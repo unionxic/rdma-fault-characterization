@@ -3,7 +3,8 @@
 ## 핵심 결론
 
 - RETRY_EXC_ERR의 3.7s detection은 하드웨어 한계가 아니라 firmware 설정이다. ConnectX-5의 min_ack_timeout_limit floor(429 + 6 × 537 ms)가 원인이며, 비활성화하면 R=7 기준 12.26 ms로 약 297배 단축됐다(N=30 실측).
-- recovery 결정에 counter는 필요 없다. CQE(ibv_wc_status + vendor_err)만으로 모든 recovery action이 결정됐고(0-cost), 전수 조사한 counter가 추가 정보를 준 경우는 0건. counter의 역할은 분류가 아니라 시점이다 — roce_adp_retrans 감시로 같은 fault의 감지·복구를 18.4 ms(203배)에 끝냈다.
+- recovery 결정의 critical path에 counter는 없다. CQE(ibv_wc_status + vendor_err)만으로 recovery action이 결정되고(0-cost), counter read는 약 7.5 ms로 recovery 2.8 ms보다 느려 사후 진단에 둔다. counter의 실시간 역할은 분류가 아니라 시점이다 — roce_adp_retrans 감시로 같은 fault의 감지·복구를 18.4 ms(203배)에 끝냈다.
+- 다만 분류 해상도의 마지막 한 단계는 counter가 올린다. CQE가 못 가르는 RETRY_EXC_ERR의 두 원인(서버 QP ERR 전이 vs 프로세스 종료)을 ethtool non-RDMA traffic(tx_vport_unicast_packets 12-13 vs 8)이 구분해 8/10 → 9/10. critical path에서는 같은 판정을 TCP probe(수백 us)로 얻는다.
 - 11개 fault 시나리오 중 9/10이 (status, vendor_err, counter signature) 조합으로 유일하게 식별되고, N=100 반복에서 전부 deterministic. 반면 latency는 host jitter로 bimodal이라 분류 신호로 부적합.
 - recovery 방법 선택만으로 2,845배 차이가 난다(QP-only 2.8 ms vs driver reload 7.9 s). QP-only는 동일 NIC의 정상 QP에 영향 0%.
 - 최대 위험은 silent failure다. NAK 에러의 partial write는 sq_psn_delta × PMTU로 서버 협조 없이 100% 복원되지만, timeout/peer death 경로는 requester-invisible — 대응은 복원이 아니라 commit 가시성이며, read-back 전략이 전 구간 우위(정상경로 0 + 에러당 최저).

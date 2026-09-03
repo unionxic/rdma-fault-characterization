@@ -59,7 +59,7 @@ REM_ACCESS_ERR과 REM_INV_REQ_ERR은 수치가 사실상 동일하다(detect 480
 
 ### 3.3 CQE sufficiency: recovery 결정은 0-cost
 
-recovery 방법을 고를 때 HW counter(sysfs/ethtool/register)를 읽을 필요가 없다. `ibv_wc_status`와 `vendor_err`만으로 모든 recovery action이 결정된다. 이는 counter를 전수 조사했기에 "충분하다"고 단정할 수 있다(counter mapping 실험에서 ethtool 2,394개 counter가 모두 recovery 결정에 추가 정보를 주지 못함을 확인 — theory 문서의 counter 관측성 참조).
+recovery 방법을 고를 때 HW counter(sysfs/ethtool/register)를 읽을 필요가 없다. `ibv_wc_status`와 `vendor_err`만으로 모든 recovery action이 결정된다. 이는 counter를 전수 조사했기에 "충분하다"고 단정할 수 있다(counter mapping 실험에서 ethtool 2,394개 counter 중 recovery 결정을 바꾸는 것이 없음을 확인. 단 분류 관점에서는 ethtool traffic fingerprint가 RETRY_EXC_ERR 두 원인을 구분해 해상도를 8/10에서 9/10으로 올린다 — theory 문서의 counter 관측성 참조).
 
 | 에러 (status / vendor_err) | CQE만으로 구분되는가 | Counter가 추가 정보를 주는가 |
 |---|---|---|
@@ -68,9 +68,9 @@ recovery 방법을 고를 때 HW counter(sysfs/ethtool/register)를 읽을 필�
 | REM_INV_REQ_ERR (9 / 0x8a) | YES | NO |
 | REM_ACCESS_ERR (10 / 0x88) | invalid rkey와 주소 범위 초과를 미구분, 단 recovery 동일이라 무방 | NO — counter도 못 구분 |
 | RNR_RETRY_EXC_ERR (13 / 0x87) | YES | NO |
-| RETRY_EXC_ERR (12 / 0x81) | 서버 QP ERR vs 프로세스 종료(kill) 미구분 | NO — counter도 못 구분, TCP probe 필요 |
+| RETRY_EXC_ERR (12 / 0x81) | 서버 QP ERR vs 프로세스 종료(kill) 미구분 | 제한적 — sysfs retry counter는 두 원인 동일(N=30), ethtool non-RDMA traffic(tx_vport_unicast 12-13 vs 8)으로만 사후 구분. critical path 판정은 TCP probe |
 
-CQE는 WR 완료 시 이미 메모리(completion queue)에 들어와 있으므로 읽는 비용이 0이다. 반면 counter read는 약 7.5ms로 측정되어 recovery(2.8ms)보다 느리다. 따라서 counter는 critical path에서 제외하고 사후 진단(firmware retry 분해, monitoring blind spot 증거 수집)으로만 위치시킨다. 단, RETRY_EXC_ERR에서 "서버 QP가 ERR로 빠졌는지(peer alive)" vs "프로세스가 죽었는지(peer dead)"는 CQE로도 counter로도 구분 불가하며, 이때만 TCP probe(약 수백 us)가 critical path에 들어간다.
+CQE는 WR 완료 시 이미 메모리(completion queue)에 들어와 있으므로 읽는 비용이 0이다. 반면 counter read는 약 7.5ms로 측정되어 recovery(2.8ms)보다 느리다. 따라서 counter는 critical path에서 제외하고 사후 진단(firmware retry 분해, monitoring blind spot 증거 수집)으로만 위치시킨다. 단, RETRY_EXC_ERR에서 "서버 QP가 ERR로 빠졌는지(peer alive)" vs "프로세스가 죽었는지(peer dead)"는 CQE로도 sysfs counter로도 구분 불가하며(ethtool non-RDMA traffic 사후 구분은 가능 — counter mapping 실험), 이때만 TCP probe(약 수백 us)가 critical path에 들어간다.
 
 | Layer | 역할 | Cost | Critical path? |
 |---|---|---|---|
