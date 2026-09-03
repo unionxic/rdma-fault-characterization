@@ -39,15 +39,4 @@ experiments/는 두 노드에서 실제 구동한 코드의 스냅샷이다. 각
 | 225 | client (requester) | ConnectX-6 (MT4123) | 20.40.1000 | 6.14.0-custom |
 | 224 | server (responder) | ConnectX-5 (MT27800) | 16.35.8002 | 6.16.2 |
 
-100 Gbps RoCE v2 직결, Ubuntu 24.04, 양쪽 GPU 없음(GPU 경계 실험은 노드 확보 후). 스크립트의 서버 주소는 placeholder로 치환되어 있다 — 재현 시 자기 환경의 값으로 교체할 것.
-
-## 재현 시 주의
-
-- firmware 토글(min_ack_timeout_limit, roce_adp_retrans_en)은 mlxreg로 ROCE_ACCL register를 수동 조작한다 — 실험 코드 밖 절차(`docs/experiments/01_detection_firmware_retry.md` 1.11절).
-- tc netem은 RDMA에 무효(kernel bypass). fault 주입은 QP 상태 조작, 프로세스 kill, link down, 그리고 storage 실험은 target 블록 계층(device-mapper)으로 수행한다.
-- vendor_err hex는 mlx5(ConnectX) 전용이다. status는 driver-stable, vendor_err는 firmware raw — 타 벤더 이식 시 분류표 재매핑이 필요하다.
-- storage 실험은 부팅 디스크 보호를 위해 file-backed nvmet namespace만 export한다(스크립트에 3중 방어 내장).
-
-## 상태
-
-Baseline(RDMA-native, 01–09)과 Case 1(SSD×RDMA, 10_storage_rdma, 72 trials) 완료. Case 2(Memory×RDMA)는 설계 완료 후 feasibility 확인 대기, Case 3(GPU×RDMA)은 GPU 노드 확보 후. 미해결 항목은 각 실험 문서의 미해결/TODO 절에 있다.
+100 Gbps RoCE v2 직결, Ubuntu 24.04, 양쪽 GPU 없음(GPU 경계 실험은 노드 확보 후).
