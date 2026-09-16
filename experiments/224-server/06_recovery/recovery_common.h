@@ -48,6 +48,7 @@ struct recovery_timing {
  * The IBA spec allows RESET transition from any state.
  * Returns 0 on success, -1 on failure.
  */
+static int reset_qp_to_reset(struct ibv_qp *qp) __attribute__((unused));
 static int reset_qp_to_reset(struct ibv_qp *qp)
 {
 	struct ibv_qp_attr attr = {
@@ -66,6 +67,7 @@ static int reset_qp_to_reset(struct ibv_qp *qp)
  * Drain any pending completions from CQ (both send and recv).
  * Returns number of completions drained.
  */
+static int drain_cq(struct ibv_cq *cq) __attribute__((unused));
 static int drain_cq(struct ibv_cq *cq)
 {
 	struct ibv_wc wc;

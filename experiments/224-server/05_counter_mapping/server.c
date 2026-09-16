@@ -160,10 +160,16 @@ static void handle_check_buffer(int conn, const char *args)
 	for (int i = beyond_start; i < beyond_end; i++)
 		if (buf[i] != 0) beyond_mod++;
 
+	/* last modified byte offset within the in-MR region [offset, within_end);
+	 * -1 if nothing landed. verify_partial_write.c parses this ':last=' field. */
+	int last_mod = -1;
+	for (int i = offset; i < within_end; i++)
+		if (buf[i] != 0) last_mod = i;
+
 	char resp[128];
-	snprintf(resp, sizeof(resp), "PARTIAL:%d/%d:%d/%d",
+	snprintf(resp, sizeof(resp), "PARTIAL:%d/%d:%d/%d:last=%d",
 		 within_mod, within_end - offset,
-		 beyond_mod, beyond_end - beyond_start);
+		 beyond_mod, beyond_end - beyond_start, last_mod);
 	printf("  [server] %s\n", resp);
 	tcp_send_msg(conn, resp);
 }
@@ -555,6 +561,90 @@ static void handle_check_c(int conn, const char *args)
 	tcp_send_msg(conn, resp);
 }
 
+/* ------------------------------------------------------------------ */
+/*  Interrupted-write (timeout / peer-death) mid-transfer partial       */
+/*  (SETUP_LARGE / INIT_LARGE / CHECK_LARGE — peer of                   */
+/*   verify_interrupted_write.c; CMD_INTERRUPT reused as the fault)     */
+/* ------------------------------------------------------------------ */
+
+/* SETUP_LARGE: back LARGE_BUF_SIZE (8MB) and register an 8MB MR (the WRITE
+ * target is fully in-MR, so the partial is caused by CMD_INTERRUPT driving the
+ * responder QP to ERR mid-transfer, NOT by a bounds check). Same shape as
+ * handle_setup_c. */
+static int handle_setup_large(int conn)
+{
+	int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+		     IBV_ACCESS_REMOTE_READ;
+
+	if (setup_rdma(&res, 0, access, 7, 7, 14) < 0)
+		return -1;
+
+	ibv_dereg_mr(res.mr);
+	free(res.buf);
+
+	res.buf = calloc(1, LARGE_BUF_SIZE);
+	if (!res.buf)
+		return -1;
+	res.buf_size = LARGE_BUF_SIZE;
+
+	res.mr = ibv_reg_mr(res.pd, res.buf, LARGE_BUF_SIZE, access);
+	if (!res.mr) {
+		fprintf(stderr, "  [server] SETUP_LARGE ibv_reg_mr(%d) failed: %s\n",
+			LARGE_BUF_SIZE, strerror(errno));
+		return -1;
+	}
+
+	res.local_info.rkey = res.mr->rkey;
+	res.local_info.raddr = (uint64_t)res.buf;
+
+	tcp_exchange_qp_info(conn, &res.local_info, &res.remote_info, 1);
+
+	if (connect_qp(&res, 1, 7, 7, 14) < 0)
+		return -1;
+
+	printf("  [server] LARGE QP ready (buf+mr=%d)\n", LARGE_BUF_SIZE);
+	tcp_send_msg(conn, CMD_READY);
+	return 0;
+}
+
+static void handle_init_large(int conn)
+{
+	memset(res.buf, 0, res.buf_size);
+	printf("  [server] LARGE buffer zeroed (%zu bytes)\n", res.buf_size);
+	tcp_send_msg(conn, CMD_DONE);
+}
+
+/* CHECK_LARGE <write_len>: ground-truth scan of the WRITE target [0, write_len).
+ * The source is a non-zero pattern and INIT_LARGE zeroed the buffer, so the
+ * contiguous non-zero prefix length equals the bytes that actually landed.
+ * Reports within_mod (non-zero bytes in range), the last non-zero offset, and
+ * the scanned length. Format parsed by verify_interrupted_write.c:
+ *   "LARGE:<within_mod>:last=<last_off>:len=<write_len>"  */
+static void handle_check_large(int conn, const char *args)
+{
+	long write_len = 0;
+	sscanf(args, "%ld", &write_len);
+
+	unsigned char *buf = (unsigned char *)res.buf;
+	long n = (long)res.buf_size;
+	long end = (write_len < n) ? write_len : n;
+	if (end < 0) end = 0;
+
+	long within_mod = 0, last_mod = -1;
+	for (long i = 0; i < end; i++) {
+		if (buf[i] != 0) {
+			within_mod++;
+			last_mod = i;
+		}
+	}
+
+	char resp[128];
+	snprintf(resp, sizeof(resp), "LARGE:%ld:last=%ld:len=%ld",
+		 within_mod, last_mod, write_len);
+	printf("  [server] %s\n", resp);
+	tcp_send_msg(conn, resp);
+}
+
 static void run_server(void)
 {
 	/* Optional bind IP via env RDMA_BIND (default INADDR_ANY). Lets the
@@ -639,6 +729,16 @@ static void run_server(void)
 
 			} else if (strncmp(cmd, CMD_CHECK_C, strlen(CMD_CHECK_C)) == 0) {
 				handle_check_c(conn, cmd + strlen(CMD_CHECK_C) + 1);
+
+			} else if (strcmp(cmd, CMD_SETUP_LARGE) == 0) {
+				if (handle_setup_large(conn) < 0)
+					fprintf(stderr, "setup_large failed\n");
+
+			} else if (strcmp(cmd, CMD_INIT_LARGE) == 0) {
+				handle_init_large(conn);
+
+			} else if (strncmp(cmd, CMD_CHECK_LARGE, strlen(CMD_CHECK_LARGE)) == 0) {
+				handle_check_large(conn, cmd + strlen(CMD_CHECK_LARGE) + 1);
 
 			} else if (strncmp(cmd, CMD_SETUP, strlen(CMD_SETUP)) == 0) {
 				if (handle_setup_normal(conn) < 0)

@@ -17,6 +17,7 @@ with open(src) as f:
             "std":  float(r["stddev_us"]),
             "p50":  float(r["p50_us"]),
             "p99":  float(r["p99_us"]),
+            "n":    int(r.get("n", 0) or 0),
         }
 
 # Stacked bar: T1+T2+coord1+T3+T4+coord2+T5
@@ -66,7 +67,9 @@ ax2.set_ylabel("Latency (us)")
 ax2.set_title("Per-stage mean +/- 1 sigma")
 ax2.grid(True, axis="y", alpha=0.3)
 
-fig.suptitle(f"Exp 3: QP recovery breakdown  (N={int(data['T1_ERR_RESET'].get('p50', 0)) and 100})", y=1.02)
+# N = real per-stage trial count (from the aggregated CSV), not a hardcoded guess.
+_n = data.get("T1_ERR_RESET", {}).get("n", 0)
+fig.suptitle(f"Exp 3: QP recovery breakdown  (N={_n})", y=1.02)
 fig.tight_layout()
 fig.savefig(out, dpi=150, bbox_inches="tight")
 print(f"wrote {out}")

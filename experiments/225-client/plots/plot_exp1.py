@@ -12,10 +12,14 @@ out_violin = os.path.join(HERE, "exp1_violin.png")
 groups = {"QP_TO_ERR": [], "KILL_PROCESS": [], "LINK_DOWN": []}
 with open(src) as f:
     for r in csv.DictReader(f):
-        groups[r["scenario"]].append(float(r["detection_latency_ms"]))
+        # setdefault so an unexpected scenario label does not KeyError.
+        groups.setdefault(r["scenario"], []).append(
+            float(r["detection_latency_ms"]))
 
 labels = ["A: QP→ERR", "B: Kill", "C: Link Down"]
 data = [groups["QP_TO_ERR"], groups["KILL_PROCESS"], groups["LINK_DOWN"]]
+if not any(data):
+    raise SystemExit(f"plot_exp1: no data in {src} for the three scenarios")
 
 fig, ax = plt.subplots(figsize=(6.0, 4.0))
 ax.boxplot(data, labels=labels, showfliers=True, widths=0.6,

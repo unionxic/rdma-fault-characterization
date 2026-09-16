@@ -157,7 +157,7 @@ static int run_force_err(int sock, int delay_ms, int trial)
 
 static int mode_force_err(int sock, int argc, char *argv[])
 {
-	int delays[] = {100, 200, 500};
+	int delays[10] = {100, 200, 500};  /* sized to the num_delays clamp below */
 	int num_delays = 3;
 
 	if (argc > 2) {
@@ -322,6 +322,9 @@ static void *monitor_thread_fn(void *arg)
 			       &ctx->counter_baseline) < 0) {
 		fprintf(stderr, "ERROR: monitor: cannot read %s\n",
 			ctx->counter_name);
+		/* Signal started so main's spin-wait terminates; detected stays
+		 * 0 so the trial fails gracefully instead of hanging forever. */
+		ctx->started = 1;
 		return NULL;
 	}
 
@@ -466,7 +469,7 @@ static int run_recover(int sock, const char *counter_name,
 	long polling_lag_us  = 0;
 	if (mon.t_last_no_change.tv_sec > 0)
 		polling_lag_us = ts_diff_us(&mon.t_last_no_change, &mon.t_detect);
-	long counter_delta   = mon.counter_detected - mon.counter_baseline;
+	long long counter_delta = mon.counter_detected - mon.counter_baseline;
 
 	printf("%s,%d,%d,%ld,%ld,%d,%lld,%ld,%ld,%ld,%ld,%ld,%d,0x%x\n",
 	       counter_name, poll_ms, trial,

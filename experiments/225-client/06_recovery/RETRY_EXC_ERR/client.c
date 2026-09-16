@@ -126,6 +126,10 @@ static int inject_and_detect(struct rdma_res *res, struct ibv_wc *wc,
 		fprintf(stderr, "ERROR: expected error CQE, got success\n");
 		return -1;
 	}
+	if (wc->status != IBV_WC_RETRY_EXC_ERR)
+		fprintf(stderr, "WARN: expected RETRY_EXC_ERR, got status=%d (%s) "
+			"— passive baseline may be measuring a different fault\n",
+			wc->status, ibv_wc_status_str(wc->status));
 
 	fprintf(stderr, "  [detect] status=%d (%s) vendor_err=0x%x\n",
 		wc->status, ibv_wc_status_str(wc->status), wc->vendor_err);
@@ -217,6 +221,13 @@ static int setup_rdma_retry(struct rdma_res *res, int buf_count,
 		if (setup_rdma(res, buf_count, mr_access, 7, 7, 14) == 0)
 			return 0;
 
+		/* setup_rdma may have partially allocated ctx/pd/cq/qp/mr/buf
+		 * before failing (e.g. at the RoCEv2-GID check while the GID
+		 * table repopulates after modprobe). Free it before retrying so
+		 * the next memset doesn't leak the handles. cleanup_rdma is
+		 * NULL-tolerant on partial allocation. */
+		cleanup_rdma(res);
+
 		clock_gettime(CLOCK_MONOTONIC, &now);
 		long elapsed_ms = (now.tv_sec - start.tv_sec) * 1000 +
 				  (now.tv_nsec - start.tv_nsec) / 1000000;
@@ -248,9 +259,12 @@ static int recover_driver_reload(int sock, struct rdma_res *res,
 		return -1;
 	}
 	usleep(500000);
-	system("dev=$(ls /sys/class/infiniband/ 2>/dev/null | head -1); "
+	/* Best-effort device rename after reload; consume return to satisfy
+	 * -Wunused-result. The trailing "; true" makes the shell rc 0 anyway. */
+	if (system("dev=$(ls /sys/class/infiniband/ 2>/dev/null | head -1); "
 	       "[ -n \"$dev\" ] && [ \"$dev\" != \"mlx5_0\" ] && "
-	       "sudo rdma dev set \"$dev\" name mlx5_0 2>/dev/null; true");
+	       "sudo rdma dev set \"$dev\" name mlx5_0 2>/dev/null; true") != 0)
+		fprintf(stderr, "WARN: device rename best-effort step failed\n");
 
 	if (setup_rdma_retry(res, 1, MR_ACCESS, 5000) < 0) {
 		fprintf(stderr, "ERROR: setup_rdma after driver reload failed\n");

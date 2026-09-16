@@ -132,20 +132,25 @@ int rdma_conn_client(struct rdma_conn *c, const char *server_ip,
 	setsockopt(c->ctrl_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
 	if (tcp_send_msg(c->ctrl_sock, CMD_MW_SETUP) < 0)
-		return -1;
+		goto fail;
 	if (wait_ready(c) < 0)                     /* #1: server 자원 준비됨 */
-		return -1;
+		goto fail;
 
 	if (setup_rdma(&c->res, 1, mr_access, retry_cnt, rnr_retry, timeout) < 0)
-		return -1;
+		goto fail;
 	if (tcp_exchange_qp_info(c->ctrl_sock, &c->res.local_info,
 				 &c->res.remote_info, 0) < 0)
-		return -1;
+		goto fail;
 	if (connect_qp(&c->res, remote_write, retry_cnt, rnr_retry, timeout) < 0)
-		return -1;
+		goto fail;
 	if (wait_ready(c) < 0)                     /* #2: 연결 완료 */
-		return -1;
+		goto fail;
 	return 0;
+fail:
+	/* free ctrl socket + any partially-allocated RDMA resources so a
+	 * failed connect does not leak an fd / QP / MR / PD / context. */
+	rdma_conn_close(c);
+	return -1;
 }
 
 int rdma_conn_server(struct rdma_conn *c, int listen_sock,
@@ -169,24 +174,31 @@ int rdma_conn_server(struct rdma_conn *c, int listen_sock,
 		return -1;
 	int flag = 1;
 	setsockopt(c->ctrl_sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+	/* Bound blocking recv so a client that dies mid-recovery does not hang
+	 * rdma_conn_serve forever (mirrors the client-side SO_RCVTIMEO). */
+	struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+	setsockopt(c->ctrl_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
 	char buf[64];
 	if (tcp_recv_msg(c->ctrl_sock, buf, sizeof(buf)) < 0 ||
 	    strcmp(buf, CMD_MW_SETUP) != 0)
-		return -1;
+		goto fail;
 
 	if (setup_rdma(&c->res, 1, mr_access, retry_cnt, rnr_retry, timeout) < 0)
-		return -1;
+		goto fail;
 	tcp_send_msg(c->ctrl_sock, CMD_READY);     /* #1 */
 	if (tcp_exchange_qp_info(c->ctrl_sock, &c->res.local_info,
 				 &c->res.remote_info, 1) < 0)
-		return -1;
+		goto fail;
 	if (connect_qp(&c->res, remote_write, retry_cnt, rnr_retry, timeout) < 0)
-		return -1;
+		goto fail;
 	if (post_recv_initial && post_recv(&c->res) < 0)
-		return -1;
+		goto fail;
 	tcp_send_msg(c->ctrl_sock, CMD_READY);     /* #2 */
 	return 0;
+fail:
+	rdma_conn_close(c);
+	return -1;
 }
 
 void rdma_conn_close(struct rdma_conn *c)
@@ -222,9 +234,13 @@ static int resend_inflight(struct rdma_conn *c)
  */
 static int bilateral_qp(struct rdma_conn *c, const char *cmd)
 {
-	drain_cq(c->res.cq);
+	/* Reset first, THEN drain: the ERR->RESET transition can still surface
+	 * flush CQEs for sibling in-flight WQEs, so draining after the reset
+	 * guarantees no stale completion is left to be misclassified by the
+	 * first post-recovery poll. */
 	if (reset_qp_to_reset(c->res.qp) < 0)
 		return -1;
+	drain_cq(c->res.cq);
 	c->res.local_info.psn = rand() & 0xFFFFFF;
 
 	if (tcp_send_msg(c->ctrl_sock, cmd) < 0)
@@ -296,9 +312,9 @@ enum rdma_recover_result rdma_conn_recover(struct rdma_conn *c,
 int rdma_conn_handle(struct rdma_conn *c, const char *cmd)
 {
 	if (strcmp(cmd, CMD_MW_RECOVER) == 0) {
-		drain_cq(c->res.cq);
 		if (reset_qp_to_reset(c->res.qp) < 0)
 			return -1;
+		drain_cq(c->res.cq);
 		c->res.local_info.psn = rand() & 0xFFFFFF;
 		if (tcp_exchange_qp_info(c->ctrl_sock, &c->res.local_info,
 					 &c->res.remote_info, 1) < 0)
@@ -313,11 +329,13 @@ int rdma_conn_handle(struct rdma_conn *c, const char *cmd)
 	}
 
 	if (strcmp(cmd, CMD_MW_REFRESH) == 0) {
-		drain_cq(c->res.cq);
 		if (reset_qp_to_reset(c->res.qp) < 0)
 			return -1;
+		drain_cq(c->res.cq);
 		/* MR 재등록 → 새 rkey. stale rkey / MR 권한 문제를 해소한다. */
-		ibv_dereg_mr(c->res.mr);
+		if (ibv_dereg_mr(c->res.mr) != 0)
+			fprintf(stderr, "rdma_conn: ibv_dereg_mr failed: %s\n",
+				strerror(errno));
 		c->res.mr = ibv_reg_mr(c->res.pd, c->res.buf, MR_SIZE, c->mr_access);
 		if (!c->res.mr)
 			return -1;
@@ -352,8 +370,14 @@ int rdma_conn_serve(struct rdma_conn *c)
 	while (tcp_recv_msg(c->ctrl_sock, cmd, sizeof(cmd)) > 0) {
 		if (strcmp(cmd, CMD_MW_SHUTDOWN) == 0)
 			break;
-		if (rdma_conn_handle(c, cmd) < 0)
-			fprintf(stderr, "rdma_conn_serve: handle '%s' failed\n", cmd);
+		if (rdma_conn_handle(c, cmd) < 0) {
+			/* A failed handler leaves the connection desynced (e.g. MR
+			 * re-register failed -> res.mr may be NULL). Stop serving
+			 * rather than run subsequent commands on broken resources. */
+			fprintf(stderr, "rdma_conn_serve: handle '%s' failed, "
+				"stopping\n", cmd);
+			return -1;
+		}
 	}
 	return 0;
 }

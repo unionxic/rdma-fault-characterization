@@ -16,6 +16,10 @@
 /* ------------------------------------------------------------------ */
 
 #define MULTI_WR_COUNT        8     /* normal WRs before faulty WR    */
+/* common.h (included above) defines LARGE_BUF_SIZE as 8MB for the strategy-C /
+ * interrupted-write experiments; the multi experiment wants its own 256KB value.
+ * Undef first so this TU uses 256KB without a -Wmacro-redefined warning. */
+#undef LARGE_BUF_SIZE
 #define LARGE_BUF_SIZE        (256 * 1024)   /* 256 KB                */
 #define MULTI_QP_COUNT        4
 #define MULTI_CQ_DEPTH        64    /* enough for multi-WR + flush    */

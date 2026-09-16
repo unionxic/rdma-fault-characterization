@@ -152,10 +152,16 @@ static void handle_check_buffer(int conn, const char *args)
 	for (int i = beyond_start; i < beyond_end; i++)
 		if (buf[i] != 0) beyond_mod++;
 
+	/* last modified byte offset within the in-MR region [offset, within_end);
+	 * -1 if nothing landed. verify_partial_write.c parses this ':last=' field. */
+	int last_mod = -1;
+	for (int i = offset; i < within_end; i++)
+		if (buf[i] != 0) last_mod = i;
+
 	char resp[128];
-	snprintf(resp, sizeof(resp), "PARTIAL:%d/%d:%d/%d",
+	snprintf(resp, sizeof(resp), "PARTIAL:%d/%d:%d/%d:last=%d",
 		 within_mod, within_end - offset,
-		 beyond_mod, beyond_end - beyond_start);
+		 beyond_mod, beyond_end - beyond_start, last_mod);
 	printf("  [server] %s\n", resp);
 	tcp_send_msg(conn, resp);
 }

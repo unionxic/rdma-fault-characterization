@@ -78,7 +78,7 @@ enum scenario {
 	SCENARIO_MAX
 };
 
-static const char *scenario_names[] = {
+static __attribute__((unused)) const char *scenario_names[] = {
 	[SCENARIO_NONE]       = "NONE",
 	[LOC_PROT_LEN]    = "LOC_PROT_LEN",
 	[LOC_PROT_LKEY]   = "LOC_PROT_LKEY",
@@ -284,7 +284,7 @@ static int snapshot_local_counters(struct counter_snapshot *snap)
 	return 0;
 }
 
-static void print_counter_delta(const char *label,
+static __attribute__((unused)) void print_counter_delta(const char *label,
 				const struct counter_snapshot *before,
 				const struct counter_snapshot *after,
 				FILE *out)
@@ -308,7 +308,7 @@ static void print_counter_delta(const char *label,
 /*  Daemon counter snapshot via TCP                                   */
 /* ------------------------------------------------------------------ */
 
-static int request_daemon_snapshot(const char *daemon_ip, int daemon_port,
+static __attribute__((unused)) int request_daemon_snapshot(const char *daemon_ip, int daemon_port,
 				   struct counter_snapshot *snap)
 {
 	int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -326,7 +326,10 @@ static int request_daemon_snapshot(const char *daemon_ip, int daemon_port,
 		return -1;
 	}
 
-	write(sock, "SNAPSHOT\n", 9);
+	if (write(sock, "SNAPSHOT\n", 9) != 9) {
+		close(sock);
+		return -1;
+	}
 
 	char buf[4096] = {};
 	int total = 0, n;
@@ -341,7 +344,8 @@ static int request_daemon_snapshot(const char *daemon_ip, int daemon_port,
 		char name[64];
 		long long val;
 		if (sscanf(line, "%63[^,],%lld", name, &val) == 2) {
-			strncpy(snap->names[snap->count], name, 63);
+			snprintf(snap->names[snap->count],
+				 sizeof(snap->names[snap->count]), "%s", name);
 			snap->values[snap->count] = val;
 			snap->count++;
 		}
@@ -354,7 +358,7 @@ static int request_daemon_snapshot(const char *daemon_ip, int daemon_port,
 /*  Background noise check                                            */
 /* ------------------------------------------------------------------ */
 
-static int verify_idle(void)
+static __attribute__((unused)) int verify_idle(void)
 {
 	struct counter_snapshot s1, s2;
 	snapshot_local_counters(&s1);
@@ -378,7 +382,7 @@ static int verify_idle(void)
 /*  TCP helpers                                                       */
 /* ------------------------------------------------------------------ */
 
-static int tcp_connect(const char *ip, int port)
+static __attribute__((unused)) int tcp_connect(const char *ip, int port)
 {
 	int sock = socket(AF_INET, SOCK_STREAM, 0);
 	if (sock < 0) {
@@ -753,7 +757,7 @@ static void cleanup_rdma(struct rdma_res *res)
 /*  RDMA post helpers                                                 */
 /* ------------------------------------------------------------------ */
 
-static int post_rdma_write(struct rdma_res *res, struct ibv_sge *custom_sge)
+static __attribute__((unused)) int post_rdma_write(struct rdma_res *res, struct ibv_sge *custom_sge)
 {
 	struct ibv_sge sge;
 	if (custom_sge) {
@@ -779,7 +783,7 @@ static int post_rdma_write(struct rdma_res *res, struct ibv_sge *custom_sge)
 	return ibv_post_send(res->qp, &wr, &bad);
 }
 
-static int post_send(struct rdma_res *res)
+static __attribute__((unused)) int post_send(struct rdma_res *res)
 {
 	struct ibv_sge sge = {
 		.addr = (uint64_t)res->buf,
@@ -797,7 +801,7 @@ static int post_send(struct rdma_res *res)
 	return ibv_post_send(res->qp, &wr, &bad);
 }
 
-static int post_recv(struct rdma_res *res)
+static __attribute__((unused)) int post_recv(struct rdma_res *res)
 {
 	struct ibv_sge sge = {
 		.addr = (uint64_t)res->buf,
@@ -813,7 +817,7 @@ static int post_recv(struct rdma_res *res)
 	return ibv_post_recv(res->qp, &wr, &bad);
 }
 
-static int poll_cq_block(struct ibv_cq *cq, struct ibv_wc *wc, int timeout_ms)
+static __attribute__((unused)) int poll_cq_block(struct ibv_cq *cq, struct ibv_wc *wc, int timeout_ms)
 {
 	struct timespec start, now;
 	clock_gettime(CLOCK_MONOTONIC, &start);
@@ -837,7 +841,7 @@ static int poll_cq_block(struct ibv_cq *cq, struct ibv_wc *wc, int timeout_ms)
 /*  Timing helper                                                     */
 /* ------------------------------------------------------------------ */
 
-static double elapsed_us(struct timespec *start, struct timespec *end)
+static __attribute__((unused)) double elapsed_us(struct timespec *start, struct timespec *end)
 {
 	return (end->tv_sec - start->tv_sec) * 1e6 +
 	       (end->tv_nsec - start->tv_nsec) / 1e3;

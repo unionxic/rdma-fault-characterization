@@ -18,6 +18,19 @@ TIMEOUT="${TIMEOUT:-8}"
 ITERS="${ITERS:-30}"
 CLIENT="${SCRIPT_DIR}/client"
 
+# Optional: pin the busy-polling client to a dedicated core to reduce
+# scheduler jitter in the sub-millisecond t1/t2 timing. Unset -> no pinning
+# (default behaviour unchanged). Example: CPU_PIN=2 ./run_experiment.sh
+CPU_PIN="${CPU_PIN:-}"
+PIN=""
+if [ -n "$CPU_PIN" ]; then
+    if command -v taskset >/dev/null 2>&1; then
+        PIN="taskset -c $CPU_PIN"
+    else
+        echo "[WARN] taskset not found; CPU_PIN ignored" >&2
+    fi
+fi
+
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 CSV="${SCRIPT_DIR}/results/modifyqp_${TIMESTAMP}.csv"
 LOG_FILE="${SCRIPT_DIR}/results/log_${TIMESTAMP}.txt"
@@ -43,7 +56,7 @@ for R in $RETRY_VALUES; do
     config_idx=$((config_idx + 1))
     log "[$config_idx/$n_retry] R=$R T=$TIMEOUT × N=$ITERS"
 
-    "$CLIENT" -s "$SERVER_IP" \
+    $PIN "$CLIENT" -s "$SERVER_IP" \
         -R "$R" -O "$TIMEOUT" -n "$ITERS" \
         -o "$CSV" 2>&1 | tee -a "$LOG_FILE" >&2
 

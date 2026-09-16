@@ -687,6 +687,11 @@ static void run_server(void)
 			perror("accept");
 			continue;
 		}
+		/* Nagle+delayed-ACK가 lockstep 왕복(RETRY_EXC_QP_ERR의 CMD_INJECT
+		 * 왕복 등, 측정 구간 t_inject..t_detect 안에 포함됨)에 ~40ms floor를
+		 * 만든다 — server.c와 동일하게 비활성화. (2026-09-15) */
+		int flag = 1;
+		setsockopt(conn, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 		printf("Client connected\n");
 
 		char cmd[256];

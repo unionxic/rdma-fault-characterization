@@ -21,8 +21,11 @@ LOOPDEV=""; DM_USED=0
 if [ -f "$STATE_FILE" ]; then
   # source 금지: state의 DM_NAME이 lib의 readonly와 충돌하고, DM_DETAIL의
   # 괄호가 syntax error를 낸다(실측). 필요한 키만 grep으로 안전 파싱.
-  LOOPDEV="$(grep '^LOOPDEV=' "$STATE_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-  DM_USED="$(grep '^DM_USED=' "$STATE_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  # state values are single-quoted (for safe re-sourcing elsewhere); strip the
+  # surrounding quotes here or `losetup "'/dev/loopN'"` fails on the literal
+  # quotes and the recorded-loop detach path silently no-ops.
+  LOOPDEV="$(grep '^LOOPDEV=' "$STATE_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "'\"" || true)"
+  DM_USED="$(grep '^DM_USED=' "$STATE_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "'\"" || true)"
 fi
 
 # 이전 dmsetup이 SIGKILL로 죽었으면 stale udev cookie(세마포어)가 남아 이후

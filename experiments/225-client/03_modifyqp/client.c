@@ -259,6 +259,9 @@ static int run_one(int ctrl_fd, rdma_ctx_t *rctx,
     }
 
     if (t2 > 0) {
+        /* Guard: no success CQE after inject (t1 never set) -> avoid
+         * unsigned underflow of t1-t0 / t2-t1 in the CSV. */
+        if (t1 == 0) t1 = t0;
         double tcp_rtt_ms = ns_to_ms(t_ack - t0);
 
         LOG_INFO("iter[%d] R=%d T=%d: t1-t0=%.3fms  t2-t1=%.3fms  t2-t0=%.3fms  "

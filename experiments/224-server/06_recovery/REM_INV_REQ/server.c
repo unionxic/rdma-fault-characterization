@@ -53,7 +53,12 @@ static int handle_setup_inv(int sock)
 		return -1;
 	}
 
-	if (connect_qp(&res, 7, 7, 7, 14) < 0) {
+	/* remote_write=0: disable RDMA-write at the QP access level. An RDMA
+	 * WRITE the responder QP does not permit is an INVALID REQUEST (NAK 1)
+	 * -> IBV_WC_REM_INV_REQ_ERR. (Enabling remote_write here while the MR
+	 * lacks it would instead yield REM_ACCESS_ERR (NAK 2) — the wrong
+	 * error class for this experiment. Recovery below re-enables it.) */
+	if (connect_qp(&res, 0, 7, 7, 14) < 0) {
 		fprintf(stderr, "ERROR: connect_qp failed\n");
 		return -1;
 	}
@@ -86,7 +91,9 @@ static int handle_recover_qp_mr(int sock)
 
 	/* Deregister old MR (LOCAL_WRITE only) */
 	if (res.mr) {
-		ibv_dereg_mr(res.mr);
+		if (ibv_dereg_mr(res.mr) != 0)
+			fprintf(stderr, "WARN: ibv_dereg_mr failed: %s\n",
+				strerror(errno));
 		res.mr = NULL;
 	}
 

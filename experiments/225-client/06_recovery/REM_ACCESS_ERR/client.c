@@ -135,6 +135,10 @@ static int inject_and_detect(struct rdma_res *res, struct ibv_wc *wc,
 		fprintf(stderr, "ERROR: expected error CQE, got success\n");
 		return -1;
 	}
+	if (wc->status != IBV_WC_REM_ACCESS_ERR)
+		fprintf(stderr, "WARN: expected REM_ACCESS_ERR, got status=%d (%s) "
+			"— fault trigger may be wrong\n",
+			wc->status, ibv_wc_status_str(wc->status));
 
 	fprintf(stderr, "  [detect] status=%d (%s) vendor_err=0x%x\n",
 		wc->status, ibv_wc_status_str(wc->status), wc->vendor_err);
@@ -265,8 +269,10 @@ static int run_trial(int sock, int trial, const char *method,
 	fprintf(stderr, "\n--- Trial %d, method=%s ---\n", trial, method);
 
 	/* 1. Setup + invalidate server MR */
-	if (setup_rem_fault(sock, &res) < 0)
+	if (setup_rem_fault(sock, &res) < 0) {
+		cleanup_rdma(&res);   /* free any partial allocation on failure */
 		return -1;
+	}
 
 	/* 2. RDMA WRITE with stale rkey → REM_ACCESS_ERR */
 	if (inject_and_detect(&res, &wc, &t_start, &t_detect) < 0) {

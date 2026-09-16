@@ -282,6 +282,10 @@ static int run_kill_one(client_config_t *cfg, int iter, FILE *csv_fp)
     }
 
     if (t2 > 0) {
+        /* Guard: no success CQE after inject (t1 never set) -> avoid
+         * unsigned underflow of t1-t0 / t2-t1 in the decomposition CSV.
+         * Attribute the whole window to the HCA retry wait. */
+        if (t1 == 0) t1 = t0;
         uint64_t t_fault_est = (t_ack > t0) ? t0 + (t_ack - t0) / 2 : t0;
 
         /* Compat line for run_experiment.sh stderr parser */

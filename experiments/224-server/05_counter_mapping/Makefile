@@ -2,7 +2,10 @@ CC = gcc
 CFLAGS = -Wall -O2
 LDFLAGS = -libverbs -lpthread
 
-all: client server multi_server verify_qp_state verify_partial_write
+# NOTE: verify_qp_state / verify_partial_write / verify_interrupted_write are
+# client-side (225) driver programs; on the 224 responder only client.c,
+# server.c and multi_server.c exist, so they are NOT build targets here.
+all: client server multi_server
 
 client: client.c common.h
 	$(CC) $(CFLAGS) -o $@ client.c $(LDFLAGS)
@@ -16,13 +19,7 @@ server: server.c common.h
 multi_server: multi_server.c common.h
 	$(CC) $(CFLAGS) -o $@ multi_server.c $(LDFLAGS)
 
-verify_qp_state: verify_qp_state.c common.h
-	$(CC) $(CFLAGS) -o $@ verify_qp_state.c $(LDFLAGS)
-
-verify_partial_write: verify_partial_write.c common.h
-	$(CC) $(CFLAGS) -o $@ verify_partial_write.c $(LDFLAGS)
-
 clean:
-	rm -f client server multi_server verify_qp_state verify_partial_write
+	rm -f client server multi_server
 
 .PHONY: all clean

@@ -407,6 +407,15 @@ static int run_isolation(int sock, int num_trials)
 			struct timespec t0, t1, t2, t3;
 			long detect_us = 0, recovery_us = 0;
 			int win_offset = 0;
+			/* first-run window aggregates carried past the tc memset()
+			 * on the full_rebuild path (otherwise the summary loop only
+			 * sees the second run and reports baseline=0, fault=0). */
+			long carry_baseline_ops = 0, carry_fault_ops = 0;
+			int  carry_baseline_n = 0,   carry_fault_n = 0;
+
+			/* zero so an early goto trial_fail (before setup) can safely
+			 * run cleanup_multi() on NULL handles. */
+			memset(&m, 0, sizeof(m));
 
 			fprintf(stderr, "\n--- Trial %d, method=%s ---\n",
 				trial, method_name);
@@ -517,6 +526,14 @@ static int run_isolation(int sock, int num_trials)
 					       tc.windows[w].ops,
 					       tc.windows[w].qp_b_state,
 					       tc.windows[w].phase);
+					if (strcmp(tc.windows[w].phase, "baseline") == 0) {
+						carry_baseline_ops += tc.windows[w].ops;
+						carry_baseline_n++;
+					} else if (strcmp(tc.windows[w].phase, "during_fault") == 0 ||
+						   strcmp(tc.windows[w].phase, "during_recovery") == 0) {
+						carry_fault_ops += tc.windows[w].ops;
+						carry_fault_n++;
+					}
 				}
 				win_offset = tc.num_windows;
 
@@ -590,8 +607,10 @@ static int run_isolation(int sock, int num_trials)
 			}
 
 			/* Summary line — combine with first-run windows if full_rebuild */
-			long baseline_ops = 0, fault_ops = 0, recovered_ops = 0;
-			int  baseline_n = 0,   fault_n = 0,   recovered_n = 0;
+			long baseline_ops = carry_baseline_ops, fault_ops = carry_fault_ops;
+			long recovered_ops = 0;
+			int  baseline_n = carry_baseline_n, fault_n = carry_fault_n;
+			int  recovered_n = 0;
 			for (int w = 0; w < tc.num_windows; w++) {
 				if (strcmp(tc.windows[w].phase, "baseline") == 0) {
 					baseline_ops += tc.windows[w].ops;
@@ -627,6 +646,11 @@ static int run_isolation(int sock, int num_trials)
 			wait_server_ack(sock, CMD_DONE);
 			cleanup_multi(&m);
 		trial_fail:
+			/* free m on the direct-to-fail paths (e.g. full_rebuild
+			 * CLEANUP/SETUP handshake) that skip trial_cleanup.
+			 * cleanup_multi is idempotent (memsets m), so the
+			 * trial_cleanup fall-through calling it twice is safe. */
+			cleanup_multi(&m);
 			fprintf(stderr, "ERROR: trial %d method=%s failed\n",
 				trial, method_name);
 			failed++;

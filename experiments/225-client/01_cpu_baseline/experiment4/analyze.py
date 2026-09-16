@@ -71,7 +71,7 @@ def matrix_success(rows, mode, loss_pct):
 def print_success_matrix(rows, mode, loss_pct, retries, timeouts, label):
     print()
     print(f"--- {label} (success %) ---")
-    header = f"{'retry\\timeout':<14}"
+    header = "{:<14}".format('retry\\timeout')
     for T in timeouts:
         header += f" | {T:>2} (~{timeout_ms(T):>7.2f}ms)"
     print(header)
@@ -89,7 +89,7 @@ def print_success_matrix(rows, mode, loss_pct, retries, timeouts, label):
 def print_kill_latency_matrix(rows, retries, timeouts):
     print()
     print("--- Persistent fault (process kill): mean detection latency ---")
-    header = f"{'retry\\timeout':<14}"
+    header = "{:<14}".format('retry\\timeout')
     for T in timeouts:
         header += f" | {T:>2} (~{timeout_ms(T):>7.2f}ms)"
     print(header)

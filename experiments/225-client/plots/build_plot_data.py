@@ -196,11 +196,20 @@ def build_exp4():
 
 def main():
     print("Building plot data ...")
-    build_exp1()
-    build_exp2()
-    build_exp3()
-    build_exp4()
-    print("Done.")
+    # NOTE: the per-experiment source paths below are relative to ROOT
+    # (225-client). If a raw-experiment tree has been moved/renamed (e.g. the
+    # exp1-4 raw CSVs now live under 01_cpu_baseline/), a builder's inputs will
+    # be missing. Report and skip that experiment rather than aborting the whole
+    # run, so the still-resolvable outputs are regenerated.
+    ok = 0
+    for name, fn in (("exp1", build_exp1), ("exp2", build_exp2),
+                     ("exp3", build_exp3), ("exp4", build_exp4)):
+        try:
+            fn()
+            ok += 1
+        except (FileNotFoundError, NotADirectoryError) as e:
+            print(f"  SKIP {name}: missing source ({e})")
+    print(f"Done ({ok}/4 built).")
 
 
 if __name__ == "__main__":
