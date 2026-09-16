@@ -246,7 +246,7 @@ int main(int argc, char **argv) {
          * control channel, (c) the responder NIC rx_packets delta (ethtool
          * traffic) to split it into link_down / proc_kill / server_qp_err. */
         char sub_cause[24] = "-";
-        long peer_rx = -1;
+        long peer_rx = -1, peer_tx = -1;
         if (st == IBV_WC_RETRY_EXC_ERR) {
             if (ep_port_state(&ep) != IBV_PORT_ACTIVE) {
                 snprintf(sub_cause, sizeof(sub_cause), "link_down");
@@ -255,10 +255,12 @@ int main(int argc, char **argv) {
                 setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
                 if (ctrl_send_line(fd, "PROBE") == 0 &&
                     ctrl_recv_line(fd, line, sizeof(line)) > 0 &&
-                    sscanf(line, "PROBED %ld", &peer_rx) == 1) {
-                    /* peer alive; its NIC saw our retransmits => QP broken but node up */
-                    snprintf(sub_cause, sizeof(sub_cause),
-                             peer_rx > 2 ? "server_qp_err" : "link_down");
+                    sscanf(line, "PROBED %ld %ld", &peer_rx, &peer_tx) >= 1) {
+                    /* peer alive on the control channel => node up, QP broken.
+                     * (peer_rx/peer_tx are the responder's fault-window RDMA port
+                     * deltas; the verification found rx does NOT separate the two
+                     * 0x81 causes, so liveness is the real discriminator.) */
+                    snprintf(sub_cause, sizeof(sub_cause), "server_qp_err");
                 } else {
                     /* control channel gone => peer process dead */
                     snprintf(sub_cause, sizeof(sub_cause), "proc_kill");
@@ -314,9 +316,9 @@ int main(int argc, char **argv) {
                 sub_cause, peer_rx);
         fflush(fo);
 
-        fprintf(stderr, "[trial %d] %s: detect=%ldns status=%s(%d) vendor=0x%x sub=%s(rx=%ld) recover=%ldns verify=%d\n",
+        fprintf(stderr, "[trial %d] %s: detect=%ldns status=%s(%d) vendor=0x%x sub=%s(peer_rx=%ld peer_tx=%ld) recover=%ldns verify=%d\n",
                 it, fault_name(fault), detect_ns, cl.status_name, (int)st, ven,
-                sub_cause, peer_rx, recover_ns, verify_ok);
+                sub_cause, peer_rx, peer_tx, recover_ns, verify_ok);
 
         if (proc_kill) {
             fprintf(stderr, "[client] proc_kill trial ends server; stopping after one trial\n");

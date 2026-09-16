@@ -148,6 +148,7 @@ int main(int argc, char **argv) {
          * retransmits over the next ~3.7s will advance it iff our NIC is alive and
          * reachable — this is the signal that disambiguates the RETRY_EXC causes. */
         uint64_t rx0 = port_counter_read(ep.dev_name, ep.ib_port, "port_rcv_packets");
+        uint64_t tx0 = port_counter_read(ep.dev_name, ep.ib_port, "port_xmit_packets");
 
         /* recovery coordination (client drives), answering PROBE liveness queries */
         bool done = false, fatal = false;
@@ -156,9 +157,11 @@ int main(int argc, char **argv) {
             if (n < 0) { fatal = true; break; }
             if (strcmp(line, "PROBE") == 0) {
                 uint64_t rx = port_counter_read(ep.dev_name, ep.ib_port, "port_rcv_packets");
+                uint64_t tx = port_counter_read(ep.dev_name, ep.ib_port, "port_xmit_packets");
                 long rxd = (rx0 != UINT64_MAX && rx != UINT64_MAX) ? (long)(rx - rx0) : -1;
+                long txd = (tx0 != UINT64_MAX && tx != UINT64_MAX) ? (long)(tx - tx0) : -1;
                 char rep[64];
-                snprintf(rep, sizeof(rep), "PROBED %ld", rxd);
+                snprintf(rep, sizeof(rep), "PROBED %ld %ld", rxd, txd);  /* fault-window deltas, pre-recovery */
                 if (ctrl_send_line(fd, rep) < 0) { fatal = true; break; }
                 continue;   /* peer is alive; keep waiting for RECOVER/NORECOVER */
             }

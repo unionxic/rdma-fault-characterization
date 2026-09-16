@@ -23,22 +23,25 @@ rain  (requester, mlx5_1, 30.0.0.3)  --RoCEv2 100G-->  sunny (responder, mlx5_0,
 | `counter` / `cnt_delta` | a chosen `hw_counter` delta across the trial (diagnosis / early detection) |
 | `sub_cause` / `peer_rx_delta` | counter-based split of the ambiguous RETRY_EXC (0x81): server_qp_err vs proc_kill vs link_down |
 
-### Counter-based sub-classification (0x81)
+### Sub-classification of RETRY_EXC (0x81)
 
 The CQE fingerprint RETRY_EXC (12 / 0x81) is ambiguous: a responder QP that went to
-ERR, a dead responder process, and a downed link all produce it. The harness resolves
-it with signals outside the CQE — the paper's "counter adds the last step of
-resolution":
+ERR, a dead responder process, and a downed link all produce it. The harness splits
+it with signals outside the CQE:
 
 1. **requester port state** — not ACTIVE ⇒ `link_down`.
 2. **peer liveness** on the control channel (which rides the mgmt IP) — a PROBE that
-   gets no reply ⇒ `proc_kill` (process dead, human intervention).
-3. **responder `port_rcv_packets` delta** (RoCE-level, not netdev rx_packets which
-   ignores kernel-bypassed RoCE) — a live peer whose NIC still counted our retransmits
-   (~40 packets over the 3.7 s) ⇒ `server_qp_err` (node up, QP broken, auto-recoverable).
+   gets a reply ⇒ node up, QP broken ⇒ `server_qp_err` (auto-recoverable); no reply
+   (dead connection) ⇒ `proc_kill` (process dead, human intervention).
 
-Measured split: server_qp_err peer_rx_delta ≈ 40–48; proc_kill peer_rx_delta = −1
-(channel dead). This is what turns one 0x81 into three actionable causes.
+**Liveness is the discriminator, not an RDMA counter** — see `VERIFICATION_0x81.md`.
+The verification measured the responder's fault-window RDMA port deltas and found they
+do **not** separate the two causes: `port_rcv_packets` ≈ 40–52 for both (retransmits
+reach the NIC regardless of QP existence), and `port_xmit_packets` = 0 for both (a QP
+in ERR does not NAK; a dead process cannot transmit). This matches the repo docs, which
+split the pair via the TCP sideband (FIN vs RST) — the same process-liveness signal the
+PROBE uses. The reported `peer_rx_delta` / `peer_tx_delta` are diagnostics, not the
+decision input. (An earlier version wrongly used peer_rx as the discriminator.)
 
 ## Fault catalog (`-f`)
 
