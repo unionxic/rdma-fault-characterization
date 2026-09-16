@@ -1,0 +1,211 @@
+# NCCL in-tree RDMA fault-classification + QP recovery patch
+# Upstream: github.com/NVIDIA/nccl
+# Tag:      v2.23.4-1
+# Commit:   68b542363f9a44cdaac480f51ebe0fc26de96139
+# File:     src/transport/net_ib.cc (single-file, +151 lines, gated by NCCL_RDMA_FAULT_RECOVERY)
+# Apply:    cd nccl && git checkout v2.23.4-1 && git apply net_ib_fault_recovery.diff
+#
+diff --git a/src/transport/net_ib.cc b/src/transport/net_ib.cc
+index d828c98..3273725 100644
+--- a/src/transport/net_ib.cc
++++ b/src/transport/net_ib.cc
+@@ -861,6 +861,8 @@ struct ncclIbRequest {
+   int events[NCCL_IB_MAX_DEVS_PER_NIC];
+   struct ncclIbNetCommDevBase* devBases[NCCL_IB_MAX_DEVS_PER_NIC];
+   int nreqs;
++  // [RDMA-FAULT-RECOVERY] bounded per-request re-poll count after a recovered fault.
++  int faultRetries;
+   union {
+     struct {
+       int size;
+@@ -902,6 +904,10 @@ struct ncclIbQp {
+   struct ibv_qp* qp;
+   int devIndex;
+   int remDevIdx;
++  // [RDMA-FAULT-RECOVERY] remote QP number retained at connect/accept time so
++  // the QP can be re-driven ERR->RESET->INIT->RTR->RTS during fault recovery
++  // (ncclIbRtrQp needs dest_qp_num, which is otherwise not kept on the comm).
++  uint32_t remQpn;
+ };
+ 
+ struct ncclIbRemSizesFifo {
+@@ -941,6 +947,11 @@ struct alignas(32) ncclIbNetCommBase {
+   struct ncclIbDevInfo remDevs[NCCL_IB_MAX_DEVS_PER_NIC];
+   // statistics about the comm
+   struct ncclIbStats stats;
++  // [RDMA-FAULT-RECOVERY] bounded count of QP-recovery attempts on this comm
++  // (only used when NCCL_RDMA_FAULT_RECOVERY=1). Padded so this struct stays a
++  // 32-byte multiple (see static_asserts below that guard fifo alignment).
++  int faultRecoveryAttempts;
++  char faultRecoveryPad[28];
+ };
+ 
+ struct ncclIbSendComm {
+@@ -1125,6 +1136,118 @@ ncclResult_t ncclIbRtsQp(struct ibv_qp* qp) {
+   return ncclSuccess;
+ }
+ 
++/* =====================================================================
++ * [RDMA-FAULT-RECOVERY] In-tree fault classification + QP-level recovery.
++ *
++ * Ported from ~/rdma-error/harness/common/probe.c classify(): on a failed
++ * IB completion we map (wc.status, wc.vendor_err) to a cause / recommended
++ * action / peer-liveness / auto-recoverable verdict, then (for NAK-class,
++ * auto-recoverable faults) attempt to re-drive the affected QP through
++ * ERR->RESET->INIT->RTR->RTS so the QP object is left usable instead of the
++ * communicator failing outright. All of this is OFF unless
++ * NCCL_RDMA_FAULT_RECOVERY=1, so default NCCL behavior is preserved.
++ *
++ * Bounded honesty note (see nccl-integration/README): re-driving the local QP
++ * cannot by itself transparently resume an in-flight RC transfer -- the remote
++ * QP's PSN state is not reset in lockstep and the failed WR is not replayed,
++ * because NCCL's mid-stream IB path has no bilateral re-handshake channel. So
++ * this restores QP usability + emits full diagnostics; it does not fabricate a
++ * completed transfer. RETRY_EXC (dead peer) is classed non-auto-recoverable and
++ * falls through to the normal error, matching the harness taxonomy.
++ * ===================================================================== */
++NCCL_PARAM(RdmaFaultRecovery, "RDMA_FAULT_RECOVERY", 0);
++#define NCCL_IB_FAULT_MAX_ATTEMPTS 3   // per-comm cap on QP re-drive attempts
++#define NCCL_IB_FAULT_MAX_RETRIES  3   // per-request cap on post-recovery re-polls
++
++struct ncclIbFaultInfo {
++  const char* cause;
++  const char* action;
++  int peerAlive;         // best-effort; see RETRY_EXC note
++  int autoRecoverable;   // 1 => attempt QP-level recovery
++};
++
++// Self-contained status name (NCCL loads libibverbs symbols via wrap_*; we avoid
++// taking a direct dependency on ibv_wc_status_str for the few statuses we log).
++static const char* ncclIbStatusStr(int status) {
++  switch (status) {
++    case IBV_WC_SUCCESS:           return "SUCCESS";
++    case IBV_WC_LOC_LEN_ERR:       return "LOC_LEN_ERR";
++    case IBV_WC_LOC_PROT_ERR:      return "LOC_PROT_ERR";
++    case IBV_WC_WR_FLUSH_ERR:      return "WR_FLUSH_ERR";
++    case IBV_WC_REM_INV_REQ_ERR:   return "REM_INV_REQ_ERR";
++    case IBV_WC_REM_ACCESS_ERR:    return "REM_ACCESS_ERR";
++    case IBV_WC_RETRY_EXC_ERR:     return "RETRY_EXC_ERR";
++    case IBV_WC_RNR_RETRY_EXC_ERR: return "RNR_RETRY_EXC_ERR";
++    default:                       return "OTHER";
++  }
++}
++
++// Mirror of harness classify() over the meaningful RoCE completion faults.
++static struct ncclIbFaultInfo ncclIbClassify(enum ibv_wc_status status, uint32_t vendor_err) {
++  struct ncclIbFaultInfo f = { "unknown", "inspect status+vendor_err", 1, 0 };
++  switch (status) {
++    case IBV_WC_WR_FLUSH_ERR: /* 5 / 0xf5 */
++      f.cause = "WR flushed (local QP left RTS, e.g. forced ERR / drained after a prior fault)";
++      f.action = "drain CQ, QP-only recover, repost"; f.peerAlive = 1; f.autoRecoverable = 1; break;
++    case IBV_WC_REM_ACCESS_ERR: /* 10 / 0x88 */
++      f.cause = (vendor_err == 0x88) ? "remote access: invalid rkey or out-of-bounds addr"
++                                     : "remote access violation";
++      f.action = "refresh rkey / clamp to remote MR bounds, QP-only recover";
++      f.peerAlive = 1; f.autoRecoverable = 1; break;
++    case IBV_WC_REM_INV_REQ_ERR: /* 9 / 0x8a */
++      f.cause = "remote invalid request (malformed WR / len / opcode)";
++      f.action = "fix request params, QP-only recover"; f.peerAlive = 1; f.autoRecoverable = 1; break;
++    case IBV_WC_RNR_RETRY_EXC_ERR: /* 13 / 0x87 */
++      f.cause = "RNR retries exhausted (responder had no recv WQE)";
++      f.action = "ensure remote posts recvs, QP-only recover"; f.peerAlive = 1; f.autoRecoverable = 1; break;
++    case IBV_WC_RETRY_EXC_ERR: /* 12 / 0x81 */
++      f.cause = "transport retries exhausted (no ACK): responder QP in ERR, process dead, or link down";
++      f.action = "probe peer liveness (control channel / bootstrap TCP; RDMA counters do NOT split the cause); if dead -> human intervention, else QP-only";
++      f.peerAlive = 0; f.autoRecoverable = 0; break;
++    case IBV_WC_LOC_PROT_ERR: /* 4 */
++      f.cause = "local protection (bad lkey / local MR bounds)";
++      f.action = "fix local MR/lkey, QP-only recover"; f.peerAlive = 1; f.autoRecoverable = 1; break;
++    case IBV_WC_LOC_LEN_ERR: /* 1 */
++      f.cause = "local length error"; f.action = "fix SGE length, QP-only recover";
++      f.peerAlive = 1; f.autoRecoverable = 1; break;
++    default:
++      f.cause = "other"; f.action = "inspect status+vendor_err"; f.peerAlive = 1; f.autoRecoverable = 0; break;
++  }
++  return f;
++}
++
++// Re-drive every QP bound to device `devIndex` on this comm through
++// ERR->RESET->INIT->RTR->RTS, reusing the retained remQpn + remote dev info.
++// The local qp_num is preserved across RESET, so the peer still targets us.
++static ncclResult_t ncclIbFaultRecoverQp(struct ncclIbNetCommBase* base,
++                                         struct ncclIbNetCommDevBase* devBase, int devIndex) {
++  int ibDevN = devBase->ibDevN;
++  uint8_t ib_port = ncclIbDevs[ibDevN].portNum;
++  int recovered = 0;
++  for (int q = 0; q < base->nqps; q++) {
++    struct ncclIbQp* qp = base->qps + q;
++    if (qp->qp == NULL || qp->devIndex != devIndex) continue;
++    struct ncclIbDevInfo* remDevInfo = base->remDevs + qp->remDevIdx;
++
++    struct ibv_qp_attr a;
++    // ERR -> RESET
++    memset(&a, 0, sizeof(a)); a.qp_state = IBV_QPS_RESET;
++    NCCLCHECK(wrap_ibv_modify_qp(qp->qp, &a, IBV_QP_STATE));
++    // RESET -> INIT (superset access flags; port from local ibDev)
++    memset(&a, 0, sizeof(a));
++    a.qp_state = IBV_QPS_INIT; a.pkey_index = ncclParamIbPkey(); a.port_num = ib_port;
++    a.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
++    NCCLCHECK(wrap_ibv_modify_qp(qp->qp, &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS));
++    // INIT -> RTR -> RTS (reuse the connect-time helpers + retained remQpn)
++    NCCLCHECK(ncclIbRtrQp(qp->qp, &devBase->gidInfo, qp->remQpn, remDevInfo, false));
++    NCCLCHECK(ncclIbRtsQp(qp->qp));
++    recovered++;
++    INFO(NCCL_NET, "NET/IB: [FAULT-RECOVERY] QP q=%d (local qpn=%u remQpn=%u dev=%d) re-driven to RTS",
++         q, qp->qp->qp_num, qp->remQpn, devIndex);
++  }
++  return recovered > 0 ? ncclSuccess : ncclSystemError;
++}
++
+ ncclResult_t ncclIbListen(int dev, void* opaqueHandle, void** listenComm) {
+   ncclResult_t ret = ncclSuccess;
+   struct ncclIbListenComm* comm;
+@@ -1327,6 +1450,7 @@ ib_connect:
+     if (remQpInfo->ece_supported)
+       NCCLCHECKGOTO(wrap_ibv_set_ece(qp, &remQpInfo->ece, &remQpInfo->ece_supported), ret, fail);
+ 
++    comm->base.qps[q].remQpn = remQpInfo->qpn; // [RDMA-FAULT-RECOVERY] retain for QP re-drive
+     NCCLCHECKGOTO(ncclIbRtrQp(qp, &commDev->base.gidInfo, remQpInfo->qpn, remDevInfo, false), ret, fail);
+     NCCLCHECKGOTO(ncclIbRtsQp(qp), ret, fail);
+   }
+@@ -1472,6 +1596,7 @@ ib_recv:
+     }
+ 
+     bool override_tc = (q == 0) ? true : false;
++    qp->remQpn = remMeta.qpInfo[q].qpn; // [RDMA-FAULT-RECOVERY] retain for QP re-drive
+     NCCLCHECKGOTO(ncclIbRtrQp(qp->qp, &rCommDev->base.gidInfo, remMeta.qpInfo[q].qpn, remDevInfo, override_tc), ret, fail);
+     NCCLCHECKGOTO(ncclIbRtsQp(qp->qp), ret, fail);
+   }
+@@ -2121,6 +2246,32 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
+             WARN("NET/IB: Got completion from peer %s with status=%d opcode=%d len=%d vendor err %d (%s)%s%s%s%s hca %s",
+                 ncclSocketToString(&addr, line), wc->status, wc->opcode, wc->byte_len, wc->vendor_err, reqTypeStr[r->type],
+                 localGidStr ?  " localGid ":"", localGidString, remoteGidStr ? " remoteGids":"", remoteGidString, hcaName);
++
++            // [RDMA-FAULT-RECOVERY] classify + (best-effort) QP-level recovery.
++            // Default behavior (flag off) is unchanged: fall straight to ncclRemoteError.
++            if (ncclParamRdmaFaultRecovery()) {
++              struct ncclIbFaultInfo fi = ncclIbClassify((enum ibv_wc_status)wc->status, wc->vendor_err);
++              WARN("NET/IB: [FAULT-RECOVERY] status=%d(%s) vendor_err=0x%x cause='%s' action='%s' peerAlive=%d autoRecoverable=%d",
++                   wc->status, ncclIbStatusStr(wc->status), wc->vendor_err, fi.cause, fi.action, fi.peerAlive, fi.autoRecoverable);
++              if (fi.autoRecoverable && r->base->faultRecoveryAttempts < NCCL_IB_FAULT_MAX_ATTEMPTS) {
++                r->base->faultRecoveryAttempts++;
++                INFO(NCCL_NET, "NET/IB: [FAULT-RECOVERY] auto-recoverable fault: attempting QP re-drive %d/%d on dev %d",
++                     r->base->faultRecoveryAttempts, NCCL_IB_FAULT_MAX_ATTEMPTS, i);
++                if (ncclIbFaultRecoverQp(r->base, r->devBases[i], i) == ncclSuccess &&
++                    r->faultRetries < NCCL_IB_FAULT_MAX_RETRIES) {
++                  // QP object restored to RTS. Give the caller a bounded re-poll
++                  // window (report "not done") rather than tearing down the comm.
++                  // NOTE: the failed WR is NOT replayed and the remote PSN is not
++                  // reset here, so a persistent fault will exhaust the retry cap
++                  // and then fail cleanly -- we never fabricate a completed transfer.
++                  r->faultRetries++;
++                  WARN("NET/IB: [FAULT-RECOVERY] QP re-driven to RTS; bounded re-poll %d/%d (in-flight WR not replayed)",
++                       r->faultRetries, NCCL_IB_FAULT_MAX_RETRIES);
++                  return ncclSuccess;
++                }
++                WARN("NET/IB: [FAULT-RECOVERY] recovery exhausted/failed; failing communicator cleanly");
++              }
++            }
+             return ncclRemoteError;
+           }
+ 
