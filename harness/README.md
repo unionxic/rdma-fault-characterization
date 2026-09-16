@@ -21,6 +21,24 @@ rain  (requester, mlx5_1, 30.0.0.3)  --RoCEv2 100G-->  sunny (responder, mlx5_0,
 | `verify_ok` | 1 if a post-recovery WRITE+READ-back matched |
 | `bytes_landed` / `sq_psn_delta` / `mtu_bytes` | partial-write byte accounting (`bytes == sq_psn_delta × PMTU`) |
 | `counter` / `cnt_delta` | a chosen `hw_counter` delta across the trial (diagnosis / early detection) |
+| `sub_cause` / `peer_rx_delta` | counter-based split of the ambiguous RETRY_EXC (0x81): server_qp_err vs proc_kill vs link_down |
+
+### Counter-based sub-classification (0x81)
+
+The CQE fingerprint RETRY_EXC (12 / 0x81) is ambiguous: a responder QP that went to
+ERR, a dead responder process, and a downed link all produce it. The harness resolves
+it with signals outside the CQE — the paper's "counter adds the last step of
+resolution":
+
+1. **requester port state** — not ACTIVE ⇒ `link_down`.
+2. **peer liveness** on the control channel (which rides the mgmt IP) — a PROBE that
+   gets no reply ⇒ `proc_kill` (process dead, human intervention).
+3. **responder `port_rcv_packets` delta** (RoCE-level, not netdev rx_packets which
+   ignores kernel-bypassed RoCE) — a live peer whose NIC still counted our retransmits
+   (~40 packets over the 3.7 s) ⇒ `server_qp_err` (node up, QP broken, auto-recoverable).
+
+Measured split: server_qp_err peer_rx_delta ≈ 40–48; proc_kill peer_rx_delta = −1
+(channel dead). This is what turns one 0x81 into three actionable causes.
 
 ## Fault catalog (`-f`)
 

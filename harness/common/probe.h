@@ -133,6 +133,15 @@ void     pin_to_cpu(int cpu); /* sched_setaffinity if cpu >= 0; no-op otherwise 
 
 /* ---- hardware counters (sysfs .../ports/N/hw_counters/<name>) ---- */
 uint64_t counter_read(const char *dev_name, uint8_t ib_port, const char *counter);
+/* netdev traffic counter (/sys/class/net/<iface>/statistics/<stat>), e.g. rx_packets.
+ * This is the "ethtool traffic" signal used to tell a live-but-broken peer (its NIC
+ * still receives our retransmits) from a dead one. UINT64_MAX if unavailable. */
+uint64_t netdev_counter(const char *iface, const char *stat);
+/* IB/RoCE port counter (/sys/class/infiniband/<dev>/ports/<port>/counters/<name>),
+ * e.g. port_rcv_packets. Unlike netdev rx_packets, this counts RoCE traffic (which
+ * bypasses the kernel net stack). UINT64_MAX if unavailable. */
+uint64_t port_counter_read(const char *dev_name, uint8_t ib_port, const char *name);
+enum ibv_port_state ep_port_state(probe_ep_t *ep);
 
 /* ---- classification: the paper's core contribution as one function ---- */
 typedef struct {

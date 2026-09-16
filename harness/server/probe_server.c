@@ -144,28 +144,46 @@ int main(int argc, char **argv) {
         }
         if (ctrl_send_line(fd, "GOACK") < 0) break;
 
-        /* recovery coordination (client drives) */
-        n = ctrl_recv_line(fd, line, sizeof(line));
-        if (n < 0) break;
-        if (strncmp(line, "RECOVER", 7) == 0) {
-            char method_s[64] = {0};
-            recovery_method_t method = RECOVER_QP_ONLY;
-            if (sscanf(line, "RECOVER %63s", method_s) == 1)
-                method = recovery_from_name(method_s);
-            bool full = (method == RECOVER_FULL_REBUILD);
-            if (fault == FAULT_RETRY_LINK_DOWN) {  /* restore the link before rewiring */
-                link_set("up");
-                wait_port_state(&ep, IBV_PORT_ACTIVE, 100);
+        /* baseline the responder NIC's rx traffic at fault time; the requester's
+         * retransmits over the next ~3.7s will advance it iff our NIC is alive and
+         * reachable — this is the signal that disambiguates the RETRY_EXC causes. */
+        uint64_t rx0 = port_counter_read(ep.dev_name, ep.ib_port, "port_rcv_packets");
+
+        /* recovery coordination (client drives), answering PROBE liveness queries */
+        bool done = false, fatal = false;
+        while (!done) {
+            n = ctrl_recv_line(fd, line, sizeof(line));
+            if (n < 0) { fatal = true; break; }
+            if (strcmp(line, "PROBE") == 0) {
+                uint64_t rx = port_counter_read(ep.dev_name, ep.ib_port, "port_rcv_packets");
+                long rxd = (rx0 != UINT64_MAX && rx != UINT64_MAX) ? (long)(rx - rx0) : -1;
+                char rep[64];
+                snprintf(rep, sizeof(rep), "PROBED %ld", rxd);
+                if (ctrl_send_line(fd, rep) < 0) { fatal = true; break; }
+                continue;   /* peer is alive; keep waiting for RECOVER/NORECOVER */
             }
-            if (server_bring_up(&ep, fd, full) < 0) { fprintf(stderr, "[server] rebuild failed\n"); break; }
-            if (ctrl_send_line(fd, "RECOK") < 0) break;
-        } else if (strcmp(line, "NORECOVER") == 0) {
-            /* no recovery this trial; still need QP usable for next trial */
-            if (server_bring_up(&ep, fd, false) < 0) break;
-            if (ctrl_send_line(fd, "RECOK") < 0) break;
-        } else {
-            fprintf(stderr, "[server] unexpected: '%s'\n", line); break;
+            if (strncmp(line, "RECOVER", 7) == 0) {
+                char method_s[64] = {0};
+                recovery_method_t method = RECOVER_QP_ONLY;
+                if (sscanf(line, "RECOVER %63s", method_s) == 1)
+                    method = recovery_from_name(method_s);
+                bool full = (method == RECOVER_FULL_REBUILD);
+                if (fault == FAULT_RETRY_LINK_DOWN) {  /* restore the link before rewiring */
+                    link_set("up");
+                    wait_port_state(&ep, IBV_PORT_ACTIVE, 100);
+                }
+                if (server_bring_up(&ep, fd, full) < 0) { fprintf(stderr, "[server] rebuild failed\n"); fatal = true; break; }
+                if (ctrl_send_line(fd, "RECOK") < 0) { fatal = true; break; }
+                done = true;
+            } else if (strcmp(line, "NORECOVER") == 0) {
+                if (server_bring_up(&ep, fd, false) < 0) { fatal = true; break; }
+                if (ctrl_send_line(fd, "RECOK") < 0) { fatal = true; break; }
+                done = true;
+            } else {
+                fprintf(stderr, "[server] unexpected: '%s'\n", line); fatal = true; break;
+            }
         }
+        if (fatal) break;
     }
 
 done:

@@ -18,6 +18,9 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <inttypes.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 
 #define WR_TRIGGER 100
 #define WR_VERIFY  200
@@ -116,6 +119,7 @@ int main(int argc, char **argv) {
     recovery_method_t recovery = recovery_from_name(recov_s);
     if (msg_size > PROBE_BUF_SIZE) msg_size = PROBE_BUF_SIZE;
     pin_to_cpu(cpu);
+    signal(SIGPIPE, SIG_IGN);   /* a dead peer must not kill us mid-PROBE */
 
     probe_ep_t ep;
     if (ep_open(&ep, dev, (uint8_t)ib_port, gid_index, PROBE_BUF_SIZE) < 0) return 1;
@@ -138,7 +142,7 @@ int main(int argc, char **argv) {
     if (!fo) { perror("fopen"); goto fail; }
     fprintf(fo, "fault,iter,recovery,detect_ns,status,status_name,vendor_err,cause,action,"
                 "peer_alive,auto_recoverable,recover_ns,verify_ok,bytes_landed,sq_psn_delta,mtu_bytes,"
-                "counter,cnt_delta\n");
+                "counter,cnt_delta,sub_cause,peer_rx_delta\n");
 
     for (int it = 0; it < iters; it++) {
         /* announce trial */
@@ -237,6 +241,33 @@ int main(int argc, char **argv) {
         uint32_t ven = (got == 1) ? wc.vendor_err : 0;
         classify_t cl = classify(st, ven);
 
+        /* counter-based sub-classification: CQE alone gives RETRY_EXC (0x81),
+         * which is ambiguous. Add (a) our port state, (b) peer liveness on the
+         * control channel, (c) the responder NIC rx_packets delta (ethtool
+         * traffic) to split it into link_down / proc_kill / server_qp_err. */
+        char sub_cause[24] = "-";
+        long peer_rx = -1;
+        if (st == IBV_WC_RETRY_EXC_ERR) {
+            if (ep_port_state(&ep) != IBV_PORT_ACTIVE) {
+                snprintf(sub_cause, sizeof(sub_cause), "link_down");
+            } else {
+                struct timeval tv = { 1, 0 };
+                setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                if (ctrl_send_line(fd, "PROBE") == 0 &&
+                    ctrl_recv_line(fd, line, sizeof(line)) > 0 &&
+                    sscanf(line, "PROBED %ld", &peer_rx) == 1) {
+                    /* peer alive; its NIC saw our retransmits => QP broken but node up */
+                    snprintf(sub_cause, sizeof(sub_cause),
+                             peer_rx > 2 ? "server_qp_err" : "link_down");
+                } else {
+                    /* control channel gone => peer process dead */
+                    snprintf(sub_cause, sizeof(sub_cause), "proc_kill");
+                }
+                tv.tv_sec = 0; tv.tv_usec = 0;
+                setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            }
+        }
+
         /* recovery */
         uint64_t t_rec0 = 0, t_rec1 = 0;
         int verify_ok = -1;
@@ -275,15 +306,17 @@ int main(int argc, char **argv) {
                          ? (long)(cnt_after - cnt_before) : -1;
         long recover_ns = (t_rec1 > t_rec0 && t_rec0) ? (long)(t_rec1 - t_rec0) : -1;
 
-        fprintf(fo, "%s,%d,%s,%ld,%d,%s,0x%x,\"%s\",\"%s\",%d,%d,%ld,%d,%u,%u,%d,%s,%ld\n",
+        fprintf(fo, "%s,%d,%s,%ld,%d,%s,0x%x,\"%s\",\"%s\",%d,%d,%ld,%d,%u,%u,%d,%s,%ld,%s,%ld\n",
                 fault_name(fault), it, recovery_name(recovery),
                 detect_ns, (int)st, cl.status_name, ven, cl.cause, cl.action,
                 cl.peer_alive, cl.auto_recoverable, recover_ns, verify_ok,
-                bytes_landed, sq_delta, ep.mtu_bytes, counter, cnt_delta);
+                bytes_landed, sq_delta, ep.mtu_bytes, counter, cnt_delta,
+                sub_cause, peer_rx);
         fflush(fo);
 
-        fprintf(stderr, "[trial %d] %s: detect=%ldns status=%s(%d) vendor=0x%x recover=%ldns verify=%d\n",
-                it, fault_name(fault), detect_ns, cl.status_name, (int)st, ven, recover_ns, verify_ok);
+        fprintf(stderr, "[trial %d] %s: detect=%ldns status=%s(%d) vendor=0x%x sub=%s(rx=%ld) recover=%ldns verify=%d\n",
+                it, fault_name(fault), detect_ns, cl.status_name, (int)st, ven,
+                sub_cause, peer_rx, recover_ns, verify_ok);
 
         if (proc_kill) {
             fprintf(stderr, "[client] proc_kill trial ends server; stopping after one trial\n");

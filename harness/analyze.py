@@ -76,6 +76,18 @@ def main(paths):
             print(f"{'':<22} partial: bytes_landed {min(bl)}..{max(bl)} "
                   f"(sq_psn_delta {min(sq)}..{max(sq)}, PMTU={mtu}B, "
                   f"bytes==sq*PMTU: {law_ok})")
+        # counter-based sub-classification (RETRY_EXC 0x81 disambiguation)
+        subs = defaultdict(int)
+        for r in rows:
+            sc = r.get("sub_cause", "-")
+            if sc and sc != "-":
+                subs[sc] += 1
+        if subs:
+            rxvals = [int(r["peer_rx_delta"]) for r in rows
+                      if r.get("peer_rx_delta","-1") not in ("","-1")]
+            rxstr = f", peer_rx_delta {min(rxvals)}..{max(rxvals)}" if rxvals else ""
+            breakdown = " ".join(f"{k}×{v}" for k, v in sorted(subs.items()))
+            print(f"{'':<22} sub-cause (hw counter): {breakdown}{rxstr}")
     print()
 
 if __name__ == "__main__":

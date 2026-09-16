@@ -408,6 +408,34 @@ uint64_t counter_read(const char *dev_name, uint8_t ib_port, const char *counter
     return (uint64_t)v;
 }
 
+uint64_t netdev_counter(const char *iface, const char *stat) {
+    if (!iface || !iface[0]) return UINT64_MAX;
+    char path[256];
+    snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/%s", iface, stat);
+    FILE *f = fopen(path, "r");
+    if (!f) return UINT64_MAX;
+    unsigned long long v = 0;
+    if (fscanf(f, "%llu", &v) != 1) { fclose(f); return UINT64_MAX; }
+    fclose(f);
+    return (uint64_t)v;
+}
+uint64_t port_counter_read(const char *dev_name, uint8_t ib_port, const char *name) {
+    char path[256];
+    snprintf(path, sizeof(path),
+             "/sys/class/infiniband/%s/ports/%u/counters/%s", dev_name, ib_port, name);
+    FILE *f = fopen(path, "r");
+    if (!f) return UINT64_MAX;
+    unsigned long long v = 0;
+    if (fscanf(f, "%llu", &v) != 1) { fclose(f); return UINT64_MAX; }
+    fclose(f);
+    return (uint64_t)v;
+}
+enum ibv_port_state ep_port_state(probe_ep_t *ep) {
+    struct ibv_port_attr pa;
+    if (ibv_query_port(ep->ctx, ep->ib_port, &pa)) return IBV_PORT_DOWN;
+    return pa.state;
+}
+
 /* ---------------- classification ---------------- */
 classify_t classify(enum ibv_wc_status status, uint32_t vendor_err) {
     classify_t c = { ibv_wc_status_str(status), "unknown", "inspect", true, false };
