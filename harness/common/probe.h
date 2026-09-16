@@ -1,0 +1,147 @@
+/*
+ * probe.h - Unified RDMA fault-characterization harness (shared core)
+ *
+ * One instrument that replaces the scattered experiments 01-10 with a single
+ * requester (client) / responder (server) pair speaking one control protocol.
+ *
+ * What it measures, per fault, per trial, into one CSV schema:
+ *   - classification:   ibv_wc_status + vendor_err  -> (cause, recommended action)
+ *   - detection latency: t_inject -> t_error_cqe  (CLOCK_MONOTONIC_RAW tight poll)
+ *   - recovery latency:  QP-only (ERR->RESET->INIT->RTS, coordinated both ends)
+ *                        vs full rebuild, then a verified round-trip
+ *   - data-plane:        partial-write bytes landed = sq_psn_delta * PMTU, verified
+ *   - counters:          hw_counter deltas around the fault (diagnosis / early detect)
+ *
+ * Design rules learned from the old code:
+ *   - TCP_NODELAY on BOTH sides of every control socket (kills the 40ms
+ *     delayed-ACK artifact that contaminated the old A/B recovery numbers).
+ *   - full error checking on every verbs and socket call; clean teardown.
+ *   - manual RC QP setup (no rdmacm) for full control of state transitions.
+ *   - client device and server device may differ (mlx5_1 vs mlx5_0): every
+ *     endpoint takes its own -d/-g/-i; nothing is hardcoded.
+ */
+#ifndef PROBE_H
+#define PROBE_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <infiniband/verbs.h>
+
+#define PROBE_DEFAULT_PORT   18580
+#define PROBE_BUF_SIZE       (4u * 1024 * 1024)   /* 4 MiB region, covers partial-write tests */
+#define PROBE_MAX_SEND_WR    512
+#define PROBE_MAX_RECV_WR    512
+#define PROBE_CQ_DEPTH       1024
+
+/* ---- fault catalog (the meaningful RDMA-side faults from exp 01-09) ---- */
+typedef enum {
+    FAULT_NONE = 0,
+    FAULT_LOCAL_QP_ERR,        /* requester forces its own QP->ERR mid-flight -> WR_FLUSH_ERR (cheap detect baseline) */
+    FAULT_REM_ACCESS,          /* write outside remote MR / bad rkey -> REM_ACCESS_ERR (10 / 0x88) */
+    FAULT_REM_INV_REQ,         /* malformed request -> REM_INV_REQ_ERR (9 / 0x8a) */
+    FAULT_RNR,                 /* SEND with no remote recv WQE -> RNR retry exhausted (13 / 0x87) */
+    FAULT_RETRY_SERVER_QP_ERR, /* responder QP->ERR, stops ACKing -> RETRY_EXC_ERR (12 / 0x81), firmware floor */
+    FAULT_RETRY_PROC_KILL,     /* responder process killed -> RETRY_EXC_ERR */
+    FAULT_RETRY_LINK_DOWN,     /* responder link down (needs root on server) -> RETRY_EXC_ERR */
+    FAULT_PARTIAL_WRITE,       /* interrupt a multi-packet WRITE mid-transfer; measure bytes landed */
+    FAULT__COUNT
+} fault_type_t;
+
+typedef enum {
+    RECOVER_NONE = 0,
+    RECOVER_QP_ONLY,           /* coordinated ERR->RESET->INIT->RTS on both ends, fresh PSNs */
+    RECOVER_FULL_REBUILD       /* destroy QP/CQ/MR/PD and recreate + re-handshake */
+} recovery_method_t;
+
+const char *fault_name(fault_type_t f);
+fault_type_t fault_from_name(const char *s);
+const char *recovery_name(recovery_method_t r);
+recovery_method_t recovery_from_name(const char *s);
+
+/* ---- RC endpoint ---- */
+typedef struct {
+    struct ibv_context *ctx;
+    struct ibv_pd      *pd;
+    struct ibv_cq      *cq;
+    struct ibv_qp      *qp;
+    struct ibv_mr      *mr;
+    char               *buf;
+    size_t              buf_size;
+
+    char                dev_name[64];
+    uint8_t             ib_port;
+    int                 gid_index;
+    struct ibv_port_attr port_attr;
+    union ibv_gid       gid;
+    int                 mtu_bytes;   /* active path MTU in bytes (for sq_psn * PMTU math) */
+} probe_ep_t;
+
+/* info exchanged over the TCP control channel to wire up the RC QP */
+typedef struct {
+    uint32_t      qp_num;
+    uint32_t      psn;
+    uint32_t      rkey;
+    uint64_t      addr;
+    uint32_t      buf_size;
+    union ibv_gid gid;
+} probe_dest_t;
+
+/* ---- TCP control channel (always TCP_NODELAY) ---- */
+int  tcp_server_listen(int port);            /* returns listening fd */
+int  tcp_server_accept(int listen_fd);       /* returns connected fd, TCP_NODELAY set */
+int  tcp_client_connect(const char *host, int port); /* returns connected fd, TCP_NODELAY set */
+int  tcp_send_all(int fd, const void *buf, size_t len);
+int  tcp_recv_all(int fd, void *buf, size_t len);
+/* small line protocol for control commands */
+int  ctrl_send_line(int fd, const char *line);      /* sends line + '\n' */
+int  ctrl_recv_line(int fd, char *buf, size_t cap);  /* reads up to '\n', strips it */
+
+/* ---- RC QP lifecycle ---- */
+int  ep_open(probe_ep_t *ep, const char *dev_name, uint8_t ib_port, int gid_index, size_t buf_size);
+int  ep_create_qp(probe_ep_t *ep);
+int  ep_to_init(probe_ep_t *ep);
+int  ep_to_rtr(probe_ep_t *ep, const probe_dest_t *remote);
+int  ep_to_rts(probe_ep_t *ep, uint32_t local_psn);
+int  ep_to_err(probe_ep_t *ep);
+int  ep_to_reset(probe_ep_t *ep);
+enum ibv_qp_state ep_qp_state(probe_ep_t *ep);
+void ep_fill_dest(const probe_ep_t *ep, uint32_t psn, probe_dest_t *out);
+void ep_destroy_qp(probe_ep_t *ep);   /* destroys QP only (keeps ctx/pd/mr) */
+void ep_close(probe_ep_t *ep);        /* full teardown */
+
+/* ---- work requests ---- */
+int  post_write(probe_ep_t *ep, uint64_t wr_id, size_t len,
+                uint64_t remote_addr, uint32_t rkey, bool signaled);
+int  post_read(probe_ep_t *ep, uint64_t wr_id, size_t len,
+               uint64_t remote_addr, uint32_t rkey);
+int  post_send(probe_ep_t *ep, uint64_t wr_id, size_t len);
+/* fetch-and-add atomic; used to trigger REM_INV_REQ when the responder QP
+ * does not enable atomics (operation-not-enabled -> NAK 1 -> 0x8a). */
+int  post_atomic_fa(probe_ep_t *ep, uint64_t wr_id, uint64_t remote_addr, uint32_t rkey);
+int  post_recv(probe_ep_t *ep, uint64_t wr_id, size_t len);
+/* poll one completion, blocking up to timeout_ms (<=0 = spin forever). returns:
+ *  1 = got wc, 0 = timeout, -1 = error. wc filled when return==1. */
+int  poll_one(probe_ep_t *ep, struct ibv_wc *wc, long timeout_ms);
+
+/* current send-queue PSN of the QP (for partial-write byte accounting) */
+int  ep_query_sq_psn(probe_ep_t *ep, uint32_t *sq_psn);
+
+/* ---- timing ---- */
+uint64_t now_ns(void);      /* CLOCK_MONOTONIC_RAW nanoseconds */
+void     pin_to_cpu(int cpu); /* sched_setaffinity if cpu >= 0; no-op otherwise */
+
+/* ---- hardware counters (sysfs .../ports/N/hw_counters/<name>) ---- */
+uint64_t counter_read(const char *dev_name, uint8_t ib_port, const char *counter);
+
+/* ---- classification: the paper's core contribution as one function ---- */
+typedef struct {
+    const char *status_name;   /* ibv_wc_status string */
+    const char *cause;         /* human cause */
+    const char *action;        /* recommended recovery action */
+    bool        peer_alive;    /* is the remote peer believed reachable? */
+    bool        auto_recoverable; /* software auto-recovery vs human intervention */
+} classify_t;
+classify_t classify(enum ibv_wc_status status, uint32_t vendor_err);
+
+#endif /* PROBE_H */
