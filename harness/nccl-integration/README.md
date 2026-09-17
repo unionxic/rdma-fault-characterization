@@ -64,15 +64,16 @@ All in `src/transport/net_ib.cc`:
 
 | Element | Line | Note |
 |---|---|---|
-| Stock failed-completion hook (`if (wc->status != IBV_WC_SUCCESS)`) | **2439** | baseline v2.23.4-1: check at 2108, `return ncclRemoteError` at 2124 |
-| Error branch: classify + INITIATOR recover+replay | **2470–2481** | `isSend` → `ncclIbRecoverInitiate` + `ncclIbReplaySend` |
-| RESPONDER non-blocking peek | **2402–2420** | peeks `base.sock`; on REQ → `ncclIbRecoverRespond` |
+| Stock failed-completion hook (`if (wc->status != IBV_WC_SUCCESS)`) | **2440** | baseline v2.23.4-1: check at 2108, `return ncclRemoteError` at 2124 |
+| Error branch: classify + INITIATOR/RESPONDER recover | **2472–2494** | `isSend` → `ncclIbRecoverInitiate` + `ncclIbReplaySend` |
+| RESPONDER non-blocking peek | **2403–2424** | peeks `base.sock`; on REQ → `ncclIbRecoverRespond` |
 | `NCCL_PARAM(RdmaFaultRecovery)` / `NCCL_PARAM(RdmaFaultInject)` | **1164 / 1167** | env vars, default 0 |
 | `struct ncclIbRecoverMsg` (magic,nqps,psn[]) | **1176** | REQ/ACK on `base.sock` |
 | `ncclIbResetQpsToInit` / `ncclIbCompleteQps` | **1274 / 1295** | ERR→RESET→INIT (+CQ drain) / RTR(rq_psn)+RTS(sq_psn) |
 | `ncclIbRecoverInitiate` / `ncclIbRecoverRespond` | **1309 / 1334** | initiator / responder handshake |
+| Responder 0x81 (peer-resetting) handling | **2479-2485** | live socket → wait for REQ; dead → decline |
 | `ncclIbReplaySend` / `ncclIbRepostRecv` | **1370 / 1398** | Phase-2 replay |
-| Phase-3 injection (`[FAULT-INJECT] forced QP0 to ERR`) | **2120** | end of `ncclIbMultiSend` |
+| Phase-3 injection (`[FAULT-INJECT] forced QP0 to ERR before post`) | **2019** | top of `ncclIbMultiSend` |
 | `ncclIbRtrQp` / `ncclIbRtsQp` PSN override param | **1077 / 1126** | added `rq_psn` / `sq_psn`; 4 prod call sites pass 0 |
 | `ncclIbQp.remQpn` (retained remote QPN) | **916** | captured at connect/accept |
 | `ncclIbRequest.send.{remoteAddr,rkeys,recoverable}` | **877** | replay snapshot |
@@ -92,31 +93,64 @@ LD_LIBRARY_PATH=. NCCL_IB_HCA=mlx5_0 NCCL_IB_GID_INDEX=3 NCCL_SOCKET_IFNAME=enp2
 NCCL_RDMA_FAULT_RECOVERY=1 ./nccl_ar2 1 30.0.0.3 43110 60 1048576 150
 ```
 
-## Test status
-- **Builds clean; flag-off baseline all-reduce over RoCE PASSES** (correct result
-  `rbuf[0]=3`; `logs/p2_baseline_rank0.log`).
-- **Cross-node bilateral handshake observed executing** (`logs/evidence_responder.txt`):
-  the responder rank logged `RECOVER_REQ received (nqps=1)` → `bilateral
-  PSN-consistent reset complete` → `reposted recv WQE`, proving the initiator sent
-  a REQ and the responder ran the full reset+repost+ACK path across the two hosts.
-- **End-to-end "collective completes with correct result, not a hang" and the
-  proc-kill control: BLOCKED at capture time** — see Blocker below. A background
-  auto-runner (`logs/autorun_recovery_test.sh`) is queued to run baseline + inject
-  + proc-kill the moment the GPU frees; its results land in `logs/autorun.log`.
+## Test status — all phases verified end-to-end over 2-node RoCE
 
-## Blocker (environmental, not the patch)
-rain's Quadro RTX 5000 (16 GB) is shared and was **saturated by another user's
-job (~15.5 GB used, ~175 MiB free)** for the duration of the final test window, so
-`ncclCommInitRank` on rain fails with CUDA `out of memory` before any collective
-runs. Both ranks need one GPU each and rain's is the only RoCE-attached GPU on
-that host, so the 2-node collective cannot be launched until it frees. This does
-not affect the patch (which builds, and whose responder path was observed running
-cross-node when the GPU still had room). The queued auto-runner will capture the
-full proof automatically when memory is available.
+Config for the fault runs: `NCCL_MAX_NCHANNELS=1 NCCL_PROTO=Simple NCCL_BUFFSIZE=8388608`,
+512 KB message (131072 floats) so exactly one net WRITE is in flight per step (see
+Scope below). rank0=rain(mlx5_1), rank1=sunny(mlx5_0), GID 3.
+
+1. **Build clean; flag-off baseline all-reduce PASSES** (correct result; `logs/p2_baseline_rank0.log`).
+2. **Phase 1+2+3 — injected recoverable flush, collective COMPLETES with correct
+   result (not a hang):** `NCCL_RDMA_FAULT_RECOVERY=1 NCCL_RDMA_FAULT_INJECT=20`.
+   rank0 exit=0, **40/40 iters, `[rank0] done`, every `rbuf[0]=3`.** The recovery
+   sequence (`logs/phase123_inject_rank0.log` / `_rank1.log`):
+   - rank0 (INITIATOR): `[FAULT-INJECT] forced QP0 to ERR before send #20` →
+     `status=5(WR_FLUSH_ERR) ... role=INITIATOR sockAlive=1` →
+     `initiator: bilateral PSN-consistent reset complete` →
+     `replayed WRITE_WITH_IMM size=131072 -> remoteAddr=... rkey=...` →
+     `recovered + replayed (attempt 1/3); resuming` → **all 40 iters complete.**
+   - rank1 (RESPONDER): `RECOVER_REQ received (nqps=1)` → `reposted recv WQE` →
+     `bilateral PSN-consistent reset + recv repost + ACK done`.
+   This is the correctness core: both ends reset to mutually-consistent fresh PSNs
+   over `base.sock`, the flushed WRITE is replayed, and the transfer + collective
+   finish correctly — exactly what the unilateral first patch could not do.
+3. **Control — proc-kill (dead peer) still fails cleanly:** `NCCL_RDMA_FAULT_RECOVERY=1`,
+   rank1 killed mid-run. rank0 detects the dead peer (`responder peek: peer socket
+   closed` → `ncclRemoteError`), **declines recovery, does not loop or fabricate a
+   completion** (`logs/control_prockill_rank0.log`). (The process then blocks until
+   `timeout` because the test driver never calls `ncclCommAbort` to tear down the
+   waiting GPU kernel — standard NCCL semantics, independent of the patch.)
+4. **Flag-off default byte-identical:** with the flag off the same kill yields the
+   stock `Got completion ... status=12` WARN and zero `[FAULT-RECOVERY]` lines.
+
+## Scope / limitations (honest)
+- **Single in-flight request per comm.** NCCL pipelines several net WRITEs at once;
+  forcing a QP to ERR flushes *all* of them, but the recovery replays only the one
+  request under test and drains the CQ of the rest. The verified runs therefore use
+  1 channel + Simple proto + a single-chunk (512 KB) message so exactly one WRITE is
+  outstanding. With default multi-channel/pipelined settings the reset+replay still
+  execute (observed), but un-replayed sibling requests then stall the collective.
+  General multi-request replay (tracking every flushed request per comm) is future work.
+- **Injection point:** `NCCL_RDMA_FAULT_INJECT=k` forces the QP to ERR *before* the
+  k-th multi-send's post (net_ib.cc:2019), so the WRITE deterministically flushes
+  regardless of size. (Forcing ERR *after* the post let small/fast sends complete
+  first, so no recoverable flush was produced — that variant was dropped.)
+- **Bidirectional QP pair:** a QP pair carries both the initiator's data WRITEs and
+  the responder's CTS WRITEs, so an initiator-side ERR makes the responder's recv
+  comm see RETRY_EXC(0x81) on its CTS path even though the peer is alive. The patch
+  handles this: on the RESPONDER, 0x81 **with a live socket** is treated as
+  "peer is resetting" → wait for the REQ (net_ib.cc:2479-2485); 0x81 with a dead
+  socket is declined. This is what lets the collective survive the injected fault.
+
+## Blocker encountered (now cleared)
+For part of the session rain's shared Quadro RTX 5000 was saturated by another
+user's ~15.5 GB job (~175 MiB free), so `ncclCommInitRank` failed with CUDA OOM and
+the fault runs could not launch. It later freed and all runs above were captured.
 
 ## Files
-- `net_ib_fault_recovery.diff` — the patch (regenerated from the patched tree;
-  applies to v2.23.4-1 after stripping the `#` banner).
-- `nccl_ar2.cu` — 2-rank all-reduce test driver.
+- `net_ib_fault_recovery.diff` — the patch (391 insertions; applies to v2.23.4-1 after stripping the `#` banner).
+- `nccl_ar2.cu` — 2-rank all-reduce test driver (socket-exchanged uniqueId, no MPI).
 - `DESIGN_recovery.md` — the design (input).
-- `logs/` — baseline, cross-node responder evidence, and the auto-runner + its output.
+- `logs/phase123_inject_rank0.log`, `_rank1.log` — the successful recovery + completion.
+- `logs/control_prockill_rank0.log` — dead-peer clean decline.
+- `logs/p2_baseline_rank0.log`, `evidence_responder.txt`, `autorun_recovery_test.sh`.

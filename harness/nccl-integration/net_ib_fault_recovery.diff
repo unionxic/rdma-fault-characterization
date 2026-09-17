@@ -1,12 +1,10 @@
-# NCCL in-tree RDMA fault-classification + TRUE bilateral recovery patch
-# Upstream: github.com/NVIDIA/nccl
-# Tag:      v2.23.4-1
-# Commit:   68b542363f9a44cdaac480f51ebe0fc26de96139
-# File:     src/transport/net_ib.cc (single file, gated by NCCL_RDMA_FAULT_RECOVERY)
-# Apply:    cd nccl && git checkout v2.23.4-1 && sed '/^# /d;/^#$/d' this.diff | git apply
+# NCCL in-tree RDMA fault-classification + TRUE bilateral recovery patch (Phases 1-3)
+# Upstream: github.com/NVIDIA/nccl   Tag: v2.23.4-1   Commit: 68b542363f9a44cdaac480f51ebe0fc26de96139
+# File: src/transport/net_ib.cc (single file, gated by NCCL_RDMA_FAULT_RECOVERY)
+# Apply: cd nccl && git checkout v2.23.4-1 && sed '/^# /d;/^#$/d' this.diff | git apply
 #
 diff --git a/src/transport/net_ib.cc b/src/transport/net_ib.cc
-index d828c98..cebdc6e 100644
+index d828c98..8f693b8 100644
 --- a/src/transport/net_ib.cc
 +++ b/src/transport/net_ib.cc
 @@ -861,12 +861,20 @@ struct ncclIbRequest {
@@ -396,28 +394,29 @@ index d828c98..cebdc6e 100644
      }
  
      // Fill Handle
-@@ -1819,6 +2108,20 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
-     comm->base.qpIndex = (comm->base.qpIndex+1) % comm->base.nqps;
-   }
+@@ -1725,6 +2014,21 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+   int nreqs = slots[0].nreqs;
+   if (nreqs > NCCL_NET_IB_MAX_RECVS) return ncclInternalError;
  
 +  // [RDMA-FAULT-RECOVERY phase 3] deterministic recoverable-flush injection: once,
-+  // on the k-th signaled multi-send, force QP0 to ERR so its just-posted WRITE(s)
-+  // flush (WR_FLUSH_ERR) while the peer stays alive -- exercises Phase 1+2.
++  // on the k-th signaled multi-send, force QP0 to ERR *before* posting so this
++  // send's WRITE(s) deterministically flush (WR_FLUSH_ERR) regardless of size,
++  // while the peer stays alive -- exercises the Phase 1+2 recovery path.
 +  if (ncclParamRdmaFaultRecovery() && ncclParamRdmaFaultInject() > 0 && !ncclIbInjectFired) {
 +    ncclIbInjectSendCount++;
 +    if (ncclIbInjectSendCount == ncclParamRdmaFaultInject()) {
 +      ncclIbInjectFired = 1;
 +      struct ibv_qp_attr ea; memset(&ea, 0, sizeof(ea)); ea.qp_state = IBV_QPS_ERR;
 +      wrap_ibv_modify_qp(comm->base.qps[0].qp, &ea, IBV_QP_STATE);
-+      WARN("NET/IB: [FAULT-INJECT] forced QP0 (qpn=%u) to ERR on signaled send #%d (transient recoverable flush)",
++      WARN("NET/IB: [FAULT-INJECT] forced QP0 (qpn=%u) to ERR before send #%d (transient recoverable flush)",
 +           comm->base.qps[0].qp->qp_num, ncclIbInjectSendCount);
 +    }
 +  }
 +
-   return ncclSuccess;
- }
- 
-@@ -1866,6 +2169,11 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
+   uint64_t wr_id = 0ULL;
+   for (int r=0; r<nreqs; r++) {
+     struct ibv_send_wr* wr = comm->wrs+r;
+@@ -1866,6 +2170,11 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
      req->send.size = size;
      req->send.data = data;
      req->send.offset = 0;
@@ -429,7 +428,7 @@ index d828c98..cebdc6e 100644
  
      // Populate events
      int nEvents = ncclParamIbSplitDataOnQps() ? comm->base.nqps : comm->base.ndevs;
-@@ -2091,6 +2399,29 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
+@@ -2091,6 +2400,29 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
        return ncclSuccess;
      }
  
@@ -459,7 +458,7 @@ index d828c98..cebdc6e 100644
      int totalWrDone = 0;
      int wrDone = 0;
      struct ibv_wc wcs[4];
-@@ -2121,6 +2452,47 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
+@@ -2121,6 +2453,55 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
              WARN("NET/IB: Got completion from peer %s with status=%d opcode=%d len=%d vendor err %d (%s)%s%s%s%s hca %s",
                  ncclSocketToString(&addr, line), wc->status, wc->opcode, wc->byte_len, wc->vendor_err, reqTypeStr[r->type],
                  localGidStr ?  " localGid ":"", localGidString, remoteGidStr ? " remoteGids":"", remoteGidString, hcaName);
@@ -480,7 +479,15 @@ index d828c98..cebdc6e 100644
 +                     sockAlive ? "server_qp_err (peer process alive, its QP broke)"
 +                               : "proc_kill / link-down (peer socket dead)");
 +              }
-+              if (fi.autoRecoverable && sockAlive
++              // A QP pair carries BIDIRECTIONAL RDMA (initiator's data writes AND the
++              // responder's CTS writes ride the same pair). So when the initiator's QP
++              // is forced to ERR, the responder's recv comm sees its CTS writes NAK as
++              // RETRY_EXC(0x81) even though the peer is alive and merely resetting. With
++              // a live socket that 0x81 is therefore recoverable on the RESPONDER side:
++              // it waits for the initiator's REQ instead of failing.
++              int allowInit = ( r->base->isSend) && fi.autoRecoverable;
++              int allowResp = (!r->base->isSend) && (fi.autoRecoverable || wc->status == IBV_WC_RETRY_EXC_ERR);
++              if (sockAlive && (allowInit || allowResp)
 +                  && r->base->faultRecoveryAttempts < NCCL_IB_FAULT_MAX_ATTEMPTS
 +                  && r->faultRetries < NCCL_IB_FAULT_MAX_RETRIES) {
 +                int attempt = r->base->faultRecoveryAttempts++;
@@ -491,7 +498,7 @@ index d828c98..cebdc6e 100644
 +                  rr = ncclIbRecoverInitiate(r->base, attempt);
 +                  if (rr == ncclSuccess) rr = ncclIbReplaySend((struct ncclIbSendComm*)r->base, r);
 +                } else {
-+                  // RESPONDER that saw its own flush: bounded wait for REQ, then respond+repost.
++                  // RESPONDER (flush or peer-reset 0x81): bounded wait for REQ, then respond+repost.
 +                  rr = ncclIbRecoverRespondWait((struct ncclIbRecvComm*)r->base, r, attempt);
 +                }
 +                if (rr == ncclSuccess) {
