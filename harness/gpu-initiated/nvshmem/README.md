@@ -252,9 +252,21 @@ comparison comes from the sibling stack instead: NCCL GIN **GDAKI** uses a norma
 ring CQ on the *same* NICs and *does* receive error CQEs (its blocking flush
 returns on a failed write; its host QP-state check sees the error) — so the NIC
 does deliver error completions to a ring CQ; IBGDA's collapsed CQ does not show
-them. That the collapsed CQ is *the* reason is thus **[inferred]** (supported by
-the GDAKI cross-check and by F2b's QP-ERR-without-CQE), not provable by flipping
-`cc` here.
+them. That the collapsed CQ is *the* reason was thus only **[inferred]** here, not
+provable by flipping `cc`.
+
+**[rejected, 2026-09-23] "The collapsed CQ is the reason."** The in-stack A/B was
+then done in NCCL GIN GDAKI, whose bundled DOCA GPUNetIO supports both CQ shapes
+(`../gin_q4/`, Task A). On the same NICs and firmware a collapsed CQ in GPU memory
+**does** receive error CQEs: the device poll returned -EIO in 27/27 collapsed
+F1/F2/F3 trials, slot 0 held the root-cause CQE (5/0xf5, 10/0x88, 12/0x81) at
+poll time and the trailing flush 5/0xf9 500 µs later. So the collapsed CQ as such
+does not suppress error completions, and why no error CQE ever appears in
+NVSHMEM's CQ remains **open**. Differences worth checking next: the CQ and QP
+context bits NVSHMEM sets through DEVX versus DOCA's (dump both with QUERY_CQ /
+QUERY_QP and diff), and the two CPU-proxy doorbell paths (NVSHMEM's
+`ibgda_rc_progress` versus DOCA's, which in collapsed mode also needs
+`CPU_PROXY_UPDATE_PI`).
 
 **[measured] The CQ cannot be relocated to host memory here.**
 `NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE=hostmem` fails at init on this box
@@ -275,8 +287,9 @@ host-side DEVX query, not something the GPU poller consults, and IBGDA installs 
 async-event/EQ handler (`ibgda_create_cq` allocates a UAR/EQ but `:1523` notes
 "IBGDA never uses it") **[measured/observed in source]**. Flipping the CQ to a
 normal ring (cc=0) to test delivery directly is not possible in-stack (init hangs)
-**[measured]**; the cross-stack GDAKI ring CQ *does* get error CQEs on the same
-NICs, so the collapsed CQ being the reason is **[inferred]**. The only
+**[measured]**. The cross-stack A/B in GDAKI showed that both ring and collapsed
+CQs receive error CQEs on the same NICs, so the collapsed CQ is **not** the reason
+and the cause of the missing error CQEs in NVSHMEM is **open** (see above). The only
 device-visible symptom of any fault is **stalled progress** — `wqe_counter` frozen
 while `ready_head` advances — which a bounded wait can detect but cannot classify.
 This holds identically for a prompt remote
