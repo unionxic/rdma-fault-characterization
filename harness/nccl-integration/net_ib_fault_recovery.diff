@@ -1,62 +1,155 @@
-# NCCL in-tree RDMA fault-classification + TRUE bilateral recovery patch (Phases 1-3)
+# NCCL in-tree RDMA fault classification + SAFE bilateral QP recovery (Stage 1)
 # Upstream: github.com/NVIDIA/nccl   Tag: v2.23.4-1   Commit: 68b542363f9a44cdaac480f51ebe0fc26de96139
-# File: src/transport/net_ib.cc (single file, gated by NCCL_RDMA_FAULT_RECOVERY)
-# Apply: cd nccl && git checkout v2.23.4-1 && sed '/^# /d;/^#$/d' this.diff | git apply
+# File: src/transport/net_ib.cc only; everything gated by NCCL_RDMA_FAULT_RECOVERY=1 (default 0)
+# Patched net_ib.cc git hash-object: 0f3397fd227a292dc9379c4b266c2f5727db12f9
+# Recovers only a WR_FLUSH_ERR on a quiescent single-QP/single-NIC/single-request
+# connection; otherwise fails like stock (ncclRemoteError). See DESIGN_recovery.md.
+# Apply: cd nccl && git checkout v2.23.4-1 && sed '/^# /d;/^#$/d' net_ib_fault_recovery.diff | git apply
 #
 diff --git a/src/transport/net_ib.cc b/src/transport/net_ib.cc
-index d828c98..8f693b8 100644
+index d828c98..0f3397f 100644
 --- a/src/transport/net_ib.cc
 +++ b/src/transport/net_ib.cc
-@@ -861,12 +861,20 @@ struct ncclIbRequest {
+@@ -854,6 +854,77 @@ struct ncclIbGidInfo {
+ #define NCCL_NET_IB_REQ_FLUSH 3
+ const char* reqTypeStr[] = { "Unused", "Send", "Recv", "Flush" };
+ 
++/* [RDMA-FAULT-RECOVERY] Types for the opt-in fault classification + bilateral QP
++ * recovery (NCCL_RDMA_FAULT_RECOVERY=1, default 0). See the block comment above
++ * ncclIbFrClassify() for the protocol and its safety preconditions. */
++NCCL_PARAM(RdmaFaultRecovery, "RDMA_FAULT_RECOVERY", 0);
++// Initiator deadline for the whole REQ -> ACK/NACK round trip, and the responder's
++// deadline for the initiator's DONE after an ACK. Timeout => stock error.
++NCCL_PARAM(RdmaFaultHandshakeMs, "RDMA_FAULT_HANDSHAKE_MS", 2000);
++// Test hook: force a send QP to ERR once, before posting the k-th signaled multi-send.
++NCCL_PARAM(RdmaFaultInject, "RDMA_FAULT_INJECT", 0);
++
++#define NCCL_IB_FR_MAX_ATTEMPTS 3      // per-comm cap on recovery INITIATIONS (answering is uncapped)
++#define NCCL_IB_FR_MAX_REPLAYS  1      // per-request cap: a request that fails again after a replay is not retried
++#define NCCL_IB_FR_MAGIC        0xFA017EC1u
++
++// wr_id tags, set only when recovery is enabled, in bits that the stock decoder
++// (wr_id & 0xff, and per-byte for multi-send) never reads for these WRs:
++//  - RQ tag on receive WQEs and CTS tag on FIFO (CTS) writes of the recv comm, so an
++//    error CQE (whose opcode is undefined) can be told apart (RQ vs SQ) by wr_id alone;
++//  - BODY tag on the unsignaled data RDMA_WRITEs of a multi-send (stock leaves those
++//    at wr_id 0, which would alias request 0 in an error CQE).
++#define NCCL_IB_FR_WRID_RQ   (1ULL << 62)
++#define NCCL_IB_FR_WRID_CTS  (1ULL << 61)
++#define NCCL_IB_FR_WRID_BODY (1ULL << 63)
++
++enum ncclIbFrState {
++  ncclIbFrIdle = 0,
++  ncclIbFrInitWait = 1,    // initiator (send comm): REQ sent, waiting for ACK/NACK
++  ncclIbFrRespPending = 2, // responder (recv comm): REQ received, precondition not yet decidable
++  ncclIbFrRespAcked = 3,   // responder: reset + re-posted + ACK sent, waiting for DONE/FAIL
++  ncclIbFrFailed = 4       // sticky: every later test/isend/irecv on the comm returns an error
++};
++
++enum ncclIbFrMsgType { ncclIbFrMsgReq = 1, ncclIbFrMsgAck = 2, ncclIbFrMsgNack = 3, ncclIbFrMsgDone = 4, ncclIbFrMsgFail = 5 };
++
++// Control message exchanged on the comm's OOB TCP socket (base.sock), which stock NCCL
++// leaves open but unused after connection setup. Fixed size; sent/received with
++// non-blocking I/O and per-comm offsets (never blocks the proxy thread).
++struct ncclIbFrMsg {
++  uint32_t magic;
++  uint32_t type;     // ncclIbFrMsgType
++  uint32_t seq;      // initiator's attempt sequence number (echoed in replies)
++  uint32_t nqps;     // sender's nqps (must be 1)
++  uint64_t fifoIdx;  // REQ: CTS FIFO sequence number of the failed send (identifies the receive)
++  uint32_t psn;      // REQ: initiator's fresh sq_psn; ACK: responder's fresh sq_psn
++  int32_t  size;     // REQ: size of the failed send
++  uint32_t reason;   // NACK/FAIL: reason code (ncclIbFrReasonStr)
++  uint32_t pad;
++};
++
++struct ncclIbFrComm {
++  int enabled;          // NCCL_RDMA_FAULT_RECOVERY, cached when the comm is connected
++  int state;            // ncclIbFrState
++  int attempts;         // send comm: initiations; recv comm: ACKs given
++  uint32_t seq;         // current handshake sequence number
++  int reqIdx;           // failed send (initiator) / matched receive (responder), index in reqs[]
++  uint32_t myPsn;       // fresh PSN chosen for the current attempt
++  uint64_t deadline;    // clockNano() deadline of the current state
++  int peerClosed;       // FIN/RST seen on base.sock
++  // First error CQE seen in the current poll batch / drain.
++  int errCount;
++  int errStatus;
++  uint32_t errVendor;
++  uint64_t errWrId;
++  uint32_t errQpNum;
++  int errDev;
++  int errForeign;       // an error CQE that does not decode to the failed request
++  struct ncclIbFrMsg rx; int rxOff;
++  struct ncclIbFrMsg tx; int txOff; int txLen;
++  struct ncclIbFrMsg req;  // responder: REQ under evaluation
++};
++
+ struct ncclIbRequest {
+   struct ncclIbNetCommBase* base;
+   int type;
+@@ -861,15 +932,25 @@ struct ncclIbRequest {
    int events[NCCL_IB_MAX_DEVS_PER_NIC];
    struct ncclIbNetCommDevBase* devBases[NCCL_IB_MAX_DEVS_PER_NIC];
    int nreqs;
-+  // [RDMA-FAULT-RECOVERY] bounded per-request re-poll count after a recovered fault.
-+  int faultRetries;
++  int frReplays;  // [RDMA-FAULT-RECOVERY] replays/re-posts of this request (reset in ncclIbGetRequest)
    union {
      struct {
        int size;
        void* data;
        uint32_t lkeys[NCCL_IB_MAX_DEVS_PER_NIC];
        int offset;
-+      // [RDMA-FAULT-RECOVERY] remote CTS (addr+rkey) captured at Isend time so a
-+      // flushed WRITE can be replayed after a bilateral QP reset. The FIFO slot is
-+      // memset right after ncclIbMultiSend, so we must snapshot it into the request.
++      // [RDMA-FAULT-RECOVERY] snapshot of the CTS FIFO entry (the slot is cleared right
++      // after ncclIbMultiSend), taken only when recovery is enabled.
 +      uint64_t remoteAddr;
 +      uint32_t rkeys[NCCL_IB_MAX_DEVS_PER_NIC];
-+      int recoverable;   // 1 if single-request (nreqs==1) => replay supported
++      uint64_t fifoIdx;
      } send;
      struct {
        int* sizes;
-@@ -902,6 +910,10 @@ struct ncclIbQp {
++      // [RDMA-FAULT-RECOVERY] recovery bookkeeping, maintained only when enabled.
++      uint64_t fifoIdx;   // CTS FIFO sequence number this receive was advertised with
++      int postedSize;     // size advertised in the CTS (n == 1)
++      int arrived;        // a RECV_RDMA_WITH_IMM completion was consumed for it
+     } recv;
+   };
+ };
+@@ -902,6 +983,13 @@ struct ncclIbQp {
    struct ibv_qp* qp;
    int devIndex;
    int remDevIdx;
-+  // [RDMA-FAULT-RECOVERY] remote QP number retained at connect/accept time so
-+  // the QP can be re-driven ERR->RESET->INIT->RTR->RTS during fault recovery
-+  // (ncclIbRtrQp needs dest_qp_num, which is otherwise not kept on the comm).
-+  uint32_t remQpn;
++  // [RDMA-FAULT-RECOVERY] connect-time attributes, kept so a QP can be re-driven
++  // RESET->INIT->RTR->RTS with exactly the attributes it was connected with.
++  uint32_t remQpn;      // remote QP number
++  int accessFlags;      // qp_access_flags given to ncclIbCreateQp
++  int overrideTc;       // override_tc given to ncclIbRtrQp (recv comm QP 0)
++  int eceSet;           // ibv_set_ece was called before RTR at connect time ...
++  struct ibv_ece ece;   // ... with this value
  };
  
  struct ncclIbRemSizesFifo {
-@@ -941,6 +953,11 @@ struct alignas(32) ncclIbNetCommBase {
+@@ -941,6 +1029,9 @@ struct alignas(32) ncclIbNetCommBase {
    struct ncclIbDevInfo remDevs[NCCL_IB_MAX_DEVS_PER_NIC];
    // statistics about the comm
    struct ncclIbStats stats;
-+  // [RDMA-FAULT-RECOVERY] bounded count of QP-recovery attempts on this comm
-+  // (only used when NCCL_RDMA_FAULT_RECOVERY=1). Padded so this struct stays a
-+  // 32-byte multiple (see static_asserts below that guard fifo alignment).
-+  int faultRecoveryAttempts;
-+  char faultRecoveryPad[28];
++  // [RDMA-FAULT-RECOVERY] per-comm recovery state (the struct stays a 32-byte multiple
++  // because it is alignas(32); see the static_asserts below).
++  struct ncclIbFrComm fr;
  };
  
  struct ncclIbSendComm {
-@@ -1063,13 +1080,13 @@ ncclResult_t ncclIbCreateQp(uint8_t ib_port, struct ncclIbNetCommDevBase* base,
+@@ -1060,16 +1151,19 @@ ncclResult_t ncclIbCreateQp(uint8_t ib_port, struct ncclIbNetCommDevBase* base,
+   qpAttr.port_num = ib_port;
+   qpAttr.qp_access_flags = access_flags;
+   NCCLCHECK(wrap_ibv_modify_qp(qp->qp, &qpAttr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS));
++  qp->accessFlags = access_flags; // [RDMA-FAULT-RECOVERY] re-used verbatim if the QP is re-driven
    return ncclSuccess;
  }
  
 -ncclResult_t ncclIbRtrQp(struct ibv_qp* qp, struct ncclIbGidInfo* sGidInfo, uint32_t dest_qp_num, struct ncclIbDevInfo* info, bool override_tc) {
-+ncclResult_t ncclIbRtrQp(struct ibv_qp* qp, struct ncclIbGidInfo* sGidInfo, uint32_t dest_qp_num, struct ncclIbDevInfo* info, bool override_tc, uint32_t rq_psn /*[RDMA-FAULT-RECOVERY] fresh PSN; 0=default*/) {
++// [RDMA-FAULT-RECOVERY] rq_psn / sq_psn default to the stock value 0; only the recovery
++// path passes the fresh PSNs exchanged in the handshake.
++ncclResult_t ncclIbRtrQp(struct ibv_qp* qp, struct ncclIbGidInfo* sGidInfo, uint32_t dest_qp_num, struct ncclIbDevInfo* info, bool override_tc, uint32_t rq_psn = 0) {
    struct ibv_qp_attr qpAttr;
    memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
    qpAttr.qp_state = IBV_QPS_RTR;
@@ -67,12 +160,12 @@ index d828c98..8f693b8 100644
    qpAttr.max_dest_rd_atomic = 1;
    qpAttr.min_rnr_timer = 12;
    if (info->link_layer == IBV_LINK_LAYER_ETHERNET) {
-@@ -1112,19 +1129,289 @@ ncclResult_t ncclIbRtrQp(struct ibv_qp* qp, struct ncclIbGidInfo* sGidInfo, uint
+@@ -1112,14 +1206,14 @@ ncclResult_t ncclIbRtrQp(struct ibv_qp* qp, struct ncclIbGidInfo* sGidInfo, uint
    return ncclSuccess;
  }
  
 -ncclResult_t ncclIbRtsQp(struct ibv_qp* qp) {
-+ncclResult_t ncclIbRtsQp(struct ibv_qp* qp, uint32_t sq_psn /*[RDMA-FAULT-RECOVERY] fresh PSN; 0=default*/) {
++ncclResult_t ncclIbRtsQp(struct ibv_qp* qp, uint32_t sq_psn = 0) {
    struct ibv_qp_attr qpAttr;
    memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
    qpAttr.qp_state = IBV_QPS_RTS;
@@ -84,55 +177,114 @@ index d828c98..8f693b8 100644
    qpAttr.max_rd_atomic = 1;
    NCCLCHECK(wrap_ibv_modify_qp(qp, &qpAttr, IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC));
    return ncclSuccess;
+@@ -1327,9 +1421,15 @@ ib_connect:
+     if (remQpInfo->ece_supported)
+       NCCLCHECKGOTO(wrap_ibv_set_ece(qp, &remQpInfo->ece, &remQpInfo->ece_supported), ret, fail);
+ 
++    // [RDMA-FAULT-RECOVERY] retain what this QP is connected with (behavior-neutral).
++    comm->base.qps[q].remQpn = remQpInfo->qpn;
++    comm->base.qps[q].overrideTc = 0;
++    comm->base.qps[q].eceSet = remQpInfo->ece_supported ? 1 : 0;
++    comm->base.qps[q].ece = remQpInfo->ece;
+     NCCLCHECKGOTO(ncclIbRtrQp(qp, &commDev->base.gidInfo, remQpInfo->qpn, remDevInfo, false), ret, fail);
+     NCCLCHECKGOTO(ncclIbRtsQp(qp), ret, fail);
+   }
++  comm->base.fr.enabled = ncclParamRdmaFaultRecovery() ? 1 : 0; // [RDMA-FAULT-RECOVERY]
+ 
+   if (link_layer == IBV_LINK_LAYER_ETHERNET ) { // RoCE
+     for (int q = 0; q < comm->base.nqps; q++) {
+@@ -1472,9 +1572,17 @@ ib_recv:
+     }
+ 
+     bool override_tc = (q == 0) ? true : false;
++    // [RDMA-FAULT-RECOVERY] retain what this QP is connected with (behavior-neutral).
++    // eceSet records that ibv_set_ece was called with remMeta's ECE (the stock call's
++    // output flag lands in meta, not here), so recovery repeats exactly that call.
++    qp->remQpn = remMeta.qpInfo[q].qpn;
++    qp->overrideTc = override_tc ? 1 : 0;
++    qp->eceSet = remMeta.qpInfo[q].ece_supported ? 1 : 0;
++    qp->ece = remMeta.qpInfo[q].ece;
+     NCCLCHECKGOTO(ncclIbRtrQp(qp->qp, &rCommDev->base.gidInfo, remMeta.qpInfo[q].qpn, remDevInfo, override_tc), ret, fail);
+     NCCLCHECKGOTO(ncclIbRtsQp(qp->qp), ret, fail);
+   }
++  rComm->base.fr.enabled = ncclParamRdmaFaultRecovery() ? 1 : 0; // [RDMA-FAULT-RECOVERY]
+ 
+   rComm->flushEnabled = ((ncclIbGdrSupport() == ncclSuccess || ncclIbDmaBufSupport(lComm->dev) == ncclSuccess)
+                             && (ncclParamIbGdrFlushDisable() == 0)) ? 1 : 0;
+@@ -1577,6 +1685,7 @@ ncclResult_t ncclIbGetRequest(struct ncclIbNetCommBase* base, struct ncclIbReque
+       r->devBases[0] = NULL;
+       r->devBases[1] = NULL;
+       r->events[0] = r->events[1] = 0;
++      r->frReplays = 0; // [RDMA-FAULT-RECOVERY]
+       *req = r;
+       return ncclSuccess;
+     }
+@@ -1717,6 +1826,785 @@ ncclResult_t ncclIbDeregMr(void* comm, void* mhandle) {
+   return ncclSuccess;
  }
  
 +/* =====================================================================
-+ * [RDMA-FAULT-RECOVERY] In-tree fault classification + QP-level recovery.
++ * [RDMA-FAULT-RECOVERY] In-tree fault classification + bilateral QP recovery.
 + *
-+ * Ported from ~/rdma-error/harness/common/probe.c classify(): on a failed
-+ * IB completion we map (wc.status, wc.vendor_err) to a cause / recommended
-+ * action / peer-liveness / auto-recoverable verdict, then (for NAK-class,
-+ * auto-recoverable faults) attempt to re-drive the affected QP through
-+ * ERR->RESET->INIT->RTR->RTS so the QP object is left usable instead of the
-+ * communicator failing outright. All of this is OFF unless
-+ * NCCL_RDMA_FAULT_RECOVERY=1, so default NCCL behavior is preserved.
++ * Opt-in: NCCL_RDMA_FAULT_RECOVERY=1. With it unset/0 every hook is skipped
++ * (base->fr.enabled == 0) and the transport issues the same verbs calls and
++ * returns the same results as stock v2.23.4-1.
 + *
-+ * Bounded honesty note (see nccl-integration/README): re-driving the local QP
-+ * cannot by itself transparently resume an in-flight RC transfer -- the remote
-+ * QP's PSN state is not reset in lockstep and the failed WR is not replayed,
-+ * because NCCL's mid-stream IB path has no bilateral re-handshake channel. So
-+ * this restores QP usability + emits full diagnostics; it does not fabricate a
-+ * completed transfer. RETRY_EXC (dead peer) is classed non-auto-recoverable and
-+ * falls through to the normal error, matching the harness taxonomy.
++ * On a failed completion the fault is classified (ncclIbFrClassify, a port of
++ * the rdma-error harness taxonomy) and logged together with an OOB-socket
++ * liveness probe (ncclIbFrLiveness). Recovery is attempted ONLY when every
++ * condition below holds; otherwise the comm fails exactly like stock
++ * (ncclRemoteError) and the failure is latched (sticky) for the comm:
++ *  1. the incident's first error CQE is IBV_WC_WR_FLUSH_ERR on the SEND comm,
++ *     i.e. the local QP left RTS without a completion error of its own (a
++ *     transient local ERR such as NCCL_RDMA_FAULT_INJECT). NAK classes,
++ *     RETRY_EXC and local protection/length errors are never recovered;
++ *  2. configuration: nqps == 1, ndevs == 1, and the failed send has nreqs == 1;
++ *  3. QUIESCENCE, checked on both sides BEFORE any QP is modified:
++ *     - initiator: the failed request, decoded from wc->wr_id with the stock
++ *       encoding, is the only request of the comm with outstanding completions;
++ *     - responder: the receive the failed send was writing into (matched by the
++ *       CTS FIFO sequence number carried in the REQ) is outstanding, its data has
++ *       not been consumed, no other request has outstanding completions (so no
++ *       other receive is posted and no other signaled CTS write is pending), and
++ *       no GPU-flush read is in flight (waited for, bounded).
++ *     CTS writes of older receives were delivered: the failed send consumed the
++ *     CTS of this receive, and RC delivers the CTS writes of one QP in order;
++ *  4. no async fatal event on the comm or its device(s) (NCCL never clears it),
++ *     and no FIN/RST on the peer's OOB socket;
++ *  5. per-comm initiation cap (NCCL_IB_FR_MAX_ATTEMPTS), per-request replay cap.
++ *
++ * Handshake on base.sock (stock NCCL leaves this TCP socket open but unused
++ * after connection setup). All socket I/O is non-blocking with per-comm
++ * offsets; the initiator is a state machine driven by successive ncclIbTest
++ * calls, so the proxy thread keeps serving every other comm (in particular the
++ * local recv comm can answer the peer's REQ: no deadlock when both ranks fault).
++ *   initiator (send comm)                    responder (recv comm)
++ *   error CQE -> checks 1-5 -> REQ{psn,fifo} -> read on every ncclIbTest/Irecv
++ *   QP stays in ERR; test returns not-done   checks 3-4 fail -> NACK (both fail)
++ *                                            else QP RTS->ERR, wait (bounded) for
++ *                                            the receive's WQE to terminate, ->RESET,
++ *                                            ->INIT->RTR(peer psn)->RTS(fresh psn)
++ *                                            with connect-time attributes, re-post
++ *                                            that one receive, ACK{psn}
++ *   ACK -> QP ->RESET->INIT->RTR->RTS, replay the one RDMA_WRITE_WITH_IMM (RDMA
++ *   WRITE is idempotent: same bytes to the same, still-reserved remote buffer),
++ *   DONE ----------------------------------> idle again (Irecv held until DONE)
++ *   No reply within NCCL_RDMA_FAULT_HANDSHAKE_MS, NACK, FAIL, a closed socket or
++ *   any verbs error => both sides latch the failure and return the stock error.
++ * CQEs of the reset QP's old incarnation are dropped only when they belong to
++ * the request being recovered (its completion is re-created by the re-post and
++ * the replay); any other one is either consumed like ncclIbTest would or makes
++ * the recovery fail: a completion is never silently lost or fabricated.
 + * ===================================================================== */
-+NCCL_PARAM(RdmaFaultRecovery, "RDMA_FAULT_RECOVERY", 0);
-+// [phase 3] NCCL_RDMA_FAULT_INJECT=k: force the send QP to ERR exactly once, on
-+// the k-th signaled multi-send (a transient, peer-alive, RECOVERABLE flush).
-+NCCL_PARAM(RdmaFaultInject, "RDMA_FAULT_INJECT", 0);
-+static int ncclIbInjectSendCount = 0;   // signaled sends seen (debug hook only)
-+static int ncclIbInjectFired = 0;        // latch: inject at most once
-+#define NCCL_IB_FAULT_MAX_ATTEMPTS 3   // per-comm cap on recovery attempts
-+#define NCCL_IB_FAULT_MAX_RETRIES  8   // per-request cap on post-recovery re-polls
-+#define NCCL_IB_RECOVER_MAGIC 0xFA017EC0u
-+
-+// Recovery control message, exchanged on the always-open OOB base.sock. psn[q] is
-+// the sender's fresh base PSN for QP q (both REQ and ACK use this layout).
-+struct ncclIbRecoverMsg {
-+  uint32_t magic;
-+  int      nqps;
-+  uint32_t psn[NCCL_IB_MAX_QPS];
-+};
 +
 +struct ncclIbFaultInfo {
 +  const char* cause;
 +  const char* action;
-+  int peerAlive;         // best-effort; see RETRY_EXC note
-+  int autoRecoverable;   // 1 => attempt QP-level recovery
++  int recoverable;  // 1 only for WR_FLUSH_ERR (see condition 1 above)
 +};
 +
-+// Self-contained status name (NCCL loads libibverbs symbols via wrap_*; we avoid
-+// taking a direct dependency on ibv_wc_status_str for the few statuses we log).
-+static const char* ncclIbStatusStr(int status) {
++static const char* ncclIbFrStatusStr(int status) {
 +  switch (status) {
 +    case IBV_WC_SUCCESS:           return "SUCCESS";
 +    case IBV_WC_LOC_LEN_ERR:       return "LOC_LEN_ERR";
@@ -146,371 +298,852 @@ index d828c98..8f693b8 100644
 +  }
 +}
 +
-+// Mirror of harness classify() over the meaningful RoCE completion faults.
-+static struct ncclIbFaultInfo ncclIbClassify(enum ibv_wc_status status, uint32_t vendor_err) {
-+  struct ncclIbFaultInfo f = { "unknown", "inspect status+vendor_err", 1, 0 };
++// Port of the harness classify(). Only WR_FLUSH_ERR is recoverable in NCCL:
++//  - REM_ACCESS_ERR / REM_INV_REQ_ERR are NAKs; the responder QP that NAKs raises
++//    IBV_EVENT_QP_ACCESS_ERR / IBV_EVENT_QP_REQ_ERR, which ncclIbAsyncThreadMain
++//    turns into ncclIbQpFatalError() on the peer comm's stats; that count is never
++//    cleared and ncclIbStatsCheckFatalCount() fails every later test/isend/irecv of
++//    the peer comm, so a QP-level recovery cannot bring the comm back;
++//  - RNR_RETRY_EXC cannot happen with NCCL's rnr_retry=7 (infinite) unless the peer
++//    is broken; RETRY_EXC means no ACK at all (peer QP in ERR, process or path gone);
++//  - LOC_LEN / LOC_PROT are local WR/MR bugs that a replay would repeat.
++static struct ncclIbFaultInfo ncclIbFrClassify(int status, uint32_t vendor_err) {
++  struct ncclIbFaultInfo f = { "other", "inspect status+vendor_err; stock error", 0 };
 +  switch (status) {
-+    case IBV_WC_WR_FLUSH_ERR: /* 5 / 0xf5 */
-+      f.cause = "WR flushed (local QP left RTS, e.g. forced ERR / drained after a prior fault)";
-+      f.action = "drain CQ, QP-only recover, repost"; f.peerAlive = 1; f.autoRecoverable = 1; break;
++    case IBV_WC_WR_FLUSH_ERR: /* 5 / vendor 0xf5 */
++      f.cause = "WR flushed: the local QP left RTS without a completion error of its own (transient local ERR)";
++      f.action = "bilateral QP reset + replay if both sides are quiescent, else stock error"; f.recoverable = 1; break;
 +    case IBV_WC_REM_ACCESS_ERR: /* 10 / 0x88 */
-+      f.cause = (vendor_err == 0x88) ? "remote access: invalid rkey or out-of-bounds addr"
-+                                     : "remote access violation";
-+      f.action = "refresh rkey / clamp to remote MR bounds, QP-only recover";
-+      f.peerAlive = 1; f.autoRecoverable = 1; break;
++      f.cause = (vendor_err == 0x88) ? "remote access: invalid rkey or out-of-bounds address" : "remote access violation";
++      f.action = "not recovered: the peer QP raised IBV_EVENT_QP_ACCESS_ERR (fatal for the peer comm in NCCL)"; break;
 +    case IBV_WC_REM_INV_REQ_ERR: /* 9 / 0x8a */
-+      f.cause = "remote invalid request (malformed WR / len / opcode)";
-+      f.action = "fix request params, QP-only recover"; f.peerAlive = 1; f.autoRecoverable = 1; break;
++      f.cause = "remote invalid request (opcode not enabled / length / malformed)";
++      f.action = "not recovered: the peer QP raised IBV_EVENT_QP_REQ_ERR (fatal for the peer comm in NCCL)"; break;
 +    case IBV_WC_RNR_RETRY_EXC_ERR: /* 13 / 0x87 */
-+      f.cause = "RNR retries exhausted (responder had no recv WQE)";
-+      f.action = "ensure remote posts recvs, QP-only recover"; f.peerAlive = 1; f.autoRecoverable = 1; break;
++      f.cause = "RNR retries exhausted (should not happen with rnr_retry=7)";
++      f.action = "not recovered: peer is not posting receives"; break;
 +    case IBV_WC_RETRY_EXC_ERR: /* 12 / 0x81 */
-+      f.cause = "transport retries exhausted (no ACK): responder QP in ERR, process dead, or link down";
-+      f.action = "probe peer liveness (responder port_xmit_packets, external); if dead -> human intervention, else QP-only";
-+      f.peerAlive = 0; f.autoRecoverable = 0; break;
++      f.cause = "transport retries exhausted (no ACK): peer QP in ERR, peer process dead, or path down";
++      f.action = "not recovered: human intervention; see liveness / 0x81 sub-cause"; break;
 +    case IBV_WC_LOC_PROT_ERR: /* 4 */
-+      f.cause = "local protection (bad lkey / local MR bounds)";
-+      f.action = "fix local MR/lkey, QP-only recover"; f.peerAlive = 1; f.autoRecoverable = 1; break;
++      f.cause = "local protection error (bad lkey / local MR bounds)"; f.action = "not recovered: a replay would repeat it"; break;
 +    case IBV_WC_LOC_LEN_ERR: /* 1 */
-+      f.cause = "local length error"; f.action = "fix SGE length, QP-only recover";
-+      f.peerAlive = 1; f.autoRecoverable = 1; break;
-+    default:
-+      f.cause = "other"; f.action = "inspect status+vendor_err"; f.peerAlive = 1; f.autoRecoverable = 0; break;
++      f.cause = "local length error"; f.action = "not recovered: a replay would repeat it"; break;
++    default: break;
 +  }
 +  return f;
 +}
 +
-+// ---------------------------------------------------------------------------
-+// TRUE bilateral recovery: send side = INITIATOR, recv side = RESPONDER (role by
-+// base.isSend, so a comm pair never double-initiates). Both ends drive their QPs
-+// ERR->RESET->INIT->RTR->RTS with PSNs exchanged over base.sock so the two ends
-+// stay mutually consistent (the correctness the unilateral re-drive lacked).
-+// ---------------------------------------------------------------------------
-+
-+// Forward decls (definitions appear later in this file): the per-dev CQ/pd/gid
-+// accessor and the IB_SPLIT_DATA_ON_QPS param, both used by the helpers below.
-+struct ncclIbNetCommDevBase* ncclIbGetNetCommDevBase(ncclIbNetCommBase* base, int devIndex);
-+int64_t ncclParamIbSplitDataOnQps();
-+
-+// Deterministic fresh, non-zero 24-bit PSN seed per (attempt,q). Exact value is
-+// irrelevant (the real PSNs are exchanged in the message); it only needs to be
-+// fresh vs the pre-fault PSN so a straggler packet cannot be mistaken for valid.
-+static inline uint32_t ncclIbFreshPsn(int attempt, int q) {
-+  return (0x000A0000u * (uint32_t)(attempt + 1) + 0x101u * (uint32_t)(q + 1)) & 0xFFFFFFu;
-+}
-+
-+// Drain any lingering CQEs (e.g. stale FLUSH_ERR from the just-errored QP) so they
-+// are not re-read as fresh faults after recovery. Assumes the faulted request is
-+// the only op in flight on this comm's CQ(s) -- true for 1 op/comm at a time, as
-+// in the tested all-reduce; concurrent multiplexed requests are out of scope.
-+static void ncclIbDrainCqs(struct ncclIbNetCommBase* base) {
-+  struct ibv_wc wcs[4];
-+  for (int q = 0; q < base->nqps; q++) {
-+    struct ncclIbQp* qp = base->qps + q;
-+    if (qp->qp == NULL) continue;
-+    struct ncclIbNetCommDevBase* db = ncclIbGetNetCommDevBase(base, qp->devIndex);
-+    int n; do { n = 0; wrap_ibv_poll_cq(db->cq, 4, wcs, &n); } while (n > 0);
++enum { ncclIbFrLiveUnknown = 0, ncclIbFrLiveNoEvidence = 1, ncclIbFrLiveFin = 2, ncclIbFrLiveRst = 3 };
++static const char* ncclIbFrLiveStr(int l) {
++  switch (l) {
++    case ncclIbFrLiveNoEvidence: return "no-FIN/RST";
++    case ncclIbFrLiveFin:        return "FIN(peer closed)";
++    case ncclIbFrLiveRst:        return "RST/TCP-error";
++    default:                     return "unknown";
 +  }
 +}
 +
-+// ERR->RESET->INIT for every QP on this comm; fill myPsn[q] with fresh PSNs, then
-+// drain the CQs. Local qp_num is preserved across RESET, so the peer still targets us.
-+static ncclResult_t ncclIbResetQpsToInit(struct ncclIbNetCommBase* base, uint32_t* myPsn, int attempt) {
-+  for (int q = 0; q < base->nqps; q++) {
-+    struct ncclIbQp* qp = base->qps + q;
-+    if (qp->qp == NULL) continue;
-+    struct ncclIbNetCommDevBase* db = ncclIbGetNetCommDevBase(base, qp->devIndex);
-+    uint8_t ib_port = ncclIbDevs[db->ibDevN].portNum;
-+    struct ibv_qp_attr a;
-+    memset(&a, 0, sizeof(a)); a.qp_state = IBV_QPS_RESET;
-+    NCCLCHECK(wrap_ibv_modify_qp(qp->qp, &a, IBV_QP_STATE));
-+    memset(&a, 0, sizeof(a));
-+    a.qp_state = IBV_QPS_INIT; a.pkey_index = ncclParamIbPkey(); a.port_num = ib_port;
-+    a.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
-+    NCCLCHECK(wrap_ibv_modify_qp(qp->qp, &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS));
-+    myPsn[q] = ncclIbFreshPsn(attempt, q);
++// Peer liveness evidence from the OOB socket, without consuming data:
++// recv(MSG_PEEK|MSG_DONTWAIT) == 0 => FIN (peer process closed/exited);
++// -1 with ECONNRESET/EPIPE/ETIMEDOUT/ENOTCONN => RST or TCP failure;
++// -1 with EAGAIN, or pending bytes => no evidence of death.
++// NOTE: a host that dies without emitting FIN/RST (power loss, kernel panic, cable
++// pull) is NOT detected here until TCP itself times out; the handshake deadline
++// still bounds the recovery attempt in that case.
++static int ncclIbFrLiveness(struct ncclIbNetCommBase* base) {
++  if (base->fr.peerClosed) return ncclIbFrLiveFin;
++  int fd = base->sock.fd;
++  if (fd < 0) return ncclIbFrLiveUnknown;
++  char c;
++  ssize_t n = recv(fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
++  if (n == 0) return ncclIbFrLiveFin;
++  if (n > 0) return ncclIbFrLiveNoEvidence;
++  if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return ncclIbFrLiveNoEvidence;
++  if (errno == ECONNRESET || errno == EPIPE || errno == ETIMEDOUT || errno == ENOTCONN) return ncclIbFrLiveRst;
++  return ncclIbFrLiveUnknown;
++}
++
++static const char* ncclIbFrReasonStr(uint32_t r) {
++  switch (r) {
++    case 1:  return "not quiescent (other requests in flight)";
++    case 2:  return "no outstanding receive matches the failed send";
++    case 3:  return "receive data already consumed";
++    case 4:  return "multi-QP / multi-NIC / multi-recv";
++    case 5:  return "async fatal event on comm/device";
++    case 6:  return "responder has its own error CQE";
++    case 7:  return "GPU-flush read still in flight at deadline";
++    case 8:  return "QP reset/re-post failed";
++    case 9:  return "handshake timeout";
++    case 10: return "protocol error";
++    case 11: return "comm already failed";
++    case 12: return "replay failed";
++    case 13: return "request already replayed";
++    case 14: return "size mismatch";
++    case 15: return "fault not recoverable";
++    default: return "unspecified";
 +  }
-+  ncclIbDrainCqs(base);
-+  return ncclSuccess;
 +}
 +
-+// INIT->RTR(rq_psn = peerPsn[q]) ->RTS(sq_psn = myPsn[q]) for every QP, so this
-+// end receives on the peer's send-PSN and sends on its own -- symmetric on both ends.
-+static ncclResult_t ncclIbCompleteQps(struct ncclIbNetCommBase* base, uint32_t* myPsn, uint32_t* peerPsn) {
-+  for (int q = 0; q < base->nqps; q++) {
-+    struct ncclIbQp* qp = base->qps + q;
-+    if (qp->qp == NULL) continue;
-+    struct ncclIbNetCommDevBase* db = ncclIbGetNetCommDevBase(base, qp->devIndex);
-+    struct ncclIbDevInfo* remDevInfo = base->remDevs + qp->remDevIdx;
-+    NCCLCHECK(ncclIbRtrQp(qp->qp, &db->gidInfo, qp->remQpn, remDevInfo, false, peerPsn[q]));
-+    NCCLCHECK(ncclIbRtsQp(qp->qp, myPsn[q]));
++static int ncclIbFrInjectCount = 0;  // NCCL_RDMA_FAULT_INJECT: signaled multi-sends seen (process-wide)
++static int ncclIbFrInjectFired = 0;  // inject at most once per process
++
++static uint64_t ncclIbFrMs(int64_t ms) { return (uint64_t)(ms > 0 ? ms : 1) * 1000000ULL; }
++
++// Fresh random 24-bit PSN (non-zero), so stale packets of the old incarnation are
++// very unlikely (~2^-24) to land on the expected PSN of the new one.
++static uint32_t ncclIbFrFreshPsn(uint32_t salt) {
++  uint64_t x = 0;
++  if (getRandomData(&x, sizeof(x)) != ncclSuccess) x = clockNano();
++  x ^= ((uint64_t)salt << 32) ^ clockNano();
++  x += 0x9e3779b97f4a7c15ULL;
++  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
++  x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
++  x ^= x >> 31;
++  uint32_t psn = (uint32_t)(x & 0xFFFFFFu);
++  return psn ? psn : 1;
++}
++
++static int ncclIbFrOutstanding(struct ncclIbRequest* r) {
++  return r->type != NCCL_NET_IB_REQ_UNUSED && (r->events[0] != 0 || r->events[1] != 0);
++}
++
++static int ncclIbFrFatal(struct ncclIbNetCommBase* base) {
++  if (__atomic_load_n(&base->stats.fatalErrorCount, __ATOMIC_RELAXED)) return 1;
++  for (int i = 0; i < base->ndevs; i++) {
++    struct ncclIbNetCommDevBase* db = ncclIbGetNetCommDevBase(base, i);
++    if (__atomic_load_n(&ncclIbDevs[db->ibDevN].stats.fatalErrorCount, __ATOMIC_RELAXED)) return 1;
 +  }
-+  return ncclSuccess;
++  return 0;
 +}
 +
-+// INITIATOR (send side): reset -> send REQ{myPsn} -> recv ACK{peerPsn} -> RTR/RTS.
-+// Any socket failure (dead peer) surfaces here => caller fails cleanly.
-+static ncclResult_t ncclIbRecoverInitiate(struct ncclIbNetCommBase* base, int attempt) {
-+  uint32_t myPsn[NCCL_IB_MAX_QPS]; memset(myPsn, 0, sizeof(myPsn));
-+  NCCLCHECK(ncclIbResetQpsToInit(base, myPsn, attempt));
-+  struct ncclIbRecoverMsg req; memset(&req, 0, sizeof(req));
-+  req.magic = NCCL_IB_RECOVER_MAGIC; req.nqps = base->nqps;
-+  for (int q = 0; q < base->nqps; q++) req.psn[q] = myPsn[q];
-+  NCCLCHECK(ncclSocketSend(&base->sock, &req, sizeof(req)));
-+  struct ncclIbRecoverMsg ack; memset(&ack, 0, sizeof(ack));
-+  NCCLCHECK(ncclSocketRecv(&base->sock, &ack, sizeof(ack)));
-+  if (ack.magic != NCCL_IB_RECOVER_MAGIC || ack.nqps != base->nqps) {
-+    WARN("NET/IB: [FAULT-RECOVERY] bad RECOVER_ACK (magic=0x%x nqps=%d)", ack.magic, ack.nqps);
-+    return ncclSystemError;
++// ---- non-blocking control-message I/O on base.sock --------------------------
++static void ncclIbFrTxProgress(struct ncclIbNetCommBase* base) {
++  struct ncclIbFrComm* fr = &base->fr;
++  while (fr->txOff < fr->txLen) {
++    if (fr->peerClosed || base->sock.fd < 0) { fr->txOff = fr->txLen = 0; return; }
++    ssize_t n = send(base->sock.fd, (char*)&fr->tx + fr->txOff, fr->txLen - fr->txOff, MSG_DONTWAIT | MSG_NOSIGNAL);
++    if (n > 0) { fr->txOff += (int)n; continue; }
++    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;  // retry on the next call
++    fr->peerClosed = 1; fr->txOff = fr->txLen = 0; return;
 +  }
-+  NCCLCHECK(ncclIbCompleteQps(base, myPsn, ack.psn));
-+  INFO(NCCL_NET, "NET/IB: [FAULT-RECOVERY] initiator: bilateral PSN-consistent reset complete (nqps=%d)", base->nqps);
-+  return ncclSuccess;
++  fr->txOff = fr->txLen = 0;
 +}
 +
-+// forward decl (defined below): re-post the flushed recv WQE(s) for request r.
-+static ncclResult_t ncclIbRepostRecv(struct ncclIbRecvComm* comm, struct ncclIbRequest* r);
-+
-+// RESPONDER (recv side): given an already-read REQ, reset -> RTR/RTS(using peer's
-+// PSNs) -> re-post recv WQE -> send ACK{myPsn}. The recv WQE is re-posted BEFORE
-+// the ACK so the initiator's replayed WRITE (sent only after it sees our ACK)
-+// always finds a posted receive (closes the RNR window).
-+static ncclResult_t ncclIbRecoverRespond(struct ncclIbRecvComm* comm, struct ncclIbRequest* r,
-+                                         struct ncclIbRecoverMsg* reqMsg, int attempt) {
-+  struct ncclIbNetCommBase* base = &comm->base;
-+  uint32_t myPsn[NCCL_IB_MAX_QPS]; memset(myPsn, 0, sizeof(myPsn));
-+  NCCLCHECK(ncclIbResetQpsToInit(base, myPsn, attempt));
-+  NCCLCHECK(ncclIbCompleteQps(base, myPsn, reqMsg->psn));
-+  NCCLCHECK(ncclIbRepostRecv(comm, r));
-+  struct ncclIbRecoverMsg ack; memset(&ack, 0, sizeof(ack));
-+  ack.magic = NCCL_IB_RECOVER_MAGIC; ack.nqps = base->nqps;
-+  for (int q = 0; q < base->nqps; q++) ack.psn[q] = myPsn[q];
-+  NCCLCHECK(ncclSocketSend(&base->sock, &ack, sizeof(ack)));
-+  INFO(NCCL_NET, "NET/IB: [FAULT-RECOVERY] responder: bilateral PSN-consistent reset + recv repost + ACK done (nqps=%d)", base->nqps);
-+  return ncclSuccess;
++// One message in flight per direction at a time: every message is a reply to, or
++// the terminal step of, the previous one. A new message replaces an unsent one
++// only if nothing of it went out yet.
++static void ncclIbFrSend(struct ncclIbNetCommBase* base, uint32_t type, uint32_t seq, uint64_t fifoIdx, uint32_t psn, int32_t size, uint32_t reason) {
++  struct ncclIbFrComm* fr = &base->fr;
++  ncclIbFrTxProgress(base);
++  if (fr->txOff != 0 && fr->txOff < fr->txLen) return;  // partially sent: cannot interleave; the peer's deadline covers it
++  memset(&fr->tx, 0, sizeof(fr->tx));
++  fr->tx.magic = NCCL_IB_FR_MAGIC; fr->tx.type = type; fr->tx.seq = seq; fr->tx.nqps = base->nqps;
++  fr->tx.fifoIdx = fifoIdx; fr->tx.psn = psn; fr->tx.size = size; fr->tx.reason = reason;
++  fr->txOff = 0; fr->txLen = sizeof(fr->tx);
++  ncclIbFrTxProgress(base);
 +}
 +
-+// Responder that reached the ERROR branch (its own QP flushed): bounded wait for
-+// the initiator's REQ on base.sock, then respond. Used only in symmetric faults;
-+// the common transient case is handled by the non-blocking peek in ncclIbTest.
-+static ncclResult_t ncclIbRecoverRespondWait(struct ncclIbRecvComm* comm, struct ncclIbRequest* r, int attempt) {
-+  struct ncclIbRecoverMsg reqMsg; int closed = 0;
-+  for (int spins = 0; spins < 100000; spins++) {
-+    ncclResult_t pr = ncclSocketTryRecv(&comm->base.sock, &reqMsg, sizeof(reqMsg), &closed, false);
-+    if (closed) { WARN("NET/IB: [FAULT-RECOVERY] responder-wait: peer socket closed"); return ncclRemoteError; }
-+    if (pr == ncclSuccess) {
-+      if (reqMsg.magic != NCCL_IB_RECOVER_MAGIC) return ncclSystemError;
-+      return ncclIbRecoverRespond(comm, r, &reqMsg, attempt);
++// Returns 1 when a complete message is available in fr->rx.
++static int ncclIbFrRxProgress(struct ncclIbNetCommBase* base) {
++  struct ncclIbFrComm* fr = &base->fr;
++  if (fr->peerClosed || base->sock.fd < 0) return 0;
++  while (fr->rxOff < (int)sizeof(fr->rx)) {
++    ssize_t n = recv(base->sock.fd, (char*)&fr->rx + fr->rxOff, sizeof(fr->rx) - fr->rxOff, MSG_DONTWAIT);
++    if (n > 0) { fr->rxOff += (int)n; continue; }
++    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
++    fr->peerClosed = 1;  // 0 = FIN, <0 = RST/other
++    return 0;
++  }
++  fr->rxOff = 0;
++  return 1;
++}
++
++// Latch the comm as failed (sticky). A pending REQ is answered with a NACK; otherwise
++// the peer is told with FAIL (best effort) so it fails promptly instead of waiting.
++static void ncclIbFrFail(struct ncclIbNetCommBase* base, uint32_t reason, int notifyPeer) {
++  struct ncclIbFrComm* fr = &base->fr;
++  if (fr->state == ncclIbFrFailed) return;
++  if (!base->isSend && fr->state == ncclIbFrRespPending) ncclIbFrSend(base, ncclIbFrMsgNack, fr->seq, 0, 0, 0, reason);
++  else if (notifyPeer) ncclIbFrSend(base, ncclIbFrMsgFail, fr->seq, 0, 0, 0, reason);
++  fr->state = ncclIbFrFailed;
++  WARN("NET/IB: [FAULT-RECOVERY] %s comm latched FAILED (%s): this and every later operation on it returns the stock error",
++       base->isSend ? "send" : "recv", ncclIbFrReasonStr(reason));
++}
++
++// ---- CQE handling -----------------------------------------------------------
++// Same message as the stock failed-completion WARN in ncclIbTest.
++static void ncclIbFrLogWc(struct ncclIbNetCommBase* base, struct ibv_wc* wc, int i) {
++  union ncclSocketAddress addr;
++  ncclSocketGetAddr(&base->sock, &addr);
++  struct ncclIbNetCommDevBase* db = ncclIbGetNetCommDevBase(base, i);
++  char localGidString[INET6_ADDRSTRLEN] = "";
++  char remoteGidString[INET6_ADDRSTRLEN] = "";
++  const char* localGidStr = NULL, *remoteGidStr = NULL;
++  if (db->gidInfo.link_layer == IBV_LINK_LAYER_ETHERNET) {
++    localGidStr = inet_ntop(AF_INET6, &db->gidInfo.localGid, localGidString, sizeof(localGidString));
++    remoteGidStr = inet_ntop(AF_INET6, &base->remDevs[i].remoteGid, remoteGidString, sizeof(remoteGidString));
++  }
++  char line[SOCKET_NAME_MAXLEN+1];
++  int t = base->reqs[wc->wr_id & 0xff].type;
++  WARN("NET/IB: Got completion from peer %s with status=%d opcode=%d len=%d vendor err %d (%s)%s%s%s%s hca %s",
++      ncclSocketToString(&addr, line), wc->status, wc->opcode, wc->byte_len, wc->vendor_err,
++      (t >= NCCL_NET_IB_REQ_UNUSED && t <= NCCL_NET_IB_REQ_FLUSH) ? reqTypeStr[t] : "?",
++      localGidStr ?  " localGid ":"", localGidString, remoteGidStr ? " remoteGids":"", remoteGidString, db->pd->context->device->name);
++}
++
++// A SUCCESS completion, consumed exactly like the stock loop in ncclIbTest does:
++// wr_id low byte = request index; a multi-send packs one request index per byte.
++static ncclResult_t ncclIbFrCompleteWc(struct ncclIbNetCommBase* base, struct ibv_wc* wc, int i) {
++  struct ncclIbRequest* req = base->reqs + (wc->wr_id & 0xff);
++  if (req->type == NCCL_NET_IB_REQ_SEND) {
++    for (int j = 0; j < req->nreqs; j++) {
++      struct ncclIbRequest* sendReq = base->reqs + ((wc->wr_id >> (j*8)) & 0xff);
++      if ((sendReq->events[i] <= 0)) {
++        WARN("NET/IB: sendReq(%p)->events={%d,%d}, i=%d, j=%d <= 0", sendReq, sendReq->events[0], sendReq->events[1], i, j);
++        return ncclInternalError;
++      }
++      sendReq->events[i]--;
 +    }
-+    if (pr != ncclInProgress) return pr;   // real socket error
++  } else {
++    if (wc->opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
++      if (req->type != NCCL_NET_IB_REQ_RECV) {
++        WARN("NET/IB: wc->opcode == IBV_WC_RECV_RDMA_WITH_IMM and req->type=%d", req->type);
++        return ncclInternalError;
++      }
++      if (req->nreqs == 1) {
++        req->recv.sizes[0] = wc->imm_data;
++      }
++      req->recv.arrived = 1;
++    }
++    req->events[i]--;
 +  }
-+  WARN("NET/IB: [FAULT-RECOVERY] responder-wait: timed out waiting for RECOVER_REQ");
-+  return ncclSystemError;
++  return ncclSuccess;
 +}
 +
-+// [phase 2] Replay a flushed single-request send: re-post a signaled
-+// RDMA_WRITE_WITH_IMM (idempotent) with the saved remote addr/rkey on QP 0, and
-+// reset the request's event count to the single completion this will produce.
-+static ncclResult_t ncclIbReplaySend(struct ncclIbSendComm* comm, struct ncclIbRequest* r) {
-+  if (!r->send.recoverable) { WARN("NET/IB: [FAULT-RECOVERY] send not replayable (nreqs>1)"); return ncclSystemError; }
-+  struct ncclIbQp* qp = comm->base.qps + 0;
++// An error completion: remembered (the first one is logged like stock), never
++// returned immediately, so the rest of the batch is still consumed.
++static void ncclIbFrNoteErrorWc(struct ncclIbNetCommBase* base, struct ibv_wc* wc, int i) {
++  struct ncclIbFrComm* fr = &base->fr;
++  if (fr->errCount == 0) {
++    ncclIbFrLogWc(base, wc, i);
++    fr->errStatus = wc->status; fr->errVendor = wc->vendor_err; fr->errWrId = wc->wr_id;
++    fr->errQpNum = wc->qp_num; fr->errDev = i; fr->errForeign = 0;
++  } else if ((wc->wr_id & 0xff) != (fr->errWrId & 0xff) || wc->qp_num != fr->errQpNum) {
++    fr->errForeign = 1;  // error CQE of another request or another QP
++  }
++  fr->errCount++;
++}
++
++// Poll every CQ of the comm until empty (non-blocking) and consume each CQE as
++// ncclIbTest would (successes complete their requests, errors are recorded).
++static ncclResult_t ncclIbFrDrainAll(struct ncclIbNetCommBase* base) {
++  for (int i = 0; i < base->ndevs; i++) {
++    struct ibv_cq* cq = ncclIbGetNetCommDevBase(base, i)->cq;
++    for (int guard = 0; guard < 4*MAX_REQUESTS; guard++) {
++      struct ibv_wc wcs[4];
++      int n = 0;
++      NCCLCHECK(wrap_ibv_poll_cq(cq, 4, wcs, &n));
++      if (n == 0) break;
++      for (int w = 0; w < n; w++) {
++        if (wcs[w].status == IBV_WC_SUCCESS) NCCLCHECK(ncclIbFrCompleteWc(base, wcs+w, i));
++        else ncclIbFrNoteErrorWc(base, wcs+w, i);
++      }
++    }
++  }
++  return ncclSuccess;
++}
++
++// Consume the CQ(s) while/after QP qpNum is moved to ERR/RESET.
++//  - CQEs of other QPs of the comm (the recv comm's GPU-flush QP): as ncclIbTest.
++//  - CQEs of qpNum that belong to request recIdx (the one being recovered) are from
++//    the old incarnation and are dropped: its completion is re-created by the
++//    re-post + replay. For the responder, *rqDone/*rqArrived report whether that
++//    receive's WQE terminated (success = data had landed; the replay rewrites the
++//    same bytes).
++//  - A SUCCESS CQE of any other request is consumed normally (never dropped);
++//    a flushed unsignaled CTS write of a completed receive is dropped (it had been
++//    delivered); anything else means the quiescence precondition was violated.
++static ncclResult_t ncclIbFrDrainOldQp(struct ncclIbNetCommBase* base, uint32_t qpNum, int recIdx, int* rqDone, int* rqArrived) {
++  for (int i = 0; i < base->ndevs; i++) {
++    struct ibv_cq* cq = ncclIbGetNetCommDevBase(base, i)->cq;
++    for (int guard = 0; guard < 4*MAX_REQUESTS; guard++) {
++      struct ibv_wc wcs[4];
++      int n = 0;
++      NCCLCHECK(wrap_ibv_poll_cq(cq, 4, wcs, &n));
++      if (n == 0) break;
++      for (int w = 0; w < n; w++) {
++        struct ibv_wc* wc = wcs + w;
++        if (wc->qp_num != qpNum) {
++          if (wc->status == IBV_WC_SUCCESS) { NCCLCHECK(ncclIbFrCompleteWc(base, wc, i)); continue; }
++          ncclIbFrLogWc(base, wc, i);
++          return ncclRemoteError;
++        }
++        uint64_t tag = wc->wr_id & ~0xffULL;
++        int idx = (int)(wc->wr_id & 0xff);
++        struct ncclIbRequest* req = base->reqs + idx;
++        if (idx == recIdx) {
++          if (!base->isSend && tag == NCCL_IB_FR_WRID_RQ) {
++            *rqDone = 1;
++            if (wc->status == IBV_WC_SUCCESS) *rqArrived = 1;
++          }
++          continue;
++        }
++        if (wc->status == IBV_WC_SUCCESS) {
++          if (!ncclIbFrOutstanding(req)) {
++            WARN("NET/IB: [FAULT-RECOVERY] success CQE for a request with no outstanding completion (idx %d wr_id 0x%lx)", idx, (unsigned long)wc->wr_id);
++            return ncclInternalError;
++          }
++          NCCLCHECK(ncclIbFrCompleteWc(base, wc, i));
++          continue;
++        }
++        if (!base->isSend && tag == NCCL_IB_FR_WRID_CTS && !ncclIbFrOutstanding(req)) continue;
++        WARN("NET/IB: [FAULT-RECOVERY] flushed WR of another in-flight request on the reset QP (idx %d wr_id 0x%lx status %d)",
++             idx, (unsigned long)wc->wr_id, wc->status);
++        return ncclInternalError;
++      }
++    }
++  }
++  return ncclSuccess;
++}
++
++static ncclResult_t ncclIbFrModifyState(struct ibv_qp* qp, enum ibv_qp_state s) {
++  struct ibv_qp_attr a;
++  memset(&a, 0, sizeof(a));
++  a.qp_state = s;
++  NCCLCHECK(wrap_ibv_modify_qp(qp, &a, IBV_QP_STATE));
++  return ncclSuccess;
++}
++
++// RESET -> INIT -> RTR -> RTS with the connect-time attributes: the same pkey/port/
++// access flags as ncclIbCreateQp, ibv_set_ece with the same ECE if it was applied
++// before RTR at connect time, the same remote QPN / remote dev info / override_tc
++// as ncclIbConnect/ncclIbAccept; only the PSNs differ (exchanged in the handshake).
++static ncclResult_t ncclIbFrBringUp(struct ncclIbNetCommBase* base, struct ncclIbQp* qp, uint32_t rqPsn, uint32_t sqPsn) {
++  struct ncclIbNetCommDevBase* db = ncclIbGetNetCommDevBase(base, qp->devIndex);
++  struct ibv_qp_attr a;
++  memset(&a, 0, sizeof(a));
++  a.qp_state = IBV_QPS_INIT;
++  a.pkey_index = ncclParamIbPkey();
++  a.port_num = ncclIbDevs[db->ibDevN].portNum;
++  a.qp_access_flags = qp->accessFlags;
++  NCCLCHECK(wrap_ibv_modify_qp(qp->qp, &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS));
++  if (qp->eceSet) {
++    struct ibv_ece ece = qp->ece;
++    int supported = 1;
++    NCCLCHECK(wrap_ibv_set_ece(qp->qp, &ece, &supported));
++  }
++  NCCLCHECK(ncclIbRtrQp(qp->qp, &db->gidInfo, qp->remQpn, base->remDevs + qp->remDevIdx, qp->overrideTc ? true : false, rqPsn));
++  NCCLCHECK(ncclIbRtsQp(qp->qp, sqPsn));
++  return ncclSuccess;
++}
++
++// Re-post the failed single-request send with the same WR shape ncclIbMultiSend
++// uses for nreqs == 1 on one QP (optional AR split into RDMA_WRITE + 0-byte
++// WRITE_WITH_IMM), to the snapshotted CTS destination.
++static ncclResult_t ncclIbFrReplaySend(struct ncclIbSendComm* comm, struct ncclIbRequest* r) {
++  struct ncclIbQp* qp = comm->base.qps;
 +  int devIndex = qp->devIndex;
-+  struct ibv_sge sge; memset(&sge, 0, sizeof(sge));
-+  struct ibv_send_wr wr; memset(&wr, 0, sizeof(wr));
-+  sge.addr = (uintptr_t)r->send.data; sge.length = r->send.size; sge.lkey = r->send.lkeys[devIndex];
-+  wr.wr_id = (uint64_t)(r - comm->base.reqs);
-+  wr.sg_list = r->send.size ? &sge : NULL;
-+  wr.num_sge = r->send.size ? 1 : 0;
-+  wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-+  wr.imm_data = r->send.size;
-+  wr.wr.rdma.remote_addr = r->send.remoteAddr;
-+  wr.wr.rdma.rkey = r->send.rkeys[qp->remDevIdx];
-+  wr.send_flags = IBV_SEND_SIGNALED;
-+  wr.next = NULL;
-+  r->events[0] = r->events[1] = 0;
-+  r->send.offset = 0;
-+  struct ibv_send_wr* bad;
-+  NCCLCHECK(wrap_ibv_post_send(qp->qp, &wr, &bad));
-+  ncclIbAddEvent(r, devIndex, &comm->devs[devIndex].base);
-+  INFO(NCCL_NET, "NET/IB: [FAULT-RECOVERY] replayed WRITE_WITH_IMM size=%d -> remoteAddr=0x%lx rkey=0x%x",
-+       r->send.size, (unsigned long)r->send.remoteAddr, wr.wr.rdma.rkey);
-+  return ncclSuccess;
-+}
-+
-+// [phase 2] Re-post the flushed recv WQE(s) for request r on its QP(s), resetting
-+// its event count to the completions the replayed WRITE_WITH_IMM will produce.
-+static ncclResult_t ncclIbRepostRecv(struct ncclIbRecvComm* comm, struct ncclIbRequest* r) {
-+  struct ibv_recv_wr wr; memset(&wr, 0, sizeof(wr));
-+  wr.wr_id = (uint64_t)(r - comm->base.reqs); wr.sg_list = NULL; wr.num_sge = 0;
-+  const int nqps = ncclParamIbSplitDataOnQps() ? comm->base.nqps : comm->base.ndevs;
-+  r->events[0] = r->events[1] = 0;
-+  int qpIndex = comm->base.qpIndex;
-+  for (int i = 0; i < nqps; i++) {
-+    struct ncclIbQp* qp = comm->base.qps + qpIndex;
-+    struct ibv_recv_wr* bad;
-+    NCCLCHECK(wrap_ibv_post_recv(qp->qp, &wr, &bad));
-+    ncclIbAddEvent(r, qp->devIndex, &comm->devs[qp->devIndex].base);
-+    qpIndex = (qpIndex + 1) % comm->base.nqps;
++  uint64_t idx = (uint64_t)(r - comm->base.reqs);
++  struct ibv_sge sge;
++  struct ibv_send_wr wrs[2];
++  memset(&sge, 0, sizeof(sge));
++  memset(wrs, 0, sizeof(wrs));
++  sge.addr = (uintptr_t)r->send.data;
++  sge.length = r->send.size;
++  sge.lkey = r->send.lkeys[devIndex];
++  wrs[0].opcode = IBV_WR_RDMA_WRITE;
++  wrs[0].wr.rdma.remote_addr = r->send.remoteAddr;
++  wrs[0].wr.rdma.rkey = r->send.rkeys[qp->remDevIdx];
++  if (r->send.size > 0) { wrs[0].sg_list = &sge; wrs[0].num_sge = 1; }
++  struct ibv_send_wr* lastWr = wrs;
++  if (comm->ar && r->send.size > ncclParamIbArThreshold()) {
++    wrs[0].wr_id = NCCL_IB_FR_WRID_BODY | idx;
++    wrs[0].next = wrs + 1;
++    lastWr = wrs + 1;  // 0-byte, remote_addr/rkey 0, exactly as stock
 +  }
-+  INFO(NCCL_NET, "NET/IB: [FAULT-RECOVERY] reposted recv WQE (wr_id=%ld)", (long)(r - comm->base.reqs));
++  lastWr->wr_id = idx;
++  lastWr->opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
++  lastWr->imm_data = r->send.size;
++  lastWr->send_flags = IBV_SEND_SIGNALED;
++  lastWr->next = NULL;
++  r->events[0] = r->events[1] = 0;
++  ncclIbAddEvent(r, devIndex, &comm->devs[devIndex].base);
++  r->frReplays++;
++  struct ibv_send_wr* bad;
++  NCCLCHECK(wrap_ibv_post_send(qp->qp, wrs, &bad));
 +  return ncclSuccess;
 +}
 +
- ncclResult_t ncclIbListen(int dev, void* opaqueHandle, void** listenComm) {
-   ncclResult_t ret = ncclSuccess;
-   struct ncclIbListenComm* comm;
-@@ -1327,8 +1614,9 @@ ib_connect:
-     if (remQpInfo->ece_supported)
-       NCCLCHECKGOTO(wrap_ibv_set_ece(qp, &remQpInfo->ece, &remQpInfo->ece_supported), ret, fail);
++// ---- initiator (send comm) --------------------------------------------------
++// Validates condition 3 for the initiator. Returns the failed request's index, or -1
++// with *why/*reason set.
++static int ncclIbFrFailedSend(struct ncclIbNetCommBase* base, const char** why, uint32_t* reason) {
++  struct ncclIbFrComm* fr = &base->fr;
++  uint64_t id = fr->errWrId;
++  int idx = (int)(id & 0xff);
++  struct ncclIbRequest* f = base->reqs + idx;
++  if (fr->errForeign) { *why = "error CQEs of more than one request/QP"; *reason = 1; return -1; }
++  if (f->type != NCCL_NET_IB_REQ_SEND || !ncclIbFrOutstanding(f)) { *why = "failed wr_id does not decode to an outstanding send"; *reason = 10; return -1; }
++  if (f->nreqs != 1) { *why = "failed send is a multi-send (nreqs > 1)"; *reason = 4; return -1; }
++  if ((id & ~0xffULL) != 0 && (id & ~0xffULL) != NCCL_IB_FR_WRID_BODY) { *why = "unexpected wr_id encoding"; *reason = 10; return -1; }
++  if (f->frReplays >= NCCL_IB_FR_MAX_REPLAYS) { *why = "this request was already replayed once"; *reason = 13; return -1; }
++  if (f->send.remoteAddr == 0) { *why = "no CTS snapshot for the failed send"; *reason = 10; return -1; }
++  for (int i = 0; i < MAX_REQUESTS; i++) {
++    if (i != idx && ncclIbFrOutstanding(base->reqs + i)) { *why = "other send requests in flight (not quiescent)"; *reason = 1; return -1; }
++  }
++  return idx;
++}
++
++// Called by ncclIbTest after a poll batch that contained error CQE(s). Returns
++// ncclSuccess (caller reports not-done) when a handshake was started, otherwise
++// latches the comm FAILED and returns the stock error.
++static ncclResult_t ncclIbFrOnLocalError(struct ncclIbNetCommBase* base) {
++  struct ncclIbFrComm* fr = &base->fr;
++  ncclResult_t dr = ncclIbFrDrainAll(base);  // consume the rest of the batch first
++  struct ncclIbFaultInfo fi = ncclIbFrClassify(fr->errStatus, fr->errVendor);
++  int live = ncclIbFrLiveness(base);
++  WARN("NET/IB: [FAULT-RECOVERY] status=%d(%s) vendor_err=0x%x cause='%s' action='%s' recoverable=%d role=%s liveness=%s errCQEs=%d",
++       fr->errStatus, ncclIbFrStatusStr(fr->errStatus), fr->errVendor, fi.cause, fi.action, fi.recoverable,
++       base->isSend ? "INITIATOR" : "RESPONDER", ncclIbFrLiveStr(live), fr->errCount);
++  if (fr->errStatus == IBV_WC_RETRY_EXC_ERR) {
++    WARN("NET/IB: [FAULT-RECOVERY] 0x81 sub-cause: %s",
++         live == ncclIbFrLiveFin ? "proc_kill: peer process closed its OOB socket (FIN)" :
++         live == ncclIbFrLiveRst ? "peer process/host gone: OOB socket reset or TCP error" :
++         live == ncclIbFrLiveNoEvidence ? "server_qp_err or path problem: no FIN/RST on the OOB socket (a host death without FIN/RST is not detectable until TCP times out)" :
++         "undetermined (socket state unknown)");
++  }
++  const char* why = NULL;
++  uint32_t reason = 15;
++  int f = -1;
++  if (dr != ncclSuccess) { why = "CQ poll failed"; reason = 10; }
++  else if (fr->state != ncclIbFrIdle) { why = "error during a recovery in progress"; reason = 8; }
++  else if (!base->isSend) { why = "error on the recv comm (the responder never initiates)"; }
++  else if (!fi.recoverable) { why = "fault class is not recoverable"; }
++  else if (live != ncclIbFrLiveNoEvidence) { why = "peer OOB socket closed/reset/unusable"; }
++  else if (base->ndevs != 1 || base->nqps != 1) { why = "multi-NIC / multi-QP comm"; reason = 4; }
++  else if (fr->attempts >= NCCL_IB_FR_MAX_ATTEMPTS) { why = "per-comm attempt cap reached"; }
++  else if (ncclIbFrFatal(base)) { why = "async fatal event on comm/device"; reason = 5; }
++  else f = ncclIbFrFailedSend(base, &why, &reason);
++  fr->errCount = 0;
++  if (why) {
++    WARN("NET/IB: [FAULT-RECOVERY] recovery declined: %s -> stock error", why);
++    ncclIbFrFail(base, reason, 1);
++    return ncclRemoteError;
++  }
++  struct ncclIbRequest* fr_req = base->reqs + f;
++  fr->attempts++;
++  fr->seq++;
++  fr->reqIdx = f;
++  fr->myPsn = ncclIbFrFreshPsn(base->qps[0].qp->qp_num);
++  fr->deadline = clockNano() + ncclIbFrMs(ncclParamRdmaFaultHandshakeMs());
++  fr->state = ncclIbFrInitWait;
++  ncclIbFrSend(base, ncclIbFrMsgReq, fr->seq, fr_req->send.fifoIdx, fr->myPsn, fr_req->send.size, 0);
++  WARN("NET/IB: [FAULT-RECOVERY] initiator: quiescent single send (req %d, fifoIdx %lu, size %d) -> RECOVER_REQ seq %u sent (attempt %d/%d); QP left in ERR until ACK, deadline %ld ms",
++       f, (unsigned long)fr_req->send.fifoIdx, fr_req->send.size, fr->seq, fr->attempts, NCCL_IB_FR_MAX_ATTEMPTS, (long)ncclParamRdmaFaultHandshakeMs());
++  return ncclSuccess;
++}
++
++// ACK received: reset our QP, bring it up with the responder's PSN, replay.
++static ncclResult_t ncclIbFrInitiatorComplete(struct ncclIbNetCommBase* base, uint32_t peerPsn) {
++  struct ncclIbFrComm* fr = &base->fr;
++  struct ncclIbRequest* f = base->reqs + fr->reqIdx;
++  if (f->type != NCCL_NET_IB_REQ_SEND || !ncclIbFrOutstanding(f) || ncclIbFrFatal(base)) return ncclInternalError;
++  struct ncclIbQp* qp = base->qps;
++  uint32_t qpn = qp->qp->qp_num;
++  int rqDone = 0, rqArrived = 0;
++  NCCLCHECK(ncclIbFrModifyState(qp->qp, IBV_QPS_RESET));
++  NCCLCHECK(ncclIbFrDrainOldQp(base, qpn, fr->reqIdx, &rqDone, &rqArrived));
++  NCCLCHECK(ncclIbFrBringUp(base, qp, peerPsn, fr->myPsn));
++  NCCLCHECK(ncclIbFrReplaySend((struct ncclIbSendComm*)base, f));
++  return ncclSuccess;
++}
++
++// Drives the initiator while it waits for the responder. *proceed = 1 once
++// recovered (the caller then polls normally for the replay's completion).
++static ncclResult_t ncclIbFrInitiatorStep(struct ncclIbNetCommBase* base, int* proceed) {
++  struct ncclIbFrComm* fr = &base->fr;
++  *proceed = 0;
++  ncclIbFrTxProgress(base);
++  // Deadline and async-fatal state are checked BEFORE acting on a buffered reply: a
++  // late ACK is never used (the responder's DONE deadline is 2x ours, see below).
++  if (clockNano() > fr->deadline) {
++    WARN("NET/IB: [FAULT-RECOVERY] initiator: no ACK/NACK within %ld ms (NCCL_RDMA_FAULT_HANDSHAKE_MS) -> stock error", (long)ncclParamRdmaFaultHandshakeMs());
++    ncclIbFrFail(base, 9, 1);
++    return ncclRemoteError;
++  }
++  if (ncclIbFrFatal(base)) {
++    WARN("NET/IB: [FAULT-RECOVERY] initiator: async fatal event during the handshake -> stock error");
++    ncclIbFrFail(base, 5, 1);
++    return ncclRemoteError;
++  }
++  if (ncclIbFrRxProgress(base)) {
++    struct ncclIbFrMsg* m = &fr->rx;
++    if (m->magic != NCCL_IB_FR_MAGIC) {
++      WARN("NET/IB: [FAULT-RECOVERY] initiator: bad message magic 0x%x (stream desynchronized)", m->magic);
++      ncclIbFrFail(base, 10, 0);
++      fr->peerClosed = 1;
++      return ncclRemoteError;
++    }
++    if (m->type == ncclIbFrMsgFail) { WARN("NET/IB: [FAULT-RECOVERY] initiator: peer reported failure (%s)", ncclIbFrReasonStr(m->reason)); ncclIbFrFail(base, 11, 0); return ncclRemoteError; }
++    if (m->seq != fr->seq) { WARN("NET/IB: [FAULT-RECOVERY] initiator: reply seq %u != %u", m->seq, fr->seq); ncclIbFrFail(base, 10, 1); return ncclRemoteError; }
++    if (m->type == ncclIbFrMsgNack) {
++      WARN("NET/IB: [FAULT-RECOVERY] initiator: responder NACK (%s): nothing was reset on either side -> stock error", ncclIbFrReasonStr(m->reason));
++      ncclIbFrFail(base, m->reason, 0);
++      return ncclRemoteError;
++    }
++    if (m->type != ncclIbFrMsgAck || m->nqps != 1 || m->fifoIdx != base->reqs[fr->reqIdx].send.fifoIdx) {
++      WARN("NET/IB: [FAULT-RECOVERY] initiator: unexpected reply type %u nqps %u fifoIdx %lu", m->type, m->nqps, (unsigned long)m->fifoIdx);
++      ncclIbFrFail(base, 10, 1);
++      return ncclRemoteError;
++    }
++    ncclResult_t rr = ncclIbFrInitiatorComplete(base, m->psn);
++    if (rr != ncclSuccess) {
++      WARN("NET/IB: [FAULT-RECOVERY] initiator: QP reset/replay failed (rc=%d) after ACK", rr);
++      ncclIbFrFail(base, 12, 1);
++      return ncclRemoteError;
++    }
++    ncclIbFrSend(base, ncclIbFrMsgDone, fr->seq, 0, 0, 0, 0);
++    fr->state = ncclIbFrIdle;
++    struct ncclIbRequest* f = base->reqs + fr->reqIdx;
++    WARN("NET/IB: [FAULT-RECOVERY] initiator: recovered (seq %u): QP re-driven RESET->INIT->RTR(rq_psn=0x%x)->RTS(sq_psn=0x%x) with connect-time attributes; replayed WRITE_WITH_IMM size=%d -> remoteAddr=0x%lx",
++         fr->seq, m->psn, fr->myPsn, f->send.size, (unsigned long)f->send.remoteAddr);
++    *proceed = 1;
++    return ncclSuccess;
++  }
++  if (fr->peerClosed) { WARN("NET/IB: [FAULT-RECOVERY] initiator: peer socket closed during handshake"); ncclIbFrFail(base, 10, 0); return ncclRemoteError; }
++  return ncclSuccess;
++}
++
++// Send comm outside a handshake: keep flushing a pending DONE/FAIL and watch for a FAIL
++// from the responder (e.g. it timed out waiting for DONE), so both sides always latch
++// together. Any other message here is a protocol error.
++static void ncclIbFrInitiatorIdle(struct ncclIbNetCommBase* base) {
++  struct ncclIbFrComm* fr = &base->fr;
++  ncclIbFrTxProgress(base);
++  if (!ncclIbFrRxProgress(base)) return;
++  struct ncclIbFrMsg* m = &fr->rx;
++  if (m->magic == NCCL_IB_FR_MAGIC && m->type == ncclIbFrMsgFail) {
++    WARN("NET/IB: [FAULT-RECOVERY] initiator: peer reported failure (%s)", ncclIbFrReasonStr(m->reason));
++    ncclIbFrFail(base, 11, 0);
++  } else {
++    WARN("NET/IB: [FAULT-RECOVERY] initiator: unexpected message (magic 0x%x type %u) while idle", m->magic, m->type);
++    ncclIbFrFail(base, 10, 0);
++    fr->peerClosed = 1;  // stream no longer trusted
++  }
++}
++
++// ---- responder (recv comm) --------------------------------------------------
++// Reset the recv comm's QP and re-post exactly receive ridx (see the protocol above).
++static ncclResult_t ncclIbFrResponderReset(struct ncclIbNetCommBase* base, int ridx, int* arrivedBeforeReset) {
++  struct ncclIbFrComm* fr = &base->fr;
++  struct ncclIbRequest* r = base->reqs + ridx;
++  struct ncclIbQp* qp = base->qps;
++  uint32_t qpn = qp->qp->qp_num;
++  int rqDone = 0, rqArrived = 0;
++  // Stop accepting packets; the HCA flushes the posted WQEs.
++  NCCLCHECK(ncclIbFrModifyState(qp->qp, IBV_QPS_ERR));
++  // Wait (bounded) until this receive's WQE terminated: RQ completions are in order,
++  // so every earlier receive completion is then in the CQ and consumed, before RESET
++  // (which on mlx5 also removes the QP's remaining CQEs from the CQ).
++  // Flush CQEs appear within microseconds; this busy-poll (it runs on the proxy thread)
++  // is capped at min(HANDSHAKE_MS/10, 100 ms).
++  uint64_t t0 = clockNano();
++  int64_t limMs = ncclParamRdmaFaultHandshakeMs() / 10;
++  uint64_t lim = ncclIbFrMs(limMs < 100 ? limMs : 100);
++  while (!rqDone) {
++    NCCLCHECK(ncclIbFrDrainOldQp(base, qpn, ridx, &rqDone, &rqArrived));
++    if (!rqDone && clockNano() - t0 > lim) {
++      WARN("NET/IB: [FAULT-RECOVERY] responder: receive WQE did not terminate within %lu ms after QP->ERR", (unsigned long)(lim/1000000));
++      return ncclSystemError;
++    }
++  }
++  NCCLCHECK(ncclIbFrModifyState(qp->qp, IBV_QPS_RESET));
++  // mlx5 already removed this QP's remaining CQEs; this catches any a provider leaves in
++  // the CQ. ridx's RQ WQE has already produced its one CQE above, so nothing the device
++  // could still write for the old QP can complete the receive re-posted below (a late
++  // CTS flush is an error CQE: dropped here, or a new fault -> latch, never a completion).
++  NCCLCHECK(ncclIbFrDrainOldQp(base, qpn, ridx, &rqDone, &rqArrived));
++  fr->myPsn = ncclIbFrFreshPsn(qpn);
++  NCCLCHECK(ncclIbFrBringUp(base, qp, fr->req.psn, fr->myPsn));
++  // Re-post exactly this receive; its only expected completion is now the replay
++  // (a signaled CTS completion it may have been waiting for was dropped above).
++  struct ibv_recv_wr wr;
++  memset(&wr, 0, sizeof(wr));
++  wr.wr_id = NCCL_IB_FR_WRID_RQ | (uint64_t)ridx;
++  wr.sg_list = NULL;
++  wr.num_sge = 0;
++  struct ibv_recv_wr* bad;
++  NCCLCHECK(wrap_ibv_post_recv(qp->qp, &wr, &bad));
++  r->events[0] = r->events[1] = 0;
++  ncclIbAddEvent(r, qp->devIndex, ncclIbGetNetCommDevBase(base, qp->devIndex));
++  r->frReplays++;
++  *arrivedBeforeReset = rqArrived;
++  return ncclSuccess;
++}
++
++// Evaluate a pending REQ (condition 3/4 for the responder); ACK or NACK it, or keep
++// it pending (bounded) while only a GPU-flush read is in flight.
++static void ncclIbFrResponderEvaluate(struct ncclIbNetCommBase* base) {
++  struct ncclIbFrComm* fr = &base->fr;
++  struct ncclIbFrMsg* q = &fr->req;
++  fr->errCount = 0;
++  ncclResult_t dr = ncclIbFrDrainAll(base);  // consume what is already in the CQ first
++  const char* why = NULL;
++  uint32_t reason = 0;
++  int ridx = -1, wait = 0;
++  if (dr != ncclSuccess || fr->errCount) { why = "responder has its own error CQE(s)"; reason = 6; }
++  else if (q->nqps != 1 || base->nqps != 1 || base->ndevs != 1) { why = "multi-QP / multi-NIC"; reason = 4; }
++  else if (ncclIbFrFatal(base)) { why = "async fatal event on comm/device"; reason = 5; }
++  else {
++    int nOther = 0, nFlush = 0;
++    for (int i = 0; i < MAX_REQUESTS; i++) {
++      struct ncclIbRequest* r = base->reqs + i;
++      if (!ncclIbFrOutstanding(r)) continue;
++      if (r->type == NCCL_NET_IB_REQ_RECV && r->recv.fifoIdx == q->fifoIdx && ridx < 0) { ridx = i; continue; }
++      if (r->type == NCCL_NET_IB_REQ_FLUSH) nFlush++; else nOther++;
++    }
++    struct ncclIbRequest* r = (ridx >= 0) ? base->reqs + ridx : NULL;
++    if (r == NULL) { why = "no outstanding receive matches the failed send"; reason = 2; }
++    else if (nOther) { why = "other requests in flight (not quiescent)"; reason = 1; }
++    else if (r->nreqs != 1) { why = "multi-recv"; reason = 4; }
++    else if (r->recv.arrived) { why = "receive data already consumed"; reason = 3; }
++    else if (q->size < 0 || q->size > r->recv.postedSize) { why = "size mismatch"; reason = 14; }
++    else if (r->frReplays >= NCCL_IB_FR_MAX_REPLAYS) { why = "receive already re-posted once"; reason = 13; }
++    else if (nFlush) wait = 1;
++  }
++  fr->errCount = 0;
++  if (!why && wait) {
++    if (clockNano() < fr->deadline) return;  // re-evaluated on the next call
++    why = "GPU-flush read still in flight at the deadline"; reason = 7;
++  }
++  if (why) {
++    WARN("NET/IB: [FAULT-RECOVERY] responder: NACK seq %u (%s); nothing reset -> stock error", q->seq, why);
++    ncclIbFrFail(base, reason, 0);  // sends the NACK (state is RespPending)
++    return;
++  }
++  int arrived = 0;
++  ncclResult_t rr = ncclIbFrResponderReset(base, ridx, &arrived);
++  if (rr != ncclSuccess) {
++    WARN("NET/IB: [FAULT-RECOVERY] responder: QP reset/re-post failed (rc=%d)", rr);
++    ncclIbFrFail(base, 8, 0);  // NACK
++    return;
++  }
++  ncclIbFrSend(base, ncclIbFrMsgAck, q->seq, q->fifoIdx, fr->myPsn, q->size, 0);
++  fr->state = ncclIbFrRespAcked;
++  fr->reqIdx = ridx;
++  fr->attempts++;
++  // 2x the initiator's deadline: the initiator acts on the ACK only before its own
++  // deadline (measured from its REQ, which precedes this ACK), so a DONE it sends always
++  // arrives before this expires unless the socket itself stalls.
++  fr->deadline = clockNano() + 2*ncclIbFrMs(ncclParamRdmaFaultHandshakeMs());
++  WARN("NET/IB: [FAULT-RECOVERY] responder: quiescent (req %d fifoIdx %lu): QP ->ERR->RESET->INIT->RTR(rq_psn=0x%x)->RTS(sq_psn=0x%x), receive re-posted%s, ACK seq %u sent",
++       ridx, (unsigned long)q->fifoIdx, q->psn, fr->myPsn, arrived ? " (data had landed before the reset; the replay rewrites the same bytes)" : "", q->seq);
++}
++
++// Socket service + state machine of a recovery-enabled recv comm. Called on every
++// ncclIbTest (any request type) and ncclIbIrecv, independently of the attempt cap.
++// Returns ncclRemoteError once the comm is latched FAILED.
++static ncclResult_t ncclIbFrResponderService(struct ncclIbNetCommBase* base) {
++  struct ncclIbFrComm* fr = &base->fr;
++  ncclIbFrTxProgress(base);
++  for (int k = 0; k < 4 && ncclIbFrRxProgress(base); k++) {
++    struct ncclIbFrMsg* m = &fr->rx;
++    if (m->magic != NCCL_IB_FR_MAGIC) {
++      WARN("NET/IB: [FAULT-RECOVERY] responder: bad message magic 0x%x (stream desynchronized; control channel abandoned)", m->magic);
++      ncclIbFrFail(base, 10, 0);
++      fr->peerClosed = 1;  // stop all further I/O on the channel
++      break;
++    }
++    if (m->type == ncclIbFrMsgReq) {
++      if (fr->state == ncclIbFrFailed) { ncclIbFrSend(base, ncclIbFrMsgNack, m->seq, 0, 0, 0, 11); continue; }
++      if (fr->state != ncclIbFrIdle) { WARN("NET/IB: [FAULT-RECOVERY] responder: REQ in state %d", fr->state); fr->seq = m->seq; ncclIbFrFail(base, 10, 1); continue; }
++      fr->req = *m;
++      fr->seq = m->seq;
++      fr->state = ncclIbFrRespPending;
++      fr->deadline = clockNano() + ncclIbFrMs(ncclParamRdmaFaultHandshakeMs() / 4);
++      WARN("NET/IB: [FAULT-RECOVERY] responder: RECOVER_REQ seq %u received (fifoIdx %lu size %d nqps %u)", m->seq, (unsigned long)m->fifoIdx, m->size, m->nqps);
++    } else if (m->type == ncclIbFrMsgDone) {
++      if (fr->state == ncclIbFrRespAcked && m->seq == fr->seq) {
++        fr->state = ncclIbFrIdle;
++        INFO(NCCL_NET, "NET/IB: [FAULT-RECOVERY] responder: DONE seq %u (initiator replayed)", m->seq);
++      } else if (fr->state != ncclIbFrFailed) {
++        WARN("NET/IB: [FAULT-RECOVERY] responder: unexpected DONE seq %u in state %d", m->seq, fr->state);
++        ncclIbFrFail(base, 10, 1);
++      }
++    } else if (m->type == ncclIbFrMsgFail) {
++      if (fr->state != ncclIbFrFailed) WARN("NET/IB: [FAULT-RECOVERY] responder: initiator reported failure (%s)", ncclIbFrReasonStr(m->reason));
++      ncclIbFrFail(base, 11, 0);
++    } else {
++      WARN("NET/IB: [FAULT-RECOVERY] responder: unexpected message type %u", m->type);
++      ncclIbFrFail(base, 10, 1);
++    }
++  }
++  if (fr->state == ncclIbFrRespPending) {
++    if (fr->peerClosed) { WARN("NET/IB: [FAULT-RECOVERY] responder: peer socket closed during handshake"); ncclIbFrFail(base, 10, 0); }
++    else ncclIbFrResponderEvaluate(base);
++  }
++  if (fr->state == ncclIbFrRespAcked) {
++    if (fr->peerClosed) { WARN("NET/IB: [FAULT-RECOVERY] responder: peer socket closed before DONE"); ncclIbFrFail(base, 10, 0); }
++    else if (clockNano() > fr->deadline) { WARN("NET/IB: [FAULT-RECOVERY] responder: no DONE within %ld ms", 2*(long)ncclParamRdmaFaultHandshakeMs()); ncclIbFrFail(base, 9, 1); }
++  }
++  return (fr->state == ncclIbFrFailed) ? ncclRemoteError : ncclSuccess;
++}
++
++// Entry point from ncclIbTest for recovery-enabled comms. *proceed = 0 means "report
++// not-done without polling" (initiator waiting for the responder).
++static ncclResult_t ncclIbFrPreTest(struct ncclIbNetCommBase* base, int* proceed) {
++  *proceed = 1;
++  if (!base->isSend) return ncclIbFrResponderService(base);
++  if (base->fr.state == ncclIbFrInitWait) NCCLCHECK(ncclIbFrInitiatorStep(base, proceed));
++  else if (base->fr.state == ncclIbFrIdle) ncclIbFrInitiatorIdle(base);
++  if (base->fr.state == ncclIbFrFailed) { ncclIbFrTxProgress(base); return ncclRemoteError; }
++  return ncclSuccess;
++}
++/* ============== end [RDMA-FAULT-RECOVERY] core ============== */
++
+ NCCL_PARAM(IbSplitDataOnQps, "IB_SPLIT_DATA_ON_QPS", 0);
  
--    NCCLCHECKGOTO(ncclIbRtrQp(qp, &commDev->base.gidInfo, remQpInfo->qpn, remDevInfo, false), ret, fail);
--    NCCLCHECKGOTO(ncclIbRtsQp(qp), ret, fail);
-+    comm->base.qps[q].remQpn = remQpInfo->qpn; // [RDMA-FAULT-RECOVERY] retain for QP re-drive
-+    NCCLCHECKGOTO(ncclIbRtrQp(qp, &commDev->base.gidInfo, remQpInfo->qpn, remDevInfo, false, 0), ret, fail);
-+    NCCLCHECKGOTO(ncclIbRtsQp(qp, 0), ret, fail);
-   }
- 
-   if (link_layer == IBV_LINK_LAYER_ETHERNET ) { // RoCE
-@@ -1472,8 +1760,9 @@ ib_recv:
-     }
- 
-     bool override_tc = (q == 0) ? true : false;
--    NCCLCHECKGOTO(ncclIbRtrQp(qp->qp, &rCommDev->base.gidInfo, remMeta.qpInfo[q].qpn, remDevInfo, override_tc), ret, fail);
--    NCCLCHECKGOTO(ncclIbRtsQp(qp->qp), ret, fail);
-+    qp->remQpn = remMeta.qpInfo[q].qpn; // [RDMA-FAULT-RECOVERY] retain for QP re-drive
-+    NCCLCHECKGOTO(ncclIbRtrQp(qp->qp, &rCommDev->base.gidInfo, remMeta.qpInfo[q].qpn, remDevInfo, override_tc, 0), ret, fail);
-+    NCCLCHECKGOTO(ncclIbRtsQp(qp->qp, 0), ret, fail);
-   }
- 
-   rComm->flushEnabled = ((ncclIbGdrSupport() == ncclSuccess || ncclIbDmaBufSupport(lComm->dev) == ncclSuccess)
-@@ -1505,8 +1794,8 @@ ib_recv:
-       devInfo.gid.global.subnet_prefix        = rCommDev->base.gidInfo.localGid.global.subnet_prefix;
-       devInfo.gid.global.interface_id         = rCommDev->base.gidInfo.localGid.global.interface_id;
-       devInfo.mtu         = ibDev->portAttr.active_mtu;
--      NCCLCHECKGOTO(ncclIbRtrQp(rCommDev->gpuFlush.qp.qp, &rCommDev->base.gidInfo, rCommDev->gpuFlush.qp.qp->qp_num, &devInfo, false), ret, fail);
--      NCCLCHECKGOTO(ncclIbRtsQp(rCommDev->gpuFlush.qp.qp), ret, fail);
-+      NCCLCHECKGOTO(ncclIbRtrQp(rCommDev->gpuFlush.qp.qp, &rCommDev->base.gidInfo, rCommDev->gpuFlush.qp.qp->qp_num, &devInfo, false, 0), ret, fail);
-+      NCCLCHECKGOTO(ncclIbRtsQp(rCommDev->gpuFlush.qp.qp, 0), ret, fail);
-     }
- 
-     // Fill Handle
-@@ -1725,6 +2014,21 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+@@ -1725,6 +2613,19 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
    int nreqs = slots[0].nreqs;
    if (nreqs > NCCL_NET_IB_MAX_RECVS) return ncclInternalError;
  
-+  // [RDMA-FAULT-RECOVERY phase 3] deterministic recoverable-flush injection: once,
-+  // on the k-th signaled multi-send, force QP0 to ERR *before* posting so this
-+  // send's WRITE(s) deterministically flush (WR_FLUSH_ERR) regardless of size,
-+  // while the peer stays alive -- exercises the Phase 1+2 recovery path.
-+  if (ncclParamRdmaFaultRecovery() && ncclParamRdmaFaultInject() > 0 && !ncclIbInjectFired) {
-+    ncclIbInjectSendCount++;
-+    if (ncclIbInjectSendCount == ncclParamRdmaFaultInject()) {
-+      ncclIbInjectFired = 1;
-+      struct ibv_qp_attr ea; memset(&ea, 0, sizeof(ea)); ea.qp_state = IBV_QPS_ERR;
-+      wrap_ibv_modify_qp(comm->base.qps[0].qp, &ea, IBV_QP_STATE);
-+      WARN("NET/IB: [FAULT-INJECT] forced QP0 (qpn=%u) to ERR before send #%d (transient recoverable flush)",
-+           comm->base.qps[0].qp->qp_num, ncclIbInjectSendCount);
++  // [RDMA-FAULT-RECOVERY] test hook NCCL_RDMA_FAULT_INJECT=k (recovery-enabled comms
++  // only): once per process, force this comm's QP 0 to ERR right before the k-th
++  // multi-send is posted, so its WRITE(s) deterministically complete with
++  // WR_FLUSH_ERR while the peer stays alive (software ERR raises no async event).
++  if (comm->base.fr.enabled && ncclParamRdmaFaultInject() > 0 && !__atomic_load_n(&ncclIbFrInjectFired, __ATOMIC_RELAXED)) {
++    int c = __atomic_add_fetch(&ncclIbFrInjectCount, 1, __ATOMIC_RELAXED);
++    if (c == ncclParamRdmaFaultInject() && !__atomic_exchange_n(&ncclIbFrInjectFired, 1, __ATOMIC_RELAXED)) {
++      ncclResult_t ir = ncclIbFrModifyState(comm->base.qps[0].qp, IBV_QPS_ERR);
++      WARN("NET/IB: [FAULT-INJECT] forced QP0 (qpn=%u) to ERR before multi-send #%d (nreqs=%d, rc=%d)",
++           comm->base.qps[0].qp->qp_num, c, nreqs, ir);
 +    }
 +  }
 +
    uint64_t wr_id = 0ULL;
    for (int r=0; r<nreqs; r++) {
      struct ibv_send_wr* wr = comm->wrs+r;
-@@ -1866,6 +2170,11 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
+@@ -1770,6 +2671,13 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+   lastWr->imm_data = immData;
+   lastWr->next = NULL;
+   lastWr->send_flags = IBV_SEND_SIGNALED;
++  if (comm->base.fr.enabled) {
++    // [RDMA-FAULT-RECOVERY] unsignaled data WRITEs (stock wr_id 0) only complete in
++    // error; tag them with their own request index so the error CQE decodes exactly.
++    for (int r=0; r<nreqs; r++) {
++      if (comm->wrs+r != lastWr) comm->wrs[r].wr_id = NCCL_IB_FR_WRID_BODY | (uint64_t)(reqs[r] - comm->base.reqs);
++    }
++  }
+ 
+   // Multi-QP: make sure IB writes are multiples of 128B so that LL and LL128 protocols still work
+   const int align = 128;
+@@ -1827,6 +2735,12 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
+   if (comm->base.ready == 0) { WARN("NET/IB: ncclIbIsend() called when comm->base.ready == 0"); return ncclInternalError; }
+   if (comm->base.ready == 0) { *request = NULL; return ncclSuccess; }
+   NCCLCHECK(ncclIbStatsCheckFatalCount(&comm->base.stats,__func__));
++  if (comm->base.fr.enabled) {
++    // [RDMA-FAULT-RECOVERY] failed comm: stock error; recovery in progress: post
++    // nothing new on the QP (the proxy retries this isend later).
++    if (comm->base.fr.state == ncclIbFrFailed) return ncclRemoteError;
++    if (comm->base.fr.state != ncclIbFrIdle) { *request = NULL; return ncclSuccess; }
++  }
+ 
+   struct ncclIbMrHandle* mhandleWrapper = (struct ncclIbMrHandle*) mhandle;
+ 
+@@ -1866,6 +2780,13 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
      req->send.size = size;
      req->send.data = data;
      req->send.offset = 0;
-+    // [RDMA-FAULT-RECOVERY] snapshot the remote destination (from the CTS FIFO)
-+    // for a possible WRITE replay; only single-request sends are replayable here.
-+    req->send.remoteAddr = slots[r].addr;
-+    for (int j = 0; j < NCCL_IB_MAX_DEVS_PER_NIC; j++) req->send.rkeys[j] = slots[r].rkeys[j];
-+    req->send.recoverable = (nreqs == 1) ? 1 : 0;
++    if (comm->base.fr.enabled) {
++      // [RDMA-FAULT-RECOVERY] snapshot the CTS destination and sequence number for a
++      // possible replay (the FIFO slot is cleared right after ncclIbMultiSend).
++      req->send.remoteAddr = slots[r].addr;
++      for (int j = 0; j < NCCL_IB_MAX_DEVS_PER_NIC; j++) req->send.rkeys[j] = slots[r].rkeys[j];
++      req->send.fifoIdx = idx;
++    }
  
      // Populate events
      int nEvents = ncclParamIbSplitDataOnQps() ? comm->base.nqps : comm->base.ndevs;
-@@ -2091,6 +2400,29 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
-       return ncclSuccess;
+@@ -1978,6 +2899,15 @@ ncclResult_t ncclIbPostFifo(struct ncclIbRecvComm* comm, int n, void** data, int
+     wr.wr_id = req - comm->base.reqs;
+     ncclIbAddEvent(req, ctsQp->devIndex, &comm->devs[ctsQp->devIndex].base);
+   }
++  if (comm->base.fr.enabled) {
++    // [RDMA-FAULT-RECOVERY] tag every CTS write (signaled or not) so an error CQE is
++    // told apart from the receive WQE's; remember the sequence number the sender will
++    // quote in a RECOVER_REQ (stock decoding reads only wr_id & 0xff).
++    wr.wr_id = NCCL_IB_FR_WRID_CTS | (uint64_t)(req - comm->base.reqs);
++    req->recv.fifoIdx = comm->remFifo.fifoTail+1;
++    req->recv.postedSize = (n == 1) ? sizes[0] : -1;
++    req->recv.arrived = 0;
++  }
+ 
+   struct ibv_send_wr* bad_wr;
+   NCCLCHECK(wrap_ibv_post_send(ctsQp->qp, &wr, &bad_wr));
+@@ -1992,6 +2922,12 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
+   if (comm->base.ready == 0) { *request = NULL; return ncclSuccess; }
+   if (n > NCCL_NET_IB_MAX_RECVS) return ncclInternalError;
+   NCCLCHECK(ncclIbStatsCheckFatalCount(&comm->base.stats,__func__));
++  if (comm->base.fr.enabled) {
++    // [RDMA-FAULT-RECOVERY] answer a peer's RECOVER_REQ even if no receive is being
++    // tested; failed comm: stock error; handshake in progress: post nothing new.
++    NCCLCHECK(ncclIbFrResponderService(&comm->base));
++    if (comm->base.fr.state != ncclIbFrIdle) { *request = NULL; return ncclSuccess; }
++  }
+ 
+   struct ncclIbRequest* req;
+   NCCLCHECK(ncclIbGetRequest(&comm->base, &req));
+@@ -2006,6 +2942,7 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
+   struct ibv_recv_wr wr;
+   memset(&wr, 0, sizeof(wr));
+   wr.wr_id = req - comm->base.reqs;
++  if (comm->base.fr.enabled) wr.wr_id |= NCCL_IB_FR_WRID_RQ; // [RDMA-FAULT-RECOVERY] see NCCL_IB_FR_WRID_*
+   wr.sg_list = NULL;
+   wr.num_sge = 0;
+ 
+@@ -2076,6 +3013,12 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
+ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
+   struct ncclIbRequest *r = (struct ncclIbRequest*)request;
+   *done = 0;
++  if (r->base->fr.enabled) {
++    // [RDMA-FAULT-RECOVERY] sticky failure latch + handshake progress (non-blocking).
++    int proceed = 1;
++    NCCLCHECK(ncclIbFrPreTest(r->base, &proceed));
++    if (!proceed) return ncclSuccess;
++  }
+   while (1) {
+     NCCLCHECK(ncclIbStatsCheckFatalCount(&r->base->stats,__func__));
+     if (r->events[0] == 0 && r->events[1] == 0) {
+@@ -2105,6 +3048,19 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
+         if (wrDone == 0) continue;
+         for (int w=0; w<wrDone; w++) {
+           struct ibv_wc *wc = wcs+w;
++          if (r->base->fr.enabled) {
++            // [RDMA-FAULT-RECOVERY] consume the WHOLE batch with the stock decoding:
++            // successes complete their requests, errors are recorded and handled
++            // after the batch (the stock code returns at the first error and drops
++            // the rest of the batch).
++            if (wc->status == IBV_WC_SUCCESS) {
++              ncclResult_t cr = ncclIbFrCompleteWc(r->base, wc, i);
++              if (cr != ncclSuccess) { ncclIbFrFail(r->base, 10, 1); return cr; }
++            } else {
++              ncclIbFrNoteErrorWc(r->base, wc, i);
++            }
++            continue;
++          }
+           if (wc->status != IBV_WC_SUCCESS) {
+             union ncclSocketAddress addr;
+             ncclSocketGetAddr(r->sock, &addr);
+@@ -2161,6 +3117,10 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
+       }
      }
  
-+    // [RDMA-FAULT-RECOVERY] RESPONDER peek: on the recv side, a transient
-+    // sender-only flush produces NO local error CQE (our QP is healthy, just
-+    // starved of the WRITE). So on every poll, non-blocking-peek base.sock for an
-+    // incoming RECOVER_REQ; if present, run the responder handshake + re-post the
-+    // recv WQE, then loop to pick up the sender's replayed completion.
-+    if (ncclParamRdmaFaultRecovery() && !r->base->isSend && r->type == NCCL_NET_IB_REQ_RECV
-+        && r->base->faultRecoveryAttempts < NCCL_IB_FAULT_MAX_ATTEMPTS) {
-+      struct ncclIbRecoverMsg reqMsg; int closed = 0;
-+      ncclResult_t pr = ncclSocketTryRecv(&r->base->sock, &reqMsg, sizeof(reqMsg), &closed, false);
-+      if (closed) { WARN("NET/IB: [FAULT-RECOVERY] responder peek: peer socket closed"); return ncclRemoteError; }
-+      if (pr != ncclSuccess && pr != ncclInProgress) return ncclRemoteError;
-+      if (pr == ncclSuccess && reqMsg.magic == NCCL_IB_RECOVER_MAGIC) {
-+        int attempt = r->base->faultRecoveryAttempts++;
-+        WARN("NET/IB: [FAULT-RECOVERY] responder: RECOVER_REQ received (nqps=%d, attempt %d/%d)",
-+             reqMsg.nqps, attempt+1, NCCL_IB_FAULT_MAX_ATTEMPTS);
-+        if (ncclIbRecoverRespond((struct ncclIbRecvComm*)r->base, r, &reqMsg, attempt) != ncclSuccess) {
-+          WARN("NET/IB: [FAULT-RECOVERY] responder recovery failed; failing cleanly");
-+          return ncclRemoteError;
-+        }
-+        continue;  // re-poll for the replayed WRITE_WITH_IMM completion
-+      }
-+    }
++    // [RDMA-FAULT-RECOVERY] an error CQE was seen: start the handshake (not done yet)
++    // or latch the failure and return the stock error.
++    if (r->base->fr.enabled && r->base->fr.errCount) return ncclIbFrOnLocalError(r->base);
 +
-     int totalWrDone = 0;
-     int wrDone = 0;
-     struct ibv_wc wcs[4];
-@@ -2121,6 +2453,55 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
-             WARN("NET/IB: Got completion from peer %s with status=%d opcode=%d len=%d vendor err %d (%s)%s%s%s%s hca %s",
-                 ncclSocketToString(&addr, line), wc->status, wc->opcode, wc->byte_len, wc->vendor_err, reqTypeStr[r->type],
-                 localGidStr ?  " localGid ":"", localGidString, remoteGidStr ? " remoteGids":"", remoteGidString, hcaName);
-+
-+            // [RDMA-FAULT-RECOVERY] classify + TRUE bilateral recovery (Phase 1+2).
-+            // Default behavior (flag off) is unchanged: fall straight to ncclRemoteError.
-+            if (ncclParamRdmaFaultRecovery()) {
-+              struct ncclIbFaultInfo fi = ncclIbClassify((enum ibv_wc_status)wc->status, wc->vendor_err);
-+              // TCP liveness on the OOB sock = the in-tree 0x81 discriminator
-+              // (server_qp_err vs proc_kill); best-effort, the handshake itself is
-+              // the real guard against a dead peer.
-+              int sockAlive = 0; (void)ncclSocketReady(r->sock, &sockAlive);
-+              WARN("NET/IB: [FAULT-RECOVERY] status=%d(%s) vendor_err=0x%x cause='%s' action='%s' autoRecoverable=%d role=%s sockAlive=%d",
-+                   wc->status, ncclIbStatusStr(wc->status), wc->vendor_err, fi.cause, fi.action,
-+                   fi.autoRecoverable, r->base->isSend ? "INITIATOR" : "RESPONDER", sockAlive);
-+              if (wc->status == IBV_WC_RETRY_EXC_ERR) {
-+                WARN("NET/IB: [FAULT-RECOVERY] 0x81 sub-cause: %s",
-+                     sockAlive ? "server_qp_err (peer process alive, its QP broke)"
-+                               : "proc_kill / link-down (peer socket dead)");
-+              }
-+              // A QP pair carries BIDIRECTIONAL RDMA (initiator's data writes AND the
-+              // responder's CTS writes ride the same pair). So when the initiator's QP
-+              // is forced to ERR, the responder's recv comm sees its CTS writes NAK as
-+              // RETRY_EXC(0x81) even though the peer is alive and merely resetting. With
-+              // a live socket that 0x81 is therefore recoverable on the RESPONDER side:
-+              // it waits for the initiator's REQ instead of failing.
-+              int allowInit = ( r->base->isSend) && fi.autoRecoverable;
-+              int allowResp = (!r->base->isSend) && (fi.autoRecoverable || wc->status == IBV_WC_RETRY_EXC_ERR);
-+              if (sockAlive && (allowInit || allowResp)
-+                  && r->base->faultRecoveryAttempts < NCCL_IB_FAULT_MAX_ATTEMPTS
-+                  && r->faultRetries < NCCL_IB_FAULT_MAX_RETRIES) {
-+                int attempt = r->base->faultRecoveryAttempts++;
-+                r->faultRetries++;
-+                ncclResult_t rr;
-+                if (r->base->isSend) {
-+                  // INITIATOR: bilateral reset, then replay the flushed WRITE.
-+                  rr = ncclIbRecoverInitiate(r->base, attempt);
-+                  if (rr == ncclSuccess) rr = ncclIbReplaySend((struct ncclIbSendComm*)r->base, r);
-+                } else {
-+                  // RESPONDER (flush or peer-reset 0x81): bounded wait for REQ, then respond+repost.
-+                  rr = ncclIbRecoverRespondWait((struct ncclIbRecvComm*)r->base, r, attempt);
-+                }
-+                if (rr == ncclSuccess) {
-+                  WARN("NET/IB: [FAULT-RECOVERY] recovered + replayed (attempt %d/%d); resuming",
-+                       attempt+1, NCCL_IB_FAULT_MAX_ATTEMPTS);
-+                  return ncclSuccess;  // not done: re-poll picks up the fresh completion
-+                }
-+                WARN("NET/IB: [FAULT-RECOVERY] recovery/replay failed (rc=%d); failing cleanly", rr);
-+              } else if (fi.autoRecoverable && !sockAlive) {
-+                WARN("NET/IB: [FAULT-RECOVERY] peer socket dead -> decline recovery (human intervention)");
-+              }
-+            }
-             return ncclRemoteError;
-           }
- 
+     // If no CQEs found on any device, return and come back later
+     if (totalWrDone == 0) return ncclSuccess;
+   }

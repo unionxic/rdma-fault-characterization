@@ -1,156 +1,209 @@
-# GPU×RDMA fault tolerance: in-tree NCCL IB-transport recovery
+# GPU×RDMA fault tolerance: in-tree NCCL IB-transport classification + safe recovery
 
-Integrates RDMA fault classification **and true bilateral QP recovery** directly
-into NCCL's own IB transport (`src/transport/net_ib.cc`) — not an external wrapper.
-On a failed IB completion NCCL classifies the fault, and for recoverable
-(NAK/flush-class) faults performs a **PSN-consistent bilateral QP reset over the
-existing OOB socket plus an idempotent WRITE replay**, so the collective can
-continue instead of hanging. Everything is gated behind `NCCL_RDMA_FAULT_RECOVERY=1`;
-with the flag off the code path is byte-identical to stock NCCL.
+The patch adds RDMA fault **classification** to NCCL's own IB transport
+(`src/transport/net_ib.cc`, NCCL v2.23.4-1), plus a **bilateral QP recovery** that runs only
+when it can be shown to be correct. It is not an external wrapper.
 
-This supersedes the first patch's *unilateral* QP re-drive (which left the two
-ends' PSNs inconsistent and never replayed the flushed WR). See
-`DESIGN_recovery.md` for the design this implements.
+Everything is behind `NCCL_RDMA_FAULT_RECOVERY=1`. With the flag off, the transport makes the
+same verbs calls and returns the same results as stock.
 
-## NCCL version
-- Upstream github.com/NVIDIA/nccl, tag **v2.23.4-1**, commit `68b542363f9a44cdaac480f51ebe0fc26de96139`.
-- CUDA 12.8, GENCODE `sm_75` (rain, Quadro RTX 5000) + `sm_86` (sunny, RTX A4000).
-- Build: `make -j src.build CUDA_HOME=/usr/local/cuda-12.8 NVCC_GENCODE="-gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_86,code=sm_86"` → **rc=0, no warnings**, alignment `static_assert`s pass.
+**Status: rebuilt and statically verified. Not yet run on the 2-node GPU setup.**
+All earlier run logs came from superseded, defective builds and are kept only as history in
+`logs/historical/` (see `HISTORICAL.md` there). The full design and the safety argument are in
+`DESIGN_recovery.md`.
 
-## What the patch does (three phases)
+## Scope (Stage 1, what the code actually does)
 
-**Phase 1 — bilateral PSN-consistent QP reset (correctness core).** Role is fixed
-by `base.isSend`: the **send comm is the INITIATOR, the recv comm the RESPONDER**
-(a comm pair never double-initiates). The control channel is the always-open OOB
-`ncclIbNetCommBase.sock`; no new channel. A fresh per-QP PSN is exchanged so both
-ends end up mutually consistent:
-- Initiator: on a recoverable fault CQE, ERR→RESET→INIT all QPs (picking fresh
-  `P_s[q]`), `ncclSocketSend` RECOVER_REQ{P_s}, `ncclSocketRecv` RECOVER_ACK{P_r},
-  then RTR(rq_psn=`P_r`)/RTS(sq_psn=`P_s`).
-- Responder: its `ncclIbTest` non-blocking-**peeks** `base.sock` every poll (a
-  transient sender-only flush yields NO local error CQE); on a RECOVER_REQ it
-  ERR→RESET→INIT (fresh `P_r`), RTR(rq_psn=`P_s`)/RTS(sq_psn=`P_r`), re-posts its
-  recv WQE, then `ncclSocketSend` RECOVER_ACK{P_r}. Recv WQE is re-posted **before**
-  the ACK so the replayed WRITE never races ahead of a posted receive (no RNR).
+When recovery is enabled and an IB completion fails, the patch first classifies the fault and
+logs it together with an OOB-socket liveness probe. It then recovers only if **all** of the
+following hold:
 
-**Phase 2 — WR replay (transfer actually finishes).** The data path is
-RDMA_WRITE, which is idempotent. At `ncclIbIsend` the remote CTS (addr+rkey) is
-snapshotted into the request (the FIFO slot is cleared right after the first
-send). After the reset, the initiator re-posts a signaled `RDMA_WRITE_WITH_IMM`
-of the full buffer (`ncclIbReplaySend`) and the responder re-posts its recv WQE
-(`ncclIbRepostRecv`); event counts are reset to exactly what the replay produces,
-and the CQs are drained of stale FLUSH_ERR CQEs first. The request's bounded
-re-poll then observes the fresh completion → done. Replay covers the single-request
-(`nreqs==1`, single-QP) path (the all-reduce case); multi-recv coalescing and
-multi-QP striping replay are out of scope (declines → clean fail).
+- **Fault class.** The first error CQE of the incident is `WR_FLUSH_ERR` on the **send** comm,
+  meaning a transient local ERR such as the `NCCL_RDMA_FAULT_INJECT` hook.
+- **Configuration.** `nqps == 1`, `ndevs == 1`, and the send has `nreqs == 1`. That means
+  a single QP, a single NIC, and no multi-recv.
+- **Quiescence on both sides, checked before any QP is modified.**
+  - Initiator: the failed send, decoded from `wc->wr_id`, is the only request in flight on
+    the comm.
+  - Responder: the matching receive (found by the CTS FIFO sequence number) is the only
+    request in flight, and its data has not been consumed. A GPU-flush read still in flight
+    is waited out, for a bounded time.
+- **Health.** No async fatal event is recorded, and the peer's socket shows no FIN/RST.
+- **Bounds.** At most 3 initiations per comm and 1 replay per request.
 
-**Phase 3 — deterministic exercise.** `NCCL_RDMA_FAULT_INJECT=k` forces the send
-QP to ERR exactly once, on the k-th signaled multi-send, so its in-flight WRITE
-flushes (WR_FLUSH_ERR) while the peer stays alive — a transient RECOVERABLE fault
-that drives Phase 1+2 deterministically.
+When all of these hold, the patch does the following:
 
-## Safety / gating / bounds
-- All behind `NCCL_RDMA_FAULT_RECOVERY=1`; flag-off path byte-identical.
-- Bounds: `faultRecoveryAttempts` per comm (max 3), `faultRetries` per request (max 8).
-- Any handshake or replay failure → clean `ncclRemoteError` (never fabricate a completion).
-- **Dead peer:** RETRY_EXC(0x81) with a dead socket is declined (classifier
-  `autoRecoverable=0`); even if a recoverable class saw a dead peer, the blocking
-  handshake (`ncclSocketSend/Recv`) fails on the closed socket → clean fail. TCP
-  liveness (`ncclSocketReady`) is logged as the in-tree 0x81 `server_qp_err` vs
-  `proc_kill` discriminator (RDMA counters do not split them).
+1. Both QPs are reset through a non-blocking REQ/ACK handshake on the comm's OOB socket, with
+   fresh random PSNs. Each QP comes back up with its connect-time attributes: access flags,
+   `override_tc`, and ECE.
+2. The responder re-posts exactly that one receive.
+3. The initiator replays exactly that one `RDMA_WRITE_WITH_IMM`. This is safe because the
+   write is idempotent and the remote buffer is still reserved.
 
-## Integration points (file:line, patched tree)
-All in `src/transport/net_ib.cc`:
+In every other case the comm fails exactly like stock, with `ncclRemoteError`, and the failure
+is latched: every later operation on the comm fails too. Failure is bounded in time (default
+deadline `NCCL_RDMA_FAULT_HANDSHAKE_MS=2000`). The peer is told with NACK or FAIL, so it fails
+promptly as well.
 
-| Element | Line | Note |
+The patch never blocks the proxy thread on a socket, never drops another request's
+completion, and never completes a receive without its data. Replaying several outstanding
+requests at once (Stage 2) is **not implemented**. In that situation the patch declines.
+
+## Defects fixed (line numbers = patched `net_ib.cc`, git hash-object `0f3397fd`, as in the diff banner)
+
+| Defect | Change | Where |
 |---|---|---|
-| Stock failed-completion hook (`if (wc->status != IBV_WC_SUCCESS)`) | **2440** | baseline v2.23.4-1: check at 2108, `return ncclRemoteError` at 2124 |
-| Error branch: classify + INITIATOR/RESPONDER recover | **2472–2494** | `isSend` → `ncclIbRecoverInitiate` + `ncclIbReplaySend` |
-| RESPONDER non-blocking peek | **2403–2424** | peeks `base.sock`; on REQ → `ncclIbRecoverRespond` |
-| `NCCL_PARAM(RdmaFaultRecovery)` / `NCCL_PARAM(RdmaFaultInject)` | **1164 / 1167** | env vars, default 0 |
-| `struct ncclIbRecoverMsg` (magic,nqps,psn[]) | **1176** | REQ/ACK on `base.sock` |
-| `ncclIbResetQpsToInit` / `ncclIbCompleteQps` | **1274 / 1295** | ERR→RESET→INIT (+CQ drain) / RTR(rq_psn)+RTS(sq_psn) |
-| `ncclIbRecoverInitiate` / `ncclIbRecoverRespond` | **1309 / 1334** | initiator / responder handshake |
-| Responder 0x81 (peer-resetting) handling | **2479-2485** | live socket → wait for REQ; dead → decline |
-| `ncclIbReplaySend` / `ncclIbRepostRecv` | **1370 / 1398** | Phase-2 replay |
-| Phase-3 injection (`[FAULT-INJECT] forced QP0 to ERR before post`) | **2019** | top of `ncclIbMultiSend` |
-| `ncclIbRtrQp` / `ncclIbRtsQp` PSN override param | **1077 / 1126** | added `rq_psn` / `sq_psn`; 4 prod call sites pass 0 |
-| `ncclIbQp.remQpn` (retained remote QPN) | **916** | captured at connect/accept |
-| `ncclIbRequest.send.{remoteAddr,rkeys,recoverable}` | **877** | replay snapshot |
+| C1 wrong request / lost batch | The flag-on path consumes the **whole** poll batch with the stock decoding: successes complete their requests, errors are recorded. The failed request is decoded from the error CQE's `wr_id` (`BODY` tag for unsignaled data WRITEs). The responder picks the receive by the REQ's FIFO sequence number, never by the tested `r`. The error CQE's (undefined) opcode is never used. Recv WQEs and CTS writes carry RQ/CTS tags in bits the stock decoder ignores. | batch loop @3052-3065, `ncclIbFrCompleteWc` @2100, `ncclIbFrNoteErrorWc` @2129, `ncclIbFrFailedSend` @2284, tags @877/2675/2903/2945 |
+| C2 reset destroys in-flight work | Nothing is reset unless both sides are quiescent: the initiator checks in `ncclIbFrFailedSend`, the responder checks, *before* reset, in `ncclIbFrResponderEvaluate`. The responder goes RTS→ERR, drains until its receive's WQE has terminated, then goes to RESET, so no earlier completion can be removed by mlx5's CQ clean-up. `ncclIbFrDrainOldQp` drops only the recovered request's CQEs; others are consumed normally, or the recovery fails. There is no blind CQ drain. | @2490, @2441, @2170 |
+| M1 multi-QP/NIC | Configuration gate before any handshake, on both sides; the REQ's `nqps` is checked too. | @2327, @2499 |
+| M2 blocking handshake / deadlock | Non-blocking `send/recv(MSG_DONTWAIT)` with per-comm offsets. The initiator is a state machine driven by `ncclIbTest` (`InitWait`, deadline). The responder is serviced from every `ncclIbTest` and `ncclIbIrecv` of the recv comm, with no attempt cap on answering. Symmetric injection cannot deadlock. | `ncclIbFrTxProgress`/`RxProgress` @2024/2051, `ncclIbFrInitiatorStep` @2367, `ncclIbFrInitiatorIdle` @2424, `ncclIbFrResponderService` @2550, hooks @3017/2926 |
+| M3 fake liveness | `recv(MSG_PEEK\|MSG_DONTWAIT)`: 0 means FIN, ECONNRESET/EPIPE/ETIMEDOUT/ENOTCONN mean RST, EAGAIN means no evidence. The result is used for the 0x81 sub-cause and as the initiation gate. A host death without FIN/RST is not detected until TCP times out. | `ncclIbFrLiveness` @1957, used @2308-2326 |
+| M4 re-recovery on a failed comm | Sticky per-comm latch (`ncclIbFrFailed`). Test, isend and irecv return the error without polling or recovering. | `ncclIbFrFail` @2067, `ncclIbFrPreTest` @2598, isend/irecv gates @2739/2926 |
+| M5 NAK classes | Only `WR_FLUSH_ERR` is recoverable. REM_ACCESS and REM_INV_REQ raise `IBV_EVENT_QP_ACCESS_ERR`/`QP_REQ_ERR` on the peer QP, which becomes a never-cleared `fatalErrorCount` in `ncclIbAsyncThreadMain`→`ncclIbQpFatalError`, so NCCL fails that comm permanently. RNR cannot occur with `rnr_retry=7`. A fatal counter is also re-checked before any reset. | `ncclIbFrClassify` @1913, `ncclIbFrFatal` @2014 |
+| M6 test driver | Per-rank, per-iteration, per-index inputs. rbuf is poisoned with NaN, and the **entire** rbuf is compared bit-exactly on **every** rank. Output is `ok` or `MISMATCH count= first=`. Every wait is bounded, with `ncclCommAbort` on an error or timeout. Exit codes: 0 ok, 2 NCCL, 3 async, 4 timeout, 5 mismatch. | `nccl_ar2.cu` |
+| snapshot ran with flag off | Gated on `fr.enabled`. | @2784 |
+| `faultRetries` never reset | Replaced by `frReplays`, reset in `ncclIbGetRequest`, cap 1. | @935, @1688 |
+| replayability checked after reset | All checks happen before the REQ (initiator) and before the reset (responder). | as above |
+| responder never checked `nqps` | Checked. | @2499 |
+| RespWait ~18 ms spin | Removed. Deadlines are time-based: `HANDSHAKE_MS` for the reply, `2×HANDSHAKE_MS` for DONE, `/4` for the flush wait, `min(/10, 100 ms)` for the ERR drain. | @2342, @2542, @2567, @2455 |
+| QP rebuilt with different attributes | Access flags are recorded in `ncclIbCreateQp` (data QPs use `REMOTE_WRITE`); remote QPN, `override_tc` (recv QP 0) and ECE are recorded at connect/accept; `ncclIbFrBringUp` repeats `set_ece` before RTR and reuses `ncclIbRtrQp`/`ncclIbRtsQp`. | @1154, @1425-1432, @1578-1585, @2225 |
+| stale header comment | Replaced by an accurate block comment. | @1830 |
+| deterministic PSN | Random 24-bit PSN from `/dev/urandom` (splitmix fallback). | `ncclIbFrFreshPsn` @1998 |
 
-## Run (2 nodes, 1 GPU each, over RoCE)
-rank0 on rain (mlx5_1/30.0.0.3), rank1 on sunny (mlx5_0/30.0.0.4). Test driver
-`nccl_ar2.cu` (socket-exchanged `ncclUniqueId`, no MPI):
+## Build (done here; reproduce with)
+
 ```bash
-# rank 0 (rain) — INITIATOR side, injects a recoverable flush on the 50th send
-LD_LIBRARY_PATH=nccl/build/lib:/usr/local/cuda-12.8/lib64 \
-NCCL_IB_HCA=mlx5_1 NCCL_IB_GID_INDEX=3 NCCL_SOCKET_IFNAME=ens4f1np1 \
-NCCL_RDMA_FAULT_RECOVERY=1 NCCL_RDMA_FAULT_INJECT=50 \
-NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=NET \
-./nccl_ar2 0 30.0.0.3 43110 60 1048576 150
-# rank 1 (sunny) — RESPONDER; recovery flag on, no inject
-LD_LIBRARY_PATH=. NCCL_IB_HCA=mlx5_0 NCCL_IB_GID_INDEX=3 NCCL_SOCKET_IFNAME=enp23s0f0np0 \
-NCCL_RDMA_FAULT_RECOVERY=1 ./nccl_ar2 1 30.0.0.3 43110 60 1048576 150
+git clone --branch v2.23.4-1 https://github.com/NVIDIA/nccl.git && cd nccl
+sed '/^# /d;/^#$/d' ../net_ib_fault_recovery.diff | git apply
+git hash-object src/transport/net_ib.cc          # must equal the hash in the diff banner
+make -j src.build CUDA_HOME=/usr/local/cuda-12.8 \
+  NVCC_GENCODE="-gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_86,code=sm_86"
+cd .. && /usr/local/cuda-12.8/bin/nvcc -O2 -std=c++17 \
+  -gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_86,code=sm_86 \
+  -I nccl/build/include -L nccl/build/lib -o nccl_ar2 nccl_ar2.cu -lnccl
 ```
 
-## Test status — all phases verified end-to-end over 2-node RoCE
+Verification results:
 
-Config for the fault runs: `NCCL_MAX_NCHANNELS=1 NCCL_PROTO=Simple NCCL_BUFFSIZE=8388608`,
-512 KB message (131072 floats) so exactly one net WRITE is in flight per step (see
-Scope below). rank0=rain(mlx5_1), rank1=sunny(mlx5_0), GID 3.
+- **Build:** rc=0 with 0 warnings, the same as the stock build.
+- **Strict compile** (`-Wall -Wextra -Wunused-function`): 10 warnings for both stock and
+  patched `net_ib.cc`, and they are the identical set. The alignment `static_assert`s pass.
+- **Driver:** compiles cleanly with `-Wall -Wextra`.
+- **Patch:** applies cleanly to a fresh clone of the tag, and the result is byte-identical to
+  the tree that was built.
+- **Independent review:** a separate read-only review found no critical defect. It reported
+  four minor issues:
+  - The initiator stopped reading the socket once idle, so the two sides could diverge on a
+    late DONE. Fixed: `ncclIbFrInitiatorIdle`, deadline checked before a buffered ACK is used,
+    and the responder's DONE deadline doubled.
+  - The ERR-drain busy-poll could grow with `HANDSHAKE_MS`. Fixed: capped at 100 ms.
+  - The fatal check was skipped while waiting. Fixed.
+  - Latched ops starve later ops. Documented below.
+  Those fixes were rebuilt and re-verified as above.
 
-1. **Build clean; flag-off baseline all-reduce PASSES** (correct result; `logs/p2_baseline_rank0.log`).
-2. **Phase 1+2+3 — injected recoverable flush, collective COMPLETES with correct
-   result (not a hang):** `NCCL_RDMA_FAULT_RECOVERY=1 NCCL_RDMA_FAULT_INJECT=20`.
-   rank0 exit=0, **40/40 iters, `[rank0] done`, every `rbuf[0]=3`.** The recovery
-   sequence (`logs/phase123_inject_rank0.log` / `_rank1.log`):
-   - rank0 (INITIATOR): `[FAULT-INJECT] forced QP0 to ERR before send #20` →
-     `status=5(WR_FLUSH_ERR) ... role=INITIATOR sockAlive=1` →
-     `initiator: bilateral PSN-consistent reset complete` →
-     `replayed WRITE_WITH_IMM size=131072 -> remoteAddr=... rkey=...` →
-     `recovered + replayed (attempt 1/3); resuming` → **all 40 iters complete.**
-   - rank1 (RESPONDER): `RECOVER_REQ received (nqps=1)` → `reposted recv WQE` →
-     `bilateral PSN-consistent reset + recv repost + ACK done`.
-   This is the correctness core: both ends reset to mutually-consistent fresh PSNs
-   over `base.sock`, the flushed WRITE is replayed, and the transfer + collective
-   finish correctly — exactly what the unilateral first patch could not do.
-3. **Control — proc-kill (dead peer) still fails cleanly:** `NCCL_RDMA_FAULT_RECOVERY=1`,
-   rank1 killed mid-run. rank0 detects the dead peer (`responder peek: peer socket
-   closed` → `ncclRemoteError`), **declines recovery, does not loop or fabricate a
-   completion** (`logs/control_prockill_rank0.log`). (The process then blocks until
-   `timeout` because the test driver never calls `ncclCommAbort` to tear down the
-   waiting GPU kernel — standard NCCL semantics, independent of the patch.)
-4. **Flag-off default byte-identical:** with the flag off the same kill yields the
-   stock `Got completion ... status=12` WARN and zero `[FAULT-RECOVERY]` lines.
+## 2-node validation (to be run by the user; not run yet)
 
-## Scope / limitations (honest)
-- **Single in-flight request per comm.** NCCL pipelines several net WRITEs at once;
-  forcing a QP to ERR flushes *all* of them, but the recovery replays only the one
-  request under test and drains the CQ of the rest. The verified runs therefore use
-  1 channel + Simple proto + a single-chunk (512 KB) message so exactly one WRITE is
-  outstanding. With default multi-channel/pipelined settings the reset+replay still
-  execute (observed), but un-replayed sibling requests then stall the collective.
-  General multi-request replay (tracking every flushed request per comm) is future work.
-- **Injection point:** `NCCL_RDMA_FAULT_INJECT=k` forces the QP to ERR *before* the
-  k-th multi-send's post (net_ib.cc:2019), so the WRITE deterministically flushes
-  regardless of size. (Forcing ERR *after* the post let small/fast sends complete
-  first, so no recoverable flush was produced — that variant was dropped.)
-- **Bidirectional QP pair:** a QP pair carries both the initiator's data WRITEs and
-  the responder's CTS WRITEs, so an initiator-side ERR makes the responder's recv
-  comm see RETRY_EXC(0x81) on its CTS path even though the peer is alive. The patch
-  handles this: on the RESPONDER, 0x81 **with a live socket** is treated as
-  "peer is resetting" → wait for the REQ (net_ib.cc:2479-2485); 0x81 with a dead
-  socket is declined. This is what lets the collective survive the injected fault.
+rank0 runs on rain (mlx5_1, ens4f1np1, 30.0.0.3) and rank1 on sunny (mlx5_0, enp23s0f0np0).
+The driver usage is `nccl_ar2 <rank> <rank0_ip> <port> [iters] [count] [sleep_ms] [timeout_s]`.
 
-## Blocker encountered (now cleared)
-For part of the session rain's shared Quadro RTX 5000 was saturated by another
-user's ~15.5 GB job (~175 MiB free), so `ncclCommInitRank` failed with CUDA OOM and
-the fault runs could not launch. It later freed and all runs above were captured.
+```bash
+# build as above into ~/nccl-fr (nccl/ and nccl_ar2 side by side), then:
+cd ~/rdma-error/harness/nccl-integration/logs
+NCCL_LIB=~/nccl-fr/nccl/build/lib DRV=~/nccl-fr/nccl_ar2 ./autorun_recovery_test.sh ~/nccl-fr/run1 deploy
+cat ~/nccl-fr/run1/summary.log
+```
+
+The script's runs and verdicts:
+
+| Run | What it does | Expected verdict |
+|---|---|---|
+| `base` | Flag **off** on both ranks | PASS |
+| `inject` | Flag on, `NCCL_RDMA_FAULT_INJECT=40` on rank0, 1 channel / Ring / Simple / 1 QP / 256 KB | RECOVERED (every iteration bit-exact on both ranks) or DECLINED-clean (both `rc=3`, reason logged) |
+| `symmetric` | Inject on both ranks | Must not deadlock; same verdicts as `inject` |
+| `pipelined` | Default channels and protocols, 16 MB, inject 7 | Clean decline or completion, never a hang or MISMATCH |
+| `prockill` | rank1 SIGKILLed | rank0 exits non-zero with no timeout (RETRY_EXC after about 34 s with the default `NCCL_IB_TIMEOUT=20`) |
+
+Any MISMATCH or timeout is a FAIL.
+
+**Choosing k.** Recovery requires the peer to have exactly one receive posted. NCCL's recv
+proxy posts every receive of an all-reduce up front (up to 8 steps). So the fault must hit the
+*last* net send of an all-reduce. With one channel, an all-reduce has 2, 4 or 8 net sends per
+rank depending on chunking, so a k that is a multiple of 8 (default 40) is aligned in all
+cases. If `inject` reports `NACK (... not quiescent)`, the injection landed mid-op. That is the
+correct, safe behaviour. Try `K=48` or `K=64`.
+
+**Single manual pair** (same environment as the script):
+
+```bash
+# rain (rank0)
+env LD_LIBRARY_PATH=~/nccl-fr/nccl/build/lib:/usr/local/cuda-12.8/lib64 NCCL_IB_HCA=mlx5_1 NCCL_IB_GID_INDEX=3 \
+  NCCL_SOCKET_IFNAME=ens4f1np1 NCCL_DEBUG=WARN NCCL_MAX_NCHANNELS=1 NCCL_MIN_NCHANNELS=1 NCCL_ALGO=Ring \
+  NCCL_PROTO=Simple NCCL_IB_QPS_PER_CONNECTION=1 NCCL_RDMA_FAULT_RECOVERY=1 NCCL_RDMA_FAULT_INJECT=40 \
+  ~/nccl-fr/nccl_ar2 0 30.0.0.3 43210 60 65536 100 60
+# sunny (rank1)
+cd ~/nccl-fr-bundle && env LD_LIBRARY_PATH=$PWD:/usr/local/cuda-12.8/lib64 NCCL_IB_HCA=mlx5_0 NCCL_IB_GID_INDEX=3 \
+  NCCL_SOCKET_IFNAME=enp23s0f0np0 NCCL_DEBUG=WARN NCCL_MAX_NCHANNELS=1 NCCL_MIN_NCHANNELS=1 NCCL_ALGO=Ring \
+  NCCL_PROTO=Simple NCCL_IB_QPS_PER_CONNECTION=1 NCCL_RDMA_FAULT_RECOVERY=1 \
+  ./nccl_ar2 1 30.0.0.3 43210 60 65536 100 60
+```
+
+Log lines to look for:
+
+- **Recovered:** `[FAULT-INJECT] forced QP0 ... ERR` →
+  `[FAULT-RECOVERY] status=5(WR_FLUSH_ERR) ... role=INITIATOR liveness=no-FIN/RST` →
+  `initiator: quiescent single send ... RECOVER_REQ seq 1 sent` (rank0), then
+  `responder: RECOVER_REQ ... received` → `responder: quiescent ... ACK seq 1 sent` (rank1), then
+  `initiator: recovered ... replayed WRITE_WITH_IMM` (rank0), and every `iter N ok` on both
+  ranks.
+- **Declined:** a `NACK (...)` / `recovery declined: ...` line, then `latched FAILED` on both
+  ranks, then `FAILED rc=3`.
+
+## What remains untested at runtime
+
+Nothing in the current patch has run on hardware. In particular, the following are
+unverified:
+
+1. that recovery actually succeeds on ConnectX-6 Dx with the k=40 alignment;
+2. that `ibv_set_ece` is accepted again after RESET→INIT (if not, recovery fails cleanly);
+3. mlx5's flush-CQE behaviour for the responder's RQ after RTS→ERR (bounded by
+   `min(HANDSHAKE_MS/10, 100 ms)`);
+4. the timing of the symmetric and pipelined cases;
+5. the proc-kill path through RETRY_EXC.
+
+The static argument for correctness is in `DESIGN_recovery.md` §4.
+
+## Limitations
+
+- **Narrow recoverable class.** In practice, WR_FLUSH_ERR as the first error with no async
+  event comes from software moving a QP to ERR, which includes the inject hook. Real NAK,
+  retry-exhausted and link faults are classified and logged, then fail like stock.
+- **Pipelining.** Under NCCL's default pipelining (several channels, receives posted ahead),
+  most faults find more than one request in flight and decline cleanly. Stage 2 (replaying
+  several requests) is not implemented.
+- **Cost of the flag.** With the flag on, a recv comm makes one extra non-blocking `recv()` per
+  `ncclIbTest`/`ncclIbIrecv`. A recovery can also busy-poll the CQ for at most
+  `min(HANDSHAKE_MS/10, 100 ms)` on the proxy thread.
+- **Peer FIN while idle.** A FIN from the peer while the comm is idle does not fail it, the
+  same as stock. A dead peer therefore surfaces as RETRY_EXC (0x81, sub-cause from liveness).
+- **Latched ops starve the ops behind them.** Once a comm is latched, its op returns an error
+  on every progress call. `proxy.cc` `progressOps` stops at the first failing op, so ops behind
+  it on that proxy thread are no longer progressed. This includes a local recv comm that would
+  answer a peer's REQ, so that peer then fails through its own deadline instead of a NACK. The
+  communicator is already in error at that point (stock sets `asyncResult` too), so the outcome
+  is the same failure, reached by a slower path.
+- **ERR→RESET drain is mlx5-verified only.** It relies on the device writing no further CQE for
+  a QP after `modify_qp(RESET)` returns, which holds on mlx5. The post-RESET drain handles
+  CQEs a provider *leaves* in the CQ, not CQEs written afterwards. Even in that case, the
+  recovered receive's own WQE has already produced its CQE before RESET, so a late CQE can only
+  be an error CQE (dropped, or treated as a new fault that latches the comm). It is never a
+  completion.
 
 ## Files
-- `net_ib_fault_recovery.diff` — the patch (391 insertions; applies to v2.23.4-1 after stripping the `#` banner).
-- `nccl_ar2.cu` — 2-rank all-reduce test driver (socket-exchanged uniqueId, no MPI).
-- `DESIGN_recovery.md` — the design (input).
-- `logs/phase123_inject_rank0.log`, `_rank1.log` — the successful recovery + completion.
-- `logs/control_prockill_rank0.log` — dead-peer clean decline.
-- `logs/p2_baseline_rank0.log`, `evidence_responder.txt`, `autorun_recovery_test.sh`.
+
+- `net_ib_fault_recovery.diff`: the patch. It applies to v2.23.4-1 after stripping the `#`
+  banner.
+- `DESIGN_recovery.md`: the design and the safety argument.
+- `nccl_ar2.cu`: the 2-rank all-reduce driver, with exact whole-buffer checking on every rank.
+- `logs/autorun_recovery_test.sh`: the 2-node validation (base / inject / symmetric /
+  pipelined / prockill).
+- `logs/historical/`: logs of superseded builds. They are not evidence for this patch.
