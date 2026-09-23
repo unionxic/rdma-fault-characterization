@@ -100,6 +100,118 @@ int rdma_conn_poll(struct rdma_conn *c, struct ibv_wc *wc,
 }
 
 /* ------------------------------------------------------------------ */
+/*  server control channel I/O                                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The server ctrl socket carries SO_RCVTIMEO = CTRL_STEP_TIMEOUT_S, so every
+ * blocking read() returns within that bound. common.h's tcp_recv_msg folds
+ * "timed out", "peer closed" and "error" into one -1 (and tcp_exchange_qp_info
+ * ignores even that), so a plain idle timeout used to look like shutdown.
+ * The server side therefore uses these variants, which keep them apart:
+ *   - waiting for the NEXT command (rdma_conn_serve): a timeout before any
+ *     byte arrived only means "no command yet" -> keep waiting, so a healthy
+ *     idle connection is served indefinitely;
+ *   - inside a started exchange (setup / recovery): any timeout means the
+ *     client stalled or died mid-exchange -> fail, so it cannot hang us.
+ */
+#define CTRL_STEP_TIMEOUT_S  5
+
+#define CTRL_ERR     (-1)   /* I/O error, or timeout after part of a line */
+#define CTRL_IDLE    (-2)   /* timeout before the first byte of a line */
+#define CTRL_CLOSED  (-3)   /* orderly peer close (read() == 0) */
+
+/* One '\n'-terminated line (same framing as tcp_recv_msg).
+ * Returns its length (>= 0) or CTRL_ERR / CTRL_IDLE / CTRL_CLOSED. */
+static int ctrl_recv_line(int sock, char *buf, int buflen)
+{
+	int total = 0;
+	while (total < buflen - 1) {
+		ssize_t n = read(sock, buf + total, 1);
+		if (n == 1) {
+			if (buf[total] == '\n') {
+				buf[total] = '\0';
+				return total;
+			}
+			total++;
+			continue;
+		}
+		if (n == 0)
+			return CTRL_CLOSED;
+		if (errno == EINTR)
+			continue;
+		if ((errno == EAGAIN || errno == EWOULDBLOCK) && total == 0)
+			return CTRL_IDLE;
+		return CTRL_ERR;
+	}
+	buf[total] = '\0';
+	return total;
+}
+
+/* Checked send of one line. MSG_NOSIGNAL: a peer that died mid-recovery must
+ * surface as -1 here, not as a SIGPIPE that kills the server. */
+static int ctrl_send_line(int sock, const char *msg)
+{
+	char buf[256];
+	int len = snprintf(buf, sizeof(buf), "%s\n", msg);
+	if (len < 0 || len >= (int)sizeof(buf))
+		return -1;
+	for (int off = 0; off < len; ) {
+		ssize_t n = send(sock, buf + off, len - off, MSG_NOSIGNAL);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			return -1;
+		off += n;
+	}
+	return 0;
+}
+
+/* Server half of tcp_exchange_qp_info (same wire format: receive the client's
+ * "qpn,psn,rkey,raddr,gid" line, then send ours), but every step is checked
+ * and bounded: a client that closes, stalls (> CTRL_STEP_TIMEOUT_S) or sends a
+ * malformed line yields -1 instead of a silently garbage remote_info. */
+static int ctrl_exchange_qp_info_server(int sock, const struct qp_info *local,
+					struct qp_info *remote)
+{
+	char rbuf[256], lbuf[256], gid_str[33];
+	struct qp_info r;
+	unsigned long raddr;
+
+	int n = ctrl_recv_line(sock, rbuf, sizeof(rbuf));
+	if (n < 0) {
+		fprintf(stderr, "rdma_conn: QP info exchange: %s\n",
+			n == CTRL_CLOSED ? "peer closed" :
+			n == CTRL_IDLE   ? "peer stalled (timeout)" :
+					   "recv error/stall");
+		return -1;
+	}
+	if (sscanf(rbuf, "%u,%u,%u,%lu,%32s", &r.qpn, &r.psn, &r.rkey,
+		   &raddr, gid_str) != 5 || strlen(gid_str) != 32) {
+		fprintf(stderr, "rdma_conn: QP info exchange: malformed '%s'\n",
+			rbuf);
+		return -1;
+	}
+	r.raddr = raddr;
+	for (int i = 0; i < 16; i++) {
+		unsigned int v;
+		if (sscanf(gid_str + i * 2, "%2x", &v) != 1)
+			return -1;
+		r.gid.raw[i] = v;
+	}
+
+	for (int i = 0; i < 16; i++)
+		sprintf(gid_str + i * 2, "%02x", local->gid.raw[i]);
+	snprintf(lbuf, sizeof(lbuf), "%u,%u,%u,%lu,%s",
+		 local->qpn, local->psn, local->rkey,
+		 (unsigned long)local->raddr, gid_str);
+	if (ctrl_send_line(sock, lbuf) < 0)
+		return -1;
+	*remote = r;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /*  lifecycle                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -174,27 +286,31 @@ int rdma_conn_server(struct rdma_conn *c, int listen_sock,
 		return -1;
 	int flag = 1;
 	setsockopt(c->ctrl_sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
-	/* Bound blocking recv so a client that dies mid-recovery does not hang
-	 * rdma_conn_serve forever (mirrors the client-side SO_RCVTIMEO). */
-	struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+	/* Bound each blocking read (mirrors the client-side SO_RCVTIMEO) so a
+	 * client that dies mid-setup / mid-recovery cannot hang the server.
+	 * This bounds exchange STEPS only: rdma_conn_serve treats a timeout while
+	 * waiting for the next command as idleness, not as peer loss. */
+	struct timeval tv = { .tv_sec = CTRL_STEP_TIMEOUT_S, .tv_usec = 0 };
 	setsockopt(c->ctrl_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
 	char buf[64];
-	if (tcp_recv_msg(c->ctrl_sock, buf, sizeof(buf)) < 0 ||
+	if (ctrl_recv_line(c->ctrl_sock, buf, sizeof(buf)) < 0 ||
 	    strcmp(buf, CMD_MW_SETUP) != 0)
 		goto fail;
 
 	if (setup_rdma(&c->res, 1, mr_access, retry_cnt, rnr_retry, timeout) < 0)
 		goto fail;
-	tcp_send_msg(c->ctrl_sock, CMD_READY);     /* #1 */
-	if (tcp_exchange_qp_info(c->ctrl_sock, &c->res.local_info,
-				 &c->res.remote_info, 1) < 0)
+	if (ctrl_send_line(c->ctrl_sock, CMD_READY) < 0)      /* #1 */
+		goto fail;
+	if (ctrl_exchange_qp_info_server(c->ctrl_sock, &c->res.local_info,
+					 &c->res.remote_info) < 0)
 		goto fail;
 	if (connect_qp(&c->res, remote_write, retry_cnt, rnr_retry, timeout) < 0)
 		goto fail;
 	if (post_recv_initial && post_recv(&c->res) < 0)
 		goto fail;
-	tcp_send_msg(c->ctrl_sock, CMD_READY);     /* #2 */
+	if (ctrl_send_line(c->ctrl_sock, CMD_READY) < 0)      /* #2 */
+		goto fail;
 	return 0;
 fail:
 	rdma_conn_close(c);
@@ -316,15 +432,16 @@ int rdma_conn_handle(struct rdma_conn *c, const char *cmd)
 			return -1;
 		drain_cq(c->res.cq);
 		c->res.local_info.psn = rand() & 0xFFFFFF;
-		if (tcp_exchange_qp_info(c->ctrl_sock, &c->res.local_info,
-					 &c->res.remote_info, 1) < 0)
+		if (ctrl_exchange_qp_info_server(c->ctrl_sock, &c->res.local_info,
+						 &c->res.remote_info) < 0)
 			return -1;
 		if (connect_qp(&c->res, c->remote_write, c->retry_cnt,
 			       c->rnr_retry, c->timeout) < 0)
 			return -1;
 		if (post_recv(&c->res) < 0)
 			return -1;
-		tcp_send_msg(c->ctrl_sock, CMD_READY);
+		if (ctrl_send_line(c->ctrl_sock, CMD_READY) < 0)
+			return -1;
 		return 1;
 	}
 
@@ -341,20 +458,23 @@ int rdma_conn_handle(struct rdma_conn *c, const char *cmd)
 			return -1;
 		c->res.local_info.rkey = c->res.mr->rkey;
 		c->res.local_info.psn  = rand() & 0xFFFFFF;
-		if (tcp_exchange_qp_info(c->ctrl_sock, &c->res.local_info,
-					 &c->res.remote_info, 1) < 0)
+		if (ctrl_exchange_qp_info_server(c->ctrl_sock, &c->res.local_info,
+						 &c->res.remote_info) < 0)
 			return -1;
 		if (connect_qp(&c->res, c->remote_write, c->retry_cnt,
 			       c->rnr_retry, c->timeout) < 0)
 			return -1;
 		if (post_recv(&c->res) < 0)
 			return -1;
-		tcp_send_msg(c->ctrl_sock, CMD_READY);
+		if (ctrl_send_line(c->ctrl_sock, CMD_READY) < 0)
+			return -1;
 		return 1;
 	}
 
 	if (strcmp(cmd, CMD_MW_PROBE) == 0) {
-		tcp_send_msg(c->ctrl_sock, CMD_READY);   /* 살아있음을 응답 */
+		/* 살아있음을 응답 */
+		if (ctrl_send_line(c->ctrl_sock, CMD_READY) < 0)
+			return -1;
 		return 1;
 	}
 
@@ -364,22 +484,44 @@ int rdma_conn_handle(struct rdma_conn *c, const char *cmd)
 	return 0;
 }
 
+/*
+ * Serve client commands until MW_SHUTDOWN.
+ * Returns 0 ONLY on MW_SHUTDOWN; -1 if the peer closed the control channel
+ * without it, on a control-channel error, or if a handler failed (including a
+ * recovery exchange whose peer stalled > CTRL_STEP_TIMEOUT_S or died).
+ * Waiting for the next command is unbounded: SO_RCVTIMEO expiring while idle
+ * (e.g. while the client waits out a multi-second RETRY_EXC detection) is not
+ * peer loss, so a healthy idle connection is served indefinitely.
+ */
 int rdma_conn_serve(struct rdma_conn *c)
 {
 	char cmd[64];
-	while (tcp_recv_msg(c->ctrl_sock, cmd, sizeof(cmd)) > 0) {
+	for (;;) {
+		int n = ctrl_recv_line(c->ctrl_sock, cmd, sizeof(cmd));
+		if (n == CTRL_IDLE)
+			continue;           /* no command yet — keep serving */
+		if (n == CTRL_CLOSED) {
+			fprintf(stderr, "rdma_conn_serve: peer closed control "
+				"channel without %s\n", CMD_MW_SHUTDOWN);
+			return -1;
+		}
+		if (n < 0) {
+			fprintf(stderr, "rdma_conn_serve: control channel "
+				"error/stall: %s\n", strerror(errno));
+			return -1;
+		}
 		if (strcmp(cmd, CMD_MW_SHUTDOWN) == 0)
-			break;
+			return 0;
 		if (rdma_conn_handle(c, cmd) < 0) {
 			/* A failed handler leaves the connection desynced (e.g. MR
-			 * re-register failed -> res.mr may be NULL). Stop serving
-			 * rather than run subsequent commands on broken resources. */
+			 * re-register failed -> res.mr may be NULL, or the peer
+			 * vanished mid-exchange). Stop serving rather than run
+			 * subsequent commands on broken resources. */
 			fprintf(stderr, "rdma_conn_serve: handle '%s' failed, "
 				"stopping\n", cmd);
 			return -1;
 		}
 	}
-	return 0;
 }
 
 const char *rdma_recover_result_str(enum rdma_recover_result r)
