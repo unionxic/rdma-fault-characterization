@@ -1,0 +1,1062 @@
+# GIN Q4 for NCCL GIN GDAKI (research build): CQ-shape knob + device-side error-CQE
+# classification with a host mailbox. All env-gated, default OFF (= stock behaviour).
+#
+# base tag: v2.32.3-1  commit: 12df1a11afad322be5a204a2db890161cbf8131d
+# LAYERED on top of ../gin/gin_fault_inject.diff (the Q2 fault-injection hook); apply both
+# from the NCCL source root, in this order:
+#   git apply ../gin/gin_fault_inject.diff && git apply gin_q4_classify.diff
+#
+# env:
+#   NCCL_GIN_GDAKI_CQ_TYPE=ring|collapsed|collapsed_host[_force]   (unset/ring = stock ring CQ)
+#       collapsed      DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED (cc=1, GPU memory); also passes
+#                      DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_CPU_PROXY_UPDATE_PI for collapsed CQs,
+#                      without which DOCA's collapsed blocking poll spins forever in CPU-proxy
+#                      doorbell mode (measured: stall at the first SQ wrap, 64 put+signal)
+#       collapsed_host DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED_HOST; refused unless GDRCopy is
+#                      available (_force tries anyway)
+#   NCCL_GIN_FAULT_CLASSIFY=1          device classification + host mailbox (default 0)
+#   NCCL_GIN_FAULT_CLASSIFY_POLL_US=N  host mailbox poll period in us (default 20)
+#   NCCL_GIN_Q4_QPWATCH_MS=N           diagnostic: watcher logs peer-QP state transitions (default 0)
+#   NCCL_GIN_Q4_LATE_READ_US=N         diagnostic, collapsed CQ: re-read slot 0 N us after detection (default 0)
+#
+# files:
+#   include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h  mailbox record (256 B), device
+#       control block, class ids; new GPU-context field `fault` (nullptr = off)
+#   include/nccl_device/gin/gdaki/gin_gdaki.h  q4Classify/q4Report (reads the error CQE: syndrome
+#       byte 55, vendor_err 54, qpn 57-59, wqe_counter 60-61; ring: scans [cqe_ci, ticket] for the
+#       first error CQE = root cause), -EIO handling in the timeout wait/flush and in the blocking
+#       wait (status-returning DOCA poll instead of the void doca_gpu_dev_verbs_wait), sticky
+#       per-context error, ncclGinApi_QueryError<GDAKI>, collapsed-CQ code option
+#   include/nccl_device/gin/gin_device_common.h  ncclGinApi_QueryError primary template (ncclSuccess)
+#   include/nccl_device/gin.h, impl/gin__funcs.h  blocking ncclGin::flush()/wait() now return
+#       ncclResult_t (source compatible): ncclRemoteError after a classified error CQE
+#   transport/net_ib/gdaki/gin_host_gdaki.cc  CQ-type knob, mailbox alloc (ncclCudaHostCalloc,
+#       mapped) + watcher thread (WARN with fingerprint/class/action, sets the GIN async result,
+#       direct QUERY_QP), queryLastError returns the classified error without the 10 s throttle
+#   gin/gin_host.cc  thread-local pointer to comm->sharedRes->ginState.asyncResult for the watcher
+#
+diff --git a/src/gin/gin_host.cc b/src/gin/gin_host.cc
+index 722914e..161ae45 100644
+--- a/src/gin/gin_host.cc
++++ b/src/gin/gin_host.cc
+@@ -26,6 +26,11 @@ NCCL_PARAM(GinEnable, "GIN_ENABLE", 1);
+ // kernel uses, on the backend actually in use.
+ thread_local bool ncclGinFaultUserCtx = false;
+ 
++// GIN Q4 (research build): while a devComm's GIN contexts are created, points at this comm's
++// GIN async result so the GDAKI mailbox watcher (NCCL_GIN_FAULT_CLASSIFY=1) can set it to
++// ncclRemoteError as soon as the device reports a classified error CQE.
++thread_local ncclResult_t* ncclGinQ4AsyncResult = nullptr;
++
+ // Backend version compatibility. Index: backend version. Value: min compatible NCCL version
+ const int proxyBackendMinVersions[] = {0, NCCL_VERSION(2, 30, 3), NCCL_VERSION(2, 30, 5), NCCL_VERSION(2, 32, 0)};
+ const int gdakiBackendMinVersions[] = {0, NCCL_VERSION(2, 30, 3), NCCL_VERSION(2, 30, 5)};
+@@ -358,6 +363,7 @@ static ncclResult_t ginDevCommSetupWithBackend(struct ncclComm* comm, struct ncc
+   };
+ 
+   ncclGinFaultUserCtx = (devComm->abortFlag == nullptr);
++  ncclGinQ4AsyncResult = &comm->sharedRes->ginState.asyncResult;
+   for (int commIdx = 0; commIdx < backend->ginCommCount; commIdx++) {
+     NCCLCHECKGOTO(backend->ncclGin->createContext(backend->ginComms[commIdx], &ginConfig,
+                                                   &ginStateDevComm->ginCtx[commIdx],
+@@ -376,6 +382,7 @@ static ncclResult_t ginDevCommSetupWithBackend(struct ncclComm* comm, struct ncc
+     if (ginStateDevComm->devHandles[commIdx]->needsProxyProgress) needsProxyProgress = true;
+   }
+   ncclGinFaultUserCtx = false;
++  ncclGinQ4AsyncResult = nullptr;
+ 
+   // Add devComm and (re)start progress threads as needed.
+   {
+@@ -403,6 +410,7 @@ static ncclResult_t ginDevCommSetupWithBackend(struct ncclComm* comm, struct ncc
+ 
+ end:
+   ncclGinFaultUserCtx = false;  // also on the error path
++  ncclGinQ4AsyncResult = nullptr;
+   if (ret != ncclSuccess) {
+     for (int commIdx = 0; commIdx < backend->ginCommCount; commIdx++) {
+       if (ginStateDevComm->ginCtx[commIdx]) backend->ncclGin->destroyContext(ginStateDevComm->ginCtx[commIdx]);
+diff --git a/src/include/nccl_device/gin.h b/src/include/nccl_device/gin.h
+index 24ba385..a7e2106 100644
+--- a/src/include/nccl_device/gin.h
++++ b/src/include/nccl_device/gin.h
+@@ -321,10 +321,12 @@ struct ncclGin_BackendMask {
+                                      Coop coop = ncclCoopThread{}, uint32_t optFlags = ncclGinOptFlagsDefault,
+                                      DescriptorSmem descriptor = ncclGin_None{}) const;
+ 
++  // GIN Q4 (research build): returns ncclRemoteError if the backend classified an error CQE on
++  // this context (GDAKI with NCCL_GIN_FAULT_CLASSIFY=1); ncclSuccess otherwise (stock behaviour).
+   template <typename Coop = ncclCoopThread, typename DescriptorSmem = ncclGin_None>
+-  NCCL_DEVICE_INLINE void wait(ncclGinRequest_t& outRequest, Coop coop = ncclCoopThread{},
+-                               DescriptorSmem descriptor = ncclGin_None{},
+-                               cuda::memory_order ord = cuda::memory_order_acquire) const;
++  NCCL_DEVICE_INLINE ncclResult_t wait(ncclGinRequest_t& outRequest, Coop coop = ncclCoopThread{},
++                                       DescriptorSmem descriptor = ncclGin_None{},
++                                       cuda::memory_order ord = cuda::memory_order_acquire) const;
+ 
+   template <typename Coop = ncclCoopThread, typename DescriptorSmem = ncclGin_None>
+   NCCL_DEVICE_INLINE ncclResult_t wait(ncclGinRequest_t& outRequest, Coop coop, DescriptorSmem descriptor,
+@@ -415,9 +417,11 @@ struct ncclGin_BackendMask {
+ 
+   // All source buffers from put's from any thread in this coop will be safe to reuse.
+   // Flush does not guarantee that data has settled in remote memory.
++  // GIN Q4 (research build): returns ncclRemoteError if the backend classified an error CQE on
++  // this context (GDAKI with NCCL_GIN_FAULT_CLASSIFY=1); ncclSuccess otherwise (stock behaviour).
+   template <typename Coop, typename DescriptorSmem = ncclGin_None>
+-  NCCL_DEVICE_INLINE void flush(Coop coop, cuda::memory_order ord = cuda::memory_order_acquire,
+-                                DescriptorSmem descriptor = ncclGin_None{}) const;
++  NCCL_DEVICE_INLINE ncclResult_t flush(Coop coop, cuda::memory_order ord = cuda::memory_order_acquire,
++                                        DescriptorSmem descriptor = ncclGin_None{}) const;
+ 
+   template <typename Coop, typename DescriptorSmem = ncclGin_None>
+   NCCL_DEVICE_INLINE ncclResult_t flush(Coop coop, cuda::memory_order ord, DescriptorSmem descriptor,
+diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki.h b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
+index 6ad2c76..ed549ed 100644
+--- a/src/include/nccl_device/gin/gdaki/gin_gdaki.h
++++ b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
+@@ -48,6 +48,19 @@ NCCL_DEVICE_INLINE uint32_t docaOptFlagsFromGinOptFlags(uint32_t ginOptFlags) {
+          (!!(ginOptFlags & ncclGinOptFlagsAggregateRequests) * DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_SKIP_DB_RINGING);
+ }
+ 
++// GIN Q4 (research build): collapsed CQ + CPU-proxy doorbell. DOCA's collapsed *blocking* poll
++// (doca_priv_gpu_dev_verbs_poll_cq_collapsed_at, used by the SQ-slot wait at every SQ wrap and by
++// doca_gpu_dev_verbs_wait) first spins until qp->sq_wqe_pi >= the polled index, but in CPU_PROXY
++// mode sq_wqe_pi is only maintained when DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_CPU_PROXY_UPDATE_PI is
++// passed to submit. Stock NCCL never passes it (its CQ is a ring, whose poll does not look at
++// sq_wqe_pi), so with NCCL_GIN_GDAKI_CQ_TYPE=collapsed the first SQ wrap spins forever. Set the
++// flag for collapsed CQs only; ring CQs (stock) get the stock code options.
++NCCL_DEVICE_INLINE static uint32_t q4CollapsedCodeOpt(doca_gpu_dev_verbs_qp* qp, uint32_t codeOpt) {
++  const uint8_t t = doca_gpu_dev_verbs_load_const((uint8_t*)&qp->cq_sq.cq_type);
++  return (t & DOCA_GPUNETIO_VERBS_CQ_FLAG_COLLAPSED) ? (codeOpt | DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_CPU_PROXY_UPDATE_PI)
++                                                     : codeOpt;
++}
++
+ template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode, typename Coop>
+ NCCL_DEVICE_INLINE static void putImplMode(
+   ncclGinCtx ctx, Coop coop, int peer, bool hasWins, ncclGinWindow_t dstWin, size_t dstOff, ncclGinWindow_t srcWin,
+@@ -62,7 +75,7 @@ NCCL_DEVICE_INLINE static void putImplMode(
+     doca_gpu_dev_verbs_qp* companion_qp;
+     ncclGinGdakiMemHandle* dstMh = (ncclGinGdakiMemHandle*)dstWin;
+     ncclGinGdakiMemHandle* srcMh = (ncclGinGdakiMemHandle*)srcWin;
+-    uint32_t codeOpt = nccl::gin::gdaki::docaOptFlagsFromGinOptFlags(optFlags);
++    uint32_t codeOpt = q4CollapsedCodeOpt(qp, nccl::gin::gdaki::docaOptFlagsFromGinOptFlags(optFlags));
+ 
+     doca_gpu_dev_verbs_addr raddr, laddr;
+     if (hasWins) {
+@@ -166,7 +179,7 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
+     ncclGinGdakiGPUContext* gdaki = &((struct ncclGinGdakiGPUContext*)ctx.handle)[ctx.contextId];
+     doca_gpu_dev_verbs_qp* qp = loadConst(&gdaki->gdqp) + peer;
+     ncclGinGdakiMemHandle* dstMh = (ncclGinGdakiMemHandle*)dstWin;
+-    uint32_t codeOpt = nccl::gin::gdaki::docaOptFlagsFromGinOptFlags(optFlags);
++    uint32_t codeOpt = q4CollapsedCodeOpt(qp, nccl::gin::gdaki::docaOptFlagsFromGinOptFlags(optFlags));
+ 
+     doca_gpu_dev_verbs_addr raddr;
+     raddr.addr = dstOff;
+@@ -275,7 +288,7 @@ NCCL_DEVICE_INLINE static void getImplMode(ncclGinCtx ctx, Coop coop, int peer,
+     laddr.key = loadConst(&localMh->lkey);
+     doca_gpu_dev_verbs_addr uninitialized_daddr{};
+     doca_gpu_dev_verbs_ticket_t out_ticket;
+-    uint32_t codeOpt = nccl::gin::gdaki::docaOptFlagsFromGinOptFlags(optFlags);
++    uint32_t codeOpt = q4CollapsedCodeOpt(qp, nccl::gin::gdaki::docaOptFlagsFromGinOptFlags(optFlags));
+     doca_gpu_dev_verbs_get<doca_sharing_mode>(qp, raddr, laddr, bytes, uninitialized_daddr, &out_ticket, codeOpt);
+     // +1 so 0 means no gets; must be after get to avoid race with concurrent flushes
+     atomicMaxAtIndex<gin_sharing_mode>(loadConst(&gdaki->last_issued_get), peer, out_ticket + 1);
+@@ -334,6 +347,195 @@ NCCL_DEVICE_INLINE static void flushAsyncImpl(ncclGinCtx ctx, int peer, ncclGinR
+   req->sq_rsvd_index = n;
+ }
+ 
++// ---------------------------------------------------------------------------
++// GIN Q4 (research build): device-side error-CQE classification + host mailbox.
++// Active only when the GPU context's `fault` pointer is set (host env
++// NCCL_GIN_FAULT_CLASSIFY=1); otherwise every path below is the stock one.
++// ---------------------------------------------------------------------------
++// mlx5 error-CQE syndrome (byte 55) + vendor_err_synd (byte 54) -> class.
++// Syndrome values: rdma-core providers/mlx5/mlx5dv.h (MLX5_CQE_SYNDROME_*),
++// mapped to ibv_wc_status by mlx5_handle_error_cqe() in providers/mlx5/cq.c.
++NCCL_DEVICE_INLINE static uint8_t q4Classify(uint8_t syndrome, uint8_t vendor) {
++  switch (syndrome) {
++  case 0x05:
++    return vendor == 0xf5 ? NCCL_GIN_Q4_CLASS_LOCAL_QP_ERR :
++           vendor == 0xf9 ? NCCL_GIN_Q4_CLASS_FLUSH_TRAILING : NCCL_GIN_Q4_CLASS_FLUSH_OTHER;
++  case 0x04: return NCCL_GIN_Q4_CLASS_LOC_PROT;
++  case 0x12: return NCCL_GIN_Q4_CLASS_REM_INV_REQ;
++  case 0x13: return NCCL_GIN_Q4_CLASS_REM_ACCESS;
++  case 0x15: return NCCL_GIN_Q4_CLASS_RETRY_EXC;
++  case 0x16: return NCCL_GIN_Q4_CLASS_RNR_RETRY_EXC;
++  case 0x01: return NCCL_GIN_Q4_CLASS_LOC_LEN;
++  case 0x02: return NCCL_GIN_Q4_CLASS_LOC_QP_OP;
++  case 0x14: return NCCL_GIN_Q4_CLASS_REM_OP;
++  case 0x22: return NCCL_GIN_Q4_CLASS_REM_ABORT;
++  case 0x11: return NCCL_GIN_Q4_CLASS_LOC_ACCESS;
++  case 0x10: return NCCL_GIN_Q4_CLASS_BAD_RESP;
++  default: return NCCL_GIN_Q4_CLASS_OTHER;
++  }
++}
++
++NCCL_DEVICE_INLINE static uint64_t q4GlobalTimer() {
++  uint64_t t;
++  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
++  return t;
++}
++
++NCCL_DEVICE_INLINE static void q4StoreSys32(uint32_t* p, uint32_t v) {
++  asm volatile("st.relaxed.sys.global.u32 [%0], %1;" ::"l"(p), "r"(v) : "memory");
++}
++
++// Copy one 64-byte CQE (written by the NIC) with system-scope loads.
++NCCL_DEVICE_INLINE static void q4ReadCqe(const uint8_t* cqe, uint8_t out[64]) {
++  NVCC_PRAGMA_UNROLL_DISABLED
++  for (int w = 0; w < 16; w++) {
++    uint32_t v = doca_gpu_dev_verbs_load_relaxed_sys_global((uint32_t*)(cqe + 4 * w));
++    out[4 * w + 0] = v & 0xff;
++    out[4 * w + 1] = (v >> 8) & 0xff;
++    out[4 * w + 2] = (v >> 16) & 0xff;
++    out[4 * w + 3] = (v >> 24) & 0xff;
++  }
++}
++
++// op_own byte of a CQE slot (system-scope load of the last dword).
++NCCL_DEVICE_INLINE static uint32_t q4CqeTailChunk(const uint8_t* cqe) {
++  return doca_gpu_dev_verbs_bswap32(doca_gpu_dev_verbs_load_relaxed_sys_global((uint32_t*)(cqe + 60)));
++}
++
++// Build and publish one record. kind = error CQE seen (-EIO) or timeout dump.
++// Called by the polling thread only, on the error / timeout path.
++NCCL_DEVICE_INLINE static void q4Report(ncclGinCtx ctx, struct ncclGinGdakiQ4* f, doca_gpu_dev_verbs_qp* qp,
++                                        int peer, uint64_t ticket, uint8_t kind, uint8_t path) {
++  const uint64_t gt = q4GlobalTimer();
++  struct doca_gpu_dev_verbs_cq* cq = doca_gpu_dev_verbs_qp_get_cq_sq(qp);
++  const uint8_t* base = (const uint8_t*)doca_gpu_dev_verbs_load_const((uintptr_t*)&cq->cqe_daddr);
++  const uint32_t cqe_num = doca_gpu_dev_verbs_load_const(&cq->cqe_num);
++  const uint64_t cqe_rsvd = doca_gpu_dev_verbs_load_const(&cq->cqe_rsvd);
++  const uint8_t cq_type = doca_gpu_dev_verbs_load_const((uint8_t*)&cq->cq_type);
++  const uint64_t cqe_ci = *(volatile uint64_t*)&cq->cqe_ci;
++  const bool collapsed = (cq_type & DOCA_GPUNETIO_VERBS_CQ_FLAG_COLLAPSED) != 0;
++
++  struct ncclGinGdakiQ4Record r;
++  uint32_t* rw = (uint32_t*)&r;
++  NVCC_PRAGMA_UNROLL_DISABLED
++  for (unsigned i = 0; i < sizeof(r) / 4; i++) rw[i] = 0;
++  r.kind = kind;
++  r.path = path;
++  r.cq_type = cq_type;
++  r.peer = (uint32_t)peer;
++  r.ctx_id = ctx.contextId;
++  r.cqe_num = cqe_num;
++  r.ticket = ticket;
++  r.cqe_ci = cqe_ci;
++  r.gtimer_ns = gt;
++
++  uint64_t rootIdx = ticket;
++  if (base != nullptr) {
++    // CQE at the polled index (ring) / the single collapsed slot 0.
++    const uint8_t* polled = collapsed ? base : base + ((ticket + cqe_rsvd) & (cqe_num - 1)) * DOCA_GPUNETIO_VERBS_CQE_SIZE;
++    q4ReadCqe(polled, r.polled_cqe);
++    r.polled_opcode = r.polled_cqe[63] >> DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT;
++    r.polled_wqe_counter = ((uint16_t)r.polled_cqe[60] << 8) | r.polled_cqe[61];
++    r.polled_syndrome = r.polled_cqe[55];
++    r.polled_vendor_err = r.polled_cqe[54];
++
++    if (!collapsed) {
++      // Ring CQ: every WQE owns the CQE at its index. The root cause is the first error CQE of
++      // the current generation in the not-yet-consumed window [cqe_ci, ticket].
++      uint64_t lo = cqe_ci;
++      if (ticket + 1 > cqe_num && lo < ticket + 1 - cqe_num) lo = ticket + 1 - cqe_num;
++      bool found = false;
++      NVCC_PRAGMA_UNROLL_DISABLED
++      for (uint64_t i = lo; i <= ticket; i++) {
++        const uint64_t iq = i + cqe_rsvd;
++        const uint32_t chunk = q4CqeTailChunk(base + (iq & (cqe_num - 1)) * DOCA_GPUNETIO_VERBS_CQE_SIZE);
++        const uint16_t wc = chunk >> 16;
++        const uint8_t opown = chunk & 0xff;
++        const bool current = !((opown & DOCA_GPUNETIO_IB_MLX5_CQE_OWNER_MASK) ^ !!(iq & cqe_num)) &&
++                             (wc == (uint16_t)(i & 0xffff));
++        if (!current) continue;
++        const uint8_t op = opown >> DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT;
++        if (op == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR || op == DOCA_GPUNETIO_IB_MLX5_CQE_RESP_ERR) {
++          if (!found) { rootIdx = i; found = true; }
++          r.n_err_window++;
++        } else {
++          r.n_ok_window++;
++        }
++      }
++      q4ReadCqe(base + ((rootIdx + cqe_rsvd) & (cqe_num - 1)) * DOCA_GPUNETIO_VERBS_CQE_SIZE, r.root_cqe);
++    } else {
++      for (int b = 0; b < 64; b++) r.root_cqe[b] = r.polled_cqe[b];
++      const uint8_t op = r.polled_opcode;
++      if (op == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR || op == DOCA_GPUNETIO_IB_MLX5_CQE_RESP_ERR) r.n_err_window = 1;
++      else if (op != DOCA_GPUNETIO_IB_MLX5_CQE_INVALID) r.n_ok_window = 1;
++      // Optional (diagnostic, NCCL_GIN_Q4_LATE_READ_US): re-read the single collapsed slot after a
++      // delay to see whether a later (flush) CQE overwrote the one the poll saw. Delays publishing.
++      const uint32_t lateNs = *(volatile uint32_t*)&f->late_read_ns;
++      if (lateNs > 0 && kind == NCCL_GIN_Q4_KIND_ERR_CQE) {
++        uint64_t now;
++        do { now = q4GlobalTimer(); } while (now - gt < lateNs);
++        uint8_t late[64];
++        q4ReadCqe(base, late);
++        r.late_opcode = late[63] >> DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT;
++        r.late_wqe_counter = ((uint16_t)late[60] << 8) | late[61];
++        r.late_syndrome = late[55];
++        r.late_vendor_err = late[54];
++        r.late_valid = 1;
++        r.late_delay_ns = (uint32_t)(now - gt);
++      }
++    }
++    // Full-buffer scan: error opcodes anywhere in the CQ buffer.
++    NVCC_PRAGMA_UNROLL_DISABLED
++    for (uint32_t j = 0; j < cqe_num; j++) {
++      const uint8_t op = (q4CqeTailChunk(base + (uint64_t)j * DOCA_GPUNETIO_VERBS_CQE_SIZE) & 0xff) >>
++                         DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT;
++      if (op == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR || op == DOCA_GPUNETIO_IB_MLX5_CQE_RESP_ERR) r.n_err_buffer++;
++    }
++  }
++  r.root_index = rootIdx;
++  // mlx5_err_cqe: hw_err_synd 52, hw_synd_type 53, vendor_err_synd 54, syndrome 55,
++  // s_wqe_opcode_qpn 56-59 (BE), wqe_counter 60-61 (BE), op_own 63.
++  r.hw_err_synd = r.root_cqe[52];
++  r.hw_synd_type = r.root_cqe[53];
++  r.vendor_err = r.root_cqe[54];
++  r.syndrome = r.root_cqe[55];
++  r.qpn = ((uint32_t)r.root_cqe[57] << 16) | ((uint32_t)r.root_cqe[58] << 8) | r.root_cqe[59];
++  r.wqe_counter = ((uint16_t)r.root_cqe[60] << 8) | r.root_cqe[61];
++  r.root_opcode = r.root_cqe[63] >> DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT;
++  const bool rootIsErr =
++    r.root_opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR || r.root_opcode == DOCA_GPUNETIO_IB_MLX5_CQE_RESP_ERR;
++  if (!rootIsErr) {
++    // Timeout dump without an error CQE: the QP number still comes from the device QP.
++    r.qpn = doca_gpu_dev_verbs_load_const(&qp->sq_num);
++    r.cls = NCCL_GIN_Q4_CLASS_NO_ERR_CQE;
++  } else {
++    r.cls = q4Classify(r.syndrome, r.vendor_err);
++  }
++
++  if (kind == NCCL_GIN_Q4_KIND_ERR_CQE) {
++    const uint32_t c = ctx.contextId < NCCL_GIN_GDAKI_Q4_MAX_CTX ? ctx.contextId : NCCL_GIN_GDAKI_Q4_MAX_CTX - 1;
++    atomicExch(&f->sticky[c], 1u);
++  }
++
++  // Publish: invalidate the slot, write the body, fence, then seq, fence, then magic.
++  struct ncclGinGdakiQ4Record* mbx = *(struct ncclGinGdakiQ4Record* volatile*)&f->mbx;
++  const uint32_t nslots = *(volatile uint32_t*)&f->nslots;
++  if (mbx == nullptr || nslots == 0) return;
++  const uint32_t seq = atomicAdd(&f->seq, 1u) + 1u;
++  r.seq = seq;
++  r.magic = NCCL_GIN_GDAKI_Q4_MAGIC;
++  uint32_t* dst = (uint32_t*)(mbx + ((seq - 1u) % nslots));
++  q4StoreSys32(&dst[0], 0u);
++  __threadfence_system();
++  NVCC_PRAGMA_UNROLL_DISABLED
++  for (unsigned i = 2; i < sizeof(r) / 4; i++) q4StoreSys32(&dst[i], rw[i]);
++  __threadfence_system();
++  q4StoreSys32(&dst[1], seq);
++  __threadfence_system();
++  q4StoreSys32(&dst[0], NCCL_GIN_GDAKI_Q4_MAGIC);
++  __threadfence_system();
++}
++
+ template <bool HasTimeout, enum doca_gpu_dev_verbs_resource_sharing_mode doca_sharing_mode>
+ NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinRequest_t& request, cuda::memory_order ord,
+                                                     uint32_t* abortFlag, uint64_t timeoutCycles) {
+@@ -345,12 +547,24 @@ NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinReque
+   doca_gpu_dev_verbs_qp* qp = loadConst(&gdaki->gdqp) + req.peer;
+   if (req.sq_rsvd_index == 0) return ncclSuccess;
+   const doca_gpu_dev_verbs_ticket_t pollIdx = static_cast<doca_gpu_dev_verbs_ticket_t>(req.sq_rsvd_index - 1u);
++  struct ncclGinGdakiQ4* q4 = loadConst(&gdaki->fault); // GIN Q4: nullptr = stock behaviour
+ 
+   // doca_gpu_dev_verbs_wait blocks indefinitely, so it can only be used when
+   // the caller has no deadline AND no abort flag to honor.
+   if NCCL_IF_CONSTEXPR (!HasTimeout) {
+     if (abortFlag == nullptr) {
+-      doca_gpu_dev_verbs_wait<doca_sharing_mode>(qp, pollIdx);
++      if (q4 == nullptr) {
++        doca_gpu_dev_verbs_wait<doca_sharing_mode>(qp, pollIdx);
++        cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
++        return ncclSuccess;
++      }
++      // GIN Q4: same blocking poll as doca_gpu_dev_verbs_wait, but keep its status: an error CQE
++      // (-EIO) is classified and reported instead of being counted as a completion.
++      int st = doca_gpu_dev_verbs_poll_cq_at<doca_sharing_mode>(qp, pollIdx);
++      if (st < 0) {
++        q4Report(ctx, q4, qp, req.peer, pollIdx, NCCL_GIN_Q4_KIND_ERR_CQE, NCCL_GIN_Q4_PATH_WAIT_BLOCKING);
++        return ncclRemoteError;
++      }
+       cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
+       return ncclSuccess;
+     }
+@@ -367,8 +581,17 @@ NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinReque
+       cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
+       return ncclSuccess;
+     }
++    if (status < 0 && q4 != nullptr) { // GIN Q4: error CQE -> classify, report, fail the wait
++      q4Report(ctx, q4, qp, req.peer, pollIdx, NCCL_GIN_Q4_KIND_ERR_CQE,
++               HasTimeout ? NCCL_GIN_Q4_PATH_WAIT_TIMEOUT : NCCL_GIN_Q4_PATH_ABORTABLE);
++      return ncclRemoteError;
++    }
+     if NCCL_IF_CONSTEXPR (HasTimeout) {
+-      if (clock64() - startCycle >= timeoutCycles) return ncclTimeout;
++      if (clock64() - startCycle >= timeoutCycles) {
++        if (q4 != nullptr)
++          q4Report(ctx, q4, qp, req.peer, pollIdx, NCCL_GIN_Q4_KIND_TIMEOUT_DUMP, NCCL_GIN_Q4_PATH_WAIT_TIMEOUT);
++        return ncclTimeout;
++      }
+     }
+     if (testAbort(abortFlag, steps)) {
+       cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
+@@ -398,6 +621,7 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+ 
+   ncclGinGdakiGPUContext* gdaki = &((struct ncclGinGdakiGPUContext*)ctx.handle)[ctx.contextId];
+   doca_gpu_dev_verbs_qp* qps = loadConst(&gdaki->gdqp);
++  struct ncclGinGdakiQ4* q4 = loadConst(&gdaki->fault); // GIN Q4: nullptr = stock behaviour
+   uint32_t steps = 0;
+   uint64_t startCycle = 0;
+   (void)startCycle; // referenced only when HasTimeout is true
+@@ -413,7 +637,16 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+     // no deadline AND no abort flag to honor.
+     if NCCL_IF_CONSTEXPR (!HasTimeout) {
+       if (abortFlag == nullptr) {
+-        doca_gpu_dev_verbs_wait<resource_sharing_mode>(&qps[peer], ticket);
++        if (q4 == nullptr) {
++          doca_gpu_dev_verbs_wait<resource_sharing_mode>(&qps[peer], ticket);
++          continue;
++        }
++        // GIN Q4: blocking poll that keeps the status (see waitImplCore).
++        int st = doca_gpu_dev_verbs_poll_cq_at<resource_sharing_mode>(&qps[peer], ticket);
++        if (st < 0) {
++          q4Report(ctx, q4, &qps[peer], peer, ticket, NCCL_GIN_Q4_KIND_ERR_CQE, NCCL_GIN_Q4_PATH_FLUSH_BLOCKING);
++          return ncclRemoteError;
++        }
+         continue;
+       }
+     }
+@@ -422,8 +655,17 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+     while (true) {
+       int status = doca_gpu_dev_verbs_poll_one_cq_at<resource_sharing_mode>(&qps[peer], ticket);
+       if (status == 0) break;
++      if (status < 0 && q4 != nullptr) { // GIN Q4: error CQE -> classify, report, fail the flush
++        q4Report(ctx, q4, &qps[peer], peer, ticket, NCCL_GIN_Q4_KIND_ERR_CQE,
++                 HasTimeout ? NCCL_GIN_Q4_PATH_FLUSH_TIMEOUT : NCCL_GIN_Q4_PATH_ABORTABLE);
++        return ncclRemoteError;
++      }
+       if NCCL_IF_CONSTEXPR (HasTimeout) {
+-        if (clock64() - startCycle >= timeoutCycles) return ncclTimeout;
++        if (clock64() - startCycle >= timeoutCycles) {
++          if (q4 != nullptr)
++            q4Report(ctx, q4, &qps[peer], peer, ticket, NCCL_GIN_Q4_KIND_TIMEOUT_DUMP, NCCL_GIN_Q4_PATH_FLUSH_TIMEOUT);
++          return ncclTimeout;
++        }
+       }
+       if (testAbort(abortFlag, steps)) {
+         if NCCL_IF_CONSTEXPR (HasTimeout) {
+@@ -658,6 +900,20 @@ struct ncclGinApi_FlushesAllPutsOnAnySignal<NCCL_NET_DEVICE_GIN_GDAKI> {
+   }
+ };
+ 
++// GIN Q4 (research build): sticky per-context error set by q4Report() when a wait/flush
++// classified an error CQE. Stock (fault == nullptr): always ncclSuccess.
++template <>
++struct ncclGinApi_QueryError<NCCL_NET_DEVICE_GIN_GDAKI> {
++  NCCL_DEVICE_INLINE static ncclResult_t call(ncclGinCtx ctx) {
++    using nccl::utility::loadConst;
++    ncclGinGdakiGPUContext* gdaki = &((struct ncclGinGdakiGPUContext*)ctx.handle)[ctx.contextId];
++    struct ncclGinGdakiQ4* q4 = loadConst(&gdaki->fault);
++    if (q4 == nullptr) return ncclSuccess;
++    const uint32_t c = ctx.contextId < NCCL_GIN_GDAKI_Q4_MAX_CTX ? ctx.contextId : NCCL_GIN_GDAKI_Q4_MAX_CTX - 1;
++    return (*(volatile uint32_t*)&q4->sticky[c]) ? ncclRemoteError : ncclSuccess;
++  }
++};
++
+ template <>
+ struct ncclGinApi_Flush<NCCL_NET_DEVICE_GIN_GDAKI> {
+   template <typename Coop>
+diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
+index 6463df7..b5f66b3 100644
+--- a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
++++ b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
+@@ -22,6 +22,106 @@ struct ncclGinGdakiGlobalGPUBufferTable {
+   unsigned int offset;
+ };
+ 
++// ---------------------------------------------------------------------------
++// GIN Q4 (research build): device-side error-CQE classification + host mailbox.
++// Env-gated, default OFF (NCCL_GIN_FAULT_CLASSIFY=1). With it off the GPU
++// context's `fault` pointer is nullptr and every device path is the stock one.
++//
++// When a GDAKI wait/flush polls a CQE and gets -EIO, device code reads the
++// error CQE (mlx5_err_cqe: syndrome byte 55, vendor_err_synd byte 54,
++// s_wqe_opcode_qpn bytes 56-59, wqe_counter bytes 60-61), classifies it,
++// writes one record into a host-pinned mapped mailbox (system-scope stores +
++// __threadfence_system, magic/seq written last) and returns ncclRemoteError.
++// A host thread in gin_host_gdaki.cc watches the mailbox.
++// ---------------------------------------------------------------------------
++#define NCCL_GIN_GDAKI_Q4_MAGIC 0x51344d42u  // "Q4MB"
++#define NCCL_GIN_GDAKI_Q4_NSLOTS 16
++#define NCCL_GIN_GDAKI_Q4_MAX_CTX 64
++
++// Class ids (device -> host). Syndromes: rdma-core providers/mlx5/cq.c.
++enum ncclGinGdakiQ4Class {
++  NCCL_GIN_Q4_CLASS_NONE = 0,
++  NCCL_GIN_Q4_CLASS_LOCAL_QP_ERR = 1,    // 0x05 WR_FLUSH / vendor 0xf5 (head-of-SQ WQE when the local QP went to ERR)
++  NCCL_GIN_Q4_CLASS_FLUSH_TRAILING = 2,  // 0x05 WR_FLUSH / vendor 0xf9 (flushed behind an earlier error)
++  NCCL_GIN_Q4_CLASS_FLUSH_OTHER = 3,     // 0x05 WR_FLUSH / other vendor syndrome
++  NCCL_GIN_Q4_CLASS_LOC_PROT = 4,        // 0x04 LOCAL_PROT
++  NCCL_GIN_Q4_CLASS_REM_INV_REQ = 5,     // 0x12 REMOTE_INVAL_REQ (0x8a)
++  NCCL_GIN_Q4_CLASS_REM_ACCESS = 6,      // 0x13 REMOTE_ACCESS (0x88)
++  NCCL_GIN_Q4_CLASS_RETRY_EXC = 7,       // 0x15 TRANSPORT_RETRY_EXC (0x81)
++  NCCL_GIN_Q4_CLASS_RNR_RETRY_EXC = 8,   // 0x16 RNR_RETRY_EXC (0x87)
++  NCCL_GIN_Q4_CLASS_LOC_LEN = 9,         // 0x01
++  NCCL_GIN_Q4_CLASS_LOC_QP_OP = 10,      // 0x02
++  NCCL_GIN_Q4_CLASS_REM_OP = 11,         // 0x14
++  NCCL_GIN_Q4_CLASS_REM_ABORT = 12,      // 0x22
++  NCCL_GIN_Q4_CLASS_LOC_ACCESS = 13,     // 0x11
++  NCCL_GIN_Q4_CLASS_BAD_RESP = 14,       // 0x10
++  NCCL_GIN_Q4_CLASS_OTHER = 15,
++  NCCL_GIN_Q4_CLASS_NO_ERR_CQE = 32,     // timeout dump: the wait expired and no error CQE was at the polled index
++};
++
++// Record kinds and device paths.
++#define NCCL_GIN_Q4_KIND_ERR_CQE 1
++#define NCCL_GIN_Q4_KIND_TIMEOUT_DUMP 2
++#define NCCL_GIN_Q4_PATH_WAIT_TIMEOUT 1
++#define NCCL_GIN_Q4_PATH_FLUSH_TIMEOUT 2
++#define NCCL_GIN_Q4_PATH_WAIT_BLOCKING 3
++#define NCCL_GIN_Q4_PATH_FLUSH_BLOCKING 4
++#define NCCL_GIN_Q4_PATH_ABORTABLE 5
++
++// One mailbox record, 256 B, in host-pinned mapped memory. The GPU writes the
++// body, __threadfence_system(), then `seq` and finally `magic` (both with
++// system-scope stores); the host reads `magic`/`seq` first.
++struct ncclGinGdakiQ4Record {
++  uint32_t magic;               // NCCL_GIN_GDAKI_Q4_MAGIC once the record is complete
++  uint32_t seq;                 // 1-based, per gdaki context
++  uint32_t qpn;                 // root CQE s_wqe_opcode_qpn & 0xffffff
++  uint16_t wqe_counter;         // root CQE wqe_counter
++  uint8_t syndrome;             // root CQE byte 55
++  uint8_t vendor_err;           // root CQE byte 54
++  uint8_t cls;                  // enum ncclGinGdakiQ4Class
++  uint8_t kind;                 // NCCL_GIN_Q4_KIND_*
++  uint8_t path;                 // NCCL_GIN_Q4_PATH_*
++  uint8_t cq_type;              // doca_gpu_dev_verbs_cq_type (0 ring, 1 collapsed, 3 collapsed-host)
++  uint8_t hw_err_synd;          // root CQE byte 52
++  uint8_t hw_synd_type;         // root CQE byte 53
++  uint8_t root_opcode;          // root CQE op_own >> 4
++  uint8_t polled_opcode;        // op_own >> 4 of the CQE at the polled index (ring) / slot 0 (collapsed)
++  uint16_t polled_wqe_counter;
++  uint8_t polled_syndrome;
++  uint8_t polled_vendor_err;
++  uint32_t peer;                // GIN rank of the QP
++  uint32_t ctx_id;              // GIN context id
++  uint32_t n_err_window;        // error CQEs found in [cqe_ci, ticket] (ring) / slot 0 (collapsed)
++  uint32_t n_ok_window;         // successful CQEs in that window
++  uint32_t n_err_buffer;        // opcode 0xd/0xe entries anywhere in the CQ buffer (full scan)
++  uint32_t cqe_num;             // CQ size
++  uint32_t pad0;
++  uint64_t ticket;             // polled consumer index (WQE index)
++  uint64_t cqe_ci;              // software consumer index at detection
++  uint64_t root_index;          // WQE index of the root CQE (ring); = ticket for collapsed
++  uint64_t gtimer_ns;           // %globaltimer at detection
++  uint8_t root_cqe[64];         // raw root CQE
++  uint8_t polled_cqe[64];       // raw CQE at the polled index / slot 0
++  uint16_t late_wqe_counter;    // collapsed CQ, optional: slot 0 re-read late_delay_ns after detection
++  uint8_t late_opcode;
++  uint8_t late_syndrome;
++  uint8_t late_vendor_err;
++  uint8_t late_valid;           // 1 if the re-read was done
++  uint8_t pad1[2];
++  uint32_t late_delay_ns;
++  uint8_t reserved[28];
++};
++static_assert(sizeof(struct ncclGinGdakiQ4Record) == 256, "ncclGinGdakiQ4Record must be 256 bytes");
++
++// Device-memory control block (one per GDAKI host context).
++struct ncclGinGdakiQ4 {
++  struct ncclGinGdakiQ4Record* mbx;             // device pointer of the mapped host records
++  uint32_t nslots;
++  uint32_t seq;                                 // atomically incremented by the GPU
++  uint32_t late_read_ns;                        // collapsed CQ: re-read slot 0 this long after detection (0 = off)
++  uint32_t sticky[NCCL_GIN_GDAKI_Q4_MAX_CTX];   // per GIN context: 1 once an error CQE was classified
++};
++
+ struct ncclGinGdakiGPUContext {
+   struct doca_gpu_dev_verbs_qp* gdqp;
+   struct doca_gpu_dev_verbs_qp* companion_gdqp;
+@@ -34,6 +134,8 @@ struct ncclGinGdakiGPUContext {
+ 
+   uint64_t* last_issued_get;  // per-peer (0 = no gets)
+   uint64_t* last_visible_get; // per-peer
++
++  struct ncclGinGdakiQ4* fault; // GIN Q4: nullptr unless NCCL_GIN_FAULT_CLASSIFY=1 (research build)
+ };
+ 
+ struct ncclGinGdakiMemHandle {
+diff --git a/src/include/nccl_device/gin/gin_device_common.h b/src/include/nccl_device/gin/gin_device_common.h
+index ec55a3c..eccf6a6 100644
+--- a/src/include/nccl_device/gin/gin_device_common.h
++++ b/src/include/nccl_device/gin/gin_device_common.h
+@@ -202,6 +202,15 @@ template <ncclNetDeviceType backend>
+ struct ncclGinApi_FlushesAllPutsOnAnySignal {
+   NCCL_DEVICE_INLINE static bool call(ncclGinCtx);
+ };
++
++// GIN Q4 (research build): sticky device-side error state of a GIN context, consulted by the
++// blocking flush()/wait() so they no longer report success for an operation that completed with
++// an error CQE. Backends without device-side error classification report ncclSuccess (this
++// primary template); GDAKI specializes it (gdaki/gin_gdaki.h).
++template <ncclNetDeviceType backend>
++struct ncclGinApi_QueryError {
++  NCCL_DEVICE_INLINE static ncclResult_t call(ncclGinCtx) { return ncclSuccess; }
++};
+ #endif
+ 
+ #ifdef __CUDACC__
+diff --git a/src/include/nccl_device/impl/gin__funcs.h b/src/include/nccl_device/impl/gin__funcs.h
+index cfcd547..4988f62 100644
+--- a/src/include/nccl_device/impl/gin__funcs.h
++++ b/src/include/nccl_device/impl/gin__funcs.h
+@@ -974,12 +974,14 @@ NCCL_DEVICE_INLINE void ncclGinSignal(ncclGin_C* net, ncclTeam team, int peer, b
+ #ifdef __CUDACC__
+ template <unsigned beMask>
+ template <typename Coop, typename DescriptorSmem>
+-NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::flush(Coop coop, cuda::memory_order ord,
+-                                                           DescriptorSmem descriptor) const {
++NCCL_DEVICE_INLINE ncclResult_t ncclGin_BackendMask<beMask>::flush(Coop coop, cuda::memory_order ord,
++                                                                   DescriptorSmem descriptor) const {
+   coop.sync();
+   ncclGinCall<ncclGinApi_Flush>(this->_makeCtx(), coop, ncclGin_isDescriptor(descriptor),
+                                 ncclGin_getDescriptor(descriptor), ord, this->comm.abortFlag);
+   coop.sync();
++  // GIN Q4: the blocking backend call is void; an error CQE it classified is kept as sticky state.
++  return ncclGinCall<ncclGinApi_QueryError>(this->_makeCtx());
+ }
+ 
+ template <unsigned beMask>
+@@ -1166,14 +1168,17 @@ NCCL_DEVICE_INLINE uint64_t ncclGinReadSignalVA(ncclGin_C* net, ncclWindow_t sig
+ 
+ template <unsigned beMask>
+ template <typename Coop, typename DescriptorSmem>
+-NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::wait(ncclGinRequest_t& request, Coop coop,
+-                                                          DescriptorSmem descriptor, cuda::memory_order ord) const {
++NCCL_DEVICE_INLINE ncclResult_t ncclGin_BackendMask<beMask>::wait(ncclGinRequest_t& request, Coop coop,
++                                                                  DescriptorSmem descriptor,
++                                                                  cuda::memory_order ord) const {
+   coop.sync();
+   if (coop.thread_rank() == 0) {
+     ncclGinCall<ncclGinApi_Wait>(this->_makeCtx(), request, ncclGin_isDescriptor(descriptor),
+                                  ncclGin_getDescriptor(descriptor), ord, this->comm.abortFlag);
+   }
+   coop.sync();
++  // GIN Q4: the blocking backend call is void; an error CQE it classified is kept as sticky state.
++  return ncclGinCall<ncclGinApi_QueryError>(this->_makeCtx());
+ }
+ 
+ template <unsigned beMask>
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 0185e08..a796adb 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -17,6 +17,10 @@
+ #include <mutex>
+ #include <thread>
+ #include <chrono>
++#include <atomic>
++#include <vector>
++#include <algorithm>
++#include <cstring>
+ 
+ #include "ibvwrap.h"
+ #include "mlx5/mlx5dvwrap.h"
+@@ -382,6 +386,8 @@ struct gdaki_context {
+   int rankStride;
+ 
+   doca_verbs_comp_channel_t* docaEvent;
++
++  struct gdakiQ4Host* q4;  // GIN Q4 (research build): nullptr unless NCCL_GIN_FAULT_CLASSIFY=1
+ };
+ 
+ static void gdakiFillExchInfo(struct gdaki_exch_info* exch_info, struct gdaki_context* gdaki_ctx,
+@@ -654,6 +660,317 @@ static void ncclGinGdakiFaultInjectArm(struct gdaki_context* gdaki_ctx) {
+   }).detach();
+ }
+ 
++// ---------------------------------------------------------------------------
++// GIN Q4 (research build; default OFF), layered on the fault-injection hook above.
++//   NCCL_GIN_GDAKI_CQ_TYPE=ring|collapsed|collapsed_host[_force]
++//       CQ shape of the GDAKI QPs. Unset/ring = stock (DOCA_GPUNETIO_VERBS_CQ_64B, a ring
++//       CQ in GPU memory). collapsed = DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED (cc=1, GPU
++//       memory). collapsed_host = DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED_HOST (host memory,
++//       CPU progress advances cqe_ci); it needs GDRCopy, so it is refused when GDRCopy is
++//       unavailable unless the _force suffix is given. The device poll picks the matching
++//       poll function at run time from cq->cq_type (doca_gpu_dev_verbs_poll_one_cq_at).
++//   NCCL_GIN_FAULT_CLASSIFY=1
++//       device-side error-CQE classification (gin_gdaki.h) + host mailbox watcher (below).
++//   NCCL_GIN_FAULT_CLASSIFY_POLL_US=<us>   mailbox poll period (default 20)
++//   NCCL_GIN_Q4_QPWATCH_MS=<ms>            diagnostic: the watcher also queries the peer
++//       QPs' state every <ms> and logs state transitions (default 0 = off)
++//   NCCL_GIN_Q4_LATE_READ_US=<us>          diagnostic, collapsed CQ: the device re-reads the
++//       single CQ slot <us> after detecting an error CQE, before publishing (default 0 = off)
++// ---------------------------------------------------------------------------
++NCCL_PARAM(GinFaultClassify, "GIN_FAULT_CLASSIFY", 0);
++NCCL_PARAM(GinFaultClassifyPollUs, "GIN_FAULT_CLASSIFY_POLL_US", 20);
++NCCL_PARAM(GinQ4QpWatchMs, "GIN_Q4_QPWATCH_MS", 0);
++NCCL_PARAM(GinQ4LateReadUs, "GIN_Q4_LATE_READ_US", 0);
++extern thread_local ncclResult_t* ncclGinQ4AsyncResult;  // gin/gin_host.cc
++extern "C" bool doca_gpu_gdrcopy_is_supported();          // doca-gpunetio/src/doca_gpunetio_gdrcopy.cpp
++
++struct gdakiQ4Host {
++  std::atomic<bool> stop{false};
++  std::atomic<int> hasError{0};
++  std::thread th;
++  struct ncclGinGdakiQ4Record* rec_h = nullptr;  // host-pinned mapped mailbox (ncclCudaHostCalloc)
++  struct ncclGinGdakiQ4Record* rec_d = nullptr;  // its device alias
++  struct ncclGinGdakiQ4* dev = nullptr;          // device control block (ncclCudaCalloc)
++  uint32_t lastSeq[NCCL_GIN_GDAKI_Q4_NSLOTS] = {};
++  ncclResult_t* asyncResult = nullptr;           // &comm->sharedRes->ginState.asyncResult
++  int pollUs = 20;
++  int qpWatchMs = 0;
++  int nErr = 0, nDump = 0, nLogged = 0;
++  struct gdaki_context* ctx = nullptr;
++};
++
++static double gdakiQ4MonoMs() {
++  struct timespec t;
++  clock_gettime(CLOCK_MONOTONIC, &t);
++  return t.tv_sec * 1e3 + t.tv_nsec * 1e-6;
++}
++
++// mlx5 syndrome -> ibv_wc_status (rdma-core providers/mlx5/cq.c, mlx5_handle_error_cqe).
++static int gdakiQ4WcStatus(uint8_t syndrome) {
++  switch (syndrome) {
++  case 0x01: return 1;   // IBV_WC_LOC_LEN_ERR
++  case 0x02: return 2;   // IBV_WC_LOC_QP_OP_ERR
++  case 0x04: return 4;   // IBV_WC_LOC_PROT_ERR
++  case 0x05: return 5;   // IBV_WC_WR_FLUSH_ERR
++  case 0x06: return 6;   // IBV_WC_MW_BIND_ERR
++  case 0x10: return 7;   // IBV_WC_BAD_RESP_ERR
++  case 0x11: return 8;   // IBV_WC_LOC_ACCESS_ERR
++  case 0x12: return 9;   // IBV_WC_REM_INV_REQ_ERR
++  case 0x13: return 10;  // IBV_WC_REM_ACCESS_ERR
++  case 0x14: return 11;  // IBV_WC_REM_OP_ERR
++  case 0x15: return 12;  // IBV_WC_RETRY_EXC_ERR
++  case 0x16: return 13;  // IBV_WC_RNR_RETRY_EXC_ERR
++  case 0x22: return 16;  // IBV_WC_REM_ABORT_ERR
++  default: return 21;    // IBV_WC_GENERAL_ERR
++  }
++}
++
++struct gdakiQ4ClassText {
++  const char* name;
++  const char* fault;
++  const char* cause;
++  const char* action;
++};
++
++// Wording of cause/action follows harness/common/probe.c classify().
++static gdakiQ4ClassText gdakiQ4Class(uint8_t cls, uint8_t vendor) {
++  switch (cls) {
++  case NCCL_GIN_Q4_CLASS_LOCAL_QP_ERR:
++    return {"LOCAL_QP_ERR", "local_err", "WR flushed (local QP left RTS, e.g. forced ERR); head-of-SQ WQE (vendor 0xf5)",
++            "drain CQ, QP-only recover, repost"};
++  case NCCL_GIN_Q4_CLASS_FLUSH_TRAILING:
++    return {"FLUSH_TRAILING", "unknown",
++            "WR flushed behind an earlier error (vendor 0xf9); no root-cause CQE in the polled window",
++            "query QP state and peer liveness; drain CQ, QP-only recover, repost"};
++  case NCCL_GIN_Q4_CLASS_FLUSH_OTHER:
++    return {"WR_FLUSH", "local_err?", "WR flushed (local QP left RTS, e.g. forced ERR)", "drain CQ, QP-only recover, repost"};
++  case NCCL_GIN_Q4_CLASS_REM_ACCESS:
++    return {"REM_ACCESS", "rem_access",
++            vendor == 0x88 ? "remote access: invalid rkey or out-of-bounds addr" : "remote access violation",
++            "refresh rkey / clamp to remote MR bounds, QP-only recover"};
++  case NCCL_GIN_Q4_CLASS_RETRY_EXC:
++    return {"RETRY_EXC", "peer_err|proc_kill",
++            "transport retries exhausted (no ACK): responder QP ERR, process dead, or link down",
++            "probe peer liveness (counters/ctrl); if dead -> human intervention, else QP-only"};
++  case NCCL_GIN_Q4_CLASS_REM_INV_REQ:
++    return {"REM_INV_REQ", "rem_inv_req", "remote invalid request (malformed WR / len / opcode)",
++            "fix request params, QP-only recover"};
++  case NCCL_GIN_Q4_CLASS_RNR_RETRY_EXC:
++    return {"RNR_RETRY_EXC", "rnr", "RNR retries exhausted (responder had no recv WQE)",
++            "ensure remote posts recvs, QP-only recover"};
++  case NCCL_GIN_Q4_CLASS_LOC_PROT:
++    return {"LOC_PROT", "loc_prot", "local protection (bad lkey / local MR bounds)", "fix local MR/lkey, QP-only recover"};
++  case NCCL_GIN_Q4_CLASS_LOC_LEN:
++    return {"LOC_LEN", "loc_len", "local length error", "fix SGE length, QP-only recover"};
++  case NCCL_GIN_Q4_CLASS_NO_ERR_CQE:
++    return {"NO_ERR_CQE", "-", "device wait expired and no error CQE was at the polled CQ index",
++            "nothing to classify from the CQ; host must query QP state / peer liveness"};
++  default:
++    return {"OTHER", "other", "other", "inspect status+vendor_err"};
++  }
++}
++
++static const char* gdakiQ4PathStr(uint8_t p) {
++  switch (p) {
++  case NCCL_GIN_Q4_PATH_WAIT_TIMEOUT: return "wait-timeout";
++  case NCCL_GIN_Q4_PATH_FLUSH_TIMEOUT: return "flush-timeout";
++  case NCCL_GIN_Q4_PATH_WAIT_BLOCKING: return "wait-blocking";
++  case NCCL_GIN_Q4_PATH_FLUSH_BLOCKING: return "flush-blocking";
++  case NCCL_GIN_Q4_PATH_ABORTABLE: return "abortable";
++  default: return "?";
++  }
++}
++
++static const char* gdakiQ4CqStr(uint8_t t) {
++  switch (t) {
++  case DOCA_GPUNETIO_VERBS_CQ_64B: return "ring";
++  case DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED: return "collapsed";
++  case DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED_HOST: return "collapsed_host";
++  default: return "?";
++  }
++}
++
++// Visit this rank's peer-connected main QPs (same set as the fault hook).
++template <typename F>
++static void gdakiQ4ForPeerQps(struct gdaki_context* g, F fn) {
++  const int nranks = g->collComm->nranks;
++  const int rankOff = g->rank % g->rankStride;
++  for (int c = 0; c < g->nContexts; c++) {
++    for (int r = 0; r < nranks; r++) {
++      if (r == g->rank || (r % g->rankStride) != rankOff) continue;
++      struct doca_gpu_verbs_qp_hl* q = g->gqps ? g->gqps[r + c * nranks] : nullptr;
++      if (q && q->qp && q->qp_gverbs) fn(q);
++    }
++  }
++}
++
++// Host QP state by QUERY_QP (doca_gpu_verbs_query_last_error: has_error = state==ERR).
++static int gdakiQ4QpErr(struct doca_gpu_verbs_qp_hl* q, double* us) {
++  struct doca_gpu_verbs_qp_error_info info;
++  double t0 = gdakiQ4MonoMs();
++  doca_error_t s = doca_gpu_verbs_query_last_error(q->qp_gverbs, &info);
++  if (us) *us = (gdakiQ4MonoMs() - t0) * 1e3;
++  if (s != DOCA_SUCCESS) return -1;
++  return info.has_error ? 1 : 0;
++}
++
++static void gdakiQ4Handle(struct gdakiQ4Host* q, const struct ncclGinGdakiQ4Record& r, double monoMs) {
++  struct gdaki_context* g = q->ctx;
++  const bool isErr = (r.kind == NCCL_GIN_Q4_KIND_ERR_CQE);
++  if (isErr) {
++    // Make ncclCommGetAsyncError report it now: the GIN async result (read when GIN proxy
++    // threads exist) and the flag consulted by ncclGinGdakiQueryLastError (always).
++    q->hasError.store(1, std::memory_order_release);
++    if (q->asyncResult) __atomic_store_n(q->asyncResult, ncclRemoteError, __ATOMIC_RELEASE);
++    q->nErr++;
++  } else {
++    q->nDump++;
++  }
++  if (++q->nLogged > 64) return;  // bounded logging; counts are kept
++  const bool rootErr = (r.root_opcode == 0xd || r.root_opcode == 0xe);
++  const gdakiQ4ClassText ct = gdakiQ4Class(r.cls, r.vendor_err);
++  const int st = rootErr ? gdakiQ4WcStatus(r.syndrome) : 0;
++  WARN("GIN/Q4: %s rank=%d seq=%u ctx=%u peer=%u qpn=%#x wqe=%u path=%s cq=%s fp=%d/%#x syndrome=%#x hw_err=%#x/%#x "
++       "class=%s fault=%s cause=\"%s\" action=\"%s\" root_op=%#x polled[wqe=%u op=%#x syn=%#x ve=%#x] "
++       "window[err=%u ok=%u root_idx=%lu ticket=%lu cqe_ci=%lu] cq_buffer_err=%u/%u gtimer_ns=%lu mono_ms=%.3f",
++       isErr ? "device-classified error CQE" : "device wait-timeout dump", g->rank, r.seq, r.ctx_id, r.peer, r.qpn,
++       r.wqe_counter, gdakiQ4PathStr(r.path), gdakiQ4CqStr(r.cq_type), st, rootErr ? r.vendor_err : 0,
++       rootErr ? r.syndrome : 0, r.hw_err_synd, r.hw_synd_type, ct.name, ct.fault, ct.cause, ct.action, r.root_opcode,
++       r.polled_wqe_counter, r.polled_opcode, r.polled_syndrome, r.polled_vendor_err, r.n_err_window, r.n_ok_window,
++       (unsigned long)r.root_index, (unsigned long)r.ticket, (unsigned long)r.cqe_ci, r.n_err_buffer, r.cqe_num,
++       (unsigned long)r.gtimer_ns, monoMs);
++  if (r.late_valid)
++    WARN("GIN/Q4: collapsed slot re-read rank=%d seq=%u late[wqe=%u op=%#x syn=%#x ve=%#x after_us=%.1f]", g->rank,
++         r.seq, r.late_wqe_counter, r.late_opcode, r.late_syndrome, r.late_vendor_err, r.late_delay_ns / 1e3);
++  // Diagnostic: direct host QUERY_QP of the QP the record came from.
++  gdakiQ4ForPeerQps(g, [&](struct doca_gpu_verbs_qp_hl* qh) {
++    uint32_t qpn = 0;
++    if (doca_verbs_qp_get_qpn(qh->qp, &qpn) != DOCA_SUCCESS || qpn != r.qpn) return;
++    double us = 0;
++    int e = gdakiQ4QpErr(qh, &us);
++    WARN("GIN/Q4: host QUERY_QP rank=%d qpn=%#x state=%s query_us=%.0f mono_ms=%.3f", g->rank, qpn,
++         e < 0 ? "query-failed" : e ? "ERR" : "not-ERR", us, gdakiQ4MonoMs());
++  });
++}
++
++static void gdakiQ4Watch(struct gdakiQ4Host* q) {
++  volatile uint32_t* words = (volatile uint32_t*)q->rec_h;
++  const int wpr = sizeof(struct ncclGinGdakiQ4Record) / 4;
++  std::vector<int> qpState;
++  double nextWatch = gdakiQ4MonoMs();
++  while (!q->stop.load(std::memory_order_acquire)) {
++    for (int s = 0; s < NCCL_GIN_GDAKI_Q4_NSLOTS; s++) {
++      volatile uint32_t* w = words + s * wpr;
++      const uint32_t magic = w[0], seq = w[1];
++      if (magic != NCCL_GIN_GDAKI_Q4_MAGIC || seq == 0 || seq == q->lastSeq[s]) continue;
++      const double monoMs = gdakiQ4MonoMs();
++      std::atomic_thread_fence(std::memory_order_acquire);
++      struct ncclGinGdakiQ4Record r;
++      uint32_t* dst = (uint32_t*)&r;
++      for (int i = 0; i < wpr; i++) dst[i] = w[i];
++      std::atomic_thread_fence(std::memory_order_acquire);
++      if (w[1] != seq || w[0] != NCCL_GIN_GDAKI_Q4_MAGIC) continue;  // being rewritten; next round
++      q->lastSeq[s] = seq;
++      gdakiQ4Handle(q, r, monoMs);
++    }
++    if (q->qpWatchMs > 0 && gdakiQ4MonoMs() >= nextWatch) {
++      nextWatch += q->qpWatchMs;
++      int i = 0;
++      gdakiQ4ForPeerQps(q->ctx, [&](struct doca_gpu_verbs_qp_hl* qh) {
++        double us = 0;
++        int e = gdakiQ4QpErr(qh, &us);
++        if (i >= (int)qpState.size()) qpState.push_back(-2);
++        if (e != qpState[i]) {
++          uint32_t qpn = 0;
++          doca_verbs_qp_get_qpn(qh->qp, &qpn);
++          WARN("GIN/Q4: QPWATCH rank=%d qpn=%#x state %s -> %s query_us=%.0f mono_ms=%.3f", q->ctx->rank, qpn,
++               qpState[i] == -2 ? "init" : qpState[i] ? "ERR" : "not-ERR", e < 0 ? "query-failed" : e ? "ERR" : "not-ERR",
++               us, gdakiQ4MonoMs());
++          qpState[i] = e;
++        }
++        i++;
++      });
++    }
++    if (q->pollUs > 0) std::this_thread::sleep_for(std::chrono::microseconds(q->pollUs));
++  }
++}
++
++static ncclResult_t gdakiQ4Alloc(struct gdaki_context* g, struct gdakiQ4Host** out) {
++  *out = nullptr;
++  if (ncclParamGinFaultClassify() == 0) return ncclSuccess;
++  ncclResult_t ret = ncclSuccess;
++  struct ncclGinGdakiQ4 init;
++  struct gdakiQ4Host* q = new gdakiQ4Host();
++  q->ctx = g;
++  q->pollUs = (int)std::max<int64_t>(0, ncclParamGinFaultClassifyPollUs());
++  q->qpWatchMs = (int)std::max<int64_t>(0, ncclParamGinQ4QpWatchMs());
++  q->asyncResult = ncclGinQ4AsyncResult;
++  NCCLCHECKGOTO(ncclCudaHostCalloc(&q->rec_h, NCCL_GIN_GDAKI_Q4_NSLOTS), ret, fail);
++  CUDACHECKGOTO(cudaHostGetDevicePointer((void**)&q->rec_d, q->rec_h, 0), ret, fail);
++  NCCLCHECKGOTO(ncclCudaCalloc(&q->dev, 1, nullptr), ret, fail);
++  memset(&init, 0, sizeof(init));
++  init.mbx = q->rec_d;
++  init.nslots = NCCL_GIN_GDAKI_Q4_NSLOTS;
++  init.late_read_ns = (uint32_t)std::max<int64_t>(0, ncclParamGinQ4LateReadUs()) * 1000u;
++  NCCLCHECKGOTO(ncclCudaMemcpy<struct ncclGinGdakiQ4>(q->dev, &init, 1), ret, fail);
++  *out = q;
++  return ncclSuccess;
++fail:
++  if (q->dev) ncclCudaFree(q->dev, nullptr);
++  if (q->rec_h) ncclCudaHostFree(q->rec_h);
++  delete q;
++  return ret;
++}
++
++static void gdakiQ4Start(struct gdakiQ4Host* q) {
++  if (!q) return;
++  q->th = std::thread(gdakiQ4Watch, q);
++  WARN("GIN/Q4: device error classification ON rank=%d mailbox=%d x %zu B host-mapped poll_us=%d qpwatch_ms=%d "
++       "async_result=%s",
++       q->ctx->rank, NCCL_GIN_GDAKI_Q4_NSLOTS, sizeof(struct ncclGinGdakiQ4Record), q->pollUs, q->qpWatchMs,
++       q->asyncResult ? "gin" : "query-only");
++}
++
++static void gdakiQ4Free(struct gdakiQ4Host* q) {
++  if (!q) return;
++  if (q->th.joinable()) {
++    q->stop.store(true, std::memory_order_release);
++    q->th.join();
++  }
++  INFO(NCCL_NET, "GIN/Q4: mailbox closed: %d error record(s), %d timeout dump(s)", q->nErr, q->nDump);
++  if (q->dev) ncclCudaFree(q->dev, nullptr);
++  if (q->rec_h) ncclCudaHostFree(q->rec_h);
++  delete q;
++}
++
++// NCCL_GIN_GDAKI_CQ_TYPE -> qp_init_attr. Returns ncclInvalidUsage if the requested type cannot work here.
++static ncclResult_t gdakiQ4ApplyCqType(struct doca_gpu_verbs_qp_init_attr_hl* a, int rank) {
++  const char* s = getenv("NCCL_GIN_GDAKI_CQ_TYPE");
++  if (s == nullptr || *s == '\0' || strcmp(s, "ring") == 0) return ncclSuccess;  // stock
++  if (strcmp(s, "collapsed") == 0) {
++    a->cq_type = DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED;
++    a->cq_collapsed = true;
++  } else if (strncmp(s, "collapsed_host", 14) == 0) {
++    const bool force = strcmp(s, "collapsed_host_force") == 0;
++    const bool gdr = doca_gpu_gdrcopy_is_supported();
++    if (!gdr && !force) {
++      WARN("GIN/Q4: NCCL_GIN_GDAKI_CQ_TYPE=collapsed_host refused on rank %d: GDRCopy is not available "
++           "(doca_gpu_gdrcopy_is_supported()=0). DOCA needs it to map the GPU-resident device QP array to the CPU "
++           "(doca_gpu_verbs_export_multi_qps_dev: need_cpu_mapping -> assert(support_gdrcopy), "
++           "DOCA_GPU_MEM_TYPE_GPU_CPU) so the CPU progress thread can advance cqe_ci.",
++           rank);
++      return ncclInvalidUsage;
++    }
++    a->cq_type = DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED_HOST;
++    a->cq_collapsed = true;
++  } else {
++    WARN("GIN/Q4: unknown NCCL_GIN_GDAKI_CQ_TYPE=%s (ring|collapsed|collapsed_host)", s);
++    return ncclInvalidUsage;
++  }
++  WARN("GIN/Q4: GDAKI CQ type %s (cq_type=%d cq_collapsed=%d) rank=%d", s, (int)a->cq_type, (int)a->cq_collapsed, rank);
++  return ncclSuccess;
++}
++
+ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, void** outGinCtx,
+                                        ncclNetDeviceHandle_t** outDevHandle) {
+   ncclResult_t status = ncclSuccess;
+@@ -864,6 +1181,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+     qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW;
+   else qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
+   qp_init_attr.comp_channel = gdaki_ctx->docaEvent;
++  NCCLCHECKGOTO(gdakiQ4ApplyCqType(&qp_init_attr, rank), status, out);  // GIN Q4: CQ shape knob (default ring)
+ 
+   if (nqps_for_comm_this_rank > 0) {
+   // SPC-X Ordering Semantic. 0 by default.
+@@ -1053,6 +1371,12 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+   contiguous_gverbs_qps = (struct doca_gpu_verbs_qp**)calloc(connectedNRanks, sizeof(struct doca_gpu_verbs_qp*));
+   EQCHECKGOTO(contiguous_gverbs_qps, nullptr, status, out);
+ 
++  // GIN Q4: mailbox + device control block (only with NCCL_GIN_FAULT_CLASSIFY=1).
++  NCCLCHECKGOTO(gdakiQ4Alloc(gdaki_ctx, &gdaki_ctx->q4), status, out);
++  if (gdaki_ctx->q4 && backendVersion != NCCL_GIN_GDAKI_GPU_CONTEXT_VERSION)
++    WARN("GIN/Q4: device code uses GDAKI GPU context v%d, classification needs v%d; left off", backendVersion,
++         NCCL_GIN_GDAKI_GPU_CONTEXT_VERSION);
++
+   for (int ctx_idx = 0; ctx_idx < ncontexts; ctx_idx++) {
+     struct ncclGinGdakiGPUContext* gin_gdaki_gpu_ctx = &gdaki_ctx->gin_gdaki_gpu_ctx_host_staging[ctx_idx];
+ 
+@@ -1110,6 +1434,10 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+                                               gin_gdaki_gpu_ctx->sink_buffer_lkey, gin_gdaki_gpu_ctx->last_issued_get,
+                                               gin_gdaki_gpu_ctx->last_visible_get, use_mcst),
+                   status, out);
++    if (gdaki_ctx->q4 && backendVersion == NCCL_GIN_GDAKI_GPU_CONTEXT_VERSION) {  // GIN Q4
++      ((struct ncclGinGdakiGPUContext*)gin_gdaki_gpu_ctx_hd_mhandle->host_buf)[ctx_idx].fault = gdaki_ctx->q4->dev;
++      gin_gdaki_gpu_ctx->fault = gdaki_ctx->q4->dev;
++    }
+   }
+ 
+   NCCLCHECKGOTO(gin_gdaki_gpu_ctx_hd_mhandle->copy_h_to_d(), status, out);
+@@ -1134,11 +1462,14 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+ 
+   *outDevHandle = devHandle;
+   *outGinCtx = gdaki_ctx;
++  gdakiQ4Start(gdaki_ctx->q4);  // GIN Q4: mailbox watcher thread
+   ncclGinGdakiFaultInjectArm(gdaki_ctx);
+ 
+ out:
+   if (status != ncclSuccess) {
+     if (gdaki_ctx) {
++      gdakiQ4Free(gdaki_ctx->q4);  // GIN Q4
++      gdaki_ctx->q4 = nullptr;
+       if (gdaki_ctx->docaEvent) {
+         doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
+         gdaki_ctx->docaEvent = nullptr;
+@@ -1231,6 +1562,9 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+   const int rankStride = gdaki_ctx->rankStride;
+   const int rankOff = gdaki_ctx->rank % rankStride;
+ 
++  gdakiQ4Free(gdaki_ctx->q4);  // GIN Q4: stop the watcher before the QPs go away
++  gdaki_ctx->q4 = nullptr;
++
+   if (gdaki_ctx->docaEvent) {
+     doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
+     gdaki_ctx->docaEvent = nullptr;
+@@ -1491,6 +1825,12 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
+   struct gdaki_context* gdakiCtx = (struct gdaki_context*)ginCtx;
+   bool hasError_ = false;
+ 
++  // GIN Q4: an error CQE classified on the device is reported at once, not on the next query tick.
++  if (gdakiCtx->q4 && gdakiCtx->q4->hasError.load(std::memory_order_acquire)) {
++    *hasError = true;
++    return ncclSuccess;
++  }
++
+   // We throttle the frequency of these queries since they can easily take 250us.
+   uint64_t now = clockNano();
+   if ((now - gdakiCtx->last_error_query_time) / 1e9 < ncclParamGinErrorQuerySec()) {
