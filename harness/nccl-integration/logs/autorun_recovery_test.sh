@@ -20,6 +20,8 @@
 #                        iteration bit-exact on every rank (the driver checks the whole rbuf);
 #           DECLINED   = a "recovery declined"/"NACK" line, both ranks rc 3 (async NCCL error,
 #                        communicator aborted), no MISMATCH, no timeout;
+#           rc 7       = the error surfaced, then ncclCommAbort hung (stock NCCL 2.23; see prockill_off);
+#                        counts as a clean failure/decline, reported as abort_hang.
 #           FAIL       = any MISMATCH (rc 5), any timeout (rc 4 / 124), or anything else.
 set -u
 OUT=${1:?usage: $0 <outdir> [deploy]}; mkdir -p "$OUT"
@@ -42,14 +44,25 @@ COUNT_P=${COUNT_P:-4194304}    # 16 MB all-reduce for the pipelined run
 TMO=${TMO:-60}                 # driver per-iteration timeout (s)
 OUTER=${OUTER:-400}            # outer safety net (s)
 
-R0ENV="NCCL_IB_HCA=mlx5_1 NCCL_IB_GID_INDEX=3 NCCL_SOCKET_IFNAME=ens4f1np1 NCCL_DEBUG=WARN"
-R1ENV="NCCL_IB_HCA=mlx5_0 NCCL_IB_GID_INDEX=3 NCCL_SOCKET_IFNAME=enp23s0f0np0 NCCL_DEBUG=WARN"
+# RoCE v2 IPv4-mapped GID index per node, detected (indices differ and can move:
+# rain's went 3 -> 4 by 2026-09-23). Override with R0_GID / R1_GID.
+GID_PROBE='d=/sys/class/infiniband/$1/ports/$2
+for g in $(ls "$d/gids" | sort -n); do
+  [ "$(cat "$d/gid_attrs/types/$g" 2>/dev/null)" = "RoCE v2" ] || continue
+  case "$(cat "$d/gids/$g")" in 0000:0000:0000:0000:0000:ffff:*) echo "$g"; exit 0;; esac
+done
+exit 1'
+R0_GID=${R0_GID:-$(bash -s -- mlx5_1 1 <<< "$GID_PROBE")} || { echo "no RoCE v2 IPv4 GID on mlx5_1"; exit 2; }
+R1_GID=${R1_GID:-$(ssh "${PEER:-unionxic@30.0.0.4}" bash -s -- mlx5_0 1 <<< "$GID_PROBE")} || { echo "no RoCE v2 IPv4 GID on sunny mlx5_0"; exit 2; }
+R0ENV="NCCL_IB_HCA=mlx5_1 NCCL_IB_GID_INDEX=$R0_GID NCCL_SOCKET_IFNAME=ens4f1np1 NCCL_DEBUG=WARN"
+R1ENV="NCCL_IB_HCA=mlx5_0 NCCL_IB_GID_INDEX=$R1_GID NCCL_SOCKET_IFNAME=enp23s0f0np0 NCCL_DEBUG=WARN"
 # The configuration recovery is designed for (single QP, single NIC, no pipelining across channels).
 SINGLE="NCCL_MAX_NCHANNELS=1 NCCL_MIN_NCHANNELS=1 NCCL_ALGO=Ring NCCL_PROTO=Simple NCCL_IB_QPS_PER_CONNECTION=1"
 FR="NCCL_RDMA_FAULT_RECOVERY=1 NCCL_RDMA_FAULT_HANDSHAKE_MS=2000"
 
 log(){ echo "[$(date +%H:%M:%S)] $*" | tee -a "$OUT/summary.log"; }
 : > "$OUT/summary.log"
+log "GID index: rank0 mlx5_1=$R0_GID, rank1 mlx5_0=$R1_GID"
 
 if [ "$MODE" = "deploy" ]; then
   ssh "$PEER" "mkdir -p ~/$PEER_DIR" && \
@@ -65,11 +78,11 @@ run(){
   cleanup
   ssh "$PEER" "rm -f /tmp/${tag}_r1.log /tmp/${tag}_r1.rc"
   env LD_LIBRARY_PATH=$NCCL_LIB:$CUDA_LIB $R0ENV $e0 \
-    timeout $OUTER "$DRV" 0 $R0_IP $port $it $cnt $slp $tmo > "$OUT/${tag}_r0.log" 2>&1 &
+    timeout $OUTER stdbuf -oL -eL "$DRV" 0 $R0_IP $port $it $cnt $slp $tmo > "$OUT/${tag}_r0.log" 2>&1 &
   local p0=$!
   sleep 2
   ssh "$PEER" "cd ~/$PEER_DIR && env LD_LIBRARY_PATH=\$PWD:$CUDA_LIB $R1ENV $e1 \
-    timeout $OUTER ./nccl_ar2 1 $R0_IP $port $it $cnt $slp $tmo > /tmp/${tag}_r1.log 2>&1; echo \$? > /tmp/${tag}_r1.rc" &
+    timeout $OUTER stdbuf -oL -eL ./nccl_ar2 1 $R0_IP $port $it $cnt $slp $tmo > /tmp/${tag}_r1.log 2>&1; echo \$? > /tmp/${tag}_r1.rc" &
   local p1=$!
   if [ "$kill" != "0" ]; then sleep "$kill"; ssh "$PEER" 'pkill -9 -x nccl_ar2'; log "$tag: killed rank1 after ${kill}s"; fi
   wait $p0; local rc0=$?
@@ -88,16 +101,18 @@ verdict(){
   local decl; decl=$(cat "$f0" "$f1" 2>/dev/null | grep -c -E "recovery declined|responder: NACK|initiator: responder NACK|no ACK/NACK within")
   local inj;  inj=$(cat "$f0" "$f1" 2>/dev/null | grep -c "\[FAULT-INJECT\]")
   local frl;  frl=$(cat "$f0" "$f1" 2>/dev/null | grep -c "\[FAULT-")
+  local ah;   ah=$(cat "$f0" "$f1" 2>/dev/null | grep -c "ABORT-HANG")
+  errrc(){ [ "$1" = 3 ] || [ "$1" = 2 ] || [ "$1" = 7 ]; }   # error surfaced to the app (7: then abort hung)
   if [ "$mism" != "0" ] || [ "$rc0" = "4" ] || [ "$rc1" = "4" ] || [ "$rc0" = "124" ] || [ "$rc1" = "124" ] || [ "$rc0" = "5" ] || [ "$rc1" = "5" ]; then v=FAIL
   elif [ "$tag" = "base" ]; then { [ "$rc0" = 0 ] && [ "$rc1" = 0 ] && [ "$frl" = 0 ]; } && v=PASS || v=FAIL
-  elif [ "$tag" = "prockill" ]; then { [ "$rc0" != 0 ]; } && v=PASS-clean-failure || v=FAIL
+  elif [ "${tag#prockill}" != "$tag" ]; then errrc "$rc0" && v=PASS-clean-failure || v=FAIL
   elif [ "$rc0" = 0 ] && [ "$rc1" = 0 ]; then
     if [ "$rec" -gt 0 ]; then v=RECOVERED
     elif [ "$inj" = 0 ]; then v="PASS(no-inject-fired)"
     else v="FAIL(inject fired but neither recovered nor failed)"; fi
-  elif [ "$decl" -gt 0 ] && [ "$rc0" = 3 -o "$rc0" = 2 ] && [ "$rc1" = 3 -o "$rc1" = 2 ]; then v=DECLINED-clean
+  elif [ "$decl" -gt 0 ] && errrc "$rc0" && errrc "$rc1"; then v=DECLINED-clean
   else v="FAIL(unclassified)"; fi
-  log "$tag: rc0=$rc0 rc1=$rc1 ok0=$(grep -c ' ok (' "$f0" 2>/dev/null) ok1=$(grep -c ' ok (' "$f1" 2>/dev/null) mismatch=$mism inject=$inj recovered=$rec declined=$decl -> $v"
+  log "$tag: rc0=$rc0 rc1=$rc1 ok0=$(grep -c ' ok (' "$f0" 2>/dev/null) ok1=$(grep -c ' ok (' "$f1" 2>/dev/null) mismatch=$mism inject=$inj recovered=$rec declined=$decl abort_hang=$ah -> $v"
 }
 
 #   tag       rank0 env                               rank1 env                               count    port  iters   sleep tmo
@@ -105,8 +120,11 @@ run base      "$SINGLE"                               "$SINGLE"                 
 run inject    "$SINGLE $FR NCCL_RDMA_FAULT_INJECT=$K" "$SINGLE $FR"                           $COUNT   43210 $ITERS  100   $TMO
 run symmetric "$SINGLE $FR NCCL_RDMA_FAULT_INJECT=$K" "$SINGLE $FR NCCL_RDMA_FAULT_INJECT=$K" $COUNT   43220 $ITERS  100   $TMO
 run pipelined "$FR NCCL_RDMA_FAULT_INJECT=$KP"        "$FR"                                   $COUNT_P 43230 $ITERS  100   $TMO
-# proc-kill: long run, rank1 SIGKILLed after 12 s; the survivor's error arrives as RETRY_EXC
-# after ~ (4.096us<<NCCL_IB_TIMEOUT) x (NCCL_IB_RETRY_CNT+1) = ~34 s with the defaults.
+# proc-kill: rank1 SIGKILLed after 12 s. The survivor sees the error as soon as the peer's
+# sockets/QPs go away. With NCCL 2.23 the following ncclCommAbort can hang in STOCK NCCL too
+# (the proxy progress thread keeps looping on the failed op); the driver's watchdog then exits 7
+# (ABORT-HANG). prockill_off is the stock control for exactly that.
+run prockill_off "$SINGLE"                            "$SINGLE"                               $COUNT   43250 400     200   90 12
 run prockill  "$SINGLE $FR"                           "$SINGLE $FR"                           $COUNT   43240 400     200   90 12
 cleanup
 log "ALL DONE (logs in $OUT)"

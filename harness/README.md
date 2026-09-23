@@ -1,9 +1,13 @@
 # Unified RDMA fault harness
 
-One requester/responder pair that replaces the scattered experiments 01–09 with a
+One requester/responder pair that consolidates the main RDMA-side faults of experiments 01–09 into a
 single instrument. It injects a selectable RDMA fault, measures how fast the
 requester detects it, classifies it from the CQE alone, recovers the QP, and
 verifies the connection — all into one CSV schema.
+
+Not covered here: the three LOC_PROT variants of the original study (0x53 SGE length,
+0x52 invalid lkey, 0x33 MR permission) and the invalid-rkey variant of REM_ACCESS, so the
+vendor_err step that splits LOC_PROT (6/10 -> 8/10 in the docs) is not reproduced by this tool.
 
 ```
 rain  (requester, mlx5_1, 30.0.0.3)  --RoCEv2 100G-->  sunny (responder, mlx5_0, 30.0.0.4)
@@ -106,6 +110,10 @@ and reconnected so the next trial can run, but the time is not recorded).
 - **Dry run:** `PROBE_LINK_DRYRUN=1 DETECT_TIMEOUT_MS=1500 ./run.sh retry_link_down`.
   Every toggle only logs `[server] DRYRUN link down|up`, and no sudo is used. Because
   the link never goes down, the rows show `no_error_cqe`.
+
+A confirmation run after all fixes (2026-09-23 12:39, stamp `20260923_123945`, N=30, all seven
+faults incl. `retry_proc_kill`, CPU 2 pinned, no other traffic on the link) reproduced every
+fingerprint and the numbers above within noise, with partial-write landed == sent in 30/30.
 
 ## Build & run
 

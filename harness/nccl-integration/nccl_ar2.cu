@@ -10,7 +10,8 @@
 //     (all values are small integers, so float sums are exact);
 //   * prints "iter N ok" or "iter N MISMATCH count=C first=I got=G expect=E".
 // Bounded: each iteration waits at most <timeout_s>; on an async NCCL error or a
-// timeout the communicator is aborted (ncclCommAbort) instead of hanging.
+// timeout the communicator is aborted (ncclCommAbort) instead of hanging; if the abort itself
+// hangs (a stock NCCL 2.23 behaviour after a transport error) a watchdog exits with code 7.
 // Exit codes: 0 all iterations ok, 1 usage/setup, 2 NCCL call error, 3 async NCCL
 // error, 4 timeout, 5 result mismatch, 6 CUDA error.
 //
@@ -23,6 +24,7 @@
 #include <cstdint>
 #include <ctime>
 #include <unistd.h>
+#include <csignal>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -30,6 +32,17 @@
 
 static const int NRANKS = 2;
 static int g_rank = -1;
+
+// ncclCommAbort in NCCL 2.23 can itself hang after a transport error: the proxy
+// progress thread keeps looping while a failed op stays active (proxy.cc
+// ncclProxyProgress), so commFree's join never returns. This happens with stock
+// NCCL too (flag off). Bound it so the test reports ABORT-HANG (exit 7) instead
+// of being killed by an outer timeout with its log lost.
+static void abortWatchdog(int) {
+  static const char m[] = "ABORT-HANG: ncclCommAbort did not return within the watchdog; exiting 7\n";
+  ssize_t w = write(2, m, sizeof(m) - 1); (void)w;
+  _exit(7);
+}
 
 #define CK(c) do { cudaError_t e_ = (c); if (e_ != cudaSuccess) { \
   fprintf(stderr, "[rank%d] CUDA %s:%d %s\n", g_rank, __FILE__, __LINE__, cudaGetErrorString(e_)); exit(6); } } while (0)
@@ -154,7 +167,12 @@ int main(int argc, char** argv) {
     cudaFree(sbuf); cudaFree(rbuf); free(hin); free(hout); free(hexp);
   } else {
     fprintf(stderr, "[rank%d] FAILED rc=%d after %d ok iterations; aborting communicator\n", rank, rc, okIters);
+    const char* wd = getenv("NCCL_AR2_ABORT_WATCHDOG_S");
+    signal(SIGALRM, abortWatchdog);
+    alarm(wd ? (unsigned)atoi(wd) : 20u);
     ncclCommAbort(comm);  // tears down the (possibly stuck) kernel instead of hanging
+    alarm(0);
+    fprintf(stderr, "[rank%d] ncclCommAbort returned\n", rank);
   }
   return rc;
 }

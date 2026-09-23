@@ -239,7 +239,7 @@ A software-forced ERR (the inject hook) raises no async event, on either side.
 - **Stale PSN collision.** The probability that a stale packet of the old incarnation hits the
   new expected PSN is about 2^-24 per such packet.
 
-## 10. Test plan (`logs/autorun_recovery_test.sh`, not yet run)
+## 10. Test plan (`logs/autorun_recovery_test.sh`; run on 2026-09-23, results in README)
 
 1. **base:** flag off on both ranks, 1-channel config. Must pass bit-exact with no `[FAULT-`
    lines.

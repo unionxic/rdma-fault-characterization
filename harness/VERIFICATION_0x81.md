@@ -44,3 +44,21 @@ diagnostics only. My earlier "peer_rx distinguishes them" claim was wrong.
 port state (not ACTIVE). And a node-level telemetry daemon on the responder (surviving
 process death) could use liveness of the process plus port counters for out-of-band
 confirmation — but the in-band discriminator remains liveness.
+
+## Re-run on 2026-09-23 (`results/verify_0x81_20260923.csv`, N=5 per cause)
+
+Environment changes since the first run: PMTU is now 4096 (a 4 KiB retry write is one packet
+per attempt, not four), rain's RoCE GID index moved to 4 (the script now detects it), and
+sunny keeps two NVMe-oF-over-RDMA namespaces from rain mounted on the same port.
+
+| cause | port_rcv_packets Δ | port_xmit_packets Δ |
+|---|---:|---:|
+| server_qp_err | 26–28 | 14 |
+| proc_kill | 23–30 | 12–16 |
+
+The two causes still overlap on both counters, so the conclusion stands: no RDMA port
+counter separates them. The non-zero xmit for both is traffic that has nothing to do with the
+fault: with no harness process and no benchmark running, sunny's port still sent and received
+14–16 packets per 5 s (measured three times), which is the background of the NVMe-oF
+connections on the same port; the fault window is about 5 s. Port counters are port-wide, so any other RDMA consumer on the port contaminates
+them, which is one more reason not to use them as the discriminator.
