@@ -1,0 +1,357 @@
+# NVSHMEM IBGDA fault-injection + diagnostic test hook
+#
+# Target: NVSHMEM commit 7bb2e99c, src/modules/transport/ibgda/ibgda.cpp
+# Default OFF: does nothing unless an env var below is set, so a normal build is
+# behaviourally identical to stock NVSHMEM. Apply: git apply <this file>.
+#
+# NVSHMEM_IBGDA_FAULT_INJECT=local_err:<ms> | peer_err:<ms> | qp2err:<ms>
+#   A detached host thread, <ms> after connect_endpoints, moves this PE's RC/DCI
+#   DEVX QPs to ERR (MLX5_CMD_OP_2ERR_QP). F1 sets it on rain, F3 on sunny.
+#
+# NVSHMEM_IBGDA_FAULT_WATCH=<period_ms>   (diagnostic, default off)
+#   A host thread that every <period_ms> issues QUERY_QP (qpc.state + SQ wqebb
+#   counters) on each RC/DCI QP and QUERY_CQ (cqc producer/consumer/status) on
+#   its send CQ, and dumps the 64-byte collapsed CQ slot (from GPU or host mem).
+#   Used to locate where a requester error completion goes.
+#
+# F2a (oob within MR), F2b (invalid rkey) and F4 (proc_kill) need no library
+# change: F2a/F2b are driven from the test binary, F4 by SIGKILLing the peer.
+# ---------------------------------------------------------------------------
+--- a/src/modules/transport/ibgda/ibgda.cpp	2026-09-23 16:01:46.018760346 +0900
++++ b/src/modules/transport/ibgda/ibgda.cpp	2026-09-23 18:50:20.802065763 +0900
+@@ -22,6 +22,8 @@
+ #include <algorithm>                                     // for for_each, remove_if, max
+ #include <cctype>                                        // for tolower, isspace
+ #include <mutex>                                         // for lock_guard, mutex
++#include <thread>                                        // for fault-inject test hook (research)
++#include <chrono>                                        // for fault-inject test hook (research)
+ #include <new>                                           // for nothrow
+ #include <string>                                        // for basic_string, string, opera...
+ #include <vector>                                        // for vector
+@@ -1532,8 +1534,18 @@
+     cq_context = DEVX_ADDR_OF(create_cq_in, cmd_in, cq_context);
+     DEVX_SET(cqc, cq_context, dbr_umem_valid, IBGDA_MLX5_UMEM_VALID_ENABLE);
+     DEVX_SET(cqc, cq_context, cqe_sz, MLX5_CQE_SIZE_64B);
+-    DEVX_SET(cqc, cq_context, cc, 0x1);  // Use collapsed CQ
+-    DEVX_SET(cqc, cq_context, oi, 0x1);  // Allow overrun
++    // QA A/B switch (default = stock collapsed CQ). NVSHMEM_IBGDA_FAULT_CQ_COLLAPSED=0
++    // creates a normal ring CQ (cc=0, oi=0) so we can test whether error CQEs are
++    // simply not delivered to a collapsed (cc=1) CQ on this NIC. Stock device waits
++    // only work past the first completion with cc=1, so cc=0 runs use ITERS=1.
++    {
++        const char *cc_env = getenv("NVSHMEM_IBGDA_FAULT_CQ_COLLAPSED");
++        int cc_val = (cc_env && cc_env[0] == '0') ? 0 : 1;
++        DEVX_SET(cqc, cq_context, cc, cc_val);   // 1 = collapsed CQ (stock)
++        DEVX_SET(cqc, cq_context, oi, cc_val);   // overrun-ignore tied to collapsed
++        if (cc_val == 0)
++            fprintf(stderr, "[nvshmem-fault-inject] CQ created with cc=0 (normal ring CQ)\n");
++    }
+     DEVX_SET(cqc, cq_context, dbr_umem_id, dbr_umem->umem_id);
+     DEVX_SET(cqc, cq_context, log_cq_size, IBGDA_ILOG2_OR0(num_cqe));
+     DEVX_SET(cqc, cq_context, uar_page, uar->page_id);
+@@ -4424,6 +4436,293 @@
+     return status;
+ }
+ 
++/* ==========================================================================
++ * NVSHMEM_IBGDA_FAULT_INJECT: research test hook (default OFF).
++ *
++ * Purpose: reproduce, on real hardware, the error CQEs that a GPU thread would
++ * see in ibgda_poll_cq, so we can measure whether the device wait / library
++ * notices them (project stage 3, Q2/Q3). It is gated entirely by the env var
++ * NVSHMEM_IBGDA_FAULT_INJECT and does nothing when the var is unset, so a
++ * default build behaves exactly like stock NVSHMEM.
++ *
++ * Grammar (case-insensitive action):
++ *   NVSHMEM_IBGDA_FAULT_INJECT=local_err:<ms>   this PE moves its own RC/DCI QPs
++ *   NVSHMEM_IBGDA_FAULT_INJECT=peer_err:<ms>    to the ERR state <ms> ms after
++ *   NVSHMEM_IBGDA_FAULT_INJECT=qp2err:<ms>      connect (all three are aliases:
++ *                                               a PE can only modify its own QPs;
++ *                                               "local" vs "peer" is decided by
++ *                                               which node the var is set on).
++ *
++ * A QP forced to ERR makes every WQE already in its send queue complete with a
++ * REQ_ERR CQE (WR_FLUSH on the initiator when it is the initiator's own QP; the
++ * peer's packets go unACKed and the initiator later sees RETRY_EXC when it is the
++ * target's QP). modify RESET/INIT/RTR/RTS->ERR is a QP_2ERR DEVX command, which
++ * is not part of the vendored mlx5_ifc.h subset, so the two command layouts are
++ * declared locally here.
++ * ========================================================================== */
++#ifndef MLX5_CMD_OP_2ERR_QP
++#define MLX5_CMD_OP_2ERR_QP 0x507
++#endif
++struct mlx5_ifc_ibgda_fi_2err_qp_in_bits {
++    u8 opcode[0x10];
++    u8 uid[0x10];
++    u8 reserved_at_20[0x10];
++    u8 op_mod[0x10];
++    u8 reserved_at_40[0x8];
++    u8 qpn[0x18];
++    u8 reserved_at_60[0x20];
++};
++struct mlx5_ifc_ibgda_fi_2err_qp_out_bits {
++    u8 status[0x8];
++    u8 reserved_at_8[0x18];
++    u8 syndrome[0x20];
++    u8 reserved_at_40[0x40];
++};
++
++/* QUERY_CQ command (not in the vendored mlx5_ifc.h subset). The reply embeds the
++ * live cqc, from which we read producer_counter / consumer_counter / status. */
++#ifndef MLX5_CMD_OP_QUERY_CQ
++#define MLX5_CMD_OP_QUERY_CQ 0x402
++#endif
++struct mlx5_ifc_ibgda_fi_query_cq_in_bits {
++    u8 opcode[0x10];
++    u8 uid[0x10];
++    u8 reserved_at_20[0x10];
++    u8 op_mod[0x10];
++    u8 reserved_at_40[0x8];
++    u8 cqn[0x18];
++    u8 reserved_at_60[0x20];
++};
++struct mlx5_ifc_ibgda_fi_query_cq_out_bits {
++    u8 status[0x8];
++    u8 reserved_at_8[0x18];
++    u8 syndrome[0x20];
++    u8 reserved_at_40[0x40];
++    struct mlx5_ifc_cqc_bits cq_context;
++    u8 reserved_at_280[0x600];
++};
++
++/* NVSHMEM_IBGDA_FAULT_WATCH diagnostic state (default off). */
++static double ibgda_fi_watch_t0 = 0.0;
++static double ibgda_fi_now_ms() {
++    struct timespec t;
++    clock_gettime(CLOCK_MONOTONIC, &t);
++    return (t.tv_sec + t.tv_nsec * 1e-9) * 1e3 - ibgda_fi_watch_t0;
++}
++
++/* QUERY_QP -> qpc.state (0 RST,1 INIT,2 RTR,3 RTS,6 ERR...) plus SQ counters. */
++static void ibgda_fi_query_qp(struct mlx5dv_devx_obj *devx_qp, uint32_t qpn, const char *tag) {
++    uint8_t cmd_in[DEVX_ST_SZ_BYTES(query_qp_in)] = {0};
++    uint8_t cmd_out[DEVX_ST_SZ_BYTES(query_qp_out)] = {0};
++    DEVX_SET(query_qp_in, cmd_in, opcode, MLX5_CMD_OP_QUERY_QP);
++    DEVX_SET(query_qp_in, cmd_in, qpn, qpn);
++    int st = mlx5dv_devx_obj_query(devx_qp, cmd_in, sizeof(cmd_in), cmd_out, sizeof(cmd_out));
++    void *qpc = DEVX_ADDR_OF(query_qp_out, cmd_out, qpc);
++    fprintf(stderr,
++            "[nvshmem-fault-watch] %.1f ms %s qpn=0x%x QUERY_QP ret=%d state=%u "
++            "hw_sq_wqebb=%u sw_sq_wqebb=%u cur_retry=%u\n",
++            ibgda_fi_now_ms(), tag, qpn, st, DEVX_GET(qpc, qpc, state),
++            DEVX_GET(qpc, qpc, hw_sq_wqebb_counter), DEVX_GET(qpc, qpc, sw_sq_wqebb_counter),
++            DEVX_GET(qpc, qpc, cur_retry_count));
++}
++
++/* QUERY_CQ -> cqc.{producer,consumer}_counter and status. */
++static void ibgda_fi_query_cq(struct mlx5dv_devx_obj *devx_cq, uint32_t cqn, const char *tag) {
++    uint8_t cmd_in[DEVX_ST_SZ_BYTES(ibgda_fi_query_cq_in)] = {0};
++    uint8_t cmd_out[DEVX_ST_SZ_BYTES(ibgda_fi_query_cq_out)] = {0};
++    DEVX_SET(ibgda_fi_query_cq_in, cmd_in, opcode, MLX5_CMD_OP_QUERY_CQ);
++    DEVX_SET(ibgda_fi_query_cq_in, cmd_in, cqn, cqn);
++    int st = mlx5dv_devx_obj_query(devx_cq, cmd_in, sizeof(cmd_in), cmd_out, sizeof(cmd_out));
++    void *cqc = DEVX_ADDR_OF(ibgda_fi_query_cq_out, cmd_out, cq_context);
++    fprintf(stderr,
++            "[nvshmem-fault-watch] %.1f ms %s cqn=0x%x QUERY_CQ ret=%d cqc_status=%u "
++            "producer=%u consumer=%u\n",
++            ibgda_fi_now_ms(), tag, cqn, st, DEVX_GET(cqc, cqc, status),
++            DEVX_GET(cqc, cqc, producer_counter), DEVX_GET(cqc, cqc, consumer_counter));
++}
++
++/* Copy the 64-byte collapsed CQ slot 0 (the device reads it at cq_mobject
++ * ALIGNED gpu_ptr, not base) and decode it. Works whether the CQ is in GPU or
++ * host memory (cudaMemcpy handles both). */
++static void ibgda_fi_dump_cq_slot(void *gpu_ptr, uint32_t cqn, const char *tag) {
++    unsigned char b[64];
++    cudaError_t e = cudaMemcpy(b, gpu_ptr, 64, cudaMemcpyDefault);
++    if (e != cudaSuccess) {
++        fprintf(stderr, "[nvshmem-fault-watch] %s cqn=0x%x slot cudaMemcpy failed %s\n", tag, cqn,
++                cudaGetErrorString(e));
++        return;
++    }
++    unsigned wqe = ((unsigned)b[60] << 8) | b[61];
++    fprintf(stderr,
++            "[nvshmem-fault-watch] %.1f ms %s cqn=0x%x SLOT op_own=0x%02x opcode=0x%x "
++            "syndrome=0x%02x vendor_err=0x%02x wqe_counter=%u\n",
++            ibgda_fi_now_ms(), tag, cqn, b[63], b[63] >> 4, b[55], b[54], wqe);
++    if (strstr(tag, "final")) {  // full hex only on the end-of-run dump
++        char hex[3 * 64 + 1];
++        for (int i = 0; i < 64; i++) snprintf(hex + 3 * i, 4, "%02x ", b[i]);
++        fprintf(stderr, "[nvshmem-fault-watch] %s cqn=0x%x SLOT bytes: %s\n", tag, cqn, hex);
++    }
++}
++
++/* Force one DEVX QP object into the ERR state. Returns 0 on success. */
++static int ibgda_fi_qp_2err(struct mlx5dv_devx_obj *devx_qp, uint32_t qpn) {
++    uint8_t cmd_in[DEVX_ST_SZ_BYTES(ibgda_fi_2err_qp_in)] = {0};
++    uint8_t cmd_out[DEVX_ST_SZ_BYTES(ibgda_fi_2err_qp_out)] = {0};
++    DEVX_SET(ibgda_fi_2err_qp_in, cmd_in, opcode, MLX5_CMD_OP_2ERR_QP);
++    DEVX_SET(ibgda_fi_2err_qp_in, cmd_in, qpn, qpn);
++    int status = mlx5dv_devx_obj_modify(devx_qp, cmd_in, sizeof(cmd_in), cmd_out, sizeof(cmd_out));
++    fprintf(stderr,
++            "[nvshmem-fault-inject] QP_2ERR qpn=0x%x ret=%d devx_status=0x%x syndrome=0x%x\n", qpn,
++            status, DEVX_GET(ibgda_fi_2err_qp_out, cmd_out, status),
++            DEVX_GET(ibgda_fi_2err_qp_out, cmd_out, syndrome));
++    // Parse-sanity (QA-B): query the SAME QP immediately in this thread and dump
++    // both the DEVX_GET-decoded state and the raw first qpc dwords, so we can
++    // tell a wrong decode apart from QUERY_QP genuinely reporting RTS.
++    {
++        uint8_t qin[DEVX_ST_SZ_BYTES(query_qp_in)] = {0};
++        uint8_t qout[DEVX_ST_SZ_BYTES(query_qp_out)] = {0};
++        DEVX_SET(query_qp_in, qin, opcode, MLX5_CMD_OP_QUERY_QP);
++        DEVX_SET(query_qp_in, qin, qpn, qpn);
++        int qs = mlx5dv_devx_obj_query(devx_qp, qin, sizeof(qin), qout, sizeof(qout));
++        void *qpc = DEVX_ADDR_OF(query_qp_out, qout, qpc);
++        const uint32_t *qd = (const uint32_t *)qpc;
++        fprintf(stderr,
++                "[nvshmem-fault-inject] post-2ERR QUERY_QP qpn=0x%x ret=%d DEVX_state=%u "
++                "raw_qpc[0..3]=%08x %08x %08x %08x (state=raw0>>28=%u)\n",
++                qpn, qs, DEVX_GET(qpc, qpc, state), be32toh(qd[0]), be32toh(qd[1]), be32toh(qd[2]),
++                be32toh(qd[3]), (be32toh(qd[0]) >> 28) & 0xf);
++    }
++    return status;
++}
++
++/* Walk every selected device's RC and DCI endpoints and force them to ERR. */
++static void ibgda_fi_all_qps_to_err(nvshmemt_ibgda_state_t *ibgda_state, int n_pes) {
++    std::lock_guard<std::mutex> lock(ibgda_state->rc_endpoint_lock);
++    int fired = 0;
++    for (int i = 0; i < ibgda_state->n_devs_selected; i++) {
++        int dev_idx = ibgda_state->selected_dev_ids[i];
++        struct ibgda_device *device = (struct ibgda_device *)ibgda_state->common.devices + dev_idx;
++        int num_rc = device->rc.num_eps_per_pe * n_pes;
++        for (int e = 0; e < num_rc; e++) {
++            struct ibgda_ep *ep = device->rc.eps ? device->rc.eps[e] : NULL;
++            if (ep && ep->qp_type == NVSHMEMI_IBGDA_DEVICE_QP_TYPE_RC && ep->devx_qp) {
++                ibgda_fi_qp_2err(ep->devx_qp, ep->qpn);
++                fired++;
++            }
++        }
++        for (int e = 0; e < device->dci.num_eps; e++) {
++            struct ibgda_ep *ep = device->dci.eps ? device->dci.eps[e] : NULL;
++            if (ep && ep->qp_type == NVSHMEMI_IBGDA_DEVICE_QP_TYPE_DCI && ep->devx_qp) {
++                ibgda_fi_qp_2err(ep->devx_qp, ep->qpn);
++                fired++;
++            }
++        }
++    }
++    fprintf(stderr, "[nvshmem-fault-inject] moved %d QP(s) to ERR\n", fired);
++}
++
++/* Arm the fault-injection thread once, from the first connect_endpoints call. */
++static void ibgda_fault_inject_arm(nvshmemt_ibgda_state_t *ibgda_state, int n_pes) {
++    const char *spec = getenv("NVSHMEM_IBGDA_FAULT_INJECT");
++    if (!spec || !*spec) {
++        return;
++    }
++    std::string s(spec);
++    size_t colon = s.find(':');
++    std::string action = (colon == std::string::npos) ? s : s.substr(0, colon);
++    long ms = (colon == std::string::npos) ? 0 : atol(s.c_str() + colon + 1);
++    std::for_each(action.begin(), action.end(), [](char &c) { c = ::tolower(c); });
++    if (action != "local_err" && action != "peer_err" && action != "qp2err") {
++        fprintf(stderr, "[nvshmem-fault-inject] unknown action '%s'; ignoring\n", action.c_str());
++        return;
++    }
++    fprintf(stderr, "[nvshmem-fault-inject] armed action=%s delay=%ld ms\n", action.c_str(), ms);
++    std::thread([ibgda_state, n_pes, ms]() {
++        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
++        ibgda_fi_all_qps_to_err(ibgda_state, n_pes);
++    }).detach();
++}
++
++/* NVSHMEM_IBGDA_FAULT_WATCH=<period_ms>: a diagnostic thread (default off) that
++ * every <period_ms> issues QUERY_QP (state + SQ counters) on each RC/DCI QP and
++ * QUERY_CQ (producer/consumer/status) on its send CQ, then dumps the 64-byte
++ * collapsed CQ slot from GPU memory. Used to locate where an error completion
++ * goes when a fault is injected. Runs for ~15 s then dumps a final slot. */
++static void ibgda_fault_watch_arm(nvshmemt_ibgda_state_t *ibgda_state, int n_pes) {
++    const char *spec = getenv("NVSHMEM_IBGDA_FAULT_WATCH");
++    if (!spec || !*spec) {
++        return;
++    }
++    long period = atol(spec);
++    if (period <= 0) period = 500;
++    {
++        struct timespec t;
++        clock_gettime(CLOCK_MONOTONIC, &t);
++        ibgda_fi_watch_t0 = (t.tv_sec + t.tv_nsec * 1e-9) * 1e3;  // relative-time origin
++    }
++    // Optional startup delay (NVSHMEM_IBGDA_FAULT_WATCH_DELAY_MS) so the query
++    // loop begins after init/first puts, not racing them. QUERY_QP is a DEVX
++    // command (no CUDA), so query-only watching does not perturb the CUDA context.
++    const char *dspec = getenv("NVSHMEM_IBGDA_FAULT_WATCH_DELAY_MS");
++    long delay = dspec ? atol(dspec) : 0;
++    // Query-only mode (NVSHMEM_IBGDA_FAULT_WATCH_QPONLY=1) skips QUERY_CQ and the
++    // per-period GPU-memory slot cudaMemcpy, which is what perturbs a faulting run.
++    const char *qonly = getenv("NVSHMEM_IBGDA_FAULT_WATCH_QPONLY");
++    bool qp_only = qonly && atoi(qonly) != 0;
++    fprintf(stderr, "[nvshmem-fault-watch] armed period=%ld ms delay=%ld qp_only=%d\n", period,
++            delay, qp_only);
++    std::thread([ibgda_state, n_pes, period, delay, qp_only]() {
++        if (delay > 0) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
++        const double run_ms = 16000.0;
++        double start = ibgda_fi_now_ms();
++        while (ibgda_fi_now_ms() - start < run_ms) {
++            std::lock_guard<std::mutex> lock(ibgda_state->rc_endpoint_lock);
++            for (int i = 0; i < ibgda_state->n_devs_selected; i++) {
++                int dev_idx = ibgda_state->selected_dev_ids[i];
++                struct ibgda_device *device =
++                    (struct ibgda_device *)ibgda_state->common.devices + dev_idx;
++                int num_rc = device->rc.num_eps_per_pe * n_pes;
++                for (int e = 0; e < num_rc; e++) {
++                    struct ibgda_ep *ep = device->rc.eps ? device->rc.eps[e] : NULL;
++                    if (ep && ep->qp_type == NVSHMEMI_IBGDA_DEVICE_QP_TYPE_RC && ep->devx_qp) {
++                        ibgda_fi_query_qp(ep->devx_qp, ep->qpn, "RC");
++                        if (!qp_only && ep->send_cq && ep->send_cq->devx_cq)
++                            ibgda_fi_query_cq(ep->send_cq->devx_cq, ep->send_cq->cqn, "RC");
++                        if (!qp_only && ep->send_cq && ep->send_cq->cq_mobject)
++                            ibgda_fi_dump_cq_slot(ep->send_cq->cq_mobject->aligned.gpu_ptr,
++                                                  ep->send_cq->cqn, "RC-slot");
++                    }
++                }
++                for (int e = 0; e < device->dci.num_eps; e++) {
++                    struct ibgda_ep *ep = device->dci.eps ? device->dci.eps[e] : NULL;
++                    if (ep && ep->qp_type == NVSHMEMI_IBGDA_DEVICE_QP_TYPE_DCI && ep->devx_qp) {
++                        ibgda_fi_query_qp(ep->devx_qp, ep->qpn, "DCI");
++                        if (!qp_only && ep->send_cq && ep->send_cq->devx_cq)
++                            ibgda_fi_query_cq(ep->send_cq->devx_cq, ep->send_cq->cqn, "DCI");
++                    }
++                }
++            }
++            std::this_thread::sleep_for(std::chrono::milliseconds(period));
++        }
++        // Final dump of the collapsed CQ slot for every RC/DCI send CQ.
++        std::lock_guard<std::mutex> lock(ibgda_state->rc_endpoint_lock);
++        for (int i = 0; i < ibgda_state->n_devs_selected; i++) {
++            int dev_idx = ibgda_state->selected_dev_ids[i];
++            struct ibgda_device *device =
++                (struct ibgda_device *)ibgda_state->common.devices + dev_idx;
++            int num_rc = device->rc.num_eps_per_pe * n_pes;
++            for (int e = 0; e < num_rc; e++) {
++                struct ibgda_ep *ep = device->rc.eps ? device->rc.eps[e] : NULL;
++                if (ep && ep->qp_type == NVSHMEMI_IBGDA_DEVICE_QP_TYPE_RC && ep->send_cq &&
++                    ep->send_cq->cq_mobject)
++                    ibgda_fi_dump_cq_slot(ep->send_cq->cq_mobject->aligned.gpu_ptr, ep->send_cq->cqn,
++                                          "RC-final");
++            }
++        }
++    }).detach();
++}
++/* ===================== end NVSHMEM_IBGDA_FAULT_INJECT hook ===================== */
++
+ int nvshmemt_ibgda_connect_endpoints(nvshmem_transport_t t, int *selected_dev_ids,
+                                      int num_selected_devs, int *out_qp_indices, int num_qps) {
+     nvshmemt_ibgda_state_t *ibgda_state = (nvshmemt_ibgda_state_t *)t->state;
+@@ -4513,6 +4812,11 @@
+     // Mark that first call is complete
+     ibgda_state->connect_endpoints_first_call = false;
+ 
++    // Research test hook (default OFF): schedule QP->ERR fault injection if the
++    // NVSHMEM_IBGDA_FAULT_INJECT env var is set. No-op otherwise.
++    ibgda_fault_inject_arm(ibgda_state, t->n_pes);
++    ibgda_fault_watch_arm(ibgda_state, t->n_pes);
++
+     return status;
+ }
+ 
