@@ -8,6 +8,8 @@
 # If the deltas overlap, the RDMA counter alone cannot distinguish them -> the
 # discriminator must be liveness, exactly as the docs say.
 set -uo pipefail
+# NB: always `pkill -x probe_server` (exact process name). `pkill -f probe_server`
+# matches the remote shell running the command itself and kills it.
 SRV_SSH=unionxic@192.0.2.194
 SRV_DATA=unionxic@30.0.0.4
 DEV=mlx5_0; PORT=1; IFACE=enp23s0f0np0
@@ -20,7 +22,7 @@ rd() { ssh -n "$SRV_DATA" "cat $CDIR/port_rcv_packets $CDIR/port_xmit_packets" 2
 echo "fault,trial,rcv_delta,xmit_delta"
 for f in retry_server_qp_err retry_proc_kill; do
   for i in $(seq 1 "$N"); do
-    ssh -n "$SRV_DATA" 'pkill -f probe_server 2>/dev/null; sleep 0.3'
+    ssh -n "$SRV_DATA" 'pkill -x probe_server 2>/dev/null; sleep 0.3'
     ssh -f "$SRV_DATA" "cd ~/rdma-error/harness && timeout 60 ./probe_server -d $DEV -i $PORT -g 3 -p 18580 -I $IFACE >/tmp/probe_srv.log 2>&1"
     sleep 1
     read -r b_r b_x <<< "$(rd)"
@@ -30,4 +32,4 @@ for f in retry_server_qp_err retry_proc_kill; do
     echo "$f,$i,$((a_r-b_r)),$((a_x-b_x))"
   done
 done
-ssh -n "$SRV_DATA" 'pkill -f probe_server 2>/dev/null; true'
+ssh -n "$SRV_DATA" 'pkill -x probe_server 2>/dev/null; true'

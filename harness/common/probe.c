@@ -31,10 +31,11 @@ const char *fault_name(fault_type_t f) {
     if (f < 0 || f >= FAULT__COUNT || !fault_names[f]) return "?";
     return fault_names[f];
 }
-fault_type_t fault_from_name(const char *s) {
+int fault_from_name(const char *s, fault_type_t *out) {
+    if (!s) return -1;
     for (int i = 0; i < FAULT__COUNT; i++)
-        if (fault_names[i] && strcmp(fault_names[i], s) == 0) return (fault_type_t)i;
-    return FAULT_NONE;
+        if (fault_names[i] && strcmp(fault_names[i], s) == 0) { *out = (fault_type_t)i; return 0; }
+    return -1;
 }
 const char *recovery_name(recovery_method_t r) {
     switch (r) {
@@ -43,10 +44,12 @@ const char *recovery_name(recovery_method_t r) {
         default:                   return "none";
     }
 }
-recovery_method_t recovery_from_name(const char *s) {
-    if (!strcmp(s, "qp_only"))      return RECOVER_QP_ONLY;
-    if (!strcmp(s, "full_rebuild")) return RECOVER_FULL_REBUILD;
-    return RECOVER_NONE;
+int recovery_from_name(const char *s, recovery_method_t *out) {
+    if (!s) return -1;
+    if (!strcmp(s, "qp_only"))      { *out = RECOVER_QP_ONLY;      return 0; }
+    if (!strcmp(s, "full_rebuild")) { *out = RECOVER_FULL_REBUILD; return 0; }
+    if (!strcmp(s, "none"))         { *out = RECOVER_NONE;         return 0; }
+    return -1;
 }
 
 /* ---------------- TCP control channel ---------------- */

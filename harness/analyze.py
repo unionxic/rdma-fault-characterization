@@ -3,7 +3,10 @@
 
 For each fault, reports the dominant (status, vendor_err) fingerprint, detection
 and recovery latency stats (n, mean, median, stddev, p95, p99, 95% CI half-width),
-verify success rate, and partial-write byte accounting where present.
+verify success rate, RETRY_EXC sub-causes, and partial-write byte accounting:
+bytes that LANDED (measured by RDMA-READ readback of the pre-zeroed responder
+buffer) versus bytes SENT as implied by the sq_psn advance (sq_psn_delta x PMTU),
+and how often the two independent measurements agree.
 
 Usage: analyze.py results/*.csv
 """
@@ -34,6 +37,43 @@ def stats(xs):
                 std=st.pstdev(xs) if len(xs) > 1 else 0.0,
                 p95=p(0.95), p99=p(0.99), ci=ci95(xs))
 
+def ival(r, key, default=-1):
+    v = r.get(key)
+    if v in (None, ""): return default
+    try: return int(v)
+    except ValueError: return default
+
+def partial_report(rows, indent):
+    """Partial-write accounting. Returns printed lines (may be empty)."""
+    out = []
+    new = [r for r in rows if ival(r, "bytes_landed_readback") >= 0]
+    if new:
+        mtu = ival(new[0], "mtu_bytes", 0)
+        landed = [ival(r, "bytes_landed_readback") for r in new]
+        total = [ival(r, "matching_bytes_total") for r in new]
+        sent = [ival(r, "bytes_sent_psn") for r in new]
+        sq = [ival(r, "sq_psn_delta") for r in new]
+        n = len(new)
+        agree = sum(1 for l, s in zip(landed, sent) if l == s)
+        diff = [l - s for l, s in zip(landed, sent)]
+        nonprefix = sum(1 for l, t in zip(landed, total) if t != l)
+        pkt_aligned = sum(1 for l in landed if mtu and l % mtu == 0)
+        out.append(f"{indent}partial: landed (RDMA-READ readback) {min(landed)}..{max(landed)} B "
+                   f"(mean {st.mean(landed):.0f} B), {pkt_aligned}/{n} PMTU-aligned")
+        out.append(f"{indent}         sent (sq_psn_delta x PMTU) {min(sent)}..{max(sent)} B "
+                   f"(sq_psn_delta {min(sq)}..{max(sq)}, PMTU={mtu} B)")
+        pk = f" ({min(diff)/mtu:+.1f}..{max(diff)/mtu:+.1f} pkts)" if mtu else ""
+        out.append(f"{indent}         landed == sent: {agree}/{n} trials; landed-sent "
+                   f"{min(diff):+d}..{max(diff):+d} B{pk}; "
+                   f"matching bytes outside the prefix: {nonprefix}/{n} trials")
+        return out
+    legacy = [r for r in rows if ival(r, "bytes_landed", 0) > 0]
+    if legacy:
+        bl = [ival(r, "bytes_landed") for r in legacy]
+        out.append(f"{indent}partial (legacy CSV): bytes_landed {min(bl)}..{max(bl)} B is "
+                   f"sq_psn_delta x PMTU only (PSN-derived, not measured)")
+    return out
+
 def main(paths):
     rows_by_fault = defaultdict(list)
     for path in paths:
@@ -50,6 +90,7 @@ def main(paths):
     print(f"\n{'fault':<22} {'n':>3} {'status/vendor':<26} "
           f"{'detect (mean±CI95)':<24} {'recover mean':<12} {'verify':>7}")
     print("-"*100)
+    ind = " " * 23
     for fault, rows in sorted(rows_by_fault.items()):
         det = stats([float(r["detect_ns"]) for r in rows if r["detect_ns"] not in ("","-1")])
         rec = stats([float(r["recover_ns"]) for r in rows if r["recover_ns"] not in ("","-1")])
@@ -58,25 +99,24 @@ def main(paths):
             fp[(r["status_name"], r["vendor_err"])] += 1
         dom = max(fp.items(), key=lambda kv: kv[1])
         vok = [r for r in rows if r.get("verify_ok") == "1"]
-        verify = f"{len(vok)}/{len(rows)}"
+        vdone = [r for r in rows if r.get("verify_ok") in ("0", "1")]
+        verify = f"{len(vok)}/{len(vdone)}" if vdone else "-"   # "-": no recovery (proc_kill)
         detstr = f"{fmt_ns(det['mean'])} ± {fmt_ns(det['ci'])}" if det else "-"
         recstr = fmt_ns(rec['mean']) if rec else "-"
         fpstr = f"{dom[0][0][:16]}/{dom[0][1]}"
         print(f"{fault:<22} {len(rows):>3} {fpstr:<26} {detstr:<24} {recstr:<12} {verify:>7}")
+        if len(fp) > 1:
+            print(f"{ind}fingerprints: " + ", ".join(f"{k[0]}/{k[1]}×{v}" for k, v in
+                                                    sorted(fp.items(), key=lambda kv: -kv[1])))
         if det:
-            print(f"{'':<22} detect: median={fmt_ns(det['median'])} "
+            print(f"{ind}detect: median={fmt_ns(det['median'])} "
                   f"p95={fmt_ns(det['p95'])} p99={fmt_ns(det['p99'])} std={fmt_ns(det['std'])}")
-        # partial-write byte accounting
-        bl = [int(r["bytes_landed"]) for r in rows if r.get("bytes_landed","0") not in ("","0")]
-        sq = [int(r["sq_psn_delta"]) for r in rows if r.get("sq_psn_delta","0") not in ("","0")]
-        if bl and sq:
-            mtu = int(rows[0].get("mtu_bytes","0") or 0)
-            law_ok = all(int(r["bytes_landed"]) == int(r["sq_psn_delta"])*mtu for r in rows
-                         if r.get("sq_psn_delta","0") not in ("","0"))
-            print(f"{'':<22} partial: bytes_landed {min(bl)}..{max(bl)} "
-                  f"(sq_psn_delta {min(sq)}..{max(sq)}, PMTU={mtu}B, "
-                  f"bytes==sq*PMTU: {law_ok})")
-        # counter-based sub-classification (RETRY_EXC 0x81 disambiguation)
+        if rec:
+            print(f"{ind}recover: median={fmt_ns(rec['median'])} p95={fmt_ns(rec['p95'])} "
+                  f"(method {rows[0].get('recovery','?')})")
+        for line in partial_report(rows, ind):
+            print(line)
+        # RETRY_EXC (0x81) sub-classification (link state + control-channel liveness)
         subs = defaultdict(int)
         for r in rows:
             sc = r.get("sub_cause", "-")
@@ -85,9 +125,9 @@ def main(paths):
         if subs:
             rxvals = [int(r["peer_rx_delta"]) for r in rows
                       if r.get("peer_rx_delta","-1") not in ("","-1")]
-            rxstr = f", peer_rx_delta {min(rxvals)}..{max(rxvals)}" if rxvals else ""
+            rxstr = f", peer_rx_delta {min(rxvals)}..{max(rxvals)} (diagnostic)" if rxvals else ""
             breakdown = " ".join(f"{k}×{v}" for k, v in sorted(subs.items()))
-            print(f"{'':<22} sub-cause (hw counter): {breakdown}{rxstr}")
+            print(f"{ind}sub-cause (liveness/link): {breakdown}{rxstr}")
     print()
 
 if __name__ == "__main__":

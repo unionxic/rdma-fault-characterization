@@ -8,8 +8,10 @@
  *   - classification:   ibv_wc_status + vendor_err  -> (cause, recommended action)
  *   - detection latency: t_inject -> t_error_cqe  (CLOCK_MONOTONIC_RAW tight poll)
  *   - recovery latency:  QP-only (ERR->RESET->INIT->RTS, coordinated both ends)
- *                        vs full rebuild, then a verified round-trip
- *   - data-plane:        partial-write bytes landed = sq_psn_delta * PMTU, verified
+ *                        vs full rebuild (QP destroy+recreate), then a verified round-trip
+ *   - data-plane:        partial-write bytes landed, MEASURED by RDMA-READ readback of
+ *                        the (pre-zeroed) responder buffer, compared against the
+ *                        bytes sent implied by the sq_psn advance (sq_psn_delta * PMTU)
  *   - counters:          hw_counter deltas around the fault (diagnosis / early detect)
  *
  * Design rules learned from the old code:
@@ -43,7 +45,8 @@ typedef enum {
     FAULT_RNR,                 /* SEND with no remote recv WQE -> RNR retry exhausted (13 / 0x87) */
     FAULT_RETRY_SERVER_QP_ERR, /* responder QP->ERR, stops ACKing -> RETRY_EXC_ERR (12 / 0x81), firmware floor */
     FAULT_RETRY_PROC_KILL,     /* responder process killed -> RETRY_EXC_ERR */
-    FAULT_RETRY_LINK_DOWN,     /* responder link down (needs root on server) -> RETRY_EXC_ERR */
+    FAULT_RETRY_LINK_DOWN,     /* responder RoCE netdev down (passwordless sudo for `ip` on server,
+                                  or PROBE_LINK_DRYRUN=1 to exercise the protocol only) -> RETRY_EXC_ERR */
     FAULT_PARTIAL_WRITE,       /* interrupt a multi-packet WRITE mid-transfer; measure bytes landed */
     FAULT__COUNT
 } fault_type_t;
@@ -51,13 +54,15 @@ typedef enum {
 typedef enum {
     RECOVER_NONE = 0,
     RECOVER_QP_ONLY,           /* coordinated ERR->RESET->INIT->RTS on both ends, fresh PSNs */
-    RECOVER_FULL_REBUILD       /* destroy QP/CQ/MR/PD and recreate + re-handshake */
+    RECOVER_FULL_REBUILD       /* destroy + recreate the QP only (CQ/MR/PD are kept) + re-handshake */
 } recovery_method_t;
 
 const char *fault_name(fault_type_t f);
-fault_type_t fault_from_name(const char *s);
+/* strict parsers: return 0 and set *out on an exact name match, -1 otherwise
+ * (unknown names are rejected, never silently mapped to none). */
+int fault_from_name(const char *s, fault_type_t *out);
 const char *recovery_name(recovery_method_t r);
-recovery_method_t recovery_from_name(const char *s);
+int recovery_from_name(const char *s, recovery_method_t *out);
 
 /* ---- RC endpoint ---- */
 typedef struct {
