@@ -26,7 +26,7 @@ rain  (requester, mlx5_1, 30.0.0.3)  --RoCEv2 100G-->  sunny (responder, mlx5_0,
 | `bytes_sent_psn` / `sq_psn_delta` / `mtu_bytes` | partial_write: bytes the requester had **sent** when its QP was forced to ERR, from the send-queue PSN advance: `((sq_psn_after − sq_psn_before) & 0xFFFFFF) × PMTU` |
 | `bytes_landed_readback` / `matching_bytes_total` | partial_write: bytes that actually **landed** at the responder, measured by RDMA-READ readback (below): matching-prefix length / matching bytes anywhere in the region |
 | `counter` / `cnt_delta` | a chosen `hw_counter` delta across the trial (diagnosis / early detection) |
-| `sub_cause` / `peer_rx_delta` | split of the ambiguous RETRY_EXC (0x81): server_qp_err vs proc_kill vs link_down |
+| `sub_cause` / `peer_rx_delta` | split of the ambiguous RETRY_EXC (0x81): server_qp_err vs proc_kill vs link_down; for REM_ACCESS / REM_INV_REQ, `proc_kill` when the peer does not answer the liveness PROBE |
 
 The four partial-write columns are `-1` for every other fault.
 
@@ -68,6 +68,15 @@ in ERR does not NAK; a dead process cannot transmit). This matches the repo docs
 split the pair via the TCP sideband (FIN vs RST) — the same process-liveness signal the
 PROBE uses. The reported `peer_rx_delta` / `peer_tx_delta` are diagnostics, not the
 decision input. (An earlier version wrongly used peer_rx as the discriminator.)
+
+**REM_ACCESS (10 / 0x88) and REM_INV_REQ (9 / 0x8a) get the same liveness PROBE**
+(2026-09-25). A SIGKILLed peer whose MR is torn down before its QP NAKs with 0x88 instead
+of going silent (`fingerprint_teardown/`: REM_ACCESS 111/192 kills when the MR was
+registered after the QP). An answered PROBE leaves the CQE classification unchanged. An
+unanswered one sets `sub_cause=proc_kill`, `peer_alive=0` and `auto_recoverable=0`: peer
+death, not an access bug. Validated with a live peer: `rem_access` 5/5 and `rem_inv_req`
+5/5 still recovered. `retry_server_qp_err` 5/5 and `retry_proc_kill` 3/3 were unchanged.
+The dead-peer 0x88 path itself is not produced by this harness's faults.
 
 ## Fault catalog (`-f`)
 

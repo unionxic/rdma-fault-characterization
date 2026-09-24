@@ -8,7 +8,7 @@
  *
  * One trial:
  *   TRIAL -> OK | "ERR <why>" -> [read counters] -> GO -> GOACK -> inject+measure detect
- *         -> [PROBE -> PROBED: RETRY_EXC sub-classification]
+ *         -> [PROBE -> PROBED: liveness for RETRY_EXC, REM_ACCESS, REM_INV_REQ]
  *         -> RECOVER/NORECOVER -> RECOK -> [recovery latency]
  *         -> [partial_write: RDMA-READ readback of the landed bytes] -> verify -> row
  *
@@ -357,12 +357,18 @@ int main(int argc, char **argv) {
          * (b) peer liveness on the control channel (PROBE answered => node up,
          *     QP broken; no answer => process dead). peer_rx/peer_tx are the
          * responder's fault-window RDMA port deltas: diagnostics only (the
-         * verification showed they do NOT separate server_qp_err from proc_kill). */
+         * verification showed they do NOT separate server_qp_err from proc_kill).
+         * REM_ACCESS (10/0x88) and REM_INV_REQ (9) get the same liveness check: a
+         * SIGKILLed peer whose MR is torn down before its QP NAKs with 0x88 instead of
+         * going silent (../fingerprint_teardown/), so an unanswered PROBE turns them into
+         * proc_kill (peer dead, not recoverable) instead of an access bug. */
         char sub_cause[24] = "-";
         long peer_rx = -1, peer_tx = -1;
         int peer_port_up = -1;
-        if (got == 1 && wc.status == IBV_WC_RETRY_EXC_ERR) {
-            if (ep_port_state(&ep) != IBV_PORT_ACTIVE) {
+        bool retry_exc = got == 1 && wc.status == IBV_WC_RETRY_EXC_ERR;
+        bool rem_nak = got == 1 && (wc.status == IBV_WC_REM_ACCESS_ERR || wc.status == IBV_WC_REM_INV_REQ_ERR);
+        if (retry_exc || rem_nak) {
+            if (retry_exc && ep_port_state(&ep) != IBV_PORT_ACTIVE) {
                 snprintf(sub_cause, sizeof(sub_cause), "link_down");
             } else {
                 struct timeval tv = { 1, 0 };
@@ -370,9 +376,11 @@ int main(int argc, char **argv) {
                 if (ctrl_send_line(fd, "PROBE") == 0 &&
                     ctrl_recv_line(fd, line, sizeof(line)) > 0 &&
                     sscanf(line, "PROBED %ld %ld %d", &peer_rx, &peer_tx, &peer_port_up) >= 1) {
-                    snprintf(sub_cause, sizeof(sub_cause), peer_port_up == 0 ? "link_down" : "server_qp_err");
+                    if (retry_exc)
+                        snprintf(sub_cause, sizeof(sub_cause), peer_port_up == 0 ? "link_down" : "server_qp_err");
                 } else {
                     snprintf(sub_cause, sizeof(sub_cause), "proc_kill");
+                    peer_alive = 0; auto_rec = 0;
                 }
                 tv.tv_sec = 0; tv.tv_usec = 0;
                 setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
