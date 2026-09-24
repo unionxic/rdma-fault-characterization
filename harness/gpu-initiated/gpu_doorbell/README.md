@@ -48,9 +48,11 @@ windows (2026-09-24, 11:16-11:26 and 12:00-12:06) and the same binaries and runn
 
 With the CPU handler the same faults never produced an error CQE in any of the 1024 CQ entries
 (`../nvshmem/`). **So NVSHMEM's missing error completions come from its CPU-proxy doorbell path,
-not from the collapsed CQ or the QP/CQ context shared by both handlers.** The F3 anomaly
-(retransmission stops but the QP stays RTS) is likewise absent with the GPU handler: RETRY_EXC
-arrives after 3.5-3.7 s as on CPU verbs. The blocking row shows the two predicted failure modes on
+not from the collapsed CQ or the QP/CQ context shared by both handlers.** The exact mechanism was
+then found in `../nvshmem_rootcause/`: the CPU proxy writes the send producer index into the
+receive word of the doorbell record, the GPU handler writes the send word. With the GPU handler
+RETRY_EXC arrives after 3.5-3.7 s, as on CPU verbs. (The earlier "F3 leaves the QP in RTS" was
+a measurement artifact of a lock-holding watch thread, see `../nvshmem_rootcause/`.) The blocking row shows the two predicted failure modes on
 real IBGDA: the collapsed slot ends at the trailing flush 5/0xf9 (Q1), and the release build's
 compiled-out assert lets `quiet` report success.
 

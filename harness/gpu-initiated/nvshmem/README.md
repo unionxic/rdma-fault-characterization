@@ -19,7 +19,11 @@ vendor_err_synd, wqe_counter, qpn) from `../DESIGN.md`.
   ignored and the blocking quiet would return "success". In practice no error CQE
   ever reached the CQ here (see Root cause), so every wait on a failed put simply
   never completes: the blocking quiet hung for every fault, and the bounded and
-  DeepEP-style waits spun to their budget.
+  DeepEP-style waits spun to their budget. (2026-09-24: the missing CQEs are an
+  NVSHMEM bug in the CPU-proxy handler, which writes the send producer index into
+  the wrong doorbell-record word; see `../nvshmem_rootcause/`. With the GPU handler
+  the CQEs arrive, and the blocking quiet then did return "success" on a failed put,
+  see `../gpu_doorbell/`.)
 - On this hardware the NIC handler auto-selects **CPU-with-host-memory** (no
   `PeerMappingOverride`, no gdrdrv, driver 12080 predates the CUDA DMA-BUF
   path): the GPU writes WQEs and a CPU proxy rings the doorbell. NIC buffers are
@@ -185,6 +189,29 @@ hits; `ready_head` keeps advancing as the kernel posts, so the gap
 `ready_head - 2*wqe_counter` is the only device-visible sign of trouble.
 
 ## Root cause (why no error CQE is ever visible)
+
+> **Update 2026-09-24: root cause found; parts of this section are superseded.**
+> See `../nvshmem_rootcause/` and `../gpu_doorbell/`.
+> - **Cause.** With the CPU-proxy NIC handler (our only option without
+>   PeerMappingOverride), `ibgda_rc_progress` / `ibgda_dci_progress` write the send
+>   producer index into word 0 of the QP doorbell record (the *receive* counter,
+>   `MLX5_RCV_DBR`) instead of word 1 (`MLX5_SND_DBR`). Normal traffic works because the
+>   UAR doorbell carries the index; at the ERR transition the NIC takes the producer from
+>   the record (0), sees an empty send queue and writes no completion. Fixing only that
+>   word (default-off knob in `../nvshmem_rootcause/nvshmem_nrc_proxy_sq_dbr.diff`) brings
+>   REM_ACCESS, RETRY_EXC and WR_FLUSH CQEs back; so does the GPU handler, which writes
+>   word 1 (`../gpu_doorbell/`).
+> - **"F3 leaves the requester QP in RTS" is wrong.** It was produced by the
+>   `NVSHMEM_IBGDA_FAULT_WATCH` thread, which held `rc_endpoint_lock` while sleeping; the
+>   CPU proxy needs the same lock, so the failing put was never rung during the watch.
+>   Without that artifact the QP goes to ERR ~3.6 s after the put, as with verbs. The
+>   "watch raced init" explanation below is wrong for the same reason.
+> - **The `ab/` F1 and F3 cells (tcc1) never exercised the fault** (the put was not rung,
+>   and F1's 2ERR ran after the 16 s watch), and the `cc=0` "init hangs" result ran with
+>   the lock-holding watch, so it is unreliable. The collapsed-CQ hypothesis was rejected
+>   separately in `../gin_q4/`.
+> - Still valid: the full-buffer scan (no 0xd/0xe anywhere), F2b's QP in ERR without a
+>   CQE, the release build compiling the assert out, and the teardown hangs.
 
 Each statement below is tagged **[measured]** or **[inferred]**. Two round-2 QA
 gaps (full-buffer scan; QUERY_QP parse) were closed and corrected earlier text.

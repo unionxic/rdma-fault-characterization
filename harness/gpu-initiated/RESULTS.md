@@ -1,9 +1,11 @@
 # GPU-initiated RDMA fault study: combined results (2026-09-23)
 
 Testbed: rain (Quadro RTX 5000, sm_75) and sunny (RTX A4000, sm_86), one ConnectX-6 Dx each
-(fw 20.43.4100), RoCE v2, PMTU 4096. No PeerMappingOverride, so every GPU-initiated stack ran in
-its CPU-doorbell fallback: the GPU writes the WQEs and polls a CQ in GPU memory, and a CPU thread
-rings the doorbell. Unless stated otherwise the IB ack timeout is 14. Details, raw data and
+(fw 20.43.4100), RoCE v2, PMTU 4096. Without PeerMappingOverride every GPU-initiated stack runs
+in its CPU-doorbell fallback: the GPU writes the WQEs and polls a CQ in GPU memory, and a CPU
+thread rings the doorbell. That is how everything except `gpu_doorbell/` ran; `gpu_doorbell/`
+reloaded the driver with the override for two short windows so the GPU rang the doorbell itself.
+Unless stated otherwise the IB ack timeout is 14. Details, raw data and
 patches are in the four subdirectories; this page only combines them.
 
 | dir | question | what it is |
@@ -20,7 +22,9 @@ patches are in the four subdirectories; this page only combines them.
 | CPU verbs (harness) | 5/0xf5, 0.23 ms | 10/0x88, 0.3 ms | 12/0x81, 3.75 s | 12/0x81, 3.73 s | - | - |
 | GIN proxy | log 5/0xf5, host 7 ms | log 10/0x88, 3 ms | log 12/0x81, 3.65 s | log **10/0x88**, 60 ms | hangs | abort hangs (blocking comm) |
 | GIN GDAKI (stock) | "QP in ERR" only, 9.4 s | same, 10.0 s | same, 9.4 s | same, 8.0 s | **reports the failed write as done** (1 iteration, 9/9) | clean |
-| NVSHMEM IBGDA (stock) | no error CQE, no host signal | invalid rkey: QP in ERR but no error CQE | no error CQE, QP stays RTS | no error CQE | hangs | `nvshmem_finalize` hangs |
+| NVSHMEM IBGDA (stock, CPU-proxy handler) | no error CQE, no host signal | invalid rkey: QP in ERR but no error CQE | no error CQE (QP reaches ERR) | no error CQE | hangs | `nvshmem_finalize` hangs |
+| NVSHMEM IBGDA, GPU handler (PeerMappingOverride) | CQE 5/0xf5, 1.8 ms | CQE 10/0x88, 9 ms | CQE 12/0x81, 3.5-3.7 s | - | quiet **returns success** on a failed put (slot 5/0xf9) | - |
+| NVSHMEM IBGDA, CPU proxy + SQ-DBR fix | CQE 5/0xf5 | CQE 10/0x88, 10 ms | CQE 12/0x81, 3.5-3.6 s | - | - | `nvshmem_finalize` still hangs |
 | GIN GDAKI + Q4 classifier | 5/0xf5, 15 ms | 10/0x88, 2.8 ms | 12/0x81, 3.64-3.70 s | 12/0x81, 3.64-3.70 s | returns `ncclRemoteError` (silent success 0/9) | clean |
 
 Times are from the fault to the first host-visible error. GDAKI's stock times are set by its
@@ -40,8 +44,16 @@ Times are from the fault to the first host-visible error. GDAKI's stock times ar
    consumer index to the first error CQE.
 3. **Where the error is seen decides what can be known.** The CPU-polled GIN proxy has the full
    fingerprint within milliseconds. The GPU-polled stacks drop it: GDAKI's device poll reduces it
-   to -EIO and its host sees only "QP in ERR" every 10 s. NVSHMEM IBGDA never showed an error CQE
-   in any of the 1024 entries of its CQs, even with the requester QP confirmed in ERR.
+   to -EIO and its host sees only "QP in ERR" every 10 s. NVSHMEM IBGDA with its CPU-proxy handler
+   never showed an error CQE in any of the 1024 entries of its CQs, even with the requester QP
+   confirmed in ERR.
+3a. **That NVSHMEM behaviour is a bug in its CPU-proxy handler (`nvshmem_rootcause/`).** The proxy
+   writes the send producer index into word 0 of the QP doorbell record (the receive counter)
+   instead of word 1; the NIC reloads the producer from the record at the ERR transition, sees an
+   empty send queue and writes no completion. CPU reproduction: 0/35 error CQEs with the word at 0,
+   21/21 with it written. In NVSHMEM itself, fixing only that word (default-off knob) or using the
+   GPU handler (`gpu_doorbell/`) brings REM_ACCESS, RETRY_EXC and WR_FLUSH CQEs back. It affects
+   any system that runs IBGDA without PeerMappingOverride.
 4. **Silent failures exist in production paths.** GDAKI's blocking wait reports a failed write as
    done (the -EIO is discarded by a void wait). Out-of-bounds puts that stay inside the registered
    MR (NVSHMEM heap, GIN window rounded to pages) are silent corruption at every layer, because the
@@ -70,20 +82,29 @@ Times are from the fault to the first host-visible error. GDAKI's stock times ar
   ERR; F3 stays RTS).
 - "Infinite RNR retry explains F3": a peer QP in ERR drops packets silently (harness), no RNR.
 - "The collapsed CQ hides error completions": rejected by the in-stack A/B in GDAKI (`gin_q4/`).
-  Why NVSHMEM's CQ never shows an error CQE is open.
+  The real cause is the doorbell-record word (finding 3a).
+- "F3 leaves NVSHMEM's requester QP in RTS" and "the watch thread raced init": both artifacts of
+  a watch thread that held `rc_endpoint_lock` while sleeping and so kept the CPU proxy from ringing
+  the failing put. Without it the QP reaches ERR ~3.6 s after the put (`nvshmem_rootcause/`).
+  The NVSHMEM `ab/` F1/F3 cells and its `cc=0` "init hangs" ran with that watch and are invalid.
 - GIN: surface times were first relative to program start; the ">55 s at IB timeout 20" bound
   came from runs that exited at 4.8 s; "GDAKI's host never learns" came from exiting before the
   10 s check. All re-measured.
 
 ## Open questions and next steps
 
-1. Why NVSHMEM IBGDA's CQ never receives an error CQE (diff its QPC/CQC bits against DOCA's, and
-   its CPU-proxy doorbell path).
-2. Why F3 leaves NVSHMEM's requester QP in RTS after the NIC stops retransmitting.
-3. The same experiments with GPU-rung doorbells (needs `PeerMappingOverride=1` and an nvidia
-   module reload on both nodes; on rain the desktop and the user's `mooncake_client` would have to
-   stop first).
-4. Recovery on top of Q4: the mailbox gives the host the fingerprint in about 0.3 ms; a host-side
-   QP reset and a GPU-side producer/consumer index resync are the next pieces, and replay must
-   handle GIN's signal atomics (a replayed ADD double-counts).
-5. Hopper-class GPUs for DeepEP, which requires SM90.
+Resolved on 2026-09-24:
+1. Why NVSHMEM IBGDA's CQ never receives an error CQE: the CPU proxy's doorbell-record word
+   (finding 3a, `nvshmem_rootcause/`).
+2. Why F3 left NVSHMEM's requester QP in RTS: it did not; a lock-holding watch thread kept the put
+   from being rung.
+3. GPU-rung doorbells (`gpu_doorbell/`): NVSHMEM's GPU handler gets the error CQEs; GIN Q4 behaves
+   as with CPU doorbells; stock GDAKI's blocking silent success is unchanged.
+
+Still open:
+4. Recovery on top of Q4 (`gin_recovery/`, in progress): host-side bilateral QP reset, GPU-side
+   index resync, and a replay rule for GIN's signal atomics (a replayed ADD double-counts).
+5. DeepEP cannot run here: its internode and low-latency kernels require SM90 (`setup.py` asserts
+   for any other arch), and rain's GPU is sm_75, below even the legacy SM80 path.
+6. That GDAKI used GPU doorbells in `gpu_doorbell/` is inferred (neither NCCL nor DOCA logs it).
+7. Reporting the NVSHMEM doorbell-record bug upstream (needs the user's go-ahead).
