@@ -132,6 +132,8 @@ RETRY_EXC_ERR detection 단축 경로 비교 (옛 클러스터).
 - **retry 소진 감지는 기본값에서 느리다.**
   - IB timeout 14에서는 모든 스택이 3.6–3.75 s다.
   - NCCL/NVSHMEM 기본값인 20에서는 GIN proxy가 RETRY_EXC를 57–59 s 만에 보고했다(4 trials). 계산값 34 s의 약 1.7배다.
+  - 그 이유를 `harness/ack_timeout/`에서 쟀다. 기본 firmware는 재시도 1회분을 쓰는 적응형 재전송 단계를 먼저 돌고, 그다음 R−1번의 timeout을 2 × 4.096 µs × 2^max(T,16) 간격으로 기다린다. detect ≈ R × I − c 식이 42/42 시행에 0.9 ms 안으로 맞고, T=20·R=7에서 59.8 s다.
+  - rain NIC의 floor(`min_ack_timeout_limit_disabled`)를 시험 창 안에서만 풀면 T=8·R=7에서 9.49 ms다. GPU 스택에서는 fault부터 호스트가 지문을 받기까지 NVSHMEM 13.3 ms, GIN GDAKI 24.6 ms였다(각 10/10). 설정은 NIC 전체에 적용되고 작은 T는 오탐 위험이 있어서, 레지스터는 창이 끝날 때마다 되돌리고 확인했다.
 - **장치측 분류(GPU 분류기, GDAKI)는 싸다.**
   - host는 장치가 감지한 지 94 µs 뒤에 정확한 지문을 받고, `ncclCommGetAsyncError`는 그로부터 190 µs 뒤에 반환한다.
   - 조용한 성공은 0/9로 사라졌다.
