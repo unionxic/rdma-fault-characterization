@@ -11,7 +11,9 @@
 #   sizeof(__be32)). Stock (unset or 0) writes byte offset dbr_offset * sizeof(__be32),
 #   i.e. word 0 (MLX5_RCV_DBR) for an RC endpoint, so the SQ record is never updated.
 # NVSHMEM_IBGDA_FAULT_WATCH (from the base diff) additionally prints both doorbell-record
-#   words of each RC endpoint ("[nvshmem-nrc] ... DBR word0(rq)=.. word1(sq)=..").
+#   words of each RC endpoint ("[nvshmem-nrc] ... DBR word0(rq)=.. word1(sq)=..") while the
+#   record is in host memory, and once more in its end-of-run dump for every handler
+#   ("[nvshmem-nrc] final RC ... DBR(host|gpu) ..."; the GPU copy is read with cudaMemcpy).
 # Watch fix: the base diff's NVSHMEM_IBGDA_FAULT_WATCH thread held rc_endpoint_lock across its
 #   sleep, which starves the CPU proxy (ibgda_rc_progress takes the same lock) and the
 #   fault-inject thread, so no doorbell is rung while the watch runs. Here the lock is released
@@ -20,7 +22,7 @@
 # exactly like the base (stock NVSHMEM + default-off fault hooks).
 # ---------------------------------------------------------------------------------------
 diff --git a/src/modules/transport/ibgda/ibgda.cpp b/src/modules/transport/ibgda/ibgda.cpp
-index c3f28ea..d10c961 100644
+index c3f28ea..e47042e 100644
 --- a/src/modules/transport/ibgda/ibgda.cpp
 +++ b/src/modules/transport/ibgda/ibgda.cpp
 @@ -473,6 +473,29 @@ int nvshmemt_ibgda_show_info(struct nvshmem_transport * /*transport*/, int /*sty
@@ -114,3 +116,26 @@ index c3f28ea..d10c961 100644
              std::this_thread::sleep_for(std::chrono::milliseconds(period));
          }
          // Final dump of the collapsed CQ slot for every RC/DCI send CQ.
+@@ -4717,6 +4755,22 @@ static void ibgda_fault_watch_arm(nvshmemt_ibgda_state_t *ibgda_state, int n_pes
+                     ep->send_cq->cq_mobject)
+                     ibgda_fi_dump_cq_slot(ep->send_cq->cq_mobject->aligned.gpu_ptr, ep->send_cq->cqn,
+                                           "RC-final");
++                // nrc: final doorbell-record words, from host memory (CPU-proxy handlers) or
++                // GPU memory (GPU handler).
++                if (ep && ep->qp_type == NVSHMEMI_IBGDA_DEVICE_QP_TYPE_RC && ep->qp_ctrl.dbr_mobject) {
++                    __be32 d[2] = {0, 0};
++                    struct ibgda_mem_object *m = ep->qp_ctrl.dbr_mobject;
++                    int ok = 0;
++                    if (m->has_cpu_mapping && m->aligned.cpu_ptr) {
++                        memcpy(d, (char *)m->aligned.cpu_ptr + ep->qp_ctrl.dbr_offset, sizeof(d));
++                        ok = 1;
++                    } else if (m->has_gpu_mapping && m->aligned.gpu_ptr) {
++                        ok = cudaMemcpy(d, (char *)m->aligned.gpu_ptr + ep->qp_ctrl.dbr_offset,
++                                        sizeof(d), cudaMemcpyDefault) == cudaSuccess;
++                    }
++                    fprintf(stderr, "[nvshmem-nrc] final RC qpn=0x%x DBR(%s) ok=%d word0(rq)=%u word1(sq)=%u\n",
++                            ep->qpn, m->has_cpu_mapping ? "host" : "gpu", ok, be32toh(d[0]), be32toh(d[1]));
++                }
+             }
+         }
+     }).detach();
