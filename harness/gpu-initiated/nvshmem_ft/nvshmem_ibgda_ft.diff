@@ -1,0 +1,1628 @@
+# NVSHMEM IBGDA fault tolerance: device classification + host mailbox + recovery (research)
+#
+# Base:     NVSHMEM commit 7bb2e99c (github.com/NVIDIA/nvshmem)
+# Layering: apply ../nvshmem/nvshmem_ibgda_fault_inject.diff, then
+#           ../nvshmem_rootcause/nvshmem_nrc_proxy_sq_dbr.diff, then this file (git apply).
+# Gate:     NVSHMEM_IBGDA_FT=1 (default off). Off: one extra __constant__ pointer read per CQ poll,
+#           no host thread, no buffer; connect issues the same DEVX commands with the same values.
+# Env:      NVSHMEM_IBGDA_FT_POLL_US (watcher period, 50), NVSHMEM_IBGDA_FT_CAPTURE=exit (diagnostic:
+#           classify only the CQE that ends the wait), NVSHMEM_IBGDA_FT_DRAIN_MS (1000),
+#           NVSHMEM_IBGDA_FT_QUIET=1 (no log lines), NVSHMEM_IBGDA_FAULT_INJECT=<act>:<ms>[,<d2>...]
+#           (multi-shot hook: shot k fires d_k ms after the recovery commit of shot k-1; -1 = inside it)
+# Files:    include/device_host_transport/nvshmem_common_ibgda.h  per-QP sticky record in the mvars
+#             padding, FT pointer in the device-state padding (sizes unchanged), record/API types
+#           include/non_abi/device/pt-to-pt/ibgda_device.cuh  in-loop capture in ibgda_poll_cq,
+#             fail-fast waits, nvshmemx_ibgda_ft_status/_quiet_bounded/_sentinel
+#           modules/transport/ibgda/ibgda.cpp  mailbox + watcher, exported nvshmemt_ibgda_ft_*
+#             (query/prepare/commit/abort/mark_failed/sentinel_stop/commits), PSN parameters on
+#             INIT2RTR/RTR2RTS (default 0 = stock), peer handle kept at connect, multi-shot hook
+#           host/coll/barrier/barrier.cpp, host/init/init.cu, internal headers: skip device barriers
+#             once the transport is marked failed (NVSHMEM_TRANSPORT_ATTR_FT_FAILED)
+#           nvshmem_transport.sym  export nvshmemt_ibgda_ft_*
+# Design:   harness/gpu-initiated/nvshmem_ft/DESIGN.md
+diff --git a/nvshmem_transport.sym b/nvshmem_transport.sym
+index 360a172..21a8007 100644
+--- a/nvshmem_transport.sym
++++ b/nvshmem_transport.sym
+@@ -1,4 +1,4 @@
+ {
+-  global: nvshmemt_init;
++  global: nvshmemt_init; nvshmemt_ibgda_ft_*;
+   local: *;
+-};
+\ No newline at end of file
++};
+diff --git a/src/host/coll/barrier/barrier.cpp b/src/host/coll/barrier/barrier.cpp
+index 7e7ac2f..02f3cb7 100644
+--- a/src/host/coll/barrier/barrier.cpp
++++ b/src/host/coll/barrier/barrier.cpp
+@@ -12,9 +12,30 @@
+ #include "internal/host/nvshmem_internal.h"              // for nvshmemi_state, nvshme...
+ #include "internal/host/nvshmemi_types.h"                // for nvshmemi_state
+ #include "internal/host/nvshmem_nvtx.hpp"                // for nvtx_cond_range, COLL_OPT
++#include "internal/host_transport/transport.h"           // NVSHMEM_IBGDA_FT: transport attr
++#include <stdio.h>                                       // NVSHMEM_IBGDA_FT: fprintf
+ #include "internal/host/util.h"                          // for nvshmemi_check_state_a...
+ 
++/* NVSHMEM_IBGDA_FT (research): true once a transport was marked failed (declined recovery). */
++bool nvshmemi_ft_transport_failed() {
++    if (!nvshmemi_state || !nvshmemi_state->transports) return false;
++    for (int i = 0; i < nvshmemi_state->num_initialized_transports; i++) {
++        if (nvshmemi_state->transports[i] &&
++            (nvshmemi_state->transports[i]->attr & NVSHMEM_TRANSPORT_ATTR_FT_FAILED))
++            return true;
++    }
++    return false;
++}
++
+ void nvshmemi_barrier(nvshmem_team_t team) {
++    if (nvshmemi_ft_transport_failed()) {
++        static bool warned = false;
++        if (!warned) {
++            fprintf(stderr, "[nvshmem-ft] transport marked failed: skipping device barrier\n");
++            warned = true;
++        }
++        return;
++    }
+     nvshmem_quiet();
+     nvshmemi_call_barrier_on_stream_kernel(team, nvshmemi_state->my_stream);
+     CUDA_RUNTIME_CHECK(cudaStreamSynchronize(nvshmemi_state->my_stream));
+diff --git a/src/host/init/init.cu b/src/host/init/init.cu
+index 8993db3..8f2be7d 100644
+--- a/src/host/init/init.cu
++++ b/src/host/init/init.cu
+@@ -1602,16 +1602,22 @@ void nvshmemid_hostlib_finalize(void *device_ctx, void *transport_device_ctx) {
+     INFO(NVSHMEM_INIT, "[%d] in nvshmem_finalize:", pid);
+ 
+     if (nvshmemi_device_state.nvshmemi_is_nvshmem_initialized) {
++        /* NVSHMEM_IBGDA_FT (research): after a declined fault the device barrier (and the quiet
++         * that follows it) cannot complete; nvshmemi_barrier() returns at once in that case. */
+         nvshmemi_barrier_all();
+-        nvshmemx_quiet_on_stream(
+-            nvshmemi_state->my_stream); /* wait for signal ops from barrier to complete */
++        if (!nvshmemi_ft_transport_failed())
++            nvshmemx_quiet_on_stream(
++                nvshmemi_state->my_stream); /* wait for signal ops from barrier to complete */
+         status = cudaDeviceSynchronize();
+         NVSHMEMI_NZ_ERROR_JMP(status, NVSHMEMX_ERROR_INTERNAL, out,
+                               "Teams cleanup device synchronization failed \n");
+         nvshmemi_region_host_reset();
+ 
+         /* barrier to ensure all previous ops are complete */
+-        nvshmemi_boot_handle.barrier(&nvshmemi_boot_handle);
++        /* NVSHMEM_IBGDA_FT (research): skipped once the transport is marked failed. Its QPs are in
++         * ERR on both sides (nothing can still write into this PE's memory), and with a dead peer
++         * the TCP bootstrap barrier retries connect() 20000 times (~23 s measured). */
++        if (!nvshmemi_ft_transport_failed()) nvshmemi_boot_handle.barrier(&nvshmemi_boot_handle);
+ 
+         /* mps finalize */
+         if (nvshmemi_is_limited_mpg_run) {
+diff --git a/src/include/device_host_transport/nvshmem_common_ibgda.h b/src/include/device_host_transport/nvshmem_common_ibgda.h
+index f735ca8..096fb9f 100644
+--- a/src/include/device_host_transport/nvshmem_common_ibgda.h
++++ b/src/include/device_host_transport/nvshmem_common_ibgda.h
+@@ -177,7 +177,14 @@ typedef struct {
+         uint64_t head;
+         uint64_t tail;
+     } ibuf;
+-    char padding[NVSHMEMI_IBGDA_QP_MANAGEMENT_PADDING];
++    // NVSHMEM_IBGDA_FT (research, default off): per-QP sticky first-error record, written by the
++    // device classifier. These 24 bytes were `char padding[NVSHMEMI_IBGDA_QP_MANAGEMENT_PADDING]`
++    // (unused, zeroed at setup); the struct size is unchanged.
++    uint32_t ft_state;  // 0 none, 1 capture in progress, 2 root cause recorded, 3 only a trailing flush
++    uint32_t ft_fp;     // opcode << 24 | syndrome << 16 | vendor_err << 8 | class
++    uint32_t ft_wqe;    // root CQE wqe_counter | polled index (low 16 bits) << 16
++    uint32_t ft_aux;    // root CQE s_wqe_opcode_qpn (opcode << 24 | qpn)
++    uint64_t ft_gtime;  // %globaltimer at capture
+ } __attribute__((__aligned__(8))) nvshmemi_ibgda_device_qp_management_v1;
+ static_assert(sizeof(nvshmemi_ibgda_device_qp_management_v1) == 96,
+               "ibgda_device_qp_management_v1 must be 96 bytes.");
+@@ -339,13 +346,142 @@ typedef struct {
+     void *extra;
+     void *region_batch_rma_pending_qps;
+     uint32_t region_batch_rma_threshold;
+-    uint8_t reserved[NVSHMEMI_IBGDA_STATE_PADDING_V2];
++    // NVSHMEM_IBGDA_FT (research): taken from the reserved bytes, the struct size is unchanged.
++    uint32_t ft_flags;  // NVSHMEMI_IBGDA_FT_FLAG_*; 0 when NVSHMEM_IBGDA_FT is off
++    void *ft;           // nvshmemi_ibgda_ft_dev_t * in GPU memory; NULL when NVSHMEM_IBGDA_FT is off
++    uint8_t reserved[NVSHMEMI_IBGDA_STATE_PADDING_V2 - 12];
+ } nvshmemi_ibgda_device_state_v2;
+ static_assert(sizeof(nvshmemi_ibgda_device_state_v2) == 8384,
+               "ibgda_device_state_v2 must be 8384 bytes.");
+ 
+ typedef nvshmemi_ibgda_device_state_v2 nvshmemi_ibgda_device_state_t;
+ 
++/* ---------------------------------------------------------------------------------------------
++ * NVSHMEM_IBGDA_FT (research, default off): device-side classification of the root-cause error
++ * CQE, a host-mapped mailbox, and the state the host recovery path resyncs. See
++ * harness/gpu-initiated/nvshmem_ft/DESIGN.md.
++ * ------------------------------------------------------------------------------------------- */
++#define NVSHMEMI_IBGDA_FT_MAGIC 0x4e465442u /* "BTFN" */
++#define NVSHMEMI_IBGDA_FT_NSLOTS 16
++
++enum {
++    NVSHMEMI_IBGDA_FT_FLAG_ON = 1,          /* classification on: record + error return */
++    NVSHMEMI_IBGDA_FT_FLAG_CAPTURE_EXIT = 2, /* diagnostic: look at the slot only when the wait
++                                                exits (stock position), not in the spin loop */
++    NVSHMEMI_IBGDA_FT_FLAG_SENTINEL = 4,     /* the application runs the device sentinel */
++};
++
++/* Classes (same numbering as the NCCL GIN Q4 classifier). Syndromes: rdma-core
++ * providers/mlx5/mlx5dv.h MLX5_CQE_SYNDROME_*, mapped as in providers/mlx5/cq.c. */
++enum {
++    NVSHMEMI_IBGDA_FT_CLASS_NONE = 0,
++    NVSHMEMI_IBGDA_FT_CLASS_LOCAL_QP_ERR = 1,   /* 0x05 WR_FLUSH, vendor 0xf5 (head of SQ) */
++    NVSHMEMI_IBGDA_FT_CLASS_FLUSH_TRAILING = 2, /* 0x05 WR_FLUSH, vendor 0xf9 (behind an error) */
++    NVSHMEMI_IBGDA_FT_CLASS_FLUSH_OTHER = 3,
++    NVSHMEMI_IBGDA_FT_CLASS_LOC_PROT = 4,       /* 0x04 */
++    NVSHMEMI_IBGDA_FT_CLASS_REM_INV_REQ = 5,    /* 0x12 (0x8a) */
++    NVSHMEMI_IBGDA_FT_CLASS_REM_ACCESS = 6,     /* 0x13 (0x88) */
++    NVSHMEMI_IBGDA_FT_CLASS_RETRY_EXC = 7,      /* 0x15 (0x81) */
++    NVSHMEMI_IBGDA_FT_CLASS_RNR_RETRY_EXC = 8,  /* 0x16 (0x87) */
++    NVSHMEMI_IBGDA_FT_CLASS_LOC_LEN = 9,        /* 0x01 */
++    NVSHMEMI_IBGDA_FT_CLASS_LOC_QP_OP = 10,     /* 0x02 */
++    NVSHMEMI_IBGDA_FT_CLASS_REM_OP = 11,        /* 0x14 */
++    NVSHMEMI_IBGDA_FT_CLASS_REM_ABORT = 12,     /* 0x22 */
++    NVSHMEMI_IBGDA_FT_CLASS_LOC_ACCESS = 13,    /* 0x11 */
++    NVSHMEMI_IBGDA_FT_CLASS_BAD_RESP = 14,      /* 0x10 */
++    NVSHMEMI_IBGDA_FT_CLASS_OTHER = 15,
++};
++
++enum {
++    NVSHMEMI_IBGDA_FT_PATH_POLL = 1,     /* ibgda_poll_cq spin loop (quiet, slot wait) */
++    NVSHMEMI_IBGDA_FT_PATH_EXIT = 2,     /* ibgda_poll_cq after the wait was satisfied */
++    NVSHMEMI_IBGDA_FT_PATH_BOUNDED = 3,  /* nvshmemx_ibgda_ft_quiet_bounded */
++    NVSHMEMI_IBGDA_FT_PATH_SENTINEL = 4, /* nvshmemx_ibgda_ft_sentinel */
++};
++
++/* One mailbox record (256 B) in host-pinned mapped memory. The device writes the body with
++ * system-scope stores, __threadfence_system(), then seq, fence, then magic. */
++typedef struct {
++    uint32_t magic;
++    uint32_t seq;          /* 1-based */
++    uint32_t qpn;          /* QP the wait was on */
++    uint32_t cqe_sqpn;     /* root CQE s_wqe_opcode_qpn (host order) */
++    uint16_t wqe_counter;  /* root CQE wqe_counter */
++    uint8_t syndrome;      /* root CQE byte 55 */
++    uint8_t vendor_err;    /* root CQE byte 54 */
++    uint8_t cls;           /* NVSHMEMI_IBGDA_FT_CLASS_* */
++    uint8_t kind;          /* 1 = error CQE */
++    uint8_t path;          /* NVSHMEMI_IBGDA_FT_PATH_* */
++    uint8_t qp_type;       /* NVSHMEMI_IBGDA_DEVICE_QP_TYPE_* */
++    uint8_t hw_err_synd;   /* byte 52 */
++    uint8_t hw_synd_type;  /* byte 53 */
++    uint8_t root_opcode;   /* op_own >> 4 */
++    uint8_t upgrade;       /* 1 if this record replaces an earlier trailing-flush-only record */
++    int32_t mype;
++    int32_t peer;          /* RC: peer PE; DCI: -1 */
++    uint32_t qp_index;     /* index into globalmem.rcs / dcis */
++    uint64_t poll_idx;     /* index (WQE idx + 1) the wait was waiting for */
++    uint64_t cons_idx;
++    uint64_t prod_idx;
++    uint64_t ready_head;
++    uint64_t resv_head;
++    uint64_t gtimer_ns;    /* %globaltimer at capture */
++    uint32_t snap_tries;   /* reads needed for a consistent 64-B snapshot */
++    uint32_t pad0;
++    uint8_t root_cqe[64];  /* raw root CQE */
++    uint8_t reserved[96];
++} nvshmemi_ibgda_ft_record_t;
++static_assert(sizeof(nvshmemi_ibgda_ft_record_t) == 256, "nvshmemi_ibgda_ft_record_t must be 256 B");
++
++/* Device control block (GPU memory), pointed to by nvshmemi_ibgda_device_state_t::ft. */
++typedef struct {
++    nvshmemi_ibgda_ft_record_t *mbox; /* device alias of the host-mapped records */
++    uint32_t nslots;
++    uint32_t seq;              /* GPU atomic, 1-based record sequence */
++    uint32_t nerr;             /* QPs with a recorded error since the last recovery */
++    uint32_t flags;            /* copy of NVSHMEMI_IBGDA_FT_FLAG_* */
++    uint64_t sentinel_polls;   /* sentinel loop iterations (diagnostic) */
++    uint32_t sentinel_stop;    /* host sets 1 to end the sentinel */
++    uint32_t sentinel_running; /* sentinel sets 1 while it runs */
++    uint64_t reserved[4];
++} nvshmemi_ibgda_ft_dev_t;
++
++/* Host API of the IBGDA transport plugin (exported from nvshmem_transport_ibgda.so; an application
++ * resolves the nvshmemt_ibgda_ft_* symbols with dlopen(RTLD_NOLOAD) + dlsym). */
++#define NVSHMEMT_IBGDA_FT_API_VERSION 1
++#define NVSHMEMT_IBGDA_FT_MAX_QPS 8
++#define NVSHMEMT_IBGDA_FT_TOKEN_MAGIC 0x4654544bu /* "KTTF" */
++
++typedef struct {
++    int valid;          /* 1 if an unrecovered error record is present */
++    int cls;            /* NVSHMEMI_IBGDA_FT_CLASS_* */
++    int wc_status;      /* ibv_wc_status equivalent of the syndrome */
++    int opcode, syndrome, vendor_err, trailing, path, upgrade, snap_tries;
++    int peer, qp_type;
++    uint32_t qpn, wqe_counter, seq, nrecords;
++    uint64_t poll_idx, prod_idx, cons_idx, gtimer_ns;
++    double host_mono_ms; /* CLOCK_MONOTONIC (ms) when the watcher read the record */
++    char name[24], fault[24], cause[128], action[128];
++    int recover_hint; /* 1 recoverable class, 2 recoverable if the peer is alive, 0 decline */
++} nvshmemt_ibgda_ft_info_t;
++
++typedef struct {
++    uint32_t magic, nqps;
++    int32_t pe, peer;
++    struct {
++        uint32_t qpn, peer_qpn, sq_psn, prod_idx;
++    } qp[NVSHMEMT_IBGDA_FT_MAX_QPS];
++} nvshmemt_ibgda_ft_token_t;
++
++typedef struct {
++    uint32_t nqps, ndci_reset, drained, pad;
++    double to_err_ms, drain_ms, prepare_ms;       /* Prepare */
++    double rst_ms, resync_ms, connect_ms, commit_ms; /* Commit */
++    uint32_t prod_idx[NVSHMEMT_IBGDA_FT_MAX_QPS];  /* device producer index of each QP at Prepare */
++    uint32_t qp_state[NVSHMEMT_IBGDA_FT_MAX_QPS];  /* QUERY_QP state at Prepare (before 2ERR) */
++    char msg[160];
++} nvshmemt_ibgda_ft_stats_t;
++
+ #include "device_host/nvshmemi_extern_constant.h"
+ 
+ #ifdef EXTERN_CONSTANT
+diff --git a/src/include/internal/host/nvshmem_internal.h b/src/include/internal/host/nvshmem_internal.h
+index 6b1523d..cb8e6d0 100644
+--- a/src/include/internal/host/nvshmem_internal.h
++++ b/src/include/internal/host/nvshmem_internal.h
+@@ -130,6 +130,7 @@ int nvshmemi_get_device_state_ptrs(void **dev_state_ptr, void **transport_dev_st
+ }
+ 
+ void nvshmemi_barrier_all();
++bool nvshmemi_ft_transport_failed(); /* NVSHMEM_IBGDA_FT (research) */
+ int nvshmemi_proxy_init(nvshmemi_state_t *state, int proxy_level);
+ int nvshmemi_proxy_finalize(nvshmemi_state_t *state);
+ 
+diff --git a/src/include/internal/host_transport/transport.h b/src/include/internal/host_transport/transport.h
+index 094aa58..11a2c49 100644
+--- a/src/include/internal/host_transport/transport.h
++++ b/src/include/internal/host_transport/transport.h
+@@ -58,6 +58,10 @@ enum {
+     NVSHMEM_TRANSPORT_ATTR_NO_ENDPOINTS = 1,
+     NVSHMEM_TRANSPORT_ATTR_CONNECTED = 1 << 1,
+     NVSHMEM_TRANSPORT_ATTR_MULTI_NIC_ENABLED = 1 << 2,
++    /* NVSHMEM_IBGDA_FT (research): set by the IBGDA transport when the application declared a
++     * fault unrecoverable; teardown then skips device collectives, which cannot complete over a
++     * QP in ERR (or with a dead peer). */
++    NVSHMEM_TRANSPORT_ATTR_FT_FAILED = 1 << 3,
+     NVSHMEM_TRANSPORT_ATTR_MAX = INT_MAX,
+ };
+ 
+diff --git a/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh b/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh
+index 143f63b..80cc9b6 100644
+--- a/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh
++++ b/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh
+@@ -496,6 +496,192 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_check_poll_ti
+ }
+ #endif
+ 
++/* ---------------------------------------------------------------------------------------------
++ * NVSHMEM_IBGDA_FT (research, default off; host env NVSHMEM_IBGDA_FT=1 sets state->ft).
++ * Device-side classification of the root-cause error CQE on the collapsed send CQ. Every poll of
++ * a send CQ also looks at the slot's opcode while it spins; the first error CQE seen on a QP is
++ * snapshotted before the trailing flushes (5/0xf9, ~59 us later) overwrite it, kept as a sticky
++ * per-QP record in mvars, and published to a host-mapped mailbox. Waits on a failed QP return an
++ * error instead of spinning or reporting success. With state->ft == NULL nothing below runs.
++ * ------------------------------------------------------------------------------------------- */
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE nvshmemi_ibgda_ft_dev_t *ibgda_ft_dev() {
++    return (nvshmemi_ibgda_ft_dev_t *)ibgda_get_state()->ft;
++}
++
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE uint64_t ibgda_ft_globaltimer() {
++    uint64_t t;
++    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t)::"memory");
++    return t;
++}
++
++/* The CQ struct points into the QP's mvars (cons_idx); recover the mvars from it. */
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE nvshmemi_ibgda_device_qp_management_t *
++ibgda_ft_mvars_of_cq(const nvshmemi_ibgda_device_cq_t *cq) {
++    return (nvshmemi_ibgda_device_qp_management_t *)((uintptr_t)cq->cons_idx -
++                                                     __builtin_offsetof(
++                                                         nvshmemi_ibgda_device_qp_management_t,
++                                                         tx_wq.cons_idx));
++}
++
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE bool ibgda_ft_is_err_opcode(uint8_t opown) {
++    uint8_t op = opown >> 4;
++    return op == MLX5_CQE_REQ_ERR || op == MLX5_CQE_RESP_ERR;
++}
++
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE uint8_t ibgda_ft_classify(uint8_t syndrome,
++                                                                                 uint8_t vendor) {
++    switch (syndrome) {
++        case 0x05:
++            return vendor == 0xf5   ? NVSHMEMI_IBGDA_FT_CLASS_LOCAL_QP_ERR
++                   : vendor == 0xf9 ? NVSHMEMI_IBGDA_FT_CLASS_FLUSH_TRAILING
++                                    : NVSHMEMI_IBGDA_FT_CLASS_FLUSH_OTHER;
++        case 0x04: return NVSHMEMI_IBGDA_FT_CLASS_LOC_PROT;
++        case 0x12: return NVSHMEMI_IBGDA_FT_CLASS_REM_INV_REQ;
++        case 0x13: return NVSHMEMI_IBGDA_FT_CLASS_REM_ACCESS;
++        case 0x15: return NVSHMEMI_IBGDA_FT_CLASS_RETRY_EXC;
++        case 0x16: return NVSHMEMI_IBGDA_FT_CLASS_RNR_RETRY_EXC;
++        case 0x01: return NVSHMEMI_IBGDA_FT_CLASS_LOC_LEN;
++        case 0x02: return NVSHMEMI_IBGDA_FT_CLASS_LOC_QP_OP;
++        case 0x14: return NVSHMEMI_IBGDA_FT_CLASS_REM_OP;
++        case 0x22: return NVSHMEMI_IBGDA_FT_CLASS_REM_ABORT;
++        case 0x11: return NVSHMEMI_IBGDA_FT_CLASS_LOC_ACCESS;
++        case 0x10: return NVSHMEMI_IBGDA_FT_CLASS_BAD_RESP;
++        default: return NVSHMEMI_IBGDA_FT_CLASS_OTHER;
++    }
++}
++
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE void ibgda_ft_st_sys32(uint32_t *p,
++                                                                              uint32_t v) {
++    asm volatile("st.relaxed.sys.global.u32 [%0], %1;" ::"l"(p), "r"(v) : "memory");
++}
++
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE uint32_t ibgda_ft_ld_u32(const void *p) {
++    uint32_t v;
++    asm volatile("ld.volatile.global.u32 %0, [%1];" : "=r"(v) : "l"(p) : "memory");
++    return v;
++}
++
++/* True once any error was recorded (or is being recorded) for the QP behind this CQ. */
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE bool ibgda_ft_cq_failed(
++    const nvshmemi_ibgda_device_cq_t *cq) {
++    return ibgda_atomic_read(&ibgda_ft_mvars_of_cq(cq)->ft_state) != 0;
++}
++
++/* Snapshot the error CQE in slot 0, record it as the QP's sticky first error and publish it to the
++ * host mailbox. Cold path: kept out of line so the poll loops stay small. Returns the syndrome. */
++__device__ __noinline__ static int ibgda_ft_capture(const nvshmemi_ibgda_device_cq_t *cq,
++                                                    uint64_t poll_idx, uint32_t path) {
++    nvshmemi_ibgda_ft_dev_t *ft = ibgda_ft_dev();
++    const uint32_t *cw = (const uint32_t *)cq->cqe; /* 16 words of the collapsed slot */
++    uint32_t w[16];
++    uint32_t tries = 0;
++
++    /* Consistent snapshot: word 15 (wqe_counter, signature, op_own) must be the same before and
++     * after the 64 bytes are read; a trailing flush that lands meanwhile changes it. */
++    for (;;) {
++        uint32_t a = ibgda_ft_ld_u32(&cw[15]);
++#pragma unroll
++        for (int i = 0; i < 16; i++) w[i] = ibgda_ft_ld_u32(&cw[i]);
++        uint32_t b = ibgda_ft_ld_u32(&cw[15]);
++        tries++;
++        if (a == b && a == w[15]) break;
++        if (tries >= 8) break;
++    }
++    /* Little-endian words: byte 4k+j is bits 8j..8j+7 of w[k]. */
++    const uint8_t opown = (uint8_t)(w[15] >> 24);                            /* byte 63 */
++    const uint8_t syndrome = (uint8_t)(w[13] >> 24);                         /* byte 55 */
++    const uint8_t vendor = (uint8_t)(w[13] >> 16);                           /* byte 54 */
++    const uint8_t hw_err = (uint8_t)w[13];                                   /* byte 52 */
++    const uint8_t hw_type = (uint8_t)(w[13] >> 8);                           /* byte 53 */
++    const uint16_t wqe = (uint16_t)(((w[15] & 0xffu) << 8) | ((w[15] >> 8) & 0xffu)); /* 60-61 BE */
++    const uint32_t sqpn = __byte_perm(w[14], 0, 0x0123);                     /* 56-59 BE */
++    if (!ibgda_ft_is_err_opcode(opown)) {
++        /* The slot changed to a non-error CQE between the caller's read and ours: nothing to
++         * record here (cannot happen after a QP error; defensive). */
++        return 0;
++    }
++    const uint8_t cls = ibgda_ft_classify(syndrome, vendor);
++    const bool trailing = (cls == NVSHMEMI_IBGDA_FT_CLASS_FLUSH_TRAILING);
++
++    nvshmemi_ibgda_device_qp_management_t *mv = ibgda_ft_mvars_of_cq(cq);
++    bool upgrade = false;
++    uint32_t old = atomicCAS(&mv->ft_state, 0u, 1u);
++    if (old != 0u) {
++        /* Already recorded. A record that holds only a trailing flush may be replaced by a root
++         * cause seen later by another poller (for example the sentinel). */
++        if (old == 3u && !trailing && atomicCAS(&mv->ft_state, 3u, 1u) == 3u) {
++            upgrade = true;
++        } else {
++            return syndrome;
++        }
++    }
++    const uint64_t gt = ibgda_ft_globaltimer();
++    mv->ft_fp = ((uint32_t)(opown >> 4) << 24) | ((uint32_t)syndrome << 16) |
++                ((uint32_t)vendor << 8) | cls;
++    mv->ft_wqe = (uint32_t)wqe | ((uint32_t)(poll_idx & 0xffff) << 16);
++    mv->ft_aux = sqpn;
++    mv->ft_gtime = gt;
++    __threadfence();
++    atomicExch(&mv->ft_state, trailing ? 3u : 2u);
++    if (!upgrade) atomicAdd(&ft->nerr, 1u);
++
++    /* Publish to the mailbox: invalidate, body, fence, seq, fence, magic. */
++    nvshmemi_ibgda_ft_record_t *mbox = *(nvshmemi_ibgda_ft_record_t *volatile *)&ft->mbox;
++    const uint32_t nslots = *(volatile uint32_t *)&ft->nslots;
++    if (mbox == nullptr || nslots == 0) return syndrome;
++    const uint32_t seq = atomicAdd(&ft->seq, 1u) + 1u;
++    uint32_t *dst = (uint32_t *)(mbox + ((seq - 1u) % nslots));
++    CONSTANT_ADDRESS_SPACE nvshmemi_ibgda_device_state_t *state = ibgda_get_state();
++    /* Which QP: the CQ is the send CQ of one RC or DCI; find its index from the mvars address. */
++    uintptr_t qp_addr = (uintptr_t)mv - __builtin_offsetof(nvshmemi_ibgda_device_qp_t, mvars);
++    uint32_t ndcis = state->num_shared_dcis + state->num_exclusive_dcis;
++    uintptr_t dci0 = (uintptr_t)state->globalmem.dcis;
++    int32_t peer = -1;
++    uint32_t qp_index;
++    uint8_t qp_type;
++    if (dci0 && qp_addr >= dci0 && qp_addr < dci0 + ndcis * sizeof(nvshmemi_ibgda_device_qp_t)) {
++        qp_index = (uint32_t)((qp_addr - dci0) / sizeof(nvshmemi_ibgda_device_qp_t));
++        qp_type = NVSHMEMI_IBGDA_DEVICE_QP_TYPE_DCI;
++    } else {
++        qp_index = (uint32_t)((qp_addr - (uintptr_t)state->globalmem.rcs) /
++                              sizeof(nvshmemi_ibgda_device_qp_t));
++        qp_type = NVSHMEMI_IBGDA_DEVICE_QP_TYPE_RC;
++        peer = (int32_t)(qp_index % (uint32_t)nvshmemi_device_state_d.npes);
++    }
++    ibgda_ft_st_sys32(&dst[0], 0u);
++    __threadfence_system();
++    ibgda_ft_st_sys32(&dst[2], cq->qpn);
++    ibgda_ft_st_sys32(&dst[3], sqpn);
++    ibgda_ft_st_sys32(&dst[4], (uint32_t)wqe | ((uint32_t)syndrome << 16) | ((uint32_t)vendor << 24));
++    ibgda_ft_st_sys32(&dst[5], (uint32_t)cls | (1u << 8) | ((path & 0xffu) << 16) |
++                                   ((uint32_t)qp_type << 24));
++    ibgda_ft_st_sys32(&dst[6], (uint32_t)hw_err | ((uint32_t)hw_type << 8) |
++                                   ((uint32_t)(opown >> 4) << 16) | ((upgrade ? 1u : 0u) << 24));
++    ibgda_ft_st_sys32(&dst[7], (uint32_t)nvshmemi_device_state_d.mype);
++    ibgda_ft_st_sys32(&dst[8], (uint32_t)peer);
++    ibgda_ft_st_sys32(&dst[9], qp_index);
++    const uint64_t vals[6] = {poll_idx,
++                              ibgda_atomic_read(cq->cons_idx),
++                              ibgda_atomic_read(cq->prod_idx),
++                              ibgda_atomic_read(cq->ready_head),
++                              ibgda_atomic_read(cq->resv_head),
++                              gt};
++#pragma unroll
++    for (int i = 0; i < 6; i++) {
++        ibgda_ft_st_sys32(&dst[10 + 2 * i], (uint32_t)vals[i]);
++        ibgda_ft_st_sys32(&dst[11 + 2 * i], (uint32_t)(vals[i] >> 32));
++    }
++    ibgda_ft_st_sys32(&dst[22], tries);
++#pragma unroll
++    for (int i = 0; i < 16; i++) ibgda_ft_st_sys32(&dst[24 + i], w[i]);
++    __threadfence_system();
++    ibgda_ft_st_sys32(&dst[1], seq);
++    __threadfence_system();
++    ibgda_ft_st_sys32(&dst[0], NVSHMEMI_IBGDA_FT_MAGIC);
++    __threadfence_system();
++    return syndrome;
++}
++
+ static_assert(NVSHMEMI_IBGDA_MAX_QP_DEPTH <= 32768,
+               "static_assert(NVSHMEMI_IBGDA_MAX_QP_DEPTH <= 32768) failed");
+ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
+@@ -517,6 +703,9 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
+ 
+     uint64_t cons_idx = ibgda_atomic_read(cq->cons_idx);
+     uint64_t new_cons_idx;
++    /* NVSHMEM_IBGDA_FT: non-NULL when the host enabled the classifier. */
++    nvshmemi_ibgda_ft_dev_t *ft = ibgda_ft_dev();
++    const bool ft_loop = ft != nullptr && !(state->ft_flags & NVSHMEMI_IBGDA_FT_FLAG_CAPTURE_EXIT);
+ 
+     assert(likely(cq->qp_type == NVSHMEMI_IBGDA_DEVICE_QP_TYPE_DCI ||
+                   cq->qp_type == NVSHMEMI_IBGDA_DEVICE_QP_TYPE_RC));
+@@ -525,6 +714,10 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
+         goto out;
+     }
+ 
++    /* FT: no separate sticky check here. After a QP error the collapsed slot always holds an error
++     * CQE (every later completion is a flush) until recovery refills it, so the first read of the
++     * slot in the loop below fails a wait on a failed QP at once (and costs no extra load). */
++
+ #ifdef NVSHMEM_IBGDA_DEBUG
+     // We can skip opcode == MLX5_CQE_INVALID check because we have already
+     // initialized the CQ buffer to 0xff. With the QP depth range we enforce,
+@@ -555,12 +748,32 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
+     // If idx is a lot greater than cons_idx, we might get incorrect result due
+     // to wqe_counter wraparound. We need to check prod_idx to be sure that idx
+     // has already been submitted.
+-    while (unlikely(ibgda_atomic_read(cq->prod_idx) < idx));
++    while (unlikely(ibgda_atomic_read(cq->prod_idx) < idx)) {
++        if (unlikely(ft != nullptr) && ibgda_ft_cq_failed(cq)) {
++            status = -1;
++            goto out;
++        }
++    }
+     IBGDA_MFENCE();
+ 
+     do {
+-        new_wqe_counter = ibgda_atomic_read(&cqe64->wqe_counter);
+-        new_wqe_counter = BSWAP16(new_wqe_counter);
++        /* FT: catch the root-cause error CQE while it is in the slot. It is followed ~59 us later
++         * by one 5/0xf9 flush per WQE behind it, the last of which satisfies this wait. One 32-bit
++         * load of CQE word 15 gives wqe_counter (bytes 60-61) and op_own (byte 63) together, so
++         * the loop does no more loads than the stock one. */
++        if (ft_loop) {
++            uint32_t w15 = ibgda_atomic_read((uint32_t *)((uintptr_t)cqe64 + 60));
++            opown = (uint8_t)(w15 >> 24);
++            if (unlikely(ibgda_ft_is_err_opcode(opown))) {
++                *error = ibgda_ft_capture(cq, idx, NVSHMEMI_IBGDA_FT_PATH_POLL);
++                status = -1;
++                goto out;
++            }
++            new_wqe_counter = BSWAP16((uint16_t)(w15 & 0xffffu));
++        } else {
++            new_wqe_counter = ibgda_atomic_read(&cqe64->wqe_counter);
++            new_wqe_counter = BSWAP16(new_wqe_counter);
++        }
+ #ifdef NVSHMEM_TIMEOUT_DEVICE_POLLING
+         now = ibgda_query_globaltimer();
+         status = ibgda_check_poll_timeout(cq, now, start, idx, error);
+@@ -611,6 +824,11 @@ check_opcode:
+     if (unlikely(opcode == MLX5_CQE_REQ_ERR)) {
+         ibgda_mlx5_err_cqe_t *cqe_err = (ibgda_mlx5_err_cqe_t *)cqe64;
+         *error = cqe_err->syndrome;
++        /* FT: stock position of the opcode check (the CQE that satisfied the wait, normally the
++         * trailing flush). Records only if nothing was recorded yet. */
++        if (unlikely(ft != nullptr)) {
++            ibgda_ft_capture(cq, idx, NVSHMEMI_IBGDA_FT_PATH_EXIT);
++        }
+ #ifdef NVSHMEM_IBGDA_DEBUG
+         __be16 wqe_counter = ibgda_atomic_read(&cqe_err->wqe_counter);
+         __be32 s_wqe_opcode_qpn = ibgda_atomic_read(&cqe_err->s_wqe_opcode_qpn);
+@@ -1729,7 +1947,9 @@ ibgda_quiet(nvshmemi_ibgda_device_qp_t *qp) {
+         printf("ibgda_poll_cq failed with error=%d.\n", err);
+     }
+ #endif
+-    assert(likely(status == 0));
++    /* NVSHMEM_IBGDA_FT: the error is kept in the QP's sticky record; nvshmemx_ibgda_ft_status()
++     * reports it to the caller of nvshmem_quiet(). */
++    assert(likely(status == 0) || ibgda_ft_dev() != nullptr);
+     return prod_idx;
+ }
+ 
+@@ -1744,10 +1964,12 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE void ibgda_wait_for_slo
+         nvshmemi_ibgda_device_cq_t cq = *qp->tx_wq.cq;
+         status = ibgda_poll_cq(&cq, wqe_idx - nwqes, &err);
+         // TODO: Integrate the error handler with the core NVSHMEM
+-        if (status) {
++        /* NVSHMEM_IBGDA_FT: on a failed QP the wait returns at once (the WQEs posted after the
++         * error are flushed by the NIC); the error is reported through the sticky record. */
++        if (status && ibgda_ft_dev() == nullptr) {
+             printf("ibgda_poll_cq failed with error=%d.\n", err);
+         }
+-        assert(likely(status == 0));
++        assert(likely(status == 0) || ibgda_ft_dev() != nullptr);
+     }
+     IBGDA_MFENCE();
+ }
+@@ -3818,6 +4040,132 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_enforce_consistency
+     }
+ }
+ 
++/* ---------------------------------------------------------------------------------------------
++ * NVSHMEM_IBGDA_FT device API (research). All return "no error" when the classifier is off.
++ * ------------------------------------------------------------------------------------------- */
++
++/* Packed fingerprint (opcode << 24 | syndrome << 16 | vendor_err << 8 | class) of the first error
++ * recorded on an RC QP to `pe`, or on any RC/DCI QP when pe < 0; 0 if there is none. */
++__device__ NVSHMEMI_DEVICE_ALWAYS_INLINE uint32_t nvshmemx_ibgda_ft_status(int pe) {
++    CONSTANT_ADDRESS_SPACE nvshmemi_ibgda_device_state_t *state = ibgda_get_state();
++    if (state->ft == nullptr) return 0;
++    const int npes = nvshmemi_device_state_d.npes;
++    const uint32_t nrcs = state->num_rc_per_pe * state->num_devices_initialized;
++    for (uint32_t i = 0; i < nrcs * (uint32_t)npes; i++) {
++        int qpe = (int)(i % (uint32_t)npes);
++        if (qpe == nvshmemi_device_state_d.mype || (pe >= 0 && qpe != pe)) continue;
++        nvshmemi_ibgda_device_qp_management_t *mv = &state->globalmem.rcs[i].mvars;
++        uint32_t st = ibgda_atomic_read(&mv->ft_state);
++        if (st == 0) continue;
++        while (st == 1) st = ibgda_atomic_read(&mv->ft_state); /* capture in progress */
++        return ibgda_atomic_read(&mv->ft_fp);
++    }
++    if (pe < 0) {
++        const uint32_t ndcis = state->num_shared_dcis + state->num_exclusive_dcis;
++        for (uint32_t i = 0; i < ndcis; i++) {
++            nvshmemi_ibgda_device_qp_management_t *mv = &state->globalmem.dcis[i].mvars;
++            uint32_t st = ibgda_atomic_read(&mv->ft_state);
++            if (st == 0) continue;
++            while (st == 1) st = ibgda_atomic_read(&mv->ft_state);
++            return ibgda_atomic_read(&mv->ft_fp);
++        }
++    }
++    return 0;
++}
++
++/* Bounded poll of one send CQ up to idx: 0 done, -1 error CQE (recorded), -2 budget expired. */
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_ft_poll_cq_bounded(
++    nvshmemi_ibgda_device_cq_t *cq, uint64_t idx, long long t0, long long budget) {
++    struct mlx5_cqe64 *cqe64 = (struct mlx5_cqe64 *)cq->cqe;
++    const uint32_t ncqes = cq->ncqes;
++    uint64_t cons_idx = ibgda_atomic_read(cq->cons_idx);
++    if (cons_idx >= idx) return 0;
++    if (ibgda_get_state()->ft != nullptr && ibgda_ft_cq_failed(cq)) return -1;
++    while (ibgda_atomic_read(cq->prod_idx) < idx) {
++        if (clock64() - t0 > budget) return -2;
++    }
++    const bool ft_on = ibgda_get_state()->ft != nullptr;
++    for (;;) {
++        uint32_t w15 = ibgda_atomic_read((uint32_t *)((uintptr_t)cqe64 + 60));
++        uint16_t wqe_counter = BSWAP16((uint16_t)(w15 & 0xffffu));
++        uint8_t opown = (uint8_t)(w15 >> 24);
++        if (ft_on && ibgda_ft_is_err_opcode(opown)) {
++            ibgda_ft_capture(cq, idx, NVSHMEMI_IBGDA_FT_PATH_BOUNDED);
++            return -1;
++        }
++        if (!((uint16_t)((uint16_t)idx - wqe_counter - (uint16_t)2) < ncqes)) {
++            ++wqe_counter;
++            uint64_t new_cons_idx = (idx & ~(0xffffULL) | wqe_counter) +
++                                    (((uint16_t)idx > wqe_counter) ? 0x10000ULL : 0x0);
++            atomicMax((unsigned long long int *)cq->cons_idx, (unsigned long long int)new_cons_idx);
++            IBGDA_MFENCE();
++            return ibgda_ft_is_err_opcode(ibgda_atomic_read(&cqe64->op_own)) ? -1 : 0;
++        }
++        if (clock64() - t0 > budget) return -2;
++    }
++}
++
++/* Bounded quiet (one thread) of every default RC QP to `pe`: 0 all complete, -1 an error CQE was
++ * recorded (see nvshmemx_ibgda_ft_status), -2 the clock64 budget expired first. */
++__device__ NVSHMEMI_DEVICE_ALWAYS_INLINE int nvshmemx_ibgda_ft_quiet_bounded(int pe,
++                                                                           long long budget) {
++    CONSTANT_ADDRESS_SPACE nvshmemi_ibgda_device_state_t *state = ibgda_get_state();
++    const int npes = nvshmemi_device_state_d.npes;
++    const uint32_t nrcs = state->num_default_rc_per_pe * state->num_devices_initialized;
++    const long long t0 = clock64();
++    int rc = 0;
++    for (uint32_t q = 0; q < nrcs; q++) {
++        nvshmemi_ibgda_device_qp_t *qp = &state->globalmem.rcs[q * (uint32_t)npes + (uint32_t)pe];
++        uint64_t idx = ibgda_submit_ready(qp);
++        nvshmemi_ibgda_device_cq_t cq = *qp->tx_wq.cq;
++        int r = ibgda_ft_poll_cq_bounded(&cq, idx, t0, budget);
++        if (r == -1) return -1;
++        if (r == -2) rc = -2;
++    }
++    return rc;
++}
++
++/* Device sentinel (research): one thread polls the collapsed send-CQ slot of every RC and DCI QP
++ * and records the first error CQE of each, so the root cause is kept even when no wait is
++ * spinning when it arrives (it is overwritten by the trailing flushes ~59 us later). Runs until
++ * the host sets ft->sentinel_stop. Launch it alone in its own kernel on a non-blocking stream. */
++__device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemx_ibgda_ft_sentinel(unsigned int poll_ns) {
++    CONSTANT_ADDRESS_SPACE nvshmemi_ibgda_device_state_t *state = ibgda_get_state();
++    nvshmemi_ibgda_ft_dev_t *ft = (nvshmemi_ibgda_ft_dev_t *)state->ft;
++    if (ft == nullptr) return;
++    const int npes = nvshmemi_device_state_d.npes;
++    const uint32_t nrc = state->num_rc_per_pe * state->num_devices_initialized * (uint32_t)npes;
++    const uint32_t ndci = state->num_shared_dcis + state->num_exclusive_dcis;
++    atomicExch(&ft->sentinel_running, 1u);
++    uint64_t polls = 0;
++    while (ibgda_ft_ld_u32(&ft->sentinel_stop) == 0u) {
++        for (uint32_t i = 0; i < nrc + ndci; i++) {
++            nvshmemi_ibgda_device_qp_t *qp;
++            if (i < nrc) {
++                if ((int)(i % (uint32_t)npes) == nvshmemi_device_state_d.mype) continue;
++                qp = &state->globalmem.rcs[i];
++            } else {
++                qp = &state->globalmem.dcis[i - nrc];
++            }
++            nvshmemi_ibgda_device_cq_t *cq = qp->tx_wq.cq;
++            struct mlx5_cqe64 *cqe64 = (struct mlx5_cqe64 *)cq->cqe;
++            uint8_t opown = ibgda_atomic_read(&cqe64->op_own);
++            if (ibgda_ft_is_err_opcode(opown)) {
++                uint32_t st = ibgda_atomic_read(&qp->mvars.ft_state);
++                if (st == 0u || st == 3u) {
++                    nvshmemi_ibgda_device_cq_t cqc = *cq;
++                    ibgda_ft_capture(&cqc, ibgda_atomic_read(&qp->mvars.tx_wq.ready_head),
++                                     NVSHMEMI_IBGDA_FT_PATH_SENTINEL);
++                }
++            }
++        }
++        polls++;
++        if (poll_ns) __nanosleep(poll_ns);
++    }
++    atomicAdd((unsigned long long int *)&ft->sentinel_polls, (unsigned long long int)polls);
++    atomicExch(&ft->sentinel_running, 0u);
++}
++
+ #endif /* __CUDA_ARCH__ */
+ 
+ #endif /* _NVSHMEMI_IBGDA_DEVICE_H_ */
+diff --git a/src/modules/transport/ibgda/ibgda.cpp b/src/modules/transport/ibgda/ibgda.cpp
+index e47042e..a88bfe7 100644
+--- a/src/modules/transport/ibgda/ibgda.cpp
++++ b/src/modules/transport/ibgda/ibgda.cpp
+@@ -24,6 +24,8 @@
+ #include <mutex>                                         // for lock_guard, mutex
+ #include <thread>                                        // for fault-inject test hook (research)
+ #include <chrono>                                        // for fault-inject test hook (research)
++#include <random>                                        // NVSHMEM_IBGDA_FT: fresh PSNs (research)
++#include <time.h>                                        // NVSHMEM_IBGDA_FT: CLOCK_MONOTONIC (research)
+ #include <new>                                           // for nothrow
+ #include <string>                                        // for basic_string, string, opera...
+ #include <vector>                                        // for vector
+@@ -226,6 +228,16 @@ struct ibgda_ep {
+     struct ibv_ah *ah;
+ 
+     uint32_t user_index;
++
++    /* NVSHMEM_IBGDA_FT (research): connect-time peer handle, kept for the recovery reconnect. */
++    int ft_peer_pe;
++    bool ft_has_peer;
++    struct ibgda_rc_handle_ft {
++        uint32_t qpn;
++        uint16_t lid;
++        uint64_t spn;
++        uint64_t iid;
++    } ft_peer;
+ };
+ 
+ struct ibgda_mem_handle {
+@@ -1775,7 +1787,7 @@ out:
+ 
+ static int ibgda_rc_init2rtr(nvshmemt_ibgda_state_t *ibgda_state, struct ibgda_ep *ep,
+                              const struct ibgda_device *device, int portid,
+-                             struct ibgda_rc_handle *peer_ep_handle) {
++                             struct ibgda_rc_handle *peer_ep_handle, uint32_t rq_psn = 0) {
+     int status = 0;
+     int init2rtr_errno = 0;
+ 
+@@ -1804,6 +1816,7 @@ static int ibgda_rc_init2rtr(nvshmemt_ibgda_state_t *ibgda_state, struct ibgda_e
+     DEVX_SET(qpc, qpc, mtu, port_attr->active_mtu);
+     DEVX_SET(qpc, qpc, log_msg_max, IBGDA_LOG_MAX_MSG_SIZE);
+     DEVX_SET(qpc, qpc, remote_qpn, peer_ep_handle->qpn);
++    DEVX_SET(qpc, qpc, next_rcv_psn, rq_psn & 0xffffff); /* FT recovery: fresh PSN; stock 0 */
+     DEVX_SET(qpc, qpc, min_rnr_nak, IBGDA_MIN_RNR_NAK);
+     DEVX_SET(qpc, qpc, log_rra_max,
+              IBGDA_ILOG2_OR0(device->common_device.device_attr.max_qp_rd_atom));
+@@ -1981,7 +1994,7 @@ out:
+ }
+ 
+ static int ibgda_qp_rtr2rts(nvshmemt_ibgda_state_t *ibgda_state, struct ibgda_ep *ep,
+-                            const struct ibgda_device *device) {
++                            const struct ibgda_device *device, uint32_t sq_psn = 0) {
+     int status = 0;
+     int rtr2rts_errno = 0;
+ 
+@@ -2004,7 +2017,7 @@ static int ibgda_qp_rtr2rts(nvshmemt_ibgda_state_t *ibgda_state, struct ibgda_ep
+     DEVX_SET(qpc, qpc, log_ack_req_freq, 0x0);  // Ack every packet
+     DEVX_SET(qpc, qpc, log_sra_max,
+              IBGDA_ILOG2_OR0(device->common_device.device_attr.max_qp_rd_atom));
+-    DEVX_SET(qpc, qpc, next_send_psn, 0x0);
++    DEVX_SET(qpc, qpc, next_send_psn, sq_psn & 0xffffff); /* FT recovery: fresh PSN; stock 0 */
+     DEVX_SET(qpc, qpc, retry_count, ibgda_state->common.options->IB_RETRY_CNT);
+     DEVX_SET(qpc, qpc, rnr_retry, 7);
+     DEVX_SET(qpc, qpc, primary_address_path.ack_timeout, ibgda_state->common.options->IB_TIMEOUT);
+@@ -3522,6 +3535,13 @@ static int ibgda_setup_rc_endpoints(nvshmemt_ibgda_state_t *ibgda_state,
+                                        &peer_ep_handles[peer_handle_index]);
+             NVSHMEMI_NZ_ERROR_JMP(status, NVSHMEMX_ERROR_INTERNAL, out,
+                                   "ibgda_rc_init2rtr failed on RC #%d.", ep_index);
++            /* NVSHMEM_IBGDA_FT: keep what the reconnect needs (same values connect used). */
++            device->rc.eps[ep_index]->ft_peer_pe = j;
++            device->rc.eps[ep_index]->ft_has_peer = true;
++            device->rc.eps[ep_index]->ft_peer.qpn = peer_ep_handles[peer_handle_index].qpn;
++            device->rc.eps[ep_index]->ft_peer.lid = peer_ep_handles[peer_handle_index].lid;
++            device->rc.eps[ep_index]->ft_peer.spn = peer_ep_handles[peer_handle_index].spn;
++            device->rc.eps[ep_index]->ft_peer.iid = peer_ep_handles[peer_handle_index].iid;
+ 
+             status = ibgda_qp_rtr2rts(ibgda_state, device->rc.eps[ep_index], device);
+             NVSHMEMI_NZ_ERROR_JMP(status, NVSHMEMX_ERROR_INTERNAL, out,
+@@ -4642,7 +4662,20 @@ static void ibgda_fi_all_qps_to_err(nvshmemt_ibgda_state_t *ibgda_state, int n_p
+     fprintf(stderr, "[nvshmem-fault-inject] moved %d QP(s) to ERR\n", fired);
+ }
+ 
+-/* Arm the fault-injection thread once, from the first connect_endpoints call. */
++/* NVSHMEM_IBGDA_FT test hook support (defined with the FT code below). */
++static uint32_t ibgda_ft_commit_count();
++static void ibgda_ft_request_fire_in_commit();
++
++static double ibgda_fi_mono_ms() {
++    struct timespec t;
++    clock_gettime(CLOCK_MONOTONIC, &t);
++    return t.tv_sec * 1e3 + t.tv_nsec * 1e-6;
++}
++
++/* Arm the fault-injection thread once, from the first connect_endpoints call.
++ * NVSHMEM_IBGDA_FT extension: <action>:<ms>[,<d2>,<d3>,...] fires shot 1 <ms> after connect and
++ * shot k >= 2 d_k ms after the FT recovery commit that followed shot k-1 (d_k = -1: inside that
++ * commit, right after RTS, so that it hits the replay). Every shot logs fire_mono_ms. */
+ static void ibgda_fault_inject_arm(nvshmemt_ibgda_state_t *ibgda_state, int n_pes) {
+     const char *spec = getenv("NVSHMEM_IBGDA_FAULT_INJECT");
+     if (!spec || !*spec) {
+@@ -4651,16 +4684,52 @@ static void ibgda_fault_inject_arm(nvshmemt_ibgda_state_t *ibgda_state, int n_pe
+     std::string s(spec);
+     size_t colon = s.find(':');
+     std::string action = (colon == std::string::npos) ? s : s.substr(0, colon);
+-    long ms = (colon == std::string::npos) ? 0 : atol(s.c_str() + colon + 1);
++    std::vector<long> shots;
++    if (colon != std::string::npos) {
++        const char *p = s.c_str() + colon + 1;
++        while (*p) {
++            char *end = NULL;
++            long v = strtol(p, &end, 10);
++            if (end == p) break;
++            shots.push_back(v);
++            p = (*end == ',') ? end + 1 : end;
++        }
++    }
++    if (shots.empty()) shots.push_back(0);
+     std::for_each(action.begin(), action.end(), [](char &c) { c = ::tolower(c); });
+     if (action != "local_err" && action != "peer_err" && action != "qp2err") {
+         fprintf(stderr, "[nvshmem-fault-inject] unknown action '%s'; ignoring\n", action.c_str());
+         return;
+     }
+-    fprintf(stderr, "[nvshmem-fault-inject] armed action=%s delay=%ld ms\n", action.c_str(), ms);
+-    std::thread([ibgda_state, n_pes, ms]() {
+-        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
++    fprintf(stderr, "[nvshmem-fault-inject] armed action=%s delay=%ld ms shots=%zu\n", action.c_str(),
++            shots[0], shots.size());
++    std::thread([ibgda_state, n_pes, shots]() {
++        std::this_thread::sleep_for(std::chrono::milliseconds(shots[0]));
++        fprintf(stderr, "[nvshmem-fault-inject] shot 1 fire_mono_ms=%.3f\n", ibgda_fi_mono_ms());
+         ibgda_fi_all_qps_to_err(ibgda_state, n_pes);
++        uint32_t c = ibgda_ft_commit_count();
++        for (size_t k = 1; k < shots.size(); k++) {
++            if (shots[k] < 0) ibgda_ft_request_fire_in_commit();
++            double w0 = ibgda_fi_mono_ms();
++            while (ibgda_ft_commit_count() < c + 1) {
++                if (ibgda_fi_mono_ms() - w0 > 120000.0) {
++                    fprintf(stderr, "[nvshmem-fault-inject] shot %zu: no recovery commit in 120 s; stop\n",
++                            k + 1);
++                    return;
++                }
++                std::this_thread::sleep_for(std::chrono::microseconds(200));
++            }
++            if (shots[k] >= 0) {
++                std::this_thread::sleep_for(std::chrono::milliseconds(shots[k]));
++                fprintf(stderr, "[nvshmem-fault-inject] shot %zu fire_mono_ms=%.3f\n", k + 1,
++                        ibgda_fi_mono_ms());
++                ibgda_fi_all_qps_to_err(ibgda_state, n_pes);
++                c = ibgda_ft_commit_count();
++            } else {
++                fprintf(stderr, "[nvshmem-fault-inject] shot %zu fired inside commit %u\n", k + 1, c + 1);
++                c = c + 1;
++            }
++        }
+     }).detach();
+ }
+ 
+@@ -4777,6 +4846,734 @@ static void ibgda_fault_watch_arm(nvshmemt_ibgda_state_t *ibgda_state, int n_pes
+ }
+ /* ===================== end NVSHMEM_IBGDA_FAULT_INJECT hook ===================== */
+ 
++/* ==========================================================================
++ * NVSHMEM_IBGDA_FT (research, default off): host side of the fault-tolerance
++ * path. See harness/gpu-initiated/nvshmem_ft/DESIGN.md.
++ *
++ *   NVSHMEM_IBGDA_FT=1              device classification + host mailbox + watcher, and the
++ *                                   recovery API below (GPU NIC handler only).
++ *   NVSHMEM_IBGDA_FT_POLL_US=<us>   watcher poll period (default 50).
++ *   NVSHMEM_IBGDA_FT_CAPTURE=exit   diagnostic: classify only the CQE that ends the wait (stock
++ *                                   position), not the slot contents seen while spinning.
++ *   NVSHMEM_IBGDA_FT_DRAIN_MS=<ms>  Prepare: bound on the wait for the NIC to flush every posted
++ *                                   WQE after the QP is in ERR (default 1000).
++ *   NVSHMEM_IBGDA_FT_QUIET=1        do not log records (overhead runs).
++ *
++ * Exported (see nvshmem_common_ibgda.h for the types): nvshmemt_ibgda_ft_enabled,
++ * nvshmemt_ibgda_ft_query, nvshmemt_ibgda_ft_prepare, nvshmemt_ibgda_ft_commit,
++ * nvshmemt_ibgda_ft_abort, nvshmemt_ibgda_ft_mark_failed, nvshmemt_ibgda_ft_sentinel_stop,
++ * nvshmemt_ibgda_ft_commits.
++ * ========================================================================== */
++#ifndef MLX5_CMD_OP_2RST_QP
++#define MLX5_CMD_OP_2RST_QP 0x50a
++#endif
++#define NVSHMEM_TRANSPORT_ATTR_FT_FAILED_BIT (1 << 3) /* mirrors host lib: skip device collectives */
++
++struct ibgda_ft_prep {
++    bool prepared;
++    uint32_t nqps;
++    uint32_t sq_psn[NVSHMEMT_IBGDA_FT_MAX_QPS];
++};
++
++struct ibgda_ft_host_state {
++    bool enabled;
++    uint32_t flags;
++    bool quiet_log;
++    int poll_us;
++    int drain_ms;
++    nvshmem_transport_t t;
++    nvshmemt_ibgda_state_t *st;
++    nvshmemi_ibgda_ft_dev_t *dev_d;
++    nvshmemi_ibgda_ft_record_t *mbox_h;
++    nvshmemi_ibgda_ft_record_t *mbox_d;
++    cudaStream_t stream;
++    void *pinned; /* 4 KiB staging for D2H/H2D copies */
++    std::thread watcher;
++    std::atomic<bool> stop;
++    std::mutex mu; /* first/nrecords/have_error */
++    uint32_t last_seq[NVSHMEMI_IBGDA_FT_NSLOTS];
++    std::atomic<int> have_error;
++    nvshmemt_ibgda_ft_info_t first;
++    uint32_t nrecords;
++    std::atomic<uint32_t> commits;
++    std::atomic<int> fire_in_commit;
++    std::vector<ibgda_ft_prep> prep;
++    std::mutex op_mu; /* serializes prepare/commit/abort */
++};
++static ibgda_ft_host_state ibgda_ft;
++
++static double ibgda_ft_mono_ms() {
++    struct timespec t;
++    clock_gettime(CLOCK_MONOTONIC, &t);
++    return t.tv_sec * 1e3 + t.tv_nsec * 1e-6;
++}
++
++static int ibgda_ft_wc_status(int syndrome) {
++    switch (syndrome) {
++        case 0x01: return 1;   /* IBV_WC_LOC_LEN_ERR */
++        case 0x02: return 2;   /* IBV_WC_LOC_QP_OP_ERR */
++        case 0x04: return 4;   /* IBV_WC_LOC_PROT_ERR */
++        case 0x05: return 5;   /* IBV_WC_WR_FLUSH_ERR */
++        case 0x06: return 6;   /* IBV_WC_MW_BIND_ERR */
++        case 0x10: return 7;   /* IBV_WC_BAD_RESP_ERR */
++        case 0x11: return 8;   /* IBV_WC_LOC_ACCESS_ERR */
++        case 0x12: return 9;   /* IBV_WC_REM_INV_REQ_ERR */
++        case 0x13: return 10;  /* IBV_WC_REM_ACCESS_ERR */
++        case 0x14: return 11;  /* IBV_WC_REM_OP_ERR */
++        case 0x15: return 12;  /* IBV_WC_RETRY_EXC_ERR */
++        case 0x16: return 13;  /* IBV_WC_RNR_RETRY_EXC_ERR */
++        case 0x22: return 16;  /* IBV_WC_REM_ABORT_ERR */
++        default: return 21;    /* IBV_WC_GENERAL_ERR */
++    }
++}
++
++/* Class text; cause/action wording follows harness/common/probe.c classify(). */
++static void ibgda_ft_class_text(int cls, int vendor, nvshmemt_ibgda_ft_info_t *o) {
++    const char *n = "OTHER", *f = "other", *c = "other", *a = "inspect status+vendor_err";
++    int hint = 0;
++    switch (cls) {
++        case NVSHMEMI_IBGDA_FT_CLASS_LOCAL_QP_ERR:
++            n = "LOCAL_QP_ERR"; f = "local_err";
++            c = "WR flushed (local QP left RTS, e.g. forced ERR); head-of-SQ WQE (vendor 0xf5)";
++            a = "drain CQ, QP-only recover, repost"; hint = 1; break;
++        case NVSHMEMI_IBGDA_FT_CLASS_FLUSH_TRAILING:
++            n = "FLUSH_TRAILING"; f = "unknown";
++            c = "WR flushed behind an earlier error (vendor 0xf9); the root-cause CQE was overwritten";
++            a = "root cause unknown: query QP state and peer liveness; decline"; break;
++        case NVSHMEMI_IBGDA_FT_CLASS_FLUSH_OTHER:
++            n = "WR_FLUSH"; f = "local_err?"; c = "WR flushed (local QP left RTS, e.g. forced ERR)";
++            a = "drain CQ, QP-only recover, repost"; break;
++        case NVSHMEMI_IBGDA_FT_CLASS_REM_ACCESS:
++            n = "REM_ACCESS"; f = "rem_access";
++            c = vendor == 0x88 ? "remote access: invalid rkey or out-of-bounds addr"
++                               : "remote access violation";
++            a = "refresh rkey / clamp to remote MR bounds, QP-only recover"; break;
++        case NVSHMEMI_IBGDA_FT_CLASS_RETRY_EXC:
++            n = "RETRY_EXC"; f = "peer_err|proc_kill";
++            c = "transport retries exhausted (no ACK): responder QP ERR, process dead, or link down";
++            a = "probe peer liveness (counters/ctrl); if dead -> human intervention, else QP-only";
++            hint = 2; break;
++        case NVSHMEMI_IBGDA_FT_CLASS_REM_INV_REQ:
++            n = "REM_INV_REQ"; f = "rem_inv_req";
++            c = "remote invalid request (malformed WR / len / opcode)";
++            a = "fix request params, QP-only recover"; break;
++        case NVSHMEMI_IBGDA_FT_CLASS_RNR_RETRY_EXC:
++            n = "RNR_RETRY_EXC"; f = "rnr"; c = "RNR retries exhausted (responder had no recv WQE)";
++            a = "ensure remote posts recvs, QP-only recover"; break;
++        case NVSHMEMI_IBGDA_FT_CLASS_LOC_PROT:
++            n = "LOC_PROT"; f = "loc_prot"; c = "local protection (bad lkey / local MR bounds)";
++            a = "fix local MR/lkey, QP-only recover"; break;
++        case NVSHMEMI_IBGDA_FT_CLASS_LOC_LEN:
++            n = "LOC_LEN"; f = "loc_len"; c = "local length error"; a = "fix SGE length, QP-only recover";
++            break;
++        default: break;
++    }
++    snprintf(o->name, sizeof(o->name), "%s", n);
++    snprintf(o->fault, sizeof(o->fault), "%s", f);
++    snprintf(o->cause, sizeof(o->cause), "%s", c);
++    snprintf(o->action, sizeof(o->action), "%s", a);
++    o->recover_hint = hint;
++}
++
++static const char *ibgda_ft_path_str(int p) {
++    switch (p) {
++        case NVSHMEMI_IBGDA_FT_PATH_POLL: return "poll";
++        case NVSHMEMI_IBGDA_FT_PATH_EXIT: return "poll-exit";
++        case NVSHMEMI_IBGDA_FT_PATH_BOUNDED: return "bounded";
++        case NVSHMEMI_IBGDA_FT_PATH_SENTINEL: return "sentinel";
++        default: return "?";
++    }
++}
++
++/* QUERY_QP -> state, hw/sw SQ wqebb counters. Returns the DEVX status. */
++static int ibgda_ft_query_qp(struct mlx5dv_devx_obj *devx_qp, uint32_t qpn, uint32_t *state,
++                             uint32_t *hw_sq, uint32_t *sw_sq) {
++    uint8_t cmd_in[DEVX_ST_SZ_BYTES(query_qp_in)] = {0};
++    uint8_t cmd_out[DEVX_ST_SZ_BYTES(query_qp_out)] = {0};
++    DEVX_SET(query_qp_in, cmd_in, opcode, MLX5_CMD_OP_QUERY_QP);
++    DEVX_SET(query_qp_in, cmd_in, qpn, qpn);
++    int st = mlx5dv_devx_obj_query(devx_qp, cmd_in, sizeof(cmd_in), cmd_out, sizeof(cmd_out));
++    void *qpc = DEVX_ADDR_OF(query_qp_out, cmd_out, qpc);
++    if (state) *state = DEVX_GET(qpc, qpc, state);
++    if (hw_sq) *hw_sq = DEVX_GET(qpc, qpc, hw_sq_wqebb_counter);
++    if (sw_sq) *sw_sq = DEVX_GET(qpc, qpc, sw_sq_wqebb_counter);
++    return st;
++}
++
++/* 2ERR (opcode 0x507) or 2RST (0x50a): same command layout. */
++static int ibgda_ft_qp_cmd(struct mlx5dv_devx_obj *devx_qp, uint32_t qpn, uint16_t opcode) {
++    uint8_t cmd_in[DEVX_ST_SZ_BYTES(ibgda_fi_2err_qp_in)] = {0};
++    uint8_t cmd_out[DEVX_ST_SZ_BYTES(ibgda_fi_2err_qp_out)] = {0};
++    DEVX_SET(ibgda_fi_2err_qp_in, cmd_in, opcode, opcode);
++    DEVX_SET(ibgda_fi_2err_qp_in, cmd_in, qpn, qpn);
++    int status = mlx5dv_devx_obj_modify(devx_qp, cmd_in, sizeof(cmd_in), cmd_out, sizeof(cmd_out));
++    if (status) {
++        fprintf(stderr, "[nvshmem-ft] qp cmd 0x%x qpn=0x%x failed ret=%d devx_status=0x%x syndrome=0x%x\n",
++                opcode, qpn, status, DEVX_GET(ibgda_fi_2err_qp_out, cmd_out, status),
++                DEVX_GET(ibgda_fi_2err_qp_out, cmd_out, syndrome));
++    }
++    return status;
++}
++
++static struct ibgda_ep *ibgda_ft_find_ep_by_qpn(uint32_t qpn, int *is_dci) {
++    nvshmemt_ibgda_state_t *st = ibgda_ft.st;
++    int n_pes = ibgda_ft.t->n_pes;
++    for (int i = 0; i < st->n_devs_selected; i++) {
++        struct ibgda_device *device =
++            (struct ibgda_device *)st->common.devices + st->selected_dev_ids[i];
++        for (int e = 0; e < device->rc.num_eps_per_pe * n_pes; e++) {
++            struct ibgda_ep *ep = device->rc.eps ? device->rc.eps[e] : NULL;
++            if (ep && ep->qpn == qpn) {
++                if (is_dci) *is_dci = 0;
++                return ep;
++            }
++        }
++        for (int e = 0; e < device->dci.num_eps; e++) {
++            struct ibgda_ep *ep = device->dci.eps ? device->dci.eps[e] : NULL;
++            if (ep && ep->qpn == qpn) {
++                if (is_dci) *is_dci = 1;
++                return ep;
++            }
++        }
++    }
++    return NULL;
++}
++
++/* Decode one mailbox record into the info struct. */
++static void ibgda_ft_decode(const nvshmemi_ibgda_ft_record_t *r, nvshmemt_ibgda_ft_info_t *o) {
++    memset(o, 0, sizeof(*o));
++    o->valid = 1;
++    o->cls = r->cls;
++    o->syndrome = r->syndrome;
++    o->vendor_err = r->vendor_err;
++    o->opcode = r->root_opcode;
++    o->wc_status = ibgda_ft_wc_status(r->syndrome);
++    o->trailing = (r->cls == NVSHMEMI_IBGDA_FT_CLASS_FLUSH_TRAILING);
++    o->path = r->path;
++    o->upgrade = r->upgrade;
++    o->snap_tries = (int)r->snap_tries;
++    o->peer = r->peer;
++    o->qp_type = r->qp_type;
++    o->qpn = r->qpn;
++    o->wqe_counter = r->wqe_counter;
++    o->seq = r->seq;
++    o->poll_idx = r->poll_idx;
++    o->prod_idx = r->prod_idx;
++    o->cons_idx = r->cons_idx;
++    o->gtimer_ns = r->gtimer_ns;
++    ibgda_ft_class_text(r->cls, r->vendor_err, o);
++}
++
++static void ibgda_ft_handle_record(const nvshmemi_ibgda_ft_record_t *r, double mono_ms) {
++    nvshmemt_ibgda_ft_info_t info;
++    ibgda_ft_decode(r, &info);
++    info.host_mono_ms = mono_ms;
++    {
++        std::lock_guard<std::mutex> g(ibgda_ft.mu);
++        ibgda_ft.nrecords++;
++        info.nrecords = ibgda_ft.nrecords;
++        /* Keep the first record since the last commit; an upgrade (root cause found after a
++         * trailing-only record) replaces it. */
++        if (!ibgda_ft.have_error.load() || (info.upgrade && ibgda_ft.first.trailing)) {
++            ibgda_ft.first = info;
++            ibgda_ft.have_error.store(1);
++        }
++    }
++    if (ibgda_ft.quiet_log) return;
++    fprintf(stderr,
++            "[nvshmem-ft] PE%d device-classified error CQE seq=%u qpn=0x%x qp_type=%s peer=%d "
++            "wqe=%u path=%s fp=%d/0x%02x syndrome=0x%02x class=%s fault=%s cause=\"%s\" "
++            "action=\"%s\" root_op=0x%x hw_err=0x%x/0x%x upgrade=%d snap_tries=%u poll_idx=%llu "
++            "prod=%llu cons=%llu ready=%llu gtimer_ns=%llu mono_ms=%.3f\n",
++            ibgda_ft.t->my_pe, r->seq, r->qpn,
++            r->qp_type == NVSHMEMI_IBGDA_DEVICE_QP_TYPE_RC ? "RC" : "DCI", r->peer, r->wqe_counter,
++            ibgda_ft_path_str(r->path), info.wc_status, r->vendor_err, r->syndrome, info.name,
++            info.fault, info.cause, info.action, r->root_opcode, r->hw_err_synd, r->hw_synd_type,
++            r->upgrade, r->snap_tries, (unsigned long long)r->poll_idx,
++            (unsigned long long)r->prod_idx, (unsigned long long)r->cons_idx,
++            (unsigned long long)r->ready_head, (unsigned long long)r->gtimer_ns, mono_ms);
++    /* Host view of the QP right after the record (DEVX QUERY_QP). */
++    int is_dci = 0;
++    struct ibgda_ep *ep = ibgda_ft_find_ep_by_qpn(r->qpn, &is_dci);
++    if (ep && ep->devx_qp) {
++        uint32_t s = 0, hw = 0, sw = 0;
++        double q0 = ibgda_ft_mono_ms();
++        int qs = ibgda_ft_query_qp(ep->devx_qp, ep->qpn, &s, &hw, &sw);
++        fprintf(stderr,
++                "[nvshmem-ft] PE%d host QUERY_QP qpn=0x%x ret=%d state=%u%s hw_sq_wqebb=%u "
++                "sw_sq_wqebb=%u query_us=%.0f\n",
++                ibgda_ft.t->my_pe, ep->qpn, qs, s, s == 6 ? "(ERR)" : s == 3 ? "(RTS)" : "", hw, sw,
++                (ibgda_ft_mono_ms() - q0) * 1e3);
++    }
++}
++
++static void ibgda_ft_watcher_main() {
++    const int wpr = sizeof(nvshmemi_ibgda_ft_record_t) / 4;
++    while (!ibgda_ft.stop.load()) {
++        for (int s = 0; s < NVSHMEMI_IBGDA_FT_NSLOTS; s++) {
++            volatile uint32_t *w = (volatile uint32_t *)&ibgda_ft.mbox_h[s];
++            uint32_t magic = w[0], seq = w[1];
++            if (magic != NVSHMEMI_IBGDA_FT_MAGIC || seq == 0 || seq == ibgda_ft.last_seq[s]) continue;
++            std::atomic_thread_fence(std::memory_order_acquire);
++            nvshmemi_ibgda_ft_record_t r;
++            uint32_t *rw = (uint32_t *)&r;
++            for (int i = 0; i < wpr; i++) rw[i] = w[i];
++            std::atomic_thread_fence(std::memory_order_acquire);
++            if (w[1] != seq || w[0] != NVSHMEMI_IBGDA_FT_MAGIC) continue; /* being rewritten */
++            ibgda_ft.last_seq[s] = seq;
++            ibgda_ft_handle_record(&r, ibgda_ft_mono_ms());
++        }
++        std::this_thread::sleep_for(std::chrono::microseconds(ibgda_ft.poll_us));
++    }
++}
++
++static void ibgda_ft_set_failed(const char *why) {
++    if (ibgda_ft.t) ibgda_ft.t->attr |= NVSHMEM_TRANSPORT_ATTR_FT_FAILED_BIT;
++    fprintf(stderr, "[nvshmem-ft] PE%d marked failed (%s): device collectives are skipped at teardown\n",
++            ibgda_ft.t ? ibgda_ft.t->my_pe : -1, why);
++}
++
++/* Called at the end of the first connect_endpoints. */
++static int ibgda_ft_init(nvshmem_transport_t t, nvshmemt_ibgda_state_t *st,
++                         nvshmemi_ibgda_device_state_t *dstate) {
++    const char *on = getenv("NVSHMEM_IBGDA_FT");
++    if (!on || atoi(on) == 0) return 0;
++    const char *pu = getenv("NVSHMEM_IBGDA_FT_POLL_US");
++    const char *cap = getenv("NVSHMEM_IBGDA_FT_CAPTURE");
++    const char *dm = getenv("NVSHMEM_IBGDA_FT_DRAIN_MS");
++    const char *ql = getenv("NVSHMEM_IBGDA_FT_QUIET");
++    ibgda_ft.poll_us = pu ? atoi(pu) : 50;
++    if (ibgda_ft.poll_us < 1) ibgda_ft.poll_us = 1;
++    ibgda_ft.drain_ms = dm ? atoi(dm) : 1000;
++    ibgda_ft.quiet_log = ql && atoi(ql) != 0;
++    ibgda_ft.flags = NVSHMEMI_IBGDA_FT_FLAG_ON;
++    if (cap && !strcmp(cap, "exit")) ibgda_ft.flags |= NVSHMEMI_IBGDA_FT_FLAG_CAPTURE_EXIT;
++    ibgda_ft.t = t;
++    ibgda_ft.st = st;
++    ibgda_ft.prep.assign(t->n_pes, ibgda_ft_prep());
++    memset(ibgda_ft.last_seq, 0, sizeof(ibgda_ft.last_seq));
++    ibgda_ft.have_error.store(0);
++    ibgda_ft.nrecords = 0;
++    ibgda_ft.commits.store(0);
++    ibgda_ft.fire_in_commit.store(0);
++
++    int status = cudaStreamCreateWithFlags(&ibgda_ft.stream, cudaStreamNonBlocking);
++    if (status) goto fail;
++    status = cudaHostAlloc(&ibgda_ft.pinned, 4096, cudaHostAllocDefault);
++    if (status) goto fail;
++    status = cudaHostAlloc((void **)&ibgda_ft.mbox_h,
++                           NVSHMEMI_IBGDA_FT_NSLOTS * sizeof(nvshmemi_ibgda_ft_record_t),
++                           cudaHostAllocMapped);
++    if (status) goto fail;
++    memset(ibgda_ft.mbox_h, 0, NVSHMEMI_IBGDA_FT_NSLOTS * sizeof(nvshmemi_ibgda_ft_record_t));
++    status = cudaHostGetDevicePointer((void **)&ibgda_ft.mbox_d, ibgda_ft.mbox_h, 0);
++    if (status) goto fail;
++    status = cudaMalloc((void **)&ibgda_ft.dev_d, sizeof(nvshmemi_ibgda_ft_dev_t));
++    if (status) goto fail;
++    {
++        nvshmemi_ibgda_ft_dev_t h;
++        memset(&h, 0, sizeof(h));
++        h.mbox = ibgda_ft.mbox_d;
++        h.nslots = NVSHMEMI_IBGDA_FT_NSLOTS;
++        h.flags = ibgda_ft.flags;
++        status = cudaMemcpy(ibgda_ft.dev_d, &h, sizeof(h), cudaMemcpyHostToDevice);
++        if (status) goto fail;
++    }
++    dstate->ft = ibgda_ft.dev_d;
++    dstate->ft_flags = ibgda_ft.flags;
++    ibgda_ft.enabled = true;
++    ibgda_ft.stop.store(false);
++    ibgda_ft.watcher = std::thread(ibgda_ft_watcher_main);
++    fprintf(stderr,
++            "[nvshmem-ft] PE%d enabled: classifier=%s mailbox=%d x %zu B poll_us=%d handler=%s "
++            "recovery=%s rc_per_pe=%d\n",
++            t->my_pe,
++            (ibgda_ft.flags & NVSHMEMI_IBGDA_FT_FLAG_CAPTURE_EXIT) ? "exit-only(diag)" : "in-loop",
++            NVSHMEMI_IBGDA_FT_NSLOTS, sizeof(nvshmemi_ibgda_ft_record_t), ibgda_ft.poll_us,
++            ibgda_nic_handler == IBGDA_NIC_HANDLER_GPU ? "GPU" : "CPU-proxy",
++            ibgda_nic_handler == IBGDA_NIC_HANDLER_GPU ? "available" : "declined (CPU-proxy handler)",
++            st->common.options->IBGDA_NUM_RC_PER_PE);
++    return 0;
++fail:
++    fprintf(stderr, "[nvshmem-ft] PE%d init failed (cuda %d); FT stays off\n", t->my_pe, status);
++    dstate->ft = NULL;
++    dstate->ft_flags = 0;
++    return 0;
++}
++
++static void ibgda_ft_fini(nvshmemi_ibgda_device_state_t *dstate) {
++    if (!ibgda_ft.enabled) return;
++    ibgda_ft.stop.store(true);
++    if (ibgda_ft.watcher.joinable()) ibgda_ft.watcher.join();
++    ibgda_ft.enabled = false;
++    if (dstate) {
++        dstate->ft = NULL;
++        dstate->ft_flags = 0;
++    }
++    if (ibgda_ft.dev_d) cudaFree(ibgda_ft.dev_d);
++    if (ibgda_ft.mbox_h) cudaFreeHost(ibgda_ft.mbox_h);
++    if (ibgda_ft.pinned) cudaFreeHost(ibgda_ft.pinned);
++    if (ibgda_ft.stream) cudaStreamDestroy(ibgda_ft.stream);
++    ibgda_ft.dev_d = NULL;
++    ibgda_ft.mbox_h = NULL;
++    ibgda_ft.pinned = NULL;
++    ibgda_ft.stream = 0;
++}
++
++/* RC endpoints to `peer`, in (device, slot) order: the same order on both sides. */
++static int ibgda_ft_rc_eps(int peer, struct ibgda_ep **eps, struct ibgda_device **devs, int max) {
++    nvshmemt_ibgda_state_t *st = ibgda_ft.st;
++    int n_pes = ibgda_ft.t->n_pes, n = 0;
++    for (int i = 0; i < st->n_devs_selected; i++) {
++        struct ibgda_device *device =
++            (struct ibgda_device *)st->common.devices + st->selected_dev_ids[i];
++        for (int e = 0; e < device->rc.num_eps_per_pe * n_pes; e++) {
++            if (e % n_pes != peer) continue;
++            struct ibgda_ep *ep = device->rc.eps ? device->rc.eps[e] : NULL;
++            if (!ep) continue;
++            if (n >= max) return -1;
++            eps[n] = ep;
++            devs[n] = device;
++            n++;
++        }
++    }
++    return n;
++}
++
++/* Copy one QP's device management variables to the host (non-blocking stream). */
++static int ibgda_ft_read_mvars(nvshmemi_ibgda_device_qp_t *qp_d,
++                               nvshmemi_ibgda_device_qp_management_t *out) {
++    int s = cudaMemcpyAsync(ibgda_ft.pinned, &qp_d->mvars, sizeof(*out), cudaMemcpyDeviceToHost,
++                            ibgda_ft.stream);
++    if (!s) s = cudaStreamSynchronize(ibgda_ft.stream);
++    if (!s) memcpy(out, ibgda_ft.pinned, sizeof(*out));
++    return s;
++}
++
++/* Device-side resync of one QP while it is in RESET: refill its collapsed CQ with the creation
++ * pattern (0xff: opcode invalid, wqe_counter 0xffff), zero its doorbell record, then zero its
++ * management variables (indices, lock, FT sticky record) = the state ibgda_get_device_qp_mvars
++ * gives a new QP. The CQ goes first so that a sentinel never sees a stale error CQE together with
++ * a cleared sticky record. */
++static int ibgda_ft_resync_qp(struct ibgda_ep *ep, nvshmemi_ibgda_device_qp_t *qp_d) {
++    int s = cudaMemsetAsync(ep->send_cq->cq_mobject->base.gpu_ptr, 0xff,
++                            ep->send_cq->cq_mobject->base.size, ibgda_ft.stream);
++    if (!s)
++        s = cudaMemsetAsync((char *)ep->qp_ctrl.dbr_mobject->aligned.gpu_ptr + ep->qp_ctrl.dbr_offset,
++                            0, IBGDA_DBRSIZE, ibgda_ft.stream);
++    if (!s) s = cudaStreamSynchronize(ibgda_ft.stream);
++    if (!s)
++        s = cudaMemsetAsync(&qp_d->mvars, 0, sizeof(nvshmemi_ibgda_device_qp_management_t),
++                            ibgda_ft.stream);
++    if (!s) s = cudaStreamSynchronize(ibgda_ft.stream);
++    return s;
++}
++
++static bool ibgda_ft_quiescent(const nvshmemi_ibgda_device_qp_management_t *m) {
++    return m->post_send_lock == 0 && m->tx_wq.resv_head == m->tx_wq.ready_head &&
++           m->tx_wq.ready_head == m->tx_wq.prod_idx && m->ibuf.head == m->ibuf.tail;
++}
++
++extern "C" __attribute__((visibility("default"))) int nvshmemt_ibgda_ft_enabled(void) {
++    return ibgda_ft.enabled ? NVSHMEMT_IBGDA_FT_API_VERSION : 0;
++}
++
++extern "C" __attribute__((visibility("default"))) uint32_t nvshmemt_ibgda_ft_commits(void) {
++    return ibgda_ft.commits.load();
++}
++
++/* 1 and *out filled if an unrecovered error record exists (waits up to wait_ms for one). */
++extern "C" __attribute__((visibility("default"))) int nvshmemt_ibgda_ft_query(
++    nvshmemt_ibgda_ft_info_t *out, int wait_ms) {
++    if (!ibgda_ft.enabled) return -1;
++    double t0 = ibgda_ft_mono_ms();
++    for (;;) {
++        if (ibgda_ft.have_error.load()) {
++            std::lock_guard<std::mutex> g(ibgda_ft.mu);
++            if (out) *out = ibgda_ft.first;
++            return 1;
++        }
++        if (ibgda_ft_mono_ms() - t0 >= wait_ms) break;
++        std::this_thread::sleep_for(std::chrono::microseconds(20));
++    }
++    if (out) memset(out, 0, sizeof(*out));
++    return 0;
++}
++
++extern "C" __attribute__((visibility("default"))) int nvshmemt_ibgda_ft_mark_failed(void) {
++    if (!ibgda_ft.t) return -1;
++    ibgda_ft_set_failed("application");
++    return 0;
++}
++
++/* Stop a running device sentinel (see nvshmemx_ibgda_ft_sentinel); waits up to wait_ms. */
++extern "C" __attribute__((visibility("default"))) int nvshmemt_ibgda_ft_sentinel_stop(int wait_ms,
++                                                                                    uint64_t *polls) {
++    if (!ibgda_ft.enabled) return -1;
++    uint32_t one = 1;
++    memcpy(ibgda_ft.pinned, &one, sizeof(one));
++    int s = cudaMemcpyAsync(&ibgda_ft.dev_d->sentinel_stop, ibgda_ft.pinned, sizeof(one),
++                            cudaMemcpyHostToDevice, ibgda_ft.stream);
++    if (!s) s = cudaStreamSynchronize(ibgda_ft.stream);
++    double t0 = ibgda_ft_mono_ms();
++    nvshmemi_ibgda_ft_dev_t h;
++    do {
++        s = cudaMemcpyAsync(ibgda_ft.pinned, ibgda_ft.dev_d, sizeof(h), cudaMemcpyDeviceToHost,
++                            ibgda_ft.stream);
++        if (!s) s = cudaStreamSynchronize(ibgda_ft.stream);
++        memcpy(&h, ibgda_ft.pinned, sizeof(h));
++        if (s || h.sentinel_running == 0) break;
++        std::this_thread::sleep_for(std::chrono::microseconds(100));
++    } while (ibgda_ft_mono_ms() - t0 < wait_ms);
++    if (polls) *polls = h.sentinel_polls;
++    return (s == 0 && h.sentinel_running == 0) ? 0 : -1;
++}
++
++/* Prepare: pause nothing (the GPU handler has no proxy); check that the device is quiescent on
++ * every RC QP to `peer`, move them to ERR, wait until the NIC has flushed every posted WQE, draw
++ * fresh send PSNs. Returns 0 and the local token, or <0 (decline; QPs possibly left in ERR). */
++extern "C" __attribute__((visibility("default"))) int nvshmemt_ibgda_ft_prepare(
++    int peer, nvshmemt_ibgda_ft_token_t *tok, nvshmemt_ibgda_ft_stats_t *stats) {
++    nvshmemt_ibgda_ft_stats_t lst;
++    nvshmemt_ibgda_ft_stats_t *S = stats ? stats : &lst;
++    memset(S, 0, sizeof(*S));
++    if (!ibgda_ft.enabled) return -1;
++    if (ibgda_nic_handler != IBGDA_NIC_HANDLER_GPU) {
++        snprintf(S->msg, sizeof(S->msg), "declined: recovery needs the GPU NIC handler");
++        return -2;
++    }
++    if (peer < 0 || peer >= ibgda_ft.t->n_pes || peer == ibgda_ft.t->my_pe) return -3;
++    std::lock_guard<std::mutex> opg(ibgda_ft.op_mu);
++    std::lock_guard<std::mutex> lk(ibgda_ft.st->rc_endpoint_lock);
++    double t0 = ibgda_ft_mono_ms();
++    nvshmemi_ibgda_device_state_t *dstate =
++        (nvshmemi_ibgda_device_state_t *)ibgda_ft.t->type_specific_shared_state;
++    struct ibgda_ep *eps[NVSHMEMT_IBGDA_FT_MAX_QPS];
++    struct ibgda_device *devs[NVSHMEMT_IBGDA_FT_MAX_QPS];
++    int n = ibgda_ft_rc_eps(peer, eps, devs, NVSHMEMT_IBGDA_FT_MAX_QPS);
++    if (n <= 0) {
++        snprintf(S->msg, sizeof(S->msg), "declined: %s RC QPs to PE %d",
++                 n == 0 ? "no" : "too many", peer);
++        return -4;
++    }
++    nvshmemi_ibgda_device_qp_management_t mv[NVSHMEMT_IBGDA_FT_MAX_QPS];
++    for (int i = 0; i < n; i++) {
++        if (ibgda_ft_read_mvars(&dstate->globalmem.rcs[eps[i]->user_index], &mv[i])) return -5;
++        if (!ibgda_ft_quiescent(&mv[i])) {
++            snprintf(S->msg, sizeof(S->msg),
++                     "declined: QP 0x%x not quiescent (lock=%d resv=%llu ready=%llu prod=%llu "
++                     "ibuf %llu/%llu)",
++                     eps[i]->qpn, mv[i].post_send_lock, (unsigned long long)mv[i].tx_wq.resv_head,
++                     (unsigned long long)mv[i].tx_wq.ready_head,
++                     (unsigned long long)mv[i].tx_wq.prod_idx, (unsigned long long)mv[i].ibuf.head,
++                     (unsigned long long)mv[i].ibuf.tail);
++            return -6;
++        }
++        S->prod_idx[i] = (uint32_t)mv[i].tx_wq.prod_idx;
++        ibgda_ft_query_qp(eps[i]->devx_qp, eps[i]->qpn, &S->qp_state[i], NULL, NULL);
++    }
++    /* No old-incarnation WQE may execute after this: every QP of the pair goes to ERR. */
++    for (int i = 0; i < n; i++) {
++        if (S->qp_state[i] != 6 && ibgda_ft_qp_cmd(eps[i]->devx_qp, eps[i]->qpn, MLX5_CMD_OP_2ERR_QP))
++            return -7;
++    }
++    double t1 = ibgda_ft_mono_ms();
++    S->to_err_ms = t1 - t0;
++    /* Drain: the NIC flushes [consumer, producer) after the ERR transition (the GPU handler keeps
++     * the doorbell record's send word current); wait until its consumer reached the producer. */
++    int drained = 0;
++    for (;;) {
++        drained = 1;
++        for (int i = 0; i < n; i++) {
++            uint32_t s = 0, hw = 0;
++            ibgda_ft_query_qp(eps[i]->devx_qp, eps[i]->qpn, &s, &hw, NULL);
++            if (s != 6 || hw != (mv[i].tx_wq.prod_idx & 0xffff)) drained = 0;
++        }
++        if (drained || ibgda_ft_mono_ms() - t1 > ibgda_ft.drain_ms) break;
++        std::this_thread::sleep_for(std::chrono::microseconds(50));
++    }
++    double t2 = ibgda_ft_mono_ms();
++    S->drain_ms = t2 - t1;
++    S->drained = drained;
++    if (!drained) {
++        snprintf(S->msg, sizeof(S->msg), "declined: NIC did not flush every posted WQE in %d ms",
++                 ibgda_ft.drain_ms);
++        return -8;
++    }
++    std::random_device rd;
++    tok->magic = NVSHMEMT_IBGDA_FT_TOKEN_MAGIC;
++    tok->nqps = n;
++    tok->pe = ibgda_ft.t->my_pe;
++    tok->peer = peer;
++    ibgda_ft_prep &p = ibgda_ft.prep[peer];
++    p.nqps = n;
++    for (int i = 0; i < n; i++) {
++        uint32_t psn = ((uint32_t)rd() ^ ((uint32_t)rd() << 7)) & 0xffffff;
++        p.sq_psn[i] = psn;
++        tok->qp[i].qpn = eps[i]->qpn;
++        tok->qp[i].peer_qpn = eps[i]->ft_peer.qpn;
++        tok->qp[i].sq_psn = psn;
++        tok->qp[i].prod_idx = (uint32_t)mv[i].tx_wq.prod_idx;
++    }
++    p.prepared = true;
++    S->nqps = n;
++    S->prepare_ms = ibgda_ft_mono_ms() - t0;
++    snprintf(S->msg, sizeof(S->msg), "prepared %d QP(s)", n);
++    return 0;
++}
++
++/* Reset one DCI of this PE that is not in RTS (local only: DCIs have no fixed peer). */
++static int ibgda_ft_reset_dci(struct ibgda_device *device, struct ibgda_ep *ep,
++                              nvshmemi_ibgda_device_qp_t *qp_d) {
++    nvshmemt_ibgda_state_t *st = ibgda_ft.st;
++    nvshmemi_ibgda_device_qp_management_t m;
++    if (ibgda_ft_read_mvars(qp_d, &m)) return -1;
++    if (!ibgda_ft_quiescent(&m)) return -2;
++    if (ibgda_ft_qp_cmd(ep->devx_qp, ep->qpn, MLX5_CMD_OP_2RST_QP)) return -3;
++    if (ibgda_ft_resync_qp(ep, qp_d)) return -4;
++    if (ibgda_qp_rst2init(st, ep, device, ep->portid)) return -5;
++    if (ibgda_dci_init2rtr(st, ep, device, ep->portid)) return -6;
++    if (ibgda_qp_rtr2rts(st, ep, device, 0)) return -7;
++    return 0;
++}
++
++/* Commit: with the peer's token, reset every RC QP to `peer` (RESET, device resync, INIT, RTR with
++ * rq_psn = peer's new sq_psn, RTS with our new sq_psn), reset any local DCI left in ERR, clear the
++ * FT error state. On failure the QPs are left in ERR or RESET (declined). */
++extern "C" __attribute__((visibility("default"))) int nvshmemt_ibgda_ft_commit(
++    int peer, const nvshmemt_ibgda_ft_token_t *remote, nvshmemt_ibgda_ft_stats_t *stats) {
++    nvshmemt_ibgda_ft_stats_t lst;
++    nvshmemt_ibgda_ft_stats_t *S = stats ? stats : &lst;
++    if (!ibgda_ft.enabled) return -1;
++    if (peer < 0 || peer >= ibgda_ft.t->n_pes) return -3;
++    int rc = 0;
++    {
++        std::lock_guard<std::mutex> opg(ibgda_ft.op_mu);
++        std::lock_guard<std::mutex> lk(ibgda_ft.st->rc_endpoint_lock);
++        nvshmemt_ibgda_state_t *st = ibgda_ft.st;
++        ibgda_ft_prep &p = ibgda_ft.prep[peer];
++        nvshmemi_ibgda_device_state_t *dstate =
++            (nvshmemi_ibgda_device_state_t *)ibgda_ft.t->type_specific_shared_state;
++        struct ibgda_ep *eps[NVSHMEMT_IBGDA_FT_MAX_QPS];
++        struct ibgda_device *devs[NVSHMEMT_IBGDA_FT_MAX_QPS];
++        int n = ibgda_ft_rc_eps(peer, eps, devs, NVSHMEMT_IBGDA_FT_MAX_QPS);
++        if (!p.prepared) {
++            snprintf(S->msg, sizeof(S->msg), "declined: commit without prepare");
++            return -10;
++        }
++        if (!remote || remote->magic != NVSHMEMT_IBGDA_FT_TOKEN_MAGIC || (int)remote->nqps != n ||
++            remote->pe != peer || remote->peer != ibgda_ft.t->my_pe || n != (int)p.nqps) {
++            snprintf(S->msg, sizeof(S->msg), "declined: token mismatch");
++            return -11;
++        }
++        for (int i = 0; i < n; i++) {
++            if (remote->qp[i].qpn != eps[i]->ft_peer.qpn || remote->qp[i].peer_qpn != eps[i]->qpn) {
++                snprintf(S->msg, sizeof(S->msg), "declined: QPN mismatch at %d (0x%x/0x%x)", i,
++                         remote->qp[i].qpn, remote->qp[i].peer_qpn);
++                return -12;
++            }
++        }
++        double t0 = ibgda_ft_mono_ms();
++        for (int i = 0; i < n; i++)
++            if (ibgda_ft_qp_cmd(eps[i]->devx_qp, eps[i]->qpn, MLX5_CMD_OP_2RST_QP)) return -13;
++        double t1 = ibgda_ft_mono_ms();
++        for (int i = 0; i < n; i++)
++            if (ibgda_ft_resync_qp(eps[i], &dstate->globalmem.rcs[eps[i]->user_index])) return -14;
++        double t2 = ibgda_ft_mono_ms();
++        for (int i = 0; i < n; i++) {
++            struct ibgda_ep *ep = eps[i];
++            struct ibgda_rc_handle h;
++            memset(&h, 0, sizeof(h));
++            h.qpn = ep->ft_peer.qpn;
++            h.lid = ep->ft_peer.lid;
++            h.spn = ep->ft_peer.spn;
++            h.iid = ep->ft_peer.iid;
++            if (ep->ah) { /* init2rtr creates a fresh AH from the same attributes */
++                ftable.destroy_ah(ep->ah);
++                ep->ah = NULL;
++            }
++            if (ibgda_qp_rst2init(st, ep, devs[i], ep->portid)) return -15;
++            if (ibgda_rc_init2rtr(st, ep, devs[i], ep->portid, &h, remote->qp[i].sq_psn)) return -16;
++            if (ibgda_qp_rtr2rts(st, ep, devs[i], p.sq_psn[i])) return -17;
++        }
++        double t3 = ibgda_ft_mono_ms();
++        /* Local DCIs left in ERR (the fault hook moves every QP of the PE). */
++        S->ndci_reset = 0;
++        for (int d = 0; d < st->n_devs_selected; d++) {
++            struct ibgda_device *device =
++                (struct ibgda_device *)st->common.devices + st->selected_dev_ids[d];
++            for (int e = 0; e < device->dci.num_eps; e++) {
++                struct ibgda_ep *ep = device->dci.eps ? device->dci.eps[e] : NULL;
++                if (!ep || !ep->devx_qp) continue;
++                uint32_t s = 0;
++                ibgda_ft_query_qp(ep->devx_qp, ep->qpn, &s, NULL, NULL);
++                if (s == 3) continue;
++                int r = ibgda_ft_reset_dci(device, ep,
++                                           &dstate->globalmem.dcis[e * st->n_devs_selected + d]);
++                if (r) {
++                    fprintf(stderr, "[nvshmem-ft] PE%d DCI 0x%x reset failed (%d)\n",
++                            ibgda_ft.t->my_pe, ep->qpn, r);
++                    return -18;
++                }
++                S->ndci_reset++;
++            }
++        }
++        /* Clear the device error counter and the host record. */
++        {
++            uint32_t z = 0;
++            memcpy(ibgda_ft.pinned, &z, sizeof(z));
++            if (cudaMemcpyAsync(&ibgda_ft.dev_d->nerr, ibgda_ft.pinned, sizeof(z),
++                                cudaMemcpyHostToDevice, ibgda_ft.stream) ||
++                cudaStreamSynchronize(ibgda_ft.stream))
++                return -19;
++        }
++        {
++            std::lock_guard<std::mutex> g(ibgda_ft.mu);
++            ibgda_ft.have_error.store(0);
++            memset(&ibgda_ft.first, 0, sizeof(ibgda_ft.first));
++        }
++        p.prepared = false;
++        S->rst_ms = t1 - t0;
++        S->resync_ms = t2 - t1;
++        S->connect_ms = t3 - t2;
++        S->commit_ms = ibgda_ft_mono_ms() - t0;
++        S->nqps = n;
++        snprintf(S->msg, sizeof(S->msg), "committed %d QP(s), %u DCI(s) reset", n, S->ndci_reset);
++        ibgda_ft.commits.fetch_add(1);
++    }
++    /* Test hook: a shot scheduled "inside the commit" fires now, after RTS (hits the replay). */
++    if (ibgda_ft.fire_in_commit.exchange(0)) {
++        fprintf(stderr, "[nvshmem-fault-inject] in-commit shot fire_mono_ms=%.3f\n", ibgda_ft_mono_ms());
++        ibgda_fi_all_qps_to_err(ibgda_ft.st, ibgda_ft.t->n_pes);
++    }
++    return rc;
++}
++
++/* Abort: forget a prepared recovery, leave the QPs in ERR and mark the transport failed so that
++ * teardown skips device collectives. */
++extern "C" __attribute__((visibility("default"))) int nvshmemt_ibgda_ft_abort(int peer) {
++    if (!ibgda_ft.enabled) return -1;
++    {
++        std::lock_guard<std::mutex> opg(ibgda_ft.op_mu);
++        if (peer >= 0 && peer < (int)ibgda_ft.prep.size()) ibgda_ft.prep[peer].prepared = false;
++        std::lock_guard<std::mutex> lk(ibgda_ft.st->rc_endpoint_lock);
++        struct ibgda_ep *eps[NVSHMEMT_IBGDA_FT_MAX_QPS];
++        struct ibgda_device *devs[NVSHMEMT_IBGDA_FT_MAX_QPS];
++        int n = peer >= 0 ? ibgda_ft_rc_eps(peer, eps, devs, NVSHMEMT_IBGDA_FT_MAX_QPS) : 0;
++        for (int i = 0; i < n; i++) {
++            uint32_t s = 0;
++            ibgda_ft_query_qp(eps[i]->devx_qp, eps[i]->qpn, &s, NULL, NULL);
++            if (s != 6) ibgda_ft_qp_cmd(eps[i]->devx_qp, eps[i]->qpn, MLX5_CMD_OP_2ERR_QP);
++        }
++    }
++    ibgda_ft_set_failed("recovery declined/aborted");
++    return 0;
++}
++/* ===================== end NVSHMEM_IBGDA_FT ===================== */
++
++static uint32_t ibgda_ft_commit_count() { return ibgda_ft.commits.load(); }
++static void ibgda_ft_request_fire_in_commit() { ibgda_ft.fire_in_commit.store(1); }
++
+ int nvshmemt_ibgda_connect_endpoints(nvshmem_transport_t t, int *selected_dev_ids,
+                                      int num_selected_devs, int *out_qp_indices, int num_qps) {
+     nvshmemt_ibgda_state_t *ibgda_state = (nvshmemt_ibgda_state_t *)t->state;
+@@ -4871,6 +5668,9 @@ int nvshmemt_ibgda_connect_endpoints(nvshmem_transport_t t, int *selected_dev_id
+     ibgda_fault_inject_arm(ibgda_state, t->n_pes);
+     ibgda_fault_watch_arm(ibgda_state, t->n_pes);
+ 
++    /* NVSHMEM_IBGDA_FT (research, default off). */
++    ibgda_ft_init(t, ibgda_state, ibgda_device_state_h);
++
+     return status;
+ }
+ 
+@@ -4892,6 +5692,9 @@ int nvshmemt_ibgda_finalize(nvshmem_transport_t transport) {
+ 
+     device_finalized.resize(ibgda_state->common.n_raw_devices, false);
+ 
++    /* NVSHMEM_IBGDA_FT: stop the watcher and free the mailbox before the queues go away. */
++    ibgda_ft_fini((nvshmemi_ibgda_device_state_t *)transport->type_specific_shared_state);
++
+     ibgda_device_lkeys.clear();
+     ibgda_device_rkeys.clear();
+ 

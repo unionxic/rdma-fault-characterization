@@ -27,6 +27,11 @@ patches are in the four subdirectories; this page only combines them.
 | NVSHMEM IBGDA, CPU proxy + SQ-DBR fix | CQE 5/0xf5 | CQE 10/0x88, 10 ms | CQE 12/0x81, 3.5-3.6 s | - | - | `nvshmem_finalize` still hangs |
 | GIN GDAKI + Q4 classifier | 5/0xf5, 15 ms | 10/0x88, 2.8 ms | 12/0x81, 3.64-3.70 s | 12/0x81, 3.64-3.70 s | returns `ncclRemoteError` (silent success 0/9) | clean |
 | GIN GDAKI + Q4 + recovery | **recovered**, ~24 ms after the fault | declined (REM_ACCESS) | **recovered**, 3.65-3.74 s after the fault | declined (peer dead) | recovered or declined | clean |
+| NVSHMEM IBGDA, GPU handler + our FT (`nvshmem_ft/`) | 5/0xf5 in 3.4-4.2 ms, **recovered** (~6.7 ms) | 10/0x88 in 1.2-2.5 ms, declined | 12/0x81 in 3.5-3.7 s, **recovered** | 12/0x81, declined (peer dead) | returns an error (FT status) | `nvshmem_finalize` returns in 17-29 ms |
+
+GIN GDAKI + Q4 + recovery was re-validated with GPU-rung doorbells (the permanent setting since
+2026-09-24 13:53) and needed `gin_recovery_gpudb.diff`: same outcomes, ~8.5 ms from kernel return
+to recovered.
 
 Times are from the fault to the first host-visible error. GDAKI's stock times are set by its
 10 s QP-state check (`NCCL_GIN_ERROR_QUERY_SEC`), not by the fault.
@@ -83,6 +88,20 @@ Times are from the fault to the first host-visible error. GDAKI's stock times ar
    Recovery takes about 8 ms after the kernel returns; detection (F3: retry exhaustion) dominates.
    Two resync details were essential and were proven by negative controls: the CQ mapping
    (`cqe_rsvd`) must advance cumulatively, and the proxy doorbell mailbox must be cleared.
+
+10. **The same approach works on NVSHMEM's GPU path (`nvshmem_ft/`), but the collapsed CQ needs
+    a helper to keep the root cause.** Stock NVSHMEM only polls slot 0 of a collapsed CQ, only
+    when a wait ends on the last WQE, checks only REQ_ERR, compiles the assert out and returns
+    void, so a failed put ends as a silent success (6/6) with the slot showing the trailing
+    flush; the host sees nothing and teardown hangs (8/8). With the FT patch the device reads
+    the CQE word on every spin and keeps a sticky first-error record: classification exact in
+    48/48 single-fault trials and 100/100 multi-fault rounds, host mailbox 67 µs after capture.
+    Where the stock wait ends the slot never holds the root cause (0/24); reading in the spin loop
+    catches it whenever the wait is already spinning (21/30); a resident device sentinel catches it
+    in every pattern tested (18/18), at the cost of one resident thread. Recovery (bilateral
+    reset, NVSHMEM's device QP state resync, signal-delta replay) recovered F1 and F3 in every
+    run (112 rounds, 200/200 operations bit-exact per run, signal exact), declined F2b and F4,
+    and made `nvshmem_finalize` return. No-fault overhead +1% at 4 KiB, +0.25% at 256 KiB.
 
 ## Rejected or corrected along the way
 
