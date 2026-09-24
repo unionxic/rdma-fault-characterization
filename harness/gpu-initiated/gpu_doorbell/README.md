@@ -79,5 +79,5 @@ Invalid (sunny's CUDA broken, window 1): all NVSHMEM trials in `results/20260924
 
 - `window.sh`: stop, reload with the override, check CUDA, run, restore (EXIT trap).
 - `experiments.sh`, `experiments2.sh`: the runs of windows 1 and 2.
-- `results/20260924/`, `results/20260924_w2/`: CSVs and per-trial logs. The window log is in the
-  session scratch (`gi/modreload/window.log`).
+- `results/20260924/`, `results/20260924_w2/`: CSVs and per-trial logs.
+- `results/window.log`: the dry run and both windows (stop, reload, CUDA check, restore).
