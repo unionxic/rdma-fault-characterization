@@ -416,3 +416,332 @@ $CR -t nrc-nv1 -- bash scripts/nvshmem_batch.sh scripts/spec_nv1.txt results/<da
 $CR -t nrc-abcA -- bash scripts/nvshmem_batch.sh scripts/spec_abc_A.txt results/<date>_abc/A    # B, C likewise
 python3 scripts/abc_table.py results/<date>_abc > results/<date>_abc/abc_table.md
 ```
+
+## Scope and mechanism checks (2026-09-25)
+
+A reviewer raised three points before any upstream report: (a) is the bug already fixed
+upstream, (b) the mechanism "at ERR the NIC takes the producer from the doorbell record and
+completes only up to it" was partly inferred, and (c) which real configurations take the
+CPU-proxy path. Tags as above: **[measured]**, **[source]**, **[docs]** (NVIDIA or third-party
+documentation), **[inferred]**. Raw files: `results/20260925_dbrk/`. All cluster runs went
+through `../common/cluster_run.sh`: tags `dbrk-smoke`, `dbrk-s1s2`, `dbrk-s345`, 02:08-02:38 KST,
+about 11 min of lock time in total, including the idle-link waits.
+
+**Answers.**
+- **(a) Not fixed.** Every upstream ref still writes word 0: `devel` 7bb2e99c (= our tree),
+  release/tag v3.8.0 (2026-09-22), and every release branch and tag back to v3.5.19 [source]. It
+  is a regression from commit ce9d487 (2025-10-05/08), which turned `dbr_offset +
+  sizeof(__be32)` into `dbr_offset * sizeof(__be32)` in the proxy only. **Affected: 3.5.x-3.8.0.
+  3.4.5 writes word 1.** There is no upstream issue or PR about it.
+- **(b) The rule, measured directly (225 trials + 5 smoke, all consistent).** At the error
+  transition the NIC sets the SQ producer to the doorbell-record value P and completes exactly
+  the WQEs in [c, P) (c = the first WQE not completed OK): the root cause for c, a flush for each
+  of the rest. Nothing at all when P <= c. This held for a local 2ERR, a NAK (REM_ACCESS) and
+  RETRY_EXC. QUERY_QP `sw_sq_wqebb_counter` = P in 225/225. With P > pi the NIC also completes the
+  never-rung slots. While the QP is in ERR, a later write to the record releases the missing
+  completions within 14-73 us, with no doorbell and no firmware command.
+- **(c) Who is affected.** NVSHMEM 3.5.x-3.8.0 with `NVSHMEM_IB_ENABLE_IBGDA=1`, whenever the NIC
+  handler resolves to the CPU proxy [source]. That is `NVSHMEM_IBGDA_NIC_HANDLER=cpu` or
+  `cpu_host_memory`, or the default `auto` (and even `gpu`, which is not enforced) on any node
+  where `cudaHostRegister(..., cudaHostRegisterIoMemory)` of the NIC UAR fails. In practice this
+  means no `PeerMappingOverride=1`, as a non-root user [docs; measured on this cluster before the
+  regkey: error 800, then "CPU with host memory backend"]. That is the no-admin mode that NVSHMEM
+  advertises as an automatic fallback since 3.4.5, and the "GDRCopy instead of regkeys" route in
+  DeepEP's install guide. It shows up only when a QP enters ERR.
+
+### (a) Is it fixed upstream? No [source, checked 2026-09-25 02:11 and 02:42 KST]
+
+`scripts/upstream_check.sh` fetched every upstream branch and tag of github.com/NVIDIA/nvshmem
+into remote-tracking refs only (the checked-out build tree stays at 7bb2e99c, `git status`
+clean) and grepped the proxy doorbell-record lines in each. Raw output:
+`results/20260925_dbrk/upstream/upstream_check.txt`.
+
+- Latest refs checked: `devel` = 7bb2e99c (2026-09-23 00:13 UTC, the tree we build; nothing
+  newer), `release/v3.8.0` = tag `v3.8.0-0` = 270759e (2026-09-22, the newest release; PyPI
+  `nvidia-nvshmem-cu12/cu13` 3.8.0 uploaded 2026-09-22), plus `release/v3.7.0..v3.7.2`, `main`
+  (2c7f5a3, "Version: 3.5.0-0"), and the feature branches `feature/gpunetio`, `grh-ibgda-poc`,
+  `benjaming/gpunetio-flid-grh`. Between v3.8.0-0 and devel, `ibgda.cpp` differs only in two
+  `#include` lines.
+- Every one of them still writes word 0. v3.8.0-0 (identical in devel),
+  `src/modules/transport/ibgda/ibgda.cpp`:
+  ```
+  517  dbrec = (__be32 *)((uintptr_t)ep->qp_ctrl.dbr_mobject->aligned.cpu_ptr +      // ibgda_dci_progress
+  518                     ep->qp_ctrl.dbr_offset * sizeof(__be32));
+  581  dbrec = (__be32 *)((uintptr_t)ep->qp_ctrl.dbr_mobject->aligned.cpu_ptr +      // ibgda_rc_progress
+  582                     ep->qp_ctrl.dbr_offset * sizeof(__be32));
+  ...
+  589  ibgda_write_once(dbrec, htobe32(*prod_idx_snapshot & 0xffff));
+  ```
+  while the GPU handler of the same file writes word 1:
+  ```
+  3910 dev_qp->tx_wq.dbrec = (__be32 *)((uintptr_t)qp_ctrl->dbr_mobject->aligned.gpu_ptr +
+  3911                                  qp_ctrl->dbr_offset + sizeof(__be32));
+  ```
+  Line numbers per ref (proxy DCI / proxy RC / GPU): v3.5.19-1 534/596/3530, v3.5.21-0
+  534/596/3530, v3.6.5-0 533/595/3535, v3.7.0-0 and v3.7.1-0 512/576/3821, v3.7.2-0
+  512/576/3824, v3.8.0-0 and devel 518/582/3911.
+- **It is a regression, introduced by commit ce9d487** "ibgda_device: Add qpair-specific APIs"
+  (Seth Howell, authored 2025-10-05, committed 2025-10-08), which moved the fields into
+  `qp_ctrl` and split the proxy into `ibgda_dci_progress` / `ibgda_rc_progress`. It replaced
+  ```
+  -  dbrec = (__be32 *)((uintptr_t)ep->dbr_mobject->aligned.cpu_ptr + ep->dbr_offset +
+  -                     sizeof(__be32));
+  +  dbrec = (__be32 *)((uintptr_t)ep->qp_ctrl.dbr_mobject->aligned.cpu_ptr +
+  +                     ep->qp_ctrl.dbr_offset * sizeof(__be32));
+  ```
+  (`+ sizeof` became `* sizeof`) in both proxies, but kept `+ sizeof(__be32)` in the GPU
+  handler. v3.4.5-0 (ibgda.cpp:475-476) still has the correct `dbr_offset + sizeof(__be32)`.
+  The squashed public histories carry the same change in 2c7f5a3 (`main`, "Version: 3.5.0-0")
+  and 7bb2e99 (`devel`). **Affected releases: 3.5.x (first published binary 3.5.19, PyPI
+  2026-01-02) through 3.8.0. 3.4.5 is not affected.** Releases before 3.4.5 are not in the
+  clone and were not checked.
+- Related upstream items: none about this. GitHub search over issues and PRs for `dbr`,
+  `doorbell`, `dbrec`, `NIC_HANDLER`, `cpu_host_memory`, `error CQE`, `ibgda_rc_progress`,
+  `PeerMappingOverride` finds only unrelated ones: #74/#80 (null check on the doorbell umem in
+  the ibdevx transport), #70 (question), #20 (open question: `ibgda_poll_cq` reads only the
+  first CQE; this is the collapsed CQ), and #23/#34 (the regkey is no longer needed for
+  CPU-assisted IBGDA since 3.4.5, see (c)). Of the PRs, 11 touch `ibgda.cpp` (#11, 14, 19, 22,
+  25, 52, 57, 71, 78, 92, 113, open or closed). None of the 10 patches the API returns changes a
+  `dbrec`/`dbr_offset` line. The eleventh, #22 (closed, unmerged "add aws branch"), is too large
+  for the API. Its head, fetched into a remote-tracking ref, carries the 3.4.5-era code with the
+  correct `dbr_offset + sizeof(__be32)`. The
+  3.8.0 changelog entry "Fixed wraparound of the GPUNetIO CPU proxy's producer index" is about
+  the separate GPUNetIO transport. That transport uses DOCA, which writes word 1
+  (`externals/gpunetio/src/doca_gpunetio.cpp:875`, `sq_dbrec = dbrec +
+  DOCA_GPUNETIO_IB_MLX5_SND_DBR`), so it is not affected [source].
+
+### (b) Direct test: the SQ doorbell-record value decides which WQEs complete at ERR
+
+**Tool change.** `nrc_devx` gained two requester-only faults, in clearly marked "dbrk" sections
+of `nrc_devx.c`. The presets and the target role are unchanged. The existing faults gain only a
+QUERY_CQ before the fault. The sunny target binary `~/gi-bundle/nrc/nrc_devx` was not rebuilt.
+Its source differs from the committed one only in requester-side q-counter code. After the usual 4 baseline put + signal pairs (WQEs
+0-7, doorbell record written correctly, so word 1 = 8), the requester posts a batch of
+`--kn 16` single RDMA WRITEs of 64 B, **every one signaled**, as WQEs 8-23 (one WQEBB each). It
+rings the UAR with the true pi (24) but writes `P = 8 + --kdbr` into the SQ doorbell-record word
+(word 1, `--set dbr_word=1`). If P > pi, the slots [pi, P) get valid signaled NOP WQEs that are
+never rung through the UAR. The CQ is a ring (`--set cq_cc=0`, 1024 CQEs), so every CQE stays in
+its own slot and can be counted. The CQE count is checked three ways: the EV log, the SUMMARY
+bookkeeping, and QUERY_CQ's `producer_counter` delta. The rest of the preset is `nvshmem`.
+- `kerr`: the target first moves its QP to ERR, so nothing in the batch is ever acknowledged
+  (c = first uncompleted WQE = 8). Then either a local 2ERR 20 ms after the ring (S1), or no
+  local action, so the QP runs into RETRY_EXC after ~3.6 s (S3, ack timeout 14, retry 7).
+- `knak`: live target. Batch WRITE 8 (WQE 16) carries a bad rkey, so WQEs 8-15 complete OK and
+  WQE 16 is NAKed with a remote access error (c = 16) (S2; S5 uses the `doca` preset).
+- `--klate-ms/--klate-uar` (S4): with P = c (nothing flushed), write word 1 = pi 250 ms after
+  the ring, with or without ringing the UAR again. The 100 ms QUERY_QP/QUERY_CQ sampler either
+  runs (s100: a query at 200 and 300 ms) or is set to 1000 ms (s1000: no firmware command
+  between the first sample at ~20 ms and the end at 700 ms).
+
+Prediction written before S1-S5 (from the smoke run and the 2026-09-24 data): error/flush CQEs
+for exactly the WQEs in [c, P) when P > c, none when P <= c; the root-cause CQE (0x05/0xf5 for a
+local 2ERR, 0x13/0x88 for the NAK, 0x15/0x81 for RETRY_EXC) only if c < P; QUERY_QP
+`sw_sq_wqebb_counter` = P from the first sample in ERR. Safety: P > pi was limited to pi + 2 with
+valid NOPs in those slots. P < c was limited to the class already run 35 times on 2026-09-24 (P
+= 0 there; here P = c - 1 and P = c - 8/c - 4), which never produced a completion.
+
+**Results [measured]: 225 trials (S1-S5) + 5 smoke, 2026-09-25 02:08-02:38. The rule held in
+225/225.** Per-trial rows: `results/20260925_dbrk/dbrk_trials.csv`; full table:
+`dbrk_table.md` (both from `scripts/dbrk_table.py`, which recounts each trial from the raw EV
+lines of `<tag>.req.log`). c = the first WQE not completed OK. P = the SQ doorbell-record value.
+Error CQEs = every opcode 0xd written after the fault. "sw/hw" = QUERY_QP
+`sw_sq_wqebb_counter` / `hw_sq_wqebb_counter` at the first sample in ERR.
+
+| cell | how the QP reaches ERR | c | P (kdbr) | n | error CQEs: count, WQEs | CQE at c (syndrome/vendor) | others | sw / hw at 1st ERR sample |
+|---|---|--:|---|--:|---|---|---|---|
+| S1 | local 2ERR at 20 ms; target in ERR, nothing acked | 8 | 24 = pi | 10 | 16: 8-23 | 0x05/0xf5 | 0x05/0xf9 | 24 / 24 |
+| S1 | " | 8 | 23 = pi-1 | 10 | 15: 8-22 | 0x05/0xf5 | 0x05/0xf9 | 23 / 23 |
+| S1 | " | 8 | 16 | 10 | 8: 8-15 | 0x05/0xf5 | 0x05/0xf9 | 16 / 16 |
+| S1 | " | 8 | 9 = c+1 | 10 | 1: 8 | 0x05/0xf5 | - | 9 / 9 |
+| S1 | " | 8 | 8 = c | 10 | **0** | - | - | 8 / 8 |
+| S1 | " | 8 | 7 = c-1 | 10 | **0** | - | - | 7 / 24 |
+| S1 | " | 8 | 26 = pi+2 (NOPs at 24, 25) | 10 | 18: 8-25 | 0x05/0xf5 | 0x05/0xf9 (24, 25 report opcode 0x00 = NOP) | 26 / 26 |
+| S2 | remote access NAK on WQE 16 (live target) | 16 | 24 = pi | 10 | 8: 16-23 | 0x13/0x88 | 0x05/0xf9 | 24 / 24 |
+| S2 | " | 16 | 20 | 10 | 4: 16-19 | 0x13/0x88 | 0x05/0xf9 | 20 / 20 |
+| S2 | " | 16 | 17 = c+1 | 10 | 1: 16 | 0x13/0x88 | - | 17 / 17 |
+| S2 | " | 16 | 16 = c | 10 | **0** | - | - | 16 / 16 |
+| S2 | " | 16 | 12 | 10 | **0** | - | - | 12 / 16 |
+| S2 | " | 16 | 8 | 10 | **0** | - | - | 8 / 16 |
+| S2 | " | 16 | 26 = pi+2 (NOPs) | 10 | 10: 16-25 | 0x13/0x88 | 0x05/0xf9 | 26 / 26 |
+| S3 | RETRY_EXC, 3.5-3.8 s after the ring | 8 | 24 = pi | 10 | 16: 8-23 | 0x15/0x81 | 0x05/0xf9 | 24 / 24 |
+| S3 | " | 8 | 16 | 10 | 8: 8-15 | 0x15/0x81 | 0x05/0xf9 | 16 / 16 |
+| S3 | " | 8 | 9 = c+1 | 10 | 1: 8 | 0x15/0x81 | - | 9 / 9 |
+| S3 | " (QP in ERR at 3.5-3.8 s) | 8 | 8 = c | 10 | **0** | - | - | 8 / 8 |
+| S5 (doca preset) | NAK on WQE 16 | 16 | 24 / 20 / 16 | 5 / 5 / 5 | 8: 16-23 / 4: 16-19 / **0** | 0x13/0x88 (when P > c) | 0x05/0xf9 | P / P |
+
+Every count was checked three ways and agreed in 225/225 trials: the EV log (each CQ slot's
+final content), the SUMMARY bookkeeping, and the QUERY_CQ `producer_counter` delta. One slot in
+one trial (`s4_late_uar1_s1000_t4`) was read while the NIC was still writing it and logged
+twice. It counts once. Totals recounted by hand from the logs: S1 has 580 CQE lines =
+10 x (16+15+8+1+0+0+18).
+- The WRITEs before the NAKed WQE (8-15) completed OK in all 85 NAK trials, for every P from 8
+  to 26. The record value plays no part in normal execution in RTS.
+- sw_sq = P at the first ERR sample in 225/225, and at the end in 195/195 (S4 excluded, where
+  the record is raised later). hw_sq = P whenever P >= c. When P < c it keeps its pre-ERR value
+  (24 = everything transmitted, S1; 16 = the NAKed WQE, S2).
+
+**Late record update (S4, 30 trials).** With P = c at the error transition, nothing is completed
+(0 CQEs between 20 and 250 ms). Word 1 is then set to pi at 250 ms. **All 16 missing
+completions follow within 14-73 us** (0x05/0xf5 on WQE 8, 0x05/0xf9 on 9-23; sw = hw = 24 at the
+end). This held with the 100 ms QUERY_QP sampler running (10/10), with no firmware command
+between 20 ms and the end (s1000, 10/10), and with the UAR rung again after the write (10/10).
+So the NIC does not take one snapshot at the transition. While the QP is in ERR it keeps
+reading the doorbell record and flushes up to whatever value it finds [measured: the CQEs
+appear without a doorbell or a command; the polling mechanism itself is inferred].
+
+**The rule [measured on CX-6 Dx fw 20.43.4100, RC, 16-WQE batches].** Once a send queue is in
+ERR (local 2ERR, a NAK, or RETRY_EXC), the NIC takes its producer index from the SQ doorbell
+record (word 1, P), not from the UAR doorbell (pi). QUERY_QP `sw_sq_wqebb_counter` then reads
+P. The NIC writes exactly one completion for each WQE in [c, P):
+- the root-cause completion for c (0x05/0xf5 after a local 2ERR, 0x13/0x88 after the NAK,
+  0x15/0x81 after retry exhaustion);
+- a 0x05/0xf9 flush for each WQE in (c, P).
+
+If P <= c (tested for c - P = 0, 1, 4 and 8 here, and 8-29 with P = 0 on 2026-09-24), it writes
+nothing at all, **not even the root-cause CQE**. The WQEs in [c, pi) are never completed. If
+P > pi, the NIC also completes the slots above pi, which were never rung, and parses whatever
+is in them (here valid NOPs, reported with opcode 0x00). While the QP stays in ERR, raising the
+record later releases the missing completions within ~0.1 ms. The reviewer's predictions
+("CQEs only for WQEs < k", "the root-cause CQE only if its index < k", "QUERY_QP's counter after
+ERR = k") all hold, with "k" read as the absolute value P and the range starting at c rather
+than 0.
+
+This replaces the [inferred] step in the Question 1 answer and in the first Limitations bullet
+above. It also explains the 2026-09-24 numbers: the stock proxy leaves P = 0 <= c for the life
+of the QP, so no completion is ever written.
+
+**Implications [inferred, not tested in NVSHMEM].**
+- A helper that notices the QP in ERR could copy the stock proxy's word 0 (which holds
+  `pi & 0xffff`) into word 1. By S4 this would release every completion, root cause included,
+  within ~0.1 ms, without rebuilding the application. The proper fix is still the one-line
+  change in `ibgda_{rc,dci}_progress` (as in `nvshmem_nrc_proxy_sq_dbr.diff`).
+- Any code that writes a record value ahead of the WQEs it has actually written risks the NIC
+  processing stale slots on an error. Here that was tested only with valid NOPs, pi + 2.
+
+**Safety.** No run hung or failed (230 SUMMARY lines, 0 NO_SUMMARY). Both ports were ACTIVE,
+MTU 4096, afterwards. Rain's kernel log shows no mlx5 message between 02:05 and 02:40. Sunny's
+shows one "mlx5_fw_tracer: FWTracer: Events were lost" at 02:24:49, a routine message there
+(24 occurrences since 2026-09-23, most during earlier fault runs).
+
+### (c) Who takes the CPU-proxy path
+
+Line numbers are devel 7bb2e99c = v3.8.0-0 (`ibgda.cpp` = `src/modules/transport/ibgda/ibgda.cpp`).
+
+**How the handler is chosen [source].**
+1. IBGDA itself is opt-in: `NVSHMEM_IB_ENABLE_IBGDA` defaults to false
+   (`src/include/host/env/env_defs.h:393`, loaded in `src/host/transport/transport.cpp:296`).
+   DeepEP's legacy (V1, NVSHMEM) buffers set it to 1 (`deep_ep/buffers/legacy.py:109`) and
+   leave `NVSHMEM_IBGDA_NIC_HANDLER` unset. DeepEP V2 uses NCCL GIN instead of NVSHMEM.
+2. `NVSHMEM_IBGDA_NIC_HANDLER` = `auto` (default) | `gpu` | `cpu` | `cpu_host_memory`
+   (`src/modules/transport/common/env_defs.h:202-208`; parsed at ibgda.cpp:416-452). `cpu`
+   = CPU proxy with a GPU-to-CPU mapping of the producer index (GDRCopy, or the internal CUDA
+   DMA-BUF backend with `NVSHMEM_GDRCOPY_USE_INTERNAL_DMABUF=1`). `cpu_host_memory` = CPU
+   proxy, producer index in host memory.
+3. Per device (ibgda.cpp:5159-5173): `cpu` and `cpu_host_memory` are taken as given.
+   **`auto` and `gpu` take the same branch**: `ibgda_check_gpu_mapping_nic_uar` (:4889-4907)
+   allocates a BF UAR and tries `cudaHostRegister(uar->reg_addr, ..., cudaHostRegisterPortable |
+   cudaHostRegisterMapped | cudaHostRegisterIoMemory)` (:1226-1235). If that fails, the device
+   silently falls back to `cpu` when a GPU-CPU mapping backend is usable, else to
+   `cpu_host_memory`. An explicit `gpu` request is therefore not enforced. Only warnings are
+   printed ("cudaHostRegister with IoMemory failed ... fallback", "... We may need to enter the
+   CPU fallback path").
+4. If any selected NIC ends up on a CPU handler, the whole transport does (:5240-5249). The
+   log line "NIC handler will be CPU with ..." (:5283/:5285) versus "NIC handler will be GPU"
+   (:5287) tells which one was chosen. With a CPU handler the transport registers
+   `nvshmemt_ibgda_progress` as its proxy (:5307-5308), and that calls `ibgda_dci_progress` and
+   `ibgda_rc_progress` (:601-607), the two functions with the wrong word. **Both CPU handlers
+   (`cpu` and `cpu_host_memory`) go through these functions.** They differ only in how the
+   producer index is read (:569-579). Both RC (the default, one per PE pair) and DCI endpoints
+   are affected.
+
+**When `cudaHostRegisterIoMemory` of the UAR fails [docs + measured here].**
+- NVSHMEM install guide (current): "In the default case, nvidia.ko must be loaded with
+  PeerMappingOverride=1 ... In the CPU-assisted case, PeerMappingOverride is not required."
+- libgdsync README (NVIDIA gpudirect): mapping a third-party PCIe BAR from the GPU is disabled
+  by default (CVE-2015-5053) and "unless the PeerMappingOverride registry ... is enabled, only
+  root user can use that feature" [docs, third-party]. Running as root without the regkey was
+  not tested here.
+- This cluster, as a non-root user, no GDRCopy: without the regkey (`../nvshmem/results/20260923/`,
+  `NVSHMEM_IBGDA_NIC_HANDLER=auto`), the logs show "WARN: cudaHostRegister with IoMemory failed
+  with error=800" (cudaErrorNotPermitted) followed by "NIC handler will be CPU with host memory
+  backend". With `PeerMappingOverride=1` (since 2026-09-24 13:53) `auto` gives "NIC handler
+  will be GPU" (`results/20260924_abc`, config A) [measured].
+
+**Since when the fallback is automatic [docs + source].** 3.0.6 added the CPU-assisted NIC
+handler and the `NVSHMEM_IBGDA_NIC_HANDLER` variable ("This feature would enable IBGDA adoption
+on systems that don't have `PeerMappingOverride=1` driver setting", changelog). At that point it
+needed GDRCopy (the current install guide still says GDRCopy is required "if CPU-assisted IBGDA
+is enabled"). The 3.0.6-3.3.x sources were not checked. 3.4.5 added `cpu_host_memory` "without the
+use of GDRCopy or the x86 regkey. Systems not supporting the other methods will automatically
+fall back to this new method. It enables the use of IBGDA on a broad range of systems without
+the need for administrator intervention" (changelog, 3.4.5). A maintainer repeated this in
+issues #23 and #34 (2025-12-18): "Starting with 3.4.5, you do not need them [the regkeys]
+anymore, for CPU-assisted IBGDA. You will still need them for fully-device-assisted IBGDA."
+The v3.4.5-0 source has exactly this auto fallback, and it writes the correct word.
+
+**Standard guidance [docs].** The NVSHMEM install guide and DeepEP's `docs/nvshmem.md` list
+two ways to enable IBGDA: (2.1) the driver regkeys `NVreg_EnableStreamMemOPs=1
+NVreg_RegistryDwords="PeerMappingOverride=1;"` ("traditional IBGDA", GPU handler), or (2.2)
+GDRCopy + gdrdrv ("asynchronous post-send operations assisted by the CPU ... can be used when
+modifying the driver regkeys is not an option"). **Option 2.2 selects the `cpu` handler and is
+therefore affected, too.** CoreWeave's SUNK docs say their nodes set
+`PeerMappingOverride=1` on the kernel command line and ship gdrdrv (GPU handler). I found no
+statement on whether DGX OS / HGX reference images set the regkey by default (open).
+
+**Therefore [source + docs; inferred for configurations not run here]:** a user hits the
+buggy path when all of the following hold:
+1. NVSHMEM 3.5.x-3.8.0 (or devel), with `NVSHMEM_IB_ENABLE_IBGDA=1`;
+2. the NIC handler resolves to a CPU proxy, i.e.
+   - `NVSHMEM_IBGDA_NIC_HANDLER=cpu` or `cpu_host_memory`, or
+   - `auto`/`gpu` on a node where `cudaHostRegisterIoMemory` of the NIC UAR fails for at least
+     one selected NIC: in practice a node without `PeerMappingOverride=1`, used by a non-root
+     user. This is the no-admin configuration that NVSHMEM 3.4.5+ advertises, and the
+     "GDRCopy instead of regkeys" route in DeepEP's guide;
+3. and a QP goes to ERR (any transport or local error, or a peer that dies). Only then does
+   the NIC read the SQ doorbell record (see (b)). In error-free operation the path is
+   functionally correct, because the UAR doorbell carries the index.
+
+A node with `PeerMappingOverride=1` and the default `auto` uses the GPU handler, which writes
+word 1, and is not affected. Neither is NVSHMEM 3.4.5 in any mode.
+
+### Limitations and open items of this section
+
+- (b) is one NIC model and firmware (ConnectX-6 Dx, 20.43.4100), RoCE v2, RC, a 1024-WQEBB SQ,
+  one-WQEBB WQEs and batches of 16. P - c was tested from -8 to +18 (and -29 via P = 0 on
+  2026-09-24). Larger distances and wrap-around of the 16-bit counter were not tested. P > pi was
+  tested only as pi + 2 with valid NOPs in those slots, to avoid feeding the NIC unwritten WQEs.
+- The claim that the NIC keeps reading the record while in ERR rests on S4 (CQEs 14-73 us after a
+  bare memory write, with no command in between). How often it reads, and whether it stops at
+  some point, was not measured. The record was raised 230 ms after the transition; later times
+  were not tested.
+- The NIC q counters were not attached in these runs (`--qcounter` off). The port hw_counters
+  read 0 for these DEVX QPs and are not used.
+- (c) Not tested here: running as root without the regkey (the libgdsync README says root can
+  map the BAR), GDRCopy (`cpu` handler, which is the same code by source), Grace/coherent
+  platforms (the changelog speaks of the "x86 regkey"), NVSHMEM <= 3.3.x sources, and whether
+  DGX OS or HGX reference images set `PeerMappingOverride=1` by default (no statement found).
+- The upstream check is a snapshot (2026-09-25 02:42 KST). The GitHub search API covers titles
+  and bodies, not comments.
+
+### Files (new in this section)
+
+| path | what |
+|---|---|
+| `nrc_devx.c` (sections marked "dbrk (2026-09-25)") | faults `kerr`/`knak`, `--kn --kdbr --kbad --k2err-ms --klate-ms --klate-uar --kbytes`. Presets and the target role are unchanged. The only change on the old fault paths is one QUERY_CQ just before the fault (the producer-counter baseline). `ring_db` is now `ring_db_val(pi, pi)` and does the same stores. The binary that ran S1-S5 is md5 `bf8d9506...` (`env.txt`) |
+| `scripts/spec_dbrk_smoke.txt`, `spec_dbrk_s1.txt` ... `spec_dbrk_s5.txt` | the trial lists (round-robin over P) |
+| `scripts/dbrk_table.py` | checks every trial against the rule, recounting from the raw EV lines, the SUMMARY and QUERY_CQ; writes `dbrk_trials.csv`, prints `dbrk_table.md` |
+| `scripts/upstream_check.sh` | (a): fetch into remote-tracking refs, grep each ref, pickaxe, GitHub search |
+| `results/20260925_dbrk/{smoke,s1..s5}/` | per trial `*.req.log` (every CQE write, QP transitions, SUMMARY), `*.tgt.log`, `*.timeline.csv`; `summary.txt` |
+| `results/20260925_dbrk/dbrk_trials.csv`, `dbrk_table.md`, `env.txt` | per-trial check, group table, binaries/firmware/lock log |
+| `results/20260925_dbrk/upstream/upstream_check.txt` | raw output of (a) |
+
+### Reproduce
+
+```
+make                       # rain only; the sunny target binary (~/gi-bundle/nrc) needs no rebuild
+CR=../common/cluster_run.sh
+$CR -t dbrk-s1s2 -- timeout -s KILL 560 bash -c 'bash scripts/batch.sh scripts/spec_dbrk_s1.txt results/<d>/s1 && bash scripts/batch.sh scripts/spec_dbrk_s2.txt results/<d>/s2'
+$CR -t dbrk-s345 -- timeout -s KILL 580 bash -c 'for s in s4 s5 s3; do bash scripts/batch.sh scripts/spec_dbrk_$s.txt results/<d>/$s; done'
+python3 scripts/dbrk_table.py results/<d> > results/<d>/dbrk_table.md
+bash scripts/upstream_check.sh > results/<d>/upstream/upstream_check.txt   # no cluster needed
+```

@@ -54,10 +54,25 @@ port_mbps() {
 
 exec 9>"$LOCK"
 start=$(date +%s)
-if ! flock -w "$MAXWAIT" 9; then
-  log "gave up waiting for the cluster lock after ${MAXWAIT}s"
-  exit 75
-fi
+# Priority: while a live process named in $PRIO waits for the lock, runs whose tag does not start
+# with "prio-" give the lock back right after getting it, so the priority run gets it next.
+PRIO=${CLUSTER_PRIO:-$SCRATCH/cluster.prio}
+case "$TAG" in prio-*) echo $$ > "$PRIO" ;; esac
+while :; do
+  left=$(( MAXWAIT - ($(date +%s) - start) ))
+  if [ "$left" -le 0 ] || ! flock -w "$left" 9; then
+    log "gave up waiting for the cluster lock after ${MAXWAIT}s"
+    case "$TAG" in prio-*) rm -f "$PRIO" ;; esac
+    exit 75
+  fi
+  case "$TAG" in prio-*) break ;; esac
+  p=$(cat "$PRIO" 2>/dev/null)
+  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+    flock -u 9; sleep 3; continue      # yield to the waiting priority run
+  fi
+  break
+done
+case "$TAG" in prio-*) rm -f "$PRIO" ;; esac
 log "lock acquired; waiting for an idle link"
 
 quiet=0

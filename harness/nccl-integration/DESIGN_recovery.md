@@ -235,7 +235,7 @@ A software-forced ERR (the inject hook) raises no async event, on either side.
   for that QP (true on mlx5). CQEs a provider leaves in the CQ are handled by the post-RESET
   drain. The recovered receive's WQE has already produced its CQE before RESET, so a late CQE
   could only be an error, never a completion.
-- **mlx5 (ConnectX-6 Dx) is the target provider.** See the provider assumption above.
+- **mlx5 (ConnectX-6 VPI, MT28908) is the target provider.** See the provider assumption above.
 - **Stale PSN collision.** The probability that a stale packet of the old incarnation hits the
   new expected PSN is about 2^-24 per such packet.
 

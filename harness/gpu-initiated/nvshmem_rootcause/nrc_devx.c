@@ -22,6 +22,12 @@
  * Faults: none | f1 (N big puts outstanding, then local 2ERR) | f1post (local 2ERR with
  *         nothing outstanding, then post) | f2b (invalid rkey) | f3 (target moves its QP
  *         to ERR, then post).
+ * dbrk test (added 2026-09-25, requester only; the target path is unchanged):
+ *         kerr (target QP to ERR, then a batch of --kn signaled WRITEs; local 2ERR after
+ *         --k2err-ms, or RETRY_EXC when it is < 0) | knak (batch WRITE --kbad has a bad rkey).
+ *         The UAR is rung with the true pi, the SQ doorbell-record word gets pi_before + --kdbr
+ *         (valid signaled NOPs fill any slots above pi). --klate-ms/--klate-uar correct the
+ *         record (and re-ring) later. Use a ring CQ (--set cq_cc=0) to see every CQE.
  *
  * Output: "EV ..." event lines, a per-sample timeline CSV (-T), and one "SUMMARY ..." line.
  * Every wait is bounded; the target exits on its own after --life-s seconds.
@@ -143,7 +149,16 @@ struct opts {
     int f1_delay_us;      /* f1: delay between doorbell and 2ERR          */
     int f2b_all;          /* f2b: signal also carries the bad rkey        */
     int qcounter;         /* allocate a q counter and attach it           */
+    /* ---- dbrk test (2026-09-25), faults kerr / knak; see README "Scope and mechanism checks" ---- */
+    int kn;               /* WQEs in the batch: single signaled RDMA WRITEs, 1 WQEBB each      */
+    int kdbr;             /* SQ doorbell-record value = pi_before + kdbr (KDBR_PI: = pi, correct) */
+    int kbad;             /* knak: batch index of the WRITE that carries the bad rkey         */
+    int k2err_ms;         /* kerr: local 2ERR this long after the ring (-1: none, RETRY_EXC)  */
+    int klate_ms;         /* write the SQ DBR = pi this long into the observation (-1: never) */
+    int klate_uar;        /* ... and ring the UAR with pi right after that write              */
+    unsigned kbytes;      /* size of each WRITE of the batch                                  */
 };
+#define KDBR_PI (-100000)
 
 struct peer_info {
     uint32_t qpn;
@@ -645,8 +660,9 @@ static void write_atomic_fa(struct ctx *c, uint64_t idx, uint64_t raddr, uint32_
 
 static inline void mmio_write64(void *reg, uint64_t v) { *(volatile uint64_t *)reg = v; }
 
-/* ring the doorbell for producer index pi, the way the preset's CPU proxy does */
-static void ring_db(struct ctx *c, uint64_t pi) {
+/* ring the UAR with producer index pi, the way the preset's CPU proxy does, but write dbr_val
+ * (normally = pi) into the doorbell-record word. dbr_val != pi only in the dbrk test. */
+static void ring_db_val(struct ctx *c, uint64_t pi, uint64_t dbr_val) {
     struct wqe_ctrl ctl = {0};
     ctl.opmod_idx_opcode = htobe32((uint32_t)(pi << 8));
     ctl.qpn_ds = htobe32(c->qpn << 8);
@@ -657,16 +673,31 @@ static void ring_db(struct ctx *c, uint64_t pi) {
     __sync_synchronize(); /* WQEs visible before anything else */
     if (c->p.db_style == 0) {
         /* NVSHMEM ibgda_rc_progress (ibgda.cpp:581-591) */
-        dbr[c->p.dbr_word] = htobe32((uint32_t)(pi & 0xffff));
+        dbr[c->p.dbr_word] = htobe32((uint32_t)(dbr_val & 0xffff));
         __atomic_thread_fence(__ATOMIC_RELEASE);
         mmio_write64(reg, db);
     } else {
         /* DOCA priv_cpu_proxy_progress_full_assisted (doca_gpunetio.cpp:1234-1252) */
         mmio_write64(reg, db);
-        dbr[c->p.dbr_word] = htobe32((uint32_t)(pi & 0xffff));
+        dbr[c->p.dbr_word] = htobe32((uint32_t)(dbr_val & 0xffff));
         __atomic_thread_fence(__ATOMIC_RELEASE);
         mmio_write64(reg, db);
     }
+}
+
+/* ring the doorbell for producer index pi, the way the preset's CPU proxy does */
+static void ring_db(struct ctx *c, uint64_t pi) { ring_db_val(c, pi, pi); }
+
+/* ---- dbrk test (2026-09-25) ---- */
+/* a valid, signaled NOP WQE (ctrl segment only, ds 1): fills the slots between pi and a
+ * doorbell-record value above pi, so the NIC never meets an unwritten WQE there */
+static void write_nop(struct ctx *c, uint64_t idx, uint8_t ce) {
+    uint8_t *w = wqe_at(c, idx);
+    memset(w, 0, 64);
+    struct wqe_ctrl *ctl = (void *)w;
+    ctl->opmod_idx_opcode = htobe32(((uint32_t)(idx & 0xffff) << 8) | 0x00); /* MLX5_OPCODE_NOP */
+    ctl->qpn_ds = htobe32((c->qpn << 8) | 1);
+    ctl->fm_ce_se = ce;
 }
 
 /* post one put + signal pair (2 WQEs); returns the index of the signal WQE */
@@ -905,6 +936,8 @@ static int run_requester(struct ctx *c) {
     double t0 = 0, t_2err = -1;
     uint64_t pi_before = c->pi, last_sig = 0;
     char rep[64];
+    struct cq_snap cs0 = query_cq(c); /* dbrk: CQ producer counter before the fault */
+    uint64_t k_dbr_val = 0;           /* dbrk: value written to the SQ doorbell record */
     if (!strcmp(o.fault, "none")) {
         t0 = now_ms();
         last_sig = post_put_signal(c, &peer, 0, o.put_bytes, peer.rkey, peer.rkey);
@@ -936,6 +969,45 @@ static int run_requester(struct ctx *c) {
         t0 = now_ms();
         last_sig = post_put_signal(c, &peer, 0, o.put_bytes, peer.rkey, peer.rkey);
         ring_db(c, c->pi);
+    } else if (!strcmp(o.fault, "kerr") || !strcmp(o.fault, "knak")) {
+        /* ---- dbrk test (2026-09-25) ----
+         * kerr: the target moves its QP to ERR first, so none of the batch is ever acked; then
+         *       either a local 2ERR k2err_ms after the ring, or (k2err_ms < 0) RETRY_EXC.
+         * knak: live target; batch WRITE kbad carries a bad rkey (REM_ACCESS NAK).
+         * The UAR is rung with the true pi; the SQ doorbell-record word gets pi_before + kdbr. */
+        int is_nak = !strcmp(o.fault, "knak");
+        if (!is_nak) {
+            if (ctrl_cmd(fd, 'E', rep)) die("target did not ack 2ERR");
+            printf("EV t_ms=%.3f what=target_2err_ack rep=\"%s\"\n", now_ms(), rep);
+        }
+        long long dv = o.kdbr == KDBR_PI ? (long long)(pi_before + o.kn) : (long long)pi_before + o.kdbr;
+        if (o.kn < 1 || o.kn > 64 || o.kbytes < 1 || o.kbytes > (1u << 20)) die("kn 1..64, kbytes 1..1MiB");
+        if (dv < 0 || dv > (long long)(pi_before + o.kn + 4)) die("kdbr out of the safe range [-pi_before, kn+4]");
+        if (pi_before + o.kn + 4 >= c->nwqebb) die("batch does not fit the SQ without wrapping");
+        if (is_nak && (o.kbad < 0 || o.kbad >= o.kn)) die("knak needs 0 <= kbad < kn");
+        uint32_t bad = peer.rkey ^ 0x00a5a500u;
+        k_dbr_val = (uint64_t)dv;
+        t0 = now_ms();
+        for (int i = 0; i < o.kn; i++) {
+            write_rdma_write(c, c->pi, (uint64_t)(uintptr_t)c->buf + (uint64_t)i * o.kbytes, c->mr->lkey,
+                             peer.addr + (uint64_t)i * o.kbytes, (is_nak && i == o.kbad) ? bad : peer.rkey, o.kbytes,
+                             8 /* CQ_UPDATE: every WQE signaled */);
+            c->pi++;
+        }
+        last_sig = c->pi - 1;
+        for (uint64_t j = c->pi; j < k_dbr_val; j++) write_nop(c, j, 8); /* only when kdbr > kn */
+        ring_db_val(c, c->pi, k_dbr_val);
+        printf("EV t_ms=%.3f what=kbatch_rung pi_before=%llu pi=%llu dbr_val=%llu nops=%lld kbad=%d\n", now_ms(),
+               (unsigned long long)pi_before, (unsigned long long)c->pi, (unsigned long long)k_dbr_val,
+               (long long)k_dbr_val > (long long)c->pi ? (long long)(k_dbr_val - c->pi) : 0LL, is_nak ? o.kbad : -1);
+        if (!is_nak && o.k2err_ms >= 0) {
+            if (o.k2err_ms) usleep((useconds_t)o.k2err_ms * 1000);
+            double ta = now_ms();
+            int rc = qp_2err(c);
+            t_2err = now_ms() - t0;
+            printf("EV t_ms=%.3f what=local_2err rc=%d at_ms=%.3f took_ms=%.3f\n", now_ms(), rc, t_2err,
+                   now_ms() - ta);
+        }
     } else {
         die("unknown fault %s", o.fault);
     }
@@ -956,9 +1028,34 @@ static int run_requester(struct ctx *c) {
     long long last_x = x0;
     struct qp_snap qs = q0;
     struct cq_snap cs = {0};
+    /* dbrk: every CQE written after the fault, "wqe:op/syndrome/vendor" in order of detection */
+    char kcqes[4096] = "";
+    size_t kcqes_len = 0;
+    int k_n_ok = 0, k_n_err = 0, k_n_after_late = 0, k_late_done = 0, err_hw_sq = -1, err_sw_sq = -1;
+    int k_err_wqe_min = -1, k_err_wqe_max = -1;
+    double t_late = -1;
     for (;;) {
         double t = now_ms() - t0;
         if (t > o.observe_ms) break;
+        if (o.klate_ms >= 0 && !k_late_done && t >= o.klate_ms) {
+            /* dbrk: correct the SQ doorbell record late (and optionally ring the UAR again) */
+            volatile uint32_t *kd = (volatile uint32_t *)c->qp_dbr;
+            __sync_synchronize();
+            kd[c->p.dbr_word] = htobe32((uint32_t)(c->pi & 0xffff));
+            __atomic_thread_fence(__ATOMIC_RELEASE);
+            if (o.klate_uar) {
+                struct wqe_ctrl lc = {0};
+                lc.opmod_idx_opcode = htobe32((uint32_t)(c->pi << 8));
+                lc.qpn_ds = htobe32(c->qpn << 8);
+                uint64_t ldb;
+                memcpy(&ldb, &lc, 8);
+                mmio_write64(c->qp_uar->reg_addr, ldb);
+            }
+            k_late_done = 1;
+            t_late = now_ms() - t0;
+            /* no QUERY_QP here: a firmware command right after the write could itself be the trigger */
+            printf("EV t_ms=%.3f what=late_dbr value=%llu uar=%d\n", t_late, (unsigned long long)c->pi, o.klate_uar);
+        }
         for (uint32_t i = 0; i < c->ncqe; i++) {
             struct cqe_view e = read_cqe(c, i);
             if (memcmp(&e, &shadow[i], sizeof(e))) {
@@ -974,6 +1071,17 @@ static int run_requester(struct ctx *c) {
                     first_err = e;
                     first_err_idx = i;
                 }
+                /* dbrk bookkeeping */
+                if (e.op == 0) k_n_ok++;
+                if (is_err_op(e.op)) {
+                    k_n_err++;
+                    if (k_err_wqe_min < 0 || e.wqe < k_err_wqe_min) k_err_wqe_min = e.wqe;
+                    if (e.wqe > k_err_wqe_max) k_err_wqe_max = e.wqe;
+                }
+                if (k_late_done) k_n_after_late++;
+                if (kcqes_len + 32 < sizeof(kcqes))
+                    kcqes_len += (size_t)snprintf(kcqes + kcqes_len, sizeof(kcqes) - kcqes_len, "%s%u:%x/%02x/%02x",
+                                                  kcqes_len ? "," : "", e.wqe, e.op, e.syndrome, e.vendor);
             }
         }
         if (t >= next_sample) {
@@ -986,7 +1094,11 @@ static int run_requester(struct ctx *c) {
             if (qs.state != last_state) {
                 printf("EV t_ms=%.3f what=qp_state %s->%s hw_sq=%d sw_sq=%d cur_retry=%d\n", t, state_name(last_state),
                        state_name(qs.state), qs.hw_sq, qs.sw_sq, qs.cur_retry);
-                if (qs.state == 6 && t_qp_err < 0) t_qp_err = t;
+                if (qs.state == 6 && t_qp_err < 0) {
+                    t_qp_err = t;
+                    err_hw_sq = qs.hw_sq; /* dbrk: first sample in ERR */
+                    err_sw_sq = qs.sw_sq;
+                }
                 last_state = qs.state;
             }
             if (tl) {
@@ -1048,6 +1160,13 @@ static int run_requester(struct ctx *c) {
                qc1.packet_seq_err - qc0.packet_seq_err, qc1.out_of_sequence - qc0.out_of_sequence,
                qc1.implied_nak_seq_err - qc0.implied_nak_seq_err, qc1.rnr_nak_retry_err - qc0.rnr_nak_retry_err,
                qc1.roce_adp_retrans - qc0.roce_adp_retrans, qc1.roce_adp_retrans_to - qc0.roce_adp_retrans_to);
+    if (!strcmp(o.fault, "kerr") || !strcmp(o.fault, "knak") || o.klate_ms >= 0) /* dbrk (2026-09-25) */
+        printf(" kn=%d kdbr=%d dbr_val=%llu kbad=%d k2err_ms=%d klate_ms=%d klate_uar=%d pi_before=%llu "
+               "err_hw_sq=%d err_sw_sq=%d cq_pc0=%d cq_pc_delta=%d k_n_ok=%d k_n_err=%d k_err_wqe_min=%d "
+               "k_err_wqe_max=%d t_late_ms=%.1f k_n_after_late=%d k_cqes=%s",
+               o.kn, o.kdbr, (unsigned long long)k_dbr_val, o.kbad, o.k2err_ms, o.klate_ms, o.klate_uar,
+               (unsigned long long)pi_before, err_hw_sq, err_sw_sq, cs0.pc, cf.pc - cs0.pc, k_n_ok, k_n_err,
+               k_err_wqe_min, k_err_wqe_max, t_late, k_n_after_late, kcqes_len ? kcqes : "-");
     printf("\n");
     (void)t_2err;
     return 0;
@@ -1061,7 +1180,9 @@ static void usage(void) {
             "  --preset nvshmem|doca   --set k=v[,k=v...]   -f none|f1|f1post|f2b|f3\n"
             "  --timeout <ack_timeout=14> --retry <7> --observe-ms <8000> --sample-ms <100> --life-s <90>\n"
             "  --baseline <4> --put-bytes <262144> --f1-bytes <4194304> --f1-n <8> --f1-delay-us <0>\n"
-            "  --f2b-all <1> --qcounter <0|1> -T <timeline.csv>\n");
+            "  --f2b-all <1> --qcounter <0|1> -T <timeline.csv>\n"
+            "  dbrk test (-f kerr|knak): --kn <16> --kdbr <rel|pi> --kbad <8> --k2err-ms <20|-1>\n"
+            "                           --klate-ms <-1> --klate-uar <0|1> --kbytes <64>\n");
     exit(2);
 }
 
@@ -1070,7 +1191,9 @@ int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     o = (struct opts){.preset_name = "nvshmem", .fault = "none", .port = 18633, .gid_idx = -1, .ib_port = 1,
                       .ack_timeout = 14, .retry_cnt = 7, .observe_ms = 8000, .sample_ms = 100, .life_s = 90,
-                      .baseline = 4, .put_bytes = 262144, .f1_bytes = 4194304, .f1_n = 8, .f2b_all = 1};
+                      .baseline = 4, .put_bytes = 262144, .f1_bytes = 4194304, .f1_n = 8, .f2b_all = 1,
+                      .kn = 16, .kdbr = KDBR_PI, .kbad = 8, .k2err_ms = 20, .klate_ms = -1, .klate_uar = 0,
+                      .kbytes = 64};
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -1096,6 +1219,13 @@ int main(int argc, char **argv) {
         else if (OPT("--f2b-all")) o.f2b_all = atoi(v);
         else if (OPT("--qcounter")) o.qcounter = atoi(v);
         else if (OPT("-T")) o.timeline = v;
+        else if (OPT("--kn")) o.kn = atoi(v); /* dbrk (2026-09-25) */
+        else if (OPT("--kdbr")) o.kdbr = strcmp(v, "pi") ? atoi(v) : KDBR_PI;
+        else if (OPT("--kbad")) o.kbad = atoi(v);
+        else if (OPT("--k2err-ms")) o.k2err_ms = atoi(v);
+        else if (OPT("--klate-ms")) o.klate_ms = atoi(v);
+        else if (OPT("--klate-uar")) o.klate_uar = atoi(v);
+        else if (OPT("--kbytes")) o.kbytes = (unsigned)strtoul(v, NULL, 0);
         else usage();
 #undef OPT
     }

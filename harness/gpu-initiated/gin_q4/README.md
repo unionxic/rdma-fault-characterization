@@ -2,7 +2,7 @@
 
 Follow-up to `../gin/` (Q2 for NCCL GIN) and `../nvshmem/` (Q2/Q3 for NVSHMEM IBGDA). Same
 cluster and conventions: rank 0 = rain (initiator, Quadro RTX 5000 sm_75, mlx5_1), rank 1 =
-sunny (target, RTX A4000 sm_86, mlx5_0), ConnectX-6 Dx RoCE, GDAKI in its CPU-doorbell
+sunny (target, RTX A4000 sm_86, mlx5_0), ConnectX-6 (VPI, MT28908) RoCE, GDAKI in its CPU-doorbell
 fallback (no PeerMappingOverride, no gdrdrv), CQ in GPU memory, `NCCL_IB_TIMEOUT=14`.
 
 ## TL;DR

@@ -4,7 +4,7 @@ Brings the approach of `../gin_q4/` (device classifies the root-cause CQE, host 
 return an error) and `../gin_recovery/` (kernel returns, host prepare / handshake / commit with a
 bilateral QP reset, fresh PSNs and a device-state resync, the application replays the data and only
 the missing signal delta) to NVSHMEM IBGDA. Same cluster: rank 0 = rain (initiator, Quadro RTX 5000
-sm_75, mlx5_1), rank 1 = sunny (target, RTX A4000 sm_86, mlx5_0), ConnectX-6 Dx RoCE,
+sm_75, mlx5_1), rank 1 = sunny (target, RTX A4000 sm_86, mlx5_0), ConnectX-6 (VPI, MT28908) RoCE,
 `NVSHMEM_IB_TIMEOUT=14`, PeerMappingOverride=1 on both nodes, so NVSHMEM's NIC handler is the GPU
 (the GPU rings the doorbell; the send CQ is collapsed and in GPU memory). One RC QP per PE
 (`NVSHMEM_IBGDA_NUM_RC_PER_PE=1`); DCIs exist but carry no traffic. The design and the safety

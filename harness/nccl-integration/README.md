@@ -188,7 +188,7 @@ Log lines to look for:
 Validated on 2026-09-23 (above): one injected recoverable fault recovered and the collective
 finished bit-exact; symmetric injection did not deadlock; a mid-pipeline fault declined
 cleanly; a killed peer was classified `proc_kill` and failed like stock. The drain after
-RTS→ERR and the ECE re-application did not break recovery on ConnectX-6 Dx (whether ECE was
+RTS→ERR and the ECE re-application did not break recovery on ConnectX-6 (VPI, MT28908) (whether ECE was
 actually negotiated on this pair was not checked). Still untested:
 
 1. faults that are not injected (the only recoverable class is a transient local ERR);

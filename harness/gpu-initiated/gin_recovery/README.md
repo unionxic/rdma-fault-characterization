@@ -5,7 +5,7 @@ mailbox). This adds recovery: a bilateral QP reset with fresh PSNs, a GPU-side s
 and an application-level replay that reconciles GIN's non-idempotent signal. The safety
 argument is in `RECOVERY_DESIGN.md`. Same cluster and conventions as Q4: rank 0 = rain (put
 initiator, Quadro RTX 5000 sm_75, mlx5_1), rank 1 = sunny (target, RTX A4000 sm_86, mlx5_0),
-ConnectX-6 Dx RoCE, GDAKI in its CPU-doorbell fallback (ring CQ in GPU memory),
+ConnectX-6 (VPI, MT28908) RoCE, GDAKI in its CPU-doorbell fallback (ring CQ in GPU memory),
 `NCCL_IB_TIMEOUT=14`, one 256 KiB put + signal ADD per iteration, 15 ms gap.
 
 ## TL;DR
@@ -16,11 +16,15 @@ ConnectX-6 Dx RoCE, GDAKI in its CPU-doorbell fallback (ring CQ in GPU memory),
     wait modes. That is 6 + 6 single-fault runs, plus 10 + 10 runs with **5 faults each**, one
     of which fires *inside* the previous recovery's commit so that it hits the replay.
   - The receiver checked every iteration's data bit-exact. Its signal equalled the expected
-    count exactly after every iteration, and at the end (base + iterations): 32/32 recovered runs.
-  - There were 130 recovery rounds. In all 112 rounds that followed a fault, the receiver read
-    V = expected − 1 (d = 1: put and ADD replayed); 20 of these rounds were hit by a second
-    fault during the replay. The d = 0 branch (the ADD had landed before the error) was
-    exercised by 18 forced recoveries, which replayed nothing and kept the count exact.
+    count exactly after every iteration, and at the end (base + iterations): 32/32 runs that
+    recovered from injected faults, and 6/6 forced d = 0 runs.
+  - There were 130 recovery rounds in the main matrix. A round is one completed Prepare →
+    handshake → Commit → replay cycle; all counts here were recounted from the raw logs
+    (`scripts/recount.py` → `results/RECOUNT.md`). 112 rounds followed a fault: 92 recovered,
+    and 20 were hit by a second fault during the replay, so a further round followed. In all
+    112 the receiver read V = expected − 1 (d = 1: put and ADD replayed). The d = 0 branch (the
+    ADD had landed before the error) was exercised by 18 forced recoveries, which replayed
+    nothing and kept the count exact.
 - **Unrecoverable faults decline cleanly.**
   - F2 (REM_ACCESS 10/0x88) is declined 3.9–4.1 ms after the bad put. Both ranks exit with
     "declined" and `ncclCommAbort` returns on both.
@@ -216,8 +220,9 @@ How to read the table:
   For F1 it is mostly the wait for the next put: the fault lands between iterations, and the
   ~1 ms minima are shots that hit an in-flight put, or the replay itself. For F3 it is the
   RETRY_EXC floor at IB timeout 14, as in Q1/Q4.
-- **Replay column.** It counts successful replays only; a failed replay shows up as the next
-  round's detection.
+- **Rounds and replay columns.** "rounds" counts every round, including those whose replay
+  failed (each ×5 cell: 20 recovered + 5 replay failed). The replay and the two "recovered"
+  columns use recovered rounds only; a failed replay shows up as the next round's detection.
 - **D0 handshake.** It includes up to 15 ms of the responder sleeping in its inter-iteration
   gap before it reads the REQ.
 
@@ -266,7 +271,8 @@ driver `50501ffc…`), and all 18 trials matched the main matrix:
 - F2 and F4 were declined on the initiator (REM_ACCESS; RETRY_EXC with the peer dead). On F2
   the receiver was declined as well.
 - Aborts returned, and no processes were left on either node.
-- Kernel return → recovered: 8.07 ms median [7.61–8.85] over 22 rounds.
+- Kernel return → recovered: 8.07 ms median [7.61–8.85] over the 22 recovered rounds after a
+  fault (26 rounds after a fault, 4 of them with a failed replay; plus 6 forced D0 rounds).
 - Details: `confirm/summary.md`.
 
 ### No-fault overhead (`results/20260924/lat/`; classify on in both; 6 interleaved runs × 5 × 2000 put+signal+flush per cell)
@@ -448,9 +454,13 @@ writes the doorbell record, which is in GPU memory. There is no CPU-side doorbel
 | F4 | timeout / blocking | 2 / 2 | GPU | - | declined (RETRY_EXC, peer dead; 3.7–3.8 s) | - | `ncclRemoteError` |
 | F1, F3, F1 ×5 | timeout, blocking | 2, 1, 1 | CPU proxy forced (v2 regression) | as above | all recovered | 4/4 / 4/4 | no error |
 
-- **Correctness.** 62 recovery rounds (plus 10 declines); `V + d = expected` held in every
-  round. All aborts returned, and no processes were left on either node (40 trials, 19 lat
-  runs).
+- **Correctness.** The 40 trials in `runs/` had 62 recovery rounds (same definition as above):
+  56 after a fault (47 recovered, 9 with a failed replay) and 6 forced D0. These include the
+  forced-proxy regression (8 rounds) and both negative controls (6). The GPU-mode matrix alone:
+  18/18 fault runs recovered with data and signal exact, 42 rounds after a fault (36 + 6 with
+  a failed replay) and 6 forced. There were 10 declines: 8 by policy (F2, F4) and 2 after the
+  `keep_gpu_pi` control's failed replay. `V + d = expected` held in all 62 rounds. All aborts
+  returned, and no processes were left on either node (40 trials, 19 lat runs).
 - **Time (GPU mode).** Kernel return → recovered was 8.2–8.8 ms (median per cell): prepare
   0.2–1.2 ms, REQ→ACK 3.6–4.7 ms, commit 3.1 ms, replay 0.26–0.28 ms. This is the same as in
   CPU mode (8.0–8.2 ms).
@@ -496,6 +506,7 @@ writes the doorbell record, which is in GPU memory. There is no CPU-side doorbel
 | `scripts/build_driver.sh`, `deploy.sh`, `make_diff.sh` | build / deploy / regenerate the diff |
 | `scripts/run_trial.sh`, `run_matrix.sh`, `confirm_batch.sh` | one trial / one batch / confirmation batch (inside `../common/cluster_run.sh`) |
 | `scripts/rec_rows.py`, `summarize.py` | logs → `trials.csv` + `events.csv` → `summary.md` |
+| `scripts/recount.py` → `results/RECOUNT.md` | runs, rounds, declines and bit-exact checks recounted from the raw per-trial logs of `20260924/` and `20260924_gpudb/`, with definitions |
 | `results/20260924/runs/logs/` | main matrix (per-trial logs, KV, meta) |
 | `results/20260924/lat/logs/` | overhead runs (raw per-iteration latencies gzipped) |
 | `results/20260924/diag/` | `f2_before_warm/`, `cancel_phase/` (release-kernel bug), `negative/` (controls) |

@@ -1,6 +1,6 @@
 # GPU-initiated RDMA fault study: combined results (2026-09-23)
 
-Testbed: rain (Quadro RTX 5000, sm_75) and sunny (RTX A4000, sm_86), one ConnectX-6 Dx each
+Testbed: rain (Quadro RTX 5000, sm_75) and sunny (RTX A4000, sm_86), one ConnectX-6 (VPI, MT28908) each
 (fw 20.43.4100), RoCE v2, PMTU 4096. Without PeerMappingOverride every GPU-initiated stack runs
 in its CPU-doorbell fallback: the GPU writes the WQEs and polls a CQ in GPU memory, and a CPU
 thread rings the doorbell. That is how everything except `gpu_doorbell/` ran; `gpu_doorbell/`
@@ -30,8 +30,9 @@ patches are in the four subdirectories; this page only combines them.
 | NVSHMEM IBGDA, GPU handler + our FT (`nvshmem_ft/`) | 5/0xf5 in 3.4-4.2 ms, **recovered** (~6.7 ms) | 10/0x88 in 1.2-2.5 ms, declined | 12/0x81 in 3.5-3.7 s, **recovered** | 12/0x81, declined (peer dead) | returns an error (FT status) | `nvshmem_finalize` returns in 17-29 ms |
 
 GIN GDAKI + Q4 + recovery was re-validated with GPU-rung doorbells (the permanent setting since
-2026-09-24 13:53) and needed `gin_recovery_gpudb.diff`: same outcomes, ~8.5 ms from kernel return
-to recovered.
+2026-09-24 13:53) and needed `gin_recovery_gpudb.diff`: same outcomes (18/18 fault runs recovered
+in the GPU-mode matrix, 42 rounds after a fault + 6 forced), ~8.5 ms from kernel return to
+recovered.
 
 Times are from the fault to the first host-visible error. GDAKI's stock times are set by its
 10 s QP-state check (`NCCL_GIN_ERROR_QUERY_SEC`), not by the fault.
@@ -132,13 +133,16 @@ Resolved on 2026-09-24:
 
 4. Recovery on top of Q4 (`gin_recovery/`): F1 (local QP ERR) and F3 (peer QP ERR, peer alive)
    recover in every trial, in both wait modes, including runs with several faults and a fault
-   that hits the replay itself; data bit-exact and the signal exact in 38/38 recovered runs
-   (110 recovery rounds). F2 (REM_ACCESS) and F4 (peer dead: RETRY_EXC with FIN on the OOB
-   socket) are declined cleanly and abort returns. The kernel returns `ncclRemoteError`, the
-   host runs prepare (pause the proxy, quiesce, ERR), an OOB handshake that reads the receiver's
-   signal value V, commit (bilateral reset with fresh PSNs, GPU-side index and CQ-mapping
-   resync, stored connect-time attributes), and the application replays the data plus the
-   missing signal delta only. Kernel-return to replay-done: 8.0-8.2 ms median, ~6 ms of it
+   that hits the replay itself. In the main matrix (CPU doorbells) data were bit-exact and the
+   signal exact in 32/32 runs that recovered from injected faults and in 6/6 forced d = 0 runs,
+   over 130 recovery rounds: 112 after a fault (20 of them hit by a second fault during the
+   replay) and 18 forced. A round is one completed Prepare → handshake → Commit → replay cycle;
+   counts are from the raw logs (`gin_recovery/results/RECOUNT.md`). F2 (REM_ACCESS) and F4
+   (peer dead: RETRY_EXC with FIN on the OOB socket) are declined cleanly and abort returns.
+   The kernel returns `ncclRemoteError`, the host runs prepare (pause the proxy, quiesce, ERR),
+   an OOB handshake that reads the receiver's signal value V, commit (bilateral reset with fresh
+   PSNs, GPU-side index and CQ-mapping resync, stored connect-time attributes), and the
+   application replays the data plus the missing signal delta only. Kernel-return to replay-done: 8.0-8.2 ms median, ~6 ms of it
    firmware QP commands. No measurable no-fault overhead.
 
 Still open:

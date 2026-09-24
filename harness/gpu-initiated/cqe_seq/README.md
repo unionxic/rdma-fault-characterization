@@ -3,7 +3,7 @@
 Question Q1 of the GPU-initiated fault study (`../DESIGN.md`). NVSHMEM IBGDA polls a
 **collapsed CQ**: one CQE slot that the NIC overwrites with every CQE it writes, so the GPU
 sees only the CQE the NIC wrote last. This experiment records, on a normal CQ, the full
-ordered CQE sequence that a ConnectX-6 Dx writes after each fault, and from it predicts what
+ordered CQE sequence that a ConnectX-6 (VPI, MT28908) writes after each fault, and from it predicts what
 a collapsed slot ends up holding: the root-cause CQE or a flush CQE.
 
 ## Why a normal CQ answers the question (an inference, not a measurement)
@@ -156,7 +156,7 @@ the main matrix. The supplementary runs add 140 more (see Results), for 470 in t
 
 ## Results
 
-Run on 2026-09-23 (rain → sunny, ConnectX-6 Dx fw 20.43.4100, RoCE v2, PMTU 4096; CPU 2
+Run on 2026-09-23 (rain → sunny, ConnectX-6 (VPI, MT28908) fw 20.43.4100, RoCE v2, PMTU 4096; CPU 2
 pinned on both nodes; link idle as checked by `cluster_run.sh`). Nine locked runs (a smoke
 test, one per fault, and two supplementary runs) held the cluster lock for about 15 minutes
 in total, including the 30 s idle-link check at the start of each run.

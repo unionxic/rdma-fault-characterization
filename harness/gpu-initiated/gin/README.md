@@ -9,7 +9,7 @@ delivered bytes are intact, how long until the host learns (via
 `ncclCommGetAsyncError`), and whether teardown (`ncclCommAbort`) returns.
 
 Cluster: **rain** = rank 0 / initiator (Quadro RTX 5000, sm_75, mlx5_1, GID 4),
-**sunny** = rank 1 / target (RTX A4000, sm_86, mlx5_0, GID 3), ConnectX-6 Dx RoCE,
+**sunny** = rank 1 / target (RTX A4000, sm_86, mlx5_0, GID 3), ConnectX-6 (VPI, MT28908) RoCE,
 no `PeerMappingOverride`, no `gdrdrv`.
 
 ## Build

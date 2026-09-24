@@ -71,7 +71,7 @@ decision input. (An earlier version wrongly used peer_rx as the discriminator.)
 
 ## Fault catalog (`-f`)
 
-| fault | trigger | expected fingerprint (ConnectX-6 Dx, fw 20.43.4100) |
+| fault | trigger | expected fingerprint (ConnectX-6 (VPI, MT28908), fw 20.43.4100) |
 |---|---|---|
 | `local_qp_err` | deep write burst, then force own QP→ERR | WR_FLUSH_ERR (5) / 0xf5 |
 | `rem_inv_req` | atomic to a responder QP that doesn't enable atomics | REM_INV_REQ_ERR (9) / 0x8a |
@@ -111,9 +111,10 @@ and reconnected so the next trial can run, but the time is not recorded).
   Every toggle only logs `[server] DRYRUN link down|up`, and no sudo is used. Because
   the link never goes down, the rows show `no_error_cqe`.
 
-A confirmation run after all fixes (2026-09-23 12:39, stamp `20260923_123945`, N=30, all seven
-faults incl. `retry_proc_kill`, CPU 2 pinned, no other traffic on the link) reproduced every
-fingerprint and the numbers above within noise, with partial-write landed == sent in 30/30.
+The final run after all fixes (2026-09-23 12:39, stamp `20260923_123945`, N=30, all seven
+faults incl. `retry_proc_kill`, CPU 2 pinned, no other traffic on the link) is the canonical
+data set for the results below. It reproduced every fingerprint in the catalog, with
+partial-write landed == sent in 30/30.
 
 ## Build & run
 
@@ -152,39 +153,42 @@ Manual invocation:
 
 ## Reproduced results (N=30, CPU 2 pinned on both nodes, 2026-09-23, this cluster)
 
-PMTU is 4096 B (netdev MTU 9000). CSVs are in `results/`: QP-only runs are stamps
-`20260923_114046` (the five fast faults) and `20260923_114103` (retry_server_qp_err);
-`retry_proc_kill` is from `20260923_113252`; full_rebuild is `20260923_114031`.
+PMTU is 4096 B (netdev MTU 9000). Canonical CSVs (numbers from `analyze.py`): detection,
+QP-only recovery and verify come from `results/*_20260923_123945.csv` (all seven faults);
+the full_rebuild column comes from `results/*_20260923_114031.csv`. The other same-day stamps
+are earlier runs and are not used in the table.
 
 | fault | status / vendor | detect mean ± CI95 (median) | QP-only recover mean (median) | full_rebuild recover mean (median) | verify |
 |---|---|---:|---:|---:|---:|
-| local_qp_err | WR_FLUSH / 0xf5 | 227 µs ± 1 µs (226 µs) | 0.92 ms (1.02 ms) | 1.80 ms (1.79 ms) | 30/30 |
-| partial_write | WR_FLUSH / 0xf5 | 346 µs ± 7 µs (338 µs) | 0.78 ms (0.78 ms) | 1.82 ms (1.81 ms) | 30/30 |
-| rem_inv_req | REM_INV_REQ / 0x8a | 530 µs ± 182 µs (304 µs) | 0.78 ms (0.77 ms) | 1.92 ms (1.80 ms) | 30/30 |
-| rem_access | REM_ACCESS / 0x88 | 683 µs ± 309 µs (322 µs) | 0.78 ms (0.77 ms) | 1.79 ms (1.79 ms) | 30/30 |
-| rnr | RNR_RETRY_EXC / 0x87 | 12.77 ms ± 5 µs (12.77 ms) | 0.80 ms (0.80 ms) | 1.81 ms (1.80 ms) | 30/30 |
-| retry_server_qp_err | RETRY_EXC / 0x81 | **3.748 s** ± 2.3 ms (3.749 s) | 0.81 ms (0.80 ms) | — | 30/30 |
-| retry_proc_kill | RETRY_EXC / 0x81 | **3.729 s** ± 9.8 ms (3.734 s) | n/a (process gone) | — | — |
+| local_qp_err | WR_FLUSH / 0xf5 | 226 µs ± 1.5 µs (225 µs) | 0.90 ms (0.79 ms) | 1.80 ms (1.79 ms) | 30/30 |
+| partial_write | WR_FLUSH / 0xf5 | 346 µs ± 6 µs (338 µs) | 0.79 ms (0.78 ms) | 1.82 ms (1.81 ms) | 30/30 |
+| rem_inv_req | REM_INV_REQ / 0x8a | 532 µs ± 183 µs (304 µs) | 0.78 ms (0.77 ms) | 1.92 ms (1.80 ms) | 30/30 |
+| rem_access | REM_ACCESS / 0x88 | 682 µs ± 307 µs (323 µs) | 0.78 ms (0.77 ms) | 1.79 ms (1.79 ms) | 30/30 |
+| rnr | RNR_RETRY_EXC / 0x87 | 12.76 ms ± 46 µs (12.79 ms) | 0.79 ms (0.78 ms) | 1.81 ms (1.80 ms) | 30/30 |
+| retry_server_qp_err | RETRY_EXC / 0x81 | **3.749 s** ± 0.35 ms (3.749 s) | 0.82 ms (0.81 ms) | — | 30/30 |
+| retry_proc_kill | RETRY_EXC / 0x81 | **3.727 s** ± 9.0 ms (3.732 s) | n/a (process gone) | — | — |
 
 - All seven faults keep the fingerprints listed in the catalog. Each (status,
   vendor_err) pair is unique except that the two RETRY_EXC causes share 0x81. Those are
   split by liveness: `server_qp_err`×30 and `proc_kill`×30.
-- `partial_write`: readback-measured landed bytes are 1,089,536–1,376,256 B (266–336
+- `partial_write`: readback-measured landed bytes are 1,085,440–1,130,496 B (265–276
   full 4 KiB packets out of 4 MiB). The PSN-based sent bytes equal the readback on
   **30/30** trials; there were no matching bytes outside the prefix, and every value is
   PMTU-aligned. The same exact agreement held in every partial_write run that day:
-  100/100 trials across qp_only, full_rebuild and `-r none`.
+  130/130 trials in six runs across qp_only, full_rebuild and `-r none`.
 - `retry_server_qp_err` / `retry_proc_kill` reproduce the ~3.7 s firmware detection
-  floor (min_ack_timeout_limit) on ConnectX-6 Dx.
-- Recovery method: full_rebuild ≈ 1.8 ms against ≈ 0.8–1.0 ms for QP-only, about
-  1.8–2.3× on medians.
-- `rem_access` / `rem_inv_req` detection is bimodal: 25 of 30 trials take 0.30–0.37 ms,
-  and 5 of 30 take 1.6–3.0 ms. That is why the mean ± CI is wide; the median is the
-  typical value.
+  floor (min_ack_timeout_limit) on ConnectX-6 (VPI, MT28908).
+- Recovery method: full_rebuild ≈ 1.8 ms against ≈ 0.8 ms for QP-only (means 0.78–0.90 ms,
+  medians 0.77–0.81 ms), about 2.3× on medians (2.27–2.33× for the five faults with both
+  methods; the two columns come from different runs).
+- `rem_access` / `rem_inv_req` detection is bimodal: for each, 25 of 30 trials take
+  0.30–0.37 ms and 5 of 30 take 1.6–3.0 ms. That is why the mean ± CI is wide; the median
+  is the typical value.
 - An earlier pinned run the same day (`20260923_113252`) showed a QP-only recovery tail
-  of 13–17 ms on 2–6 of 30 trials per fault, while rain's 5-minute load average was
-  ~7.8. Rerun at low load, the tail disappeared (p95 ≤ 1.05 ms), so treat recovery
-  means from a loaded host with care.
+  of 12.8–17.2 ms on 2–5 of 30 trials in five of the six faults with recovery (none in
+  partial_write), while rain's 5-minute load average was ~7.8. Rerun at low load
+  (`114046`/`114103`, and again in the canonical `123945`), the tail disappeared: QP-only
+  p95 ≤ 1.06 ms and no trial above 1.1 ms. Treat recovery means from a loaded host with care.
 
 ## Design notes
 

@@ -1,5 +1,9 @@
 # 실험과 결과
 
+> **수치 체계.** 이 디렉토리 01–08 문서의 수치는 전부 옛 클러스터 225(ConnectX-6, fw 20.40.1000) ↔ 224(ConnectX-5, fw 16.35.8002)에서 측정했다. 이 연구의 canonical 기록은 이 수치다. 현재 테스트베드(rain↔sunny, 둘 다 ConnectX-6, fw 20.43.4100)의 수치는 `harness/`에 있다(`harness/results/*_20260923_123945.csv`, `harness/gpu-initiated/RESULTS.md`). 두 체계는 직접 비교하지 않는다.
+>
+> 정의 차이: PMTU 1024 vs 4096 / CPU pinning 없음 vs CPU 2 / RNR `rnr_retry=0` vs 6 / full rebuild가 PD·CQ·QP·MR 전부 vs QP만 / QP-only의 MR 재교환이 필요 시 포함 vs 없음. driver reload(7.9 s, 2,845배)는 옛 클러스터에서만 측정했다. 아래 표의 "+ethtool" 단계가 센 것은 RDMA counter가 아니라 TCP sideband, 즉 process liveness 신호다(`harness/VERIFICATION_0x81.md`).
+
 RDMA subsystem failure/error behavior 연구의 전 실험 실측 기록. 각 문서는 "셋업 + 방법 + 수치 + 결론" 묶음이며, 모든 수치는 원본 실험 데이터(각 실험 코드 디렉토리의 results/ CSV)에서 그대로 인용한다. 문서 간 수치가 충돌하면 아래 canonical 표가 단일 기준이다.
 
 | 문서 | 내용 | 대응 실험 코드 |

@@ -9,7 +9,7 @@ split only by the **non-RDMA TCP sideband** (process alive → FIN, ~12-13 pkts;
 `kill -9` → RST, ~8 pkts) — i.e. by process liveness, not by an RDMA counter.
 
 Earlier in this work I claimed the responder `port_rcv_packets` delta (peer_rx ≈ 40)
-distinguished them. This verifies that claim on ConnectX-6 Dx (fw 20.43.4100).
+distinguished them. This verifies that claim on ConnectX-6 (VPI, MT28908; fw 20.43.4100).
 
 **Method.** `verify_0x81_counter.sh` reads the responder's RDMA port counters
 (`port_rcv_packets`, `port_xmit_packets`) externally over the fault window for each

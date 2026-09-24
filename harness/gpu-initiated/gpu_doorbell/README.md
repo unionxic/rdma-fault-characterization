@@ -8,6 +8,16 @@
 > the file also applies at boot. From now on NVSHMEM's default NIC handler is the GPU; to
 > reproduce the CPU-proxy results, set `NVSHMEM_IBGDA_NIC_HANDLER=cpu_host_memory`.
 
+> **What the override relaxes (added 2026-09-25 after review).** `PeerMappingOverride=1` lets the
+> nvidia driver map peer-device MMIO (here the NIC's UAR doorbell pages) into GPU address spaces
+> without the admin-only checks it otherwise applies (`cudaHostRegister(..., IoMemory)` fails with
+> error 800 for a non-root user without it). That is what GPU-rung doorbells need, and it is the
+> documented requirement of NVSHMEM's GPU NIC handler, but it widens what any CUDA process on the
+> node may map. Both nodes are shared (the user's gds-kv / NVMe-oF experiments run there); the
+> user chose to keep it on. Results measured before 2026-09-24 13:53 ran without it (CPU-proxy
+> doorbells) and results after it with it; every table in this repo that mixes the two now says
+> which driver configuration each row used.
+
 Every other result in `../` ran in the CPU-doorbell fallback: without
 `NVreg_RegistryDwords="PeerMappingOverride=1;"` the NIC's UAR page cannot be mapped into the
 GPU, so a CPU thread rings the doorbell while the GPU still builds the WQEs and polls a CQ in GPU
