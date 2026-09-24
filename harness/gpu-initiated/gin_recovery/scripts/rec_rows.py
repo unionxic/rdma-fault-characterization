@@ -52,6 +52,22 @@ def fires(logpath):
     return out
 
 
+def dbmode(logpath):
+    """doorbell mode of the user devComm's GDAKI context (NCCL WARN from gin_recovery_gpudb.diff),
+    and how often DOCA printed 'Enabling CPU proxy mode' (DOCA_GPUNETIO_LOG>=4)"""
+    mode, proxy_warn = '', 0
+    if not os.path.exists(logpath):
+        return mode, proxy_warn
+    for ln in open(logpath, errors='replace'):
+        if 'GIN/GDAKI: doorbell mode=' in ln:
+            m = re.search(r'doorbell mode=(\S+).*user_ctx=(\d)', ln)
+            if m and (m.group(2) == '1' or not mode):
+                mode = m.group(1)
+        if 'Enabling CPU proxy mode' in ln:
+            proxy_warn += 1
+    return mode, proxy_warn
+
+
 def f(x, d=None):
     try:
         return float(x)
@@ -136,7 +152,12 @@ def main():
             first_fault = fire[0] if fire else (kill if kill is not None else f(k0.get('fault_mono_ms')))
             t0_0 = f(k0.get('t0_mono_ms'), 0.0)
             hem = f(k0.get('host_error_ms'), -1.0)
+            dm0, pw0 = dbmode(os.path.join(d, stem + '_r0.log'))
+            dm1, pw1 = dbmode(os.path.join(d, stem + '_r1.log'))
             trows.append(dict(
+                db_mode_r0=dm0, db_mode_r1=dm1, doca_proxy_warn_r0=pw0, doca_proxy_warn_r1=pw1,
+                proxy_thread_r0=m.get('r0_gin_proxy_thread', ''), proxy_thread_r1=m.get('r1_gin_proxy_thread', ''),
+                bundle=m.get('bundle', ''),
                 stem=stem, fault=m.get('fault'), wait=m.get('wait'), trial=m.get('trial'), rec=m.get('rec'),
                 inject=m.get('inject'), iters=m.get('iters'), r0rc=m.get('r0rc'), r1rc=m.get('r1rc'), left=m.get('left'),
                 wall_s=m.get('wall_s'), shots_fired=len(fire),

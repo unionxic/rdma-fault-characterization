@@ -31,26 +31,37 @@ def med(vals, fmt='{:.1f}'):
     return (fmt + ' [' + fmt + '-' + fmt + ']').format(m, min(v), max(v))
 
 
+DIAG = {'keepgpupi': 'keep_gpu_pi', 'keepgpudbr': 'keep_gpu_dbr', 'docarsvd': 'doca_cqe_rsvd', 'keepdb': 'keep_proxy_db'}
+
+
 def kind(t):
     inj = t.get('inject') or ''
+    k = t['fault']
     if t['fault'] in ('F1', 'F3') and ',' in inj:
-        return t['fault'] + ' x' + str(len(inj.split(',')))
-    return t['fault']
+        k += ' x' + str(len(inj.split(',')))
+    for tag, name in DIAG.items():
+        if tag in (t.get('trial') or ''):
+            k += ' [DIAG ' + name + ']'
+    if t.get('db_mode_r0') == 'CPU_PROXY':
+        k += ' [CPU proxy]'
+    return k
 
 
 def main():
     T = rows(sys.argv[1])
     E = rows(sys.argv[2])
     print('## Outcomes\n')
-    print('| fault | rec | wait | n | shots fired | recovered events | replay failed | declined | r0 ops ok | r1 data exact | '
-          'signal exact | final async (r0) | teardown r0/r1 | left |')
-    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+    print('| fault | rec | wait | doorbell (r0/r1; GIN proxy thread r0/r1) | n | shots fired | recovered events | replay failed | '
+          'declined | r0 ops ok | r1 data exact | signal exact | final async (r0) | teardown r0/r1 | left |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
     g = OrderedDict()
     for t in T:
         if t['fault'] == 'lat':
             continue
-        g.setdefault((kind(t), t['rec'], t['wait']), []).append(t)
-    for (k, rec, w), ts in g.items():
+        g.setdefault((kind(t), t['rec'], t['wait'], t.get('db_mode_r0', '')), []).append(t)
+    for (k, rec, w, dbm), ts in g.items():
+        db = ','.join(sorted(set(f"{t.get('db_mode_r0') or '?'}/{t.get('db_mode_r1') or '?'}; "
+                                 f"{t.get('proxy_thread_r0') or '?'}/{t.get('proxy_thread_r1') or '?'}" for t in ts)))
         n = len(ts)
         shots = ','.join(str(t['shots_fired']) for t in ts)
         recov = ','.join(str(t['recovered']) for t in ts)
@@ -62,7 +73,7 @@ def main():
         fa = ','.join(sorted(set(t['final_async'] for t in ts)))
         td = ','.join(sorted(set(f"{t['abort0'] or t['teardown0']}/{t['abort1'] or t['teardown1'] or '-'}" for t in ts)))
         left = sum(int(t['left'] or 0) for t in ts)
-        print(f'| {k} | {rec} | {w} | {n} | {shots} | {recov} | {rf} | {dec} | {ok0} | {dx}/{n} | {se}/{n} | {fa} | {td} | {left} |')
+        print(f'| {k} | {rec} | {w} | {db} | {n} | {shots} | {recov} | {rf} | {dec} | {ok0} | {dx}/{n} | {se}/{n} | {fa} | {td} | {left} |')
 
     print('\n## Declined runs\n')
     print('| fault | wait | n | reason | root fp / class | r0 exit | r1 outcome | r1 exit | surface (ms) | teardown r0 (ms) |')
@@ -127,9 +138,9 @@ def main():
         print('|---|---|---|---|---|---|---|---|---|')
         g = OrderedDict()
         for t in L:
-            mm = re.search(r'_b(\d+)r\d+$', t['stem'])
+            mm = re.search(r'_b(\d+)(?:r|px)\d+$', t['stem'])
             b = mm.group(1) if mm else '?'
-            g.setdefault((b, t['wait'], t['rec']), []).append(t)
+            g.setdefault((b, t['wait'], t['rec'] + (' ' + t['db_mode_r0'] if t.get('db_mode_r0') else '')), []).append(t)
         for (b, w, r), ts in sorted(g.items(), key=lambda x: (int(x[0][0]) if x[0][0].isdigit() else 0, x[0][1], x[0][2])):
             cores = [fl(t['lat_cpu_ms']) / fl(t['lat_wall_ms']) for t in ts if fl(t['lat_cpu_ms']) and fl(t['lat_wall_ms'])]
             print(f"| {b} | {w} | {r} | {len(ts)} | {sum(int(t['lat_n'] or 0) for t in ts)} | "

@@ -33,7 +33,7 @@ ASYNC_POLL_US=${ASYNC_POLL_US:-200}
 HERE=$(cd "$(dirname "$0")" && pwd)
 RAIN_MGMT=192.0.2.193
 SUNNY_SSH=${SUNNY_SSH:-unionxic@192.0.2.194}
-BUNDLE=/home/unionxic/gi-bundle/gin_recovery
+BUNDLE=${BUNDLE:-/home/unionxic/gi-bundle/gin_recovery}
 BIN=gin_rec
 PORT=$(( 45000 + ($$ + RANDOM) % 4000 ))
 
@@ -63,9 +63,9 @@ esac
 RECENV="NCCL_GIN_FAULT_CLASSIFY=$CLASSIFY NCCL_GIN_FAULT_CLASSIFY_POLL_US=$POLL_US NCCL_GIN_FAULT_RECOVERY=$REC GIN_RECOVERY=$REC"
 COMMON_ENV="NCCL_DEBUG=${NCCL_DEBUG:-WARN} NCCL_DEBUG_SUBSYS=${NCCL_DEBUG_SUBSYS:-INIT,NET} \
 NCCL_SOCKET_IFNAME=eno1 NCCL_GIN_TYPE=3 NCCL_IB_TIMEOUT=$IB_TIMEOUT \
-NCCL_GIN_ENABLE=1 GIN_ABORT_WATCHDOG_S=15 LD_LIBRARY_PATH=$BUNDLE \
+NCCL_GIN_ENABLE=1 NCCL_SET_THREAD_NAME=1 GIN_ABORT_WATCHDOG_S=15 LD_LIBRARY_PATH=$BUNDLE \
 GIN_BLOCK_CAP_S=${GIN_BLOCK_CAP_S:-25} GIN_POST_POLL_S=${GIN_POST_POLL_S:-15} GIN_ASYNC_POLL_US=$ASYNC_POLL_US \
-GIN_LAT_ITERS=${LAT_ITERS:-2000} GIN_LAT_REPS=${LAT_REPS:-5} $RECENV ${EXTRA_ENV:-}"
+GIN_LAT_ITERS=${LAT_ITERS:-2000} GIN_LAT_REPS=${LAT_REPS:-5} $RECENV ${DOCA_LOG:+DOCA_GPUNETIO_LOG=$DOCA_LOG} ${EXTRA_ENV:-}"
 
 DRV_ARGS="$ITERS $BYTES $WAIT $FAULT $DEV_TIMEOUT_S $WATCHDOG_S"
 echo "[$tag] GID rain=$GID0 sunny=$GID1 port=$PORT ib_timeout=$IB_TIMEOUT inject=$INJECT env='$RECENV'" >&2
@@ -85,6 +85,15 @@ if [ "$KILL_R1" = 1 ]; then
   KILLER=$!
 fi
 
+# doorbell-mode probe (thread_probe.sh) on both ranks, while the trial runs
+PROBE=${PROBE:-1}
+if [ "$PROBE" = 1 ]; then
+  bash "$HERE/thread_probe.sh" $BIN $((WATCHDOG_S+30)) > "$WORK/probe0.out" 2>&1 &
+  PROBE0=$!
+  ssh "$SUNNY_SSH" "bash -s $BIN $((WATCHDOG_S+30))" < "$HERE/thread_probe.sh" > "$WORK/probe1.out" 2>&1 &
+  PROBE1=$!
+fi
+
 LATRAW=""
 [ "$FAULT" = lat ] && LATRAW="GIN_LAT_RAW=$WORK/lat_raw.csv"
 T0=$(date +%s.%N)
@@ -97,6 +106,8 @@ T1=$(date +%s.%N)
 
 wait "$SSH_PID" 2>/dev/null; R1RC=$?
 [ "${KILLER:-}" ] && wait "$KILLER" 2>/dev/null
+[ "${PROBE0:-}" ] && wait "$PROBE0" 2>/dev/null
+[ "${PROBE1:-}" ] && wait "$PROBE1" 2>/dev/null
 scp -q "$SUNNY_SSH:/tmp/gin_rec_r1.kv" "$R1KV" 2>/dev/null || true
 scp -q "$SUNNY_SSH:/tmp/gin_rec_r1.log" "$R1LOG" 2>/dev/null || true
 ssh -n "$SUNNY_SSH" "pgrep -x $BIN | xargs -r kill -9 2>/dev/null; rm -f /tmp/gin_rec_r1.kv /tmp/gin_rec_r1.log" || true
@@ -111,8 +122,11 @@ cp "$R0KV"  "$LOGDIR/${stem}_r0.kv"  2>/dev/null || true
 cp "$R1KV"  "$LOGDIR/${stem}_r1.kv"  2>/dev/null || true
 [ -f "$WORK/lat_raw.csv" ] && gzip -c "$WORK/lat_raw.csv" > "$LOGDIR/${stem}_lat_raw.csv.gz"
 [ -f "$WORK/kill.out" ] && cp "$WORK/kill.out" "$LOGDIR/${stem}_kill.out"
+P0=$(sed -n 's/^probe //p' "$WORK/probe0.out" 2>/dev/null | tr ' ' '\n' | sed 's/^/r0_/' | tr '\n' ' ')
+P1=$(sed -n 's/^probe //p' "$WORK/probe1.out" 2>/dev/null | tr ' ' '\n' | sed 's/^/r1_/' | tr '\n' ' ')
 echo "fault=$FAULT wait=$WAIT trial=$TRIAL rec=$REC classify=$CLASSIFY inject=$INJECT iters=$ITERS r0rc=$R0RC r1rc=$R1RC \
-left=$LEFT bytes=$BYTES ib_timeout=$IB_TIMEOUT gap_ms=$GAP_MS wall_s=$(awk "BEGIN{printf \"%.1f\", $T1-$T0}")" > "$LOGDIR/${stem}_meta.txt"
+left=$LEFT bytes=$BYTES ib_timeout=$IB_TIMEOUT gap_ms=$GAP_MS wall_s=$(awk "BEGIN{printf \"%.1f\", $T1-$T0}") \
+bundle=$(basename $BUNDLE) ${P0}${P1}" > "$LOGDIR/${stem}_meta.txt"
 echo "[$tag] r0rc=$R0RC r1rc=$R1RC left=$LEFT wall=$(awk "BEGIN{printf \"%.1f\", $T1-$T0}")s :: $(grep -h 'DONE okIters' "$R0LOG" "$R1LOG" 2>/dev/null | sed 's/^.*\] //' | tr '\n' '|')" >&2
 rm -rf "$WORK"
 exit 0

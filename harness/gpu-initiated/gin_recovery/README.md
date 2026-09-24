@@ -45,6 +45,12 @@ ConnectX-6 Dx RoCE, GDAKI in its CPU-doorbell fallback (ring CQ in GPU memory),
     on the wire but the GPU polled a stale slot (`wqe_counter` 23 instead of 1) and timed out.
   - Without zeroing the proxy doorbell mailbox, the 1st replay was never doorbelled (the CQE
     slot still held its initial opcode 0xf).
+- **GPU doorbells (since 13:53 the default here): see the "GPU doorbell" section.**
+  - GDAKI now rings doorbells from the GPU: `GPU_SM_DB` on every QP, no proxy thread, one fewer
+    CPU core.
+  - The committed v1 declines in that mode. v2 (`gin_recovery_gpudb.diff`) resets the GPU-side
+    doorbell state instead and recovers F1/F3 (×1 and ×5) with exact data and signals.
+  - F2/F4 still decline cleanly, and the Q4 classifier is unchanged.
 - **Three things the tests taught** (all fixed; details in design §11):
   - A kernel launched while another kernel spins must not need a local-memory resize, or it
     will not start until the spinner exits (in blocking mode: never).
@@ -367,6 +373,119 @@ driver `50501ffc…`), and all 18 trials matched the main matrix:
   a 15 s smoke at 12:01 and a 14 s smoke at 12:07. Both were smoke runs whose logs were
   discarded or superseded, and both are noted in the shared cluster log.
 
+## GPU doorbell (PeerMappingOverride=1, permanent since 2026-09-24 13:53)
+
+Every result above ran in the CPU-doorbell fallback. With the override, DOCA maps the NIC's UAR
+page into the GPU and the GPU rings the doorbells itself. This section re-runs the classifier
+and the recovery matrix in that state (`results/20260924_gpudb/`, 2026-09-24 15:10–15:39, 4
+holds of 1–9 min).
+
+### Which doorbell mode GDAKI uses now (measured, four indicators)
+
+| indicator | GPU doorbell (default now) | CPU proxy forced (`NCCL_GIN_GDAKI_NIC_HANDLER=1`, positive control) |
+|---|---|---|
+| new NCCL WARN, once per GDAKI context (`gin_recovery_gpudb.diff`): `GIN/GDAKI: doorbell mode=... first_nic_handler=... needsProxyProgress=` | `mode=GPU`: 12/12 main QPs `GPU_SM_DB`, `needsProxyProgress=0`, on both ranks, for the user and the internal devComm, in every trial | `mode=CPU_PROXY`: 12/12 `CPU_PROXY`, `needsProxyProgress=1` |
+| NCCL's GIN progress thread "NCCL GIN P0-0" (`scripts/thread_probe.sh`; needs `NCCL_SET_THREAD_NAME=1`) | absent on both ranks | present on both ranks |
+| DOCA's own "Enabling CPU proxy mode" (`DOCA_GPUNETIO_LOG=4`) | 0 lines | 24 lines per rank (one per QP) |
+| process CPU with no fault (lat runs) | 1.07 cores | 2.07 cores (the proxy spins one core) |
+
+The indicators agree in every trial. For the unmodified gin_q4 binaries, the DOCA line and the
+thread probe are the indicators; both were validated in the same driver state by a forced-proxy
+gin_q4 run.
+
+### Q4 classifier (unchanged gin_q4 build and runner; `results/20260924_gpudb/q4/`)
+
+| fault | n | device class, root fp | host `ncclCommGetAsyncError` after the fault | silent success | abort / leftover |
+|---|---|---|---|---|---|
+| F1 | 3 | LOCAL_QP_ERR 5/0xf5 | 14.8–16.1 ms | 0 | clean / 0 |
+| F2 | 2 | REM_ACCESS 10/0x88 | 4.1–6.8 ms | 0 | clean / 0 |
+| F3 | 2 | RETRY_EXC 12/0x81 | 3.51–3.58 s | 0 | clean / 0 |
+| F4 | 2 | RETRY_EXC 12/0x81 | 3.59–3.71 s | 0 | clean / 0 |
+| F1, CPU proxy forced | 1 | LOCAL_QP_ERR 5/0xf5 | 14.7 ms | 0 | clean / 0 |
+
+These match the CPU-doorbell Q4 results, so the classifier does not depend on the doorbell path.
+
+### The committed recovery (v1) under GPU doorbells: declined, not broken
+
+2/2 runs (F1 timeout, F3 blocking; `results/20260924_gpudb/v1/`) were declined at Prepare with
+"doorbell mode is not CPU proxy". Both ranks exited "declined" and aborts returned. v1 rejects
+every non-proxy QP before touching anything. That guard mattered: v1's Commit writes the
+host-memory doorbell record and the proxy mailbox, and in GPU mode neither exists (the pointers
+are null and the record lives in GPU memory).
+
+### v2: `gin_recovery_gpudb.diff` (layered on `gin_recovery.diff`, +~95 lines, same env gating)
+
+In GPU_SM_DB mode the GPU's submit raises `sq_wqe_pi` (`atomic_max`), rings the UAR doorbell and
+writes the doorbell record, which is in GPU memory. There is no CPU-side doorbell state.
+
+- **Prepare, GPU mode.** Quiescence is `sq_ready_index == sq_rsvd_index == sq_wqe_pi` and the
+  GPU-memory doorbell record (read D2H) `== sq_rsvd_index & 0xffff`. CPU-proxy mode is unchanged.
+- **Commit, GPU mode.** Zero the doorbell record with `cudaMemsetAsync` on the recovery stream,
+  while the QP is in RESET. `sq_wqe_pi` is already reset with the device struct.
+- **Other.**
+  - Modes other than CPU_PROXY or GPU_SM_DB with a valid DBR (BlueFlame, no-DBR, SW-emulated
+    DBR, free-flow) are declined.
+  - There is no BlueFlame index to resync: DOCA's GPU submit writes an 8-byte doorbell to a
+    fixed UAR offset, and BlueFlame is used only with TMA (sm_90).
+  - A doorbell-mode log line was added, and two diagnostic knobs, `keep_gpu_pi` and
+    `keep_gpu_dbr`.
+- **Build and deploy.** Built in `gi/gin_recovery/build_gpudb` from a separate worktree; the
+  four diffs applied to a clean v2.32.3-1 reproduce the tree (checked). Deployed to
+  `~/gi-bundle/gin_recovery_gpudb/` (libnccl `1ed8e0a1…`, driver `89e72d50…`). The v1 bundle
+  `~/gi-bundle/gin_recovery/` (`951001fe…`) is untouched.
+
+### Recovery v2 results (`results/20260924_gpudb/summary.md`)
+
+| fault | wait | n | doorbell | faults | rounds (recovered / replay failed) | data bit-exact / signal exact | final async |
+|---|---|---|---|---|---|---|---|
+| none | timeout / blocking | 2 / 2 | GPU | 0 | 0 | 4/4 / 4/4 | no error |
+| F1 | timeout / blocking | 3 / 3 | GPU | 1 each | 1 / 0 each | 6/6 / 6/6 | no error |
+| F3 | timeout / blocking | 3 / 3 | GPU | 1 each | 1 / 0 each | 6/6 / 6/6 | no error |
+| F1 ×5 | blocking | 3 | GPU | 5 each | 4 / 1 each | 3/3 / 3/3 | no error |
+| F3 ×5 | blocking | 3 | GPU | 5 each | 4 / 1 each | 3/3 / 3/3 | no error |
+| D0 (forced, d = 0) | timeout / blocking | 1 / 1 | GPU | 0 | 3 / 0 each | 2/2 / 2/2 | no error |
+| F2 | timeout / blocking | 2 / 2 | GPU | - | declined (REM_ACCESS; surfaced 4.0–6.4 ms) | - | `ncclRemoteError` |
+| F4 | timeout / blocking | 2 / 2 | GPU | - | declined (RETRY_EXC, peer dead; 3.7–3.8 s) | - | `ncclRemoteError` |
+| F1, F3, F1 ×5 | timeout, blocking | 2, 1, 1 | CPU proxy forced (v2 regression) | as above | all recovered | 4/4 / 4/4 | no error |
+
+- **Correctness.** 62 recovery rounds (plus 10 declines); `V + d = expected` held in every
+  round. All aborts returned, and no processes were left on either node (40 trials, 19 lat
+  runs).
+- **Time (GPU mode).** Kernel return → recovered was 8.2–8.8 ms (median per cell): prepare
+  0.2–1.2 ms, REQ→ACK 3.6–4.7 ms, commit 3.1 ms, replay 0.26–0.28 ms. This is the same as in
+  CPU mode (8.0–8.2 ms).
+- **Fault → recovered** is set by detection, as before: F1 at 9.6–9.7 ms (single-fault runs;
+  here the fault hit an in-flight operation, so there was no 15 ms wait for the next one) and
+  F3 at 3.59 s.
+- **Outliers.** Two rounds took about 21 ms because one responder INIT/RTR/RTS sequence took
+  15 ms instead of 1.9 ms (firmware command time, inside the modify calls). Both were in
+  forced-proxy runs on sunny.
+
+**Negative controls (GPU mode; F1, timeout, 2 shots, 2 trials each).**
+
+| variant | observed |
+|---|---|
+| `keep_gpu_pi` (device `sq_wqe_pi` not reset) | 2/2 broken, as predicted: the first replay's flush timed out. The polled CQ slot was never written (opcode 0xf), because the GPU's `atomic_max` on the stale `sq_wqe_pi` suppressed the doorbell. Declined, both ranks exit 9. |
+| `keep_gpu_dbr` (GPU doorbell record not reset) | 2/2 recovered, 4/4 rounds, data and signal exact. A stale record did no harm here: the GPU's first submit rewrites it before the NIC reads it. The reset is kept as a defensive step (the NIC reads the record on doorbell recovery); it was not shown to be necessary. |
+
+**No-fault overhead (GPU mode).**
+
+- Recovery flag off vs on (classifier on in both): p50 at 4 KiB was 9.66 / 9.64 µs (timeout)
+  and 10.21 / 10.21 µs (blocking); at 256 KiB, 37.19 / 37.00 µs and 37.31 / 36.84 µs. That is
+  2–3 runs × 10k samples per cell, and no difference within run-to-run spread.
+- Same session, 256 KiB timeout, flag on: GPU 37.00 µs at 1.07 cores, forced CPU proxy 37.50 µs
+  at 2.07 cores.
+- One lat run failed with a TCP port collision in the driver's bootstrap
+  (`bind: Address already in use`). It was re-run; the log is kept in `lat/failed/`.
+
+**Measured vs inferred.**
+- **Measured.** The doorbell mode per QP (DOCA's resolved `nic_handler`, read from the host
+  shadow of the device QP struct), the tables above, and both negative controls.
+- **From source.** The GPU submit path (`doca_gpu_dev_verbs_submit_db`: `atomic_max` on
+  `sq_wqe_pi`, UAR write, DBR write, second UAR write) and the DBR placement (GPU memory when
+  DOCA resolves the GPU handler).
+- **Not tested.** BlueFlame and no-DBR GPU modes (declined), and Hopper.
+
 ## Files
 
 | path | what |
@@ -383,6 +502,9 @@ driver `50501ffc…`), and all 18 trials matched the main matrix:
 | `results/20260924/smoke/` | first end-to-end smoke (base, F1, F3) |
 | `results/20260924/confirm/` | every cell once on the final build |
 | `results/20260924/{trials,events}.csv`, `summary.md` | generated |
+| `gin_recovery_gpudb.diff`, `scripts/make_diff_gpudb.sh` | v2 (GPU doorbells), layered on `gin_recovery.diff` |
+| `scripts/run_gpudb.sh`, `q4_rerun.sh`, `thread_probe.sh` | GPU-doorbell matrix, Q4 re-run, doorbell-mode probe |
+| `results/20260924_gpudb/` | GPU-doorbell runs: `runs/` (v2 matrix, negative controls, forced-proxy regression), `lat/`, `q4/`, `v1/`, `smoke/`, `summary.md` |
 
 Reproduce (each line one cluster hold):
 

@@ -43,9 +43,10 @@ ENOTCONN means the peer is dead. EAGAIN is no evidence of death. The handshake d
 
 1. **Configuration.** GDAKI backend; ring CQ (`DOCA_GPUNETIO_VERBS_CQ_64B`, the stock shape);
    CPU-proxy doorbell mode (the only mode this hardware runs); no companion (counter) QPs;
-   the GDAKI context belongs to a user devComm. Collapsed CQs and GPU-rung doorbells are
-   declined because they are untested here (the state inventory in §6 covers them, but the
-   reset of a GPU-memory doorbell record was never exercised).
+   the GDAKI context belongs to a user devComm. Collapsed CQs are declined because they are
+   untested here. GPU-rung doorbells (`GPU_SM_DB`) are declined by v1 and supported by v2
+   (`gin_recovery_gpudb.diff`, §11); BlueFlame, no-DBR and SW-emulated-DBR modes are declined
+   by both.
 2. **Class** as in §2, reported by the initiator's device.
 3. **Quiescence** (§4) on both ranks, verified per QP from the device state:
    `sq_ready_index == sq_rsvd_index` (no WQE half-posted), the proxy doorbell mailbox equals
@@ -167,13 +168,13 @@ consistent with that:
 |---|---|---|---|---|
 | `sq_rsvd_index` | device QP struct | GPU | 0 | next WQE must be index 0 / slot 0, as the NIC expects after RESET |
 | `sq_ready_index` | device QP struct | GPU | 0 | the ready CAS loop compares it with the next reserved index |
-| `sq_wqe_pi` | device QP struct | GPU | 0 | producer index (only used with `CPU_PROXY_UPDATE_PI`, i.e. collapsed CQs) |
+| `sq_wqe_pi` | device QP struct | GPU | 0 | producer index: in GPU_SM_DB mode the GPU's submit rings only if `atomic_max(sq_wqe_pi, new)` raises it, so a stale value suppresses every doorbell of the new epoch (measured, §11); in CPU-proxy mode used only with `CPU_PROXY_UPDATE_PI` (collapsed CQs) |
 | `sq_lock` | device QP struct | GPU | 0 | no holder exists (quiescent) |
 | `cq_sq.cqe_ci` | device QP struct | GPU | 0 | consumer index lives in the WQE index space |
 | `cq_sq.cqe_rsvd` | device QP struct | host | old `cqe_rsvd` + S (S = WQEs of the ending epoch) | the ring poll reads the CQE of WQE j at CQ position j + `cqe_rsvd`; the CQ producer stands at old `cqe_rsvd` + S (one CQE per WQE, drained), so the first new CQE lands there |
 | CQ buffer | GPU memory | NIC | **not** rewritten | every stale entry at a position in the current lap was written in the previous lap, so its owner bit has the wrong parity and it cannot be taken for a new CQE; never-written entries still carry DOCA's init value (owner 1, opcode invalid), which is not valid in lap 0 |
 | SQ WQE buffer | GPU memory | GPU | not rewritten | the NIC fetches only up to the doorbell record, which the device writes after it has written the new WQEs |
-| SQ doorbell record | host memory (CPU-proxy mode) | proxy | 0, while the QP is in RESET | the NIC may read it (doorbell recovery); a stale value would make it fetch stale WQEs from slot 0 |
+| SQ doorbell record | host memory (CPU-proxy mode); GPU memory (GPU_SM_DB, v2) | proxy / GPU | 0, while the QP is in RESET (host store / `cudaMemsetAsync`) | the NIC may read it (doorbell recovery); a stale value would make it fetch stale WQEs from slot 0 |
 | proxy doorbell mailbox `cpu_db` | host-mapped | GPU (`fetch_max`) | 0 | the GPU publishes new producer indices with `fetch_max`; a stale S would hide them until the new epoch passed S, and no doorbell would ring |
 | proxy `sq_wqe_pi_last` | host struct | proxy thread | 0 | the proxy rings only when the mailbox exceeds it |
 | host shadow `qp_cpu` | host struct | DOCA host | same values as the device copy | keeps any later DOCA host operation that copies it consistent |
@@ -304,3 +305,14 @@ Invariants, each with the reason it holds:
   completes in ~0.3 ms, the hook's four modify commands take ~1.2 ms), so the fault landed on the
   next operation. The hook gained delay -1 (fire inside the commit, after RTS), which hits the
   replay deterministically.
+- **GPU doorbells (v2, `gin_recovery_gpudb.diff`).**
+  - Since PeerMappingOverride=1 became permanent, DOCA resolves every GDAKI QP to `GPU_SM_DB`.
+    The GPU rings the UAR doorbell and writes the doorbell record, which lives in GPU memory.
+    There is no proxy thread, mailbox or proxy counter.
+  - v1 declined (safely) in this mode. v2 checks quiescence against `sq_wqe_pi` and the
+    GPU-memory record, and zeroes the record with `cudaMemsetAsync`; the rest of the protocol
+    and the inventory are unchanged.
+  - Measured negative controls:
+    - Leaving `sq_wqe_pi` stale breaks recovery: no doorbell ever rings for the replay.
+    - Leaving the GPU doorbell record stale did not (4/4 recoveries), because the GPU's first
+      submit rewrites it. Its reset stays as a defensive step.
