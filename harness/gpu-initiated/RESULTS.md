@@ -26,6 +26,7 @@ patches are in the four subdirectories; this page only combines them.
 | NVSHMEM IBGDA, GPU handler (PeerMappingOverride) | CQE 5/0xf5, 1.8 ms | CQE 10/0x88, 9 ms | CQE 12/0x81, 3.5-3.7 s | - | quiet **returns success** on a failed put (slot 5/0xf9) | - |
 | NVSHMEM IBGDA, CPU proxy + SQ-DBR fix | CQE 5/0xf5 | CQE 10/0x88, 10 ms | CQE 12/0x81, 3.5-3.6 s | - | - | `nvshmem_finalize` still hangs |
 | GIN GDAKI + Q4 classifier | 5/0xf5, 15 ms | 10/0x88, 2.8 ms | 12/0x81, 3.64-3.70 s | 12/0x81, 3.64-3.70 s | returns `ncclRemoteError` (silent success 0/9) | clean |
+| GIN GDAKI + Q4 + recovery | **recovered**, ~24 ms after the fault | declined (REM_ACCESS) | **recovered**, 3.65-3.74 s after the fault | declined (peer dead) | recovered or declined | clean |
 
 Times are from the fault to the first host-visible error. GDAKI's stock times are set by its
 10 s QP-state check (`NCCL_GIN_ERROR_QUERY_SEC`), not by the fault.
@@ -74,6 +75,15 @@ Times are from the fault to the first host-visible error. GDAKI's stock times ar
    Silent success disappears. With no fault the median put+signal+flush latency rises by at most
    0.1 µs at 4 KiB (about 1%).
 
+9. **Transient faults can be recovered without losing or duplicating anything (`gin_recovery/`).**
+   On GDAKI, with the kernel returning on error, a host-side prepare/handshake/commit and an
+   application replay that re-sends the data but only the missing part of the signal, F1 and F3
+   recovered in every trial (including several faults per run and a fault during the replay),
+   with every iteration's data bit-exact and the final signal exact; F2 and F4 declined cleanly.
+   Recovery takes about 8 ms after the kernel returns; detection (F3: retry exhaustion) dominates.
+   Two resync details were essential and were proven by negative controls: the CQ mapping
+   (`cqe_rsvd`) must advance cumulatively, and the proxy doorbell mailbox must be cleared.
+
 ## Rejected or corrected along the way
 
 - "NVSHMEM puts to a failed peer never retire": wire counters showed about 4 s of retransmission
@@ -101,9 +111,18 @@ Resolved on 2026-09-24:
 3. GPU-rung doorbells (`gpu_doorbell/`): NVSHMEM's GPU handler gets the error CQEs; GIN Q4 behaves
    as with CPU doorbells; stock GDAKI's blocking silent success is unchanged.
 
+4. Recovery on top of Q4 (`gin_recovery/`): F1 (local QP ERR) and F3 (peer QP ERR, peer alive)
+   recover in every trial, in both wait modes, including runs with several faults and a fault
+   that hits the replay itself; data bit-exact and the signal exact in 38/38 recovered runs
+   (110 recovery rounds). F2 (REM_ACCESS) and F4 (peer dead: RETRY_EXC with FIN on the OOB
+   socket) are declined cleanly and abort returns. The kernel returns `ncclRemoteError`, the
+   host runs prepare (pause the proxy, quiesce, ERR), an OOB handshake that reads the receiver's
+   signal value V, commit (bilateral reset with fresh PSNs, GPU-side index and CQ-mapping
+   resync, stored connect-time attributes), and the application replays the data plus the
+   missing signal delta only. Kernel-return to replay-done: 8.0-8.2 ms median, ~6 ms of it
+   firmware QP commands. No measurable no-fault overhead.
+
 Still open:
-4. Recovery on top of Q4 (`gin_recovery/`, in progress): host-side bilateral QP reset, GPU-side
-   index resync, and a replay rule for GIN's signal atomics (a replayed ADD double-counts).
 5. DeepEP cannot run here: its internode and low-latency kernels require SM90 (`setup.py` asserts
    for any other arch), and rain's GPU is sm_75, below even the legacy SM80 path.
 6. That GDAKI used GPU doorbells in `gpu_doorbell/` is inferred (neither NCCL nor DOCA logs it).

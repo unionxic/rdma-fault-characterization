@@ -73,6 +73,10 @@ doorbell here is **inferred**: neither NCCL nor DOCA logs the doorbell mode, but
 `cudaHostRegisterIoMemory` call that failed before succeeded for NVSHMEM in the same window, and
 the median latency is about 0.6 µs lower than the CPU-doorbell 37.4 µs.
 
+Possibly perturbed: window 2's NVSHMEM `F2b_timeout_t1` overlapped, from 12:01:04 to 12:01:19, a
+short smoke run of the recovery work that had started on the old lock file (reported by that
+agent). Its result is identical to t2 and t3.
+
 Invalid (sunny's CUDA broken, window 1): all NVSHMEM trials in `results/20260924/nvshmem/`, and GIN
 `ring_c1_none_timeout_t1/t2`, `ring_c1_F1_timeout_t1/t2`, `ring_c1_F2_timeout_t1` in
 `results/20260924/gin_q4/`.

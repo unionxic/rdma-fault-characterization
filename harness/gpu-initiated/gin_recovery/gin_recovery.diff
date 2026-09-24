@@ -1,0 +1,1036 @@
+# GIN GDAKI recovery (research build): bilateral QP reset with fresh PSNs + GPU-side state resync,
+# host API for the application's recovery handshake, multi-shot fault hook. Env-gated, default OFF.
+#
+# base tag: v2.32.3-1  commit: 12df1a11afad322be5a204a2db890161cbf8131d
+# LAYERED on top of ../gin/gin_fault_inject.diff and ../gin_q4/gin_q4_classify.diff; apply all three
+# from the NCCL source root, in this order:
+#   git apply ../gin/gin_fault_inject.diff && git apply ../gin_q4/gin_q4_classify.diff && \
+#   git apply gin_recovery.diff
+#
+# env:
+#   NCCL_GIN_FAULT_RECOVERY=1        enable (needs NCCL_GIN_FAULT_CLASSIFY=1; user devComms, GDAKI, ring CQ,
+#                                    CPU-proxy doorbell, no counter/companion QPs; otherwise declined)
+#   NCCL_GIN_RECOVERY_DRAIN_MS=N     bound on waiting for the CQE of the last posted WQE (default 1000)
+#   NCCL_GIN_FAULT_INJECT=local_err:<ms>[,<ms>...] | peer_err:...   (test hook from gin_fault_inject.diff)
+#                                    with recovery on: shot k>1 fires <ms> after the recovery commit that
+#                                    followed shot k-1 on this rank; -1 = inside that commit (after RTS)
+#   NCCL_GIN_FAULT_INJECT_WAIT_S=N   multi-shot hook: give up waiting for a commit after N s (default 60)
+#   NCCL_GIN_RECOVERY_DIAG=doca_cqe_rsvd|keep_proxy_db   negative controls only: break one resync step
+#                                    on purpose (DOCA's non-cumulative cqe_rsvd / stale proxy doorbell)
+#
+# files:
+#   nccl.h.in  ncclGinFaultInfo_t / ncclGinRecoverToken_t / ncclGinRecoverStats_t,
+#              ncclGinFaultQuery, ncclGinRecoverPrepare, ncclGinRecoverCommit, ncclGinRecoverAbort
+#   gin/gin_host.cc  thread-local comm key while a devComm's GIN contexts are created
+#   transport/net_ib/gdaki/gin_host_gdaki.cc  gdakiConnectQp(rqPsn, sqPsn) (stock callers pass 0),
+#              per-QP connect-time info, recovery registry, proxy-progress pause, Prepare (quiescence
+#              check, QP->ERR, drain), Commit (2RST, doorbell/proxy/device-index resync, cqe_rsvd advance,
+#              get tickets, reconnect, Q4 error clear), Abort, FaultQuery; multi-shot hook
+# Design and safety argument: RECOVERY_DESIGN.md.
+#
+diff --git a/src/gin/gin_host.cc b/src/gin/gin_host.cc
+index 161ae45..139f3a1 100644
+--- a/src/gin/gin_host.cc
++++ b/src/gin/gin_host.cc
+@@ -31,6 +31,11 @@ thread_local bool ncclGinFaultUserCtx = false;
+ // ncclRemoteError as soon as the device reports a classified error CQE.
+ thread_local ncclResult_t* ncclGinQ4AsyncResult = nullptr;
+ 
++// GIN recovery (research build): while a devComm's GIN contexts are created, the owning ncclComm.
++// The GDAKI backend keys its recovery registry by it (NCCL_GIN_FAULT_RECOVERY=1; nccl.h
++// ncclGinRecover*).
++thread_local void* ncclGinRecCommKey = nullptr;
++
+ // Backend version compatibility. Index: backend version. Value: min compatible NCCL version
+ const int proxyBackendMinVersions[] = {0, NCCL_VERSION(2, 30, 3), NCCL_VERSION(2, 30, 5), NCCL_VERSION(2, 32, 0)};
+ const int gdakiBackendMinVersions[] = {0, NCCL_VERSION(2, 30, 3), NCCL_VERSION(2, 30, 5)};
+@@ -364,6 +369,7 @@ static ncclResult_t ginDevCommSetupWithBackend(struct ncclComm* comm, struct ncc
+ 
+   ncclGinFaultUserCtx = (devComm->abortFlag == nullptr);
+   ncclGinQ4AsyncResult = &comm->sharedRes->ginState.asyncResult;
++  ncclGinRecCommKey = (void*)comm;
+   for (int commIdx = 0; commIdx < backend->ginCommCount; commIdx++) {
+     NCCLCHECKGOTO(backend->ncclGin->createContext(backend->ginComms[commIdx], &ginConfig,
+                                                   &ginStateDevComm->ginCtx[commIdx],
+@@ -383,6 +389,7 @@ static ncclResult_t ginDevCommSetupWithBackend(struct ncclComm* comm, struct ncc
+   }
+   ncclGinFaultUserCtx = false;
+   ncclGinQ4AsyncResult = nullptr;
++  ncclGinRecCommKey = nullptr;
+ 
+   // Add devComm and (re)start progress threads as needed.
+   {
+@@ -411,6 +418,7 @@ static ncclResult_t ginDevCommSetupWithBackend(struct ncclComm* comm, struct ncc
+ end:
+   ncclGinFaultUserCtx = false;  // also on the error path
+   ncclGinQ4AsyncResult = nullptr;
++  ncclGinRecCommKey = nullptr;
+   if (ret != ncclSuccess) {
+     for (int commIdx = 0; commIdx < backend->ginCommCount; commIdx++) {
+       if (ginStateDevComm->ginCtx[commIdx]) backend->ncclGin->destroyContext(ginStateDevComm->ginCtx[commIdx]);
+diff --git a/src/nccl.h.in b/src/nccl.h.in
+index 0b1ef92..89f7bae 100644
+--- a/src/nccl.h.in
++++ b/src/nccl.h.in
+@@ -1018,6 +1018,64 @@ ncclResult_t pncclParamGetAllParameterKeys(const char*** table, int* tableLen);
+ void ncclParamDumpAll(void);
+ void pncclParamDumpAll(void);
+ 
++/*
++ * GIN GDAKI fault recovery (research build). Active only with NCCL_GIN_FAULT_RECOVERY=1 and
++ * NCCL_GIN_FAULT_CLASSIFY=1 on a GDAKI communicator; otherwise these return ncclInvalidUsage.
++ * Mechanism only: the caller must stop every kernel that posts on the communicator's GIN QPs
++ * before ncclGinRecoverPrepare, run the same sequence on the peer (exchanging the tokens out
++ * of band), and relaunch the failed operation after ncclGinRecoverCommit.
++ */
++#define NCCL_GIN_RECOVERY_MAX_QPS 64
++#define NCCL_GIN_RECOVERY_TOKEN_MAGIC 0x47524543u /* "GREC" */
++typedef struct {
++  int valid;                   /* 1 if a device-classified error CQE was reported since the last recovery */
++  int recoverable;             /* 0 no, 1 yes (LOCAL_QP_ERR), 2 yes if the peer is alive (RETRY_EXC) */
++  int cls;                     /* device class id (NCCL_GIN_Q4_CLASS_*) */
++  int wcStatus;                /* ibv_wc_status equivalent of the root-cause CQE */
++  int vendorErr;
++  int syndrome;
++  int peer;
++  int ctxId;
++  unsigned int qpn;
++  unsigned int wqeCounter;
++  unsigned int seq;
++  unsigned int nRecords;       /* error records since the last recovery */
++  unsigned long long gtimerNs; /* device %globaltimer at detection */
++  double hostMonoMs;           /* CLOCK_MONOTONIC (ms) when the host watcher read the record */
++  char className[24];
++} ncclGinFaultInfo_t;
++
++typedef struct {
++  unsigned int magic;
++  unsigned int nqp;
++  unsigned int qpn[NCCL_GIN_RECOVERY_MAX_QPS];             /* local QPN, (devComm, GIN context) order */
++  unsigned int remoteQpn[NCCL_GIN_RECOVERY_MAX_QPS];       /* QPN it is connected to */
++  unsigned int sqPsn[NCCL_GIN_RECOVERY_MAX_QPS];           /* fresh send PSN of the new incarnation */
++  unsigned long long epochWqes[NCCL_GIN_RECOVERY_MAX_QPS]; /* WQEs posted in the ending epoch */
++} ncclGinRecoverToken_t;
++
++typedef struct {
++  int nqp;
++  unsigned int cqeErr;         /* error CQEs of the ending epoch in the unconsumed window (all QPs) */
++  unsigned int cqeOk;          /* successful CQEs in that window */
++  unsigned long long epochWqes; /* WQEs of the ending epoch, summed over the QPs */
++  double prepareUs, errUs, drainUs; /* Prepare: total, move-to-ERR, drain wait */
++  double commitUs, resetUs, resyncUs, connectUs; /* Commit: total, 2RST, device resync, INIT/RTR/RTS */
++} ncclGinRecoverStats_t;
++
++ncclResult_t  ncclGinFaultQuery(ncclComm_t comm, int waitMs, ncclGinFaultInfo_t* info);
++ncclResult_t pncclGinFaultQuery(ncclComm_t comm, int waitMs, ncclGinFaultInfo_t* info);
++ncclResult_t  ncclGinRecoverPrepare(ncclComm_t comm, int peer, ncclGinRecoverToken_t* local,
++                                    ncclGinRecoverStats_t* stats);
++ncclResult_t pncclGinRecoverPrepare(ncclComm_t comm, int peer, ncclGinRecoverToken_t* local,
++                                    ncclGinRecoverStats_t* stats);
++ncclResult_t  ncclGinRecoverCommit(ncclComm_t comm, int peer, const ncclGinRecoverToken_t* remote,
++                                   ncclGinRecoverStats_t* stats);
++ncclResult_t pncclGinRecoverCommit(ncclComm_t comm, int peer, const ncclGinRecoverToken_t* remote,
++                                   ncclGinRecoverStats_t* stats);
++ncclResult_t  ncclGinRecoverAbort(ncclComm_t comm, int peer);
++ncclResult_t pncclGinRecoverAbort(ncclComm_t comm, int peer);
++
+ #ifdef __cplusplus
+ } // end extern "C"
+ #endif
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index a796adb..dc841f4 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -15,6 +15,8 @@
+ #include <cuda_runtime_api.h>
+ 
+ #include <mutex>
++#include <condition_variable>
++#include <random>
+ #include <thread>
+ #include <chrono>
+ #include <atomic>
+@@ -388,6 +390,7 @@ struct gdaki_context {
+   doca_verbs_comp_channel_t* docaEvent;
+ 
+   struct gdakiQ4Host* q4;  // GIN Q4 (research build): nullptr unless NCCL_GIN_FAULT_CLASSIFY=1
++  struct gdakiRecHost* rec;  // GIN recovery (research build): nullptr unless NCCL_GIN_FAULT_RECOVERY=1
+ };
+ 
+ static void gdakiFillExchInfo(struct gdaki_exch_info* exch_info, struct gdaki_context* gdaki_ctx,
+@@ -472,8 +475,11 @@ static ncclResult_t gdakiGetPathMtu(enum ibv_mtu local_active_mtu, enum ibv_mtu
+   return ncclSuccess;
+ }
+ 
++// GIN recovery (research build): rqPsn/sqPsn are the stock 0 for every connect-time call; the
++// recovery reconnect (NCCL_GIN_FAULT_RECOVERY=1) passes fresh PSNs exchanged with the peer.
+ static ncclResult_t gdakiConnectQp(struct gdaki_context* ctx, struct doca_gpu_verbs_qp_hl* gqp,
+-                                   struct gdaki_exch_info* exch_info, uint8_t lagTxPortAffinity = 0) {
++                                   struct gdaki_exch_info* exch_info, uint8_t lagTxPortAffinity = 0,
++                                   uint32_t rqPsn = 0, uint32_t sqPsn = 0) {
+   ncclResult_t status = ncclSuccess;
+   doca_verbs_qp_attr_t* verbs_qp_attr = nullptr;
+   int max_dest_rd_atomic =
+@@ -527,9 +533,9 @@ static ncclResult_t gdakiConnectQp(struct gdaki_context* ctx, struct doca_gpu_ve
+   DOCACHECK(doca_verbs_ah_attr_set_dlid(ctx->ah, dlid));
+   DOCACHECK(doca_verbs_qp_attr_create(&verbs_qp_attr));
+   DOCACHECKGOTO(doca_verbs_qp_attr_set_path_mtu(verbs_qp_attr, path_mtu), status, destroy_verbs_qp_attr);
+-  DOCACHECKGOTO(doca_verbs_qp_attr_set_rq_psn(verbs_qp_attr, 0), status, destroy_verbs_qp_attr);
++  DOCACHECKGOTO(doca_verbs_qp_attr_set_rq_psn(verbs_qp_attr, rqPsn), status, destroy_verbs_qp_attr);
+ 
+-  DOCACHECKGOTO(doca_verbs_qp_attr_set_sq_psn(verbs_qp_attr, 0), status, destroy_verbs_qp_attr);
++  DOCACHECKGOTO(doca_verbs_qp_attr_set_sq_psn(verbs_qp_attr, sqPsn), status, destroy_verbs_qp_attr);
+   DOCACHECKGOTO(doca_verbs_qp_attr_set_port_num(verbs_qp_attr, ctx->port_num), status, destroy_verbs_qp_attr);
+   DOCACHECKGOTO(doca_verbs_qp_attr_set_ack_timeout(verbs_qp_attr, ncclParamIbTimeout()), status, destroy_verbs_qp_attr);
+   DOCACHECKGOTO(doca_verbs_qp_attr_set_retry_cnt(verbs_qp_attr, ncclParamIbRetryCnt()), status, destroy_verbs_qp_attr);
+@@ -613,6 +619,43 @@ static double ncclGinGdakiFaultMonoMs() {
+   return t.tv_sec * 1e3 + t.tv_nsec * 1e-6;
+ }
+ 
++// Moves this rank's peer-connected GDAKI QPs (and companions) to ERR; logs fire/done times.
++static void ncclGinGdakiFaultFire(struct gdaki_context* gdaki_ctx, const char* shotTag) {
++  const int nranks = gdaki_ctx->collComm->nranks;
++  const int ncontexts = gdaki_ctx->nContexts;
++  const int myRank = gdaki_ctx->rank;
++  doca_verbs_qp_attr_t* errAttr = nullptr;
++  if (doca_verbs_qp_attr_create(&errAttr) != DOCA_SUCCESS) {
++    WARN("GIN/FAULT: GDAKI fault could not allocate qp attr");
++    return;
++  }
++  doca_verbs_qp_attr_set_next_state(errAttr, DOCA_VERBS_QP_STATE_ERR);
++  int moved = 0, total = 0;
++  double t0 = ncclGinGdakiFaultMonoMs();
++  // Only the QPs connected to other ranks (qp_idx = rank + ctx*nranks, rank != self);
++  // the self-loop QPs are not on the wire between the two nodes.
++  for (int c = 0; c < ncontexts; c++) {
++    for (int r = 0; r < nranks; r++) {
++      if (r == myRank) continue;
++      int i = r + c * nranks;
++      struct doca_gpu_verbs_qp_hl* q[2] = {gdaki_ctx->gqps ? gdaki_ctx->gqps[i] : nullptr,
++                                           gdaki_ctx->companion_gqps ? gdaki_ctx->companion_gqps[i] : nullptr};
++      for (int k = 0; k < 2; k++) {
++        if (!q[k] || !q[k]->qp) continue;
++        total++;
++        if (doca_verbs_qp_modify(q[k]->qp, errAttr, DOCA_VERBS_QP_ATTR_NEXT_STATE) == DOCA_SUCCESS) moved++;
++      }
++    }
++  }
++  double t1 = ncclGinGdakiFaultMonoMs();
++  doca_verbs_qp_attr_destroy(errAttr);
++  WARN("GIN/FAULT: GDAKI fault fired%s: moved %d/%d GIN QP(s) to ERR fire_mono_ms=%.3f done_mono_ms=%.3f", shotTag,
++       moved, total, t0, t1);
++}
++
++// GIN recovery (research build): multi-shot hook, defined with the recovery code below.
++static void gdakiRecHookStart(struct gdaki_context* gdaki_ctx, const std::vector<int>& delays, const char* spec);
++
+ static void ncclGinGdakiFaultInjectArm(struct gdaki_context* gdaki_ctx) {
+   const char* spec = getenv("NCCL_GIN_FAULT_INJECT");
+   if (!spec || !*spec) return;
+@@ -622,41 +665,27 @@ static void ncclGinGdakiFaultInjectArm(struct gdaki_context* gdaki_ctx) {
+   int delayMs = -1;
+   if (sscanf(spec, "local_err:%d", &delayMs) != 1 && sscanf(spec, "peer_err:%d", &delayMs) != 1) return;
+   if (delayMs < 0) return;
++  // GIN recovery (research build): "local_err:<ms>,<ms>,..." -- with NCCL_GIN_FAULT_RECOVERY=1 the
++  // k-th delay (k >= 2) counts from the (k-1)-th recovery commit on this rank (see gdakiRecHookStart).
++  std::vector<int> delays;
++  for (const char* p = strchr(spec, ':'); p && *p; p = strchr(p, ',')) {
++    delays.push_back(atoi(p + 1));
++    p++;
++  }
++  if (gdaki_ctx->rec != nullptr && delays.size() >= 1) {
++    gdakiRecHookStart(gdaki_ctx, delays, spec);
++    return;
++  }
++  if (delays.size() > 1)
++    WARN("GIN/FAULT: %s lists %zu shots; only the first fires without NCCL_GIN_FAULT_RECOVERY=1", spec, delays.size());
+   const int nranks = gdaki_ctx->collComm->nranks;
+   const int ncontexts = gdaki_ctx->nContexts;
+-  const int myRank = gdaki_ctx->rank;
+   const int nqps = ncontexts * (nranks + 1); // main-QP array: per-(ctx,rank) QPs + self-loop responders
+   WARN("GIN/FAULT: GDAKI fault hook armed (%s): %d context(s) x %d peer(s) (%d main QPs incl. self-loop), fires in "
+        "%d ms", spec, ncontexts, nranks - 1, nqps, delayMs);
+-  std::thread([gdaki_ctx, ncontexts, nranks, myRank, delayMs]() {
++  std::thread([gdaki_ctx, delayMs]() {
+     std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+-    doca_verbs_qp_attr_t* errAttr = nullptr;
+-    if (doca_verbs_qp_attr_create(&errAttr) != DOCA_SUCCESS) {
+-      WARN("GIN/FAULT: GDAKI fault could not allocate qp attr");
+-      return;
+-    }
+-    doca_verbs_qp_attr_set_next_state(errAttr, DOCA_VERBS_QP_STATE_ERR);
+-    int moved = 0, total = 0;
+-    double t0 = ncclGinGdakiFaultMonoMs();
+-    // Only the QPs connected to other ranks (qp_idx = rank + ctx*nranks, rank != self);
+-    // the self-loop QPs are not on the wire between the two nodes.
+-    for (int c = 0; c < ncontexts; c++) {
+-      for (int r = 0; r < nranks; r++) {
+-        if (r == myRank) continue;
+-        int i = r + c * nranks;
+-        struct doca_gpu_verbs_qp_hl* q[2] = {gdaki_ctx->gqps ? gdaki_ctx->gqps[i] : nullptr,
+-                                             gdaki_ctx->companion_gqps ? gdaki_ctx->companion_gqps[i] : nullptr};
+-        for (int k = 0; k < 2; k++) {
+-          if (!q[k] || !q[k]->qp) continue;
+-          total++;
+-          if (doca_verbs_qp_modify(q[k]->qp, errAttr, DOCA_VERBS_QP_ATTR_NEXT_STATE) == DOCA_SUCCESS) moved++;
+-        }
+-      }
+-    }
+-    double t1 = ncclGinGdakiFaultMonoMs();
+-    doca_verbs_qp_attr_destroy(errAttr);
+-    WARN("GIN/FAULT: GDAKI fault fired: moved %d/%d GIN QP(s) to ERR fire_mono_ms=%.3f done_mono_ms=%.3f", moved,
+-         total, t0, t1);
++    ncclGinGdakiFaultFire(gdaki_ctx, "");
+   }).detach();
+ }
+ 
+@@ -697,6 +726,13 @@ struct gdakiQ4Host {
+   int qpWatchMs = 0;
+   int nErr = 0, nDump = 0, nLogged = 0;
+   struct gdaki_context* ctx = nullptr;
++  // GIN recovery (research build): the last error record since the last recovery, for
++  // ncclGinFaultQuery, and whether the watcher set the GIN async result (so recovery may clear it).
++  std::mutex lastMu;
++  struct ncclGinGdakiQ4Record lastErr;
++  double lastErrMonoMs = 0;
++  unsigned int nErrSinceRec = 0;
++  std::atomic<int> setAsync{0};
+ };
+ 
+ static double gdakiQ4MonoMs() {
+@@ -820,8 +856,18 @@ static void gdakiQ4Handle(struct gdakiQ4Host* q, const struct ncclGinGdakiQ4Reco
+   if (isErr) {
+     // Make ncclCommGetAsyncError report it now: the GIN async result (read when GIN proxy
+     // threads exist) and the flag consulted by ncclGinGdakiQueryLastError (always).
++    if (g->rec) {
++      // GIN recovery: keep the record for ncclGinFaultQuery (before the flags below are raised).
++      std::lock_guard<std::mutex> lk(q->lastMu);
++      q->lastErr = r;
++      q->lastErrMonoMs = monoMs;
++      q->nErrSinceRec++;
++    }
+     q->hasError.store(1, std::memory_order_release);
+-    if (q->asyncResult) __atomic_store_n(q->asyncResult, ncclRemoteError, __ATOMIC_RELEASE);
++    if (q->asyncResult) {
++      __atomic_store_n(q->asyncResult, ncclRemoteError, __ATOMIC_RELEASE);
++      if (g->rec) q->setAsync.store(1, std::memory_order_release);  // GIN recovery may clear it
++    }
+     q->nErr++;
+   } else {
+     q->nDump++;
+@@ -971,6 +1017,648 @@ static ncclResult_t gdakiQ4ApplyCqType(struct doca_gpu_verbs_qp_init_attr_hl* a,
+   return ncclSuccess;
+ }
+ 
++// ---------------------------------------------------------------------------
++// GIN recovery (research build; default OFF), layered on the Q4 classifier above.
++//   NCCL_GIN_FAULT_RECOVERY=1            enable (needs NCCL_GIN_FAULT_CLASSIFY=1; user devComms only)
++//   NCCL_GIN_RECOVERY_DRAIN_MS=<ms>      bound on waiting for the CQE of the last posted WQE (1000)
++//   NCCL_GIN_FAULT_INJECT_WAIT_S=<s>     multi-shot hook: bound on waiting for the next commit (60)
++// Host API (nccl.h): ncclGinFaultQuery, ncclGinRecoverPrepare, ncclGinRecoverCommit,
++// ncclGinRecoverAbort. Design and safety argument: harness/gpu-initiated/gin_recovery/
++// RECOVERY_DESIGN.md. In short: with every GPU producer stopped, Prepare pauses the CPU-proxy
++// doorbell thread for this context, checks that each peer QP is quiescent (no half-posted or
++// unsubmitted WQE), moves it to ERR and waits for the CQE of its last WQE; Commit (after the
++// peer did the same) resets the QP (2RST), restarts the device WQE index space at 0 with
++// cqe_rsvd advanced by the WQEs of the ending epoch, zeroes the doorbell record / proxy
++// mailbox / proxy counter and the get tickets, and reconnects with the connect-time attributes
++// and fresh PSNs (INIT/RTR/RTS), then clears the Q4 error state.
++// ---------------------------------------------------------------------------
++NCCL_PARAM(GinFaultRecovery, "GIN_FAULT_RECOVERY", 0);
++NCCL_PARAM(GinRecoveryDrainMs, "GIN_RECOVERY_DRAIN_MS", 1000);
++NCCL_PARAM(GinFaultInjectWaitS, "GIN_FAULT_INJECT_WAIT_S", 60);
++// Diagnostic A/B only (default: the design). NCCL_GIN_RECOVERY_DIAG=doca_cqe_rsvd sets cqe_rsvd to the
++// ending epoch's WQE count like doca_gpu_verbs_reset_tracking_and_memory (not cumulative);
++// =keep_proxy_db leaves the CPU-proxy doorbell mailbox (cpu_db) and its counter unreset.
++static int gdakiRecDiag() {
++  static int v = -1;
++  if (v < 0) {
++    const char* e = getenv("NCCL_GIN_RECOVERY_DIAG");
++    v = (e && strcmp(e, "doca_cqe_rsvd") == 0) ? 1 : (e && strcmp(e, "keep_proxy_db") == 0) ? 2 : 0;
++    if (v) WARN("GIN/REC: DIAGNOSTIC mode NCCL_GIN_RECOVERY_DIAG=%s (breaks the recovery on purpose)", e);
++  }
++  return v;
++}
++extern thread_local void* ncclGinRecCommKey;  // gin/gin_host.cc
++
++struct gdakiRecQp {
++  bool used = false;             // a peer-connected main QP of this rank
++  int ctxIdx = 0, peer = 0, qpIdx = 0;
++  struct gdaki_exch_info exch;   // connect-time info of the peer QP (copy)
++  uint8_t lag = 0;               // connect-time LAG TX port affinity
++  struct doca_gpu_dev_verbs_qp snap;  // device QP struct at Prepare
++  uint64_t epochWqes = 0;        // sq_rsvd_index at Prepare = WQEs of the ending epoch
++  uint32_t newSqPsn = 0;
++};
++
++struct gdakiRecHost {
++  void* commKey = nullptr;
++  struct gdaki_context* ctx = nullptr;
++  std::vector<gdakiRecQp> qps;   // indexed by qp_idx = rank + ctx * nranks
++  std::atomic<int> paused{0};    // proxy progress skips this context while set
++  std::atomic<int> busy{0};      // proxy progress calls inside this context
++  std::mutex opMu;               // Prepare/Commit bodies vs. the test hook's fire
++  int state = 0;                 // 0 idle, 1 prepared
++  int preparedPeer = -1;
++  cudaStream_t stream = nullptr; // private non-blocking stream: never waits for user kernels
++  uint8_t* pinned = nullptr;     // pinned staging for D2H/H2D copies
++  size_t pinnedSize = 0;
++  std::mt19937 rng;
++  int nCommits = 0, nAborts = 0;
++  // multi-shot test hook (NCCL_GIN_FAULT_INJECT with a list)
++  std::thread hookTh;
++  std::mutex hookMu;
++  std::condition_variable hookCv;
++  bool hookStop = false;
++  uint64_t commits = 0;
++  int armShot = 0, armTotal = 0;  // delay -1: Commit fires this shot after RTS, before it returns
++};
++
++static std::mutex gdakiRecRegMu;
++static std::vector<struct gdakiRecHost*> gdakiRecReg;
++
++// Proxy progress guard: with recovery off (rec == nullptr) it does nothing.
++struct gdakiRecProgressGuard {
++  struct gdakiRecHost* r;
++  bool skip = false;
++  explicit gdakiRecProgressGuard(struct gdakiRecHost* r_) : r(r_) {
++    if (r == nullptr) return;
++    r->busy.fetch_add(1, std::memory_order_seq_cst);
++    if (r->paused.load(std::memory_order_seq_cst)) {
++      r->busy.fetch_sub(1, std::memory_order_seq_cst);
++      r = nullptr;
++      skip = true;
++    }
++  }
++  ~gdakiRecProgressGuard() {
++    if (r) r->busy.fetch_sub(1, std::memory_order_seq_cst);
++  }
++};
++
++static ncclResult_t gdakiRecPause(struct gdakiRecHost* r) {
++  r->paused.store(1, std::memory_order_seq_cst);
++  const double t0 = gdakiQ4MonoMs();
++  while (r->busy.load(std::memory_order_seq_cst) != 0) {
++    if (gdakiQ4MonoMs() - t0 > 1000) {
++      r->paused.store(0, std::memory_order_seq_cst);
++      WARN("GIN/REC: proxy progress did not leave the context within 1 s");
++      return ncclInternalError;
++    }
++    std::this_thread::yield();
++  }
++  return ncclSuccess;
++}
++
++static void gdakiRecResume(struct gdakiRecHost* r) { r->paused.store(0, std::memory_order_seq_cst); }
++
++static ncclResult_t gdakiRecD2H(struct gdakiRecHost* r, void* dst, const void* src, size_t n) {
++  if (n > r->pinnedSize) return ncclInternalError;
++  CUDACHECK(cudaMemcpyAsync(r->pinned, src, n, cudaMemcpyDeviceToHost, r->stream));
++  CUDACHECK(cudaStreamSynchronize(r->stream));
++  memcpy(dst, r->pinned, n);
++  return ncclSuccess;
++}
++
++static ncclResult_t gdakiRecH2D(struct gdakiRecHost* r, void* dst, const void* src, size_t n) {
++  if (n > r->pinnedSize) return ncclInternalError;
++  memcpy(r->pinned, src, n);
++  CUDACHECK(cudaMemcpyAsync(dst, r->pinned, n, cudaMemcpyHostToDevice, r->stream));
++  CUDACHECK(cudaStreamSynchronize(r->stream));
++  return ncclSuccess;
++}
++
++// A CQE at ring position `pos` belongs to the current lap and to WQE `wqeIdx` (ring CQ).
++static bool gdakiRecCqeCurrent(const uint8_t* cqe, uint64_t pos, uint32_t cqeNum, uint64_t wqeIdx) {
++  const uint16_t wc = ((uint16_t)cqe[60] << 8) | cqe[61];
++  const uint8_t opown = cqe[63];
++  const bool owner = (opown & DOCA_GPUNETIO_IB_MLX5_CQE_OWNER_MASK) != 0;
++  return owner == ((pos & cqeNum) != 0) && wc == (uint16_t)(wqeIdx & 0xffff);
++}
++
++static void gdakiRecFind(void* key, std::vector<struct gdakiRecHost*>& out) {
++  std::lock_guard<std::mutex> lk(gdakiRecRegMu);
++  for (auto* r : gdakiRecReg)
++    if (r->commKey == key) out.push_back(r);
++}
++
++static uint32_t gdakiRecQpn(struct doca_gpu_verbs_qp_hl* q) {
++  uint32_t qpn = 0;
++  doca_verbs_qp_get_qpn(q->qp, &qpn);
++  return qpn;
++}
++
++static ncclResult_t gdakiRecModify(struct doca_gpu_verbs_qp_hl* q, enum doca_verbs_qp_state st) {
++  doca_verbs_qp_attr_t* a = nullptr;
++  if (doca_verbs_qp_attr_create(&a) != DOCA_SUCCESS) return ncclSystemError;
++  doca_verbs_qp_attr_set_next_state(a, st);
++  doca_error_t e = doca_verbs_qp_modify(q->qp, a, DOCA_VERBS_QP_ATTR_NEXT_STATE);
++  doca_verbs_qp_attr_destroy(a);
++  if (e != DOCA_SUCCESS) {
++    WARN("GIN/REC: modify qpn=%#x -> state %d failed (%d)", gdakiRecQpn(q), (int)st, (int)e);
++    return ncclSystemError;
++  }
++  return ncclSuccess;
++}
++
++// The peer-connected QPs of `r` to `peer`, in GIN-context order.
++template <typename F>
++static void gdakiRecForPeer(struct gdakiRecHost* r, int peer, F fn) {
++  const int nranks = r->ctx->collComm->nranks;
++  for (int c = 0; c < r->ctx->nContexts; c++) {
++    const int i = peer + c * nranks;
++    if (i < (int)r->qps.size() && r->qps[i].used) fn(r->qps[i], r->ctx->gqps[i]);
++  }
++}
++
++static void gdakiRecAllToErr(struct gdakiRecHost* r, int peer) {
++  gdakiRecForPeer(r, peer, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) { (void)gdakiRecModify(q, DOCA_VERBS_QP_STATE_ERR); });
++}
++
++static void gdakiRecRegister(struct gdaki_context* g) {
++  struct gdakiRecHost* r = g->rec;
++  if (r == nullptr) return;
++  if (g->q4 == nullptr) {
++    WARN("GIN/REC: NCCL_GIN_FAULT_RECOVERY=1 needs NCCL_GIN_FAULT_CLASSIFY=1; recovery disabled on rank %d", g->rank);
++    delete r;
++    g->rec = nullptr;
++    return;
++  }
++  uint32_t cqeMax = 1;
++  while (cqeMax < g->qp_sq_size) cqeMax <<= 1;
++  r->pinnedSize = std::max<size_t>((size_t)cqeMax * DOCA_GPUNETIO_VERBS_CQE_SIZE, sizeof(struct doca_gpu_dev_verbs_qp)) + 4096;
++  if (cudaStreamCreateWithFlags(&r->stream, cudaStreamNonBlocking) != cudaSuccess ||
++      cudaHostAlloc((void**)&r->pinned, r->pinnedSize, cudaHostAllocDefault) != cudaSuccess) {
++    WARN("GIN/REC: could not allocate the recovery stream/staging; recovery disabled on rank %d", g->rank);
++    if (r->stream) cudaStreamDestroy(r->stream);
++    delete r;
++    g->rec = nullptr;
++    return;
++  }
++  std::random_device rd;
++  r->rng.seed(rd() ^ (uint32_t)clockNano() ^ ((uint32_t)g->rank << 24));
++  int n = 0;
++  for (auto& q : r->qps) n += q.used ? 1 : 0;
++  {
++    std::lock_guard<std::mutex> lk(gdakiRecRegMu);
++    gdakiRecReg.push_back(r);
++  }
++  WARN("GIN/REC: recovery ON rank=%d peer_qps=%d contexts=%d drain_ms=%ld (API: ncclGinRecoverPrepare/Commit)", g->rank,
++       n, g->nContexts, (long)ncclParamGinRecoveryDrainMs());
++}
++
++static void gdakiRecFree(struct gdakiRecHost* r) {
++  if (r == nullptr) return;
++  {
++    std::lock_guard<std::mutex> lk(gdakiRecRegMu);
++    gdakiRecReg.erase(std::remove(gdakiRecReg.begin(), gdakiRecReg.end(), r), gdakiRecReg.end());
++  }
++  {
++    std::lock_guard<std::mutex> lk(r->hookMu);
++    r->hookStop = true;
++  }
++  r->hookCv.notify_all();
++  if (r->hookTh.joinable()) r->hookTh.join();
++  if (r->stream) cudaStreamDestroy(r->stream);
++  if (r->pinned) cudaFreeHost(r->pinned);
++  INFO(NCCL_NET, "GIN/REC: closed: %d commit(s), %d abort(s)", r->nCommits, r->nAborts);
++  delete r;
++}
++
++// Multi-shot fault hook: shot 1 fires delays[0] ms after context creation; shot k > 1 fires
++// delays[k-1] ms after the recovery commit that followed shot k-1 on this rank (0 = at once).
++// A delay of -1 fires shot k *inside* that commit, after the QPs reached RTS and before Commit
++// returns, so the application's replay meets a QP in ERR (a fault during the recovery itself).
++// Joined on context destruction.
++static void gdakiRecHookStart(struct gdaki_context* g, const std::vector<int>& delays, const char* spec) {
++  struct gdakiRecHost* r = g->rec;
++  const int nranks = g->collComm->nranks;
++  WARN("GIN/FAULT: GDAKI fault hook armed (%s): %d context(s) x %d peer(s), %zu shot(s); shot 1 fires in %d ms, "
++       "shot k>1 fires its delay after the recovery commit that followed shot k-1",
++       spec, g->nContexts, nranks - 1, delays.size(), delays[0]);
++  r->hookTh = std::thread([g, r, delays]() {
++    const double waitS = (double)ncclParamGinFaultInjectWaitS();
++    uint64_t commitsAtFire = 0;
++    for (size_t k = 0; k < delays.size(); k++) {
++      std::unique_lock<std::mutex> lk(r->hookMu);
++      if (k > 0 && delays[k] < 0) {
++        r->armShot = (int)k + 1;
++        r->armTotal = (int)delays.size();
++        bool ok = r->hookCv.wait_for(lk, std::chrono::duration<double>(waitS),
++                                     [&] { return r->hookStop || r->armShot == 0; });
++        if (r->hookStop) return;
++        if (!ok) {
++          r->armShot = 0;
++          WARN("GIN/FAULT: shot %zu/%zu cancelled: no recovery commit within %.0f s", k + 1, delays.size(), waitS);
++          return;
++        }
++        commitsAtFire = r->commits;  // the commit that fired it has already counted itself
++        continue;
++      }
++      if (k > 0) {
++        bool ok = r->hookCv.wait_for(lk, std::chrono::duration<double>(waitS),
++                                     [&] { return r->hookStop || r->commits > commitsAtFire; });
++        if (r->hookStop) return;
++        if (!ok) {
++          WARN("GIN/FAULT: shot %zu/%zu cancelled: no recovery commit within %.0f s", k + 1, delays.size(), waitS);
++          return;
++        }
++      }
++      if (delays[k] > 0 &&
++          r->hookCv.wait_for(lk, std::chrono::milliseconds(delays[k]), [&] { return r->hookStop; }))
++        return;
++      if (r->hookStop) return;
++      lk.unlock();
++      std::lock_guard<std::mutex> op(r->opMu);  // never inside a Prepare/Commit body
++      {
++        std::lock_guard<std::mutex> lk2(r->hookMu);
++        commitsAtFire = r->commits;
++      }
++      char tag[48];
++      snprintf(tag, sizeof(tag), " (shot %zu/%zu)", k + 1, delays.size());
++      ncclGinGdakiFaultFire(g, tag);
++    }
++  });
++}
++
++static const char* gdakiRecStateStr(int s) { return s == 0 ? "idle" : s == 1 ? "prepared" : "?"; }
++
++NCCL_API(ncclResult_t, ncclGinFaultQuery, ncclComm_t comm, int waitMs, ncclGinFaultInfo_t* info);
++ncclResult_t ncclGinFaultQuery(ncclComm_t comm, int waitMs, ncclGinFaultInfo_t* info) {
++  if (info == nullptr) return ncclInvalidArgument;
++  memset(info, 0, sizeof(*info));
++  std::vector<struct gdakiRecHost*> rs;
++  gdakiRecFind((void*)comm, rs);
++  if (rs.empty()) return ncclInvalidUsage;
++  const double deadline = gdakiQ4MonoMs() + std::max(0, waitMs);
++  do {
++    for (auto* r : rs) {
++      struct gdakiQ4Host* q = r->ctx->q4;
++      std::lock_guard<std::mutex> lk(q->lastMu);
++      if (q->nErrSinceRec == 0 || (info->valid && q->lastErrMonoMs <= info->hostMonoMs)) continue;
++      const struct ncclGinGdakiQ4Record& e = q->lastErr;
++      const bool rootErr = (e.root_opcode == 0xd || e.root_opcode == 0xe);
++      info->valid = 1;
++      info->cls = e.cls;
++      info->wcStatus = rootErr ? gdakiQ4WcStatus(e.syndrome) : 0;
++      info->vendorErr = rootErr ? e.vendor_err : 0;
++      info->syndrome = rootErr ? e.syndrome : 0;
++      info->peer = (int)e.peer;
++      info->ctxId = (int)e.ctx_id;
++      info->qpn = e.qpn;
++      info->wqeCounter = e.wqe_counter;
++      info->seq = e.seq;
++      info->nRecords = q->nErrSinceRec;
++      info->gtimerNs = e.gtimer_ns;
++      info->hostMonoMs = q->lastErrMonoMs;
++      info->recoverable = (e.cls == NCCL_GIN_Q4_CLASS_LOCAL_QP_ERR) ? 1 : (e.cls == NCCL_GIN_Q4_CLASS_RETRY_EXC) ? 2 : 0;
++      snprintf(info->className, sizeof(info->className), "%s", gdakiQ4Class(e.cls, e.vendor_err).name);
++    }
++    if (info->valid) break;
++    std::this_thread::sleep_for(std::chrono::microseconds(20));
++  } while (gdakiQ4MonoMs() < deadline);
++  return ncclSuccess;
++}
++
++NCCL_API(ncclResult_t, ncclGinRecoverPrepare, ncclComm_t comm, int peer, ncclGinRecoverToken_t* local,
++         ncclGinRecoverStats_t* stats);
++ncclResult_t ncclGinRecoverPrepare(ncclComm_t comm, int peer, ncclGinRecoverToken_t* local,
++                                   ncclGinRecoverStats_t* stats) {
++  if (local == nullptr) return ncclInvalidArgument;
++  ncclGinRecoverStats_t st;
++  memset(&st, 0, sizeof(st));
++  memset(local, 0, sizeof(*local));
++  local->magic = NCCL_GIN_RECOVERY_TOKEN_MAGIC;
++  std::vector<struct gdakiRecHost*> rs;
++  gdakiRecFind((void*)comm, rs);
++  if (rs.empty()) {
++    WARN("GIN/REC: prepare: no recovery-enabled GDAKI context on this communicator");
++    return ncclInvalidUsage;
++  }
++  const double t0 = gdakiQ4MonoMs();
++  ncclResult_t ret = ncclSuccess;
++  std::vector<std::unique_lock<std::mutex>> ops;
++  std::vector<struct gdakiRecHost*> pausedRs;
++  const char* why = nullptr;
++
++  // 1. configuration (checked before anything is touched)
++  for (auto* r : rs) {
++    struct gdaki_context* g = r->ctx;
++    if (peer < 0 || peer >= g->collComm->nranks || peer == g->rank) { why = "invalid peer"; goto decline; }
++    if (r->state != 0) { why = "a recovery is already prepared"; goto decline; }
++    if (g->companion_gqps != nullptr) { why = "companion (counter) QPs present"; goto decline; }
++    int n = 0;
++    gdakiRecForPeer(r, peer, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
++      n++;
++      struct doca_gpu_verbs_qp* v = q->qp_gverbs;
++      if (!v->cpu_proxy || (v->qp_cpu->nic_handler & DOCA_GPUNETIO_VERBS_NIC_HANDLER_FLAG_FREE_FLOW) != 0)
++        why = "doorbell mode is not CPU proxy";
++      else if (v->cq_type != DOCA_GPUNETIO_VERBS_CQ_64B)
++        why = "CQ is not a ring CQ";
++      else if (v->qp_gpu == nullptr)
++        why = "QP not exported";
++    });
++    if (why) goto decline;
++    if (n == 0) { why = "no QP to this peer"; goto decline; }
++    if ((int)local->nqp + n > NCCL_GIN_RECOVERY_MAX_QPS) { why = "too many QPs"; goto decline; }
++    local->nqp += n;
++  }
++  local->nqp = 0;
++
++  // 2. pause the proxy doorbell thread, ring any pending doorbell, snapshot and check quiescence
++  for (auto* r : rs) {
++    ops.emplace_back(r->opMu);
++    if (gdakiRecPause(r) != ncclSuccess) { why = "cannot pause proxy progress"; goto decline; }
++    pausedRs.push_back(r);
++    bool bad = false;
++    gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
++      if (bad) return;
++      struct doca_gpu_verbs_qp* v = q->qp_gverbs;
++      bool progressed = false;
++      doca_gpu_verbs_cpu_proxy_progress(v, &progressed);
++      if (gdakiRecD2H(r, &rq.snap, v->qp_gpu, sizeof(rq.snap)) != ncclSuccess) { bad = true; why = "cannot read device QP"; return; }
++      const uint64_t S = rq.snap.sq_rsvd_index, R = rq.snap.sq_ready_index;
++      const uint64_t P = __atomic_load_n(v->cpu_db, __ATOMIC_ACQUIRE);
++      if (R != S || P != S || v->sq_wqe_pi_last != S) {
++        WARN("GIN/REC: prepare: qpn=%#x not quiescent: sq_rsvd_index=%lu sq_ready_index=%lu proxy_db=%lu rung=%lu",
++             gdakiRecQpn(q), (unsigned long)S, (unsigned long)R, (unsigned long)P, (unsigned long)v->sq_wqe_pi_last);
++        bad = true;
++        why = "GPU producer not quiescent";
++        return;
++      }
++      rq.epochWqes = S;
++    });
++    if (bad) goto decline;
++  }
++
++  // 3. every QP of the pair set -> ERR (stops retransmission and execution of the old incarnation)
++  {
++    const double e0 = gdakiQ4MonoMs();
++    for (auto* r : rs) {
++      bool bad = false;
++      gdakiRecForPeer(r, peer, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
++        if (!bad && gdakiRecModify(q, DOCA_VERBS_QP_STATE_ERR) != ncclSuccess) bad = true;
++      });
++      if (bad) { why = "modify to ERR failed"; goto decline; }
++    }
++    st.errUs = (gdakiQ4MonoMs() - e0) * 1e3;
++  }
++
++  // 4. drain: the CQE of the last WQE of the epoch is in the ring (all earlier ones are too)
++  {
++    const double d0 = gdakiQ4MonoMs();
++    const double deadline = d0 + (double)ncclParamGinRecoveryDrainMs();
++    for (auto* r : rs) {
++      bool bad = false;
++      gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
++        if (bad || rq.epochWqes == 0) return;
++        const struct doca_gpu_dev_verbs_cq& cq = rq.snap.cq_sq;
++        const uint32_t cqeNum = cq.cqe_num;
++        if ((size_t)cqeNum * DOCA_GPUNETIO_VERBS_CQE_SIZE > r->pinnedSize) { bad = true; why = "CQ too large"; return; }
++        const uint64_t last = rq.epochWqes - 1;
++        const uint64_t pos = last + cq.cqe_rsvd;
++        const uint8_t* slotAddr = cq.cqe_daddr + (pos & (cqeNum - 1)) * DOCA_GPUNETIO_VERBS_CQE_SIZE;
++        uint8_t cqe[64];
++        while (true) {
++          if (gdakiRecD2H(r, cqe, slotAddr, sizeof(cqe)) != ncclSuccess) { bad = true; why = "cannot read CQ"; return; }
++          if (gdakiRecCqeCurrent(cqe, pos, cqeNum, last)) break;
++          if (gdakiQ4MonoMs() > deadline) {
++            WARN("GIN/REC: prepare: qpn=%#x drain timeout: CQE of WQE %lu (ring pos %lu) not written after %ld ms "
++                 "(wqe_counter=%u op_own=%#x)",
++                 gdakiRecQpn(q), (unsigned long)last, (unsigned long)pos, (long)ncclParamGinRecoveryDrainMs(),
++                 ((unsigned)cqe[60] << 8) | cqe[61], cqe[63]);
++            bad = true;
++            why = "drain timeout";
++            return;
++          }
++          std::this_thread::sleep_for(std::chrono::microseconds(50));
++        }
++        // Diagnostics: current CQEs of the unconsumed window [cqe_ci, S).
++        std::vector<uint8_t> ring((size_t)cqeNum * DOCA_GPUNETIO_VERBS_CQE_SIZE);
++        if (gdakiRecD2H(r, ring.data(), cq.cqe_daddr, ring.size()) != ncclSuccess) return;
++        uint64_t lo = cq.cqe_ci;
++        if (rq.epochWqes > cqeNum && lo < rq.epochWqes - cqeNum) lo = rq.epochWqes - cqeNum;
++        for (uint64_t i = lo; i < rq.epochWqes; i++) {
++          const uint64_t p = i + cq.cqe_rsvd;
++          const uint8_t* c = ring.data() + (p & (cqeNum - 1)) * DOCA_GPUNETIO_VERBS_CQE_SIZE;
++          if (!gdakiRecCqeCurrent(c, p, cqeNum, i)) continue;
++          const uint8_t op = c[63] >> 4;
++          if (op == 0xd || op == 0xe) st.cqeErr++;
++          else st.cqeOk++;
++        }
++      });
++      if (bad) goto decline;
++    }
++    st.drainUs = (gdakiQ4MonoMs() - d0) * 1e3;
++  }
++
++  // 5. token: fresh 24-bit send PSN per QP
++  for (auto* r : rs) {
++    gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
++      rq.newSqPsn = r->rng() & 0xffffff;
++      const unsigned n = local->nqp++;
++      local->qpn[n] = gdakiRecQpn(q);
++      local->remoteQpn[n] = (unsigned)rq.exch.qpn;
++      local->sqPsn[n] = rq.newSqPsn;
++      local->epochWqes[n] = rq.epochWqes;
++      st.epochWqes += rq.epochWqes;
++    });
++    r->state = 1;
++    r->preparedPeer = peer;
++  }
++  st.nqp = (int)local->nqp;
++  st.prepareUs = (gdakiQ4MonoMs() - t0) * 1e3;
++  if (stats) *stats = st;
++  INFO(NCCL_NET, "GIN/REC: prepared peer=%d qps=%d epoch_wqes=%llu cqe_err=%u cqe_ok=%u err_us=%.0f drain_us=%.0f total_us=%.0f",
++       peer, st.nqp, st.epochWqes, st.cqeErr, st.cqeOk, st.errUs, st.drainUs, st.prepareUs);
++  return ncclSuccess;
++
++decline:
++  for (auto* r : pausedRs) gdakiRecResume(r);
++  WARN("GIN/REC: prepare declined (peer=%d): %s", peer, why ? why : "?");
++  if (ret == ncclSuccess) ret = ncclInvalidUsage;
++  return ret;
++}
++
++NCCL_API(ncclResult_t, ncclGinRecoverCommit, ncclComm_t comm, int peer, const ncclGinRecoverToken_t* remote,
++         ncclGinRecoverStats_t* stats);
++ncclResult_t ncclGinRecoverCommit(ncclComm_t comm, int peer, const ncclGinRecoverToken_t* remote,
++                                  ncclGinRecoverStats_t* stats) {
++  if (remote == nullptr) return ncclInvalidArgument;
++  std::vector<struct gdakiRecHost*> rs;
++  gdakiRecFind((void*)comm, rs);
++  if (rs.empty()) return ncclInvalidUsage;
++  ncclGinRecoverStats_t st;
++  if (stats) st = *stats;
++  else memset(&st, 0, sizeof(st));
++  // Validate before touching anything: same QP set, each end connected to the other.
++  {
++    unsigned n = 0;
++    bool bad = remote->magic != NCCL_GIN_RECOVERY_TOKEN_MAGIC;
++    for (auto* r : rs) {
++      if (r->state != 1 || r->preparedPeer != peer) {
++        WARN("GIN/REC: commit: context not prepared for peer %d (state %s)", peer, gdakiRecStateStr(r->state));
++        return ncclInvalidUsage;
++      }
++      gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
++        if (n >= remote->nqp || remote->qpn[n] != (unsigned)rq.exch.qpn || remote->remoteQpn[n] != gdakiRecQpn(q))
++          bad = true;
++        n++;
++      });
++    }
++    if (bad || n != remote->nqp) {
++      WARN("GIN/REC: commit: peer token does not match the connected QPs (local %u, remote %u)", n, remote->nqp);
++      return ncclInvalidArgument;
++    }
++  }
++  const double t0 = gdakiQ4MonoMs();
++  ncclResult_t ret = ncclSuccess;
++  unsigned n = 0;
++  for (auto* r : rs) {
++    std::lock_guard<std::mutex> op(r->opMu);
++    struct gdaki_context* g = r->ctx;
++    const int nranks = g->collComm->nranks;
++    bool bad = false;
++    gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
++      const unsigned idx = n++;
++      if (bad) return;
++      struct doca_gpu_verbs_qp* v = q->qp_gverbs;
++      // (a) 2RST: the NIC restarts this SQ at WQE counter 0; no CQE is written for it any more.
++      double a = gdakiQ4MonoMs();
++      if (gdakiRecModify(q, DOCA_VERBS_QP_STATE_RST) != ncclSuccess) { bad = true; return; }
++      double b = gdakiQ4MonoMs();
++      st.resetUs += (b - a) * 1e3;
++      // (b) host doorbell state of the CPU proxy, while the QP is in RESET.
++      __atomic_store_n(v->sq_dbrec, (__be32)0, __ATOMIC_RELEASE);
++      if (gdakiRecDiag() != 2) {
++        __atomic_store_n(&v->cpu_db[0], (uint64_t)0, __ATOMIC_RELEASE);
++        v->sq_wqe_pi_last = 0;
++      }
++      // (c) device QP struct: new WQE index epoch; CQ mapping advanced by the WQEs of the old one.
++      struct doca_gpu_dev_verbs_qp nd = rq.snap;
++      nd.sq_rsvd_index = 0;
++      nd.sq_ready_index = 0;
++      nd.sq_wqe_pi = 0;
++      nd.sq_lock = 0;
++      nd.cq_sq.cqe_ci = 0;
++      nd.cq_sq.cqe_rsvd = rq.snap.cq_sq.cqe_rsvd + rq.epochWqes;
++      if (gdakiRecDiag() == 1) nd.cq_sq.cqe_rsvd = rq.epochWqes;  // diagnostic: DOCA's formula
++      if (gdakiRecH2D(r, v->qp_gpu, &nd, sizeof(nd)) != ncclSuccess) { bad = true; return; }
++      v->qp_cpu->sq_rsvd_index = 0;
++      v->qp_cpu->sq_ready_index = 0;
++      v->qp_cpu->sq_wqe_pi = 0;
++      v->qp_cpu->sq_lock = 0;
++      v->qp_cpu->cq_sq.cqe_ci = 0;
++      v->qp_cpu->cq_sq.cqe_rsvd = nd.cq_sq.cqe_rsvd;
++      // (d) GIN get tickets of this (context, peer): WQE indices of the old epoch.
++      const size_t off = (size_t)rq.ctxIdx * nranks + rq.peer;
++      if (cudaMemsetAsync(g->last_issued_get + off, 0, sizeof(uint64_t), r->stream) != cudaSuccess ||
++          cudaMemsetAsync(g->last_visible_get + off, 0, sizeof(uint64_t), r->stream) != cudaSuccess ||
++          cudaStreamSynchronize(r->stream) != cudaSuccess) {
++        WARN("GIN/REC: commit: cannot clear get tickets");
++        bad = true;
++        return;
++      }
++      double c = gdakiQ4MonoMs();
++      st.resyncUs += (c - b) * 1e3;
++      // (e) reconnect with the connect-time attributes and the fresh PSNs.
++      if (gdakiConnectQp(g, q, &rq.exch, rq.lag, remote->sqPsn[idx], rq.newSqPsn) != ncclSuccess) {
++        WARN("GIN/REC: commit: reconnect of qpn=%#x failed", gdakiRecQpn(q));
++        bad = true;
++        return;
++      }
++      st.connectUs += (gdakiQ4MonoMs() - c) * 1e3;
++      INFO(NCCL_NET, "GIN/REC: qpn=%#x -> remote %#x reconnected: epoch_wqes=%lu cqe_rsvd %lu->%lu rq_psn=%#x sq_psn=%#x",
++           gdakiRecQpn(q), rq.exch.qpn, (unsigned long)rq.epochWqes, (unsigned long)rq.snap.cq_sq.cqe_rsvd,
++           (unsigned long)nd.cq_sq.cqe_rsvd, remote->sqPsn[idx], rq.newSqPsn);
++    });
++    if (bad) {
++      // A half-reset pair must never carry traffic: leave every QP of this peer in ERR.
++      gdakiRecAllToErr(r, peer);
++      ret = ncclSystemError;
++    }
++  }
++  if (ret != ncclSuccess) {
++    for (auto* r : rs) {
++      r->state = 0;
++      r->nAborts++;
++      gdakiRecResume(r);
++    }
++    WARN("GIN/REC: commit failed (peer=%d); QPs left in ERR", peer);
++    return ret;
++  }
++  // Test hook (delay -1): fire the armed shot now, after RTS and before Commit returns.
++  for (auto* r : rs) {
++    int shot = 0, total = 0;
++    {
++      std::lock_guard<std::mutex> lk(r->hookMu);
++      shot = r->armShot;
++      total = r->armTotal;
++    }
++    if (shot > 0) {
++      char tag[64];
++      snprintf(tag, sizeof(tag), " (shot %d/%d, inside commit)", shot, total);
++      std::lock_guard<std::mutex> op(r->opMu);
++      ncclGinGdakiFaultFire(r->ctx, tag);
++    }
++  }
++  // Clear the Q4 error state: device sticky errors, host flag, the GIN async result it set.
++  for (auto* r : rs) {
++    struct gdakiQ4Host* q = r->ctx->q4;
++    if (cudaMemsetAsync(q->dev->sticky, 0, sizeof(q->dev->sticky), r->stream) != cudaSuccess ||
++        cudaStreamSynchronize(r->stream) != cudaSuccess) {
++      WARN("GIN/REC: commit: cannot clear the device error state");
++      ret = ncclUnhandledCudaError;
++    }
++    {
++      std::lock_guard<std::mutex> lk(q->lastMu);
++      q->nErrSinceRec = 0;
++    }
++    q->hasError.store(0, std::memory_order_release);
++    if (q->asyncResult && q->setAsync.exchange(0)) {
++      ncclResult_t expect = ncclRemoteError;
++      __atomic_compare_exchange_n(q->asyncResult, &expect, ncclSuccess, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
++    }
++    r->state = 0;
++    r->nCommits++;
++    gdakiRecResume(r);
++    {
++      std::lock_guard<std::mutex> op(r->opMu);
++      std::lock_guard<std::mutex> lk(r->hookMu);
++      r->commits++;
++      r->armShot = 0;
++    }
++    r->hookCv.notify_all();
++  }
++  st.commitUs = (gdakiQ4MonoMs() - t0) * 1e3;
++  if (stats) *stats = st;
++  INFO(NCCL_NET, "GIN/REC: committed peer=%d qps=%u reset_us=%.0f resync_us=%.0f connect_us=%.0f total_us=%.0f", peer, n,
++       st.resetUs, st.resyncUs, st.connectUs, st.commitUs);
++  return ret;
++}
++
++NCCL_API(ncclResult_t, ncclGinRecoverAbort, ncclComm_t comm, int peer);
++ncclResult_t ncclGinRecoverAbort(ncclComm_t comm, int peer) {
++  std::vector<struct gdakiRecHost*> rs;
++  gdakiRecFind((void*)comm, rs);
++  if (rs.empty()) return ncclInvalidUsage;
++  for (auto* r : rs) {
++    if (r->state != 1) continue;
++    r->state = 0;
++    r->nAborts++;
++    gdakiRecResume(r);  // QPs stay in ERR; the Q4 error stays set
++    WARN("GIN/REC: recovery aborted (peer=%d); QPs left in ERR", peer);
++  }
++  return ncclSuccess;
++}
++
+ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, void** outGinCtx,
+                                        ncclNetDeviceHandle_t** outDevHandle) {
+   ncclResult_t status = ncclSuccess;
+@@ -1294,6 +1982,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+                   status, out);
+   }
+ 
++  // GIN recovery (research build): keep the connect-time peer info of every peer-connected main QP
++  // of a user devComm, so a recovery can reconnect with exactly the same attributes.
++  if (ncclParamGinFaultRecovery() && ncclGinFaultUserCtx) {
++    gdaki_ctx->rec = new gdakiRecHost();
++    gdaki_ctx->rec->ctx = gdaki_ctx;
++    gdaki_ctx->rec->commKey = ncclGinRecCommKey;
++    gdaki_ctx->rec->qps.resize(nqps_for_comm);
++  }
++
+   for (int rank_idx = rankOff; rank_idx < nranks; rank_idx += rankStride) {
+     if (rank_idx == rank) continue;
+     for (int ctx_idx = 0; ctx_idx < ncontexts; ctx_idx++) {
+@@ -1303,6 +2000,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+       uint8_t lagTxPortAffinity = (numLagPorts > 0) ? (ctx_idx % numLagPorts) + 1 : 0;
+ 
+       NCCLCHECKGOTO(gdakiConnectQp(gdaki_ctx, gdaki_ctx->gqps[qp_idx], peer_info, lagTxPortAffinity), status, out);
++      if (gdaki_ctx->rec) {  // GIN recovery
++        struct gdakiRecQp& rq = gdaki_ctx->rec->qps[qp_idx];
++        rq.used = true;
++        rq.ctxIdx = ctx_idx;
++        rq.peer = rank_idx;
++        rq.qpIdx = qp_idx;
++        rq.exch = *peer_info;
++        rq.lag = lagTxPortAffinity;
++      }
+       DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->gqps[qp_idx]->qp, &qpn), status, out);
+       INFO(NCCL_NET,
+            "[%d] Connected main QP: qp_idx=%d, main_qpn=%#x, remote_rank=%d, remote_qpn=%#x, lagTxPortAffinity=%u%s",
+@@ -1462,12 +2168,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+ 
+   *outDevHandle = devHandle;
+   *outGinCtx = gdaki_ctx;
++  gdakiRecRegister(gdaki_ctx);   // GIN recovery: registry + staging (only with NCCL_GIN_FAULT_RECOVERY=1)
+   gdakiQ4Start(gdaki_ctx->q4);  // GIN Q4: mailbox watcher thread
+   ncclGinGdakiFaultInjectArm(gdaki_ctx);
+ 
+ out:
+   if (status != ncclSuccess) {
+     if (gdaki_ctx) {
++      gdakiRecFree(gdaki_ctx->rec);  // GIN recovery
++      gdaki_ctx->rec = nullptr;
+       gdakiQ4Free(gdaki_ctx->q4);  // GIN Q4
+       gdaki_ctx->q4 = nullptr;
+       if (gdaki_ctx->docaEvent) {
+@@ -1562,6 +2271,8 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+   const int rankStride = gdaki_ctx->rankStride;
+   const int rankOff = gdaki_ctx->rank % rankStride;
+ 
++  gdakiRecFree(gdaki_ctx->rec);  // GIN recovery: unregister, join the test hook, before the QPs go away
++  gdaki_ctx->rec = nullptr;
+   gdakiQ4Free(gdaki_ctx->q4);  // GIN Q4: stop the watcher before the QPs go away
+   gdaki_ctx->q4 = nullptr;
+ 
+@@ -1742,6 +2453,9 @@ ncclResult_t ncclGinGdakiProgress(void* ctx) {
+   const int rankOff = gdakiCtx->rank % rankStride;
+   bool has_progressed = true;
+   bool progressed;
++  // GIN recovery: skip this context while a recovery rewrites its doorbell state (no-op when off).
++  gdakiRecProgressGuard recGuard(gdakiCtx->rec);
++  if (recGuard.skip) return ncclSuccess;
+ 
+   while (has_progressed) {
+     has_progressed = false;
