@@ -1,5 +1,13 @@
 # GPU-rung doorbells (PeerMappingOverride=1): what changes
 
+> **Since 2026-09-24 13:53 the override is permanent on both nodes** (the user's decision):
+> `/etc/modprobe.d/nvidia-peermapping.conf` holds
+> `options nvidia NVreg_RegistryDwords="PeerMappingOverride=1;" NVreg_EnableStreamMemOPs=1`,
+> applied without a reboot by `apply_peermapping.sh` (one module reload; rain's mooncake_client
+> and gdm restarted; CUDA checked on both nodes). The nvidia modules are not in the initramfs, so
+> the file also applies at boot. From now on NVSHMEM's default NIC handler is the GPU; to
+> reproduce the CPU-proxy results, set `NVSHMEM_IBGDA_NIC_HANDLER=cpu_host_memory`.
+
 Every other result in `../` ran in the CPU-doorbell fallback: without
 `NVreg_RegistryDwords="PeerMappingOverride=1;"` the NIC's UAR page cannot be mapped into the
 GPU, so a CPU thread rings the doorbell while the GPU still builds the WQEs and polls a CQ in GPU
