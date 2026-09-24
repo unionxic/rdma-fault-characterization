@@ -14,7 +14,10 @@
 set -u
 
 SCRATCH=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
-LOCK=${CLUSTER_LOCK:-$SCRATCH/cluster.lock}
+# v2: the first lock file stays held forever by a process that inherited its fd (a
+# mooncake_client restarted from inside a locked run, 2026-09-24). The command below now
+# runs with fd 9 closed, so nothing it starts can inherit the lock.
+LOCK=${CLUSTER_LOCK:-$SCRATCH/cluster.lock.v2}
 LOG=${CLUSTER_LOG:-$SCRATCH/cluster_run.log}
 PORT=/sys/class/infiniband/mlx5_1/ports/1/counters
 SUNNY_MGMT=${SUNNY_MGMT:-unionxic@192.0.2.194}
@@ -70,7 +73,7 @@ while :; do
 done
 
 log "idle (rate=${mbps}Mb/s); running: $*"
-"$@"
+"$@" 9>&-      # the lock fd stays with this shell only; children must not inherit it
 rc=$?
 log "command exited rc=$rc; sunny_busy_after=$(sunny_busy)"
 exit $rc
