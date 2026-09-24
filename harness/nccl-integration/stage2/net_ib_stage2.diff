@@ -1,0 +1,1448 @@
+# NCCL in-tree RDMA fault recovery, Stage 2 (many requests in flight); design: DESIGN_stage2.md
+# Upstream: github.com/NVIDIA/nccl   Tag: v2.23.4-1   Commit: 68b542363f9a44cdaac480f51ebe0fc26de96139
+# File: src/transport/net_ib.cc only; recovery behind NCCL_RDMA_FAULT_RECOVERY=1 (default 0);
+# test-injection knobs NCCL_RDMA_FAULT_INJECT* / _TEST_MUTE are separate (see DESIGN_stage2.md §10).
+# Patched net_ib.cc git hash-object: cc54d9a5b267d0677e29ae0866d706493c753849 (built library md5 78f96f38, the build of every final result)
+# Apply: cd nccl && git checkout v2.23.4-1 && sed '/^# /d;/^#$/d' net_ib_stage2.diff | git apply
+#
+diff --git a/src/transport/net_ib.cc b/src/transport/net_ib.cc
+index d828c98..cc54d9a 100644
+--- a/src/transport/net_ib.cc
++++ b/src/transport/net_ib.cc
+@@ -20,6 +20,10 @@
+ #include <poll.h>
+ #include <sys/types.h>
+ #include <unistd.h>
++#include <errno.h>
++#include <netinet/tcp.h>
++#include <algorithm>
++#include <vector>
+ #define ENABLE_TIMER 0
+ #include "timer.h"
+ 
+@@ -926,6 +930,7 @@ struct ncclIbMrHandle {
+   ibv_mr* mrs[NCCL_IB_MAX_DEVS_PER_NIC];
+ };
+ 
++struct ncclIbFr2;  // [RDMA-FAULT-RECOVERY Stage 2]
+ struct alignas(32) ncclIbNetCommBase {
+   int ndevs;
+   bool isSend;
+@@ -941,6 +946,8 @@ struct alignas(32) ncclIbNetCommBase {
+   struct ncclIbDevInfo remDevs[NCCL_IB_MAX_DEVS_PER_NIC];
+   // statistics about the comm
+   struct ncclIbStats stats;
++  // [RDMA-FAULT-RECOVERY Stage 2] side state, NULL unless NCCL_RDMA_FAULT_RECOVERY=1
++  struct ncclIbFr2* fr;
+ };
+ 
+ struct ncclIbSendComm {
+@@ -1063,13 +1070,13 @@ ncclResult_t ncclIbCreateQp(uint8_t ib_port, struct ncclIbNetCommDevBase* base,
+   return ncclSuccess;
+ }
+ 
+-ncclResult_t ncclIbRtrQp(struct ibv_qp* qp, struct ncclIbGidInfo* sGidInfo, uint32_t dest_qp_num, struct ncclIbDevInfo* info, bool override_tc) {
++ncclResult_t ncclIbRtrQp(struct ibv_qp* qp, struct ncclIbGidInfo* sGidInfo, uint32_t dest_qp_num, struct ncclIbDevInfo* info, bool override_tc, uint32_t rq_psn = 0) {
+   struct ibv_qp_attr qpAttr;
+   memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
+   qpAttr.qp_state = IBV_QPS_RTR;
+   qpAttr.path_mtu = info->mtu;
+   qpAttr.dest_qp_num = dest_qp_num;
+-  qpAttr.rq_psn = 0;
++  qpAttr.rq_psn = rq_psn;
+   qpAttr.max_dest_rd_atomic = 1;
+   qpAttr.min_rnr_timer = 12;
+   if (info->link_layer == IBV_LINK_LAYER_ETHERNET) {
+@@ -1112,19 +1119,25 @@ ncclResult_t ncclIbRtrQp(struct ibv_qp* qp, struct ncclIbGidInfo* sGidInfo, uint
+   return ncclSuccess;
+ }
+ 
+-ncclResult_t ncclIbRtsQp(struct ibv_qp* qp) {
++ncclResult_t ncclIbRtsQp(struct ibv_qp* qp, uint32_t sq_psn = 0) {
+   struct ibv_qp_attr qpAttr;
+   memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
+   qpAttr.qp_state = IBV_QPS_RTS;
+   qpAttr.timeout = ncclParamIbTimeout();
+   qpAttr.retry_cnt = ncclParamIbRetryCnt();
+   qpAttr.rnr_retry = 7;
+-  qpAttr.sq_psn = 0;
++  qpAttr.sq_psn = sq_psn;
+   qpAttr.max_rd_atomic = 1;
+   NCCLCHECK(wrap_ibv_modify_qp(qp, &qpAttr, IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC));
+   return ncclSuccess;
+ }
+ 
++// [RDMA-FAULT-RECOVERY Stage 2] defined with the recovery module below ncclIbDeregMr
++static void fr2Attach(struct ncclIbNetCommBase* base, int isSend, int ar, uint32_t remQpn, int eceSet,
++                      const struct ibv_ece* ece, bool overrideTc);
++static void fr2Activate(struct ncclIbNetCommBase* base);
++static void fr2Detach(struct ncclIbNetCommBase* base);
++
+ ncclResult_t ncclIbListen(int dev, void* opaqueHandle, void** listenComm) {
+   ncclResult_t ret = ncclSuccess;
+   struct ncclIbListenComm* comm;
+@@ -1341,6 +1354,9 @@ ib_connect:
+     }
+   }
+ 
++  // [RDMA-FAULT-RECOVERY Stage 2] side state + connect-time attributes of QP 0 (no-op unless enabled)
++  fr2Attach(&comm->base, 1, comm->ar, remMeta.qpInfo[0].qpn, remMeta.qpInfo[0].ece_supported, &remMeta.qpInfo[0].ece, false);
++
+   comm->base.ready = 1;
+   stage->state = ncclIbCommStateConnected;
+   stage->offset = 0;
+@@ -1349,12 +1365,14 @@ ib_send_ready:
+   NCCLCHECKGOTO(ncclSocketProgress(NCCL_SOCKET_SEND, &comm->base.sock, &comm->base.ready, sizeof(int), &stage->offset), ret, fail);
+   if (stage->offset != sizeof(int)) return ncclSuccess;
+ 
++  fr2Activate(&comm->base);   // [RDMA-FAULT-RECOVERY Stage 2] only now may the helper touch base.sock
+   *sendComm = comm;
+ exit:
+   if (stage->buffer) free(stage->buffer);
+   stage->state = ncclIbCommStateStart;
+   return ret;
+ fail:
++  fr2Detach(&comm->base);
+   free(comm);
+   goto exit;
+ }
+@@ -1476,6 +1494,10 @@ ib_recv:
+     NCCLCHECKGOTO(ncclIbRtsQp(qp->qp), ret, fail);
+   }
+ 
++  // [RDMA-FAULT-RECOVERY Stage 2] side state + connect-time attributes of QP 0 (no-op unless enabled)
++  fr2Attach(&rComm->base, 0, 0, remMeta.qpInfo[0].qpn, remMeta.qpInfo[0].ece_supported && meta.qpInfo[0].ece_supported,
++            &remMeta.qpInfo[0].ece, true);
++
+   rComm->flushEnabled = ((ncclIbGdrSupport() == ncclSuccess || ncclIbDmaBufSupport(lComm->dev) == ncclSuccess)
+                             && (ncclParamIbGdrFlushDisable() == 0)) ? 1 : 0;
+ 
+@@ -1554,6 +1576,7 @@ ib_recv_ready:
+   NCCLCHECKGOTO(ncclSocketProgress(NCCL_SOCKET_RECV,  &rComm->base.sock, &rComm->base.ready, sizeof(int), &stage->offset), ret, fail);
+   if (stage->offset != sizeof(int)) return ncclSuccess;
+ 
++  fr2Activate(&rComm->base);  // [RDMA-FAULT-RECOVERY Stage 2] only now may the helper touch base.sock
+   *recvComm = rComm;
+ exit:
+   /* reset lComm stage */
+@@ -1564,6 +1587,7 @@ exit:
+   stage->buffer = NULL;
+   return ret;
+ fail:
++  fr2Detach(&rComm->base);
+   free(rComm);
+   goto exit;
+ }
+@@ -1717,6 +1741,1141 @@ ncclResult_t ncclIbDeregMr(void* comm, void* mhandle) {
+   return ncclSuccess;
+ }
+ 
++/* =====================================================================
++ * [RDMA-FAULT-RECOVERY Stage 2] in-tree recovery with many requests in flight.
++ * Design: harness/nccl-integration/stage2/DESIGN_stage2.md (rdma-error repo).
++ *
++ * Opt-in: NCCL_RDMA_FAULT_RECOVERY=1. With it unset/0, base->fr stays NULL and every hook below
++ * is skipped: the transport makes the same verbs calls as stock v2.23.4-1. With it on, a comm
++ * whose configuration is supported (1 QP, 1 NIC, no adaptive routing) gets a side allocation
++ * (struct ncclIbFr2) and:
++ *  - every CQE of the comm's CQ goes through fr2PollCq(): drain markers and FR tags first, the
++ *    stock accounting for successes, and the first error CQE of an incident starts a recovery
++ *    instead of failing the comm (WR_FLUSH, or RETRY_EXC with the peer alive);
++ *  - the send comm S always leads: drain (QP->ERR + marker, like ib_drain_qp), REQ; the recv
++ *    comm R drains, reconciles (R_done = last receive that completed; pending receives are a
++ *    suffix), resets, re-posts the pending receives, ACKs; S resets, completes the groups R got,
++ *    replays the others in FIFO order, DONE; R then rewrites the CTS entries S may lack;
++ *  - R that detects first drains and sends NOTIFY; S leads when it next runs;
++ *  - isend()/irecv() return a NULL request while a recovery runs; test() returns not-done;
++ *  - bounded: handshake deadline, drain deadline, max rounds without progress; peer death via
++ *    FIN/RST and TCP keepalive on base.sock.
++ * Test hooks (work with the recovery flag off too, to drive the stock error path):
++ *  NCCL_RDMA_FAULT_INJECT=k [_REPEAT=n _PERIOD=p]: force the send QP to ERR before multi-send k
++ *  NCCL_RDMA_FAULT_INJECT_RECV=k: force the recv QP to ERR before receive post k
++ *  NCCL_RDMA_FAULT_INJECT_RECV_SILENT=1: ... and R does not NOTIFY (S then sees RETRY_EXC)
++ *  NCCL_RDMA_FAULT_TEST_MUTE=1: R never answers a REQ (live but unresponsive peer)
++ * ===================================================================== */
++NCCL_PARAM(RdmaFaultRecovery, "RDMA_FAULT_RECOVERY", 0);
++NCCL_PARAM(RdmaFaultHandshakeMs, "RDMA_FAULT_HANDSHAKE_MS", 5000);
++NCCL_PARAM(RdmaFaultDrainMs, "RDMA_FAULT_DRAIN_MS", 1000);
++NCCL_PARAM(RdmaFaultMaxRounds, "RDMA_FAULT_MAX_ROUNDS", 8);
++NCCL_PARAM(RdmaFaultPollUs, "RDMA_FAULT_POLL_US", 100);
++NCCL_PARAM(RdmaFaultKeepaliveMs, "RDMA_FAULT_KEEPALIVE_MS", 5000);
++NCCL_PARAM(RdmaFaultPathWaitMs, "RDMA_FAULT_PATH_WAIT_MS", 30000);
++NCCL_PARAM(RdmaFaultWaitReqMs, "RDMA_FAULT_WAITREQ_MS", 120000);
++NCCL_PARAM(RdmaFaultInject, "RDMA_FAULT_INJECT", 0);
++NCCL_PARAM(RdmaFaultInjectRepeat, "RDMA_FAULT_INJECT_REPEAT", 1);
++NCCL_PARAM(RdmaFaultInjectPeriod, "RDMA_FAULT_INJECT_PERIOD", 0);
++NCCL_PARAM(RdmaFaultInjectRecv, "RDMA_FAULT_INJECT_RECV", 0);
++NCCL_PARAM(RdmaFaultInjectRecvSilent, "RDMA_FAULT_INJECT_RECV_SILENT", 0);
++NCCL_PARAM(RdmaFaultTestMute, "RDMA_FAULT_TEST_MUTE", 0);
++
++#define FR2_MARK_SQ 0xFEFEFEFEFEFEFE01ULL  // stock wr_ids are < 256 or pack distinct request indices
++#define FR2_MARK_RQ 0xFEFEFEFEFEFEFE02ULL
++#define FR2_CTS_TAG 0xFEFEFEFEFEFEFE03ULL
++#define FR2_MARK_FL 0xFEFEFEFEFEFEFE04ULL  // drain marker of the GPU-flush QP
++#define FR2_MAGIC 0x46523253u               // "FR2S"
++
++enum { FR2_NOTIFY = 1, FR2_REQ = 2, FR2_ACK = 3, FR2_NACK = 4, FR2_DONE = 5, FR2_FAIL = 6, FR2_HELLO = 7 };
++static const char* fr2MsgStr(uint32_t t) {
++  switch (t) { case FR2_NOTIFY: return "NOTIFY"; case FR2_REQ: return "REQ"; case FR2_ACK: return "ACK";
++    case FR2_NACK: return "NACK"; case FR2_DONE: return "DONE"; case FR2_FAIL: return "FAIL"; case FR2_HELLO: return "HELLO"; default: return "?"; }
++}
++
++struct ncclIbFr2Msg {
++  uint32_t magic, type, epoch, reason;
++  uint64_t a, b;
++  uint32_t psn, nqps, ndevs, status, vendor, flags;
++};
++static_assert(sizeof(struct ncclIbFr2Msg) == 56, "FR2 message size");
++
++enum ncclIbFr2State {
++  FR2_IDLE = 0,
++  FR2_S_DRAIN, FR2_S_WAIT_ACK, FR2_S_BRINGUP,                               // send comm (leader)
++  FR2_R_DRAIN_NOTIFY, FR2_R_WAIT_REQ, FR2_R_DRAIN_REQ, FR2_R_BRINGUP, FR2_R_WAIT_DONE,  // recv comm
++  FR2_FAILED
++};
++static const char* fr2StateStr(int s) {
++  switch (s) { case FR2_IDLE: return "IDLE"; case FR2_S_DRAIN: return "S_DRAIN"; case FR2_S_WAIT_ACK: return "S_WAIT_ACK";
++    case FR2_R_DRAIN_NOTIFY: return "R_DRAIN_NOTIFY"; case FR2_R_WAIT_REQ: return "R_WAIT_REQ"; case FR2_R_DRAIN_REQ: return "R_DRAIN_REQ";
++    case FR2_R_WAIT_DONE: return "R_WAIT_DONE"; case FR2_S_BRINGUP: return "S_BRINGUP"; case FR2_R_BRINGUP: return "R_BRINGUP";
++    case FR2_FAILED: return "FAILED"; default: return "?"; }
++}
++
++enum {  // reasons (FAIL/NACK and logs)
++  FR2_R_NONE = 0, FR2_R_CLASS = 1, FR2_R_PEER_DEAD = 2, FR2_R_FATAL = 3, FR2_R_DRAIN_TMO = 4, FR2_R_HS_TMO = 5,
++  FR2_R_PROTO = 6, FR2_R_INCONSISTENT = 7, FR2_R_MULTI = 8, FR2_R_VERBS = 9, FR2_R_ROUNDS = 10, FR2_R_PEER_FAIL = 11,
++  FR2_R_FLUSHQP = 12, FR2_R_DONE_TMO = 13, FR2_R_PATH_TMO = 14, FR2_R_PEER_OFF = 15
++};
++static const char* fr2ReasonStr(uint32_t r) {
++  switch (r) {
++    case FR2_R_CLASS: return "fault class not recoverable";
++    case FR2_R_PEER_DEAD: return "peer dead (FIN/RST/keepalive)";
++    case FR2_R_FATAL: return "async fatal event on comm/device";
++    case FR2_R_DRAIN_TMO: return "drain marker not seen before the deadline";
++    case FR2_R_HS_TMO: return "no ACK before the handshake deadline";
++    case FR2_R_PROTO: return "protocol error";
++    case FR2_R_INCONSISTENT: return "reconciliation found an inconsistent state";
++    case FR2_R_MULTI: return "unsupported group (nreqs>1)";
++    case FR2_R_VERBS: return "verbs call failed during recovery";
++    case FR2_R_ROUNDS: return "too many rounds without progress";
++    case FR2_R_PEER_FAIL: return "peer failed or declined";
++    case FR2_R_FLUSHQP: return "error on the GPU-flush QP";
++    case FR2_R_DONE_TMO: return "no DONE before the deadline";
++    case FR2_R_PATH_TMO: return "local GID / path did not come back before the deadline";
++    case FR2_R_PEER_OFF: return "the peer has recovery off (no HELLO)";
++    default: return "unspecified";
++  }
++}
++
++struct ncclIbFr2ReqInfo { uint64_t idx; int arrived; };
++struct ncclIbFr2Group { uint64_t idx; uint64_t addr; uint32_t rkey; int nreqs; int reqIdx; int remSize; };
++
++struct ncclIbFr2 {
++  pthread_mutex_t lock;          // serialises the proxy thread's calls and the helper thread
++  struct ncclIbFr2* next;        // helper-thread list
++  struct ncclIbNetCommBase* base;
++  uint64_t waitReqDeadline;      // R in WAIT_REQ
++  int peerHello;                 // the peer runs Stage 2 on this connection
++  int notifyPending; int notifyStatus; uint32_t notifyVendor;   // S: a NOTIFY for a new incident seen mid-round
++  int gidVer;                    // RoCE version of the connect-time local GID entry
++  uint64_t bringupBackoff;       // ns, grows while the path is not usable
++  uint64_t finSeenAt;            // IDLE: when a FIN/RST was first seen while requests were outstanding
++  int injSilentArmed;            // R: silent injection pending (fires at a receive completion)
++  int isSend;
++  int state;
++  uint32_t epoch;            // S: last REQ sent; R: last REQ accepted
++  int rounds;                // S: consecutive rounds without progress
++  uint64_t progress, progressAtReq;  // S: success group completions
++  uint64_t deadline;         // handshake / DONE deadline (ns)
++  uint64_t nextPoll;         // socket poll throttle in IDLE (ns)
++  uint64_t pollNs;
++  uint32_t psnLocal, psnPeer;
++  // incident / drain
++  int errDone, markSqPosted, markRqPosted, markSq, markRq, drained;
++  uint64_t drainDeadline;
++  int silent, mute;
++  int firstStatus; uint32_t firstVendor; const char* firstSrc;
++  uint64_t tDetect, tDrained, tReq, tAck, tDone;
++  uint64_t peerFifoHead;     // R: from REQ
++  uint64_t rDone, peerFifoTail;  // S: from ACK
++  uint64_t ctsFrom;          // R: rewrite CTS for idx >= ctsFrom after DONE
++  int recoveries, lastReplayed, lastCompleted, lastReposted, lastCts;
++  uint64_t pathDeadline, nextTry; int bringupTries;
++  int pend[MAX_REQUESTS]; int npend;   // R: pending receives (request indices) in FIFO order
++  // R: local recovery of the GPU-flush (loopback) QP
++  int flState, flErrDone, flMarkPosted, flMark, flRecoveries; uint64_t flDeadline, flNextTry;
++  struct { uint64_t addr; uint32_t rkey; } fl[MAX_REQUESTS];   // READ target of each flush request
++  // OOB socket
++  struct ncclIbFr2Msg rx; int rxOff;
++  struct ncclIbFr2Msg txq[8]; int txHead, txCount, txOff;
++  int peerClosed;
++  // connect-time attributes of qps[0]
++  uint32_t remQpn; int accessFlags; int eceSet; struct ibv_ece ece; bool overrideTc;
++  // side arrays
++  struct ncclIbFr2ReqInfo req[MAX_REQUESTS];
++  struct ncclIbFr2Group grp[MAX_REQUESTS];   // S: by FIFO slot
++};
++
++static inline uint64_t fr2Ms(int64_t ms) { return (uint64_t)(ms > 0 ? ms : 1) * 1000000ULL; }
++
++static uint32_t fr2FreshPsn(uint32_t salt) {
++  uint64_t x = 0;
++  if (getRandomData(&x, sizeof(x)) != ncclSuccess) x = clockNano();
++  x ^= ((uint64_t)salt << 32) ^ clockNano();
++  x += 0x9e3779b97f4a7c15ULL;
++  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
++  x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
++  x ^= x >> 31;
++  uint32_t psn = (uint32_t)(x & 0xFFFFFFu);
++  return psn ? psn : 1;
++}
++
++// TCP keepalive + user timeout on the OOB socket, so a peer node that dies without FIN/RST
++// (crash, power loss, partition) shows up as ETIMEDOUT within about `ms`.
++static void fr2Keepalive(int fd, int64_t ms) {
++  if (fd < 0 || ms <= 0) return;
++  int one = 1, idle = (int)std::max<int64_t>(1, (ms * 2 / 5) / 1000), intvl = (int)std::max<int64_t>(1, (ms / 5) / 1000), cnt = 3;
++  unsigned int uto = (unsigned int)ms;
++  if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one)) ||
++      setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle)) ||
++      setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl)) ||
++      setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt)) ||
++      setsockopt(fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &uto, sizeof(uto)))
++    WARN("NET/IB: [FAULT-RECOVERY2] setting keepalive on the OOB socket failed: %s", strerror(errno));
++}
++
++// ---- helper thread ---------------------------------------------------------------
++// NCCL calls a comm only while it has an active op, so a comm with nothing pending would never read a
++// NOTIFY/REQ. One helper thread per process serves every recovery-enabled comm: it waits on their OOB
++// sockets and steps any comm that has input or a recovery in progress. It only uses trylock, and the
++// proxy hooks use trylock too (they return not-done / a NULL request when the helper holds the lock),
++// so neither thread ever blocks the other.
++static pthread_mutex_t fr2ListLock = PTHREAD_MUTEX_INITIALIZER;
++static struct ncclIbFr2* fr2List = NULL;
++static pthread_t fr2HelperThread;
++static int fr2HelperStarted = 0;
++static ncclResult_t fr2Step(struct ncclIbNetCommBase* base);
++static void fr2ServiceFailed(struct ncclIbNetCommBase* base);
++static ncclResult_t fr2ModifyState(struct ibv_qp* qp, enum ibv_qp_state s);
++static void fr2Send(struct ncclIbNetCommBase* base, uint32_t type, uint32_t reason, uint64_t a, uint64_t b, uint32_t psn);
++static void fr2Fail(struct ncclIbNetCommBase* base, uint32_t reason, int notify);
++
++static inline int fr2Busy(struct ncclIbFr2* fr) {
++  return (fr->state != FR2_IDLE && fr->state != FR2_FAILED) || fr->flState;
++}
++
++static void* fr2HelperMain(void*) {
++  std::vector<struct pollfd> pfd;
++  std::vector<int> ready;
++  std::vector<struct ncclIbFr2*> work;
++  while (1) {
++    pfd.clear(); ready.clear(); work.clear();
++    int busy = 0;
++    pthread_mutex_lock(&fr2ListLock);
++    for (struct ncclIbFr2* fr = fr2List; fr; fr = fr->next) {
++      if (fr2Busy(fr)) busy = 1;
++      else if (!fr->peerClosed && fr->base->sock.fd >= 0) { struct pollfd p; p.fd = fr->base->sock.fd; p.events = POLLIN; p.revents = 0; pfd.push_back(p); }
++    }
++    pthread_mutex_unlock(&fr2ListLock);
++    if (busy) usleep(200);
++    int nready = pfd.empty() ? 0 : poll(pfd.data(), pfd.size(), busy ? 0 : 2);
++    if (pfd.empty() && !busy) { usleep(2000); continue; }
++    if (!busy && nready <= 0) continue;
++    for (auto& p : pfd) if (p.revents) ready.push_back(p.fd);
++    // pick the comms to serve under the list lock (only live ones), serve them outside it: fr2Detach
++    // unregisters under the list lock and then waits for the comm lock we hold, so fr stays valid
++    pthread_mutex_lock(&fr2ListLock);
++    for (struct ncclIbFr2* fr = fr2List; fr; fr = fr->next) {
++      int need = fr2Busy(fr) || std::find(ready.begin(), ready.end(), fr->base->sock.fd) != ready.end();
++      if (need && pthread_mutex_trylock(&fr->lock) == 0) work.push_back(fr);
++    }
++    pthread_mutex_unlock(&fr2ListLock);
++    for (struct ncclIbFr2* fr : work) {
++      if (fr->state == FR2_FAILED) fr2ServiceFailed(fr->base);
++      else { fr->nextPoll = 0; if (fr2Step(fr->base) != ncclSuccess) fr2Fail(fr->base, FR2_R_VERBS, 1); }
++      pthread_mutex_unlock(&fr->lock);
++    }
++  }
++  return NULL;
++}
++
++static void fr2Register(struct ncclIbFr2* fr) {
++  pthread_mutex_lock(&fr2ListLock);
++  fr->next = fr2List; fr2List = fr;
++  if (!fr2HelperStarted) {
++    if (pthread_create(&fr2HelperThread, NULL, fr2HelperMain, NULL) == 0) {
++      pthread_detach(fr2HelperThread);
++      ncclSetThreadName(fr2HelperThread, "NCCL IbFR2");
++      fr2HelperStarted = 1;
++    } else WARN("NET/IB: [FAULT-RECOVERY2] helper thread not started; idle comms recover only when NCCL calls them");
++  }
++  pthread_mutex_unlock(&fr2ListLock);
++}
++
++static void fr2Unregister(struct ncclIbFr2* fr) {
++  pthread_mutex_lock(&fr2ListLock);
++  for (struct ncclIbFr2** p = &fr2List; *p; p = &(*p)->next) if (*p == fr) { *p = fr->next; break; }
++  pthread_mutex_unlock(&fr2ListLock);
++}
++
++// Allocate the side state for a comm whose configuration Stage 2 supports.
++static void fr2Attach(struct ncclIbNetCommBase* base, int isSend, int ar, uint32_t remQpn, int eceSet,
++                      const struct ibv_ece* ece, bool overrideTc) {
++  if (!ncclParamRdmaFaultRecovery()) return;
++  if (base->nqps != 1 || base->ndevs != 1 || ar) {
++    INFO(NCCL_NET, "NET/IB: [FAULT-RECOVERY2] recovery off for this %s comm (nqps=%d ndevs=%d ar=%d): only 1 QP / 1 NIC / no AR is supported",
++         isSend ? "send" : "recv", base->nqps, base->ndevs, ar);
++    return;
++  }
++  // a full flush of this comm must fit in its CQ: RQ 256 + SQ 512 + markers + GPU-flush CQEs
++  struct ncclIbNetCommDevBase* db0 = ncclIbGetNetCommDevBase(base, 0);
++  if (db0->cq->cqe < 2 * MAX_REQUESTS + MAX_REQUESTS + 8) {
++    INFO(NCCL_NET, "NET/IB: [FAULT-RECOVERY2] recovery off for this comm: CQ holds %d entries, a full flush needs %d", db0->cq->cqe, 3 * MAX_REQUESTS + 8);
++    return;
++  }
++  struct ncclIbFr2* fr = (struct ncclIbFr2*)calloc(1, sizeof(struct ncclIbFr2));
++  if (fr == NULL) { WARN("NET/IB: [FAULT-RECOVERY2] allocation failed; recovery off for this comm"); return; }
++  pthread_mutex_init(&fr->lock, NULL);
++  fr->base = base;
++  fr->gidVer = (int)ncclParamIbRoceVersionNum();
++  if (db0->gidInfo.link_layer == IBV_LINK_LAYER_ETHERNET) {
++    struct ncclIbDev* ibDev0 = ncclIbDevs + db0->ibDevN; int ver = 0;
++    if (ncclIbRoceGetVersionNum(ibDev0->devName, ibDev0->portNum, db0->gidInfo.localGidIndex, &ver) == ncclSuccess && ver) fr->gidVer = ver;
++  }
++  fr->isSend = isSend;
++  fr->state = FR2_IDLE;
++  fr->pollNs = (uint64_t)std::max<int64_t>(0, ncclParamRdmaFaultPollUs()) * 1000ULL;
++  fr->remQpn = remQpn; fr->accessFlags = IBV_ACCESS_REMOTE_WRITE; fr->eceSet = eceSet;
++  if (ece) fr->ece = *ece;
++  fr->overrideTc = overrideTc;
++  fr->mute = (!isSend && ncclParamRdmaFaultTestMute()) ? 1 : 0;
++  if (!isSend && ncclParamRdmaFaultInjectRecvSilent() && ncclParamRdmaFaultInjectRecv() > 0) {
++    static int armedOnce = 0;   // the first recv comm of the process only
++    if (!__atomic_exchange_n(&armedOnce, 1, __ATOMIC_RELAXED)) fr->injSilentArmed = (int)ncclParamRdmaFaultInjectRecv();
++  }
++  fr2Keepalive(base->sock.fd, ncclParamRdmaFaultKeepaliveMs());
++  base->fr = fr;   // registered with the helper by fr2Activate, once connect/accept has finished with base.sock
++  INFO(NCCL_NET, "NET/IB: [FAULT-RECOVERY2] recovery on for %s comm qpn=%u remQpn=%u", isSend ? "send" : "recv", base->qps[0].qp->qp_num, remQpn);
++}
++
++static void fr2Detach(struct ncclIbNetCommBase* base) {
++  struct ncclIbFr2* fr = base->fr;
++  if (fr == NULL) return;
++  fr2Unregister(fr);                 // the helper no longer sees it once this returns
++  pthread_mutex_lock(&fr->lock);     // and no proxy call is inside it
++  pthread_mutex_unlock(&fr->lock);
++  pthread_mutex_destroy(&fr->lock);
++  base->fr = NULL;
++  free(fr);
++}
++
++// connect/accept is done with base.sock: from now on the helper may read it. Announce Stage 2 to the
++// peer (a peer with recovery off never answers, and then every fault fails like stock).
++static void fr2Activate(struct ncclIbNetCommBase* base) {
++  struct ncclIbFr2* fr = base->fr;
++  if (fr == NULL) return;
++  pthread_mutex_lock(&fr->lock);
++  fr2Send(base, FR2_HELLO, 0, 0, 0, 0);
++  pthread_mutex_unlock(&fr->lock);
++  fr2Register(fr);
++}
++
++static int fr2Fatal(struct ncclIbNetCommBase* base) {
++  if (!ncclParamIbAsyncEvents()) return 0;   // same switch as ncclIbStatsCheckFatalCount
++  if (__atomic_load_n(&base->stats.fatalErrorCount, __ATOMIC_RELAXED)) return 1;
++  struct ncclIbNetCommDevBase* db = ncclIbGetNetCommDevBase(base, 0);
++  return __atomic_load_n(&ncclIbDevs[db->ibDevN].stats.fatalErrorCount, __ATOMIC_RELAXED) ? 1 : 0;
++}
++
++// ---- OOB socket (non-blocking) ------------------------------------------------
++static void fr2TxProgress(struct ncclIbNetCommBase* base) {
++  struct ncclIbFr2* fr = base->fr;
++  while (fr->txCount > 0) {
++    if (fr->peerClosed || base->sock.fd < 0) { fr->txCount = 0; fr->txOff = 0; return; }
++    struct ncclIbFr2Msg* m = &fr->txq[fr->txHead];
++    ssize_t n = send(base->sock.fd, (char*)m + fr->txOff, sizeof(*m) - fr->txOff, MSG_DONTWAIT | MSG_NOSIGNAL);
++    if (n > 0) {
++      fr->txOff += (int)n;
++      if (fr->txOff == (int)sizeof(*m)) { fr->txOff = 0; fr->txHead = (fr->txHead + 1) % 8; fr->txCount--; }
++      continue;
++    }
++    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
++    fr->peerClosed = 1; fr->txCount = 0; fr->txOff = 0; return;
++  }
++}
++
++static void fr2Send(struct ncclIbNetCommBase* base, uint32_t type, uint32_t reason, uint64_t a, uint64_t b, uint32_t psn) {
++  struct ncclIbFr2* fr = base->fr;
++  if (fr->txCount == 8) { WARN("NET/IB: [FAULT-RECOVERY2] OOB TX queue full, dropping %s", fr2MsgStr(type)); return; }
++  struct ncclIbFr2Msg* m = &fr->txq[(fr->txHead + fr->txCount) % 8];
++  memset(m, 0, sizeof(*m));
++  m->magic = FR2_MAGIC; m->type = type; m->epoch = fr->epoch; m->reason = reason; m->a = a; m->b = b; m->psn = psn;
++  m->nqps = base->nqps; m->ndevs = base->ndevs; m->status = fr->firstStatus; m->vendor = fr->firstVendor;
++  fr->txCount++;
++  fr2TxProgress(base);
++}
++
++// 1 when a whole message is in fr->rx.
++static int fr2RxProgress(struct ncclIbNetCommBase* base) {
++  struct ncclIbFr2* fr = base->fr;
++  if (fr->peerClosed || base->sock.fd < 0) return 0;
++  while (fr->rxOff < (int)sizeof(fr->rx)) {
++    ssize_t n = recv(base->sock.fd, (char*)&fr->rx + fr->rxOff, sizeof(fr->rx) - fr->rxOff, MSG_DONTWAIT);
++    if (n > 0) { fr->rxOff += (int)n; continue; }
++    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
++    fr->peerClosed = 1;  // 0 = FIN; <0 = RST, ETIMEDOUT (keepalive), ...
++    return 0;
++  }
++  fr->rxOff = 0;
++  return 1;
++}
++
++// Liveness evidence without consuming data: 1 = dead (FIN/RST/TCP timeout), 0 = no evidence.
++static int fr2PeerDead(struct ncclIbNetCommBase* base) {
++  struct ncclIbFr2* fr = base->fr;
++  if (fr->peerClosed) return 1;
++  int fd = base->sock.fd;
++  if (fd < 0) return 1;
++  char c;
++  ssize_t n = recv(fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
++  if (n == 0) return 1;
++  if (n > 0) return 0;
++  if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
++  return 1;
++}
++
++static void fr2Fail(struct ncclIbNetCommBase* base, uint32_t reason, int notify) {
++  struct ncclIbFr2* fr = base->fr;
++  if (fr->state == FR2_FAILED) return;
++  int prev = fr->state;
++  if (notify) fr2Send(base, (!fr->isSend && (prev == FR2_R_DRAIN_REQ)) ? FR2_NACK : FR2_FAIL, reason, 0, 0, 0);
++  fr->state = FR2_FAILED;
++  fr->flState = 0;
++  WARN("NET/IB: [FAULT-RECOVERY2] %s comm FAILED in %s (%s, epoch %u, rounds %d): it now returns the stock error",
++       fr->isSend ? "send" : "recv", fr2StateStr(prev), fr2ReasonStr(reason), fr->epoch, fr->rounds);
++}
++
++// ---- classification -----------------------------------------------------------
++static int fr2Recoverable(int status) {
++  return status == IBV_WC_WR_FLUSH_ERR || status == IBV_WC_RETRY_EXC_ERR;
++}
++static const char* fr2StatusStr(int status) {
++  switch (status) {
++    case IBV_WC_SUCCESS: return "SUCCESS"; case IBV_WC_LOC_LEN_ERR: return "LOC_LEN_ERR"; case IBV_WC_LOC_PROT_ERR: return "LOC_PROT_ERR";
++    case IBV_WC_WR_FLUSH_ERR: return "WR_FLUSH_ERR"; case IBV_WC_REM_INV_REQ_ERR: return "REM_INV_REQ_ERR";
++    case IBV_WC_REM_ACCESS_ERR: return "REM_ACCESS_ERR"; case IBV_WC_RETRY_EXC_ERR: return "RETRY_EXC_ERR";
++    case IBV_WC_RNR_RETRY_EXC_ERR: return "RNR_RETRY_EXC_ERR"; default: return "OTHER";
++  }
++}
++
++// Start an incident (idempotent while one runs). src: "cqe", "notify".
++static void fr2StartIncident(struct ncclIbNetCommBase* base, int status, uint32_t vendor, const char* src) {
++  struct ncclIbFr2* fr = base->fr;
++  if (fr->state != FR2_IDLE) return;
++  fr->firstStatus = status; fr->firstVendor = vendor; fr->firstSrc = src;
++  fr->tDetect = clockNano();
++  int dead = fr2PeerDead(base);
++  WARN("NET/IB: [FAULT-RECOVERY2] %s comm: incident via %s: status=%d(%s) vendor_err=0x%x peer=%s -> %s",
++       fr->isSend ? "send" : "recv", src, status, fr2StatusStr(status), vendor, dead ? "dead(FIN/RST/timeout)" : "no-evidence-of-death",
++       fr2Recoverable(status) && !dead ? (fr->isSend ? "lead a recovery" : "drain, then NOTIFY the leader") : "fail");
++  if (!fr2Recoverable(status)) { fr2Fail(base, FR2_R_CLASS, 1); return; }
++  if (dead) { fr2Fail(base, FR2_R_PEER_DEAD, 0); return; }
++  if (!fr->peerHello) { fr2Fail(base, FR2_R_PEER_OFF, 0); return; }
++  if (fr2Fatal(base)) { fr2Fail(base, FR2_R_FATAL, 1); return; }
++  fr->errDone = fr->markSqPosted = fr->markRqPosted = fr->markSq = fr->markRq = fr->drained = 0;
++  fr->drainDeadline = clockNano() + fr2Ms(ncclParamRdmaFaultDrainMs());
++  fr->state = fr->isSend ? FR2_S_DRAIN : FR2_R_DRAIN_NOTIFY;
++}
++
++// Send/recv requests still waiting for a completion (GPU-flush requests excluded: they are local).
++static int fr2HasOutstanding(struct ncclIbNetCommBase* base) {
++  for (int i = 0; i < MAX_REQUESTS; i++) {
++    struct ncclIbRequest* r = base->reqs + i;
++    if ((r->type == NCCL_NET_IB_REQ_SEND || r->type == NCCL_NET_IB_REQ_RECV) && (r->events[0] || r->events[1])) return 1;
++  }
++  return 0;
++}
++
++static int fr2PendingRecvs(struct ncclIbNetCommBase* base) {
++  int n = 0;
++  for (int i = 0; i < MAX_REQUESTS; i++)
++    if (base->reqs[i].type == NCCL_NET_IB_REQ_RECV && !base->fr->req[i].arrived) n++;
++  return n;
++}
++
++// ---- CQ processing ------------------------------------------------------------
++// Polls the comm's CQ once (up to 16 CQEs). Success: stock accounting (+ side arrays). Error on
++// the connection QP: starts an incident when idle, ignored while one runs (flush of the old
++// incarnation; its requests are rebuilt by reconciliation). *n = CQEs consumed.
++static ncclResult_t fr2PollCq(struct ncclIbNetCommBase* base, int* n) {
++  struct ncclIbFr2* fr = base->fr;
++  struct ncclIbNetCommDevBase* db = ncclIbGetNetCommDevBase(base, 0);
++  struct ibv_wc wcs[16];
++  int got = 0;
++  *n = 0;
++  NCCLCHECK(wrap_ibv_poll_cq(db->cq, 16, wcs, &got));
++  *n = got;
++  uint32_t connQpn = base->qps[0].qp->qp_num;
++  for (int w = 0; w < got; w++) {
++    struct ibv_wc* wc = wcs + w;
++    if (wc->wr_id == FR2_MARK_SQ && wc->qp_num == connQpn) { fr->markSq = 1; continue; }
++    if (wc->wr_id == FR2_MARK_RQ && wc->qp_num == connQpn) { fr->markRq = 1; continue; }
++    if (wc->wr_id == FR2_MARK_FL) { fr->flMark = 1; continue; }
++    if (wc->wr_id == FR2_CTS_TAG && wc->qp_num == connQpn) {
++      if (wc->status != IBV_WC_SUCCESS && fr->state == FR2_IDLE) fr2StartIncident(base, wc->status, wc->vendor_err, "cqe(cts-rewrite)");
++      continue;
++    }
++    if (wc->status != IBV_WC_SUCCESS) {
++      if (wc->qp_num != connQpn) {  // GPU-flush (loopback) QP of the recv comm: recovered locally
++        if (!fr->isSend && fr->flState == 0 && (wc->status == IBV_WC_WR_FLUSH_ERR || wc->status == IBV_WC_RETRY_EXC_ERR)) {
++          WARN("NET/IB: [FAULT-RECOVERY2] recv comm: GPU-flush QP error (qpn=%u status=%d(%s) vendor_err=0x%x): local re-drive",
++               wc->qp_num, wc->status, fr2StatusStr(wc->status), wc->vendor_err);
++          fr->flState = 1; fr->flErrDone = fr->flMarkPosted = fr->flMark = 0;
++          fr->flDeadline = clockNano() + fr2Ms(ncclParamRdmaFaultPathWaitMs());
++        } else if (fr->flState == 0) {
++          WARN("NET/IB: [FAULT-RECOVERY2] error CQE on a non-connection QP (qpn=%u status=%d vendor_err=0x%x)", wc->qp_num, wc->status, wc->vendor_err);
++          fr2Fail(base, FR2_R_FLUSHQP, 1);
++        }
++        continue;   // flushes of the old flush-QP incarnation: their requests are re-posted
++      }
++      if (fr->state == FR2_IDLE) fr2StartIncident(base, wc->status, wc->vendor_err, "cqe");
++      else if ((fr->state == FR2_S_DRAIN || fr->state == FR2_R_DRAIN_NOTIFY || fr->state == FR2_R_DRAIN_REQ) &&
++               !fr2Recoverable(wc->status)) {
++        // e.g. a NOTIFY started this round but the local QP holds a NAK-class error: not recoverable
++        WARN("NET/IB: [FAULT-RECOVERY2] %s comm: non-recoverable error CQE during the drain: status=%d(%s) vendor_err=0x%x",
++             fr->isSend ? "send" : "recv", wc->status, fr2StatusStr(wc->status), wc->vendor_err);
++        fr->firstStatus = wc->status; fr->firstVendor = wc->vendor_err;
++        fr2Fail(base, FR2_R_CLASS, 1);
++      }
++      else if (fr->state == FR2_R_WAIT_DONE) {
++        // a new fault on the new incarnation before DONE: a fresh incident (S will see it too)
++        fr->state = FR2_IDLE;
++        fr2StartIncident(base, wc->status, wc->vendor_err, "cqe(after-ack)");
++      }
++      continue;
++    }
++    // success: the stock accounting of ncclIbTest
++    struct ncclIbRequest* req = base->reqs + (wc->wr_id & 0xff);
++    if (req->type == NCCL_NET_IB_REQ_SEND) {
++      for (int j = 0; j < req->nreqs; j++) {
++        struct ncclIbRequest* sendReq = base->reqs + ((wc->wr_id >> (j * 8)) & 0xff);
++        if (sendReq->events[0] <= 0) {
++          WARN("NET/IB: [FAULT-RECOVERY2] sendReq(%p)->events={%d,%d} <= 0 on a success CQE", sendReq, sendReq->events[0], sendReq->events[1]);
++          return ncclInternalError;
++        }
++        sendReq->events[0]--;
++      }
++      fr->progress++;
++    } else {
++      if (wc->opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
++        if (req->type != NCCL_NET_IB_REQ_RECV) {
++          WARN("NET/IB: [FAULT-RECOVERY2] RECV_RDMA_WITH_IMM for req type %d", req->type);
++          return ncclInternalError;
++        }
++        if (req->nreqs == 1) req->recv.sizes[0] = wc->imm_data;
++        fr->req[req - base->reqs].arrived = 1;
++        if (fr->injSilentArmed > 1) fr->injSilentArmed--;
++        else if (fr->injSilentArmed == 1 && fr2PendingRecvs(base) >= 1) {
++          // test hook (SILENT): kill this QP right after a receive arrived while another receive is
++          // pending (its CTS is out, so the sender will write into the dead QP); do not notify, so
++          // the sender meets RETRY_EXC. Firing when nothing is pending would leave the sender idle
++          // waiting for a CTS, which only R's WAITREQ deadline can end.
++          fr->injSilentArmed = 0;
++          fr->silent = 1;
++          ncclResult_t ir = fr2ModifyState(base->qps[0].qp, IBV_QPS_ERR);
++          WARN("NET/IB: [FAULT-INJECT] forced recv QP (qpn=%u) to ERR after a receive completion [silent] (rc=%d)", base->qps[0].qp->qp_num, ir);
++        }
++      }
++      req->events[0]--;
++    }
++  }
++  return ncclSuccess;
++}
++
++// ---- drain (ib_drain_qp style) -------------------------------------------------
++static ncclResult_t fr2ModifyState(struct ibv_qp* qp, enum ibv_qp_state s) {
++  struct ibv_qp_attr attr;
++  memset(&attr, 0, sizeof(attr));
++  attr.qp_state = s;
++  return wrap_ibv_modify_qp(qp, &attr, IBV_QP_STATE);
++}
++
++// Advances the drain; *finished = 1 once both markers of this comm's queues were consumed.
++static ncclResult_t fr2DrainProgress(struct ncclIbNetCommBase* base, int* finished) {
++  struct ncclIbFr2* fr = base->fr;
++  struct ibv_qp* qp = base->qps[0].qp;
++  *finished = 0;
++  if (fr->drained) { *finished = 1; return ncclSuccess; }
++  if (!fr->errDone) {
++    if (fr2ModifyState(qp, IBV_QPS_ERR) != ncclSuccess) { fr2Fail(base, FR2_R_VERBS, 1); return ncclSuccess; }
++    fr->errDone = 1;
++  }
++  int n;
++  NCCLCHECK(fr2PollCq(base, &n));  // consuming flushed CQEs frees queue slots for the markers
++  if (fr->state == FR2_FAILED) return ncclSuccess;
++  if (!fr->markSqPosted) {
++    struct ibv_send_wr wr, *bad;
++    memset(&wr, 0, sizeof(wr));
++    wr.wr_id = FR2_MARK_SQ; wr.opcode = IBV_WR_RDMA_WRITE; wr.send_flags = IBV_SEND_SIGNALED;
++    if (qp->context->ops.post_send(qp, &wr, &bad) == 0) fr->markSqPosted = 1;  // ENOMEM: retry after more polling
++  }
++  if (!fr->isSend && !fr->markRqPosted) {
++    struct ibv_recv_wr wr, *bad;
++    memset(&wr, 0, sizeof(wr));
++    wr.wr_id = FR2_MARK_RQ;
++    if (qp->context->ops.post_recv(qp, &wr, &bad) == 0) fr->markRqPosted = 1;
++  }
++  NCCLCHECK(fr2PollCq(base, &n));
++  if (fr->state == FR2_FAILED) return ncclSuccess;
++  if (fr->markSq && (fr->isSend || fr->markRq)) {
++    fr->drained = 1; fr->tDrained = clockNano(); *finished = 1;
++    return ncclSuccess;
++  }
++  if (clockNano() > fr->drainDeadline) fr2Fail(base, FR2_R_DRAIN_TMO, 1);
++  return ncclSuccess;
++}
++
++// Current GID-table index of this comm's local GID, found by value and RoCE version. A GID entry
++// that a QP references is kept (pending deletion) when its address goes away, so an address that
++// comes back gets a NEW index while the QP's address vector still names the dead one: the QP stays
++// broken even after the address returns. Re-resolving the index at bring-up fixes that.
++// Returns 1 and the index when the GID is present, 0 when it is not (yet).
++static int fr2ResolveLocalGid(struct ncclIbNetCommDevBase* db, struct ncclIbDev* ibDev, int want_ver, int* idxOut) {
++  if (db->gidInfo.link_layer != IBV_LINK_LAYER_ETHERNET) { *idxOut = db->gidInfo.localGidIndex; return 1; }
++  struct ibv_port_attr pa;
++  if (wrap_ibv_query_port(ibDev->context, ibDev->portNum, &pa) != ncclSuccess) return 0;
++  int want = want_ver;
++  for (int i = 0; i < pa.gid_tbl_len; i++) {
++    union ibv_gid g;
++    if (wrap_ibv_query_gid(ibDev->context, ibDev->portNum, i, &g) != ncclSuccess) continue;
++    if (memcmp(&g, &db->gidInfo.localGid, sizeof(g)) != 0) continue;
++    int ver = 0;
++    if (ncclIbRoceGetVersionNum(ibDev->devName, ibDev->portNum, i, &ver) != ncclSuccess) continue;
++    if (ver == want) { *idxOut = i; return 1; }
++  }
++  return 0;
++}
++
++// RESET -> INIT -> [set_ece] -> RTR(rq_psn) -> RTS(sq_psn) with the connect-time attributes.
++// ncclInProgress = the path is not usable yet (local GID absent, or RTR could not resolve the peer):
++// the caller retries until its path deadline.
++static ncclResult_t fr2BringUp(struct ncclIbNetCommBase* base, uint32_t rqPsn, uint32_t sqPsn) {
++  struct ncclIbFr2* fr = base->fr;
++  struct ncclIbQp* q = base->qps + 0;
++  struct ncclIbNetCommDevBase* db = ncclIbGetNetCommDevBase(base, q->devIndex);
++  struct ncclIbDev* ibDev = ncclIbDevs + db->ibDevN;
++  int gidIdx = -1;
++  fr->bringupTries++;
++  if (!fr2ResolveLocalGid(db, ibDev, fr->gidVer, &gidIdx)) return ncclInProgress;
++  if (gidIdx != db->gidInfo.localGidIndex) {
++    WARN("NET/IB: [FAULT-RECOVERY2] local GID moved from index %d to %d (the address was re-created); using the new index",
++         db->gidInfo.localGidIndex, gidIdx);
++    db->gidInfo.localGidIndex = gidIdx;
++  }
++  NCCLCHECK(fr2ModifyState(q->qp, IBV_QPS_RESET));
++  struct ibv_qp_attr attr;
++  memset(&attr, 0, sizeof(attr));
++  attr.qp_state = IBV_QPS_INIT;
++  attr.pkey_index = ncclParamIbPkey();
++  attr.port_num = ibDev->portNum;
++  attr.qp_access_flags = fr->accessFlags;
++  NCCLCHECK(wrap_ibv_modify_qp(q->qp, &attr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS));
++  if (fr->eceSet) {
++    struct ibv_ece ece = fr->ece; int supported = 1;
++    NCCLCHECK(wrap_ibv_set_ece(q->qp, &ece, &supported));
++  }
++  if (ncclIbRtrQp(q->qp, &db->gidInfo, fr->remQpn, &base->remDevs[q->remDevIdx], fr->overrideTc, rqPsn) != ncclSuccess)
++    return ncclInProgress;   // left in INIT; the next try starts from RESET again
++  NCCLCHECK(ncclIbRtsQp(q->qp, sqPsn));
++  fr->errDone = fr->markSqPosted = fr->markRqPosted = fr->markSq = fr->markRq = fr->drained = 0;
++  return ncclSuccess;
++}
++
++// ---- R: reconcile + reset + re-post (on REQ, after the drain) -------------------
++static ncclResult_t fr2RecvReconcile(struct ncclIbRecvComm* comm, uint64_t* rDoneOut, int* ok) {
++  struct ncclIbNetCommBase* base = &comm->base;
++  struct ncclIbFr2* fr = base->fr;
++  *ok = 0;
++  uint64_t tail = comm->remFifo.fifoTail;   // idx of the last posted receive
++  int pend[MAX_REQUESTS]; int npend = 0; uint64_t minPend = UINT64_MAX, maxArr = 0;
++  for (int i = 0; i < MAX_REQUESTS; i++) {
++    struct ncclIbRequest* r = base->reqs + i;
++    if (r->type != NCCL_NET_IB_REQ_RECV) continue;
++    if (r->nreqs != 1) { fr2Fail(base, FR2_R_MULTI, 1); return ncclSuccess; }
++    if (fr->req[i].arrived) {
++      maxArr = std::max(maxArr, fr->req[i].idx);
++      r->events[0] = 0; r->events[1] = 0;   // only a CTS completion could be left: the CTS was delivered
++    } else {
++      pend[npend++] = i;
++      minPend = std::min(minPend, fr->req[i].idx);
++    }
++  }
++  uint64_t rDone = npend ? minPend - 1 : tail;
++  // pending receives must be exactly rDone+1 .. tail (contiguous suffix)
++  int consistent = (uint64_t)npend == tail - rDone && maxArr <= rDone &&
++                   fr->peerFifoHead >= rDone && fr->peerFifoHead <= tail;
++  if (consistent) {
++    std::sort(pend, pend + npend, [&](int x, int y) { return fr->req[x].idx < fr->req[y].idx; });
++    for (int k = 0; k < npend; k++) if (fr->req[pend[k]].idx != rDone + 1 + k) consistent = 0;
++  }
++  if (!consistent) {
++    WARN("NET/IB: [FAULT-RECOVERY2] recv reconcile: inconsistent (npend=%d rDone=%lu tail=%lu maxArrived=%lu peerFifoHead=%lu)",
++         npend, rDone, tail, maxArr, fr->peerFifoHead);
++    fr2Fail(base, FR2_R_INCONSISTENT, 1);
++    return ncclSuccess;
++  }
++  memcpy(fr->pend, pend, npend * sizeof(int));
++  fr->npend = npend;
++  fr->ctsFrom = std::max(fr->peerFifoHead, rDone) + 1;
++  *rDoneOut = rDone;
++  *ok = 1;
++  return ncclSuccess;
++}
++
++// R, after its bring-up: re-post the pending receives in FIFO order.
++static ncclResult_t fr2RecvRepost(struct ncclIbRecvComm* comm) {
++  struct ncclIbNetCommBase* base = &comm->base;
++  struct ncclIbFr2* fr = base->fr;
++  for (int k = 0; k < fr->npend; k++) {
++    struct ncclIbRequest* r = base->reqs + fr->pend[k];
++    struct ibv_recv_wr wr, *bad;
++    memset(&wr, 0, sizeof(wr));
++    wr.wr_id = fr->pend[k];
++    if (wrap_ibv_post_recv(base->qps[0].qp, &wr, &bad) != ncclSuccess) { fr2Fail(base, FR2_R_VERBS, 1); return ncclSuccess; }
++    r->events[0] = 1; r->events[1] = 0;
++  }
++  fr->lastReposted = fr->npend;
++  return ncclSuccess;
++}
++
++// R, after DONE: rewrite the CTS entries of pending receives the leader has not consumed.
++static ncclResult_t fr2CtsRewrite(struct ncclIbRecvComm* comm) {
++  struct ncclIbNetCommBase* base = &comm->base;
++  struct ncclIbFr2* fr = base->fr;
++  struct ncclIbQp* ctsQp = base->qps + 0;
++  uint64_t tail = comm->remFifo.fifoTail;
++  int count = 0;
++  for (uint64_t idx = fr->ctsFrom; idx <= tail; idx++) {
++    int slot = (int)((idx - 1) % MAX_REQUESTS);   // PostFifo used slot = fifoTail % MAX before fifoTail++
++    struct ncclIbSendFifo* localElem = comm->remFifo.elems[slot];
++    if (localElem[0].idx != idx) {
++      WARN("NET/IB: [FAULT-RECOVERY2] CTS rewrite: slot %d holds idx %lu, expected %lu", slot, localElem[0].idx, idx);
++      fr2Fail(base, FR2_R_INCONSISTENT, 1);
++      return ncclSuccess;
++    }
++    struct ibv_sge sge;
++    sge.addr = (uint64_t)localElem;
++    sge.length = localElem[0].nreqs * sizeof(struct ncclIbSendFifo);
++    sge.lkey = comm->devs[ctsQp->devIndex].fifoMr->lkey;
++    struct ibv_send_wr wr, *bad;
++    memset(&wr, 0, sizeof(wr));
++    wr.sg_list = &sge; wr.num_sge = 1;
++    wr.opcode = IBV_WR_RDMA_WRITE;
++    wr.send_flags = comm->remFifo.flags;
++    if (idx == tail || slot == 0) { wr.send_flags |= IBV_SEND_SIGNALED; wr.wr_id = FR2_CTS_TAG; }  // keep <= 256 posts between signaled WRs
++    wr.wr.rdma.remote_addr = comm->remFifo.addr + slot * NCCL_NET_IB_MAX_RECVS * sizeof(struct ncclIbSendFifo);
++    wr.wr.rdma.rkey = base->remDevs[ctsQp->remDevIdx].fifoRkey;
++    if (wrap_ibv_post_send(ctsQp->qp, &wr, &bad) != ncclSuccess) { fr2Fail(base, FR2_R_VERBS, 1); return ncclSuccess; }
++    count++;
++  }
++  fr->lastCts = count;
++  return ncclSuccess;
++}
++
++// ---- S: reconcile + reset + replay (on ACK) ------------------------------------
++static ncclResult_t fr2SendFinish(struct ncclIbSendComm* comm) {
++  struct ncclIbNetCommBase* base = &comm->base;
++  struct ncclIbFr2* fr = base->fr;
++  uint64_t head = comm->fifoHead;   // idx of the last matched (posted) group
++  uint64_t rDone = fr->rDone;
++  if (!(rDone <= head && head <= fr->peerFifoTail)) {
++    WARN("NET/IB: [FAULT-RECOVERY2] send reconcile: rDone=%lu fifoHead=%lu peerFifoTail=%lu", rDone, head, fr->peerFifoTail);
++    fr2Fail(base, FR2_R_INCONSISTENT, 1);
++    return ncclSuccess;
++  }
++  // in-flight groups: send requests with outstanding events, keyed by FIFO idx
++  uint8_t inflight[MAX_REQUESTS]; memset(inflight, 0, sizeof(inflight));
++  for (int i = 0; i < MAX_REQUESTS; i++) {
++    struct ncclIbRequest* r = base->reqs + i;
++    if (r->type != NCCL_NET_IB_REQ_SEND || (r->events[0] == 0 && r->events[1] == 0)) continue;
++    uint64_t idx = fr->req[i].idx;
++    if (r->nreqs != 1) { fr2Fail(base, FR2_R_MULTI, 1); return ncclSuccess; }
++    if (idx == 0 || idx > head || head - idx >= MAX_REQUESTS) {
++      WARN("NET/IB: [FAULT-RECOVERY2] send reconcile: in-flight req %d has idx %lu (fifoHead %lu)", i, idx, head);
++      fr2Fail(base, FR2_R_INCONSISTENT, 1);
++      return ncclSuccess;
++    }
++    inflight[(idx - 1) % MAX_REQUESTS] = 1;
++  }
++  // every group in rDone+1..head must be in flight (a completed group implies R executed it)
++  for (uint64_t idx = rDone + 1; idx <= head; idx++) {
++    int slot = (int)((idx - 1) % MAX_REQUESTS);
++    struct ncclIbFr2Group* g = fr->grp + slot;
++    if (!inflight[slot] || g->idx != idx || g->nreqs != 1 || fr->req[g->reqIdx].idx != idx) {
++      WARN("NET/IB: [FAULT-RECOVERY2] send reconcile: group %lu not replayable (inflight=%d rec.idx=%lu nreqs=%d)", idx, inflight[slot], g->idx, g->nreqs);
++      fr2Fail(base, FR2_R_INCONSISTENT, 1);
++      return ncclSuccess;
++    }
++  }
++  fr->bringupTries = 0; fr->bringupBackoff = 0;
++  fr->pathDeadline = clockNano() + fr2Ms(ncclParamRdmaFaultPathWaitMs());
++  fr->nextTry = 0;
++  fr->state = FR2_S_BRINGUP;
++  return ncclSuccess;
++}
++
++// S, after its bring-up: complete the groups R had, replay the others, DONE.
++static ncclResult_t fr2SendApply(struct ncclIbSendComm* comm) {
++  struct ncclIbNetCommBase* base = &comm->base;
++  struct ncclIbFr2* fr = base->fr;
++  uint64_t head = comm->fifoHead;
++  uint64_t rDone = fr->rDone;
++  // groups R executed: complete them
++  int completed = 0;
++  for (int i = 0; i < MAX_REQUESTS; i++) {
++    struct ncclIbRequest* r = base->reqs + i;
++    if (r->type != NCCL_NET_IB_REQ_SEND || (r->events[0] == 0 && r->events[1] == 0)) continue;
++    if (fr->req[i].idx <= rDone) { r->events[0] = 0; r->events[1] = 0; completed++; }
++  }
++  // groups R did not execute: replay in FIFO order (same WR as ncclIbMultiSend for nreqs == 1, no AR)
++  struct ncclIbQp* qp = base->qps + 0;
++  int replayed = 0;
++  for (uint64_t idx = rDone + 1; idx <= head; idx++) {
++    struct ncclIbFr2Group* g = fr->grp + (idx - 1) % MAX_REQUESTS;
++    struct ncclIbRequest* r = base->reqs + g->reqIdx;
++    struct ibv_sge sge;
++    struct ibv_send_wr wr, *bad;
++    memset(&wr, 0, sizeof(wr));
++    wr.wr_id = (uint64_t)g->reqIdx;
++    wr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
++    wr.imm_data = r->send.size;
++    wr.send_flags = IBV_SEND_SIGNALED;
++    wr.wr.rdma.remote_addr = g->addr;
++    wr.wr.rdma.rkey = g->rkey;
++    if (r->send.size > 0) {
++      sge.addr = (uintptr_t)r->send.data; sge.length = r->send.size; sge.lkey = r->send.lkeys[qp->devIndex];
++      wr.sg_list = &sge; wr.num_sge = 1;
++    }
++    if (wrap_ibv_post_send(qp->qp, &wr, &bad) != ncclSuccess) { fr2Fail(base, FR2_R_VERBS, 1); return ncclSuccess; }
++    r->events[0] = 1; r->events[1] = 0;
++    r->send.offset = r->send.size;
++    replayed++;
++  }
++  fr->lastReplayed = replayed; fr->lastCompleted = completed;
++  fr->progress += completed;   // groups R had count as progress for MAX_ROUNDS
++  fr2Send(base, FR2_DONE, 0, (uint64_t)replayed, (uint64_t)completed, 0);
++  fr->tDone = clockNano();
++  fr->recoveries++;
++  fr->state = FR2_IDLE;
++  WARN("NET/IB: [FAULT-RECOVERY2] send comm: recovered (epoch %u, round %d): first error %s(0x%x) via %s; R_done=%lu fifoHead=%lu peerFifoTail=%lu; "
++       "completed %d group(s) R had, replayed %d; psn rq=0x%x sq=0x%x; detect->drained %.3f ms, ->ACK %.3f ms, ->replayed %.3f ms (total %.3f ms)",
++       fr->epoch, fr->rounds, fr2StatusStr(fr->firstStatus), fr->firstVendor, fr->firstSrc ? fr->firstSrc : "?", rDone, head, fr->peerFifoTail,
++       completed, replayed, fr->psnPeer, fr->psnLocal,
++       (fr->tDrained - fr->tDetect) / 1e6, (fr->tAck - fr->tDetect) / 1e6, (fr->tDone - fr->tAck) / 1e6, (fr->tDone - fr->tDetect) / 1e6);
++  if (fr->notifyPending) {   // R reported a fresh fault while this round ran
++    fr->notifyPending = 0;
++    fr2StartIncident(base, fr->notifyStatus, fr->notifyVendor, "notify(latched)");
++  }
++  return ncclSuccess;
++}
++
++// ---- messages -------------------------------------------------------------------
++static ncclResult_t fr2Handle(struct ncclIbNetCommBase* base, struct ncclIbFr2Msg* m) {
++  struct ncclIbFr2* fr = base->fr;
++  if (m->magic != FR2_MAGIC) { fr2Fail(base, FR2_R_PROTO, 0); fr->peerClosed = 1; return ncclSuccess; }
++  if (m->type == FR2_HELLO) { fr->peerHello = 1; return ncclSuccess; }
++  if (m->type == FR2_FAIL || m->type == FR2_NACK) {
++    WARN("NET/IB: [FAULT-RECOVERY2] %s comm: peer sent %s (%s)", fr->isSend ? "send" : "recv", fr2MsgStr(m->type), fr2ReasonStr(m->reason));
++    fr2Fail(base, FR2_R_PEER_FAIL, 0);
++    return ncclSuccess;
++  }
++  if (fr->state == FR2_FAILED) {
++    if (!fr->isSend && m->type == FR2_REQ) fr2Send(base, FR2_NACK, FR2_R_PEER_FAIL, 0, 0, 0);
++    return ncclSuccess;
++  }
++  if (fr->isSend) {
++    if (m->type == FR2_NOTIFY) {
++      // m->epoch = the last round R accepted. Older than ours: R noticed the incident we are already
++      // handling. Equal or newer: a fresh fault at R (e.g. on the new incarnation before our DONE).
++      if (m->epoch < fr->epoch) return ncclSuccess;
++      if (fr->state == FR2_IDLE) fr2StartIncident(base, (int)m->status, m->vendor, "notify");
++      else { fr->notifyPending = 1; fr->notifyStatus = (int)m->status; fr->notifyVendor = m->vendor; }
++      return ncclSuccess;
++    }
++    if (m->type == FR2_ACK) {
++      if (fr->state != FR2_S_WAIT_ACK || m->epoch != fr->epoch) return ncclSuccess;  // stale
++      fr->tAck = clockNano();
++      fr->psnPeer = m->psn; fr->rDone = m->a; fr->peerFifoTail = m->b;
++      return fr2SendFinish((struct ncclIbSendComm*)base);
++    }
++    fr2Fail(base, FR2_R_PROTO, 1);
++    return ncclSuccess;
++  }
++  // recv comm
++  if (m->type == FR2_REQ) {
++    if (fr->mute) return ncclSuccess;          // test hook: never answer
++    if (m->epoch <= fr->epoch) { fr2Fail(base, FR2_R_PROTO, 1); return ncclSuccess; }
++    if (m->nqps != 1 || m->ndevs != 1) { fr->state = FR2_R_DRAIN_REQ; fr2Fail(base, FR2_R_MULTI, 1); return ncclSuccess; }
++    fr->epoch = m->epoch; fr->psnPeer = m->psn; fr->peerFifoHead = m->a;
++    if (fr->state == FR2_IDLE || fr->state == FR2_R_WAIT_DONE) {
++      // the leader starts a (new) round: drain this incarnation first
++      if (fr->state == FR2_IDLE) { fr->firstStatus = (int)m->status; fr->firstVendor = m->vendor; fr->firstSrc = "req"; fr->tDetect = clockNano(); }
++      fr->errDone = fr->markSqPosted = fr->markRqPosted = fr->markSq = fr->markRq = fr->drained = 0;
++      fr->drainDeadline = clockNano() + fr2Ms(ncclParamRdmaFaultDrainMs());
++    }
++    fr->tReq = clockNano();
++    fr->state = FR2_R_DRAIN_REQ;
++    return ncclSuccess;
++  }
++  if (m->type == FR2_DONE) {
++    if (fr->state != FR2_R_WAIT_DONE || m->epoch != fr->epoch) return ncclSuccess;  // stale
++    NCCLCHECK(fr2CtsRewrite((struct ncclIbRecvComm*)base));
++    if (fr->state == FR2_FAILED) return ncclSuccess;
++    fr->tDone = clockNano();
++    fr->recoveries++;
++    fr->state = FR2_IDLE;
++    WARN("NET/IB: [FAULT-RECOVERY2] recv comm: recovered (epoch %u): R_done=%lu, re-posted %d receive(s), leader replayed %lu, rewrote %d CTS entr%s; "
++         "REQ->ACK %.3f ms, ACK->DONE %.3f ms",
++         fr->epoch, fr->rDone, fr->lastReposted, m->a, fr->lastCts, fr->lastCts == 1 ? "y" : "ies",
++         (fr->tAck - fr->tReq) / 1e6, (fr->tDone - fr->tAck) / 1e6);
++    return ncclSuccess;
++  }
++  fr2Fail(base, FR2_R_PROTO, 1);
++  return ncclSuccess;
++}
++
++// R: re-drive the GPU-flush loopback QP (no peer involved) and re-post the flush READs still
++// outstanding. Same GID re-resolution and path wait as the connection QP.
++static ncclResult_t fr2FlushStep(struct ncclIbRecvComm* comm) {
++  struct ncclIbNetCommBase* base = &comm->base;
++  struct ncclIbFr2* fr = base->fr;
++  struct ncclIbRecvCommDev* rd = comm->devs + 0;
++  struct ibv_qp* fqp = rd->gpuFlush.qp.qp;
++  if (fqp == NULL) { fr->flState = 0; fr2Fail(base, FR2_R_FLUSHQP, 1); return ncclSuccess; }
++  int n;
++  if (fr->flState == 1) {   // drain
++    if (!fr->flErrDone) { if (fr2ModifyState(fqp, IBV_QPS_ERR) != ncclSuccess) { fr2Fail(base, FR2_R_FLUSHQP, 1); return ncclSuccess; } fr->flErrDone = 1; }
++    NCCLCHECK(fr2PollCq(base, &n));
++    if (!fr->flMarkPosted) {
++      struct ibv_send_wr wr, *bad; memset(&wr, 0, sizeof(wr));
++      wr.wr_id = FR2_MARK_FL; wr.opcode = IBV_WR_RDMA_WRITE; wr.send_flags = IBV_SEND_SIGNALED;
++      if (fqp->context->ops.post_send(fqp, &wr, &bad) == 0) fr->flMarkPosted = 1;
++    }
++    NCCLCHECK(fr2PollCq(base, &n));
++    if (fr->flMark) { fr->flState = 2; fr->flNextTry = 0; }
++    else if (clockNano() > fr->flDeadline) fr2Fail(base, FR2_R_DRAIN_TMO, 1);
++    return ncclSuccess;
++  }
++  if (fr->flState == 2) {   // bring-up + re-post
++    if (clockNano() < fr->flNextTry) return ncclSuccess;
++    struct ncclIbNetCommDevBase* db = &rd->base;
++    struct ncclIbDev* ibDev = ncclIbDevs + db->ibDevN;
++    int gidIdx = -1;
++    if (!fr2ResolveLocalGid(db, ibDev, fr->gidVer, &gidIdx)) goto notready;
++    if (gidIdx != db->gidInfo.localGidIndex) {
++      WARN("NET/IB: [FAULT-RECOVERY2] local GID moved from index %d to %d (flush QP)", db->gidInfo.localGidIndex, gidIdx);
++      db->gidInfo.localGidIndex = gidIdx;
++    }
++    {
++      if (fr2ModifyState(fqp, IBV_QPS_RESET) != ncclSuccess) { fr2Fail(base, FR2_R_FLUSHQP, 1); return ncclSuccess; }
++      struct ibv_qp_attr attr; memset(&attr, 0, sizeof(attr));
++      attr.qp_state = IBV_QPS_INIT; attr.pkey_index = ncclParamIbPkey(); attr.port_num = ibDev->portNum;
++      attr.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ;
++      if (wrap_ibv_modify_qp(fqp, &attr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) != ncclSuccess) { fr2Fail(base, FR2_R_FLUSHQP, 1); return ncclSuccess; }
++      struct ncclIbDevInfo devInfo; memset(&devInfo, 0, sizeof(devInfo));
++      devInfo.lid = ibDev->portAttr.lid; devInfo.link_layer = ibDev->portAttr.link_layer; devInfo.ib_port = ibDev->portNum;
++      devInfo.gid = db->gidInfo.localGid; devInfo.mtu = ibDev->portAttr.active_mtu;
++      if (ncclIbRtrQp(fqp, &db->gidInfo, fqp->qp_num, &devInfo, false) != ncclSuccess) goto notready;
++      if (ncclIbRtsQp(fqp) != ncclSuccess) { fr2Fail(base, FR2_R_FLUSHQP, 1); return ncclSuccess; }
++    }
++    {
++      int reposted = 0;
++      for (int i = 0; i < MAX_REQUESTS; i++) {
++        struct ncclIbRequest* r = base->reqs + i;
++        if (r->type != NCCL_NET_IB_REQ_FLUSH || (r->events[0] == 0 && r->events[1] == 0)) continue;
++        struct ibv_send_wr wr, *bad; memset(&wr, 0, sizeof(wr));
++        wr.wr_id = i; wr.wr.rdma.remote_addr = fr->fl[i].addr; wr.wr.rdma.rkey = fr->fl[i].rkey;
++        wr.sg_list = &rd->gpuFlush.sge; wr.num_sge = 1; wr.opcode = IBV_WR_RDMA_READ; wr.send_flags = IBV_SEND_SIGNALED;
++        if (wrap_ibv_post_send(fqp, &wr, &bad) != ncclSuccess) { fr2Fail(base, FR2_R_FLUSHQP, 1); return ncclSuccess; }
++        r->events[0] = 1; r->events[1] = 0; reposted++;
++      }
++      fr->flState = 0; fr->flRecoveries++;
++      WARN("NET/IB: [FAULT-RECOVERY2] recv comm: GPU-flush QP re-driven, %d flush read(s) re-posted", reposted);
++    }
++    return ncclSuccess;
++notready:
++    if (clockNano() > fr->flDeadline) { fr2Fail(base, FR2_R_PATH_TMO, 1); return ncclSuccess; }
++    fr->flNextTry = clockNano() + 20000000ULL;
++  }
++  return ncclSuccess;
++}
++
++// A FAILED comm keeps answering, so the peer fails promptly instead of at its deadline.
++static void fr2ServiceFailed(struct ncclIbNetCommBase* base) {
++  struct ncclIbFr2* fr = base->fr;
++  fr2TxProgress(base);
++  for (int k = 0; k < 4 && fr2RxProgress(base); k++) {
++    if (fr->rx.magic != FR2_MAGIC) { fr->peerClosed = 1; break; }
++    if (fr->rx.type == FR2_REQ) fr2Send(base, FR2_NACK, FR2_R_PEER_FAIL, 0, 0, 0);
++    else if (fr->rx.type == FR2_NOTIFY) fr2Send(base, FR2_FAIL, FR2_R_PEER_FAIL, 0, 0, 0);
++  }
++}
++
++// ---- the state machine (called from test/isend/irecv) ---------------------------
++static ncclResult_t fr2Step(struct ncclIbNetCommBase* base) {
++  struct ncclIbFr2* fr = base->fr;
++  if (fr->state == FR2_FAILED) return ncclSuccess;
++  if (fr->flState) { NCCLCHECK(fr2FlushStep((struct ncclIbRecvComm*)base)); if (fr->state == FR2_FAILED) return ncclSuccess; }
++  uint64_t now = clockNano();
++  fr2TxProgress(base);
++  if (fr->state != FR2_IDLE || now >= fr->nextPoll) {
++    fr->nextPoll = now + fr->pollNs;
++    while (fr->state != FR2_FAILED && fr2RxProgress(base)) NCCLCHECK(fr2Handle(base, &fr->rx));
++    if (fr->state == FR2_FAILED) return ncclSuccess;
++    if (fr->state != FR2_IDLE && fr2PeerDead(base)) { fr2Fail(base, FR2_R_PEER_DEAD, 0); return ncclSuccess; }
++  }
++  if (fr->state != FR2_IDLE && fr2Fatal(base)) { fr2Fail(base, FR2_R_FATAL, 1); return ncclSuccess; }
++  int finished = 0, n = 0;
++  // IDLE + the peer's socket shows FIN/RST (or a keepalive timeout) while requests are outstanding:
++  // the peer process (or node) is gone and will never complete them. Stock NCCL would wait forever
++  // when nothing of ours is in flight (no RETRY_EXC ever comes). A normal teardown has nothing
++  // outstanding; a 50 ms grace with CQ polling covers completions still sitting in the CQ.
++  if (fr->state == FR2_IDLE && fr->peerClosed) {
++    if (!fr2HasOutstanding(base)) fr->finSeenAt = 0;
++    else if (fr->finSeenAt == 0) fr->finSeenAt = clockNano();
++    else if (clockNano() - fr->finSeenAt > 50000000ULL) {
++      NCCLCHECK(fr2PollCq(base, &n));
++      if (fr->state == FR2_IDLE && fr2HasOutstanding(base)) {
++        WARN("NET/IB: [FAULT-RECOVERY2] %s comm: the peer closed its OOB socket (FIN/RST/timeout) while requests are outstanding: peer process gone",
++             fr->isSend ? "send" : "recv");
++        fr2Fail(base, FR2_R_PEER_DEAD, 0);
++        return ncclSuccess;
++      }
++    }
++  }
++  switch (fr->state) {
++    case FR2_S_DRAIN:
++      NCCLCHECK(fr2DrainProgress(base, &finished));
++      if (fr->state != FR2_FAILED && finished) {
++        if (fr->progress == fr->progressAtReq) fr->rounds++; else fr->rounds = 1;
++        fr->progressAtReq = fr->progress;
++        if (fr->rounds > ncclParamRdmaFaultMaxRounds()) { fr2Fail(base, FR2_R_ROUNDS, 1); break; }
++        fr->epoch++;
++        fr->psnLocal = fr2FreshPsn(base->qps[0].qp->qp_num);
++        fr->tReq = clockNano();
++        fr->deadline = fr->tReq + fr2Ms(ncclParamRdmaFaultHandshakeMs()) + fr2Ms(ncclParamRdmaFaultPathWaitMs());
++        fr->state = FR2_S_WAIT_ACK;
++        fr2Send(base, FR2_REQ, 0, ((struct ncclIbSendComm*)base)->fifoHead, 0, fr->psnLocal);
++      }
++      break;
++    case FR2_S_WAIT_ACK:
++      NCCLCHECK(fr2PollCq(base, &n));
++      if (fr->state == FR2_S_WAIT_ACK && clockNano() > fr->deadline) fr2Fail(base, FR2_R_HS_TMO, 1);
++      break;
++    case FR2_S_BRINGUP: {
++      NCCLCHECK(fr2PollCq(base, &n));
++      if (fr->state != FR2_S_BRINGUP || clockNano() < fr->nextTry) break;
++      ncclResult_t br = fr2BringUp(base, fr->psnPeer, fr->psnLocal);
++      if (br == ncclInProgress) {
++        if (clockNano() > fr->pathDeadline) { fr2Fail(base, FR2_R_PATH_TMO, 1); break; }
++        fr->bringupBackoff = std::min<uint64_t>(fr->bringupBackoff ? 2 * fr->bringupBackoff : 20000000ULL, 1000000000ULL);
++        fr->nextTry = clockNano() + fr->bringupBackoff;
++        break;
++      }
++      if (br != ncclSuccess) { fr2Fail(base, FR2_R_VERBS, 1); break; }
++      if (fr->bringupTries > 1)
++        WARN("NET/IB: [FAULT-RECOVERY2] send comm: path usable again after %d bring-up tries", fr->bringupTries);
++      NCCLCHECK(fr2SendApply((struct ncclIbSendComm*)base));
++      break;
++    }
++    case FR2_R_DRAIN_NOTIFY:
++      NCCLCHECK(fr2DrainProgress(base, &finished));
++      if (fr->state != FR2_FAILED && finished) {
++        fr->state = FR2_R_WAIT_REQ;
++        fr->waitReqDeadline = clockNano() + fr2Ms(ncclParamRdmaFaultWaitReqMs());
++        if (!fr->silent) fr2Send(base, FR2_NOTIFY, 0, ((struct ncclIbRecvComm*)base)->remFifo.fifoTail, 0, 0);
++        else WARN("NET/IB: [FAULT-RECOVERY2] recv comm: drained; SILENT test mode: not notifying the leader");
++      }
++      break;
++    case FR2_R_WAIT_REQ:
++      NCCLCHECK(fr2PollCq(base, &n));   // GPU-flush completions keep flowing
++      if (fr->state == FR2_R_WAIT_REQ && clockNano() > fr->waitReqDeadline) fr2Fail(base, FR2_R_HS_TMO, 1);
++      break;
++    case FR2_R_DRAIN_REQ:
++      NCCLCHECK(fr2DrainProgress(base, &finished));
++      if (fr->state != FR2_FAILED && finished) {
++        uint64_t rDone = 0; int ok = 0;
++        NCCLCHECK(fr2RecvReconcile((struct ncclIbRecvComm*)base, &rDone, &ok));
++        if (!ok) break;
++        fr->rDone = rDone;
++        fr->psnLocal = fr2FreshPsn(base->qps[0].qp->qp_num);
++        fr->bringupTries = 0; fr->bringupBackoff = 0;
++        fr->pathDeadline = clockNano() + fr2Ms(ncclParamRdmaFaultPathWaitMs());
++        fr->nextTry = 0;
++        fr->state = FR2_R_BRINGUP;
++      }
++      break;
++    case FR2_R_BRINGUP: {
++      NCCLCHECK(fr2PollCq(base, &n));
++      if (fr->state != FR2_R_BRINGUP || clockNano() < fr->nextTry) break;
++      ncclResult_t br = fr2BringUp(base, fr->psnPeer, fr->psnLocal);
++      if (br == ncclInProgress) {
++        if (clockNano() > fr->pathDeadline) { fr2Fail(base, FR2_R_PATH_TMO, 1); break; }
++        fr->bringupBackoff = std::min<uint64_t>(fr->bringupBackoff ? 2 * fr->bringupBackoff : 20000000ULL, 1000000000ULL);
++        fr->nextTry = clockNano() + fr->bringupBackoff;   // 20 ms doubling to 1 s
++        break;
++      }
++      if (br != ncclSuccess) { fr2Fail(base, FR2_R_VERBS, 1); break; }
++      NCCLCHECK(fr2RecvRepost((struct ncclIbRecvComm*)base));
++      if (fr->state == FR2_FAILED) break;
++      fr->tAck = clockNano();
++      fr->deadline = fr->tAck + 2 * fr2Ms(ncclParamRdmaFaultHandshakeMs()) + fr2Ms(ncclParamRdmaFaultPathWaitMs());
++      fr->state = FR2_R_WAIT_DONE;
++      fr->silent = 0;
++      fr2Send(base, FR2_ACK, 0, fr->rDone, ((struct ncclIbRecvComm*)base)->remFifo.fifoTail, fr->psnLocal);
++      if (fr->bringupTries > 1)
++        WARN("NET/IB: [FAULT-RECOVERY2] recv comm: path usable again after %d bring-up tries", fr->bringupTries);
++      break;
++    }
++    case FR2_R_WAIT_DONE:
++      NCCLCHECK(fr2PollCq(base, &n));
++      if (fr->state == FR2_R_WAIT_DONE && clockNano() > fr->deadline) fr2Fail(base, FR2_R_DONE_TMO, 1);
++      break;
++    default:
++      break;
++  }
++  return ncclSuccess;
++}
++
++// ---- test-injection hooks (independent of the recovery flag) ----------------------
++static int fr2InjSendCount = 0, fr2InjSendFired = 0, fr2InjRecvCount = 0, fr2InjRecvFired = 0;
++
++static void fr2MaybeInjectSend(struct ncclIbNetCommBase* base) {
++  int64_t k = ncclParamRdmaFaultInject();
++  if (k <= 0) return;
++  int64_t reps = std::max<int64_t>(1, ncclParamRdmaFaultInjectRepeat()), per = ncclParamRdmaFaultInjectPeriod();
++  int fired = __atomic_load_n(&fr2InjSendFired, __ATOMIC_RELAXED);
++  if (fired >= reps) return;
++  int c = __atomic_add_fetch(&fr2InjSendCount, 1, __ATOMIC_RELAXED);
++  if (c == k + fired * per && (fired == 0 || per > 0)) {
++    __atomic_add_fetch(&fr2InjSendFired, 1, __ATOMIC_RELAXED);
++    ncclResult_t ir = fr2ModifyState(base->qps[0].qp, IBV_QPS_ERR);
++    WARN("NET/IB: [FAULT-INJECT] forced send QP (qpn=%u) to ERR before multi-send #%d (injection %d/%ld, rc=%d)",
++         base->qps[0].qp->qp_num, c, fired + 1, reps, ir);
++  }
++}
++
++static void fr2MaybeInjectRecv(struct ncclIbNetCommBase* base) {
++  int64_t k = ncclParamRdmaFaultInjectRecv();
++  if (k <= 0 || ncclParamRdmaFaultInjectRecvSilent() || __atomic_load_n(&fr2InjRecvFired, __ATOMIC_RELAXED)) return;
++  int c = __atomic_add_fetch(&fr2InjRecvCount, 1, __ATOMIC_RELAXED);
++  if (c == k && !__atomic_exchange_n(&fr2InjRecvFired, 1, __ATOMIC_RELAXED)) {
++    ncclResult_t ir = fr2ModifyState(base->qps[0].qp, IBV_QPS_ERR);
++    WARN("NET/IB: [FAULT-INJECT] forced recv QP (qpn=%u) to ERR before receive post #%d (rc=%d)", base->qps[0].qp->qp_num, c, ir);
++  }
++}
++
++// ncclIbTest with the flag on.
++static ncclResult_t fr2Test(struct ncclIbRequest* r, int* done, int* sizes) {
++  struct ncclIbNetCommBase* base = r->base;
++  struct ncclIbFr2* fr = base->fr;
++  *done = 0;
++  if (fr->state != FR2_FAILED && fr2Fatal(base)) fr2Fail(base, FR2_R_FATAL, 1);
++  if (fr->state == FR2_FAILED) {
++    NCCLCHECK(ncclIbStatsCheckFatalCount(&base->stats, __func__));
++    return ncclRemoteError;
++  }
++  NCCLCHECK(fr2Step(base));
++  for (int iter = 0; iter < 64; iter++) {
++    if (fr->state == FR2_FAILED) return ncclRemoteError;
++    if (r->events[0] == 0 && r->events[1] == 0) {
++      *done = 1;
++      if (sizes && r->type == NCCL_NET_IB_REQ_RECV) for (int i = 0; i < r->nreqs; i++) sizes[i] = r->recv.sizes[i];
++      if (sizes && r->type == NCCL_NET_IB_REQ_SEND) sizes[0] = r->send.size;
++      NCCLCHECK(ncclIbFreeRequest(r));
++      return ncclSuccess;
++    }
++    if (fr->state != FR2_IDLE) return ncclSuccess;   // recovery in progress: fr2Step polls the CQ
++    int n = 0;
++    NCCLCHECK(fr2PollCq(base, &n));
++    if ((fr->state != FR2_IDLE && fr->state != FR2_FAILED) || fr->flState) NCCLCHECK(fr2Step(base));
++    if (n == 0) return ncclSuccess;
++  }
++  return ncclSuccess;
++}
++
+ NCCL_PARAM(IbSplitDataOnQps, "IB_SPLIT_DATA_ON_QPS", 0);
+ 
+ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+@@ -1724,6 +2883,7 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+   volatile struct ncclIbSendFifo* slots = comm->fifo[slot];
+   int nreqs = slots[0].nreqs;
+   if (nreqs > NCCL_NET_IB_MAX_RECVS) return ncclInternalError;
++  fr2MaybeInjectSend(&comm->base);  // [RDMA-FAULT-RECOVERY] test hook, off unless NCCL_RDMA_FAULT_INJECT>0
+ 
+   uint64_t wr_id = 0ULL;
+   for (int r=0; r<nreqs; r++) {
+@@ -1822,11 +2982,16 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+   return ncclSuccess;
+ }
+ 
+-ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mhandle, void** request) {
++static ncclResult_t ncclIbIsendBody(void* sendComm, void* data, int size, int tag, void* mhandle, void** request) {
+   struct ncclIbSendComm* comm = (struct ncclIbSendComm*)sendComm;
+   if (comm->base.ready == 0) { WARN("NET/IB: ncclIbIsend() called when comm->base.ready == 0"); return ncclInternalError; }
+   if (comm->base.ready == 0) { *request = NULL; return ncclSuccess; }
+   NCCLCHECK(ncclIbStatsCheckFatalCount(&comm->base.stats,__func__));
++  if (comm->base.fr) {  // [RDMA-FAULT-RECOVERY Stage 2] no new sends while a recovery runs
++    if (comm->base.fr->state != FR2_FAILED) NCCLCHECK(fr2Step(&comm->base));
++    if (comm->base.fr->state == FR2_FAILED) return ncclRemoteError;
++    if (comm->base.fr->state != FR2_IDLE) { *request = NULL; return ncclSuccess; }
++  }
+ 
+   struct ncclIbMrHandle* mhandleWrapper = (struct ncclIbMrHandle*) mhandle;
+ 
+@@ -1888,6 +3053,7 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
+     }
+ 
+     *request = reqs[r] = req;
++    if (comm->base.fr) { comm->base.fr->req[req - comm->base.reqs].idx = idx; comm->base.fr->req[req - comm->base.reqs].arrived = 0; }
+ 
+     // If this is a multi-recv, send only when all requests have matched.
+     for (int r=0; r<nreqs; r++) {
+@@ -1896,6 +3062,11 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
+ 
+     TIME_START(0);
+     NCCLCHECK(ncclIbMultiSend(comm, slot));
++    if (comm->base.fr) {  // [RDMA-FAULT-RECOVERY Stage 2] keep what a replay needs; the slot is cleared below
++      struct ncclIbFr2Group* g = comm->base.fr->grp + slot;
++      g->idx = idx; g->nreqs = nreqs; g->addr = slots[0].addr; g->rkey = slots[0].rkeys[comm->base.qps[0].remDevIdx];
++      g->remSize = slots[0].size; g->reqIdx = (int)(reqs[0] - comm->base.reqs);
++    }
+ 
+     // Clear slots[0]->nreqs, as well as other fields to help debugging and sanity checks
+     memset((void*)slots, 0, sizeof(struct ncclIbSendFifo));
+@@ -1986,15 +3157,21 @@ ncclResult_t ncclIbPostFifo(struct ncclIbRecvComm* comm, int n, void** data, int
+   return ncclSuccess;
+ }
+ 
+-ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* tags, void** mhandles, void** request) {
++static ncclResult_t ncclIbIrecvBody(void* recvComm, int n, void** data, int* sizes, int* tags, void** mhandles, void** request) {
+   struct ncclIbRecvComm* comm = (struct ncclIbRecvComm*)recvComm;
+   if (comm->base.ready == 0) { WARN("NET/IB: ncclIbIrecv() called when comm->base.ready == 0"); return ncclInternalError; }
+   if (comm->base.ready == 0) { *request = NULL; return ncclSuccess; }
+   if (n > NCCL_NET_IB_MAX_RECVS) return ncclInternalError;
+   NCCLCHECK(ncclIbStatsCheckFatalCount(&comm->base.stats,__func__));
++  if (comm->base.fr) {  // [RDMA-FAULT-RECOVERY Stage 2] no new receives while a recovery runs
++    if (comm->base.fr->state != FR2_FAILED) NCCLCHECK(fr2Step(&comm->base));
++    if (comm->base.fr->state == FR2_FAILED) return ncclRemoteError;
++    if (comm->base.fr->state != FR2_IDLE) { *request = NULL; return ncclSuccess; }
++  }
+ 
+   struct ncclIbRequest* req;
+   NCCLCHECK(ncclIbGetRequest(&comm->base, &req));
++  if (comm->base.fr) { comm->base.fr->req[req - comm->base.reqs].idx = comm->remFifo.fifoTail + 1; comm->base.fr->req[req - comm->base.reqs].arrived = 0; }
+   req->type = NCCL_NET_IB_REQ_RECV;
+   req->sock = &comm->base.sock;
+   req->nreqs = n;
+@@ -2013,6 +3190,8 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
+   // Select either all QPs, or one qp per-device
+   const int nqps = ncclParamIbSplitDataOnQps() ? comm->base.nqps : comm->base.ndevs;
+ 
++  fr2MaybeInjectRecv(&comm->base);  // [RDMA-FAULT-RECOVERY] test hook, off unless NCCL_RDMA_FAULT_INJECT_RECV>0
++
+   // Post recvs
+   struct ibv_recv_wr* bad_wr;
+   for (int i = 0; i < nqps; i++) {
+@@ -2033,7 +3212,7 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
+   return ncclSuccess;
+ }
+ 
+-ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void** mhandles, void** request) {
++static ncclResult_t ncclIbIflushBody(void* recvComm, int n, void** data, int* sizes, void** mhandles, void** request) {
+   struct ncclIbRecvComm* comm = (struct ncclIbRecvComm*)recvComm;
+   int last = -1;
+   for (int i=0; i<n; i++) if (sizes[i]) last = i;
+@@ -2054,6 +3233,7 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
+ 
+     wr.wr.rdma.remote_addr = (uint64_t)data[last];
+     wr.wr.rdma.rkey = mhandle->mrs[i]->rkey;
++    if (comm->base.fr && i == 0) { comm->base.fr->fl[req - comm->base.reqs].addr = (uint64_t)data[last]; comm->base.fr->fl[req - comm->base.reqs].rkey = mhandle->mrs[i]->rkey; }
+     wr.sg_list = &comm->devs[i].gpuFlush.sge;
+     wr.num_sge = 1;
+     wr.opcode = IBV_WR_RDMA_READ;
+@@ -2071,10 +3251,59 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
+   return ncclSuccess;
+ }
+ 
++// [RDMA-FAULT-RECOVERY Stage 2] entry points: with recovery on, every call runs under the comm's lock
++// (trylock for isend/irecv: a NULL request makes NCCL retry; iflush must not return NULL spuriously,
++// so it waits). A comm FAILED by the async-fatal check sends FAIL before the stock check returns.
++static ncclResult_t fr2Enter(struct ncclIbNetCommBase* base) {
++  struct ncclIbFr2* fr = base->fr;
++  if (fr->state != FR2_FAILED && fr2Fatal(base)) fr2Fail(base, FR2_R_FATAL, 1);
++  if (fr->state == FR2_FAILED) { fr2ServiceFailed(base); return ncclRemoteError; }
++  return ncclSuccess;
++}
++
++ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mhandle, void** request) {
++  struct ncclIbSendComm* comm = (struct ncclIbSendComm*)sendComm;
++  struct ncclIbFr2* fr = comm->base.fr;
++  if (fr == NULL) return ncclIbIsendBody(sendComm, data, size, tag, mhandle, request);
++  if (pthread_mutex_trylock(&fr->lock) != 0) { *request = NULL; return ncclSuccess; }
++  ncclResult_t res = fr2Enter(&comm->base);
++  if (res == ncclSuccess) res = ncclIbIsendBody(sendComm, data, size, tag, mhandle, request);
++  pthread_mutex_unlock(&fr->lock);
++  return res;
++}
++
++ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* tags, void** mhandles, void** request) {
++  struct ncclIbRecvComm* comm = (struct ncclIbRecvComm*)recvComm;
++  struct ncclIbFr2* fr = comm->base.fr;
++  if (fr == NULL) return ncclIbIrecvBody(recvComm, n, data, sizes, tags, mhandles, request);
++  if (pthread_mutex_trylock(&fr->lock) != 0) { *request = NULL; return ncclSuccess; }
++  ncclResult_t res = fr2Enter(&comm->base);
++  if (res == ncclSuccess) res = ncclIbIrecvBody(recvComm, n, data, sizes, tags, mhandles, request);
++  pthread_mutex_unlock(&fr->lock);
++  return res;
++}
++
++ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void** mhandles, void** request) {
++  struct ncclIbRecvComm* comm = (struct ncclIbRecvComm*)recvComm;
++  struct ncclIbFr2* fr = comm->base.fr;
++  if (fr == NULL) return ncclIbIflushBody(recvComm, n, data, sizes, mhandles, request);
++  pthread_mutex_lock(&fr->lock);
++  ncclResult_t res = ncclIbIflushBody(recvComm, n, data, sizes, mhandles, request);
++  pthread_mutex_unlock(&fr->lock);
++  return res;
++}
++
+ #define HCA_NAME(req, index) ((req)->devBases[(index)]->pd->context->device->name)
+ 
+ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
+   struct ncclIbRequest *r = (struct ncclIbRequest*)request;
++  if (r->base->fr) {  // [RDMA-FAULT-RECOVERY Stage 2]
++    struct ncclIbFr2* fr = r->base->fr;
++    if (pthread_mutex_trylock(&fr->lock) != 0) { *done = 0; return ncclSuccess; }  // the helper holds it: try again later
++    ncclResult_t res = fr2Test(r, done, sizes);
++    pthread_mutex_unlock(&fr->lock);
++    return res;
++  }
+   *done = 0;
+   while (1) {
+     NCCLCHECK(ncclIbStatsCheckFatalCount(&r->base->stats,__func__));
+@@ -2169,6 +3398,7 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
+ ncclResult_t ncclIbCloseSend(void* sendComm) {
+   struct ncclIbSendComm* comm = (struct ncclIbSendComm*)sendComm;
+   if (comm) {
++    fr2Detach(&comm->base);   // first: the helper must never see a closed socket or destroyed QP/CQ
+     NCCLCHECK(ncclSocketClose(&comm->base.sock));
+ 
+     for (int q = 0; q < comm->base.nqps; q++)
+@@ -2189,6 +3419,7 @@ ncclResult_t ncclIbCloseSend(void* sendComm) {
+ ncclResult_t ncclIbCloseRecv(void* recvComm) {
+   struct ncclIbRecvComm* comm = (struct ncclIbRecvComm*)recvComm;
+   if (comm) {
++    fr2Detach(&comm->base);   // first: the helper must never see a closed socket or destroyed QP/CQ
+     NCCLCHECK(ncclSocketClose(&comm->base.sock));
+ 
+     for (int q = 0; q < comm->base.nqps; q++)

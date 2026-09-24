@@ -91,6 +91,16 @@ RETRY_EXC_ERR detection 단축 경로 비교 (옛 클러스터).
   - pipelined: 깨끗하게 거절.
   - peer kill: `proc_kill`로 분류한 뒤 stock과 같이 실패.
   - 복구 대상은 첫 에러가 WR_FLUSH이고 QP 1개·NIC 1개·in-flight 요청 1개일 때로 한정된다. `ncclCommAbort`는 에러 후 stock 2.23에서도 hang한다.
+- **NCCL Stage 2**(`harness/nccl-integration/stage2/`, 2026-09-25): 같은 `net_ib.cc` 안에서 요청이 여러 개 비행 중이어도 복구한다. 설계와 QA 두 라운드는 `DESIGN_stage2.md`에 있다.
+  - NCCL 기본 설정(2채널, pipelined, 16 MB)에서 send QP ERR 30/30, recv QP ERR 30/30을 복구했다. 최종 빌드 재확인에서도 30/30이었다. Stage 1은 이 설정을 3/3 거절했다. 복구 시간 중앙값은 2.1–2.3 ms다.
+  - run당 5회 fault 50/50, 양쪽 rank 동시 fault 20/20(deadlock 없음).
+  - **실제 경로 fault도 복구했다.** 테스트용 보조 RoCE 주소를 sunny에서 지웠다가 다시 붙이면, 주소가 새 GID index로 돌아와 기존 QP는 영구히 죽는다. 원본은 0.5 s·6 s 끊김에서 RETRY_EXC 12/0x81 뒤 6/6 실패했고, 타당성 시험에서는 0.3 s 끊김에도 QP가 죽었다. Stage 2는 GID를 값으로 다시 찾아 0.5 s·6 s·15 s 끊김을 15/15 복구했고, 15,000회 반복의 결과가 모두 정확했다. link 자체는 내리지 않으므로 같은 링크의 NVMe-oF는 영향이 없었다.
+  - 죽은 peer: 수신 대기 중인 생존자에게 50.2 ms 만에 에러를 올린다(10/10). 원본은 같은 상황에서 아무 경고 없이 멈춘다(3/3).
+  - 오래된 QP의 패킷(stale packet)은 HW counter(`duplicate_request`, `out_of_sequence`, `packet_seq_err`)로 확인했는데, 모든 캠페인에서 0이었다.
+  - fault가 없을 때 비용은 flag on에서 −0.2 ~ +0.7 %, flag off는 원본과 같다.
+- **NCCL 완료 시간 비교**(`harness/nccl-integration/perf/`): fault 1회가 든 작업 전체의 시간을 비교했다.
+  - 제자리 복구는 약 2 ms를 더한다. 실패한 반복부터 재시작하면 약 1.1 s를 더한다. 반복마다 checkpoint가 있고 에러 즉시 재기동한다는, 재시작에 가장 유리한 가정에서다.
+  - NCCL 기본 IB timeout 20에서 실제 경로 fault는 NIC이 포기하기까지 56–60 s가 걸린다. 그 뒤로는 복구(68.0 s)와 재시작(68.3 s)이 오차 안에서 같다. 이때 병목은 복구가 아니라 detection이다.
 
 ### (c) GPU-initiated RDMA (`harness/gpu-initiated/`, 2026-09-23~24)
 
@@ -139,9 +149,9 @@ RETRY_EXC_ERR detection 단축 경로 비교 (옛 클러스터).
 
 한계:
 
-- **복구된 fault는 지금까지 전부 주입한 것이다.** 로컬 QP 에러와 상대 QP 에러, 그리고 NCCL 패치의 inject는 모두 소프트웨어가 QP를 ERR로 옮긴 경우다. 실제 원격 에러(원격 접근 오류)와 죽은 peer(상대 프로세스 사망)는 거절 경로만 검증됐다.
-- **검증 범위가 좁다.** NVSHMEM FT는 2 PEs, peer당 RC QP 1개, 복구 중 in-flight op 1개로 검증했다. GIN 복구는 2 ranks, QP 쌍당 initiator 1개, in-flight op 1개(lockstep)로 검증했다.
-- **[추론, 미시험]:** 여러 QP·NIC, 3개 이상 PE, 여러 op in flight, 양쪽 동시 initiation, FIN 없이 죽는 peer host.
+- **실제 fault를 복구한 것은 NCCL Stage 2의 주소 flap뿐이다.** GPU 스택(GIN, NVSHMEM)에서 복구한 로컬 QP 에러와 상대 QP 에러는 모두 소프트웨어가 QP를 ERR로 옮긴 경우다. 실제 원격 에러(원격 접근 오류)와 죽은 peer(상대 프로세스 사망)는 거절 경로만 검증됐다. 진짜 link down은 공유 NVMe-oF 때문에 돌리지 않았다(`stage2/linkflap_window.sh`는 준비만 됐고 사용자 승인이 필요하다).
+- **검증 범위가 좁다.** NVSHMEM FT는 2 PEs, peer당 RC QP 1개, 복구 중 in-flight op 1개로 검증했다. GIN 복구는 2 ranks, QP 쌍당 initiator 1개, in-flight op 1개(lockstep)로 검증했다. NCCL Stage 2만 여러 요청 in flight와 양쪽 동시 fault를 다루고, 그것도 2 ranks·NIC 1개다.
+- **[추론, 미시험]:** GPU 스택의 여러 QP·NIC, 3개 이상 PE, 여러 op in flight, 양쪽 동시 initiation, 그리고 모든 스택에서 FIN 없이 죽는 peer host.
 - **실험 규모:** 노드 한 쌍, fw 한 종, RoCE v2. 복구 실험은 cell당 3–5 trials다.
 - `gpu_doorbell/` 창에서 GDAKI가 GPU doorbell을 썼다는 것은 추론이다(NCCL·DOCA 모두 로그하지 않는다). 2026-09-24의 `gin_recovery` GPU-doorbell 재실행에서는 네 지표로 측정했다.
 - DeepEP는 SM90이 필요해 이 테스트베드(sm_75/sm_86)에서 돌릴 수 없다.
