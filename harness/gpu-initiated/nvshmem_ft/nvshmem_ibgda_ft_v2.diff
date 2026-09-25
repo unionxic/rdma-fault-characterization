@@ -19,8 +19,16 @@
 #             posted, sticky record class OOB_WRITE/OOB_READ, status/bounded quiet report it
 #           NVSHMEM_IBGDA_FT_BOUNDS_GUARD=<bytes>  (with BOUNDS) red zone after every symmetric
 #             allocation, published as free (an overrun starting at an object's end is caught)
-#           NVSHMEM_IBGDA_FT_TEST_SKIP=<idx,lock,ibuf,sticky,cqfill,dbr,nerr,dci,psn,finbar,ringci>
-#             test-only: skip one step of the recovery resync / teardown handling
+#           NVSHMEM_IBGDA_FT_TEST_SKIP=<idx,lock,ibuf,sticky,cqfill,dbr,nerr,dci,psn,finbar,ringci,park>
+#             test-only: skip one step of the recovery resync / teardown handling (park: v2 posting)
+# v2.1:     park (on with FT): a QP with a recorded CQE error or ring invariant gets prod_idx raised
+#             to a mark (2^63), so later posts never write the doorbell record or ring; the drain
+#             waits for the doorbell record's send word; recovery removes the mark. No post-path
+#             instruction added.
+#           ring-walk invariant: a consumed CQE whose advance d is outside 1..ncqes is recorded
+#             (class RING_INVARIANT, sticky opcode 0xf) and fails the wait; policy: decline
+#           NVSHMEM_IBGDA_FT_TEST_TRIP=ring_d:<n> | ring_d_silent:<n>  test-only: force d = 0 at the
+#             n-th consumed ring CQE (record + error, or v2's silent consumption)
 # Design:   harness/gpu-initiated/nvshmem_ft/V2.md (v1: DESIGN.md)
 diff --git a/nvshmem_transport.sym b/nvshmem_transport.sym
 index 360a172..21a8007 100644
@@ -205,7 +213,7 @@ index da5af3f..5422b6c 100644
           typeid(decltype(*this)).name());
      nvshmemi_update_device_state();
 diff --git a/src/include/device_host_transport/nvshmem_common_ibgda.h b/src/include/device_host_transport/nvshmem_common_ibgda.h
-index f735ca8..808faae 100644
+index f735ca8..ae7d8af 100644
 --- a/src/include/device_host_transport/nvshmem_common_ibgda.h
 +++ b/src/include/device_host_transport/nvshmem_common_ibgda.h
 @@ -177,7 +177,17 @@ typedef struct {
@@ -227,7 +235,7 @@ index f735ca8..808faae 100644
  } __attribute__((__aligned__(8))) nvshmemi_ibgda_device_qp_management_v1;
  static_assert(sizeof(nvshmemi_ibgda_device_qp_management_v1) == 96,
                "ibgda_device_qp_management_v1 must be 96 bytes.");
-@@ -339,13 +349,209 @@ typedef struct {
+@@ -339,13 +349,227 @@ typedef struct {
      void *extra;
      void *region_batch_rma_pending_qps;
      uint32_t region_batch_rma_threshold;
@@ -265,7 +273,14 @@ index f735ca8..808faae 100644
 +                                                walk them by consumer counter (mvars.ft_ring_ci) */
 +    NVSHMEMI_IBGDA_FT_FLAG_BOUNDS = 16,      /* remote ranges are checked against the heap's
 +                                                allocated chunks before an RMA/AMO is posted */
++    NVSHMEMI_IBGDA_FT_FLAG_TEST_TRIP = 32,   /* test-only: trip the ring-walk invariant check
++                                                (NVSHMEM_IBGDA_FT_TEST_TRIP) */
++    NVSHMEMI_IBGDA_FT_FLAG_PARK = 64,        /* v2.1: a QP with a recorded error is parked: posts
++                                                on it no longer advance its doorbell record or ring
++                                                the doorbell (they would only be flushed) */
 +};
++/* v2.1: prod_idx of a parked QP (the recording thread raises it with atomicMax). */
++#define NVSHMEMI_IBGDA_FT_PARK_MARK (1ULL << 63)
 +
 +/* v2 test-only knobs (NVSHMEM_IBGDA_FT_TEST_SKIP=<comma list>): skip one step of the recovery
 + * resync (negative controls). Never set in production. */
@@ -280,8 +295,10 @@ index f735ca8..808faae 100644
 +    NVSHMEMI_IBGDA_FT_SKIP_DCI = 1 << 7,    /* do not reset local DCIs left in ERR */
 +    NVSHMEMI_IBGDA_FT_SKIP_PSN = 1 << 8,    /* reconnect with PSN 0 instead of fresh random PSNs */
 +    NVSHMEMI_IBGDA_FT_SKIP_FINBAR = 1 << 9, /* after a decline, do not skip the teardown barriers */
-+    NVSHMEMI_IBGDA_FT_SKIP_RINGCI = 1 << 10 /* ring mode: restart the consumer counter at 0 instead
++    NVSHMEMI_IBGDA_FT_SKIP_RINGCI = 1 << 10, /* ring mode: restart the consumer counter at 0 instead
 +                                               of the CQ's producer counter */
++    NVSHMEMI_IBGDA_FT_SKIP_PARK = 1 << 11    /* v2.1: do not park failed QPs (v2 behaviour: fail-fast
++                                               posts keep ringing the doorbell) */
 +};
 +
 +/* Classes (same numbering as the NCCL GIN Q4 classifier). Syndromes: rdma-core
@@ -307,6 +324,9 @@ index f735ca8..808faae 100644
 +    NVSHMEMI_IBGDA_FT_CLASS_OOB_WRITE = 16, /* put/p/AMO/signal target range outside an allocated
 +                                               chunk of the symmetric heap: not posted */
 +    NVSHMEMI_IBGDA_FT_CLASS_OOB_READ = 17,  /* get/g source range, same check: not posted */
++    NVSHMEMI_IBGDA_FT_CLASS_RING_INVARIANT = 18, /* ring walk: a consumed CQE's wqe_counter does not
++                                                    advance cons_idx by 1..ncqes (internal error;
++                                                    fails every later wait on the QP) */
 +};
 +
 +/* v2: why a bounds check failed (record vendor_err byte of a library-detected record). */
@@ -371,7 +391,9 @@ index f735ca8..808faae 100644
 +    uint64_t oob_chunk_end;/* bounds: end offset of the chunk that holds oob_off (0 if free) */
 +    uint32_t oob_op;       /* bounds: NVSHMEMI_IBGDA_FT_OP_* */
 +    uint32_t ring;         /* 1 if the CQ is a ring (NVSHMEM_IBGDA_FT_RING_CQ) */
-+    uint8_t reserved[56];
++    uint32_t inv_d;        /* ring invariant record: the advance d computed for the consumed CQE */
++    uint32_t inv_ncqes;    /* ring invariant record: the bound (ncqes) it violated */
++    uint8_t reserved[48];
 +} nvshmemi_ibgda_ft_record_t;
 +static_assert(sizeof(nvshmemi_ibgda_ft_record_t) == 256, "nvshmemi_ibgda_ft_record_t must be 256 B");
 +
@@ -385,7 +407,10 @@ index f735ca8..808faae 100644
 +    uint64_t sentinel_polls;   /* sentinel loop iterations (diagnostic) */
 +    uint32_t sentinel_stop;    /* host sets 1 to end the sentinel */
 +    uint32_t sentinel_running; /* sentinel sets 1 while it runs */
-+    uint64_t reserved[4];
++    uint32_t test_trip;        /* test-only countdown: the ring consumption that brings it to 0 has
++                                  its d forced to 0 (NVSHMEM_IBGDA_FT_TEST_TRIP) */
++    uint32_t test_trip_mode;   /* 1 = v2.1 behaviour (record + error), 2 = emulate v2 (silent skip) */
++    uint64_t reserved[3];
 +} nvshmemi_ibgda_ft_dev_t;
 +
 +/* Host API of the IBGDA transport plugin (exported from nvshmem_transport_ibgda.so; an application
@@ -406,8 +431,9 @@ index f735ca8..808faae 100644
 +    char name[24], fault[24], cause[128], action[128];
 +    int recover_hint; /* 1 recoverable class, 2 recoverable if the peer is alive, 0 decline */
 +    /* v2 */
-+    int kind;         /* 1 error CQE, 2 library-detected (bounds) */
++    int kind;         /* 1 error CQE, 2 library-detected (bounds), 3 internal (ring invariant) */
 +    int oob_op;
++    uint32_t inv_d, inv_ncqes;
 +    uint64_t ring_ci, oob_off, oob_len, oob_chunk_end;
 +} nvshmemt_ibgda_ft_info_t;
 +
@@ -466,10 +492,10 @@ index 094aa58..11a2c49 100644
  };
  
 diff --git a/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh b/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh
-index 143f63b..67c7665 100644
+index 143f63b..fb1e2bd 100644
 --- a/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh
 +++ b/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh
-@@ -496,6 +496,390 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_check_poll_ti
+@@ -496,6 +496,491 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_check_poll_ti
  }
  #endif
  
@@ -584,6 +610,21 @@ index 143f63b..67c7665 100644
 +    }
 +}
 +
++/* v2.1: park the QP behind these management variables. A QP with a recorded error (CQE error or
++ * ring invariant; not a bounds record, whose QP is healthy) should not be posted to any more: the
++ * slot wait fails fast after an error, and v2 went on writing WQEs and ringing the doorbell far past
++ * the NIC's flush point (up to 16 queues), which overwrote SQ slots the NIC had not flushed; the
++ * NIC then stopped flushing (measured) and the recovery drain never completed. Parking raises
++ * prod_idx to NVSHMEMI_IBGDA_FT_PARK_MARK: every later ibgda_post_send's atomicMax returns a
++ * larger old value, so it neither writes the doorbell record nor rings (posts are dropped; on a
++ * failed QP they would only be flushed). Recovery zeroes prod_idx and so un-parks. */
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE void ibgda_ft_park(
++    nvshmemi_ibgda_device_qp_management_t *mv) {
++    if (ibgda_get_state()->ft_flags & NVSHMEMI_IBGDA_FT_FLAG_PARK)
++        atomicMax((unsigned long long int *)&mv->tx_wq.prod_idx,
++                  (unsigned long long int)NVSHMEMI_IBGDA_FT_PARK_MARK);
++}
++
 +/* Snapshot the error CQE at `slot` (slot 0 of a collapsed CQ, or the ring slot at consumer
 + * counter ring_ci), record it as the QP's sticky first error and publish it to the host mailbox.
 + * Cold path: kept out of line so the poll loops stay small. Returns the syndrome. */
@@ -678,6 +719,7 @@ index 143f63b..67c7665 100644
 +    r[40] = (uint32_t)ring_ci;
 +    r[41] = (uint32_t)(ring_ci >> 32);
 +    r[49] = ring ? 1u : 0u;
++    ibgda_ft_park(mv); /* v2.1: after the record's snapshot of prod_idx */
 +    ibgda_ft_mbox_publish(ft, r);
 +    return syndrome;
 +}
@@ -694,8 +736,85 @@ index 143f63b..67c7665 100644
 + * sentinel or in-loop timing is needed. Exact 64-bit cons_idx: the CAS winner of CQE k reads
 + * cons_idx after the CAS; every CQE before k was claimed earlier and no later one yet, so
 + * w + 1 - nwqes <= cons_idx <= w (w = the CQE's WQE index) and d = (uint16)(wqe_counter + 1 -
-+ * cons_idx) is the exact advance, 1 <= d <= nwqes <= 32768.
++ * cons_idx) is the exact advance, 1 <= d <= nwqes <= ncqes. A d outside that range means the
++ * invariant is broken (bug or memory corruption): v2.1 records it (class RING_INVARIANT) and fails
++ * this and every later wait on the QP, instead of consuming the CQE silently (v2), which left the
++ * waiter spinning for a completion that had been consumed.
++ * No lap before the root cause is recorded, even with fail-fast posting: after an error cons_idx
++ * stops at the failing WQE w_err (error CQEs are never consumed), and a WQE with index >= cons_idx
++ * + nwqes can only be reserved after the slot wait (ibgda_wait_for_slot_availability) polled this
++ * ring, and that poll records the root cause before it returns -1 and lets posting continue. So
++ * at most nwqes CQEs (one per WQE in [w_err, cons_idx + nwqes)) are written from the root cause on
++ * before it is recorded, and slot k is rewritten only by CQE k + ncqes (nwqes == ncqes here, both
++ * round_up_pow2(QP_DEPTH); checked at init).
 + * ------------------------------------------------------------------------------------------- */
++/* v2.1: a consumed CQE broke the ring-walk invariant. Record it (sticky record with opcode 0xf so
++ * that every later wait on the QP fails, and a mailbox record the host logs). Cold path. */
++__device__ __noinline__ static void ibgda_ft_ring_invariant(const nvshmemi_ibgda_device_cq_t *cq,
++                                                            uint64_t idx, uint64_t ci, uint32_t w15,
++                                                            uint64_t cons, uint32_t d,
++                                                            uint32_t path) {
++    nvshmemi_ibgda_ft_dev_t *ft = ibgda_ft_dev();
++    if (ft == nullptr) return;
++    nvshmemi_ibgda_device_qp_management_t *mv = ibgda_ft_mvars_of_cq(cq);
++    const uint16_t wc = BSWAP16((uint16_t)(w15 & 0xffffu));
++    const uint8_t cls = NVSHMEMI_IBGDA_FT_CLASS_RING_INVARIANT;
++    const uint32_t old = atomicCAS(&mv->ft_state, 0u, 1u);
++    const bool first = (old == 0u);
++    if (first) {
++        mv->ft_fp = (0xfu << 24) | cls; /* opcode 0xf: not a CQE error, but it fails later waits */
++        mv->ft_wqe = (uint32_t)wc | ((uint32_t)(idx & 0xffff) << 16);
++        mv->ft_aux = d;
++        __threadfence();
++        atomicExch(&mv->ft_state, 2u);
++        atomicAdd(&ft->nerr, 1u);
++    }
++    uint32_t qp_index;
++    uint8_t qp_type;
++    int32_t peer;
++    ibgda_ft_qp_of_mvars(mv, &qp_index, &qp_type, &peer);
++    uint32_t r[sizeof(nvshmemi_ibgda_ft_record_t) / 4];
++#pragma unroll
++    for (int i = 0; i < (int)(sizeof(r) / 4); i++) r[i] = 0u;
++    r[2] = cq->qpn;
++    r[4] = (uint32_t)wc;
++    r[5] = (uint32_t)cls | (3u << 8) | ((path & 0xffu) << 16) | ((uint32_t)qp_type << 24);
++    r[6] = (0xfu << 16) | (first ? 0u : (1u << 24));
++    r[7] = (uint32_t)nvshmemi_device_state_d.mype;
++    r[8] = (uint32_t)peer;
++    r[9] = qp_index;
++    const uint64_t vals[6] = {idx,
++                              cons,
++                              ibgda_atomic_read(cq->prod_idx),
++                              ibgda_atomic_read(cq->ready_head),
++                              ibgda_atomic_read(cq->resv_head),
++                              ibgda_ft_globaltimer()};
++#pragma unroll
++    for (int i = 0; i < 6; i++) {
++        r[10 + 2 * i] = (uint32_t)vals[i];
++        r[11 + 2 * i] = (uint32_t)(vals[i] >> 32);
++    }
++    r[39] = w15; /* word 15 of the consumed CQE (root_cqe[60..63]) */
++    r[40] = (uint32_t)ci;
++    r[41] = (uint32_t)(ci >> 32);
++    r[49] = 1u;
++    r[50] = d;
++    r[51] = cq->ncqes;
++    ibgda_ft_park(mv);
++    ibgda_ft_mbox_publish(ft, r);
++}
++
++/* v2.1 test-only (NVSHMEM_IBGDA_FT_TEST_TRIP): force d = 0 on the consumption that brings the
++ * countdown to 0. Returns the (possibly forced) d and whether to emulate v2's silent skip. */
++__device__ __noinline__ static uint32_t ibgda_ft_test_trip(uint32_t d, bool *silent) {
++    nvshmemi_ibgda_ft_dev_t *ft = ibgda_ft_dev();
++    *silent = false;
++    if (ft == nullptr) return d;
++    if (atomicSub(&ft->test_trip, 1u) != 1u) return d;
++    *silent = (*(volatile uint32_t *)&ft->test_trip_mode == 2u);
++    return 0u;
++}
++
 +__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_ft_ring_poll(
 +    nvshmemi_ibgda_device_cq_t *cq, uint64_t idx, int *error, uint32_t path, long long t0,
 +    long long budget) {
@@ -720,14 +839,22 @@ index 143f63b..67c7665 100644
 +            if (atomicCAS(ci_p, (unsigned long long)ci, (unsigned long long)(ci + 1)) == ci) {
 +                const uint16_t wc = BSWAP16((uint16_t)(w15 & 0xffffu));
 +                const uint64_t cons = ibgda_atomic_read(cq->cons_idx);
-+                const uint16_t d = (uint16_t)(wc + 1u - (uint16_t)cons);
++                uint32_t d = (uint16_t)(wc + 1u - (uint16_t)cons);
++                bool silent = false;
++                if (unlikely(ibgda_get_state()->ft_flags & NVSHMEMI_IBGDA_FT_FLAG_TEST_TRIP))
++                    d = ibgda_ft_test_trip(d, &silent);
 +                ci++;
-+                if (likely(d != 0 && d <= 0x8000u)) {
++                if (likely(d != 0 && d <= ncqes)) {
 +                    atomicMax((unsigned long long int *)cq->cons_idx,
 +                              (unsigned long long int)(cons + d));
 +                    /* Done as soon as this wait is satisfied: a later CQE (possibly an error of a
 +                     * later operation) is left to the next wait. */
 +                    if (cons + d >= idx) return 0;
++                } else if (!silent) {
++                    /* v2.1: record the broken invariant and fail (v2 skipped it silently). */
++                    ibgda_ft_ring_invariant(cq, idx, ci - 1, w15, cons, d, path);
++                    *error = -1;
++                    return -1;
 +                }
 +            } else {
 +                ci = ibgda_atomic_read((uint64_t *)ci_p);
@@ -860,7 +987,7 @@ index 143f63b..67c7665 100644
  static_assert(NVSHMEMI_IBGDA_MAX_QP_DEPTH <= 32768,
                "static_assert(NVSHMEMI_IBGDA_MAX_QP_DEPTH <= 32768) failed");
  __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
-@@ -517,6 +901,9 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
+@@ -517,6 +1002,9 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
  
      uint64_t cons_idx = ibgda_atomic_read(cq->cons_idx);
      uint64_t new_cons_idx;
@@ -870,7 +997,7 @@ index 143f63b..67c7665 100644
  
      assert(likely(cq->qp_type == NVSHMEMI_IBGDA_DEVICE_QP_TYPE_DCI ||
                    cq->qp_type == NVSHMEMI_IBGDA_DEVICE_QP_TYPE_RC));
-@@ -525,6 +912,16 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
+@@ -525,6 +1013,16 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
          goto out;
      }
  
@@ -887,7 +1014,7 @@ index 143f63b..67c7665 100644
  #ifdef NVSHMEM_IBGDA_DEBUG
      // We can skip opcode == MLX5_CQE_INVALID check because we have already
      // initialized the CQ buffer to 0xff. With the QP depth range we enforce,
-@@ -555,12 +952,32 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
+@@ -555,12 +1053,32 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
      // If idx is a lot greater than cons_idx, we might get incorrect result due
      // to wqe_counter wraparound. We need to check prod_idx to be sure that idx
      // has already been submitted.
@@ -923,7 +1050,7 @@ index 143f63b..67c7665 100644
  #ifdef NVSHMEM_TIMEOUT_DEVICE_POLLING
          now = ibgda_query_globaltimer();
          status = ibgda_check_poll_timeout(cq, now, start, idx, error);
-@@ -611,6 +1028,11 @@ check_opcode:
+@@ -611,6 +1129,11 @@ check_opcode:
      if (unlikely(opcode == MLX5_CQE_REQ_ERR)) {
          ibgda_mlx5_err_cqe_t *cqe_err = (ibgda_mlx5_err_cqe_t *)cqe64;
          *error = cqe_err->syndrome;
@@ -935,7 +1062,17 @@ index 143f63b..67c7665 100644
  #ifdef NVSHMEM_IBGDA_DEBUG
          __be16 wqe_counter = ibgda_atomic_read(&cqe_err->wqe_counter);
          __be32 s_wqe_opcode_qpn = ibgda_atomic_read(&cqe_err->s_wqe_opcode_qpn);
-@@ -1729,7 +2151,9 @@ ibgda_quiet(nvshmemi_ibgda_device_qp_t *qp) {
+@@ -1574,6 +2097,9 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE void ibgda_post_send(
+                                        (unsigned long long int)new_prod_idx);
+     }
+ 
++    /* FT v2.1: a parked QP (see ibgda_ft_park) has prod_idx = NVSHMEMI_IBGDA_FT_PARK_MARK, so
++     * old_prod_idx is larger than any new index and nothing below runs: no instruction is added
++     * to this path. */
+     if (likely(new_prod_idx > old_prod_idx)) {
+         IBGDA_MEMBAR();
+         ibgda_update_dbr(qp, new_prod_idx);
+@@ -1729,7 +2255,9 @@ ibgda_quiet(nvshmemi_ibgda_device_qp_t *qp) {
          printf("ibgda_poll_cq failed with error=%d.\n", err);
      }
  #endif
@@ -946,7 +1083,7 @@ index 143f63b..67c7665 100644
      return prod_idx;
  }
  
-@@ -1744,10 +2168,12 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE void ibgda_wait_for_slo
+@@ -1744,10 +2272,12 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE void ibgda_wait_for_slo
          nvshmemi_ibgda_device_cq_t cq = *qp->tx_wq.cq;
          status = ibgda_poll_cq(&cq, wqe_idx - nwqes, &err);
          // TODO: Integrate the error handler with the core NVSHMEM
@@ -961,7 +1098,7 @@ index 143f63b..67c7665 100644
      }
      IBGDA_MFENCE();
  }
-@@ -2716,6 +3142,11 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_rma
+@@ -2716,6 +3246,11 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_rma
  template <typename T>
  __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_rma_p(
      void *rptr, const T value, int dst_pe, nvshmemx_qp_handle_t qp_index = NVSHMEMX_QP_DEFAULT) {
@@ -973,7 +1110,7 @@ index 143f63b..67c7665 100644
      unsigned int amask = __activemask();
      bool can_combine_data = false;
      int pred_contiguous = 0;
-@@ -2917,6 +3348,11 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE T
+@@ -2917,6 +3452,11 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE T
  nvshmemi_ibgda_rma_g(void *rptr, int dst_pe, nvshmemx_qp_handle_t qp_index = NVSHMEMX_QP_DEFAULT) {
      T ret;
      CONSTANT_ADDRESS_SPACE nvshmemi_ibgda_device_state_t *state = ibgda_get_state();
@@ -985,7 +1122,7 @@ index 143f63b..67c7665 100644
  
      int proxy_pe = ibgda_get_proxy_pe(dst_pe);
  
-@@ -2947,6 +3383,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_rma_nbi(
+@@ -2947,6 +3487,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_rma_nbi(
      void *rptr, void *lptr, size_t bytes, int dst_pe, nvshmemx_qp_handle_t qp_index,
      const nvshmemi_region_info_t *region_info) {
      CONSTANT_ADDRESS_SPACE nvshmemi_ibgda_device_state_t *state = ibgda_get_state();
@@ -998,7 +1135,7 @@ index 143f63b..67c7665 100644
      int proxy_pe = ibgda_get_proxy_pe(dst_pe);
  #ifndef __clang_llvm_bitcode_lib__
      if (SCOPE == NVSHMEMI_THREADGROUP_THREAD) {
-@@ -2992,6 +3434,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_rma(
+@@ -2992,6 +3538,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_rma(
      void *rptr, void *lptr, size_t bytes, int dst_pe,
      nvshmemx_qp_handle_t qp_index = NVSHMEMX_QP_DEFAULT) {
      CONSTANT_ADDRESS_SPACE nvshmemi_ibgda_device_state_t *state = ibgda_get_state();
@@ -1011,7 +1148,7 @@ index 143f63b..67c7665 100644
      int proxy_pe = ibgda_get_proxy_pe(dst_pe);
  #ifndef __clang_llvm_bitcode_lib__
      if (SCOPE == NVSHMEMI_THREADGROUP_THREAD) {
-@@ -3122,6 +3570,11 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_amo_nonfetch(
+@@ -3122,6 +3674,11 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_amo_nonfetch(
      assert(!nvshmemi_is_float_type<T>() ||
             (op != NVSHMEMI_AMO_ADD && op != NVSHMEMI_AMO_FETCH_ADD));
      CONSTANT_ADDRESS_SPACE nvshmemi_ibgda_device_state_t *state = ibgda_get_state();
@@ -1023,7 +1160,7 @@ index 143f63b..67c7665 100644
  
      if (state->support_half_av_seg) {
          nvshmemi_ibgda_amo_nonfetch_impl<T, true>(rptr, value, pe, op, qp_index);
-@@ -3272,6 +3725,11 @@ nvshmemi_ibgda_amo_fetch(void *rptr, const T value, const T compare, int pe, nvs
+@@ -3272,6 +3829,11 @@ nvshmemi_ibgda_amo_fetch(void *rptr, const T value, const T compare, int pe, nvs
             (op != NVSHMEMI_AMO_ADD && op != NVSHMEMI_AMO_FETCH_ADD));
      T ret;
      CONSTANT_ADDRESS_SPACE nvshmemi_ibgda_device_state_t *state = ibgda_get_state();
@@ -1035,7 +1172,7 @@ index 143f63b..67c7665 100644
  
      if (state->support_half_av_seg) {
          ret = nvshmemi_ibgda_amo_fetch_impl<T, true>(rptr, value, compare, pe, op, qp_index);
-@@ -3605,6 +4063,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_put_signal(
+@@ -3605,6 +4167,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_put_signal(
      void *rptr, void *lptr, size_t bytes, void *sig_rptr, uint64_t signal, nvshmemi_amo_t sig_op,
      int pe, bool is_nbi, nvshmemx_qp_handle_t qp_index = NVSHMEMX_QP_DEFAULT) {
      CONSTANT_ADDRESS_SPACE nvshmemi_ibgda_device_state_t *state = ibgda_get_state();
@@ -1048,7 +1185,7 @@ index 143f63b..67c7665 100644
  #ifndef __clang_llvm_bitcode_lib__
      if (SCOPE == NVSHMEMI_THREADGROUP_THREAD) {
  #else
-@@ -3818,6 +4282,147 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_enforce_consistency
+@@ -3818,6 +4386,147 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_ibgda_enforce_consistency
      }
  }
  
@@ -1197,7 +1334,7 @@ index 143f63b..67c7665 100644
  
  #endif /* _NVSHMEMI_IBGDA_DEVICE_H_ */
 diff --git a/src/modules/transport/ibgda/ibgda.cpp b/src/modules/transport/ibgda/ibgda.cpp
-index e47042e..71f510e 100644
+index e47042e..cbd2724 100644
 --- a/src/modules/transport/ibgda/ibgda.cpp
 +++ b/src/modules/transport/ibgda/ibgda.cpp
 @@ -24,6 +24,8 @@
@@ -1396,7 +1533,7 @@ index e47042e..71f510e 100644
      }).detach();
  }
  
-@@ -4777,6 +4870,997 @@ static void ibgda_fault_watch_arm(nvshmemt_ibgda_state_t *ibgda_state, int n_pes
+@@ -4777,6 +4870,1096 @@ static void ibgda_fault_watch_arm(nvshmemt_ibgda_state_t *ibgda_state, int n_pes
  }
  /* ===================== end NVSHMEM_IBGDA_FAULT_INJECT hook ===================== */
  
@@ -1539,6 +1676,11 @@ index e47042e..71f510e 100644
 +                    ? "remote range starts in unallocated heap (device bounds check, not posted)"
 +                    : "remote range runs past the end of its heap chunk (device bounds check, not posted)";
 +            a = "application addressing bug: fix offset/length; the QP is healthy; decline"; break;
++        case NVSHMEMI_IBGDA_FT_CLASS_RING_INVARIANT:
++            n = "RING_INVARIANT"; f = "internal";
++            c = "ring walk: consumed CQE did not advance cons_idx by 1..ncqes; QP completion "
++                "tracking unreliable (bug or corruption)";
++            a = "decline (a recovery commit would reset the ring); report as a bug"; break;
 +        default: break;
 +    }
 +    snprintf(o->name, sizeof(o->name), "%s", n);
@@ -1640,7 +1782,9 @@ index e47042e..71f510e 100644
 +    o->oob_len = r->oob_len;
 +    o->oob_chunk_end = r->oob_chunk_end;
 +    o->oob_op = (int)r->oob_op;
-+    if (r->kind == 2) o->wc_status = -1; /* no CQE */
++    o->inv_d = r->inv_d;
++    o->inv_ncqes = r->inv_ncqes;
++    if (r->kind == 2 || r->kind == 3) o->wc_status = -1; /* no error CQE */
 +    ibgda_ft_class_text(r->cls, r->vendor_err, o);
 +}
 +
@@ -1660,6 +1804,20 @@ index e47042e..71f510e 100644
 +        }
 +    }
 +    if (ibgda_ft.quiet_log) return;
++    if (r->kind == 3) {
++        const uint32_t w15 = ((const uint32_t *)r->root_cqe)[15];
++        fprintf(stderr,
++                "[nvshmem-ft] PE%d device ring-walk invariant violated seq=%u qpn=0x%x peer=%d "
++                "path=%s ring_ci=%llu wqe_counter=%u op_own=0x%02x cons=%llu d=%u (valid 1..%u) "
++                "poll_idx=%llu prod=%llu class=%s cause=\"%s\" action=\"%s\" already_recorded=%d "
++                "gtimer_ns=%llu mono_ms=%.3f\n",
++                ibgda_ft.t->my_pe, r->seq, r->qpn, r->peer, ibgda_ft_path_str(r->path),
++                (unsigned long long)r->ring_ci, r->wqe_counter, w15 >> 24,
++                (unsigned long long)r->cons_idx, r->inv_d, r->inv_ncqes,
++                (unsigned long long)r->poll_idx, (unsigned long long)r->prod_idx, info.name,
++                info.cause, info.action, r->upgrade, (unsigned long long)r->gtimer_ns, mono_ms);
++        return;
++    }
 +    if (r->kind == 2) {
 +        fprintf(stderr,
 +                "[nvshmem-ft] PE%d device bounds check rejected an operation seq=%u qpn=0x%x peer=%d "
@@ -1800,7 +1958,7 @@ index e47042e..71f510e 100644
 +        {"cqfill", NVSHMEMI_IBGDA_FT_SKIP_CQFILL}, {"dbr", NVSHMEMI_IBGDA_FT_SKIP_DBR},
 +        {"nerr", NVSHMEMI_IBGDA_FT_SKIP_NERR},     {"dci", NVSHMEMI_IBGDA_FT_SKIP_DCI},
 +        {"psn", NVSHMEMI_IBGDA_FT_SKIP_PSN},       {"finbar", NVSHMEMI_IBGDA_FT_SKIP_FINBAR},
-+        {"ringci", NVSHMEMI_IBGDA_FT_SKIP_RINGCI}};
++        {"ringci", NVSHMEMI_IBGDA_FT_SKIP_RINGCI}, {"park", NVSHMEMI_IBGDA_FT_SKIP_PARK}};
 +    uint32_t m = 0;
 +    if (!sv) return 0;
 +    std::string str(sv);
@@ -1830,6 +1988,23 @@ index e47042e..71f510e 100644
 +    ibgda_ft.ring = (ibgda_ft_ring_cq_mode == 1);
 +    ibgda_ft.bounds = bd && atoi(bd) != 0;
 +    ibgda_ft.skip = ibgda_ft_parse_skip(getenv("NVSHMEM_IBGDA_FT_TEST_SKIP"));
++    /* v2.1 test-only: NVSHMEM_IBGDA_FT_TEST_TRIP=ring_d:<n> (the n-th consumed ring CQE fails the
++     * invariant check -> RING_INVARIANT record + error) or ring_d_silent:<n> (emulates v2: the
++     * CQE is consumed without advancing cons_idx and without a record). Ring mode only. */
++    uint32_t trip_n = 0, trip_mode = 0;
++    {
++        const char *tt = getenv("NVSHMEM_IBGDA_FT_TEST_TRIP");
++        if (tt && !strncmp(tt, "ring_d_silent:", 14)) {
++            trip_mode = 2;
++            trip_n = (uint32_t)atoi(tt + 14);
++        } else if (tt && !strncmp(tt, "ring_d:", 7)) {
++            trip_mode = 1;
++            trip_n = (uint32_t)atoi(tt + 7);
++        } else if (tt && *tt) {
++            fprintf(stderr, "[nvshmem-ft] unknown NVSHMEM_IBGDA_FT_TEST_TRIP '%s'\n", tt);
++        }
++        if (trip_n == 0) trip_mode = 0;
++    }
 +    const char *pu = getenv("NVSHMEM_IBGDA_FT_POLL_US");
 +    const char *cap = getenv("NVSHMEM_IBGDA_FT_CAPTURE");
 +    const char *dm = getenv("NVSHMEM_IBGDA_FT_DRAIN_MS");
@@ -1842,6 +2017,8 @@ index e47042e..71f510e 100644
 +    if (cap && !strcmp(cap, "exit")) ibgda_ft.flags |= NVSHMEMI_IBGDA_FT_FLAG_CAPTURE_EXIT;
 +    if (ibgda_ft.ring) ibgda_ft.flags |= NVSHMEMI_IBGDA_FT_FLAG_RING_CQ;
 +    if (ibgda_ft.bounds) ibgda_ft.flags |= NVSHMEMI_IBGDA_FT_FLAG_BOUNDS;
++    if (trip_mode && ibgda_ft.ring) ibgda_ft.flags |= NVSHMEMI_IBGDA_FT_FLAG_TEST_TRIP;
++    if (!(ibgda_ft.skip & NVSHMEMI_IBGDA_FT_SKIP_PARK)) ibgda_ft.flags |= NVSHMEMI_IBGDA_FT_FLAG_PARK;
 +    ibgda_ft.t = t;
 +    ibgda_ft.st = st;
 +    ibgda_ft.prep.assign(t->n_pes, ibgda_ft_prep());
@@ -1870,8 +2047,32 @@ index e47042e..71f510e 100644
 +        h.mbox = ibgda_ft.mbox_d;
 +        h.nslots = NVSHMEMI_IBGDA_FT_NSLOTS;
 +        h.flags = ibgda_ft.flags;
++        h.test_trip = (ibgda_ft.flags & NVSHMEMI_IBGDA_FT_FLAG_TEST_TRIP) ? trip_n : 0;
++        h.test_trip_mode = (ibgda_ft.flags & NVSHMEMI_IBGDA_FT_FLAG_TEST_TRIP) ? trip_mode : 0;
 +        status = cudaMemcpy(ibgda_ft.dev_d, &h, sizeof(h), cudaMemcpyHostToDevice);
 +        if (status) goto fail;
++    }
++    if (ibgda_ft.ring) {
++        /* v2.1: the no-lap argument (DESIGN of ibgda_ft_ring_poll) needs nwqes <= ncqes for every
++         * send queue; both are round_up_pow2(QP_DEPTH) here. Checked, not assumed. */
++        for (int i = 0; i < st->n_devs_selected; i++) {
++            struct ibgda_device *device =
++                (struct ibgda_device *)st->common.devices + st->selected_dev_ids[i];
++            for (int e = 0; e < device->rc.num_eps_per_pe * t->n_pes; e++) {
++                struct ibgda_ep *ep = device->rc.eps ? device->rc.eps[e] : NULL;
++                if (ep && ep->send_cq && ep->sq_cnt > ep->send_cq->num_cqe) {
++                    status = -2;
++                    goto fail;
++                }
++            }
++            for (int e = 0; e < device->dci.num_eps; e++) {
++                struct ibgda_ep *ep = device->dci.eps ? device->dci.eps[e] : NULL;
++                if (ep && ep->send_cq && ep->sq_cnt > ep->send_cq->num_cqe) {
++                    status = -2;
++                    goto fail;
++                }
++            }
++        }
 +    }
 +    dstate->ft = ibgda_ft.dev_d;
 +    dstate->ft_flags = ibgda_ft.flags;
@@ -1890,7 +2091,7 @@ index e47042e..71f510e 100644
 +    fprintf(stderr,
 +            "[nvshmem-ft] PE%d enabled: classifier=%s mailbox=%d x %zu B poll_us=%d handler=%s "
 +            "recovery=%s rc_per_pe=%d ring_cq=%d bounds=%d(%s, %u granules, %zu chunks, %u snapshots) "
-+            "test_skip=0x%x\n",
++            "test_skip=0x%x test_trip=%s:%u sq=%u cq=%u park=%d\n",
 +            t->my_pe,
 +            ibgda_ft.ring ? "ring-walk"
 +            : (ibgda_ft.flags & NVSHMEMI_IBGDA_FT_FLAG_CAPTURE_EXIT) ? "exit-only(diag)" : "in-loop",
@@ -1900,7 +2101,14 @@ index e47042e..71f510e 100644
 +            st->common.options->IBGDA_NUM_RC_PER_PE, ibgda_ft.ring ? 1 : 0, ibgda_ft.bounds ? 1 : 0,
 +            !ibgda_ft.bounds ? "off" : dstate->ft_obj_ngran ? "chunk table" : "heap-level until the "
 +                                                                               "first snapshot",
-+            dstate->ft_obj_ngran, ibgda_ft.heap_off.size(), ibgda_ft.heap_updates, ibgda_ft.skip);
++            dstate->ft_obj_ngran, ibgda_ft.heap_off.size(), ibgda_ft.heap_updates, ibgda_ft.skip,
++            !(ibgda_ft.flags & NVSHMEMI_IBGDA_FT_FLAG_TEST_TRIP) ? "off"
++            : trip_mode == 2                                     ? "ring_d_silent"
++                                                                 : "ring_d",
++            (ibgda_ft.flags & NVSHMEMI_IBGDA_FT_FLAG_TEST_TRIP) ? trip_n : 0,
++            (unsigned)ibgda_round_up_pow2_or_0(ibgda_qp_depth),
++            (unsigned)ibgda_round_up_pow2_or_0(ibgda_qp_depth),
++            (ibgda_ft.flags & NVSHMEMI_IBGDA_FT_FLAG_PARK) ? 1 : 0);
 +    return 0;
 +fail:
 +    fprintf(stderr, "[nvshmem-ft] PE%d init failed (cuda %d); FT stays off\n", t->my_pe, status);
@@ -2079,8 +2287,11 @@ index e47042e..71f510e 100644
 +}
 +
 +static bool ibgda_ft_quiescent(const nvshmemi_ibgda_device_qp_management_t *m) {
++    /* v2.1: a parked QP (prod_idx = PARK_MARK) has rung nothing since its error was recorded;
++     * every WQE the device made ready was either rung before or dropped. */
++    const bool parked = (m->tx_wq.prod_idx & NVSHMEMI_IBGDA_FT_PARK_MARK) != 0;
 +    return m->post_send_lock == 0 && m->tx_wq.resv_head == m->tx_wq.ready_head &&
-+           m->tx_wq.ready_head == m->tx_wq.prod_idx && m->ibuf.head == m->ibuf.tail;
++           (parked || m->tx_wq.ready_head == m->tx_wq.prod_idx) && m->ibuf.head == m->ibuf.tail;
 +}
 +
 +extern "C" __attribute__((visibility("default"))) int nvshmemt_ibgda_ft_enabled(void) {
@@ -2188,15 +2399,33 @@ index e47042e..71f510e 100644
 +    }
 +    double t1 = ibgda_ft_mono_ms();
 +    S->to_err_ms = t1 - t0;
-+    /* Drain: the NIC flushes [consumer, producer) after the ERR transition (the GPU handler keeps
-+     * the doorbell record's send word current); wait until its consumer reached the producer. */
++    /* Drain: the NIC flushes [consumer, P) after the ERR transition, P = the send word of the
++     * doorbell record (../nvshmem_rootcause); wait until its consumer reached P. v2.1: P is read
++     * from the record, not taken from the device producer index: they are equal unless the QP was
++     * parked (FT_FLAG_PARK), when posts after the error were counted but never rung. */
++    uint32_t dbr_sq[NVSHMEMT_IBGDA_FT_MAX_QPS];
++    for (int i = 0; i < n; i++) {
++        uint32_t w[2] = {0, 0};
++        if (cudaMemcpyAsync(ibgda_ft.pinned,
++                            (char *)eps[i]->qp_ctrl.dbr_mobject->aligned.gpu_ptr + eps[i]->qp_ctrl.dbr_offset,
++                            sizeof(w), cudaMemcpyDeviceToHost, ibgda_ft.stream) ||
++            cudaStreamSynchronize(ibgda_ft.stream))
++            return -5;
++        memcpy(w, ibgda_ft.pinned, sizeof(w));
++        dbr_sq[i] = be32toh(w[1]) & 0xffff; /* word 1 = send producer (GPU handler) */
++    }
 +    int drained = 0;
++    uint32_t last_hw = 0, last_sw = 0;
 +    for (;;) {
 +        drained = 1;
 +        for (int i = 0; i < n; i++) {
-+            uint32_t s = 0, hw = 0;
-+            ibgda_ft_query_qp(eps[i]->devx_qp, eps[i]->qpn, &s, &hw, NULL);
-+            if (s != 6 || hw != (mv[i].tx_wq.prod_idx & 0xffff)) drained = 0;
++            uint32_t s = 0, hw = 0, sw = 0;
++            ibgda_ft_query_qp(eps[i]->devx_qp, eps[i]->qpn, &s, &hw, &sw);
++            if (s != 6 || hw != dbr_sq[i]) drained = 0;
++            if (i == 0) {
++                last_hw = hw;
++                last_sw = sw;
++            }
 +        }
 +        if (drained || ibgda_ft_mono_ms() - t1 > ibgda_ft.drain_ms) break;
 +        std::this_thread::sleep_for(std::chrono::microseconds(50));
@@ -2205,8 +2434,15 @@ index e47042e..71f510e 100644
 +    S->drain_ms = t2 - t1;
 +    S->drained = drained;
 +    if (!drained) {
-+        snprintf(S->msg, sizeof(S->msg), "declined: NIC did not flush every posted WQE in %d ms",
-+                 ibgda_ft.drain_ms);
++        uint32_t cq_pi = 0;
++        ibgda_ft_query_cq_pi(eps[0]->send_cq, &cq_pi);
++        snprintf(S->msg, sizeof(S->msg),
++                 "declined: NIC did not flush every posted WQE in %d ms (hw_sq %u sw_sq %u dbr %u "
++                 "ready16 %u cq_pi %u ring_ci %llu parked %d)",
++                 ibgda_ft.drain_ms, last_hw, last_sw, dbr_sq[0],
++                 (unsigned)(mv[0].tx_wq.ready_head & 0xffff), cq_pi,
++                 (unsigned long long)mv[0].ft_ring_ci,
++                 (mv[0].tx_wq.prod_idx & NVSHMEMI_IBGDA_FT_PARK_MARK) ? 1 : 0);
 +        return -8;
 +    }
 +    std::random_device rd;
@@ -2394,7 +2630,7 @@ index e47042e..71f510e 100644
  int nvshmemt_ibgda_connect_endpoints(nvshmem_transport_t t, int *selected_dev_ids,
                                       int num_selected_devs, int *out_qp_indices, int num_qps) {
      nvshmemt_ibgda_state_t *ibgda_state = (nvshmemt_ibgda_state_t *)t->state;
-@@ -4871,6 +5955,12 @@ int nvshmemt_ibgda_connect_endpoints(nvshmem_transport_t t, int *selected_dev_id
+@@ -4871,6 +6054,12 @@ int nvshmemt_ibgda_connect_endpoints(nvshmem_transport_t t, int *selected_dev_id
      ibgda_fault_inject_arm(ibgda_state, t->n_pes);
      ibgda_fault_watch_arm(ibgda_state, t->n_pes);
  
@@ -2407,7 +2643,7 @@ index e47042e..71f510e 100644
      return status;
  }
  
-@@ -4892,6 +5982,9 @@ int nvshmemt_ibgda_finalize(nvshmem_transport_t transport) {
+@@ -4892,6 +6081,9 @@ int nvshmemt_ibgda_finalize(nvshmem_transport_t transport) {
  
      device_finalized.resize(ibgda_state->common.n_raw_devices, false);
  

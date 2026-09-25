@@ -61,7 +61,7 @@ esac
 {
   echo "tag=$tag fault=$FAULT mode=$MODE trial=$TRIAL ft=$FT recover=$RECOVER iters=$ITERS bytes=$BYTES"
   echo "burst=$BURST fault_ms=$FAULT_MS shots=$SHOTS corrupt_at=$CORRUPT_AT kill_at=$KILL_AT qdelay_us=${QDELAY_US:-} sentinel=${SENTINEL:-} lat=${LAT:-}"
-  echo "ring=${RING:-} bounds=${BOUNDS:-} guard=${GUARD:-} skip=${SKIP:-} cq_collapsed=${CQ_COLLAPSED:-} oob=${OOB:-} xargs=\"${XARGS:-}\" mt=${MT:-} mt_reps=${MT_REPS:-}"
+  echo "ring=${RING:-} bounds=${BOUNDS:-} guard=${GUARD:-} skip=${SKIP:-} trip=${TRIP:-} cq_collapsed=${CQ_COLLAPSED:-} oob=${OOB:-} xargs=\"${XARGS:-}\" mt=${MT:-} mt_reps=${MT_REPS:-}"
   echo "ft_capture=${FT_CAPTURE:-} ib_timeout=${NVSHMEM_IB_TIMEOUT:-14} bundle=$BUNDLE bin=$BIN start=$(date '+%F %T')"
   echo "md5_rain=$(md5sum < $LBIN | cut -c1-12) lib_rain=$(md5sum < $BUNDLE/lib/nvshmem_transport_ibgda.so.7.0.0 | cut -c1-12) host_rain=$(md5sum < $BUNDLE/lib/libnvshmem_host.so.3.9.0 | cut -c1-12)"
 } > "$META"
@@ -69,7 +69,7 @@ esac
 pkill -x "$BIN" 2>/dev/null
 ssh -n -o ConnectTimeout=5 "$SUNNY_SSH" "pkill -x $BIN 2>/dev/null; true"
 
-LIMITS="NVFT_ACK_LIMIT_S=${NVFT_ACK_LIMIT_S:-60} NVFT_RX_LIMIT_S=${NVFT_RX_LIMIT_S:-120} NVFT_TEARDOWN_S=${NVFT_TEARDOWN_S:-60} NVFT_INIT_DIAG_S=${NVFT_INIT_DIAG_S:-0}"
+LIMITS="NVFT_ACK_LIMIT_S=${NVFT_ACK_LIMIT_S:-60} NVFT_RX_LIMIT_S=${NVFT_RX_LIMIT_S:-120} NVFT_TEARDOWN_S=${NVFT_TEARDOWN_S:-60} NVFT_INIT_DIAG_S=${NVFT_INIT_DIAG_S:-0} NVFT_BLOCK_ALARM_S=${NVFT_BLOCK_ALARM_S:-90}"
 REMOTE_ENV="$(node_env sunny); export $LIMITS"
 ssh -n -o ConnectTimeout=8 "$SUNNY_SSH" \
   "$REMOTE_ENV; ${INJ1:+export $INJ1;} exec timeout -s KILL $PROC_TIMEOUT $RBIN 1 $RAIN_MGMT $PORT $MODE $ARGS1" \

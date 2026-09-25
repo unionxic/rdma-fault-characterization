@@ -7,6 +7,7 @@
 #   BOUNDS ("")       NVSHMEM_IBGDA_FT_BOUNDS       (v2 B: device bounds check of remote ranges)
 #   GUARD ("")        NVSHMEM_IBGDA_FT_BOUNDS_GUARD (v2 B: red zone bytes after every allocation)
 #   SKIP ("")         NVSHMEM_IBGDA_FT_TEST_SKIP    (v2 C: test-only, skip resync steps)
+#   TRIP ("")         NVSHMEM_IBGDA_FT_TEST_TRIP    (v2.1: test-only, ring_d:<n> | ring_d_silent:<n>)
 #   CQ_COLLAPSED ("") NVSHMEM_IBGDA_FAULT_CQ_COLLAPSED (hook: 0 = cc=0/oi=0 ring CQ, stock device code)
 #   FT_CAPTURE, FT_QUIET, FT_POLL_US, HANDLER, PROXY_SQ_DBR as in ../env_ft.sh
 BUNDLE=${BUNDLE:-$HOME/gi-bundle/nvshmem_ft2}
@@ -39,6 +40,7 @@ EOT
   [ -n "${BOUNDS:-}" ] && echo "export NVSHMEM_IBGDA_FT_BOUNDS=$BOUNDS"
   [ -n "${GUARD:-}" ] && echo "export NVSHMEM_IBGDA_FT_BOUNDS_GUARD=$GUARD"
   [ -n "${SKIP:-}" ] && echo "export NVSHMEM_IBGDA_FT_TEST_SKIP=$SKIP"
+  [ -n "${TRIP:-}" ] && echo "export NVSHMEM_IBGDA_FT_TEST_TRIP=$TRIP"
   [ -n "${CQ_COLLAPSED:-}" ] && echo "export NVSHMEM_IBGDA_FAULT_CQ_COLLAPSED=$CQ_COLLAPSED"
   [ -n "${FT_CAPTURE:-}" ] && echo "export NVSHMEM_IBGDA_FT_CAPTURE=$FT_CAPTURE"
   [ -n "${FT_QUIET:-}" ] && echo "export NVSHMEM_IBGDA_FT_QUIET=$FT_QUIET"

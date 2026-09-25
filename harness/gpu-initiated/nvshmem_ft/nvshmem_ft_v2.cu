@@ -12,6 +12,11 @@
 //   --mt T [--mt-reps R]  fault-free concurrency check: per iteration T threads of one CTA each put
 //        bytes/T (+ signal ADD 1) and call nvshmem_quiet, R times, all on the same RC QP (concurrent
 //        waiters on one send CQ); PE1 expects the signal to grow by T*R and verifies every byte.
+//   --mt-burst  with --mt: each thread posts its R put+signal back to back and quiets once at the
+//        end (v2.1 lap test: after a fault the posting continues fail-fast and laps the send CQ).
+//        After a failed kernel PE0 prints BURSTDIAG (device producer index, ring counter, and the
+//        CQ slot that held the recorded root cause).
+//   NVFT_BLOCK_ALARM_S=<s>  host bound on a blocking-mode kernel (default 90).
 //
 // (v1 header follows)
 // nvshmem_ft.cu - 2-PE NVSHMEM IBGDA fault-tolerance driver (classification, recovery, overhead).
@@ -146,6 +151,7 @@ static int g_sock = -1;
 // v2 driver fix: an ITER_OK that arrives while the initiator waits for a recovery ACK (the target
 // verified the operation before the REQ reached it, forced d = 0 rounds) is kept, not dropped.
 static bool g_have_stash = false;
+static unsigned g_block_alarm_s = 90;  // v2.1: NVFT_BLOCK_ALARM_S
 static Msg g_stash;
 // Host-side bounds (s), overridable for flag-off runs where the stock paths hang.
 static double g_ack_limit_s = 60, g_rx_limit_s = 120, g_teardown_s = 60;
@@ -292,14 +298,16 @@ __global__ void put_kernel(char *dst, const char *src, size_t bytes, uint64_t *s
 
 // v2 --mt: T threads, each puts its slice + signal and quiets, R times (concurrent CQ waiters).
 __global__ void mt_put_kernel(char *dst, const char *src, size_t bytes, uint64_t *sig, int peer, int reps,
-                              PutResult *res) {
+                              int burst_mode, PutResult *res) {
     const size_t slice = bytes / blockDim.x;
     const size_t o = (size_t)threadIdx.x * slice;
     if (threadIdx.x == 0) res->gt_start = gtimer();
     for (int r = 0; r < reps; r++) {
         nvshmem_putmem_signal_nbi(dst + o, src + o, slice, sig, 1ull, NVSHMEM_SIGNAL_ADD, peer);
-        nvshmem_quiet();
+        if (!burst_mode) nvshmem_quiet();
     }
+    if (threadIdx.x == 0) res->gt_post = gtimer();
+    if (burst_mode) nvshmem_quiet();
     __syncthreads();
     if (threadIdx.x == 0) {
         res->gt_end = gtimer();
@@ -447,6 +455,62 @@ static void dumpQp(cudaStream_t s, const char *tag, nvshmemi_ibgda_device_qp_t *
                 tag, k, e[63], e[63] >> 4, e[63] & 1, ((unsigned)e[60] << 8) | e[61], e[55], e[54]);
     }
 }
+// v2.1 lap test: after a failed burst, read the RC QP's device state and the CQ slot that held
+// the recorded root cause. posted_after = WQEs posted after the root-cause WQE (each is flushed with
+// one CQE); laps = how many times the ring was rewritten past the root-cause slot.
+static void burstDiag(int it, int peer, const nvshmemt_ibgda_ft_info_t *info) {
+    usleep(20000);  // let the NIC flush every WQE the kernel posted
+    cudaStream_t st;
+    if (cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking)) return;
+    nvshmemi_ibgda_device_state_t ds;
+    nvshmemi_ibgda_device_qp_t qp;
+    nvshmemi_ibgda_device_cq_t cq;
+    unsigned char e[64];
+    if (cudaMemcpyFromSymbolAsync(&ds, nvshmemi_ibgda_device_state_d, sizeof(ds), 0, cudaMemcpyDeviceToHost, st) ||
+        cudaStreamSynchronize(st) || !ds.globalmem.rcs ||
+        cudaMemcpyAsync(&qp, &ds.globalmem.rcs[peer], sizeof(qp), cudaMemcpyDeviceToHost, st) ||
+        cudaStreamSynchronize(st) ||
+        cudaMemcpyAsync(&cq, qp.tx_wq.cq, sizeof(cq), cudaMemcpyDeviceToHost, st) || cudaStreamSynchronize(st)) {
+        printf("BURSTDIAG it=%d copy failed\n", it);
+        cudaStreamDestroy(st);
+        return;
+    }
+    const bool ring = (ds.ft_flags & NVSHMEMI_IBGDA_FT_FLAG_RING_CQ) != 0;
+    const uint64_t slot = ring ? (info->ring_ci & (cq.ncqes - 1)) : 0;
+    uint32_t dbr_be = 0;  // send word of the doorbell record: the producer the NIC was told
+    if (qp.tx_wq.dbrec && (cudaMemcpyAsync(&dbr_be, qp.tx_wq.dbrec, 4, cudaMemcpyDeviceToHost, st) ||
+                           cudaStreamSynchronize(st)))
+        dbr_be = 0;
+    const unsigned dbr16 = __builtin_bswap32(dbr_be) & 0xffff;
+    if (cudaMemcpyAsync(e, (char *)cq.cqe + slot * 64, 64, cudaMemcpyDeviceToHost, st) || cudaStreamSynchronize(st)) {
+        printf("BURSTDIAG it=%d slot copy failed\n", it);
+        cudaStreamDestroy(st);
+        return;
+    }
+    cudaStreamDestroy(st);
+    const uint64_t prod = qp.mvars.tx_wq.prod_idx;
+    const int parked = (prod >> 63) ? 1 : 0;           // v2.1 park mark
+    const uint64_t ready = qp.mvars.tx_wq.ready_head;  // every WQE the kernel made ready
+    const uint64_t last = ready ? ready - 1 : 0;
+    const uint64_t root = last - (uint16_t)((uint16_t)last - (uint16_t)info->wqe_counter);
+    const uint64_t after = last - root;
+    const unsigned now_wqe = ((unsigned)e[60] << 8) | e[61];
+    const bool same = ((e[63] >> 4) == 0xd || (e[63] >> 4) == 0xe) && now_wqe == info->wqe_counter &&
+                      e[55] == (unsigned)info->syndrome && e[54] == (unsigned)info->vendor_err;
+    const unsigned rung_after = (uint16_t)(dbr16 - 1u - (uint16_t)info->wqe_counter);
+    printf("BURSTDIAG it=%d ring=%d parked=%d ncqes=%u prod=%llu ready=%llu cons=%llu ring_ci_now=%llu root_ring_ci=%llu "
+           "root_wqe=%llu posted_after_root=%llu laps_if_all_flushed=%llu dbr16=%u rung_after_root=%u "
+           "slot=%llu slot_now_op_own=0x%02x slot_now_wqe=%u slot_now_synd=0x%02x/0x%02x "
+           "root_cqe_still_in_slot=%d ft_state=%u ft_fp=0x%08x\n",
+           it, ring ? 1 : 0, parked, cq.ncqes, (unsigned long long)(prod & ~(1ULL << 63)),
+           (unsigned long long)ready,
+           (unsigned long long)qp.mvars.tx_wq.cons_idx, (unsigned long long)qp.mvars.ft_ring_ci,
+           (unsigned long long)info->ring_ci, (unsigned long long)root, (unsigned long long)after,
+           (unsigned long long)((after + 1) / cq.ncqes), dbr16, rung_after, (unsigned long long)slot, e[63],
+           now_wqe, e[55], e[54], same ? 1 : 0, qp.mvars.ft_state, qp.mvars.ft_fp);
+    fflush(stdout);
+}
+
 static void *initDiagThread(void *arg) {
     double s = *(double *)arg;
     double t0 = monoMs();
@@ -489,7 +553,7 @@ int main(int argc, char **argv) {
     int sentinel = -1, lat = 0, lat_reps = 1, max_rounds = 6, force_at = -1;
     const char *oob = nullptr;  // v2 F2a kind
     int oob_at = -1;
-    int mt = 0, mt_reps = 4;  // v2 --mt
+    int mt = 0, mt_reps = 4, mt_burst = 0;  // v2 --mt, v2.1 --mt-burst
     double quiet_delay_us = 0;
     size_t bytes = 256u * 1024u;
     for (int i = 5; i < argc; i++) {
@@ -511,6 +575,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--oob-at")) oob_at = atoi(nxt());
         else if (!strcmp(argv[i], "--mt")) mt = atoi(nxt());
         else if (!strcmp(argv[i], "--mt-reps")) mt_reps = atoi(nxt());
+        else if (!strcmp(argv[i], "--mt-burst")) mt_burst = 1;
         else {
             fprintf(stderr, "unknown arg %s\n", argv[i]);
             return 1;
@@ -522,10 +587,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "bad --oob kind\n");
         return 1;
     }
-    if (mt < 0 || mt > 1024 || (mt && (bytes % (size_t)mt || recover || burst != 1 || mt_reps < 1))) {
-        fprintf(stderr, "bad --mt arguments (bytes %% T == 0, no --recover, burst 1)\n");
+    if (mt < 0 || mt > 1024 || (mt && (bytes % (size_t)mt || burst != 1 || mt_reps < 1 || (recover && !mt_burst)))) {
+        fprintf(stderr, "bad --mt arguments (bytes %% T == 0, burst 1, --recover only with --mt-burst)\n");
         return 1;
     }
+    // operations (put + signal ADD 1) per iteration; the recovery's replay bound d <= ops_it
+    const int ops_it = mt ? mt * mt_reps : burst;
     if (mode < 0 || (rank != 0 && rank != 1) || iters <= 0 || bytes == 0 || burst < 1) {
         fprintf(stderr, "bad arguments\n");
         return 1;
@@ -534,6 +601,7 @@ int main(int argc, char **argv) {
     if (getenv("NVFT_ACK_LIMIT_S")) g_ack_limit_s = atof(getenv("NVFT_ACK_LIMIT_S"));
     if (getenv("NVFT_RX_LIMIT_S")) g_rx_limit_s = atof(getenv("NVFT_RX_LIMIT_S"));
     if (getenv("NVFT_TEARDOWN_S")) g_teardown_s = atof(getenv("NVFT_TEARDOWN_S"));
+    if (getenv("NVFT_BLOCK_ALARM_S")) g_block_alarm_s = (unsigned)atoi(getenv("NVFT_BLOCK_ALARM_S"));
 
     // --- unique-id bootstrap over TCP on the management network; the socket stays open (OOB) ---
     int one = 1;
@@ -797,7 +865,7 @@ int main(int argc, char **argv) {
             int round = 0;
             bool done = false;
             while (!done) {
-                alarm(mode == 1 ? 90 : (dev_timeout_ms / 1000 + 30));
+                alarm(mode == 1 ? g_block_alarm_s : (dev_timeout_ms / 1000 + 30));
                 memset(pr, 0, sizeof(*pr));
                 double tl = monoMs();
                 char *pdst = (oob && it == oob_at) ? bad_dst : dbuf;  // v2 F2a
@@ -805,8 +873,8 @@ int main(int argc, char **argv) {
                     printf("FAULT F2a oob=%s it=%d dst=%p fire_mono_ms=%.3f\n", oob, it, (void *)pdst, monoMs());
                     fflush(stdout);
                 }
-                if (mt)
-                    mt_put_kernel<<<1, mt, 0, mainS>>>(dbuf, sbuf, bytes, sig, peer, mt_reps, pr);
+                if (mt && round == 0)  // a recovery round replays the missing d ops with put_kernel
+                    mt_put_kernel<<<1, mt, 0, mainS>>>(dbuf, sbuf, bytes, sig, peer, mt_reps, mt_burst, pr);
                 else
                 put_kernel<<<1, 1, 0, mainS>>>(pdst, sbuf, bytes, sig, peer, mode, budget, nops,
                                                round == 0 ? delay_cycles : 0, pr);
@@ -854,6 +922,7 @@ int main(int argc, char **argv) {
                        (unsigned long long)info.ring_ci, info.oob_op, (unsigned long long)info.oob_off,
                        (unsigned long long)info.oob_len, (unsigned long long)info.oob_chunk_end);
                 fflush(stdout);
+                if (mt && mt_burst && round == 0 && pr->rc != 0 && have) burstDiag(it, peer, &info);  // v2.1
                 // ---- policy
                 const char *why = nullptr;
                 if (forced) why = nullptr;
@@ -1086,8 +1155,8 @@ int main(int argc, char **argv) {
                     CK(cudaMemcpyAsync(pin64, sig, 8, cudaMemcpyDeviceToHost, side));
                     CK(cudaStreamSynchronize(side));
                     V = pin64[0];
-                    long long dd = (long long)((uint64_t)(m.it + 1) * burst) - (long long)V;
-                    if (dd < 0 || dd > burst) nack = "signal outside [expected-burst, expected]";
+                    long long dd = (long long)((uint64_t)(m.it + 1) * ops_it) - (long long)V;
+                    if (dd < 0 || dd > ops_it) nack = "signal outside [expected-burst, expected]";
                     else d = (int)dd;
                 }
                 double q1 = monoMs();

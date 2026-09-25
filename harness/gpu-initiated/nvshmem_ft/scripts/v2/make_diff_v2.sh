@@ -33,8 +33,16 @@ cat <<'HDR'
 #             posted, sticky record class OOB_WRITE/OOB_READ, status/bounded quiet report it
 #           NVSHMEM_IBGDA_FT_BOUNDS_GUARD=<bytes>  (with BOUNDS) red zone after every symmetric
 #             allocation, published as free (an overrun starting at an object's end is caught)
-#           NVSHMEM_IBGDA_FT_TEST_SKIP=<idx,lock,ibuf,sticky,cqfill,dbr,nerr,dci,psn,finbar,ringci>
-#             test-only: skip one step of the recovery resync / teardown handling
+#           NVSHMEM_IBGDA_FT_TEST_SKIP=<idx,lock,ibuf,sticky,cqfill,dbr,nerr,dci,psn,finbar,ringci,park>
+#             test-only: skip one step of the recovery resync / teardown handling (park: v2 posting)
+# v2.1:     park (on with FT): a QP with a recorded CQE error or ring invariant gets prod_idx raised
+#             to a mark (2^63), so later posts never write the doorbell record or ring; the drain
+#             waits for the doorbell record's send word; recovery removes the mark. No post-path
+#             instruction added.
+#           ring-walk invariant: a consumed CQE whose advance d is outside 1..ncqes is recorded
+#             (class RING_INVARIANT, sticky opcode 0xf) and fails the wait; policy: decline
+#           NVSHMEM_IBGDA_FT_TEST_TRIP=ring_d:<n> | ring_d_silent:<n>  test-only: force d = 0 at the
+#             n-th consumed ring CQE (record + error, or v2's silent consumption)
 # Design:   harness/gpu-initiated/nvshmem_ft/V2.md (v1: DESIGN.md)
 HDR
 cd "$SRC" && git diff "$BASE" -- src nvshmem_transport.sym

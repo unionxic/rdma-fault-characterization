@@ -39,7 +39,7 @@ def parse_trial(meta_path):
     l0 = readlog(base + '.pe0.log')
     l1 = readlog(base + '.pe1.log')
     row = {k: meta.get(k, '') for k in (
-        'tag', 'fault', 'mode', 'trial', 'ft', 'recover', 'ring', 'bounds', 'guard', 'skip', 'oob', 'mt',
+        'tag', 'fault', 'mode', 'trial', 'ft', 'recover', 'ring', 'bounds', 'guard', 'skip', 'trip', 'oob', 'mt',
         'cq_collapsed', 'qdelay_us', 'sentinel', 'burst', 'bin', 'md5_rain', 'lib_rain', 'host_rain',
         'pe0_rc', 'pe1_rc', 'leftover_rain', 'leftover_sunny', 'start')}
     row['dir'] = os.path.basename(os.path.dirname(meta_path))
@@ -103,6 +103,28 @@ def parse_trial(meta_path):
     row['initdiag0'] = ' | '.join(l[len('INITDIAG '):] for l in l0 if l.startswith('INITDIAG '))
     row['initdiag1'] = ' | '.join(l[len('INITDIAG '):] for l in l1 if l.startswith('INITDIAG '))
     row['cc0_line'] = int(any('CQ created with cc=0' in l for l in l0))
+    # v2.1: fault time (F1 hook shot 1 on PE0 / F2b stamp), post time of the failing kernel,
+    # host mailbox time, ring lap diagnostic, ring invariant record
+    shot = next((l for l in l0 if re.search(r'\[nvshmem-fault-inject\] shot 1 fire_mono_ms=', l)), None)
+    f2b = next((kv(l) for l in l0 if l.startswith('FAULT F2b')), None)
+    row['fault_t'] = (re.search(r'fire_mono_ms=([\d.]+)', shot).group(1) if shot
+                      else f2b.get('fire_mono_ms', '') if f2b else '')
+    if fr:
+        itl = next((kv(l) for l in l0 if l.startswith('ITER %s rank 0 round 0 ' % fr.get('it'))), {})
+        row['fail_post_t'] = itl.get('gt_post_mono', '')
+        row['fail_start_t'] = itl.get('gt_start_mono', '')
+        row['fail_kernel_ms'] = itl.get('dt_ms', '')
+    bd = next((kv(l) for l in l0 if l.startswith('BURSTDIAG ')), None)
+    for k in ('parked', 'ncqes', 'prod', 'ready', 'root_wqe', 'posted_after_root', 'laps_if_all_flushed', 'dbr16', 'rung_after_root', 'root_cqe_still_in_slot',
+              'root_ring_ci', 'ring_ci_now', 'ft_fp'):
+        row['bd_' + k] = bd.get(k, '') if bd else ''
+    iv = next((kv(l) for l in l0 if 'ring-walk invariant violated' in l), None)
+    row['inv_d'] = iv.get('d', '') if iv else ''
+    row['inv_path'] = iv.get('path', '') if iv else ''
+    row['mt'] = meta.get('mt', '')
+    dc = next((kv(l) for l in l0 if '[nvshmem-ft] PE0 device-classified error CQE' in l), None)
+    for k in ('path', 'poll_idx', 'prod', 'cons', 'ready', 'ring_ci', 'wqe', 'mono_ms', 'gtimer_ns'):
+        row['rec_' + k] = dc.get(k, '') if dc else ''
     row['iters0'] = sum(1 for l in l0 if l.startswith('ITER ') and ' rank 0 ' in l)
     return row
 
