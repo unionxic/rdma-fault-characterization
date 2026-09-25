@@ -135,7 +135,7 @@ int ctrl_recv_line(int fd, char *buf, size_t cap) {
         char c;
         ssize_t n = recv(fd, &c, 1, 0);
         if (n < 0) { if (errno == EINTR) continue; perror("recv"); return -1; }
-        if (n == 0) { if (i == 0) return -1; break; }
+        if (n == 0) { if (i == 0) { errno = ECONNRESET; return -1; } break; }   /* EOF: peer closed */
         if (c == '\n') break;
         buf[i++] = c;
     }

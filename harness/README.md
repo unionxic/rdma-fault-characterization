@@ -73,8 +73,12 @@ decision input. (An earlier version wrongly used peer_rx as the discriminator.)
 (2026-09-25). A SIGKILLed peer whose MR is torn down before its QP NAKs with 0x88 instead
 of going silent (`fingerprint_teardown/`: REM_ACCESS 111/192 kills when the MR was
 registered after the QP). An answered PROBE leaves the CQE classification unchanged. An
-unanswered one sets `sub_cause=proc_kill`, `peer_alive=0` and `auto_recoverable=0`: peer
-death, not an access bug. Validated with a live peer: `rem_access` 5/5 and `rem_inv_req`
+unanswered one is split (changed after review, 2026-09-25): EOF or reset on the control connection
+sets `sub_cause=proc_kill`, `peer_alive=0`, `auto_recoverable=0` (peer death, not an access bug); no
+answer within 1 s on a connection that is still open sets `sub_cause=no_answer`, `peer_alive=-1`
+(unknown), `auto_recoverable=0`, so a live but slow peer with a real access bug is not recorded as
+dead. The same split applies to RETRY_EXC (before, a timeout also counted as `proc_kill`); the
+`no_answer` path is not produced by this harness's faults and is untested. Validated with a live peer: `rem_access` 5/5 and `rem_inv_req`
 5/5 still recovered. `retry_server_qp_err` 5/5 and `retry_proc_kill` 3/3 were unchanged.
 The dead-peer 0x88 path itself is not produced by this harness's faults.
 

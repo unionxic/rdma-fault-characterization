@@ -29,6 +29,7 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <errno.h>
 
 #define WR_TRIGGER  100
 #define WR_VERIFY   200
@@ -373,12 +374,19 @@ int main(int argc, char **argv) {
             } else {
                 struct timeval tv = { 1, 0 };
                 setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                errno = 0;
                 if (ctrl_send_line(fd, "PROBE") == 0 &&
                     ctrl_recv_line(fd, line, sizeof(line)) > 0 &&
                     sscanf(line, "PROBED %ld %ld %d", &peer_rx, &peer_tx, &peer_port_up) >= 1) {
                     if (retry_exc)
                         snprintf(sub_cause, sizeof(sub_cause), peer_port_up == 0 ? "link_down" : "server_qp_err");
+                } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    /* no answer within 1 s, connection still open: a hung or slow peer, not proof of
+                     * death. Recorded apart from proc_kill; liveness unknown (-1). */
+                    snprintf(sub_cause, sizeof(sub_cause), "no_answer");
+                    peer_alive = -1; auto_rec = 0;
                 } else {
+                    /* EOF or reset on the control connection: the peer process is gone */
                     snprintf(sub_cause, sizeof(sub_cause), "proc_kill");
                     peer_alive = 0; auto_rec = 0;
                 }
