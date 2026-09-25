@@ -16,7 +16,8 @@ LIBS = {                                    # build name -> lib dir on rain
     "stage1i": f"{SCRATCH}/n2/stage1i/build/lib",
     "stage2": f"{SCRATCH}/n2/stage2/build/lib",
     "stage2f": f"{SCRATCH}/n2/stage2f/build/lib",   # frozen copy used by the completion-time campaign
-    "stage2old": f"{SCRATCH}/n2/stage2_78f/build/lib",   # build 78f96f38, before the OOB-loss fix (T10 control)
+    "stage2old": f"{SCRATCH}/n2/stage2_78f/build/lib",   # build 78f96f38, before the OOB-loss fix (T12b control)
+    "stage2rst": f"{SCRATCH}/n2/stage2_7b0/build/lib",   # build 7b0d0122, RST still counted as death (T12c control)
 }
 
 GID_PROBE = r'''d=/sys/class/infiniband/$1/ports/$2

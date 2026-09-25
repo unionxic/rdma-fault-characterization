@@ -97,11 +97,22 @@ TESTS = {
     # management-network outage: every TCP connection of this job between the two nodes is blackholed
     # for 12 s (iptables on rain, only this job's local ports), RDMA untouched. The OOB keepalive then
     # reports ETIMEDOUT after ~5 s on both sides. Must not fail the job (stock does not use TCP then).
-    "T10": ("management-network (OOB) outage 12 s, default", DEFAULT, COUNT_DEFAULT, 12000, {}, {}, "pass", ("oob", 12.0)),
+    # T12/T12b were first recorded as T10/T10b (results/20260925/T10*); renamed because T10 is the
+    # completion-time test in DESIGN §11. Both names are accepted.
+    "T12": ("management-network (OOB) outage 12 s, default", DEFAULT, COUNT_DEFAULT, 12000, {}, {}, "pass", ("oob", 12.0)),
     # same with 1 GiB all-reduces (~0.3 s each): a comm then has requests outstanding for longer than
     # the FIN rule's 50 ms grace, which is what made the pre-fix build treat an OOB timeout as death
-    "T10b": ("management-network (OOB) outage 12 s, 1 GiB all-reduces", DEFAULT, 268435456, 100, {}, {}, "pass", ("oob", 12.0)),
+    "T12b": ("management-network (OOB) outage 12 s, 1 GiB all-reduces", DEFAULT, 268435456, 100, {}, {}, "pass", ("oob", 12.0)),
+    # one-sided outage: only sunny->rain is dropped. rain's keepalive times out (ETIMEDOUT) and its kernel
+    # resets the connection; the RST reaches sunny, which is alive. Must not fail the job.
+    "T12c": ("one-way OOB outage 12 s (sunny->rain dropped), 1 GiB all-reduces", DEFAULT, 268435456, 100, {}, {}, "pass", ("oob1", 12.0)),
+    # a fault after the OOB was lost (outage 3-15 s, then a send-QP fault ~6 s later: ~16.7 multi-sends per
+    # iteration, k=150000 is about iteration 9000): with no OOB the
+    # comm cannot recover and must fail like stock, promptly
+    "T12d": ("fault after an OOB outage (OOB lost, then send QP ERR)", DEFAULT, COUNT_DEFAULT, 12000,
+             {"NCCL_RDMA_FAULT_INJECT": "150000"}, {}, "fail", ("oob", 12.0)),
 }
+TESTS["T10"], TESTS["T10b"] = TESTS["T12"], TESTS["T12b"]   # names used in results/20260925/T10*
 
 MGMT_PEER = "192.0.2.194"          # sunny on the management network (NCCL_SOCKET_IFNAME=eno1)
 _oob_rules = []                          # iptables rule specs currently installed by this runner
@@ -117,7 +128,7 @@ def oob_unblock():
         _ipt("-D", spec)
 
 
-def oob_partition(hold_s, log):
+def oob_partition(hold_s, log, one_way=False):
     """Blackhole every established TCP connection of the local nccl_ct to sunny's management address
     for hold_s seconds (only its local ports; ssh and everything else keep working), then restore."""
     pids = subprocess.run(["pgrep", "-x", "nccl_ct"], capture_output=True, text=True).stdout.split()
@@ -129,12 +140,14 @@ def oob_partition(hold_s, log):
             ports.add(local.rsplit(":", 1)[1])
     try:
         for port in sorted(ports):
-            for spec in (["OUTPUT", "1", "-p", "tcp", "-d", MGMT_PEER, "--sport", port, "-j", "DROP"],
-                         ["INPUT", "1", "-p", "tcp", "-s", MGMT_PEER, "--dport", port, "-j", "DROP"]):
+            specs = [["INPUT", "1", "-p", "tcp", "-s", MGMT_PEER, "--dport", port, "-j", "DROP"]]
+            if not one_way:
+                specs.append(["OUTPUT", "1", "-p", "tcp", "-d", MGMT_PEER, "--sport", port, "-j", "DROP"])
+            for spec in specs:
                 r = _ipt("-I", spec)
                 if r.returncode == 0:
                     _oob_rules.append([spec[0]] + spec[2:])
-        log.write(f"{time.monotonic():.6f} OOB-PARTITION start pids={pids} local_ports={sorted(ports)} rules={len(_oob_rules)}\n")
+        log.write(f"{time.monotonic():.6f} OOB-PARTITION start one_way={one_way} pids={pids} local_ports={sorted(ports)} rules={len(_oob_rules)}\n")
         log.flush()
         time.sleep(hold_s)
     finally:
@@ -199,11 +212,11 @@ def main():
                         time.sleep(3)   # the job (15000 x 16 MB) runs ~35 s; the cut lands ~2 s into its loop
                         gbh("cut", str(outage))
                     killer = threading.Thread(target=k, daemon=True); killer.start()
-                elif special and special[0] == "oob":
+                elif special and special[0] in ("oob", "oob1"):
                     plog = open(os.path.join(a.out, f"{tag}_partition.log"), "w")
-                    def k(hold=special[1]):
+                    def k(hold=special[1], one_way=(special[0] == "oob1")):
                         time.sleep(3)   # ~2 s into the loop, all connections established
-                        oob_partition(hold, plog)
+                        oob_partition(hold, plog, one_way)
                     killer = threading.Thread(target=k, daemon=True); killer.start()
                 res = C.run_pair(a.out, tag, a.build, env, env0=e0, env1=e1, args=args, timeout=a.run_timeout,
                                  kill_on_fail=False, early_exit=(special != "kill"))

@@ -241,15 +241,25 @@ entry can be overwritten (I5).
 
 ## 7. Liveness and silent peers
 
-- `recv(MSG_PEEK|MSG_DONTWAIT)` on `base.sock` gives three answers (changed 2026-09-25 after review):
-  - 0 = FIN, ECONNRESET/EPIPE = RST: **peer process dead** (`peerClosed`). The peer's kernel answered
-    for a closed socket.
-  - any other error (ETIMEDOUT from keepalive/`TCP_USER_TIMEOUT`, EHOSTUNREACH, ...): **OOB lost**
-    (`oobLost`). This is not evidence of death: a management-network outage produces it while the
-    peer and RDMA are fine.
+- `recv(MSG_PEEK|MSG_DONTWAIT)` on `base.sock` gives three answers (changed twice on 2026-09-25 after
+  review):
+  - 0 = FIN: **peer process dead** (`peerClosed`). A dying process closes its sockets, and with nothing
+    unread (the OOB records are small and read at once) its kernel sends FIN.
+  - any error (ETIMEDOUT from keepalive/`TCP_USER_TIMEOUT`, EHOSTUNREACH, and also ECONNRESET/EPIPE):
+    **OOB lost** (`oobLost`), not evidence of death. A management-network outage produces the timeout
+    while the peer and RDMA are fine. A reset is ambiguous: a dead peer with unread data sends one, but so
+    does a live peer whose own kernel timed the connection out during a one-sided outage (its keepalive
+    fired, the other side's did not) once any packet of ours reaches it.
   - EAGAIN = no evidence.
   RETRY_EXC is recovered only on "no evidence" (the handshake itself then proves the peer's transport
-  is responsive). With the OOB lost no recovery is possible; a fault then fails the comm like stock.
+  is responsive).
+- **OOB lost is permanent for the comm.** The TCP connection is not re-established, so recovery stays
+  off until the comm is destroyed even after the management network is back. A fault after that fails
+  the comm at once, like stock (the incident is refused with "OOB lost" before any handshake). If the
+  OOB is lost on only one side, the other side learns it within about one keepalive interval: its next
+  probe or record reaches a reset connection (→ oobLost), or its own keepalive times out while the
+  outage lasts. A recovery that was already waiting for the peer fails at that point instead of at its
+  handshake deadline; the bound is TCP's (about `KEEPALIVE_MS`), not 5 s + 30 s.
 - A node that crashes, loses power or is partitioned sends neither FIN nor RST. With the flag on,
   `base.sock` gets TCP keepalive (`SO_KEEPALIVE`, `TCP_KEEPIDLE`/`INTVL`/`CNT`) and
   `TCP_USER_TIMEOUT`, from `NCCL_RDMA_FAULT_KEEPALIVE_MS` (default 5000: idle 2 s, 3 probes 1 s
@@ -258,15 +268,20 @@ entry can be overwritten (I5).
 - While IDLE, socket trouble never fails a comm that has nothing outstanding: a FIN (normal teardown
   of the peer) or an OOB loss only records it, which disables recovery for that comm; a later fault
   then fails like stock. **FIN rule:** if send/recv requests are still outstanding when the peer's
-  socket shows **FIN/RST**, and still after a 50 ms grace in which the CQ is polled, the comm fails:
-  the peer process is gone and will never complete them. This matters when the dead peer was the one
+  socket shows **FIN**, and still after a 50 ms grace in which the CQ is polled, the comm fails: the
+  peer process is gone and will never complete them. This matters when the dead peer was the one
   expected to send: then nothing of ours is in flight, no RETRY_EXC ever comes, and stock NCCL waits
   forever (measured: T8 with back-to-back all-reduces hung 5/5 until the test timeout before this
-  rule; the stock control hung 3/3). **An OOB loss (ETIMEDOUT) does not trigger the FIN rule**: until
-  2026-09-25 it did, so a management-network outage of more than ~5 s killed a healthy job with
-  requests outstanding, which is worse than stock (stock does not use TCP then). Test T10 (a 12 s
-  blackhole of this job's TCP connections, RDMA untouched) covers it. The price: a peer node that
-  dies silently while we wait to receive is not detected (stock behaviour, not worse).
+  rule; the stock control hung 3/3). **An OOB loss does not trigger the FIN rule.** Until the review
+  of 2026-09-25 a keepalive timeout did (build 78f96f38): a management-network outage of more than
+  ~5 s killed a healthy job whose comms had requests outstanding for longer than the grace (test T12b:
+  0/3), which is worse than stock (stock does not use TCP then). Until the second review a reset still
+  counted as death (build 7b0d0122), which a one-sided outage turns into the same failure (test T12c).
+  The price: a peer node that dies silently, or a dead peer that leaves unread OOB data (RST instead of
+  FIN), is not detected while we wait to receive; that is stock behaviour, not worse.
+- Tests: T12 / T12b (both directions of this job's TCP connections blackholed for 12 s, 16 MB and
+  1 GiB all-reduces; first recorded as T10 / T10b), T12c (one direction only), T12d (a send-QP fault
+  after the OOB was lost: must fail like stock). T10 in §11 is the completion-time test.
 - NCCL calls a comm only while it has an active op, so a leader with nothing pending would never
   read a NOTIFY, and an idle R would never read a REQ. A **helper thread** (one per process, started
   with the first recovery-enabled comm) waits on all their OOB sockets with `poll()` and steps any

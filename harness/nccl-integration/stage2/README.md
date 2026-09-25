@@ -26,7 +26,8 @@ Raw data: `results/20260925/<campaign>/` (`results.csv`, `logs.tar.gz`, hardware
 error and SUMMARY line is kept. Of the per-iteration `IT` lines it keeps the first and last 20, every
 1000th, and 5 on each side of every stall, so the fault and recovery timelines are intact. Library builds: `f7f45278` (after code QA round 2), `3b0b760d` (+ test-hook fix),
 `78f96f38` (+ the FIN rule, §7), `7b0d0122` (+ the OOB-loss fix after the 2026-09-25 review: a keepalive
-timeout no longer counts as peer death; final; `net_ib_stage2.diff` is this build's source). The later changes
+timeout no longer counts as peer death), `a037de42` (+ after the second review: a reset (RST) no longer
+counts as peer death either, only FIN; final; `net_ib_stage2.diff` is this build's source). The later changes
 do not touch the paths the first campaigns exercise, and campaigns A2/A3 re-ran the core cases on
 the final build (rows marked "final build").
 
@@ -50,11 +51,18 @@ the final build (rows marked "final build").
 | T8 stock control | same, recovery off (the stock code path) | 78f96f38 | 3 | **3/3 hang**: the survivor prints nothing (no NCCL warning) until the runner kills it at 60 s | - |
 | T9 | peer never answers REQ (mute test hook) | 3b0b760d | 5 | 5/5 fail cleanly at the handshake deadline | - |
 | T4ar | R's QP dies silently at the end of an all-reduce iteration (S idle) | 78f96f38 | 1 | fails cleanly at the 120 s WAITREQ bound (both sides) | - |
-| **T10b** | **management-network outage**: every TCP connection of the job between the nodes blackholed for 12 s (iptables on rain, this job's ports only), RDMA untouched; 1 GiB all-reduces | 78f96f38 (before the fix) | 3 | **0/3: a healthy job killed** 4.3–4.6 s into the outage ("peer closed its OOB socket ... peer process gone") | - |
-| **T10b** | same | **7b0d0122 (fixed)** | 5 | **5/5 pass**, 100/100 iterations exact; all 4 comms on both ranks log "OOB socket lost (Connection timed out) ... recovery disabled" 4.2–4.5 s in | - |
-| T10b stock control | same, stock library | stock | 2 | 2/2 pass | - |
+| **T12b** (recorded as T10b) | **management-network outage**: every TCP connection of the job between the nodes blackholed for 12 s (iptables on rain, this job's ports only), RDMA untouched; 1 GiB all-reduces | 78f96f38 (before the fix) | 3 | **0/3: a healthy job killed** 4.3–4.6 s into the outage ("peer closed its OOB socket ... peer process gone") | - |
+| **T12b** | same | **7b0d0122 (first fix)** | 5 | **5/5 pass**, 100/100 iterations exact; all 4 comms on both ranks log "OOB socket lost (Connection timed out) ... recovery disabled" 4.2–4.5 s in | - |
+| T12b stock control | same, stock library | stock | 2 | 2/2 pass | - |
 | T0d / T1 / T2 / T3 / T5 / T6 / T7a / T8 / T9, fixed build (A4) | regression after the OOB-loss fix | 7b0d0122 | 5 each | all as before: 5/5 pass; 5/5, 5/5, 5/5 recovered; 25/25 and 10/10 recoveries; T7a 5/5 (20 recoveries); T8 5/5 error 50.1–50.2 ms after the peer's last iteration (FIN path, no OOB-loss line); T9 5/5 clean fail | 2.24–2.45 ms; T7a 3.30 ms after RETRY_EXC |
-| T10 | same outage with 16 MB all-reduces | 78f96f38 / 7b0d0122 / stock | 3 / 5 / 2 | all pass (with 16 MB the per-iteration gaps reset the 50 ms grace, so the old rule did not fire) | - |
+| T12 (recorded as T10) | same outage with 16 MB all-reduces | 78f96f38 / 7b0d0122 / stock | 3 / 5 / 2 | all pass (with 16 MB the per-iteration gaps reset the 50 ms grace, so the old rule did not fire) | - |
+| **T12c** | **one-sided** management-network outage (only sunny→rain dropped, 12 s, 1 GiB): rain's keepalive times out and its kernel resets the connection; the RST reaches sunny, which is alive | 7b0d0122 (RST still = death) | 3 | **0/3: healthy job killed** on sunny ("peer closed its OOB socket (FIN/RST) ... peer process gone") | - |
+| **T12c** | same | **a037de42 (final: only FIN = death)** | 5 | **5/5 pass**, 100/100 iterations exact | - |
+| T12c stock control | same, stock library | stock | 2 | 2/2 pass | - |
+| T12b | two-way outage again, final build | a037de42 | 3 | 3/3 pass | - |
+| **T12d** | a send-QP fault ~10 s after a two-way outage (OOB lost on both sides), 16 MB | a037de42 | 3 | 3/3 fail **like stock**: the incident is refused with "OOB lost" and the error surfaces 0.06–0.07 ms after the fault | - |
+| T12d stock-path control | same, recovery flag off (stock error path; the stock library has no injection hook) | a037de42, flag off | 3 | 3/3 fail, error 0.05–2.18 ms after the fault | - |
+| T0d / T1 / T2 / T3 / T5 / T6 / T7a / T8 / T9, final build (A5) | regression after the FIN-only change | a037de42 | 3 each | 3/3 pass; T1/T2/T3/T5/T6/T7a all recovered; T8 3/3 clean fail through the FIN path; T9 3/3 clean fail | - |
 
 - Stale-packet counters: `duplicate_request`, `out_of_sequence` and `packet_seq_err` stayed at 0 on both
   NICs across every campaign. `implied_nak_seq_err` was 0 on both NICs up to campaign B (03:41) and 2 on

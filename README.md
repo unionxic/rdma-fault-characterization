@@ -97,7 +97,7 @@ RETRY_EXC_ERR detection 단축 경로 비교 (옛 클러스터).
   - **주소 재구성 fault를 복구했다.** 테스트용 보조 RoCE 주소를 sunny에서 지웠다가 다시 붙이면, 주소가 새 GID index로 돌아와 기존 QP의 address vector가 없어진 항목을 가리키게 되고, 원본 QP는 영구히 죽는다. 원본은 0.5 s·6 s 끊김에서 RETRY_EXC 12/0x81 뒤 6/6 실패했고, 타당성 시험에서는 0.3 s 끊김에도 QP가 죽었다. Stage 2는 GID를 값으로 다시 찾아 0.5 s·6 s·15 s 끊김을 15/15 복구했고, 15,000회 반복의 결과가 모두 정확했다. link 자체는 내리지 않으므로 같은 링크의 NVMe-oF는 영향이 없었다.
   - 이 실험이 보인 것은 drain, PSN reset, replay, GID 재탐색이 실제 RETRY_EXC CQE에서 동작한다는 점이다. 패킷만 잃고 GID index는 그대로인 일시 장애(진짜 link flap)에 대한 내성은 보이지 않았다. 그런 flap이 재전송 예산 안이면 원본도 견디고, 예산을 넘으면 port state 이벤트가 끼는데 그 경로는 시험하지 않았다(사용자 결정으로 진짜 link flap은 돌리지 않음).
   - 죽은 peer: 상대 소켓에 FIN·RST가 보이면 수신 대기 중인 생존자에게 50.2 ms 만에 에러를 올린다(10/10; 그 뒤 NCCL 2.23 abort hang 때문에 드라이버 watchdog으로 종료). 원본은 같은 상황에서 아무 경고 없이 멈춘다(3/3).
-  - 관리망 장애는 상대 사망으로 보지 않는다(9월 25일 검토 후 수정). keepalive timeout(ETIMEDOUT)은 복구만 끄고 작업은 원본처럼 계속한다. 이 작업의 TCP 연결만 12초 막는 시험(T10b, 1 GiB all-reduce)에서 수정 전 빌드는 멀쩡한 작업을 4.3–4.6초 만에 죽였고(0/3), 수정 후 5/5, 원본 2/2 통과했다.
+  - 관리망 장애는 상대 사망으로 보지 않는다(9월 25일 검토 후 수정). keepalive timeout(ETIMEDOUT)은 복구만 끄고 작업은 원본처럼 계속한다. 이 작업의 TCP 연결만 12초 막는 시험(T12b, 1 GiB all-reduce)에서 수정 전 빌드는 멀쩡한 작업을 4.3–4.6초 만에 죽였고(0/3), 수정 후 5/5, 원본 2/2 통과했다. 2차 검토 뒤에는 RST도 사망 증거로 쓰지 않는다. 한쪽 방향만 막힌 장애에서는 먼저 timeout된 쪽의 커널이 RST를 보내는데, 그것을 사망으로 읽은 빌드는 멀쩡한 작업을 죽였다(T12c 0/3, 수정 후 5/5). OOB 상실은 그 comm이 끝날 때까지 유지되고(재연결하지 않음), 그 뒤 fault는 원본처럼 즉시 실패한다(T12d, 0.06–0.07 ms).
   - 오래된 QP의 패킷(stale packet)은 HW counter(`duplicate_request`, `out_of_sequence`, `packet_seq_err`)로 확인했는데, 모든 캠페인에서 0이었다. `implied_nak_seq_err`는 두 캠페인 사이에 rain에서 0→2가 됐고 캠페인 안에서는 변하지 않았다(출처 미상).
   - fault가 없을 때 비용은 flag on에서 −0.2 ~ +0.7 %다. 원본 자체의 반복 간 편차(0.4–1.7 %, n=3) 안이라 약 1 % 이하라는 것까지만 말할 수 있다. flag off는 원본과 같다.
 - **NCCL 완료 시간 비교**(`harness/nccl-integration/perf/`): fault 1회가 든 작업 전체의 시간을 비교했다.
@@ -131,11 +131,13 @@ RETRY_EXC_ERR detection 단축 경로 비교 (옛 클러스터).
   - upstream 보고는 사용자 결정을 기다린다.
 - **같은 원인이 다른 지문으로 나온다.**
   - 죽은 peer는 CPU verbs와 GDAKI에서 12/0x81이지만, GIN proxy에서는 60 ms 안에 10/0x88로 나온다.
+  - 원인은 `harness/fingerprint_teardown/`에서 쟀다(SIGKILL 417회). 커널은 죽은 프로세스의 verbs 객체를 가장 나중에 만든 것부터 지운다. 그래서 MR을 QP 뒤에 등록했으면 MR이 먼저 사라져 아직 살아 있는 QP가 NAK를 보낸다(REM_ACCESS, 구조상 불가능한 sunny DEVX 셀을 빼면 111/161, 경합). MR을 QP보다 먼저 등록했으면 한 번도 0x88이 나오지 않았다(0/83). sunny의 OFED 25.10은 DEVX QP(GDAKI, NVSHMEM IBGDA)를 먼저 지워서 0x81이 나온다. 그래서 0x88이라도 상대가 죽었으면 상대 사망으로 봐야 하고, harness 분류기는 REM_ACCESS에도 liveness를 확인한다.
   - GDAKI에서 상대 QP 에러와 상대 프로세스 사망는 같은 0x81이다. 그래서 CPU 경로와 마찬가지로 liveness가 필요하다.
 - **retry 소진 감지는 기본값에서 느리다.**
   - IB timeout 14에서는 모든 스택이 3.6–3.75 s다.
   - NCCL/NVSHMEM 기본값인 20에서는 GIN proxy가 RETRY_EXC를 57–59 s 만에 보고했다(4 trials). 계산값 34 s의 약 1.7배다.
-  - 그 이유를 `harness/ack_timeout/`에서 쟀다. 기본 firmware는 재시도 1회분을 쓰는 적응형 재전송 단계를 먼저 돌고, 그다음 R−1번의 timeout을 2 × 4.096 µs × 2^max(T,16) 간격으로 기다린다. detect ≈ R × I − c 식이 42/42 시행에 0.9 ms 안으로 맞고, T=20·R=7에서 59.8 s다.
+  - 그 이유를 `harness/ack_timeout/`에서 쟀다. 기본 firmware는 재시도 1회분을 쓰는 적응형 재전송 단계를 먼저 돌고, 그다음 R−1번의 timeout을 2 × 4.096 µs × 2^max(T,16) 간격으로 기다린다. 한 run 안에서 이어 도는 시행(첫 시행 제외)에는 detect ≈ R × I − c 식이 맞는다. 식을 세운 42회에 0.9 ms 안, 예측을 먼저 고정하고 새 조건에서 돌린 55회 중 52회가 ±1.5 ms 안이었다. T=20·R=7에서 59.8 s다.
+  - 다만 새 프로세스의 첫 시행은 첫 정규 timeout 시점이 이력에 따라 달라 이 식이 정확히 맞지 않는다(T=20에서 약 1 s 짧음). GPU·NCCL 측정은 모두 첫 시행이다. GIN proxy의 57–59 s는 이 식(59.8 s)보다 짧고, GIN과 비슷한 트래픽을 넣은 새 프로세스 CPU 측정(57.7–58.2 s)과 범위가 겹친다. 즉 식은 약 2배가 되는 구조를 설명하지만, 새 프로세스의 정확한 값은 예측하지 못한다.
   - rain NIC의 floor(`min_ack_timeout_limit_disabled`)를 시험 창 안에서만 풀면 T=8·R=7에서 9.49 ms다. GPU 스택에서는 fault부터 호스트가 지문을 받기까지 NVSHMEM 13.3 ms, GIN GDAKI 24.6 ms였다(각 10/10). 설정은 NIC 전체에 적용되고 작은 T는 오탐 위험이 있어서, 레지스터는 창이 끝날 때마다 되돌리고 확인했다.
 - **장치측 분류(GPU 분류기, GDAKI)는 싸다.**
   - host는 장치가 감지한 지 94 µs 뒤에 정확한 지문을 받고, `ncclCommGetAsyncError`는 그로부터 190 µs 뒤에 반환한다.
@@ -146,10 +148,12 @@ RETRY_EXC_ERR detection 단축 경로 비교 (옛 클러스터).
   - 원격 접근 오류와 상대 프로세스 사망는 깨끗하게 거절됐다.
   - kernel이 반환한 뒤 replay가 끝나기까지 중앙값 8.0–8.2 ms가 걸렸다. 그중 약 6 ms는 firmware QP 명령이다.
   - GPU-rung doorbell에서는 `gin_recovery_gpudb.diff`로 같은 결과를 얻었고, 약 8.5 ms가 걸렸다.
+  - **투명 복구 1단계**(`gin_recovery/TRANSPARENT_S1.md`, 2026-09-25): 고치지 않은 GIN 프로그램이 로컬 QP 에러와 상대 QP 에러를 에러도 커널 재실행도 없이 넘긴다(복구 가능한 셀 95/95, "WRITE는 실행·ADD는 미실행" 경계 30/30, 비행 중 fault 150/150). 복구 불가 fault는 거절한다(40/40). helper가 commit 전에 멈추거나 죽으면 flush는 device hold가 끝나는 때(시험에서 4.0 s) 에러를 돌려주고, commit 뒤에 멈추면 2 × hold(8.0 s)에 돌려준다. watchdog은 async 에러만 올린다. blocking flush의 상한은 hold(30 s, give-up 경합에서 지면 60 s)뿐이다. **비용: flag를 켜면 4 KiB 지연이 +60 %(10.24 → 16.42 µs)**여서 아직 실용 단계가 아니다. flag를 끄면 +1 %다. 비행 중 op 1개·post 스레드 1개까지만 시험했다.
 - **NVSHMEM IBGDA 분류+복구(`nvshmem_ft/`, GPU handler).**
   - 분류는 single-fault 48/48, multi-fault 100/100 round에서 정확했다. host mailbox는 캡처 67 µs 뒤에 읽혔다.
   - 로컬 QP 에러와 상대 QP 에러는 모든 run에서 복구됐다(112 rounds, run당 200/200 ops bit-exact). 잘못된 rkey와 상대 프로세스 사망는 거절됐고, `nvshmem_finalize`는 17–29 ms 안에 반환한다.
   - collapsed 슬롯에서 원인을 잡은 비율은 stock wait가 끝나는 지점에서 읽으면 0/24, spin loop 안에서 읽으면 21/30, 상주 sentinel을 쓰면 18/18이었다.
+  - v2(`nvshmem_ft/V2.md`, 2026-09-25): ring CQ 모드에서는 sentinel 없이 원인 CQE를 90/90 잡는다(같은 패턴의 collapsed 루프 안 읽기는 0/90). 다만 조기 감지는 대체하지 못한다(fault부터 mailbox까지 ring만 3.2 ms, collapsed+sentinel 1.2 ms). v2.1은 에러 뒤 doorbell이 앞서 나가 burst 복구가 3/5 거절되던 결함을 "park"로 고쳤다(수정 후 ring 5/5, collapsed 3/3). 원인 CQE는 수정 전에도 잃지 않았다(155/155). post 전 범위 검사는 빈 공간·객체 끝·힙 끝을 넘는 쓰기를 모두 막지만, 기존 사례(다음 객체를 정확히 덮는 쓰기)는 red zone을 켜야 잡는다(0/30 → 35/35).
   - fault가 없을 때 비용은 4 KiB에서 +1%, 256 KiB에서 +0.25%다.
 
 한계:
