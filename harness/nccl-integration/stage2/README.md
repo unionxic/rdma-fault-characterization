@@ -25,7 +25,8 @@ Raw data: `results/20260925/<campaign>/` (`results.csv`, `logs.tar.gz`, hardware
 `lib_md5.txt`). The larger log archives are thinned by `../perf/thin_logs.py`: every NCCL, recovery,
 error and SUMMARY line is kept. Of the per-iteration `IT` lines it keeps the first and last 20, every
 1000th, and 5 on each side of every stall, so the fault and recovery timelines are intact. Library builds: `f7f45278` (after code QA round 2), `3b0b760d` (+ test-hook fix),
-`78f96f38` (+ the FIN rule, §7; final; `net_ib_stage2.diff` is this build's source). The later changes
+`78f96f38` (+ the FIN rule, §7), `7b0d0122` (+ the OOB-loss fix after the 2026-09-25 review: a keepalive
+timeout no longer counts as peer death; final; `net_ib_stage2.diff` is this build's source). The later changes
 do not touch the paths the first campaigns exercise, and campaigns A2/A3 re-ran the core cases on
 the final build (rows marked "final build").
 
@@ -41,30 +42,54 @@ the final build (rows marked "final build").
 | T1 / T2 / T3, final build | as above | 78f96f38 | 10 / 10 / 10 | **30/30 recovered** | 2.22 / 2.24 / 2.14 ms (2.10–2.37) |
 | T5 / T6 / T0d, final build | as above | 78f96f38 | 5 / 5 / 5 | 5/5 runs, 25/25 recoveries; 5/5 runs, 10/10 recoveries; 5/5 pass | 2.15 ms (2.07–2.41); 2.29 ms (2.25–2.36) |
 | T1b | send inject, one-way broadcast stream | 78f96f38 | 10 | 10/10 recovered | 2.22 ms (2.14–2.46) |
-| **T7a** | **real path fault: sunny's RoCE address removed 0.5 s** (packets lost; both NICs exhaust retries → RETRY_EXC; the address comes back at a new GID index) | 78f96f38 | 5 | **5/5 recovered** (4 connections each, 15,000/15,000 iterations exact) | 2.64 ms (2.00–4.11) after RETRY_EXC |
+| **T7a** | **address-reconfiguration fault: sunny's secondary RoCE address removed for 0.5 s and re-added** (it comes back at a new GID index, so the old QPs' address vectors name a dead GID entry; both NICs exhaust retries → RETRY_EXC 3.1 s after the address is back) | 78f96f38 | 5 | **5/5 recovered** (4 connections each, 15,000/15,000 iterations exact) | 2.64 ms (2.00–4.11) after RETRY_EXC |
 | **T7b** | same, 6 s outage | 78f96f38 | 5 | **5/5 recovered** | 3.26 s (waits for the address, 2.26–3.27 s) |
 | **T7c** | same, 15 s outage | 78f96f38 | 5 | **5/5 recovered** | 12.27 s (waits for the address) |
 | T7a/T7b stock control | same faults, recovery off | 78f96f38 | 3 / 3 | **6/6 fail** (RETRY_EXC 12/0x81 at iteration ~443, then NCCL 2.23's abort hang) | - |
-| T8 | rank 1 SIGKILLed while rank 0 waits to receive | 78f96f38 | 10 | 10/10 fail cleanly, error surfaced **50.2 ms** after the peer's last iteration (FIN rule) | - |
+| T8 | rank 1 SIGKILLed while rank 0 waits to receive | 78f96f38 | 10 | 10/10: rank 0's NCCL error surfaced **50.2 ms** after the peer's last iteration (FIN rule), then rank 0 exited through the driver's abort watchdog (rc 7, NCCL 2.23's `ncclCommAbort` hangs); rank 1 = the killed rank (rc 255 via ssh). The CSV of that campaign (C5) says `FAIL(rc 7/255)`: the classifier accepted rc 7/255 as a clean failure only afterwards | - |
 | T8 stock control | same, recovery off (the stock code path) | 78f96f38 | 3 | **3/3 hang**: the survivor prints nothing (no NCCL warning) until the runner kills it at 60 s | - |
 | T9 | peer never answers REQ (mute test hook) | 3b0b760d | 5 | 5/5 fail cleanly at the handshake deadline | - |
 | T4ar | R's QP dies silently at the end of an all-reduce iteration (S idle) | 78f96f38 | 1 | fails cleanly at the 120 s WAITREQ bound (both sides) | - |
+| **T10b** | **management-network outage**: every TCP connection of the job between the nodes blackholed for 12 s (iptables on rain, this job's ports only), RDMA untouched; 1 GiB all-reduces | 78f96f38 (before the fix) | 3 | **0/3: a healthy job killed** 4.3–4.6 s into the outage ("peer closed its OOB socket ... peer process gone") | - |
+| **T10b** | same | **7b0d0122 (fixed)** | 5 | **5/5 pass**, 100/100 iterations exact; all 4 comms on both ranks log "OOB socket lost (Connection timed out) ... recovery disabled" 4.2–4.5 s in | - |
+| T10b stock control | same, stock library | stock | 2 | 2/2 pass | - |
+| T0d / T1 / T2 / T3 / T5 / T6 / T7a / T8 / T9, fixed build (A4) | regression after the OOB-loss fix | 7b0d0122 | 5 each | all as before: 5/5 pass; 5/5, 5/5, 5/5 recovered; 25/25 and 10/10 recoveries; T7a 5/5 (20 recoveries); T8 5/5 error 50.1–50.2 ms after the peer's last iteration (FIN path, no OOB-loss line); T9 5/5 clean fail | 2.24–2.45 ms; T7a 3.30 ms after RETRY_EXC |
+| T10 | same outage with 16 MB all-reduces | 78f96f38 / 7b0d0122 / stock | 3 / 5 / 2 | all pass (with 16 MB the per-iteration gaps reset the 50 ms grace, so the old rule did not fire) | - |
 
-- Hardware counters `duplicate_request`, `out_of_sequence`, `packet_seq_err`, `implied_nak_seq_err`
-  stayed at 0 on both NICs across every campaign: no stale packet of an old QP incarnation was seen.
+- Stale-packet counters: `duplicate_request`, `out_of_sequence` and `packet_seq_err` stayed at 0 on both
+  NICs across every campaign. `implied_nak_seq_err` was 0 on both NICs up to campaign B (03:41) and 2 on
+  rain from C2 (04:08) on; it did not change inside any campaign that has both snapshots (B and C6 lack
+  the "after" snapshot, and other experiments used the cluster between B and C2), so its source is
+  not attributed. No stale packet of an old QP incarnation was seen.
 - The storage traffic on the same link (NVMe-oF on the primary addresses) logged nothing during the
   address-flap runs (sunny's last NVMe kernel message is the 2026-09-22 mount).
 - Before the FIN rule, T8 hung 5/5 until the test timeout: with back-to-back all-reduces the survivor
   is usually waiting to receive when the peer dies, so nothing of its own is in flight and no RETRY_EXC
   ever comes. Stock NCCL behaves the same way: the T8 stock control hung 3/3.
-- T4 (a silent R death meant to exercise the RETRY_EXC-led path) could not be produced with this
-  workload (see DESIGN §15); the RETRY_EXC-led path is exercised by the real fault T7 instead.
+- T4 (a silent R death meant to exercise the path where S's own RETRY_EXC leads the recovery): on
+  all-reduce (B, 5 runs) S was idle and never met RETRY_EXC; with a 256 KB broadcast (C5, 10 runs) the
+  silent injection never fired; with a 64 MB broadcast (C6, 3 runs) it fired 3/3 and S met RETRY_EXC
+  once (3.56 s after the silent death), **recovering in 1.9 ms**; the other 2 ran into the 90 s run
+  timeout with S idle (below R's 120 s WAITREQ bound). The S-led RETRY_EXC path is also exercised by
+  T7 (every T7 run).
 - Fault-free overhead with the flag on (`../perf`, 3 runs each, medians vs stock 2.23.4): single
   config 64 KB +0.7 %, 1 MB −0.2 %, 16 MB +0.6 %, 64 MB +0.4 %; default config +0.6 / +0.1 / −0.1 /
-  +0.1 %. Flag off equals stock within noise.
+  +0.1 %. These are all inside the run-to-run spread of stock itself (0.4–1.7 %, one cell 4.6 %, n=3),
+  so the measurement bounds the cost to about 1 % but cannot resolve it. Flag off equals stock within
+  the same noise.
 - Completion time of a whole job with one fault (`../perf/README.md`): recovery adds about 2 ms and
-  restart-from-the-failed-iteration about 1.1 s. With NCCL's default IB timeout, a real path fault
+  restart-from-the-failed-iteration about 1.1 s. The 1.1 s is the relaunch cost of a small 2-rank job
+  (process start to communicator ready) with a checkpoint every iteration, so it is a lower bound for
+  real jobs, not a typical value. With NCCL's default IB timeout, the address-reconfiguration fault
   takes about a minute to surface, and recovery and restart then finish within noise of each other.
+- **What T7 does and does not show.** The fault is an address reconfiguration, not a packet-loss
+  transient: the address was back 0.51 s after the cut, yet stock QPs failed (6/6, and 0.3 s in the
+  feasibility test) because the re-added address got a new GID index while the old QPs' address
+  vectors still name the removed entry. T7 shows that drain, PSN reset, replay and GID re-resolution
+  work on a real RETRY_EXC CQE. It does not show tolerance of a transient packet loss with the GID
+  index kept (a real link flap): a flap shorter than the retry budget would be absorbed by stock too,
+  and a longer one also raises port-state events, a path not tested here. The real link-flap test
+  (`linkflap_window.sh`) was not run: the link carries the user's NVMe-oF.
 
 ## Files
 

@@ -2,11 +2,12 @@
 # Upstream: github.com/NVIDIA/nccl   Tag: v2.23.4-1   Commit: 68b542363f9a44cdaac480f51ebe0fc26de96139
 # File: src/transport/net_ib.cc only; recovery behind NCCL_RDMA_FAULT_RECOVERY=1 (default 0);
 # test-injection knobs NCCL_RDMA_FAULT_INJECT* / _TEST_MUTE are separate (see DESIGN_stage2.md §10).
-# Patched net_ib.cc git hash-object: cc54d9a5b267d0677e29ae0866d706493c753849 (built library md5 78f96f38, the build of every final result)
+# Patched net_ib.cc git hash-object: 644d350368c1e8c1b873aa254ec286a1a5a3c93b (built library md5 7b0d0122: build 78f96f38 + OOB loss
+# (keepalive timeout) kept apart from peer death, 2026-09-25 review; DESIGN_stage2.md §7)
 # Apply: cd nccl && git checkout v2.23.4-1 && sed '/^# /d;/^#$/d' net_ib_stage2.diff | git apply
 #
 diff --git a/src/transport/net_ib.cc b/src/transport/net_ib.cc
-index d828c98..cc54d9a 100644
+index d828c98..644d350 100644
 --- a/src/transport/net_ib.cc
 +++ b/src/transport/net_ib.cc
 @@ -20,6 +20,10 @@
@@ -133,7 +134,7 @@ index d828c98..cc54d9a 100644
    free(rComm);
    goto exit;
  }
-@@ -1717,6 +1741,1141 @@ ncclResult_t ncclIbDeregMr(void* comm, void* mhandle) {
+@@ -1717,6 +1741,1164 @@ ncclResult_t ncclIbDeregMr(void* comm, void* mhandle) {
    return ncclSuccess;
  }
  
@@ -212,12 +213,12 @@ index d828c98..cc54d9a 100644
 +enum {  // reasons (FAIL/NACK and logs)
 +  FR2_R_NONE = 0, FR2_R_CLASS = 1, FR2_R_PEER_DEAD = 2, FR2_R_FATAL = 3, FR2_R_DRAIN_TMO = 4, FR2_R_HS_TMO = 5,
 +  FR2_R_PROTO = 6, FR2_R_INCONSISTENT = 7, FR2_R_MULTI = 8, FR2_R_VERBS = 9, FR2_R_ROUNDS = 10, FR2_R_PEER_FAIL = 11,
-+  FR2_R_FLUSHQP = 12, FR2_R_DONE_TMO = 13, FR2_R_PATH_TMO = 14, FR2_R_PEER_OFF = 15
++  FR2_R_FLUSHQP = 12, FR2_R_DONE_TMO = 13, FR2_R_PATH_TMO = 14, FR2_R_PEER_OFF = 15, FR2_R_OOB_LOST = 16
 +};
 +static const char* fr2ReasonStr(uint32_t r) {
 +  switch (r) {
 +    case FR2_R_CLASS: return "fault class not recoverable";
-+    case FR2_R_PEER_DEAD: return "peer dead (FIN/RST/keepalive)";
++    case FR2_R_PEER_DEAD: return "peer dead (FIN/RST on its OOB socket)";
 +    case FR2_R_FATAL: return "async fatal event on comm/device";
 +    case FR2_R_DRAIN_TMO: return "drain marker not seen before the deadline";
 +    case FR2_R_HS_TMO: return "no ACK before the handshake deadline";
@@ -231,6 +232,7 @@ index d828c98..cc54d9a 100644
 +    case FR2_R_DONE_TMO: return "no DONE before the deadline";
 +    case FR2_R_PATH_TMO: return "local GID / path did not come back before the deadline";
 +    case FR2_R_PEER_OFF: return "the peer has recovery off (no HELLO)";
++    case FR2_R_OOB_LOST: return "OOB socket lost without evidence of peer death (e.g. keepalive timeout)";
 +    default: return "unspecified";
 +  }
 +}
@@ -276,7 +278,9 @@ index d828c98..cc54d9a 100644
 +  // OOB socket
 +  struct ncclIbFr2Msg rx; int rxOff;
 +  struct ncclIbFr2Msg txq[8]; int txHead, txCount, txOff;
-+  int peerClosed;
++  int peerClosed;   // the peer's OOB socket showed FIN or RST: its process is gone
++  int oobLost;      // the OOB socket failed without that evidence (ETIMEDOUT from keepalive, unreachable):
++                    // the management network may be down while RDMA is fine; recovery is off, the comm runs on
 +  // connect-time attributes of qps[0]
 +  uint32_t remQpn; int accessFlags; int eceSet; struct ibv_ece ece; bool overrideTc;
 +  // side arrays
@@ -342,7 +346,7 @@ index d828c98..cc54d9a 100644
 +    pthread_mutex_lock(&fr2ListLock);
 +    for (struct ncclIbFr2* fr = fr2List; fr; fr = fr->next) {
 +      if (fr2Busy(fr)) busy = 1;
-+      else if (!fr->peerClosed && fr->base->sock.fd >= 0) { struct pollfd p; p.fd = fr->base->sock.fd; p.events = POLLIN; p.revents = 0; pfd.push_back(p); }
++      else if (!fr->peerClosed && !fr->oobLost && fr->base->sock.fd >= 0) { struct pollfd p; p.fd = fr->base->sock.fd; p.events = POLLIN; p.revents = 0; pfd.push_back(p); }
 +    }
 +    pthread_mutex_unlock(&fr2ListLock);
 +    if (busy) usleep(200);
@@ -456,10 +460,22 @@ index d828c98..cc54d9a 100644
 +}
 +
 +// ---- OOB socket (non-blocking) ------------------------------------------------
++// A socket error is evidence of peer death only if it is a reset (the peer's kernel answered for a closed
++// socket). ETIMEDOUT (keepalive / TCP_USER_TIMEOUT), EHOSTUNREACH and the like mean the OOB path is gone,
++// which a management-network outage also produces while RDMA keeps working: that only disables recovery.
++static void fr2OobError(struct ncclIbNetCommBase* base, int err) {
++  struct ncclIbFr2* fr = base->fr;
++  if (fr->peerClosed || fr->oobLost) return;
++  if (err == ECONNRESET || err == EPIPE) { fr->peerClosed = 1; return; }
++  fr->oobLost = 1;
++  WARN("NET/IB: [FAULT-RECOVERY2] %s comm: OOB socket lost (%s) without evidence of peer death: recovery disabled for this comm, it continues as stock",
++       fr->isSend ? "send" : "recv", strerror(err));
++}
++
 +static void fr2TxProgress(struct ncclIbNetCommBase* base) {
 +  struct ncclIbFr2* fr = base->fr;
 +  while (fr->txCount > 0) {
-+    if (fr->peerClosed || base->sock.fd < 0) { fr->txCount = 0; fr->txOff = 0; return; }
++    if (fr->peerClosed || fr->oobLost || base->sock.fd < 0) { fr->txCount = 0; fr->txOff = 0; return; }
 +    struct ncclIbFr2Msg* m = &fr->txq[fr->txHead];
 +    ssize_t n = send(base->sock.fd, (char*)m + fr->txOff, sizeof(*m) - fr->txOff, MSG_DONTWAIT | MSG_NOSIGNAL);
 +    if (n > 0) {
@@ -468,7 +484,7 @@ index d828c98..cc54d9a 100644
 +      continue;
 +    }
 +    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
-+    fr->peerClosed = 1; fr->txCount = 0; fr->txOff = 0; return;
++    fr2OobError(base, errno); fr->txCount = 0; fr->txOff = 0; return;
 +  }
 +}
 +
@@ -486,30 +502,34 @@ index d828c98..cc54d9a 100644
 +// 1 when a whole message is in fr->rx.
 +static int fr2RxProgress(struct ncclIbNetCommBase* base) {
 +  struct ncclIbFr2* fr = base->fr;
-+  if (fr->peerClosed || base->sock.fd < 0) return 0;
++  if (fr->peerClosed || fr->oobLost || base->sock.fd < 0) return 0;
 +  while (fr->rxOff < (int)sizeof(fr->rx)) {
 +    ssize_t n = recv(base->sock.fd, (char*)&fr->rx + fr->rxOff, sizeof(fr->rx) - fr->rxOff, MSG_DONTWAIT);
 +    if (n > 0) { fr->rxOff += (int)n; continue; }
 +    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
-+    fr->peerClosed = 1;  // 0 = FIN; <0 = RST, ETIMEDOUT (keepalive), ...
++    if (n == 0) fr->peerClosed = 1;  // FIN
++    else fr2OobError(base, errno);   // RST -> peerClosed; ETIMEDOUT etc. -> oobLost
 +    return 0;
 +  }
 +  fr->rxOff = 0;
 +  return 1;
 +}
 +
-+// Liveness evidence without consuming data: 1 = dead (FIN/RST/TCP timeout), 0 = no evidence.
++// Liveness evidence without consuming data: 1 = dead (FIN/RST), 0 = no evidence. A socket error without
++// that evidence sets oobLost (the OOB path is unusable, the peer may be alive) and returns 0.
 +static int fr2PeerDead(struct ncclIbNetCommBase* base) {
 +  struct ncclIbFr2* fr = base->fr;
 +  if (fr->peerClosed) return 1;
 +  int fd = base->sock.fd;
 +  if (fd < 0) return 1;
++  if (fr->oobLost) return 0;
 +  char c;
 +  ssize_t n = recv(fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
-+  if (n == 0) return 1;
++  if (n == 0) { fr->peerClosed = 1; return 1; }
 +  if (n > 0) return 0;
 +  if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
-+  return 1;
++  fr2OobError(base, errno);
++  return fr->peerClosed;
 +}
 +
 +static void fr2Fail(struct ncclIbNetCommBase* base, uint32_t reason, int notify) {
@@ -544,10 +564,12 @@ index d828c98..cc54d9a 100644
 +  fr->tDetect = clockNano();
 +  int dead = fr2PeerDead(base);
 +  WARN("NET/IB: [FAULT-RECOVERY2] %s comm: incident via %s: status=%d(%s) vendor_err=0x%x peer=%s -> %s",
-+       fr->isSend ? "send" : "recv", src, status, fr2StatusStr(status), vendor, dead ? "dead(FIN/RST/timeout)" : "no-evidence-of-death",
-+       fr2Recoverable(status) && !dead ? (fr->isSend ? "lead a recovery" : "drain, then NOTIFY the leader") : "fail");
++       fr->isSend ? "send" : "recv", src, status, fr2StatusStr(status), vendor,
++       dead ? "dead(FIN/RST)" : fr->oobLost ? "OOB-lost(no-evidence-of-death)" : "no-evidence-of-death",
++       fr2Recoverable(status) && !dead && !fr->oobLost ? (fr->isSend ? "lead a recovery" : "drain, then NOTIFY the leader") : "fail");
 +  if (!fr2Recoverable(status)) { fr2Fail(base, FR2_R_CLASS, 1); return; }
 +  if (dead) { fr2Fail(base, FR2_R_PEER_DEAD, 0); return; }
++  if (fr->oobLost) { fr2Fail(base, FR2_R_OOB_LOST, 0); return; }
 +  if (!fr->peerHello) { fr2Fail(base, FR2_R_PEER_OFF, 0); return; }
 +  if (fr2Fatal(base)) { fr2Fail(base, FR2_R_FATAL, 1); return; }
 +  fr->errDone = fr->markSqPosted = fr->markRqPosted = fr->markSq = fr->markRq = fr->drained = 0;
@@ -1101,20 +1123,22 @@ index d828c98..cc54d9a 100644
 +    while (fr->state != FR2_FAILED && fr2RxProgress(base)) NCCLCHECK(fr2Handle(base, &fr->rx));
 +    if (fr->state == FR2_FAILED) return ncclSuccess;
 +    if (fr->state != FR2_IDLE && fr2PeerDead(base)) { fr2Fail(base, FR2_R_PEER_DEAD, 0); return ncclSuccess; }
++    if (fr->state != FR2_IDLE && fr->oobLost) { fr2Fail(base, FR2_R_OOB_LOST, 0); return ncclSuccess; }
 +  }
 +  if (fr->state != FR2_IDLE && fr2Fatal(base)) { fr2Fail(base, FR2_R_FATAL, 1); return ncclSuccess; }
 +  int finished = 0, n = 0;
-+  // IDLE + the peer's socket shows FIN/RST (or a keepalive timeout) while requests are outstanding:
-+  // the peer process (or node) is gone and will never complete them. Stock NCCL would wait forever
-+  // when nothing of ours is in flight (no RETRY_EXC ever comes). A normal teardown has nothing
-+  // outstanding; a 50 ms grace with CQ polling covers completions still sitting in the CQ.
++  // IDLE + the peer's socket shows FIN/RST while requests are outstanding: the peer process is gone and
++  // will never complete them. Stock NCCL would wait forever when nothing of ours is in flight (no
++  // RETRY_EXC ever comes). A normal teardown has nothing outstanding; a 50 ms grace with CQ polling covers
++  // completions still sitting in the CQ. A keepalive timeout (oobLost) is NOT used here: a management-
++  // network outage produces it while the peer and RDMA are fine, and failing then would be worse than stock.
 +  if (fr->state == FR2_IDLE && fr->peerClosed) {
 +    if (!fr2HasOutstanding(base)) fr->finSeenAt = 0;
 +    else if (fr->finSeenAt == 0) fr->finSeenAt = clockNano();
 +    else if (clockNano() - fr->finSeenAt > 50000000ULL) {
 +      NCCLCHECK(fr2PollCq(base, &n));
 +      if (fr->state == FR2_IDLE && fr2HasOutstanding(base)) {
-+        WARN("NET/IB: [FAULT-RECOVERY2] %s comm: the peer closed its OOB socket (FIN/RST/timeout) while requests are outstanding: peer process gone",
++        WARN("NET/IB: [FAULT-RECOVERY2] %s comm: the peer closed its OOB socket (FIN/RST) while requests are outstanding: peer process gone",
 +             fr->isSend ? "send" : "recv");
 +        fr2Fail(base, FR2_R_PEER_DEAD, 0);
 +        return ncclSuccess;
@@ -1275,7 +1299,7 @@ index d828c98..cc54d9a 100644
  NCCL_PARAM(IbSplitDataOnQps, "IB_SPLIT_DATA_ON_QPS", 0);
  
  ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
-@@ -1724,6 +2883,7 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+@@ -1724,6 +2906,7 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
    volatile struct ncclIbSendFifo* slots = comm->fifo[slot];
    int nreqs = slots[0].nreqs;
    if (nreqs > NCCL_NET_IB_MAX_RECVS) return ncclInternalError;
@@ -1283,7 +1307,7 @@ index d828c98..cc54d9a 100644
  
    uint64_t wr_id = 0ULL;
    for (int r=0; r<nreqs; r++) {
-@@ -1822,11 +2982,16 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+@@ -1822,11 +3005,16 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
    return ncclSuccess;
  }
  
@@ -1301,7 +1325,7 @@ index d828c98..cc54d9a 100644
  
    struct ncclIbMrHandle* mhandleWrapper = (struct ncclIbMrHandle*) mhandle;
  
-@@ -1888,6 +3053,7 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
+@@ -1888,6 +3076,7 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
      }
  
      *request = reqs[r] = req;
@@ -1309,7 +1333,7 @@ index d828c98..cc54d9a 100644
  
      // If this is a multi-recv, send only when all requests have matched.
      for (int r=0; r<nreqs; r++) {
-@@ -1896,6 +3062,11 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
+@@ -1896,6 +3085,11 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
  
      TIME_START(0);
      NCCLCHECK(ncclIbMultiSend(comm, slot));
@@ -1321,7 +1345,7 @@ index d828c98..cc54d9a 100644
  
      // Clear slots[0]->nreqs, as well as other fields to help debugging and sanity checks
      memset((void*)slots, 0, sizeof(struct ncclIbSendFifo));
-@@ -1986,15 +3157,21 @@ ncclResult_t ncclIbPostFifo(struct ncclIbRecvComm* comm, int n, void** data, int
+@@ -1986,15 +3180,21 @@ ncclResult_t ncclIbPostFifo(struct ncclIbRecvComm* comm, int n, void** data, int
    return ncclSuccess;
  }
  
@@ -1344,7 +1368,7 @@ index d828c98..cc54d9a 100644
    req->type = NCCL_NET_IB_REQ_RECV;
    req->sock = &comm->base.sock;
    req->nreqs = n;
-@@ -2013,6 +3190,8 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
+@@ -2013,6 +3213,8 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
    // Select either all QPs, or one qp per-device
    const int nqps = ncclParamIbSplitDataOnQps() ? comm->base.nqps : comm->base.ndevs;
  
@@ -1353,7 +1377,7 @@ index d828c98..cc54d9a 100644
    // Post recvs
    struct ibv_recv_wr* bad_wr;
    for (int i = 0; i < nqps; i++) {
-@@ -2033,7 +3212,7 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
+@@ -2033,7 +3235,7 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
    return ncclSuccess;
  }
  
@@ -1362,7 +1386,7 @@ index d828c98..cc54d9a 100644
    struct ncclIbRecvComm* comm = (struct ncclIbRecvComm*)recvComm;
    int last = -1;
    for (int i=0; i<n; i++) if (sizes[i]) last = i;
-@@ -2054,6 +3233,7 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
+@@ -2054,6 +3256,7 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
  
      wr.wr.rdma.remote_addr = (uint64_t)data[last];
      wr.wr.rdma.rkey = mhandle->mrs[i]->rkey;
@@ -1370,7 +1394,7 @@ index d828c98..cc54d9a 100644
      wr.sg_list = &comm->devs[i].gpuFlush.sge;
      wr.num_sge = 1;
      wr.opcode = IBV_WR_RDMA_READ;
-@@ -2071,10 +3251,59 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
+@@ -2071,10 +3274,59 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
    return ncclSuccess;
  }
  
@@ -1430,7 +1454,7 @@ index d828c98..cc54d9a 100644
    *done = 0;
    while (1) {
      NCCLCHECK(ncclIbStatsCheckFatalCount(&r->base->stats,__func__));
-@@ -2169,6 +3398,7 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
+@@ -2169,6 +3421,7 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
  ncclResult_t ncclIbCloseSend(void* sendComm) {
    struct ncclIbSendComm* comm = (struct ncclIbSendComm*)sendComm;
    if (comm) {
@@ -1438,7 +1462,7 @@ index d828c98..cc54d9a 100644
      NCCLCHECK(ncclSocketClose(&comm->base.sock));
  
      for (int q = 0; q < comm->base.nqps; q++)
-@@ -2189,6 +3419,7 @@ ncclResult_t ncclIbCloseSend(void* sendComm) {
+@@ -2189,6 +3442,7 @@ ncclResult_t ncclIbCloseSend(void* sendComm) {
  ncclResult_t ncclIbCloseRecv(void* recvComm) {
    struct ncclIbRecvComm* comm = (struct ncclIbRecvComm*)recvComm;
    if (comm) {

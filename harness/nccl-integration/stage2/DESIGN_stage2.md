@@ -241,23 +241,32 @@ entry can be overwritten (I5).
 
 ## 7. Liveness and silent peers
 
-- `recv(MSG_PEEK|MSG_DONTWAIT)` on `base.sock`: 0 = FIN (process exited), ECONNRESET/EPIPE/
-  ETIMEDOUT/ENOTCONN = dead; EAGAIN = no evidence. RETRY_EXC is recovered only on "no evidence"
-  (the handshake itself then proves the peer's transport is responsive).
+- `recv(MSG_PEEK|MSG_DONTWAIT)` on `base.sock` gives three answers (changed 2026-09-25 after review):
+  - 0 = FIN, ECONNRESET/EPIPE = RST: **peer process dead** (`peerClosed`). The peer's kernel answered
+    for a closed socket.
+  - any other error (ETIMEDOUT from keepalive/`TCP_USER_TIMEOUT`, EHOSTUNREACH, ...): **OOB lost**
+    (`oobLost`). This is not evidence of death: a management-network outage produces it while the
+    peer and RDMA are fine.
+  - EAGAIN = no evidence.
+  RETRY_EXC is recovered only on "no evidence" (the handshake itself then proves the peer's transport
+  is responsive). With the OOB lost no recovery is possible; a fault then fails the comm like stock.
 - A node that crashes, loses power or is partitioned sends neither FIN nor RST. With the flag on,
   `base.sock` gets TCP keepalive (`SO_KEEPALIVE`, `TCP_KEEPIDLE`/`INTVL`/`CNT`) and
   `TCP_USER_TIMEOUT`, from `NCCL_RDMA_FAULT_KEEPALIVE_MS` (default 5000: idle 2 s, 3 probes 1 s
-  apart). The kernel then reports ETIMEDOUT within about that time, which the liveness check
-  sees. This bounds R's WAIT_REQ and every handshake wait by peer liveness.
-- While IDLE, socket trouble never fails a comm that has nothing outstanding: a FIN (normal
-  teardown of the peer) or a keepalive timeout (management network down while RDMA is fine) only
-  records that the peer is gone, which disables recovery for that comm; a later fault then fails
-  like stock. **But** if send/recv requests are still outstanding when the peer's socket shows
-  FIN/RST/timeout, and still after a 50 ms grace in which the CQ is polled, the comm fails: the
-  peer process (or node) is gone and will never complete them. This matters when the dead peer was
-  the one expected to send: then nothing of ours is in flight, no RETRY_EXC ever comes, and stock
-  NCCL waits forever (measured: T8 with back-to-back all-reduces hung 5/5 until the test timeout
-  before this rule).
+  apart). The kernel then reports ETIMEDOUT within about that time, which bounds every handshake
+  wait and R's WAIT_REQ (a recovery in progress fails with "OOB lost").
+- While IDLE, socket trouble never fails a comm that has nothing outstanding: a FIN (normal teardown
+  of the peer) or an OOB loss only records it, which disables recovery for that comm; a later fault
+  then fails like stock. **FIN rule:** if send/recv requests are still outstanding when the peer's
+  socket shows **FIN/RST**, and still after a 50 ms grace in which the CQ is polled, the comm fails:
+  the peer process is gone and will never complete them. This matters when the dead peer was the one
+  expected to send: then nothing of ours is in flight, no RETRY_EXC ever comes, and stock NCCL waits
+  forever (measured: T8 with back-to-back all-reduces hung 5/5 until the test timeout before this
+  rule; the stock control hung 3/3). **An OOB loss (ETIMEDOUT) does not trigger the FIN rule**: until
+  2026-09-25 it did, so a management-network outage of more than ~5 s killed a healthy job with
+  requests outstanding, which is worse than stock (stock does not use TCP then). Test T10 (a 12 s
+  blackhole of this job's TCP connections, RDMA untouched) covers it. The price: a peer node that
+  dies silently while we wait to receive is not detected (stock behaviour, not worse).
 - NCCL calls a comm only while it has an active op, so a leader with nothing pending would never
   read a NOTIFY, and an idle R would never read a REQ. A **helper thread** (one per process, started
   with the first recovery-enabled comm) waits on all their OOB sockets with `poll()` and steps any
@@ -424,11 +433,14 @@ the stock structs keep their sizes, `fr` sits in existing tail padding) and the 
   QP dies right after an iteration S has nothing in flight and waits for a CTS that never comes; no
   RETRY_EXC ever appears (T4 on all-reduce: 5/5 stuck until the test timeout). Only R's own
   detection (NOTIFY, the normal case: T3/T3s) or R's WAITREQ bound ends it. The RETRY_EXC-led path
-  was then tried with a one-way broadcast stream (256 KB and 64 MB), but the broadcast is so fast
-  that by the time R processes a completion S has usually sent everything it had CTS for, so the
-  silent death again leaves S idle (0/13 runs produced a RETRY_EXC at S). The RETRY_EXC-led path is
-  instead covered by a REAL path fault (T7, the address flap): there both sides' NICs exhaust their
-  retries and S's send comm starts the recovery from its own RETRY_EXC CQE (15/15 recovered). The
+  was then tried with a one-way broadcast stream. At 256 KB the silent injection never fired (10/10:
+  no receive completion found another receive pending). At 64 MB it fired 3/3, but the broadcast is so
+  fast that S had usually sent everything it had CTS for, so the silent death left S idle in 2/3; in
+  1/3 S met RETRY_EXC 3.56 s after the silent death and led a recovery that completed in 1.9 ms. The
+  S-led RETRY_EXC path is also covered by the address-reconfiguration fault (T7): there both sides'
+  NICs exhaust their retries and S's send comm starts the recovery from its own RETRY_EXC CQE (15/15
+  recovered). T7 is not a packet-loss transient (the re-added address gets a new GID index; see
+  README "What T7 does and does not show"). The
   all-reduce silent case is kept as a test of the WAITREQ bound (T4ar: both sides fail cleanly at
   120 s).
 - **Peer process death while we wait to receive** had the same shape (T8): fixed by the FIN rule in §7.

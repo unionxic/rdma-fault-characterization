@@ -94,7 +94,52 @@ TESTS = {
     "T7a": ("GID blackhole 0.5 s", DEFAULT, COUNT_DEFAULT, 15000, {}, {}, "recover-gbh", ("gbh", 0.5)),
     "T7b": ("GID blackhole 6 s", DEFAULT, COUNT_DEFAULT, 15000, {}, {}, "recover-gbh", ("gbh", 6.0)),
     "T7c": ("GID blackhole 15 s", DEFAULT, COUNT_DEFAULT, 15000, {}, {}, "recover-gbh", ("gbh", 15.0)),
+    # management-network outage: every TCP connection of this job between the two nodes is blackholed
+    # for 12 s (iptables on rain, only this job's local ports), RDMA untouched. The OOB keepalive then
+    # reports ETIMEDOUT after ~5 s on both sides. Must not fail the job (stock does not use TCP then).
+    "T10": ("management-network (OOB) outage 12 s, default", DEFAULT, COUNT_DEFAULT, 12000, {}, {}, "pass", ("oob", 12.0)),
+    # same with 1 GiB all-reduces (~0.3 s each): a comm then has requests outstanding for longer than
+    # the FIN rule's 50 ms grace, which is what made the pre-fix build treat an OOB timeout as death
+    "T10b": ("management-network (OOB) outage 12 s, 1 GiB all-reduces", DEFAULT, 268435456, 100, {}, {}, "pass", ("oob", 12.0)),
 }
+
+MGMT_PEER = "192.0.2.194"          # sunny on the management network (NCCL_SOCKET_IFNAME=eno1)
+_oob_rules = []                          # iptables rule specs currently installed by this runner
+
+
+def _ipt(op, spec):
+    return subprocess.run(["sudo", "-n", "iptables", "-w", op] + spec, capture_output=True, text=True)
+
+
+def oob_unblock():
+    while _oob_rules:
+        spec = _oob_rules.pop()
+        _ipt("-D", spec)
+
+
+def oob_partition(hold_s, log):
+    """Blackhole every established TCP connection of the local nccl_ct to sunny's management address
+    for hold_s seconds (only its local ports; ssh and everything else keep working), then restore."""
+    pids = subprocess.run(["pgrep", "-x", "nccl_ct"], capture_output=True, text=True).stdout.split()
+    ports = set()
+    ss = subprocess.run(["ss", "-tnpH", "state", "established", "dst", MGMT_PEER], capture_output=True, text=True).stdout
+    for line in ss.splitlines():
+        if any(f"pid={pid}," in line for pid in pids):
+            local = line.split()[2] if len(line.split()) > 3 else line.split()[0]
+            ports.add(local.rsplit(":", 1)[1])
+    try:
+        for port in sorted(ports):
+            for spec in (["OUTPUT", "1", "-p", "tcp", "-d", MGMT_PEER, "--sport", port, "-j", "DROP"],
+                         ["INPUT", "1", "-p", "tcp", "-s", MGMT_PEER, "--dport", port, "-j", "DROP"]):
+                r = _ipt("-I", spec)
+                if r.returncode == 0:
+                    _oob_rules.append([spec[0]] + spec[2:])
+        log.write(f"{time.monotonic():.6f} OOB-PARTITION start pids={pids} local_ports={sorted(ports)} rules={len(_oob_rules)}\n")
+        log.flush()
+        time.sleep(hold_s)
+    finally:
+        oob_unblock()
+        log.write(f"{time.monotonic():.6f} OOB-PARTITION end\n"); log.flush()
 
 
 def main():
@@ -154,9 +199,16 @@ def main():
                         time.sleep(3)   # the job (15000 x 16 MB) runs ~35 s; the cut lands ~2 s into its loop
                         gbh("cut", str(outage))
                     killer = threading.Thread(target=k, daemon=True); killer.start()
+                elif special and special[0] == "oob":
+                    plog = open(os.path.join(a.out, f"{tag}_partition.log"), "w")
+                    def k(hold=special[1]):
+                        time.sleep(3)   # ~2 s into the loop, all connections established
+                        oob_partition(hold, plog)
+                    killer = threading.Thread(target=k, daemon=True); killer.start()
                 res = C.run_pair(a.out, tag, a.build, env, env0=e0, env1=e1, args=args, timeout=a.run_timeout,
                                  kill_on_fail=False, early_exit=(special != "kill"))
                 if killer: killer.join(60)
+                oob_unblock()
                 v, info = classify(res, expect)
                 rt = rec_times(res)
                 row = {"test": t, "desc": desc, "i": i, "verdict": v, "rec_ms": ";".join(f"{x:.3f}" for x in rt), **info}
@@ -166,6 +218,7 @@ def main():
                     w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
                     w.writeheader(); w.writerows(rows)
     finally:
+        oob_unblock()
         if gbh_up:
             gbh("teardown")
             if hasattr(C.run_pair, "_gids"):
