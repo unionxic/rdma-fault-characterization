@@ -153,7 +153,7 @@ RETRY_EXC_ERR detection 단축 경로 비교 (옛 클러스터).
   - 분류는 single-fault 48/48, multi-fault 100/100 round에서 정확했다. host mailbox는 캡처 67 µs 뒤에 읽혔다.
   - 로컬 QP 에러와 상대 QP 에러는 모든 run에서 복구됐다(112 rounds, run당 200/200 ops bit-exact). 잘못된 rkey와 상대 프로세스 사망는 거절됐고, `nvshmem_finalize`는 17–29 ms 안에 반환한다.
   - collapsed 슬롯에서 원인을 잡은 비율은 stock wait가 끝나는 지점에서 읽으면 0/24, spin loop 안에서 읽으면 21/30, 상주 sentinel을 쓰면 18/18이었다.
-  - v2(`nvshmem_ft/V2.md`, 2026-09-25): ring CQ 모드에서는 sentinel 없이 원인 CQE를 90/90 잡는다(같은 패턴의 collapsed 루프 안 읽기는 0/90). 다만 조기 감지는 대체하지 못한다(fault부터 mailbox까지 ring만 3.2 ms, collapsed+sentinel 1.2 ms). v2.1은 에러 뒤 doorbell이 앞서 나가 burst 복구가 3/5 거절되던 결함을 "park"로 고쳤다(수정 후 ring 5/5, collapsed 3/3). 원인 CQE는 수정 전에도 잃지 않았다(155/155). post 전 범위 검사는 빈 공간·객체 끝·힙 끝을 넘는 쓰기를 모두 막지만, 기존 사례(다음 객체를 정확히 덮는 쓰기)는 red zone을 켜야 잡는다(0/30 → 35/35).
+  - v2(`nvshmem_ft/V2.md`, 2026-09-25): ring CQ 모드에서는 sentinel 없이 원인 CQE를 90/90 잡는다(같은 패턴의 collapsed 루프 안 읽기는 0/90). 다만 조기 감지는 대체하지 못한다(fault부터 mailbox까지 ring만 3.2 ms, collapsed+sentinel 1.2 ms). v2.1은 에러 뒤 doorbell이 앞서 나가 burst 복구가 3/5 거절되던 결함을 "park"로 고쳤다(수정 후 ring 5/5, collapsed 3/3). 원인 CQE는 수정 전에도 잃지 않았다(155/155). post 전 범위 검사는 빈 공간·객체 끝·힙 끝을 넘는 쓰기를 모두 막지만, 기존 사례(다음 객체를 정확히 덮는 쓰기)는 red zone을 켜야 잡는다(0/30 → 35/35). v2.2(3차 검토)는 v1부터 있던 버그를 찾아 고쳤다. fault 뒤 완료가 실패한 fetch AMO가 이전 값(stale)을 아무 표시 없이 돌려줬다(v2.1에서 40 run 동안 510,028개). 이제는 모두 1인 값(poison)과 카운터를 돌려주고, stale 값은 0개다(46 run). park는 모든 post가 device-scope인 QP에만 걸도록 고쳤고, 여러 CTA와 sentinel이 섞인 시험에서 복구가 80/80 정확했다.
   - fault가 없을 때 비용은 4 KiB에서 +1%, 256 KiB에서 +0.25%다.
 
 한계:
