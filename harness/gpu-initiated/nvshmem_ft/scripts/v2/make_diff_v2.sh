@@ -35,10 +35,16 @@ cat <<'HDR'
 #             allocation, published as free (an overrun starting at an object's end is caught)
 #           NVSHMEM_IBGDA_FT_TEST_SKIP=<idx,lock,ibuf,sticky,cqfill,dbr,nerr,dci,psn,finbar,ringci,park>
 #             test-only: skip one step of the recovery resync / teardown handling (park: v2 posting)
-# v2.1:     park (on with FT): a QP with a recorded CQE error or ring invariant gets prod_idx raised
-#             to a mark (2^63), so later posts never write the doorbell record or ring; the drain
-#             waits for the doorbell record's send word; recovery removes the mark. No post-path
-#             instruction added.
+# v2.1:     park (on with FT, not with NVSHMEM_IBGDA_FT_CAPTURE=exit): a QP with a recorded CQE
+#             error or ring invariant gets bit 63 of prod_idx set (device-scope atomicOr; the low
+#             bits keep the last rung index), so later posts never write the doorbell record or
+#             ring; the drain waits for the doorbell record's send word; recovery removes the mark.
+#             No post-path instruction added. Only QPs whose every post is a device-scope atomic
+#             are parked (all RC QPs, shared DCIs); exclusive DCIs (block-scope posts) are not.
+#           fetch results (AMO fetch, g): a fetch whose own completion failed returns the poison
+#             value (all bits 1) instead of the ibuf slot's older content; ft_dev.fetch_poisoned
+#             counts them (FT on only; flag off: one __constant__ test per fetch).
+#           API 3: 64-bit prod_idx + parked flags in the Prepare stats and token.
 #           ring-walk invariant: a consumed CQE whose advance d is outside 1..ncqes is recorded
 #             (class RING_INVARIANT, sticky opcode 0xf) and fails the wait; policy: decline
 #           NVSHMEM_IBGDA_FT_TEST_TRIP=ring_d:<n> | ring_d_silent:<n>  test-only: force d = 0 at the

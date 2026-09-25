@@ -15,6 +15,8 @@
 #      OOB (exact)  F2a kind: exact | gap | straddle | tail | heap (driver --oob)
 #      XARGS ("")   extra driver arguments for both ranks
 #      MT MT_REPS   --mt T --mt-reps R (fault-free concurrent waiters, see nvshmem_ft_v2.cu)
+#      MT_CTAS      --mt-ctas C (v2.1: C CTAs of MT threads on the same RC QP)
+#      AMO AMO_THREADS  --amo K --amo-threads T (v2.1: fetch-AMO test)
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/env_v2.sh"
@@ -45,6 +47,8 @@ ARGS="--iters $ITERS --bytes $BYTES --gap-ms $GAP_MS --dev-timeout-ms $DEV_TIMEO
 [ -n "${FORCE_AT:-}" ] && ARGS="$ARGS --force-rec-at $FORCE_AT"
 [ -n "${XARGS:-}" ] && ARGS="$ARGS $XARGS"
 [ -n "${MT:-}" ] && ARGS="$ARGS --mt $MT --mt-reps ${MT_REPS:-4}"
+[ -n "${MT_CTAS:-}" ] && ARGS="$ARGS --mt-ctas $MT_CTAS"
+[ -n "${AMO:-}" ] && ARGS="$ARGS --amo $AMO --amo-threads ${AMO_THREADS:-1}"
 ARGS0="$ARGS"; ARGS1="$ARGS"
 INJ0=""; INJ1=""; KILL1=0
 case "$FAULT" in
@@ -61,7 +65,7 @@ esac
 {
   echo "tag=$tag fault=$FAULT mode=$MODE trial=$TRIAL ft=$FT recover=$RECOVER iters=$ITERS bytes=$BYTES"
   echo "burst=$BURST fault_ms=$FAULT_MS shots=$SHOTS corrupt_at=$CORRUPT_AT kill_at=$KILL_AT qdelay_us=${QDELAY_US:-} sentinel=${SENTINEL:-} lat=${LAT:-}"
-  echo "ring=${RING:-} bounds=${BOUNDS:-} guard=${GUARD:-} skip=${SKIP:-} trip=${TRIP:-} cq_collapsed=${CQ_COLLAPSED:-} oob=${OOB:-} xargs=\"${XARGS:-}\" mt=${MT:-} mt_reps=${MT_REPS:-}"
+  echo "ring=${RING:-} bounds=${BOUNDS:-} guard=${GUARD:-} skip=${SKIP:-} trip=${TRIP:-} cq_collapsed=${CQ_COLLAPSED:-} oob=${OOB:-} xargs=\"${XARGS:-}\" mt=${MT:-} mt_reps=${MT_REPS:-} mt_ctas=${MT_CTAS:-} amo=${AMO:-} amo_threads=${AMO_THREADS:-}"
   echo "ft_capture=${FT_CAPTURE:-} ib_timeout=${NVSHMEM_IB_TIMEOUT:-14} bundle=$BUNDLE bin=$BIN start=$(date '+%F %T')"
   echo "md5_rain=$(md5sum < $LBIN | cut -c1-12) lib_rain=$(md5sum < $BUNDLE/lib/nvshmem_transport_ibgda.so.7.0.0 | cut -c1-12) host_rain=$(md5sum < $BUNDLE/lib/libnvshmem_host.so.3.9.0 | cut -c1-12)"
 } > "$META"

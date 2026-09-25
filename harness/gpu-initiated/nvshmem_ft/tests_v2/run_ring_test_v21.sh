@@ -3,7 +3,7 @@
 # header (ring_walk_test3; the walker now records and fails on an invariant violation instead of
 # consuming silently, so any violation shows up as bad_rc).
 set -u
-BIN=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad/agent_ftv2/ring_walk_test3
+BIN=${BIN:-/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad/agent_ftv2/ring_walk_test3}  # v2.1 third review: ring_walk_test4
 export LD_LIBRARY_PATH=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad/agent_ftv2/install/lib:/usr/local/cuda-12.8/lib64
 OUT=$1
 {

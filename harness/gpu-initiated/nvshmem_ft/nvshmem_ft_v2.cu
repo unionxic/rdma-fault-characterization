@@ -17,6 +17,18 @@
 //        After a failed kernel PE0 prints BURSTDIAG (device producer index, ring counter, and the
 //        CQ slot that held the recorded root cause).
 //   NVFT_BLOCK_ALARM_S=<s>  host bound on a blocking-mode kernel (default 90).
+//   --mt-ctas C  (v2.1 third review) with --mt: C CTAs of T threads post on the same RC QP (the QP
+//        is shared: NVSHMEM_IBGDA_NUM_RC_PER_PE=1, RC_MAP_BY=none), each thread bytes/(C*T). With
+//        --mt-burst, --quiet-delay-us D spins D us between the posts and the quiet (no thread polls
+//        the CQ meanwhile unless a slot wait does). RECBY: the thread that recorded (and parked).
+//   --amo K [--amo-threads T]  (v2.1 third review) fetch-AMO test: per iteration T threads of one
+//        warp (T = 32: the warp-coalesced path; T = 1: one thread) each do K
+//        nvshmem_uint64_atomic_fetch_add(sig, 1, peer); PE1 expects the signal to grow by K*T.
+//        PE0 checks every returned value (AMOCHECK): fresh (a ticket never returned before),
+//        dup (a stale value: a ticket already returned, or the ibuf slot's old content), poison
+//        (all ones: the v2.1 FT result of a fetch whose completion failed), other; split by
+//        whether nvshmemx_ibgda_ft_status(peer) was already set when the fetch returned. Thread 0
+//        also times each fetch (AMOLAT, fault-free runs). No --recover with --amo.
 //
 // (v1 header follows)
 // nvshmem_ft.cu - 2-PE NVSHMEM IBGDA fault-tolerance driver (classification, recovery, overhead).
@@ -297,19 +309,60 @@ __global__ void put_kernel(char *dst, const char *src, size_t bytes, uint64_t *s
 }
 
 // v2 --mt: T threads, each puts its slice + signal and quiets, R times (concurrent CQ waiters).
+// v2.1 --mt-ctas: gridDim.x CTAs of T threads, all on the same (shared) RC QP.
 __global__ void mt_put_kernel(char *dst, const char *src, size_t bytes, uint64_t *sig, int peer, int reps,
-                              int burst_mode, PutResult *res) {
-    const size_t slice = bytes / blockDim.x;
-    const size_t o = (size_t)threadIdx.x * slice;
-    if (threadIdx.x == 0) res->gt_start = gtimer();
+                              int burst_mode, long long delay_cycles, PutResult *res) {
+    const size_t slice = bytes / ((size_t)blockDim.x * gridDim.x);
+    const size_t o = ((size_t)blockIdx.x * blockDim.x + threadIdx.x) * slice;
+    const bool lead = threadIdx.x == 0 && blockIdx.x == 0;
+    if (lead) res->gt_start = gtimer();
     for (int r = 0; r < reps; r++) {
         nvshmem_putmem_signal_nbi(dst + o, src + o, slice, sig, 1ull, NVSHMEM_SIGNAL_ADD, peer);
         if (!burst_mode) nvshmem_quiet();
     }
-    if (threadIdx.x == 0) res->gt_post = gtimer();
+    if (lead) res->gt_post = gtimer();
+    if (burst_mode && delay_cycles > 0) {  // v2.1: "compute" between posting and the quiet
+        long long t0 = clock64();
+        while (clock64() - t0 < delay_cycles) {
+        }
+    }
     if (burst_mode) nvshmem_quiet();
     __syncthreads();
+    // v2.1 third review: every CTA checks the QP after its own quiet (the host zeroed rc/fp before
+    // the launch; only failures are written). With several CTAs, CTA 0's quiet can finish while
+    // other CTAs still post, so a status read by CTA 0 alone misses errors on their operations.
     if (threadIdx.x == 0) {
+        const uint32_t fp = nvshmemx_ibgda_ft_status(peer);
+        if (fp) {
+            res->fp = fp;
+            res->rc = -1;
+        }
+    }
+    if (lead) {
+        res->gt_end = gtimer();
+        res->ready_head = nvshmemi_ibgda_device_state_d.globalmem.rcs[peer].mvars.tx_wq.ready_head;
+    }
+}
+
+// v2.1 --amo: T threads (one warp) each do K fetch-ADD 1 on the peer's signal word. vals/stat are
+// mapped host memory: vals[t*K+k] = the returned (old) value, stat[t*K+k] = 1 if the QP's FT status
+// was already set when that fetch returned. Thread 0 times each fetch (times[k], ns).
+__global__ void amo_kernel(uint64_t *ctr, int peer, int K, unsigned long long *vals, unsigned char *stat,
+                           unsigned int *times, PutResult *res) {
+    const int t = threadIdx.x;
+    if (t == 0) res->gt_start = gtimer();
+    for (int k = 0; k < K; k++) {
+        unsigned long long t0 = gtimer();
+        unsigned long long v = nvshmem_uint64_atomic_fetch_add(ctr, 1ull, peer);
+        unsigned long long t1 = gtimer();
+        vals[(size_t)t * K + k] = v;
+        stat[(size_t)t * K + k] = nvshmemx_ibgda_ft_status(peer) ? 1 : 0;
+        if (t == 0 && times) times[k] = (unsigned int)(t1 - t0);
+    }
+    __syncthreads();
+    if (t == 0) {
+        res->gt_post = gtimer();
+        nvshmem_quiet();
         res->gt_end = gtimer();
         res->fp = nvshmemx_ibgda_ft_status(peer);
         res->rc = res->fp ? -1 : 0;
@@ -511,6 +564,43 @@ static void burstDiag(int it, int peer, const nvshmemt_ibgda_ft_info_t *info) {
     fflush(stdout);
 }
 
+// v2.1 --amo: classify every value the fetch-ADDs of one kernel returned (see the header).
+static void amoCheck(int it, int K, int T, int krc, const unsigned long long *vals, const unsigned char *stat,
+                     const unsigned int *times, std::vector<unsigned char> &seen, long long &fresh_total) {
+    int n[4] = {0, 0, 0, 0}, e[4] = {0, 0, 0, 0};  // fresh, dup, poison, other; e: FT status already set
+    int first_err_k = -1;
+    unsigned long long ex[3] = {0, 0, 0};
+    int nex = 0;
+    for (int t = 0; t < T; t++)
+        for (int k = 0; k < K; k++) {
+            const size_t i = (size_t)t * K + k;
+            const unsigned long long v = vals[i];
+            const bool err = stat[i] != 0;
+            if (err && (first_err_k < 0 || k < first_err_k)) first_err_k = k;
+            int c;
+            if (v == ~0ull) c = 2;
+            else if (v < seen.size() && !seen[v]) { seen[v] = 1; c = 0; }
+            else if (v < seen.size()) c = 1;
+            else c = 3;
+            n[c]++;
+            if (err) e[c]++;
+            if (c == 1 && nex < 3) ex[nex++] = v;
+        }
+    fresh_total += n[0];
+    printf("AMOCHECK it=%d threads=%d K=%d kernel_rc=%d fresh=%d dup=%d poison=%d other=%d after_err=%d "
+           "after_err_fresh=%d after_err_dup=%d after_err_poison=%d after_err_other=%d before_err_dup=%d "
+           "first_err_k=%d fresh_total=%lld dup_examples=%llu,%llu,%llu\n",
+           it, T, K, krc, n[0], n[1], n[2], n[3], e[0] + e[1] + e[2] + e[3], e[0], e[1], e[2], e[3],
+           n[1] - e[1], first_err_k, fresh_total, ex[0], ex[1], ex[2]);
+    if (krc == 0 && times && K > 0) {
+        std::vector<unsigned> v(times, times + K);
+        std::sort(v.begin(), v.end());
+        printf("AMOLAT it=%d n=%d p50_us=%.3f p90_us=%.3f p99_us=%.3f\n", it, K, v[K / 2] / 1e3,
+               v[(size_t)(K * 0.9)] / 1e3, v[(size_t)(K * 0.99)] / 1e3);
+    }
+    fflush(stdout);
+}
+
 static void *initDiagThread(void *arg) {
     double s = *(double *)arg;
     double t0 = monoMs();
@@ -540,7 +630,7 @@ int main(int argc, char **argv) {
                 "usage: %s <rank 0|1> <peer_mgmt_ip> <tcp_port> <timeout|blocking> [--iters N] "
                 "[--bytes B] [--gap-ms G] [--dev-timeout-ms T] [--recover] [--corrupt-rkey IT] "
                 "[--burst N] [--quiet-delay-us D] [--sentinel POLL_NS] [--lat K] [--lat-reps R] "
-                "[--max-rounds R]\n",
+                "[--max-rounds R] [--mt T --mt-reps R [--mt-burst] [--mt-ctas C]] [--amo K [--amo-threads T]]\n",
                 argv[0]);
         return 1;
     }
@@ -554,6 +644,7 @@ int main(int argc, char **argv) {
     const char *oob = nullptr;  // v2 F2a kind
     int oob_at = -1;
     int mt = 0, mt_reps = 4, mt_burst = 0;  // v2 --mt, v2.1 --mt-burst
+    int mt_ctas = 1, amo = 0, amo_threads = 1;  // v2.1 third review: --mt-ctas, --amo, --amo-threads
     double quiet_delay_us = 0;
     size_t bytes = 256u * 1024u;
     for (int i = 5; i < argc; i++) {
@@ -576,6 +667,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--mt")) mt = atoi(nxt());
         else if (!strcmp(argv[i], "--mt-reps")) mt_reps = atoi(nxt());
         else if (!strcmp(argv[i], "--mt-burst")) mt_burst = 1;
+        else if (!strcmp(argv[i], "--mt-ctas")) mt_ctas = atoi(nxt());
+        else if (!strcmp(argv[i], "--amo")) amo = atoi(nxt());
+        else if (!strcmp(argv[i], "--amo-threads")) amo_threads = atoi(nxt());
         else {
             fprintf(stderr, "unknown arg %s\n", argv[i]);
             return 1;
@@ -587,12 +681,17 @@ int main(int argc, char **argv) {
         fprintf(stderr, "bad --oob kind\n");
         return 1;
     }
-    if (mt < 0 || mt > 1024 || (mt && (bytes % (size_t)mt || burst != 1 || mt_reps < 1 || (recover && !mt_burst)))) {
-        fprintf(stderr, "bad --mt arguments (bytes %% T == 0, burst 1, --recover only with --mt-burst)\n");
+    if (mt < 0 || mt > 1024 || mt_ctas < 1 || mt_ctas > 64 ||
+        (mt && (bytes % ((size_t)mt * mt_ctas) || burst != 1 || mt_reps < 1 || (recover && !mt_burst)))) {
+        fprintf(stderr, "bad --mt arguments (bytes %% (T*C) == 0, burst 1, --recover only with --mt-burst)\n");
         return 1;
     }
-    // operations (put + signal ADD 1) per iteration; the recovery's replay bound d <= ops_it
-    const int ops_it = mt ? mt * mt_reps : burst;
+    if (amo < 0 || amo_threads < 1 || amo_threads > 32 || (amo && (mt || recover || burst != 1))) {
+        fprintf(stderr, "bad --amo arguments (threads 1..32, no --mt, no --recover, burst 1)\n");
+        return 1;
+    }
+    // operations (put + signal ADD 1, or fetch-ADD 1) per iteration; the recovery's replay bound d <= ops_it
+    const int ops_it = mt ? mt * mt_reps * mt_ctas : amo ? amo * amo_threads : burst;
     if (mode < 0 || (rank != 0 && rank != 1) || iters <= 0 || bytes == 0 || burst < 1) {
         fprintf(stderr, "bad arguments\n");
         return 1;
@@ -725,6 +824,18 @@ int main(int argc, char **argv) {
     CK(cudaHostAlloc(&pr, sizeof(*pr), cudaHostAllocMapped));
     CK(cudaHostAlloc(&rr, sizeof(*rr), cudaHostAllocMapped));
     CK(cudaHostAlloc(&pin64, 2 * sizeof(uint64_t), cudaHostAllocDefault));
+    // v2.1 --amo: per-op results in mapped host memory, and every ticket seen so far
+    unsigned long long *amo_vals = nullptr;
+    unsigned char *amo_stat = nullptr;
+    unsigned int *amo_times = nullptr;
+    std::vector<unsigned char> amo_seen;
+    long long amo_ops_ok = 0;
+    if (amo) {
+        CK(cudaHostAlloc(&amo_vals, sizeof(unsigned long long) * amo * amo_threads, cudaHostAllocMapped));
+        CK(cudaHostAlloc(&amo_stat, (size_t)amo * amo_threads, cudaHostAllocMapped));
+        CK(cudaHostAlloc(&amo_times, sizeof(unsigned int) * amo, cudaHostAllocMapped));
+        amo_seen.assign((size_t)iters * amo * amo_threads + 1, 0);
+    }
     cudaStream_t side, mainS;
     CK(cudaStreamCreateWithFlags(&side, cudaStreamNonBlocking));
     CK(cudaStreamCreateWithFlags(&mainS, cudaStreamNonBlocking));
@@ -779,6 +890,14 @@ int main(int argc, char **argv) {
         CK(cudaStreamSynchronize(mainS));
         lat_kernel<<<1, 1, 0, mainS>>>(dbuf, sbuf, bytes, sig, peer, 0, nullptr, &pr->rc);
         CK(cudaStreamSynchronize(mainS));
+        if (mt) {  // v2.1: warm the multi-CTA poster too (it may run next to the sentinel)
+            mt_put_kernel<<<mt_ctas, mt, 0, mainS>>>(dbuf, sbuf, bytes, sig, peer, 0, mt_burst, 0, pr);
+            CK(cudaStreamSynchronize(mainS));
+        }
+        if (amo) {
+            amo_kernel<<<1, amo_threads, 0, mainS>>>(sig, peer, 0, amo_vals, amo_stat, amo_times, pr);
+            CK(cudaStreamSynchronize(mainS));
+        }
     } else {
         pin64[0] = 0;
         recv_kernel<<<1, 256, 0, mainS>>>((unsigned char *)dbuf, bytes, sig, 0, -1, 0, 1000, rr);
@@ -873,8 +992,11 @@ int main(int argc, char **argv) {
                     printf("FAULT F2a oob=%s it=%d dst=%p fire_mono_ms=%.3f\n", oob, it, (void *)pdst, monoMs());
                     fflush(stdout);
                 }
-                if (mt && round == 0)  // a recovery round replays the missing d ops with put_kernel
-                    mt_put_kernel<<<1, mt, 0, mainS>>>(dbuf, sbuf, bytes, sig, peer, mt_reps, mt_burst, pr);
+                if (amo)  // v2.1 third review: fetch-AMO test (classification runs only)
+                    amo_kernel<<<1, amo_threads, 0, mainS>>>(sig, peer, amo, amo_vals, amo_stat, amo_times, pr);
+                else if (mt && round == 0)  // a recovery round replays the missing d ops with put_kernel
+                    mt_put_kernel<<<mt_ctas, mt, 0, mainS>>>(dbuf, sbuf, bytes, sig, peer, mt_reps, mt_burst,
+                                                             delay_cycles, pr);
                 else
                 put_kernel<<<1, 1, 0, mainS>>>(pdst, sbuf, bytes, sig, peer, mode, budget, nops,
                                                round == 0 ? delay_cycles : 0, pr);
@@ -893,6 +1015,7 @@ int main(int argc, char **argv) {
                        pr->slot_wqe, pr->ready_head, tl, tr, gtToMono(pr->gt_start), gtToMono(pr->gt_post),
                        gtToMono(pr->gt_end));
                 fflush(stdout);
+                if (amo) amoCheck(it, amo, amo_threads, pr->rc, amo_vals, amo_stat, amo_times, amo_seen, amo_ops_ok);
                 // --force-rec-at: run one recovery round after an operation that succeeded (its ADD
                 // executed), to exercise the d = 0 branch.
                 const bool forced = recover && pr->rc == 0 && it == force_at && round == 0;
@@ -922,7 +1045,13 @@ int main(int argc, char **argv) {
                        (unsigned long long)info.ring_ci, info.oob_op, (unsigned long long)info.oob_off,
                        (unsigned long long)info.oob_len, (unsigned long long)info.oob_chunk_end);
                 fflush(stdout);
-                if (mt && mt_burst && round == 0 && pr->rc != 0 && have) burstDiag(it, peer, &info);  // v2.1
+                if (((mt && mt_burst) || amo) && round == 0 && pr->rc != 0 && have) burstDiag(it, peer, &info);  // v2.1
+#if NVSHMEMT_IBGDA_FT_API_VERSION >= 3
+                if (amo && have) printf("FETCHPOISON it=%d device_count=%u\n", it, info.fetch_poisoned);
+                if (have)  // v2.1 third review: the thread that recorded the error and parked the QP
+                    printf("RECBY it=%d path=%d by_cta=%u by_tid=%u by_sm=%u\n", it, info.path, info.by_cta,
+                           info.by_tid, info.by_smid);
+#endif
                 // ---- policy
                 const char *why = nullptr;
                 if (forced) why = nullptr;
@@ -997,13 +1126,20 @@ int main(int argc, char **argv) {
                 }
                 printf("REC it=%d round=%d class=%s d=%d V=%llu prepare_ms=%.3f (to_err %.3f drain %.3f) "
                        "handshake_ms=%.3f commit_ms=%.3f (rst %.3f resync %.3f connect %.3f dci %u) "
-                       "peer_prepare_ms=%.3f peer_commit_ms=%.3f qp_state_before=%u prod_before=%u "
-                       "t_ret=%.3f t_commit_done=%.3f ring_ci_old=%llu ring_scan=%u ring_pi=%u skip=0x%x\n",
+                       "peer_prepare_ms=%.3f peer_commit_ms=%.3f qp_state_before=%u prod_before=%llu "
+                       "parked_before=%u t_ret=%.3f t_commit_done=%.3f ring_ci_old=%llu ring_scan=%u ring_pi=%u "
+                       "skip=0x%x\n",
                        it, round, info.name, m.d, (unsigned long long)m.V, r1 - r0, sp.to_err_ms,
                        sp.drain_ms, r2 - r1, r3 - r2, sc.rst_ms, sc.resync_ms, sc.connect_ms,
                        sc.ndci_reset, (double)m.status / 1000.0, (double)m.pad / 1000.0,
-                       sp.qp_state[0], sp.prod_idx[0], tr, r3, (unsigned long long)sc.ring_ci_old[0],
-                       sc.ring_scan[0], sc.ring_pi[0], sc.skip_mask);
+                       sp.qp_state[0], (unsigned long long)sp.prod_idx[0],
+#if NVSHMEMT_IBGDA_FT_API_VERSION >= 3
+                       sp.parked_mask & 1u,
+#else
+                       0u,
+#endif
+                       tr, r3, (unsigned long long)sc.ring_ci_old[0], sc.ring_scan[0], sc.ring_pi[0],
+                       sc.skip_mask);
                 fflush(stdout);
                 round++;
                 if (m.d == 0) {  // the missing work already executed
@@ -1063,7 +1199,7 @@ int main(int argc, char **argv) {
                 break;
             }
             ok_iters++;
-            expected_final = (uint64_t)(it + 1) * (mt ? (uint64_t)mt * mt_reps : (uint64_t)burst);
+            expected_final = (uint64_t)(it + 1) * (uint64_t)ops_it;
             double el = monoMs() - t0;
             if (el < gap_ms) usleep((useconds_t)((gap_ms - el) * 1000));
         }
@@ -1071,9 +1207,10 @@ int main(int argc, char **argv) {
         // -------------------------------------------------------------------- target
         int it = 0;
         while (it < iters && rc == 0) {
-            uint64_t expect = (uint64_t)(it + 1) * (mt ? (uint64_t)mt * mt_reps : (uint64_t)burst);
+            uint64_t expect = (uint64_t)(it + 1) * (uint64_t)ops_it;
+            const size_t vbytes = amo ? 0 : bytes;  // --amo: no data, only the signal count
             memset(rr, 0, sizeof(*rr));
-            recv_kernel<<<1, 256, 0, mainS>>>((unsigned char *)dbuf, bytes, sig, expect, it, mode,
+            recv_kernel<<<1, 256, 0, mainS>>>((unsigned char *)dbuf, vbytes, sig, expect, it, mode,
                                               (long long)(dev_timeout_ms * 2) * cyc_per_ms, rr);
             double tl = monoMs();
             bool kdone = false, failed = false;
@@ -1086,7 +1223,7 @@ int main(int argc, char **argv) {
                         rearm++;
                         printf("REARM it=%d n=%d\n", it, rearm);
                         fflush(stdout);
-                        recv_kernel<<<1, 256, 0, mainS>>>((unsigned char *)dbuf, bytes, sig, expect, it,
+                        recv_kernel<<<1, 256, 0, mainS>>>((unsigned char *)dbuf, vbytes, sig, expect, it,
                                                           mode, (long long)(dev_timeout_ms * 2) * cyc_per_ms, rr);
                         continue;
                     }
