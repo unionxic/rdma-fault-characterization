@@ -8,6 +8,18 @@ initiator, Quadro RTX 5000 sm_75, mlx5_1), rank 1 = sunny (target, RTX A4000 sm_
 ConnectX-6 (VPI, MT28908) RoCE, GDAKI in its CPU-doorbell fallback (ring CQ in GPU memory),
 `NCCL_IB_TIMEOUT=14`, one 256 KiB put + signal ADD per iteration, 15 ms gap.
 
+**Step S1: app-transparent recovery (2026-09-25, `TRANSPARENT_S1.md`, `gin_transparent_s1.diff`,
+`NCCL_GIN_FAULT_TRANSPARENT=1`).** The recovery below needs the application to end its kernel, run a
+handshake and relaunch. S1 moves all of it into NCCL, so an unmodified put + signal + flush program
+survives a local or peer QP error with no error and no relaunch:
+- 95/95 recoverable runs transparent; the "WRITE executed, ADD not" boundary 30/30; a fault inside an
+  in-flight op 150/150.
+- Unrecoverable faults are declined and surface (40/40).
+- If the helper stalls or dies, the flush returns an error when the device hold expires (4.0 s in the
+  test). A blocking flush is bounded only by that hold (30 s, 60 s when the give-up loses).
+- **Cost: the flag-on fast path is +60 % at 4 KiB (10.24 → 16.42 µs)**, +7 % at 256 KiB; flag off +1 %.
+- Tested with one operation in flight and one posting thread only.
+
 ## TL;DR
 
 - **Recoverable faults recover, with nothing lost or doubled** (measured on 2026-09-24: 64

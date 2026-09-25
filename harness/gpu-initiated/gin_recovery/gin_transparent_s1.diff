@@ -16,7 +16,8 @@
 #   rank); NCCL_GIN_TS_HANDSHAKE_MS (3000), NCCL_GIN_TS_HOLD_MS (30000: device-side bound of every parked
 #   poster/waiter), NCCL_GIN_TS_QUIESCE_MS (5000), NCCL_GIN_TS_CONNECT_MS (15000), NCCL_GIN_TS_ROUND_MS (25000:
 #   watchdog on one helper round); negative controls NCCL_GIN_TS_DIAG=norebase|noring; test knobs (research
-#   only) NCCL_GIN_TS_TEST_STALL=<ms>@quiesce|commit, NCCL_GIN_TS_TEST_DIE=quiesce, NCCL_GIN_TS_TEST_SPLIT=<k>[,..].
+#   only) NCCL_GIN_TS_TEST_STALL=<ms>@quiesce|commit|replay, NCCL_GIN_TS_TEST_DIE=quiesce,
+#   NCCL_GIN_TS_TEST_SPLIT=<k>[,..].
 #
 # S1 files:
 #   include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h  struct ncclGinTsGate (64 B, in the reserved2
@@ -31,7 +32,9 @@
 #       serialized with the fault hook (opMu); periodic gate scan (lost records / give-ups -> decline);
 #       watchdog in the Q4 watcher (round longer than ROUND_MS, or a helper that stopped taking records ->
 #       async error); ncclGinGdakiTsCommTeardown (helper, watcher, hook joined and gates poisoned when the
-#       communicator is destroyed or aborted without ncclDevCommDestroy)
+#       communicator is destroyed or aborted without ncclDevCommDestroy; nothing is freed there: the helper
+#       state lives until the context is destroyed, since ncclCommGetAsyncError may read it at any time);
+#       before re-posting, a device thread that failed after a lost give-up makes the round decline
 #   init.cc  ncclCommAbort calls ncclGinGdakiTsCommTeardown right after it sets the abort flags (a kernel held
 #       across a recovery must be released before the teardown's cudaFree, which waits for it)
 #   gin/gin_host.cc  ncclGinHostFinalize calls ncclGinGdakiTsCommTeardown before the GIN collComms close
@@ -1488,7 +1491,7 @@ index 7e70d56..1f1c357 100644
  
      bool is_qp_attr_path_mtu_valid(enum doca_verbs_mtu_size path_mtu) noexcept;
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 976ab91..c8aaebd 100644
+index 976ab91..587caf2 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -15,6 +15,23 @@
@@ -1574,7 +1577,7 @@ index 976ab91..c8aaebd 100644
    DOCACHECKGOTO(doca_verbs_qp_attr_set_port_num(verbs_qp_attr, ctx->port_num), status, destroy_verbs_qp_attr);
    DOCACHECKGOTO(doca_verbs_qp_attr_set_ack_timeout(verbs_qp_attr, ncclParamIbTimeout()), status, destroy_verbs_qp_attr);
    DOCACHECKGOTO(doca_verbs_qp_attr_set_retry_cnt(verbs_qp_attr, ncclParamIbRetryCnt()), status, destroy_verbs_qp_attr);
-@@ -585,6 +623,2517 @@ destroy_verbs_qp_attr:
+@@ -585,6 +623,2569 @@ destroy_verbs_qp_attr:
  NCCL_PARAM(GinGdakiUseReliableDB, "GDAKI_USE_RELIABLE_DB", 0);
  NCCL_PARAM(GinGdakiForceMcst, "GDAKI_FORCE_MCST", 0);
  
@@ -2907,12 +2910,18 @@ index 976ab91..c8aaebd 100644
 +  std::atomic<int> nQueued{0};            // fault records queued and not yet taken by the helper
 +  std::atomic<int> surfaced{0};           // 1 once the watchdog raised the error (the helper then declines)
 +  // Test knobs (research build).
-+  int stallMs = 0, stallStage = 0;        // stage 1 = after quiesce, 2 = after commit
++  int stallMs = 0, stallStage = 0;        // stage 1 = after quiesce, 2 = after commit, 3 = after the commit point
 +  int dieStage = 0;                       // 1 = helper thread exits after quiesce
 +  std::atomic<int> dead{0};
 +  struct ncclGinTsTest* test = nullptr;   // host-mapped (NCCL_GIN_TS_TEST_SPLIT)
 +  struct ncclGinTsTest* testDev = nullptr;
 +  std::thread testTh;
++  // Communicator teardown (ncclGinGdakiTsCommTeardown). ts is never deleted there: other threads read it
++  // without a lock (gdakiTsActive in ncclGinGdakiQueryLastError, reachable from ncclCommGetAsyncError at
++  // any time, including during ncclCommAbort); it goes with the context (gdakiRecFree).
++  bool stopped = false;                   // threads joined, sockets closed (gdakiTsStop)
++  std::atomic<int> tearing{0};            // 1 while the teardown runs
++  std::atomic<uint64_t> tdQueries{0};     // ncclGinGdakiQueryLastError calls that overlapped it (test evidence)
 +};
 +
 +static int64_t gdakiTsNowUs() {
@@ -3067,6 +3076,8 @@ index 976ab91..c8aaebd 100644
 +  if (k == 0) return false;
 +  return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
 +}
++
++static bool gdakiTsTestStall(struct gdakiTs* ts, int ms, const char* where, int rank);  // test knob, below
 +
 +// ---- gate access (device QP padding) ----
 +static uint8_t* gdakiTsGateDev(struct doca_gpu_verbs_qp* v) {
@@ -3261,6 +3272,28 @@ index 976ab91..c8aaebd 100644
 +  if (gdakiTsCommitPoint(r, peer, &ab) != ncclSuccess || ab) {  // before anything executes again
 +    *why = "a device waiter gave up before the commit point";
 +    return ncclSystemError;
++  }
++  // Test knob: a helper that stalls past its commit point (device give-ups now lose; waiters wait one
++  // more bound, then fail). Nothing has been re-posted yet, so a teardown here still declines.
++  if (r->ts->stallStage == 3 && gdakiTsTestStall(r->ts, r->ts->stallMs, "after the commit point", r->ctx->rank)) {
++    *why = "the communicator is being destroyed";
++    return ncclSystemError;
++  }
++  // A device thread that lost its give-up fails after one more bound (and poisons the QP): if that
++  // already happened, the application was told the operation failed, so do not re-post it. (A failure
++  // after this check is still surfaced, by the idle scan; the re-post may then have executed.)
++  {
++    bool failed = false;
++    gdakiRecForPeer(r, peer, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
++      uint32_t st = 0;
++      if (gdakiTsGateRead(r, q->qp_gverbs, offsetof(struct ncclGinTsGate, status), &st, sizeof(st)) != ncclSuccess ||
++          st != 0)
++        failed = true;
++    });
++    if (failed) {
++      *why = "a device thread failed the QP after the commit point (second hold expired)";
++      return ncclSystemError;
++    }
 +  }
 +  gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
 +    const unsigned idx = i++;
@@ -3676,12 +3709,15 @@ index 976ab91..c8aaebd 100644
 +      if (why) return;
 +      struct gdakiTsQp& s = ts->qs[rq.qpIdx];
 +      struct ncclGinTsGate2 g2;
-+      uint32_t reported = 0;
++      uint32_t reported = 0, status = 0;
 +      if (gdakiRecD2H(r, &g2, gdakiTsGate2Dev(q->qp_gverbs), sizeof(g2)) != ncclSuccess ||
 +          gdakiTsGateRead(r, q->qp_gverbs, offsetof(struct ncclGinTsGate, reported), &reported, sizeof(reported)) !=
++            ncclSuccess ||
++          gdakiTsGateRead(r, q->qp_gverbs, offsetof(struct ncclGinTsGate, status), &status, sizeof(status)) !=
 +            ncclSuccess)
 +        return;
 +      if (g2.abandoned >= s.epoch + 2u) why = "a device waiter gave up with no recovery running";
++      else if (status != 0) why = "a device thread failed the QP (second hold expired after the commit point)";
 +      else if (reported >= s.epoch + 2u && reported > s.handled) {
 +        if (++s.lostScans >= 2) why = "a fault record never reached the helper (mailbox overflow)";
 +      } else s.lostScans = 0;
@@ -3926,7 +3962,7 @@ index 976ab91..c8aaebd 100644
 +  const char* e = getenv("NCCL_GIN_TS_TEST_STALL");
 +  if (e && *e) {
 +    ts->stallMs = atoi(e);
-+    ts->stallStage = strstr(e, "@commit") ? 2 : 1;
++    ts->stallStage = strstr(e, "@replay") ? 3 : strstr(e, "@commit") ? 2 : 1;
 +  }
 +  e = getenv("NCCL_GIN_TS_TEST_DIE");
 +  if (e && *e) ts->dieStage = 1;
@@ -4013,10 +4049,12 @@ index 976ab91..c8aaebd 100644
 +//  - then poison every gate (status = 1): with no helper left, a device thread parked on a pending fault,
 +//    or one that meets a fault later while an application kernel still runs, fails at once instead of
 +//    holding for hold_ms. No QP state change is issued here.
-+// The context itself (QPs, gates) stays until ncclDevCommDestroy, as in stock NCCL; it is taken out of
-+// the registry. Contexts without transparent recovery are not touched (flag off: unchanged). As for
-+// every NCCL teardown, a concurrent ncclDevCommDestroy of the same communicator is API misuse.
-+static void gdakiTsFree(struct gdakiRecHost* r);
++// The context itself (QPs, gates, and r and ts, which ncclCommGetAsyncError may still read through
++// ncclGinGdakiQueryLastError) stays until ncclDevCommDestroy, as in stock NCCL; it is taken out of the
++// registry. Nothing is freed here. Contexts without transparent recovery are not touched (flag off:
++// unchanged). As for every NCCL teardown, a concurrent ncclDevCommDestroy of the same communicator is
++// API misuse.
++static void gdakiTsStop(struct gdakiRecHost* r);
 +extern void ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
 +  std::vector<struct gdakiRecHost*> rs;
 +  {
@@ -4032,6 +4070,7 @@ index 976ab91..c8aaebd 100644
 +    const int64_t busy = ts->busySinceUs.load(std::memory_order_acquire);
 +    const int queued = ts->nQueued.load(std::memory_order_acquire);
 +    const int dead = ts->dead.load(std::memory_order_acquire);
++    ts->tearing.store(1, std::memory_order_relaxed);
 +    gdakiQ4Stop(r->ctx->q4);
 +    ts->stop.store(true, std::memory_order_release);
 +    if (ts->th.joinable()) ts->th.join();
@@ -4056,7 +4095,7 @@ index 976ab91..c8aaebd 100644
 +      });
 +    }
 +    const int rank = r->ctx->rank, rounds = ts->nRounds, recovered = ts->nRecovered, declined = ts->nDeclined;
-+    gdakiTsFree(r);
++    gdakiTsStop(r);  // sockets closed; ts stays allocated (read without a lock by queryLastError)
 +    {
 +      // The communicator and its collComm are freed next: no later lookup (by any key, null included)
 +      // may find this context. gdakiRecFree (ncclDevCommDestroy, if it ever comes) erases nothing then.
@@ -4064,27 +4103,43 @@ index 976ab91..c8aaebd 100644
 +      gdakiRecReg.erase(std::remove(gdakiRecReg.begin(), gdakiRecReg.end(), r), gdakiRecReg.end());
 +      r->commKey = nullptr;
 +    }
++    const int64_t tEnd = gdakiTsNowUs();
++    ts->tearing.store(0, std::memory_order_relaxed);
 +    WARN("GIN/TS: communicator teardown rank=%d: helper/watcher/hook joined in %.1f ms (round_in_progress=%d "
-+         "queued=%d helper_dead=%d rounds=%d recovered=%d declined=%d), gates poisoned=%d failed=%d",
-+         rank, (tJoin - t0) / 1000.0, busy != 0, queued, dead, rounds, recovered, declined, nPoison, nPoisonErr);
++         "queued=%d helper_dead=%d rounds=%d recovered=%d declined=%d), gates poisoned=%d failed=%d, "
++         "teardown_ms=%.1f concurrent_error_queries=%lu t0_mono_ms=%.3f",
++         rank, (tJoin - t0) / 1000.0, busy != 0, queued, dead, rounds, recovered, declined, nPoison, nPoisonErr,
++         (tEnd - t0) / 1000.0, (unsigned long)ts->tdQueries.load(), t0 / 1000.0);
 +  }
 +}
 +
-+static void gdakiTsFree(struct gdakiRecHost* r) {
-+  if (r == nullptr || r->ts == nullptr) return;
-+  struct gdakiTs* ts = r->ts;
++// Stop the helper and the split-test thread and close the sockets (idempotent). ts itself stays.
++static void gdakiTsStop(struct gdakiRecHost* r) {
++  struct gdakiTs* ts = r ? r->ts : nullptr;
++  if (ts == nullptr || ts->stopped) return;
 +  ts->stop.store(true, std::memory_order_release);
 +  if (ts->th.joinable()) ts->th.join();
 +  if (ts->testTh.joinable()) ts->testTh.join();
-+  if (ts->test) {
-+    WARN("GIN/TS: TEST split rank=%d nsplit=%u no_ack=%u", r->ctx->rank, ts->test->nsplit,
-+         ts->test->nsplitNoAck);
-+    cudaFreeHost(ts->test);
-+  }
++  if (ts->test)
++    WARN("GIN/TS: TEST split rank=%d nsplit=%u no_ack=%u", r->ctx->rank, ts->test->nsplit, ts->test->nsplitNoAck);
 +  for (auto& pe : ts->peers)
-+    if (pe.fd >= 0) close(pe.fd);
++    if (pe.fd >= 0) {
++      close(pe.fd);
++      pe.fd = -1;
++    }
++  ts->stopped = true;
++}
++
++// With the context (gdakiRecFree: ncclDevCommDestroy, after ncclGinDevCommFree unlinked the devComm under
++// the devComm write lock, so no queryLastError can run on it any more). The split-test block is host
++// memory a running kernel may read, so it is freed only here as well.
++static void gdakiTsFree(struct gdakiRecHost* r) {
++  if (r == nullptr || r->ts == nullptr) return;
++  gdakiTsStop(r);
++  struct gdakiTs* ts = r->ts;
 +  INFO(NCCL_NET, "GIN/TS: closed rank=%d rounds=%d recovered=%d declined=%d stale=%d", r->ctx->rank, ts->nRounds,
 +       ts->nRecovered, ts->nDeclined, ts->nStale);
++  if (ts->test) cudaFreeHost(ts->test);
 +  delete ts;
 +  r->ts = nullptr;
 +}
@@ -4092,7 +4147,7 @@ index 976ab91..c8aaebd 100644
  ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, void** outGinCtx,
                                         ncclNetDeviceHandle_t** outDevHandle) {
    ncclResult_t status = ncclSuccess;
-@@ -795,6 +3344,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -795,6 +3396,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
      qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW;
    else qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
    qp_init_attr.comp_channel = gdaki_ctx->docaEvent;
@@ -4100,7 +4155,7 @@ index 976ab91..c8aaebd 100644
  
    if (nqps_for_comm_this_rank > 0) {
    // SPC-X Ordering Semantic. 0 by default.
-@@ -907,6 +3457,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -907,6 +3509,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
                    status, out);
    }
  
@@ -4116,7 +4171,7 @@ index 976ab91..c8aaebd 100644
    for (int rank_idx = rankOff; rank_idx < nranks; rank_idx += rankStride) {
      if (rank_idx == rank) continue;
      for (int ctx_idx = 0; ctx_idx < ncontexts; ctx_idx++) {
-@@ -916,6 +3475,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -916,6 +3527,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
        uint8_t lagTxPortAffinity = (numLagPorts > 0) ? (ctx_idx % numLagPorts) + 1 : 0;
  
        NCCLCHECKGOTO(gdakiConnectQp(gdaki_ctx, gdaki_ctx->gqps[qp_idx], peer_info, lagTxPortAffinity), status, out);
@@ -4132,7 +4187,7 @@ index 976ab91..c8aaebd 100644
        DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->gqps[qp_idx]->qp, &qpn), status, out);
        INFO(NCCL_NET,
             "[%d] Connected main QP: qp_idx=%d, main_qpn=%#x, remote_rank=%d, remote_qpn=%#x, lagTxPortAffinity=%u%s",
-@@ -984,6 +3552,12 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -984,6 +3604,12 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
    contiguous_gverbs_qps = (struct doca_gpu_verbs_qp**)calloc(connectedNRanks, sizeof(struct doca_gpu_verbs_qp*));
    EQCHECKGOTO(contiguous_gverbs_qps, nullptr, status, out);
  
@@ -4145,7 +4200,7 @@ index 976ab91..c8aaebd 100644
    for (int ctx_idx = 0; ctx_idx < ncontexts; ctx_idx++) {
      struct ncclGinGdakiGPUContext* gin_gdaki_gpu_ctx = &gdaki_ctx->gin_gdaki_gpu_ctx_host_staging[ctx_idx];
  
-@@ -1041,6 +3615,10 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -1041,6 +3667,10 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
                                                gin_gdaki_gpu_ctx->sink_buffer_lkey, gin_gdaki_gpu_ctx->last_issued_get,
                                                gin_gdaki_gpu_ctx->last_visible_get, use_mcst),
                    status, out);
@@ -4156,7 +4211,7 @@ index 976ab91..c8aaebd 100644
    }
  
    NCCLCHECKGOTO(gin_gdaki_gpu_ctx_hd_mhandle->copy_h_to_d(), status, out);
-@@ -1062,13 +3640,24 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -1062,13 +3692,24 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
    gdaki_ctx->devHandle = devHandle;
    gdaki_ctx->nContexts = ncontexts;
    gdaki_ctx->rankStride = rankStride;
@@ -4181,7 +4236,7 @@ index 976ab91..c8aaebd 100644
        if (gdaki_ctx->docaEvent) {
          doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
          gdaki_ctx->docaEvent = nullptr;
-@@ -1161,6 +3750,12 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+@@ -1161,6 +3802,12 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
    const int rankStride = gdaki_ctx->rankStride;
    const int rankOff = gdaki_ctx->rank % rankStride;
  
@@ -4194,7 +4249,7 @@ index 976ab91..c8aaebd 100644
    if (gdaki_ctx->docaEvent) {
      doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
      gdaki_ctx->docaEvent = nullptr;
-@@ -1338,6 +3933,9 @@ ncclResult_t ncclGinGdakiProgress(void* ctx) {
+@@ -1338,6 +3985,9 @@ ncclResult_t ncclGinGdakiProgress(void* ctx) {
    const int rankOff = gdakiCtx->rank % rankStride;
    bool has_progressed = true;
    bool progressed;
@@ -4204,13 +4259,15 @@ index 976ab91..c8aaebd 100644
  
    while (has_progressed) {
      has_progressed = false;
-@@ -1421,6 +4019,18 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
+@@ -1421,6 +4071,20 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
    struct gdaki_context* gdakiCtx = (struct gdaki_context*)ginCtx;
    bool hasError_ = false;
  
 +  // GIN transparent recovery S1: the helper owns the QPs' states (a QP in ERR may be under recovery);
 +  // an error is reported only once the helper declined (it then raises q4->hasError).
 +  if (gdakiTsActive(gdakiCtx->rec)) {
++    if (gdakiCtx->rec->ts->tearing.load(std::memory_order_relaxed))
++      gdakiCtx->rec->ts->tdQueries.fetch_add(1, std::memory_order_relaxed);
 +    *hasError = gdakiCtx->q4->hasError.load(std::memory_order_acquire) != 0;
 +    return ncclSuccess;
 +  }

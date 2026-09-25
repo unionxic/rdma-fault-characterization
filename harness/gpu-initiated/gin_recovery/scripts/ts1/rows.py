@@ -73,6 +73,9 @@ def parse_log(path):
             m = re.search(r"joined in ([\d.]+) ms", line)
             m2 = re.search(r"gates poisoned=(\d+) failed=(\d+)", line)
             out["teardown"] = {"join_ms": float(m.group(1)) if m else None,
+                               "td_ms": float(d["teardown_ms"]) if "teardown_ms" in d else None,
+                               "queries": int(d["concurrent_error_queries"]) if "concurrent_error_queries" in d else None,
+                               "t0": float(d["t0_mono_ms"]) if "t0_mono_ms" in d else None,
                                "round": int(d.get("round_in_progress", -1)), "queued": int(d.get("queued", -1)),
                                "dead": int(d.get("helper_dead", -1)),
                                "poisoned": int(m2.group(1)) if m2 else None, "poison_failed": int(m2.group(2)) if m2 else None}
@@ -146,6 +149,16 @@ def main():
                 r["td_round_" + rk] = td["round"] if td else None
                 r["td_poisoned_" + rk] = td["poisoned"] if td else None
                 r["td_poison_failed_" + rk] = td["poison_failed"] if td else None
+                r["td_ms_" + rk] = td.get("td_ms") if td else None
+                r["td_queries_" + rk] = td.get("queries") if td else None
+            kk = k0
+            r["abort_mon_mode"] = kk.get("abort_mon_mode")
+            r["abort_mon_samples"] = kk.get("abort_mon_samples")
+            r["abort_mon_call_errs"] = kk.get("abort_mon_call_errs")
+            r["abort_mon_last_after_start_ms"] = kk.get("abort_mon_last_after_start_ms")
+            a0 = fnum(kk.get("abort_start_mono_ms"))
+            t0td = l0["teardown"].get("t0") if l0["teardown"] else None
+            r["abort_to_td_start_ms"] = (t0td - a0) if (a0 is not None and t0td is not None) else None
             # a trial whose driver could not bind its own rendezvous port never reached NCCL (harness failure)
             r0log = stem + "_r0.log"
             r["bind_fail"] = int(os.path.exists(r0log) and "bind: Address already in use" in open(r0log, errors="replace").read())

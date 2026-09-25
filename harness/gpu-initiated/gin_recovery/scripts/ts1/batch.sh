@@ -56,6 +56,26 @@ for ((k = START; k < START + N; k++)); do
     slow_b)   st=quiesce; [ $((k % 2)) = 0 ] && st=commit
               TS=1 R0_ENV="NCCL_GIN_TS_TEST_STALL=3000@$st" EXTRA_ENV="GIN_TS_POST_ABORT_WAIT_S=3" INJECT=$inj \
               run F1 blocking n$k "$L" 120 ;;
+    # --- third review ---
+    # the helper stalls AFTER its commit point (hold 4 s): the device's give-up loses at 4 s and waits one
+    # more bound; late_ok: the publication comes at 6 s -> still transparent; late_fail: none by 8 s -> the
+    # flush fails at 2 x hold, the helper (back at 12 s) sees the failed QP and declines instead of
+    # re-posting, and the error surfaces (the app samples the async error 6 s longer). Handshake 10 s so
+    # that the responder's DONE wait (2 x handshake) outlasts the stall.
+    late_ok_b)   TS=1 R0_ENV="NCCL_GIN_TS_TEST_STALL=6000@replay" \
+                 EXTRA_ENV="NCCL_GIN_TS_HOLD_MS=4000 NCCL_GIN_TS_HANDSHAKE_MS=10000 GIN_TS_POST_ABORT_WAIT_S=3" \
+                 INJECT=$inj run F1 blocking n$k "$L" 120 ;;
+    late_fail_b) TS=1 R0_ENV="NCCL_GIN_TS_TEST_STALL=12000@replay GIN_TS_END_WAIT_S=6" \
+                 EXTRA_ENV="NCCL_GIN_TS_HOLD_MS=4000 NCCL_GIN_TS_HANDSHAKE_MS=10000 GIN_TS_RX_WAIT_S=12 GIN_TS_POST_ABORT_WAIT_S=3" \
+                 INJECT=$inj run F1 blocking n$k "$L" 120 ;;
+    # ncclCommGetAsyncError in a tight loop on another thread while ncclCommAbort runs mid-round (as
+    # abortmid_b); the monitor is not stopped before the abort: it runs 200 ms into the abort
+    # (abortmon_b), or until ncclCommAbort returned (abortmonfull_b)
+    abortmon_b|abortmonfull_b)
+                 ma=200; [ "$CELL" = abortmonfull_b ] && ma=full
+                 TS=1 ABORT_WD_S=15 R0_ENV="NCCL_GIN_TS_TEST_STALL=8000@quiesce GIN_TS_ASYNC_GRACE_S=0.3" \
+                 EXTRA_ENV="NCCL_GIN_TS_ROUND_MS=2000 NCCL_GIN_TS_HOLD_MS=30000 GIN_TS_RX_WAIT_S=12 GIN_TS_POST_ABORT_WAIT_S=5 GIN_ASYNC_POLL_US=0 GIN_TS_MON_ABORT=$ma" \
+                 INJECT=$inj run F1 blocking n$k "$L" 120 ;;
     # the application's own flush timeout (0.5 s) is shorter than the (stalled, 3 s) recovery
     tmo_t)    TS=1 ABORT_WD_S=15 DEV_TIMEOUT_S=0.5 R0_ENV="NCCL_GIN_TS_TEST_STALL=3000@quiesce" \
               EXTRA_ENV="NCCL_GIN_TS_ROUND_MS=2000 GIN_TS_RX_WAIT_S=12 GIN_TS_ASYNC_GRACE_S=10 GIN_TS_POST_ABORT_WAIT_S=3" \

@@ -21,7 +21,11 @@
 //   Faults of the transport (local QP ERR, peer QP ERR, peer SIGKILL) are injected by the runner.
 // env: GIN_TS_F2_IT, GIN_TS_RX_WAIT_S (receiver's per-iteration waitSignal timeout, default 30),
 //      GIN_ASYNC_POLL_US (200), GIN_LAT_RAW (path: per-iteration latency CSV, lat mode),
-//      GIN_TS_CONTINUE=1 (test: keep posting after a failed flush instead of stopping)
+//      GIN_TS_CONTINUE=1 (test: keep posting after a failed flush instead of stopping),
+//      GIN_TS_ASYNC_GRACE_S (2: how long the kernel may run on after an async error),
+//      GIN_TS_END_WAIT_S (0.3: async sampling after the kernel ended), GIN_TS_POST_ABORT_WAIT_S (observe a
+//      kernel still running when ncclCommAbort returned), GIN_TS_MON_ABORT=<ms>|full (the async monitor
+//      keeps calling ncclCommGetAsyncError while ncclCommAbort runs), GIN_ABORT_WATCHDOG_S (15)
 // exit: 0 all iterations ok and nothing surfaced; 2 NCCL call error; 3 async error seen by the host;
 //       4 a device wait/flush returned an error or timed out; 5 data/signal check failed;
 //       6 CUDA error; 7 watchdog.
@@ -70,6 +74,48 @@ static void kv(const char* fmt, ...) {
   fflush(g_kv);
 }
 
+struct AsyncMon {
+  std::atomic<bool> stop{false};
+  std::atomic<int> firstErr{0};
+  std::atomic<double> firstMs{-1.0};
+  std::atomic<long> samples{0}, errSamples{0};
+  // GIN_TS_MON_ABORT=<ms>|full: the monitor is NOT stopped before ncclCommAbort; it keeps calling
+  // ncclCommGetAsyncError (a tight loop with GIN_ASYNC_POLL_US=0) while the abort runs, until <ms> after
+  // the abort started, or ("full") until ncclCommAbort returned.
+  std::atomic<double> abortStartMs{-1.0};
+  double abortLimitMs = -1.0;  // -1: stopped before the abort (default); 0: full
+  std::atomic<long> abortSamples{0}, abortCallErrs{0};
+  std::atomic<double> lastAbortSampleMs{-1.0};
+};
+static void asyncMonRun(AsyncMon* m) {
+  const char* pu = getenv("GIN_ASYNC_POLL_US");
+  useconds_t us = pu ? (useconds_t)atoi(pu) : 200u;
+  while (!m->stop.load()) {
+    const double a0 = m->abortStartMs.load();
+    if (a0 >= 0 && m->abortLimitMs > 0 && monoMs() - a0 > m->abortLimitMs) break;
+    ncclResult_t s = ncclSuccess;
+    const ncclResult_t rc = ncclCommGetAsyncError(g_comm, &s);
+    if (a0 >= 0) {
+      m->abortSamples++;
+      if (rc != ncclSuccess) m->abortCallErrs++;
+      m->lastAbortSampleMs.store(monoMs());
+    }
+    if (rc == ncclSuccess) {
+      m->samples++;
+      if (s != ncclSuccess && s != ncclInProgress) {
+        m->errSamples++;
+        if (m->firstMs.load() < 0) {
+          m->firstErr.store((int)s);
+          m->firstMs.store(monoMs());
+        }
+      }
+    }
+    if (us) usleep(us);
+  }
+}
+static AsyncMon* g_mon = nullptr;
+static std::thread* g_monTh = nullptr;
+
 static void teardownExit(int code) {
   static std::atomic<int> once{0};
   if (once.fetch_add(1) != 0) _exit(code);
@@ -77,9 +123,18 @@ static void teardownExit(int code) {
     const char* wd = getenv("GIN_ABORT_WATCHDOG_S");
     alarm(wd ? (unsigned)atoi(wd) : 15u);
     double a0 = monoMs();
+    if (g_mon && g_monTh) g_mon->abortStartMs.store(a0);  // the monitor keeps polling (GIN_TS_MON_ABORT)
     ncclResult_t ar = ncclCommAbort(g_comm);
+    const double a1 = monoMs();
     alarm(0);
-    kv("teardown_ms=%.1f abort_ret=%s", monoMs() - a0, ncclGetErrorString(ar));
+    kv("teardown_ms=%.1f abort_ret=%s abort_start_mono_ms=%.3f", a1 - a0, ncclGetErrorString(ar), a0);
+    if (g_mon && g_monTh) {
+      g_mon->stop.store(true);
+      g_monTh->join();
+      kv("abort_mon_mode=%s abort_mon_samples=%ld abort_mon_call_errs=%ld abort_mon_last_after_start_ms=%.3f",
+         g_mon->abortLimitMs == 0 ? "full" : "bounded", g_mon->abortSamples.load(), g_mon->abortCallErrs.load(),
+         g_mon->lastAbortSampleMs.load() < 0 ? -1.0 : g_mon->lastAbortSampleMs.load() - a0);
+    }
     // GIN_TS_POST_ABORT_WAIT_S: if the kernel was still running at the abort, watch it for up to this
     // long after ncclCommAbort returned (observation only: exited / still running / CUDA error).
     const char* pw = getenv("GIN_TS_POST_ABORT_WAIT_S");
@@ -272,30 +327,6 @@ __global__ void readSigKernel(struct ncclDevComm devComm, unsigned long long* v)
   if (threadIdx.x == 0) *v = gin.readSignal(0);
 }
 
-struct AsyncMon {
-  std::atomic<bool> stop{false};
-  std::atomic<int> firstErr{0};
-  std::atomic<double> firstMs{-1.0};
-  std::atomic<long> samples{0}, errSamples{0};
-};
-static void asyncMonRun(AsyncMon* m) {
-  const char* pu = getenv("GIN_ASYNC_POLL_US");
-  useconds_t us = pu ? (useconds_t)atoi(pu) : 200u;
-  while (!m->stop.load()) {
-    ncclResult_t s = ncclSuccess;
-    if (ncclCommGetAsyncError(g_comm, &s) == ncclSuccess) {
-      m->samples++;
-      if (s != ncclSuccess && s != ncclInProgress) {
-        m->errSamples++;
-        if (m->firstMs.load() < 0) {
-          m->firstErr.store((int)s);
-          m->firstMs.store(monoMs());
-        }
-      }
-    }
-    usleep(us);
-  }
-}
 
 static int cmpU64(const void* a, const void* b) {
   unsigned long long x = *(const unsigned long long*)a, y = *(const unsigned long long*)b;
@@ -573,10 +604,19 @@ int main(int argc, char** argv) {
     }
   }
   if (!kernelDone && exitCode == 0) { exitCode = 7; outcome = "kernel_stuck"; }
-  // let the async monitor sample a little longer (an error raised at the end would still count)
-  usleep(300000);
-  mon.stop.store(true);
-  monTh.join();
+  // let the async monitor sample a little longer (an error raised at the end would still count);
+  // GIN_TS_END_WAIT_S overrides the 0.3 s
+  const double endWaitS = getenv("GIN_TS_END_WAIT_S") ? atof(getenv("GIN_TS_END_WAIT_S")) : 0.3;
+  usleep((useconds_t)(endWaitS * 1e6));
+  const char* monAbort = getenv("GIN_TS_MON_ABORT");
+  if (monAbort && *monAbort) {
+    mon.abortLimitMs = strcmp(monAbort, "full") == 0 ? 0.0 : atof(monAbort);
+    g_mon = &mon;  // teardownExit stops and joins it after ncclCommAbort
+    g_monTh = &monTh;
+  } else {
+    mon.stop.store(true);
+    monTh.join();
+  }
   ncclResult_t fa = ncclSuccess;
   ncclCommGetAsyncError(g_comm, &fa);
   if (mon.firstMs.load() >= 0 && exitCode == 0) { exitCode = 3; outcome = "async_error"; }

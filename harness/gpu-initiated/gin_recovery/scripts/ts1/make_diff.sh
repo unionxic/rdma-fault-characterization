@@ -27,7 +27,8 @@ cat <<'HDR'
 #   rank); NCCL_GIN_TS_HANDSHAKE_MS (3000), NCCL_GIN_TS_HOLD_MS (30000: device-side bound of every parked
 #   poster/waiter), NCCL_GIN_TS_QUIESCE_MS (5000), NCCL_GIN_TS_CONNECT_MS (15000), NCCL_GIN_TS_ROUND_MS (25000:
 #   watchdog on one helper round); negative controls NCCL_GIN_TS_DIAG=norebase|noring; test knobs (research
-#   only) NCCL_GIN_TS_TEST_STALL=<ms>@quiesce|commit, NCCL_GIN_TS_TEST_DIE=quiesce, NCCL_GIN_TS_TEST_SPLIT=<k>[,..].
+#   only) NCCL_GIN_TS_TEST_STALL=<ms>@quiesce|commit|replay, NCCL_GIN_TS_TEST_DIE=quiesce,
+#   NCCL_GIN_TS_TEST_SPLIT=<k>[,..].
 #
 # S1 files:
 #   include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h  struct ncclGinTsGate (64 B, in the reserved2
@@ -42,7 +43,9 @@ cat <<'HDR'
 #       serialized with the fault hook (opMu); periodic gate scan (lost records / give-ups -> decline);
 #       watchdog in the Q4 watcher (round longer than ROUND_MS, or a helper that stopped taking records ->
 #       async error); ncclGinGdakiTsCommTeardown (helper, watcher, hook joined and gates poisoned when the
-#       communicator is destroyed or aborted without ncclDevCommDestroy)
+#       communicator is destroyed or aborted without ncclDevCommDestroy; nothing is freed there: the helper
+#       state lives until the context is destroyed, since ncclCommGetAsyncError may read it at any time);
+#       before re-posting, a device thread that failed after a lost give-up makes the round decline
 #   init.cc  ncclCommAbort calls ncclGinGdakiTsCommTeardown right after it sets the abort flags (a kernel held
 #       across a recovery must be released before the teardown's cudaFree, which waits for it)
 #   gin/gin_host.cc  ncclGinHostFinalize calls ncclGinGdakiTsCommTeardown before the GIN collComms close
