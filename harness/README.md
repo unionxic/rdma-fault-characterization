@@ -77,8 +77,15 @@ unanswered one is split (changed after review, 2026-09-25): EOF or reset on the 
 sets `sub_cause=proc_kill`, `peer_alive=0`, `auto_recoverable=0` (peer death, not an access bug); no
 answer within 1 s on a connection that is still open sets `sub_cause=no_answer`, `peer_alive=-1`
 (unknown), `auto_recoverable=0`, so a live but slow peer with a real access bug is not recorded as
-dead. The same split applies to RETRY_EXC (before, a timeout also counted as `proc_kill`); the
-`no_answer` path is not produced by this harness's faults and is untested. Validated with a live peer: `rem_access` 5/5 and `rem_inv_req`
+dead. The same split applies to RETRY_EXC (before, a timeout also counted as `proc_kill`).
+A first version of this split could never report `no_answer`: `ctrl_recv_line` called `perror()`
+after the timed-out `recv()`, and glibc 2.31 then sets errno to EINVAL when stderr is a file or a pipe
+(as it is under `run.sh`). `ctrl_recv_line` now saves and restores errno and stays quiet on the
+expected timeout. Validated with the server's test switch `PROBE_TEST_NO_PROBE_REPLY=1` (a live
+server that ignores PROBE): `rem_access`, `rem_inv_req` and `retry_server_qp_err` 3/3 each gave
+`no_answer`, `peer_alive=-1`, and still recovered and verified; without the switch `rem_access`,
+`retry_server_qp_err` and `retry_proc_kill` gave the same results as before
+(`results/validation_20260925_no_answer/`). Validated with a live peer: `rem_access` 5/5 and `rem_inv_req`
 5/5 still recovered. `retry_server_qp_err` 5/5 and `retry_proc_kill` 3/3 were unchanged.
 The dead-peer 0x88 path itself is not produced by this harness's faults.
 

@@ -134,7 +134,16 @@ int ctrl_recv_line(int fd, char *buf, size_t cap) {
     while (i + 1 < cap) {
         char c;
         ssize_t n = recv(fd, &c, 1, 0);
-        if (n < 0) { if (errno == EINTR) continue; perror("recv"); return -1; }
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            /* keep errno for the caller: EAGAIN/EWOULDBLOCK = SO_RCVTIMEO expired (no answer).
+             * perror() may overwrite errno (glibc 2.31 sets EINVAL when stderr is a file or a
+             * pipe), so save and restore it, and stay quiet on the expected timeout. */
+            int e = errno;
+            if (e != EAGAIN && e != EWOULDBLOCK) perror("recv");
+            errno = e;
+            return -1;
+        }
         if (n == 0) { if (i == 0) { errno = ECONNRESET; return -1; } break; }   /* EOF: peer closed */
         if (c == '\n') break;
         buf[i++] = c;

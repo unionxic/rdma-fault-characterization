@@ -46,7 +46,7 @@ kill_server() {
 start_server() {
     kill_server || { log "ERROR: could not stop a running probe_server"; return 1; }
     # ssh -f detaches after auth; the remote process survives this shell.
-    ssh -f "$SERVER_SSH" "cd $SERVER_DIR && PROBE_LINK_DRYRUN=$PROBE_LINK_DRYRUN \
+    ssh -f "$SERVER_SSH" "cd $SERVER_DIR && PROBE_LINK_DRYRUN=$PROBE_LINK_DRYRUN PROBE_TEST_NO_PROBE_REPLY=${PROBE_TEST_NO_PROBE_REPLY:-0} \
         timeout $SERVER_TIMEOUT ./probe_server \
         -d $SERVER_DEV -i $IB_PORT -g $SERVER_GID_INDEX -p $CTRL_PORT -C $SERVER_CPU \
         -I $SERVER_IFACE > $SERVER_LOG 2>&1"

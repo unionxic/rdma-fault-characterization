@@ -44,6 +44,7 @@ static uint32_t pick_psn(void) { return (uint32_t)(now_ns() & 0xffffff); }
 /* ---------------- link control (retry_link_down) ---------------- */
 static const char *g_iface = NULL;              /* RoCE netdev (-I / $PROBE_IFACE) */
 static int g_dryrun = 0;                        /* $PROBE_LINK_DRYRUN=1: log, never toggle */
+static int g_no_probe_reply = 0;                /* $PROBE_TEST_NO_PROBE_REPLY=1: test only, ignore PROBE */
 /* Set BEFORE the link is downed (so a signal in between still restores) and
  * cleared only after a successful restore. */
 static volatile sig_atomic_t g_link_downed = 0;
@@ -190,6 +191,9 @@ int main(int argc, char **argv) {
     g_iface = getenv("PROBE_IFACE");
     const char *dr = getenv("PROBE_LINK_DRYRUN");
     g_dryrun = (dr && dr[0] && strcmp(dr, "0") != 0);
+    const char *npr = getenv("PROBE_TEST_NO_PROBE_REPLY");
+    g_no_probe_reply = (npr && npr[0] && strcmp(npr, "0") != 0);
+    if (g_no_probe_reply) fprintf(stderr, "[server] PROBE_TEST_NO_PROBE_REPLY=1: PROBE is ignored (test of the client's no_answer path)\n");
     int opt;
     while ((opt = getopt(argc, argv, "d:i:g:p:C:I:h")) != -1) {
         switch (opt) {
@@ -327,6 +331,7 @@ int main(int argc, char **argv) {
             n = ctrl_recv_line(fd, line, sizeof(line));
             if (n < 0) { fprintf(stderr, "[server] client closed mid-trial\n"); stop = true; break; }
             if (strcmp(line, "PROBE") == 0) {
+                if (g_no_probe_reply) continue;   /* test only: a live peer that does not answer */
                 uint64_t rx = port_counter_read(ep.dev_name, ep.ib_port, "port_rcv_packets");
                 uint64_t tx = port_counter_read(ep.dev_name, ep.ib_port, "port_xmit_packets");
                 long rxd = (rx0 != UINT64_MAX && rx != UINT64_MAX) ? (long)(rx - rx0) : -1;
