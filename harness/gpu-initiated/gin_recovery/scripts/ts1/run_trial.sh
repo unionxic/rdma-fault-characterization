@@ -8,6 +8,7 @@
 #   TS=0|1        NCCL_GIN_FAULT_TRANSPARENT (default 1). REC/CLASSIFY default 1 (the gpudb v2 stack).
 #   BASE=1        run the gpudb (v2) libnccl + the driver compiled against it (bundle base/), TS ignored
 #   INJECT=<ms>   hook delay list (F1 on rank 0 local_err, F3 on rank 1 peer_err), default 700
+#   R0_ENV=<VAR=val ...>  extra environment for rank 0 only (test knobs of the initiator)
 #   KILL_DELAY_MS (F4, default 1200), GAP_US (default 15000; lat: 0), DEV_TIMEOUT_S (flush timeout in
 #   timeout mode, default 8), WATCHDOG_S (default 45), DIAG (NCCL_GIN_TS_DIAG), EXTRA_ENV
 set -u
@@ -67,7 +68,7 @@ if [ "$KILL_R1" = 1 ]; then
 fi
 LATRAW=""; [ "$FAULT" = lat ] && LATRAW="GIN_LAT_RAW=$WORK/lat_raw.csv"
 T0=$(date +%s.%N)
-env $NENV NCCL_IB_HCA=mlx5_1 NCCL_IB_GID_INDEX=$GID0 ${INJ0:+NCCL_GIN_FAULT_INJECT=$INJ0} $LATRAW \
+env $NENV NCCL_IB_HCA=mlx5_1 NCCL_IB_GID_INDEX=$GID0 ${INJ0:+NCCL_GIN_FAULT_INJECT=$INJ0} $LATRAW ${R0_ENV:-} \
   stdbuf -oL -eL timeout -s KILL $((WATCHDOG_S+20)) "$BUNDLE/$BIN" 0 $RAIN_MGMT $PORT $ARGS "$WORK/r0.kv" $GAP_US \
   > "$WORK/r0.log" 2>&1
 R0RC=$?
@@ -84,7 +85,7 @@ mkdir -p "$LOGDIR"
 stem="${CELL:-ts${TS}b${BASE}_${FAULT}_${WAIT}}_${TRIAL}"
 for f in r0.log r1.log r0.kv r1.kv kill.out; do [ -f "$WORK/$f" ] && cp "$WORK/$f" "$LOGDIR/${stem}_$f"; done
 [ -f "$WORK/lat_raw.csv" ] && gzip -c "$WORK/lat_raw.csv" > "$LOGDIR/${stem}_lat_raw.csv.gz"
-echo "cell=${CELL:-} var=${VAR:-} fault=$FAULT wait=$WAIT trial=$TRIAL ts=$TS base=$BASE rec=$REC classify=$CLASSIFY diag=${DIAG:-} inject=$INJECT \
+echo "cell=${CELL:-} var=${VAR:-} r0env=$(echo ${R0_ENV:-} | tr ' ' '+') fault=$FAULT wait=$WAIT trial=$TRIAL ts=$TS base=$BASE rec=$REC classify=$CLASSIFY diag=${DIAG:-} inject=$INJECT \
 iters=$ITERS bytes=$BYTES gap_us=$GAP_US r0rc=$R0RC r1rc=$R1RC left=$LEFT ib_timeout=$IB_TIMEOUT \
 wall_s=$(awk "BEGIN{printf \"%.1f\", $T1-$T0}") bundle=$BUNDLE" > "$LOGDIR/${stem}_meta.txt"
 echo "[$tag] r0rc=$R0RC r1rc=$R1RC left=$LEFT wall=$(awk "BEGIN{printf \"%.1f\", $T1-$T0}")s :: $(grep -h 'DONE outcome' "$WORK/r0.log" "$WORK/r1.log" 2>/dev/null | sed 's/^.*\] //' | tr '\n' '|')" >&2

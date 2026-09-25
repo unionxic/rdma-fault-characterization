@@ -32,7 +32,8 @@ def fnum(x, default=None):
 
 
 def parse_log(path):
-    out = {"fires": [], "q4": [], "rec": [], "decl": [], "ts_on": 0, "ts_off": [], "gin_err_warn": 0}
+    out = {"fires": [], "q4": [], "rec": [], "decl": [], "ts_on": 0, "ts_off": [], "gin_err_warn": 0,
+           "watchdog": [], "test_stall": [], "test_die": [], "split": None, "teardown": None}
     if not os.path.exists(path):
         return out
     for line in open(path, errors="replace"):
@@ -58,6 +59,27 @@ def parse_log(path):
             out["ts_off"].append(line.strip()[-120:])
         elif "GIN Error detected" in line:
             out["gin_err_warn"] += 1
+        elif "GIN/TS: watchdog" in line:
+            m = re.search(r"mono_ms=([\d.]+)", line)
+            out["watchdog"].append(float(m.group(1)) if m else None)
+        elif "GIN/TS: TEST stall" in line:
+            m = re.search(r"mono_ms=([\d.]+)", line)
+            out["test_stall"].append(float(m.group(1)) if m else None)
+        elif "GIN/TS: TEST helper thread exits" in line:
+            m = re.search(r"mono_ms=([\d.]+)", line)
+            out["test_die"].append(float(m.group(1)) if m else None)
+        elif "GIN/TS: communicator teardown" in line:
+            d = dict(re.findall(r"(\w+)=(-?[\d.]+)", line))
+            m = re.search(r"joined in ([\d.]+) ms", line)
+            m2 = re.search(r"gates poisoned=(\d+) failed=(\d+)", line)
+            out["teardown"] = {"join_ms": float(m.group(1)) if m else None,
+                               "round": int(d.get("round_in_progress", -1)), "queued": int(d.get("queued", -1)),
+                               "dead": int(d.get("helper_dead", -1)),
+                               "poisoned": int(m2.group(1)) if m2 else None, "poison_failed": int(m2.group(2)) if m2 else None}
+        elif "GIN/TS: TEST split rank" in line:
+            m = re.search(r"nsplit=(\d+) no_ack=(\d+)", line)
+            if m:
+                out["split"] = (int(m.group(1)), int(m.group(2)))
     return out
 
 
@@ -103,7 +125,27 @@ def main():
                 "decl_r0": ";".join(l0["decl"]), "decl_r1": ";".join(l1["decl"]),
                 "teardown_r0": k0.get("abort_ret"), "teardown_r1": k1.get("abort_ret"),
                 "launch_r0": k0.get("launch_mono_ms"), "kernel_ms_r0": k0.get("kernel_ms"),
+                "kernel_ms_r1": k1.get("kernel_ms"), "teardown_ms_r0": k0.get("teardown_ms"),
+                "teardown_ms_r1": k1.get("teardown_ms"),
+                "tx_err_n": k0.get("tx_err_n"), "tx_err_first_lat_us": k0.get("tx_err_first_lat_us"),
+                "tx_err_later_max_lat_us": k0.get("tx_err_later_max_lat_us"),
+                "r0_async_first_ms": k0.get("async_first_ms_after_launch"),
+                "split_n": l0["split"][0] if l0["split"] else None,
+                "split_noack": l0["split"][1] if l0["split"] else None,
+                "n_watchdog_r0": len(l0["watchdog"]), "r1_q4": len(l1["q4"]),
+                "r0env": m.get("r0env", ""),
+                "kernel_exit_after_async_ms": k0.get("kernel_exit_after_async_ms"),
+                "post_abort_running_r0": k0.get("post_abort_kernel_running_at_abort_return"),
+                "post_abort_state_r0": k0.get("post_abort_state"), "post_abort_exit_ms_r0": k0.get("post_abort_exit_ms"),
+                "post_abort_state_r1": k1.get("post_abort_state"),
             }
+            for rk, lg in (("r0", l0), ("r1", l1)):
+                td = lg["teardown"]
+                r["td_" + rk] = int(td is not None)
+                r["td_join_ms_" + rk] = td["join_ms"] if td else None
+                r["td_round_" + rk] = td["round"] if td else None
+                r["td_poisoned_" + rk] = td["poisoned"] if td else None
+                r["td_poison_failed_" + rk] = td["poison_failed"] if td else None
             # a trial whose driver could not bind its own rendezvous port never reached NCCL (harness failure)
             r0log = stem + "_r0.log"
             r["bind_fail"] = int(os.path.exists(r0log) and "bind: Address already in use" in open(r0log, errors="replace").read())
@@ -146,6 +188,19 @@ def main():
                 r["fault_to_resumed_ms"] = (res - fire) if (fire is not None and res) else None
                 r["mbx_to_resumed_us"] = x.get("mbx_to_resumed_us")
                 r["S/U/n"] = x.get("S/U/n")
+                # exactly-once boundary (split cell): the k-th put's WRITE executed, its ADD did not ->
+                # S = 2k WQEs posted in the epoch, U = 2k-1 executed, n = 1 re-posted (the ADD alone)
+                ms = re.search(r"NCCL_GIN_TS_TEST_SPLIT=(\d+)", m.get("r0env", ""))
+                su = re.match(r"\[(\d+)/(\d+)/(\d+)", x.get("S/U/n") or "")
+                if ms and su:
+                    kk = int(ms.group(1)); S_, U_, n_ = (int(v) for v in su.groups())
+                    r["split_k"] = kk
+                    r["split_boundary"] = int(S_ == 2 * kk and U_ == 2 * kk - 1 and n_ == 1)
+            wd = l0["watchdog"][0] if l0["watchdog"] else None
+            st0 = (l0["test_stall"] or l0["test_die"] or [None])[0]
+            r["stall_to_watchdog_ms"] = (wd - st0) if (wd is not None and st0 is not None) else None
+            r["fault_to_watchdog_ms"] = (wd - fire) if (wd is not None and fire is not None) else None
+            r["mbx_to_watchdog_ms"] = (wd - q4ms) if (wd is not None and q4ms) else None
             if l0.get("decl_mono") is not None and fire is not None:
                 r["fault_to_decline_ms"] = l0["decl_mono"] - fire
             if l0.get("decl_mono") is not None and q4ms:

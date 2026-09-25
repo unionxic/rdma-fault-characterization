@@ -34,6 +34,41 @@ for ((k = START; k < START + N; k++)); do
     neg_noring_t)   TS=1 DIAG=noring INJECT=$inj WATCHDOG_S=40 EXTRA_ENV="GIN_TS_RX_WAIT_S=10" run F1 timeout n$k "$L" 120 ;;
     off_f1_b) TS=0 INJECT=$inj run F1 blocking n$k "$L" 120 ;;
     base_f1_b) BASE=1 INJECT=$inj run F1 blocking n$k "$L" 120 ;;
+    # --- follow-up (external review) ---
+    # exactly-once boundary: the k-th put+signal is split; the fault fires after its WRITE completed and
+    # before its ADD is posted (test hook inside NCCL, rank 0 only): the round must re-post only the ADD
+    split_b)  TS=1 R0_ENV="NCCL_GIN_TS_TEST_SPLIT=$(( 20 + (k * 13) % 80 ))" run none blocking n$k "$L" 120 ;;
+    # bounded behaviour when the helper stalls / dies mid-round (rank 0 test knobs)
+    # (GIN_TS_ASYNC_GRACE_S: how long the application lets the kernel finish after the async error;
+    #  GIN_TS_POST_ABORT_WAIT_S: observe a kernel still running at ncclCommAbort; both driver-side only)
+    stallq_b) TS=1 ABORT_WD_S=15 R0_ENV="NCCL_GIN_TS_TEST_STALL=8000@quiesce" \
+              EXTRA_ENV="NCCL_GIN_TS_ROUND_MS=2000 NCCL_GIN_TS_HOLD_MS=4000 GIN_TS_RX_WAIT_S=12 GIN_TS_ASYNC_GRACE_S=10 GIN_TS_POST_ABORT_WAIT_S=3" \
+              INJECT=$inj run F1 blocking n$k "$L" 120 ;;
+    stallc_b) TS=1 ABORT_WD_S=15 R0_ENV="NCCL_GIN_TS_TEST_STALL=8000@commit" \
+              EXTRA_ENV="NCCL_GIN_TS_ROUND_MS=2000 NCCL_GIN_TS_HOLD_MS=4000 GIN_TS_RX_WAIT_S=12 GIN_TS_ASYNC_GRACE_S=10 GIN_TS_POST_ABORT_WAIT_S=3" \
+              INJECT=$inj run F1 blocking n$k "$L" 120 ;;
+    die_b)    TS=1 ABORT_WD_S=15 R0_ENV="NCCL_GIN_TS_TEST_DIE=quiesce GIN_TS_CONTINUE=1" \
+              EXTRA_ENV="NCCL_GIN_TS_ROUND_MS=2000 NCCL_GIN_TS_HOLD_MS=4000 GIN_TS_RX_WAIT_S=12 GIN_TS_ASYNC_GRACE_S=10 GIN_TS_POST_ABORT_WAIT_S=3" \
+              INJECT=$inj run F1 blocking n$k "$L" 120 ;;
+    # a slow but successful round (helper stalled 3 s < NCCL_GIN_TS_ROUND_MS 25 s): must stay transparent,
+    # no watchdog (the review found a false "helper not running" at the end of rounds longer than 1 s)
+    #   (odd trials stall after quiesce, even trials after both commits, i.e. inside the responder's DONE wait)
+    slow_b)   st=quiesce; [ $((k % 2)) = 0 ] && st=commit
+              TS=1 R0_ENV="NCCL_GIN_TS_TEST_STALL=3000@$st" EXTRA_ENV="GIN_TS_POST_ABORT_WAIT_S=3" INJECT=$inj \
+              run F1 blocking n$k "$L" 120 ;;
+    # the application's own flush timeout (0.5 s) is shorter than the (stalled, 3 s) recovery
+    tmo_t)    TS=1 ABORT_WD_S=15 DEV_TIMEOUT_S=0.5 R0_ENV="NCCL_GIN_TS_TEST_STALL=3000@quiesce" \
+              EXTRA_ENV="NCCL_GIN_TS_ROUND_MS=2000 GIN_TS_RX_WAIT_S=12 GIN_TS_ASYNC_GRACE_S=10 GIN_TS_POST_ABORT_WAIT_S=3" \
+              INJECT=$inj run F1 timeout n$k "$L" 120 ;;
+    # production form of the helper-vs-teardown race: the application calls ncclCommAbort (without
+    # ncclDevCommDestroy) while rank 0's helper is inside a round (stalled 8 s after quiesce) and the
+    # kernel is parked (hold 30 s): the teardown must join the helper, poison the gates, and the kernel exit
+    abortmid_b) TS=1 ABORT_WD_S=15 R0_ENV="NCCL_GIN_TS_TEST_STALL=8000@quiesce GIN_TS_ASYNC_GRACE_S=0.3" \
+              EXTRA_ENV="NCCL_GIN_TS_ROUND_MS=2000 NCCL_GIN_TS_HOLD_MS=30000 GIN_TS_RX_WAIT_S=12 GIN_TS_POST_ABORT_WAIT_S=5" \
+              INJECT=$inj run F1 blocking n$k "$L" 120 ;;
+    # cumulative cost attribution (unsafe device variants compiled into the driver only)
+    lat_c1gpufence_4k|lat_c2nogate_4k|lat_c3nopoll_4k) v=${CELL#lat_}; TS=1 VAR=${v%_4k} run lat blocking n$k "$L" 3000 4096 ;;
+    lat_c1gpufence_256k|lat_c2nogate_256k|lat_c3nopoll_256k) v=${CELL#lat_}; TS=1 VAR=${v%_256k} run lat blocking n$k "$L" 3000 262144 ;;
     lat_on_4k)    TS=1 run lat blocking n$k "$L" 3000 4096 ;;
     lat_off_4k)   TS=0 run lat blocking n$k "$L" 3000 4096 ;;
     lat_base_4k)  BASE=1 run lat blocking n$k "$L" 3000 4096 ;;

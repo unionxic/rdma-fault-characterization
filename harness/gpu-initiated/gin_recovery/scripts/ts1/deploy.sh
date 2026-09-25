@@ -28,7 +28,7 @@ echo "rain:"; echo "$L"; echo "sunny:"; echo "$S"
 (cd ~/$B/base && LD_LIBRARY_PATH=$HOME/$B/base ldd ./gin_ts1 | grep nccl)
 ssh -n "$SUNNY_SSH" "cd ~/$B && LD_LIBRARY_PATH=\$HOME/$B ldd ./gin_ts1 | grep nccl"
 # cost-attribution variants (driver only; the same libnccl as the S1 bundle)
-for v in nogate nopoll gpufence; do
+for v in ${VARS:-c1gpufence c2nogate c3nopoll}; do
   VB=$SCR/agent_ts1/var/$v/gin_ts1
   [ -f "$VB" ] || continue
   mkdir -p ~/$B/var_$v; cp -f "$LIB" ~/$B/var_$v/; cp -f "$VB" ~/$B/var_$v/gin_ts1

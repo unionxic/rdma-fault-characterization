@@ -13,8 +13,10 @@
 # Apply to a pristine tree:  git apply gin_transparent_s1.diff   (equivalently: 1-4 in order, then S1 alone)
 #
 # env (S1): NCCL_GIN_FAULT_TRANSPARENT=1 (needs NCCL_GIN_FAULT_CLASSIFY=1 NCCL_GIN_FAULT_RECOVERY=1, on every
-#   rank); NCCL_GIN_TS_HANDSHAKE_MS (3000), NCCL_GIN_TS_HOLD_MS (10000), NCCL_GIN_TS_QUIESCE_MS (5000),
-#   NCCL_GIN_TS_CONNECT_MS (15000); NCCL_GIN_TS_DIAG=norebase|noring (negative controls only).
+#   rank); NCCL_GIN_TS_HANDSHAKE_MS (3000), NCCL_GIN_TS_HOLD_MS (30000: device-side bound of every parked
+#   poster/waiter), NCCL_GIN_TS_QUIESCE_MS (5000), NCCL_GIN_TS_CONNECT_MS (15000), NCCL_GIN_TS_ROUND_MS (25000:
+#   watchdog on one helper round); negative controls NCCL_GIN_TS_DIAG=norebase|noring; test knobs (research
+#   only) NCCL_GIN_TS_TEST_STALL=<ms>@quiesce|commit, NCCL_GIN_TS_TEST_DIE=quiesce, NCCL_GIN_TS_TEST_SPLIT=<k>[,..].
 #
 # S1 files:
 #   include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h  struct ncclGinTsGate (64 B, in the reserved2
@@ -26,13 +28,22 @@
 #       (set up at context creation over the GIN collComm), policy, quiesce, existing Prepare/Commit,
 #       executed-count exchange (responder rmsn), re-post + host doorbell, epoch publish, decline; Q4 watcher
 #       hands faults to the helper; queryLastError reports only declined faults; helper QP state changes are
-#       serialized with the fault hook (opMu); periodic gate scan (lost records / give-ups -> decline)
+#       serialized with the fault hook (opMu); periodic gate scan (lost records / give-ups -> decline);
+#       watchdog in the Q4 watcher (round longer than ROUND_MS, or a helper that stopped taking records ->
+#       async error); ncclGinGdakiTsCommTeardown (helper, watcher, hook joined and gates poisoned when the
+#       communicator is destroyed or aborted without ncclDevCommDestroy)
+#   init.cc  ncclCommAbort calls ncclGinGdakiTsCommTeardown right after it sets the abort flags (a kernel held
+#       across a recovery must be released before the teardown's cudaFree, which waits for it)
+#   gin/gin_host.cc  ncclGinHostFinalize calls ncclGinGdakiTsCommTeardown before the GIN collComms close
+#       (ncclCommDestroy; a no-op after an abort)
+#   (follow-up after an external review: flushAsync non-blocking, parked time charged to a timeout, parked
+#   posters bounded, watchdog, teardown, the exactly-once split test)
 #   transport/net_ib/gdaki/doca-gpunetio/{include/host/doca_verbs.h,src/doca_verbs_qp.{cpp,hpp}}
 #       doca_verbs_qp_query_seq: QPC rmsn / next_rcv_psn / next_send_psn / state via DEVX QUERY_QP
 # Design, tests and results: TRANSPARENT_S1.md
 #
 diff --git a/src/gin/gin_host.cc b/src/gin/gin_host.cc
-index b4ec6c2..139f3a1 100644
+index b4ec6c2..c221de1 100644
 --- a/src/gin/gin_host.cc
 +++ b/src/gin/gin_host.cc
 @@ -18,6 +18,24 @@
@@ -90,6 +101,27 @@ index b4ec6c2..139f3a1 100644
    if (ret != ncclSuccess) {
      for (int commIdx = 0; commIdx < backend->ginCommCount; commIdx++) {
        if (ginStateDevComm->ginCtx[commIdx]) backend->ncclGin->destroyContext(ginStateDevComm->ginCtx[commIdx]);
+@@ -477,9 +504,20 @@ ncclResult_t ncclGinDevCommFree(struct ncclComm* comm, struct ncclDevComm const*
+   return ncclSuccess;
+ }
+ 
++// GIN transparent recovery S1 (research build; transport/net_ib/gdaki/gin_host_gdaki.cc): stops the recovery
++// helper threads of this communicator's GDAKI contexts. A devComm the application did not destroy keeps its
++// GDAKI context (and so its helper) past the communicator's teardown; the helper must not outlive the
++// collComm and the communicator it uses. No-op unless NCCL_GIN_FAULT_TRANSPARENT=1, and after
++// ncclCommAbort, which already called it (init.cc).
++extern void ncclGinGdakiTsCommTeardown(void* commKey, void* collComm);
++
+ ncclResult_t ncclGinHostFinalize(struct ncclComm* comm) {
+   struct ncclGinState* ginState = &comm->sharedRes->ginState;
+   if (!ginState->connected) return ncclSuccess;
++  ncclGinGdakiTsCommTeardown((void*)comm, nullptr);
++  for (int b = 0; b < ginState->numActiveBackends; b++)
++    for (int c = 0; c < ginState->backends[b].ginCommCount; c++)
++      if (ginState->backends[b].ginComms[c] != NULL) ncclGinGdakiTsCommTeardown(nullptr, ginState->backends[b].ginComms[c]);
+ 
+   if (ginState->proxyThreadsCreated) {
+     ginState->proxyThreadStopSignal.store(true);
 diff --git a/src/include/nccl_device/gin.h b/src/include/nccl_device/gin.h
 index 24ba385..a7e2106 100644
 --- a/src/include/nccl_device/gin.h
@@ -125,7 +157,7 @@ index 24ba385..a7e2106 100644
    template <typename Coop, typename DescriptorSmem = ncclGin_None>
    NCCL_DEVICE_INLINE ncclResult_t flush(Coop coop, cuda::memory_order ord, DescriptorSmem descriptor,
 diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki.h b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
-index 6ad2c76..cf3b979 100644
+index 6ad2c76..653dbb9 100644
 --- a/src/include/nccl_device/gin/gdaki/gin_gdaki.h
 +++ b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
 @@ -10,6 +10,7 @@
@@ -145,7 +177,7 @@ index 6ad2c76..cf3b979 100644
    uint64_t sq_rsvd_index;
  };
  static_assert(sizeof(ncclGinGdakiRequest) <= sizeof(ncclGinRequest_t),
-@@ -48,6 +51,170 @@ NCCL_DEVICE_INLINE uint32_t docaOptFlagsFromGinOptFlags(uint32_t ginOptFlags) {
+@@ -48,6 +51,284 @@ NCCL_DEVICE_INLINE uint32_t docaOptFlagsFromGinOptFlags(uint32_t ginOptFlags) {
           (!!(ginOptFlags & ncclGinOptFlagsAggregateRequests) * DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_SKIP_DB_RINGING);
  }
  
@@ -176,7 +208,8 @@ index 6ad2c76..cf3b979 100644
 +              "gate2 must fill reserved1 exactly");
 +static_assert(sizeof(struct doca_gpu_dev_verbs_qp) % 8 == 0, "device QP array stride must keep the gate aligned");
 +#define NCCL_GIN_TS_EPOCH_ANY 0xffffffffu  // tsPollEnter: accept the current stable epoch
-+#define NCCL_GIN_TS_EPOCH_BAD 0xfffffffeu  // request: no valid ticket (declined / no stable epoch in time)
++#define NCCL_GIN_TS_EPOCH_BAD 0xfffffffeu  // request: no valid ticket (the QP failed)
++#define NCCL_GIN_TS_EPOCH_PENDING 0xfffffffdu  // request: a recovery was in progress; the wait takes the ticket
 +
 +NCCL_DEVICE_INLINE static struct ncclGinTsGate* tsGate(doca_gpu_dev_verbs_qp* qp) {
 +  return reinterpret_cast<struct ncclGinTsGate*>(qp->reserved2);
@@ -212,21 +245,93 @@ index 6ad2c76..cf3b979 100644
 +  return t;
 +}
 +
++// Results of the bounded waits below.
++#define NCCL_GIN_TS_OK 0       // proceed
++#define NCCL_GIN_TS_FAIL 1     // the QP failed (declined by the host, or a device give-up won): an error
++#define NCCL_GIN_TS_TIMEOUT 2  // the caller's own timeout expired first (not a failure: stock timeout semantics)
++
++// The caller's own deadline (clock64 based, as the stock timeout paths): cycles == 0 means none.
++struct ncclGinTsDeadline {
++  uint64_t start;
++  uint64_t cycles;
++};
++NCCL_DEVICE_INLINE static bool tsExpired(const struct ncclGinTsDeadline& d) {
++  return d.cycles != 0 && (uint64_t)clock64() - d.start >= d.cycles;
++}
++
++// Mark the QP failed from the device and raise the sticky context error (blocking flush()/wait() report
++// it). status is only ever written to 1 (by the host when it declines, or here), so there is no race.
++NCCL_DEVICE_INLINE static void tsPoison(doca_gpu_dev_verbs_qp* qp, struct ncclGinGdakiQ4* q4, uint32_t ctxId) {
++  atomicExch(&tsGate(qp)->status, 1u);
++  if (q4 != nullptr) {
++    const uint32_t c = ctxId < NCCL_GIN_GDAKI_Q4_MAX_CTX ? ctxId : NCCL_GIN_GDAKI_Q4_MAX_CTX - 1;
++    atomicExch(&q4->sticky[c], 1u);
++  }
++  __threadfence_system();
++}
++
++// A device thread whose bound expired while it waited for stable epoch `next`. Commit point with the
++// host (Dekker): record `next` in abandoned, fence, read commit; the host writes commit = next, then
++// reads abandoned. Either the host sees the give-up (it declines: nothing of that round executes) or
++// the thread sees the commit (it keeps waiting: the round is publishing). Returns true if the give-up
++// won; the caller then poisons the QP, so later waits on it fail at once instead of each waiting for a
++// bound, and later posts are not made (tsGateEnter checks status); the host declines on seeing it.
++NCCL_DEVICE_INLINE static bool tsGiveUp(doca_gpu_dev_verbs_qp* qp, uint32_t next) {
++  atomicMax(&tsGate2(qp)->abandoned, next);
++  __threadfence_system();
++  return tsLoadAcquireSys(&tsGate(qp)->commit) < next;
++}
++
 +// Enter the post critical section of `qp` (before a WQE slot is reserved). Dekker with the host,
 +// which writes pause=1 and afterwards reads `active` (two copies on one stream, the read issued
 +// only after the write completed): our increment is ordered before our pause load by the
 +// system-scope sequentially consistent fence, so the host either reads active > 0 (and waits for
 +// us) or we read pause == 1 (and back out). A parked poster is uncounted and holds no WQE slot. The
 +// acquire load makes the posting code below read the QP state the host left after a recovery.
-+__device__ __noinline__ static void tsGateEnter(doca_gpu_dev_verbs_qp* qp) {
++// Parking is bounded by the gate's waitMs (give-up through the commit point, a second bound after a
++// lost one). Returns false if the post must not be made: the QP failed (the operation is not posted
++// and every later flush/wait on the QP reports ncclRemoteError).
++__device__ __noinline__ static bool tsGateEnter(doca_gpu_dev_verbs_qp* qp, struct ncclGinGdakiQ4* q4, uint32_t ctxId) {
 +  struct ncclGinTsGate* g = tsGate(qp);
 +  while (true) {
 +    atomicAdd(&g->active, 1u);
 +    __threadfence_system();
-+    if (tsLoadAcquireSys(&g->pause) == 0) return;
++    // status (sticky) is loaded before the acquire load of pause so the two loads overlap: a QP poisoned
++    // by a device give-up (or at communicator teardown) may still be healthy, and must take no new post.
++    const uint32_t failed = tsLoadRelaxedSys(&g->status);
++    if (tsLoadAcquireSys(&g->pause) == 0 && failed == 0) return true;
 +    tsReleaseDec(&g->active);
-+    // Parked until the host publishes or declines (it always clears pause, within its bounded round).
-+    while (tsLoadAcquireSys(&g->pause) != 0) __nanosleep(1000);
++    if (failed != 0) {
++      tsPoison(qp, q4, ctxId);
++      return false;
++    }
++    const uint64_t holdNs = (uint64_t)tsLoadRelaxedSys(&g->waitMs) * 1000000ull;
++    uint64_t t0 = tsNowNs();
++    bool committed = false;
++    while (tsLoadAcquireSys(&g->pause) != 0) {
++      if (tsLoadRelaxedSys(&g->status) != 0) {  // failed while parked
++        tsPoison(qp, q4, ctxId);
++        return false;
++      }
++      if (tsNowNs() - t0 > holdNs) {
++        // The epoch this poster waits for is the one after the odd epoch of the round in progress. An
++        // even epoch here means the host published after the pause load above: re-check pause instead
++        // of giving up on an epoch that was never going to come.
++        const uint32_t e = tsLoadAcquireSys(&g->epoch);
++        if ((e & 1u) == 0) {
++          __nanosleep(1000);
++          continue;
++        }
++        const uint32_t next = e + 1u;
++        if (committed || tsGiveUp(qp, next)) {
++          tsPoison(qp, q4, ctxId);
++          return false;
++        }
++        committed = true;  // the host passed its commit point: wait one more bound for the publication
++        t0 = tsNowNs();
++      }
++      __nanosleep(1000);
++    }
 +  }
 +}
 +NCCL_DEVICE_INLINE static void tsGateLeave(doca_gpu_dev_verbs_qp* qp) { tsReleaseDec(&tsGate(qp)->active); }
@@ -257,21 +362,11 @@ index 6ad2c76..cf3b979 100644
 +  return false;
 +}
 +
-+// A waiter whose bound expired while it waited for stable epoch `next`. Commit point with the host
-+// (Dekker): we record `next` in abandoned, fence, then read commit; the host writes commit = next,
-+// then reads abandoned. Either the host sees us (it declines: nothing of that round executes) or we
-+// see its commit (we keep waiting: the round is publishing and our operation is being re-posted).
-+// Returns true if the waiter must fail.
-+NCCL_DEVICE_INLINE static bool tsGiveUp(doca_gpu_dev_verbs_qp* qp, uint32_t next) {
-+  atomicMax(&tsGate2(qp)->abandoned, next);
-+  __threadfence_system();
-+  return tsLoadAcquireSys(&tsGate(qp)->commit) < next;
-+}
-+
-+// Park until the epoch is stable and differs from `notEpoch` (NCCL_GIN_TS_EPOCH_ANY: any stable epoch).
-+// false: declined, or the bound expired and the give-up won. After a lost give-up (the host committed)
-+// the waiter waits one more bound for the publication before it fails regardless.
-+NCCL_DEVICE_INLINE static bool tsParkStable(doca_gpu_dev_verbs_qp* qp, uint32_t notEpoch) {
++// Park until the epoch is stable and differs from `notEpoch` (NCCL_GIN_TS_EPOCH_ANY: any stable epoch),
++// bounded by the caller's deadline (TIMEOUT) and by the gate's waitMs (give-up through the commit
++// point; after a lost give-up, one more bound for the publication, then failure regardless).
++NCCL_DEVICE_INLINE static int tsParkStable(doca_gpu_dev_verbs_qp* qp, uint32_t notEpoch, struct ncclGinGdakiQ4* q4,
++                                           uint32_t ctxId, const struct ncclGinTsDeadline& dl) {
 +  struct ncclGinTsGate* g = tsGate(qp);
 +  const uint64_t holdNs = (uint64_t)tsLoadRelaxedSys(&g->waitMs) * 1000000ull;
 +  uint64_t t0 = tsNowNs();
@@ -279,13 +374,16 @@ index 6ad2c76..cf3b979 100644
 +  NVCC_PRAGMA_UNROLL_DISABLED
 +  while (true) {
 +    const uint32_t cur = tsLoadAcquireSys(&g->epoch);
-+    if (tsLoadRelaxedSys(&g->status) != 0) return false;
-+    if ((cur & 1u) == 0 && cur != notEpoch) return true;
++    if (tsLoadRelaxedSys(&g->status) != 0) return NCCL_GIN_TS_FAIL;
++    if ((cur & 1u) == 0 && cur != notEpoch) return NCCL_GIN_TS_OK;
++    if (tsExpired(dl)) return NCCL_GIN_TS_TIMEOUT;
 +    if (tsNowNs() - t0 > holdNs) {
-+      if (committed) return false;  // the host committed and did not publish within a further bound
 +      // The stable epoch we wait for: the next one after an odd epoch, else the one after notEpoch.
 +      const uint32_t next = (cur & 1u) ? cur + 1u : notEpoch + 2u;
-+      if (tsGiveUp(qp, next)) return false;
++      if (committed || tsGiveUp(qp, next)) {
++        tsPoison(qp, q4, ctxId);
++        return NCCL_GIN_TS_FAIL;
++      }
 +      committed = true;
 +      t0 = tsNowNs();
 +    }
@@ -295,28 +393,76 @@ index 6ad2c76..cf3b979 100644
 +
 +// A logical ticket for everything posted so far on `qp`: *logicalCount = lbase + sq_rsvd_index, read
 +// inside the counted region (where neither can change). stay = keep the region entered on success
-+// (flush polls next; *epoch and *phys then describe the entered state). false: declined or gave up.
++// (flush polls next; *epoch and *phys then describe the entered state).
 +template <enum doca_gpu_dev_verbs_resource_sharing_mode doca_sharing_mode>
-+__device__ __noinline__ static bool tsTicket(doca_gpu_dev_verbs_qp* qp, uint32_t* epoch, uint64_t* phys,
-+                                             uint64_t* logicalCount, bool stay) {
++__device__ __noinline__ static int tsTicket(doca_gpu_dev_verbs_qp* qp, uint32_t* epoch, uint64_t* phys,
++                                            uint64_t* logicalCount, bool stay, struct ncclGinGdakiQ4* q4,
++                                            uint32_t ctxId, struct ncclGinTsDeadline dl) {
 +  struct ncclGinTsGate* g = tsGate(qp);
 +  while (true) {
-+    if (!tsParkStable(qp, NCCL_GIN_TS_EPOCH_ANY)) return false;
++    const int pr = tsParkStable(qp, NCCL_GIN_TS_EPOCH_ANY, q4, ctxId, dl);
++    if (pr != NCCL_GIN_TS_OK) return pr;
 +    uint32_t e = NCCL_GIN_TS_EPOCH_ANY;
-+    if (!tsPollEnter(qp, &e)) continue;  // went odd (or declined) in between: park again
++    if (!tsPollEnter(qp, &e)) continue;  // went odd (or failed) in between: park again
 +    const uint64_t n = doca_gpu_dev_verbs_atomic_read<uint64_t, doca_sharing_mode>(&qp->sq_rsvd_index);
 +    *epoch = e;
 +    *phys = n;
 +    *logicalCount = tsLoadRelaxedSys64(&g->lbase) + n;
 +    if (!stay) tsPollLeave(qp);
-+    return true;
++    return NCCL_GIN_TS_OK;
 +  }
++}
++
++// Test only (NCCL_GIN_TS_TEST_SPLIT, see struct ncclGinTsTest): called inside the gate for a
++// put+signal. Returns true if it posted the operation itself (split), false to post it normally.
++template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode>
++__device__ __noinline__ static bool tsTestSplitPut(doca_gpu_dev_verbs_qp* qp, doca_gpu_dev_verbs_addr raddr,
++                                                   doca_gpu_dev_verbs_addr laddr, size_t bytes,
++                                                   doca_gpu_dev_verbs_addr sig_raddr,
++                                                   doca_gpu_dev_verbs_addr sig_laddr, uint64_t sigVal,
++                                                   uint32_t codeOpt) {
++  struct ncclGinTsGate* g = tsGate(qp);
++  volatile struct ncclGinTsTest* t = (volatile struct ncclGinTsTest*)tsLoadRelaxedSys64(&g->test);
++  if (t == nullptr || bytes == 0) return false;
++  const uint32_t k = atomicAdd(&g->testPuts, 1u) + 1u;
++  bool hit = false;
++  const uint32_t nl = t->nlist < NCCL_GIN_TS_TEST_MAXLIST ? t->nlist : NCCL_GIN_TS_TEST_MAXLIST;
++  for (uint32_t i = 0; i < nl; i++) hit |= (t->list[i] == k);
++  if (!hit) return false;
++  // 1. the WRITE alone; its success CQE means the responder executed it (RC: ACK after placement).
++  doca_gpu_dev_verbs_ticket_t w;
++  doca_gpu_dev_verbs_put<resource_sharing_mode>(qp, raddr, laddr, bytes, &w, codeOpt);
++  const uint64_t t0 = tsNowNs();
++  int st;
++  do {
++    st = doca_gpu_dev_verbs_poll_one_cq_at<resource_sharing_mode>(qp, w);
++  } while (st > 0 && tsNowNs() - t0 < 1000000000ull);
++  // 2. the gap: the host test thread moves the QPs to ERR, then acks (bounded).
++  bool acked = false;
++  if (st == 0) {
++    t->gapReq = k;
++    __threadfence_system();
++    while (tsNowNs() - t0 < 2000000000ull) {
++      if (t->gapAck == k) {
++        acked = true;
++        break;
++      }
++      __nanosleep(1000);
++    }
++  }
++  if (acked) t->nsplit = t->nsplit + 1;
++  else t->nsplitNoAck = t->nsplitNoAck + 1;
++  __threadfence_system();
++  // 3. the signal ADD alone, into the QP in ERR: flushed; the responder never executes it.
++  doca_gpu_dev_verbs_signal<DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD, resource_sharing_mode>(qp, sig_raddr, sig_laddr,
++                                                                                      sigVal, codeOpt);
++  return true;
 +}
 +
  template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode, typename Coop>
  NCCL_DEVICE_INLINE static void putImplMode(
    ncclGinCtx ctx, Coop coop, int peer, bool hasWins, ncclGinWindow_t dstWin, size_t dstOff, ncclGinWindow_t srcWin,
-@@ -62,7 +229,7 @@ NCCL_DEVICE_INLINE static void putImplMode(
+@@ -62,7 +343,7 @@ NCCL_DEVICE_INLINE static void putImplMode(
      doca_gpu_dev_verbs_qp* companion_qp;
      ncclGinGdakiMemHandle* dstMh = (ncclGinGdakiMemHandle*)dstWin;
      ncclGinGdakiMemHandle* srcMh = (ncclGinGdakiMemHandle*)srcWin;
@@ -325,17 +471,33 @@ index 6ad2c76..cf3b979 100644
  
      doca_gpu_dev_verbs_addr raddr, laddr;
      if (hasWins) {
-@@ -89,6 +256,9 @@ NCCL_DEVICE_INLINE static void putImplMode(
+@@ -89,6 +370,11 @@ NCCL_DEVICE_INLINE static void putImplMode(
        counter_laddr.key = loadConst(&gdaki->sink_buffer_lkey);
      }
  
 +    const bool ts = tsOn(qp);  // GIN transparent recovery: pause gate (off: one load)
-+    if (ts) tsGateEnter(qp);
++    // A false gate means the QP failed while this poster was parked: the operation is not posted, and
++    // every later flush/wait on the QP reports ncclRemoteError.
++    if (ts && !tsGateEnter(qp, loadConst(&gdaki->fault), ctx.contextId)) goto tsSkipped;
 +
      // cuda::thread_scope_system has the lowest value
      // DOCA guarantees SCOPE_GPU. Only add another release if SCOPE_SYSTEM is required.
      if ((required == cuda::thread_scope_system) && (given > required)) {
-@@ -118,6 +288,10 @@ NCCL_DEVICE_INLINE static void putImplMode(
+@@ -101,8 +387,11 @@ NCCL_DEVICE_INLINE static void putImplMode(
+           qp, raddr, laddr, bytes, sig_raddr, sig_laddr, signalOpArg, companion_qp, counter_raddr, counter_laddr, 1,
+           codeOpt);
+       } else if (hasSignal) {
+-        doca_gpu_dev_verbs_put_signal<DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD, resource_sharing_mode>(
+-          qp, raddr, laddr, bytes, sig_raddr, sig_laddr, signalOpArg, codeOpt);
++        if (!(ts && (tsGate(qp)->flags & NCCL_GIN_TS_F_TEST_SPLIT) &&
++              tsTestSplitPut<resource_sharing_mode>(qp, raddr, laddr, bytes, sig_raddr, sig_laddr, signalOpArg,
++                                                    codeOpt)))
++          doca_gpu_dev_verbs_put_signal<DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD, resource_sharing_mode>(
++            qp, raddr, laddr, bytes, sig_raddr, sig_laddr, signalOpArg, codeOpt);
+       } else if (hasCounter) {
+         doca_gpu_dev_verbs_put_counter<resource_sharing_mode>(qp, raddr, laddr, bytes, companion_qp, counter_raddr,
+                                                               counter_laddr, 1, codeOpt);
+@@ -118,6 +407,11 @@ NCCL_DEVICE_INLINE static void putImplMode(
                                                                                              signalOpArg, codeOpt);
        }
      }
@@ -343,10 +505,11 @@ index 6ad2c76..cf3b979 100644
 +      if (hasWins && bytes == 0) tsMarkNonMsg(qp, NCCL_GIN_TS_NONMSG_NOP);  // DOCA posts a NOP for 0 bytes
 +      tsGateLeave(qp);
 +    }
++  tsSkipped:;
  
  #ifdef NCCL_DEVICE_GIN_GDAKI_ENABLE_DEBUG
      doca_gpu_dev_verbs_wait(qp);
-@@ -166,7 +340,7 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
+@@ -166,7 +460,7 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
      ncclGinGdakiGPUContext* gdaki = &((struct ncclGinGdakiGPUContext*)ctx.handle)[ctx.contextId];
      doca_gpu_dev_verbs_qp* qp = loadConst(&gdaki->gdqp) + peer;
      ncclGinGdakiMemHandle* dstMh = (ncclGinGdakiMemHandle*)dstWin;
@@ -355,32 +518,33 @@ index 6ad2c76..cf3b979 100644
  
      doca_gpu_dev_verbs_addr raddr;
      raddr.addr = dstOff;
-@@ -181,6 +355,9 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
+@@ -181,6 +475,9 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
        sig_laddr.key = loadConst(&gdaki->sink_buffer_lkey);
      }
  
 +    const bool ts = tsOn(qp);  // GIN transparent recovery: pause gate (off: one load)
-+    if (ts) tsGateEnter(qp);
++    if (ts && !tsGateEnter(qp, loadConst(&gdaki->fault), ctx.contextId)) goto tsSkipped;  // QP failed: not posted
 +
      // cuda::thread_scope_system has the lowest value
      // DOCA guarantees SCOPE_GPU. Only add another release if SCOPE_SYSTEM is required.
      if ((required == cuda::thread_scope_system) && (given > required)) {
-@@ -193,6 +370,7 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
+@@ -193,6 +490,8 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
      } else {
        doca_gpu_dev_verbs_p<T, resource_sharing_mode>(qp, raddr, srcData, codeOpt);
      }
 +    if (ts) tsGateLeave(qp);
++  tsSkipped:;
  
  #ifdef NCCL_DEVICE_GIN_GDAKI_ENABLE_DEBUG
      doca_gpu_dev_verbs_wait(qp);
-@@ -275,10 +453,16 @@ NCCL_DEVICE_INLINE static void getImplMode(ncclGinCtx ctx, Coop coop, int peer,
+@@ -275,10 +574,17 @@ NCCL_DEVICE_INLINE static void getImplMode(ncclGinCtx ctx, Coop coop, int peer,
      laddr.key = loadConst(&localMh->lkey);
      doca_gpu_dev_verbs_addr uninitialized_daddr{};
      doca_gpu_dev_verbs_ticket_t out_ticket;
 -    uint32_t codeOpt = nccl::gin::gdaki::docaOptFlagsFromGinOptFlags(optFlags);
 +    uint32_t codeOpt = q4CollapsedCodeOpt(qp, nccl::gin::gdaki::docaOptFlagsFromGinOptFlags(optFlags));
 +    const bool ts = tsOn(qp);  // GIN transparent recovery: pause gate (off: one load)
-+    if (ts) tsGateEnter(qp);
++    if (ts && !tsGateEnter(qp, loadConst(&gdaki->fault), ctx.contextId)) goto tsSkipped;  // QP failed: not posted
      doca_gpu_dev_verbs_get<doca_sharing_mode>(qp, raddr, laddr, bytes, uninitialized_daddr, &out_ticket, codeOpt);
      // +1 so 0 means no gets; must be after get to avoid race with concurrent flushes
      atomicMaxAtIndex<gin_sharing_mode>(loadConst(&gdaki->last_issued_get), peer, out_ticket + 1);
@@ -388,10 +552,11 @@ index 6ad2c76..cf3b979 100644
 +      tsMarkNonMsg(qp, NCCL_GIN_TS_NONMSG_READ);
 +      tsGateLeave(qp);
 +    }
++  tsSkipped:;
    }
    coop.sync();
  }
-@@ -312,6 +496,7 @@ NCCL_DEVICE_INLINE static void flushAsyncImpl(ncclGinCtx ctx, int peer, ncclGinR
+@@ -312,6 +618,7 @@ NCCL_DEVICE_INLINE static void flushAsyncImpl(ncclGinCtx ctx, int peer, ncclGinR
    ncclGinGdakiGPUContext* gdaki = &((struct ncclGinGdakiGPUContext*)ctx.handle)[ctx.contextId];
    doca_gpu_dev_verbs_qp* qp = loadConst(&gdaki->gdqp) + peer;
  
@@ -399,11 +564,15 @@ index 6ad2c76..cf3b979 100644
    if (loadConst(&gdaki->use_mcst)) {
      uint64_t* lastIssuedGetArr = loadConst(&gdaki->last_issued_get);
      uint64_t* lastVisibleGetArr = loadConst(&gdaki->last_visible_get);
-@@ -322,18 +507,322 @@ NCCL_DEVICE_INLINE static void flushAsyncImpl(ncclGinCtx ctx, int peer, ncclGinR
+@@ -322,18 +629,335 @@ NCCL_DEVICE_INLINE static void flushAsyncImpl(ncclGinCtx ctx, int peer, ncclGinR
        daddr.addr = 0;
        daddr.key = loadConst(&gdaki->sink_buffer_lkey);
        doca_gpu_dev_verbs_ticket_t mcstWqeIdx;
-+      if (ts) tsGateEnter(qp);
++      if (ts && !tsGateEnter(qp, loadConst(&gdaki->fault), ctx.contextId)) {  // QP failed: nothing posted
++        req->tsEpoch = NCCL_GIN_TS_EPOCH_BAD;
++        req->sq_rsvd_index = 0;
++        return;
++      }
        doca_gpu_dev_verbs_mcst<doca_sharing_mode, DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, daddr, &mcstWqeIdx);
        req->sq_rsvd_index = mcstWqeIdx + 1;
         // Must be after mcst to avoid race with concurrent flushes
@@ -420,13 +589,20 @@ index 6ad2c76..cf3b979 100644
    }
  
 +  if (ts) {
-+    uint32_t e = 0;
-+    uint64_t n = 0, l = 0;
-+    if (tsTicket<doca_sharing_mode>(qp, &e, &n, &l, /*stay=*/false)) {
++    // Never blocks (as stock): one attempt at the counted region. During a recovery the ticket is
++    // taken by the wait instead (PENDING: it then also covers posts made after this call, which only
++    // makes the wait longer, never early).
++    uint32_t e = NCCL_GIN_TS_EPOCH_ANY;
++    if (tsPollEnter(qp, &e)) {
++      const uint64_t n = doca_gpu_dev_verbs_atomic_read<uint64_t, doca_sharing_mode>(&qp->sq_rsvd_index);
 +      req->tsEpoch = 0;
-+      req->sq_rsvd_index = l;  // logical count
-+    } else {  // the wait reports it
-+      req->tsEpoch = NCCL_GIN_TS_EPOCH_BAD;
++      req->sq_rsvd_index = tsLoadRelaxedSys64(&tsGate(qp)->lbase) + n;  // logical count
++      tsPollLeave(qp);
++    } else if (tsLoadRelaxedSys(&tsGate(qp)->status) != 0) {
++      req->tsEpoch = NCCL_GIN_TS_EPOCH_BAD;  // failed QP: the wait reports it
++      req->sq_rsvd_index = 0;
++    } else {
++      req->tsEpoch = NCCL_GIN_TS_EPOCH_PENDING;
 +      req->sq_rsvd_index = 0;
 +    }
 +    return;
@@ -635,9 +811,11 @@ index 6ad2c76..cf3b979 100644
 +// were executed by the responder and [U, S) are re-posted at physical [0, S - U). Inside the counted
 +// region a waiter maps it: below lbase = done; else physical = logical - lbase. On an error CQE the
 +// waiter publishes the Q4 record (once per epoch, without the sticky error), leaves the region and
-+// parks until a new stable epoch, or a decline. Holding is bounded by the gate's waitMs (commit point
-+// with the host, tsGiveUp); a declined QP or a won give-up returns ncclRemoteError and raises the
-+// sticky error, as Q4 did.
++// parks until a new stable epoch, or a decline. Bounds: a caller with a timeout gets ncclTimeout at
++// its own deadline, parked time included (the operation may still complete, as with a stock timeout);
++// holding is also bounded by the gate's waitMs (give-up through the commit point with the host,
++// tsGiveUp; one more bound after a lost give-up). A failed QP (declined, or a won give-up, which
++// poisons it) returns ncclRemoteError and raises the sticky error, as Q4 did.
 +// ---------------------------------------------------------------------------
 +NCCL_DEVICE_INLINE static ncclResult_t tsFail(ncclGinCtx ctx, struct ncclGinGdakiQ4* q4) {
 +  if (q4 != nullptr) {
@@ -648,27 +826,28 @@ index 6ad2c76..cf3b979 100644
 +}
 +
 +// Wait for logical WQE `lticket`. entered: the caller holds the counted region for `epoch`, in which
-+// the ticket is physical index `phys` (tsTicket with stay); else the region is entered here.
++// the ticket is physical index `phys` (tsTicket with stay); else the region is entered here. With
++// HasTimeout, the caller's deadline (startCycle + timeoutCycles) covers everything, parked time included.
 +template <bool HasTimeout, enum doca_gpu_dev_verbs_resource_sharing_mode doca_sharing_mode>
 +__device__ __noinline__ static ncclResult_t tsPoll(ncclGinCtx ctx, struct ncclGinGdakiQ4* q4, doca_gpu_dev_verbs_qp* qp,
 +                                                   int peer, uint64_t lticket, bool entered, uint32_t epoch,
 +                                                   uint64_t phys, cuda::memory_order ord, uint32_t* abortFlag,
-+                                                   uint64_t timeoutCycles, uint8_t path) {
++                                                   uint64_t startCycle, uint64_t timeoutCycles, uint8_t path) {
 +  using nccl::utility::testAbort;
-+  (void)timeoutCycles;
 +  struct ncclGinTsGate* g = tsGate(qp);
 +  const bool noRebase = (g->flags & NCCL_GIN_TS_F_DIAG_NOREBASE) != 0;
++  struct ncclGinTsDeadline dl;
++  dl.start = startCycle;
++  dl.cycles = HasTimeout ? timeoutCycles : 0;
 +  bool in = entered, havePhys = entered;
 +  uint64_t t = phys;
 +  uint32_t steps = 0, abortSteps = 0;
-+  uint64_t startCycle = 0;
-+  (void)startCycle;
-+  if NCCL_IF_CONSTEXPR (HasTimeout) startCycle = clock64();
 +  NVCC_PRAGMA_UNROLL_DISABLED
 +  while (true) {
 +    if (!in) {
-+      if (!tsParkStable(qp, NCCL_GIN_TS_EPOCH_ANY)) return tsFail(ctx, q4);  // declined / gave up
-+      if NCCL_IF_CONSTEXPR (HasTimeout) startCycle = clock64();  // time parked is not charged to the caller
++      const int pr = tsParkStable(qp, NCCL_GIN_TS_EPOCH_ANY, q4, ctx.contextId, dl);
++      if (pr == NCCL_GIN_TS_TIMEOUT) return ncclTimeout;  // the caller's bound; the operation may still complete
++      if (pr != NCCL_GIN_TS_OK) return tsFail(ctx, q4);   // declined / gave up
 +      uint32_t e = NCCL_GIN_TS_EPOCH_ANY;
 +      if (!tsPollEnter(qp, &e)) continue;
 +      in = true;
@@ -698,18 +877,17 @@ index 6ad2c76..cf3b979 100644
 +        q4Report(ctx, q4, qp, peer, t, NCCL_GIN_Q4_KIND_ERR_CQE, path, /*sticky=*/false, epoch);
 +      tsPollLeave(qp);
 +      in = false;
-+      if (!tsParkStable(qp, epoch)) return tsFail(ctx, q4);
++      const int pr = tsParkStable(qp, epoch, q4, ctx.contextId, dl);
++      if (pr == NCCL_GIN_TS_TIMEOUT) return ncclTimeout;
++      if (pr != NCCL_GIN_TS_OK) return tsFail(ctx, q4);
 +      steps = 0;
-+      if NCCL_IF_CONSTEXPR (HasTimeout) startCycle = clock64();  // time held is not charged to the caller
 +      continue;
 +    }
-+    if NCCL_IF_CONSTEXPR (HasTimeout) {
-+      if (clock64() - startCycle >= timeoutCycles) {
-+        if (q4 != nullptr)
-+          q4Report(ctx, q4, qp, peer, t, NCCL_GIN_Q4_KIND_TIMEOUT_DUMP, path, /*sticky=*/false, epoch);
-+        tsPollLeave(qp);
-+        return ncclTimeout;
-+      }
++    if (tsExpired(dl)) {
++      if (q4 != nullptr)
++        q4Report(ctx, q4, qp, peer, t, NCCL_GIN_Q4_KIND_TIMEOUT_DUMP, path, /*sticky=*/false, epoch);
++      tsPollLeave(qp);
++      return ncclTimeout;
 +    }
 +    if (testAbort(abortFlag, abortSteps)) {
 +      tsPollLeave(qp);
@@ -722,17 +900,35 @@ index 6ad2c76..cf3b979 100644
  template <bool HasTimeout, enum doca_gpu_dev_verbs_resource_sharing_mode doca_sharing_mode>
  NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinRequest_t& request, cuda::memory_order ord,
                                                      uint32_t* abortFlag, uint64_t timeoutCycles) {
-@@ -343,14 +832,34 @@ NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinReque
+@@ -343,14 +967,52 @@ NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinReque
    ncclGinGdakiRequest& req = reinterpret_cast<ncclGinGdakiRequest&>(request);
    ncclGinGdakiGPUContext* gdaki = &((struct ncclGinGdakiGPUContext*)ctx.handle)[ctx.contextId];
    doca_gpu_dev_verbs_qp* qp = loadConst(&gdaki->gdqp) + req.peer;
 +  if (tsOn(qp)) {  // GIN transparent recovery: hold across a recovery instead of failing
 +    struct ncclGinGdakiQ4* q4 = loadConst(&gdaki->fault);
-+    if (req.tsEpoch == NCCL_GIN_TS_EPOCH_BAD) return tsFail(ctx, q4);  // flushAsync got no valid ticket
-+    if (req.sq_rsvd_index == 0) return ncclSuccess;                    // logical count 0: nothing posted
-+    return tsPoll<HasTimeout, doca_sharing_mode>(
-+      ctx, q4, qp, req.peer, req.sq_rsvd_index - 1u, /*entered=*/false, 0, 0, ord, abortFlag, timeoutCycles,
-+      HasTimeout ? NCCL_GIN_Q4_PATH_WAIT_TIMEOUT : abortFlag ? NCCL_GIN_Q4_PATH_ABORTABLE : NCCL_GIN_Q4_PATH_WAIT_BLOCKING);
++    const uint8_t path =
++      HasTimeout ? NCCL_GIN_Q4_PATH_WAIT_TIMEOUT : abortFlag ? NCCL_GIN_Q4_PATH_ABORTABLE : NCCL_GIN_Q4_PATH_WAIT_BLOCKING;
++    const uint64_t startCycle = HasTimeout ? clock64() : 0;
++    if (req.tsEpoch == NCCL_GIN_TS_EPOCH_BAD) return tsFail(ctx, q4);  // flushAsync found the QP failed
++    if (req.tsEpoch == NCCL_GIN_TS_EPOCH_PENDING) {  // flushAsync ran during a recovery: take the ticket now
++      uint32_t e = 0;
++      uint64_t n = 0, l = 0;
++      struct ncclGinTsDeadline dl;
++      dl.start = startCycle;
++      dl.cycles = HasTimeout ? timeoutCycles : 0;
++      const int tr = tsTicket<doca_sharing_mode>(qp, &e, &n, &l, /*stay=*/true, q4, ctx.contextId, dl);
++      if (tr == NCCL_GIN_TS_TIMEOUT) return ncclTimeout;
++      if (tr != NCCL_GIN_TS_OK) return tsFail(ctx, q4);
++      if (n == 0) {
++        tsPollLeave(qp);
++        return ncclSuccess;
++      }
++      return tsPoll<HasTimeout, doca_sharing_mode>(ctx, q4, qp, req.peer, l - 1, /*entered=*/true, e, n - 1, ord,
++                                                   abortFlag, startCycle, timeoutCycles, path);
++    }
++    if (req.sq_rsvd_index == 0) return ncclSuccess;  // logical count 0: nothing posted
++    return tsPoll<HasTimeout, doca_sharing_mode>(ctx, q4, qp, req.peer, req.sq_rsvd_index - 1u, /*entered=*/false, 0,
++                                                 0, ord, abortFlag, startCycle, timeoutCycles, path);
 +  }
    if (req.sq_rsvd_index == 0) return ncclSuccess;
    const doca_gpu_dev_verbs_ticket_t pollIdx = static_cast<doca_gpu_dev_verbs_ticket_t>(req.sq_rsvd_index - 1u);
@@ -758,7 +954,7 @@ index 6ad2c76..cf3b979 100644
        cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
        return ncclSuccess;
      }
-@@ -367,8 +876,17 @@ NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinReque
+@@ -367,8 +1029,17 @@ NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinReque
        cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
        return ncclSuccess;
      }
@@ -777,7 +973,7 @@ index 6ad2c76..cf3b979 100644
      }
      if (testAbort(abortFlag, steps)) {
        cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
-@@ -398,6 +916,7 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+@@ -398,6 +1069,7 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
  
    ncclGinGdakiGPUContext* gdaki = &((struct ncclGinGdakiGPUContext*)ctx.handle)[ctx.contextId];
    doca_gpu_dev_verbs_qp* qps = loadConst(&gdaki->gdqp);
@@ -785,20 +981,25 @@ index 6ad2c76..cf3b979 100644
    uint32_t steps = 0;
    uint64_t startCycle = 0;
    (void)startCycle; // referenced only when HasTimeout is true
-@@ -405,6 +924,21 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+@@ -405,6 +1077,26 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
  
    NVCC_PRAGMA_UNROLL_DISABLED
    for (int peer = coop.thread_rank(); peer < ctx.nRanks; peer += coop.size()) {
 +    if (tsOn(&qps[peer])) {  // GIN transparent recovery: consistent ticket, hold across a recovery
 +      uint32_t e = 0;
 +      uint64_t n = 0, l = 0;
-+      if (!tsTicket<resource_sharing_mode>(&qps[peer], &e, &n, &l, /*stay=*/true)) return tsFail(ctx, q4);
++      struct ncclGinTsDeadline dl;  // the flush's own deadline covers parking too
++      dl.start = HasTimeout ? startCycle : 0;
++      dl.cycles = HasTimeout ? timeoutCycles : 0;
++      const int tr = tsTicket<resource_sharing_mode>(&qps[peer], &e, &n, &l, /*stay=*/true, q4, ctx.contextId, dl);
++      if (tr == NCCL_GIN_TS_TIMEOUT) return ncclTimeout;
++      if (tr != NCCL_GIN_TS_OK) return tsFail(ctx, q4);
 +      if (n == 0) {  // nothing posted in this epoch; earlier epochs' WQEs were executed or re-posted here
 +        tsPollLeave(&qps[peer]);
 +        continue;
 +      }
 +      const ncclResult_t r = tsPoll<HasTimeout, resource_sharing_mode>(
-+        ctx, q4, &qps[peer], peer, l - 1, /*entered=*/true, e, n - 1, ord, abortFlag, timeoutCycles,
++        ctx, q4, &qps[peer], peer, l - 1, /*entered=*/true, e, n - 1, ord, abortFlag, dl.start, timeoutCycles,
 +        HasTimeout ? NCCL_GIN_Q4_PATH_FLUSH_TIMEOUT
 +                   : abortFlag ? NCCL_GIN_Q4_PATH_ABORTABLE : NCCL_GIN_Q4_PATH_FLUSH_BLOCKING);
 +      if (r != ncclSuccess) return r;
@@ -807,7 +1008,7 @@ index 6ad2c76..cf3b979 100644
      uint64_t ticket = doca_gpu_dev_verbs_atomic_read<uint64_t, resource_sharing_mode>(&qps[peer].sq_rsvd_index);
      if (ticket == 0) continue; // No need to poll if there are no outstanding operations
      --ticket;
-@@ -413,7 +947,16 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+@@ -413,7 +1105,16 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
      // no deadline AND no abort flag to honor.
      if NCCL_IF_CONSTEXPR (!HasTimeout) {
        if (abortFlag == nullptr) {
@@ -825,7 +1026,7 @@ index 6ad2c76..cf3b979 100644
          continue;
        }
      }
-@@ -422,8 +965,17 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+@@ -422,8 +1123,17 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
      while (true) {
        int status = doca_gpu_dev_verbs_poll_one_cq_at<resource_sharing_mode>(&qps[peer], ticket);
        if (status == 0) break;
@@ -844,7 +1045,7 @@ index 6ad2c76..cf3b979 100644
        }
        if (testAbort(abortFlag, steps)) {
          if NCCL_IF_CONSTEXPR (HasTimeout) {
-@@ -658,6 +1210,20 @@ struct ncclGinApi_FlushesAllPutsOnAnySignal<NCCL_NET_DEVICE_GIN_GDAKI> {
+@@ -658,6 +1368,20 @@ struct ncclGinApi_FlushesAllPutsOnAnySignal<NCCL_NET_DEVICE_GIN_GDAKI> {
    }
  };
  
@@ -866,10 +1067,10 @@ index 6ad2c76..cf3b979 100644
  struct ncclGinApi_Flush<NCCL_NET_DEVICE_GIN_GDAKI> {
    template <typename Coop>
 diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
-index 6463df7..55a3eaa 100644
+index 6463df7..625b9c1 100644
 --- a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
 +++ b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
-@@ -22,6 +22,152 @@ struct ncclGinGdakiGlobalGPUBufferTable {
+@@ -22,6 +22,169 @@ struct ncclGinGdakiGlobalGPUBufferTable {
    unsigned int offset;
  };
  
@@ -984,17 +1185,20 @@ index 6463df7..55a3eaa 100644
 +// ---------------------------------------------------------------------------
 +#define NCCL_GIN_TS_F_ON 0x1u             // gate enabled on this QP
 +#define NCCL_GIN_TS_F_DIAG_NOREBASE 0x2u  // negative control: waiters keep their pre-recovery physical index
++#define NCCL_GIN_TS_F_TEST_SPLIT 0x4u     // test only: split listed put+signal ops (struct ncclGinTsTest)
 +struct ncclGinTsGate {
 +  uint32_t pause;        // host: 1 while a recovery owns the QP (posters park before reserving a WQE slot)
 +  uint32_t epoch;        // host: even = stable epoch; odd = a recovery is in progress
-+  uint32_t status;       // host: 0 ok; 1 declined (terminal; waiters return ncclRemoteError)
++  uint32_t status;       // 0 ok; 1 = failed (terminal; waiters/posters return ncclRemoteError): set by the host
++                         // when it declines, or by a device thread that won a give-up (both only ever write 1)
 +  uint32_t nonmsg;       // device: a WQE that is not a request message (NOP, DUMP) or a READ was posted
 +  uint64_t lbase;        // host: logical index of physical WQE 0 of the current stable epoch (read by
 +                         // waiters only inside the counted region, where it cannot change)
 +  uint32_t commit;       // host: the stable epoch it is about to publish, written before its last check of
 +                         // gate2.abandoned (commit point, Dekker with a waiter that gives up)
-+  uint32_t pad0;
-+  uint64_t reserved[2];
++  uint32_t testPuts;     // test only (TEST_SPLIT): signalled puts seen on this QP (device atomics)
++  uint64_t test;         // test only (TEST_SPLIT): device pointer of the host-mapped struct ncclGinTsTest
++  uint64_t reserved;
 +  uint32_t active;       // device: posters inside the gate
 +  uint32_t flags;        // host at init: NCCL_GIN_TS_F_*
 +  uint32_t reported;     // device: highest (epoch + 2) for which a waiter published a fault record
@@ -1009,6 +1213,20 @@ index 6463df7..55a3eaa 100644
 +                       // nothing is re-posted for an operation the application saw fail
 +};
 +static_assert(sizeof(struct ncclGinTsGate2) == 8, "ncclGinTsGate2 must fit the 8-byte QP padding");
++// Test only (NCCL_GIN_TS_TEST_SPLIT, initiator rank): host-mapped pinned memory. For each listed put
++// (1-based count of signalled puts on the QP) the device posts the WRITE alone, waits for its success
++// CQE (the responder executed it), publishes gapReq, waits (bounded) for the host test thread to move
++// the QPs to ERR and ack, then posts the signal ADD alone, which is flushed: the "WRITE executed, ADD
++// not" boundary, deterministically.
++#define NCCL_GIN_TS_TEST_MAXLIST 8
++struct ncclGinTsTest {
++  uint32_t gapReq;     // device: the put index now in its gap
++  uint32_t gapAck;     // host: the fault for gapReq has fired
++  uint32_t nsplit;     // device: splits whose gap was acked
++  uint32_t nsplitNoAck;  // device: splits whose WRITE failed or whose gap was not acked in time
++  uint32_t nlist;      // host at init
++  uint32_t list[NCCL_GIN_TS_TEST_MAXLIST];
++};
 +
 +// Device-memory control block (one per GDAKI host context).
 +struct ncclGinGdakiQ4 {
@@ -1022,7 +1240,7 @@ index 6463df7..55a3eaa 100644
  struct ncclGinGdakiGPUContext {
    struct doca_gpu_dev_verbs_qp* gdqp;
    struct doca_gpu_dev_verbs_qp* companion_gdqp;
-@@ -34,6 +180,8 @@ struct ncclGinGdakiGPUContext {
+@@ -34,6 +197,8 @@ struct ncclGinGdakiGPUContext {
  
    uint64_t* last_issued_get;  // per-peer (0 = no gets)
    uint64_t* last_visible_get; // per-peer
@@ -1092,6 +1310,30 @@ index cfcd547..4988f62 100644
  }
  
  template <unsigned beMask>
+diff --git a/src/init.cc b/src/init.cc
+index 4a88a75..c7930b0 100644
+--- a/src/init.cc
++++ b/src/init.cc
+@@ -3485,6 +3485,7 @@ fail:
+   goto exit;
+ }
+ 
++extern void ncclGinGdakiTsCommTeardown(void* commKey, void* collComm);  // transport/net_ib/gdaki/gin_host_gdaki.cc
+ NCCL_API(ncclResult_t, ncclCommAbort, ncclComm_t comm);
+ ncclResult_t ncclCommAbort(ncclComm_t comm) {
+   NVTX3_RANGE(NcclNvtxParamsCommAbort);
+@@ -3503,6 +3504,11 @@ ncclResult_t ncclCommAbort(ncclComm_t comm) {
+   /* init thread must be joined before we destroy the comm,
+    * and we should ignore the init error here. */
+   (void)ncclCommEnsureReady(comm);
++  // GIN transparent recovery S1 (research build; no-op unless NCCL_GIN_FAULT_TRANSPARENT=1): stop the
++  // recovery helpers of this communicator and fail their gates now, as the abort flag does for NCCL's
++  // own kernels. A device thread held across a recovery then returns an error at once; the teardown
++  // below frees device memory, and that waits for every running kernel.
++  ncclGinGdakiTsCommTeardown((void*)comm, nullptr);
+ 
+   // once the comm is ready, we can access ranks etc
+   int rank = comm->rank, nranks = comm->nRanks, cudaDev = comm->cudaDev;
 diff --git a/src/nccl.h.in b/src/nccl.h.in
 index 0b1ef92..89f7bae 100644
 --- a/src/nccl.h.in
@@ -1246,7 +1488,7 @@ index 7e70d56..1f1c357 100644
  
      bool is_qp_attr_path_mtu_valid(enum doca_verbs_mtu_size path_mtu) noexcept;
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 976ab91..161fac9 100644
+index 976ab91..c8aaebd 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -15,6 +15,23 @@
@@ -1281,7 +1523,7 @@ index 976ab91..161fac9 100644
  
  #include "doca_gpunetio_host.h"
  #include "nccl_device/gin/gdaki/gin_gdaki_device_host_common.h"
-@@ -380,8 +398,24 @@ struct gdaki_context {
+@@ -380,8 +398,25 @@ struct gdaki_context {
    int rankStride;
  
    doca_verbs_comp_channel_t* docaEvent;
@@ -1295,6 +1537,7 @@ index 976ab91..161fac9 100644
 +struct ncclGinGdakiQ4Record;
 +static bool gdakiTsActive(struct gdakiRecHost* r);
 +static bool gdakiTsRoutes(struct gdakiRecHost* r, const struct ncclGinGdakiQ4Record& rec);
++static void gdakiTsWatchdog(struct gdakiRecHost* r);
 +static void gdakiTsPushFault(struct gdakiRecHost* r, const struct ncclGinGdakiQ4Record& rec, double monoMs);
 +static void gdakiTsStart(struct gdakiRecHost* r);
 +static void gdakiTsFree(struct gdakiRecHost* r);
@@ -1306,7 +1549,7 @@ index 976ab91..161fac9 100644
  static void gdakiFillExchInfo(struct gdaki_exch_info* exch_info, struct gdaki_context* gdaki_ctx,
                                struct doca_gpu_verbs_qp_hl* gqp) {
    exch_info->lid = gdaki_ctx->port_attr.lid;
-@@ -464,8 +498,11 @@ static ncclResult_t gdakiGetPathMtu(enum ibv_mtu local_active_mtu, enum ibv_mtu
+@@ -464,8 +499,11 @@ static ncclResult_t gdakiGetPathMtu(enum ibv_mtu local_active_mtu, enum ibv_mtu
    return ncclSuccess;
  }
  
@@ -1319,7 +1562,7 @@ index 976ab91..161fac9 100644
    ncclResult_t status = ncclSuccess;
    doca_verbs_qp_attr_t* verbs_qp_attr = nullptr;
    int max_dest_rd_atomic =
-@@ -519,9 +556,9 @@ static ncclResult_t gdakiConnectQp(struct gdaki_context* ctx, struct doca_gpu_ve
+@@ -519,9 +557,9 @@ static ncclResult_t gdakiConnectQp(struct gdaki_context* ctx, struct doca_gpu_ve
    DOCACHECK(doca_verbs_ah_attr_set_dlid(ctx->ah, dlid));
    DOCACHECK(doca_verbs_qp_attr_create(&verbs_qp_attr));
    DOCACHECKGOTO(doca_verbs_qp_attr_set_path_mtu(verbs_qp_attr, path_mtu), status, destroy_verbs_qp_attr);
@@ -1331,7 +1574,7 @@ index 976ab91..161fac9 100644
    DOCACHECKGOTO(doca_verbs_qp_attr_set_port_num(verbs_qp_attr, ctx->port_num), status, destroy_verbs_qp_attr);
    DOCACHECKGOTO(doca_verbs_qp_attr_set_ack_timeout(verbs_qp_attr, ncclParamIbTimeout()), status, destroy_verbs_qp_attr);
    DOCACHECKGOTO(doca_verbs_qp_attr_set_retry_cnt(verbs_qp_attr, ncclParamIbRetryCnt()), status, destroy_verbs_qp_attr);
-@@ -585,6 +622,2264 @@ destroy_verbs_qp_attr:
+@@ -585,6 +623,2517 @@ destroy_verbs_qp_attr:
  NCCL_PARAM(GinGdakiUseReliableDB, "GDAKI_USE_RELIABLE_DB", 0);
  NCCL_PARAM(GinGdakiForceMcst, "GDAKI_FORCE_MCST", 0);
  
@@ -1664,6 +1907,7 @@ index 976ab91..161fac9 100644
 +      q->lastSeq[s] = seq;
 +      gdakiQ4Handle(q, r, monoMs);
 +    }
++    if (q->ctx->rec) gdakiTsWatchdog(q->ctx->rec);  // GIN transparent recovery: no-op unless it is on
 +    if (q->qpWatchMs > 0 && gdakiQ4MonoMs() >= nextWatch) {
 +      nextWatch += q->qpWatchMs;
 +      int i = 0;
@@ -2567,6 +2811,11 @@ index 976ab91..161fac9 100644
 +//                                 exceed the host's own bounds for one round, ~quiesce+drain+2x handshake)
 +//   NCCL_GIN_TS_QUIESCE_MS=<ms>    bound on waiting for in-gate posters to leave (5000)
 +//   NCCL_GIN_TS_CONNECT_MS=<ms>    bound on the init-time socket setup (15000)
++//   NCCL_GIN_TS_ROUND_MS=<ms>      watchdog: a helper round (or queued fault with no live helper) older than
++//                                 this surfaces the fault through ncclCommGetAsyncError (25000)
++//   test only: NCCL_GIN_TS_TEST_STALL=<ms>@quiesce|commit (the initiator's helper sleeps in its round),
++//   NCCL_GIN_TS_TEST_DIE=quiesce (the initiator's helper thread exits mid-round, leaving the QPs paused),
++//   NCCL_GIN_TS_TEST_SPLIT=<k>[,<k>...] (split the k-th put+signal: see struct ncclGinTsTest)
 +//   NCCL_GIN_TS_DIAG=norebase|noring  negative controls only: waiters keep their stale ticket / the
 +//                                 host does not ring the doorbell for the re-posted WQEs
 +// The application's kernels and host code are unchanged. A helper thread per GDAKI context (not the
@@ -2583,6 +2832,7 @@ index 976ab91..161fac9 100644
 +NCCL_PARAM(GinTsHoldMs, "GIN_TS_HOLD_MS", 30000);
 +NCCL_PARAM(GinTsQuiesceMs, "GIN_TS_QUIESCE_MS", 5000);
 +NCCL_PARAM(GinTsConnectMs, "GIN_TS_CONNECT_MS", 15000);
++NCCL_PARAM(GinTsRoundMs, "GIN_TS_ROUND_MS", 25000);
 +
 +#define GDAKI_TS_MAGIC 0x31535447u  // "GTS1"
 +#define GDAKI_TS_DIAG_NOREBASE 0x1u
@@ -2650,6 +2900,38 @@ index 976ab91..161fac9 100644
 +  uint64_t round = 0;
 +  int nRounds = 0, nRecovered = 0, nDeclined = 0, nStale = 0;
 +  std::atomic<int> active{0};             // 1 once the helper runs (gdakiTsActive)
++  // Watchdog (read by the Q4 watcher thread, which is independent of the helper).
++  int roundMs = 25000;
++  std::atomic<int64_t> busySinceUs{0};    // start of the helper's current round, 0 when idle
++  std::atomic<int64_t> heartbeatUs{0};    // last helper loop iteration
++  std::atomic<int> nQueued{0};            // fault records queued and not yet taken by the helper
++  std::atomic<int> surfaced{0};           // 1 once the watchdog raised the error (the helper then declines)
++  // Test knobs (research build).
++  int stallMs = 0, stallStage = 0;        // stage 1 = after quiesce, 2 = after commit
++  int dieStage = 0;                       // 1 = helper thread exits after quiesce
++  std::atomic<int> dead{0};
++  struct ncclGinTsTest* test = nullptr;   // host-mapped (NCCL_GIN_TS_TEST_SPLIT)
++  struct ncclGinTsTest* testDev = nullptr;
++  std::thread testTh;
++};
++
++static int64_t gdakiTsNowUs() {
++  struct timespec t;
++  clock_gettime(CLOCK_MONOTONIC, &t);
++  return (int64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000;
++}
++
++// Marks the helper busy for one round (watchdog input); clears it on every exit path. The heartbeat is
++// refreshed first (release order: the watcher loads busySince with acquire, then the heartbeat), so the
++// end of a long round is never mistaken for a helper that stopped looping.
++struct gdakiTsBusy {
++  struct gdakiTs* ts;
++  explicit gdakiTsBusy(struct gdakiTs* t) : ts(t) { ts->busySinceUs.store(gdakiTsNowUs(), std::memory_order_release); }
++  ~gdakiTsBusy() {
++    if (ts->dead.load(std::memory_order_acquire)) return;
++    ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
++    ts->busySinceUs.store(0, std::memory_order_release);
++  }
 +};
 +
 +
@@ -2676,6 +2958,38 @@ index 976ab91..161fac9 100644
 +static void gdakiTsPushFault(struct gdakiRecHost* r, const struct ncclGinGdakiQ4Record& rec, double monoMs) {
 +  std::lock_guard<std::mutex> lk(r->ts->qMu);
 +  r->ts->faults.push_back({rec, monoMs});
++  r->ts->nQueued.fetch_add(1, std::memory_order_acq_rel);
++}
++
++// Raise the fault on the host (ncclCommGetAsyncError), once.
++static void gdakiTsSurface(struct gdakiRecHost* r, const char* why) {
++  struct gdakiTs* ts = r->ts;
++  if (ts->surfaced.exchange(1) != 0) return;
++  struct gdakiQ4Host* q4 = r->ctx->q4;
++  q4->hasError.store(1, std::memory_order_release);
++  if (q4->asyncResult) {
++    __atomic_store_n(q4->asyncResult, ncclRemoteError, __ATOMIC_RELEASE);
++    q4->setAsync.store(1, std::memory_order_release);
++  }
++  WARN("GIN/TS: watchdog rank=%d: %s; the fault surfaces (ncclRemoteError) mono_ms=%.3f", r->ctx->rank, why,
++       gdakiQ4MonoMs());
++}
++
++// Called by the Q4 watcher thread every poll (it does not depend on the helper): a round older than
++// NCCL_GIN_TS_ROUND_MS, or queued fault records with a helper that has not looped for a second,
++// surface the fault instead of letting it vanish with a stalled or dead helper.
++static void gdakiTsWatchdog(struct gdakiRecHost* r) {
++  if (!gdakiTsActive(r)) return;
++  struct gdakiTs* ts = r->ts;
++  if (ts->surfaced.load(std::memory_order_acquire)) return;
++  const int64_t now = gdakiTsNowUs();
++  const int64_t b = ts->busySinceUs.load(std::memory_order_acquire);
++  if (b != 0 && now - b > (int64_t)ts->roundMs * 1000) {
++    gdakiTsSurface(r, "a recovery round exceeded NCCL_GIN_TS_ROUND_MS (helper stalled or dead)");
++  } else if (b == 0 && ts->nQueued.load(std::memory_order_acquire) > 0 &&
++             now - ts->heartbeatUs.load(std::memory_order_acquire) > 1000000) {
++    gdakiTsSurface(r, "fault records are queued and the recovery helper is not running");
++  }
 +}
 +
 +// ---- socket helpers (every fd is non-blocking; every wait is bounded) ----
@@ -2882,6 +3196,11 @@ index 976ab91..161fac9 100644
 +        break;
 +      }
 +      if (active == 0 && g2.pollers == 0) break;
++      if (r->ts->stop.load(std::memory_order_acquire)) {  // teardown: decline now
++        ret = ncclSystemError;
++        *why = "the communicator is being destroyed";
++        break;
++      }
 +      if (gdakiQ4MonoMs() > deadline) {
 +        WARN("GIN/TS: qpn=%#x: %u poster(s) / %u poller(s) still inside the gate after %d ms", gdakiRecQpn(q),
 +             active, g2.pollers, r->ts->quiesceMs);
@@ -2931,6 +3250,14 @@ index 976ab91..161fac9 100644
 +  unsigned i = 0;
 +  size_t dl = 0;
 +  bool ab = false;
++  if (r->ts->surfaced.load(std::memory_order_acquire)) {  // the watchdog already told the application
++    *why = "the watchdog surfaced the fault before the commit point";
++    return ncclSystemError;
++  }
++  if (r->ts->stop.load(std::memory_order_acquire)) {
++    *why = "the communicator is being destroyed";
++    return ncclSystemError;
++  }
 +  if (gdakiTsCommitPoint(r, peer, &ab) != ncclSuccess || ab) {  // before anything executes again
 +    *why = "a device waiter gave up before the commit point";
 +    return ncclSystemError;
@@ -3102,6 +3429,17 @@ index 976ab91..161fac9 100644
 +  return gdakiQ4Class((uint8_t)cls, 0).name;
 +}
 +
++// Test knob: sleep `ms` in steps, returning early (true) on teardown.
++static bool gdakiTsTestStall(struct gdakiTs* ts, int ms, const char* where, int rank) {
++  WARN("GIN/TS: TEST stall rank=%d %d ms %s mono_ms=%.3f", rank, ms, where, gdakiQ4MonoMs());
++  const double end = gdakiQ4MonoMs() + ms;
++  while (gdakiQ4MonoMs() < end) {
++    if (ts->stop.load(std::memory_order_acquire)) return true;
++    std::this_thread::sleep_for(std::chrono::milliseconds(10));
++  }
++  return false;
++}
++
 +// Initiator: the device reported a fault on a QP to rec.peer.
 +static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f) {
 +  struct gdakiTs* ts = r->ts;
@@ -3131,6 +3469,9 @@ index 976ab91..161fac9 100644
 +    return gdakiTsDecline(r, peer, why, true, cls);
 +  }
 +  if (pe.gone || pe.fd < 0) return gdakiTsDecline(r, peer, "no helper socket to the peer", false, cls);
++  if (ts->surfaced.load(std::memory_order_acquire))
++    return gdakiTsDecline(r, peer, "the watchdog surfaced a fault earlier", true, cls);
++  gdakiTsBusy busy(ts);
 +  const uint64_t round = ++ts->round;
 +  ts->nRounds++;
 +  const char* why = nullptr;
@@ -3143,6 +3484,13 @@ index 976ab91..161fac9 100644
 +  struct gdakiTsReplayStats rs;
 +  if (gdakiTsQuiesce(r, peer, &why) != ncclSuccess) return gdakiTsDecline(r, peer, why, true, cls);
 +  tQ = gdakiQ4MonoMs();
++  if (ts->dieStage == 1) {  // test: the helper thread dies mid-round (QPs paused, round never ends)
++    WARN("GIN/TS: TEST helper thread exits after quiesce rank=%d mono_ms=%.3f", g->rank, gdakiQ4MonoMs());
++    ts->dead.store(1, std::memory_order_release);
++    return;
++  }
++  if (ts->stallStage == 1 && gdakiTsTestStall(ts, ts->stallMs, "after quiesce", g->rank))
++    return gdakiTsDecline(r, peer, "the communicator is being destroyed", true, cls);
 +  if (ncclGinRecoverPrepare(comm, peer, &tok, &st) != ncclSuccess)
 +    return gdakiTsDecline(r, peer, "prepare declined", true, cls);
 +  if (gdakiTsNonMsg(r, peer, &nm) != ncclSuccess || nm != 0) {
@@ -3201,6 +3549,8 @@ index 976ab91..161fac9 100644
 +    return gdakiTsDecline(r, peer, "commit failed", true, cls);
 +  if (gdakiTsBaseline(r, peer) != ncclSuccess) return gdakiTsDecline(r, peer, "QUERY_QP failed after commit", true, cls);
 +  tC = gdakiQ4MonoMs();
++  if (ts->stallStage == 2 && gdakiTsTestStall(ts, ts->stallMs, "after commit", g->rank))
++    return gdakiTsDecline(r, peer, "the communicator is being destroyed", true, cls);
 +  if (gdakiTsReplayResume(r, peer, a.executed, a.nqp, &rs, &why) != ncclSuccess)
 +    return gdakiTsDecline(r, peer, why ? why : "replay failed", true, cls);
 +  const double tR = gdakiQ4MonoMs();
@@ -3236,6 +3586,11 @@ index 976ab91..161fac9 100644
 +    (void)gdakiTsSend(pe.fd, &m, 200);
 +  };
 +  if (pe.declined) return nack(2);
++  if (ts->surfaced.load(std::memory_order_acquire)) {
++    nack(9);
++    return gdakiTsDecline(r, peer, "the watchdog surfaced a fault earlier", false, req.arg);
++  }
++  gdakiTsBusy busy(ts);
 +  const double t0 = gdakiQ4MonoMs();
 +  const char* why = nullptr;
 +  ncclGinRecoverToken_t tok;
@@ -3344,7 +3699,8 @@ index 976ab91..161fac9 100644
 +  std::vector<struct pollfd> pfds;
 +  std::vector<int> who;
 +  double nextScan = gdakiQ4MonoMs() + 100.0;
-+  while (!ts->stop.load(std::memory_order_acquire)) {
++  while (!ts->stop.load(std::memory_order_acquire) && !ts->dead.load(std::memory_order_acquire)) {
++    ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
 +    pfds.clear();
 +    who.clear();
 +    for (int p = 0; p < (int)ts->peers.size(); p++) {
@@ -3381,7 +3737,12 @@ index 976ab91..161fac9 100644
 +      std::lock_guard<std::mutex> lk(ts->qMu);
 +      fs.swap(ts->faults);
 +    }
-+    for (auto& f : fs) gdakiTsInitiate(r, f);
++    for (auto& f : fs) {
++      if (ts->dead.load(std::memory_order_acquire)) break;
++      gdakiTsInitiate(r, f);
++      ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);  // before the count drops (watchdog)
++      ts->nQueued.fetch_sub(1, std::memory_order_acq_rel);
++    }
 +    if (fs.empty() && gdakiQ4MonoMs() >= nextScan) {
 +      gdakiTsScan(r);
 +      nextScan = gdakiQ4MonoMs() + 100.0;
@@ -3537,19 +3898,74 @@ index 976ab91..161fac9 100644
 +}
 +
 +// After gdakiRecRegister (recovery stream and staging exist): enable the gates and start the helper.
++// Test thread (NCCL_GIN_TS_TEST_SPLIT): when the device reports a split put in its gap, move this
++// rank's QPs to ERR (under opMu, like every QP state change) and ack.
++static void gdakiTsTestMain(struct gdakiRecHost* r) {
++  struct gdakiTs* ts = r->ts;
++  volatile struct ncclGinTsTest* t = ts->test;
++  uint32_t last = 0;
++  while (!ts->stop.load(std::memory_order_acquire)) {
++    const uint32_t req = t->gapReq;
++    if (req != 0 && req != last) {
++      {
++        std::lock_guard<std::mutex> op(r->opMu);
++        char tag[64];
++        snprintf(tag, sizeof(tag), " (test split put %u)", req);
++        ncclGinGdakiFaultFire(r->ctx, tag);
++      }
++      std::atomic_thread_fence(std::memory_order_release);
++      t->gapAck = req;
++      last = req;
++    }
++    std::this_thread::sleep_for(std::chrono::microseconds(20));
++  }
++}
++
++static void gdakiTsTestKnobs(struct gdakiRecHost* r) {
++  struct gdakiTs* ts = r->ts;
++  const char* e = getenv("NCCL_GIN_TS_TEST_STALL");
++  if (e && *e) {
++    ts->stallMs = atoi(e);
++    ts->stallStage = strstr(e, "@commit") ? 2 : 1;
++  }
++  e = getenv("NCCL_GIN_TS_TEST_DIE");
++  if (e && *e) ts->dieStage = 1;
++  e = getenv("NCCL_GIN_TS_TEST_SPLIT");
++  if (e && *e) {
++    if (cudaHostAlloc((void**)&ts->test, sizeof(struct ncclGinTsTest), cudaHostAllocMapped) != cudaSuccess ||
++        cudaHostGetDevicePointer((void**)&ts->testDev, ts->test, 0) != cudaSuccess) {
++      WARN("GIN/TS: TEST split: cannot allocate the test block");
++      if (ts->test) cudaFreeHost(ts->test);
++      ts->test = nullptr;
++      ts->testDev = nullptr;
++    } else {
++      memset(ts->test, 0, sizeof(struct ncclGinTsTest));
++      for (const char* q = e; q && *q && ts->test->nlist < NCCL_GIN_TS_TEST_MAXLIST; q = strchr(q, ',') ? strchr(q, ',') + 1 : nullptr)
++        ts->test->list[ts->test->nlist++] = (uint32_t)atoi(q);
++    }
++  }
++  if (ts->stallMs || ts->dieStage || ts->test)
++    WARN("GIN/TS: TEST knobs rank=%d stall_ms=%d stage=%d die=%d split=%s", r->ctx->rank, ts->stallMs, ts->stallStage,
++         ts->dieStage, ts->test ? e : "-");
++}
++
 +static void gdakiTsStart(struct gdakiRecHost* r) {
 +  if (r == nullptr || r->ts == nullptr) return;
 +  struct gdakiTs* ts = r->ts;
 +  struct gdaki_context* g = r->ctx;
 +  bool ok = true;
 +  int nq = 0;
++  ts->roundMs = (int)std::max<int64_t>(100, ncclParamGinTsRoundMs());
++  gdakiTsTestKnobs(r);
 +  for (int p = 0; p < (int)ts->peers.size() && ok; p++) {
 +    if (ts->peers[p].fd < 0) continue;
 +    gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
 +      struct ncclGinTsGate gate;
 +      memset(&gate, 0, sizeof(gate));
-+      gate.flags = NCCL_GIN_TS_F_ON | ((ts->diag & GDAKI_TS_DIAG_NOREBASE) ? NCCL_GIN_TS_F_DIAG_NOREBASE : 0u);
++      gate.flags = NCCL_GIN_TS_F_ON | ((ts->diag & GDAKI_TS_DIAG_NOREBASE) ? NCCL_GIN_TS_F_DIAG_NOREBASE : 0u) |
++                   (ts->testDev ? NCCL_GIN_TS_F_TEST_SPLIT : 0u);
 +      gate.waitMs = (uint32_t)ts->holdMs;
++      gate.test = (uint64_t)(uintptr_t)ts->testDev;
 +      struct ncclGinTsGate2 g2;
 +      memset(&g2, 0, sizeof(g2));
 +      if (gdakiTsGateWrite(r, q->qp_gverbs, 0, &gate, sizeof(gate)) != ncclSuccess ||
@@ -3569,15 +3985,89 @@ index 976ab91..161fac9 100644
 +      });
 +      close(ts->peers[p].fd);
 +    }
++    if (ts->test) cudaFreeHost(ts->test);
 +    delete ts;
 +    r->ts = nullptr;
 +    return;
 +  }
++  ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
 +  ts->active.store(1, std::memory_order_release);
 +  ts->th = std::thread(gdakiTsMain, r);
-+  WARN("GIN/TS: transparent recovery ON rank=%d gated_qps=%d handshake_ms=%d hold_ms=%d quiesce_ms=%d diag=%#x "
-+       "(helper thread + library socket; the application sees no recovered fault)",
-+       g->rank, nq, ts->handshakeMs, ts->holdMs, ts->quiesceMs, ts->diag);
++  if (ts->test) ts->testTh = std::thread(gdakiTsTestMain, r);
++  WARN("GIN/TS: transparent recovery ON rank=%d gated_qps=%d handshake_ms=%d hold_ms=%d quiesce_ms=%d round_ms=%d "
++       "diag=%#x (helper thread + library socket; the application sees no recovered fault)",
++       g->rank, nq, ts->handshakeMs, ts->holdMs, ts->quiesceMs, ts->roundMs, ts->diag);
++}
++
++// Called by ncclCommAbort as soon as the abort flags are set (before the teardown, whose cudaFree calls
++// wait for every running kernel, so a kernel held across a recovery must be released first), and by
++// ncclGinHostFinalize (communicator destroy/abort) before the GIN proxy threads are joined and the GIN
++// collComms are closed (a no-op there after an abort). A GDAKI context lives until ncclDevCommDestroy, and stock NCCL does not
++// call that on ncclCommDestroy/ncclCommAbort: a devComm the application did not destroy keeps its
++// context, and with it the recovery helper, the Q4 watcher and the fault hook, which use the
++// communicator, its collComm and its async-error slot. Stop and join them here for every
++// recovery-enabled context of this communicator (`commKey`) or of a collComm about to be closed:
++//  - watcher first (it reads r->ts), then the helper (a round in progress declines at its next bounded
++//    wait: socket, quiesce, stall; the watcher's watchdog no longer runs, the helper's own bounds do),
++//    then the hook and the split-test thread (both fire QP state changes);
++//  - then poison every gate (status = 1): with no helper left, a device thread parked on a pending fault,
++//    or one that meets a fault later while an application kernel still runs, fails at once instead of
++//    holding for hold_ms. No QP state change is issued here.
++// The context itself (QPs, gates) stays until ncclDevCommDestroy, as in stock NCCL; it is taken out of
++// the registry. Contexts without transparent recovery are not touched (flag off: unchanged). As for
++// every NCCL teardown, a concurrent ncclDevCommDestroy of the same communicator is API misuse.
++static void gdakiTsFree(struct gdakiRecHost* r);
++extern void ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
++  std::vector<struct gdakiRecHost*> rs;
++  {
++    std::lock_guard<std::mutex> lk(gdakiRecRegMu);
++    for (auto* r : gdakiRecReg)
++      if (r->ts != nullptr &&
++          ((commKey != nullptr && r->commKey == commKey) || (collComm != nullptr && (void*)r->ctx->collComm == collComm)))
++        rs.push_back(r);
++  }
++  for (auto* r : rs) {
++    struct gdakiTs* ts = r->ts;
++    const int64_t t0 = gdakiTsNowUs();
++    const int64_t busy = ts->busySinceUs.load(std::memory_order_acquire);
++    const int queued = ts->nQueued.load(std::memory_order_acquire);
++    const int dead = ts->dead.load(std::memory_order_acquire);
++    gdakiQ4Stop(r->ctx->q4);
++    ts->stop.store(true, std::memory_order_release);
++    if (ts->th.joinable()) ts->th.join();
++    if (ts->testTh.joinable()) ts->testTh.join();
++    {
++      std::lock_guard<std::mutex> lk(r->hookMu);
++      r->hookStop = true;
++    }
++    r->hookCv.notify_all();
++    if (r->hookTh.joinable()) r->hookTh.join();
++    const int64_t tJoin = gdakiTsNowUs();
++    int nPoison = 0, nPoisonErr = 0;
++    for (int p = 0; p < (int)ts->peers.size(); p++) {
++      if (ts->peers[p].fd < 0) continue;
++      gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
++        const uint32_t one = 1;
++        if (gdakiTsGateWrite(r, q->qp_gverbs, offsetof(struct ncclGinTsGate, status), &one, sizeof(one)) ==
++            ncclSuccess)
++          nPoison++;
++        else
++          nPoisonErr++;
++      });
++    }
++    const int rank = r->ctx->rank, rounds = ts->nRounds, recovered = ts->nRecovered, declined = ts->nDeclined;
++    gdakiTsFree(r);
++    {
++      // The communicator and its collComm are freed next: no later lookup (by any key, null included)
++      // may find this context. gdakiRecFree (ncclDevCommDestroy, if it ever comes) erases nothing then.
++      std::lock_guard<std::mutex> lk(gdakiRecRegMu);
++      gdakiRecReg.erase(std::remove(gdakiRecReg.begin(), gdakiRecReg.end(), r), gdakiRecReg.end());
++      r->commKey = nullptr;
++    }
++    WARN("GIN/TS: communicator teardown rank=%d: helper/watcher/hook joined in %.1f ms (round_in_progress=%d "
++         "queued=%d helper_dead=%d rounds=%d recovered=%d declined=%d), gates poisoned=%d failed=%d",
++         rank, (tJoin - t0) / 1000.0, busy != 0, queued, dead, rounds, recovered, declined, nPoison, nPoisonErr);
++  }
 +}
 +
 +static void gdakiTsFree(struct gdakiRecHost* r) {
@@ -3585,6 +4075,12 @@ index 976ab91..161fac9 100644
 +  struct gdakiTs* ts = r->ts;
 +  ts->stop.store(true, std::memory_order_release);
 +  if (ts->th.joinable()) ts->th.join();
++  if (ts->testTh.joinable()) ts->testTh.join();
++  if (ts->test) {
++    WARN("GIN/TS: TEST split rank=%d nsplit=%u no_ack=%u", r->ctx->rank, ts->test->nsplit,
++         ts->test->nsplitNoAck);
++    cudaFreeHost(ts->test);
++  }
 +  for (auto& pe : ts->peers)
 +    if (pe.fd >= 0) close(pe.fd);
 +  INFO(NCCL_NET, "GIN/TS: closed rank=%d rounds=%d recovered=%d declined=%d stale=%d", r->ctx->rank, ts->nRounds,
@@ -3596,7 +4092,7 @@ index 976ab91..161fac9 100644
  ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, void** outGinCtx,
                                         ncclNetDeviceHandle_t** outDevHandle) {
    ncclResult_t status = ncclSuccess;
-@@ -795,6 +3090,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -795,6 +3344,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
      qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW;
    else qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
    qp_init_attr.comp_channel = gdaki_ctx->docaEvent;
@@ -3604,7 +4100,7 @@ index 976ab91..161fac9 100644
  
    if (nqps_for_comm_this_rank > 0) {
    // SPC-X Ordering Semantic. 0 by default.
-@@ -907,6 +3203,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -907,6 +3457,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
                    status, out);
    }
  
@@ -3620,7 +4116,7 @@ index 976ab91..161fac9 100644
    for (int rank_idx = rankOff; rank_idx < nranks; rank_idx += rankStride) {
      if (rank_idx == rank) continue;
      for (int ctx_idx = 0; ctx_idx < ncontexts; ctx_idx++) {
-@@ -916,6 +3221,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -916,6 +3475,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
        uint8_t lagTxPortAffinity = (numLagPorts > 0) ? (ctx_idx % numLagPorts) + 1 : 0;
  
        NCCLCHECKGOTO(gdakiConnectQp(gdaki_ctx, gdaki_ctx->gqps[qp_idx], peer_info, lagTxPortAffinity), status, out);
@@ -3636,7 +4132,7 @@ index 976ab91..161fac9 100644
        DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->gqps[qp_idx]->qp, &qpn), status, out);
        INFO(NCCL_NET,
             "[%d] Connected main QP: qp_idx=%d, main_qpn=%#x, remote_rank=%d, remote_qpn=%#x, lagTxPortAffinity=%u%s",
-@@ -984,6 +3298,12 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -984,6 +3552,12 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
    contiguous_gverbs_qps = (struct doca_gpu_verbs_qp**)calloc(connectedNRanks, sizeof(struct doca_gpu_verbs_qp*));
    EQCHECKGOTO(contiguous_gverbs_qps, nullptr, status, out);
  
@@ -3649,7 +4145,7 @@ index 976ab91..161fac9 100644
    for (int ctx_idx = 0; ctx_idx < ncontexts; ctx_idx++) {
      struct ncclGinGdakiGPUContext* gin_gdaki_gpu_ctx = &gdaki_ctx->gin_gdaki_gpu_ctx_host_staging[ctx_idx];
  
-@@ -1041,6 +3361,10 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -1041,6 +3615,10 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
                                                gin_gdaki_gpu_ctx->sink_buffer_lkey, gin_gdaki_gpu_ctx->last_issued_get,
                                                gin_gdaki_gpu_ctx->last_visible_get, use_mcst),
                    status, out);
@@ -3660,7 +4156,7 @@ index 976ab91..161fac9 100644
    }
  
    NCCLCHECKGOTO(gin_gdaki_gpu_ctx_hd_mhandle->copy_h_to_d(), status, out);
-@@ -1062,13 +3386,24 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -1062,13 +3640,24 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
    gdaki_ctx->devHandle = devHandle;
    gdaki_ctx->nContexts = ncontexts;
    gdaki_ctx->rankStride = rankStride;
@@ -3685,7 +4181,7 @@ index 976ab91..161fac9 100644
        if (gdaki_ctx->docaEvent) {
          doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
          gdaki_ctx->docaEvent = nullptr;
-@@ -1161,6 +3496,12 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+@@ -1161,6 +3750,12 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
    const int rankStride = gdaki_ctx->rankStride;
    const int rankOff = gdaki_ctx->rank % rankStride;
  
@@ -3698,7 +4194,7 @@ index 976ab91..161fac9 100644
    if (gdaki_ctx->docaEvent) {
      doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
      gdaki_ctx->docaEvent = nullptr;
-@@ -1338,6 +3679,9 @@ ncclResult_t ncclGinGdakiProgress(void* ctx) {
+@@ -1338,6 +3933,9 @@ ncclResult_t ncclGinGdakiProgress(void* ctx) {
    const int rankOff = gdakiCtx->rank % rankStride;
    bool has_progressed = true;
    bool progressed;
@@ -3708,7 +4204,7 @@ index 976ab91..161fac9 100644
  
    while (has_progressed) {
      has_progressed = false;
-@@ -1421,6 +3765,18 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
+@@ -1421,6 +4019,18 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
    struct gdaki_context* gdakiCtx = (struct gdaki_context*)ginCtx;
    bool hasError_ = false;
  

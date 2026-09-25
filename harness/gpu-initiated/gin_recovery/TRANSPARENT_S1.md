@@ -3,7 +3,7 @@
 Patch: `gin_transparent_s1.diff`, a full diff against NCCL v2.32.3-1 (12df1a11). It holds, unchanged, the
 four layers that `gin_recovery_gpudb.diff` sits on, plus S1 (see "Stack" below). Driver:
 `gin_ts1.cu`, an application with no recovery code in it. Scripts: `scripts/ts1/`. Results:
-`results/20260925_ts1/`. Design this implements: `../TRANSPARENT_RECOVERY_DESIGN.md` §3, §5, §6, §13
+`results/20260925_ts1/` (the follow-up after the external review: `v2_*` and `summary_v2.md`). Design this implements: `../TRANSPARENT_RECOVERY_DESIGN.md` §3, §5, §6, §13
 (step S1), with the changes listed in "Where S1 departs from the design".
 
 Tags used below: **[measured]** = counted from the per-trial logs in `results/20260925_ts1/`;
@@ -44,8 +44,12 @@ QP forced to ERR, peer alive; the initiator sees RETRY_EXC 12/0x81); F4 = peer p
     although the requester's completion was an error. Nothing was re-posted in those rounds, and the
     final signal was still exact.
   - The other 16 rounds, and all 115 rounds of the main matrix, re-posted the WRITE and the ADD.
+  - The third case, where the responder executed the WRITE but not the ADD (n = 1), never occurred
+    naturally. The follow-up forces it with a test hook: the fault fires after the WRITE completed
+    and before the ADD is posted. **30/30** rounds re-posted only the ADD, and data and the final
+    signal were exact (see "Follow-up", point 2).
   - The second authority agrees: the responder's `next_rcv_psn` matched the executed count in
-    105/105 first rounds (65 PSNs per 256 KiB op at PMTU 4096).
+    105/105 first rounds (65 PSNs per 256 KiB op at PMTU 4096), and in 30/30 forced n = 1 rounds.
 - **Cost of a recovery [measured].**
   - The helper's round takes **9.3–9.8 ms** (median per cell): quiesce 0.2 ms (1.1 ms for F3),
     Prepare 0.5, handshake 4.2–5.3 (it includes the peer's Prepare and Commit), Commit 3.3,
@@ -60,6 +64,22 @@ QP forced to ERR, peer alive; the initiator sees RETRY_EXC 12/0x81); F4 = peer p
   - **F4 (SIGKILL of the peer, 10/10).** The decline came 3.78 s after the kill, median
     [3.57–3.82] ("RETRY_EXC and the peer's socket shows FIN/RST"). The flush returned the error;
     `ncclCommAbort` returned on the surviving rank.
+- **Every wait is bounded, and a stalled or dead helper surfaces [measured, follow-up].** The
+  application gets an error within its own bound. 10 runs per cell:
+  - helper stalled 8 s in a round (hold 4 s, round limit 2 s): the flush returned
+    `ncclRemoteError` at 4.0 s, and `ncclCommGetAsyncError` reported the error 2.0 s after the stall
+    began;
+  - helper thread killed mid-round: the same result;
+  - a flush timeout of 0.5 s, shorter than a 3 s recovery: `ncclTimeout` at 469 ms;
+  - a 3 s round, below the round limit: still transparent, with no false alarm.
+- **Communicator teardown [measured, follow-up].**
+  - Before the fix, `ncclCommAbort` never stopped the helper. For a devComm the application did not
+    destroy, the helper outlived the communicator.
+  - With a kernel held mid-round, the abort did not return within 15 s (1 run, the first smoke of the
+    fix). The inferred cause is a device synchronization in NCCL's teardown that waits for the held
+    kernel; the helper's own teardown line never appeared.
+  - Now the abort stops the helper and fails the gates first. It returned in 0.6–1.0 s (10/10),
+    and the held kernel had exited by then.
 - **Negative controls [measured].** Each removes one resync step and breaks the run exactly as
   predicted (5/5 each):
   - **No ticket rebase on the device.** The re-post executed (rank 1 received that iteration) but
@@ -71,11 +91,22 @@ QP forced to ERR, peer alive; the initiator sees RETRY_EXC 12/0x81); F4 = peer p
     the faulted iteration, the async error is raised at the same point, and the receiver times out.
   - Latency: +1.0% at 4 KiB (p50 10.24 vs 10.14 µs) and +0.6% at 256 KiB (38.43 vs 38.21 µs).
     Attributed to the extra gate-flag load per post and wait and the changed code layout [inferred].
-- **Flag on costs a lot on the fast path [measured].** p50 goes from 10.24 to 16.96 µs at 4 KiB
-  (+66%) and from 38.43 to 41.28 µs at 256 KiB (+7.4%). Cost attribution at 4 KiB:
-  - system-scope fences instead of GPU-scope: +3.3 µs;
-  - the poster gate: +2.6 µs;
-  - the counted poll region: +4.7 µs.
+- **Flag on costs a lot on the fast path [measured].**
+  - Phase-1 build: p50 went from 10.24 to 16.96 µs at 4 KiB (+66%) and from 38.43 to 41.28 µs at
+    256 KiB (+7.4%).
+  - Final follow-up build: 10.24 → 16.42 µs at 4 KiB (+60%) and 38.43 → 41.34 µs at 256 KiB
+    (+7.6%).
+  - Cost attribution at 4 KiB, removing one mechanism at a time **cumulatively** in this order, on
+    the final build (`v2_lat/`):
+    - system-scope fences → GPU scope: −2.94 µs;
+    - then the poster gate: −1.89 µs;
+    - then the counted poll region: −1.22 µs;
+    - the rest (flag loads, code layout): 0.13 µs.
+
+    The four add up to the 6.18 µs total.
+  - The phase-1 attribution (3.3 + 2.6 + 4.7 µs) removed each mechanism alone. Those removals
+    overlap (each fence was counted under "fences" and again under its own mechanism), and they
+    summed to more than the total. They were wrong as a split (point 4 of the follow-up).
 
   Reducing this is S2 work (see "Next step").
 - **Found by the tests [measured].**
@@ -86,10 +117,215 @@ QP forced to ERR, peer alive; the initiator sees RETRY_EXC 12/0x81); F4 = peer p
     - The waiter's 30 s hold then expired and the flush failed.
   - Fix: every QP state change by the helper is now serialized with the hook (`opMu`, which
     Prepare, Commit and the hook already used). After the fix the cell ran 30/30 with no new kernel
-    messages.
+    messages, and 150/150 on the final follow-up build (one-sided 95% upper bound on the failure rate: 1.98%) on the final follow-up build.
+  - 1/30 before against 0 after is not proof that `opMu` fixed it: at that rate the two cannot be
+    told apart statistically (follow-up, point 3). The causal claim rests on the mechanism: the
+    kernel log names a `2ERR_QP` that timed out, and the code had two threads that could issue it
+    on the same QP. The pre-fix build was deliberately not re-run, because reproducing the hang
+    would leak another firmware command slot.
   - That one command-resource slot of rain's `mlx5_1` (0000:17:00.1) stays leaked until the mlx5
-    driver is reloaded. All later runs were unaffected.
+    driver is reloaded, which was not done.
+    - **Every run from hold G (06:56) onward, including all follow-up runs, ran with that slot
+      leaked.** This is a condition of those runs, not something shown to be harmless.
+    - What was measured is limited [measured]:
+      - rain's Commit time (dominated by firmware commands) had a median of 3.37 ms before the leak
+        (115 rounds), 3.34 ms in hold G, and 3.37 ms in the follow-up (90 rounds);
+      - per-hold debugfs counters show 0 new command failures in any follow-up hold;
+      - no mlx5 kernel message has appeared since 06:45:02.
+    - This covers only the concurrency these tests reach, a few commands at a time. It says nothing
+      about a load that needs every command slot.
 
+
+## Follow-up after the external review
+
+An external reviewer raised five points. Each was checked against the code first. **All five were
+correct**; none is disputed here. Points 1–3 led to code changes and new tests. Points 4 and 5 were
+errors in this write-up.
+
+The follow-up changes were reviewed twice by the independent reviewer before any follow-up
+measurement (see "Independent review"). That review found one more major bug (a false watchdog
+alarm), fixed before the runs.
+
+All follow-up numbers come from the final follow-up build: libnccl md5 `110440e7`, driver md5
+`faa6ee2e`. They are in `results/20260925_ts1/v2_*/`, and were run in holds `ts1b-H1`…`H4`
+(non-prio, ≤ 15 min each) through `../common/cluster_run.sh`. Tables:
+`scripts/ts1/followup_summary.py results/20260925_ts1`.
+
+### Point 1: "transparent" overclaimed its bounds — correct, fixed
+
+| sub-point | verdict | change |
+|---|---|---|
+| (a) `flushAsync` can block up to 60 s | correct: it parked inside, up to 2 × hold | `flushAsync` makes one attempt at the counted region. During a recovery it returns a PENDING request, and the wait takes the ticket itself under its own deadline. Exception: the MCST DUMP after a `get` goes through the poster gate (that epoch declines anyway) |
+| (b) a timeout flush did not charge parked time | correct: phase 1 restarted the timeout after each park, on purpose (and the review table below described that wrongly) | one deadline covers ticket, park and poll; on expiry the call returns `ncclTimeout` wherever it is |
+| (c) a parked poster spins without bound | correct | posters give up after `NCCL_GIN_TS_HOLD_MS` through the same commit point as waiters, poison the QP (`status`) and skip the post; every later post and wait on that QP fails at once |
+| (d) with the helper stalled or dead the error vanished | correct: in transparent mode the watcher hands the record to the helper instead of raising it | watchdog in the Q4 watcher thread: a round longer than `NCCL_GIN_TS_ROUND_MS` (25 s), or records queued while the helper's heartbeat is more than 1 s old, sets the communicator's async error (`ncclRemoteError`); the helper then declines |
+
+Test knobs (rank 0 only, research build):
+- `NCCL_GIN_TS_TEST_STALL=<ms>@quiesce|commit`: the helper sleeps inside the round, after its quiesce
+  or after both commits;
+- `NCCL_GIN_TS_TEST_DIE=quiesce`: the helper thread exits mid-round.
+
+The application's grace after an async error is `GIN_TS_ASYNC_GRACE_S` (driver side). 10 runs per
+cell, all rank 0 flushes blocking unless stated. Round limit 2 s and hold 4 s in the stall/die
+cells, so that the bounds are short enough to measure:
+
+| cell | n | first flush result (app) | its latency | later flushes | watchdog after stall/death | async error seen by the app, after the fault | `ncclCommAbort` | kernel still running when abort returned |
+|---|---|---|---|---|---|---|---|---|
+| `stallq_b`: helper stalls 8 s after quiesce | 10 | `ncclRemoteError` 10/10 | 4000.3 ms [4000.2–4000.4] | – | 1999.8 ms | 10/10, 2012 ms [2001–2016] | 795 ms [516–958] | 0/10 |
+| `stallc_b`: helper stalls 8 s after both commits | 10 | `ncclRemoteError` 10/10 | 4000.3 ms | – | 1990.0 ms | 10/10, 2012 ms | 806 ms | 0/10 |
+| `die_b`: helper thread exits after quiesce (application keeps looping) | 10 | `ncclRemoteError` 10/10 | 4000.3 ms | 43–80 more flushes, each failing in ≤ 12.2 µs (QP poisoned) | 1999.8 ms | 10/10, 2013 ms | 737 ms | 0/10 |
+| `tmo_t`: flush timeout 0.5 s, recovery stalled 3 s | 10 | `ncclTimeout` 10/10 | **469.0 ms** [469.0–472.7] (≤ the app's 0.5 s) | – | – (3 s < round limit) | 0/10 (the app's own timeout, not an error) | 824 ms | 0/10 |
+| `slow_b`: helper stalls 3 s (quiesce or commit), default limits | 10 | **transparent 10/10** | the slow iteration 3.02 s | – | none (0/10) | 0/10 | 717 ms | 0/10 |
+
+- "Stalls 8 s after both commits" covers the case of the helper stuck after the Prepare/Commit
+  point and before the re-post commit point. The watchdog's decline wins there. (The 8 s stall is
+  cut short at teardown, so the round never reaches its commit point.)
+- The device-side bound (hold) and the host-side watchdog are independent. In `die_b` no helper
+  thread exists any more, yet the flush fails at the hold bound and the error still surfaces
+  through the watcher.
+- `slow_b` is the regression test for the reviewer's major finding in the follow-up code (a false
+  watchdog at the end of any round longer than 1 s).
+
+### Point 2: the exactly-once boundary was never observed — correct, test built
+
+The n = 1 case occurred 0/30 times in phase 1: the responder executed the WRITE but not the ADD. It
+is now forced with `NCCL_GIN_TS_TEST_SPLIT=k` (rank 0, research build):
+1. The k-th put+signal is split: the device posts the WRITE alone and waits for its CQE, so the
+   responder has executed it.
+2. A host test thread then fires the local fault, under `opMu`, and acknowledges.
+3. Only then does the device post the ADD, into the ERR QP, so it is flushed.
+
+k was spread over 25..98 (30 distinct values), with the unmodified application otherwise.
+
+| n | transparent | split fired, fault acknowledged | S = 2k, U = 2k−1, n = 1 (only the ADD re-posted) | `next_rcv_psn` agrees | final signal exact | bad slots (GPU/host) | async errors r0/r1 |
+|---|---|---|---|---|---|---|---|
+| 30 | **30/30** | 30/30 | **30/30** | 30/30 | 30/30 | 0/0 | 0/0 |
+
+So all three cases of the executed-prefix rule have now been run: n = 0, 1 and 2.
+
+### Point 3: the `opMu` fix and the production form of the race — correct, analysed and fixed
+
+- **Rate on the final build.** The in-flight F1 cell (`f1g0_b`: 4 KiB back to back, fault inside
+  an op) was run in three holds (H1, H3, H4; 50 runs each):
+
+  | n | transparent | failures | 95% upper bound, one-sided (Clopper–Pearson) | 95% CI, two-sided | re-posted n = 0 / 1 / 2 | `next_rcv_psn` agrees |
+  |---|---|---|---|---|---|---|
+  | 150 | **150/150** | 0 | **1.98%** | 0–2.43% | 73 / 0 / 77 | 150/150 |
+
+  Fault after launch: 49 ms [20–74]. Fault → resumed: 11.5 ms [11.1–12.0].
+  - Before the fix: 1/30, whose two-sided 95% CI is 0.08%–17%.
+  - If the fixed build still failed at the pre-fix point estimate (3.3%), 0/150 would have
+    probability 0.6%. Rates below about 2% are not excluded.
+  - That is a bound on the fixed build, not a proof of the cause (see TL;DR).
+- **Production form: helper round against communicator teardown.** Reading the code found two
+  real problems. Both are fixed.
+  1. **The helper outlived the communicator [source].**
+     - In NCCL 2.32, `ncclCommDestroy`/`ncclCommAbort` never destroy the GIN contexts of a
+       devComm the application did not destroy with `ncclDevCommDestroy`. `ncclGinHostFinalize`
+       only joins the proxy threads and closes the collComms.
+     - So the helper, the Q4 watcher and the fault hook kept running after the teardown. They
+       used the freed collComm (`nranks`), the freed communicator (`ncclGinRecoverAbort`) and the
+       async-result slot in the freed `sharedRes`.
+     - This is a use-after-free, and a source of QP state changes during teardown.
+     - Fix: `ncclGinGdakiTsCommTeardown(comm)`, called from `ncclCommAbort` and from
+       `ncclGinHostFinalize`. For every transparent context of the communicator it:
+       - stops the watcher, then joins the helper (a round in progress declines at its next
+         bounded wait), the test thread and the hook;
+       - poisons every gate;
+       - removes the context from the registry.
+     - The contexts themselves stay until `ncclDevCommDestroy`, as in stock NCCL.
+  2. **`ncclCommAbort` hung with a kernel held mid-round [measured, 1 run; cause inferred].**
+     - NCCL's abort flag does not reach GIN waits of a user devComm. The held kernel therefore kept
+       waiting (hold 30 s).
+     - The teardown blocked, inferred to be a device synchronization. In the first smoke of fix 1
+       it did not return within the driver's 15 s alarm (`v2_smoke2_pre_abort_hook/`).
+     - Fix: the teardown runs from `ncclCommAbort` right after the abort flags are set, before
+       anything is freed. The poisoned gates release the held kernel at once.
+
+  Test `abortmid_b` (10 runs): the helper stalls 8 s in a round, the hold is 30 s, and the
+  application aborts about 0.6 s after the async error. That is `ncclCommAbort` without
+  `ncclDevCommDestroy`, while the kernel is held and the round is in progress.
+
+  | n | abort returned | abort time | teardown found a round in progress | helper, watcher and hook joined in | gates poisoned | kernel still running when abort returned |
+  |---|---|---|---|---|---|---|
+  | 10 | 10/10 | 730 ms [588–1010] | 10/10 | 2.9 ms [2.1–3.6] | 4/4 per run | 0/10 |
+
+  Every other follow-up cell also ends in `ncclCommAbort`: the teardown line appears in each, with
+  a round in progress in every stall/die/timeout run. Flag off prints nothing (`off_f1_b`,
+  unchanged path).
+- **What remains [source]:**
+  - An abort that arrives while the helper is inside a firmware command waits for that command.
+  - A concurrent `ncclDevCommDestroy` of the same communicator from another thread is API misuse,
+    as for the rest of NCCL.
+  - Pre-existing in layer 2 (Q4 on, transparent off), not changed because the flag-off path must
+    stay identical: the Q4 watcher of such a context also outlives the communicator.
+
+### Point 4: the attribution rows overlapped — correct
+
+- The three phase-1 variants each removed one mechanism alone:
+  - GPU-scope fences (both fences);
+  - no gate (the gate *and its fence*);
+  - no poll counting (the counter *and its fence*).
+- The fences were therefore counted twice, and 3.3 + 2.6 + 4.7 = 10.6 µs exceeded the 6.7 µs total.
+- The follow-up measures cumulative removal on the final build: 5 interleaved runs × 2900
+  iterations per cell, `v2_lat/`, unsafe variants compiled into the driver only.
+
+| 4 KiB | p50 µs | step | cumulative |
+|---|---|---|---|
+| flag on | 16.42 | – | – |
+| − system-scope fences (→ GPU scope) | 13.47 | 2.94 | 2.94 |
+| − the poster gate | 11.58 | 1.89 | 4.83 |
+| − the poll-region counting | 10.37 | 1.22 | 6.05 |
+| flag off | 10.24 | 0.13 | 6.18 |
+| gpudb v2 build | 10.21 | 0.03 | 6.21 |
+
+| 256 KiB | p50 µs | step | cumulative |
+|---|---|---|---|
+| flag on | 41.34 | – | – |
+| − system-scope fences | 40.48 | 0.86 | 0.86 |
+| − the poster gate | 39.46 | 1.02 | 1.89 |
+| − the poll-region counting | 38.59 | 0.86 | 2.75 |
+| flag off | 38.43 | 0.16 | 2.91 |
+| gpudb v2 build (4 runs; 1 lost to a driver port collision) | 38.27 | 0.16 | 3.07 |
+
+- The steps add up by construction.
+- A cumulative split depends on the order of removal. In this order the fences are the largest
+  part at 4 KiB (48%), and the three mechanisms are similar at 256 KiB.
+- The flag-on p50 of the final build (16.42 µs) is lower than phase 1's (16.96 µs). The build
+  changed: the gate now also loads `status`, and `flushAsync` makes one attempt instead of parking.
+  Only the final build's numbers are used here.
+
+### Regression on the final build
+
+Every phase-1 cell was re-run on the final build (`v2_confirm/`, 2–3 runs each). The outcomes are
+the same as in phase 1:
+- none, F1 blocking and with timeout, F3 blocking and with timeout: transparent (3/3 each);
+- F1 ×5: 3/3, 15 rounds;
+- F2 and F4: declined (3/3), with the same reasons;
+- both negative controls failed as predicted (2/2);
+- flag off and the gpudb build: `ncclRemoteError` at the fault (2/2 each), with no teardown line.
+
+The phase-1 limit about F2 is unchanged: rank 1's `ncclCommAbort` still does not return (exit 7).
+That rank's kernel spins on the application's own `waitSignal`, which no GIN mechanism can release.
+The teardown hook runs there, but it has nothing to release.
+
+### Point 5: the leaked firmware command slot — correct
+
+- "All later runs were unaffected" was not supported, and it is withdrawn.
+- Stated as a condition instead: from 06:45:02, one command slot of rain `mlx5_1` is leaked. Every
+  later hold ran with it: hold G, and every follow-up run.
+- What was measured [measured; `scripts/ts1/fwcmd_delta.py results/20260925_ts1/v2_fwcmd`, read-only
+  debugfs and dmesg snapshots taken inside each hold, before and after]:
+  - the rain-side Commit (4 contexts × 2RST/INIT/RTR/RTS) has a median of 3.37 ms before the leak
+    (holds A–E, 115 rounds), 3.34 ms in hold G (55 rounds), and 3.37 ms in the follow-up (90
+    rounds);
+  - no new command failure (`failed`, `failed_mbox_status`) in any follow-up hold;
+  - per-hold mean command latencies are steady across the six follow-up holds: `2ERR_QP` 118–152 µs,
+    `RST2INIT` 146 µs, `INIT2RTR` 156–158 µs, `RTR2RTS` 83 µs, `QUERY_QP` 51–52 µs. `2RST_QP`
+    varies from 198 to 367 µs with the mix of cells;
+  - no new mlx5 kernel message after 06:45:02.
+- This shows no measurable effect at the concurrency these tests reach, a few commands in flight.
+  It does not show that the device behaves normally when all command slots are needed.
 
 ## What the application does, and what it sees
 
@@ -191,25 +427,76 @@ zero (off) unless the host enables it [source]. DOCA's device code never touches
   3. re-enters and re-maps its ticket.
 
   The flush, blocking or with a timeout, therefore returns `ncclSuccess` once the re-posted WQE
-  completes. The same code serves the blocking and timeout flush and wait paths. With a timeout,
-  time spent held is not charged to the caller.
-- **Bounds and giving up.** A held waiter gives up after `NCCL_GIN_TS_HOLD_MS` (30 s) with no new
-  epoch. Giving up goes through a commit point with the host (Dekker again):
-  - waiter: `atomicMax(abandoned, next)`; fence.sc.sys; read `commit`;
-  - host, before anything is re-posted: write `commit = next`, then read `abandoned`.
+  completes. The same code serves the blocking and timeout flush and wait paths.
+- **Bounds and giving up** (rewritten in the follow-up; the phase-1 version had the gaps the external
+  review listed, see "Follow-up"). Every device-side wait is now bounded, and each bound ends in a
+  defined result:
+  - **The caller's own timeout covers parked time.** `flush`/`wait` with a timeout carry one deadline
+    (`clock64` start + the caller's cycles, as the stock timeout paths) through ticket-taking, parking
+    and polling. When it expires the call returns `ncclTimeout` wherever it is, parked or polling. It
+    does not abandon the operation: as with a stock timeout, the operation may still complete later
+    (after the recovery).
+  - **`flushAsync` does not block.** It makes one attempt at the counted region. If a recovery is in
+    progress it returns a PENDING request (a marker in the request's epoch field); if the QP has
+    failed, a BAD one. The matching wait takes the ticket itself, under its own deadline. (Phase 1
+    parked inside `flushAsync`, for up to about 2 × hold.)
+    - One exception: after a `get`, `flushAsync` posts an MCST DUMP, and that post goes through the
+      poster gate, so it can park for up to 2 × hold.
+    - A round in an epoch with a `get` declines anyway (READ is `nonmsg`), so this only delays the
+      error.
+  - **Library bound for callers without a timeout, and for posters.** A parked waiter *and* a parked
+    poster (`tsGateEnter`) give up after `NCCL_GIN_TS_HOLD_MS` (30 s) with no new epoch. (Phase 1
+    posters had no bound.) Giving up goes through a commit point with the host (Dekker again):
+    - device: `atomicMax(abandoned, next)`; fence.sc.sys; read `commit`;
+    - host, before anything is re-posted: write `commit = next`, then read `abandoned`.
 
-  Either the host sees the give-up and declines, so nothing is re-posted, or the waiter sees the
-  commit and keeps waiting (it fails after one more bound only if the host never publishes). A
-  declined QP (`status`) returns `ncclRemoteError` and raises Q4's sticky error, so the blocking
-  `flush()`/`wait()` API reports it as in Q4.
+    Either the host sees the give-up and declines, so nothing is re-posted, or the device thread sees
+    the commit and waits one more bound for the publication. After that it fails regardless.
+  - **Failing poisons the QP.** A won give-up writes `status = 1` and Q4's sticky error. Every later
+    wait on that QP returns `ncclRemoteError` at once, instead of each waiting out its own bound.
+    - Every later post checks `status` in the gate and is dropped, as is the post of a poster that
+      gave up. The next flush/wait on that QP reports the failure. A poisoned QP can still be
+      healthy on the NIC, so without the check it would keep executing posts whose waits all fail;
+      the check was added after the follow-up review.
+    - The host's periodic scan sees `abandoned` and declines, so `ncclCommGetAsyncError` reports it
+      too.
+  - A declined QP (`status`) returns `ncclRemoteError` and raises Q4's sticky error, so the blocking
+    `flush()`/`wait()` API reports it as in Q4.
 
 ### Host (`gin_host_gdaki.cc`): a helper thread inside NCCL
 
 There is one helper thread per GDAKI context of a user devComm, not the application. The Q4
 watcher hands it every device-classified error record that belongs to a gated QP. In transparent
-mode the watcher does not raise the async error, and `ncclGinGdakiQueryLastError` reports only
-declined faults, so a QP that is in ERR while it is being recovered is never reported [source;
-measured: 0 async errors in the recovered runs].
+mode the watcher does not raise the async error for a record it hands over, and
+`ncclGinGdakiQueryLastError` reports only declined faults, so a QP that is in ERR while it is being
+recovered is never reported [source; measured: 0 async errors in the recovered runs].
+
+- **Watchdog (follow-up).** Because the watcher hands the error over instead of raising it, a helper
+  that stalls or dies would make the error disappear. The watcher (a separate thread) therefore
+  checks the helper on every poll:
+  - a round that has been running longer than `NCCL_GIN_TS_ROUND_MS` (25 s by default; a normal
+    round takes 10 ms);
+  - or fault records queued while the helper's heartbeat is older than 1 s (the helper is dead or
+    stuck outside a round).
+
+  Either one surfaces the error: the Q4 host error flag, and `ncclRemoteError` as the communicator's
+  GIN async result, so `ncclCommGetAsyncError` reports it. A WARN names the reason. From then on the
+  helper declines instead of continuing: it checks before the commit point, and at the start of each
+  initiator or responder round. The device side has its own bound (above), so the kernel is released
+  even when no host thread acts.
+  - The heartbeat is refreshed when a round ends, before the round is marked finished.
+    - The first version refreshed it only at the top of the helper loop. The end of any round longer
+      than 1 s, with stale records queued, then looked like a dead helper. Stale records are the
+      normal case: the round's own quiesce produces flush errors.
+    - This produced a false `ncclRemoteError`. The follow-up review found it before any
+      measurement; the `slow_b` cell below tests it.
+  - If the watchdog fires after the helper passed the re-post commit point (a round longer than
+    `ROUND_MS` that then completes), the round still publishes. The application then has an async
+    error while its data is intact. That is fail-safe, but it is a false positive in that case.
+- **Communicator teardown (follow-up).** `ncclGinGdakiTsCommTeardown` runs from `ncclCommAbort`
+  as soon as the abort flags are set, and from `ncclGinHostFinalize` for `ncclCommDestroy`. It
+  stops the watcher, joins the helper, the test thread and the hook, poisons every gate and
+  unregisters the context. See "Follow-up", point 3, for the race and the measurements.
 
 - **Channel: a library-owned TCP socket per (GDAKI context, peer).**
   - It is opened at context creation on the `NCCL_SOCKET_IFNAME` interface (the management
@@ -300,11 +587,11 @@ measured: 0 async errors in the recovered runs].
 | 2 | `../gin_q4/gin_q4_classify.diff` | device root-cause classification, host mailbox + watcher |
 | 3 | `gin_recovery.diff` | Prepare / Commit / Abort, reconnect with fresh PSNs, resync inventory |
 | 4 | `gin_recovery_gpudb.diff` | GPU_SM_DB doorbell mode in Prepare/Commit |
-| 5 | S1 (in `gin_transparent_s1.diff`) | gate, logical tickets, hold-and-rebase waits, helper thread, socket, re-post + host doorbell, `doca_verbs_qp_query_seq` |
+| 5 | S1 (in `gin_transparent_s1.diff`) | gate, logical tickets, hold-and-rebase waits, helper thread, socket, re-post + host doorbell, `doca_verbs_qp_query_seq`; follow-up: bounded posters and `flushAsync`, deadline over parking, watchdog, teardown hooks in `init.cc` (`ncclCommAbort`) and `gin/gin_host.cc` (`ncclGinHostFinalize`), test knobs |
 
 - **Checked on the scratch trees:**
   - `gin_transparent_s1.diff` applied to a pristine `git archive v2.32.3-1` reproduces the
-    source tree exactly.
+    source tree exactly (re-checked on the final follow-up tree).
   - So do layers 1–4 followed by the S1 layer alone.
   - Layers 1–4 applied to pristine reproduce the gpudb v2 worktree (`gi/gin_recovery/nccl-src-gpudb`).
 - **Build:**
@@ -317,11 +604,14 @@ measured: 0 async errors in the recovered runs].
 - **Bundle:** `~/gi-bundle/gin_ts1/` on rain and sunny (md5 and `ldd` checked by
   `scripts/ts1/deploy.sh`). `base/` holds the gpudb libnccl, copied read-only, with the driver
   compiled against it.
-- **Size of the S1 layer:**
-  - 6 files, +1554 / −14 lines including comments.
-  - Device: about 270 non-comment lines in 2 headers.
-  - Host: about 1000 non-comment lines in `gin_host_gdaki.cc`.
-  - DOCA extension (`doca_verbs_qp_query_seq`): about 40 lines.
+- **Size of the S1 layer** (after the follow-up; phase 1 in parentheses):
+  - 8 files, +2002 / −16 lines including comments (6 files, +1554 / −14).
+  - Device: 407 non-comment added lines in 2 headers (265).
+  - Host: 1197 non-comment lines in `gin_host_gdaki.cc` (990).
+  - Teardown hooks in `init.cc` and `gin/gin_host.cc`: 7.
+  - DOCA extension (`doca_verbs_qp_query_seq`): 28 (unchanged).
+  - About 100 of the follow-up lines are test-only knobs: the split, the stall and die knobs, and
+    the test thread.
 
 ## Tests
 
@@ -341,6 +631,11 @@ Builds:
   `confirm_lat/`): the final libnccl `59c283ff`, which adds the `opMu` serialization.
 - Driver `gin_ts1` `0a686a08` throughout.
 - gpudb baseline: libnccl `1ed8e0a1` + the same driver source (`14463ed0`).
+- Follow-up (`v2_*`): libnccl `110440e7` (the final build, with the bounds, the watchdog, the teardown
+  hooks and the review fixes), driver `faa6ee2e` (adds `GIN_TS_ASYNC_GRACE_S`,
+  `GIN_TS_POST_ABORT_WAIT_S`, continue-after-error mode), baseline driver `a999772c`. The phase-1
+  tables above were not re-measured on this build, except as listed under "Follow-up" and the
+  regression pass (`v2_confirm/`).
 
 6 trials (listed in `summary.md`) failed before NCCL started because the driver's own rendezvous
 port was taken (`bind: Address already in use`). They are excluded and re-run.
@@ -366,7 +661,8 @@ port was taken (`bind: Address already in use`). They are excluded and re-run.
 - **Confirmation pass on the final build** (`confirm/`, 1–3 each): the same outcome in every cell.
   none 2/2, F1 2/2 and 3/3, F3 3/3, F1 ×5 3/3 (15 rounds), F2 3/3 declined, F4 3/3 declined, both
   negative controls failing as predicted, flag-off 2/2 error.
-- **Leftovers:** no process was left on either node in any trial except the pre-fix hung trial.
+- **Leftovers:** no process was left on either node in any trial except the pre-fix hung trial
+  (follow-up: 0 in all 272 trials of `v2_split`, `v2_f1g0`, `v2_bounds` and `v2_confirm`).
 - **Teardown:**
   - `ncclCommAbort` returned on rank 0 in every trial.
   - On rank 1 in F2 it did not return within 5 s (exit 7). That rank's own `waitSignal` kernel
@@ -423,26 +719,25 @@ How to read the table:
 | 256 KiB p50 / p99 / mean (µs) | 38.21 / 38.94 / 38.14 | 38.43 / 38.94 / 38.36 | **41.28** / 42.78 / 41.43 |
 | per-run p50 range, 4 KiB | 10.08–10.18 | 10.24–10.24 | 16.96–16.99 |
 
-The final build (`confirm_lat/`, 3 runs each) is the same: 4 KiB off 10.24 / on 16.96; 256 KiB off
-38.40 / on 41.25.
+- The phase-1 final build (`confirm_lat/`, 3 runs each) gave the same: 4 KiB off 10.24 / on 16.96;
+  256 KiB off 38.40 / on 41.25.
+- The final follow-up build (`v2_lat/`, 5 runs each, interleaved) gave:
 
-**Cost attribution, 4 KiB p50, 5 interleaved runs each (`lat_attr/`).** The variant builds are
-UNSAFE device builds, compiled into the driver only, used here to split the cost and not part of
-the patch:
+  | size | gpudb | off | on |
+  |---|---|---|---|
+  | 4 KiB | 10.21 | 10.24 | 16.42 |
+  | 256 KiB | 38.27 | 38.43 | 41.34 |
 
-| variant | p50 µs | saves vs flag on |
-|---|---|---|
-| flag on (reference) | 16.96 | – |
-| both Dekker fences at GPU scope (`__threadfence`) | 13.66 | 3.3 |
-| poster gate removed | 14.37 | 2.6 |
-| poll-region counting removed | 12.29 | 4.7 |
-| flag off | 10.24 | 6.7 |
-
-- At 256 KiB the same variants save 0.7–1.9 µs (flag on 41.25; GPU-scope fences 40.51, no gate 39.33,
-  no poll counting 40.13), because part of the cost overlaps the transfer.
-- The two system-scope SC fences are about half of the overhead [measured]. Why they cost this much
-  is [inferred]: the waiter-side fence follows the posted MMIO doorbell write. The rest is also
-  [inferred]: the extra `.sys` loads and releases, and the out-of-line calls.
+**Cost attribution.** Superseded by the cumulative measurement in "Follow-up", point 4, which is
+the one to use.
+- The phase-1 table (`lat_attr/`: GPU-scope fences 13.66, no gate 14.37, no poll counting 12.29 µs
+  against flag on 16.96) removed each mechanism **alone**. Those removals overlap: each fence is
+  inside two of the variants. So the rows (3.3 + 2.6 + 4.7 µs) must not be added, and they do not
+  split the 6.7 µs total.
+- In the cumulative split on the final build, the two system-scope SC fences are the largest part
+  at 4 KiB, at 2.94 of 6.18 µs [measured].
+- Why they cost this much is [inferred]: the waiter-side fence follows the posted MMIO doorbell
+  write. The rest is also [inferred]: the extra `.sys` loads and releases, and the out-of-line calls.
 - The design's §10 target (≤ 1–2%) is **not met** by S1; see "Next step".
 
 ### Cross-check of the two executed-prefix authorities
@@ -471,15 +766,18 @@ the same prefix on this hardware.
 
 ## Independent review (before the final runs)
 
-A separate reviewer agent read the layer three times (read-only) and then did a final pass.
+A separate reviewer agent read the layer three times (read-only) and then did a final pass. After
+the external review, it read the follow-up changes twice more, before the follow-up measurements.
 Every finding was fixed, or is listed under Limits:
 
 | round | findings | fixed |
 |---|---|---|
 | v1 | 7 major, 6 minor, nits | major: the whole-struct Commit write racing live waiters and parked posters (`cqe_ci` and `active` clobbered); responder quiesce deadlock with traffic in both directions (QPs now go to ERR before the wait); `flushAsync` dropping a failed ticket; device give-up not coordinated with a host re-post; a recovery with one peer clearing another peer's declined error; two contexts on one communicator; use-after-free of the recovery host by the Q4 watcher at teardown. minor: nonmsg never cleared, baseline failure ignored, faults on ungated QPs swallowed, `cudaMemsetAsync` on the helper path, fast-path fences, lbase re-check |
 | v2 | 1 new major, 1 major at scale, 2 minor | `tsTicket` retries starving the host's `pollers == 0` read (parking without counter traffic); lost mailbox records (periodic gate scan); check-then-act between give-up and re-post (commit point); the 4-entry lbase ring (logical tickets) |
-| v3 | 0 major, 1 minor, nits | parked time charged to the caller's timeout; wording |
+| v3 | 0 major, 1 minor, nits | the timeout's start was made explicit: phase 1 restarted the caller's timeout after each park, so parked time was *not* charged. An earlier version of this row said the opposite, which was wrong; the follow-up now charges it. Wording |
 | v4 | nothing that is not a documented limit | – |
+| follow-up v1 (after the external review's changes) | 1 major, 2 minor, 3 nits | major: a false watchdog error at the end of any round longer than 1 s with records queued (heartbeat not refreshed at round end). minor: a device-poisoned but healthy QP still took posts (gate now checks `status`); a poster's give-up could compute its target epoch from a later load and poison a just-recovered QP (now only from an odd epoch). nits: the MCST `flushAsync` path can still park (documented); a torn-down context stayed in the registry with a null key (now removed); teardown vs a concurrent `ncclDevCommDestroy` (API misuse, documented) |
+| follow-up v2 | the fixes checked: correct, nothing new | – |
 
 ## What is still not transparent (S1 limits)
 
@@ -489,8 +787,10 @@ Every finding was fixed, or is listed under Limits:
   - A kernel spinning on the application's own `waitSignal` cannot be released by the library.
   - Measured: the F2 receiver's `ncclCommAbort` did not return while that kernel spun.
 - **The stall is visible.** The faulted operation takes 10 ms longer (F1) or 3.6 s (RETRY_EXC).
-  An application flush timeout shorter than the detection time still returns `ncclTimeout`, as in
-  stock NCCL. Time spent held during a recovery is not charged to the caller.
+  An application flush timeout shorter than the detection time, or shorter than the recovery, still
+  returns `ncclTimeout`, as in stock NCCL. Since the follow-up, time spent held during a recovery
+  counts against the caller's timeout (measured in `tmo_t`, below). The operation itself may then
+  still complete after the recovery, which is what a stock timeout means as well.
 - **One operation in flight per QP, one posting thread [measured scope].** The mechanism is
   written for more: re-posting `[U, S)` up to the ring size, logical tickets per waiter, counted
   posters and pollers. But only the single-op case was run.
@@ -510,12 +810,20 @@ Every finding was fixed, or is listed under Limits:
   - A QP that errs while idle is recovered only when it is next used.
   - In transparent mode `ncclGinGdakiQueryLastError` no longer reports QP-state errors, only
     declines.
-- **Bounds that are not device-side:**
-  - A parked poster spins until the helper clears `pause`. The helper's round is bounded, but a
-    dead helper thread would leave the poster spinning.
-  - After a lost give-up (the host had passed its commit point) a waiter still fails after one more
-    hold period.
-  - `flushAsync` can block for up to about 2 × hold.
+- **Bounds that remain (after the follow-up):**
+  - A caller without a timeout (the blocking `flush()`/`wait()`), and every parked poster, is bounded
+    by the library's hold (`NCCL_GIN_TS_HOLD_MS`, 30 s). After a lost give-up (the host had passed
+    its commit point) that becomes up to 2 × hold. The phase-1 gaps (unbounded posters, a
+    `flushAsync` that could block for about 2 × hold, parked time not charged to a timeout) are
+    closed.
+  - The watchdog surfaces a stalled or dead helper after `NCCL_GIN_TS_ROUND_MS` (25 s) of one round,
+    or 1 s of missed heartbeat with records queued. It cannot tell a slow firmware command inside a
+    round from a stuck one: a round that legitimately takes longer than `ROUND_MS` is failed.
+  - `ncclCommAbort` joins the helper. If the helper is inside a firmware command at that moment,
+    the abort waits for that command. The command is bounded only by the mlx5 driver's command
+    timeout. In the 06:45 hang the driver reported the timeout about 104 s after the command.
+  - A kernel spinning on the application's own `waitSignal` (not a GIN QP wait) is not released by
+    the library (unchanged; see Declined faults).
 - **Scale:**
   - The idle scan does two small device-to-host copies per gated QP every 100 ms.
   - Mailbox overflow (16 slots) becomes a decline instead of a recovery.
@@ -531,6 +839,9 @@ Every finding was fixed, or is listed under Limits:
   - the negative controls;
   - the cost attribution;
   - the concurrent-`2ERR_QP` hang and its kernel log;
+  - (follow-up) the forced n = 1 boundary, the bounds under a stalled or dead helper, the application
+    timeout shorter than the recovery, the abort with a round in progress, the in-flight rate with
+    its confidence bound, the cumulative cost split, and per-hold firmware-command counters;
   - the doorbell mode per QP (log line);
   - md5 provenance.
 - **From source:**
@@ -539,12 +850,16 @@ Every finding was fixed, or is listed under Limits:
   - the NIC reads the doorbell record only on doorbell recovery;
   - the host UAR mapping is the one DOCA's CPU proxy rings;
   - one CQE per WQE on the ring CQ.
+- **A condition of the runs, not a result:** every run from hold G (06:56) onward ran with one
+  leaked firmware command slot on rain `mlx5_1` (TL;DR, follow-up point 5).
 - **Inferred, not tested:**
+  - that `opMu` was the cause of the phase-1 hang (mechanism plus 0 recurrences, not a controlled
+    before/after comparison);
+  - why the unhooked `ncclCommAbort` blocked with a held kernel (a device synchronization in the
+    teardown);
   - that the Dekker handshakes hold under contention (the argument is about L2 as the coherence
     point shared by SM atomics, `.sys` loads and copy-engine accesses; the copy engine is outside
     the PTX memory model);
-  - that the n = 1 re-post (WRITE executed, ADD not) is correct: it follows from the same rule as
-    n = 0 and n = 2 but was not hit;
   - behaviour with more than one op in flight, more than two ranks, symmetric faults, and a peer
     host that dies without FIN (covered only by keepalive/`TCP_USER_TIMEOUT` and the handshake
     deadline).
@@ -556,7 +871,8 @@ Every finding was fixed, or is listed under Limits:
      word. Entry becomes one acquire atomic add whose return value carries the epoch: a
      single-location check, so no SC fence is needed. Leave is one release add.
    - The host keeps its copy-engine write of the epoch half and its read of the count.
-   - The attribution above says this removes most of the 6.7 µs. Correctness of a copy-engine
+   - By the cumulative split (follow-up, point 4), the fences and the two counted regions are 6.05
+     of the 6.18 µs at 4 KiB, so this targets nearly all of it. Correctness of a copy-engine
      partial write racing an L2 atomic on the same word needs a targeted micro-test first.
 2. **Bursts.** Many unsignaled `put`s (`AggregateRequests`) then one flush, and many threads/CTAs
    posting to one QP.
@@ -582,10 +898,17 @@ Every finding was fixed, or is listed under Limits:
 | `scripts/ts1/build_driver.sh`, `deploy.sh`, `make_diff.sh` | build (also `BASE=1` against the gpudb tree), deploy with md5/ldd checks, regenerate the diff |
 | `scripts/ts1/run_trial.sh`, `batch.sh`, `lat_batch.sh`, `matrix.sh`, `holdE.sh`, `holdF.sh`, `holdG.sh`, `smoke*.sh` | one trial / one cell / the holds (all inside `../common/cluster_run.sh`) |
 | `scripts/ts1/rows.py`, `summarize.py`, `lat_summary.py`, `psn_check.py` | raw logs → CSV → tables |
+| `scripts/ts1/followup_hold.sh`, `chain_followup.sh`, `smokeW.sh`, `smoke_check.py` | follow-up holds H1–H4 (non-prio `ts1b-*`), run in order after an automatic smoke gate |
+| `scripts/ts1/followup_summary.py`, `fwcmd_delta.py`, `fwcmd_snapshot.sh` | follow-up tables (split, in-flight rate with Clopper–Pearson bounds, bounds, cumulative latency, regression); read-only firmware-command counters per hold |
 | `results/20260925_ts1/` | `runs/` (main matrix + in-flight cell), `confirm/` + `confirm_lat/` (final build), `lat/`, `lat_attr/`, `f1g0_before_opmu_fix/` (the hang), `smoke*/`, `trials*.csv`, `rounds*.csv`, `summary.md`, hold outputs. Each per-trial directory is stored as `<dir>.tar.xz` (55 MB of logs, mostly repeated warning lines, pack to 1.6 MB; the archives round-trip byte for byte). Run `for a in *.tar.xz; do tar xJf $a; done` in that directory before re-running the scripts below |
 
+Follow-up results (not packed yet): `results/20260925_ts1/v2_split/`, `v2_f1g0/`, `v2_bounds/`,
+`v2_lat/`, `v2_confirm/`, `v2_smoke/`, `v2_smoke2/`, `v2_smoke2_pre_abort_hook/`, `v2_fwcmd/`, the
+hold outputs `v2_hold_H*.out` and `v2_chain.out`, `trials_v2_*.csv`, and `summary_v2.md`.
+
 Scratch (not in the repo): tree `$SCR/agent_ts1/nccl-src` (git: pristine → 4 layers → S1 working
-changes); build `$SCR/agent_ts1/build`; variants `$SCR/agent_ts1/var/`. Bundle
+changes); build `$SCR/agent_ts1/build`; variants `$SCR/agent_ts1/var/`. The cumulative variants
+`c1gpufence`, `c2nogate`, `c3nopoll` are the final header plus `var/<v>.hdr.diff`. Bundle
 `~/gi-bundle/gin_ts1/` on both nodes (`base/`, `var_*/`).
 
 Reproduce (each line is one cluster hold; `CR=../common/cluster_run.sh`, `R=$PWD/results/20260925_ts1`):
@@ -598,5 +921,7 @@ python3 scripts/ts1/rows.py $R/runs --out $R/trials.csv --rounds $R/rounds.csv
 python3 scripts/ts1/rows.py $R/confirm --out $R/trials_confirm.csv --rounds $R/rounds_confirm.csv
 python3 scripts/ts1/summarize.py $R/trials.csv $R/rounds.csv; python3 scripts/ts1/psn_check.py $R/trials.csv $R/runs
 python3 scripts/ts1/lat_summary.py $R/lat; python3 scripts/ts1/lat_summary.py $R/lat_attr
+bash scripts/ts1/chain_followup.sh                              # follow-up: smoke gate, then holds ts1b-H1..H4
+python3 scripts/ts1/followup_summary.py $R; python3 scripts/ts1/fwcmd_delta.py $R/v2_fwcmd
 ```
 

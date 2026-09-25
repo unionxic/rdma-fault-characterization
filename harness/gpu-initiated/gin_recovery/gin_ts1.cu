@@ -20,7 +20,8 @@
 //   receiver's window (REM_ACCESS). lat = no fault, per-iteration latency, one reused slot.
 //   Faults of the transport (local QP ERR, peer QP ERR, peer SIGKILL) are injected by the runner.
 // env: GIN_TS_F2_IT, GIN_TS_RX_WAIT_S (receiver's per-iteration waitSignal timeout, default 30),
-//      GIN_ASYNC_POLL_US (200), GIN_LAT_RAW (path: per-iteration latency CSV, lat mode)
+//      GIN_ASYNC_POLL_US (200), GIN_LAT_RAW (path: per-iteration latency CSV, lat mode),
+//      GIN_TS_CONTINUE=1 (test: keep posting after a failed flush instead of stopping)
 // exit: 0 all iterations ok and nothing surfaced; 2 NCCL call error; 3 async error seen by the host;
 //       4 a device wait/flush returned an error or timed out; 5 data/signal check failed;
 //       6 CUDA error; 7 watchdog.
@@ -49,6 +50,7 @@
 static int g_rank = -1;
 static FILE* g_kv = nullptr;
 static ncclComm_t g_comm = nullptr;
+static cudaStream_t g_stream = nullptr;  // the kernel's stream (post-abort observation only)
 static const uint8_t POISON = 0xA5;
 
 static double nowSec() {
@@ -78,6 +80,18 @@ static void teardownExit(int code) {
     ncclResult_t ar = ncclCommAbort(g_comm);
     alarm(0);
     kv("teardown_ms=%.1f abort_ret=%s", monoMs() - a0, ncclGetErrorString(ar));
+    // GIN_TS_POST_ABORT_WAIT_S: if the kernel was still running at the abort, watch it for up to this
+    // long after ncclCommAbort returned (observation only: exited / still running / CUDA error).
+    const char* pw = getenv("GIN_TS_POST_ABORT_WAIT_S");
+    if (pw && g_stream) {
+      const double lim = atof(pw) * 1000.0, t0 = monoMs();
+      cudaError_t q = cudaStreamQuery(g_stream);
+      const bool wasRunning = q == cudaErrorNotReady;
+      while (q == cudaErrorNotReady && monoMs() - t0 < lim) { usleep(1000); q = cudaStreamQuery(g_stream); }
+      kv("post_abort_kernel_running_at_abort_return=%d post_abort_state=%s post_abort_exit_ms=%.1f", wasRunning ? 1 : 0,
+         q == cudaSuccess ? "exited" : q == cudaErrorNotReady ? "still_running" : cudaGetErrorName(q),
+         q == cudaErrorNotReady ? -1.0 : monoMs() - t0);
+    }
   }
   kv("exit=%d", code);
   _exit(code);
@@ -154,13 +168,15 @@ struct TxOut {
   int rc;                      // first non-success flush return code (0 = none)
   int rcIt;                    // its iteration
   int done;                    // iterations completed
-  int pad;
+  int nErr;                    // flushes that did not return ncclSuccess (continue mode counts them all)
   unsigned long long tStart;   // globaltimer at kernel start
+  unsigned long long firstErrLatNs;  // latency of the first failing put+flush
+  unsigned long long maxLaterErrLatNs;  // longest failing put+flush after the first one (continue mode)
 };
 __global__ void txKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t bytes, int iters, int reuseSlot,
                          int badIt, size_t badOff, unsigned long long gapNs, struct ncclDevComm devComm,
                          int useTimeout, unsigned long long timeoutCycles, unsigned long long* lat,
-                         volatile int* progress, TxOut* out) {
+                         volatile int* progress, TxOut* out, int contOnErr) {
   ncclGin gin{devComm, 0};
   if (threadIdx.x == 0) out->tStart = gtNow();
   for (int i = 0; i < iters; i++) {
@@ -179,18 +195,26 @@ __global__ void txKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t byte
     }
     if (rc != ncclSuccess) {
       if (threadIdx.x == 0) {
-        out->rc = (int)rc;
-        out->rcIt = i;
-        out->done = i;
+        if (out->nErr == 0) {
+          out->rc = (int)rc;
+          out->rcIt = i;
+          out->done = i;
+          out->firstErrLatNs = t1 - t0;
+        } else if (t1 - t0 > out->maxLaterErrLatNs) {
+          out->maxLaterErrLatNs = t1 - t0;
+        }
+        out->nErr++;
       }
-      return;
+      // An ordinary application stops at the first error; GIN_TS_CONTINUE=1 keeps posting (test of the
+      // bounded poster/waiter paths after a failure).
+      if (!contOnErr) return;
     }
     if (gapNs) {
       unsigned long long g0 = gtNow();
       while (gtNow() - g0 < gapNs) {}
     }
   }
-  if (threadIdx.x == 0) out->done = iters;
+  if (threadIdx.x == 0 && out->nErr == 0) out->done = iters;
 }
 
 // ---- rank 1: wait for every iteration's signal and check its slot on the device -------------------
@@ -300,6 +324,7 @@ int main(int argc, char** argv) {
   const bool isF2 = strcmp(mode, "F2") == 0;
   const int badIt = isF2 ? (getenv("GIN_TS_F2_IT") ? atoi(getenv("GIN_TS_F2_IT")) : 10) : -1;
   const double rxWaitS = getenv("GIN_TS_RX_WAIT_S") ? atof(getenv("GIN_TS_RX_WAIT_S")) : 30.0;
+  const bool contOnErr = getenv("GIN_TS_CONTINUE") && atoi(getenv("GIN_TS_CONTINUE")) != 0;
   if ((rank != 0 && rank != 1) || iters <= 0 || bytes == 0) return 1;
   signal(SIGALRM, onAlarm);
   kv("rank=%d iters=%d bytes=%zu wait_mode=%s mode=%s dev_timeout_s=%.1f gap_us=%ld t0_mono_ms=%.3f", rank, iters,
@@ -387,6 +412,7 @@ int main(int argc, char** argv) {
   kv("devcomm_mono_ms=%.3f", tDevComm);
   cudaStream_t st;
   CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
+  g_stream = st;
 
   std::vector<uint8_t> h(winBytes);
   unsigned long long base = 0;
@@ -435,7 +461,7 @@ int main(int argc, char** argv) {
     const size_t badOff = winBytes + (size_t)64 * 1024 * 1024;
     txKernel<<<1, 1, 0, st>>>(sendWin, recvWin, bytes, iters, reuse, badIt, badOff,
                               (unsigned long long)gapUs * 1000ull, devComm, useTimeout ? 1 : 0, timeoutCycles, dLat,
-                              dProg, dTx);
+                              dProg, dTx, contOnErr ? 1 : 0);
   } else {
     rxKernel<<<1, 256, 0, st>>>(recvWin, (const uint8_t*)dRecv, bytes, iters, reuse, base, devComm, rxWaitCycles, dLat,
                                 dSig, dProg, dRx);
@@ -452,8 +478,12 @@ int main(int argc, char** argv) {
     if (mon.firstMs.load() >= 0) {
       // The application learns that the communicator failed: it reports and aborts (the device wait
       // it is stuck in cannot be recovered by the application).
+      // GIN_TS_ASYNC_GRACE_S: how long it lets the kernel finish on its own first (default 2 s).
+      const double graceMs = getenv("GIN_TS_ASYNC_GRACE_S") ? atof(getenv("GIN_TS_ASYNC_GRACE_S")) * 1000.0 : 2000.0;
       double t = monoMs();
-      while (cudaStreamQuery(st) == cudaErrorNotReady && monoMs() - t < 2000) usleep(1000);
+      while (cudaStreamQuery(st) == cudaErrorNotReady && monoMs() - t < graceMs) usleep(1000);
+      kv("async_grace_ms=%.0f kernel_exit_after_async_ms=%.1f", graceMs,
+         cudaStreamQuery(st) == cudaErrorNotReady ? -1.0 : monoMs() - t);
       if (cudaStreamQuery(st) == cudaErrorNotReady) {
         outcome = "async_error_kernel_stuck";
         exitCode = 3;
@@ -474,8 +504,9 @@ int main(int argc, char** argv) {
   if (rank == 0 && kernelDone) {
     TxOut o;
     CK(cudaMemcpy(&o, dTx, sizeof(o), cudaMemcpyDeviceToHost));
-    kv("tx_done=%d tx_rc=%s tx_rc_it=%d tx_start_gt=%llu", o.done, ncclGetErrorString((ncclResult_t)o.rc),
-       o.rc ? o.rcIt : -1, o.tStart);
+    kv("tx_done=%d tx_rc=%s tx_rc_it=%d tx_start_gt=%llu tx_err_n=%d tx_err_first_lat_us=%.1f "
+       "tx_err_later_max_lat_us=%.1f", o.done, ncclGetErrorString((ncclResult_t)o.rc), o.rc ? o.rcIt : -1, o.tStart,
+       o.nErr, o.firstErrLatNs / 1e3, o.maxLaterErrLatNs / 1e3);
     if (o.rc != 0 && exitCode == 0) { exitCode = 4; outcome = "device_error"; }
     // per-iteration flush latency: max (the iteration a recovery was hidden in) and the rest
     int n = o.done;

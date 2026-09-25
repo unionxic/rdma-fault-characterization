@@ -24,8 +24,10 @@ cat <<'HDR'
 # Apply to a pristine tree:  git apply gin_transparent_s1.diff   (equivalently: 1-4 in order, then S1 alone)
 #
 # env (S1): NCCL_GIN_FAULT_TRANSPARENT=1 (needs NCCL_GIN_FAULT_CLASSIFY=1 NCCL_GIN_FAULT_RECOVERY=1, on every
-#   rank); NCCL_GIN_TS_HANDSHAKE_MS (3000), NCCL_GIN_TS_HOLD_MS (10000), NCCL_GIN_TS_QUIESCE_MS (5000),
-#   NCCL_GIN_TS_CONNECT_MS (15000); NCCL_GIN_TS_DIAG=norebase|noring (negative controls only).
+#   rank); NCCL_GIN_TS_HANDSHAKE_MS (3000), NCCL_GIN_TS_HOLD_MS (30000: device-side bound of every parked
+#   poster/waiter), NCCL_GIN_TS_QUIESCE_MS (5000), NCCL_GIN_TS_CONNECT_MS (15000), NCCL_GIN_TS_ROUND_MS (25000:
+#   watchdog on one helper round); negative controls NCCL_GIN_TS_DIAG=norebase|noring; test knobs (research
+#   only) NCCL_GIN_TS_TEST_STALL=<ms>@quiesce|commit, NCCL_GIN_TS_TEST_DIE=quiesce, NCCL_GIN_TS_TEST_SPLIT=<k>[,..].
 #
 # S1 files:
 #   include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h  struct ncclGinTsGate (64 B, in the reserved2
@@ -37,7 +39,16 @@ cat <<'HDR'
 #       (set up at context creation over the GIN collComm), policy, quiesce, existing Prepare/Commit,
 #       executed-count exchange (responder rmsn), re-post + host doorbell, epoch publish, decline; Q4 watcher
 #       hands faults to the helper; queryLastError reports only declined faults; helper QP state changes are
-#       serialized with the fault hook (opMu); periodic gate scan (lost records / give-ups -> decline)
+#       serialized with the fault hook (opMu); periodic gate scan (lost records / give-ups -> decline);
+#       watchdog in the Q4 watcher (round longer than ROUND_MS, or a helper that stopped taking records ->
+#       async error); ncclGinGdakiTsCommTeardown (helper, watcher, hook joined and gates poisoned when the
+#       communicator is destroyed or aborted without ncclDevCommDestroy)
+#   init.cc  ncclCommAbort calls ncclGinGdakiTsCommTeardown right after it sets the abort flags (a kernel held
+#       across a recovery must be released before the teardown's cudaFree, which waits for it)
+#   gin/gin_host.cc  ncclGinHostFinalize calls ncclGinGdakiTsCommTeardown before the GIN collComms close
+#       (ncclCommDestroy; a no-op after an abort)
+#   (follow-up after an external review: flushAsync non-blocking, parked time charged to a timeout, parked
+#   posters bounded, watchdog, teardown, the exactly-once split test)
 #   transport/net_ib/gdaki/doca-gpunetio/{include/host/doca_verbs.h,src/doca_verbs_qp.{cpp,hpp}}
 #       doca_verbs_qp_query_seq: QPC rmsn / next_rcv_psn / next_send_psn / state via DEVX QUERY_QP
 # Design, tests and results: TRANSPARENT_S1.md
