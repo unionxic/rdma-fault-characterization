@@ -6,7 +6,7 @@ in its CPU-doorbell fallback: the GPU writes the WQEs and polls a CQ in GPU memo
 thread rings the doorbell. That is how everything except `gpu_doorbell/` ran; `gpu_doorbell/`
 reloaded the driver with the override for two short windows so the GPU rang the doorbell itself.
 Unless stated otherwise the IB ack timeout is 14. Details, raw data and
-patches are in the four subdirectories; this page only combines them.
+patches are in the subdirectories listed below; this page only combines them.
 
 **Update 2026-09-25.**
 - **N=30 re-run.** The classification, recovery and decline cells of GIN GDAKI + device
@@ -28,6 +28,13 @@ patches are in the four subdirectories; this page only combines them.
 | `gin/` | Q2 | NCCL 2.32.3 GIN, proxy and GDAKI backends, faults F1-F4 |
 | `nvshmem/` | Q2, Q3 | NVSHMEM IBGDA (7bb2e99c), faults F1-F4, collapsed-CQ reads |
 | `gin_q4/` | A/B, Q4 | GDAKI with a collapsed vs ring CQ; device-side classification + host mailbox |
+| `nvshmem_rootcause/` | Q2 | the NVSHMEM CPU-proxy doorbell-record bug: reproduction, fix knob, upstream scope |
+| `gpu_doorbell/` | - | runs with GPU-rung doorbells (PeerMappingOverride) |
+| `gin_recovery/` | recovery | GDAKI recovery (CPU and GPU doorbells), and app-transparent recovery step 1 (`TRANSPARENT_S1.md`) |
+| `nvshmem_ft/` | recovery | NVSHMEM IBGDA classification + recovery: v1, v2/v2.1 (`V2.md`: ring CQ, bounds check, park) |
+| `transparent_probe/` | design | hardware probe for app-transparent recovery (responder `next_rcv_psn` = executed prefix) |
+| `common/` | - | `cluster_run.sh` and shared helpers |
+| `N30_20260925.md` | - | N=30 re-run of the classification, recovery and decline cells |
 
 ## What each stack does today when a fault happens
 
@@ -42,6 +49,8 @@ patches are in the four subdirectories; this page only combines them.
 | GIN GDAKI + Q4 classifier | 5/0xf5, 15 ms | 10/0x88, 2.8 ms | 12/0x81, 3.64-3.70 s | 12/0x81, 3.64-3.70 s | returns `ncclRemoteError` (silent success 0/9) | clean |
 | GIN GDAKI + Q4 + recovery | **recovered**, ~24 ms after the fault | declined (REM_ACCESS) | **recovered**, 3.65-3.74 s after the fault | declined (peer dead) | recovered or declined | clean |
 | NVSHMEM IBGDA, GPU handler + our FT (`nvshmem_ft/`) | 5/0xf5 in 3.4-4.2 ms, **recovered** (~6.7 ms) | 10/0x88 in 1.2-2.5 ms, declined | 12/0x81 in 3.5-3.7 s, **recovered** | 12/0x81, declined (peer dead) | returns an error (FT status) | `nvshmem_finalize` returns in 17-29 ms |
+| NVSHMEM FT v2.1, ring CQ mode (`nvshmem_ft/V2.md`) | root cause kept without a sentinel (90/90), **recovered** incl. 8-thread bursts after "park" | declined; in-MR overrun caught only with the red zone (0/30 → 35/35) | **recovered** | declined | returns an error | returns |
+| GIN GDAKI transparent recovery S1 (`gin_recovery/TRANSPARENT_S1.md`) | **recovered with no error seen by the app** (95/95 recoverable cells; one op in flight, one poster) | declined, error surfaces | **recovered, transparent** (3.6 s = RETRY_EXC detection) | declined | the flush returns success; bounded only by the hold (30 s, 60 s if the give-up loses); **flag on costs +60 % at 4 KiB** | returns (teardown joins the helper) |
 
 GIN GDAKI + Q4 + recovery was re-validated with GPU-rung doorbells (the permanent setting since
 2026-09-24 13:53) and needed `gin_recovery_gpudb.diff`: same outcomes (18/18 fault runs recovered

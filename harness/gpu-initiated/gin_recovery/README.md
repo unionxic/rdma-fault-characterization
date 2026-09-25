@@ -15,8 +15,10 @@ survives a local or peer QP error with no error and no relaunch:
 - 95/95 recoverable runs transparent; the "WRITE executed, ADD not" boundary 30/30; a fault inside an
   in-flight op 150/150.
 - Unrecoverable faults are declined and surface (40/40).
-- If the helper stalls or dies, the flush returns an error when the device hold expires (4.0 s in the
-  test). A blocking flush is bounded only by that hold (30 s, 60 s when the give-up loses).
+- If the helper stalls or dies before its commit point, the flush returns an error when the device hold
+  expires (4.0 s with the 4 s test hold); after the commit point, at 2 x hold (8.0 s measured). The
+  watchdog only raises the async error. A blocking flush is bounded only by that hold (30 s by default,
+  60 s when the give-up loses), never by anything the application passes.
 - **Cost: the flag-on fast path is +60 % at 4 KiB (10.24 → 16.42 µs)**, +7 % at 256 KiB; flag off +1 %.
 - Tested with one operation in flight and one posting thread only.
 
