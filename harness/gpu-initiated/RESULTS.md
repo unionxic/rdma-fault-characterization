@@ -8,6 +8,20 @@ reloaded the driver with the override for two short windows so the GPU rang the 
 Unless stated otherwise the IB ack timeout is 14. Details, raw data and
 patches are in the four subdirectories; this page only combines them.
 
+**Update 2026-09-25.**
+- **N=30 re-run.** The classification, recovery and decline cells of GIN GDAKI + device
+  classifier, GDAKI recovery and NVSHMEM FT were re-run at N=30 (N=10 for multi-fault and
+  control cells), all on GPU doorbells (`N30_20260925.md`). Every cell was 100% (682 valid
+  trials). The lower Wilson 95% bound is 88.6% per N=30 cell. Pooled bounds are 98.4%
+  (classifier, 240/240), 96.3% (GDAKI recovery, 100/100), 96.9% (NVSHMEM classify, 120/120)
+  and 95.4% (NVSHMEM recovery, 80/80). Success rates match the earlier small-N runs in every
+  cell.
+- **Other studies from the same day:**
+  - `../ack_timeout/`: RETRY_EXC timing and the firmware floor.
+  - `../fingerprint_teardown/`: why a killed peer gives 0x81 or 0x88.
+  - `nvshmem_ft/V2.md`: ring CQ, bounds check, negative controls.
+  - `gin_recovery/TRANSPARENT_S1.md`: app-transparent GDAKI recovery, step 1.
+
 | dir | question | what it is |
 |---|---|---|
 | `cqe_seq/` | Q1 | CPU verbs: the CQE sequence the NIC writes after each fault |
