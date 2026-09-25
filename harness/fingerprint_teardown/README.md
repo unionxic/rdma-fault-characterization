@@ -49,7 +49,11 @@ mismatches.
    * On a live process the same holds. `ibv_dereg_mr` gave REM_ACCESS 90/90 and
      `ibv_destroy_qp` gave RETRY_EXC 20/20 [measured].
    * Over all kill trials, the MR registered *before* the QP gave REM_ACCESS 0/83. The MR
-     registered *after* the QP gave REM_ACCESS 111/192 [measured].
+     registered *after* the QP gave REM_ACCESS 111/192 [measured], but that pools two mechanisms:
+     31 of the 192 are DEVX-QP trials on sunny, where OFED 25.10 destroys every DEVX QP before
+     anything else, so REM_ACCESS cannot occur there (0/31). Without them, MR-after-QP kills gave
+     REM_ACCESS **111/161**; the rest is the race described below. The order claim itself rests on
+     the paired cells (0/10 vs 10/10, 0/20 vs 20/20) and the kernel source.
 3. **Registration order and QP flavour set which object dies first.**
    * The uverbs file destroys its objects newest first (`list_add` at the head, walk from the
      head), so an MR registered after its QP dies before it [source].

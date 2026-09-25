@@ -37,11 +37,21 @@ def tag_runs(rows):
     return rows
 
 
+def with_runs(rows):
+    """Files written by ackt >= the run_id version carry the process's run_id; older files get a
+    run index from tag_runs()."""
+    if rows and "run_id" in rows[0]:
+        for r in rows:
+            r["run"] = r["run_id"]
+        return rows
+    return tag_runs(rows)
+
+
 def load(d):
-    trials = tag_runs(list(csv.DictReader(open(f"{d}/trials.csv"))))
+    trials = with_runs(list(csv.DictReader(open(f"{d}/trials.csv"))))
     ev = defaultdict(list)
     try:
-        for r in tag_runs(list(csv.DictReader(open(f"{d}/events.csv")))):
+        for r in with_runs(list(csv.DictReader(open(f"{d}/events.csv")))):
             ev[(r["label"], r["T"], r["R"], r["run"], r["trial"])].append(r)
     except FileNotFoundError:
         pass

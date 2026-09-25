@@ -1,7 +1,7 @@
 # Why NVSHMEM IBGDA never gets an error CQE (and why F3 seemed to leave its QP in RTS)
 
 Follow-up to `../nvshmem/` (Q2/Q3, Root cause section) and `../gin_q4/` (Task A). Same
-cluster: rain (requester, mlx5_1) and sunny (target, mlx5_0), ConnectX-6 Dx fw 20.43.4100,
+cluster: rain (requester, mlx5_1) and sunny (target, mlx5_0), ConnectX-6 VPI fw 20.43.4100,
 RoCE v2, PMTU 4096, IB ack timeout 14, retry count 7. Every cluster run went through
 `../common/cluster_run.sh`. Tags: **[measured]**, **[source]** (read in the code),
 **[inferred]**.
@@ -589,7 +589,7 @@ So the NIC does not take one snapshot at the transition. While the QP is in ERR 
 reading the doorbell record and flushes up to whatever value it finds [measured: the CQEs
 appear without a doorbell or a command; the polling mechanism itself is inferred].
 
-**The rule [measured on CX-6 Dx fw 20.43.4100, RC, 16-WQE batches].** Once a send queue is in
+**The rule [measured on ConnectX-6 VPI fw 20.43.4100, RC, 16-WQE batches].** Once a send queue is in
 ERR (local 2ERR, a NAK, or RETRY_EXC), the NIC takes its producer index from the SQ doorbell
 record (word 1, P), not from the UAR doorbell (pi). QUERY_QP `sw_sq_wqebb_counter` then reads
 P. The NIC writes exactly one completion for each WQE in [c, P):
@@ -706,7 +706,7 @@ word 1, and is not affected. Neither is NVSHMEM 3.4.5 in any mode.
 
 ### Limitations and open items of this section
 
-- (b) is one NIC model and firmware (ConnectX-6 Dx, 20.43.4100), RoCE v2, RC, a 1024-WQEBB SQ,
+- (b) is one NIC model and firmware (ConnectX-6 VPI, 20.43.4100), RoCE v2, RC, a 1024-WQEBB SQ,
   one-WQEBB WQEs and batches of 16. P - c was tested from -8 to +18 (and -29 via P = 0 on
   2026-09-24). Larger distances and wrap-around of the 16-bit counter were not tested. P > pi was
   tested only as pi + 2 with valid NOPs in those slots, to avoid feeding the NIC unwritten WQEs.

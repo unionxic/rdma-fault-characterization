@@ -19,23 +19,39 @@ from source, not measured here. "nominal" below always means 4.096 us x 2^T (the
 
 ## TL;DR
 
-- **The 34 s vs 59 s gap is explained [measured, T=20 R=7: 59.05-59.77 s, N=5].** With the
+- **The 34 s vs 57-59 s gap is explained [measured, T=20 R=7: 59.05-59.77 s back-to-back (N=5),
+  58.46-58.79 s in fresh processes (N=10), 57.69-58.24 s in fresh processes with traffic before
+  the fault (N=5)].** With the
   firmware defaults the NIC does not make "R+1 attempts of 4.096 us x 2^T". Per fault it runs
   1. an **adaptive-retransmission phase**: 4-11 early retransmissions on a firmware schedule
      (typical steps 8.6, 16.6, 33.7, 67.1, 100.6, 201.4, 536.8, 805.3, 2147.8, 4294.8 ms), counted
      in `roce_adp_retrans`, not in `local_ack_timeout_err`. It continues while the step is at most
-     nominal(max(T,16)) (within 0.3 ms) and, whatever its length, uses up **one** unit of `retry_cnt`;
+     nominal(max(T,16)) (within 0.3 ms) and, whatever its length, uses up **one** unit of `retry_cnt`
+     (this schedule is the back-to-back one; in a fresh process it differs, section D);
   2. then **R-1 regular ACK timeouts** (`local_ack_timeout_err`), spaced exactly
      **I = 2 x 4.096 us x 2^max(T,16)**: 536.9 ms for T<=16, then 1073.8 / 2147.6 / 4295.1 /
      8590.2 ms at T=17/18/19/20 (interval / nominal(max(T,16)) = 2.000 in every cell). The first R-2 of them
      retransmit; the last one completes the WQE with RETRY_EXC 12/0x81 (0.37 ms before to 0.07 ms
      after the CQE was polled).
 
-  At T=20, R=7: adaptive phase to 8.225 s (10-11 retransmissions), first regular timeout at
-  16.815 s, then 5 x 8.590 s -> **59.766 s**. Every floor-on trial after the first of each run
-  (42/42, R=1..7, T=14..20) fits **detect = R x I - c** within 0.9 ms, c = 96 ms (T<=16) or
-  364 ms (T>=17). The naive (R+1) x nominal is short by the factor ~2R/(R+1) = 1.75 at R=7:
-  59.8 / 34.4 = 1.74. The GIN proxy's 57-59 s (earlier stage) is this, measured through NCCL.
+  At T=20, R=7, back-to-back: adaptive phase to 8.225 s (10-11 retransmissions), first regular
+  timeout at 16.815 s, then 5 x 8.590 s -> **59.766 s**. The naive (R+1) x nominal is short by
+  about 2R/(R+1) = 1.75 at R=7 (59.8 / 34.4 = 1.74).
+- **What the model predicts, and what not (review follow-up, section D) [measured].**
+  - *Back-to-back faults in one process*: detect = R x I - c (c fitted: 96 / 364 ms). Out of
+    sample, with predictions written down before the run, 52/55 non-first trials at T=10, 12, 15,
+    16 (R=7), T=15 (R=1, 3, 5) and T=17 (R=1, 2, 3, 5) were within 1.5 ms (per-cell median error -0.45 to
+    -0.82 ms); the `max(T,16)` clamp, R-1 regular timeouts and the T=17 first-timeout rule held in
+    55/55; 3 trials ran 2.6-7.6 ms early (their whole adaptive schedule shifted).
+  - *First fault of a process* (every GPU/NCCL trial): only the regular part is predicted. In
+    all 205 sampled floor-on trials with R >= 1 (sections A and D, every mode) there were R-1
+    regular timeouts spaced I (within 0.56 ms), the last one within 0.6 ms of the CQE, so
+    detect = t_L1 + (R-2) x I (within 1.0 ms; 1.7 ms at T=20, where I = 2.00003 x nominal). Where the regular
+    part starts (t_L1) depends on history: at T=14 R=7 detect was 3.50-3.76 s across fresh
+    processes, fresh contexts, idle gaps and prior traffic (model 3.66 s); at T=20 57.7-59.8 s.
+  - *NCCL GIN proxy 57-59 s*: below the back-to-back model (59.77 s; the earlier README wrongly
+    said "within range"); matched in range by fresh CPU processes with GIN-like traffic before
+    the fault (57.69-58.24 s, N=5).
 - **"The floor" is a firmware mode, not only a clamp [measured].** With the defaults, the
   interval is clamped to 536.9 ms (= 2 x nominal(16)) for T<=16 - the old study's "537 ms per
   retry"; the old "429 ms first timeout" matches the adaptive phase (440 ms here) and "adp absorbs
@@ -59,6 +75,12 @@ from source, not measured here. "nominal" below always means 4.096 us x 2^T (the
   C_nvshmem); 8 restored by the window's trap and verified field by field (19/19 equal to the
   before-dump), 1 (the SIGKILL test) by the guardian within 0.5 s. The final read (06:47:50)
   equals the first before-dump in all 19 fields (`window/final_check_17:00.1.txt`).
+- **Window lock check fixed (review item 4).** The first version only refused when a
+  non-blocking flock on a hard-coded path succeeded, so a flock(1) error let the register change
+  go ahead. It now refuses unless its nearest `cluster_run.sh` ancestor verifiably holds the
+  shared lock (fdinfo + flock exit code 75 + script and lock path checks, no hard-coded path).
+  All six refusal paths and one positive control were tested inside a real hold with no register
+  access (register identical before/after in 19/19 fields); no window has run since the fix.
 
 ## Method
 
@@ -73,6 +95,12 @@ until the completion (t1), detect = t1 - t0 (`CLOCK_MONOTONIC_RAW`). QPs are des
 trial. Every cell ran under `../gpu-initiated/common/cluster_run.sh` (lock + idle link), with all
 processes under `timeout -s KILL`; no process was left on either node after any cell
 (`leftover=0/0` in every `logs/*.cli.log`).
+
+Options added for the review follow-up (section D): `-F` reopens the device context (PD, MR,
+CQ) before every trial, `-G ms` idles before every trial, `-P n:gap_ms:bytes` posts n signaled
+WRITEs right before the fault; every trial and event row carries the process's `run_id` (and
+the trial row its QPN, pid and these settings), so one-trial processes appended to the same files
+stay separable. Files from the first version are refused rather than mixed.
 
 **Per-timeout timing.** A sampler thread (own CPU) loops over (a) one RDMA-netlink
 `RDMA_NLDEV_CMD_STAT_GET` of the port's default counter set - all `hw_counters` in one uncached
@@ -147,7 +175,7 @@ Reading the timelines:
   R cell, and the no-sampler control) followed another adaptive schedule (e.g. 94, 161, 262,
   530 ms at T=14; 47, 81, 131, 265, 534, 1071, 2144, 3755 ms at T=19), giving detect 10-1250 ms
   off R x I - c. Trials 2..N (42/42) fit R x I - c within 0.9 ms. The cause (per-process or
-  per-context adaptive state) was not identified.
+  per-context adaptive state) was not identified. Characterised directly in section D2-D4.
 - `roce_adp_retrans_to`, `roce_slow_restart*`, `packet_seq_err`, `out_of_sequence`,
   `implied_nak_seq_err`, `duplicate_request` did not change in any fault window (`d_*` columns
   of `trials.csv`); `req_cqe_error` +1 per trial (our CQE).
@@ -186,9 +214,27 @@ t_A        = end of the adaptive phase: last step <= nominal(max(T,16)) of the f
 
 At T=20, R=7: 8225 + 8590 + 5 x 8590 = 59766 ms. The review's 34 s assumed (R+1) attempts of
 nominal(T); the NIC runs R-1 regular attempts of **2 x** nominal plus an adaptive phase of about
-one more I, which is 7 x 8.59 - 0.36 = 59.8 s. The 57-59 s seen by NCCL GIN (proxy, peer QP error, 4 trials,
-`../gpu-initiated/RESULTS.md` item 6) is within this range; the GIN fault time is when sunny's QP
-went to ERR, and the first unacknowledged put can come up to one iteration gap later [inferred].
+one more I, which is 7 x 8.59 - 0.36 = 59.8 s.
+
+`c` (96 / 364 ms) was fitted on these same trials, and the rule is valid for back-to-back faults
+in one process only; D1 tests it out of sample, D2-D4 show where it stops (first fault of a
+process).
+
+**The NCCL GIN proxy's 57-59 s (corrected 2026-09-25 after review).** The first version of this
+README said those values fall in this model's range. They do not: the model gives 59.77 s at
+T=20 R=7 (back-to-back), and the smallest section-A value was 59.05 s (a first trial). The GIN
+values (`../gpu-initiated/gin/results/20260923/gin_results.csv`, rows `ref60*`, `refblk*`) are
+host-error times 58.44 / 58.50 s (timeout mode) and 59.07 / 59.67 s (blocking) after rank-0
+start, minus a fault time that was not recorded in those runs and was taken as the median F3
+fire time of other runs (1.297 s; 1.287-1.313 s there): **57.1-58.4 s fault -> host error**.
+The host sees the error after the CQE, and the failing put is posted after the fault, so the
+NIC's post -> CQE was at most 57.1-58.4 s. The direct fresh-process measurements (D3, D4) are
+consistent with that: a fresh CPU process at T=20 R=7 took 58.46-58.79 s (N=10), and a fresh process
+with GIN-like traffic before the fault 57.69-58.24 s (N=5), which overlaps the GIN range. In all
+of them the regular part (6 regular timeouts spaced 8.59 s, the last one = CQE) is exact; the
+history-dependent part is the first regular timeout (16.8 s back-to-back, 15.5-15.8 s fresh,
+14.7-15.3 s fresh with traffic). With the GIN fault times estimated and N=4 / 5, this is agreement
+in range, not a per-trial prediction.
 
 ## B. Floor off (`min_ack_timeout_limit_disabled=1`, inside `ackfloor_window.sh`) [measured]
 
@@ -297,15 +343,207 @@ Medians [min-max]. Raw: `results/20260925/C/` (`gin_<floor>_T<T>.csv` + `logs/`,
 - **No spurious failure before the fault** at T=8 floor off (nominal 1 ms): GIN completed 37-38
   iterations and NVSHMEM 51/51 (data verified on PE1) before the injected fault in every trial.
   This is 20 short runs on an idle direct link, not evidence of safety under load.
-- With the floor on, the GPU values (3.53-3.63 s) sit below the CPU steady state (3.66 s) and among
-  the CPU trial-1 values (3.50-3.75 s); every GPU trial is a new process, which fits the trial-1
-  effect of A [inferred].
+- With the floor on, the GPU values (post -> error 3.53-3.62 s, 6 trials) are not the CPU steady
+  state (3.66 s). Every GPU trial is a fresh process; the direct CPU fresh-process measurement (D2)
+  gave 3.50-3.76 s at T=14, but typically 3.74-3.76 s, so the GPU values lie inside that range
+  and away from its usual value. Read through the regular part (detect = t_L1 + 5 x 536.9 ms,
+  which held in every CPU trial), they correspond to t_L1 = 0.84-0.93 s, a first regular timeout
+  seen neither in steady state (0.977 s) nor in the usual fresh-process case (1.06-1.08 s). The
+  GPU QPs carried 37-51 successful iterations before the fault, the CPU QPs one WRITE. Adding
+  GIN-like traffic before the fault to fresh CPU processes (D4) moved them to 3.59-3.75 s
+  (median 3.73 s): the GIN value (3.62 s at T=14, 3.58-3.62 s at T=8) is inside that range, the
+  NVSHMEM values (3.53-3.56 s, 51 iterations of a different pattern) still below it. So history
+  explains part of the difference; the rest is not reproduced [measured / not identified].
 - Not run: recovery. With NVSHMEM FT's measured ~3 ms host recovery (`../gpu-initiated/nvshmem_ft/`),
   fault -> recovered would be ~16 ms at T=8 floor off [inferred, not measured].
 
+## D. Review follow-up: out-of-sample check and fresh processes (floor on, no register change)
+
+### D1a. Predictions, written before the measurement
+
+(The text of this subsection is kept as written before the run; its md5 `52de8f0a...` is in
+`oos/prereg.txt`, recorded 14:11:52, and the exact text in `oos/prereg_section.md`; the
+pre-run `predict.py` is kept as `oos/predict_prereg.py`.)
+
+Written 2026-09-25 14:11 KST, before any of the runs below: `predict.py` (md5 `9ce7ab8f...`) encodes
+the section-A model unchanged (schedule points, `max(T,16)` clamp, `min(s_next, I)` rule, as
+fitted on `results/20260925/A` trials >= 2) and wrote `results/20260925/oos/predictions.csv`
+(md5 `dbc6ed2a...`, mtime 14:11:19). None of these (T, R) cells was measured before, except
+T=16 R=7, which is repeated as a replicate. Acceptance criterion, fixed in advance: every
+non-first trial within 1.5 ms of the predicted detection time.
+
+| T | R | I (ms) | t_A end of adaptive phase (ms) | first regular timeout (ms) | regular timeouts | adaptive retransmissions | predicted detect (ms) |
+|---|---|---|---|---|---|---|---|
+| 10 | 7 | 536.87 | 440.4 | 977.2 | 6 | 4-7 | 3661.55 |
+| 12 | 7 | 536.87 | 440.4 | 977.2 | 6 | 4-7 | 3661.55 |
+| 15 | 7 | 536.87 | 440.4 | 977.2 | 6 | 4-7 | 3661.55 |
+| 16 | 7 | 536.87 | 440.4 | 977.2 | 6 | 4-7 | 3661.55 |
+| 15 | 1 | 536.87 | 440.4 | - | 0 | 4-7 | 440.40 |
+| 15 | 3 | 536.87 | 440.4 | 977.2 | 2 | 4-7 | 1514.07 |
+| 15 | 5 | 536.87 | 440.4 | 977.2 | 4 | 4-7 | 2587.81 |
+| 17 | 1 | 1073.74 | 977.2 | - | 0 | 5-8 | 977.20 |
+| 17 | 2 | 1073.74 | 977.2 | 1782.5 | 1 | 5-8 | 1782.50 |
+| 17 | 3 | 1073.74 | 977.2 | 1782.5 | 2 | 5-8 | 2856.24 |
+| 17 | 5 | 1073.74 | 977.2 | 1782.5 | 4 | 5-8 | 5003.73 |
+
+What each cell tests: T=10/12/15 the `max(T,16)` clamp below T=14 and between 14 and 16 (without
+the clamp, T=10 would give a regular interval of 8.4 ms, not 536.9 ms); T=17 R=2 the
+`min(s_next, I)` rule directly (first regular timeout at 1782.5 = 977.2 + 805.3, against 2050.9 =
+977.2 + I without it); R=1 that the WQE fails at the end of the adaptive phase.
+
+For fresh processes (D2) the model makes no timing prediction for the adaptive phase, because the
+13 first trials of section A did not follow its schedule. Hypothesis written in advance: the
+regular part (spacing I, R-1 regular timeouts, last one = CQE) holds in a fresh process too;
+only the adaptive phase differs.
+
+### D1b. Out-of-sample result [measured]
+
+Run 2026-09-25 14:34-14:40 (hold `ackD1-oos`), N=6 per cell, trial 1 of every cell excluded from
+the score (review item: non-first trials). `predict.py --check results/20260925/oos`
+(`oos/check.md`); after the run `predict.py` was edited only in its `--check` printing (an empty
+list guard); the prediction file is unchanged (md5 `dbc6ed2a...` re-generated identically).
+
+| T | R | non-first trials | predicted (ms) | measured median [min-max] (ms) | error median [min-max] (ms) | within 1.5 ms | regular timeouts (pred / meas) | regular interval (pred / meas median) | first regular timeout (pred / meas median) | trial 1 detect (error) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 10 | 7 | 5 | 3661.55 | 3660.96 [3658.98-3661.26] | -0.59 [-2.57--0.29] | 4/5 | 6 / 6 | 536.9 / 536.9 | 977.2 / 976.5 | 3685.7 (+24.2) |
+| 12 | 7 | 5 | 3661.55 | 3661.02 [3660.82-3661.17] | -0.54 [-0.74--0.39] | 5/5 | 6 / 6 | 536.9 / 536.9 | 977.2 / 976.4 | 3739.8 (+78.3) |
+| 15 | 1 | 5 | 440.40 | 439.72 [439.61-440.11] | -0.68 [-0.79--0.29] | 5/5 | 0 / 0 | - | - / - | 534.4 (+94.0) |
+| 15 | 3 | 5 | 1514.07 | 1513.52 [1513.04-1513.71] | -0.55 [-1.03--0.36] | 5/5 | 2 / 2 | 536.9 / 536.9 | 977.2 / 976.3 | 1613.6 (+99.5) |
+| 15 | 5 | 5 | 2587.81 | 2587.13 [2587.09-2587.35] | -0.68 [-0.72--0.47] | 5/5 | 4 / 4 | 536.9 / 536.8 | 977.2 / 976.4 | 2675.7 (+87.9) |
+| 15 | 7 | 5 | 3661.55 | 3660.74 [3660.47-3661.12] | -0.82 [-1.09--0.44] | 5/5 | 6 / 6 | 536.9 / 536.9 | 977.2 / 976.3 | 3758.2 (+96.6) |
+| 16 | 7 | 5 | 3661.55 | 3660.94 [3660.75-3661.08] | -0.61 [-0.81--0.47] | 5/5 | 6 / 6 | 536.9 / 536.9 | 977.2 / 976.4 | 3758.9 (+97.4) |
+| 17 | 1 | 5 | 977.20 | 976.75 [976.52-976.83] | -0.45 [-0.68--0.37] | 5/5 | 0 / 0 | - | - / - | 1059.2 (+82.0) |
+| 17 | 2 | 5 | 1782.50 | 1781.81 [1781.54-1782.23] | -0.69 [-0.96--0.27] | 5/5 | 1 / 1 | - | 1782.5 / 1781.6 | 2143.5 (+361.0) |
+| 17 | 3 | 5 | 2856.24 | 2855.57 [2848.67-2855.75] | -0.67 [-7.57--0.50] | 4/5 | 2 / 2 | 1073.7 / 1073.6 | 1782.5 / 1781.7 | 2940.1 (+83.8) |
+| 17 | 5 | 5 | 5003.73 | 5003.27 [4996.15-5003.44] | -0.46 [-7.58--0.28] | 4/5 | 4 / 4 | 1073.7 / 1073.8 | 1782.5 / 1782.0 | 5101.7 (+98.0) |
+
+- **52/55 non-first trials within the 1.5 ms set in advance; median error -0.45 to -0.82 ms per
+  cell** (all cells slightly early: the frozen schedule points were counter-event midpoints,
+  which lag the firmware event by a fraction of a sampling round [inferred]).
+- **The structural predictions held in 55/55:** R-1 regular timeouts; regular interval 536.9 ms at
+  T=10, 12 and 15 (the clamp: without it T=10 would space them 8.4 ms apart); the first regular
+  timeout at T=17 R=2 at 1781.6 ms, i.e. t_A + 805 ms, as `min(s_next, I)` predicts (t_A + I would
+  be 2050.9 ms); R=1 fails at the end of the adaptive phase (439.7 / 976.8 ms).
+- **The 3 misses (-2.6, -7.6, -7.6 ms)** had their whole adaptive schedule shifted earlier by the
+  same amount, with extra early entry points: e.g. T=17 R=3 trial 2: 6.85, 8.78, 13.0, 21.4, 38.3,
+  63.5, 130.5, 231.1, 432.8, 969.3 ms (vs 440.4 / 977.2), then the regular part exact. Two of
+  them also had 10 adaptive retransmissions (predicted 5-8). The schedule is therefore not
+  anchored exactly to the post; in ~5% of back-to-back trials it runs a few ms early [measured,
+  cause unknown]. In-sample (section A) no such shift was seen in 42 trials.
+- **Trial 1 of every cell was again off**, this time always late (+24 to +361 ms), see D2.
+- Other checks: 66/66 RETRY_EXC 12/0x81, warm-up write ok 66/66, `T_q,R_q` = requested 66/66,
+  timeout counters quiet in every quiet window; own transmissions = 1 + adaptive + (R-2) in 54/55
+  (one masked by a background xmit/rcv pair). Raw: `results/20260925/oos/`.
+
+### D2. Fresh processes, fresh contexts, idle gaps [measured]
+
+Modes (all floor on, T=14 and T=17 at R=7, `results/20260925/fresh/`, hold `ackD2-fresh`
+14:43-14:49; T=20 in `results/20260925/fresh20/`):
+- `freshP`: every trial is a new requester **and** responder process (`run_cpu.sh ... 1`, 10
+  times): new device context, PD, CQ, MR, QP, new control connection, ~3 s between trials
+  (ssh, GID probe, server start). This is what every GPU/NCCL trial is.
+- `ctxF` (`ackt -F`): one process; the device context (PD, MR, CQ) is closed and reopened before
+  every trial; trials ~1 s apart as in section A.
+- `gap5s` (`ackt -G 5000`): one process and context; 5 s idle before every trial.
+
+`fresh_check.py results/20260925/fresh`:
+
+| mode | T | trials | detect median [min-max] (ms) | steady model | detect - model (ms) | t_A last adaptive (ms) | t_L1 first regular timeout (ms) | t_L1 - t_A (ms) | regular timeouts = R-1 | max abs(gap - I) (ms) | max abs(detect - (t_L1 + (R-2) I)) (ms) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| freshP | 14 | 10 | 3750.1 [3499.9-3764.0] | 3661.6 | +88.6 [-161.7..+102.5] | 528.8 [412.5-542.5] | 1065.6 [815.4-1079.7] | 536.9 [402.8-537.2] | 10/10 | 0.32 | 0.37 |
+| freshP | 17 | 10 | 7257.2 [7234.7-7500.4] | 7151.2 | +106.0 [+83.5..+349.2] | 1063.2 [812.6-1095.0] | 1888.3 [1865.7-2131.3] | 805.5 [805.2-1074.0] | 10/10 | 0.32 | 0.34 |
+| ctxF, trials >= 2 | 14 | 10 | 3635.4 [3632.8-3639.8] | 3661.6 | -26.2 [-28.8..-21.8] | 415.6 [411.4-552.5] | 950.7 [948.3-955.4] | 536.7 [402.5-537.0] | 10/10 | 0.32 | 0.33 |
+| ctxF, trials >= 2 | 17 | 10 | 7127.7 [7123.3-7128.8] | 7151.2 | -23.5 [-27.9..-22.4] | 953.4 [949.0-954.7] | 1758.6 [1754.4-1760.0] | 805.4 [805.0-805.7] | 10/10 | 0.40 | 0.44 |
+| gap5s, trials >= 2 | 14 | 10 | 3761.2 [3761.0-3761.4] | 3661.6 | +99.7 [+99.4..+99.8] | 539.8 [539.5-540.1] | 1076.7 [1076.5-1077.0] | 537.0 [536.7-537.1] | 10/10 | 0.37 | 0.31 |
+| trial 1 of ctxF / ctxF / gap5s | 14 / 17 / 14 | 1 each | 3502.5 / 7521.9 / 3604.2 | | -159.1 / +370.7 / -57.3 | | 818.0 / 2152.9 / 919.7 | 402.6 / 1073.9 / 402.6 | 3/3 | | |
+
+What the model describes, and what not:
+- **Described in every trial (53/53 here; 205/205 over all sampled floor-on trials with R >= 1,
+  see TL;DR):** the regular part. After the
+  adaptive phase come exactly R-1 regular timeouts spaced I = 2 x nominal(max(T,16)) (worst gap
+  error 0.44 ms), the last one is the CQE, so **detect = t_L1 + (R-2) x I within 0.44 ms**. Also
+  t_L1 - t_A is always I or 0.75 x I (402.6 / 536.9 ms at T=14; 805.3 / 1073.9 ms at T=17): in all
+  177 floor-on trials with both events (sections A, D1-D3), 128 at I and 49 at 0.75 x I, none else.
+- **Not described:** where the adaptive phase ends (t_A) and so where the regular part starts
+  (t_L1). The steady-state value (t_L1 = 977.2 ms at T<=16, 1782.5 ms at T=17) holds only for
+  back-to-back trials in one process and context (section A, D1). It moves with the history:
+  a 5 s idle gap shifts it by +99.5 ms (10/10, spread 0.5 ms), reopening the device context by
+  -26 ms (10/10, spread 7 ms), and a fresh process pair lands at +80..+102 ms in 9/10 (T=14) and
+  +84..+118 ms in 9/10 (T=17), with one outlier each (-162 ms at T=14, +349 ms at T=17).
+- So for a fresh process, which is every GPU/NCCL measurement, **detect = t_L1 + (R-2) x I with
+  t_L1 unknown in advance**; at T=14 R=7 it measured 3500-3764 ms (model 3661.6), at T=17
+  7235-7500 ms (model 7151.2). The spread (T=14: 264 ms, T=17: 266 ms, T=20: 336 ms in D3) comes
+  from t_L1 alone.
+- **Which condition reproduces the first-trial schedule:** none exactly. The idle gap alone
+  reproduces the typical fresh-process shift (+99.7 ms vs +80..+102 ms); reopening the context
+  alone gives a different, stable shift (-26 ms); the first trial of each mode, and the fresh
+  outliers, are unlike both. The dependence on idle time points to firmware state that ages
+  between faults (e.g. an RTT/backoff estimate per function or port) [inferred, not identified].
+  All values here come from one warm-up WRITE before the fault; a QP that carried traffic
+  before the fault (the GPU runs: 37-51 iterations) starts from yet another state (D4).
+
+### D3. Fresh processes at T=20, R=7 (N=10) [measured]
+
+`results/20260925/fresh20/` (hold `ackD3-fresh20`, 15:18-15:28), mode `freshP` as in D2:
+
+| mode | T | trials | detect median [min-max] (ms) | steady model | detect - model (ms) | t_A last adaptive (ms) | t_L1 first regular timeout (ms) | t_L1 - t_A (ms) | regular timeouts = R-1 | max abs(gap - I) (ms) | max abs(detect - (t_L1 + 5 I)) (ms) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| freshP | 20 | 10 | **58780.4** [58458.2-58794.4] | 59764.7 | -984.3 [-1306.6..-970.3] | 7239.4 [6916.5-7253.1] | 15829.4 [15506.8-15843.3] | 8590.2 [8589.9-8590.4] | 10/10 | 0.52 | 1.67 (b) |
+
+(b) the measured I is 8590.2 ms, 0.27 ms above 2 x nominal(20); over 5 intervals that is 1.35 ms.
+
+- At T=20 a fresh process is ~1 s **faster** than the back-to-back steady state (58.46-58.79 s vs
+  59.77 s), while at T=14/17 it was ~0.1 s slower. The regular part is again exact (6 regular
+  timeouts, spaced 8590.2 ms); the difference is in the adaptive phase: in fresh processes its
+  last points were ... 1054-1079, 1860-1884, 4007-4032, 7229-7253 ms (9/10) (steps ~805, 2148, 3221 =
+  0.75 x nominal(20)), in steady state ... 977, 1782, 3930, 8225 ms (last step 4295 = nominal(20)).
+- One trial (58458 ms) ended its adaptive phase one point earlier (6916.5 ms), the same kind of
+  outlier as at T=14/17.
+- For item A this means: at NCCL's default T=20, R=7 the time to RETRY_EXC for a fresh process is
+  58.5-58.8 s (N=10), not 59.8 s; both are far from the naive 34.4 s, and 42.95 s of it
+  (5 x 8.59 s after the first regular timeout) is fixed by the regular part.
+
+### D4. Fresh processes with GPU-like traffic before the fault [measured]
+
+The GPU drivers run 37-51 successful put+signal iterations on the QP before the fault; D2/D3 had
+one WRITE. `ackt -P 37:15:262144` posts 37 signaled 256 KiB WRITEs 15 ms apart (the GIN driver's
+iteration pattern) right before the fault (`scripts/d4_traffic.sh`, `results/20260925/freshW/`,
+hold `ackD4-traffic` 15:33-15:39; 37/37 WRITEs completed in every trial):
+
+| mode | T | trials | detect median [min-max] (ms) | steady model | detect - model (ms) | t_L1 first regular timeout (ms) | regular timeouts = R-1 | max abs(detect - (t_L1 + 5 I)) (ms) |
+|---|---|---|---|---|---|---|---|---|
+| freshW (fresh process + traffic) | 14 | 10 | 3726.3 [3594.6-3745.9] | 3661.6 | +64.7 [-66.9..+84.3] | 1041.8 [910.0-1061.2] | 10/10 | 0.38 |
+| freshW (fresh process + traffic) | 20 | 5 | **58216.8** [57693.1-58238.2] | 59764.7 | -1547.9 [-2071.6..-1526.5] | 15265.9 [14742.1-15287.4] | 5/5 | 1.32 |
+| warmS (one process + traffic), trials >= 2 | 14 | 5 | 3640.2 [3639.9-3640.3] | 3661.6 | -21.4 [-21.7..-21.2] | 955.7 [955.4-955.7] | 5/5 | 0.26 |
+
+- Prior traffic moves t_L1 again (T=14: fresh 1065.6 -> 1041.8 ms median; back-to-back 977.2 ->
+  955.7 ms; T=20: fresh 15829 -> 15266 ms), the regular part stays exact (21/21).
+- At T=20 the fresh-with-traffic runs gave 57.69-58.24 s, the range of the GIN proxy measurement
+  (next paragraph).
+
+### What changes in the earlier text (review items 1-3)
+
+- Section A's formula with the fitted c describes **back-to-back faults in one process**; it
+  predicted such trials out of sample within 1.5 ms in 52/55 (D1). It does not predict the
+  first fault of a process, which is the GPU/NCCL case: there only the regular part holds, and
+  the start of the regular part t_L1 depends on history (D2-D4). Across all modes measured,
+  RETRY_EXC at R=7 came 3.50-3.76 s after the post at T=14 and 57.7-59.8 s at T=20.
+- The GIN proxy statement is corrected in section A (item 3).
+
 ## Register window (`ackfloor_window.sh`, `ackfloor_guardian.sh`)
 
-- Must run under `cluster_run.sh` (refuses with exit 64 if the cluster lock is free).
+- **Lock precondition (fail closed, fixed 2026-09-25 after review).** The first version tested
+  `flock -n <hard-coded path> true` and refused only if that *succeeded*; any flock(1) error
+  (e.g. exit 66 when the path could not be opened) was taken as "held" and the register change
+  went ahead. Now, before the first register access, the window refuses (exit 64) unless all of
+  these hold: (1) the nearest ancestor process runs `cluster_run.sh`; (2) that process's fd 9 is
+  an existing, not deleted, regular file; (3) `/proc/<it>/fdinfo/9` shows a FLOCK WRITE lock on
+  that inode and `flock -n -E 75` on the file returns exactly 75 (any other status, including an
+  error, refuses); (4) the ancestor runs this repository's `../gpu-initiated/common/cluster_run.sh`;
+  (5) the locked file is the shared lock as that script defines it (its `SCRATCH`/`LOCK` lines
+  evaluated with `CLUSTER_LOCK` unset), so `CLUSTER_LOCK=<private file> cluster_run.sh` is refused.
+  No lock path is hard-coded in the window any more. `ACKFLOOR_CHECK_ONLY=1` runs the checks and
+  exits before any register access (for tests).
 - (a) reads and saves the full ROCE_ACCL of 17:00.1 (19 fields) and refuses unless
   `min_ack_timeout_limit_disabled` is 0; also saves 17:00.0's ROCE_ACCL (read only);
 - (b) `mlxreg -d 17:00.1 --reg_name ROCE_ACCL --yes --set "<all 9 *_field_select=0 except
@@ -323,7 +561,27 @@ Tested before first use (`scripts/test_window.sh`, `results/20260925/window_test
 the cluster lock): `true`; a read inside the window (`0x00000001`); command SIGKILLed (window rc
 137, restored); window SIGTERMed (rc 143, command group stopped, restored); window SIGKILLed
 (guardian restored within 0.5 s); lock not held (refused, register untouched). Every case read
-0 afterwards. The dumps of every window are in `results/20260925/window/<stamp>_<tag>_*.txt`
+0 afterwards.
+
+Lock-check refusal paths (`scripts/test_lockcheck.sh`, run inside a real hold
+`ackW-lockcheck2`, `results/20260925/lockcheck_test2.out`): every case ran with
+`ACKFLOOR_CHECK_ONLY=1`; cases A and B were repeated on the real path (no CHECK_ONLY) only after
+their CHECK_ONLY run had refused.
+
+| case | setup | result |
+|---|---|---|
+| A | window re-parented to init (no `cluster_run.sh` ancestor) | refused, check 1 (CHECK_ONLY and real path) |
+| B | fake `cluster_run.sh` with fd 9 open, no lock taken | refused, check 3 (CHECK_ONLY and real path) |
+| C | fake `cluster_run.sh` holding a flock on its own file | refused, check 4 |
+| D | fake `cluster_run.sh` without fd 9 | refused, check 2 |
+| E | the real `cluster_run.sh` with `CLUSTER_LOCK=<private file>` | refused, check 5 |
+| F | the real `cluster_run.sh` whose lock file was deleted | refused, check 2 ("(deleted)") |
+| G | positive control, directly under the real hold | checks passed (CHECK_ONLY exit 0) |
+
+ROCE_ACCL of 17:00.1 read before and after the test: identical in all 19 fields; the window log
+gained 10 lines, none of them BEFORE/SET/RESTORED. (The first run, `lockcheck_test.out`, had a
+bug in the test harness of case A, which reported "not re-parented" and did not run the window;
+fixed and re-run as above.) The dumps of every window are in `results/20260925/window/<stamp>_<tag>_*.txt`
 (`before`, `after_set`, `after_restore`, `before_17:00.0`, `after_17:00.0`).
 
 ## Caveats
@@ -344,6 +602,12 @@ the cluster lock): `true`; a read inside the window (`0x00000001`); command SIGK
 - The register was set only inside windows: 74 s (B), 106 s (B2), 668 s (C_gin), 70 s (C_nvshmem),
   plus < 3 s per test case; always restored and verified (window log, dumps). Holds are logged in
   the shared `cluster_run.log` under tags `ack*`.
+- **Scope of the floor-on formula [measured, section D].** `detect = R x I - c` holds for faults
+  back-to-back in one process (52/55 out of sample within 1.5 ms). For the first fault of a
+  process (GPU/NCCL), after an idle gap, with a fresh device context or after prior traffic,
+  only the regular part holds (detect = t_L1 + (R-2) x I); detect moved by -165..+371 ms at
+  T=14/17 (R=7) and by -2.07..-0.71 s at T=20 against the back-to-back model. The firmware state behind this
+  was not identified.
 - The adaptive schedule, the trial-1 effect, R=0 with the floor on, and t1 with the floor off are
   firmware behaviour of fw 20.43.4100 observed from counters; no firmware documentation was
   consulted. A single node pair, direct cable, no switch.
@@ -359,6 +623,14 @@ the cluster lock): `true`; a read inside the window (`0x00000001`); command SIGK
 | `ackfloor_window.sh`, `ackfloor_guardian.sh`, `scripts/test_window.sh` | register window, guardian, restore-path tests |
 | `scripts/gpu_gin.sh`, `scripts/gpu_nvshmem.sh` | GPU trials through the unchanged `gin_q4` / `nvshmem_ft` runners and bundles |
 | `analyze.py`, `tables.py`, `qa_check.py` | per-trial timelines, tables, independent re-computation of the CPU claims |
+| `predict.py` | the frozen floor-on model as a predictor (`--csv`) and the out-of-sample check (`--check`) |
+| `fresh_check.py` | fresh-process / fresh-context / idle-gap / prior-traffic characterisation (D2-D4) |
+| `qa_check_d.py` | independent re-computation of the section-D claims from the raw files (`results/20260925/qa_check_d.out`) |
+| `scripts/test_lockcheck.sh` | refusal paths of the window's lock check (no register access) |
+| `results/20260925/oos/` | D1: `prereg.txt`, `predictions.csv`, trials/events/attempts, `check.md` |
+| `results/20260925/fresh/`, `fresh20/`, `freshW/` | D2/D3/D4: fresh-process, fresh-context, idle-gap and prior-traffic runs |
+| `scripts/d4_traffic.sh` | D4 cells (fresh processes with 37 x 256 KiB WRITEs before the fault) |
+| `results/20260925/lockcheck_test2.out` | lock-check test (first attempt with the case-A harness bug: `lockcheck_test.out`) |
 | `results/20260925/{smoke,A,B}/` | `trials.csv`, `events.csv`, `attempts.csv`, `summary.md`, per-cell logs, hold outputs |
 | `c_summary.py` | GPU table (Task C) |
 | `results/20260925/C/` | GPU trials (CSV + per-trial logs, `summary.md`, bundle md5) |

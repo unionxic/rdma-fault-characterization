@@ -8,6 +8,10 @@
  *                            -o <trials.csv> -e <events.csv> [-L label] [-K counters]
  *                            [-W detect cap ms] [-Q quiet ms] [-A tail ms] [-C cpu] [-X sampler cpu]
  *                            [-N (no sampler)] [-I sampler sleep us]
+ *                            [-F (reopen the device context before every trial)]
+ *                            [-G ms (idle gap before every trial)]
+ *                            [-P n:gap_ms:bytes (n successful signaled WRITEs, gap_ms apart,
+ *                             right before the fault, like the GPU drivers' iterations)]
  *
  * Per trial: fresh RC QP pair (requester: timeout T, retry_cnt R), one warm-up 64 B WRITE
  * (must succeed), a quiet window of Q ms (background check), then the responder moves its QP
@@ -323,7 +327,7 @@ static void usage(const char *p) {
         "usage: %s -S -d dev -g gid -p port                      (responder)\n"
         "       %s -c host -p port -d dev -g gid -T t -R r -n N -o trials.csv -e events.csv\n"
         "          [-L label] [-K c1,c2,@portctr] [-W cap_ms] [-Q quiet_ms] [-A tail_ms]\n"
-        "          [-C cpu] [-X sampler_cpu] [-N] [-I sampler_sleep_us]\n"
+        "          [-C cpu] [-X sampler_cpu] [-N] [-I sampler_sleep_us] [-F] [-G gap_ms] [-P n:gap_ms:bytes]\n"
         "       %s -M ms -d dev [-K ...]                            (counter monitor only)\n", p, p, p);
 }
 
@@ -333,9 +337,11 @@ int main(int argc, char **argv) {
     const char *klist = "local_ack_timeout_err,roce_adp_retrans,roce_adp_retrans_to,roce_slow_restart,"
                         "roce_slow_restart_trans,packet_seq_err,out_of_sequence,implied_nak_seq_err,"
                         "duplicate_request,req_cqe_error,@port_xmit_packets,@port_rcv_packets";
-    long cap_ms = 120000, quiet_ms = 300, tail_ms = 60, mon_ms = 0;
+    long cap_ms = 120000, quiet_ms = 300, tail_ms = 60, mon_ms = 0, gap_ms = 0;
+    int reopen = 0;
+    long pre_n = 0, pre_gap_ms = 0, pre_bytes = 0;
     int opt;
-    while ((opt = getopt(argc, argv, "Sc:p:d:g:i:T:R:n:o:e:L:K:W:Q:A:C:X:NI:M:h")) != -1) {
+    while ((opt = getopt(argc, argv, "Sc:p:d:g:i:T:R:n:o:e:L:K:W:Q:A:C:X:NI:M:FG:P:h")) != -1) {
         switch (opt) {
             case 'S': server = 1; break;
             case 'c': host = optarg; break;
@@ -358,6 +364,12 @@ int main(int argc, char **argv) {
             case 'N': nosampler = 1; break;
             case 'I': s_sleep_us = atol(optarg); break;
             case 'M': mon_ms = atol(optarg); break;
+            case 'F': reopen = 1; break;
+            case 'G': gap_ms = atol(optarg); break;
+            case 'P':
+                if (sscanf(optarg, "%ld:%ld:%ld", &pre_n, &pre_gap_ms, &pre_bytes) != 3 || pre_n < 0 ||
+                    pre_bytes <= 0 || pre_bytes > (1L << 20)) { usage(argv[0]); return 2; }
+                break;
             default: usage(argv[0]); return 2;
         }
     }
@@ -423,6 +435,22 @@ int main(int argc, char **argv) {
     int fd = tcp_client_connect(host, ctrl_port);
     if (fd < 0) return 1;
 
+    /* run_id: this process's start time (CLOCK_MONOTONIC_RAW ns); tags every trial and event row,
+     * so that several processes appending to the same files can be told apart. Files written by
+     * the first version (no run_id column) are refused rather than mixed. */
+    uint64_t run_id = now_ns();
+    for (int k2 = 0; k2 < 2; k2++) {
+        const char *path = k2 ? evout : out;
+        FILE *chk = fopen(path, "r");
+        if (!chk) continue;
+        char hdr[4096] = "";
+        if (fgets(hdr, sizeof(hdr), chk) && hdr[0] && (!strstr(hdr, "run_id") || (k2 == 0 && !strstr(hdr, "pre_n")))) {
+            fprintf(stderr, "%s has an older header; use a new output directory\n", path);
+            fclose(chk);
+            return 2;
+        }
+        fclose(chk);
+    }
     FILE *fo = fopen(out, "a");
     if (!fo) { perror(out); return 1; }
     fseek(fo, 0, SEEK_END);
@@ -431,7 +459,7 @@ int main(int argc, char **argv) {
                     "warm_ok,sampler,rounds,mean_round_us,max_round_us,quiet_ms");
         for (int i = 0; i < NC; i++) fprintf(fo, ",bg_%s", C[i].name);
         for (int i = 0; i < NC; i++) fprintf(fo, ",d_%s", C[i].name);
-        fprintf(fo, "\n");
+        fprintf(fo, ",qpn,reopen,gap_ms,pid,run_id,pre_n,pre_ok,pre_gap_ms,pre_bytes\n");
     }
 
     pthread_t th;
@@ -442,7 +470,13 @@ int main(int argc, char **argv) {
     for (int t = 1; t <= n; t++) {
         char line[256];
         probe_dest_t rem;
+        if (gap_ms > 0) usleep((useconds_t)(gap_ms * 1000));
+        if (reopen && t > 1) {   /* fresh device context (PD, MR, CQ) for this trial */
+            ep_close(&ep);
+            if (ep_open(&ep, g_dev, (uint8_t)g_port, gid, 1u << 20)) { rc = 1; break; }
+        }
         if (ctrl_send_line(fd, "QP") || connect_qp(&ep, fd, 0, T, R, &rem)) { rc = 1; break; }
+        uint32_t qpn = ep.qp->qp_num;
         int Tq = -1, Rq = -1;
         query_timeout_retry(&ep, &Tq, &Rq);
         /* warm-up write: path must work before the fault */
@@ -459,6 +493,14 @@ int main(int argc, char **argv) {
         atomic_store(&s_active, nosampler ? 0 : 1);
         usleep((useconds_t)(quiet_ms * 1000));
         read_all(B, NULL, NULL, NULL, NULL);
+
+        /* optional traffic right before the fault (the GPU drivers run 37-51 iterations first) */
+        int pre_ok = 0;
+        for (long k2 = 0; k2 < pre_n; k2++) {
+            if (post_write(&ep, 100 + (uint64_t)k2, (size_t)pre_bytes, rem.addr, rem.rkey, true) == 0 &&
+                poll_one(&ep, &wc, 2000) == 1 && wc.status == IBV_WC_SUCCESS) pre_ok++;
+            if (pre_gap_ms > 0) usleep((useconds_t)(pre_gap_ms * 1000));
+        }
 
         if (ctrl_send_line(fd, "ERR") || ctrl_recv_line(fd, line, sizeof(line)) < 0 || strncmp(line, "ERRD 0", 6)) {
             fprintf(stderr, "[ackt] trial %d: responder ERR failed: '%s'\n", t, line);
@@ -483,7 +525,8 @@ int main(int argc, char **argv) {
                 !nosampler, rounds, mean_r, atomic_load(&s_maxround) / 1000.0, quiet_ms);
         for (int i = 0; i < NC; i++) fprintf(fo, ",%lld", (long long)(B[i] - A[i]));
         for (int i = 0; i < NC; i++) fprintf(fo, ",%lld", (long long)(Cv[i] - B[i]));
-        fprintf(fo, "\n");
+        fprintf(fo, ",%u,%d,%ld,%d,%llu,%ld,%d,%ld,%ld\n", qpn, reopen, gap_ms, (int)getpid(), (unsigned long long)run_id,
+                pre_n, pre_ok, pre_gap_ms, pre_bytes);
         fflush(fo);
         /* events of this trial, relative to t0 */
         fprintf(stderr, "[ackt] %s T=%d R=%d trial %d: detect %.3f ms status %d vendor 0x%x d_timeout=%lld\n",
@@ -507,14 +550,15 @@ int main(int argc, char **argv) {
     FILE *fe = fopen(evout, "a");
     if (!fe) { perror(evout); return 1; }
     fseek(fe, 0, SEEK_END);
-    if (ftell(fe) == 0) fprintf(fe, "label,T,R,trial,counter,lo_us,hi_us,mid_us,old,new\n");
+    if (ftell(fe) == 0) fprintf(fe, "label,T,R,trial,counter,lo_us,hi_us,mid_us,old,new,run_id\n");
     for (long k = 0; k < ne; k++) {
         if (EV[k].c < 0) continue;
         int tr = EV[k].trial;
         uint64_t base = (tr > 0 && tr < 4096) ? t0s[tr] : 0;
         double lo = ((double)EV[k].lo - (double)base) / 1000.0, hi = ((double)EV[k].hi - (double)base) / 1000.0;
-        fprintf(fe, "%s,%d,%d,%d,%s,%.1f,%.1f,%.1f,%llu,%llu\n", label, T, R, tr, C[EV[k].c].name,
-                lo, hi, (lo + hi) / 2, (unsigned long long)EV[k].oldv, (unsigned long long)EV[k].newv);
+        fprintf(fe, "%s,%d,%d,%d,%s,%.1f,%.1f,%.1f,%llu,%llu,%llu\n", label, T, R, tr, C[EV[k].c].name,
+                lo, hi, (lo + hi) / 2, (unsigned long long)EV[k].oldv, (unsigned long long)EV[k].newv,
+                (unsigned long long)run_id);
     }
     fclose(fe);
     close(fd);

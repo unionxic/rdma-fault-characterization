@@ -1,4 +1,4 @@
-# GPU-initiated RDMA fault study: combined results (2026-09-23)
+# GPU-initiated RDMA fault study: combined results (2026-09-23, updated 2026-09-25)
 
 Testbed: rain (Quadro RTX 5000, sm_75) and sunny (RTX A4000, sm_86), one ConnectX-6 (VPI, MT28908) each
 (fw 20.43.4100), RoCE v2, PMTU 4096. Without PeerMappingOverride every GPU-initiated stack runs
@@ -73,8 +73,9 @@ Times are from the fault to the first host-visible error. GDAKI's stock times ar
    instead of word 1; the NIC reloads the producer from the record at the ERR transition, sees an
    empty send queue and writes no completion. CPU reproduction: 0/35 error CQEs with the word at 0,
    21/21 with it written. In NVSHMEM itself, fixing only that word (default-off knob) or using the
-   GPU handler (`gpu_doorbell/`) brings REM_ACCESS, RETRY_EXC and WR_FLUSH CQEs back. It affects
-   any system that runs IBGDA without PeerMappingOverride.
+   GPU handler (`gpu_doorbell/`) brings REM_ACCESS, RETRY_EXC and WR_FLUSH CQEs back. Scope: NVSHMEM
+   3.5.x through 3.8.0 (a regression from commit ce9d487, 2025-10; 3.4.5 is correct), with IBGDA on
+   and the CPU-proxy NIC handler, i.e. systems without PeerMappingOverride.
 4. **Silent failures exist in production paths.** GDAKI's blocking wait reports a failed write as
    done (the -EIO is discarded by a void wait). Out-of-bounds puts that stay inside the registered
    MR (NVSHMEM heap, GIN window rounded to pages) are silent corruption at every layer, because the
@@ -86,9 +87,15 @@ Times are from the fault to the first host-visible error. GDAKI's stock times ar
    RETRY_EXC 57-59 s after the fault (4 trials), about 1.7 times the 34 s computed from
    4.096 µs × 2^20 × 8.
 7. **The same cause can show different fingerprints.** A killed peer gives RETRY_EXC 12/0x81 on
-   CPU verbs and on GDAKI, but REM_ACCESS 10/0x88 within 60 ms on the GIN proxy (the target's
-   registration apparently goes away before its QP). F3 and F4 give the same 12/0x81 on GDAKI, so
-   a liveness signal is still needed to tell them apart, as on CPU.
+   CPU verbs and on GDAKI, but REM_ACCESS 10/0x88 within 60 ms on the GIN proxy. Measured since
+   (`../fingerprint_teardown/`, 417 kills): the kernel destroys a dead process's verbs objects newest
+   first, so an MR registered after its QP dies first and the still-live QP NAKs (REM_ACCESS; 111/161
+   such kills outside the DEVX-on-sunny cells, a race), while an MR registered before its QP never
+   gives REM_ACCESS (0/83). The GIN proxy registers its signal buffer after connecting its QPs
+   [source; the link to its 60 ms is inferred]. On sunny's OFED 25.10 DEVX QPs (GDAKI, NVSHMEM
+   IBGDA) are destroyed first, hence 12/0x81 there. F3 and F4 give the same 12/0x81 on GDAKI, so a
+   liveness signal is still needed to tell them apart, as on CPU; 10/0x88 with a dead peer is peer
+   death too.
 8. **Device-side classification works and is cheap (Q4).** With a device classifier and a
    host-mapped mailbox, GDAKI's host learns the exact fingerprint 94 µs after the device detects
    it and `ncclCommGetAsyncError` returns it 190 µs later, instead of "QP in ERR" after 9.4-10 s.

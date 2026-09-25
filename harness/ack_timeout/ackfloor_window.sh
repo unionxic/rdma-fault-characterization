@@ -6,8 +6,19 @@
 #   ackfloor_window.sh [-t tag] -- <command> [args...]
 #
 # Contract:
-#   * must itself run under ../gpu-initiated/common/cluster_run.sh (refuses if the cluster lock
-#     is not held by someone);
+#   * must itself run under ../gpu-initiated/common/cluster_run.sh, and refuses (fail closed,
+#     before any register access) unless the cluster lock is verifiably held by that process:
+#       1. the nearest ancestor process runs cluster_run.sh;
+#       2. that process has fd 9 open on an existing, not deleted, regular file;
+#       3. /proc/<it>/fdinfo/9 shows a FLOCK WRITE lock on that file's inode, and a
+#          non-blocking flock(1) on the file fails with the conflict code (any other outcome,
+#          including a flock(1) error, refuses);
+#       4. the script it runs is this repository's ../gpu-initiated/common/cluster_run.sh;
+#       5. the locked file is the shared cluster lock as that script defines it (its SCRATCH/LOCK
+#          lines evaluated with CLUSTER_LOCK unset), so a cluster_run.sh pointed at a private
+#          lock file (CLUSTER_LOCK=...) is refused too.
+#     ACKFLOOR_CHECK_ONLY=1: run these checks, print the result and exit (0 = would proceed)
+#     without reading or writing the register (used by scripts/test_lockcheck.sh);
 #   * (a) records the full ROCE_ACCL state before (all 19 fields) -> window/<stamp>_before.txt;
 #     refuses unless min_ack_timeout_limit_disabled is 0 before;
 #   * (b) sets ONLY min_ack_timeout_limit_disabled = 1 (its field_select = 1, every other
@@ -28,7 +39,7 @@ REG=ROCE_ACCL
 FIELD=min_ack_timeout_limit_disabled
 RESDIR=${ACKFLOOR_DIR:-$HERE/results/20260925/window}
 LOG=${ACKFLOOR_LOG:-$HERE/results/20260925/window.log}
-LOCK=${CLUSTER_LOCK:-/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad/cluster.lock.v2}
+CR_REPO=$HERE/../gpu-initiated/common/cluster_run.sh
 TAG=win
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -50,9 +61,56 @@ fieldval() { awk -F= -v f="$1" '$1==f {print $2}'; }
 SEL="roce_adp_retrans_field_select=0,roce_tx_window_field_select=0,roce_slow_restart_field_select=0,roce_slow_restart_idle_field_select=0,${FIELD}_field_select=1,adaptive_routing_forced_en_field_select=0,selective_repeat_forced_en_field_select=0,dc_half_handshake_en_field_select=0,ack_dscp_force_field_select=0"
 setval() { sudo -n mlxreg -d "$DEV" --reg_name "$REG" --yes --set "$SEL,$FIELD=$1" 2>&1; }
 
-# ---- 0. preconditions ----
-if flock -n "$LOCK" true 2>/dev/null; then
-  log "REFUSE: cluster lock $LOCK is not held; run me under cluster_run.sh"; exit 64
+# ---- 0. preconditions: the cluster lock must be verifiably held by our cluster_run.sh ----
+# prints one line; returns 0 only if every check passes (sets LOCK and CR_PID)
+LOCK=""; CR_PID=""
+verify_lock() {
+  local pid=$$ ppid cmd arg script="" cwd lk ino fdino rc canon crreal
+  # 1. nearest ancestor running cluster_run.sh
+  while :; do
+    ppid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)
+    [ -n "$ppid" ] && [ "$ppid" -gt 1 ] 2>/dev/null || break
+    while IFS= read -r -d '' arg; do
+      case "$arg" in */cluster_run.sh|cluster_run.sh) script=$arg; break ;; esac
+    done < "/proc/$ppid/cmdline" 2>/dev/null
+    [ -n "$script" ] && { CR_PID=$ppid; break; }
+    pid=$ppid
+  done
+  [ -n "$CR_PID" ] || { echo "check 1: no cluster_run.sh among the ancestors of pid $$"; return 1; }
+  # 2. its fd 9: an existing, not deleted, regular file
+  lk=$(readlink "/proc/$CR_PID/fd/9" 2>/dev/null) || { echo "check 2: cluster_run.sh (pid $CR_PID) has no fd 9"; return 1; }
+  case "$lk" in *" (deleted)") echo "check 2: fd 9 of pid $CR_PID points to a deleted file: $lk"; return 1 ;; esac
+  [ -f "$lk" ] || { echo "check 2: fd 9 of pid $CR_PID is not an existing regular file: $lk"; return 1; }
+  fdino=$(stat -L -c '%d:%i' "/proc/$CR_PID/fd/9" 2>/dev/null)
+  [ -n "$fdino" ] && [ "$fdino" = "$(stat -c '%d:%i' "$lk" 2>/dev/null)" ] || { echo "check 2: fd 9 of pid $CR_PID is not the file at $lk"; return 1; }
+  # 3. the lock is held on that open file (fdinfo) and a non-blocking attempt conflicts
+  ino=${fdino#*:}
+  grep -Eq "^lock:.*FLOCK +ADVISORY +WRITE +[0-9]+ +[0-9a-f]+:[0-9a-f]+:$ino " "/proc/$CR_PID/fdinfo/9" 2>/dev/null \
+    || { echo "check 3: no FLOCK WRITE lock on fd 9 of pid $CR_PID ($lk): not held"; return 1; }
+  flock -n -E 75 "$lk" true 2>/dev/null; rc=$?
+  [ "$rc" = 75 ] || { echo "check 3: non-blocking flock on $lk returned $rc (want 75 = held)"; return 1; }
+  # 4. the script is this repository's cluster_run.sh
+  cwd=$(readlink "/proc/$CR_PID/cwd" 2>/dev/null)
+  case "$script" in /*) ;; *) script=$cwd/$script ;; esac
+  crreal=$(realpath -e "$CR_REPO" 2>/dev/null)
+  [ -n "$crreal" ] && [ "$(realpath -e "$script" 2>/dev/null)" = "$crreal" ] \
+    || { echo "check 4: ancestor runs $script, not $CR_REPO"; return 1; }
+  # 5. the locked file is the shared cluster lock as cluster_run.sh itself defines it
+  canon=$(env -u CLUSTER_LOCK bash -c "$(grep -E '^(SCRATCH|LOCK)=' "$crreal")"'; printf %s "$LOCK"' 2>/dev/null)
+  [ -n "$canon" ] && [ "$(realpath -e "$lk")" = "$(realpath -e "$canon" 2>/dev/null)" ] \
+    || { echo "check 5: held lock $lk is not the shared cluster lock ${canon:-<undefined>}"; return 1; }
+  LOCK=$lk
+  echo "lock verified: $lk held by cluster_run.sh pid $CR_PID (fdinfo FLOCK WRITE, flock -n -> 75)"
+  return 0
+}
+verify_lock > "${PFX}_lockcheck.txt" 2>&1; VRC=$?     # in this shell: sets LOCK and CR_PID
+VMSG=$(cat "${PFX}_lockcheck.txt" 2>/dev/null)
+if [ "$VRC" != 0 ] || [ -z "$LOCK" ]; then
+  log "REFUSE: ${VMSG:-lock check failed}"; exit 64
+fi
+log "$VMSG"
+if [ "${ACKFLOOR_CHECK_ONLY:-0}" = 1 ]; then
+  log "CHECK_ONLY: checks passed; exiting without touching the register"; exit 0
 fi
 B_RAW=$(getreg "$DEV") || { log "REFUSE: GET failed: $B_RAW"; exit 65; }
 printf '%s\n' "$B_RAW" > "${PFX}_before.txt"
