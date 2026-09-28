@@ -12,6 +12,7 @@
 - 100 GbE RoCE v2 직결, PMTU 4096(netdev MTU 9000).
 - 이 링크는 사용자의 NVMe-oF 스토리지(rain이 export, sunny가 mount)와 공유된다. 그래서 sunny 포트 카운터에는 배경 트래픽이 섞이고(5 s당 14–16 packets), 실제 link down과 mlx5 driver reload는 실행하지 않는다.
 - PeerMappingOverride=1이 2026-09-24 13:53부터 양쪽에 영구 적용돼 있다. 그 전의 GPU-initiated 실험은 `gpu_doorbell/`의 짧은 창 두 번을 빼면 CPU-doorbell fallback(GPU가 WQE를 쓰고 CPU 스레드가 doorbell을 울림)에서 돌았다.
+- 공개 저장소에서는 두 노드의 관리망 주소를 문서용 주소(192.0.2.x, RFC 5737)로 바꿔 두었다. 스크립트를 실행하려면 실제 주소로 바꿔야 한다.
 - NIC 표기: 2026-09-24까지의 문서는 "ConnectX-6 Dx"라고 적었지만, PCI ID(15b3:101b, MT28908)와 VPD 기준으로 두 NIC 모두 ConnectX-6 VPI다(Dx였다면 15b3:101d에 fw 22.x). 2026-09-25에 모든 문서를 고쳤다.
 
 옛 클러스터: 225(ConnectX-6, fw 20.40.1000) ↔ 224(ConnectX-5, fw 16.35.8002), 100 Gbps RoCE v2 직결, Ubuntu 24.04, GPU 없음. `docs/experiments/` 01–08과 `experiments/`의 수치는 모두 이 클러스터에서 나왔다.
