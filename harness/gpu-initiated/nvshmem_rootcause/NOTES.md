@@ -9,10 +9,10 @@
 - collapsed 슬롯에서 원인 CQE가 덮이기까지의 약 60 µs는 이 스택에서 잰 값이 아니다. CPU verbs와 `../gin_q4/`의 값이다.
 - 3자 비교의 감지 시간(약 2 ms / 10 ms / 3.5~3.8 s)은 put부터 감지까지다. 장애 시점부터가 아니다.
 
-Follow-up to `../nvshmem/` (Q2/Q3, Root cause section) and `../gin_q4/` (Task A). Same
-cluster: rain (requester, mlx5_1) and sunny (target, mlx5_0), ConnectX-6 VPI fw 20.43.4100,
-RoCE v2, PMTU 4096, IB ack timeout 14, retry count 7. Every cluster run went through
-`../common/cluster_run.sh`. Tags: **[measured]**, **[source]** (read in the code),
+Follow-up to `../nvshmem/` (per-stack fault measurement and CQ-slot read, Root cause section) and
+`../gin_q4/` (Task A). Same cluster: rain (requester, mlx5_1) and sunny (target, mlx5_0), ConnectX-6
+VPI fw 20.43.4100, RoCE v2, PMTU 4096, IB ack timeout 14, retry count 7. Every cluster run went
+through `../common/cluster_run.sh`. Tags: **[measured]**, **[source]** (read in the code),
 **[inferred]**.
 
 ## Answers
@@ -55,17 +55,17 @@ init pattern and GPU placement change nothing.
 **Question 2: F3, ~4 s of retransmission then silence, QP in RTS for 16 s.** These were two
 observations from two different runs, and the "RTS" one is an instrument artifact.
 1. The diagnostic watch thread of `../nvshmem/nvshmem_ibgda_fault_inject.diff` holds
-   `rc_endpoint_lock` across its `sleep_for(period)` [source]. `ibgda_rc_progress`, the CPU
-   proxy that rings every doorbell, takes the same lock (ibgda.cpp:542). So
-   while the watch runs, the post-fault put is never rung: nothing is outstanding, nothing is
-   retransmitted, and RTS is the correct state. This was reproduced exactly [measured, nv2]. With
-   the Q2 watch settings (300 ms period, 800 ms delay, lock held), F3 shows `state=3,
-   hw_sq=sw_sq=23` for the whole window with `ready_head=25`, the Q2 qptl signature, and rain
-   transmits nothing after the fault until the watch ends (17.6 s). Only then does the starved
-   put go out and get retransmitted. The same watch with the lock released during the sleep: the
-   put is rung, retransmitted, and the QP goes to ERR ~3.6 s later. The fault-inject thread takes
-   the same lock: in all three Q2 `ab/F1_timeout_tcc1_*` runs its 2ERR executed only after the
-   watch's final dump (log line 308 of 313).
+   `rc_endpoint_lock` across its `sleep_for(period)` [source]. `ibgda_rc_progress`, the CPU proxy
+   that rings every doorbell, takes the same lock (ibgda.cpp:542). So while the watch runs, the
+   post-fault put is never rung: nothing is outstanding, nothing is retransmitted, and RTS is the
+   correct state. This was reproduced exactly [measured, nv2]. With the watch settings of
+   `../nvshmem/` (300 ms period, 800 ms delay, lock held), F3 shows `state=3, hw_sq=sw_sq=23` for
+   the whole window with `ready_head=25`, the qptl signature from `../nvshmem/`, and rain transmits
+   nothing after the fault until the watch ends (17.6 s). Only then does the starved put go out and
+   get retransmitted. The same watch with the lock released during the sleep: the put is rung,
+   retransmitted, and the QP goes to ERR ~3.6 s later. The fault-inject thread takes the same lock:
+   in all three `../nvshmem/` `ab/F1_timeout_tcc1_*` runs its 2ERR executed only after the watch's
+   final dump (log line 308 of 313).
 2. Without the artifact, NVSHMEM F3 behaves like verbs on the wire. Retransmission bursts of
    65-69 packets arrive every ~0.5 s for ~3 s, the same with the knob off and on. The QP goes to
    ERR 3.6 s after the put (watch at 100 ms, lock released: 5210-5304 ms watch clock, failing put
@@ -99,7 +99,7 @@ observations from two different runs, and the "RTS" one is an instrument artifac
    now releases the lock while it sleeps (`NVSHMEM_IBGDA_FAULT_WATCH_HOLD_LOCK=1` restores the
    base behaviour for the A/B). Only the transport plugin was rebuilt; it is deployed as
    `~/gi-bundle/nvshmem_nrc` on both nodes (md5 `7d9dc262...` on both). Driver, env and fault
-   hooks are the Q2 ones (`../nvshmem/`), via `scripts/run_nvshmem_trial.sh`, which also samples
+   hooks are those of `../nvshmem/`, via `scripts/run_nvshmem_trial.sh`, which also samples
    rain's port counters every 0.5 s.
 
 ## Results: CPU reproduction (57 trials, `results/20260924/b1..b4`, `all_trials.csv`)
@@ -156,7 +156,7 @@ sample in ERR, in every trial: 0 with word 0 and pi with word 1. `hw_sq_wqebb_co
 the failing WQE (8) with word 0 and advances to pi with word 1 [measured]. The inferred reading
 is that on the error transition the NIC takes the producer from the doorbell record and
 completes (with error or flush) the WQEs in [hw consumer, producer). With 0 that range is
-empty [inferred]. The same signature is already in NVSHMEM's Q2 watch logs
+empty [inferred]. The same signature is already in NVSHMEM's watch logs from `../nvshmem/`
 (`../nvshmem/results/20260923/ab/F2b_timeout_tcc1_*`: `state=6 hw_sq_wqebb=15 sw_sq_wqebb=0`).
 
 ## Results: in NVSHMEM itself (GPU, CPU-proxy handler; 18 trials, `results/20260924/nv1, nv2`, `nvshmem_trials.csv`)
@@ -177,8 +177,8 @@ unless stated. Scan = the device's scan of all 1024 CQ entries after the wait.
 | F3 | 1 | 2 | **error after 3.52-3.58 s** | **0xd / 0x15 / 0x81 at wqe 27** | 1 | ERR at 5.1-5.2 s, hw = sw = 32 | 0 / 32 |
 | F3, no watch | 0 | 2 | timeout 9.6 s | 0x0 | 0 | - | - |
 | F3, no watch | 1 | 1 | **error after 3.63 s** | **0xd / 0x15 / 0x81 at wqe 27** | 1 | - | - |
-| F3, Q2 watch (lock held, 300 ms / 800 ms) | 0 | 1 | timeout 9.6 s, only 4 of 6 pre-fault iterations done | 0x0 | 0 | **RTS, hw = sw = 23 throughout** | 23 / 0 |
-| F2b, Q2 watch (lock held) | 0 | 1 | timeout | 0x0 | 0 | RTS, hw = sw = 23 throughout | 23 / 0 |
+| F3, `../nvshmem/` watch (lock held, 300 ms / 800 ms) | 0 | 1 | timeout 9.6 s, only 4 of 6 pre-fault iterations done | 0x0 | 0 | **RTS, hw = sw = 23 throughout** | 23 / 0 |
+| F2b, `../nvshmem/` watch (lock held) | 0 | 1 | timeout | 0x0 | 0 | RTS, hw = sw = 23 throughout | 23 / 0 |
 | F3, lock held, 100 ms, no delay | 0 | 1 | NVSHMEM init never completed (killed) | - | - | - | - |
 
 The watch clock starts at connect. The failing F3 put is rung at ~1.6-1.7 s, so ERR at 5.2 s is
@@ -293,7 +293,7 @@ QUERY_QP anywhere in ibgda.cpp (the QP states in the tables come from our diagno
 
 **Root cause vs trailing flush in the collapsed slot.** NVSHMEM's put + signal is two WQEs, and
 only the signal (the last) is signaled. The root cause lands on the put (wqe N-1); the flush
-0x05/0xf9 for the signal (wqe N) overwrites slot 0 ~60 us later (Q1).
+0x05/0xf9 for the signal (wqe N) overwrites slot 0 ~60 us later (`../cqe_seq/`).
 - `ibgda_poll_cq` waits for `wqe_counter == N` (the last WQE). So it wakes on the **flush**, and
   what it reads is 0xd with syndrome 0x05 (WR_FLUSH). The root cause (0x13/0x88, 0x15/0x81,
   0x05/0xf5) is already gone at that point. Only when the failing WQE is itself the last one
@@ -302,7 +302,7 @@ only the signal (the last) is signaled. The root cause lands on the put (wqe N-1
   checks the opcode on every spin and stops at the first 0xd. It therefore catches the root cause
   before the flush arrives (A timeout: 0x13/0x88 @23, 0x15/0x81 @23/@27, 0x05/0xf5 @27; 12/12 timeout-mode fault trials).
   A library-side classifier must read the slot the same way, or it must find the root cause by
-  other means (Q1/Q4).
+  other means (`../cqe_seq/`, `../gin_q4/`).
 - Blocking, measured (A, 2+2 trials): the failing iteration's `nvshmem_quiet()` returned after
   9.8-10.8 ms (F2b) or 3.73-3.76 s (F3), the arrival time of the flush. Every later iteration's
   quiet returned in ~2 ms, because its WQEs were posted to a QP in ERR and flushed at once. The
@@ -327,24 +327,24 @@ Each entry: hypothesis, experiment, result, conclusion.
 - **12:02, prediction (logged before any result).** The GPU handler writes word 1, so H1
   predicts error CQEs with GPU-rung doorbells, and F3 QP -> ERR.
 - **12:04-12:20, the lead's GPU-doorbell window (measured by the lead,
-  `../gpu_doorbell/results/20260924_w2/nvshmem/`).** GPU handler, stock binary: F2b 0xd/0x13/0x88
-  at wqe 23 (3/3); F1 0xd/0x05/0xf5 at wqe 27 (3/3); F3 0xd/0x15/0x81 at wqe 27 after 3.54-3.72 s
-  (3/3). The blocking `nvshmem_quiet` returned success on F2b with 0xd/0x05/0xf9 in the slot
-  (Q1's flush overwrite, assert compiled out). This matches the prediction. [source] The
-  handler-dependent code is: QP DBR allocation (:2139-2143), the DBR word (:581-589 vs
-  :3910-3911), UAR type and mapping (:2356-2357, :1337-1392), who rings (`use_async_postsend`
-  :3815, progress hook :5308), and the prod_idx indirection (:2109-2130). CQ creation and
-  placement (:5268-5274), the CQ the device polls, every QPC/CQC field and the doorbell ctrl word
-  (pi<<8, qpn<<8, opcode 0, ds 0 in both, ibgda_device.cuh:1554-1555 vs ibgda.cpp:586-587) are
-  the same in both handlers. The proxy never touches the CQ. That leaves the DBR word, the UAR,
-  and who issues the stores.
+  `../gpu_doorbell/results/20260924_w2/nvshmem/`).** GPU handler, stock binary: F2b 0xd/0x13/0x88 at
+  wqe 23 (3/3); F1 0xd/0x05/0xf5 at wqe 27 (3/3); F3 0xd/0x15/0x81 at wqe 27 after 3.54-3.72 s
+  (3/3). The blocking `nvshmem_quiet` returned success on F2b with 0xd/0x05/0xf9 in the slot (the
+  flush overwrite predicted by `../cqe_seq/`, assert compiled out). This matches the prediction.
+  [source] The handler-dependent code is: QP DBR allocation (:2139-2143), the DBR word (:581-589 vs
+  :3910-3911), UAR type and mapping (:2356-2357, :1337-1392), who rings (`use_async_postsend` :3815,
+  progress hook :5308), and the prod_idx indirection (:2109-2130). CQ creation and placement
+  (:5268-5274), the CQ the device polls, every QPC/CQC field and the doorbell ctrl word (pi<<8,
+  qpn<<8, opcode 0, ds 0 in both, ibgda_device.cuh:1554-1555 vs ibgda.cpp:586-587) are the same in
+  both handlers. The proxy never touches the CQ. That leaves the DBR word, the UAR, and who issues
+  the stores.
 - **12:08-12:10, b1 (measured).** nvshmem preset: no error CQE in F1/F1post/F2b/F3. doca: all
   present. nvshmem with only `dbr_word=1`: all present. **H1 supported.** A new observation: F3 in
-  the nvshmem preset reaches ERR at 3.8 s rather than staying RTS as in Q2.
-- **12:15, H16: Q2's "RTS for 16 s" is a watch artifact.** From source: the watch's `lock_guard`
-  spans `sleep_for`, and the proxy takes the same lock (ibgda.cpp:542). The Q2 logs agree: qptl F3 `hw = sw = 23`
-  with ready_head 25; `ab/*_tcc1_*` F1/F3 `hw = sw = 15` with ready_head 17 in all six runs; F1's
-  2ERR after the watch window in 3/3.
+  the nvshmem preset reaches ERR at 3.8 s rather than staying RTS as in `../nvshmem/`.
+- **12:15, H16: the "RTS for 16 s" of `../nvshmem/` is a watch artifact.** From source: the watch's
+  `lock_guard` spans `sleep_for`, and the proxy takes the same lock (ibgda.cpp:542). The
+  `../nvshmem/` logs agree: qptl F3 `hw = sw = 23` with ready_head 25; `ab/*_tcc1_*` F1/F3 `hw = sw
+  = 15` with ready_head 17 in all six runs; F1's 2ERR after the watch window in 3/3.
 - **12:17-12:21, b2/b3 (measured).** Bisection of every other difference: none flips it (H2-H15
   rejected). Reverse: doca + word 0 loses the CQEs. GPU-handler emulation (word 1 + BF UAR) keeps
   them. Replicates. q counters: the fault is detected but `req_cqe_error` = 0. **H1 confirmed on
@@ -354,7 +354,7 @@ Each entry: hypothesis, experiment, result, conclusion.
   RETRY_EXC reach the device (5/5). **H1 confirmed in NVSHMEM.** With the fixed watch, F3's QP
   goes to ERR (2/2). The old watch (100 ms, no delay) starves NVSHMEM init entirely.
 - **12:34-12:36, b4 (measured).** doca + word 0 on F1/F1post/F2b/F3 replicates: 0/5 vs doca 4/4.
-- **12:39-12:42, nv2 (measured).** The Q2 qptl run reproduced with the lock-holding watch
+- **12:39-12:42, nv2 (measured).** The `../nvshmem/` qptl run reproduced with the lock-holding watch
   (RTS, hw = sw = 23, ready_head 25, nothing transmitted until the watch ends). The same watch
   with the lock released: put rung, retransmitted, ERR at 5.3 s, no CQE. No watch: same
   retransmission; knob on gives RETRY_EXC at 3.63 s. **H16 confirmed; question 2 answered.**

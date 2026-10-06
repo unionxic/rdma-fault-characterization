@@ -14,13 +14,12 @@
   F2b 3회)가 모두 exit 7이다. 블로킹 9회는 대기에서, 나머지 21회는 종료 과정에서 멈췄다. 참고 측정 2회도 같다.
 - "1 F3 reference at the default IB timeout"은 2회다(`matrix_ref.csv`, 대기 예산 15 s와 40 s). 363회 읽기에 둘 다 들어 있다.
 
-GPU-initiated RDMA fault characterization for the **NVSHMEM IBGDA** transport, on
-the rain (client, mlx5_1, Quadro RTX 5000 / sm_75) + sunny (server, mlx5_0, RTX
-A4000 / sm_86) RoCE cluster. Answers Q2 (which layer notices a fault, whether the
-fingerprint is visible, whether the device wait hangs / times out / returns
-success, whether data is correct, time to surface, whether teardown returns) and
-Q3 (read the collapsed CQ slot from device code: opcode, syndrome,
-vendor_err_synd, wqe_counter, qpn) from `../DESIGN.md`.
+GPU-initiated RDMA fault characterization for the **NVSHMEM IBGDA** transport, on the rain (client,
+mlx5_1, Quadro RTX 5000 / sm_75) + sunny (server, mlx5_0, RTX A4000 / sm_86) RoCE cluster. Answers
+the per-stack fault measurement (which layer notices a fault, whether the status/vendor_err pair is
+visible, whether the device wait hangs / times out / returns success, whether data is correct, time
+to surface, whether teardown returns) and the NVSHMEM CQ-slot read (read the collapsed CQ slot from
+device code: opcode, syndrome, vendor_err_synd, wqe_counter, qpn) from `../DESIGN.md`.
 
 ## TL;DR
 
@@ -43,7 +42,7 @@ vendor_err_synd, wqe_counter, qpn) from `../DESIGN.md`.
   path): the GPU writes WQEs and a CPU proxy rings the doorbell. NIC buffers are
   on GPU memory; the CQ is in GPU memory and collapsed (`cc=1`: 1024 physical
   entries but the NIC only ever writes slot 0, confirmed by a full-buffer scan).
-- No fault produces a decoded fingerprint anywhere in the stack, and no QP is
+- No fault produces a decoded error code anywhere in the stack, and no QP is
   ever reset. Teardown (`nvshmem_finalize`) hangs after a QP error.
 
 ## Build
@@ -69,7 +68,7 @@ cmake -S src -B build -DCMAKE_BUILD_TYPE=release \
   / `nvshmemx_init_attr(NVSHMEMX_INIT_WITH_UNIQUEID, ...)`.
 - **Device asserts are compiled out** in this default release config (`-O3
   -DNDEBUG`), so `ibgda_quiet`'s `assert(likely(status == 0))` is a no-op — the
-  central Q2 fact.
+  central fact of the per-stack fault measurement.
 
 `build_driver.sh` compiles the driver (`-rdc=true`, links `libnvshmem_host` +
 `libnvshmem_device`), warning-free under `-Wall -Wextra`.
@@ -143,13 +142,13 @@ watchdog for the library's unbounded paths). Host `CLOCK_MONOTONIC` per iteratio
 - `deepep_poll` — PE0 spins on `wqe_counter` **only**, never inspecting `op_own`
   for the success decision (the DeepEP-legacy behaviour), to show whether an
   error CQE is taken as success.
-- `snapshot` (Q3, per lead request) — after posting `--burst N` puts, PE0
+- `snapshot` (the CQ-slot read, per lead request) — after posting `--burst N` puts, PE0
   continuously records every change of the collapsed CQ slot into a host-mapped
   ring `(t_cycles, opcode, syndrome, vendor_err, wqe_counter)`, so we can see
   whether the root-cause CQE is ever observable and for how long before flush
   CQEs overwrite slot 0.
 
-**Q3**: when the wait ends (success or bounded-spin expiry) PE0's device code
+**CQ-slot read**: when the wait ends (success or bounded-spin expiry) PE0's device code
 reads the collapsed CQ slot of the RC QP it used, through
 `nvshmemi_ibgda_device_state_d.globalmem.rcs[peer].tx_wq.cq->cqe`, as raw bytes
 (op_own byte 63, syndrome byte 55, vendor_err byte 54, wqe_counter bytes 60-61
@@ -192,12 +191,12 @@ success; the failing iteration's quiet then hangs and the per-iteration watchdog
 kills the process, so `data_check`/`target_outcome` reflect the last *pre-fault*
 iteration, not recovery. For F4 the data arrived before the peer was killed.
 
-**Q3 (collapsed-slot contents).** Read after every wait, plus 45 continuous
+**CQ-slot read (collapsed-slot contents).** Read after every wait, plus 45 continuous
 snapshot transitions across 15 s windows (burst 1 and 16): the slot's opcode was
 `0x0` (MLX5_CQE_REQ, a normal completion) in **364/364** device reads and
 **45/45** snapshot samples. An error CQE (`opcode 0xd`, MLX5_CQE_REQ_ERR) was
 **never** observed, so `syndrome`/`vendor_err_synd` never carried a real
-fingerprint (the bytes read on a normal CQE are the completion's timestamp
+error code (the bytes read on a normal CQE are the completion's timestamp
 field). `wqe_counter` freezes at the last successful WQE (e.g. 24) once the fault
 hits; `ready_head` keeps advancing as the kernel posts, so the gap
 `ready_head - 2*wqe_counter` is the only device-visible sign of trouble.
@@ -338,16 +337,15 @@ error (F2b invalid rkey), not just retry-exhaustion faults.
 
 ## Observations
 
-- **The fingerprint is never visible at the IBGDA device CQ.** Across every
-  fault and wait mode, the collapsed slot the device polls holds only normal
-  completions; the WR_FLUSH / REM_ACCESS / RETRY_EXC CQEs that CPU verbs produce
-  (Q1) are absent. Evidence: `matrix.csv` (all `cqe_opcode=0x0`),
-  `snap/*.pe0.log` (all `op=0x0`), `matrix_ref.csv` (op 0x0 at 38.1 s).
-  This is the central negative result: device-side classification (Q4) has
-  nothing to classify for these faults on this stack — the only device-observable
-  signal is stalled progress (`wqe_counter` frozen).
+- **The error code is never visible at the IBGDA device CQ.** Across every fault and wait mode, the
+  collapsed slot the device polls holds only normal completions; the WR_FLUSH / REM_ACCESS /
+  RETRY_EXC CQEs that CPU verbs produce (`../cqe_seq/`) are absent. Evidence: `matrix.csv` (all
+  `cqe_opcode=0x0`), `snap/*.pe0.log` (all `op=0x0`), `matrix_ref.csv` (op 0x0 at 38.1 s). This is
+  the central negative result: device-side classification (as in the GDAKI device-side classifier)
+  has nothing to classify for these faults on this stack — the only device-observable signal is
+  stalled progress (`wqe_counter` frozen).
 
-- **Why the Q1 flush prediction does not reproduce here.** See the Root-cause
+- **Why the flush prediction of `../cqe_seq/` does not reproduce here.** See the Root-cause
   section: the NIC does reach retry exhaustion (wire counters), but the resulting
   requester error CQE is never delivered to the collapsed CQ the GPU polls, the
   CQ exposes no producer counter, and QUERY_QP does not report ERR. (The earlier
