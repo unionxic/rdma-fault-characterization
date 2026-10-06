@@ -22,10 +22,10 @@ TIMEOUT_VALUES="14 8"
 KILL_ITERS=30
 
 # Experiment 4 client binary (reused as-is)
-EXP4_CLIENT="${EXP4_CLIENT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../cpu_baseline/experiment4/client}"
+EXP4_CLIENT="${EXP4_CLIENT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../01_cpu_baseline/experiment4/client}"
 
 # Experiment 1 server_loop.sh (reused for kill mode)
-SERVER_LOOP="${SERVER_LOOP:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../cpu_baseline/experiment1/server_loop.sh}"
+SERVER_LOOP="${SERVER_LOOP:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../01_cpu_baseline/experiment1/server_loop.sh}"
 
 # SSH to Server B for remote server management
 # Set these before running, e.g.:

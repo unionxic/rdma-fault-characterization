@@ -1,5 +1,5 @@
 # Makefile for Retry Decomposition Experiment
-# Reuses cpu_baseline/experiment1's server binary; only the client is built here.
+# Reuses 01_cpu_baseline/experiment1's server binary; only the client is built here.
 # common.h, rdma_common.c, rdma_common.h are symlinks to experiment1/.
 
 CC      := gcc
