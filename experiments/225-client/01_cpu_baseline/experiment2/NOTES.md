@@ -12,12 +12,12 @@ undetected during the "blind window." This experiment quantifies the relationshi
 detection_delay = max(HCA_retry_time, sleep_time)
 ```
 
-- **sleep_time < HCA_retry_time (~3.7s):** CPU wakes before error CQE arrives.
-  It must busy-poll until the HCA retry mechanism exhausts. Detection delay ~3.7s.
+- **sleep_time < HCA_retry_time (≈3.7s):** CPU wakes before error CQE arrives.
+  It must busy-poll until the HCA retry mechanism exhausts. Detection delay ≈3.7s.
 - **sleep_time > HCA_retry_time:** Error CQE is already in the CQ when CPU wakes.
   Detection delay ~ sleep_time. The blind window dominates.
 
-This proves CPU-mediated detection has a hard floor of ~3.7s AND grows unboundedly
+This proves CPU-mediated detection has a hard floor of ≈3.7s AND grows unboundedly
 with CPU busyness.
 
 ## Parameters
@@ -71,8 +71,8 @@ experiment2/
 ## Hardware Environment (verified on)
 
 - ConnectX-5, mlx5_0, RoCEv2, rdma-core 50.0
-- QP config: timeout=14 (~67ms), retry_cnt=7
-- Expected HCA retry time: ~3.7s (7 retries x exponential backoff)
+- QP config: timeout=14 (≈67ms), retry_cnt=7
+- Expected HCA retry time: ≈3.7s (7 retries x exponential backoff)
 
 ## Output Format
 
@@ -90,17 +90,17 @@ Key derived columns:
 - `wakeup_to_detection_ns`: t_detected - t_wakeup (time spent polling after sleep)
 
 The `wakeup_to_detection` column is the key diagnostic:
-- Large value (~3.7s): HCA retry still in progress when CPU woke (HCA-dominated)
+- Large value (≈3.7s): HCA retry still in progress when CPU woke (HCA-dominated)
 - Near-zero: error CQE was already in CQ (sleep-dominated)
 
 ## Expected Results
 
 | Sleep Interval | Detection Delay (ms) | Regime          |
 |----------------|----------------------|-----------------|
-| 0 (busy poll)  | ~3,700               | HCA-dominated   |
-| 1 ms           | ~3,700               | HCA-dominated   |
-| 10 ms          | ~3,700               | HCA-dominated   |
-| 100 ms         | ~3,700               | HCA-dominated   |
-| 1 s            | ~3,700               | HCA-dominated   |
-| 5 s            | ~5,000               | Sleep-dominated |
-| 10 s           | ~10,000              | Sleep-dominated |
+| 0 (busy poll)  | ≈3,700               | HCA-dominated   |
+| 1 ms           | ≈3,700               | HCA-dominated   |
+| 10 ms          | ≈3,700               | HCA-dominated   |
+| 100 ms         | ≈3,700               | HCA-dominated   |
+| 1 s            | ≈3,700               | HCA-dominated   |
+| 5 s            | ≈5,000               | Sleep-dominated |
+| 10 s           | ≈10,000              | Sleep-dominated |

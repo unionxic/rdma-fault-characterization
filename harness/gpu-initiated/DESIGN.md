@@ -12,7 +12,7 @@ the status/vendor_err pair in production builds and none resets a QP:
 | NCCL GIN proxy (2.28.7+) | CPU progress thread (`ibv_poll_cq`) | WARN with status/vendor_err, then the progress thread exits; the GPU spins on queue credits with no bound |
 | NCCL GIN GDAKI | GPU thread | only REQ_ERR -> -EIO; the timeout wait treats it as "not done" until timeout; the blocking wait discards it (counts as success); the host polls QP state at most every 10 s, only inside `ncclCommGetAsyncError` |
 | NVSHMEM IBGDA | GPU thread, collapsed (1-slot) CQ in GPU memory | only REQ_ERR checked, then `assert` (a no-op with NDEBUG) |
-| DeepEP legacy | GPU thread | the opcode is never read; an error is taken as success, or a ~100 s trap. Needs SM90: cannot run here |
+| DeepEP legacy | GPU thread | the opcode is never read; an error is taken as success, or a ≈100 s trap. Needs SM90: cannot run here |
 
 This stage measures that behaviour on real hardware, then prototypes device-side
 classification.
@@ -45,7 +45,7 @@ classification.
 Not included: RNR (these stacks post no SENDs, and rnr_retry is 7), and link_down (the link
 carries the user's NVMe-oF storage).
 
-IB timeout: runs use 14 (retry-exhausted detection near the ~3.7 s firmware floor) to keep
+IB timeout: runs use 14 (retry-exhausted detection near the ≈3.7 s firmware floor) to keep
 trials short; one reference run per stack uses the library default (20, about 34 s computed).
 
 ## Per-trial record (common CSV columns)

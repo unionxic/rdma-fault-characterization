@@ -3,11 +3,11 @@
 이 문서는 예전 README 본문을 그대로 옮긴 상세 기록이다(영문). 요약은 [README.md](README.md)에 있다.
 
 **2026-10-06 리뷰 정정** (`harness/gpu-initiated/propagation/review_20261006/nccl_netib_design.md`)
-- 응답 쪽 PSN 비교 28/28 가운데 burst 중간에 놓인 점은 ra_s4 하나뿐이다. ERR 점은 모두 prefix 0~3이나 256이라, 응답 QP를 메시지 중간에 ERR로 만든 적은 없다.
+- 응답 쪽 PSN 비교 28/28 가운데 burst 중간에 놓인 점은 ra_s4 하나뿐이다. ERR 점은 모두 prefix 0–3이나 256이라, 응답 QP를 메시지 중간에 ERR로 만든 적은 없다.
 - 장애를 넣은 20회(run1과 run2의 ra, rb) 모두에서 요청 쪽 자신의 next_send_psn도 응답 쪽 next_rcv_psn과 같았다(원시 로그에만 있음). 그래서 이 probe는 응답 쪽 값이 요청 쪽 완료 수(223 대 234)보다 낫다는 것까지만 보였다. 요청 쪽 QP 상태보다 낫다는 것은 보이지 못했다.
 - exactly-once 재전송 질문의 "hundreds of ops in flight"에 대한 exactly-once 근거는 재전송이 있었던 1회(22개)뿐이다. 유효한 Mode B 재전송은 0회다. 설계 문서 §6.2도 같은 과장이 있다. `../RESULTS.md`는 "next_rcv_psn = executed prefix"를 조건 없이 적는데, burst 중간 점은 1개뿐이다.
 - 중복 창 "16 이상 64 미만"은 깊이마다 1회 결과다. max_rd_atomic과의 관계는 추정이다. 깊이 4의 되감기에는 atomic이 없었다(깊이 4, 16, 64, 200에서 0, 3, 13, 34개).
-- 원시 로그 재집계: 응답 쪽 QUERY_QP 시간은 28점에서 57.8~83.5 µs다. 설계 문서 §11.1의 "60–84 µs"는 run2만의 범위다(run1 rb_s1이 57.8 µs).
+- 원시 로그 재집계: 응답 쪽 QUERY_QP 시간은 28점에서 57.8–83.5 µs다. 설계 문서 §11.1의 "60–84 µs"는 run2만의 범위다(run1 rb_s1이 57.8 µs).
 - 아래 본문의 Files 표가 가리키는 `results/run1`, `results/run2`는 저장소에 없다. 로그는 Release `data-20261006`에 있다.
 
 Supports `../TRANSPARENT_RECOVERY_DESIGN.md`. CPU-only mlx5 DEVX, one RC QP pair

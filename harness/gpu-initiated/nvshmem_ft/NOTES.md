@@ -10,7 +10,7 @@
 - `V2.md`의 "sentinel 없이 90/90"은 v2 빌드에서 잰 값이다. F3, F4의 분류, 복구, 거절은 v2.2에서 다시 돌리지 않았다(v1, v2 결과).
 - fetch 옛 값의 수는 범위에 따라 둘이다. `V2.md`의 456,125(35회)는 일반 모드 5칸의 합이다. 리뷰와 `../RESULTS.md`의
   510,028(40회)은 진단 모드 5회를 더한 v2.1 전체이고, 그중 3회는 멈춰 값이 없다. 원시 로그로 다시 세면 둘 다 맞다.
-- N30(`results/20260925_n30/`)은 rain `mlx5_1`의 펌웨어 명령 슬롯 하나가 샌 상태(09-25 06:45부터)에서 돌았다(07:04~07:31).
+- N30(`results/20260925_n30/`)은 rain `mlx5_1`의 펌웨어 명령 슬롯 하나가 샌 상태(09-25 06:45부터)에서 돌았다(07:04–07:31).
   N30 문서에는 이 언급이 없다(`../gin_recovery/TRANSPARENT_S1.md`).
 
 Brings the approach of `../gin_q4/` (device classifies the root-cause CQE, host mailbox, waits
@@ -25,7 +25,7 @@ argument are in `DESIGN.md`.
 
 ## TL;DR
 
-- **Classification is exact and reaches the host in ~0.07 ms.** 48/48 single-fault trials (both
+- **Classification is exact and reaches the host in ≈0.07 ms.** 48/48 single-fault trials (both
   wait modes) and 100/100 rounds of the five-fault runs recorded the true root cause: F1 LOCAL_QP_ERR
   5/0xf5, F2b REM_ACCESS 10/0x88, F3 and F4 RETRY_EXC 12/0x81. The watcher read the record 67 us
   (median; 8-137 us, n=222) after the device captured it. Fault -> host-visible error code in the
@@ -48,10 +48,10 @@ argument are in `DESIGN.md`.
   112 recovery rounds (20 of them a second round for the same operation); every one of the 200
   operations per run was verified bit-exact with an exact signal, and V was always expected - 1
   (d = 1). Forced recoveries after completed operations (d = 0, 6/6) replayed nothing.
-- **Recovery takes ~3 ms of host time after the kernel returns** (median 3.08 ms, 2.69-5.67):
+- **Recovery takes ≈3 ms of host time after the kernel returns** (median 3.08 ms, 2.69-5.67):
   prepare 0.15-0.5 ms, handshake (incl. the responder's prepare and commit) 1.2-2.9 ms, commit
   1.0-1.5 ms, replay 0.06-0.08 ms, for one RC QP (+ one DCI) per side. Fault -> recovered: F1
-  ~6.7 ms, F3 3.51-3.76 s.
+  ≈6.7 ms, F3 3.51-3.76 s.
 - **Unrecoverable faults decline cleanly and teardown returns.** F2b is declined (class) 1.2-2.5 ms
   after the bad put, F4 (RETRY_EXC with FIN on the OOB socket) 3.6-3.8 s after the kill, the
   CPU-proxy NIC handler is declined (configuration). `nvshmem_finalize` returned on every surviving
@@ -64,7 +64,7 @@ argument are in `DESIGN.md`.
 
 | piece | what |
 |---|---|
-| `nvshmem_ibgda_ft.diff` | NVSHMEM patch (+~1340 lines, 8 files), layered on `7bb2e99c` + `../nvshmem/nvshmem_ibgda_fault_inject.diff` + `../nvshmem_rootcause/nvshmem_nrc_proxy_sq_dbr.diff` (the version committed in b0562a2); gated by `NVSHMEM_IBGDA_FT=1`, default off |
+| `nvshmem_ibgda_ft.diff` | NVSHMEM patch (+≈1340 lines, 8 files), layered on `7bb2e99c` + `../nvshmem/nvshmem_ibgda_fault_inject.diff` + `../nvshmem_rootcause/nvshmem_nrc_proxy_sq_dbr.diff` (the version committed in b0562a2); gated by `NVSHMEM_IBGDA_FT=1`, default off |
 | `DESIGN.md` | contract, classification on a collapsed CQ, preconditions, quiescence model, protocol, reset/resync inventory, replay semantics, safety argument, what the tests changed |
 | `nvshmem_ft.cu` | 2-PE driver (from `../nvshmem/nvshmem_fault.cu`): lockstep put+signal with per-iteration verification, OOB protocol, recovery loop, capture-study and latency modes |
 | `scripts/` | build, deploy, trial / matrix runners, specs, log -> CSV, tables, diff regeneration + verification |
@@ -152,7 +152,7 @@ Every cluster command ran through `../common/cluster_run.sh`: b2 in 2 holds (6 a
 Each trial left no process on either node (`leftover` 0/0 in every row of `trials.csv`). The b2
 library was compiled on rain (niced) during the last minutes of b1's hold D, whose runs are
 superseded. Fault times: F1 = hook `fire_mono_ms`; F3 = hook on sunny, moved to rain's clock
-with the OOB clock offset (min RTT of 30 pings, ~0.1 ms); F2b = after the rkeys were corrupted,
+with the OOB clock offset (min RTT of 30 pings, ≈0.1 ms); F2b = after the rkeys were corrupted,
 before the put kernel; F4 = sunny's `CLOCK_MONOTONIC` right before the SIGKILL, same offset. Device
 detection = the record's `%globaltimer` on rain's clock (driver calibration, +-3 us).
 
@@ -174,7 +174,7 @@ Medians [min-max]. The same 24 classes were recorded in the 24 fault trials of `
 F2b: the put kernel started 8-28 us after the fault stamp and the REM_ACCESS CQE arrived
 1.2 ms after the WQEs were posted (2.2-2.5 ms in 2 trials); in `results/b1` that gap was 4.4-5.6 ms
 in one batch, for reasons not identified (it lies before detection). F4: the kill closes the
-peer's socket at once, but puts in the first ~1 ms after the FIN still completed; the first put the
+peer's socket at once, but puts in the first ≈1 ms after the FIN still completed; the first put the
 dead QP no longer ACKed ended in RETRY_EXC. The records also carry `wqe_counter` (the failing
 WQE: 117 = the RDMA WRITE of the put+signal pair; 23 for F2b) and the snapshot needed one read
 in every trial (`snap_tries=1`).
@@ -281,7 +281,7 @@ per cell (60k samples); per-run median of the p50 / p99 of the 5 reps:
 | 262144 p50 (us) | 40.32 [40.16-40.32] | 40.42 | 40.42 |
 | 262144 p99 (us) | 40.99 | 40.99 | 40.99 |
 
-The timer resolution is ~32 ns, so identical values across runs are expected. The build `b1`
+The timer resolution is ≈32 ns, so identical values across runs are expected. The build `b1`
 (separate loads of `op_own` and the sticky record in the spin loop, plus a sticky check on entry)
 measured 12.48 -> 13.06 us at 4 KiB and 40.38 -> 40.90 us at 256 KiB; the final loop reads CQE word
 15 once per iteration. The watcher thread sleeps 50 us between mailbox scans (no measurable CPU

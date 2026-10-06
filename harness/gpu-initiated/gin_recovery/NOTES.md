@@ -10,7 +10,7 @@
   진짜 blocking F4는 GIN 투명 복구 1단계(`TRANSPARENT_S1.md`)에서만 쟀다.
 - `results/20260924/`(v1)의 CPU doorbell은 로그가 아니라 시각과 v1의 모드 검사로 추정한 것이다.
 - 09-25 06:45부터 rain `mlx5_1`의 펌웨어 명령 슬롯 하나가 샜다(`TRANSPARENT_S1.md`). 이 폴더의 N30 재측정은
-  02:11~03:29에 끝나 영향 밖이다. 같은 날 NVSHMEM과 GDAKI 장치 쪽 분류기의 N30(07:04~09:34)은 샌 상태에서 돌았다.
+  02:11–03:29에 끝나 영향 밖이다. 같은 날 NVSHMEM과 GDAKI 장치 쪽 분류기의 N30(07:04–09:34)은 샌 상태에서 돌았다.
 
 Builds on `../gin_q4/` (device-side classification of the root-cause error CQE + host
 mailbox). This adds recovery: a bilateral QP reset with fresh PSNs, a GPU-side state resync,
@@ -91,7 +91,7 @@ survives a local or peer QP error with no error and no relaunch:
 
 | piece | what |
 |---|---|
-| `gin_recovery.diff` | NCCL patch (+~780 lines, 3 files), layered on `../gin/gin_fault_inject.diff` + `../gin_q4/gin_q4_classify.diff`, env-gated `NCCL_GIN_FAULT_RECOVERY=1` (default off) |
+| `gin_recovery.diff` | NCCL patch (+≈780 lines, 3 files), layered on `../gin/gin_fault_inject.diff` + `../gin_q4/gin_q4_classify.diff`, env-gated `NCCL_GIN_FAULT_RECOVERY=1` (default off) |
 | `RECOVERY_DESIGN.md` | contract, policy, quiescence model, protocol, reset/resync inventory, safety argument, what the tests changed |
 | `gin_rec.cu` | 2-rank driver (from `../gin_q4/gin_q4.cu`): typed OOB protocol, initiator recovery loop, responder REQ handling, re-arm, cancel, checks |
 | `scripts/` | build, deploy, trial/matrix runners, confirmation batch, log → CSV, summary, diff regeneration |
@@ -244,7 +244,7 @@ How to read the table:
   measured clock offset.
 - **Detection.** "Device detects" is the classifier record's `%globaltimer` placed on the host clock.
   For F1 it is mostly the wait for the next put: the fault lands between iterations, and the
-  ~1 ms minima are shots that hit an in-flight put, or the replay itself. For F3 it is the
+  ≈1 ms minima are shots that hit an in-flight put, or the replay itself. For F3 it is the
   RETRY_EXC floor at IB timeout 14, as in `../cqe_seq/` and `../gin_q4/`.
 - **Rounds and replay columns.** "rounds" counts every round, including those whose replay
   failed (each ×5 cell: 20 recovered + 5 replay failed). The replay and the two "recovered"
@@ -445,7 +445,7 @@ every non-proxy QP before touching anything. That guard mattered: v1's Commit wr
 host-memory doorbell record and the proxy mailbox, and in GPU mode neither exists (the pointers
 are null and the record lives in GPU memory).
 
-### v2: `gin_recovery_gpudb.diff` (layered on `gin_recovery.diff`, +~95 lines, same env gating)
+### v2: `gin_recovery_gpudb.diff` (layered on `gin_recovery.diff`, +≈95 lines, same env gating)
 
 In GPU_SM_DB mode the GPU's submit raises `sq_wqe_pi` (`atomic_max`), rings the UAR doorbell and
 writes the doorbell record, which is in GPU memory. There is no CPU-side doorbell state.

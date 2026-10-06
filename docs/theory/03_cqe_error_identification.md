@@ -52,7 +52,7 @@ LOC_PROT_ERR는 "내 NIC이 내 로컬 메모리에 접근하려다 실패했다
 
 여기서는 vendor_err가 셋을 구분하지 못하고 모두 0x81이다. 단, 세 번째 "네트워크 단절"은 이 실험에서 직접 재현하지 못했다 — `ip link set down`이 kernel bypass 때문에 RDMA data path를 막지 못해 link down 시나리오 재현에 실패했다(물리 케이블 분리나 스위치 포트 차단이 필요). 따라서 네트워크 단절도 vendor_err 0x81로 동일하리라는 것은 실측이 아니라 추론이다. 근거는 클라이언트 NIC의 인식 모델이다: 서버 QP ERR / 프로세스 kill / 네트워크 단절 모두 클라이언트 NIC 관점에서는 "패킷을 보냈는데 ACK가 안 왔다"로 완전히 동일하다 — NIC 자체가 원인을 모르므로 syndrome도 같을 수밖에 없다. vendor_err의 0x81 수렴은 vendor_err의 한계가 아니라 NIC의 인식 한계를 그대로 반영한 것이다. vendor_err는 "NIC이 본 것"을 충실히 돌려줄 뿐, NIC이 못 본 것을 만들어내지는 않는다.
 
-실측한 두 원인(서버 QP ERR, 프로세스 kill)은 sysfs counter signature까지 100% 동일했고(local_ack_timeout_err~+6, req_transport_retries_exceeded~+1, roce_adp_retrans~+8), 실제 retry timeout latency도 약 3.7s로 동일했다. 둘의 구분은 오직 ethtool traffic counter(`tx_vport_unicast_packets`)로만 가능했다: 서버 프로세스가 살아 있는 서버 QP ERR는 TCP 정상 종료(FIN)로 패킷 12–13개, 프로세스 kill(`kill -9`)은 TCP RST로 패킷 8개로 나타났다. 즉 RDMA-level counter는 둘을 못 가르고, non-RDMA TCP 종료 패턴만이 둘을 가른다.
+실측한 두 원인(서버 QP ERR, 프로세스 kill)은 sysfs counter signature까지 100% 동일했고(local_ack_timeout_err ≈+6, req_transport_retries_exceeded ≈+1, roce_adp_retrans ≈+8), 실제 retry timeout latency도 약 3.7s로 동일했다. 둘의 구분은 오직 ethtool traffic counter(`tx_vport_unicast_packets`)로만 가능했다: 서버 프로세스가 살아 있는 서버 QP ERR는 TCP 정상 종료(FIN)로 패킷 12–13개, 프로세스 kill(`kill -9`)은 TCP RST로 패킷 8개로 나타났다. 즉 RDMA-level counter는 둘을 못 가르고, non-RDMA TCP 종료 패턴만이 둘을 가른다.
 
 두 사례의 대비가 vendor_err의 성격을 정의한다.
 

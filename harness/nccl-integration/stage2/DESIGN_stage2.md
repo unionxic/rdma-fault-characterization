@@ -174,7 +174,7 @@ isend() allowed again                                  rewrite CTS for fifoHead_
   fails too. A FAILED comm keeps answering: REQ gets NACK, NOTIFY gets FAIL.
 - **Rounds.** S fails the comm after `NCCL_RDMA_FAULT_MAX_ROUNDS` (default 8) consecutive rounds
   without progress (progress = a group completed with a success CQE since the previous round).
-  With RETRY_EXC detection of ~3.7 s per round (IB timeout 14) this tolerates a path outage of
+  With RETRY_EXC detection of ≈3.7 s per round (IB timeout 14) this tolerates a path outage of
   roughly 30 s.
 - **Symmetric and concurrent faults.** Each connection recovers independently (its own QP pair and
   socket). Both directions between two ranks are two connections. Each proxy thread keeps
@@ -274,7 +274,7 @@ entry can be overwritten (I5).
   forever (measured: T8 with back-to-back all-reduces hung 5/5 until the test timeout before this
   rule; the stock control hung 3/3). **An OOB loss does not trigger the FIN rule.** Until the review
   of 2026-09-25 a keepalive timeout did (build 78f96f38): a management-network outage of more than
-  ~5 s killed a healthy job whose comms had requests outstanding for longer than the grace (test T12b:
+  ≈5 s killed a healthy job whose comms had requests outstanding for longer than the grace (test T12b:
   0/3), which is worse than stock (stock does not use TCP then). Until the second review a reset still
   counted as death (build 7b0d0122), which a one-sided outage turns into the same failure (test T12c).
   The price: a peer node that dies silently, or a dead peer that leaves unread OOB data (RST instead of
@@ -374,7 +374,7 @@ Correctness in every run: every iteration's whole result buffer bit-exact on bot
 | T1 | S inject, single config, k not aligned to an all-reduce boundary | recovered | 30 |
 | T2 | S inject, default config (multi-channel pipelining), 16 MB | recovered | 30 |
 | T3 | R inject (R detects, NOTIFY path), default config | recovered | 30 |
-| T4 | R inject silent (S sees RETRY_EXC ~3.7 s later) | recovered | 10 |
+| T4 | R inject silent (S sees RETRY_EXC ≈3.7 s later) | recovered | 10 |
 | T5 | repeated S injections (5 per run) | recovered 5× | 10 |
 | T6 | symmetric S injections on both ranks | recovered, no deadlock | 10 |
 | T7 | GID blackhole of 0.2 s, 2 s, 10 s | 0.2 s masked by HW retransmission; 2 s and 10 s: RETRY_EXC then recovered after the path returns | 10 each |
@@ -424,7 +424,7 @@ Two independent reviews (protocol/NCCL integration; verbs/mlx5), plus one hardwa
 | SQ margin after the CTS rewrite burst is exactly 512 | low | the rewrite of slot 0 is signaled too (FR tag) |
 | CQ capacity for a full flush | low | recovery is enabled only if the CQ holds ≥ 3×256+8 entries (mlx5 rounds 512 up to 1024 here) |
 | T4 can hang if R dies while S has nothing in flight | minor (test) | the silent injection fires right after a receive completion, while S streams the next groups |
-| RTR can block ~1 s on address resolution; drains take ms with full queues | medium | documented in §1; counted in the deadlines |
+| RTR can block ≈1 s on address resolution; drains take ms with full queues | medium | documented in §1; counted in the deadlines |
 | Stale-packet argument incomplete (same QPN) | medium | §12 corrected; counters recorded around tests |
 | Responder-side NAK errors surface as async events, not CQEs, on R | medium | the fatal check runs on every step of a recovery before NOTIFY/ACK/DONE |
 
@@ -447,7 +447,7 @@ the stock structs keep their sizes, `fr` sits in existing tail padding) and the 
 | GID re-resolution required `NCCL_IB_ROCE_VERSION_NUM` rather than the connect-time entry's version | minor | the version of the connect-time entry is recorded |
 | `fr2Fatal` ignored `NCCL_IB_RETURN_ASYNC_EVENTS=0` | minor | same switch as stock |
 | Asymmetric enablement made a fault wait for a deadline | minor | HELLO |
-| Helper held the global list lock while stepping (RTR can take ~1 s) | minor | comms are picked under the list lock and served outside it (detach unregisters, then waits for the comm lock) |
+| Helper held the global list lock while stepping (RTR can take ≈1 s) | minor | comms are picked under the list lock and served outside it (detach unregisters, then waits for the comm lock) |
 | RTR retries every 20 ms printed a WARN each | minor | backoff 20 ms doubling to 1 s |
 | BRINGUP states did not poll the CQ (GPU-flush completions stalled) | minor | they poll |
 | Doc drift (message size, TX queue, flush-QP handling, SILENT needing the flag, dead fall-through) | nit | fixed here and in the code |

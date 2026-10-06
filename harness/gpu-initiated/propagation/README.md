@@ -51,7 +51,7 @@
   devel은 GPU 처리 경로에서 CQE가 3묶음, CPU 프록시 경로에서는 오류 CQE가 아예 없었다(0/30).
 - net_ib는 장애 없음과 원격 접근 오류만 돌렸고, 모든 계층에서 둘이 갈렸다. 받는 쪽 API까지 오류가 갔다.
 - 포트 오류 카운터는 verbs로 만든 QP에서만 올랐다(130/130, DEVX 스택은 0/150). 혼잡 알림 처리
-  카운터는 재시도 초과와 상대 kill에서만 9~13 올랐다(105/115). 이것은 DEVX 스택에서도 마찬가지였다.
+  카운터는 재시도 초과와 상대 kill에서만 9–13 올랐다(105/115). 이것은 DEVX 스택에서도 마찬가지였다.
 - 표 전체와 시행별 값: [LAYERS.md](results/20261006_campaign/LAYERS.md),
   [layers_trials.csv](results/20261006_campaign/layers_trials.csv). 예측 채점:
   [SCORE.md](results/20261006_campaign/SCORE.md).

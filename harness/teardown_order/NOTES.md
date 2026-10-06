@@ -12,9 +12,9 @@
 
 The review question: the same fault, "peer process killed with SIGKILL", gives the initiator
 different error codes.
-* RETRY_EXC 12/0x81 after ~3.7 s in the CPU verbs harness (`retry_proc_kill`, host-memory
+* RETRY_EXC 12/0x81 after ≈3.7 s in the CPU verbs harness (`retry_proc_kill`, host-memory
   MR), with NVSHMEM IBGDA, and with GIN GDAKI.
-* REM_ACCESS 10/0x88 after ~60 ms with NCCL GIN's proxy backend (target in GPU memory;
+* REM_ACCESS 10/0x88 after ≈60 ms with NCCL GIN's proxy backend (target in GPU memory;
   `../gpu-initiated/gin/README.md`, `../gpu-initiated/RESULTS.md` finding 7).
 
 Does that break "the CQE alone classifies"? What is the mechanism?
@@ -38,7 +38,7 @@ A one-off recount of every trial from the raw requester and victim logs found 0 
      the QP it gave RETRY_EXC 10/10 either way [measured].
    * The QP was left up while the registered GPU buffer was freed (`cudaFree`) or the whole
      CUDA context was destroyed (`cudaDeviceReset`). That produced **no error at all**:
-     20/20 with peermem, 10/10 with dma-buf. The NIC went on completing ~74 000 64 KiB WRITEs
+     20/20 with peermem, 10/10 with dma-buf. The NIC went on completing ≈74 000 64 KiB WRITEs
      per trial into that memory for the 1.5 s observed [measured].
    * nvidia_peermem on these drivers registers only its *persistent* client, which pins the
      pages and has no invalidation callback [source]. The mechanism in the hypothesis would
@@ -47,7 +47,7 @@ A one-off recount of every trial from the raw requester and victim logs found 0 
    * The kernel releases a dying process's fds in **descending** order, not ascending
      (275/275 kill trials) [measured, source].
    * In a CUDA process the uverbs file is released **after every fd**, whatever its number:
-     ~39 ms after the kill on sunny, after all CUDA files (142/142) [measured]. Its last
+     ≈39 ms after the kill on sunny, after all CUDA files (142/142) [measured]. Its last
      reference is a memory mapping, and nvidia-uvm keeps the address space alive until its
      own fd is released [source, inferred].
 2. **The error code depends on which of the dead process's verbs objects is destroyed
@@ -76,7 +76,7 @@ A one-off recount of every trial from the raw requester and victim logs found 0 
 4. **MR-first is necessary but not sufficient: it is a race.**
    * After an MR is revoked, the responder answers the next WRITE to it only after a delay,
      with no ACK and no NAK in between. The delay was 1.0-1.1 ms on rain and in sunny's later
-     sessions, and ~2.2 ms in two earlier sunny sessions [measured, live `dereg_mr`].
+     sessions, and ≈2.2 ms in two earlier sunny sessions [measured, live `dereg_mr`].
    * The delay is not RNR pacing: the responder's RNR timer (0.01 or 2.56 ms) did not change
      it. It is not requester retransmission either: the requester's adaptive-retransmit,
      ack-timeout and sequence-error counters stayed at 0 before the NAK (20/20) [measured].
@@ -100,7 +100,7 @@ A one-off recount of every trial from the raw requester and victim logs found 0 
      follows [source; measured analogue].
    * **GIN proxy**: it uses verbs QPs, connects them in `createContext`, and only *then*
      allocates and registers its GPU signal buffer [source]. An MR newer than the QPs dies
-     first, so REM_ACCESS is possible [inferred]. The ~60 ms fits a CUDA process, whose uverbs
+     first, so REM_ACCESS is possible [inferred]. The ≈60 ms fits a CUDA process, whose uverbs
      file is released last: 39.5-41.7 ms in our minimal peermem CUDA victims on sunny,
      31-33 ms on rain [measured analogue].
 6. **So 10/0x88 alone does not name the cause.** It says "the target MR was gone while the QP
@@ -205,8 +205,8 @@ Requester HW counters (`sF_sunny`, deltas from the trigger to the first error CQ
     triggers, after the remaining fds [inferred from source].
   * Measured for CUDA processes: in 142/142 CUDA kill trials, the responder kept answering
     *after* the lowest-numbered marker (`start`, fd 3) had been released.
-    * sunny: `start` at 24.7 ms [18.7-29.2], last ACK 39.1 ms [29.7-43.6], reaped at ~74 ms.
-    * rain: `start` at 28.9 ms, last ACK 29.9 ms, reaped at ~78 ms.
+    * sunny: `start` at 24.7 ms [18.7-29.2], last ACK 39.1 ms [29.7-43.6], reaped at ≈74 ms.
+    * rain: `start` at 28.9 ms, last ACK 29.9 ms, reaped at ≈78 ms.
     * This held in both fd layouts (CUDA fds below or above the uverbs fd).
 
 ### B. What the uverbs release destroys, in which order
@@ -242,7 +242,7 @@ Requester HW counters (`sF_sunny`, deltas from the trigger to the first error CQ
   * rain 1.08 ms [0.69-1.11] (sE).
 
   Neither the RNR timer nor requester-side retransmission explains the delay (see the
-  counters above). Why it was ~2.2 ms in the two earlier sunny sessions is not known.
+  counters above). Why it was ≈2.2 ms in the two earlier sunny sessions is not known.
   In the kill trials the gap from the last ACK to the REM_ACCESS was 0.38-3.51 ms (111
   trials) [measured].
 * **Kernel log.** The responder's kernel logs the QP error as
@@ -279,7 +279,7 @@ Requester HW counters (`sF_sunny`, deltas from the trigger to the first error CQ
   * GPU victims with the MR registered before the QP ended in RETRY_EXC 30/30 (peermem 20,
     dma-buf 10). None saw an invalid rkey.
   * dmesg on both nodes showed no nvidia-peermem message during our sessions. The one NVRM
-    `p2p.c:224` assertion on rain (~05:14) fell while another agent held the lock.
+    `p2p.c:224` assertion on rain (≈05:14) fell while another agent held the lock.
 * Side finding: a freed CUDA buffer that is still registered remains a live RDMA target. The
   NIC writes into memory the process has freed until the MR is deregistered [measured].
   Presumably the persistent pin keeps the pages from being reused [inferred].
@@ -290,7 +290,7 @@ Requester HW counters (`sF_sunny`, deltas from the trigger to the first error CQ
 |---|---|---|---|
 | CPU harness `retry_proc_kill` | the QP. On GO the server calls `ep_close()` itself (QP, CQ, MR, ... in that order, probe.c:293-300) and exits. The client posts 300 ms later (probe_server.c:294-301, probe_client.c:250-254) | RETRY_EXC 12/0x81, 3.73 s | [source]. A real SIGKILL mid-stream with the same MR-before-QP order: RETRY_EXC 10/10 (`host_mrfirst`) [measured] |
 | NVSHMEM IBGDA / GIN GDAKI | the DEVX QP. `ibgda.cpp:2390` and `doca_verbs_qp.cpp:747` create QPs with DEVX `CREATE_QP`, and `mlx5_ib_ufile_hw_cleanup` destroys them first on sunny | RETRY_EXC 12/0x81 | [source]. `devx_gpu_qpfirst` / `devx_dmabuf_qpfirst` on sunny: RETRY_EXC 20/20 [measured] |
-| NCCL GIN proxy | a GPU MR registered after the QPs. `createContext` connects the verbs QPs (`gin_host_proxy.cc:481` → `ncclIbConnectImpl`/`ncclIbAcceptImpl`, `gin.cc:527-533`), and only then are the signals allocated and registered (`gin_host_proxy.cc:524-533`) | REM_ACCESS 10/0x88, ~60 ms | [source]. Verbs QP + GPU MR after QP: REM_ACCESS 40/40 at 39.5-41.7 ms (sunny) and 10/10 at 31.5-33.4 ms (rain) [measured analogue]. Which MR the failing request hit is unknown. NCCL's WARN prints `opcode=4 len=8`, but libmlx5 does not fill `opcode`/`byte_len` for error CQEs (providers/mlx5/cq.c:875-900), so those fields are stale [source]. Nor do the logs say whether NCCL registered it as dma-buf or peermem. Either can produce REM_ACCESS. A dma-buf MR right after its QP gives RETRY_EXC 10/10, but REM_ACCESS 10/10 once 32 other MRs sit in between (`dmabuf_qpfirst_x32`). NCCL creates further objects between its QPs and the signals MR [inferred] |
+| NCCL GIN proxy | a GPU MR registered after the QPs. `createContext` connects the verbs QPs (`gin_host_proxy.cc:481` → `ncclIbConnectImpl`/`ncclIbAcceptImpl`, `gin.cc:527-533`), and only then are the signals allocated and registered (`gin_host_proxy.cc:524-533`) | REM_ACCESS 10/0x88, ≈60 ms | [source]. Verbs QP + GPU MR after QP: REM_ACCESS 40/40 at 39.5-41.7 ms (sunny) and 10/10 at 31.5-33.4 ms (rain) [measured analogue]. Which MR the failing request hit is unknown. NCCL's WARN prints `opcode=4 len=8`, but libmlx5 does not fill `opcode`/`byte_len` for error CQEs (providers/mlx5/cq.c:875-900), so those fields are stale [source]. Nor do the logs say whether NCCL registered it as dma-buf or peermem. Either can produce REM_ACCESS. A dma-buf MR right after its QP gives RETRY_EXC 10/10, but REM_ACCESS 10/10 once 32 other MRs sit in between (`dmabuf_qpfirst_x32`). NCCL creates further objects between its QPs and the signals MR [inferred] |
 
 On a node with an older OFED (rain, 23.10) the DEVX exception does not apply. A GDAKI or
 NVSHMEM peer whose MR was registered after its QPs would then also produce REM_ACCESS
@@ -333,7 +333,7 @@ dead(P) = the OOB/bootstrap socket owned by peer process P delivers EOF or RST
   [inferred]. A dead peer never answers a PROBE, and a live one answers within an RTT
   (0.1 ms here), so T only costs time when the peer really is dead.
 * **Do not use the timing of the NAK.** The silence before the NAK is the same for a dying
-  peer and for a live `ibv_dereg_mr` (~1-2 ms) [measured]. Only an out-of-bounds WRITE to a
+  peer and for a live `ibv_dereg_mr` (≈1-2 ms) [measured]. Only an out-of-bounds WRITE to a
   valid MR NAKs quickly (0.3 ms, harness `rem_access`, `../gpu-initiated/RESULTS.md`).
 * **Apply the same gate to the other remote-NAK classes** (9/0x8a REM_INV_REQ, 11
   REM_OP_ERR), since a dying peer's objects vanish one at a time [inferred, not measured

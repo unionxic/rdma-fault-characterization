@@ -302,7 +302,7 @@ Invariants, each with the reason it holds:
   - Leaving the proxy mailbox at its old value meant the first replay was never doorbelled.
   - Both were declined cleanly (`NCCL_GIN_RECOVERY_DIAG`, results in `diag/negative/`).
 - **Test hook.** A shot delay of 0 after a commit usually lost the race to the replay (the replay
-  completes in ~0.3 ms, the hook's four modify commands take ~1.2 ms), so the fault landed on the
+  completes in ≈0.3 ms, the hook's four modify commands take ≈1.2 ms), so the fault landed on the
   next operation. The hook gained delay -1 (fire inside the commit, after RTS), which hits the
   replay deterministically.
 - **GPU doorbells (v2, `gin_recovery_gpudb.diff`).**

@@ -5,12 +5,12 @@
 **2026-10-06 리뷰 정정**
 
 - NVSHMEM 표의 "time to device detection"은 장애 시점이 아니라 post에서 감지까지의 시간이다(n=3).
-  같은 GPU handler를 쓴 abc A(`../nvshmem_rootcause/`)는 F1 2.0~2.3 ms, F2b 10.3~10.7 ms였다.
+  같은 GPU handler를 쓴 abc A(`../nvshmem_rootcause/`)는 F1 2.0–2.3 ms, F2b 10.3–10.7 ms였다.
   `RESULTS.md`가 이 값(1.8 ms, 9 ms)을 장애에서 감지까지처럼 인용한 것은 과장이다.
 - GIN 표 아래의 "match the CPU-doorbell ones within noise"는 F1과 F3만 맞다. F2의 호스트 시간(ring 4.3 ms, collapsed 3.8 ms,
-  각 1회)은 CPU doorbell(Task B ring 2.79 ms, Task A collapsed 3.24 ms)보다 0.6~1.5 ms 길다(원시 표에서 다시 셈).
+  각 1회)은 CPU doorbell(Task B ring 2.79 ms, Task A collapsed 3.24 ms)보다 0.6–1.5 ms 길다(원시 표에서 다시 셈).
 - 지연 36.74 µs와 36.86 µs는 timeout 대기 각 1회 실행의 중앙값이다(원시 지연 기록으로 확인).
-  CPU doorbell의 실행 간 편차(36.9~37.8 µs)와 거의 겹치므로 "0.6 µs 낮다"는 약한 근거다.
+  CPU doorbell의 실행 간 편차(36.9–37.8 µs)와 거의 겹치므로 "0.6 µs 낮다"는 약한 근거다.
 
 > **Since 2026-09-24 13:53 the override is permanent on both nodes** (the user's decision):
 > `/etc/modprobe.d/nvidia-peermapping.conf` holds

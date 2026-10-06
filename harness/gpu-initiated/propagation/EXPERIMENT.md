@@ -28,7 +28,7 @@
 
 - 기존 결과를 다시 정리한 [REVIEW_20261006.md](REVIEW_20261006.md)와 그 근거인
   [review_20261006/](review_20261006/)의 리뷰 네 개가 출발점이다.
-  - 장애 F0~F4를 계층 L0~L5에서 얼마나 구분할 수 있는지(분할)를 스택마다 정리했다.
+  - 장애 F0–F4를 계층 L0–L5에서 얼마나 구분할 수 있는지(분할)를 스택마다 정리했다.
   - 빈 칸도 함께 정리했다. 예: F0 대조, 비동기 이벤트, 수동 쪽(상대 rank), 정리 시간.
 - 질문:
   1. 장애 정보가 계층마다 얼마나 전달되는가(전파율). 원인을 몇 가지로 구분할 수 있는가(분할).
@@ -54,13 +54,13 @@
 
 | 묶음 | 칸 id | 무엇을 예측하나 |
 |---|---|---|
-| CPU 응답 쪽 이벤트와 QP 상태 | EV1a~e, EV2a~b | 어떤 장애에서 응답 쪽 QP가 ERR이 되고 비동기 이벤트를 받는가 |
-| GIN proxy 수동 쪽 | EV3a~c | 수동 쪽 로그에는 오류가 남지만 API는 모른다 |
+| CPU 응답 쪽 이벤트와 QP 상태 | EV1a–e, EV2a–b | 어떤 장애에서 응답 쪽 QP가 ERR이 되고 비동기 이벤트를 받는가 |
+| GIN proxy 수동 쪽 | EV3a–c | 수동 쪽 로그에는 오류가 남지만 API는 모른다 |
 | DEVX 스택의 비동기 오류 | EV4 | 모든 시행에서 없다 |
-| 포트 카운터 | EV5a~d | DEVX 스택은 +0, verbs 스택은 증가 |
-| NCCL net_ib F2 | NET1a~c | 수동 쪽 API까지 오류가 간다. 복구 2단계(Stage 2)는 거절한다 |
+| 포트 카운터 | EV5a–d | DEVX 스택은 +0, verbs 스택은 증가 |
+| NCCL net_ib F2 | NET1a–c | 수동 쪽 API까지 오류가 간다. 복구 2단계(Stage 2)는 거절한다 |
 | GDAKI doorbell | D1, D2 | GPU doorbell에서도 CQE가 생기고, blocking 대기는 실패를 성공으로 보고한다 |
-| 정리 단계 | 정리 예측 T1~T4 | F0에서는 5 s 안에 돌아온다. 공식 3.8.0 F4에서는 finalize가 30 s 넘게 멈춘다 |
+| 정리 단계 | 정리 예측 T1–T4 | F0에서는 5 s 안에 돌아온다. 공식 3.8.0 F4에서는 finalize가 30 s 넘게 멈춘다 |
 
 판정 기준(사전 등록): 칸마다 시행의 90% 이상이 예측과 같고, 예측 밖 결과가 하나도 없을 것. "모든
 시행"으로 적힌 칸은 전부 맞아야 한다.
@@ -93,7 +93,7 @@
 
 - **독립변수:**
   - 스택과 변형(CPU, GP, GG, GQ, NC, NG, NX, ND, NF, NET)
-  - 장애(F0~F4, CPU의 rem_inv_req, rnr, partial_write)
+  - 장애(F0–F4, CPU의 rem_inv_req, rnr, partial_write)
   - 대기 방식(timeout/blocking)
 - **종속변수(계층별 관측):**
   - L0: 응답 쪽 QP 상태, 포트 `hw_counters` 변화
@@ -116,9 +116,9 @@ F0 5).
 | 스택 | 셀(장애:대기:반복) | 합계 | 대조군 |
 |---|---|--:|---|
 | cpu | none 5, local_qp_err, rem_access, rem_inv_req, rnr, retry_server_qp_err, retry_proc_sigkill, partial_write 각 10 | 75 | none |
-| gp | none:timeout 5, F1~F4:timeout 각 10 | 45 | none |
-| gg | none:timeout 5, F1:blocking 5, F2~F4:blocking 각 10 | 40 | none |
-| gq | none:timeout 5, F1~F3:blocking 각 5, F4:timeout 5 | 25 | none |
+| gp | none:timeout 5, F1–F4:timeout 각 10 | 45 | none |
+| gg | none:timeout 5, F1:blocking 5, F2–F4:blocking 각 10 | 40 | none |
+| gq | none:timeout 5, F1–F3:blocking 각 5, F4:timeout 5 | 25 | none |
 | nvo | {NC, NG, NX} x {kill 0, kill 1} 각 5, FINALIZE=1 | 30 | kill 0 |
 | nvd | {auto, cpu_host_memory} x {F1, F2b, F3} 각 10 | 60 | 없음 |
 | nvf | none, F1, F2b, F3, F4 각 5 | 25 | none |
@@ -198,7 +198,7 @@ F0 5).
 | 14:02 | CPU smoke 1회차: CPU harness 빌드 실패로 8회 모두 rc=2 | 다시 실행하면서 폴더를 덮어써 파일 기록은 없다. 원인 수정은 `648b417a` |
 | 14:03 | CPU smoke 2회차: 8회 | `results/20261006_smoke/cpu/` (`harness__gpu-initiated__propagation__results__20261006_smoke.tar.xz`) |
 | 14:04 | F2 주입 훅 병합 | `b2a043b0`, `33a68234` (PR #15) |
-| 14:05~14:26 | GPU, net smoke: gp 5, gg 5, gq 5, nvo 6, nvd 6, nvf 5, net 3 | `results/20261006_smoke/` (`harness__gpu-initiated__propagation__results__20261006_smoke.tar.xz`) |
+| 14:05–14:26 | GPU, net smoke: gp 5, gg 5, gq 5, nvo 6, nvd 6, nvf 5, net 3 | `results/20261006_smoke/` (`harness__gpu-initiated__propagation__results__20261006_smoke.tar.xz`) |
 | 14:18 | 러너와 DEVIATIONS 병합 | `c68a981f` (PR #16) |
 | 14:27 | 캠페인 시작, 실행 커밋 `3eb87407` | `results/20261006_campaign/run_all.out` |
 | 14:33 | cpu 끝: 75/75회 실행, 러너 rc 모두 0 | `cpu/trials.log` |
@@ -213,10 +213,10 @@ F0 5).
 | 16:43 | 상태를 `QA`로 바꿈. 채점에서 틀림으로 나온 네 줄을 원자료로 확인해 문제 두 가지를 찾음 | 16절 |
 | 17:05 | 사용자 결정: gp, gg F4를 원래 설정으로 다시 돌린다. EV3a 블라인드는 `logs/`를 관측 불가로 두고 `v2/logs/`로 판정한다 | [DEVIATIONS.md](DEVIATIONS.md) 10, 11 |
 | 17:06 | 독립 재계산(캠페인 325회)이 끝남. 채점기가 판정 기준의 "예측 밖 결과 없음"을 빠뜨린 것을 찾음 | DEVIATIONS 12, 16절 |
-| 17:08~17:13 | gp F4 10회, gg F4 10회 재실행. kill은 모두 162~168회째에 걸림 | `results/20261006_f4rerun/`, `campaign/rerun_f4.sh` |
+| 17:08–17:13 | gp F4 10회, gg F4 10회 재실행. kill은 모두 162–168회째에 걸림 | `results/20261006_f4rerun/`, `campaign/rerun_f4.sh` |
 | 17:15 | 최종 채점 | `results/20261006_campaign/SCORE.md`, `score.json` |
-| 17:41~18:30 | 계층별 전파율과 분할 표. 다른 에이전트가 같은 표를 따로 만들어 대조함 | [LAYERS.md](results/20261006_campaign/LAYERS.md), 16절 |
-| 17:48~18:25 | 원자료 세 묶음을 Release `data-20261006`에 올리고 체크섬 목록을 갱신함 | `DATA.md` |
+| 17:41–18:30 | 계층별 전파율과 분할 표. 다른 에이전트가 같은 표를 따로 만들어 대조함 | [LAYERS.md](results/20261006_campaign/LAYERS.md), 16절 |
+| 17:48–18:25 | 원자료 세 묶음을 Release `data-20261006`에 올리고 체크섬 목록을 갱신함 | `DATA.md` |
 | 18:45 | 상태를 `COMPLETE`로 바꿈. 결과 PR | 이 문서의 커밋 |
 
 ## 13. 사전 등록 이후 변경
@@ -276,7 +276,7 @@ F0 5).
 **5. 포트 카운터.**
 - verbs로 QP를 만드는 경로(CPU 하네스, GIN 프록시, net_ib)는 장애 130/130에서 오류 카운터가 올랐다.
   DEVX로 QP를 만드는 스택은 0/150이다. `[추론]` 카운터가 DEVX QP를 세지 않기 때문이다.
-- 혼잡 알림 처리 카운터(`rp_cnp_handled`)는 재시도 초과와 상대 kill에서만 9~13 올랐다. DEVX 스택을
+- 혼잡 알림 처리 카운터(`rp_cnp_handled`)는 재시도 초과와 상대 kill에서만 9–13 올랐다. DEVX 스택을
   포함한 모든 스택에서 그랬고(105/115), 다른 장애와 장애 없음에서는 한 번도 오르지 않았다. 예외는 GIN
   프록시의 상대 kill(0/10)로, 이 경우는 재시도 초과가 아니라 원격 접근 오류로 끝났다. `[미확인]` 왜
   오르는지는 확인하지 않았다.
@@ -401,7 +401,7 @@ F0 5).
   - GPU doorbell 예측 (D1)의 장치 결과 `-EIO`는 원본 드라이버로는 볼 수 없다. GPU doorbell 방식인지는
     로그에 없고 추정이다.
 - GIN 프록시와 GDAKI의 상대 kill 재실행 20회(17:30): kill이 20회 모두 통신 중에 걸렸다(반복 400회 중
-  162~168회째). 채점기와 판정이 같다. 다른 점은 t10 하나다.
+  162–168회째). 채점기와 판정이 같다. 다른 점은 t10 하나다.
   - 맞음: 수동 쪽 비동기 QP 이벤트 없음(EV3c), DEVX 스택 QP 비동기 오류 없음(EV4), DEVX 스택 포트 오류
     카운터 +0(EV5a).
   - 틀림: 요청 쪽 포트 오류 카운터(EV5c), GPU doorbell(D1), 상대 kill 뒤 첫 flush(D2).
@@ -471,5 +471,5 @@ F0 5).
 - Hiller, Jhumka, Suri, "PROPANE", ISSTA'02. 모듈 사이 오류 전파 측정.
 - Natella, Cotroneo, Madeira, "Assessing Dependability with Software Fault Injection: A Survey", ACM CSUR 2016.
 - Huang 외, "Gray Failure", HotOS'17. differential observability.
-- Mellanox Adapters PRM Rev 0.40, 7.4.2~7.4.3절(doorbell record와 WQE 소유권).
+- Mellanox Adapters PRM Rev 0.40, 7.4.2–7.4.3절(doorbell record와 WQE 소유권).
 - [../../../docs/GIT_WORKFLOW.md](../../../docs/GIT_WORKFLOW.md), [../../../DATA.md](../../../DATA.md).

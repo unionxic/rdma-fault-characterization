@@ -93,7 +93,7 @@ All 300 measurements (100 × 3 scenarios) reported the same error:
 
 | Metric | Value |
 |--------|-------|
-| Typical RTT | ~360–440 µs |
+| Typical RTT | ≈360–440 µs |
 | Contribution to measurement | < 0.01% of detection latency |
 
 ## LaTeX Table (copy-paste)
@@ -120,7 +120,7 @@ C: Link Down               & 100 & 3{,}702 & 3{,}701 & 10.3 & 3{,}705 & 3{,}706 
 
 ## Key Findings
 
-### Finding 1: Detection latency is ~3.7 seconds regardless of fault type
+### Finding 1: Detection latency is ≈3.7 seconds regardless of fault type
 
 All three fault scenarios — ranging from a software-only QP state transition (A) to a physical link failure (C) — produce statistically indistinguishable detection latencies of approximately 3.7 seconds. The coefficient of variation is < 0.3% within each scenario.
 
@@ -131,11 +131,11 @@ All three fault scenarios — ranging from a software-only QP state transition (
 The tight CQ polling loop (no sleep, no event-driven wait) represents the theoretical minimum software overhead. Despite this, detection takes 3.7 seconds because:
 
 1. When the remote QP fails (any scenario), it stops sending ACKs for incoming RDMA packets
-2. The requester HCA waits `timeout` (~67 ms) before each retry
+2. The requester HCA waits `timeout` (≈67 ms) before each retry
 3. After `retry_cnt` (7) retries are exhausted, the HCA posts `IBV_WC_RETRY_EXC_ERR`
 4. Only then can the CPU observe the error via CQ polling
 
-The ~3.7s total is consistent with the HCA retry mechanism: multiple retry cycles at ~67 ms each, with firmware-internal processing adding to the total.
+The ≈3.7s total is consistent with the HCA retry mechanism: multiple retry cycles at ≈67 ms each, with firmware-internal processing adding to the total.
 
 ### Finding 3: No explicit error notification exists in the RDMA transport
 
@@ -145,7 +145,7 @@ In all scenarios, the error is `RETRY_EXC_ERR` (timeout-based), never an explici
 
 ### Finding 4: Reducing timeout trades detection speed for false positives
 
-The timeout parameter could be reduced (e.g., timeout=10 → ~4 ms per retry → ~28 ms total), but this creates a tradeoff:
+The timeout parameter could be reduced (e.g., timeout=10 → ≈4 ms per retry → ≈28 ms total), but this creates a tradeoff:
 - Lower timeout → faster detection, but increased risk of false positives on congested networks
 - Higher timeout → fewer false positives, but slower detection
 - Production deployments typically use timeout=14–17 for this reason
@@ -157,7 +157,7 @@ This tradeoff does not exist in GPU-initiated fault handling, where the GPU can 
 | Metric | CPU-Mediated (this experiment) | GPU-Initiated (proposed) |
 |--------|-------------------------------|--------------------------|
 | Detection trigger | HCA retry exhaustion (timeout-based) | GPU kernel observes stalled operation |
-| Detection latency | ~3,700 ms (fixed by HCA parameters) | Target: < 1 ms (application-level) |
+| Detection latency | ≈3,700 ms (fixed by HCA parameters) | Target: < 1 ms (application-level) |
 | Detection mechanism | Poll CQE from CPU | GPU-side doorbell / shared memory flag |
 | Recovery initiation | CPU receives error CQE → schedules recovery | GPU detects stall → initiates recovery directly |
 | Total stall time | > 3,700 ms + recovery time | Target: detection + recovery in < 10 ms |

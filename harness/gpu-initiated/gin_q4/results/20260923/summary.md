@@ -7,7 +7,7 @@ source: `results/20260923`
 `-EIO seen` = the device poll returned -EIO (error CQE, opcode 0xd) in n trials. `root` = the
 status/vendor_err pair the device classified (ring: first error CQE in [cqe_ci, ticket]; collapsed:
 slot 0). `polled/slot` = CQE at the polled index (ring) or slot 0 (collapsed) when the poll
-returned. `late` = collapsed slot 0 re-read ~500 us later. `QP ERR` = first host QUERY_QP showing
+returned. `late` = collapsed slot 0 re-read ≈500 us later. `QP ERR` = first host QUERY_QP showing
 ERR (100 ms watch). Times in ms after the fault.
 
 | cq | classify | fault | wait | n | -EIO seen | root (status/vendor) | class | polled/slot CQE | window err/ok | late re-read | CQ buffer err | t_dev | t_api | QP ERR (watch) | init / target | init_silent_iters | teardown |

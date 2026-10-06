@@ -55,7 +55,7 @@ The void trial is an ssh connection reset at the launch of PE 1, before `nvshmem
   Recovered classes: LOCAL_QP_ERR (F1, 65/65), RETRY_EXC (F3 5/5, flap 18/18); declined: REM_ACCESS
   10/10 (syndrome 0x88), RETRY_EXC with FIN 5/5. [measured]
 - **Round time** (initiator): F1 4.64 ms [4.18–5.46] (quiesce 0.10, prepare 0.12, handshake 2.54,
-  commit 0.82, finish 0.03; the DCI reset, ~0.4 ms, runs before the handshake); in flight 4.41; F1 × 5
+  commit 0.82, finish 0.03; the DCI reset, ≈0.4 ms, runs before the handshake); in flight 4.41; F1 × 5
   4.47 [3.58–53.0] (one round of 125 took 53 ms, host scheduling); mt 6.69 (quiesce 2.4 ms: 32
   posters stop); F3 5.71. F3's 3.6 s slow operation is the NIC's retry timeout, not the recovery.
 
@@ -75,7 +75,7 @@ After every hold both ports had only their primary address; sunny's nvme error-l
 | transparent, without the GID re-lookup (control) | 6 s | 3 | 0 | **3** | 0 | 3.94 [3.83–4.02] | – | – | 3/3 |
 
 The GID index moves on every re-add (72/72 cuts over all flap sets) and DEVX QPs keep the old
-source-GID index, so even a 0.5 s cut is permanent for the QP: under v2.2 RETRY_EXC fires ~3.9 s after
+source-GID index, so even a 0.5 s cut is permanent for the QP: under v2.2 RETRY_EXC fires ≈3.9 s after
 the cut (6/6), the application gets the error and `nvshmem_finalize` did not return within 65 s. With transparent
 recovery, RETRY_EXC with a live peer is recovered: sunny's helper finds its GID by value at the new index at
 once (0.5 s) or after 2.4, 11.3 or 21.4 s (6, 15, 25 s cuts), PE 0's device threads hold that long,
