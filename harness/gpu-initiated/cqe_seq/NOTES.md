@@ -3,7 +3,7 @@
 아래는 예전 README 본문을 그대로 옮긴 것이다(영문). 요약은 [README.md](README.md)에 있다.
 
 **2026-10-06 리뷰 정정**
-- `retry_proc_kill`은 SIGKILL이 아니다. 상대가 QP를 먼저 정리하고 정상 종료했고, 요청 쪽은 300 ms 뒤에 썼다. 실제 SIGKILL은 270회 중 111회가 0x88이다(`../../fingerprint_teardown/`).
+- `retry_proc_kill`은 SIGKILL이 아니다. 상대가 QP를 먼저 정리하고 정상 종료했고, 요청 쪽은 300 ms 뒤에 썼다. 실제 SIGKILL은 270회 중 111회가 0x88이다(`../../teardown_order/`).
 - 원인 CQE가 약 60 µs 보인다는 값은 일반 CQ에서 잰 것이다. GIN 실험(`../gin_q4/`)은 500 µs 뒤 슬롯이 flush라는 것까지만 보였다. NVSHMEM GPU 핸들러 아래 collapsed 슬롯에서는 재지 않았다.
 - 원격 오류 지연이 칸마다 반복적으로 다른 현상(N=1 원격 접근 오류 2.94~2.96 ms, 10/10)은 옛 실험(`experiments/225-client`)의 스케줄러 설명과 맞지 않는다. 원인은 조사하지 않았다.
 

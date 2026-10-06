@@ -29,7 +29,7 @@ sha256sum -c --ignore-missing SHA256SUMS && tar -xJf '<asset>'
 | `experiments/225-client/02_retry_decomposition/results` | `experiments__225-client__02_retry_decomposition__results.tar.xz` | 1 | 0.00 | `e9d1ba2d24f1` |  |
 | `experiments/225-client/08_middleware/results/qa_20260923` | `experiments__225-client__08_middleware__results__qa_20260923.tar.xz` | 3 | 0.00 | `81bab59542ef` |  |
 | `harness/ack_timeout/results/20260925` | `harness__ack_timeout__results__20260925.tar.xz` | 470 | 0.09 | `1a7804554161` |  |
-| `harness/fingerprint_teardown/results/20260925` | `harness__fingerprint_teardown__results__20260925.tar.xz` | 880 | 0.05 | `90607969ed03` |  |
+| `harness/teardown_order/results/20260925` | `harness__fingerprint_teardown__results__20260925.tar.xz` | 880 | 0.05 | `90607969ed03` | packed before the folder was renamed: unpacks to the old folder name |
 | `harness/gpu-initiated/cqe_seq/results` | `harness__gpu-initiated__cqe_seq__results.tar.xz` | 10 | 0.01 | `7f64aac4d552` |  |
 | `harness/gpu-initiated/gin/results/20260923` | `harness__gpu-initiated__gin__results__20260923.tar.xz` | 494 | 0.02 | `323d7009d7c4` |  |
 | `harness/gpu-initiated/gin_q4/results/20260923` | `harness__gpu-initiated__gin_q4__results__20260923.tar.xz` | 847 | 1.23 | `2cd3fc7802b7` |  |

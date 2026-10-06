@@ -14,7 +14,7 @@ and every choice made after the tag.
 2. **F4 on the CPU stack is a real SIGKILL.** The responder raises SIGKILL on GO (fault
    `retry_proc_sigkill`). The requester keeps the old proc-kill flow, which waits 300 ms
    before its write. The kernel has then almost always torn the responder down, so the
-   0x88 teardown race (`fingerprint_teardown/`, 111/270) is unlikely to appear.
+   0x88 teardown race (`../../teardown_order/`, 111/270) is unlikely to appear.
 3. **When the responder's state is read (EV1, EV2).** The requester waits 10 ms after detecting
    the fault, then asks the responder for its QP state and its async events since GO. Recovery
    starts after that.

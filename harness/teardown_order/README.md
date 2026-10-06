@@ -1,4 +1,4 @@
-# fingerprint_teardown: 죽은 상대의 오류 코드가 갈리는 이유
+# teardown_order: 죽은 상대의 오류 코드가 갈리는 이유
 
 같은 "상대 프로세스 종료"에서 CPU verbs, NVSHMEM IBGDA, GIN GDAKI는 약 3.7 s 뒤 RETRY_EXC 12/0x81을 받았다.
 NCCL GIN proxy는 약 60 ms 뒤 REM_ACCESS 10/0x88을 받았다. CQE만으로 원인을 가른다는 가정이 깨지는지, 왜 갈리는지 쟀다.

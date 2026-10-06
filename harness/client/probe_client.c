@@ -430,7 +430,7 @@ int main(int argc, char **argv) {
          * verification showed they do NOT separate server_qp_err from proc_kill).
          * REM_ACCESS (10/0x88) and REM_INV_REQ (9) get the same liveness check: a
          * SIGKILLed peer whose MR is torn down before its QP NAKs with 0x88 instead of
-         * going silent (../fingerprint_teardown/), so an unanswered PROBE turns them into
+         * going silent (../teardown_order/), so an unanswered PROBE turns them into
          * proc_kill (peer dead, not recoverable) instead of an access bug. */
         char sub_cause[24] = "-";
         long peer_rx = -1, peer_tx = -1;
