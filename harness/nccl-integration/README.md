@@ -1,8 +1,8 @@
-# nccl-integration: NCCL IB 전송 안의 장애 분류와 복구 (Stage 1)
+# nccl-integration: NCCL IB 전송 안의 장애 분류와 복구 1단계(Stage 1)
 
 NCCL 2.23.4의 IB 전송(CPU proxy 경로) 안에 RDMA 장애 분류와 제자리 복구를 넣었다. 외부 래퍼가 아니다.
 Stage 1은 연결에 요청이 하나만 걸려 있을 때만 복구한다. 그 밖에는 원본과 똑같이 실패한다.
-여러 요청을 복구하는 Stage 2는 `stage2/`, 완료 시간과 오버헤드는 `perf/`에 있다.
+여러 요청을 복구하는 NCCL 복구 2단계(Stage 2)는 `stage2/`, 완료 시간과 오버헤드는 `perf/`에 있다.
 
 ## 무엇을 쟀나
 
