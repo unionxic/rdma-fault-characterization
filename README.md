@@ -69,11 +69,6 @@ IBGDA)이다.
 - **원시 로그와 기록:** 결과 폴더별로 Release `data-20261006`에 올렸다.
 - **목록과 체크섬:** [`DATA.md`](DATA.md).
 
-## 재현
-
-- 각 폴더의 README에 실행 순서와 필요한 환경이 있다.
-- 노드 두 대와 ConnectX NIC가 필요하다. GPU 실험은 NVIDIA GPU, CUDA 12.x, 그리고 NCCL 2.32.3 또는 NVSHMEM 소스가 필요하다.
-
 ## 저장소 구성
 
 | 경로 | 내용 |
@@ -83,7 +78,6 @@ IBGDA)이다.
 | `harness/gpu-initiated/` | GPU-initiated 스택(GIN, NVSHMEM). 종합은 `RESULTS.md` |
 | `harness/ack_timeout/`, `harness/fingerprint_teardown/` | 감지 시간과 오류 코드 차이 분석 |
 | `experiments/`, `docs/` | 초기 연구 |
-| `tools/` | 데이터 릴리스 도구 |
 
 ## 인용과 버전
 
