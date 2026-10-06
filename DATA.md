@@ -5,9 +5,17 @@ GitHub Release assets, one `.tar.xz` per result folder. Each archive unpacks to 
 repository path, next to the tracked tables (see `docs/GIT_WORKFLOW.md`). Management addresses
 read `192.0.2.193/194`, as in the history.
 
+## Result tables
+
+- **Kept in the repository:** the tables a document cites by name, and the data sets behind a
+  main table (cited by a run-stamped pattern), plus the write-ups (`.md`) in each result folder.
+- **Everything else:** all 667 tables tracked before the pruning are in
+  `results-tables-20261006.tar.xz` (same release). They are also at tag
+  `archive/results-tables-20261006`.
+
 ## Release `data-20261006`
 
-37 archives, 11297 files, 36.7 MB compressed. Packed by `tools/pack_release.py`.
+37 raw-data archives (plus the tables archive above), 11297 files, 36.7 MB compressed. Packed by `tools/pack_release.py`.
 The full checksums are in the `SHA256SUMS` asset.
 
 ```

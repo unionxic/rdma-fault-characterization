@@ -41,6 +41,13 @@ Follows common research-software practice:
 - docs: `.md`;
 - small derived data: `.csv`; `.txt .json .spec` outside result folders.
 
+Inside result folders only the core is committed:
+- the write-ups (`.md`);
+- the tables a document cites by name, or by a run-stamped pattern such as
+  `results/*_20260923_123945.csv`.
+
+Other tables go to the data release with the raw data.
+
 Raw data is not in the history. That means logs, per-trial `.kv/.meta` files, `.out/.console`,
 archives, and any `.txt/.json` inside `results/`. Each data release is a GitHub Release
 `data-YYYYMMDD`:
@@ -67,6 +74,9 @@ Scripts that must match the real addresses as patterns read them at run time fro
 `~/.config/rdma-error/mgmt.env`, which defines `MGMT_A` and `MGMT_B`. That file is local and is
 never committed. Examples: `nvshmem_ft/scripts/t1/pack_t1.sh` and
 `nvshmem_rootcause/official380/redact.py`.
+
+`git archive` run locally applies the smudge filter, so it writes the real addresses. Run it as
+`git -c filter.mgmtip.smudge=cat archive ...` when packing committed files.
 
 Before every push, a grep of the index (`git grep --cached`) for the real prefix must print
 nothing, in any spelling, escaped or not.

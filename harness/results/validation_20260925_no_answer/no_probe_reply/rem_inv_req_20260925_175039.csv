@@ -1,4 +1,0 @@
-fault,iter,recovery,detect_ns,status,status_name,vendor_err,cause,action,peer_alive,auto_recoverable,recover_ns,verify_ok,bytes_sent_psn,sq_psn_delta,bytes_landed_readback,matching_bytes_total,mtu_bytes,counter,cnt_delta,sub_cause,peer_rx_delta
-rem_inv_req,0,qp_only,420606,9,remote invalid request error,0x8a,"remote invalid request (malformed WR / len / opcode)","fix request params, QP-only recover",-1,0,1061187,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,no_answer,-1
-rem_inv_req,1,qp_only,371312,9,remote invalid request error,0x8a,"remote invalid request (malformed WR / len / opcode)","fix request params, QP-only recover",-1,0,1014978,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,no_answer,-1
-rem_inv_req,2,qp_only,360291,9,remote invalid request error,0x8a,"remote invalid request (malformed WR / len / opcode)","fix request params, QP-only recover",-1,0,1023944,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,no_answer,-1
