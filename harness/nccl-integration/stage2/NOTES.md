@@ -33,7 +33,7 @@ gets a new GID index.
 ## Results (2026-09-25; 2 nodes, ConnectX-6 VPI, RoCE v2, IB timeout 14; every run checks every iteration's whole result buffer on both ranks)
 
 Raw data: `results/20260925/<campaign>/` (`results.csv`, `logs.tar.gz`, hardware counters before/after,
-`lib_md5.txt`). The larger log archives are thinned by `../perf/thin_logs.py`: every NCCL, recovery,
+`lib_md5.txt`). The larger log archives were thinned by `perf/thin_logs.py` (removed; tag archive/results-tables-20261006 has it): every NCCL, recovery,
 error and SUMMARY line is kept. Of the per-iteration `IT` lines it keeps the first and last 20, every
 1000th, and 5 on each side of every stall, so the fault and recovery timelines are intact. Library builds: `f7f45278` (after code QA round 2), `3b0b760d` (+ test-hook fix),
 `78f96f38` (+ the FIN rule, §7), `7b0d0122` (+ the OOB-loss fix after the 2026-09-25 review: a keepalive
