@@ -1,50 +1,96 @@
 # RDMA 장애 특성화와 복구
 
-RDMA RC QP의 장애를 오류 CQE, vendor_err, HW 카운터로 실측해 분류하고, 가장 작은 단위로 복구한다. 같은 틀을 NCCL과 GPU-initiated RDMA(NCCL GIN, NVSHMEM IBGDA)로 넓혔다.
+RDMA 통신에서 장애가 났을 때, 그 정보가 NIC에서 응용까지 어디서 남고 어디서 사라지는지 측정한다.
+남은 정보로 원인을 얼마나 구분할 수 있는지, 언제 안전하게 복구할 수 있는지도 보인다. 대상은
+CPU verbs, NCCL, 그리고 GPU가 직접 통신을 시작하는 GPU-initiated RDMA 스택(NCCL GIN, NVSHMEM
+IBGDA)이다.
+
+## 연구 질문
+
+1. 장애가 나면 NIC, 완료 기록(CQE), 라이브러리, API, 호스트 중 어디까지 오류가 전달되는가.
+2. 남은 정보로 장애 원인을 몇 가지로 구분할 수 있는가.
+3. 어떤 장애를 응용 수정 없이, 데이터를 잃거나 중복하지 않고 복구할 수 있는가.
+
+## 주요 결과
+
+각 항목의 근거와 원시 수치는 괄호 안 폴더에 있다.
+
+**오류 정보가 사라지는 지점**
+- **원본 스택:** 정보는 위 계층으로 갈수록 줄어들기만 한다.
+  - 예: GIN GDAKI는 NIC에서 네 묶음으로 갈리던 장애가 blocking 대기에서는 정상 완료와 구분되지 않는다.
+  - 예: NVSHMEM은 실패한 put을 성공처럼 반환한다. (`harness/gpu-initiated/`)
+- **수동 쪽(상대 rank):** 오류 통지를 한 번도 받지 못했고, 정리도 끝나지 않았다.
+- **원인 구분:** 오류 코드만으로는 장애 7가지가 5묶음으로 갈린다. 상대 프로세스의 생존 확인을 더하면 6묶음이 된다. (`harness/`)
+- **같은 원인, 다른 코드:** 죽은 상대는 커널이 자원을 지우는 순서에 따라 다른 오류 코드(0x81 또는 0x88)로 보인다. (`harness/fingerprint_teardown/`)
+
+**NVSHMEM 버그**
+- NVSHMEM 3.5.x~3.8.0의 CPU 프록시 경로에서는 QP 오류가 나도 오류 완료가 아예 생기지 않아서 응용이 멈춘다.
+- 공식 3.8.0 원본에서 3/3 재현했고, 두 줄 수정으로 사라진다.
+- 업스트림에는 아직 보고하지 않았다. (`harness/gpu-initiated/nvshmem_rootcause/`)
+
+**감지 시간**
+- 재전송 소진 오류는 타임아웃 14에서 3.5~3.8 s, NCCL과 NVSHMEM 기본값 20에서 58.5~58.8 s 뒤에 보인다.
+- 이 시간을 미리 예측하는 모델을, 처음 보는 설정 55회 중 52회에서 1.5 ms 안으로 맞혔다. (`harness/ack_timeout/`)
+
+**복구**
+- **CPU verbs:** 해당 QP만 재설정해 0.8 ms 안팎에 복구한다. (`harness/`)
+- **NCCL:** 요청이 최대 4개 진행 중일 때 30/30 복구했고, 중앙값은 2.26 ms다. 주소가 바뀌는 장애도 15/15 복구했다. 복구를 끈 대조군은 6/6 실패했다. (`harness/nccl-integration/`)
+- **GPU 스택:**
+  - 장치 쪽에서 원인을 분류하면 성공으로 잘못 보고되던 경우가 사라진다.
+  - 호스트가 오류를 아는 시간이 9.4 s에서 1 ms 미만으로 줄었다.
+  - 로컬 QP 오류와 상대 QP 오류는 복구하고, 나머지는 거절한다. N=30 재실행에서 모든 셀이 100%였다. (`harness/gpu-initiated/`)
+- **응용 수정 없는 복구(GIN):** 95/95 성공했다. 진행 중인 연산이 1개일 때까지이고, 켜면 4 KiB 지연이 60% 늘어난다.
+
+## 진행 중
+
+- **교차 계층 측정 캠페인:** 예측을 먼저 등록했고(태그 `prereg/propagation-v1`), 아직 실행하지 않았다. (`harness/gpu-initiated/propagation/`)
+- **투명 복구 2단계:** GIN S2와 NVSHMEM T1. 미해결 항목이 남아 있어 draft PR로 두었다.
+- **NVSHMEM 업스트림 이슈:** 초안만 있다.
+
+## 범위와 한계
+
+- **장비:** 노드 한 쌍과 NIC 한 종류(ConnectX-6)에서만 측정했다. 그래서 범위를 mlx5 기반 스택으로 한정한다.
+- **장애 종류:** 대부분 소프트웨어로 주입했다. 실제 link down은 공유 링크라서 시험하지 않았다.
+- **GPU:** 소비자용 GPU만 썼다. Hopper(SM90)가 필요한 DeepEP는 돌리지 않았다.
+- **초기 연구:** `experiments/`와 `docs/`의 내용은 다른 클러스터에서 한 것이고, 일부 수치는 이 테스트베드에서 다시 재지 않았다.
 
 ## 테스트베드
 
 | 노드 | 역할 | NIC | GPU |
 | --- | --- | --- | --- |
-| rain | requester, rank 0 | ConnectX-6 VPI, fw 20.43.4100 (`mlx5_1`) | Quadro RTX 5000 (sm_75) |
-| sunny | responder, rank 1 | ConnectX-6 VPI, fw 20.43.4100 (`mlx5_0`) | RTX A4000 (sm_86) |
+| rain | requester, rank 0 | ConnectX-6 VPI, fw 20.43.4100 | Quadro RTX 5000 (sm_75) |
+| sunny | responder, rank 1 | ConnectX-6 VPI, fw 20.43.4100 | RTX A4000 (sm_86) |
 
-100 GbE RoCE v2 직결이다. 초기 연구(`experiments/`, `docs/`)는 다른 클러스터(ConnectX-5/6, GPU 없음)에서 했다. 관리망 주소는 문서용 주소(192.0.2.x)로 바꿔 두었다.
+100 GbE RoCE v2로 직결했다. 관리망 주소는 문서용 주소(192.0.2.x)로 바꿔 두었다.
 
-## 핵심 결과
+## 데이터
 
-**장애 분류와 복구 (CPU verbs)**
-- 10가지 장애를 오류 코드만으로 6개, vendor_err를 더해 8개, 상대 프로세스 생존 여부까지 더해 9개로 구분한다.
-- 해당 QP만 재설정해 2.8 ms에 복구한다(드라이버 재적재는 7.9 s). 다른 연결에는 영향이 없다.
-- RETRY_EXC 감지 3.7 s는 firmware의 적응형 재전송과 두 배 간격의 timeout 때문이다. NCCL 기본값(timeout 20)에서는 59.8 s이고, floor를 풀면 9.5 ms다.
-- 죽은 상대가 0x81 또는 0x88로 보이는 차이는 커널이 verbs 객체를 지우는 순서에서 나온다.
+- **저장소 안:** 결과 표(CSV)와 해설.
+- **원시 로그와 기록:** 결과 폴더별로 Release `data-20261006`에 올렸다.
+- **목록과 체크섬:** [`DATA.md`](DATA.md).
 
-**NCCL 2.23 (`net_ib.cc` 패치)**
-- 요청이 여러 개 비행 중이어도 복구한다. 기본 설정에서 30/30, 약 2.2 ms. 주소 재구성 fault도 15/15 복구했다(원본은 6/6 실패).
-- fault 한 번에 제자리 복구는 +2 ms, 재시작은 +1.1 s.
-- 관리망 장애를 상대 사망으로 오판해 멀쩡한 작업을 죽이지 않는다(FIN만 사망으로 판정).
+## 재현
 
-**GPU-initiated RDMA (NCCL GIN, NVSHMEM IBGDA)**
-- NVSHMEM CPU 프록시 버그: 송신 인덱스를 doorbell record의 엉뚱한 칸에 써서 에러 CQE가 사라진다. 고치면 0/35에서 21/21. 3.5.x부터 3.8.0까지의 회귀다.
-- GPU 분류기로 실패를 성공으로 보고하던 문제를 없앴고, 호스트 감지는 9.4 s에서 ms 단위로 줄었다.
-- GDAKI와 NVSHMEM 모두 로컬 QP 에러와 상대 QP 에러는 복구하고 나머지는 거절한다. N=30 재실행에서 모든 셀이 100 %였다.
-- 투명 복구 1단계(GIN): 응용 수정 없이 95/95 복구. 비행 중 op 1개까지이고, 켜면 4 KiB 지연이 60 % 늘어난다.
-- NVSHMEM FT v2.2: ring CQ로 원인 CQE를 90/90 보존하고, 실패한 fetch AMO가 이전 값을 돌려주던 버그를 고쳤다.
+- 각 폴더의 README에 실행 순서와 필요한 환경이 있다.
+- 노드 두 대와 ConnectX NIC가 필요하다. GPU 실험은 NVIDIA GPU, CUDA 12.x, 그리고 NCCL 2.32.3 또는 NVSHMEM 소스가 필요하다.
 
-## 구성
+## 저장소 구성
 
 | 경로 | 내용 |
 | --- | --- |
-| `harness/` | 장애 주입과 측정 장치 (C) |
-| `harness/nccl-integration/` | NCCL 패치(`stage2/net_ib_stage2.diff`), 시험, 완료 시간 비교 |
-| `harness/gpu-initiated/` | GIN, NVSHMEM 패치와 드라이버, 설계 문서 (`RESULTS.md`가 종합) |
-| `harness/ack_timeout/` | RETRY_EXC 감지 시간 분석 |
-| `harness/fingerprint_teardown/` | 죽은 상대의 오류 코드가 갈리는 원인 분석 |
-| `experiments/`, `docs/` | 초기 연구의 실험 코드와 이론 문서 |
+| `harness/` | CPU verbs 장애 측정과 복구 |
+| `harness/nccl-integration/` | NCCL 장애 복구 |
+| `harness/gpu-initiated/` | GPU-initiated 스택(GIN, NVSHMEM). 종합은 `RESULTS.md` |
+| `harness/ack_timeout/`, `harness/fingerprint_teardown/` | 감지 시간과 오류 코드 차이 분석 |
+| `experiments/`, `docs/` | 초기 연구 |
+| `tools/` | 데이터 릴리스 도구 |
 
-## 한계
+## 인용과 버전
 
-- 노드 한 쌍, NIC 한 종류에서만 측정했다.
-- 진짜 link flap과 GPU 스택의 실제 경로 fault는 시험하지 않았다.
-- GPU 투명 복구는 비행 중 op 1개까지다.
-- 원시 로그와 결과 파일은 이 저장소에 올리지 않았다.
+- 결과를 인용할 때는 브랜치가 아니라 태그나 커밋을 가리킨다.
+- 사전 등록은 `prereg/...` 태그, 원시 데이터는 `data-...` 태그다.
+
+## 운영
+
+- 관리자: [@unionxic](https://github.com/unionxic). 질문과 오류 제보는 GitHub Issues로 받는다.
+- 브랜치, 커밋, 데이터 규칙은 [`docs/GIT_WORKFLOW.md`](docs/GIT_WORKFLOW.md)에 있다.
