@@ -16,9 +16,9 @@
 |---|---|
 | `01_cpu_baseline/` | experiment1, experiment3의 server (fault 주입 대상). experiment2, experiment4와 `02_retry_decomposition`은 experiment1의 server를 `server_loop.sh`, `server_link_loop.sh`로 띄워 재사용한다 |
 | `04_error_codes/` | 시나리오별 RDMA 설정을 바꿔주는 server (이 저장소에는 없다) |
-| `05_counter_mapping/` | fingerprint server + `multi_server`. 예외: swap 실험에서는 이 노드가 **requester(client)** 가 된다 — orchestration 스크립트(`run_swap.sh`)는 225에만 있음 (224 사본은 안 되는 ssh 방향을 전제해 2026-07-15 삭제) |
+| `05_counter_mapping/` | 카운터 매핑(장애별 오류 코드와 카운터 변화) server + `multi_server`. 예외: swap 실험에서는 이 노드가 **requester(client)** 가 된다 — orchestration 스크립트(`run_swap.sh`)는 225에만 있음 (224 사본은 안 되는 ssh 방향을 전제해 2026-07-15 삭제) |
 | `06_recovery/` | NAK 유형별 fault를 만들어주는 server 5종 |
-| `10_storage_rdma/` | **Phase 1 (SSD × RDMA)** target 쪽: file-backed nvmet-rdma export + dm-dust/flakey/delay 고장 주입. 부팅 디스크(nvme0n1) 절대 미접촉 — loop 디바이스만 export(하드 게이트). 225의 `run_storage_experiment.sh`가 ssh로 setup/teardown/crash 호출. 상세: 그 안 `README.md` |
+| `10_storage_rdma/` | **Phase 1 (SSD × RDMA)** target 쪽: file-backed nvmet-rdma export + dm-dust/flakey/delay 고장 주입. 부팅 디스크(nvme0n1) 절대 미접촉 — loop 디바이스만 export(어기면 중단하는 필수 검사). 225의 `run_storage_experiment.sh`가 ssh로 setup/teardown/crash 호출. 상세: 그 안 `README.md` |
 | `rdma-core/` | upstream 소스 사본 (레퍼런스 열람용으로 추정 — 실험 Makefile들은 참조하지 않음, 이 저장소에는 없다) |
 
 ## 2026-07-10 디렉토리 재구성 (구 → 신)

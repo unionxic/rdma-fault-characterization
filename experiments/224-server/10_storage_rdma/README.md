@@ -11,7 +11,7 @@ orchestration과 결과 수집은 전부 225의 같은 이름 디렉토리에서
 224의 **유일한 디스크는 부팅 디스크 `nvme0n1`**이다. 이 디렉토리의 어떤 코드도
 실디스크를 export하지 않는다. 오직 파일(`/home/gustlr/nvmet_backing/ns1.img`)을
 `losetup`으로 붙인 **loop 디바이스만** dm 타겟/ nvmet namespace에 도달한다.
-`lib_storage.sh`의 하드 게이트가 이를 강제한다:
+`lib_storage.sh`의 필수 검사 함수가 이를 강제한다(하나라도 어기면 중단):
 
 - `assert_not_real_disk` — `nvme0*`, 임의의 실 NVMe/SATA 네임스페이스, 그리고
   `/`를 담은 루트 디스크(및 그 자식)를 이름·`lsblk PKNAME` 두 방식으로 거부.

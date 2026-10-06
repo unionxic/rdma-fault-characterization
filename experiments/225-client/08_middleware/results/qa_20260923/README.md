@@ -24,7 +24,7 @@ unchanged):
 
 ## Result 1: the four demo scenarios (`demo_4scenarios.log`)
 
-| scenario | fingerprint | outcome | demo_client exit |
+| scenario | vendor_err | outcome | demo_client exit |
 |---|---|---|---|
 | rnr | 0x87 | QP recovery, resend succeeded | 0 |
 | rem_access | 0x88 | QP recovery + MR refresh, resend succeeded | 0 |

@@ -105,15 +105,15 @@ Server-side error counter(resp_cqe_error, resp_remote_access_errors 등)는 어�
 4. WR_FLUSH_ERR인데 `req_cqe_flush_error` 미증가 (baseline 335,228, delta=0). `req_cqe_error`만 +1 — counter 이름과 실제 동작 불일치
 5. MR 권한 위반의 server rx_read_requests=+1 → valid operation이 RDMA READ임을 확인. (invalid rkey와 주소 범위 초과는 WRITE)
 
-sysfs resolution: **10 scenarios → 8 unique fingerprints** (REM_ACCESS_ERR 잘못된 rkey ≡ 주소 범위 초과, RETRY_EXC_ERR 서버 QP ERR ≡ 프로세스 종료 구분 불가)
+sysfs resolution: **10 scenarios → 구별되는 조합 8개** (REM_ACCESS_ERR 잘못된 rkey ≡ 주소 범위 초과, RETRY_EXC_ERR 서버 QP ERR ≡ 프로세스 종료 구분 불가)
 
 ---
 
-## 4. ethtool Traffic Fingerprint (tx/rx_vport_rdma/unicast)
+## 4. ethtool 트래픽 counter 패턴 (tx/rx_vport_rdma/unicast)
 
 ethtool -S의 2,394개 counter 중 RDMA traffic counter만 non-zero delta. error/diagnostic counter 31개는 전부 zero. N=3, deterministic.
 
-### 4-1. Packet-level fingerprint
+### 4-1. 패킷 수 패턴
 
 | 시나리오 | C_TX RDMA | C_TX RDMA bytes | S_TX RDMA | S_TX RDMA bytes | C_TX TCP | S_TX TCP |
 |---|---|---|---|---|---|---|
@@ -130,7 +130,7 @@ ethtool -S의 2,394개 counter 중 RDMA traffic counter만 non-zero delta. error
 
 C_TX RDMA = client tx_vport_rdma_unicast_packets, C_TX TCP = client tx_vport_unicast_packets (non-RDMA)
 
-ethtool 추가 후 resolution: **10 scenarios → 9 unique fingerprints** (REM_ACCESS_ERR 잘못된 rkey ≡ 주소 범위 초과만 남음)
+ethtool 추가 후 resolution: **10 scenarios → 구별되는 조합 9개** (REM_ACCESS_ERR 잘못된 rkey ≡ 주소 범위 초과만 남음)
 
 ### 4-2. RETRY_EXC_ERR 서버 QP ERR ≡ 프로세스 종료 구분
 
@@ -288,9 +288,9 @@ IBA spec과 ConnectX-5 구현이 정확히 일치. Error NAK 후 server QP도 ER
 
 ## 8. Resolution Summary
 
-### 8-1. 구분 가능한 fingerprint
+### 8-1. 구분 가능한 신호 조합
 
-| Counter Source | Unique Fingerprints | 구분 불가 쌍 |
+| Counter Source | 구별되는 조합 수 | 구분 불가 쌍 |
 |---|---|---|
 | CQE status only (ibv_wc_status) | 6/10 | LOC_PROT 3종, REM_ACCESS 2종, RETRY_EXC 2종 |
 | + vendor_err | 8/10 | rkey ≡ addr (0x88), QP ERR ≡ kill (0x81) |

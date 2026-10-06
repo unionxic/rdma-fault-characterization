@@ -16,7 +16,7 @@ orchestration 스크립트는 여기서 실행한다 (SSH는 225→224 방향만
 | `02_retry_decomposition/` | 3.7s를 retry_cnt × timeout sweep으로 분해 (Exp A) | 완료 |
 | `03_modifyqp/` | `ibv_modify_qp(ERR)`로 SSH/커널 오버헤드를 제거한 순수 HCA retry 시간 측정 → firmware `min_ack_timeout_limit` 발견, 비활성화 시 R=7이 12.26ms | 완료 |
 | `04_error_codes/` | 9개 에러 시나리오 재현으로 `ibv_wc_status` 코드 채집. 결과는 `REPORT.md` (둘 다 이 저장소에는 없다) | 완료 |
-| `05_counter_mapping/` | 핵심 실험 묶음: fault fingerprint(카운터 매핑), multi-QP/WR 조건, partial/interrupted write, A/B recovery, NIC swap. 상세는 그 안의 `README.md` | 일부 실행 대기 |
+| `05_counter_mapping/` | 핵심 실험 묶음: 장애별 오류 코드와 카운터 변화(카운터 매핑), multi-QP/WR 조건, partial/interrupted write, A/B recovery, NIC swap. 상세는 그 안의 `README.md` | 완료(A/B recovery 재실행 대기) |
 | `06_recovery/` | NAK 4종(REM_ACCESS, REM_INV_REQ, RETRY_EXC, RNR)별 recovery 비용 + multi_qp isolation + early detection. 요약: `recovery_results_summary.md` | 완료(RNR 재실행 대기) |
 | `08_middleware/` | 코드는 지웠다(아래). `results/qa_20260923/README.md`(2026-09-23 데모 QA 기록)만 남았다 | — |
 | `10_storage_rdma/` | **Phase 1 (SSD × RDMA)** cross-resource 확장: NVMe-oF over RDMA에서 media/fail-slow/target-crash/partial 고장의 NVMe·RDMA 계층 표면화 매핑. initiator/orchestrator 쪽. 커널 QP라 CQE 불가시 → (NVMe status, dmesg, 양쪽 counter, latency) tuple. 상세: 그 안 `README.md` | 코드 완성, 실행 대기 |

@@ -78,7 +78,7 @@ control**이다(Fable 노트 1).
 
 1. `ssh 224 target_setup <scenario> [param]`
 2. `nvme connect -t rdma -a 10.0.0.3 -s 4420 -n <NQN>` → **subsysnqn/transport로**
-   우리 네임스페이스 자동 선택(부팅 디스크 `nvme0n1`과 절대 안 겹침, 하드 게이트)
+   우리 네임스페이스 자동 선택(부팅 디스크 `nvme0n1`과 절대 안 겹침, 겹치면 중단하는 필수 검사)
 3. `/dev/kmsg` 마커 기록 + **양쪽** 카운터 before 스냅샷
 4. 시나리오별 워크로드 실행 → NVMe status/errno, latency, (partial) valid_prefix,
    (crash) detect_ms 수집
