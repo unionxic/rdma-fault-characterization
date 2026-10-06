@@ -1,107 +1,73 @@
-# GPU-rung doorbells (PeerMappingOverride=1): what changes
+# gpu_doorbell: GPU가 doorbell을 울릴 때 무엇이 바뀌나
 
-> **Since 2026-09-24 13:53 the override is permanent on both nodes** (the user's decision):
-> `/etc/modprobe.d/nvidia-peermapping.conf` holds
-> `options nvidia NVreg_RegistryDwords="PeerMappingOverride=1;" NVreg_EnableStreamMemOPs=1`,
-> applied without a reboot by `apply_peermapping.sh` (one module reload; rain's mooncake_client
-> and gdm restarted; CUDA checked on both nodes). The nvidia modules are not in the initramfs, so
-> the file also applies at boot. From now on NVSHMEM's default NIC handler is the GPU; to
-> reproduce the CPU-proxy results, set `NVSHMEM_IBGDA_NIC_HANDLER=cpu_host_memory`.
+2026-09-24 오후 전까지 다른 GPU 실험은 모두 CPU가 doorbell을 울리는 fallback 모드였다. GPU는 WQE를 쓰고 CQ를 읽지만,
+NIC에 알리는 doorbell은 CPU 스레드가 울렸다. 여기서는 nvidia 드라이버의 PeerMappingOverride 설정을 켜서
+GPU가 doorbell을 직접 울리게 하고, 같은 장애에서 NVSHMEM IBGDA와 NCCL GIN GDAKI가 어떻게 달라지는지 봤다.
 
-> **What the override relaxes (added 2026-09-25 after review).** `PeerMappingOverride=1` lets the
-> nvidia driver map peer-device MMIO (here the NIC's UAR doorbell pages) into GPU address spaces
-> without the admin-only checks it otherwise applies (`cudaHostRegister(..., IoMemory)` fails with
-> error 800 for a non-root user without it). That is what GPU-rung doorbells need, and it is the
-> documented requirement of NVSHMEM's GPU NIC handler, but it widens what any CUDA process on the
-> node may map. Both nodes are shared (the user's gds-kv / NVMe-oF experiments run there); the
-> user chose to keep it on. Results measured before 2026-09-24 13:53 ran without it (CPU-proxy
-> doorbells) and results after it with it; every table in this repo that mixes the two now says
-> which driver configuration each row used.
+## 무엇을 쟀나
 
-Every other result in `../` ran in the CPU-doorbell fallback: without
-`NVreg_RegistryDwords="PeerMappingOverride=1;"` the NIC's UAR page cannot be mapped into the
-GPU, so a CPU thread rings the doorbell while the GPU still builds the WQEs and polls a CQ in GPU
-memory. Here the nvidia modules on both nodes were reloaded with the override for two short
-windows (2026-09-24, 11:16-11:26 and 12:00-12:06) and the same binaries and runners were used.
+- **짧은 시간 창 2개.** 2026-09-24 11:16~11:26(창 1)과 12:00~12:06(창 2)에만 설정을 켜고, 끝나면 되돌렸다.
+  같은 날 13:53부터는 사용자 결정으로 두 노드에서 상시 켜져 있다.
+- **NVSHMEM IBGDA, GPU NIC handler (창 2).** F1 로컬 QP 오류, F2b 잘못된 rkey, F3 상대 QP 오류 각 3회,
+  장애 없음 2회, F2b를 blocking quiet로 1회.
+- **NCCL GIN GDAKI (창 1, 2).** 장치 분류 빌드(`../gin_q4/`)로 F1, F2, F3, 장애 없음.
+  분류를 끈 stock으로 F1 blocking 2회. 장애 없는 지연 측정.
+- **조건.** rain과 sunny, ConnectX-6 RoCE, IB 타임아웃 14. CPU doorbell 때와 같은 바이너리와 실행기.
 
-## Procedure (`window.sh`, run under `../common/cluster_run.sh`)
+## 결론
 
-1. Stop every GPU user on rain: the user's `mooncake_client` (command line, environment, cwd and
-   log recorded first), two stale `nvidia-smi` monitors started 6 and 8 days earlier whose output
-   files had been deleted (not restarted), their `hostmon.sh` parent, and the gdm greeter. sunny
-   had no GPU user.
-2. On both nodes: `rmmod` the nvidia stack, `modprobe nvidia NVreg_RegistryDwords='PeerMappingOverride=1;' NVreg_EnableStreamMemOPs=1`,
-   then the rest of the stack (`/etc/modprobe.d` untouched). Check CUDA on both nodes.
-3. Run `experiments.sh` (window 1) or `experiments2.sh` (window 2).
-4. Restore from an EXIT trap: reload the stack with the original parameters, start gdm, restart
-   `mooncake_client` with its original command line, environment, cwd and log. Verified after
-   each window: `RegistryDwords: ""` on both nodes, CUDA OK on both, gdm active, `mooncake_client`
-   serving on 30.0.0.3:50052 and re-registered with its master.
+- **NVSHMEM은 GPU handler에서 오류 CQE를 받는다.** F1, F2b, F3 각 3/3회 CQ 슬롯에 원인 CQE가 있었다.
+  - F1 WR_FLUSH 0x05/0xf5, F2b REM_ACCESS 0x13/0x88, F3 RETRY_EXC 0x15/0x81 (syndrome/vendor_err).
+  - CPU handler에서는 같은 장애에서 1024개 CQ 항목 어디에도 오류 CQE가 없었다(`../nvshmem/`).
+  - 그래서 원인은 collapsed CQ가 아니라 CPU proxy doorbell 경로다. 정확한 원인은 `../nvshmem_rootcause/`에서 찾았다.
+- **NVSHMEM blocking quiet는 실패를 성공으로 보고했다.** F2b blocking 1회에서 슬롯은 이미 뒤따른 flush
+  0x05/0xf9로 덮였고, quiet는 성공을 돌려줬다.
+- **GIN 분류는 doorbell 경로와 무관하다.** F1 LOCAL_QP_ERR 5/0xf5, F2 REM_ACCESS 10/0x88, F3 RETRY_EXC 12/0x81로
+  모두 맞았다. 호스트가 아는 시간은 F1과 F3에서 CPU doorbell 결과와 같은 범위였다.
+  F2는 ring 4.3 ms, collapsed 3.8 ms(각 1회)로 CPU doorbell(2.8 ms, 3.2 ms)보다 0.6~1.5 ms 길었다. 원인은 확인하지 않았다.
+- **stock GDAKI의 조용한 성공도 그대로다.** F1 blocking 2/2회에서 보내는 쪽이 실패한 쓰기를 완료로 셌다.
+  호스트는 9.4 s 뒤 "QP가 ERR"만 알았다.
+- **GPU doorbell 지연은 조금 낮았지만 근거가 약하다.** GIN 256 KiB put, signal, flush(timeout 대기) 중앙값이
+  36.74 µs(분류 끔), 36.86 µs(켬)로, CPU doorbell의 약 37.4 µs보다 약 0.6 µs 낮다.
+  각 1회 실행이고, CPU doorbell의 실행 간 편차(36.9~37.8 µs)와 거의 겹친다.
 
-### Incidents
+## 결과
 
-- **Window 1, sunny's CUDA broke after the reload.** The reload moved sunny's dynamic char-device
-  majors: `nvidia-uvm` went to 511 while `/dev/nvidia-uvm` still pointed to 509, which
-  `nvidia-fs` now owned (`nvfs_ioctl: Invalid IOCTL` in dmesg, "cuda failed with unknown error").
-  Every NVSHMEM trial and the first five GIN trials of window 1 are invalid for that reason
-  (listed below). The node was recreated with the right major mid-window; `window.sh` now checks
-  CUDA on both nodes after the reload and restores without running if it fails.
-- **The cluster lock stayed held after window 1.** `mooncake_client`, restarted from inside the
-  locked run, inherited the lock's fd 9, so every later `cluster_run.sh` waited on it
-  (11:26-12:00). Fixed without touching `mooncake_client`: `cluster_run.sh` now uses a new lock
-  file and runs its command with fd 9 closed, and `window.sh` restarts `mooncake_client` with
-  `9>&-`. After window 2 the old lock is free and `mooncake_client` holds no lock fd.
+| 스택 | 장애 | 결과 | 시간 |
+|---|---|---|--:|
+| NVSHMEM GPU handler | F1 | 0x05/0xf5, 3/3 | 1.7~1.8 ms |
+| NVSHMEM GPU handler | F2b | 0x13/0x88, 3/3 | 8.7~9.9 ms |
+| NVSHMEM GPU handler | F3 | 0x15/0x81, 3/3 | 3.54~3.72 s |
+| NVSHMEM GPU handler | F2b, blocking quiet | 슬롯 0x05/0xf9, quiet 성공 | - |
+| GIN 분류 (ring 2, collapsed 1) | F1 | LOCAL_QP_ERR 5/0xf5 | 14.6~15.7 ms |
+| GIN 분류 (ring 1, collapsed 1) | F2 | REM_ACCESS 10/0x88 | 3.8~4.3 ms |
+| GIN 분류 (ring 2, collapsed 1) | F3 | RETRY_EXC 12/0x81 | 3.54~3.73 s |
+| GIN stock | F1, blocking | 성공으로 보고 2/2 | 9.4 s |
 
-## Results
+NVSHMEM 시간은 post에서 장치 감지까지, GIN 시간은 장애에서 호스트 비동기 오류 조회까지다.
+GIN 장애 없음(ring 2, collapsed 1)은 모두 정상이었고 데이터가 정확했다.
 
-### NVSHMEM IBGDA with the GPU handler (window 2; log: "NIC handler will be GPU")
+## 한계와 주의
 
-| fault | trials | error CQE in the collapsed slot | time to device detection |
-|---|---|---|---|
-| none | 2 | - (ok, data exact) | - |
-| F2b invalid rkey | 3/3 | 0xd / syndrome 0x13 / vendor_err 0x88 (REM_ACCESS) | 8.7-9.9 ms |
-| F1 local ERR | 3/3 | 0xd / 0x05 / 0xf5 (WR_FLUSH, head of queue) | 1.7-1.8 ms |
-| F3 peer QP ERR | 3/3 | 0xd / 0x15 / 0x81 (RETRY_EXC) | 3.54-3.72 s |
-| F2b, blocking `nvshmem_quiet` | 1 | 0xd / 0x05 / **0xf9** (the trailing signal's flush over-wrote the root cause) | quiet **returned success** |
+- **창 1의 일부는 무효다.** 드라이버를 다시 올린 뒤 sunny의 CUDA가 깨졌다(장치 번호 불일치).
+  창 1의 NVSHMEM 전부와 GIN 처음 5회는 버렸다. 표는 유효한 실행만 담았다.
+- **GIN이 GPU doorbell을 썼다는 것은 추정이다.** NCCL과 DOCA가 doorbell 모드를 기록하지 않는다.
+  같은 창에서 NVSHMEM의 doorbell 매핑이 성공했고 지연이 0.6 µs 낮다는 것이 근거다.
+  모드를 기록하는 빌드는 나중에 `../gin_recovery/`에서 나왔다.
+- **NVSHMEM 시간은 장애 시점 기준이 아니다.** post에서 감지까지다. 같은 GPU handler를 쓴 다른 측정
+  (`../nvshmem_rootcause/`의 abc A)은 F1 2.0~2.3 ms, F2b 10.3~10.7 ms였다.
+- **표본이 작다.** 칸마다 1~3회다. GIN 분류는 이후 GPU doorbell에서 N30으로 다시 쟀다(`../gin_q4/`, `../N30_20260925.md`).
+- **이 폴더에서 재지 않은 것.** F4, GIN stock의 F2~F4, GIN proxy backend.
+- **창 2의 NVSHMEM F2b 1회는 다른 실행과 15 s 겹쳤다.** 복구 작업의 짧은 시험 실행이었다. 오류 CQE는 나머지 2회와 같았다.
+- **설정은 노드의 보안 범위를 넓힌다.** PeerMappingOverride는 관리자 전용 검사 없이 다른 장치의 MMIO를 GPU에 매핑하게 한다.
+  노드의 어느 CUDA 프로세스든 매핑할 수 있는 범위가 넓어진다. 두 노드는 공유 노드이고, 사용자가 상시 켜 두기로 했다.
+  09-24 13:53 이전 결과와 이후 결과는 doorbell 경로가 다르다.
 
-With the CPU handler the same faults never produced an error CQE in any of the 1024 CQ entries
-(`../nvshmem/`). **So NVSHMEM's missing error completions come from its CPU-proxy doorbell path,
-not from the collapsed CQ or the QP/CQ context shared by both handlers.** The exact mechanism was
-then found in `../nvshmem_rootcause/`: the CPU proxy writes the send producer index into the
-receive word of the doorbell record, the GPU handler writes the send word. With the GPU handler
-RETRY_EXC arrives after 3.5-3.7 s, as on CPU verbs. (The earlier "F3 leaves the QP in RTS" was
-a measurement artifact of a lock-holding watch thread, see `../nvshmem_rootcause/`.) The blocking row shows the two predicted failure modes on
-real IBGDA: the collapsed slot ends at the trailing flush 5/0xf9 (Q1), and the release build's
-compiled-out assert lets `quiet` report success.
+## 파일
 
-### NCCL GIN GDAKI with GPU doorbells (windows 1 and 2, valid trials only)
-
-| run | result |
+| 파일 | 내용 |
 |---|---|
-| Q4 classifier, F1 (ring 2, collapsed 1) | LOCAL_QP_ERR 5/0xf5, host API at 14.6-15.7 ms |
-| Q4 classifier, F2 (ring 1, collapsed 1) | REM_ACCESS 10/0x88, host API at 3.8-4.3 ms |
-| Q4 classifier, F3 (ring 2, collapsed 1) | RETRY_EXC 12/0x81, host API at 3.54-3.73 s |
-| Q4 classifier, no fault (ring 2, collapsed 1) | ok, data exact |
-| stock (classifier off), F1 blocking, 2 trials | initiator reports the failed write as done (init_silent_iters 1 in 2/2); host learns "QP in ERR" at 9.4 s |
-| latency, no fault, 256 KiB put+signal+flush | median 36.74 µs (classifier off), 36.86 µs (on) |
-
-The Q4 results match the CPU-doorbell ones (`../gin_q4/`) within noise, and stock GDAKI's silent
-success is unchanged, so neither depends on the doorbell path. That GDAKI actually used the GPU
-doorbell here is **inferred**: neither NCCL nor DOCA logs the doorbell mode, but the same
-`cudaHostRegisterIoMemory` call that failed before succeeded for NVSHMEM in the same window, and
-the median latency is about 0.6 µs lower than the CPU-doorbell 37.4 µs.
-
-Possibly perturbed: window 2's NVSHMEM `F2b_timeout_t1` overlapped, from 12:01:04 to 12:01:19, a
-short smoke run of the recovery work that had started on the old lock file (reported by that
-agent). Its result is identical to t2 and t3.
-
-Invalid (sunny's CUDA broken, window 1): all NVSHMEM trials in `results/20260924/nvshmem/`, and GIN
-`ring_c1_none_timeout_t1/t2`, `ring_c1_F1_timeout_t1/t2`, `ring_c1_F2_timeout_t1` in
-`results/20260924/gin_q4/`.
-
-## Files
-
-- `window.sh`: stop, reload with the override, check CUDA, run, restore (EXIT trap).
-- `experiments.sh`, `experiments2.sh`: the runs of windows 1 and 2.
-- `results/20260924/`, `results/20260924_w2/`: CSVs and per-trial logs.
-- `results/window.log`: the dry run and both windows (stop, reload, CUDA check, restore).
+| [NOTES.md](NOTES.md) | 상세 기록 (시간 창 절차와 사고 기록 포함) |
+| 결과 폴더 | 저장소에 없다. 표와 로그(`results/20260924/`, `results/20260924_w2/`, 창 로그)는 모두 Release `data-20261006` |
+| `../nvshmem_rootcause/` | NVSHMEM CPU proxy에서 오류 CQE가 없던 원인 |
+| `../gin_q4/`, `../gin_recovery/` | GIN 분류의 N30 재측정, GPU doorbell에서의 복구 |
