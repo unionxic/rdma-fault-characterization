@@ -141,19 +141,6 @@ static int client_bring_up_qp_only(probe_ep_t *ep, int fd) {
     return connect_qp_client(ep, fd, pick_psn());
 }
 
-static const char *qp_state_name(enum ibv_qp_state s) {
-    switch (s) {
-        case IBV_QPS_RESET: return "RESET";
-        case IBV_QPS_INIT:  return "INIT";
-        case IBV_QPS_RTR:   return "RTR";
-        case IBV_QPS_RTS:   return "RTS";
-        case IBV_QPS_SQD:   return "SQD";
-        case IBV_QPS_SQE:   return "SQE";
-        case IBV_QPS_ERR:   return "ERR";
-        default:            return "UNKNOWN";
-    }
-}
-
 /* ---------------- the batch ---------------- */
 /* Build the chained WR list for one trial. Valid writes use their own offset
  * (wrapping inside the 4 MiB region) on both sides; the bad WQE is at bad_idx. */
