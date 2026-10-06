@@ -38,7 +38,9 @@ error and SUMMARY line is kept. Of the per-iteration `IT` lines it keeps the fir
 1000th, and 5 on each side of every stall, so the fault and recovery timelines are intact. Library builds: `f7f45278` (after code QA round 2), `3b0b760d` (+ test-hook fix),
 `78f96f38` (+ the FIN rule, §7), `7b0d0122` (+ the OOB-loss fix after the 2026-09-25 review: a keepalive
 timeout no longer counts as peer death), `a037de42` (+ after the second review: a reset (RST) no longer
-counts as peer death either, only FIN; final; `net_ib_stage2.diff` is this build's source). The later changes
+counts as peer death either, only FIN; final), `9ed03e1d` (a037de42 + the test-only F2 hook
+`NCCL_RDMA_FAULT_INJECT_RKEY`, DESIGN §10; `net_ib_stage2.diff` is this build's source, and its previous
+version in git is a037de42's). The later changes
 do not touch the paths the first campaigns exercise, and campaigns A2/A3 re-ran the core cases on
 the final build (rows marked "final build").
 

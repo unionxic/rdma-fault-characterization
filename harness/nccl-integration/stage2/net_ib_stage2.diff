@@ -2,12 +2,14 @@
 # Upstream: github.com/NVIDIA/nccl   Tag: v2.23.4-1   Commit: 68b542363f9a44cdaac480f51ebe0fc26de96139
 # File: src/transport/net_ib.cc only; recovery behind NCCL_RDMA_FAULT_RECOVERY=1 (default 0);
 # test-injection knobs NCCL_RDMA_FAULT_INJECT* / _TEST_MUTE are separate (see DESIGN_stage2.md §10).
-# Patched net_ib.cc git hash-object: 6f28da69c21e3f5787edcec9964b2d46acce7bb9 (built library md5 a037de42: only an OOB FIN counts as peer
-# death; any OOB socket error, including a reset, is "OOB lost" and only disables recovery; DESIGN §7)
+# Patched net_ib.cc git hash-object: 18d998a8f17c66668bdd69414d58527d18313123 (built library md5 9ed03e1d).
+# It is build a037de42 (source 6f28da69: only an OOB FIN counts as peer death; any OOB socket error, including
+# a reset, is "OOB lost" and only disables recovery; DESIGN §7) plus the test-only F2 hook
+# NCCL_RDMA_FAULT_INJECT_RKEY (DESIGN §10), which builds every WR as before while it is unset.
 # Apply: cd nccl && git checkout v2.23.4-1 && sed '/^# /d;/^#$/d' net_ib_stage2.diff | git apply
 #
 diff --git a/src/transport/net_ib.cc b/src/transport/net_ib.cc
-index d828c98..6f28da6 100644
+index d828c98..18d998a 100644
 --- a/src/transport/net_ib.cc
 +++ b/src/transport/net_ib.cc
 @@ -20,6 +20,10 @@
@@ -134,7 +136,7 @@ index d828c98..6f28da6 100644
    free(rComm);
    goto exit;
  }
-@@ -1717,6 +1741,1167 @@ ncclResult_t ncclIbDeregMr(void* comm, void* mhandle) {
+@@ -1717,6 +1741,1189 @@ ncclResult_t ncclIbDeregMr(void* comm, void* mhandle) {
    return ncclSuccess;
  }
  
@@ -161,6 +163,8 @@ index d828c98..6f28da6 100644
 + *  NCCL_RDMA_FAULT_INJECT=k [_REPEAT=n _PERIOD=p]: force the send QP to ERR before multi-send k
 + *  NCCL_RDMA_FAULT_INJECT_RECV=k: force the recv QP to ERR before receive post k
 + *  NCCL_RDMA_FAULT_INJECT_RECV_SILENT=1: ... and R does not NOTIFY (S then sees RETRY_EXC)
++ *  NCCL_RDMA_FAULT_INJECT_RKEY=k: the data write of multi-send k carries a corrupted rkey, so the
++ *    responder NAKs it with a remote access error (F2: REM_ACCESS_ERR on S, QP_ACCESS_ERR on R)
 + *  NCCL_RDMA_FAULT_TEST_MUTE=1: R never answers a REQ (live but unresponsive peer)
 + * ===================================================================== */
 +NCCL_PARAM(RdmaFaultRecovery, "RDMA_FAULT_RECOVERY", 0);
@@ -176,6 +180,7 @@ index d828c98..6f28da6 100644
 +NCCL_PARAM(RdmaFaultInjectPeriod, "RDMA_FAULT_INJECT_PERIOD", 0);
 +NCCL_PARAM(RdmaFaultInjectRecv, "RDMA_FAULT_INJECT_RECV", 0);
 +NCCL_PARAM(RdmaFaultInjectRecvSilent, "RDMA_FAULT_INJECT_RECV_SILENT", 0);
++NCCL_PARAM(RdmaFaultInjectRkey, "RDMA_FAULT_INJECT_RKEY", 0);
 +NCCL_PARAM(RdmaFaultTestMute, "RDMA_FAULT_TEST_MUTE", 0);
 +
 +#define FR2_MARK_SQ 0xFEFEFEFEFEFEFE01ULL  // stock wr_ids are < 256 or pack distinct request indices
@@ -1270,6 +1275,25 @@ index d828c98..6f28da6 100644
 +  }
 +}
 +
++// F2 (remote access): the data RDMA write(s) of one multi-send carry a corrupted rkey; the responder NAKs
++// them (REM_ACCESS_ERR on S, IBV_EVENT_QP_ACCESS_ERR on R). Armed at multi-send k (counted like
++// NCCL_RDMA_FAULT_INJECT, own counter, first-time sends only: replays do not pass here); fires on the
++// first multi-send from k on that carries data, because a zero-length RDMA write's rkey is not checked.
++// Returns the number of the multi-send to corrupt, or 0. The QP and the FIFO slot are not touched.
++#define FR2_INJ_RKEY_XOR 0xffu   // flips the low byte (mlx5: same mkey index, wrong key byte -> NAK)
++static int fr2InjRkeyCount = 0, fr2InjRkeyFired = 0;
++
++static int fr2MaybeInjectRkey(struct ncclIbRequest** reqs, int nreqs) {
++  int64_t k = ncclParamRdmaFaultInjectRkey();
++  if (k <= 0 || __atomic_load_n(&fr2InjRkeyFired, __ATOMIC_RELAXED)) return 0;
++  int c = __atomic_add_fetch(&fr2InjRkeyCount, 1, __ATOMIC_RELAXED);
++  if (c < k) return 0;
++  int data = 0;
++  for (int r = 0; r < nreqs; r++) data |= reqs[r]->send.size > 0;
++  if (!data) return 0;
++  return __atomic_exchange_n(&fr2InjRkeyFired, 1, __ATOMIC_RELAXED) ? 0 : c;
++}
++
 +// ncclIbTest with the flag on.
 +static ncclResult_t fr2Test(struct ncclIbRequest* r, int* done, int* sizes) {
 +  struct ncclIbNetCommBase* base = r->base;
@@ -1302,15 +1326,35 @@ index d828c98..6f28da6 100644
  NCCL_PARAM(IbSplitDataOnQps, "IB_SPLIT_DATA_ON_QPS", 0);
  
  ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
-@@ -1724,6 +2909,7 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+@@ -1724,6 +2931,8 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
    volatile struct ncclIbSendFifo* slots = comm->fifo[slot];
    int nreqs = slots[0].nreqs;
    if (nreqs > NCCL_NET_IB_MAX_RECVS) return ncclInternalError;
 +  fr2MaybeInjectSend(&comm->base);  // [RDMA-FAULT-RECOVERY] test hook, off unless NCCL_RDMA_FAULT_INJECT>0
++  int injRkey = fr2MaybeInjectRkey(reqs, nreqs);  // test hook (F2), 0 unless NCCL_RDMA_FAULT_INJECT_RKEY>0
  
    uint64_t wr_id = 0ULL;
    for (int r=0; r<nreqs; r++) {
-@@ -1822,11 +3008,16 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+@@ -1784,6 +2993,7 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+ 
+       // Select proper rkey (needed even for 0-size send)
+       comm->wrs[r].wr.rdma.rkey = slots[r].rkeys[qp->remDevIdx];
++      if (injRkey && i == 0) comm->wrs[r].wr.rdma.rkey ^= FR2_INJ_RKEY_XOR;  // test hook (F2)
+ 
+       int chunkSize = DIVUP(DIVUP(reqs[r]->send.size, nqps), align) * align;
+       int length = std::min(reqs[r]->send.size-reqs[r]->send.offset, chunkSize);
+@@ -1807,6 +3017,10 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
+ 
+     struct ibv_send_wr* bad_wr;
+     NCCLCHECK(wrap_ibv_post_send(qp->qp, comm->wrs, &bad_wr));
++    if (injRkey && i == 0)
++      WARN("NET/IB: [FAULT-INJECT] multi-send #%d posted with a corrupted rkey (qpn=%u, rkey 0x%x -> 0x%x, nreqs=%d, size=%d): "
++           "the responder must NAK it with a remote access error", injRkey, qp->qp->qp_num,
++           (uint32_t)slots[0].rkeys[qp->remDevIdx], comm->wrs[0].wr.rdma.rkey, nreqs, reqs[0]->send.size);
+ 
+     for (int r=0; r<nreqs; r++) {
+       int chunkSize = DIVUP(DIVUP(reqs[r]->send.size, nqps), align) * align;
+@@ -1822,11 +3036,16 @@ ncclResult_t ncclIbMultiSend(struct ncclIbSendComm* comm, int slot) {
    return ncclSuccess;
  }
  
@@ -1328,7 +1372,7 @@ index d828c98..6f28da6 100644
  
    struct ncclIbMrHandle* mhandleWrapper = (struct ncclIbMrHandle*) mhandle;
  
-@@ -1888,6 +3079,7 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
+@@ -1888,6 +3107,7 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
      }
  
      *request = reqs[r] = req;
@@ -1336,7 +1380,7 @@ index d828c98..6f28da6 100644
  
      // If this is a multi-recv, send only when all requests have matched.
      for (int r=0; r<nreqs; r++) {
-@@ -1896,6 +3088,11 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
+@@ -1896,6 +3116,11 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, int size, int tag, void* mh
  
      TIME_START(0);
      NCCLCHECK(ncclIbMultiSend(comm, slot));
@@ -1348,7 +1392,7 @@ index d828c98..6f28da6 100644
  
      // Clear slots[0]->nreqs, as well as other fields to help debugging and sanity checks
      memset((void*)slots, 0, sizeof(struct ncclIbSendFifo));
-@@ -1986,15 +3183,21 @@ ncclResult_t ncclIbPostFifo(struct ncclIbRecvComm* comm, int n, void** data, int
+@@ -1986,15 +3211,21 @@ ncclResult_t ncclIbPostFifo(struct ncclIbRecvComm* comm, int n, void** data, int
    return ncclSuccess;
  }
  
@@ -1371,7 +1415,7 @@ index d828c98..6f28da6 100644
    req->type = NCCL_NET_IB_REQ_RECV;
    req->sock = &comm->base.sock;
    req->nreqs = n;
-@@ -2013,6 +3216,8 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
+@@ -2013,6 +3244,8 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
    // Select either all QPs, or one qp per-device
    const int nqps = ncclParamIbSplitDataOnQps() ? comm->base.nqps : comm->base.ndevs;
  
@@ -1380,7 +1424,7 @@ index d828c98..6f28da6 100644
    // Post recvs
    struct ibv_recv_wr* bad_wr;
    for (int i = 0; i < nqps; i++) {
-@@ -2033,7 +3238,7 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
+@@ -2033,7 +3266,7 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, int* sizes, int* ta
    return ncclSuccess;
  }
  
@@ -1389,7 +1433,7 @@ index d828c98..6f28da6 100644
    struct ncclIbRecvComm* comm = (struct ncclIbRecvComm*)recvComm;
    int last = -1;
    for (int i=0; i<n; i++) if (sizes[i]) last = i;
-@@ -2054,6 +3259,7 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
+@@ -2054,6 +3287,7 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
  
      wr.wr.rdma.remote_addr = (uint64_t)data[last];
      wr.wr.rdma.rkey = mhandle->mrs[i]->rkey;
@@ -1397,7 +1441,7 @@ index d828c98..6f28da6 100644
      wr.sg_list = &comm->devs[i].gpuFlush.sge;
      wr.num_sge = 1;
      wr.opcode = IBV_WR_RDMA_READ;
-@@ -2071,10 +3277,59 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
+@@ -2071,10 +3305,59 @@ ncclResult_t ncclIbIflush(void* recvComm, int n, void** data, int* sizes, void**
    return ncclSuccess;
  }
  
@@ -1457,7 +1501,7 @@ index d828c98..6f28da6 100644
    *done = 0;
    while (1) {
      NCCLCHECK(ncclIbStatsCheckFatalCount(&r->base->stats,__func__));
-@@ -2169,6 +3424,7 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
+@@ -2169,6 +3452,7 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
  ncclResult_t ncclIbCloseSend(void* sendComm) {
    struct ncclIbSendComm* comm = (struct ncclIbSendComm*)sendComm;
    if (comm) {
@@ -1465,7 +1509,7 @@ index d828c98..6f28da6 100644
      NCCLCHECK(ncclSocketClose(&comm->base.sock));
  
      for (int q = 0; q < comm->base.nqps; q++)
-@@ -2189,6 +3445,7 @@ ncclResult_t ncclIbCloseSend(void* sendComm) {
+@@ -2189,6 +3473,7 @@ ncclResult_t ncclIbCloseSend(void* sendComm) {
  ncclResult_t ncclIbCloseRecv(void* recvComm) {
    struct ncclIbRecvComm* comm = (struct ncclIbRecvComm*)recvComm;
    if (comm) {
