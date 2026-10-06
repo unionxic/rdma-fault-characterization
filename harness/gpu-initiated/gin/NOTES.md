@@ -15,13 +15,12 @@
 - proxy와 GDAKI의 F2~F4 칸은 3회씩이며 N30으로 다시 재지 않았다. proxy F4의 10/0x88(6/6)은
   `../../teardown_order/`에 따르면 경쟁 조건이라 12/0x81도 나올 수 있다.
 
-Answers **Q2** of the GPU-initiated RDMA fault study (see `../DESIGN.md`) for NCCL
-GIN on both networking backends we can run here: the **CPU-proxy** backend and the
-**GDAKI** (DOCA GPUNetIO) backend. For each fault we measure which layer notices,
-whether the CQE fingerprint (`ibv_wc_status`/`vendor_err`) is visible anywhere,
-whether the device wait times out / hangs / falsely reports success, whether the
-delivered bytes are intact, how long until the host learns (via
-`ncclCommGetAsyncError`), and whether teardown (`ncclCommAbort`) returns.
+Answers the **per-stack fault measurement** of the GPU-initiated RDMA fault study (see
+`../DESIGN.md`) for NCCL GIN on both networking backends we can run here: the **CPU-proxy** backend
+and the **GDAKI** (DOCA GPUNetIO) backend. For each fault we measure which layer notices, whether
+the CQE error code (`ibv_wc_status`/`vendor_err`) is visible anywhere, whether the device wait times
+out / hangs / falsely reports success, whether the delivered bytes are intact, how long until the
+host learns (via `ncclCommGetAsyncError`), and whether teardown (`ncclCommAbort`) returns.
 
 Cluster: **rain** = rank 0 / initiator (Quadro RTX 5000, sm_75, mlx5_1, GID 4),
 **sunny** = rank 1 / target (RTX A4000, sm_86, mlx5_0, GID 3), ConnectX-6 (VPI, MT28908) RoCE,
@@ -61,7 +60,7 @@ default priority is GDAKI > Proxy). Both initialize on this hardware:
   while the **CQ stays in GPU memory** and the GPU thread polls it. GDAKI ran fine
   in this fallback mode; no system changes were needed.
 
-### GDAKI CQ shape (for Q1 cross-reference)
+### GDAKI CQ shape (for cross-reference with the CQE-sequence question)
 
 NCCL's GDAKI init (`gin_host_gdaki.cc`) zero-initializes `doca_gpu_verbs_qp_init_attr_hl`
 and never sets `cq_collapsed`, so `resolve_cq_type()` yields
@@ -75,7 +74,7 @@ only reads the *opcode* and returns `-EIO` when it is `REQ_ERR`; it never reads
 `syndrome`/`vendor_err` unless `DOCA_GPUNETIO_VERBS_ENABLE_DEBUG` is compiled in,
 and the host-side `doca_gpu_verbs_query_last_error` reads only the **QP state**
 (a boolean `has_error`), not the CQE. So neither the root-cause nor the flush
-fingerprint (5 / 0xf9) is exposed by GDAKI in a production build — the device
+error code (5 / 0xf9) is exposed by GDAKI in a production build — the device
 sees "some REQ_ERR", the host sees "QP is in ERR", and the syndrome is discarded.
 
 ## Fault-injection patch
@@ -251,15 +250,15 @@ blocking).
 
 ## Observations
 
-- **Proxy exposes the full fingerprint, fast.** The progress thread's `ibv_poll_cq`
+- **Proxy exposes the full status/vendor_err pair, fast.** The progress thread's `ibv_poll_cq`
   WARN carries `status`/`vendor_err` and `ncclCommGetAsyncError` returns
-  `ncclRemoteError` (fp=`log`): F1 WR_FLUSH 5/0xf5 in **~7 ms**, F2 REM_ACCESS
+  `ncclRemoteError` (`fp_where`=`log`): F1 WR_FLUSH 5/0xf5 in **~7 ms**, F2 REM_ACCESS
   10/0x88 in **~3 ms**, F4 REM_ACCESS 10/0x88 **~60 ms** after the SIGKILL, F3
   RETRY_EXC 12/0x81 after **~3.6 s** at IB_TIMEOUT=14 (the RETRY_EXC floor; v1's
   "~5 s" was start-relative) and **~57-59 s** at the default IB_TIMEOUT=20.
-- **GDAKI exposes no fingerprint and learns only on a 10 s tick.** The device
+- **GDAKI exposes no error code and learns only on a 10 s tick.** The device
   poll reads only the CQE opcode (REQ_ERR -> `-EIO`); the host learns via
-  `ncclCommGetAsyncError`'s QP-state check (fp=`api`, "GIN Error detected", no
+  `ncclCommGetAsyncError`'s QP-state check (`fp_where`=`api`, "GIN Error detected", no
   status/vendor_err), throttled to NCCL_GIN_ERROR_QUERY_SEC=10 s. In all 24 GDAKI
   fault trials the host error lands at the same moment, **~10.7 s after rank 0's
   start** (60.7 s for the IB=20 ref) — the first throttled query after the initial
@@ -284,7 +283,7 @@ blocking).
   management TCP barrier; the drain's first put then ends with device rc **8 =
   ncclTimeout** (the 5 s device cap; v1 labelled this "error"). No NCCL WARN and no
   status/vendor_err appear; the only host-visible sign is the QP-state check
-  (fp=`api`) ~8 s after the kill. Proxy F4 by contrast logs REM_ACCESS 10/0x88
+  (`fp_where`=`api`) ~8 s after the kill. Proxy F4 by contrast logs REM_ACCESS 10/0x88
   within 60 ms (the host error is seen during the drain -> init=`error`).
 - **F3 vs F4 on the initiator.** F3 (peer QP -> ERR, process alive) exhausts IB
   retries -> RETRY_EXC 12/0x81 (3.6 s at IB=14); F4 (process killed) has its
@@ -295,13 +294,12 @@ blocking).
   MR (`ncclMemAlloc` rounds to ~2 MiB) raises **no** error (silent loss, v1);
   only a put outside the MR (64 MiB offset, v2) raises REM_ACCESS. The GIN device
   `put` does not bounds-check offsets.
-- **GDAKI CQ shape (Q1 cross-reference).** NCCL leaves `cq_collapsed=0`, so the
-  GDAKI CQ is a **normal ring** (`DOCA_GPUNETIO_VERBS_CQ_64B`, size = `sq_nwqe` =
-  `NCCL_GIN_GDAKI_QP_DEPTH` = 128), indexed per-WQE — not a single-slot collapsed
-  CQ. The root-cause CQE sits at its slot, but the device reads only the opcode and
-  the host only the QP state, so neither the root cause nor a flush syndrome
-  (5/0xf9) is exposed in a production build (the syndrome prints only under
-  `DOCA_GPUNETIO_VERBS_ENABLE_DEBUG`).
+- **GDAKI CQ shape (cross-reference with the CQE-sequence question).** NCCL leaves `cq_collapsed=0`,
+  so the GDAKI CQ is a **normal ring** (`DOCA_GPUNETIO_VERBS_CQ_64B`, size = `sq_nwqe` =
+  `NCCL_GIN_GDAKI_QP_DEPTH` = 128), indexed per-WQE — not a single-slot collapsed CQ. The root-cause
+  CQE sits at its slot, but the device reads only the opcode and the host only the QP state, so
+  neither the root cause nor a flush syndrome (5/0xf9) is exposed in a production build (the
+  syndrome prints only under `DOCA_GPUNETIO_VERBS_ENABLE_DEBUG`).
 - GIN honours `NCCL_IB_TIMEOUT` on both backends (proxy QPs via
   `ncclIbConnectImpl`, GDAKI via `doca_verbs_qp_attr_set_ack_timeout`).
 
@@ -312,9 +310,9 @@ Evidence: v2 per-rank logs/KV in `results/20260923/v2/logs/` (hook lines
 
 ## Limitations
 
-* pre-Hopper GPUs here -> GDAKI runs in its **CPU-doorbell fallback** (no
-  `PeerMappingOverride`, no gdrdrv); the CQ is still in GPU memory and polled by the
-  GPU (the codepath Q2 targets), but doorbell ringing is not GPU-initiated.
+* pre-Hopper GPUs here -> GDAKI runs in its **CPU-doorbell fallback** (no `PeerMappingOverride`, no
+  gdrdrv); the CQ is still in GPU memory and polled by the GPU (the codepath the per-stack fault
+  measurement targets), but doorbell ringing is not GPU-initiated.
 * Registered/symmetric memory kept small (256 KiB window) for rain's 256 MiB BAR1.
 * Non-blocking comm (the 2.32 docs' prescription for safe abort) was not used:
   symmetric-window registration failed under it in this build

@@ -2,14 +2,14 @@
 
 | cell | N | success | failures | Wilson 95% CI | time | other | earlier small-N (success, time median [min-max]) | same as earlier? |
 |---|--:|--:|---|---|---|---|---|---|
-| GIN Q4 classifier, ring CQ, F1 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 15.60 [14.78-15.97] 16.05 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task B, n=6: 6/6, 15.42 [14.90-15.97]; 09-24 GPU doorbell (windows + q4 re-run), n=5: 5/5, 15.75 [14.82-16.08] | same; same |
-| GIN Q4 classifier, ring CQ, F2 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 1.60 [1.55-2.84] 2.85 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task B, n=6: 6/6, 2.79 [2.74-3.06]; 09-24 GPU doorbell (windows + q4 re-run), n=3: 3/3, 4.33 [4.08-6.77] | diff: time (N30 median -1.19 ms vs earlier); diff: time (N30 median -2.73 ms vs earlier) |
-| GIN Q4 classifier, ring CQ, F3 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 3678 [3537-3747] 3776 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task B, n=6: 6/6, 3668 [3547-3753]; 09-24 GPU doorbell (windows + q4 re-run), n=4: 4/4, 3632 [3513-3731] | same; same |
-| GIN Q4 classifier, ring CQ, F4 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 3686 [3598-3799] 3816 (n=30) | class 30/30; initiator 1 op ahead of the killed target 4/30 (last op ACKed before the kill; see §1) | 09-23 CPU doorbell, Task B, n=6: 6/6, 3673 [3574-3803]; 09-24 GPU doorbell (windows + q4 re-run), n=2: 2/2, 3651 [3589-3714] | same; same |
-| GIN Q4 classifier, collapsed CQ, F1 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 15.24 [14.77-15.55] 16.00 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task A, n=9: 9/9, 15.41 [14.86-16.15]; 09-24 GPU doorbell (windows + q4 re-run), n=1: 1/1, 14.63 [14.63-14.63] | same; same |
-| GIN Q4 classifier, collapsed CQ, F2 | 30 | 30 | 0; 1 harness-invalid excluded + replaced | 88.6-100.0% | fault->host API 1.60 [1.52-2.83] 4.36 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task A, n=9: 9/9, 3.24 [2.79-3.35]; 09-24 GPU doorbell (windows + q4 re-run), n=1: 1/1, 3.84 [3.84-3.84] | diff: time (N30 median -1.65 ms vs earlier); same |
-| GIN Q4 classifier, collapsed CQ, F3 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 3632 [3547-3753] 3808 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task A, n=9: 9/9, 3646 [3525-3792]; 09-24 GPU doorbell (windows + q4 re-run), n=1: 1/1, 3536 [3536-3536] | same; same |
-| GIN Q4 classifier, collapsed CQ, F4 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 3698 [3598-3806] 3830 (n=30) | class 30/30; initiator 1 op ahead of the killed target 1/30 (last op ACKed before the kill; see §1) | - | - |
+| GIN device-side classifier, ring CQ, F1 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 15.60 [14.78-15.97] 16.05 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task B, n=6: 6/6, 15.42 [14.90-15.97]; 09-24 GPU doorbell (windows + `q4` re-run), n=5: 5/5, 15.75 [14.82-16.08] | same; same |
+| GIN device-side classifier, ring CQ, F2 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 1.60 [1.55-2.84] 2.85 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task B, n=6: 6/6, 2.79 [2.74-3.06]; 09-24 GPU doorbell (windows + `q4` re-run), n=3: 3/3, 4.33 [4.08-6.77] | diff: time (N30 median -1.19 ms vs earlier); diff: time (N30 median -2.73 ms vs earlier) |
+| GIN device-side classifier, ring CQ, F3 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 3678 [3537-3747] 3776 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task B, n=6: 6/6, 3668 [3547-3753]; 09-24 GPU doorbell (windows + `q4` re-run), n=4: 4/4, 3632 [3513-3731] | same; same |
+| GIN device-side classifier, ring CQ, F4 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 3686 [3598-3799] 3816 (n=30) | class 30/30; initiator 1 op ahead of the killed target 4/30 (last op ACKed before the kill; see §1) | 09-23 CPU doorbell, Task B, n=6: 6/6, 3673 [3574-3803]; 09-24 GPU doorbell (windows + `q4` re-run), n=2: 2/2, 3651 [3589-3714] | same; same |
+| GIN device-side classifier, collapsed CQ, F1 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 15.24 [14.77-15.55] 16.00 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task A, n=9: 9/9, 15.41 [14.86-16.15]; 09-24 GPU doorbell (windows + `q4` re-run), n=1: 1/1, 14.63 [14.63-14.63] | same; same |
+| GIN device-side classifier, collapsed CQ, F2 | 30 | 30 | 0; 1 harness-invalid excluded + replaced | 88.6-100.0% | fault->host API 1.60 [1.52-2.83] 4.36 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task A, n=9: 9/9, 3.24 [2.79-3.35]; 09-24 GPU doorbell (windows + `q4` re-run), n=1: 1/1, 3.84 [3.84-3.84] | diff: time (N30 median -1.65 ms vs earlier); same |
+| GIN device-side classifier, collapsed CQ, F3 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 3632 [3547-3753] 3808 (n=30) | class 30/30; silent success 0/30 (blocking 0/15) | 09-23 CPU doorbell, Task A, n=9: 9/9, 3646 [3525-3792]; 09-24 GPU doorbell (windows + `q4` re-run), n=1: 1/1, 3536 [3536-3536] | same; same |
+| GIN device-side classifier, collapsed CQ, F4 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 3698 [3598-3806] 3830 (n=30) | class 30/30; initiator 1 op ahead of the killed target 1/30 (last op ACKed before the kill; see §1) | - | - |
 | GIN stock control (classifier off), ring, F1, blocking: silent success | 10 | 10 | - | 72.2-100.0% | fault->host API 9401.8 [9401.6-9402.0] 9402.2 (n=10) | success here = the failed put was reported done | 09-23 CPU doorbell, Task B, n=3: 3/3, 9401.4 [9401.1-9401.5]; 09-24 GPU doorbell window 1, n=2: 2/2, 9401.2 [9401.0-9401.4] | diff: time (N30 median +0.5 ms vs earlier); diff: time (N30 median +0.7 ms vs earlier) |
 | GDAKI recovery v2 F1 | 30 | 30 | 0 | 88.6-100.0% | kernel return->recovered 8.87 [8.49-9.18] 9.39 (n=30) | rounds: 30 recovered, 0 replay failed; d=1 30, d=0 0 | 09-24 v2, GPU doorbell, n=6: 6/6, 8.71 [8.13-9.20]; 09-24 v1, CPU-doorbell fallback (before PMO), n=10: 10/10, 8.23 [8.04-8.85] | same; diff: time (N30 median +0.64 ms vs earlier) |
 | GDAKI recovery v2 F3 | 30 | 30 | 0 | 88.6-100.0% | kernel return->recovered 8.35 [8.22-8.61] 8.64 (n=30) | rounds: 30 recovered, 0 replay failed; d=1 30, d=0 0 | 09-24 v2, GPU doorbell, n=6: 6/6, 8.41 [8.24-8.45]; 09-24 v1, CPU-doorbell fallback (before PMO), n=8: 8/8, 8.10 [7.96-8.22] | same; diff: time (N30 median +0.25 ms vs earlier) |
@@ -18,8 +18,8 @@
 | GDAKI recovery v2 D0 | 30 | 30 | 0 | 88.6-100.0% | kernel return->recovered 23.18 [23.04-23.35] 23.72 (n=90) | rounds: 90 recovered, 0 replay failed; d=1 0, d=0 90 | 09-24 v2, GPU doorbell, n=2: 2/2, 23.08 [22.94-23.33]; 09-24 v1, CPU-doorbell fallback (before PMO), n=8: 8/8, 22.94 [22.79-23.15] | same; diff: time (N30 median +0.24 ms vs earlier) |
 | GDAKI recovery v2 F2 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 2.90 [2.88-3.05] 5.17 (n=30) | declined: class_REM_ACCESS 30 | 09-24 v2, GPU doorbell, n=4: 4/4, 4.15 [3.90-6.43]; 09-24 v1, CPU-doorbell fallback (before PMO), n=8: 8/8, 3.90 [3.88-5.68] | diff: time (N30 median -1.25 ms vs earlier); diff: time (N30 median -1.00 ms vs earlier) |
 | GDAKI recovery v2 F4 | 30 | 30 | 0 | 88.6-100.0% | fault->host API 3720 [3626-3794] 3822 (n=30) | declined: retry_exc_peer_dead 30 | 09-24 v2, GPU doorbell, n=4: 4/4, 3762 [3698-3830]; 09-24 v1, CPU-doorbell fallback (before PMO), n=8: 8/8, 3668 [3578-3800] | same; same |
-| GDAKI recovery v2 off F1 | 10 | 10 | 0 | 72.2-100.0% | fault->host API 1.43 [0.93-10.24] 14.79 (n=10) | Q4 class LOCAL_QP_ERR 10; recovery events 0 | 09-24 v1, CPU-doorbell fallback (before PMO), n=4: 4/4, 0.83 [0.74-0.94] | diff: time (N30 median +0.60 ms vs earlier) |
-| GDAKI recovery v2 off F3 | 10 | 10 | 0 | 72.2-100.0% | fault->host API 3674 [3653-3746] 3773 (n=10) | Q4 class RETRY_EXC 10; recovery events 0 | 09-24 v1, CPU-doorbell fallback (before PMO), n=4: 4/4, 3600 [3521-3644] | diff: time (N30 median +74 ms vs earlier) |
+| GDAKI recovery v2 off F1 | 10 | 10 | 0 | 72.2-100.0% | fault->host API 1.43 [0.93-10.24] 14.79 (n=10) | classifier class LOCAL_QP_ERR 10; recovery events 0 | 09-24 v1, CPU-doorbell fallback (before PMO), n=4: 4/4, 0.83 [0.74-0.94] | diff: time (N30 median +0.60 ms vs earlier) |
+| GDAKI recovery v2 off F3 | 10 | 10 | 0 | 72.2-100.0% | fault->host API 3674 [3653-3746] 3773 (n=10) | classifier class RETRY_EXC 10; recovery events 0 | 09-24 v1, CPU-doorbell fallback (before PMO), n=4: 4/4, 3600 [3521-3644] | diff: time (N30 median +74 ms vs earlier) |
 | GDAKI recovery v1cpu F1 | 10 | 10 | 0 | 72.2-100.0% | kernel return->recovered 8.49 [8.30-9.09] 9.17 (n=10) | rounds: 10 recovered, 0 replay failed; d=1 10, d=0 0 | 09-24 v1, CPU-doorbell fallback (before PMO), n=10: 10/10, 8.23 [8.04-8.85] | diff: time (N30 median +0.26 ms vs earlier) |
 | GDAKI recovery v1cpu F3 | 10 | 10 | 0 | 72.2-100.0% | kernel return->recovered 8.39 [8.19-9.45] 13.65 (n=10) | rounds: 10 recovered, 0 replay failed; d=1 10, d=0 0 | 09-24 v1, CPU-doorbell fallback (before PMO), n=8: 8/8, 8.10 [7.96-8.22] | diff: time (N30 median +0.29 ms vs earlier) |
 | NVSHMEM FT classify F1 | 30 | 30 | 0 | 88.6-100.0% | fault->host mailbox 4.14 [3.84-8.71] 9.38 (n=30) | finalize PE0 19.7 [19.4-20.0] 20.2 (n=30) | b2, n=6: 6/6, 3.63 [3.41-4.10] | diff: time (N30 median +0.51 ms vs earlier) |
@@ -37,9 +37,9 @@
 
 | claim | N | success | Wilson 95% CI |
 |---|--:|--:|---|
-| GIN Q4: classification exact (class + fp), all CQ x fault cells | 240 | 240 | 98.4-100.0% |
-| GIN Q4: all criteria, all CQ x fault cells | 240 | 240 | 98.4-100.0% |
-| GIN Q4: no silent success, F1-F3 | 180 | 180 | 97.9-100.0% |
+| GIN classifier: classification exact (class + error code), all CQ x fault cells | 240 | 240 | 98.4-100.0% |
+| GIN classifier: all criteria, all CQ x fault cells | 240 | 240 | 98.4-100.0% |
+| GIN classifier: no silent success, F1-F3 | 180 | 180 | 97.9-100.0% |
 | GDAKI recovery: fault runs recovered with exact data and signals (v2 F1, F3, x5; v1cpu F1, F3) | 100 | 100 | 96.3-100.0% |
 | GDAKI recovery: forced d=0 runs exact | 30 | 30 | 88.6-100.0% |
 | GDAKI recovery: F2/F4 declined for the right reason | 60 | 60 | 94.0-100.0% |
@@ -48,9 +48,9 @@
 | NVSHMEM FT: F2b/F4 declined for the right reason | 20 | 20 | 83.9-100.0% |
 | NVSHMEM FT: nvshmem_finalize returned on PE0, all cells | 220 | 220 | 98.3-100.0% |
 
-### 1a. GIN GDAKI + Q4 device classifier (flag on), per CQ type x fault
+### 1a. GIN GDAKI + device-side classifier (flag on), per CQ type x fault
 
-| CQ | fault | wait | N | class + fp correct | device wait returned ncclRemoteError | host API returned error | silent success | fault -> host API (ms): median [p10-p90] max | fault -> device (ms): median [p10-p90] max | abort clean / leftover 0 | doorbell (indicators) | driver |
+| CQ | fault | wait | N | class + error code correct | device wait returned ncclRemoteError | host API returned error | silent success | fault -> host API (ms): median [p10-p90] max | fault -> device (ms): median [p10-p90] max | abort clean / leftover 0 | doorbell (indicators) | driver |
 |---|---|---|--:|---|---|---|---|---|---|---|---|---|
 | collapsed | F1 | both | 30 | 30/30 [88.6-100.0%] | 30/30 [88.6-100.0%] | 30/30 [88.6-100.0%] | 0/30 | 15.24 [14.77-15.55] 16.00 (n=30) | 15.05 [14.53-15.28] 15.73 (n=30) | 30/30 / 30/30 | GPU 30 | PMO=1,SMO=1 both 30 |
 | collapsed | F1 | timeout | 15 | 15/15 [79.6-100.0%] | 15/15 [79.6-100.0%] | 15/15 [79.6-100.0%] | 0/15 | 15.25 [14.82-15.63] 16.00 (n=15) | 15.09 [14.57-15.46] 15.73 (n=15) | 15/15 / 15/15 | GPU 15 | PMO=1,SMO=1 both 15 |
@@ -85,7 +85,10 @@ Harness-invalid trials (excluded from N; a replacement trial was run for each): 
 |--:|---|---|---|---|---|---|---|
 | 10 | 10/10 [72.2-100.0%] | success (no error returned) 10 | 9401.8 [9401.6-9402.0] 9402.2 (n=10) | ncclRemoteError 10 | 10/10 / 10/10 | GPU 10 | PMO=1,SMO=1 both 10 |
 
-Positive control for the doorbell indicators (same gin_q4 build, `NCCL_GIN_GDAKI_NIC_HANDLER=1`): px1: proxy thread r0/r1 1/1, DOCA "Enabling CPU proxy mode" lines r0/r1 24/24 -> CPU_PROXY, class LOCAL_QP_ERR; px2: proxy thread r0/r1 1/1, DOCA "Enabling CPU proxy mode" lines r0/r1 24/24 -> CPU_PROXY, class LOCAL_QP_ERR
+Positive control for the doorbell indicators (same `gin_q4` build, `NCCL_GIN_GDAKI_NIC_HANDLER=1`):
+px1: proxy thread r0/r1 1/1, DOCA "Enabling CPU proxy mode" lines r0/r1 24/24 -> CPU_PROXY, class
+LOCAL_QP_ERR; px2: proxy thread r0/r1 1/1, DOCA "Enabling CPU proxy mode" lines r0/r1 24/24 ->
+CPU_PROXY, class LOCAL_QP_ERR
 
 ### 2. GDAKI recovery (v2 = gin_recovery_gpudb, GPU doorbells; v1cpu = gin_recovery with the CPU proxy forced)
 
@@ -125,11 +128,20 @@ Positive control for the doorbell indicators (same gin_q4 build, `NCCL_GIN_GDAKI
 | v1cpu F3 | timeout | 5 | 5/5 | 56.6-100.0% | 8.44 [8.28-11.59] 13.65 (n=5) | 3680 [3588-3711] 3721 (n=5) | - | 5 / 0 / 5 / 0 | CPU_PROXY (thread+DOCA) 5 | PMO=1,SMO=1 both 5 |
 | v1cpu F3 | blocking | 5 | 5/5 | 56.6-100.0% | 8.34 [8.14-8.81] 8.98 (n=5) | 3626 [3549-3699] 3732 (n=5) | - | 5 / 0 / 5 / 0 | CPU_PROXY (thread+DOCA) 5 | PMO=1,SMO=1 both 5 |
 
-Success criteria: **F1**: recovered once (d=1), 120/120 ops bit-exact + signal exact each op + final signal exact, both exit 0, aborts return; **F3**: same as F1 (class RETRY_EXC, peer alive); **F1 x5**: 5 shots, 4 recovered + 1 replay failed (shot inside the commit), all d=1, 160/160 bit-exact, signals exact; **F3 x5**: 5 shots, 4 recovered + 1 replay failed, all d=1, 200/200 bit-exact, signals exact; **D0**: 3 forced recoveries with d=0 (nothing replayed), 120/120 bit-exact, signals exact; **F2**: declined (class_REM_ACCESS, fp 10/0x88), both ranks exit 9, both aborts return; **F4**: declined (retry_exc_peer_dead, fp 12/0x81), initiator exits 9, abort returns; **off F1**: recovery flag off: initiator exits 8 with the Q4 class LOCAL_QP_ERR, no recovery event, abort returns; **off F3**: recovery flag off: initiator exits 8 with the Q4 class RETRY_EXC, no recovery event, abort returns.
+Success criteria: **F1**: recovered once (d=1), 120/120 ops bit-exact + signal exact each op + final
+signal exact, both exit 0, aborts return; **F3**: same as F1 (class RETRY_EXC, peer alive); **F1
+x5**: 5 shots, 4 recovered + 1 replay failed (shot inside the commit), all d=1, 160/160 bit-exact,
+signals exact; **F3 x5**: 5 shots, 4 recovered + 1 replay failed, all d=1, 200/200 bit-exact,
+signals exact; **D0**: 3 forced recoveries with d=0 (nothing replayed), 120/120 bit-exact, signals
+exact; **F2**: declined (class_REM_ACCESS, code 10/0x88), both ranks exit 9, both aborts return;
+**F4**: declined (retry_exc_peer_dead, code 12/0x81), initiator exits 9, abort returns; **off F1**:
+recovery flag off: initiator exits 8 with the classifier class LOCAL_QP_ERR, no recovery event,
+abort returns; **off F3**: recovery flag off: initiator exits 8 with the classifier class RETRY_EXC,
+no recovery event, abort returns.
 
 ### 3. NVSHMEM IBGDA + FT patch (GPU NIC handler)
 
-| cell | wait | N | success | Wilson 95% CI | class + fp correct | fault -> device (ms) | fault -> host mailbox (ms) | kernel return -> recovered (ms) | fault -> recovered (ms) | finalize PE0 / PE1 (ms) | silent success | doorbell | driver |
+| cell | wait | N | success | Wilson 95% CI | class + error code correct | fault -> device (ms) | fault -> host mailbox (ms) | kernel return -> recovered (ms) | fault -> recovered (ms) | finalize PE0 / PE1 (ms) | silent success | doorbell | driver |
 |---|---|--:|---|---|---|---|---|---|---|---|---|---|---|
 | classify F1 | both | 30 | 30/30 | 88.6-100.0% | 30/30 [88.6-100.0%] | 4.10 [3.83-8.66] 9.29 (n=30) | 4.14 [3.84-8.71] 9.38 (n=30) | - | - | 19.7 [19.4-20.0] 20.2 (n=30) / 25.4 [25.2-25.6] 25.7 (n=30) | 0/30 | GPU 30 | PMO=1,SMO=1 both 30 |
 | classify F1 | timeout | 15 | 15/15 | 79.6-100.0% | 15/15 [79.6-100.0%] | 4.13 [3.82-8.57] 8.75 (n=15) | 4.15 [3.88-8.64] 8.81 (n=15) | - | - | 19.7 [19.4-20.0] 20.1 (n=15) / 25.5 [25.2-25.7] 25.7 (n=15) | 0/15 | GPU 15 | PMO=1,SMO=1 both 15 |
@@ -162,26 +174,33 @@ Success criteria: **F1**: recovered once (d=1), 120/120 ops bit-exact + signal e
 | decline F4 | timeout | 5 | 5/5 | 56.6-100.0% | 5/5 [56.6-100.0%] | 3649 [3620-3678] 3694 (n=5) | 3649 [3620-3678] 3694 (n=5) | - | - | 19.4 [19.0-19.5] 19.5 (n=5) / - | - | GPU 5 | PMO=1,SMO=1 both 5 |
 | decline F4 | blocking | 5 | 5/5 | 56.6-100.0% | 5/5 [56.6-100.0%] | 3654 [3611-3690] 3693 (n=5) | 3654 [3611-3690] 3693 (n=5) | - | - | 19.3 [19.2-19.7] 19.9 (n=5) / - | - | GPU 5 | PMO=1,SMO=1 both 5 |
 
-Success criteria: **classify**: first device record = true class and fp (F1 LOCAL_QP_ERR 5/0xf5, F2b REM_ACCESS 10/0x88, F3/F4 RETRY_EXC 12/0x81), no op verified wrong on the target, PE0 declines (classification run) and nvshmem_finalize returns (PE1 too unless killed), no leftovers; **recover**: 1 fault round recovered (d=1, class right), 200/200 ops bit-exact with exact per-op signal, final signal 200, both exit 0, both finalize return; **recover x5**: 5 shots, 5 rounds, 4 recovered ops + 1 replay hit by the in-commit shot, all d=1, 200/200 bit-exact, final signal 200; **decline**: declined for the right reason (F2b "class not recoverable", F4 "RETRY_EXC with the peer dead"), PE0 exits 9, finalize returns.
+Success criteria: **classify**: first device record = true class and error code (F1 LOCAL_QP_ERR
+5/0xf5, F2b REM_ACCESS 10/0x88, F3/F4 RETRY_EXC 12/0x81), no op verified wrong on the target, PE0
+declines (classification run) and nvshmem_finalize returns (PE1 too unless killed), no leftovers;
+**recover**: 1 fault round recovered (d=1, class right), 200/200 ops bit-exact with exact per-op
+signal, final signal 200, both exit 0, both finalize return; **recover x5**: 5 shots, 5 rounds, 4
+recovered ops + 1 replay hit by the in-commit shot, all d=1, 200/200 bit-exact, final signal 200;
+**decline**: declined for the right reason (F2b "class not recoverable", F4 "RETRY_EXC with the peer
+dead"), PE0 exits 9, finalize returns.
 
-### 4a. GIN GDAKI + Q4: earlier small-N vs N30 (success = class+fp right, device and host API return the error, no silent success except F4, abort clean; time = fault -> host API, ms)
+### 4a. GIN GDAKI + classifier: earlier small-N vs N30 (success = class + error code right, device and host API return the error, no silent success except F4, abort clean; time = fault -> host API, ms)
 
 | cell | earlier source (doorbell) | earlier success | N30 success | earlier time median [min-max] | N30 time median [min-max] | Fisher p | Mann-Whitney p | verdict |
 |---|---|---|---|---|---|---|---|---|
 | ring F1 | 09-23 CPU doorbell, Task B, n=6 | 6/6 | 30/30 | 15.42 [14.90-15.97] | 15.60 [14.68-16.05] | 1 | 0.978 | same (no detectable difference) |
-| ring F1 | 09-24 GPU doorbell (windows + q4 re-run), n=5 | 5/5 | 30/30 | 15.75 [14.82-16.08] | 15.60 [14.68-16.05] | 1 | 0.569 | same (no detectable difference) |
+| ring F1 | 09-24 GPU doorbell (windows + `q4` re-run), n=5 | 5/5 | 30/30 | 15.75 [14.82-16.08] | 15.60 [14.68-16.05] | 1 | 0.569 | same (no detectable difference) |
 | ring F2 | 09-23 CPU doorbell, Task B, n=6 | 6/6 | 30/30 | 2.79 [2.74-3.06] | 1.60 [1.53-2.85] | 1 | 0.0063 | different: time (N30 median -1.19 ms vs earlier) |
-| ring F2 | 09-24 GPU doorbell (windows + q4 re-run), n=3 | 3/3 | 30/30 | 4.33 [4.08-6.77] | 1.60 [1.53-2.85] | 1 | 0.000367 | different: time (N30 median -2.73 ms vs earlier) |
+| ring F2 | 09-24 GPU doorbell (windows + `q4` re-run), n=3 | 3/3 | 30/30 | 4.33 [4.08-6.77] | 1.60 [1.53-2.85] | 1 | 0.000367 | different: time (N30 median -2.73 ms vs earlier) |
 | ring F3 | 09-23 CPU doorbell, Task B, n=6 | 6/6 | 30/30 | 3668 [3547-3753] | 3678 [3525-3776] | 1 | 0.919 | same (no detectable difference) |
-| ring F3 | 09-24 GPU doorbell (windows + q4 re-run), n=4 | 4/4 | 30/30 | 3632 [3513-3731] | 3678 [3525-3776] | 1 | 0.519 | same (no detectable difference) |
+| ring F3 | 09-24 GPU doorbell (windows + `q4` re-run), n=4 | 4/4 | 30/30 | 3632 [3513-3731] | 3678 [3525-3776] | 1 | 0.519 | same (no detectable difference) |
 | ring F4 | 09-23 CPU doorbell, Task B, n=6 | 6/6 | 30/30 | 3673 [3574-3803] | 3686 [3557-3816] | 1 | 0.788 | same (no detectable difference) |
-| ring F4 | 09-24 GPU doorbell (windows + q4 re-run), n=2 | 2/2 | 30/30 | 3651 [3589-3714] | 3686 [3557-3816] | 1 | 0.488 | same (no detectable difference) |
+| ring F4 | 09-24 GPU doorbell (windows + `q4` re-run), n=2 | 2/2 | 30/30 | 3651 [3589-3714] | 3686 [3557-3816] | 1 | 0.488 | same (no detectable difference) |
 | collapsed F1 | 09-23 CPU doorbell, Task A, n=9 | 9/9 | 30/30 | 15.41 [14.86-16.15] | 15.24 [14.40-16.00] | 1 | 0.126 | same (no detectable difference) |
-| collapsed F1 | 09-24 GPU doorbell (windows + q4 re-run), n=1 | 1/1 | 30/30 | 14.63 [14.63-14.63] | 15.24 [14.40-16.00] | 1 | - | same (no detectable difference) |
+| collapsed F1 | 09-24 GPU doorbell (windows + `q4` re-run), n=1 | 1/1 | 30/30 | 14.63 [14.63-14.63] | 15.24 [14.40-16.00] | 1 | - | same (no detectable difference) |
 | collapsed F2 | 09-23 CPU doorbell, Task A, n=9 | 9/9 | 30/30 | 3.24 [2.79-3.35] | 1.60 [1.47-4.36] | 1 | 5e-05 | different: time (N30 median -1.65 ms vs earlier) |
-| collapsed F2 | 09-24 GPU doorbell (windows + q4 re-run), n=1 | 1/1 | 30/30 | 3.84 [3.84-3.84] | 1.60 [1.47-4.36] | 1 | - | same (no detectable difference) |
+| collapsed F2 | 09-24 GPU doorbell (windows + `q4` re-run), n=1 | 1/1 | 30/30 | 3.84 [3.84-3.84] | 1.60 [1.47-4.36] | 1 | - | same (no detectable difference) |
 | collapsed F3 | 09-23 CPU doorbell, Task A, n=9 | 9/9 | 30/30 | 3646 [3525-3792] | 3632 [3520-3808] | 1 | 0.731 | same (no detectable difference) |
-| collapsed F3 | 09-24 GPU doorbell (windows + q4 re-run), n=1 | 1/1 | 30/30 | 3536 [3536-3536] | 3632 [3520-3808] | 1 | - | same (no detectable difference) |
+| collapsed F3 | 09-24 GPU doorbell (windows + `q4` re-run), n=1 | 1/1 | 30/30 | 3536 [3536-3536] | 3632 [3520-3808] | 1 | - | same (no detectable difference) |
 | stock F1 blocking: silent success | 09-23 CPU doorbell, Task B, n=3 | 3/3 | 10/10 | 9401.4 [9401.1-9401.5] | 9401.8 [9401.5-9402.2] | 1 | 0.00699 | different: time (N30 median +0.5 ms vs earlier) |
 | stock F1 blocking: silent success | 09-24 GPU doorbell window 1, n=2 | 2/2 | 10/10 | 9401.2 [9401.0-9401.4] | 9401.8 [9401.5-9402.2] | 1 | 0.0303 | different: time (N30 median +0.7 ms vs earlier) |
 

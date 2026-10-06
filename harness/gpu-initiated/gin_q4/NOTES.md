@@ -8,11 +8,12 @@
   F1~F3에서 돌아오지 않았다(N30 90/90, N30 stock 대조 10/10). N30 표의 "abort clean"도 rank 0 기준이다.
 - N30(`results/20260925_n30/`)이 GPU doorbell로 돌았다는 것은 두 지표로 추정한 것이다. 이 빌드는 doorbell 모드를 기록하지 않는다.
 - N30(`results/20260925_n30/`)은 모두 rain `mlx5_1`의 펌웨어 명령 슬롯 하나가 샌 상태에서 돌았다. 슬롯은 09-25 06:45에
-  샜고(`../gin_recovery/TRANSPARENT_S1.md`), N30 Q4 253회는 07:31~09:34에 돌았다. N30 문서에는 이 언급이 없다.
+  샜고(`../gin_recovery/TRANSPARENT_S1.md`), N30 분류기 시행 253회는 07:31~09:34에 돌았다. N30 문서에는 이 언급이 없다.
 - 이 드라이버에는 받는 쪽이 동기화 응답 뒤에 버퍼를 초기화하는 경쟁이 남아 있다
   (`../gin_recovery/RECOVERY_DESIGN.md` §11). 틀린다면 거짓 불일치 쪽이며, 관찰되지 않았다.
 
-Follow-up to `../gin/` (Q2 for NCCL GIN) and `../nvshmem/` (Q2/Q3 for NVSHMEM IBGDA). Same
+Follow-up to `../gin/` (the per-stack fault measurement for NCCL GIN) and `../nvshmem/` (the
+per-stack fault measurement and CQ-slot read for NVSHMEM IBGDA). Same
 cluster and conventions: rank 0 = rain (initiator, Quadro RTX 5000 sm_75, mlx5_1), rank 1 =
 sunny (target, RTX A4000 sm_86, mlx5_0), ConnectX-6 (VPI, MT28908) RoCE, GDAKI in its CPU-doorbell
 fallback (no PeerMappingOverride, no gdrdrv), CQ in GPU memory, `NCCL_IB_TIMEOUT=14`.
@@ -22,23 +23,23 @@ fallback (no PeerMappingOverride, no gdrdrv), CQ in GPU memory, `NCCL_IB_TIMEOUT
 - **Task A (in-stack A/B).** A collapsed CQ (`cc=1`, GPU memory) inside GIN GDAKI **does receive
   error CQEs**: the device poll returned -EIO in 27/27 fault trials (F1/F2/F3, timeout and
   blocking), as the ring CQ did in 33/33 (F1-F4, Tasks A+B). At poll time slot 0 held the
-  **root-cause** CQE (5/0xf5, 10/0x88, 12/0x81) in 27/27; 500 us later it held the trailing
-  flush 5/0xf9 of the next WQE (18/18 re-reads), which is Q1's prediction measured on a real
-  collapsed CQ. So "the collapsed CQ hides error completions" is **rejected in-stack**;
-  NVSHMEM's missing error CQEs have another cause.
+  **root-cause** CQE (5/0xf5, 10/0x88, 12/0x81) in 27/27; 500 us later it held the trailing flush
+  5/0xf9 of the next WQE (18/18 re-reads), which is the prediction of the CQE-sequence question
+  (`../cqe_seq/`) measured on a real collapsed CQ. So "the collapsed CQ hides error completions" is
+  **rejected in-stack**; NVSHMEM's missing error CQEs have another cause.
 - Making the collapsed CQ run at all needed a fix: NCCL + DOCA in CPU-proxy mode **deadlock at
   the first SQ wrap** (64 put+signal) with a collapsed CQ, because DOCA's collapsed blocking
   poll waits on `sq_wqe_pi`, which is only maintained with `CPU_PROXY_UPDATE_PI` (measured,
   root cause from source). `64B_COLLAPSED_HOST` cannot work here: DOCA refuses it without
   GDRCopy and then aborts in its own error path (measured, backtrace kept).
-- **Task B (Q4).** With `NCCL_GIN_FAULT_CLASSIFY=1` on the ring CQ, the device classified every
-  fault correctly (F1 LOCAL_QP_ERR 5/0xf5, F2 REM_ACCESS 10/0x88, F3 RETRY_EXC 12/0x81; 6/6 each
-  over both wait modes; F4 12/0x81, same class as F3). The root cause is found by scanning back
-  from the polled index; the polled (trailing, signal) WQE itself always held 5/0xf9.
-  `ncclCommGetAsyncError` returns `ncclRemoteError` **~0.19 ms after device detection**
-  (median), i.e. 15 ms / 2.8 ms / 3.6-3.7 s / 3.6-3.7 s after the fault for F1/F2/F3/F4, versus
-  9.4 / 10.0 / 9.4 / 8.0 s with the flag off (same build; = Q2 stock). The blocking flush now
-  returns `ncclRemoteError`: **init_silent_iters 0** in F1-F3 (flag off: 1 in 9/9).
+- **Task B (GDAKI device-side classifier).** With `NCCL_GIN_FAULT_CLASSIFY=1` on the ring CQ, the
+  device classified every fault correctly (F1 LOCAL_QP_ERR 5/0xf5, F2 REM_ACCESS 10/0x88, F3
+  RETRY_EXC 12/0x81; 6/6 each over both wait modes; F4 12/0x81, same class as F3). The root cause is
+  found by scanning back from the polled index; the polled (trailing, signal) WQE itself always held
+  5/0xf9. `ncclCommGetAsyncError` returns `ncclRemoteError` **~0.19 ms after device detection**
+  (median), i.e. 15 ms / 2.8 ms / 3.6-3.7 s / 3.6-3.7 s after the fault for F1/F2/F3/F4, versus 9.4
+  / 10.0 / 9.4 / 8.0 s with the flag off (same build; = the stock result of `../gin/`). The blocking
+  flush now returns `ncclRemoteError`: **init_silent_iters 0** in F1-F3 (flag off: 1 in 9/9).
   `ncclCommAbort` returned in every trial of Tasks A and B except the forced `collapsed_host`
   attempt (process aborted in DOCA); no process was left on either node after any trial.
 - **Overhead** (no fault): put+signal+flush p50 +0.06-0.10 us at 4 KiB (10.1-10.2 us, <=1%),
@@ -48,9 +49,9 @@ fallback (no PeerMappingOverride, no gdrdrv), CQ in GPU memory, `NCCL_IB_TIMEOUT
 ## Build and deploy
 
 Base: NCCL **v2.32.3-1** (commit `12df1a11afad322be5a204a2db890161cbf8131d`) +
-`../gin/gin_fault_inject.diff` (Q2 hook, unchanged) + **`gin_q4_classify.diff`** (this work;
-layered, see its header). A separate source copy and build directory were used, so the Q2 build
-(`scratchpad/gi/gin/build`) is untouched:
+`../gin/gin_fault_inject.diff` (the fault-injection hook of `../gin/`, unchanged) +
+**`gin_q4_classify.diff`** (this work; layered, see its header). A separate source copy and build
+directory were used, so the `../gin/` build (`scratchpad/gi/gin/build`) is untouched:
 
 ```
 cd <nccl v2.32.3-1> && git apply ../gin/gin_fault_inject.diff && git apply gin_q4_classify.diff
@@ -69,7 +70,7 @@ optional slot re-read (`NCCL_GIN_Q4_LATE_READ_US`, off in those runs; record lay
 identical); `smoke/` and `diag/collapsed_stall*` ran before the collapsed-CQ fix (that is what
 they document). Deployed to `~/gi-bundle/gin_q4/` on both nodes (`libnccl.so.2.32.3` +
 `gin_q4`, md5 checked; runs use `LD_LIBRARY_PATH` to it). The GIN device API is header-only, so
-the driver must be compiled against the Q4 headers.
+the driver must be compiled against the classifier build's headers.
 
 ## What the patch does (`gin_q4_classify.diff`, +740/-16, all default OFF)
 
@@ -104,13 +105,13 @@ record into a host-pinned mapped mailbox (16 slots: invalidate, body with `st.re
 `ncclGinApi_QueryError` (primary template returns `ncclSuccess` for the other backends; GDAKI
 reads the sticky word). This is how the blocking path reports the failure.
 
-**Host (`gin_host_gdaki.cc`, `gin_host.cc`).** Per GDAKI context: mailbox
-(`ncclCudaHostCalloc`, mapped) + device block, and a watcher thread (sleep `POLL_US`, seqlock
-read). On a record it sets the comm's GIN async result to `ncclRemoteError` (pointer handed down
-from `ginDevCommSetupWithBackend`) and a flag that `ncclGinGdakiQueryLastError` returns
-immediately (bypassing the 10 s throttle), logs one WARN with fingerprint, class, cause and
-action (wording of `harness/common/probe.c classify()`), then QUERY_QPs that QP.
-Verbatim (ring, F2, `results/20260923/taskB/logs/ring_c1_F2_timeout_t1_r0.log`, prefix trimmed):
+**Host (`gin_host_gdaki.cc`, `gin_host.cc`).** Per GDAKI context: mailbox (`ncclCudaHostCalloc`,
+mapped) + device block, and a watcher thread (sleep `POLL_US`, seqlock read). On a record it sets
+the comm's GIN async result to `ncclRemoteError` (pointer handed down from
+`ginDevCommSetupWithBackend`) and a flag that `ncclGinGdakiQueryLastError` returns immediately
+(bypassing the 10 s throttle), logs one WARN with the status/vendor_err pair, class, cause and
+action (wording of `harness/common/probe.c classify()`), then QUERY_QPs that QP. Verbatim (ring, F2,
+`results/20260923/taskB/logs/ring_c1_F2_timeout_t1_r0.log`, prefix trimmed):
 
 ```
 NCCL WARN GIN/Q4: device-classified error CQE rank=0 seq=1 ctx=0 peer=1 qpn=0x383e wqe=0 path=flush-timeout
@@ -127,9 +128,9 @@ NCCL WARN GIN/Q4: host QUERY_QP rank=0 qpn=0x383e state=ERR query_us=71 mono_ms=
 error return is not counted as a completed iteration (exit 8); (b) `%globaltimer` <->
 CLOCK_MONOTONIC calibration at start (a kernel publishes `%globaltimer` to mapped memory; offset
 bound from 200k host samples; consistency ~1-2 us); (c) `ncclCommGetAsyncError` polled every
-`GIN_ASYNC_POLL_US` (200 us here; Q2 used 2 ms); (d) fault `lat` for the overhead runs; (e) a
+`GIN_ASYNC_POLL_US` (200 us here; `../gin/` used 2 ms); (d) fault `lat` for the overhead runs; (e) a
 device phase marker to locate a kernel that never returns. Fault catalog, lockstep barrier, F2
-(put at a 64 MiB offset), F4 (SIGKILL + drain puts), watchdogs: as in Q2.
+(put at a 64 MiB offset), F4 (SIGKILL + drain puts), watchdogs: as in `../gin/`.
 
 Teardown timing on both ranks (added 2026-10-06 for `../propagation/`; not yet run on the
 cluster): as in `../gin/README.md`. A hung `ncclCommAbort` now prints how long it ran, against
@@ -150,7 +151,7 @@ No processes left on either node after any trial (`leftover_procs` = 0 in every 
 
 ## Task A: collapsed vs ring CQ (NCCL_GIN_FAULT_CLASSIFY=1 unless noted)
 
-| CQ | fault | wait | n | -EIO seen | root fp / class | slot / polled CQE at detection | slot 500 us later | t_dev (ms) | t_api (ms) |
+| CQ | fault | wait | n | -EIO seen | root code / class | slot / polled CQE at detection | slot 500 us later | t_dev (ms) | t_api (ms) |
 |---|---|---|---|---|---|---|---|---|---|
 | ring | F1 | timeout | 3 | 3/3 | 5/0xf5 LOCAL_QP_ERR @76 | 5/0xf9 @77 (window: 2 err) | - | 14.6 | 14.9 |
 | ring | F2 | timeout | 3 | 3/3 | 10/0x88 REM_ACCESS @0 | 5/0xf9 @1 | - | 2.6 | 2.8 |
@@ -178,16 +179,16 @@ Findings:
    CQE [inferred]), the timeout wait spun to its timeout, and the host learned only at the 10 s
    tick.
 2. **[measured + source] Why slot 0 shows the root cause, not a flush.** DOCA's collapsed poll
-   (`doca_priv_gpu_dev_verbs_poll_cq_one_collapsed_at`) counts ticket T as complete when the
-   slot's `wqe_counter >= T-1` (its code keeps "index+1" in software; NCCL passes the WQE index).
-   With put+signal (write @T-1, atomic @T) the poll fires on the write's CQE: in all 27 trials
-   the slot's wqe_counter was T-1 and held the root cause; the atomic's flush 5/0xf9 @T
-   overwrote it within 500 us (the Q1 gap is ~60 us). With more WQEs behind the failing one the
-   slot would already be 5/0xf9 (inferred from Q1 + the re-read). Side effect (from source): on
-   a collapsed CQ, NCCL's flush can return when the write has completed but the signal atomic
-   has not.
+   (`doca_priv_gpu_dev_verbs_poll_cq_one_collapsed_at`) counts ticket T as complete when the slot's
+   `wqe_counter >= T-1` (its code keeps "index+1" in software; NCCL passes the WQE index). With
+   put+signal (write @T-1, atomic @T) the poll fires on the write's CQE: in all 27 trials the slot's
+   wqe_counter was T-1 and held the root cause; the atomic's flush 5/0xf9 @T overwrote it within 500
+   us (the gap measured in `../cqe_seq/` is ~60 us). With more WQEs behind the failing one the slot
+   would already be 5/0xf9 (inferred from `../cqe_seq/` + the re-read). Side effect (from source):
+   on a collapsed CQ, NCCL's flush can return when the write has completed but the signal atomic has
+   not.
 3. **[measured] F1 on GDAKI lands between iterations.** The next put posts WQEs 76/77 to a QP
-   already in ERR; the NIC flushes the first with 5/0xf5 and the second with 5/0xf9 (Q1 saw
+   already in ERR; the NIC flushes the first with 5/0xf5 and the second with 5/0xf9 (`../cqe_seq/` saw
    0xf5 only for the head WQE at the moment of the ERR; this shows the same for WQEs posted
    afterwards).
 4. **[measured] Collapsed CQ + CPU-proxy doorbell deadlocks without `CPU_PROXY_UPDATE_PI`.**
@@ -211,9 +212,9 @@ Findings:
    NVSHMEM creates/drives its QP/CQ or its proxy (not identified; e.g. compare its CQ context
    via QUERY_CQ and whether its proxy stops ringing after ERR).
 
-## Task B (Q4): ring CQ, flag on vs off (same build)
+## Task B (device-side classifier): ring CQ, flag on vs off (same build)
 
-| fault | wait | flag | n | device rc | class (true) | root fp | t_dev | t_mbx | t_api (ms) | init_silent_iters | init / target |
+| fault | wait | flag | n | device rc | class (true) | root code | t_dev | t_mbx | t_api (ms) | init_silent_iters | init / target |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | F1 | timeout | on | 3 | ncclRemoteError | LOCAL_QP_ERR (F1) | 5/0xf5 | 14.94 | 15.02 | **15.18** | 0,0,0 | error / timeout |
 | F1 | blocking | on | 3 | ncclRemoteError | LOCAL_QP_ERR | 5/0xf5 | 15.56 | 15.62 | **15.66** | **0,0,0** | error / hang |
@@ -228,20 +229,20 @@ Findings:
 | F4 | both | off | 6 | ncclTimeout | - | - | - | - | 8038-8039 | 0 | timeout / killed |
 
 Medians over 3 trials (full ranges and all columns in `results/20260923/summary.md`). *F4 uses
-the timeout-mode drain in both modes (as in Q2). Baselines (3 timeout + 3 blocking, flag on):
+the timeout-mode drain in both modes (as in `../gin/`). Baselines (3 timeout + 3 blocking, flag on):
 all ok, no records.
 
 - **Detection.** The device sees the fault at the first poll that meets the error CQE: F1 at the
-  next iteration's flush (~15 ms = the 15 ms iteration gap), F2 2.6 ms after the out-of-bounds
-  put was launched, F3/F4 at RETRY_EXC (3.5-3.8 s at IB timeout 14, cf. Q1 3.52-3.61 s and GIN
-  proxy F3 3.6 s).
+  next iteration's flush (~15 ms = the 15 ms iteration gap), F2 2.6 ms after the out-of-bounds put
+  was launched, F3/F4 at RETRY_EXC (3.5-3.8 s at IB timeout 14, cf. `../cqe_seq/` 3.52-3.61 s and
+  GIN proxy F3 3.6 s).
 - **Device -> host.** Record read by the watcher 94 us after `t_dev` (median, 56-126, n=33 ring
   trials; the 20 us sleep overshoots to ~60-80 us), `ncclCommGetAsyncError` 190 us (69-371; the
   driver polls every 200 us), kernel return seen by the host 372 us (500 us poll). With the flag
   off the host learns only at the next 10 s QP-state tick (8.0-10.0 s here, phase-dependent).
 - **Class vs truth.** F1, F2, F3 exact in 6/6 each. F4 (SIGKILL) gives RETRY_EXC 12/0x81 like
   F3 (on GDAKI the killed peer's QPs vanish and packets are dropped; the GIN proxy saw REM_ACCESS
-  10/0x88 at 60 ms in Q2); separating peer_err from proc_kill needs a liveness probe, as in the
+  10/0x88 at 60 ms in `../gin/`); separating peer_err from proc_kill needs a liveness probe, as in the
   CPU harness.
 - **Trailing WQE.** The polled index is the signal atomic, whose CQE was 5/0xf9 in every ring
   fault trial; the root cause sits one index earlier and is found by the window scan
@@ -253,7 +254,7 @@ all ok, no records.
   was killed before it logged that iteration; the following drain flush returned
   `ncclRemoteError` (12/0x81).
 - **Teardown.** `ncclCommAbort` returned on rank 0 in every trial (the target's blocking hang is
-  bounded by the driver cap, as in Q2).
+  bounded by the driver cap, as in `../gin/`).
 
 ## Overhead (no fault, ring CQ, same build; `results/20260923/lat/`)
 
@@ -305,9 +306,9 @@ unknown); the source of the small p99 shift.
 
 | path | what |
 |---|---|
-| `gin_q4_classify.diff` | the Q4 patch (layered on `../gin/gin_fault_inject.diff`) |
+| `gin_q4_classify.diff` | the classifier patch (layered on `../gin/gin_fault_inject.diff`) |
 | `gin_q4.cu` | driver (from `../gin/gin_fault.cu`) |
-| `scripts/build_driver.sh` | builds the driver against the Q4 build tree |
+| `scripts/build_driver.sh` | builds the driver against the classifier build tree |
 | `scripts/run_trial.sh`, `run_matrix.sh` | one trial / one batch (run inside `../common/cluster_run.sh`) |
 | `scripts/q4_row.py`, `rebuild_csv.py`, `summarize.py` | CSV row, CSV regeneration from logs, tables |
 | `results/20260923/taskA/` | Task A: 56 trials (`taskA.csv`, `logs/`) |

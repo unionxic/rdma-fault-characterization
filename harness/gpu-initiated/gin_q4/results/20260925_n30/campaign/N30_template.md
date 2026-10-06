@@ -7,13 +7,14 @@ forced-CPU-doorbell cells), with the builds, runners and settings of the earlier
 the result with the earlier small-N numbers. Nothing was rebuilt or patched: every trial ran the
 deployed bundles through the stacks' own, unchanged `run_trial.sh`.
 
-**Answer in one line:** every cell reached 100 % at the higher N (682 valid trials, 0 failures; lower
-Wilson 95 % bound 88.6 % per N=30 cell and 72.2 % per N=10 cell, 96.3 % for all GDAKI fault-recovery
-runs pooled). One GIN Q4 trial was invalid and was replaced: rank 0 could not bind its bootstrap
-port, so no fault ran. The success proportions are the same as in the earlier small-N runs in every
-cell. Several median times differ. Each difference traced to where the fault falls in the iteration
-cycle, to a two-mode REM_ACCESS latency before detection, to the retry-exhaustion band, or to
-0.1–0.6 ms of host-side variation; none traced to the FT code.
+**Answer in one line:** every cell reached 100 % at the higher N (682 valid trials, 0 failures;
+lower Wilson 95 % bound 88.6 % per N=30 cell and 72.2 % per N=10 cell, 96.3 % for all GDAKI
+fault-recovery runs pooled). One trial of the GIN GDAKI device-side classifier was invalid and was
+replaced: rank 0 could not bind its bootstrap port, so no fault ran. The success proportions are the
+same as in the earlier small-N runs in every cell. Several median times differ. Each difference
+traced to where the fault falls in the iteration cycle, to a two-mode REM_ACCESS latency before
+detection, to the retry-exhaustion band, or to 0.1–0.6 ms of host-side variation; none traced to the
+FT code.
 
 ## Setup
 
@@ -26,11 +27,11 @@ cycle, to a two-mode REM_ACCESS latency before detection, to the retry-exhaustio
   "PeerMappingOverride=1;"` and `EnableStreamMemOPs: 1` on both nodes in every trial (column
   "driver" below: `PMO=1,SMO=1 both`).
 - **Doorbell mode, recorded per trial** (column "doorbell"):
-  - GIN Q4 (`gin_q4` build, which does not log its doorbell mode): two indicators per rank, as in
-    `gin_recovery/scripts/q4_rerun.sh`. The GIN CPU-proxy progress thread "NCCL GIN P…" (sampled
-    every 0.25 s with `NCCL_SET_THREAD_NAME=1`) and DOCA's "Enabling CPU proxy mode" warning
-    (`DOCA_GPUNETIO_LOG=4`, one line per QP when DOCA falls back to the CPU proxy). "GPU" = neither
-    indicator on either rank. Positive control in the same session: 2 trials with
+  - GIN classifier (`gin_q4` build, which does not log its doorbell mode): two indicators per rank,
+    as in `gin_recovery/scripts/q4_rerun.sh`. The GIN CPU-proxy progress thread "NCCL GIN P…"
+    (sampled every 0.25 s with `NCCL_SET_THREAD_NAME=1`) and DOCA's "Enabling CPU proxy mode"
+    warning (`DOCA_GPUNETIO_LOG=4`, one line per QP when DOCA falls back to the CPU proxy). "GPU" =
+    neither indicator on either rank. Positive control in the same session: 2 trials with
     `NCCL_GIN_GDAKI_NIC_HANDLER=1` flip both indicators (see §1).
   - GDAKI recovery v2 (`gin_recovery_gpudb`): the NCCL WARN `GIN/GDAKI: doorbell mode=GPU …
     gpu_sm_db=12 cpu_proxy=0` that v2 logs once per GDAKI context on each rank, plus both indicators
@@ -51,17 +52,17 @@ cycle, to a two-mode REM_ACCESS latency before detection, to the retry-exhaustio
   wait (15 + 15 for N=30, 5 + 5 for N=10). Two exceptions: the stock control is blocking only (as
   requested; silent success needs the blocking wait), and the doorbell positive control is 2 timeout
   trials. The tables give both modes pooled and each mode alone.
-- **CQ type.** GIN Q4: ring and collapsed (`NCCL_GIN_GDAKI_CQ_TYPE=collapsed`); recovery: ring (the
-  only supported shape). NVSHMEM: its collapsed send CQ.
+- **CQ type.** GIN classifier: ring and collapsed (`NCCL_GIN_GDAKI_CQ_TYPE=collapsed`); recovery:
+  ring (the only supported shape). NVSHMEM: its collapsed send CQ.
 - **Order and holds.** Trials were interleaved round-robin over cells and wait modes (one trial of
   every cell per round), and run in holds of `common/cluster_run.sh` of at most 14 min, released
   between holds. No new trial started after 600 s, and there was a hard stop at 780 s (recovery
-  queue); for the merged NVSHMEM + GIN Q4 queue these were 690 s / 810 s. There were 10 holds
+  queue); for the merged NVSHMEM + GIN classifier queue these were 690 s / 810 s. There were 10 holds
   (2026-09-25 02:10–09:34 KST, 3.5–12.2 min each) plus a 1.2 min smoke hold, queued behind other
   agents' runs. From 02:48 `cluster_run.sh` gives priority to `prio-` runs, so these runs waited up
   to 2 h for the lock. No hold overlapped another run.
-- **Differences from the earlier runs.** All three are post-fault bounds of the GIN Q4 driver, so
-  they only shorten what happens after the initiator has recorded its result:
+- **Differences from the earlier runs.** All three are post-fault bounds of the GIN classifier
+  driver, so they only shorten what happens after the initiator has recorded its result:
   - `GIN_BLOCK_CAP_S` = 8 s with the classifier on, 12 s for the stock control (earlier 25 s): how
     long a blocking wait may hang. The initiator has its result at most ~3.8 s after the fault
     (RETRY_EXC).
@@ -72,7 +73,7 @@ cycle, to a two-mode REM_ACCESS latency before detection, to the retry-exhaustio
 
   The stock control's host detection (the 10 s QP-state tick, 9.4 s after F1) still happens inside
   these bounds, because the initiator blocks on its next barrier until the target's 12 s cap ends
-  (checked by hand in `stock/logs/ring_c0_F1_blocking_t1_*`). The earlier Q4 Task A
+  (checked by hand in `stock/logs/ring_c0_F1_blocking_t1_*`). The earlier classifier Task A
   collapsed runs also had diagnostic knobs on (100 ms QP watch, 500 µs slot re-read, which delays
   publishing by 0.5 ms); here they are off. Recovery and NVSHMEM trials used exactly the earlier
   per-cell settings (`gin_recovery/scripts/run_gpudb.sh` main/v1 parts, `nvshmem_ft/scripts/specs/`).
@@ -101,9 +102,9 @@ injected. It was replaced by trial `t16` of the same cell. The same collision hi
 on 2026-09-24 (`gin_recovery` GPU-doorbell `lat/failed/`). No other trial of the campaign lacks the
 start-up marker (`gin_available=1` on both GIN ranks, `[PEn] ready` on both NVSHMEM PEs).
 
-## 1. GIN GDAKI + Q4 device classifier (`gin_q4`)
+## 1. GIN GDAKI + device-side classifier (`gin_q4`)
 
-Success criterion per trial: the device record has the true class and fingerprint (F1
+Success criterion per trial: the device record has the true class and error code (F1
 LOCAL_QP_ERR 5/0xf5, F2 REM_ACCESS 10/0x88, F3 and F4 RETRY_EXC 12/0x81), the device wait returned
 `ncclRemoteError`, `ncclCommGetAsyncError` returned an error, no silent success (the initiator did
 not count a put that the target never verified; not applied to F4, see below) and `ncclCommAbort`
@@ -112,7 +113,7 @@ by the driver) after the fault.
 
 <!--T:1a-->
 
-- **All 240 valid classifier-on trials met the criterion.** Class and fingerprint were exact, the
+- **All 240 valid classifier-on trials met the criterion.** Class and error code were exact, the
   device wait returned `ncclRemoteError`, `ncclCommGetAsyncError` returned an error, `ncclCommAbort`
   returned, and no process was left, in 240/240. There was no silent success in F1–F3 (0/180; 0/90
   in the blocking wait, the only mode where it can occur).
@@ -128,8 +129,8 @@ by the driver) after the fault.
 - **Doorbell mode.** In all 250 trials (240 + 10 stock), neither indicator appeared on either rank:
   no "NCCL GIN P" proxy thread, and 0 "Enabling CPU proxy mode" lines. The 2 positive-control trials
   with `NCCL_GIN_GDAKI_NIC_HANDLER=1` showed the proxy thread on both ranks and 24 DOCA lines per rank,
-  and still classified LOCAL_QP_ERR. That GIN Q4 used GPU-rung doorbells is therefore inferred from
-  these indicators (the gin_q4 build does not log the mode). The v2 recovery build does log it
+  and still classified LOCAL_QP_ERR. That the GIN classifier used GPU-rung doorbells is therefore inferred from
+  these indicators (the `gin_q4` build does not log the mode). The v2 recovery build does log it
   (`doorbell mode=GPU`) under the same driver state.
 - **Times.** F1 is detected at the next iteration's put, 15.2–15.6 ms after the hook (median; the
   iteration gap is 15 ms). F3 and F4 are detected at retry exhaustion, 3.52–3.83 s after the fault.
@@ -187,13 +188,13 @@ completed (d = 1) or the commit finished (d = 0).
 ## 3. NVSHMEM IBGDA + FT patch (`nvshmem_ft`, GPU NIC handler)
 
 "Fault → host mailbox" is when the host watcher read the device record (the first host-visible
-fingerprint); "fault → device" is the record's `%globaltimer` on rain's clock. Finalize = the
+error code); "fault → device" is the record's `%globaltimer` on rain's clock. Finalize = the
 driver's timing of `nvshmem_finalize` on each PE.
 
 <!--T:3-->
 
 - **Every one of the 220 NVSHMEM trials met its criterion.** Classification: the first device record
-  had the true class and fingerprint in 120/120 trials (30 per fault, half through the bounded quiet
+  had the true class and error code in 120/120 trials (30 per fault, half through the bounded quiet
   and half through `nvshmem_quiet` + `nvshmemx_ibgda_ft_status`). In F1, F2b and F3 the initiator
   never counted an operation that the target had not verified (silent success 0/90; not defined for
   F4, where the target is killed). Recovery: 80/80 runs with 200/200 operations bit-exact, an exact
@@ -227,7 +228,7 @@ driver's timing of `nvshmem_finalize` on each PE.
 
 The earlier trials were recomputed from their raw logs with the same extractors and the same
 per-trial criteria as the N30 trials (scratch CSVs, not written into the earlier result
-directories). Earlier sources: GIN Q4 `gin_q4/results/20260923/taskB` (ring) and `taskA`
+directories). Earlier sources: GIN classifier `gin_q4/results/20260923/taskB` (ring) and `taskA`
 (collapsed; CPU doorbells), and the GPU-doorbell runs of 2026-09-24 (`gpu_doorbell/results/20260924*`
 valid trials and `gin_recovery/results/20260924_gpudb/q4`); recovery `gin_recovery/results/20260924`
 (runs + confirm; v1, CPU-doorbell fallback before PeerMappingOverride) and
@@ -246,7 +247,7 @@ not show any new failure mode of the FT code.
 
 **Times: the same in about half of the comparisons.** The rest differ, and each difference traced to
 something outside the classifier and recovery code:
-- **REM_ACCESS detection** (GIN Q4 F2 and recovery F2 now faster; NVSHMEM decline F2b slower,
+- **REM_ACCESS detection** (GIN classifier F2 and recovery F2 now faster; NVSHMEM decline F2b slower,
   classify F2b +0.14 ms). The whole difference lies before the device sees the error CQE. The host
   path after detection is unchanged: GIN recovery F2 device → `ncclGinFaultQuery` was 0.13 / 0.21 ms
   (medians, 09-24 v1 / v2) and 0.05–0.30 ms per N30 trial. The latency has two modes (§5).
@@ -283,12 +284,12 @@ above are systematic (for example the REM_ACCESS modes), not isolated p-values.
 2. **REM_ACCESS latency has two modes.** Time from the bad put (GIN: the fault stamp right before
    its launch; NVSHMEM: the post) to the device seeing REM_ACCESS, in all three stacks:
    - fast mode: 1.26–1.68 ms;
-   - slow mode: 2.46–2.97 ms, plus two stragglers (4.15 ms: one GIN Q4 collapsed trial; 5.02 ms: one
-     GIN recovery F2 trial).
+   - slow mode: 2.46–2.97 ms, plus two stragglers (4.15 ms: one GIN classifier collapsed trial; 5.02
+     ms: one GIN recovery F2 trial).
 
    Which trials were fast or slow:
-   - GIN Q4 F2: 41 of 60 trials were fast. The mode followed time: every trial up to 08:15 was fast,
-     and every trial from 09:18 on was slow.
+   - GIN classifier F2: 41 of 60 trials were fast. The mode followed time: every trial up to 08:15
+     was fast, and every trial from 09:18 on was slow.
    - GIN recovery F2 (02:11–03:29): all 30 slow.
    - NVSHMEM: classify F2b all 30 fast, decline F2b all 10 slow, although both ran interleaved in the
      same holds. So the mode is not only a matter of time.
@@ -315,21 +316,21 @@ above are systematic (for example the REM_ACCESS modes), not isolated p-values.
 
    The 09-24 GPU-doorbell runs had two such rounds (~21 ms). Correctness was unaffected.
 5. **Variable Prepare time** in single-shot GIN F1 recoveries (see §4). Not isolated.
-6. **F4 "one operation ahead"** (5/60 GIN Q4 trials). The kill landed between the write's ACK and
-   the target's check (§1).
+6. **F4 "one operation ahead"** (5/60 GIN classifier trials). The kill landed between the write's
+   ACK and the target's check (§1).
 7. **Process notes.**
    - A first NVSHMEM hold waited the full 2 h for the lock (`gave up … after 7200s`) and ran
-     nothing. The queue was then merged with the GIN Q4 queue, so that one hold could finish one and
-     continue with the other.
-   - The GIN Q4 post-fault bounds (8/4 s, see Setup) were fixed before any GIN Q4 trial of the
-     campaign ran.
+     nothing. The queue was then merged with the GIN classifier queue, so that one hold could finish
+     one and continue with the other.
+   - The GIN classifier post-fault bounds (8/4 s, see Setup) were fixed before any GIN classifier
+     trial of the campaign ran.
    - The analysis first counted the NVSHMEM smoke trial as a classify trial, because the two had the
      same tag (14 events for 13 trials). Smoke directories are now excluded.
 
 ## 6. Measured vs inferred
 
 - **Measured:**
-  - every outcome, class, fingerprint, bit-exact check, per-operation and final signal, and time in
+  - every outcome, class, error code, bit-exact check, per-operation and final signal, and time in
     the tables;
   - the doorbell mode logged by the v2 GIN build and by NVSHMEM;
   - the proxy-thread and DOCA indicators, and the driver parameters of both nodes, per trial;
@@ -338,8 +339,8 @@ above are systematic (for example the REM_ACCESS modes), not isolated p-values.
   - the REM_ACCESS modes and their timeline;
   - hold times.
 - **Inferred:**
-  - That GIN Q4 and v1 used GPU and CPU-proxy doorbells respectively: from the two indicators,
-    validated by the positive control in the same session, not logged by those builds.
+  - That the GIN classifier and v1 used GPU and CPU-proxy doorbells respectively: from the two
+    indicators, validated by the positive control in the same session, not logged by those builds.
   - That the F4 "one ahead" operations had landed: a success CQE for an RDMA WRITE means the
     responder acknowledged it (verbs semantics). The wire was not captured.
   - That the three slow rounds were firmware command time: the time is inside the modify-QP calls.
@@ -388,7 +389,7 @@ python3 $C/bin/assemble_doc.py $C/N30_template.md analysis.md N30_20260925.md
   from the raw KV/log files, with separate and simpler parsing, and diffed them against the analysis
   CSVs: class, silent-success count, device/host error, teardown, doorbell and driver flags,
   fault → host API (0.01 ms tolerance), recovery counts, d values, data and signal checks, declines
-  and finalize times. Final pass: 253 GIN Q4 + 210 recovery + 220 NVSHMEM trials, **no
+  and finalize times. Final pass: 253 GIN classifier + 210 recovery + 220 NVSHMEM trials, **no
   disagreement**.
 - **Passes that found something:**
   - bugs in the QA script itself: a meta-suffix off by one, two missing multiline flags, `device_rc=`
@@ -408,7 +409,7 @@ python3 $C/bin/assemble_doc.py $C/N30_template.md analysis.md N30_20260925.md
     8.25 ms; V = 37, expected 38, d = 1; 120/120 bit-exact; final signal 120.
   - Stock `stock/logs/ring_c0_F1_blocking_t1`: 39 counted vs 38 verified; "GIN Error detected" at
     9402 ms; target hang 12000 ms.
-  - The five GIN Q4 F4 one-ahead trials (§1).
+  - The five GIN classifier F4 one-ahead trials (§1).
   - The invalid trial's logs.
   - The three slow recovery rounds (responder `rxrec` step times).
   - F2 `t1` decline timestamps.
