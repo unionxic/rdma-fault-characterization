@@ -6,7 +6,7 @@ the public API. This is the evidence and the logs for the upstream issue
 
 | File | What |
 |---|---|
-| `kill_repro.cu` | PE 0 loops put + signal + `nvshmem_quiet()` to PE 1, one kernel per iteration. The host bounds each iteration (`hang_s`). PE 1 waits for each signal. |
+| `kill_repro.cu` | PE 0 loops put + signal + `nvshmem_quiet()` to PE 1, one kernel per iteration. The host bounds each iteration (`hang_s`). PE 1 waits for each signal. With `FINALIZE=1` each PE calls `nvshmem_finalize()` when its run ends, under a 30 s watchdog (below). |
 | `fix.diff` | The two-line fix against v3.8.0-0. |
 | `build.sh` | Builds v3.8.0-0 from the GitHub tag archive, then a second ibgda plugin with only `fix.diff`. Builds the reproducer and deploys `~/gi-bundle/nvshmem_off380` to both nodes. |
 | `run.sh` | One trial: stock or fix, NIC handler, kill or not. Prints one CSV row with rain's port-counter deltas. |
@@ -37,3 +37,24 @@ PE 1 was SIGKILLed after PE 0's iteration 3; iteration 5 is the first one after 
 The stock and fix bundles differ only in `nvshmem_transport_ibgda.so.7.0.0`. Rebuilding the stock
 plugin after reverting `fix.diff` gives a bit-identical file (md5 `4aa4dda2`). The fix plugin is
 `e5935238`.
+
+## Teardown timing (`FINALIZE=1`, added 2026-10-06 for the propagation campaign)
+
+The default run never calls `nvshmem_finalize()`, and the result above comes from that mode.
+With `FINALIZE=1`, `run.sh` passes the variable to both PEs. Each PE then calls
+`nvshmem_finalize()` wherever its run ends: after all iterations, at the `hang_s` bound, or after
+a failed kernel. A watchdog thread bounds the call to 30 s. The PE prints one line:
+- `PE <n>: nvshmem_finalize returned after X ms`, and keeps the exit code of the end path
+  (0, 3 or 4);
+- or `PE <n>: nvshmem_finalize did not return after 30 s`, and exits 5.
+
+These lines start with `PE <n>:`, so `run.sh`'s `pe0_last` (the last `^PE 0 ` line) is the same
+iteration line as before. The finalize result shows as `pe0_rc` = 5 and in the logs. At the
+`hang_s` bound the stuck kernel is still running when finalize is called.
+
+Checked locally with `nvshmem_finalize` replaced by a sleep:
+- the default exits without the call;
+- a 120 ms sleep gives "returned after 120.1 ms" and keeps the exit code;
+- a 40 s sleep gives "did not return after 30 s" and exit 5.
+
+Not yet run on the cluster.
