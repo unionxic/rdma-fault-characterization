@@ -105,7 +105,7 @@ def flap(trials, rounds):
         if t['fault'] != 'FLAP':
             continue
         by.setdefault(t['dir'] + ':' + cell(t)[3], []).append(t)
-    print('| cell | n | transparent | declined | failed | RETRY_EXC after the cut start (s) | slowest operation (s) | recovery rounds | sunny GID index before->after | T1 re-lookup moves |')
+    print('| cell | n | transparent | declined | failed | RETRY_EXC after the cut start (s) | slowest operation (s) | recovery rounds | sunny GID index before->after | GID re-lookup moves |')
     print('|---|--:|---|---|---|---|---|---|---|---|')
     for c, ts in by.items():
         cnt = defaultdict(int)

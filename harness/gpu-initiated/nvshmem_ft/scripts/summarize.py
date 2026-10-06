@@ -55,7 +55,7 @@ def main():
             continue
         out.append('\n### %s (%d trials)\n' % (d, len(rows)))
         if not any(r['recover'] == '1' for r in rows):
-            out.append('| fault | mode | variant | n | recorded class (first record) | fp | path | fault -> device (ms) | device -> mailbox (us) | fault -> host API (ms) | target | teardown r0/r1 (finalize ms) | exit r0/r1 |')
+            out.append('| fault | mode | variant | n | recorded class (first record) | status/vendor_err | path | fault -> device (ms) | device -> mailbox (us) | fault -> host API (ms) | target | teardown r0/r1 (finalize ms) | exit r0/r1 |')
             out.append('|---|---|---|--:|---|---|---|---|---|---|---|---|---|')
             for r in rows:
                 r['variant'] = re.sub(r'^[A-Za-z0-9]+_(timeout|blocking)_ft\d_rec\d_?', '', r['tag'])
