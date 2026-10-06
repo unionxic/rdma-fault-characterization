@@ -26,8 +26,8 @@ MR while the QP is still alive, and the next WRITE is NAKed.
 Tags: **[measured]** (this directory; raw data in `results/20260925/`), **[source]** (code read
 on these machines), **[inferred]**. 417 trials, all run under
 `../gpu-initiated/common/cluster_run.sh`, N=10 per variant (7 single smoke trials besides).
-`qa_crosscheck.py` recounts every trial from the raw requester and victim logs: 0
-mismatches.
+A one-off recount of every trial from the raw requester and victim logs found 0 mismatches
+(`qa_crosscheck.py`, removed 2026-10-06, in tag `archive/results-tables-20261006`).
 
 ## Answer
 
@@ -361,7 +361,7 @@ Programs (all new; `make` on rain; the victim side is copied to sunny `~/fp-bund
 | `fp_launcher.c` | runs on the victim's node. It forks the victim and `SIGKILL`s it on request (timestamp taken just before `kill()`), then reaps it through a pidfd. It also timestamps the FIN of every **marker** socket. The victim opens one marker (TCP to the launcher on loopback) after each setup step (`start`, `after_cuda`, `after_ibv`, `after_qp`, `after_mr`, `last`). Each marker is one more file in the victim's fd table, so its FIN times the moment the kernel released that fd. |
 | `fp_requester.c` | one trial, in this order: clock offset to the launcher (min-RTT of 32 pings); SPAWN; connect the victim's OOB socket (management network); bring up the QP; stream signaled 64 KiB RDMA WRITEs (<= 8 outstanding, one post per >= 20 us) for 300 ms; trigger. It records the first error CQE (status, vendor_err, time), the last successful completion, the OOB FIN/RST, the launcher's reap and marker times, and (from sF on) its port HW counters. |
 | `run_session.sh` | runs a spec (variant, N, trigger, victim flags) under one lock hold. `REVERSE=1` puts the victim on rain. |
-| `make_table.py`, `summarize.py`, `qa_crosscheck.py` | results table, per-variant summary, and recount from the raw logs. |
+| `make_table.py`, `summarize.py` | results table and per-variant summary. |
 
 `fp_responder.c` options:
 * `-m host|gpu|dmabuf`: the MR memory.
@@ -387,7 +387,7 @@ Programs (all new; `make` on rain; the victim side is copied to sunny `~/fp-bund
 | `third_party/mlx5_ifc.h` | PRM layouts, verbatim from rdma-core `providers/mlx5/mlx5_ifc.h` (dual BSD/GPL) |
 | `fp_launcher.c`, `fp_requester.c` | kill/observe side and requester side |
 | `Makefile`, `run_session.sh` | build on rain; one locked session per spec |
-| `make_table.py`, `summarize.py`, `qa_crosscheck.py` | the table above; per-variant summary with marker windows; recount of every trial from the raw logs |
+| `make_table.py`, `summarize.py` | the table above; per-variant summary with marker windows |
 | `results/20260925/specs/` | the spec files that were run |
 | `results/20260925/s1_sunny` | smoke, fd order, MR/QP order, peermem vs dma-buf (`smoke2_s1.spec`) |
 | `results/20260925/sB_sunny` | DEVX QPs; live `dereg_mr` / `destroy_qp` controls (`sB.spec`) |
@@ -420,7 +420,7 @@ Reproduce (from this directory, on rain):
 make
 ../gpu-initiated/common/cluster_run.sh -w 3600 -t fp -- ./run_session.sh <out> results/20260925/specs/<spec>
 REVERSE=1 ../gpu-initiated/common/cluster_run.sh -w 3600 -t fp-rev -- ./run_session.sh <out> results/20260925/specs/s5_rev.spec
-python3 qa_crosscheck.py <out> && python3 summarize.py <out>/trials.csv
+python3 summarize.py <out>/trials.csv
 ```
 
 
