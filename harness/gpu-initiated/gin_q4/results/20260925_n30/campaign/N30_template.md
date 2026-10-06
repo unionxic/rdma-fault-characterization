@@ -363,16 +363,15 @@ above are systematic (for example the REM_ACCESS modes), not isolated p-values.
 | `gin_recovery/results/20260925_n30/rec_n30_{trials,events}.csv` | per trial / per recovery round, with verdicts and fault-time columns |
 | `nvshmem_ft/results/20260925_n30/{classify,recover,multi,decline,smoke}/` | 120 / 60 / 20 / 20 trials (+1 smoke): `<tag>.meta`, `.pe0.log.gz`, `.pe1.log.gz` (gzipped after the analysis, as in `b2`; `rows.py` reads them), `.drv` |
 | `nvshmem_ft/results/20260925_n30/{trials,events}.csv`, `nv_n30_{trials,events}.csv` | regenerated with `nvshmem_ft/scripts/rows.py`; with verdicts |
-| `gin_q4/results/20260925_n30/campaign/` | the campaign tools (copied from the scratch directory, paths inside point there): `bin/` (`q4_one.sh`, `rec_one.sh`, `nv_one.sh` wrap the stacks' unchanged `run_trial.sh`; `drvcfg.sh`; `chunk.sh`, `campaign.sh`, `campaign2.sh`; `gen_queues.py`; `analyze_n30.py`; `qa_n30.py`; `assemble_doc.py`), `specs/` (queues), `state/` (per-trial log `trials.log`, `holds.log`, full console `campaign.out`, `smoke.out`), `N30_template.md`, `analysis.md` |
+| `gin_q4/results/20260925_n30/campaign/` | the campaign tools (copied from the scratch directory, paths inside point there): `bin/` (`gen_queues.py`; `analyze_n30.py`; `qa_n30.py`; `assemble_doc.py`), `specs/` (queues), `state/` (per-trial log `trials.log`, `holds.log`, full console `campaign.out`, `smoke.out`), `N30_template.md`, `analysis.md`. The per-trial wrappers (`q4_one.sh`, `rec_one.sh`, `nv_one.sh` wrapped the stacks' unchanged `run_trial.sh`; `drvcfg.sh`) and the chunk runner `chunk.sh` stayed in the scratch directory; the hold schedulers `campaign.sh` and `campaign2.sh` were removed on 2026-10-06 (tag `archive/results-tables-20261006`) |
 
 Reproduce (each campaign hold runs inside `common/cluster_run.sh`):
 
 ```
 C=gin_q4/results/20260925_n30/campaign
 python3 $C/bin/gen_queues.py                                   # rec.q, nv.q, q4.q -> specs/
-bash $C/bin/campaign.sh rec                                    # GIN recovery queue, holds of <= 14 min
-cat specs/nv.q specs/q4.q > specs/nvq4.q                       # (+ the replacement line q4-...-F2-blocking-t16)
-START_S=690 HARD_S=810 bash $C/bin/campaign2.sh nvq4           # NVSHMEM + GIN Q4 (merged queue)
+# then rec.q (GIN recovery), then nv.q + q4.q merged into nvq4.q (+ the replacement line
+# q4-...-F2-blocking-t16), chunk by chunk, one hold of <= 14 min per chunk (scheduler not in the tree)
 python3 $C/bin/analyze_n30.py > analysis.md                    # regenerates every CSV and table
 python3 $C/bin/qa_n30.py                                       # independent cross-check, exit 0 = agree
 python3 $C/bin/assemble_doc.py $C/N30_template.md analysis.md N30_20260925.md
