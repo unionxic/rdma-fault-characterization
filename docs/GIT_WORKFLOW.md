@@ -81,6 +81,13 @@ never committed. Examples: `nvshmem_ft/scripts/t1/pack_t1.sh` and
 Before every push, a grep of the index (`git grep --cached`) for the real prefix must print
 nothing, in any spelling, escaped or not.
 
+## Markdown
+
+GitHub renders `~text~` (one or two tildes) as strikethrough. Two range tildes in one paragraph,
+list item or table cell strike out everything between them. Outside code, write ranges with an en
+dash (`3.5–3.8 s`) and "about" as "약 60 µs" or `≈60 µs`. `tools/check_md.py` lists every tilde
+outside code that is not surrounded by spaces; the local pre-push hook runs it.
+
 ## Tags and releases
 
 | tag | meaning |
