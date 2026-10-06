@@ -44,7 +44,7 @@ IBGDA)이다.
 ## 진행 중
 
 - **교차 계층 측정 캠페인:** 예측을 먼저 등록했고(태그 `prereg/propagation-v1`), 아직 실행하지 않았다. (`harness/gpu-initiated/propagation/`)
-- **투명 복구 2단계:** GIN S2와 NVSHMEM T1. 미해결 항목이 남아 있어 draft PR로 두었다.
+- **투명 복구 후속:** GIN 투명 복구 2단계와 NVSHMEM 투명 복구. 미해결 항목이 남아 있어 draft PR로 두었다.
 - **NVSHMEM 업스트림 이슈:** 초안만 있다.
 
 ## 범위와 한계
