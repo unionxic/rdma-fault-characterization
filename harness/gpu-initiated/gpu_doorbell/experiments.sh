@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # experiments.sh - the runs done with GPU-rung doorbells (PeerMappingOverride=1).
-# Called by window.sh inside the driver-reload window, which already holds the cluster
-# lock, so the per-trial runners are called directly (not through cluster_run.sh).
+# Ran inside the driver-reload window (window.sh, removed: the override is permanent since
+# 2026-09-24 13:53), which already held the cluster lock, so the per-trial runners are called
+# directly. Run it inside ../common/cluster_run.sh.
 # Same runners, binaries and knobs as the CPU-doorbell results in ../nvshmem and ../gin_q4;
 # only the doorbell path differs.
 set -u
