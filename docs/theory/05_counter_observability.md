@@ -12,7 +12,7 @@
 | `ethtool -S` | netdev | 2,394 | Ethernet/MAC traffic·error counter |
 | NIC register (mlxreg, root) | PPCNT/MPCNT/MISC | 169 | firmware/PHY/PCIe register |
 
-방법은 동일하다. 각 fault scenario에서 fault inject 직전과 직후 counter snapshot을 찍어 그 차이(delta)를 측정하고, "어느 fault가 어느 counter를 얼마나 올리는가"를 그 fault의 fingerprint로 정의한다. 그런 다음 counter source를 하나씩 더해 가며 10개 scenario 중 몇 개가 서로 다른 fingerprint를 갖는지(unique fingerprint 수)를 센다.
+방법은 동일하다. 각 fault scenario에서 fault inject 직전과 직후 counter snapshot을 찍어 그 차이(delta)를 측정하고, "어느 fault가 어느 counter를 얼마나 올리는가"를 그 fault의 counter signature로 정의한다. 그런 다음 counter source를 하나씩 더해 가며 10개 scenario 중 몇 개가 서로 다른 신호 조합(오류 코드와 counter signature)을 갖는지(구별되는 조합 수)를 센다.
 
 ### 5.1 실험 셋업과 deterministic 여부
 
@@ -59,9 +59,9 @@ server-side error counter(resp_cqe_error, resp_remote_access_errors 등)는 어�
 
 ### 5.3 Resolution: 무엇을 더 보면 원인이 갈리는가
 
-counter source를 하나씩 추가하며 10개 scenario 중 몇 개가 서로 구별되는지(unique fingerprint)를 측정했다. 출발점인 CQE status only(ibv_wc_status)에서는 LOC_PROT_ERR 3종(SGE length / invalid lkey / MR 권한 위반), REM_ACCESS_ERR 2종(invalid rkey / 주소 범위 초과), RETRY_EXC_ERR 2종(서버 QP ERR / 프로세스 kill)이 각각 한 status로 뭉쳐 6/10만 구별된다.
+counter source를 하나씩 추가하며 10개 scenario 중 몇 개가 서로 구별되는지(구별되는 조합 수)를 측정했다. 출발점인 CQE status only(ibv_wc_status)에서는 LOC_PROT_ERR 3종(SGE length / invalid lkey / MR 권한 위반), REM_ACCESS_ERR 2종(invalid rkey / 주소 범위 초과), RETRY_EXC_ERR 2종(서버 QP ERR / 프로세스 kill)이 각각 한 status로 뭉쳐 6/10만 구별된다.
 
-| Counter source | Unique fingerprints | 남는 구분 불가 쌍 |
+| Counter source | 구별되는 조합 수 | 남는 구분 불가 쌍 |
 |---|---|---|
 | CQE status only (ibv_wc_status) | 6/10 | LOC_PROT_ERR 3종, REM_ACCESS_ERR 2종, RETRY_EXC_ERR 2종 |
 | + vendor_err | 8/10 | invalid rkey ≡ 주소 범위 초과 (0x88), 서버 QP ERR ≡ 프로세스 kill (0x81) |

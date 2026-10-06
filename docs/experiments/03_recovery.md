@@ -59,7 +59,7 @@ REM_ACCESS_ERR과 REM_INV_REQ_ERR은 수치가 사실상 동일하다(detect 480
 
 ### 3.3 CQE sufficiency: recovery 결정은 0-cost
 
-recovery 방법을 고를 때 HW counter(sysfs/ethtool/register)를 읽을 필요가 없다. `ibv_wc_status`와 `vendor_err`만으로 모든 recovery action이 결정된다. 이는 counter를 전수 조사했기에 "충분하다"고 단정할 수 있다(counter mapping 실험에서 ethtool 2,394개 counter 중 recovery 결정을 바꾸는 것이 없음을 확인. 단 분류 관점에서는 ethtool traffic fingerprint가 RETRY_EXC_ERR 두 원인을 구분해 해상도를 8/10에서 9/10으로 올린다 — theory 문서의 counter 관측성 참조).
+recovery 방법을 고를 때 HW counter(sysfs/ethtool/register)를 읽을 필요가 없다. `ibv_wc_status`와 `vendor_err`만으로 모든 recovery action이 결정된다. 이는 counter를 전수 조사했기에 "충분하다"고 단정할 수 있다(counter mapping 실험에서 ethtool 2,394개 counter 중 recovery 결정을 바꾸는 것이 없음을 확인. 단 분류 관점에서는 ethtool 트래픽 counter의 변화 패턴이 RETRY_EXC_ERR 두 원인을 구분해 해상도를 8/10에서 9/10으로 올린다 — theory 문서의 counter 관측성 참조).
 
 | 에러 (status / vendor_err) | CQE만으로 구분되는가 | Counter가 추가 정보를 주는가 |
 |---|---|---|

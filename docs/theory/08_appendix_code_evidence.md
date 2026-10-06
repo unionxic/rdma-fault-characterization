@@ -2,7 +2,7 @@
 
 > [이론 문서 인덱스](README.md)
 
-이 부록은 실험 코드를 구현하면서 마주친 함정들을 다룬다. 각 함정은 단순한 버그 수정이 아니라 RDMA subsystem의 동작에 대한 관찰이며, 재현성에 직결되므로 기록한다. 코드 라인 번호는 이 repo의 `kernel_src/mlx5_ib/cq.c`와 `kernel_src/include/device.h`에서 실제로 확인한 값이다.
+이 부록은 실험 코드를 구현하면서 마주친 함정들을 다룬다. 각 함정은 단순한 버그 수정이 아니라 RDMA subsystem의 동작에 대한 관찰이며, 재현성에 직결되므로 기록한다. 코드 라인 번호는 초기 연구 때 따로 복사해 둔 커널 소스(`kernel_src/mlx5_ib/cq.c`, `kernel_src/include/device.h`)에서 확인한 값이다. 그 복사본은 이 저장소에 없다. 커널 원본으로는 `drivers/infiniband/hw/mlx5/cq.c`와 `include/linux/mlx5/device.h`이고, 라인 번호는 커널 버전마다 다르다.
 
 ### A.1 MR 권한은 두 곳에 모두 설정해야 한다
 
@@ -115,8 +115,8 @@ struct mlx5_err_cqe {
 
 `mlx5_handle_error_cqe()`의 switch는 `cqe->syndrome`(device.h:814)으로 분기하고(cq.c:288), 값 복사는 `cqe->vendor_err_synd`(device.h:813)에서 가져온다(cq.c:339). 즉 ibv_wc_status를 만드는 바이트와 vendor_err를 만드는 바이트가 물리적으로 분리되어 있어, 하나의 status code가 여러 vendor_err로 세분화될 수 있다는 본문의 관찰(LOC_PROT_ERR가 0x53/0x52/0x33으로 갈라지는 것)이 구조적으로 성립한다. 참고로 cq.c:530-531의 디버그 로그도 `err_cqe->syndrome`과 `err_cqe->vendor_err_synd`를 별개 값으로 함께 출력한다.
 
-0xf5와 driver 상수 값의 일치 여부. 경로 2가 대입하는 `MLX5_CQE_SYNDROME_WR_FLUSH_ERR`의 실제 enum 숫자값은 이 repo에 들어 있지 않다. 이 repo의 어떤 헤더(device.h 포함)에도 `MLX5_CQE_SYNDROME_*` enum 정의가 없으며, cq.c가 참조만 할 뿐이다(repo 전역 grep 결과 정의 없음, 사용처 3곳뿐). 이 enum은 커널의 `<linux/mlx5/cq.h>`에 정의되어 있다.
+0xf5와 driver 상수 값의 일치 여부. 경로 2가 대입하는 `MLX5_CQE_SYNDROME_WR_FLUSH_ERR`의 실제 enum 숫자값은 그 소스 복사본에 들어 있지 않았다. 복사본의 어떤 헤더(device.h 포함)에도 `MLX5_CQE_SYNDROME_*` enum 정의가 없으며, cq.c가 참조만 할 뿐이다(복사본 전역 grep 결과 정의 없음, 사용처 3곳뿐). 이 enum은 커널의 `<linux/mlx5/cq.h>`에 정의되어 있다.
 
-따라서 실험에서 관측한 0xf5가 경로 1(firmware raw)에서 온 것인지 경로 2(driver 상수)에서 온 것인지, 그리고 driver 상수 자체가 0xf5와 같은지는 이 repo만으로 확정할 수 없다.
+따라서 실험에서 관측한 0xf5가 경로 1(firmware raw)에서 온 것인지 경로 2(driver 상수)에서 온 것인지, 그리고 driver 상수 자체가 0xf5와 같은지는 그 복사본만으로 확정할 수 없다.
 
 [TODO: 확인 필요] 서버에서 `grep -rn "MLX5_CQE_SYNDROME_WR_FLUSH_ERR" /usr/src/linux-headers-*/include/linux/mlx5/cq.h` 또는 `<linux/mlx5/cq.h>`를 직접 열어 enum 숫자값을 확인하고 0xf5와 일치하는지 대조할 것. 일치한다면 4절의 "QP→ERR 강제 전환 후 post" 시나리오에서 관측된 0xf5는 경로 2(driver 상수)일 가능성이 높고, 일치하지 않는다면 경로 1(firmware raw)로 해석해야 한다.

@@ -18,7 +18,7 @@
 | vendor_err | CQE (data path, user-space) | firmware raw, ConnectX-specific | 2차 세분류 |
 | hw_counter delta | sysfs / ethtool (control path) | port-level, async | 진단 보강 + 조기감지 |
 
-이 세 신호를 단계적으로 합치면 분류 해상도(distinguishable error 종류)가 올라간다. counter mapping 전수조사 결과 ibv_wc_status만으로는 10종 중 6종, vendor_err를 더하면 8종, ethtool counter까지 더하면 9종이 구분되었다 (5절). 남은 1종은 REM_ACCESS_ERR 계열에서 invalid rkey와 주소 범위 초과가 모든 counter source에서 동일 fingerprint를 보여 구분 불가다.
+이 세 신호를 단계적으로 합치면 분류 해상도(distinguishable error 종류)가 올라간다. counter mapping 전수조사 결과 ibv_wc_status만으로는 10종 중 6종, vendor_err를 더하면 8종, ethtool counter까지 더하면 9종이 구분되었다 (5절). 남은 1종은 REM_ACCESS_ERR 계열에서 invalid rkey와 주소 범위 초과가 모든 counter source에서 같은 신호 조합을 보여 구분 불가다.
 
 6/10 →(+vendor_err)→ 8/10 →(+ethtool counter)→ 9/10
 
