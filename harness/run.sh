@@ -129,7 +129,7 @@ run_one() {
     local out="$RESULTS_DIR/${fault}_${STAMP}.csv"
     local rc=0 crc
     log "=== fault: $fault (recovery=$RECOVERY, n=$ITERS) ==="
-    if [ "$fault" = "retry_proc_kill" ]; then
+    if [ "$fault" = "retry_proc_kill" ] || [ "$fault" = "retry_proc_sigkill" ]; then
         # server dies each trial -> restart per iteration, append rows
         local i first=1 fails=0 tmp
         rm -f "$out"

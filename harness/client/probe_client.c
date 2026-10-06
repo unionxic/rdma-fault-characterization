@@ -9,8 +9,15 @@
  * One trial:
  *   TRIAL -> OK | "ERR <why>" -> [read counters] -> GO -> GOACK -> inject+measure detect
  *         -> [PROBE -> PROBED: liveness for RETRY_EXC, REM_ACCESS, REM_INV_REQ]
+ *         -> [QUERY -> QUERIED <responder QP state> <responder async events since GO>;
+ *             skipped when the responder is dead] + our own async events since GO
  *         -> RECOVER/NORECOVER -> RECOK -> [recovery latency]
  *         -> [partial_write: RDMA-READ readback of the landed bytes] -> verify -> row
+ *
+ * Fault "none" (F0) is a control: the normal 4 KiB write, polled to its completion,
+ * then the same QUERY, recovery and verify steps as any other trial.
+ * A thread records the async events of our device context (common/probe.c).
+ * At exit the client prints how long its own teardown (ep_close) took.
  *
  * Exit status: 0 = all requested trials completed (and verified);
  *              1 = a protocol/RDMA step failed or fewer trials completed
@@ -34,6 +41,10 @@
 #define WR_TRIGGER  100
 #define WR_VERIFY   200
 #define WR_READBACK 300
+
+/* Wait after detection before QUERY and before reading our own async events, so an
+ * async event raised together with the fault has reached its monitor thread. */
+#define QUERY_SETTLE_MS 10
 
 /* remote target info kept for the trial loop */
 static probe_dest_t g_remote;
@@ -122,12 +133,49 @@ static int readback_landed(probe_ep_t *ep, size_t len, uint8_t seed, long *prefi
     return 0;
 }
 
+/* Ask the live responder for its QP state and its async events since GO:
+ *   QUERY -> "QUERIED <state> <events>"
+ * Lines that are not the answer (a late PROBED) are skipped. Without an answer
+ * within 2 s both fields stay "?". */
+static void query_server(int fd, char *qp, size_t qcap, char *ev, size_t ecap) {
+    snprintf(qp, qcap, "?");
+    snprintf(ev, ecap, "?");
+    struct timeval tv = { 2, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    char line[512];
+    if (ctrl_send_line(fd, "QUERY") == 0) {
+        for (int k = 0; k < 4; k++) {
+            if (ctrl_recv_line(fd, line, sizeof(line)) < 0) break;
+            if (strncmp(line, "QUERIED ", 8) != 0) {
+                fprintf(stderr, "[client] skipping '%s' while waiting for QUERIED\n", line);
+                continue;
+            }
+            char *st = line + 8, *sp = strchr(st, ' ');
+            if (!sp) break;
+            *sp = '\0';
+            snprintf(qp, qcap, "%s", st);
+            snprintf(ev, ecap, "%s", sp + 1);
+            break;
+        }
+    }
+    tv.tv_sec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if (strcmp(qp, "?") == 0) fprintf(stderr, "[client] WARNING: no QUERIED answer from the server\n");
+}
+
+/* our own teardown: async monitor stop + QP/CQ/MR/PD destroy + device close */
+static void client_teardown(probe_ep_t *ep) {
+    uint64_t t0 = now_ns();
+    ep_close(ep);
+    fprintf(stderr, "[client] teardown (ep_close) returned after %.3f ms\n", (double)(now_ns() - t0) / 1e6);
+}
+
 static void usage(const char *prog) {
     fprintf(stderr,
       "usage: %s -s server -d dev -i port -g gid -p ctrlport\n"
       "         -f fault -r recovery -n iters -o out.csv [-C cpu] [-S msgsize] [-k counter] [-t detect_ms]\n"
-      "faults: local_qp_err rem_access rem_inv_req rnr retry_server_qp_err retry_proc_kill\n"
-      "        retry_link_down partial_write\n"
+      "faults: none local_qp_err rem_access rem_inv_req rnr retry_server_qp_err retry_proc_kill\n"
+      "        retry_proc_sigkill retry_link_down partial_write\n"
       "recovery: qp_only full_rebuild none\n"
       "exit: 0 ok, 1 failure/incomplete, 2 bad args, 3 fault refused by server\n", prog);
 }
@@ -163,16 +211,18 @@ int main(int argc, char **argv) {
     if (!server) { fprintf(stderr, "ERROR: -s server required\n"); return 2; }
     fault_type_t fault;
     recovery_method_t recovery;
-    if (fault_from_name(fault_s, &fault) < 0 || fault == FAULT_NONE) {
+    if (fault_from_name(fault_s, &fault) < 0) {
         fprintf(stderr, "ERROR: unknown fault '%s'\n", fault_s); usage(argv[0]); return 2;
     }
     if (recovery_from_name(recov_s, &recovery) < 0) {
         fprintf(stderr, "ERROR: unknown recovery '%s'\n", recov_s); usage(argv[0]); return 2;
     }
     if (iters <= 0) { fprintf(stderr, "ERROR: -n must be > 0\n"); return 2; }
-    if (fault == FAULT_RETRY_PROC_KILL && iters != 1) {
-        fprintf(stderr, "ERROR: retry_proc_kill ends the server each trial: use -n 1 "
-                        "(run.sh restarts the server per trial)\n");
+    /* both end the server on GO: retry_proc_kill by exiting, retry_proc_sigkill by SIGKILL */
+    const bool proc_kill = (fault == FAULT_RETRY_PROC_KILL || fault == FAULT_RETRY_PROC_SIGKILL);
+    if (proc_kill && iters != 1) {
+        fprintf(stderr, "ERROR: %s ends the server each trial: use -n 1 "
+                        "(run.sh restarts the server per trial)\n", fault_name(fault));
         return 2;
     }
     if (msg_size == 0) { fprintf(stderr, "ERROR: -S must be > 0\n"); return 2; }
@@ -183,6 +233,7 @@ int main(int argc, char **argv) {
 
     probe_ep_t ep;
     if (ep_open(&ep, dev, (uint8_t)ib_port, gid_index, PROBE_BUF_SIZE) < 0) return 1;
+    if (async_mon_start(ep.ctx, "client") < 0) { ep_close(&ep); return 1; }
     if (ep_create_qp(&ep) < 0) { ep_close(&ep); return 1; }
     if (ep_to_init(&ep) < 0) { ep_close(&ep); return 1; }
 
@@ -204,12 +255,12 @@ int main(int argc, char **argv) {
     fprintf(fo, "fault,iter,recovery,detect_ns,status,status_name,vendor_err,cause,action,"
                 "peer_alive,auto_recoverable,recover_ns,verify_ok,"
                 "bytes_sent_psn,sq_psn_delta,bytes_landed_readback,matching_bytes_total,mtu_bytes,"
-                "counter,cnt_delta,sub_cause,peer_rx_delta\n");
+                "counter,cnt_delta,sub_cause,peer_rx_delta,"
+                "srv_qp_state,srv_async,cli_async\n");
     fflush(fo);
 
     int completed = 0;
     bool failed = false, refused = false;
-    const bool proc_kill = (fault == FAULT_RETRY_PROC_KILL);
 
 /* abort the run: the current trial is NOT recorded, the client exits non-zero */
 #define TRIAL_FAIL(...) do {                                         \
@@ -246,7 +297,8 @@ int main(int argc, char **argv) {
         const uint8_t seed = (uint8_t)(0x40 + it);
         fill_pattern(&ep, seed);
 
-        /* barrier */
+        /* barrier; async events from here on belong to this trial */
+        const uint64_t t_go_mono = mono_ns();
         if (ctrl_send_line(fd, "GO") < 0) TRIAL_FAIL("send GO");
         if (proc_kill) {
             /* server exits on GO (no GOACK); let its QP be fully torn down so the
@@ -264,6 +316,16 @@ int main(int argc, char **argv) {
         long bytes_sent_psn = -1, sq_delta = -1, landed_rb = -1, match_total = -1;
 
         switch (fault) {
+            case FAULT_NONE: {
+                /* F0 control: the normal write, polled to its own completion (success
+                 * expected; an error CQE is recorded like any other) */
+                if (post_write(&ep, WR_TRIGGER, 4096, g_remote.addr, g_remote.rkey, true) < 0)
+                    TRIAL_FAIL("post_write");
+                t_inject = now_ns();
+                got = poll_one(&ep, &wc, detect_timeout_ms);
+                t_detect = now_ns();
+                break;
+            }
             case FAULT_LOCAL_QP_ERR: {
                 /* keep the send queue deep so WRs are still outstanding when we
                  * force ERR, then measure inject -> first WR_FLUSH_ERR CQE */
@@ -305,6 +367,7 @@ int main(int argc, char **argv) {
             }
             case FAULT_RETRY_SERVER_QP_ERR:
             case FAULT_RETRY_PROC_KILL:
+            case FAULT_RETRY_PROC_SIGKILL:
             case FAULT_RETRY_LINK_DOWN: {
                 /* responder stopped ACKing (QP ERR / process gone / link down)
                  * -> transport retries exhausted */
@@ -344,10 +407,16 @@ int main(int argc, char **argv) {
         const char *action = "-";
         if (got == 1) {
             classify_t cl = classify(wc.status, wc.vendor_err);
-            detect_ns = (long)(t_detect - t_inject);
+            /* a SUCCESS here is only possible for F0: nothing was detected */
+            detect_ns = (wc.status != IBV_WC_SUCCESS) ? (long)(t_detect - t_inject) : -1;
             st_code = (int)wc.status; ven = wc.vendor_err;
             st_name = cl.status_name; cause = cl.cause; action = cl.action;
             peer_alive = cl.peer_alive; auto_rec = cl.auto_recoverable;
+        } else if (fault == FAULT_NONE) {
+            st_name = "no_cqe";
+            cause = "F0 control: the write did not complete within the detect timeout";
+            fprintf(stderr, "[client] trial %d: WARNING: F0 write did not complete within %ld ms\n",
+                    it, detect_timeout_ms);
         } else {
             fprintf(stderr, "[client] trial %d: WARNING: no error CQE within %ld ms (fault did not manifest)\n",
                     it, detect_timeout_ms);
@@ -395,6 +464,15 @@ int main(int argc, char **argv) {
             }
         }
 
+        /* Cross-layer state at fault time, before any recovery: the responder's QP state
+         * and its async events since its GO, and our own async events since our GO.
+         * "-" = the responder is dead (proc_kill faults, or an EOF on PROBE); "?" = no answer. */
+        char srv_qp[16] = "-", srv_async[PROBE_ASYNC_FMT_MAX] = "-", cli_async[PROBE_ASYNC_FMT_MAX];
+        usleep(QUERY_SETTLE_MS * 1000);
+        if (!proc_kill && strcmp(sub_cause, "proc_kill") != 0)
+            query_server(fd, srv_qp, sizeof(srv_qp), srv_async, sizeof(srv_async));
+        async_mon_format(t_go_mono, cli_async, sizeof(cli_async));
+
         /* recovery */
         uint64_t t_rec0 = 0, t_rec1 = 0;
         int verify_ok = -1;
@@ -439,19 +517,21 @@ int main(int argc, char **argv) {
                          ? (long)(cnt_after - cnt_before) : -1;
         long recover_ns = (t_rec1 > t_rec0 && t_rec0) ? (long)(t_rec1 - t_rec0) : -1;
 
-        fprintf(fo, "%s,%d,%s,%ld,%d,%s,0x%x,\"%s\",\"%s\",%d,%d,%ld,%d,%ld,%ld,%ld,%ld,%d,%s,%ld,%s,%ld\n",
+        fprintf(fo, "%s,%d,%s,%ld,%d,%s,0x%x,\"%s\",\"%s\",%d,%d,%ld,%d,%ld,%ld,%ld,%ld,%d,%s,%ld,%s,%ld,"
+                    "%s,%s,%s\n",
                 fault_name(fault), it, recovery_name(recovery),
                 detect_ns, st_code, st_name, ven, cause, action,
                 peer_alive, auto_rec, recover_ns, verify_ok,
                 bytes_sent_psn, sq_delta, landed_rb, match_total, ep.mtu_bytes,
-                counter, cnt_delta, sub_cause, peer_rx);
+                counter, cnt_delta, sub_cause, peer_rx,
+                srv_qp, srv_async, cli_async);
         fflush(fo);
         completed++;
 
         fprintf(stderr, "[trial %d] %s: detect=%ldns status=%s(%d) vendor=0x%x sub=%s(peer_rx=%ld peer_tx=%ld) "
-                        "recover=%ldns verify=%d",
+                        "recover=%ldns verify=%d srv_qp=%s srv_async=%s cli_async=%s",
                 it, fault_name(fault), detect_ns, st_name, st_code, ven,
-                sub_cause, peer_rx, peer_tx, recover_ns, verify_ok);
+                sub_cause, peer_rx, peer_tx, recover_ns, verify_ok, srv_qp, srv_async, cli_async);
         if (fault == FAULT_PARTIAL_WRITE)
             fprintf(stderr, " sent_psn=%ld (sq_delta=%ld) landed_readback=%ld match_total=%ld",
                     bytes_sent_psn, sq_delta, landed_rb, match_total);
@@ -466,7 +546,7 @@ endloop:
     if (fo && fo != stdout) fclose(fo);
     if (!proc_kill) ctrl_send_line(fd, "BYE");   /* proc_kill: the server already exited */
     close(fd);
-    ep_close(&ep);
+    client_teardown(&ep);
     if (refused) {
         fprintf(stderr, "[client] aborted: fault %s unavailable on the server (%d/%d trials)\n",
                 fault_name(fault), completed, iters);
@@ -482,6 +562,6 @@ endloop:
 fail:
     if (fo && fo != stdout) fclose(fo);
     close(fd);
-    ep_close(&ep);
+    client_teardown(&ep);
     return 1;
 }

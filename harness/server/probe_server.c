@@ -10,12 +10,17 @@
  * mirrored so QP-only / full-rebuild recovery stays PSN-consistent both ends.
  *
  * Per-fault responder behaviour:
+ *   none (F0 control)   : nothing
  *   local_qp_err, rem_access, rem_inv_req, rnr : nothing (requester-side trigger)
  *   partial_write       : buffer zeroed at TRIAL time, so the requester can measure
  *                         the bytes that actually landed by RDMA-READ readback
  *   retry_server_qp_err : own QP -> ERR on GO (stops ACKing)
  *   retry_proc_kill     : this process exits on GO, before acking anything (the
  *                         runner restarts it per trial). There is no KILL command.
+ *                         The exit is graceful: the QP, MR and device are closed first.
+ *   retry_proc_sigkill  : this process raises SIGKILL on GO, before acking anything:
+ *                         a real crash, the kernel tears the resources down. The
+ *                         runner restarts it per trial, as for retry_proc_kill.
  *   retry_link_down     : `sudo -n ip link set dev <iface> down` on GO. Checked at
  *                         TRIAL time: if the link cannot be toggled the reply is
  *                         "ERR link_down_unavailable <why>" instead of "OK".
@@ -25,6 +30,11 @@
  *                         `timeout`, which sends SIGTERM), and atexit as a backstop.
  *                         PROBE_LINK_DRYRUN=1 makes every toggle log
  *                         "[server] DRYRUN link <state>" instead of touching the link.
+ *
+ * After the fault the client may send QUERY; the reply is
+ *   QUERIED <state of our QP (ibv_query_qp)> <our async events since GO>
+ * (async_mon_format in common/probe.c). A thread records the async events of our
+ * device context. At exit the server prints how long its own teardown took.
  */
 #define _GNU_SOURCE
 #include "probe.h"
@@ -234,6 +244,7 @@ int main(int argc, char **argv) {
 
     probe_ep_t ep;
     if (ep_open(&ep, dev, (uint8_t)ib_port, gid_index, PROBE_BUF_SIZE) < 0) return 1;
+    if (async_mon_start(ep.ctx, "server") < 0) { ep_close(&ep); return 1; }
     if (ep_create_qp(&ep) < 0) { ep_close(&ep); return 1; }
     if (ep_to_init(&ep) < 0) { ep_close(&ep); return 1; }
     g_ep = &ep;
@@ -268,7 +279,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[server] bad trial line: '%s'\n", line); break;
         }
         fault_type_t fault;
-        if (fault_from_name(fault_s, &fault) < 0 || fault == FAULT_NONE) {
+        if (fault_from_name(fault_s, &fault) < 0) {
             fprintf(stderr, "[server] unknown fault '%s'\n", fault_s);
             if (ctrl_send_line(fd, "ERR unknown_fault") < 0) break;
             continue;                   /* client decides; it will send BYE */
@@ -294,9 +305,15 @@ int main(int argc, char **argv) {
             if (strcmp(line, "BYE") == 0) rc = 0;
             break;
         }
+        const uint64_t t_go_mono = mono_ns();    /* async events from here on belong to this trial */
 
         /* proc_kill: die on GO, BEFORE acking anything, so no in-flight write can
          * be ACKed in a race window; the requester then hits RETRY_EXC cleanly. */
+        if (fault == FAULT_RETRY_PROC_SIGKILL) {
+            /* a real crash: no ep_close, no close(); the kernel tears everything down */
+            fprintf(stderr, "[server] proc_sigkill: raising SIGKILL on command\n");
+            raise(SIGKILL);
+        }
         if (fault == FAULT_RETRY_PROC_KILL) {
             fprintf(stderr, "[server] proc_kill: exiting on command\n");
             g_ep = NULL;
@@ -343,6 +360,17 @@ int main(int argc, char **argv) {
                 if (ctrl_send_line(fd, rep) < 0) { stop = true; break; }
                 continue;   /* peer is alive; keep waiting for RECOVER/NORECOVER */
             }
+            if (strcmp(line, "QUERY") == 0) {
+                /* fault-time state, before any recovery: our QP state and our async events */
+                enum ibv_qp_state qs;
+                const char *qsn = (ep_query_qp_state(&ep, &qs) == 0) ? qp_state_name(qs) : "?";
+                char evs[PROBE_ASYNC_FMT_MAX], rep[PROBE_ASYNC_FMT_MAX + 32];
+                async_mon_format(t_go_mono, evs, sizeof(evs));
+                snprintf(rep, sizeof(rep), "QUERIED %s %s", qsn, evs);
+                fprintf(stderr, "[server] %s\n", rep);
+                if (ctrl_send_line(fd, rep) < 0) { stop = true; break; }
+                continue;
+            }
             char method_s[64] = {0};
             if (sscanf(line, "RECOVER %63s", method_s) == 1) {
                 recovery_method_t method;
@@ -374,6 +402,8 @@ done:
     if (fd >= 0) close(fd);
     if (lfd >= 0) close(lfd);
     g_ep = NULL;
+    uint64_t t_td = now_ns();
     ep_close(&ep);
+    fprintf(stderr, "[server] teardown (ep_close) returned after %.3f ms\n", (double)(now_ns() - t_td) / 1e6);
     return rc;
 }
