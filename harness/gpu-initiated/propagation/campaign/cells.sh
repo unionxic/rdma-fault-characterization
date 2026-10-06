@@ -72,7 +72,7 @@ nvo)
 nvd)
   for h in auto cpu_host_memory; do
     for f in F1 F2b F3; do
-      for t in $(seq "$(nn 5)"); do
+      for t in $(seq "$(nn 10)"); do
         trial "nvd_${h}_${f}_t$t" env NIC_HANDLER="$h" bash "$G/nvshmem/run_trial.sh" "$f" timeout "$t" "$OUT/runs_$h"
       done
     done
