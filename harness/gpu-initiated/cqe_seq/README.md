@@ -2,7 +2,7 @@
 
 NVSHMEM IBGDA는 collapsed CQ를 읽는다. NIC가 슬롯 하나를 계속 덮어쓰므로 GPU는 마지막에 쓰인 CQE만 본다.
 일반 CQ에서 장애 뒤 CQE 전체 순서를 기록해, 그 슬롯에 원인 CQE가 남는지 flush CQE가 남는지 예측했다.
-GPU 연구의 질문 Q1이다. GPU 없이 CPU verbs로만 쟀다.
+GPU 연구의 첫 질문(CQE 순서 측정)이다. GPU 없이 CPU verbs로만 쟀다.
 
 ## 무엇을 쟀나
 
@@ -73,5 +73,5 @@ GPU 연구의 질문 Q1이다. GPU 없이 CPU verbs로만 쟀다.
 |---|---|
 | [NOTES.md](NOTES.md) | 상세 기록(영문): 방법, 칸별 전체 표 |
 | `results/` | 칸별 요약 표(summary.md, summary.csv)만 있다. CQE별 기록, 시험별 표, 실행 로그는 Release `data-20261006` |
-| `../DESIGN.md` | GPU 연구 설계와 질문 Q1~Q4 |
+| `../DESIGN.md` | GPU 연구 설계와 측정 질문 4개 |
 | `../RESULTS.md` | GPU 스택 결과. 실제 collapsed CQ에서 이 예측을 확인한 내용(Findings 1번) |

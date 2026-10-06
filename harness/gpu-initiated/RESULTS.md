@@ -24,11 +24,11 @@ patches are in the subdirectories listed below; this page only combines them.
 
 | dir | question | what it is |
 |---|---|---|
-| `cqe_seq/` | Q1 | CPU verbs: the CQE sequence the NIC writes after each fault |
-| `gin/` | Q2 | NCCL 2.32.3 GIN, proxy and GDAKI backends, faults F1-F4 |
-| `nvshmem/` | Q2, Q3 | NVSHMEM IBGDA (7bb2e99c), faults F1-F4, collapsed-CQ reads |
-| `gin_q4/` | A/B, Q4 | GDAKI with a collapsed vs ring CQ; device-side classification + host mailbox |
-| `nvshmem_rootcause/` | Q2 | the NVSHMEM CPU-proxy doorbell-record bug: reproduction, fix knob, upstream scope |
+| `cqe_seq/` | CQE sequence | CPU verbs: the CQE sequence the NIC writes after each fault |
+| `gin/` | per-stack faults | NCCL 2.32.3 GIN, proxy and GDAKI backends, faults F1-F4 |
+| `nvshmem/` | per-stack faults, CQ-slot read | NVSHMEM IBGDA (7bb2e99c), faults F1-F4, collapsed-CQ reads |
+| `gin_q4/` | A/B, device-side classifier | GDAKI with a collapsed vs ring CQ; device-side classification + host mailbox |
+| `nvshmem_rootcause/` | per-stack faults | the NVSHMEM CPU-proxy doorbell-record bug: reproduction, fix knob, upstream scope |
 | `gpu_doorbell/` | - | runs with GPU-rung doorbells (PeerMappingOverride) |
 | `gin_recovery/` | recovery | GDAKI recovery (CPU and GPU doorbells), and app-transparent recovery step 1 (`TRANSPARENT_S1.md`) |
 | `nvshmem_ft/` | recovery | NVSHMEM IBGDA classification + recovery: v1, v2/v2.1 (`V2.md`: ring CQ, bounds check, park) |
@@ -46,13 +46,13 @@ patches are in the subdirectories listed below; this page only combines them.
 | NVSHMEM IBGDA (stock, CPU-proxy handler) | no error CQE, no host signal | invalid rkey: QP in ERR but no error CQE | no error CQE (QP reaches ERR) | no error CQE | hangs | `nvshmem_finalize` hangs |
 | NVSHMEM IBGDA, GPU handler (PeerMappingOverride) | CQE 5/0xf5, 1.8 ms | CQE 10/0x88, 9 ms | CQE 12/0x81, 3.5-3.7 s | - | quiet **returns success** on a failed put (slot 5/0xf9) | - |
 | NVSHMEM IBGDA, CPU proxy + SQ-DBR fix | CQE 5/0xf5 | CQE 10/0x88, 10 ms | CQE 12/0x81, 3.5-3.6 s | - | - | `nvshmem_finalize` still hangs |
-| GIN GDAKI + Q4 classifier | 5/0xf5, 15 ms | 10/0x88, 2.8 ms | 12/0x81, 3.64-3.70 s | 12/0x81, 3.64-3.70 s | returns `ncclRemoteError` (silent success 0/9) | clean |
-| GIN GDAKI + Q4 + recovery | **recovered**, ~24 ms after the fault | declined (REM_ACCESS) | **recovered**, 3.65-3.74 s after the fault | declined (peer dead) | recovered or declined | clean |
+| GIN GDAKI + device-side classifier | 5/0xf5, 15 ms | 10/0x88, 2.8 ms | 12/0x81, 3.64-3.70 s | 12/0x81, 3.64-3.70 s | returns `ncclRemoteError` (silent success 0/9) | clean |
+| GIN GDAKI + classifier + recovery | **recovered**, ~24 ms after the fault | declined (REM_ACCESS) | **recovered**, 3.65-3.74 s after the fault | declined (peer dead) | recovered or declined | clean |
 | NVSHMEM IBGDA, GPU handler + our FT (`nvshmem_ft/`) | 5/0xf5 in 3.4-4.2 ms, **recovered** (~6.7 ms) | 10/0x88 in 1.2-2.5 ms, declined | 12/0x81 in 3.5-3.7 s, **recovered** | 12/0x81, declined (peer dead) | returns an error (FT status) | `nvshmem_finalize` returns in 17-29 ms |
 | NVSHMEM FT v2.2, ring CQ mode (`nvshmem_ft/V2.md`; v2.2 poisons fetch AMOs whose completion failed: before, 510,028 stale values were returned silently in 40 runs) | root cause kept without a sentinel (90/90), **recovered** incl. 8-thread bursts after "park" | declined; in-MR overrun caught only with the red zone (0/30 → 35/35) | **recovered** | declined | returns an error | returns |
-| GIN GDAKI transparent recovery S1 (`gin_recovery/TRANSPARENT_S1.md`) | **recovered with no error seen by the app** (95/95 recoverable cells; one op in flight, one poster) | declined, error surfaces | **recovered, transparent** (3.6 s = RETRY_EXC detection) | declined | the flush returns success; bounded only by the hold (30 s, 60 s if the give-up loses); **flag on costs +60 % at 4 KiB** | returns (teardown joins the helper) |
+| GIN GDAKI transparent recovery step 1 (`gin_recovery/TRANSPARENT_S1.md`) | **recovered with no error seen by the app** (95/95 recoverable cells; one op in flight, one poster) | declined, error surfaces | **recovered, transparent** (3.6 s = RETRY_EXC detection) | declined | the flush returns success; bounded only by the hold (30 s, 60 s if the give-up loses); **flag on costs +60 % at 4 KiB** | returns (teardown joins the helper) |
 
-GIN GDAKI + Q4 + recovery was re-validated with GPU-rung doorbells (the permanent setting since
+GIN GDAKI + classifier + recovery was re-validated with GPU-rung doorbells (the permanent setting since
 2026-09-24 13:53) and needed `gin_recovery_gpudb.diff`: same outcomes (18/18 fault runs recovered
 in the GPU-mode matrix, 42 rounds after a fault + 6 forced), ~8.5 ms from kernel return to
 recovered.
@@ -62,21 +62,21 @@ Times are from the fault to the first host-visible error. GDAKI's stock times ar
 
 ## Findings
 
-1. **A single-slot collapsed CQ normally ends up holding a flush, not the root cause (Q1,
-   measured on CPU, confirmed on a real collapsed CQ in `gin_q4/`).** After the root-cause CQE
-   the NIC writes one `WR_FLUSH 5/0xf9` for every WQE posted behind the failing one, signaled
-   or not, about 59 µs after the root cause and then every 9.35 µs. The root cause survives in the
-   slot only if the failing WQE was the last one outstanding. On GDAKI's collapsed CQ the slot
-   held the root cause at poll time and 5/0xf9 500 µs later (18/18).
-2. **A classifier must find the root-cause CQE, not the polled one.** In every Q4 trial the CQE
-   that the wait polls (the signal WQE behind the put) was the trailing flush 5/0xf9. Reading only
-   the polled CQE would have misclassified every fault. On a ring CQ the device scans back from the
-   consumer index to the first error CQE.
+1. **A single-slot collapsed CQ normally ends up holding a flush, not the root cause (CQE-sequence
+   question, measured on CPU, confirmed on a real collapsed CQ in `gin_q4/`).** After the
+   root-cause CQE the NIC writes one `WR_FLUSH 5/0xf9` for every WQE posted behind the failing one,
+   signaled or not, about 59 µs after the root cause and then every 9.35 µs. The root cause
+   survives in the slot only if the failing WQE was the last one outstanding. On GDAKI's collapsed
+   CQ the slot held the root cause at poll time and 5/0xf9 500 µs later (18/18).
+2. **A classifier must find the root-cause CQE, not the polled one.** In every trial of the
+   device-side classifier the CQE that the wait polls (the signal WQE behind the put) was the
+   trailing flush 5/0xf9. Reading only the polled CQE would have misclassified every fault. On a
+   ring CQ the device scans back from the consumer index to the first error CQE.
 3. **Where the error is seen decides what can be known.** The CPU-polled GIN proxy has the full
-   fingerprint within milliseconds. The GPU-polled stacks drop it: GDAKI's device poll reduces it
-   to -EIO and its host sees only "QP in ERR" every 10 s. NVSHMEM IBGDA with its CPU-proxy handler
-   never showed an error CQE in any of the 1024 entries of its CQs, even with the requester QP
-   confirmed in ERR.
+   status/vendor_err pair within milliseconds. The GPU-polled stacks drop it: GDAKI's device poll
+   reduces it to -EIO and its host sees only "QP in ERR" every 10 s. NVSHMEM IBGDA with its
+   CPU-proxy handler never showed an error CQE in any of the 1024 entries of its CQs, even with the
+   requester QP confirmed in ERR.
 3a. **That NVSHMEM behaviour is a bug in its CPU-proxy handler (`nvshmem_rootcause/`).** The proxy
    writes the send producer index into word 0 of the QP doorbell record (the receive counter)
    instead of word 1; the NIC reloads the producer from the record at the ERR transition, sees an
@@ -95,7 +95,7 @@ Times are from the fault to the first host-visible error. GDAKI's stock times ar
    gives 3.6-3.75 s on every stack. At the NCCL/NVSHMEM default of 20 the GIN proxy reported
    RETRY_EXC 57-59 s after the fault (4 trials), about 1.7 times the 34 s computed from
    4.096 µs × 2^20 × 8.
-7. **The same cause can show different fingerprints.** A killed peer gives RETRY_EXC 12/0x81 on
+7. **The same cause can show different error codes.** A killed peer gives RETRY_EXC 12/0x81 on
    CPU verbs and on GDAKI, but REM_ACCESS 10/0x88 within 60 ms on the GIN proxy. Measured since
    (`../teardown_order/`, 417 kills): the kernel destroys a dead process's verbs objects newest
    first, so an MR registered after its QP dies first and the still-live QP NAKs (REM_ACCESS; 111/161
@@ -105,11 +105,11 @@ Times are from the fault to the first host-visible error. GDAKI's stock times ar
    IBGDA) are destroyed first, hence 12/0x81 there. F3 and F4 give the same 12/0x81 on GDAKI, so a
    liveness signal is still needed to tell them apart, as on CPU; 10/0x88 with a dead peer is peer
    death too.
-8. **Device-side classification works and is cheap (Q4).** With a device classifier and a
-   host-mapped mailbox, GDAKI's host learns the exact fingerprint 94 µs after the device detects
-   it and `ncclCommGetAsyncError` returns it 190 µs later, instead of "QP in ERR" after 9.4-10 s.
-   Silent success disappears. With no fault the median put+signal+flush latency rises by at most
-   0.1 µs at 4 KiB (about 1%).
+8. **Device-side classification works and is cheap (`gin_q4/`).** With a device classifier and a
+   host-mapped mailbox, GDAKI's host learns the exact status/vendor_err pair 94 µs after the device
+   detects it and `ncclCommGetAsyncError` returns it 190 µs later, instead of "QP in ERR" after
+   9.4-10 s. Silent success disappears. With no fault the median put+signal+flush latency rises by
+   at most 0.1 µs at 4 KiB (about 1%).
 
 9. **Transient faults can be recovered without losing or duplicating anything (`gin_recovery/`).**
    On GDAKI, with the kernel returning on error, a host-side prepare/handshake/commit and an
@@ -158,22 +158,23 @@ Resolved on 2026-09-24:
    (finding 3a, `nvshmem_rootcause/`).
 2. Why F3 left NVSHMEM's requester QP in RTS: it did not; a lock-holding watch thread kept the put
    from being rung.
-3. GPU-rung doorbells (`gpu_doorbell/`): NVSHMEM's GPU handler gets the error CQEs; GIN Q4 behaves
-   as with CPU doorbells; stock GDAKI's blocking silent success is unchanged.
+3. GPU-rung doorbells (`gpu_doorbell/`): NVSHMEM's GPU handler gets the error CQEs; the GIN
+   device-side classifier behaves as with CPU doorbells; stock GDAKI's blocking silent success is
+   unchanged.
 
-4. Recovery on top of Q4 (`gin_recovery/`): F1 (local QP ERR) and F3 (peer QP ERR, peer alive)
-   recover in every trial, in both wait modes, including runs with several faults and a fault
-   that hits the replay itself. In the main matrix (CPU doorbells) data were bit-exact and the
-   signal exact in 32/32 runs that recovered from injected faults and in 6/6 forced d = 0 runs,
-   over 130 recovery rounds: 112 after a fault (20 of them hit by a second fault during the
-   replay) and 18 forced. A round is one completed Prepare → handshake → Commit → replay cycle;
-   counts are from the raw logs (`gin_recovery/results/RECOUNT.md`). F2 (REM_ACCESS) and F4
-   (peer dead: RETRY_EXC with FIN on the OOB socket) are declined cleanly and abort returns.
-   The kernel returns `ncclRemoteError`, the host runs prepare (pause the proxy, quiesce, ERR),
-   an OOB handshake that reads the receiver's signal value V, commit (bilateral reset with fresh
-   PSNs, GPU-side index and CQ-mapping resync, stored connect-time attributes), and the
-   application replays the data plus the missing signal delta only. Kernel-return to replay-done: 8.0-8.2 ms median, ~6 ms of it
-   firmware QP commands. No measurable no-fault overhead.
+4. Recovery on top of the device-side classifier (`gin_recovery/`): F1 (local QP ERR) and F3 (peer
+   QP ERR, peer alive) recover in every trial, in both wait modes, including runs with several
+   faults and a fault that hits the replay itself. In the main matrix (CPU doorbells) data were
+   bit-exact and the signal exact in 32/32 runs that recovered from injected faults and in 6/6
+   forced d = 0 runs, over 130 recovery rounds: 112 after a fault (20 of them hit by a second fault
+   during the replay) and 18 forced. A round is one completed Prepare → handshake → Commit → replay
+   cycle; counts are from the raw logs (`gin_recovery/results/RECOUNT.md`). F2 (REM_ACCESS) and F4
+   (peer dead: RETRY_EXC with FIN on the OOB socket) are declined cleanly and abort returns. The
+   kernel returns `ncclRemoteError`, the host runs prepare (pause the proxy, quiesce, ERR), an OOB
+   handshake that reads the receiver's signal value V, commit (bilateral reset with fresh PSNs,
+   GPU-side index and CQ-mapping resync, stored connect-time attributes), and the application
+   replays the data plus the missing signal delta only. Kernel-return to replay-done: 8.0-8.2 ms
+   median, ~6 ms of it firmware QP commands. No measurable no-fault overhead.
 
 Still open:
 5. DeepEP cannot run here: its internode and low-latency kernels require SM90 (`setup.py` asserts

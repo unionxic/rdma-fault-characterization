@@ -1,11 +1,11 @@
 # GPU-initiated RDMA: fault characterization design (stage 3 of the project)
 
-The harness (`../`) characterizes RDMA faults on CPU verbs by their CQE fingerprint
+The harness (`../`) characterizes RDMA faults on CPU verbs by the error code in their CQE
 (`ibv_wc_status` + `vendor_err`), and the NCCL patch (`../nccl-integration/`) recovers one
 class of them inside NCCL's CPU proxy path. The research target is fault tolerance of
 **GPU-initiated** RDMA (NVSHMEM IBGDA, DeepEP, NCCL GIN), where a GPU thread posts the
 WQEs and polls the CQ. A source survey (2026-09-23) found that none of these stacks decodes
-the fingerprint in production builds and none resets a QP:
+the status/vendor_err pair in production builds and none resets a QP:
 
 | stack | who sees the error CQE | what happens today (from source) |
 |---|---|---|
@@ -19,17 +19,19 @@ classification.
 
 ## Questions
 
-- **Q1 (CPU, no GPU).** After the first error CQE, which further CQEs does the NIC write
+- **CQE sequence (CPU, no GPU).** After the first error CQE, which further CQEs does the NIC write
   (flush CQEs for signaled and unsignaled WQEs, in what order)? Hence: what does a single-slot
   collapsed CQ hold at the end, the root-cause CQE or a flush CQE?
-- **Q2 (GPU).** For each stack we can run (GIN proxy, GIN GDAKI, NVSHMEM IBGDA) and each fault:
-  which layer notices, whether the fingerprint is visible anywhere, whether the device wait
-  times out / hangs / returns success, whether the delivered data is correct, how long until
-  the host learns about it, and whether teardown returns.
-- **Q3 (GPU, NVSHMEM).** Read the collapsed CQ slot from device code after a fault: opcode,
-  syndrome, vendor_err_synd, wqe_counter. This measures Q1's prediction directly.
-- **Q4 (GPU, prototype).** Can device code map (syndrome, vendor_err) to our fault classes and
-  hand the result to a host thread through a pinned mailbox within bounded time?
+- **Per-stack fault measurement (GPU).** For each stack we can run (GIN proxy, GIN GDAKI, NVSHMEM
+  IBGDA) and each fault: which layer notices, whether the status/vendor_err pair is visible
+  anywhere, whether the device wait times out / hangs / returns success, whether the delivered data
+  is correct, how long until the host learns about it, and whether teardown returns.
+- **NVSHMEM CQ-slot read (GPU, NVSHMEM).** Read the collapsed CQ slot from device code after a
+  fault: opcode, syndrome, vendor_err_synd, wqe_counter. This measures the prediction of the
+  CQE-sequence question directly.
+- **GDAKI device-side classifier (GPU, prototype).** Can device code map (syndrome, vendor_err) to
+  our fault classes and hand the result to a host thread through a pinned mailbox within bounded
+  time?
 
 ## Fault catalog for GPU-initiated stacks
 
@@ -58,7 +60,7 @@ silent_success,host_error,host_error_ms,fp_where,status,vendor_err,teardown,note
   `ok`, `mismatch`, `missing`, `n/a`.
 - `silent_success`: 1 if the initiator's wait reported success for an operation whose data
   did not arrive intact.
-- `fp_where`: where the fingerprint was visible: `log`, `cqe` (read by our device code),
+- `fp_where`: where the status/vendor_err pair was visible: `log`, `cqe` (read by our device code),
   `api` (returned by an API), `none`.
 - `teardown`: `clean`, `hang` (bounded by a watchdog), `n/a`.
 
@@ -75,7 +77,10 @@ silent_success,host_error,host_error_ms,fp_where,status,vendor_err,teardown,note
 ## Layout
 
 - `common/`: `cluster_run.sh`.
-- `cqe_seq/`: Q1 (CPU verbs, reuses `../common/probe.c` and `../server/probe_server`).
-- `gin/`: Q2 for NCCL GIN (proxy and GDAKI backends): patch, driver, scripts, results.
-- `nvshmem/`: Q2 and Q3 for NVSHMEM IBGDA: patch, driver, scripts, results.
+- `cqe_seq/`: the CQE-sequence question (CPU verbs, reuses `../common/probe.c` and
+  `../server/probe_server`).
+- `gin/`: the per-stack fault measurement for NCCL GIN (proxy and GDAKI backends): patch, driver,
+  scripts, results.
+- `nvshmem/`: the per-stack fault measurement and the CQ-slot read for NVSHMEM IBGDA: patch, driver,
+  scripts, results.
 - `RESULTS.md`: the combined result table and conclusions.

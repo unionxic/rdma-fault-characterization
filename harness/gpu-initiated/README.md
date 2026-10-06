@@ -29,7 +29,7 @@ CPU verbs 실험(`../`)이 기준선이다.
   - NVSHMEM 안에서: stock CPU proxy 0/12, GPU handler 16/16, 칸을 고친 CPU proxy 16/16.
 - **분류는 읽힌 CQE가 아니라 원인 CQE를 봐야 한다.**
   - NIC는 원인 CQE 약 60 µs 뒤부터 flush(5/0xf9)를 쓴다. GDAKI ring CQ에서 wait가 읽은 CQE는 매번 이 flush였다(33/33).
-  - GDAKI 장치 분류기(Q4): N=30에서 240/240 정확, 조용한 성공 0/180. 장치가 감지하고 94 µs 뒤 호스트 mailbox에 닿는다.
+  - GDAKI 장치 쪽 분류기: N=30에서 240/240 정확, 조용한 성공 0/180. 장치가 감지하고 94 µs 뒤, 호스트에 오류를 알리는 공유 메모리 칸에 닿는다.
     장애가 없을 때 비용은 4 KiB에서 0.1 µs 이하(약 1%)다.
   - NVSHMEM FT: N=30에서 120/120 정확. collapsed CQ(1칸)는 원인 CQE가 올 때 기다리는 스레드가 없으면 원인을 잃는다.
   - FT v2의 ring CQ는 post와 wait 사이에 계산이 끼어도 90/90을 지킨다(collapsed는 0/90).
@@ -41,7 +41,7 @@ CPU verbs 실험(`../`)이 기준선이다.
     장애를 5번 낸 실행에서는 F1 2.82 ms, F3 4.77 ms다. 거절 20/20.
   - FT v2.2는 완료가 실패한 fetch의 값에 오염 표시를 한다.
   - F3와 F4는 CQE 코드가 같다(12/0x81). 상대 소켓의 FIN을 봐야 갈린다.
-- **투명 복구 1단계(S1)에서는 앱이 오류를 보지 않는다.**
+- **GIN 투명 복구 1단계에서는 앱이 오류를 보지 않는다.**
   - GDAKI F1, F3 95/95가 오류 없이 끝났고 데이터도 정확했다. 연산 하나가 in flight이고 poster가 하나인 경우다.
   - 기능을 켜면 장애가 없어도 4 KiB 지연(p50)이 +60%다(후속 빌드, 10.24에서 16.42 µs). 1단계 첫 빌드는 +66%였다.
 
@@ -51,12 +51,12 @@ CPU verbs 실험(`../`)이 기준선이다.
 |---|---|---|---|
 | GIN proxy (stock) | CPU 스레드 로그, 오류 코드 전체 | 오류 1종(timeout) 또는 hang(blocking) | blocking F1~F3에서 양쪽 rank hang |
 | GIN GDAKI (stock) | 호스트는 10 s 주기로 "QP in ERR"만 | blocking에서 실패를 완료로 보고(9/9) | blocking F1~F3에서 대상 rank hang |
-| GDAKI + 분류기(Q4) | 로그와 mailbox, 오류 코드 전체 | 오류 1종, 조용한 성공 0/180 | blocking F1~F3에서 대상 rank hang |
+| GDAKI + 장치 쪽 분류기 | 로그와 호스트 알림 칸, 오류 코드 전체 | 오류 1종, 조용한 성공 0/180 | blocking F1~F3에서 대상 rank hang |
 | GDAKI + 복구 | 위와 같음, 상대 생존 여부 추가 | 오류 뒤 원인 조회, F1, F3 복구, F2, F4 거절 | 양쪽 반환 |
-| GDAKI 투명 복구 S1 | 로그에만 | F1, F3는 오류 없이 성공(95/95) | 대상 rank가 F2에서 hang |
+| GDAKI 투명 복구 1단계 | 로그에만 | F1, F3는 오류 없이 성공(95/95) | 대상 rank가 F2에서 hang |
 | NVSHMEM CPU proxy (stock) | 없음(오류 CQE가 안 생김) | 무한 대기 | finalize hang |
 | NVSHMEM GPU handler 또는 버그 수정 | CQE에 잠깐 남았다가 flush로 덮임 | 실패한 put도 정상 반환(6/6) | finalize hang |
-| NVSHMEM FT v1, v2.2 | mailbox, 오류 코드 전체 | 상태 조회로 오류, F1, F3 복구 | FT abort를 불러야 반환 |
+| NVSHMEM FT v1, v2.2 | 호스트 알림 칸, 오류 코드 전체 | 상태 조회로 오류, F1, F3 복구 | FT abort를 불러야 반환 |
 
 IB 타임아웃 14에서 F3, F4의 RETRY_EXC CQE는 장애 뒤 3.5~3.8 s에 생긴다.
 기본값 20에서는 GIN proxy가 57.1~58.4 s 걸렸다(4회, 장애 시각은 추정).
@@ -65,12 +65,12 @@ N=30 재측정 682 trial은 분류, 복구, 거절 셀이 모두 100%였다. Wil
 ## 한계와 주의
 
 - **"GDAKI 종료는 깨끗하다"는 시작 rank만 맞다.** blocking F1~F3에서 대상 rank의 abort는 돌아오지 않았다.
-  - stock 9/9, Q4 N=30 90/90, stock N=30 10/10이다.
+  - stock 9/9, 장치 쪽 분류기 N=30 90/90, stock N=30 10/10이다.
   - GIN proxy의 abort hang은 F1~F3에만 있고, 양쪽 rank 모두다.
 - **대상 rank는 오류를 받지 못한다.** stock GIN의 F1~F3에서 대상 rank에 비동기 오류가 한 번도 없었다(backend마다 18/18).
   자기 QP가 ERR인 F3도 그렇다. 원인은 아직 모른다.
-- **API 값은 한 종류다.** Q4에서도 API는 ncclRemoteError만 준다. 오류 코드는 로그와 mailbox에만 있다.
-  "API까지 190 µs"는 mailbox가 아니라 장치 감지부터 잰 값이다.
+- **API 값은 한 종류다.** 장치 쪽 분류기를 붙여도 API는 ncclRemoteError만 준다. 오류 코드는 로그와 호스트 알림 칸에만 있다.
+  "API까지 190 µs"는 알림 칸에 닿은 때가 아니라 장치 감지부터 잰 값이다.
 - **NVSHMEM FT의 종료 반환은 조건부다.** 앱의 거절 경로가 FT abort를 불러야 한다.
   - 그것 없이 v2.2로 address flap을 돌리면 6/6 hang이었다(커밋 전 결과).
   - quiet는 여전히 결과를 돌려주지 않고, 오류는 상태 조회로만 보인다. barrier와 collective는 소스만 봤다.
@@ -85,20 +85,20 @@ N=30 재측정 682 trial은 분류, 복구, 거절 셀이 모두 100%였다. Wil
   - GIN에서 MR 안 범위 초과 쓰기가 조용히 사라진다는 주장은 원시 데이터가 남아 있지 않다.
 - **N=30 일부는 펌웨어 명령 슬롯이 샌 상태에서 돌았다.** 09-25 06:45 이후 hold다. N=30 문서에는 이 언급이 없다.
 - **돌리지 않은 것.** link down(공유 링크라서), DeepEP(SM90이 필요한데 rain은 sm_75), 3 rank 이상, Hopper.
-- **진행 중.** GIN 투명 복구 2단계(S2)와 NVSHMEM 투명 복구(T1)는 draft PR로 두었다. 위 결론에는 넣지 않았다.
+- **진행 중.** GIN 투명 복구 2단계와 NVSHMEM 투명 복구는 draft PR로 두었다. 위 결론에는 넣지 않았다.
 
 ## 파일
 
 | 파일 | 내용 |
 |---|---|
 | [RESULTS.md](RESULTS.md) | 스택별 결과를 합친 표와 결론 |
-| [DESIGN.md](DESIGN.md) | 질문 Q1~Q4와 장애 목록 |
+| [DESIGN.md](DESIGN.md) | 측정 질문 4개와 장애 목록 |
 | [N30_20260925.md](N30_20260925.md) | 핵심 셀 N=30 재측정 |
 | [TRANSPARENT_RECOVERY_DESIGN.md](TRANSPARENT_RECOVERY_DESIGN.md) | 앱이 모르게 복구하는 설계 |
 | `cqe_seq/` | 장애 뒤 NIC가 쓰는 CQE 순서(CPU verbs) |
 | `gin/` | NCCL GIN proxy와 GDAKI의 stock 동작 |
 | `gin_q4/` | GDAKI 장치 쪽 분류기, collapsed CQ와 ring CQ 비교 |
-| `gin_recovery/` | GDAKI 복구와 투명 복구 S1 |
+| `gin_recovery/` | GDAKI 복구와 GIN 투명 복구 1단계 |
 | `gpu_doorbell/` | GPU가 doorbell을 직접 울린 실행 |
 | `nvshmem/` | NVSHMEM IBGDA의 stock 동작 |
 | `nvshmem_rootcause/` | doorbell record 버그의 원인과 범위, 공식 3.8.0 확인 |

@@ -53,19 +53,19 @@ the two, not directly tested.
    The app's kernel source is unchanged; the library's inlined poll gains one subtraction (item 4),
    so apps must be recompiled (§12). NVSHMEM's `ibgda_poll_cq` also needs to spin and yield on an
    error CQE instead of asserting.
-4. **Pre-fault tickets survive the QP reset only through a per-QP base offset.** After `2RST` the NIC
-   restarts its send WQE counter at 0 [measured: gin_recovery, nvshmem_ft]. It also ignores the WQE
-   ctrl-segment index field and reports its own counter in the CQE [probe Q4, n=1, fresh QP]. So the
-   library keeps the logical indices waiters hold, restarts only the physical slot and the NIC
-   counter, and has every device poll subtract a per-QP `base` written under pause. It also advances
-   the CQ mapping (`cqe_rsvd`) cumulatively, so stale ring entries are never taken for new ones
-   [measured, gin_recovery negative controls]. §6.3 has the full inventory.
+4. **Pre-fault tickets survive the QP reset only through a per-QP base offset.** After `2RST` the
+   NIC restarts its send WQE counter at 0 [measured: gin_recovery, nvshmem_ft]. It also ignores the
+   WQE ctrl-segment index field and reports its own counter in the CQE [probe, WQE-index test, n=1,
+   fresh QP]. So the library keeps the logical indices waiters hold, restarts only the physical slot
+   and the NIC counter, and has every device poll subtract a per-QP `base` written under pause. It
+   also advances the CQ mapping (`cqe_rsvd`) cumulatively, so stale ring entries are never taken for
+   new ones [measured, gin_recovery negative controls]. §6.3 has the full inventory.
 4a. **Rewinding the requester alone into executed requests is safe only in a shallow window**
-   [probe Q3, n=1 per depth]. Duplicates were absorbed silently when the requester rewound up to 16
-   requests. At 64 and 200 the requester timed out with RETRY_EXC. No atomic was ever applied twice,
-   so the failure is safe but still a decline. Mode A therefore resumes at the responder's PSN
-   boundary rather than the requester's last ACK, and re-issuing an executed-but-unacked fetching
-   atomic is allowed only within that window.
+   [probe, duplicate-absorption test, n=1 per depth]. Duplicates were absorbed silently when the
+   requester rewound up to 16 requests. At 64 and 200 the requester timed out with RETRY_EXC. No
+   atomic was ever applied twice, so the failure is safe but still a decline. Mode A therefore
+   resumes at the responder's PSN boundary rather than the requester's last ACK, and re-issuing an
+   executed-but-unacked fetching atomic is allowed only within that window.
 5. **Multi-QP is handled by a recovery epoch per (context, peer).** All QPs of a peer are reset
    and replayed together; healthy QPs to other peers keep running. The declines that remain are
    the deterministic classes (REM_ACCESS, REM_INV_REQ, LOC_*) and a dead peer — the same set as
@@ -248,20 +248,21 @@ this alone — **no app checkpoint, no receiver-signal read by the app**.
 
 Two facts must hold on hardware, and are what the probe measures (§11):
 
-- **Q1** After the responder QP has gone to ERR, does `QUERY_QP.next_rcv_psn` still equal the PSN
-  after the last request the responder actually executed (ground truth: responder memory)? And in
-  the RETRY_EXC case where only the *requester* errs and the responder stays RTS, does it? Prior
-  work already saw `QUERY_QP` return a coherent `hw_sq_wqebb_counter` in ERR and coherent
-  `next_send_psn`/`last_acked_psn` [measured, nrc_devx / nvshmem_ft `QUERY_QP` 222/222 in ERR], so
-  the read itself is reliable; Q1 is specifically about `next_rcv_psn` on the *responder* matching
-  memory to the packet. **Answer [probe]: yes in 28/28 data points (§11.1), and `rmsn` equals the
-  executed request count too.**
-- **Q4** Does the NIC take the WQE ctrl-segment index field or its own WQE counter as authoritative,
-  and which one does the send CQE's `wqe_counter` report? **Answer [probe, n=1, fresh QP]: its own
-  counter.** WQEs with index fields 1000–1003 in slots 0–3 executed and completed with `wqe_counter`
-  0–3. With the counter restarting at 0 after `2RST` [measured, prior], logical indices cannot be
-  carried into the CQE, so device polls need the per-QP base of §6.3. Not yet checked: the same test
-  *after* a `2RST` (expected to behave the same, since the counter is the NIC's own).
+- **PSN authority.** After the responder QP has gone to ERR, does `QUERY_QP.next_rcv_psn` still
+  equal the PSN after the last request the responder actually executed (ground truth: responder
+  memory)? And in the RETRY_EXC case where only the *requester* errs and the responder stays RTS,
+  does it? Prior work already saw `QUERY_QP` return a coherent `hw_sq_wqebb_counter` in ERR and
+  coherent `next_send_psn`/`last_acked_psn` [measured, nrc_devx / nvshmem_ft `QUERY_QP` 222/222 in
+  ERR], so the read itself is reliable; this question is specifically about `next_rcv_psn` on the
+  *responder* matching memory to the packet. **Answer [probe]: yes in 28/28 data points (§11.1), and
+  `rmsn` equals the executed request count too.**
+- **WQE index.** Does the NIC take the WQE ctrl-segment index field or its own WQE counter as
+  authoritative, and which one does the send CQE's `wqe_counter` report? **Answer [probe, n=1, fresh
+  QP]: its own counter.** WQEs with index fields 1000–1003 in slots 0–3 executed and completed with
+  `wqe_counter` 0–3. With the counter restarting at 0 after `2RST` [measured, prior], logical
+  indices cannot be carried into the CQE, so device polls need the per-QP base of §6.3. Not yet
+  checked: the same test *after* a `2RST` (expected to behave the same, since the counter is the
+  NIC's own).
 
 ### 4.3 Idempotence classes for replay [source]
 
@@ -276,13 +277,13 @@ Two facts must hold on hardware, and are what the probe measures (§11):
   executed-but-unacked. Two options: (i) **decline** the recovery if any executed-but-unacked
   fetching op is in the gap (safe, simple); (ii) **re-issue** it, which is exactly-once at the
   responder only if the responder answers a duplicate from its atomic/read replay state rather than
-  executing it again. **Q3 [probe, n=1 per depth]:** duplicates were absorbed with correct
-  completions and no double-applied atomic at rewind depths 4 and 16. At depths 64 and 200 the
-  responder did not answer and the requester ended in RETRY_EXC; still no counter exceeded 1. I infer
-  the window is the responder's read/atomic resources (`max_rd_atomic`); that is not measured. The
-  design uses (i) by default. It enables (ii) only when the executed-but-unacked gap holds at most as
-  many reads/atomics as that limit, which the probe showed is at least 3 atomics plus reads in 16
-  requests. Beyond the window the failure is a safe RETRY_EXC, which is then declined.
+  executing it again. **Duplicate absorption [probe, n=1 per depth]:** duplicates were absorbed with
+  correct completions and no double-applied atomic at rewind depths 4 and 16. At depths 64 and 200
+  the responder did not answer and the requester ended in RETRY_EXC; still no counter exceeded 1. I
+  infer the window is the responder's read/atomic resources (`max_rd_atomic`); that is not measured.
+  The design uses (i) by default. It enables (ii) only when the executed-but-unacked gap holds at
+  most as many reads/atomics as that limit, which the probe showed is at least 3 atomics plus reads
+  in 16 requests. Beyond the window the failure is a safe RETRY_EXC, which is then declined.
 
 ---
 
@@ -310,10 +311,10 @@ register, so the host cannot rewrite it. Therefore the reset keeps the *logical*
 the NIC WQE counter at 0, with the CQ mapping (`cqe_rsvd` for the ring CQ; the single slot for the
 collapsed CQ) arranged so the replayed op the waiter is blocked on completes at the ticket the
 waiter already holds. This is the collapsed-vs-ring subtlety of §6.3 and the reason `cqe_rsvd` must
-advance cumulatively [measured, gin_recovery negative control]. Probe **Q4** shows the CQE carries
-the NIC's own 0-based counter, not the index field. So the poll's `wqe_counter` comparison (live on
-sm < 90, which covers both GPUs here) must subtract the per-QP base of §6.3. That is a one-line
-change in the library's inlined poll; the app's kernel source does not change.
+advance cumulatively [measured, gin_recovery negative control]. The probe's **WQE-index test** shows
+the CQE carries the NIC's own 0-based counter, not the index field. So the poll's `wqe_counter`
+comparison (live on sm < 90, which covers both GPUs here) must subtract the per-QP base of §6.3.
+That is a one-line change in the library's inlined poll; the app's kernel source does not change.
 
 The `abortFlag`/timeout path is a fallback only: flipping the library's abort word makes the waiter
 return "not done", which is transparent only if the app loops on the result — app-specific — so the
@@ -392,11 +393,11 @@ After `2RST` the NIC restarts the send WQE counter at 0 and expects WQE 0 in slo
 CQ object is **not** reset; its producer keeps counting. Every device word that encodes a WQE index
 or a doorbell must be made consistent — the two prior designs enumerated this exhaustively and
 proved the two non-obvious items by negative control; the multi-op design reuses that inventory
-with the index rows changed for ticket preservation (§5, Q4):
+with the index rows changed for ticket preservation (§5, and the probe's WQE-index test):
 
 | state (NVSHMEM / GDAKI) | on recovery | why |
 |---|---|---|
-| per-QP `base` (new) | = logical index of the first replayed WQE (E), written under pause before RTS | physical slot, ctrl index, doorbell value and CQE `wqe_counter` are all `logical − base` (Q4: the CQE carries the NIC's own counter, restarted at 0) |
+| per-QP `base` (new) | = logical index of the first replayed WQE (E), written under pause before RTS | physical slot, ctrl index, doorbell value and CQE `wqe_counter` are all `logical − base` (WQE-index test: the CQE carries the NIC's own counter, restarted at 0) |
 | `resv_head` / `sq_rsvd_index` | **kept** (logical) = E + #replayed after the host replay | blocked waiters hold logical tickets; the next reservation continues the logical sequence |
 | `ready_head` / `sq_ready_index` | kept, set equal to `resv_head` | the submit CAS compares against it; quiescent at pause |
 | `prod_idx` / `sq_wqe_pi` | kept (logical); only the value rung = `(prod − base) & 0xffff` | logical indices only grow, so `atomicMax` keeps working. (The prior designs reset indices to 0 and had to zero this word: a stale value suppressed every doorbell [measured]; that hazard remains if anyone resets to 0.) |
@@ -406,7 +407,7 @@ with the index rows changed for ticket preservation (§5, Q4):
 | CQ mapping `cqe_rsvd` (GDAKI) | old + S cumulatively | ring poll reads WQE j at CQ pos j+`cqe_rsvd`; must advance by the epoch's WQE count, **not** be set to it (measured: non-cumulative → polled a stale CQE, timed out) [measured] |
 | doorbell record (send word) | 0 while in RESET | NIC may reload it; stale → fetches stale WQEs |
 | CQ buffer | not rewritten (ring, GDAKI) / refilled 0xff (collapsed, NVSHMEM) | ring: stale entries have wrong owner parity; collapsed: slot 0 still holds the old error CQE, must be refilled after 2RST (measured) |
-| Q4 sticky error / async result | cleared | else later waits keep failing |
+| device-side classifier's sticky error / async result | cleared | else later waits keep failing |
 
 **Ticket preservation (the multi-op addition).** In the prior single-op designs the WQE index space
 restarted at 0 and every pre-fault ticket was declared void — which is exactly the app-visible break
@@ -417,10 +418,10 @@ single slot for NVSHMEM) is set so that the replayed op which the waiter is bloc
 the ticket the waiter holds. This is the one genuinely new correctness obligation over the prior
 designs.
 
-**Q4 settles how.** The NIC ignores the ctrl-segment index field and reports its own WQE counter in
-the CQE [probe, n=1, fresh QP]. That counter restarts at 0 after `2RST` [measured, prior]. So after a
-reset the CQE can never carry a preserved logical index. Every device poll that compares the CQE's
-`wqe_counter` with a logical ticket must therefore subtract a **per-QP base**:
+**The WQE-index test settles how.** The NIC ignores the ctrl-segment index field and reports its own
+WQE counter in the CQE [probe, n=1, fresh QP]. That counter restarts at 0 after `2RST` [measured,
+prior]. So after a reset the CQE can never carry a preserved logical index. Every device poll that
+compares the CQE's `wqe_counter` with a logical ticket must therefore subtract a **per-QP base**:
 `base[qp]` = the logical index at which the current NIC incarnation began. The host writes it under
 pause, before RTS.
 
@@ -468,7 +469,7 @@ Let the executed prefix (from `next_rcv_psn`, §4.2) be the requests with PSN `<
    in flight: each signal maps to one atomic WQE with one PSN, and the boundary `P` splits them
    cleanly).
 4. **Fetching atomics / READs** with PSN < P whose result the requester did not receive: **decline**
-   by default; re-issue only within the measured duplicate-absorb window (§11 Q3).
+   by default; re-issue only within the measured duplicate-absorb window (§11, duplicate absorption).
 5. A replay that faults again starts a new epoch and re-reads `P`; an op executed during a failed
    replay is counted, not repeated.
 
@@ -512,18 +513,19 @@ with a **burst of many ops** and **tens of QPs**.
 
 **Stages:**
 
-1. **S0 — probe (this task).** `transparent_probe/`: Q1 (responder `next_rcv_psn` vs memory, ERR
-   and RTS), Q2 (Mode A/B exactly-once, N≈256 ops), Q3 (duplicate-atomic window), Q4 (WQE index
-   field after reset). N≥30 per cell. Decides Mode A legality and the fetching-atomic policy.
-2. **S1 — device pause gate + block-across-recovery, single QP, single op.** Prove the kernel is
+1. **Step 0, the probe (this task).** `transparent_probe/`: PSN authority (responder `next_rcv_psn`
+   vs memory, ERR and RTS), exactly-once replay (Mode A/B, N≈256 ops), the duplicate-atomic window,
+   and the WQE index field after reset. N≥30 per cell. Decides Mode A legality and the
+   fetching-atomic policy.
+2. **Step 1, device pause gate + block-across-recovery, single QP, single op.** Prove the kernel is
    not relaunched (the app just calls `put;quiet` in a loop; a fault mid-loop is invisible). Reuse
    the prior host prepare/commit. N≥30.
-3. **S2 — multi-op on one QP.** Burst of 128–512 ops then `quiet`; inject mid-burst; verify
+3. **Step 2, multi-op on one QP.** Burst of 128–512 ops then `quiet`; inject mid-burst; verify
    exactly-once from the PSN table. N≥30. This is the direct answer to objection (a).
-4. **S3 — multi-QP / multi-peer.** `num_rc_per_pe`/`ginContextCount` > 1; fault on one QP; others
+4. **Step 3, multi-QP / multi-peer.** `num_rc_per_pe`/`ginContextCount` > 1; fault on one QP; others
    keep running; recovery epoch per (context,peer). N≥30.
-5. **S4 — Mode A one-sided** (responder untouched), the transparency win; and device-side replay
-   (S5, optional).
+5. **Step 4, Mode A one-sided** (responder untouched), the transparency win; and device-side replay
+   (step 5, optional).
 
 **Test plan** mirrors `stage2/DESIGN_stage2.md` §11: flag-off == stock (T0), single inject not on a
 boundary (T1), **many ops in flight** (T2: 512 ops, inject at a random op), multi-QP (T3), repeated
@@ -563,28 +565,28 @@ Two cluster runs, each one hold under `common/cluster_run.sh` (logs:
 **[probe]**. Where I infer something from it, the text says so.
 
 **run1 was invalid for exactly-once.** It exposed two probe bugs: (i) inline WRITEs were built with
-`ds=0`, a malformed WQE, so every trial's requester failed deterministically at its first inline WRITE
-(executed prefixes 0/0/0/1/3, the same for both scenarios with the same seed); (ii) the replay poll
-consumed stale flush CQEs of the failed burst because the probe had no **CQ drain**. The drain bug is
-itself a finding: without the drain step of §4/§6 (consume one CQE per posted WQE before reusing the
-CQ), the replay's completions cannot be told from the failed burst's flushes. Both are fixed (inline
-WRITEs replaced by small plain WRITEs, which does not change PSN accounting; `drain_cq()` added).
-run1 still gives 14 valid **Q1** data points (its 4 `dup` trials print Q1 before aborting), because
-Q1 is measured on the responder before any replay: `Q1_MATCH` 14/14 at prefixes 0–3, five of them
-with the responder QP in ERR.
+`ds=0`, a malformed WQE, so every trial's requester failed deterministically at its first inline
+WRITE (executed prefixes 0/0/0/1/3, the same for both scenarios with the same seed); (ii) the replay
+poll consumed stale flush CQEs of the failed burst because the probe had no **CQ drain**. The drain
+bug is itself a finding: without the drain step of §4/§6 (consume one CQE per posted WQE before
+reusing the CQ), the replay's completions cannot be told from the failed burst's flushes. Both are
+fixed (inline WRITEs replaced by small plain WRITEs, which does not change PSN accounting;
+`drain_cq()` added). run1 still gives 14 valid **PSN-authority** data points (its 4 `dup` trials
+print that check before aborting), because it is measured on the responder before any replay:
+`Q1_MATCH` 14/14 at prefixes 0–3, five of them with the responder QP in ERR.
 
 **run2 (corrected binary, 15 trials):**
 
-| scenario | n | responder state at QUERY_QP | executed prefix (PSN = memory) | Q1_MATCH | rmsn = prefix | requests replayed | exactly-once | host recovery time |
+| scenario | n | responder state at QUERY_QP | executed prefix (PSN = memory) | `Q1_MATCH` | rmsn = prefix | requests replayed | exactly-once | host recovery time |
 |---|--:|---|---|---|---|---|---|---|
 | `resp_err` (Mode B) | 5 | ERR | 256 in 5/5 (the burst finished before the responder's 2ERR took effect) | 5/5 | 5/5 | 0 | 5/5 (trivial: nothing to replay) | 1.30–1.37 ms |
 | `req_err` (Mode A) | 5 | RTS | 256 in 4/5; **234 in 1/5** (ra_s4) | 5/5 | 5/5 | 0 ×4; **22** ×1 | 5/5 | 0.59–0.62 ms |
-| `dup` with 46 READs in the plan | 4 | RTS | 256 | 4/4 | 4/4 | (Q3, below) | – | – |
+| `dup` with 46 READs in the plan | 4 | RTS | 256 | 4/4 | 4/4 | (duplicate absorption, below) | – | – |
 
-- **Q1 holds in every data point: 28/28** (run1 14, run2 14). `QUERY_QP.next_rcv_psn` gave exactly
-  the prefix found in responder memory, and `rmsn` equalled the executed request count in every run2
-  trial. That covers the responder QP in ERR (10 points, all at prefixes 0–3 or 256) and in RTS
-  (18 points, one mid-burst). The query took 60–84 µs.
+- **The PSN authority holds in every data point: 28/28** (run1 14, run2 14). `QUERY_QP.next_rcv_psn`
+  gave exactly the prefix found in responder memory, and `rmsn` equalled the executed request count
+  in every run2 trial. That covers the responder QP in ERR (10 points, all at prefixes 0–3 or 256)
+  and in RTS (18 points, one mid-burst). The query took 60–84 µs.
 - **The READ accounting is confirmed.** With 46 READs of 256 B / 8 KiB / 4·MTU+7 B in the plan,
   `next_rcv_psn` = 0x373 = psn0 + 627. That sum is only right if each READ counts
   `ceil(bytes/MTU)` PSNs; counting 1 PSN per READ would give a different value. The same plan was run
@@ -602,7 +604,7 @@ with the responder QP in ERR.
   responder in ERR mid-burst. The fault landed after the 256-request burst had finished (≈0.4–0.6 ms)
   in 9 of 10 trials. The next run must inject earlier (before or right at the doorbell), or use a
   longer burst, and must reach N ≥ 30 per cell.
-- **Q3, duplicate absorption, by rewind depth.** One trial per depth. The requester alone was
+- **Duplicate absorption, by rewind depth.** One trial per depth. The requester alone was
   reset and rewound into already-executed requests; the plan included READs.
 
   | rewind depth (requests) | duplicate atomics in the rewind | requester result | any counter > 1 |
@@ -618,7 +620,7 @@ with the responder QP in ERR.
   without having measured it, that the limit is the responder's read/atomic replay resources
   (`max_rd_atomic`). The probe did **not** overwrite WRITE targets before the rewind, so it cannot
   say whether duplicate WRITEs are executed again.
-- **Q4, index field.** One trial, on a fresh QP, **not after a 2RST**. Four WRITEs had ctrl-segment
+- **WQE index field.** One trial, on a fresh QP, **not after a 2RST**. Four WRITEs had ctrl-segment
   index fields 1000–1003 but sat in physical slots 0–3. All 4 executed, and their CQEs reported
   `wqe_counter` 0, 1, 2, 3. The NIC ignores the index field for execution and reports its own WQE
   counter. Combined with the earlier measurement that the counter restarts at 0 after `2RST`
@@ -629,15 +631,16 @@ with the responder QP in ERR.
 
 ## 12. Biggest risks
 
-1. **Exactly-once at scale is not yet validated.** Q1 held in 28/28 data points, but only 1 trial
-   (Mode A) had a non-empty replay. There are none for Mode B, and none with the responder QP driven
-   to ERR while requests were in flight: the ERR data points are all at prefixes 0–3 or at the full
+1. **Exactly-once at scale is not yet validated.** The PSN authority held in 28/28 data points, but
+   only 1 trial (Mode A) had a non-empty replay. There are none for Mode B, and none with the
+   responder QP driven to ERR while requests were in flight: the ERR data points are all at prefixes
+   0–3 or at the full
    256. A responder whose `next_rcv_psn` behaves differently when the ERR transition lands in the
    middle of a multi-packet message is the remaining gap. Mode A, where the responder stays RTS, is
    covered by the one partial-message trial and remains the safer primary path. Next: inject at or
    before the doorbell with a longer burst, N ≥ 30 per cell (§10).
 2. **Device code is header-inlined, and DeepEP legacy forks it.** Transparency needs library device
-   changes: the pause gate, the per-QP base in polls (§6.3, now required by Q4), and spin instead of
+   changes: the pause gate, the per-QP base in polls (§6.3, now required by the WQE-index test), and spin instead of
    assert. NVSHMEM's and GIN's device APIs are compiled into the app's kernels, so apps need **no
    source change but must be recompiled** against the patched headers. More seriously, DeepEP's legacy
    (NVSHMEM) kernels do not call NVSHMEM's device posting code at all. They post and poll through their
@@ -647,10 +650,11 @@ with the responder QP in ERR.
    through NCCL's device headers [source `backend/nccl.cu`], so a GIN fix reaches it with a recompile.
    This makes GIN the better first target (§13).
 3. **Fetching atomics / READs executed-but-unacked.** Exactly-once for these needs either a decline
-   or a re-issue within the duplicate window. Q3 put that window at ≥ 16 requests absorbed and < 64
-   (n=1 per depth; the mechanism, `max_rd_atomic`, is inferred), with a safe RETRY_EXC beyond it.
-   DeepEP's low-latency path is dominated by non-fetching signal-adds, which are safe, but its `get`
-   and the CST flush are reads. Whether duplicate WRITEs are executed again was not measured.
+   or a re-issue within the duplicate window. The duplicate-absorption test put that window at ≥ 16
+   requests absorbed and < 64 (n=1 per depth; the mechanism, `max_rd_atomic`, is inferred), with a
+   safe RETRY_EXC beyond it. DeepEP's low-latency path is dominated by non-fetching signal-adds,
+   which are safe, but its `get` and the CST flush are reads. Whether duplicate WRITEs are executed
+   again was not measured.
 4. **Pause-gate correctness under the real memory model.** The Dekker argument (§3.2) assumes a
    working system-scope fence on GPU-mapped host memory across PCIe; PeerMappingOverride makes GPU
    doorbells work but the host↔device fence on mapped memory must be validated (a targeted micro-test
@@ -665,7 +669,7 @@ with the responder QP in ERR.
 
 ## 13. Recommended first implementation step
 
-Land **S1: the device pause gate + block-across-recovery on GDAKI, single QP, single op**, on top
+Land **step 1: the device pause gate + block-across-recovery on GDAKI, single QP, single op**, on top
 of the existing `gin_recovery` host prepare/commit, gated by the existing flag. Rationale:
 
 - It is the smallest change that proves the **transparency** claim (the reviewer's objection (b)):
@@ -674,12 +678,12 @@ of the existing `gin_recovery` host prepare/commit, gated by the existing flag. 
 - GDAKI's wait already spins on `-EIO` and already has an `abortFlag`/timeout hook [source]. Blocking
   across a recovery therefore needs no new device control flow: the pause gate (three words in
   existing padding) plus the per-QP base subtraction in `poll_one_cq_at` and the slot/doorbell
-  computation, which Q4 showed is required (§6.3).
+  computation, which the WQE-index test showed is required (§6.3).
 - GIN is the better first target. DeepEP's elastic path reaches it through NCCL's device headers
   with a recompile only, whereas DeepEP legacy forks the NVSHMEM device code (§12 risk 2).
-- Its probe prerequisites are answered: Q1 (the PSN authority, 28/28) and Q4 (the NIC's own counter,
-  so the base is needed). Run the missing Mode B / mid-burst exactly-once cells (§12 risk 1) in
-  parallel. They validate S2's replay, not S1's transparency mechanism.
+- Its probe prerequisites are answered: the PSN authority (28/28) and the WQE index (the NIC's own
+  counter, so the base is needed). Run the missing Mode B / mid-burst exactly-once cells (§12 risk
+  1) in parallel. They validate step 2's replay, not step 1's transparency mechanism.
 
-Then S2 (many ops on one QP) directly retires objection (a), and S3/S4 (multi-QP, Mode A) complete
-the DeepEP-scale, maximally-transparent story.
+Then step 2 (many ops on one QP) directly retires objection (a), and steps 3 and 4 (multi-QP, Mode
+A) complete the DeepEP-scale, maximally-transparent story.
