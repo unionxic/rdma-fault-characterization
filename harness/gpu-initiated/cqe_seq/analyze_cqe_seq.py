@@ -286,7 +286,7 @@ def main(argv):
     fpsurv = sum(1 for d in tot if d["last_fp_is_root_fp"])
     noerr = sum(1 for d in tr if d["root"] is None)
     print("\ntrials: %d (%d without any error CQE); last CQE is the root-cause CQE in %d/%d, "
-          "last CQE has the root cause's fingerprint in %d/%d" % (len(tr), noerr, surv, len(tot), fpsurv, len(tot)))
+          "last CQE has the root cause's error code in %d/%d" % (len(tr), noerr, surv, len(tot), fpsurv, len(tot)))
     bad = [d for d in tr if d["trial"]["drain_end"] == "bound" or d["foreign"] or d["late"]]
     if bad:
         print("WARNING: %d trials with drain_end=bound, foreign or late CQEs" % len(bad))

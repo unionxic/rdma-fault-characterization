@@ -36,7 +36,7 @@ def fnum(x):
         return None
 
 
-print("| stack | floor | IB timeout T | N | class (fingerprint) | failing op posted -> error (ms) | fault -> device detection (ms) | fault -> host-visible fingerprint (ms) | fault -> API error (ms) | teardown / leftover |")
+print("| stack | floor | IB timeout T | N | class (status/vendor_err) | failing op posted -> error (ms) | fault -> device detection (ms) | fault -> host-visible error code (ms) | fault -> API error (ms) | teardown / leftover |")
 print("|---|---|---|---|---|---|---|---|---|---|")
 for p in sorted(glob.glob(f"{D}/gin_*_T*.csv"), key=lambda s: (s.split("_")[-2], int(re.search(r"_T(\d+)", s).group(1)))):
     m = re.search(r"gin_(\w+?)_T(\d+)\.csv", os.path.basename(p))
@@ -50,7 +50,7 @@ for p in sorted(glob.glob(f"{D}/gin_*_T*.csv"), key=lambda s: (s.split("_")[-2],
         m2 = re.search(r"device_rc_ms=([0-9.]+)", open(kv).read()) if os.path.exists(kv) else None
         post.append(float(m2.group(1)) if m2 else None)
     left = sum(int(r["leftover_procs"] or 0) for r in rs)
-    print(f"| GIN GDAKI + Q4 | {label} | {T} | {len(rs)} | {', '.join(cls)} ({sum(r['q4_class'] == 'RETRY_EXC' for r in rs)}/{len(rs)}) | "
+    print(f"| GIN GDAKI + device classifier | {label} | {T} | {len(rs)} | {', '.join(cls)} ({sum(r['q4_class'] == 'RETRY_EXC' for r in rs)}/{len(rs)}) | "
           f"{rng(post)} | {rng([fnum(r['t_dev_ms']) for r in rs])} | {rng([fnum(r['t_mbx_ms']) for r in rs])} | "
           f"{rng([fnum(r['t_api_ms']) for r in rs])} | {','.join(td)} / {left} |")
 
