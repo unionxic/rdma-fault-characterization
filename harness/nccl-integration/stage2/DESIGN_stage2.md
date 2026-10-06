@@ -343,6 +343,17 @@ bring-up returns "not ready" and is retried every 20 ms until `PATH_WAIT_MS`.
 | `NCCL_RDMA_FAULT_INJECT_RECV_SILENT=1` | instead of at a post, R's QP is forced to ERR right after its k-th receive completion (while S streams the next groups) and R does not NOTIFY: S meets RETRY_EXC. Needs the recovery flag on (it lives in the recovery CQ path) |
 | `NCCL_RDMA_FAULT_TEST_MUTE=1` | R never answers REQ (a live but unresponsive peer): S must fail at its deadline |
 
+`NCCL_RDMA_FAULT_INJECT_RKEY=k` (default 0, off) makes F2, a remote access error, without forcing any QP
+state. On the S side, the data RDMA write of the k-th multi-send of the process is posted with the low byte of
+its rkey flipped (on mlx5: the same mkey index with a wrong key byte). The count is the one of
+`NCCL_RDMA_FAULT_INJECT`, on its own counter, and replays are not counted. If that multi-send carries no data,
+the next one that does is used, because the rkey of a zero-length write is not checked. The QP, the FIFO slot
+and the rkey kept for a replay are untouched, and one `[FAULT-INJECT] ... posted with a corrupted rkey` line is
+logged. The responder NAKs the write: S is expected to get `REM_ACCESS_ERR` (10 / 0x88), and R's QP to raise
+`IBV_EVENT_QP_ACCESS_ERR`, which NCCL counts as fatal. With the recovery flag on, Stage 2 must decline the class
+(§3) and fail like stock, with no replay. With the flag off, the fault takes the stock error path (the
+control). With the knob unset, every WR is built as before.
+
 Faults not made by a hook: SIGKILL of a rank (process death, FIN), and a **GID blackhole**: the
 QPs of the test use a RoCE GID of a secondary IPv4 address on the RoCE netdev of each node;
 removing that address on one node for T seconds removes the GID, so the NIC drops the
