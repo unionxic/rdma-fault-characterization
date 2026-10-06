@@ -13,6 +13,7 @@ IBGDA)이다.
 
 ## 주요 결과
 
+결과를 설명하고 새 스택의 결과를 미리 맞히는 규칙 다섯 가지는 [`MODEL.md`](MODEL.md)에 정리했다.
 각 항목의 근거와 원시 수치는 괄호 안 폴더에 있다.
 
 **오류 정보가 사라지는 지점**
@@ -73,6 +74,7 @@ IBGDA)이다.
 
 | 경로 | 내용 |
 | --- | --- |
+| `MODEL.md` | 오류 전파 규칙(분석 틀) |
 | `harness/` | CPU verbs 장애 측정과 복구 |
 | `harness/nccl-integration/` | NCCL 장애 복구 |
 | `harness/gpu-initiated/` | GPU-initiated 스택(GIN, NVSHMEM). 종합은 `RESULTS.md` |

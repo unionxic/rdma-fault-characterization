@@ -8,6 +8,7 @@ RDMA 장애가 NIC에서 응용까지 어디서 남고 어디서 사라지는지
 | 문서 | 내용 |
 |---|---|
 | [README.md](README.md) | 연구 질문과 주요 결과 |
+| [MODEL.md](MODEL.md) | 오류 전파 규칙(분석 틀) |
 | [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) | 브랜치, 커밋, 추적 범위, 데이터 릴리스, 태그 |
 | [DATA.md](DATA.md) | 원자료가 있는 Release 자산과 체크섬 |
 | [docs/templates/EXPERIMENT.md](docs/templates/EXPERIMENT.md) | 실험 문서 템플릿 |
