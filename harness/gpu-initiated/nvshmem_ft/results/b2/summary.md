@@ -1,7 +1,7 @@
 
 ### classify (30 trials)
 
-| fault | mode | variant | n | recorded class (first record) | fp | path | fault -> device (ms) | device -> mailbox (us) | fault -> host API (ms) | target | teardown r0/r1 (finalize ms) | exit r0/r1 |
+| fault | mode | variant | n | recorded class (first record) | status/vendor_err | path | fault -> device (ms) | device -> mailbox (us) | fault -> host API (ms) | target | teardown r0/r1 (finalize ms) | exit r0/r1 |
 |---|---|---|--:|---|---|---|---|---|---|---|---|---|
 | F1 | blocking | - | 3 | LOCAL_QP_ERR 3 | 5/0xf5 | poll 3 | 3.603 [3.331-4.080] | 60 [21-76] | 3.663 [3.407-4.101] | rc9 3 | 3/3 returned (19 [19-19] / 25 [25-25]) | 3 / 9 |
 | F1 | timeout | - | 3 | LOCAL_QP_ERR 3 | 5/0xf5 | bounded 3 | 3.499 [3.462-3.599] | 65 [59-99] | 3.598 [3.521-3.664] | rc9 3 | 3/3 returned (19 [19-19] / 25 [25-25]) | 3 / 9 |
@@ -79,7 +79,7 @@ Recovery rounds (ms, median [min-max]):
 
 ### capture_blocking (72 trials)
 
-| fault | mode | variant | n | recorded class (first record) | fp | path | fault -> device (ms) | device -> mailbox (us) | fault -> host API (ms) | target | teardown r0/r1 (finalize ms) | exit r0/r1 |
+| fault | mode | variant | n | recorded class (first record) | status/vendor_err | path | fault -> device (ms) | device -> mailbox (us) | fault -> host API (ms) | target | teardown r0/r1 (finalize ms) | exit r0/r1 |
 |---|---|---|--:|---|---|---|---|---|---|---|---|---|
 | F1 | blocking | cexit_b16 | 3 | FLUSH_TRAILING 3 | 5/0xf9 | exit 3 | 4.432 [4.083-4.766] | 87 [17-106] | 4.538 [4.170-4.783] | rc9 3 | 3/3 returned (19 [19-19] / 25 [25-25]) | 3 / 9 |
 | F1 | blocking | cexit_d0 | 3 | FLUSH_TRAILING 3 | 5/0xf9 | exit 3 | 3.819 [3.768-3.985] | 79 [76-102] | 3.921 [3.847-4.061] | rc9 3 | 3/3 returned (19 [19-19] / 25 [25-26]) | 3 / 9 |
@@ -108,7 +108,7 @@ Recovery rounds (ms, median [min-max]):
 
 ### flagoff (8 trials)
 
-| fault | mode | variant | n | recorded class (first record) | fp | path | fault -> device (ms) | device -> mailbox (us) | fault -> host API (ms) | target | teardown r0/r1 (finalize ms) | exit r0/r1 |
+| fault | mode | variant | n | recorded class (first record) | status/vendor_err | path | fault -> device (ms) | device -> mailbox (us) | fault -> host API (ms) | target | teardown r0/r1 (finalize ms) | exit r0/r1 |
 |---|---|---|--:|---|---|---|---|---|---|---|---|---|
 | F1 | blocking | - | 2 | - 2 | - | - 2 | - | - | - | rc7 2 | 0/0 returned (- / -) | 7 / 7 |
 | F2b | blocking | - | 2 | - 2 | - | - 2 | - | - | - | rc7 2 | 0/0 returned (- / -) | 7 / 7 |

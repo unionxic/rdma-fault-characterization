@@ -1,9 +1,9 @@
-# NVSHMEM IBGDA transparent recovery (T1)
+# NVSHMEM IBGDA transparent recovery
 
 Patch: `nvshmem_ibgda_transparent.diff`, a full diff on the same base as `nvshmem_ibgda_ft_v2.diff`
 (NVSHMEM `7bb2e99c` + `../nvshmem/nvshmem_ibgda_fault_inject.diff` +
-`../nvshmem_rootcause/nvshmem_nrc_proxy_sq_dbr.diff`); it contains FT v2.2 unchanged except where T1
-hooks in. Switch: `NVSHMEM_IBGDA_FT_TRANSPARENT=1` (needs `NVSHMEM_IBGDA_FT=1`,
+`../nvshmem_rootcause/nvshmem_nrc_proxy_sq_dbr.diff`); it contains FT v2.2 unchanged except where transparent
+recovery hooks in. Switch: `NVSHMEM_IBGDA_FT_TRANSPARENT=1` (needs `NVSHMEM_IBGDA_FT=1`,
 `NVSHMEM_IBGDA_FT_RING_CQ=1` and the GPU NIC handler; every PE must set it). Unset, the library
 behaves as v2.2.
 
@@ -68,23 +68,23 @@ After every hold both ports had only their primary address; sunny's nvme error-l
 | build | cut | n | transparent | declined | failed | RETRY_EXC after the cut start (s) | slowest operation (s) | recovery round (ms) | sunny GID index moved |
 |---|---|--:|--:|--:|--:|---|---|---|---|
 | v2.2 (FT on, no recovery) | 0.5 / 6 / 15 s | 2 / 2 / 2 | 0 | 0 | **6** | 3.80–4.05 | – | – | 6/6 |
-| **T1 final** | 0.5 s | 5 | **5** | 0 | 0 | 3.91 [3.90–3.96] | 3.65 [3.63–3.71] | 8.04 [6.05–8.32] | 5/5 |
-| **T1 final** | 6 s | 5 | **5** | 0 | 0 | 3.86 [3.81–3.95] | 6.02 [6.01–6.04] | 2427 [2377–2477] | 5/5 |
-| **T1 final** | 15 s | 5 | **5** | 0 | 0 | 3.99 [3.80–4.05] | 15.05 [15.02–15.06] | 11342 [11290–11494] | 5/5 |
-| T1, final transport (`flap_cut25`) | 25 s | 3 | **3** | 0 | 0 | 3.84 [3.84–3.97] | 25.04 [25.03–25.07] | 21464 [21364–21465] | 3/3 |
-| T1 without the GID re-lookup (control) | 6 s | 3 | 0 | **3** | 0 | 3.94 [3.83–4.02] | – | – | 3/3 |
+| **transparent, final** | 0.5 s | 5 | **5** | 0 | 0 | 3.91 [3.90–3.96] | 3.65 [3.63–3.71] | 8.04 [6.05–8.32] | 5/5 |
+| **transparent, final** | 6 s | 5 | **5** | 0 | 0 | 3.86 [3.81–3.95] | 6.02 [6.01–6.04] | 2427 [2377–2477] | 5/5 |
+| **transparent, final** | 15 s | 5 | **5** | 0 | 0 | 3.99 [3.80–4.05] | 15.05 [15.02–15.06] | 11342 [11290–11494] | 5/5 |
+| transparent, final transport (`flap_cut25`) | 25 s | 3 | **3** | 0 | 0 | 3.84 [3.84–3.97] | 25.04 [25.03–25.07] | 21464 [21364–21465] | 3/3 |
+| transparent, without the GID re-lookup (control) | 6 s | 3 | 0 | **3** | 0 | 3.94 [3.83–4.02] | – | – | 3/3 |
 
 The GID index moves on every re-add (72/72 cuts over all flap sets) and DEVX QPs keep the old
 source-GID index, so even a 0.5 s cut is permanent for the QP: under v2.2 RETRY_EXC fires ~3.9 s after
-the cut (6/6), the application gets the error and `nvshmem_finalize` did not return within 65 s. T1
-recovers with RETRY_EXC and a live peer: sunny's helper finds its GID by value at the new index at
+the cut (6/6), the application gets the error and `nvshmem_finalize` did not return within 65 s. With transparent
+recovery, RETRY_EXC with a live peer is recovered: sunny's helper finds its GID by value at the new index at
 once (0.5 s) or after 2.4, 11.3 or 21.4 s (6, 15, 25 s cuts), PE 0's device threads hold that long,
 and the application sees one slow operation of about max(retry timeout, cut) and no error. Without the
 re-lookup (control) RTR fails with the stale index and the round declines 5–17 ms after the record.
 
 ### Library-socket outage (set `review4`)
 
-PE 0's T1 socket port is dropped by iptables in both directions for 8 s, 1.5 s into a 1000 × 64 KiB
+PE 0's recovery socket port is dropped by iptables in both directions for 8 s, 1.5 s into a 1000 × 64 KiB
 run (20 ms gap); no RDMA fault in `sock`, F1 at 12 s in `sock1`.
 
 | cell | n | transparent | declined | failed | socket lost (PE 0 / PE 1) | errno | back (PE 0 / PE 1) | cut start → back (s) | F1 rounds after it |
@@ -141,36 +141,36 @@ stops completing while every slot is taken, fault or not (5.6 s with no fault, 8
 
 The host flips the epoch with 4-byte copies while every device thread enters and leaves with 64-bit
 atomics: 0 torn values in 327.7 M + 102.4 M atomics per run, PASS in every run (rain sm_75 in 5 holds,
-sunny sm_86 in 1). Enter + leave costs 380 ns (rain), 376–414 ns (sunny); S1's Dekker gate 2239–2395 ns.
+sunny sm_86 in 1). Enter + leave costs 380 ns (rain), 376–414 ns (sunny); the Dekker gate of GIN transparent recovery step 1, 2239–2395 ns.
 
 ### Fault-free latency (set `lat_final2`)
 
 Put + signal + quiet, one thread, 2000 operations × 5 reps × 5 runs per cell, interleaved, GPU
 `%globaltimer`; runs are bimodal (12.4 vs 14.1 µs for v2.2), so the best run stands next to the median
-of all 25 reps. "FT on, ring" is the v2.2 FT configuration T1 needs, T1 off.
+of all 25 reps. "FT on, ring" is the v2.2 FT configuration transparent recovery needs, with the switch off.
 
-| size, stat (µs) | v2.2, FT off | T1 build, FT off | T1 build, FT on (ring), T1 off | T1 on |
+| size, stat (µs) | v2.2, FT off | transparent build, FT off | transparent build, FT on (ring), switch off | switch on |
 |---|--:|--:|--:|--:|
 | 4 KiB p50, best run | 12.384 | 13.056 | 13.440 | **14.240** |
 | 4 KiB p50 / p99, median of all reps | 12.672 / 14.368 | 13.088 / 14.272 | 13.440 / 14.368 | 16.256 (4 of 5 runs slow) / 16.416 |
 | 256 KiB p50, best run | 40.256 | 40.768 | 40.960 | **41.760** |
 | 256 KiB p50 / p99, median of all reps | 40.352 / 40.992 | 40.768 / 41.248 | 40.960 / 42.176 | 41.888 / 43.008 |
 
-T1 on costs +1.86 µs at 4 KiB and +1.50 µs at 256 KiB against v2.2 with FT off (+0.80 against the
-same build with FT and ring CQs on). With the switch off the T1 build costs +0.67 and +0.51 µs; the
+The switch on costs +1.86 µs at 4 KiB and +1.50 µs at 256 KiB against v2.2 with FT off (+0.80 against the
+same build with FT and ring CQs on). With the switch off the transparent build costs +0.67 and +0.51 µs; the
 bisect of that cost is under Limits. [measured]
 
 ## How it works
 
-Same structure as S1 (`../gin_recovery/TRANSPARENT_S1.md`, "How it works"): a pause gate for posters,
+Same structure as GIN transparent recovery step 1 (`../gin_recovery/TRANSPARENT_S1.md`, "How it works"): a pause gate for posters,
 waits that hold across a recovery with logical tickets, a helper thread inside the library that runs
 the round over its own TCP socket, the executed prefix from the responder's `rmsn`, a host re-post with
 a host doorbell, a commit-point give-up handshake, a watchdog and a teardown hook. What differs for
 NVSHMEM:
 
 **Device (`ibgda_device.cuh`).**
-- **Gate** (64 B per RC QP in GPU memory). S1's gate used two words and system-scope SC fences on both
-  sides (Dekker; most of its +6 µs). T1 puts the epoch (high 32 bits, written by the host with a 4-byte
+- **Gate** (64 B per RC QP in GPU memory). The GIN step-1 gate used two words and system-scope SC fences on both
+  sides (Dekker; most of its +6 µs). Here the epoch (high 32 bits, written by the host with a 4-byte
   copy) and the count of device threads inside (low 32 bits) into one 64-bit word: a poster enters with
   one `atomicAdd` whose return value carries the epoch (one location: host write and entries ordered at
   L2, no fence) and leaves with one `red.release.gpu.add`; `gate_race_test.cu` tests the no-tearing assumption.
@@ -185,19 +185,19 @@ NVSHMEM:
   so that a stale CAS fails. A waiter takes its ticket (epoch, `off`, `ready_head`) in one stable epoch,
   validates completions against it, re-maps it after a recovery (L = D − `off`), and enters the count
   only to record an error CQE.
-- **Indices jump instead of restarting.** After `2RST` the NIC's WQE counter restarts at 0; S1 restarted
-  the device indices too. T1 moves every index to B, the next multiple of 65536 above every old index,
+- **Indices jump instead of restarting.** After `2RST` the NIC's WQE counter restarts at 0; GIN step 1 restarted
+  the device indices too. This build moves every index to B, the next multiple of 65536 above every old index,
   and rotates the send ring so that the first unexecuted WQE U sits in slot 0 (= index B): the NIC
   counter equals D mod 65536 again, post and poll code is unchanged, `off` grows by B − U per recovery.
 - **WQEBBs vs messages.** `rmsn` counts messages, device indices 64-B WQEBBs, and NVSHMEM posts
   multi-WQEBB WQEs (the barrier's signal: a 2-WQEBB masked atomic plus a NOP). Each post adds its surplus
   to the gate's `xbb` when its range is ready; a host walk of [C, R) turns the executed count into an index.
 - **Flag off.** Each hook tests one flag word of the `__constant__` device state and branches around
-  the T1 path; the rare paths (hold, give-up, index fix, error record) are out of line. The build knob
+  the recovery path; the rare paths (hold, give-up, index fix, error record) are out of line. The build knob
   `NVSHMEMI_IBGDA_T1_DEVICE` (bit 0 post hooks, bit 1 wait hooks, bit 2 the rest; 0 = v2.2's device
   code, the switch refused at init) exists for the latency study.
 
-**Host (`ibgda.cpp`).** The round is S1's (quiesce, drain, executed counts, REQ/ACK, 2RST, commit
+**Host (`ibgda.cpp`).** The round is the one of GIN step 1 (quiesce, drain, executed counts, REQ/ACK, 2RST, commit
 point, rebase, INIT/RTR/RTS, re-post, publish, DONE) with these differences:
 - **One helper thread per process**, fed by the v2.2 mailbox watcher (the application sees no record
   of a gated QP), which also runs the watchdog; an `atexit` hook stops and joins it when a process
@@ -209,7 +209,7 @@ point, rebase, INIT/RTR/RTS, re-post, publish, DONE) with these differences:
   responder executed is not re-posted.
 - **Commit point.** Nothing device-visible is written before it. A device wait that reaches `HOLD_MS`
   records "abandoned" and fences; the host writes "commit", fences and reads "abandoned": either the host
-  declines or the device keeps waiting (S1's handshake, per gate). After it the host publishes `off` and
+  declines or the device keeps waiting (the GIN step-1 handshake, per gate). After it the host publishes `off` and
   `xbb` before the re-post doorbell (a poster leaving its hold with FAILED then shifts), the epoch last.
 - **Bounds.** `ROUND_MS` (watchdog, before the commit point) has the floor quiesce + drain + handshake
   + 2 × GID wait + 5 s (73 s); `HOLD_MS` (one bound before the commit point, one after; the hold starts
@@ -253,12 +253,12 @@ point, rebase, INIT/RTR/RTS, re-post, publish, DONE) with these differences:
   identified. Reaching the device state without a CUDA stream (a BAR1 mapping) would remove it; not done.
 - **Flag off costs +0.5–0.7 µs per operation** (4 KiB 13.06 vs 12.38; 256 KiB 40.77 vs 40.26). The
   bisect (set `bisect`, seven interleaved cells, `summary_t1.md`) puts it in the device hooks: with
-  every hook compiled out the T1 source runs at v2.2's latency, the host libraries cost ≤ 0.13 µs, post
+  every hook compiled out the transparent source runs at v2.2's latency, the host libraries cost ≤ 0.13 µs, post
   hooks alone +0.6, wait hooks alone +0.35, both +0.5 (not additive). Registers, spills and the flag
   word's cache line are unchanged; the remaining explanation, not verified at SASS level, is that each
   hook's branch stops the compiler from overlapping the global loads around it. Only the build knob
   removes it; a run-time switch would need a per-operation dispatch at the API layer.
-- **Refused setups.** T1 stays off, with a warning, with more than 8 RC QPs to one peer, without
+- **Refused setups.** Transparent recovery stays off, with a warning, with more than 8 RC QPs to one peer, without
   ring CQs, park or the GPU NIC handler, or with v2 bounds mode; every PE must set the switch (a PE
   without it hangs in the init allgather).
 - **Declined, by design.** A fetching atomic, READ, `g`/`get` or DUMP in [C, R): accepting those in
@@ -279,7 +279,7 @@ point, rebase, INIT/RTR/RTS, re-post, publish, DONE) with these differences:
 - **Kernel log.** rain's `mlx5_1` (one leaked firmware command slot since 2026-09-25) logged no new
   mlx5 message; its NVRM BAR1 messages fall into void trials with a 400 MiB heap and the other agent's
   holds. sunny logged `FWTracer: Events were lost` at 09-30 23:21:30 (F2A trials), 10-01 02:27:47 (no
-  T1 hold) and 12:18:23 (`dci_diag`), as on 09-25; no nvme error lines.
+  transparent-recovery hold) and 12:18:23 (`dci_diag`), as on 09-25; no nvme error lines.
 
 ## Provenance
 
@@ -297,7 +297,7 @@ base and reproduces the tree, which rebuilds to transport `c69d6cc4`. Earlier bu
 
 ## Files
 
-- `nvshmem_ibgda_transparent.diff`: the patch; T1 code in `ibgda_device.cuh` (block after
+- `nvshmem_ibgda_transparent.diff`: the patch; the transparent-recovery code in `ibgda_device.cuh` (block after
   `ibgda_ft_ring_poll`, hooks in reserve/submit/quiet), `nvshmem_common_ibgda.h` (gate, flag),
   `ibgda.cpp` ("T1 (research)" .. "end T1"). `nvshmem_t1.cu`: the application, no recovery code
   (`--fetch`, `--fetch-every`, `--fill-sms`, `--bad-at` shape the workload). `tests_t1/`: the gate

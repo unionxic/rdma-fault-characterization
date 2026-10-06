@@ -11,7 +11,7 @@ part keeps the earlier sets, the changes between builds and the per-variant tabl
 | mainB, neg | 22:58–23:16 | `ef3e996a` | `446e82f6` | `f8158c55` | b2: fault hook only (the in-commit shot fires before the re-post doorbell; in b1 it fired after it and hit the re-post 0/10) |
 | neg2, f2a, lat | 23:18–23:26 | `83402302` | `c28f555e` | `f8158c55` | b3: `Uexec` added to the RECOVERED line; driver gets F2A `--bad-at` |
 | flap_v22 | 23:26–23:33 | `d90585c8` | `6913dea6` | `54a9d23a` | v2.2 (`~/gi-bundle/nvshmem_ft2` libraries) |
-| flap_t1_outlined, reg_outlined, lat_outlined | 23:48–10-01 00:19 | `5f5c9bc9` | `c28f555e` | `c9c6041f` | every T1 device path out of line (reverted: +1.5 µs with T1 on, flag-off cost unchanged) |
+| flap_t1_outlined, reg_outlined, lat_outlined | 23:48–10-01 00:19 | `5f5c9bc9` | `c28f555e` | `c9c6041f` | every transparent-recovery device path out of line (reverted: +1.5 µs with the switch on, flag-off cost unchanged) |
 | reg_final, flap_t1_final, flap_nogid, lat_final | 10-01 00:38–01:13 | `aabbcf80` | `c28f555e` | `d8883a20` | b3's source, rebuilt: the build the external review looked at |
 | bisect, fetch | 10-01 08:12–08:29 | `3b8bc926` (+`--fetch`) | `c28f555e` | `d8883a20` | same libraries; variants varA/varP/varW and mixA/mixB (below) |
 | reg_fixed, review, flap_fixed, fetch_fixed, flap_cut25, lat_fixed | 08:48–09:58 | `1489d29a` (+`--fill-sms`) | `c69d6cc4` | `d4692937` | the review fixes, with the wait and `submit_ready` hooks moved after the hot loads (reverted: flag-off cost +0.93 µs instead of +0.5) |
@@ -60,7 +60,7 @@ fetches), F3 8/8 declined, no fault 5/5. The per-set tables are above in this fi
 
 ## Fault-free latency of the earlier builds (p50 µs, median of 25 reps)
 
-| set | 4 KiB: v2.2 off / T1 off / FT+ring / T1 on | 256 KiB: same |
+| set | 4 KiB: v2.2 off / transparent build off / FT+ring / transparent on | 256 KiB: same |
 |---|---|---|
 | lat (b3) | 12.544 / 13.088 / 13.472 / 14.304 | 40.288 / 40.864 / 40.960 / 41.952 |
 | lat_outlined | 12.384 / 13.120 / 13.664 / 15.840 | 40.256 / 40.832 / 40.960 / 43.072 |
@@ -73,14 +73,14 @@ fetches), F3 8/8 declined, no fault 5/5. The per-set tables are above in this fi
 | cell | what runs | 4 KiB, per-run p50 (µs) | best | 256 KiB, per-run p50 | best |
 |---|---|---|--:|---|--:|
 | v22off | v2.2 libraries and driver | 14.08 12.35 12.38 12.45 12.35 | 12.35 | 39.97 39.97 40.13 40.10 40.10 | 39.97 |
-| t1off | T1 build (reviewed) | 12.90 12.86 12.90 13.70 12.93 | 12.86 | 40.70 40.70 40.74 40.77 40.70 | 40.70 |
-| mixA | T1 driver (T1 device code) + v2.2 host libraries | 13.31 15.42 13.25 13.41 13.34 | 13.25 | 40.93 40.96 40.96 40.96 40.96 | 40.93 |
-| mixB | v2.2 driver (v2.2 device code) + T1 host libraries | 14.30 12.48 12.48 12.58 12.58 | 12.48 | 40.22 40.22 40.32 40.38 40.83 | 40.22 |
-| varA | every T1 device hook compiled out (`NVSHMEMI_IBGDA_T1_DEVICE=0`) | 12.35 12.35 12.35 12.32 12.45 | 12.32 | 39.97 39.97 40.10 40.13 40.22 | 39.97 |
+| t1off | transparent build (reviewed) | 12.90 12.86 12.90 13.70 12.93 | 12.86 | 40.70 40.70 40.74 40.77 40.70 | 40.70 |
+| mixA | transparent driver (its device code) + v2.2 host libraries | 13.31 15.42 13.25 13.41 13.34 | 13.25 | 40.93 40.96 40.96 40.96 40.96 | 40.93 |
+| mixB | v2.2 driver (v2.2 device code) + transparent host libraries | 14.30 12.48 12.48 12.58 12.58 | 12.48 | 40.22 40.22 40.32 40.38 40.83 | 40.22 |
+| varA | every transparent-recovery device hook compiled out (`NVSHMEMI_IBGDA_T1_DEVICE=0`) | 12.35 12.35 12.35 12.32 12.45 | 12.32 | 39.97 39.97 40.10 40.13 40.22 | 39.97 |
 | varP | post hooks compiled out (reserve, submit, submit_ready); wait hooks kept (=6) | 12.74 12.70 12.74 12.77 12.77 | 12.70 | 40.35 40.35 40.48 40.48 40.48 | 40.35 |
 | varW | wait hooks compiled out (quiet, quiet_status, quiet_with_cst); post hooks kept (=5) | 12.96 13.02 13.06 13.09 14.40 | 12.96 | 40.67 40.67 40.77 40.77 40.77 | 40.67 |
 
-Per-run medians: `bisect_runs.txt`; raw rows: `trials_bisect.csv`. With every hook compiled out the T1
+Per-run medians: `bisect_runs.txt`; raw rows: `trials_bisect.csv`. With every hook compiled out the transparent
 source runs at v2.2's latency; the host side costs ≤ 0.13 µs; post hooks alone +0.6, wait hooks alone
 +0.35, both +0.5 µs (4 KiB), not additive. Each hook is one `__constant__` flag load and a branch
 (the state is `__constant__` memory, so a dedicated `__constant__` flag is what the code already does);
