@@ -1,60 +1,52 @@
-# Official NVSHMEM v3.8.0-0 reproduction
+# official380: 공식 NVSHMEM 3.8.0에서 재현
 
-The doorbell-record bug reproduced on the unmodified release, with a test program that uses only
-the public API. This is the evidence and the logs for the upstream issue
-(`../UPSTREAM_ISSUE_DRAFT.md`).
+수정하지 않은 공식 릴리스 v3.8.0-0에서 doorbell record 버그가 재현되는지 봤다.
+공개 API만 쓰는 작은 프로그램으로 상대 PE를 죽이고, 다음 quiet 호출이 돌아오는지 쟀다.
+업스트림 이슈 초안(`../UPSTREAM_ISSUE_DRAFT.md`)의 근거다. 원인 분석은 `../`에 있다.
 
-| File | What |
+## 무엇을 쟀나
+
+- **장애.** PE 0(rain)이 반복마다 put + signal + quiet를 한다. 3번째 반복 뒤 PE 1(sunny)을 SIGKILL했다. 5번째 반복이 죽은 뒤 첫 반복이다.
+- **변형 3가지, 각 3회.** 공식본 CPU 프록시, 공식본 GPU 핸들러, CPU 프록시+두 줄 수정. 죽이지 않은 대조가 공식본과 수정본에 1회씩. 모두 11회.
+- **기록.** 반복마다 걸린 시간(30 s에서 포기), rain 포트의 오류 카운터 증감.
+- **조건.** 2026-10-01 20:35~20:39, ConnectX-6 RoCE v2, IB 타임아웃 14, 재시도 7, PeerMappingOverride 켬. 공식본과 수정본은 IBGDA 플러그인 파일 하나만 다르다.
+
+## 결론
+
+- **공식 3.8.0에서도 재현됐다.** CPU 프록시에서 상대가 죽으면 quiet가 30 s 안에 돌아오지 않았다(3/3). NVSHMEM은 장애 뒤 아무 로그도 남기지 않았다.
+- **원인은 앞 단계와 같은 것으로 본다.** 앞 단계에서 찾은 doorbell record의 칸만 고친 두 줄 수정으로
+  CPU 프록시가 GPU 핸들러와 같아졌다. 3.8.0에서 CQ를 직접 읽지는 않았다.
+- **GPU 핸들러와 수정본은 재시도가 끝나면 돌아온다.** 죽은 뒤 첫 반복이 GPU 핸들러 3537~3755 ms, 수정본 3744~3792 ms에 돌아왔다(각 3/3). 그 뒤 반복은 1.1 ms였다.
+- **돌아와도 성공으로 보인다.** 상대가 죽었는데도 두 변형 모두 40회 반복이 전부 "돌아옴"이었다. quiet는 결과값이 없어서 앱은 실패를 모른다. 수정은 멈춤을 조용한 성공으로 바꾼다.
+- **포트 카운터는 움직이지 않았다.** 11회 모두 +0이었다(ack timeout, CQE 오류, flush, remote access). NVSHMEM의 QP는 포트 카운터에 잡히지 않는다. 호스트 쪽에서 장애를 알아챌 단서가 없다.
+
+## 결과
+
+| 라이브러리 | NIC 핸들러 | 죽은 뒤 첫 반복 | 그 뒤 반복 | 시행 |
+|---|---|---|---|--:|
+| 공식본 | CPU 프록시 | 30 s 안에 안 돌아옴 | - | 3/3 |
+| 공식본 | GPU | 3537~3755 ms 뒤 돌아옴 | 1.1 ms | 3/3 |
+| 수정본 | CPU 프록시 | 3744~3792 ms 뒤 돌아옴 | 1.1 ms | 3/3 |
+
+약 3.7 s는 IB 타임아웃 14, 재시도 7에서 재시도가 다 끝나 QP가 ERR로 가는 시간이다.
+죽이지 않은 대조는 공식본과 수정본 모두 40회 반복이 1.0~2.2 ms였다.
+
+## 한계와 주의
+
+- **F4만 돌렸다.** 3.8.0에서 F1, F2b, F3은 돌리지 않았다. 다른 장애는 devel 빌드 결과(`../`)뿐이다.
+- **CQ 슬롯은 읽지 않았다.** 오류 코드는 이 실험에서 보지 않았다. 핸들러 차이는 대기가 돌아오는지로만 봤다.
+- **finalize는 재지 않았다.** 재현 프로그램은 finalize 없이 끝난다. 3.8.0의 종료 동작은 모른다.
+- **핸들러는 직접 지정했다.** 기본 설정(auto)이 CPU 프록시로 떨어지는 것은 예전 devel 실행에서 본 것이다. 3.8.0에서는 다시 확인하지 않았다.
+- **3.4.5는 돌리지 않았다.** 3.4.5가 맞는 칸에 쓴다는 것은 소스 확인이다.
+- **시행 수가 적다.** 변형마다 3회, 대조는 1회씩이다.
+- **업스트림 이슈는 아직 올리지 않았다.** 초안은 "약 3.7 s 뒤 돌아옴"을 기대 동작으로 적었다. 이것은 API 수준에서 조용한 성공이다.
+- **노드 한 쌍, NIC 한 종류다.** 두 노드의 드라이버와 OFED 버전이 서로 다르다.
+
+## 파일
+
+| 파일 | 내용 |
 |---|---|
-| `kill_repro.cu` | PE 0 loops put + signal + `nvshmem_quiet()` to PE 1, one kernel per iteration. The host bounds each iteration (`hang_s`). PE 1 waits for each signal. With `FINALIZE=1` each PE calls `nvshmem_finalize()` when its run ends, under a 30 s watchdog (below). |
-| `fix.diff` | The two-line fix against v3.8.0-0. |
-| `build.sh` | Builds v3.8.0-0 from the GitHub tag archive, then a second ibgda plugin with only `fix.diff`. Builds the reproducer and deploys `~/gi-bundle/nvshmem_off380` to both nodes. |
-| `run.sh` | One trial: stock or fix, NIC handler, kill or not. Prints one CSV row with rain's port-counter deltas. |
-| `all.sh` | The matrix (11 trials), run inside `cluster_run.sh`. |
-| `redact.py` | Copies logs for the issue with hostnames and IPs replaced. |
-
-```
-W=<work dir> bash build.sh
-../../common/cluster_run.sh -t off380 -- timeout -s KILL 1500 bash all.sh ../results/20261001_official380
-```
-
-## Result (2026-10-01 20:35-20:39, `../results/20261001_official380`)
-
-PE 1 was SIGKILLed after PE 0's iteration 3; iteration 5 is the first one after the kill.
-
-| Library | NIC handler | Iteration 5 | Trials |
-|---|---|---|---|
-| stock | `cpu_host_memory` | `nvshmem_quiet()` not returned after 30 s | 3/3 |
-| stock | `gpu` | returned after 3537-3755 ms, later ones in 1.1 ms | 3/3 |
-| fix | `cpu_host_memory` | returned after 3744-3792 ms, later ones in 1.1 ms | 3/3 |
-
-- Without the kill (stock and fix, 1 each), all 40 iterations returned in 1.0-2.2 ms.
-- rain's port `hw_counters` did not move in any trial (`req_cqe_error`, `local_ack_timeout_err`
-  and the others: +0). NVSHMEM's DEVX QPs are not counted there, as in NVIDIA/nvshmem#64.
-- The kill time is in `trials.csv`. The runner's marker line in the pe0 log was overwritten,
-  because PE 0 writes the log without O_APPEND.
-
-The stock and fix bundles differ only in `nvshmem_transport_ibgda.so.7.0.0`. Rebuilding the stock
-plugin after reverting `fix.diff` gives a bit-identical file (md5 `4aa4dda2`). The fix plugin is
-`e5935238`.
-
-## Teardown timing (`FINALIZE=1`, added 2026-10-06 for the propagation campaign)
-
-The default run never calls `nvshmem_finalize()`, and the result above comes from that mode.
-With `FINALIZE=1`, `run.sh` passes the variable to both PEs. Each PE then calls
-`nvshmem_finalize()` wherever its run ends: after all iterations, at the `hang_s` bound, or after
-a failed kernel. A watchdog thread bounds the call to 30 s. The PE prints one line:
-- `PE <n>: nvshmem_finalize returned after X ms`, and keeps the exit code of the end path
-  (0, 3 or 4);
-- or `PE <n>: nvshmem_finalize did not return after 30 s`, and exits 5.
-
-These lines start with `PE <n>:`, so `run.sh`'s `pe0_last` (the last `^PE 0 ` line) is the same
-iteration line as before. The finalize result shows as `pe0_rc` = 5 and in the logs. At the
-`hang_s` bound the stuck kernel is still running when finalize is called.
-
-Checked locally with `nvshmem_finalize` replaced by a sleep:
-- the default exits without the call;
-- a 120 ms sleep gives "returned after 120.1 ms" and keeps the exit code;
-- a 40 s sleep gives "did not return after 30 s" and exit 5.
-
-Not yet run on the cluster.
+| [NOTES.md](NOTES.md) | 상세 기록(영문, 옛 README 본문) |
+| `../UPSTREAM_ISSUE_DRAFT.md` | 업스트림 이슈 초안. 올리지 않음 |
+| `../UPSTREAM_ISSUE_EVIDENCE.md` | 근거를 담은 긴 판 |
+| `../results/20261001_official380/` | 시행 표(시행당 한 줄). 원시 로그와 이슈용 로그는 Release `data-20261006` |
