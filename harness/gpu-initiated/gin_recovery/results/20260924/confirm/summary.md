@@ -21,7 +21,7 @@
 
 ## Declined runs
 
-| fault | wait | n | reason | root fp / class | r0 exit | r1 outcome | r1 exit | surface (ms) | teardown r0 (ms) |
+| fault | wait | n | reason | root status/vendor_err / class | r0 exit | r1 outcome | r1 exit | surface (ms) | teardown r0 (ms) |
 |---|---|---|---|---|---|---|---|---|---|
 | F2 | blocking | 1 | class_REM_ACCESS | 10/0x88 REM_ACCESS | 9 | declined | 9 | 4.2 | 872.7 |
 | F2 | timeout | 1 | class_REM_ACCESS | 10/0x88 REM_ACCESS | 9 | declined | 9 | 5.7 | 887.0 |

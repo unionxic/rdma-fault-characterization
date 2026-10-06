@@ -2,18 +2,18 @@
 
 Patch: `gin_recovery.diff`, layered on `../gin/gin_fault_inject.diff` and
 `../gin_q4/gin_q4_classify.diff` (NCCL v2.32.3-1). Everything is behind
-`NCCL_GIN_FAULT_RECOVERY=1` (default 0) and needs `NCCL_GIN_FAULT_CLASSIFY=1` (the Q4
-classifier). This document states the contract, the mechanism, and the argument that a
+`NCCL_GIN_FAULT_RECOVERY=1` (default 0) and needs `NCCL_GIN_FAULT_CLASSIFY=1` (the GDAKI
+device-side classifier). This document states the contract, the mechanism, and the argument that a
 recovery neither loses nor duplicates an operation. Section 11 lists what the tests changed.
 
 ## 1. Contract
 
 - **Flag off:** no new code runs. The GDAKI connect path makes the same DOCA calls with the
-  same arguments as the Q4 build (the new PSN parameters default to the stock 0). The
-  progress thread takes no extra lock. The behaviour is the Q4 build's.
+  same arguments as the classifier build (the new PSN parameters default to the stock 0). The
+  progress thread takes no extra lock. The behaviour is the classifier build's.
 - **Flag on:** the library recovers only when the preconditions in §3 hold. In every other
   case it declines: the error stays surfaced (`ncclRemoteError` from the device wait and from
-  `ncclCommGetAsyncError`), the QPs stay in ERR, and teardown (`ncclCommAbort`) works as in Q4.
+  `ncclCommGetAsyncError`), the QPs stay in ERR, and teardown (`ncclCommAbort`) works as with the classifier alone.
   Every wait in the recovery path is bounded.
 - The library provides the **mechanism**: fault query, quiescence checks, bilateral QP reset
   with fresh PSNs, and GPU-side state resync. The **application** provides the policy inputs
@@ -22,7 +22,7 @@ recovery neither loses nor duplicates an operation. Section 11 lists what the te
 
 ## 2. Fault classes and policy
 
-The Q4 device classifier finds the root-cause CQE (not the polled one, which is normally the
+The device-side classifier finds the root-cause CQE (not the polled one, which is normally the
 trailing flush 5/0xf9) and publishes it through the host mailbox.
 
 | root cause (status/vendor) | class | decision | why |
@@ -66,7 +66,7 @@ GPU producers must stop before any QP is touched, because the reset rewrites the
 indices the device uses. The model:
 
 1. A device wait (`flush`, `wait`, timeout or blocking) that meets an error CQE returns
-   `ncclRemoteError` (Q4). The kernel returns; it posts nothing more.
+   `ncclRemoteError` (the classifier's behaviour). The kernel returns; it posts nothing more.
 2. The host waits for the stream (the kernel has exited). Only then does it call
    `ncclGinRecoverPrepare`.
 3. The peer's host must not run a kernel that **posts** on the same QPs until the recovery is
@@ -97,7 +97,7 @@ network (fixed-size records with magic, type, iteration, token).
 ```
 initiator (rank 0)                                   responder (rank 1)
 kernel returns ncclRemoteError; stream idle          waiter kernel may still spin on its signal
-ncclGinFaultQuery -> class, fingerprint
+ncclGinFaultQuery -> class, status/vendor_err
 policy (§2): decline -> send FAIL, stop
 ncclGinRecoverPrepare(peer 1):
    pause proxy progress; per QP: check quiescence,
@@ -179,8 +179,8 @@ consistent with that:
 | proxy `sq_wqe_pi_last` | host struct | proxy thread | 0 | the proxy rings only when the mailbox exceeds it |
 | host shadow `qp_cpu` | host struct | DOCA host | same values as the device copy | keeps any later DOCA host operation that copies it consistent |
 | `last_issued_get`, `last_visible_get` [ctx][peer] | GPU memory | GPU | 0 | they hold WQE tickets (+1) of gets and MCST reads; a stale ticket would make the next flush poll an index of the new epoch that may never exist |
-| Q4 sticky error [ctx] | GPU memory | GPU | 0 | otherwise every later blocking flush/wait returns `ncclRemoteError` |
-| Q4 host `hasError`, GIN async result | host | Q4 watcher | cleared (the async result only if it still holds the watcher's `ncclRemoteError`) | otherwise `ncclCommGetAsyncError` keeps failing after a successful recovery |
+| classifier sticky error [ctx] | GPU memory | GPU | 0 | otherwise every later blocking flush/wait returns `ncclRemoteError` |
+| classifier host `hasError`, GIN async result | host | classifier watcher | cleared (the async result only if it still holds the watcher's `ncclRemoteError`) | otherwise `ncclCommGetAsyncError` keeps failing after a successful recovery |
 | signal and counter tables, signal shadows | GPU memory | application | untouched | application state; reconciled by §7 |
 
 DOCA ships `doca_gpu_verbs_reset_tracking_and_memory`, which resets most of these fields. It
@@ -194,7 +194,7 @@ forever for the responder's still-spinning waiter kernel.
 
 `QP_2RST` → zero the doorbell record, `cpu_db`, `sq_wqe_pi_last` → write the device QP struct
 and the host shadow → clear `last_*_get` → INIT → RTR → RTS. Then, once for the context:
-clear the Q4 error state, resume the proxy, and bump the commit counter (the multi-shot test
+clear the classifier's error state, resume the proxy, and bump the commit counter (the multi-shot test
 hook waits on it). The GIN progress thread is paused from the start of Prepare to the end of
 Commit or Abort: it skips this context while a flag is set, and Prepare waits until no
 progress call is inside the context.
@@ -257,7 +257,7 @@ Invariants, each with the reason it holds:
 - Class not recoverable, peer dead, a precondition fails, NACK, deadline, a DOCA modify
   error, or too many attempts: the initiator sends FAIL (best effort) and stops. The comm
   stays in error (`ncclRemoteError` from `ncclCommGetAsyncError`); the application tears it
-  down with `ncclCommAbort`, which returns (Q4 measured GDAKI teardown after an error as
+  down with `ncclCommAbort`, which returns (the classifier runs measured GDAKI teardown after an error as
   clean).
 - A responder that gets FAIL releases its own blocking waiter (self signal), reports the
   failure, and tears down.
@@ -288,7 +288,7 @@ Invariants, each with the reason it holds:
   stack frame; the waiter has none) did not start while the waiter spun: in timeout mode it
   started only when the waiter timed out (4.1 s), in blocking mode never (receiver capped at
   30 s). Launching it once at init fixed it. Added to §4.
-- **Barrier race inherited from the Q4 driver** (driver): the receiver poisoned its buffer after
+- **Barrier race inherited from the `gin_q4` driver** (driver): the receiver poisoned its buffer after
   acknowledging the barrier; once, right after a driver-module reload, its first `cudaMemset` was
   slow enough for the put to land first, so the signal said "done" over a poisoned buffer. The
   receiver now poisons before the acknowledgement.
