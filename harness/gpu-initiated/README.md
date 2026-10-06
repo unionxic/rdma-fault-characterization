@@ -81,7 +81,7 @@ N=30 재측정 682 trial은 분류, 복구, 거절 셀이 모두 100%였다. Wil
 - **RESULTS.md 표의 빈칸과 값.** "-"로 된 NVSHMEM GPU handler의 F4와 종료는 실제로 쟀다(F4 12/0x81, finalize hang 16/16).
   - GPU handler 감지 1.8 ms, 9 ms는 n=3 창의 값이다. 다른 측정은 2.0~2.3 ms, 10.3~10.7 ms다(둘 다 post부터).
 - **표본과 경합.** stock proxy와 GDAKI의 F2~F4는 셀당 n=3이다.
-  - proxy F4의 10/0x88은 경합 결과라서 12/0x81도 나올 수 있다(`../fingerprint_teardown/`).
+  - proxy F4의 10/0x88은 경합 결과라서 12/0x81도 나올 수 있다(`../teardown_order/`).
   - GIN에서 MR 안 범위 초과 쓰기가 조용히 사라진다는 주장은 원시 데이터가 남아 있지 않다.
 - **N=30 일부는 펌웨어 명령 슬롯이 샌 상태에서 돌았다.** 09-25 06:45 이후 hold다. N=30 문서에는 이 언급이 없다.
 - **돌리지 않은 것.** link down(공유 링크라서), DeepEP(SM90이 필요한데 rain은 sm_75), 3 rank 이상, Hopper.

@@ -21,7 +21,7 @@ IBGDA)이다.
   - 예: NVSHMEM은 실패한 put을 성공처럼 반환한다. (`harness/gpu-initiated/`)
 - **수동 쪽(상대 rank):** 오류 통지를 한 번도 받지 못했고, 정리도 끝나지 않았다.
 - **원인 구분:** 오류 코드만으로는 장애 7가지가 5묶음으로 갈린다. 상대 프로세스의 생존 확인을 더하면 6묶음이 된다. (`harness/`)
-- **같은 원인, 다른 코드:** 죽은 상대는 커널이 자원을 지우는 순서에 따라 다른 오류 코드(0x81 또는 0x88)로 보인다. (`harness/fingerprint_teardown/`)
+- **같은 원인, 다른 코드:** 죽은 상대는 커널이 자원을 지우는 순서에 따라 다른 오류 코드(0x81 또는 0x88)로 보인다. (`harness/teardown_order/`)
 
 **NVSHMEM 버그**
 - NVSHMEM 3.5.x~3.8.0의 CPU 프록시 경로에서는 QP 오류가 나도 오류 완료가 아예 생기지 않아서 응용이 멈춘다.
@@ -76,7 +76,7 @@ IBGDA)이다.
 | `harness/` | CPU verbs 장애 측정과 복구 |
 | `harness/nccl-integration/` | NCCL 장애 복구 |
 | `harness/gpu-initiated/` | GPU-initiated 스택(GIN, NVSHMEM). 종합은 `RESULTS.md` |
-| `harness/ack_timeout/`, `harness/fingerprint_teardown/` | 감지 시간과 오류 코드 차이 분석 |
+| `harness/ack_timeout/`, `harness/teardown_order/` | 감지 시간과 오류 코드 차이 분석 |
 | `experiments/`, `docs/` | 초기 연구 |
 
 ## 인용과 버전

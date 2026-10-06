@@ -4,7 +4,7 @@
 
 **2026-10-06 리뷰 정정** (`gpu-initiated/propagation/review_20261006/cpu_baseline.md`)
 - "각 (status, vendor_err) 쌍은 RETRY_EXC를 빼면 고유하다"는 틀리다. `local_qp_err`와 `partial_write`가 모두 5/0xf5다.
-- `retry_proc_kill`은 SIGKILL이 아니다. QP를 먼저 정리하고 정상 종료한다. 실제 SIGKILL은 270회 중 111회가 0x88로 나온다(`fingerprint_teardown/`).
+- `retry_proc_kill`은 SIGKILL이 아니다. QP를 먼저 정리하고 정상 종료한다. 실제 SIGKILL은 270회 중 111회가 0x88로 나온다(`teardown_order/`).
 - `retry_server_qp_err` 행은 30/30이 `auto_recoverable=0`으로 기록됐다. `probe_client.c`의 라벨 버그이고, 실제로는 복구됐다.
 
 
@@ -83,7 +83,7 @@ decision input. (An earlier version wrongly used peer_rx as the discriminator.)
 
 **REM_ACCESS (10 / 0x88) and REM_INV_REQ (9 / 0x8a) get the same liveness PROBE**
 (2026-09-25). A SIGKILLed peer whose MR is torn down before its QP NAKs with 0x88 instead
-of going silent (`fingerprint_teardown/`: REM_ACCESS 111/192 kills when the MR was
+of going silent (`teardown_order/`: REM_ACCESS 111/192 kills when the MR was
 registered after the QP). An answered PROBE leaves the CQE classification unchanged. An
 unanswered one is split (changed after review, 2026-09-25): EOF or reset on the control connection
 sets `sub_cause=proc_kill`, `peer_alive=0`, `auto_recoverable=0` (peer death, not an access bug); no

@@ -1,4 +1,4 @@
-# fingerprint_teardown: 상세 기록
+# teardown_order: 상세 기록
 
 아래는 예전 README 본문을 그대로 옮긴 것이다(영문). 요약은 [README.md](README.md)에 있다.
 

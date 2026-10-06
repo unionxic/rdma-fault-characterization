@@ -13,7 +13,7 @@
 - F4는 두 대기 방식 모두 timeout 대기로 끝을 확인했다. "F4 blocking" 행은 사실상 timeout 행이다.
 - stock GDAKI 장치가 오류 CQE를 -EIO로 받고 버린다는 설명은 소스 근거다. stock 빌드에서 직접 관찰하지 않았다.
 - proxy와 GDAKI의 F2~F4 칸은 3회씩이며 N30으로 다시 재지 않았다. proxy F4의 10/0x88(6/6)은
-  `../../fingerprint_teardown/`에 따르면 경쟁 조건이라 12/0x81도 나올 수 있다.
+  `../../teardown_order/`에 따르면 경쟁 조건이라 12/0x81도 나올 수 있다.
 
 Answers **Q2** of the GPU-initiated RDMA fault study (see `../DESIGN.md`) for NCCL
 GIN on both networking backends we can run here: the **CPU-proxy** backend and the

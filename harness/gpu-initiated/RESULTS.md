@@ -18,7 +18,7 @@ patches are in the subdirectories listed below; this page only combines them.
   cell.
 - **Other studies from the same day:**
   - `../ack_timeout/`: RETRY_EXC timing and the firmware floor.
-  - `../fingerprint_teardown/`: why a killed peer gives 0x81 or 0x88.
+  - `../teardown_order/`: why a killed peer gives 0x81 or 0x88.
   - `nvshmem_ft/V2.md`: ring CQ, bounds check, negative controls.
   - `gin_recovery/TRANSPARENT_S1.md`: app-transparent GDAKI recovery, step 1.
 
@@ -97,7 +97,7 @@ Times are from the fault to the first host-visible error. GDAKI's stock times ar
    4.096 µs × 2^20 × 8.
 7. **The same cause can show different fingerprints.** A killed peer gives RETRY_EXC 12/0x81 on
    CPU verbs and on GDAKI, but REM_ACCESS 10/0x88 within 60 ms on the GIN proxy. Measured since
-   (`../fingerprint_teardown/`, 417 kills): the kernel destroys a dead process's verbs objects newest
+   (`../teardown_order/`, 417 kills): the kernel destroys a dead process's verbs objects newest
    first, so an MR registered after its QP dies first and the still-live QP NAKs (REM_ACCESS; 111/161
    such kills outside the DEVX-on-sunny cells, a race), while an MR registered before its QP never
    gives REM_ACCESS (0/83). The GIN proxy registers its signal buffer after connecting its QPs

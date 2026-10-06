@@ -37,7 +37,7 @@ RDMA 연결에 장애를 일부러 내서, 요청 쪽이 오류를 얼마나 빨
 
 ## 한계와 주의
 
-- **"상대 프로세스 종료"는 SIGKILL이 아니다.** 상대가 QP를 먼저 정리하고 정상 종료한 경우다. 실제 SIGKILL에서는 270회 중 111회가 다른 코드(0x88)로 나온다(`fingerprint_teardown/`).
+- **"상대 프로세스 종료"는 SIGKILL이 아니다.** 상대가 QP를 먼저 정리하고 정상 종료한 경우다. 실제 SIGKILL에서는 270회 중 111회가 다른 코드(0x88)로 나온다(`teardown_order/`).
 - **"상대 QP 오류" 행의 라벨이 틀려 있다.** CSV에서 `auto_recoverable`이 0으로 찍혔는데, 기록 코드의 라벨 버그다. 실제로는 30/30 복구됐다.
 - **link down은 재지 않았다.** 링크를 실제로 내리는 시험은 하지 않았다. 공유 링크라서 그렇다.
 - **기록하지 않은 신호가 있다.** 응답 쪽 QP 상태와 비동기 이벤트는 이 실험에서 기록하지 않았다. 다음 캠페인에서 잰다(`gpu-initiated/propagation/`).
@@ -50,5 +50,5 @@ RDMA 연결에 장애를 일부러 내서, 요청 쪽이 오류를 얼마나 빨
 | `results/` | 결과 표(CSV). 원시 로그는 Release `data-20261006` |
 | [NOTES.md](NOTES.md) | 상세 기록 |
 | `VERIFICATION_0x81.md` | 0x81 두 원인을 카운터로 가를 수 없다는 검증 |
-| `ack_timeout/`, `fingerprint_teardown/` | 감지 시간 분석, 종료한 상대의 코드가 갈리는 원인 |
+| `ack_timeout/`, `teardown_order/` | 감지 시간 분석, 종료한 상대의 코드가 갈리는 원인 |
 | `nccl-integration/`, `gpu-initiated/` | NCCL과 GPU 스택 실험 |
