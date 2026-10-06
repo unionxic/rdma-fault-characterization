@@ -120,5 +120,5 @@ the final build (rows marked "final build").
 | `DESIGN_stage2.md` | design, invariants, exactly-once argument, QA rounds 1 and 2 |
 | `net_ib_stage2.diff` | the patch against v2.23.4-1 |
 | `run_tests.py` | the validation matrix (design §11) |
-| `gid_blackhole.sh`, `gbh_feasibility.sh` | the address-flap fault (secondary RoCE address removed and re-added) and its feasibility test |
+| `gid_blackhole.sh` | the address-flap fault (secondary RoCE address removed and re-added). Its one-off feasibility test `gbh_feasibility.sh` (raw output not kept) was removed on 2026-10-06, in tag `archive/results-tables-20261006` |
 | `results/` | per-run logs, `results.csv`, hardware counters before/after each campaign |
