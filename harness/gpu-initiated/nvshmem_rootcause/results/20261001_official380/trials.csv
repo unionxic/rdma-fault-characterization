@@ -1,0 +1,12 @@
+variant,handler_env,kill,trial,handler_log,kill_at,pe0_rc,pe1_rc,d_ack_timeout;d_cqe_err;d_flush;d_rem_access,pe0_last
+stock,cpu_host_memory,0,1,CPU with host memory backend,-,0,0,0;0;0;0;,"PE 0 iter 39: put + signal + nvshmem_quiet() returned after 1.1 ms"
+stock,cpu_host_memory,1,1,CPU with host memory backend,20:35:44.776,3,255,0;0;0;0;,"PE 0 iter 5: nvshmem_quiet() has not returned after 30 s; exiting without nvshmem_finalize"
+stock,gpu,1,1,GPU,20:36:20.763,0,255,0;0;0;0;,"PE 0 iter 39: put + signal + nvshmem_quiet() returned after 1.1 ms"
+fix,cpu_host_memory,1,1,CPU with host memory backend,20:36:39.256,0,255,0;0;0;0;,"PE 0 iter 39: put + signal + nvshmem_quiet() returned after 1.1 ms"
+stock,cpu_host_memory,1,2,CPU with host memory backend,20:36:57.796,3,255,0;0;0;0;,"PE 0 iter 5: nvshmem_quiet() has not returned after 30 s; exiting without nvshmem_finalize"
+stock,gpu,1,2,GPU,20:37:33.776,0,255,0;0;0;0;,"PE 0 iter 39: put + signal + nvshmem_quiet() returned after 1.1 ms"
+fix,cpu_host_memory,1,2,CPU with host memory backend,20:37:52.271,0,255,0;0;0;0;,"PE 0 iter 39: put + signal + nvshmem_quiet() returned after 1.1 ms"
+stock,cpu_host_memory,1,3,CPU with host memory backend,20:38:10.800,3,255,0;0;0;0;,"PE 0 iter 5: nvshmem_quiet() has not returned after 30 s; exiting without nvshmem_finalize"
+stock,gpu,1,3,GPU,20:38:46.683,0,255,0;0;0;0;,"PE 0 iter 39: put + signal + nvshmem_quiet() returned after 1.1 ms"
+fix,cpu_host_memory,1,3,CPU with host memory backend,20:39:04.996,0,255,0;0;0;0;,"PE 0 iter 39: put + signal + nvshmem_quiet() returned after 1.1 ms"
+fix,cpu_host_memory,0,1,CPU with host memory backend,-,0,0,0;0;0;0;,"PE 0 iter 39: put + signal + nvshmem_quiet() returned after 1.1 ms"
