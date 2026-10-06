@@ -119,7 +119,7 @@ and FR-tagged CTS rewrites (§6.4) before the stock decoding.
 ## 5. Protocol
 
 Channel: `base.sock` (every call `MSG_DONTWAIT`, sends also `MSG_NOSIGNAL`; fixed 56-byte records:
-magic, type, epoch, reason, two 64-bit fields, PSN, nqps, ndevs, fingerprint; partial reads/writes
+magic, type, epoch, reason, two 64-bit fields, PSN, nqps, ndevs, error code (status, vendor_err); partial reads/writes
 resume on the next call; a TX queue of 8 records). Both sides send **HELLO** once connect/accept
 has finished with the socket; a comm whose peer never said HELLO (recovery off there, or not
 supported) fails like stock on its first fault instead of waiting for a leader that will never
@@ -127,7 +127,7 @@ come.
 
 | message | direction | fields |
 |---|---|---|
-| NOTIFY | R → S | fingerprint of R's first error |
+| NOTIFY | R → S | status/vendor_err of R's first error |
 | REQ | S → R | epoch, `psn_s`, `fifoHead_S`, `nqps`, `ndevs` |
 | ACK | R → S | epoch, `psn_r`, `R_done`, `fifoTail_R` |
 | NACK | R → S | epoch, reason |
