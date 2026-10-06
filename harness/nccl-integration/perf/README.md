@@ -1,95 +1,81 @@
-# NCCL completion time: how much does in-library recovery buy?
+# perf: 제자리 복구가 작업 완료 시간에 주는 이득
 
-Same 2-rank job, run three ways, and the wall time of the whole job compared:
+장애가 한 번 나는 2-rank NCCL 작업을 세 방식으로 돌려 전체 시간을 비교했다.
+제자리 복구가 재시작보다 얼마나 빠른지, 장애가 없을 때 복구 기능이 얼마나 비용을 내는지를 잰다.
 
-- **baseline**: no fault.
-- **recover**: one fault, recovery flag on. The library repairs the connection in place and the job
-  keeps going.
-- **restart**: the same fault with the flag off, i.e. the stock error path. As soon as either rank
-  prints the error, the runner kills both ranks and relaunches the job from the failed iteration.
-  That assumes a checkpoint after every iteration, which is the best case for restart; a real
-  job would also lose the work since its last checkpoint.
+## 무엇을 쟀나
 
-Every run checks every iteration's whole result buffer on both ranks, on the GPU, bit for bit.
+- **세 방식.** 장애 없음(baseline), 플래그를 켜고 제자리 복구(recover), 재시작(restart).
+  - restart는 플래그를 끈 오류 경로에서 오류가 보이자마자 두 rank를 죽이고, 실패한 반복부터 다시 띄운다.
+  - 매 반복 체크포인트가 있다고 가정한 최선의 경우다.
+- **장애 2가지.** 주입으로 연결 QP를 ERR로 만든 경우(즉시 보임)와,
+  sunny의 보조 RoCE 주소를 0.5 s 지운 실제 경로 장애(NCCL 기본 IB 타임아웃 20)다.
+- **횟수.** 장애 시험은 3~5회다. 장애 없는 오버헤드는 메시지 4가지와 설정 2가지, 칸마다 3회다.
+  - 오버헤드는 rank 0의 반복 한 번 시간의 중앙값을 원본과 비교했다.
+  - 실행 하나의 반복 수는 64 KB와 1 MB가 400회, 16 MB가 25회, 64 MB가 20회다.
+- **조건.** 2026-09-25, rain과 sunny, ConnectX-6 VPI, RoCE v2. 매 반복 결과 버퍼 전체를 GPU에서 bit 단위로 검사했다.
+  single은 1채널과 QP 1개, default는 NCCL이 고른 2채널 파이프라인이다.
 
-| file | what |
+## 결론
+
+- **즉시 보이는 장애에서는 복구가 약 2 ms, 재시작이 약 1.1 s 더 든다.**
+  - 복구 비용은 작업 전체 시간의 잡음 안이다.
+  - 재시작 비용은 대부분 다시 띄운 프로세스가 준비되는 시간이다.
+  - rain rank는 실행부터 통신 준비까지 0.79~0.88 s 걸렸고, 그중 comm 초기화가 0.16~0.23 s다. sunny rank는 0.31~0.39 s다.
+- **Stage 1은 기본 설정에서 복구하지 못한다.** 16 MB 기본 설정에서 0/3이었다.
+  거절한 뒤 abort가 돌아오지 않아 20 s 감시 시간 뒤에 끝났다(전체 21.6 s). Stage 2는 5/5 복구했다.
+- **기본 IB 타임아웃에서는 감지가 시간을 지배한다.**
+  - 주소를 0.5 s 지우면 작업이 56~60 s 멈춘 뒤에야 RETRY_EXC가 온다. 복구도 재시작도 그 전에는 시작할 수 없다.
+  - 복구 67.96 s, 재시작 68.28 s로 중앙값 차이는 0.3 s다. 감지 시간의 흩어짐보다 작다.
+  - 이 경우 복구는 시간을 벌지 않는다. 체크포인트와 런처가 필요 없게 해 줄 뿐이다.
+- **장애가 없을 때 비용은 작다.**
+  - 플래그 켬은 Stage 2가 −0.2~+0.7 %, Stage 1이 −0.2~+2.7 %였다.
+  - 플래그 끔은 두 패치 모두 원본 대비 −0.6~+0.3 %였다.
+  - 원본끼리도 3회 사이에 0.1~1.7 % 흩어졌다(한 칸은 4.6 %).
+
+## 결과
+
+주입 장애 (전체 시간 중앙값, 실행부터 두 rank 종료까지):
+
+| 작업 | 빌드 | baseline | recover | restart | 복구 자체 |
+|---|---|--:|--:|--:|--:|
+| 256 KB 200회, single, 반복 약 95에서 장애 (n=5) | Stage 1 | 1.44 s | 1.44 s, 5/5 | 2.54 s (+1.10 s) | 1.81 ms |
+| 256 KB 300회, single, 반복 약 95에서 장애 (n=5) | Stage 2 | 1.45 s | 1.45 s, 5/5 | 2.51 s (+1.07 s) | 2.26 ms |
+| 16 MB 100회, default, 반복 13에서 장애 (n=3) | Stage 1 | 1.41 s | 0/3 (21.6 s에 종료) | 2.60 s (+1.18 s) | - |
+| 16 MB 100회, default, 반복 13에서 장애 (n=5) | Stage 2 | 1.41 s | 1.42 s, 5/5 | 2.55 s (+1.14 s) | 2.31 ms |
+
+Stage 1과 Stage 2의 256 KB 작업은 반복 수가 다르다. 빌드끼리가 아니라 같은 행 안에서 비교한다.
+
+주소 0.5 s 제거, NCCL 기본 IB 타임아웃 (16 MB 3000회, default, n=3):
+
+| 방식 | 전체 시간 (중앙값, 범위) | 내용 |
+|---|--:|---|
+| baseline | 8.45 s (8.45~10.5) | - |
+| recover (Stage 2) | 67.96 s (66.5~69.0) | 56~60 s 멈춘 뒤 연결마다 2.46~4.78 ms에 복구, 3/3 정확 |
+| restart (플래그 끔) | 68.28 s (67.8~69.8) | 같은 대기 뒤 죽이고 다시 띄움 |
+
+## 한계와 주의
+
+- **한 쌍의 노드, 행마다 작업 하나, 3~5회다.** 효과의 크기를 보여줄 뿐 분포가 아니다.
+- **restart는 낙관적이다.** 첫 오류 로그 줄을 보자마자 다시 띄웠고 잃은 작업이 없다.
+  실제로는 런처의 감지와 스케줄 지연, 체크포인트 읽기, 마지막 체크포인트 이후의 작업이 더 든다.
+- **restart 시간에는 runner의 정리 시간이 빠져 있다.** 넣으면 주입 장애에서 약 4.9~5.0 s다.
+- **baseline과 restart는 원본 바이너리가 아니다.** 같은 패치 라이브러리에서 플래그를 끈 것이다.
+  원본 NCCL 2.23.4 빌드는 오버헤드 비교에만 썼다.
+- **"복구 +2 ms, 재시작 +1.1 s"는 주입 장애에만 맞다.** 주입 장애는 µs 안에 보인다.
+  실제 경로 장애는 IB 타임아웃이 지나야 보이고, 그때는 둘이 거의 같아진다.
+- **오버헤드는 1 % 아래를 가르지 못한다.** 칸마다 3회씩 쟀고, 차이가 원본끼리의 흩어짐과 같은 크기다.
+  Stage 1의 64 KB single +2.7 %는 그 칸의 원본 흩어짐(0.7 %)보다 크다.
+- **빌드 라벨 정정.** 측정한 Stage 2 빌드는 3b0b760d다. 예전 README가 "최종 빌드"라 부른 78f96f38도 최종이 아니다.
+  최종은 a037de42다. 그 사이 변경은 상대 생존 판정(FIN 규칙, OOB 소켓을 잃었을 때의 처리)이다.
+- **IB 타임아웃 14에서는 다르다.** 같은 주소 장애에서 RETRY_EXC가 끊긴 뒤 약 3.5 s에 오고,
+  복구는 2.6 ms다(`../stage2/`).
+
+## 파일
+
+| 파일 | 내용 |
 |---|---|
-| `nccl_ct.cu` | the job. NCCL all-reduce (or broadcast) loop with GPU fill and check kernels, per-iteration time, comm init and ready times. `--start k` resumes at iteration k; the data for iteration k is a function of k, so a relaunched job produces the same bytes. |
-| `ctlib.py` | launches the pair (rain: `mlx5_1`, sunny: `mlx5_0`, OOB on `eno1`) with a given library build and returns both ranks' summaries |
-| `completion_time.py` | `smoke`, `overhead`, `fault` (fault = `inject` test hook or `gbh:<s>`, the address-flap fault of `../stage2/gid_blackhole.sh`) |
-| `summarize.py` | the tables below, from the CSVs |
-| `thin_logs.py` | shrinks a `logs.tar.gz` for the repository: drops per-iteration `IT` lines except the first and last 20, every 1000th, and those around every stall; all other lines stay |
-| `results/20260925/` | CSVs, raw logs (`logs.tar.gz`; the address-flap archive is thinned), runner consoles |
-
-Builds: `stock` (NCCL v2.23.4-1), `stage1i` (Stage 1 patch, `../DESIGN_recovery.md`), `stage2f`
-(Stage 2 patch, `../stage2/`; library md5 `3b0b760d`, the same recovery code as the final build
-`78f96f38`, which only adds the FIN rule for dead peers). Configs: **single** = 1 channel, Ring,
-Simple, 1 QP per connection (the only case Stage 1 handles); **default** = NCCL's own choice, which on
-this pair is 2 channels, pipelined, several requests in flight per connection.
-
-## Results (2026-09-25, rain ↔ sunny, ConnectX-6 VPI, RoCE v2)
-
-### A fault the library sees immediately (test hook forces the connection QP to ERR)
-
-Wall times are medians, from launch until both ranks exit. For restart, the wall time is the sum of
-the two segments (killed job + relaunched job). The runner's own cleanup between the segments
-(`pkill`, then 1 s of sleep) is not counted; with it, the runner-level wall time is about 4.9–5.0 s
-(the `runner_wall_s` column).
-
-| job | build | baseline | recover | restart | recovery itself |
-|---|---|---|---|---|---|
-| 300 × 256 KB, single, fault at iteration ~95 (n = 5) | Stage 1 | 1.44 s | **1.44 s**, 5/5 | 2.54 s (+1.10 s) | 1.81 ms (1.78–2.21) |
-| same | Stage 2 | 1.45 s | **1.45 s**, 5/5 | 2.51 s (+1.07 s) | 2.26 ms (2.21–2.35) |
-| 100 × 16 MB, default, fault at iteration 13 (n = 3 / 5) | Stage 1 | 1.41 s | **0/3**: declined (several requests in flight), then NCCL's abort hang; killed at 21.6 s | 2.60 s (+1.19 s) | - |
-| same | Stage 2 | 1.41 s | **1.42 s**, 5/5 | 2.55 s (+1.14 s) | 2.31 ms (2.29–2.33) |
-
-- Restart costs **about 1.1 s** on top of the baseline, even with a checkpoint after every iteration
-  and a relaunch the instant the error appears. Nearly all of it is the relaunched processes getting
-  ready again: 0.8–0.9 s per rank from launch until the communicator is ready. Comm init alone is
-  0.16–0.23 s; the rest is CUDA context creation, the bootstrap, and the first collective's lazy
-  connection setup.
-- In-place recovery costs about 2 ms, which is inside the run-to-run noise of the whole job.
-- With these short jobs the ratio is large (+75 % vs +0.1 %), but the absolute gap is about one
-  second per fault. A real restart pays more: the launcher's detection and scheduling delay, the
-  checkpoint load, and the work since the last checkpoint. None of those is modeled here.
-
-### A real path fault with NCCL's default IB timeout (address flap, `gbh:0.5`)
-
-sunny's secondary RoCE address is removed for 0.5 s, 3 s into a 3000 × 16 MB default-config job, and
-added back. The address comes back at a new GID index, so every QP on the old index is dead for good.
-NCCL's default `NCCL_IB_TIMEOUT=20` / `IB_RETRY_CNT=7` applies (n = 3).
-
-| mode | wall (median, range) | what happens |
-|---|---|---|
-| baseline | 8.45 s (8.45–10.5) | - |
-| recover (Stage 2) | **67.96 s** (66.5–69.0), 3/3 correct | the job stalls for 56–60 s (longest gap between iterations) until the NICs give up with RETRY_EXC on the connections; each recovers in 2.5–4.8 ms (per-connection totals, send side) |
-| restart (stock) | 68.28 s (67.8–69.8) | the same ~58 s wait for RETRY_EXC, then kill + relaunch; the relaunched segment (≈2,540 iterations) takes 7.4 s |
-
-- Here **detection dominates both paths**: with the default timeout the NIC retries for about a minute
-  before it reports anything, and neither recovery nor restart can start earlier. Recovery and restart
-  differ by 0.3 s at the median, less than the run-to-run spread of the detection time (56–60 s). In
-  this setting recovery does not buy completion time; it buys not needing a checkpoint and a launcher.
-- `../stage2` runs the same fault class with `NCCL_IB_TIMEOUT=14`. There RETRY_EXC comes after about
-  3 s and recovery takes 2.6 ms. `../../ack_timeout/` measures how the RETRY_EXC time depends on the
-  timeout on this NIC, including the firmware's minimum ACK-timeout floor.
-
-### Fault-free overhead (median of 3 runs, each the median of 400 iterations)
-
-| message | single: Stage 1 flag on | single: Stage 2 flag on | default: Stage 1 flag on | default: Stage 2 flag on |
-|---|---|---|---|---|
-| 64 KB | +2.7 % | +0.7 % | +1.1 % | +0.6 % |
-| 1 MB | +0.5 % | −0.2 % | +1.4 % | +0.1 % |
-| 16 MB | +1.8 % | +0.6 % | +0.4 % | −0.1 % |
-| 64 MB | −0.0 % | +0.4 % | −0.2 % | +0.1 % |
-
-With the flag off, both patches are within ±0.6 % of stock. Stage 2's flag-on cost is lower than
-Stage 1's because it checks the peer's socket only every 100 µs.
-
-## Limits
-
-- One pair of nodes, one job shape per row, 3–5 repetitions: the rows show the size of the effect,
-  not a distribution.
-- "restart" is optimistic. It detects the error from the first log line (a real job waits for its
-  own timeout or its launcher) and it loses no work.
-- The injected fault is detected in microseconds. A real fault is detected when the NIC gives up,
-  which is the IB timeout, as the address-flap row shows.
+| [NOTES.md](NOTES.md) | 상세 기록(영문) |
+| `results/20260925/` | 저장소에는 없다. CSV, 로그, runner 콘솔은 Release `data-20261006` |
+| `../stage2/` | Stage 2 설계와 결과 |
+| `../../ack_timeout/` | IB 타임아웃에 따른 RETRY_EXC 시간 |
