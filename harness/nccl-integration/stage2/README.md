@@ -1,111 +1,93 @@
-# Stage 2: in-tree NCCL recovery with many requests in flight
+# stage2: 요청 여러 개가 걸린 NCCL 연결의 제자리 복구
 
-NCCL v2.23.4-1, `src/transport/net_ib.cc` only, behind `NCCL_RDMA_FAULT_RECOVERY=1`.
-Design and the two QA rounds: [DESIGN_stage2.md](DESIGN_stage2.md). Patch: [net_ib_stage2.diff](net_ib_stage2.diff).
-Everything is inside the library: detection, classification, the handshake with the peer (over the
-comm's own OOB socket), the drain, reconciliation, QP re-drive, replay, and a helper thread that
-serves comms NCCL is not calling. The test program (`../perf/nccl_ct.cu`) only runs all-reduces and
-checks every result buffer bit-exactly; the runner (`run_tests.py`) only launches and judges.
+Stage 1은 연결에 요청이 하나만 걸려 있을 때만 복구한다. 그래서 NCCL 기본 설정에서는 시험한 4번 모두 거절했다.
+Stage 2는 요청이 여러 개 걸려 있어도 복구하도록 만들었다. 상대가 살아 있는 RETRY_EXC와 주소 재구성 장애도 다룬다.
+감지부터 재전송까지 모두 NCCL 라이브러리 안에서 한다. 시험 프로그램은 all-reduce를 돌리고 결과만 검사한다.
 
-## What it does (one paragraph)
+## 무엇을 쟀나
 
-When the connection QP of a send comm S or recv comm R fails (WR_FLUSH, or RETRY_EXC with the peer
-alive), both sides drain their QP the way `ib_drain_qp` does (ERR + a marker WR whose flush CQE
-proves every earlier WR was accounted for). R computes `R_done`, the last receive that completed
-(completed receives are a prefix, because one RC QP executes S's groups in FIFO order), re-drives
-its QP with a fresh PSN, re-posts every pending receive and ACKs. S completes the groups R already
-had, re-drives its QP, replays the groups R did not get, in FIFO order, and sends DONE; R then
-rewrites the CTS entries S may lack. Either side may detect first (R sends NOTIFY; S always leads).
-The local GID is looked up again by value at every re-drive, because an address that comes back
-gets a new GID index.
+- **장애.** 송신 QP나 수신 QP를 강제로 ERR(주입), 상대 수신 QP를 조용히 ERR, 상대 SIGKILL, 복구 요청에 답하지 않는 상대.
+  - 실제 경로 장애로는 sunny의 보조 RoCE 주소를 0.5, 6, 15 s 지웠다 다시 넣었다.
+  - 관리망의 TCP 연결을 12 s 막는 시험도 했다. RDMA 링크는 건드리지 않았다.
+- **횟수.** 핵심 주입 시험은 30회, 나머지는 1~10회. 빌드 5개를 거쳤고, 최종 빌드(a037de42)에서 핵심 경우를 3회씩 다시 돌렸다.
+- **판정.** 매 반복마다 두 rank의 결과 버퍼 전체를 bit 단위로 검사했다.
+- **조건.** 2026-09-25, rain과 sunny, ConnectX-6 VPI, RoCE v2, IB 타임아웃 14, NCCL 2.23.4.
+  복구용 TCP 소켓(OOB 소켓)은 관리망에 두었다.
 
-## Results (2026-09-25; 2 nodes, ConnectX-6 VPI, RoCE v2, IB timeout 14; every run checks every iteration's whole result buffer on both ranks)
+## 결론
 
-Raw data: `results/20260925/<campaign>/` (`results.csv`, `logs.tar.gz`, hardware counters before/after,
-`lib_md5.txt`). The larger log archives are thinned by `../perf/thin_logs.py`: every NCCL, recovery,
-error and SUMMARY line is kept. Of the per-iteration `IT` lines it keeps the first and last 20, every
-1000th, and 5 on each side of every stall, so the fault and recovery timelines are intact. Library builds: `f7f45278` (after code QA round 2), `3b0b760d` (+ test-hook fix),
-`78f96f38` (+ the FIN rule, §7), `7b0d0122` (+ the OOB-loss fix after the 2026-09-25 review: a keepalive
-timeout no longer counts as peer death), `a037de42` (+ after the second review: a reset (RST) no longer
-counts as peer death either, only FIN; final; `net_ib_stage2.diff` is this build's source). The later changes
-do not touch the paths the first campaigns exercise, and campaigns A2/A3 re-ran the core cases on
-the final build (rows marked "final build").
+- **요청이 여러 개 걸려 있어도 복구된다.**
+  - 기본 설정(2채널, 파이프라인, 16 MB)에서 송신 QP 장애 30/30, 수신 QP 장애 30/30이 복구됐다.
+  - Stage 1은 송신 쪽 같은 경우를 3/3 거절했다(`../perf/`).
+  - 복구 시간 중앙값은 2.1~2.3 ms였다. 실행당 장애 5번은 50/50, 양쪽 동시 장애는 20/20이었고 교착은 없었다.
+  - 모든 로그에서 복구 444번(시험 422, 성능 측정 22) 동안 결과 불일치는 0이었다.
+  - 옛 QP의 늦은 패킷을 보여 주는 카운터(중복 요청, 순서 어긋남)도 모든 캠페인에서 0이었다.
+- **주소를 0.5 s만 지워도 기존 QP는 다시 살아나지 않는다. Stage 2는 이것을 복구한다.**
+  - 다시 넣은 주소는 새 GID 인덱스를 받는다. 기존 QP는 지워진 항목을 계속 가리킨다.
+  - 그래서 끊긴 길이와 상관없이 끊긴 뒤 3.5~3.7 s에 RETRY_EXC가 난다.
+  - 플래그 끔은 0.5 s와 6 s에서 6/6 실패했다. Stage 2는 15/15 복구했고, 실행마다 15,000회 반복이 모두 맞았다.
+  - sunny에서 "GID 이동" 기록이 23/23 실행에 남았다.
+- **상대가 조용히 죽으면 RDMA로는 내가 보내는 중일 때만 보인다.**
+  - 수신을 기다리는 중에 상대가 SIGKILL되면, 원본 경로는 CQE도 경고도 오류 카운터 변화도 없이 멈췄다(3/3, 60 s에 강제 종료).
+  - Stage 2는 상대 소켓의 FIN을 보고 50 ms 유예 뒤 실패를 올린다. 오류는 상대의 마지막 반복 뒤 50.1~50.2 ms에 나왔다.
+  - 상대 수신 QP를 조용히 ERR로 만든 64 MB 방송 시험에서는 보내던 중이던 1/3만 RETRY_EXC를 받았다.
+    3.56 s 뒤였고 1.9 ms에 복구됐다. 나머지 2회와 all-reduce 5회는 시간 제한까지 멈췄다.
+- **관리망 장애가 건강한 작업을 죽이면 안 된다.**
+  - FIN 규칙을 처음 넣은 빌드는 TCP keepalive 시간 초과도 상대 죽음으로 봤다. 건강한 작업을 죽였다(0/3, 차단 뒤 4.3~4.6 s).
+  - 다음 빌드는 RST를 죽음으로 봐서 단방향 차단에서 0/3이었다.
+  - 최종 빌드는 FIN만 죽음으로 본다. 양방향 차단 3/3, 단방향 차단 5/5 통과했다.
+  - 대가가 있다. OOB 소켓을 잃은 연결은 복구가 영구히 꺼진다.
+    그 뒤 장애를 낸 rank는 원본 오류로 0.057~0.065 ms에 실패했다(3/3). 플래그 끔 대조는 0.055~0.242 ms였다.
+- **앱이 보는 오류는 하나뿐이다.**
+  - 올라온 오류는 모두 ncclRemoteError였다(73건). 복구된 장애는 앱에 보이지 않고, 원인과 복구 기록은 로그에만 남는다.
+  - 오류 뒤 ncclCommAbort는 한 번도 돌아오지 않았다(NCCL 2.23 원본 동작).
+- **장애가 없을 때 비용은 약 1 % 안이다.** 플래그 켬은 원본 대비 −0.2~+0.7 %였다(`../perf/`, 3회씩).
+  원본끼리의 흩어짐(0.1~1.7 %, 한 칸 4.6 %)과 같은 크기라 1 % 아래는 가르지 못한다.
 
-| case | what happens | build | N | result | recovery time (median, range) |
-|---|---|---|---|---|---|
-| T0s / T0d | no fault, flag on (single / default config) | f7f45278 | 10 / 10 | 20/20 pass | - |
-| T1 | send QP forced to ERR (256 KB, 1 channel) | f7f45278 | 30 | **30/30 recovered** | 2.22 ms (2.14–2.34) |
-| T2 | same, **default config** (2 channels, pipelined, 16 MB) — Stage 1 declined this 3/3 | f7f45278 | 30 | **30/30 recovered** | 2.26 ms (2.22–2.35) |
-| T3 | recv QP forced to ERR, default config (R detects, NOTIFY) | f7f45278 | 30 | **30/30 recovered** | 2.15 ms (2.11–2.27) |
-| T3s | same, single config | f7f45278 | 10 | 10/10 recovered | 2.07 ms (2.05–2.13) |
-| T5 | 5 faults per run, default config | f7f45278 | 10 | 10/10 runs, **50/50 recoveries** | 2.14 ms (2.05–2.40) |
-| T6 | both ranks inject at once (both directions) | f7f45278 | 10 | 10/10 runs, 20/20 recoveries, no deadlock | 2.34 ms (2.23–2.40) |
-| T1 / T2 / T3, final build | as above | 78f96f38 | 10 / 10 / 10 | **30/30 recovered** | 2.22 / 2.24 / 2.14 ms (2.10–2.37) |
-| T5 / T6 / T0d, final build | as above | 78f96f38 | 5 / 5 / 5 | 5/5 runs, 25/25 recoveries; 5/5 runs, 10/10 recoveries; 5/5 pass | 2.15 ms (2.07–2.41); 2.29 ms (2.25–2.36) |
-| T1b | send inject, one-way broadcast stream | 78f96f38 | 10 | 10/10 recovered | 2.22 ms (2.14–2.46) |
-| **T7a** | **address-reconfiguration fault: sunny's secondary RoCE address removed for 0.5 s and re-added** (it comes back at a new GID index, so the old QPs' address vectors name a dead GID entry; both NICs exhaust retries → RETRY_EXC 3.1 s after the address is back) | 78f96f38 | 5 | **5/5 recovered** (4 connections each, 15,000/15,000 iterations exact) | 2.64 ms (2.00–4.11) after RETRY_EXC |
-| **T7b** | same, 6 s outage | 78f96f38 | 5 | **5/5 recovered** | 3.26 s (waits for the address, 2.26–3.27 s) |
-| **T7c** | same, 15 s outage | 78f96f38 | 5 | **5/5 recovered** | 12.27 s (waits for the address) |
-| T7a/T7b stock control | same faults, recovery off | 78f96f38 | 3 / 3 | **6/6 fail** (RETRY_EXC 12/0x81 at iteration ~443, then NCCL 2.23's abort hang) | - |
-| T8 | rank 1 SIGKILLed while rank 0 waits to receive | 78f96f38 | 10 | 10/10: rank 0's NCCL error surfaced **50.2 ms** after the peer's last iteration (FIN rule), then rank 0 exited through the driver's abort watchdog (rc 7, NCCL 2.23's `ncclCommAbort` hangs); rank 1 = the killed rank (rc 255 via ssh). The CSV of that campaign (C5) says `FAIL(rc 7/255)`: the classifier accepted rc 7/255 as a clean failure only afterwards | - |
-| T8 stock control | same, recovery off (the stock code path) | 78f96f38 | 3 | **3/3 hang**: the survivor prints nothing (no NCCL warning) until the runner kills it at 60 s | - |
-| T9 | peer never answers REQ (mute test hook) | 3b0b760d | 5 | 5/5 fail cleanly at the handshake deadline | - |
-| T4ar | R's QP dies silently at the end of an all-reduce iteration (S idle) | 78f96f38 | 1 | fails cleanly at the 120 s WAITREQ bound (both sides) | - |
-| **T12b** (recorded as T10b) | **management-network outage**: every TCP connection of the job between the nodes blackholed for 12 s (iptables on rain, this job's ports only), RDMA untouched; 1 GiB all-reduces | 78f96f38 (before the fix) | 3 | **0/3: a healthy job killed** 4.3–4.6 s into the outage ("peer closed its OOB socket ... peer process gone") | - |
-| **T12b** | same | **7b0d0122 (first fix)** | 5 | **5/5 pass**, 100/100 iterations exact; all 4 comms on both ranks log "OOB socket lost (Connection timed out) ... recovery disabled" 4.2–4.5 s in | - |
-| T12b stock control | same, stock library | stock | 2 | 2/2 pass | - |
-| T0d / T1 / T2 / T3 / T5 / T6 / T7a / T8 / T9, fixed build (A4) | regression after the OOB-loss fix | 7b0d0122 | 5 each | all as before: 5/5 pass; 5/5, 5/5, 5/5 recovered; 25/25 and 10/10 recoveries; T7a 5/5 (20 recoveries); T8 5/5 error 50.1–50.2 ms after the peer's last iteration (FIN path, no OOB-loss line); T9 5/5 clean fail | 2.24–2.45 ms; T7a 3.30 ms after RETRY_EXC |
-| T12 (recorded as T10) | same outage with 16 MB all-reduces | 78f96f38 / 7b0d0122 / stock | 3 / 5 / 2 | all pass (with 16 MB the per-iteration gaps reset the 50 ms grace, so the old rule did not fire) | - |
-| **T12c** | **one-sided** management-network outage (only sunny→rain dropped, 12 s, 1 GiB): rain's keepalive times out and its kernel resets the connection; the RST reaches sunny, which is alive | 7b0d0122 (RST still = death) | 3 | **0/3: healthy job killed** on sunny ("peer closed its OOB socket (FIN/RST) ... peer process gone") | - |
-| **T12c** | same | **a037de42 (final: only FIN = death)** | 5 | **5/5 pass**, 100/100 iterations exact | - |
-| T12c stock control | same, stock library | stock | 2 | 2/2 pass | - |
-| T12b | two-way outage again, final build | a037de42 | 3 | 3/3 pass | - |
-| **T12d** | a send-QP fault ~10 s after a two-way outage (OOB lost on both sides), 16 MB | a037de42 | 3 | 3/3 fail **like stock**: the incident is refused with "OOB lost" and the error surfaces 0.06–0.07 ms after the fault | - |
-| T12d stock-path control | same, recovery flag off (stock error path; the stock library has no injection hook) | a037de42, flag off | 3 | 3/3 fail, error 0.05–2.18 ms after the fault | - |
-| T0d / T1 / T2 / T3 / T5 / T6 / T7a / T8 / T9, final build (A5) | regression after the FIN-only change | a037de42 | 3 each | 3/3 pass; T1/T2/T3/T5/T6/T7a all recovered; T8 3/3 clean fail through the FIN path; T9 3/3 clean fail | - |
+## 결과
 
-- Stale-packet counters: `duplicate_request`, `out_of_sequence` and `packet_seq_err` stayed at 0 on both
-  NICs across every campaign. `implied_nak_seq_err` was 0 on both NICs up to campaign B (03:41) and 2 on
-  rain from C2 (04:08) on; it did not change inside any campaign that has both snapshots (B and C6 lack
-  the "after" snapshot, and other experiments used the cluster between B and C2), so its source is
-  not attributed. No stale packet of an old QP incarnation was seen.
-- The storage traffic on the same link (NVMe-oF on the primary addresses) logged nothing during the
-  address-flap runs (sunny's last NVMe kernel message is the 2026-09-22 mount).
-- Before the FIN rule, T8 hung 5/5 until the test timeout: with back-to-back all-reduces the survivor
-  is usually waiting to receive when the peer dies, so nothing of its own is in flight and no RETRY_EXC
-  ever comes. Stock NCCL behaves the same way: the T8 stock control hung 3/3.
-- T4 (a silent R death meant to exercise the path where S's own RETRY_EXC leads the recovery): on
-  all-reduce (B, 5 runs) S was idle and never met RETRY_EXC; with a 256 KB broadcast (C5, 10 runs) the
-  silent injection never fired; with a 64 MB broadcast (C6, 3 runs) it fired 3/3 and S met RETRY_EXC
-  once (3.56 s after the silent death), **recovering in 1.9 ms**; the other 2 ran into the 90 s run
-  timeout with S idle (below R's 120 s WAITREQ bound). The S-led RETRY_EXC path is also exercised by
-  T7 (every T7 run).
-- Fault-free overhead with the flag on (`../perf`, 3 runs each, medians vs stock 2.23.4): single
-  config 64 KB +0.7 %, 1 MB −0.2 %, 16 MB +0.6 %, 64 MB +0.4 %; default config +0.6 / +0.1 / −0.1 /
-  +0.1 %. These are all inside the run-to-run spread of stock itself (0.4–1.7 %, one cell 4.6 %, n=3),
-  so the measurement bounds the cost to about 1 % but cannot resolve it. Flag off equals stock within
-  the same noise.
-- Completion time of a whole job with one fault (`../perf/README.md`): recovery adds about 2 ms and
-  restart-from-the-failed-iteration about 1.1 s. The 1.1 s is the relaunch cost of a small 2-rank job
-  (process start to communicator ready) with a checkpoint every iteration, so it is a lower bound for
-  real jobs, not a typical value. With NCCL's default IB timeout, the address-reconfiguration fault
-  takes about a minute to surface, and recovery and restart then finish within noise of each other.
-- **What T7 does and does not show.** The fault is an address reconfiguration, not a packet-loss
-  transient: the address was back 0.51 s after the cut, yet stock QPs failed (6/6, and 0.3 s in the
-  feasibility test) because the re-added address got a new GID index while the old QPs' address
-  vectors still name the removed entry. T7 shows that drain, PSN reset, replay and GID re-resolution
-  work on a real RETRY_EXC CQE. It does not show tolerance of a transient packet loss with the GID
-  index kept (a real link flap): a flap shorter than the retry budget would be absorbed by stock too,
-  and a longer one also raises port-state events, a path not tested here. The real link-flap test
-  (`linkflap_window.sh`) was not run: the link carries the user's NVMe-oF.
+| 시험 | 장애 | N | 결과 | 복구 시간 (중앙값) |
+|---|---|--:|---|--:|
+| T1 | 송신 QP ERR, 단일 설정 | 30 | 30/30 복구 | 2.22 ms |
+| T2 | 송신 QP ERR, 기본 설정 16 MB | 30 | 30/30 복구 | 2.26 ms |
+| T3 | 수신 QP ERR, 기본 설정 | 30 | 30/30 복구 | 2.15 ms |
+| T5 | 실행당 5번 주입 | 10 | 50/50 복구 | 2.14 ms |
+| T6 | 두 rank 동시 주입 | 10 | 20/20 복구, 교착 없음 | 2.34 ms |
+| T7a/b/c | 주소 0.5/6/15 s 제거 | 5/5/5 | 15/15 복구 (플래그 끔 0.5 s와 6 s 6/6 실패) | 2.64 ms / 3.26 s / 12.27 s |
+| T8 | 수신 대기 중 상대 SIGKILL | 10 | 50.1~50.2 ms에 오류 (원본 경로 3/3 멈춤) | - |
+| T9 | 복구 요청에 답하지 않는 상대 | 5 | 기한에 깨끗이 실패 | - |
+| T12b/c | 관리망 12 s 차단, 양방향/단방향 | 3/5 | 최종 빌드 통과 (이전 빌드 0/3, 0/3) | - |
+| T12d | 관리망을 잃은 뒤 송신 장애 | 3 | 원본처럼 실패 | - |
 
-## Files
+복구 시간은 장애를 알아챈 뒤부터다. T7b와 T7c는 주소가 돌아오길 기다린 시간이 들어 있다.
+T1~T9의 N은 최종 이전 빌드 기준이다. 최종 빌드에서는 T1, T2, T3, T5, T6, T7a, T8, T9를 3회씩 돌려 모두 같은 결과였다.
 
-| file | what |
+## 한계와 주의
+
+- **30회 결과는 최종 이전 빌드다.** T1~T3의 30/30은 f7f45278에서 나왔다. 최종 빌드는 경우마다 3회뿐이다.
+  예전 README가 78f96f38 행을 "final build"라 부른 것은 틀렸다.
+- **걸린 요청은 많아야 4개였다.** 복구 시점의 미실행 그룹은 0~4개, 미리 건 수신은 1~4개였다.
+  설계의 256개 한도 근처는 가 보지 않았다. 모든 복구가 첫 라운드에 끝났다.
+- **"실행됐지만 ACK를 못 받은" 경우는 5번만 나왔다.** 모두 주소 재구성(T7)에서였고, 주입 장애에서는 0번이었다.
+- **잘못된 지점부터 다시 보내는 음성 대조가 없다.** 중복 재전송이 bit 검사에 걸릴 것이라는 건 추론이다.
+- **T7은 패킷 손실이 아니라 주소 재구성이다.** GID 인덱스가 유지되는 진짜 link flap은 시험하지 않았다(공유 링크).
+  설계 때의 "짧은 끊김은 재전송으로 가려진다"는 예상은 틀렸다. 0.3 s 사전 시험의 원시 출력은 남아 있지 않다.
+- **대조군 대부분은 원본 바이너리가 아니다.** T7, T8, T12d 대조는 패치한 라이브러리의 플래그 끔이다.
+  원본 바이너리 대조는 관리망 시험에만 있다. 수신 QP 장애와 조용한 ERR에는 대조가 없다.
+- **"깨끗한 실패"는 한 rank만 오류를 봐도 붙었다.** T12d에서는 상대 rank가 오류를 보기 전에 runner가 죽였다(3/3).
+  C5의 T8은 CSV에 FAIL로 남아 있고, 나중에 깨끗한 실패로 다시 분류했다.
+- **OOB 소켓은 다시 연결하지 않는다.** 관리망이 약 4.2 s 넘게 끊기면 그 연결의 복구가 꺼진다.
+  RST를 보내는 죽은 상대와 조용히 사라진 호스트는 시험하지 않았다. 수신 대기 중이면 원본처럼 못 알아챌 것으로 본다(추정).
+- **GID 변경 이벤트를 쓰지 않는다.** 주소 재구성마다 비동기 이벤트(type 18)가 RETRY_EXC보다 3.5~3.7 s 먼저 왔다(29/29).
+  원본도 패치도 무시했다. 18을 GID_CHANGE로 읽은 것은 libibverbs 값 기준이다.
+- **T7b와 T7c 복구 시간에는 재시도 간격이 들어 있다.** 주소가 돌아온 뒤 최대 약 0.9 s 더 걸릴 수 있다(추정).
+- **시험하지 않은 것.** REM_ACCESS 같은 NAK 장애, 다중 QP와 다중 NIC(설계상 거절), rain 쪽 주소 재구성, 진짜 link down.
+
+## 파일
+
+| 파일 | 내용 |
 |---|---|
-| `DESIGN_stage2.md` | design, invariants, exactly-once argument, QA rounds 1 and 2 |
-| `net_ib_stage2.diff` | the patch against v2.23.4-1 |
-| `run_tests.py` | the validation matrix (design §11) |
-| `gid_blackhole.sh`, `gbh_feasibility.sh` | the address-flap fault (secondary RoCE address removed and re-added) and its feasibility test |
-| `linkflap_window.sh` | a real link down/up on sunny's RoCE port, with a watchdog that brings the link back. **Not run**: the link carries the user's NVMe-oF, so the script refuses to run without explicit approval |
-| `results/` | per-run logs, `results.csv`, hardware counters before/after each campaign |
+| [NOTES.md](NOTES.md) | 상세 기록 |
+| `DESIGN_stage2.md` | 설계, 불변식, exactly-once 논증, 두 차례 QA |
+| `results/20260925/` | 캠페인별 결과 표(`results.csv`). 로그 묶음과 하드웨어 카운터는 Release `data-20261006` |
+| `../perf/` | 작업 완료 시간과 장애 없는 오버헤드 |

@@ -1,94 +1,84 @@
-# transparent_probe: feasibility probe for app-transparent, multi-op GPU-RDMA recovery
+# transparent_probe: 응답 쪽 PSN으로 실행된 지점을 알 수 있나
 
-Supports `../TRANSPARENT_RECOVERY_DESIGN.md`. CPU-only mlx5 DEVX, one RC QP pair
-(requester = rain `mlx5_1`, responder = sunny `mlx5_0`), so it needs no GPU and runs quickly, yet
-it reproduces the WQE/PSN/CQ mechanics the GPU libraries depend on: RDMA WRITE (one SGE, 64 B to
-7·MTU), 8-byte ATOMIC FETCH_ADD (one distinct counter per atomic), RDMA READ; a 64-byte **ring**
-CQ; every WQE signaled; the SQ doorbell record's **send** word (word 1) written — the correct word,
-so it does not hit the CPU-proxy `nvshmem_rootcause` bug. It answers the four feasibility questions
-the design turns on:
+GPU 라이브러리 안에서 앱 모르게 여러 op를 복구하려면, 응답 쪽이 어디까지 실행했는지 정확히 알아야 한다.
+이 probe는 GPU 없이 CPU에서 mlx5 DEVX QP 한 쌍으로 그 전제를 확인한다. `../TRANSPARENT_RECOVERY_DESIGN.md`의 근거다.
 
-| Q | question | scenario | key output field |
-|---|---|---|---|
-| Q1 | Does the responder's `QUERY_QP.next_rcv_psn` equal the executed prefix (ground truth = responder memory), after the responder QP → ERR, and while it stays RTS and only the requester errs? | `resp_err`, `req_err` | `Q1_MATCH`, `prefix_from_psn`, `mem_prefix` |
-| Q2 | With that PSN, is "reset + replay whole requests from the first unexecuted one" exactly-once for hundreds of ops in flight? Mode B (both reset) and Mode A (responder untouched). | `resp_err` (B), `req_err` (A) | `EXACTLY_ONCE`, `fadd_multi`, `notlanded`, `corrupt` |
-| Q3 | If the requester alone rewinds its PSN into already-executed requests, are duplicate atomics re-executed or absorbed, and at what rewind depth does the responder NAK? | `dup` (depth sweep) | `fadd_multi`, `duperr`, `poll_rc` |
-| Q4 | After `2RST`, does the NIC take the WQE ctrl index field or its own restarted counter, and what `wqe_counter` does the CQE carry? | `wqeidx` | per-CQE `wqe_counter`, `landed` |
+## 무엇을 쟀나
 
-Exactly-once is checked end to end: the responder holds the deterministic plan and, from its own
-memory, reports how many WRITEs landed (byte-for-byte vs the pattern), how many FETCH_ADD counters
-are 0 / exactly 1 / >1, and its `next_rcv_psn`/`rmsn` from `QUERY_QP`. The requester verifies READ
-data locally. A recovery is a success only if every write landed, every atomic counter is exactly
-1, no counter is >1 (`fadd_multi==0`), and every read verified.
+- **질문 4개.**
+  - Q1: 응답 쪽 QP의 next_rcv_psn이 실제로 실행된 요청의 끝(실행 prefix)과 같은가. 응답 QP가 ERR일 때와 RTS일 때.
+  - Q2: 그 PSN부터 다시 보내면 exactly-once인가. 양쪽 재설정(Mode B)과 요청 쪽만 재설정(Mode A).
+  - Q3: 요청 쪽만 PSN을 되감아 이미 실행된 요청을 다시 보내면 atomic이 두 번 실행되나.
+  - Q4: NIC는 WQE의 index 필드를 따르나, 자기 카운터를 쓰나.
+- **정답은 응답 쪽 메모리다.** WRITE는 바이트 패턴으로, FETCH_ADD는 요청마다 다른 카운터로 센다. 카운터가 정확히 1이면 exactly-once다.
+- **실행 2번.** run1은 probe 버그로 Q1 14점만 유효하다.
+  - run2는 고친 뒤 15회다. Mode B 5회, Mode A 5회, 되감기 4회, index 시험 1회다.
+  - index 시험을 뺀 14회는 한 번에 요청 256개를 보낸다.
+- **조건.** 2026-09-25, rain(요청)과 sunny(응답), ConnectX-6 펌웨어 20.43.4100, RoCE v2, ack 타임아웃 14.
 
-## Ground truth and why it is trustworthy
+## 결론
 
-- WRITE landing: the requester's source buffer is filled with a seeded 64-bit pattern
-  `pat(seed_w, offset)`; the responder pre-fills its buffer with a different background pattern.
-  After execution the responder reads each write's target region and reports landed / not-landed /
-  corrupt (partial). Offsets are distinct per request, so a landed write is unambiguous.
-- FETCH_ADD: each atomic targets a distinct 8-byte counter (initialised 0), `swap_add=1`, so the
-  counter value is the execution count — 1 = exactly-once, 2 = double-executed (a replay bug).
-- Executed prefix from memory (`mem_prefix`): RC executes in order, so the executed set is a
-  prefix; `mem_prefix` is the last executed write/atomic + 1. `prefix_from_psn` is computed
-  independently from `next_rcv_psn` and the per-request PSN table. `Q1_MATCH = (they agree)`.
-  For Q1/Q2 the plan excludes READs by default (`--reads 0`) so the memory prefix is exact; `dup`
-  includes READs (`--reads 1`).
+- **응답 쪽 next_rcv_psn은 실행 prefix와 28/28 같았다.**
+  - 응답 QP가 ERR일 때 10점, RTS일 때 18점이다. 응답 쪽 rmsn도 실행한 요청 수와 같았다.
+  - 응답 QP 상태를 한 번 조회하는 데 58~84 µs 걸렸다.
+  - 다만 burst 중간에 놓인 점은 1개뿐이다. 나머지는 prefix 0~3이거나 256(burst 끝)이다.
+- **READ는 ceil(bytes/MTU)개 PSN을 쓴다.** READ 46개가 든 계획에서 next_rcv_psn이 psn0+627이었다.
+  같은 계획 하나를 4번 돌린 결과다.
+- **요청 쪽 완료 수는 실제 실행보다 뒤처질 수 있다. 1회 관찰이다.**
+  - ra_s4에서 요청 쪽 성공 완료는 223개, 응답 쪽 실행은 234개였다.
+  - 완료 수 기준으로 다시 보내면 이미 실행된 11개(atomic 포함)를 또 보낸다.
+  - 응답 쪽 PSN이 가리키는 요청의 시작부터 22개를 다시 보냈다. 반쯤 받은 WRITE의 중복 패킷 3개는 흡수됐다.
+  - 끝에는 WRITE 205/205가 도착했고, 카운터 51/51이 정확히 1이었다.
+- **요청 쪽만 되감으면 16개까지는 중복이 조용히 흡수됐다. 깊이마다 1회다.**
+  - 4개와 16개는 흡수됐다. 64개와 200개는 응답 쪽이 답하지 않아 RETRY_EXC로 끝났다.
+  - 되감은 범위의 atomic은 깊이 4, 16, 64, 200에서 0, 3, 13, 34개였다. 어느 깊이에서도 두 번 적용되지 않았다.
+  - 실패한 깊이에서도 데이터는 그대로였고, 요청 쪽은 오류 CQE를 받았다.
+- **NIC는 WQE의 index 필드를 무시하고 자기 카운터를 CQE에 쓴다.** 새 QP에서 1회 봤다.
+  index 1000~1003을 단 WQE 4개가 모두 실행됐고, CQE에는 0~3이 나왔다.
 
-## Build and run
+## 결과
 
-```
-make                         # builds tr_probe here (also built on sunny by run_probe.sh)
-# every RoCE run goes through the shared lock:
-../common/cluster_run.sh -w 7200 -t tr-matrix -- timeout 560 bash run_matrix.sh run3   # -> results/run3
-# or one scenario:
-../common/cluster_run.sh -t tr-one -- bash run_probe.sh tag $PWD/results/one resp_err
-```
+run2, 시나리오별:
 
-`run_probe.sh <tag> <outdir> <scen> [-- extra]` builds the binary on sunny (its own OFED),
-resolves both RoCE v2 IPv4 GIDs, starts the responder on sunny and the requester on rain, and
-prints the requester's `SUMMARY` line. Env: `SEED K RECOVER DELAY_MAX_US DUP_DEPTH READS
-ACK_TIMEOUT PORT`. Each process self-bounds with `alarm`; only its own binary (`pkill -x tr_probe`)
-is ever killed. Logs: `<outdir>/<tag>.{req,tgt}.log`.
+| 시나리오 | n | 응답 QP 상태 | 실행 prefix | Q1 일치 | 다시 보낸 요청 | exactly-once | 호스트 복구 시간 |
+|---|--:|---|---|--:|---|--:|--:|
+| 응답 QP를 ERR로 (Mode B) | 5 | ERR | 256 (5/5) | 5/5 | 0 | 5/5 (보낼 것 없음) | 1.30~1.37 ms |
+| 요청 QP를 ERR로 (Mode A) | 5 | RTS | 256 (4/5), 234 (1/5) | 5/5 | 0 (4회), 22 (1회) | 5/5 | 0.59~0.62 ms |
+| 되감기 (READ 46개 포함) | 4 | RTS | 256 | 4/4 | Q3 참고 | - | - |
 
-`run_matrix.sh` runs the whole feasibility matrix in one bounded hold (< 10 min): 5 seeds each of
-`resp_err` (Mode B) and `req_err` (Mode A) with recovery, a `dup` depth sweep (4/16/64/200), and
-`wqeidx`.
+run1의 14점을 더해 Q1은 28/28이다. run1은 ERR 5점, RTS 9점이고 prefix는 모두 0~3이다.
+장애가 burst가 끝난 뒤 들어간 경우가 10회 중 9회라, 다시 보낼 것이 거의 없었다.
+index 시험 1회(Q4)는 표에서 뺐다.
 
-## Files
+## 한계와 주의
 
-| file | what |
+- **복구에서 실제로 다시 보낸 시험은 1회다.**
+  - run2에서 복구 재전송이 있었던 것은 Mode A 1회(22개)뿐이다. Mode B의 유효한 재전송은 0회다.
+  - 설계 문서는 장애를 더 일찍 넣고 칸마다 30회 이상 돌려야 한다고 본다.
+- **응답 QP가 burst 중간에 ERR이 된 적이 없다.** ERR 점은 모두 prefix 0~3이나 256이다.
+- **요청 쪽 QP 상태보다 낫다는 것은 보이지 못했다.**
+  - 손실 없는 직결 링크라 요청 쪽 자신의 next_send_psn도 장애를 넣은 20회 모두 같은 값이었다(원시 로그에만 있음).
+  - 보인 것은 응답 쪽 값이 요청 쪽 완료 수보다 정확하다는 데까지다.
+- **중복 창은 16 이상 64 미만이다.** 깊이마다 1회다.
+  - 응답 쪽 read/atomic 자원(max_rd_atomic) 때문이라는 건 추정이다.
+  - 중복 WRITE가 다시 실행되는지는 대상을 덮어쓰지 않아서 모른다.
+- **Q4는 새 QP에서 1회만 봤다.** 재설정 뒤에는 재지 않았다.
+- **run1은 exactly-once 판단에 쓸 수 없다.**
+  - 잘못 만든 WQE 때문에 요청 쪽이 맨 앞 몇 요청에서 실패했다. 재전송의 완료와 앞선 실패의 flush도 가르지 못했다.
+  - Q1 14점은 재전송 전에 쟀으므로 유효하다.
+- **CPU DEVX QP이고 GPU 라이브러리의 QP가 아니다.** QP 한 쌍, 링크 하나, 펌웨어 하나다.
+  GPU 쪽 생산자 일시정지 같은 장치 쪽 흐름은 재지 않았다.
+- **다른 문서에 과장되거나 틀린 문장이 있다.**
+  - 설계 문서 §6.2의 "수백 개 op에서 Mode A exactly-once 검증"은 이 1회, 22개 재전송에 기댄다(2026-10-06 리뷰).
+  - `../RESULTS.md`는 "next_rcv_psn = 실행 prefix"를 조건 없이 적는다. burst 중간 점은 1개뿐이다(리뷰).
+  - 설계 문서 §11.1의 조회 시간 60~84 µs는 run1의 57.8 µs를 빠뜨렸다(원시 로그 재집계).
+- **응답 쪽 노드의 주소 재구성은 Mode A로 못 다룬다(리뷰 추정).**
+  응답 쪽 자신의 GID 인덱스가 낡아 ACK가 나가지 못하므로 응답 QP도 다시 세워야 한다. 설계 문서는 경로 장애를 Mode A로 보낸다.
+
+## 파일
+
+| 파일 | 내용 |
 |---|---|
-| `tr_probe.c` | the probe (requester + responder in one binary) |
-| `tr_prm.h` | mlx5 PRM layouts (copied from `../nvshmem_rootcause/nrc_prm.h`, + 2RST_QP) |
-| `run_probe.sh` | one trial across rain+sunny (inside `cluster_run.sh`) |
-| `run_matrix.sh` | the feasibility matrix in one hold |
-| `results/run1` | first run: **invalid for exactly-once** (inline WQEs built with `ds=0`; replay poll without a CQ drain); its 14 Q1 lines are valid |
-| `results/run2` | corrected binary, 15 trials; the figures in `../TRANSPARENT_RECOVERY_DESIGN.md` §11.1 |
-
-## Results (run2, see the design doc §11.1 for the full table)
-
-- Q1: `next_rcv_psn` (and `rmsn`) equalled the memory prefix in 28/28 data points (run1 14 +
-  run2 14; responder in ERR 10, in RTS 18). READs count `ceil(bytes/MTU)` PSNs
-  (psn0 0x100 + 627 = 0x373 with 46 READs).
-- Q2: exactly-once in 10/10 run2 recoveries, but only 1 (Mode A, ra_s4) had a non-empty replay: 22
-  requests incl. a partly received WRITE (3 duplicate packets absorbed); 11 requests were executed
-  but unacked and correctly not re-sent. No Mode B trial had anything to replay. The fault landed
-  after the burst in 9/10: the next run must inject earlier, N >= 30.
-- Q3: rewind 4 and 16 requests absorbed; 64 and 200 end in RETRY_EXC; no counter > 1 at any depth.
-- Q4: CQE `wqe_counter` is the NIC's own counter (0..3 for index fields 1000..1003); fresh QP only.
-
-## Scope / limitations
-
-- CPU DEVX QPs, not the GPU libraries' QPs: it reproduces the QPC/CQ/WQE/PSN mechanics and the
-  `2RST`+replay path, not the device-side pause gate or the block-across-recovery wait (those are
-  GPU-only and are staged in the design, S1+). It establishes the transport-level feasibility the
-  design rests on (the PSN authority, exactly-once replay, the duplicate window, the index-field
-  behaviour), not the device control-flow.
-- One QP pair; multi-QP is the design's S3. One firmware (20.43.4100), RoCE v2, ack timeout 14.
-- `dup` does not overwrite WRITE targets before the rewind, so it cannot tell whether duplicate
-  WRITEs are executed again; `wqeidx` runs on a fresh QP, not after a 2RST.
-- The inline-WRITE builder (`OP_WINL`) is kept in the source but never generated (it computed `ds`
-  wrong in run1).
-- READ-result verification uses the replay-pass offset; READs are enabled only in `dup` (where they
-  are not result-verified), so this does not affect the Q1/Q2 exactly-once checks.
+| [NOTES.md](NOTES.md) | 상세 기록 |
+| `../TRANSPARENT_RECOVERY_DESIGN.md` | 이 probe가 뒷받침하는 설계. §11에 결과 전체 |
+| `results/run1/`, `results/run2/` | 저장소에는 없다. 로그는 Release `data-20261006` |
