@@ -1,11 +1,11 @@
-# Transparent recovery, step S1: GIN GDAKI, one peer, one QP, one operation in flight
+# GIN transparent recovery, step 1: GDAKI, one peer, one QP, one operation in flight
 
 Patch: `gin_transparent_s1.diff`, a full diff against NCCL v2.32.3-1 (12df1a11). It holds, unchanged, the
-four layers that `gin_recovery_gpudb.diff` sits on, plus S1 (see "Stack" below). Driver:
+four layers that `gin_recovery_gpudb.diff` sits on, plus step 1 (see "Stack" below). Driver:
 `gin_ts1.cu`, an application with no recovery code in it. Scripts: `scripts/ts1/`. Results:
 `results/20260925_ts1/` (the follow-up after the external review: `v2_*` and `summary_v2.md`; the
 third review: `v3_*` and `summary_v3.md`). Design this implements: `../TRANSPARENT_RECOVERY_DESIGN.md` §3, §5, §6, §13
-(step S1), with the changes listed in "Where S1 departs from the design".
+(step 1), with the changes listed in "Where step 1 departs from the design".
 
 Tags used below: **[measured]** = counted from the per-trial logs in `results/20260925_ts1/`;
 **[source]** = read in the code; **[inferred]** = reasoned, not tested here.
@@ -125,7 +125,7 @@ QP forced to ERR, peer alive; the initiator sees RETRY_EXC 12/0x81); F4 = peer p
     overlap (each fence was counted under "fences" and again under its own mechanism), and they
     summed to more than the total. They were wrong as a split (point 4 of the follow-up).
 
-  Reducing this is S2 work (see "Next step").
+  Reducing this is step-2 work (see "Next step").
 - **Found by the tests [measured].**
   - The fault hook's thread and the helper once issued `2ERR_QP` on the same QP concurrently (1 of
     30 in-flight runs).
@@ -179,7 +179,7 @@ reproduced the outcomes and latencies of this section.
 | (a) `flushAsync` can block up to 60 s | correct: it parked inside, up to 2 × hold | `flushAsync` makes one attempt at the counted region. During a recovery it returns a PENDING request, and the wait takes the ticket itself under its own deadline. Exception: the MCST DUMP after a `get` goes through the poster gate (that epoch declines anyway) |
 | (b) a timeout flush did not charge parked time | correct: phase 1 restarted the timeout after each park, on purpose (and the review table below described that wrongly) | one deadline covers ticket, park and poll; on expiry the call returns `ncclTimeout` wherever it is |
 | (c) a parked poster spins without bound | correct | posters give up after `NCCL_GIN_TS_HOLD_MS` through the same commit point as waiters, poison the QP (`status`) and skip the post; every later post and wait on that QP fails at once |
-| (d) with the helper stalled or dead the error vanished | correct: in transparent mode the watcher hands the record to the helper instead of raising it | watchdog in the Q4 watcher thread: a round longer than `NCCL_GIN_TS_ROUND_MS` (25 s), or records queued while the helper's heartbeat is more than 1 s old, sets the communicator's async error (`ncclRemoteError`); the helper then declines |
+| (d) with the helper stalled or dead the error vanished | correct: in transparent mode the watcher hands the record to the helper instead of raising it | watchdog in the classifier's watcher thread: a round longer than `NCCL_GIN_TS_ROUND_MS` (25 s), or records queued while the helper's heartbeat is more than 1 s old, sets the communicator's async error (`ncclRemoteError`); the helper then declines |
 
 Test knobs (rank 0 only, research build):
 - `NCCL_GIN_TS_TEST_STALL=<ms>@quiesce|commit`: the helper sleeps inside the round, after its quiesce
@@ -252,7 +252,7 @@ So all three cases of the executed-prefix rule have now been run: n = 0, 1 and 2
      - In NCCL 2.32, `ncclCommDestroy`/`ncclCommAbort` never destroy the GIN contexts of a
        devComm the application did not destroy with `ncclDevCommDestroy`. `ncclGinHostFinalize`
        only joins the proxy threads and closes the collComms.
-     - So the helper, the Q4 watcher and the fault hook kept running after the teardown. They
+     - So the helper, the classifier's watcher and the fault hook kept running after the teardown. They
        used the freed collComm (`nranks`), the freed communicator (`ncclGinRecoverAbort`) and the
        async-result slot in the freed `sharedRes`.
      - This is a use-after-free, and a source of QP state changes during teardown.
@@ -286,8 +286,8 @@ So all three cases of the executed-prefix rule have now been run: n = 0, 1 and 2
   - An abort that arrives while the helper is inside a firmware command waits for that command.
   - A concurrent `ncclDevCommDestroy` of the same communicator from another thread is API misuse,
     as for the rest of NCCL.
-  - Pre-existing in layer 2 (Q4 on, transparent off), not changed because the flag-off path must
-    stay identical: the Q4 watcher of such a context also outlives the communicator.
+  - Pre-existing in layer 2 (classifier on, transparent off), not changed because the flag-off path must
+    stay identical: the classifier's watcher of such a context also outlives the communicator.
 
 ### Point 4: the attribution rows overlapped — correct
 
@@ -420,7 +420,7 @@ giving up" and Limits now say this, and "every wait is bounded" was removed.
 - **The fix.** The teardown now frees nothing.
   - It joins the threads, closes the sockets, poisons the gates and unregisters the context.
   - The helper state stays, with `active` still set, so a late query takes the transparent branch.
-    That branch reads only this state and the Q4 host flag. The Q4 host is stopped at teardown but
+    That branch reads only this state and the classifier's host flag. The classifier's host side is stopped at teardown but
     freed only with the context.
   - The split-test block, which a running kernel may read, stays as well.
   - Both are freed with the context, in `ncclDevCommDestroy`. That runs only after
@@ -533,7 +533,7 @@ zero (off) unless the host enables it [source]. DOCA's device code never touches
 | `active` | posters (atomics) | host | posters inside the post critical section |
 | `pollers` | waiters (atomics) | host | waiters inside the counted poll region |
 | `abandoned` | waiters (atomicMax) | host | the highest epoch a waiter stopped waiting for |
-| `nonmsg` | posters | host | a NOP/DUMP/READ was posted this epoch (S1 cannot count or re-post it) |
+| `nonmsg` | posters | host | a NOP/DUMP/READ was posted this epoch (step 1 cannot count or re-post it) |
 | `reported` | waiters | waiters, host scan | dedupes fault records per epoch |
 
 - **Pause gate (posters).** Every post goes through `tsGateEnter`/`tsGateLeave`: `put`, `signal`,
@@ -574,8 +574,8 @@ zero (off) unless the host enables it [source]. DOCA's device code never touches
     counter, not from the ctrl index field (`transparent_probe/results/run2/wqeidx`: override 1000
     → counters 0..3), so logical indices cannot be kept on the wire.
 - **Wait across a recovery (`tsPoll`).** On an error CQE the waiter:
-  1. publishes the existing Q4 mailbox record (once per epoch, with the root-cause scan, but
-     without setting Q4's sticky context error);
+  1. publishes the existing classifier mailbox record (once per epoch, with the root-cause scan, but
+     without setting the classifier's sticky context error);
   2. leaves the region and parks until a new stable epoch appears;
   3. re-enters and re-maps its ticket.
 
@@ -614,7 +614,7 @@ zero (off) unless the host enables it [source]. DOCA's device code never touches
     - A failure that lands after that check (a window of microseconds against a 30 s bound) is still
       surfaced, by the idle scan, which now also declines on a poisoned gate. The re-post may then
       have executed; the operation's outcome is unknown, as after a stock timeout.
-  - **Failing poisons the QP.** A won give-up writes `status = 1` and Q4's sticky error. Every later
+  - **Failing poisons the QP.** A won give-up writes `status = 1` and the classifier's sticky error. Every later
     wait on that QP returns `ncclRemoteError` at once, instead of each waiting out its own bound.
     - Every later post checks `status` in the gate and is dropped, as is the post of a poster that
       gave up. The next flush/wait on that QP reports the failure. A poisoned QP can still be
@@ -622,12 +622,12 @@ zero (off) unless the host enables it [source]. DOCA's device code never touches
       the check was added after the follow-up review.
     - The host's periodic scan sees `abandoned` and declines, so `ncclCommGetAsyncError` reports it
       too.
-  - A declined QP (`status`) returns `ncclRemoteError` and raises Q4's sticky error, so the blocking
-    `flush()`/`wait()` API reports it as in Q4.
+  - A declined QP (`status`) returns `ncclRemoteError` and raises the classifier's sticky error, so the blocking
+    `flush()`/`wait()` API reports it as with the classifier alone.
 
 ### Host (`gin_host_gdaki.cc`): a helper thread inside NCCL
 
-There is one helper thread per GDAKI context of a user devComm, not the application. The Q4
+There is one helper thread per GDAKI context of a user devComm, not the application. The classifier's
 watcher hands it every device-classified error record that belongs to a gated QP. In transparent
 mode the watcher does not raise the async error for a record it hands over, and
 `ncclGinGdakiQueryLastError` reports only declined faults, so a QP that is in ERR while it is being
@@ -641,7 +641,7 @@ recovered is never reported [source; measured: 0 async errors in the recovered r
   - or fault records queued while the helper's heartbeat is older than 1 s (the helper is dead or
     stuck outside a round).
 
-  Either one surfaces the error: the Q4 host error flag, and `ncclRemoteError` as the communicator's
+  Either one surfaces the error: the classifier's host error flag, and `ncclRemoteError` as the communicator's
   GIN async result, so `ncclCommGetAsyncError` reports it. A WARN names the reason. From then on the
   helper declines instead of continuing: it checks before the commit point, and at the start of each
   initiator or responder round. The device side has its own bound (above), so the kernel is released
@@ -691,7 +691,7 @@ recovered is never reported [source; measured: 0 async errors in the recovered r
   4. `QUERY_QP` (DEVX, new `doca_verbs_qp_query_seq`) of this rank's QPs: `rmsn` minus the
      baseline = the number of the **peer's** request messages this QP executed.
   5. Send REQ {token, executed counts}. Wait for ACK, bounded by handshake + quiesce + drain. A
-     simultaneous REQ from the peer is answered with NACK and both sides decline (S1 has one
+     simultaneous REQ from the peer is answered with NACK and both sides decline (step 1 has one
      initiator per pair).
   6. `ncclGinRecoverCommit` with the peer's token: `2RST`, doorbell record 0, device struct,
      `cqe_rsvd += S`, get tickets, INIT/RTR/RTS with the exchanged PSNs. It is the existing code,
@@ -699,7 +699,7 @@ recovered is never reported [source; measured: 0 async errors in the recovered r
      - it writes only the fields it owns (`[0, reserved1)` and `cq_sq`), never the gate;
      - it zeroes with copies from pinned memory instead of `cudaMemsetAsync` (a memset may need a
        kernel slot that the application's persistent kernel holds);
-     - it does not clear the Q4 error state (a declined peer's error must stay surfaced).
+     - it does not clear the classifier's error state (a declined peer's error must stay surfaced).
   7. Take the new `rmsn` baseline (no traffic can flow yet).
   8. Re-post and resume (`gdakiTsReplayResume`):
      - Commit point: `commit = stable+2` on every QP, then check `abandoned`.
@@ -718,7 +718,7 @@ recovered is never reported [source; measured: 0 async errors in the recovered r
   - wait for DONE (≤ 2× handshake), so its own posters and any re-post only start after the
     initiator reached RTR;
   - re-post and resume with the initiator's counts.
-- **Which WQEs executed.** For S1, "minimal correct rule" means the responder's message sequence
+- **Which WQEs executed.** For step 1, "minimal correct rule" means the responder's message sequence
   number, from the same `QUERY_QP` that the probe used for `next_rcv_psn`.
   - Every WQE of the epoch is exactly one request message (the device declines otherwise through
     `nonmsg`), and RC executes in order. So the executed prefix is the first `rmsn − rmsn0` WQEs,
@@ -733,7 +733,7 @@ recovered is never reported [source; measured: 0 async errors in the recovered r
     exactly once.
 - **Decline:**
   - QPs to ERR; `status = 1`; `epoch` moved past any held epoch; `pause = 0`.
-  - The Q4 sticky error, the host flag and the GIN async result are set, so waiters return
+  - The classifier's sticky error, the host flag and the GIN async result are set, so waiters return
     `ncclRemoteError` and `ncclCommGetAsyncError` reports it.
   - FAIL is sent to the peer, whose helper declines too.
 - **Lost records.** Every 100 ms while idle, the helper reads each gate.
@@ -746,18 +746,18 @@ recovered is never reported [source; measured: 0 async errors in the recovered r
 
 ## Stack
 
-| layer | file | what S1 uses from it |
+| layer | file | what step 1 uses from it |
 |---|---|---|
 | 1 | `../gin/gin_fault_inject.diff` | the F1/F3 hook (`NCCL_GIN_FAULT_INJECT`), multi-shot with recovery |
 | 2 | `../gin_q4/gin_q4_classify.diff` | device root-cause classification, host mailbox + watcher |
 | 3 | `gin_recovery.diff` | Prepare / Commit / Abort, reconnect with fresh PSNs, resync inventory |
 | 4 | `gin_recovery_gpudb.diff` | GPU_SM_DB doorbell mode in Prepare/Commit |
-| 5 | S1 (in `gin_transparent_s1.diff`) | gate, logical tickets, hold-and-rebase waits, helper thread, socket, re-post + host doorbell, `doca_verbs_qp_query_seq`; follow-up: bounded posters and `flushAsync`, deadline over parking, watchdog, teardown hooks in `init.cc` (`ncclCommAbort`) and `gin/gin_host.cc` (`ncclGinHostFinalize`), test knobs |
+| 5 | step 1 (in `gin_transparent_s1.diff`) | gate, logical tickets, hold-and-rebase waits, helper thread, socket, re-post + host doorbell, `doca_verbs_qp_query_seq`; follow-up: bounded posters and `flushAsync`, deadline over parking, watchdog, teardown hooks in `init.cc` (`ncclCommAbort`) and `gin/gin_host.cc` (`ncclGinHostFinalize`), test knobs |
 
 - **Checked on the scratch trees:**
   - `gin_transparent_s1.diff` applied to a pristine `git archive v2.32.3-1` reproduces the
     source tree exactly (re-checked on the final follow-up tree).
-  - So do layers 1–4 followed by the S1 layer alone.
+  - So do layers 1–4 followed by the step-1 layer alone.
   - Layers 1–4 applied to pristine reproduce the gpudb v2 worktree (`gi/gin_recovery/nccl-src-gpudb`).
 - **Build:**
   - The tree is `$SCR/agent_ts1/nccl-src`; the build is `$SCR/agent_ts1/build`, a copy of the
@@ -769,7 +769,7 @@ recovered is never reported [source; measured: 0 async errors in the recovered r
 - **Bundle:** `~/gi-bundle/gin_ts1/` on rain and sunny (md5 and `ldd` checked by
   `scripts/ts1/deploy.sh`). `base/` holds the gpudb libnccl, copied read-only, with the driver
   compiled against it.
-- **Size of the S1 layer** (after the third review; phase 1 in parentheses):
+- **Size of the step-1 layer** (after the third review; phase 1 in parentheses):
   - 8 files, +2056 / −16 lines including comments (6 files, +1554 / −14).
   - Device: 407 non-comment added lines in 2 headers (265).
   - Host: 1233 non-comment lines in `gin_host_gdaki.cc` (990).
@@ -824,8 +824,8 @@ port was taken (`bind: Address already in use`). They are excluded and re-run.
 | f4_b | SIGKILL of rank 1 | 10 | 0/10, declined | 10 | – | – | 10/– | 0/0 | 10/10 |
 | neg_norebase_t | F1, waiters keep the stale ticket | 5 | 0/5 (as predicted) | 5 (`ncclTimeout`) | 5 | 0/5 | 0/0 | 5/5 | 0 |
 | neg_noring_t | F1, no host doorbell for the re-post | 5 | 0/5 (as predicted) | 5 (`ncclTimeout`) | 5 | 0/5 | 0/0 | 5/5 | 0 |
-| off_f1_b | F1, S1 build, flag off | 5 | 0/5 (Q4 behaviour) | 5 (`ncclRemoteError`) | 5 | 0/5 | 5/0 | 0/0 | – |
-| base_f1_b | F1, gpudb v2 build | 5 | 0/5 (Q4 behaviour) | 5 (`ncclRemoteError`) | 5 | 0/5 | 5/0 | 0/0 | – |
+| off_f1_b | F1, step-1 build, flag off | 5 | 0/5 (classifier only) | 5 (`ncclRemoteError`) | 5 | 0/5 | 5/0 | 0/0 | – |
+| base_f1_b | F1, gpudb v2 build | 5 | 0/5 (classifier only) | 5 (`ncclRemoteError`) | 5 | 0/5 | 5/0 | 0/0 | – |
 
 - **Confirmation pass on the final build** (`confirm/`, 1–3 each): the same outcome in every cell.
   none 2/2, F1 2/2 and 3/3, F3 3/3, F1 ×5 3/3 (15 rounds), F2 3/3 declined, F4 3/3 declined, both
@@ -871,7 +871,7 @@ How to read the table:
   query and Commit (3.3 ms).
 - **Commit:** four GIN contexts × (2RST + INIT/RTR/RTS) of firmware commands, the same cost as
   gin_recovery. Resetting only the faulted pair would halve it.
-- **Detection to mailbox** is unchanged from Q4, since the classifier is the same.
+- **Detection to mailbox** is unchanged from the classifier runs, since the classifier is the same.
 
 ### Declines (bounded, error surfaced)
 
@@ -882,7 +882,7 @@ How to read the table:
 
 ### Fault-free latency (put + signal + flush of the unmodified loop, GPU %globaltimer, 15 runs × 2900 iterations per cell, interleaved)
 
-| bytes | gpudb v2 build | S1 build, flag off | S1 build, flag on |
+| bytes | gpudb v2 build | step-1 build, flag off | step-1 build, flag on |
 |---|---|---|---|
 | 4 KiB p50 / p99 / mean (µs) | 10.14 / 10.34 / 9.99 | 10.24 / 11.42 / 10.24 | **16.96** / 18.46 / 17.16 |
 | 256 KiB p50 / p99 / mean (µs) | 38.21 / 38.94 / 38.14 | 38.43 / 38.94 / 38.36 | **41.28** / 42.78 / 41.43 |
@@ -907,28 +907,28 @@ the one to use.
   at 4 KiB, at 2.94 of 6.18 µs [measured].
 - Why they cost this much is [inferred]: the waiter-side fence follows the posted MMIO doorbell
   write. The rest is also [inferred]: the extra `.sys` loads and releases, and the out-of-line calls.
-- The design's §10 target (≤ 1–2%) is **not met** by S1; see "Next step".
+- The design's §10 target (≤ 1–2%) is **not met** by step 1; see "Next step".
 
 ### Cross-check of the two executed-prefix authorities
 
 On the first round of every run the responder's receive PSN starts at 0. Its `next_rcv_psn` equals
 65·⌊E/2⌋ (+64 if E is odd), where E is the executed count from `rmsn`: **105/105** agree
-(`psn_check.py`). So the executed-WQE count S1 uses and the PSN authority the probe validated name
+(`psn_check.py`). So the executed-WQE count step 1 uses and the PSN authority the probe validated name
 the same prefix on this hardware.
 
 
-## Where S1 departs from the design (`../TRANSPARENT_RECOVERY_DESIGN.md`)
+## Where step 1 departs from the design (`../TRANSPARENT_RECOVERY_DESIGN.md`)
 
-- **Executed prefix.** S1 uses the responder's `rmsn` (messages) rather than `next_rcv_psn`
+- **Executed prefix.** Step 1 uses the responder's `rmsn` (messages) rather than `next_rcv_psn`
   (packets), as described above, with a device-side guard that declines when a WQE is not one
   message. Both come from the same `QUERY_QP`; each recovery logs both.
 - **Tickets.** The design kept logical producer indices on the wire and fell back to a rebase
-  table if the NIC rejected them. The probe showed the NIC ignores the index field, so S1 keeps
+  table if the NIC rejected them. The probe showed the NIC ignores the index field, so step 1 keeps
   physical indices on the device and gives waiters a logical ticket instead. One `lbase` per QP
   replaces the rebase table.
 - **Waiters are counted too.** The design paused only posters. The review showed that waiters
   also write QP state (`cqe_ci`), so they poll inside a counted region as well.
-- **Commit point.** The design's waits were only "bounded". S1 adds the abandoned/commit
+- **Commit point.** The design's waits were only "bounded". Step 1 adds the abandoned/commit
   handshake, so a waiter that stops waiting can never be followed by a re-post of its operation.
 - **Replay by the host with a host doorbell.** This matches §6.4 "by host". With GPU doorbells
   the host must ring the UAR itself.
@@ -941,7 +941,7 @@ Every finding was fixed, or is listed under Limits:
 
 | round | findings | fixed |
 |---|---|---|
-| v1 | 7 major, 6 minor, nits | major: the whole-struct Commit write racing live waiters and parked posters (`cqe_ci` and `active` clobbered); responder quiesce deadlock with traffic in both directions (QPs now go to ERR before the wait); `flushAsync` dropping a failed ticket; device give-up not coordinated with a host re-post; a recovery with one peer clearing another peer's declined error; two contexts on one communicator; use-after-free of the recovery host by the Q4 watcher at teardown. minor: nonmsg never cleared, baseline failure ignored, faults on ungated QPs swallowed, `cudaMemsetAsync` on the helper path, fast-path fences, lbase re-check |
+| v1 | 7 major, 6 minor, nits | major: the whole-struct Commit write racing live waiters and parked posters (`cqe_ci` and `active` clobbered); responder quiesce deadlock with traffic in both directions (QPs now go to ERR before the wait); `flushAsync` dropping a failed ticket; device give-up not coordinated with a host re-post; a recovery with one peer clearing another peer's declined error; two contexts on one communicator; use-after-free of the recovery host by the classifier's watcher at teardown. minor: nonmsg never cleared, baseline failure ignored, faults on ungated QPs swallowed, `cudaMemsetAsync` on the helper path, fast-path fences, lbase re-check |
 | v2 | 1 new major, 1 major at scale, 2 minor | `tsTicket` retries starving the host's `pollers == 0` read (parking without counter traffic); lost mailbox records (periodic gate scan); check-then-act between give-up and re-post (commit point); the 4-entry lbase ring (logical tickets) |
 | v3 | 0 major, 1 minor, nits | the timeout's start was made explicit: phase 1 restarted the caller's timeout after each park, so parked time was *not* charged. An earlier version of this row said the opposite, which was wrong; the follow-up now charges it. Wording |
 | v4 | nothing that is not a documented limit | – |
@@ -949,7 +949,7 @@ Every finding was fixed, or is listed under Limits:
 | follow-up v2 | the fixes checked: correct, nothing new | – |
 | third review (after the external re-check) | nothing at major or minor level; 1 optional nit | the nit: the check before re-posting can still race with a device thread whose second hold expires inside the window between that check and the publication; a second Dekker handshake (device `failing` against host `publishing`) would close it. Not implemented: the residual is surfaced by the idle scan and documented under Limits; listed under Next step |
 
-## What is still not transparent (S1 limits)
+## What is still not transparent (step-1 limits)
 
 - **Declined faults are visible by design.** REM_ACCESS and the other deterministic classes, a
   dead peer, a deadline, a lost mailbox record or a waiter that gave up all end as
@@ -1050,7 +1050,7 @@ Every finding was fixed, or is listed under Limits:
     host that dies without FIN (covered only by keepalive/`TCP_USER_TIMEOUT` and the handshake
     deadline).
 
-## Next step: S2 (many operations in flight on one QP)
+## Next step: step 2 (many operations in flight on one QP)
 
 1. **Cheaper gate.**
    - Put the epoch (high 32 bits) and the poster/poller count (low 32 bits) in one 64-bit gate
@@ -1082,7 +1082,7 @@ Every finding was fixed, or is listed under Limits:
 
 | path | what |
 |---|---|
-| `gin_transparent_s1.diff` | full patch vs v2.32.3-1 (4 earlier layers + S1) |
+| `gin_transparent_s1.diff` | full patch vs v2.32.3-1 (4 earlier layers + step 1) |
 | `gin_ts1.cu` | the unmodified application driver |
 | `scripts/ts1/build_driver.sh`, `deploy.sh`, `make_diff.sh` | build (also `BASE=1` against the gpudb tree), deploy with md5/ldd checks, regenerate the diff |
 | `scripts/ts1/run_trial.sh`, `batch.sh`, `lat_batch.sh`, `matrix.sh`, `holdE.sh`, `holdF.sh`, `holdG.sh`, `smoke*.sh` | one trial / one cell / the holds (all inside `../common/cluster_run.sh`) |
@@ -1101,7 +1101,7 @@ Third-review results: `v3_smoke`, `v3_late`, `v3_abortmon`, `v3_confirm`, `v3_la
 written as plain directories and are packed to `<dir>.tar.xz` like the rest; where a directory is
 missing, unpack its archive.
 
-Scratch (not in the repo): tree `$SCR/agent_ts1/nccl-src` (git: pristine → 4 layers → S1 working
+Scratch (not in the repo): tree `$SCR/agent_ts1/nccl-src` (git: pristine → 4 layers → step-1 working
 changes); build `$SCR/agent_ts1/build`; variants `$SCR/agent_ts1/var/`. The cumulative variants
 `c1gpufence`, `c2nogate`, `c3nopoll` are the final header plus `var/<v>.hdr.diff`. Bundle
 `~/gi-bundle/gin_ts1/` on both nodes (`base/`, `var_*/`).

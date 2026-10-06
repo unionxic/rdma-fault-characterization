@@ -1,10 +1,10 @@
-# Transparent recovery, step S2: GIN GDAKI with many operations in flight
+# GIN transparent recovery, step 2: GDAKI with many operations in flight
 
-Patch: `gin_transparent_s2.diff`, a full diff against NCCL v2.32.3-1 (the four earlier layers, S1 and S2,
+Patch: `gin_transparent_s2.diff`, a full diff against NCCL v2.32.3-1 (the four earlier layers, step 1 and step 2,
 with the review fixes). Driver: `gin_ts2.cu`, an extended copy of `gin_ts1.cu` that still contains no
 recovery code. Gate micro-test: `gate_ce_test.cu`. Minimal bidirectional program: `gin_bidir_min.cu`.
-Scripts: `scripts/ts2/`. Results: `results/20260930_ts2/` (first S2 build: A latency and gate test, B,
-C, E) and `results/20261001_ts2/` (reviewed build: S1 regression cells, D, the review cells, the
+Scripts: `scripts/ts2/`. Results: `results/20260930_ts2/` (first step-2 build: A latency and gate test, B,
+C, E) and `results/20261001_ts2/` (reviewed build: step-1 regression cells, D, the review cells, the
 16…1024-thread cells with n = 10, latency again, the bidirectional diagnostics). Each table names its
 build.
 
@@ -56,18 +56,18 @@ build's numbers in parentheses, `results/20260930_ts2/trials_lat.csv`):
 - The same application source is compiled against each build.
 - Each cell is put + signal + flush, 3000 iterations per run, 5 interleaved runs. The table shows p50,
   median of runs.
-- One S2-on 256 KiB run (reviewed build) and one S1-off 4 KiB run (first build) were lost to the
+- One 256 KiB run with step 2 on (reviewed build) and one 4 KiB run with step 1 off (first build) were lost to the
   driver's rendezvous port being taken, so those cells have 4 runs.
 - The reviewed build adds one load of the gate's error record per post (`tsPostLeave`).
 
-| size | gpudb v2 | S1 off | S1 on | S2 off | **S2 on** | S2 on, gate at system scope |
+| size | gpudb v2 | step 1 off | step 1 on | step 2 off | **step 2 on** | step 2 on, gate at system scope |
 |---|---|---|---|---|---|---|
 | 4 KiB | 10.24 µs | 10.27 | 16.80 | 10.24 | **10.91** (+0.67 µs, +6.5%; first build 10.85) | 12.29 |
 | 256 KiB | 38.40 µs | 38.50 | 41.73 | 38.56 | **38.96** (+0.56 µs, +1.5%; first build 38.94) | 39.94 |
 
 The gate micro-test passed 14 of 14 runs again on the reviewed build (`results/20261001_ts2/gate_test.txt`).
 
-**S1 correctness cells on the S2 build** [measured] (reviewed build, `results/20261001_ts2/trials_reg.csv`,
+**Step-1 correctness cells on the step-2 build** [measured] (reviewed build, `results/20261001_ts2/trials_reg.csv`,
 `rounds_reg.csv`; the first build gave the same counts):
 
 | cell | n | outcome |
@@ -77,16 +77,16 @@ The gate micro-test passed 14 of 14 runs again on the reviewed build (`results/2
 | F3 (RETRY_EXC) | 10 | transparent 10/10; fault → resumed 3.68 s [3.57–3.76] |
 | F1 ×5 in one run | 10 | transparent 10/10, 50 rounds (the third fault hits the re-posted WQEs) |
 | F1 inside an in-flight op (4 KiB back to back) | 30 | transparent 30/30; re-posted n = 0 in 21 rounds, n = 2 in 9 |
-| F2 (REM_ACCESS) | 10 | declined 10/10 ("class REM_ACCESS is not recoverable"); `ncclRemoteError`, async error on both ranks; rank 1's abort does not return (exit 7, as in S1) |
+| F2 (REM_ACCESS) | 10 | declined 10/10 ("class REM_ACCESS is not recoverable"); `ncclRemoteError`, async error on both ranks; rank 1's abort does not return (exit 7, as in step 1) |
 | F4 (SIGKILL) | 10 | declined 10/10, 3.59–3.82 s after the kill ("RETRY_EXC and the peer's socket shows FIN/RST") |
 | negative control: no ticket rebase | 10 | fails as predicted 10/10 (`ncclTimeout`, slots missing) |
 | negative control: no host doorbell | 10 | fails as predicted 10/10 |
-| flag off, S2 build / gpudb build | 5 / 5 | `ncclRemoteError` at the fault, 5/5 each (Q4 behaviour) |
+| flag off, step-2 build / gpudb build | 5 / 5 | `ncclRemoteError` at the fault, 5/5 each (classifier only) |
 
-- The F1 round takes 10.31 ms [10.12–10.75] (S1: 9.46; first S2 build 10.42):
+- The F1 round takes 10.31 ms [10.12–10.75] (step 1: 9.46; first step-2 build 10.42):
   - quiesce 0.21 ms;
   - Prepare 0.47 ms;
-  - REQ→ACK 6.03 ms (S1: 5.28; the responder now also reads the ring indices and looks its GID up);
+  - REQ→ACK 6.03 ms (step 1: 5.28; the responder now also reads the ring indices and looks its GID up);
   - Commit 3.34 ms;
   - re-post 0.18 ms.
 
@@ -136,15 +136,15 @@ Setup:
 
 | cell | n | transparent | both helpers initiated at once | declined |
 |---|---|---|---|---|
-| tie-break on (S2) | 30 | **30/30** | 28: the lower rank kept its round, the higher rank yielded and answered it; 2 were sequential rounds | 0 |
-| tie-break off (S1 behaviour) | 10 | 1/10 | 9: NACK, and both sides declined ("simultaneous recovery from both ends") | 9 |
+| tie-break on (step 2) | 30 | **30/30** | 28: the lower rank kept its round, the higher rank yielded and answered it; 2 were sequential rounds | 0 |
+| tie-break off (step-1 behaviour) | 10 | 1/10 | 9: NACK, and both sides declined ("simultaneous recovery from both ends") | 9 |
 
 **Two GIN kernels per GPU, launched on two streams, do not run at the same time on this testbed when the
 receiver is launched first; one kernel with both roles does** [measured] (`trials_c.csv`;
 `results/20261001_ts2/trials_min.csv`, `summary.md` "bmin", `two_streams*.txt`).
 
 What the driver's `bidir` cells showed (two kernels per rank, receiver launched first on its own stream;
-6 of 6 trials in `c1`, 27 of 27 in `bmin4`–`bmin6`, S2 flag on, flag off and the gpudb build alike):
+6 of 6 trials in `c1`, 27 of 27 in `bmin4`–`bmin6`, the step-2 build with the flag on and off, and the gpudb build alike):
 sunny → rain delivered 120/120 slots and its signal exactly; rain → sunny got success CQEs for 24–28
 puts and then a remote NAK (REM_ACCESS) from sunny's NIC; sunny's receiver saw 0–2 slots. With no kernel
 preload (`smoke1`) the roles were reversed. Rain's receive path is therefore not the cause.
@@ -159,7 +159,7 @@ after each kernel) on the **unpatched gpudb build**, 64 B × 120 and 256 KiB × 
 | both directions, sequentially (`seq`) | 3 | 3/3 | |
 | both at once, no receiver kernels (`hostrx`: the host polls the signal; `txonly`: checked after a barrier) | 3 + 3 | 6/6 | |
 | **both at once, a sender kernel and a receiver kernel per GPU, receiver launched first** (`both`, also on one context) | 13 + 3 | **0/16** | on both GPUs the sender kernel ended 1–3 ms after the receiver kernel, i.e. at the receiver's timeout (8.2–8.4 s), in 13 of 13 timed trials; the launch call returned in 0–2 ms; the same with the sender launched 2 s later (3/3), with a 1-thread receiver (3/3), with `CUDA_MODULE_LOADING=EAGER` (6/6), with `CUDA_DEVICE_MAX_CONNECTIONS=32` (6/6) and with the local-memory reservation raised to 2 KiB (6/6; the kernels' frames are 248 and 592 B). The sender kernel did not execute until the receiver kernel exited |
-| **both roles as two CTAs of one kernel** (`fused`; gpudb and S2 builds) | 6 + 3 | **9/9** | both kernels' work done in 2–7 ms |
+| **both roles as two CTAs of one kernel** (`fused`; gpudb and step-2 builds) | 6 + 3 | **9/9** | both kernels' work done in 2–7 ms |
 | sender launched first, then the receiver (`txfirst`), and the same with the sender paced to 50 ms per put | 3 + 3 | 6/6 | paced: the receiver kernel saw its first signal 0–2 ms after its entry and its last 5.95 s after, while the sender kernel was still running: a GIN receiver kernel does run next to a GIN sender kernel |
 | two plain kernels on two streams (`two_streams_test.cu`, a 2 s spinner then a trivial kernel, both launch orders, both GPUs) | 4 | concurrent 4/4 | with stack frames of 256 B / 1 KiB / 4 KiB as well; only a kernel whose frame exceeds the device's local-memory reservation (4 KiB against the 1 KiB default) waits for the running kernel, which is the documented CUDA behaviour and not this case |
 
@@ -180,12 +180,12 @@ or on one rank (F1, F3). No self-report knob.
 
 | cell | n | transparent | rounds | notes |
 |---|---|---|---|---|
-| fault-free, gpudb build / S2 flag off / S2 flag on | 3 / 3 / 5 | 11/11 | 0 | both directions bit-exact, both signals exact |
+| fault-free, gpudb build / step 2 with the flag off / on | 3 / 3 / 5 | 11/11 | 0 | both directions bit-exact, both signals exact |
 | F1 on both ranks at once | 20 | **20/20** | 20 initiator + 20 responder | rank 1's hook fired 0.6–1.0 ms after rank 0's in every trial; the later rank's helper always found the REQ first and answered it, so the tie-break was not needed (0 kept / 0 yielded). Each round re-posted both sides' unexecuted WQEs (initiator n = 0 or 2) |
 | F1 on rank 0 only / F3 (rank 1's QPs forced to ERR) | 4 / 5 | 9/9 | 1 each | one F1 trial lost to the rendezvous port |
-| F1 on both, tie-break off | 5 | 5/5 | 5 + 5 | no overlap, as above, so S1's NACK path was not reached |
+| F1 on both, tie-break off | 5 | 5/5 | 5 + 5 | no overlap, as above, so the step-1 NACK path was not reached |
 | **F1 on both with rank 1's hook 1–2 ms earlier, 4 KiB back to back both ways** (`bidirf_sym_b`, the symmetric-initiation test with real traffic) | 20 | **20/20** | 20 initiator + 20 responder | both helpers initiated at once in 19 of 20 (rank 1's fault fired 0.05–1.64 ms before rank 0's): the lower rank kept its round and the higher rank yielded and answered it, 19 kept / 19 yielded; 1 trial had sequential rounds. Helper round 8.9 ms, fault → resumed 10.7 ms [9.95–11.45] |
-| the same, tie-break off (S1 behaviour) | 5 | 1/5 | – | 4 declined on both sides ("simultaneous recovery from both ends"), 1 had no overlap |
+| the same, tie-break off (step-1 behaviour) | 5 | 1/5 | – | 4 declined on both sides ("simultaneous recovery from both ends"), 1 had no overlap |
 
 The symmetric-initiation result with the test knob (first table of this section) therefore holds with
 real bidirectional traffic and faults on both sides, without any knob.
@@ -200,26 +200,26 @@ Setup:
 
 | cut | build | n | transparent | declined | GID index after re-add | first error (RETRY_EXC) after cut start | resumed after cut start | slow iteration |
 |---|---|---|---|---|---|---|---|---|
-| 0.5 s | S1 | 2 | 0 | 2 | moved 2/2 | 3.94, 4.02 s | – | – |
-| 6 s | S1 | 2 | 0 | 2 | moved 2/2 | 3.94, 3.95 s | – | – |
-| 15 s | S1 | 2 | 0 | 2 | moved 2/2 | 3.94, 3.96 s | – | – |
-| 0.5 s | S2 | 5 | **5/5** | 0 | moved 5/5 | 3.88–4.06 s | 3.89–4.07 s | 3.62–3.80 s |
-| 6 s | S2 | 5 | **5/5** | 0 | moved 5/5 | 3.82–4.04 s | 6.29–6.32 s | 6.02–6.05 s |
-| 15 s | S2 | 5 | **5/5** | 0 | moved 5/5 | 3.78–4.02 s | 15.30–15.31 s | 15.02–15.05 s |
-| 20 s (near the bound) | S2, reviewed build | 3 | **3/3** | 0 | moved 3/3 | 3.91–4.01 s | 20.29–20.31 s (GID wait 16.29–16.38 s) | 20.03–20.05 s |
-| 30 s (beyond the bound) | S2, reviewed build | 3 | 0 | **3/3, clean** | – | 3.87–4.01 s | – (sunny's GID wait ended at its 21.0 s bound: "not back after 21 010–21 019 ms"; sunny declined, rain got NACK and declined 24.9 s after the cut began; no watchdog surface; both aborts returned, 0.56–0.98 s on rain and 6.3 s on sunny, whose receiver kernel first ran out its own 40 s wait) | – |
+| 0.5 s | step 1 | 2 | 0 | 2 | moved 2/2 | 3.94, 4.02 s | – | – |
+| 6 s | step 1 | 2 | 0 | 2 | moved 2/2 | 3.94, 3.95 s | – | – |
+| 15 s | step 1 | 2 | 0 | 2 | moved 2/2 | 3.94, 3.96 s | – | – |
+| 0.5 s | step 2 | 5 | **5/5** | 0 | moved 5/5 | 3.88–4.06 s | 3.89–4.07 s | 3.62–3.80 s |
+| 6 s | step 2 | 5 | **5/5** | 0 | moved 5/5 | 3.82–4.04 s | 6.29–6.32 s | 6.02–6.05 s |
+| 15 s | step 2 | 5 | **5/5** | 0 | moved 5/5 | 3.78–4.02 s | 15.30–15.31 s | 15.02–15.05 s |
+| 20 s (near the bound) | step 2, reviewed build | 3 | **3/3** | 0 | moved 3/3 | 3.91–4.01 s | 20.29–20.31 s (GID wait 16.29–16.38 s) | 20.03–20.05 s |
+| 30 s (beyond the bound) | step 2, reviewed build | 3 | 0 | **3/3, clean** | – | 3.87–4.01 s | – (sunny's GID wait ended at its 21.0 s bound: "not back after 21 010–21 019 ms"; sunny declined, rain got NACK and declined 24.9 s after the cut began; no watchdog surface; both aborts returned, 0.56–0.98 s on rain and 6.3 s on sunny, whose receiver kernel first ran out its own 40 s wait) | – |
 
 - **The GID index moves on every re-add** [measured]. Sunny's secondary address alternated between index
   5 and 6 in 21 of 21 cuts, and in 6 more cuts made while no test process was running
   (`d1_setup_failed`).
 - **The QPs do not survive even a 0.5 s cut** [measured]. Their address vector still names the old
   index. RETRY_EXC fires about 2.9 s after the address is back, about 3.9 s after the cut begins.
-- **S1** declines about 4 s after the cut start:
+- **Step 1** declines about 4 s after the cut start:
   - the responder's reconnect fails with the stale source GID index ("commit failed"; DOCA resolves the
     next hop from that index at RTR [source]);
   - the initiator gets NACK;
   - the flush returns `ncclRemoteError` and both hosts see the async error.
-- **S2** looks each rank's own GID up again by value before the reconnect.
+- **Step 2** looks each rank's own GID up again by value before the reconnect.
   - 0.5 s cut: sunny found its address at the new index in 0.3 ms.
   - 6 s cut: sunny waited 2.23–2.46 s for the address.
   - 15 s cut: sunny waited 11.28–11.52 s.
@@ -230,7 +230,7 @@ Setup:
 
 ### R. Review cells (reviewed build, `results/20261001_ts2/new`)
 
-The code review of the first S2 build found four items (see "Review fixes" below). These cells test the
+The code review of the first step-2 build found four items (see "Review fixes" below). These cells test the
 fixes. `ring_*`: one thread posts 128 aggregated 1 KiB puts (the whole 128-slot SQ, none rung) and then
 one signal, which must wait for the slot of the first put, whose WQE was never rung; stock DOCA would
 spin there forever. `burst_hring*`: 16 aggregated 4 KiB puts, a 20 ms pause, then the signal that rings
@@ -265,15 +265,15 @@ commit point but before the mark (`late_fail`).
 
 | cell | n | outcome |
 |---|---|---|
-| stall 10 s after PUBLISHING | 5 | **transparent 5/5**. The device threads' second bound expired at 8 s, they saw PUBLISHING and kept waiting. The slow iteration was 10.01 s. S1 would have failed them at 8 s while re-posting anyway [inferred] |
+| stall 10 s after PUBLISHING | 5 | **transparent 5/5**. The device threads' second bound expired at 8 s, they saw PUBLISHING and kept waiting. The slow iteration was 10.01 s. Step 1 would have failed them at 8 s while re-posting anyway [inferred] |
 | stall 14 s after PUBLISHING | 5 | flush failed at 12.00 s = 3 × hold, 5/5. The helper re-posted at 14 s, then the idle scan declined and the async error surfaced. This is the remaining residual: it needs a helper that stalls for 2 × hold inside its re-post |
-| stall 12 s after the commit point, before PUBLISHING | 3 | flush failed at 8.00 s = 2 × hold, 3/3. The helper saw the device failure at its PUBLISHING check and declined without re-posting (as S1's `late_fail_b`) |
+| stall 12 s after the commit point, before PUBLISHING | 3 | flush failed at 8.00 s = 2 × hold, 3/3. The helper saw the device failure at its PUBLISHING check and declined without re-posting (as step 1's `late_fail_b`) |
 
-## What changed versus S1, and why
+## What changed versus step 1, and why
 
 ### A. The gate
-- **The gate word.** S1 used two counters, each entered with `atomicAdd; fence.sc.sys; ld.acquire.sys`
-  plus a `status` load. S2 uses one 64-bit word per QP, in the QP's 8-byte `reserved1` padding.
+- **The gate word.** Step 1 used two counters, each entered with `atomicAdd; fence.sc.sys; ld.acquire.sys`
+  plus a `status` load. Step 2 uses one 64-bit word per QP, in the QP's 8-byte `reserved1` padding.
   - Epoch half: written only by the host, as one 4-byte copy. Even = stable, odd = a recovery owns the QP.
     Bit 31 = declined. Bit 30 = PUBLISHING (see E).
   - Count half: written only by the device. It counts the threads inside a post or a CQ poll. Bit 31 = a
@@ -300,7 +300,7 @@ commit point but before the mark (`late_fail`).
   re-posted like any unexecuted WQE [source; not needed in any measured round].
 - **Blocked posters overwrite WQEs that must be re-posted.** A poster blocked on a full SQ ring (128
   WQEs) takes its slot as soon as the NIC flushes the WQE in it. That overwrites a WQE the recovery
-  must re-post, and S1 declined such a round. S2 changes the slot wait of a gated QP, in NCCL's vendored
+  must re-post, and step 1 declined such a round. Step 2 changes the slot wait of a gated QP, in NCCL's vendored
   DOCA header:
   - it copies such a WQE into a per-QP rescue area first (32 rings deep by default);
   - it polls the slot's CQE directly (owner parity + WQE counter) instead of through DOCA's
@@ -310,7 +310,7 @@ commit point but before the mark (`late_fail`).
     epoch) or has failed it (bit 31 of the epoch half: a decline writes it with an even epoch, and the
     QP is in ERR, so the ring gets the poster its error CQE and the kernel can exit), and otherwise
     after 16 K spins (a WQE that was never rung completes only when rung, and nobody else rings while
-    its poster is blocked). The first S2 build rang only while the epoch was odd (review finding 2).
+    its poster is blocked). The first step-2 build rang only while the epoch was odd (review finding 2).
 - **A slot wait that consumes the error CQE** (found while testing review finding 2, `smoke7`). With a
   full ring of aggregated puts, the poster of the signal waits for the CQE of the first put, one ring
   behind, and that CQE is the error: the slot wait keeps the WQE and returns, the signal is posted, and
@@ -319,13 +319,13 @@ commit point but before the mark (`late_fail`).
   the classifier): the kernel never exited and the abort did not return, with F4 and with F2 (1 of 1
   each on the intermediate build). Fix: the slot wait records the first error CQE it sees (syndrome,
   vendor syndrome, opcode) in the gate (`swErr`); the poster reports it after its post
-  (`tsSwErrReport`, Q4 path `post-slot-wait`, the same once-per-epoch dedupe as a waiter); the
+  (`tsSwErrReport`, classifier path `post-slot-wait`, the same once-per-epoch dedupe as a waiter); the
   classifier takes the class from that record when the CQ window holds no root or only trailing flushes
   (the root CQE's slot is reused by the WQE that poster posts next). The helper's round then flips the
   epoch, and the stranded waiter, which checks the epoch every 1024 polls, leaves the window and parks
   (then fails on a decline, or re-maps its ticket after a re-post). The host zeroes the record at publish.
 - **Host doorbell.** `gdakiTsRing` writes the 16-bit WQE index into the doorbell's control segment,
-  masked (`(pi & 0xffff) << 8`). The first S2 build shifted the whole 64-bit index, so from the 65 536th
+  masked (`(pi & 0xffff) << 8`). The first step-2 build shifted the whole 64-bit index, so from the 65 536th
   WQE on it spilled into the opmod byte (review finding 3; the NIC ignored it in the measured 1024-thread
   rounds, which rang at indices up to about 200 000).
 - **Where each re-posted WQE comes from.** The re-post takes each WQE from its slot, if the 16-bit WQE
@@ -337,18 +337,18 @@ commit point but before the mark (`late_fail`).
   - One ring's worth is posted first, then more as the re-posted WQEs complete.
   - The host reads their CQEs; the gate is still closed.
   - Afterwards the host sets the CQ consumer index past the consumed ones.
-  - Each direction of the re-post is one copy (S1 used one copy per WQE).
+  - Each direction of the re-post is one copy (step 1 used one copy per WQE).
 - **Test trigger.** `NCCL_GIN_FAULT_INJECT_AT=wqe:<n>|sig:<n>` fires the hook at a point of the traffic
   instead of at a wall-clock time. Its poll stream and staging are allocated at context creation:
   `cudaFreeHost` inside the hook thread had waited for the kernel and fired the fault only after the
   traffic ended (smoke2).
 
 ### C. Symmetric initiation
-- **S1:** a REQ that arrived while the helper waited for ACK got NACK, and both sides declined.
-- **S2:** the lower rank keeps its round and drops the peer's REQ. The higher rank abandons its own
+- **Step 1:** a REQ that arrived while the helper waited for ACK got NACK, and both sides declined.
+- **Step 2:** the lower rank keeps its round and drops the peer's REQ. The higher rank abandons its own
   round and answers the lower rank's REQ as a responder, reusing its quiesce, Prepare and executed
   counts. Each side re-posts its own unexecuted WQEs from the other's counts. No extra message is needed.
-- `NCCL_GIN_TS_TIE_BREAK=0` restores S1.
+- `NCCL_GIN_TS_TIE_BREAK=0` restores the step-1 behaviour.
 
 ### D. GID re-lookup on reconnect
 - Before every Commit, each rank looks its own GID up again by value, from sysfs: the GID bytes and the
@@ -369,7 +369,7 @@ commit point but before the mark (`late_fail`).
   not set. Otherwise it waits one more bound for the publication, and then fails regardless.
 
 ### Review fixes (reviewed build, 2026-10-01)
-The independent review of the first S2 build found four items; all are in the final build and diff.
+The independent review of the first step-2 build found four items; all are in the final build and diff.
 
 | finding | change | test |
 |---|---|---|
@@ -408,40 +408,40 @@ The independent review of the first S2 build found four items; all are in the fi
   threads) every thread got through; the number of retries was not recorded.
 - **Flap bounds.** The address must be back within the path wait (21 s after the clamp) of the round's
   start, which follows the RETRY_EXC detection (about 3.7 s after the cut begins on this testbed): a cut
-  of about 24 s is the limit [measured: 20 s survived, 30 s declined; see D]. The first S2 build's text
+  of about 24 s is the limit [measured: 20 s survived, 30 s declined; see D]. The first step-2 build's text
   ("hold minus detection, about 26 s") was wrong: the 30 s path wait exceeded the watchdog's 25 s round
   bound. The re-lookup handles a changed index of the same address, not a changed address. Only sunny's
   address was cut.
-- **Unchanged from S1:** NOP, READ and fetching atomics still make a round decline. A kernel spinning on
+- **Unchanged from step 1:** NOP, READ and fetching atomics still make a round decline. A kernel spinning on
   the application's own `waitSignal` is still not released (F2, rank 1).
 - **Window size.** On rain, GIN windows above about 50 MiB each failed to register ("ibv_reg_mr_iova2
   ... Bad address"; rain's BAR1 is 256 MiB). The test sizes were chosen to stay below that.
 - **Node state.**
   - The leaked `mlx5_1` command slot on rain from 25 Sep is still leaked. The `2ERR_QP` failure count
     stayed at 16 in every hold, and rain had no new mlx5 kernel message (`fwcmd.tar.xz`).
-  - Sunny logged one "FWTracer: Events were lost" line on 30 Sep at 23:21:30, outside every S2 hold.
+  - Sunny logged one "FWTracer: Events were lost" line on 30 Sep at 23:21:30, outside every step-2 hold.
 
 ## Provenance and files
 
 | item | md5 (first 8) |
 |---|---|
-| S2 libnccl, final build (`results/20261001_ts2`: holds `fix1` and everything from 14:12 on) | 0a32b875 |
-| S2 libnccl, intermediate builds of 1 Oct: ring condition only (`smoke7`) / plus the slot-wait error record (`prev_6ff74bb6`: the holds of 09:18–12:16, superseded by the final build's re-runs; `lat`, `bmin*`, `stacks` were not re-run, see the text) | 5706dc07 / 6ff74bb6 |
-| S2 libnccl, first build (`results/20260930_ts2`) | 744517c9 |
-| S1 libnccl / gpudb v2 libnccl | f19cbcfe / 1ed8e0a1 |
-| `gin_ts2` against S2, final | d4b1f082 |
-| `gin_ts2` against S1 / gpudb / S2 with system-scope gate, final | 8f142f89 / 8025cac0 / fda38dba |
-| `gin_ts2` first build, against S2 / S1 / gpudb / system scope | 8fa052cf / c9579b82 / f31e1905 / 432ea4af |
-| `gin_bidir_min` against S2 / gpudb, final | b981db00 / 9d4c600d |
+| step-2 libnccl, final build (`results/20261001_ts2`: holds `fix1` and everything from 14:12 on) | 0a32b875 |
+| step-2 libnccl, intermediate builds of 1 Oct: ring condition only (`smoke7`) / plus the slot-wait error record (`prev_6ff74bb6`: the holds of 09:18–12:16, superseded by the final build's re-runs; `lat`, `bmin*`, `stacks` were not re-run, see the text) | 5706dc07 / 6ff74bb6 |
+| step-2 libnccl, first build (`results/20260930_ts2`) | 744517c9 |
+| step-1 libnccl / gpudb v2 libnccl | f19cbcfe / 1ed8e0a1 |
+| `gin_ts2` against step 2, final | d4b1f082 |
+| `gin_ts2` against step 1 / gpudb / step 2 with system-scope gate, final | 8f142f89 / 8025cac0 / fda38dba |
+| `gin_ts2` first build, against step 2 / step 1 / gpudb / system scope | 8fa052cf / c9579b82 / f31e1905 / 432ea4af |
+| `gin_bidir_min` against step 2 / gpudb, final | b981db00 / 9d4c600d |
 | `gate_ce_test`, `two_streams_test` | bd75cc5a, c21fb39a |
 | `gin_transparent_s2.diff` (verified: pristine + diff == tree) | 6fc8744e |
 
 | path | what |
 |---|---|
 | `gin_transparent_s2.diff` | full patch vs v2.32.3-1; `scripts/ts2/make_diff.sh` regenerates it and checks that pristine + patch equals the source tree |
-| `gin_ts2.cu`, `gate_ce_test.cu` | the application (modes `none`/`lat`/`F2` as S1, `burst`, `bidir`, `bidir` fused with `GIN_TS_BIDIR_FUSED=1`) and the gate micro-test |
+| `gin_ts2.cu`, `gate_ce_test.cu` | the application (modes `none`/`lat`/`F2` as in step 1, `burst`, `bidir`, `bidir` fused with `GIN_TS_BIDIR_FUSED=1`) and the gate micro-test |
 | `gin_bidir_min.cu`, `two_streams_test.cu` | the minimal bidirectional program (modes `both`/`d01`/`d10`/`seq`/`hostrx`/`txonly`/`fused`/`txfirst`) and the two-stream concurrency test |
-| `scripts/ts2/build_driver.sh`, `deploy.sh` | build against the S2, S1 or gpudb tree; deploy `~/gi-bundle/gin_ts2/` with md5 and `ldd` checks |
+| `scripts/ts2/build_driver.sh`, `deploy.sh` | build against the step-2, step-1 or gpudb tree; deploy `~/gi-bundle/gin_ts2/` with md5 and `ldd` checks |
 | `scripts/ts2/run_trial.sh`, `batch.sh`, `hold.sh`, `chain.sh`, `gate_test.sh` | one trial, the cells, the holds (each ≤ 15 min through `../common/cluster_run.sh`), the gate test |
 | `scripts/ts2/rows.py`, `rows_min.py`, `summarize.py`, `min_table.py`, `tables.sh`, `pack.sh` | logs → CSV → `summary.md`; packing |
 | `results/20260930_ts2/`, `results/20261001_ts2/` | `trials_*.csv`, `rounds_*.csv`, `summary.md`, `gate_test.txt`, `hold_*.out`, `gbh_*.txt`, `two_streams*.txt`; per-trial directories stored as `<dir>.tar.xz` (unpack with `for a in *.tar.xz; do tar xJf $a; done` before `tables.sh`) |

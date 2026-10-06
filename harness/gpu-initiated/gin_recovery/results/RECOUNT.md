@@ -24,7 +24,7 @@ a later, separate experiment and is not counted here.
   *declined* = rank 0 declined, split into *declined as designed* (a pre-HS decline: the policy refuses
   the class or a dead peer, or v1's guard refuses a non-proxy doorbell mode) and *declined after a failed
   round* (negative controls whose broken resync made the replay fail, as predicted); *flag off* =
-  `NCCL_GIN_FAULT_RECOVERY` off (Q4 behaviour); *other* = none of these.
+  `NCCL_GIN_FAULT_RECOVERY` off (classifier only, no recovery); *other* = none of these.
 - **Bit-exact**: rank 1 checks every iteration (all 256 KiB equal the pattern and the signal equals
   base + it + 1) and logs `okit` only if both hold. *r1 ops verified* = rank-1 `okit` count / iterations
   configured. *run exact* = all iterations verified, `data_check=ok` and final `signal_exact=1`.
@@ -210,7 +210,7 @@ Rank-0 NCCL log timestamps (rain wall clock): 2026-09-24 15:33:32 to 2026-09-24 
 
 Runs without `lat_data_bad=0`: `rec1_lat_blocking_b4096r2` (killed/killed)
 
-## `20260924_gpudb/q4/logs/` - unchanged gin_q4 classifier re-run (not the recovery driver)
+## `20260924_gpudb/q4/logs/` - unchanged `gin_q4` classifier re-run (not the recovery driver)
 
 10 runs (F1 x4, F2 x2, F3 x2, F4 x2); gin_q4 driver, no recovery,
 so no rounds. Not included in any recovery count.

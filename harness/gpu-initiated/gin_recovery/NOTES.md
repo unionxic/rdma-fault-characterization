@@ -7,22 +7,22 @@
 - "Measured vs inferred"와 "Limitations"는 GPU doorbell을 시험하지 않았다(CPU proxy만)고 적고 있다.
   같은 파일의 "GPU doorbell" 절에서 v2로 쟀으므로 그 문장들은 낡았다.
 - F4 "blocking" 칸은 사실상 timeout 칸이다. 이 드라이버는 F4 확인에 늘 timeout 대기를 썼다.
-  진짜 blocking F4는 S1(`TRANSPARENT_S1.md`)에서만 쟀다.
+  진짜 blocking F4는 GIN 투명 복구 1단계(`TRANSPARENT_S1.md`)에서만 쟀다.
 - `results/20260924/`(v1)의 CPU doorbell은 로그가 아니라 시각과 v1의 모드 검사로 추정한 것이다.
 - 09-25 06:45부터 rain `mlx5_1`의 펌웨어 명령 슬롯 하나가 샜다(`TRANSPARENT_S1.md`). 이 폴더의 N30 재측정은
-  02:11~03:29에 끝나 영향 밖이다. 같은 날 NVSHMEM과 GIN Q4의 N30(07:04~09:34)은 샌 상태에서 돌았다.
+  02:11~03:29에 끝나 영향 밖이다. 같은 날 NVSHMEM과 GDAKI 장치 쪽 분류기의 N30(07:04~09:34)은 샌 상태에서 돌았다.
 
 Builds on `../gin_q4/` (device-side classification of the root-cause error CQE + host
 mailbox). This adds recovery: a bilateral QP reset with fresh PSNs, a GPU-side state resync,
 and an application-level replay that reconciles GIN's non-idempotent signal. The safety
-argument is in `RECOVERY_DESIGN.md`. Same cluster and conventions as Q4: rank 0 = rain (put
+argument is in `RECOVERY_DESIGN.md`. Same cluster and conventions as the GDAKI device-side classifier (`../gin_q4/`): rank 0 = rain (put
 initiator, Quadro RTX 5000 sm_75, mlx5_1), rank 1 = sunny (target, RTX A4000 sm_86, mlx5_0),
 ConnectX-6 (VPI, MT28908) RoCE, GDAKI in its CPU-doorbell fallback (ring CQ in GPU memory),
 `NCCL_IB_TIMEOUT=14`, one 256 KiB put + signal ADD per iteration, 15 ms gap.
 
-**Step S1: app-transparent recovery (2026-09-25, `TRANSPARENT_S1.md`, `gin_transparent_s1.diff`,
+**GIN transparent recovery, step 1 (2026-09-25, `TRANSPARENT_S1.md`, `gin_transparent_s1.diff`,
 `NCCL_GIN_FAULT_TRANSPARENT=1`).** The recovery below needs the application to end its kernel, run a
-handshake and relaunch. S1 moves all of it into NCCL, so an unmodified put + signal + flush program
+handshake and relaunch. Step 1 moves all of it into NCCL, so an unmodified put + signal + flush program
 survives a local or peer QP error with no error and no relaunch:
 - 95/95 recoverable runs transparent; the "WRITE executed, ADD not" boundary 30/30; a fault inside an
   in-flight op 150/150.
@@ -80,11 +80,11 @@ survives a local or peer QP error with no error and no relaunch:
     CPU core.
   - The committed v1 declines in that mode. v2 (`gin_recovery_gpudb.diff`) resets the GPU-side
     doorbell state instead and recovers F1/F3 (×1 and ×5) with exact data and signals.
-  - F2/F4 still decline cleanly, and the Q4 classifier is unchanged.
+  - F2/F4 still decline cleanly, and the device-side classifier is unchanged.
 - **Three things the tests taught** (all fixed; details in design §11):
   - A kernel launched while another kernel spins must not need a local-memory resize, or it
     will not start until the spinner exits (in blocking mode: never).
-  - The Q4 driver had a barrier race (poison after the ack).
+  - The `gin_q4` driver had a barrier race (poison after the ack).
   - "Fire right after the commit" usually misses the replay; firing *inside* the commit does not.
 
 ## What was built
@@ -102,7 +102,7 @@ survives a local or peer QP error with no error and no relaunch:
 Host API, declared in the patched `nccl.h`:
 
 ```c
-ncclResult_t ncclGinFaultQuery(ncclComm_t, int waitMs, ncclGinFaultInfo_t*);       // Q4 record: class, fp, recoverable
+ncclResult_t ncclGinFaultQuery(ncclComm_t, int waitMs, ncclGinFaultInfo_t*);       // classifier record: class, status/vendor_err, recoverable
 ncclResult_t ncclGinRecoverPrepare(ncclComm_t, int peer, ncclGinRecoverToken_t* local, ncclGinRecoverStats_t*);
 ncclResult_t ncclGinRecoverCommit(ncclComm_t, int peer, const ncclGinRecoverToken_t* remote, ncclGinRecoverStats_t*);
 ncclResult_t ncclGinRecoverAbort(ncclComm_t, int peer);
@@ -125,7 +125,7 @@ ncclResult_t ncclGinRecoverAbort(ncclComm_t, int peer);
   5. Reconnect with the stored connect-time attributes and the exchanged PSNs:
      `gdakiConnectQp(..., rqPsn, sqPsn)`, the stock function with two defaulted parameters.
 
-  Then it clears the Q4 sticky device error, the host flag and the GIN async result, and
+  Then it clears the classifier's sticky device error, the host flag and the GIN async result, and
   resumes the proxy.
 - **Checks and declines.** Configuration (GDAKI, ring CQ, CPU proxy, no counters) and a token
   mismatch are checked before anything is touched. A failure midway leaves every QP of the peer
@@ -166,7 +166,7 @@ scripts/deploy.sh            # ~/gi-bundle/gin_recovery/ on rain and sunny, md5 
 
 - **Patch integrity.** The three diffs, applied in order to a pristine `git archive v2.32.3-1`,
   reproduce the build tree exactly (checked).
-- **Separate build.** Source copy and build dir are separate from Q4's; `gi/gin_q4/build` is
+- **Separate build.** Source copy and build dir are separate from the `gin_q4` ones; `gi/gin_q4/build` is
   untouched.
 - **Final build.** `libnccl.so.2.32.3` md5 `951001fe…` with driver `50501ffc…`. It was used for
   the negative controls, overhead reps 4–6 and `confirm/`.
@@ -199,20 +199,20 @@ released in between. Each trial left 0 processes on either node. Tables are gene
 | D0 (forced, no fault) | timeout / blocking | 3 / 3 | 0 | 3 / 0 each (d = 0) | 120/120 all | 6/6 | 6/6 | no error | returned / returned |
 | F2 | timeout / blocking | 3 / 3 | - | declined (REM_ACCESS) | 0/120 | - | - | `ncclRemoteError` (stays surfaced) | returned / returned |
 | F4 | timeout / blocking | 3 / 3 | - | declined (RETRY_EXC, peer dead) | 176–180/400 | - | - | `ncclRemoteError` | returned / (killed) |
-| F1, F3, flag off | timeout / blocking | 2 each | 1 | none (Q4 behaviour) | 37/120 | - | - | `ncclRemoteError` | returned / returned |
+| F1, F3, flag off | timeout / blocking | 2 each | 1 | none (classifier only) | 37/120 | - | - | `ncclRemoteError` | returned / returned |
 
 **Why ×5 gives 4 recovered + 1 replay failed.** Shot 3 fires inside the commit of shot 2's
 recovery, so shot 2's replay meets a QP in ERR: LOCAL_QP_ERR 5/0xf5 on F1, RETRY_EXC after
 3.6 s on F3. The next round reads V again (still expected − 1) and replays again. Five faults
 make five rounds but hit four operations.
 
-**Flag-off rows.** These are the Q4 behaviour: the initiator exits with the classified error
+**Flag-off rows.** These behave as the classifier alone does: the initiator exits with the classified error
 (exit 8) at the fault. The receiver's outcome in those rows is this driver's peer-loss handling,
 not NCCL's.
 
 ### Declined faults
 
-| fault | wait | n | decision | root fp (class) | r0 exit | r1 | error surfaced after | abort r0 |
+| fault | wait | n | decision | root status/vendor_err (class) | r0 exit | r1 | error surfaced after | abort r0 |
 |---|---|---|---|---|---|---|---|---|
 | F2 | timeout | 3 | class not recoverable | 10/0x88 (REM_ACCESS) | 9 (declined) | declined (exit 9), waiter released by self-signal | 4.0 ms [3.9–4.1] | 882 ms |
 | F2 | blocking | 3 | class not recoverable | 10/0x88 (REM_ACCESS) | 9 | declined (exit 9) | 3.9 ms | 889 ms |
@@ -242,10 +242,10 @@ release kernel only started when the waiter timed out (4.1 s). Evidence:
 How to read the table:
 - **Fault time.** It is the hook's `fire_mono_ms`; F3 fires on rank 1 and is converted with the
   measured clock offset.
-- **Detection.** "Device detects" is the Q4 record's `%globaltimer` placed on the host clock.
+- **Detection.** "Device detects" is the classifier record's `%globaltimer` placed on the host clock.
   For F1 it is mostly the wait for the next put: the fault lands between iterations, and the
   ~1 ms minima are shots that hit an in-flight put, or the replay itself. For F3 it is the
-  RETRY_EXC floor at IB timeout 14, as in Q1/Q4.
+  RETRY_EXC floor at IB timeout 14, as in `../cqe_seq/` and `../gin_q4/`.
 - **Rounds and replay columns.** "rounds" counts every round, including those whose replay
   failed (each ×5 cell: 20 recovered + 5 replay failed). The replay and the two "recovered"
   columns use recovered rounds only; a failed replay shows up as the next round's detection.
@@ -285,7 +285,7 @@ How to read the table:
 
 | variant | expected | observed |
 |---|---|---|
-| `NCCL_GIN_RECOVERY_DIAG=doca_cqe_rsvd` (`cqe_rsvd` = ending epoch's WQEs, as in DOCA's `reset_tracking_and_memory`) | 1st recovery fine (cumulative = non-cumulative from 0); 2nd recovery: the GPU polls the wrong ring slot | 2/2: recovery 1 ok; recovery 2's replay reached the receiver (receiver verified 30 operations) but the initiator's flush timed out. The Q4 timeout dump shows the polled slot holding a stale previous-epoch CQE (`wqe_counter` 23, success opcode) where WQE 1 was expected. Declined, both ranks exit 9 |
+| `NCCL_GIN_RECOVERY_DIAG=doca_cqe_rsvd` (`cqe_rsvd` = ending epoch's WQEs, as in DOCA's `reset_tracking_and_memory`) | 1st recovery fine (cumulative = non-cumulative from 0); 2nd recovery: the GPU polls the wrong ring slot | 2/2: recovery 1 ok; recovery 2's replay reached the receiver (receiver verified 30 operations) but the initiator's flush timed out. The classifier's timeout dump shows the polled slot holding a stale previous-epoch CQE (`wqe_counter` 23, success opcode) where WQE 1 was expected. Declined, both ranks exit 9 |
 | `NCCL_GIN_RECOVERY_DIAG=keep_proxy_db` (proxy mailbox and counter not reset) | the new epoch's producer index stays below the stale one, so no doorbell rings | 2/2: first replay timed out; the polled slot was never written (opcode 0xf); receiver saw 19 = initiator's 19 operations. Declined, both exit 9 |
 
 ### Confirmation on the final build (`results/20260924/confirm/`, 18 trials)
@@ -356,8 +356,8 @@ driver `50501ffc…`), and all 18 trials matched the main matrix:
      (inferred from finding 5).
 7. **[measured] GDAKI's "silent" failure modes also exist on the recovery path.**
    - In the `doca_cqe_rsvd` control the operation succeeded on the wire but the initiator timed
-     out: a spurious failure, the mirror image of Q2's silent success.
-   - The driver's barrier race (inherited from Q4, found here) produced "signal done, data
+     out: a spurious failure, the mirror image of the silent success of stock GDAKI (`../gin/`).
+   - The driver's barrier race (inherited from the `gin_q4` driver, found here) produced "signal done, data
      poisoned" once.
    - Both are detectable only by end-to-end data and signal checks.
 
@@ -366,8 +366,8 @@ driver `50501ffc…`), and all 18 trials matched the main matrix:
 - **Measured.** Everything in the tables and findings 1–5 and 7:
   - outcomes and bit-exact data;
   - exact signals per operation and at the end;
-  - timing breakdowns (host CLOCK_MONOTONIC; device times from `%globaltimer` via the Q4
-    calibration);
+  - timing breakdowns (host CLOCK_MONOTONIC; device times from `%globaltimer` via the classifier's
+    clock calibration);
   - library step costs;
   - the cancel-kernel phase markers;
   - the stack-frame sizes (`ptxas -v`);
@@ -425,9 +425,9 @@ The indicators agree in every trial. For the unmodified gin_q4 binaries, the DOC
 thread probe are the indicators; both were validated in the same driver state by a forced-proxy
 gin_q4 run.
 
-### Q4 classifier (unchanged gin_q4 build and runner; `results/20260924_gpudb/q4/`)
+### Device-side classifier (unchanged `gin_q4` build and runner; `results/20260924_gpudb/q4/`)
 
-| fault | n | device class, root fp | host `ncclCommGetAsyncError` after the fault | silent success | abort / leftover |
+| fault | n | device class, root status/vendor_err | host `ncclCommGetAsyncError` after the fault | silent success | abort / leftover |
 |---|---|---|---|---|---|
 | F1 | 3 | LOCAL_QP_ERR 5/0xf5 | 14.8–16.1 ms | 0 | clean / 0 |
 | F2 | 2 | REM_ACCESS 10/0x88 | 4.1–6.8 ms | 0 | clean / 0 |
@@ -435,7 +435,7 @@ gin_q4 run.
 | F4 | 2 | RETRY_EXC 12/0x81 | 3.59–3.71 s | 0 | clean / 0 |
 | F1, CPU proxy forced | 1 | LOCAL_QP_ERR 5/0xf5 | 14.7 ms | 0 | clean / 0 |
 
-These match the CPU-doorbell Q4 results, so the classifier does not depend on the doorbell path.
+These match the CPU-doorbell classifier results, so the classifier does not depend on the doorbell path.
 
 ### The committed recovery (v1) under GPU doorbells: declined, not broken
 
@@ -540,7 +540,7 @@ writes the doorbell record, which is in GPU memory. There is no CPU-side doorbel
 | `results/20260924/confirm/` | every cell once on the final build |
 | `results/20260924/{trials,events}.csv`, `summary.md` | generated |
 | `gin_recovery_gpudb.diff`, `scripts/make_diff_gpudb.sh` | v2 (GPU doorbells), layered on `gin_recovery.diff` |
-| `scripts/run_gpudb.sh`, `q4_rerun.sh`, `thread_probe.sh` | GPU-doorbell matrix, Q4 re-run, doorbell-mode probe |
+| `scripts/run_gpudb.sh`, `q4_rerun.sh`, `thread_probe.sh` | GPU-doorbell matrix, classifier re-run, doorbell-mode probe |
 | `results/20260924_gpudb/` | GPU-doorbell runs: `runs/` (v2 matrix, negative controls, forced-proxy regression), `lat/`, `q4/`, `v1/`, `smoke/`, `summary.md` |
 
 Reproduce (each line one cluster hold):

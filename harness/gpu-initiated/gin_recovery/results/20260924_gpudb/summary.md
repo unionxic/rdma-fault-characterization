@@ -24,7 +24,7 @@
 
 ## Declined runs
 
-| fault | wait | n | reason | root fp / class | r0 exit | r1 outcome | r1 exit | surface (ms) | teardown r0 (ms) |
+| fault | wait | n | reason | root status/vendor_err / class | r0 exit | r1 outcome | r1 exit | surface (ms) | teardown r0 (ms) |
 |---|---|---|---|---|---|---|---|---|---|
 | F1 x2 [DIAG keep_gpu_pi] | timeout | 2 | replay_error | 5/0xf5 LOCAL_QP_ERR | 9,9 | declined | 9,9 | 11.1 [10.6-11.6] | 750.9 [749.1-752.6] |
 | F2 | blocking | 2 | class_REM_ACCESS | 10/0x88 REM_ACCESS | 9,9 | declined | 9,9 | 4.1 [4.0-4.2] | 879.9 [871.0-888.8] |
