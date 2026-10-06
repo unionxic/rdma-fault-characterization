@@ -140,6 +140,15 @@ puts to the dead peer so the RDMA fault surfaces on the initiator.
   (`GIN_POST_POLL_S`) before teardown, so slow host-side detectors (GDAKI's 10 s
   QP-state check) are observed. Then it tears down under an alarm watchdog
   (`ncclCommAbort`) and records whether abort returned.
+* Teardown timing, both ranks (added 2026-10-06 for `../propagation/`; not yet run on the
+  cluster). A returned abort prints `[rankN] ncclCommAbort returned <ret> after X ms`
+  (KV `teardown=clean teardown_ms=X`), as before. A hung abort now also prints
+  `[rankN] ncclCommAbort did not return within S s` after the unchanged `WATCHDOG` line
+  (KV `teardown=hang teardown_bound_s=S`). `S` is `GIN_ABORT_WATCHDOG_S`, 15 by default;
+  `scripts/run_trial.sh` now takes it from the environment. If the global deadline cuts a
+  running abort first, the driver prints `... did not return within X ms (global watchdog)`
+  (KV `teardown=hang teardown_ms=X teardown_cut_by=global_watchdog`). For a 30 s bound, set
+  `GIN_ABORT_WATCHDOG_S=30` and raise `WATCHDOG_S` so the global deadline comes later.
 * Timing (QA item 1): each rank logs its start `t0_mono_ms`; right after the
   unique-id exchange rank 0 measures the rain<->sunny CLOCK_MONOTONIC offset
   (32-round ping-pong on the management socket, min-RTT sample; RTT ~0.2 ms).

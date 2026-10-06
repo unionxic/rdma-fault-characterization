@@ -119,6 +119,12 @@ bound from 200k host samples; consistency ~1-2 us); (c) `ncclCommGetAsyncError` 
 device phase marker to locate a kernel that never returns. Fault catalog, lockstep barrier, F2
 (put at a 64 MiB offset), F4 (SIGKILL + drain puts), watchdogs: as in Q2.
 
+Teardown timing on both ranks (added 2026-10-06 for `../propagation/`; not yet run on the
+cluster): as in `../gin/README.md`. A hung `ncclCommAbort` now prints how long it ran, against
+`GIN_ABORT_WATCHDOG_S` or the global deadline, and writes `teardown=hang` to the KV file. The
+runner's default `WATCHDOG_S=60` can end a blocking trial during the abort; for a 30 s bound,
+raise it.
+
 Times (all on rank 0's CLOCK_MONOTONIC, ms after the fault; fault = hook `fire_mono_ms` for
 F1/F3, launch of the first out-of-bounds put for F2, SIGKILL time for F4): `t_dev` = record's
 `%globaltimer`, `t_mbx` = watcher read it, `t_rc` = host saw the kernel return (500 us poll),

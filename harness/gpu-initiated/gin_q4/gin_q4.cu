@@ -141,9 +141,18 @@ static ncclResult_t commPoll(ncclComm_t comm) {
 
 // ---- host watchdog --------------------------------------------------------
 static std::atomic<int> g_phase{0};        // 0 setup, 1 running, 2 teardown
+// Teardown timing. Both ranks print how long ncclCommAbort took, or that it did not
+// return within GIN_ABORT_WATCHDOG_S (alarm) or before the global deadline.
+static std::atomic<double> g_abortT0{-1.0};  // relMs() when ncclCommAbort was called; -1 = not running
+static int g_kvFd = -1;                      // g_kv's descriptor, for the write()-only reporters
+static char g_abortHangMsg[128], g_abortHangKv[96];   // prebuilt: the alarm handler may not format
+static size_t g_abortHangMsgLen = 0, g_abortHangKvLen = 0;
+static size_t clampLen(int n, size_t cap) { return n < 0 ? 0 : ((size_t)n < cap ? (size_t)n : cap - 1); }
 static void abortAlarm(int) {
   static const char m[] = "WATCHDOG: abort/teardown did not return; exiting 7\n";
   ssize_t w = write(2, m, sizeof(m) - 1); (void)w;
+  if (g_abortHangMsgLen) { w = write(2, g_abortHangMsg, g_abortHangMsgLen); (void)w; }
+  if (g_kvFd >= 0 && g_abortHangKvLen) { w = write(g_kvFd, g_abortHangKv, g_abortHangKvLen); (void)w; }
   _exit(7);
 }
 
@@ -156,11 +165,19 @@ static void _teardownExit(int code) {
   if (g_comm) {
     const char* wd = getenv("GIN_ABORT_WATCHDOG_S");
     unsigned s = wd ? (unsigned)atoi(wd) : 15u;
+    g_abortHangMsgLen = clampLen(snprintf(g_abortHangMsg, sizeof g_abortHangMsg,
+                                          "[rank%d] ncclCommAbort did not return within %u s\n", g_rank, s),
+                                 sizeof g_abortHangMsg);
+    g_abortHangKvLen = clampLen(snprintf(g_abortHangKv, sizeof g_abortHangKv,
+                                         "teardown=hang teardown_bound_s=%u\n", s), sizeof g_abortHangKv);
+    g_kvFd = g_kv ? fileno(g_kv) : -1;
     signal(SIGALRM, abortAlarm);
     alarm(s);
     double a0 = relMs();
+    g_abortT0.store(a0);
     ncclResult_t ar = ncclCommAbort(g_comm);   // safe on a non-blocking comm
     alarm(0);
+    g_abortT0.store(-1.0);
     double dt = relMs() - a0;
     kv("teardown=%s teardown_ms=%.1f abort_ret=%s", "clean", dt, ncclGetErrorString(ar));
     fprintf(stderr, "[rank%d] ncclCommAbort returned %s after %.1f ms\n", g_rank, ncclGetErrorString(ar), dt);
@@ -364,6 +381,19 @@ int main(int argc, char** argv) {
     while (nowSec() < deadline) usleep(50000);
     static const char m[] = "WATCHDOG: global deadline exceeded; exiting 7\n";
     ssize_t w = write(2, m, sizeof(m) - 1); (void)w;
+    double a0 = g_abortT0.load();
+    if (a0 >= 0) {                         // the deadline cut a running ncclCommAbort
+      char b[160];
+      double ran = relMs() - a0;
+      size_t n = clampLen(snprintf(b, sizeof b, "[rank%d] ncclCommAbort did not return within %.1f ms "
+                                   "(global watchdog)\n", g_rank, ran), sizeof b);
+      w = write(2, b, n); (void)w;
+      if (g_kvFd >= 0) {
+        n = clampLen(snprintf(b, sizeof b, "teardown=hang teardown_ms=%.1f teardown_cut_by=global_watchdog\n",
+                              ran), sizeof b);
+        w = write(g_kvFd, b, n); (void)w;
+      }
+    }
     _exit(7);
   }).detach();
 
