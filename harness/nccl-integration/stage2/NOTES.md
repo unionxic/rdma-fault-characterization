@@ -110,7 +110,8 @@ the final build (rows marked "final build").
   work on a real RETRY_EXC CQE. It does not show tolerance of a transient packet loss with the GID
   index kept (a real link flap): a flap shorter than the retry budget would be absorbed by stock too,
   and a longer one also raises port-state events, a path not tested here. The real link-flap test
-  (`linkflap_window.sh`) was not run: the link carries the user's NVMe-oF.
+  was not run: the link carries the user's NVMe-oF. Its never-run script, `linkflap_window.sh`, was
+  removed from the tree on 2026-10-06 (tag `archive/results-tables-20261006`).
 
 ## Files
 
@@ -120,5 +121,4 @@ the final build (rows marked "final build").
 | `net_ib_stage2.diff` | the patch against v2.23.4-1 |
 | `run_tests.py` | the validation matrix (design §11) |
 | `gid_blackhole.sh`, `gbh_feasibility.sh` | the address-flap fault (secondary RoCE address removed and re-added) and its feasibility test |
-| `linkflap_window.sh` | a real link down/up on sunny's RoCE port, with a watchdog that brings the link back. **Not run**: the link carries the user's NVMe-oF, so the script refuses to run without explicit approval |
 | `results/` | per-run logs, `results.csv`, hardware counters before/after each campaign |
