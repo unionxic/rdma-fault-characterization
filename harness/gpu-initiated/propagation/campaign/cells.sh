@@ -47,8 +47,16 @@ gp|gg)
   else cells="$cells F1:blocking:5 F2:blocking:10 F3:blocking:10 F4:blocking:10"; fi
   for c in $cells; do
     IFS=: read -r f m n <<< "$c"
+    [ -n "${ONLY_FAULT:-}" ] && [ "$f" != "$ONLY_FAULT" ] && continue
     for t in $(seq "$(nn "$n")"); do
-      trial "${STACK}_${f}_${m}_t$t" bash "$G/gin/scripts/run_trial.sh" "$B" "$f" "$m" "$t" "$OUT/${STACK}.csv"
+      if [ "$f" = F4 ]; then
+        # F4 takes run_matrix.sh's settings so the kill lands mid-run: 400 iterations, 10 ms
+        # gap, kill 2.5 s after launch, then rank 0 drains puts to the dead peer
+        trial "${STACK}_${f}_${m}_t$t" env KILL_DELAY_MS=2500 GAP_MS=10 \
+          bash "$G/gin/scripts/run_trial.sh" "$B" "$f" "$m" "$t" "$OUT/${STACK}.csv" 400 14
+      else
+        trial "${STACK}_${f}_${m}_t$t" bash "$G/gin/scripts/run_trial.sh" "$B" "$f" "$m" "$t" "$OUT/${STACK}.csv"
+      fi
     done
   done ;;
 gq)
