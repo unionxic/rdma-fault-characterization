@@ -173,7 +173,7 @@ All experiment code is in `experiment1/`:
 - `rdma_common.c/h`, `common.h`: shared RDMA and protocol utilities
 - `server_loop.sh`: auto-restart wrapper for Scenario B
 - `server_link_loop.sh`: link recovery wrapper for Scenario C
-- `analyze.py`: statistics and LaTeX table generation
+- `analyze.py`: statistics and LaTeX table generation (only in `225-client/01_cpu_baseline/experiment1/`)
 
 ### Build
 

@@ -2,7 +2,9 @@ CC = gcc
 CFLAGS = -Wall -O2 -fPIC
 LDFLAGS = -libverbs
 
-all: librdma_fault.a test_classify
+# 224 쪽은 08_middleware의 demo_server가 링크할 라이브러리만 만든다.
+# 분류 단위 테스트(test_classify)는 225-client/07_fault_classify에 있다.
+all: librdma_fault.a
 
 rdma_fault.o: rdma_fault.c rdma_fault.h
 	$(CC) $(CFLAGS) -c rdma_fault.c
@@ -11,14 +13,7 @@ rdma_fault.o: rdma_fault.c rdma_fault.h
 librdma_fault.a: rdma_fault.o
 	ar rcs $@ rdma_fault.o
 
-# 분류 단위 테스트 (실제 RDMA 불필요, 가짜 wc로 분류만 검증)
-test_classify: test_classify.c librdma_fault.a rdma_fault.h
-	$(CC) $(CFLAGS) -o $@ test_classify.c -L. -lrdma_fault $(LDFLAGS)
-
-test: test_classify
-	./test_classify
-
 clean:
-	rm -f *.o *.a test_classify
+	rm -f *.o *.a
 
-.PHONY: all test clean
+.PHONY: all clean
