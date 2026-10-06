@@ -15,7 +15,8 @@ read `192.0.2.193/194`, as in the history.
 
 ## Release `data-20261006`
 
-37 raw-data archives (plus the tables archive above), 11297 files, 36.7 MB compressed. Packed by `tools/pack_release.py`.
+40 raw-data archives (plus the tables archive above), 13714 files, 703.1 MB compressed. Packed by `tools/pack_release.py`.
+The three propagation archives were added later the same day with `--whole`.
 The full checksums are in the `SHA256SUMS` asset.
 
 ```
@@ -55,6 +56,9 @@ sha256sum -c --ignore-missing SHA256SUMS && tar -xJf '<asset>'
 | `harness/gpu-initiated/nvshmem_rootcause/results/20260924_abc` | `harness__gpu-initiated__nvshmem_rootcause__results__20260924_abc.tar.xz` | 166 | 0.11 | `4d0765fada6a` |  |
 | `harness/gpu-initiated/nvshmem_rootcause/results/20260925_dbrk` | `harness__gpu-initiated__nvshmem_rootcause__results__20260925_dbrk.tar.xz` | 474 | 0.05 | `f10c7a0b42ee` |  |
 | `harness/gpu-initiated/nvshmem_rootcause/results/20261001_official380` | `harness__gpu-initiated__nvshmem_rootcause__results__20261001_official380.tar.xz` | 29 | 0.02 | `b80613d4c185` |  |
+| `harness/gpu-initiated/propagation/results/20261006_campaign` | `harness__gpu-initiated__propagation__results__20261006_campaign.tar.xz` | 1992 | 578.60 | `9c732944c00f` | added 2026-10-06 18:25; whole folder, repeated files stored as hard links |
+| `harness/gpu-initiated/propagation/results/20261006_f4rerun` | `harness__gpu-initiated__propagation__results__20261006_f4rerun.tar.xz` | 145 | 0.02 | `5bbfb1bbaecd` | added 2026-10-06 17:50 |
+| `harness/gpu-initiated/propagation/results/20261006_smoke` | `harness__gpu-initiated__propagation__results__20261006_smoke.tar.xz` | 280 | 87.80 | `fa4907aa0564` | added 2026-10-06 17:50; smoke runs, not scored |
 | `harness/gpu-initiated/transparent_probe/results/run1` | `harness__gpu-initiated__transparent_probe__results__run1.tar.xz` | 30 | 0.00 | `58aa0ced51b9` |  |
 | `harness/gpu-initiated/transparent_probe/results/run2` | `harness__gpu-initiated__transparent_probe__results__run2.tar.xz` | 30 | 0.00 | `0733ed6e3fbc` |  |
 | `harness/nccl-integration/logs` | `harness__nccl-integration__logs.tar.xz` | 26 | 0.00 | `d4f8aa492a1f` |  |
