@@ -1,0 +1,25 @@
+id,kind,variant,rank,fault,layer,observable,predicted,acceptance,basis
+EV1a,N,CPU,responder,F2,L4,QP-affiliated async event,IBV_EVENT_QP_ACCESS_ERR,>=9/10 and no other QP event,ibv_get_async_event(3); OLD qp_state_verify.csv
+EV1b,N,CPU,responder,rem_inv_req,L4,QP-affiliated async event,IBV_EVENT_QP_REQ_ERR,>=9/10 and no other QP event,ibv_get_async_event(3); OLD qp_state_verify.csv
+EV1c,N,CPU,responder,rnr,L4,QP-affiliated async event,none,10/10,OLD: responder RTS after RNR
+EV1d,N,CPU,responder,F1;F3;F4;F0;partial_write,L4,QP-affiliated async event,none,10/10 per fault,software-forced or remote-side transitions raise no affiliated error event
+EV1e,N,CPU,requester,all faults,L4,QP-affiliated async event,none,10/10 per fault,requester errors arrive as CQEs
+EV2a,N,CPU,responder,F2;rem_inv_req,L0,responder QP state after fault,ERR,>=9/10,OLD qp_state_verify.csv (CX-5)
+EV2b,N,CPU,responder,rnr;F1,L0,responder QP state after fault,RTS,>=9/10,OLD qp_state_verify.csv (CX-5)
+EV3a,B+N,GP,target,F2,L4-log,NCCL WARN on r1,"""async fatal event on QP"" with local access violation",>=9/10 (new); every retained r1 F2 log (blind),net_ib/common.cc:187-201
+EV3b,B+N,GP,target,F2,L4-api,r1 ncclCommGetAsyncError,ncclSuccess until its own wait ends,>=9/10,no GIN path calls ncclIbStatsCheckFatalCount
+EV3c,B+N,GP,target,F1;F3;F4,L4-log,NCCL async QP event on r1,none,10/10 per fault,software-forced transitions; F4 target is dead
+EV4,N,GG;GQ;NC;NG;NX;ND;NF,both,all faults,L4,QP-affiliated async error or NCCL async fatal line,none,every trial,DEVX QPs; doca_verbs_cq.cpp:978 completion events only; NVSHMEM has no async-event code
+EV5a,N,GG;GQ;NF;ND,both nodes,all faults,L0,port hw_counters req_cqe_error req_cqe_flush_error local_ack_timeout_err req_remote_access_errors,+0 each,every trial,official380 (+0 for DEVX); NVIDIA/nvshmem#64
+EV5b,R,NC;NG;NX,both nodes,F4,L0,same counters,+0 each,every trial,official380
+EV5c,N,CPU;GP,requester node,F3;F4,L0,local_ack_timeout_err and req_cqe_error,>=+6 and >=+1,>=9/10,verbs QPs use the port q counter
+EV5d,N,CPU;GP,requester node,F1;F2,L0,req_cqe_error,>=+1,>=9/10,verbs QPs use the port q counter
+NET1a,N,NET stock,requester,F2,L1-L4,WARN status/vendor and API,10/0x88 in WARN; ncclRemoteError,>=9/10,net_ib v2.23.4
+NET1b,N,NET stock,target,F2,L4,async event WARN and target API,async fatal event on QP WARN and a target API error,>=9/10,v2.23.4 p2p fatal-count checks in test/irecv
+NET1c,N,NET stage2,both,F2,L3,recovery decision,declined; ncclRemoteError; no replay,>=9/10,Stage 2 decline rule for REM_ACCESS
+D1,N,GG (GPU doorbell),initiator,F2;F3;F4,L2-L4,device result / blocking flush / host,-EIO; flush success on failed op; GIN Error detected at next 10 s tick,>=9/10 per fault,DOCA writes DBR word 1 before UAR in both doorbell modes
+D2,N,GG blocking,initiator,F4,L3,first flush after kill,returns success (silent),>=9/10,same void wait as F1-F3; F4 gives 12/0x81 on DEVX
+T1,N,all variants,both,F0,L1-L5,errors and teardown,no error at any layer; teardown returns within 5 s on both ranks,5/5 per variant,-
+T2,N,NC;NG;NX,PE0,F4,L5,nvshmem_finalize,does not return within 30 s,5/5 per variant,devel: finalize hangs after any QP error
+T3,R,GG;GQ blocking,r0;r1,F1;F2;F3,L5,ncclCommAbort,r0 returns; r1 does not return within 30 s,5/5 per cell,gin.md 1b/1c
+T4,R,NF,both,F1;F3 / F2;F4,L5,nvshmem_finalize,returns / returns after driver ft_abort,5/5 per cell,nvshmem.md 2
