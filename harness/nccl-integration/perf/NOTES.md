@@ -31,7 +31,6 @@ Every run checks every iteration's whole result buffer on both ranks, on the GPU
 | `ctlib.py` | launches the pair (rain: `mlx5_1`, sunny: `mlx5_0`, OOB on `eno1`) with a given library build and returns both ranks' summaries |
 | `completion_time.py` | `smoke`, `overhead`, `fault` (fault = `inject` test hook or `gbh:<s>`, the address-flap fault of `../stage2/gid_blackhole.sh`) |
 | `summarize.py` | the tables below, from the CSVs |
-| `thin_logs.py` | shrinks a `logs.tar.gz` for the repository: drops per-iteration `IT` lines except the first and last 20, every 1000th, and those around every stall; all other lines stay |
 | `results/20260925/` | CSVs, raw logs (`logs.tar.gz`; the address-flap archive is thinned), runner consoles |
 
 Builds: `stock` (NCCL v2.23.4-1), `stage1i` (Stage 1 patch, `../DESIGN_recovery.md`), `stage2f`
