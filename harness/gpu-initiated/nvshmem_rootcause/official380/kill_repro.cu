@@ -7,8 +7,17 @@
 // reports that nvshmem_quiet() did not return and exits without nvshmem_finalize() (which
 // cannot complete with a dead peer anyway).
 //
+// FINALIZE=1 (env, optional): wherever the run ends (all iterations returned, the hang_s bound,
+// or a failed kernel), the PE calls nvshmem_finalize() under a 30 s watchdog thread and prints
+// "PE <n>: nvshmem_finalize returned after X ms" or
+// "PE <n>: nvshmem_finalize did not return after 30 s". The exit code is the one of the end path
+// (0, 3 or 4) if finalize returned, and 5 if it did not. Without FINALIZE the program never calls
+// nvshmem_finalize, as before.
+//
 // usage: nvs_kill_repro <rank 0|1> <pe0_ip> <tcp_port> [iters] [bytes] [period_ms] [hang_s]
 // Bootstrap: NVSHMEM unique id, sent from PE 0 to PE 1 over a plain TCP socket.
+#include <atomic>
+#include <thread>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -37,6 +46,40 @@ static double now_ms() {
     timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+// ---- FINALIZE=1: nvshmem_finalize() at the end, bounded by a watchdog thread ----
+static const int FINALIZE_BOUND_S = 30;
+static bool g_finalize = false;
+static std::atomic<int> g_fin_state{0};  // 0 running, 1 returned, 2 watchdog fired
+
+// Ends the process. With FINALIZE=1 it first calls nvshmem_finalize(); a watchdog thread exits
+// with code 5 if that has not returned after FINALIZE_BOUND_S.
+[[noreturn]] static void end_run(int mype, int code) {
+    fflush(stdout);
+    if (g_finalize) {
+        double t0 = now_ms();
+        std::thread([mype, t0]() {
+            while (now_ms() - t0 < FINALIZE_BOUND_S * 1e3) {
+                if (g_fin_state.load() != 0) return;
+                usleep(10000);
+            }
+            int running = 0;
+            if (!g_fin_state.compare_exchange_strong(running, 2)) return;
+            char m[96];
+            int n = snprintf(m, sizeof m, "PE %d: nvshmem_finalize did not return after %d s\n", mype,
+                             FINALIZE_BOUND_S);
+            if (n > 0 && write(1, m, (size_t)n) < 0) {}
+            _exit(5);
+        }).detach();
+        nvshmem_finalize();
+        int running = 0;
+        if (!g_fin_state.compare_exchange_strong(running, 1))
+            for (;;) pause();  // the watchdog fired first and is exiting
+        printf("PE %d: nvshmem_finalize returned after %.1f ms\n", mype, now_ms() - t0);
+        fflush(stdout);
+    }
+    _exit(code);
 }
 
 static int xfer(int fd, void *p, size_t n, int send_) {
@@ -74,6 +117,8 @@ int main(int argc, char **argv) {
     size_t bytes = argc > 5 ? strtoul(argv[5], 0, 10) : 262144;
     int period_ms = argc > 6 ? atoi(argv[6]) : 250;
     int hang_s = argc > 7 ? atoi(argv[7]) : 30;
+    const char *fin = getenv("FINALIZE");
+    g_finalize = fin && fin[0] && strcmp(fin, "0") != 0;
     setvbuf(stdout, NULL, _IOLBF, 0);
 
     nvshmemx_uniqueid_t id = NVSHMEMX_UNIQUEID_INITIALIZER;
@@ -136,8 +181,9 @@ int main(int argc, char **argv) {
     CK(cudaMemset(src, 0x5a, bytes));
     CK(cudaDeviceSynchronize());
     nvshmem_barrier_all();
-    printf("PE %d ready: iters=%d bytes=%zu period_ms=%d hang_s=%d\n", mype, iters, bytes, period_ms,
-           hang_s);
+    printf("PE %d ready: iters=%d bytes=%zu period_ms=%d hang_s=%d%s\n", mype, iters, bytes, period_ms,
+           hang_s, g_finalize ? " finalize=1" : "");
+    const char *end_how = g_finalize ? "calling nvshmem_finalize" : "exiting without nvshmem_finalize";
 
     cudaStream_t st;
     CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
@@ -152,18 +198,18 @@ int main(int argc, char **argv) {
         while ((q = cudaStreamQuery(st)) == cudaErrorNotReady) {
             if (now_ms() - t0 > hang_s * 1e3) {
                 if (mype == 0)
-                    printf("PE 0 iter %d: nvshmem_quiet() has not returned after %d s; exiting without "
-                           "nvshmem_finalize\n", i, hang_s);
+                    printf("PE 0 iter %d: nvshmem_quiet() has not returned after %d s; %s\n", i, hang_s,
+                           end_how);
                 else
-                    printf("PE 1 iter %d: no signal after %d s; exiting\n", i, hang_s);
-                fflush(stdout);
-                _exit(3);
+                    printf("PE 1 iter %d: no signal after %d s; %s\n", i, hang_s,
+                           g_finalize ? end_how : "exiting");
+                end_run(mype, 3);
             }
             usleep(1000);
         }
         if (q != cudaSuccess) {
             printf("PE %d iter %d: kernel failed: %s\n", mype, i, cudaGetErrorString(q));
-            _exit(4);
+            end_run(mype, 4);
         }
         if (mype == 0)
             printf("PE 0 iter %d: put + signal + nvshmem_quiet() returned after %.1f ms\n", i, now_ms() - t0);
@@ -171,8 +217,7 @@ int main(int argc, char **argv) {
             printf("PE 1 iter %d: signal arrived after %.1f ms\n", i, now_ms() - t0);
         if (mype == 0) usleep(period_ms * 1000);
     }
-    // No nvshmem_finalize(): its barrier cannot complete once the peer is gone.
-    printf("PE %d: all %d iterations returned; exiting without nvshmem_finalize\n", mype, iters);
-    fflush(stdout);
-    _exit(0);
+    // No nvshmem_finalize() by default: its barrier cannot complete once the peer is gone.
+    printf("PE %d: all %d iterations returned; %s\n", mype, iters, end_how);
+    end_run(mype, 0);
 }

@@ -6,7 +6,8 @@
 #
 # stock = unmodified NVSHMEM v3.8.0-0; fix = the same build with only the doorbell-record line
 # changed in nvshmem_transport_ibgda.so (see README.md). kill=1 SIGKILLs PE 1 once PE 0 has
-# finished iteration KILL_AFTER (default 3).
+# finished iteration KILL_AFTER (default 3). FINALIZE=1 is passed to both PEs (nvshmem_finalize
+# at the end under a 30 s watchdog; see kill_repro.cu); the default 0 keeps the old behaviour.
 set -u
 VAR=$1; HANDLER=$2; KILL=$3; TRIAL=$4; OUT=$5
 mkdir -p "$OUT"
@@ -38,6 +39,7 @@ export NVSHMEM_DISABLE_CUDA_VMM=1 NVSHMEM_CUMEM_GRANULARITY=2097152 NVSHMEM_SYMM
 export NVSHMEM_MAX_TEAMS=4 NVSHMEM_G_BUF_SIZE=262144 NVSHMEM_G_COALESCING_BUF_SIZE=4194304
 export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=eno1
 export NVSHMEM_DEBUG=INFO NVSHMEM_DEBUG_SUBSYS=ALL
+export FINALIZE=${FINALIZE:-0}
 EOF
 }
 ctrs() { local d=/sys/class/infiniband/mlx5_1/ports/1/hw_counters c; for c in $CTRS; do printf '%s ' "$(cat $d/$c)"; done; }
