@@ -1,109 +1,58 @@
-# Experiment 3: QP Recovery Overhead Decomposition
+# experiment3: QP 복구 단계별 비용
 
-Measures the minimum cost of the recovery **action** itself — the
-per-stage `ibv_modify_qp` latency to bring a broken RC QP from ERR
-back to RTS — with coordination between the two endpoints.
+장애로 ERR가 된 QP를 같은 QP 그대로 RTS까지 되돌리는 데 각 단계가 얼마나 걸리는지 쟀다.
+감지 뒤 복구 동작 자체의 하한이다. 양쪽이 동시에 복구하고, TCP로 두 번 맞춘다.
+수치는 옛 클러스터(225 요청 ConnectX-6, 224 응답 ConnectX-5)에서 쟀다.
 
-Scope: scenario A (QP→ERR) only. Scenarios B and C (process kill,
-link down) require full resource rebuild and are not representative
-of minimum-action cost.
+## 무엇을 쟀나
 
-This is **not** comparable to Minder's "30 minutes manual diagnosis"
-or Holmes's "30.3 s localization" — those include detection +
-diagnosis + orchestration. Experiment 3 isolates the recovery
-action's floor, on top of which production systems stack detection
-and coordination overhead.
+- **장애 하나.** 응답 쪽이 자기 QP를 ERR로 바꾼다. 요청 쪽은 재전송을 다 쓰고 오류를 받는다.
+  프로세스 종료와 link down은 자원을 전부 다시 만들어야 해서 뺐다.
+- **100회.** 감지, 남은 CQE 비우기, ERR→RESET, RESET→INIT, INIT→RTR, RTR→RTS, 시험 쓰기 1회를 따로 쟀다.
+  양쪽 동기화 두 번(INIT 뒤, RTS 뒤)도 따로 쟀다.
+- **같은 QP를 계속 썼다.** QP 번호, MR, PSN을 바꾸지 않고 제자리에서 되돌렸다. QP 설정은 experiment1과 같다.
 
-## Stages measured (per iteration)
+## 결론
 
-| Stage              | What it measures                                      |
-|--------------------|-------------------------------------------------------|
-| detection          | t(first error CQE) − t(fault injected), est. via TCP RTT/2 |
-| drain              | Draining remaining flush CQEs from the CQ             |
-| T1                 | `ibv_modify_qp(ERR → RESET)`                          |
-| T2                 | `ibv_modify_qp(RESET → INIT)`                         |
-| coord1             | TCP send+recv barrier: both sides at INIT             |
-| T3                 | `ibv_modify_qp(INIT → RTR)`                           |
-| T4                 | `ibv_modify_qp(RTR → RTS)`                            |
-| coord2             | TCP send+recv barrier: both sides at RTS              |
-| T5                 | Post 1 signaled `RDMA_WRITE`, busy-poll for SUCCESS CQE |
-| total_local        | T1 + T2 + T3 + T4 + T5                                |
-| total_with_coord   | total_local + coord1 + coord2                         |
+- **복구 동작은 약 2.7 ms다.** 요청 쪽 단계 합의 평균이 2,724 µs다. 양쪽 동기화를 넣으면 3,640 µs다.
+- **ERR→RESET이 가장 비싸다.** 평균 1,695 µs로 단계 합의 62.2%다.
+- **감지가 전체 시간을 정한다.** 같은 시험의 감지는 3.754 s였다. 복구 동작은 그 약 1/1000이다.
+  - 그래서 전체 시간을 줄이려면 복구가 아니라 감지를 줄여야 한다.
+- **같은 QP를 되살리면 연결 정보를 다시 주고받지 않아도 된다.** QP 번호, 주소, 키가 그대로이기 때문이다.
+  다만 양쪽이 함께 RESET을 거쳐야 하므로 상대의 협조는 필요하다.
 
-QP object is never destroyed between iterations. Same QPN, same MR,
-same `remote_info` and `local_psn` reused for the full run.
+## 결과
 
-## Build
+| 단계 | 평균 | 중앙값 | p99 |
+|---|--:|--:|--:|
+| 감지 | 3.754 s | 3.754 s | 3.755 s |
+| 남은 CQE 비우기 | 0.05 µs | 0.05 µs | 0.16 µs |
+| ERR → RESET | 1,695 µs | 1,746 µs | 1,812 µs |
+| RESET → INIT | 431 µs | 431 µs | 800 µs |
+| 동기화 1 | 25 µs | 22 µs | 69 µs |
+| INIT → RTR | 371 µs | 322 µs | 739 µs |
+| RTR → RTS | 222 µs | 209 µs | 375 µs |
+| 동기화 2 | 890 µs | 933 µs | 1,620 µs |
+| 시험 쓰기 완료 | 4.8 µs | 4.1 µs | 20.9 µs |
+| 단계 합 (동기화 제외) | 2,724 µs | 2,693 µs | 3,510 µs |
+| 동기화 포함 | 3,640 µs | 3,609 µs | 4,428 µs |
 
-```bash
-make
-```
+값은 요청 쪽 기록 100회다.
 
-Shares `common.h`, `rdma_common.c/h` with `experiment1/` via symlinks.
-Adds `rdma_recovery.c/h` for per-stage transition helpers and
-`common3.h` for recovery-coordination message types.
+## 한계와 주의
 
-## Run
+- **응답 QP를 ERR로 바꾼 경우만 쟀다.** 다른 오류의 복구 비용은 [06_recovery](../../06_recovery/README.md)에 있다.
+- **운영 시스템의 진단 시간과 비교하면 안 된다.** Minder나 Holmes의 값은 감지, 진단, 조율을 모두 포함한다. 여기 값은 복구 동작만이다.
+- **응답 쪽 단계는 따로 기록했다.** 응답 쪽 ERR→RESET 중앙값은 323 µs로 요청 쪽보다 훨씬 짧다([224 쪽 README](../../../224-server/01_cpu_baseline/experiment3/README.md)).
+- **CPU를 고정하지 않았다.** 값은 호스트 부하에 따라 움직일 수 있다.
+- **옛 클러스터 값이다.** 새 테스트베드의 QP 복구(0.8 ms 안팎, `../../../../harness/`)와 정의가 달라 직접 비교하지 않는다.
 
-**Server (224, fault target, 10.0.0.3):**
+## 파일
 
-```bash
-./server -d mlx5_0 -i 1 -g 3 -p 18515 -o results/server_recovery.csv
-```
-
-**Client (225, observer, 10.0.0.2):**
-
-```bash
-./client -s 10.0.0.3 -d mlx5_0 -g 3 -n 100 -o results/recovery.csv
-```
-
-Or via orchestrator (requires SSH to server in `config.sh`):
-
-```bash
-./run_experiment.sh
-```
-
-## Analyze
-
-```bash
-python3 analyze.py results/recovery.csv --latex
-```
-
-## Protocol — recovery coordination
-
-Both sides execute the ERR → RESET → INIT → RTR → RTS sequence in
-parallel, but synchronize at two TCP points:
-
-1. After INIT: both sides send+recv `MSG_RECOVERY_INIT_DONE` before
-   entering INIT → RTR. Ensures neither side proceeds on a stale
-   (pre-recovery) peer view.
-2. After RTS: both sides send+recv `MSG_RECOVERY_RTS_DONE` before
-   the client posts its T5 probe write. Guarantees the server's QP
-   is in RTS (can receive) when the write arrives, so T5 measures
-   transport latency only, not the server's state-transition tail.
-
-`QPN`, `addr`, and `rkey` do not change across in-place recovery,
-so no new `MSG_EXCHANGE_QP_INFO` is needed. `local_psn` is reused;
-the hardware reset clears internal PSN counters and `modify(RTS)`
-re-establishes them to the same value.
-
-## CSV schema
-
-`results/recovery.csv` (client):
-
-```
-iteration,
-t_inject_request_ns, t_ack_ns, t_detected_ns, t_drain_done_ns,
-t_reset_done_ns, t_init_done_ns, t_barrier1_ns,
-t_rtr_done_ns, t_rts_done_ns, t_barrier2_ns, t_write_cqe_ns,
-detection_ns, drain_ns, T1_ns, T2_ns, coord1_ns, T3_ns, T4_ns,
-coord2_ns, T5_ns, total_local_ns, total_with_coord_ns,
-detect_error_status
-```
-
-`results/server_recovery.csv` (server, if `-o` given):
-
-```
-iteration, t_inject_ns, drain_ns,
-T1_ns, T2_ns, coord1_ns, T3_ns, T4_ns, coord2_ns
-```
+| 파일 | 내용 |
+|---|---|
+| [NOTES.md](NOTES.md) | 예전 README(영문). 단계 정의, 동기화 방식, CSV 형식, 실행 방법 |
+| `results/recovery.csv` | 요청 쪽 시험별 기록 100행. 시험용 짧은 기록은 태그 `archive/results-tables-20261006`에만 있다 |
+| `../../plots/data/exp3_stages.csv` | 위 표의 요약 |
+| [224 쪽 README](../../../224-server/01_cpu_baseline/experiment3/README.md) | 응답 쪽 기록 |
+| [docs/experiments/01](../../../../docs/experiments/01_detection_firmware_retry.md) | 감지와 복구 비교(1.3절) |
