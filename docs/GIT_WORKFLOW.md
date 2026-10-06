@@ -11,8 +11,9 @@ Follows common research-software practice:
 
 - **`master`** is the only long-lived branch and the public record. It is never force-pushed or
   rewritten; a GitHub ruleset blocks both.
-- **Everything else happens on a short-lived branch.** It is merged with a pull request (squash),
-  then deleted.
+- **Everything else happens on a short-lived branch.** It is merged with a pull request, using
+  "Rebase and merge", then deleted. Rebase keeps each commit's author (the noreply address) and
+  message. A web squash would record the account's primary e-mail as the author.
 
 | prefix | for | example |
 |---|---|---|
