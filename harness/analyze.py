@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """analyze.py - summarize unified RDMA fault harness CSVs.
 
-For each fault, reports the dominant (status, vendor_err) fingerprint, detection
+For each fault, reports the dominant (status, vendor_err) error code, detection
 and recovery latency stats (n, mean, median, stddev, p95, p99, 95% CI half-width),
 verify success rate, RETRY_EXC sub-causes, and partial-write byte accounting:
 bytes that LANDED (measured by RDMA-READ readback of the pre-zeroed responder
@@ -106,7 +106,7 @@ def main(paths):
         fpstr = f"{dom[0][0][:16]}/{dom[0][1]}"
         print(f"{fault:<22} {len(rows):>3} {fpstr:<26} {detstr:<24} {recstr:<12} {verify:>7}")
         if len(fp) > 1:
-            print(f"{ind}fingerprints: " + ", ".join(f"{k[0]}/{k[1]}×{v}" for k, v in
+            print(f"{ind}error codes: " + ", ".join(f"{k[0]}/{k[1]}×{v}" for k, v in
                                                     sorted(fp.items(), key=lambda kv: -kv[1])))
         if det:
             print(f"{ind}detect: median={fmt_ns(det['median'])} "
