@@ -5,8 +5,8 @@ same status+vendor_err: the responder QP went to ERR (node alive), or the respon
 process was killed (node's RDMA context gone). The repo docs
 (`docs/theory/05_counter_observability.md` §5.3, `docs/theory/04` §4.3) claim these
 have **identical RDMA traffic** (15 wire packets, identical sysfs signatures) and are
-split only by the **non-RDMA TCP sideband** (process alive → FIN, ~12-13 pkts;
-`kill -9` → RST, ~8 pkts) — i.e. by process liveness, not by an RDMA counter.
+split only by the **non-RDMA TCP sideband** (process alive → FIN, ≈12-13 pkts;
+`kill -9` → RST, ≈8 pkts) — i.e. by process liveness, not by an RDMA counter.
 
 Earlier in this work I claimed the responder `port_rcv_packets` delta (peer_rx ≈ 40)
 distinguished them. This verifies that claim on ConnectX-6 (VPI, MT28908; fw 20.43.4100).
@@ -24,7 +24,7 @@ fault-window measurement for the alive case.
 | server_qp_err (node alive, QP ERR) | 40–57 | **0** |
 | proc_kill (process dead) | 44–52 | 0 |
 
-- `port_rcv_packets` is **the same** for both (~40–52): the requester's retransmits
+- `port_rcv_packets` is **the same** for both (≈40–52): the requester's retransmits
   reach the responder NIC whether or not a QP exists to consume them. It does **not**
   distinguish the two causes.
 - `port_xmit_packets` is **0 for both** in the fault window: a QP in ERR does not NAK,

@@ -9,7 +9,7 @@
 - "collapsed CQ가 원인"은 기각됐다(`../gin_q4/`). 실제 원인은 CPU 프록시가 doorbell record의 엉뚱한 칸에 쓰는 버그다. "QUERY_QP does not report ERR", "puts never retire", "infinite RNR"도 틀렸다.
 - cc=0 "init hangs"는 락을 잡은 감시 스레드와 함께 돌아 믿을 수 없다. 감시 없이 다시 재 보니 멈춤은 맞고, 원인은 GPU가 CQ 첫 칸만 읽기 때문이다(`../nvshmem_ft/V2.md` A1).
 - "finalize tries to quiesce the broken QP"는 틀렸다. 멈춤은 종료 과정(heap 해제와 finalize)의 GPU barrier에서 온다(`../nvshmem_ft/DESIGN.md` 9절).
-- 시간 제한 대기와 DeepEP식 대기의 1.46 / 3.85 / 5.75~5.79 s는 대기에 준 예산이다. 감지 시간이 아니다.
+- 시간 제한 대기와 DeepEP식 대기의 1.46 / 3.85 / 5.75–5.79 s는 대기에 준 예산이다. 감지 시간이 아니다.
 - 장애 뒤 종료: 리뷰는 "12/12 + F2b 3/3"으로 적었으나 `matrix.csv`를 다시 세면 장애 시행 30회(F1, F3, F4 각 9회와
   F2b 3회)가 모두 exit 7이다. 블로킹 9회는 대기에서, 나머지 21회는 종료 과정에서 멈췄다. 참고 측정 2회도 같다.
 - "1 F3 reference at the default IB timeout"은 2회다(`matrix_ref.csv`, 대기 예산 15 s와 40 s). 363회 읽기에 둘 다 들어 있다.
@@ -84,7 +84,7 @@ Getting a 2-PE IBGDA put working required working around this box, all via env
   `NVSHMEM_IB_ENABLE_IBGDA=1`) as the only IB transport, and it registers the
   heap with `ibv_reg_dmabuf_mr`.
 - The **whole heap is registered with the NIC in one shot** and BAR1 is only
-  256 MiB. Stock NVSHMEM builds a ~1.5 GiB heap (`heapextra` ≈ 1.28 GiB from 256
+  256 MiB. Stock NVSHMEM builds a ≈1.5 GiB heap (`heapextra` ≈ 1.28 GiB from 256
   teams' psync + a 64 MiB coalescing buffer, rounded to a 512 MiB granularity
   when VMM is off). We shrink it well under 64 MiB: `NVSHMEM_MAX_TEAMS=4`,
   `NVSHMEM_G_BUF_SIZE=262144`, `NVSHMEM_G_COALESCING_BUF_SIZE=4194304`,
@@ -101,7 +101,7 @@ Getting a 2-PE IBGDA put working required working around this box, all via env
 ## Patch (fault injection)
 
 `nvshmem_ibgda_fault_inject.diff` — a minimal, default-OFF test + diagnostic
-hook in `src/modules/transport/ibgda/ibgda.cpp` (~269 added lines, applies with
+hook in `src/modules/transport/ibgda/ibgda.cpp` (≈269 added lines, applies with
 `git apply --check` clean on commit `7bb2e99c`). Both features are gated by env
 vars; unset, the build is behaviourally identical to stock.
 
@@ -171,20 +171,20 @@ CPU_with_host_memory` and `stack = nvshmem-ibgda` for every row.
 | none (baseline) | timeout | 5 | ok | ok | ok | 0/5 | none (op 0x0) | clean | n/a |
 | none | blocking | 5 | ok | ok | ok | 0/5 | none | clean | n/a |
 | none | deepep_poll | 5 | ok | ok | ok | 0/5 | none | clean | n/a |
-| F1 local_err | timeout | 3 | hang_killed | timeout | missing | 0/3 | **none** | **hang** | ~1.46 s (device budget) |
+| F1 local_err | timeout | 3 | hang_killed | timeout | missing | 0/3 | **none** | **hang** | ≈1.46 s (device budget) |
 | F1 | blocking | 3 | hang_killed | ok\* | ok\* | 0/3 | none | **hang** | 30 s (watchdog only) |
-| F1 | deepep_poll | 3 | hang_killed | timeout | missing | 0/3 | none | hang | ~1.46 s |
+| F1 | deepep_poll | 3 | hang_killed | timeout | missing | 0/3 | none | hang | ≈1.46 s |
 | F2a oob_within_mr | timeout | 3 | **ok** | ok | **mismatch** | **3/3** | none (op 0x0) | clean | never (silent) |
 | F2a | blocking | 3 | **ok** | ok | **mismatch** | **3/3** | none | clean | never (silent) |
 | F2a | deepep_poll | 3 | **ok** | ok | **mismatch** | **3/3** | none | clean | never (silent) |
-| F2b invalid_rkey | timeout | 3 | hang_killed | timeout | missing | 0/3 | **none** (op 0x0) | **hang** | ~3.85 s (device budget) |
-| F3 peer_err | timeout | 3 | hang_killed | timeout | missing | 0/3 | **none** | **hang** | ~5.75 s (device budget) |
+| F2b invalid_rkey | timeout | 3 | hang_killed | timeout | missing | 0/3 | **none** (op 0x0) | **hang** | ≈3.85 s (device budget) |
+| F3 peer_err | timeout | 3 | hang_killed | timeout | missing | 0/3 | **none** | **hang** | ≈5.75 s (device budget) |
 | F3 | blocking | 3 | hang_killed | ok\* | ok\* | 0/3 | none | **hang** | 30 s (watchdog only) |
-| F3 | deepep_poll | 3 | hang_killed | timeout | missing | 0/3 | none | hang | ~5.79 s |
+| F3 | deepep_poll | 3 | hang_killed | timeout | missing | 0/3 | none | hang | ≈5.79 s |
 | F3 (reference, IB_TIMEOUT=20) | timeout | 1 | hang_killed | — | missing | 0/1 | **none even at 38.1 s** | hang | > 38 s |
-| F4 proc_kill | timeout | 3 | hang_killed | killed | ok\* | 0/3 | **none** | **hang** | ~5.79 s (device budget) |
+| F4 proc_kill | timeout | 3 | hang_killed | killed | ok\* | 0/3 | **none** | **hang** | ≈5.79 s (device budget) |
 | F4 | blocking | 3 | hang_killed | killed | ok\* | 0/3 | none | **hang** | 30 s (watchdog only) |
-| F4 | deepep_poll | 3 | hang_killed | killed | ok\* | 0/3 | none | hang | ~5.79 s |
+| F4 | deepep_poll | 3 | hang_killed | killed | ok\* | 0/3 | none | hang | ≈5.79 s |
 
 \* blocking mode runs the loop to completion reporting each `nvshmem_quiet()` as
 success; the failing iteration's quiet then hangs and the per-iteration watchdog
@@ -217,7 +217,7 @@ hits; `ready_head` keeps advancing as the kernel posts, so the gap
 > - **"F3 leaves the requester QP in RTS" is wrong.** It was produced by the
 >   `NVSHMEM_IBGDA_FAULT_WATCH` thread, which held `rc_endpoint_lock` while sleeping; the
 >   CPU proxy needs the same lock, so the failing put was never rung during the watch.
->   Without that artifact the QP goes to ERR ~3.6 s after the put, as with verbs. The
+>   Without that artifact the QP goes to ERR ≈3.6 s after the put, as with verbs. The
 >   "watch raced init" explanation below is wrong for the same reason.
 > - **The `ab/` F1 and F3 cells (tcc1) never exercised the fault** (the put was not rung,
 >   and F1's 2ERR ran after the 16 s watch), and the `cc=0` "init hangs" result ran with
@@ -263,13 +263,13 @@ error completion is simply never written to the CQ.
 **F3 (peer QP→ERR, silent drop)** → rain's QP stays `state = 3` (RTS) for all 54
 query-only samples over 16 s (`qptl/F3_timeout_t1.pe0.log`, watched QPN `0x27f6`
 = the put's QP), while the put stalls and (lead's counters) the wire retransmits
-then stops by ~4 s. F1 (local 2ERR) also drives the QP to ERR (state 6, verified
+then stops by ≈4 s. F1 (local 2ERR) also drives the QP to ERR (state 6, verified
 same-thread post-2ERR query). In **no** case is an error CQE written.
 
 **[rejected] "Infinite RNR retry" is not the explanation for F3.** An earlier
 draft attributed F3's RTS-forever to `rnr_retry = 7` (`ibgda.cpp:1976`). The
 harness control (verbs QPs, same NICs) shows a peer QP in ERR *silently drops*
-and yields RETRY_EXC 12/0x81 at ~3.7 s — no RNR NAKs — so infinite-RNR does not
+and yields RETRY_EXC 12/0x81 at ≈3.7 s — no RNR NAKs — so infinite-RNR does not
 fit and is dropped. F3's requester simply does not surface the retry-exhaustion
 as a QP-ERR or a CQE on the collapsed CQ within the window; the mechanism for the
 missing surfacing is the collapsed CQ (below), not RNR.
@@ -377,7 +377,7 @@ error (F2b invalid rkey), not just retry-exhaustion faults.
 - **F2b (invalid rkey) — a genuine remote error — is also invisible.** Corrupting
   all 64 `constmem.rkeys` entries makes the next put carry a bad rkey; the put
   fails (PE1 `data_check=missing`, `wqe_counter` frozen) but the collapsed slot
-  still reads `opcode 0x0`, the bounded wait times out (~3.85 s), and teardown
+  still reads `opcode 0x0`, the bounded wait times out (≈3.85 s), and teardown
   hangs — identical signature to the retry-exhaustion faults. So even a prompt
   remote NAK never surfaces as an error CQE to the GPU (`matrix_f2b.csv`,
   `f2b/*.pe0.log`).
@@ -389,8 +389,8 @@ error (F2b invalid rkey), not just retry-exhaustion faults.
 
 - **Timeout / DeepEP waits detect the stall but cannot classify it.** Our own
   bounded `clock64` poll (timeout mode) and the wqe_counter-only DeepEP-style poll
-  both correctly return "not complete" at the budget (host learns at ~1.5 s for
-  F1, ~5.8 s for F3/F4). Neither can say *why*, because the CQ carries no error.
+  both correctly return "not complete" at the budget (host learns at ≈1.5 s for
+  F1, ≈5.8 s for F3/F4). Neither can say *why*, because the CQ carries no error.
   The DeepEP poll would take an error CQE as success if one ever appeared, but one
   never does — so here it degenerates to the same timeout.
 
@@ -408,7 +408,7 @@ error (F2b invalid rkey), not just retry-exhaustion faults.
   operations, so for a local QP→ERR (F1) the next post hits an already-ERR QP and
   is dropped by the proxy with no CQE at all; a genuine in-flight flush is only
   observable when WQEs stay outstanding in hardware for a long window (F3/F4,
-  where the retry timer holds them ~3.7 s at IB_TIMEOUT=14).
+  where the retry timer holds them ≈3.7 s at IB_TIMEOUT=14).
 - Symmetric/registered memory is kept ≤ 64 MiB (BAR1 = 256 MiB). DeepEP itself
   needs SM90 and cannot run on this hardware; only its poll style is reproduced
   (`deepep_poll`).

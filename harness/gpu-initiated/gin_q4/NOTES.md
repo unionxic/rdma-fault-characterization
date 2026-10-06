@@ -5,10 +5,10 @@
 **2026-10-06 리뷰 정정**
 
 - TL;DR의 "`ncclCommAbort` returned in every trial"은 보내는 쪽(rank 0)만 맞다. 받는 쪽 abort는 blocking
-  F1~F3에서 돌아오지 않았다(N30 90/90, N30 stock 대조 10/10). N30 표의 "abort clean"도 rank 0 기준이다.
+  F1–F3에서 돌아오지 않았다(N30 90/90, N30 stock 대조 10/10). N30 표의 "abort clean"도 rank 0 기준이다.
 - N30(`results/20260925_n30/`)이 GPU doorbell로 돌았다는 것은 두 지표로 추정한 것이다. 이 빌드는 doorbell 모드를 기록하지 않는다.
 - N30(`results/20260925_n30/`)은 모두 rain `mlx5_1`의 펌웨어 명령 슬롯 하나가 샌 상태에서 돌았다. 슬롯은 09-25 06:45에
-  샜고(`../gin_recovery/TRANSPARENT_S1.md`), N30 분류기 시행 253회는 07:31~09:34에 돌았다. N30 문서에는 이 언급이 없다.
+  샜고(`../gin_recovery/TRANSPARENT_S1.md`), N30 분류기 시행 253회는 07:31–09:34에 돌았다. N30 문서에는 이 언급이 없다.
 - 이 드라이버에는 받는 쪽이 동기화 응답 뒤에 버퍼를 초기화하는 경쟁이 남아 있다
   (`../gin_recovery/RECOVERY_DESIGN.md` §11). 틀린다면 거짓 불일치 쪽이며, 관찰되지 않았다.
 
@@ -36,7 +36,7 @@ fallback (no PeerMappingOverride, no gdrdrv), CQ in GPU memory, `NCCL_IB_TIMEOUT
   device classified every fault correctly (F1 LOCAL_QP_ERR 5/0xf5, F2 REM_ACCESS 10/0x88, F3
   RETRY_EXC 12/0x81; 6/6 each over both wait modes; F4 12/0x81, same class as F3). The root cause is
   found by scanning back from the polled index; the polled (trailing, signal) WQE itself always held
-  5/0xf9. `ncclCommGetAsyncError` returns `ncclRemoteError` **~0.19 ms after device detection**
+  5/0xf9. `ncclCommGetAsyncError` returns `ncclRemoteError` **≈0.19 ms after device detection**
   (median), i.e. 15 ms / 2.8 ms / 3.6-3.7 s / 3.6-3.7 s after the fault for F1/F2/F3/F4, versus 9.4
   / 10.0 / 9.4 / 8.0 s with the flag off (same build; = the stock result of `../gin/`). The blocking
   flush now returns `ncclRemoteError`: **init_silent_iters 0** in F1-F3 (flag off: 1 in 9/9).
@@ -44,7 +44,7 @@ fallback (no PeerMappingOverride, no gdrdrv), CQ in GPU memory, `NCCL_IB_TIMEOUT
   attempt (process aborted in DOCA); no process was left on either node after any trial.
 - **Overhead** (no fault): put+signal+flush p50 +0.06-0.10 us at 4 KiB (10.1-10.2 us, <=1%),
   +0.03-0.19 us at 256 KiB (37.3-37.6 us, <=0.5%); 4 KiB p99 +0.1-0.6 us (within run-to-run
-  spread); mailbox watcher at 20 us poll costs ~0.05 CPU core.
+  spread); mailbox watcher at 20 us poll costs ≈0.05 CPU core.
 
 ## Build and deploy
 
@@ -127,7 +127,7 @@ NCCL WARN GIN/Q4: host QUERY_QP rank=0 qpn=0x383e state=ERR query_us=71 mono_ms=
 `gin_q4.cu` = `../gin/gin_fault.cu` + (a) blocking mode keeps the return of `gin.flush()`; an
 error return is not counted as a completed iteration (exit 8); (b) `%globaltimer` <->
 CLOCK_MONOTONIC calibration at start (a kernel publishes `%globaltimer` to mapped memory; offset
-bound from 200k host samples; consistency ~1-2 us); (c) `ncclCommGetAsyncError` polled every
+bound from 200k host samples; consistency ≈1-2 us); (c) `ncclCommGetAsyncError` polled every
 `GIN_ASYNC_POLL_US` (200 us here; `../gin/` used 2 ms); (d) fault `lat` for the overhead runs; (e) a
 device phase marker to locate a kernel that never returns. Fault catalog, lockstep barrier, F2
 (put at a 64 MiB offset), F4 (SIGKILL + drain puts), watchdogs: as in `../gin/`.
@@ -183,7 +183,7 @@ Findings:
    `wqe_counter >= T-1` (its code keeps "index+1" in software; NCCL passes the WQE index). With
    put+signal (write @T-1, atomic @T) the poll fires on the write's CQE: in all 27 trials the slot's
    wqe_counter was T-1 and held the root cause; the atomic's flush 5/0xf9 @T overwrote it within 500
-   us (the gap measured in `../cqe_seq/` is ~60 us). With more WQEs behind the failing one the slot
+   us (the gap measured in `../cqe_seq/` is ≈60 us). With more WQEs behind the failing one the slot
    would already be 5/0xf9 (inferred from `../cqe_seq/` + the re-read). Side effect (from source):
    on a collapsed CQ, NCCL's flush can return when the write has completed but the signal atomic has
    not.
@@ -233,11 +233,11 @@ the timeout-mode drain in both modes (as in `../gin/`). Baselines (3 timeout + 3
 all ok, no records.
 
 - **Detection.** The device sees the fault at the first poll that meets the error CQE: F1 at the
-  next iteration's flush (~15 ms = the 15 ms iteration gap), F2 2.6 ms after the out-of-bounds put
+  next iteration's flush (≈15 ms = the 15 ms iteration gap), F2 2.6 ms after the out-of-bounds put
   was launched, F3/F4 at RETRY_EXC (3.5-3.8 s at IB timeout 14, cf. `../cqe_seq/` 3.52-3.61 s and
   GIN proxy F3 3.6 s).
 - **Device -> host.** Record read by the watcher 94 us after `t_dev` (median, 56-126, n=33 ring
-  trials; the 20 us sleep overshoots to ~60-80 us), `ncclCommGetAsyncError` 190 us (69-371; the
+  trials; the 20 us sleep overshoots to ≈60-80 us), `ncclCommGetAsyncError` 190 us (69-371; the
   driver polls every 200 us), kernel return seen by the host 372 us (500 us poll). With the flag
   off the host learns only at the next 10 s QP-state tick (8.0-10.0 s here, phase-dependent).
 - **Class vs truth.** F1, F2, F3 exact in 6/6 each. F4 (SIGKILL) gives RETRY_EXC 12/0x81 like
@@ -271,8 +271,8 @@ samples), flag off/on interleaved; plus 2 runs with a 1 ms watcher poll.
 p50 cost <= 0.1 us (<= 1%) at 4 KiB; the 256 KiB differences (<= 0.6 us) are inside the
 per-run spread (36.9-37.8 us). The 4 KiB p99 shift (+0.1-0.6 us) persists with a 1 ms watcher
 poll, so it is not the watcher thread [measured]; it presumably comes from the device-side
-change (extra branches, larger kernel) [inferred, not isolated]. The watcher itself costs ~0.05
-CPU core at a 20 us poll, ~0.01 at 1 ms. The ~2 cores baseline is the GIN CPU-proxy doorbell
+change (extra branches, larger kernel) [inferred, not isolated]. The watcher itself costs ≈0.05
+CPU core at a 20 us poll, ≈0.01 at 1 ms. The ≈2 cores baseline is the GIN CPU-proxy doorbell
 thread (spinning) plus the async-error poller.
 
 ## Measured vs inferred

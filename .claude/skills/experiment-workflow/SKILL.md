@@ -39,7 +39,7 @@ description: rdma-error 저장소의 실험 작업 절차. 실험을 새로 시�
 
    이후 작업은 모두 `~/rdma-error-wt/<study>` 안에서 한다.
 2. 실험 폴더를 정하고 템플릿을 복사한다: `cp docs/templates/EXPERIMENT.md <폴더>/EXPERIMENT.md`.
-3. 1~10절을 채운다. 기존 결과를 쓸 때는 원자료에서 다시 세고, 아니면 `[미확인]`으로 둔다.
+3. 1–10절을 채운다. 기존 결과를 쓸 때는 원자료에서 다시 세고, 아니면 `[미확인]`으로 둔다.
 4. 상태 `DRAFT`로 커밋한다. 파일을 하나씩 지정해 `git add`하고, `git add -A`는 쓰지 않는다. PR을
    draft로 연다.
 5. 실험이 끝나 PR이 합쳐지면 `git worktree remove ~/rdma-error-wt/<study>`로 정리한다.

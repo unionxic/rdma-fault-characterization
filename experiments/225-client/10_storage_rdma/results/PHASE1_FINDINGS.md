@@ -1,7 +1,7 @@
 # Phase 1 (SSD × RDMA) 결과 정리 — 2026-07-15/16 실측
 
 데이터: `raw/storage_rdma.csv` (45 trials: BASELINE 3, MEDIA_ERROR_READ 5,
-MEDIA_ERROR_PARTIAL_READ 5, FULL_IO_FAIL 10, FAIL_SLOW 17(sweep 1~35000ms),
+MEDIA_ERROR_PARTIAL_READ 5, FULL_IO_FAIL 10, FAIL_SLOW 17(sweep 1–35000ms),
 TARGET_CRASH 5). 테스트베드: 225(initiator, CX-6) ↔ 224(nvmet-rdma target,
 CX-5), file-backed namespace + dm 주입.
 
@@ -18,7 +18,7 @@ CX-5), file-backed namespace + dm 주입.
 | MEDIA_ERROR_PARTIAL_READ | EIO — 그러나 버퍼에 유효 prefix 2MiB 착지, 경계는 비공개 | 무결 | NVMe status (경계는 어느 계층도 못 줌) |
 | FULL_IO_FAIL | **media와 동일한** generic Internal Error | 무결 | 구분 불가 |
 | FAIL_SLOW ≤ 5s | **아무것도 없음** — Success, latency만 delay 추종 (p50 ≈ delay+α) | 무결 | latency 분포뿐 |
-| FAIL_SLOW 35s (> io_timeout 30s) | **아무것도 없음** — 에러조차 안 돌아옴 (187~220초 hang, 강제 disconnect로만 해제) | **폭발**: resp_cqe_error +7,839 / flush +7,776 / local_ack_timeout_err / roce_adp_retrans / req_transport_retries_exceeded | RDMA 카운터뿐 |
+| FAIL_SLOW 35s (> io_timeout 30s) | **아무것도 없음** — 에러조차 안 돌아옴 (187–220초 hang, 강제 disconnect로만 해제) | **폭발**: resp_cqe_error +7,839 / flush +7,776 / local_ack_timeout_err / roce_adp_retrans / req_transport_retries_exceeded | RDMA 카운터뿐 |
 | TARGET_CRASH | 33.36초 후 EIO (±30ms, N=5) | 폭발: resp_cqe_error +2,613 등 | RDMA 카운터 + dmesg |
 
 ## 가설 판정
@@ -69,12 +69,12 @@ CX-5), file-backed namespace + dm 주입.
 ## E1. FAULT_ISOLATION — NVMe 에러는 명령 단위로 격리된다 (3/3)
 - 불량 LBA read 20회 **연속** 실패 후에도: 정상 LBA read 전부 성공(rc=0),
   dmesg에 controller reset **없음**(ctrl_reset=no). 연결·컨트롤러 무사.
-- RDMA와의 대비가 핵심: RDMA는 에러 1개가 QP 전체를 죽여 재연결(2.8ms~)이
+- RDMA와의 대비가 핵심: RDMA는 에러 1개가 QP 전체를 죽여 재연결(2.8ms 이상)이
   필수인데, NVMe-oF는 에러가 해당 명령에만 국한 → **복구 = "그 블록만 피하기"**.
 - 원시 status `0x6006` = SC 0x06 + **MORE(0x2000) + DNR(0x4000) 비트 세트**.
   (CSV의 DNR=no는 파서가 nvme-cli 출력 문자열만 봐서 생긴 오탐 — 원시값 기준
   DNR=yes. dmesg의 "MORE DNR"와 일치.)
-- good_read_us(5~10ms)는 nvme-cli 프로세스 기동 오버헤드 포함 — 성공 여부만
+- good_read_us(5–10ms)는 nvme-cli 프로세스 기동 오버헤드 포함 — 성공 여부만
   유효, latency 비교는 BASELINE(fio) 기준을 쓸 것.
 
 ## E2. TIMEOUT_TUNING — io_timeout은 hang을 끊는 레버가 아니다 (9/9 still_hang)
@@ -85,24 +85,24 @@ CX-5), file-backed namespace + dm 주입.
   한(신뢰성 계약) 루프는 계속된다. hang을 유한 에러로 바꾸는 레버는 연결
   계층(fast_io_fail_tmo)뿐인데 **이 nvme-cli는 그 플래그가 없다** — "정책
   레버의 가용성 자체가 배포 환경 의존"이라는 발견.
-- 부수 관측: 강제 disconnect의 해제 소요조차 reset 주기 위상에 따라 6~98s로
-  출렁였다(5s: 97~103s에 해제, 10s: 90.5s 즉시, 30s: 188s). **운영자의 개입
+- 부수 관측: 강제 disconnect의 해제 소요조차 reset 주기 위상에 따라 6–98s로
+  출렁였다(5s: 97–103s에 해제, 10s: 90.5s 즉시, 30s: 188s). **운영자의 개입
   수단도 루프에 종속된다.**
 - notes의 fast_io_fail=5s 표기는 상수 출력일 뿐 실제 연결엔 미적용(플래그
   부재) — 해석 시 주의.
 
 ## E3. TARGET_RECOVERY — 부활 시간은 reconnect 격자의 산술 (9/9 recovered)
-- crash→I/O 재개: T=5s → **17.4~17.5s**, T=15s → **27.3~27.8s**, T=30s → **38.0s**.
+- crash→I/O 재개: T=5s → **17.4–17.5s**, T=15s → **27.3–27.8s**, T=30s → **38.0s**.
 - 모델이 정확히 맞는다: 재개 ≈ (restore 이후 첫 reconnect 슬롯, 10s 격자)
-  + ~7s(재연결 완료+네임스페이스 재스캔+프로브). restore_to_resume이 T=5/15에서
-  ~12s(다음 슬롯까지 대기 포함), T=30에서 ~7.5s(슬롯 직후 restore)인 것이 증거.
+  + 약 7s(재연결 완료+네임스페이스 재스캔+프로브). restore_to_resume이 T=5/15에서
+  약 12s(다음 슬롯까지 대기 포함), T=30에서 약 7.5s(슬롯 직후 restore)인 것이 증거.
 - 처방: 죽음 감지는 0.6s(E4)인데 부활 반영은 슬롯 대기가 지배 →
   **reconnect_delay를 줄이면 복구가 그만큼 빨라진다** (정책 = 복구 레버).
 
 ## E4. COUNTER_EARLY_DETECT — 카운터는 앱보다 33초 먼저 안다
-- crash 모드: `resp_cqe_error` 첫 발화 **613~616ms** vs 앱 에러 33.3~33.7s →
-  **lead ≈ 32.7~33.1초** (약 54배 빠름). 3/3 일관.
-- failslow 모드: 카운터 발화 **4.4~4.8s**, 앱은 영원히 hang → **lead = ∞**.
+- crash 모드: `resp_cqe_error` 첫 발화 **613–616ms** vs 앱 에러 33.3–33.7s →
+  **lead ≈ 32.7–33.1초** (약 54배 빠름). 3/3 일관.
+- failslow 모드: 카운터 발화 **4.4–4.8s**, 앱은 영원히 hang → **lead = ∞**.
   앱이 원리적으로 알 수 없는 장애를 카운터는 수 초 내 알린다.
 - 두 모드 모두 첫 신호가 `resp_cqe_error` → 스토리지판 early-detection의
   감시 대상 카운터 확정. (RDMA판 roce_adp_retrans 18.4ms 발견의 확장.)
@@ -113,6 +113,6 @@ CX-5), file-backed namespace + dm 주입.
 |---|---|---|
 | NVMe status (SCT/SC + DNR/MORE) | per-command 실패 식별, DNR=재시도 무의미 | 해당 블록 회피 (연결 재구축 불필요 — E1) |
 | latency 분포 | fail-slow 유일한 사전 신호 (<30s 구간) | p99 감시 → 선제 조치 |
-| RDMA counter (resp_cqe_error) | 앱보다 33s(crash)~∞(failslow) 빠른 감지 | 조기 disconnect/failover 트리거 (E4) |
+| RDMA counter (resp_cqe_error) | 앱보다 33s(crash)–∞(failslow) 빠른 감지 | 조기 disconnect/failover 트리거 (E4) |
 | 연결 정책 (reconnect_delay, ctrl_loss_tmo) | 표면화·복구 시간을 직접 결정 | 튜닝 자체가 복구 수단 (E2·E3) |
 | io_timeout | reset 주기만 변경 — **hang 못 끊음** | 단독으로는 레버 아님 (E2) |

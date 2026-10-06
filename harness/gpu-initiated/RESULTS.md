@@ -47,14 +47,14 @@ patches are in the subdirectories listed below; this page only combines them.
 | NVSHMEM IBGDA, GPU handler (PeerMappingOverride) | CQE 5/0xf5, 1.8 ms | CQE 10/0x88, 9 ms | CQE 12/0x81, 3.5-3.7 s | - | quiet **returns success** on a failed put (slot 5/0xf9) | - |
 | NVSHMEM IBGDA, CPU proxy + SQ-DBR fix | CQE 5/0xf5 | CQE 10/0x88, 10 ms | CQE 12/0x81, 3.5-3.6 s | - | - | `nvshmem_finalize` still hangs |
 | GIN GDAKI + device-side classifier | 5/0xf5, 15 ms | 10/0x88, 2.8 ms | 12/0x81, 3.64-3.70 s | 12/0x81, 3.64-3.70 s | returns `ncclRemoteError` (silent success 0/9) | clean |
-| GIN GDAKI + classifier + recovery | **recovered**, ~24 ms after the fault | declined (REM_ACCESS) | **recovered**, 3.65-3.74 s after the fault | declined (peer dead) | recovered or declined | clean |
-| NVSHMEM IBGDA, GPU handler + our FT (`nvshmem_ft/`) | 5/0xf5 in 3.4-4.2 ms, **recovered** (~6.7 ms) | 10/0x88 in 1.2-2.5 ms, declined | 12/0x81 in 3.5-3.7 s, **recovered** | 12/0x81, declined (peer dead) | returns an error (FT status) | `nvshmem_finalize` returns in 17-29 ms |
+| GIN GDAKI + classifier + recovery | **recovered**, ≈24 ms after the fault | declined (REM_ACCESS) | **recovered**, 3.65-3.74 s after the fault | declined (peer dead) | recovered or declined | clean |
+| NVSHMEM IBGDA, GPU handler + our FT (`nvshmem_ft/`) | 5/0xf5 in 3.4-4.2 ms, **recovered** (≈6.7 ms) | 10/0x88 in 1.2-2.5 ms, declined | 12/0x81 in 3.5-3.7 s, **recovered** | 12/0x81, declined (peer dead) | returns an error (FT status) | `nvshmem_finalize` returns in 17-29 ms |
 | NVSHMEM FT v2.2, ring CQ mode (`nvshmem_ft/V2.md`; v2.2 poisons fetch AMOs whose completion failed: before, 510,028 stale values were returned silently in 40 runs) | root cause kept without a sentinel (90/90), **recovered** incl. 8-thread bursts after "park" | declined; in-MR overrun caught only with the red zone (0/30 → 35/35) | **recovered** | declined | returns an error | returns |
 | GIN GDAKI transparent recovery step 1 (`gin_recovery/TRANSPARENT_S1.md`) | **recovered with no error seen by the app** (95/95 recoverable cells; one op in flight, one poster) | declined, error surfaces | **recovered, transparent** (3.6 s = RETRY_EXC detection) | declined | the flush returns success; bounded only by the hold (30 s, 60 s if the give-up loses); **flag on costs +60 % at 4 KiB** | returns (teardown joins the helper) |
 
 GIN GDAKI + classifier + recovery was re-validated with GPU-rung doorbells (the permanent setting since
 2026-09-24 13:53) and needed `gin_recovery_gpudb.diff`: same outcomes (18/18 fault runs recovered
-in the GPU-mode matrix, 42 rounds after a fault + 6 forced), ~8.5 ms from kernel return to
+in the GPU-mode matrix, 42 rounds after a fault + 6 forced), ≈8.5 ms from kernel return to
 recovered.
 
 Times are from the fault to the first host-visible error. GDAKI's stock times are set by its
@@ -145,7 +145,7 @@ Times are from the fault to the first host-visible error. GDAKI's stock times ar
   The real cause is the doorbell-record word (finding 3a).
 - "F3 leaves NVSHMEM's requester QP in RTS" and "the watch thread raced init": both artifacts of
   a watch thread that held `rc_endpoint_lock` while sleeping and so kept the CPU proxy from ringing
-  the failing put. Without it the QP reaches ERR ~3.6 s after the put (`nvshmem_rootcause/`).
+  the failing put. Without it the QP reaches ERR ≈3.6 s after the put (`nvshmem_rootcause/`).
   The NVSHMEM `ab/` F1/F3 cells and its `cc=0` "init hangs" ran with that watch and are invalid.
 - GIN: surface times were first relative to program start; the ">55 s at IB timeout 20" bound
   came from runs that exited at 4.8 s; "GDAKI's host never learns" came from exiting before the
@@ -174,7 +174,7 @@ Resolved on 2026-09-24:
    handshake that reads the receiver's signal value V, commit (bilateral reset with fresh PSNs,
    GPU-side index and CQ-mapping resync, stored connect-time attributes), and the application
    replays the data plus the missing signal delta only. Kernel-return to replay-done: 8.0-8.2 ms
-   median, ~6 ms of it firmware QP commands. No measurable no-fault overhead.
+   median, ≈6 ms of it firmware QP commands. No measurable no-fault overhead.
 
 Still open:
 5. DeepEP cannot run here: its internode and low-latency kernels require SM90 (`setup.py` asserts

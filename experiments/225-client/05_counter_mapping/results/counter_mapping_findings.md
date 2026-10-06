@@ -35,7 +35,7 @@ Traffic policy: single in-flight WR. Fault inject 시점에 pending WR 1개로 �
 | link down | Link down | ip link set down | (재현 실패) | — | — | 3 |
 | 주소 범위 초과 | Address out of bounds | client raddr MR 범위 밖 | REM_ACCESS_ERR (10) | 0x88 | 0.57 ms (bimodal) | 100 |
 
-\* 프로세스 kill 5.13s는 inject 코드의 signal + sleep(1s) coordination이 포함된 측정값으로 실제 detection이 아니다. RETRY_EXC의 실측 retry exhaustion은 서버 QP ERR 3.56s다. 기존 N=10의 invalid rkey와 주소 범위 초과 ~3.1ms는 warmup-biased였고, N=100 median은 그보다 낮다(아래 2-1).
+\* 프로세스 kill 5.13s는 inject 코드의 signal + sleep(1s) coordination이 포함된 측정값으로 실제 detection이 아니다. RETRY_EXC의 실측 retry exhaustion은 서버 QP ERR 3.56s다. 기존 N=10의 invalid rkey와 주소 범위 초과 약 3.1ms는 warmup-biased였고, N=100 median은 그보다 낮다(아래 2-1).
 
 link down 실패 원인: `ip link set enp1s0f0np0 down`이 RoCE v2 트래픽을 차단하지 못함 (3 trial 모두 status=0 SUCCESS). 소프트웨어 link down으로는 RDMA path가 끊기지 않음.
 
@@ -43,24 +43,24 @@ link down 실패 원인: `ip link set enp1s0f0np0 down`이 RoCE v2 트래픽을 
 
 ## 2-1. Detection Latency 분포 (빠른 에러 N=100 / timeout N=30, 2026-06-04 재측정)
 
-| 에러 (vendor_err) | median (us) | mean | std | min~max | 비고 |
+| 에러 (vendor_err) | median (us) | mean | std | min–max | 비고 |
 |---|---|---|---|---|---|
-| SGE length (0x53) | 1503 | 1503 | 42 | 1490~1904 | 안정, wire 5pkt 후 감지 |
-| invalid lkey (0x52) | 319 | 358 | 203 | 316~1554 | 즉시 거부(wire pkt 0), 97/100 안정 |
-| MR permission (0x33) | 1500 | 1496 | 202 | 348~1707 | RDMA READ 왕복 |
-| WR_FLUSH (0xf5) | 520 | 523 | 64 | 398~689 | 안정, SW flush |
-| REM_INV_REQ (0x8a) | 1641 | 1080 | 584 | 467~1751 | bimodal |
-| REM_ACCESS rkey (0x88) | 1738 | 1416 | 582 | 554~2008 | bimodal |
-| RNR (0x87) | 255 | 255 | 11 | 248~289 | 최안정 |
-| REM_ACCESS addr (0x88) | 565 | 1052 | 761 | 555~3213 | bimodal |
-| RETRY_EXC QP ERR (0x81) | 3.56 s | 3.56 s | 30 ms | 3.54~3.71 s | 실측 retry exhaustion (N=30) |
-| RETRY_EXC kill (0x81) | 5.13 s* | 5.13 s | 116 ms | 4.91~5.25 s | *signal+sleep artifact (N=30) |
+| SGE length (0x53) | 1503 | 1503 | 42 | 1490–1904 | 안정, wire 5pkt 후 감지 |
+| invalid lkey (0x52) | 319 | 358 | 203 | 316–1554 | 즉시 거부(wire pkt 0), 97/100 안정 |
+| MR permission (0x33) | 1500 | 1496 | 202 | 348–1707 | RDMA READ 왕복 |
+| WR_FLUSH (0xf5) | 520 | 523 | 64 | 398–689 | 안정, SW flush |
+| REM_INV_REQ (0x8a) | 1641 | 1080 | 584 | 467–1751 | bimodal |
+| REM_ACCESS rkey (0x88) | 1738 | 1416 | 582 | 554–2008 | bimodal |
+| RNR (0x87) | 255 | 255 | 11 | 248–289 | 최안정 |
+| REM_ACCESS addr (0x88) | 565 | 1052 | 761 | 555–3213 | bimodal |
+| RETRY_EXC QP ERR (0x81) | 3.56 s | 3.56 s | 30 ms | 3.54–3.71 s | 실측 retry exhaustion (N=30) |
+| RETRY_EXC kill (0x81) | 5.13 s* | 5.13 s | 116 ms | 4.91–5.25 s | *signal+sleep artifact (N=30) |
 
 발견:
 
-1. invalid lkey 정정: 기존 N=10 "~1.5ms"는 부정확. N=100 median 319us로, length·permission(~1.5ms)과 분리된다. ethtool상 lkey는 wire 패킷 0개(즉시 거부)인 반면 length는 5패킷(NIC이 MR boundary를 pre-validate하지 않고 DMA 시작 후 감지)이라, latency가 error pipeline stage를 그대로 반영한다.
+1. invalid lkey 정정: 기존 N=10 "≈1.5ms"는 부정확. N=100 median 319us로, length·permission(약 1.5ms)과 분리된다. ethtool상 lkey는 wire 패킷 0개(즉시 거부)인 반면 length는 5패킷(NIC이 MR boundary를 pre-validate하지 않고 DMA 시작 후 감지)이라, latency가 error pipeline stage를 그대로 반영한다.
 
-2. NAK 에러 bimodal: REM_INV_REQ·REM_ACCESS(rkey/addr)는 ~0.5ms와 ~1.6ms 두 모드를 오간다(두 모드 차 ~1ms로 일정). busy-poll(poll_cq_block) 중 OS scheduler의 CPU 양보로 추정 — 실행 내 phase shift이며 방향(앞/뒤 어느 쪽이 느린지)은 실행마다 다르다(warmup이 아님). counter·vendor_err는 N=100에서 100% deterministic인데 latency만 host 환경에 의존한다 → latency는 분류 신호로 부적합하고, CQE(vendor_err) 기반 분류의 근거가 된다. 절대값을 보고하려면 CPU pinning/core isolation이 필요하다.
+2. NAK 에러 bimodal: REM_INV_REQ·REM_ACCESS(rkey/addr)는 약 0.5ms와 약 1.6ms 두 모드를 오간다(두 모드 차 약 1ms로 일정). busy-poll(poll_cq_block) 중 OS scheduler의 CPU 양보로 추정 — 실행 내 phase shift이며 방향(앞/뒤 어느 쪽이 느린지)은 실행마다 다르다(warmup이 아님). counter·vendor_err는 N=100에서 100% deterministic인데 latency만 host 환경에 의존한다 → latency는 분류 신호로 부적합하고, CQE(vendor_err) 기반 분류의 근거가 된다. 절대값을 보고하려면 CPU pinning/core isolation이 필요하다.
 
 3. firmware retry counter는 deterministic: RETRY_EXC 두 시나리오의 local_ack_timeout_err +6, roce_adp_retrans +8이 N=30 전부 동일하다 — retry state machine은 latency와 달리 흔들리지 않는다.
 
@@ -308,7 +308,7 @@ IBA spec과 ConnectX-5 구현이 정확히 일치. Error NAK 후 server QP도 ER
 | C_TX RDMA | 2 pkts, 300B | 2 pkts, 300B |
 | S_TX RDMA | 2 pkts, 148B | 2 pkts, 148B |
 | TCP traffic | 10 pkts | 10 pkts |
-| Latency | ~3.1 ms | ~3.1 ms |
+| Latency | ≈3.1 ms | ≈3.1 ms |
 | Server QP state | ERR | ERR |
 
 모든 counter source에서 동일. Server firmware 내부에서 rkey lookup 실패와 address range 검증 실패가 동일 NAK(Remote Access Error)을 생성하며, 두 검증 단계 사이에 public counter가 없음. Application-level 정보(어떤 parameter가 잘못됐는지)로만 구분 가능.

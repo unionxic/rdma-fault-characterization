@@ -5,14 +5,14 @@
 **2026-10-06 리뷰 정정**
 
 - "GDAKI teardown returned in all cells"는 보내는 쪽(rank 0)만 맞다. 받는 쪽(rank 1)의 abort는 GDAKI
-  blocking F1~F3 9/9회 돌아오지 않았다. 결과 표의 teardown "clean"도 rank 0 기준이다.
-- 받는 쪽은 두 backend 모두 F1~F3 18/18회 비동기 오류를 받지 못했다. 자기 QP가 ERR인 F3에서도 같았다.
+  blocking F1–F3 9/9회 돌아오지 않았다. 결과 표의 teardown "clean"도 rank 0 기준이다.
+- 받는 쪽은 두 backend 모두 F1–F3 18/18회 비동기 오류를 받지 못했다. 자기 QP가 ERR인 F3에서도 같았다.
   "호스트가 10 s마다 QP 상태를 검사한다"는 설명은 rank 1에는 맞지 않는다. 원인은 확인하지 않았다.
 - "F2 regimes"의 MR 안쪽 넘침 "silent loss"는 남아 있는 원시 데이터가 없다. v1의 F2 행은 모두
   REM_ACCESS(proxy)나 10 s 검사(GDAKI)로 나온다.
 - F4는 두 대기 방식 모두 timeout 대기로 끝을 확인했다. "F4 blocking" 행은 사실상 timeout 행이다.
 - stock GDAKI 장치가 오류 CQE를 -EIO로 받고 버린다는 설명은 소스 근거다. stock 빌드에서 직접 관찰하지 않았다.
-- proxy와 GDAKI의 F2~F4 칸은 3회씩이며 N30으로 다시 재지 않았다. proxy F4의 10/0x88(6/6)은
+- proxy와 GDAKI의 F2–F4 칸은 3회씩이며 N30으로 다시 재지 않았다. proxy F4의 10/0x88(6/6)은
   `../../teardown_order/`에 따르면 경쟁 조건이라 12/0x81도 나올 수 있다.
 
 Answers the **per-stack fault measurement** of the GPU-initiated RDMA fault study (see
@@ -165,7 +165,7 @@ puts to the dead peer so the RDMA fault surfaces on the initiator.
   `GIN_ABORT_WATCHDOG_S=30` and raise `WATCHDOG_S` so the global deadline comes later.
 * Timing (QA item 1): each rank logs its start `t0_mono_ms`; right after the
   unique-id exchange rank 0 measures the rain<->sunny CLOCK_MONOTONIC offset
-  (32-round ping-pong on the management socket, min-RTT sample; RTT ~0.2 ms).
+  (32-round ping-pong on the management socket, min-RTT sample; RTT ≈0.2 ms).
   Fault fire time: F1/F3 = the hook's `fire_mono_ms` (F3 on sunny, converted);
   F2 = rank 0's launch of the first out-of-bounds put; F4 = a timestamp taken on
   sunny **in the same process that sends SIGKILL** (python `clock_gettime` then
@@ -191,7 +191,7 @@ wait). `scripts/run_trial.sh` runs one trial (launches rank 1 on sunny over SSH,
 rank 0 on rain, injects the fault, merges both ranks' KEY=VALUE outputs into one
 CSV row). `scripts/run_matrix.sh <backend> <csv> <batch>` runs a batch of trials
 (`baseline`, `faults-timeout`, `faults-blocking`); the caller wraps each batch in
-one `cluster_run.sh` hold (<~15 min each, released between batches).
+one `cluster_run.sh` hold (<≈15 min each, released between batches).
 `scripts/merge_v2.py` assembles the final CSV (v1 baseline + v2 faults + refs) and
 `scripts/summarize.py` collapses it into the table below.
 
@@ -211,7 +211,7 @@ post-fault polling, gated hooks, CLOCK_MONOTONIC fault times), plus the IB=20
 references in `results/20260923/ref60/` (the lead's proxy re-measurement and one
 GDAKI blocking trial). **Superseded:** `gin_results_v1.csv` / `summary_v1.md` —
 their `host_error_ms` is relative to program start (not a time-to-surface), GDAKI
-timeout "host never learns" was a driver artifact (process exited ~5 s after the
+timeout "host never learns" was a driver artifact (process exited ≈5 s after the
 fault), and the old `ref` rows had a 5 s device cap (the ">55 s" claim was wrong).
 
 `surface_ms` = host time-to-surface after the fault fired, median [min-max] over
@@ -228,8 +228,8 @@ trials; `init_silent_iters` per trial; `status/ve` from the proxy WARN.
 | proxy | F3 | blocking | 3 | hang / hang | n/a | 0,0,0 | remote | **3613** [3539-3696] | log | 12/0x81 | **hang** |
 | proxy | F4 | timeout | 3 | error / killed | missing | 0,0,0 | remote | **60** [60-61] | log | 10/0x88 | clean |
 | proxy | F4 | blocking | 3 | error / killed | missing | 0,0,0 | remote | **61** [60-62] | log | 10/0x88 | clean |
-| proxy | F3 ref IB=20 | timeout | 2 | timeout / timeout | missing | 0,0 | remote | ~57170 (est) | log | 12/0x81 | clean |
-| proxy | F3 ref IB=20 | blocking | 2 | hang / hang | n/a | 0,0 | remote | ~58074 (est) | log | 12/0x81 | hang |
+| proxy | F3 ref IB=20 | timeout | 2 | timeout / timeout | missing | 0,0 | remote | ≈57170 (est) | log | 12/0x81 | clean |
+| proxy | F3 ref IB=20 | blocking | 2 | hang / hang | n/a | 0,0 | remote | ≈58074 (est) | log | 12/0x81 | hang |
 | gdaki | none | both | 5+5 | ok / ok | ok | 0 | none | - | none | - | clean |
 | gdaki | F1 | timeout | 3 | timeout / timeout | missing | 0,0,0 | remote | **9402** [9401-9403] | api | - | clean |
 | gdaki | F1 | blocking | 3 | **ok** / hang | n/a | **1,1,1** | remote | **9402** [9401-9403] | api | - | clean |
@@ -252,22 +252,22 @@ blocking).
 
 - **Proxy exposes the full status/vendor_err pair, fast.** The progress thread's `ibv_poll_cq`
   WARN carries `status`/`vendor_err` and `ncclCommGetAsyncError` returns
-  `ncclRemoteError` (`fp_where`=`log`): F1 WR_FLUSH 5/0xf5 in **~7 ms**, F2 REM_ACCESS
-  10/0x88 in **~3 ms**, F4 REM_ACCESS 10/0x88 **~60 ms** after the SIGKILL, F3
-  RETRY_EXC 12/0x81 after **~3.6 s** at IB_TIMEOUT=14 (the RETRY_EXC floor; v1's
-  "~5 s" was start-relative) and **~57-59 s** at the default IB_TIMEOUT=20.
+  `ncclRemoteError` (`fp_where`=`log`): F1 WR_FLUSH 5/0xf5 in **≈7 ms**, F2 REM_ACCESS
+  10/0x88 in **≈3 ms**, F4 REM_ACCESS 10/0x88 **≈60 ms** after the SIGKILL, F3
+  RETRY_EXC 12/0x81 after **≈3.6 s** at IB_TIMEOUT=14 (the RETRY_EXC floor; v1's
+  "≈5 s" was start-relative) and **≈57-59 s** at the default IB_TIMEOUT=20.
 - **GDAKI exposes no error code and learns only on a 10 s tick.** The device
   poll reads only the CQE opcode (REQ_ERR -> `-EIO`); the host learns via
   `ncclCommGetAsyncError`'s QP-state check (`fp_where`=`api`, "GIN Error detected", no
   status/vendor_err), throttled to NCCL_GIN_ERROR_QUERY_SEC=10 s. In all 24 GDAKI
-  fault trials the host error lands at the same moment, **~10.7 s after rank 0's
+  fault trials the host error lands at the same moment, **≈10.7 s after rank 0's
   start** (60.7 s for the IB=20 ref) — the first throttled query after the initial
   one — regardless of when the fault fired (F2 at 0.7 s -> surface 10.0 s, F1/F3 at
   1.3 s -> 9.4 s, F4 at 2.7 s -> 8.0 s). GDAKI time-to-surface is therefore
   "until the next 10 s tick after the QP enters ERR" (0-10 s, phase-dependent),
-  plus the RETRY_EXC time when the error is remote (ref: QP enters ERR ~57 s after
+  plus the RETRY_EXC time when the error is remote (ref: QP enters ERR ≈57 s after
   the fault, host at 59.4 s). **v1's "GDAKI timeout: host never learns" was an
-  artifact** of the driver exiting ~5 s after the fault; with 15 s of post-fault
+  artifact** of the driver exiting ≈5 s after the fault; with 15 s of post-fault
   polling it surfaces in timeout mode too.
 - **Device-wait outcome.** timeout mode: both waits return `ncclTimeout`, data
   missing (bounded as designed). proxy blocking: both waits hang (user devComms get
@@ -283,15 +283,15 @@ blocking).
   management TCP barrier; the drain's first put then ends with device rc **8 =
   ncclTimeout** (the 5 s device cap; v1 labelled this "error"). No NCCL WARN and no
   status/vendor_err appear; the only host-visible sign is the QP-state check
-  (`fp_where`=`api`) ~8 s after the kill. Proxy F4 by contrast logs REM_ACCESS 10/0x88
+  (`fp_where`=`api`) ≈8 s after the kill. Proxy F4 by contrast logs REM_ACCESS 10/0x88
   within 60 ms (the host error is seen during the drain -> init=`error`).
 - **F3 vs F4 on the initiator.** F3 (peer QP -> ERR, process alive) exhausts IB
   retries -> RETRY_EXC 12/0x81 (3.6 s at IB=14); F4 (process killed) has its
   MR/QP torn down by the kernel, so the next write is rejected -> REM_ACCESS
-  10/0x88 within ~60 ms. On the proxy backend the two are distinguishable; on
+  10/0x88 within ≈60 ms. On the proxy backend the two are distinguishable; on
   GDAKI both look identical ("QP in ERR").
 - **F2 regimes.** A put just past the logical window but inside the page-rounded
-  MR (`ncclMemAlloc` rounds to ~2 MiB) raises **no** error (silent loss, v1);
+  MR (`ncclMemAlloc` rounds to ≈2 MiB) raises **no** error (silent loss, v1);
   only a put outside the MR (64 MiB offset, v2) raises REM_ACCESS. The GIN device
   `put` does not bounds-check offsets.
 - **GDAKI CQ shape (cross-reference with the CQE-sequence question).** NCCL leaves `cq_collapsed=0`,

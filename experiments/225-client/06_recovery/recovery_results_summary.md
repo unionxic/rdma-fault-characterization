@@ -71,10 +71,10 @@ Recovery method: 양쪽 QP reset + server 새 MR 등록 + (PSN + rkey + addr) �
 파일: `REM_ACCESS_ERR/results/recovery_20260517_160121.csv`
 
 특이사항:
-- Detection ~450us = Error NAK 즉시 리턴 (retry 없음, IBA spec 상 Error NAK은 재전송 불가)
+- Detection 약 450us = Error NAK 즉시 리턴 (retry 없음, IBA spec 상 Error NAK은 재전송 불가)
 - Error NAK 자체가 peer liveness 증거 → TCP probe 불필요
 - 첫 5 trials warmup (5.3ms→480us), NIC cache 효과. 안정값 기준 분석
-- MR 재등록이 recovery에 추가되지만 latency 차이 무시 가능 (~100us)
+- MR 재등록이 recovery에 추가되지만 latency 차이 무시 가능 (약 100us)
 
 ---
 
@@ -109,7 +109,7 @@ Recovery method: 양쪽 QP reset + server MR 재등록(REMOTE_WRITE 포함) + (P
 | REM_INV_REQ | 489 us | Error NAK 즉시 리턴 | IBA: Error NAK은 재전송 불가 |
 | RETRY_EXC_ERR | 3,738 ms | Timeout retry exhaustion | retry_cnt=7 + adaptive retrans |
 
-Detection 차이: NAK 기반 에러는 수백 us, Timeout 기반 에러는 수 초. 1,000x~10,000x 차이.
+Detection 차이: NAK 기반 에러는 수백 us, Timeout 기반 에러는 수 초. 1,000x–10,000x 차이.
 
 ### 3-2. Recovery Latency
 
@@ -120,8 +120,8 @@ Detection 차이: NAK 기반 에러는 수백 us, Timeout 기반 에러는 수 �
 | REM_INV_REQ | 1,310 us | 6,960 us | — |
 | RETRY_EXC_ERR | 2,773 us | 9,633 us | 7,889,068 us |
 
-Recovery는 에러 유형에 거의 무관 (QP-only: 1.3~2.8ms). 절차가 동일하면 시간도 동일.
-RETRY_EXC가 ~1.4ms 느린 이유: 3.7s 동안 firmware가 쌓은 retry state 정리 비용.
+Recovery는 에러 유형에 거의 무관 (QP-only: 1.3–2.8ms). 절차가 동일하면 시간도 동일.
+RETRY_EXC가 약 1.4ms 느린 이유: 3.7s 동안 firmware가 쌓은 retry state 정리 비용.
 
 ### 3-3. End-to-End Total (detect + recovery + retry)
 
@@ -132,8 +132,8 @@ RETRY_EXC가 ~1.4ms 느린 이유: 3.7s 동안 firmware가 쌓은 retry state �
 | REM_INV_REQ | 1,818 us | 7,411 us | — |
 | RETRY_EXC_ERR | 3,740,787 us | 3,748,447 us | 11,511,890 us |
 
-NAK 기반 에러: end-to-end ~2ms (detect + recover 합산).
-Timeout 기반 에러: end-to-end ~3.7s — detection이 지배, recovery 최적화로 줄일 수 없음.
+NAK 기반 에러: end-to-end 약 2ms (detect + recover 합산).
+Timeout 기반 에러: end-to-end 약 3.7s — detection이 지배, recovery 최적화로 줄일 수 없음.
 
 ---
 
@@ -174,7 +174,7 @@ Firmware retry 2단계 구조 발견:
 | 253.2 | roce_adp_retrans +1 | 134.6ms |
 | 522.0 | roce_adp_retrans +1 | 268.8ms |
 
-2단계 — ACK timeout retry (~536ms 고정 간격):
+2단계 — ACK timeout retry (약 536ms 고정 간격):
 
 | 시점 (ms) | Counter | 간격 |
 |---|---|---|
@@ -189,9 +189,9 @@ Counter별 첫 증가 시점:
 
 | Counter | 첫 증가 (avg) | CQE 대비 |
 |---|---|---|
-| roce_adp_retrans | ~10 ms | 3.7s 전 |
-| local_ack_timeout_err | ~1,050 ms | 2.7s 전 |
-| req_transport_retries_exceeded | ~3,742 ms | CQE와 동시 |
+| roce_adp_retrans | 약 10 ms | 3.7s 전 |
+| local_ack_timeout_err | 약 1,050 ms | 2.7s 전 |
+| req_transport_retries_exceeded | 약 3,742 ms | CQE와 동시 |
 | roce_adp_retrans_to | 미증가 | — |
 | out_of_sequence | 미증가 | — |
 
@@ -209,8 +209,8 @@ Counter를 10ms 간격으로 polling → 증가 감지 시 force ERR → recover
 | Active — local_ack_timeout_err 50ms | 1,057,000 | 2,695 | 1,060,000 | 3.5x |
 | Active — roce_adp_retrans 10ms | 16,559 | 1,575 | 18,431 | 203x |
 
-local_ack_timeout_err: polling interval(10/20/50ms)은 결과에 거의 무관 — counter 증가 시점(~1,050ms)이 지배.
-roce_adp_retrans: detection 10~31ms 범위. polls_before_detect 1~3회, counter 첫 증가(~4ms)와 polling 주기(10ms) 정렬에 따라 결정.
+local_ack_timeout_err: polling interval(10/20/50ms)은 결과에 거의 무관 — counter 증가 시점(약 1,050ms)이 지배.
+roce_adp_retrans: detection 10–31ms 범위. polls_before_detect 1–3회, counter 첫 증가(약 4ms)와 polling 주기(10ms) 정렬에 따라 결정.
 
 파일:
 - `RETRY_EXC_ERR/early_detect/results/early_detect_20260517_230111_combined.csv` (local_ack_timeout_err)
@@ -220,8 +220,8 @@ roce_adp_retrans: detection 10~31ms 범위. polls_before_detect 1~3회, counter 
 
 | Counter | 첫 증가 | Detection | False positive 위험 | 적합 정책 |
 |---|---|---|---|---|
-| roce_adp_retrans | ~4-18 ms | 16.6 ms (실측) | 높음 — 일시적 congestion에서도 증가 가능 | threshold N 설정 ("N번 연속 증가 시 개입") |
-| local_ack_timeout_err | ~1,050 ms | ~1,053 ms | 거의 없음 — ACK timeout 자체가 보수적 판정 | 첫 증가 즉시 개입 가능 |
+| roce_adp_retrans | 약 4-18 ms | 16.6 ms (실측) | 높음 — 일시적 congestion에서도 증가 가능 | threshold N 설정 ("N번 연속 증가 시 개입") |
+| local_ack_timeout_err | 약 1,050 ms | 약 1,053 ms | 거의 없음 — ACK timeout 자체가 보수적 판정 | 첫 증가 즉시 개입 가능 |
 
 roce_adp_retrans는 패킷이 살짝 늦게 도착하면 firmware가 adaptive retransmission을 시도하면서 +1됨.
 이걸로 바로 QP를 ERR로 전이시키면 정상 연결을 죽이는 위험.
@@ -243,8 +243,8 @@ local_ack_timeout_err는 ACK timeout이 발생해야 증가하므로, 증가 자
 
 | Method | 내용 | Latency | 비고 |
 |---|---|---|---|
-| QP-only (+MR) | QP RESET→RTS + PSN 재협상 + (필요시 MR 재교환) | 1.3~2.8 ms | PD, CQ 재활용 |
-| Full rebuild | PD/CQ/QP/MR 전부 파괴 + 재생성 | 6.9~9.6 ms | 모든 자원 새로 할당 |
+| QP-only (+MR) | QP RESET→RTS + PSN 재협상 + (필요시 MR 재교환) | 1.3–2.8 ms | PD, CQ 재활용 |
+| Full rebuild | PD/CQ/QP/MR 전부 파괴 + 재생성 | 6.9–9.6 ms | 모든 자원 새로 할당 |
 | Driver reload | modprobe -r + modprobe + device init + 전체 재생성 | 7,889 ms | QP-only 대비 2,847x 느림 |
 
 ---
@@ -259,17 +259,17 @@ Counter는 사후 진단용 (firmware retry 분해, monitoring blind spot 증거
 
 ### 5-2. Recovery latency는 에러 유형 무관, method 선택이 지배적
 
-QP-only: ~1.5ms (에러 유형 불문)
-Driver reload: ~7.9s
+QP-only: 약 1.5ms (에러 유형 불문)
+Driver reload: ≈7.9s
 차이: 2,847x — CQE 분류로 QP-only 선택하면 즉시 이 이득을 얻음.
 
 ### 6-3. Detection bottleneck은 counter 감시로 해결 가능
 
 | Detection 방법 | 시간 | Total | False positive |
 |---|---|---|---|
-| NAK 기반 (RNR, REM_ACCESS, REM_INV_REQ) | 수백 us | ~2ms | 없음 |
-| Timeout — passive (기존) | 3,738 ms | ~3.7s | 없음 |
-| Timeout — active (local_ack_timeout_err) | 1,053 ms | ~1.06s (3.5x) | 거의 없음 |
+| NAK 기반 (RNR, REM_ACCESS, REM_INV_REQ) | 수백 us | 약 2ms | 없음 |
+| Timeout — passive (기존) | 3,738 ms | 약 3.7s | 없음 |
+| Timeout — active (local_ack_timeout_err) | 1,053 ms | 약 1.06s (3.5x) | 거의 없음 |
 | Timeout — active (roce_adp_retrans) | 16.6 ms | 18.4ms (203x) | 높음 (threshold 필요) |
 
 Counter의 역할 재정의:
@@ -279,10 +279,10 @@ Counter의 역할 재정의:
 
 ### 6-4. Firmware retry 2단계 구조 발견
 
-1단계 Adaptive retransmission: roce_adp_retrans, exponential backoff (~4ms에서 시작, 배증)
-2단계 ACK timeout retry: local_ack_timeout_err, ~536ms 고정 간격
+1단계 Adaptive retransmission: roce_adp_retrans, exponential backoff (약 4ms에서 시작, 배증)
+2단계 ACK timeout retry: local_ack_timeout_err, 약 536ms 고정 간격
 
-roce_adp_retrans가 local_ack_timeout_err보다 ~60x 먼저 증가.
+roce_adp_retrans가 local_ack_timeout_err보다 약 60x 먼저 증가.
 단, roce_adp_retrans는 일시적 congestion에서도 증가 가능 → threshold 정책 필요.
 
 ### 6-5. Error NAK = peer liveness 증거
@@ -320,8 +320,8 @@ Full rebuild는 모든 QP/PD/CQ/MR을 파괴하므로 정상 QP_A도 중단. QP-
 
 | QP | Injected fault | CQE status | vendor_err | Detection |
 |---|---|---|---|---|
-| QP_A | MR deregistered | 10 (REM_ACCESS_ERR) | 0x88 | ~2.1ms |
-| QP_B | QP forced ERR | 5 (WR_FLUSH_ERR) | 0xf5 | ~101ms |
+| QP_A | MR deregistered | 10 (REM_ACCESS_ERR) | 0x88 | ≈2.1ms |
+| QP_B | QP forced ERR | 5 (WR_FLUSH_ERR) | 0xf5 | ≈101ms |
 
 CQE: per-QP로 정확한 에러 식별. 10/10 trials deterministic.
 
@@ -331,7 +331,7 @@ Counter delta (port-level, 혼합):
 |---|---|---|
 | req_cqe_error | +2 | QP_A + QP_B 합산, 어느 QP인지 구분 불가 |
 | req_remote_access_errors | +1 | QP_A의 REM_ACCESS, counter만으로는 확인 불가 |
-| roce_adp_retrans | +2~4 | QP_B의 retry, 양도 변동 |
+| roce_adp_retrans | +2–4 | QP_B의 retry, 양도 변동 |
 
 결론: counter는 port-level aggregate → multi-QP 환경에서 에러 원인 귀속 불가. CQE가 유일한 per-QP 분류 수단.
 

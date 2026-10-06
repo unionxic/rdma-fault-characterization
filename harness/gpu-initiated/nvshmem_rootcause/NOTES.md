@@ -7,7 +7,7 @@
 - 업스트림 이슈 초안의 "Expected: `nvshmem_quiet()` returns after about 3.7 s"는 API 수준에서 조용한 성공이다(quiet는 void이고 상대는 죽었다). 수정은 멈춤을 조용한 성공으로 바꿀 뿐, 오류를 알려 주지 않는다.
 - "How the GPU-handler path detects" 절의 -1 반환과 오류 printf는 소스로만 확인했다. 직접 관측한 적이 없다.
 - collapsed 슬롯에서 원인 CQE가 덮이기까지의 약 60 µs는 이 스택에서 잰 값이 아니다. CPU verbs와 `../gin_q4/`의 값이다.
-- 3자 비교의 감지 시간(약 2 ms / 10 ms / 3.5~3.8 s)은 put부터 감지까지다. 장애 시점부터가 아니다.
+- 3자 비교의 감지 시간(약 2 ms / 10 ms / 3.5–3.8 s)은 put부터 감지까지다. 장애 시점부터가 아니다.
 
 Follow-up to `../nvshmem/` (per-stack fault measurement and CQ-slot read, Root cause section) and
 `../gin_q4/` (Task A). Same cluster: rain (requester, mlx5_1) and sunny (target, mlx5_0), ConnectX-6
@@ -52,7 +52,7 @@ init pattern and GPU placement change nothing.
   trials, the root cause in all 24 timeout-mode ones), stock CPU proxy 0/12 ("3-way comparison"
   below).
 
-**Question 2: F3, ~4 s of retransmission then silence, QP in RTS for 16 s.** These were two
+**Question 2: F3, ≈4 s of retransmission then silence, QP in RTS for 16 s.** These were two
 observations from two different runs, and the "RTS" one is an instrument artifact.
 1. The diagnostic watch thread of `../nvshmem/nvshmem_ibgda_fault_inject.diff` holds
    `rc_endpoint_lock` across its `sleep_for(period)` [source]. `ibgda_rc_progress`, the CPU proxy
@@ -63,14 +63,14 @@ observations from two different runs, and the "RTS" one is an instrument artifac
    the whole window with `ready_head=25`, the qptl signature from `../nvshmem/`, and rain transmits
    nothing after the fault until the watch ends (17.6 s). Only then does the starved put go out and
    get retransmitted. The same watch with the lock released during the sleep: the put is rung,
-   retransmitted, and the QP goes to ERR ~3.6 s later. The fault-inject thread takes the same lock:
+   retransmitted, and the QP goes to ERR ≈3.6 s later. The fault-inject thread takes the same lock:
    in all three `../nvshmem/` `ab/F1_timeout_tcc1_*` runs its 2ERR executed only after the watch's
    final dump (log line 308 of 313).
 2. Without the artifact, NVSHMEM F3 behaves like verbs on the wire. Retransmission bursts of
-   65-69 packets arrive every ~0.5 s for ~3 s, the same with the knob off and on. The QP goes to
+   65-69 packets arrive every ≈0.5 s for ≈3 s, the same with the knob off and on. The QP goes to
    ERR 3.6 s after the put (watch at 100 ms, lock released: 5210-5304 ms watch clock, failing put
-   rung at ~1600-1700 ms). Only the RETRY_EXC CQE is missing, for the reason in question 1
-   [measured, nv1/nv2]. The "silence" after ~4 s is simply the end of the retries.
+   rung at ≈1600-1700 ms). Only the RETRY_EXC CQE is missing, for the reason in question 1
+   [measured, nv1/nv2]. The "silence" after ≈4 s is simply the end of the retries.
    `nvshmem_finalize` still hangs after the error with the knob on (pe0 exit 7 in every fault
    trial). That is a separate teardown issue.
 
@@ -181,12 +181,12 @@ unless stated. Scan = the device's scan of all 1024 CQ entries after the wait.
 | F2b, `../nvshmem/` watch (lock held) | 0 | 1 | timeout | 0x0 | 0 | RTS, hw = sw = 23 throughout | 23 / 0 |
 | F3, lock held, 100 ms, no delay | 0 | 1 | NVSHMEM init never completed (killed) | - | - | - | - |
 
-The watch clock starts at connect. The failing F3 put is rung at ~1.6-1.7 s, so ERR at 5.2 s is
-~3.6 s after the put. In F3 the device saw the error 3.5-3.6 s after the wait began.
+The watch clock starts at connect. The failing F3 put is rung at ≈1.6-1.7 s, so ERR at 5.2 s is
+≈3.6 s after the put. In F3 the device saw the error 3.5-3.6 s after the wait began.
 
 **Port counters (rain, 0.5 s samples, `*.cnt`).** F3 with the lock released, knob off or on,
 watch or no watch: after the fault, bursts of 65-69 packets with almost no packets received,
-every ~0.5 s for ~3 s (samples 2.5-5.5 s of the trial clock), then quiet. This is the "~850
+every ≈0.5 s for ≈3 s (samples 2.5-5.5 s of the trial clock), then quiet. This is the "≈850
 packets then silence" of the original report. F3 with the lock held: no transmission after the
 fault until 17.6 s (the watch ends at 0.8 + 16 s), then the same burst pattern.
 
@@ -244,7 +244,7 @@ of the doorbell record = 0, and the QP is in ERR with sw_sq 0. F4 behaves like F
 handler (RETRY_EXC, since the killed peer's QPs vanish). In blocking mode (A and C),
 `nvshmem_quiet()` returned on every iteration and the driver counted 8/8 done while the target
 received only 4 (F2b) or 6 (F3). The failing quiet returned when the trailing flush arrived
-(10 ms / 3.6-3.8 s), and later ones in ~2 ms. The slot then held 0xd / 0x05 / 0xf9, not the root
+(10 ms / 3.6-3.8 s), and later ones in ≈2 ms. The slot then held 0xd / 0x05 / 0xf9, not the root
 cause. Teardown hung after every fault on every handler.
 
 ### How the GPU-handler path detects an error today (source + config A/C)
@@ -293,7 +293,7 @@ QUERY_QP anywhere in ibgda.cpp (the QP states in the tables come from our diagno
 
 **Root cause vs trailing flush in the collapsed slot.** NVSHMEM's put + signal is two WQEs, and
 only the signal (the last) is signaled. The root cause lands on the put (wqe N-1); the flush
-0x05/0xf9 for the signal (wqe N) overwrites slot 0 ~60 us later (`../cqe_seq/`).
+0x05/0xf9 for the signal (wqe N) overwrites slot 0 ≈60 us later (`../cqe_seq/`).
 - `ibgda_poll_cq` waits for `wqe_counter == N` (the last WQE). So it wakes on the **flush**, and
   what it reads is 0xd with syndrome 0x05 (WR_FLUSH). The root cause (0x13/0x88, 0x15/0x81,
   0x05/0xf5) is already gone at that point. Only when the failing WQE is itself the last one
@@ -305,7 +305,7 @@ only the signal (the last) is signaled. The root cause lands on the put (wqe N-1
   other means (`../cqe_seq/`, `../gin_q4/`).
 - Blocking, measured (A, 2+2 trials): the failing iteration's `nvshmem_quiet()` returned after
   9.8-10.8 ms (F2b) or 3.73-3.76 s (F3), the arrival time of the flush. Every later iteration's
-  quiet returned in ~2 ms, because its WQEs were posted to a QP in ERR and flushed at once. The
+  quiet returned in ≈2 ms, because its WQEs were posted to a QP in ERR and flushed at once. The
   driver counted 8/8 iterations complete while the target received only 4 (F2b) or 6 (F3). Every
   post-fault iteration was a silent success.
 
@@ -371,7 +371,7 @@ Each entry: hypothesis, experiment, result, conclusion.
 - `../nvshmem/README.md` "F3 ... rain's QP stays state = 3 (RTS) for all 54 query-only samples
   over 16 s" and RESULTS.md "F3 ... no error CQE, QP stays RTS": the watched run had a starved
   proxy, so the failing put was never sent. Without that artifact F3's requester QP goes to ERR
-  after ~3.6 s of retries. Still no CQE, for question 1's reason.
+  after ≈3.6 s of retries. Still no CQE, for question 1's reason.
 - `../nvshmem/README.md` "The earlier 'state = 3 always' came from the watch thread racing init":
   the watch did not race init; it blocked the proxy and the fault thread.
 - `../nvshmem/results/20260923/ab/F1_*` and `ab/F3_*` (tcc1): the failing put was never rung, and
@@ -534,13 +534,13 @@ its own slot and can be counted. The CQE count is checked three ways: the EV log
 bookkeeping, and QUERY_CQ's `producer_counter` delta. The rest of the preset is `nvshmem`.
 - `kerr`: the target first moves its QP to ERR, so nothing in the batch is ever acknowledged
   (c = first uncompleted WQE = 8). Then either a local 2ERR 20 ms after the ring (S1), or no
-  local action, so the QP runs into RETRY_EXC after ~3.6 s (S3, ack timeout 14, retry 7).
+  local action, so the QP runs into RETRY_EXC after ≈3.6 s (S3, ack timeout 14, retry 7).
 - `knak`: live target. Batch WRITE 8 (WQE 16) carries a bad rkey, so WQEs 8-15 complete OK and
   WQE 16 is NAKed with a remote access error (c = 16) (S2; S5 uses the `doca` preset).
 - `--klate-ms/--klate-uar` (S4): with P = c (nothing flushed), write word 1 = pi 250 ms after
   the ring, with or without ringing the UAR again. The 100 ms QUERY_QP/QUERY_CQ sampler either
   runs (s100: a query at 200 and 300 ms) or is set to 1000 ms (s1000: no firmware command
-  between the first sample at ~20 ms and the end at 700 ms).
+  between the first sample at ≈20 ms and the end at 700 ms).
 
 Prediction written before S1-S5 (from the smoke run and the 2026-09-24 data): error/flush CQEs
 for exactly the WQEs in [c, P) when P > c, none when P <= c; the root-cause CQE (0x05/0xf5 for a
@@ -610,7 +610,7 @@ If P <= c (tested for c - P = 0, 1, 4 and 8 here, and 8-29 with P = 0 on 2026-09
 nothing at all, **not even the root-cause CQE**. The WQEs in [c, pi) are never completed. If
 P > pi, the NIC also completes the slots above pi, which were never rung, and parses whatever
 is in them (here valid NOPs, reported with opcode 0x00). While the QP stays in ERR, raising the
-record later releases the missing completions within ~0.1 ms. The reviewer's predictions
+record later releases the missing completions within ≈0.1 ms. The reviewer's predictions
 ("CQEs only for WQEs < k", "the root-cause CQE only if its index < k", "QUERY_QP's counter after
 ERR = k") all hold, with "k" read as the absolute value P and the range starting at c rather
 than 0.
@@ -622,7 +622,7 @@ of the QP, so no completion is ever written.
 **Implications [inferred, not tested in NVSHMEM].**
 - A helper that notices the QP in ERR could copy the stock proxy's word 0 (which holds
   `pi & 0xffff`) into word 1. By S4 this would release every completion, root cause included,
-  within ~0.1 ms, without rebuilding the application. The proper fix is still the one-line
+  within ≈0.1 ms, without rebuilding the application. The proper fix is still the one-line
   change in `ibgda_{rc,dci}_progress` (as in `nvshmem_nrc_proxy_sq_dbr.diff`).
 - Any code that writes a record value ahead of the WQEs it has actually written risks the NIC
   processing stale slots on an error. Here that was tested only with valid NOPs, pi + 2.

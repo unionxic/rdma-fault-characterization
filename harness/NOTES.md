@@ -110,7 +110,7 @@ The dead-peer 0x88 path itself is not produced by this harness's faults.
 | `rem_inv_req` | atomic to a responder QP that doesn't enable atomics | REM_INV_REQ_ERR (9) / 0x8a |
 | `rem_access` | write past the end of the remote MR | REM_ACCESS_ERR (10) / 0x88 |
 | `rnr` | SEND with no remote recv WQE (finite rnr_retry) | RNR_RETRY_EXC_ERR (13) / 0x87 |
-| `retry_server_qp_err` | responder QP→ERR, stops ACKing | RETRY_EXC_ERR (12) / 0x81, ~3.75 s firmware floor |
+| `retry_server_qp_err` | responder QP→ERR, stops ACKing | RETRY_EXC_ERR (12) / 0x81, ≈3.75 s firmware floor |
 | `partial_write` | 4 MiB write, force own QP→ERR mid-transfer | WR_FLUSH_ERR (5) / 0xf5; landed bytes measured by readback |
 | `retry_proc_kill` | responder process exits on GO (runner restarts it per trial; client needs `-n 1`) | RETRY_EXC_ERR (12) / 0x81 |
 | `retry_proc_sigkill` | responder raises SIGKILL on GO: no cleanup by the process (restarted per trial; `-n 1`) | not yet measured |
@@ -255,7 +255,7 @@ are earlier runs and are not used in the table.
   **30/30** trials; there were no matching bytes outside the prefix, and every value is
   PMTU-aligned. The same exact agreement held in every partial_write run that day:
   130/130 trials in six runs across qp_only, full_rebuild and `-r none`.
-- `retry_server_qp_err` / `retry_proc_kill` reproduce the ~3.7 s firmware detection
+- `retry_server_qp_err` / `retry_proc_kill` reproduce the ≈3.7 s firmware detection
   floor (min_ack_timeout_limit) on ConnectX-6 (VPI, MT28908).
 - Recovery method: full_rebuild ≈ 1.8 ms against ≈ 0.8 ms for QP-only (means 0.78–0.90 ms,
   medians 0.77–0.81 ms), about 2.3× on medians (2.27–2.33× for the five faults with both
@@ -265,14 +265,14 @@ are earlier runs and are not used in the table.
   is the typical value.
 - An earlier pinned run the same day (`20260923_113252`) showed a QP-only recovery tail
   of 12.8–17.2 ms on 2–5 of 30 trials in five of the six faults with recovery (none in
-  partial_write), while rain's 5-minute load average was ~7.8. Rerun at low load
+  partial_write), while rain's 5-minute load average was ≈7.8. Rerun at low load
   (`114046`/`114103`, and again in the canonical `123945`), the tail disappeared: QP-only
   p95 ≤ 1.06 ms and no trial above 1.1 ms. Treat recovery means from a loaded host with care.
 
 ## Design notes
 
 - TCP_NODELAY on every control socket (both connect and accepted sides) — avoids the
-  ~40 ms delayed-ACK artifact that contaminated the old A/B recovery numbers.
+  ≈40 ms delayed-ACK artifact that contaminated the old A/B recovery numbers.
 - Manual RC QP setup (no rdmacm) for full control of state transitions.
 - Error checking on every verbs/socket call, and a failed post is never recorded as a
   fault trial. Clean teardown; built with `-Wall -Wextra -Werror`.

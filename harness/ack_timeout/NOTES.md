@@ -3,10 +3,10 @@
 아래는 예전 README 본문을 그대로 옮긴 것이다(영문). 요약은 [README.md](README.md)에 있다.
 
 **2026-10-06 리뷰 정정**
-- 59.8 s는 한 프로세스 안 연속 장애 값이다. 새 프로세스는 58.46~58.79 s, NCCL GIN 측정은 57.1~58.4 s다. 다른 문서에서 인용할 때 이 조건을 붙인다.
+- 59.8 s는 한 프로세스 안 연속 장애 값이다. 새 프로세스는 58.46–58.79 s, NCCL GIN 측정은 57.1–58.4 s다. 다른 문서에서 인용할 때 이 조건을 붙인다.
 - 9.5 ms는 T=8, floor 끔 값이다. T=20, floor 끔은 37.9 s다(2회). floor 끄기는 NIC function 전체에 걸리는 레지스터 변경이다.
 - D1b의 "back-to-back 시험의 약 5%가 몇 ms 일찍 끝난다"는 D1의 첫 시험 제외 55회 중 3회다. A절의 42회에는 없었으므로 합치면 97회 중 3회다.
-- 아래 본문에 이미 반영된 정정: GIN 57~59 s가 "모델 범위 안"이라는 문장 철회, 레지스터 창 잠금 확인 수정, 각 칸 첫 시험이 모델에서 벗어나는 현상(원인 미상).
+- 아래 본문에 이미 반영된 정정: GIN 57–59 s가 "모델 범위 안"이라는 문장 철회, 레지스터 창 잠금 확인 수정, 각 칸 첫 시험이 모델에서 벗어나는 현상(원인 미상).
 
 Answers a review of `docs/experiments/01_detection_firmware_retry.md` and of the GPU stage
 (`harness/gpu-initiated/`):
@@ -112,8 +112,8 @@ stay separable. Files from the first version are refused rather than mixed.
 
 **Per-timeout timing.** A sampler thread (own CPU) loops over (a) one RDMA-netlink
 `RDMA_NLDEV_CMD_STAT_GET` of the port's default counter set - all `hw_counters` in one uncached
-firmware query, ~0.2 ms - and (b) the sysfs port counters `port_xmit_packets` and
-`port_rcv_packets` (~0.09 ms each). Each change is logged with a bracket [lo, hi] (the counter
+firmware query, ≈0.2 ms - and (b) the sysfs port counters `port_xmit_packets` and
+`port_rcv_packets` (≈0.09 ms each). Each change is logged with a bracket [lo, hi] (the counter
 held the old value after lo and the new one before hi); the event time is the midpoint. Sampling
 round: mean 0.38-0.39 ms in every trial; the worst single round was 12.4 ms (a scheduling stall;
 17 of 152 sampled trials had one round > 2 ms), but no timeout or adaptive event had a bracket wider than 2.3 ms
@@ -128,7 +128,7 @@ show qp` listed 18 kernel `rdma_cm` RC QPs in RTS on rain's mlx5_1 (the nvmet-rd
 sunny's NVMe-oF mount [inferred from the setup notes]) and anything else on the port. Measured: in the 300 ms quiet window of
 all 152 sampled trials the timeout-related counters (`local_ack_timeout_err`, `roce_adp_retrans`)
 changed **0** times; the background shows up only as `port_xmit_packets`+`port_rcv_packets`
-pairs (~2-4 packets/s, request/response). Our retransmissions are xmit increments without an rcv
+pairs (≈2-4 packets/s, request/response). Our retransmissions are xmit increments without an rcv
 increment within 1 ms (the responder QP is in ERR and never answers); `own transmissions` below
 counts those, including the original WRITE.
 
@@ -268,7 +268,7 @@ in range, not a per-trial prediction.
 | 18 | 7 | 1073.742 | 2 | 2/2 | 9219.88 [9140.50-9299.25] | 9219.88 +- 112.25 | 0 | 629.60 [550.23-708.97] | 0.59 | 1073.83 [1073.51-1074.03] | 1.000 | 9 | 8 | -0.34 |
 | 20 | 7 | 4294.967 | 2 | 2/2 | 37939.02 [37587.71-38290.33] | 37939.02 +- 496.82 | 0 | 3578.17 [3226.80-3929.54] | 0.83 | 4295.09 [4294.88-4295.33] | 1.000 | 9 | 8 | -1.11 |
 
-(a) At T=8 the interval (~1.05 ms) is 2.7 sampling rounds, so the event-to-event gaps are
+(a) At T=8 the interval (≈1.05 ms) is 2.7 sampling rounds, so the event-to-event gaps are
 quantized (0.77 / 1.16 ms). From the detection times instead: the slope over R at T=8 is
 (9.49 - 2.24) / 7 = 1.04 ms per retry = 0.99 x nominal.
 
@@ -337,11 +337,11 @@ Medians [min-max]. Raw: `results/20260925/C/` (`gin_<floor>_T<T>.csv` + `logs/`,
 
 - **Floor off, the host sees the exact error code 13 ms (NVSHMEM) / 25 ms (GIN) after the fault
   at T=8, 40 / 52 ms at T=10, 585 / 599 ms at T=14**, against 3.54 / 3.61 s with the defaults at
-  the same T=8 (266x / 147x). With the floor on, T=8 and T=14 give the same ~3.6 s (the clamp).
+  the same T=8 (266x / 147x). With the floor on, T=8 and T=14 give the same ≈3.6 s (the clamp).
 - **The NIC part equals the CPU measurement.** Post of the failing op -> error: NVSHMEM 9.5 /
   36.8 / 581.4 ms, GIN 10.2 / 37.3 / 584.3 ms, CPU verbs (B) 9.49 / 37.91 / 574.90 ms at T=8 / 10 /
   14. The rest of fault -> error code is the application's own gap until it next touches the
-  broken QP (NVSHMEM fault -> kernel start 3.6 ms median; GIN ~14 ms, its 15 ms iteration gap)
+  broken QP (NVSHMEM fault -> kernel start 3.6 ms median; GIN ≈14 ms, its 15 ms iteration gap)
   plus device -> mailbox (50-100 us medians).
 - **Classification and teardown are unchanged.** 60/60 floor-off trials recorded RETRY_EXC
   12/0x81 for the root-cause WQE (GIN: WQE 76, 74 in one trial, polled trailing CQE 5/0xf9;
@@ -362,8 +362,8 @@ Medians [min-max]. Raw: `results/20260925/C/` (`gin_<floor>_T<T>.csv` + `logs/`,
   (median 3.73 s): the GIN value (3.62 s at T=14, 3.58-3.62 s at T=8) is inside that range, the
   NVSHMEM values (3.53-3.56 s, 51 iterations of a different pattern) still below it. So history
   explains part of the difference; the rest is not reproduced [measured / not identified].
-- Not run: recovery. With NVSHMEM FT's measured ~3 ms host recovery (`../gpu-initiated/nvshmem_ft/`),
-  fault -> recovered would be ~16 ms at T=8 floor off [inferred, not measured].
+- Not run: recovery. With NVSHMEM FT's measured ≈3 ms host recovery (`../gpu-initiated/nvshmem_ft/`),
+  fault -> recovered would be ≈16 ms at T=8 floor off [inferred, not measured].
 
 ## D. Review follow-up: out-of-sample check and fresh processes (floor on, no register change)
 
@@ -438,7 +438,7 @@ list guard); the prediction file is unchanged (md5 `dbc6ed2a...` re-generated id
   same amount, with extra early entry points: e.g. T=17 R=3 trial 2: 6.85, 8.78, 13.0, 21.4, 38.3,
   63.5, 130.5, 231.1, 432.8, 969.3 ms (vs 440.4 / 977.2), then the regular part exact. Two of
   them also had 10 adaptive retransmissions (predicted 5-8). The schedule is therefore not
-  anchored exactly to the post; in ~5% of back-to-back trials it runs a few ms early [measured,
+  anchored exactly to the post; in ≈5% of back-to-back trials it runs a few ms early [measured,
   cause unknown]. In-sample (section A) no such shift was seen in 42 trials.
 - **Trial 1 of every cell was again off**, this time always late (+24 to +361 ms), see D2.
 - Other checks: 66/66 RETRY_EXC 12/0x81, warm-up write ok 66/66, `T_q,R_q` = requested 66/66,
@@ -450,10 +450,10 @@ list guard); the prediction file is unchanged (md5 `dbc6ed2a...` re-generated id
 Modes (all floor on, T=14 and T=17 at R=7, `results/20260925/fresh/`, hold `ackD2-fresh`
 14:43-14:49; T=20 in `results/20260925/fresh20/`):
 - `freshP`: every trial is a new requester **and** responder process (`run_cpu.sh ... 1`, 10
-  times): new device context, PD, CQ, MR, QP, new control connection, ~3 s between trials
+  times): new device context, PD, CQ, MR, QP, new control connection, ≈3 s between trials
   (ssh, GID probe, server start). This is what every GPU/NCCL trial is.
 - `ctxF` (`ackt -F`): one process; the device context (PD, MR, CQ) is closed and reopened before
-  every trial; trials ~1 s apart as in section A.
+  every trial; trials ≈1 s apart as in section A.
 - `gap5s` (`ackt -G 5000`): one process and context; 5 s idle before every trial.
 
 `fresh_check.py results/20260925/fresh`:
@@ -502,10 +502,10 @@ What the model describes, and what not:
 
 (b) the measured I is 8590.2 ms, 0.27 ms above 2 x nominal(20); over 5 intervals that is 1.35 ms.
 
-- At T=20 a fresh process is ~1 s **faster** than the back-to-back steady state (58.46-58.79 s vs
-  59.77 s), while at T=14/17 it was ~0.1 s slower. The regular part is again exact (6 regular
+- At T=20 a fresh process is ≈1 s **faster** than the back-to-back steady state (58.46-58.79 s vs
+  59.77 s), while at T=14/17 it was ≈0.1 s slower. The regular part is again exact (6 regular
   timeouts, spaced 8590.2 ms); the difference is in the adaptive phase: in fresh processes its
-  last points were ... 1054-1079, 1860-1884, 4007-4032, 7229-7253 ms (9/10) (steps ~805, 2148, 3221 =
+  last points were ... 1054-1079, 1860-1884, 4007-4032, 7229-7253 ms (9/10) (steps ≈805, 2148, 3221 =
   0.75 x nominal(20)), in steady state ... 977, 1782, 3930, 8225 ms (last step 4295 = nominal(20)).
 - One trial (58458 ms) ended its adaptive phase one point earlier (6916.5 ms), the same kind of
   outlier as at T=14/17.
@@ -601,7 +601,7 @@ fixed and re-run as above.) The dumps of every window are in `results/20260925/w
   not only ours: the 18 kernel `rdma_cm` QPs (the nvmet-rdma target that serves sunny's NVMe-oF
   mount [inferred]) and any QP that `mooncake_client` (`--device_names=mlx5_1`) opens. Measured here: with the
   floor off, new QPs get no adaptive retransmission and a 1x instead of 2x interval, and a QP
-  with a small T gives up after ~(R+2) x nominal of silence (T=8 R=7: 9.5 ms). A PFC pause, a
+  with a small T gives up after ≈(R+2) x nominal of silence (T=8 R=7: 9.5 ms). A PFC pause, a
   congested switch or a busy responder that stalls ACKs for longer than that turns into a
   RETRY_EXC and a dead queue pair. Whether already-established QPs (the NVMe-oF ones) pick up the
   change was not measured; their timeout is set by `rdma_cm` (typically T around 18 from the
@@ -621,7 +621,7 @@ fixed and re-run as above.) The dumps of every window are in `results/20260925/w
 - The adaptive schedule, the trial-1 effect, R=0 with the floor on, and t1 with the floor off are
   firmware behaviour of fw 20.43.4100 observed from counters; no firmware documentation was
   consulted. A single node pair, direct cable, no switch.
-- Counter timing resolution ~0.4 ms (worst bracket 2.3 ms); T=8 intervals are therefore taken
+- Counter timing resolution ≈0.4 ms (worst bracket 2.3 ms); T=8 intervals are therefore taken
   from the R-slope of detect, not from event gaps.
 
 ## Files

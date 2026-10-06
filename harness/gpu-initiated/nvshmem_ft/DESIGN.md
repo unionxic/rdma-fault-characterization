@@ -27,7 +27,7 @@ GPU-rung doorbells. Section 10 lists what the tests changed.
 
 NVSHMEM's send CQs are collapsed (`cc=1`): the NIC writes every CQE to slot 0. After an error the
 NIC writes the root-cause CQE and then one `WR_FLUSH 5/0xf9` for each WQE behind it, the first
-~59 us later (the CQE-sequence measurement, `../cqe_seq/`). `ibgda_poll_cq` waits until the slot's `wqe_counter` reaches the index it
+≈59 us later (the CQE-sequence measurement, `../cqe_seq/`). `ibgda_poll_cq` waits until the slot's `wqe_counter` reaches the index it
 waits for, which is the *last* posted WQE, so the stock wait always ends on a trailing flush and
 (with the release build's `assert` compiled out) reports success.
 
@@ -52,7 +52,7 @@ the status/vendor_err pair, class, cause and action (wording of `harness/common/
 the QP with DEVX `QUERY_QP`, and keeps the first record for `nvshmemt_ibgda_ft_query()`.
 
 **When the root cause is lost.** The in-loop read captures the root cause only if some thread is
-polling the CQ during the ~59 us before the first trailing flush. That holds when the wait follows
+polling the CQ during the ≈59 us before the first trailing flush. That holds when the wait follows
 the posts (put+signal then quiet; a burst then quiet; RETRY_EXC, which arrives seconds later while
 the wait spins). It fails when the kernel posts and then does other work for longer than that
 window before it waits (`nbi` puts overlapped with compute). For that pattern the patch offers a
@@ -237,7 +237,7 @@ trial. Consequence: after a decline the job's collectives are gone; the applicat
   22.9 s: the TCP bootstrap barrier retried `connect()` 20000 times. It is skipped too once the
   transport is marked failed (18-19 ms after the change). Without the patch the device barrier
   hangs for good (flag-off runs).
-- **A killed peer's socket closes before its QPs stop answering.** Puts issued in the first ~1 ms
+- **A killed peer's socket closes before its QPs stop answering.** Puts issued in the first ≈1 ms
   after the FIN still completed; the first put that the dead QP no longer ACKed ended in RETRY_EXC
   3.6-3.8 s later. The driver therefore keeps posting after the FIN until the RDMA error, and the
   kill time is taken on sunny (the runner's own timestamp included the ssh round trip).

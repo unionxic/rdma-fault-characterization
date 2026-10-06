@@ -8,7 +8,7 @@
 **2026-10-06 README 정리 때 CSV와 로그로 다시 센 정정**
 - 주입 장애 표 첫 행의 "300 × 256 KB"는 Stage 2에만 맞다. Stage 1 작업은 200 × 256 KB였다(CSV와 로그 모두 200회). 오류는 Stage 1이 반복 95, Stage 2가 반복 96에서 올라왔고, restart는 반복 94와 95부터 다시 시작했다.
 - 오버헤드 표의 "each the median of 400 iterations"는 64 KB와 1 MB에만 맞다. 실행 하나의 반복 수는 16 MB가 25회, 64 MB가 20회다(CSV 기준).
-- "0.8–0.9 s per rank"는 rain rank에만 맞다(0.79~0.88 s). sunny rank는 실행부터 통신 준비까지 0.31~0.39 s였다. comm 초기화 0.16~0.23 s도 rain 값이다(sunny 0.16~0.26 s).
+- "0.8–0.9 s per rank"는 rain rank에만 맞다(0.79–0.88 s). sunny rank는 실행부터 통신 준비까지 0.31–0.39 s였다. comm 초기화 0.16–0.23 s도 rain 값이다(sunny 0.16–0.26 s).
 - Stage 1 default 행의 restart 증가분은 중앙값끼리 빼면 +1.18 s다(2.596 − 1.412). "+1.19 s"는 반올림한 값끼리 뺀 것으로 보인다.
 - Stage 1 default의 recover는 "killed at 21.6 s"가 아니다. abort가 돌아오지 않아 시험 프로그램의 20 s 감시 시간 뒤 스스로 끝났다.
 - "restart (stock)"과 baseline은 원본 바이너리가 아니다. 같은 패치 라이브러리에서 플래그를 끈 것이다. 원본 빌드는 오버헤드 비교에만 썼다.
@@ -50,7 +50,7 @@ the two segments (killed job + relaunched job). The runner's own cleanup between
 
 | job | build | baseline | recover | restart | recovery itself |
 |---|---|---|---|---|---|
-| 300 × 256 KB, single, fault at iteration ~95 (n = 5) | Stage 1 | 1.44 s | **1.44 s**, 5/5 | 2.54 s (+1.10 s) | 1.81 ms (1.78–2.21) |
+| 300 × 256 KB, single, fault at iteration ≈95 (n = 5) | Stage 1 | 1.44 s | **1.44 s**, 5/5 | 2.54 s (+1.10 s) | 1.81 ms (1.78–2.21) |
 | same | Stage 2 | 1.45 s | **1.45 s**, 5/5 | 2.51 s (+1.07 s) | 2.26 ms (2.21–2.35) |
 | 100 × 16 MB, default, fault at iteration 13 (n = 3 / 5) | Stage 1 | 1.41 s | **0/3**: declined (several requests in flight), then NCCL's abort hang; killed at 21.6 s | 2.60 s (+1.19 s) | - |
 | same | Stage 2 | 1.41 s | **1.42 s**, 5/5 | 2.55 s (+1.14 s) | 2.31 ms (2.29–2.33) |
@@ -75,7 +75,7 @@ NCCL's default `NCCL_IB_TIMEOUT=20` / `IB_RETRY_CNT=7` applies (n = 3).
 |---|---|---|
 | baseline | 8.45 s (8.45–10.5) | - |
 | recover (Stage 2) | **67.96 s** (66.5–69.0), 3/3 correct | the job stalls for 56–60 s (longest gap between iterations) until the NICs give up with RETRY_EXC on the connections; each recovers in 2.5–4.8 ms (per-connection totals, send side) |
-| restart (stock) | 68.28 s (67.8–69.8) | the same ~58 s wait for RETRY_EXC, then kill + relaunch; the relaunched segment (≈2,540 iterations) takes 7.4 s |
+| restart (stock) | 68.28 s (67.8–69.8) | the same ≈58 s wait for RETRY_EXC, then kill + relaunch; the relaunched segment (≈2,540 iterations) takes 7.4 s |
 
 - Here **detection dominates both paths**: with the default timeout the NIC retries for about a minute
   before it reports anything, and neither recovery nor restart can start earlier. Recovery and restart

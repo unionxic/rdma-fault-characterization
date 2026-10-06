@@ -104,5 +104,5 @@ Data: `results/20261006_f4rerun/{gp,gg}` for GP/GG F4; everything else from `res
 - Kill landed during traffic in 20/20: rank 1 never printed `DONE` (killed at 162-168 of 400 iterations, r1 rc 255); rank 0 lost the peer at the next barrier and then drained puts to the dead QP.
 - GP F4 rank 0 WARN: `Got completion ... status=10 opcode=4 len=8 vendor err 136 (IPut)` (REM_ACCESS 0x88), i.e. the F2 class, not RETRY_EXC; hence local_ack_timeout_err +0 (EV5c needs >= +6).
 - GG F4: drain_device_rc=8 is ncclTimeout (nccl.h of the gin build: `ncclTimeout = 8`). The drain put uses the bounded flush (gin_fault.cu: putKernel(..., /*useTimeout=*/1, ...)); in blocking mode the per-iteration TCP barrier sees the death first, so no blocking flush ran on a post-kill op (r0 okit = r1 okit in 9/10; t10 r0 counted one more iteration than r1, but whether that op failed cannot be determined).
-- D1 F4 L4 holds 10/10 (GIN Error detected 8.03-8.08 s after the kill, at the ~10.8 s tick); L3 fails (r0 init_outcome=timeout, not a silent success); L2 not observable with the stock driver.
+- D1 F4 L4 holds 10/10 (GIN Error detected 8.03-8.08 s after the kill, at the ≈10.8 s tick); L3 fails (r0 init_outcome=timeout, not a silent success); L2 not observable with the stock driver.
 

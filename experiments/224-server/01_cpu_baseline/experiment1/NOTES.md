@@ -185,6 +185,6 @@ This assumes symmetric TCP latency. For sub-microsecond precision,
 use PTP-synchronized clocks and compare timestamps directly.
 
 ### QP timeout configuration
-The QP is configured with `timeout=14` (~67ms per retry) and `retry_cnt=7`.
+The QP is configured with `timeout=14` (≈67ms per retry) and `retry_cnt=7`.
 This directly affects Scenario C results. These are typical production values;
 adjust in `rdma_common.c` if you want to characterize different timeout settings.

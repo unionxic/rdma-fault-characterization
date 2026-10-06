@@ -335,7 +335,7 @@ Same unless listed. "n.o." = not observed in the campaign files.
 - GP target L3 > L2: the target only sees that the expected signal never arrives (timeout). Data dependency, not an error channel.
 - GP target L4 log > L3 (F2): verbs QP async event on the responder (IBV_EVENT_QP_ACCESS_ERR, "async fatal event"). Added channel (EV3).
 - GG init L3 > L0 (F3/F4): F4's ncclTimeout comes from the drain the app starts after its TCP barrier fails. Added liveness channel plus a different wait mode.
-- GG init L4 > L3 (F0/F1..F3): the host error tick ("GIN Error detected", ncclRemoteError ~10.8 s) sees what the blocking wait dropped. Separate host channel; L1/L2 not observed.
+- GG init L4 > L3 (F0/F1..F3): the host error tick ("GIN Error detected", ncclRemoteError ≈10.8 s) sees what the blocking wait dropped. Separate host channel; L1/L2 not observed.
 - GG/GQ/NF/ND init L1 or L4 > L0 (F0/F1/F2): L0 port error counters do not count DEVX QPs. Instrument blind spot, not a new channel.
 - GQ L2 > L1 read: Q4 classifier scans back to the root CQE. Added read channel.
 - GQ init L4 log > L3: Q4 mailbox/log carries the class; the API value is ncclRemoteError for all. Not finer than L2.

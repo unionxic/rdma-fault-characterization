@@ -15,7 +15,7 @@ Cross-resource 에러 관측 연구의 **Phase 1**. RDMA가 관여하는 데이�
 
 ## 핵심 관측 제약 — 커널 consumer의 CQE 불가시성
 
-기존 연구(01~09)는 유저스페이스 requester가 QP를 직접 소유해서 `ibv_wc_status`
+기존 연구(01–09)는 유저스페이스 requester가 QP를 직접 소유해서 `ibv_wc_status`
 + `vendor_err`를 CQE에서 직접 읽었다. **여기서는 다르다.** NVMe-oF의 initiator
 QP는 **커널(nvme-rdma)이 소유**한다. 유저스페이스에는 completion이 노출되지
 않으므로 `wc_status`/`vendor_err`를 관측할 수 없다. 이건 한계가 아니라 기존 연구

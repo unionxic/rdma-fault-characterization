@@ -4,7 +4,7 @@
 
 **2026-10-06 리뷰 정정** (`harness/gpu-initiated/propagation/review_20261006/nccl_netib_design.md`)
 - `prockill_off`를 "Stock control"이라 불렀지만 원본 바이너리가 아니다. 패치한 라이브러리에서 플래그를 끈 것이다. "abort hang은 원본 NCCL 2.23의 동작"이라는 문장도 이 대조와 backtrace에 기댄다.
-- `DESIGN_recovery.md` §10은 prockill 뒤 RETRY_EXC를 약 34 s로 예상했다. 실제는 약 56~58 s로 추정된다. 로그 줄에 시각이 없어, 요약 로그의 kill 시각과 판정 시각(초 단위, 78 s 차이)에서 abort 감시 20 s와 정리 시간을 뺀 값이다.
+- `DESIGN_recovery.md` §10은 prockill 뒤 RETRY_EXC를 약 34 s로 예상했다. 실제는 약 56–58 s로 추정된다. 로그 줄에 시각이 없어, 요약 로그의 kill 시각과 판정 시각(초 단위, 78 s 차이)에서 abort 감시 20 s와 정리 시간을 뺀 값이다.
 - `DESIGN_recovery.md` §9의 "Not run on 2-node GPUs yet"와 `logs/historical/HISTORICAL.md` 마지막 문단은 낡았다. 패치는 2026-09-23에 2노드에서 돌았다.
 - "What remains untested"에 하나가 빠졌다. 주입은 모두 송신 전에 들어가서, "데이터가 도착한 뒤 재설정하고 다시 보내는" 경우는 실행되지 않았다(주입 위치로 본 추정).
 - Stage 1은 OOB 소켓을 RoCE 링크의 인터페이스에, Stage 2는 관리망에 두었다. 두 단계의 생존 판정 결과는 비교할 수 없다.
@@ -75,7 +75,7 @@ requests at once (Stage 2) is **not implemented**. In that situation the patch d
 | `faultRetries` never reset | Replaced by `frReplays`, reset in `ncclIbGetRequest`, cap 1. | @935, @1688 |
 | replayability checked after reset | All checks happen before the REQ (initiator) and before the reset (responder). | as above |
 | responder never checked `nqps` | Checked. | @2499 |
-| RespWait ~18 ms spin | Removed. Deadlines are time-based: `HANDSHAKE_MS` for the reply, `2×HANDSHAKE_MS` for DONE, `/4` for the flush wait, `min(/10, 100 ms)` for the ERR drain. | @2342, @2542, @2567, @2455 |
+| RespWait ≈18 ms spin | Removed. Deadlines are time-based: `HANDSHAKE_MS` for the reply, `2×HANDSHAKE_MS` for DONE, `/4` for the flush wait, `min(/10, 100 ms)` for the ERR drain. | @2342, @2542, @2567, @2455 |
 | QP rebuilt with different attributes | Access flags are recorded in `ncclIbCreateQp` (data QPs use `REMOTE_WRITE`); remote QPN, `override_tc` (recv QP 0) and ECE are recorded at connect/accept; `ncclIbFrBringUp` repeats `set_ece` before RTR and reuses `ncclIbRtrQp`/`ncclIbRtsQp`. | @1154, @1425-1432, @1578-1585, @2225 |
 | stale header comment | Replaced by an accurate block comment. | @1830 |
 | deterministic PSN | Random 24-bit PSN from `/dev/urandom` (splitmix fallback). | `ncclIbFrFreshPsn` @1998 |
