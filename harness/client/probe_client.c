@@ -153,7 +153,7 @@ static void query_server(int fd, char *qp, size_t qcap, char *ev, size_t ecap) {
             char *st = line + 8, *sp = strchr(st, ' ');
             if (!sp) break;
             *sp = '\0';
-            snprintf(qp, qcap, "%s", st);
+            snprintf(qp, qcap, "%.15s", st);
             snprintf(ev, ecap, "%s", sp + 1);
             break;
         }
