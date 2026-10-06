@@ -27,7 +27,7 @@ GPU-rung doorbells. Section 10 lists what the tests changed.
 
 NVSHMEM's send CQs are collapsed (`cc=1`): the NIC writes every CQE to slot 0. After an error the
 NIC writes the root-cause CQE and then one `WR_FLUSH 5/0xf9` for each WQE behind it, the first
-~59 us later (Q1). `ibgda_poll_cq` waits until the slot's `wqe_counter` reaches the index it
+~59 us later (the CQE-sequence measurement, `../cqe_seq/`). `ibgda_poll_cq` waits until the slot's `wqe_counter` reaches the index it
 waits for, which is the *last* posted WQE, so the stock wait always ends on a trailing flush and
 (with the release build's `assert` compiled out) reports success.
 
@@ -48,7 +48,7 @@ recovery refills it, so no separate sticky check is needed on the fast path.
 The record is also written to a 16-slot mailbox of 256-byte records in host-pinned mapped memory:
 invalidate `magic`, body with `st.relaxed.sys`, `__threadfence_system`, `seq`, fence, `magic`.
 A host watcher thread in the transport polls the mailbox (default every 50 us), logs one line with
-fingerprint, class, cause and action (wording of `harness/common/probe.c classify()`), queries
+the status/vendor_err pair, class, cause and action (wording of `harness/common/probe.c classify()`), queries
 the QP with DEVX `QUERY_QP`, and keeps the first record for `nvshmemt_ibgda_ft_query()`.
 
 **When the root cause is lost.** The in-loop read captures the root cause only if some thread is
@@ -106,7 +106,7 @@ prod_idx`.
 ```
 initiator (PE0)                                     responder (PE1)
 kernel returns error; stream idle                   waiter may still spin on its signal
-ft_query -> class, fingerprint
+ft_query -> class, status/vendor_err
 policy: decline -> FAIL, ft_abort, teardown
 ft_prepare(peer): quiescence, QPs -> ERR,
    drain, fresh random 24-bit SQ PSNs

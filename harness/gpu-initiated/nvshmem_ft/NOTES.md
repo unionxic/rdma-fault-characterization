@@ -28,7 +28,7 @@ argument are in `DESIGN.md`.
 - **Classification is exact and reaches the host in ~0.07 ms.** 48/48 single-fault trials (both
   wait modes) and 100/100 rounds of the five-fault runs recorded the true root cause: F1 LOCAL_QP_ERR
   5/0xf5, F2b REM_ACCESS 10/0x88, F3 and F4 RETRY_EXC 12/0x81. The watcher read the record 67 us
-  (median; 8-137 us, n=222) after the device captured it. Fault -> host-visible fingerprint in the
+  (median; 8-137 us, n=222) after the device captured it. Fault -> host-visible error code in the
   single-fault runs: F1 3.4-4.2 ms (the fault lands between operations; the next put meets it),
   F2b 1.2-2.5 ms after the bad put, F3 3.50-3.68 s and F4 3.61-3.79 s (retry exhaustion at IB
   timeout 14).
@@ -79,7 +79,7 @@ argument are in `DESIGN.md`.
   management variables, publishes a 256-byte record to a host-mapped mailbox (system-scope stores,
   `seq`, then `magic`), and returns -1 at once. Struct sizes are unchanged (the FT pointer takes
   12 of the device state's 44 reserved bytes).
-- New device API: `nvshmemx_ibgda_ft_status(pe)` (packed fingerprint of the first error on an RC QP
+- New device API: `nvshmemx_ibgda_ft_status(pe)` (packed opcode, syndrome, vendor_err and class of the first error on an RC QP
   to `pe`, 0 if none; this is how a kernel learns that `nvshmem_quiet()` failed),
   `nvshmemx_ibgda_ft_quiet_bounded(pe, cycles)` (0 / -1 error / -2 budget expired),
   `nvshmemx_ibgda_ft_sentinel(poll_ns)` (device sentinel, see the capture study).
@@ -87,7 +87,7 @@ argument are in `DESIGN.md`.
 ### Host side (`ibgda.cpp`, host library)
 
 - Mailbox (16 x 256 B, `cudaHostAlloc` mapped) and a watcher thread (default 50 us poll) that logs
-  one line per record with fingerprint, class, cause and action (wording of
+  one line per record with the status/vendor_err pair, class, cause and action (wording of
   `harness/common/probe.c classify()`), then DEVX `QUERY_QP`s the QP. Example (F2b, `results/b2`):
 
   ```
@@ -158,7 +158,7 @@ detection = the record's `%globaltimer` on rain's clock (driver calibration, +-3
 
 ### Classification (`classify/`, no recovery: every fault is declined and both PEs tear down)
 
-| fault | wait | n | recorded class | fingerprint | read by | fault -> device (ms) | device -> mailbox (us) | teardown r0 / r1 (finalize ms) |
+| fault | wait | n | recorded class | status/vendor_err | read by | fault -> device (ms) | device -> mailbox (us) | teardown r0 / r1 (finalize ms) |
 |---|---|--:|---|---|---|---|---|---|
 | none | timeout / blocking | 3 / 3 | - | - | - | - | - | returned (20 / 26) |
 | F1 local QP -> ERR | timeout | 3 | LOCAL_QP_ERR 3/3 | 5/0xf5 | bounded quiet | 3.50 [3.46-3.60] | 65 [59-99] | returned (19 / 25) |
@@ -201,7 +201,7 @@ which of the two recorded first).
 | F3 | put+signal, 2 ms compute, wait | - | **3/3** | - |
 | **total** | | **0/24** | **21/30** | **18/18** |
 
-- The stock position always sees the flush of the last WQE, as predicted by Q1 and seen in GDAKI
+- The stock position always sees the flush of the last WQE, as predicted by the CQE-sequence measurement (`../cqe_seq/`) and seen in GDAKI
   (`../gin_q4/`): with put+signal the wait is for the signal's WQE, whose flush follows the root
   cause.
 - In-loop keeps the root cause when some thread is spinning on the CQ while it arrives: always
@@ -320,7 +320,7 @@ cost was looked for; it is one mostly sleeping thread per PE).
   checks only the device indices. One initiator per QP pair; lockstep operations.
 - **LOCAL_QP_ERR is treated as transient**; a persistent local fault is bounded by 6 rounds.
 - The target never sees an error by itself (it posts nothing); it learns from the OOB socket.
-- F3 and F4 have the same fingerprint; they are told apart only by the OOB socket (FIN), as in the
+- F3 and F4 have the same error code; they are told apart only by the OOB socket (FIN), as in the
   CPU harness.
 - One node pair, one firmware (20.43.4100), RoCE v2, IB timeout 14; 3 trials per single-fault cell,
   5 per multi-fault cell; the capture study has 3 trials per cell.
