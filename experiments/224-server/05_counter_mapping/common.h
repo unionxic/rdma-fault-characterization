@@ -3,7 +3,7 @@
  *
  * 시나리오 ID(11개 fault 유형), TCP 제어 프로토콜(CMD_*), 하드웨어 카운터 스냅샷/델타,
  * RDMA 연결 보일러플레이트(setup_rdma → qp_info 교환 → connect_qp)를 담은
- * 단일 헤더 라이브러리. 06_recovery / 08_middleware / 09_verify도 include한다.
+ * 단일 헤더 라이브러리. 06_recovery도 include한다.
  *
  * 225 사본과 형제 관계지만 완전 동일하지는 않다: 225 쪽에는 NIC udev rename
  * (mlx5_0 → rocep1s0f0) 대응용 런타임 장치명 탐색 주석/코드가 더 들어가 있다.

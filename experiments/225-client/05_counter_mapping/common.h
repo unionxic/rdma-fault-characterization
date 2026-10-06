@@ -1,7 +1,7 @@
 /*
  * common.h — 05_counter_mapping 공유 인프라 헤더 (client/server/verify_* 공용)
  *
- * 이 디렉토리의 모든 실험과 06_recovery, 08_middleware, 09_verify가 include하는
+ * 이 디렉토리의 모든 실험과 06_recovery가 include하는
  * 단일 헤더 라이브러리다. 담고 있는 것:
  *
  *   - 네트워크/RDMA 상수: RDMA 데이터 경로는 10.0.0.2(225)↔10.0.0.3(224),

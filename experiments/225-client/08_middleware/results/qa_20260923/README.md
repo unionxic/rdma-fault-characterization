@@ -1,5 +1,9 @@
 # 08_middleware QA on real RDMA (2026-09-23)
 
+> The `08_middleware` and `07_fault_classify` code this page tested (`rdma_conn.c`, `demo_client.c`,
+> `demo_server.c`, `librdma_fault`) was removed from the tree on 2026-10-06; it is in tag
+> `archive/results-tables-20261006`. The logs are in Release `data-20261006`.
+
 Real-hardware check of the `rdma_conn.c` server control-channel fix (commit f942bdb),
 run on the current cluster: rain (client, mlx5_1) and sunny (server, mlx5_0), RoCE v2.
 
