@@ -65,7 +65,7 @@ def main(paths):
     by = OrderedDict()
     for r in rows:
         by.setdefault(r["variant"], []).append(r)
-    print("| variant | trigger | N | fingerprint (status/vendor) | err_ms | last_ok_ms | OOB close | reap_ms | stop window (marker release) |")
+    print("| variant | trigger | N | error code (status/vendor_err) | err_ms | last_ok_ms | OOB close | reap_ms | stop window (marker release) |")
     print("|---|---|---|---|---|---|---|---|---|")
     for v, rs in by.items():
         fp = Counter()
