@@ -1,0 +1,7 @@
+stem,cell,rank,idx,role,round,class,fp,S/U/n,replayed,rescued,chunks,host_rung,tie_kept,yielded,gid,gid_wait_ms,quiesce_us,prepare_us,handshake_us,commit_us,replay_us,total_us,mbx_to_resumed_us,ack_to_done_us,t_resumed,resumed_after_fault_ms,resumed_after_cut_end_ms
+burst_hring2_b_n6,burst_hring2_b,r0,1,initiator,1,LOCAL_QP_ERR,5/0xf5,"[510/493/17,0/0/0,0/0/0,0/0/0]",17,0,0,0,0,,4->4,0.0,500,443,6308,3321,179,10813,10966,,1980121117.130,11.773000001907349,
+burst_hring2_b_n6,burst_hring2_b,r1,1,responder,1,LOCAL_QP_ERR,,"[0/0/0,0/0/0,0/0/0,0/0/0]",0,0,0,0,,0,3->3,0.1,1487,637,,3810,332,10195,,3819,849062007.107,12.208999872207642,
+burst_hring2_b_n7,burst_hring2_b,r0,1,initiator,1,LOCAL_QP_ERR,5/0xf5,"[628/612/16,0/0/0,0/0/0,0/0/0]",16,0,0,16,0,,4->4,0.0,252,679,6017,3336,180,10527,11209,,1980130968.621,12.47000002861023,
+burst_hring2_b_n7,burst_hring2_b,r1,1,responder,1,LOCAL_QP_ERR,,"[0/0/0,0/0/0,0/0/0,0/0/0]",0,0,0,0,,0,3->3,0.1,1410,632,,3667,290,9879,,3783,849071858.566,12.865000009536743,
+burst_hring2_b_n8,burst_hring2_b,r0,1,initiator,1,LOCAL_QP_ERR,5/0xf5,"[747/731/16,0/0/0,0/0/0,0/0/0]",16,0,0,16,0,,4->4,0.0,219,720,6152,3438,184,10781,11556,,1980140835.915,12.79699993133545,
+burst_hring2_b_n8,burst_hring2_b,r1,1,responder,1,LOCAL_QP_ERR,,"[0/0/0,0/0/0,0/0/0,0/0/0]",0,0,0,0,,0,3->3,0.1,1366,606,,3870,294,10133,,3900,849081725.881,13.19700002670288,
