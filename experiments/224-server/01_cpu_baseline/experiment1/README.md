@@ -1,5 +1,8 @@
 # Experiment 1: RDMA Fault Detection Latency Baseline
 
+> 224 쪽 사본이다. `config.sh`, `run_experiment.sh`, `analyze.py`는 225 쪽
+> (`225-client/01_cpu_baseline/experiment1/`)에만 있다(2026-10-06에 똑같던 224 사본을 지웠다).
+
 ## What This Measures
 
 This experiment measures the **latency from RDMA fault occurrence to error detection

@@ -23,6 +23,7 @@
   responder=CX-6), client가 224(SSH, requester=CX-5)에서 뜬다. 그래서 이
   디렉토리에는 225인데도 `server.c`가, 224인데도 `client.c`가 있다 — 잔여 파일이
   아니라 swap용이니 지우지 말 것.
-- `common.h`는 `06_recovery/`, `08_middleware/`, `09_verify/`도 include하는 공유
+- `common.h`는 `06_recovery/`, `08_middleware/`도 include하는 공유
   헤더다. 수정 시 그쪽 빌드도 영향받는다.
-- 카운터 수집은 `counter_daemon.sh`(sysfs 스냅샷 데몬)를 스크립트들이 알아서 띄운다.
+- 카운터 수집은 224의 `counter_daemon.sh`(sysfs 스냅샷 데몬,
+  `224-server/05_counter_mapping/`)를 스크립트들이 SSH로 알아서 띄운다.

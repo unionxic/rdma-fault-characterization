@@ -1,5 +1,9 @@
 # Experiment 3: QP Recovery Overhead Decomposition
 
+> 224 쪽 사본이다. 여기서는 `server`만 빌드한다. `client.c`, `config.sh`, `run_experiment.sh`,
+> `analyze.py`는 225 쪽(`225-client/01_cpu_baseline/experiment3/`)에만 있다(2026-10-06에 똑같던 224
+> 사본을 지웠다).
+
 Measures the minimum cost of the recovery **action** itself — the
 per-stage `ibv_modify_qp` latency to bring a broken RC QP from ERR
 back to RTS — with coordination between the two endpoints.
