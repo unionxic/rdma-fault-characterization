@@ -325,7 +325,8 @@ on the next modify); RTR with the recorded remote QPN and remote device info and
 `max_rd_atomic`. The PSNs are fresh.
 
 **The local GID index is looked up again by value** (GID bytes + RoCE version) at every bring-up.
-Measured on this testbed (2026-09-25, `gbh_feasibility.sh`): removing a RoCE address for 0.3 s
+Measured on this testbed (2026-09-25, one-off feasibility script `gbh_feasibility.sh`, removed
+2026-10-06, in tag `archive/results-tables-20261006`): removing a RoCE address for 0.3 s
 made the existing QP fail with RETRY_EXC 12/0x81, and the re-added address came back at a new GID
 index (5 → 6). The kernel keeps a GID entry that a QP references (pending deletion) but clears
 its hardware entry at once, so the re-created address gets another slot while the old QP's
