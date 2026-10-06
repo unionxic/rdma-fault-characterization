@@ -1,0 +1,3 @@
+# Forced recovery after a completed operation (the d = 0 branch: the ADD executed, nothing replayed)
+none timeout 3 RECOVER=1 FORCE_AT=60 TAG=d0
+none blocking 3 RECOVER=1 FORCE_AT=60 TAG=d0

@@ -1,0 +1,28 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T0d,"flag on, no fault, default",0,PASS,,0,0,0,0,0,0,60,60,1.51
+T0d,"flag on, no fault, default",1,PASS,,0,0,0,0,0,0,60,60,1.479
+T0d,"flag on, no fault, default",2,PASS,,0,0,0,0,0,0,60,60,1.5
+T1,"S inject, single, unaligned k",0,RECOVERED,2.536,0,0,1,1,0,1,300,300,1.489
+T1,"S inject, single, unaligned k",1,RECOVERED,2.407,0,0,1,1,0,1,300,300,1.509
+T1,"S inject, single, unaligned k",2,RECOVERED,2.387,0,0,1,1,0,1,300,300,1.515
+T2,"S inject, default config",0,RECOVERED,2.313,0,0,1,1,0,1,60,60,1.52
+T2,"S inject, default config",1,RECOVERED,2.308,0,0,1,1,0,1,60,60,1.495
+T2,"S inject, default config",2,RECOVERED,2.400,0,0,1,1,0,1,60,60,1.484
+T3,"R inject (NOTIFY path), default",0,RECOVERED,2.152,0,0,1,1,0,1,60,60,1.485
+T3,"R inject (NOTIFY path), default",1,RECOVERED,2.290,0,0,1,1,0,1,60,60,1.484
+T3,"R inject (NOTIFY path), default",2,RECOVERED,2.191,0,0,1,1,0,1,60,60,1.485
+T5,"S inject x5, default",0,RECOVERED,2.410;2.241;2.134;2.216;2.078,0,0,5,5,0,5,80,80,1.49
+T5,"S inject x5, default",1,RECOVERED,2.468;2.335;2.290;2.166;2.137,0,0,5,5,0,5,80,80,1.5
+T5,"S inject x5, default",2,RECOVERED,2.273;2.144;2.156;2.106;2.109,0,0,5,5,0,5,80,80,1.474
+T6,"symmetric S inject, default",0,RECOVERED,2.424;2.372,0,0,2,2,0,2,60,60,1.489
+T6,"symmetric S inject, default",1,RECOVERED,2.276;2.467,0,0,2,2,0,2,60,60,1.479
+T6,"symmetric S inject, default",2,RECOVERED,2.312;2.415,0,0,2,2,0,2,60,60,1.484
+T8,"SIGKILL rank1, single",0,CLEAN_FAIL,,0,0,0,0,1,0,62355,,27.226
+T8,"SIGKILL rank1, single",1,CLEAN_FAIL,,0,0,0,0,1,0,61940,,27.206
+T8,"SIGKILL rank1, single",2,CLEAN_FAIL,,0,0,0,0,1,0,60952,,27.232
+T9,"mute peer, R inject",0,CLEAN_FAIL,,0,0,0,0,2,1,96,95,56.671
+T9,"mute peer, R inject",1,CLEAN_FAIL,,0,0,0,0,2,1,96,95,56.68
+T9,"mute peer, R inject",2,CLEAN_FAIL,,0,0,0,0,2,1,96,95,56.651
+T7a,GID blackhole 0.5 s,0,RECOVERED,2.781;4.236;3.505;3.712,0,0,4,4,0,0,15000,15000,42.561
+T7a,GID blackhole 0.5 s,1,RECOVERED,2.417;2.999;2.790;2.944,0,0,4,4,0,0,15000,15000,42.526
+T7a,GID blackhole 0.5 s,2,RECOVERED,2.426;2.810;2.380;3.277,0,0,4,4,0,0,15000,15000,42.546

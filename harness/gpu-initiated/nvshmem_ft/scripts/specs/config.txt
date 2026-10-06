@@ -1,0 +1,4 @@
+# Unsupported configuration: CPU-proxy NIC handler (recovery declined). Without the SQ-DBR fix no
+# error CQE arrives at all (../nvshmem_rootcause); with it the fault is classified, then declined.
+F1 timeout 2 RECOVER=1 HANDLER=cpu_host_memory DEV_TIMEOUT_MS=3000 TAG=cpuproxy
+F1 timeout 2 RECOVER=1 HANDLER=cpu_host_memory PROXY_SQ_DBR=1 TAG=cpuproxy_sqdbr

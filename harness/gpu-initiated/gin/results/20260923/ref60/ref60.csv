@@ -1,0 +1,3 @@
+stack,backend,fault,wait_mode,trial,iters_ok_before,init_outcome,target_outcome,data_check,silent_success,host_error,host_error_ms,fp_where,status,vendor_err,teardown,notes
+nccl-gin,proxy,F3,timeout,ref60,37,timeout,timeout,missing,0,remote,58438.4,log,12,129,clean,r0rc=4;r1rc=4;gintype=2
+nccl-gin,proxy,F3,timeout,ref60b,37,timeout,timeout,missing,0,remote,58495.7,log,12,129,clean,r0rc=4;r1rc=4;gintype=2

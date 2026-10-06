@@ -1,0 +1,7 @@
+# v2.1 third review, AFTER (v2.2 build), item 1: the QP is parked by another kernel (the sentinel) or
+# another CTA while 4 CTAs x 8 threads keep posting on the shared RC QP; recovery on.
+#  delay: 4 x 8 x 12 put+signal (768 WQEs < SQ 1024, no slot wait), then 300 us compute, then quiet
+#  burst: 4 x 8 x 256 put+signal (16 384 WQEs), posters' slot waits poll the CQ
+F1 blocking 30 RING=1 RECOVER=1 MT=8 MT_CTAS=4 BYTES=16384 XARGS=--mt-burst SENTINEL=200 MT_REPS=12 QDELAY_US=300 ITERS=1500 GAP_MS=0 TAG=ga_mcta_delay_rec
+F1 blocking 30 RING=1 RECOVER=1 MT=8 MT_CTAS=4 BYTES=16384 XARGS=--mt-burst SENTINEL=200 MT_REPS=256 ITERS=300 GAP_MS=0 TAG=ga_mcta_burst_rec
+F1 blocking 10 RECOVER=1 MT=8 MT_CTAS=4 BYTES=16384 XARGS=--mt-burst SENTINEL=200 MT_REPS=12 QDELAY_US=300 ITERS=1500 GAP_MS=0 TAG=ga_mcta_delay_crec

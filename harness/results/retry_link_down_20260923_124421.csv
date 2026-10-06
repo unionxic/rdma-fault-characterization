@@ -1,0 +1,6 @@
+fault,iter,recovery,detect_ns,status,status_name,vendor_err,cause,action,peer_alive,auto_recoverable,recover_ns,verify_ok,bytes_sent_psn,sq_psn_delta,bytes_landed_readback,matching_bytes_total,mtu_bytes,counter,cnt_delta,sub_cause,peer_rx_delta
+retry_link_down,0,qp_only,-1,-1,no_error_cqe,0x0,"no error CQE within the detect timeout (fault did not manifest)","-",-1,-1,956013,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,-1
+retry_link_down,1,qp_only,-1,-1,no_error_cqe,0x0,"no error CQE within the detect timeout (fault did not manifest)","-",-1,-1,960374,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,-1
+retry_link_down,2,qp_only,-1,-1,no_error_cqe,0x0,"no error CQE within the detect timeout (fault did not manifest)","-",-1,-1,980506,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,-1
+retry_link_down,3,qp_only,-1,-1,no_error_cqe,0x0,"no error CQE within the detect timeout (fault did not manifest)","-",-1,-1,941414,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,-1
+retry_link_down,4,qp_only,-1,-1,no_error_cqe,0x0,"no error CQE within the detect timeout (fault did not manifest)","-",-1,-1,932807,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,-1

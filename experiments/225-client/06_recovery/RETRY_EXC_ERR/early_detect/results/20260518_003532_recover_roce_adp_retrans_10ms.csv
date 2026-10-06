@@ -1,0 +1,12 @@
+# Early detection recovery (counter=roce_adp_retrans, poll=10ms)
+# counter,poll_ms,trial,detect_us,polling_lag_us,polls_before_detect,counter_delta,force_us,force_to_cqe_us,recovery_us,retry_us,total_us,cqe_status,vendor_err
+roce_adp_retrans,10,0,20533,10405,2,1,267,293,1512,4,22350,0,0xf5
+roce_adp_retrans,10,1,20963,10556,2,1,291,280,1624,5,22972,0,0xf5
+roce_adp_retrans,10,2,20803,10589,2,1,302,294,1755,4,22943,0,0xf5
+roce_adp_retrans,10,3,10357,0,1,2,215,240,1351,3,11955,0,0xf5
+roce_adp_retrans,10,4,10204,0,1,1,213,239,1543,3,11993,0,0xf5
+roce_adp_retrans,10,5,10253,0,1,1,215,241,1372,4,11873,0,0xf5
+roce_adp_retrans,10,6,30988,10488,3,1,278,256,1949,4,33294,0,0xf5
+roce_adp_retrans,10,7,20863,10545,2,1,219,245,1765,4,22880,0,0xf5
+roce_adp_retrans,10,8,10410,0,1,1,220,245,1519,4,12181,0,0xf5
+roce_adp_retrans,10,9,10218,0,1,2,273,252,1362,3,11872,0,0xf5

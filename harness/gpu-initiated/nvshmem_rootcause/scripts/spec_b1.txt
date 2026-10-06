@@ -1,0 +1,14 @@
+# batch 1: nvshmem vs doca preset, and nvshmem with only the SQ doorbell-record word changed
+b1_nvs_none      none   nvshmem -            2000
+b1_nvs_f2b       f2b    nvshmem -            3000
+b1_doca_f2b      f2b    doca    -            3000
+b1_nvsdbr1_f2b   f2b    nvshmem dbr_word=1   3000
+b1_nvs_f1        f1     nvshmem -            3000
+b1_doca_f1       f1     doca    -            3000
+b1_nvsdbr1_f1    f1     nvshmem dbr_word=1   3000
+b1_nvs_f1post    f1post nvshmem -            3000
+b1_doca_f1post   f1post doca    -            3000
+b1_nvsdbr1_f1post f1post nvshmem dbr_word=1  3000
+b1_nvs_f3        f3     nvshmem -            10000
+b1_doca_f3       f3     doca    -            10000
+b1_nvsdbr1_f3    f3     nvshmem dbr_word=1   10000

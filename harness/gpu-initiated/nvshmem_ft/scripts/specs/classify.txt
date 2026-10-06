@@ -1,0 +1,11 @@
+# Classification (no recovery): the initiator declines every fault and both sides tear down.
+none timeout 3
+none blocking 3
+F1 timeout 3
+F1 blocking 3
+F2b timeout 3
+F2b blocking 3
+F3 timeout 3
+F3 blocking 3
+F4 timeout 3
+F4 blocking 3

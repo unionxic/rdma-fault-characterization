@@ -1,0 +1,31 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T4,"R dies silently (S RETRY_EXC path), broadcast stream, single",0,PASS(no fault fired),,0,0,0,0,0,0,300,300,1.451
+T4,"R dies silently (S RETRY_EXC path), broadcast stream, single",1,PASS(no fault fired),,0,0,0,0,0,0,300,300,1.457
+T4,"R dies silently (S RETRY_EXC path), broadcast stream, single",2,PASS(no fault fired),,0,0,0,0,0,0,300,300,1.431
+T4,"R dies silently (S RETRY_EXC path), broadcast stream, single",3,PASS(no fault fired),,0,0,0,0,0,0,300,300,1.472
+T4,"R dies silently (S RETRY_EXC path), broadcast stream, single",4,PASS(no fault fired),,0,0,0,0,0,0,300,300,1.446
+T4,"R dies silently (S RETRY_EXC path), broadcast stream, single",5,PASS(no fault fired),,0,0,0,0,0,0,300,300,1.406
+T4,"R dies silently (S RETRY_EXC path), broadcast stream, single",6,PASS(no fault fired),,0,0,0,0,0,0,300,300,1.436
+T4,"R dies silently (S RETRY_EXC path), broadcast stream, single",7,PASS(no fault fired),,0,0,0,0,0,0,300,300,1.441
+T4,"R dies silently (S RETRY_EXC path), broadcast stream, single",8,PASS(no fault fired),,0,0,0,0,0,0,300,300,1.421
+T4,"R dies silently (S RETRY_EXC path), broadcast stream, single",9,PASS(no fault fired),,0,0,0,0,0,0,300,300,1.446
+T1b,"S inject, broadcast stream, single",0,RECOVERED,2.456,0,0,1,1,0,1,300,300,1.436
+T1b,"S inject, broadcast stream, single",1,RECOVERED,2.312,0,0,1,1,0,1,300,300,1.452
+T1b,"S inject, broadcast stream, single",2,RECOVERED,2.287,0,0,1,1,0,1,300,300,1.447
+T1b,"S inject, broadcast stream, single",3,RECOVERED,2.184,0,0,1,1,0,1,300,300,1.452
+T1b,"S inject, broadcast stream, single",4,RECOVERED,2.188,0,0,1,1,0,1,300,300,1.446
+T1b,"S inject, broadcast stream, single",5,RECOVERED,2.238,0,0,1,1,0,1,300,300,1.452
+T1b,"S inject, broadcast stream, single",6,RECOVERED,2.144,0,0,1,1,0,1,300,300,1.442
+T1b,"S inject, broadcast stream, single",7,RECOVERED,2.140,0,0,1,1,0,1,300,300,1.442
+T1b,"S inject, broadcast stream, single",8,RECOVERED,2.356,0,0,1,1,0,1,300,300,1.437
+T1b,"S inject, broadcast stream, single",9,RECOVERED,2.196,0,0,1,1,0,1,300,300,1.412
+T8,"SIGKILL rank1, single",0,FAIL(rc 7/255),,0,0,0,0,1,0,60181,,27.248
+T8,"SIGKILL rank1, single",1,FAIL(rc 7/255),,0,0,0,0,1,0,60284,,27.245
+T8,"SIGKILL rank1, single",2,FAIL(rc 7/255),,0,0,0,0,1,0,59515,,27.258
+T8,"SIGKILL rank1, single",3,FAIL(rc 7/255),,0,0,0,0,1,0,60190,,27.237
+T8,"SIGKILL rank1, single",4,FAIL(rc 7/255),,0,0,0,0,1,0,60464,,27.255
+T8,"SIGKILL rank1, single",5,FAIL(rc 7/255),,0,0,0,0,1,0,59422,,27.236
+T8,"SIGKILL rank1, single",6,FAIL(rc 7/255),,0,0,0,0,1,0,60377,,27.243
+T8,"SIGKILL rank1, single",7,FAIL(rc 7/255),,0,0,0,0,1,0,58965,,27.246
+T8,"SIGKILL rank1, single",8,FAIL(rc 7/255),,0,0,0,0,1,0,60732,,27.254
+T8,"SIGKILL rank1, single",9,FAIL(rc 7/255),,0,0,0,0,1,0,59708,,27.261

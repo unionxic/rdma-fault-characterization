@@ -1,0 +1,7 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T0s,"flag on, no fault, single",0,PASS,,0,0,0,0,0,0,300,300,1.447
+T0s,"flag on, no fault, single",1,PASS,,0,0,0,0,0,0,300,300,1.447
+T1,"S inject, single, unaligned k",0,RECOVERED,2.624,0,0,1,1,0,1,300,300,1.447
+T1,"S inject, single, unaligned k",1,RECOVERED,2.182,0,0,1,1,0,1,300,300,1.447
+T3s,"R inject (NOTIFY path), single",0,RECOVERED,2.074,0,0,1,1,0,1,300,300,1.422
+T3s,"R inject (NOTIFY path), single",1,RECOVERED,2.068,0,0,1,1,0,1,300,300,1.452

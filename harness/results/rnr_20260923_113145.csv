@@ -1,0 +1,6 @@
+fault,iter,recovery,detect_ns,status,status_name,vendor_err,cause,action,peer_alive,auto_recoverable,recover_ns,verify_ok,bytes_sent_psn,sq_psn_delta,bytes_landed_readback,matching_bytes_total,mtu_bytes,counter,cnt_delta,sub_cause,peer_rx_delta
+rnr,0,qp_only,12169933,13,RNR retry counter exceeded,0x87,"RNR retries exhausted (responder had no recv WQE)","ensure remote posts recvs, QP-only recover",1,1,807528,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,-1
+rnr,1,qp_only,12686357,13,RNR retry counter exceeded,0x87,"RNR retries exhausted (responder had no recv WQE)","ensure remote posts recvs, QP-only recover",1,1,796137,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,-1
+rnr,2,qp_only,12767791,13,RNR retry counter exceeded,0x87,"RNR retries exhausted (responder had no recv WQE)","ensure remote posts recvs, QP-only recover",1,1,787882,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,-1
+rnr,3,qp_only,12762647,13,RNR retry counter exceeded,0x87,"RNR retries exhausted (responder had no recv WQE)","ensure remote posts recvs, QP-only recover",1,1,792309,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,-1
+rnr,4,qp_only,12783555,13,RNR retry counter exceeded,0x87,"RNR retries exhausted (responder had no recv WQE)","ensure remote posts recvs, QP-only recover",1,1,783886,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,-1

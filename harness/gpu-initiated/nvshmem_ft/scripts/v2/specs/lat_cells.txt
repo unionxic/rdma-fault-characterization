@@ -1,0 +1,18 @@
+# A3/B overhead: 5 x 2000 (put+signal+nvshmem_quiet) per run, GPU-timed; interleaved runs.
+# v1off/v1on = the v1 build (copied from ~/gi-bundle/nvshmem_ft, md5-checked) flag off / on.
+none timeout LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1off
+none timeout LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1on
+none timeout LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=l4k_v2off
+none timeout LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 TAG=l4k_v2coll
+none timeout LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=4096 TAG=l4k_v2sent
+none timeout LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=4096 TAG=l4k_v2ring
+none timeout LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2bounds
+none timeout LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2ringbounds
+none timeout LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1off
+none timeout LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1on
+none timeout LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 TAG=l256k_v2off
+none timeout LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 TAG=l256k_v2coll
+none timeout LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=262144 TAG=l256k_v2sent
+none timeout LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=262144 TAG=l256k_v2ring
+none timeout LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2bounds
+none timeout LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2ringbounds

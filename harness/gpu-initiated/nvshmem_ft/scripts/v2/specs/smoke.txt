@@ -1,0 +1,12 @@
+# v2 smoke: flag off, v1-equivalent collapsed FT, ring, bounds, ring+bounds; faults F1 (ring) and F2a gap (bounds)
+none timeout 1 FT=0 ITERS=60 TAG=s_off
+none timeout 1 ITERS=60 TAG=s_on
+none timeout 1 RING=1 ITERS=60 TAG=s_ring
+none blocking 1 RING=1 ITERS=60 TAG=s_ring
+none timeout 1 BOUNDS=1 ITERS=60 TAG=s_bounds
+none timeout 1 RING=1 BOUNDS=1 ITERS=60 TAG=s_ringbounds
+F1 blocking 1 RING=1 QDELAY_US=2000 TAG=s_ring_d2000
+F1 timeout 1 RING=1 RECOVER=1 ITERS=100 TAG=s_ring_rec
+F2a timeout 1 BOUNDS=1 OOB=gap ITERS=10 CORRUPT_AT=4 TAG=s_gap
+F2a timeout 1 BOUNDS=1 OOB=exact ITERS=10 CORRUPT_AT=4 TAG=s_exact
+F1 timeout 1 RECOVER=1 ITERS=100 SKIP=cqfill TAG=s_skip_cqfill

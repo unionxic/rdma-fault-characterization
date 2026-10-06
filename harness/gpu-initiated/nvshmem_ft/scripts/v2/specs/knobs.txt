@@ -1,0 +1,18 @@
+# C: negative controls, one resync step skipped per cell (both PEs), F1 recovery (collapsed CQ, default)
+F1 timeout 5 RECOVER=1 TAG=kbase
+F1 timeout 5 RECOVER=1 SKIP=idx TAG=k_idx
+F1 timeout 5 RECOVER=1 SKIP=lock TAG=k_lock
+F1 timeout 5 RECOVER=1 SKIP=ibuf TAG=k_ibuf
+F1 timeout 5 RECOVER=1 SKIP=sticky TAG=k_sticky
+F1 timeout 5 RECOVER=1 SKIP=cqfill TAG=k_cqfill
+F1 timeout 5 RECOVER=1 SKIP=dbr TAG=k_dbr
+F1 timeout 5 RECOVER=1 SKIP=dci TAG=k_dci
+F1 timeout 5 RECOVER=1 SKIP=psn TAG=k_psn
+F1F2b timeout 5 RECOVER=1 CORRUPT_AT=120 TAG=kbase_f1f2b
+F1F2b timeout 5 RECOVER=1 CORRUPT_AT=120 SKIP=nerr TAG=k_nerr
+F2b timeout 5 RECOVER=1 NVFT_TEARDOWN_S=20 TAG=kbase_decl
+F2b timeout 5 RECOVER=1 SKIP=finbar NVFT_TEARDOWN_S=20 TAG=k_finbar
+F4 timeout 3 RECOVER=1 NVFT_TEARDOWN_S=40 TAG=kbase_decl
+F4 timeout 3 RECOVER=1 SKIP=finbar NVFT_TEARDOWN_S=40 TAG=k_finbar
+F1 timeout 5 RING=1 RECOVER=1 SKIP=cqfill TAG=kr_cqfill
+F1 timeout 5 RING=1 RECOVER=1 SKIP=ringci TAG=kr_ringci

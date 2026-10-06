@@ -1,0 +1,46 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T0d,"flag on, no fault, default",0,PASS,,0,0,0,0,0,0,60,60,1.539
+T0d,"flag on, no fault, default",1,PASS,,0,0,0,0,0,0,60,60,1.48
+T0d,"flag on, no fault, default",2,PASS,,0,0,0,0,0,0,60,60,1.505
+T0d,"flag on, no fault, default",3,PASS,,0,0,0,0,0,0,60,60,1.495
+T0d,"flag on, no fault, default",4,PASS,,0,0,0,0,0,0,60,60,1.5
+T1,"S inject, single, unaligned k",0,RECOVERED,2.622,0,0,1,1,0,1,300,300,1.495
+T1,"S inject, single, unaligned k",1,RECOVERED,2.436,0,0,1,1,0,1,300,300,1.515
+T1,"S inject, single, unaligned k",2,RECOVERED,2.476,0,0,1,1,0,1,300,300,1.525
+T1,"S inject, single, unaligned k",3,RECOVERED,2.437,0,0,1,1,0,1,300,300,1.51
+T1,"S inject, single, unaligned k",4,RECOVERED,2.434,0,0,1,1,0,1,300,300,1.505
+T2,"S inject, default config",0,RECOVERED,2.255,0,0,1,1,0,1,60,60,1.5
+T2,"S inject, default config",1,RECOVERED,2.236,0,0,1,1,0,1,60,60,1.49
+T2,"S inject, default config",2,RECOVERED,2.352,0,0,1,1,0,1,60,60,1.525
+T2,"S inject, default config",3,RECOVERED,2.279,0,0,1,1,0,1,60,60,1.505
+T2,"S inject, default config",4,RECOVERED,2.473,0,0,1,1,0,1,60,60,1.485
+T3,"R inject (NOTIFY path), default",0,RECOVERED,2.128,0,0,1,1,0,1,60,60,1.48
+T3,"R inject (NOTIFY path), default",1,RECOVERED,2.332,0,0,1,1,0,1,60,60,1.475
+T3,"R inject (NOTIFY path), default",2,RECOVERED,2.257,0,0,1,1,0,1,60,60,1.489
+T3,"R inject (NOTIFY path), default",3,RECOVERED,2.190,0,0,1,1,0,1,60,60,1.495
+T3,"R inject (NOTIFY path), default",4,RECOVERED,2.241,0,0,1,1,0,1,60,60,1.48
+T5,"S inject x5, default",0,RECOVERED,2.355;2.296;2.193;2.153;2.134,0,0,5,5,0,5,80,80,1.51
+T5,"S inject x5, default",1,RECOVERED,2.440;2.447;2.296;2.204;2.158,0,0,5,5,0,5,80,80,1.488
+T5,"S inject x5, default",2,RECOVERED,2.380;2.165;2.240;2.194;2.164,0,0,5,5,0,5,80,80,1.49
+T5,"S inject x5, default",3,RECOVERED,2.435;2.314;2.308;2.169;2.127,0,0,5,5,0,5,80,80,1.494
+T5,"S inject x5, default",4,RECOVERED,2.555;2.298;2.176;2.236;2.126,0,0,5,5,0,5,80,80,1.495
+T6,"symmetric S inject, default",0,RECOVERED,2.495;2.503,0,0,2,2,0,2,60,60,1.5
+T6,"symmetric S inject, default",1,RECOVERED,2.431;2.401,0,0,2,2,0,2,60,60,1.494
+T6,"symmetric S inject, default",2,RECOVERED,2.532;2.539,0,0,2,2,0,2,60,60,1.479
+T6,"symmetric S inject, default",3,RECOVERED,2.437;2.456,0,0,2,2,0,2,60,60,1.495
+T6,"symmetric S inject, default",4,RECOVERED,2.301;2.397,0,0,2,2,0,2,60,60,1.489
+T8,"SIGKILL rank1, single",0,CLEAN_FAIL,,0,0,0,0,1,0,60695,,27.231
+T8,"SIGKILL rank1, single",1,CLEAN_FAIL,,0,0,0,0,1,0,61309,,27.222
+T8,"SIGKILL rank1, single",2,CLEAN_FAIL,,0,0,0,0,1,0,60946,,27.228
+T8,"SIGKILL rank1, single",3,CLEAN_FAIL,,0,0,0,0,1,0,61470,,27.215
+T8,"SIGKILL rank1, single",4,CLEAN_FAIL,,0,0,0,0,1,0,60603,,27.228
+T9,"mute peer, R inject",0,CLEAN_FAIL,,0,0,0,0,2,1,96,95,56.674
+T9,"mute peer, R inject",1,CLEAN_FAIL,,0,0,0,0,2,1,96,95,56.673
+T9,"mute peer, R inject",2,CLEAN_FAIL,,0,0,0,0,2,1,96,95,56.662
+T9,"mute peer, R inject",3,CLEAN_FAIL,,0,0,0,0,2,1,96,95,56.667
+T9,"mute peer, R inject",4,CLEAN_FAIL,,0,0,0,0,2,1,96,95,56.669
+T7a,GID blackhole 0.5 s,0,RECOVERED,2.257;3.747;3.005;4.547,0,0,4,4,0,0,15000,15000,43.071
+T7a,GID blackhole 0.5 s,1,RECOVERED,2.279;2.985;3.031;3.650,0,0,4,4,0,0,15000,15000,42.527
+T7a,GID blackhole 0.5 s,2,RECOVERED,2.268;4.214;3.363;3.283,0,0,4,4,0,0,15000,15000,42.527
+T7a,GID blackhole 0.5 s,3,RECOVERED,3.092;3.488;3.526;4.070,0,0,4,4,0,0,15000,15000,42.537
+T7a,GID blackhole 0.5 s,4,RECOVERED,2.519;2.812;3.311;4.152,0,0,4,4,0,0,15000,15000,43.036

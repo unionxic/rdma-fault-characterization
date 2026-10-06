@@ -1,0 +1,6 @@
+fault,iter,recovery,detect_ns,status,status_name,vendor_err,cause,action,peer_alive,auto_recoverable,recover_ns,verify_ok,bytes_sent_psn,sq_psn_delta,bytes_landed_readback,matching_bytes_total,mtu_bytes,counter,cnt_delta,sub_cause,peer_rx_delta
+partial_write,0,qp_only,382525,5,Work Request Flushed Error,0xf5,"WR flushed (local QP left RTS, e.g. forced ERR)","drain CQ, QP-only recover, repost",1,1,839766,1,1359872,332,1359872,1359872,4096,roce_adp_retrans,0,-,-1
+partial_write,1,qp_only,412642,5,Work Request Flushed Error,0xf5,"WR flushed (local QP left RTS, e.g. forced ERR)","drain CQ, QP-only recover, repost",1,1,790858,1,1363968,333,1363968,1363968,4096,roce_adp_retrans,0,-,-1
+partial_write,2,qp_only,360477,5,Work Request Flushed Error,0xf5,"WR flushed (local QP left RTS, e.g. forced ERR)","drain CQ, QP-only recover, repost",1,1,803406,1,1347584,329,1347584,1347584,4096,roce_adp_retrans,0,-,-1
+partial_write,3,qp_only,351616,5,Work Request Flushed Error,0xf5,"WR flushed (local QP left RTS, e.g. forced ERR)","drain CQ, QP-only recover, repost",1,1,802542,1,1347584,329,1347584,1347584,4096,roce_adp_retrans,0,-,-1
+partial_write,4,qp_only,366913,5,Work Request Flushed Error,0xf5,"WR flushed (local QP left RTS, e.g. forced ERR)","drain CQ, QP-only recover, repost",1,1,815109,1,1404928,343,1404928,1404928,4096,roce_adp_retrans,0,-,-1

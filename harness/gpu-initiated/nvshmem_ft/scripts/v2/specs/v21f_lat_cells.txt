@@ -1,0 +1,10 @@
+none timeout LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1off
+none timeout LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=l4k_v21off
+none timeout LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/var_nogate TAG=l4k_nogateoff
+none timeout LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 TAG=l4k_v21coll
+none timeout LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=4096 TAG=l4k_v21ring
+none timeout LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1off
+none timeout LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 TAG=l256k_v21off
+none timeout LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/var_nogate TAG=l256k_nogateoff
+none timeout LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 TAG=l256k_v21coll
+none timeout LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=262144 TAG=l256k_v21ring

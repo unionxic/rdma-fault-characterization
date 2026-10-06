@@ -1,0 +1,33 @@
+# dbrk S4 (2026-09-25): kerr + 2ERR at 20 ms with kdbr 0 (P = c: nothing flushed), then at 250 ms write the
+# SQ DBR = pi, without (uar0) or with (uar1) ringing the UAR again. QUERY_QP/CQ samples every 100 ms (s100:
+# one at 200 and 300 ms) or every 1000 ms (s1000: none between the first sample at ~20 ms and the end).
+s4_late_uar0_s100_t1 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 100
+s4_late_uar0_s1000_t1 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 1000
+s4_late_uar1_s1000_t1 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 1 --sample-ms 1000
+s4_late_uar0_s100_t2 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 100
+s4_late_uar0_s1000_t2 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 1000
+s4_late_uar1_s1000_t2 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 1 --sample-ms 1000
+s4_late_uar0_s100_t3 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 100
+s4_late_uar0_s1000_t3 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 1000
+s4_late_uar1_s1000_t3 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 1 --sample-ms 1000
+s4_late_uar0_s100_t4 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 100
+s4_late_uar0_s1000_t4 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 1000
+s4_late_uar1_s1000_t4 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 1 --sample-ms 1000
+s4_late_uar0_s100_t5 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 100
+s4_late_uar0_s1000_t5 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 1000
+s4_late_uar1_s1000_t5 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 1 --sample-ms 1000
+s4_late_uar0_s100_t6 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 100
+s4_late_uar0_s1000_t6 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 1000
+s4_late_uar1_s1000_t6 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 1 --sample-ms 1000
+s4_late_uar0_s100_t7 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 100
+s4_late_uar0_s1000_t7 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 1000
+s4_late_uar1_s1000_t7 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 1 --sample-ms 1000
+s4_late_uar0_s100_t8 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 100
+s4_late_uar0_s1000_t8 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 1000
+s4_late_uar1_s1000_t8 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 1 --sample-ms 1000
+s4_late_uar0_s100_t9 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 100
+s4_late_uar0_s1000_t9 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 1000
+s4_late_uar1_s1000_t9 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 1 --sample-ms 1000
+s4_late_uar0_s100_t10 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 100
+s4_late_uar0_s1000_t10 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 0 --sample-ms 1000
+s4_late_uar1_s1000_t10 kerr nvshmem cq_cc=0,dbr_word=1 700 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 250 --klate-uar 1 --sample-ms 1000

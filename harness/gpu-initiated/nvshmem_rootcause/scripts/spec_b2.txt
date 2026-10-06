@@ -1,0 +1,26 @@
+# batch 2: bisection. Start from the nvshmem preset and apply ONE doca value (or one coupled
+# group) at a time; F2b (invalid rkey) is the quick discriminating fault. Then the reverse
+# (doca preset with NVSHMEM's doorbell-record word) and F1/F3 replicates.
+b2_nvs_f2b_r2            f2b nvshmem -                                            3000
+b2_nvs_cc0_f2b           f2b nvshmem cq_cc=0,cq_log_page_size=0                   3000
+b2_nvs_cqlog7_f2b        f2b nvshmem cq_log_size=7                                3000
+b2_nvs_cqpg0_f2b         f2b nvshmem cq_log_page_size=0                           3000
+b2_nvs_cqinit1_f2b       f2b nvshmem cq_init=1                                    3000
+b2_nvs_sq7_f2b           f2b nvshmem log_sq_size=7                                3000
+b2_nvs_norq_f2b          f2b nvshmem rq_srq=0                                     3000
+b2_nvs_uidx0_f2b         f2b nvshmem user_index=0                                 3000
+b2_nvs_atomicgrp_f2b     f2b nvshmem r2i_rae=0,rtr_rwe_rae=1,rtr_opt_mask=4,atomic_mode=1 3000
+b2_nvs_sport_f2b         f2b nvshmem udp_sport=-1                                 3000
+b2_nvs_prio_f2b          f2b nvshmem eth_prio_set=0                               3000
+b2_nvs_rtsrwe_f2b        f2b nvshmem rts_rwe=1                                    3000
+b2_nvs_wce_f2b           f2b nvshmem write_ce=8                                   3000
+b2_nvs_dbstyle_f2b       f2b nvshmem db_style=1                                   3000
+b2_nvs_uarbf_f2b         f2b nvshmem uar_type=1                                   3000
+b2_nvs_dbr1_f2b_r2       f2b nvshmem dbr_word=1                                   3000
+b2_doca_dbr0_f2b         f2b doca    dbr_word=0                                   3000
+b2_doca_dbr0style0_f2b   f2b doca    dbr_word=0,db_style=0                        3000
+b2_doca_cc1_f2b          f2b doca    cq_cc=1                                      3000
+b2_doca_cc1dbr0_f2b      f2b doca    cq_cc=1,dbr_word=0                           3000
+# GPU-handler emulation on CPU: SQ doorbell-record word + BF UAR (what the GPU handler uses
+# when NC_DEDICATED is unavailable), and the UAR alone
+b2_nvs_gpuemu_f2b        f2b nvshmem dbr_word=1,uar_type=1                        3000

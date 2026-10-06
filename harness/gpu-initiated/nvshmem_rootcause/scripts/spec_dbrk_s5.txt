@@ -1,0 +1,17 @@
+# dbrk S5 (2026-09-25): cross-check with the doca preset (ring CQ, SQ DBR word 1, UAR-DBR-fence-UAR ring order,
+# zero-size RQ, ...): knak with the bad rkey at batch WRITE 8; kn=16
+s5_kpi_t1 knak doca - 600 --kn 16 --kdbr pi --kbad 8
+s5_k8_t1 knak doca - 600 --kn 16 --kdbr 8 --kbad 8
+s5_k12_t1 knak doca - 600 --kn 16 --kdbr 12 --kbad 8
+s5_kpi_t2 knak doca - 600 --kn 16 --kdbr pi --kbad 8
+s5_k8_t2 knak doca - 600 --kn 16 --kdbr 8 --kbad 8
+s5_k12_t2 knak doca - 600 --kn 16 --kdbr 12 --kbad 8
+s5_kpi_t3 knak doca - 600 --kn 16 --kdbr pi --kbad 8
+s5_k8_t3 knak doca - 600 --kn 16 --kdbr 8 --kbad 8
+s5_k12_t3 knak doca - 600 --kn 16 --kdbr 12 --kbad 8
+s5_kpi_t4 knak doca - 600 --kn 16 --kdbr pi --kbad 8
+s5_k8_t4 knak doca - 600 --kn 16 --kdbr 8 --kbad 8
+s5_k12_t4 knak doca - 600 --kn 16 --kdbr 12 --kbad 8
+s5_kpi_t5 knak doca - 600 --kn 16 --kdbr pi --kbad 8
+s5_k8_t5 knak doca - 600 --kn 16 --kdbr 8 --kbad 8
+s5_k12_t5 knak doca - 600 --kn 16 --kdbr 12 --kbad 8

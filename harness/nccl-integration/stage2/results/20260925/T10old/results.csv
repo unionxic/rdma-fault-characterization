@@ -1,0 +1,4 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T10,"management-network (OOB) outage 12 s, default",0,PASS,,0,0,0,0,0,0,12000,12000,30.542
+T10,"management-network (OOB) outage 12 s, default",1,PASS,,0,0,0,0,0,0,12000,12000,31.015
+T10,"management-network (OOB) outage 12 s, default",2,PASS,,0,0,0,0,0,0,12000,12000,30.501

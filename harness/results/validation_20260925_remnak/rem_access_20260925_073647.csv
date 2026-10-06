@@ -1,0 +1,6 @@
+fault,iter,recovery,detect_ns,status,status_name,vendor_err,cause,action,peer_alive,auto_recoverable,recover_ns,verify_ok,bytes_sent_psn,sq_psn_delta,bytes_landed_readback,matching_bytes_total,mtu_bytes,counter,cnt_delta,sub_cause,peer_rx_delta
+rem_access,0,qp_only,360439,10,remote access error,0x88,"remote access: invalid rkey or out-of-bounds addr","refresh rkey / clamp to remote MR bounds, QP-only recover",1,1,791856,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,0
+rem_access,1,qp_only,325601,10,remote access error,0x88,"remote access: invalid rkey or out-of-bounds addr","refresh rkey / clamp to remote MR bounds, QP-only recover",1,1,811683,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,0
+rem_access,2,qp_only,320411,10,remote access error,0x88,"remote access: invalid rkey or out-of-bounds addr","refresh rkey / clamp to remote MR bounds, QP-only recover",1,1,769381,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,0
+rem_access,3,qp_only,320849,10,remote access error,0x88,"remote access: invalid rkey or out-of-bounds addr","refresh rkey / clamp to remote MR bounds, QP-only recover",1,1,774553,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,0
+rem_access,4,qp_only,319881,10,remote access error,0x88,"remote access: invalid rkey or out-of-bounds addr","refresh rkey / clamp to remote MR bounds, QP-only recover",1,1,777059,1,-1,-1,-1,-1,4096,roce_adp_retrans,0,-,0

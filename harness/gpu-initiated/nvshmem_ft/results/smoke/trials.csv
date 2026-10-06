@@ -1,0 +1,16 @@
+dir,tag,fault,mode,trial,ft,recover,burst,qdelay_us,sentinel,shots,ft_capture,pe0_rc,pe1_rc,ok_iters0,ok_iters1,rx_data_ok,rx_data_bad,rx_sig_exact,final_sig,expected_sig,faults_fired,fault_rounds,rec_rounds,rec_ok_ops,declined,decline_reason,first_class,first_fp,first_path,first_fault_to_dev_ms,first_fault_to_mbx_ms,first_dev_to_mbx_us,teardown0,teardown1,finalize0_ms,finalize1_ms,leftover
+s1,F1_timeout_ft1_rec1_t1,F1,timeout,1,1,1,1,,,,,0,0,10,10,10,0,10,10,10,0,0,0,0,0,,,,,,,,returned,returned,19.3,25.5,0/0
+s1,F2b_timeout_ft1_rec0_t1,F2b,timeout,1,1,0,1,,,,,7,7,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),NONE,0/0x00,0,,,,no,no,,,0/0
+s1,none_blocking_ft1_rec0_t1,none,blocking,1,1,0,1,,,,,0,0,10,10,10,0,10,10,10,0,0,0,0,0,,,,,,,,returned,returned,19.6,25.6,0/0
+s1,none_timeout_ft1_rec0_t1,none,timeout,1,1,0,1,,,,,0,0,10,10,10,0,10,10,10,0,0,0,0,0,,,,,,,,returned,returned,20.0,30.0,0/0
+s2,F1_timeout_ft1_rec1_t1,F1,timeout,1,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.714,8.76,46.0,returned,returned,21.8,26.9,0/0
+s2,F2b_timeout_ft1_rec1_t1,F2b,timeout,1,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,3,7.577,7.607,30.0,returned,returned,20.2,25.4,0/0
+s2,F3_blocking_ft1_rec1_t1,F3,blocking,1,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3773.015,3773.121,106.0,returned,returned,22.1,27.0,0/0
+s2,F4_blocking_ft1_rec1_t1,F4,blocking,1,1,1,1,,,,,7,255,18,,18,0,18,,,1,0,0,0,0,,,,,,,,no,no,,,0/0
+s3,F1_blocking_ft1_rec0_t1,F1,blocking,1,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,3.461,3.55,89.0,returned,returned,20.1,25.0,0/0
+s3,F2b_blocking_ft1_rec1_t1,F2b,blocking,1,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,1,6.221,6.264,43.0,returned,returned,19.8,29.5,0/0
+s3,F4_blocking_ft1_rec1_t1,F4,blocking,1,1,1,1,,,,,4,255,16,,16,0,16,,,1,0,0,0,0,,,,,,,,returned,no,22916.4,,0/0
+s3,F4_timeout_ft1_rec1_t1,F4,timeout,1,1,1,1,,,,,4,255,19,,19,0,19,,,1,0,0,0,0,,,,,,,,returned,no,22912.0,,0/0
+s4,F4_blocking_ft1_rec1_t1,F4,blocking,1,1,1,1,,,,,9,255,18,,18,0,18,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,1,3743.004,3743.113,109.0,returned,no,19.4,,0/0
+s4,F4_timeout_ft1_rec0_t2,F4,timeout,2,1,0,1,,,,,3,255,20,,20,0,20,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3732.432,3732.445,13.0,returned,no,18.1,,0/0
+s4,F4_timeout_ft1_rec1_t1,F4,timeout,1,1,1,1,,,,,9,255,18,,18,0,18,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,3,3799.759,3799.833,74.0,returned,no,18.5,,0/0

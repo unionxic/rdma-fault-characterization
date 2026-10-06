@@ -1,0 +1,6 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T12c,"one-way OOB outage 12 s (sunny->rain dropped), 1 GiB all-reduces",0,PASS,,0,0,0,0,0,0,100,100,17.04
+T12c,"one-way OOB outage 12 s (sunny->rain dropped), 1 GiB all-reduces",1,PASS,,0,0,0,0,0,0,100,100,16.999
+T12c,"one-way OOB outage 12 s (sunny->rain dropped), 1 GiB all-reduces",2,PASS,,0,0,0,0,0,0,100,100,16.984
+T12c,"one-way OOB outage 12 s (sunny->rain dropped), 1 GiB all-reduces",3,PASS,,0,0,0,0,0,0,100,100,17.0
+T12c,"one-way OOB outage 12 s (sunny->rain dropped), 1 GiB all-reduces",4,PASS,,0,0,0,0,0,0,100,100,16.97

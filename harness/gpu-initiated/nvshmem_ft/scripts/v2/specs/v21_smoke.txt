@@ -1,0 +1,9 @@
+# v2.1 smoke (lap burst, invariant trip, regression)
+none timeout 1 FT=0 ITERS=60 TAG=v21s_off
+none blocking 1 RING=1 MT=8 MT_REPS=1024 BYTES=4096 ITERS=20 XARGS=--mt-burst TAG=v21s_burst_nofault
+F2b blocking 1 RING=1 MT=8 MT_REPS=1024 BYTES=4096 ITERS=10 XARGS=--mt-burst TAG=v21s_lap_f2b
+F1 blocking 1 RING=1 MT=8 MT_REPS=1024 BYTES=4096 ITERS=1000 GAP_MS=0 XARGS=--mt-burst TAG=v21s_lap_f1
+F1 blocking 1 RING=1 RECOVER=1 MT=8 MT_REPS=1024 BYTES=4096 ITERS=300 GAP_MS=0 XARGS=--mt-burst TAG=v21s_lap_f1rec
+none timeout 1 RING=1 TRIP=ring_d:100 TAG=v21s_trip
+none timeout 1 RING=1 TRIP=ring_d_silent:100 DEV_TIMEOUT_MS=3000 TAG=v21s_trip_silent
+F1 timeout 1 RING=1 RECOVER=1 TAG=v21s_ringrec

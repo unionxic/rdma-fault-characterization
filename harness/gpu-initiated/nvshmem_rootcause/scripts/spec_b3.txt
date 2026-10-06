@@ -1,0 +1,14 @@
+# batch 3: replicates of the discriminating cells (F1, F1post, F3), q-counter diagnostics
+b3_nvs_f3_r2             f3     nvshmem -              10000
+b3_nvsdbr1_f3_r2         f3     nvshmem dbr_word=1     10000
+b3_doca_dbr0_f3          f3     doca    dbr_word=0     10000
+b3_nvs_f3_qc             f3     nvshmem -              10000 --qcounter 2
+b3_nvsdbr1_f3_qc         f3     nvshmem dbr_word=1     10000 --qcounter 2
+b3_nvs_f2b_qc            f2b    nvshmem -              3000  --qcounter 2
+b3_nvsdbr1_f2b_qc        f2b    nvshmem dbr_word=1     3000  --qcounter 2
+b3_nvs_f1_r2             f1     nvshmem -              3000
+b3_nvsdbr1_f1_r2         f1     nvshmem dbr_word=1     3000
+b3_nvs_f1post_r2         f1post nvshmem -              3000
+b3_nvsdbr1_f1post_r2     f1post nvshmem dbr_word=1     3000
+b3_nvs_f3_r3             f3     nvshmem -              10000
+b3_nvsdbr1_f3_r3         f3     nvshmem dbr_word=1     10000

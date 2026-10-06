@@ -1,0 +1,6 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T9,"mute peer, R inject",0,CLEAN_FAIL,,0,0,0,0,2,1,96,95,28.591
+T9,"mute peer, R inject",1,CLEAN_FAIL,,0,0,0,0,2,1,96,95,28.091
+T9,"mute peer, R inject",2,CLEAN_FAIL,,0,0,0,0,2,1,96,95,28.59
+T9,"mute peer, R inject",3,CLEAN_FAIL,,0,0,0,0,2,1,96,95,28.096
+T9,"mute peer, R inject",4,CLEAN_FAIL,,0,0,0,0,2,1,96,95,28.595

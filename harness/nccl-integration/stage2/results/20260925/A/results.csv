@@ -1,0 +1,91 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T1,"S inject, single, unaligned k",0,RECOVERED,2.205,0,0,1,1,0,1,300,300,1.447
+T1,"S inject, single, unaligned k",1,RECOVERED,2.252,0,0,1,1,0,1,300,300,1.447
+T1,"S inject, single, unaligned k",2,RECOVERED,2.216,0,0,1,1,0,1,300,300,1.401
+T1,"S inject, single, unaligned k",3,RECOVERED,2.229,0,0,1,1,0,1,300,300,1.446
+T1,"S inject, single, unaligned k",4,RECOVERED,2.150,0,0,1,1,0,1,300,300,1.452
+T1,"S inject, single, unaligned k",5,RECOVERED,2.219,0,0,1,1,0,1,300,300,1.437
+T1,"S inject, single, unaligned k",6,RECOVERED,2.231,0,0,1,1,0,1,300,300,1.447
+T1,"S inject, single, unaligned k",7,RECOVERED,2.190,0,0,1,1,0,1,300,300,1.457
+T1,"S inject, single, unaligned k",8,RECOVERED,2.198,0,0,1,1,0,1,300,300,1.431
+T1,"S inject, single, unaligned k",9,RECOVERED,2.165,0,0,1,1,0,1,300,300,1.442
+T1,"S inject, single, unaligned k",10,RECOVERED,2.157,0,0,1,1,0,1,300,300,1.462
+T1,"S inject, single, unaligned k",11,RECOVERED,2.342,0,0,1,1,0,1,300,300,1.447
+T1,"S inject, single, unaligned k",12,RECOVERED,2.220,0,0,1,1,0,1,300,300,1.442
+T1,"S inject, single, unaligned k",13,RECOVERED,2.140,0,0,1,1,0,1,300,300,1.452
+T1,"S inject, single, unaligned k",14,RECOVERED,2.261,0,0,1,1,0,1,300,300,1.437
+T1,"S inject, single, unaligned k",15,RECOVERED,2.323,0,0,1,1,0,1,300,300,1.432
+T1,"S inject, single, unaligned k",16,RECOVERED,2.219,0,0,1,1,0,1,300,300,1.437
+T1,"S inject, single, unaligned k",17,RECOVERED,2.175,0,0,1,1,0,1,300,300,1.442
+T1,"S inject, single, unaligned k",18,RECOVERED,2.206,0,0,1,1,0,1,300,300,1.437
+T1,"S inject, single, unaligned k",19,RECOVERED,2.255,0,0,1,1,0,1,300,300,1.441
+T1,"S inject, single, unaligned k",20,RECOVERED,2.148,0,0,1,1,0,1,300,300,1.462
+T1,"S inject, single, unaligned k",21,RECOVERED,2.220,0,0,1,1,0,1,300,300,1.462
+T1,"S inject, single, unaligned k",22,RECOVERED,2.248,0,0,1,1,0,1,300,300,1.442
+T1,"S inject, single, unaligned k",23,RECOVERED,2.268,0,0,1,1,0,1,300,300,1.442
+T1,"S inject, single, unaligned k",24,RECOVERED,2.223,0,0,1,1,0,1,300,300,1.437
+T1,"S inject, single, unaligned k",25,RECOVERED,2.205,0,0,1,1,0,1,300,300,1.457
+T1,"S inject, single, unaligned k",26,RECOVERED,2.146,0,0,1,1,0,1,300,300,1.452
+T1,"S inject, single, unaligned k",27,RECOVERED,2.297,0,0,1,1,0,1,300,300,1.457
+T1,"S inject, single, unaligned k",28,RECOVERED,2.210,0,0,1,1,0,1,300,300,1.436
+T1,"S inject, single, unaligned k",29,RECOVERED,2.187,0,0,1,1,0,1,300,300,1.447
+T2,"S inject, default config",0,RECOVERED,2.279,0,0,1,1,0,1,60,60,1.442
+T2,"S inject, default config",1,RECOVERED,2.247,0,0,1,1,0,1,60,60,1.437
+T2,"S inject, default config",2,RECOVERED,2.233,0,0,1,1,0,1,60,60,1.411
+T2,"S inject, default config",3,RECOVERED,2.316,0,0,1,1,0,1,60,60,1.427
+T2,"S inject, default config",4,RECOVERED,2.242,0,0,1,1,0,1,60,60,1.462
+T2,"S inject, default config",5,RECOVERED,2.260,0,0,1,1,0,1,60,60,1.416
+T2,"S inject, default config",6,RECOVERED,2.231,0,0,1,1,0,1,60,60,1.412
+T2,"S inject, default config",7,RECOVERED,2.283,0,0,1,1,0,1,60,60,1.432
+T2,"S inject, default config",8,RECOVERED,2.266,0,0,1,1,0,1,60,60,1.411
+T2,"S inject, default config",9,RECOVERED,2.346,0,0,1,1,0,1,60,60,1.447
+T2,"S inject, default config",10,RECOVERED,2.290,0,0,1,1,0,1,60,60,1.401
+T2,"S inject, default config",11,RECOVERED,2.315,0,0,1,1,0,1,60,60,1.421
+T2,"S inject, default config",12,RECOVERED,2.253,0,0,1,1,0,1,60,60,1.437
+T2,"S inject, default config",13,RECOVERED,2.264,0,0,1,1,0,1,60,60,1.427
+T2,"S inject, default config",14,RECOVERED,2.256,0,0,1,1,0,1,60,60,1.412
+T2,"S inject, default config",15,RECOVERED,2.277,0,0,1,1,0,1,60,60,1.447
+T2,"S inject, default config",16,RECOVERED,2.262,0,0,1,1,0,1,60,60,1.406
+T2,"S inject, default config",17,RECOVERED,2.249,0,0,1,1,0,1,60,60,1.432
+T2,"S inject, default config",18,RECOVERED,2.265,0,0,1,1,0,1,60,60,1.416
+T2,"S inject, default config",19,RECOVERED,2.292,0,0,1,1,0,1,60,60,1.457
+T2,"S inject, default config",20,RECOVERED,2.326,0,0,1,1,0,1,60,60,1.417
+T2,"S inject, default config",21,RECOVERED,2.339,0,0,1,1,0,1,60,60,1.432
+T2,"S inject, default config",22,RECOVERED,2.333,0,0,1,1,0,1,60,60,1.417
+T2,"S inject, default config",23,RECOVERED,2.279,0,0,1,1,0,1,60,60,1.431
+T2,"S inject, default config",24,RECOVERED,2.224,0,0,1,1,0,1,60,60,1.412
+T2,"S inject, default config",25,RECOVERED,2.236,0,0,1,1,0,1,60,60,1.427
+T2,"S inject, default config",26,RECOVERED,2.245,0,0,1,1,0,1,60,60,1.447
+T2,"S inject, default config",27,RECOVERED,2.262,0,0,1,1,0,1,60,60,1.411
+T2,"S inject, default config",28,RECOVERED,2.318,0,0,1,1,0,1,60,60,1.406
+T2,"S inject, default config",29,RECOVERED,2.220,0,0,1,1,0,1,60,60,1.427
+T3,"R inject (NOTIFY path), default",0,RECOVERED,2.217,0,0,1,1,0,1,60,60,1.426
+T3,"R inject (NOTIFY path), default",1,RECOVERED,2.182,0,0,1,1,0,1,60,60,1.421
+T3,"R inject (NOTIFY path), default",2,RECOVERED,2.202,0,0,1,1,0,1,60,60,1.401
+T3,"R inject (NOTIFY path), default",3,RECOVERED,2.153,0,0,1,1,0,1,60,60,1.411
+T3,"R inject (NOTIFY path), default",4,RECOVERED,2.143,0,0,1,1,0,1,60,60,1.416
+T3,"R inject (NOTIFY path), default",5,RECOVERED,2.271,0,0,1,1,0,1,60,60,1.427
+T3,"R inject (NOTIFY path), default",6,RECOVERED,2.147,0,0,1,1,0,1,60,60,1.417
+T3,"R inject (NOTIFY path), default",7,RECOVERED,2.136,0,0,1,1,0,1,60,60,1.416
+T3,"R inject (NOTIFY path), default",8,RECOVERED,2.218,0,0,1,1,0,1,60,60,1.416
+T3,"R inject (NOTIFY path), default",9,RECOVERED,2.158,0,0,1,1,0,1,60,60,1.432
+T3,"R inject (NOTIFY path), default",10,RECOVERED,2.222,0,0,1,1,0,1,60,60,1.406
+T3,"R inject (NOTIFY path), default",11,RECOVERED,2.158,0,0,1,1,0,1,60,60,1.421
+T3,"R inject (NOTIFY path), default",12,RECOVERED,2.141,0,0,1,1,0,1,60,60,1.432
+T3,"R inject (NOTIFY path), default",13,RECOVERED,2.168,0,0,1,1,0,1,60,60,1.406
+T3,"R inject (NOTIFY path), default",14,RECOVERED,2.264,0,0,1,1,0,1,60,60,1.417
+T3,"R inject (NOTIFY path), default",15,RECOVERED,2.146,0,0,1,1,0,1,60,60,1.442
+T3,"R inject (NOTIFY path), default",16,RECOVERED,2.238,0,0,1,1,0,1,60,60,1.401
+T3,"R inject (NOTIFY path), default",17,RECOVERED,2.178,0,0,1,1,0,1,60,60,1.437
+T3,"R inject (NOTIFY path), default",18,RECOVERED,2.135,0,0,1,1,0,1,60,60,1.441
+T3,"R inject (NOTIFY path), default",19,RECOVERED,2.136,0,0,1,1,0,1,60,60,1.426
+T3,"R inject (NOTIFY path), default",20,RECOVERED,2.145,0,0,1,1,0,1,60,60,1.442
+T3,"R inject (NOTIFY path), default",21,RECOVERED,2.130,0,0,1,1,0,1,60,60,1.447
+T3,"R inject (NOTIFY path), default",22,RECOVERED,2.135,0,0,1,1,0,1,60,60,1.416
+T3,"R inject (NOTIFY path), default",23,RECOVERED,2.165,0,0,1,1,0,1,60,60,1.406
+T3,"R inject (NOTIFY path), default",24,RECOVERED,2.155,0,0,1,1,0,1,60,60,1.416
+T3,"R inject (NOTIFY path), default",25,RECOVERED,2.196,0,0,1,1,0,1,60,60,1.437
+T3,"R inject (NOTIFY path), default",26,RECOVERED,2.150,0,0,1,1,0,1,60,60,1.401
+T3,"R inject (NOTIFY path), default",27,RECOVERED,2.114,0,0,1,1,0,1,60,60,1.422
+T3,"R inject (NOTIFY path), default",28,RECOVERED,2.123,0,0,1,1,0,1,60,60,1.447
+T3,"R inject (NOTIFY path), default",29,RECOVERED,2.133,0,0,1,1,0,1,60,60,1.411

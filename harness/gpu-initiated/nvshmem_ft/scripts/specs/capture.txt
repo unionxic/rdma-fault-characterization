@@ -1,0 +1,28 @@
+# Root-cause capture on the collapsed CQ, by capture position and posting pattern (classification
+# only). cexit = classify the CQE that ends the wait (stock position, NVSHMEM_IBGDA_FT_CAPTURE=exit);
+# cloop = in-loop capture (default); csent = in-loop + device sentinel (200 ns poll).
+# dN = N us of "compute" between posting and the wait; b16 = 16 put+signal ops, then the wait.
+F2b timeout 3 FT_CAPTURE=exit TAG=cexit_d0
+F2b timeout 3 TAG=cloop_d0
+F2b timeout 3 SENTINEL=200 TAG=csent_d0
+F2b timeout 3 FT_CAPTURE=exit QDELAY_US=200 TAG=cexit_d200
+F2b timeout 3 QDELAY_US=200 TAG=cloop_d200
+F2b timeout 3 SENTINEL=200 QDELAY_US=200 TAG=csent_d200
+F2b timeout 3 FT_CAPTURE=exit QDELAY_US=2000 TAG=cexit_d2000
+F2b timeout 3 QDELAY_US=2000 TAG=cloop_d2000
+F2b timeout 3 SENTINEL=200 QDELAY_US=2000 TAG=csent_d2000
+F2b timeout 3 BURST=16 FT_CAPTURE=exit TAG=cexit_b16
+F2b timeout 3 BURST=16 TAG=cloop_b16
+F2b timeout 3 BURST=16 SENTINEL=200 QDELAY_US=2000 TAG=csent_b16d2000
+F1 timeout 3 FT_CAPTURE=exit TAG=cexit_d0
+F1 timeout 3 TAG=cloop_d0
+F1 timeout 3 FT_CAPTURE=exit QDELAY_US=200 TAG=cexit_d200
+F1 timeout 3 QDELAY_US=200 TAG=cloop_d200
+F1 timeout 3 SENTINEL=200 QDELAY_US=200 TAG=csent_d200
+F1 timeout 3 QDELAY_US=2000 TAG=cloop_d2000
+F1 timeout 3 SENTINEL=200 QDELAY_US=2000 TAG=csent_d2000
+F1 timeout 3 BURST=16 FT_CAPTURE=exit TAG=cexit_b16
+F1 timeout 3 BURST=16 TAG=cloop_b16
+F3 timeout 3 BURST=16 FT_CAPTURE=exit TAG=cexit_b16
+F3 timeout 3 BURST=16 TAG=cloop_b16
+F3 timeout 3 QDELAY_US=2000 TAG=cloop_d2000

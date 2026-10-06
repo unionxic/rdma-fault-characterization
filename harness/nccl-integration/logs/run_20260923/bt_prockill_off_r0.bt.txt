@@ -1,0 +1,52 @@
+Thread 7 (Thread 0x7f4a1f5fe000 (LWP 1313795) "nccl_ar2"):
+#0  0x00007f4a5f80d71b in sched_yield () at ../sysdeps/unix/syscall-template.S:78
+#1  0x00007f4a5f9d7f28 in ncclProxyProgress (proxyState_=0x55bab7f1af90) at proxy.cc:917
+#2  0x00007f4a5f90d609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+#3  0x00007f4a5f82a353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95
+Thread 6 (Thread 0x7f4a5f2c7000 (LWP 1313791) "nccl_ar2"):
+#0  __pthread_clockjoin_ex (threadid=0x7f4a1f5fe000, thread_return=thread_return@entry=0x0, clockid=clockid@entry=0x0, abstime=abstime@entry=0x0, block=block@entry=0x1) at pthread_join_common.c:145
+#1  0x00007f4a5f90e9f3 in __pthread_join (threadid=<optimized out>, thread_return=thread_return@entry=0x0) at pthread_join.c:24
+#2  0x00007f4a5f9d92c3 in ncclProxyProgressDestroy (proxyState=0x55bab7f1af90) at proxy.cc:959
+#3  0x00007f4a5f9dc6b6 in ncclProxyService (_args=0x55bab7f1af90) at proxy.cc:1674
+#4  0x00007f4a5f90d609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+#5  0x00007f4a5f82a353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95
+Thread 5 (Thread 0x7f4a37854000 (LWP 1313789) "nccl_ar2"):
+#0  __libc_read (nbytes=0x10, buf=0x7f4a3784e780, fd=0x26) at ../sysdeps/unix/sysv/linux/read.c:26
+#1  __libc_read (fd=0x26, buf=buf@entry=0x7f4a3784e780, nbytes=nbytes@entry=0x10) at ../sysdeps/unix/sysv/linux/read.c:24
+#2  0x00007f4a58012014 in read (__nbytes=0x10, __buf=0x7f4a3784e780, __fd=<optimized out>) at /usr/include/x86_64-linux-gnu/bits/unistd.h:44
+#3  __ibv_get_async_event_1_1 (context=0x55bab7f47fb0, event=0x7f4a3784e7e0) at ./libibverbs/device.c:459
+#4  0x00007f4a5fa0eaa6 in wrap_ibv_get_async_event (context=<optimized out>, event=event@entry=0x7f4a3784e7e0) at misc/ibvwrap.cc:121
+#5  0x00007f4a5fa3846c in ncclIbAsyncThreadMain (args=0x7f4a63772cc0 <ncclIbDevs>) at transport/net_ib.cc:131
+#6  0x00007f4a5f90d609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+#7  0x00007f4a5f82a353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95
+Thread 4 (Thread 0x7f4a4dfff000 (LWP 1313781) "cuda-EvtHandlr"):
+#0  0x00007f4a5f81dbbf in __GI___poll (fds=0x7f4a48000c10, nfds=0xb, timeout=0x64) at ../sysdeps/unix/sysv/linux/poll.c:29
+#1  0x00007f4a5a9276e7 in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#2  0x00007f4a5a9cd87f in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#3  0x00007f4a5a910723 in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#4  0x00007f4a5f90d609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+#5  0x00007f4a5f82a353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95
+Thread 3 (Thread 0x7f4a588e4000 (LWP 1313780) "nccl_ar2"):
+#0  futex_wait_cancelable (private=<optimized out>, expected=0x0, futex_word=0x55bab3817fd0) at ../sysdeps/nptl/futex-internal.h:183
+#1  __pthread_cond_wait_common (abstime=0x0, clockid=0x0, mutex=0x55bab3813158, cond=0x55bab3817fa8) at pthread_cond_wait.c:508
+#2  __pthread_cond_wait (cond=0x55bab3817fa8, mutex=0x55bab3813158) at pthread_cond_wait.c:647
+#3  0x00007f4a5a876049 in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#4  0x00007f4a5a910723 in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#5  0x00007f4a5f90d609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+#6  0x00007f4a5f82a353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95
+Thread 2 (Thread 0x7f4a5a601000 (LWP 1313779) "cuda00001c00008"):
+#0  0x00007f4a5f81dbbf in __GI___poll (fds=0x55bab37dd0b0, nfds=0x3, timeout=0xffffffff) at ../sysdeps/unix/sysv/linux/poll.c:29
+#1  0x00007f4a5a9276e7 in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#2  0x00007f4a5a9cd87f in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#3  0x00007f4a5a910723 in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#4  0x00007f4a5f90d609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+#5  0x00007f4a5f82a353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95
+Thread 1 (Thread 0x7f4a5f31a000 (LWP 1313716) "nccl_ar2"):
+#0  __pthread_clockjoin_ex (threadid=0x7f4a5f2c7000, thread_return=thread_return@entry=0x0, clockid=clockid@entry=0x0, abstime=abstime@entry=0x0, block=block@entry=0x1) at pthread_join_common.c:145
+#1  0x00007f4a5f90e9f3 in __pthread_join (threadid=<optimized out>, thread_return=thread_return@entry=0x0) at pthread_join.c:24
+#2  0x00007f4a5f9c3065 in commFree (comm=comm@entry=0x55bab41d8700) at init.cc:189
+#3  0x00007f4a5f9ce07d in commCleanup (comm=comm@entry=0x55bab41d8700) at init.cc:1990
+#4  0x00007f4a5f9ce69b in commReclaim (job_=job_@entry=0x55bab7f338f0) at init.cc:2075
+#5  0x00007f4a5f9c15a5 in ncclAsyncLaunch (job=0x55bab7f338f0, func=func@entry=0x7f4a5f9ce58f <commReclaim(ncclAsyncJob*)>, undo=undo@entry=0x0, destructor=0x7f4a5f7a56d0 <__GI___libc_free>, comm=comm@entry=0x55bab41d8700) at group.cc:37
+#6  0x00007f4a5f9cec08 in ncclCommAbort (comm=0x55bab41d8700) at init.cc:2152
+#7  0x000055bab324d38e in main ()

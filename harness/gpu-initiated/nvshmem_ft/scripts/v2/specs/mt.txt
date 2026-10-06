@@ -1,0 +1,6 @@
+# A (concurrency): fault-free, 32 threads of one CTA each put 8 KiB + signal and nvshmem_quiet, 8 times
+# per iteration, all on the one RC QP (concurrent CQ waiters); 100 iterations verified byte by byte.
+none timeout 3 FT=0 MT=32 MT_REPS=8 ITERS=100 TAG=mt_off
+none timeout 3 MT=32 MT_REPS=8 ITERS=100 TAG=mt_coll
+none timeout 3 RING=1 MT=32 MT_REPS=8 ITERS=100 TAG=mt_ring
+none timeout 3 RING=1 BOUNDS=1 MT=32 MT_REPS=8 ITERS=100 TAG=mt_ringbounds

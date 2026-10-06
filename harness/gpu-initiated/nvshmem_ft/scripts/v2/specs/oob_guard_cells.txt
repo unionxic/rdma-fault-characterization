@@ -1,0 +1,4 @@
+# B with a 512-B red zone after every allocation (NVSHMEM_IBGDA_FT_BOUNDS_GUARD=512)
+F2a timeout BOUNDS=1 GUARD=512 OOB=exact ITERS=10 CORRUPT_AT=4 TAG=g_exact
+F2a timeout BOUNDS=1 GUARD=512 OOB=straddle ITERS=10 CORRUPT_AT=4 TAG=g_straddle
+F2a timeout BOUNDS=1 GUARD=512 OOB=tail ITERS=10 CORRUPT_AT=4 TAG=g_tail

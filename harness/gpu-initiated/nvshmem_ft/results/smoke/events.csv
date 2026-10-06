@@ -1,0 +1,10 @@
+tag,it,round,kernel_rc,have,class,fp,syndrome,path,trailing,upgrade,wqe,liveness,fault_src,t_fault_to_dev_ms,t_fault_to_mbx_ms,t_dev_to_mbx_us,t_fault_to_ret_ms,dir,d,V,prepare_ms,handshake_ms,commit_ms,peer_prepare_ms,peer_commit_ms,ret_to_commit_ms,commit_to_replayed_ms,ret_to_recovered_ms,fault_to_recovered_ms
+F2b_timeout_ft1_rec0_t1,4,0,-1,0,NONE,0/0x00,0x00,0,0,0,0,alive,f2b,,,,5.435,s1,,,,,,,,,,,
+F1_timeout_ft1_rec1_t1,51,0,-1,1,LOCAL_QP_ERR,5/0xf5,0x05,3,0,0,117,alive,hook0,8.714,8.76,46.0,8.727,s2,1,51,0.301,2.038,1.725,0.902,1.021,4.152,0.063,4.215,12.942
+F2b_timeout_ft1_rec1_t1,4,0,-1,1,REM_ACCESS,10/0x88,0x13,3,0,0,23,alive,f2b,7.577,7.607,30.0,7.588,s2,,,,,,,,,,,
+F3_blocking_ft1_rec1_t1,51,0,-1,1,RETRY_EXC,12/0x81,0x15,1,0,0,117,alive,hook1,3773.015,3773.121,106.0,3773.041,s2,1,51,0.439,2.465,1.380,0.360,1.979,4.399,0.075,4.474,3777.515
+F1_blocking_ft1_rec0_t1,51,0,-1,1,LOCAL_QP_ERR,5/0xf5,0x05,1,0,0,117,alive,hook0,3.461,3.55,89.0,3.476,s3,,,,,,,,,,,
+F2b_blocking_ft1_rec1_t1,4,0,-1,1,REM_ACCESS,10/0x88,0x13,1,0,0,23,alive,f2b,6.221,6.264,43.0,6.235,s3,,,,,,,,,,,
+F4_blocking_ft1_rec1_t1,20,0,-1,1,RETRY_EXC,12/0x81,0x15,1,0,0,55,dead(FIN),kill,3743.004,3743.113,109.0,3743.026,s4,,,,,,,,,,,
+F4_timeout_ft1_rec0_t2,22,0,-1,1,RETRY_EXC,12/0x81,0x15,3,0,0,59,dead(FIN),kill,3732.432,3732.445,13.0,3732.45,s4,,,,,,,,,,,
+F4_timeout_ft1_rec1_t1,20,0,-1,1,RETRY_EXC,12/0x81,0x15,3,0,0,55,dead(FIN),kill,3799.759,3799.833,74.0,3799.778,s4,,,,,,,,,,,

@@ -1,0 +1,18 @@
+# v2 format (fault wait handler fix hold watch_ms trial [delay]). Originally run in v1 format with
+# handler "auto", which was the CPU proxy before PeerMappingOverride became permanent.
+# NVSHMEM IBGDA on the GPUs, CPU-proxy NIC handler
+none timeout cpu_host_memory 1 0 100 1
+F2b timeout cpu_host_memory 0 0 100 1
+F2b timeout cpu_host_memory 1 0 100 1
+F3 timeout cpu_host_memory 0 0 100 1
+F3 timeout cpu_host_memory 1 0 100 1
+F1 timeout cpu_host_memory 0 0 100 1
+F1 timeout cpu_host_memory 1 0 100 1
+# the Q2 watch artifact: watch holds the proxy lock across its sleep
+F3 timeout cpu_host_memory 0 1 100 1
+# no watch at all (port counters only)
+F3 timeout cpu_host_memory 0 0 0 2
+F2b timeout cpu_host_memory 0 0 100 2
+F2b timeout cpu_host_memory 1 0 100 2
+F3 timeout cpu_host_memory 0 0 100 2
+F3 timeout cpu_host_memory 1 0 100 2

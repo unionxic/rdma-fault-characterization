@@ -1,0 +1,16 @@
+# Final build (bounded-quiet ring branch fenced; ITER_OK stash in the driver): sanity re-runs of the
+# ring paths, the forced d = 0 re-run, the long concurrent-waiter run, the red-zone fault, flag off.
+F1 timeout 5 RING=1 RECOVER=1 TAG=fin_ring
+F3 timeout 3 RING=1 RECOVER=1 TAG=fin_ring
+F1 blocking 3 RING=1 RECOVER=1 TAG=fin_ring
+F1 timeout 3 RING=1 RECOVER=1 SHOTS=,20,20,-1,20 TAG=fin_ringx5
+F1 blocking 5 RING=1 QDELAY_US=2000 TAG=fin_cring_d2000
+none timeout 5 RING=1 RECOVER=1 FORCE_AT=60 TAG=ringd0fix
+none blocking 3 RING=1 RECOVER=1 FORCE_AT=60 TAG=ringd0fix
+none timeout 3 RECOVER=1 FORCE_AT=60 TAG=colld0fix
+none timeout 3 RING=1 MT=32 MT_REPS=8 ITERS=300 TAG=mt300_ring
+none timeout 2 MT=32 MT_REPS=8 ITERS=300 TAG=mt300_coll
+F2a timeout 5 BOUNDS=1 GUARD=512 OOB=exact ITERS=10 CORRUPT_AT=4 TAG=fin_g_exact
+F1 timeout 3 RECOVER=1 TAG=fin_coll
+none timeout 3 FT=0 TAG=fin_off
+none timeout 3 RING=1 BOUNDS=1 GUARD=512 TAG=fin_all
