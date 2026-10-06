@@ -28,7 +28,10 @@
 
 # Never track these, even if they match the allow-list above.
 __pycache__/
-.claude/
+# Claude Code: only the root project skills are shared; worktrees, local state and any
+# nested .claude folders stay out.
+**/.claude/*
+!/.claude/skills/
 **/build/
 **/install/
 
