@@ -1,0 +1,12 @@
+# a fetching atomic (nvshmem_long_atomic_fetch_add on PE1's counter) after the put+signal of every
+# K-th iteration (FETCH_EVERY; every iteration by default)
+#   F1, no gap, every iteration: the fetch is in flight or is the next post -> expected: decline
+#     (fetch in the unfinished range), the fetch returns the poison value, nothing stale
+#   F3 (peer QP to ERR): the next fetch never completes -> RETRY_EXC with the fetch in the range -> decline
+#   F1, 15 ms gap, a fetch every 8th iteration: the fault lands between operations after a fetch
+#     completed; the next iteration usually has no fetch -> recovered, every fetch value exact; the
+#     ~1 in 8 whose next iteration fetches -> declined
+12 F1 loop TAG=fetch_gap0 FETCH=1 ITERS=16000 BYTES=4096 GAP_US=0 FAULT_LO=70 FAULT_HI=250 KTIMEOUT=8 PROC_TIMEOUT=25
+10 F3 loop TAG=fetch_f3 FETCH=1 ITERS=1000 BYTES=4096 GAP_US=20000 KTIMEOUT=12 PROC_TIMEOUT=30
+12 F1 loop TAG=fetch_gap15 FETCH=1 FETCH_EVERY=8 ITERS=160 BYTES=262144 GAP_US=15000 KTIMEOUT=10 PROC_TIMEOUT=25
+3 none loop TAG=fetch_none FETCH=1 FETCH_EVERY=8 ITERS=160 BYTES=262144 GAP_US=15000 KTIMEOUT=10 PROC_TIMEOUT=25

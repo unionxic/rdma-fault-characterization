@@ -1,0 +1,9 @@
+# cells for the code-review fixes (final build)
+#   dci_fill: F1 (the hook moves the RC QP and the DCI to ERR) while a second kernel of the
+#             application fills every SM thread slot: the DCI reset must not launch a kernel
+#   sock:     library-socket outage on rain for 8 s (iptables DROP of PE0's T1 socket port, both
+#             directions), no RDMA fault: the job must stay healthy and the socket come back
+#   sock1:    the same outage (1.5 s .. 9.5 s), then F1 at 12 s: must recover over the re-dialed socket
+10 F1 loop TAG=dci_fill FILL=1 ITERS=400 SYM=160M KTIMEOUT=100 PROC_TIMEOUT=130 HOLD_MS=90000
+5 SOCK loop TAG=sock SOCK_S=8 SOCK_AT_MS=1500 ITERS=1000 BYTES=65536 GAP_US=20000 KTIMEOUT=60 PROC_TIMEOUT=80
+5 SOCK1 loop TAG=sock1 SOCK_S=8 SOCK_AT_MS=1500 FAULT_MS=12000 ITERS=1000 BYTES=65536 GAP_US=20000 KTIMEOUT=60 PROC_TIMEOUT=80

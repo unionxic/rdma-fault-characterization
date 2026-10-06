@@ -1,0 +1,2 @@
+# one dci_fill trial with copy/loop diagnostics in the helper (diag bundle)
+1 F1 loop TAG=dci_diag FILL=1 BUNDLE=/home/unionxic/gi-bundle/nvshmem_t1/diag ITERS=400 SYM=160M KTIMEOUT=100 PROC_TIMEOUT=130

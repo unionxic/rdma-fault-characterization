@@ -1,0 +1,7 @@
+# code-review cells without dci_fill (whose ~95 s trials filled the review2/review3 holds):
+#   sock:  8 s outage of PE0's library socket (iptables DROP of its port, both directions), no fault
+#   sock1: the same outage (1.5 .. 9.5 s), then F1 at 12 s over the re-dialed socket
+#   fetch_f3: F3 with a fetch every iteration, kernel timeout longer than the 20 s loop
+5 SOCK loop TAG=sock SOCK_S=8 SOCK_AT_MS=1500 ITERS=1000 BYTES=65536 GAP_US=20000 KTIMEOUT=60 PROC_TIMEOUT=80
+5 SOCK1 loop TAG=sock1 SOCK_S=8 SOCK_AT_MS=1500 FAULT_MS=12000 ITERS=1000 BYTES=65536 GAP_US=20000 KTIMEOUT=60 PROC_TIMEOUT=80
+10 F3 loop TAG=fetch_f3 FETCH=1 ITERS=1000 BYTES=4096 GAP_US=20000 KTIMEOUT=30 PROC_TIMEOUT=50

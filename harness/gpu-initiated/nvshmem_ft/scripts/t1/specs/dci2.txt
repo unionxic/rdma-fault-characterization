@@ -1,0 +1,3 @@
+# DCI reset under a full GPU (re-run with the filler polling device memory; the first filler polled a
+# host-mapped flag from ~50k threads and saturated PCIe, which stalled every copy for the hold bound)
+10 F1 loop TAG=dci_fill FILL=1 ITERS=400 SYM=160M KTIMEOUT=100 PROC_TIMEOUT=130

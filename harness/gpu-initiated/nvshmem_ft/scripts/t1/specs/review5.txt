@@ -1,0 +1,14 @@
+# third-round cells (final build): bounded copies, lock only around DEVX commands, decline mirror,
+# accept every loop
+#   dci_fill:   F1 while a second application kernel fills every SM thread slot -> expected now: a
+#               prompt bounded decline (copies time out, the mirror reaches the device wait)
+#   dci_fill32: the same with CUDA_DEVICE_MAX_CONNECTIONS=32 in both processes (the reviewer's
+#               hypothesis: a shared hardware work queue)
+#   sock, sock1: 8 s outage of PE0's socket (both directions), without / with F1 at 12 s
+#   sockA:      the outage drops only the packets arriving at PE0's socket (PE0 detects first and
+#               re-dials while sunny still holds the old connection), then F1 at 12 s
+8 F1 loop TAG=dci_fill FILL=1 ITERS=400 SYM=160M KTIMEOUT=100 PROC_TIMEOUT=130
+4 F1 loop TAG=dci_fill32 FILL=1 XENV=CUDA_DEVICE_MAX_CONNECTIONS=32 ITERS=400 SYM=160M KTIMEOUT=100 PROC_TIMEOUT=130
+5 SOCK loop TAG=sock SOCK_S=8 SOCK_AT_MS=1500 ITERS=1000 BYTES=65536 GAP_US=20000 KTIMEOUT=60 PROC_TIMEOUT=80
+5 SOCK1 loop TAG=sock1 SOCK_S=8 SOCK_AT_MS=1500 FAULT_MS=12000 ITERS=1000 BYTES=65536 GAP_US=20000 KTIMEOUT=60 PROC_TIMEOUT=80
+5 SOCK1 loop TAG=sockA SOCK_DIR=in SOCK_S=8 SOCK_AT_MS=1500 FAULT_MS=12000 ITERS=1000 BYTES=65536 GAP_US=20000 KTIMEOUT=60 PROC_TIMEOUT=80
