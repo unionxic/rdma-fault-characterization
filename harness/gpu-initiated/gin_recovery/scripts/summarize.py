@@ -76,7 +76,7 @@ def main():
         print(f'| {k} | {rec} | {w} | {db} | {n} | {shots} | {recov} | {rf} | {dec} | {ok0} | {dx}/{n} | {se}/{n} | {fa} | {td} | {left} |')
 
     print('\n## Declined runs\n')
-    print('| fault | wait | n | reason | root fp / class | r0 exit | r1 outcome | r1 exit | surface (ms) | teardown r0 (ms) |')
+    print('| fault | wait | n | reason | root status/vendor_err / class | r0 exit | r1 outcome | r1 exit | surface (ms) | teardown r0 (ms) |')
     print('|---|---|---|---|---|---|---|---|---|---|')
     g = OrderedDict()
     for t in T:

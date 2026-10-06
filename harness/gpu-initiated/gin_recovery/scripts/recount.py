@@ -65,7 +65,7 @@ DESC = {
     '20260924_gpudb/smoke/logs': 'v2 smoke',
     '20260924_gpudb/lat/logs': 'no-fault overhead runs',
     '20260924_gpudb/lat/failed': 'lat run that failed in bootstrap (port collision), re-run',
-    '20260924_gpudb/q4/logs': 'unchanged gin_q4 classifier re-run (not the recovery driver)',
+    '20260924_gpudb/q4/logs': 'unchanged `gin_q4` classifier re-run (not the recovery driver)',
 }
 ORDER = list(DESC)
 
@@ -305,7 +305,7 @@ def main():
     P('  *declined* = rank 0 declined, split into *declined as designed* (a pre-HS decline: the policy refuses')
     P('  the class or a dead peer, or v1\'s guard refuses a non-proxy doorbell mode) and *declined after a failed')
     P('  round* (negative controls whose broken resync made the replay fail, as predicted); *flag off* =')
-    P('  `NCCL_GIN_FAULT_RECOVERY` off (Q4 behaviour); *other* = none of these.')
+    P('  `NCCL_GIN_FAULT_RECOVERY` off (classifier only, no recovery); *other* = none of these.')
     P('- **Bit-exact**: rank 1 checks every iteration (all 256 KiB equal the pattern and the signal equals')
     P('  base + it + 1) and logs `okit` only if both hold. *r1 ops verified* = rank-1 `okit` count / iterations')
     P('  configured. *run exact* = all iterations verified, `data_check=ok` and final `signal_exact=1`.')

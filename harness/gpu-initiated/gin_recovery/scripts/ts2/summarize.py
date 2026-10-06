@@ -134,7 +134,7 @@ def teardown_table(rows, cells):
 
 
 def flap_table(rows, rounds, cells):
-    print("| cell | n | transparent | declined | cut length s | first Q4 record after cut start s | GID moved (r1) | GID wait ms | resumed after cut start s | slow iteration s | watchdog surfaces | declines (reasons) |")
+    print("| cell | n | transparent | declined | cut length s | first classifier record after cut start s | GID moved (r1) | GID wait ms | resumed after cut start s | slow iteration s | watchdog surfaces | declines (reasons) |")
     print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for c in cells:
         rs = [r for r in rows if r["cell"] == c and r.get("bind_fail") != "1"]

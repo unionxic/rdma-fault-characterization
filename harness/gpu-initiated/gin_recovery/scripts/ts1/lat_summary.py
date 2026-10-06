@@ -34,7 +34,7 @@ def main():
     print("| cell | build / flag | bytes | runs ok | samples | p50 us | p90 us | p99 us | mean us | per-run p50 range us |")
     print("|---|---|---|---|---|---|---|---|---|---|")
     order = ["lat_base_4k", "lat_off_4k", "lat_on_4k", "lat_base_256k", "lat_off_256k", "lat_on_256k"]
-    names = {"base": "gpudb (v2) build", "off": "S1 build, flag off", "on": "S1 build, flag on"}
+    names = {"base": "gpudb (v2) build", "off": "step-1 build, flag off", "on": "step-1 build, flag on"}
     for c in order + sorted(k for k in cells if k not in order):
         if c not in cells:
             continue
