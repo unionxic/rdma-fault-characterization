@@ -1,2 +1,0 @@
-stack,backend,fault,wait_mode,trial,iters_ok_before,init_outcome,target_outcome,data_check,silent_success,host_error,host_error_ms,fp_where,status,vendor_err,teardown,notes,fault_ms,surface_ms,surface_by,init_silent_iters,clock_offset_ms
-nccl-gin,gdaki,F3,blocking,refblk_gdaki,38,ok,hang_killed,n/a,0,remote,60736.4,api,,,clean,r0rc=0;r1rc=7;gintype=3;qps_moved=4/4;drain_rc=;post_poll_ms=/15019.4,1329.6,59406.8,r0,1,-1131059103.634
