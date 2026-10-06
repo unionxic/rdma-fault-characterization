@@ -15,8 +15,9 @@
 > **Since 2026-09-24 13:53 the override is permanent on both nodes** (the user's decision):
 > `/etc/modprobe.d/nvidia-peermapping.conf` holds
 > `options nvidia NVreg_RegistryDwords="PeerMappingOverride=1;" NVreg_EnableStreamMemOPs=1`,
-> applied without a reboot by `apply_peermapping.sh` (one module reload; rain's mooncake_client
-> and gdm restarted; CUDA checked on both nodes). The nvidia modules are not in the initramfs, so
+> applied without a reboot by a one-off script, `apply_peermapping.sh` (one module reload; rain's
+> mooncake_client and gdm restarted; CUDA checked on both nodes; removed from the tree on 2026-10-06,
+> in tag `archive/results-tables-20261006`). The nvidia modules are not in the initramfs, so
 > the file also applies at boot. From now on NVSHMEM's default NIC handler is the GPU; to
 > reproduce the CPU-proxy results, set `NVSHMEM_IBGDA_NIC_HANDLER=cpu_host_memory`.
 
@@ -38,6 +39,10 @@ windows (2026-09-24, 11:16-11:26 and 12:00-12:06) and the same binaries and runn
 
 ## Procedure (`window.sh`, run under `../common/cluster_run.sh`)
 
+`window.sh` was removed from the tree on 2026-10-06 (tag `archive/results-tables-20261006`): the
+override has been permanent since 2026-09-24 13:53, so a re-run needs no driver reload, only
+`experiments.sh` or `experiments2.sh` inside `../common/cluster_run.sh`. What it did:
+
 1. Stop every GPU user on rain: the user's `mooncake_client` (command line, environment, cwd and
    log recorded first), two stale `nvidia-smi` monitors started 6 and 8 days earlier whose output
    files had been deleted (not restarted), their `hostmon.sh` parent, and the gdm greeter. sunny
@@ -56,12 +61,12 @@ windows (2026-09-24, 11:16-11:26 and 12:00-12:06) and the same binaries and runn
   majors: `nvidia-uvm` went to 511 while `/dev/nvidia-uvm` still pointed to 509, which
   `nvidia-fs` now owned (`nvfs_ioctl: Invalid IOCTL` in dmesg, "cuda failed with unknown error").
   Every NVSHMEM trial and the first five GIN trials of window 1 are invalid for that reason
-  (listed below). The node was recreated with the right major mid-window; `window.sh` now checks
-  CUDA on both nodes after the reload and restores without running if it fails.
+  (listed below). The node was recreated with the right major mid-window; `window.sh` then checked
+  CUDA on both nodes after the reload and restored without running if it failed.
 - **The cluster lock stayed held after window 1.** `mooncake_client`, restarted from inside the
   locked run, inherited the lock's fd 9, so every later `cluster_run.sh` waited on it
   (11:26-12:00). Fixed without touching `mooncake_client`: `cluster_run.sh` now uses a new lock
-  file and runs its command with fd 9 closed, and `window.sh` restarts `mooncake_client` with
+  file and runs its command with fd 9 closed, and `window.sh` then restarted `mooncake_client` with
   `9>&-`. After window 2 the old lock is free and `mooncake_client` holds no lock fd.
 
 ## Results
@@ -113,7 +118,8 @@ Invalid (sunny's CUDA broken, window 1): all NVSHMEM trials in `results/20260924
 
 ## Files
 
-- `window.sh`: stop, reload with the override, check CUDA, run, restore (EXIT trap).
 - `experiments.sh`, `experiments2.sh`: the runs of windows 1 and 2.
+- `window.sh` (stop, reload with the override, check CUDA, run, restore) and `apply_peermapping.sh`:
+  removed on 2026-10-06, in tag `archive/results-tables-20261006`.
 - `results/20260924/`, `results/20260924_w2/`: CSVs and per-trial logs.
 - `results/window.log`: the dry run and both windows (stop, reload, CUDA check, restore).
