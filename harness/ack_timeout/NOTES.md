@@ -370,8 +370,10 @@ Medians [min-max]. Raw: `results/20260925/C/` (`gin_<floor>_T<T>.csv` + `logs/`,
 ### D1a. Predictions, written before the measurement
 
 (The text of this subsection is kept as written before the run; its md5 `52de8f0a...` is in
-`oos/prereg.txt`, recorded 14:11:52, and the exact text in `oos/prereg_section.md`; the
-pre-run `predict.py` is kept as `oos/predict_prereg.py`.)
+`oos/prereg.txt`, recorded 14:11:52, and the exact text in `oos/prereg_section.md`. The
+pre-run `predict.py` differs from today's only in one `--check` print line; its frozen copy
+`oos/predict_prereg.py` was removed from the tree on 2026-10-06 and is in tag
+`archive/results-tables-20261006`.)
 
 Written 2026-09-25 14:11 KST, before any of the runs below: `predict.py` (md5 `9ce7ab8f...`) encodes
 the section-A model unchanged (schedule points, `max(T,16)` clamp, `min(s_next, I)` rule, as
@@ -630,10 +632,10 @@ fixed and re-run as above.) The dumps of every window are in `results/20260925/w
 | `scripts/run_cpu.sh`, `sweep_cpu.sh` | one cell / several cells in one hold |
 | `ackfloor_window.sh`, `ackfloor_guardian.sh`, `scripts/test_window.sh` | register window, guardian, restore-path tests |
 | `scripts/gpu_gin.sh`, `scripts/gpu_nvshmem.sh` | GPU trials through the unchanged `gin_q4` / `nvshmem_ft` runners and bundles |
-| `analyze.py`, `tables.py`, `qa_check.py` | per-trial timelines, tables, independent re-computation of the CPU claims |
+| `analyze.py`, `tables.py` | per-trial timelines, tables |
 | `predict.py` | the frozen floor-on model as a predictor (`--csv`) and the out-of-sample check (`--check`) |
 | `fresh_check.py` | fresh-process / fresh-context / idle-gap / prior-traffic characterisation (D2-D4) |
-| `qa_check_d.py` | independent re-computation of the section-D claims from the raw files (`results/20260925/qa_check_d.out`) |
+| (removed 2026-10-06) | `qa_check.py` and `qa_check_d.py`, the one-off independent re-computations of the CPU and section-D claims (output `results/20260925/qa_check_d.out`); in tag `archive/results-tables-20261006` |
 | `scripts/test_lockcheck.sh` | refusal paths of the window's lock check (no register access) |
 | `results/20260925/oos/` | D1: `prereg.txt`, `predictions.csv`, trials/events/attempts, `check.md` |
 | `results/20260925/fresh/`, `fresh20/`, `freshW/` | D2/D3/D4: fresh-process, fresh-context, idle-gap and prior-traffic runs |
