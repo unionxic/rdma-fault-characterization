@@ -1,0 +1,4 @@
+Pre-registration of teardown_channel, 2026-10-07 08:10 KST, before any run.
+sha256 of the fixed prediction file:
+0cd05dada8063c21eb0d5e5b06577be825f6d832368c9851eab8c35b03dd64bf  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/teardown-channel-v1 (sections 2, 3, 7, 8).
