@@ -1,0 +1,56 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T0s,"flag on, no fault, single",0,PASS,,0,0,0,0,0,0,300,300,1.456
+T0s,"flag on, no fault, single",1,PASS,,0,0,0,0,0,0,300,300,1.442
+T0s,"flag on, no fault, single",2,PASS,,0,0,0,0,0,0,300,300,1.447
+T0s,"flag on, no fault, single",3,PASS,,0,0,0,0,0,0,300,300,1.442
+T0s,"flag on, no fault, single",4,PASS,,0,0,0,0,0,0,300,300,1.451
+T0s,"flag on, no fault, single",5,PASS,,0,0,0,0,0,0,300,300,1.447
+T0s,"flag on, no fault, single",6,PASS,,0,0,0,0,0,0,300,300,1.441
+T0s,"flag on, no fault, single",7,PASS,,0,0,0,0,0,0,300,300,1.436
+T0s,"flag on, no fault, single",8,PASS,,0,0,0,0,0,0,300,300,1.441
+T0s,"flag on, no fault, single",9,PASS,,0,0,0,0,0,0,300,300,1.441
+T0d,"flag on, no fault, default",0,PASS,,0,0,0,0,0,0,60,60,1.438
+T0d,"flag on, no fault, default",1,PASS,,0,0,0,0,0,0,60,60,1.406
+T0d,"flag on, no fault, default",2,PASS,,0,0,0,0,0,0,60,60,1.426
+T0d,"flag on, no fault, default",3,PASS,,0,0,0,0,0,0,60,60,1.391
+T0d,"flag on, no fault, default",4,PASS,,0,0,0,0,0,0,60,60,1.462
+T0d,"flag on, no fault, default",5,PASS,,0,0,0,0,0,0,60,60,1.437
+T0d,"flag on, no fault, default",6,PASS,,0,0,0,0,0,0,60,60,1.421
+T0d,"flag on, no fault, default",7,PASS,,0,0,0,0,0,0,60,60,1.421
+T0d,"flag on, no fault, default",8,PASS,,0,0,0,0,0,0,60,60,1.426
+T0d,"flag on, no fault, default",9,PASS,,0,0,0,0,0,0,60,60,1.406
+T3s,"R inject (NOTIFY path), single",0,RECOVERED,2.065,0,0,1,1,0,1,300,300,1.421
+T3s,"R inject (NOTIFY path), single",1,RECOVERED,2.057,0,0,1,1,0,1,300,300,1.457
+T3s,"R inject (NOTIFY path), single",2,RECOVERED,2.097,0,0,1,1,0,1,300,300,1.447
+T3s,"R inject (NOTIFY path), single",3,RECOVERED,2.083,0,0,1,1,0,1,300,300,1.447
+T3s,"R inject (NOTIFY path), single",4,RECOVERED,2.102,0,0,1,1,0,1,300,300,1.447
+T3s,"R inject (NOTIFY path), single",5,RECOVERED,2.068,0,0,1,1,0,1,300,300,1.467
+T3s,"R inject (NOTIFY path), single",6,RECOVERED,2.053,0,0,1,1,0,1,300,300,1.452
+T3s,"R inject (NOTIFY path), single",7,RECOVERED,2.126,0,0,1,1,0,1,300,300,1.437
+T3s,"R inject (NOTIFY path), single",8,RECOVERED,2.071,0,0,1,1,0,1,300,300,1.447
+T3s,"R inject (NOTIFY path), single",9,RECOVERED,2.067,0,0,1,1,0,1,300,300,1.432
+T5,"S inject x5, default",0,RECOVERED,2.397;2.140;2.158;2.198;2.151,0,0,5,5,0,5,80,80,1.437
+T5,"S inject x5, default",1,RECOVERED,2.237;2.121;2.159;2.104;2.049,0,0,5,5,0,5,80,80,1.437
+T5,"S inject x5, default",2,RECOVERED,2.285;2.174;2.248;2.193;2.094,0,0,5,5,0,5,80,80,1.422
+T5,"S inject x5, default",3,RECOVERED,2.262;2.131;2.113;2.112;2.050,0,0,5,5,0,5,80,80,1.401
+T5,"S inject x5, default",4,RECOVERED,2.285;2.097;2.239;2.131;2.170,0,0,5,5,0,5,80,80,1.457
+T5,"S inject x5, default",5,RECOVERED,2.277;2.148;2.196;2.159;2.085,0,0,5,5,0,5,80,80,1.391
+T5,"S inject x5, default",6,RECOVERED,2.347;2.125;2.113;2.125;2.094,0,0,5,5,0,5,80,80,1.412
+T5,"S inject x5, default",7,RECOVERED,2.355;2.096;2.149;2.190;2.065,0,0,5,5,0,5,80,80,1.417
+T5,"S inject x5, default",8,RECOVERED,2.358;2.092;2.119;2.089;2.073,0,0,5,5,0,5,80,80,1.417
+T5,"S inject x5, default",9,RECOVERED,2.257;2.181;2.133;2.058;2.097,0,0,5,5,0,5,80,80,1.437
+T6,"symmetric S inject, default",0,RECOVERED,2.337;2.383,0,0,2,2,0,2,60,60,1.437
+T6,"symmetric S inject, default",1,RECOVERED,2.367;2.397,0,0,2,2,0,2,60,60,1.411
+T6,"symmetric S inject, default",2,RECOVERED,2.247;2.391,0,0,2,2,0,2,60,60,1.396
+T6,"symmetric S inject, default",3,RECOVERED,2.318;2.327,0,0,2,2,0,2,60,60,1.447
+T6,"symmetric S inject, default",4,RECOVERED,2.334;2.369,0,0,2,2,0,2,60,60,1.437
+T6,"symmetric S inject, default",5,RECOVERED,2.399;2.339,0,0,2,2,0,2,60,60,1.422
+T6,"symmetric S inject, default",6,RECOVERED,2.295;2.233,0,0,2,2,0,2,60,60,1.436
+T6,"symmetric S inject, default",7,RECOVERED,2.329;2.369,0,0,2,2,0,2,60,60,1.427
+T6,"symmetric S inject, default",8,RECOVERED,2.339;2.320,0,0,2,2,0,2,60,60,1.411
+T6,"symmetric S inject, default",9,RECOVERED,2.278;2.338,0,0,2,2,0,2,60,60,1.431
+T4,"R inject silent (S RETRY_EXC path), single",0,FAIL,,0,1,0,0,0,1,,,91.212
+T4,"R inject silent (S RETRY_EXC path), single",1,FAIL,,0,1,0,0,0,1,,,91.212
+T4,"R inject silent (S RETRY_EXC path), single",2,FAIL,,0,1,0,0,0,1,,,91.212
+T4,"R inject silent (S RETRY_EXC path), single",3,FAIL,,0,1,0,0,0,1,,,91.208
+T4,"R inject silent (S RETRY_EXC path), single",4,FAIL,,0,1,0,0,0,1,,,91.216

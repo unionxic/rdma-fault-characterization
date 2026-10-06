@@ -1,0 +1,36 @@
+# v2.1 third review, AFTER (v2.2 build), item 2 (fetch AMOs after the error), CAPTURE=exit, F2b with
+# 4 CTAs + sentinel, regression, and flag-off cost (AMO fetch and put) vs the v2.1-final build (v21ref).
+F1 blocking 10 RING=1 AMO=1024 AMO_THREADS=1 ITERS=300 GAP_MS=0 TAG=ga_amo_r1
+F1 blocking 10 RING=1 AMO=1024 AMO_THREADS=32 ITERS=300 GAP_MS=0 TAG=ga_amo_r32
+F1 blocking 5 AMO=1024 AMO_THREADS=1 ITERS=300 GAP_MS=0 TAG=ga_amo_c1
+F1 blocking 5 AMO=1024 AMO_THREADS=32 ITERS=300 GAP_MS=0 TAG=ga_amo_c32
+F1 blocking 5 RING=1 SKIP=park AMO=1024 AMO_THREADS=32 ITERS=300 GAP_MS=0 TAG=ga_amo_r32np
+F1 blocking 3 FT_CAPTURE=exit AMO=1024 AMO_THREADS=32 ITERS=300 GAP_MS=0 NVFT_BLOCK_ALARM_S=20 PROC_TIMEOUT=90 TAG=ga_cexit_amo
+F1 blocking 2 FT_CAPTURE=exit MT=8 MT_REPS=1024 BYTES=4096 XARGS=--mt-burst ITERS=2000 GAP_MS=0 NVFT_BLOCK_ALARM_S=20 PROC_TIMEOUT=90 TAG=ga_cexit_mt
+F2b blocking 10 RING=1 MT=8 MT_CTAS=4 MT_REPS=256 BYTES=16384 XARGS=--mt-burst SENTINEL=200 ITERS=10 TAG=ga_mcta_sent_f2b
+F2b blocking 3 RING=1 MT=8 MT_REPS=1024 BYTES=4096 XARGS=--mt-burst ITERS=10 TAG=ga_flap_ring_f2b
+F1 blocking 3 RING=1 MT=8 MT_REPS=1024 BYTES=4096 XARGS=--mt-burst ITERS=2000 GAP_MS=0 TAG=ga_flap_ring_f1
+F1 blocking 3 RING=1 RECOVER=1 MT=8 MT_REPS=1024 BYTES=4096 XARGS=--mt-burst ITERS=300 GAP_MS=0 TAG=ga_flap_ring_f1rec
+none blocking 1 FT=0 AMO=2000 AMO_THREADS=1 ITERS=5 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=lamo_v21ref TFIRST=1
+none blocking 1 FT=0 AMO=2000 AMO_THREADS=1 ITERS=5 TAG=lamo_v22 TFIRST=1
+none blocking 1 FT=0 AMO=2000 AMO_THREADS=1 ITERS=5 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=lamo_v21ref TFIRST=2
+none blocking 1 FT=0 AMO=2000 AMO_THREADS=1 ITERS=5 TAG=lamo_v22 TFIRST=2
+none blocking 1 FT=0 AMO=2000 AMO_THREADS=1 ITERS=5 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=lamo_v21ref TFIRST=3
+none blocking 1 FT=0 AMO=2000 AMO_THREADS=1 ITERS=5 TAG=lamo_v22 TFIRST=3
+none blocking 1 FT=0 AMO=2000 AMO_THREADS=1 ITERS=5 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=lamo_v21ref TFIRST=4
+none blocking 1 FT=0 AMO=2000 AMO_THREADS=1 ITERS=5 TAG=lamo_v22 TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=l4k_v21ref TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=l4k_v22 TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=l4k_v21ref TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=l4k_v22 TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=l4k_v21ref TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=l4k_v22 TFIRST=3
+F1 timeout 3 RING=1 RECOVER=1 TAG=ga_ringrec
+F1 timeout 3 RECOVER=1 TAG=ga_collrec
+none timeout 3 RING=1 RECOVER=1 FORCE_AT=60 TAG=ga_ringd0
+F2a timeout 3 BOUNDS=1 GUARD=512 OOB=exact ITERS=10 CORRUPT_AT=4 TAG=ga_g_exact
+F1 timeout 2 RING=1 RECOVER=1 SKIP=ringci TAG=ga_kr_ringci
+F1 timeout 3 RECOVER=1 SKIP=idx TAG=ga_k_idx
+none timeout 2 RING=1 MT=32 MT_REPS=8 ITERS=300 TAG=ga_mt300_ring
+none timeout 2 RING=1 TRIP=ring_d:100 TAG=ga_trip
+none timeout 2 FT=0 TAG=ga_off

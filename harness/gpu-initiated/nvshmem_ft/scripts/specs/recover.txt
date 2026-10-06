@@ -1,0 +1,11 @@
+# Recovery: F1/F3 recovered, F2b/F4 declined, base runs.
+none timeout 3 RECOVER=1
+none blocking 3 RECOVER=1
+F1 timeout 3 RECOVER=1
+F1 blocking 3 RECOVER=1
+F3 timeout 3 RECOVER=1
+F3 blocking 3 RECOVER=1
+F2b timeout 3 RECOVER=1
+F2b blocking 3 RECOVER=1
+F4 timeout 3 RECOVER=1
+F4 blocking 3 RECOVER=1

@@ -1,0 +1,12 @@
+# A4: ring-CQ mode under the recovery path (fault-free, F1, F3, x5, forced d=0, declines)
+none timeout 3 RING=1 RECOVER=1 TAG=ring
+none blocking 3 RING=1 RECOVER=1 TAG=ring
+F1 timeout 5 RING=1 RECOVER=1 TAG=ring
+F1 blocking 5 RING=1 RECOVER=1 TAG=ring
+F3 timeout 3 RING=1 RECOVER=1 TAG=ring
+F3 blocking 3 RING=1 RECOVER=1 TAG=ring
+F1 timeout 3 RING=1 RECOVER=1 SHOTS=,20,20,-1,20 TAG=ringx5
+F1 blocking 3 RING=1 RECOVER=1 SHOTS=,20,20,-1,20 TAG=ringx5
+none timeout 3 RING=1 RECOVER=1 FORCE_AT=60 TAG=ringd0
+F2b timeout 3 RING=1 RECOVER=1 TAG=ring
+F4 timeout 2 RING=1 RECOVER=1 TAG=ring

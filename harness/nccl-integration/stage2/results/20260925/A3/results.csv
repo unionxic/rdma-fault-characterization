@@ -1,0 +1,16 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T5,"S inject x5, default",0,RECOVERED,2.412;2.249;2.134;2.127;2.220,0,0,5,5,0,5,80,80,1.441
+T5,"S inject x5, default",1,RECOVERED,2.357;2.151;2.191;2.117;2.169,0,0,5,5,0,5,80,80,1.421
+T5,"S inject x5, default",2,RECOVERED,2.289;2.097;2.111;2.178;2.085,0,0,5,5,0,5,80,80,1.422
+T5,"S inject x5, default",3,RECOVERED,2.233;2.153;2.166;2.095;2.096,0,0,5,5,0,5,80,80,1.406
+T5,"S inject x5, default",4,RECOVERED,2.287;2.155;2.149;2.066;2.142,0,0,5,5,0,5,80,80,1.401
+T6,"symmetric S inject, default",0,RECOVERED,2.352;2.328,0,0,2,2,0,2,60,60,1.416
+T6,"symmetric S inject, default",1,RECOVERED,2.341;2.359,0,0,2,2,0,2,60,60,1.412
+T6,"symmetric S inject, default",2,RECOVERED,2.246;2.260,0,0,2,2,0,2,60,60,1.431
+T6,"symmetric S inject, default",3,RECOVERED,2.250;2.295,0,0,2,2,0,2,60,60,1.406
+T6,"symmetric S inject, default",4,RECOVERED,2.281;2.263,0,0,2,2,0,2,60,60,1.401
+T0d,"flag on, no fault, default",0,PASS,,0,0,0,0,0,0,60,60,1.406
+T0d,"flag on, no fault, default",1,PASS,,0,0,0,0,0,0,60,60,1.402
+T0d,"flag on, no fault, default",2,PASS,,0,0,0,0,0,0,60,60,1.447
+T0d,"flag on, no fault, default",3,PASS,,0,0,0,0,0,0,60,60,1.411
+T0d,"flag on, no fault, default",4,PASS,,0,0,0,0,0,0,60,60,1.421

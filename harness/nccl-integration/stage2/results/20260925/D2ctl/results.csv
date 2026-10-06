@@ -1,0 +1,7 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T7a,GID blackhole 0.5 s,0,CLEAN_FAIL,,0,0,0,0,0,0,443,443,26.249
+T7a,GID blackhole 0.5 s,1,CLEAN_FAIL,,0,0,0,0,0,0,444,444,26.212
+T7a,GID blackhole 0.5 s,2,CLEAN_FAIL,,0,0,0,0,0,0,443,443,26.22
+T7b,GID blackhole 6 s,0,CLEAN_FAIL,,0,0,0,0,0,0,444,444,26.244
+T7b,GID blackhole 6 s,1,CLEAN_FAIL,,0,0,0,0,0,0,452,452,26.213
+T7b,GID blackhole 6 s,2,CLEAN_FAIL,,0,0,0,0,0,0,445,445,26.23

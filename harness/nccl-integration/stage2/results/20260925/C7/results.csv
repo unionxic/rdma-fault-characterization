@@ -1,0 +1,4 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T8,"SIGKILL rank1, single",0,FAIL,,0,1,0,0,0,0,,,61.209
+T8,"SIGKILL rank1, single",1,FAIL,,0,1,0,0,0,0,,,61.208
+T8,"SIGKILL rank1, single",2,FAIL,,0,1,0,0,0,0,,,61.208

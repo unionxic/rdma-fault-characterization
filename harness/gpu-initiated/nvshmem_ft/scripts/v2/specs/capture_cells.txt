@@ -1,0 +1,11 @@
+# A2: root-cause capture when the kernel computes between posting and waiting (nvshmem_quiet path).
+# cloop = collapsed CQ, in-loop read (v1 default); csent = + device sentinel (200 ns); cring = ring CQ.
+F1 blocking QDELAY_US=200 TAG=cloop_d200
+F1 blocking QDELAY_US=200 SENTINEL=200 TAG=csent_d200
+F1 blocking QDELAY_US=200 RING=1 TAG=cring_d200
+F1 blocking QDELAY_US=2000 TAG=cloop_d2000
+F1 blocking QDELAY_US=2000 SENTINEL=200 TAG=csent_d2000
+F1 blocking QDELAY_US=2000 RING=1 TAG=cring_d2000
+F2b blocking QDELAY_US=2000 TAG=cloop_d2000
+F2b blocking QDELAY_US=2000 SENTINEL=200 TAG=csent_d2000
+F2b blocking QDELAY_US=2000 RING=1 TAG=cring_d2000

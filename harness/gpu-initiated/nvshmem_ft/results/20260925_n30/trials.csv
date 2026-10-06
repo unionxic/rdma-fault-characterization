@@ -1,0 +1,221 @@
+dir,tag,fault,mode,trial,ft,recover,burst,qdelay_us,sentinel,shots,ft_capture,pe0_rc,pe1_rc,ok_iters0,ok_iters1,rx_data_ok,rx_data_bad,rx_sig_exact,final_sig,expected_sig,faults_fired,fault_rounds,rec_rounds,rec_ok_ops,declined,decline_reason,first_class,first_fp,first_path,first_fault_to_dev_ms,first_fault_to_mbx_ms,first_dev_to_mbx_us,teardown0,teardown1,finalize0_ms,finalize1_ms,leftover
+classify,F1_blocking_ft1_rec0_t1,F1,blocking,1,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,8.459,8.494,35.0,returned,returned,19.7,25.5,0/0
+classify,F1_blocking_ft1_rec0_t10,F1,blocking,10,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,4.29,4.36,70.0,returned,returned,19.6,25.6,0/0
+classify,F1_blocking_ft1_rec0_t11,F1,blocking,11,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,4.289,4.32,31.0,returned,returned,19.7,25.3,0/0
+classify,F1_blocking_ft1_rec0_t12,F1,blocking,12,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,3.993,4.1,107.0,returned,returned,19.9,25.2,0/0
+classify,F1_blocking_ft1_rec0_t13,F1,blocking,13,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,3.83,3.845,15.0,returned,returned,19.3,25.3,0/0
+classify,F1_blocking_ft1_rec0_t14,F1,blocking,14,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,3.995,4.077,82.0,returned,returned,19.8,25.4,0/0
+classify,F1_blocking_ft1_rec0_t15,F1,blocking,15,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,4.054,4.068,14.0,returned,returned,19.5,25.4,0/0
+classify,F1_blocking_ft1_rec0_t2,F1,blocking,2,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,8.719,8.755,36.0,returned,returned,19.8,25.4,0/0
+classify,F1_blocking_ft1_rec0_t3,F1,blocking,3,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,8.302,8.358,56.0,returned,returned,19.7,25.6,0/0
+classify,F1_blocking_ft1_rec0_t4,F1,blocking,4,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,8.197,8.296,99.0,returned,returned,19.7,25.3,0/0
+classify,F1_blocking_ft1_rec0_t5,F1,blocking,5,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,9.294,9.378,84.0,returned,returned,19.4,25.5,0/0
+classify,F1_blocking_ft1_rec0_t6,F1,blocking,6,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,4.014,4.083,69.0,returned,returned,19.8,25.6,0/0
+classify,F1_blocking_ft1_rec0_t7,F1,blocking,7,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,3.883,3.98,97.0,returned,returned,19.6,25.2,0/0
+classify,F1_blocking_ft1_rec0_t8,F1,blocking,8,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,4.033,4.132,99.0,returned,returned,19.6,25.6,0/0
+classify,F1_blocking_ft1_rec0_t9,F1,blocking,9,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,1,3.782,3.84,58.0,returned,returned,20.2,25.5,0/0
+classify,F1_timeout_ft1_rec0_t1,F1,timeout,1,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,8.655,8.705,50.0,returned,returned,19.5,25.6,0/0
+classify,F1_timeout_ft1_rec0_t10,F1,timeout,10,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,4.069,4.118,49.0,returned,returned,19.8,25.2,0/0
+classify,F1_timeout_ft1_rec0_t11,F1,timeout,11,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,4.126,4.152,26.0,returned,returned,19.8,25.5,0/0
+classify,F1_timeout_ft1_rec0_t12,F1,timeout,12,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,3.906,3.961,55.0,returned,returned,19.9,25.4,0/0
+classify,F1_timeout_ft1_rec0_t13,F1,timeout,13,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,3.949,3.968,19.0,returned,returned,19.4,25.3,0/0
+classify,F1_timeout_ft1_rec0_t14,F1,timeout,14,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,4.138,4.173,35.0,returned,returned,19.5,25.3,0/0
+classify,F1_timeout_ft1_rec0_t15,F1,timeout,15,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,4.009,4.05,41.0,returned,returned,19.6,25.3,0/0
+classify,F1_timeout_ft1_rec0_t2,F1,timeout,2,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,8.436,8.539,103.0,returned,returned,20.0,25.5,0/0
+classify,F1_timeout_ft1_rec0_t3,F1,timeout,3,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,8.224,8.283,59.0,returned,returned,19.7,25.7,0/0
+classify,F1_timeout_ft1_rec0_t4,F1,timeout,4,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,8.753,8.806,53.0,returned,returned,20.1,25.7,0/0
+classify,F1_timeout_ft1_rec0_t5,F1,timeout,5,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,8.018,8.067,49.0,returned,returned,20.0,25.6,0/0
+classify,F1_timeout_ft1_rec0_t6,F1,timeout,6,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,8.273,8.311,38.0,returned,returned,19.9,25.5,0/0
+classify,F1_timeout_ft1_rec0_t7,F1,timeout,7,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,3.755,3.831,76.0,returned,returned,19.4,25.4,0/0
+classify,F1_timeout_ft1_rec0_t8,F1,timeout,8,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,3.757,3.807,50.0,returned,returned,19.7,25.2,0/0
+classify,F1_timeout_ft1_rec0_t9,F1,timeout,9,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),LOCAL_QP_ERR,5/0xf5,3,4.024,4.054,30.0,returned,returned,19.4,25.6,0/0
+classify,F2b_blocking_ft1_rec0_t1,F2b,blocking,1,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.428,1.435,7.0,returned,returned,19.0,25.3,0/0
+classify,F2b_blocking_ft1_rec0_t10,F2b,blocking,10,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.3,1.331,31.0,returned,returned,18.7,25.2,0/0
+classify,F2b_blocking_ft1_rec0_t11,F2b,blocking,11,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.28,1.38,100.0,returned,returned,18.9,25.3,0/0
+classify,F2b_blocking_ft1_rec0_t12,F2b,blocking,12,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.334,1.395,61.0,returned,returned,18.7,25.3,0/0
+classify,F2b_blocking_ft1_rec0_t13,F2b,blocking,13,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.328,1.388,60.0,returned,returned,19.0,25.5,0/0
+classify,F2b_blocking_ft1_rec0_t14,F2b,blocking,14,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.298,1.397,99.0,returned,returned,18.7,25.2,0/0
+classify,F2b_blocking_ft1_rec0_t15,F2b,blocking,15,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.431,1.447,16.0,returned,returned,19.1,25.3,0/0
+classify,F2b_blocking_ft1_rec0_t2,F2b,blocking,2,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.339,1.371,32.0,returned,returned,19.0,25.2,0/0
+classify,F2b_blocking_ft1_rec0_t3,F2b,blocking,3,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.369,1.428,59.0,returned,returned,19.0,25.1,0/0
+classify,F2b_blocking_ft1_rec0_t4,F2b,blocking,4,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.367,1.409,42.0,returned,returned,18.9,25.3,0/0
+classify,F2b_blocking_ft1_rec0_t5,F2b,blocking,5,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.332,1.391,59.0,returned,returned,18.7,25.5,0/0
+classify,F2b_blocking_ft1_rec0_t6,F2b,blocking,6,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.684,1.757,73.0,returned,returned,19.0,25.2,0/0
+classify,F2b_blocking_ft1_rec0_t7,F2b,blocking,7,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.693,1.73,37.0,returned,returned,18.9,25.1,0/0
+classify,F2b_blocking_ft1_rec0_t8,F2b,blocking,8,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.317,1.328,11.0,returned,returned,19.2,25.3,0/0
+classify,F2b_blocking_ft1_rec0_t9,F2b,blocking,9,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,1,1.29,1.34,50.0,returned,returned,19.3,25.2,0/0
+classify,F2b_timeout_ft1_rec0_t1,F2b,timeout,1,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.334,1.361,27.0,returned,returned,19.1,24.9,0/0
+classify,F2b_timeout_ft1_rec0_t10,F2b,timeout,10,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.328,1.342,14.0,returned,returned,18.9,25.3,0/0
+classify,F2b_timeout_ft1_rec0_t11,F2b,timeout,11,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.311,1.322,11.0,returned,returned,19.1,25.4,0/0
+classify,F2b_timeout_ft1_rec0_t12,F2b,timeout,12,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.278,1.352,74.0,returned,returned,19.1,25.2,0/0
+classify,F2b_timeout_ft1_rec0_t13,F2b,timeout,13,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.293,1.376,83.0,returned,returned,19.0,25.3,0/0
+classify,F2b_timeout_ft1_rec0_t14,F2b,timeout,14,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.344,1.432,88.0,returned,returned,19.2,25.3,0/0
+classify,F2b_timeout_ft1_rec0_t15,F2b,timeout,15,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.368,1.39,22.0,returned,returned,18.8,25.4,0/0
+classify,F2b_timeout_ft1_rec0_t2,F2b,timeout,2,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.407,1.429,22.0,returned,returned,19.1,25.3,0/0
+classify,F2b_timeout_ft1_rec0_t3,F2b,timeout,3,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.425,1.442,17.0,returned,returned,19.0,25.1,0/0
+classify,F2b_timeout_ft1_rec0_t4,F2b,timeout,4,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.383,1.413,30.0,returned,returned,19.2,25.4,0/0
+classify,F2b_timeout_ft1_rec0_t5,F2b,timeout,5,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.388,1.405,17.0,returned,returned,19.1,25.5,0/0
+classify,F2b_timeout_ft1_rec0_t6,F2b,timeout,6,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.423,1.457,34.0,returned,returned,19.1,25.2,0/0
+classify,F2b_timeout_ft1_rec0_t7,F2b,timeout,7,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.483,1.496,13.0,returned,returned,18.6,25.3,0/0
+classify,F2b_timeout_ft1_rec0_t8,F2b,timeout,8,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.346,1.443,97.0,returned,returned,19.0,25.3,0/0
+classify,F2b_timeout_ft1_rec0_t9,F2b,timeout,9,1,0,1,,,,,3,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,recovery not enabled (classification run),REM_ACCESS,10/0x88,3,1.328,1.432,104.0,returned,returned,19.1,25.3,0/0
+classify,F3_blocking_ft1_rec0_t1,F3,blocking,1,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3757.996,3758.111,115.0,returned,returned,19.1,26.8,0/0
+classify,F3_blocking_ft1_rec0_t10,F3,blocking,10,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3665.336,3665.388,52.0,returned,returned,18.3,25.7,0/0
+classify,F3_blocking_ft1_rec0_t11,F3,blocking,11,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3713.854,3713.922,68.0,returned,returned,18.2,25.5,0/0
+classify,F3_blocking_ft1_rec0_t12,F3,blocking,12,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3728.375,3728.512,137.0,returned,returned,18.4,25.9,0/0
+classify,F3_blocking_ft1_rec0_t13,F3,blocking,13,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3683.113,3683.248,135.0,returned,returned,18.1,26.3,0/0
+classify,F3_blocking_ft1_rec0_t14,F3,blocking,14,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3770.199,3770.243,44.0,returned,returned,18.2,25.8,0/0
+classify,F3_blocking_ft1_rec0_t15,F3,blocking,15,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3713.186,3713.308,122.0,returned,returned,18.5,26.0,0/0
+classify,F3_blocking_ft1_rec0_t2,F3,blocking,2,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3505.93,3505.954,24.0,returned,returned,18.8,26.6,0/0
+classify,F3_blocking_ft1_rec0_t3,F3,blocking,3,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3795.696,3795.77,74.0,returned,returned,18.5,26.6,0/0
+classify,F3_blocking_ft1_rec0_t4,F3,blocking,4,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3743.688,3743.764,76.0,returned,returned,18.7,26.5,0/0
+classify,F3_blocking_ft1_rec0_t5,F3,blocking,5,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3730.25,3730.293,43.0,returned,returned,19.0,26.9,0/0
+classify,F3_blocking_ft1_rec0_t6,F3,blocking,6,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3724.991,3725.028,37.0,returned,returned,19.0,26.6,0/0
+classify,F3_blocking_ft1_rec0_t7,F3,blocking,7,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3718.78,3718.859,79.0,returned,returned,18.3,25.5,0/0
+classify,F3_blocking_ft1_rec0_t8,F3,blocking,8,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3705.65,3705.733,83.0,returned,returned,18.1,25.7,0/0
+classify,F3_blocking_ft1_rec0_t9,F3,blocking,9,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3686.728,3686.836,108.0,returned,returned,18.2,25.9,0/0
+classify,F3_timeout_ft1_rec0_t1,F3,timeout,1,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3557.164,3557.213,49.0,returned,returned,19.0,26.1,0/0
+classify,F3_timeout_ft1_rec0_t10,F3,timeout,10,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3637.168,3637.235,67.0,returned,returned,18.2,25.6,0/0
+classify,F3_timeout_ft1_rec0_t11,F3,timeout,11,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3679.115,3679.217,102.0,returned,returned,18.1,25.8,0/0
+classify,F3_timeout_ft1_rec0_t12,F3,timeout,12,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3746.594,3746.726,132.0,returned,returned,18.5,25.9,0/0
+classify,F3_timeout_ft1_rec0_t13,F3,timeout,13,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3672.855,3672.906,51.0,returned,returned,18.5,26.2,0/0
+classify,F3_timeout_ft1_rec0_t14,F3,timeout,14,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3699.711,3699.755,44.0,returned,returned,18.3,25.6,0/0
+classify,F3_timeout_ft1_rec0_t15,F3,timeout,15,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3731.655,3731.704,49.0,returned,returned,18.1,25.6,0/0
+classify,F3_timeout_ft1_rec0_t2,F3,timeout,2,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3533.228,3533.296,68.0,returned,returned,18.7,26.4,0/0
+classify,F3_timeout_ft1_rec0_t3,F3,timeout,3,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3778.144,3778.201,57.0,returned,returned,18.7,26.7,0/0
+classify,F3_timeout_ft1_rec0_t4,F3,timeout,4,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3741.912,3741.993,81.0,returned,returned,18.9,26.7,0/0
+classify,F3_timeout_ft1_rec0_t5,F3,timeout,5,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3736.165,3736.257,92.0,returned,returned,18.8,26.6,0/0
+classify,F3_timeout_ft1_rec0_t6,F3,timeout,6,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3768.128,3768.235,107.0,returned,returned,18.7,26.6,0/0
+classify,F3_timeout_ft1_rec0_t7,F3,timeout,7,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3714.76,3714.878,118.0,returned,returned,18.6,26.1,0/0
+classify,F3_timeout_ft1_rec0_t8,F3,timeout,8,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3792.158,3792.263,105.0,returned,returned,18.5,25.5,0/0
+classify,F3_timeout_ft1_rec0_t9,F3,timeout,9,1,0,1,,,,,3,9,51,51,51,0,51,1099511627776,51,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3510.798,3510.931,133.0,returned,returned,18.2,25.7,0/0
+classify,F4_blocking_ft1_rec0_t1,F4,blocking,1,1,0,1,,,,,3,255,19,,19,0,19,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3609.591,3609.693,102.0,returned,no,18.5,,0/0
+classify,F4_blocking_ft1_rec0_t10,F4,blocking,10,1,0,1,,,,,3,255,19,,19,0,19,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3616.723,3616.808,85.0,returned,no,18.2,,0/0
+classify,F4_blocking_ft1_rec0_t11,F4,blocking,11,1,0,1,,,,,3,255,19,,19,0,19,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3599.402,3599.478,76.0,returned,no,18.5,,0/0
+classify,F4_blocking_ft1_rec0_t12,F4,blocking,12,1,0,1,,,,,3,255,20,,20,0,20,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3602.576,3602.659,83.0,returned,no,18.2,,0/0
+classify,F4_blocking_ft1_rec0_t13,F4,blocking,13,1,0,1,,,,,3,255,19,,19,0,19,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3613.232,3613.297,65.0,returned,no,18.1,,0/0
+classify,F4_blocking_ft1_rec0_t14,F4,blocking,14,1,0,1,,,,,3,255,18,,18,0,18,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3607.947,3608.067,120.0,returned,no,18.2,,0/0
+classify,F4_blocking_ft1_rec0_t15,F4,blocking,15,1,0,1,,,,,3,255,18,,18,0,18,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3602.757,3602.865,108.0,returned,no,18.1,,0/0
+classify,F4_blocking_ft1_rec0_t2,F4,blocking,2,1,0,1,,,,,3,255,20,,20,0,20,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3563.85,3563.867,17.0,returned,no,18.3,,0/0
+classify,F4_blocking_ft1_rec0_t3,F4,blocking,3,1,0,1,,,,,3,255,20,,20,0,20,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3594.668,3594.735,67.0,returned,no,18.5,,0/0
+classify,F4_blocking_ft1_rec0_t4,F4,blocking,4,1,0,1,,,,,3,255,20,,20,0,20,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3625.755,3625.834,79.0,returned,no,18.6,,0/0
+classify,F4_blocking_ft1_rec0_t5,F4,blocking,5,1,0,1,,,,,3,255,19,,19,0,19,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3608.49,3608.555,65.0,returned,no,18.6,,0/0
+classify,F4_blocking_ft1_rec0_t6,F4,blocking,6,1,0,1,,,,,3,255,20,,20,0,20,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3567.052,3567.077,25.0,returned,no,18.3,,0/0
+classify,F4_blocking_ft1_rec0_t7,F4,blocking,7,1,0,1,,,,,3,255,19,,19,0,19,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3612.84,3612.886,46.0,returned,no,18.3,,0/0
+classify,F4_blocking_ft1_rec0_t8,F4,blocking,8,1,0,1,,,,,3,255,19,,19,0,19,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3595.402,3595.443,41.0,returned,no,18.2,,0/0
+classify,F4_blocking_ft1_rec0_t9,F4,blocking,9,1,0,1,,,,,3,255,18,,18,0,18,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,1,3617.449,3617.515,66.0,returned,no,18.5,,0/0
+classify,F4_timeout_ft1_rec0_t1,F4,timeout,1,1,0,1,,,,,3,255,20,,20,0,20,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3820.589,3820.68,91.0,returned,no,19.0,,0/0
+classify,F4_timeout_ft1_rec0_t10,F4,timeout,10,1,0,1,,,,,3,255,18,,18,0,18,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3611.101,3611.196,95.0,returned,no,18.4,,0/0
+classify,F4_timeout_ft1_rec0_t11,F4,timeout,11,1,0,1,,,,,3,255,20,,20,0,20,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3598.296,3598.351,55.0,returned,no,18.1,,0/0
+classify,F4_timeout_ft1_rec0_t12,F4,timeout,12,1,0,1,,,,,3,255,17,,17,0,17,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3616.989,3617.082,93.0,returned,no,18.6,,0/0
+classify,F4_timeout_ft1_rec0_t13,F4,timeout,13,1,0,1,,,,,3,255,18,,18,0,18,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3635.685,3635.794,109.0,returned,no,18.3,,0/0
+classify,F4_timeout_ft1_rec0_t14,F4,timeout,14,1,0,1,,,,,3,255,18,,18,0,18,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3622.608,3622.663,55.0,returned,no,18.2,,0/0
+classify,F4_timeout_ft1_rec0_t15,F4,timeout,15,1,0,1,,,,,3,255,19,,19,0,19,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3625.618,3625.678,60.0,returned,no,18.2,,0/0
+classify,F4_timeout_ft1_rec0_t2,F4,timeout,2,1,0,1,,,,,3,255,18,,18,0,18,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3610.712,3610.825,113.0,returned,no,18.3,,0/0
+classify,F4_timeout_ft1_rec0_t3,F4,timeout,3,1,0,1,,,,,3,255,20,,20,0,20,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3617.127,3617.24,113.0,returned,no,18.3,,0/0
+classify,F4_timeout_ft1_rec0_t4,F4,timeout,4,1,0,1,,,,,3,255,18,,18,0,18,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3616.201,3616.226,25.0,returned,no,18.8,,0/0
+classify,F4_timeout_ft1_rec0_t5,F4,timeout,5,1,0,1,,,,,3,255,20,,20,0,20,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3607.054,3607.135,81.0,returned,no,18.8,,0/0
+classify,F4_timeout_ft1_rec0_t6,F4,timeout,6,1,0,1,,,,,3,255,18,,18,0,18,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3613.978,3614.071,93.0,returned,no,18.6,,0/0
+classify,F4_timeout_ft1_rec0_t7,F4,timeout,7,1,0,1,,,,,3,255,18,,18,0,18,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3783.446,3783.476,30.0,returned,no,17.9,,0/0
+classify,F4_timeout_ft1_rec0_t8,F4,timeout,8,1,0,1,,,,,3,255,19,,19,0,19,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3598.057,3598.133,76.0,returned,no,18.1,,0/0
+classify,F4_timeout_ft1_rec0_t9,F4,timeout,9,1,0,1,,,,,3,255,19,,19,0,19,,,1,1,0,0,1,recovery not enabled (classification run),RETRY_EXC,12/0x81,3,3616.356,3616.43,74.0,returned,no,18.2,,0/0
+recover,F1_blocking_ft1_rec1_t1,F1,blocking,1,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.127,8.159,32.0,returned,returned,20.5,26.8,0/0
+recover,F1_blocking_ft1_rec1_t10,F1,blocking,10,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.269,8.316,47.0,returned,returned,20.2,26.1,0/0
+recover,F1_blocking_ft1_rec1_t11,F1,blocking,11,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.553,8.666,113.0,returned,returned,20.5,26.0,0/0
+recover,F1_blocking_ft1_rec1_t12,F1,blocking,12,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.429,8.445,16.0,returned,returned,20.4,26.0,0/0
+recover,F1_blocking_ft1_rec1_t13,F1,blocking,13,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.276,8.329,53.0,returned,returned,20.1,26.1,0/0
+recover,F1_blocking_ft1_rec1_t14,F1,blocking,14,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.142,8.248,106.0,returned,returned,20.3,26.5,0/0
+recover,F1_blocking_ft1_rec1_t15,F1,blocking,15,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.5,8.591,91.0,returned,returned,20.2,26.0,0/0
+recover,F1_blocking_ft1_rec1_t2,F1,blocking,2,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.26,8.298,38.0,returned,returned,20.6,26.7,0/0
+recover,F1_blocking_ft1_rec1_t3,F1,blocking,3,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.121,8.226,105.0,returned,returned,20.8,26.7,0/0
+recover,F1_blocking_ft1_rec1_t4,F1,blocking,4,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.127,8.23,103.0,returned,returned,20.4,26.6,0/0
+recover,F1_blocking_ft1_rec1_t5,F1,blocking,5,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.189,8.27,81.0,returned,returned,20.6,26.4,0/0
+recover,F1_blocking_ft1_rec1_t6,F1,blocking,6,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.48,8.588,108.0,returned,returned,20.4,26.4,0/0
+recover,F1_blocking_ft1_rec1_t7,F1,blocking,7,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.407,8.466,59.0,returned,returned,20.1,25.8,0/0
+recover,F1_blocking_ft1_rec1_t8,F1,blocking,8,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.155,8.247,92.0,returned,returned,20.4,26.0,0/0
+recover,F1_blocking_ft1_rec1_t9,F1,blocking,9,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,1,8.428,8.516,88.0,returned,returned,20.2,26.1,0/0
+recover,F1_timeout_ft1_rec1_t1,F1,timeout,1,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.317,8.42,103.0,returned,returned,21.0,26.4,0/0
+recover,F1_timeout_ft1_rec1_t10,F1,timeout,10,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.23,8.246,16.0,returned,returned,20.4,26.0,0/0
+recover,F1_timeout_ft1_rec1_t11,F1,timeout,11,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.388,8.445,57.0,returned,returned,20.1,26.3,0/0
+recover,F1_timeout_ft1_rec1_t12,F1,timeout,12,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.103,8.147,44.0,returned,returned,20.2,26.1,0/0
+recover,F1_timeout_ft1_rec1_t13,F1,timeout,13,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.398,8.445,47.0,returned,returned,20.1,26.0,0/0
+recover,F1_timeout_ft1_rec1_t14,F1,timeout,14,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.161,8.223,62.0,returned,returned,20.1,26.0,0/0
+recover,F1_timeout_ft1_rec1_t15,F1,timeout,15,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.294,8.385,91.0,returned,returned,20.2,26.1,0/0
+recover,F1_timeout_ft1_rec1_t2,F1,timeout,2,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.41,8.479,69.0,returned,returned,20.6,26.6,0/0
+recover,F1_timeout_ft1_rec1_t3,F1,timeout,3,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.088,8.171,83.0,returned,returned,21.2,26.7,0/0
+recover,F1_timeout_ft1_rec1_t4,F1,timeout,4,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.38,8.403,23.0,returned,returned,20.5,26.7,0/0
+recover,F1_timeout_ft1_rec1_t5,F1,timeout,5,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.147,8.255,108.0,returned,returned,20.4,26.3,0/0
+recover,F1_timeout_ft1_rec1_t6,F1,timeout,6,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.397,8.441,44.0,returned,returned,20.7,26.6,0/0
+recover,F1_timeout_ft1_rec1_t7,F1,timeout,7,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.622,8.715,93.0,returned,returned,20.2,25.6,0/0
+recover,F1_timeout_ft1_rec1_t8,F1,timeout,8,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.195,8.209,14.0,returned,returned,20.2,25.9,0/0
+recover,F1_timeout_ft1_rec1_t9,F1,timeout,9,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,LOCAL_QP_ERR,5/0xf5,3,8.205,8.3,95.0,returned,returned,20.3,26.1,0/0
+recover,F3_blocking_ft1_rec1_t1,F3,blocking,1,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3652.322,3652.374,52.0,returned,returned,21.1,27.2,0/0
+recover,F3_blocking_ft1_rec1_t10,F3,blocking,10,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3587.403,3587.5,97.0,returned,returned,20.6,26.4,0/0
+recover,F3_blocking_ft1_rec1_t11,F3,blocking,11,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3642.771,3642.859,88.0,returned,returned,21.0,26.7,0/0
+recover,F3_blocking_ft1_rec1_t12,F3,blocking,12,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3625.097,3625.162,65.0,returned,returned,20.7,26.4,0/0
+recover,F3_blocking_ft1_rec1_t13,F3,blocking,13,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3607.589,3607.687,98.0,returned,returned,20.5,26.8,0/0
+recover,F3_blocking_ft1_rec1_t14,F3,blocking,14,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3622.925,3623.027,102.0,returned,returned,21.3,26.3,0/0
+recover,F3_blocking_ft1_rec1_t15,F3,blocking,15,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3622.047,3622.172,125.0,returned,returned,20.6,26.5,0/0
+recover,F3_blocking_ft1_rec1_t2,F3,blocking,2,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3622.227,3622.275,48.0,returned,returned,21.1,26.7,0/0
+recover,F3_blocking_ft1_rec1_t3,F3,blocking,3,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3617.534,3617.573,39.0,returned,returned,21.1,26.8,0/0
+recover,F3_blocking_ft1_rec1_t4,F3,blocking,4,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3648.657,3648.772,115.0,returned,returned,21.0,26.6,0/0
+recover,F3_blocking_ft1_rec1_t5,F3,blocking,5,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3603.556,3603.633,77.0,returned,returned,21.2,26.9,0/0
+recover,F3_blocking_ft1_rec1_t6,F3,blocking,6,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3621.548,3621.627,79.0,returned,returned,20.9,26.7,0/0
+recover,F3_blocking_ft1_rec1_t7,F3,blocking,7,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3627.878,3627.99,112.0,returned,returned,20.8,26.2,0/0
+recover,F3_blocking_ft1_rec1_t8,F3,blocking,8,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3610.029,3610.144,115.0,returned,returned,20.8,26.6,0/0
+recover,F3_blocking_ft1_rec1_t9,F3,blocking,9,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,1,3624.516,3624.625,109.0,returned,returned,20.9,26.2,0/0
+recover,F3_timeout_ft1_rec1_t1,F3,timeout,1,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3638.203,3638.233,30.0,returned,returned,21.4,26.9,0/0
+recover,F3_timeout_ft1_rec1_t10,F3,timeout,10,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3622.283,3622.365,82.0,returned,returned,20.8,26.7,0/0
+recover,F3_timeout_ft1_rec1_t11,F3,timeout,11,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3657.624,3657.672,48.0,returned,returned,20.6,26.4,0/0
+recover,F3_timeout_ft1_rec1_t12,F3,timeout,12,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3652.253,3652.312,59.0,returned,returned,20.7,26.5,0/0
+recover,F3_timeout_ft1_rec1_t13,F3,timeout,13,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3643.261,3643.355,94.0,returned,returned,20.6,26.0,0/0
+recover,F3_timeout_ft1_rec1_t14,F3,timeout,14,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3585.179,3585.215,36.0,returned,returned,20.5,26.4,0/0
+recover,F3_timeout_ft1_rec1_t15,F3,timeout,15,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3640.818,3640.893,75.0,returned,returned,20.8,26.5,0/0
+recover,F3_timeout_ft1_rec1_t2,F3,timeout,2,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3618.001,3618.067,66.0,returned,returned,21.1,26.7,0/0
+recover,F3_timeout_ft1_rec1_t3,F3,timeout,3,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3583.463,3583.515,52.0,returned,returned,21.4,26.6,0/0
+recover,F3_timeout_ft1_rec1_t4,F3,timeout,4,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3598.757,3598.788,31.0,returned,returned,22.0,26.9,0/0
+recover,F3_timeout_ft1_rec1_t5,F3,timeout,5,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3641.247,3641.278,31.0,returned,returned,21.3,26.7,0/0
+recover,F3_timeout_ft1_rec1_t6,F3,timeout,6,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3636.444,3636.473,29.0,returned,returned,21.3,27.0,0/0
+recover,F3_timeout_ft1_rec1_t7,F3,timeout,7,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3622.64,3622.693,53.0,returned,returned,20.9,26.2,0/0
+recover,F3_timeout_ft1_rec1_t8,F3,timeout,8,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3668.904,3669.025,121.0,returned,returned,20.8,26.4,0/0
+recover,F3_timeout_ft1_rec1_t9,F3,timeout,9,1,1,1,,,,,0,0,200,200,200,0,200,200,200,1,1,1,1,0,,RETRY_EXC,12/0x81,3,3558.692,3558.787,95.0,returned,returned,20.8,26.3,0/0
+multi,F1_blocking_ft1_rec1_x5_t1,F1,blocking,1,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,LOCAL_QP_ERR,5/0xf5,1,3.867,3.942,75.0,returned,returned,21.2,26.6,0/0
+multi,F1_blocking_ft1_rec1_x5_t2,F1,blocking,2,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,LOCAL_QP_ERR,5/0xf5,1,3.87,3.965,95.0,returned,returned,20.7,26.4,0/0
+multi,F1_blocking_ft1_rec1_x5_t3,F1,blocking,3,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,LOCAL_QP_ERR,5/0xf5,1,3.975,3.999,24.0,returned,returned,21.2,26.2,0/0
+multi,F1_blocking_ft1_rec1_x5_t4,F1,blocking,4,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,LOCAL_QP_ERR,5/0xf5,1,3.959,4.004,45.0,returned,returned,21.5,26.7,0/0
+multi,F1_blocking_ft1_rec1_x5_t5,F1,blocking,5,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,LOCAL_QP_ERR,5/0xf5,1,4.172,4.248,76.0,returned,returned,20.9,26.6,0/0
+multi,F1_timeout_ft1_rec1_x5_t1,F1,timeout,1,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,LOCAL_QP_ERR,5/0xf5,3,3.738,3.782,44.0,returned,returned,21.6,26.5,0/0
+multi,F1_timeout_ft1_rec1_x5_t2,F1,timeout,2,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,LOCAL_QP_ERR,5/0xf5,3,3.914,4.011,97.0,returned,returned,21.2,26.8,0/0
+multi,F1_timeout_ft1_rec1_x5_t3,F1,timeout,3,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,LOCAL_QP_ERR,5/0xf5,3,3.989,4.005,16.0,returned,returned,21.2,26.3,0/0
+multi,F1_timeout_ft1_rec1_x5_t4,F1,timeout,4,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,LOCAL_QP_ERR,5/0xf5,3,3.992,4.061,69.0,returned,returned,21.3,26.6,0/0
+multi,F1_timeout_ft1_rec1_x5_t5,F1,timeout,5,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,LOCAL_QP_ERR,5/0xf5,3,3.752,3.834,82.0,returned,returned,21.2,26.3,0/0
+multi,F3_blocking_ft1_rec1_x5_t1,F3,blocking,1,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,RETRY_EXC,12/0x81,1,3576.095,3576.129,34.0,returned,returned,25.4,29.4,0/0
+multi,F3_blocking_ft1_rec1_x5_t2,F3,blocking,2,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,RETRY_EXC,12/0x81,1,3570.789,3570.825,36.0,returned,returned,24.9,29.3,0/0
+multi,F3_blocking_ft1_rec1_x5_t3,F3,blocking,3,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,RETRY_EXC,12/0x81,1,3561.882,3561.903,21.0,returned,returned,25.0,29.5,0/0
+multi,F3_blocking_ft1_rec1_x5_t4,F3,blocking,4,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,RETRY_EXC,12/0x81,1,3564.695,3564.751,56.0,returned,returned,25.2,29.2,0/0
+multi,F3_blocking_ft1_rec1_x5_t5,F3,blocking,5,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,RETRY_EXC,12/0x81,1,3586.727,3586.81,83.0,returned,returned,25.3,29.1,0/0
+multi,F3_timeout_ft1_rec1_x5_t1,F3,timeout,1,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,RETRY_EXC,12/0x81,3,3566.815,3566.92,105.0,returned,returned,25.7,29.5,0/0
+multi,F3_timeout_ft1_rec1_x5_t2,F3,timeout,2,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,RETRY_EXC,12/0x81,3,3581.322,3581.403,81.0,returned,returned,25.0,29.3,0/0
+multi,F3_timeout_ft1_rec1_x5_t3,F3,timeout,3,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,RETRY_EXC,12/0x81,3,3627.437,3627.554,117.0,returned,returned,25.2,30.1,0/0
+multi,F3_timeout_ft1_rec1_x5_t4,F3,timeout,4,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,RETRY_EXC,12/0x81,3,3534.323,3534.387,64.0,returned,returned,25.4,29.7,0/0
+multi,F3_timeout_ft1_rec1_x5_t5,F3,timeout,5,1,1,1,,,",20,20,-1,20",,0,0,200,200,200,0,200,200,200,5,5,5,4,0,,RETRY_EXC,12/0x81,3,3585.91,3585.988,78.0,returned,returned,25.2,30.1,0/0
+decline,F2b_blocking_ft1_rec1_t1,F2b,blocking,1,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,1,2.521,2.563,42.0,returned,returned,19.9,25.4,0/0
+decline,F2b_blocking_ft1_rec1_t2,F2b,blocking,2,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,1,2.482,2.504,22.0,returned,returned,19.2,25.5,0/0
+decline,F2b_blocking_ft1_rec1_t3,F2b,blocking,3,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,1,2.583,2.607,24.0,returned,returned,19.8,25.5,0/0
+decline,F2b_blocking_ft1_rec1_t4,F2b,blocking,4,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,1,2.539,2.558,19.0,returned,returned,19.6,25.6,0/0
+decline,F2b_blocking_ft1_rec1_t5,F2b,blocking,5,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,1,2.496,2.525,29.0,returned,returned,19.7,25.5,0/0
+decline,F2b_timeout_ft1_rec1_t1,F2b,timeout,1,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,3,2.648,2.735,87.0,returned,returned,19.4,25.3,0/0
+decline,F2b_timeout_ft1_rec1_t2,F2b,timeout,2,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,3,2.537,2.554,17.0,returned,returned,19.5,25.7,0/0
+decline,F2b_timeout_ft1_rec1_t3,F2b,timeout,3,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,3,2.715,2.742,27.0,returned,returned,20.2,25.3,0/0
+decline,F2b_timeout_ft1_rec1_t4,F2b,timeout,4,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,3,2.688,2.725,37.0,returned,returned,20.2,25.6,0/0
+decline,F2b_timeout_ft1_rec1_t5,F2b,timeout,5,1,1,1,,,,,9,9,4,4,4,0,4,1099511627776,4,1,1,0,0,1,class not recoverable,REM_ACCESS,10/0x88,3,2.483,2.555,72.0,returned,returned,19.6,25.3,0/0
+decline,F4_blocking_ft1_rec1_t1,F4,blocking,1,1,1,1,,,,,9,255,21,,21,0,21,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,1,3622.382,3622.456,74.0,returned,no,19.3,,0/0
+decline,F4_blocking_ft1_rec1_t2,F4,blocking,2,1,1,1,,,,,9,255,18,,18,0,18,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,1,3692.734,3692.805,71.0,returned,no,19.3,,0/0
+decline,F4_blocking_ft1_rec1_t3,F4,blocking,3,1,1,1,,,,,9,255,20,,20,0,20,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,1,3603.385,3603.446,61.0,returned,no,19.2,,0/0
+decline,F4_blocking_ft1_rec1_t4,F4,blocking,4,1,1,1,,,,,9,255,20,,20,0,20,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,1,3654.339,3654.391,52.0,returned,no,19.3,,0/0
+decline,F4_blocking_ft1_rec1_t5,F4,blocking,5,1,1,1,,,,,9,255,18,,18,0,18,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,1,3685.258,3685.345,87.0,returned,no,19.9,,0/0
+decline,F4_timeout_ft1_rec1_t1,F4,timeout,1,1,1,1,,,,,9,255,18,,18,0,18,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,3,3649.135,3649.179,44.0,returned,no,19.5,,0/0
+decline,F4_timeout_ft1_rec1_t2,F4,timeout,2,1,1,1,,,,,9,255,20,,20,0,20,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,3,3655.22,3655.289,69.0,returned,no,19.4,,0/0
+decline,F4_timeout_ft1_rec1_t3,F4,timeout,3,1,1,1,,,,,9,255,17,,17,0,17,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,3,3693.907,3693.946,39.0,returned,no,19.1,,0/0
+decline,F4_timeout_ft1_rec1_t4,F4,timeout,4,1,1,1,,,,,9,255,19,,19,0,19,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,3,3644.825,3644.855,30.0,returned,no,19.4,,0/0
+decline,F4_timeout_ft1_rec1_t5,F4,timeout,5,1,1,1,,,,,9,255,20,,20,0,20,,,1,1,0,0,1,RETRY_EXC with the peer dead,RETRY_EXC,12/0x81,3,3603.687,3603.761,74.0,returned,no,19.0,,0/0

@@ -1,0 +1,60 @@
+Thread 7 (Thread 0x7fbb7dd30000 (LWP 1313013) "nccl_ar2"):
+#0  __libc_recv (flags=<optimized out>, len=0x28, buf=0x7fbb78088938, fd=0x3a) at ../sysdeps/unix/sysv/linux/recv.c:28
+#1  __libc_recv (fd=0x3a, buf=0x7fbb78088938, len=0x28, flags=flags@entry=0x40) at ../sysdeps/unix/sysv/linux/recv.c:23
+#2  0x00007fbbb6faffcd in recv (__flags=0x40, __n=<optimized out>, __buf=<optimized out>, __fd=<optimized out>) at /usr/include/x86_64-linux-gnu/bits/socket2.h:44
+#3  ncclIbFrRxProgress (base=base@entry=0x7fbb78080000) at transport/net_ib.cc:2055
+#4  0x00007fbbb6fb6b78 in ncclIbFrRxProgress (base=0x7fbb78080000) at transport/net_ib.cc:2053
+#5  ncclIbFrResponderService (base=base@entry=0x7fbb78080000) at transport/net_ib.cc:2553
+#6  0x00007fbbb6fb7968 in ncclIbFrPreTest (proceed=<synthetic pointer>, base=0x7fbb78080000) at transport/net_ib.cc:2600
+#7  ncclIbTest (request=0x7fbb78080008, done=0x7fbb7dd2a3ec, sizes=0x7fbb7dd2a470) at transport/net_ib.cc:3019
+#8  0x00007fbbb6f9102f in recvProxyProgress (proxyState=<optimized out>, args=0x7fbb6e807018) at transport/net.cc:1320
+#9  0x00007fbbb6f4eea3 in progressOps (idle=<synthetic pointer>, opStart=<optimized out>, state=0x5604c825ebb8, proxyState=0x5604c825ea70) at proxy.cc:707
+#10 ncclProxyProgress (proxyState_=0x5604c825ea70) at proxy.cc:894
+#11 0x00007fbbb6e84609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+Thread 6 (Thread 0x7fbbb683e000 (LWP 1313010) "nccl_ar2"):
+#0  __pthread_clockjoin_ex (threadid=0x7fbb7dd30000, thread_return=thread_return@entry=0x0, clockid=clockid@entry=0x0, abstime=abstime@entry=0x0, block=block@entry=0x1) at pthread_join_common.c:145
+#1  0x00007fbbb6e859f3 in __pthread_join (threadid=<optimized out>, thread_return=thread_return@entry=0x0) at pthread_join.c:24
+#2  0x00007fbbb6f502c3 in ncclProxyProgressDestroy (proxyState=0x5604c825ea70) at proxy.cc:959
+#3  0x00007fbbb6f536b6 in ncclProxyService (_args=0x5604c825ea70) at proxy.cc:1674
+#4  0x00007fbbb6e84609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+#5  0x00007fbbb6da1353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95
+Thread 5 (Thread 0x7fbb9edde000 (LWP 1313009) "nccl_ar2"):
+#0  __libc_read (nbytes=0x10, buf=0x7fbb9edd8780, fd=0x26) at ../sysdeps/unix/sysv/linux/read.c:26
+#1  __libc_read (fd=0x26, buf=buf@entry=0x7fbb9edd8780, nbytes=nbytes@entry=0x10) at ../sysdeps/unix/sysv/linux/read.c:24
+#2  0x00007fbba47ef014 in read (__nbytes=0x10, __buf=0x7fbb9edd8780, __fd=<optimized out>) at /usr/include/x86_64-linux-gnu/bits/unistd.h:44
+#3  __ibv_get_async_event_1_1 (context=0x5604c828b4c0, event=0x7fbb9edd87e0) at ./libibverbs/device.c:459
+#4  0x00007fbbb6f85aa6 in wrap_ibv_get_async_event (context=<optimized out>, event=event@entry=0x7fbb9edd87e0) at misc/ibvwrap.cc:121
+#5  0x00007fbbb6faf46c in ncclIbAsyncThreadMain (args=0x7fbbbace9cc0 <ncclIbDevs>) at transport/net_ib.cc:131
+#6  0x00007fbbb6e84609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+#7  0x00007fbbb6da1353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95
+Thread 4 (Thread 0x7fbbb087b000 (LWP 1313000) "cuda-EvtHandlr"):
+#0  0x00007fbbb6d94bbf in __GI___poll (fds=0x7fbba0000c10, nfds=0xb, timeout=0x64) at ../sysdeps/unix/sysv/linux/poll.c:29
+#1  0x00007fbbb1e9e6e7 in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#2  0x00007fbbb1f4487f in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#3  0x00007fbbb1e87723 in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#4  0x00007fbbb6e84609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+#5  0x00007fbbb6da1353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95
+Thread 3 (Thread 0x7fbbb107c000 (LWP 1312999) "nccl_ar2"):
+#0  futex_abstimed_wait_cancelable (private=<optimized out>, abstime=0x7fbbb10767b0, clockid=<optimized out>, expected=0x0, futex_word=0x5604c3c1b000) at ../sysdeps/nptl/futex-internal.h:320
+#1  __pthread_cond_wait_common (abstime=0x7fbbb10767b0, clockid=<optimized out>, mutex=0x5604c3c16158, cond=0x5604c3c1afd8) at pthread_cond_wait.c:520
+#2  __pthread_cond_timedwait (cond=0x5604c3c1afd8, mutex=0x5604c3c16158, abstime=0x7fbbb10767b0) at pthread_cond_wait.c:665
+#3  0x00007fbbb1ded19a in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#4  0x00007fbbb1e87723 in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#5  0x00007fbbb6e84609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+#6  0x00007fbbb6da1353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95
+Thread 2 (Thread 0x7fbbb1b78000 (LWP 1312998) "cuda00001c00008"):
+#0  0x00007fbbb6d94bbf in __GI___poll (fds=0x5604c3be00b0, nfds=0x3, timeout=0xffffffff) at ../sysdeps/unix/sysv/linux/poll.c:29
+#1  0x00007fbbb1e9e6e7 in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#2  0x00007fbbb1f4487f in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#3  0x00007fbbb1e87723 in ?? () from /usr/lib/x86_64-linux-gnu/libcuda.so.1
+#4  0x00007fbbb6e84609 in start_thread (arg=<optimized out>) at pthread_create.c:477
+#5  0x00007fbbb6da1353 in clone () at ../sysdeps/unix/sysv/linux/x86_64/clone.S:95
+Thread 1 (Thread 0x7fbbb6891000 (LWP 1312913) "nccl_ar2"):
+#0  __pthread_clockjoin_ex (threadid=0x7fbbb683e000, thread_return=thread_return@entry=0x0, clockid=clockid@entry=0x0, abstime=abstime@entry=0x0, block=block@entry=0x1) at pthread_join_common.c:145
+#1  0x00007fbbb6e859f3 in __pthread_join (threadid=<optimized out>, thread_return=thread_return@entry=0x0) at pthread_join.c:24
+#2  0x00007fbbb6f3a065 in commFree (comm=comm@entry=0x5604c451bff0) at init.cc:189
+#3  0x00007fbbb6f4507d in commCleanup (comm=comm@entry=0x5604c451bff0) at init.cc:1990
+#4  0x00007fbbb6f4569b in commReclaim (job_=job_@entry=0x5604c8277410) at init.cc:2075
+#5  0x00007fbbb6f385a5 in ncclAsyncLaunch (job=0x5604c8277410, func=func@entry=0x7fbbb6f4558f <commReclaim(ncclAsyncJob*)>, undo=undo@entry=0x0, destructor=0x7fbbb6d1c6d0 <__GI___libc_free>, comm=comm@entry=0x5604c451bff0) at group.cc:37
+#6  0x00007fbbb6f45c08 in ncclCommAbort (comm=0x5604c451bff0) at init.cc:2152
+#7  0x00005604c3a9a38e in main ()

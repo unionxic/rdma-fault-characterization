@@ -1,0 +1,11 @@
+# v2.1 regression on the final build
+F1 timeout 3 RING=1 RECOVER=1 TAG=v21_ringrec
+F1 blocking 2 RING=1 RECOVER=1 TAG=v21_ringrec
+F3 timeout 2 RING=1 RECOVER=1 TAG=v21_ringrec
+F1 timeout 2 RING=1 RECOVER=1 SHOTS=,20,20,-1,20 TAG=v21_ringx5
+none timeout 3 RING=1 RECOVER=1 FORCE_AT=60 TAG=v21_ringd0
+F1 timeout 3 RECOVER=1 TAG=v21_collrec
+F2a timeout 3 BOUNDS=1 GUARD=512 OOB=exact ITERS=10 CORRUPT_AT=4 TAG=v21_g_exact
+F1 timeout 3 RING=1 RECOVER=1 SKIP=ringci TAG=v21_kr_ringci
+none timeout 2 RING=1 MT=32 MT_REPS=8 ITERS=300 TAG=v21_mt300_ring
+none timeout 2 FT=0 TAG=v21_off

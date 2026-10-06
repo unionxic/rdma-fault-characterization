@@ -1,0 +1,6 @@
+# Several faults per run: shot 1 at FAULT_MS, then 20 ms after each commit; shot 4 fires inside
+# the commit of shot 3's recovery (hits the replay).
+F1 timeout 5 RECOVER=1 SHOTS=,20,20,-1,20 TAG=x5
+F1 blocking 5 RECOVER=1 SHOTS=,20,20,-1,20 TAG=x5
+F3 timeout 5 RECOVER=1 SHOTS=,20,20,-1,20 TAG=x5
+F3 blocking 5 RECOVER=1 SHOTS=,20,20,-1,20 TAG=x5

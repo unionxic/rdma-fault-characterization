@@ -1,0 +1,6 @@
+F2b blocking RING=1 MT=8 MT_REPS=1024 BYTES=4096 XARGS=--mt-burst ITERS=10 TAG=lap_ring_f2b
+F1 blocking RING=1 MT=8 MT_REPS=1024 BYTES=4096 XARGS=--mt-burst ITERS=2000 GAP_MS=0 TAG=lap_ring_f1
+F2b blocking RING=1 SKIP=park MT=8 MT_REPS=1024 BYTES=4096 XARGS=--mt-burst ITERS=10 TAG=lap_ringnopark_f2b
+F1 blocking RING=1 SKIP=park MT=8 MT_REPS=1024 BYTES=4096 XARGS=--mt-burst ITERS=2000 GAP_MS=0 TAG=lap_ringnopark_f1
+F2b blocking MT=8 MT_REPS=1024 BYTES=4096 XARGS=--mt-burst ITERS=10 TAG=lap_coll_f2b
+F1 blocking MT=8 MT_REPS=1024 BYTES=4096 XARGS=--mt-burst ITERS=2000 GAP_MS=0 TAG=lap_coll_f1

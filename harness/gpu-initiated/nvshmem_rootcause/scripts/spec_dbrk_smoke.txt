@@ -1,0 +1,6 @@
+# dbrk smoke (2026-09-25): one trial per mode. Ring CQ, SQ DBR word 1 (correct word), batch of 16 signaled WRITEs after 8 baseline WQEs
+smoke_kerr_pi   kerr nvshmem cq_cc=0,dbr_word=1 600 --kn 16 --kdbr pi --k2err-ms 20
+smoke_kerr_k8   kerr nvshmem cq_cc=0,dbr_word=1 600 --kn 16 --kdbr 8 --k2err-ms 20
+smoke_knak_k12  knak nvshmem cq_cc=0,dbr_word=1 600 --kn 16 --kdbr 12 --kbad 8
+smoke_kerr_k18  kerr nvshmem cq_cc=0,dbr_word=1 600 --kn 16 --kdbr 18 --k2err-ms 20
+smoke_late_k0   kerr nvshmem cq_cc=0,dbr_word=1 600 --kn 16 --kdbr 0 --k2err-ms 20 --klate-ms 200 --klate-uar 0

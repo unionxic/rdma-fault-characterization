@@ -1,0 +1,11 @@
+# batch 4: replicates of the reverse direction (doca preset with NVSHMEM's DBR word) and doca controls
+b4_doca_f2b_r2           f2b    doca -           3000
+b4_doca_dbr0_f2b_r2      f2b    doca dbr_word=0  3000
+b4_doca_f1_r2            f1     doca -           3000
+b4_doca_dbr0_f1          f1     doca dbr_word=0  3000
+b4_doca_dbr0_f1_r2       f1     doca dbr_word=0  3000
+b4_doca_f1post_r2        f1post doca -           3000
+b4_doca_dbr0_f1post      f1post doca dbr_word=0  3000
+b4_doca_dbr0_f1post_r2   f1post doca dbr_word=0  3000
+b4_doca_f3_r2            f3     doca -           10000
+b4_doca_dbr0_f3_r2       f3     doca dbr_word=0  10000

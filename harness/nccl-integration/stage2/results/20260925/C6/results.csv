@@ -1,0 +1,4 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T4,"R dies silently (S RETRY_EXC path), 64 MB broadcast stream, single",0,FAIL,,0,1,0,0,0,1,,,91.213
+T4,"R dies silently (S RETRY_EXC path), 64 MB broadcast stream, single",1,RECOVERED,1.935,0,0,1,1,0,1,60,60,5.442
+T4,"R dies silently (S RETRY_EXC path), 64 MB broadcast stream, single",2,FAIL,,0,1,0,0,0,1,,,91.212

@@ -1,0 +1,11 @@
+# B controls: same faults without the check (FT on, BOUNDS unset), blocking-mode detection, beyond-heap,
+# fault-free runs with the check on (no false positives through init, barriers, 200 verified iterations)
+F2a timeout 5 OOB=exact ITERS=10 CORRUPT_AT=4 TAG=c_exact
+F2a timeout 5 OOB=gap ITERS=10 CORRUPT_AT=4 TAG=c_gap
+F2a timeout 5 OOB=straddle ITERS=10 CORRUPT_AT=4 TAG=c_straddle
+F2a timeout 5 OOB=tail ITERS=10 CORRUPT_AT=4 TAG=c_tail
+F2a blocking 5 BOUNDS=1 OOB=gap ITERS=10 CORRUPT_AT=4 TAG=b_gap
+F2a blocking 5 BOUNDS=1 OOB=straddle ITERS=10 CORRUPT_AT=4 TAG=b_straddle
+F2a timeout 5 BOUNDS=1 OOB=heap ITERS=10 CORRUPT_AT=4 TAG=b_heap
+none timeout 3 BOUNDS=1 TAG=b_none
+none blocking 3 BOUNDS=1 RING=1 TAG=b_none_ring

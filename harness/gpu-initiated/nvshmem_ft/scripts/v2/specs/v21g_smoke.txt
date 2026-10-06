@@ -1,0 +1,6 @@
+# v2.1 third review: smoke of the new driver modes on the v2.1-final reference bundle (v21ref)
+none blocking 1 RING=1 AMO=256 AMO_THREADS=32 ITERS=5 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=gs_amo32
+none blocking 1 FT=0 AMO=256 AMO_THREADS=1 ITERS=5 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=gs_amo1off
+F1 blocking 1 RING=1 AMO=1024 AMO_THREADS=32 ITERS=200 GAP_MS=0 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=gs_amo_f1
+none blocking 1 RING=1 MT=8 MT_REPS=64 MT_CTAS=4 BYTES=16384 XARGS=--mt-burst ITERS=5 SENTINEL=200 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=gs_mcta
+F1 blocking 1 RING=1 RECOVER=1 MT=8 MT_REPS=256 MT_CTAS=4 BYTES=16384 XARGS=--mt-burst ITERS=300 GAP_MS=0 SENTINEL=200 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v21ref TAG=gs_mcta_rec

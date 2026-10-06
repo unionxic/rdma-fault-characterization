@@ -1,0 +1,16 @@
+# 3-way comparison, config B: handler=cpu_host_memory fix=0. fault wait handler fix hold watch_ms trial
+none timeout cpu_host_memory 0 0 100 1
+none timeout cpu_host_memory 0 0 100 2
+none timeout cpu_host_memory 0 0 100 3
+F1 timeout cpu_host_memory 0 0 100 1
+F1 timeout cpu_host_memory 0 0 100 2
+F1 timeout cpu_host_memory 0 0 100 3
+F2b timeout cpu_host_memory 0 0 100 1
+F2b timeout cpu_host_memory 0 0 100 2
+F2b timeout cpu_host_memory 0 0 100 3
+F3 timeout cpu_host_memory 0 0 100 1
+F3 timeout cpu_host_memory 0 0 100 2
+F3 timeout cpu_host_memory 0 0 100 3
+F4 timeout cpu_host_memory 0 0 100 1
+F4 timeout cpu_host_memory 0 0 100 2
+F4 timeout cpu_host_memory 0 0 100 3

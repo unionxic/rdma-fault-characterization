@@ -1,0 +1,11 @@
+# v2 format (fault wait handler fix hold watch_ms trial [delay]). Originally run in v1 format with
+# handler "auto", which was the CPU proxy before PeerMappingOverride became permanent.
+# NVSHMEM follow-up
+# the Q2 qptl run exactly (watch holds the lock, 300 ms period, 800 ms delay), stock proxy
+F3 timeout cpu_host_memory 0 1 300 3 800
+# same watch settings but the lock released during the sleep
+F3 timeout cpu_host_memory 0 0 300 3 800
+# no watch at all: port counters only
+F3 timeout cpu_host_memory 0 0 0 3
+F3 timeout cpu_host_memory 1 0 0 3
+F2b timeout cpu_host_memory 0 1 300 3 800

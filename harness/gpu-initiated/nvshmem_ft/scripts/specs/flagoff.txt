@@ -1,0 +1,6 @@
+# Same build, NVSHMEM_IBGDA_FT unset: stock behaviour (blocking quiet reports success on a failed
+# put; the timeout mode's bounded wait sees the error only at exit, unclassified; finalize hangs).
+F1 blocking 2 FT=0 NVFT_ACK_LIMIT_S=10 NVFT_RX_LIMIT_S=15 NVFT_TEARDOWN_S=10
+F2b blocking 2 FT=0 NVFT_ACK_LIMIT_S=10 NVFT_RX_LIMIT_S=15 NVFT_TEARDOWN_S=10
+F3 blocking 2 FT=0 NVFT_ACK_LIMIT_S=10 NVFT_RX_LIMIT_S=15 NVFT_TEARDOWN_S=10
+F3 timeout 2 FT=0 NVFT_ACK_LIMIT_S=10 NVFT_RX_LIMIT_S=15 NVFT_TEARDOWN_S=10

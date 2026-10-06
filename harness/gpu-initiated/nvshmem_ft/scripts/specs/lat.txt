@@ -1,0 +1,8 @@
+# No-fault overhead: 5 x 2000 put+signal+quiet per run, GPU-timed; flag off / on / on + sentinel,
+# interleaved (run this spec several times with TFIRST to get more runs per cell).
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=lat4k_off
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 TAG=lat4k_on
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=4096 TAG=lat4k_sent
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 TAG=lat256k_off
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 TAG=lat256k_on
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=262144 TAG=lat256k_sent

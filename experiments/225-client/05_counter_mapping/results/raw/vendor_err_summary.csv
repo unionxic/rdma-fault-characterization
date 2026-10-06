@@ -1,0 +1,2178 @@
+scenario,requester_nic,trial,wc_status,wc_status_str,vendor_err,latency_us
+LOC_PROT_LEN,unknown,0,4,local protection error,0x53,1904
+LOC_PROT_LEN,unknown,1,4,local protection error,0x53,1503
+LOC_PROT_LEN,unknown,2,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,3,4,local protection error,0x53,1581
+LOC_PROT_LEN,unknown,4,4,local protection error,0x53,1492
+LOC_PROT_LEN,unknown,5,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,6,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,7,4,local protection error,0x53,1531
+LOC_PROT_LEN,unknown,8,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,9,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,10,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,11,4,local protection error,0x53,1500
+LOC_PROT_LEN,unknown,12,4,local protection error,0x53,1490
+LOC_PROT_LEN,unknown,13,4,local protection error,0x53,1490
+LOC_PROT_LEN,unknown,14,4,local protection error,0x53,1491
+LOC_PROT_LEN,unknown,15,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,16,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,17,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,18,4,local protection error,0x53,1492
+LOC_PROT_LEN,unknown,19,4,local protection error,0x53,1498
+LOC_PROT_LEN,unknown,20,4,local protection error,0x53,1500
+LOC_PROT_LEN,unknown,21,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,22,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,23,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,24,4,local protection error,0x53,1500
+LOC_PROT_LEN,unknown,25,4,local protection error,0x53,1534
+LOC_PROT_LEN,unknown,26,4,local protection error,0x53,1501
+LOC_PROT_LEN,unknown,27,4,local protection error,0x53,1502
+LOC_PROT_LEN,unknown,28,4,local protection error,0x53,1500
+LOC_PROT_LEN,unknown,29,4,local protection error,0x53,1500
+LOC_PROT_LEN,unknown,30,4,local protection error,0x53,1500
+LOC_PROT_LEN,unknown,31,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,32,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,33,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,34,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,35,4,local protection error,0x53,1499
+LOC_PROT_LEN,unknown,36,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,37,4,local protection error,0x53,1512
+LOC_PROT_LEN,unknown,38,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,39,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,40,4,local protection error,0x53,1492
+LOC_PROT_LEN,unknown,41,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,42,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,43,4,local protection error,0x53,1491
+LOC_PROT_LEN,unknown,44,4,local protection error,0x53,1490
+LOC_PROT_LEN,unknown,45,4,local protection error,0x53,1500
+LOC_PROT_LEN,unknown,46,4,local protection error,0x53,1517
+LOC_PROT_LEN,unknown,47,4,local protection error,0x53,1542
+LOC_PROT_LEN,unknown,48,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,49,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,50,4,local protection error,0x53,1499
+LOC_PROT_LEN,unknown,51,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,52,4,local protection error,0x53,1517
+LOC_PROT_LEN,unknown,53,4,local protection error,0x53,1507
+LOC_PROT_LEN,unknown,54,4,local protection error,0x53,1499
+LOC_PROT_LEN,unknown,55,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,56,4,local protection error,0x53,1540
+LOC_PROT_LEN,unknown,57,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,58,4,local protection error,0x53,1498
+LOC_PROT_LEN,unknown,59,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,60,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,61,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,62,4,local protection error,0x53,1492
+LOC_PROT_LEN,unknown,63,4,local protection error,0x53,1490
+LOC_PROT_LEN,unknown,64,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,65,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,66,4,local protection error,0x53,1499
+LOC_PROT_LEN,unknown,67,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,68,4,local protection error,0x53,1498
+LOC_PROT_LEN,unknown,69,4,local protection error,0x53,1498
+LOC_PROT_LEN,unknown,70,4,local protection error,0x53,1525
+LOC_PROT_LEN,unknown,71,4,local protection error,0x53,1501
+LOC_PROT_LEN,unknown,72,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,73,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,74,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,75,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,76,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,77,4,local protection error,0x53,1503
+LOC_PROT_LEN,unknown,78,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,79,4,local protection error,0x53,1499
+LOC_PROT_LEN,unknown,80,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,81,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,82,4,local protection error,0x53,1492
+LOC_PROT_LEN,unknown,83,4,local protection error,0x53,1533
+LOC_PROT_LEN,unknown,84,4,local protection error,0x53,1500
+LOC_PROT_LEN,unknown,85,4,local protection error,0x53,1512
+LOC_PROT_LEN,unknown,86,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,87,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,88,4,local protection error,0x53,1520
+LOC_PROT_LEN,unknown,89,4,local protection error,0x53,1499
+LOC_PROT_LEN,unknown,90,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,91,4,local protection error,0x53,1492
+LOC_PROT_LEN,unknown,92,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,93,4,local protection error,0x53,1501
+LOC_PROT_LEN,unknown,94,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,95,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,96,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,97,4,local protection error,0x53,1492
+LOC_PROT_LEN,unknown,98,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,99,4,local protection error,0x53,1493
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+LOC_PROT_LKEY,unknown,0,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,1,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,2,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,3,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,4,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,5,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,6,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,7,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,8,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,9,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,10,4,local protection error,0x52,322
+LOC_PROT_LKEY,unknown,11,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,12,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,13,4,local protection error,0x52,317
+LOC_PROT_LKEY,unknown,14,4,local protection error,0x52,324
+LOC_PROT_LKEY,unknown,15,4,local protection error,0x52,353
+LOC_PROT_LKEY,unknown,16,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,17,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,18,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,19,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,20,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,21,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,22,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,23,4,local protection error,0x52,321
+LOC_PROT_LKEY,unknown,24,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,25,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,26,4,local protection error,0x52,316
+LOC_PROT_LKEY,unknown,27,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,28,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,29,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,30,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,31,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,32,4,local protection error,0x52,323
+LOC_PROT_LKEY,unknown,33,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,34,4,local protection error,0x52,316
+LOC_PROT_LKEY,unknown,35,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,36,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,37,4,local protection error,0x52,339
+LOC_PROT_LKEY,unknown,38,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,39,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,40,4,local protection error,0x52,324
+LOC_PROT_LKEY,unknown,41,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,42,4,local protection error,0x52,324
+LOC_PROT_LKEY,unknown,43,4,local protection error,0x52,317
+LOC_PROT_LKEY,unknown,44,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,45,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,46,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,47,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,48,4,local protection error,0x52,325
+LOC_PROT_LKEY,unknown,49,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,50,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,51,4,local protection error,0x52,321
+LOC_PROT_LKEY,unknown,52,4,local protection error,0x52,360
+LOC_PROT_LKEY,unknown,53,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,54,4,local protection error,0x52,338
+LOC_PROT_LKEY,unknown,55,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,56,4,local protection error,0x52,317
+LOC_PROT_LKEY,unknown,57,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,58,4,local protection error,0x52,325
+LOC_PROT_LKEY,unknown,59,4,local protection error,0x52,321
+LOC_PROT_LKEY,unknown,60,4,local protection error,0x52,324
+LOC_PROT_LKEY,unknown,61,4,local protection error,0x52,364
+LOC_PROT_LKEY,unknown,62,4,local protection error,0x52,325
+LOC_PROT_LKEY,unknown,63,4,local protection error,0x52,321
+LOC_PROT_LKEY,unknown,64,4,local protection error,0x52,324
+LOC_PROT_LKEY,unknown,65,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,66,4,local protection error,0x52,333
+LOC_PROT_LKEY,unknown,67,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,68,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,69,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,70,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,71,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,72,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,73,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,74,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,75,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,76,4,local protection error,0x52,361
+LOC_PROT_LKEY,unknown,77,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,78,4,local protection error,0x52,321
+LOC_PROT_LKEY,unknown,79,4,local protection error,0x52,345
+LOC_PROT_LKEY,unknown,80,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,81,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,82,4,local protection error,0x52,317
+LOC_PROT_LKEY,unknown,83,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,84,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,85,4,local protection error,0x52,325
+LOC_PROT_LKEY,unknown,86,4,local protection error,0x52,324
+LOC_PROT_LKEY,unknown,87,4,local protection error,0x52,317
+LOC_PROT_LKEY,unknown,88,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,89,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,90,4,local protection error,0x52,326
+LOC_PROT_LKEY,unknown,91,4,local protection error,0x52,323
+LOC_PROT_LKEY,unknown,92,4,local protection error,0x52,323
+LOC_PROT_LKEY,unknown,93,4,local protection error,0x52,321
+LOC_PROT_LKEY,unknown,94,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,95,4,local protection error,0x52,397
+LOC_PROT_LKEY,unknown,96,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,97,4,local protection error,0x52,1554
+LOC_PROT_LKEY,unknown,98,4,local protection error,0x52,1494
+LOC_PROT_LKEY,unknown,99,4,local protection error,0x52,1494
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+LOC_PROT_PERM,unknown,0,4,local protection error,0x33,1707
+LOC_PROT_PERM,unknown,1,4,local protection error,0x33,1529
+LOC_PROT_PERM,unknown,2,4,local protection error,0x33,1526
+LOC_PROT_PERM,unknown,3,4,local protection error,0x33,1520
+LOC_PROT_PERM,unknown,4,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,5,4,local protection error,0x33,1524
+LOC_PROT_PERM,unknown,6,4,local protection error,0x33,1559
+LOC_PROT_PERM,unknown,7,4,local protection error,0x33,1520
+LOC_PROT_PERM,unknown,8,4,local protection error,0x33,1524
+LOC_PROT_PERM,unknown,9,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,10,4,local protection error,0x33,1549
+LOC_PROT_PERM,unknown,11,4,local protection error,0x33,1543
+LOC_PROT_PERM,unknown,12,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,13,4,local protection error,0x33,1562
+LOC_PROT_PERM,unknown,14,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,15,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,16,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,17,4,local protection error,0x33,1546
+LOC_PROT_PERM,unknown,18,4,local protection error,0x33,1524
+LOC_PROT_PERM,unknown,19,4,local protection error,0x33,1546
+LOC_PROT_PERM,unknown,20,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,21,4,local protection error,0x33,1548
+LOC_PROT_PERM,unknown,22,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,23,4,local protection error,0x33,1529
+LOC_PROT_PERM,unknown,24,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,25,4,local protection error,0x33,1519
+LOC_PROT_PERM,unknown,26,4,local protection error,0x33,1560
+LOC_PROT_PERM,unknown,27,4,local protection error,0x33,1549
+LOC_PROT_PERM,unknown,28,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,29,4,local protection error,0x33,1520
+LOC_PROT_PERM,unknown,30,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,31,4,local protection error,0x33,1524
+LOC_PROT_PERM,unknown,32,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,33,4,local protection error,0x33,1556
+LOC_PROT_PERM,unknown,34,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,35,4,local protection error,0x33,1519
+LOC_PROT_PERM,unknown,36,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,37,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,38,4,local protection error,0x33,1557
+LOC_PROT_PERM,unknown,39,4,local protection error,0x33,1518
+LOC_PROT_PERM,unknown,40,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,41,4,local protection error,0x33,1557
+LOC_PROT_PERM,unknown,42,4,local protection error,0x33,1526
+LOC_PROT_PERM,unknown,43,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,44,4,local protection error,0x33,1531
+LOC_PROT_PERM,unknown,45,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,46,4,local protection error,0x33,1524
+LOC_PROT_PERM,unknown,47,4,local protection error,0x33,1520
+LOC_PROT_PERM,unknown,48,4,local protection error,0x33,1526
+LOC_PROT_PERM,unknown,49,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,50,4,local protection error,0x33,1525
+LOC_PROT_PERM,unknown,51,4,local protection error,0x33,1526
+LOC_PROT_PERM,unknown,52,4,local protection error,0x33,1529
+LOC_PROT_PERM,unknown,53,4,local protection error,0x33,1558
+LOC_PROT_PERM,unknown,54,4,local protection error,0x33,1525
+LOC_PROT_PERM,unknown,55,4,local protection error,0x33,1559
+LOC_PROT_PERM,unknown,56,4,local protection error,0x33,1526
+LOC_PROT_PERM,unknown,57,4,local protection error,0x33,1532
+LOC_PROT_PERM,unknown,58,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,59,4,local protection error,0x33,1537
+LOC_PROT_PERM,unknown,60,4,local protection error,0x33,1561
+LOC_PROT_PERM,unknown,61,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,62,4,local protection error,0x33,1524
+LOC_PROT_PERM,unknown,63,4,local protection error,0x33,1525
+LOC_PROT_PERM,unknown,64,4,local protection error,0x33,1560
+LOC_PROT_PERM,unknown,65,4,local protection error,0x33,1525
+LOC_PROT_PERM,unknown,66,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,67,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,68,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,69,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,70,4,local protection error,0x33,1524
+LOC_PROT_PERM,unknown,71,4,local protection error,0x33,1520
+LOC_PROT_PERM,unknown,72,4,local protection error,0x33,1526
+LOC_PROT_PERM,unknown,73,4,local protection error,0x33,1520
+LOC_PROT_PERM,unknown,74,4,local protection error,0x33,1520
+LOC_PROT_PERM,unknown,75,4,local protection error,0x33,1526
+LOC_PROT_PERM,unknown,76,4,local protection error,0x33,1554
+LOC_PROT_PERM,unknown,77,4,local protection error,0x33,1525
+LOC_PROT_PERM,unknown,78,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,79,4,local protection error,0x33,1530
+LOC_PROT_PERM,unknown,80,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,81,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,82,4,local protection error,0x33,1527
+LOC_PROT_PERM,unknown,83,4,local protection error,0x33,1529
+LOC_PROT_PERM,unknown,84,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,85,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,86,4,local protection error,0x33,1527
+LOC_PROT_PERM,unknown,87,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,88,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,89,4,local protection error,0x33,1526
+LOC_PROT_PERM,unknown,90,4,local protection error,0x33,1564
+LOC_PROT_PERM,unknown,91,4,local protection error,0x33,1534
+LOC_PROT_PERM,unknown,92,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,93,4,local protection error,0x33,1556
+LOC_PROT_PERM,unknown,94,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,95,4,local protection error,0x33,1519
+LOC_PROT_PERM,unknown,96,4,local protection error,0x33,1528
+LOC_PROT_PERM,unknown,97,4,local protection error,0x33,361
+LOC_PROT_PERM,unknown,98,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,99,4,local protection error,0x33,350
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+WR_FLUSH,unknown,0,5,Work Request Flushed Error,0xf5,576
+WR_FLUSH,unknown,1,5,Work Request Flushed Error,0xf5,546
+WR_FLUSH,unknown,2,5,Work Request Flushed Error,0xf5,414
+WR_FLUSH,unknown,3,5,Work Request Flushed Error,0xf5,492
+WR_FLUSH,unknown,4,5,Work Request Flushed Error,0xf5,487
+WR_FLUSH,unknown,5,5,Work Request Flushed Error,0xf5,462
+WR_FLUSH,unknown,6,5,Work Request Flushed Error,0xf5,646
+WR_FLUSH,unknown,7,5,Work Request Flushed Error,0xf5,520
+WR_FLUSH,unknown,8,5,Work Request Flushed Error,0xf5,533
+WR_FLUSH,unknown,9,5,Work Request Flushed Error,0xf5,522
+WR_FLUSH,unknown,10,5,Work Request Flushed Error,0xf5,460
+WR_FLUSH,unknown,11,5,Work Request Flushed Error,0xf5,550
+WR_FLUSH,unknown,12,5,Work Request Flushed Error,0xf5,511
+WR_FLUSH,unknown,13,5,Work Request Flushed Error,0xf5,472
+WR_FLUSH,unknown,14,5,Work Request Flushed Error,0xf5,602
+WR_FLUSH,unknown,15,5,Work Request Flushed Error,0xf5,649
+WR_FLUSH,unknown,16,5,Work Request Flushed Error,0xf5,501
+WR_FLUSH,unknown,17,5,Work Request Flushed Error,0xf5,671
+WR_FLUSH,unknown,18,5,Work Request Flushed Error,0xf5,626
+WR_FLUSH,unknown,19,5,Work Request Flushed Error,0xf5,539
+WR_FLUSH,unknown,20,5,Work Request Flushed Error,0xf5,546
+WR_FLUSH,unknown,21,5,Work Request Flushed Error,0xf5,516
+WR_FLUSH,unknown,22,5,Work Request Flushed Error,0xf5,689
+WR_FLUSH,unknown,23,5,Work Request Flushed Error,0xf5,523
+WR_FLUSH,unknown,24,5,Work Request Flushed Error,0xf5,482
+WR_FLUSH,unknown,25,5,Work Request Flushed Error,0xf5,614
+WR_FLUSH,unknown,26,5,Work Request Flushed Error,0xf5,473
+WR_FLUSH,unknown,27,5,Work Request Flushed Error,0xf5,477
+WR_FLUSH,unknown,28,5,Work Request Flushed Error,0xf5,439
+WR_FLUSH,unknown,29,5,Work Request Flushed Error,0xf5,398
+WR_FLUSH,unknown,30,5,Work Request Flushed Error,0xf5,512
+WR_FLUSH,unknown,31,5,Work Request Flushed Error,0xf5,481
+WR_FLUSH,unknown,32,5,Work Request Flushed Error,0xf5,513
+WR_FLUSH,unknown,33,5,Work Request Flushed Error,0xf5,599
+WR_FLUSH,unknown,34,5,Work Request Flushed Error,0xf5,518
+WR_FLUSH,unknown,35,5,Work Request Flushed Error,0xf5,501
+WR_FLUSH,unknown,36,5,Work Request Flushed Error,0xf5,579
+WR_FLUSH,unknown,37,5,Work Request Flushed Error,0xf5,534
+WR_FLUSH,unknown,38,5,Work Request Flushed Error,0xf5,447
+WR_FLUSH,unknown,39,5,Work Request Flushed Error,0xf5,555
+WR_FLUSH,unknown,40,5,Work Request Flushed Error,0xf5,465
+WR_FLUSH,unknown,41,5,Work Request Flushed Error,0xf5,569
+WR_FLUSH,unknown,42,5,Work Request Flushed Error,0xf5,529
+WR_FLUSH,unknown,43,5,Work Request Flushed Error,0xf5,480
+WR_FLUSH,unknown,44,5,Work Request Flushed Error,0xf5,478
+WR_FLUSH,unknown,45,5,Work Request Flushed Error,0xf5,436
+WR_FLUSH,unknown,46,5,Work Request Flushed Error,0xf5,431
+WR_FLUSH,unknown,47,5,Work Request Flushed Error,0xf5,488
+WR_FLUSH,unknown,48,5,Work Request Flushed Error,0xf5,438
+WR_FLUSH,unknown,49,5,Work Request Flushed Error,0xf5,482
+WR_FLUSH,unknown,50,5,Work Request Flushed Error,0xf5,544
+WR_FLUSH,unknown,51,5,Work Request Flushed Error,0xf5,510
+WR_FLUSH,unknown,52,5,Work Request Flushed Error,0xf5,479
+WR_FLUSH,unknown,53,5,Work Request Flushed Error,0xf5,501
+WR_FLUSH,unknown,54,5,Work Request Flushed Error,0xf5,644
+WR_FLUSH,unknown,55,5,Work Request Flushed Error,0xf5,485
+WR_FLUSH,unknown,56,5,Work Request Flushed Error,0xf5,581
+WR_FLUSH,unknown,57,5,Work Request Flushed Error,0xf5,534
+WR_FLUSH,unknown,58,5,Work Request Flushed Error,0xf5,473
+WR_FLUSH,unknown,59,5,Work Request Flushed Error,0xf5,513
+WR_FLUSH,unknown,60,5,Work Request Flushed Error,0xf5,573
+WR_FLUSH,unknown,61,5,Work Request Flushed Error,0xf5,485
+WR_FLUSH,unknown,62,5,Work Request Flushed Error,0xf5,500
+WR_FLUSH,unknown,63,5,Work Request Flushed Error,0xf5,525
+WR_FLUSH,unknown,64,5,Work Request Flushed Error,0xf5,534
+WR_FLUSH,unknown,65,5,Work Request Flushed Error,0xf5,619
+WR_FLUSH,unknown,66,5,Work Request Flushed Error,0xf5,487
+WR_FLUSH,unknown,67,5,Work Request Flushed Error,0xf5,610
+WR_FLUSH,unknown,68,5,Work Request Flushed Error,0xf5,610
+WR_FLUSH,unknown,69,5,Work Request Flushed Error,0xf5,481
+WR_FLUSH,unknown,70,5,Work Request Flushed Error,0xf5,605
+WR_FLUSH,unknown,71,5,Work Request Flushed Error,0xf5,556
+WR_FLUSH,unknown,72,5,Work Request Flushed Error,0xf5,420
+WR_FLUSH,unknown,73,5,Work Request Flushed Error,0xf5,566
+WR_FLUSH,unknown,74,5,Work Request Flushed Error,0xf5,430
+WR_FLUSH,unknown,75,5,Work Request Flushed Error,0xf5,580
+WR_FLUSH,unknown,76,5,Work Request Flushed Error,0xf5,439
+WR_FLUSH,unknown,77,5,Work Request Flushed Error,0xf5,458
+WR_FLUSH,unknown,78,5,Work Request Flushed Error,0xf5,488
+WR_FLUSH,unknown,79,5,Work Request Flushed Error,0xf5,443
+WR_FLUSH,unknown,80,5,Work Request Flushed Error,0xf5,584
+WR_FLUSH,unknown,81,5,Work Request Flushed Error,0xf5,601
+WR_FLUSH,unknown,82,5,Work Request Flushed Error,0xf5,428
+WR_FLUSH,unknown,83,5,Work Request Flushed Error,0xf5,527
+WR_FLUSH,unknown,84,5,Work Request Flushed Error,0xf5,655
+WR_FLUSH,unknown,85,5,Work Request Flushed Error,0xf5,501
+WR_FLUSH,unknown,86,5,Work Request Flushed Error,0xf5,610
+WR_FLUSH,unknown,87,5,Work Request Flushed Error,0xf5,432
+WR_FLUSH,unknown,88,5,Work Request Flushed Error,0xf5,573
+WR_FLUSH,unknown,89,5,Work Request Flushed Error,0xf5,606
+WR_FLUSH,unknown,90,5,Work Request Flushed Error,0xf5,497
+WR_FLUSH,unknown,91,5,Work Request Flushed Error,0xf5,456
+WR_FLUSH,unknown,92,5,Work Request Flushed Error,0xf5,478
+WR_FLUSH,unknown,93,5,Work Request Flushed Error,0xf5,545
+WR_FLUSH,unknown,94,5,Work Request Flushed Error,0xf5,548
+WR_FLUSH,unknown,95,5,Work Request Flushed Error,0xf5,524
+WR_FLUSH,unknown,96,5,Work Request Flushed Error,0xf5,596
+WR_FLUSH,unknown,97,5,Work Request Flushed Error,0xf5,587
+WR_FLUSH,unknown,98,5,Work Request Flushed Error,0xf5,479
+WR_FLUSH,unknown,99,5,Work Request Flushed Error,0xf5,478
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+REM_INV_REQ,unknown,0,9,remote invalid request error,0x8a,638
+REM_INV_REQ,unknown,1,9,remote invalid request error,0x8a,478
+REM_INV_REQ,unknown,2,9,remote invalid request error,0x8a,482
+REM_INV_REQ,unknown,3,9,remote invalid request error,0x8a,476
+REM_INV_REQ,unknown,4,9,remote invalid request error,0x8a,474
+REM_INV_REQ,unknown,5,9,remote invalid request error,0x8a,475
+REM_INV_REQ,unknown,6,9,remote invalid request error,0x8a,471
+REM_INV_REQ,unknown,7,9,remote invalid request error,0x8a,473
+REM_INV_REQ,unknown,8,9,remote invalid request error,0x8a,515
+REM_INV_REQ,unknown,9,9,remote invalid request error,0x8a,471
+REM_INV_REQ,unknown,10,9,remote invalid request error,0x8a,470
+REM_INV_REQ,unknown,11,9,remote invalid request error,0x8a,469
+REM_INV_REQ,unknown,12,9,remote invalid request error,0x8a,467
+REM_INV_REQ,unknown,13,9,remote invalid request error,0x8a,471
+REM_INV_REQ,unknown,14,9,remote invalid request error,0x8a,474
+REM_INV_REQ,unknown,15,9,remote invalid request error,0x8a,506
+REM_INV_REQ,unknown,16,9,remote invalid request error,0x8a,502
+REM_INV_REQ,unknown,17,9,remote invalid request error,0x8a,499
+REM_INV_REQ,unknown,18,9,remote invalid request error,0x8a,502
+REM_INV_REQ,unknown,19,9,remote invalid request error,0x8a,470
+REM_INV_REQ,unknown,20,9,remote invalid request error,0x8a,468
+REM_INV_REQ,unknown,21,9,remote invalid request error,0x8a,471
+REM_INV_REQ,unknown,22,9,remote invalid request error,0x8a,474
+REM_INV_REQ,unknown,23,9,remote invalid request error,0x8a,512
+REM_INV_REQ,unknown,24,9,remote invalid request error,0x8a,508
+REM_INV_REQ,unknown,25,9,remote invalid request error,0x8a,467
+REM_INV_REQ,unknown,26,9,remote invalid request error,0x8a,471
+REM_INV_REQ,unknown,27,9,remote invalid request error,0x8a,475
+REM_INV_REQ,unknown,28,9,remote invalid request error,0x8a,510
+REM_INV_REQ,unknown,29,9,remote invalid request error,0x8a,471
+REM_INV_REQ,unknown,30,9,remote invalid request error,0x8a,474
+REM_INV_REQ,unknown,31,9,remote invalid request error,0x8a,478
+REM_INV_REQ,unknown,32,9,remote invalid request error,0x8a,482
+REM_INV_REQ,unknown,33,9,remote invalid request error,0x8a,473
+REM_INV_REQ,unknown,34,9,remote invalid request error,0x8a,481
+REM_INV_REQ,unknown,35,9,remote invalid request error,0x8a,513
+REM_INV_REQ,unknown,36,9,remote invalid request error,0x8a,476
+REM_INV_REQ,unknown,37,9,remote invalid request error,0x8a,475
+REM_INV_REQ,unknown,38,9,remote invalid request error,0x8a,474
+REM_INV_REQ,unknown,39,9,remote invalid request error,0x8a,482
+REM_INV_REQ,unknown,40,9,remote invalid request error,0x8a,474
+REM_INV_REQ,unknown,41,9,remote invalid request error,0x8a,471
+REM_INV_REQ,unknown,42,9,remote invalid request error,0x8a,476
+REM_INV_REQ,unknown,43,9,remote invalid request error,0x8a,475
+REM_INV_REQ,unknown,44,9,remote invalid request error,0x8a,495
+REM_INV_REQ,unknown,45,9,remote invalid request error,0x8a,481
+REM_INV_REQ,unknown,46,9,remote invalid request error,0x8a,478
+REM_INV_REQ,unknown,47,9,remote invalid request error,0x8a,480
+REM_INV_REQ,unknown,48,9,remote invalid request error,0x8a,471
+REM_INV_REQ,unknown,49,9,remote invalid request error,0x8a,1656
+REM_INV_REQ,unknown,50,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,51,9,remote invalid request error,0x8a,1649
+REM_INV_REQ,unknown,52,9,remote invalid request error,0x8a,1650
+REM_INV_REQ,unknown,53,9,remote invalid request error,0x8a,1651
+REM_INV_REQ,unknown,54,9,remote invalid request error,0x8a,1647
+REM_INV_REQ,unknown,55,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,56,9,remote invalid request error,0x8a,1650
+REM_INV_REQ,unknown,57,9,remote invalid request error,0x8a,1650
+REM_INV_REQ,unknown,58,9,remote invalid request error,0x8a,1647
+REM_INV_REQ,unknown,59,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,60,9,remote invalid request error,0x8a,1654
+REM_INV_REQ,unknown,61,9,remote invalid request error,0x8a,1648
+REM_INV_REQ,unknown,62,9,remote invalid request error,0x8a,1649
+REM_INV_REQ,unknown,63,9,remote invalid request error,0x8a,1652
+REM_INV_REQ,unknown,64,9,remote invalid request error,0x8a,1647
+REM_INV_REQ,unknown,65,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,66,9,remote invalid request error,0x8a,1643
+REM_INV_REQ,unknown,67,9,remote invalid request error,0x8a,1682
+REM_INV_REQ,unknown,68,9,remote invalid request error,0x8a,1657
+REM_INV_REQ,unknown,69,9,remote invalid request error,0x8a,1649
+REM_INV_REQ,unknown,70,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,71,9,remote invalid request error,0x8a,1653
+REM_INV_REQ,unknown,72,9,remote invalid request error,0x8a,1654
+REM_INV_REQ,unknown,73,9,remote invalid request error,0x8a,1656
+REM_INV_REQ,unknown,74,9,remote invalid request error,0x8a,1683
+REM_INV_REQ,unknown,75,9,remote invalid request error,0x8a,1647
+REM_INV_REQ,unknown,76,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,77,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,78,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,79,9,remote invalid request error,0x8a,1751
+REM_INV_REQ,unknown,80,9,remote invalid request error,0x8a,1691
+REM_INV_REQ,unknown,81,9,remote invalid request error,0x8a,1652
+REM_INV_REQ,unknown,82,9,remote invalid request error,0x8a,1649
+REM_INV_REQ,unknown,83,9,remote invalid request error,0x8a,1653
+REM_INV_REQ,unknown,84,9,remote invalid request error,0x8a,1641
+REM_INV_REQ,unknown,85,9,remote invalid request error,0x8a,1641
+REM_INV_REQ,unknown,86,9,remote invalid request error,0x8a,1655
+REM_INV_REQ,unknown,87,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,88,9,remote invalid request error,0x8a,1651
+REM_INV_REQ,unknown,89,9,remote invalid request error,0x8a,1655
+REM_INV_REQ,unknown,90,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,91,9,remote invalid request error,0x8a,1650
+REM_INV_REQ,unknown,92,9,remote invalid request error,0x8a,1643
+REM_INV_REQ,unknown,93,9,remote invalid request error,0x8a,1647
+REM_INV_REQ,unknown,94,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,95,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,96,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,97,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,98,9,remote invalid request error,0x8a,1680
+REM_INV_REQ,unknown,99,9,remote invalid request error,0x8a,1661
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+REM_ACCESS_RKEY,unknown,0,10,remote access error,0x88,1895
+REM_ACCESS_RKEY,unknown,1,10,remote access error,0x88,1742
+REM_ACCESS_RKEY,unknown,2,10,remote access error,0x88,1752
+REM_ACCESS_RKEY,unknown,3,10,remote access error,0x88,1747
+REM_ACCESS_RKEY,unknown,4,10,remote access error,0x88,1752
+REM_ACCESS_RKEY,unknown,5,10,remote access error,0x88,1774
+REM_ACCESS_RKEY,unknown,6,10,remote access error,0x88,1733
+REM_ACCESS_RKEY,unknown,7,10,remote access error,0x88,1741
+REM_ACCESS_RKEY,unknown,8,10,remote access error,0x88,1732
+REM_ACCESS_RKEY,unknown,9,10,remote access error,0x88,1739
+REM_ACCESS_RKEY,unknown,10,10,remote access error,0x88,1735
+REM_ACCESS_RKEY,unknown,11,10,remote access error,0x88,1776
+REM_ACCESS_RKEY,unknown,12,10,remote access error,0x88,1734
+REM_ACCESS_RKEY,unknown,13,10,remote access error,0x88,1729
+REM_ACCESS_RKEY,unknown,14,10,remote access error,0x88,1738
+REM_ACCESS_RKEY,unknown,15,10,remote access error,0x88,1745
+REM_ACCESS_RKEY,unknown,16,10,remote access error,0x88,1732
+REM_ACCESS_RKEY,unknown,17,10,remote access error,0x88,1738
+REM_ACCESS_RKEY,unknown,18,10,remote access error,0x88,1772
+REM_ACCESS_RKEY,unknown,19,10,remote access error,0x88,1744
+REM_ACCESS_RKEY,unknown,20,10,remote access error,0x88,1731
+REM_ACCESS_RKEY,unknown,21,10,remote access error,0x88,1735
+REM_ACCESS_RKEY,unknown,22,10,remote access error,0x88,1742
+REM_ACCESS_RKEY,unknown,23,10,remote access error,0x88,1728
+REM_ACCESS_RKEY,unknown,24,10,remote access error,0x88,1731
+REM_ACCESS_RKEY,unknown,25,10,remote access error,0x88,1736
+REM_ACCESS_RKEY,unknown,26,10,remote access error,0x88,1743
+REM_ACCESS_RKEY,unknown,27,10,remote access error,0x88,1738
+REM_ACCESS_RKEY,unknown,28,10,remote access error,0x88,1836
+REM_ACCESS_RKEY,unknown,29,10,remote access error,0x88,1736
+REM_ACCESS_RKEY,unknown,30,10,remote access error,0x88,1747
+REM_ACCESS_RKEY,unknown,31,10,remote access error,0x88,1747
+REM_ACCESS_RKEY,unknown,32,10,remote access error,0x88,1735
+REM_ACCESS_RKEY,unknown,33,10,remote access error,0x88,1748
+REM_ACCESS_RKEY,unknown,34,10,remote access error,0x88,1746
+REM_ACCESS_RKEY,unknown,35,10,remote access error,0x88,1746
+REM_ACCESS_RKEY,unknown,36,10,remote access error,0x88,1735
+REM_ACCESS_RKEY,unknown,37,10,remote access error,0x88,1777
+REM_ACCESS_RKEY,unknown,38,10,remote access error,0x88,1743
+REM_ACCESS_RKEY,unknown,39,10,remote access error,0x88,1743
+REM_ACCESS_RKEY,unknown,40,10,remote access error,0x88,1730
+REM_ACCESS_RKEY,unknown,41,10,remote access error,0x88,1749
+REM_ACCESS_RKEY,unknown,42,10,remote access error,0x88,1746
+REM_ACCESS_RKEY,unknown,43,10,remote access error,0x88,1790
+REM_ACCESS_RKEY,unknown,44,10,remote access error,0x88,1733
+REM_ACCESS_RKEY,unknown,45,10,remote access error,0x88,1748
+REM_ACCESS_RKEY,unknown,46,10,remote access error,0x88,1747
+REM_ACCESS_RKEY,unknown,47,10,remote access error,0x88,1736
+REM_ACCESS_RKEY,unknown,48,10,remote access error,0x88,1742
+REM_ACCESS_RKEY,unknown,49,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,50,10,remote access error,0x88,594
+REM_ACCESS_RKEY,unknown,51,10,remote access error,0x88,563
+REM_ACCESS_RKEY,unknown,52,10,remote access error,0x88,573
+REM_ACCESS_RKEY,unknown,53,10,remote access error,0x88,567
+REM_ACCESS_RKEY,unknown,54,10,remote access error,0x88,554
+REM_ACCESS_RKEY,unknown,55,10,remote access error,0x88,568
+REM_ACCESS_RKEY,unknown,56,10,remote access error,0x88,609
+REM_ACCESS_RKEY,unknown,57,10,remote access error,0x88,604
+REM_ACCESS_RKEY,unknown,58,10,remote access error,0x88,604
+REM_ACCESS_RKEY,unknown,59,10,remote access error,0x88,605
+REM_ACCESS_RKEY,unknown,60,10,remote access error,0x88,597
+REM_ACCESS_RKEY,unknown,61,10,remote access error,0x88,563
+REM_ACCESS_RKEY,unknown,62,10,remote access error,0x88,562
+REM_ACCESS_RKEY,unknown,63,10,remote access error,0x88,567
+REM_ACCESS_RKEY,unknown,64,10,remote access error,0x88,560
+REM_ACCESS_RKEY,unknown,65,10,remote access error,0x88,602
+REM_ACCESS_RKEY,unknown,66,10,remote access error,0x88,572
+REM_ACCESS_RKEY,unknown,67,10,remote access error,0x88,582
+REM_ACCESS_RKEY,unknown,68,10,remote access error,0x88,567
+REM_ACCESS_RKEY,unknown,69,10,remote access error,0x88,562
+REM_ACCESS_RKEY,unknown,70,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,71,10,remote access error,0x88,570
+REM_ACCESS_RKEY,unknown,72,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,73,10,remote access error,0x88,600
+REM_ACCESS_RKEY,unknown,74,10,remote access error,0x88,566
+REM_ACCESS_RKEY,unknown,75,10,remote access error,0x88,604
+REM_ACCESS_RKEY,unknown,76,10,remote access error,0x88,568
+REM_ACCESS_RKEY,unknown,77,10,remote access error,0x88,564
+REM_ACCESS_RKEY,unknown,78,10,remote access error,0x88,568
+REM_ACCESS_RKEY,unknown,79,10,remote access error,0x88,563
+REM_ACCESS_RKEY,unknown,80,10,remote access error,0x88,572
+REM_ACCESS_RKEY,unknown,81,10,remote access error,0x88,2001
+REM_ACCESS_RKEY,unknown,82,10,remote access error,0x88,2008
+REM_ACCESS_RKEY,unknown,83,10,remote access error,0x88,1977
+REM_ACCESS_RKEY,unknown,84,10,remote access error,0x88,1972
+REM_ACCESS_RKEY,unknown,85,10,remote access error,0x88,1972
+REM_ACCESS_RKEY,unknown,86,10,remote access error,0x88,1979
+REM_ACCESS_RKEY,unknown,87,10,remote access error,0x88,1966
+REM_ACCESS_RKEY,unknown,88,10,remote access error,0x88,1956
+REM_ACCESS_RKEY,unknown,89,10,remote access error,0x88,1961
+REM_ACCESS_RKEY,unknown,90,10,remote access error,0x88,1981
+REM_ACCESS_RKEY,unknown,91,10,remote access error,0x88,2001
+REM_ACCESS_RKEY,unknown,92,10,remote access error,0x88,1962
+REM_ACCESS_RKEY,unknown,93,10,remote access error,0x88,1955
+REM_ACCESS_RKEY,unknown,94,10,remote access error,0x88,1969
+REM_ACCESS_RKEY,unknown,95,10,remote access error,0x88,1974
+REM_ACCESS_RKEY,unknown,96,10,remote access error,0x88,2000
+REM_ACCESS_RKEY,unknown,97,10,remote access error,0x88,1957
+REM_ACCESS_RKEY,unknown,98,10,remote access error,0x88,1955
+REM_ACCESS_RKEY,unknown,99,10,remote access error,0x88,1962
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RNR_RETRY_EXC,unknown,0,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,1,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,2,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,3,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,4,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,5,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,6,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,7,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,8,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,9,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,10,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,11,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,12,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,13,13,RNR retry counter exceeded,0x87,285
+RNR_RETRY_EXC,unknown,14,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,15,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,16,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,17,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,18,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,19,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,20,13,RNR retry counter exceeded,0x87,284
+RNR_RETRY_EXC,unknown,21,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,22,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,23,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,24,13,RNR retry counter exceeded,0x87,256
+RNR_RETRY_EXC,unknown,25,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,26,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,27,13,RNR retry counter exceeded,0x87,286
+RNR_RETRY_EXC,unknown,28,13,RNR retry counter exceeded,0x87,248
+RNR_RETRY_EXC,unknown,29,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,30,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,31,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,32,13,RNR retry counter exceeded,0x87,277
+RNR_RETRY_EXC,unknown,33,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,34,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,35,13,RNR retry counter exceeded,0x87,287
+RNR_RETRY_EXC,unknown,36,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,37,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,38,13,RNR retry counter exceeded,0x87,285
+RNR_RETRY_EXC,unknown,39,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,40,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,41,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,42,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,43,13,RNR retry counter exceeded,0x87,255
+RNR_RETRY_EXC,unknown,44,13,RNR retry counter exceeded,0x87,253
+RNR_RETRY_EXC,unknown,45,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,46,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,47,13,RNR retry counter exceeded,0x87,267
+RNR_RETRY_EXC,unknown,48,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,49,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,50,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,51,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,52,13,RNR retry counter exceeded,0x87,271
+RNR_RETRY_EXC,unknown,53,13,RNR retry counter exceeded,0x87,255
+RNR_RETRY_EXC,unknown,54,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,55,13,RNR retry counter exceeded,0x87,289
+RNR_RETRY_EXC,unknown,56,13,RNR retry counter exceeded,0x87,283
+RNR_RETRY_EXC,unknown,57,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,58,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,59,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,60,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,61,13,RNR retry counter exceeded,0x87,252
+RNR_RETRY_EXC,unknown,62,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,63,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,64,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,65,13,RNR retry counter exceeded,0x87,285
+RNR_RETRY_EXC,unknown,66,13,RNR retry counter exceeded,0x87,252
+RNR_RETRY_EXC,unknown,67,13,RNR retry counter exceeded,0x87,286
+RNR_RETRY_EXC,unknown,68,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,69,13,RNR retry counter exceeded,0x87,283
+RNR_RETRY_EXC,unknown,70,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,71,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,72,13,RNR retry counter exceeded,0x87,248
+RNR_RETRY_EXC,unknown,73,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,74,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,75,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,76,13,RNR retry counter exceeded,0x87,287
+RNR_RETRY_EXC,unknown,77,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,78,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,79,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,80,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,81,13,RNR retry counter exceeded,0x87,248
+RNR_RETRY_EXC,unknown,82,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,83,13,RNR retry counter exceeded,0x87,264
+RNR_RETRY_EXC,unknown,84,13,RNR retry counter exceeded,0x87,253
+RNR_RETRY_EXC,unknown,85,13,RNR retry counter exceeded,0x87,252
+RNR_RETRY_EXC,unknown,86,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,87,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,88,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,89,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,90,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,91,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,92,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,93,13,RNR retry counter exceeded,0x87,252
+RNR_RETRY_EXC,unknown,94,13,RNR retry counter exceeded,0x87,280
+RNR_RETRY_EXC,unknown,95,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,96,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,97,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,98,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,99,13,RNR retry counter exceeded,0x87,249
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+REM_ACCESS_ADDR,unknown,0,10,remote access error,0x88,2129
+REM_ACCESS_ADDR,unknown,1,10,remote access error,0x88,3213
+REM_ACCESS_ADDR,unknown,2,10,remote access error,0x88,3176
+REM_ACCESS_ADDR,unknown,3,10,remote access error,0x88,3157
+REM_ACCESS_ADDR,unknown,4,10,remote access error,0x88,3189
+REM_ACCESS_ADDR,unknown,5,10,remote access error,0x88,1960
+REM_ACCESS_ADDR,unknown,6,10,remote access error,0x88,1977
+REM_ACCESS_ADDR,unknown,7,10,remote access error,0x88,1978
+REM_ACCESS_ADDR,unknown,8,10,remote access error,0x88,1975
+REM_ACCESS_ADDR,unknown,9,10,remote access error,0x88,1958
+REM_ACCESS_ADDR,unknown,10,10,remote access error,0x88,2041
+REM_ACCESS_ADDR,unknown,11,10,remote access error,0x88,1978
+REM_ACCESS_ADDR,unknown,12,10,remote access error,0x88,1968
+REM_ACCESS_ADDR,unknown,13,10,remote access error,0x88,1964
+REM_ACCESS_ADDR,unknown,14,10,remote access error,0x88,1982
+REM_ACCESS_ADDR,unknown,15,10,remote access error,0x88,1988
+REM_ACCESS_ADDR,unknown,16,10,remote access error,0x88,1969
+REM_ACCESS_ADDR,unknown,17,10,remote access error,0x88,1963
+REM_ACCESS_ADDR,unknown,18,10,remote access error,0x88,2017
+REM_ACCESS_ADDR,unknown,19,10,remote access error,0x88,1972
+REM_ACCESS_ADDR,unknown,20,10,remote access error,0x88,1975
+REM_ACCESS_ADDR,unknown,21,10,remote access error,0x88,1969
+REM_ACCESS_ADDR,unknown,22,10,remote access error,0x88,1949
+REM_ACCESS_ADDR,unknown,23,10,remote access error,0x88,1965
+REM_ACCESS_ADDR,unknown,24,10,remote access error,0x88,2033
+REM_ACCESS_ADDR,unknown,25,10,remote access error,0x88,1953
+REM_ACCESS_ADDR,unknown,26,10,remote access error,0x88,1966
+REM_ACCESS_ADDR,unknown,27,10,remote access error,0x88,1972
+REM_ACCESS_ADDR,unknown,28,10,remote access error,0x88,1988
+REM_ACCESS_ADDR,unknown,29,10,remote access error,0x88,1977
+REM_ACCESS_ADDR,unknown,30,10,remote access error,0x88,1992
+REM_ACCESS_ADDR,unknown,31,10,remote access error,0x88,566
+REM_ACCESS_ADDR,unknown,32,10,remote access error,0x88,571
+REM_ACCESS_ADDR,unknown,33,10,remote access error,0x88,560
+REM_ACCESS_ADDR,unknown,34,10,remote access error,0x88,592
+REM_ACCESS_ADDR,unknown,35,10,remote access error,0x88,576
+REM_ACCESS_ADDR,unknown,36,10,remote access error,0x88,597
+REM_ACCESS_ADDR,unknown,37,10,remote access error,0x88,559
+REM_ACCESS_ADDR,unknown,38,10,remote access error,0x88,557
+REM_ACCESS_ADDR,unknown,39,10,remote access error,0x88,571
+REM_ACCESS_ADDR,unknown,40,10,remote access error,0x88,566
+REM_ACCESS_ADDR,unknown,41,10,remote access error,0x88,560
+REM_ACCESS_ADDR,unknown,42,10,remote access error,0x88,560
+REM_ACCESS_ADDR,unknown,43,10,remote access error,0x88,570
+REM_ACCESS_ADDR,unknown,44,10,remote access error,0x88,562
+REM_ACCESS_ADDR,unknown,45,10,remote access error,0x88,566
+REM_ACCESS_ADDR,unknown,46,10,remote access error,0x88,563
+REM_ACCESS_ADDR,unknown,47,10,remote access error,0x88,563
+REM_ACCESS_ADDR,unknown,48,10,remote access error,0x88,558
+REM_ACCESS_ADDR,unknown,49,10,remote access error,0x88,557
+REM_ACCESS_ADDR,unknown,50,10,remote access error,0x88,560
+REM_ACCESS_ADDR,unknown,51,10,remote access error,0x88,571
+REM_ACCESS_ADDR,unknown,52,10,remote access error,0x88,563
+REM_ACCESS_ADDR,unknown,53,10,remote access error,0x88,601
+REM_ACCESS_ADDR,unknown,54,10,remote access error,0x88,557
+REM_ACCESS_ADDR,unknown,55,10,remote access error,0x88,564
+REM_ACCESS_ADDR,unknown,56,10,remote access error,0x88,569
+REM_ACCESS_ADDR,unknown,57,10,remote access error,0x88,597
+REM_ACCESS_ADDR,unknown,58,10,remote access error,0x88,565
+REM_ACCESS_ADDR,unknown,59,10,remote access error,0x88,558
+REM_ACCESS_ADDR,unknown,60,10,remote access error,0x88,560
+REM_ACCESS_ADDR,unknown,61,10,remote access error,0x88,573
+REM_ACCESS_ADDR,unknown,62,10,remote access error,0x88,557
+REM_ACCESS_ADDR,unknown,63,10,remote access error,0x88,559
+REM_ACCESS_ADDR,unknown,64,10,remote access error,0x88,555
+REM_ACCESS_ADDR,unknown,65,10,remote access error,0x88,558
+REM_ACCESS_ADDR,unknown,66,10,remote access error,0x88,557
+REM_ACCESS_ADDR,unknown,67,10,remote access error,0x88,565
+REM_ACCESS_ADDR,unknown,68,10,remote access error,0x88,564
+REM_ACCESS_ADDR,unknown,69,10,remote access error,0x88,561
+REM_ACCESS_ADDR,unknown,70,10,remote access error,0x88,562
+REM_ACCESS_ADDR,unknown,71,10,remote access error,0x88,557
+REM_ACCESS_ADDR,unknown,72,10,remote access error,0x88,557
+REM_ACCESS_ADDR,unknown,73,10,remote access error,0x88,557
+REM_ACCESS_ADDR,unknown,74,10,remote access error,0x88,555
+REM_ACCESS_ADDR,unknown,75,10,remote access error,0x88,561
+REM_ACCESS_ADDR,unknown,76,10,remote access error,0x88,556
+REM_ACCESS_ADDR,unknown,77,10,remote access error,0x88,601
+REM_ACCESS_ADDR,unknown,78,10,remote access error,0x88,558
+REM_ACCESS_ADDR,unknown,79,10,remote access error,0x88,555
+REM_ACCESS_ADDR,unknown,80,10,remote access error,0x88,560
+REM_ACCESS_ADDR,unknown,81,10,remote access error,0x88,564
+REM_ACCESS_ADDR,unknown,82,10,remote access error,0x88,565
+REM_ACCESS_ADDR,unknown,83,10,remote access error,0x88,557
+REM_ACCESS_ADDR,unknown,84,10,remote access error,0x88,558
+REM_ACCESS_ADDR,unknown,85,10,remote access error,0x88,561
+REM_ACCESS_ADDR,unknown,86,10,remote access error,0x88,563
+REM_ACCESS_ADDR,unknown,87,10,remote access error,0x88,560
+REM_ACCESS_ADDR,unknown,88,10,remote access error,0x88,561
+REM_ACCESS_ADDR,unknown,89,10,remote access error,0x88,563
+REM_ACCESS_ADDR,unknown,90,10,remote access error,0x88,563
+REM_ACCESS_ADDR,unknown,91,10,remote access error,0x88,563
+REM_ACCESS_ADDR,unknown,92,10,remote access error,0x88,558
+REM_ACCESS_ADDR,unknown,93,10,remote access error,0x88,559
+REM_ACCESS_ADDR,unknown,94,10,remote access error,0x88,571
+REM_ACCESS_ADDR,unknown,95,10,remote access error,0x88,565
+REM_ACCESS_ADDR,unknown,96,10,remote access error,0x88,562
+REM_ACCESS_ADDR,unknown,97,10,remote access error,0x88,567
+REM_ACCESS_ADDR,unknown,98,10,remote access error,0x88,560
+REM_ACCESS_ADDR,unknown,99,10,remote access error,0x88,557
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+LOC_PROT_LEN,unknown,0,4,local protection error,0x53,1501
+LOC_PROT_LEN,unknown,1,4,local protection error,0x53,1499
+LOC_PROT_LEN,unknown,2,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,3,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,4,4,local protection error,0x53,1499
+LOC_PROT_LEN,unknown,5,4,local protection error,0x53,1492
+LOC_PROT_LEN,unknown,6,4,local protection error,0x53,1502
+LOC_PROT_LEN,unknown,7,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,8,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,9,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,10,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,11,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,12,4,local protection error,0x53,1500
+LOC_PROT_LEN,unknown,13,4,local protection error,0x53,1532
+LOC_PROT_LEN,unknown,14,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,15,4,local protection error,0x53,1527
+LOC_PROT_LEN,unknown,16,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,17,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,18,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,19,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,20,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,21,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,22,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,23,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,24,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,25,4,local protection error,0x53,1509
+LOC_PROT_LEN,unknown,26,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,27,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,28,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,29,4,local protection error,0x53,1498
+LOC_PROT_LEN,unknown,30,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,31,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,32,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,33,4,local protection error,0x53,1488
+LOC_PROT_LEN,unknown,34,4,local protection error,0x53,1531
+LOC_PROT_LEN,unknown,35,4,local protection error,0x53,1532
+LOC_PROT_LEN,unknown,36,4,local protection error,0x53,1528
+LOC_PROT_LEN,unknown,37,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,38,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,39,4,local protection error,0x53,1499
+LOC_PROT_LEN,unknown,40,4,local protection error,0x53,1534
+LOC_PROT_LEN,unknown,41,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,42,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,43,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,44,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,45,4,local protection error,0x53,1490
+LOC_PROT_LEN,unknown,46,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,47,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,48,4,local protection error,0x53,1489
+LOC_PROT_LEN,unknown,49,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,50,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,51,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,52,4,local protection error,0x53,1498
+LOC_PROT_LEN,unknown,53,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,54,4,local protection error,0x53,1514
+LOC_PROT_LEN,unknown,55,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,56,4,local protection error,0x53,1492
+LOC_PROT_LEN,unknown,57,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,58,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,59,4,local protection error,0x53,1498
+LOC_PROT_LEN,unknown,60,4,local protection error,0x53,1532
+LOC_PROT_LEN,unknown,61,4,local protection error,0x53,1498
+LOC_PROT_LEN,unknown,62,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,63,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,64,4,local protection error,0x53,1531
+LOC_PROT_LEN,unknown,65,4,local protection error,0x53,1528
+LOC_PROT_LEN,unknown,66,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,67,4,local protection error,0x53,1529
+LOC_PROT_LEN,unknown,68,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,69,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,70,4,local protection error,0x53,1582
+LOC_PROT_LEN,unknown,71,4,local protection error,0x53,1529
+LOC_PROT_LEN,unknown,72,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,73,4,local protection error,0x53,1522
+LOC_PROT_LEN,unknown,74,4,local protection error,0x53,1529
+LOC_PROT_LEN,unknown,75,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,76,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,77,4,local protection error,0x53,1556
+LOC_PROT_LEN,unknown,78,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,79,4,local protection error,0x53,1499
+LOC_PROT_LEN,unknown,80,4,local protection error,0x53,1527
+LOC_PROT_LEN,unknown,81,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,82,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,83,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,84,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,85,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,86,4,local protection error,0x53,1491
+LOC_PROT_LEN,unknown,87,4,local protection error,0x53,1548
+LOC_PROT_LEN,unknown,88,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,89,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,90,4,local protection error,0x53,1496
+LOC_PROT_LEN,unknown,91,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,92,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,93,4,local protection error,0x53,1497
+LOC_PROT_LEN,unknown,94,4,local protection error,0x53,1527
+LOC_PROT_LEN,unknown,95,4,local protection error,0x53,1495
+LOC_PROT_LEN,unknown,96,4,local protection error,0x53,1493
+LOC_PROT_LEN,unknown,97,4,local protection error,0x53,1492
+LOC_PROT_LEN,unknown,98,4,local protection error,0x53,1494
+LOC_PROT_LEN,unknown,99,4,local protection error,0x53,1493
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+LOC_PROT_LKEY,unknown,0,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,1,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,2,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,3,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,4,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,5,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,6,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,7,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,8,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,9,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,10,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,11,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,12,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,13,4,local protection error,0x52,317
+LOC_PROT_LKEY,unknown,14,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,15,4,local protection error,0x52,321
+LOC_PROT_LKEY,unknown,16,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,17,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,18,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,19,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,20,4,local protection error,0x52,325
+LOC_PROT_LKEY,unknown,21,4,local protection error,0x52,324
+LOC_PROT_LKEY,unknown,22,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,23,4,local protection error,0x52,321
+LOC_PROT_LKEY,unknown,24,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,25,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,26,4,local protection error,0x52,319
+LOC_PROT_LKEY,unknown,27,4,local protection error,0x52,318
+LOC_PROT_LKEY,unknown,28,4,local protection error,0x52,324
+LOC_PROT_LKEY,unknown,29,4,local protection error,0x52,320
+LOC_PROT_LKEY,unknown,30,4,local protection error,0x52,1494
+LOC_PROT_LKEY,unknown,31,4,local protection error,0x52,1494
+LOC_PROT_LKEY,unknown,32,4,local protection error,0x52,1494
+LOC_PROT_LKEY,unknown,33,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,34,4,local protection error,0x52,1490
+LOC_PROT_LKEY,unknown,35,4,local protection error,0x52,1494
+LOC_PROT_LKEY,unknown,36,4,local protection error,0x52,1492
+LOC_PROT_LKEY,unknown,37,4,local protection error,0x52,1492
+LOC_PROT_LKEY,unknown,38,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,39,4,local protection error,0x52,1491
+LOC_PROT_LKEY,unknown,40,4,local protection error,0x52,1496
+LOC_PROT_LKEY,unknown,41,4,local protection error,0x52,1497
+LOC_PROT_LKEY,unknown,42,4,local protection error,0x52,1490
+LOC_PROT_LKEY,unknown,43,4,local protection error,0x52,1497
+LOC_PROT_LKEY,unknown,44,4,local protection error,0x52,1569
+LOC_PROT_LKEY,unknown,45,4,local protection error,0x52,1527
+LOC_PROT_LKEY,unknown,46,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,47,4,local protection error,0x52,1494
+LOC_PROT_LKEY,unknown,48,4,local protection error,0x52,1532
+LOC_PROT_LKEY,unknown,49,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,50,4,local protection error,0x52,1489
+LOC_PROT_LKEY,unknown,51,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,52,4,local protection error,0x52,1522
+LOC_PROT_LKEY,unknown,53,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,54,4,local protection error,0x52,1523
+LOC_PROT_LKEY,unknown,55,4,local protection error,0x52,1497
+LOC_PROT_LKEY,unknown,56,4,local protection error,0x52,1496
+LOC_PROT_LKEY,unknown,57,4,local protection error,0x52,1492
+LOC_PROT_LKEY,unknown,58,4,local protection error,0x52,1497
+LOC_PROT_LKEY,unknown,59,4,local protection error,0x52,1495
+LOC_PROT_LKEY,unknown,60,4,local protection error,0x52,1496
+LOC_PROT_LKEY,unknown,61,4,local protection error,0x52,1495
+LOC_PROT_LKEY,unknown,62,4,local protection error,0x52,1497
+LOC_PROT_LKEY,unknown,63,4,local protection error,0x52,1496
+LOC_PROT_LKEY,unknown,64,4,local protection error,0x52,1495
+LOC_PROT_LKEY,unknown,65,4,local protection error,0x52,1492
+LOC_PROT_LKEY,unknown,66,4,local protection error,0x52,1492
+LOC_PROT_LKEY,unknown,67,4,local protection error,0x52,1492
+LOC_PROT_LKEY,unknown,68,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,69,4,local protection error,0x52,1496
+LOC_PROT_LKEY,unknown,70,4,local protection error,0x52,1492
+LOC_PROT_LKEY,unknown,71,4,local protection error,0x52,1492
+LOC_PROT_LKEY,unknown,72,4,local protection error,0x52,1495
+LOC_PROT_LKEY,unknown,73,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,74,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,75,4,local protection error,0x52,1491
+LOC_PROT_LKEY,unknown,76,4,local protection error,0x52,1496
+LOC_PROT_LKEY,unknown,77,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,78,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,79,4,local protection error,0x52,1492
+LOC_PROT_LKEY,unknown,80,4,local protection error,0x52,1497
+LOC_PROT_LKEY,unknown,81,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,82,4,local protection error,0x52,1494
+LOC_PROT_LKEY,unknown,83,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,84,4,local protection error,0x52,1495
+LOC_PROT_LKEY,unknown,85,4,local protection error,0x52,1490
+LOC_PROT_LKEY,unknown,86,4,local protection error,0x52,1526
+LOC_PROT_LKEY,unknown,87,4,local protection error,0x52,1494
+LOC_PROT_LKEY,unknown,88,4,local protection error,0x52,1488
+LOC_PROT_LKEY,unknown,89,4,local protection error,0x52,1491
+LOC_PROT_LKEY,unknown,90,4,local protection error,0x52,1505
+LOC_PROT_LKEY,unknown,91,4,local protection error,0x52,1529
+LOC_PROT_LKEY,unknown,92,4,local protection error,0x52,1529
+LOC_PROT_LKEY,unknown,93,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,94,4,local protection error,0x52,1494
+LOC_PROT_LKEY,unknown,95,4,local protection error,0x52,1490
+LOC_PROT_LKEY,unknown,96,4,local protection error,0x52,1493
+LOC_PROT_LKEY,unknown,97,4,local protection error,0x52,1492
+LOC_PROT_LKEY,unknown,98,4,local protection error,0x52,1494
+LOC_PROT_LKEY,unknown,99,4,local protection error,0x52,1493
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+LOC_PROT_PERM,unknown,0,4,local protection error,0x33,1576
+LOC_PROT_PERM,unknown,1,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,2,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,3,4,local protection error,0x33,1525
+LOC_PROT_PERM,unknown,4,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,5,4,local protection error,0x33,1557
+LOC_PROT_PERM,unknown,6,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,7,4,local protection error,0x33,1550
+LOC_PROT_PERM,unknown,8,4,local protection error,0x33,1532
+LOC_PROT_PERM,unknown,9,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,10,4,local protection error,0x33,1525
+LOC_PROT_PERM,unknown,11,4,local protection error,0x33,1524
+LOC_PROT_PERM,unknown,12,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,13,4,local protection error,0x33,1524
+LOC_PROT_PERM,unknown,14,4,local protection error,0x33,1524
+LOC_PROT_PERM,unknown,15,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,16,4,local protection error,0x33,1529
+LOC_PROT_PERM,unknown,17,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,18,4,local protection error,0x33,1526
+LOC_PROT_PERM,unknown,19,4,local protection error,0x33,1527
+LOC_PROT_PERM,unknown,20,4,local protection error,0x33,1523
+LOC_PROT_PERM,unknown,21,4,local protection error,0x33,1558
+LOC_PROT_PERM,unknown,22,4,local protection error,0x33,1520
+LOC_PROT_PERM,unknown,23,4,local protection error,0x33,1520
+LOC_PROT_PERM,unknown,24,4,local protection error,0x33,1541
+LOC_PROT_PERM,unknown,25,4,local protection error,0x33,1524
+LOC_PROT_PERM,unknown,26,4,local protection error,0x33,1521
+LOC_PROT_PERM,unknown,27,4,local protection error,0x33,1518
+LOC_PROT_PERM,unknown,28,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,29,4,local protection error,0x33,1522
+LOC_PROT_PERM,unknown,30,4,local protection error,0x33,385
+LOC_PROT_PERM,unknown,31,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,32,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,33,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,34,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,35,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,36,4,local protection error,0x33,345
+LOC_PROT_PERM,unknown,37,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,38,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,39,4,local protection error,0x33,387
+LOC_PROT_PERM,unknown,40,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,41,4,local protection error,0x33,344
+LOC_PROT_PERM,unknown,42,4,local protection error,0x33,346
+LOC_PROT_PERM,unknown,43,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,44,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,45,4,local protection error,0x33,353
+LOC_PROT_PERM,unknown,46,4,local protection error,0x33,351
+LOC_PROT_PERM,unknown,47,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,48,4,local protection error,0x33,349
+LOC_PROT_PERM,unknown,49,4,local protection error,0x33,345
+LOC_PROT_PERM,unknown,50,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,51,4,local protection error,0x33,349
+LOC_PROT_PERM,unknown,52,4,local protection error,0x33,349
+LOC_PROT_PERM,unknown,53,4,local protection error,0x33,346
+LOC_PROT_PERM,unknown,54,4,local protection error,0x33,345
+LOC_PROT_PERM,unknown,55,4,local protection error,0x33,346
+LOC_PROT_PERM,unknown,56,4,local protection error,0x33,386
+LOC_PROT_PERM,unknown,57,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,58,4,local protection error,0x33,384
+LOC_PROT_PERM,unknown,59,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,60,4,local protection error,0x33,356
+LOC_PROT_PERM,unknown,61,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,62,4,local protection error,0x33,352
+LOC_PROT_PERM,unknown,63,4,local protection error,0x33,351
+LOC_PROT_PERM,unknown,64,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,65,4,local protection error,0x33,383
+LOC_PROT_PERM,unknown,66,4,local protection error,0x33,345
+LOC_PROT_PERM,unknown,67,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,68,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,69,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,70,4,local protection error,0x33,346
+LOC_PROT_PERM,unknown,71,4,local protection error,0x33,349
+LOC_PROT_PERM,unknown,72,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,73,4,local protection error,0x33,345
+LOC_PROT_PERM,unknown,74,4,local protection error,0x33,345
+LOC_PROT_PERM,unknown,75,4,local protection error,0x33,346
+LOC_PROT_PERM,unknown,76,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,77,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,78,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,79,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,80,4,local protection error,0x33,344
+LOC_PROT_PERM,unknown,81,4,local protection error,0x33,363
+LOC_PROT_PERM,unknown,82,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,83,4,local protection error,0x33,349
+LOC_PROT_PERM,unknown,84,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,85,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,86,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,87,4,local protection error,0x33,349
+LOC_PROT_PERM,unknown,88,4,local protection error,0x33,383
+LOC_PROT_PERM,unknown,89,4,local protection error,0x33,346
+LOC_PROT_PERM,unknown,90,4,local protection error,0x33,344
+LOC_PROT_PERM,unknown,91,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,92,4,local protection error,0x33,383
+LOC_PROT_PERM,unknown,93,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,94,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,95,4,local protection error,0x33,347
+LOC_PROT_PERM,unknown,96,4,local protection error,0x33,346
+LOC_PROT_PERM,unknown,97,4,local protection error,0x33,348
+LOC_PROT_PERM,unknown,98,4,local protection error,0x33,383
+LOC_PROT_PERM,unknown,99,4,local protection error,0x33,347
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+WR_FLUSH,unknown,0,5,Work Request Flushed Error,0xf5,456
+WR_FLUSH,unknown,1,5,Work Request Flushed Error,0xf5,517
+WR_FLUSH,unknown,2,5,Work Request Flushed Error,0xf5,602
+WR_FLUSH,unknown,3,5,Work Request Flushed Error,0xf5,382
+WR_FLUSH,unknown,4,5,Work Request Flushed Error,0xf5,555
+WR_FLUSH,unknown,5,5,Work Request Flushed Error,0xf5,429
+WR_FLUSH,unknown,6,5,Work Request Flushed Error,0xf5,536
+WR_FLUSH,unknown,7,5,Work Request Flushed Error,0xf5,509
+WR_FLUSH,unknown,8,5,Work Request Flushed Error,0xf5,466
+WR_FLUSH,unknown,9,5,Work Request Flushed Error,0xf5,483
+WR_FLUSH,unknown,10,5,Work Request Flushed Error,0xf5,589
+WR_FLUSH,unknown,11,5,Work Request Flushed Error,0xf5,579
+WR_FLUSH,unknown,12,5,Work Request Flushed Error,0xf5,519
+WR_FLUSH,unknown,13,5,Work Request Flushed Error,0xf5,526
+WR_FLUSH,unknown,14,5,Work Request Flushed Error,0xf5,479
+WR_FLUSH,unknown,15,5,Work Request Flushed Error,0xf5,517
+WR_FLUSH,unknown,16,5,Work Request Flushed Error,0xf5,538
+WR_FLUSH,unknown,17,5,Work Request Flushed Error,0xf5,486
+WR_FLUSH,unknown,18,5,Work Request Flushed Error,0xf5,461
+WR_FLUSH,unknown,19,5,Work Request Flushed Error,0xf5,525
+WR_FLUSH,unknown,20,5,Work Request Flushed Error,0xf5,412
+WR_FLUSH,unknown,21,5,Work Request Flushed Error,0xf5,615
+WR_FLUSH,unknown,22,5,Work Request Flushed Error,0xf5,536
+WR_FLUSH,unknown,23,5,Work Request Flushed Error,0xf5,522
+WR_FLUSH,unknown,24,5,Work Request Flushed Error,0xf5,510
+WR_FLUSH,unknown,25,5,Work Request Flushed Error,0xf5,446
+WR_FLUSH,unknown,26,5,Work Request Flushed Error,0xf5,580
+WR_FLUSH,unknown,27,5,Work Request Flushed Error,0xf5,449
+WR_FLUSH,unknown,28,5,Work Request Flushed Error,0xf5,392
+WR_FLUSH,unknown,29,5,Work Request Flushed Error,0xf5,554
+WR_FLUSH,unknown,30,5,Work Request Flushed Error,0xf5,680
+WR_FLUSH,unknown,31,5,Work Request Flushed Error,0xf5,617
+WR_FLUSH,unknown,32,5,Work Request Flushed Error,0xf5,449
+WR_FLUSH,unknown,33,5,Work Request Flushed Error,0xf5,523
+WR_FLUSH,unknown,34,5,Work Request Flushed Error,0xf5,617
+WR_FLUSH,unknown,35,5,Work Request Flushed Error,0xf5,534
+WR_FLUSH,unknown,36,5,Work Request Flushed Error,0xf5,584
+WR_FLUSH,unknown,37,5,Work Request Flushed Error,0xf5,480
+WR_FLUSH,unknown,38,5,Work Request Flushed Error,0xf5,474
+WR_FLUSH,unknown,39,5,Work Request Flushed Error,0xf5,487
+WR_FLUSH,unknown,40,5,Work Request Flushed Error,0xf5,629
+WR_FLUSH,unknown,41,5,Work Request Flushed Error,0xf5,550
+WR_FLUSH,unknown,42,5,Work Request Flushed Error,0xf5,437
+WR_FLUSH,unknown,43,5,Work Request Flushed Error,0xf5,515
+WR_FLUSH,unknown,44,5,Work Request Flushed Error,0xf5,520
+WR_FLUSH,unknown,45,5,Work Request Flushed Error,0xf5,645
+WR_FLUSH,unknown,46,5,Work Request Flushed Error,0xf5,487
+WR_FLUSH,unknown,47,5,Work Request Flushed Error,0xf5,439
+WR_FLUSH,unknown,48,5,Work Request Flushed Error,0xf5,475
+WR_FLUSH,unknown,49,5,Work Request Flushed Error,0xf5,517
+WR_FLUSH,unknown,50,5,Work Request Flushed Error,0xf5,643
+WR_FLUSH,unknown,51,5,Work Request Flushed Error,0xf5,522
+WR_FLUSH,unknown,52,5,Work Request Flushed Error,0xf5,478
+WR_FLUSH,unknown,53,5,Work Request Flushed Error,0xf5,601
+WR_FLUSH,unknown,54,5,Work Request Flushed Error,0xf5,474
+WR_FLUSH,unknown,55,5,Work Request Flushed Error,0xf5,477
+WR_FLUSH,unknown,56,5,Work Request Flushed Error,0xf5,426
+WR_FLUSH,unknown,57,5,Work Request Flushed Error,0xf5,585
+WR_FLUSH,unknown,58,5,Work Request Flushed Error,0xf5,539
+WR_FLUSH,unknown,59,5,Work Request Flushed Error,0xf5,614
+WR_FLUSH,unknown,60,5,Work Request Flushed Error,0xf5,670
+WR_FLUSH,unknown,61,5,Work Request Flushed Error,0xf5,519
+WR_FLUSH,unknown,62,5,Work Request Flushed Error,0xf5,567
+WR_FLUSH,unknown,63,5,Work Request Flushed Error,0xf5,521
+WR_FLUSH,unknown,64,5,Work Request Flushed Error,0xf5,628
+WR_FLUSH,unknown,65,5,Work Request Flushed Error,0xf5,519
+WR_FLUSH,unknown,66,5,Work Request Flushed Error,0xf5,1007
+WR_FLUSH,unknown,67,5,Work Request Flushed Error,0xf5,544
+WR_FLUSH,unknown,68,5,Work Request Flushed Error,0xf5,508
+WR_FLUSH,unknown,69,5,Work Request Flushed Error,0xf5,481
+WR_FLUSH,unknown,70,5,Work Request Flushed Error,0xf5,589
+WR_FLUSH,unknown,71,5,Work Request Flushed Error,0xf5,587
+WR_FLUSH,unknown,72,5,Work Request Flushed Error,0xf5,493
+WR_FLUSH,unknown,73,5,Work Request Flushed Error,0xf5,578
+WR_FLUSH,unknown,74,5,Work Request Flushed Error,0xf5,463
+WR_FLUSH,unknown,75,5,Work Request Flushed Error,0xf5,597
+WR_FLUSH,unknown,76,5,Work Request Flushed Error,0xf5,581
+WR_FLUSH,unknown,77,5,Work Request Flushed Error,0xf5,444
+WR_FLUSH,unknown,78,5,Work Request Flushed Error,0xf5,424
+WR_FLUSH,unknown,79,5,Work Request Flushed Error,0xf5,570
+WR_FLUSH,unknown,80,5,Work Request Flushed Error,0xf5,493
+WR_FLUSH,unknown,81,5,Work Request Flushed Error,0xf5,459
+WR_FLUSH,unknown,82,5,Work Request Flushed Error,0xf5,480
+WR_FLUSH,unknown,83,5,Work Request Flushed Error,0xf5,538
+WR_FLUSH,unknown,84,5,Work Request Flushed Error,0xf5,474
+WR_FLUSH,unknown,85,5,Work Request Flushed Error,0xf5,521
+WR_FLUSH,unknown,86,5,Work Request Flushed Error,0xf5,475
+WR_FLUSH,unknown,87,5,Work Request Flushed Error,0xf5,535
+WR_FLUSH,unknown,88,5,Work Request Flushed Error,0xf5,531
+WR_FLUSH,unknown,89,5,Work Request Flushed Error,0xf5,583
+WR_FLUSH,unknown,90,5,Work Request Flushed Error,0xf5,499
+WR_FLUSH,unknown,91,5,Work Request Flushed Error,0xf5,440
+WR_FLUSH,unknown,92,5,Work Request Flushed Error,0xf5,524
+WR_FLUSH,unknown,93,5,Work Request Flushed Error,0xf5,532
+WR_FLUSH,unknown,94,5,Work Request Flushed Error,0xf5,475
+WR_FLUSH,unknown,95,5,Work Request Flushed Error,0xf5,454
+WR_FLUSH,unknown,96,5,Work Request Flushed Error,0xf5,500
+WR_FLUSH,unknown,97,5,Work Request Flushed Error,0xf5,397
+WR_FLUSH,unknown,98,5,Work Request Flushed Error,0xf5,561
+WR_FLUSH,unknown,99,5,Work Request Flushed Error,0xf5,346
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+REM_INV_REQ,unknown,0,9,remote invalid request error,0x8a,1887
+REM_INV_REQ,unknown,1,9,remote invalid request error,0x8a,1649
+REM_INV_REQ,unknown,2,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,3,9,remote invalid request error,0x8a,1644
+REM_INV_REQ,unknown,4,9,remote invalid request error,0x8a,1682
+REM_INV_REQ,unknown,5,9,remote invalid request error,0x8a,1648
+REM_INV_REQ,unknown,6,9,remote invalid request error,0x8a,1644
+REM_INV_REQ,unknown,7,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,8,9,remote invalid request error,0x8a,1647
+REM_INV_REQ,unknown,9,9,remote invalid request error,0x8a,1647
+REM_INV_REQ,unknown,10,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,11,9,remote invalid request error,0x8a,1649
+REM_INV_REQ,unknown,12,9,remote invalid request error,0x8a,1688
+REM_INV_REQ,unknown,13,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,14,9,remote invalid request error,0x8a,1650
+REM_INV_REQ,unknown,15,9,remote invalid request error,0x8a,1653
+REM_INV_REQ,unknown,16,9,remote invalid request error,0x8a,1655
+REM_INV_REQ,unknown,17,9,remote invalid request error,0x8a,1641
+REM_INV_REQ,unknown,18,9,remote invalid request error,0x8a,1641
+REM_INV_REQ,unknown,19,9,remote invalid request error,0x8a,1650
+REM_INV_REQ,unknown,20,9,remote invalid request error,0x8a,1686
+REM_INV_REQ,unknown,21,9,remote invalid request error,0x8a,1670
+REM_INV_REQ,unknown,22,9,remote invalid request error,0x8a,1682
+REM_INV_REQ,unknown,23,9,remote invalid request error,0x8a,1648
+REM_INV_REQ,unknown,24,9,remote invalid request error,0x8a,1653
+REM_INV_REQ,unknown,25,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,26,9,remote invalid request error,0x8a,1653
+REM_INV_REQ,unknown,27,9,remote invalid request error,0x8a,1653
+REM_INV_REQ,unknown,28,9,remote invalid request error,0x8a,1653
+REM_INV_REQ,unknown,29,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,30,9,remote invalid request error,0x8a,1670
+REM_INV_REQ,unknown,31,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,32,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,33,9,remote invalid request error,0x8a,1683
+REM_INV_REQ,unknown,34,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,35,9,remote invalid request error,0x8a,1643
+REM_INV_REQ,unknown,36,9,remote invalid request error,0x8a,1647
+REM_INV_REQ,unknown,37,9,remote invalid request error,0x8a,1643
+REM_INV_REQ,unknown,38,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,39,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,40,9,remote invalid request error,0x8a,1685
+REM_INV_REQ,unknown,41,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,42,9,remote invalid request error,0x8a,1648
+REM_INV_REQ,unknown,43,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,44,9,remote invalid request error,0x8a,1688
+REM_INV_REQ,unknown,45,9,remote invalid request error,0x8a,1654
+REM_INV_REQ,unknown,46,9,remote invalid request error,0x8a,1644
+REM_INV_REQ,unknown,47,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,48,9,remote invalid request error,0x8a,1639
+REM_INV_REQ,unknown,49,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,50,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,51,9,remote invalid request error,0x8a,1648
+REM_INV_REQ,unknown,52,9,remote invalid request error,0x8a,1673
+REM_INV_REQ,unknown,53,9,remote invalid request error,0x8a,1647
+REM_INV_REQ,unknown,54,9,remote invalid request error,0x8a,1643
+REM_INV_REQ,unknown,55,9,remote invalid request error,0x8a,1650
+REM_INV_REQ,unknown,56,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,57,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,58,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,59,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,60,9,remote invalid request error,0x8a,1650
+REM_INV_REQ,unknown,61,9,remote invalid request error,0x8a,1653
+REM_INV_REQ,unknown,62,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,63,9,remote invalid request error,0x8a,1662
+REM_INV_REQ,unknown,64,9,remote invalid request error,0x8a,1649
+REM_INV_REQ,unknown,65,9,remote invalid request error,0x8a,1654
+REM_INV_REQ,unknown,66,9,remote invalid request error,0x8a,1682
+REM_INV_REQ,unknown,67,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,68,9,remote invalid request error,0x8a,1644
+REM_INV_REQ,unknown,69,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,70,9,remote invalid request error,0x8a,1650
+REM_INV_REQ,unknown,71,9,remote invalid request error,0x8a,1653
+REM_INV_REQ,unknown,72,9,remote invalid request error,0x8a,1641
+REM_INV_REQ,unknown,73,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,74,9,remote invalid request error,0x8a,1684
+REM_INV_REQ,unknown,75,9,remote invalid request error,0x8a,1668
+REM_INV_REQ,unknown,76,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,77,9,remote invalid request error,0x8a,1681
+REM_INV_REQ,unknown,78,9,remote invalid request error,0x8a,1639
+REM_INV_REQ,unknown,79,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,80,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,81,9,remote invalid request error,0x8a,1639
+REM_INV_REQ,unknown,82,9,remote invalid request error,0x8a,1667
+REM_INV_REQ,unknown,83,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,84,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,85,9,remote invalid request error,0x8a,1640
+REM_INV_REQ,unknown,86,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,87,9,remote invalid request error,0x8a,1646
+REM_INV_REQ,unknown,88,9,remote invalid request error,0x8a,1645
+REM_INV_REQ,unknown,89,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,90,9,remote invalid request error,0x8a,1682
+REM_INV_REQ,unknown,91,9,remote invalid request error,0x8a,1640
+REM_INV_REQ,unknown,92,9,remote invalid request error,0x8a,1676
+REM_INV_REQ,unknown,93,9,remote invalid request error,0x8a,1643
+REM_INV_REQ,unknown,94,9,remote invalid request error,0x8a,1647
+REM_INV_REQ,unknown,95,9,remote invalid request error,0x8a,1640
+REM_INV_REQ,unknown,96,9,remote invalid request error,0x8a,1642
+REM_INV_REQ,unknown,97,9,remote invalid request error,0x8a,1651
+REM_INV_REQ,unknown,98,9,remote invalid request error,0x8a,1649
+REM_INV_REQ,unknown,99,9,remote invalid request error,0x8a,1642
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+REM_ACCESS_RKEY,unknown,0,10,remote access error,0x88,746
+REM_ACCESS_RKEY,unknown,1,10,remote access error,0x88,572
+REM_ACCESS_RKEY,unknown,2,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,3,10,remote access error,0x88,562
+REM_ACCESS_RKEY,unknown,4,10,remote access error,0x88,554
+REM_ACCESS_RKEY,unknown,5,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,6,10,remote access error,0x88,556
+REM_ACCESS_RKEY,unknown,7,10,remote access error,0x88,552
+REM_ACCESS_RKEY,unknown,8,10,remote access error,0x88,559
+REM_ACCESS_RKEY,unknown,9,10,remote access error,0x88,564
+REM_ACCESS_RKEY,unknown,10,10,remote access error,0x88,554
+REM_ACCESS_RKEY,unknown,11,10,remote access error,0x88,560
+REM_ACCESS_RKEY,unknown,12,10,remote access error,0x88,557
+REM_ACCESS_RKEY,unknown,13,10,remote access error,0x88,562
+REM_ACCESS_RKEY,unknown,14,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,15,10,remote access error,0x88,560
+REM_ACCESS_RKEY,unknown,16,10,remote access error,0x88,562
+REM_ACCESS_RKEY,unknown,17,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,18,10,remote access error,0x88,594
+REM_ACCESS_RKEY,unknown,19,10,remote access error,0x88,563
+REM_ACCESS_RKEY,unknown,20,10,remote access error,0x88,554
+REM_ACCESS_RKEY,unknown,21,10,remote access error,0x88,591
+REM_ACCESS_RKEY,unknown,22,10,remote access error,0x88,555
+REM_ACCESS_RKEY,unknown,23,10,remote access error,0x88,557
+REM_ACCESS_RKEY,unknown,24,10,remote access error,0x88,562
+REM_ACCESS_RKEY,unknown,25,10,remote access error,0x88,594
+REM_ACCESS_RKEY,unknown,26,10,remote access error,0x88,597
+REM_ACCESS_RKEY,unknown,27,10,remote access error,0x88,555
+REM_ACCESS_RKEY,unknown,28,10,remote access error,0x88,555
+REM_ACCESS_RKEY,unknown,29,10,remote access error,0x88,563
+REM_ACCESS_RKEY,unknown,30,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,31,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,32,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,33,10,remote access error,0x88,559
+REM_ACCESS_RKEY,unknown,34,10,remote access error,0x88,567
+REM_ACCESS_RKEY,unknown,35,10,remote access error,0x88,588
+REM_ACCESS_RKEY,unknown,36,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,37,10,remote access error,0x88,554
+REM_ACCESS_RKEY,unknown,38,10,remote access error,0x88,562
+REM_ACCESS_RKEY,unknown,39,10,remote access error,0x88,597
+REM_ACCESS_RKEY,unknown,40,10,remote access error,0x88,559
+REM_ACCESS_RKEY,unknown,41,10,remote access error,0x88,568
+REM_ACCESS_RKEY,unknown,42,10,remote access error,0x88,556
+REM_ACCESS_RKEY,unknown,43,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,44,10,remote access error,0x88,599
+REM_ACCESS_RKEY,unknown,45,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,46,10,remote access error,0x88,565
+REM_ACCESS_RKEY,unknown,47,10,remote access error,0x88,553
+REM_ACCESS_RKEY,unknown,48,10,remote access error,0x88,554
+REM_ACCESS_RKEY,unknown,49,10,remote access error,0x88,559
+REM_ACCESS_RKEY,unknown,50,10,remote access error,0x88,560
+REM_ACCESS_RKEY,unknown,51,10,remote access error,0x88,562
+REM_ACCESS_RKEY,unknown,52,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,53,10,remote access error,0x88,559
+REM_ACCESS_RKEY,unknown,54,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,55,10,remote access error,0x88,563
+REM_ACCESS_RKEY,unknown,56,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,57,10,remote access error,0x88,562
+REM_ACCESS_RKEY,unknown,58,10,remote access error,0x88,557
+REM_ACCESS_RKEY,unknown,59,10,remote access error,0x88,592
+REM_ACCESS_RKEY,unknown,60,10,remote access error,0x88,595
+REM_ACCESS_RKEY,unknown,61,10,remote access error,0x88,557
+REM_ACCESS_RKEY,unknown,62,10,remote access error,0x88,560
+REM_ACCESS_RKEY,unknown,63,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,64,10,remote access error,0x88,555
+REM_ACCESS_RKEY,unknown,65,10,remote access error,0x88,597
+REM_ACCESS_RKEY,unknown,66,10,remote access error,0x88,559
+REM_ACCESS_RKEY,unknown,67,10,remote access error,0x88,568
+REM_ACCESS_RKEY,unknown,68,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,69,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,70,10,remote access error,0x88,608
+REM_ACCESS_RKEY,unknown,71,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,72,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,73,10,remote access error,0x88,556
+REM_ACCESS_RKEY,unknown,74,10,remote access error,0x88,554
+REM_ACCESS_RKEY,unknown,75,10,remote access error,0x88,554
+REM_ACCESS_RKEY,unknown,76,10,remote access error,0x88,559
+REM_ACCESS_RKEY,unknown,77,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,78,10,remote access error,0x88,601
+REM_ACCESS_RKEY,unknown,79,10,remote access error,0x88,551
+REM_ACCESS_RKEY,unknown,80,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,81,10,remote access error,0x88,560
+REM_ACCESS_RKEY,unknown,82,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,83,10,remote access error,0x88,555
+REM_ACCESS_RKEY,unknown,84,10,remote access error,0x88,557
+REM_ACCESS_RKEY,unknown,85,10,remote access error,0x88,554
+REM_ACCESS_RKEY,unknown,86,10,remote access error,0x88,557
+REM_ACCESS_RKEY,unknown,87,10,remote access error,0x88,555
+REM_ACCESS_RKEY,unknown,88,10,remote access error,0x88,555
+REM_ACCESS_RKEY,unknown,89,10,remote access error,0x88,563
+REM_ACCESS_RKEY,unknown,90,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,91,10,remote access error,0x88,559
+REM_ACCESS_RKEY,unknown,92,10,remote access error,0x88,565
+REM_ACCESS_RKEY,unknown,93,10,remote access error,0x88,566
+REM_ACCESS_RKEY,unknown,94,10,remote access error,0x88,559
+REM_ACCESS_RKEY,unknown,95,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,96,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,97,10,remote access error,0x88,561
+REM_ACCESS_RKEY,unknown,98,10,remote access error,0x88,558
+REM_ACCESS_RKEY,unknown,99,10,remote access error,0x88,566
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RNR_RETRY_EXC,unknown,0,13,RNR retry counter exceeded,0x87,285
+RNR_RETRY_EXC,unknown,1,13,RNR retry counter exceeded,0x87,282
+RNR_RETRY_EXC,unknown,2,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,3,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,4,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,5,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,6,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,7,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,8,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,9,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,10,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,11,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,12,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,13,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,14,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,15,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,16,13,RNR retry counter exceeded,0x87,245
+RNR_RETRY_EXC,unknown,17,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,18,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,19,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,20,13,RNR retry counter exceeded,0x87,289
+RNR_RETRY_EXC,unknown,21,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,22,13,RNR retry counter exceeded,0x87,252
+RNR_RETRY_EXC,unknown,23,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,24,13,RNR retry counter exceeded,0x87,285
+RNR_RETRY_EXC,unknown,25,13,RNR retry counter exceeded,0x87,253
+RNR_RETRY_EXC,unknown,26,13,RNR retry counter exceeded,0x87,256
+RNR_RETRY_EXC,unknown,27,13,RNR retry counter exceeded,0x87,286
+RNR_RETRY_EXC,unknown,28,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,29,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,30,13,RNR retry counter exceeded,0x87,286
+RNR_RETRY_EXC,unknown,31,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,32,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,33,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,34,13,RNR retry counter exceeded,0x87,286
+RNR_RETRY_EXC,unknown,35,13,RNR retry counter exceeded,0x87,285
+RNR_RETRY_EXC,unknown,36,13,RNR retry counter exceeded,0x87,252
+RNR_RETRY_EXC,unknown,37,13,RNR retry counter exceeded,0x87,255
+RNR_RETRY_EXC,unknown,38,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,39,13,RNR retry counter exceeded,0x87,271
+RNR_RETRY_EXC,unknown,40,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,41,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,42,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,43,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,44,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,45,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,46,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,47,13,RNR retry counter exceeded,0x87,274
+RNR_RETRY_EXC,unknown,48,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,49,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,50,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,51,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,52,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,53,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,54,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,55,13,RNR retry counter exceeded,0x87,281
+RNR_RETRY_EXC,unknown,56,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,57,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,58,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,59,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,60,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,61,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,62,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,63,13,RNR retry counter exceeded,0x87,255
+RNR_RETRY_EXC,unknown,64,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,65,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,66,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,67,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,68,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,69,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,70,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,71,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,72,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,73,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,74,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,75,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,76,13,RNR retry counter exceeded,0x87,280
+RNR_RETRY_EXC,unknown,77,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,78,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,79,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,80,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,81,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,82,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,83,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,84,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,85,13,RNR retry counter exceeded,0x87,253
+RNR_RETRY_EXC,unknown,86,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,87,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,88,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,89,13,RNR retry counter exceeded,0x87,253
+RNR_RETRY_EXC,unknown,90,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,91,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,92,13,RNR retry counter exceeded,0x87,254
+RNR_RETRY_EXC,unknown,93,13,RNR retry counter exceeded,0x87,251
+RNR_RETRY_EXC,unknown,94,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,95,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,96,13,RNR retry counter exceeded,0x87,249
+RNR_RETRY_EXC,unknown,97,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,98,13,RNR retry counter exceeded,0x87,250
+RNR_RETRY_EXC,unknown,99,13,RNR retry counter exceeded,0x87,250
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+REM_ACCESS_ADDR,unknown,0,10,remote access error,0x88,3323
+REM_ACCESS_ADDR,unknown,1,10,remote access error,0x88,3189
+REM_ACCESS_ADDR,unknown,2,10,remote access error,0x88,3154
+REM_ACCESS_ADDR,unknown,3,10,remote access error,0x88,3163
+REM_ACCESS_ADDR,unknown,4,10,remote access error,0x88,3151
+REM_ACCESS_ADDR,unknown,5,10,remote access error,0x88,3185
+REM_ACCESS_ADDR,unknown,6,10,remote access error,0x88,3165
+REM_ACCESS_ADDR,unknown,7,10,remote access error,0x88,3171
+REM_ACCESS_ADDR,unknown,8,10,remote access error,0x88,3138
+REM_ACCESS_ADDR,unknown,9,10,remote access error,0x88,3175
+REM_ACCESS_ADDR,unknown,10,10,remote access error,0x88,3128
+REM_ACCESS_ADDR,unknown,11,10,remote access error,0x88,3126
+REM_ACCESS_ADDR,unknown,12,10,remote access error,0x88,3185
+REM_ACCESS_ADDR,unknown,13,10,remote access error,0x88,3137
+REM_ACCESS_ADDR,unknown,14,10,remote access error,0x88,3170
+REM_ACCESS_ADDR,unknown,15,10,remote access error,0x88,3134
+REM_ACCESS_ADDR,unknown,16,10,remote access error,0x88,3149
+REM_ACCESS_ADDR,unknown,17,10,remote access error,0x88,3132
+REM_ACCESS_ADDR,unknown,18,10,remote access error,0x88,3143
+REM_ACCESS_ADDR,unknown,19,10,remote access error,0x88,3142
+REM_ACCESS_ADDR,unknown,20,10,remote access error,0x88,3118
+REM_ACCESS_ADDR,unknown,21,10,remote access error,0x88,3129
+REM_ACCESS_ADDR,unknown,22,10,remote access error,0x88,3163
+REM_ACCESS_ADDR,unknown,23,10,remote access error,0x88,3142
+REM_ACCESS_ADDR,unknown,24,10,remote access error,0x88,3141
+REM_ACCESS_ADDR,unknown,25,10,remote access error,0x88,3138
+REM_ACCESS_ADDR,unknown,26,10,remote access error,0x88,3139
+REM_ACCESS_ADDR,unknown,27,10,remote access error,0x88,3159
+REM_ACCESS_ADDR,unknown,28,10,remote access error,0x88,3126
+REM_ACCESS_ADDR,unknown,29,10,remote access error,0x88,3165
+REM_ACCESS_ADDR,unknown,30,10,remote access error,0x88,3137
+REM_ACCESS_ADDR,unknown,31,10,remote access error,0x88,3183
+REM_ACCESS_ADDR,unknown,32,10,remote access error,0x88,3150
+REM_ACCESS_ADDR,unknown,33,10,remote access error,0x88,3132
+REM_ACCESS_ADDR,unknown,34,10,remote access error,0x88,3132
+REM_ACCESS_ADDR,unknown,35,10,remote access error,0x88,3154
+REM_ACCESS_ADDR,unknown,36,10,remote access error,0x88,3149
+REM_ACCESS_ADDR,unknown,37,10,remote access error,0x88,3152
+REM_ACCESS_ADDR,unknown,38,10,remote access error,0x88,3164
+REM_ACCESS_ADDR,unknown,39,10,remote access error,0x88,3125
+REM_ACCESS_ADDR,unknown,40,10,remote access error,0x88,3142
+REM_ACCESS_ADDR,unknown,41,10,remote access error,0x88,3154
+REM_ACCESS_ADDR,unknown,42,10,remote access error,0x88,3159
+REM_ACCESS_ADDR,unknown,43,10,remote access error,0x88,3152
+REM_ACCESS_ADDR,unknown,44,10,remote access error,0x88,3141
+REM_ACCESS_ADDR,unknown,45,10,remote access error,0x88,3136
+REM_ACCESS_ADDR,unknown,46,10,remote access error,0x88,3139
+REM_ACCESS_ADDR,unknown,47,10,remote access error,0x88,3152
+REM_ACCESS_ADDR,unknown,48,10,remote access error,0x88,3139
+REM_ACCESS_ADDR,unknown,49,10,remote access error,0x88,3116
+REM_ACCESS_ADDR,unknown,50,10,remote access error,0x88,1730
+REM_ACCESS_ADDR,unknown,51,10,remote access error,0x88,1737
+REM_ACCESS_ADDR,unknown,52,10,remote access error,0x88,1738
+REM_ACCESS_ADDR,unknown,53,10,remote access error,0x88,1769
+REM_ACCESS_ADDR,unknown,54,10,remote access error,0x88,1776
+REM_ACCESS_ADDR,unknown,55,10,remote access error,0x88,1756
+REM_ACCESS_ADDR,unknown,56,10,remote access error,0x88,1741
+REM_ACCESS_ADDR,unknown,57,10,remote access error,0x88,1736
+REM_ACCESS_ADDR,unknown,58,10,remote access error,0x88,1731
+REM_ACCESS_ADDR,unknown,59,10,remote access error,0x88,1738
+REM_ACCESS_ADDR,unknown,60,10,remote access error,0x88,1740
+REM_ACCESS_ADDR,unknown,61,10,remote access error,0x88,1731
+REM_ACCESS_ADDR,unknown,62,10,remote access error,0x88,1730
+REM_ACCESS_ADDR,unknown,63,10,remote access error,0x88,1740
+REM_ACCESS_ADDR,unknown,64,10,remote access error,0x88,1755
+REM_ACCESS_ADDR,unknown,65,10,remote access error,0x88,1733
+REM_ACCESS_ADDR,unknown,66,10,remote access error,0x88,1729
+REM_ACCESS_ADDR,unknown,67,10,remote access error,0x88,1747
+REM_ACCESS_ADDR,unknown,68,10,remote access error,0x88,1734
+REM_ACCESS_ADDR,unknown,69,10,remote access error,0x88,1735
+REM_ACCESS_ADDR,unknown,70,10,remote access error,0x88,1740
+REM_ACCESS_ADDR,unknown,71,10,remote access error,0x88,1735
+REM_ACCESS_ADDR,unknown,72,10,remote access error,0x88,1739
+REM_ACCESS_ADDR,unknown,73,10,remote access error,0x88,1737
+REM_ACCESS_ADDR,unknown,74,10,remote access error,0x88,1749
+REM_ACCESS_ADDR,unknown,75,10,remote access error,0x88,1736
+REM_ACCESS_ADDR,unknown,76,10,remote access error,0x88,1742
+REM_ACCESS_ADDR,unknown,77,10,remote access error,0x88,1731
+REM_ACCESS_ADDR,unknown,78,10,remote access error,0x88,1735
+REM_ACCESS_ADDR,unknown,79,10,remote access error,0x88,1807
+REM_ACCESS_ADDR,unknown,80,10,remote access error,0x88,1741
+REM_ACCESS_ADDR,unknown,81,10,remote access error,0x88,1727
+REM_ACCESS_ADDR,unknown,82,10,remote access error,0x88,1730
+REM_ACCESS_ADDR,unknown,83,10,remote access error,0x88,1735
+REM_ACCESS_ADDR,unknown,84,10,remote access error,0x88,1731
+REM_ACCESS_ADDR,unknown,85,10,remote access error,0x88,1739
+REM_ACCESS_ADDR,unknown,86,10,remote access error,0x88,1734
+REM_ACCESS_ADDR,unknown,87,10,remote access error,0x88,1732
+REM_ACCESS_ADDR,unknown,88,10,remote access error,0x88,1777
+REM_ACCESS_ADDR,unknown,89,10,remote access error,0x88,1734
+REM_ACCESS_ADDR,unknown,90,10,remote access error,0x88,1731
+REM_ACCESS_ADDR,unknown,91,10,remote access error,0x88,1744
+REM_ACCESS_ADDR,unknown,92,10,remote access error,0x88,1735
+REM_ACCESS_ADDR,unknown,93,10,remote access error,0x88,1731
+REM_ACCESS_ADDR,unknown,94,10,remote access error,0x88,1735
+REM_ACCESS_ADDR,unknown,95,10,remote access error,0x88,1731
+REM_ACCESS_ADDR,unknown,96,10,remote access error,0x88,1743
+REM_ACCESS_ADDR,unknown,97,10,remote access error,0x88,1739
+REM_ACCESS_ADDR,unknown,98,10,remote access error,0x88,1748
+REM_ACCESS_ADDR,unknown,99,10,remote access error,0x88,1735
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_QP_ERR,unknown,0,12,transport retry counter exceeded,0x81,3713678
+RETRY_EXC_QP_ERR,unknown,1,12,transport retry counter exceeded,0x81,3560127
+RETRY_EXC_QP_ERR,unknown,2,12,transport retry counter exceeded,0x81,3550521
+RETRY_EXC_QP_ERR,unknown,3,12,transport retry counter exceeded,0x81,3544885
+RETRY_EXC_QP_ERR,unknown,4,12,transport retry counter exceeded,0x81,3561340
+RETRY_EXC_QP_ERR,unknown,5,12,transport retry counter exceeded,0x81,3573606
+RETRY_EXC_QP_ERR,unknown,6,12,transport retry counter exceeded,0x81,3551952
+RETRY_EXC_QP_ERR,unknown,7,12,transport retry counter exceeded,0x81,3565635
+RETRY_EXC_QP_ERR,unknown,8,12,transport retry counter exceeded,0x81,3547997
+RETRY_EXC_QP_ERR,unknown,9,12,transport retry counter exceeded,0x81,3550454
+RETRY_EXC_QP_ERR,unknown,10,12,transport retry counter exceeded,0x81,3548428
+RETRY_EXC_QP_ERR,unknown,11,12,transport retry counter exceeded,0x81,3560684
+RETRY_EXC_QP_ERR,unknown,12,12,transport retry counter exceeded,0x81,3547271
+RETRY_EXC_QP_ERR,unknown,13,12,transport retry counter exceeded,0x81,3542761
+RETRY_EXC_QP_ERR,unknown,14,12,transport retry counter exceeded,0x81,3553671
+RETRY_EXC_QP_ERR,unknown,15,12,transport retry counter exceeded,0x81,3555716
+RETRY_EXC_QP_ERR,unknown,16,12,transport retry counter exceeded,0x81,3568893
+RETRY_EXC_QP_ERR,unknown,17,12,transport retry counter exceeded,0x81,3543824
+RETRY_EXC_QP_ERR,unknown,18,12,transport retry counter exceeded,0x81,3561187
+RETRY_EXC_QP_ERR,unknown,19,12,transport retry counter exceeded,0x81,3560622
+RETRY_EXC_QP_ERR,unknown,20,12,transport retry counter exceeded,0x81,3544257
+RETRY_EXC_QP_ERR,unknown,21,12,transport retry counter exceeded,0x81,3552096
+RETRY_EXC_QP_ERR,unknown,22,12,transport retry counter exceeded,0x81,3567464
+RETRY_EXC_QP_ERR,unknown,23,12,transport retry counter exceeded,0x81,3570118
+RETRY_EXC_QP_ERR,unknown,24,12,transport retry counter exceeded,0x81,3554413
+RETRY_EXC_QP_ERR,unknown,25,12,transport retry counter exceeded,0x81,3547853
+RETRY_EXC_QP_ERR,unknown,26,12,transport retry counter exceeded,0x81,3552311
+RETRY_EXC_QP_ERR,unknown,27,12,transport retry counter exceeded,0x81,3558613
+RETRY_EXC_QP_ERR,unknown,28,12,transport retry counter exceeded,0x81,3535274
+RETRY_EXC_QP_ERR,unknown,29,12,transport retry counter exceeded,0x81,3545549
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5148911
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5021149
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5199856
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5211385
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,4969038
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,4973046
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5223952
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5225649
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5001512
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,4995866
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5226079
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5204938
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,4978680
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,4999479
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5215631
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5201873
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5230773
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5231556
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,4979689
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,4911821
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5032204
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5240747
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5253157
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,4996111
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5209953
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5242262
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5219051
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5214120
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,4999241
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+RETRY_EXC_PROC_KILL,unknown,0,12,transport retry counter exceeded,0x81,5239067
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.

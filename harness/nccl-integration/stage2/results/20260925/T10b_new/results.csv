@@ -1,0 +1,6 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T10b,"management-network (OOB) outage 12 s, 1 GiB all-reduces",0,PASS,,0,0,0,0,0,0,100,100,17.035
+T10b,"management-network (OOB) outage 12 s, 1 GiB all-reduces",1,PASS,,0,0,0,0,0,0,100,100,17.005
+T10b,"management-network (OOB) outage 12 s, 1 GiB all-reduces",2,PASS,,0,0,0,0,0,0,100,100,17.012
+T10b,"management-network (OOB) outage 12 s, 1 GiB all-reduces",3,PASS,,0,0,0,0,0,0,100,100,17.022
+T10b,"management-network (OOB) outage 12 s, 1 GiB all-reduces",4,PASS,,0,0,0,0,0,0,100,100,16.985

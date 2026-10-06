@@ -1,0 +1,2 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T4ar,"R dies silently, all-reduce (limitation: S idle)",0,CLEAN_FAIL,,0,0,0,0,2,1,96,96,141.602

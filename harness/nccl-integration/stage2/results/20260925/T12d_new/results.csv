@@ -1,0 +1,4 @@
+test,desc,i,verdict,rec_ms,mismatch,timeout,rec_send,rec_recv,failed_lines,injected,ok0,ok1,wall_s
+T12d,"fault after an OOB outage (OOB lost, then send QP ERR)",0,CLEAN_FAIL,,0,0,0,0,1,1,9369,,45.03
+T12d,"fault after an OOB outage (OOB lost, then send QP ERR)",1,CLEAN_FAIL,,0,0,0,0,1,1,9369,,44.696
+T12d,"fault after an OOB outage (OOB lost, then send QP ERR)",2,CLEAN_FAIL,,0,0,0,0,1,1,9369,,44.736

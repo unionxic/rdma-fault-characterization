@@ -1,0 +1,96 @@
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1off TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1on TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=l4k_v2off TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 TAG=l4k_v2coll TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=4096 TAG=l4k_v2sent TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=4096 TAG=l4k_v2ring TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2bounds TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2ringbounds TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1off TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1on TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 TAG=l256k_v2off TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 TAG=l256k_v2coll TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=262144 TAG=l256k_v2sent TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=262144 TAG=l256k_v2ring TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2bounds TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2ringbounds TFIRST=1
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1off TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1on TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=l4k_v2off TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 TAG=l4k_v2coll TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=4096 TAG=l4k_v2sent TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=4096 TAG=l4k_v2ring TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2bounds TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2ringbounds TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1off TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1on TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 TAG=l256k_v2off TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 TAG=l256k_v2coll TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=262144 TAG=l256k_v2sent TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=262144 TAG=l256k_v2ring TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2bounds TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2ringbounds TFIRST=2
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1off TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1on TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=l4k_v2off TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 TAG=l4k_v2coll TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=4096 TAG=l4k_v2sent TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=4096 TAG=l4k_v2ring TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2bounds TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2ringbounds TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1off TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1on TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 TAG=l256k_v2off TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 TAG=l256k_v2coll TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=262144 TAG=l256k_v2sent TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=262144 TAG=l256k_v2ring TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2bounds TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2ringbounds TFIRST=3
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1off TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1on TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=l4k_v2off TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 TAG=l4k_v2coll TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=4096 TAG=l4k_v2sent TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=4096 TAG=l4k_v2ring TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2bounds TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2ringbounds TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1off TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1on TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 TAG=l256k_v2off TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 TAG=l256k_v2coll TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=262144 TAG=l256k_v2sent TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=262144 TAG=l256k_v2ring TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2bounds TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2ringbounds TFIRST=4
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1off TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1on TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=l4k_v2off TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 TAG=l4k_v2coll TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=4096 TAG=l4k_v2sent TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=4096 TAG=l4k_v2ring TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2bounds TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2ringbounds TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1off TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1on TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 TAG=l256k_v2off TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 TAG=l256k_v2coll TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=262144 TAG=l256k_v2sent TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=262144 TAG=l256k_v2ring TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2bounds TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2ringbounds TFIRST=5
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1off TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l4k_v1on TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=4096 TAG=l4k_v2off TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=4096 TAG=l4k_v2coll TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=4096 TAG=l4k_v2sent TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=4096 TAG=l4k_v2ring TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2bounds TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=4096 TAG=l4k_v2ringbounds TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1off TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 BUNDLE=/home/unionxic/gi-bundle/nvshmem_ft2/v1ref BIN=nvft2v1_drv TAG=l256k_v1on TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=0 BYTES=262144 TAG=l256k_v2off TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BYTES=262144 TAG=l256k_v2coll TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 SENTINEL=200 BYTES=262144 TAG=l256k_v2sent TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BYTES=262144 TAG=l256k_v2ring TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2bounds TFIRST=6
+none timeout 1 LAT=2000 LAT_REPS=5 FT=1 RING=1 BOUNDS=1 BYTES=262144 TAG=l256k_v2ringbounds TFIRST=6

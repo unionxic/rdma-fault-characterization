@@ -1,0 +1,106 @@
+scenario,requester_nic,trial,wc_status,wc_status_str,vendor_err,latency_us
+LOC_PROT_LEN,CX5,0,4,local protection error,0x53,2319
+LOC_PROT_LEN,CX5,1,4,local protection error,0x53,1761
+LOC_PROT_LEN,CX5,2,4,local protection error,0x53,1729
+LOC_PROT_LEN,CX5,3,4,local protection error,0x53,1689
+LOC_PROT_LEN,CX5,4,4,local protection error,0x53,1698
+LOC_PROT_LEN,CX5,5,4,local protection error,0x53,1720
+LOC_PROT_LEN,CX5,6,4,local protection error,0x53,1665
+LOC_PROT_LEN,CX5,7,4,local protection error,0x53,1692
+LOC_PROT_LEN,CX5,8,4,local protection error,0x53,1688
+LOC_PROT_LEN,CX5,9,4,local protection error,0x53,1694
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+LOC_PROT_LKEY,CX5,0,4,local protection error,0x52,1690
+LOC_PROT_LKEY,CX5,1,4,local protection error,0x52,1707
+LOC_PROT_LKEY,CX5,2,4,local protection error,0x52,1676
+LOC_PROT_LKEY,CX5,3,4,local protection error,0x52,1698
+LOC_PROT_LKEY,CX5,4,4,local protection error,0x52,1700
+LOC_PROT_LKEY,CX5,5,4,local protection error,0x52,1683
+LOC_PROT_LKEY,CX5,6,4,local protection error,0x52,1704
+LOC_PROT_LKEY,CX5,7,4,local protection error,0x52,1703
+LOC_PROT_LKEY,CX5,8,4,local protection error,0x52,1697
+LOC_PROT_LKEY,CX5,9,4,local protection error,0x52,1685
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+LOC_PROT_PERM,CX5,0,4,local protection error,0x33,1908
+LOC_PROT_PERM,CX5,1,4,local protection error,0x33,1749
+LOC_PROT_PERM,CX5,2,4,local protection error,0x33,1742
+LOC_PROT_PERM,CX5,3,4,local protection error,0x33,1729
+LOC_PROT_PERM,CX5,4,4,local protection error,0x33,1747
+LOC_PROT_PERM,CX5,5,4,local protection error,0x33,1755
+LOC_PROT_PERM,CX5,6,4,local protection error,0x33,1746
+LOC_PROT_PERM,CX5,7,4,local protection error,0x33,1721
+LOC_PROT_PERM,CX5,8,4,local protection error,0x33,1720
+LOC_PROT_PERM,CX5,9,4,local protection error,0x33,1719
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+REM_INV_REQ,CX5,0,9,remote invalid request error,0x8a,2403
+REM_INV_REQ,CX5,1,9,remote invalid request error,0x8a,1908
+REM_INV_REQ,CX5,2,9,remote invalid request error,0x8a,1858
+REM_INV_REQ,CX5,3,9,remote invalid request error,0x8a,1874
+REM_INV_REQ,CX5,4,9,remote invalid request error,0x8a,1917
+REM_INV_REQ,CX5,5,9,remote invalid request error,0x8a,1866
+REM_INV_REQ,CX5,6,9,remote invalid request error,0x8a,1866
+REM_INV_REQ,CX5,7,9,remote invalid request error,0x8a,1900
+REM_INV_REQ,CX5,8,9,remote invalid request error,0x8a,1893
+REM_INV_REQ,CX5,9,9,remote invalid request error,0x8a,1922
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
+REM_ACCESS_RKEY,CX5,0,10,remote access error,0x88,3798
+REM_ACCESS_RKEY,CX5,1,10,remote access error,0x88,3190
+REM_ACCESS_RKEY,CX5,2,10,remote access error,0x88,3164
+REM_ACCESS_RKEY,CX5,3,10,remote access error,0x88,3219
+REM_ACCESS_RKEY,CX5,4,10,remote access error,0x88,3125
+REM_ACCESS_RKEY,CX5,5,10,remote access error,0x88,3145
+REM_ACCESS_RKEY,CX5,6,10,remote access error,0x88,3191
+REM_ACCESS_RKEY,CX5,7,10,remote access error,0x88,3110
+REM_ACCESS_RKEY,CX5,8,10,remote access error,0x88,3117
+REM_ACCESS_RKEY,CX5,9,10,remote access error,0x88,3193
+# --- baseline reference (current requester, pre-swap) ---
+# LOC_PROT_LEN    : vendor_err=0x53 (SGE length > MR size)
+# LOC_PROT_LKEY   : vendor_err=0x52 (invalid lkey)
+# LOC_PROT_PERM   : vendor_err=0x33 (MR missing LOCAL_WRITE)
+# REM_INV_REQ     : vendor_err=0x8a (REMOTE_WRITE not allowed)
+# REM_ACCESS_RKEY : vendor_err=0x88 (invalid rkey)
+# RNR_RETRY_EXC       : vendor_err=0x87 (RNR retries exhausted)
+# REM_ACCESS_ADDR : vendor_err=0x88 (remote addr out of MR bounds)
+# RETRY_EXC_*        : vendor_err=0x81 (transport retries exceeded)
+# Local errors (LOC_PROT_LEN/LOC_PROT_LKEY/LOC_PROT_PERM) isolate requester NIC generation = clean compare.
+# Remote NAK errors (REM_INV_REQ/REM_ACCESS_RKEY/REM_ACCESS_ADDR) flip requester AND responder = confounded.
