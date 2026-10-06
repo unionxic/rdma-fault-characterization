@@ -67,3 +67,13 @@ sha256sum -c --ignore-missing SHA256SUMS && tar -xJf '<asset>'
 | `harness/results/validation_20260925_no_answer` | `harness__results__validation_20260925_no_answer.tar.xz` | 1 | 0.00 | `b2d7bb57fdad` |  |
 | `harness/results/validation_20260925_probe_split` | `harness__results__validation_20260925_probe_split.tar.xz` | 1 | 0.00 | `6de4738a6fa9` |  |
 | `harness/results/validation_20260925_remnak` | `harness__results__validation_20260925_remnak.tar.xz` | 2 | 0.00 | `4955ac26fead` |  |
+
+## Release `data-20261007`
+
+2 raw-data archives, 242 files, 0.09 MB compressed. Packed by `tools/pack_release.py --whole`.
+The full checksums are in the `SHA256SUMS` asset of that release.
+
+| folder | asset | files | MB | sha256 (first 12) | note |
+|---|---|--:|--:|---|---|
+| `harness/gpu-initiated/nvshmem_rootcause/teardown_channel/results/20261007` | `harness__gpu-initiated__nvshmem_rootcause__teardown_channel__results__20261007.tar.xz` | 230 | 0.08 | `4fe553c1c7f4` |  |
+| `harness/gpu-initiated/nvshmem_rootcause/teardown_channel/results/20261007_smoke` | `harness__gpu-initiated__nvshmem_rootcause__teardown_channel__results__20261007_smoke.tar.xz` | 12 | 0.01 | `c0f012d0ea9c` | smoke run, not scored |

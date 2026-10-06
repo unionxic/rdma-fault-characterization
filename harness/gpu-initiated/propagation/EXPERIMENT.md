@@ -461,6 +461,7 @@ F0 5).
 ## 19. 다음 작업
 
 1. 정리 단계의 통신을 채널로 볼지 정하고, NVSHMEM 3.8.0 정리 단계가 상대 kill을 어디서 아는지 잰다.
+   2026-10-07 후속 실험에서 쟀다: [../nvshmem_rootcause/teardown_channel/EXPERIMENT.md](../nvshmem_rootcause/teardown_channel/EXPERIMENT.md).
 2. 혼잡 알림 처리 카운터가 재시도 초과에서 오르는 이유를 확인한다.
 3. 재지 못한 계층(GIN GDAKI와 NVSHMEM 3.8.0의 CQE, NVSHMEM devel의 API)을 재는 계측을 더한다.
 
