@@ -1,0 +1,12 @@
+# code-review cells, second run (the first `review` hold aborted after its dci_fill trials: the hold
+# script was edited while it ran; and its SM filler polled host memory from ~50k threads, which
+# saturated PCIe and stalled every host<->device copy for the hold bound)
+#   dci_fill: F1 (RC QP and DCI to ERR) while a second application kernel fills every SM thread slot
+#   sock:     8 s outage of PE0's library socket (iptables DROP of its port, both directions), no fault
+#   sock1:    the same outage (1.5 .. 9.5 s), then F1 at 12 s over the re-dialed socket
+10 F1 loop TAG=dci_fill FILL=1 ITERS=400 SYM=160M KTIMEOUT=100 PROC_TIMEOUT=130
+5 SOCK loop TAG=sock SOCK_S=8 SOCK_AT_MS=1500 ITERS=1000 BYTES=65536 GAP_US=20000 KTIMEOUT=60 PROC_TIMEOUT=80
+5 SOCK1 loop TAG=sock1 SOCK_S=8 SOCK_AT_MS=1500 FAULT_MS=12000 ITERS=1000 BYTES=65536 GAP_US=20000 KTIMEOUT=60 PROC_TIMEOUT=80
+#   fetch_f3: re-run of the F3 fetch cell with a kernel timeout longer than the 20 s loop (the
+#             fetch_fixed run used 12 s, so the bounded exit was not recorded)
+10 F3 loop TAG=fetch_f3 FETCH=1 ITERS=1000 BYTES=4096 GAP_US=20000 KTIMEOUT=30 PROC_TIMEOUT=50

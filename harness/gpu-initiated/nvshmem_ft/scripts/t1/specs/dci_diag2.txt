@@ -1,0 +1,3 @@
+# diagnostics on the diag bundle: does the helper's idle-scan copy stall under the filler with no fault at all?
+2 none loop TAG=fill_nofault FILL=1 BUNDLE=/home/unionxic/gi-bundle/nvshmem_t1/diag ITERS=400 SYM=160M KTIMEOUT=60 PROC_TIMEOUT=80
+1 F1 loop TAG=dci_diag FILL=1 BUNDLE=/home/unionxic/gi-bundle/nvshmem_t1/diag ITERS=400 SYM=160M KTIMEOUT=100 PROC_TIMEOUT=130

@@ -1,0 +1,9 @@
+# code-review cells, third run. dci_fill: the filler's grid is exactly the free capacity (191 CTAs of
+# 256 threads next to the loop kernel's CTA: every SM at its 1024-thread limit, no CTA pending);
+# review/review2 ran it oversubscribed by one CTA (192: one CTA pending in the compute queue for
+# the whole run), and every host copy of the helper stalled behind it for the hold bound.
+10 F1 loop TAG=dci_fill FILL=1 ITERS=400 SYM=160M KTIMEOUT=100 PROC_TIMEOUT=130
+5 SOCK loop TAG=sock SOCK_S=8 SOCK_AT_MS=1500 ITERS=1000 BYTES=65536 GAP_US=20000 KTIMEOUT=60 PROC_TIMEOUT=80
+5 SOCK1 loop TAG=sock1 SOCK_S=8 SOCK_AT_MS=1500 FAULT_MS=12000 ITERS=1000 BYTES=65536 GAP_US=20000 KTIMEOUT=60 PROC_TIMEOUT=80
+10 F3 loop TAG=fetch_f3 FETCH=1 ITERS=1000 BYTES=4096 GAP_US=20000 KTIMEOUT=30 PROC_TIMEOUT=50
+3 F1 loop TAG=dci_fill_over FILL=2 ITERS=400 SYM=160M HOLD_MS=78000 KTIMEOUT=100 PROC_TIMEOUT=130

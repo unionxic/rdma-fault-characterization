@@ -1,0 +1,6 @@
+# main matrix, part A (unmodified application; 256 KiB put+signal+quiet with a 15 ms gap unless stated)
+30 none loop TAG=main ITERS=160
+30 F1 loop TAG=main ITERS=160
+15 F3 loop TAG=main ITERS=420 KTIMEOUT=60 PROC_TIMEOUT=80
+10 F1x5 loop TAG=main ITERS=260
+40 F1 loop TAG=inflight ITERS=16000 BYTES=4096 GAP_US=0 FAULT_LO=70 FAULT_HI=250

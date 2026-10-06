@@ -1,0 +1,8 @@
+# part B: declines (F2 REM_ACCESS by the responder revoking remote access; F4 SIGKILL of PE1) and
+# several CTAs/threads posting on the one RC QP (bursts that fill the send queue), fault mid-stream
+15 F3 loop TAG=main ITERS=420 SYM=160M KTIMEOUT=60 PROC_TIMEOUT=80
+30 F2 loop TAG=decl ITERS=160 KTIMEOUT=10 PROC_TIMEOUT=25
+10 F4 loop TAG=decl ITERS=400 SYM=160M KILL_MS=600 KTIMEOUT=15 PROC_TIMEOUT=30
+15 F1 mt TAG=mt CTAS=4 THREADS=8 BURST=16 REPS=100 BYTES=1024 GAP_US=2000 FAULT_LO=70 FAULT_HI=300
+5 none mt TAG=mt CTAS=4 THREADS=8 BURST=16 REPS=100 BYTES=1024 GAP_US=2000
+10 F1x5 loop TAG=main2 ITERS=260

@@ -1,0 +1,2 @@
+# F2 as the application's own bug: iteration 60 puts to an address past the symmetric heap (rkey 0)
+30 F2A loop TAG=decl ITERS=100 SYM=40M BAD_AT=60 KTIMEOUT=8 PROC_TIMEOUT=20

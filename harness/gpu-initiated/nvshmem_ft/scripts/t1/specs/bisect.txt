@@ -1,0 +1,22 @@
+# flag-off latency bisect (FT=0 everywhere): interleaved, 5 runs x 5 reps x 2000 ops, 4 KiB and 256 KiB
+#   v22off  v2.2 libraries + v2.2 driver
+#   t1off   final T1 build (libraries + driver)
+#   mixA    T1 driver (T1 device code) + v2.2 host libraries        -> device side?
+#   mixB    v2.2 driver (v2.2 device code) + T1 host libraries      -> host side?
+#   varA    T1 source, every T1 device hook compiled out (NVSHMEMI_IBGDA_T1_DEVICE=0)
+#   varP    post hooks compiled out (reserve / submit / submit_ready), wait hooks kept (=6)
+#   varW    wait hooks compiled out (quiet / quiet_status / quiet_with_cst), post hooks kept (=5)
+5 none lat TAG=b4k_v22off BIN=nvt1v22_drv FT=0 ITERS=2000 REPS=5 BYTES=4096 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b4k_t1off FT=0 ITERS=2000 REPS=5 BYTES=4096 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b4k_mixA BUNDLE=/home/unionxic/gi-bundle/nvshmem_t1/mixA FT=0 ITERS=2000 REPS=5 BYTES=4096 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b4k_mixB BIN=nvt1v22_drv BUNDLE_V22=/home/unionxic/gi-bundle/nvshmem_t1/mixB FT=0 ITERS=2000 REPS=5 BYTES=4096 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b4k_varA BUNDLE=/home/unionxic/gi-bundle/nvshmem_t1/varA FT=0 ITERS=2000 REPS=5 BYTES=4096 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b4k_varP BUNDLE=/home/unionxic/gi-bundle/nvshmem_t1/varP FT=0 ITERS=2000 REPS=5 BYTES=4096 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b4k_varW BUNDLE=/home/unionxic/gi-bundle/nvshmem_t1/varW FT=0 ITERS=2000 REPS=5 BYTES=4096 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b256k_v22off BIN=nvt1v22_drv FT=0 ITERS=2000 REPS=5 BYTES=262144 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b256k_t1off FT=0 ITERS=2000 REPS=5 BYTES=262144 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b256k_mixA BUNDLE=/home/unionxic/gi-bundle/nvshmem_t1/mixA FT=0 ITERS=2000 REPS=5 BYTES=262144 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b256k_mixB BIN=nvt1v22_drv BUNDLE_V22=/home/unionxic/gi-bundle/nvshmem_t1/mixB FT=0 ITERS=2000 REPS=5 BYTES=262144 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b256k_varA BUNDLE=/home/unionxic/gi-bundle/nvshmem_t1/varA FT=0 ITERS=2000 REPS=5 BYTES=262144 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b256k_varP BUNDLE=/home/unionxic/gi-bundle/nvshmem_t1/varP FT=0 ITERS=2000 REPS=5 BYTES=262144 KTIMEOUT=40 PROC_TIMEOUT=60
+5 none lat TAG=b256k_varW BUNDLE=/home/unionxic/gi-bundle/nvshmem_t1/varW FT=0 ITERS=2000 REPS=5 BYTES=262144 KTIMEOUT=40 PROC_TIMEOUT=60

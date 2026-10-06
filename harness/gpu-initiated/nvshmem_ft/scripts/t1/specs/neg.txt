@@ -1,0 +1,8 @@
+# negative controls: one T1 resync step removed (test-only knobs); expected to fail
+5 F1 loop TAG=neg_ring T1SKIP=ring ITERS=160 KTIMEOUT=15 PROC_TIMEOUT=30
+5 F1 loop TAG=neg_rotate T1SKIP=rotate ITERS=160 KTIMEOUT=15 PROC_TIMEOUT=30
+5 F1 loop TAG=neg_ringci SKIP=ringci ITERS=160 KTIMEOUT=15 PROC_TIMEOUT=30
+# neg_remap as run in this hold (void: the 400 MiB heap failed GPUDirect registration, BAR1; re-run
+# with 60 x 2 MiB in neg2.txt); reconstructed from the .meta files: FAULT_LO/HI not recorded, drawn 47..99 ms
+10 F1 loop TAG=neg_remap T1SKIP=remap ITERS=150 BYTES=2097152 GAP_US=0 SYM=400M FAULT_LO=45 FAULT_HI=100 KTIMEOUT=15 PROC_TIMEOUT=30
+15 F1 loop TAG=neg_prefix T1SKIP=prefix ITERS=16000 BYTES=4096 GAP_US=0 FAULT_LO=70 FAULT_HI=250 KTIMEOUT=15 PROC_TIMEOUT=30

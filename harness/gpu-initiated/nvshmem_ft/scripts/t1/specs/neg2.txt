@@ -1,0 +1,3 @@
+# negative controls, second set: waiter ticket remap (2 MiB ops, no gap) and executed prefix (in-flight)
+10 F1 loop TAG=neg_remap T1SKIP=remap ITERS=60 BYTES=2097152 GAP_US=0 SYM=160M FAULT_LO=45 FAULT_HI=80 KTIMEOUT=15 PROC_TIMEOUT=30
+10 F1 loop TAG=neg_prefix2 T1SKIP=prefix ITERS=16000 BYTES=4096 GAP_US=0 FAULT_LO=70 FAULT_HI=250 KTIMEOUT=15 PROC_TIMEOUT=30
