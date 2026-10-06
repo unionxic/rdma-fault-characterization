@@ -1,54 +1,54 @@
-# 08_middleware QA on real RDMA (2026-09-23)
+# qa_20260923: 미들웨어 데모 실기 점검
 
-> The `08_middleware` and `07_fault_classify` code this page tested (`rdma_conn.c`, `demo_client.c`,
-> `demo_server.c`, `librdma_fault`) was removed from the tree on 2026-10-06; it is in tag
-> `archive/results-tables-20261006`. The logs are in Release `data-20261006`.
+초기 연구의 미들웨어 데모(오류 분류와 자동 복구)를 2026-09-23 새 클러스터의 실제 RDMA에서 돌려 본 기록이다.
+제어 채널의 유휴 타임아웃 버그를 고친 것이 실제로 효과가 있는지도 확인했다.
+데모와 분류 라이브러리 코드는 2026-10-06에 지웠다. 태그 `archive/results-tables-20261006`에 남아 있다.
 
-Real-hardware check of the `rdma_conn.c` server control-channel fix (commit f942bdb),
-run on the current cluster: rain (client, mlx5_1) and sunny (server, mlx5_0), RoCE v2.
+## 무엇을 쟀나
 
-## How the binaries were built
+- **새 클러스터에서 했다.** rain(요청), sunny(응답), RoCE v2다. 이 폴더의 다른 실험과 달리 옛 클러스터가 아니다.
+- **데모 시나리오 4가지.** 수신 버퍼 없음(RNR), 원격 접근 오류, 재전송 소진, 로컬 보호 오류.
+- **버그 수정 전후.** 감지 중 제어 채널이 5 s 넘게 놀도록 IB 타임아웃을 18, CQE 대기를 30 s로 늘렸다.
+  같은 요청 쪽을 수정 전 서버와 수정 후 서버에 차례로 붙였다.
+- **빌드.** 옛 클러스터 값(주소, 장치 이름, GID 번호)만 바꾼 임시 사본으로 빌드했다. 레포 코드는 바꾸지 않았다.
 
-`05_counter_mapping/common.h` hard-codes the old cluster's constants, so the demo was
-built from a **scratch copy** of `experiments/` with these overrides only (the repo is
-unchanged):
+## 결론
 
-| side | constant | repo value | value used |
-|---|---|---|---|
-| client (225) | `RDMA_SERVER_IP` | `"10.0.0.3"` | `"30.0.0.4"` |
-| client (225) | `IB_DEV_NAME` | `"mlx5_0"` (port DOWN on rain) | `"mlx5_1"` |
-| client (225) | `GID_INDEX` | `3` | `4` (rain's RoCE v2 IPv4 GID) |
-| server (224) | `RDMA_SERVER_IP` | `"10.0.0.3"` | `"30.0.0.4"` |
+- **데모 4가지가 의도대로 동작했다.**
+  - 수신 버퍼 없음과 원격 접근 오류는 QP를 복구한 뒤 다시 보내 성공했다.
+  - 재전송 소진은 상대가 살아 있는지 확인한 뒤 복구했다.
+  - 로컬 보호 오류는 앱 버그로 분류해 자동 복구하지 않았다. 의도한 동작이다.
+- **수정 전 서버는 살아 있는 상대를 죽었다고 판정하게 만들었다.**
+  서버가 제어 채널이 5 s 놀면 빠져나갔다. 그래서 감지 뒤 확인 요청에 답할 서버가 없었다.
+- **수정 후에는 복구와 재전송이 성공했다.** 서버가 놀고 있는 동안에도 계속 기다린다.
+- **기본 설정에서는 이 버그가 드러나지 않는다.** 재전송 소진 감지가 약 3.7 s라 5 s 안에 끝나기 때문이다.
+  IB 타임아웃 18에서는 감지가 약 12~14 s 걸려 버그가 드러났다.
 
-`demo_server` was built on rain and copied to sunny's `/tmp`.
+## 결과
 
-## Result 1: the four demo scenarios (`demo_4scenarios.log`)
+| 데모 시나리오 | vendor_err | 결과 | 종료 코드 |
+|---|---|---|--:|
+| 수신 버퍼 없음 | 0x87 | QP 복구 뒤 재전송 성공 | 0 |
+| 원격 접근 오류 | 0x88 | QP 복구와 MR 갱신 뒤 재전송 성공 | 0 |
+| 재전송 소진 | 0x81 | 상대 생존 확인 뒤 복구, 재전송 성공 | 0 |
+| 로컬 보호 오류 | 0x53 | 앱 버그로 분류, 자동 복구 안 함 | 0 |
 
-| scenario | vendor_err | outcome | demo_client exit |
-|---|---|---|---|
-| rnr | 0x87 | QP recovery, resend succeeded | 0 |
-| rem_access | 0x88 | QP recovery + MR refresh, resend succeeded | 0 |
-| retry | 0x81 | peer probed, then recovered, resend succeeded | 0 |
-| loc_prot | 0x53 | classified as an application bug, no auto-recovery (expected) | 0 |
+| 재전송 소진, IB 타임아웃 18 | 요청 쪽 결과 | 종료 코드 |
+|---|---|--:|
+| 수정 전 서버 | 살아 있는 상대를 죽었다고 판정 | 1 |
+| 수정 후 서버 | 복구 뒤 재전송 성공 | 0 |
 
-In this demo the retry scenario is detected in about 3.7 s, which is under the 5 s
-control-step timeout, so it does not exercise the idle-timeout bug.
+## 한계와 주의
 
-## Result 2: the idle-timeout bug, before vs after the fix
+- **반복 측정이 아니라 동작 확인이다.** 감지 시간은 로그에서 읽은 대략값만 남았다.
+- **수정 전후 비교는 레포 값과 다른 설정으로 했다.** IB 타임아웃(레포 14)과 CQE 대기(레포 12 s)를 늘린 임시 사본이다.
+- **그동안 링크는 비어 있었다.** 다른 벤치마크 트래픽이 없음을 5 s마다 확인했다.
+- **코드는 레포에 없다.** 같은 분류는 지금 `../../../../../harness/`의 CPU verbs 측정이 맡는다.
 
-To make the control channel stay idle longer than 5 s during detection, the scratch
-client used IB timeout 18 (repo value 14) and a 30 s CQE wait (`CQ_TIMEOUT_MS`, repo value
-12 s). RETRY_EXC detection then took about 12-14 s. The same client was run against two
-servers: one built from `rdma_conn.c` before the fix (`f942bdb^`), one after.
+## 파일
 
-| server | client outcome | exit |
-|---|---|---|
-| before the fix (`retry_t18_prefix_client.log`) | `[recover] peer 사망(escalate)`: a live peer was declared dead | 1 |
-| after the fix (`retry_t18_fixed_client.log`) | `[recover] OK(복구+재전송 완료)`, resend succeeded | 0 |
-
-Before the fix the server's serve loop returned after 5 s of control-channel idleness,
-so when the client probed after detection the server was gone. After the fix the
-server keeps serving while idle and completes the recovery.
-
-The link was otherwise idle during these runs: no gdsio / NVMe-oF benchmark traffic
-(sampled every 5 s).
+| 파일 | 내용 |
+|---|---|
+| [NOTES.md](NOTES.md) | 예전 README(영문). 빌드에 바꾼 값, 로그 이름 |
+| Release `data-20261006` | 로그 3개. 이 폴더 이름의 압축 파일이다([DATA.md](../../../../../DATA.md)) |
+| 태그 `archive/results-tables-20261006` | 지운 데모와 분류 라이브러리 코드 |

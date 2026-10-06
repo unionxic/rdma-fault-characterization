@@ -1,106 +1,51 @@
-# Experiment 4: NIC Retry Boundary
+# experiment4: NIC 재전송 설정의 경계
 
-Characterizes the parameter regimes where ConnectX-5 hardware retry
-masks transient packet loss versus where the retry budget is
-exhausted and the application sees a hard failure.
+retry_cnt와 IB 타임아웃을 바꿔 가며, NIC 재전송이 일시적 손실을 가려 주는 구간과 장애 감지가 늦어지는 구간을 찾으려 했다.
+장애 없음, 패킷 손실 주입, 응답 프로세스 종료 세 단계로 쟀다.
+수치는 옛 클러스터(225 요청 ConnectX-6, 224 응답 ConnectX-5)에서 2026-04-27에 쟀다.
 
-## Sweep
+## 무엇을 쟀나
 
-- `retry_cnt` ∈ {0, 1, 3, 7}
-- `qp_timeout` ∈ {8, 12, 14, 17, 20} → 4.096 µs · 2ˣ:
-  | x  | t       |
-  |----|---------|
-  | 8  | 1.05 ms |
-  | 12 | 16.8 ms |
-  | 14 | 67.1 ms |
-  | 17 | 537 ms  |
-  | 20 | 4.30 s  |
-- Transient (`tc netem loss`): {1%, 5%, 10%, 50%}
-- Persistent: process kill (Server B exits abruptly)
+- **설정 20가지.** retry_cnt 0, 1, 3, 7과 IB 타임아웃 8, 12, 14, 17, 20의 조합이다. 타임아웃 공칭값은 1.05 ms~4.30 s다.
+- **장애 없음.** 설정마다 쓰기 200회.
+- **패킷 손실.** tc netem으로 1, 5, 10, 50% 손실을 넣었다. 설정과 손실률 조합 80가지, 조합마다 쓰기 200회.
+- **응답 프로세스 종료.** 설정마다 10회. 종료부터 오류 CQE까지의 시간을 쟀다. 응답 서버는 experiment1 것을 다시 썼다.
 
-## Required setup
+## 결론
 
-- **Local sudo (client side)** — `tc qdisc add/del netem` is run from
-  `run_experiment.sh`. Configure passwordless sudo for `tc`, or keep
-  a sudo session warm before launching.
-- **Remote SSH to Server B** for kill phase (uses
-  `experiment1/server_loop.sh`).
-- **`experiment1/server` built** on the remote — used as a passive
-  write target during transient/baseline phases and via `server_loop.sh`
-  during the kill phase.
+- **tc netem 손실은 RDMA에 닿지 않았다.** 손실률 50%에서도 80가지 조합 모두 200/200 성공했다.
+  RoCE 트래픽이 커널 네트워크 스택을 거치지 않기 때문이다. 그래서 일시적 손실을 가려 주는 구간은 재지 못했다.
+- **장애가 없으면 설정은 상관없다.** 20가지 모두 200/200 성공했고, 쓰기 평균은 2.78~2.96 µs였다.
+- **retry_cnt 7에서 타임아웃을 14 아래로 내려도 감지는 약 3.55 s 그대로다.** 타임아웃 8, 12, 14가 모두 3,551 ms다.
+  - NIC 펌웨어의 ACK 타임아웃 하한 때문이다. 하한을 끈 결과는 [docs/experiments/01](../../../../docs/experiments/01_detection_firmware_retry.md)에 있다.
+- **타임아웃을 올리면 감지가 크게 늦어진다.** retry_cnt 7에서 타임아웃 17은 7,040 ms다. 타임아웃 20은 기다리는 시간 안에 오류가 오지 않았다.
+- **retry_cnt를 줄이면 빨라지지만 수백 ms 아래로는 안 간다.** 타임아웃 14 이하에서 retry_cnt 1은 약 464 ms, 3은 약 1,403 ms다.
 
-## Build
+## 결과
 
-```bash
-make
-```
+| retry_cnt | T=8 | T=12 | T=14 | T=17 | T=20 |
+|---|--:|--:|--:|--:|--:|
+| 0 | 465 ms | 1,941 ms | 1,403 ms | 2,747 ms | 1,940 ms |
+| 1 | 464 ms | 464 ms | 465 ms | 867 ms | 7,577 ms |
+| 3 | 1,403 ms | 1,403 ms | 1,404 ms | 2,745 ms | 24,758 ms |
+| 7 | 3,551 ms | 3,551 ms | 3,551 ms | 7,040 ms | 시간 안에 안 옴 |
 
-Reuses experiment1's `common.h`, `rdma_common.c/h` via symlinks. No
-changes to shared code; the parametrized RTR→RTS modify lives in
-`client.c::connect_qp_custom()`.
+응답 프로세스 종료부터 오류 CQE까지의 중앙값이다. 칸마다 10회다. T는 IB 타임아웃이다.
 
-## Run
+## 한계와 주의
 
-Configure `config.sh` first (especially `SERVER_SSH`, `SERVER_BIN_DIR`,
-`NIC_IFACE`).
+- **패킷 손실 단계는 아무것도 재지 못했다.** netem은 RDMA 트래픽에 걸리지 않는다. 손실을 넣으려면 다른 방법이 필요하다.
+- **retry_cnt 0 행은 불규칙하다.** 타임아웃이 커져도 감지 시간이 늘지 않고 흩어진다(T=20의 평균 3,763 ms, p99 7,572 ms). 원인은 확인하지 않았다.
+- **장애는 프로세스 종료 하나다.** 칸마다 10회라 꼬리는 말하기 어렵다.
+- **이 경계는 새 테스트베드에서 재전송 단위로 다시 쟀다.** 하한이 켜져 있으면 재전송 간격이 536.9 ms로 고정된다(`../../../../harness/ack_timeout/`).
+- **옛 클러스터 값이다.** PMTU 1024, CPU 고정 없음.
 
-Full sweep:
-```bash
-./run_experiment.sh
-```
+## 파일
 
-Subset:
-```bash
-PHASE=baseline ./run_experiment.sh   # 20 configs, no fault
-PHASE=netem    ./run_experiment.sh   # 80 configs (4 loss × 20)
-PHASE=kill     ./run_experiment.sh   # 20 configs
-```
-
-Results are appended to `results/exp4_<TIMESTAMP>.csv` (one row per
-configuration, aggregated across all writes / iterations).
-
-## CSV schema
-
-```
-mode, retry_cnt, qp_timeout, rnr_retry, loss_pct,
-n_attempted, n_observed, n_ok,
-n_retry_exc, n_rnr_retry_exc, n_wr_flush, n_other,
-mean_us, p50_us, p99_us, min_us, max_us
-```
-
-For `mode=kill`, `n_ok` = number of iterations where the client
-observed an error CQE within `WRITE_TIMEOUT_SEC`; `mean/p50/p99_us`
-report detection latency. `n_retry_exc` etc. are simultaneously
-counted (each kill produces both an `ok` latency entry and an error
-code).
-
-For `mode=netem`, `n_ok` = number of writes that completed with
-`IBV_WC_SUCCESS`; the error counters partition the failed writes
-by status. After the first error the QP enters ERR; remaining writes
-in the run flush, so you typically see at most one error code per
-configuration.
-
-## Analyze
-
-```bash
-python3 analyze.py results/exp4_<TS>.csv
-python3 analyze.py results/exp4_<TS>.csv --breakdown   # full per-row dump
-```
-
-## Mental model for the result
-
-- **retry_cnt=0**: HCA does not retry at all. Even tiny loss → hard
-  failure. Persistent fault detected as fast as `qp_timeout` lets it.
-- **retry_cnt=7 with small qp_timeout** (e.g., 8): retry budget cycles
-  fast; can mask high loss rates within tight latency bounds.
-- **retry_cnt=7 with large qp_timeout** (e.g., 20): same retry budget
-  but each retry waits seconds; total recovery for persistent faults
-  approaches *minutes* — this is the regime where production
-  deployments are quietly losing throughput.
-
-This experiment maps the boundary so the paper can argue concretely:
-"current default (retry_cnt=7, timeout=14) is a 3.7s-blind-window
-trade-off. Lowering timeout exposes you to transient loss; raising
-it makes persistent faults invisible for seconds." GPU-initiated
-recovery sidesteps both edges by detecting and reacting in software
-without depending on transport-level retry as the failure detector.
+| 파일 | 내용 |
+|---|---|
+| [NOTES.md](NOTES.md) | 예전 README(영문). sweep 정의, CSV 형식, 해석 모델, 실행 방법 |
+| `../../plots/data/exp4_kill_heatmap.csv` | 위 표(평균, 중앙값, p99 포함) |
+| `../../plots/data/exp4_netem_success.csv` | 패킷 손실 단계의 성공률 |
+| `../../plots/data/exp4_baseline_success.csv` | 장애 없음 단계의 성공률과 쓰기 시간 |
+| `results/` | 원본 표 4개. 태그 `archive/results-tables-20261006`에만 있다 |

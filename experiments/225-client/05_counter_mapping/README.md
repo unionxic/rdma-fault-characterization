@@ -1,31 +1,75 @@
-# 05_counter_mapping — 장애별 오류 코드와 카운터 + partial write + A/B recovery 실험 묶음
+# 05_counter_mapping: 장애별 오류 코드와 카운터
 
-이 디렉토리는 한 쌍의 client/server 인프라(`common.h` 기반)를 공유하는 여러
-실험이 모여 있다. 전부 225에서 `run*.sh`로 실행한다 (swap 제외, 아래 참고).
+장애 10가지를 일부러 내고, 요청 쪽이 받는 오류 코드(status와 vendor_err)와 양쪽 NIC 카운터가 어떻게 바뀌는지 쟀다.
+같은 틀로 partial write, 복구 전략 비교, NIC 세대 맞바꾸기도 쟀다. 초기 연구의 중심 실험이다.
+수치는 옛 클러스터(225 요청 ConnectX-6, 224 응답 ConnectX-5)에서 2026년 5~7월에 쟀다.
 
-## 하위 실험 인덱스
+## 무엇을 쟀나
 
-| 실험 | 코드 | 스크립트 | 결과 | 상태 |
-|---|---|---|---|---|
-| 카운터 매핑 (장애별 오류 코드와 카운터 변화) | `client.c` + 224 `server.c` | `run_experiment.sh` | 종합: `results/counter_mapping_findings.md`. 시나리오별 `results/raw/<시나리오>.csv`는 저장소에 없음(아래) | 완료 — 9/10 시나리오 유일 식별 |
-| ethtool 카운터 버전 | 〃 | `run_ethtool_experiment.sh` | `results/ethtool/`, 저장소에 없음(아래) | 완료 |
-| 다중 조건 (MULTI_WR / MULTI_QP / LARGE_MSG) | `multi_client.c`, `multi_common.h`, 224 `multi_server.c` | `run_multi_experiment.sh` | `results/multi/`, 저장소에 없음(아래) | 완료 — 9/9 MATCH(27 trials) |
-| 서버 QP 상태 검증 (NAK 후 responder QP가 정말 ERR인가) | `verify_qp_state.c` | `run_verify.sh` | `results/raw/qp_state_verify.csv` | 완료 — 시나리오 5개 × N=10. NAK 3종과 서버 QP ERR 뒤 ERR, RNR 뒤 RTS |
-| MR 경계 partial write (경계 침범) | `verify_partial_write.c` | `run_partial.sh` | `results/raw/partial_write_verify.csv` | 완료 — bytes = sq_psn_delta × PMTU |
-| mid-transfer interrupted write (전송 도중 QP→ERR) | `verify_interrupted_write.c` | `run_interrupted.sh` | `results/raw/interrupted_write_verify.csv` | 완료 — N=100(2026-06-02). silent 경로의 partial은 sq_psn으로 복원 안 됨(0/52) |
-| A/B recovery (reactive 재전송 vs proactive 범위검사) | `ab_recovery.c` | `run_ab_recovery.sh` | `results/raw/ab_recovery.csv` | 완료 — 조합당 N=10000(2026-06-04). A recover 42.7 ms에는 TCP_NODELAY 누락 아티팩트가 섞여 재실행 필요. 상세: `README_ab_recovery.md` |
-| 전략 C: silent partial write 대응 (commit-flag vs CRC32 vs read-back diff) | `silent_strategy.c` + 224 `server.c` | `run_silent.sh` | `results/raw/silent_strategy.csv` | 완료(2026-07-15). 상세: `README_silent_strategy.md`, `docs/experiments/07_silent_partial_strategy.md` |
-| NIC 세대 swap (vendor_err 일반화) | 224의 `client.c` + 225의 `server.c` | `run_swap.sh` | `results/raw/vendor_err_summary.csv` | 완료 — 에러 종류별 N=10, vendor_err가 세대와 무관. 상세: `docs/theory/06_vendor_err_generalization.md` |
+- **장애 10가지.** 로컬 보호 오류 3가지(SGE 길이 초과, 잘못된 lkey, MR 권한 위반), WR flush,
+  REMOTE_WRITE 권한 없음, 원격 접근 오류 2가지(잘못된 rkey, 주소 범위 초과), 수신 버퍼 없음(RNR), 응답 QP ERR, 응답 프로세스 종료.
+  - 빠른 오류 8가지는 100회, 재전송 소진 2가지는 30회다(2026-06-04).
+- **기록한 것.** 오류 코드, 감지 시간, 양쪽 sysfs RDMA 카운터, ethtool 카운터 2,394개(3회씩), NIC 레지스터 169개.
+- **현실 조건.** 쓰기 여러 개, 큰 메시지, QP 여러 개에서 같은 결과가 나오는지 봤다. 9가지, 27회.
+- **partial write.** MR 경계를 넘는 쓰기(10회), 4 MiB 쓰기 도중 응답 QP를 ERR로 바꾸기(100회).
+- **복구 전략.** 주소 위반 쓰기에서 사후 복구와 사전 범위 검사를 비교했다. 오류율 3단계와 크기 2가지, 조합마다 10,000회.
+  조용히 잘린 쓰기를 가려내는 방법 세 가지도 비교했다.
+- **NIC 세대 맞바꾸기.** 224(ConnectX-5)를 요청 쪽으로 두고 같은 오류 5가지를 10회씩 냈다.
 
-저장소에 없는 결과 표(시나리오별 `results/raw/*.csv`, `results/ethtool/`, `results/multi/`)는 태그
-`archive/results-tables-20261006`(Release `data-20261006`의 `results-tables-20261006.tar.xz`)에 있다.
+## 결론
 
-## 주의
+- **오류 코드로 10가지 중 8가지가 갈린다.** status만 쓰면 6가지다. vendor_err가 로컬 보호 오류 3가지를 0x53, 0x52, 0x33으로 가른다.
+- **남는 두 쌍은 카운터로도 거의 안 갈린다.**
+  - 잘못된 rkey와 주소 범위 초과는 모든 카운터에서 같았다(10/0x88).
+  - 응답 QP ERR과 프로세스 종료(12/0x81)는 ethtool의 비RDMA 패킷 수로 사후에만 갈렸다(TCP 12~13 대 8).
+    이것은 RDMA 카운터가 아니라 제어용 TCP 연결, 곧 상대 프로세스의 생존 신호다.
+- **오류는 요청 쪽에만 보인다.** 10가지 모두 응답 쪽 오류 카운터는 0이었다. 응답 쪽은 정상 요청 수신 카운터만 올랐다.
+- **RDMA 오류가 보이는 곳은 sysfs RDMA 카운터뿐이다.** ethtool 오류 카운터 31개는 10가지 × 3회 모두 0이었다. root로 읽은 NIC 레지스터도 반응이 없었다.
+- **감지 시간은 분류 신호로 못 쓴다.** 원격 NAK 3가지는 약 0.5 ms와 1.6 ms 두 봉우리를 오갔다. 오류 코드와 카운터는 매번 같았다.
+- **원격 NAK 뒤에는 응답 쪽 QP도 ERR가 된다.** RNR만 예외로 RTS를 유지했다(10회). 그래서 복구는 양쪽이 함께 해야 한다.
+- **partial write는 항상 PMTU 단위다.** NAK가 오면 요청 쪽 sq_psn 증가분 × PMTU가 실제 기록량과 맞았다(10/10, 복구 전략 실험에서 4,400/4,400).
+  - 응답 QP가 조용히 죽으면 sq_psn은 경계를 알려 주지 않았다(0/52).
+- **예측 가능한 오류는 사전 검사가 낫다.** 정상 경로 비용은 같았고(2.34 대 2.32 µs), 오류가 나면 사전 검사가 훨씬 빠르고 오염 구간이 없었다.
+- **조용히 잘린 쓰기는 되읽기가 가장 싸다.** 4 MB 쓰기의 오류당 비용이 되읽기 4,003 µs, 커밋 플래그 4,164 µs, CRC32C 5,130 µs였다. 되읽기는 정상 경로 비용도 0이다.
+- **vendor_err는 ConnectX-5와 ConnectX-6에서 같았다.** 로컬 보호 오류 3가지는 요청 쪽만 바뀌므로 깨끗한 비교다. 원격 NAK는 양쪽이 같이 바뀌어 약한 증거다.
 
-- **swap 실험만 역할이 반대다**: `run_swap.sh`를 225에서 돌리면 server가 225(로컬,
-  responder=CX-6), client가 224(SSH, requester=CX-5)에서 뜬다. 그래서 이
-  디렉토리에는 225인데도 `server.c`가, 224인데도 `client.c`가 있다 — 잔여 파일이
-  아니라 swap용이니 지우지 말 것.
-- `common.h`는 `06_recovery/`도 include하는 공유 헤더다. 수정 시 그쪽 빌드도 영향받는다.
-- 카운터 수집은 224의 `counter_daemon.sh`(sysfs 스냅샷 데몬,
-  `224-server/05_counter_mapping/`)를 스크립트들이 SSH로 알아서 띄운다.
+## 결과
+
+| 장애 | status / vendor_err | 감지 중앙값 | N |
+|---|---|--:|--:|
+| SGE 길이 초과 | 4 / 0x53 | 1,503 µs | 100 |
+| 잘못된 lkey | 4 / 0x52 | 319 µs | 100 |
+| MR 권한 위반 | 4 / 0x33 | 1,500 µs | 100 |
+| WR flush | 5 / 0xf5 | 520 µs | 100 |
+| REMOTE_WRITE 권한 없음 | 9 / 0x8a | 1,641 µs (두 봉우리) | 100 |
+| 잘못된 rkey | 10 / 0x88 | 1,738 µs (두 봉우리) | 100 |
+| 주소 범위 초과 | 10 / 0x88 | 565 µs (두 봉우리) | 100 |
+| 수신 버퍼 없음(RNR) | 13 / 0x87 | 255 µs | 100 |
+| 응답 QP ERR | 12 / 0x81 | 3.56 s | 30 |
+| 응답 프로세스 종료 | 12 / 0x81 | 5.13 s | 30 |
+
+프로세스 종료의 5.13 s는 주입 쪽의 신호와 1 s 대기가 섞인 값이라 감지 시간이 아니다.
+
+## 한계와 주의
+
+- **link down은 재현하지 못했다.** 소프트웨어로 링크를 내려도 RoCE 트래픽이 끊기지 않았다(3회 모두 성공).
+- **사후 복구의 42.7 ms는 측정 오류가 섞인 값이다.** 응답 서버의 TCP 설정 누락으로 왕복마다 지연 ACK 40 ms가 끼었다.
+  고친 뒤 같은 복구는 2,833~2,889 µs였다. 재실행은 하지 않았다. 배수(228배, 1,851배)는 과대이고, 사전 검사가 낫다는 결론은 그대로다.
+- **조용히 잘린 쓰기의 판별은 잘린 경우만 확인했다.** 300회 모두 잘린 경우였다. 전부 기록되거나 하나도 안 된 경우는 시험하지 않았다.
+  CRC32C의 판별 시간 1,408 µs는 제어 교환 지연이 섞인 것으로 의심된다.
+- **잘못된 lkey의 wire 패킷 수가 기록 안에서 0과 1로 엇갈린다.** 측정 표(1패킷)를 따랐다. 패킷 캡처로 확인하지 않았다.
+- **감지 시간은 CPU를 고정하지 않고 쟀다.** 절대값은 호스트에 따라 달라진다.
+- **죽은 상대가 늘 0x81을 내는 것은 아니다.** 새 테스트베드에서는 상대의 MR이 QP보다 먼저 사라지면 0x88이 나왔다(`../../../harness/teardown_order/`).
+- **옛 클러스터 값이다.** PMTU 1024다. 새 테스트베드의 오류 코드 측정은 `../../../harness/`에 있다.
+
+## 파일
+
+| 파일 | 내용 |
+|---|---|
+| [NOTES.md](NOTES.md) | 예전 README. 하위 실험별 코드, 결과 위치, 실행 방법 |
+| [results/counter_mapping_findings.md](results/counter_mapping_findings.md) | 카운터 매핑 종합. 카운터 표, ethtool 패턴, 레지스터 조사 |
+| [README_ab_recovery.md](README_ab_recovery.md) | 사후 복구와 사전 검사 비교의 설계 |
+| [README_silent_strategy.md](README_silent_strategy.md) | 조용히 잘린 쓰기 대응 비교의 설계 |
+| `results/raw/` | 오류 코드 요약, QP 상태, partial write, 복구 전략 표. 시나리오별 카운터 표와 ethtool, 다중 조건 표는 태그 `archive/results-tables-20261006`에만 있다 |
+| [docs/experiments/05](../../../docs/experiments/05_partial_write_ab_recovery.md), [06](../../../docs/experiments/06_latency_distribution.md), [07](../../../docs/experiments/07_silent_partial_strategy.md) | partial write, 감지 시간 분포, 조용히 잘린 쓰기 해설 |
+| [docs/theory/05](../../../docs/theory/05_counter_observability.md), [06](../../../docs/theory/06_vendor_err_generalization.md) | 카운터 관측성, vendor_err 일반화 |

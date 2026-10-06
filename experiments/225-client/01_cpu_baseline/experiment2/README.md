@@ -1,104 +1,51 @@
-# Experiment 2: CPU Polling Interval Blind Window
+# experiment2: polling 간격과 감지 지연
 
-## What This Measures
+CPU가 다른 일을 하느라 CQ를 띄엄띄엄 polling하면 장애 감지가 얼마나 늦어지는지 쟀다.
+장애 주입 뒤 정해진 시간만큼 잠들었다가 polling을 시작했다. 장애는 experiment1의 세 가지를 다시 썼다.
+수치는 옛 클러스터(225 요청 ConnectX-6, 224 응답 ConnectX-5)에서 쟀다.
 
-Detection latency as a function of CPU polling interval. When the CPU is not
-continuously polling the CQ (because it is busy with other work), faults go
-undetected during the "blind window." This experiment quantifies the relationship:
+## 무엇을 쟀나
 
-```
-detection_delay = max(HCA_retry_time, sleep_time)
-```
+- **잠드는 시간 7단계.** 0(바로 polling), 1 ms, 10 ms, 100 ms, 1 s, 5 s, 10 s.
+- **장애 세 가지.** 응답 QP를 ERR로 바꾸기, 응답 프로세스 종료, 응답 쪽 link down이다.
+- **조합마다 30회.** 장애 주입부터 오류 CQE를 본 시각까지, 그리고 깨어난 뒤 오류를 보기까지를 기록했다.
+- **조건.** IB 타임아웃 14, retry_cnt 7. 응답 서버는 experiment1 것을 다시 썼다.
 
-- **sleep_time < HCA_retry_time (~3.7s):** CPU wakes before error CQE arrives.
-  It must busy-poll until the HCA retry mechanism exhausts. Detection delay ~3.7s.
-- **sleep_time > HCA_retry_time:** Error CQE is already in the CQ when CPU wakes.
-  Detection delay ~ sleep_time. The blind window dominates.
+## 결론
 
-This proves CPU-mediated detection has a hard floor of ~3.7s AND grows unboundedly
-with CPU busyness.
+- **잠드는 시간이 100 ms 이하면 감지 시간은 그대로다.** 약 3.70~3.81 s다. 재전송이 끝나기 전에 깨어나 기다리기 때문이다.
+- **1 s 이상 잠들면 감지가 그만큼 늦어진다.** 중앙값이 1 s에서 4.56~4.77 s, 5 s에서 8.53~8.64 s, 10 s에서 13.63~13.74 s다.
+- **늦어진 폭은 "둘 중 큰 값"보다 크다.** 1 s 이상에서는 세 장애 모두 깨어난 뒤에도 약 3.5~3.8 s를 더 기다렸다.
+  잠든 시간과 재전송 시간이 겹치지 않고 더해진 셈이다.
+- **polling을 자주 해도 3.7 s 아래로는 못 내려간다.** 줄이는 수단은 polling이 아니라 NIC 재전송 설정이다.
 
-## Parameters
+## 결과
 
-| Parameter     | Values                                              |
-|---------------|-----------------------------------------------------|
-| Sleep (us)    | 0 (busy), 1000, 10000, 100000, 1000000, 5000000, 10000000 |
-| Fault types   | (a) QP->ERR, (b) Process kill, (c) Link down        |
-| Iterations    | 30 per combination                                   |
-| Total         | 7 x 3 x 30 = 630 measurements                       |
+| 잠드는 시간 | 응답 QP를 ERR로 | 응답 프로세스 종료 | 응답 쪽 link down |
+|---|--:|--:|--:|
+| 0 | 3,751 ms | 안 잼 | 3,813 ms |
+| 1 ms | 3,751 ms | 3,700 ms | 3,813 ms |
+| 10 ms | 3,750 ms | 3,701 ms | 3,812 ms |
+| 100 ms | 3,750 ms | 3,700 ms | 3,812 ms |
+| 1 s | 4,556 ms | 4,774 ms | 4,618 ms |
+| 5 s | 8,582 ms | 8,532 ms | 8,644 ms |
+| 10 s | 13,683 ms | 13,633 ms | 13,745 ms |
 
-## Dependencies
+값은 장애 주입부터 오류 CQE를 볼 때까지의 중앙값이다. 칸마다 30회다.
 
-- Same as Experiment 1 (rdma-core, libibverbs-dev, librdmacm-dev)
-- Experiment 1 server binary (`../experiment1/server`)
-- Experiment 1 wrapper scripts (`server_loop.sh`, `server_link_loop.sh`)
-- Python 3 for analysis
+## 한계와 주의
 
-## How to Run
+- **해설 문서와 남은 표가 다르다.** [docs/experiments/01](../../../../docs/experiments/01_detection_firmware_retry.md) 1.9절은 QP ERR이 "잠든 시간과 3.7 s 중 큰 값"을 따른다고 적었다.
+  남은 표에서는 QP ERR도 다른 두 장애처럼 더해졌다. 왜 1 s 이상에서 겹치지 않는지는 확인하지 않았다.
+- **프로세스 종료는 잠들지 않는 칸(0)이 표에 없다.** 그래서 이 장애만 7칸이 아니라 6칸이다.
+- **예전 README의 "예상 결과"는 측정값이 아니다.** 5 s에서 약 5,000 ms라는 예상은 맞지 않았다.
+- **옛 클러스터 값이다.** 새 테스트베드에서는 다시 재지 않았다.
 
-1. Edit `config.sh` with your environment (IPs, device names, SSH targets)
-2. Build experiment1 server if not already: `make -C ../experiment1`
-3. Build experiment2 client: `make`
-4. Run: `./run_experiment.sh`
+## 파일
 
-For manual testing of a single combination:
-```bash
-# On Server B:
-cd ../experiment1 && ./server -d mlx5_0 -g 3
-
-# On Server A:
-./client -s 10.0.0.4 -T 1000000 -S a -n 30 -o results/test.csv
-```
-
-## File Structure
-
-```
-experiment2/
-├── Makefile              # Builds client only
-├── client.c              # Client with configurable sleep parameter
-├── analyze.py            # Statistics + tables + LaTeX generation
-├── run_experiment.sh     # Orchestration (drives all combinations)
-├── config.sh             # Environment configuration
-├── common.h -> ../experiment1/common.h
-├── rdma_common.h -> ../experiment1/rdma_common.h
-├── rdma_common.c -> ../experiment1/rdma_common.c
-├── results/              # Output directory
-└── README.md
-```
-
-## Hardware Environment (verified on)
-
-- ConnectX-5, mlx5_0, RoCEv2, rdma-core 50.0
-- QP config: timeout=14 (~67ms), retry_cnt=7
-- Expected HCA retry time: ~3.7s (7 retries x exponential backoff)
-
-## Output Format
-
-CSV columns:
-```
-sleep_us, scenario, iteration,
-t_inject_request_ns, t_ack_ns, tcp_rtt_ns,
-t_wakeup_ns, t_detected_ns,
-detection_delay_ns, wakeup_to_detection_ns,
-error_status, vendor_err
-```
-
-Key derived columns:
-- `detection_delay_ns`: t_detected - estimated_fault_time
-- `wakeup_to_detection_ns`: t_detected - t_wakeup (time spent polling after sleep)
-
-The `wakeup_to_detection` column is the key diagnostic:
-- Large value (~3.7s): HCA retry still in progress when CPU woke (HCA-dominated)
-- Near-zero: error CQE was already in CQ (sleep-dominated)
-
-## Expected Results
-
-| Sleep Interval | Detection Delay (ms) | Regime          |
-|----------------|----------------------|-----------------|
-| 0 (busy poll)  | ~3,700               | HCA-dominated   |
-| 1 ms           | ~3,700               | HCA-dominated   |
-| 10 ms          | ~3,700               | HCA-dominated   |
-| 100 ms         | ~3,700               | HCA-dominated   |
-| 1 s            | ~3,700               | HCA-dominated   |
-| 5 s            | ~5,000               | Sleep-dominated |
-| 10 s           | ~10,000              | Sleep-dominated |
+| 파일 | 내용 |
+|---|---|
+| [NOTES.md](NOTES.md) | 예전 README(영문). 매개변수, CSV 형식, 예상 결과, 실행 방법 |
+| `../../plots/data/exp2_sleep_curve.csv` | 위 표의 원본 요약(평균, 표준편차, 중앙값, 최소, 최대) |
+| `results/` | 시험별 원본 표. 태그 `archive/results-tables-20261006`에만 있다 |
+| [docs/experiments/01](../../../../docs/experiments/01_detection_firmware_retry.md) | 1.9절 polling 간격 해설 |
