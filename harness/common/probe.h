@@ -13,6 +13,8 @@
  *                        the (pre-zeroed) responder buffer, compared against the
  *                        bytes sent implied by the sq_psn advance (sq_psn_delta * PMTU)
  *   - counters:          hw_counter deltas around the fault (diagnosis / early detect)
+ *   - cross-layer state: the responder's QP state after the fault and the async events
+ *                        (ibv_get_async_event) of both ends since GO
  *
  * Design rules learned from the old code:
  *   - TCP_NODELAY on BOTH sides of every control socket (kills the 40ms
@@ -38,7 +40,7 @@
 
 /* ---- fault catalog (the meaningful RDMA-side faults from exp 01-09) ---- */
 typedef enum {
-    FAULT_NONE = 0,
+    FAULT_NONE = 0,            /* F0 control: the normal 4 KiB write, no fault; success expected */
     FAULT_LOCAL_QP_ERR,        /* requester forces its own QP->ERR mid-flight -> WR_FLUSH_ERR (cheap detect baseline) */
     FAULT_REM_ACCESS,          /* write outside remote MR / bad rkey -> REM_ACCESS_ERR (10 / 0x88) */
     FAULT_REM_INV_REQ,         /* malformed request -> REM_INV_REQ_ERR (9 / 0x8a) */
@@ -48,6 +50,8 @@ typedef enum {
     FAULT_RETRY_LINK_DOWN,     /* responder RoCE netdev down (passwordless sudo for `ip` on server,
                                   or PROBE_LINK_DRYRUN=1 to exercise the protocol only) -> RETRY_EXC_ERR */
     FAULT_PARTIAL_WRITE,       /* interrupt a multi-packet WRITE mid-transfer; measure bytes landed */
+    FAULT_RETRY_PROC_SIGKILL,  /* responder raises SIGKILL on GO: a real crash, no cleanup by the
+                                  process (the runner restarts it per trial) -> as retry_proc_kill */
     FAULT__COUNT
 } fault_type_t;
 
@@ -111,9 +115,12 @@ int  ep_to_rts(probe_ep_t *ep, uint32_t local_psn);
 int  ep_to_err(probe_ep_t *ep);
 int  ep_to_reset(probe_ep_t *ep);
 enum ibv_qp_state ep_qp_state(probe_ep_t *ep);
+/* QP state by ibv_query_qp; 0 = ok, -1 = the query failed (ep_qp_state reports that as ERR) */
+int  ep_query_qp_state(probe_ep_t *ep, enum ibv_qp_state *out);
+const char *qp_state_name(enum ibv_qp_state s);   /* RESET INIT RTR RTS SQD SQE ERR */
 void ep_fill_dest(const probe_ep_t *ep, uint32_t psn, probe_dest_t *out);
 void ep_destroy_qp(probe_ep_t *ep);   /* destroys QP only (keeps ctx/pd/mr) */
-void ep_close(probe_ep_t *ep);        /* full teardown */
+void ep_close(probe_ep_t *ep);        /* full teardown; stops the async monitor of ep->ctx first */
 
 /* ---- work requests ---- */
 int  post_write(probe_ep_t *ep, uint64_t wr_id, size_t len,
@@ -134,7 +141,27 @@ int  ep_query_sq_psn(probe_ep_t *ep, uint32_t *sq_psn);
 
 /* ---- timing ---- */
 uint64_t now_ns(void);      /* CLOCK_MONOTONIC_RAW nanoseconds */
+uint64_t mono_ns(void);     /* CLOCK_MONOTONIC nanoseconds (async events; the clock evrec uses) */
 void     pin_to_cpu(int cpu); /* sched_setaffinity if cpu >= 0; no-op otherwise */
+
+/* ---- async events of the device context (ibv_get_async_event) ----
+ * One monitor per process. async_mon_start() starts a thread that takes every async
+ * event delivered to ctx, acks it, keeps it for async_mon_format(), and logs it to
+ * stderr as
+ *   [<tag>] async event <IBV_EVENT_*> <qpn=0x..|port=N|wqn=0x..|cq|srq|-> mono_ns=<CLOCK_MONOTONIC ns>
+ * The thread blocks every signal, so signals are still handled by the main thread.
+ * It only reads events: it posts, polls and modifies nothing. ep_close() stops it
+ * before the device is closed. Returns 0 on success. */
+#define PROBE_ASYNC_FMT_MAX 400
+int  async_mon_start(struct ibv_context *ctx, const char *tag);
+void async_mon_stop(void);
+/* The events recorded at or after since_mono_ns, oldest first, as
+ *   <IBV_EVENT_*>/<element>/dt_ns=<ns after since_mono_ns>
+ * joined by ';' (no commas or blanks, so it fits a CSV field and a control line).
+ * "none" if there is none, "?" if the monitor never ran. If cap is too small the
+ * list ends with ";+N_more". */
+void async_mon_format(uint64_t since_mono_ns, char *out, size_t cap);
+const char *async_event_name(enum ibv_event_type t);
 
 /* ---- hardware counters (sysfs .../ports/N/hw_counters/<name>) ---- */
 uint64_t counter_read(const char *dev_name, uint8_t ib_port, const char *counter);

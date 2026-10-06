@@ -9,6 +9,11 @@
 #include <unistd.h>
 #include <time.h>
 #include <sched.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
+#include <signal.h>
+#include <inttypes.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -26,6 +31,7 @@ static const char *fault_names[FAULT__COUNT] = {
     [FAULT_RETRY_PROC_KILL]    = "retry_proc_kill",
     [FAULT_RETRY_LINK_DOWN]    = "retry_link_down",
     [FAULT_PARTIAL_WRITE]      = "partial_write",
+    [FAULT_RETRY_PROC_SIGKILL] = "retry_proc_sigkill",
 };
 const char *fault_name(fault_type_t f) {
     if (f < 0 || f >= FAULT__COUNT || !fault_names[f]) return "?";
@@ -153,6 +159,8 @@ int ctrl_recv_line(int fd, char *buf, size_t cap) {
 }
 
 /* ---------------- RC QP lifecycle ---------------- */
+static void async_mon_stop_ctx(struct ibv_context *ctx);   /* async monitor, below */
+
 static int mtu_to_bytes(enum ibv_mtu m) {
     switch (m) {
         case IBV_MTU_256:  return 256;
@@ -287,6 +295,26 @@ enum ibv_qp_state ep_qp_state(probe_ep_t *ep) {
     if (ibv_query_qp(ep->qp, &a, IBV_QP_STATE, &ia)) return IBV_QPS_ERR;
     return a.qp_state;
 }
+int ep_query_qp_state(probe_ep_t *ep, enum ibv_qp_state *out) {
+    struct ibv_qp_attr a; struct ibv_qp_init_attr ia;
+    if (!ep->qp) return -1;
+    int rc = ibv_query_qp(ep->qp, &a, IBV_QP_STATE, &ia);
+    if (rc) { fprintf(stderr, "ibv_query_qp(state): %s\n", strerror(rc)); return -1; }
+    *out = a.qp_state;
+    return 0;
+}
+const char *qp_state_name(enum ibv_qp_state s) {
+    switch (s) {
+        case IBV_QPS_RESET: return "RESET";
+        case IBV_QPS_INIT:  return "INIT";
+        case IBV_QPS_RTR:   return "RTR";
+        case IBV_QPS_RTS:   return "RTS";
+        case IBV_QPS_SQD:   return "SQD";
+        case IBV_QPS_SQE:   return "SQE";
+        case IBV_QPS_ERR:   return "ERR";
+        default:            return "UNKNOWN";
+    }
+}
 void ep_fill_dest(const probe_ep_t *ep, uint32_t psn, probe_dest_t *out) {
     memset(out, 0, sizeof(*out));
     out->qp_num = ep->qp->qp_num;
@@ -305,7 +333,7 @@ void ep_close(probe_ep_t *ep) {
     if (ep->mr) { ibv_dereg_mr(ep->mr); ep->mr = NULL; }
     if (ep->buf){ free(ep->buf); ep->buf = NULL; }
     if (ep->pd) { ibv_dealloc_pd(ep->pd); ep->pd = NULL; }
-    if (ep->ctx){ ibv_close_device(ep->ctx); ep->ctx = NULL; }
+    if (ep->ctx){ async_mon_stop_ctx(ep->ctx); ibv_close_device(ep->ctx); ep->ctx = NULL; }
 }
 
 /* ---------------- work requests ---------------- */
@@ -398,6 +426,11 @@ uint64_t now_ns(void) {
     clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
+uint64_t mono_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
 void pin_to_cpu(int cpu) {
     if (cpu < 0) return;
     cpu_set_t set;
@@ -405,6 +438,176 @@ void pin_to_cpu(int cpu) {
     CPU_SET(cpu, &set);
     if (sched_setaffinity(0, sizeof(set), &set) != 0)
         fprintf(stderr, "warning: pin_to_cpu(%d): %s\n", cpu, strerror(errno));
+}
+
+/* ---------------- async events ---------------- */
+const char *async_event_name(enum ibv_event_type t) {
+    switch (t) {
+        case IBV_EVENT_CQ_ERR:              return "IBV_EVENT_CQ_ERR";
+        case IBV_EVENT_QP_FATAL:            return "IBV_EVENT_QP_FATAL";
+        case IBV_EVENT_QP_REQ_ERR:          return "IBV_EVENT_QP_REQ_ERR";
+        case IBV_EVENT_QP_ACCESS_ERR:       return "IBV_EVENT_QP_ACCESS_ERR";
+        case IBV_EVENT_COMM_EST:            return "IBV_EVENT_COMM_EST";
+        case IBV_EVENT_SQ_DRAINED:          return "IBV_EVENT_SQ_DRAINED";
+        case IBV_EVENT_PATH_MIG:            return "IBV_EVENT_PATH_MIG";
+        case IBV_EVENT_PATH_MIG_ERR:        return "IBV_EVENT_PATH_MIG_ERR";
+        case IBV_EVENT_DEVICE_FATAL:        return "IBV_EVENT_DEVICE_FATAL";
+        case IBV_EVENT_PORT_ACTIVE:         return "IBV_EVENT_PORT_ACTIVE";
+        case IBV_EVENT_PORT_ERR:            return "IBV_EVENT_PORT_ERR";
+        case IBV_EVENT_LID_CHANGE:          return "IBV_EVENT_LID_CHANGE";
+        case IBV_EVENT_PKEY_CHANGE:         return "IBV_EVENT_PKEY_CHANGE";
+        case IBV_EVENT_SM_CHANGE:           return "IBV_EVENT_SM_CHANGE";
+        case IBV_EVENT_SRQ_ERR:             return "IBV_EVENT_SRQ_ERR";
+        case IBV_EVENT_SRQ_LIMIT_REACHED:   return "IBV_EVENT_SRQ_LIMIT_REACHED";
+        case IBV_EVENT_QP_LAST_WQE_REACHED: return "IBV_EVENT_QP_LAST_WQE_REACHED";
+        case IBV_EVENT_CLIENT_REREGISTER:   return "IBV_EVENT_CLIENT_REREGISTER";
+        case IBV_EVENT_GID_CHANGE:          return "IBV_EVENT_GID_CHANGE";
+        case IBV_EVENT_WQ_FATAL:            return "IBV_EVENT_WQ_FATAL";
+        default:                            return "IBV_EVENT_UNKNOWN";
+    }
+}
+
+/* the affiliated element; read while the event is still un-acked (the QP cannot be
+ * destroyed before the ack) */
+static void async_elem(const struct ibv_async_event *e, char *b, size_t cap) {
+    switch (e->event_type) {
+        case IBV_EVENT_QP_FATAL: case IBV_EVENT_QP_REQ_ERR: case IBV_EVENT_QP_ACCESS_ERR:
+        case IBV_EVENT_COMM_EST: case IBV_EVENT_SQ_DRAINED: case IBV_EVENT_PATH_MIG:
+        case IBV_EVENT_PATH_MIG_ERR: case IBV_EVENT_QP_LAST_WQE_REACHED:
+            snprintf(b, cap, "qpn=0x%x", e->element.qp ? e->element.qp->qp_num : 0u); break;
+        case IBV_EVENT_PORT_ACTIVE: case IBV_EVENT_PORT_ERR: case IBV_EVENT_LID_CHANGE:
+        case IBV_EVENT_PKEY_CHANGE: case IBV_EVENT_SM_CHANGE: case IBV_EVENT_CLIENT_REREGISTER:
+        case IBV_EVENT_GID_CHANGE:
+            snprintf(b, cap, "port=%d", e->element.port_num); break;
+        case IBV_EVENT_WQ_FATAL:
+            snprintf(b, cap, "wqn=0x%x", e->element.wq ? e->element.wq->wq_num : 0u); break;
+        case IBV_EVENT_CQ_ERR:
+            snprintf(b, cap, "cq"); break;
+        case IBV_EVENT_SRQ_ERR: case IBV_EVENT_SRQ_LIMIT_REACHED:
+            snprintf(b, cap, "srq"); break;
+        default:
+            snprintf(b, cap, "-"); break;
+    }
+}
+
+#define ASYNC_KEEP 256                     /* newest events kept for async_mon_format() */
+typedef struct {
+    uint64_t            mono;              /* CLOCK_MONOTONIC ns when the event was taken */
+    enum ibv_event_type type;
+    char                elem[24];
+} async_rec_t;
+static struct {
+    pthread_t           th;
+    int                 running, ever_ran;
+    int                 wake[2];           /* self-pipe: async_mon_stop() wakes the thread */
+    struct ibv_context *ctx;
+    char                tag[16];
+    pthread_mutex_t     mu;
+    async_rec_t         rec[ASYNC_KEEP];
+    uint64_t            total;             /* events taken; rec[] holds the newest ASYNC_KEEP */
+} g_am = { .mu = PTHREAD_MUTEX_INITIALIZER, .wake = { -1, -1 } };
+
+static void *async_mon_run(void *arg) {
+    (void)arg;
+    for (;;) {
+        struct pollfd p[2] = { { .fd = g_am.ctx->async_fd, .events = POLLIN },
+                               { .fd = g_am.wake[0],       .events = POLLIN } };
+        if (poll(p, 2, -1) < 0) {
+            if (errno == EINTR) continue;
+            perror("poll(async_fd)");
+            break;
+        }
+        if (p[1].revents) break;                       /* async_mon_stop() */
+        if (p[0].revents & POLLIN) {
+            struct ibv_async_event e;
+            while (ibv_get_async_event(g_am.ctx, &e) == 0) {   /* fd is non-blocking */
+                async_rec_t r = { .mono = mono_ns(), .type = e.event_type };
+                async_elem(&e, r.elem, sizeof(r.elem));
+                ibv_ack_async_event(&e);
+                fprintf(stderr, "[%s] async event %s %s mono_ns=%" PRIu64 "\n",
+                        g_am.tag, async_event_name(r.type), r.elem, r.mono);
+                pthread_mutex_lock(&g_am.mu);
+                g_am.rec[g_am.total % ASYNC_KEEP] = r;
+                g_am.total++;
+                pthread_mutex_unlock(&g_am.mu);
+            }
+        } else if (p[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            fprintf(stderr, "[%s] async event fd revents=0x%x; async monitor stops\n",
+                    g_am.tag, (unsigned)p[0].revents);
+            break;
+        }
+    }
+    return NULL;
+}
+
+int async_mon_start(struct ibv_context *ctx, const char *tag) {
+    if (g_am.running) { fprintf(stderr, "async_mon_start: already running\n"); return -1; }
+    /* O_NONBLOCK on this process's descriptor only: draining never blocks the thread */
+    int fl = fcntl(ctx->async_fd, F_GETFL);
+    if (fl < 0 || fcntl(ctx->async_fd, F_SETFL, fl | O_NONBLOCK) < 0) { perror("fcntl(async_fd)"); return -1; }
+    if (pipe(g_am.wake) < 0) { perror("pipe"); return -1; }
+    g_am.ctx = ctx;
+    snprintf(g_am.tag, sizeof(g_am.tag), "%s", tag);
+    pthread_mutex_lock(&g_am.mu);
+    g_am.total = 0;
+    pthread_mutex_unlock(&g_am.mu);
+    /* the thread inherits a full signal mask: every signal stays on the main thread
+     * (probe_server defers SIGTERM/SIGINT/SIGHUP around its link toggle) */
+    sigset_t all, old;
+    sigfillset(&all);
+    pthread_sigmask(SIG_BLOCK, &all, &old);
+    int rc = pthread_create(&g_am.th, NULL, async_mon_run, NULL);
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    if (rc) {
+        fprintf(stderr, "pthread_create(async monitor): %s\n", strerror(rc));
+        close(g_am.wake[0]); close(g_am.wake[1]);
+        g_am.wake[0] = g_am.wake[1] = -1;
+        g_am.ctx = NULL;
+        return -1;
+    }
+    g_am.running = 1;
+    g_am.ever_ran = 1;
+    return 0;
+}
+
+void async_mon_stop(void) {
+    if (!g_am.running) return;
+    char c = 1;
+    ssize_t w = write(g_am.wake[1], &c, 1);
+    (void)w;
+    pthread_join(g_am.th, NULL);
+    close(g_am.wake[0]); close(g_am.wake[1]);
+    g_am.wake[0] = g_am.wake[1] = -1;
+    g_am.running = 0;
+    g_am.ctx = NULL;
+}
+static void async_mon_stop_ctx(struct ibv_context *ctx) {
+    if (g_am.running && g_am.ctx == ctx) async_mon_stop();
+}
+
+void async_mon_format(uint64_t since_mono_ns, char *out, size_t cap) {
+    if (!cap) return;
+    if (!g_am.ever_ran) { snprintf(out, cap, "?"); return; }
+    size_t len = 0;
+    int shown = 0, more = 0;
+    out[0] = '\0';
+    pthread_mutex_lock(&g_am.mu);
+    uint64_t first = g_am.total > ASYNC_KEEP ? g_am.total - ASYNC_KEEP : 0;
+    for (uint64_t i = first; i < g_am.total; i++) {
+        const async_rec_t *r = &g_am.rec[i % ASYNC_KEEP];
+        if (r->mono < since_mono_ns) continue;
+        char item[96];
+        int n = snprintf(item, sizeof(item), "%s%s/%s/dt_ns=%" PRIu64, shown ? ";" : "",
+                         async_event_name(r->type), r->elem, r->mono - since_mono_ns);
+        /* keep room for ";+N_more" once the list no longer fits */
+        if (more || n < 0 || len + (size_t)n + 16 >= cap) { more++; continue; }
+        memcpy(out + len, item, (size_t)n + 1);
+        len += (size_t)n;
+        shown++;
+    }
+    pthread_mutex_unlock(&g_am.mu);
+    if (more) snprintf(out + len, cap - len, "%s+%d_more", shown ? ";" : "", more);
+    else if (!shown) snprintf(out, cap, "none");
 }
 
 /* ---------------- hardware counters ---------------- */

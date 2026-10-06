@@ -35,8 +35,12 @@ rain  (requester, mlx5_1, 30.0.0.3)  --RoCEv2 100G-->  sunny (responder, mlx5_0,
 | `bytes_landed_readback` / `matching_bytes_total` | partial_write: bytes that actually **landed** at the responder, measured by RDMA-READ readback (below): matching-prefix length / matching bytes anywhere in the region |
 | `counter` / `cnt_delta` | a chosen `hw_counter` delta across the trial (diagnosis / early detection) |
 | `sub_cause` / `peer_rx_delta` | split of the ambiguous RETRY_EXC (0x81): server_qp_err vs proc_kill vs link_down; for REM_ACCESS / REM_INV_REQ, `proc_kill` when the peer does not answer the liveness PROBE |
+| `srv_qp_state` | responder QP state (`ibv_query_qp`) after the fault, before recovery: `RESET INIT RTR RTS SQD SQE ERR`; `-` if the responder is dead, `?` if it did not answer |
+| `srv_async` | responder's async events since its GO, at the same moment (format below); `-` / `?` as above |
+| `cli_async` | requester's own async events since its GO, at the same moment |
 
-The four partial-write columns are `-1` for every other fault.
+The four partial-write columns are `-1` for every other fault. The last three columns were
+added on 2026-10-06 (below); older CSVs end at `peer_rx_delta`.
 
 ### Partial-write accounting (measured, not derived)
 
@@ -101,6 +105,7 @@ The dead-peer 0x88 path itself is not produced by this harness's faults.
 
 | fault | trigger | expected fingerprint (ConnectX-6 (VPI, MT28908), fw 20.43.4100) |
 |---|---|---|
+| `none` | F0 control: the normal 4 KiB write, polled to its completion | success; `detect_ns=-1` |
 | `local_qp_err` | deep write burst, then force own QP→ERR | WR_FLUSH_ERR (5) / 0xf5 |
 | `rem_inv_req` | atomic to a responder QP that doesn't enable atomics | REM_INV_REQ_ERR (9) / 0x8a |
 | `rem_access` | write past the end of the remote MR | REM_ACCESS_ERR (10) / 0x88 |
@@ -108,6 +113,7 @@ The dead-peer 0x88 path itself is not produced by this harness's faults.
 | `retry_server_qp_err` | responder QP→ERR, stops ACKing | RETRY_EXC_ERR (12) / 0x81, ~3.75 s firmware floor |
 | `partial_write` | 4 MiB write, force own QP→ERR mid-transfer | WR_FLUSH_ERR (5) / 0xf5; landed bytes measured by readback |
 | `retry_proc_kill` | responder process exits on GO (runner restarts it per trial; client needs `-n 1`) | RETRY_EXC_ERR (12) / 0x81 |
+| `retry_proc_sigkill` | responder raises SIGKILL on GO: no cleanup by the process (restarted per trial; `-n 1`) | not yet measured |
 | `retry_link_down` | responder runs `sudo -n ip link set dev $SERVER_IFACE down` on GO (see below) | RETRY_EXC_ERR (12) / 0x81 expected — not yet measured |
 
 Unknown `-f` / `-r` names are rejected (exit 2); they no longer fall back to `none`.
@@ -144,6 +150,50 @@ faults incl. `retry_proc_kill`, CPU 2 pinned, no other traffic on the link) is t
 data set for the results below. It reproduced every fingerprint in the catalog, with
 partial-write landed == sent in 30/30.
 
+### Instrumentation for the propagation campaign (2026-10-06)
+
+Added for `gpu-initiated/propagation/PREDICTIONS.md` (cells EV1, EV2, T1). None of it changes
+what is posted or polled for the existing faults. Not yet run on the cluster.
+
+- **Async-event thread on both sides.** `probe_client` and `probe_server` each start a thread
+  on their device context (`async_mon_*` in `common/probe.c`). It logs every event to stderr:
+  `[server] async event IBV_EVENT_QP_ACCESS_ERR qpn=0x1c3 mono_ns=<CLOCK_MONOTONIC ns>`. It then
+  acks the event and keeps it for the trial record. The thread blocks all signals, so the
+  server's signal handling and its deferral around the link toggle stay on the main thread.
+  `CLOCK_MONOTONIC` is the clock `propagation/evrec` uses on the same node.
+- **Responder state after the fault.** After detection, and after the PROBE if there is one,
+  the client waits `QUERY_SETTLE_MS` (10 ms). The wait lets an event raised with the fault reach
+  its thread. Then the client sends `QUERY`. The server answers `QUERIED <state> <events>`: the
+  state comes from `ibv_query_qp` on its QP, the events are those its thread took since it
+  received GO. The client also formats its own events since it sent GO. All of this happens
+  before RECOVER/NORECOVER. When the responder is dead (`retry_proc_kill`,
+  `retry_proc_sigkill`, or `sub_cause=proc_kill`), no QUERY is sent and the two server columns
+  are `-`. `cli_async` is recorded in every trial.
+- **Event list format.** Each event is `<IBV_EVENT_*>/<element>/dt_ns=<ns after GO>`, and events
+  are joined by `;`. The element is `qpn=0x..`, `port=N`, `wqn=0x..`, `cq`, `srq` or `-`. An
+  empty list is `none`. A list longer than about 400 characters ends with `;+N_more`; the
+  stderr log keeps every event.
+- **`none` (F0).** The client posts the normal 4 KiB signaled write (the `retry_*` trigger) and
+  polls its own completion with `poll_one`. A success gives `status=0` and
+  `status_name=success`, `detect_ns=-1`, and the `classify()` row "no error". An error CQE is
+  recorded like any other fault. The trial then runs QUERY, the configured recovery and the
+  verify, like every other fault, so `recover_ns` for F0 is the cost of resetting a healthy
+  connection. `./run.sh none` selects it.
+- **`retry_proc_sigkill` (F4).** The server logs one line and calls `raise(SIGKILL)` on GO,
+  before GOACK. No `ep_close` and no `close()` run, so the kernel tears down the QP, MR, PD and
+  sockets. The client side is the `retry_proc_kill` flow: no GOACK is expected, a 300 ms wait,
+  one 4 KiB write, the liveness PROBE, no recovery. `run.sh` restarts the server per trial, as
+  for `retry_proc_kill`.
+- **Teardown time.** At exit the client prints
+  `[client] teardown (ep_close) returned after X ms`, and the server prints the same with
+  `[server]`. `ep_close` stops the async thread first, then destroys the QP, CQ, MR and PD and
+  closes the device.
+- **Checked locally only (no RDMA peer, no traffic).** The build is clean with
+  `-Wall -Wextra -Werror`. On rain `mlx5_1` (device context only), the thread starts, stops
+  through `ep_close` in 0.4 ms, and formats an empty list as `none`. Synthetic records gave the
+  expected `dt_ns`, the GO filter, `;+N_more` truncation and ring wrap. `analyze.py` reads the
+  new columns unchanged.
+
 ## Build & run
 
 ```bash
@@ -152,6 +202,7 @@ make                       # builds probe_client + probe_server (both nodes)
 CLIENT_CPU=2 SERVER_CPU=2 ITERS=30 ./run.sh                 # pinned, 30 trials
 FAULTS="rnr rem_access" RECOVERY=full_rebuild ./run.sh      # subset + method
 ITERS=30 ./run.sh retry_proc_kill                           # server restarted per trial
+ITERS=10 ./run.sh none retry_proc_sigkill                   # F0 control; real SIGKILL (restarted per trial)
 ```
 
 All environment lives in `config.sh` (server IP/ssh/device/iface, client device, GID

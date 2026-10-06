@@ -39,9 +39,9 @@ DETECT_TIMEOUT_MS="${DETECT_TIMEOUT_MS:-10000}"
 # per trial <= detect timeout + 25 s (PROBE, recovery, link re-train, verify).
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-$(( 120 + ITERS * (DETECT_TIMEOUT_MS / 1000 + 25) ))}"
 
-# faults to run by default (space-separated). Also available: retry_proc_kill
-# (server restarted per trial) and retry_link_down (passwordless sudo for `ip` on
-# the server, or PROBE_LINK_DRYRUN=1).
+# faults to run by default (space-separated). Also available: none (F0 control, no
+# fault), retry_proc_kill and retry_proc_sigkill (server restarted per trial) and
+# retry_link_down (passwordless sudo for `ip` on the server, or PROBE_LINK_DRYRUN=1).
 FAULTS="${FAULTS:-local_qp_err rem_inv_req rem_access rnr retry_server_qp_err partial_write}"
 RECOVERY="${RECOVERY:-qp_only}"
 
