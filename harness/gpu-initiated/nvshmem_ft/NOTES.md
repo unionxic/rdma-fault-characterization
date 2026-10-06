@@ -333,7 +333,7 @@ cost was looked for; it is one mostly sleeping thread per PE).
 | `nvshmem_ibgda_ft.diff` | NVSHMEM patch (header: base, layering, env, files) |
 | `nvshmem_ft.cu` | driver |
 | `scripts/build_driver.sh`, `deploy.sh`, `make_diff.sh`, `env_ft.sh` | build / deploy / diff / environment |
-| `scripts/run_trial.sh`, `run_matrix.sh`, `batch_*.sh`, `specs/*.txt` | one trial / one spec / one cluster hold |
+| `scripts/run_trial.sh`, `run_matrix.sh`, `batch_e1.sh`, `batch_e2.sh`, `specs/*.txt` | one trial / one spec / one cluster hold (the b1 holds `batch_a.sh`..`batch_d.sh` and the first `smoke.sh` were removed on 2026-10-06; the timeout-mode capture study of b1 is `run_matrix.sh specs/capture.txt`) |
 | `scripts/rows.py`, `summarize.py` | logs -> `trials*.csv` + `events*.csv` -> tables |
 | `results/b2/` | final build: per-trial `.meta` and gzipped `.pe0.log`/`.pe1.log`, `matrix.out`, CSVs |
 | `results/b1/` | first build, incl. `diag/capture_sentinel_hang` (driver bug, DESIGN §10) |
