@@ -1,35 +1,73 @@
-# 실험과 결과
+# docs/experiments: 초기 연구의 실험 해설
 
-> **수치 체계.** 이 디렉토리 01–08 문서의 수치는 전부 옛 클러스터 225(ConnectX-6, fw 20.40.1000) ↔ 224(ConnectX-5, fw 16.35.8002)에서 측정했다. 이 연구의 canonical 기록은 이 수치다. 현재 테스트베드(rain↔sunny, 둘 다 ConnectX-6, fw 20.43.4100)의 수치는 `harness/`에 있다(`harness/results/*_20260923_123945.csv`, `harness/gpu-initiated/RESULTS.md`). 두 체계는 직접 비교하지 않는다.
->
-> 정의 차이: PMTU 1024 vs 4096 / CPU pinning 없음 vs CPU 2 / RNR `rnr_retry=0` vs 6 / full rebuild가 PD·CQ·QP·MR 전부 vs QP만 / QP-only의 MR 재교환이 필요 시 포함 vs 없음. driver reload(7.9 s, 2,845배)는 옛 클러스터에서만 측정했다. 아래 표의 "+ethtool" 단계가 센 것은 RDMA counter가 아니라 TCP sideband, 즉 process liveness 신호다(`harness/VERIFICATION_0x81.md`).
+초기 연구(2026년 4~7월)의 실험 결과를 주제별로 정리한 문서들이다. 수치는 모두 옛 클러스터에서 쟀다.
+225(요청, ConnectX-6 fw 20.40.1000)와 224(응답, ConnectX-5 fw 16.35.8002), 100 Gbps RoCE v2다.
+지금 테스트베드(rain, sunny)의 수치는 `../../harness/`에 있다. 두 체계는 직접 비교하지 않는다.
 
-RDMA subsystem failure/error behavior 연구의 전 실험 실측 기록. 각 문서는 "셋업 + 방법 + 수치 + 결론" 묶음이며, 모든 수치는 원본 실험 데이터(각 실험 코드 디렉토리의 results/ CSV)에서 그대로 인용한다. 문서 간 수치가 충돌하면 아래 canonical 표가 단일 기준이다.
+## 무엇을 쟀나
 
-| 문서 | 내용 | 대응 실험 코드 |
-|------|------|----------------|
-| [01 Detection·firmware retry 분해](01_detection_firmware_retry.md) | 3.7s baseline의 정체(min_ack_timeout_limit), 297배 단축 | 01_cpu_baseline, 02_retry_decomposition, 03_modifyqp |
-| [02 Early detection](02_early_detection.md) | counter 감시 기반 조기 감지 (203배 / 3.5배) | 06_recovery/RETRY_EXC_ERR/early_detect |
-| [03 Recovery 방법론](03_recovery.md) | QP-only / Full rebuild / Driver reload 비교, CQE sufficiency | 06_recovery |
-| [04 Multi-QP isolation](04_multi_qp_isolation.md) | QP-only 격리 복구, CQE per-QP vs counter port-level | 06_recovery/multi_qp |
-| [05 Partial write와 A/B recovery](05_partial_write_ab_recovery.md) | sq_psn 기반 data-plane 복원, reactive vs proactive | 05_counter_mapping |
-| [06 Latency 분포](06_latency_distribution.md) | N=100 분포, bimodal, latency는 분류 신호로 부적합 | 05_counter_mapping |
-| [07 Silent partial 대응 전략](07_silent_partial_strategy.md) | commit-flag / CRC / read-back 3전략 실측 | 05_counter_mapping (silent_strategy) |
-| [08 Storage×RDMA 경계 실험](08_storage_rdma.md) | SSD 오류의 RDMA 경계 통과, 관측성 역전 | 10_storage_rdma |
+- **감지 시간.** 상대가 응답을 멈추면 왜 약 3.7 s가 걸리는지, 줄일 수 있는지(01, 02).
+- **복구.** 오류 종류별 복구 방법과 비용, 다중 QP에서의 격리(03, 04).
+- **오류 신호.** 장애 10가지의 오류 코드, 카운터, 감지 시간 분포(06, [theory](../theory/README.md)).
+- **데이터.** partial write가 어디까지 써지는지, 요청 쪽이 그것을 알 수 있는지, 대응 전략(05, 07).
+- **스토리지 경계.** SSD 장애가 NVMe-oF over RDMA에서 어느 계층에 보이는지(08).
+- **GPU 통합 계획.** 다음 단계의 설계다(09). 측정 결과는 `../../harness/`에 있다.
 
-## 핵심 수치 canonical (정합성 기준)
-본문 여러 섹션이 같은 수치를 다르게 인용하는 경우가 있다. 충돌 시 아래 값을 기준으로 본다.
+## 결론
 
-| 항목 | 기준값 | 정의·출처 | 주의 |
-|------|--------|-----------|------|
-| RETRY_EXC_ERR detection baseline | 약 3.7 s | CQ tight-loop 측정. 프로세스 kill 3,701 ± 8.5 ms, link down 3,701 ± 10.3 ms (N=100) | 서버 QP ERR은 cpu_baseline에서 N=1만 저장(3,748 ± 11.9 ms, 데이터 손실). 유효 canonical은 counter_mapping 재측정 3.56s ± 30 ms (N=30) |
-| firmware retry 산술 모델 | 429 + 6 × 537 ≈ 3,651 ms | min_ack_timeout_limit floor 분해 | 본문에서 "3.5 s"로 표기된 곳은 이 retry timeout을 가리킴 (측정 baseline 3.7s와 구분) |
-| min_ack_timeout_limit 비활성 (R=7) | 12.26 ms | N=30 실측 (추정 아님) | |
-| detection 단축비 | 약 297배 | 3,651ms ÷ 12.26ms ≈ 297 (산술 모델 기준) | 측정 baseline 3.7s 기준이면 약 302배. 본문의 "297배"는 산술 모델 기준 |
-| recovery latency | QP-only 2.8 ms / Full rebuild 9.6 ms / Driver reload 7.9 s | recovery 실험 (RETRY_EXC_ERR, N=10) | |
-| Driver reload ÷ QP-only | 약 2,845배 | 7,889,068 ÷ 2,773 = 2,845 | 원본 문서(recovery_results_summary.md)는 2,847배로 표기 — 반올림/오기. 실계산은 2,845 |
-| 프로세스 kill detection | 3,701 ± 8.5 ms (N=100) | cpu_baseline | counter_mapping의 5.13 s는 inject 코드의 signal + sleep(1s) coordination이 포함된 artifact (실 detection 아님) |
-| A/B 실험 A recover | 42.7 ms (아티팩트 포함) | ab_recovery.csv 실측 ([05 문서](05_partial_write_ab_recovery.md)) | 2026-07-15 판명: 224 `05_counter_mapping/server.c`의 accept 소켓 TCP_NODELAY 누락 → 40 ms delayed-ACK floor 혼입. 수정 완료, silent 전략 실험에서 동일 시퀀스 recover 2,833–2,889 µs 실측으로 검증(아티팩트 재현 0/300). ab_recovery 재실행 대기 — §5.6 배수(228배/1851배)는 약 1/15로 축소 예상, B 우위 결론은 불변 |
-| counter 분류 해상도 | 6/10 → 8/10 → 9/10 | ibv_wc_status → +vendor_err → +ethtool | 남은 1종: REM_ACCESS_ERR의 invalid rkey ≡ 주소 범위 초과 (모든 counter source에서 동일) |
-| silent partial 대응 3전략 | C3 read-back total 4,003 µs / C1 commit-flag 4,164 µs / C2 CRC32C 5,130 µs (4MB PARTIAL, 에러당) | silent_strategy.csv ([07 문서](07_silent_partial_strategy.md)) | 정상경로 오버헤드: C3 0 / C1 +약 1 µs 상수 / C2 +89% @4MB. C2 judge 수치는 오염 의심(7.4절) |
-| Storage(SSD) 경계 대표값 | target crash 에러 표면화 33.36 s ± 0.03 / RDMA counter 최초 발화 0.6 s (lead 54배) | Phase 1/1b, PHASE1_FINDINGS.md ([08 문서](08_storage_rdma.md)) | 33.36 s는 물리 감지가 아니라 재연결 정책(3회 × 10 s) 지배 |
+- **3.7 s는 NIC 펌웨어의 ACK 타임아웃 하한 때문이다.** 하한을 끄면 retry_cnt 7에서 12.26 ms다(약 297배).
+- **카운터를 보면 하한을 끄지 않고도 일찍 안다.** 적응형 재전송 카운터로 18.4 ms(약 203배), ACK 타임아웃 카운터로 1,058 ms(3.5배)다.
+- **복구 비용은 방법이 정한다.** QP만 재설정 2.8 ms, 자원 전부 재생성 9.6 ms, 드라이버 재적재 7.9 s다.
+  방법은 오류 코드(status와 vendor_err)만으로 고를 수 있다.
+- **QP만 재설정하면 다른 QP는 멈추지 않는다.** 어느 QP의 오류인지는 CQE만 알려 준다. 카운터는 포트 단위 합이다.
+- **오류 신호로 10가지 중 9가지가 갈린다.** status만 6, vendor_err를 더해 8, ethtool의 TCP 패킷 수를 더해 9다.
+  남는 것은 잘못된 rkey와 주소 범위 초과다.
+- **감지 시간은 분류 신호가 못 된다.** 원격 NAK의 감지 시간은 두 봉우리를 오간다. 오류 코드와 카운터는 매번 같다.
+- **partial write는 NAK가 올 때만 요청 쪽이 복원할 수 있다.** 조용한 장애에서는 sq_psn이 경계를 주지 않는다(0/52).
+  예측 가능한 오류는 사전 검사가, 조용히 잘린 쓰기는 되읽기가 가장 싸다.
+- **SSD 장애가 명시적일수록 RDMA는 조용하다.** 조용한 장애는 RDMA 카운터에만 보인다.
+
+## 결과
+
+여러 문서가 같은 수치를 다르게 인용하면 아래 값을 기준으로 한다.
+
+| 항목 | 기준값 | 주의 |
+|---|---|---|
+| 재전송 소진 감지 | 약 3.7 s. 프로세스 종료 3,701 ± 8.5 ms, link down 3,701 ± 10.3 ms (N=100) | 카운터 매핑의 응답 QP ERR 재측정은 3.56 s ± 30 ms (N=30) |
+| 펌웨어 재전송 모델 | 429 + 6 × 537 ≈ 3,651 ms | 본문의 "3.5 s"는 이 재전송 시간이다 |
+| 하한 끔, retry_cnt 7 | 12.26 ms (N=30) | 단축비 약 297배는 모델 기준. 측정값 3.7 s 기준이면 약 302배 |
+| 복구 시간 (재전송 소진, N=10) | QP만 2.8 ms, 전부 재생성 9.6 ms, 드라이버 재적재 7.9 s | 드라이버 ÷ QP만은 2,845배. 요약 문서의 2,847배는 오기 |
+| 프로세스 종료 감지 | 3,701 ± 8.5 ms (N=100) | 카운터 매핑의 5.13 s는 주입 쪽 대기가 섞인 값 |
+| 사후 복구 전략의 복구 시간 | 42.7 ms | TCP 설정 누락으로 40 ms가 낀 값. 고친 뒤 같은 복구는 2,833~2,889 µs. 재실행 안 함 |
+| 분류 해상도 | 6/10 → 8/10 → 9/10 | 마지막 단계는 RDMA 카운터가 아니라 TCP 생존 신호 |
+| 조용히 잘린 4 MB 쓰기의 대응 비용 | 되읽기 4,003 µs, 커밋 플래그 4,164 µs, CRC32C 5,130 µs | CRC32C의 판별 시간은 오염 의심 |
+| SSD 타깃 붕괴 | 앱 33.36 ± 0.03 s, RDMA 카운터 0.6 s (약 54배) | 33.36 s는 재연결 정책(3회 × 10 s)이 정한다 |
+
+## 한계와 주의
+
+- **정의가 새 테스트베드와 다르다.** PMTU 1024(새 4096), CPU 고정 없음(새 CPU 2), RNR rnr_retry 0(새 6)이다.
+  자원 전부 재생성은 PD, CQ, QP, MR 전부다(새는 QP만). QP만 재설정은 필요하면 MR 재교환을 포함한다(새는 없음).
+- **드라이버 재적재는 옛 클러스터에서만 쟀다.**
+- **같은 원인이 다른 코드로 보일 수 있다.** 새 테스트베드에서는 죽은 상대가 0x88을 내는 경우를 찾았다(`../../harness/teardown_order/`).
+  옛 문서의 "프로세스 종료는 0x81"은 상대의 QP가 먼저 사라진 경우에만 맞다.
+- **01 문서 1.9절과 남은 표가 다르다.** 해설은 QP ERR이 "잠든 시간과 3.7 s 중 큰 값"을 따른다고 적었다.
+  남은 표에서는 1 s 이상 잠들면 세 장애 모두 더해졌다([experiment2](../../experiments/225-client/01_cpu_baseline/experiment2/README.md)).
+- **TODO가 남은 문서가 있다.** 잘못된 lkey의 wire 패킷 수, CPU를 고정한 재측정, 다른 NIC에서의 재현이다.
+- **인용한 결과 표 일부는 레포에서 빠졌다.** 태그 `archive/results-tables-20261006`에 있다. 원시 기록 일부는 Release `data-20261006`이다([DATA.md](../../DATA.md)).
+
+## 파일
+
+| 문서 | 내용 |
+|---|---|
+| [01 감지 시간과 펌웨어 재전송](01_detection_firmware_retry.md) | 3.7 s 분해, 펌웨어 하한, polling 간격 |
+| [02 조기 감지](02_early_detection.md) | 카운터 기반 조기 감지(203배, 3.5배) |
+| [03 복구 방법](03_recovery.md) | QP만 재설정, 전부 재생성, 드라이버 재적재. CQE만으로 결정 |
+| [04 다중 QP 격리](04_multi_qp_isolation.md) | QP만 재설정의 격리, CQE와 카운터의 식별 단위 |
+| [05 partial write와 복구 전략](05_partial_write_ab_recovery.md) | sq_psn으로 기록량 복원, 사후 복구와 사전 검사 |
+| [06 감지 시간 분포](06_latency_distribution.md) | 100회 분포, 두 봉우리, 분류 신호로 부적합 |
+| [07 조용히 잘린 쓰기 대응](07_silent_partial_strategy.md) | 커밋 플래그, CRC32C, 되읽기 |
+| [08 SSD와 RDMA 경계](08_storage_rdma.md) | SSD 오류가 RDMA 경계를 지날 때 |
+| [09 GPU 통합 계획](09_gpu_rdma_plan.md) | 다음 단계 설계 |
+| [NOTES.md](NOTES.md) | 예전 README. 기준값별 정의와 출처, 문서별 대응 실험 폴더 |
+| [../theory/README.md](../theory/README.md) | 이론과 분류 |
+| [../../experiments/225-client/README.md](../../experiments/225-client/README.md) | 실험 폴더와 결과 표 |
