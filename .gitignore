@@ -1,0 +1,39 @@
+# Allow-list: git tracks code, docs and small derived tables only.
+# Raw data (logs, per-trial key-value files, archives) is published as GitHub Release
+# assets, with checksums in DATA.md. See docs/GIT_WORKFLOW.md.
+
+# Ignore everything...
+*
+# ...but descend into directories,
+!*/
+
+# and track these.
+!.gitignore
+!Makefile
+# code
+!*.c
+!*.h
+!*.cu
+!*.cc
+!*.py
+!*.sh
+!*.diff
+# docs
+!*.md
+# derived tables, experiment specs and small text records
+!*.csv
+!*.txt
+!*.json
+!*.spec
+
+# Never track these, even if they match the allow-list above.
+__pycache__/
+.claude/
+**/build/
+**/install/
+
+# Inside result folders only the tables (*.csv) and write-ups (*.md) are tracked;
+# everything else there is raw data and goes to the release assets.
+**/results/**/*.txt
+**/results/**/*.json
+**/results/**/*.spec
