@@ -37,3 +37,6 @@ __pycache__/
 **/results/**/*.txt
 **/results/**/*.json
 **/results/**/*.spec
+
+# Session QA notes stay local.
+harness/QA_20260923.md
