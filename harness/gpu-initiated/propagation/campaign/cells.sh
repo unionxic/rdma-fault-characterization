@@ -84,12 +84,12 @@ nvf)
     done
   done ;;
 net)
-  # NET_TESTS="<run_tests.py id>:<n> ..."; the F2 ids are added to stage2/run_tests.py for NET1
-  : "${NET_TESTS:?set NET_TESTS to run_tests.py ids with counts, e.g. 'T13:10 T13ctl:10'}"
-  for s in $NET_TESTS; do
-    IFS=: read -r id n <<< "$s"
+  # NCCL 2.23.4 net_ib (../../../nccl-integration/stage2/run_tests.py): T0s = no fault (flag on),
+  # F2 = corrupted rkey with recovery on, F2stock = the same with recovery off (stock error path)
+  for c in T0s:5 F2:10 F2stock:10; do
+    IFS=: read -r id n <<< "$c"
     for t in $(seq "$(nn "$n")"); do
-      trial "net_${id}_t$t" bash -c "${NET_CMD:?set NET_CMD, the run_tests.py invocation; {id} and {out} are replaced}"
+      trial "net_${id}_t$t" python3 "$H/nccl-integration/stage2/run_tests.py" --out "$OUT/runs/${id}_t$t" --tests "$id" --n 1
     done
   done ;;
 *) echo "unknown stack $STACK" >&2; exit 2 ;;
