@@ -1,0 +1,20 @@
+--- a/src/modules/transport/ibgda/ibgda.cpp
++++ b/src/modules/transport/ibgda/ibgda.cpp
+@@ -515,7 +515,7 @@
+                 ep = device->dci.eps[i];
+ 
+                 dbrec = (__be32 *)((uintptr_t)ep->qp_ctrl.dbr_mobject->aligned.cpu_ptr +
+-                                   ep->qp_ctrl.dbr_offset * sizeof(__be32));
++                                   ep->qp_ctrl.dbr_offset + sizeof(__be32));
+                 bf = (__be64 *)ep->uar_mobject->aligned.cpu_ptr;
+ 
+                 memset((void *)&ctrl_seg, 0, sizeof(ctrl_seg));
+@@ -579,7 +579,7 @@
+             }
+             if (*prod_idx_cache < *prod_idx_snapshot) {
+                 dbrec = (__be32 *)((uintptr_t)ep->qp_ctrl.dbr_mobject->aligned.cpu_ptr +
+-                                   ep->qp_ctrl.dbr_offset * sizeof(__be32));
++                                   ep->qp_ctrl.dbr_offset + sizeof(__be32));
+                 bf = (__be64 *)ep->uar_mobject->aligned.cpu_ptr;
+ 
+                 memset((void *)&ctrl_seg, 0, sizeof(ctrl_seg));
