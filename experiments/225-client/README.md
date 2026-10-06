@@ -18,16 +18,19 @@ orchestration 스크립트는 여기서 실행한다 (SSH는 225→224 방향만
 | `04_error_codes/` | 9개 에러 시나리오 재현으로 `ibv_wc_status` 코드 채집. 결과는 `REPORT.md` (둘 다 이 저장소에는 없다) | 완료 |
 | `05_counter_mapping/` | 핵심 실험 묶음: fault fingerprint(카운터 매핑), multi-QP/WR 조건, partial/interrupted write, A/B recovery, NIC swap. 상세는 그 안의 `README.md` | 일부 실행 대기 |
 | `06_recovery/` | NAK 4종(REM_ACCESS, REM_INV_REQ, RETRY_EXC, RNR)별 recovery 비용 + multi_qp isolation + early detection. 요약: `recovery_results_summary.md` | 완료(RNR 재실행 대기) |
-| `07_fault_classify/` | `librdma_fault.a` — (wc_status, vendor_err) → (원인, 권장 action, peer liveness) 분류 라이브러리 | 완료 |
-| `08_middleware/` | `librdma_conn.a` — 분류→자동복구→재전송을 감싼 미들웨어 + 데모 | 완료 |
+| `08_middleware/` | 코드는 지웠다(아래). `results/qa_20260923/README.md`(2026-09-23 데모 QA 기록)만 남았다 | — |
 | `10_storage_rdma/` | **Phase 1 (SSD × RDMA)** cross-resource 확장: NVMe-oF over RDMA에서 media/fail-slow/target-crash/partial 고장의 NVMe·RDMA 계층 표면화 매핑. initiator/orchestrator 쪽. 커널 QP라 CQE 불가시 → (NVMe status, dmesg, 양쪽 counter, latency) tuple. 상세: 그 안 `README.md` | 코드 완성, 실행 대기 |
 | `plots/` | 실험 1~4 원시 CSV → plot용 데이터(`data/`) 생성 | — |
 | `docs/` | `SUMMARY.md` (2026-05-06 시점 종합 요약, 이 저장소에는 없다) | — |
 
 2026-10-06에 지운 것: 한 번 쓴 통합 검증 `09_verify/`(실제 fault 5종으로 분류 라이브러리 확인),
-그림을 그리던 `plots/plot_exp1~4.py`(그림은 저장소에도 문서에도 없다), 인용되지 않은
-`10_storage_rdma/aggregate_results.py`, 224 사본과 똑같던 `01_cpu_baseline/experiment3/server.c`와
-`05_counter_mapping/counter_daemon.sh`(둘 다 224에서만 돈다). git 태그 `archive/results-tables-20261006`에 남아 있다.
+분류 라이브러리 `07_fault_classify/`(`librdma_fault.a`)와 그 위의 미들웨어 데모 `08_middleware/`의 코드
+(`docs/`의 수치가 기대지 않고, 같은 분류는 `harness/common/probe.c`의 `classify()`가 맡는다),
+`02_retry_decomposition/`의 쓰이지 않던 계측 client(`client.c`, `Makefile`, symlink 3개; 실험은
+experiment4 client로 돌았다), 그림을 그리던 `plots/plot_exp1~4.py`(그림은 저장소에도 문서에도 없다),
+인용되지 않은 `10_storage_rdma/aggregate_results.py`, 224 사본과 똑같던
+`01_cpu_baseline/experiment3/server.c`와 `05_counter_mapping/counter_daemon.sh`(둘 다 224에서만 돈다).
+git 태그 `archive/results-tables-20261006`에 남아 있다.
 
 로컬 정리본(이론/실험결과/다음계획 3부작)은 맥북
 `~/Desktop/Netsys/gpu-fault-recovery/1_이론.md, 2_실험과_결과.md, 3_다음_계획.md`에 있다.
@@ -37,8 +40,7 @@ orchestration 스크립트는 여기서 실행한다 (SSH는 225→224 방향만
 - 각 실험 디렉토리의 `run*.sh`를 **225에서** 실행한다. 스크립트가 SSH로 224의
   서버 바이너리를 빌드/기동/정리까지 관리한다.
 - 빌드만 따로 하려면 각 디렉토리에서 `make`. 의존 관계:
-  `08_middleware`는 `07_fault_classify`의 `librdma_fault.a`를,
-  `06_recovery`/`08_middleware`는 `05_counter_mapping/common.h`를 참조한다.
+  `06_recovery`는 `05_counter_mapping/common.h`를 참조한다.
 - `02_retry_decomposition`은 `01_cpu_baseline/experiment4`의 client 바이너리를,
   `03_modifyqp`는 `01_cpu_baseline/experiment1`의 server(224)를 재사용한다.
 - 예외: `05_counter_mapping/run_swap.sh`만 역할이 뒤집힌다 — 225가 responder,
