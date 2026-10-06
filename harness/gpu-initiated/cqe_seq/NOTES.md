@@ -12,7 +12,7 @@
 - "rem_inv_req ~0.36 ms with N ≥ 16"과 "rem_access ~1.78 ms with N = 64"는 잘못된 WQE가 맨 앞이나 가운데일 때만 맞다. 맨 끝 보충에서는 N=16, 64에서도 원격 잘못된 요청 약 1.6 ms, 원격 접근 오류 약 3.0 ms였다.
 - 원인 CQE까지 시간 범위는 기본 행렬 값이다. 보충에서는 원격 접근 오류 5.66 ms, 원격 잘못된 요청 1.89 ms, 64 KiB 로컬 오류 399 µs가 한 번씩 나왔다.
 
-Question Q1 of the GPU-initiated fault study (`../DESIGN.md`). NVSHMEM IBGDA polls a
+The CQE-sequence question of the GPU-initiated fault study (`../DESIGN.md`). NVSHMEM IBGDA polls a
 **collapsed CQ**: one CQE slot that the NIC overwrites with every CQE it writes, so the GPU
 sees only the CQE the NIC wrote last. This experiment records, on a normal CQ, the full
 ordered CQE sequence that a ConnectX-6 (VPI, MT28908) writes after each fault, and from it predicts what
@@ -27,16 +27,16 @@ not the driver's software-flush constant `MLX5_CQE_SYNDROME_WR_FLUSH_ERR` = 0x05
 sequence below is the sequence of CQE writes the NIC performs, and the order in which a
 collapsed slot would be overwritten. This rests on one assumption: the NIC writes the same
 CQEs in the same order when the CQ is collapsed. A separate experiment reads a real
-collapsed CQ from GPU code (Q3); it checks this prediction.
+collapsed CQ from GPU code (the NVSHMEM CQ-slot read); it checks this prediction.
 
-## Answer to Q1
+## Answer
 
-**A collapsed slot ends up holding the root-cause CQE only if the failing WQE is the last
-WQE outstanding on the QP. If any WQE is posted behind it, the NIC overwrites the slot with
-one flush CQE per trailing WQE, and the slot ends up holding
-`WR_FLUSH_ERR (5) / vendor_err 0xf9` for the last posted WQE. The fault's fingerprint is
-then gone.** The root-cause CQE stays visible for about 60 µs before the first flush
-overwrites it (measured on a normal CQ; the collapsed CQ itself is Q3's measurement).
+**A collapsed slot ends up holding the root-cause CQE only if the failing WQE is the last WQE
+outstanding on the QP. If any WQE is posted behind it, the NIC overwrites the slot with one flush
+CQE per trailing WQE, and the slot ends up holding `WR_FLUSH_ERR (5) / vendor_err 0xf9` for the last
+posted WQE. The fault's error code is then gone.** The root-cause CQE stays visible for about 60 µs
+before the first flush overwrites it (measured on a normal CQ; the collapsed CQ itself is measured
+by the NVSHMEM CQ-slot read).
 
 Evidence: 470 trials and 9,004 CQEs. Every cell of the main matrix and of the
 bad-WQE-last run gave the same CQE sequence (status, vendor_err, WQE index) in 5 of 5
@@ -83,15 +83,15 @@ after every trial.
    (`ibv_modify_qp` takes ~217 µs). No error CQE was written, although the QP was in ERR.
    A collapsed slot would still hold the last SUCCESS CQE; only `ibv_query_qp` shows the fault.
 
-**Implications for the GPU side (inference, for Q3/Q4).** In the usual case a batch is in
-flight when the fault hits. Device code that reads the collapsed slot afterwards then sees
-`5/0xf9` whatever the fault was. The slot says "flushed behind an earlier error" but not
-which error, and its `wqe_counter` points at the last posted WQE, not at the failing one. A
-device-side classifier can only see the fingerprint if it reads the slot within about 60 µs
-of the root-cause write. Otherwise the fingerprint has to come from another source, for
-example a CQ with more than one slot, or a host-side check of the QP and the peer.
-IBGDA's check (`REQ_ERR` → assert) would still fire on the flush, because a flush CQE is
-also an error CQE, but without the cause.
+**Implications for the GPU side (inference, for the NVSHMEM CQ-slot read and the GDAKI device-side
+classifier).** In the usual case a batch is in flight when the fault hits. Device code that reads
+the collapsed slot afterwards then sees `5/0xf9` whatever the fault was. The slot says "flushed
+behind an earlier error" but not which error, and its `wqe_counter` points at the last posted WQE,
+not at the failing one. A device-side classifier can only see the error code if it reads the slot
+within about 60 µs of the root-cause write. Otherwise the error code has to come from another
+source, for example a CQ with more than one slot, or a host-side check of the QP and the peer.
+IBGDA's check (`REQ_ERR` → assert) would still fire on the flush, because a flush CQE is also an
+error CQE, but without the cause.
 
 ## Method
 
@@ -122,7 +122,7 @@ bad one is a valid RDMA WRITE to its own 4 KiB offset. The bad WQE sits at k = 0
 or k = N/2 ("middle"); for N = 1 only "first" exists. A supplementary run also puts it at
 k = N − 1 ("last").
 
-| fault | batch and trigger | root-cause fingerprint (harness catalog) |
+| fault | batch and trigger | root-cause error code (harness catalog) |
 |---|---|---|
 | `local_qp_err` | N valid WRITEs of **4 MiB** (the harness's `MSG_SIZE`, so they are still outstanding), then the client moves its own QP to ERR | WR_FLUSH 5 / 0xf5 |
 | `rem_access` | WQE k = 4 KiB WRITE at remote `addr + buf_size` (past the end of the remote MR) | REM_ACCESS 10 / 0x88 |

@@ -88,25 +88,25 @@ then found in `../nvshmem_rootcause/`: the CPU proxy writes the send producer in
 receive word of the doorbell record, the GPU handler writes the send word. With the GPU handler
 RETRY_EXC arrives after 3.5-3.7 s, as on CPU verbs. (The earlier "F3 leaves the QP in RTS" was
 a measurement artifact of a lock-holding watch thread, see `../nvshmem_rootcause/`.) The blocking row shows the two predicted failure modes on
-real IBGDA: the collapsed slot ends at the trailing flush 5/0xf9 (Q1), and the release build's
+real IBGDA: the collapsed slot ends at the trailing flush 5/0xf9 (as `../cqe_seq/` predicted), and the release build's
 compiled-out assert lets `quiet` report success.
 
 ### NCCL GIN GDAKI with GPU doorbells (windows 1 and 2, valid trials only)
 
 | run | result |
 |---|---|
-| Q4 classifier, F1 (ring 2, collapsed 1) | LOCAL_QP_ERR 5/0xf5, host API at 14.6-15.7 ms |
-| Q4 classifier, F2 (ring 1, collapsed 1) | REM_ACCESS 10/0x88, host API at 3.8-4.3 ms |
-| Q4 classifier, F3 (ring 2, collapsed 1) | RETRY_EXC 12/0x81, host API at 3.54-3.73 s |
-| Q4 classifier, no fault (ring 2, collapsed 1) | ok, data exact |
+| device-side classifier, F1 (ring 2, collapsed 1) | LOCAL_QP_ERR 5/0xf5, host API at 14.6-15.7 ms |
+| device-side classifier, F2 (ring 1, collapsed 1) | REM_ACCESS 10/0x88, host API at 3.8-4.3 ms |
+| device-side classifier, F3 (ring 2, collapsed 1) | RETRY_EXC 12/0x81, host API at 3.54-3.73 s |
+| device-side classifier, no fault (ring 2, collapsed 1) | ok, data exact |
 | stock (classifier off), F1 blocking, 2 trials | initiator reports the failed write as done (init_silent_iters 1 in 2/2); host learns "QP in ERR" at 9.4 s |
 | latency, no fault, 256 KiB put+signal+flush | median 36.74 µs (classifier off), 36.86 µs (on) |
 
-The Q4 results match the CPU-doorbell ones (`../gin_q4/`) within noise, and stock GDAKI's silent
-success is unchanged, so neither depends on the doorbell path. That GDAKI actually used the GPU
-doorbell here is **inferred**: neither NCCL nor DOCA logs the doorbell mode, but the same
-`cudaHostRegisterIoMemory` call that failed before succeeded for NVSHMEM in the same window, and
-the median latency is about 0.6 µs lower than the CPU-doorbell 37.4 µs.
+The classifier results match the CPU-doorbell ones (`../gin_q4/`) within noise, and stock GDAKI's
+silent success is unchanged, so neither depends on the doorbell path. That GDAKI actually used the
+GPU doorbell here is **inferred**: neither NCCL nor DOCA logs the doorbell mode, but the same
+`cudaHostRegisterIoMemory` call that failed before succeeded for NVSHMEM in the same window, and the
+median latency is about 0.6 µs lower than the CPU-doorbell 37.4 µs.
 
 Possibly perturbed: window 2's NVSHMEM `F2b_timeout_t1` overlapped, from 12:01:04 to 12:01:19, a
 short smoke run of the recovery work that had started on the old lock file (reported by that
