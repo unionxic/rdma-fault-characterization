@@ -33,7 +33,7 @@ fault after launch (ms): 49.0 [19.7-73.9]; fault -> resumed (ms): 11.51 [11.14-1
 
 | 4k | runs | p50 | per-run p50 range | step saves | cumulative saves |
 |---|---|---|---|---|---|
-| flag on (S1) | 5 | 16.42 | 16.42-16.42 | - | 0.00 |
+| flag on (step 1) | 5 | 16.42 | 16.42-16.42 | - | 0.00 |
 | - system-scope fences -> GPU scope | 5 | 13.47 | 13.44-13.47 | 2.94 | 2.94 |
 | - and the poster gate removed | 5 | 11.58 | 11.58-11.62 | 1.89 | 4.83 |
 | - and the poll-region counting removed | 5 | 10.37 | 10.27-10.50 | 1.22 | 6.05 |
@@ -42,7 +42,7 @@ fault after launch (ms): 49.0 [19.7-73.9]; fault -> resumed (ms): 11.51 [11.14-1
 
 | 256k | runs | p50 | per-run p50 range | step saves | cumulative saves |
 |---|---|---|---|---|---|
-| flag on (S1) | 5 | 41.34 | 41.31-41.44 | - | 0.00 |
+| flag on (step 1) | 5 | 41.34 | 41.31-41.44 | - | 0.00 |
 | - system-scope fences -> GPU scope | 5 | 40.48 | 40.45-40.61 | 0.86 | 0.86 |
 | - and the poster gate removed | 5 | 39.46 | 39.46-39.52 | 1.02 | 1.89 |
 | - and the poll-region counting removed | 5 | 38.59 | 38.43-38.62 | 0.86 | 2.75 |
@@ -71,11 +71,11 @@ fault after launch (ms): 49.0 [19.7-73.9]; fault -> resumed (ms): 11.51 [11.14-1
 | cell | build / flag | bytes | runs ok | samples | p50 us | p90 us | p99 us | mean us | per-run p50 range us |
 |---|---|---|---|---|---|---|---|---|---|
 | lat_base_4k | gpudb (v2) build | 4k | 5/5 | 14500 | 10.21 | 10.27 | 11.33 | 10.07 | 10.14-10.24 |
-| lat_off_4k | S1 build, flag off | 4k | 5/5 | 14500 | 10.24 | 10.43 | 11.49 | 10.23 | 10.21-10.27 |
-| lat_on_4k | S1 build, flag on | 4k | 5/5 | 14500 | 16.42 | 17.06 | 17.86 | 16.59 | 16.42-16.42 |
+| lat_off_4k | step-1 build, flag off | 4k | 5/5 | 14500 | 10.24 | 10.43 | 11.49 | 10.23 | 10.21-10.27 |
+| lat_on_4k | step-1 build, flag on | 4k | 5/5 | 14500 | 16.42 | 17.06 | 17.86 | 16.59 | 16.42-16.42 |
 | lat_base_256k | gpudb (v2) build | 256k | 4/5 | 11600 | 38.27 | 38.94 | 42.43 | 38.35 | 38.24-38.40 |
-| lat_off_256k | S1 build, flag off | 256k | 5/5 | 14500 | 38.43 | 38.94 | 41.22 | 38.42 | 38.37-38.56 |
-| lat_on_256k | S1 build, flag on | 256k | 5/5 | 14500 | 41.34 | 42.46 | 43.01 | 41.59 | 41.31-41.44 |
+| lat_off_256k | step-1 build, flag off | 256k | 5/5 | 14500 | 38.43 | 38.94 | 41.22 | 38.42 | 38.37-38.56 |
+| lat_on_256k | step-1 build, flag on | 256k | 5/5 | 14500 | 41.34 | 42.46 | 43.01 | 41.59 | 41.31-41.44 |
 | lat_c1gpufence_256k | c1gpufence | 256k | 5/5 | 14500 | 40.48 | 40.99 | 43.71 | 40.48 | 40.45-40.61 |
 | lat_c1gpufence_4k | c1gpufence | 4k | 5/5 | 14500 | 13.47 | 14.24 | 14.37 | 13.43 | 13.44-13.47 |
 | lat_c2nogate_256k | c2nogate | 256k | 5/5 | 14500 | 39.46 | 40.42 | 40.93 | 39.61 | 39.46-39.52 |

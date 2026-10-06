@@ -10,25 +10,25 @@ Builds: runs/ cells except f1g0_b, lat/, lat_attr/, f1g0_before_opmu_fix/: libnc
 | cell | fault | flush | bytes | build/flag | n | transparent (all ok, no error anywhere) | flush rc != ok | slots bad (dev/host) | final signal exact | async error r0 / r1 | recovered rounds (init/resp) | declined r0 | r0 exit / r1 exit | left |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | base_f1_b | F1 | blocking | 262144 | gpudb build | 5 | 0/5 | 5 | 0/5 | 0/5 | 5/0 | 0/0 | 0 | 5x4 / 5x4 | 0 |
-| f1_b | F1 | blocking | 262144 | S1 build, flag on | 30 | 30/30 | 0 | 0/0 | 30/30 | 0/0 | 30/30 | 0 | 30x0 / 30x0 | 0 |
-| f1_t | F1 | timeout | 262144 | S1 build, flag on | 10 | 10/10 | 0 | 0/0 | 10/10 | 0/0 | 10/10 | 0 | 10x0 / 10x0 | 0 |
-| f1g0_b | F1 | blocking | 4096 | S1 build, flag on | 30 | 30/30 | 0 | 0/0 | 30/30 | 0/0 | 30/30 | 0 | 30x0 / 30x0 | 0 |
-| f1x5_b | F1 | blocking | 262144 | S1 build, flag on | 10 | 10/10 | 0 | 0/0 | 10/10 | 0/0 | 50/50 | 0 | 10x0 / 10x0 | 0 |
-| f2_b | F2 | blocking | 262144 | S1 build, flag on | 30 | 0/30 | 30 | 0/0 | 0/30 | 30/30 | 0/0 | 30 | 30x4 / 30x7 | 0 |
-| f3_b | F3 | blocking | 262144 | S1 build, flag on | 10 | 10/10 | 0 | 0/0 | 10/10 | 0/0 | 10/10 | 0 | 10x0 / 10x0 | 0 |
-| f3_t | F3 | timeout | 262144 | S1 build, flag on | 5 | 5/5 | 0 | 0/0 | 5/5 | 0/0 | 5/5 | 0 | 5x0 / 5x0 | 0 |
-| f4_b | F4 | blocking | 262144 | S1 build, flag on | 10 | 0/10 | 10 | 0/0 | 0/10 | 10/0 | 0/0 | 10 | 10x4 / 10x255 | 0 |
-| neg_norebase_t | F1 | timeout | 262144 | S1 build, flag on diag=norebase | 5 | 0/5 | 5 | 0/5 | 0/5 | 0/0 | 5/5 | 0 | 5x4 / 5x4 | 0 |
-| neg_noring_t | F1 | timeout | 262144 | S1 build, flag on diag=noring | 5 | 0/5 | 5 | 0/5 | 0/5 | 0/0 | 5/5 | 0 | 5x4 / 5x4 | 0 |
-| none_b | none | blocking | 262144 | S1 build, flag on | 30 | 30/30 | 0 | 0/0 | 30/30 | 0/0 | 0/0 | 0 | 30x0 / 30x0 | 0 |
-| off_f1_b | F1 | blocking | 262144 | S1 build, flag off | 5 | 0/5 | 5 | 0/5 | 0/5 | 5/0 | 0/0 | 0 | 5x4 / 5x4 | 0 |
+| f1_b | F1 | blocking | 262144 | step-1 build, flag on | 30 | 30/30 | 0 | 0/0 | 30/30 | 0/0 | 30/30 | 0 | 30x0 / 30x0 | 0 |
+| f1_t | F1 | timeout | 262144 | step-1 build, flag on | 10 | 10/10 | 0 | 0/0 | 10/10 | 0/0 | 10/10 | 0 | 10x0 / 10x0 | 0 |
+| f1g0_b | F1 | blocking | 4096 | step-1 build, flag on | 30 | 30/30 | 0 | 0/0 | 30/30 | 0/0 | 30/30 | 0 | 30x0 / 30x0 | 0 |
+| f1x5_b | F1 | blocking | 262144 | step-1 build, flag on | 10 | 10/10 | 0 | 0/0 | 10/10 | 0/0 | 50/50 | 0 | 10x0 / 10x0 | 0 |
+| f2_b | F2 | blocking | 262144 | step-1 build, flag on | 30 | 0/30 | 30 | 0/0 | 0/30 | 30/30 | 0/0 | 30 | 30x4 / 30x7 | 0 |
+| f3_b | F3 | blocking | 262144 | step-1 build, flag on | 10 | 10/10 | 0 | 0/0 | 10/10 | 0/0 | 10/10 | 0 | 10x0 / 10x0 | 0 |
+| f3_t | F3 | timeout | 262144 | step-1 build, flag on | 5 | 5/5 | 0 | 0/0 | 5/5 | 0/0 | 5/5 | 0 | 5x0 / 5x0 | 0 |
+| f4_b | F4 | blocking | 262144 | step-1 build, flag on | 10 | 0/10 | 10 | 0/0 | 0/10 | 10/0 | 0/0 | 10 | 10x4 / 10x255 | 0 |
+| neg_norebase_t | F1 | timeout | 262144 | step-1 build, flag on diag=norebase | 5 | 0/5 | 5 | 0/5 | 0/5 | 0/0 | 5/5 | 0 | 5x4 / 5x4 | 0 |
+| neg_noring_t | F1 | timeout | 262144 | step-1 build, flag on diag=noring | 5 | 0/5 | 5 | 0/5 | 0/5 | 0/0 | 5/5 | 0 | 5x4 / 5x4 | 0 |
+| none_b | none | blocking | 262144 | step-1 build, flag on | 30 | 30/30 | 0 | 0/0 | 30/30 | 0/0 | 0/0 | 0 | 30x0 / 30x0 | 0 |
+| off_f1_b | F1 | blocking | 262144 | step-1 build, flag off | 5 | 0/5 | 5 | 0/5 | 0/5 | 5/0 | 0/0 | 0 | 5x4 / 5x4 | 0 |
 
 ## Declines
 
 | cell | n | reason on rank 0 (first) | reason on rank 1 | flush rc (rank 0) | r0 async error after launch ms median [range] | fault -> rank-0 decline ms median [range] | mailbox -> decline ms median | r1 async |
 |---|---|---|---|---|---|---|---|---|
-| f2_b F2 blocking 262144 S1 build, flag on | 30 | class REM_ACCESS is not recoverable | the peer declined | remote process exited or there was a network error | 154.1 [153.8-154.9] | - [---] | 1.49 | remote process exited or there was a network error |
-| f4_b F4 blocking 262144 S1 build, flag on | 10 | RETRY_EXC and the peer's socket shows FIN/RST | - | remote process exited or there was a network error | 7079.8 [6675.2-7386.8] | 3777.1 [3570.4-3817.4] | 1.33 |  |
+| f2_b F2 blocking 262144 step-1 build, flag on | 30 | class REM_ACCESS is not recoverable | the peer declined | remote process exited or there was a network error | 154.1 [153.8-154.9] | - [---] | 1.49 | remote process exited or there was a network error |
+| f4_b F4 blocking 262144 step-1 build, flag on | 10 | RETRY_EXC and the peer's socket shows FIN/RST | - | remote process exited or there was a network error | 7079.8 [6675.2-7386.8] | 3777.1 [3570.4-3817.4] | 1.33 |  |
 
 ## Recovery rounds (rank 0 initiator lines; ms unless stated)
 
@@ -48,18 +48,18 @@ Builds: runs/ cells except f1g0_b, lat/, lat_attr/, f1g0_before_opmu_fix/: libnc
 | cell | n | max flush latency ms median [range] | other flushes p50 us (median) | fault after launch ms [range] |
 |---|---|---|---|---|
 | base_f1_b F1 blocking 262144 gpudb build | 5 | 0.05 [0.05-0.05] | 43.68 | 593-1141 |
-| f1_b F1 blocking 262144 S1 build, flag on | 30 | 10.43 [9.88-10.96] | 45.95 | 518-1141 |
-| f1_t F1 timeout 262144 S1 build, flag on | 10 | 10.36 [10.25-10.76] | 47.14 | 578-1140 |
-| f1g0_b F1 blocking 4096 S1 build, flag on | 30 | 10.62 [10.40-10.91] | 16.74 | 17-63 |
-| f1x5_b F1 blocking 262144 S1 build, flag on | 10 | 22.08 [21.78-22.26] | 46.34 | 564-1126 |
-| f2_b F2 blocking 262144 S1 build, flag on | 30 | 0.06 [0.05-0.06] | 49.09 | --- |
-| f3_b F3 blocking 262144 S1 build, flag on | 10 | 3603.62 [3525.54-3767.28] | 45.95 | 578-1141 |
-| f3_t F3 timeout 262144 S1 build, flag on | 5 | 3612.17 [3544.33-3773.26] | 47.14 | 593-1141 |
-| f4_b F4 blocking 262144 S1 build, flag on | 10 | 0.06 [0.05-0.06] | 47.05 | 2903-3763 |
-| neg_norebase_t F1 timeout 262144 S1 build, flag on diag=norebase | 5 | 0.06 [0.06-0.06] | 47.17 | 593-1141 |
-| neg_noring_t F1 timeout 262144 S1 build, flag on diag=noring | 5 | 0.06 [0.06-0.06] | 47.17 | 579-1141 |
-| none_b none blocking 262144 S1 build, flag on | 30 | 0.06 [0.05-0.06] | 45.95 | --- |
-| off_f1_b F1 blocking 262144 S1 build, flag off | 5 | 0.05 [0.05-0.05] | 43.84 | 578-1140 |
+| f1_b F1 blocking 262144 step-1 build, flag on | 30 | 10.43 [9.88-10.96] | 45.95 | 518-1141 |
+| f1_t F1 timeout 262144 step-1 build, flag on | 10 | 10.36 [10.25-10.76] | 47.14 | 578-1140 |
+| f1g0_b F1 blocking 4096 step-1 build, flag on | 30 | 10.62 [10.40-10.91] | 16.74 | 17-63 |
+| f1x5_b F1 blocking 262144 step-1 build, flag on | 10 | 22.08 [21.78-22.26] | 46.34 | 564-1126 |
+| f2_b F2 blocking 262144 step-1 build, flag on | 30 | 0.06 [0.05-0.06] | 49.09 | --- |
+| f3_b F3 blocking 262144 step-1 build, flag on | 10 | 3603.62 [3525.54-3767.28] | 45.95 | 578-1141 |
+| f3_t F3 timeout 262144 step-1 build, flag on | 5 | 3612.17 [3544.33-3773.26] | 47.14 | 593-1141 |
+| f4_b F4 blocking 262144 step-1 build, flag on | 10 | 0.06 [0.05-0.06] | 47.05 | 2903-3763 |
+| neg_norebase_t F1 timeout 262144 step-1 build, flag on diag=norebase | 5 | 0.06 [0.06-0.06] | 47.17 | 593-1141 |
+| neg_noring_t F1 timeout 262144 step-1 build, flag on diag=noring | 5 | 0.06 [0.06-0.06] | 47.17 | 579-1141 |
+| none_b none blocking 262144 step-1 build, flag on | 30 | 0.06 [0.05-0.06] | 45.95 | --- |
+| off_f1_b F1 blocking 262144 step-1 build, flag off | 5 | 0.05 [0.05-0.05] | 43.84 | 578-1140 |
 
 Excluded (the driver's own rendezvous socket could not bind its random port; NCCL never started): off_f1_b x1
 
@@ -70,19 +70,19 @@ first-round rmsn vs next_rcv_psn (PMTU 4096): 105/105 agree
 | cell | build / flag | bytes | runs ok | samples | p50 us | p90 us | p99 us | mean us | per-run p50 range us |
 |---|---|---|---|---|---|---|---|---|---|
 | lat_base_4k | gpudb (v2) build | 4k | 15/16 | 43500 | 10.14 | 10.24 | 10.34 | 9.99 | 10.08-10.18 |
-| lat_off_4k | S1 build, flag off | 4k | 15/15 | 43500 | 10.24 | 10.43 | 11.42 | 10.24 | 10.24-10.24 |
-| lat_on_4k | S1 build, flag on | 4k | 15/16 | 43500 | 16.96 | 18.18 | 18.46 | 17.16 | 16.96-16.99 |
+| lat_off_4k | step-1 build, flag off | 4k | 15/15 | 43500 | 10.24 | 10.43 | 11.42 | 10.24 | 10.24-10.24 |
+| lat_on_4k | step-1 build, flag on | 4k | 15/16 | 43500 | 16.96 | 18.18 | 18.46 | 17.16 | 16.96-16.99 |
 | lat_base_256k | gpudb (v2) build | 256k | 15/15 | 43500 | 38.21 | 38.88 | 38.94 | 38.14 | 38.11-38.21 |
-| lat_off_256k | S1 build, flag off | 256k | 15/15 | 43500 | 38.43 | 38.91 | 38.94 | 38.36 | 38.40-38.46 |
-| lat_on_256k | S1 build, flag on | 256k | 15/15 | 43500 | 41.28 | 42.30 | 42.78 | 41.43 | 41.02-41.34 |
+| lat_off_256k | step-1 build, flag off | 256k | 15/15 | 43500 | 38.43 | 38.91 | 38.94 | 38.36 | 38.40-38.46 |
+| lat_on_256k | step-1 build, flag on | 256k | 15/15 | 43500 | 41.28 | 42.30 | 42.78 | 41.43 | 41.02-41.34 |
 
 # Cost attribution (lat_attr/; nogate/nopoll/gpufence are UNSAFE device variants compiled into the driver only)
 | cell | build / flag | bytes | runs ok | samples | p50 us | p90 us | p99 us | mean us | per-run p50 range us |
 |---|---|---|---|---|---|---|---|---|---|
-| lat_off_4k | S1 build, flag off | 4k | 5/5 | 14500 | 10.24 | 10.43 | 11.42 | 10.23 | 10.24-10.24 |
-| lat_on_4k | S1 build, flag on | 4k | 5/5 | 14500 | 16.96 | 18.14 | 18.46 | 17.13 | 16.93-16.96 |
-| lat_off_256k | S1 build, flag off | 256k | 5/5 | 14500 | 38.43 | 38.91 | 38.94 | 38.36 | 38.40-38.50 |
-| lat_on_256k | S1 build, flag on | 256k | 5/5 | 14500 | 41.25 | 42.27 | 42.82 | 41.45 | 41.25-41.31 |
+| lat_off_4k | step-1 build, flag off | 4k | 5/5 | 14500 | 10.24 | 10.43 | 11.42 | 10.23 | 10.24-10.24 |
+| lat_on_4k | step-1 build, flag on | 4k | 5/5 | 14500 | 16.96 | 18.14 | 18.46 | 17.13 | 16.93-16.96 |
+| lat_off_256k | step-1 build, flag off | 256k | 5/5 | 14500 | 38.43 | 38.91 | 38.94 | 38.36 | 38.40-38.50 |
+| lat_on_256k | step-1 build, flag on | 256k | 5/5 | 14500 | 41.25 | 42.27 | 42.82 | 41.45 | 41.25-41.31 |
 | lat_gpufence_256k | gpufence | 256k | 5/5 | 14500 | 40.51 | 40.96 | 40.99 | 40.39 | 40.48-40.58 |
 | lat_gpufence_4k | gpufence | 4k | 5/5 | 14500 | 13.66 | 14.34 | 14.37 | 13.63 | 13.63-13.73 |
 | lat_nogate_256k | nogate | 256k | 5/5 | 14500 | 39.33 | 40.32 | 40.80 | 39.47 | 39.20-39.39 |
@@ -95,23 +95,23 @@ first-round rmsn vs next_rcv_psn (PMTU 4096): 105/105 agree
 
 | cell | fault | flush | bytes | build/flag | n | transparent (all ok, no error anywhere) | flush rc != ok | slots bad (dev/host) | final signal exact | async error r0 / r1 | recovered rounds (init/resp) | declined r0 | r0 exit / r1 exit | left |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| f1_b | F1 | blocking | 262144 | S1 build, flag on | 2 | 2/2 | 0 | 0/0 | 2/2 | 0/0 | 2/2 | 0 | 2x0 / 2x0 | 0 |
-| f1_t | F1 | timeout | 262144 | S1 build, flag on | 3 | 3/3 | 0 | 0/0 | 3/3 | 0/0 | 3/3 | 0 | 3x0 / 3x0 | 0 |
-| f1x5_b | F1 | blocking | 262144 | S1 build, flag on | 3 | 3/3 | 0 | 0/0 | 3/3 | 0/0 | 15/15 | 0 | 3x0 / 3x0 | 0 |
-| f2_b | F2 | blocking | 262144 | S1 build, flag on | 3 | 0/3 | 3 | 0/0 | 0/3 | 3/3 | 0/0 | 3 | 3x4 / 3x7 | 0 |
-| f3_b | F3 | blocking | 262144 | S1 build, flag on | 3 | 3/3 | 0 | 0/0 | 3/3 | 0/0 | 3/3 | 0 | 3x0 / 3x0 | 0 |
-| f4_b | F4 | blocking | 262144 | S1 build, flag on | 3 | 0/3 | 3 | 0/0 | 0/3 | 3/0 | 0/0 | 3 | 3x4 / 3x255 | 0 |
-| neg_norebase_t | F1 | timeout | 262144 | S1 build, flag on diag=norebase | 1 | 0/1 | 1 | 0/1 | 0/1 | 0/0 | 1/1 | 0 | 1x4 / 1x4 | 0 |
-| neg_noring_t | F1 | timeout | 262144 | S1 build, flag on diag=noring | 1 | 0/1 | 1 | 0/1 | 0/1 | 0/0 | 1/1 | 0 | 1x4 / 1x4 | 0 |
-| none_b | none | blocking | 262144 | S1 build, flag on | 2 | 2/2 | 0 | 0/0 | 2/2 | 0/0 | 0/0 | 0 | 2x0 / 2x0 | 0 |
-| off_f1_b | F1 | blocking | 262144 | S1 build, flag off | 2 | 0/2 | 2 | 0/2 | 0/2 | 2/0 | 0/0 | 0 | 2x4 / 2x4 | 0 |
+| f1_b | F1 | blocking | 262144 | step-1 build, flag on | 2 | 2/2 | 0 | 0/0 | 2/2 | 0/0 | 2/2 | 0 | 2x0 / 2x0 | 0 |
+| f1_t | F1 | timeout | 262144 | step-1 build, flag on | 3 | 3/3 | 0 | 0/0 | 3/3 | 0/0 | 3/3 | 0 | 3x0 / 3x0 | 0 |
+| f1x5_b | F1 | blocking | 262144 | step-1 build, flag on | 3 | 3/3 | 0 | 0/0 | 3/3 | 0/0 | 15/15 | 0 | 3x0 / 3x0 | 0 |
+| f2_b | F2 | blocking | 262144 | step-1 build, flag on | 3 | 0/3 | 3 | 0/0 | 0/3 | 3/3 | 0/0 | 3 | 3x4 / 3x7 | 0 |
+| f3_b | F3 | blocking | 262144 | step-1 build, flag on | 3 | 3/3 | 0 | 0/0 | 3/3 | 0/0 | 3/3 | 0 | 3x0 / 3x0 | 0 |
+| f4_b | F4 | blocking | 262144 | step-1 build, flag on | 3 | 0/3 | 3 | 0/0 | 0/3 | 3/0 | 0/0 | 3 | 3x4 / 3x255 | 0 |
+| neg_norebase_t | F1 | timeout | 262144 | step-1 build, flag on diag=norebase | 1 | 0/1 | 1 | 0/1 | 0/1 | 0/0 | 1/1 | 0 | 1x4 / 1x4 | 0 |
+| neg_noring_t | F1 | timeout | 262144 | step-1 build, flag on diag=noring | 1 | 0/1 | 1 | 0/1 | 0/1 | 0/0 | 1/1 | 0 | 1x4 / 1x4 | 0 |
+| none_b | none | blocking | 262144 | step-1 build, flag on | 2 | 2/2 | 0 | 0/0 | 2/2 | 0/0 | 0/0 | 0 | 2x0 / 2x0 | 0 |
+| off_f1_b | F1 | blocking | 262144 | step-1 build, flag off | 2 | 0/2 | 2 | 0/2 | 0/2 | 2/0 | 0/0 | 0 | 2x4 / 2x4 | 0 |
 
 ## Declines
 
 | cell | n | reason on rank 0 (first) | reason on rank 1 | flush rc (rank 0) | r0 async error after launch ms median [range] | fault -> rank-0 decline ms median [range] | mailbox -> decline ms median | r1 async |
 |---|---|---|---|---|---|---|---|---|
-| f2_b F2 blocking 262144 S1 build, flag on | 3 | class REM_ACCESS is not recoverable | the peer declined | remote process exited or there was a network error | 154.2 [154.0-154.7] | - [---] | 1.63 | remote process exited or there was a network error |
-| f4_b F4 blocking 262144 S1 build, flag on | 3 | RETRY_EXC and the peer's socket shows FIN/RST | - | remote process exited or there was a network error | 7009.6 [6752.1-7214.8] | 3663.3 [3582.3-3666.9] | 1.78 |  |
+| f2_b F2 blocking 262144 step-1 build, flag on | 3 | class REM_ACCESS is not recoverable | the peer declined | remote process exited or there was a network error | 154.2 [154.0-154.7] | - [---] | 1.63 | remote process exited or there was a network error |
+| f4_b F4 blocking 262144 step-1 build, flag on | 3 | RETRY_EXC and the peer's socket shows FIN/RST | - | remote process exited or there was a network error | 7009.6 [6752.1-7214.8] | 3663.3 [3582.3-3666.9] | 1.78 |  |
 
 ## Recovery rounds (rank 0 initiator lines; ms unless stated)
 
@@ -128,31 +128,31 @@ first-round rmsn vs next_rcv_psn (PMTU 4096): 105/105 agree
 
 | cell | n | max flush latency ms median [range] | other flushes p50 us (median) | fault after launch ms [range] |
 |---|---|---|---|---|
-| f1_b F1 blocking 262144 S1 build, flag on | 2 | 10.28 [9.82-10.74] | 45.97 | 729-867 |
-| f1_t F1 timeout 262144 S1 build, flag on | 3 | 10.29 [10.07-10.39] | 47.17 | 593-867 |
-| f1x5_b F1 blocking 262144 S1 build, flag on | 3 | 21.84 [21.82-22.55] | 47.33 | 578-852 |
-| f2_b F2 blocking 262144 S1 build, flag on | 3 | 0.06 [0.05-0.06] | 49.02 | --- |
-| f3_b F3 blocking 262144 S1 build, flag on | 3 | 3578.92 [3553.10-3620.93] | 45.95 | 593-867 |
-| f4_b F4 blocking 262144 S1 build, flag on | 3 | 0.06 [0.06-0.06] | 47.26 | 3170-3551 |
-| neg_norebase_t F1 timeout 262144 S1 build, flag on diag=norebase | 1 | 0.06 [0.06-0.06] | 47.20 | 593-593 |
-| neg_noring_t F1 timeout 262144 S1 build, flag on diag=noring | 1 | 0.06 [0.06-0.06] | 47.71 | 593-593 |
-| none_b none blocking 262144 S1 build, flag on | 2 | 0.06 [0.05-0.06] | 45.95 | --- |
-| off_f1_b F1 blocking 262144 S1 build, flag off | 2 | 0.05 [0.05-0.05] | 43.86 | 593-729 |
+| f1_b F1 blocking 262144 step-1 build, flag on | 2 | 10.28 [9.82-10.74] | 45.97 | 729-867 |
+| f1_t F1 timeout 262144 step-1 build, flag on | 3 | 10.29 [10.07-10.39] | 47.17 | 593-867 |
+| f1x5_b F1 blocking 262144 step-1 build, flag on | 3 | 21.84 [21.82-22.55] | 47.33 | 578-852 |
+| f2_b F2 blocking 262144 step-1 build, flag on | 3 | 0.06 [0.05-0.06] | 49.02 | --- |
+| f3_b F3 blocking 262144 step-1 build, flag on | 3 | 3578.92 [3553.10-3620.93] | 45.95 | 593-867 |
+| f4_b F4 blocking 262144 step-1 build, flag on | 3 | 0.06 [0.06-0.06] | 47.26 | 3170-3551 |
+| neg_norebase_t F1 timeout 262144 step-1 build, flag on diag=norebase | 1 | 0.06 [0.06-0.06] | 47.20 | 593-593 |
+| neg_noring_t F1 timeout 262144 step-1 build, flag on diag=noring | 1 | 0.06 [0.06-0.06] | 47.71 | 593-593 |
+| none_b none blocking 262144 step-1 build, flag on | 2 | 0.06 [0.05-0.06] | 45.95 | --- |
+| off_f1_b F1 blocking 262144 step-1 build, flag off | 2 | 0.05 [0.05-0.05] | 43.86 | 593-729 |
 
 Excluded (the driver's own rendezvous socket could not bind its random port; NCCL never started): f1_b x1, none_b x1
 
 | cell | build / flag | bytes | runs ok | samples | p50 us | p90 us | p99 us | mean us | per-run p50 range us |
 |---|---|---|---|---|---|---|---|---|---|
-| lat_off_4k | S1 build, flag off | 4k | 3/3 | 8700 | 10.24 | 10.40 | 11.42 | 10.21 | 10.24-10.24 |
-| lat_on_4k | S1 build, flag on | 4k | 3/3 | 8700 | 16.96 | 18.14 | 18.46 | 17.15 | 16.96-16.96 |
-| lat_off_256k | S1 build, flag off | 256k | 3/3 | 8700 | 38.40 | 38.91 | 38.94 | 38.27 | 38.37-38.43 |
-| lat_on_256k | S1 build, flag on | 256k | 3/3 | 8700 | 41.25 | 42.24 | 42.72 | 41.35 | 41.18-41.28 |
+| lat_off_4k | step-1 build, flag off | 4k | 3/3 | 8700 | 10.24 | 10.40 | 11.42 | 10.21 | 10.24-10.24 |
+| lat_on_4k | step-1 build, flag on | 4k | 3/3 | 8700 | 16.96 | 18.14 | 18.46 | 17.15 | 16.96-16.96 |
+| lat_off_256k | step-1 build, flag off | 256k | 3/3 | 8700 | 38.40 | 38.91 | 38.94 | 38.27 | 38.37-38.43 |
+| lat_on_256k | step-1 build, flag on | 256k | 3/3 | 8700 | 41.25 | 42.24 | 42.72 | 41.35 | 41.18-41.28 |
 
 # In-flight cell before the opMu fix (f1g0_before_opmu_fix/): 29/30 transparent; n17 hung (concurrent 2ERR_QP by the fault hook and the helper; kernel log: 2ERR_QP(0x507) No done completion, leak of a command resource)
 ## Outcomes (one row per cell; every value counted from the per-trial logs)
 
 | cell | fault | flush | bytes | build/flag | n | transparent (all ok, no error anywhere) | flush rc != ok | slots bad (dev/host) | final signal exact | async error r0 / r1 | recovered rounds (init/resp) | declined r0 | r0 exit / r1 exit | left |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| f1g0_b | F1 | blocking | 4096 | S1 build, flag on | 30 | 29/30 | 1 | 0/1 | 29/30 | 0/0 | 29/29 | 0 | 29x0,1x137 / 29x0,1x4 | 1 |
+| f1g0_b | F1 | blocking | 4096 | step-1 build, flag on | 30 | 29/30 | 1 | 0/1 | 29/30 | 0/0 | 29/29 | 0 | 29x0,1x137 / 29x0,1x4 | 1 |
 
 ## Declines
