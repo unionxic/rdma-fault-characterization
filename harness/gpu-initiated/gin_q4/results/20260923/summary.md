@@ -1,10 +1,14 @@
-# GIN GDAKI Q4 summary
+# GIN GDAKI device-side classifier: summary
 
 source: `results/20260923`
 
 ## Task A: collapsed vs ring CQ inside GIN GDAKI
 
-`-EIO seen` = the device poll returned -EIO (error CQE, opcode 0xd) in n trials. `root` = fingerprint the device classified (ring: first error CQE in [cqe_ci, ticket]; collapsed: slot 0). `polled/slot` = CQE at the polled index (ring) or slot 0 (collapsed) when the poll returned. `late` = collapsed slot 0 re-read ~500 us later. `QP ERR` = first host QUERY_QP showing ERR (100 ms watch). Times in ms after the fault.
+`-EIO seen` = the device poll returned -EIO (error CQE, opcode 0xd) in n trials. `root` = the
+status/vendor_err pair the device classified (ring: first error CQE in [cqe_ci, ticket]; collapsed:
+slot 0). `polled/slot` = CQE at the polled index (ring) or slot 0 (collapsed) when the poll
+returned. `late` = collapsed slot 0 re-read ~500 us later. `QP ERR` = first host QUERY_QP showing
+ERR (100 ms watch). Times in ms after the fault.
 
 | cq | classify | fault | wait | n | -EIO seen | root (status/vendor) | class | polled/slot CQE | window err/ok | late re-read | CQ buffer err | t_dev | t_api | QP ERR (watch) | init / target | init_silent_iters | teardown |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -28,11 +32,11 @@ source: `results/20260923`
 | ring | 1 | F2 | timeout | 3 | 3/3 | 10/0x88 x3 | REM_ACCESS x3 | 0xd 0x5/0xf9 @1 x3 | 2/0 x3 | - | 2/128 x3 | 2.61 [2.59-3.23] | 2.8 [2.8-3.5] | 98 [98-99] | error x3 / timeout x3 | 0/0/0 | clean x3 |
 | ring | 1 | F3 | timeout | 3 | 3/3 | 12/0x81 x3 | RETRY_EXC x3 | 0xd 0x5/0xf9 @77 x3 | 2/0 x3 | - | 2/128 x3 | 3591.81 [3547.00-3656.04] | 3592.1 [3547.2-3656.4] | 3600 [3600-3700] | error x3 / timeout x3 | 0/0/0 | clean x3 |
 
-## Task B (Q4): device classification + host mailbox, ring CQ
+## Task B (device-side classifier): device classification + host mailbox, ring CQ
 
 classify 1 = NCCL_GIN_FAULT_CLASSIFY=1, 0 = same build with the flag off (stock paths). t_dev = device detection (%globaltimer of the record), t_mbx = host watcher read the record, t_rc = host saw the kernel return, t_api = first non-success ncclCommGetAsyncError (driver polls every 200 us); all ms after the fault, median [min-max].
 
-| classify | fault | wait | n | init / target | device rc | class (true: fault) | root fp | t_dev | t_mbx | t_rc | t_api | init_silent_iters | host_error | teardown |
+| classify | fault | wait | n | init / target | device rc | class (true: fault) | root code | t_dev | t_mbx | t_rc | t_api | init_silent_iters | host_error | teardown |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 0 | F1 | blocking | 3 | ok x3 / hang_killed x3 | - x3 | - x3 (LOCAL_QP_ERR (5/0xf5)) | - x3 | - | - | - | 9401.38 [9401.13-9401.45] | 1/1/1 | remote x3 | clean x3 |
 | 0 | F1 | timeout | 3 | timeout x3 / timeout x3 | ncclTimeout x3 | - x3 (LOCAL_QP_ERR (5/0xf5)) | - x3 | - | - | - | 9401.23 [9401.10-9401.91] | 0/0/0 | remote x3 | clean x3 |
