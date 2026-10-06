@@ -15,7 +15,7 @@ common_env() {
   cat <<EOF
 export LD_LIBRARY_PATH=$BUNDLE/lib:$CUDA_HOME/lib64:\${LD_LIBRARY_PATH:-}
 export NVSHMEM_IB_ENABLE_IBGDA=1
-export NVSHMEM_IBGDA_NIC_HANDLER=auto
+export NVSHMEM_IBGDA_NIC_HANDLER=${NIC_HANDLER:-auto}
 # NIC control buffers (CQ/WQ/dbr) location: gpumem (default) or hostmem. Used by
 # the diagnostic to test whether an error CQE appears in a host-memory CQ.
 export NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE=${NVSHMEM_IBGDA_FORCE_NIC_BUF_MEMTYPE:-gpumem}
