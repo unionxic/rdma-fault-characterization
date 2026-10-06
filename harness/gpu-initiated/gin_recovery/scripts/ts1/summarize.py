@@ -35,9 +35,9 @@ def cell_of(r):
     if r["base"] == "1":
         tag = "gpudb build"
     elif r["ts"] == "0":
-        tag = "S1 build, flag off"
+        tag = "step-1 build, flag off"
     else:
-        tag = "S1 build, flag on"
+        tag = "step-1 build, flag on"
     d = f" diag={r['diag']}" if r.get("diag") else ""
     return (r.get("cell", ""), r["fault"], r["wait"], r["bytes"], tag + d)
 

@@ -138,7 +138,7 @@ def main():
                 v = [int(l.split(",")[1]) / 1e3 for l in gzip.open(raw, "rt") if "," in l][100:]
                 cells[cell].append(v)
         print("### Fault-free latency, cumulative removal (p50 of pooled samples, us)\n")
-        order = [("on", "flag on (S1)"), ("c1gpufence", "- system-scope fences -> GPU scope"),
+        order = [("on", "flag on (step 1)"), ("c1gpufence", "- system-scope fences -> GPU scope"),
                  ("c2nogate", "- and the poster gate removed"), ("c3nopoll", "- and the poll-region counting removed"),
                  ("off", "flag off"), ("base", "gpudb v2 build")]
         for size in ("4k", "256k"):

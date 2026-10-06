@@ -180,9 +180,9 @@ def q4_rows():
 def q4_tables(R):
     main = [r for r in R if r['sub'] == 'main' and not r['invalid']]
     inval = [r for r in R if r['sub'] in ('main', 'stock', 'posctl') and r['invalid']]
-    p('### 1a. GIN GDAKI + Q4 device classifier (flag on), per CQ type x fault')
+    p('### 1a. GIN GDAKI + device-side classifier (flag on), per CQ type x fault')
     p()
-    p('| CQ | fault | wait | N | class + fp correct | device wait returned ncclRemoteError | host API returned error | '
+    p('| CQ | fault | wait | N | class + error code correct | device wait returned ncclRemoteError | host API returned error | '
       'silent success | fault -> host API (ms): median [p10-p90] max | fault -> device (ms): median [p10-p90] max | '
       'abort clean / leftover 0 | doorbell (indicators) | driver |')
     p('|---|---|---|--:|---|---|---|---|---|---|---|---|---|')
@@ -227,7 +227,7 @@ def q4_tables(R):
         p()
     pc = [r for r in R if r['sub'] == 'posctl']
     if pc:
-        p('Positive control for the doorbell indicators (same gin_q4 build, `NCCL_GIN_GDAKI_NIC_HANDLER=1`): %s' % '; '.join(
+        p('Positive control for the doorbell indicators (same `gin_q4` build, `NCCL_GIN_GDAKI_NIC_HANDLER=1`): %s' % '; '.join(
             '%s: proxy thread r0/r1 %s/%s, DOCA "Enabling CPU proxy mode" lines r0/r1 %s/%s -> %s, class %s' % (
                 r['trial'], r['proxy_thread_r0'], r['proxy_thread_r1'], r['doca_proxy_lines_r0'], r['doca_proxy_lines_r1'],
                 r['doorbell'], r['q4_class']) for r in pc))
@@ -378,10 +378,10 @@ REC_CRIT = {
     'F1 x5': '5 shots, 4 recovered + 1 replay failed (shot inside the commit), all d=1, 160/160 bit-exact, signals exact',
     'F3 x5': '5 shots, 4 recovered + 1 replay failed, all d=1, 200/200 bit-exact, signals exact',
     'D0': '3 forced recoveries with d=0 (nothing replayed), 120/120 bit-exact, signals exact',
-    'F2': 'declined (class_REM_ACCESS, fp 10/0x88), both ranks exit 9, both aborts return',
-    'F4': 'declined (retry_exc_peer_dead, fp 12/0x81), initiator exits 9, abort returns',
-    'off F1': 'recovery flag off: initiator exits 8 with the Q4 class LOCAL_QP_ERR, no recovery event, abort returns',
-    'off F3': 'recovery flag off: initiator exits 8 with the Q4 class RETRY_EXC, no recovery event, abort returns',
+    'F2': 'declined (class_REM_ACCESS, code 10/0x88), both ranks exit 9, both aborts return',
+    'F4': 'declined (retry_exc_peer_dead, code 12/0x81), initiator exits 9, abort returns',
+    'off F1': 'recovery flag off: initiator exits 8 with the classifier class LOCAL_QP_ERR, no recovery event, abort returns',
+    'off F3': 'recovery flag off: initiator exits 8 with the classifier class RETRY_EXC, no recovery event, abort returns',
 }
 
 
@@ -520,7 +520,7 @@ def nv_rows():
 NV_ORDER = ['classify F1', 'classify F2b', 'classify F3', 'classify F4', 'recover F1', 'recover F3', 'recover F1 x5',
             'recover F3 x5', 'decline F2b', 'decline F4']
 NV_CRIT = {
-    'classify': 'first device record = true class and fp (F1 LOCAL_QP_ERR 5/0xf5, F2b REM_ACCESS 10/0x88, F3/F4 RETRY_EXC 12/0x81), '
+    'classify': 'first device record = true class and error code (F1 LOCAL_QP_ERR 5/0xf5, F2b REM_ACCESS 10/0x88, F3/F4 RETRY_EXC 12/0x81), '
                 'no op verified wrong on the target, PE0 declines (classification run) and nvshmem_finalize returns (PE1 too unless killed), no leftovers',
     'recover': '1 fault round recovered (d=1, class right), 200/200 ops bit-exact with exact per-op signal, final signal 200, both exit 0, both finalize return',
     'recover x5': '5 shots, 5 rounds, 4 recovered ops + 1 replay hit by the in-commit shot, all d=1, 200/200 bit-exact, final signal 200',
@@ -531,7 +531,7 @@ NV_CRIT = {
 def nv_tables(T, E):
     p('### 3. NVSHMEM IBGDA + FT patch (GPU NIC handler)')
     p()
-    p('| cell | wait | N | success | Wilson 95% CI | class + fp correct | fault -> device (ms) | fault -> host mailbox (ms) | '
+    p('| cell | wait | N | success | Wilson 95% CI | class + error code correct | fault -> device (ms) | fault -> host mailbox (ms) | '
       'kernel return -> recovered (ms) | fault -> recovered (ms) | finalize PE0 / PE1 (ms) | silent success | doorbell | driver |')
     p('|---|---|--:|---|---|---|---|---|---|---|---|---|---|---|')
     main = [t for t in T if not t['cell'].startswith('smoke') and not t['invalid']]
@@ -675,7 +675,7 @@ def compare(Rq, Tr, Er, Tn, En):
     cpuB = [r for r in cpuB if not r['invalid']]
     cpuA = [r for r in cpuA if not r['invalid']]
     gpu_prev = [r for r in gpu_prev if not r['invalid']]
-    p('### 4a. GIN GDAKI + Q4: earlier small-N vs N30 (success = class+fp right, device and host API return the error, '
+    p('### 4a. GIN GDAKI + classifier: earlier small-N vs N30 (success = class + error code right, device and host API return the error, '
       'no silent success except F4, abort clean; time = fault -> host API, ms)')
     p()
     p('| cell | earlier source (doorbell) | earlier success | N30 success | earlier time median [min-max] | '
@@ -687,7 +687,7 @@ def compare(Rq, Tr, Er, Tn, En):
             nd = 2 if f in ('F1', 'F2') else 0
             for src, rows in (('09-23 CPU doorbell, ' + ('Task B' if cq == 'ring' else 'Task A'),
                                [r for r in (cpuB if cq == 'ring' else cpuA) if r['cq_type'] == cq and r['classify'] == '1']),
-                              ('09-24 GPU doorbell (windows + q4 re-run)', [r for r in gpu_prev if r['cq_type'] == cq and r['classify'] == '1'])):
+                              ('09-24 GPU doorbell (windows + `q4` re-run)', [r for r in gpu_prev if r['cq_type'] == cq and r['classify'] == '1'])):
                 o = [r for r in rows if r['fault'] == f]
                 if not o or not nr:
                     continue
@@ -793,7 +793,7 @@ def summary(Rq, Tr, Er, Tn, En):
                 ssum(rs, lambda r: r['wait_mode'] == 'blocking')) if f != 'F4' else
                 'class %d/%d; initiator 1 op ahead of the killed target %d/%d (last op ACKed before the kill; see §1)' % (
                 ssum(rs, lambda r: r['class_ok']), n, ssum(rs, lambda r: r['silent']), n))
-            S.append(('GIN Q4 classifier, %s CQ, %s' % (cq, f), n, x,
+            S.append(('GIN device-side classifier, %s CQ, %s' % (cq, f), n, x,
                       fails(rs, q4_ok, lambda r: '%s_t%s' % (r['wait_mode'], r['trial'])) +
                       ('; %d harness-invalid excluded + replaced' % ninv if ninv else ''), '%.1f-%.1f%%' % (100 * lo, 100 * hi),
                       'fault->host API ' + dist([r['t_api_ms'] for r in rs], 2 if f in ('F1', 'F2') else 0), oth, e, v))
@@ -826,7 +826,7 @@ def summary(Rq, Tr, Er, Tn, En):
         if k in ('F2', 'F4'):
             oth = 'declined: ' + ', '.join('%s %d' % kv for kv in Counter(t['decline_reason'] for t in rs).items())
         elif k.startswith('off'):
-            oth = 'Q4 class ' + ', '.join('%s %d' % kv for kv in Counter(t['r0_first_class'] for t in rs).items()) + \
+            oth = 'classifier class ' + ', '.join('%s %d' % kv for kv in Counter(t['r0_first_class'] for t in rs).items()) + \
                   '; recovery events %d' % sum(int(t['rec_events'] or 0) for t in rs)
         else:
             oth = 'rounds: %d recovered, %d replay failed; d=1 %d, d=0 %d' % (
@@ -853,9 +853,9 @@ def summary(Rq, Tr, Er, Tn, En):
     rv = [t for t in Tr if t['sub'] in ('v2', 'v1cpu') and not t['invalid']]
     nv_ = [t for t in Tn if not t['invalid']]
     pools = [
-        ('GIN Q4: classification exact (class + fp), all CQ x fault cells', q, lambda r: r['class_ok']),
-        ('GIN Q4: all criteria, all CQ x fault cells', q, q4_ok),
-        ('GIN Q4: no silent success, F1-F3', [r for r in q if r['fault'] != 'F4'], lambda r: not r['silent']),
+        ('GIN classifier: classification exact (class + error code), all CQ x fault cells', q, lambda r: r['class_ok']),
+        ('GIN classifier: all criteria, all CQ x fault cells', q, q4_ok),
+        ('GIN classifier: no silent success, F1-F3', [r for r in q if r['fault'] != 'F4'], lambda r: not r['silent']),
         ('GDAKI recovery: fault runs recovered with exact data and signals (v2 F1, F3, x5; v1cpu F1, F3)',
          [t for t in rv if t['cell'] in ('v2 F1', 'v2 F3', 'v2 F1 x5', 'v2 F3 x5', 'v1cpu F1', 'v1cpu F3')], lambda t: t['ok']),
         ('GDAKI recovery: forced d=0 runs exact', [t for t in rv if t['cell'] == 'v2 D0'], lambda t: t['ok']),

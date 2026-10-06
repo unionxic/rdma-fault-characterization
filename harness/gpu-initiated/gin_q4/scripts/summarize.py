@@ -57,7 +57,7 @@ def slot(v):  # "wqe=77;op=0xd;syn=0x5;ve=0xf9" -> "0xd 5/0xf9 @77"
 def taskA(rows, out):
     out.append("## Task A: collapsed vs ring CQ inside GIN GDAKI\n")
     out.append("`-EIO seen` = the device poll returned -EIO (error CQE, opcode 0xd) in n trials. `root` = "
-               "fingerprint the device classified (ring: first error CQE in [cqe_ci, ticket]; collapsed: slot 0). "
+               "the status/vendor_err pair the device classified (ring: first error CQE in [cqe_ci, ticket]; collapsed: slot 0). "
                "`polled/slot` = CQE at the polled index (ring) or slot 0 (collapsed) when the poll returned. "
                "`late` = collapsed slot 0 re-read ~500 us later. `QP ERR` = first host QUERY_QP showing ERR "
                "(100 ms watch). Times in ms after the fault.\n")
@@ -84,12 +84,12 @@ def taskA(rows, out):
 
 
 def taskB(rows, out):
-    out.append("## Task B (Q4): device classification + host mailbox, ring CQ\n")
+    out.append("## Task B (device-side classifier): device classification + host mailbox, ring CQ\n")
     out.append("classify 1 = NCCL_GIN_FAULT_CLASSIFY=1, 0 = same build with the flag off (stock paths). "
                "t_dev = device detection (%globaltimer of the record), t_mbx = host watcher read the record, "
                "t_rc = host saw the kernel return, t_api = first non-success ncclCommGetAsyncError (driver polls "
                "every 200 us); all ms after the fault, median [min-max].\n")
-    out.append("| classify | fault | wait | n | init / target | device rc | class (true: fault) | root fp | "
+    out.append("| classify | fault | wait | n | init / target | device rc | class (true: fault) | root code | "
                "t_dev | t_mbx | t_rc | t_api | init_silent_iters | host_error | teardown |")
     out.append("|" + "---|" * 15)
     cells = defaultdict(list)
@@ -149,7 +149,7 @@ def overhead(rows, out, logdir):
 
 def main():
     d = sys.argv[1]
-    out = ["# GIN GDAKI Q4 summary", "", "source: `%s`" % d, ""]
+    out = ["# GIN GDAKI device-side classifier: summary", "", "source: `%s`" % d, ""]
     a = load(os.path.join(d, "taskA", "*.csv"))
     if a:
         taskA(a, out)
