@@ -11,7 +11,7 @@
 - 아래 본문에 이미 반영된 정정: fd 순서와 GPU 메모리 해제 가설 기각, 첫 스모크 세션(`superseded_smoke1_underflow`) 폐기.
 
 The review question: the same fault, "peer process killed with SIGKILL", gives the initiator
-different fingerprints.
+different error codes.
 * RETRY_EXC 12/0x81 after ~3.7 s in the CPU verbs harness (`retry_proc_kill`, host-memory
   MR), with NVSHMEM IBGDA, and with GIN GDAKI.
 * REM_ACCESS 10/0x88 after ~60 ms with NCCL GIN's proxy backend (target in GPU memory;
@@ -32,7 +32,7 @@ A one-off recount of every trial from the raw requester and victim logs found 0 
 ## Answer
 
 1. **The hypothesis is wrong on this system. Neither fd order nor GPU memory being freed
-   decides the fingerprint.**
+   decides the error code.**
    * Opening CUDA before or after `ibv_open_device` changed nothing. GPU/peermem with the MR
      registered after the QP gave REM_ACCESS 10/10 either way. With the MR registered before
      the QP it gave RETRY_EXC 10/10 either way [measured].
@@ -50,7 +50,7 @@ A one-off recount of every trial from the raw requester and victim logs found 0 
      ~39 ms after the kill on sunny, after all CUDA files (142/142) [measured]. Its last
      reference is a memory mapping, and nvidia-uvm keeps the address space alive until its
      own fd is released [source, inferred].
-2. **The fingerprint depends on which of the dead process's verbs objects is destroyed
+2. **The error code depends on which of the dead process's verbs objects is destroyed
    first: the QP the WRITEs arrive on, or the MR they target.**
    * QP first: the QPN is gone, the NIC drops the requests silently, and the requester retries
      until RETRY_EXC 12/0x81, 3.5-3.8 s after the last ACK.
@@ -286,7 +286,7 @@ Requester HW counters (`sF_sunny`, deltas from the trigger to the first error CQ
 
 ### E. The three stacks
 
-| stack | what dies first at exit | fingerprint | evidence |
+| stack | what dies first at exit | error code | evidence |
 |---|---|---|---|
 | CPU harness `retry_proc_kill` | the QP. On GO the server calls `ep_close()` itself (QP, CQ, MR, ... in that order, probe.c:293-300) and exits. The client posts 300 ms later (probe_server.c:294-301, probe_client.c:250-254) | RETRY_EXC 12/0x81, 3.73 s | [source]. A real SIGKILL mid-stream with the same MR-before-QP order: RETRY_EXC 10/10 (`host_mrfirst`) [measured] |
 | NVSHMEM IBGDA / GIN GDAKI | the DEVX QP. `ibgda.cpp:2390` and `doca_verbs_qp.cpp:747` create QPs with DEVX `CREATE_QP`, and `mlx5_ib_ufile_hw_cleanup` destroys them first on sunny | RETRY_EXC 12/0x81 | [source]. `devx_gpu_qpfirst` / `devx_dmabuf_qpfirst` on sunny: RETRY_EXC 20/20 [measured] |
@@ -298,7 +298,7 @@ NVSHMEM peer whose MR was registered after its QPs would then also produce REM_A
 
 ## Classification rule
 
-The CQE fingerprint still says *what the NIC saw*:
+The CQE error code still says *what the NIC saw*:
 * 12/0x81: nobody answered.
 * 10/0x88: the target MR was gone or out of bounds while the QP answered.
 

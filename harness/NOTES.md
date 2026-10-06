@@ -27,7 +27,7 @@ rain  (requester, mlx5_1, 30.0.0.3)  --RoCEv2 100G-->  sunny (responder, mlx5_0,
 | column | meaning |
 |---|---|
 | `detect_ns` | inject → first error CQE (CLOCK_MONOTONIC_RAW tight poll); `-1` if no error CQE arrived within the detect timeout |
-| `status` / `status_name` / `vendor_err` | the CQE fingerprint — the paper's classification key (`-1` / `no_error_cqe` when the fault did not manifest) |
+| `status` / `status_name` / `vendor_err` | the CQE error code (status/vendor_err pair), the paper's classification key (`-1` / `no_error_cqe` when the fault did not manifest) |
 | `cause` / `action` / `peer_alive` / `auto_recoverable` | `classify(status,vendor_err)` output |
 | `recover_ns` | coordinated QP recovery latency (both ends); `-1` for `-r none` and `retry_proc_kill` |
 | `verify_ok` | 1 if a post-recovery 4 KiB WRITE+READ-back matched; `-1` if no recovery was attempted |
@@ -62,7 +62,7 @@ recorded only `sq_psn_delta × PMTU` and then "checked" that same identity.)
 
 ### Sub-classification of RETRY_EXC (0x81)
 
-The CQE fingerprint RETRY_EXC (12 / 0x81) is ambiguous: a responder QP that went to
+The CQE error code RETRY_EXC (12 / 0x81) is ambiguous: a responder QP that went to
 ERR, a dead responder process, and a downed link all produce it. The harness splits
 it with signals outside the CQE:
 
@@ -103,7 +103,7 @@ The dead-peer 0x88 path itself is not produced by this harness's faults.
 
 ## Fault catalog (`-f`)
 
-| fault | trigger | expected fingerprint (ConnectX-6 (VPI, MT28908), fw 20.43.4100) |
+| fault | trigger | expected status / vendor_err (ConnectX-6 (VPI, MT28908), fw 20.43.4100) |
 |---|---|---|
 | `none` | F0 control: the normal 4 KiB write, polled to its completion | success; `detect_ns=-1` |
 | `local_qp_err` | deep write burst, then force own QP→ERR | WR_FLUSH_ERR (5) / 0xf5 |
@@ -127,7 +127,7 @@ and reconnected so the next trial can run, but the time is not recorded).
 
 - **Status: implemented** in client, server and runner. The protocol and every
   link-restore path were validated on 2026-09-23 with `PROBE_LINK_DRYRUN=1` only; a
-  real link toggle has not been run, so the fingerprint above is still unmeasured.
+  real link toggle has not been run, so the error code above is still unmeasured.
 - **Requires passwordless sudo for `ip` on the responder** (a NOPASSWD sudoers rule).
   Before acking a `retry_link_down` TRIAL the server checks that `SERVER_IFACE` exists
   and that `sudo -n -l ip link set dev <iface> down|up` is allowed. If not, it replies
@@ -147,7 +147,7 @@ and reconnected so the next trial can run, but the time is not recorded).
 
 The final run after all fixes (2026-09-23 12:39, stamp `20260923_123945`, N=30, all seven
 faults incl. `retry_proc_kill`, CPU 2 pinned, no other traffic on the link) is the canonical
-data set for the results below. It reproduced every fingerprint in the catalog, with
+data set for the results below. It reproduced every error code in the catalog, with
 partial-write landed == sent in 30/30.
 
 ### Instrumentation for the propagation campaign (2026-10-06)
@@ -247,7 +247,7 @@ are earlier runs and are not used in the table.
 | retry_server_qp_err | RETRY_EXC / 0x81 | **3.749 s** ± 0.35 ms (3.749 s) | 0.82 ms (0.81 ms) | — | 30/30 |
 | retry_proc_kill | RETRY_EXC / 0x81 | **3.727 s** ± 9.0 ms (3.732 s) | n/a (process gone) | — | — |
 
-- All seven faults keep the fingerprints listed in the catalog. Each (status,
+- All seven faults keep the error codes listed in the catalog. Each (status,
   vendor_err) pair is unique except that the two RETRY_EXC causes share 0x81. Those are
   split by liveness: `server_qp_err`×30 and `proc_kill`×30.
 - `partial_write`: readback-measured landed bytes are 1,085,440–1,130,496 B (265–276

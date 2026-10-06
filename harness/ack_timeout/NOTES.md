@@ -72,7 +72,7 @@ from source, not measured here. "nominal" below always means 4.096 us x 2^T (the
   1.2 / 5.9 / 12.26 ms). Every trial fits detect = t1 + (R+1) x nominal within 1.2 ms, where t1
   is a first `local_ack_timeout_err` that triggers no retransmission, at 0.51-1.16 x nominal.
   T=20 R=7 floor off: 37.6-38.3 s (vs 59.8 s with the floor on).
-- **GPU stage, floor off [measured, N=10 per cell]:** fault -> host-visible fingerprint (device
+- **GPU stage, floor off [measured, N=10 per cell]:** fault -> host-visible error code (device
   classifier -> host mailbox) **13.3 ms (NVSHMEM IBGDA FT) / 24.6 ms (NCCL GIN GDAKI + device classifier) at T=8**,
   40.4 / 51.9 ms at T=10, 585.1 / 599.3 ms at T=14, vs 3.54 / 3.61 s with the defaults at T=8.
   The NIC part (failing op posted -> error: 9.5 / 10.2 ms at T=8) equals the CPU verbs number;
@@ -315,10 +315,10 @@ Times are ms after the fault on rain's `CLOCK_MONOTONIC`, as each stack's own ro
 them (`q4_row.py`, `rows.py`); "failing op posted -> error" isolates the NIC part: GIN = the
 driver's `device_rc_ms` (start of the failing iteration -> device wait returned the error,
 host-observed with a 0.5 ms poll), NVSHMEM = `post_to_dev_ms` (post of the failing put -> device
-record). The fault -> fingerprint column was recomputed from the raw logs (hook `fire_mono_ms`
+record). The fault -> error-code column was recomputed from the raw logs (hook `fire_mono_ms`
 on sunny, clock offset, mailbox `mono_ms` on rain) with identical results.
 
-| stack | floor | IB timeout T | N | class (fingerprint) | failing op posted -> error (ms) | fault -> device detection (ms) | fault -> host-visible fingerprint (ms) | fault -> `ncclCommGetAsyncError` (ms) | teardown / leftover procs |
+| stack | floor | IB timeout T | N | class (status/vendor_err) | failing op posted -> error (ms) | fault -> device detection (ms) | fault -> host-visible error code (ms) | fault -> `ncclCommGetAsyncError` (ms) | teardown / leftover procs |
 |---|---|---|---|---|---|---|---|---|---|
 | GIN GDAKI + device classifier | **off** | 8 | 10 | RETRY_EXC 12/0x81 (10/10) | 10.2 [10.2-10.3] | 24.5 [14.1-25.2] | **24.6** [14.2-25.3] | 24.7 [14.3-25.5] | clean / 0 |
 | GIN GDAKI + device classifier | **off** | 10 | 10 | RETRY_EXC 12/0x81 (10/10) | 37.3 [36.7-38.4] | 51.8 [50.5-52.8] | **51.9** [50.7-52.9] | 52.1 [50.8-53.0] | clean / 0 |
@@ -335,12 +335,12 @@ Medians [min-max]. Raw: `results/20260925/C/` (`gin_<floor>_T<T>.csv` + `logs/`,
 `nvshmem_<floor>_T<T>_rec0/` per-trial `.meta`/logs, `nvshmem_trials.csv`, `nvshmem_events.csv`,
 `summary.md` = this table from `c_summary.py`).
 
-- **Floor off, the host sees the exact fingerprint 13 ms (NVSHMEM) / 25 ms (GIN) after the fault
+- **Floor off, the host sees the exact error code 13 ms (NVSHMEM) / 25 ms (GIN) after the fault
   at T=8, 40 / 52 ms at T=10, 585 / 599 ms at T=14**, against 3.54 / 3.61 s with the defaults at
   the same T=8 (266x / 147x). With the floor on, T=8 and T=14 give the same ~3.6 s (the clamp).
 - **The NIC part equals the CPU measurement.** Post of the failing op -> error: NVSHMEM 9.5 /
   36.8 / 581.4 ms, GIN 10.2 / 37.3 / 584.3 ms, CPU verbs (B) 9.49 / 37.91 / 574.90 ms at T=8 / 10 /
-  14. The rest of fault -> fingerprint is the application's own gap until it next touches the
+  14. The rest of fault -> error code is the application's own gap until it next touches the
   broken QP (NVSHMEM fault -> kernel start 3.6 ms median; GIN ~14 ms, its 15 ms iteration gap)
   plus device -> mailbox (50-100 us medians).
 - **Classification and teardown are unchanged.** 60/60 floor-off trials recorded RETRY_EXC

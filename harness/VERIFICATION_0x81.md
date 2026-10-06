@@ -1,6 +1,6 @@
 # Verification: can an RDMA counter alone split the RETRY_EXC (0x81) pair?
 
-**Question.** The CQE fingerprint RETRY_EXC (12 / 0x81) covers two causes with the
+**Question.** The CQE error code RETRY_EXC (12 / 0x81) covers two causes with the
 same status+vendor_err: the responder QP went to ERR (node alive), or the responder
 process was killed (node's RDMA context gone). The repo docs
 (`docs/theory/05_counter_observability.md` §5.3, `docs/theory/04` §4.3) claim these
