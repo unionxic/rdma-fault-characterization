@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""score.py <campaign_root> [--old-gin <dir>] - score the 24 pre-registered predictions.
+"""score.py <campaign_root> [--f4-rerun <dir>] [--old-gin <dir>] - score the 24 pre-registered predictions.
 
 Reads the campaign outputs of cells.sh (one folder per stack) and writes SCORE.md and score.json
 into <campaign_root>. Acceptance follows PREDICTIONS.md: a categorical cell holds if at least 90 %
-of its trials show the predicted outcome and no trial shows an outcome outside it. A cell without
-trials is "no data". --old-gin points at the retained GIN logs of 2026-09-23 for the blind part
-of EV3a.
+of its trials show the predicted outcome and no trial shows an outcome outside it. A miss is an
+observed outcome other than the predicted one, so any miss fails the cell; a not-observable trial
+counts against the 90 % only. A cell without trials is "no data".
+--f4-rerun replaces the GP and GG F4 trials with those of the re-run (DEVIATIONS.md item 10).
+--old-gin points at the retained 2026-09-23 GIN results folder for the blind part of EV3a; a log
+without NCCL output or whose rank 0 saw no REM_ACCESS status is not observable (item 11).
 """
 import csv, glob, json, math, os, re, sys
 
 ROOT = os.path.abspath(sys.argv[1])
 OLD_GIN = sys.argv[sys.argv.index("--old-gin") + 1] if "--old-gin" in sys.argv else None
+F4_RERUN = os.path.abspath(sys.argv[sys.argv.index("--f4-rerun") + 1]) if "--f4-rerun" in sys.argv else None
 CTRS = ["req_cqe_error", "req_cqe_flush_error", "local_ack_timeout_err", "req_remote_access_errors"]
 
 
@@ -70,8 +74,8 @@ def score(pid, cells, outcomes, rule="90", note=""):
         verdict = "no data"
     elif rule == "all":
         verdict = "holds" if k == n else "fails"
-    else:
-        verdict = "holds" if k >= math.ceil(0.9 * n) else "fails"
+    else:   # >= 90 % of all trials, and no observed outcome outside the predicted class
+        verdict = "holds" if k >= math.ceil(0.9 * len(outcomes)) and k == n else "fails"
     lo, hi = wilson(k, n)
     misses = [t for t, o in obs if not o]
     results.append(dict(id=pid, cells=cells, n=n, hits=k, rule=rule, verdict=verdict,
@@ -109,10 +113,11 @@ def only(ev, name):
 score("EV1a", "CPU responder, F2", [(t, only(qp_events(r["srv_async"]), "IBV_EVENT_QP_ACCESS_ERR")) for f, t, r, _, _ in cpu if f == "rem_access"])
 score("EV1b", "CPU responder, rem_inv_req", [(t, only(qp_events(r["srv_async"]), "IBV_EVENT_QP_REQ_ERR")) for f, t, r, _, _ in cpu if f == "rem_inv_req"])
 score("EV1c", "CPU responder, rnr", [(t, r["srv_async"] == "none") for f, t, r, _, _ in cpu if f == "rnr"])
-score("EV1d", "CPU responder, F1 F3 F4 F0 partial_write",
-      [(t, None if r["srv_async"] == "-" else r["srv_async"] == "none") for f, t, r, _, _ in cpu
-       if f in ("local_qp_err", "retry_server_qp_err", "retry_proc_sigkill", "none", "partial_write")],
-      note="F4: responder dead, not observable")
+ev1d = [(t, None if r["srv_async"] == "-" else r["srv_async"] == "none") for f, t, r, _, _ in cpu
+        if f in ("local_qp_err", "retry_server_qp_err", "retry_proc_sigkill", "none", "partial_write")]
+# DEVIATIONS 4: a dead responder is reported apart as not observable, outside the 90 % count
+score("EV1d", "CPU responder, F1 F3 F4 F0 partial_write", [x for x in ev1d if x[1] is not None],
+      note=f"F4: responder dead, {sum(1 for x in ev1d if x[1] is None)} not observable, reported apart (DEVIATIONS 4)")
 score("EV1e", "CPU requester, all faults", [(t, r["cli_async"] == "none") for f, t, r, _, _ in cpu])
 score("EV2a", "CPU responder QP state, F2 rem_inv_req", [(t, r["srv_qp_state"] == "ERR") for f, t, r, _, _ in cpu if f in ("rem_access", "rem_inv_req")])
 score("EV2b", "CPU responder QP state, rnr F1", [(t, r["srv_qp_state"] == "RTS") for f, t, r, _, _ in cpu if f in ("rnr", "local_qp_err")])
@@ -140,12 +145,28 @@ for f, t, r, _, txt in cpu:
 
 # ---------------- GIN (gp gg gq) ----------------
 def gin_rows(stack, backend_prefix):
-    d = os.path.join(ROOT, stack)
+    out = []
+    for root in (ROOT, F4_RERUN):
+        if root is None:
+            continue
+        rerun = root == F4_RERUN
+        if rerun and stack not in ("gp", "gg"):
+            continue
+        out += gin_rows_at(root, stack, backend_prefix,
+                           keep=(lambda r: r["fault"] == "F4") if rerun else
+                                (lambda r: not (F4_RERUN and stack in ("gp", "gg") and r["fault"] == "F4")))
+    return out
+
+
+def gin_rows_at(root, stack, backend_prefix, keep):
+    d = os.path.join(root, stack)
     f = os.path.join(d, f"{stack}.csv")
     if not os.path.exists(f):
         return []
     out = []
     for r in csv.DictReader(open(f)):
+        if not keep(r):
+            continue
         base = f"{backend_prefix}_{r['fault']}_{r['wait_mode']}_t{r['trial']}"
         tag = f"{stack}_{r['fault']}_{r['wait_mode']}_t{r['trial']}"
         lg = os.path.join(d, "logs", base)
@@ -302,18 +323,28 @@ score("T3", "GG GQ blocking F1-F3: r0 teardown returns, r1 does not", t3)
 score("T4", "NF: F1 F3 finalize returns on both PEs; F2 F4 returns after ft_abort", t4)
 
 # ---------------- blind part of EV3a: retained 2026-09-23 GIN proxy F2 r1 logs ----------------
+def old_f2(p):
+    """None when the old trial cannot show the line: no NCCL output (NCCL_DEBUG off) or no REM_ACCESS."""
+    r1, r0 = text(p), text(p.replace("_r1.log", "_r0.log"))
+    if "NCCL" not in r1 or not re.search(r"status=10\b", r0):
+        return None
+    return bool(re.search(r"async fatal event on QP.*local access violation", r1))
+
 if OLD_GIN:
-    old = sorted(glob.glob(os.path.join(OLD_GIN, "**", "proxy_F2_*r1*.log"), recursive=True))
+    old = sorted(glob.glob(os.path.join(OLD_GIN, "**", "proxy_F2_*_r1.log"), recursive=True))
     score("EV3a-blind", "retained 2026-09-23 GIN proxy F2 r1 logs",
-          [(os.path.basename(p), bool(re.search(r"async fatal event on QP.*local access violation", text(p)))) for p in old],
-          rule="all")
+          [(os.path.relpath(p, OLD_GIN), old_f2(p)) for p in old], rule="all",
+          note="not observable: no NCCL output or no REM_ACCESS on r0 (DEVIATIONS 11)")
 
 order = ["EV1a", "EV1b", "EV1c", "EV1d", "EV1e", "EV2a", "EV2b", "EV3a", "EV3a-blind", "EV3b", "EV3c", "EV4",
          "EV5a", "EV5b", "EV5c", "EV5d", "NET1a", "NET1b", "NET1c", "D1", "D2", "T1", "T2", "T3", "T4"]
 results.sort(key=lambda r: order.index(r["id"]) if r["id"] in order else 99)
 json.dump(results, open(os.path.join(ROOT, "score.json"), "w"), indent=1)
 with open(os.path.join(ROOT, "SCORE.md"), "w") as f:
-    f.write("# Campaign score\n\nScored by `campaign/score.py` against `PREDICTIONS.md` (tag prereg/propagation-v1).\n\n")
+    f.write("# Campaign score\n\nScored by `campaign/score.py` against `PREDICTIONS.md` (tag prereg/propagation-v1).\n")
+    if F4_RERUN:
+        f.write(f"GP and GG F4 trials come from `{os.path.relpath(F4_RERUN, ROOT)}` (DEVIATIONS 10).\n")
+    f.write("A miss is an outcome outside the predicted class, so any miss fails a cell.\n\n")
     f.write("| id | cells | n | hits | rule | verdict | Wilson 95% | misses | note |\n|---|---|--:|--:|---|---|---|---|---|\n")
     for r in results:
         miss = ", ".join(r["misses"][:6]) + (" ..." if len(r["misses"]) > 6 else "")
