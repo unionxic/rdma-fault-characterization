@@ -33,7 +33,7 @@
 
 기존 N=10에서 invalid lkey를 다른 LOC_PROT_ERR 2종과 함께 "약 1.5ms"로 묶었던 것은 부정확했다. N=100 median은 319us로, SGE length 초과·MR 권한 위반(약 1.5ms)과 명확히 분리된다.
 
-원인은 latency가 error pipeline의 어느 stage에서 잡히는지를 그대로 반영하기 때문이다. ethtool traffic fingerprint(원본 findings §4-1, N=3 deterministic)와 교차하면 세 LOC_PROT_ERR이 wire에 보내는 RDMA 패킷 수가 다르다. 여기서 client TX/server TX RDMA 패킷은 ethtool의 tx_vport_rdma_unicast_packets delta다.
+원인은 latency가 error pipeline의 어느 stage에서 잡히는지를 그대로 반영하기 때문이다. ethtool 트래픽 counter 변화(원본 findings §4-1, N=3 deterministic)와 교차하면 세 LOC_PROT_ERR이 wire에 보내는 RDMA 패킷 수가 다르다. 여기서 client TX/server TX RDMA 패킷은 ethtool의 tx_vport_rdma_unicast_packets delta다.
 
 | 에러 | latency median | client TX RDMA 패킷 | server TX RDMA 패킷 | 의미 |
 |---|---|---|---|---|

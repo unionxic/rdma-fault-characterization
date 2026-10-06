@@ -50,7 +50,7 @@ firmware가 vendor_err를 정한다는 것은 곧 칩 벤더가 다르면 인코
 | 항목 | 내용 |
 |------|------|
 | ground truth (ibv_devinfo) | 225 = ConnectX-6 (vendor_part_id 4123, fw 20.40.1000), 224 = ConnectX-5 (vendor_part_id 4119, fw 16.35.8002) |
-| 문서 오류 정정 | 노드의 CLAUDE.md/SUMMARY.md가 225를 ConnectX-5로 잘못 적었으나 ibv_devinfo가 정답 |
+| 문서 오류 정정 | 당시 노드에 둔 작업 메모(이 저장소에는 없음)가 225를 ConnectX-5로 잘못 적었으나 ibv_devinfo가 정답 |
 | 방법 | requester 역할을 ConnectX-5(224, fw 16.35)로 두고 동일 에러를 유발, 기존 ConnectX-6(225, fw 20.40) 결과와 vendor_err를 비교 |
 | orchestration | 225 로컬 server + ssh로 224 client 구동. ssh가 225→224 방향만 되므로 run_swap.sh는 225에서 실행 |
 | 반복 수 | N=10 (에러 종류별) |

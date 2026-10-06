@@ -51,7 +51,7 @@ QP-only는 full rebuild 대비 recovery time 기준 14995 / 2453 ≈ 6.1배 빠�
 | QP_A | invalid rkey 또는 주소 범위 초과 계열 | REM_ACCESS_ERR (status=10) | 0x88 |
 | QP_B | 서버 QP ERR 전이 후 후속 WR flush | WR_FLUSH_ERR (status=5) | 0xf5 |
 
-QP_A의 vendor_err 0x88은 counter mapping 실험에서 "invalid rkey ≡ 주소 범위 초과" 두 원인이 모든 counter source에서 동일 signature를 내는 것으로 확인된 REM_ACCESS_ERR 계열이다. 둘은 firmware 내부에서 같은 NAK를 생성하므로 fingerprint만으로는 구분되지 않는다.
+QP_A의 vendor_err 0x88은 counter mapping 실험에서 "invalid rkey ≡ 주소 범위 초과" 두 원인이 모든 counter source에서 동일 signature를 내는 것으로 확인된 REM_ACCESS_ERR 계열이다. 둘은 firmware 내부에서 같은 NAK를 생성하므로 오류 코드와 counter 변화만으로는 구분되지 않는다.
 
 두 detection 신호의 동작 차이:
 
@@ -64,11 +64,11 @@ CQE는 각 completion이 자신의 QP 번호와 status, vendor_err를 그대로 
 
 해석: HW counter는 multi-QP 환경에서 per-QP 분류 신호로 쓸 수 없다. counter는 "포트 전체에서 에러가 몇 건 늘었다"는 집계 정보만 주고, 어떤 QP를 어떻게 복구해야 하는지는 알려주지 못한다. 따라서 분류의 1차 신호는 반드시 per-QP CQE여야 하며, counter는 보조(추세/관측)로만 활용 가능하다. 이는 production survey에서 본 NCCL/UCX/SPDK가 vendor_err를 런타임 분기에 쓰지 않는 관행(production survey 확인)과는 별개로, 적어도 "어느 QP가 망가졌는가"라는 1차 질문에 대해서는 CQE만이 답을 준다는 점을 실증한다.
 
-### 4.5 Realistic 조건에서 fingerprint 불변성
+### 4.5 Realistic 조건에서 오류 신호 조합의 불변성
 
-단일 WR·단일 패킷·단일 QP라는 단순화된 조건에서 도출한 에러 fingerprint(ibv_wc_status × vendor_err × counter signature)가, multi-WR·multi-packet·multi-QP의 현실적 조건에서도 유지되는지 확인했다. 결과는 9개 시나리오 전부 MATCH(9/9, 총 27 trials, 예외 없음)로, 현실적 조건에서도 fingerprint가 동일하게 재현되었다(이 검증은 counter mapping 실험에 통합되어 수행됨, 2026-05-16).
+단일 WR·단일 패킷·단일 QP라는 단순화된 조건에서 도출한 오류 신호 조합(ibv_wc_status × vendor_err × counter signature)이, multi-WR·multi-packet·multi-QP의 현실적 조건에서도 유지되는지 확인했다. 결과는 9개 시나리오 전부 MATCH(9/9, 총 27 trials, 예외 없음)로, 현실적 조건에서도 같은 조합이 재현되었다(이 검증은 counter mapping 실험에 통합되어 수행됨, 2026-05-16).
 
-| 조건 | fingerprint 재현 |
+| 조건 | 신호 조합 재현 |
 |------|------------------|
 | 단순(single WR / single packet / single QP) | baseline |
 | realistic(multi-WR / multi-packet / multi-QP) | 9/9 MATCH (27 trials) |
@@ -77,14 +77,14 @@ invariance를 떠받치는 세 mechanistic 관찰:
 
 | 현실 조건 | 관찰 | 함의 |
 |-----------|------|------|
-| multi-WR (8개 unsignaled WR pending) | 에러 발생 시에도 flush CQE = 0 (unsignaled WR은 에러 시 CQE 미생성) | WR_FLUSH_ERR fingerprint가 signaled WR에 한정됨을 확인 |
-| multi-packet (256KB = 256 packets) | counter delta가 single-packet과 동일 | fingerprint가 전송 크기에 invariant |
+| multi-WR (8개 unsignaled WR pending) | 에러 발생 시에도 flush CQE = 0 (unsignaled WR은 에러 시 CQE 미생성) | WR_FLUSH_ERR 오류 코드가 signaled WR에 한정됨을 확인 |
+| multi-packet (256KB = 256 packets) | counter delta가 single-packet과 동일 | 신호 조합이 전송 크기에 invariant |
 | multi-QP isolation 3종(local / remote / timeout 계열) | sibling QP 영향 0 | Experiment 1의 isolation을 에러 유형 전반으로 확장 |
 
-이는 theory 문서의 에러 분류 체계에서 구축한 fingerprint 기반 분류가 toy 조건의 산물이 아니라 동시성·다중 전송 환경에서도 그대로 성립함을 의미한다. 코드: `05_counter_mapping/multi_client.c`(225), `multi_server.c`(224).
+이는 theory 문서의 에러 분류 체계에서 구축한 오류 신호 조합 기반 분류가 toy 조건의 산물이 아니라 동시성·다중 전송 환경에서도 그대로 성립함을 의미한다. 코드: `05_counter_mapping/multi_client.c`(225), `multi_server.c`(224).
 
 ### 4.6 결론
 
-multi-QP 실험은 두 가지를 실증했다. (1) QP-only recovery는 fault QP를 격리해 복구하며 정상 QP throughput 변화 0%(5,885 → 6,036 ops/10ms, 측정 오차 범위), full rebuild는 공유 자원(PD/MR/CQ) 파괴로 무관한 QP에 14,995 us downtime을 강제한다(recovery time 2,453 us vs 14,995 us, 약 6.1배 차이). (2) 동시 다발 에러에서 per-QP 식별은 CQE만 가능하고(10/10 deterministic) HW counter는 port-level 합산(`req_cqe_error` baseline 대비 +2)으로 구분 불가하다. 여기에 realistic 조건 fingerprint 9/9 MATCH(27 trials)가 더해져, "per-QP CQE로 분류 → 최소 recovery action(QP-only) 선택 → isolation 보장"이라는 흐름이 단일 QP toy 환경이 아니라 실제 동시성 환경에서도 성립한다는 근거가 된다.
+multi-QP 실험은 두 가지를 실증했다. (1) QP-only recovery는 fault QP를 격리해 복구하며 정상 QP throughput 변화 0%(5,885 → 6,036 ops/10ms, 측정 오차 범위), full rebuild는 공유 자원(PD/MR/CQ) 파괴로 무관한 QP에 14,995 us downtime을 강제한다(recovery time 2,453 us vs 14,995 us, 약 6.1배 차이). (2) 동시 다발 에러에서 per-QP 식별은 CQE만 가능하고(10/10 deterministic) HW counter는 port-level 합산(`req_cqe_error` baseline 대비 +2)으로 구분 불가하다. 여기에 realistic 조건 신호 조합 9/9 MATCH(27 trials)가 더해져, "per-QP CQE로 분류 → 최소 recovery action(QP-only) 선택 → isolation 보장"이라는 흐름이 단일 QP toy 환경이 아니라 실제 동시성 환경에서도 성립한다는 근거가 된다.
 
 raw CSV 위치: `06_recovery/multi_qp/results/20260518_013055_isolation.csv`, 동 `_concurrent.csv` (2026-07-15 검토에서 존재 확인).

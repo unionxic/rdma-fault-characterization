@@ -20,7 +20,7 @@ cpu_baseline Exp1은 CQ를 tight-loop로 polling하면서 fault 주입 후 첫 f
 
 세 가지 서로 다른 fault 원인이 같은 값으로 수렴한다는 사실 자체가, detection latency를 결정하는 것이 fault의 종류가 아니라 HCA의 transport retry 동작이라는 점을 시사한다. 응답이 오지 않는 모든 fault는 동일한 retry timeout 사이클을 거친 뒤에야 failure CQE를 발생시킨다.
 
-측정 정밀도 한계: 이 detection 측정에는 fault 주입을 위한 control 경로의 TCP RTT가 혼입되어 있어 sub-ms 정밀도를 주장할 수 없다. 다만 3.7s가 지배적이라 혼입의 영향은 1% 미만이다. 서버 QP를 ERR로 전이시키는 시나리오는 detection_latency.csv에 N=1만 저장(데이터 손실)되어 단독으로는 통계적 주장에 쓸 수 없다. 프로세스 kill과 link down 시나리오만 N=100으로 완전하다.
+측정 정밀도 한계: 이 detection 측정에는 fault 주입을 위한 control 경로의 TCP RTT가 혼입되어 있어 sub-ms 정밀도를 주장할 수 없다. 다만 3.7s가 지배적이라 혼입의 영향은 1% 미만이다. 서버 QP를 ERR로 전이시키는 시나리오는 결과 CSV(`detection_latency.csv`, 저장소에 없음)에 N=1만 저장(데이터 손실)되어 단독으로는 통계적 주장에 쓸 수 없다. 프로세스 kill과 link down 시나리오만 N=100으로 완전하다.
 
 ### 1.3 Recovery floor와의 대비: 왜 detection이 지배하는가
 
@@ -127,15 +127,15 @@ MFT(Mellanox Firmware Tools) 설치가 필요하고, 빌드 시 `--without-kerne
 
 실험 구성: client는 225 노드에서 03_modifyqp/를 실행하고, server는 224 노드의 기존 01_cpu_baseline/experiment1/server를 사용한다.
 
-결과 파일:
+결과 파일: 아래 다섯 파일은 저장소 본문에 없다. 태그 `archive/results-tables-20261006`(Release `data-20261006`의 `results-tables-20261006.tar.xz`와 같은 내용)에 있다. 1.2절의 `detection_latency.csv`는 저장소에 올라온 적이 없다.
 
-| 파일 | 내용 |
+| 파일 (`experiments/225-client/` 아래) | 내용 |
 |---|---|
-| modifyqp_20260507_125550.csv | min_limit OFF, R=0..7, N=30 (R=7 12.26ms 실측의 출처) |
-| modifyqp_20260507_111714.csv | min_limit ON, 동일 sweep (default floor) |
-| raw_20260504_182249.csv | process-kill 기준 retry_cnt × qp_timeout sweep |
-| test_no_adp.csv | adp OFF 단독 효과 측정 |
-| test_no_min_limit.csv | min_limit OFF 검증 |
+| `03_modifyqp/results/modifyqp_20260507_125550.csv` | min_limit OFF, R=0..7, N=30 (R=7 12.26ms 실측의 출처) |
+| `03_modifyqp/results/modifyqp_20260507_111714.csv` | min_limit ON, 동일 sweep (default floor) |
+| `02_retry_decomposition/results/raw_20260504_182249.csv` | process-kill 기준 retry_cnt × qp_timeout sweep |
+| `03_modifyqp/results/test_no_adp.csv` | adp OFF 단독 효과 측정 |
+| `03_modifyqp/results/test_no_min_limit.csv` | min_limit OFF 검증 |
 
 ### 1.12 이 절의 결론
 
