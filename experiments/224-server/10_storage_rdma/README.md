@@ -1,75 +1,49 @@
-# 10_storage_rdma — Phase 1 (SSD × RDMA) : target 쪽 (224)
+# 10_storage_rdma: SSD 장애 실험의 타깃 쪽
 
-이 디렉토리는 Phase-1 실험의 **target/responder(224)** 쪽 스크립트다. 실제
-orchestration과 결과 수집은 전부 225의 같은 이름 디렉토리에서 이뤄지고, 여기
-스크립트들은 225의 `run_storage_experiment.sh`가 **SSH(225→224)로** 호출한다.
-설계 배경은 맥북 `~/Desktop/Netsys/gpu-fault-recovery/4_확장방향_cross_resource.md`
-(§3 Phase 1, §6 Fable 검토 노트) 참고. 전체 가설/해석은 225의 `README.md`에 있다.
+NVMe-oF over RDMA 실험에서 타깃(응답) 역할을 한 224 쪽 폴더다. 가짜 디스크를 만들어 RDMA로 내보내고, 그 아래에 장애를 넣는다.
+조율과 측정은 225가 했다. 결과와 해석은 [225 쪽 README](../../225-client/10_storage_rdma/README.md)에 있다.
+수치는 옛 클러스터(225 initiator ConnectX-6, 224 target ConnectX-5)에서 2026-07-15~17에 쟀다.
 
-## 안전 원칙 (가장 중요)
+## 무엇을 쟀나
 
-224의 **유일한 디스크는 부팅 디스크 `nvme0n1`**이다. 이 디렉토리의 어떤 코드도
-실디스크를 export하지 않는다. 오직 파일(`/home/gustlr/nvmet_backing/ns1.img`)을
-`losetup`으로 붙인 **loop 디바이스만** dm 타겟/ nvmet namespace에 도달한다.
-`lib_storage.sh`의 필수 검사 함수가 이를 강제한다(하나라도 어기면 중단):
+- **타깃 구성.** 파일 → loop 장치 → device-mapper 고장 계층 → nvmet namespace → RDMA 포트 순으로 쌓았다.
+- **넣은 장애.** 불량 블록, 전체 I/O 실패, 지연(1 ms~35 s), 포트 제거(타깃 붕괴), 제거한 포트 복원.
+- **시험 수.** 신호 측정 45회, 복구 활용 측정 27회, 모두 72회다.
+- **부팅 디스크 보호.** 이 노드의 유일한 디스크가 부팅 디스크다. 그래서 실제 디스크는 내보내지 않았다.
+  loop 장치가 아니면 멈추는 검사를 세 겹으로 넣었다.
 
-- `assert_not_real_disk` — `nvme0*`, 임의의 실 NVMe/SATA 네임스페이스, 그리고
-  `/`를 담은 루트 디스크(및 그 자식)를 이름·`lsblk PKNAME` 두 방식으로 거부.
-- `assert_loop_device` — export/dm 대상이 `lsblk -no TYPE == loop`가 아니면 abort.
-- `assert_dm_on_loop` — dm 디바이스의 `/sys/block/<dm>/slaves`가 전부 loop인지 확인.
+## 결론
+
+- **72회 동안 부팅 디스크를 건드리지 않고 장애를 냈다.** 블록 계층에 넣는 방식이라 커널 네트워크 스택을 거치지 않는 RDMA에도 장애가 닿는다.
+- **이 방식의 매체 오류는 일반 오류로만 보인다.** 불량 블록과 전체 실패 모두 initiator에서 같은 Internal Error(SCT 0x0, SC 0x6)였다.
+  - 커널 소스를 보면 nvmet은 매체 오류 타입을 실을 수 있다. 우리 주입 도구가 일반 I/O 오류를 내서 그 경로를 타지 않았다.
+- **포트를 지우면 initiator 앱은 33.36 s 뒤에 EIO를 받는다.** RDMA 카운터 resp_cqe_error는 0.6 s에 올랐다.
+- **포트만 다시 만들면 initiator가 스스로 재연결한다.** 다운 시간 5, 15, 30 s에서 재개까지 17.4, 27.8, 38.0 s였다. 재연결 간격(10 s)이 이 시간을 정한다.
+
+## 결과
+
+| 장애 | 타깃 구성 | initiator 앱이 본 것 |
+|---|---|---|
+| 없음 | loop 직결 | 성공 |
+| 작은 읽기의 매체 오류 | 불량 블록 | Internal Error |
+| 큰 읽기 도중 불량 블록 | 2 MiB 위치에 불량 블록, 위치 표시 패턴 기록 | EIO. 버퍼 앞 2 MiB는 실제로 채워짐 |
+| 전체 I/O 실패 | 모든 I/O 실패 | Internal Error |
+| 느린 장애 | 읽기와 쓰기 지연 | 5 s 이하는 성공, 35 s는 오류 없이 멈춤 |
+| 타깃 붕괴 | 포트 제거 | 33.36 s 뒤 EIO |
+| 타깃 복원 | 포트 제거 뒤 다시 만들기 | 17.4~38.0 s 뒤 재개 |
+
+## 한계와 주의
+
+- **타깃 붕괴는 포트 제거로 흉내 냈다.** 노드 전원이나 커널이 죽는 경우는 시험하지 않았다.
+- **매체 오류 타입을 재현하지 못했다.** 그래서 nvmet이 원인을 얼마나 보존하는지는 과소평가됐다.
+- **initiator 쪽 상태 위조(통제 실험)는 돌리지 않았다.** 그 경우 타깃은 정상 내보내기만 맡는다.
+- **옛 클러스터, 노드 한 쌍이다.** 지금 테스트베드에서는 다시 재지 않았다.
 
 ## 파일
 
-| 파일 | 역할 |
+| 파일 | 내용 |
 |---|---|
-| `lib_storage.sh` | 공용: 시나리오 라벨 상수, 안전 assert, RDMA sysfs 카운터 스냅샷, 경로 상수. 단독 실행 X (source 전용) |
-| `target_precheck.sh` | 읽기 전용 환경 점검(모듈 nvmet/nvmet-rdma, dm-dust/flakey/delay, configfs, nvme/fio/cc). 표로 PASS/FAIL 출력, 변경 없음 |
-| `target_setup.sh <SCENARIO> [param]` | 백킹 이미지→loop→(시나리오별 dm)→configfs로 nvmet subsystem/ns/port(rdma, `10.0.0.3:4420`) 구성. 상태를 `.storage_rdma_state`에 기록 |
-| `target_teardown.sh` | 역순 해제(configfs→dm→loop). 멱등, 상태파일 기반 |
-| `target_crash.sh` | TARGET_CRASH용 — nvmet 포트 제거로 즉사 모사. 트리거 시각(ns) 출력 + `/dev/kmsg` 마커 |
-| `target_restore.sh` | **(Phase 1b)** TARGET_RECOVERY용 — crash가 지운 nvmet **포트만 재생성**(subsystem/ns/loop/dm 무변경 = crash의 역연산). 트리거 시각(ns) 출력 + `/dev/kmsg` 마커. subsystem이 없으면 실패(빈 포트 방지) |
-| `pattern.h` | 오프셋 식별 패턴 스펙 (225 사본과 **byte-identical**). 4KB 블록마다 `[magic|block_index]` 16B 레코드 256개 |
-| `pattern_write.c` | 백킹 loop에 위 패턴을 기록 (MEDIA_ERROR_PARTIAL_READ 셋업 시 setup 스크립트가 `cc`로 빌드·실행) |
-
-## 시나리오별 target 구성
-
-| 시나리오 | dm 스택 | 비고 |
-|---|---|---|
-| `BASELINE` | 없음 (loop 직결) | 대조군 |
-| `MEDIA_ERROR_READ` | dm-dust + addbadblock + enable | bad block byte offset(param, 기본 32768) → 4KB 단위 블록 번호로 환산 |
-| `MEDIA_ERROR_PARTIAL_READ` | dm-dust (bad block = 읽기 중간) + **패턴 기록** | 대형 순차 read 중간에 bad block. initiator가 유효 prefix 측정 |
-| `FULL_IO_FAIL` | dm-flakey `up=0 down=3600` | trial 동안 전 I/O 실패 |
-| `FAIL_SLOW` | dm-delay `<ms>` | read+write 지연. ms는 param |
-| `TARGET_CRASH` | 없음 (loop 직결) | I/O 중 `target_crash.sh`로 포트 제거 |
-| `INITIATOR_STATUS_INJECT` | 없음 (loop 직결) | initiator debugfs 통제 실험 — target은 정상 export만 제공 |
-| `FAULT_ISOLATION` (1b) | dm-dust (=MEDIA_ERROR_READ) | 초기자가 불량 read 격리 + 정상 read 생존을 실증 |
-| `TIMEOUT_TUNING` (1b) | dm-delay (=FAIL_SLOW, param=지연 ms, 보통 35000) | 초기자가 io_timeout/fast_io_fail로 time-to-error 측정 |
-| `TARGET_RECOVERY` (1b) | 없음 (loop 직결) | I/O 중 `target_crash.sh`(死) → `target_restore.sh`(부활) |
-| `COUNTER_EARLY_DETECT` (1b) | 없음 (loop 직결, crash 모드) | 초기자 카운터 폴링 lead time. fail-slow 모드는 초기자가 FAIL_SLOW 라벨을 직접 요청 |
-
-## dm 좌표 계산 메모 (직접 검증 필요 항목)
-
-- dm sector 단위는 항상 **512B**. `blockdev --getsz`가 512-sector 개수를 준다.
-- dm-dust 테이블: `0 <sectors> dust <loopdev> 0 <blksz_bytes>` (여기 blksz=4096B).
-  bad block 번호는 **blksz(4096B) 단위** → `offset_bytes / 4096`.
-  메시지 순서: `addbadblock <n>` → `enable`(이때부터 해당 블록 read가 EIO).
-- dm-flakey: `0 <sectors> flakey <dev> 0 <up> <down>`. up=0 → 항상 down(전 I/O 에러).
-- dm-delay: `0 <sectors> delay <dev> 0 <ms>` — read/write 모두 지연.
-
-## 실행 (사용자가 직접, 224에서는 거의 실행할 일 없음)
-
-```bash
-# 225가 ssh로 호출하지만, 수동 점검은 224에서:
-sudo ./target_precheck.sh
-sudo ./target_setup.sh MEDIA_ERROR_PARTIAL_READ 2097152
-sudo ./target_teardown.sh
-```
-
-모든 setup/teardown/crash/**restore**은 **root(sudo)** 필요 (loop/dm/configfs/kmsg).
-
-**Phase 1b sudoers 추가 (필수)**: orchestrator가 `target_restore.sh`를 ssh로
-passwordless 호출하려면 `/etc/sudoers.d/storage_rdma`에 기존 3줄 옆에 한 줄 추가:
-
-```
-gustlr ALL=(root) NOPASSWD: /home/gustlr/Desktop/gpu_fault_recovery/10_storage_rdma/target_restore.sh
-```
+| [NOTES.md](NOTES.md) | 예전 README. 안전 검사, 시나리오별 타깃 구성, 실행 방법 |
+| [225 쪽 README](../../225-client/10_storage_rdma/README.md) | 결과 요약과 해석 |
+| [PHASE1_FINDINGS.md](../../225-client/10_storage_rdma/results/PHASE1_FINDINGS.md) | 결과 정리(225 쪽) |
+| [docs/experiments/08](../../../docs/experiments/08_storage_rdma.md) | 해설 |
