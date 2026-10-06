@@ -43,23 +43,12 @@ RDMA 연결에 장애를 일부러 내서, 요청 쪽이 오류를 얼마나 빨
 - **기록하지 않은 신호가 있다.** 응답 쪽 QP 상태와 비동기 이벤트는 이 실험에서 기록하지 않았다. 다음 캠페인에서 잰다(`gpu-initiated/propagation/`).
 - **부하가 높으면 복구에 꼬리가 생긴다.** 호스트 부하가 높을 때 복구 시간이 12~17 ms로 튀는 경우가 있었다. 표의 값은 부하가 낮을 때 잰 것이다.
 
-## 실행
-
-```bash
-make          # 두 노드 모두
-./run.sh      # config.sh의 장애 목록을 돌리고 analyze.py로 요약
-```
-
-설정은 `config.sh`에 있다. 옵션과 수동 실행 방법은 [NOTES.md](NOTES.md)에 있다.
-
 ## 파일
 
 | 파일 | 내용 |
 |---|---|
-| `client/`, `server/`, `common/` | 요청 쪽과 응답 쪽 프로그램 |
-| `run.sh`, `config.sh`, `analyze.py` | 실행, 설정, 요약 |
 | `results/` | 결과 표(CSV). 원시 로그는 Release `data-20261006` |
-| [NOTES.md](NOTES.md) | 상세 기록: CSV 열 정의, 부분 쓰기 계산, 0x81 세분, 설계 메모 |
+| [NOTES.md](NOTES.md) | 상세 기록 |
 | `VERIFICATION_0x81.md` | 0x81 두 원인을 카운터로 가를 수 없다는 검증 |
 | `ack_timeout/`, `fingerprint_teardown/` | 감지 시간 분석, 종료한 상대의 코드가 갈리는 원인 |
 | `nccl-integration/`, `gpu-initiated/` | NCCL과 GPU 스택 실험 |
