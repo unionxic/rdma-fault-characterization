@@ -2,15 +2,24 @@
 """run_tests.py - Stage 2 validation on 2 nodes (design §11). Orchestration only; the mechanism
 under test is inside libnccl (stage2 build). Run under ../../gpu-initiated/common/cluster_run.sh.
 
-usage: run_tests.py --out DIR [--tests T1 T2 ...] [--n N] [--build stage2]
+usage: run_tests.py --out DIR [--tests T1 T2 ...] [--n N] [--build B]
+  --build defaults to stage2, or to stage2rkey when an F2 test is selected (the F2 hook exists only there).
 Verdict per run:
   RECOVERED   both ranks rc 0, every iteration bit-exact (nccl_ct checks the whole buffer), and at
               least one "[FAULT-RECOVERY2] send comm: recovered" line (count = rounds).
   CLEAN_FAIL  both ranks surfaced an NCCL error (rc 2/3/7 or killed after it), no mismatch/timeout.
+  DECLINED    (F2, recovery on) CLEAN_FAIL, the corrupted-rkey write was posted once, rank 0 saw status 10
+              (REM_ACCESS) and refused it by class ("fault class not recoverable"), and no recovery was led or
+              completed on either rank.
+  STOCK_FAIL  (F2, recovery off) CLEAN_FAIL, the corrupted-rkey write was posted once, rank 0 saw status 10,
+              and no [FAULT-RECOVERY2] line exists.
   PASS        (no-fault cases) both rc 0, no recovery lines.
   FAIL        anything else (mismatch, timeout, hang, a recovery that did not complete, ...).
+The F2 tests score cell NET1 of ../../gpu-initiated/propagation/PREDICTIONS.md (pre-registered N = 10: --n 10).
+Its observables are columns of results.csv (written for every test): rc0/rc1, rkey_inj, r0_rem_access, r0_vendor,
+r1_async_fatal, r0_api/r1_api (the error nccl_ct printed), r0_declined, lead.
 """
-import argparse, csv, os, subprocess, sys, threading, time
+import argparse, csv, os, re, subprocess, sys, threading, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "perf"))
 import ctlib as C
@@ -18,6 +27,40 @@ import ctlib as C
 FR = {"NCCL_RDMA_FAULT_RECOVERY": "1", "NCCL_IB_TIMEOUT": "14"}
 DEFAULT = {}
 COUNT_SINGLE, COUNT_DEFAULT = 65536, 4194304      # 256 KB, 16 MB
+
+
+API_REMOTE = "remote process exited or there was a network error"   # ncclGetErrorString(ncclRemoteError)
+API_ERR = re.compile(r"async NCCL error(?: after sync)?: (.*)|ncclAllReduce -> (.*)|\] NCCL \S+:\d+ (.*)")
+VENDOR = re.compile(r"status=10\b.*?vendor[ _]err[= ](0x[0-9a-fA-F]+|\d+)")   # stock "vendor err 136", FR2 "vendor_err=0x88"
+
+
+def f2_obs(res):
+    """Observables of the F2 cell (NET1). Rank 0 is the requester (it carries NCCL_RDMA_FAULT_INJECT_RKEY), rank 1
+    the target. Computed for every run, so that results.csv keeps one header in a mixed campaign."""
+    l0, l1 = [l for _, l in res["lines0"]], [l for _, l in res["lines1"]]
+
+    def vendor(lines):
+        for l in lines:
+            m = VENDOR.search(l)
+            if m:
+                return hex(int(m.group(1), 0))
+        return ""
+
+    def api(lines):
+        for l in lines:
+            m = API_ERR.search(l)
+            if m:
+                msg = next(g for g in m.groups() if g is not None).strip()
+                return "ncclRemoteError" if msg == API_REMOTE else msg
+        return ""
+    return dict(rc0=res["rc0"], rc1=res["rc1"],
+                rkey_inj=sum("posted with a corrupted rkey" in l for l in l0 + l1),
+                r0_rem_access=sum(bool(re.search(r"status=10\b", l)) for l in l0),
+                r0_vendor=vendor(l0),
+                r1_async_fatal=sum("async fatal event on QP" in l for l in l1),
+                r0_api=api(l0), r1_api=api(l1),
+                r0_declined=sum("fault class not recoverable" in l for l in l0),
+                lead=sum("-> lead a recovery" in l for l in l0 + l1))
 
 
 def classify(res, expect):
@@ -29,9 +72,13 @@ def classify(res, expect):
     rrec = sum("[FAULT-RECOVERY2] recv comm: recovered" in l for l in lines)
     failed = sum("comm FAILED" in l for l in lines)
     inj = sum("[FAULT-INJECT]" in l for l in lines)
+    fr2 = sum("[FAULT-RECOVERY2]" in l for l in lines)
+    o = f2_obs(res)
     s0, s1 = res["s0"] or {}, res["s1"] or {}
     if mism or tmo:
         v = "FAIL"
+    elif rc0 == 0 and rc1 == 0 and expect in ("decline", "stock-fail"):
+        v = "FAIL(no fault fired)" if o["rkey_inj"] == 0 else "FAIL(fault fired, no error)"
     elif rc0 == 0 and rc1 == 0:
         if expect == "pass":
             v = "PASS" if rec == 0 and failed == 0 else "FAIL(unexpected recovery)"
@@ -44,10 +91,26 @@ def classify(res, expect):
                 v = "PASS(no fault fired)" if inj == 0 else "FAIL(no recovery line)"
     elif rc0 in (2, 3, 7, -9, 137, 255) and rc1 in (2, 3, 7, -9, 137, 255) and mism == 0:   # 137/255: the rank the test killed
         v = "CLEAN_FAIL"
+        if expect in ("decline", "stock-fail") and o["rkey_inj"] != 1:
+            v = f"FAIL({o['rkey_inj']} rkey injections)"
+        elif expect == "decline":
+            if rec or rrec or o["lead"]:
+                v = "FAIL(recovery attempted)"
+            elif o["r0_declined"] and o["r0_rem_access"]:
+                v = "DECLINED"
+            else:
+                v = "CLEAN_FAIL(not declined by class)"
+        elif expect == "stock-fail":
+            if fr2:
+                v = "FAIL(recovery code active)"
+            elif o["r0_rem_access"]:
+                v = "STOCK_FAIL"
+            else:
+                v = "CLEAN_FAIL(no REM_ACCESS on rank 0)"
     else:
         v = f"FAIL(rc {rc0}/{rc1})"
     return v, dict(mismatch=mism, timeout=int(bool(tmo)), rec_send=rec, rec_recv=rrec, failed_lines=failed, injected=inj,
-                   ok0=s0.get("ok"), ok1=s1.get("ok"), wall_s=round(res["wall_s"], 3))
+                   ok0=s0.get("ok"), ok1=s1.get("ok"), wall_s=round(res["wall_s"], 3), **o)
 
 
 def rec_times(res):
@@ -111,8 +174,19 @@ TESTS = {
     # comm cannot recover and must fail like stock, promptly
     "T12d": ("fault after an OOB outage (OOB lost, then send QP ERR)", DEFAULT, COUNT_DEFAULT, 12000,
              {"NCCL_RDMA_FAULT_INJECT": "150000"}, {}, "fail", ("oob", 12.0)),
+    # F2, remote access (cell NET1 of ../../gpu-initiated/propagation/PREDICTIONS.md): the data write of rank 0's
+    # multi-send #403 carries a corrupted rkey (same config and k as T1), so rank 1's recv QP NAKs it. Rank 0 is the
+    # requester, rank 1 the target. Recovery on: Stage 2 must refuse the class (REM_ACCESS) and fail like stock.
+    "F2": ("F2 corrupted rkey on rank 0's write, recovery on (declined)", C.SINGLE, COUNT_SINGLE, 300,
+           {"NCCL_RDMA_FAULT_INJECT_RKEY": "403"}, {}, "decline", None),
+    # the same fault down the stock error path (flag off on both ranks; the stock library has no injection hook)
+    "F2stock": ("F2 corrupted rkey on rank 0's write, recovery off (stock error path control)", C.SINGLE, COUNT_SINGLE, 300,
+                {"NCCL_RDMA_FAULT_INJECT_RKEY": "403", "NCCL_RDMA_FAULT_RECOVERY": "0"}, {"NCCL_RDMA_FAULT_RECOVERY": "0"},
+                "stock-fail", None),
 }
 TESTS["T10"], TESTS["T10b"] = TESTS["T12"], TESTS["T12b"]   # names used in results/20260925/T10*
+RKEY_TESTS = {t for t, v in TESTS.items() if "NCCL_RDMA_FAULT_INJECT_RKEY" in {**v[4], **v[5]}}
+RKEY_BUILDS = {"stage2rkey"}             # builds that have NCCL_RDMA_FAULT_INJECT_RKEY (ctlib.LIBS)
 
 MGMT_PEER = "192.0.2.194"          # sunny on the management network (NCCL_SOCKET_IFNAME=eno1)
 _oob_rules = []                          # iptables rule specs currently installed by this runner
@@ -160,11 +234,16 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--tests", nargs="+", default=["T0s", "T1", "T2", "T3", "T4", "T5", "T6", "T8", "T9"])
     p.add_argument("--n", type=int, default=5)
-    p.add_argument("--build", default="stage2")
+    p.add_argument("--build", default=None, help="ctlib.LIBS key; default stage2, or stage2rkey if an F2 test is selected")
     p.add_argument("--extra-env", nargs="*", default=[])
     p.add_argument("--run-timeout", type=int, default=240)
     p.add_argument("--recovery", type=int, default=1, help="0 = stock error path (control runs)")
     a = p.parse_args()
+    rkey = sorted(set(a.tests) & RKEY_TESTS)
+    if a.build is None:
+        a.build = "stage2rkey" if rkey else "stage2"
+    if rkey and a.build not in RKEY_BUILDS:
+        p.error(f"{rkey} need a build with NCCL_RDMA_FAULT_INJECT_RKEY ({sorted(RKEY_BUILDS)}), not {a.build}")
     os.makedirs(a.out, exist_ok=True)
     extra = dict(kv.split("=", 1) for kv in a.extra_env)
     # freeze the library for this campaign: both ranks use the same bytes even if it is rebuilt meanwhile
@@ -188,7 +267,7 @@ def main():
             env = {**cfg, **FR, **extra}
             if not a.recovery:
                 env["NCCL_RDMA_FAULT_RECOVERY"] = "0"
-                expect = "fail" if expect.startswith("recover") else expect
+                expect = "fail" if expect.startswith("recover") else "stock-fail" if expect == "decline" else expect
             if special and special[0] == "gbh" and not gbh_up:
                 r = gbh("setup")
                 g0, g1 = r.stdout.split()

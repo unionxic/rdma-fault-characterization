@@ -18,6 +18,7 @@ LIBS = {                                    # build name -> lib dir on rain
     "stage2f": f"{SCRATCH}/n2/stage2f/build/lib",   # frozen copy used by the completion-time campaign
     "stage2old": f"{SCRATCH}/n2/stage2_78f/build/lib",   # build 78f96f38, before the OOB-loss fix (T12b control)
     "stage2rst": f"{SCRATCH}/n2/stage2_7b0/build/lib",   # build 7b0d0122, RST still counted as death (T12c control)
+    "stage2rkey": f"{SCRATCH}/nccl_rkey_build/lib",      # a037de42 + the F2 hook NCCL_RDMA_FAULT_INJECT_RKEY
 }
 
 GID_PROBE = r'''d=/sys/class/infiniband/$1/ports/$2
