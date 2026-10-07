@@ -12,7 +12,10 @@
  * context that owns the object, so the events of other processes' QPs never arrive
  * here.
  *
- * usage: evrec -d dev [-p port] [-o out] [-T max_seconds]
+ * usage: evrec -d dev [-p port] [-o out] [-T max_seconds] [-s sample_ms -c name,name,...]
+ *
+ * -s/-c (live_peer study, 2026-10-07): every sample_ms milliseconds, read only the named files of
+ * hw_counters/ (at most 16) and write one "smp" line. Without -s nothing changes in the output.
  *
  * Output: one record per line, "<kind> key=value ...":
  *   start  dev= port= pid= max_s= mono_ns= real_ns=
@@ -22,6 +25,7 @@
  *   event  seq= mono_ns= real_ns= type=IBV_EVENT_* code= elem=port|device|qp|cq|srq|wq|unknown
  *          [port=N | qpn=0x.. | wqn=0x..]
  *   end    reason=sigterm|sigint|sighup|timeout|error events= mono_ns= real_ns=
+ *   smp    mono_ns= <name>=<value> ...   (only with -s; value ? if unreadable)
  *
  * Exit status: 0 normal end (signal or -T), 1 device/IO error, 2 bad arguments.
  */
@@ -173,9 +177,34 @@ static void snapshot(FILE *out, const char *dev, int port, const char *phase) {
     snapshot_dir(out, base, "counters", phase);
 }
 
+/* one sample of the named hw_counters files: "smp mono_ns=<n> name=value ..." */
+#define SMP_MAX 16
+static void sample(FILE *out, const char *base, char names[][64], int n) {
+    char line[2048];
+    int len = snprintf(line, sizeof(line), "smp mono_ns=%" PRIu64, clock_ns(CLOCK_MONOTONIC));
+    for (int i = 0; i < n && len > 0 && (size_t)len < sizeof(line); i++) {
+        char fpath[512], val[64] = "?";
+        snprintf(fpath, sizeof(fpath), "%s/hw_counters/%s", base, names[i]);
+        int fd = open(fpath, O_RDONLY);
+        if (fd >= 0) {
+            ssize_t r = read(fd, val, sizeof(val) - 1);
+            close(fd);
+            if (r > 0) {
+                val[r] = '\0';
+                char *nl = strchr(val, '\n');
+                if (nl) *nl = '\0';
+            } else {
+                snprintf(val, sizeof(val), "?");
+            }
+        }
+        len += snprintf(line + len, sizeof(line) - (size_t)len, " %s=%s", names[i], val);
+    }
+    fprintf(out, "%s\n", line);
+}
+
 static void usage(const char *prog) {
     fprintf(stderr,
-            "usage: %s -d dev [-p port] [-o out] [-T max_seconds]\n"
+            "usage: %s -d dev [-p port] [-o out] [-T max_seconds] [-s sample_ms -c name,...]\n"
             "  records the async events of <dev> and the port's hw_counters/ and counters/\n"
             "  at start and at end (SIGTERM, SIGINT, SIGHUP, or after -T seconds; 0 = no bound)\n",
             prog);
@@ -185,18 +214,31 @@ int main(int argc, char **argv) {
     const char *dev = NULL, *out_path = NULL;
     int port = 1;
     double max_s = 0;
+    long sample_ms = 0;
+    char smp_names[SMP_MAX][64];
+    int smp_n = 0;
     int opt;
-    while ((opt = getopt(argc, argv, "d:p:o:T:h")) != -1) {
+    while ((opt = getopt(argc, argv, "d:p:o:T:s:c:h")) != -1) {
         switch (opt) {
             case 'd': dev = optarg; break;
             case 'p': port = atoi(optarg); break;
             case 'o': out_path = optarg; break;
             case 'T': max_s = atof(optarg); break;
+            case 's': sample_ms = atol(optarg); break;
+            case 'c': {
+                char tmp[1024];
+                snprintf(tmp, sizeof(tmp), "%s", optarg);
+                for (char *tok = strtok(tmp, ","); tok && smp_n < SMP_MAX; tok = strtok(NULL, ","))
+                    snprintf(smp_names[smp_n++], sizeof(smp_names[0]), "%s", tok);
+                break;
+            }
             case 'h': usage(argv[0]); return 0;
             default:  usage(argv[0]); return 2;
         }
     }
-    if (!dev || port < 1 || port > 255 || max_s < 0) { usage(argv[0]); return 2; }
+    if (!dev || port < 1 || port > 255 || max_s < 0 || sample_ms < 0 || (sample_ms > 0 && smp_n == 0)) {
+        usage(argv[0]); return 2;
+    }
 
     /* Block the end signals before anything else; they are only taken inside ppoll(),
      * so a signal that arrives during setup still ends the run with the end snapshot. */
@@ -242,15 +284,27 @@ int main(int argc, char **argv) {
     snapshot(out, dev, port, "start");
 
     const uint64_t deadline = max_s > 0 ? mono0 + (uint64_t)(max_s * 1e9) : 0;
+    char smp_base[256];
+    snprintf(smp_base, sizeof(smp_base), "/sys/class/infiniband/%s/ports/%d", dev, port);
+    const uint64_t smp_step = (uint64_t)sample_ms * 1000000ull;
+    uint64_t next_smp = sample_ms > 0 ? clock_ns(CLOCK_MONOTONIC) : 0;
     const char *reason = "error";
     uint64_t events = 0;
     for (;;) {
         if (g_stop_sig) break;
         struct timespec ts, *tsp = NULL;
-        if (deadline) {
-            uint64_t now = clock_ns(CLOCK_MONOTONIC);
-            if (now >= deadline) { reason = "timeout"; break; }
-            uint64_t left = deadline - now;
+        uint64_t now = clock_ns(CLOCK_MONOTONIC);
+        if (deadline && now >= deadline) { reason = "timeout"; break; }
+        if (next_smp && now >= next_smp) {
+            sample(out, smp_base, smp_names, smp_n);
+            next_smp += smp_step;
+            if (next_smp <= now) next_smp = now + smp_step;
+            continue;
+        }
+        uint64_t wake = deadline;
+        if (next_smp && (!wake || next_smp < wake)) wake = next_smp;
+        if (wake) {
+            uint64_t left = wake - now;
             ts.tv_sec = (time_t)(left / 1000000000ull);
             ts.tv_nsec = (long)(left % 1000000000ull);
             tsp = &ts;
