@@ -70,10 +70,12 @@ sha256sum -c --ignore-missing SHA256SUMS && tar -xJf '<asset>'
 
 ## Release `data-20261007`
 
-2 raw-data archives, 242 files, 0.09 MB compressed. Packed by `tools/pack_release.py --whole`.
+4 raw-data archives, 391 files, 0.18 MB compressed. Packed by `tools/pack_release.py --whole`.
 The full checksums are in the `SHA256SUMS` asset of that release.
 
 | folder | asset | files | MB | sha256 (first 12) | note |
 |---|---|--:|--:|---|---|
 | `harness/gpu-initiated/nvshmem_rootcause/teardown_channel/results/20261007` | `harness__gpu-initiated__nvshmem_rootcause__teardown_channel__results__20261007.tar.xz` | 230 | 0.08 | `4fe553c1c7f4` |  |
 | `harness/gpu-initiated/nvshmem_rootcause/teardown_channel/results/20261007_smoke` | `harness__gpu-initiated__nvshmem_rootcause__teardown_channel__results__20261007_smoke.tar.xz` | 12 | 0.01 | `c0f012d0ea9c` | smoke run, not scored |
+| `harness/gpu-initiated/nvshmem_rootcause/cq380/results/20261007` | `harness__gpu-initiated__nvshmem_rootcause__cq380__results__20261007.tar.xz` | 115 | 0.06 | `476a79a255d7` |  |
+| `harness/gpu-initiated/nvshmem_rootcause/cq380/results/20261007_smoke` | `harness__gpu-initiated__nvshmem_rootcause__cq380__results__20261007_smoke.tar.xz` | 34 | 0.02 | `947c4f180928` | smoke run, not scored |
