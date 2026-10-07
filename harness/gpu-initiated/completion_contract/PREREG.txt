@@ -1,0 +1,5 @@
+Pre-registration of completion_contract, 2026-10-07 09:12:55 +0900, before any measured run of this study.
+sha256 of the fixed prediction file:
+c6f143ac3d23fa481a5595ef4c764333988302d564102b9ff3b0b6380c8d04cc  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/completion-contract-v1 (sections 2, 3, 7, 8).
+The source predictions (S rows) come from the audit reports in audit/, written 2026-10-06.
