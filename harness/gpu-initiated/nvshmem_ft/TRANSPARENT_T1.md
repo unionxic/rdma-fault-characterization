@@ -330,7 +330,8 @@ point, rebase, INIT/RTR/RTS, re-post, publish, DONE) with these differences:
   re-lookup is by value, local only); the transport's device-wide GID index is not updated.
 - **Open items from the review.** A second device give-up in the same round is not handshaken; QPs
   created after init can push the count past 8; a DCI post between the quiescence check and the DCI's
-  2RST is not excluded; the `atexit` join is not tested.
+  2RST is not excluded; the `atexit` join is not tested. (Tested later in `t1_close/`: exit without
+  finalize joined the helper 2.16–2.28 ms after exit, 10/10, on the t1_close build.)
 - **Kernel log.** rain's `mlx5_1` (one leaked firmware command slot since 2026-09-25) logged no new
   mlx5 message; its NVRM BAR1 messages fall into void trials with a 400 MiB heap and the other agent's
   holds. sunny logged `FWTracer: Events were lost` at 09-30 23:21:30 (F2A trials), 10-01 02:27:47 (no
