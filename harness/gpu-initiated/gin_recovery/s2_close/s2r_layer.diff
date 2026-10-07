@@ -1,0 +1,220 @@
+diff --git a/src/dev_runtime.cc b/src/dev_runtime.cc
+index 2bad06e..ecc2d6d 100644
+--- a/src/dev_runtime.cc
++++ b/src/dev_runtime.cc
+@@ -29,6 +29,8 @@
+ 
+ int64_t ncclParamEnqueueRearchEnable();
+ 
++bool ncclGinTsUserAbortEnabled();  // transport/net_ib/gdaki/gin_host_gdaki.cc (gin-s2-close)
++
+ NCCL_PARAM(WinStride, "WIN_STRIDE", -1);
+ NCCL_PARAM(EnableVersionCheck, "ENABLE_VERSION_CHECK", 1);
+ NCCL_PARAM(ElasticBufferRegister, "ELASTIC_BUFFER_REGISTER", 1);
+@@ -1639,6 +1641,13 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
+     reqs->ginSignalCount = ginSignalTotal;
+     reqs->ginCounterCount = ginCounterTotal;
+     NCCLCHECKGOTO(ncclGinDevCommSetup(comm, reqs, outDevComm, deviceCodeVersion), ret, fail);
++    // GIN transparent recovery (research build, gin-s2-close): give a user devComm the communicator's device
++    // abort flag, so ncclCommAbort releases its kernels' GIN waits (waitSignal included), as it does for NCCL's
++    // own devComms. After the GIN setup, which recognises a user context by a null abortFlag (gin/gin_host.cc).
++    if (!isInternal && ncclGinTsUserAbortEnabled()) {
++      outDevComm->abortFlag = comm->abortFlagDev;
++      WARN("GIN/TS: user devComm abort flag set rank=%d", comm->rank);
++    }
+   }
+ 
+   CUDACHECKGOTO(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), ret, fail);
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 7213c1f..ab69116 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -32,6 +32,7 @@
+ #include <sys/socket.h>
+ #include <netinet/in.h>
+ #include <netinet/tcp.h>
++#include <linux/filter.h>
+ 
+ #include "ibvwrap.h"
+ #include "mlx5/mlx5dvwrap.h"
+@@ -1950,6 +1951,9 @@ ncclResult_t ncclGinRecoverAbort(ncclComm_t comm, int peer) {
+ //   NCCL_GIN_TS_TEST_DIE=quiesce (the initiator's helper thread exits mid-round, leaving the QPs paused),
+ //   NCCL_GIN_TS_TEST_SPLIT=<k>[,<k>...] (split the k-th put+signal: see struct ncclGinTsTest),
+ //   NCCL_GIN_TS_TEST_SELF_REPORT=1 (S2: the helper gets a LOCAL_QP_ERR record when the fault hook fires on its rank)
++//   NCCL_GIN_TS_TEST_SOCK_MUTE=<start ms>:<length ms> (gin-s2-close: drop every segment arriving on the helper
++//   sockets for that window, a silent management-network outage of this connection; see gdakiTsTestMute)
++//   NCCL_GIN_TS_USER_ABORT=0|1 (gin-s2-close, default 1: a user devComm gets the communicator's device abort flag)
+ //   NCCL_GIN_TS_DIAG=norebase|noring  negative controls only: waiters keep their stale ticket / the
+ //                                 host does not ring the doorbell for the re-posted WQEs
+ // The application's kernels and host code are unchanged. A helper thread per GDAKI context (not the
+@@ -1962,6 +1966,13 @@ ncclResult_t ncclGinRecoverAbort(ncclComm_t comm, int peer) {
+ // (gin_gdaki.h tsPoll). Design and measurements: harness/gpu-initiated/gin_recovery/TRANSPARENT_S1.md.
+ // ===========================================================================
+ NCCL_PARAM(GinFaultTransparent, "GIN_FAULT_TRANSPARENT", 0);
++// gin-s2-close: with transparent recovery on, give a user devComm the communicator's device abort flag
++// (dev_runtime.cc), so ncclCommAbort releases its kernels' GIN waits, waitSignal included, as it does for NCCL's
++// own devComms. NCCL_GIN_TS_USER_ABORT=0 keeps the stock null flag.
++NCCL_PARAM(GinTsUserAbort, "GIN_TS_USER_ABORT", 1);
++bool ncclGinTsUserAbortEnabled() {
++  return ncclParamGinFaultRecovery() && ncclParamGinFaultTransparent() && ncclParamGinTsUserAbort() != 0;
++}
+ NCCL_PARAM(GinTsHandshakeMs, "GIN_TS_HANDSHAKE_MS", 3000);
+ NCCL_PARAM(GinTsHoldMs, "GIN_TS_HOLD_MS", 30000);
+ NCCL_PARAM(GinTsQuiesceMs, "GIN_TS_QUIESCE_MS", 5000);
+@@ -2010,6 +2021,7 @@ struct gdakiTsPeer {
+   bool declined = false;  // terminal
+   size_t have = 0;        // bytes of a partial record in buf
+   struct gdakiTsMsg buf;
++  char closeCause[24] = {0};  // gin-s2-close: why gdakiTsPump last failed (FIN, BADMAGIC or the errno name)
+ };
+ 
+ struct gdakiTsQp {        // host copy, per qp_idx
+@@ -2052,6 +2064,7 @@ struct gdakiTs {
+   // Test knobs (research build).
+   int stallMs = 0, stallStage = 0;        // stage 1 = after quiesce, 2 = after commit, 3 = after the commit point
+   int dieStage = 0;                       // 1 = helper thread exits after quiesce
++  int muteStartMs = -1, muteLenMs = 0;    // gin-s2-close: NCCL_GIN_TS_TEST_SOCK_MUTE=<start ms>:<length ms>
+   std::atomic<int> dead{0};
+   struct ncclGinTsTest* test = nullptr;   // host-mapped (NCCL_GIN_TS_TEST_SPLIT)
+   struct ncclGinTsTest* testDev = nullptr;
+@@ -2216,17 +2229,46 @@ static int gdakiTsSend(int fd, struct gdakiTsMsg* m, int timeoutMs) {
+   return 0;
+ }
+ 
+-// Reads what is available. 1: a whole record is in *out; 0: not yet; -1: FIN, error or bad magic.
++// gin-s2-close: a short name for the errno that ended the helper socket (logged, not acted on).
++static const char* gdakiTsErrName(int e) {
++  switch (e) {
++    case ETIMEDOUT: return "ETIMEDOUT";
++    case ECONNRESET: return "ECONNRESET";
++    case EPIPE: return "EPIPE";
++    case EHOSTUNREACH: return "EHOSTUNREACH";
++    case ENETUNREACH: return "ENETUNREACH";
++    case ECONNREFUSED: return "ECONNREFUSED";
++    case ECONNABORTED: return "ECONNABORTED";
++    case ENOTCONN: return "ENOTCONN";
++    case EBADF: return "EBADF";
++    default: return nullptr;
++  }
++}
++
++// Reads what is available. 1: a whole record is in *out; 0: not yet; -1: FIN, error or bad magic
++// (pe.closeCause then says which).
+ static int gdakiTsPump(struct gdakiTsPeer& pe, struct gdakiTsMsg* out) {
+   while (pe.have < sizeof(struct gdakiTsMsg)) {
+     ssize_t k = recv(pe.fd, (char*)&pe.buf + pe.have, sizeof(struct gdakiTsMsg) - pe.have, MSG_DONTWAIT);
+-    if (k == 0) return -1;
+-    if (k < 0) return (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) ? 0 : -1;
++    if (k == 0) {
++      snprintf(pe.closeCause, sizeof(pe.closeCause), "FIN");
++      return -1;
++    }
++    if (k < 0) {
++      const int e = errno;
++      if (e == EAGAIN || e == EWOULDBLOCK || e == EINTR) return 0;
++      const char* n = gdakiTsErrName(e);
++      if (n) snprintf(pe.closeCause, sizeof(pe.closeCause), "%s", n);
++      else snprintf(pe.closeCause, sizeof(pe.closeCause), "errno%d", e);
++      return -1;
++    }
+     pe.have += (size_t)k;
+   }
+   *out = pe.buf;
+   pe.have = 0;
+-  return out->magic == GDAKI_TS_MAGIC ? 1 : -1;
++  if (out->magic == GDAKI_TS_MAGIC) return 1;
++  snprintf(pe.closeCause, sizeof(pe.closeCause), "BADMAGIC");
++  return -1;
+ }
+ 
+ // Waits up to timeoutMs for one record. 1 record, 0 timeout, -1 FIN/error.
+@@ -3207,6 +3249,39 @@ static void gdakiTsScan(struct gdakiRecHost* r) {
+   }
+ }
+ 
++// gin-s2-close test knob NCCL_GIN_TS_TEST_SOCK_MUTE=<start ms>:<length ms> (times from the start of the helper
++// thread, which follows the socket setup): attach a drop-everything classic BPF filter to every helper socket at the
++// start and detach it at the end. The kernel then discards every segment that arrives on those sockets (no FIN, no
++// RST), as a silent outage of the management network would, for these connections only. Test only.
++static void gdakiTsTestMute(struct gdakiTs* ts, int rank, double t0, int* state) {
++  if (ts->muteStartMs < 0 || *state >= 2) return;
++  const double now = gdakiQ4MonoMs();
++  if (*state == 0 && now >= t0 + ts->muteStartMs) {
++    struct sock_filter code[1] = {BPF_STMT(BPF_RET | BPF_K, 0)};
++    struct sock_fprog prog;
++    prog.len = 1;
++    prog.filter = code;
++    int n = 0, bad = 0;
++    for (auto& pe : ts->peers) {
++      if (pe.fd < 0) continue;
++      if (setsockopt(pe.fd, SOL_SOCKET, SO_ATTACH_FILTER, &prog, sizeof(prog)) == 0) n++;
++      else bad++;
++    }
++    if (bad) WARN("GIN/TS: TEST socket mute: SO_ATTACH_FILTER failed on %d socket(s) rank=%d errno=%d", bad, rank, errno);
++    WARN("GIN/TS: TEST socket mute on rank=%d peers=%d mono_ms=%.3f", rank, n, now);
++    *state = 1;
++  }
++  if (*state == 1 && now >= t0 + ts->muteStartMs + ts->muteLenMs) {
++    int n = 0, dummy = 0;
++    for (auto& pe : ts->peers) {
++      if (pe.fd < 0) continue;
++      if (setsockopt(pe.fd, SOL_SOCKET, SO_DETACH_FILTER, &dummy, sizeof(dummy)) == 0) n++;
++    }
++    WARN("GIN/TS: TEST socket mute off rank=%d peers=%d mono_ms=%.3f", rank, n, now);
++    *state = 2;
++  }
++}
++
+ static void gdakiTsMain(struct gdakiRecHost* r) {
+   gdakiTsInHelper = true;
+   gdakiTsOwner = r;
+@@ -3216,8 +3291,11 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+   std::vector<struct pollfd> pfds;
+   std::vector<int> who;
+   double nextScan = gdakiQ4MonoMs() + 100.0;
++  const double tMain0 = gdakiQ4MonoMs();  // gin-s2-close: origin of the socket-mute test knob
++  int muteState = 0;
+   while (!ts->stop.load(std::memory_order_acquire) && !ts->dead.load(std::memory_order_acquire)) {
+     ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
++    gdakiTsTestMute(ts, g->rank, tMain0, &muteState);
+     pfds.clear();
+     who.clear();
+     for (int p = 0; p < (int)ts->peers.size(); p++) {
+@@ -3244,9 +3322,11 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+       }
+       if (got < 0 && !pe.gone) {
+         // FIN/RST while idle is not a fault (the peer may just be tearing down): recovery with this
+-        // peer becomes impossible and a later fault on it is declined.
++        // peer becomes impossible and a later fault on it is declined. (gin-s2-close: logged as a WARN with
++        // its cause; the behaviour is unchanged.)
+         pe.gone = true;
+-        INFO(NCCL_NET, "GIN/TS: rank %d: socket to rank %d closed", g->rank, p);
++        WARN("GIN/TS: rank %d: socket to rank %d closed cause=%s mono_ms=%.3f", g->rank, p,
++             pe.closeCause[0] ? pe.closeCause : "unknown", gdakiQ4MonoMs());
+       }
+     }
+     std::vector<struct gdakiTsFault> fs;
+@@ -3472,9 +3552,20 @@ static void gdakiTsTestKnobs(struct gdakiRecHost* r) {
+         ts->test->list[ts->test->nlist++] = (uint32_t)atoi(q);
+     }
+   }
+-  if (ts->stallMs || ts->dieStage || ts->test)
+-    WARN("GIN/TS: TEST knobs rank=%d stall_ms=%d stage=%d die=%d split=%s", r->ctx->rank, ts->stallMs, ts->stallStage,
+-         ts->dieStage, ts->test ? e : "-");
++  const char* split = ts->test ? e : "-";
++  e = getenv("NCCL_GIN_TS_TEST_SOCK_MUTE");  // gin-s2-close
++  if (e && *e) {
++    int a = -1, b = 0;
++    if (sscanf(e, "%d:%d", &a, &b) == 2 && a >= 0 && b > 0) {
++      ts->muteStartMs = a;
++      ts->muteLenMs = b;
++    } else {
++      WARN("GIN/TS: TEST socket mute: cannot parse NCCL_GIN_TS_TEST_SOCK_MUTE=%s", e);
++    }
++  }
++  if (ts->stallMs || ts->dieStage || ts->test || ts->muteStartMs >= 0)
++    WARN("GIN/TS: TEST knobs rank=%d stall_ms=%d stage=%d die=%d split=%s sock_mute=%d:%d", r->ctx->rank, ts->stallMs,
++         ts->stallStage, ts->dieStage, split, ts->muteStartMs, ts->muteLenMs);
+ }
+ 
+ static void gdakiTsStart(struct gdakiRecHost* r) {
