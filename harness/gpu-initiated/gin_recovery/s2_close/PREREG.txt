@@ -1,0 +1,8 @@
+Pre-registration of gin-s2-close, 2026-10-07 18:56:33 +0900, before any measured run of this study.
+sha256 of the fixed prediction file:
+0b18ee25ccad7200d6d6518cf408fbe2038a3d6b81858c5c223df272c88bb563  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/gin-s2-close-v1 (sections 2, 3, 7, 8).
+The scoring fields, cell keys (cell@build) and acceptance grammar are fixed in EXPERIMENT.md section 3.1-3.2.
+The predictions come from the step-2 source tree (gin_transparent_s2.diff on NCCL v2.32.3-1) and from the step-2 raw
+data recounted from Release data-20261006 on 2026-10-07; no code for this study was written or built and nothing was
+run on the cluster before this file.
