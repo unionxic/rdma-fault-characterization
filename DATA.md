@@ -70,7 +70,7 @@ sha256sum -c --ignore-missing SHA256SUMS && tar -xJf '<asset>'
 
 ## Release `data-20261007`
 
-8 raw-data archives, 1425 files, 0.81 MB compressed. Packed by `tools/pack_release.py --whole`.
+10 raw-data archives, 2266 files, 0.96 MB compressed. Packed by `tools/pack_release.py --whole`.
 The full checksums are in the `SHA256SUMS` asset of that release.
 
 | folder | asset | files | MB | sha256 (first 12) | note |
@@ -83,3 +83,5 @@ The full checksums are in the `SHA256SUMS` asset of that release.
 | `harness/gpu-initiated/completion_contract/results/20261007_smoke` | `harness__gpu-initiated__completion_contract__results__20261007_smoke.tar.xz` | 64 | 0.03 | `a1a4f151d8d7` | smoke runs, not scored |
 | `harness/gpu-initiated/nvshmem_ft/t1_close/results/20261007` | `harness__gpu-initiated__nvshmem_ft__t1_close__results__20261007.tar.xz` | 666 | 0.40 | `14d8ef769d77` |  |
 | `harness/gpu-initiated/nvshmem_ft/t1_close/results/20261007_smoke` | `harness__gpu-initiated__nvshmem_ft__t1_close__results__20261007_smoke.tar.xz` | 78 | 0.12 | `492e253870cd` | smoke runs, not scored |
+| `harness/live_peer/results/20261007` | `harness__live_peer__results__20261007.tar.xz` | 743 | 0.13 | `bd2e7b5e19b2` |  |
+| `harness/live_peer/results/20261007_smoke` | `harness__live_peer__results__20261007_smoke.tar.xz` | 98 | 0.02 | `f029e949f2cf` | smoke runs, not scored |
