@@ -1,0 +1,7 @@
+Pre-registration of live_peer, 2026-10-07 19:02:12 +0900, before any measured run of this study.
+sha256 of the fixed prediction file:
+877aa1d48b614ee14ec3ef55cc17dc9c38b51c9adc68aa6b2378f1b3548a27bd  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/live-peer-v1 (sections 2, 3, 7, 8).
+The source predictions (S rows) cite line numbers re-checked on 2026-10-07 against master 3dbf995e.
+The background counts in EXPERIMENT.md section 1 were recomputed from Release data-20261006 before this registration.
+No build, smoke run or measured run of this study existed when this file was written.
