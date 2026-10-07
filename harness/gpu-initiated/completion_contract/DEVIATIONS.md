@@ -50,3 +50,7 @@ start, item 2) and before the second smoke run's result and before any main run.
      The CPU proxy's doorbell-record code, the subject of P1, is not touched.
    - P1 and P3 use `lib_ahinit` (variant name `ahinit` in the rows); P2 stays on `lib_stock`.
      The results are reported as "3.4.5 with the DCT initialization fix", not as unmodified 3.4.5.
+5. **Trial count.** Section 7 ends with "모두 50회다", but its table adds up to 55: P1 10, P2 5,
+   P3 5, P4 10, P5 5, P6 15 (5 for each of three faults), P7 5. The main run follows the table, cell
+   by cell, which is what each acceptance rule counts. Found on 2026-10-07 14:28 while the main run
+   was starting; no result had been seen.
