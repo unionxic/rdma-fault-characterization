@@ -1,0 +1,26 @@
+tag,path,scan_failed,total_err,rc_valid,rc_err,errors,hung,slow
+fix_cpu_host_memory_kill1_t1,kernel,False,1,1,1,0x05/0xf9,False,iter 5 3526 ms
+fix_cpu_host_memory_kill1_t2,kernel,False,1,1,1,0x05/0xf9,False,iter 5 3532 ms
+fix_cpu_host_memory_kill1_t3,kernel,False,1,1,1,0x05/0xf9,False,iter 5 3776 ms
+fix_cpu_host_memory_kill1_t4,kernel,False,1,1,1,0x05/0xf9,False,iter 5 3538 ms
+fix_cpu_host_memory_kill1_t5,kernel,False,1,1,1,0x05/0xf9,False,iter 5 3536 ms
+stock_cpu_host_memory_kill0_t1,kernel,False,0,1,0,,False,
+stock_cpu_host_memory_kill0_t2,kernel,False,0,1,0,,False,
+stock_cpu_host_memory_kill0_t3,kernel,False,0,1,0,,False,
+stock_cpu_host_memory_kill0_t4,kernel,False,0,1,0,,False,
+stock_cpu_host_memory_kill0_t5,kernel,False,0,1,0,,False,
+stock_cpu_host_memory_kill1_t1,cuda-gdb,True,0,1,0,,True,
+stock_cpu_host_memory_kill1_t2,cuda-gdb,True,0,1,0,,True,
+stock_cpu_host_memory_kill1_t3,cuda-gdb,True,0,1,0,,True,
+stock_cpu_host_memory_kill1_t4,cuda-gdb,True,0,1,0,,True,
+stock_cpu_host_memory_kill1_t5,cuda-gdb,True,0,1,0,,True,
+stock_gpu_kill0_t1,kernel,False,0,1,0,,False,
+stock_gpu_kill0_t2,kernel,False,0,1,0,,False,
+stock_gpu_kill0_t3,kernel,False,0,1,0,,False,
+stock_gpu_kill0_t4,kernel,False,0,1,0,,False,
+stock_gpu_kill0_t5,kernel,False,0,1,0,,False,
+stock_gpu_kill1_t1,kernel,False,1,1,1,0x05/0xf9,False,iter 5 3536 ms
+stock_gpu_kill1_t2,kernel,False,1,1,1,0x05/0xf9,False,iter 5 3577 ms
+stock_gpu_kill1_t3,kernel,False,1,1,1,0x05/0xf9,False,iter 5 3579 ms
+stock_gpu_kill1_t4,kernel,False,1,1,1,0x05/0xf9,False,iter 5 3642 ms
+stock_gpu_kill1_t5,kernel,False,1,1,1,0x05/0xf9,False,iter 5 3655 ms
