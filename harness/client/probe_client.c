@@ -14,6 +14,12 @@
  *         -> RECOVER/NORECOVER -> RECOK -> [recovery latency]
  *         -> [partial_write: RDMA-READ readback of the landed bytes] -> verify -> row
  *
+ * live_peer faults (live_*, harness/live_peer/EXPERIMENT.md) post the normal 4 KiB write and record
+ * the first CQE whatever its status. After a responder stop (live_stop_*) the client sends RESYNC and
+ * drops the late answers until RESYNCED. When the liveness check says proc_kill, recovery and verify
+ * are skipped. Every row records whether the responder was really alive after the verdict
+ * (truth_alive: a later answer on the control connection, or an ALIVE? answer on a new connection).
+ *
  * Fault "none" (F0) is a control: the normal 4 KiB write, polled to its completion,
  * then the same QUERY, recovery and verify steps as any other trial.
  * A thread records the async events of our device context (common/probe.c).
@@ -137,6 +143,7 @@ static int readback_landed(probe_ep_t *ep, size_t len, uint8_t seed, long *prefi
  *   QUERY -> "QUERIED <state> <events>"
  * Lines that are not the answer (a late PROBED) are skipped. Without an answer
  * within 2 s both fields stay "?". */
+static int g_answers_after_verdict = 0;   /* live_peer: control answers received after the verdict */
 static void query_server(int fd, char *qp, size_t qcap, char *ev, size_t ecap) {
     snprintf(qp, qcap, "?");
     snprintf(ev, ecap, "?");
@@ -155,12 +162,65 @@ static void query_server(int fd, char *qp, size_t qcap, char *ev, size_t ecap) {
             *sp = '\0';
             snprintf(qp, qcap, "%.15s", st);
             snprintf(ev, ecap, "%s", sp + 1);
+            g_answers_after_verdict++;
             break;
         }
     }
     tv.tv_sec = 0;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     if (strcmp(qp, "?") == 0) fprintf(stderr, "[client] WARNING: no QUERIED answer from the server\n");
+}
+
+/* live_peer: after a responder stop, send RESYNC <it> and drop every line until RESYNCED <it>
+ * (late PROBED / QUERIED answers). Waits up to 20 s. Returns 0 when RESYNCED arrived. */
+static int resync_server(int fd, int it, long *resync_ms, int *stale) {
+    char line[512];
+    uint64_t t0 = now_ns();
+    *stale = 0;
+    struct timeval tv = { 20, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    snprintf(line, sizeof(line), "RESYNC %d", it);
+    int ok = -1;
+    if (ctrl_send_line(fd, line) == 0) {
+        char want[32];
+        snprintf(want, sizeof(want), "RESYNCED %d", it);
+        for (int k = 0; k < 16; k++) {
+            if (ctrl_recv_line(fd, line, sizeof(line)) < 0) break;
+            if (strcmp(line, want) == 0) { ok = 0; break; }
+            fprintf(stderr, "[client] resync: dropping late line '%s'\n", line);
+            (*stale)++;
+        }
+    }
+    tv.tv_sec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    *resync_ms = (long)((now_ns() - t0) / 1000000ull);
+    return ok;
+}
+
+/* live_peer ground truth when the control connection gave no answer after the verdict: open a new
+ * connection and ask "ALIVE?". 1 = "ALIVE <pid> <state>" (alive_q), 0 = connection refused for 5 s
+ * (refused), -1 = no answer (no_reply). */
+static int alive_query(const char *server, int port, const char **how) {
+    uint64_t dl = now_ns() + 5000000000ull;
+    int afd = -1;
+    while (afd < 0) {
+        afd = tcp_client_connect(server, port);
+        if (afd >= 0) break;
+        if (now_ns() > dl) { *how = "refused"; return 0; }
+        usleep(200000);
+    }
+    struct timeval tv = { 5, 0 };
+    setsockopt(afd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    char line[128] = "";
+    int r = -1;
+    *how = "no_reply";
+    if (ctrl_send_line(afd, "ALIVE?") == 0 && ctrl_recv_line(afd, line, sizeof(line)) > 0 &&
+        strncmp(line, "ALIVE ", 6) == 0) {
+        r = 1; *how = "alive_q";
+    }
+    fprintf(stderr, "[client] ALIVE? -> '%s' (%s)\n", line, *how);
+    close(afd);
+    return r;
 }
 
 /* our own teardown: async monitor stop + QP/CQ/MR/PD destroy + device close */
@@ -220,6 +280,8 @@ int main(int argc, char **argv) {
     if (iters <= 0) { fprintf(stderr, "ERROR: -n must be > 0\n"); return 2; }
     /* both end the server on GO: retry_proc_kill by exiting, retry_proc_sigkill by SIGKILL */
     const bool proc_kill = (fault == FAULT_RETRY_PROC_KILL || fault == FAULT_RETRY_PROC_SIGKILL);
+    const bool live_fault = fault >= FAULT_LIVE_QP_RESET;
+    const bool live_stop = (fault == FAULT_LIVE_STOP_ERR || fault == FAULT_LIVE_STOP_OK);
     if (proc_kill && iters != 1) {
         fprintf(stderr, "ERROR: %s ends the server each trial: use -n 1 "
                         "(run.sh restarts the server per trial)\n", fault_name(fault));
@@ -256,11 +318,12 @@ int main(int argc, char **argv) {
                 "peer_alive,auto_recoverable,recover_ns,verify_ok,"
                 "bytes_sent_psn,sq_psn_delta,bytes_landed_readback,matching_bytes_total,mtu_bytes,"
                 "counter,cnt_delta,sub_cause,peer_rx_delta,"
-                "srv_qp_state,srv_async,cli_async\n");
+                "srv_qp_state,srv_async,cli_async,"
+                "cqe_ns,t_post_mono_ns,resync_ms,stale_lines,truth_alive,truth_how\n");
     fflush(fo);
 
     int completed = 0;
-    bool failed = false, refused = false;
+    bool failed = false, refused = false, ctl_dead = false;
 
 /* abort the run: the current trial is NOT recorded, the client exits non-zero */
 #define TRIAL_FAIL(...) do {                                         \
@@ -309,16 +372,26 @@ int main(int argc, char **argv) {
             if (strcmp(line, "GOACK") != 0) TRIAL_FAIL("expected GOACK, got '%s'", line);
         }
 
-        uint64_t t_inject = 0, t_detect = 0;
+        uint64_t t_inject = 0, t_detect = 0, t_post_mono = 0;
+        g_answers_after_verdict = 0;
         struct ibv_wc wc; memset(&wc, 0, sizeof(wc));
         int got = 0;
         /* partial-write accounting (-1 = not applicable) */
         long bytes_sent_psn = -1, sq_delta = -1, landed_rb = -1, match_total = -1;
 
         switch (fault) {
-            case FAULT_NONE: {
-                /* F0 control: the normal write, polled to its own completion (success
-                 * expected; an error CQE is recorded like any other) */
+            case FAULT_NONE:
+            case FAULT_LIVE_QP_RESET:
+            case FAULT_LIVE_QP_INIT:
+            case FAULT_LIVE_QP_RTR:
+            case FAULT_LIVE_TRANSIENT:
+            case FAULT_LIVE_STOP_ERR:
+            case FAULT_LIVE_STOP_OK:
+            case FAULT_LIVE_CTL_CLOSE:
+            case FAULT_LIVE_QP_RECREATE: {
+                /* F0 control and the live_peer faults: the normal write, polled to its own
+                 * first completion (success or error) */
+                t_post_mono = mono_ns();
                 if (post_write(&ep, WR_TRIGGER, 4096, g_remote.addr, g_remote.rkey, true) < 0)
                     TRIAL_FAIL("post_write");
                 t_inject = now_ns();
@@ -398,6 +471,8 @@ int main(int argc, char **argv) {
                 TRIAL_FAIL("unsupported fault %s", fault_name(fault));
         }
         if (got < 0) TRIAL_FAIL("ibv_poll_cq error");
+        if (!t_post_mono) t_post_mono = mono_ns() - (now_ns() - t_inject);   /* other faults: inject time */
+        const long cqe_ns = (got == 1) ? (long)(t_detect - t_inject) : -1;
 
         long detect_ns = -1;
         int st_code = -1, peer_alive = -1, auto_rec = -1;
@@ -412,7 +487,7 @@ int main(int argc, char **argv) {
             st_code = (int)wc.status; ven = wc.vendor_err;
             st_name = cl.status_name; cause = cl.cause; action = cl.action;
             peer_alive = cl.peer_alive; auto_rec = cl.auto_recoverable;
-        } else if (fault == FAULT_NONE) {
+        } else if (fault == FAULT_NONE || live_fault) {
             st_name = "no_cqe";
             cause = "F0 control: the write did not complete within the detect timeout";
             fprintf(stderr, "[client] trial %d: WARNING: F0 write did not complete within %ld ms\n",
@@ -469,14 +544,23 @@ int main(int argc, char **argv) {
          * "-" = the responder is dead (proc_kill faults, or an EOF on PROBE); "?" = no answer. */
         char srv_qp[16] = "-", srv_async[PROBE_ASYNC_FMT_MAX] = "-", cli_async[PROBE_ASYNC_FMT_MAX];
         usleep(QUERY_SETTLE_MS * 1000);
-        if (!proc_kill && strcmp(sub_cause, "proc_kill") != 0)
+        const bool judged_dead = strcmp(sub_cause, "proc_kill") == 0;
+        if (!proc_kill && !judged_dead)
             query_server(fd, srv_qp, sizeof(srv_qp), srv_async, sizeof(srv_async));
         async_mon_format(t_go_mono, cli_async, sizeof(cli_async));
+
+        /* live_peer: after a responder stop, drop the late answers before the binary recovery exchange */
+        long resync_ms = -1;
+        int stale_lines = -1;
+        if (live_stop && !judged_dead) {
+            if (resync_server(fd, it, &resync_ms, &stale_lines) < 0) TRIAL_FAIL("no RESYNCED from the server");
+            g_answers_after_verdict++;
+        }
 
         /* recovery */
         uint64_t t_rec0 = 0, t_rec1 = 0;
         int verify_ok = -1;
-        if (!proc_kill) {
+        if (!proc_kill && !judged_dead) {
             if (recovery == RECOVER_NONE) {
                 if (ctrl_send_line(fd, "NORECOVER") < 0) TRIAL_FAIL("send NORECOVER");
             } else {
@@ -489,6 +573,7 @@ int main(int argc, char **argv) {
             if (ctrl_recv_line(fd, line, sizeof(line)) < 0) TRIAL_FAIL("no RECOK (server gone?)");
             if (strcmp(line, "RECOK") != 0) TRIAL_FAIL("expected RECOK, got '%s'", line);
             t_rec1 = now_ns();
+            g_answers_after_verdict++;
 
             /* partial_write: measure landed bytes BEFORE the verify step overwrites
              * remote [0,4096). Done after NORECOVER too (the QP is RTS either way). */
@@ -512,19 +597,27 @@ int main(int argc, char **argv) {
             } else verify_ok = 0;
         }
 
+        /* live_peer ground truth: was the responder process alive after the verdict? */
+        int truth_alive = -1;
+        const char *truth_how = "ctl";
+        if (g_answers_after_verdict > 0) truth_alive = 1;
+        else truth_alive = alive_query(server, ctrl_port, &truth_how);
+        if (judged_dead) ctl_dead = true;
+
         uint64_t cnt_after = counter_read(dev, (uint8_t)ib_port, counter);
         long cnt_delta = (cnt_before != UINT64_MAX && cnt_after != UINT64_MAX)
                          ? (long)(cnt_after - cnt_before) : -1;
         long recover_ns = (t_rec1 > t_rec0 && t_rec0) ? (long)(t_rec1 - t_rec0) : -1;
 
         fprintf(fo, "%s,%d,%s,%ld,%d,%s,0x%x,\"%s\",\"%s\",%d,%d,%ld,%d,%ld,%ld,%ld,%ld,%d,%s,%ld,%s,%ld,"
-                    "%s,%s,%s\n",
+                    "%s,%s,%s,%ld,%" PRIu64 ",%ld,%d,%d,%s\n",
                 fault_name(fault), it, recovery_name(recovery),
                 detect_ns, st_code, st_name, ven, cause, action,
                 peer_alive, auto_rec, recover_ns, verify_ok,
                 bytes_sent_psn, sq_delta, landed_rb, match_total, ep.mtu_bytes,
                 counter, cnt_delta, sub_cause, peer_rx,
-                srv_qp, srv_async, cli_async);
+                srv_qp, srv_async, cli_async,
+                cqe_ns, t_post_mono, resync_ms, stale_lines, truth_alive, truth_how);
         fflush(fo);
         completed++;
 
@@ -535,8 +628,11 @@ int main(int argc, char **argv) {
         if (fault == FAULT_PARTIAL_WRITE)
             fprintf(stderr, " sent_psn=%ld (sq_delta=%ld) landed_readback=%ld match_total=%ld",
                     bytes_sent_psn, sq_delta, landed_rb, match_total);
+        fprintf(stderr, " cqe_ns=%ld resync_ms=%ld stale_lines=%d truth_alive=%d(%s)",
+                cqe_ns, resync_ms, stale_lines, truth_alive, truth_how);
         fputc('\n', stderr);
 
+        if (ctl_dead) break;   /* the control connection is gone: no further trial */
         if (verify_ok == 0)
             TRIAL_FAIL("post-recovery verify failed (row recorded); connection unusable, stopping");
     }
@@ -544,7 +640,7 @@ int main(int argc, char **argv) {
 
 endloop:
     if (fo && fo != stdout) fclose(fo);
-    if (!proc_kill) ctrl_send_line(fd, "BYE");   /* proc_kill: the server already exited */
+    if (!proc_kill && !ctl_dead) ctrl_send_line(fd, "BYE");   /* proc_kill: the server already exited */
     close(fd);
     client_teardown(&ep);
     if (refused) {

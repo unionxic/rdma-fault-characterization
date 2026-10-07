@@ -52,6 +52,18 @@ typedef enum {
     FAULT_PARTIAL_WRITE,       /* interrupt a multi-packet WRITE mid-transfer; measure bytes landed */
     FAULT_RETRY_PROC_SIGKILL,  /* responder raises SIGKILL on GO: a real crash, no cleanup by the
                                   process (the runner restarts it per trial) -> as retry_proc_kill */
+    /* live_peer study (harness/live_peer/EXPERIMENT.md): the responder process stays alive but is not
+     * ready. All of them post one 4 KiB write and record the first CQE whatever its status. */
+    FAULT_LIVE_QP_RESET,       /* responder QP -> RESET on GO */
+    FAULT_LIVE_QP_INIT,        /* responder QP -> RESET -> INIT on GO */
+    FAULT_LIVE_QP_RTR,         /* responder QP re-armed RESET -> INIT -> RTR with its saved receive PSN */
+    FAULT_LIVE_TRANSIENT,      /* responder QP held in INIT for LIVE_TRANSIENT_MS after GOACK, then
+                                  re-armed to RTS with its saved receive PSN */
+    FAULT_LIVE_STOP_ERR,       /* responder QP -> ERR, then the process stops itself for LIVE_STOP_MS */
+    FAULT_LIVE_STOP_OK,        /* healthy QP, the process stops itself for LIVE_STOP_MS after GOACK */
+    FAULT_LIVE_CTL_CLOSE,      /* responder QP -> ERR, then the live process closes only its control
+                                  connection and answers ALIVE? on a new one */
+    FAULT_LIVE_QP_RECREATE,    /* responder destroys its QP and creates a new one left in INIT */
     FAULT__COUNT
 } fault_type_t;
 
@@ -138,6 +150,11 @@ int  poll_one(probe_ep_t *ep, struct ibv_wc *wc, long timeout_ms);
 
 /* current send-queue PSN of the QP (for partial-write byte accounting) */
 int  ep_query_sq_psn(probe_ep_t *ep, uint32_t *sq_psn);
+/* next send PSN and next expected receive PSN of the QP (ibv_query_qp SQ_PSN | RQ_PSN) */
+int  ep_query_psns(probe_ep_t *ep, uint32_t *sq_psn, uint32_t *rq_psn);
+/* RESET -> INIT -> RTR toward `remote` with rq_psn in place of remote->psn, then RTS with sq_psn if
+ * to_rts (live_peer: re-arm a responder QP without the requester noticing a PSN change) */
+int  ep_rearm(probe_ep_t *ep, const probe_dest_t *remote, uint32_t rq_psn, uint32_t sq_psn, bool to_rts);
 
 /* ---- timing ---- */
 uint64_t now_ns(void);      /* CLOCK_MONOTONIC_RAW nanoseconds */

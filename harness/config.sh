@@ -45,4 +45,8 @@ SERVER_TIMEOUT="${SERVER_TIMEOUT:-$(( 120 + ITERS * (DETECT_TIMEOUT_MS / 1000 + 
 FAULTS="${FAULTS:-local_qp_err rem_inv_req rem_access rnr retry_server_qp_err partial_write}"
 RECOVERY="${RECOVERY:-qp_only}"
 
+# live_peer (harness/live_peer/EXPERIMENT.md): responder stop length and transient not-ready window
+LIVE_STOP_MS="${LIVE_STOP_MS:-8000}"
+LIVE_TRANSIENT_MS="${LIVE_TRANSIENT_MS:-1250}"
+
 RESULTS_DIR="${RESULTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/results}"

@@ -32,6 +32,14 @@ static const char *fault_names[FAULT__COUNT] = {
     [FAULT_RETRY_LINK_DOWN]    = "retry_link_down",
     [FAULT_PARTIAL_WRITE]      = "partial_write",
     [FAULT_RETRY_PROC_SIGKILL] = "retry_proc_sigkill",
+    [FAULT_LIVE_QP_RESET]      = "live_qp_reset",
+    [FAULT_LIVE_QP_INIT]       = "live_qp_init",
+    [FAULT_LIVE_QP_RTR]        = "live_qp_rtr",
+    [FAULT_LIVE_TRANSIENT]     = "live_transient",
+    [FAULT_LIVE_STOP_ERR]      = "live_stop_err",
+    [FAULT_LIVE_STOP_OK]       = "live_stop_ok",
+    [FAULT_LIVE_CTL_CLOSE]     = "live_ctl_close",
+    [FAULT_LIVE_QP_RECREATE]   = "live_qp_recreate",
 };
 const char *fault_name(fault_type_t f) {
     if (f < 0 || f >= FAULT__COUNT || !fault_names[f]) return "?";
@@ -417,6 +425,25 @@ int ep_query_sq_psn(probe_ep_t *ep, uint32_t *sq_psn) {
     struct ibv_qp_attr a; struct ibv_qp_init_attr ia;
     if (ibv_query_qp(ep->qp, &a, IBV_QP_SQ_PSN, &ia)) { perror("query sq_psn"); return -1; }
     *sq_psn = a.sq_psn;
+    return 0;
+}
+
+int ep_query_psns(probe_ep_t *ep, uint32_t *sq_psn, uint32_t *rq_psn) {
+    struct ibv_qp_attr a; struct ibv_qp_init_attr ia;
+    if (!ep->qp) return -1;
+    int rc = ibv_query_qp(ep->qp, &a, IBV_QP_SQ_PSN | IBV_QP_RQ_PSN, &ia);
+    if (rc) { fprintf(stderr, "ibv_query_qp(psns): %s\n", strerror(rc)); return -1; }
+    *sq_psn = a.sq_psn;
+    *rq_psn = a.rq_psn;
+    return 0;
+}
+int ep_rearm(probe_ep_t *ep, const probe_dest_t *remote, uint32_t rq_psn, uint32_t sq_psn, bool to_rts) {
+    probe_dest_t r = *remote;
+    r.psn = rq_psn;
+    if (ep_to_reset(ep) < 0) return -1;
+    if (ep_to_init(ep) < 0) return -1;
+    if (ep_to_rtr(ep, &r) < 0) return -1;
+    if (to_rts && ep_to_rts(ep, sq_psn) < 0) return -1;
     return 0;
 }
 
