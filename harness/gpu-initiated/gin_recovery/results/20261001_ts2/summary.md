@@ -48,34 +48,122 @@
 | cell | initiator rounds | re-posted n (faulted QP): min/median/max | n not a multiple of the burst | rounds with host-rung WQEs | rescued WQEs (sum) | chunked re-posts | helper total ms | fault → resumed ms |
 |---|---|---|---|---|---|---|---|---|
 
+## reg
+
+### Outcomes
+
+| cell | n | transparent | declined | failed | flush rc != ok | bad slots (dev/host) | signals exact | async error r0/r1 | rounds init/resp | tie kept/yielded | declines (reasons) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| base_f1_b | 5 | 0 | 0 | 5 | 5 | 0/307 | 0/5 | 5/0 | 0/0 | 0/0 | - |
+| f1_b | 13 | 13 | 0 | 0 | 0 | 0/0 | 13/13 | 0/0 | 13/13 | 0/0 | - |
+| f1g0_b | 30 | 30 | 0 | 0 | 0 | 0/0 | 30/30 | 0/0 | 30/30 | 0/0 | - |
+| f1x5_b | 10 | 10 | 0 | 0 | 0 | 0/0 | 10/10 | 0/0 | 50/50 | 0/0 | - |
+| f2_b | 10 | 0 | 10 | 0 | 10 | 0/0 | 0/10 | 10/10 | 0/0 | 0/0 | class REM_ACCESS is not recoverable (10); the peer declined (10) |
+| f3_b | 10 | 10 | 0 | 0 | 0 | 0/0 | 10/10 | 0/0 | 10/10 | 0/0 | - |
+| f4_b | 10 | 0 | 10 | 0 | 10 | 0/0 | 0/10 | 10/0 | 0/0 | 0/0 | RETRY_EXC and the peer's socket shows FIN/RST (10) |
+| neg_norebase_t | 10 | 0 | 0 | 10 | 10 | 0/607 | 0/10 | 0/0 | 10/10 | 0/0 | - |
+| neg_noring_t | 10 | 0 | 0 | 10 | 10 | 0/616 | 0/10 | 0/0 | 10/10 | 0/0 | - |
+| none_b | 10 | 10 | 0 | 0 | 0 | 0/0 | 10/10 | 0/0 | 0/0 | 0/0 | - |
+| off_f1_b | 5 | 0 | 0 | 5 | 5 | 0/307 | 0/5 | 5/0 | 0/0 | 0/0 | - |
+
+### Kernel exit and abort return
+
+| cell | n | r0 exit codes | r1 exit codes | abort returned r0 / r1 | teardown ms r0 | teardown ms r1 | watchdog surfaces | declines (reasons) |
+|---|---|---|---|---|---|---|---|---|
+| f2_b | 10 | 4 ×10 | 7 ×10 | 10/10 / 0/10 | 885 [866–890] | - | 0 | class REM_ACCESS is not recoverable (10); the peer declined (10) |
+| f4_b | 10 | 4 ×10 | 255 ×10 | 10/10 / 0/10 | 809 [577–980] | - | 0 | RETRY_EXC and the peer's socket shows FIN/RST (10) |
+
+### Recovery rounds
+
+| cell | initiator rounds | re-posted n (faulted QP): min/median/max | n not a multiple of the burst | rounds with host-rung WQEs | rescued WQEs (sum) | chunked re-posts | helper total ms | fault → resumed ms |
+|---|---|---|---|---|---|---|---|---|
+| f1_b | 13 | 2/2/2 | - | 0 | 0 | 0 | 10.30 [10.21–10.52] | 22.43 [11.63–25.74] |
+| f1g0_b | 30 | 0/0/2 | - | 0 | 0 | 0 | 10.66 [10.19–11.46] | 11.73 [11.34–13.43] |
+| f1x5_b | 50 | 2/2/2 | - | 0 | 0 | 0 | 10.24 [9.80–11.64] | 193.73 [15.85–535.12] |
+| f3_b | 10 | 2/2/2 | - | 0 | 0 | 0 | 10.16 [10.05–10.43] | 3645.98 [3560.04–3780.55] |
+| neg_norebase_t | 10 | 2/2/2 | - | 0 | 0 | 0 | 10.48 [10.30–10.69] | 23.50 [12.30–26.07] |
+| neg_noring_t | 10 | 2/2/2 | - | 0 | 0 | 0 | 10.34 [10.13–10.49] | 23.11 [11.47–26.07] |
+
+## b
+
+### Outcomes
+
+| cell | n | transparent | declined | failed | flush rc != ok | bad slots (dev/host) | signals exact | async error r0/r1 | rounds init/resp | tie kept/yielded | declines (reasons) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| mt1024_f1_b | 10 | 10 | 0 | 0 | 0 | 0/0 | 10/10 | 0/0 | 10/10 | 0/0 | - |
+| mt1024_none_b | 1 | 1 | 0 | 0 | 0 | 0/0 | 1/1 | 0/0 | 0/0 | 0/0 | - |
+| mt256_f1_b | 10 | 10 | 0 | 0 | 0 | 0/0 | 10/10 | 0/0 | 10/10 | 0/0 | - |
+
+### Recovery rounds
+
+| cell | initiator rounds | re-posted n (faulted QP): min/median/max | n not a multiple of the burst | rounds with host-rung WQEs | rescued WQEs (sum) | chunked re-posts | helper total ms | fault → resumed ms |
+|---|---|---|---|---|---|---|---|---|
+| mt1024_f1_b | 10 | 563/666/725 | 8 | 0 | 5282 | 10 | 17.20 [16.51–17.73] | 18.65 [17.26–19.23] |
+| mt256_f1_b | 10 | 234/253/265 | 6 | 0 | 1234 | 10 | 11.98 [11.49–13.33] | 14.41 [13.57–15.68] |
+
+## c
+
+### Outcomes
+
+| cell | n | transparent | declined | failed | flush rc != ok | bad slots (dev/host) | signals exact | async error r0/r1 | rounds init/resp | tie kept/yielded | declines (reasons) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| bidirf_f1_b | 5 | 5 | 0 | 0 | 0 | 0/0 | 5/5 | 0/0 | 5/5 | 0/0 | - |
+| bidirf_f1both_b | 20 | 20 | 0 | 0 | 0 | 0/0 | 20/20 | 0/0 | 20/20 | 0/0 | - |
+| bidirf_f1both_notie_b | 5 | 5 | 0 | 0 | 0 | 0/0 | 5/5 | 0/0 | 5/5 | 0/0 | - |
+| bidirf_f3_b | 4 | 4 | 0 | 0 | 0 | 0/0 | 4/4 | 0/0 | 4/4 | 0/0 | - |
+| bidirf_none_b | 5 | 5 | 0 | 0 | 0 | 0/0 | 5/5 | 0/0 | 0/0 | 0/0 | - |
+| bidirf_none_base_b | 3 | 3 | 0 | 0 | 0 | 0/0 | 3/3 | 0/0 | 0/0 | 0/0 | - |
+| bidirf_none_off_b | 3 | 3 | 0 | 0 | 0 | 0/0 | 3/3 | 0/0 | 0/0 | 0/0 | - |
+
+### Recovery rounds
+
+| cell | initiator rounds | re-posted n (faulted QP): min/median/max | n not a multiple of the burst | rounds with host-rung WQEs | rescued WQEs (sum) | chunked re-posts | helper total ms | fault → resumed ms |
+|---|---|---|---|---|---|---|---|---|
+| bidirf_f1_b | 5 | 2/2/2 | - | 0 | 0 | 0 | 10.48 [10.30–10.61] | 17.74 [12.09–21.57] |
+| bidirf_f1both_b | 20 | 0/2/2 | - | 0 | 0 | 0 | 9.38 [9.11–10.08] | 13.93 [10.62–24.28] |
+| bidirf_f1both_notie_b | 5 | 0/2/2 | - | 0 | 0 | 0 | 9.39 [9.08–9.99] | 15.73 [10.66–23.67] |
+| bidirf_f3_b | 4 | 0/0/0 | - | 0 | 0 | 0 | 10.62 [10.46–10.84] | 14.45 [13.07–22.54] |
+
 ## d
 
 ### Outcomes
 
 | cell | n | transparent | declined | failed | flush rc != ok | bad slots (dev/host) | signals exact | async error r0/r1 | rounds init/resp | tie kept/yielded | declines (reasons) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
+| flap_s2_05 | 5 | 5 | 0 | 0 | 0 | 0/0 | 5/5 | 0/0 | 5/5 | 0/0 | - |
+| flap_s2_15 | 5 | 5 | 0 | 0 | 0 | 0/0 | 5/5 | 0/0 | 5/5 | 0/0 | - |
 | flap_s2_20 | 3 | 3 | 0 | 0 | 0 | 0/0 | 3/3 | 0/0 | 3/3 | 0/0 | - |
 | flap_s2_30 | 3 | 0 | 3 | 0 | 3 | 0/0 | 0/3 | 3/3 | 0/0 | 0/0 | peer NACK (3); the local GID did not come back within NCCL_GIN_TS_PATH_WAIT_MS (3) |
+| flap_s2_6 | 5 | 5 | 0 | 0 | 0 | 0/0 | 5/5 | 0/0 | 5/5 | 0/0 | - |
 
 ### Kernel exit and abort return
 
 | cell | n | r0 exit codes | r1 exit codes | abort returned r0 / r1 | teardown ms r0 | teardown ms r1 | watchdog surfaces | declines (reasons) |
 |---|---|---|---|---|---|---|---|---|
-| flap_s2_20 | 3 | 0 ×3 | 0 ×3 | 3/3 / 3/3 | 527 [520–997] | 980 [952–983] | 0 | - |
-| flap_s2_30 | 3 | 4 ×3 | 3 ×3 | 3/3 / 3/3 | 645 [559–979] | 6368 [6259–6404] | 0 | peer NACK (3); the local GID did not come back within NCCL_GIN_TS_PATH_WAIT_MS (3) |
+| flap_s2_05 | 5 | 0 ×5 | 0 ×5 | 5/5 / 5/5 | 858 [765–966] | 827 [728–927] | 0 | - |
+| flap_s2_15 | 5 | 0 ×5 | 0 ×5 | 5/5 / 5/5 | 523 [519–1003] | 970 [963–989] | 0 | - |
+| flap_s2_20 | 3 | 0 ×3 | 0 ×3 | 3/3 / 3/3 | 982 [972–999] | 948 [938–964] | 0 | - |
+| flap_s2_30 | 3 | 4 ×3 | 3 ×3 | 3/3 / 3/3 | 662 [569–998] | 6342 [6274–6484] | 0 | peer NACK (3); the local GID did not come back within NCCL_GIN_TS_PATH_WAIT_MS (3) |
+| flap_s2_6 | 5 | 0 ×5 | 0 ×5 | 5/5 / 5/5 | 990 [519–998] | 958 [927–987] | 0 | - |
 
 ### Address flaps
 
 | cell | n | transparent | declined | cut length s | first classifier record after cut start s | GID moved (r1) | GID wait ms | resumed after cut start s | slow iteration s | watchdog surfaces | declines (reasons) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| flap_s2_20 | 3 | 3 | 0 | 20.57 [20.56–20.57] | 3.97 [3.91–4.01] | 3/3 | 16312 [16288–16381] | 20.30 [20.29–20.31] | 20.03 [20.03–20.05] | 0 | - |
-| flap_s2_30 | 3 | 0 | 3 | 30.58 [30.58–30.58] | 3.91 [3.87–4.01] | 0/3 | - | - | 0.00 [0.00–0.00] | 0 | peer NACK (3); the local GID did not come back within NCCL_GIN_TS_PATH_WAIT_MS (3) |
+| flap_s2_05 | 5 | 5 | 0 | 1.07 [1.06–1.08] | 3.94 [3.83–4.01] | 5/5 | 0 [0–0] | 3.95 [3.84–4.03] | 3.67 [3.57–3.76] | 0 | - |
+| flap_s2_15 | 5 | 5 | 0 | 15.57 [15.57–15.58] | 3.90 [3.79–4.05] | 5/5 | 11377 [11231–11509] | 15.31 [15.28–15.32] | 15.03 [15.01–15.05] | 0 | - |
+| flap_s2_20 | 3 | 3 | 0 | 20.57 [20.57–20.57] | 3.85 [3.82–3.85] | 3/3 | 16456 [16436–16467] | 20.30 [20.30–20.31] | 20.04 [20.03–20.05] | 0 | - |
+| flap_s2_30 | 3 | 0 | 3 | 30.58 [30.58–30.59] | 3.92 [3.81–4.00] | 0/3 | - | - | 0.00 [0.00–0.00] | 0 | peer NACK (3); the local GID did not come back within NCCL_GIN_TS_PATH_WAIT_MS (3) |
+| flap_s2_6 | 5 | 5 | 0 | 6.57 [6.56–6.58] | 3.88 [3.80–3.99] | 5/5 | 2414 [2301–2490] | 6.30 [6.30–6.32] | 6.03 [6.03–6.05] | 0 | - |
 
 ### Recovery rounds
 
 | cell | initiator rounds | re-posted n (faulted QP): min/median/max | n not a multiple of the burst | rounds with host-rung WQEs | rescued WQEs (sum) | chunked re-posts | helper total ms | fault → resumed ms |
 |---|---|---|---|---|---|---|---|---|
-| flap_s2_20 | 3 | 2/2/2 | - | 0 | 0 | 0 | 16323.49 [16299.37–16392.10] | 20302.91 [20291.99–20309.63] |
+| flap_s2_05 | 5 | 2/2/2 | - | 0 | 0 | 0 | 11.57 [11.48–12.67] | 3949.41 [3837.20–4025.89] |
+| flap_s2_15 | 5 | 2/2/2 | - | 0 | 0 | 0 | 11388.49 [11242.59–11521.04] | 15307.42 [15284.72–15318.27] |
+| flap_s2_20 | 3 | 2/2/2 | - | 0 | 0 | 0 | 16467.94 [16448.39–16479.14] | 20303.95 [20295.84–20314.43] |
+| flap_s2_6 | 5 | 2/2/2 | - | 0 | 0 | 0 | 2425.21 [2312.51–2501.41] | 6303.50 [6298.67–6322.51] |
 
 ## new
 
@@ -83,26 +171,26 @@
 
 | cell | n | transparent | declined | failed | flush rc != ok | bad slots (dev/host) | signals exact | async error r0/r1 | rounds init/resp | tie kept/yielded | declines (reasons) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| burst_hring2_b | 5 | 5 | 0 | 0 | 0 | 0/0 | 5/5 | 0/0 | 5/5 | 0/0 | - |
+| burst_hring2_b | 8 | 8 | 0 | 0 | 0 | 0/0 | 8/8 | 0/0 | 8/8 | 0/0 | - |
 | burst_hring_b | 5 | 5 | 0 | 0 | 0 | 0/0 | 5/5 | 0/0 | 5/5 | 0/0 | - |
-| ring_f2_b | 5 | 0 | 5 | 0 | 5 | 0/0 | 0/5 | 5/5 | 0/0 | 0/0 | class REM_ACCESS is not recoverable (5); the peer declined (5) |
-| ring_f4_b | 5 | 0 | 5 | 0 | 5 | 0/0 | 0/5 | 5/0 | 0/0 | 0/0 | RETRY_EXC and the peer's socket shows FIN/RST (5) |
+| ring_f2_b | 10 | 0 | 10 | 0 | 10 | 0/0 | 0/10 | 10/10 | 0/0 | 0/0 | class REM_ACCESS is not recoverable (10); the peer declined (10) |
+| ring_f4_b | 10 | 0 | 10 | 0 | 10 | 0/0 | 0/10 | 10/0 | 0/0 | 0/0 | RETRY_EXC and the peer's socket shows FIN/RST (10) |
 | ring_none_b | 5 | 5 | 0 | 0 | 0 | 0/0 | 5/5 | 0/0 | 0/0 | 0/0 | - |
 
 ### Kernel exit and abort return
 
 | cell | n | r0 exit codes | r1 exit codes | abort returned r0 / r1 | teardown ms r0 | teardown ms r1 | watchdog surfaces | declines (reasons) |
 |---|---|---|---|---|---|---|---|---|
-| ring_f2_b | 5 | 4 ×5 | 7 ×5 | 5/5 / 0/5 | 822 [807–825] | - | 0 | class REM_ACCESS is not recoverable (5); the peer declined (5) |
-| ring_f4_b | 5 | 4 ×5 | 255 ×5 | 5/5 / 0/5 | 756 [693–1001] | - | 0 | RETRY_EXC and the peer's socket shows FIN/RST (5) |
-| ring_none_b | 5 | 0 ×5 | 0 ×5 | 5/5 / 5/5 | 940 [930–944] | 930 [918–932] | 0 | - |
+| ring_f2_b | 10 | 4 ×10 | 7 ×10 | 10/10 / 0/10 | 816 [798–835] | - | 0 | class REM_ACCESS is not recoverable (10); the peer declined (10) |
+| ring_f4_b | 10 | 4 ×10 | 255 ×10 | 10/10 / 0/10 | 857 [626–955] | - | 0 | RETRY_EXC and the peer's socket shows FIN/RST (10) |
+| ring_none_b | 5 | 0 ×5 | 0 ×5 | 5/5 / 5/5 | 931 [926–933] | 913 [908–916] | 0 | - |
 
 ### Recovery rounds
 
 | cell | initiator rounds | re-posted n (faulted QP): min/median/max | n not a multiple of the burst | rounds with host-rung WQEs | rescued WQEs (sum) | chunked re-posts | helper total ms | fault → resumed ms |
 |---|---|---|---|---|---|---|---|---|
-| burst_hring2_b | 5 | 16/16/16 | 5 | 5 | 0 | 0 | 10.58 [10.42–10.65] | 12.05 [11.89–12.41] |
-| burst_hring_b | 5 | 17/17/17 | 0 | 0 | 0 | 0 | 10.40 [10.23–10.45] | 19.40 [14.83–30.55] |
+| burst_hring2_b | 8 | 16/16/17 | 6 | 6 | 0 | 0 | 10.61 [10.13–10.81] | 12.38 [11.77–12.80] |
+| burst_hring_b | 5 | 17/17/17 | 0 | 0 | 0 | 0 | 10.39 [10.27–10.51] | 20.57 [14.17–31.43] |
 
 ## bmin (the minimal bidirectional program, gpudb build unless the cell says s2)
 
@@ -120,13 +208,20 @@
 | min_txonly_262144 | 3 | 3 | 64 / 64 / 0 / 1 | 64 / 64 / 0 / 1 | - / - | - / - |
 | minx_both_262144 | 2 | 0 | 64 / 0 / 63–64 / 1 | 64 / 64 / 0 / 1 | 8278–8281 / 8275–8278 | 8281–8284 / 8278–8281 |
 | minx_both_64 | 2 | 0 | 120 / 0 / 112 / 0 | 120 / 120 / 0 / 1 | 8263–8281 / 8262–8280 | 8264–8282 / 8263–8281 |
+| minx_both_conn_262144 | 3 | 0 | 64 / 0 / 62–63 / 1 | 64 / 64 / 0 / 1 | 8302–8307 / 8298–8304 | 8305–8310 / 8302–8308 |
+| minx_both_conn_64 | 3 | 0 | 120 / 0 / 108–110 / 0 | 120 / 120 / 0 / 1 | 8255–8288 / 8254–8286 | 8256–8288 / 8255–8288 |
+| minx_both_eager_262144 | 3 | 0 | 64 / 0 / 63–64 / 1 | 64 / 64 / 0 / 1 | 8299–8304 / 8296–8301 | 8302–8307 / 8300–8304 |
+| minx_both_eager_64 | 3 | 0 | 120 / 0 / 110–112 / 0 | 120 / 120 / 0 / 1 | 8255–8282 / 8254–8281 | 8256–8283 / 8255–8282 |
 | minx_both_paced_64 | 3 | 0 | 7 / 0 / 119 / 0 | 120 / 120 / 0 / 1 | 8344–8366 / 8343–8365 | 8696–8718 / 8344–8366 |
 | minx_both_rx1_64 | 3 | 0 | 120 / 0 / 111–112 / 0 | 120 / 120 / 0 / 1 | 8350–8367 / 8349–8366 | 8351–8368 / 8350–8367 |
+| minx_both_stack_262144 | 3 | 0 | 64 / 0 / 63 / 1 | 64 / 64 / 0 / 1 | 8282–8310 / 8278–8306 | 8284–8312 / 8282–8310 |
+| minx_both_stack_64 | 3 | 0 | 120 / 0 / 110–112 / 0 | 120 / 120 / 0 / 1 | 8226–8265 / 8225–8264 | 8227–8266 / 8226–8265 |
 | minx_both_txdelay_64 | 3 | 0 | 120 / 0 / 110–111 / 0 | 120 / 120 / 0 / 1 | 8277–8351 / 8276–8350 | 8278–8352 / 8278–8351 |
 | minx_fused_262144 | 3 | 3 | 64 / 64 / 0 / 1 | 64 / 64 / 0 / 1 | 7–7 / -1 | 5–5 / -1 |
 | minx_fused_64 | 3 | 3 | 120 / 120 / 0 / 1 | 120 / 120 / 0 / 1 | 2–4 / -1 | 2–4 / -1 |
 | minx_fused_s2_64 | 3 | 3 | 120 / 120 / 0 / 1 | 120 / 120 / 0 / 1 | 4–4 / -1 | 4–4 / -1 |
 | minx_txfirst_64 | 3 | 3 | 120 / 120 / 0 / 1 | 120 / 120 / 0 / 1 | 3–3 / 2–2 | 1 / 3–4 |
+| minx_txfirst_paced_64 | 3 | 3 | 120 / 120 / 0 / 1 | 120 / 120 / 0 / 1 | 5953 / 5951 | 5951 / 5953–5953 |
 
 Two plain kernels on two streams (two_streams_test.cu):
 
