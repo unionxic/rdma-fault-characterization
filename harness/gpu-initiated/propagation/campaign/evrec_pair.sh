@@ -3,9 +3,12 @@
 # one trial. "start" returns once both have written their start snapshot; "stop" sends SIGTERM,
 # waits for the end snapshot and leaves <tag>.evrec.rain and <tag>.evrec.sunny in <outdir>.
 # Each evrec also ends by itself after MAX_S seconds, so a lost "stop" cannot leave it running.
+# EVREC_BIN selects another evrec build (same path on both nodes); EVREC_ARGS adds options to both
+# (live_peer: "-s 50 -c name,..." for counter samples). Both default to the propagation behaviour.
 set -u
 CMD=$1; OUT=$2; TAG=$3
-E=$HOME/gi-bundle/evrec/evrec
+E=${EVREC_BIN:-$HOME/gi-bundle/evrec/evrec}
+XA=${EVREC_ARGS:-}
 MAX_S=${MAX_S:-1800}
 mkdir -p "$OUT"
 L=$OUT/$TAG.evrec.rain; R=/tmp/evrec_$TAG.log
@@ -16,9 +19,9 @@ wait_line() {  # wait_line <file> <pattern> <tries of 0.05 s>
 
 case "$CMD" in
 start)
-  "$E" -d mlx5_1 -p 1 -o "$L" -T "$MAX_S" >/dev/null 2>&1 &
+  "$E" -d mlx5_1 -p 1 -o "$L" -T "$MAX_S" $XA >/dev/null 2>&1 &
   echo $! > "$OUT/.$TAG.evrec.pid"
-  ssh -n sunny "nohup $E -d mlx5_0 -p 1 -o $R -T $MAX_S >/dev/null 2>&1 & echo \$!" > "$OUT/.$TAG.evrec.rpid"
+  ssh -n sunny "nohup $E -d mlx5_0 -p 1 -o $R -T $MAX_S $XA >/dev/null 2>&1 & echo \$!" > "$OUT/.$TAG.evrec.rpid"
   wait_line "$L" '^snap phase=start dir=counters' 100 || echo "evrec_pair: no start snapshot on rain for $TAG" >&2
   ssh -n sunny "for i in \$(seq 100); do grep -q '^snap phase=start dir=counters' $R && exit 0; sleep 0.05; done; exit 1" \
     || echo "evrec_pair: no start snapshot on sunny for $TAG" >&2
