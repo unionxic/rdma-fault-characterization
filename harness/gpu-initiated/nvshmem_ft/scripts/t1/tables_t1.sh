@@ -6,7 +6,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 R=${1:-$HERE/../../results/20260930_t1}
 cd "$R"
-SETS="smoke1 mainA mainB neg neg2 f2a lat flap_v22 reg_outlined lat_outlined flap_t1_outlined reg_final flap_t1_final flap_nogid lat_final bisect fetch reg_fixed review flap_fixed fetch_fixed flap_cut25 lat_fixed review2 review3 reg_final2 lat_final2 flap_final2 review4 dci_diag dci_diag2 reg_final3 flap_final3 flap_cut25_3 review5 review6"
+SETS="smoke1 mainA mainB neg neg2 f2a lat flap_v22 reg_outlined lat_outlined flap_t1_outlined reg_final flap_t1_final flap_nogid lat_final bisect fetch reg_fixed review flap_fixed fetch_fixed flap_cut25 lat_fixed review2 review3 reg_final2 lat_final2 flap_final2 review4 dci_diag dci_diag2 reg_final3 flap_final3 review5"
 D=""
 for s in $SETS; do [ -d "$s" ] && D="$D $s"; done
 python3 "$HERE/rows_t1.py" $D --trials trials_t1.csv --rounds rounds_t1.csv > /dev/null
