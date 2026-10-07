@@ -5,12 +5,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `PREREGISTERED` |
+| 상태 | `RUNNING` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-07 |
 | 기준 브랜치와 커밋 | `exp/nvshmem-t1-close` @ `3dbf995e` (master) |
 | 사전 등록 태그 | `prereg/nvshmem-t1-close-v1` (이 상태로 바꾼 커밋) |
-| 마지막 갱신 | 2026-10-07 18:57, 사전 등록 |
+| 마지막 갱신 | 2026-10-07 19:13, 본 실행 시작 |
 
 표시: `[측정]` 원자료나 파일에서 확인, `[소스]` 코드나 문서에서 확인, `[추론]` 해석, `[미확인]` 확인 안 함.
 장애와 셀의 기호(F1, N1 등)는 원자료를 찾는 키로만 괄호나 id 열에 둔다. 파일과 환경변수 이름의 T1은 그대로 둔다.
@@ -308,8 +308,8 @@ F4 timeout 5 RING=1 RECOVER=1 TAG=r14_v22f4
 
 - [x] 질문, 가설, 셀 작성 (`DRAFT`)
 - [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
-- [ ] 계측과 실행기 구현, 빌드, 리뷰
-- [ ] smoke 실행(채점 제외)
+- [x] 계측과 실행기 구현, 빌드, 리뷰(리뷰는 자체 검토만, 12절)
+- [x] smoke 실행(채점 제외)
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 채점과 재계산 (`QA`)
 - [ ] 결과 정리, 원자료 릴리스, PR
@@ -322,6 +322,11 @@ F4 timeout 5 RING=1 RECOVER=1 TAG=r14_v22f4
 | 2026-10-07 18:18–18:41 | 읽기 전용 범위 조사: 남은 항목 목록, final3 원자료 재계산(`rows_t1.py`), 공식 3.8.0과 비교 | 설계 메모와 재계산 CSV는 저장소 밖(scratchpad). 이 문서 1절에 옮긴 숫자는 원자료에서 다시 센 것 |
 | 2026-10-07 18:50 | worktree에서 사전 등록 파일 작성. 빌드와 클러스터 실행 없음 | 이 문서, [predictions.csv](predictions.csv) |
 | 2026-10-07 18:57:27 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/nvshmem-t1-close-v1` |
+| 2026-10-07 18:58–19:05 | scratch 소스 트리의 final3을 커밋하고 git bundle로 보관. 9절의 코드 변경, 빌드 b1(`build.sh`), 전체 diff(`make_diff.sh`, 7bb2e99c 위 재적용 검증), 새 묶음 `~/gi-bundle/nvshmem_t1close`에 배포(`deploy.sh`). 두 노드 md5 같음(14파일). 기존 묶음 파일 변경 0건(rain 207, sunny 259파일). 코드 리뷰는 자체 검토만 | [build.sh](build.sh), [make_diff.sh](make_diff.sh), [deploy.sh](deploy.sh). b1 md5: transport `31fa3a87`, host `3d630308`, `nvt1_drv` `d4b78b17` `[측정]` |
+| 2026-10-07 19:05:35–19:06:59 | smoke 1(b1, 9회, 채점 제외). 셀마다 1회와 장애 없음 1회 | `results/20261007_smoke/smoke/`. fetch 세 시행의 [C, R) opcode가 `08-15-12-23`(쓰기, 신호 ADD, fetch, DUMP)라서 fetch 뒤 WQE는 DUMP다. fetch 칸 중단 규칙은 걸리지 않음 `[측정]`. finalize 없는 종료는 두 PE가 helper join 뒤 abort(rc 134/255). 연결 32개의 꽉 찬 GPU는 거절. 나머지는 예측대로. 두 노드 새 dmesg 0줄, 남은 iptables 규칙 0 |
+| 2026-10-07 19:07–19:09:07 | 변경 1(DEVIATIONS 1): atexit 훅에서 FT 감시 스레드도 join. 빌드 b2를 새 묶음 `~/gi-bundle/nvshmem_t1close_b2`에 배포. 두 노드 md5 같음, 기존 묶음 파일 변경 0건(rain 225, sunny 277파일) | b2 md5: transport `b4b4115e`, host `3d630308`, `nvt1_drv` `278089a4`, v2.2 기준 `6913dea6`/`54a9d23a`/`f1d4d304` `[측정]`. diff `nvshmem_ibgda_t1close.diff` md5 `e9ff3ac0` |
+| 2026-10-07 19:10:43–19:12:07 | smoke 2(b2, 9회, 채점 제외). 잠금은 다른 실험(GIN) hold 뒤 19:10:12에 얻음 | `results/20261007_smoke/b2/smoke/`. finalize 없는 종료: 두 PE rc 0, `ATEXIT helper=joined join_ms=2.2`. 연결 32개의 꽉 찬 GPU는 거절(복사 상한). 나머지는 smoke 1과 같음. 재현 칸(장애 없음) 투명. 중단 규칙 해당 없음. 새 dmesg 0줄, iptables 0 |
+| 2026-10-07 19:13 | 본 실행 시작(`run_main.sh`, hold A부터 E까지 차례로, hold마다 `cluster_run.sh -w 10800 -t t1c-<hold>`). 상태 `RUNNING` | `results/20261007/run_main.out` |
 
 ## 13. 사전 등록 이후 변경
 
@@ -329,6 +334,10 @@ F4 timeout 5 RING=1 RECOVER=1 TAG=r14_v22f4
 
 | 날짜 | 무엇을 | 이유 | 영향 범위 | 커밋 |
 |---|---|---|---|---|
+
+변경은 [DEVIATIONS.md](DEVIATIONS.md)에 적었다. 요점: smoke 1의 finalize 없는 종료에서 FT 감시 스레드가 정리되지 않아
+abort했고, atexit 훅이 그 스레드도 join하도록 고친 빌드 b2를 새 묶음에 배포했다(1). smoke는 두 번 했다(2). hold마다 두 노드
+dmesg와 iptables를 기계로 확인하는 래퍼를 썼다(3). 예측과 판정 기준은 바꾸지 않았다.
 
 ## 14. 원자료와 결과표
 
