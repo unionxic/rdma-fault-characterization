@@ -1,0 +1,22 @@
+id,kind,cells,observable,predicted,acceptance,basis
+P1,N,"NVSHMEM v3.4.5-0, CPU proxy (cpu_host_memory), peer killed",first iteration after the kill,returns after the retries run out (3-5 s),">=9/10, and no trial that does not return within 30 s",audit C row 2 (proxy writes word 1)
+P2,N,"NVSHMEM v3.4.5-0, GPU handler, peer killed",first iteration after the kill,returns after the retries run out (3-5 s),5/5,audit C row 1
+P3,C,"NVSHMEM v3.4.5-0, CPU proxy, no kill",all iterations,return,5/5,control
+P4,N,"NCCL 2.32.3 GIN GDAKI, NCCL_GIN_GDAKI_NIC_HANDLER=6 (BlueFlame), no fault, timeout wait",first iteration,"the device wait does not complete (timeout at the device bound); no data at the target",">=9/10, and no trial that completes normally",audit B row N7 (no doorbell and no record written)
+P5,C,"NCCL GIN GDAKI, default handler, no fault, timeout wait",all iterations,complete normally,5/5,control
+P6,R,"NCCL GIN GDAKI, NCCL_GIN_GDAKI_NIC_HANDLER=1 (CPU proxy), local QP error, remote access error, peer QP error, timeout wait",host error (ncclCommGetAsyncError) in event mode,reported,5/5 per fault,audit B row N2 (progress thread raises the record); event-mode host error needs an error CQE
+P7,C,"NCCL GIN GDAKI, NCCL_GIN_GDAKI_NIC_HANDLER=1, no fault",all iterations,complete normally with no host error,5/5,control
+S1,source,"libmlx5 verbs, NCCL net_ib, NCCL GIN proxy",DBR send word vs posted index,reaches it: faults visible,source only,audit A
+S2,source,"UCX CPU rc/dc/ud mlx5",same,visible,source only,audit D
+S3,source,"NCCL GIN GDAKI default (GPU rings)",same,visible,source only,audit B N1
+S4,source,"NCCL GIN GDAKI CPU proxy handler",same,conditional: visible while the progress thread runs,source only,audit B N2/N3
+S5,source,"NCCL GIN GDAKI aggregate-requests hint",same,conditional: visible if a later unhinted op follows on the QP,source only,audit B N4
+S6,source,"NCCL GIN GDAKI BlueFlame handler (6)",same,lost (all); no op reaches the NIC even without a fault,source only,audit B N7
+S7,source,"DOCA no-DBR hardware mode",same,outside rule 1; visible if the NIC follows the doorbell,source only,audit B N5 / D
+S8,source,"NVSHMEM 3.4.5 CPU proxy",same,visible,source only,audit C row 2
+S9,source,"NVSHMEM 3.5.0-3.8.0 CPU proxy, RC and DCI",same,lost (all),source only,audit C rows 4/5/8/9
+S10,source,"NVSHMEM GPU handler 3.4.5, 3.5.x, 3.8.0",same,visible,source only,audit C rows 1/3/6
+S11,source,"NVSHMEM 3.8.0 batch-RMA region",same,conditional: visible if quiet/fence/region stop runs after the error,source only,audit C row 7
+S12,source,"UCX GPU (rc_gda) default delayed posts",same,conditional: the last 1-127 posts need a later NODELAY post,source only,audit D
+S13,source,"rocSHMEM GDA mlx5",same,visible at the CQE; lost in the library (quiet ignores the error),source only,audit D
+S14,source,"DeepEP main",same,undetermined (delegated to NCCL GIN),source only,audit C row 10
