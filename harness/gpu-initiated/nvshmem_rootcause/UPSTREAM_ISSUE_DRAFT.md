@@ -1,5 +1,7 @@
 <!--
-Before posting (not part of the issue): use the web form "NVSHMEM issue or bug" and paste each
+Posted on 2026-10-07 as https://github.com/NVIDIA/nvshmem/issues/117, in the layout of the web form
+"NVSHMEM issue or bug". The posted platform field adds the GPUs, CUDA 12.8 and the firmware.
+Earlier note: use the web form "NVSHMEM issue or bug" and paste each
 section into the field with the same name. Leave "Share Your Debug Logs" empty. Logs
 (results/20261001_official380/issue_logs/), the reproducer (official380/kill_repro.cu) and the long
 write-up (UPSTREAM_ISSUE_EVIDENCE.md) are for follow-up if asked.
