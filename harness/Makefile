@@ -4,7 +4,7 @@ CFLAGS  ?= -O2 -Wall -Wextra -Werror -std=gnu11 -Icommon
 LDLIBS  := -libverbs -lpthread -lrt
 
 COMMON  := common/probe.c
-HDR     := common/probe.h
+HDR     := common/probe.h common/lp_stall.h
 
 all: probe_server probe_client
 

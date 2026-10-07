@@ -38,7 +38,8 @@ done
 # remote shell running that very command has "probe_server" in its command line
 # and would kill itself (ssh exit 255, and nothing after it runs).
 kill_server() {
-    ssh -n "$SERVER_SSH" 'pkill -x probe_server 2>/dev/null
+    # live_peer: a probe_server stopped by its own lp_stall helper is continued first, so it can take SIGTERM
+    ssh -n "$SERVER_SSH" 'pkill -CONT -x probe_server 2>/dev/null; pkill -x probe_server 2>/dev/null
         for _ in $(seq 1 30); do pgrep -x probe_server >/dev/null || exit 0; sleep 0.1; done
         pkill -KILL -x probe_server 2>/dev/null; sleep 0.3
         ! pgrep -x probe_server >/dev/null'
@@ -47,6 +48,7 @@ start_server() {
     kill_server || { log "ERROR: could not stop a running probe_server"; return 1; }
     # ssh -f detaches after auth; the remote process survives this shell.
     ssh -f "$SERVER_SSH" "cd $SERVER_DIR && PROBE_LINK_DRYRUN=$PROBE_LINK_DRYRUN PROBE_TEST_NO_PROBE_REPLY=${PROBE_TEST_NO_PROBE_REPLY:-0} \
+        LIVE_STOP_MS=$LIVE_STOP_MS LIVE_TRANSIENT_MS=$LIVE_TRANSIENT_MS \
         timeout $SERVER_TIMEOUT ./probe_server \
         -d $SERVER_DEV -i $IB_PORT -g $SERVER_GID_INDEX -p $CTRL_PORT -C $SERVER_CPU \
         -I $SERVER_IFACE > $SERVER_LOG 2>&1"
@@ -58,6 +60,10 @@ start_server() {
     return 1
 }
 stop_server() { kill_server >/dev/null 2>&1 || log "WARNING: could not confirm probe_server stopped"; }
+# keep the responder's log next to the CSV (live_peer: fault_applied / stall / rearm records)
+fetch_server_log() {   # fetch_server_log <dest>
+    ssh -n "$SERVER_SSH" "cat $SERVER_LOG" >> "$1" 2>/dev/null || log "WARNING: could not fetch $SERVER_LOG"
+}
 
 # best effort: if the responder's RoCE netdev is admin-down, bring it back up
 restore_link() {
@@ -87,6 +93,7 @@ make -s
 log "syncing source + building server ($SERVER_SSH)"
 # sync source (never the binaries or results) so the responder rebuilds from the
 # same code; nccl-integration/ is not part of this build and is left alone.
+ssh -n "$SERVER_SSH" "mkdir -p $SERVER_DIR"
 rsync -a --exclude='results/*' --exclude='/probe_client' --exclude='/probe_server' \
       --exclude='/nccl-integration/' \
       "$SCRIPT_DIR"/ "$SERVER_SSH:$SERVER_DIR"/ >/dev/null
@@ -141,6 +148,7 @@ run_one() {
             fi
             crc=0
             client "$fault" 1 "$tmp" || crc=$?
+            fetch_server_log "$RESULTS_DIR/${fault}_${STAMP}.srv.log"
             [ "$crc" -eq 0 ] || { fails=$((fails + 1)); log "ERROR: $fault trial $i: client exit $crc"; }
             if [ -f "$tmp" ]; then
                 if [ $first -eq 1 ]; then cp "$tmp" "$out"; first=0
@@ -153,6 +161,7 @@ run_one() {
         if start_server; then
             crc=0
             client "$fault" "$ITERS" "$out" || crc=$?
+            fetch_server_log "$RESULTS_DIR/${fault}_${STAMP}.srv.log"
             if [ "$crc" -ne 0 ]; then
                 rc=1
                 log "ERROR: $fault: client exit $crc; responder log tail:"

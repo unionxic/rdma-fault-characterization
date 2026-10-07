@@ -21,6 +21,21 @@
  *   retry_proc_sigkill  : this process raises SIGKILL on GO, before acking anything:
  *                         a real crash, the kernel tears the resources down. The
  *                         runner restarts it per trial, as for retry_proc_kill.
+ *   live_* (live_peer study, harness/live_peer/EXPERIMENT.md): the process stays alive but is
+ *                         not ready. Each logs "[server] fault_applied fault=<f> mono_ns=<n>".
+ *     live_qp_reset     : own QP -> RESET on GO
+ *     live_qp_init      : own QP -> RESET -> INIT on GO
+ *     live_qp_rtr       : own QP re-armed RESET -> INIT -> RTR with its saved receive PSN
+ *     live_transient    : own QP -> RESET -> INIT on GO; LIVE_TRANSIENT_MS (1250) after GOACK it is
+ *                         re-armed to RTS with the saved PSNs ("[server] rearm ...")
+ *     live_stop_err     : own QP -> ERR, GOACK, then this process stops itself for LIVE_STOP_MS
+ *                         (8000) through the lp_stall helper (common/lp_stall.h)
+ *     live_stop_ok      : GOACK, then the same stop with a healthy QP
+ *     live_ctl_close    : own QP -> ERR, GOACK, then the control connection is closed while the
+ *                         process lives on; a new connection gets "ALIVE <pid> <QP state>" to
+ *                         "ALIVE?" (20 s), then the server exits normally
+ *     live_qp_recreate  : own QP destroyed and a new one created and left in INIT
+ *   RESYNC <n> is answered with RESYNCED <n> (the client drops late answers after a stop).
  *   retry_link_down     : `sudo -n ip link set dev <iface> down` on GO. Checked at
  *                         TRIAL time: if the link cannot be toggled the reply is
  *                         "ERR link_down_unavailable <why>" instead of "OK".
@@ -38,6 +53,7 @@
  */
 #define _GNU_SOURCE
 #include "probe.h"
+#include "lp_stall.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +62,8 @@
 #include <getopt.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <poll.h>
+#include <inttypes.h>
 
 extern char **environ;
 
@@ -170,12 +188,21 @@ static void on_term_signal(int sig) {
 }
 
 /* ---------------- QP wiring ---------------- */
+static probe_dest_t g_peer;          /* the requester's QP info of the current connection (live_*) */
+static lp_stall_t g_stall = { -1, -1 };
+
+static long env_ms(const char *name, long def) {
+    const char *v = getenv(name);
+    return (v && v[0]) ? atol(v) : def;
+}
+
 /* exchange dest (server sends first, then receives) and go RTR->RTS */
 static int connect_qp_server(probe_ep_t *ep, int fd, uint32_t local_psn) {
     probe_dest_t local, remote;
     ep_fill_dest(ep, local_psn, &local);
     if (tcp_send_all(fd, &local, sizeof(local)) < 0) return -1;
     if (tcp_recv_all(fd, &remote, sizeof(remote)) < 0) return -1;
+    g_peer = remote;
     if (ep_to_rtr(ep, &remote) < 0) return -1;
     if (ep_to_rts(ep, local_psn) < 0) return -1;
     return 0;
@@ -193,6 +220,29 @@ static int server_bring_up(probe_ep_t *ep, int fd, bool full_rebuild) {
     }
     if (ep_to_init(ep) < 0) return -1;
     return connect_qp_server(ep, fd, psn);
+}
+
+/* live_ctl_close: after the control connection is closed, answer "ALIVE?" on a new connection
+ * (up to 20 s), so the requester can tell a live process from a dead one. */
+static void serve_alive_query(int lfd, probe_ep_t *ep) {
+    struct pollfd p = { .fd = lfd, .events = POLLIN, .revents = 0 };
+    if (poll(&p, 1, 20000) <= 0) { fprintf(stderr, "[server] no ALIVE? connection within 20 s\n"); return; }
+    int afd = tcp_server_accept(lfd);
+    if (afd < 0) return;
+    struct timeval tv = { 5, 0 };
+    setsockopt(afd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    char line[128];
+    if (ctrl_recv_line(afd, line, sizeof(line)) > 0 && strcmp(line, "ALIVE?") == 0) {
+        enum ibv_qp_state qs;
+        const char *qsn = (ep_query_qp_state(ep, &qs) == 0) ? qp_state_name(qs) : "?";
+        char rep[96];
+        snprintf(rep, sizeof(rep), "ALIVE %d %s", (int)getpid(), qsn);
+        ctrl_send_line(afd, rep);
+        fprintf(stderr, "[server] answered '%s' mono_ns=%" PRIu64 "\n", rep, mono_ns());
+    } else {
+        fprintf(stderr, "[server] unexpected line on the ALIVE? connection: '%s'\n", line);
+    }
+    close(afd);
 }
 
 int main(int argc, char **argv) {
@@ -241,6 +291,13 @@ int main(int argc, char **argv) {
     if (g_dryrun) fprintf(stderr, "[server] PROBE_LINK_DRYRUN=1: link toggles are logged, not performed\n");
 
     pin_to_cpu(cpu);
+
+    /* live_peer: the stop helper is forked before the device and the sockets are opened */
+    if (lp_stall_start(&g_stall) != 0) { perror("lp_stall_start"); return 1; }
+    const long live_stop_ms = env_ms("LIVE_STOP_MS", 8000);
+    const long live_transient_ms = env_ms("LIVE_TRANSIENT_MS", 1250);
+    fprintf(stderr, "[server] pid %d, lp_stall helper pid %d, LIVE_STOP_MS=%ld LIVE_TRANSIENT_MS=%ld\n",
+            (int)getpid(), (int)g_stall.pid, live_stop_ms, live_transient_ms);
 
     probe_ep_t ep;
     if (ep_open(&ep, dev, (uint8_t)ib_port, gid_index, PROBE_BUF_SIZE) < 0) return 1;
@@ -329,10 +386,64 @@ int main(int argc, char **argv) {
                 continue;
             }
         }
-        if (fault == FAULT_RETRY_SERVER_QP_ERR) {
-            if (ep_to_err(&ep) < 0) break;
+        /* live_peer faults and the peer QP error: change our QP before GOACK */
+        uint32_t saved_sq = 0, saved_rq = 0;
+        bool applied = true;
+        switch (fault) {
+            case FAULT_RETRY_SERVER_QP_ERR:
+            case FAULT_LIVE_STOP_ERR:
+            case FAULT_LIVE_CTL_CLOSE:
+                applied = ep_to_err(&ep) == 0; break;
+            case FAULT_LIVE_QP_RESET:
+                applied = ep_to_reset(&ep) == 0; break;
+            case FAULT_LIVE_QP_INIT:
+                applied = ep_to_reset(&ep) == 0 && ep_to_init(&ep) == 0; break;
+            case FAULT_LIVE_QP_RECREATE:
+                ep_destroy_qp(&ep);
+                applied = ep_create_qp(&ep) == 0 && ep_to_init(&ep) == 0; break;
+            case FAULT_LIVE_QP_RTR:
+                applied = ep_query_psns(&ep, &saved_sq, &saved_rq) == 0 &&
+                          ep_rearm(&ep, &g_peer, saved_rq, saved_sq, false) == 0; break;
+            case FAULT_LIVE_TRANSIENT:
+                applied = ep_query_psns(&ep, &saved_sq, &saved_rq) == 0 &&
+                          ep_to_reset(&ep) == 0 && ep_to_init(&ep) == 0; break;
+            default: break;
         }
+        if (!applied) { fprintf(stderr, "[server] could not apply %s\n", fault_s); break; }
+        const bool live_fault = fault == FAULT_RETRY_SERVER_QP_ERR || fault >= FAULT_LIVE_QP_RESET;
         if (ctrl_send_line(fd, "GOACK") < 0) break;
+        const uint64_t t_goack = mono_ns();
+        if (live_fault)
+            fprintf(stderr, "[server] fault_applied fault=%s mono_ns=%" PRIu64 " rq_psn=%u sq_psn=%u\n",
+                    fault_s, t_goack, saved_rq, saved_sq);
+        if (fault == FAULT_LIVE_TRANSIENT) {
+            const uint64_t until = t_goack + (uint64_t)live_transient_ms * 1000000ull;
+            for (uint64_t now = mono_ns(); now < until; now = mono_ns()) {
+                uint64_t left = until - now;
+                struct timespec d = { (time_t)(left / 1000000000ull), (long)(left % 1000000000ull) };
+                nanosleep(&d, NULL);
+            }
+            if (ep_rearm(&ep, &g_peer, saved_rq, saved_sq, true) < 0) { fprintf(stderr, "[server] rearm failed\n"); break; }
+            fprintf(stderr, "[server] rearm mono_ns=%" PRIu64 " rq_psn=%u sq_psn=%u\n", mono_ns(), saved_rq, saved_sq);
+        }
+        if (fault == FAULT_LIVE_STOP_ERR || fault == FAULT_LIVE_STOP_OK) {
+            uint64_t t_stop = 0, t_cont = 0;
+            if (lp_stall_self(&g_stall, (uint32_t)live_stop_ms, &t_stop, &t_cont) < 0) {
+                fprintf(stderr, "[server] stall helper gone\n"); break;
+            }
+            fprintf(stderr, "[server] stall_begin mono_ns=%" PRIu64 " ms=%ld\n", t_stop, live_stop_ms);
+            fprintf(stderr, "[server] stall_end mono_ns=%" PRIu64 " measured_ms=%.3f\n", t_cont,
+                    (double)(t_cont - t_stop) / 1e6);
+        }
+        if (fault == FAULT_LIVE_CTL_CLOSE) {
+            fprintf(stderr, "[server] ctl_close pid=%d mono_ns=%" PRIu64 "\n", (int)getpid(), mono_ns());
+            shutdown(fd, SHUT_RDWR);
+            close(fd);
+            fd = -1;
+            serve_alive_query(lfd, &ep);
+            rc = 0;
+            break;   /* the process exits normally after answering */
+        }
 
         /* Baseline the responder RDMA port counters at fault time. They are reported
          * in the PROBE reply as DIAGNOSTICS ONLY: VERIFICATION_0x81.md showed that
@@ -359,6 +470,14 @@ int main(int argc, char **argv) {
                 snprintf(rep, sizeof(rep), "PROBED %ld %ld %d", rxd, txd, port_up);
                 if (ctrl_send_line(fd, rep) < 0) { stop = true; break; }
                 continue;   /* peer is alive; keep waiting for RECOVER/NORECOVER */
+            }
+            unsigned rs = 0;
+            if (sscanf(line, "RESYNC %u", &rs) == 1) {
+                char rep[48];
+                snprintf(rep, sizeof(rep), "RESYNCED %u", rs);
+                fprintf(stderr, "[server] %s mono_ns=%" PRIu64 "\n", rep, mono_ns());
+                if (ctrl_send_line(fd, rep) < 0) { stop = true; break; }
+                continue;
             }
             if (strcmp(line, "QUERY") == 0) {
                 /* fault-time state, before any recovery: our QP state and our async events */
