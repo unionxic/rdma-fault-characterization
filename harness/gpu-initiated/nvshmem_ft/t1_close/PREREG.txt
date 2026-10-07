@@ -1,0 +1,5 @@
+Pre-registration of nvshmem-t1-close, 2026-10-07 18:57:27 +0900, before any build or measured run of this study.
+sha256 of the fixed prediction file:
+7f8b32045aa665a2eaedd97acf486077a4c2ba4d00548ad4c84c0899722f897b  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/nvshmem-t1-close-v1 (sections 2, 3, 7, 8).
+The final3 numbers in the basis column were recounted from the raw logs of Release data-20261006 (sets reg_final3, flap_final3, review5) with scripts/t1/rows_t1.py on 2026-10-07.
