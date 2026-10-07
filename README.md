@@ -28,7 +28,7 @@ IBGDA)이다.
 **NVSHMEM 버그**
 - NVSHMEM 3.5.x–3.8.0의 CPU 프록시 경로에서는 QP 오류가 나도 오류 완료가 아예 생기지 않아서 응용이 멈춘다.
 - 공식 3.8.0 원본에서 3/3 재현했고, 두 줄 수정으로 사라진다.
-- 업스트림에는 아직 보고하지 않았다. (`harness/gpu-initiated/nvshmem_rootcause/`)
+- 업스트림에 이슈로 보고했다(NVIDIA/nvshmem #117). (`harness/gpu-initiated/nvshmem_rootcause/`)
 
 **감지 시간**
 - 재전송 소진 오류는 타임아웃 14에서 3.5–3.8 s, NCCL과 NVSHMEM 기본값 20에서 58.5–58.8 s 뒤에 보인다.
@@ -45,8 +45,8 @@ IBGDA)이다.
 
 ## 진행 중
 
-- **투명 복구 후속:** GIN 투명 복구 2단계와 NVSHMEM 투명 복구. 미해결 항목이 남아 있어 draft PR로 두었다.
-- **NVSHMEM 업스트림 이슈:** 초안만 있다.
+- **투명 복구 후속:** GIN 투명 복구 2단계와 NVSHMEM 투명 복구. 미해결 항목이 남아 있다.
+- **NVSHMEM 업스트림 이슈:** #117로 게시했고, 답을 기다린다.
 
 ## 범위와 한계
 
