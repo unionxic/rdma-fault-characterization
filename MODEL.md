@@ -41,10 +41,21 @@ record에 적힌 값까지만 완료를 만든다. 그래서 record 값이 소�
   GPU 처리 경로와 그 칸만 고친 수정본은 5/5였다. 장애가 없으면 어느 쪽도 오류 CQE가 없었다(10/10).
 - GIN GDAKI는 GPU가 doorbell을 울리는 경로에서도 record를 먼저 쓴다(소스 확인). 규칙대로라면 완료가
   생겨야 한다. 사전 등록한 예측대로 원격 접근 오류와 상대 QP 오류에서 20/20 생겼다.
+- 스택 14개의 소스를 읽어, record를 누가 언제 쓰는지만으로 "보인다, 사라진다, 조건부"를 미리 적었다. 다른
+  에이전트가 근거 줄을 원본 커밋에서 다시 확인했다(14/14). 그중 이 테스트베드에서 잴 수 있는 칸을 사전 등록하고
+  쟀다(55회).
+  - NVSHMEM 3.4.5의 CPU 프록시는 같은 프록시지만 송신 칸에 쓴다. 상대 kill 뒤 대기가 재전송이 끝나자 10/10
+    돌아왔다. 같은 경로가 3.8.0에서는 오류 CQE 0/5였다. 걸린 시간(57.0–58.5 s)은 예측에 적은 3–5 s가
+    아니었다. 3.4.5가 IB 타임아웃을 20으로 고정한 것을 예측할 때 놓쳤기 때문이다.
+  - NCCL GIN GDAKI의 BlueFlame 처리 방식(설정값 6)은 doorbell도 record도 쓰지 않는다. 장애가 없어도 첫 반복이
+    10/10 시간 초과였고, 받는 쪽에 데이터가 없었다.
+  - 같은 스택의 CPU 프록시 처리 방식은 진행 스레드가 record를 올린다. 로컬 QP 오류, 원격 접근 오류, 상대 QP
+    오류에서 호스트 오류가 15/15 나왔다.
 
 **한계.** NIC 한 종류(ConnectX-6, 펌웨어 20.43.4100)와 RC QP에서만 쟀다. record 값과 첫 미완료
 위치의 차이는 -8부터 +18까지만 시험했다. "오류 상태의 NIC가 record를 다시 읽는다"는 동작 방식은
-세 번째 측정에서 추론한 것이다.
+세 번째 측정에서 추론한 것이다. record를 읽지 않게 설정한 QP(DOCA의 record 없는 모드)는 규칙 1의 범위
+밖이다. UCX, rocSHMEM, DeepEP는 소스 예측만 있고 재지 않았다.
 
 ## 규칙 2. 위로 갈수록 줄어든다
 
@@ -169,13 +180,14 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
 
 - 노드 한 쌍, NIC 한 종류(ConnectX-6)에서 쟀다. 장애는 소프트웨어로 주입했다.
 - 규칙 3의 오판은 아직 재지 않았다.
-- 규칙 1을 다른 스택으로 넓히려면, 각 스택이 record 값을 어떻게 쓰는지 소스에서 먼저 확인한다.
+- 규칙 1은 스택 14개에 소스로 적용해 봤고, 그중 이 테스트베드에서 잴 수 있는 경로만 쟀다. 소스로만 예측한
+  경로(UCX GPU의 지연 게시, rocSHMEM 등)는 재지 않았다.
 
 ## 근거 문서
 
 | 규칙 | 문서 |
 |---|---|
-| 1 | [nvshmem_rootcause/README.md](harness/gpu-initiated/nvshmem_rootcause/README.md), [official380/README.md](harness/gpu-initiated/nvshmem_rootcause/official380/README.md), [cq380/README.md](harness/gpu-initiated/nvshmem_rootcause/cq380/README.md) |
+| 1 | [nvshmem_rootcause/README.md](harness/gpu-initiated/nvshmem_rootcause/README.md), [official380/README.md](harness/gpu-initiated/nvshmem_rootcause/official380/README.md), [cq380/README.md](harness/gpu-initiated/nvshmem_rootcause/cq380/README.md), [completion_contract/README.md](harness/gpu-initiated/completion_contract/README.md) |
 | 2, 4 | [propagation/README.md](harness/gpu-initiated/propagation/README.md), [LAYERS.md](harness/gpu-initiated/propagation/results/20261006_campaign/LAYERS.md), [REVIEW_20261006.md](harness/gpu-initiated/propagation/REVIEW_20261006.md) |
 | 3 | [teardown_order/README.md](harness/teardown_order/README.md), [ack_timeout/README.md](harness/ack_timeout/README.md), [stage2/README.md](harness/nccl-integration/stage2/README.md) |
 | 4 | [gin/README.md](harness/gpu-initiated/gin/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md) |
