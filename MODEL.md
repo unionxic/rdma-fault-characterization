@@ -37,6 +37,8 @@ record에 적힌 값까지만 완료를 만든다. 그래서 record 값이 소�
 - NVSHMEM 3.5.x–3.8.0의 CPU 프록시는 송신 값을 record의 다른 칸에 쓴다(소스 확인). 규칙대로라면 어떤
   장애도 보이지 않아야 한다. 오류 CQE는 GPU 없는 재현에서 0/35, NVSHMEM 안에서 0/12였고, 수정하지 않은
   공식 3.8.0에서도 3/3 재현됐다. 그 칸만 고치면 21/21, 16/16으로 돌아왔다.
+- 공식 3.8.0의 CQ를 직접 읽는 측정을 사전 등록했다. 예측대로 CPU 프록시는 상대 kill 뒤 오류 CQE가 0/5였고,
+  GPU 처리 경로와 그 칸만 고친 수정본은 5/5였다. 장애가 없으면 어느 쪽도 오류 CQE가 없었다(10/10).
 - GIN GDAKI는 GPU가 doorbell을 울리는 경로에서도 record를 먼저 쓴다(소스 확인). 규칙대로라면 완료가
   생겨야 한다. 사전 등록한 예측대로 원격 접근 오류와 상대 QP 오류에서 20/20 생겼다.
 
@@ -173,7 +175,7 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
 
 | 규칙 | 문서 |
 |---|---|
-| 1 | [nvshmem_rootcause/README.md](harness/gpu-initiated/nvshmem_rootcause/README.md), [official380/README.md](harness/gpu-initiated/nvshmem_rootcause/official380/README.md) |
+| 1 | [nvshmem_rootcause/README.md](harness/gpu-initiated/nvshmem_rootcause/README.md), [official380/README.md](harness/gpu-initiated/nvshmem_rootcause/official380/README.md), [cq380/README.md](harness/gpu-initiated/nvshmem_rootcause/cq380/README.md) |
 | 2, 4 | [propagation/README.md](harness/gpu-initiated/propagation/README.md), [LAYERS.md](harness/gpu-initiated/propagation/results/20261006_campaign/LAYERS.md), [REVIEW_20261006.md](harness/gpu-initiated/propagation/REVIEW_20261006.md) |
 | 3 | [teardown_order/README.md](harness/teardown_order/README.md), [ack_timeout/README.md](harness/ack_timeout/README.md), [stage2/README.md](harness/nccl-integration/stage2/README.md) |
 | 4 | [gin/README.md](harness/gpu-initiated/gin/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md) |

@@ -2,7 +2,7 @@
 
 `../nvshmem/`에서 NVSHMEM은 어떤 장애에도 오류 CQE를 받지 못했다. 그 원인을 찾고, 누가 영향을 받는지 따졌다.
 원인은 CPU 프록시의 doorbell record 버그다. NIC가 오류 상태에서 doorbell record를 어떻게 읽는지도 직접 쟀다.
-수정하지 않은 공식 3.8.0에서도 재현했다(`official380/`).
+수정하지 않은 공식 3.8.0에서도 재현했고(`official380/`), 그 CQ를 직접 읽어 확인했다(`cq380/`).
 
 ## 무엇을 쟀나
 
@@ -61,6 +61,8 @@
 | `PRESETS.md` | NVSHMEM과 DOCA의 QP, CQ 설정을 항목별로 비교한 표 |
 | `UPSTREAM_ISSUE_DRAFT.md`, `UPSTREAM_ISSUE_EVIDENCE.md` | 업스트림 이슈 본문(짧은 판, #117로 게시)과 근거를 담은 긴 판 |
 | `official380/` | 공식 v3.8.0-0 재현 |
+| [`cq380/`](cq380/README.md) | 공식 3.8.0의 CQ 직접 읽기(사전 등록, CPU 프록시 오류 CQE 0/5, GPU 핸들러와 수정본 5/5) |
+| [`teardown_channel/`](teardown_channel/README.md) | 공식 3.8.0의 finalize가 멈추는 곳(사전 등록) |
 | `results/20260924/` | CPU 재현과 NVSHMEM 스위치 시행 표 |
 | `results/20260924_abc/` | 3자 비교 표 |
 | `results/20260925_dbrk/` | NIC 규칙 측정 표 |
