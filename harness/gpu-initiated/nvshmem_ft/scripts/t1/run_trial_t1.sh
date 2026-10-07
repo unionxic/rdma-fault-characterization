@@ -13,7 +13,7 @@
 #      this long after PE0 starts its kernel), FETCH=1 (--fetch), PROC_TIMEOUT KTIMEOUT, TAG, BUNDLE
 #      BUNDLE_V22 BIN, XENV (one extra VAR=value exported in both processes, e.g.
 #      CUDA_DEVICE_MAX_CONNECTIONS=32), SOCK_DIR (both|in), and the knobs
-#      of env_t1.sh (FT RING T1 T1SKIP SKIP HOLD_MS ... GID_R GID_S).
+#      of env_t1.sh (FT RING T1 T1SKIP SKIP HOLD_MS ... GID_R GID_S RC_PER_PE RC_MAP); NOFIN=1 (--no-finalize).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/env_t1.sh"
@@ -43,6 +43,7 @@ ARGS="--iters $ITERS --bytes $BYTES --gap-us $GAP_US --kernel-timeout-s $KTIMEOU
 [ -n "${REPS:-}" ] && ARGS="$ARGS --reps $REPS"
 [ "${FETCH:-0}" = 1 ] && ARGS="$ARGS --fetch${FETCH_EVERY:+ --fetch-every $FETCH_EVERY}"
 [ "${FILL:-0}" != 0 ] && ARGS="$ARGS --fill-sms $FILL"
+[ "${NOFIN:-0}" = 1 ] && ARGS="$ARGS --no-finalize"   # t1_close: exit without nvshmem_finalize
 INJ0=""; INJ1=""
 case "$FAULT" in
   none|F4|FLAP|SOCK) ;;
@@ -55,7 +56,7 @@ case "$FAULT" in
   *) echo "unknown fault $FAULT" >&2; exit 2 ;;
 esac
 {
-  echo "tag=$tag fault=$FAULT mode=$MODE trial=$TRIAL ft=${FT:-1} ring=${RING:-1} t1=${T1:-1} t1skip=${T1SKIP:-} skip=${SKIP:-} fetch=${FETCH:-0} fetch_every=${FETCH_EVERY:-1} fill=${FILL:-0} sock_s=${SOCK_S:-} sock_at_ms=${SOCK_AT_MS:-} sock_dir=${SOCK_DIR:-both} xenv=${XENV:-}"
+  echo "tag=$tag fault=$FAULT mode=$MODE trial=$TRIAL ft=${FT:-1} ring=${RING:-1} t1=${T1:-1} t1skip=${T1SKIP:-} skip=${SKIP:-} fetch=${FETCH:-0} fetch_every=${FETCH_EVERY:-1} fill=${FILL:-0} sock_s=${SOCK_S:-} sock_at_ms=${SOCK_AT_MS:-} sock_dir=${SOCK_DIR:-both} xenv=${XENV:-} nofin=${NOFIN:-0} rc_per_pe=${RC_PER_PE:-1} rc_map=${RC_MAP:-none}"
   echo "iters=$ITERS bytes=$BYTES gap_us=$GAP_US ctas=${CTAS:-} threads=${THREADS:-} burst=${BURST:-} reps=${REPS:-} fault_ms=$FMS shots=${SHOTS:-} kill_ms=${KILL_MS:-} cut_s=${CUT_S:-} cut_at_ms=${CUT_AT_MS:-}"
   echo "hold_ms=${HOLD_MS:-} gid_r=${GID_R:-4} gid_s=${GID_S:-3} ib_timeout=${NVSHMEM_IB_TIMEOUT:-14} bundle=$BUNDLE bin=$BIN start=$(date '+%F %T')"
   echo "md5_bin=$(md5sum < $LBIN | cut -c1-12) md5_transport=$(md5sum < $BUNDLE/lib/nvshmem_transport_ibgda.so.7.0.0 | cut -c1-12) md5_host=$(md5sum < $BUNDLE/lib/libnvshmem_host.so.3.9.0 | cut -c1-12)"

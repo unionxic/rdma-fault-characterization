@@ -259,7 +259,7 @@ int main(int argc, char **argv) {
     const int port = atoi(argv[3]);
     const char *mode = argv[4];
     int iters = 160, ctas = 4, threads = 8, burst = 1, reps = 1, bad_at = -1, do_fetch = 0, fill = 0,
-        fetch_every = 1;
+        fetch_every = 1, no_finalize = 0;
     long gap_us = 15000;
     double ktimeout_s = 120;
     size_t bytes = 256u * 1024u;
@@ -275,6 +275,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--kernel-timeout-s")) ktimeout_s = atof(nxt());
         else if (!strcmp(argv[i], "--bad-at")) bad_at = atoi(nxt());
         else if (!strcmp(argv[i], "--fetch")) do_fetch = 1;
+        else if (!strcmp(argv[i], "--no-finalize")) no_finalize = 1; /* t1_close: exit through atexit only */
         else if (!strcmp(argv[i], "--fetch-every")) fetch_every = std::max(1, atoi(nxt()));
         else if (!strcmp(argv[i], "--fill-sms")) {
             fill = 1;
@@ -586,6 +587,12 @@ int main(int argc, char **argv) {
         *s = 0;
         status_kernel<<<1, 1, 0, st>>>(peer, s);
         if (waitStream(st, 10) == 0) printf("T1STATUS rank %d end_status=0x%08x\n", me, *s);
+    }
+    if (no_finalize) {
+        /* t1_close: leave main without nvshmem_finalize; the library's atexit hook stops its helper */
+        printf("T1EXIT rank %d mono_ms=%.3f\n", me, monoMs());
+        fflush(stdout);
+        return rc;
     }
     double tf = monoMs();
     nvshmem_finalize();

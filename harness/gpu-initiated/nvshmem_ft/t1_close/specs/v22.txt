@@ -1,0 +1,3 @@
+# t1_close hold C, second part: FT v2.2 bundle (~/gi-bundle/nvshmem_ft2), scripts/v2 runner (fault mode n VAR=...)
+F3 timeout 5 RING=1 RECOVER=1 TAG=r13_v22f3
+F4 timeout 5 RING=1 RECOVER=1 TAG=r14_v22f4
