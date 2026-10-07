@@ -1,0 +1,10 @@
+--- a/src/modules/transport/ibgda/ibgda.cpp
++++ b/src/modules/transport/ibgda/ibgda.cpp
+@@ -2183,6 +2183,7 @@
+ 
+     memset(&pd_init_attr, 0, sizeof(pd_init_attr));
+     memset(&srq_init_attr, 0, sizeof(srq_init_attr));
++    memset(&ah_attr, 0, sizeof(ah_attr));  // as 3.8.0 does
+ 
+     pd_init_attr.pd = device->pd;
+     pd = ibv_alloc_parent_domain(context, &pd_init_attr);

@@ -6,12 +6,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `PREREGISTERED` |
+| 상태 | `RUNNING` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-06 |
 | 기준 브랜치와 커밋 | `exp/completion-contract` @ `31098a9d` (master) |
 | 사전 등록 태그 | `prereg/completion-contract-v1` (이 상태로 바꾼 커밋) |
-| 마지막 갱신 | 2026-10-07 09:12, 사전 등록 |
+| 마지막 갱신 | 2026-10-07 14:30, smoke 끝, 본 실행 시작 |
 
 표시: `[측정]` 원자료에서 확인, `[추론]` 해석, `[미확인]` 확인 안 함. 소스에서 읽은 예측은 `[소스]`로 표시한다.
 
@@ -148,7 +148,7 @@
   - NCCL 칸: `../gin/scripts/run_trial.sh`에 처리 방식 설정값(`NCCL_GIN_GDAKI_NIC_HANDLER`)을 두 rank에
     환경변수로 준다. 이를 위해 실행기에 추가 환경변수를 넘기는 자리를 만든다.
   - 모두 `cluster_run.sh` 안에서 돈다.
-- **채점:** `[미확인]` 아직 없음.
+- **채점:** [score.py](score.py). 결과는 `results/<날짜>/SCORE.md`.
 - **출력:** `results/` 아래 날짜 폴더. 원시 로그는 Release.
 
 ## 10. 완료 조건과 QA 기준
@@ -164,8 +164,8 @@
 
 - [x] 질문, 가설, 셀 작성 (`DRAFT`)
 - [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
-- [ ] NVSHMEM 3.4.5 빌드와 배포
-- [ ] smoke 실행(채점 제외)
+- [x] NVSHMEM 3.4.5 빌드와 배포
+- [x] smoke 실행(채점 제외)
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 채점과 재계산 (`QA`)
 - [ ] 결과 정리, 원자료 릴리스, PR
@@ -179,10 +179,17 @@
 | 2026-10-06 23:30 | 배포된 NCCL 번들의 설정값과 GDRCopy 상태 확인 | 5절 |
 | 2026-10-06 23:45 | 실험 문서 초안 | 이 문서 |
 | 2026-10-07 09:12:55 | 제외 기준(폴링 대체 문구)과 실행 방법을 다듬고 사전 등록. 예측 원문은 [predictions.csv](predictions.csv) | [PREREG.txt](PREREG.txt), 태그 `prereg/completion-contract-v1` |
+| 2026-10-07 09:14–09:19 | NVSHMEM 공식 v3.4.5-0 빌드(GDRCopy 끔)와 두 노드 배포. 플러그인과 재현 프로그램 md5가 두 노드에서 같음 | [build_345.sh](build_345.sh) |
+| 2026-10-07 09:16–09:19 | NCCL 칸 smoke, 칸마다 1회(장애 칸은 장애마다 1회), 6회. 예측과 어긋난 시행 없음 | `results/20261007_smoke/gin/` |
+| 2026-10-07 14:14 | NVSHMEM 3.4.5 smoke 1차, 3회. 모두 시작 단계 실패: 3.4.5가 RC 배정 값 "none"을 모름 | `results/20261007_smoke/nvs/`, [DEVIATIONS.md](DEVIATIONS.md) 2 |
+| 2026-10-07 14:17 | 3.4.5가 IB 타임아웃 20, 재시도 7을 소스에 고정한 것을 확인. 대기 상한 90 s와 대체 판정 창 50–70 s를 결과 보기 전에 적음 | [DEVIATIONS.md](DEVIATIONS.md) 3 |
+| 2026-10-07 14:18 | smoke 2차, 3회. GPU 처리는 죽은 뒤 첫 반복이 57.6 s에 돌아옴. CPU 프록시 2회는 sunny에서 주소 핸들 생성 실패로 시작 못 함 | `results/20261007_smoke/nvs2/`, [DEVIATIONS.md](DEVIATIONS.md) 4 |
+| 2026-10-07 14:22 | 주소 핸들 구조체 초기화 한 줄(3.8.0과 같음)을 더한 3.4.5 플러그인 빌드, 두 노드 배포. smoke 3차, 3회: CPU 프록시 kill 59.9 s에 돌아옴, 장애 없음 40회 모두 돌아옴 | [patches/](patches/), [build_345_ahinit.sh](build_345_ahinit.sh), `results/20261007_smoke/nvs3/` |
 
 ## 13. 사전 등록 이후 변경
 
-`[미확인]` 아직 없다.
+[DEVIATIONS.md](DEVIATIONS.md)에 적었다. 요점: 3.4.5는 타임아웃을 20으로 고정해서 예측의 3–5 s 창을 그대로 쓸 수 없다(쓴 그대로 판정과
+타임아웃 20 창 판정을 함께 낸다). CPU 프록시 칸은 초기화 한 줄을 더한 3.4.5로 잰다. 예측과 판정 기준 원문은 바꾸지 않았다.
 
 ## 14. 원자료와 결과표
 
