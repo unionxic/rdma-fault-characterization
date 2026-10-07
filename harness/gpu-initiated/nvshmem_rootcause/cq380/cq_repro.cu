@@ -93,39 +93,112 @@ __global__ void cq_scan(CqSum *out, int *nout, int npes) {
     *nout = k;
 }
 
-// Reads every CQ while other kernels may still be running (non-blocking stream, bounded wait).
-static void cq_scan_print(int npes) {
+// Everything the scan needs is prepared before the first iteration (cq_scan_prepare): allocating,
+// or copying through pageable memory, while a kernel is stuck can block, and a scan kernel can
+// queue behind the stuck kernel. So the CQ array is copied to the host at start. A queue whose
+// buffer is host memory (the cpu_host_memory handler) is then read directly by the CPU, with no
+// CUDA call. Otherwise a kernel on its own non-blocking stream reads it, with a bounded wait.
+static cudaStream_t g_scan_stream;
+static CqSum *g_scan_d, *g_scan_h;
+static int *g_scan_dn, *g_scan_hn;
+static bool g_scan_on = false;
+static int g_ncq = 0, g_ndci = 0;
+static nvshmemi_ibgda_device_cq_t g_cq[MAX_CQ];
+static const volatile uint8_t *g_cqe_host[MAX_CQ];
+static bool g_all_host = false;
+
+static void cq_scan_prepare(int npes) {
     const char *e = getenv("CQSCAN");
     if (!e || !e[0] || !strcmp(e, "0")) return;
-    CqSum *d = nullptr; int *dn = nullptr;
-    cudaStream_t s;
-    if (cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) || cudaMalloc(&d, sizeof(CqSum) * MAX_CQ) ||
-        cudaMalloc(&dn, sizeof(int))) {
+    if (cudaStreamCreateWithFlags(&g_scan_stream, cudaStreamNonBlocking) ||
+        cudaMalloc(&g_scan_d, sizeof(CqSum) * MAX_CQ) || cudaMalloc(&g_scan_dn, sizeof(int)) ||
+        cudaMallocHost(&g_scan_h, sizeof(CqSum) * MAX_CQ) || cudaMallocHost(&g_scan_hn, sizeof(int))) {
         printf("CQSCAN failed: allocation\n");
         return;
     }
-    cudaMemsetAsync(dn, 0, sizeof(int), s);
-    cq_scan<<<1, 1, 0, s>>>(d, dn, npes);
-    CqSum h[MAX_CQ]; int hn = 0;
-    cudaMemcpyAsync(h, d, sizeof h, cudaMemcpyDeviceToHost, s);
-    cudaMemcpyAsync(&hn, dn, sizeof hn, cudaMemcpyDeviceToHost, s);
-    double t0 = now_ms();
-    cudaError_t q;
-    while ((q = cudaStreamQuery(s)) == cudaErrorNotReady && now_ms() - t0 < 5000) usleep(1000);
-    if (q != cudaSuccess) {
-        printf("CQSCAN failed: %s\n", q == cudaErrorNotReady ? "scan kernel did not finish in 5 s" : cudaGetErrorString(q));
+    g_scan_on = true;
+    static nvshmemi_ibgda_device_state_t st;
+    if (cudaMemcpyFromSymbol(&st, nvshmemi_ibgda_device_state_d, sizeof st) || !st.globalmem.cqs) {
+        printf("CQSCAN note: device state not readable from the host; kernel path only\n");
         return;
     }
+    g_ndci = st.num_shared_dcis + st.num_exclusive_dcis;
+    int n = g_ndci + st.num_rc_per_pe * st.num_devices_initialized * npes;
+    if (n > MAX_CQ) n = MAX_CQ;
+    if (cudaMemcpy(g_cq, st.globalmem.cqs, sizeof(g_cq[0]) * n, cudaMemcpyDeviceToHost)) return;
+    g_ncq = n;
+    g_all_host = true;
+    printf("CQSCAN prep queues=%d dcis=%d\n", n, g_ndci);
+    for (int i = 0; i < n; i++) {
+        g_cqe_host[i] = nullptr;
+        if (!g_cq[i].cqe || g_cq[i].ncqes == 0 || g_cq[i].ncqes > 65536) continue;
+        cudaPointerAttributes at;
+        cudaError_t ae = cudaPointerGetAttributes(&at, g_cq[i].cqe);
+        printf("CQSCAN prep cq=%d type=%s qpn=0x%x ncqes=%u cqe=%p ptr_type=%d host_ptr=%s\n", i,
+               i < g_ndci ? "dci" : "rc", g_cq[i].qpn, g_cq[i].ncqes, g_cq[i].cqe,
+               ae == cudaSuccess ? (int)at.type : -1, (ae == cudaSuccess && at.hostPointer) ? "yes" : "no");
+        if (ae == cudaSuccess && at.type == cudaMemoryTypeHost && at.hostPointer)
+            g_cqe_host[i] = (const volatile uint8_t *)at.hostPointer;
+        else
+            g_all_host = false;
+    }
+    cudaGetLastError();
+}
+
+static void cq_print(const CqSum *h, int hn, const char *path) {
     int total = 0;
     for (int i = 0; i < hn; i++) {
-        printf("CQSCAN cq=%d type=%s qpn=0x%x ncqes=%u valid=%u err=%u", i, h[i].is_dci ? "dci" : "rc", h[i].qpn,
-               h[i].ncqes, h[i].valid, h[i].err);
-        if (h[i].err) printf(" first_err_at=%u syndrome=0x%02x vendor=0x%02x", h[i].first_err_idx, h[i].first_synd,
-                             h[i].first_vend);
-        printf(" last_opcode=0x%x\n", h[i].last_op);
-        total += h[i].err;
+        const CqSum &c = h[i];
+        printf("CQSCAN cq=%d type=%s qpn=0x%x ncqes=%u valid=%u err=%u", i, c.is_dci ? "dci" : "rc", c.qpn,
+               c.ncqes, c.valid, c.err);
+        if (c.err) printf(" first_err_at=%u syndrome=0x%02x vendor=0x%02x", c.first_err_idx, c.first_synd, c.first_vend);
+        printf(" last_opcode=0x%x\n", c.last_op);
+        total += c.err;
     }
-    printf("CQSCAN queues=%d total_err=%d\n", hn, total);
+    printf("CQSCAN queues=%d total_err=%d path=%s\n", hn, total, path);
+}
+
+static void cq_scan_print(int npes) {
+    if (!g_scan_on) return;
+    if (g_all_host && g_ncq > 0) {
+        CqSum h[MAX_CQ]; int k = 0;
+        for (int i = 0; i < g_ncq; i++) {
+            if (!g_cqe_host[i]) continue;
+            CqSum c = {};
+            c.qpn = g_cq[i].qpn; c.ncqes = g_cq[i].ncqes; c.is_dci = i < g_ndci; c.first_err_idx = 0xffffffffu;
+            for (uint32_t j = 0; j < g_cq[i].ncqes; j++) {
+                const volatile uint8_t *e = g_cqe_host[i] + 64 * (size_t)j;
+                uint8_t op = e[63] >> 4;
+                if (op == 0xf) continue;
+                c.valid++; c.last_op = op;
+                if (op == 0xd || op == 0xe) {
+                    if (!c.err) { c.first_err_idx = j; c.first_synd = e[55]; c.first_vend = e[54]; }
+                    c.err++;
+                }
+            }
+            h[k++] = c;
+        }
+        cq_print(h, k, "host");
+        return;
+    }
+    *g_scan_hn = -1;
+    cq_scan<<<1, 1, 0, g_scan_stream>>>(g_scan_d, g_scan_dn, npes);
+    cudaMemcpyAsync(g_scan_h, g_scan_d, sizeof(CqSum) * MAX_CQ, cudaMemcpyDeviceToHost, g_scan_stream);
+    cudaMemcpyAsync(g_scan_hn, g_scan_dn, sizeof(int), cudaMemcpyDeviceToHost, g_scan_stream);
+    double t0 = now_ms();
+    cudaError_t q;
+    while ((q = cudaStreamQuery(g_scan_stream)) == cudaErrorNotReady && now_ms() - t0 < 5000) usleep(1000);
+    if (q != cudaSuccess) {
+        printf("CQSCAN failed: %s\n", q == cudaErrorNotReady ? "scan did not finish in 5 s" : cudaGetErrorString(q));
+        const char *hold = getenv("CQSCAN_HOLD_S");
+        if (hold && atoi(hold) > 0) {
+            printf("CQSCAN hold %d s for an external dump\n", atoi(hold));
+            fflush(stdout);
+            sleep(atoi(hold));
+        }
+        return;
+    }
+    cq_print(g_scan_h, *g_scan_hn, "kernel");
 }
 
 // ---- FINALIZE=1: nvshmem_finalize() at the end, bounded by a watchdog thread ----
@@ -267,6 +340,7 @@ int main(int argc, char **argv) {
 
     cudaStream_t st;
     CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
+    if (mype == 0) cq_scan_prepare(2);
     for (int i = 0; i < iters; i++) {
         double t0 = now_ms();
         if (mype == 0)
