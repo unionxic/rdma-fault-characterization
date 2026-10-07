@@ -11,7 +11,7 @@
 set -u
 VAR=$1; HANDLER=$2; KILL=$3; TRIAL=$4; OUT=$5
 mkdir -p "$OUT"
-B=$HOME/gi-bundle/nvshmem_off380          # same path on both nodes
+B=${NVS_BUNDLE:-$HOME/gi-bundle/nvshmem_off380}   # same path on both nodes; completion_contract uses nvshmem_345
 BIN=${NVS_BIN:-nvs_kill_repro}   # cq380 uses nvs_cq_repro
 RAIN_MGMT=192.0.2.193
 PORT=${PORT:-18317}
