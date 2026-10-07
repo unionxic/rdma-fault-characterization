@@ -15,6 +15,9 @@
 #                  followed shot k-1 on the injecting rank.
 #   GAP_MS, DEV_TIMEOUT_S, WATCHDOG_S, BYTES, KILL_DELAY_MS, GIN_BLOCK_CAP_S, GIN_POST_POLL_S,
 #   ASYNC_POLL_US, POLL_US, LAT_ITERS, LAT_REPS, EXTRA_ENV as in the Q4 runner.
+# live_peer (harness/live_peer/EXPERIMENT.md): the meta line gets r1_alive_at_r0_exit (pgrep of rank 1
+#   on sunny right after rank 0 exits), and the cleanup sends SIGCONT before SIGKILL and ends the
+#   lp_stall helpers. The stall itself is set through EXTRA_ENV (GIN_REC_TEST_STALL_MS/_ON).
 set -u
 
 FAULT=$1; WAIT=$2; TRIAL=$3; LOGDIR=$4
@@ -103,6 +106,7 @@ env $COMMON_ENV NCCL_IB_HCA=mlx5_1 NCCL_IB_GID_INDEX=$GID0 \
   "$BUNDLE/$BIN" 0 $RAIN_MGMT $PORT $DRV_ARGS "$R0KV" "$GAP_MS" > "$R0LOG" 2>&1
 R0RC=$?
 T1=$(date +%s.%N)
+R1ALIVE=$(ssh -n "$SUNNY_SSH" "pgrep -x $BIN >/dev/null && echo 1 || echo 0" 2>/dev/null || echo -1)
 
 wait "$SSH_PID" 2>/dev/null; R1RC=$?
 [ "${KILLER:-}" ] && wait "$KILLER" 2>/dev/null
@@ -110,8 +114,9 @@ wait "$SSH_PID" 2>/dev/null; R1RC=$?
 [ "${PROBE1:-}" ] && wait "$PROBE1" 2>/dev/null
 scp -q "$SUNNY_SSH:/tmp/gin_rec_r1.kv" "$R1KV" 2>/dev/null || true
 scp -q "$SUNNY_SSH:/tmp/gin_rec_r1.log" "$R1LOG" 2>/dev/null || true
-ssh -n "$SUNNY_SSH" "pgrep -x $BIN | xargs -r kill -9 2>/dev/null; rm -f /tmp/gin_rec_r1.kv /tmp/gin_rec_r1.log" || true
-pkill -x $BIN 2>/dev/null || true
+ssh -n "$SUNNY_SSH" "pgrep -x $BIN | xargs -r kill -CONT 2>/dev/null; pgrep -x $BIN | xargs -r kill -9 2>/dev/null; pkill -x lp_stall 2>/dev/null; rm -f /tmp/gin_rec_r1.kv /tmp/gin_rec_r1.log" || true
+pkill -CONT -x $BIN 2>/dev/null; pkill -x $BIN 2>/dev/null || true
+pkill -x lp_stall 2>/dev/null || true
 LEFT=$( { pgrep -x $BIN; ssh -n "$SUNNY_SSH" "pgrep -x $BIN"; } 2>/dev/null | wc -l)
 
 mkdir -p "$LOGDIR"
@@ -125,7 +130,7 @@ cp "$R1KV"  "$LOGDIR/${stem}_r1.kv"  2>/dev/null || true
 P0=$(sed -n 's/^probe //p' "$WORK/probe0.out" 2>/dev/null | tr ' ' '\n' | sed 's/^/r0_/' | tr '\n' ' ')
 P1=$(sed -n 's/^probe //p' "$WORK/probe1.out" 2>/dev/null | tr ' ' '\n' | sed 's/^/r1_/' | tr '\n' ' ')
 echo "fault=$FAULT wait=$WAIT trial=$TRIAL rec=$REC classify=$CLASSIFY inject=$INJECT iters=$ITERS r0rc=$R0RC r1rc=$R1RC \
-left=$LEFT bytes=$BYTES ib_timeout=$IB_TIMEOUT gap_ms=$GAP_MS wall_s=$(awk "BEGIN{printf \"%.1f\", $T1-$T0}") \
+left=$LEFT r1_alive_at_r0_exit=$R1ALIVE bytes=$BYTES ib_timeout=$IB_TIMEOUT gap_ms=$GAP_MS wall_s=$(awk "BEGIN{printf \"%.1f\", $T1-$T0}") \
 bundle=$(basename $BUNDLE) ${P0}${P1}" > "$LOGDIR/${stem}_meta.txt"
 echo "[$tag] r0rc=$R0RC r1rc=$R1RC left=$LEFT wall=$(awk "BEGIN{printf \"%.1f\", $T1-$T0}")s :: $(grep -h 'DONE okIters' "$R0LOG" "$R1LOG" 2>/dev/null | sed 's/^.*\] //' | tr '\n' '|')" >&2
 rm -rf "$WORK"

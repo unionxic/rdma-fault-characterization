@@ -31,6 +31,12 @@
 // env: GIN_RECOVERY=1 (app protocol; the runner also sets NCCL_GIN_FAULT_RECOVERY=1),
 //      GIN_REC_MAX_PER_ITER (4), GIN_REC_HANDSHAKE_MS (3000), GIN_RX_ITER_CAP_S (30),
 //      GIN_BLOCK_CAP_S, GIN_POST_POLL_S, GIN_ASYNC_POLL_US, GIN_LAT_* as in gin_q4.
+//      live_peer study (harness/live_peer/EXPERIMENT.md), rank 1 only:
+//        GIN_REC_TEST_STALL_MS=<ms> (0 = off) stops rank 1 once for <ms> through the lp_stall helper
+//        (../../common/lp_stall.h), at GIN_REC_TEST_STALL_ON=req (first line of the first REQ it
+//        handles, before Prepare) or iter:<k> (right after it sends BAR_ACK and launches the wait
+//        kernel of iteration k). The kv gets "stall on= it= ms= begin_mono_ms= end_mono_ms=
+//        measured_ms=". Without the variable the helper is not even forked.
 
 #include <nccl.h>
 #include "nccl_device.h"
@@ -55,6 +61,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include "../../common/lp_stall.h"
 
 static const int NRANKS = 2;
 static int g_rank = -1;
@@ -62,6 +69,12 @@ static FILE* g_kv = nullptr;             // KEY=VALUE results file for the runne
 static ncclComm_t g_comm = nullptr;
 static int g_sock = -1;                  // management-net TCP socket to the peer
 static const uint8_t POISON = 0xA5;      // receive-buffer fill; "missing" == all bytes still POISON
+// live_peer stall switch (rank 1 only; see the header)
+static lp_stall_t g_stall = { -1, -1 };
+static unsigned g_stallMs = 0;
+static bool g_stallOnReq = false;
+static int g_stallIter = -1;
+static bool g_stallDone = false;
 
 // ---- small helpers --------------------------------------------------------
 static double nowSec() {
@@ -80,6 +93,21 @@ static void kv(const char* fmt, ...) {
   va_end(ap);
   fputc('\n', g_kv);
   fflush(g_kv);
+}
+
+static void doStall(const char* on, int it) {
+  if (g_stallDone || g_stallMs == 0) return;
+  g_stallDone = true;
+  uint64_t t0 = 0, t1 = 0;
+  if (lp_stall_self(&g_stall, g_stallMs, &t0, &t1) != 0) {
+    fprintf(stderr, "[rank%d] stall helper gone\n", g_rank);
+    kv("stall on=%s it=%d ms=%u error=helper_gone", on, it, g_stallMs);
+    return;
+  }
+  kv("stall on=%s it=%d ms=%u begin_mono_ms=%.3f end_mono_ms=%.3f measured_ms=%.3f", on, it, g_stallMs, t0 / 1e6,
+     t1 / 1e6, (t1 - t0) / 1e6);
+  fprintf(stderr, "[rank%d] stall on=%s it=%d ms=%u begin_mono_ms=%.3f end_mono_ms=%.3f\n", g_rank, on, it, g_stallMs,
+          t0 / 1e6, t1 / 1e6);
 }
 
 #define CK(c) do { cudaError_t e_ = (c); if (e_ != cudaSuccess) { \
@@ -515,6 +543,7 @@ static int senderRecover(Run& R, int it, double tKernelRet, bool forced = false)
 
 // Receiver: answer a REQ for iteration i (current, or the one just completed).
 static void receiverHandleReq(Run& R, const Msg& req, int curIt, int lastDone, bool* recovering) {
+  if (g_stallOnReq) doStall("req", req.iter);   // live_peer: stop before anything of the request is handled
   const int i = req.iter;
   const double tReq = monoMs();
   if (i != curIt && i != lastDone) {
@@ -588,6 +617,16 @@ static void receiverCancel(Run& R) {
 
 int main(int argc, char** argv) {
   g_t0 = nowSec();
+  // live_peer: fork the stall helper before any file, thread or CUDA call (rank 1, switch set)
+  if (argc > 1 && atoi(argv[1]) == 1 && getenv("GIN_REC_TEST_STALL_MS") && atoi(getenv("GIN_REC_TEST_STALL_MS")) > 0) {
+    g_stallMs = (unsigned)atoi(getenv("GIN_REC_TEST_STALL_MS"));
+    const char* on = getenv("GIN_REC_TEST_STALL_ON") ? getenv("GIN_REC_TEST_STALL_ON") : "req";
+    if (strcmp(on, "req") == 0) g_stallOnReq = true;
+    else if (strncmp(on, "iter:", 5) == 0) g_stallIter = atoi(on + 5);
+    else { fprintf(stderr, "bad GIN_REC_TEST_STALL_ON=%s\n", on); return 1; }
+    if (lp_stall_start(&g_stall) != 0) { perror("lp_stall_start"); return 1; }
+    fprintf(stderr, "[rank1] live_peer stall switch: %u ms on %s (helper pid %d)\n", g_stallMs, on, (int)g_stall.pid);
+  }
   if (argc < 11) {
     fprintf(stderr, "usage: %s <rank 0|1> <rank0_ip> <port> <iters> <bytes> "
                     "<timeout|blocking> <none|F1|F2|F3|F4|lat> <dev_timeout_s> "
@@ -959,6 +998,7 @@ int main(int argc, char** argv) {
       *R.h_rc = 123456;
       waitKernel<<<1, 1, 0, R.st>>>(0, expected, R.devComm, useTimeout ? 1 : 0, R.timeoutCycles, R.d_rc, R.d_sig);
       CK(cudaGetLastError());
+      if (it == g_stallIter) doStall("iter", it);   // live_peer: rank 0's put of this iteration lands while we are stopped
       const double tStart = relMs();
       const double iterCap = useTimeout ? R.rxCapS : R.blockCapS;
       int rearms = 0;
