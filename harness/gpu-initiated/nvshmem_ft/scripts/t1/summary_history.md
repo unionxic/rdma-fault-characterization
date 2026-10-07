@@ -19,6 +19,7 @@ part keeps the earlier sets, the changes between builds and the per-variant tabl
 | reg_final2, lat_final2, flap_final2 | 10:36–11:11 | `f40cf527` | `c69d6cc4` | `0dcfb0e1` | **final**: the review fixes, hooks at their reviewed positions, `NVSHMEMI_IBGDA_T1_DEVICE` knob |
 | review3, review4 | 11:25–12:05 | `7a166d01` (exact-fit filler) | `c69d6cc4` | `0dcfb0e1` | final libraries |
 | dci_diag, dci_diag2 | 12:16–14:20 | `7a166d01` | `3cb50f80` | – | final source plus timing logs in the helper (side bundle `diag`, not in the diff) |
+| reg_final3, flap_final3, review5 | 14:56–15:36 | `e2bb70be` | `82737569` | `3d630308` | **final3** = the committed `nvshmem_ibgda_transparent.diff`: third-round fixes (copies bounded by `COPY_MS` with a host-mapped decline mirror, `rc_endpoint_lock` only around DEVX commands, accept on every helper loop, bounded join, `HOLD_MS` floor 93 s). Added to the tables 2026-10-07 from the raw logs; `flap_cut25_3` and `review6` were planned and never ran |
 
 The device source of b1, b2, b3 and the reviewed build is the same (builds 8–10 recompiled only
 `ibgda.cpp`). The transport builds bit-identically (`c69d6cc4` from `reg_fixed` on); the host library

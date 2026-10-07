@@ -21,6 +21,13 @@ timeout 14, retry count 7, one RC QP per peer. Every number is counted from the 
 `scripts/t1/rows_t1.py` and `summarize_t1.py`; times are median [min–max]; sets are directories under
 `results/20260930_t1/`. Earlier builds, the external review and the latency bisect: `summary_t1.md`.
 
+**Which build (corrected 2026-10-07).** The tables in this section, up to "Fault-free latency", are the
+**final2** build (transport `c69d6cc4`). The committed `nvshmem_ibgda_transparent.diff` is **final3**
+(transport `82737569`): it adds the third-round fixes listed under "final3" below. final3 ran 108 trials
+on 2026-10-01 14:56–15:36 (sets `reg_final3`, `flap_final3`, `review5`). Those trials were missing from
+`trials_t1.csv` and from this document; they were recounted from the raw logs (Release `data-20261006`)
+with `rows_t1.py` and are now in the tables and in the section "final3 (the committed diff)". [measured]
+
 **Transparent**: both processes exited 0, PE 0 ran every iteration with `nvshmemx_ibgda_ft_status`
 (observation only) never set, every slot bit-exact on PE 1's GPU and host, the final signal exact
 (each ADD once), host error view and device status clean on both PEs. **Declined**: a DECLINE line,
@@ -102,6 +109,10 @@ iteration and records the value (expected: the number of fetches before it); PE 
 A fetch in the unfinished range [C, R) when the round starts has an ambiguous local result, so the
 round declines and the fetch returns the poison value (all bits 1, v2.2's rule).
 
+The F3 row is the `review4` set. The same cell also ran in `fetch_fixed` (10 trials, `specs/fetch.txt`):
+all 10 are "failed", because the kernel timeout there (12 s) was shorter than the 20 s loop (PE 0 rc 7,
+kernel timeout); their DECLINE line names the fetch, as in `review4`. [measured, recount 2026-10-07]
+
 | cell | workload | n | transparent | declined | failed | decline names the fetch | poison from the failed iteration on, none before | stale | PE 1 counter = exact fetches |
 |---|---|--:|--:|--:|--:|--:|--:|--:|--:|
 | F1, no gap, fetch every iteration | 16000 × 4 KiB, fault 70–250 ms | 12 | 0 | **12** | 0 | 12/12 | 12/12 | 0 | 12/12 |
@@ -137,6 +148,11 @@ cause (75/75 F1 rounds of the regression reset the DCI, no kernel): the helper's
 stops completing while every slot is taken, fault or not (5.6 s with no fault, 83.6 s with F1,
 `dci_diag`/`dci_diag2`), so no round starts. See Limits. [measured]
 
+final3 (`review5`, 8 trials) bounds this case by the copy bound (`COPY_MS`, 2 s) and the decline mirror:
+8/8 declined 0.33–1.17 s after the device record, reason "a device-state copy did not complete within the
+bound (GPU stream stalled)", `nvshmem_finalize` 22.4–26.6 ms, PE 0's kernel 5.96–6.80 s. Still 0 recovered.
+[measured, recount 2026-10-07]
+
 ### Gate micro-test (`tests_t1/gate_race_test.cu`)
 
 The host flips the epoch with 4-byte copies while every device thread enters and leaves with 64-bit
@@ -159,6 +175,43 @@ of all 25 reps. "FT on, ring" is the v2.2 FT configuration transparent recovery 
 The switch on costs +1.86 µs at 4 KiB and +1.50 µs at 256 KiB against v2.2 with FT off (+0.80 against the
 same build with FT and ring CQs on). With the switch off the transparent build costs +0.67 and +0.51 µs; the
 bisect of that cost is under Limits. [measured]
+
+### final3 (the committed diff; sets `reg_final3`, `flap_final3`, `review5`)
+
+Third-round fixes over final2: device-state copies bounded by `COPY_MS` with a host-mapped decline mirror,
+`rc_endpoint_lock` held only around DEVX commands, the listener accepted on every helper loop, a bounded
+helper join, `HOLD_MS` floor 93 s. Build: transport `82737569`, host `3d630308`, driver `e2bb70be` in all
+108 trials. Recounted 2026-10-07 from the raw logs with `rows_t1.py`. [measured]
+
+| set | cell | n | transparent | declined | failed | notes |
+|---|---|--:|--:|--:|--:|---|
+| reg_final3 | no fault | 10 | **10** | 0 | 0 | no void trial |
+| reg_final3 | F1 | 20 | **20** | 0 | 0 | |
+| reg_final3 | F1 in flight | 20 | **20** | 0 | 0 | 0 WQEBBs re-posted in 10 rounds, 2 in 10 |
+| reg_final3 | F3 | 5 | **5** | 0 | 0 | |
+| reg_final3 | F1 × 5, 3rd shot inside the commit | 5 | **5** | 0 | 0 | 5 rounds per trial |
+| reg_final3 | F1, 4 CTAs × 8 threads on one QP | 10 | **10** | 0 | 0 | |
+| reg_final3 | F2A app bug | 10 | 0 | **10** | 0 | `nvshmem_finalize` 20.3–22.7 ms |
+| reg_final3 | F4 SIGKILL | 5 | 0 | **5** | 0 | `nvshmem_finalize` 24.4–25.1 ms |
+| flap_final3 | address cut 0.5 / 6 / 15 s | 5 / 5 / 5 | **15** | 0 | 0 | recovery round median 9.9 / 2478 / 11345 ms |
+| review5 | F1 under a full GPU (`dci_fill`) | 8 | 0 | **8** | 0 | 0.33–1.17 s from record to DECLINE |
+
+**final3 is slower per round than final2.** Initiator round, median [min–max] ms, n = rounds: [measured]
+
+| cell | final2 | final3 | prepare | commit | finish |
+|---|---|---|---|---|---|
+| F1 (n = 20 each) | 4.64 [4.18–5.46] | 7.35 [6.97–8.33] | 0.12 → 0.32 | 0.82 → 1.34 | 0.03 → 0.45 |
+| F1 in flight (n = 20 each) | 4.41 [4.06–5.10] | 7.06 [6.83–7.29] | 0.12 → 0.32 | 0.79 → 1.34 | 0.02 → 0.38 |
+| F3 (n = 5 each) | 5.71 [5.13–6.61] | 8.58 [8.07–8.65] | 0.12 → 0.32 | 1.46 → 2.04 | 0.03 → 0.45 |
+| F1, 4 CTAs (n = 10 each) | 6.69 [5.37–6.87] | 9.37 [8.79–11.94] | 0.13 → 0.33 | 0.80 → 1.34 | 0.03 → 0.45 |
+
+final3's bounded copy (`t1_sync`) polls `cudaStreamQuery` with a 20 µs sleep; with the default timer slack one
+copy costs about 70 µs, which matches the per-step increase [inferred]. `t1_close/` measures a fix.
+
+Not run on final3: the fault-free latency (`reglat.txt` holds no latency cell), the socket-outage cells and
+`CUDA_DEVICE_MAX_CONNECTIONS=32` of `review5`/`review6` (the `review5` hold spent its time on the 8 `dci_fill`
+trials; `review6` never got a hold), and the 25 s cut `flap_cut25_3` (its hold output is empty; the cluster log
+has no such hold). [measured]
 
 ## How it works
 
@@ -248,7 +301,8 @@ point, rebase, INIT/RTR/RTS, re-post, publish, DONE) with these differences:
 - **A GPU with every SM thread slot taken stops the helper.** Its device-state reads and writes are
   `cudaMemcpyAsync` + `cudaStreamSynchronize` on its own stream, and with the application occupying
   every thread slot a 64-byte copy did not complete until the application's kernels ended (`dci_fill`,
-  24/24 declined at the hold bound). A standalone program with the same filler copies in microseconds
+  final2: 24/24 declined at the hold bound, 82.0–94.7 s after the record; final3: 8/8 declined by the copy
+  bound, 0.33–1.17 s after the record). A standalone program with the same filler copies in microseconds
   (`tests_t1/fill_copy_test.cu`, set `fill_copy`): the stall is specific to the NVSHMEM process, cause not
   identified. Reaching the device state without a CUDA stream (a BAR1 mapping) would remove it; not done.
 - **Flag off costs +0.5–0.7 µs per operation** (4 KiB 13.06 vs 12.38; 256 KiB 40.77 vs 40.26). The
@@ -267,7 +321,8 @@ point, rebase, INIT/RTR/RTS, re-post, publish, DONE) with these differences:
   not done. Also every class but LOCAL_QP_ERR / RETRY_EXC; a peer whose socket shows FIN; a fault
   while the management path is down (after one handshake bound) or whose round is in progress when it
   drops (at the ACK or DONE bound); a device-state copy that does not complete within `COPY_MS`.
-- **Bounds.** A device wait holds for at most `HOLD_MS` (78 s), then gives up through the commit-point
+- **Bounds.** A device wait holds for at most `HOLD_MS` (93 s in final3, the committed diff; 78 s in
+  final2, the build of the tables above), then gives up through the commit-point
   handshake and the round declines; the watchdog declines a round longer than `ROUND_MS` (73 s) before
   its commit point; the address must be back within `GID_WAIT_MS` (30 s). Held device threads spin.
 - **Not handled.** An application wait on its own memory (PE 1's `signal_wait_until`) is not released
@@ -285,7 +340,8 @@ point, rebase, INIT/RTR/RTS, re-post, publish, DONE) with these differences:
 
 | sets | date (KST) | driver | transport | host lib | build |
 |---|---|---|---|---|---|
-| reg_final2, lat_final2, flap_final2 | 10-01 10:36–11:11 | `f40cf527` | `c69d6cc4` | `0dcfb0e1` | **final**: `nvshmem_ibgda_transparent.diff` |
+| reg_final3, flap_final3, review5 | 10-01 14:56–15:36 | `e2bb70be` | `82737569` | `3d630308` | **final3**: `nvshmem_ibgda_transparent.diff` (third-round fixes) |
+| reg_final2, lat_final2, flap_final2 | 10-01 10:36–11:11 | `f40cf527` | `c69d6cc4` | `0dcfb0e1` | **final2**: the tables of this document |
 | review3, review4 (dci_fill, sock, sock1, F3 fetch) | 11:25–12:05 | `7a166d01` (exact-fit SM filler) | `c69d6cc4` | `0dcfb0e1` | final libraries |
 | reg_fixed, review, flap_fixed, fetch_fixed, flap_cut25 | 08:48–09:58 | `1489d29a` | `c69d6cc4` | `d4692937` | final transport; device hooks placed differently (see `summary_t1.md`) |
 | flap_v22 | 09-30 23:26–23:33 | `d90585c8` | `6913dea6` | `54a9d23a` | v2.2 (`~/gi-bundle/nvshmem_ft2`) |
@@ -293,7 +349,10 @@ point, rebase, INIT/RTR/RTS, re-post, publish, DONE) with these differences:
 
 md5 prefixes are from the trials' `.meta` files; the transport builds bit-identically, host library and
 driver do not. `scripts/t1/make_diff_t1.sh` regenerates the diff and checks that it re-applies on the
-base and reproduces the tree, which rebuilds to transport `c69d6cc4`. Earlier builds: `summary_t1.md`.
+base and reproduces the tree. That tree is final3: it built (2026-10-01 14:42–14:49) to transport `82737569`,
+host `3d630308`, driver `e2bb70be`, the md5 of all 108 final3 trials. An earlier version of this sentence
+named transport `c69d6cc4`, which is final2; the raw data show `82737569` for the diff's build. Earlier
+builds: `summary_t1.md`.
 
 ## Files
 
