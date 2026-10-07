@@ -68,6 +68,13 @@ LABEL = {
     "K6": "GIN 상대 QP 오류: rain rp_cnp_handled 8 이상, q 카운터 +0, sunny +0",
     "K7": "50 ms 표본: 두 카운터 차이 1 이하, 게시와 첫 CQE + 100 ms 사이에만 증가",
 }
+CELL_LABEL = {
+    "A0": "장애 없음", "A1": "응답 QP 오류, 프로세스 응답", "A2": "응답 프로세스 SIGKILL", "A3": "응답 QP RESET",
+    "A4": "응답 QP INIT", "A5": "응답 QP RTR", "A6": "1250 ms 준비 안 됨 뒤 재무장", "A7": "QP 오류 + 8 s 정지",
+    "A8": "정상 QP + 8 s 정지", "A9": "QP 오류 + 제어 연결만 닫음", "A10": "수신 버퍼 없음", "A11": "QP 파괴 뒤 새 QP",
+    "B0": "GIN 상대 QP 오류, 정지 없음", "B1": "GIN 상대 QP 오류 + 1 s 정지", "B2": "GIN 상대 QP 오류 + 6 s 정지",
+    "B3": "GIN 장애 없음 + 6 s 정지",
+}
 EXCL_LABEL = {"runner_fail": "실행기 실패", "not_applied": "장애 미적용"}
 
 
@@ -421,7 +428,7 @@ L.append("|---|--:|--:|--:|--:|--:|--:|")
 for c in ALL_CELLS:
     ts = [t for t in trials if t["cell"] == c]
     sc = [t for t in ts if not t["excl"]]
-    L.append(f"| {c} | {len(ts)} | {len(sc)} | {sum(t['excl'] == 'not_applied' for t in ts)} | "
+    L.append(f"| {CELL_LABEL[c]} ({c}) | {len(ts)} | {len(sc)} | {sum(t['excl'] == 'not_applied' for t in ts)} | "
              f"{sum(t['excl'] == 'runner_fail' for t in ts)} | {sum(not t['ctr_ok'] for t in sc)} | "
              f"{sum(not t['truth_ok'] for t in sc)} |")
 L.append("")
@@ -440,13 +447,13 @@ L.append("")
 L.append("n은 줄이 적용된 셀들의 채점 시행 수 합이고, 맞은 시행은 셀마다 판정식 항목 중 가장 적게 맞은 항목의 수를 더한 값이다. "
          "판정식 항목별 수는 아래에 있다.\n")
 L.append("## 판정식 항목별 수\n")
-L.append("| id | 셀 | n | 항목 | 맞은 시행 | 결과 |")
+L.append("| 예측 | 셀 | n | 항목 | 맞은 시행 | 결과 |")
 L.append("|---|---|--:|---|--:|---|")
 for r in scored_rows:
     for d in r["detail"]:
         for src, info in d["calls"]:
             res = {None: "자료 없음", True: "맞음", False: "틀림"}[info["verdict"]]
-            L.append(f"| ({r['id']}) | {d['cell']} | {info['n']} | `{src}` | {info['hits']} | {res} |")
+            L.append(f"| ({r['id']}) | {CELL_LABEL[d['cell']]} ({d['cell']}) | {info['n']} | `{src}` | {info['hits']} | {res} |")
 L.append("")
 open(os.path.join(R, "SCORE.md"), "w").write("\n".join(L) + "\n")
 json.dump([{**{k: v for k, v in r.items() if k != "detail"}, "detail": [
