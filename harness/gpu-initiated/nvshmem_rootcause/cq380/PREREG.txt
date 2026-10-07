@@ -1,0 +1,4 @@
+Pre-registration of cq380, 2026-10-07 09:26:59 +0900, before any run of this study.
+sha256 of the fixed prediction file:
+b7455ebb13b24eff8c3d3008661f8a8fd864f08c01ad2ecdf72f71b88a51026e  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/cq380-v1 (sections 2, 3, 7, 8).

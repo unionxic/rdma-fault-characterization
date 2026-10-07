@@ -12,7 +12,7 @@ set -u
 VAR=$1; HANDLER=$2; KILL=$3; TRIAL=$4; OUT=$5
 mkdir -p "$OUT"
 B=$HOME/gi-bundle/nvshmem_off380          # same path on both nodes
-BIN=nvs_kill_repro
+BIN=${NVS_BIN:-nvs_kill_repro}   # cq380 uses nvs_cq_repro
 RAIN_MGMT=192.0.2.193
 PORT=${PORT:-18317}
 ITERS=${ITERS:-40}; BYTES=${BYTES:-262144}; PERIOD_MS=${PERIOD_MS:-250}; HANG_S=${HANG_S:-30}
@@ -39,7 +39,7 @@ export NVSHMEM_DISABLE_CUDA_VMM=1 NVSHMEM_CUMEM_GRANULARITY=2097152 NVSHMEM_SYMM
 export NVSHMEM_MAX_TEAMS=4 NVSHMEM_G_BUF_SIZE=262144 NVSHMEM_G_COALESCING_BUF_SIZE=4194304
 export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=eno1
 export NVSHMEM_DEBUG=INFO NVSHMEM_DEBUG_SUBSYS=ALL
-export FINALIZE=${FINALIZE:-0}
+export FINALIZE=${FINALIZE:-0} CQSCAN=${CQSCAN:-0}
 EOF
 }
 ctrs() { local d=/sys/class/infiniband/mlx5_1/ports/1/hw_counters c; for c in $CTRS; do printf '%s ' "$(cat $d/$c)"; done; }

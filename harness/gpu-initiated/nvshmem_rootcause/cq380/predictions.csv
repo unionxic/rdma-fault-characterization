@@ -1,0 +1,5 @@
+id,cells,observable,predicted,acceptance,basis
+C1,"v3.8.0-0 CPU proxy (cpu_host_memory, stock), peer killed","PE 0 CQ scan at the hang bound (CQSCAN lines)","no error CQE (opcode 0xd or 0xe) in any queue, while the RC queue holds valid success CQEs",5/5,"proxy writes the SQ index into word 0; rule 1: nothing completes from the first incomplete WQE on (devel build: 0/35)"
+C2,"v3.8.0-0 GPU handler (stock), peer killed","PE 0 CQ scan after the last iteration","at least one error CQE in an RC queue",5/5,"GPU handler writes word 1"
+C3,"v3.8.0-0 CPU proxy with the two-line fix, peer killed","PE 0 CQ scan after the last iteration","at least one error CQE in an RC queue",5/5,"the fix makes the proxy write word 1"
+C4,"v3.8.0-0 CPU proxy (stock) and GPU handler (stock), no kill","PE 0 CQ scan after the last iteration","no error CQE in any queue",5/5 per variant,control
