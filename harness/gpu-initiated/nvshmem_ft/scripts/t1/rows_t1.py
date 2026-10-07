@@ -37,8 +37,14 @@ def parse_trial(meta_path):
               'sock_end_rain_mono_ms', 'iptables_left', 'iters', 'bytes', 'gap_us', 'ctas', 'threads',
               'burst', 'reps', 'fault_ms', 'shots', 'kill_ms', 'cut_s', 'cut_at_ms', 'hold_ms', 'gid_r', 'gid_s',
               'bin', 'md5_bin', 'md5_transport', 'md5_host', 'pe0_rc', 'pe1_rc', 'leftover_rain', 'leftover_sunny',
-              'kill_mono1_s', 'cut_start_rain_mono_ms', 'cut_end_rain_mono_ms', 'start'):
+              'kill_mono1_s', 'cut_start_rain_mono_ms', 'cut_end_rain_mono_ms', 'start',
+              'nofin', 'rc_per_pe', 'rc_map', 'xenv', 'sock_dir', 'bundle'):  # t1_close: last six
         r[k] = m.get(k, '')
+    # t1_close: fetch counts of PE0's first round line (RECOVERED initiator or DECLINE), the exit
+    # without nvshmem_finalize (T1EXIT) and the library's atexit hook (ATEXIT)
+    for k in ('t1_fetch_cr0', 't1_fetch_exec0', 't1_fetch_reposted0'):
+        r[k] = ''
+    first_round0 = None
     rounds = []
     for pe in (0, 1):
         p = f'{base}.pe{pe}.log'
@@ -84,6 +90,8 @@ def parse_trial(meta_path):
                 d = kv(line)
                 r.setdefault('arrive1', [])
                 r['arrive1'].append('%s:%s' % (d.get('it'), d.get('gt')))
+            elif line.startswith('T1EXIT '):
+                r[f'exit_mono{pe}'] = kv(line).get('mono_ms', '')
             elif line.startswith('T1STATUS '):
                 r[f'end_status{pe}'] = kv(line).get('end_status', '')
             elif line.startswith('T1END '):
@@ -104,17 +112,28 @@ def parse_trial(meta_path):
                 d = kv(line)
                 rec_t.append((d.get('mono_ms'), d.get('class'), d.get('fp')))
             elif '[nvshmem-t1]' in line:
-                if ' RECOVERED ' in line:
+                if ' ATEXIT ' in line:
                     d = kv(line)
+                    mm = re.search(r'PE\d ([\d.]+) ATEXIT', line)
+                    r[f'atexit_mono{pe}'] = mm.group(1) if mm else ''
+                    r[f'atexit_join_ms{pe}'] = d.get('join_ms', '')
+                    r[f'atexit_detached{pe}'] = 1 if d.get('helper') == 'detached' else 0
+                elif ' RECOVERED ' in line:
+                    d = kv(line)
+                    if pe == 0 and first_round0 is None and ' RECOVERED initiator ' in line:
+                        first_round0 = d
                     mm = re.search(r'PE(\d) ([\d.]+) RECOVERED (\w+)', line)
                     rr = {'dir': r['dir'], 'tag': tag, 'pe': pe, 'role': mm.group(3), 'end_mono_ms': mm.group(2)}
                     for k in ('peer', 'class', 'round', 'total_ms', 'quiesce_ms', 'prepare_ms', 'handshake_ms',
                               'commit_ms', 'gid_ms', 'sgid', 'finish_ms', 'qpn', 'C', 'U', 'Uexec', 'P', 'R', 'V', 'reposted',
-                              'B', 'exec_by_peer', 'epoch', 'dci_reset', 'dci_pending', 'dci_failed'):
+                              'B', 'exec_by_peer', 'epoch', 'dci_reset', 'dci_pending', 'dci_failed',
+                              'nqps', 'fetch_cr', 'fetch_exec', 'fetch_reposted'):
                         rr[k] = d.get(k, '')
                     rounds.append(rr)
                 elif ' DECLINE ' in line:
                     d = kv(line)
+                    if pe == 0 and first_round0 is None:
+                        first_round0 = d
                     mm = re.search(r'PE(\d) ([\d.]+) DECLINE', line)
                     declines.append((mm.group(2) if mm else '', d.get('class', ''), d.get('reason', '')))
                 elif ' FAULT ' in line:
@@ -160,6 +179,12 @@ def parse_trial(meta_path):
             m2 = pat.match(line)
             if m2:
                 r['gid_r_after'], r['gid_s_after'] = m2.group(1), m2.group(2)
+    if first_round0 is not None:
+        for k in ('fetch_cr', 'fetch_exec', 'fetch_reposted'):
+            r['t1_' + k + '0'] = first_round0.get(k, '')
+    for pe in (0, 1):
+        for k in ('exit_mono', 'atexit_mono', 'atexit_join_ms', 'atexit_detached'):
+            r.setdefault(f'{k}{pe}', '')
     r['rounds_init'] = sum(1 for x in rounds if x['role'] == 'initiator')
     r['rounds_resp'] = sum(1 for x in rounds if x['role'] == 'responder')
     r.pop('arrive1', None)  # per-iteration arrival times stay in the raw logs (T1ARRIVE lines)
