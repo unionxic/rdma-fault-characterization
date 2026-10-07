@@ -6,12 +6,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `PREREGISTERED` |
+| 상태 | `RUNNING` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-07 |
 | 기준 브랜치와 커밋 | `exp/live-peer` @ `3dbf995e` (master) |
 | 사전 등록 태그 | `prereg/live-peer-v1` (이 상태로 바꾼 커밋) |
-| 마지막 갱신 | 2026-10-07 19:02, 사전 등록 |
+| 마지막 갱신 | 2026-10-07 19:56, 구현, 배포, smoke, 본 실행 시작 |
 
 표시: `[측정]` 원자료에서 확인, `[소스]` 코드나 문서에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함. 이 문서를 쓰는
 동안 클러스터에서 아무것도 실행하지 않았고 빌드도 하지 않았다. 측정값은 기존 원자료와 rain의 로컬 sysfs 읽기에서만
@@ -239,10 +239,11 @@
 | NIC와 펌웨어 | ConnectX-6, rain `mlx5_0`, `mlx5_1` 20.43.4100, `mlx5_1` 포트 1 ACTIVE | `[측정]` rain sysfs `fw_ver`, `ports/1/state`, 2026-10-07. sunny는 2026-10-06 propagation 5절의 값, 실행 전 다시 읽는다 |
 | 커널, OFED | rain 5.15.0-97, OFED-internal-23.10-7.1.8 / sunny 6.8.0-138, OFED 25.10-1.7.1 | `[측정]` rain `uname -r`, `ofed_info -s`, 2026-10-07. sunny는 2026-10-06 |
 | DCQCN 설정 | rain `ens4f1np1` 반응 쪽, 알림 쪽 모두 우선순위 0–7 켜짐 | `[측정]` rain sysfs `ecn/*/enable/*`, 2026-10-07. sunny는 실행 전 읽기만 한다 |
-| 커널 로그 | rain `dmesg`는 sudo 없이 읽힌다(`kernel.dmesg_restrict=0`) | `[측정]` 2026-10-07. sunny는 `[미확인]` |
+| 커널 로그 | rain `dmesg`는 sudo 없이 읽힌다(`kernel.dmesg_restrict=0`). sunny는 sudo 없이 읽히지 않아 8절대로 rain만 검사한다 | `[측정]` 2026-10-07 19:29 |
 | GIN 번들 | `~/gi-bundle/gin_recovery_gpudb`: `gin_rec` md5 `89e72d50`, `libnccl.so.2.32.3` md5 `1ed8e0a1` | `[측정]` rain md5sum, 2026-10-07. N30 기록(`gpu-initiated/N30_20260925.md:42`)과 같다. sunny는 실행 전 확인 |
-| 새 GIN 드라이버 | 위 libnccl + 정지 장치를 더한 `gin_rec`, `~/gi-bundle/gin_recovery_gpudb_stall` | 빌드 전 `[미확인]` |
-| 새 evrec | 표본 기능을 더한 evrec, `~/gi-bundle/evrec2/evrec` | 빌드 전 `[미확인]` |
+| 새 GIN 드라이버 | 위 libnccl(md5 `1ed8e0a1`) + 정지 장치를 더한 `gin_rec` md5 `fac97c8c`, `~/gi-bundle/gin_recovery_gpudb_stall` | `[측정]` 두 노드 md5sum, 2026-10-07 19:29 배포 블록. 기존 `gin_rec`과의 차이는 [DEVIATIONS.md](DEVIATIONS.md) 4 |
+| 새 evrec | 표본 기능을 더한 evrec md5 `3f93b3a9`, `~/gi-bundle/evrec2/evrec` | `[측정]` 두 노드 md5sum, 같은 배포 블록 |
+| CPU 하네스 | rain `probe_client` `4b6c2b10`, `probe_server` `372c820a`(이 worktree에서 빌드) / sunny `probe_client` `486e8913`, `probe_server` `c6f0bd96`(`~/rdma-error-lp/harness`에서 빌드). 소스는 커밋 `f288469e` | `[측정]` md5sum, 같은 배포 블록. `run.sh`가 시행마다 다시 빌드하므로 소스가 같으면 바이너리도 같다 `[추론]` |
 | GPU와 CUDA | rain Quadro RTX 5000, sunny RTX A4000, CUDA 12.8 | propagation 5절 |
 
 ## 6. 변수
@@ -439,9 +440,9 @@
 
 - [x] 질문, 가설, 셀 작성 (`DRAFT`)
 - [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
-- [ ] 계측과 실행기 구현(CPU 하네스, GIN 드라이버, evrec, `run_cells.sh`, `score.py`), 빌드, 리뷰
-- [ ] 배포
-- [ ] smoke 실행(채점 제외)
+- [x] 계측과 실행기 구현(CPU 하네스, GIN 드라이버, evrec, `run_cells.sh`, `score.py`), 빌드. 독립 리뷰는 하지 않았고 smoke와 채점기 시험으로 확인했다
+- [x] 배포
+- [x] smoke 실행(채점 제외)
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 채점과 재계산 (`QA`)
 - [ ] 결과 정리, 원자료 릴리스, PR
@@ -455,13 +456,15 @@
 | 2026-10-07 18:21–18:30 | Release `data-20261006`의 propagation 캠페인 묶음과 재실행 묶음을 받아 체크섬 확인, evrec 650개에서 혼잡 알림 카운터를 다시 셈 | 1.2, 1.3 |
 | 2026-10-07 18:55–19:05 | 다른 에이전트가 읽은 줄 번호(복구 2단계, 장애 대응판, 투명 복구, ack_timeout, teardown_order)를 master `3dbf995e`에서 다시 확인. 인용 줄 범위 세 곳을 고침(복구 2단계의 FIN 판정, ack_timeout의 재전송 설명, teardown_order의 cudaFree 결과). 예측 내용은 바뀌지 않음 | 3.1, [predictions.csv](predictions.csv) |
 | 2026-10-07 19:02:12 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/live-peer-v1` |
+| 2026-10-07 19:05–19:15 | 구현과 빌드: CPU 하네스(새 장애 여덟 개, 정지 도우미, RESYNC, 실제 생존 기록), evrec 표본, GIN 정지 스위치, 실행기, 배포 스크립트, 채점기, 카운터 재계산. 빌드됨. 정지 도우미는 rain에서 RDMA 없이 따로 시험(500 ms 정지 동안 상태 `T`, `timeout` 아래에서도 같음) | 커밋 `f288469e`, `5e1bd3ce`, `25a771b6`, `f7d70114`. 구현 결정은 [DEVIATIONS.md](DEVIATIONS.md) 1–6 |
+| 2026-10-07 19:29:02–19:29:10 | 배포 블록(`lp-deploy`, 락 대기 19:16–19:28). 새 디렉터리에만 배포, 두 노드 md5 일치. 블록 뒤 정지 상태 프로세스 없음, rain dmesg mlx5 명령 오류 줄 2(전부 이전 것) | 5절의 md5 |
+| 2026-10-07 19:40:51–19:42:36 | smoke 1부(`lp-smokeA`), 셀마다 1회, 12회. 러너 rc 모두 0, 따로 센 시행 없음, 중단 없음. 블록 뒤 정지 상태와 남은 프로세스 없음, rain dmesg 2에서 그대로, sunny dmesg는 sudo 없이 읽히지 않음 | `results/20261007_smoke/A/`(Release 예정, 채점 제외) |
+| 2026-10-07 19:52:45–19:53:38 | smoke 2부(`lp-smokeB`), 셀마다 1회, 4회. 러너 rc 모두 0, 따로 센 시행 없음. 블록 뒤 검사 같음. 채점기를 smoke 사본으로 시험해 판정식이 모두 계산되는 것을 확인(결과는 채점에 쓰지 않음) | `results/20261007_smoke/B/` |
+| 2026-10-07 19:54:29 | 본 실행 시작. 1부(`lp-A`)와 2부(`lp-B`)를 각각 `cluster_run.sh -w 10800` 블록으로 대기열에 넣음. 상태 `RUNNING` | `results/20261007/` |
 
 ## 13. 사전 등록 이후 변경
 
-> 기존 문장을 고치지 않고 여기에 덧붙인다. 변경이 많으면 `DEVIATIONS.md`에 두고 링크한다.
-
-| 날짜 | 무엇을 | 이유 | 영향 범위 | 커밋 |
-|---|---|---|---|---|
+변경과 구현 결정은 [DEVIATIONS.md](DEVIATIONS.md)에 있다. 예측, 판정식, 셀, 반복 수, 제외와 중단 기준을 바꾼 항목은 없다.
 
 ## 14. 원자료와 결과표
 
