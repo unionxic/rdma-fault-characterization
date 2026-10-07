@@ -34,6 +34,8 @@
 //   GIN_TS_AGG_GAP_US (burst: 0; a pause between the K aggregated puts and the signal that rings for them),
 //   GIN_TS_BURST_BADIT (burst: -1; F2 in burst mode: thread 0's first put of that iteration goes to an invalid
 //   remote offset), GIN_TS_R1_BYTES (bidir: rank 1's message size; default = bytes)
+// gin-s2-close: GIN_TS_GET=1 (the one-thread loop of mode none, rank 0 sends): a get of GIN_TS_GET_BYTES (65536) per
+//   iteration from rank 1's send window into rank 0's receive window, checked after a successful flush (kv get_n, get_bad).
 // exit: 0 all iterations ok and nothing surfaced; 2 NCCL call error; 3 async error seen by the host;
 //       4 a device wait/flush returned an error or timed out; 5 data/signal check failed;
 //       6 CUDA error; 7 watchdog.
@@ -290,6 +292,61 @@ __global__ void txKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t byte
          out, contOnErr, peer, ctx);
 }
 
+// ---- gin-s2-close: the S1 loop with a get (RDMA READ) per iteration (GIN_TS_GET=1, rank 0 only) ---------
+// for i: put(slot i, bytes) + signal ADD 1 ; get(getBytes from the peer's send window at i*getBytes into this rank's
+// receive window at the same offset) ; flush ; when the flush returned ncclSuccess, check the got bytes against the
+// pattern the peer wrote (seed 7) ; [gap]. A separate kernel, so the other modes' kernels are unchanged.
+struct GetOut {
+  int n;           // gets checked (iterations whose flush returned ncclSuccess)
+  int bad;         // of those, gets whose bytes did not match
+  int firstBadIt;  // first such iteration (-1 = none)
+  int pad;
+};
+__global__ void txGetKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t bytes, int iters, size_t getBytes,
+                            const uint8_t* getBuf, unsigned long long gapNs, struct ncclDevComm devComm, int useTimeout,
+                            unsigned long long timeoutCycles, unsigned long long* lat, volatile int* progress, TxOut* out,
+                            GetOut* gout, int peer, int ctx) {
+  ncclGin gin{devComm, ctx};
+  out->tStart = gtNow();
+  gout->firstBadIt = -1;
+  for (int i = 0; i < iters; i++) {
+    const size_t off = (size_t)i * bytes, goff = (size_t)i * getBytes;
+    unsigned long long t0 = gtNow();
+    gin.put(ncclTeamWorld(devComm), peer, recvWin, off, sendWin, off, bytes, ncclGin_WeakSignalInc{0});
+    gin.get(ncclTeamWorld(devComm), peer, sendWin, goff, recvWin, goff, getBytes);
+    ncclResult_t rc;
+    if (useTimeout) rc = gin.flush(ncclCoopCta(), cuda::memory_order_acquire, ncclGin_None{}, timeoutCycles);
+    else rc = gin.flush(ncclCoopCta());
+    unsigned long long t1 = gtNow();
+    lat[i] = t1 - t0;
+    if (rc != ncclSuccess) {
+      out->rc = (int)rc;
+      out->rcIt = i;
+      out->done = i;
+      out->firstErrLatNs = t1 - t0;
+      out->nErr++;
+      *progress = i + 1;
+      __threadfence_system();
+      return;
+    }
+    int b = 0;
+    for (size_t k = 0; k < getBytes; k++)
+      b |= (((volatile const uint8_t*)getBuf)[goff + k] != pat(i, k, 7u));
+    gout->n++;
+    if (b) {
+      if (gout->bad == 0) gout->firstBadIt = i;
+      gout->bad++;
+    }
+    *progress = i + 1;
+    __threadfence_system();
+    if (gapNs) {
+      unsigned long long g0 = gtNow();
+      while (gtNow() - g0 < gapNs) {}
+    }
+  }
+  out->done = iters;
+}
+
 // ---- S1 receiver ----------------------------------------------------------------------------------
 struct RxOut {
   int rc;
@@ -540,6 +597,9 @@ int main(int argc, char** argv) {
                          : (isBurst && getenv("GIN_TS_BURST_BADIT")) ? atoi(getenv("GIN_TS_BURST_BADIT")) : -1;
   const long aggGapUs = (isBurst && getenv("GIN_TS_AGG_GAP_US")) ? atol(getenv("GIN_TS_AGG_GAP_US")) : 0;
   const double rxWaitS = getenv("GIN_TS_RX_WAIT_S") ? atof(getenv("GIN_TS_RX_WAIT_S")) : 30.0;
+  // gin-s2-close: a get per iteration in the one-thread loop (rank 0 reads from rank 1's send window)
+  const bool getMode = getenv("GIN_TS_GET") && atoi(getenv("GIN_TS_GET")) != 0;
+  const size_t getBytes = getenv("GIN_TS_GET_BYTES") ? strtoul(getenv("GIN_TS_GET_BYTES"), nullptr, 10) : 65536;
   const bool contOnErr = getenv("GIN_TS_CONTINUE") && atoi(getenv("GIN_TS_CONTINUE")) != 0;
   const int txBlocks = getenv("GIN_TS_TX_BLOCKS") ? atoi(getenv("GIN_TS_TX_BLOCKS")) : 1;
   const int txThreads = getenv("GIN_TS_TX_THREADS") ? atoi(getenv("GIN_TS_TX_THREADS")) : 1;
@@ -553,9 +613,11 @@ int main(int argc, char** argv) {
   const int K = isBurst ? burstK : 1;
   if ((rank != 0 && rank != 1) || iters <= 0 || bytes == 0 || P <= 0 || K <= 0 || (isBurst && bytes % 4) || P % NS)
     return 1;
+  if (getMode && (isBurst || isBidir || isLat || getBytes == 0 || getBytes > bytes)) return 1;  // one-thread loop only
   signal(SIGALRM, onAlarm);
   kv("rank=%d iters=%d bytes=%zu wait_mode=%s mode=%s dev_timeout_s=%.1f gap_us=%ld t0_mono_ms=%.3f", rank, iters,
      bytes, argv[6], mode, devTimeoutS, gapUs, monoMs());
+  if (getMode) kv("get_mode=1 get_bytes=%zu", getBytes);
   if (isBurst) kv("burst_blocks=%d burst_threads=%d burst_P=%d burst_K=%d burst_agg=%d qdepth=%d burst_signals=%d "
                   "burst_agg_gap_us=%ld burst_bad_it=%d", txBlocks, txThreads, P, K, agg, qDepth, NS, aggGapUs, badIt);
   std::thread([watchdogS]() {
@@ -671,6 +733,16 @@ int main(int argc, char** argv) {
     }
     CK(cudaMemcpy(dSend, h.data(), winBytes, cudaMemcpyHostToDevice));
   }
+  if (getMode) {  // gin-s2-close: rank 1's send window holds the get source (seed 7); rank 0's receive window is poisoned
+    if (rank == 1) {
+      std::vector<uint8_t> g(winBytes, 0);
+      for (int i = 0; i < iters; i++)
+        for (size_t k = 0; k < getBytes; k++) g[(size_t)i * getBytes + k] = pat(i, k, 7u);
+      CK(cudaMemcpy(dSend, g.data(), winBytes, cudaMemcpyHostToDevice));
+    } else {
+      CK(cudaMemset(dRecv, POISON, winBytes));
+    }
+  }
   std::vector<unsigned long long> bases(NS, 0);
   unsigned long long* dBases = nullptr;
   CK(cudaMalloc(&dBases, sizeof(unsigned long long) * NS));
@@ -706,6 +778,9 @@ int main(int argc, char** argv) {
   CK(cudaMalloc(&dTxT, sizeof(TxThr) * P));
   CK(cudaMalloc(&dRxT, sizeof(RxThr) * P));
   CK(cudaMemset(dTx, 0, sizeof(TxOut)));
+  GetOut* dGet = nullptr;
+  CK(cudaMalloc(&dGet, sizeof(GetOut)));
+  CK(cudaMemset(dGet, 0, sizeof(GetOut)));
   CK(cudaMemset(dRx, 0, sizeof(RxOut)));
   CK(cudaMemset(dTxT, 0, sizeof(TxThr) * P));
   CK(cudaMemset(dRxT, 0, sizeof(RxThr) * P));
@@ -765,6 +840,10 @@ int main(int argc, char** argv) {
       txBurstKernel<<<txBlocks, txThreads, 0, st>>>(sendWin, recvWin, bytes, iters, K, agg, NS,
                                                     (unsigned long long)gapUs * 1000ull, (unsigned long long)aggGapUs * 1000ull,
                                                     badIt, badOff, devComm, useTimeout ? 1 : 0, timeoutCycles, dLat, dProg, dTxT);
+    else if (getMode)
+      txGetKernel<<<1, 1, 0, st>>>(sendWin, recvWin, txBytes, iters, getBytes, (const uint8_t*)dRecv,
+                                   (unsigned long long)gapUs * 1000ull, devComm, useTimeout ? 1 : 0, timeoutCycles, dLat, dProg,
+                                   dTx, dGet, peer, txCtx);
     else
       txKernel<<<1, 1, 0, st>>>(sendWin, recvWin, txBytes, iters, reuse, badIt, badOff, (unsigned long long)gapUs * 1000ull,
                                 devComm, useTimeout ? 1 : 0, timeoutCycles, dLat, dProg, dTx, contOnErr ? 1 : 0, peer, txCtx);
@@ -827,6 +906,12 @@ int main(int argc, char** argv) {
          "tx_err_later_max_lat_us=%.1f", o.done, ncclGetErrorString((ncclResult_t)o.rc), o.rc ? o.rcIt : -1, o.tStart,
          o.nErr, o.firstErrLatNs / 1e3, o.maxLaterErrLatNs / 1e3);
       if (o.rc != 0 && exitCode == 0) { exitCode = 4; outcome = "device_error"; }
+      if (getMode) {
+        GetOut go;
+        CK(cudaMemcpy(&go, dGet, sizeof(go), cudaMemcpyDeviceToHost));
+        kv("get_n=%d get_bad=%d get_first_bad_it=%d", go.n, go.bad, go.firstBadIt);
+        if (go.bad && exitCode == 0) { exitCode = 5; outcome = "get_data_bad"; }
+      }
       std::vector<unsigned long long> lat(iters);
       CK(cudaMemcpy(lat.data(), dLat, sizeof(unsigned long long) * iters, cudaMemcpyDeviceToHost));
       lat.resize(std::max(0, o.done));

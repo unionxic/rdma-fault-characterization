@@ -1,0 +1,47 @@
+== source
+ba4984bd7ec45a31835fd715d37f00cf  s2r/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  s2r/gin_ts2
+ba4984bd7ec45a31835fd715d37f00cf  s2rget/libnccl.so.2.32.3
+f3de7a38faff46beace45a208991b20e  s2rget/gin_ts2
+== rain
+ba4984bd7ec45a31835fd715d37f00cf  s2r/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  s2r/gin_ts2
+ba4984bd7ec45a31835fd715d37f00cf  s2rget/libnccl.so.2.32.3
+f3de7a38faff46beace45a208991b20e  s2rget/gin_ts2
+== sunny
+ba4984bd7ec45a31835fd715d37f00cf  s2r/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  s2r/gin_ts2
+ba4984bd7ec45a31835fd715d37f00cf  s2rget/libnccl.so.2.32.3
+f3de7a38faff46beace45a208991b20e  s2rget/gin_ts2
+rain s2r: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/s2r/libnccl.so.2 (0x00007fa34c53f000)
+sunny s2r: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/s2r/libnccl.so.2 (0x000079bbe1a00000)
+rain s2rget: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/s2rget/libnccl.so.2 (0x00007f42b89a2000)
+sunny s2rget: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/s2rget/libnccl.so.2 (0x00007a06cd600000)
+deployed md5 == source on both nodes
+existing bundle unchanged on both nodes (12 files each)
+== existing bundle md5 (rain)
+9d4c600d5fb2bd7c3f1f9a078caf709e  ./base/gin_bidir_min
+8025cac015e20f6f4bd929f2f935317e  ./base/gin_ts2
+1ed8e0a15dc76fb7cbe672fe463923c3  ./base/libnccl.so.2.32.3
+bd75cc5a26383093db7d6067b6de86a9  ./gate_ce_test
+b981db0006c52f2935fefe7f8837303f  ./gin_bidir_min
+d4b1f082e3e3150d8ceff7313475e6aa  ./gin_ts2
+0a32b87538b169f303ef1190a659d3be  ./libnccl.so.2.32.3
+8f142f89a5d55b0753a1d6b1b8cc79cf  ./s1/gin_ts2
+f19cbcfe471dd1f2be60d70b4b05d8c2  ./s1/libnccl.so.2.32.3
+c21fb39a4a537a602ae85ac3da1cdebe  ./two_streams_test
+fda38dba0dd0387ed02415039c0d7ff4  ./var_sys/gin_ts2
+0a32b87538b169f303ef1190a659d3be  ./var_sys/libnccl.so.2.32.3
+== existing bundle md5 (sunny)
+9d4c600d5fb2bd7c3f1f9a078caf709e  ./base/gin_bidir_min
+8025cac015e20f6f4bd929f2f935317e  ./base/gin_ts2
+1ed8e0a15dc76fb7cbe672fe463923c3  ./base/libnccl.so.2.32.3
+bd75cc5a26383093db7d6067b6de86a9  ./gate_ce_test
+b981db0006c52f2935fefe7f8837303f  ./gin_bidir_min
+d4b1f082e3e3150d8ceff7313475e6aa  ./gin_ts2
+0a32b87538b169f303ef1190a659d3be  ./libnccl.so.2.32.3
+8f142f89a5d55b0753a1d6b1b8cc79cf  ./s1/gin_ts2
+f19cbcfe471dd1f2be60d70b4b05d8c2  ./s1/libnccl.so.2.32.3
+c21fb39a4a537a602ae85ac3da1cdebe  ./two_streams_test
+fda38dba0dd0387ed02415039c0d7ff4  ./var_sys/gin_ts2
+0a32b87538b169f303ef1190a659d3be  ./var_sys/libnccl.so.2.32.3
