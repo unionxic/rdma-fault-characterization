@@ -64,6 +64,9 @@ typedef enum {
     FAULT_LIVE_CTL_CLOSE,      /* responder QP -> ERR, then the live process closes only its control
                                   connection and answers ALIVE? on a new one */
     FAULT_LIVE_QP_RECREATE,    /* responder destroys its QP and creates a new one left in INIT */
+    /* live_boundary study (harness/live_peer/boundary/EXPERIMENT.md) */
+    FAULT_LIVE_STOP_PROBE,     /* responder QP -> ERR on GO; the process stops itself for LIVE_STOP_MS
+                                  when it receives the first PROBE (0 = no stop), then answers */
     FAULT__COUNT
 } fault_type_t;
 
