@@ -10,8 +10,8 @@
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/nccl-builtin` @ `d834f86c` |
-| 사전 등록 태그 | 없음. 메인 세션의 pilot 뒤 `prereg/nccl-builtin-v1`을 달 예정(3절) |
-| 마지막 갱신 | 2026-10-09 01:00, 초안(1–12절), 훅과 빌드, 스크립트, 오프라인 채점 시험 |
+| 사전 등록 태그 | 없음. pilot 검토를 마쳤다. 메인 세션이 `prereg/nccl-builtin-v1`을 달 예정(3절) |
+| 마지막 갱신 | 2026-10-09 01:30, 배포와 pilot 기록, pilot 검토 뒤 예측과 반복 수 확정(3, 7, 9, 12절) |
 
 표시: `[측정]` 원자료에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -93,10 +93,16 @@
    로그만 다르다. 복원력이 없으면 "Got CQE with error"와 "Got completion from peer ... status=...(n)"이 남고, 있으면 "Got completion with
    error"(INFO)와 치명 판정 줄이 남는다.
 7. **상대 프로세스의 죽음.** 이 경로에는 CQE로만 보인다. RAS는 통신기 상태를 읽기만 한다(`ras/collectives.cc` 725–731행).
+8. **오류 뒤의 진행 스레드와 abort.** 2.32.3의 프록시 진행 스레드는 첫 오류를 비동기 오류로 두고 루프를 빠져나간다(`proxy.cc`
+   978–983행). 그래서 오류를 받은 rank는 그 뒤 어떤 연결로도 더 보내지 않는다. 2.23.4는 오류를 기록하고 루프를 계속 돈다(v2.23.4-1
+   `proxy.cc` 894–899행). 두 버전 모두 앱이 `ncclCommAbort`를 부르면 GPU 커널이 오지 않을 데이터를 기다리던 루프를 빠져나와 다음 단계로
+   간다(v2.23.4-1 `device/prims_simple.h` 128–133행, v2.32.3-1 111행). 그래서 2.23.4에서는 오류를 받아 abort한 rank가 아직 살아 있는
+   다른 연결로 덜 만든 데이터를 보낼 수 있고, 그것을 기다리던 상대는 틀린 결과로 연산을 마칠 수 있다 `[추론]`. 이 항목은 pilot의
+   `rqp@s2off` 결과를 보고 소스를 다시 읽어 더했다(12절).
 
 **이 테스트베드** `[측정]`. 2026-10-09 00:45 rain sysfs에서 mlx5_0 port 1은 DOWN(Disabled), mlx5_1은 ACTIVE였다. NCCL은 ACTIVE가 아닌
 포트를 쓰지 않는다(`init.cc` 505행) `[소스]`. 이전 실험처럼 rank마다 `NCCL_IB_HCA`로 한 장치만 쓴다(rain mlx5_1, sunny mlx5_0). sunny의
-다른 포트 상태는 `[미확인]`이고 hold 스냅숏에 남긴다.
+포트는 2026-10-09 pilot hold 스냅숏에서 mlx5_0 ACTIVE, mlx5_1 DOWN이었다 `[측정]`. 두 노드 모두 활성 포트가 하나다.
 
 **비어 있는 것.**
 - NCCL 내장 복원력을 이 테스트베드에서 돌려 본 적이 없다.
@@ -110,6 +116,7 @@
 3. 같은 장애, 같은 날, 같은 실행기에서 다중 요청 복구는 이전 결과를 재현하는가? 플래그를 끄면 어떻게 실패하는가?
 4. 2.32.3의 "조용한" 수신 QP 장애는 조용히 남는가, 장애를 낸 rank 자신이 알아채는가?
 5. 장애가 없을 때 failover, failover와 recovery, 다중 요청 복구를 켜면 all-reduce 시간이 얼마나 바뀌는가?
+6. 한 rank의 장애가 상대에게 틀린 결과로 새어 나가는가? (pilot 뒤 더한 질문, 12절)
 
 ## 2. 가설
 
@@ -121,13 +128,18 @@
 | H4 | 플래그를 끈 다중 요청 복구와 복원력 없는 2.32.3은 송신, 수신 QP 장애를 1 s 안의 오류로, 받는 중 상대의 죽음을 멈춤으로 보인다 | 예측 B1–B3, S6–S8 중 하나라도 틀린다 |
 | H5 | 2.32.3에서는 "조용한" 수신 QP 장애도 rank 1 자신이 1 s 안에 오류로 올린다. 다중 요청 복구는 rank 1에서 조용히 둔다 | 예측 B4, F4, S4 중 하나라도 틀린다 |
 | H6 | 장애가 없을 때의 비용은 작다 | 예측 O1–O4 중 하나라도 틀린다 |
+| H7 | 2.23.4의 원본 오류 경로에서는 오류를 받아 abort한 rank 때문에, 살아 있는 상대가 장애 난 집합 연산을 오류 없이 틀린 결과로 마칠 수 있다. 2.32.3에서는 그런 일이 없다 | 예측 S9나 I1이 틀린다 |
 
 ## 3. 사전 예측
 
-**고정 시점.** 예측 원문은 [predictions.csv](predictions.csv)(26줄)다. 예측은 사전 등록 태그를 달 때 고정한다. 메인 세션이 pilot(9절의
-P1, P2)을 돌린 뒤, 상태를 `PREREGISTERED`로 바꾸고 `predictions.csv`의 sha256을 `PREREG.txt`에 적은 커밋 하나에
-`prereg/nccl-builtin-v1`을 단다. **pilot 시행은 어떤 경우에도 채점하지 않는다.** pilot을 보고 태그 전에 예측, 셀, 반복 수, 판정식을
-고치면 무엇을 왜 고쳤는지, pilot의 어느 관측이 근거인지 12절에 적는다. 태그 뒤에는 13절 규칙을 따른다.
+**고정 시점.** 예측 원문은 [predictions.csv](predictions.csv)(27줄)다. 예측은 사전 등록 태그를 달 때 고정한다.
+- 메인 세션이 pilot(9절의 P1, P2, 2026-10-09 01:03:42–01:10:21, 34회)을 돌렸다. **이 절의 예측과 판정식, 7절의 반복 수는 그 pilot을 검토한
+  뒤 확정했다.** 바꾼 것과 그 근거가 된 pilot 관측은 12절에 있다.
+- 바꾼 것은 세 종류뿐이다. 소스를 덜 읽어 생긴 예측의 고침(S7, I1, 새 예측 S9), pilot에서 시행이 싸게 끝나 늘린 반복 수와 그에 맞춘 기준
+  (B1–B4, F3, F4, O5), 하네스 정의의 고침(3.1의 `outcome`과 새 열)이다. pilot에 맞추려고 바꾼 예측은 없다. pilot과 어긋났지만 소스로
+  설명하지 못한 예측(O3)은 그대로 두고 의문을 12절에 적었다.
+- 상태를 `PREREGISTERED`로 바꾸고 `predictions.csv`의 sha256을 `PREREG.txt`에 적은 커밋 하나에 `prereg/nccl-builtin-v1`을 단다.
+- **pilot 시행은 어떤 경우에도 채점하지 않는다.** 태그 뒤에는 13절 규칙을 따른다.
 
 `kind`는 N(2.32.3의 새 셀), R(다중 요청 복구 재현), C(대조), A(모든 셀)다.
 
@@ -145,6 +157,7 @@ P1, P2)을 돌린 뒤, 상태를 `PREREGISTERED`로 바꾸고 `predictions.csv`�
 | `ver_r0` | rank 0의 `NCCL version <x.y.z>` 줄의 버전 |
 | `inj_r<r>`, `inj_kind` | `[FAULT-INJECT] forced (send\|recv) QP` 줄 수, 첫 줄의 종류(`send`, `recv`, 줄에 `[silent]`가 있으면 `silent`) |
 | `t_fault` | 장애 시각: kill 셀은 실행기가 kill을 보내기 직전(`t_kill_req`), 주입 셀은 첫 훅 줄을 받은 시각 |
+| `kill_rtt_ms` | kill 셀에서 kill을 보낸 ssh 명령이 돌아오기까지(ms). kill은 이 사이에 일어난다(pilot 5회 246–250 ms) |
 | `err_r<r>`, `errcode_r<r>` | 그 rank 드라이버의 첫 NCCL 오류 줄: `async`(`async NCCL error`), `call`(호출이 오류를 돌려줌). 오류 문자열을 결과 이름으로 바꾼 값(예: `ncclRemoteError`) |
 | `dt_err_r<r>` | 그 오류 줄의 수신 시각 − `t_fault`(ms). `dt_to_r<r>`은 `TIMEOUT after` 줄의 같은 값 |
 | `first_err_rank` | 오류 줄이 먼저 온 rank |
@@ -159,8 +172,9 @@ P1, P2)을 돌린 뒤, 상태를 `PREREGISTERED`로 바꾸고 `predictions.csv`�
 | `s2_on_r<r>`, `s2_rec`, `s2_rec_ms`, `s2_fin_r<r>` | 다중 요청 복구: `[FAULT-RECOVERY2] recovery on for` 줄 수, 두 rank의 `comm: recovered` 줄 수, 첫 송신 통신기 복구 줄의 `total` ms, `closed its OOB socket (FIN)` 줄 수 |
 | `ok_r<r>`, `iters_r<r>`, `med_ms_r<r>` | 드라이버 `SUMMARY` 줄의 `ok`, `iters`, `med_ms`(반복 한 번 시간의 중앙값) |
 | `timeout_r<r>`, `abort_ret_r<r>`, `abort_hang_r<r>` | `TIMEOUT after`, `ncclCommAbort returned`, `ABORT-HANG` 줄 수 |
-| `mism` | 두 rank의 `MISMATCH` 줄 수 합 |
-| `outcome` | `MISMATCH`(mism > 0), `TRANSPARENT`(두 rank 종료 코드 0, 두 rank 모두 `ok == iters`), `ERROR`(아니고 어느 rank든 오류 줄), `HANG`(아니고 TIMEOUT 줄이 있거나 실행 상한에 닿음), `OTHER`(그 밖) |
+| `mism_r<r>`, `mism`, `dt_mism_r<r>` | 그 rank의 `MISMATCH` 줄 수, 두 rank의 합, 첫 `MISMATCH` 줄의 수신 시각 − `t_fault`(ms) |
+| `mism_pre_to` | 어느 rank든 첫 `TIMEOUT after` 줄보다 먼저 받은 `MISMATCH` 줄 수(TIMEOUT이 없으면 `mism`과 같다) |
+| `outcome` | `MISMATCH`(`mism_pre_to > 0`), `TRANSPARENT`(두 rank 종료 코드 0, 두 rank 모두 `ok == iters`), `ERROR`(아니고 어느 rank든 오류 줄), `HANG`(아니고 TIMEOUT 줄이 있거나 실행 상한에 닿음), `OTHER`(그 밖). 드라이버는 TIMEOUT 뒤 `ncclCommAbort`를 부른다. abort한 커널이 덜 만든 데이터를 상대에게 넘길 수 있으므로(1절 8번) TIMEOUT 뒤의 `MISMATCH`는 하네스가 끝내는 방식의 산물로 보고 결과 분류에 넣지 않는다. 그런 줄도 `mism`에는 남는다(pilot 뒤 고침, 12절) |
 | `kill_ok`, `wallcap`, `grace_kill_r<r>` | kill이 PID 확인을 거쳐 보내졌으면 1. 실행 상한에 닿았으면 1. 다른 rank가 0이 아닌 코드로 끝난 뒤 6 s가 지나 실행기가 끝냈으면 1 |
 
 ### 3.2 셀 키와 판정식 문법
@@ -176,15 +190,15 @@ P1, P2)을 돌린 뒤, 상태를 `PREREGISTERED`로 바꾸고 `predictions.csv`�
 
 | id | 셀 | 예측 | 판정 기준(요약) | 근거 |
 |---|---|---|---|---|
-| B1 | `sqp@off` | 복원력 없는 2.32.3: 송신 QP 장애가 rank 0에서 1 s 안에 ncclRemoteError로 올라온다. 원본 오류 CQE 줄과 WR_FLUSH_ERR가 남는다 | ≥4/5 | `ncclIbTest` `[소스]`, 다중 요청 복구 끔 0.055–0.242 ms(3회) `[측정]` |
-| B2 | `rqp@off` | 수신 QP 장애가 rank 1 자신에게서 1 s 안에 ncclRemoteError로 올라온다 | ≥4/5 | 걸어 둔 수신과 다음 CTS가 비워짐 `[소스]` |
-| B3 | `kill@off` | 받는 중 상대가 죽으면 생존 rank는 12 s 반복 제한까지 오류를 보지 못한다 | 멈춤 ≥4/5 | 1절 7번 `[소스]`, 2.23.4 끔 3/3 `[측정]` |
-| B4 | `slbc@off`, `slar@off` | "조용한" 장애도 rank 1 자신이 1 s 안에 ncclRemoteError로 올린다 | 셀마다 ≥4/5 | 걸어 둔 수신이 비워짐 `[소스]` |
+| B1 | `sqp@off` | 복원력 없는 2.32.3: 송신 QP 장애가 rank 0에서 1 s 안에 ncclRemoteError로 올라온다. 원본 오류 CQE 줄과 WR_FLUSH_ERR가 남는다 | ≥9/10 | `ncclIbTest` `[소스]`, 다중 요청 복구 끔 0.055–0.242 ms(3회) `[측정]` |
+| B2 | `rqp@off` | 수신 QP 장애가 rank 1 자신에게서 1 s 안에 ncclRemoteError로 올라온다 | ≥9/10 | 걸어 둔 수신과 다음 CTS가 비워짐 `[소스]` |
+| B3 | `kill@off` | 받는 중 상대가 죽으면 생존 rank는 12 s 반복 제한까지 오류를 보지 못한다 | 멈춤 ≥9/10 | 1절 7번 `[소스]`, 2.23.4 끔 3/3 `[측정]` |
+| B4 | `slbc@off`, `slar@off` | "조용한" 장애도 rank 1 자신이 1 s 안에 ncclRemoteError로 올린다 | 셀마다 ≥9/10 | 걸어 둔 수신이 비워짐 `[소스]` |
 | R1 | `sqp@rec` | recovery 변수만 켜면 `off`와 같다. 원본 오류 경로이고 failover 경고, 치명 판정, 복구 동작 줄이 없다 | ≥4/5 | 1절 1번 `[소스]` |
 | F1 | `sqp@fo`, `sqp@forec` | 첫 오류 CQE에서 곧바로 치명 판정, rank 0에 1 s 안 ncclRemoteError. 원본 오류 CQE 줄과 복구 동작 줄이 없다 | 셀마다 ≥9/10 | 1절 4, 5번 `[소스]` |
 | F2 | `rqp@fo`, `rqp@forec` | 같은 판정이 rank 1에서 | 셀마다 ≥9/10 | 같음 |
-| F3 | `kill@fo`, `kill@forec` | 생존 rank는 12 s 반복 제한까지 오류를 보지 못한다 | 셀마다 멈춤 ≥4/5 | 1절 3, 7번 `[소스]` |
-| F4 | `slbc@fo`, `slbc@forec`, `slar@fo`, `slar@forec` | rank 1 자신이 치명으로 판정해 1 s 안에 올린다 | 셀마다 ≥4/5 | B4와 F1 `[소스]` |
+| F3 | `kill@fo`, `kill@forec` | 생존 rank는 12 s 반복 제한까지 오류를 보지 못한다 | 셀마다 멈춤 ≥9/10 | 1절 3, 7번 `[소스]` |
+| F4 | `slbc@fo`, `slbc@forec`, `slar@fo`, `slar@forec` | rank 1 자신이 치명으로 판정해 1 s 안에 올린다 | 셀마다 ≥9/10 | B4와 F1 `[소스]` |
 | F5 | failover를 켠 셀 14개(장애 10, 장애 없음 4) | 모든 시행에서 두 rank가 연결 때 "넘겨 갈 다른 장치가 없다"고 경고한다(WARN 줄이라 모든 셀에서 보인다) | 셀마다 예외 0 | 1절 5번 `[소스]` |
 | F6 | 2.32.3 장애 셀 16개 | 어느 설정도 어느 장애도 투명하게 만들지 못한다 | 셀마다 투명 0 | H1 |
 | F7 | 2.32.3 장애 셀 16개 | 장치 실패 표시, QP 교체, 확인 읽기, port recovery 줄이 없다. kill 셀은 WARN이라 이 중 장치 실패 표시 줄만 보인다 | 셀마다 0 | 1절 4, 5번 `[소스]` |
@@ -192,23 +206,26 @@ P1, P2)을 돌린 뒤, 상태를 `PREREGISTERED`로 바꾸고 `predictions.csv`�
 | S2 | 같음 | 복구 시간(송신 통신기 `total`) 중앙값이 두 셀 모두 1.8–3.0 ms | 셀 중앙값 | 2.152–2.400 ms(최종 빌드 6회) `[측정]` |
 | S3 | `kill@s2on` | OOB 소켓의 FIN으로 상대의 죽음을 알아 kill 뒤 1 s 안에 생존 rank에 오류를 올린다 | 5/5 | 3/3 `[측정]` |
 | S4 | `slbc@s2on` | rank 1은 1 s 안에 오류를 올리지 않는다. 작업은 투명하게 복구되거나 멈춘다 | 5/5 | 3회 `[측정]` |
-| S5 | `slar@s2on` | 보내는 쪽이 할 일이 없어 12 s 반복 제한까지 멈춘다 | 5/5 | 5회와 1회 `[측정]` |
+| S5 | `slar@s2on` | 보내는 쪽이 할 일이 없어 12 s 반복 제한까지 멈춘다(TIMEOUT 뒤의 틀린 결과는 결과 분류에 넣지 않는다, 3.1) | 5/5 | 5회와 1회 `[측정]` |
 | S6 | `sqp@s2off` | 1 s 안 ncclRemoteError, WR_FLUSH_ERR, 복구 줄 없음 | 5/5 | 3/3 `[측정]` |
-| S7 | `rqp@s2off` | rank 1에서 1 s 안 ncclRemoteError, 복구 줄 없음 | ≥4/5 | `[소스]`, 이전 대조 없음 `[미확인]` |
+| S7 | `rqp@s2off` | rank 1에서 1 s 안 ncclRemoteError, 복구 줄 없음. 결과 분류는 묻지 않는다(S9) | ≥4/5 | `[소스]`, 이전 대조 없음 `[미확인]`, pilot 뒤 고침 |
 | S8 | `kill@s2off` | 생존 rank는 12 s 반복 제한까지 오류를 보지 못한다 | 멈춤 ≥4/5 | 3/3 `[측정]` |
-| I1 | 셀 34개 모두 | 어느 시행도 틀린 결과를 내지 않는다(MISMATCH 없음) | 셀마다 0 | `[추론]` |
+| S9 | `rqp@s2off` | rank 1이 오류를 받아 abort한 뒤, rank 0은 장애 난 all-reduce를 자기 오류 없이 틀린 결과로 마친다. 틀린 결과는 rank 1의 오류보다 뒤에 온다 | ≥4/5 | 1절 8번 `[소스, 추론]`, pilot 1/1 `[측정, pilot, 채점 안 함]`, pilot 뒤 더함 |
+| I1 | `rqp@s2off`, `slar@s2on`을 뺀 셀 32개 | 어느 시행도 틀린 결과를 내지 않는다(MISMATCH 없음) | 셀마다 0 | 1절 8번 `[소스, 추론]`, pilot 뒤 고침 |
 | O1 | `ovh16m@fo` 대 `ovh16m@off` | failover가 rank 0 반복 시간 중앙값을 2 % 넘게 바꾸지 않는다 | 실행 중앙값의 차이 | 1절 2번 `[소스]`, 크기는 `[추론]` |
 | O2 | `ovh64k@fo` 대 `ovh64k@off` | 5 % 넘게 바꾸지 않는다 | 같음 | 같음 |
 | O3 | `forec` 대 `fo`, 두 크기 | port recovery를 더해도 2 % 넘게 바뀌지 않는다 | 같음 | 쉬는 스레드와 QP뿐 `[소스]` |
 | O4 | `s2on` 대 `s2off`, 16 MiB와 64 KiB | 2 %, 3 % 안 | 같음 | +1.27 %, −0.22 %(3회씩) `[측정]` |
-| O5 | 장애 없는 셀 10개 | 모든 실행이 투명하다 | 셀마다 5/5 | `[추론]` |
+| O5 | 장애 없는 셀 10개 | 모든 실행이 투명하다 | 셀마다 10/10 | `[추론]` |
 
 ### 3.4 탐색 관찰(채점하지 않음)
 
 다음은 예측 없이 기록만 하고 15절에 서술한다.
 - 2.32.3 장애 셀에서 장애를 내지 않은 rank가 겪는 일: 상대가 끝난 뒤 RETRY_EXC를 받는지, 실행기의 6 s 유예 뒤에 끝나는지.
 - 2.32.3에서 오류 뒤 `ncclCommAbort`가 돌아오는지(`abort_ret_r<r>`, `abort_hang_r<r>`). 2.23.4에서는 1절의 원시 로그 중 오류 뒤 abort를
-  부른 rank 로그 14개(A5의 T8과 T9, C4, T12d) 모두 감시 시간에 끝났고 돌아온 것은 0이다 `[측정]`.
+  부른 rank 로그 14개(A5의 T8과 T9, C4, T12d) 모두 감시 시간에 끝났고 돌아온 것은 0이다 `[측정]`. pilot에서는 2.32.3으로 abort를 부른 rank
+  로그 22개 모두 돌아왔고, 2.23.4로 부른 7개는 모두 감시 시간에 끝났다 `[측정, pilot]`.
+- TIMEOUT 뒤의 틀린 결과(`mism`과 `mism_pre_to`의 차): 특히 `slar@s2on`에서 rank 1이 먼저 시간 초과하는 경우.
 - `slbc@s2on`에서 투명 복구된 비율.
 - 장애에서 앱 오류까지의 시간 분포(설정별).
 
@@ -236,14 +253,14 @@ P1, P2)을 돌린 뒤, 상태를 `PREREGISTERED`로 바꾸고 `predictions.csv`�
 | 항목 | 값 | 확인 방법과 날짜 |
 |---|---|---|
 | 노드 | rain(rank 0), sunny(rank 1) | 루트 `README.md` 테스트베드 표 |
-| NIC와 포트 | ConnectX-6, fw 20.43.4100. rain mlx5_0 port 1 DOWN(Disabled), mlx5_1 ACTIVE(Ethernet). 쓰는 장치는 rain mlx5_1, sunny mlx5_0(`NCCL_IB_HCA`) | rain `[측정]` 2026-10-09 00:45 sysfs. sunny `[미확인]`, hold 스냅숏에 남긴다 |
-| 커널 | rain 5.15.0-97-generic | rain `[측정]` 2026-10-09. sunny는 hold 스냅숏 |
+| NIC와 포트 | ConnectX-6, fw 20.43.4100(두 노드). rain mlx5_0 port 1 DOWN(Disabled), mlx5_1 ACTIVE(Ethernet). sunny mlx5_0 ACTIVE, mlx5_1 DOWN. 쓰는 장치는 rain mlx5_1, sunny mlx5_0(`NCCL_IB_HCA`). NCCL이 만든 가상 장치는 `ndevs=1` | rain `[측정]` 2026-10-09 00:45 sysfs. 두 노드 `[측정]` pilot hold 스냅숏 4개(01:04–01:10)에서 같음. `ndevs=1`은 pilot rank 0의 INFO 줄 `Made virtual device [0] name=mlx5_1 ... ndevs=1` `[측정]` |
+| 커널 | rain 5.15.0-97-generic, sunny 6.8.0-138-generic | `[측정]` pilot hold 스냅숏 |
 | GPU, 드라이버, CUDA | rain Quadro RTX 5000, 드라이버 570.211.01, CUDA 12.8(nvcc 12.8.93). sunny RTX A4000 | rain `[측정]` 2026-10-09. sunny는 루트 README `[미확인]` |
 | 관리망 소켓 | `NCCL_SOCKET_IFNAME=eno1` | `cells.py` |
 | IB 타임아웃 | `NCCL_IB_TIMEOUT=14`, 재시도 횟수는 기본(7) | `cells.py` |
-| 2.32.3 + 훅(`n232`) | libnccl md5 `9269cc75b0a75cbdc327b075cd26234c`. upstream v2.32.3-1(`12df1a11`) + [inject_232.diff](inject_232.diff)(md5 `c4709b2e`, `p2p.cc` 96줄 추가) | `[측정]` 2026-10-09 00:36 빌드됨. [build_nb.sh](build_nb.sh)가 빌드 전에 소스 트리가 태그 + diff와 같은지 확인했다. 내 스크래치 트리와 upstream 태그는 `bindings/nccl4py/.git_archival.txt`만 다르다. 실행은 하지 않았다 |
-| 다중 요청 복구(`s2`) | libnccl md5 `9ed03e1d4b9833c0c2e01f3aa1f84d1c`(최종 빌드 `a037de42` + 쓰지 않는 원격 접근 훅) | `[측정]` v2.23.4-1의 `net_ib.cc`에 `../stage2/net_ib_stage2.diff`를 적용하면 git hash-object `18d998a8`로 diff 머리말과 같다. 이 바이너리가 그 소스에서 나왔다는 것은 `../stage2/NOTES.md`의 기록이다 `[미확인]` |
-| 드라이버 `nb_ct` | md5 `523fd8637c185caa39987f10543b893f`. `../perf/nccl_ct.cu`를 고치지 않고 2.23.4의 `nccl.h`로 sm_75, sm_86 컴파일 | `[측정]` 빌드됨. rain에서 `ldd -r`로 두 라이브러리 모두 해결 안 된 기호가 없음을 확인(정적 확인, 실행 안 함) |
+| 2.32.3 + 훅(`n232`) | libnccl md5 `9269cc75b0a75cbdc327b075cd26234c`. upstream v2.32.3-1(`12df1a11`) + [inject_232.diff](inject_232.diff)(md5 `c4709b2e`, `p2p.cc` 96줄 추가) | `[측정]` 2026-10-09 00:36 빌드됨. [build_nb.sh](build_nb.sh)가 빌드 전에 소스 트리가 태그 + diff와 같은지 확인했다. 내 스크래치 트리와 upstream 태그는 `bindings/nccl4py/.git_archival.txt`만 다르다. 배포 뒤 두 노드의 md5가 같다([deploy_check.txt](deploy_check.txt), pilot hold 스냅숏 4개) |
+| 다중 요청 복구(`s2`) | libnccl md5 `9ed03e1d4b9833c0c2e01f3aa1f84d1c`(최종 빌드 `a037de42` + 쓰지 않는 원격 접근 훅) | `[측정]` v2.23.4-1의 `net_ib.cc`에 `../stage2/net_ib_stage2.diff`를 적용하면 git hash-object `18d998a8`로 diff 머리말과 같다. 이 바이너리가 그 소스에서 나왔다는 것은 `../stage2/NOTES.md`의 기록이다 `[미확인]`. 배포 뒤 두 노드의 md5가 같다 `[측정]` |
+| 드라이버 `nb_ct` | md5 `523fd8637c185caa39987f10543b893f`. `../perf/nccl_ct.cu`를 고치지 않고 2.23.4의 `nccl.h`로 sm_75, sm_86 컴파일 | `[측정]` rain에서 `ldd -r`로 두 라이브러리 모두 해결 안 된 기호가 없음을 확인. 두 노드 두 번들에서 md5가 같다. pilot 34회에서 두 라이브러리 모두로 돌았다 |
 
 ## 6. 변수
 
@@ -265,16 +282,17 @@ P1, P2)을 돌린 뒤, 상태를 `PREREGISTERED`로 바꾸고 `predictions.csv`�
 
 ## 7. 실험 셀, 반복 수, 대조군
 
-반복 수는 내장 복원력의 송신, 수신 QP 셀(가설 H1의 중심) 10회, 나머지 5회다. 장애 없는 셀의 반복은 실행 수다.
+반복 수는 pilot을 본 뒤 확정했다(12절). 2.32.3의 새 장애 셀(`off`, `fo`, `forec`) 10회, 대조(`rec`, `s2off`)와 다중 요청 복구 재현(`s2on`)
+5회, 장애 없는 셀은 모두 10회다(oneway의 새 셀 10, 재현과 대조 5 규칙). 장애 없는 셀의 반복은 실행 수다.
 
 | 셀 | 조건 | 설정과 반복 수 | 종류 |
 |---|---|---|---|
-| `sqp` | 기본 설정, 16 MiB all-reduce 150회, warmup 0. rank 0에 `NCCL_RDMA_FAULT_INJECT=301` | `off` 5, `rec` 5, `fo` 10, `forec` 10, `s2on` 5, `s2off` 5 | N, C, N, N, R, C |
-| `rqp` | 같은 작업. rank 1에 `NCCL_RDMA_FAULT_INJECT_RECV=301` | `off` 5, `fo` 10, `forec` 10, `s2on` 5, `s2off` 5 | N, N, N, R, C |
-| `kill` | 1채널, 256 KiB all-reduce 300 000회(`--quiet`), warmup 5. rank 0을 띄운 뒤 5 s에 실행기가 rank 1을 PID로 SIGKILL | `off`, `fo`, `forec`, `s2on`, `s2off` 각 5 | N, N, N, R, C |
-| `slbc` | 1채널, 64 MiB 방송 60회, warmup 0. rank 1에 `NCCL_RDMA_FAULT_INJECT_RECV=301`, `NCCL_RDMA_FAULT_INJECT_RECV_SILENT=1` | `off`, `fo`, `forec`, `s2on` 각 5 | N, N, N, R |
-| `slar` | 1채널, 256 KiB all-reduce 1 000회, warmup 0. rank 1에 같은 조용한 훅, 403번째 | `off`, `fo`, `forec`, `s2on` 각 5 | N, N, N, R |
-| `ovh64k` | 기본 설정, 64 KiB all-reduce 2 000회, warmup 20, 장애 없음 | `off`, `fo`, `forec`, `s2on`, `s2off` 각 5 | N, N, N, R, R |
+| `sqp` | 기본 설정, 16 MiB all-reduce 150회, warmup 0. rank 0에 `NCCL_RDMA_FAULT_INJECT=301` | `off`, `fo`, `forec` 각 10, `rec`, `s2on`, `s2off` 각 5 | N, N, N, C, R, C |
+| `rqp` | 같은 작업. rank 1에 `NCCL_RDMA_FAULT_INJECT_RECV=301` | `off`, `fo`, `forec` 각 10, `s2on`, `s2off` 각 5 | N, N, N, R, C |
+| `kill` | 1채널, 256 KiB all-reduce 300 000회(`--quiet`), warmup 5. rank 0을 띄운 뒤 5 s에 실행기가 rank 1을 PID로 SIGKILL | `off`, `fo`, `forec` 각 10, `s2on`, `s2off` 각 5 | N, N, N, R, C |
+| `slbc` | 1채널, 64 MiB 방송 60회, warmup 0. rank 1에 `NCCL_RDMA_FAULT_INJECT_RECV=301`, `NCCL_RDMA_FAULT_INJECT_RECV_SILENT=1` | `off`, `fo`, `forec` 각 10, `s2on` 5 | N, N, N, R |
+| `slar` | 1채널, 256 KiB all-reduce 1 000회, warmup 0. rank 1에 같은 조용한 훅, 403번째 | `off`, `fo`, `forec` 각 10, `s2on` 5 | N, N, N, R |
+| `ovh64k` | 기본 설정, 64 KiB all-reduce 2 000회, warmup 20, 장애 없음 | `off`, `fo`, `forec`, `s2on`, `s2off` 각 10 | N, N, N, R, R |
 | `ovh16m` | 기본 설정, 16 MiB all-reduce 200회, warmup 5, 장애 없음 | 같음 | 같음 |
 
 1채널은 `NCCL_MAX_NCHANNELS=1`, `NCCL_MIN_NCHANNELS=1`, `NCCL_ALGO=Ring`, `NCCL_PROTO=Simple`, `NCCL_IB_QPS_PER_CONNECTION=1`이다
@@ -284,13 +302,13 @@ P1, P2)을 돌린 뒤, 상태를 `PREREGISTERED`로 바꾸고 `predictions.csv`�
 
 | 종류 | 장애 셀 시행 | 장애 없는 실행 |
 |---|--:|--:|
-| 2.32.3(`off`, `rec`, `fo`, `forec`) | 100 | 30 |
-| 다중 요청 복구 켬 | 25 | 10 |
-| 다중 요청 복구 끔 | 15 | 10 |
-| 합 | 140 | 50 |
+| 2.32.3(`off`, `rec`, `fo`, `forec`) | 155 | 60 |
+| 다중 요청 복구 켬 | 25 | 20 |
+| 다중 요청 복구 끔 | 15 | 20 |
+| 합 | 195 | 100 |
 
-장애 셀 시행 140회는 셀 키 24개의 합이다(`sqp` 40, `rqp` 35, `kill` 25, `slbc` 20, `slar` 20). 장애 없는 실행 50회는 셀 키 10개의 합이다.
-pilot은 따로 34회다(셀 키마다 1회, 9절).
+장애 셀 시행 195회는 셀 키 24개의 합이다(`sqp` 45, `rqp` 40, `kill` 40, `slbc` 35, `slar` 35). 장애 없는 실행 100회는 셀 키 10개의 합이다.
+pilot은 따로 34회다(셀 키마다 1회, 9절, 채점 안 함).
 
 ## 8. 제외 기준과 중단 기준
 
@@ -363,22 +381,25 @@ pilot은 따로 34회다(셀 키마다 1회, 9절).
 **실행.** hold는 [hold.sh](hold.sh)에 두고, [chain.sh](chain.sh)가 hold마다 `cluster_run.sh -w 10800 -t nb-<hold>`에 넣는다. 결과
 폴더는 `results/<날짜>/<설정>/`(pilot은 `results/<날짜>_pilot/`). 같은 hold 안에서는 셀 키를 한 번씩 번갈아 돈다.
 
-| hold | 내용 | 추정 `[추론]` |
+| hold | 내용 | 시간 |
 |---|---|---|
-| P1 pilot | 송신, 수신 QP 셀 키 11개 각 1회, 장애 없는 셀 키 10개 각 1회 | 5–6분 |
-| P2 pilot | 조용한 장애 셀 키 8개, kill 셀 키 5개 각 1회 | 6분 |
-| H1 | 장애 없는 셀 키 10개 × 5회 | 5–6분 |
-| H2 | `sqp@off`, `rqp@off`, `sqp@rec`, `sqp@s2on` × 5 | 5–6분 |
-| H3 | `sqp@fo`, `sqp@forec` × 10 | 6분 |
-| H4 | `rqp@fo`, `rqp@forec` × 10 | 6분 |
-| H5 | `rqp@s2on`, `sqp@s2off`, `rqp@s2off`, `kill@s2off` × 5 | 7분 |
-| H6 | `slbc@off`, `slbc@fo`, `slbc@forec`, `slbc@s2on` × 5 | 6–7분 |
-| H7 | `slar@off`, `slar@fo`, `slar@forec`, `slar@s2on` × 5 | 7분 |
-| H8 | `kill@off`, `kill@fo`, `kill@forec`, `kill@s2on` × 5 | 9분 |
+| P1 pilot | 송신, 수신 QP 셀 키 11개 각 1회, 장애 없는 셀 키 10개 각 1회 | `[측정]` 01:04:13–01:06:35(잠금 01:03:42) |
+| P2 pilot | 조용한 장애 셀 키 8개, kill 셀 키 5개 각 1회 | `[측정]` 01:07:09–01:10:19(잠금 01:06:38) |
+| H1, H2 | 장애 없는 셀 키 10개 × 5회씩(두 hold로 키마다 10회) | 각 4분 |
+| H3, H4 | `sqp@off`, `sqp@fo`, `sqp@forec` × 5씩 | 각 3–4분 |
+| H5 | `sqp@rec`, `sqp@s2on`, `sqp@s2off` × 5 | 4분 |
+| H6, H7 | `rqp@off`, `rqp@fo`, `rqp@forec` × 5씩 | 각 3분 |
+| H8 | `rqp@s2on`, `rqp@s2off`, `slbc@s2on`, `slar@s2on` × 5 | 5분 |
+| H9, H10 | `slbc@off`, `slbc@fo`, `slbc@forec` × 5씩 | 각 3분 |
+| H11, H12 | `slar@off`, `slar@fo`, `slar@forec` × 5씩 | 각 3–4분 |
+| H13, H14 | `kill@off`, `kill@fo`, `kill@forec` × 5씩 | 각 6분 |
+| H15 | `kill@s2on`, `kill@s2off` × 5 | 5분 |
 
-시행 하나의 추정 `[추론]`: 투명한 시행 5–6 s, 한 rank가 오류를 받는 시행 10–20 s(abort가 돌아오는지와 6 s 유예에 따라), 멈춤 20–30 s.
-최악은 실행 상한(장애 셀 40 s × hold당 20회 = 800 s)이라 hold 하나가 880 s를 넘지 않는다. hold마다 잠금과 유휴 확인, 스냅숏이 약 1분 더
-든다. 본 실행 H1–H8은 50–60분, pilot은 약 12분이다 `[추론]`.
+본 실행 hold의 시간은 pilot의 셀별 실행 시간에 시행마다 약 1.9 s(실행기 시작, GID 읽기, 남은 프로세스 확인)와 hold마다 스냅숏 약 50 s를
+더한 추정이다 `[추론]`. pilot의 시행 하나는 1.7–27.4 s였다(34회의 범위) `[측정]`. 본 실행 H1–H15는 시행과 스냅숏 약 57분, hold마다
+유휴 링크 확인 약 31 s를 더해 약 65분이다(잠금을 기다리는 시간 제외) `[추론]`. 최악은 모든 시행이 실행 상한에 닿는 경우로, hold 하나에
+장애 시행 20회 × 40 s = 800 s 또는 장애 없는 실행 50회 × 15 s = 750 s다. 거기에 시행마다의 준비 시간과 스냅숏이 붙어 880 s 상한에 닿을 수
+있다. 그러면 `timeout`이 hold를 끝내고, 남은 셀은 `fill:`로 채운다.
 
 **채점.** `python3 score.py results/<날짜>`. [rows_nb.py](rows_nb.py)가 3.1의 열을 만들고, [score.py](score.py)가 8절의 제외와 설정
 확인을 거쳐 [predictions.csv](predictions.csv)의 판정식을 3.2 문법대로 적용한다. 결과는 `results/<날짜>/SCORE.md`와
@@ -389,7 +410,7 @@ pilot은 따로 34회다(셀 키마다 1회, 9절).
 ## 10. 완료 조건과 QA 기준
 
 - [ ] 모든 셀 키가 계획한 반복 수만큼 판정됐다. 제외와 설정 확인 실패를 따로 센 표가 있다.
-- [ ] 예측 26줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
+- [ ] 예측 27줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
 - [ ] 다른 에이전트가 `score.py`를 보지 않고 원시 로그에서 핵심 수치를 다시 셌다. 대상은 결과 분류, 앱 오류와 시각, 치명 판정과 복원력 동작
   줄, 다중 요청 복구의 복구 줄과 시간, 반복 시간 중앙값이다.
 - [ ] 다른 에이전트가 `inject_232.diff`와 실행기를 읽고 리뷰했다.
@@ -405,10 +426,11 @@ pilot은 따로 34회다(셀 키마다 1회, 9절).
 - [x] 주입 훅 작성, 빌드(`n232` 빌드됨), 다중 요청 복구 빌드와 드라이버 준비
 - [x] `cells.py`, `nbrun.py`, `hold.sh`, `chain.sh`, `deploy_nb.sh`, `rows_nb.py`, `score.py`
 - [x] 실행기와 채점기의 오프라인 시험(클러스터 없이, 12절)
-- [ ] 배포(메인 세션)
-- [ ] pilot P1, P2(메인 세션, 채점 제외)
+- [x] 배포(메인 세션)
+- [x] pilot P1, P2(메인 세션, 채점 제외)
+- [x] pilot 검토, 하네스 고침, 예측과 반복 수 확정
 - [ ] 고정 절 확정, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
-- [ ] 본 실행 H1–H8 (`RUNNING`)
+- [ ] 본 실행 H1–H15 (`RUNNING`)
 - [ ] 채점 (`QA`)
 - [ ] 독립 재계산과 코드 리뷰
 - [ ] 결과 정리, 원자료 릴리스, PR
@@ -427,7 +449,69 @@ pilot은 따로 34회다(셀 키마다 1회, 9절).
 | 2026-10-09 00:47–00:49 | 실행기 오프라인 시험: 가짜 `nb_ct` 스크립트와 ssh 대신 로컬 bash로 정상 종료, 한 rank 오류 뒤 유예, 실행 상한, rank 1 kill을 돌림. 끝까지 읽지 못한 로그가 비지 않도록 시행 끝에서 로그를 비우게 고침 | 세션 스크래치 `agent_nb/mock/` |
 | 2026-10-09 00:48 | 실수: 위 모의 시험의 남은 `sleep` 자식을 지우려고 `pkill -x sleep -u <내 사용자>`를 한 번 실행했다. 이 명령은 이 사용자의 다른 `sleep`도 끌 수 있다. 그때 `cluster_run.sh` 잠금 아래 도는 작업은 없었다(`cluster_run.log` 마지막 줄 00:37:36 종료). 다른 셸(00:45:52 시작)의 180 s 대기가 00:48:52에 끝났는데, 그 대기가 이 명령으로 최대 약 1 s 일찍 끝났을 수 있다 `[미확인]`. 남은 모의 `sleep` 세 개는 PID로 껐다. 이후 이런 명령은 쓰지 않는다 | 이 행 |
 | 2026-10-09 00:58 | 훅 diff와 빌드 스크립트, 실행기와 채점기를 커밋 | 브랜치 `exp/nccl-builtin`의 `96ef1b23`, `0bc2641b`(rebase 전 해시) |
-| 2026-10-09 01:00 | 1–12절 초안, 예측 26줄. 상태 `DRAFT`. 클러스터에서는 아무것도 돌리지 않았다(ssh, 배포, `cluster_run.sh`, GPU나 RDMA 프로그램 실행 모두 없음) | 이 커밋 |
+| 2026-10-09 01:00 | 1–12절 초안, 예측 26줄. 상태 `DRAFT`. 그때까지 클러스터에서는 아무것도 돌리지 않았다(ssh, 배포, `cluster_run.sh`, GPU나 RDMA 프로그램 실행 모두 없음) | `1cbc2c0b`(rebase 전 해시) |
+| 2026-10-09 01:02:37–01:03:28 | 메인 세션이 배포(`deploy_nb.sh`, rc 0). 두 노드의 배포 파일 md5가 소스와 같고, `ldd`가 두 노드 두 번들 모두 번들 안의 libnccl을 가리킨다. 기존 번들(rain 272개, sunny 332개 파일)의 md5가 배포 전후 같다 `[측정]` | [deploy_check.txt](deploy_check.txt) |
+| 2026-10-09 01:03:42–01:10:21 | 메인 세션이 pilot을 돌림: `chain.sh results/20261009_pilot P1 P2`. P1은 잠금 01:03:42, 실행 01:04:13–01:06:35(21회). P2는 잠금 01:06:38, 실행 01:07:09–01:10:19(13회). 두 hold rc 0. 34회 모두 설정 확인을 통과하고 8절의 제외에 걸린 시행이 없다. 남은 `nb_ct` 0. mlx5: 새 커널 줄 0, 명령 오류 줄 rain 2, sunny 0, rain 펌웨어 명령 실패 수 31로 전후가 같다. 두 노드에 다른 GPU 사용자 없음 `[측정]`. 채점하지 않는다 | `results/20261009_pilot/`(원시 파일은 커밋하지 않음), `hold_P1.out`, `hold_P2.out`, `mlx5_new_P1.txt`, `mlx5_new_P2.txt` |
+| 2026-10-09 01:12–01:30 | pilot 검토(아래 "pilot 검토"). `rows_nb.py`를 다시 돌려 34회의 줄을 셀마다 원시 로그와 대조함. 하네스 고침과 예측, 반복 수 확정(아래 "pilot 뒤 바꾼 것") | [results/20261009_pilot/trials_pilot.csv](results/20261009_pilot/trials_pilot.csv)(`rows_nb.py`가 만든 34줄, 채점 상태 없음), 세션 스크래치 `agent_nb/pilot_check.py`, 이 커밋 |
+
+**pilot 검토** (2026-10-09, 34회, 채점하지 않음). 수치는 시행 하나씩이다. 시각은 실행기의 수신 시각이다 `[측정]`.
+- **훅 위치.** 모든 주입 셀에서 정한 rank의 훅이 정한 종류로 한 번 발사됐다.
+  - 송신, 수신 QP 훅은 두 라이브러리 모두 301번째에서 발사됐고 그 rank의 반복 18(150회 중)에서 멈췄다.
+  - 2.32.3의 조용한 훅: 방송은 수신 완료 301번째(걸린 수신 4–6개), 반복 2. all-reduce는 403번째(걸린 수신 1개), 반복 100–101.
+  - 다중 요청 복구의 조용한 훅은 통신기 준비 뒤 64–69 ms에 발사됐다.
+  - 모두 검사하는 반복 안이다.
+  - kill은 rank 0을 띄우고 5.0 s 뒤 요청했고, ssh 명령은 246–250 ms에 돌아왔다(5회). 그때 생존 rank는 41 658–44 641회를 마쳤다.
+- **파서.** 두 라이브러리의 WARN 줄 종류를 모두 모아 보았다. 3.1의 정규식이 읽는 줄 밖에는 예상하지 못한 경고(비동기 이벤트, RAS)가 없었다.
+  - 상태 번호는 2.32.3 원본 줄(`IBV_WC_WR_FLUSH_ERR(5)`, `IBV_WC_RETRY_EXC_ERR(12)`), 2.32.3 복원력 INFO 줄, 2.23.4 원본 줄, 다중 요청
+    복구 줄에서 모두 읽혔다.
+  - 버전 줄, 단일 장치 경고(`fo`, `forec` 14회 모두 두 rank. 기본 설정은 rank마다 4줄, 1채널은 2줄), 복원력과 recovery 설정 줄이 설정대로
+    나왔다.
+- **2.32.3**(`off`, `rec`, `fo`, `forec`, 21회). 소스 예측과 모두 맞았다.
+  - 송신 QP: rank 0이 훅 뒤 0.036–0.199 ms에 ncclRemoteError를 받았다(4회). `off`와 `rec`은 원본 오류 CQE 줄과 WR_FLUSH_ERR(5)를 남겼다.
+    `fo`와 `forec`은 그 줄 없이 치명 판정 줄을 남겼다. rank 1은 오류를 받지 못하고 실행기의 유예 뒤에 끝났다.
+  - 수신 QP: rank 1이 0.027–0.047 ms에 ncclRemoteError를 받았다(3회). rank 0은 3 593–3 667 ms 뒤 RETRY_EXC(12)로 오류를 받았다.
+  - 조용한 수신 QP: rank 1 자신이 0.033–0.159 ms에 오류를 받았다(6회). 방송에서는 rank 0도 3 591–3 684 ms 뒤 RETRY_EXC를 받았다.
+    all-reduce에서는 rank 0이 오류 없이 유예 뒤에 끝났다.
+  - kill: 생존 rank가 kill 요청 뒤 12 243–12 250 ms에 TIMEOUT으로 끝났고 오류는 없었다(3회).
+  - 복원력 동작 줄(장치 실패 표시, QP 교체, 확인 읽기, port recovery)은 21회 모두 0이다.
+  - `ncclCommAbort`는 2.32.3에서 부른 rank 로그 22개 모두 SUMMARY 뒤 524–553 ms에 돌아왔다. 2.23.4에서는 7개 모두 감시 시간에 끝났다.
+- **다중 요청 복구**(10회). 아래 한 셀을 빼고 소스 예측과 맞았다.
+  - 켬: 송신, 수신 QP 모두 투명하게 복구했다(복구 시간 2.762 ms, 2.581 ms).
+  - 켬, 조용한 방송: rank 1은 알리지 않고 비웠다. rank 0은 훅 뒤 3 591 ms에 RETRY_EXC를 받아 2.116 ms에 복구했고 투명했다.
+  - 켬, 조용한 all-reduce: 두 rank가 0.3 ms 차이로 TIMEOUT으로 끝났다.
+  - 켬, kill: FIN으로 kill 요청 뒤 295 ms(ssh 명령이 돌아온 뒤 49 ms)에 오류를 받았다.
+  - 끔, 송신 QP: rank 0이 0.076 ms에 오류를 받았다.
+  - 끔, kill: TIMEOUT으로 끝났다.
+- **예측과 어긋난 셀: `rqp@s2off`**(다중 요청 복구 끔, 수신 QP 오류).
+  - rank 1은 훅 뒤 0.024 ms에 ncclRemoteError를 받았다(S7의 내용은 맞음).
+  - 그런데 rank 0은 오류 없이 반복 18을 마쳤고, 결과 버퍼 4 194 304개 중 524 288개가 틀렸다(첫 위치 3 670 016, 받은 값 2741, 맞는 값
+    2485). 이 MISMATCH 줄은 훅 뒤 633 ms에 왔다.
+  - 그 뒤 rank 0은 훅 뒤 3.6 s에 RETRY_EXC 경고를 남겼고, 두 rank의 abort는 돌아오지 않았다.
+  - 처음 예측(S7의 `outcome == "ERROR"`, I1의 "MISMATCH 없음")은 2.23.4의 오류 뒤 동작을 읽지 않고 세운 것이었다. 소스를 다시 읽어 1절
+    8번으로 설명했다 `[소스, 추론]`. 2.23.4의 진행 스레드는 오류 뒤에도 돈다. rank 1이 abort하면 그 커널이 받지 못한 데이터를 기다리지
+    않고 넘어간다. 그래서 rank 1의 멀쩡한 송신 연결로 덜 만든 데이터가 rank 0에 간다. 2.32.3의 같은 셀 3회는 rank 0이 3.6 s 뒤 RETRY_EXC
+    오류로 끝났고 틀린 결과가 없었다. 2.32.3의 진행 스레드가 첫 오류에서 멈추는 것과 맞는다.
+  - 이 설명은 소스와 시행 하나에서 이끈 것이다. 틀린 값이 rank 1의 어느 버퍼에서 왔는지는 확인하지 않았다 `[미확인]`.
+- **장애 없는 실행**(실행 하나씩). 실행 순서는 `off`, `fo`, `forec`, `s2on`, `s2off`였다.
+  - 64 KiB: 0.0551, 0.0556, 0.0578, 0.0510, 0.0515 ms.
+  - 16 MiB: 3.0846, 3.1033, 3.2505, 3.2934, 3.2314 ms.
+  - `forec`가 `fo`보다 4.0 %(64 KiB), 4.7 %(16 MiB) 느려 O3의 2 %를 넘었다. 소스에서는 두 설정의 데이터 경로 차이를 찾지 못했다
+    (1절 2번, 3.3의 O3 근거) `[소스]`. 16 MiB 값은 실행 순서를 따라 대체로 커졌다. 실행 하나로는 흐름과 효과를 가를 수 없다 `[추론]`.
+    O3는 그대로 두고 이 의문을 적는다.
+- **기타.** 다중 요청 복구의 복구 시간(2.762, 2.581 ms)은 S2의 범위(1.8–3.0 ms) 안이다. 다만 WARN 수준이던 최종 빌드의 2.152–2.400 ms보다
+  위쪽이다. 이 셀은 INFO로 돈다. S2는 그대로 둔다.
+
+**pilot 뒤 바꾼 것**(태그 전, 2026-10-09).
+
+| 무엇을 | 근거가 된 pilot 관측 | 바꾸지 않은 것 |
+|---|---|---|
+| 1절 8번, 2절 H7과 질문 6, 예측 S9(`rqp@s2off`: rank 1의 오류 뒤 rank 0이 오류 없이 틀린 결과로 마침) 추가 | `rqp@s2off`의 MISMATCH. 2.23.4의 `proxy.cc` 894–899행과 `prims_simple.h` 128–133행을 다시 읽음 | S9의 기준(≥4/5)은 시행 하나에 맞추지 않고, 소스로 정해지는 순서(rank 1의 오류가 먼저)를 담았다 |
+| S7: `outcome == "ERROR"` 조건을 뺐다 | 같은 시행. 결과 분류는 MISMATCH를 먼저 매기므로, rank 1의 오류(S7의 내용)와 rank 0의 결과(S9)를 나누었다 | rank 1의 1 s 안 오류, 상태 5, 복구 없음, ≥4/5 |
+| I1: `rqp@s2off`와 `slar@s2on`을 셀에서 뺐다(34개에서 32개로) | `rqp@s2off`는 S9로 옮겼다. `slar@s2on`은 같은 abort 경로가 TIMEOUT 뒤에 열릴 수 있어(rank 1이 먼저 시간 초과하면) S5와 결과 분류에 맡겼다. pilot의 `slar@s2on`에는 틀린 결과가 없었다 | 나머지 32개 셀의 "MISMATCH 0" |
+| 3.1 `outcome`: TIMEOUT 뒤의 MISMATCH는 결과 분류에 넣지 않는다(`mism_pre_to`). 열 `mism_r<r>`, `dt_mism_r<r>`, `kill_rtt_ms` 추가([rows_nb.py](rows_nb.py)) | 드라이버는 TIMEOUT 뒤 abort하므로 하네스의 끝내는 방식이 틀린 결과를 만들 수 있다. S5의 기준 글은 그대로 두고 근거에 이 정의를 적었다 | 다른 열의 정의 |
+| 반복 수: 2.32.3의 새 장애 셀을 모두 10회로(`fo`, `forec`의 송신, 수신 QP는 원래 10회), 장애 없는 셀을 10회로. 기준을 B1–B4, F3, F4는 ≥4/5에서 ≥9/10으로, O5는 5/5에서 10/10으로 맞췄다([score.py](score.py)의 `PLANNED`, [hold.sh](hold.sh)의 H1–H15) | pilot 34회의 두 hold는 실행 5.5분, 잠금과 유휴 확인을 넣어 6.7분이었다(추정 약 12분). 늘린 본 실행이 약 65분으로 1.5시간 안이다. 장애 없는 실행은 실행 하나의 차이가 4.7 %까지 나서, 키마다 실행을 늘려 중앙값의 잡음을 줄인다 | 기준을 늦춘 예측은 없다. 대조와 재현 셀(`rec`, `s2on`, `s2off`)은 5회 그대로 |
+| 5절: sunny의 커널과 포트, 배포 확인 | hold 스냅숏, `deploy_check.txt` | |
+| 그대로 둔 예측: O3 | `forec`가 `fo`보다 4.0 %, 4.7 % 느림(실행 하나) | 소스로 설명하지 못해 그대로 두고 의문을 위에 적었다 |
 
 ## 13. 사전 등록 이후 변경
 
@@ -438,10 +522,13 @@ pilot은 따로 34회다(셀 키마다 1회, 9절).
 
 ## 14. 원자료와 결과표
 
-아직 없다 `[미확인]`.
+본 실행은 아직 없다 `[미확인]`.
 
 | 무엇 | 경로 또는 Release 자산 | n |
 |---|---|--:|
+| pilot 시행별 표(3.1의 열, 채점 안 함) | [results/20261009_pilot/trials_pilot.csv](results/20261009_pilot/trials_pilot.csv) | 시행 34 |
+| pilot 원시 파일(시행 로그, meta, hold 출력, 스냅숏) | `results/20261009_pilot/`(커밋하지 않음). Release 예정 | 시행 34, hold 2 |
+| 배포 확인 | [deploy_check.txt](deploy_check.txt) | |
 
 ## 15. 결과 요약
 
