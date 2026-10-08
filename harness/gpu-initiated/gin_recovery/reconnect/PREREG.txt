@@ -1,0 +1,9 @@
+Pre-registration of gin-reconnect, 2026-10-08 10:35:21 +0900, before any measured run of this study.
+sha256 of the fixed prediction file:
+5f9b8508b814a4c67855b04580713b18cd22d998c454ce97fd9970d6e61d909a  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/gin-reconnect-v1 (sections 2, 3, 7, 8).
+The scoring fields, log-line formats, decline texts, cell keys (cell@build) and the acceptance grammar (that of
+../s2_close/EXPERIMENT.md 3.2) are fixed in EXPERIMENT.md section 3.
+The predictions come from the gin-s2-close library tree (../s2_close/gin_transparent_s2r.diff on NCCL v2.32.3-1), the
+reconnect design of EXPERIMENT.md section 9, and the gin-s2-close raw data (Release data-20261007); no code for this
+study was written or built and nothing was run on the cluster before this file.
