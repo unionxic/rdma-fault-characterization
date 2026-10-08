@@ -140,8 +140,12 @@ def row(stem_path):
     t_kill = fnum(meta.get("t_kill_req"))
     t_fault = t_kill if t_kill is not None else t_inj
     r["t_fault"] = "" if t_fault is None else "%.6f" % t_fault
-    # application-visible errors (the driver's lines), timeouts, summaries
+    t_kd = fnum(meta.get("t_kill_done"))
+    r["kill_rtt_ms"] = ms(t_kd, t_kill)   # the ssh round trip of the kill command; the kill lands inside it
+    # application-visible errors (the driver's lines), timeouts, wrong results, summaries
     first_err = {}
+    t_to_all = [t for rk in (0, 1) for t, l in L[rk] if "TIMEOUT after" in l]
+    t_first_to = min(t_to_all) if t_to_all else None
     for rk in (0, 1):
         err = [(t, l) for t, l in L[rk] if RE_ERR.search(l) or RE_NK.search(l)]
         if err:
@@ -159,6 +163,8 @@ def row(stem_path):
             r[f"err_r{rk}"] = r[f"errcode_r{rk}"] = r[f"dt_err_r{rk}"] = ""
         to = [t for t, l in L[rk] if "TIMEOUT after" in l]
         r[f"dt_to_r{rk}"] = ms(to[0] if to else None, t_fault)
+        mi = [t for t, l in L[rk] if "MISMATCH" in l]
+        r[f"dt_mism_r{rk}"] = ms(mi[0] if mi else None, t_fault)
         st = ""
         for _, l in L[rk]:
             for rx in RE_STATUS:
@@ -178,10 +184,15 @@ def row(stem_path):
     rec = [float(RE_S2REC.search(l).group(1)) for rk in (0, 1) for _, l in L[rk] if RE_S2REC.search(l)]
     r["s2_rec"] = sum(1 for rk in (0, 1) for _, l in L[rk] if "[FAULT-RECOVERY2]" in l and "comm: recovered" in l)
     r["s2_rec_ms"] = "%.3f" % rec[0] if rec else ""
+    # wrong results received before the first TIMEOUT line of either rank. After a TIMEOUT the driver calls
+    # ncclCommAbort; an aborting kernel stops waiting and may hand its peer unfinished data (EXPERIMENT.md 1, 12), so a
+    # MISMATCH after a timeout is a product of the harness's own ending and does not set the outcome
+    r["mism_pre_to"] = sum(1 for rk in (0, 1) for t, l in L[rk]
+                           if "MISMATCH" in l and (t_first_to is None or t < t_first_to))
     # outcome (EXPERIMENT.md 3.1)
     ok_all = (r["rc0"] == "0" and r["rc1"] == "0" and r["ok_r0"] != "" and r["ok_r0"] == r["iters_r0"] and
               r["ok_r1"] != "" and r["ok_r1"] == r["iters_r1"])
-    if r["mism"] > 0:
+    if r["mism_pre_to"] > 0:
         r["outcome"] = "MISMATCH"
     elif ok_all:
         r["outcome"] = "TRANSPARENT"
