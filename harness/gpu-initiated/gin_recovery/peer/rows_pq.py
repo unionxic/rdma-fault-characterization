@@ -47,6 +47,8 @@ Two-rank columns (_r<r> for rank r = 0, 1):
   rdv_r*, rdv_rejected_r*, rdv_foreign_r0, rdv_decoy_r1   kv of the verified rendezvous (empty with an older driver)
   decoy_conns, decoy_bytes  <stem>_decoy.out
   port, port_tries, port_skipped, occupy_port, occupy_skipped, decoy_port   meta (runner)
+  end_wait_r*               GIN_TS_END_WAIT_S in the rank's environment (meta r<r>env; the ACK-race cells' responder
+                            stays that long after its kernel, added after the pilot), "" when unset
 N-rank columns (sums over the ranks unless _r<r>):
   n_pq_on                   ranks with a START line
   n_uapeer, uapeer          UAPEER lines; "R-P" pairs (list)
@@ -219,6 +221,10 @@ def extra_pq2(stem):
         else:
             o["rdv_decoy_r1"] = k.get("rdv_decoy", "")
     o["n_rec_any"] = n_rec
+    meta = kvfile(stem + "_meta.txt")
+    for r in (0, 1):
+        m = re.search(r"GIN_TS_END_WAIT_S=([\d.]+)", meta.get(f"r{r}env", "") or "")
+        o[f"end_wait_r{r}"] = m.group(1) if m else ""
     return common(stem, o)
 
 

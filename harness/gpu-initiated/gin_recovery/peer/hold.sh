@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # gin-peer holds (each <= 15 min; each inside ../../common/cluster_run.sh -w 10800, see chain.sh).
-# usage: hold.sh <resultsdir> <P0|P1|H1|...|H8|fill:<subdir>:<cell>@<build>:<n>:<start>[,...]>
+# usage: hold.sh <resultsdir> <P0|P1|P2|H1|...|H8|fill:<subdir>:<cell>@<build>:<n>:<start>[,...]>
 # Trial folders under <resultsdir>: two-rank trials in <build>/ (hq/, hf/, hqp/, hfp/), N-rank trials in mr_<lib>/
-# (mr_hq/, mr_hf/). P0 and P1 are the pilot (never scored; chain.sh writes them into their own results folder).
+# (mr_hq/, mr_hf/). P0, P1 and P2 are pilots (never scored; chain.sh writes them into their own results folder).
 # Before and after every hold: GPU users and compute mode of both nodes; the full mlx5 kernel lines of both nodes
 # (mlx5_<tag>_<node>.txt); the count of mlx5 command-error lines; rain's mlx5_1 firmware-command counters (debugfs,
 # read-only). New mlx5 lines go to mlx5_new_<hold>.txt. A new command-error line or a growth of the firmware-command
@@ -52,6 +52,9 @@ case "$H" in
     for x in pq_repost_r1_b pq_ackrace_f1_b pq_ackrace_f1r1_b pq_copystall_shrink_b; do c $x hq; c $x hf; done
     for x in hd_fwslow_f1_b pq_copystall1_shrink_b pq_rdv_b f1_b; do c $x hq; done
     c lat_4k hqp; c lat_4k hfp ;;
+  P2)  # second pilot after the first (not scored): the two ACK-race cells changed after P0 (the responder now stays
+       # 12 s; EXPERIMENT.md 12), once per build
+    for x in pq_ackrace_f1_b pq_ackrace_f1r1_b; do c $x hq; c $x hf; done ;;
   P1)  # pilot, four ranks (not scored): every new four-rank cell and its control once
     c mr4_kill3_peer hq; c mr4_kill3_peer hf
     c pq4_fwslow hq; c pq4_fwslow hf

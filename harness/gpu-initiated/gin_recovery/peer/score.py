@@ -65,6 +65,8 @@ KNOBS2 = {"pq_repost_r1_b": {(1, "hk_badrepost"): "1"}, "hd_repost_f1_b": {(0, "
           "hd_fwslow_f1_b": {(0, "hk_fwdelay"): "8000@commit"},
           "pq_copystall_shrink_b": {(0, "hk_copystall"): "4000"}, "pq_copystall1_shrink_b": {(1, "hk_copystall"): "4000"}}
 MUTED = {"pq_ackrace_f1_b": 0, "pq_ackrace_f1r1_b": 1}  # the rank whose helper sockets are muted (test switch)
+# after the pilot: the ACK-race cells' responder (the other rank) stays GIN_TS_END_WAIT_S=12 s before tearing down
+LINGER = {"pq_ackrace_f1_b": (1, "12"), "pq_ackrace_f1r1_b": (0, "12")}
 FW_CELLS = {"hd_fwslow_f1_b", "pq4_fwslow"}
 
 LABEL = {
@@ -114,7 +116,8 @@ EXCL_LABEL = {"bind": "드라이버 랑데부 포트 bind 실패", "no_fault": "
               "fw_overrun": "펌웨어 명령 하나가 NCCL_GIN_TS_FW_MS를 넘음(이 셀의 주제가 아님)",
               "config_build": "설정 확인 실패: 빌드 시작 줄이 빌드와 다름", "config_ts_off": "설정 확인 실패: 투명 복구 시작 줄 없음",
               "config_no_ua": "설정 확인 실패: abort 단어 줄 없음", "config_knobs": "설정 확인 실패: 시험 스위치 줄이 셀과 다름",
-              "config_mute": "설정 확인 실패: 끊김 줄이 셀과 다름", "surplus": "계획 수를 넘은 시행"}
+              "config_mute": "설정 확인 실패: 끊김 줄이 셀과 다름",
+              "config_linger": "설정 확인 실패: 응답 쪽의 끝 대기(GIN_TS_END_WAIT_S)가 셀과 다름", "surplus": "계획 수를 넘은 시행"}
 
 
 def num(x):
@@ -159,6 +162,8 @@ def status2(r):  # two ranks
                                                                          "n_fwold_r1", "rs_fw_overruns_r0", "rs_fw_overruns_r1")):
         return "fw_overrun"
     # ---- configuration (a failure here stops the block)
+    if cell in LINGER and str(r.get(f"end_wait_r{LINGER[cell][0]}") or "") != LINGER[cell][1]:
+        return "config_linger"
     ranks = (0,) if cell in KILL_R1 else (1,) if cell in KILL_R0 else (0, 1)
     for rk in ranks:
         hd_on, prod, hf_on = str(r.get(f"hd_on_r{rk}")), str(r.get(f"prod_r{rk}")), str(r.get(f"hf_on_r{rk}"))
