@@ -6,12 +6,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `PREREGISTERED` |
+| 상태 | `RUNNING` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-08 |
 | 기준 브랜치와 커밋 | `exp/gin-pair-check` @ `613003e9` (master) |
 | 사전 등록 태그 | `prereg/gin-pair-check-v1` (상태를 `PREREGISTERED`로 바꾼 바로 그 커밋) |
-| 마지막 갱신 | 2026-10-08 13:51, 사전 등록 |
+| 마지막 갱신 | 2026-10-08 14:31, 본 실행 H1–H4 끝, 채우기 1회 대기 |
 
 표시: `[측정]` 원자료에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -230,7 +230,7 @@ Python의 산술과 비교다(`../pair_reset/EXPERIMENT.md` 3.2절과 같음). �
 | GPU와 CUDA | rain Quadro RTX 5000(sm_75), sunny RTX A4000(sm_86), PeerMappingOverride=1, CUDA 12.8 | gin-s2-close 5절 |
 | GIN 문맥 | 사용자 devComm의 GDAKI 문맥 하나에 GIN 문맥 4개, 문맥마다 상대 QP 1개 | `[측정]` gin-pair-reset 5절 |
 | 기준 빌드 `pr`, `prd` | libnccl `51c2426c`, 드라이버 `d4b1f082`, `4926edee` | `[측정]` 2026-10-08 배포 때 두 노드 같음(`../pair_reset/deploy_check.txt`) |
-| 이 실험의 빌드 `pc`, `pcd` | libnccl md5와 배포 확인 | `[미확인]` 빌드 전. 배포 때 기록 |
+| 이 실험의 빌드 `pc`, `pcd` | libnccl `93d9ffeed6d30e6467a3c5474035fd61`(두 번들 같음). `pc` 드라이버 `d4b1f082`(`pr`과 같은 파일), `pcd` 드라이버 `4926edee`(`prd`와 같은 파일). 변경분 [pc_layer.diff](pc_layer.diff)(md5 `76ae7483`), pristine 기준 전체 diff [gin_transparent_pc.diff](gin_transparent_pc.diff)(md5 `a22f091d`) | `[측정]` 2026-10-08 배포 때 두 노드 md5 같음, 기존 번들 24개 파일 md5 그대로([deploy_check.txt](deploy_check.txt)). pristine v2.32.3-1에 전체 diff를 적용하면, 그리고 `pr` 전체 diff에 변경분을 더하면 빌드 트리와 같다 `[측정]`([make_diff_pc.sh](make_diff_pc.sh)) |
 
 ## 6. 변수
 
@@ -421,7 +421,7 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 클러스터 시간�
   QP 상태와 에폭, 문맥 1의 창 안 반복, Commit과 라운드 시간, 투명 여부다.
 - [ ] 다른 에이전트가 `pc_layer.diff`를 읽고 리뷰했다.
 - [ ] smoke와 제외 시행이 결과에 섞이지 않았다.
-- [ ] 새 빌드의 md5, 전체 diff, pristine + diff 확인 결과를 5절에 적었다.
+- [x] 새 빌드의 md5, 전체 diff, pristine + diff 확인 결과를 5절에 적었다.
 - [ ] 원자료를 Release에 올리고 `DATA.md`에 적었다.
 - [ ] hold 전후 mlx5 스냅숏에 새 명령 오류가 없었거나, 있었다면 그 줄의 내용을 12절에 적었다.
 
@@ -429,9 +429,9 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 클러스터 시간�
 
 - [x] 질문, 가설, 셀 작성 (`DRAFT`)
 - [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
-- [ ] 코드 변경, 빌드, 배포
-- [ ] `cells.sh`, `hold.sh`, `chain.sh`, `rows_pc.py`, `score.py`
-- [ ] smoke 실행(채점 제외)
+- [x] 코드 변경, 빌드, 배포
+- [x] `cells.sh`, `hold.sh`, `chain.sh`, `rows_pc.py`, `score.py`
+- [x] smoke 실행(채점 제외)
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 채점 (`QA`)
 - [ ] 독립 재계산과 코드 리뷰
@@ -445,7 +445,20 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 클러스터 시간�
 | 2026-10-08 | gin-pair-reset의 결과표와 코드 리뷰에서 기준 수치를 다시 셈 `[측정]`. `f3_b@pr` 5회는 두 rank 에폭 `[2,0,0,0]`, `qps=1`. `pr_dual_f1c0_b@prd` 10회의 시작 쪽 Commit 743–785 µs(중앙값 768), 라운드 전체 2 934–3 093 µs(중앙값 3 013). 범위 충돌 rank 1 재실행 Commit 3 612–3 787 µs와 에폭 `[4,2,2,2]`(코드 리뷰 항목 5) | `../pair_reset/results/20261008/trials_scored.csv`, `../pair_reset/qa/code_review.md` |
 | 2026-10-08 | 코드를 읽고 설계를 정함 `[추론]`. 응답 쪽이 Prepare 전에 거절하면 두 rank가 다른 범위로 Prepare한 상태가 생기지 않으므로, 넓혀서 답하기보다 거절과 재실행을 택했다 | 9절 |
 | 2026-10-08 | 사용자가 이 후속 실험을 승인 | |
-| 2026-10-08 13:51:48 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/gin-pair-check-v1` |
+| 2026-10-08 13:51:48 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/gin-pair-check-v1`, 커밋 `27edc62c` |
+| 2026-10-08 13:52–13:55 | 검사 계층 작성(`gin_host_gdaki.cc` 한 파일), 증분 빌드(다시 컴파일된 파일은 `gin_host_gdaki.cc`와 버전 표시뿐). libnccl `93d9ffee`. 전체 diff로 pristine에서 트리 재현 확인 | [build_pc.sh](build_pc.sh), [make_diff_pc.sh](make_diff_pc.sh), [pc_layer.diff](pc_layer.diff), [gin_transparent_pc.diff](gin_transparent_pc.diff) |
+| 2026-10-08 13:55 | 두 노드의 새 디렉터리 `pc/`, `pcd/`에 배포. 두 노드 md5가 소스와 같고, 기존 번들 24개 파일(`pr/`, `prd/` 포함)의 md5가 배포 전후 같다 `[측정]`. 확인 출력은 파일로만 받았다 | [deploy_check.txt](deploy_check.txt), [deploy_pc.sh](deploy_pc.sh) |
+| 2026-10-08 13:56:57–13:58:11 | smoke(`gpc-H0`, 잠금 13:56:26), 14회, 채점 제외. 모두 투명했다 `[측정]`. 8절의 구현 결함 조건에는 하나도 걸리지 않았고, 훅 지연은 바꾸지 않았다. 셀별로 본 것은 아래와 같다 | `results/20261008_smoke/smoke/`, `hold_H0.out`, `mlx5_new_H0.txt` |
+| | `f3_b@pc` 2회: rank 1이 `not_rts=3`으로 거절, rank 0이 `reason=peer`로 전체 재설정, 두 rank QP 상태 `[3,3,3,3]`. 검사를 끈 대조: 좁혀지고 rank 1 QP 상태 `[3,6,6,6]` | 같음 |
+| | 응답 쪽 고장 2회: `not_rts=1`로 거절, 전체 재설정, 모두 RTS. 깨끗한 응답 쪽 2회: 좁혀짐, rank 1 검사 수락(`check_us` 230, 236), 에폭 `[2,0,0,0]`. 응답 쪽 스위치 끔: `reason=off`로 거절, 전체 재설정 | 같음 |
+| | 범위 충돌 2회: 사전 등록한 예측(E2)과 다르게 움직였다. rank 1은 충돌 뒤 rank 0의 문맥 0 REQ에 처음부터 응답하면서 9절 5번대로 검사를 했고, 자기 장애 QP(문맥 1, 범위 밖)가 ERR이라 거절했다(`not_rts=1`). rank 0은 전체로 다시 돌았고, rank 1이 다시 정한 문맥 1 라운드와 두 번째로 충돌해 rank 1이 전체 REQ에 응답했다. 두 rank 에폭 `[2,2,2,2]`, 모두 RTS, 투명 `[측정]`. 사전 등록한 설계(9절 2, 5번)를 그대로 따른 동작이고 8절의 구현 결함이 아니므로 코드를 바꾸지 않았다. 충돌 뒤 문맥 1 쌍만 돈다는 예측(E2)은 이 경로를 놓쳤다 `[추론]` | `results/20261008_smoke/smoke/pc_bidirf_conflict_b_n*`, [DEVIATIONS.md](DEVIATIONS.md) 2절 |
+| 2026-10-08 13:58:52 | 본 실행 시작(상태 `RUNNING`). H1–H4를 [chain.sh](chain.sh)로 차례로 잡는다(`cluster_run.sh -w 10800`, 태그 `gpc-H<k>`) | `results/20261008/chain.out` |
+| 2026-10-08 13:59:23–14:03:03 | H1(`gpc-H1`, 잠금 13:58:52): 지연 20회(`pc`와 `pr` 섞어서), 재현 셀 25회(로컬 QP 오류 셀 세 개, 끊김 없는 kill, 받는 쪽 abort 해제). 모두 예상한 결과(복구 셀 투명, 거절 셀 거절)였고 시작 실패 0 `[측정]`. mlx5 명령 오류 줄(rain 2, sunny 0)과 rain 펌웨어 명령 실패 수(31)는 전후가 같고 새 mlx5 줄은 0이다 | `results/20261008/lat/`, `results/20261008/rep_pc/`, `hold_H1.out`, `mlx5_new_H1.txt` |
+| 2026-10-08 14:04:08–14:07:29 | H2(`gpc-H2`, 잠금 14:03:37): 깨끗한 응답 쪽 10회와 `pr` 기준 5회(2:1로 섞어서), 응답 쪽 고장 10회, 응답 쪽 스위치 끔 5회. 시작한 시행은 모두 투명했다. 깨끗한 응답 쪽 9회는 좁혀지고 rank 1이 검사 뒤 수락했다. 응답 쪽 고장 10회는 모두 rank 1이 `not_rts=1`로 거절하고 rank 0이 전체로 다시 돌았다. 스위치 끔 5회는 모두 `reason=off` 거절 뒤 전체 재설정이었다 `[측정]`. 깨끗한 응답 쪽 1회(n10)가 드라이버 랑데부 포트 충돌로 시작하지 못해 제외, 나중에 채운다. mlx5 명령 오류 줄(rain 2, sunny 0)과 rain 펌웨어 명령 실패 수(31)는 전후가 같고 새 mlx5 줄은 0이다 | `results/20261008/dual/`, `hold_H2.out`, `mlx5_new_H2.txt` |
+| 2026-10-08 14:10:07–14:13:56 | H3(`gpc-H3`, 잠금 14:09:36): `f3_b@pc` 10회와 검사 끈 대조 5회(2:1로 섞어서), 두 문맥 재현 셀 10회. 모두 투명했다. `f3_b@pc` 10회는 모두 rank 1이 `not_rts=3`으로 거절하고 rank 0이 전체로 다시 돌았으며, 두 rank QP 상태 `[3,3,3,3]`이었다. 검사 끈 대조 5회는 모두 좁혀지고 rank 1 QP 상태 `[3,6,6,6]`이었다 `[측정]`. 시작 실패 0. mlx5 명령 오류 줄(rain 2, sunny 0)과 rain 펌웨어 명령 실패 수(31)는 전후가 같고 새 mlx5 줄은 0이다 | `results/20261008/f3/`, `results/20261008/dual/`, `hold_H3.out`, `mlx5_new_H3.txt` |
+| 2026-10-08 14:16:35–14:17:14 | H4(`gpc-H4`, 잠금 14:16:04): 범위 충돌 10회. 모두 투명했고 거절은 없었다. 10회 모두 smoke와 같은 경로였다. rank 1이 충돌 뒤 rank 0의 문맥 0 REQ를 `not_rts=1`로 거절했고, rank 0이 전체로 다시 돌았다. rank 1이 다시 정한 문맥 1 라운드는 rank 0의 전체 REQ와 두 번째로 충돌했고(충돌 줄 2개), rank 1이 전체 REQ에 응답했다. 두 rank 에폭 `[2,2,2,2]`, 모두 RTS, `r1_q4_in_stall` 10/10이 1 `[측정]`. mlx5 명령 오류 줄(rain 2, sunny 0)과 rain 펌웨어 명령 실패 수(31)는 전후가 같고 새 mlx5 줄은 0이다 | `results/20261008/conflict/`, `hold_H4.out`, `mlx5_new_H4.txt` |
+| 2026-10-08 14:17:31 | 채우기 hold(`gpc-fill`, `fill:dual:pc_dual_f1c0_b@pcd:1:11`, 깨끗한 응답 쪽 셀 n11 하나)를 [chain.sh](chain.sh)로 시작했으나, 잠금을 얻기 전에 실행 에이전트가 실수로 멈춰 끊겼다. 돈 시행은 없다 `[측정]`(`hold_fill.out` 빈 파일, `cluster_run.log`에 `gpc-fill` 줄 없음) | `results/20261008/chain.out`, [DEVIATIONS.md](DEVIATIONS.md) 4절 |
+| 2026-10-08 14:28–14:31 | 다른 세션이 이어받음. rain과 sunny에 남은 `gin_ts2` 프로세스 없음, `STOP_mlx5` 없음, 2, 3, 7, 8절과 `predictions.csv`(sha256 `a8a4b046`)는 태그 그대로 `[측정]`. 8절 제외 규칙을 `score.py`의 `status_of` 그대로 다시 적용했다(결과 열은 보지 않음). 따로 셀 시행은 `dual/pc_dual_f1c0_b_n10`(랑데부 포트 충돌) 하나이고, 나머지 17개 셀은 계획 수만큼 돌았고 따로 셀 시행이 없다 `[측정]`. 채우기를 같은 명령으로 다시 시작하려 했으나 클러스터 실행 권한 확인에서 막혀 시작하지 않았다. 상태는 `RUNNING` 그대로다 | [DEVIATIONS.md](DEVIATIONS.md) 4절 |
 
 ## 13. 사전 등록 이후 변경
 
@@ -453,6 +466,7 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 클러스터 시간�
 
 | 날짜 | 무엇을 | 이유 | 영향 범위 | 커밋 |
 |---|---|---|---|---|
+| 2026-10-08 | 사전 등록 뒤 정한 구현 세부, smoke에서 본 것, 본 실행 중 생긴 일(채우기 hold가 잠금 전에 끊김, 채우기 시행이 별도 hold에서 돎) | 각 행은 [DEVIATIONS.md](DEVIATIONS.md)에 있다 | 가설, 예측, 판정식, 셀, 반복 수, 제외 기준은 그대로 | `DEVIATIONS.md`의 git 기록 |
 
 ## 14. 원자료와 결과표
 
