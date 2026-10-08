@@ -23,7 +23,10 @@ Columns (_r<r>: from rank r's log or kv):
   hog_first_start_rel_ms_r*, hog_last_start_rel_ms_r*, probe_done_end_r*, hog_running_at_end_r*
                              kv of the GPU-filling kernel and the copy probe (GIN_TS_HOG_MS, GIN_TS_HOG_PREALLOC,
                              GIN_TS_HOG_SLACK, GIN_TS_HOG_PROBE); probe_stuck is "none" or the comma-separated indices still
-                             running; hog_local_bytes only with GIN_TS_HOG_PREALLOC
+                             running; hog_local_bytes only with GIN_TS_HOG_PREALLOC. hog_first_start_rel_ms and
+                             hog_last_start_rel_ms are globaltimer minus the host's CLOCK_REALTIME at the launch call: they carry
+                             a constant offset per node (pilot: about 3 359 ms on rain, 3 673 ms on sunny), so only their
+                             difference (hog_start_spread_ms) and comparisons on the same node mean anything; no rule uses them
 """
 import os, re
 
