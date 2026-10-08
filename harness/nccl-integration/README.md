@@ -76,3 +76,4 @@ pipelined도 양쪽 모두 abort에서 멈췄다. 반복 측정은 작업 완료
 | `logs/historical/` | 옛 기록 문서(`HISTORICAL.md`): 폐기된 빌드의 09-17 기록. 이 패치의 증거가 아니다 |
 | `stage2/` | 다중 요청 복구(Stage 2) |
 | `perf/` | 작업 완료 시간과 장애 없는 오버헤드 |
+| [`builtin/`](builtin/README.md) | NCCL 2.32.3 내장 복원력(port failover, port recovery)과 다중 요청 복구의 비교(사전 등록) |

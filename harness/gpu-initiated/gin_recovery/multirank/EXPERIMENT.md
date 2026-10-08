@@ -579,7 +579,7 @@ LIB=hd bash $M/chain.sh $PWD/$M/results/<날짜> fill:<폴더>:<셀>:<수>:<시�
 - [x] 독립 재계산과 코드 리뷰
 - [x] 결과 정리, 원자료 릴리스
 - [x] 결론 확정 (`COMPLETE`)
-- [ ] PR: 본 세션이 네 실험 브랜치를 한 PR로 합친다(`DATA.md`, 상위 README와 함께)
+- [x] PR: 실험마다 PR로 합쳤다(이 실험 #52). `DATA.md`와 상위 README는 뒤의 문서 PR에서 갱신했다
 
 ## 12. 실행 기록 (시간순)
 
