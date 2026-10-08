@@ -106,18 +106,27 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
   - QP가 먼저 사라지면 마지막 ACK 뒤 3.51–3.76 s에 12/0x81이 왔다(159회).
   - 메모리 등록이 먼저 사라지면 0.38–3.51 ms에 10/0x88이 왔다(111회).
   - 살아 있는 상대도 같았다. 메모리 등록 해제는 0x88(90/90), QP 파괴는 0x81(20/20)이었다.
+- 측정: 혼잡 알림 처리 카운터는 재시도 초과와 상대 kill에서만 오르는 것처럼 보였지만(105/115), 혼잡이 아니라
+  재전송마다 오르는 카운터였다. 실제 혼잡 신호는 125회 모두 0이었고, 오류 없이 끝난 일시 장애에서도 올랐다(10/10).
+  그래서 원인 구분에 쓸 수 없다.
 
 **맞힌 것.**
 - 검출 시간은 미리 맞힐 수 있었다. 측정 전에 적은 예측이 처음 보는 설정 55회 중 52회에서 1.5 ms 안에
   맞았다.
 - 이번 캠페인에서 GIN 프록시의 상대 kill은 12/0x81이 아니라 10/0x88로 보였다. 예측(재시도 초과
   카운터가 오른다)은 틀렸지만, 위의 지우는 순서 규칙과는 맞는다.
+- 살아 있는 상대의 오판을 사전 등록하고 쟀다(125회, 예측 34줄 중 33줄 맞음).
+  - 데이터 경로는 프로세스 생존을 모른다. 응답 쪽 QP가 요청을 받을 수 없으면 프로세스가 살아 있어도 kill과 같은
+    12/0x81이 3.5–3.8 s 뒤에 왔다(55/55). QP가 멀쩡하면 프로세스가 멈춰 있어도 쓰기는 정상 완료했다(10/10).
+  - 탐지기는 프로세스가 아니라 제어 연결과 응답 시간을 본다. 살아 있는 상대가 제어 연결만 닫으면 "죽음"(10/10),
+    마감보다 오래 멈추면 "복구 불가"(20/20)로 판정됐다. 장애 없이 멈춘 상대는 아무도 알아채지 못했다(15/15).
+  - GIN 투명 복구도 같다. 관리망 소켓이 시간 초과로 닫히면 살아 있는 상대의 상대 QP 오류를 상대가 끊은 것으로
+    보고 거절했다(10/10).
 
-**한계.** 살아 있지만 준비가 안 된 상대를 죽었다고 잘못 판정하는 경우(오판)는 아직 재지 않았다.
+**한계.** 오판은 마감의 양쪽에 정지 시간 하나씩만 쟀다. 오판이 시작되는 경계 자체는 재지 않았다.
 원인을 가를 수 있는데 아무도 쓰지 않는 정보도 있다.
 - 주소 재구성 때 GID 변경 비동기 이벤트가 재시도 초과보다 3.5–3.7 s 먼저 왔다(29/29). 어느 스택도
   이 이벤트를 읽지 않는다.
-- 혼잡 알림 처리 카운터가 재시도 초과와 상대 kill에서만 올랐다(105/115). 이유는 확인하지 않았다.
 
 ## 규칙 4. 완료를 받지 않는 쪽은 장애를 모른다
 
@@ -133,6 +142,9 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
   받는 쪽 비동기 오류는 18/18 없었다.
 - 대조: 양방향 통신인 net_ib는 받는 쪽도 자기 수신 완료로 오류를 받았다(20/20).
 - NVSHMEM 장애 대응판에서는 시작 쪽이 별도 소켓으로 알려 줄 때만 받는 쪽이 원인을 안다.
+- 알려 주는 통로가 있으면, 받는 쪽 장치 대기까지 잇는 데는 abort 신호 하나면 된다. GIN 투명 복구에서 사용자
+  devComm에 abort 플래그를 이으니 거절 뒤 받는 쪽 abort가 1 s 안에 돌아왔다(20/20). 잇지 않으면 14.3 s 걸렸다(5/5).
+- 그 통로가 끊기면 받는 쪽은 다시 아무것도 모른다. 관리망 소켓이 끊긴 뒤의 거절에서 받는 쪽 비동기 오류는 0/10이었다.
 
 **한계.** 받는 쪽 QP의 상태 변화는 GIN에서 직접 재지 않았다.
 
@@ -152,8 +164,14 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
   - 더하기가 이미 실행된 경우를 강제로 만든 실행도 30/30 정확했다.
 - NVSHMEM 장애 대응판의 앞선 판은 실패한 QP의 fetch에서 옛 값을 오류 없이 돌려줬다(40회에 510,028개).
   모든 비트가 1인 표시값을 돌려주도록 바꾼 뒤에는 옛 값이 0개였다(38회).
+- NVSHMEM 투명 복구에서 응답 쪽이 실행한 수를 보고 fetch를 다시 보낼지 정했다(사전 등록). 실행되지 않은 fetch는 다시
+  보내 투명하게 끝났고(27/27), 이미 실행된 fetch가 있을 때만 거절했다(3/3). 그 거절을 끄고 다시 보내게 하면 실제로
+  두 번 적용됐다(2/2).
+- GIN 투명 복구는 다시 보낼 수 없는 읽기(get)가 낀 라운드를 성공으로 내보내지 않고 거절했다(10/10, 조용한 실패 0).
 
-**한계.** 이미 실행된 경우는 강제로만 만들었다. 실제 장애로는 일어나지 않았다.
+**한계.** 이전 판의 "이미 실행된 경우는 강제로만 만들었다"는 원자료와 달라 2026-10-07에 바로잡았다. 더하기까지 실행된
+라운드는 GIN 투명 복구에서 실제 장애로도 나왔다(1단계 14/30과 73/150, 2단계 21/30). NVSHMEM에서도 이미 실행된 fetch가 실제
+장애로 나왔다(3/10). 강제로만 만든 것은 "쓰기만 실행되고 더하기는 아직" 경우다. 읽기의 재전송은 아직 지원하지 않고 거절한다.
 
 ## 규칙끼리의 관계
 
@@ -179,7 +197,7 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
 ## 범위와 남은 확인
 
 - 노드 한 쌍, NIC 한 종류(ConnectX-6)에서 쟀다. 장애는 소프트웨어로 주입했다.
-- 규칙 3의 오판은 아직 재지 않았다.
+- 규칙 3의 오판은 마감 양쪽 한 점씩만 쟀다. 경계 자체는 재지 않았다.
 - 규칙 1은 스택 14개에 소스로 적용해 봤고, 그중 이 테스트베드에서 잴 수 있는 경로만 쟀다. 소스로만 예측한
   경로(UCX GPU의 지연 게시, rocSHMEM 등)는 재지 않았다.
 
@@ -189,9 +207,9 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
 |---|---|
 | 1 | [nvshmem_rootcause/README.md](harness/gpu-initiated/nvshmem_rootcause/README.md), [official380/README.md](harness/gpu-initiated/nvshmem_rootcause/official380/README.md), [cq380/README.md](harness/gpu-initiated/nvshmem_rootcause/cq380/README.md), [completion_contract/README.md](harness/gpu-initiated/completion_contract/README.md) |
 | 2, 4 | [propagation/README.md](harness/gpu-initiated/propagation/README.md), [LAYERS.md](harness/gpu-initiated/propagation/results/20261006_campaign/LAYERS.md), [REVIEW_20261006.md](harness/gpu-initiated/propagation/REVIEW_20261006.md) |
-| 3 | [teardown_order/README.md](harness/teardown_order/README.md), [ack_timeout/README.md](harness/ack_timeout/README.md), [stage2/README.md](harness/nccl-integration/stage2/README.md) |
-| 4 | [gin/README.md](harness/gpu-initiated/gin/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md) |
-| 5 | [gin_recovery/README.md](harness/gpu-initiated/gin_recovery/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md) |
+| 3 | [teardown_order/README.md](harness/teardown_order/README.md), [ack_timeout/README.md](harness/ack_timeout/README.md), [stage2/README.md](harness/nccl-integration/stage2/README.md), [live_peer/README.md](harness/live_peer/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md) |
+| 4 | [gin/README.md](harness/gpu-initiated/gin/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md) |
+| 5 | [gin_recovery/README.md](harness/gpu-initiated/gin_recovery/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md), [t1_close/README.md](harness/gpu-initiated/nvshmem_ft/t1_close/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md) |
 
 참고 문헌:
 - Mellanox Adapters Programmer's Reference Manual, Rev 0.40.
