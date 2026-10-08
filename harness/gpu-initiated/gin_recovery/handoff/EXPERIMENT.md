@@ -5,12 +5,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `DRAFT` |
+| 상태 | `PREREGISTERED` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-handoff` @ `692ff591`(태그 `prereg/gin-harden-v1`의 커밋. gin-harden의 실행기, 채점 함수, `hd` 소스를 그대로 쓰려고 그 위에서 시작) |
-| 사전 등록 태그 | 없음(메인 세션이 pilot을 돌린 뒤 `prereg/gin-handoff-v1`) |
-| 마지막 갱신 | 2026-10-09, pilot H0 뒤 예측 확정(사전 등록 커밋 전, 상태는 아직 `DRAFT`) |
+| 사전 등록 태그 | `prereg/gin-handoff-v1` (상태를 `PREREGISTERED`로 바꾼 바로 그 커밋) |
+| 마지막 갱신 | 2026-10-09 05:12, 사전 등록(pilot H0 뒤 예측 확정) |
 
 표시: `[측정]` 원자료에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -541,7 +541,7 @@ python3 score.py results/<날짜>
 - [x] 질문, 가설, 셀, 예측 초안 (`DRAFT`)
 - [x] 배포(메인 세션, 2026-10-09 04:50:54–04:51:18)
 - [x] pilot H0(메인 세션, 05:04:28–05:05:52, 채점 안 함), 결과로 고칠 것 고치기(12절)
-- [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
+- [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
 - [ ] 본 실행 H1–H4 (`RUNNING`)
 - [ ] 채점 (`QA`)
 - [ ] 독립 재계산과 코드 리뷰
@@ -566,6 +566,7 @@ python3 score.py results/<날짜>
 | 2026-10-09 05:04:28–05:05:52 | pilot H0(메인 세션, `bash chain.sh results/20261009_pilot H0`, 04:51:22에 대기 시작, 다른 실험의 hold 뒤 05:03:57에 잠금, 05:04:28에 유휴 확인, hold rc 0, chain 끝 05:05:54). 14회, 채점 안 함. mlx5 새 줄 0, 명령 오류 줄(rain 2, sunny 0)과 rain 펌웨어 명령 실패 수(31) 전후 같음, `gin-harden-` iptables 규칙 0, 모든 시행 `left=0`, STOP 파일 없음, CUDA 메모리 오류 줄 없음 `[측정]` | `results/20261009_pilot/`(hold_H0.out, chain.out, 스냅숏, 빌드별 시행 파일. 원자료는 Release 예정) |
 | 2026-10-09 | pilot 분석(`score.py`를 세션 스크래치의 사본에 계획 수 1로 돌림, 14회 모두 로그와 kv와 대조). 14회 모두 설정 확인 통과, 제외 0. 셀이 있던 예측 19개 모두 판정식 조건 1/1 `[측정]`. 셀별: shrink 셀 셋의 `r0rc=4`는 rank 1 kill로 장치 대기가 오류를 돌려준 때문이고(진행 195–199/400) shrink와 무관하다. `hd_shrink_b@hf` shrink 성공 17.3 ms, 넘김 줄 "raised for rank(s) 1", 새 통신기 1 rank, allreduce 확인 맞음 0.3 ms, 새 통신기 비동기 오류 없음, 부모는 shrink 뒤에도 `ncclRemoteError`, 새 통신기 해제 502.0 ms, abort 오류 없음. `@hfp` 같음(17.2 ms, WARN에 넘김 줄 없음). `@hd` shrink 0.0 ms에 `ncclRemoteError`. 스위치 끔 0.0 ms에 실패, 유지 줄 사유 `NCCL_GIN_SHRINK_HANDOFF=0`. devComm 먼저 없앰: 없애기 11.1 ms, shrink 성공 16.5 ms, 부모 비동기 오류가 사라짐(no error), allreduce 맞음. 죽음 판정 뒤 거절은 kill 1.54–1.64 ms 뒤(shrink 셀 다섯과 `f4_b`, n=6). GPU 가득 참: `hf_hog_f1_b`, `hf_hogslack_f1_b`(gin-harden 순서)는 41/120에서 거절, `hf_hogpre_f1_b`, `hf_hogpreslack_f1_b`(호출을 앞당김)는 120/120 투명(값은 3절 머리). `hf_hog_f1_b`에서 rank 0 감시가 "fault records are queued and the recovery helper is not running"으로 드러냈고 유지 줄 사유가 "a GIN error was raised without a peer". 4 KiB 지연 p50: `hfp`, `hdp`, `hd` 모두 10.69 µs(n=1씩) `[측정]` | 세션 스크래치 `hf_work/pilot/`(사본, `SCORE.md`, `trials_scored.csv`) |
 | 2026-10-09 | pilot 뒤 변경(태그 전). 예측: S3 상한 5 000 ms → 500 ms(pilot 16.5–17.3 ms). 다른 판정식, 셀, 반복 수, 제외 기준은 그대로. 열 설명: `hog_first_start_rel_ms`, `hog_last_start_rel_ms`는 노드마다 일정한 시계 차(rain 3 358.6–3 358.7 ms, sunny 3 672.6 ms, 블록이 바로 시작한 셀 n=2씩)를 품으므로 판정에 쓰지 않는다고 적음. 그 차를 빼면 gin-harden 순서 셀의 첫 블록은 GIN 커널 시작 2 063.6–2 092.5 ms 뒤에 시작했고 각 rank의 GIN 커널 시간(2 064.0–2 093.6 ms)과 1.3 ms 안에서 맞는다(n=4 rank-시행) `[측정, 추론]`. 실행 스크립트, 라이브러리, 드라이버, 번들은 그대로. 확정한 `predictions.csv` sha256 `04ac4a66cb4c2ea64bafb9a412d49f0dbd3fff5d26c36fafeecb361ded88799a`(24줄) | [predictions.csv](predictions.csv), [rows_hf.py](rows_hf.py), [score.py](score.py) |
+| 2026-10-09 05:12:42 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/gin-handoff-v1` |
 
 ## 13. 사전 등록 이후 변경
 
