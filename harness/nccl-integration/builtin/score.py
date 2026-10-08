@@ -25,9 +25,11 @@ sys.path.insert(0, HERE)
 import rows_nb  # noqa: E402
 from cells import CELLS, KEYS, config_status  # noqa: E402
 
-# section 7: planned scored trials per cell key (overhead cells: runs)
+# section 7 (finalized after the pilot): the new 2.32.3 fault cells (off, fo, forec) and every fault-free cell 10,
+# the controls and the Stage 2 replications 5
 PLANNED = {k: 5 for k in KEYS}
-PLANNED.update({"sqp@fo": 10, "sqp@forec": 10, "rqp@fo": 10, "rqp@forec": 10})
+PLANNED.update({f"{c}@{g}": 10 for c in ("sqp", "rqp", "kill", "slbc", "slar") for g in ("off", "fo", "forec")})
+PLANNED.update({k: 10 for k in KEYS if k.startswith("ovh")})
 
 LABEL = {
     "B1": "2.32.3 기본: 송신 QP 오류가 rank 0에서 1 s 안에 ncclRemoteError로 올라옴(원본 오류 경로, WR_FLUSH_ERR)",
@@ -49,8 +51,9 @@ LABEL = {
     "S5": "다중 요청 복구(켬)의 256 KiB all-reduce 조용한 오류는 12 s 반복 제한까지 멈춤",
     "S6": "다중 요청 복구 끔: 송신 QP 오류가 rank 0에서 1 s 안에 ncclRemoteError, 복구 없음",
     "S7": "다중 요청 복구 끔: 수신 QP 오류가 rank 1에서 1 s 안에 ncclRemoteError, 복구 없음",
+    "S9": "다중 요청 복구 끔: rank 1이 오류를 받은 뒤 rank 0이 장애 난 all-reduce를 틀린 결과로 오류 없이 마침",
     "S8": "다중 요청 복구 끔: 상대 SIGKILL 뒤 생존 rank는 12 s 반복 제한까지 오류를 보지 못함",
-    "I1": "어느 셀의 어느 시행도 틀린 결과를 내지 않음(MISMATCH 없음)",
+    "I1": "rqp@s2off와 slar@s2on 밖의 어느 셀의 어느 시행도 틀린 결과를 내지 않음(MISMATCH 없음)",
     "O1": "장애 없는 16 MiB all-reduce: port failover가 rank 0 반복 시간 중앙값을 2 % 넘게 바꾸지 않음",
     "O2": "장애 없는 64 KiB all-reduce: port failover가 5 % 넘게 바꾸지 않음",
     "O3": "failover에 port recovery를 더해도 두 크기 모두 2 % 넘게 바뀌지 않음",

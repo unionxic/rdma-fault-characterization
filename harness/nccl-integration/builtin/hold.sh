@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # nccl-builtin holds (each <= 15 min; each inside ../../gpu-initiated/common/cluster_run.sh -w 10800, see chain.sh).
-# usage: hold.sh <resultsdir> <P1|P2|H1|...|H8|fill:<cell>@<cfg>:<n>:<start>[,...]>
-#   P1, P2 = pilot (results/<date>_pilot/, never scored); H1-H8 = main run (EXPERIMENT.md 9).
+# usage: hold.sh <resultsdir> <P1|P2|H1|...|H15|fill:<cell>@<cfg>:<n>:<start>[,...]>
+#   P1, P2 = pilot (results/<date>_pilot/, never scored); H1-H15 = main run (EXPERIMENT.md 9).
 # Trial folders under <resultsdir>: one per configuration (off/, rec/, fo/, forec/, s2on/, s2off/).
 # Before and after every hold: GPU users; the md5 of both bundles on both nodes; the RoCE port counters of both nodes;
 # the full mlx5 kernel lines of both nodes (mlx5_<tag>_<node>.txt); the count of mlx5 command-error lines; rain's
@@ -58,15 +58,18 @@ case "$H" in
   P2)  # pilot, part 2 (not scored): every silent-fault and kill cell key once
     inter 1 slbc@off slbc@fo slbc@forec slbc@s2on slar@off slar@fo slar@forec slar@s2on \
       kill@off kill@fo kill@forec kill@s2on kill@s2off ;;
-  H1)  # fault-free all-reduce time: 5 rounds over both sizes and the five configurations
+  # main run (EXPERIMENT.md 9, finalized after the pilot): every hold has at most 20 fault trials (wall cap 40 s each) or
+  # 50 fault-free runs (cap 15 s each), so a hold ends inside the 880 s bound even when every trial hits its cap
+  H1|H2)  # fault-free all-reduce time: 5 rounds over both sizes and the five configurations (10 runs per key in two holds)
     inter 5 ovh64k@off ovh64k@fo ovh64k@forec ovh64k@s2on ovh64k@s2off ovh16m@off ovh16m@fo ovh16m@forec ovh16m@s2on ovh16m@s2off ;;
-  H2)  inter 5 sqp@off rqp@off sqp@rec sqp@s2on ;;
-  H3)  inter 10 sqp@fo sqp@forec ;;
-  H4)  inter 10 rqp@fo rqp@forec ;;
-  H5)  inter 5 rqp@s2on sqp@s2off rqp@s2off kill@s2off ;;
-  H6)  inter 5 slbc@off slbc@fo slbc@forec slbc@s2on ;;
-  H7)  inter 5 slar@off slar@fo slar@forec slar@s2on ;;
-  H8)  inter 5 kill@off kill@fo kill@forec kill@s2on ;;
+  H3|H4)  inter 5 sqp@off sqp@fo sqp@forec ;;
+  H5)     inter 5 sqp@rec sqp@s2on sqp@s2off ;;
+  H6|H7)  inter 5 rqp@off rqp@fo rqp@forec ;;
+  H8)     inter 5 rqp@s2on rqp@s2off slbc@s2on slar@s2on ;;
+  H9|H10) inter 5 slbc@off slbc@fo slbc@forec ;;
+  H11|H12) inter 5 slar@off slar@fo slar@forec ;;
+  H13|H14) inter 5 kill@off kill@fo kill@forec ;;
+  H15)    inter 5 kill@s2on kill@s2off ;;
   fill:*)  # replacement trials (EXPERIMENT.md 8): fill:<cell>@<cfg>:<n>:<start>[,...]
     spec=${H#fill:}
     IFS=',' read -ra items <<< "$spec"
