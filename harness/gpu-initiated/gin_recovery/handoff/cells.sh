@@ -25,13 +25,26 @@ for ((k = START; k < START + N; k++)); do
              EXTRA_ENV="GIN_TS_BIDIR_FUSED=1 GIN_TS_RX_WAIT_S=60" \
              R0_ENV="GIN_TS_SHRINK=1 GIN_TS_HO_WAIT_S=3 GIN_TS_POST_ABORT_WAIT_S=10 NCCL_GIN_SHRINK_HANDOFF=0" \
              run F4 blocking n$k "$L" 400 16384 ;;
-    # the GPU full of an application kernel (hd_hog_f1_b of ../harden/cells.sh) with the copy probe on both ranks; rank 0
-    # then shrinks to itself (rank 1 alive): the watchdog surface of the stalled helper names no peer, so the hand-off
-    # must keep the stock answer
+    # the application's "devComm first" way around the stock check (switch off): hd_shrink_b plus, on rank 0,
+    # NCCL_GIN_SHRINK_HANDOFF=0 and ncclDevCommDestroy before the shrink (GIN_TS_SHRINK_DEVCOMM_DESTROY=1)
+    hf_shrinkdc_b) TS=1 APP=bidir KILL_DELAY_MS=3500 ABORT_WD_S=30 WATCHDOG_S=90 \
+             EXTRA_ENV="GIN_TS_BIDIR_FUSED=1 GIN_TS_RX_WAIT_S=60" \
+             R0_ENV="GIN_TS_SHRINK=1 GIN_TS_HO_WAIT_S=3 GIN_TS_POST_ABORT_WAIT_S=10 NCCL_GIN_SHRINK_HANDOFF=0 GIN_TS_SHRINK_DEVCOMM_DESTROY=1" \
+             run F4 blocking n$k "$L" 400 16384 ;;
+    # The GPU full of an application kernel (hd_hog_f1_b of ../harden/cells.sh: f1_b, both ranks GIN_TS_HOG_MS=3000) with
+    # the copy probe on both ranks, in a 2 x 2: the calls between the GIN launch and the GPU-filling launch as in
+    # gin-harden (occupancy query that loads the kernel, cudaMalloc, stream) or none of them (GIN_TS_HOG_PREALLOC=1), and
+    # the GPU-filling grid at its full size or one block smaller (GIN_TS_HOG_SLACK=1).
+    # hf_hog_f1_b: as gin-harden's pilot; rank 0 then shrinks to itself (rank 1 alive): a watchdog surface of the stalled
+    # helper names no peer, so the hand-off must keep the stock answer
     hf_hog_f1_b) TS=1 INJECT=$inj EXTRA_ENV="GIN_TS_HOG_MS=3000 GIN_TS_HOG_PROBE=1" \
              R0_ENV="GIN_TS_SHRINK=1 GIN_TS_HO_WAIT_S=3" run F1 blocking n$k "$L" 120 ;;
-    # the same with a GPU-filling grid one block smaller (it can be fully resident next to the 1-block GIN kernel)
     hf_hogslack_f1_b) TS=1 INJECT=$inj EXTRA_ENV="GIN_TS_HOG_MS=3000 GIN_TS_HOG_SLACK=1 GIN_TS_HOG_PROBE=1" \
+             run F1 blocking n$k "$L" 120 ;;
+    hf_hogpre_f1_b) TS=1 INJECT=$inj EXTRA_ENV="GIN_TS_HOG_MS=3000 GIN_TS_HOG_PREALLOC=1 GIN_TS_HOG_PROBE=1" \
+             run F1 blocking n$k "$L" 120 ;;
+    hf_hogpreslack_f1_b) TS=1 INJECT=$inj \
+             EXTRA_ENV="GIN_TS_HOG_MS=3000 GIN_TS_HOG_PREALLOC=1 GIN_TS_HOG_SLACK=1 GIN_TS_HOG_PROBE=1" \
              run F1 blocking n$k "$L" 120 ;;
     *) echo "unknown cell $CELL" >&2; exit 1 ;;
   esac
