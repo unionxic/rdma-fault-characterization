@@ -1,0 +1,11 @@
+Pre-registration of gin-pair-check, 2026-10-08 13:51:48 +0900, before any measured run of this study.
+sha256 of the fixed prediction file:
+a8a4b04602b0acee8477a8682c222922d4aee1a1b41f238a9de50ff00c93c8e8  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/gin-pair-check-v1 (sections 2, 3, 7, 8).
+The scoring fields, log-line formats, the refusal code (NACK 12), cell keys (cell@build) and the acceptance grammar (that
+of ../s2_close/EXPERIMENT.md 3.2, plus plain arithmetic outside count() and median(), as ../pair_reset/EXPERIMENT.md 3.2)
+are fixed in EXPERIMENT.md section 3.
+The predictions come from the gin-pair-reset library tree (../pair_reset/gin_transparent_pr.diff on NCCL v2.32.3-1), the
+responder-check design of EXPERIMENT.md section 9, the gin-pair-reset results table (../pair_reset/results/20261008/
+trials_scored.csv) and its code review (../pair_reset/qa/code_review.md); no code for this study was written or built and
+nothing was run on the cluster before this file.
