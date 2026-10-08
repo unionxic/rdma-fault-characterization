@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run gin-harden holds one after another, each as its own ../../common/cluster_run.sh hold (-w 10800: other experiments
 # share the lock; tag ghd-<hold>; each hold bounded by timeout -s KILL 880). No further hold runs once a hold has written
-# <resultsdir>/STOP_mlx5 or STOP_iptables. After every hold (also one killed by its bound, whose trial could not remove
+# <resultsdir>/STOP_mlx5, STOP_iptables or STOP_cuda. After every hold (also one killed by its bound, whose trial could not remove
 # its mute rules), any iptables INPUT rule on rain whose comment starts with "gin-harden-" (only run_trial_hd.sh adds
 # such rules) is deleted and the deletion is checked; a rule that cannot be deleted writes STOP_iptables.
 # usage: chain.sh <resultsdir> <hold> [<hold> ...]
@@ -25,7 +25,7 @@ ipt_cleanup() {  # delete this study's leftover INPUT rules on rain (tagged gin-
   [ "$left" = 0 ] || echo "$(date '+%F %T') $left gin-harden iptables rule(s) could not be deleted" | tee -a "$R/STOP_iptables"
 }
 for H in "$@"; do
-  if [ -e "$R/STOP_mlx5" ] || [ -e "$R/STOP_iptables" ]; then
+  if [ -e "$R/STOP_mlx5" ] || [ -e "$R/STOP_iptables" ] || [ -e "$R/STOP_cuda" ]; then
     echo "$(date '+%F %T') hold $H skipped: STOP file present" | tee -a "$R/chain.out"
     continue
   fi

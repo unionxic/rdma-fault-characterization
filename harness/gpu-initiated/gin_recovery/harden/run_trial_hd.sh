@@ -167,8 +167,14 @@ scp -q "$SUNNY_SSH:$R1LOG" "$WORK/r1.log" 2>/dev/null || true
 # for above (its gin_ts2 child ends with it or before it): nothing local to kill. Leftovers are counted by the trial's
 # unique tag in the command line (counting only).
 ssh -n "$SUNNY_SSH" "tp=\$(cat $R1PIDF 2>/dev/null); if [ -n \"\$tp\" ] && grep -q $RTAG /proc/\$tp/cmdline 2>/dev/null; then \
-for c in \$(pgrep -P \"\$tp\"); do kill -9 \$c 2>/dev/null; done; kill -9 \$tp 2>/dev/null; fi; rm -f $R1KV $R1LOG" || true
-LEFT=$( { pgrep -f "$WORK/r0.kv" 2>/dev/null; ssh -n "$SUNNY_SSH" "pgrep -f $RTAG; rm -f $R1PIDF"; } 2>/dev/null | wc -l)
+for c in \$(pgrep -P \"\$tp\"); do kill -9 \$c 2>/dev/null; done; kill -9 \$tp 2>/dev/null; fi; rm -f $R1KV $R1LOG $R1PIDF" || true
+# The count must not match the shell that runs it: `pgrep -f` skips only itself, and a pattern written literally into
+# the remote command line would match that remote shell (the pilot's left=1 on every trial). The pattern is therefore a
+# regex whose own text does not match it ("[g]in_hd_..." matches "gin_hd_...", not "[g]in_hd_..."), and the remote
+# command carries no other copy of the tag. Locally the trial's work directory is matched the same way.
+RPAT="[${RTAG:0:1}]${RTAG:1}"
+LPAT="[${WORK:0:1}]${WORK:1}/r0.kv"
+LEFT=$( { pgrep -f "$LPAT" 2>/dev/null; ssh -n "$SUNNY_SSH" "pgrep -f '$RPAT'"; } 2>/dev/null | wc -l)
 LEFT_RULES=$(sudo -n iptables -w 5 -S INPUT 2>/dev/null | grep -c -- "$MUTE_TAG")
 mkdir -p "$LOGDIR"
 stem="${CELL:-${BUILD}_ts${TS}_${APP}_${FAULT}_${WAIT}}_${TRIAL}"
