@@ -16,7 +16,9 @@ run() { CELL=$CELL BUILD=$B bash "$D/run_trial_hq.sh" "$@"; }
 mr() { CELL=$CELL LIB=$B MRKEY=hq ABORT_WD_S=20 bash "$D/run_mr_hq.sh" "$@"; }
 BIDIR="GIN_TS_BIDIR_FUSED=1"
 # N-rank timing (as ../multirank/cells.sh, kept): hook F_MS after the GDAKI context is created, kill KILL_MS after the
-# runner starts the killed rank; F2_MS: the second hook of pq4_fwslow (rank 2, edge 2>0), after rank 0's overrun round
+# runner starts the killed rank; F2_MS: the second hook of pq4_fwslow (rank 2, edge 2>0), after rank 0's overrun round.
+# Pilot 20261009: rank 0's decline of rank 1 came 4.05-4.07 s after its hook and rank 2's hook 1.43 s after that decline
+# (hq and hf, one trial each), inside the 15 s traffic window: F2_MS kept.
 F_MS=${F_MS:-6000}; KILL_MS=${KILL_MS:-9000}; F2_MS=${F2_MS:-11500}
 ctx() { local a=$1 b=$2 n=$3; echo $(( a * (n - 1) + (b < a ? b : b - 1) )); }
 hook() { echo "NCCL_GIN_FAULT_INJECT=local_err:$F_MS NCCL_GIN_FAULT_INJECT_CTX=$(ctx "$1" "$2" "$3")"; }
@@ -71,9 +73,16 @@ for ((k = START; k < START + NRUN; k++)); do
     # the ACK and the TCP acknowledgements come back to a muted socket: both sockets end with ETIMEDOUT about 5 s later,
     # the initiator cancels (retry) and the committed responder declines. After the mute the initiator reconnects: the
     # lower rank re-dials (HELLO, _f1_b), the higher rank probes (PROBE, _f1r1_b).
+    # Pilot 20261009 (EXPERIMENT.md 12): cancel 5.23-5.26 s after the round, mute end 1.73-1.77 s after the cancel, first
+    # re-dial or probe 0.24-0.27 s after the mute end (4 trials, hq and hf). The responder left 0.34-0.38 s after its
+    # decline (its application ends on the device error), so every re-dial or probe was refused and the initiator judged
+    # it dead: the cell never reached the reconnect it is about. The responder now stays GIN_TS_END_WAIT_S=12 s after its
+    # kernel before tearing down (driver switch, both bundles): longer than the initiator's reconnect bound (10 s from the
+    # cancel) plus 2 s, so the hf control can show its bound too.
     pq_ackrace_f1_b) TS=1 INJECT=1500 ABORT_WD_S=20 WATCHDOG_S=60 EXTRA_ENV="GIN_TS_RX_WAIT_S=10" \
-             R0_ENV="NCCL_GIN_TS_TEST_SOCK_MUTE=500:8000" run F1 blocking $t "$L" 1000 16384 ;;
+             R0_ENV="NCCL_GIN_TS_TEST_SOCK_MUTE=500:8000" R1_ENV="GIN_TS_END_WAIT_S=12" run F1 blocking $t "$L" 1000 16384 ;;
     pq_ackrace_f1r1_b) TS=1 APP=bidir GAP_US=15000 ABORT_WD_S=20 WATCHDOG_S=60 EXTRA_ENV="$BIDIR GIN_TS_RX_WAIT_S=30" \
+             R0_ENV="GIN_TS_END_WAIT_S=12" \
              R1_ENV="NCCL_GIN_FAULT_INJECT=local_err:1500 NCCL_GIN_FAULT_INJECT_CTX=1 NCCL_GIN_TS_TEST_SOCK_MUTE=500:8000" \
              run none blocking $t "$L" 1000 16384 ;;
     # ---- 4: cause-based shrink hand-off at two ranks ----
