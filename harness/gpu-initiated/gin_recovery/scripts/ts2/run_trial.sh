@@ -16,6 +16,7 @@
 #                 after rank 0 launched its kernel (gid_blackhole.sh cut); needs GIDSEL=secondary and a prior setup
 #   R0_ENV / R1_ENV / EXTRA_ENV   extra environment (rank 0 / rank 1 / both)
 #   KILL_DELAY_MS (F4, default 1200), GAP_US (default 15000; lat: 0), DEV_TIMEOUT_S (8), WATCHDOG_S (45), DIAG
+#   KILL_R0=1 (gin-oneway; default 0): kill rank 0, by the PID of the process started here, KILL_DELAY_MS after its launch
 set -u
 FAULT=$1; WAIT=$2; TRIAL=$3; LOGDIR=$4
 ITERS=${5:-120}
@@ -95,10 +96,31 @@ if [ -n "${CUT_S:-}" ]; then
 fi
 LATRAW=""; [ "$FAULT" = lat ] && LATRAW="GIN_LAT_RAW=$WORK/lat_raw.csv"
 T0=$(date +%s.%N)
+if [ "${KILL_R0:-0}" != 1 ]; then
 env $NENV NCCL_IB_HCA=mlx5_1 NCCL_IB_GID_INDEX=$GID0 ${INJ0:+NCCL_GIN_FAULT_INJECT=$INJ0} $LATRAW ${R0_ENV:-} \
   stdbuf -oL -eL timeout -s KILL $((WATCHDOG_S+20)) "$BUNDLE/$BIN" 0 $RAIN_MGMT $PORT $ARGS "$WORK/r0.kv" $GAP_US \
   > "$WORK/r0.log" 2>&1
 R0RC=$?
+else
+  # gin-oneway: KILL_R0=1 kills OUR rank 0 (the gin_ts2 child of the timeout started here, by PID) KILL_DELAY_MS after
+  # its launch; kill.out records kill_mono_ms (rain's CLOCK_MONOTONIC), the pid and rank=0
+  env $NENV NCCL_IB_HCA=mlx5_1 NCCL_IB_GID_INDEX=$GID0 ${INJ0:+NCCL_GIN_FAULT_INJECT=$INJ0} $LATRAW ${R0_ENV:-} \
+    stdbuf -oL -eL timeout -s KILL $((WATCHDOG_S+20)) "$BUNDLE/$BIN" 0 $RAIN_MGMT $PORT $ARGS "$WORK/r0.kv" $GAP_US \
+    > "$WORK/r0.log" 2>&1 &
+  R0PID=$!
+  ( sleep "$(awk "BEGIN{print ${KILL_DELAY_MS:-1200}/1000}")"
+    pid=$(pgrep -P "$R0PID" -x $BIN | head -1)
+    if [ -n "$pid" ]; then
+      python3 -c "import os,sys,time; t=time.clock_gettime(time.CLOCK_MONOTONIC)*1e3; os.kill(int(sys.argv[1]),9); print('kill_mono_ms=%.3f pid=%s rank=0' % (t, sys.argv[1]))" "$pid"
+    else
+      echo "no_rank0_process=1"
+    fi > "$WORK/kill.out" 2>&1
+    echo "[$tag] SIGKILL rank0 after ${KILL_DELAY_MS:-1200} ms: $(cat "$WORK/kill.out")" >&2 ) &
+  KILLER0=$!
+  wait "$R0PID"
+  R0RC=$?
+  wait "$KILLER0" 2>/dev/null
+fi
 T1=$(date +%s.%N)
 wait "$SSH_PID" 2>/dev/null; R1RC=$?
 [ "${KILLER:-}" ] && wait "$KILLER" 2>/dev/null
