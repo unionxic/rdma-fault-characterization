@@ -11,7 +11,7 @@
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-multirank` @ `d834f86c` (master) |
 | 사전 등록 태그 | 없음. 파일럿 뒤에 단다(3절) |
-| 마지막 갱신 | 2026-10-09, 소스 분석, 설계, 드라이버와 스크립트 작성, 드라이버 빌드(실행 안 함) |
+| 마지막 갱신 | 2026-10-09, 본 실행 빌드 `hd`의 diff로 예측 다시 이끎(3.5), `hd` 드라이버 빌드(배포, 실행 안 함) |
 
 표시: `[측정]` 원자료나 시행별 표에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -45,7 +45,7 @@
 | 빌드 | 키 | 내용 |
 |---|---|---|
 | gin-oneway 라이브러리 | `ow` | libnccl `b4af65c5`(`$HOME/gi-bundle/gin_ts2/ow/`, 2026-10-08 배포). 파일럿에 쓴다 |
-| gin-harden 라이브러리 | `hd` | 다른 에이전트가 만드는 중이다(`$HOME/gi-bundle/gin_ts2/hd/` 예정) `[미확인]`. 본 실행에 쓴다 |
+| gin-harden 라이브러리 | `hd` | libnccl `e2090323`(`$HOME/gi-bundle/gin_ts2/hd/`, gin-harden이 배포). 본 실행에 쓴다. 장치 헤더가 `ow`와 달라 드라이버를 따로 빌드했다(5절) |
 | 이 실험의 드라이버 | `mr/<키>` | `gin_mr`(이 폴더의 `gin_mr.cu`)만 담은 새 디렉터리 `$HOME/gi-bundle/gin_ts2/mr/<키>/`. libnccl은 그 빌드의 번들에서 쓴다 |
 
 ## 1. 배경과 연구 질문
@@ -108,6 +108,27 @@
   라운드가 끝나기를 기다린다.
 - 거절은 통신기 전체의 GIN 비동기 결과를 오류로 바꾼다(3355–3358). 그 랭크의 앱은 `ncclCommGetAsyncError`로 이를 본다.
 
+**본 실행 빌드 `hd`에서 달라지는 점** `[소스]`(`agent_ts2hd/nccl-src`, `gin_host_gdaki.cc` md5 `36995301`; 그 작업 트리의 diff는
+gin-harden의 `hd_layer.diff`와 index 줄을 빼고 같다 `[측정]`).
+- **거절은 랭크 전체의 장치 대기를 오류로 푼다.** 거절(`gdakiTsDecline` 4052–4099)이 통신기마다 하나인 사용자 devComm abort 단어에
+  오류 비트(`NCCL_DEVCOMM_ABORT_ERROR`)를 쓴다. `waitSignal`과 `flush`, `wait`은 폴링 10 000번마다 그 단어를 보고 오류를 돌려준다
+  (`utility.h` `testAbort`, `gin__funcs.h` `waitRollingLessEq`, `gin_gdaki.h` `tsPoll`, `waitImplCore`, `flushImplModeCore`).
+  - 15 ms 간격 동안 다음 signal을 기다리는 받는 쪽은 곧 그 확인에 닿아 오류로 끝난다.
+  - 건강한 상대로의 put은 약 10 µs에 끝나므로, 상대별 flush의 대기는 그 확인 전에 성공한다 `[추론]`. 문맥 전체 flush는 ow와 같이 거절된
+    상대의 QP에서 바로 실패한다.
+- **죽음은 바로 판정하고 바로 거절한다.** BYE 없는 FIN은 죽음이고(`gdakiTsSocketLost` 3008–3039), helper 루프가 장애를 기다리지 않고
+  "peer judged dead: the peer's socket shows <원인>"으로 거절한다(`gdakiTsMain` 5010–5019). 리셋이면 1 000 ms 이상 떨어진 거부 두 번 뒤
+  죽음이다(`gdakiTsRefused` 3043–3064). 정상 정리는 BYE를 먼저 보내므로 "떠남"이다.
+- **순환 대기는 그대로다.** ACK를 기다리는 동안 그 상대의 소켓만 읽는 구조와 한도(`gdakiTsRoundLeftMs` 2512–2517, `gdakiTsInitiate`
+  4576–4669)가 바뀌지 않았다.
+- **범위 결정, 응답 쪽 범위 확인, 정지(quiesce)는 펌웨어 단계 감시만 더해졌다**(`gdakiTsDecideScope`, `gdakiTsCheckScope`,
+  `gdakiTsQuiesce`를 ow와 함수 단위로 비교).
+- **라운드 상한.** 문맥(이 실험에서는 랭크)마다 60 000 ms 안의 라운드(두 역할)가 8번이면 거절하고 복구를 멈춘다(`gdakiTsEscalated`
+  4207–4231). 문맥 수가 아니라 라운드 수를 센다. 전체 범위 라운드는 12개 문맥을 덮어도 한 번이다. 이 실험의 셀에서 한 랭크의 라운드는
+  많아야 3번(`mr4_f1all0`의 rank 0)이라 상한에 닿지 않는다.
+- 문맥 번호 대신 고유값(nonce)을 HELLO에 싣는다. 이 실험의 셀에는 재연결이 없어 영향이 없다. 시험 스위치
+  `NCCL_GIN_TS_TEST_STALL`, `NCCL_GIN_FAULT_INJECT_CTX`는 연구 빌드 `hd`에 그대로 있다(`gin_host_gdaki.cc` 5285, 677).
+
 **GPU 하나를 두 프로세스가 쓰기.**
 - 두 프로세스의 CUDA 문맥은 GPU를 시분할로 나눠 쓴다고 본다 `[추론]`. 이 테스트베드에서 GDAKI 커널로 재 본 적은 없다 `[미확인]`.
 - 한 프로세스 안에서는 GIN 받는 커널이 먼저 돌면 다른 스트림의 GIN 보내는 커널이 그것이 끝날 때까지 시작하지 않았다(원인 모름). 한 커널에
@@ -133,7 +154,7 @@
 | H1 | GPU마다 프로세스 둘로 통신기와 문맥 12개의 devComm이 만들어지고 네 랭크 모두 투명 복구가 켜진다. 두 프로세스의 커널은 GPU를 시분할로 나눠 써서 간선 12개가 모두 정확히 전달된다 | 랭크 4개 장애 없는 셀에서 초기화 실패나 투명하지 않은 시행이 2회 이상이다 |
 | H2 | 한 쌍의 장애는 그 쌍의 QP 하나만 다루는 라운드 하나로 투명하게 복구되고, 다른 간선은 그동안 계속 진행한다. 노드 안 간선(NIC loopback)도 같다 | 한 쌍 장애 셀 셋 중 하나라도 쌍 범위 복구나 투명이 9/10 미만이다. 또는 상대 QP 오류로 묶인 동안 다른 간선이 100번 이상 진행한 시행이 9/10 미만이다 |
 | H3 | 여러 쌍의 장애는 각 helper가 차례로 처리해 모두 복구된다. 한 랭크의 모든 간선 장애는 상대마다 전체 범위 라운드 하나씩이다 | 동시 장애 셀 셋 중 하나라도 예측한 라운드와 투명이 9/10 미만이다. 또는 한 helper의 두 라운드가 시간상 겹친다 |
-| H4 | 한 랭크가 죽으면 helper는 그 상대만 거절한다. 그러나 문맥 전체 flush를 쓰는 앱은 거절 뒤 살아남은 랭크 사이의 간선도 모두 오류로 멈추고, 상대별 flush를 쓰는 앱은 그 간선을 끝까지 정확히 보낸다 | kill 셀에서 거절 대상이 rank 3뿐인 시행이 9/10 미만이다. 또는 문맥 전체 flush에서 살아남은 간선 6개가 모두 멈춘 시행, 상대별 flush에서 6개가 모두 끝난 시행이 각각 9/10 미만이다 |
+| H4 | 한 랭크가 죽으면 살아남은 랭크의 helper는 소켓으로 곧바로 죽음을 판정해 그 상대만 거절한다. 그 거절이 랭크의 사용자 abort 단어를 올리므로 살아남은 랭크 사이의 받는 쪽은 flush 방식과 상관없이 오류로 끝난다. 보내는 쪽은 문맥 전체 flush에서는 거절된 QP 때문에 멈추고, 상대별 flush에서는 끝까지 성공한다 | kill 셀에서 거절 대상이 rank 3뿐이고 kill 2 s 안인 시행이 9/10 미만이다. 또는 문맥 전체 flush에서 살아남은 간선의 보내는 쪽 6개가 모두 실패한 시행, 상대별 flush에서 받는 쪽 6개가 모두 실패하고 보내는 쪽 6개가 모두 성공한 시행이 각각 9/10 미만이다 |
 | H5 | 시작 쪽 셋이 순환하면 ACK 한도(라운드 시작 + 24.5 s)까지 서로 기다린 뒤 "handshake timeout"으로 거절한다. 순환이 없는 사슬은 바로 풀린다 | 순환 셀에서 그 거절과 시각이 4/5 미만이다. 또는 사슬 셀이 투명하지 않다 |
 | H6 | (탐색) 장애 없는 지연의 중앙값은 랭크 수가 늘어도 거의 그대로이고, GPU 시분할은 드문 긴 반복으로만 보인다 | 지연 예측(3.3 L1–L5)이 틀린다. 탐색 예측(L3, L4)은 틀려도 가설 H1–H5에 영향을 주지 않는다 |
 
@@ -147,7 +168,7 @@
 
 파일럿 시행은 어떤 예측의 판정에도 쓰지 않는다. 파일럿 결과 폴더는 `score.py`에 넘기지 않는다.
 
-예측 원문은 [predictions.csv](predictions.csv)이고 40줄이다. `kind`는 N(새 셀), C(대조), X(탐색)다.
+예측 원문은 [predictions.csv](predictions.csv)이고 41줄이다. `kind`는 N(새 셀), C(대조), X(탐색)다.
 
 ### 3.1 판정에 쓰는 열
 
@@ -173,7 +194,8 @@ R과 상대 P, "a>b"는 간선이다. 시각은 CLOCK_MONOTONIC ms이고, "rank 
 | `q4_first` | 각 랭크의 첫 "device-classified error CQE" 줄의 분류를 "랭크:분류"로 |
 | `killed`, `kill_ms0`, `kill_in_traffic` | kill.out에 `kill_mono_ms`가 있으면 1. rank 0 시계의 kill 시각. 모든 랭크의 커널 시작 뒤이고 가장 이른 트래픽 끝보다 5 000 ms 이상 앞서면 1 |
 | `decl_after_kill_ms_r<r>` | rank r의 첫 거절(rank 0 시계) − `kill_ms0` |
-| `n_surv_edges`, `surv_edges_ok`, `surv_tx_failed` | kill 셀: 죽은 랭크가 끼지 않은 간선 수, 그중 정상인 수, 그중 보낸 쪽 결과가 `no error`가 아닌 수 |
+| `n_surv_edges`, `surv_edges_ok`, `surv_tx_failed`, `surv_rx_failed` | kill 셀: 죽은 랭크가 끼지 않은 간선 수, 그중 정상인 수, 그중 보낸 쪽 결과가 `no error`가 아닌 수, 받은 쪽 결과가 `no error`가 아닌 수 |
+| `n_hd`, `n_judged_dead`, `n_esc`, `n_fw_over`, `n_copy_to`, `n_cancel` | `hd`의 줄 수: 시작 줄 `GIN/TS: harden=1 rank=`, `rank P judged dead`, `escalated rank=`, 펌웨어 단계가 `more than NCCL_GIN_TS_FW_MS`, 복사가 `(NCCL_GIN_TS_COPY_MS)`, 라운드가 `cancelled ... before the commit` |
 | `f3_detect_ms` | rank 0의 첫 분류 기록 − rank 1의 첫 훅 발사(rank 0 시계) |
 | `win_edge_r<r>`, `w_<ab>_in` | 드라이버 kv. 그 랭크가 보낸 반복 중 가장 오래 걸린 반복의 간선, 그리고 다른 보내는 간선이 그 반복 안에 시작해서 끝낸 반복 수 |
 | `resp_overlap_r0`, `init_overlap_r0` | rank 0의 응답 라운드 [`t_req`, `t_resumed`] (시작 라운드 [`t_start`, `t_resumed`]) 둘이 겹치면 1, 아니면 0. 둘 미만이면 빈칸 |
@@ -218,11 +240,12 @@ R과 상대 P, "a>b"는 간선이다. 시각은 CLOCK_MONOTONIC ms이고, "rank 
 | F1 | `mr4_f1all0` | rank 0의 모든 문맥 장애를 상대마다 전체 범위(QP 12개, 사유 `qp_state`) 라운드 하나씩, 셋으로 복구 | ≥9/10 | 범위 결정 `[소스]` |
 | F2 | `mr4_f1all0` | 간선 12개 모두 투명(다른 랭크가 rank 0의 ERR QP로 보내던 것도 라운드에서 다시 보냄) | ≥9/10 | 세 라운드가 약 0.1 s 안에 끝나 재시도 초과(약 3.6 s) 전 `[추론]` |
 | F3 | `mr4_f1all0` | 세 라운드가 겹치지 않고, rank 0과 각 상대 사이 QP 72칸 모두 epoch 2, 끝에 모두 RTS | ≥9/10 | 같음 |
-| K1 | `mr4_kill3` | rank 3 kill 뒤 살아남은 세 랭크가 rank 3만, 재시도 초과와 죽은 소켓을 사유로 거절 | ≥9/10 | 거절은 상대마다 `[소스]` |
-| K2 | `mr4_kill3` | 그 거절이 kill 3.0–5.0 s 뒤 | ≥9/10 | 랭크 2개 kill에서 거절까지 3 555.9–3 874.2 ms(n=10) `[측정]` |
-| K3 | `mr4_kill3` | 문맥 전체 flush에서는 거절 뒤 살아남은 랭크 사이의 간선 6개도 모두 오류로 멈춘다 | ≥9/10 | 1절 flush의 범위와 거절의 번짐 `[소스]` |
+| R1 | 복구 셀 여섯 | `hd`의 상한이 조용하다: 라운드 상한, 펌웨어 단계와 복사의 상한 초과, 소켓으로 취소된 라운드, 죽음 판정이 없다 | 셀마다 ≥9/10 | 한 랭크의 라운드는 많아야 3번(상한 8), 명령과 복사는 1 ms 안팎(상한 3 000, 2 000 ms) `[소스, 추론]` |
+| K1 | `mr4_kill3` | rank 3 kill 뒤 살아남은 세 랭크가 소켓(BYE 없는 FIN)으로 rank 3의 죽음을 바로 판정하고 rank 3만 거절("peer judged dead") | ≥9/10 | `hd`의 죽음 판정과 거절 `[소스]` |
+| K2 | `mr4_kill3` | 그 거절이 kill 0–2 s 뒤(재시도 초과를 기다리지 않음) | ≥9/10 | kill에서 살아남은 쪽 소켓의 FIN까지 0.1–0.3 ms(랭크 2개, n=20) `[측정]` |
+| K3 | `mr4_kill3` | 문맥 전체 flush에서는 거절 뒤 살아남은 랭크 사이의 간선 6개도 모두 오류로 멈춘다(보내는 쪽 6개 실패) | ≥9/10 | 1절 flush의 범위와 거절의 번짐 `[소스]` |
 | K4 | `mr4_kill3_peer` | 상대별 flush에서도 rank 3만 거절 | ≥9/10 | K1과 같음 |
-| K5 | `mr4_kill3_peer` | 상대별 flush에서는 살아남은 랭크 사이 간선 6개가 모두 정확히 끝남 | ≥9/10 | 1절 `[소스]` |
+| K5 | `mr4_kill3_peer` | 상대별 flush: 살아남은 랭크 사이의 받는 쪽 6개는 모두 오류로 끝나고, 보내는 쪽 6개는 끝까지 성공 | ≥9/10 | `hd`의 사용자 abort 단어와 폴링 10 000번마다의 확인 `[소스, 추론]` |
 | K6 | 두 kill 셀 | 살아남은 세 랭크의 앱이 모두 비동기 오류를 봄 | 셀마다 ≥9/10 | 거절이 통신기 전체 결과를 바꿈 `[소스]` |
 | K7 | 두 kill 셀 | 거절은 rank 3으로 가는 QP 36칸(랭크 3 × 문맥 12)만 닫음(epoch 2, ERR) | 셀마다 ≥9/10 | `gdakiTsDecline` `[소스]` |
 | Y1 | `mr4_cyc_stall` | 순환하는 세 시작 쪽(0에서 1, 1에서 2, 2에서 0)이 서로를 기다려 "handshake timeout" 거절이 하나 이상 생기고 투명하지 않음 | ≥4/5 | 1절 순환 대기 `[소스]` |
@@ -236,8 +259,9 @@ R과 상대 P, "a>b"는 간선이다. 시각은 CLOCK_MONOTONIC ms이고, "rank 
 | L4 | `mr4_lat` | 탐색: 실행 5회 중 4회 이상 어떤 간선에 200 µs 이상인 반복이 있다(시분할) | ≥4/5 | 같음 |
 | L5 | `mr2_lat` | 프로세스가 GPU마다 하나면 5회 중 4회 이상 200 µs 넘는 반복이 없다 | ≥4/5 | `gin_ts2` 4 KiB 최대 16.3–243.7 µs, 10회 중 1회만 200 µs 넘음 `[측정]` |
 
-측정 근거의 출처: C2, C4는 `../results/20260925_ts1/trials.csv`(`f3_b`)와 `../results/20261001_ts2/trials_reg.csv`(`f3_b`), K2는 같은
-`trials_reg.csv`(`f4_b`)에서 2026-10-09에 다시 셌다 `[측정]`(시행별 표에서 셈, 원시 로그에서 다시 세지 않음). L1, L5는
+측정 근거의 출처: C2, C4는 `../results/20260925_ts1/trials.csv`(`f3_b`)와 `../results/20261001_ts2/trials_reg.csv`(`f3_b`)에서 2026-10-09에
+다시 셌다 `[측정]`(시행별 표에서 셈, 원시 로그에서 다시 세지 않음). K2의 kill에서 FIN까지는 gin-s2-close, gin-reconnect, gin-pair-check,
+gin-oneway의 `results/*/trials_scored.csv`의 `f4_b` 행 20개(`sock_close_ms_r0 − fault_mono_r0`, 모두 `cause=FIN`)에서 셌다(같음). L1, L5는
 `../oneway/results/20261008/trials_scored.csv`의 `lat_*_4k` 행이다(같음).
 
 ### 3.4 파일럿 뒤 한 번 바꿀 수 있는 값
@@ -252,19 +276,33 @@ R과 상대 P, "a>b"는 간선이다. 시각은 CLOCK_MONOTONIC ms이고, "rank 
 | `STALL`(순환과 사슬 셀의 helper 멈춤) | 300 ms | 파일럿 순환 시행의 `cyc_spread_ms`가 200 ms를 넘으면 그 2배 이상으로 늘린다 |
 | 순서 제외의 퍼짐 한도 | 250 ms | `STALL`을 늘리면 `STALL` − 50 ms로 맞춘다 |
 | 본 실행 빌드 키 | `hd` | 다른 빌드로 돌리면 그 키로 바꾼다(`score.py`의 `MAIN`, 예측 파일의 셀 키) |
-| 빌드 표시 줄 | `ow`만 확인 | `hd`의 시작 줄(예: `helper liveness`)이 다르면 `score.py`의 `BUILD_MARK`에 더한다 |
+| 빌드 표시 줄 | `ow`: `helper liveness oneway=1`. `hd`: 그 줄과 `harden=1`(3.5에서 정함) | 파일럿과 다르게 찍히면 고친다 |
 
 파일럿에서 랭크 4개의 통신기가 만들어지지 않거나, 장애 없는 시행이 커널 정지나 감시로 끝나면 이 실험은 `BLOCKED`가 된다. 12절에 원인(로그 줄)과
 풀리는 조건(예: GPU 컴퓨트 모드 변경은 사용자 결정)을 적고, 본 실행은 하지 않는다.
 
 ### 3.5 본 실행 빌드 `hd`를 위한 다시 읽기
 
-예측은 `ow` 트리의 소스에서 이끌었다. `hd`(gin-harden)는 아직 없다. 태그 전에 `hd` 트리의 diff(`ow` 대비)를 읽고 다음 코드가 바뀌었는지
-확인한다. 바뀌었으면 기대는 예측을 다시 쓰고 12절에 적는다.
-- `gdakiTsInitiate`의 ACK 대기와 한도(Y1–Y3, E1), `gdakiTsMain`의 처리 순서(E2, F3).
-- `gdakiTsDecline`의 범위와 붙는 오류 표시(K3, K5, K7), `gdakiTsDecideScope`와 `gdakiTsCheckScope`(A1, B1, C1, F1).
-- 장치 쪽 `flushImplModeCore`, `flushAsyncImpl`, `waitImplCore`(K3, K5). 장치 헤더가 바뀌면 드라이버를 `hd` 트리로 다시 빌드한다(9절).
-- 시험 스위치 `NCCL_GIN_TS_TEST_STALL`, `NCCL_GIN_FAULT_INJECT_CTX`가 남아 있는지(순환, 사슬, 한 쌍 셀 전부).
+처음 예측은 `ow` 트리의 소스에서 이끌었다. 2026-10-09에 `hd` 트리(gin-harden의 `hd_layer.diff`, gin-harden `EXPERIMENT.md` 9절)를 읽고 예측을
+다시 이끌었다. 결과는 1절 끝의 "본 실행 빌드 `hd`에서 달라지는 점"이고, 예측마다 이렇다.
+
+| 예측 | `hd`에서 | 무엇을 읽었나 |
+|---|---|---|
+| K1, K4 | 바꿈: 사유가 재시도 초과가 아니라 "peer judged dead: the peer's socket shows <원인>" | `gdakiTsSocketLost`, `gdakiTsMain` |
+| K2 | 바꿈: kill 3.0–5.0 s 뒤가 아니라 0–2 s 뒤 | 같음, kill에서 FIN까지의 측정 |
+| K3 | 판정식 그대로, 근거에 사용자 abort 단어를 더함 | `gdakiTsDecline`, `flushImplModeCore` |
+| K5 | 바꿈: 간선 6개가 모두 끝난다가 아니라, 받는 쪽 6개는 오류, 보내는 쪽 6개는 성공 | `ncclGinTsUserAbortRaise`, `testAbort`, `waitRollingLessEq`, `tsPoll` |
+| K6, K7 | 그대로(근거만 `hd` 줄로) | `gdakiTsDecline` |
+| Y1–Y3 | 그대로(ACK 대기 구조와 한도가 같음) | `gdakiTsInitiate`, `gdakiTsRoundLeftMs` |
+| A1–F3, T1, Z1 | 그대로. 범위 결정, 범위 확인, 정지는 펌웨어 단계 감시만 더해짐. 다시 보내기는 모든 QP를 먼저 검사함(결과는 같음) | 함수 단위 비교 |
+| R1 | 새로 더함: 라운드 상한, 단계와 복사 상한, 소켓 취소, 죽음 판정이 복구 셀에서 나오지 않음 | `gdakiTsEscalated`, `gdakiRecFwGuard`, `gdakiRecCopyWait` |
+| I1–I6, L1–L5 | 그대로. 사용자 devComm 줄은 끝에 `word=own`이 붙었으나 열은 앞부분으로 센다. 장치의 빠른 경로는 바뀌지 않음 | `dev_runtime.cc`, 장치 헤더 diff |
+
+- 장치 헤더가 바뀌었다(`gin_gdaki.h`, `gin_gdaki_device_host_common.h`, `gin__funcs.h`, `utility.h`, `nccl.h`). 그래서 드라이버를 `hd` 트리로
+  따로 빌드했다(5절). 소스 `gin_mr.cu`는 파일럿 드라이버와 같다.
+- `hd`의 시작 줄은 `ow`의 `helper liveness oneway=1`을 그대로 찍고 `GIN/TS: harden=1 rank=<r> ...`을 더한다. 설정 확인(8절)에 둘 다 쓴다.
+- 파일럿은 `ow`로 돈다. 그래서 파일럿의 kill 셀은 `ow`의 동작(재시도 초과 뒤 거절, 상대별 flush에서 간선이 끝남)을 보일 것이고, 위 `hd`
+  예측의 근거가 아니다. 파일럿에서 볼 것은 3.4의 값과 실행 가능성이다.
 
 ## 4. 범위
 
@@ -290,8 +328,10 @@ R과 상대 P, "a>b"는 간선이다. 시각은 CLOCK_MONOTONIC ms이고, "rank 
 | 관리망 | `NCCL_SOCKET_IFNAME=eno1` | `run_mr.sh` |
 | 파일럿 빌드 `ow` | libnccl `b4af65c54b14f192803c88adcd2bf759`, 두 노드 같음 | `[측정]` 2026-10-08(`../oneway/deploy_check.txt`) |
 | `ow` 장치 헤더 | 설치된 `include/` 트리 요약값(파일별 md5 목록의 md5) `552c7b2c`. 투명 복구 2단계 최종 트리(`agent_ts2/build/include`)와 파일 단위로 같다 | `[측정]` 2026-10-09(`build_mr.sh`, `diff -r`) |
-| 본 실행 빌드 `hd` | 아직 없음 | `[미확인]` |
-| 드라이버 `gin_mr`(`ow` 트리로 빌드) | md5 `c0206b603e74073ee7c176ed6f8635fd`, 소스 `gin_mr.cu` md5 `fd90b11f`. sm_75와 sm_86, 커널 레지스터 202와 128, 스레드당 스택 736 B. 빌드만 했다. 배포하지 않았고 실행하지 않았다 | `[측정]` 2026-10-09(`build_mr.sh`, `cuobjdump -res-usage`), 세션 스크래치 `agent_mr/out/ow/build_info.txt` |
+| 본 실행 빌드 `hd` | libnccl `e209032310a2cefd5d71e86533674bd6`(세션 스크래치 `agent_ts2hd/out/hd`, 빌드 트리와 같음). 두 노드의 `$HOME/gi-bundle/gin_ts2/hd/`에 배포됨(gin-harden) | `[측정]` 2026-10-09 rain의 md5. 두 노드 md5와 `ldd`는 gin-harden의 배포 확인(`../harden/deploy_check.txt`, gin-harden 브랜치)에서 읽었다 |
+| `hd` 장치 헤더 | 요약값 `2b1b6286`. `ow`와 다른 파일: `gin_gdaki.h`, `gin_gdaki_device_host_common.h`, `gin__funcs.h`, `utility.h`, `nccl.h` | `[측정]` 2026-10-09(`build_mr.sh`, `diff -rq`) |
+| 드라이버 `gin_mr`(`hd` 트리로 빌드) | md5 `670509805832745caa3c2c54badb84c5`, 소스 `gin_mr.cu` md5 `fd90b11f`(파일럿 드라이버와 같은 소스). 레지스터 202와 128, 스택 736 B. `LD_LIBRARY_PATH`로 `hd` 번들의 libnccl을 찾는다(rain의 `ldd`). 빌드만 했다. 배포하지 않았고 실행하지 않았다 | `[측정]` 2026-10-09, 세션 스크래치 `agent_mr/out/hd/build_info.txt` |
+| 드라이버 `gin_mr`(`ow` 트리로 빌드) | md5 `c0206b603e74073ee7c176ed6f8635fd`, 소스 `gin_mr.cu` md5 `fd90b11f`. sm_75와 sm_86, 커널 레지스터 202와 128, 스레드당 스택 736 B. 본 세션이 `mr/ow/`에 배포했다(`deploy_check_ow.txt`: 두 노드 md5가 소스와 같고 기존 번들 32파일 그대로) | `[측정]` 2026-10-09(`build_mr.sh`, `cuobjdump -res-usage`), 세션 스크래치 `agent_mr/out/ow/build_info.txt` |
 
 ## 6. 변수
 
@@ -369,7 +409,7 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 본 실행은 모두 
 
 **설정 확인.** 모든 랭크의 devComm이 만들어진 시행에서, 하나라도 어긋나면 제외가 아니라 그 hold를 멈추고 원인을 12절에 적는다.
 - `n_ts_on`, `n_ua`, `n_pr`, `n_pc`가 n이고, `gq_min == gq_max == (n − 1) × n × (n − 1)`.
-- `ow` 시행은 `n_ow == n`. `hd`는 3.4대로 정한다.
+- `ow` 시행은 `n_ow == n`. `hd` 시행은 `n_ow == n`이고 `n_hd == n`이다(3.5).
 - 멈춤 스위치 줄(`knob_stall`)이 순환 셀은 `0:300;1:300;2:300`, 사슬 셀은 `0:300;1:300`, 나머지는 빈칸.
 - 훅이 없는 셀에 훅 발사가 없음. flush 방식이 셀과 같음. `mrge_err == 0`.
 
@@ -413,13 +453,13 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 본 실행은 모두 
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
 M=harness/gpu-initiated/gin_recovery/multirank
 bash $M/build_mr.sh ow $SCR/agent_ts2ow/build      # 2026-10-09에 했음
-bash $M/build_mr.sh hd $SCR/agent_ts2hd/build      # hd가 나온 뒤
+bash $M/build_mr.sh hd $SCR/agent_ts2hd/build      # 2026-10-09에 했음
 ```
 
 **3. 배포**(본 세션). `deploy_mr.sh <키> <확인 출력 파일>`. 확인 출력은 파일로만 받는다.
 ```
 bash $M/deploy_mr.sh ow $M/deploy_check_ow.txt     # 파일럿 전, 수 초
-bash $M/deploy_mr.sh hd $M/deploy_check_hd.txt     # 본 실행 전
+bash $M/deploy_mr.sh hd $M/deploy_check_hd.txt     # 본 실행 전, 수 초(mr/hd/gin_mr만 두고, libnccl은 hd 번들의 것을 씀)
 ```
 
 **4. 파일럿(P0, 채점하지 않음).** `mr2_none` 1, `mr4_nomrge` 1, `mr4_none` 2. 앞의 `mr4_none`이 모든 랭크 `ok`면 `mr3_none`,
@@ -449,7 +489,7 @@ LIB=hd bash $M/chain.sh $PWD/$M/results/<날짜> fill:<폴더>:<셀>:<수>:<시�
 ## 10. 완료 조건과 QA 기준
 
 - [ ] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외와 실패를 따로 센 표가 있다.
-- [ ] 예측 40줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
+- [ ] 예측 41줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
 - [ ] 다른 에이전트가 `score.py`를 보지 않고 원시 로그에서 핵심 수치를 다시 셌다. 대상은 간선별 전달, 라운드와 범위, 거절 대상과 사유와
   시각, teardown epoch와 QP 상태, 묶인 반복 안의 진행, 순환의 한도 시각이다.
 - [ ] 다른 에이전트가 `gin_mr.cu`, `run_mr.sh`, `rows_mr.py`를 읽고 리뷰했다.
@@ -462,8 +502,10 @@ LIB=hd bash $M/chain.sh $PWD/$M/results/<날짜> fill:<폴더>:<셀>:<수>:<시�
 
 - [x] 소스 분석, 질문, 가설, 셀 작성 (`DRAFT`)
 - [x] 드라이버 `gin_mr` 작성과 빌드(`ow` 트리), 실행 스크립트, 열 추출과 채점기 작성. 합성 시행 파일로 열 추출과 채점기만 확인(클러스터 실행 없음)
-- [ ] 드라이버 배포(`mr/ow`), 파일럿 P0(채점 제외), 3.4 값 확정
-- [ ] `hd` 빌드의 diff 읽기(3.5), `mr/hd` 빌드와 배포
+- [x] 드라이버 배포(`mr/ow`, 본 세션)
+- [ ] 파일럿 P0(채점 제외), 3.4 값 확정
+- [x] `hd` 빌드의 diff 읽기와 예측 다시 이끌기(3.5), `mr/hd` 빌드
+- [ ] `mr/hd` 배포
 - [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/gin-multirank-v1` 태그
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 채점 (`QA`)
@@ -479,6 +521,10 @@ LIB=hd bash $M/chain.sh $PWD/$M/results/<날짜> fill:<폴더>:<셀>:<수>:<시�
 | 2026-10-09 | 랭크 2개 측정값을 시행별 표에서 다시 셈: 상대 QP 오류에서 첫 분류 기록까지 3 523.5–3 763.0 ms(n=10), 3 548.9–3 770.1 ms(n=10), kill에서 거절까지 3 555.9–3 874.2 ms(n=10) `[측정]` | `../results/20260925_ts1/trials.csv`, `../results/20261001_ts2/trials_reg.csv` |
 | 2026-10-09 | 드라이버 `gin_mr.cu`와 스크립트 작성. `ow` 트리로 빌드됨(md5 `c0206b60`, 경고 없음). 실행하지 않았다 | 5절, 세션 스크래치 `agent_mr/out/ow/build_info.txt` |
 | 2026-10-09 | 합성 시행 파일(로그 형식은 소스의 WARN 줄 그대로)로 `rows_mr.py`와 `score.py`가 열을 만들고 판정식을 평가하는지만 확인. 클러스터 실행 없음 | 세션 스크래치 `agent_mr/test/` |
+| 2026-10-09 | 본 세션이 드라이버를 `mr/ow/`에 배포했다. 두 노드 md5가 소스(`c0206b60`)와 같고 기존 번들 32파일이 그대로다 | [deploy_check_ow.txt](deploy_check_ow.txt) |
+| 2026-10-09 | 본 실행 빌드 `hd`가 나와(libnccl `e2090323`) 드라이버를 `hd` 트리로 빌드했다(md5 `67050980`, 소스 같음, 경고 없음). 장치 헤더가 `ow`와 달라 따로 빌드가 필요하다 `[측정]`. 배포와 실행은 하지 않았다 | 5절, 세션 스크래치 `agent_mr/out/hd/build_info.txt` |
+| 2026-10-09 | `hd`의 diff를 읽고 예측을 다시 이끌었다(3.5). 바꾼 것: K1, K4(거절 사유), K2(kill 0–2 s 뒤), K5(받는 쪽 오류, 보내는 쪽 성공), 가설 H4. 더한 것: R1, 열 `surv_rx_failed`, `n_hd`, `n_judged_dead`, `n_esc`, `n_fw_over`, `n_copy_to`, `n_cancel`, `score.py`의 `hd` 빌드 표시. 근거 문장만 고친 것: K3, K6, K7, Y1–Y3. 이유: `hd`는 죽음을 소켓으로 바로 판정해 거절하고, 거절이 통신기의 사용자 abort 단어를 올려 랭크의 모든 장치 대기를 오류로 푼다. 라운드 상한(8번/60 s)은 이 실험의 셀에서 닿지 않는다(한 랭크 많아야 3번). 시험 스위치 두 개는 `hd`에 그대로 있다 | 1절 끝, 3.5, [predictions.csv](predictions.csv) |
+| 2026-10-09 | 예측은 아직 고정하지 않았다. 파일럿(P0, `ow`, 잠금을 기다리는 중) 뒤 3.4의 값만 바꿀 수 있고, 그 뒤 사전 등록 커밋과 태그 `prereg/gin-multirank-v1`에서 고정한다. 파일럿을 돌리는 동안 파일럿이 읽는 스크립트(`run_mr.sh`, `cells.sh`, `hold.sh`, `chain.sh`)는 고치지 않았다 | 3절 |
 
 ## 13. 사전 등록 이후 변경
 

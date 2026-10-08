@@ -57,6 +57,12 @@ of rank 0's kv.
   n_surv_edges surv_edges_ok surv_tx_failed    kill trials: edges between ranks other than kill_rank; how many are ok; how
                                                many of their senders' tx rc are not "no error"
   knob_stall                                   "GIN/TS: TEST knobs rank=<r> stall_ms=<ms> stage=1" as "r:ms"
+  surv_rx_failed                               kill trials: edges between survivors whose receiver's rx rc is not "no error"
+  n_hd                                         gin-harden start lines "GIN/TS: harden=1 rank=" (build marker of hd)
+  n_judged_dead                                gin-harden "GIN/TS: rank R: rank P judged dead" lines
+  n_esc, n_fw_over, n_copy_to, n_cancel        gin-harden WARN lines: "GIN/TS: escalated rank=" (round cap), a firmware
+                                               phase "more than NCCL_GIN_TS_FW_MS", a device-state copy "not complete after
+                                               ... (NCCL_GIN_TS_COPY_MS)", a round "cancelled ... before the commit"
 """
 import argparse, csv, glob, os, re, statistics, sys
 
@@ -91,7 +97,8 @@ def fnum(x):
 def scan(path):
     o = {"ts_on": [], "ts_off": 0, "ua": 0, "ow": 0, "pr": 0, "pc": 0, "fires": [], "rounds": [], "rec": [], "decl": [],
          "acc": 0, "ref": 0, "conflict": 0, "tie": 0, "watchdog": 0, "ep": [], "qpst": [], "teardown": 0, "q4": None,
-         "mrge": 0, "bind": 0, "knob_stall": None}
+         "mrge": 0, "bind": 0, "knob_stall": None, "hd": 0, "dead_j": 0, "esc": 0, "fw_over": 0, "copy_to": 0,
+         "cancel": 0}
     if not os.path.exists(path):
         return o
     for line in open(path, errors="replace"):
@@ -104,6 +111,18 @@ def scan(path):
             o["ua"] += 1
         if "GIN/TS: helper liveness oneway=1" in line:
             o["ow"] += 1
+        if "GIN/TS: harden=1 rank=" in line:  # gin-harden
+            o["hd"] += 1
+        if re.search(r"GIN/TS: rank \d+: rank \d+ judged dead", line):
+            o["dead_j"] += 1
+        if "GIN/TS: escalated rank=" in line:
+            o["esc"] += 1
+        if "more than NCCL_GIN_TS_FW_MS" in line:
+            o["fw_over"] += 1
+        if "(NCCL_GIN_TS_COPY_MS)" in line:
+            o["copy_to"] += 1
+        if re.search(r"GIN/TS: rank \d+: round \d+ (with|from) rank \d+ cancelled", line):
+            o["cancel"] += 1
         if re.search(r"GIN/TS: pair reset=1 rank=", line):
             o["pr"] += 1
         if re.search(r"GIN/TS: pair check=1 rank=", line):
@@ -187,8 +206,9 @@ def rows_of(stem):
     d["n_ts_on"] = len(gq)
     d["gq_min"] = min(gq) if gq else ""
     d["gq_max"] = max(gq) if gq else ""
-    for key in ("ts_off", "ua", "ow", "pr", "pc"):
+    for key in ("ts_off", "ua", "ow", "pr", "pc", "hd", "esc", "fw_over", "copy_to", "cancel"):
         d["n_" + key] = sum(x[key] for x in lg)
+    d["n_judged_dead"] = sum(x["dead_j"] for x in lg)
     # edges
     elist = []
     edges_meta = m.get("edges", "all")
@@ -339,8 +359,9 @@ def rows_of(stem):
         d["n_surv_edges"] = len(surv)
         d["surv_edges_ok"] = sum(1 for e in surv if ok[e])
         d["surv_tx_failed"] = sum(1 for a, b in surv if k[a].get(f"tx_{a}{b}_rc", "") not in ("no error", ""))
+        d["surv_rx_failed"] = sum(1 for a, b in surv if k[b].get(f"rx_{a}{b}_rc", "") not in ("no error", ""))
     else:
-        d["n_surv_edges"] = d["surv_edges_ok"] = d["surv_tx_failed"] = ""
+        d["n_surv_edges"] = d["surv_edges_ok"] = d["surv_tx_failed"] = d["surv_rx_failed"] = ""
     d["knob_stall"] = jl(f"{r}:{lg[r]['knob_stall']}" for r in range(n) if lg[r]["knob_stall"])
     return d
 
