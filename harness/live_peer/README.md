@@ -75,5 +75,6 @@
 | [qa/](qa/) | 이전 측정의 카운터 재계산, 독립 재계산 스크립트 |
 | `run_cells.sh`, `score.py` | 실행, 채점 |
 | [MODEL.md](../../MODEL.md) | 오류 전파 규칙(규칙 3) |
+| [boundary/](boundary/README.md) | 후속: 오판이 시작되는 경계(마감 근처 정지 길이) |
 
 원자료(시행별 CSV, 로그, 카운터 기록)는 Release `data-20261007`에 있다([DATA.md](../../DATA.md)).
