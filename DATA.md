@@ -90,7 +90,7 @@ The full checksums are in the `SHA256SUMS` asset of that release.
 
 ## Release `data-20261008`
 
-4 raw-data archives, 1474 files, 0.59 MB compressed. Packed by `tools/pack_release.py --whole`.
+6 raw-data archives, 2147 files, 0.88 MB compressed. Packed by `tools/pack_release.py --whole`.
 The full checksums are in the `SHA256SUMS` asset of that release.
 
 | folder | asset | files | MB | sha256 (first 12) | note |
@@ -99,3 +99,5 @@ The full checksums are in the `SHA256SUMS` asset of that release.
 | `harness/gpu-initiated/nvshmem_ft/t1_380/results/20261008_smoke` | `harness__gpu-initiated__nvshmem_ft__t1_380__results__20261008_smoke.tar.xz` | 58 | 0.09 | `c4a526b28641` | smoke run, not scored |
 | `harness/gpu-initiated/gin_recovery/reconnect/results/20261008` | `harness__gpu-initiated__gin_recovery__reconnect__results__20261008.tar.xz` | 653 | 0.26 | `d1dd5ebd0e92` |  |
 | `harness/gpu-initiated/gin_recovery/reconnect/results/20261008_smoke` | `harness__gpu-initiated__gin_recovery__reconnect__results__20261008_smoke.tar.xz` | 122 | 0.04 | `8b6cea2e0e01` | smoke runs, not scored |
+| `harness/gpu-initiated/gin_recovery/pair_reset/results/20261008` | `harness__gpu-initiated__gin_recovery__pair_reset__results__20261008.tar.xz` | 604 | 0.25 | `f517a5d85a74` |  |
+| `harness/gpu-initiated/gin_recovery/pair_reset/results/20261008_smoke` | `harness__gpu-initiated__gin_recovery__pair_reset__results__20261008_smoke.tar.xz` | 69 | 0.03 | `6867007a4dc2` | smoke runs, not scored |
