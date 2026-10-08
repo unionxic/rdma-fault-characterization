@@ -2,7 +2,8 @@
 # run_mr.sh - one gin-multirank trial: N processes of gin_mr (the unmodified application), rank r on rain when r is even
 # and on sunny when r is odd (interleaved, so NCCL's LSA team has one rank and no rank maps another process's memory;
 # EXPERIMENT.md 1). Every cluster action runs inside ../../common/cluster_run.sh (hold.sh via chain.sh); this script
-# bounds each process with timeout -s KILL (WATCHDOG_S + 20) and kills only gin_mr (exact name) or our PIDs.
+# bounds each process with timeout -s KILL (WATCHDOG_S + 20), whose kill reaches only its own child. It never kills by
+# name: the only kill is KILL_RANK's, by the PID recorded right after that rank started (below).
 #
 # usage: run_mr.sh <trial-tag> <logdir>
 # env:
@@ -15,9 +16,12 @@
 #   TS (1)             NCCL_GIN_FAULT_TRANSPARENT; REC, CLASSIFY (1)
 #   MRGE (1 if N > 2)  NCCL_MULTI_RANK_GPU_ENABLE (0 with N > 2 is the pilot's negative control)
 #   R<r>_ENV           extra environment of rank r (fault hooks, test switches); EXTRA_ENV: every rank
-#   KILL_RANK, KILL_DELAY_MS   SIGKILL rank KILL_RANK KILL_DELAY_MS after the runner started it: the gin_mr child of the
-#                      timeout this script started, found by PID (rain: our background PID; sunny: the PID our remote
-#                      shell wrote before exec); kill.out holds kill_mono_ms (that node's CLOCK_MONOTONIC), pid, rank, node
+#   KILL_RANK, KILL_DELAY_MS   SIGKILL rank KILL_RANK KILL_DELAY_MS after the runner started it. Its timeout's PID is
+#                      recorded at the start (rain: our background PID; sunny: the PID our remote shell wrote before
+#                      exec); the PID of its gin_mr and of that process's parent are recorded from it (parent links,
+#                      pgrep -P) as soon as they exist; the kill goes to that recorded PID only while it is still gin_mr
+#                      with the recorded parent (so the PID cannot have been reused); kill.out holds kill_mono_ms (that
+#                      node's CLOCK_MONOTONIC), pid, rank, node
 #   CELL               stem prefix of the trial files
 # files in <logdir>: <stem>_r<r>.log, <stem>_r<r>.kv (every rank), <stem>_kill.out, <stem>_meta.txt
 set -u
@@ -72,15 +76,29 @@ launch 0
 KILLER=""
 if [ -n "${KILL_RANK:-}" ]; then
   KR=$KILL_RANK
+  # record the PID of KR's gin_mr and of its parent: a descendant (child or grandchild) of the PID we recorded at its
+  # start, found through the parent links (pgrep -P) and recognised by /proc/<pid>/comm; up to 20 s
+  PIDREC='for i in $(seq 1 200); do for a in "$1" $(pgrep -P "$1"); do for c in $(pgrep -P "$a"); do
+[ "$(cat /proc/$c/comm 2>/dev/null)" = gin_mr ] && { echo "$c $a" > "$2"; exit 0; }; done; done; sleep 0.1; done; exit 1'
+  if [ $((KR % 2)) -eq 1 ]; then
+    ssh -n "$SUNNY_SSH" "for i in \$(seq 1 50); do [ -s $RT.r$KR.pid ] && break; sleep 0.1; done; \
+bash -c '$PIDREC' _ \$(cat $RT.r$KR.pid) $RT.r$KR.cpid" &
+  else
+    bash -c "$PIDREC" _ "${PID[$KR]}" "$WORK/kill_target.pid" &
+  fi
+  RECORDER=$!
   ( sleep "$(awk -v a="${LT[$KR]}" -v d="${KILL_DELAY_MS:-6500}" -v n="$(date +%s.%N)" \
               'BEGIN{s = a + d / 1000 - n; if (s < 0) s = 0; print s}')"
-    PYK='import os,sys,time; t=time.clock_gettime(time.CLOCK_MONOTONIC)*1e3; os.kill(int(sys.argv[1]),9); print("kill_mono_ms=%.3f pid=%s rank=%s node=%s" % (t, sys.argv[1], sys.argv[2], sys.argv[3]))'
+    # kill the recorded PID only while it is still the child of the recorded timeout (no PID reuse)
+    PYK='import os,sys,time; c,p=int(sys.argv[1]),sys.argv[2]; s=open("/proc/%d/stat"%c).read(); assert s[s.index("(")+1:s.rindex(")")]=="gin_mr" and s.rsplit(")",1)[1].split()[1]==p, "not the recorded process"; t=time.clock_gettime(time.CLOCK_MONOTONIC)*1e3; os.kill(c,9); print("kill_mono_ms=%.3f pid=%d rank=%s node=%s" % (t, c, sys.argv[3], sys.argv[4]))'
     if [ $((KR % 2)) -eq 1 ]; then
-      ssh -n "$SUNNY_SSH" "pp=\$(cat $RT.r$KR.pid 2>/dev/null); pid=\$(pgrep -P \"\$pp\" -x $BIN | head -1); \
-if [ -n \"\$pid\" ]; then python3 -c '$PYK' \"\$pid\" $KR sunny; else echo no_process=1 rank=$KR; fi"
+      ssh -n "$SUNNY_SSH" "for i in \$(seq 1 50); do [ -s $RT.r$KR.cpid ] && break; sleep 0.1; done; \
+read c p < $RT.r$KR.cpid 2>/dev/null; \
+if [ -n \"\$c\" ] && [ -n \"\$p\" ]; then python3 -c '$PYK' \"\$c\" \"\$p\" $KR sunny; else echo no_process=1 rank=$KR; fi"
     else
-      pid=$(pgrep -P "${PID[$KR]}" -x $BIN | head -1)
-      if [ -n "$pid" ]; then python3 -c "$PYK" "$pid" "$KR" rain; else echo "no_process=1 rank=$KR"; fi
+      for i in $(seq 1 50); do [ -s "$WORK/kill_target.pid" ] && break; sleep 0.1; done
+      read -r c p < "$WORK/kill_target.pid" 2>/dev/null
+      if [ -n "${c:-}" ] && [ -n "${p:-}" ]; then python3 -c "$PYK" "$c" "$p" "$KR" rain; else echo "no_process=1 rank=$KR"; fi
     fi > "$WORK/kill.out" 2>&1
     echo "[$tag] SIGKILL rank $KR after ${KILL_DELAY_MS:-6500} ms: $(cat "$WORK/kill.out")" >&2 ) &
   KILLER=$!
@@ -88,14 +106,14 @@ fi
 declare -A RC
 for ((r = 0; r < N; r++)); do wait "${PID[$r]}" 2>/dev/null; RC[$r]=$?; done
 T1=$(date +%s.%N)
-[ -n "$KILLER" ] && wait "$KILLER" 2>/dev/null
+[ -n "$KILLER" ] && wait "$KILLER" "$RECORDER" 2>/dev/null
 for ((r = 1; r < N; r += 2)); do
   scp -q "$SUNNY_SSH:$RT.r$r.kv" "$WORK/r$r.kv" 2>/dev/null || true
   scp -q "$SUNNY_SSH:$RT.r$r.log" "$WORK/r$r.log" 2>/dev/null || true
 done
-# only our own binary name, exact match (other users run other binaries); then our sunny-side files
-ssh -n "$SUNNY_SSH" "pgrep -x $BIN | xargs -r kill -9 2>/dev/null; rm -f $RT.r*.kv $RT.r*.log $RT.r*.pid" || true
-pkill -x $BIN 2>/dev/null || true
+# nothing is killed here: every rank's timeout has exited (wait above), so its gin_mr has ended too. Our sunny-side files
+# go; LEFT is a read-only count of gin_mr processes still present on either node (expected 0; two in a row stop the run)
+ssh -n "$SUNNY_SSH" "rm -f $RT.r*.kv $RT.r*.log $RT.r*.pid $RT.r*.cpid" || true
 LEFT=$( { pgrep -x $BIN; ssh -n "$SUNNY_SSH" "pgrep -x $BIN"; } 2>/dev/null | wc -l)
 mkdir -p "$LOGDIR"
 stem="${CELL:-mr_n${N}_${MODE}}_${TRIAL}"

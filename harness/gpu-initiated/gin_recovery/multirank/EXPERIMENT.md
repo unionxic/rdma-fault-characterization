@@ -381,10 +381,15 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 본 실행은 모두 
   돌지 않는다(3.4).
 - **하지 않는 것.** 실제 link down이나 flap, 재부팅, 드라이버 재적재, 커널 모듈 적재, RoCE 주소 변경, iptables 같은 방화벽 변경, 시스템
   TCP 설정 변경, GPU 컴퓨트 모드 변경. 이 실험은 관리망 끊김을 쓰지 않는다.
-- **프로세스.** 우리가 띄운 프로세스만 정확한 이름(`pkill -x gin_mr`)이나 PID로 끈다. kill 셀은 실행기가 띄운 `timeout`의 자식 `gin_mr`를
-  PID로 찾는다. 다른 사용자의 작업(gds-kv, NVMe-oF, gdsio, mooncake, `prio-` 작업)은 건드리지 않는다.
-  - `left > 0`이 두 시행 연속이면 `cells.sh`가 `STOP_left`를 쓰고, 그 hold의 남은 시행과 이후 hold를 돌지 않는다.
-  - hold가 제한 시간으로 잘려 `gin_mr`가 남았으면, 다음 hold가 시작할 때 두 노드에서 `pkill -x gin_mr`로 끄고 `stale.txt`에 적는다.
+- **프로세스.** 이름으로는 아무것도 끄지 않는다(`pkill`, `killall` 없음). 같은 Unix 계정으로 다른 사용자의 실험과 VS Code가 돈다.
+  다른 사용자의 작업(gds-kv, NVMe-oF, gdsio, mooncake, `prio-` 작업)은 건드리지 않는다.
+  - 랭크마다 `timeout -s KILL (WATCHDOG_S + 20)`이 제 자식 `gin_mr`만 끝낸다. 실행기는 끄지 않는다.
+  - kill 셀의 kill은 하나뿐이다. 실행기가 그 랭크를 띄울 때 기록한 PID에서 부모 관계(`pgrep -P`)로 `gin_mr`의 PID와 그 부모 PID를 기록하고,
+    kill 직전에 그 PID가 여전히 `gin_mr`이고 부모가 같은지 확인한 뒤 그 PID에만 SIGKILL을 보낸다(`run_mr.sh`).
+  - 시행 뒤 `gin_mr`가 남았는지는 읽기만 해서 센다(`left`). `left > 0`이 두 시행 연속이면 `cells.sh`가 `STOP_left`를 쓰고, 그 hold의 남은
+    시행과 이후 hold를 돌지 않는다.
+  - hold가 제한 시간으로 잘려 `gin_mr`가 남았으면 그것은 제 `timeout`이 끝낸다. 다음 hold는 시작할 때 남은 `gin_mr`가 없어질 때까지 150 s
+    까지 기다리고(`stale.txt`), 그래도 있으면 시행을 하나도 돌지 않는다(`STOP_left`).
 - **mlx5 오류.** rain `mlx5_1`은 펌웨어 명령 슬롯 하나가 새어 있다. hold 앞뒤에 두 노드의 mlx5 커널 줄 전체와 rain의 펌웨어 명령 계수를
   남긴다. hold 동안 새 mlx5 명령 오류 줄(`mlx5`와 `cmd` 또는 `command`, 그리고 `failed`, `timeout`, `leak` 중 하나)이 생기거나 명령 실패
   계수(`failed`, `failed_mbox_status`)가 늘면 그 hold 뒤로 멈춘다(`STOP_mlx5`). 이 실험은 한 노드의 두 프로세스가 같은 NIC에 펌웨어 명령을
