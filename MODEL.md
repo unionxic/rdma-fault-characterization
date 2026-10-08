@@ -122,8 +122,17 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
     마감보다 오래 멈추면 "복구 불가"(20/20)로 판정됐다. 장애 없이 멈춘 상대는 아무도 알아채지 못했다(15/15).
   - GIN 투명 복구도 같다. 관리망 소켓이 시간 초과로 닫히면 살아 있는 상대의 상대 QP 오류를 상대가 끊은 것으로
     보고 거절했다(10/10).
+  - 관리망이 한쪽 방향으로만 끊겨도 같았다. 먼저 시간 초과한 쪽 커널이 보낸 리셋을 받은 쪽이 살아 있는 상대를 죽음으로
+    보고 거절했고, 시험 스위치 없는 실제 경주에서도 그랬다(5/5). 리셋을 "모름"으로 두고 다시 연결하게 고치자 오판이
+    없어졌고, 죽은 상대는 확인 접속이 거부되어 장애를 본 뒤 1.29–2.12 ms에 판정했다(사전 등록, 예측 28줄 중 23줄 맞음.
+    틀린 5줄은 정상 종료 때의 소켓 닫힘까지 죽음으로 센 판정식 탓이다).
+- 오판이 시작되는 경계를 사전 등록하고 쟀다. 경계 위치는 소스의 마감 상수와 측정한 지연으로 미리 맞혔다(측정 예측 14줄
+  중 12줄 맞음, 판정식을 문자 그대로 읽으면 11줄).
+  - CPU harness의 1 s 마감은 커널 타이머가 32 ms 격자로 올려 잡아 실제로 1001.6–1027.1 ms에 끝났다. 정지 990 ms 이하는
+    늘 살아 있음, 1040 ms 이상은 늘 응답 없음이었다.
+  - GIN 복구의 3 s 핸드셰이크 마감에서는 정지 2992 ms 이하면 늘 복구, 2998 ms 이상이면 늘 거절이었다.
 
-**한계.** 오판은 마감의 양쪽에 정지 시간 하나씩만 쟀다. 오판이 시작되는 경계 자체는 재지 않았다.
+**한계.** 경계 근처(CPU harness 990–1040 ms, GIN 복구 2992–2998 ms)에서 오판이 날 확률은 재지 않았다.
 원인을 가를 수 있는데 아무도 쓰지 않는 정보도 있다.
 - 주소 재구성 때 GID 변경 비동기 이벤트가 재시도 초과보다 3.5–3.7 s 먼저 왔다(29/29). 어느 스택도
   이 이벤트를 읽지 않는다.
@@ -197,7 +206,7 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
 ## 범위와 남은 확인
 
 - 노드 한 쌍, NIC 한 종류(ConnectX-6)에서 쟀다. 장애는 소프트웨어로 주입했다.
-- 규칙 3의 오판은 마감 양쪽 한 점씩만 쟀다. 경계 자체는 재지 않았다.
+- 규칙 3의 오판 경계는 쟀지만, 경계 근처에서 오판이 날 확률은 재지 않았다.
 - 규칙 1은 스택 14개에 소스로 적용해 봤고, 그중 이 테스트베드에서 잴 수 있는 경로만 쟀다. 소스로만 예측한
   경로(UCX GPU의 지연 게시, rocSHMEM 등)는 재지 않았다.
 
@@ -207,7 +216,7 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
 |---|---|
 | 1 | [nvshmem_rootcause/README.md](harness/gpu-initiated/nvshmem_rootcause/README.md), [official380/README.md](harness/gpu-initiated/nvshmem_rootcause/official380/README.md), [cq380/README.md](harness/gpu-initiated/nvshmem_rootcause/cq380/README.md), [completion_contract/README.md](harness/gpu-initiated/completion_contract/README.md) |
 | 2, 4 | [propagation/README.md](harness/gpu-initiated/propagation/README.md), [LAYERS.md](harness/gpu-initiated/propagation/results/20261006_campaign/LAYERS.md), [REVIEW_20261006.md](harness/gpu-initiated/propagation/REVIEW_20261006.md) |
-| 3 | [teardown_order/README.md](harness/teardown_order/README.md), [ack_timeout/README.md](harness/ack_timeout/README.md), [stage2/README.md](harness/nccl-integration/stage2/README.md), [live_peer/README.md](harness/live_peer/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md) |
+| 3 | [teardown_order/README.md](harness/teardown_order/README.md), [ack_timeout/README.md](harness/ack_timeout/README.md), [stage2/README.md](harness/nccl-integration/stage2/README.md), [live_peer/README.md](harness/live_peer/README.md), [boundary/README.md](harness/live_peer/boundary/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md), [oneway/README.md](harness/gpu-initiated/gin_recovery/oneway/README.md) |
 | 4 | [gin/README.md](harness/gpu-initiated/gin/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md) |
 | 5 | [gin_recovery/README.md](harness/gpu-initiated/gin_recovery/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md), [t1_close/README.md](harness/gpu-initiated/nvshmem_ft/t1_close/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md) |
 
