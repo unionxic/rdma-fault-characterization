@@ -1,5 +1,5 @@
 diff --git a/src/init.cc b/src/init.cc
-index d08ac5f..417619d 100644
+index d08ac5f..3de1432 100644
 --- a/src/init.cc
 +++ b/src/init.cc
 @@ -296,6 +296,10 @@ void ncclCommPushCudaGdrFree(struct ncclComm* comm, void* handle) {
@@ -21,21 +21,24 @@ index d08ac5f..417619d 100644
        for (int c = 0; c < MAXCHANNELS; c++) {
          if (comm->sharedRes->peers[c]) free(comm->sharedRes->peers[c]);
          if (comm->sharedRes->devPeers[c]) ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
-@@ -3557,6 +3562,91 @@ static void childCommCleanupJob(void* job) {
+@@ -3557,6 +3562,98 @@ static void childCommCleanupJob(void* job) {
    delete initJob;
  }
  
 +// gin-handoff: the readiness check of an aborting shrink (NCCL_SHRINK_ABORT). Stock ncclCommInitChildComm calls
-+// ncclCommEnsureReady, which reports the parent's GIN async error, so stock NCCL can never shrink a communicator after a
-+// GIN error, not even to drop the rank that caused it. Here the aborting shrink goes on when the parent's only pending
++// ncclCommEnsureReady, which reports the parent's GIN async error, so stock NCCL cannot shrink a communicator after a GIN
++// error, not even to drop the rank that caused it, unless the application first destroys every devComm with GIN
++// contexts (ncclDevCommDestroy unlinks them, and with them every GIN error, also those for live peers). Here the
++// aborting shrink goes on, with the devComms left in place, when the parent's only pending
 +// error is the GIN error of its GDAKI contexts and the GDAKI layer raised it only for GIN peers that are all excluded
 +// (gin_host_gdaki.cc ncclGinTsBlameQuery). The child of an aborting shrink never shares the parent's resources
 +// (ncclCommInitChildComm: shareResources is false for NCCL_SHRINK_ABORT): it gets its own shared resources, GIN state,
 +// async result and abort flags, so it does not inherit the parent's GIN error; the parent keeps its error and still has
 +// to be aborted or destroyed. Every other case keeps the stock answer and says why: NCCL_GIN_SHRINK_HANDOFF=0, an error
-+// that is not ncclRemoteError or not from GIN (the communicator's or the proxy's async result), GIN progress threads
-+// (their async result names no peer), a GIN state shared with another communicator, a GIN backend other than GDAKI, no
-+// record, a raise without a peer, a peer that cannot be mapped or is not excluded. excludeRanksList is sorted.
++// that is not ncclRemoteError or not from GIN (the communicator's or the proxy's async result), a group job of the parent
++// not yet completed (stock completes it only when there is no error), GIN progress threads (their async result names no
++// peer), a GIN state shared with another communicator, a GIN backend other than GDAKI, no record, a raise without a peer,
++// too many peers, a peer that cannot be mapped or is not excluded. excludeRanksList is sorted.
 +static double commMonoMs() {
 +  struct timespec t;
 +  clock_gettime(CLOCK_MONOTONIC, &t);
@@ -59,6 +62,8 @@ index d08ac5f..417619d 100644
 +             (comm->proxyState &&
 +              COMPILER_ATOMIC_LOAD(&comm->proxyState->asyncResult, std::memory_order_acquire) != ncclSuccess)) {
 +    why = "the communicator or its proxy has an error of its own";
++  } else if (comm->groupJob != nullptr) {
++    why = "a group job of the communicator is not completed";
 +  } else if (gs == nullptr || !gs->connected) {
 +    why = "no GIN state";
 +  } else if (gs->proxyThreadsCreated) {
@@ -77,6 +82,7 @@ index d08ac5f..417619d 100644
 +      const int stride = full ? 1 : comm->contiguousRanksPerHost;
 +      const int q = ncclGinTsBlameQuery(&gs->asyncResult, peers, kMaxPeers, &nPeers);
 +      if (q == 0) why = "no record of the GIN error";
++      else if (q == -2) why = "the GIN error was raised for more than 64 peers";
 +      else if (q < 0) why = "a GIN error was raised without a peer";
 +      else if (nPeers == 0) why = "no peer recorded";
 +      else if (stride < 1 || stride == INT_MAX) why = "the GIN ranks cannot be mapped to communicator ranks";
@@ -102,18 +108,19 @@ index d08ac5f..417619d 100644
 +    len += snprintf(list + len, sizeof(list) - len, "%s%d", i ? "," : "", worlds[i]);
 +#ifdef NCCL_GIN_TS_PRODUCTION
 +  INFO(NCCL_INIT,
-+#else
-+  WARN(
-+#endif
 +       "GIN/TS: rank %d: aborting shrink proceeds past the parent's GIN error, raised for rank(s) %s, all excluded "
 +       "mono_ms=%.3f", comm->rank, list, commMonoMs());
++#else
++  WARN("GIN/TS: rank %d: aborting shrink proceeds past the parent's GIN error, raised for rank(s) %s, all excluded "
++       "mono_ms=%.3f", comm->rank, list, commMonoMs());
++#endif
 +  return ncclSuccess;
 +}
 +
  // initializing a child communicator (for both split and shrink)
  static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, bool isShrink, int flags, int color,
                                            int key, int* excludeRanksList, int excludeRanksCount, ncclConfig_t* config,
-@@ -3580,7 +3670,11 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm,
+@@ -3580,7 +3677,11 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm,
                      ncclSuccess,
                    res, exit);
    }
@@ -127,10 +134,10 @@ index d08ac5f..417619d 100644
  
    /* *newcomm should be NCCL_COMM_NULL until comm split fully complete. */
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 09c9461..50ff5e1 100644
+index 09c9461..8efd681 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-@@ -798,6 +798,71 @@ static double gdakiQ4MonoMs() {
+@@ -798,6 +798,72 @@ static double gdakiQ4MonoMs() {
    return t.tv_sec * 1e3 + t.tv_nsec * 1e-6;
  }
  
@@ -172,15 +179,16 @@ index 09c9461..50ff5e1 100644
 +}
 +
 +// init.cc: 1 with the GIN peers (at most maxPeers) when every GIN error raise for `slot` named a peer; 0 when there is
-+// no record for `slot`; -1 when a raise named no peer, a raise could not be tied to any communicator, or there are more
-+// than maxPeers peers.
++// no record for `slot`; -1 when a raise named no peer or a raise could not be tied to any communicator; -2 when there
++// are more than maxPeers peers.
 +int ncclGinTsBlameQuery(const void* slot, int* peers, int maxPeers, int* nPeers) {
 +  *nPeers = 0;
 +  if (gdakiBlameUnkeyed.load(std::memory_order_seq_cst)) return -1;
 +  std::lock_guard<std::mutex> lk(gdakiBlameMu);
 +  for (auto& x : gdakiBlameReg) {
 +    if (x.slot != slot) continue;
-+    if (x.noPeer != 0 || (int)x.peers.size() > maxPeers) return -1;
++    if (x.noPeer != 0) return -1;
++    if ((int)x.peers.size() > maxPeers) return -2;
 +    for (int p : x.peers) peers[(*nPeers)++] = p;
 +    return 1;
 +  }
@@ -202,7 +210,7 @@ index 09c9461..50ff5e1 100644
  // mlx5 syndrome -> ibv_wc_status (rdma-core providers/mlx5/cq.c, mlx5_handle_error_cqe).
  static int gdakiQ4WcStatus(uint8_t syndrome) {
    switch (syndrome) {
-@@ -927,6 +992,7 @@ static void gdakiQ4Handle(struct gdakiQ4Host* q, const struct ncclGinGdakiQ4Reco
+@@ -927,6 +993,7 @@ static void gdakiQ4Handle(struct gdakiQ4Host* q, const struct ncclGinGdakiQ4Reco
        // handled as Q4 does.
        gdakiTsPushFault(g->rec, r, monoMs);
      } else {
@@ -210,7 +218,7 @@ index 09c9461..50ff5e1 100644
        q->hasError.store(1, std::memory_order_release);
        if (q->asyncResult) {
          __atomic_store_n(q->asyncResult, ncclRemoteError, __ATOMIC_RELEASE);
-@@ -2744,6 +2810,8 @@ static void gdakiTsSurface(struct gdakiRecHost* r, const char* why) {
+@@ -2744,6 +2811,8 @@ static void gdakiTsSurface(struct gdakiRecHost* r, const char* why) {
    struct gdakiTs* ts = r->ts;
    if (ts->surfaced.exchange(1) != 0) return;
    struct gdakiQ4Host* q4 = r->ctx->q4;
@@ -219,7 +227,7 @@ index 09c9461..50ff5e1 100644
    q4->hasError.store(1, std::memory_order_release);
    if (q4->asyncResult) {  // gin-harden: never after the communicator is freed (an orphaned helper)
      (void)gdakiTsToComm(ts, [&] {
-@@ -4068,6 +4136,7 @@ static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bo
+@@ -4068,6 +4137,7 @@ static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bo
    }
    struct gdakiQ4Host* q4 = r->ctx->q4;
    (void)gdakiTsToComm(ts, [&] {  // never after the communicator is freed (an orphaned helper)
@@ -227,7 +235,7 @@ index 09c9461..50ff5e1 100644
      ncclGinTsUserAbortRaise(r->commKey, uaWhy);
      if (q4->asyncResult) {
        __atomic_store_n(q4->asyncResult, ncclRemoteError, __ATOMIC_RELEASE);
-@@ -5500,6 +5569,8 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+@@ -5500,6 +5570,8 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
                0
  #endif
    );
@@ -236,7 +244,7 @@ index 09c9461..50ff5e1 100644
  }
  
  // Called by ncclCommAbort as soon as the abort flags are set (before the teardown, whose cudaFree calls
-@@ -6666,6 +6737,8 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
+@@ -6666,6 +6738,8 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
    } else {
      NCCLCHECKGOTO(ncclGinGdakiQueryLastErrorPolling(gdakiCtx, &hasError_), status, exit);
    }
