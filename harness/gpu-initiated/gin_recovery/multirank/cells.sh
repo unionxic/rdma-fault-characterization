@@ -18,7 +18,20 @@ peerhook() { echo "NCCL_GIN_FAULT_INJECT=peer_err:$F_MS NCCL_GIN_FAULT_INJECT_CT
 ST="NCCL_GIN_TS_TEST_STALL=${STALL}@quiesce"
 BASE="GIN_TS_RX_WAIT_S=10"
 run() { CELL=$CELL LIB=$LIBK MRKEY=${MRKEY:-$LIBK} ABORT_WD_S=20 bash "$D/run_mr.sh" "$@"; }
+RES=$(dirname "$L")   # the results directory (hold.sh passes <resultsdir>/<hold folder>)
+streak() {  # after trial $1: two trials in a row that left a gin_mr process behind write $RES/STOP_left (EXPERIMENT.md 8)
+  local left; left=$(sed -n 's/.* left=\([0-9]*\) .*/\1/p' "$L/${CELL}_$1_meta.txt" 2>/dev/null)
+  if [ -n "$left" ] && [ "$left" -gt 0 ]; then
+    echo $(( $(cat "$RES/LEFT_STREAK" 2>/dev/null || echo 0) + 1 )) > "$RES/LEFT_STREAK"
+  else
+    echo 0 > "$RES/LEFT_STREAK"
+  fi
+  if [ "$(cat "$RES/LEFT_STREAK")" -ge 2 ]; then
+    echo "$(date '+%F %T') ${CELL}_$1: gin_mr left behind in two trials in a row" | tee -a "$RES/STOP_left"
+  fi
+}
 for ((k = START; k < START + NRUN; k++)); do
+  [ -e "$RES/STOP_left" ] || [ -e "$RES/STOP_mlx5" ] && { echo "skipped ${CELL}_n$k: STOP file" >&2; break; }
   t=n$k
   case "$CELL" in
     # fault-free
@@ -53,4 +66,5 @@ for ((k = START; k < START + NRUN; k++)); do
     mr4_lat)         N=4 MODE=lat ITERS=3000 BYTES=4096 EXTRA_ENV="$BASE" run $t "$L" ;;
     *) echo "unknown cell $CELL" >&2; exit 1 ;;
   esac
+  streak $t
 done

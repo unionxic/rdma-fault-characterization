@@ -31,8 +31,13 @@ snap() {  # snap <tag>
   echo "rain fwcmd failed sum: $(awk '{for(i=1;i<=NF;i++) if($i ~ /^failed=|^failed_mbox_status=/){split($i,a,"="); s+=a[2]}} END{print s+0}' "$R/fwcmd_$1.txt")"
 }
 mkdir -p "$R"
+stale=$( { pgrep -x gin_mr; ssh -n "$SUNNY_SSH" "pgrep -x gin_mr"; } 2>/dev/null | wc -l)
+if [ "$stale" -gt 0 ]; then  # only our own binary name (an earlier hold cut by its timeout)
+  echo "$(date '+%F %T') hold $HT: $stale gin_mr process(es) left from before; ending them" | tee -a "$R/stale.txt"
+  pkill -x gin_mr 2>/dev/null; ssh -n "$SUNNY_SSH" "pkill -x gin_mr" 2>/dev/null; sleep 2
+fi
 snap "before-$HT" | tee "$R/snap_before-$HT.txt"
-c() { bash "$D/cells.sh" "$R/$2" "$1" "$LIB" "${3:-1}" "${4:-1}"; }  # c <cell> <subdir> [n] [start]
+c() { [ -e "$R/STOP_left" ] || bash "$D/cells.sh" "$R/$2" "$1" "$LIB" "${3:-1}" "${4:-1}"; }  # c <cell> <subdir> [n] [start]
 okall() {  # okall <subdir> <cell> <trial> <n>: every rank's kv says outcome=ok
   local r; for ((r = 0; r < $4; r++)); do grep -qx 'outcome=ok' "$R/$1/${2}_${3}_r$r.kv" 2>/dev/null || return 1; done
 }
