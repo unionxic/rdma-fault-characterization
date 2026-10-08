@@ -1,0 +1,1425 @@
+diff --git a/src/dev_runtime.cc b/src/dev_runtime.cc
+index 7bacbbe..95f1c14 100644
+--- a/src/dev_runtime.cc
++++ b/src/dev_runtime.cc
+@@ -30,7 +30,7 @@
+ int64_t ncclParamEnqueueRearchEnable();
+ 
+ bool ncclGinTsUserAbortEnabled();  // transport/net_ib/gdaki/gin_host_gdaki.cc (gin-s2-close)
+-uint32_t* ncclGinTsUserAbortWord(void* comm, int rank);  // gin_host_gdaki.cc (gin-harden)
++uint32_t* ncclGinTsUserAbortWord(void* comm, int rank, int nRanks);  // gin_host_gdaki.cc (gin-harden; gin-peer: nRanks)
+ 
+ NCCL_PARAM(WinStride, "WIN_STRIDE", -1);
+ NCCL_PARAM(EnableVersionCheck, "ENABLE_VERSION_CHECK", 1);
+@@ -1649,14 +1649,18 @@ ncclResult_t ncclDevrCommCreateInternal(struct ncclComm* comm, struct ncclDevCom
+     // communicator's: only ncclCommAbort, an aborting shrink, a revoke and the recovery's own decline and death paths
+     // write it, always with NCCL_DEVCOMM_ABORT_ERROR, so a wait it releases returns an error. Group failures and the
+     // shrink's temporary flag no longer release user waits.
++    // gin-peer: one word per peer besides it (sized by the communicator's rank count). A decline toward a peer raises
++    // that peer's word only, which the gates of that peer's QPs carry; this devComm word (waits that name no peer:
++    // waitSignal, waitCounter, barriers) is raised by ncclCommAbort, an aborting shrink, a revoke, and once every peer
++    // of this rank is declined.
+     if (!isInternal && ncclGinTsUserAbortEnabled()) {
+-      uint32_t* w = ncclGinTsUserAbortWord((void*)comm, comm->rank);
++      uint32_t* w = ncclGinTsUserAbortWord((void*)comm, comm->rank, comm->nRanks);
+       if (w != nullptr) {
+         outDevComm->abortFlag = w;
+ #ifdef NCCL_GIN_TS_PRODUCTION
+-        INFO(NCCL_INIT, "GIN/TS: user devComm abort flag set rank=%d word=own", comm->rank);
++        INFO(NCCL_INIT, "GIN/TS: user devComm abort flag set rank=%d word=own per_peer=1", comm->rank);
+ #else
+-        WARN("GIN/TS: user devComm abort flag set rank=%d word=own", comm->rank);
++        WARN("GIN/TS: user devComm abort flag set rank=%d word=own per_peer=1", comm->rank);
+ #endif
+       } else {
+         WARN("GIN/TS: no abort word for the user devComm on rank %d; its waits are not released by an abort", comm->rank);
+diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki.h b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
+index 5b855bb..c849598 100644
+--- a/src/include/nccl_device/gin/gdaki/gin_gdaki.h
++++ b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
+@@ -213,6 +213,25 @@ NCCL_DEVICE_INLINE static bool tsLateFail(doca_gpu_dev_verbs_qp* qp, struct nccl
+   return true;
+ }
+ 
++// gin-harden: the user devComm's own abort word for a parked poster: the host stores it in gate.test with bit 0 set
++// (the field holds the split test's pointer only under NCCL_GIN_TS_F_TEST_SPLIT); nullptr while it is not there (or
++// with an older library, which leaves the field 0): the poster is then bounded by waitMs as before.
++// gin-peer: the word stored there is the one of this QP's peer (per peer, not per communicator): a decline toward that
++// peer raises it, and so do ncclCommAbort, an aborting shrink and a revoke (they raise every peer's word). Waiters and
++// pollers of the QP read it too, so a decline toward one peer releases, without any copy, exactly the device threads
++// that wait on that peer's QPs.
++NCCL_DEVICE_INLINE static uint32_t* tsPosterAbortWord(doca_gpu_dev_verbs_qp* qp) {
++  struct ncclGinTsGate* g = tsGate(qp);
++  if (g->flags & NCCL_GIN_TS_F_TEST_SPLIT) return nullptr;
++  const uint64_t t = tsLoadRelaxedSys64(&g->test);
++  return (t & 1ull) ? (uint32_t*)(uintptr_t)(t & ~1ull) : nullptr;
++}
++// gin-peer: the word of this QP's peer carries NCCL_DEVCOMM_ABORT_ERROR (`other` is a word already checked: skipped)
++NCCL_DEVICE_INLINE static bool tsQpWordError(doca_gpu_dev_verbs_qp* qp, uint32_t* other) {
++  uint32_t* w = tsPosterAbortWord(qp);
++  return w != nullptr && w != other && nccl::utility::abortIsError(w);
++}
++
+ // Park until the epoch is stable and differs from `notEpoch` (NCCL_GIN_TS_EPOCH_ANY: any stable epoch),
+ // bounded by the caller's deadline (TIMEOUT) and by the gate's waitMs: a give-up through the commit point;
+ // after a lost give-up, one more bound, then a failure through the second Dekker (tsLateFail); if the host
+@@ -234,7 +253,10 @@ NCCL_DEVICE_INLINE static int tsParkStable(doca_gpu_dev_verbs_qp* qp, uint32_t n
+     if (tsExpired(dl)) return NCCL_GIN_TS_TIMEOUT;
+     // gin-harden: the user devComm's own abort word with the error bit releases a parked waiter at once. The QP is
+     // failed from the device too (DEV_FAILED: the host then never publishes a round whose waiter saw an error).
+-    if (dl.abortFlag != nullptr && (++abortSteps & 0x3fu) == 0 && nccl::utility::abortIsError(dl.abortFlag)) {
++    // gin-peer: every 64 polls, the caller's word (a waiter's devComm word, raised by ncclCommAbort, an aborting
++    // shrink, a revoke, or once every peer is declined; a poster's: the word below) and the word of this QP's peer.
++    if ((++abortSteps & 0x3fu) == 0 &&
++        ((dl.abortFlag != nullptr && nccl::utility::abortIsError(dl.abortFlag)) || tsQpWordError(qp, dl.abortFlag))) {
+       tsPoison(qp, q4, ctxId);
+       return NCCL_GIN_TS_FAIL;
+     }
+@@ -262,17 +284,7 @@ NCCL_DEVICE_INLINE static int tsParkStable(doca_gpu_dev_verbs_qp* qp, uint32_t n
+ // Poster slow path (out of line): the entry add returned an odd epoch or a failure. Back out, park (bounded
+ // by waitMs through the commit point, as waiters), and enter again once a new stable epoch is published.
+ // Returns false if the post must not be made: the QP failed (the operation is not posted and every later
+-// flush/wait on the QP reports ncclRemoteError).
+-// gin-harden: the user devComm's own abort word for a parked poster: the host stores it in gate.test with bit 0 set
+-// (the field holds the split test's pointer only under NCCL_GIN_TS_F_TEST_SPLIT); nullptr while it is not there (or
+-// with an older library, which leaves the field 0): the poster is then bounded by waitMs as before.
+-NCCL_DEVICE_INLINE static uint32_t* tsPosterAbortWord(doca_gpu_dev_verbs_qp* qp) {
+-  struct ncclGinTsGate* g = tsGate(qp);
+-  if (g->flags & NCCL_GIN_TS_F_TEST_SPLIT) return nullptr;
+-  const uint64_t t = tsLoadRelaxedSys64(&g->test);
+-  return (t & 1ull) ? (uint32_t*)(uintptr_t)(t & ~1ull) : nullptr;
+-}
+-
++// flush/wait on the QP reports ncclRemoteError). The poster's word: tsPosterAbortWord (above).
+ __device__ __noinline__ static bool tsGateEnterSlow(doca_gpu_dev_verbs_qp* qp, struct ncclGinGdakiQ4* q4, uint32_t ctxId,
+                                                     unsigned long long w) {
+   unsigned long long* word = tsWord(qp);
+@@ -1101,6 +1113,11 @@ __device__ __noinline__ static ncclResult_t tsPoll(ncclGinCtx ctx, struct ncclGi
+       cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
+       return ncclSuccess;
+     }
++    // gin-peer: on the same cadence (testAbort just looked: every 10000 polls), the word of this QP's peer
++    if (abortSteps == 0 && tsQpWordError(qp, abortFlag)) {
++      tsPollLeave(qp);
++      return tsFail(ctx, q4);
++    }
+   }
+ }
+ 
+diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
+index a3185e7..0386168 100644
+--- a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
++++ b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
+@@ -164,6 +164,9 @@ struct ncclGinTsGate {
+   uint32_t reported;     // device: highest (epoch + 2) for which a waiter published a fault record
+   uint64_t test;         // test only (TEST_SPLIT): device pointer of the host-mapped struct ncclGinTsTest.
+                          // gin-harden: without TEST_SPLIT, 0 or the user devComm's abort word | 1 (parked posters)
++                         // gin-peer: that word is the one of this QP's peer (a decline toward that peer raises it;
++                         // ncclCommAbort, an aborting shrink and a revoke raise every peer's word); parked waiters and
++                         // pollers of this QP read it too
+   uint32_t testPuts;     // test only (TEST_SPLIT): signalled puts seen on this QP (device atomics)
+   uint32_t swErr;        // device (the vendored slot wait): the first error CQE it saw in this epoch, bit 31 valid,
+                          // bits 8..15 syndrome, 0..7 vendor syndrome, 16..19 opcode (CAS from 0; the host zeroes it
+diff --git a/src/init.cc b/src/init.cc
+index 3de1432..b8e46b8 100644
+--- a/src/init.cc
++++ b/src/init.cc
+@@ -297,7 +297,8 @@ void ncclCommPushCudaGdrFree(struct ncclComm* comm, void* handle) {
+ void ncclGinTsUserAbortRaise(void* comm, int why);
+ void ncclGinTsUserAbortFree(void* comm);
+ // gin-handoff (transport/net_ib/gdaki/gin_host_gdaki.cc): which GIN peers a GIN state's GIN error was raised for.
+-int ncclGinTsBlameQuery(const void* slot, int* peers, int maxPeers, int* nPeers);
++int ncclGinTsBlameQuery(const void* slot, int* peers, int maxPeers, int* nPeers, int* otherPeer,
++                        const char** otherCause);  // gin-peer: with the cause class of each raise
+ void ncclGinTsBlameForget(const void* slot);
+ int ncclGinShrinkHandoffEnabled();
+ 
+@@ -3576,6 +3577,10 @@ static void childCommCleanupJob(void* job) {
+ // not yet completed (stock completes it only when there is no error), GIN progress threads (their async result names no
+ // peer), a GIN state shared with another communicator, a GIN backend other than GDAKI, no record, a raise without a peer,
+ // too many peers, a peer that cannot be mapped or is not excluded. excludeRanksList is sorted.
++// gin-peer: the rule asks for the cause too (gin-handoff qa/code_review.md M1): every raise must have a cause on the
++// peer's side (the peer died, left, or reported the failure itself) besides naming an excluded peer. A raise for an
++// excluded peer whose cause is on this rank (a failed commit or copy, a firmware overrun, a rejected re-post plan...) or
++// cannot be attributed keeps the stock answer, with the rank and the cause in the keep line.
+ static double commMonoMs() {
+   struct timespec t;
+   clock_gettime(CLOCK_MONOTONIC, &t);
+@@ -3617,8 +3622,16 @@ static ncclResult_t commShrinkAbortReady(ncclComm_t comm, int* excludeRanksList,
+       // the GIN ranks of the GDAKI contexts: the team ncclGinConnectOnce connects (gin/gin_host.cc)
+       const bool full = gs->ginConnectionType == NCCL_GIN_CONNECTION_FULL;
+       const int stride = full ? 1 : comm->contiguousRanksPerHost;
+-      const int q = ncclGinTsBlameQuery(&gs->asyncResult, peers, kMaxPeers, &nPeers);
+-      if (q == 0) why = "no record of the GIN error";
++      int otherPeer = -1;
++      const char* otherCause = "";
++      const int q = ncclGinTsBlameQuery(&gs->asyncResult, peers, kMaxPeers, &nPeers, &otherPeer, &otherCause);
++      if (q == -3) {  // gin-peer
++        const int st = (stride >= 1 && stride != INT_MAX) ? stride : 0;
++        const int world = st ? comm->rank + (otherPeer - comm->rank / st) * st : -1;
++        snprintf(whyBuf, sizeof(whyBuf), "it was raised for rank %d (GIN rank %d) with a cause that is not the peer's (%s)",
++                 world, otherPeer, otherCause);
++        why = whyBuf;
++      } else if (q == 0) why = "no record of the GIN error";
+       else if (q == -2) why = "the GIN error was raised for more than 64 peers";
+       else if (q < 0) why = "a GIN error was raised without a peer";
+       else if (nPeers == 0) why = "no peer recorded";
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 8efd681..15808a6 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -809,16 +809,36 @@ static double gdakiQ4MonoMs() {
+ // that cannot be tied to a communicator (no slot) turns that rule off for the whole process. Entries are dropped when the
+ // GIN state is freed (init.cc commFree); a stale entry can only add peers, never remove one.
+ NCCL_PARAM(GinShrinkHandoff, "GIN_SHRINK_HANDOFF", 1);  // gin-handoff: 0 = stock (an aborting shrink fails on a GIN error)
++// gin-peer: the cause class of every raise, besides the peer it names. Only a peer-side cause lets an aborting shrink
++// that excludes that peer go on: the peer died (FIN without BYE, two refused connects), it left (BYE), or it reported the
++// failure itself (FAIL or NACK on the helper socket, FAIL on a reconnect). A cause on this rank (a failed commit, copy or
++// QUERY_QP, a firmware overrun, a rejected re-post plan, the escalation cap, a device waiter that gave up...) or one that
++// cannot be attributed (no reconnect, a handshake timeout, a class that is not recoverable, a classified error without
++// transparent recovery) keeps the stock answer even when its peer is excluded (gin-handoff qa/code_review.md M1).
++enum class gdakiCause : int { Local = 0, PeerDead = 1, PeerLeft = 2, PeerReported = 3, Unknown = 4 };
++static const char* gdakiCauseName(gdakiCause c) {
++  switch (c) {
++    case gdakiCause::Local: return "local";
++    case gdakiCause::PeerDead: return "peer-dead";
++    case gdakiCause::PeerLeft: return "peer-left";
++    case gdakiCause::PeerReported: return "peer-reported";
++    default: return "unknown";
++  }
++}
++static bool gdakiCausePeerSide(gdakiCause c) {
++  return c == gdakiCause::PeerDead || c == gdakiCause::PeerLeft || c == gdakiCause::PeerReported;
++}
+ struct gdakiBlame {
+   const void* slot;
+-  std::vector<int> peers;  // GIN ranks, each once
++  std::vector<int> peers;  // GIN ranks, each once: raises with a peer-side cause
++  std::vector<std::pair<int, int>> other;  // gin-peer: (GIN rank, cause) of raises with a cause on this rank or none
+   uint64_t noPeer;         // raises that named no peer
+ };
+ static std::mutex gdakiBlameMu;
+ static std::vector<struct gdakiBlame> gdakiBlameReg;
+ static std::atomic<int> gdakiBlameUnkeyed{0};
+ 
+-static void gdakiBlameNote(const void* slot, int peer) {
++static void gdakiBlameNote(const void* slot, int peer, gdakiCause cause) {
+   if (slot == nullptr) {
+     gdakiBlameUnkeyed.store(1, std::memory_order_seq_cst);
+     return;
+@@ -828,23 +848,34 @@ static void gdakiBlameNote(const void* slot, int peer) {
+   for (auto& x : gdakiBlameReg)
+     if (x.slot == slot) e = &x;
+   if (e == nullptr) {
+-    gdakiBlameReg.push_back({slot, {}, 0});
++    gdakiBlameReg.push_back({slot, {}, {}, 0});
+     e = &gdakiBlameReg.back();
+   }
+   if (peer < 0) e->noPeer++;
+-  else if (std::find(e->peers.begin(), e->peers.end(), peer) == e->peers.end()) e->peers.push_back(peer);
++  else if (!gdakiCausePeerSide(cause)) {
++    const std::pair<int, int> pc(peer, (int)cause);
++    if (std::find(e->other.begin(), e->other.end(), pc) == e->other.end()) e->other.push_back(pc);
++  } else if (std::find(e->peers.begin(), e->peers.end(), peer) == e->peers.end()) e->peers.push_back(peer);
+ }
+ 
+-// init.cc: 1 with the GIN peers (at most maxPeers) when every GIN error raise for `slot` named a peer; 0 when there is
+-// no record for `slot`; -1 when a raise named no peer or a raise could not be tied to any communicator; -2 when there
+-// are more than maxPeers peers.
+-int ncclGinTsBlameQuery(const void* slot, int* peers, int maxPeers, int* nPeers) {
++// init.cc: 1 with the GIN peers (at most maxPeers) when every GIN error raise for `slot` named a peer and a peer-side
++// cause; 0 when there is no record for `slot`; -1 when a raise named no peer or a raise could not be tied to any
++// communicator; -2 when there are more than maxPeers peers; -3 (gin-peer) when a raise named a peer with a cause on this
++// rank or no attributable cause (*otherPeer, *otherCause: the first such raise).
++int ncclGinTsBlameQuery(const void* slot, int* peers, int maxPeers, int* nPeers, int* otherPeer, const char** otherCause) {
+   *nPeers = 0;
++  *otherPeer = -1;
++  *otherCause = "";
+   if (gdakiBlameUnkeyed.load(std::memory_order_seq_cst)) return -1;
+   std::lock_guard<std::mutex> lk(gdakiBlameMu);
+   for (auto& x : gdakiBlameReg) {
+     if (x.slot != slot) continue;
+     if (x.noPeer != 0) return -1;
++    if (!x.other.empty()) {
++      *otherPeer = x.other[0].first;
++      *otherCause = gdakiCauseName((gdakiCause)x.other[0].second);
++      return -3;
++    }
+     if ((int)x.peers.size() > maxPeers) return -2;
+     for (int p : x.peers) peers[(*nPeers)++] = p;
+     return 1;
+@@ -993,7 +1024,9 @@ static void gdakiQ4Handle(struct gdakiQ4Host* q, const struct ncclGinGdakiQ4Reco
+       // handled as Q4 does.
+       gdakiTsPushFault(g->rec, r, monoMs);
+     } else {
+-      gdakiBlameNote(q->asyncResult, (int)r.peer);  // gin-handoff: the QP's GIN peer, before the flag
++      // gin-handoff: the QP's GIN peer, before the flag. gin-peer: a classified error CQE without the helper (no
++      // liveness evidence) has no attributable cause.
++      gdakiBlameNote(q->asyncResult, (int)r.peer, gdakiCause::Unknown);
+       q->hasError.store(1, std::memory_order_release);
+       if (q->asyncResult) {
+         __atomic_store_n(q->asyncResult, ncclRemoteError, __ATOMIC_RELEASE);
+@@ -1262,10 +1295,23 @@ struct gdakiRecHost {
+   std::atomic<int> nCopyTimeouts{0};
+   std::atomic<int64_t> fwSinceUs{0};      // start of the firmware-command phase the helper is in, 0 outside one
+   std::atomic<const char*> fwPhase{""};   // its name (gdakiRecFwGuard)
+-  std::atomic<int> fwOverrun{0};          // the watchdog saw a phase longer than NCCL_GIN_TS_FW_MS: set once (the user
+-                                          // devComm word is raised then and every later round declines)
+-  std::atomic<uint64_t> posterWord{0};    // the user devComm's abort word | 1, for parked posters (gdakiTsPosterWordStep)
+-  uint64_t posterWordDone = 0;            // helper only: the value the gates hold
++  // gin-peer: the watchdog's verdict is per round. fwMu orders the outermost guard's start and end of a phase with the
++  // watchdog's look at it, so an overrun is always charged to the round (fwRound) and the peer (fwPeer) the phase
++  // belongs to. ovRound = fwRound + 1 of the round that overran (0: none); that round declines when the command returns
++  // (gdakiTsFwCheck); the next round has a new number and runs normally.
++  // Each outermost phase gets its own number (fwPhaseSeq): the watchdog charges a phase at most once (ovPhaseSeq), also
++  // a phase outside any round (a decline), which reuses the last round's number.
++  std::mutex fwMu;
++  std::atomic<uint64_t> fwRound{0};       // helper: +1 at the start of every round (either role)
++  std::atomic<int> fwPeer{-1};            // the GIN peer of the current phase (-1: none)
++  std::atomic<uint64_t> ovRound{0};       // watchdog: fwRound + 1 of the round whose phase overran NCCL_GIN_TS_FW_MS
++  uint64_t fwPhaseSeq = 0;                // fwMu: number of the current (or last) outermost phase
++  uint64_t ovPhaseSeq = 0;                // fwMu: the last phase the watchdog charged
++  // gin-peer: the communicator's user abort words (ncclGinTsUserAbortWord): [0] the devComm word, [1 + p] GIN peer p's
++  // word, which the gates of the QPs to p carry (gdakiTsPosterWordStep)
++  std::atomic<uintptr_t> uaBase{0};
++  std::atomic<int> uaN{0};                // GIN peers with a word (the communicator's rank count)
++  bool posterWordDone = false;            // helper only: the gates hold their peer's word
+ };
+ 
+ static std::mutex gdakiRecRegMu;
+@@ -1386,16 +1432,21 @@ static ncclResult_t gdakiRecH2D(struct gdakiRecHost* r, void* dst, const void* s
+ // The watchdog times single commands, not whole phases: every firmware command inside a phase, and every device-state
+ // copy (bounded by NCCL_GIN_TS_COPY_MS < NCCL_GIN_TS_FW_MS on its own), restarts the clock (gdakiRecFwMark).
+ static void gdakiRecTestFwDelay(struct gdakiRecHost* r, const char* phase);  // below (test switch)
++// gin-peer: `peer` = the GIN peer whose round (or decline) the phase belongs to; an overrun releases the device threads
++// that wait on that peer only (-1: unknown, then every one).
+ struct gdakiRecFwGuard {
+   struct gdakiRecHost* r;
+   const char* prevPhase = "";
+   int64_t prevSince = 0;  // a nested phase (2ERR inside a failing commit) gives the outer phase its start back
+-  gdakiRecFwGuard(struct gdakiRecHost* r_, const char* phase) : r(r_) {
++  gdakiRecFwGuard(struct gdakiRecHost* r_, const char* phase, int peer) : r(r_) {
+     if (r == nullptr) return;
+     prevPhase = r->fwPhase.load(std::memory_order_relaxed);
+     prevSince = r->fwSinceUs.load(std::memory_order_acquire);
+     if (prevSince == 0) {
++      std::lock_guard<std::mutex> lk(r->fwMu);  // gin-peer: see struct gdakiRecHost
++      r->fwPhaseSeq++;
+       r->fwPhase.store(phase, std::memory_order_relaxed);
++      r->fwPeer.store(peer, std::memory_order_relaxed);
+       r->fwSinceUs.store((int64_t)(gdakiQ4MonoMs() * 1000.0), std::memory_order_release);
+       gdakiRecFwCur = r;
+     }
+@@ -1404,6 +1455,7 @@ struct gdakiRecFwGuard {
+   ~gdakiRecFwGuard() {
+     if (r == nullptr) return;
+     if (prevSince == 0) {
++      std::lock_guard<std::mutex> lk(r->fwMu);
+       r->fwSinceUs.store(0, std::memory_order_release);
+       gdakiRecFwCur = nullptr;
+     } else {
+@@ -1468,7 +1520,7 @@ static void gdakiRecForPeer(struct gdakiRecHost* r, int peer, F fn) {
+ }
+ 
+ static void gdakiRecAllToErr(struct gdakiRecHost* r, int peer) {
+-  gdakiRecFwGuard fw(r, "2ERR");  // gin-harden: firmware-command phase (watchdog)
++  gdakiRecFwGuard fw(r, "2ERR", peer);  // gin-harden: firmware-command phase (watchdog)
+   gdakiRecForPeer(r, peer, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) { (void)gdakiRecModify(q, DOCA_VERBS_QP_STATE_ERR); });
+ }
+ 
+@@ -1873,7 +1925,7 @@ ncclResult_t ncclGinRecoverPrepare(ncclComm_t comm, int peer, ncclGinRecoverToke
+   {
+     const double e0 = gdakiQ4MonoMs();
+     for (auto* r : rs) {
+-      gdakiRecFwGuard fw(r, "2ERR");  // gin-harden: firmware-command phase (watchdog)
++      gdakiRecFwGuard fw(r, "2ERR", peer);  // gin-harden: firmware-command phase (watchdog)
+       bool bad = false;
+       gdakiRecForPeer(r, peer, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
+         if (!bad && gdakiRecModify(q, DOCA_VERBS_QP_STATE_ERR) != ncclSuccess) bad = true;
+@@ -2005,7 +2057,7 @@ ncclResult_t ncclGinRecoverCommit(ncclComm_t comm, int peer, const ncclGinRecove
+     struct gdaki_context* g = r->ctx;
+     const int nranks = r->nranks;
+     bool bad = false;
+-    gdakiRecFwGuard fw(r, "commit");  // gin-harden: firmware-command phase (2RST, INIT/RTR/RTS) for the watchdog
++    gdakiRecFwGuard fw(r, "commit", peer);  // gin-harden: firmware-command phase (2RST, INIT/RTR/RTS) for the watchdog
+     gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+       const unsigned idx = n++;
+       if (bad) return;
+@@ -2285,6 +2337,14 @@ NCCL_PARAM(GinTsPort, "GIN_TS_PORT", 0);                           // gin-harden
+ // user devComm (dev_runtime.cc) and freed with the communicator (init.cc commFree). Raised once, never cleared, always
+ // with NCCL_DEVCOMM_ABORT_ERROR | why: every user wait of the communicator then returns an error, and a waiter parked
+ // in a gate (gin_gdaki.h tsParkStable) fails without any copy or firmware command.
++// gin-peer: the word is now an array of 1 + nRanks words. Word [0] is the user devComm's abortFlag: the waits that
++// name no peer (waitSignal, waitCounter, the barriers, the void wait/flush forms' abort) read only it. Word [1 + p] is
++// GIN peer p's: the gates of every QP to p carry its address (gate.test, gdakiTsPosterWordStep), and the posters,
++// waiters and pollers of those QPs read it (gin_gdaki.h tsPosterAbortWord, tsParkStable, tsPoll). A decline toward p,
++// a death of p and a firmware overrun in a round with p raise word [1 + p] only (gdakiUaRaisePeer); waits on QPs to
++// other peers keep running. ncclCommAbort, an aborting shrink and a revoke raise every word (ncclGinTsUserAbortRaise).
++// Word [0] also goes up once every peer that a helper of this communicator gates has its word raised (with two ranks:
++// the first decline, as before). A word is raised once and never cleared.
+ enum { GDAKI_UA_ABORT = 1, GDAKI_UA_REVOKE = 2, GDAKI_UA_SHRINK = 3, GDAKI_UA_DECLINED = 4, GDAKI_UA_PEER_DEAD = 5,
+        GDAKI_UA_FW_WATCHDOG = 6 };
+ static const char* gdakiUaName(int why) {
+@@ -2301,31 +2361,42 @@ static const char* gdakiUaName(int why) {
+ struct gdakiUa {
+   void* comm;
+   int rank;
+-  uint32_t* word;
+-  int why;
++  int n;                          // gin-peer: GIN peers with a word (the communicator's rank count)
++  uint32_t* word;                 // gin-peer: n + 1 words ([0]: the devComm word, [1 + p]: peer p's)
++  int why;                        // why word [0] was raised (0: not yet)
++  std::vector<int> peerWhy;       // gin-peer: why word [1 + p] was raised (0: not yet)
++  std::vector<uint8_t> expected;  // gin-peer: GIN peers a helper of this communicator gates
+ };
+ static std::mutex gdakiUaMu;
+ static std::vector<struct gdakiUa> gdakiUaReg;
++static void gdakiTsGatedPeers(struct gdakiRecHost* r, std::vector<uint8_t>& out);  // gin-peer: below (needs gdakiTs)
+ 
+-uint32_t* ncclGinTsUserAbortWord(void* comm, int rank) {
+-  if (comm == nullptr || !ncclGinTsUserAbortEnabled()) return nullptr;
++uint32_t* ncclGinTsUserAbortWord(void* comm, int rank, int nRanks) {
++  if (comm == nullptr || nRanks < 1 || !ncclGinTsUserAbortEnabled()) return nullptr;
+   std::lock_guard<std::mutex> lk(gdakiUaMu);
+-  uint32_t* w = nullptr;
+-  for (auto& e : gdakiUaReg)
+-    if (e.comm == comm) w = e.word;
+-  if (w == nullptr) {
+-    if (ncclCudaHostCalloc(&w, 1) != ncclSuccess || w == nullptr) return nullptr;
+-    gdakiUaReg.push_back({comm, rank, w, 0});
++  struct gdakiUa* e = nullptr;
++  for (auto& x : gdakiUaReg)
++    if (x.comm == comm) e = &x;
++  if (e == nullptr) {
++    uint32_t* w = nullptr;
++    if (ncclCudaHostCalloc(&w, (size_t)nRanks + 1) != ncclSuccess || w == nullptr) return nullptr;
++    gdakiUaReg.push_back({comm, rank, nRanks, w, 0, std::vector<int>(nRanks, 0), std::vector<uint8_t>(nRanks, 0)});
++    e = &gdakiUaReg.back();
+   }
+   {  // the recovery helpers of this communicator's contexts (those of this devComm included: they are registered by now)
+-     // give the word to their gates, for parked posters (gdakiTsPosterWordStep)
++     // give each gate its peer's word (gdakiTsPosterWordStep); the peers they gate are the ones "every peer" counts
+     std::lock_guard<std::mutex> rl(gdakiRecRegMu);
+-    for (auto* r : gdakiRecReg)
+-      if (r->commKey == comm) r->posterWord.store((uint64_t)(uintptr_t)w | 1ull, std::memory_order_release);
++    for (auto* r : gdakiRecReg) {
++      if (r->commKey != comm) continue;
++      gdakiTsGatedPeers(r, e->expected);
++      r->uaN.store(e->n, std::memory_order_relaxed);
++      r->uaBase.store((uintptr_t)e->word, std::memory_order_release);
++    }
+   }
+-  return w;
++  return e->word;
+ }
+ 
++// ncclCommAbort, an aborting shrink, a revoke (init.cc): every word of the communicator.
+ void ncclGinTsUserAbortRaise(void* comm, int why) {
+   if (comm == nullptr) return;
+   int rank = -1;
+@@ -2337,7 +2408,12 @@ void ncclGinTsUserAbortRaise(void* comm, int why) {
+     if (e == nullptr || e->why != 0) return;
+     e->why = why;
+     rank = e->rank;
+-    __atomic_store_n(e->word, NCCL_DEVCOMM_ABORT_ERROR | (uint32_t)why, __ATOMIC_RELEASE);
++    __atomic_store_n(&e->word[0], NCCL_DEVCOMM_ABORT_ERROR | (uint32_t)why, __ATOMIC_RELEASE);
++    for (int p = 0; p < e->n; p++)
++      if (e->peerWhy[p] == 0) {
++        e->peerWhy[p] = why;
++        __atomic_store_n(&e->word[1 + p], NCCL_DEVCOMM_ABORT_ERROR | (uint32_t)why, __ATOMIC_RELEASE);
++      }
+   }
+   if (why == GDAKI_UA_ABORT || why == GDAKI_UA_REVOKE || why == GDAKI_UA_SHRINK)
+     GIN_TS_NOTE("GIN/TS: user devComm waits released rank=%d why=%s mono_ms=%.3f", rank, gdakiUaName(why), gdakiQ4MonoMs());
+@@ -2345,6 +2421,64 @@ void ncclGinTsUserAbortRaise(void* comm, int why) {
+     WARN("GIN/TS: user devComm waits released rank=%d why=%s mono_ms=%.3f", rank, gdakiUaName(why), gdakiQ4MonoMs());
+ }
+ 
++// gin-peer: a decline toward GIN peer `peer`, its death, or a firmware overrun in a round with it: that peer's word only;
++// word [0] too once every peer a helper of this communicator gates has its word raised. A peer outside the array
++// (cannot happen with one GIN team per communicator) raises every word.
++static void gdakiUaRaisePeer(void* comm, int peer, int why) {
++  if (comm == nullptr) return;
++  int rank = -1;
++  bool first = false, every = false, all = false;
++  {
++    std::lock_guard<std::mutex> lk(gdakiUaMu);
++    struct gdakiUa* e = nullptr;
++    for (auto& x : gdakiUaReg)
++      if (x.comm == comm) e = &x;
++    if (e == nullptr) return;
++    rank = e->rank;
++    if (peer < 0 || peer >= e->n) {
++      all = true;
++    } else if (e->peerWhy[peer] == 0) {
++      e->peerWhy[peer] = why;
++      __atomic_store_n(&e->word[1 + peer], NCCL_DEVCOMM_ABORT_ERROR | (uint32_t)why, __ATOMIC_RELEASE);
++      first = true;
++    }
++    if (!all && e->why == 0) {
++      bool any = false, down = true;
++      for (int p = 0; p < e->n; p++)
++        if (e->expected[p]) {
++          any = true;
++          if (e->peerWhy[p] == 0) down = false;
++        }
++      if (any && down) {
++        e->why = why;
++        __atomic_store_n(&e->word[0], NCCL_DEVCOMM_ABORT_ERROR | (uint32_t)why, __ATOMIC_RELEASE);
++        every = true;
++      }
++    }
++  }
++  if (all) {
++    ncclGinTsUserAbortRaise(comm, why);
++    return;
++  }
++  if (first)
++    WARN("GIN/TS: user devComm waits on rank %d released rank=%d why=%s mono_ms=%.3f", peer, rank, gdakiUaName(why),
++         gdakiQ4MonoMs());
++  if (every) {
++    WARN("GIN/TS: user devComm waits released rank=%d why=%s mono_ms=%.3f", rank, gdakiUaName(why), gdakiQ4MonoMs());
++    GIN_TS_NOTE("GIN/TS: rank %d: every peer of this rank is declined: waits that name no peer are released too", rank);
++  }
++}
++
++// gin-peer: GIN peer `peer`'s word (or every word) of this communicator is raised: the device threads that wait on its
++// QPs were released with an error, so no round with it may publish (they would see a stale failure, and later waits on
++// it fail at once).
++static bool gdakiUaPeerRaised(void* comm, int peer) {
++  std::lock_guard<std::mutex> lk(gdakiUaMu);
++  for (auto& x : gdakiUaReg)
++    if (x.comm == comm) return x.why != 0 || (peer >= 0 && peer < x.n && x.peerWhy[peer] != 0);
++  return false;
++}
++
+ void ncclGinTsUserAbortFree(void* comm) {
+   uint32_t* w = nullptr;
+   {
+@@ -2441,8 +2575,30 @@ struct gdakiTsPeer {
+   size_t probeHave = 0;
+   struct gdakiTsMsg probeBuf;
+   char probeCause[24] = {0};
++  // gin-peer
++  bool peerFailed = false;    // the peer answered a re-dial or a probe with FAIL: it declined this pair (no death)
++  bool failedPending = false; // ... and this rank has not declined it yet (the helper loop does, at once)
++  gdakiCause failCause = gdakiCause::Unknown;  // the cause that FAIL carried (gdakiTsRemoteCause)
++  gdakiCause declCause = gdakiCause::Unknown;  // this rank's cause when it declined the peer (sent in FAIL, NACK 2)
+ };
+ 
++// gin-peer: FAIL and NACK carry the sender's cause class in `pad` (1 + gdakiCause; 0 = none, an older peer). A peer that
++// declined for a cause on its own side (local) makes it a peer-side cause here (peer-reported); any other cause (it blamed
++// this rank, or could not attribute) stays unattributed here. NACK codes: 2 already declined (its stored cause), 11
++// invalid scope and 15 a rejected re-post plan (either rank's data: unknown), every other code a cause on the sender.
++static gdakiCause gdakiTsRemoteCause(const struct gdakiTsMsg& m) {
++  if (m.pad == 0 || m.pad > 5) return gdakiCause::Unknown;
++  return (gdakiCause)(int)(m.pad - 1) == gdakiCause::Local ? gdakiCause::PeerReported : gdakiCause::Unknown;
++}
++static uint32_t gdakiTsCausePad(gdakiCause c) { return 1u + (uint32_t)(int)c; }
++// gin-peer: the cause a NACK carries (see above). 1 (collision, tie-break off) and 12 (scope refused, no decline): none.
++static uint32_t gdakiTsNackPad(int reason, const struct gdakiTsPeer& pe) {
++  if (reason == 1 || reason == 12) return 0;
++  if (reason == 2) return gdakiTsCausePad(pe.declCause);
++  if (reason == 11 || reason == 15) return gdakiTsCausePad(gdakiCause::Unknown);
++  return gdakiTsCausePad(gdakiCause::Local);
++}
++
+ struct gdakiTsQp {        // host copy, per qp_idx
+   uint32_t epoch = 0;     // current stable (even) epoch of the gate
+   uint64_t lbase = 0;     // host copy of gate.lbase (logical index of physical WQE 0 of the stable epoch)
+@@ -2616,8 +2772,10 @@ static void gdakiRecTestFwDelay(struct gdakiRecHost* r, const char* phase) {
+ 
+ // gin-harden: the round must decline once a firmware-command phase overran NCCL_GIN_TS_FW_MS (the watchdog already
+ // released the device threads with an error and surfaced the fault).
++// gin-peer: only the round whose phase overran (gin-harden: every later round too). The watchdog released the device
++// threads of that round's peer only and raised the async error; the next round has a new number and is not affected.
+ static bool gdakiTsFwCheck(struct gdakiRecHost* r, const char** why) {
+-  if (r->fwOverrun.load(std::memory_order_acquire) == 0) return false;
++  if (r->ovRound.load(std::memory_order_acquire) != r->fwRound.load(std::memory_order_acquire) + 1) return false;
+   *why = "a firmware command phase exceeded NCCL_GIN_TS_FW_MS";
+   return true;
+ }
+@@ -2626,6 +2784,13 @@ static bool gdakiTsActive(struct gdakiRecHost* r) {
+   return r != nullptr && r->ts != nullptr && r->ts->active.load(std::memory_order_acquire) != 0;
+ }
+ 
++// gin-peer: the GIN peers whose QPs this context gates (set at setup, constant afterwards), marked in `out`.
++static void gdakiTsGatedPeers(struct gdakiRecHost* r, std::vector<uint8_t>& out) {
++  if (r->ts == nullptr) return;
++  for (int p = 0; p < (int)out.size() && p < (int)r->ts->peers.size(); p++)
++    if (r->ts->peers[p].gated) out[p] = 1;
++}
++
+ // Only faults on a gated QP (a peer with a helper socket) go to the helper.
+ static bool gdakiTsRoutes(struct gdakiRecHost* r, const struct ncclGinGdakiQ4Record& rec) {
+   if (!gdakiTsActive(r)) return false;
+@@ -2717,7 +2882,7 @@ static uint32_t gdakiTsDecideScope(struct gdakiRecHost* r, const struct gdakiTsF
+   bool notRts = false;
+   {
+     std::lock_guard<std::mutex> op(r->opMu);  // QUERY_QP never overlaps a QP state change (see gdakiTsQuiesce)
+-    gdakiRecFwGuard fw(r, "QUERY_QP");        // gin-harden: firmware-command phase (watchdog)
++    gdakiRecFwGuard fw(r, "QUERY_QP", peer);        // gin-harden: firmware-command phase (watchdog)
+     gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+       if (notRts || rq.ctxIdx == c) return;
+       uint32_t st = 0;
+@@ -2752,7 +2917,7 @@ static int gdakiTsCheckScope(struct gdakiRecHost* r, int peer, uint32_t scope, i
+   gdakiTsScope = GDAKI_TS_SCOPE_ALL;
+   {
+     std::lock_guard<std::mutex> op(r->opMu);  // QUERY_QP never overlaps a QP state change (see gdakiTsQuiesce)
+-    gdakiRecFwGuard fw(r, "QUERY_QP");        // gin-harden: firmware-command phase (watchdog)
++    gdakiRecFwGuard fw(r, "QUERY_QP", peer);        // gin-harden: firmware-command phase (watchdog)
+     gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+       if (rq.ctxIdx < 32 && (scope & (1u << rq.ctxIdx)) != 0) return;
+       (*checked)++;
+@@ -2812,7 +2977,7 @@ static void gdakiTsSurface(struct gdakiRecHost* r, const char* why) {
+   if (ts->surfaced.exchange(1) != 0) return;
+   struct gdakiQ4Host* q4 = r->ctx->q4;
+   // gin-handoff: a surface names no peer (before the flag; never after the communicator is freed)
+-  (void)gdakiTsToComm(ts, [&] { gdakiBlameNote(q4->asyncResult, -1); });
++  (void)gdakiTsToComm(ts, [&] { gdakiBlameNote(q4->asyncResult, -1, gdakiCause::Unknown); });
+   q4->hasError.store(1, std::memory_order_release);
+   if (q4->asyncResult) {  // gin-harden: never after the communicator is freed (an orphaned helper)
+     (void)gdakiTsToComm(ts, [&] {
+@@ -2833,16 +2998,51 @@ static void gdakiTsWatchdog(struct gdakiRecHost* r) {
+   // gin-harden: a firmware-command phase of the helper longer than NCCL_GIN_TS_FW_MS. The command cannot be
+   // interrupted: release the device threads now (the user devComm's own word, a CPU store), surface the fault; the
+   // round declines as soon as the command returns (gdakiTsFwCheck).
++  // gin-peer: per round and per peer. The verdict is taken under fwMu, so it belongs to the round and the peer of the
++  // phase that is running (struct gdakiRecHost). Only that peer's word is raised (its device threads fail; the others'
++  // keep running), the async error is raised with a cause on this rank (an aborting shrink keeps the stock answer), and
++  // `surfaced` is NOT set: once the command returns, the round declines that peer and the next round runs normally. A
++  // command that never returns keeps the helper in its round: after NCCL_GIN_TS_ROUND_MS the check below surfaces the
++  // fault with no peer (`surfaced`), and from then on every round of this context declines.
+   {
+-    const int64_t f = r->fwSinceUs.load(std::memory_order_acquire);
+-    const int64_t nowUs = gdakiTsNowUs();
+-    if (f != 0 && nowUs - f > (int64_t)ts->fwMs * 1000 && r->fwOverrun.exchange(1) == 0) {
++    bool over = false;
++    int peer = -1;
++    uint64_t rd = 0;
++    double ranMs = 0;
++    const char* phase = "";
++    const int64_t f0 = r->fwSinceUs.load(std::memory_order_acquire);  // lock-free look first (every watcher poll)
++    if (f0 != 0 && gdakiTsNowUs() - f0 > (int64_t)ts->fwMs * 1000) {
++      std::lock_guard<std::mutex> lk(r->fwMu);
++      const int64_t f = r->fwSinceUs.load(std::memory_order_acquire);
++      const int64_t nowUs = gdakiTsNowUs();
++      rd = r->fwRound.load(std::memory_order_acquire) + 1;
++      if (f != 0 && nowUs - f > (int64_t)ts->fwMs * 1000 && r->ovPhaseSeq != r->fwPhaseSeq) {
++        peer = r->fwPeer.load(std::memory_order_relaxed);
++        r->ovPhaseSeq = r->fwPhaseSeq;  // this phase is charged once
++        r->ovRound.store(rd, std::memory_order_release);
++        phase = r->fwPhase.load(std::memory_order_relaxed);
++        ranMs = (nowUs - f) / 1000.0;
++        over = true;
++      }
++    }
++    if (over) {
+       ts->cFwOverruns.fetch_add(1, std::memory_order_relaxed);
+       WARN("GIN/TS: watchdog rank=%d: firmware command phase %s has run %.0f ms, more than NCCL_GIN_TS_FW_MS=%d; device "
+-           "waits are released with an error and the round declines when the command returns mono_ms=%.3f",
+-           r->ctx->rank, r->fwPhase.load(std::memory_order_relaxed), (nowUs - f) / 1000.0, ts->fwMs, gdakiQ4MonoMs());
+-      (void)gdakiTsToComm(ts, [&] { ncclGinTsUserAbortRaise(r->commKey, GDAKI_UA_FW_WATCHDOG); });
+-      gdakiTsSurface(r, "a firmware command phase exceeded NCCL_GIN_TS_FW_MS");
++           "waits on rank %d are released with an error and that round declines when the command returns (round %lu; "
++           "later rounds are not affected) mono_ms=%.3f",
++           r->ctx->rank, phase, ranMs, ts->fwMs, peer, (unsigned long)(rd - 1), gdakiQ4MonoMs());
++      struct gdakiQ4Host* q4 = r->ctx->q4;
++      (void)gdakiTsToComm(ts, [&] {
++        gdakiBlameNote(q4->asyncResult, peer, gdakiCause::Local);  // before the flags below
++        gdakiUaRaisePeer(r->commKey, peer, GDAKI_UA_FW_WATCHDOG);   // peer -1: every word
++        if (q4->asyncResult) {
++          __atomic_store_n(q4->asyncResult, ncclRemoteError, __ATOMIC_RELEASE);
++          q4->setAsync.store(1, std::memory_order_release);
++        }
++      });
++      q4->hasError.store(1, std::memory_order_release);
++      GIN_TS_NOTE("GIN/TS: rank %d: GIN error raised for rank %d cause=%s (firmware overrun) mono_ms=%.3f", r->ctx->rank,
++                  peer, gdakiCauseName(gdakiCause::Local), gdakiQ4MonoMs());
+     }
+   }
+   if (ts->surfaced.load(std::memory_order_acquire)) return;
+@@ -3109,10 +3309,18 @@ static int gdakiTsSocketLost(struct gdakiRecHost* r, int p, bool connectRefused
+ 
+ // gin-harden: a connect (the lower rank's re-dial or the higher rank's probe) to `p` was refused. The peer becomes dead
+ // only on a second refusal at least 1000 ms after the first; until then the next attempt waits for that second.
++// gin-peer: a first refusal older than GDAKI_TS_REFUSAL_FORGET_MS is forgotten (gin-harden counted it however old it
++// was): death needs two refusals 1000-5000 ms apart, with no connect that went through in between.
++#define GDAKI_TS_REFUSAL_FORGET_MS 5000.0
+ static void gdakiTsRefused(struct gdakiRecHost* r, int p, bool probe) {
+   struct gdakiTsPeer& pe = r->ts->peers[p];
+-  if (pe.left) return;  // it said BYE: a closed listen socket is expected
++  if (pe.left || pe.peerFailed) return;  // it said BYE (or declined this pair): a closed listen socket is expected
+   const double now = gdakiQ4MonoMs();
++  if (pe.refusals > 0 && now - pe.firstRefusalMs > GDAKI_TS_REFUSAL_FORGET_MS) {
++    GIN_TS_NOTE("GIN/TS: rank %d: refusal by rank %d from %.0f ms ago forgotten (older than %.0f ms) mono_ms=%.3f",
++                r->ctx->rank, p, now - pe.firstRefusalMs, GDAKI_TS_REFUSAL_FORGET_MS, now);
++    pe.refusals = 0;
++  }
+   if (pe.refusals == 0) pe.firstRefusalMs = now;
+   pe.refusals++;
+   const bool dead = pe.refusals >= 2 && now - pe.firstRefusalMs >= 1000.0;
+@@ -3212,6 +3420,39 @@ static void gdakiTsLeftUninstalled(struct gdakiRecHost* r, int p) {
+   GIN_TS_NOTE("GIN/TS: rank %d: rank %d left the communicator (BYE) mono_ms=%.3f", r->ctx->rank, p, gdakiQ4MonoMs());
+ }
+ 
++// gin-peer: the peer answered a re-dial or a probe with FAIL: it declined this pair (for instance, a round it had
++// committed when this rank cancelled it on a socket loss). Not death; no more re-dials or probes; a fault waiting for the
++// reconnect ends at once (gdakiTsInitiate), and the helper loop declines the peer now (failedPending), as it does for a
++// FAIL on an installed socket.
++static void gdakiTsPeerFailedUninstalled(struct gdakiRecHost* r, int p, const char* what, gdakiCause rc) {
++  struct gdakiTsPeer& pe = r->ts->peers[p];
++  pe.peerFailed = true;
++  pe.failCause = rc;
++  pe.failedPending = !pe.declined;
++  pe.unknown = false;
++  pe.gone = true;
++  snprintf(pe.lostCause, sizeof(pe.lostCause), "FAIL");
++  GIN_TS_NOTE("GIN/TS: rank %d: rank %d declined this pair (FAIL on %s) mono_ms=%.3f", r->ctx->rank, p, what,
++              gdakiQ4MonoMs());
++}
++
++// gin-peer: a declining rank answers a re-dial (HELLO) or a probe (PROBE) of the peer it declined with FAIL, so that the
++// peer's retried fault ends at once instead of waiting out NCCL_GIN_TS_RECONNECT_MS.
++static void gdakiTsAnswerFail(struct gdakiRecHost* r, int fd, int p, uint64_t round, const char* what) {
++  struct gdakiTsMsg m;
++  memset(&m, 0, sizeof(m));
++  m.type = GDAKI_TS_FAIL;
++  m.from = r->ctx->rank;
++  m.arg = 2;  // declined
++  m.round = round;
++  m.nonce = r->ts->nonce;
++  m.pad = gdakiTsCausePad(r->ts->peers[p].declCause);
++  (void)gdakiTsSend(fd, &m, 50);
++  close(fd);
++  GIN_TS_NOTE("GIN/TS: rank %d: answered a %s of declined rank %d with FAIL mono_ms=%.3f", r->ctx->rank, what, p,
++              gdakiQ4MonoMs());
++}
++
+ // gin-oneway: the pending re-dial to `p` was not accepted; the peer stays unknown and is re-dialled.
+ static void gdakiTsNotAccepted(struct gdakiRecHost* r, int p, const char* why) {
+   struct gdakiTsPeer& pe = r->ts->peers[p];
+@@ -3278,6 +3519,13 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+         gdakiTsLeftUninstalled(r, p);
+         continue;
+       }
++      if (got == 1 && a.type == GDAKI_TS_FAIL && a.from == p && a.nonce == ts->nonce) {  // gin-peer: it declined us
++        close(pe.pendFd);
++        pe.pendFd = -1;
++        pe.pendHave = 0;
++        gdakiTsPeerFailedUninstalled(r, p, "re-dial", gdakiTsRemoteCause(a));
++        continue;
++      }
+       if (got == 1 && a.type == GDAKI_TS_HELLO_ACK && a.nonce != ts->nonce) gdakiTsNotAccepted(r, p, "nonce mismatch");
+       else if (got == 1) gdakiTsNotAccepted(r, p, "unexpected reply");
+       else if (got < 0) gdakiTsNotAccepted(r, p, pe.pendCause[0] ? pe.pendCause : "closed");
+@@ -3369,6 +3617,10 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+         gdakiTsLeftUninstalled(r, p);
+         continue;
+       }
++      if (got == 1 && a.type == GDAKI_TS_FAIL && a.from == p && a.nonce == ts->nonce) {  // gin-peer: it declined us
++        gdakiTsPeerFailedUninstalled(r, p, "probe", gdakiTsRemoteCause(a));
++        continue;
++      }
+       if (ok) {
+         pe.refusals = 0;
+         if (!pe.probeAnswered) {
+@@ -3452,6 +3704,11 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+       struct gdakiTsMsg h;
+       memset(&h, 0, sizeof(h));
+       const int got = gdakiTsRecv(tmp, &h, 500, &ts->stop);
++      if (got == 1 && h.type == GDAKI_TS_PROBE && h.nonce == ts->nonce && h.from > rank &&
++          h.from < (int)ts->peers.size() && ts->peers[h.from].gated && ts->peers[h.from].declined) {
++        gdakiTsAnswerFail(r, fd, h.from, 0, "probe");  // gin-peer
++        continue;
++      }
+       if (got == 1 && h.type == GDAKI_TS_PROBE) {  // gin-oneway: a peer's liveness probe
+         if (h.nonce == ts->nonce && h.from > rank && h.from < (int)ts->peers.size()) {  // gin-harden: answer it
+           struct gdakiTsMsg a;
+@@ -3475,6 +3732,11 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+         gdakiTsAbortClose(fd);
+         continue;
+       }
++      if (got == 1 && h.type == GDAKI_TS_HELLO && from >= 0 && from < rank && from < (int)ts->peers.size() &&
++          ts->peers[from].gated && ts->peers[from].declined) {
++        gdakiTsAnswerFail(r, fd, from, h.round, "re-dial");  // gin-peer
++        continue;
++      }
+       if (got != 1 || h.type != GDAKI_TS_HELLO || from < 0 || from >= rank || from >= (int)ts->peers.size() ||
+           !ts->peers[from].gated || ts->peers[from].declined || h.round <= ts->peers[from].gen) {
+         INFO(NCCL_NET, "GIN/TS: rank %d: refused a reconnect (got=%d type=%u from=%d gen=%lu)", rank, got, h.type, from,
+@@ -3593,7 +3855,7 @@ static ncclResult_t gdakiTsExecuted(struct gdakiRecHost* r, int peer, uint32_t*
+                                     uint32_t* nqp) {
+   ncclResult_t ret = ncclSuccess;
+   unsigned i = 0;
+-  gdakiRecFwGuard fw(r, "QUERY_QP");  // gin-harden: firmware-command phase (watchdog)
++  gdakiRecFwGuard fw(r, "QUERY_QP", peer);  // gin-harden: firmware-command phase (watchdog)
+   gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+     uint32_t rmsn = 0, rcv = 0, st = 0;
+     gdakiRecFwMark(r);  // gin-harden: one firmware command
+@@ -3612,7 +3874,7 @@ static ncclResult_t gdakiTsExecuted(struct gdakiRecHost* r, int peer, uint32_t*
+ // After a commit, before any traffic of the new incarnation: the responder MSN baseline.
+ static ncclResult_t gdakiTsBaseline(struct gdakiRecHost* r, int peer) {
+   ncclResult_t ret = ncclSuccess;
+-  gdakiRecFwGuard fw(r, "QUERY_QP");  // gin-harden: firmware-command phase (watchdog)
++  gdakiRecFwGuard fw(r, "QUERY_QP", peer);  // gin-harden: firmware-command phase (watchdog)
+   gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+     uint32_t rmsn = 0;
+     gdakiRecFwMark(r);  // gin-harden: one firmware command
+@@ -3795,11 +4057,22 @@ struct gdakiTsRepostPlan {
+   std::vector<uint8_t> w;  // n re-posted WQEs, ctrl index already rewritten to physical [0, n)
+ };
+ 
+-static ncclResult_t gdakiTsReplayResume(struct gdakiRecHost* r, int peer, const uint32_t* executed, uint32_t nqp,
+-                                        struct gdakiTsReplayStats* rs, const char** why) {
++// gin-peer: the two passes are two functions. Pass 1 (gdakiTsRepostPlanAll) runs on EACH rank before its Commit: the
++// responder plans from the REQ's executed counts before it commits and ACKs (a rejection is NACK 15: the initiator
++// declines without committing), the initiator plans from the ACK's counts before its Commit (a rejection declines with
++// FAIL: the responder, waiting for DONE, declines without re-posting). So no rank re-posts unless both ranks' plans
++// passed (gin-harden: the responder validated only after DONE, when the initiator had already re-posted). The plan reads
++// the ring and the rescue area once, while no poster can enter the gate; the Commit resets the QP, not the ring. Pass 2
++// (gdakiTsRepostApply) runs after the Commit: commit point, PUBLISHING, then the re-posts and the new epochs. What can
++// still fail after the peer re-posted is a device copy or a doorbell of this rank's pass 2, not a rejected target.
++// *code: 16 when the plan was not attempted (a state of this rank: surfaced, stopping, the peer's waits released), 15
++// when a plan was rejected (the counts or the ring: either rank's data, so the cause is unattributed).
++static ncclResult_t gdakiTsRepostPlanAll(struct gdakiRecHost* r, int peer, const uint32_t* executed, uint32_t nqp,
++                                         std::vector<struct gdakiTsRepostPlan>& plans, const char** why, const char* role,
++                                         int* code) {
+   ncclResult_t ret = ncclSuccess;
+-  size_t dl = 0;
+-  bool ab = false;
++  plans.clear();
++  *code = 16;
+   if (r->ts->surfaced.load(std::memory_order_acquire)) {  // the watchdog already told the application
+     *why = "the watchdog surfaced the fault before the commit point";
+     return ncclSystemError;
+@@ -3808,8 +4081,12 @@ static ncclResult_t gdakiTsReplayResume(struct gdakiRecHost* r, int peer, const
+     *why = "the communicator is being destroyed";
+     return ncclSystemError;
+   }
++  if (gdakiUaPeerRaised(r->commKey, peer)) {  // gin-peer (a firmware overrun charged to another phase of this peer)
++    *why = "the device waits on the peer were already released";
++    return ncclSystemError;
++  }
++  *code = 15;
+   // ---- gin-harden, pass 1: plan and validate every QP of the round ----
+-  std::vector<struct gdakiTsRepostPlan> plans;
+   unsigned i = 0, total = 0;
+   int badIdx = -1;
+   gdakiRecForPeer(r, peer, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl*) { total++; });
+@@ -3920,8 +4197,36 @@ static ncclResult_t gdakiTsReplayResume(struct gdakiRecHost* r, int peer, const
+   if (ret != ncclSuccess) {
+     WARN("GIN/TS: rank %d: re-post plan to rank %d rejected at qp %d of %u (%s); nothing re-posted mono_ms=%.3f",
+          r->ctx->rank, peer, badIdx, total, *why ? *why : "?", gdakiQ4MonoMs());
++    plans.clear();
+     return ret;
+   }
++  uint64_t nw = 0;
++  for (auto& pl : plans) nw += pl.n;
++  GIN_TS_NOTE("GIN/TS: rank %d: re-post plan to rank %d validated: %u qp(s), %lu WQE(s), role=%s, before this rank's "
++              "commit mono_ms=%.3f", r->ctx->rank, peer, (unsigned)plans.size(), (unsigned long)nw, role, gdakiQ4MonoMs());
++  return ncclSuccess;
++}
++
++static ncclResult_t gdakiTsRepostApply(struct gdakiRecHost* r, int peer, std::vector<struct gdakiTsRepostPlan>& plans,
++                                       struct gdakiTsReplayStats* rs, const char** why) {
++  ncclResult_t ret = ncclSuccess;
++  size_t dl = 0;
++  bool ab = false;
++  if (r->ts->surfaced.load(std::memory_order_acquire)) {  // the watchdog surfaced a fault meanwhile (round too long)
++    *why = "the watchdog surfaced the fault before the commit point";
++    return ncclSystemError;
++  }
++  if (r->ts->stop.load(std::memory_order_acquire)) {
++    *why = "the communicator is being destroyed";
++    return ncclSystemError;
++  }
++  // gin-peer: a firmware overrun in this round's last phase (the baseline QUERY_QP after the Commit), or one charged to
++  // another round number while this peer's device waits were released, declines here, before anything is published
++  if (gdakiTsFwCheck(r, why)) return ncclSystemError;
++  if (gdakiUaPeerRaised(r->commKey, peer)) {
++    *why = "the device waits on the peer were already released";
++    return ncclSystemError;
++  }
+   // ---- commit point ----
+   if (gdakiTsCommitPoint(r, peer, &ab) != ncclSuccess || ab) {  // before anything executes again
+     *why = "a device waiter gave up before the commit point";
+@@ -4118,7 +4423,15 @@ static ncclResult_t gdakiTsReplayResume(struct gdakiRecHost* r, int peer, const
+ // the word is per communicator, so waits on QPs to healthy peers fail too while those QPs stay RTS), the async error,
+ // the FAIL to the peer and the log line. Last the gates failed and the device error state (bounded copies); a gate that
+ // cannot be written while copies are blocked is written again by gdakiTsScan.
+-static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bool sendFail, int cls,
++// gin-peer: the word raised is the declined peer's own (gdakiUaRaisePeer): the device threads waiting on that peer's QPs
++// fail, the ones waiting on other peers' QPs do not (the devComm word follows once every peer is declined). The device
++// error state of every context (the sticky flag that blocking flush() and wait() return) is no longer raised here: a
++// wait that touches the declined peer's QPs fails by itself (its gate is failed, or the peer's word) and raises the
++// sticky flag of its own context. That flag is per context, not per peer: once it is raised, a later blocking flush() or
++// wait() of the same context returns the error also for a healthy peer's QP (per peer are the parked and polling paths
++// and the waits that name a peer, gin_gdaki.h). `cause` is the cause class of the raise (gdakiCause): it is noted with
++// the peer for an aborting shrink and logged.
++static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bool sendFail, int cls, gdakiCause cause,
+                            int uaWhy = GDAKI_UA_DECLINED) {
+   struct gdakiTs* ts = r->ts;
+   gdakiTsScope = GDAKI_TS_SCOPE_ALL;  // gin-pair-reset: a decline covers every context's QPs to the peer, as before
+@@ -4126,6 +4439,8 @@ static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bo
+   const bool first = !pe.declined;
+   pe.declined = true;
+   pe.deadJudged = false;  // gin-harden: handled
++  pe.failedPending = false;  // gin-peer: handled
++  if (first) pe.declCause = cause;  // gin-peer: told to the peer in FAIL and NACK 2
+   if (first) {
+     ts->nDeclined++;
+     ts->cDeclined.fetch_add(1, std::memory_order_relaxed);
+@@ -4137,8 +4452,8 @@ static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bo
+   }
+   struct gdakiQ4Host* q4 = r->ctx->q4;
+   (void)gdakiTsToComm(ts, [&] {  // never after the communicator is freed (an orphaned helper)
+-    gdakiBlameNote(q4->asyncResult, peer);  // gin-handoff: the declined GIN peer, before the flags below
+-    ncclGinTsUserAbortRaise(r->commKey, uaWhy);
++    gdakiBlameNote(q4->asyncResult, peer, cause);  // gin-handoff: the declined GIN peer, before the flags below
++    gdakiUaRaisePeer(r->commKey, peer, uaWhy);     // gin-peer: that peer's word
+     if (q4->asyncResult) {
+       __atomic_store_n(q4->asyncResult, ncclRemoteError, __ATOMIC_RELEASE);
+       q4->setAsync.store(1, std::memory_order_release);
+@@ -4151,21 +4466,21 @@ static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bo
+     m.type = GDAKI_TS_FAIL;
+     m.from = r->ctx->rank;
+     m.arg = cls;
++    m.nonce = ts->nonce;               // gin-peer
++    m.pad = gdakiTsCausePad(cause);    // gin-peer: the cause on this side
+     (void)gdakiTsSend(pe.fd, &m, 200);
+   }
+   WARN("GIN/TS: declined rank=%d peer=%d reason=\"%s\" class=%d mono_ms=%.3f (error surfaces; QPs left in ERR)",
+        r->ctx->rank, peer, why, cls, gdakiQ4MonoMs());
++  GIN_TS_NOTE("GIN/TS: rank %d: GIN error raised for rank %d cause=%s mono_ms=%.3f", r->ctx->rank, peer,
++              gdakiCauseName(cause), gdakiQ4MonoMs());
+   bool gateFailed = true;
+   gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+     struct gdakiTsQp& s = ts->qs[rq.qpIdx];
+     s.epoch = (s.epoch | 1u) + 1u;  // even and newer than any epoch a waiter holds: holders wake, see the failure
+     if (gdakiTsWordHiWrite(r, q->qp_gverbs, NCCL_GIN_TS_W_HOST_FAILED | s.epoch) != ncclSuccess) gateFailed = false;
+   });
+-  if (gdakiTsZeroDev(r, q4->dev->sticky, sizeof(q4->dev->sticky), 1) != ncclSuccess) {
+-    WARN("GIN/TS: cannot set the device error state");
+-    gateFailed = false;
+-  }
+-  pe.failPending = !gateFailed;  // gin-harden: gdakiTsScan writes both once copies are allowed again
++  pe.failPending = !gateFailed;  // gin-harden: gdakiTsScan writes them once copies are allowed again
+ }
+ 
+ static const char* gdakiTsClassName(int cls) {
+@@ -4278,13 +4593,16 @@ static ncclResult_t gdakiTsResolveGid(struct gdakiRecHost* r, double* waitedMs,
+ // (either role) within NCCL_GIN_TS_ESCALATE_WINDOW_MS, now or earlier. Past the cap recovery stops on this context: the
+ // caller declines (async error, user waits released with an error) and every later fault is declined too, so that an
+ // upper layer (a framework watchdog) can remove the node. The WARN line names the cap (ncclGetLastError shows it).
+-static bool gdakiTsEscalated(struct gdakiRecHost* r, char* why, size_t wl) {
++// gin-peer: `count` = false for a rerun of the same fault (a retry after a socket loss, a rerun after a refused or
++// conflicting scope): it is checked against a cap that is already reached but is not counted as a new round (gin-harden
++// counted every rerun).
++static bool gdakiTsEscalated(struct gdakiRecHost* r, char* why, size_t wl, bool count = true) {
+   struct gdakiTs* ts = r->ts;
+   if (ts->escalated) {
+     snprintf(why, wl, "recovery stopped on this communicator by the escalation cap");
+     return true;
+   }
+-  if (ts->escRounds <= 0) return false;
++  if (ts->escRounds <= 0 || !count) return false;
+   const double now = gdakiQ4MonoMs();
+   auto& v = ts->roundStarts;
+   v.erase(std::remove_if(v.begin(), v.end(), [&](double t) { return now - t > (double)ts->escWindowMs; }), v.end());
+@@ -4337,8 +4655,8 @@ static bool gdakiTsCancelRound(struct gdakiRecHost* r, int peer, const struct gd
+               cause, gdakiQ4MonoMs());
+   (void)ncclGinRecoverAbort((ncclComm_t)r->commKey, peer);
+   struct gdakiTsFault g = f;
++  ts->cCancelled.fetch_add(1, std::memory_order_relaxed);  // gin-peer: every cancelled round, retried or not (as the responder)
+   if (!gdakiTsRequeueRetry(r, f, &g.sockRetries)) return false;
+-  ts->cCancelled.fetch_add(1, std::memory_order_relaxed);
+   WARN("GIN/TS: rank %d: round %lu with rank %d cancelled (%s, socket %s) before the commit; the fault is retried after "
+        "the reconnect (retry %d of %d) mono_ms=%.3f", r->ctx->rank, (unsigned long)round, peer, stage, cause,
+        g.sockRetries, GDAKI_TS_SOCK_RETRIES, gdakiQ4MonoMs());
+@@ -4368,7 +4686,7 @@ static void gdakiTsCancelResponder(struct gdakiRecHost* r, int peer, uint64_t ro
+     char why[96];
+     snprintf(why, sizeof(why), "socket to the peer lost in a yielded round (%s), retried %d times", cause,
+              GDAKI_TS_SOCK_RETRIES);
+-    gdakiTsDecline(r, peer, why, false, yf->rec.cls);
++    gdakiTsDecline(r, peer, why, false, yf->rec.cls, gdakiCause::Unknown);
+   }
+ }
+ 
+@@ -4393,38 +4711,53 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
+     m.round = req.round;
+     m.from = g->rank;
+     m.arg = reason;
++    m.nonce = ts->nonce;                  // gin-peer
++    m.pad = gdakiTsNackPad(reason, pe);   // gin-peer: the cause on this side
+     (void)gdakiTsSend(pe.fd, &m, 200);
+   };
+   const char* why = nullptr;
+   double gidWaitMs = 0;
+   int gidOld = g->gid_index;
+   struct gdakiTsReplayStats rs;
++  std::vector<struct gdakiTsRepostPlan> plans;  // gin-peer
+   // gin-harden: last point at which this rank can back out without a decline. A socket that already shows a FIN or an
+   // error cancels the round (the initiator retries it after the reconnect); a firmware phase that overran declines.
+   if (gdakiTsFwCheck(r, &why)) {
+     nack(14);
+-    return gdakiTsDecline(r, peer, why, false, req.arg);
++    return gdakiTsDecline(r, peer, why, false, req.arg, gdakiCause::Local);
+   }
+   if (gdakiTsRoundPeekLost(pe)) {
+     if (!pe.left) return gdakiTsCancelResponder(r, peer, req.round, yf);
+-    return gdakiTsDecline(r, peer, "the peer left the communicator (BYE)", false, req.arg);
++    return gdakiTsDecline(r, peer, "the peer left the communicator (BYE)", false, req.arg, gdakiCause::PeerLeft);
+   }
+   if (gdakiTsResolveGid(r, &gidWaitMs, &gidOld, &why) != ncclSuccess) {
+     nack(10);
+-    return gdakiTsDecline(r, peer, why, false, req.arg);
++    return gdakiTsDecline(r, peer, why, false, req.arg, gdakiCause::Local);
++  }
++  // gin-peer: this rank's re-post plan (from the initiator's executed counts) before it commits and ACKs: a rejection is
++  // NACK 15 (16: not attempted), so the initiator declines without committing and nobody re-posts
++  int planCode = 0;
++  if (gdakiTsRepostPlanAll(r, peer, req.executed, req.nqp, plans, &why, "responder", &planCode) != ncclSuccess) {
++    nack(planCode);
++    return gdakiTsDecline(r, peer, why ? why : "re-post plan rejected", false, req.arg,
++                          planCode == 15 ? gdakiCause::Unknown : gdakiCause::Local);
+   }
+   const double tG = gdakiQ4MonoMs();
+   if (ncclGinRecoverCommit(comm, peer, &req.tok, st) != ncclSuccess) {
+     nack(7);
+-    return gdakiTsDecline(r, peer, "commit failed", false, req.arg);
++    return gdakiTsDecline(r, peer, "commit failed", false, req.arg, gdakiCause::Local);
+   }
+   if (gdakiTsFwCheck(r, &why)) {  // gin-harden
+     nack(14);
+-    return gdakiTsDecline(r, peer, why, false, req.arg);
++    return gdakiTsDecline(r, peer, why, false, req.arg, gdakiCause::Local);
+   }
+   if (gdakiTsBaseline(r, peer) != ncclSuccess) {
+     nack(8);
+-    return gdakiTsDecline(r, peer, "QUERY_QP failed after commit", false, req.arg);
++    return gdakiTsDecline(r, peer, "QUERY_QP failed after commit", false, req.arg, gdakiCause::Local);
++  }
++  if (gdakiTsFwCheck(r, &why)) {  // gin-peer: an overrun in the baseline QUERY_QP, before the initiator commits
++    nack(14);
++    return gdakiTsDecline(r, peer, why, false, req.arg, gdakiCause::Local);
+   }
+   const double tC = gdakiQ4MonoMs();
+   memset(&m, 0, sizeof(m));
+@@ -4449,7 +4782,7 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
+     const char* n = gdakiTsErrName(errno);
+     snprintf(w, sizeof(w), "cannot send ACK (%s)", n ? n : "send failed");
+     pe.gone = true;
+-    return gdakiTsDecline(r, peer, w, false, req.arg);
++    return gdakiTsDecline(r, peer, w, false, req.arg, gdakiCause::Unknown);
+   }
+   // DONE: the initiator committed (its QPs are at RTR), so our own re-posted WQEs and new posts can go. The
+   // initiator may first wait for its own address (path wait). Bounded by what is left of the round.
+@@ -4459,19 +4792,19 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
+     char w[96];
+     snprintf(w, sizeof(w), "peer closed the socket before DONE (%s)", pe.closeCause[0] ? pe.closeCause : "unknown");
+     pe.gone = true;
+-    return gdakiTsDecline(r, peer, w, false, req.arg);
++    return gdakiTsDecline(r, peer, w, false, req.arg, gdakiCause::Unknown);
+   }
+-  if (got == 0) return gdakiTsDecline(r, peer, "DONE timeout", true, req.arg);
++  if (got == 0) return gdakiTsDecline(r, peer, "DONE timeout", true, req.arg, gdakiCause::Unknown);
+   if (d.type == GDAKI_TS_BYE) {  // gin-harden
+     pe.left = true;
+-    return gdakiTsDecline(r, peer, "the peer left the communicator (BYE)", false, req.arg);
++    return gdakiTsDecline(r, peer, "the peer left the communicator (BYE)", false, req.arg, gdakiCause::PeerLeft);
+   }
+   if (d.type != GDAKI_TS_DONE || d.round != req.round)
+     return gdakiTsDecline(r, peer, d.type == GDAKI_TS_FAIL ? "peer FAIL before DONE" : "unexpected record before DONE",
+-                          false, req.arg);
++                          false, req.arg, (d.type == GDAKI_TS_FAIL ? gdakiTsRemoteCause(d) : gdakiCause::Unknown));
+   const double tD = gdakiQ4MonoMs();
+-  if (gdakiTsReplayResume(r, peer, req.executed, req.nqp, &rs, &why) != ncclSuccess)
+-    return gdakiTsDecline(r, peer, why ? why : "replay failed", true, req.arg);
++  if (gdakiTsRepostApply(r, peer, plans, &rs, &why) != ncclSuccess)  // gin-peer: the plan validated before the ACK
++    return gdakiTsDecline(r, peer, why ? why : "replay failed", true, req.arg, gdakiCause::Local);
+   const double tR = gdakiQ4MonoMs();
+   ts->nRecovered++;
+   ts->cRecovered.fetch_add(1, std::memory_order_relaxed);
+@@ -4511,12 +4844,12 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+   if (cls != NCCL_GIN_Q4_CLASS_RETRY_EXC && cls != NCCL_GIN_Q4_CLASS_LOCAL_QP_ERR) {
+     char why[64];
+     snprintf(why, sizeof(why), "class %s is not recoverable", gdakiTsClassName(cls));
+-    return gdakiTsDecline(r, peer, why, true, cls);
++    return gdakiTsDecline(r, peer, why, true, cls, gdakiCause::Unknown);
+   }
+   if (ts->escalated) {  // gin-harden: recovery stopped on this context
+     char why[96];
+     (void)gdakiTsEscalated(r, why, sizeof(why));
+-    return gdakiTsDecline(r, peer, why, true, cls);
++    return gdakiTsDecline(r, peer, why, true, cls, gdakiCause::Local);
+   }
+   {
+     // gin-reconnect: the helper socket's liveness, three ways. No evidence: go on. Dead: decline, naming the cause.
+@@ -4537,7 +4870,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+           gdakiTsReconnectStep(r);
+           lv = gdakiTsPeerLiveness(r, peer, &cause);
+           if (lv != GDAKI_TS_LV_UNKNOWN) {
+-            ended = lv == GDAKI_TS_LV_DEAD ? "dead" : "reconnected";
++            ended = lv != GDAKI_TS_LV_DEAD ? "reconnected" : pe.peerFailed ? "declined" : pe.left ? "left" : "dead";
+             break;
+           }
+           std::this_thread::sleep_for(std::chrono::milliseconds(1));
+@@ -4548,9 +4881,16 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+     }
+     char why[160];
+     if (lv == GDAKI_TS_LV_DEAD) {
++      // gin-peer: a peer that answered a re-dial or probe with FAIL declined this pair (it may have committed a round this
++      // rank then cancelled): not death, a cause on the peer's side
++      if (pe.peerFailed) {
++        return gdakiTsDecline(r, peer, "the peer declined this pair (FAIL on reconnect)", false, cls, pe.failCause,
++                              GDAKI_UA_DECLINED);
++      }
+       if (retry) snprintf(why, sizeof(why), "RETRY_EXC and the peer's socket shows %s", cause);
+       else snprintf(why, sizeof(why), "no helper socket to the peer (%s)", cause);
+-      return gdakiTsDecline(r, peer, why, false, cls, pe.left ? GDAKI_UA_DECLINED : GDAKI_UA_PEER_DEAD);
++      return gdakiTsDecline(r, peer, why, false, cls, pe.left ? gdakiCause::PeerLeft : gdakiCause::PeerDead,
++                            pe.left ? GDAKI_UA_DECLINED : GDAKI_UA_PEER_DEAD);
+     }
+     if (lv == GDAKI_TS_LV_UNKNOWN) {
+       char tail[96];
+@@ -4558,17 +4898,22 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+       else snprintf(tail, sizeof(tail), "%s, reconnect off", cause);
+       if (retry) snprintf(why, sizeof(why), "RETRY_EXC and peer liveness unknown (%s)", tail);
+       else snprintf(why, sizeof(why), "no helper socket to the peer: peer liveness unknown (%s)", tail);
+-      return gdakiTsDecline(r, peer, why, false, cls);
++      return gdakiTsDecline(r, peer, why, false, cls, gdakiCause::Unknown);
+     }
+   }
+   if (ts->surfaced.load(std::memory_order_acquire))
+-    return gdakiTsDecline(r, peer, "the watchdog surfaced a fault earlier", true, cls);
++    return gdakiTsDecline(r, peer, "the watchdog surfaced a fault earlier", true, cls, gdakiCause::Local);
++  // gin-peer: a rerun of the same fault (socket retry, scope rerun) is not a new round for the escalation cap; the REQ
++  // tells the responder (t[3] = 1, unused in a REQ before)
++  const bool rerun = f.sockRetries > 0 || f.fullWhy != 0 || f.conflicts > 0;
+   {
+     char why[96];
+-    if (gdakiTsEscalated(r, why, sizeof(why))) return gdakiTsDecline(r, peer, why, true, cls);  // gin-harden
++    if (gdakiTsEscalated(r, why, sizeof(why), !rerun))
++      return gdakiTsDecline(r, peer, why, true, cls, gdakiCause::Local);  // gin-harden
+   }
+   gdakiTsBusy busy(ts);
+   const uint64_t round = ++ts->round;
++  r->fwRound.fetch_add(1, std::memory_order_acq_rel);  // gin-peer: a new round for the firmware watchdog
+   ts->nRounds++;
+   ts->cRounds.fetch_add(1, std::memory_order_relaxed);
+   // gin-pair-reset: the scope of this round (EXPERIMENT.md 9, item 3), before anything is paused.
+@@ -4589,8 +4934,8 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+   int gidOld = g->gid_index;
+   uint32_t tieKept = 0;
+   struct gdakiTsReplayStats rs;
+-  if (gdakiTsQuiesce(r, peer, &why, &hostRung) != ncclSuccess) return gdakiTsDecline(r, peer, why, true, cls);
+-  if (gdakiTsFwCheck(r, &why)) return gdakiTsDecline(r, peer, why, true, cls);  // gin-harden
++  if (gdakiTsQuiesce(r, peer, &why, &hostRung) != ncclSuccess) return gdakiTsDecline(r, peer, why, true, cls, gdakiCause::Local);
++  if (gdakiTsFwCheck(r, &why)) return gdakiTsDecline(r, peer, why, true, cls, gdakiCause::Local);  // gin-harden
+   tQ = gdakiQ4MonoMs();
+ #ifndef NCCL_GIN_TS_PRODUCTION
+   if (ts->dieStage == 1) {  // test: the helper thread dies mid-round (QPs paused, round never ends)
+@@ -4600,13 +4945,13 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+   }
+ #endif
+   if (ts->stallStage == 1 && gdakiTsTestStall(ts, ts->stallMs, "after quiesce", g->rank))
+-    return gdakiTsDecline(r, peer, "the communicator is being destroyed", true, cls);
++    return gdakiTsDecline(r, peer, "the communicator is being destroyed", true, cls, gdakiCause::Local);
+   if (ncclGinRecoverPrepare(comm, peer, &tok, &st) != ncclSuccess)
+-    return gdakiTsDecline(r, peer, "prepare declined", true, cls);
+-  if (gdakiTsFwCheck(r, &why)) return gdakiTsDecline(r, peer, why, true, cls);  // gin-harden
++    return gdakiTsDecline(r, peer, "prepare declined", true, cls, gdakiCause::Local);
++  if (gdakiTsFwCheck(r, &why)) return gdakiTsDecline(r, peer, why, true, cls, gdakiCause::Local);  // gin-harden
+   if (gdakiTsNonMsg(r, peer, &nm) != ncclSuccess || nm != 0) {
+     snprintf(rs.detail, sizeof(rs.detail), "epoch posted a WQE the recovery cannot count or re-post (mask %#x)", nm);
+-    return gdakiTsDecline(r, peer, rs.detail, true, cls);
++    return gdakiTsDecline(r, peer, rs.detail, true, cls, gdakiCause::Local);
+   }
+   memset(&m, 0, sizeof(m));
+   m.type = GDAKI_TS_REQ;
+@@ -4615,9 +4960,10 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+   m.arg = cls;
+   m.pad = reqScope;  // gin-pair-reset
+   m.tok = tok;
++  m.t[3] = rerun ? 1.0 : 0.0;  // gin-peer
+   if (gdakiTsExecuted(r, peer, m.executed, m.nrp, &nqp) != ncclSuccess)
+-    return gdakiTsDecline(r, peer, "QUERY_QP failed", true, cls);
+-  if (gdakiTsFwCheck(r, &why)) return gdakiTsDecline(r, peer, why, true, cls);  // gin-harden: before the peer commits
++    return gdakiTsDecline(r, peer, "QUERY_QP failed", true, cls, gdakiCause::Local);
++  if (gdakiTsFwCheck(r, &why)) return gdakiTsDecline(r, peer, why, true, cls, gdakiCause::Local);  // gin-harden: before the peer commits
+   m.nqp = nqp;
+   tP = gdakiQ4MonoMs();
+   // gin-harden: a socket that already shows a FIN or an error (the peer cannot have seen this REQ): cancel and retry
+@@ -4626,7 +4972,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+     char w[96];
+     snprintf(w, sizeof(w), pe.left ? "the peer left the communicator (BYE)" : "socket to the peer lost before REQ (%s)",
+              pe.lostCause);
+-    return gdakiTsDecline(r, peer, w, false, cls);
++    return gdakiTsDecline(r, peer, w, false, cls, (pe.left ? gdakiCause::PeerLeft : gdakiCause::Unknown));
+   }
+   if (gdakiTsSend(pe.fd, &m, ts->handshakeMs) != 0) {
+     char w[80];
+@@ -4635,7 +4981,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+     snprintf(pe.closeCause, sizeof(pe.closeCause), "%s", n ? n : "send failed");
+     if (gdakiTsCancelRound(r, peer, f, round, "REQ send")) return;  // gin-harden
+     pe.gone = true;
+-    return gdakiTsDecline(r, peer, w, false, cls);
++    return gdakiTsDecline(r, peer, w, false, cls, gdakiCause::Unknown);
+   }
+   // ACK (bounded: the handshake bound plus the responder's own quiesce, drain and path-wait bounds). A REQ
+   // from the peer meanwhile is a simultaneous initiation (S2 tie-break, deterministic, no extra message):
+@@ -4654,15 +5000,15 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+                pe.closeCause[0] ? pe.closeCause : "unknown");
+       if (gdakiTsCancelRound(r, peer, f, round, "waiting for ACK")) return;  // gin-harden
+       pe.gone = true;
+-      return gdakiTsDecline(r, peer, w, false, cls);
++      return gdakiTsDecline(r, peer, w, false, cls, gdakiCause::Unknown);
+     }
+-    if (got == 0) return gdakiTsDecline(r, peer, "handshake timeout", true, cls);
++    if (got == 0) return gdakiTsDecline(r, peer, "handshake timeout", true, cls, gdakiCause::Unknown);
+     if (a.type == GDAKI_TS_BYE) {  // gin-harden
+       pe.left = true;
+-      return gdakiTsDecline(r, peer, "the peer left the communicator (BYE)", false, cls);
++      return gdakiTsDecline(r, peer, "the peer left the communicator (BYE)", false, cls, gdakiCause::PeerLeft);
+     }
+     if (a.type == GDAKI_TS_ACK && a.round == round) {
+-      if (a.pad != reqScope) return gdakiTsDecline(r, peer, "scope mismatch in ACK", true, cls);  // gin-pair-reset
++      if (a.pad != reqScope) return gdakiTsDecline(r, peer, "scope mismatch in ACK", true, cls, gdakiCause::Unknown);  // gin-pair-reset
+       break;
+     }
+     if (a.type == GDAKI_TS_NACK && a.arg == 12 && a.round == round && reqScope != 0) {
+@@ -4676,7 +5022,12 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+       return;
+     }
+     if (a.type == GDAKI_TS_NACK || a.type == GDAKI_TS_FAIL)
+-      return gdakiTsDecline(r, peer, a.type == GDAKI_TS_NACK ? "peer NACK" : "peer FAIL", false, cls);
++      return gdakiTsDecline(r, peer,
++                            a.type == GDAKI_TS_FAIL ? "peer FAIL"
++                            : a.arg == 15           ? "peer NACK (its re-post plan was rejected)"  // gin-peer
++                            : a.arg == 16           ? "peer NACK (its waits on this rank were already released)"
++                                                    : "peer NACK",
++                            false, cls, gdakiTsRemoteCause(a));
+     if (a.type == GDAKI_TS_REQ && a.from == peer) {
+       if (ts->tieBreak == 0) {  // S1 behaviour (NCCL_GIN_TS_TIE_BREAK=0): NACK and decline on both sides
+         struct gdakiTsMsg n;
+@@ -4686,7 +5037,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+         n.from = g->rank;
+         n.arg = 1;  // collision
+         (void)gdakiTsSend(pe.fd, &n, 200);
+-        return gdakiTsDecline(r, peer, "simultaneous recovery from both ends (tie-break off)", false, cls);
++        return gdakiTsDecline(r, peer, "simultaneous recovery from both ends (tie-break off)", false, cls, gdakiCause::Unknown);
+       }
+       if (g->rank > peer && a.pad != reqScope) {
+         // gin-pair-reset: simultaneous rounds with different scopes. Our prepared QPs cannot answer the lower rank's
+@@ -4741,19 +5092,26 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+   {
+     bool ab = false;
+     if (gdakiTsAbandoned(r, peer, &ab) != ncclSuccess || ab)
+-      return gdakiTsDecline(r, peer, "a device waiter gave up during the handshake", true, cls);
++      return gdakiTsDecline(r, peer, "a device waiter gave up during the handshake", true, cls, gdakiCause::Local);
+   }
+-  if (gdakiTsResolveGid(r, &gidWaitMs, &gidOld, &why) != ncclSuccess) return gdakiTsDecline(r, peer, why, true, cls);
++  if (gdakiTsResolveGid(r, &gidWaitMs, &gidOld, &why) != ncclSuccess) return gdakiTsDecline(r, peer, why, true, cls, gdakiCause::Local);
++  // gin-peer: this rank's re-post plan (from the responder's executed counts) before its Commit; a rejection declines with
++  // FAIL, and the responder, which waits for DONE, declines without re-posting
++  std::vector<struct gdakiTsRepostPlan> plans;
++  int planCode = 0;  // gin-peer
++  if (gdakiTsRepostPlanAll(r, peer, a.executed, a.nqp, plans, &why, "initiator", &planCode) != ncclSuccess)
++    return gdakiTsDecline(r, peer, why ? why : "re-post plan rejected", true, cls,
++                          planCode == 15 ? gdakiCause::Unknown : gdakiCause::Local);
+   const double tG = gdakiQ4MonoMs();
+   if (ncclGinRecoverCommit(comm, peer, &a.tok, &st) != ncclSuccess)
+-    return gdakiTsDecline(r, peer, "commit failed", true, cls);
+-  if (gdakiTsFwCheck(r, &why)) return gdakiTsDecline(r, peer, why, true, cls);  // gin-harden
+-  if (gdakiTsBaseline(r, peer) != ncclSuccess) return gdakiTsDecline(r, peer, "QUERY_QP failed after commit", true, cls);
++    return gdakiTsDecline(r, peer, "commit failed", true, cls, gdakiCause::Local);
++  if (gdakiTsFwCheck(r, &why)) return gdakiTsDecline(r, peer, why, true, cls, gdakiCause::Local);  // gin-harden
++  if (gdakiTsBaseline(r, peer) != ncclSuccess) return gdakiTsDecline(r, peer, "QUERY_QP failed after commit", true, cls, gdakiCause::Local);
+   tC = gdakiQ4MonoMs();
+   if (ts->stallStage == 2 && gdakiTsTestStall(ts, ts->stallMs, "after commit", g->rank))
+-    return gdakiTsDecline(r, peer, "the communicator is being destroyed", true, cls);
+-  if (gdakiTsReplayResume(r, peer, a.executed, a.nqp, &rs, &why) != ncclSuccess)
+-    return gdakiTsDecline(r, peer, why ? why : "replay failed", true, cls);
++    return gdakiTsDecline(r, peer, "the communicator is being destroyed", true, cls, gdakiCause::Local);
++  if (gdakiTsRepostApply(r, peer, plans, &rs, &why) != ncclSuccess)  // gin-peer: the plan validated before the Commit
++    return gdakiTsDecline(r, peer, why ? why : "replay failed", true, cls, gdakiCause::Local);
+   const double tR = gdakiQ4MonoMs();
+   memset(&m, 0, sizeof(m));
+   m.type = GDAKI_TS_DONE;
+@@ -4793,19 +5151,27 @@ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiT
+     m.round = req.round;
+     m.from = g->rank;
+     m.arg = reason;
++    m.nonce = ts->nonce;                  // gin-peer
++    m.pad = gdakiTsNackPad(reason, pe);   // gin-peer: the cause on this side
+     (void)gdakiTsSend(pe.fd, &m, 200);
+   };
+   if (pe.declined) return nack(2);
++  if (gdakiUaPeerRaised(r->commKey, peer)) {  // gin-peer: the device waits on this peer were already released
++    nack(16);
++    return gdakiTsDecline(r, peer, "the device waits on the peer were already released", false, req.arg, gdakiCause::Local);
++  }
++  // gin-peer: a new round for the firmware watchdog, before its first firmware phase (the scope check below)
++  r->fwRound.fetch_add(1, std::memory_order_acq_rel);
+   if (ts->surfaced.load(std::memory_order_acquire)) {
+     nack(9);
+-    return gdakiTsDecline(r, peer, "the watchdog surfaced a fault earlier", false, req.arg);
++    return gdakiTsDecline(r, peer, "the watchdog surfaced a fault earlier", false, req.arg, gdakiCause::Local);
+   }
+   // gin-pair-reset: the initiator's scope (0 = every context); a context without a QP to the initiator is invalid.
+   uint32_t scope = GDAKI_TS_SCOPE_ALL;
+   if (req.pad != 0) {
+     if ((req.pad & ~gdakiTsAllMask(r, peer)) != 0) {
+       nack(11);
+-      return gdakiTsDecline(r, peer, "invalid scope in REQ", false, req.arg);
++      return gdakiTsDecline(r, peer, "invalid scope in REQ", false, req.arg, gdakiCause::Unknown);
+     }
+     // gin-pair-check: refuse (NACK 12, nothing paused or changed, no decline) when a QP of ours to the initiator outside
+     // the scope is not RTS or our own switch is off; the initiator reruns the round as a full reset.
+@@ -4817,10 +5183,11 @@ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiT
+     scope = req.pad;
+   }
+   {  // gin-harden: the escalation cap counts the rounds this rank answers too (a refused scope above is not a round)
++     // gin-peer: not the initiator's reruns of one fault (REQ t[3])
+     char why[96];
+-    if (gdakiTsEscalated(r, why, sizeof(why))) {
++    if (gdakiTsEscalated(r, why, sizeof(why), req.t[3] == 0.0)) {
+       nack(13);
+-      return gdakiTsDecline(r, peer, why, false, req.arg);
++      return gdakiTsDecline(r, peer, why, false, req.arg, gdakiCause::Local);
+     }
+   }
+   gdakiTsScopeGuard scopeGuard(scope);
+@@ -4835,20 +5202,20 @@ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiT
+   uint32_t executed[NCCL_GIN_RECOVERY_MAX_QPS] = {0}, nrp[NCCL_GIN_RECOVERY_MAX_QPS] = {0};
+   if (gdakiTsQuiesce(r, peer, &why, &hostRung) != ncclSuccess) {
+     nack(3);
+-    return gdakiTsDecline(r, peer, why, false, req.arg);
++    return gdakiTsDecline(r, peer, why, false, req.arg, gdakiCause::Local);
+   }
+   const double tQ = gdakiQ4MonoMs();
+   if (ncclGinRecoverPrepare(comm, peer, &tok, &st) != ncclSuccess) {
+     nack(4);
+-    return gdakiTsDecline(r, peer, "prepare declined", false, req.arg);
++    return gdakiTsDecline(r, peer, "prepare declined", false, req.arg, gdakiCause::Local);
+   }
+   if (gdakiTsNonMsg(r, peer, &nm) != ncclSuccess || nm != 0) {
+     nack(5);
+-    return gdakiTsDecline(r, peer, "epoch posted a WQE the recovery cannot count or re-post", false, req.arg);
++    return gdakiTsDecline(r, peer, "epoch posted a WQE the recovery cannot count or re-post", false, req.arg, gdakiCause::Local);
+   }
+   if (gdakiTsExecuted(r, peer, executed, nrp, &nqp) != ncclSuccess) {
+     nack(6);
+-    return gdakiTsDecline(r, peer, "QUERY_QP failed", false, req.arg);
++    return gdakiTsDecline(r, peer, "QUERY_QP failed", false, req.arg, gdakiCause::Local);
+   }
+   const double tP = gdakiQ4MonoMs();
+   gdakiTsRespondPrepared(r, peer, req, tok, executed, nrp, nqp, &st, t0, tQ, tP, hostRung, 0);
+@@ -4861,14 +5228,19 @@ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiT
+ // copies, the high half first: the design relies only on 4-byte copy atomicity, and the device acts on the value only
+ // once bit 0 (in the low half, written last) is set, so it never sees a pointer with a stale high half. The value only
+ // ever goes from 0 to (word | 1): the word lives as long as the communicator.
++// gin-peer: the gate of a QP to peer p gets peer p's word (word [1 + p] of ncclGinTsUserAbortWord), which parked posters,
++// parked waiters and pollers of that QP read (gin_gdaki.h tsPosterAbortWord). A failed write is retried on the next loop.
+ static void gdakiTsPosterWordStep(struct gdakiRecHost* r) {
+   struct gdakiTs* ts = r->ts;
+-  const uint64_t w = r->posterWord.load(std::memory_order_acquire);
+-  if (w == r->posterWordDone || r->posterWordDone != 0 || ts->testDev != nullptr) return;
+-  const uint32_t lo = (uint32_t)w, hi = (uint32_t)(w >> 32);
++  if (r->posterWordDone || ts->testDev != nullptr) return;
++  const uintptr_t base = r->uaBase.load(std::memory_order_acquire);
++  if (base == 0) return;
++  const int n = r->uaN.load(std::memory_order_relaxed);
+   bool ok = true;
+   for (int p = 0; p < (int)ts->peers.size() && ok; p++) {
+-    if (!ts->peers[p].gated) continue;
++    if (!ts->peers[p].gated || p >= n) continue;  // (p >= n cannot happen: one GIN team per communicator)
++    const uint64_t w = (uint64_t)(base + sizeof(uint32_t) * (size_t)(1 + p)) | 1ull;
++    const uint32_t lo = (uint32_t)w, hi = (uint32_t)(w >> 32);
+     gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
+       if (!ok) return;
+       if (gdakiTsGateWrite(r, q->qp_gverbs, offsetof(struct ncclGinTsGate, test) + 4, &hi, 4) != ncclSuccess ||
+@@ -4876,7 +5248,7 @@ static void gdakiTsPosterWordStep(struct gdakiRecHost* r) {
+         ok = false;
+     });
+   }
+-  if (ok) r->posterWordDone = w;
++  if (ok) r->posterWordDone = true;
+ }
+ 
+ // Every 100 ms while idle: the device gates of each live peer. A waiter that gave up with no round
+@@ -4894,9 +5266,7 @@ static void gdakiTsScan(struct gdakiRecHost* r) {
+     gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+       if (gdakiTsWordHiWrite(r, q->qp_gverbs, NCCL_GIN_TS_W_HOST_FAILED | ts->qs[rq.qpIdx].epoch) != ncclSuccess) ok = false;
+     });
+-    struct gdakiQ4Host* q4 = r->ctx->q4;
+-    if (ok && gdakiTsZeroDev(r, q4->dev->sticky, sizeof(q4->dev->sticky), 1) != ncclSuccess) ok = false;
+-    if (ok) {
++    if (ok) {  // gin-peer: the gates only (no context-wide device error state, see gdakiTsDecline)
+       pe.failPending = false;
+       GIN_TS_NOTE("GIN/TS: rank %d: the gates to declined rank %d failed after the late copy mono_ms=%.3f", r->ctx->rank, p,
+                   gdakiQ4MonoMs());
+@@ -4921,7 +5291,7 @@ static void gdakiTsScan(struct gdakiRecHost* r) {
+         if (++s.lostScans >= 2) why = "a fault record never reached the helper (mailbox overflow)";
+       } else s.lostScans = 0;
+     });
+-    if (why) gdakiTsDecline(r, p, why, true, 0);
++    if (why) gdakiTsDecline(r, p, why, true, 0, gdakiCause::Local);
+   }
+ }
+ 
+@@ -5062,7 +5432,7 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+       while ((got = gdakiTsPump(pe, &msg)) == 1) {
+         if (msg.type == GDAKI_TS_REQ && msg.from == p) gdakiTsRespond(r, p, msg);
+         else if (msg.type == GDAKI_TS_FAIL) {
+-          if (!pe.declined) gdakiTsDecline(r, p, "the peer declined", false, msg.arg);
++          if (!pe.declined) gdakiTsDecline(r, p, "the peer declined", false, msg.arg, gdakiTsRemoteCause(msg));
+         } else if (msg.type == GDAKI_TS_BYE) {  // gin-harden: the peer leaves; its FIN that follows is not death
+           pe.left = true;
+           GIN_TS_NOTE("GIN/TS: rank %d: rank %d left the communicator (BYE) mono_ms=%.3f", g->rank, p, gdakiQ4MonoMs());
+@@ -5085,7 +5455,14 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+       if (!pe.deadJudged || pe.declined) continue;
+       char why[96];
+       snprintf(why, sizeof(why), "peer judged dead: the peer's socket shows %s", pe.lostCause);
+-      gdakiTsDecline(r, p, why, false, 0, GDAKI_UA_PEER_DEAD);
++      gdakiTsDecline(r, p, why, false, 0, gdakiCause::PeerDead, GDAKI_UA_PEER_DEAD);
++    }
++    // gin-peer: a peer that answered a re-dial or a probe with FAIL declined this pair: decline it now, as for a FAIL on
++    // an installed socket (a fault waiting for its reconnect has declined it already)
++    for (int p = 0; p < (int)ts->peers.size(); p++) {
++      struct gdakiTsPeer& pe = ts->peers[p];
++      if (!pe.failedPending || pe.declined) continue;
++      gdakiTsDecline(r, p, "the peer declined this pair (FAIL on reconnect)", false, 0, pe.failCause);
+     }
+     std::vector<struct gdakiTsFault> fs;
+     {
+@@ -5572,6 +5949,10 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+   );
+   // gin-handoff: an aborting shrink may go past a GIN error raised only for excluded ranks (init.cc)
+   GIN_TS_NOTE("GIN/TS: handoff=1 rank=%d shrink_handoff=%d", g->rank, ncclGinShrinkHandoffEnabled());
++  // gin-peer: per-peer user abort words, per-round firmware watchdog, re-post plans before the commit on both ranks, FAIL
++  // to a declined peer's re-dial or probe, cause-based hand-off, refusals forgotten after 5 s
++  GIN_TS_NOTE("GIN/TS: peer=1 rank=%d per_peer_words=1 fw_watchdog=per_round plan_before_commit=1 fail_on_reconnect=1 "
++              "handoff_rule=cause refusal_forget_ms=%.0f", g->rank, GDAKI_TS_REFUSAL_FORGET_MS);
+ }
+ 
+ // Called by ncclCommAbort as soon as the abort flags are set (before the teardown, whose cudaFree calls
+@@ -5681,7 +6062,7 @@ extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
+       // Diagnostics (research build only; skipped once a copy or a firmware phase overran its bound):
+       // gin-pair-reset: the epoch half of every gate word to each gated peer, read from the device before the poison, in
+       // GIN-context order (odd: closed; +2 per published round)
+-      const bool diagOk = !r->copyStuck && r->fwOverrun.load(std::memory_order_acquire) == 0;
++      const bool diagOk = !r->copyStuck && ts->cFwOverruns.load(std::memory_order_acquire) == 0;  // gin-peer: any overrun
+       for (int p = 0; diagOk && p < (int)ts->peers.size(); p++) {
+         if (!ts->peers[p].gated) continue;
+         char ep[160];
+@@ -6739,7 +7120,7 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
+     NCCLCHECKGOTO(ncclGinGdakiQueryLastErrorPolling(gdakiCtx, &hasError_), status, exit);
+   }
+   // gin-handoff: an error found by QUERY_QP here (no classifier, or transparent recovery off) names no peer
+-  if (hasError_) gdakiBlameNote(gdakiCtx->q4 ? (const void*)gdakiCtx->q4->asyncResult : nullptr, -1);
++  if (hasError_) gdakiBlameNote(gdakiCtx->q4 ? (const void*)gdakiCtx->q4->asyncResult : nullptr, -1, gdakiCause::Unknown);
+ 
+ exit:
+   *hasError = hasError_;
