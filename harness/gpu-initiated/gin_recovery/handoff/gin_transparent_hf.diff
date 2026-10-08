@@ -1563,7 +1563,7 @@ index 12582b6..ee1a07e 100644
  T&& declval() noexcept {
    static_assert(sizeof(T) != sizeof(T), "You can't evaluate declval.");
 diff --git a/src/init.cc b/src/init.cc
-index 4a88a75..417619d 100644
+index 4a88a75..3de1432 100644
 --- a/src/init.cc
 +++ b/src/init.cc
 @@ -290,6 +290,17 @@ void ncclCommPushCudaGdrFree(struct ncclComm* comm, void* handle) {
@@ -1636,21 +1636,24 @@ index 4a88a75..417619d 100644
  
    // once the comm is ready, we can access ranks etc
    int rank = comm->rank, nranks = comm->nRanks, cudaDev = comm->cudaDev;
-@@ -3538,6 +3562,91 @@ static void childCommCleanupJob(void* job) {
+@@ -3538,6 +3562,98 @@ static void childCommCleanupJob(void* job) {
    delete initJob;
  }
  
 +// gin-handoff: the readiness check of an aborting shrink (NCCL_SHRINK_ABORT). Stock ncclCommInitChildComm calls
-+// ncclCommEnsureReady, which reports the parent's GIN async error, so stock NCCL can never shrink a communicator after a
-+// GIN error, not even to drop the rank that caused it. Here the aborting shrink goes on when the parent's only pending
++// ncclCommEnsureReady, which reports the parent's GIN async error, so stock NCCL cannot shrink a communicator after a GIN
++// error, not even to drop the rank that caused it, unless the application first destroys every devComm with GIN
++// contexts (ncclDevCommDestroy unlinks them, and with them every GIN error, also those for live peers). Here the
++// aborting shrink goes on, with the devComms left in place, when the parent's only pending
 +// error is the GIN error of its GDAKI contexts and the GDAKI layer raised it only for GIN peers that are all excluded
 +// (gin_host_gdaki.cc ncclGinTsBlameQuery). The child of an aborting shrink never shares the parent's resources
 +// (ncclCommInitChildComm: shareResources is false for NCCL_SHRINK_ABORT): it gets its own shared resources, GIN state,
 +// async result and abort flags, so it does not inherit the parent's GIN error; the parent keeps its error and still has
 +// to be aborted or destroyed. Every other case keeps the stock answer and says why: NCCL_GIN_SHRINK_HANDOFF=0, an error
-+// that is not ncclRemoteError or not from GIN (the communicator's or the proxy's async result), GIN progress threads
-+// (their async result names no peer), a GIN state shared with another communicator, a GIN backend other than GDAKI, no
-+// record, a raise without a peer, a peer that cannot be mapped or is not excluded. excludeRanksList is sorted.
++// that is not ncclRemoteError or not from GIN (the communicator's or the proxy's async result), a group job of the parent
++// not yet completed (stock completes it only when there is no error), GIN progress threads (their async result names no
++// peer), a GIN state shared with another communicator, a GIN backend other than GDAKI, no record, a raise without a peer,
++// too many peers, a peer that cannot be mapped or is not excluded. excludeRanksList is sorted.
 +static double commMonoMs() {
 +  struct timespec t;
 +  clock_gettime(CLOCK_MONOTONIC, &t);
@@ -1674,6 +1677,8 @@ index 4a88a75..417619d 100644
 +             (comm->proxyState &&
 +              COMPILER_ATOMIC_LOAD(&comm->proxyState->asyncResult, std::memory_order_acquire) != ncclSuccess)) {
 +    why = "the communicator or its proxy has an error of its own";
++  } else if (comm->groupJob != nullptr) {
++    why = "a group job of the communicator is not completed";
 +  } else if (gs == nullptr || !gs->connected) {
 +    why = "no GIN state";
 +  } else if (gs->proxyThreadsCreated) {
@@ -1692,6 +1697,7 @@ index 4a88a75..417619d 100644
 +      const int stride = full ? 1 : comm->contiguousRanksPerHost;
 +      const int q = ncclGinTsBlameQuery(&gs->asyncResult, peers, kMaxPeers, &nPeers);
 +      if (q == 0) why = "no record of the GIN error";
++      else if (q == -2) why = "the GIN error was raised for more than 64 peers";
 +      else if (q < 0) why = "a GIN error was raised without a peer";
 +      else if (nPeers == 0) why = "no peer recorded";
 +      else if (stride < 1 || stride == INT_MAX) why = "the GIN ranks cannot be mapped to communicator ranks";
@@ -1717,18 +1723,19 @@ index 4a88a75..417619d 100644
 +    len += snprintf(list + len, sizeof(list) - len, "%s%d", i ? "," : "", worlds[i]);
 +#ifdef NCCL_GIN_TS_PRODUCTION
 +  INFO(NCCL_INIT,
-+#else
-+  WARN(
-+#endif
 +       "GIN/TS: rank %d: aborting shrink proceeds past the parent's GIN error, raised for rank(s) %s, all excluded "
 +       "mono_ms=%.3f", comm->rank, list, commMonoMs());
++#else
++  WARN("GIN/TS: rank %d: aborting shrink proceeds past the parent's GIN error, raised for rank(s) %s, all excluded "
++       "mono_ms=%.3f", comm->rank, list, commMonoMs());
++#endif
 +  return ncclSuccess;
 +}
 +
  // initializing a child communicator (for both split and shrink)
  static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, bool isShrink, int flags, int color,
                                            int key, int* excludeRanksList, int excludeRanksCount, ncclConfig_t* config,
-@@ -3561,7 +3670,11 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm,
+@@ -3561,7 +3677,11 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm,
                      ncclSuccess,
                    res, exit);
    }
@@ -1741,7 +1748,7 @@ index 4a88a75..417619d 100644
    CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), res, exit);
  
    /* *newcomm should be NCCL_COMM_NULL until comm split fully complete. */
-@@ -3658,6 +3771,9 @@ ncclResult_t ncclCommShrink(ncclComm_t comm, int* excludeRanksList, int excludeR
+@@ -3658,6 +3778,9 @@ ncclResult_t ncclCommShrink(ncclComm_t comm, int* excludeRanksList, int excludeR
    // Handle error mode by setting abort flags and waiting for kernels to complete and unset the flags
    // to avoid bootstrap issues
    if (shrinkFlags & NCCL_SHRINK_ABORT) {
@@ -2046,7 +2053,7 @@ index 7e70d56..1f1c357 100644
  
      bool is_qp_attr_path_mtu_valid(enum doca_verbs_mtu_size path_mtu) noexcept;
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 976ab91..50ff5e1 100644
+index 976ab91..8efd681 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -15,6 +15,24 @@
@@ -2127,7 +2134,7 @@ index 976ab91..50ff5e1 100644
  static void gdakiFillExchInfo(struct gdaki_exch_info* exch_info, struct gdaki_context* gdaki_ctx,
                                struct doca_gpu_verbs_qp_hl* gqp) {
    exch_info->lid = gdaki_ctx->port_attr.lid;
-@@ -419,172 +467,5358 @@ destroy_verbs_ah:
+@@ -419,172 +467,5359 @@ destroy_verbs_ah:
    return status;
  }
  
@@ -2510,15 +2517,16 @@ index 976ab91..50ff5e1 100644
 +}
 +
 +// init.cc: 1 with the GIN peers (at most maxPeers) when every GIN error raise for `slot` named a peer; 0 when there is
-+// no record for `slot`; -1 when a raise named no peer, a raise could not be tied to any communicator, or there are more
-+// than maxPeers peers.
++// no record for `slot`; -1 when a raise named no peer or a raise could not be tied to any communicator; -2 when there
++// are more than maxPeers peers.
 +int ncclGinTsBlameQuery(const void* slot, int* peers, int maxPeers, int* nPeers) {
 +  *nPeers = 0;
 +  if (gdakiBlameUnkeyed.load(std::memory_order_seq_cst)) return -1;
 +  std::lock_guard<std::mutex> lk(gdakiBlameMu);
 +  for (auto& x : gdakiBlameReg) {
 +    if (x.slot != slot) continue;
-+    if (x.noPeer != 0 || (int)x.peers.size() > maxPeers) return -1;
++    if (x.noPeer != 0) return -1;
++    if ((int)x.peers.size() > maxPeers) return -2;
 +    for (int p : x.peers) peers[(*nPeers)++] = p;
 +    return 1;
 +  }
@@ -7624,7 +7632,7 @@ index 976ab91..50ff5e1 100644
  ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, void** outGinCtx,
                                         ncclNetDeviceHandle_t** outDevHandle) {
    ncclResult_t status = ncclSuccess;
-@@ -795,6 +6029,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -795,6 +6030,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
      qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW;
    else qp_init_attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
    qp_init_attr.comp_channel = gdaki_ctx->docaEvent;
@@ -7632,7 +7640,7 @@ index 976ab91..50ff5e1 100644
  
    if (nqps_for_comm_this_rank > 0) {
    // SPC-X Ordering Semantic. 0 by default.
-@@ -907,6 +6142,16 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -907,6 +6143,16 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
                    status, out);
    }
  
@@ -7649,7 +7657,7 @@ index 976ab91..50ff5e1 100644
    for (int rank_idx = rankOff; rank_idx < nranks; rank_idx += rankStride) {
      if (rank_idx == rank) continue;
      for (int ctx_idx = 0; ctx_idx < ncontexts; ctx_idx++) {
-@@ -916,6 +6161,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -916,6 +6162,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
        uint8_t lagTxPortAffinity = (numLagPorts > 0) ? (ctx_idx % numLagPorts) + 1 : 0;
  
        NCCLCHECKGOTO(gdakiConnectQp(gdaki_ctx, gdaki_ctx->gqps[qp_idx], peer_info, lagTxPortAffinity), status, out);
@@ -7665,7 +7673,7 @@ index 976ab91..50ff5e1 100644
        DOCACHECKGOTO(doca_verbs_qp_get_qpn(gdaki_ctx->gqps[qp_idx]->qp, &qpn), status, out);
        INFO(NCCL_NET,
             "[%d] Connected main QP: qp_idx=%d, main_qpn=%#x, remote_rank=%d, remote_qpn=%#x, lagTxPortAffinity=%u%s",
-@@ -984,6 +6238,12 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -984,6 +6239,12 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
    contiguous_gverbs_qps = (struct doca_gpu_verbs_qp**)calloc(connectedNRanks, sizeof(struct doca_gpu_verbs_qp*));
    EQCHECKGOTO(contiguous_gverbs_qps, nullptr, status, out);
  
@@ -7678,7 +7686,7 @@ index 976ab91..50ff5e1 100644
    for (int ctx_idx = 0; ctx_idx < ncontexts; ctx_idx++) {
      struct ncclGinGdakiGPUContext* gin_gdaki_gpu_ctx = &gdaki_ctx->gin_gdaki_gpu_ctx_host_staging[ctx_idx];
  
-@@ -1041,6 +6301,10 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -1041,6 +6302,10 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
                                                gin_gdaki_gpu_ctx->sink_buffer_lkey, gin_gdaki_gpu_ctx->last_issued_get,
                                                gin_gdaki_gpu_ctx->last_visible_get, use_mcst),
                    status, out);
@@ -7689,7 +7697,7 @@ index 976ab91..50ff5e1 100644
    }
  
    NCCLCHECKGOTO(gin_gdaki_gpu_ctx_hd_mhandle->copy_h_to_d(), status, out);
-@@ -1062,13 +6326,24 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -1062,13 +6327,24 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
    gdaki_ctx->devHandle = devHandle;
    gdaki_ctx->nContexts = ncontexts;
    gdaki_ctx->rankStride = rankStride;
@@ -7714,7 +7722,7 @@ index 976ab91..50ff5e1 100644
        if (gdaki_ctx->docaEvent) {
          doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
          gdaki_ctx->docaEvent = nullptr;
-@@ -1161,6 +6436,18 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+@@ -1161,6 +6437,18 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
    const int rankStride = gdaki_ctx->rankStride;
    const int rankOff = gdaki_ctx->rank % rankStride;
  
@@ -7733,7 +7741,7 @@ index 976ab91..50ff5e1 100644
    if (gdaki_ctx->docaEvent) {
      doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
      gdaki_ctx->docaEvent = nullptr;
-@@ -1338,6 +6625,9 @@ ncclResult_t ncclGinGdakiProgress(void* ctx) {
+@@ -1338,6 +6626,9 @@ ncclResult_t ncclGinGdakiProgress(void* ctx) {
    const int rankOff = gdakiCtx->rank % rankStride;
    bool has_progressed = true;
    bool progressed;
@@ -7743,7 +7751,7 @@ index 976ab91..50ff5e1 100644
  
    while (has_progressed) {
      has_progressed = false;
-@@ -1421,6 +6711,20 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
+@@ -1421,6 +6712,20 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
    struct gdaki_context* gdakiCtx = (struct gdaki_context*)ginCtx;
    bool hasError_ = false;
  
@@ -7764,7 +7772,7 @@ index 976ab91..50ff5e1 100644
    // We throttle the frequency of these queries since they can easily take 250us.
    uint64_t now = clockNano();
    if ((now - gdakiCtx->last_error_query_time) / 1e9 < ncclParamGinErrorQuerySec()) {
-@@ -1433,6 +6737,8 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
+@@ -1433,6 +6738,8 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
    } else {
      NCCLCHECKGOTO(ncclGinGdakiQueryLastErrorPolling(gdakiCtx, &hasError_), status, exit);
    }
