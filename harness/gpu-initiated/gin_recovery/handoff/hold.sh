@@ -43,22 +43,23 @@ case "$H" in
     one hd_shrink_b hd hd
     one hd_shrink_b hfp hfp
     one hf_shrinkoff_b hf hf
-    one hf_hog_f1_b hf hf
-    one hf_hogslack_f1_b hf hf
+    one hf_shrinkdc_b hf hf
+    for x in hf_hog_f1_b hf_hogslack_f1_b hf_hogpre_f1_b hf_hogpreslack_f1_b; do one $x hf hf; done
     one f1_b hf hf
     one f4_b hf hf
     for b in hfp hdp hd; do one lat_4k $b $b; done ;;
-  H1)  # shrink hand-off: hf 10, hd 5 (control), hfp 5, switch off 5, interleaved
+  H1)  # shrink hand-off: hf 10, hd 5 (control), hfp 5, switch off 5, devComm destroyed first 5, interleaved
     for k in 1 2 3 4 5; do
       c hd_shrink_b hf hf 2 $((2 * k - 1))
       c hd_shrink_b hd hd 1 $k
       c hd_shrink_b hfp hfp 1 $k
       c hf_shrinkoff_b hf hf 1 $k
+      c hf_shrinkdc_b hf hf 1 $k
     done ;;
-  H2)  # the GPU full of an application kernel: full-size grid 5, one block smaller 10, interleaved 1:2
+  H2)  # the GPU full of an application kernel: the 2 x 2 (calls between the launches or none; full grid or one block
+       # smaller), 5 each, interleaved
     for k in 1 2 3 4 5; do
-      c hf_hog_f1_b hf hf 1 $k
-      c hf_hogslack_f1_b hf hf 2 $((2 * k - 1))
+      for x in hf_hog_f1_b hf_hogslack_f1_b hf_hogpre_f1_b hf_hogpreslack_f1_b; do c $x hf hf 1 $k; done
     done ;;
   H3)  # regression (hf, and the production kill on hfp)
     for x in f1_b f3_b bidirf_sym_b f4_b f2rel_b hd_rxdeath_b; do c $x hf hf 5; done

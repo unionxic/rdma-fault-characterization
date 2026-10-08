@@ -18,14 +18,15 @@ H=$SCR/agent_ts2hf/out
 declare -A LIB DRV WANT_LIB
 LIB[hf]=$H/hf/libnccl.so.2.32.3;   DRV[hf]=$H/drv/gin_ts2
 LIB[hfp]=$H/hfp/libnccl.so.2.32.3; DRV[hfp]=$H/drv/gin_ts2
-WANT_LIB[hf]=${WANT_HF:?WANT_HF=<md5 prefix of out/hf, EXPERIMENT.md 5>}
-WANT_LIB[hfp]=${WANT_HFP:?WANT_HFP=<md5 prefix of out/hfp, EXPERIMENT.md 5>}
-WANT_DRV=${WANT_DRV:?WANT_DRV=<md5 prefix of out/drv/gin_ts2, EXPERIMENT.md 5>}
+# the builds recorded in EXPERIMENT.md 5 (override only after a rebuild that is recorded there)
+WANT_LIB[hf]=${WANT_HF:-b6372d8622f6a7eceb9fd4528c00e707}
+WANT_LIB[hfp]=${WANT_HFP:-1ae4ce9aecb1727248db7eb3699ad110}
+WANT_DRV=${WANT_DRV:-9493584d5a321277c61863f4ed6ac379}
 DIRS="hf hfp"
 for d in $DIRS; do
   [ -f "${LIB[$d]}" ] && [ -f "${DRV[$d]}" ] || { echo "missing source for $d" >&2; exit 1; }
-  [ "$(md5sum < "${LIB[$d]}" | cut -c1-8)" = "${WANT_LIB[$d]:0:8}" ] || { echo "out/$d is not the expected build" >&2; exit 1; }
-  [ "$(md5sum < "${DRV[$d]}" | cut -c1-8)" = "${WANT_DRV:0:8}" ] || { echo "out/drv is not the expected driver" >&2; exit 1; }
+  [ "$(md5sum < "${LIB[$d]}" | cut -d' ' -f1)" = "${WANT_LIB[$d]}" ] || { echo "out/$d is not the expected build" >&2; exit 1; }
+  [ "$(md5sum < "${DRV[$d]}" | cut -d' ' -f1)" = "$WANT_DRV" ] || { echo "out/drv is not the expected driver" >&2; exit 1; }
 done
 existing() { echo "cd ~/$B && find . \( -path ./hf -o -path ./hfp \) -prune -o -type f -print | sort | xargs md5sum"; }
 BEFORE_L=$(bash -c "$(existing)"); BEFORE_S=$(ssh -n "$SUNNY_SSH" "$(existing)")

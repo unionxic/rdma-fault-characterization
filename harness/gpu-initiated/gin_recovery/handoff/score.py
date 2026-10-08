@@ -36,19 +36,21 @@ from rows_hf import extra_hf  # noqa: E402
 
 # section 7: planned scored trials per cell key (latency cells: runs)
 PLANNED = {"hd_shrink_b@hf": 10, "hd_shrink_b@hd": 5, "hd_shrink_b@hfp": 5, "hf_shrinkoff_b@hf": 5,
-           "hf_hog_f1_b@hf": 5, "hf_hogslack_f1_b@hf": 10, "hdp_kill_b@hfp": 5}
+           "hf_shrinkdc_b@hf": 5, "hf_hog_f1_b@hf": 5, "hf_hogslack_f1_b@hf": 5, "hf_hogpre_f1_b@hf": 5,
+           "hf_hogpreslack_f1_b@hf": 5, "hdp_kill_b@hfp": 5}
 for c in ("f1_b", "f3_b", "bidirf_sym_b", "f4_b", "f2rel_b", "hd_rxdeath_b"):
     PLANNED[f"{c}@hf"] = 5
 for sz in ("4k", "256k"):
     for b in ("hfp", "hdp", "hd"):
         PLANNED[f"lat_{sz}@{b}"] = 5
 # section 8: which rank's hook must fire, kills
-HOOK_R0 = {"f1_b", "hf_hog_f1_b", "hf_hogslack_f1_b"}
+HOG = {"hf_hog_f1_b", "hf_hogslack_f1_b", "hf_hogpre_f1_b", "hf_hogpreslack_f1_b"}
+HOOK_R0 = {"f1_b"} | HOG
 HOOK_R1 = {"f3_b"}
 HOOK_BOTH = {"bidirf_sym_b"}
-KILL_R1 = {"f4_b", "hd_shrink_b", "hf_shrinkoff_b", "hdp_kill_b"}
+KILL_R1 = {"f4_b", "hd_shrink_b", "hf_shrinkoff_b", "hf_shrinkdc_b", "hdp_kill_b"}
 KILL_R0 = {"hd_rxdeath_b"}
-HOG = {"hf_hog_f1_b", "hf_hogslack_f1_b"}
+SWITCH_OFF_R0 = {"hf_shrinkoff_b", "hf_shrinkdc_b"}  # NCCL_GIN_SHRINK_HANDOFF=0 on rank 0
 
 LABEL = {
     "S1": "죽은 rank를 뺀 중단 shrink가 1-rank 통신기를 돌려주고, 그 allreduce가 맞고, 새 통신기에 비동기 오류가 없음",
@@ -58,12 +60,12 @@ LABEL = {
     "S5": "대조(스위치 끔): shrink가 부모의 GIN 오류로 실패하고 유지 줄이 스위치를 사유로 적음",
     "S6": "운영 빌드도 같은 shrink를 넘기고, 넘김 줄은 WARN에 보이지 않음",
     "S7": "상대를 적지 않은 GIN 오류(감시가 드러낸 오류)가 있으면 순정 판정을 유지함",
-    "G1": "대조: GPU를 다 채우는 크기의 커널에서 pilot의 실패(복사 시간 초과, 복구 없음)가 재현됨",
-    "G2": "그 커널의 블록 하나는 GIN 커널이 끝날 때까지 시작하지 못함",
-    "G3": "새 스트림 P개의 4 B 복사 중 일부만 200 ms 안에 끝나고, 나머지는 GIN 커널이 끝난 뒤 끝남",
-    "G4": "200 ms 안에 끝나지 않은 복사는 GPU를 채우는 커널의 스트림 뒤 P번째 스트림의 것 하나뿐임",
-    "G5": "블록 하나를 줄인 커널에서는 모든 블록이 시작하고, 복사 시간 초과 없이 투명하게 복구됨",
-    "G6": "블록 하나를 줄인 커널에서는 새 스트림 P개의 복사가 모두 200 ms 안에 끝남",
+    "S8": "대조(스위치 끔): devComm을 먼저 없앤 응용은 순정 확인으로도 1-rank 통신기를 얻음",
+    "G1": "대조: 두 커널 사이에 gin-harden의 호출(커널 적재, 할당, 스트림)이 있으면 pilot의 실패가 재현됨",
+    "G2": "그 순서에서는 GPU 채우기 커널이 GIN 커널 옆에서 전혀 시작하지 못하고 새 스트림 복사도 하나도 200 ms 안에 끝나지 않음",
+    "G3": "그 순서에서는 격자를 블록 하나 줄여도 시작하지 못하고 pilot의 실패가 재현됨",
+    "G4": "두 커널 사이에 아무것도 없으면 가득 채우는 격자도 시작하고 복사가 끝나며 투명하게 복구됨",
+    "G5": "두 커널 사이에 아무것도 없고 격자가 블록 하나 작으면 모든 블록이 시작하고 투명하게 복구됨",
     "R1": "복구 재현 셀이 그대로 투명",
     "R2": "끊김 없는 kill이 2 s 안에 죽음 원인으로 거절되고 abort가 돌아옴",
     "R3": "원격 접근 오류를 rank 0이 거절하고, 받는 쪽 대기가 오류로 풀리며 abort가 5 s 안에 돌아옴",
@@ -132,7 +134,7 @@ def status_of(r):
             if not val(r.get("ua_r%d" % rk)) >= 1:
                 return "config_no_ua"
         if build == "hf":
-            want = "0" if (cell == "hf_shrinkoff_b" and rk == 0) else "1"
+            want = "0" if (cell in SWITCH_OFF_R0 and rk == 0) else "1"
             if str(r.get("hf_switch_r%d" % rk)) != want:
                 return "config_switch"
         # no test switch of gin-harden or earlier studies in any cell of this study

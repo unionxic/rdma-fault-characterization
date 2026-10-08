@@ -15,12 +15,15 @@ Columns (_r<r>: from rank r's log or kv):
   n_surface_r*               "GIN/TS: watchdog rank=<r>: <why>; the fault surfaces" lines (a GIN error raised without a peer)
   surface_why_r*             <why> of the first such line
   n_late_copy_r*             "the late device-state copy completed" lines
-  ho_parent_async_after, ho_newcomm_async, ho_newcomm_destroy_rc, ho_check_ms, ho_allreduce_done, ho_allreduce_rc
-                             rank 0 kv (GIN_TS_SHRINK)
-  hog_slack_r*, hog_started_probe_r*, probe_n_r*, probe_done_200ms_r*, probe_stuck_r*, probe_max_ms_r*,
-  probe_after_hog_ms_r*, hog_started_end_r*, hog_start_spread_ms_r*, probe_done_end_r*, hog_running_at_end_r*
-                             kv of the GPU-filling kernel and the copy probe (GIN_TS_HOG_MS, GIN_TS_HOG_SLACK,
-                             GIN_TS_HOG_PROBE); probe_stuck is "none" or the comma-separated indices still running
+  ho_parent_async_after, ho_newcomm_async, ho_newcomm_destroy_rc, ho_check_ms, ho_allreduce_done, ho_allreduce_rc,
+  ho_devcomm_destroy_rc, ho_devcomm_destroy_ms
+                             rank 0 kv (GIN_TS_SHRINK, GIN_TS_SHRINK_DEVCOMM_DESTROY)
+  hog_slack_r*, hog_prealloc_r*, hog_local_bytes_r*, hog_started_probe_r*, probe_n_r*, probe_done_200ms_r*,
+  probe_stuck_r*, probe_max_ms_r*, probe_after_hog_ms_r*, hog_started_end_r*, hog_start_spread_ms_r*,
+  hog_first_start_rel_ms_r*, hog_last_start_rel_ms_r*, probe_done_end_r*, hog_running_at_end_r*
+                             kv of the GPU-filling kernel and the copy probe (GIN_TS_HOG_MS, GIN_TS_HOG_PREALLOC,
+                             GIN_TS_HOG_SLACK, GIN_TS_HOG_PROBE); probe_stuck is "none" or the comma-separated indices still
+                             running; hog_local_bytes only with GIN_TS_HOG_PREALLOC
 """
 import os, re
 
@@ -31,9 +34,10 @@ RE_HOFF_KEEP = re.compile(r"GIN/TS: rank \d+: aborting shrink keeps the parent's
 RE_SURFACE = re.compile(r"GIN/TS: watchdog rank=\d+: (.*?); the fault surfaces")
 RE_LATE = re.compile(r"the late device-state copy completed")
 HO_KEYS = ["ho_parent_async_after", "ho_newcomm_async", "ho_newcomm_destroy_rc", "ho_check_ms", "ho_allreduce_done",
-           "ho_allreduce_rc"]
-HOG_KEYS = ["hog_slack", "hog_started_probe", "probe_n", "probe_done_200ms", "probe_stuck", "probe_max_ms",
-            "probe_after_hog_ms", "hog_started_end", "hog_start_spread_ms", "probe_done_end", "hog_running_at_end"]
+           "ho_allreduce_rc", "ho_devcomm_destroy_rc", "ho_devcomm_destroy_ms"]
+HOG_KEYS = ["hog_slack", "hog_prealloc", "hog_local_bytes", "hog_started_probe", "probe_n", "probe_done_200ms",
+            "probe_stuck", "probe_max_ms", "probe_after_hog_ms", "hog_started_end", "hog_start_spread_ms",
+            "hog_first_start_rel_ms", "hog_last_start_rel_ms", "probe_done_end", "hog_running_at_end"]
 
 
 def kvfile(path):  # as ../scripts/ts2/rows.py
