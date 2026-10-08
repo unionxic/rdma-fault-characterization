@@ -6,12 +6,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `DRAFT` |
+| 상태 | `PREREGISTERED` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-multirank` @ `d834f86c` (master) |
-| 사전 등록 태그 | 없음. 파일럿 뒤 확정한 예측을 사전 등록 커밋에서 태그로 고정한다(3절) |
-| 마지막 갱신 | 2026-10-09, 파일럿 P0(`ow`) 검토와 예측 확정(3.6), `mr/hd` 배포 기록 |
+| 사전 등록 태그 | `prereg/gin-multirank-v1` (상태를 `PREREGISTERED`로 바꾼 바로 그 커밋) |
+| 마지막 갱신 | 2026-10-09 03:40, 사전 등록(파일럿 P0 검토 뒤 예측 확정) |
 
 표시: `[측정]` 원자료나 시행별 표에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -573,7 +573,7 @@ LIB=hd bash $M/chain.sh $PWD/$M/results/<날짜> fill:<폴더>:<셀>:<수>:<시�
 - [x] `hd` 빌드의 diff 읽기와 예측 다시 이끌기(3.5), `mr/hd` 빌드
 - [x] `mr/hd` 배포(본 세션)
 - [x] 파일럿 검토와 예측 확정(3.6): 열 `rec_first_after_round_ms`, `rec_last_after_round_ms` 추가, Y3, Z1 고침, Z2 추가
-- [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/gin-multirank-v1` 태그
+- [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/gin-multirank-v1` 태그
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 채점 (`QA`)
 - [ ] 독립 재계산과 코드 리뷰
@@ -598,6 +598,7 @@ LIB=hd bash $M/chain.sh $PWD/$M/results/<날짜> fill:<폴더>:<셀>:<수>:<시�
 | 2026-10-09 | 파일럿 검토: `rows_mr.py`로 열을 다시 만들어(`trials_p0.csv`, 17행) `ow` 예측과 비교했다. 훅 9번과 kill 2번이 계획대로 트래픽 안에서 일어났다. 3.4의 값은 바꿀 필요가 없었다(훅이 커널 시작 5 959–5 975 ms 뒤, kill이 7 983–8 026 ms 뒤, 순환 라운드 시작의 퍼짐 17.4 ms). 랭크 4개의 프로세스 시작에서 커널 시작까지 919–1 278 ms(랭크 실행 52번) `[측정]` | 3.4, 3.6, `results/20261009_pilot/trials_p0.csv`(커밋 안 함) |
 | 2026-10-09 | 파일럿이 보인 열의 잘못과 소스 분석의 빈틈으로 예측을 고쳤다. `rows_mr.py`에 열 `rec_first_after_round_ms`, `rec_last_after_round_ms`를 더했다. Y3는 판정식의 열만 바꿨다(문장과 한도 그대로). Z1은 다시 이끌었다(열, 한도 2 000 → 5 000 ms, 문장). Z2를 더했다. F2, R1은 근거 문장만 고쳤다. 증거: 순환 시행에서 rank 2의 recovered 줄 `total_us` 549 ms와 첫 라운드 줄 25.1 s 뒤의 재개, 같은 시행의 "refused reason=not_rts" 줄 둘과 "rerunning as a full reset" 줄 둘, 모든 문맥 장애 시행의 라운드 단계 시간 `[측정]`. 파일럿에서 맞거나 틀렸다는 이유만으로 바꾼 예측은 없다. 사슬 셀은 파일럿에 없었다 | 1절 장애 훅, 3.1, 3.3, 3.6, [predictions.csv](predictions.csv), [rows_mr.py](rows_mr.py), [score.py](score.py)(이름표만) |
 | 2026-10-09 | 7절 hold 추정을 파일럿 시행 시간으로 고쳤다(본 실행 약 55분). `cells.sh`는 머리말 설명만 고쳤다(값 그대로). 예측 42줄(새 셀 31, 대조 9, 탐색 2)로 확정했다. 확정한 [predictions.csv](predictions.csv)의 sha256은 `3a35b6dba9b99cde8b0d4086ad5b87ad9d0826175f625dea86d725fc192a90ee`다. 상태는 `DRAFT`다. 고정은 사전 등록 커밋과 태그 `prereg/gin-multirank-v1`에서 한다 | 3절, 7절 |
+| 2026-10-09 03:40:58 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/gin-multirank-v1` |
 
 ## 13. 사전 등록 이후 변경
 

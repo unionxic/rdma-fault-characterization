@@ -1,0 +1,7 @@
+Pre-registration of gin-multirank, 2026-10-09 03:40:58 +0900, before any main-run trial of this study.
+sha256 of the fixed prediction file:
+3a35b6dba9b99cde8b0d4086ad5b87ad9d0826175f625dea86d725fc192a90ee  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/gin-multirank-v1 (sections 2, 3, 7, 8).
+A pilot of 17 trials on the gin-oneway library (ow; results/20261009_pilot, hold P0 2026-10-09 03:15:51-03:20:56, never
+scored) ran before this file. The main run uses the gin-harden library (hd). The predictions were derived from the hd source
+and finalized after the pilot; every change and its pilot evidence is in EXPERIMENT.md sections 3.6 and 12.
