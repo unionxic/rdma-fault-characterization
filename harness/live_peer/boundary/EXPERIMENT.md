@@ -5,12 +5,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `PREREGISTERED` |
+| 상태 | `RUNNING` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-08 |
 | 기준 브랜치와 커밋 | `exp/live-boundary` @ `613003e9` (master) |
 | 사전 등록 태그 | `prereg/live-boundary-v1` (이 상태로 바꾼 커밋) |
-| 마지막 갱신 | 2026-10-08 13:57, 사전 등록 |
+| 마지막 갱신 | 2026-10-08 14:17, 구현, 배포, smoke, 본 실행 시작 |
 
 표시: `[측정]` 원자료에서 확인, `[소스]` 코드나 문서에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함. 이 문서를 쓰는 동안
 클러스터에서 아무것도 실행하지 않았고 빌드도 하지 않았다. 측정값은 live_peer의 원자료(Release `data-20261007`의
@@ -169,9 +169,10 @@
 | NIC와 펌웨어 | ConnectX-6, 20.43.4100 | live_peer 5절(2026-10-07). 실행 전 다시 읽는다 |
 | rain 커널 | 5.15.0-97, `CONFIG_HZ=250`, `CONFIG_NO_HZ_IDLE=y`, `CONFIG_HIGH_RES_TIMERS=y` | `[측정]` `/boot/config-5.15.0-97-generic`, 2026-10-08 |
 | sunny 커널 | 6.8.0-138 | live_peer 5절. 서버 쪽 타이머는 판정에 쓰이지 않는다 |
-| GIN 번들 | `~/gi-bundle/gin_recovery_gpudb_stall`: `gin_rec` md5 `fac97c8c`, `libnccl.so.2.32.3` md5 `1ed8e0a1` | `[측정]` rain md5sum, 2026-10-08. sunny는 실행 전 확인 `[미확인]` |
-| evrec | `~/gi-bundle/evrec2/evrec` md5 `3f93b3a9`(표본 없이 시작과 끝만) | `[측정]` rain md5sum, 2026-10-08 |
-| CPU 하네스 | master `613003e9`의 소스 + 9.1절의 변경. `run.sh`가 시행마다 빌드한다 | 빌드 전 `[미확인]` |
+| GIN 번들 | `~/gi-bundle/gin_recovery_gpudb_stall`: `gin_rec` md5 `fac97c8c`, `libnccl.so.2.32.3` md5 `1ed8e0a1` | `[측정]` 두 노드 md5sum, 2026-10-08 14:03 배포 블록 |
+| evrec | `~/gi-bundle/evrec2/evrec` md5 `3f93b3a9`(표본 없이 시작과 끝만) | `[측정]` 두 노드 md5sum, 같은 배포 블록 |
+| CPU 하네스 | 소스 커밋 `b5657f88`(master `613003e9` + 9.1절의 변경). rain `probe_client` `a9c481f2`, `probe_server` `c3f24990` / sunny(`~/rdma-error-lb/harness`) `probe_client` `3c06e360`, `probe_server` `413c52e6`. `run.sh`가 시행마다 다시 빌드한다 | `[측정]` md5sum, 같은 배포 블록 |
+| 커널 로그 | sunny `dmesg`는 sudo 없이 읽히지 않아 8절대로 rain만 검사한다 | `[측정]` 2026-10-08 14:08 실행기 시작 기록 |
 
 ## 6. 변수
 
@@ -296,9 +297,9 @@ env BUNDLE=$HOME/gi-bundle/gin_recovery_gpudb_stall REC=1 CLASSIFY=1 INJECT=600 
 
 - [x] 질문, 가설, 셀 작성 (`DRAFT`)
 - [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
-- [ ] 계측과 실행기 구현(`live_stop_probe`, `probe_ms`, `run_points.sh`, `deploy.sh`, `score.py`), 빌드, 리뷰
-- [ ] 배포
-- [ ] smoke 실행(채점 제외)
+- [x] 계측과 실행기 구현(`live_stop_probe`, `probe_ms`, `run_points.sh`, `deploy.sh`, `score.py`), 빌드. 독립 리뷰는 하지 않았고 smoke와 가짜 자료로 채점기를 시험했다
+- [x] 배포
+- [x] smoke 실행(채점 제외)
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 채점과 재계산 (`QA`)
 - [ ] 결과 정리, 원자료 릴리스, PR
@@ -311,13 +312,15 @@ env BUNDLE=$HOME/gi-bundle/gin_recovery_gpudb_stall REC=1 CLASSIFY=1 INJECT=600 
 | 2026-10-08 13:45–14:00 | 설계: 커널 소스(리눅스 6.10.8, 5.4)에서 소켓 타임아웃의 jiffy 변환, 타이머 휠 반올림, `poll` 여유를 읽고 GIN 드라이버의 마감 경로를 다시 읽음. rain의 `CONFIG_HZ` 확인 | 1.2, 3.1 |
 | 2026-10-08 13:47–13:50 | Release `data-20261007`의 live_peer 원자료를 받아 체크섬 확인, GIN의 Prepare 시간, ACK 지연, 정지 오차, 거절 시각, CPU 하네스의 첫 CQE 시각을 다시 셈 | 1.2 |
 | 2026-10-08 13:57:38 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/live-boundary-v1` |
+| 2026-10-08 13:58–14:01 | 구현과 빌드: `live_stop_probe` 장애와 `probe_ms` 열, `run_points.sh`, `deploy.sh`, `score.py`. 빌드됨(`-Werror`). 채점기는 가짜 자료로 모든 판정식이 계산되는 것을 확인 | 커밋 `b5657f88`, `67a9c668`. 구현 결정은 [DEVIATIONS.md](DEVIATIONS.md) 1–4 |
+| 2026-10-08 14:03:34–14:03:37 | 배포 블록(`lb-deploy`, 락 대기 14:01–14:03). sunny에 `~/rdma-error-lb/harness`를 만들고 빌드. GIN 정지 번들과 evrec2의 md5가 두 노드에서 사전 등록 값과 같음. 블록 뒤 정지 상태와 남은 프로세스 없음, rain dmesg mlx5 명령 오류 줄 2(이전 것)에서 그대로 | 5절의 md5 |
+| 2026-10-08 14:08:00–14:09:36 | smoke CPU(`lb-smoke-cpu`), 점마다 1회, 10회. 러너 rc 모두 0, 따로 센 시행 없음. 블록 뒤 검사 같음. sunny dmesg는 sudo 없이 읽히지 않음 | `results/20261008_smoke/CP/`, `CG/`(채점 제외) |
+| 2026-10-08 14:14:27–14:16:04 | smoke GIN(`lb-smoke-gin`), 점마다 1회, 7회. 러너 rc 모두 0, 따로 센 시행 없음. 블록 뒤 검사 같음 | `results/20261008_smoke/G/`(채점 제외) |
+| 2026-10-08 14:16:29 | 본 실행 시작. CPU(`lb-cpu`)와 GIN(`lb-gin`)을 각각 `cluster_run.sh -w 10800` 블록으로 대기열에 넣음. 상태 `RUNNING` | `results/20261008/` |
 
 ## 13. 사전 등록 이후 변경
 
-> 기존 문장을 고치지 않고 여기에 덧붙인다. 변경이 많으면 `DEVIATIONS.md`에 두고 링크한다.
-
-| 날짜 | 무엇을 | 이유 | 영향 범위 | 커밋 |
-|---|---|---|---|---|
+변경과 구현 결정은 [DEVIATIONS.md](DEVIATIONS.md)에 있다. 예측, 판정식, 셀, 반복 수, 제외와 중단 기준을 바꾼 항목은 없다.
 
 ## 14. 원자료와 결과표
 
