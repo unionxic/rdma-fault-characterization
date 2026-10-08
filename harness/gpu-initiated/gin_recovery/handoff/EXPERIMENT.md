@@ -5,12 +5,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `PREREGISTERED` |
+| 상태 | `COMPLETE` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-handoff` @ `692ff591`(태그 `prereg/gin-harden-v1`의 커밋. gin-harden의 실행기, 채점 함수, `hd` 소스를 그대로 쓰려고 그 위에서 시작) |
 | 사전 등록 태그 | `prereg/gin-handoff-v1` (상태를 `PREREGISTERED`로 바꾼 바로 그 커밋) |
-| 마지막 갱신 | 2026-10-09 05:12, 사전 등록(pilot H0 뒤 예측 확정) |
+| 마지막 갱신 | 2026-10-09, 본 실행, 채점, 독립 재계산, 코드 리뷰, Release 뒤 마감(12–19절) |
 
 표시: `[측정]` 원자료에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -231,6 +231,8 @@ GPU 가득 참 2 × 2의 pilot(셀마다 n=1, 채점 안 함)은 H2와 맞았다
   (`/dev/gdrdrv` 없음, 2026-10-09 확인 `[측정]`) 클러스터 규칙상 모듈을 올리지 않는다. 막힌 쓰기를 다른 스트림으로 다시 내면 늦게 도착한 옛 쓰기가
   새 값을 덮는다. 그래서 이 실험은 원인만 잰다.
 - 중단하지 않는 shrink(`NCCL_SHRINK_DEFAULT`), split, revoke 뒤 shrink: 판정을 바꾸지 않는다(순정 그대로).
+  정정(본 실행 뒤, 코드 리뷰 L7): revoke 뒤의 shrink라도 `NCCL_SHRINK_ABORT`이면 넘김 규칙이 걸린다. 코드는 revoke 여부를 보지 않는다
+  (`commShrinkAbortReady`) `[소스]`. revoke 셀은 없다(13절).
 - 3 rank 이상(gin-multirank의 몫): 상대 번호를 통신기 rank로 옮기는 식은 일반 경우로 썼지만 2 rank로만 잰다. 살아남은 rank들이 서로 다른 판정을 내릴 때(한
   rank는 넘기고 다른 rank는 유지) 생기는 일도 재지 않는다(18절).
 - GIN progress 스레드가 있는 백엔드(CPU proxy doorbell), GDAKI가 아닌 GIN 백엔드: 넘기지 않고 순정 판정을 지킨다 `[소스]`. 이 테스트베드는 GPU
@@ -518,17 +520,17 @@ python3 score.py results/<날짜>
 
 ## 10. 완료 조건과 QA 기준
 
-- [ ] 메인 세션이 pilot(H0)을 돌리고 결과를 12절에 적은 뒤, 고칠 것을 고치고 태그를 달았다.
-- [ ] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외와 실패를 따로 센 표가 있다.
-- [ ] 예측 24줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
-- [ ] 다른 에이전트가 `score.py`를 보지 않고 원자료에서 핵심 수치를 다시 셌다(shrink 결과와 시간, 넘김과 유지 줄, 부모와 아이의 비동기 오류, 복사 시간
-  초과, 블록 시작 수와 간격, 새 스트림 복사, 통계 값, 지연).
-- [ ] 다른 에이전트가 `hf_layer.diff`와 드라이버 변경을 읽고 리뷰했다(설계 단계 리뷰는 12절).
-- [ ] smoke와 pilot, 제외 시행이 결과에 섞이지 않았다.
-- [ ] 새 빌드의 md5, 전체 diff, pristine + diff 확인, 운영 빌드의 strings 확인을 5절과 12절에 적었다.
-- [ ] 원자료를 Release에 올리고 `DATA.md`에 적었다.
-- [ ] hold 전후 mlx5 스냅숏에 새 명령 오류가 없었거나, 있었다면 그 줄의 내용을 12절에 적었다. `gin-harden-` iptables 규칙이 늘지 않았다.
-- [ ] 모든 시행에서 CUDA 메모리 오류(종료 코드 139, illegal address)가 없었다(`STOP_cuda` 없음).
+- [x] 메인 세션이 pilot(H0)을 돌리고 결과를 12절에 적은 뒤, 고칠 것을 고치고 태그를 달았다.
+- [x] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외와 실패를 따로 센 표가 있다([SCORE.md](results/20261009/SCORE.md) 끝 표).
+- [x] 예측 24줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다([SCORE.md](results/20261009/SCORE.md)).
+- [x] 다른 에이전트가 `score.py`를 보지 않고 원자료에서 핵심 수치를 다시 셌다(shrink 결과와 시간, 넘김과 유지 줄, 부모와 아이의 비동기 오류, 복사 시간
+  초과, 블록 시작 수와 간격, 새 스트림 복사, 통계 값, 지연)([qa_recount.md](results/20261009/qa_recount.md)).
+- [x] 다른 에이전트가 `hf_layer.diff`와 드라이버 변경을 읽고 리뷰했다(설계 단계 리뷰는 12절, 본 실행 뒤 리뷰는 [qa/code_review.md](qa/code_review.md)).
+- [x] smoke와 pilot, 제외 시행이 결과에 섞이지 않았다.
+- [x] 새 빌드의 md5, 전체 diff, pristine + diff 확인, 운영 빌드의 strings 확인을 5절과 12절에 적었다.
+- [x] 원자료를 Release에 올렸다(`data-20261009`, 14절). `DATA.md` 항목은 상위 문서와 함께 묶음 PR에서 적는다.
+- [x] hold 전후 mlx5 스냅숏에 새 명령 오류가 없었다. hold 밖(H3과 H4 사이)에 sunny의 FWTracer 줄 하나가 생겼다(12절). `gin-harden-` iptables 규칙이 늘지 않았다.
+- [x] 모든 시행에서 CUDA 메모리 오류(종료 코드 139, illegal address)가 없었다(`STOP_cuda` 없음).
 
 ## 11. 작업 체크리스트
 
@@ -542,11 +544,11 @@ python3 score.py results/<날짜>
 - [x] 배포(메인 세션, 2026-10-09 04:50:54–04:51:18)
 - [x] pilot H0(메인 세션, 05:04:28–05:05:52, 채점 안 함), 결과로 고칠 것 고치기(12절)
 - [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
-- [ ] 본 실행 H1–H4 (`RUNNING`)
-- [ ] 채점 (`QA`)
-- [ ] 독립 재계산과 코드 리뷰
-- [ ] 결과 정리, 원자료 Release, PR
-- [ ] 결론 확정 (`COMPLETE`)
+- [x] 본 실행 H1–H4와 채우기 hold (`RUNNING`)
+- [x] 채점 (`QA`)
+- [x] 독립 재계산과 코드 리뷰
+- [x] 결과 정리, 원자료 Release(`data-20261009`). PR은 상위 문서와 묶어 메인 세션이 연다
+- [x] 결론 확정 (`COMPLETE`)
 
 ## 12. 실행 기록 (시간순)
 
@@ -563,10 +565,23 @@ python3 score.py results/<날짜>
 | 2026-10-09 | 리뷰 반영. 계층: 매크로 인자 밖으로 로그 분기, 64개 넘는 상대에 따로 된 사유, 끝나지 않은 그룹 작업이 있으면 유지, 순정 확인에 대한 설명 고침(devComm을 먼저 없애는 길). 드라이버: 새 배열과 새 스트림 확인 준비를 GIN 커널 전으로(두 커널 사이는 gin-harden 그대로), `GIN_TS_HOG_PREALLOC`, 블록 시작 시각의 처음과 끝, `GIN_TS_SHRINK_DEVCOMM_DESTROY`. 셀: GPU 채우기 2 × 2(가득과 하나 작게 × 두 커널 사이 호출 있음과 없음, 각 5), `hf_shrinkdc_b` 5. 예측: G를 다섯으로 다시 쓰고(H2 고침), 스트림 번호 예측(옛 G4) 뺌, S8 더함. 다시 빌드(빌드됨, 실행 안 함): `hf` `b6372d86`, `hfp` `1ae4ce9a`, 드라이버 `9493584d`, 경고 0. `make_diff_hf.sh` 두 재현 VERIFIED, `hf_layer.diff` `a2bcaf69`(+176/−1), 전체 diff `882dfff7`. 운영 빌드 strings 수는 위와 같음 `[측정]`. 합성 시험을 새 셀까지 넣어 다시 돌림: 시행 102개, 판정 100, 예상대로(R1, R3만 자료 부족) `[측정, 실제 측정 아님]` | 세션 스크래치 `hf_work/build_hf2.log`, `build_hfp2.log`, `build_drv3.log`, `synth/fab_hf.py` |
 | 2026-10-09 | 클러스터에서는 아무것도 돌리지 않았다(ssh, 배포, cluster_run.sh, GPU와 RDMA 프로그램 모두 없음). 배포, pilot, 본 실행은 메인 세션이 한다 | |
 | 2026-10-09 04:50:54–04:51:18 | 배포(메인 세션, `bash deploy_hf.sh deploy_check.txt`, rc 0): 새 디렉터리 `hf/`, `hfp/`. 두 노드 md5가 소스와 같고(libnccl `b6372d86`, `1ae4ce9a`, 드라이버 `9493584d`), 드라이버마다 자기 번들의 libnccl을 쓰며, 기존 번들 42개 파일 md5가 두 노드에서 그대로 `[측정]` | [deploy_check.txt](deploy_check.txt) |
-| 2026-10-09 05:04:28–05:05:52 | pilot H0(메인 세션, `bash chain.sh results/20261009_pilot H0`, 04:51:22에 대기 시작, 다른 실험의 hold 뒤 05:03:57에 잠금, 05:04:28에 유휴 확인, hold rc 0, chain 끝 05:05:54). 14회, 채점 안 함. mlx5 새 줄 0, 명령 오류 줄(rain 2, sunny 0)과 rain 펌웨어 명령 실패 수(31) 전후 같음, `gin-harden-` iptables 규칙 0, 모든 시행 `left=0`, STOP 파일 없음, CUDA 메모리 오류 줄 없음 `[측정]` | `results/20261009_pilot/`(hold_H0.out, chain.out, 스냅숏, 빌드별 시행 파일. 원자료는 Release 예정) |
+| 2026-10-09 05:04:28–05:05:52 | pilot H0(메인 세션, `bash chain.sh results/20261009_pilot H0`, 04:51:22에 대기 시작, 다른 실험의 hold 뒤 05:03:57에 잠금, 05:04:28에 유휴 확인, hold rc 0, chain 끝 05:05:54). 14회, 채점 안 함. mlx5 새 줄 0, 명령 오류 줄(rain 2, sunny 0)과 rain 펌웨어 명령 실패 수(31) 전후 같음, `gin-harden-` iptables 규칙 0, 모든 시행 `left=0`, STOP 파일 없음, CUDA 메모리 오류 줄 없음 `[측정]` | `results/20261009_pilot/`(hold_H0.out, chain.out, 스냅숏, 빌드별 시행 파일. 원자료는 Release `data-20261009`의 pilot 자산, 14절) |
 | 2026-10-09 | pilot 분석(`score.py`를 세션 스크래치의 사본에 계획 수 1로 돌림, 14회 모두 로그와 kv와 대조). 14회 모두 설정 확인 통과, 제외 0. 셀이 있던 예측 19개 모두 판정식 조건 1/1 `[측정]`. 셀별: shrink 셀 셋의 `r0rc=4`는 rank 1 kill로 장치 대기가 오류를 돌려준 때문이고(진행 195–199/400) shrink와 무관하다. `hd_shrink_b@hf` shrink 성공 17.3 ms, 넘김 줄 "raised for rank(s) 1", 새 통신기 1 rank, allreduce 확인 맞음 0.3 ms, 새 통신기 비동기 오류 없음, 부모는 shrink 뒤에도 `ncclRemoteError`, 새 통신기 해제 502.0 ms, abort 오류 없음. `@hfp` 같음(17.2 ms, WARN에 넘김 줄 없음). `@hd` shrink 0.0 ms에 `ncclRemoteError`. 스위치 끔 0.0 ms에 실패, 유지 줄 사유 `NCCL_GIN_SHRINK_HANDOFF=0`. devComm 먼저 없앰: 없애기 11.1 ms, shrink 성공 16.5 ms, 부모 비동기 오류가 사라짐(no error), allreduce 맞음. 죽음 판정 뒤 거절은 kill 1.54–1.64 ms 뒤(shrink 셀 다섯과 `f4_b`, n=6). GPU 가득 참: `hf_hog_f1_b`, `hf_hogslack_f1_b`(gin-harden 순서)는 41/120에서 거절, `hf_hogpre_f1_b`, `hf_hogpreslack_f1_b`(호출을 앞당김)는 120/120 투명(값은 3절 머리). `hf_hog_f1_b`에서 rank 0 감시가 "fault records are queued and the recovery helper is not running"으로 드러냈고 유지 줄 사유가 "a GIN error was raised without a peer". 4 KiB 지연 p50: `hfp`, `hdp`, `hd` 모두 10.69 µs(n=1씩) `[측정]` | 세션 스크래치 `hf_work/pilot/`(사본, `SCORE.md`, `trials_scored.csv`) |
 | 2026-10-09 | pilot 뒤 변경(태그 전). 예측: S3 상한 5 000 ms → 500 ms(pilot 16.5–17.3 ms). 다른 판정식, 셀, 반복 수, 제외 기준은 그대로. 열 설명: `hog_first_start_rel_ms`, `hog_last_start_rel_ms`는 노드마다 일정한 시계 차(rain 3 358.6–3 358.7 ms, sunny 3 672.6 ms, 블록이 바로 시작한 셀 n=2씩)를 품으므로 판정에 쓰지 않는다고 적음. 그 차를 빼면 gin-harden 순서 셀의 첫 블록은 GIN 커널 시작 2 063.6–2 092.5 ms 뒤에 시작했고 각 rank의 GIN 커널 시간(2 064.0–2 093.6 ms)과 1.3 ms 안에서 맞는다(n=4 rank-시행) `[측정, 추론]`. 실행 스크립트, 라이브러리, 드라이버, 번들은 그대로. 확정한 `predictions.csv` sha256 `04ac4a66cb4c2ea64bafb9a412d49f0dbd3fff5d26c36fafeecb361ded88799a`(24줄) | [predictions.csv](predictions.csv), [rows_hf.py](rows_hf.py), [score.py](score.py) |
 | 2026-10-09 05:12:42 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/gin-handoff-v1` |
+| 2026-10-09 05:12:50 | 본 실행 시작(메인 세션, `bash chain.sh results/20261009 H1 H2 H3 H4`). hold마다 다른 실험의 hold와 번갈아 잠금을 기다림 | `results/20261009/chain.out` |
+| 2026-10-09 05:21:09–05:24:28 | H1(잠금 05:20:38, 유휴 확인 뒤 시작, 3분 19초, rc 0): shrink 셀 30회(`hd_shrink_b` `hf` 10, `hd` 5, `hfp` 5, `hf_shrinkoff_b` 5, `hf_shrinkdc_b` 5) `[측정]` | `hold_H1.out`, `cluster_run.log`(꼬리표 `ghf-H1`) |
+| 2026-10-09 05:42:03–05:45:09 | H2(잠금 05:41:32, 3분 6초, rc 0): GPU 가득 참 2 × 2 20회. `hf_hogpre_f1_b` n1은 rank 0의 랑데부 포트 bind 실패(`bind: Address already in use`, `r0rc=1`)로 rank 1이 자기 45 s 감시까지 기다림 `[측정]` | `hold_H2.out`, `ghf-H2` |
+| 2026-10-09 05:53:37–05:57:04 | H3(잠금 05:53:06, 3분 27초, rc 0): 회귀 35회 `[측정]` | `hold_H3.out`, `ghf-H3` |
+| 2026-10-09 06:08:57–06:10:43 | H4(잠금 06:08:26, 1분 46초, rc 0): 지연 30실행 `[측정]`. H3 뒤 스냅숏(05:57:03)과 H4 앞 스냅숏(06:08:57) 사이, 어느 hold 밖에서 sunny에 mlx5 줄 하나(`mlx5_fw_tracer_handle_traces ... FWTracer: Events were lost`)가 생김. 명령 오류 줄이 아니고 명령 오류 수는 그대로 `[측정]` | `hold_H4.out`, `ghf-H4`, `mlx5_*` |
+| 2026-10-09 06:17:49–06:17:58 | 채우기 hold(`fill:hf:hf_hogpre_f1_b@hf:1:6`, 06:11:00에 대기 시작, 잠금 06:17:18, 9 s, rc 0): bind 실패 시행(8절 제외)을 다음 번호 n6으로 채움. 계획 5에 채움 1(20%), 50% 상한 안 `[측정]` | `hold_fill.out`, `ghf-fill` |
+| 2026-10-09 | 본 실행 전체: hold 다섯 모두 rc 0, STOP 파일 없음. hold 안 시간 합 11분 47초(추정 약 13분). 모든 hold 앞뒤로 mlx5 새 줄 0, 명령 오류 줄 rain 2와 sunny 0 그대로, rain 펌웨어 명령 실패 31 그대로, `gin-harden-` iptables 규칙 0, 모든 시행 `left=0`, 종료 코드 139나 illegal address 없음 `[측정]` | 위 hold 출력, [qa_recount.md](results/20261009/qa_recount.md) 3절 |
+| 2026-10-09 | 채점(메인 세션, `python3 score.py results/20261009`): 시행 116개(셀 86, 지연 30), 판정 115, 제외 1(bind 실패). 예측 24개 모두 맞음 `[측정]` | [SCORE.md](results/20261009/SCORE.md), [trials_scored.csv](results/20261009/trials_scored.csv) |
+| 2026-10-09 | 독립 재계산(다른 에이전트, `score.py`, `rows_hf.py`, `SCORE.md`를 보지 않고 원자료에서 열을 다시 뽑고 자기 판정식 평가기로 셈): 맞음 24, 틀림 0, 자료 부족 0. 무결성(태그 커밋, `predictions.csv` sha256 세 곳 같음, 고정 절과 스크립트가 태그와 같음), 제외와 채움 확인, hold 출력 116줄이 시행 파일과 모두 맞음. 지연 p50을 원시 지연(실행마다 3000개)에서 다시 계산해 kv와 같음. 문서와 다른 점 셋(시계 차가 변함, GPU 가득 참 셀의 거절 사유 문구, 이 문서에 본 실행 기록이 아직 없었음)과 관찰 둘(FWTracer 줄, "cannot set the device error state" 줄)은 13절 `[측정]` | [qa/recount.py](qa/recount.py), [qa_recount.md](results/20261009/qa_recount.md) |
+| 2026-10-09 | 본 실행 뒤 코드 리뷰(다른 에이전트, 읽기만): 막는 것과 높음 없음, shrink 변경은 주장한 범위에서 안전. 중간 둘(M1 "올린 상대"와 "원인 상대"의 차이, M2 GIN 상태 없는 아이만 시험), 낮음 여덟(L1 포트 범위, L2 자동화 안 된 8절 규칙 셋, L3 S6과 S8의 전제가 판정식에 없음, L4 복사 확인의 시간 해상도, L5 시계 차의 변화, L6 세 호출 묶음, L7 revoke 문구, L8 채움 시행의 시각). 측정 결과를 바꾸는 것은 없음 `[소스, 측정]` | [qa/code_review.md](qa/code_review.md) |
+| 2026-10-09 | 나도 채점기 출력(`trials_scored.csv`)에서 핵심 수치를 따로 셈: shrink 시간, devComm 없애기 시간, kill 뒤 거절(n=40), 받기만 하는 rank, 원격 접근 오류의 rank 1 abort, 2 × 2의 블록 수와 복사 수와 간격, 지연 p50. 독립 재계산의 값과 모두 같음 `[측정]` | [trials_scored.csv](results/20261009/trials_scored.csv) |
+| 2026-10-09 06:23:50 | Release `data-20261009`(메인 세션): 본 실행 자산(파일 712개, 0.37 MB)과 pilot 자산(파일 90개, 0.05 MB)을 내려받아 확인. `sha256sum -c` 통과, 주소를 바꾼 뒤 원본과 같고 실제 주소 접두가 없음 `[측정]` | 14절 |
+| 2026-10-09 | 마감: 상태 `COMPLETE`, 13–19절, 폴더 [README.md](README.md). 고정 절(2, 3, 7, 8절)은 고치지 않고 정정은 13절에 둠. 클러스터 명령은 이 마감에서 돌리지 않음 | |
 
 ## 13. 사전 등록 이후 변경
 
@@ -574,40 +589,151 @@ python3 score.py results/<날짜>
 
 | 날짜 | 무엇을 | 이유 | 영향 범위 | 커밋 |
 |---|---|---|---|---|
+| 2026-10-09 | `hf_hogpre_f1_b@hf` n1 제외, n6으로 채움(채우기 hold, 06:17:49–06:17:58). 다른 시행보다 32분 늦게, 섞지 않고 혼자 돌았다(리뷰 L8) | 랑데부 포트 bind 실패(8절 제외 규칙 그대로. 계획 변경 아님) | 그 셀 키 하나. n6의 값은 n2–n5와 같다(191/192, 287/288 블록, 복사 8/8이 0.034–0.057 ms, 투명) `[측정]` | 마감 커밋 |
+| 2026-10-09 | 정정(3.1절, 고정): `hog_first_start_rel_ms`, `hog_last_start_rel_ms`의 노드별 시계 차는 일정하지 않다. 블록이 바로 시작한 셀에서 pilot(05:05) rain 3 358.6–3 358.7 ms, sunny 3 672.6 ms; H2(05:42–05:45, 9 rank-시행씩) rain 3 361.8–3 362.2 ms, sunny 3 692.7–3 693.5 ms; 채우기(06:17) rain 3 372.8 ms, sunny 3 699.2 ms. H2 안에서 rain은 시행마다 약 0.1 ms씩 늘었다(리뷰 L5, 재계산 6절 2번) `[측정]`. 기준이 `CLOCK_REALTIME`이라 NTP 보정을 받는 것으로 본다 `[추론]` | 독립 재계산과 리뷰가 찾음 | 판정식은 이 열을 쓰지 않는다. 블록 시작을 GIN 커널 끝과 비교할 때는 같은 hold의 셀에서 잰 차를 쓰거나 `hog_start_spread_ms`를 쓴다 | 마감 커밋 |
+| 2026-10-09 | 정정(3절 머리, 고정): GPU 가득 참 pilot을 "복구는 복사 시간 초과로 거절됐다"고 적었다. 사건의 순서는 맞다: 복사 시간 초과 줄("...; the round declines")이 먼저 나오고 rank 0의 거절 줄이 1.24–1.30 ms 뒤에 온다(본 실행 n=10). 그러나 거절 줄에 적힌 사유는 "the watchdog surfaced a fault earlier"다(pilot과 본 실행 10/10). 감시는 그보다 먼저(훅 11.8–461.9 ms 뒤) 상대 없이 오류를 드러냈다 `[측정]` | 독립 재계산 6절 3번 | 판정 영향 없음: G1은 복사 시간 초과 줄과 복구 없음만 본다 | 마감 커밋 |
+| 2026-10-09 | 덧붙임(관찰): gin-harden 순서의 GPU 가득 참 셀 10회 모두 적어도 한 rank에 "GIN/TS: cannot set the device error state"가 나오고, 늦은 복사가 끝난 뒤 "the gates to declined rank N failed after the late copy"가 나온다(rank 0의 `hf_hog_f1_b` n2, n5는 늦은 복사가 거절 0.008–0.009 ms 뒤 끝나 앞 줄이 없음). 거절의 장치 오류 상태 쓰기가 복사라서 막혔다가 나중에 다시 쓰인 것이다 `[측정, 소스]` | 독립 재계산 6절 5번 | 판정 영향 없음. 9절 1번 (c)의 "막힌 복사는 helper 점검이 다시 쓴다"가 실제로 일어났다 | 마감 커밋 |
+| 2026-10-09 | 정정(4절): revoke 뒤의 중단 shrink에도 넘김 규칙이 걸린다(리뷰 L7). 4절에 그 문장을 덧붙였다 | 코드와 문서가 다름 | revoke 셀이 없어 측정 영향 없음 | 마감 커밋 |
+| 2026-10-09 | 해석의 범위(2절 H1, H2, 고정): (1) 넘김 규칙은 오류가 "누구를 상대로 올려졌는가"를 보지 원인을 보지 않는다. 거절은 원인이 자기 rank에 있어도(커밋 실패, 펌웨어 단계, 라운드 안 복사 시간 초과 등) 그 상대를 적는다. 2 rank에서는 상대가 하나뿐이라 결과에 영향이 없다(리뷰 M1). (2) 아이 통신기의 격리는 GIN 상태가 없는 아이(devComm을 만들지 않음, 1-rank allreduce는 로컬 복사)에서만 쟀다(리뷰 M2). (3) H2는 "할당과 커널 적재"라고 적었지만 2 × 2가 가른 것은 세 호출(점유율 질의로 부르는 지연 적재, `cudaMalloc`, 스트림 생성)의 묶음이다. 어느 하나를 원인으로 말하지 않는다(리뷰 L6) | 리뷰 M1, M2, L6 | 결론과 README의 문장을 이 범위로 썼다(17절) | 마감 커밋 |
+| 2026-10-09 | 덧붙임(판정식): S6과 S8의 판정식에는 "shrink 전에 부모에 오류가 있었다"는 전제가 없다(리뷰 L3). 데이터에서는 전제가 섰다: S6 셀 5/5 `ho_async_seen=1`이고 shrink 뒤 부모 오류가 `ncclRemoteError`, S8 셀 5/5 `ho_async_seen=1`이고 없애기 뒤 부모 오류가 "no error" `[측정]`. G2의 "GIN 커널이 끝난 뒤 모두 끝난다"는 "200 ms 안에는 하나도 안 끝나고 실행 끝에는 모두 끝났다"로만 뒷받침된다(확인 창 뒤의 완료 시각을 남기지 않음, 리뷰 L4) | 리뷰 L3, L4 | 판정 그대로 | 마감 커밋 |
+| 2026-10-09 | 덧붙임(8절 실행): 8절의 규칙 셋("`left > 0`이 두 시행 연속이면 멈춤", "설정 확인 실패는 블록을 멈춤", "채움이 계획의 50%를 넘으면 자료 부족")은 스크립트가 자동으로 하지 않는다(리뷰 L2). 본 실행에서 셋 다 해당하지 않았다: `left=0` 116/116, 설정 확인 실패 0, 채움 1/5 `[측정]` | 리뷰 L2 | 영향 없음 | 마감 커밋 |
 
 ## 14. 원자료와 결과표
 
-아직 없다. 계획: `results/<날짜>/SCORE.md`, `results/<날짜>/trials_scored.csv`(커밋), 빌드별 시행 파일과 hold 출력(Release).
+| 무엇 | 경로 또는 Release 자산 | n |
+|---|---|--:|
+| 채점표(예측별 판정, 놓친 시행, 셀별 제외) | [results/20261009/SCORE.md](results/20261009/SCORE.md) | 예측 24 |
+| 시행별 값(채점 상태 포함) | [results/20261009/trials_scored.csv](results/20261009/trials_scored.csv) | 116(판정 115) |
+| 독립 재계산 | [results/20261009/qa_recount.md](results/20261009/qa_recount.md), 스크립트 [qa/recount.py](qa/recount.py) | 116 |
+| 본 실행 뒤 코드 리뷰 | [qa/code_review.md](qa/code_review.md) | |
+| 본 실행 원자료(빌드별 시행 로그와 kv, hold 출력, 스냅숏) | Release `data-20261009`, `harness__gpu-initiated__gin_recovery__handoff__results__20261009.tar.xz`(파일 712개, 0.37 MB, sha256 앞 12자리 `9a7fa309c670`) | 116 |
+| pilot 원자료(채점 안 함) | Release `data-20261009`, `harness__gpu-initiated__gin_recovery__handoff__results__20261009_pilot.tar.xz`(파일 90개, 0.05 MB, sha256 앞 12자리 `688ff55d71f0`) | 14 |
+| 배포 확인 | [deploy_check.txt](deploy_check.txt) | |
+| 사전 등록 | [predictions.csv](predictions.csv), [PREREG.txt](PREREG.txt), 태그 `prereg/gin-handoff-v1`(`c9efc7b9`) | 24 |
+
+빌드별 중간 표(`trials_hf.csv` 등)는 `trials_scored.csv`에 모두 들어 있어 커밋하지 않았다. Release 자산은 메인 세션이 06:23:50에 내려받아
+확인했다(12절).
 
 ## 15. 결과 요약
 
-`[미확인]` 아직 측정 전이다.
+판정: **예측 24개 모두 맞음**(판정 시행 115, 제외 1). 채점 [SCORE.md](results/20261009/SCORE.md), 독립 재계산도 24/24
+([qa_recount.md](results/20261009/qa_recount.md)) `[측정]`. 아래 범위는 따로 적지 않으면 그 셀 키의 판정 시행 전체에 걸친 범위다.
+
+**shrink 넘기기**(rank 0. 상대 rank 1 kill 뒤 주 대기가 끝난 다음 `ncclCommShrink(comm, {1}, NCCL_SHRINK_ABORT)`) `[측정]`
+
+| 조건 | 셀 키 | n | shrink | 걸린 시간 | 새 통신기(1 rank)의 allreduce | shrink 뒤 부모의 비동기 오류 | 예측 |
+|---|---|--:|---|---|---|---|---|
+| 이 실험 라이브러리, 연구 빌드 | `hd_shrink_b@hf` | 10 | 성공 10/10. 넘김 줄이 rank 1만 적음 10/10 | 17.0–17.3 ms | 맞음 10/10(확인 0.3 ms), 새 통신기 비동기 오류 없음 10/10 | `ncclRemoteError` 10/10 | S1–S3 맞음 |
+| 이 실험 라이브러리, 운영 빌드 | `hd_shrink_b@hfp` | 5 | 성공 5/5. WARN에 넘김 줄 없음 | 16.9–17.3 ms | 맞음 5/5 | `ncclRemoteError` 5/5 | S6 맞음 |
+| gin-harden 라이브러리(대조) | `hd_shrink_b@hd` | 5 | `ncclRemoteError` 5/5 | 0.0 ms | 통신기 없음 | 이 드라이버는 기록 안 함 | S4 맞음 |
+| 스위치 끔(대조) | `hf_shrinkoff_b@hf` | 5 | `ncclRemoteError` 5/5. 유지 줄 사유 `NCCL_GIN_SHRINK_HANDOFF=0` | 0.0 ms | 통신기 없음 | `ncclRemoteError` 5/5 | S5 맞음 |
+| 스위치 끔, devComm을 먼저 없앰(대조) | `hf_shrinkdc_b@hf` | 5 | 성공 5/5. 넘김, 유지 줄 없음 | 16.4–16.9 ms | 맞음 5/5 | 오류 없음 5/5(없애기 10.8–11.1 ms) | S8 맞음 |
+| 살아 있는 rank 1을 빼는 shrink, 감시가 상대 없이 오류를 올린 뒤 | `hf_hog_f1_b@hf` | 5 | `ncclRemoteError` 5/5. 유지 줄 사유 "a GIN error was raised without a peer" | 0.0 ms | 통신기 없음 | `ncclRemoteError` 5/5 | S7 맞음 |
+
+- 성공한 shrink를 셋 합치면 16.4–17.3 ms(n=20)다. 새 통신기는 언제나 1 rank였고 allreduce 결과는 20/20 맞았다. 새 통신기 해제는 502.0–502.9 ms
+  (`@hf`, `@hfp`, n=15), devComm을 먼저 없앤 셀 503.1–503.2 ms(n=5)다.
+- 죽음 판정 뒤 거절: kill 셀 키 7개를 합쳐 kill 뒤 1.51–1.86 ms(n=40), 원인은 모두 상대 소켓의 FIN이다.
+
+**GPU 가득 참 2 × 2**(셀마다 n=5. rank 0은 rain 48 SM × 4 = 192블록, rank 1은 sunny 48 × 6 = 288블록. 장애는 GIN 커널 시작 583.1–1 147.2 ms 뒤로
+20회 모두 GPU 채우기 3 s 창 안. 새 스트림 복사는 GPU 채우기를 띄운 20.0–20.1 ms 뒤) `[측정]`
+
+| 두 커널 사이 호출, 격자 | 셀 키 | 확인 때 시작한 블록(r0 / r1) | 새 스트림 복사 8개 중 200 ms 안(r0 / r1) | 실행 끝 | 복구 | 예측 |
+|---|---|---|---|---|---|---|
+| gin-harden 순서, 가득 | `hf_hog_f1_b` | 0/192 / 0/288, 5/5 | 0 / 0, 5/5 | 블록 모두 시작(간격 0.0 ms), 복사 8/8 | rank 0 복사 시간 초과 뒤 거절 5/5, 투명 0/5 | G1, G2 맞음 |
+| gin-harden 순서, 하나 작게 | `hf_hogslack_f1_b` | 0/191 / 0/287, 5/5 | 0 / 0, 5/5 | 같음 | 거절 5/5, 투명 0/5 | G3 맞음 |
+| 없음, 가득 | `hf_hogpre_f1_b` | 191/192 / 287/288, 5/5 | 8 / 8, 5/5(가장 늦은 복사 0.033–0.080 ms) | 남은 블록 하나가 GIN 커널 끝에 시작(시작 간격 rain 1 816.4–1 816.6 ms, sunny 1 801.4–1 801.6 ms. GIN 커널 시간 1 816.9–1 817.1 ms, 1 801.9–1 802.4 ms) | 투명 5/5, 복사 시간 초과 0 | G4 맞음 |
+| 없음, 하나 작게 | `hf_hogpreslack_f1_b` | 191/191 / 287/287, 5/5 | 8 / 8, 5/5(0.034–0.104 ms) | 간격 0.0 ms | 투명 5/5, 복사 시간 초과 0 | G5 맞음 |
+
+- gin-harden 순서의 두 셀(n=10)에서 rank 0은 훅 11.8–461.9 ms 뒤 감시가 상대 없이 오류를 드러냈고("fault records are queued and the recovery helper is
+  not running"), 훅 915.0–1 463.0 ms 뒤 복사 시간 초과 줄, 그 1.24–1.30 ms 뒤 거절 줄(사유 "the watchdog surfaced a fault earlier")을 남겼다.
+  rank 1은 "the peer declined"로 거절했다(10/10) `[측정]`.
+- 같은 hold의 시계 차를 빼면 그 두 셀에서 첫 블록은 GIN 커널이 끝난 순간에 시작했다(차이 −1.8–0.0 ms, rank-시행 20) `[측정, 추론]`.
+
+**회귀** `[측정]`(n=5씩)
+- 투명 5/5: `f1_b`, `f3_b`, `bidirf_sym_b`(R1). 통계 API: `f1_b`에서 두 rank가 라운드 1, 복구 1, rank 0 거절 0(5/5, R6). `f4_b`에서 죽음 1, 거절 1(5/5, R7).
+- kill 거절: `f4_b` kill 뒤 1.58–1.67 ms, 운영 빌드 `hdp_kill_b@hfp` 1.51–1.60 ms, 모두 FIN, abort 오류 없음(R2, R5).
+- 원격 접근 오류: rank 0 거절 5/5. rank 1 대기는 `ncclRemoteError`로 풀리고 신호 없이 성공한 대기 0, rank 1 abort 773.3–796.7 ms(R3).
+- 받기만 하는 rank: 죽음 판정 5/5, kill 뒤 대기 해제 19.5–21.7 ms, 비동기 오류 1.9–2.2 ms, abort 오류 없음(R4).
+
+**지연**(rank 0 p50, 실행마다 3000번, 실행 5의 중앙값) `[측정]`
+
+| 크기 | 이 실험 운영 빌드 | gin-harden 운영 빌드 | gin-harden 연구 빌드 | 실행별 범위(세 빌드) | 예측 |
+|---|--:|--:|--:|---|---|
+| 4 KiB | 10.69 µs | 10.69 µs | 10.69 µs | 10.69–10.72 µs | P1, P3 맞음(차이 0.00) |
+| 256 KiB | 38.91 µs | 38.88 µs | 38.88 µs | 38.88–38.91 µs | P2, P4 맞음(차이 0.03) |
+
+원시 지연 90 000개가 모두 32 ns의 배수라 0.03 µs 차이는 타이머 한 눈금이다. p50은 원시 지연에서 다시 계산해도 kv와 같다(재계산).
 
 ## 16. QA와 재현성
 
-- 재현: [gin_transparent_hf.diff](gin_transparent_hf.diff)(pristine NCCL v2.32.3-1 기준)로 만든다. `hfp`는 같은 소스에
-  `-DNCCL_GIN_TS_PRODUCTION`. 빌드 절차는 [build_hf.sh](build_hf.sh).
+- **채점.** 메인 세션이 `score.py`로 셈: 시행 116, 판정 115, 예측 24 맞음 `[측정]`.
+- **독립 재계산.** 다른 에이전트가 `score.py`, `rows_hf.py`, `SCORE.md`, `trials_*.csv`를 읽지 않고 원시 로그와 kv에서 모든 열을 다시 뽑고, 자기
+  판정식 평가기로 셌다([qa/recount.py](qa/recount.py), [qa_recount.md](results/20261009/qa_recount.md)).
+  - 맞은 것: 판정 24/24, 제외 1과 채움, hold 출력 116줄과 시행 파일, 설정 확인 115/115, 멈춤 기준(새 mlx5 줄 0, 명령 오류와 펌웨어 실패 수 그대로,
+    iptables 규칙 0, STOP 없음, 139 없음), 지연 p50(원시 3000개에서 다시 계산).
+  - 무결성: 태그 `prereg/gin-handoff-v1`이 커밋 `c9efc7b9`, `predictions.csv` sha256이 작업 트리, 태그, `PREREG.txt` 세 곳에서 같음, 고정 절과
+    `cells.sh`, `chain.sh`, 드라이버 소스가 태그와 같음(`hold.sh`와 실행기는 관리망 주소 필터가 넣는 자리만 다름). 본 실행의 첫 로그 05:21:11은 사전
+    등록 05:12:42 뒤.
+  - 다른 것: 13절에 옮긴 셋(시계 차, 거절 사유 문구, 이 문서의 본 실행 기록 부재)과 관찰 둘. 판정을 바꾸는 것은 없다.
+- **코드 리뷰.** 설계 단계 리뷰(12절)와 본 실행 뒤 리뷰([qa/code_review.md](qa/code_review.md)). 본 실행 뒤 리뷰는 rain의 번들 md5가 5절과 같음을
+  확인했다(sunny는 `deploy_check.txt`만 `[미확인]`). 찾은 것과 처리는 13, 18, 19절.
+- **내 확인.** 채점기 출력에서 핵심 수치를 따로 세어 재계산과 같음을 확인했다(12절). 이것은 독립 확인이 아니다.
+- **재현.** [gin_transparent_hf.diff](gin_transparent_hf.diff)(pristine NCCL v2.32.3-1 기준)로 만든다. `hfp`는 같은 소스에
+  `-DNCCL_GIN_TS_PRODUCTION`. 빌드 절차는 [build_hf.sh](build_hf.sh), 배포는 [deploy_hf.sh](deploy_hf.sh)(md5 확인), 실행은 9절. 빌드 md5는 5절.
 
 ## 17. 결론
 
-아직 없다.
+1. **GIN 오류 뒤 죽은 rank를 빼는 shrink가 응용을 바꾸지 않고 된다.** 순정 NCCL 2.32.3과 gin-harden 빌드는 GIN 오류가 난 통신기의 중단 shrink를 바로
+   `ncclRemoteError`로 돌려준다(대조 5/5, 스위치 끔 5/5). 이 실험의 계층은 라이브러리가 그 GIN 오류를 올릴 때 누구를 상대로 올렸는지 적어 두고, 그
+   상대가 모두 빠지면 오류를 넘어간다. 그래서 죽은 rank를 뺀 1-rank 통신기를 약 17 ms에 돌려줬고(연구 빌드 10/10, 운영 빌드 5/5), 그 allreduce는
+   맞았으며, 새 통신기는 부모의 오류를 물려받지 않았다. 부모는 오류를 그대로 지녀 여전히 abort해야 한다. 상대를 적지 않은 오류(감시의 드러냄)가
+   한 번이라도 있으면 순정 답을 지켰다(5/5) `[측정]`.
+   - 한계: 규칙은 오류가 "누구를 상대로 올려졌는가"를 본다. 원인이 자기 rank에 있는 거절도 상대를 적으므로, 3 rank 이상에서는 원인이 남은 채
+     넘어갈 수 있다. 2 rank라 "빼지 않은 rank" 거부 경로는 지나지 않았다. 아이 통신기는 GIN 문맥 없이만 썼다(13, 18절) `[추론, 소스]`.
+   - 응용이 devComm을 먼저 없애면 순정 확인으로도 shrink가 된다(5/5). 그 길은 devComm의 모든 오류를 지우고 응용을 바꿔야 한다 `[측정, 추론]`.
+2. **GPU가 가득 찬 동안 복구가 실패한 원인은 GPU가 가득 찬 것이 아니라, GIN 커널을 띄운 뒤 GPU 채우기 커널을 띄우기 전에 응용이 한 세 호출의 묶음이다.**
+   묶음은 그 커널의 점유율 질의(지연 적재로 커널 코드를 올림), `cudaMalloc`, 스트림 생성이다. 묶음이 있으면 격자 크기와 상관없이 그 뒤의 GPU 명령
+   (GPU 채우기 커널, helper의 복사, 새 스트림 8개의 복사)이 GIN 커널이 끝날 때까지 시작하지 않았고 복구는 2 s 복사 상한 뒤 거절로 끝났다(10/10).
+   묶음을 GIN 커널 전으로 옮기면 GPU가 똑같이 가득 차도 새 스트림 복사는 0.11 ms 안에 끝나고 복구는 투명했다(10/10). 다 올라가지 못한 블록 하나가 1.8 s 동안
+   남아도 복사와 복구를 막지 않았으므로, 하드웨어 작업 큐를 나누어 쓴다는 읽기는 맞지 않았다 `[측정]`. 셋 중 어느 호출이 원인인지는 가르지
+   못했다. CUDA 문서의 암묵적 동기화(할당)와 지연 적재 경고에 맞는 동작이다 `[추론]`. 응용 쪽 대책은 GIN 커널이 복구 중 기다릴 수 있는 동안
+   할당, 첫 커널 적재, 스트림 생성을 하지 않고 미리 해 두는 것이다 `[추론]`. 라이브러리는 이 경우를 고치지 않았다(9절 2번).
+3. **기존 동작과 지연은 그대로다.** 회귀 7셀이 모두 예측대로였고(n=35), 운영 빌드의 지연은 gin-harden 빌드와 4 KiB에서 같고 256 KiB에서 타이머
+   한 눈금(0.03 µs) 달랐다 `[측정]`.
 
 ## 18. 한계
 
-측정 전이라 결과의 한계는 아직 없다. 설계상 알려진 한계는 4절 제외와 9절 1번 (d), 9절 2번에 있다. GPU 가득 참 진단은 한 테스트베드(Turing과
-Ampere, CUDA 12.8, 드라이버 570)의 CUDA 동작을 재므로 다른 GPU와 드라이버로 넓히지 않는다.
+- **2 rank, 노드마다 GPU 하나.** 상대가 하나라 넘김 규칙의 rank 옮기기는 항등식으로만 지났고, "빼지 않은 rank" 거부 경로는 소스로만 확인했다.
+  살아남은 rank들의 판정이 엇갈리는 경우도 재지 않았다.
+- **"올린 상대"와 "원인"(리뷰 M1).** 거절은 원인이 자기 rank에 있어도 그 상대를 적는다. 3 rank 이상에서는 원인이 남은 rank가 빠진 상대만 빼고
+  shrink를 넘길 수 있다.
+- **아이 통신기(리뷰 M2).** 아이는 devComm을 만들지 않았고 1-rank allreduce는 로컬 복사다. 넘김 뒤 아이가 자기 GIN 문맥을 여는 실제 쓰임은 재지
+  않았다.
+- **GPU 가득 참.** 한 테스트베드(Turing과 Ampere, CUDA 12.8, 드라이버 570)의 CUDA 동작이다. 세 호출 묶음만 갈랐고 하나씩은 가르지 않았다(리뷰
+  L6). 멈춘 복사가 실행 끝에는 끝나 있었다는 것만 알고 끝난 시각은 남기지 않았다(리뷰 L4). 블록 시작의 절대 시각 열은 시계 차가 변해 같은 hold
+  안에서만 쓸 수 있다(리뷰 L5). 라이브러리는 이 경우를 고치지 않아, 복구 중 응용이 그 호출을 하면 helper는 여전히 2 s 뒤 거절한다.
+- **판정식.** S6, S8에는 부모 오류의 전제가 없다(데이터에서는 섰다, 리뷰 L3). 8절의 규칙 셋은 자동이 아니다(해당 없음, 리뷰 L2).
+- **실행기.** 랑데부 포트를 rain의 임시 포트 범위(32768–60999) 안에서 골라 116회 중 1회가 bind에 실패했다(리뷰 L1). 채운 시행은 32분 늦게 혼자
+  돌았다(리뷰 L8, 값은 같음).
+- **빌드.** 연구 빌드에는 시험 스위치가 있다. 운영 빌드는 넘김 줄을 INFO로 남겨 `NCCL_DEBUG=WARN`에서는 보이지 않는다. 키 없는 올림 한 번이 이
+  프로세스의 넘김을 끝까지 끈다(보수적, 리뷰 nit).
 
 ## 19. 다음 작업
 
-- GPU가 가득 찬 동안의 복구: 원인이 확인되면, GPU의 명령을 거치지 않는 장치 상태 접근(NIC로 자기 GPU 메모리를 읽고 쓰기, 또는 gdrdrv가 있는
-  노드의 BAR1 매핑)과 그 원자성 확인. H2가 맞다면 어느 호출(할당, 고정 메모리 할당, 지연 적재, 스트림 생성)이 묶는지 하나씩 가르기.
-- 쉬는 중 점검을 복사 없이 하기(장치가 `abandoned`, `reported`를 호스트 매핑 단어에도 씀): 감시가 상대 없이 드러내는 일을 줄인다.
-- 3 rank 이상에서 살아남은 rank들의 넘김 판정이 엇갈리는 경우와 "빼지 않은 rank" 유지 경로.
-- gin-s2의 미해결 관측(돌고 있는 GIN 받는 커널 옆의 새 커널).
+- **원인 기준의 넘김 규칙(리뷰 M1).** 원인이 자기 rank에 있는 거절(커밋 실패, 펌웨어 단계, 라운드 안 복사 시간 초과, 계획 거부, 상한 넘김)은
+  상대 없는 올림으로 적어, 넘김이 원인이 남은 shrink를 막게 한다. 3 rank 이상에서 "빼지 않은 rank" 거부 경로와 엇갈린 판정을 잰다.
+- **자기 devComm을 여는 아이(리뷰 M2).** 넘김 뒤 아이 통신기에서 devComm을 만들고 GIN 커널을 돌려, 부모의 GIN 상태와 오류 기록이 섞이지 않는지 잰다.
+- **랑데부 포트(리뷰 L1).** 임시 포트 범위 밖에서 고르거나, rank 0이 포트 0에 bind하고 실제 포트를 rank 1에 넘긴다.
+- **CUDA 암묵적 동기화에 대한 라이브러리 쪽 완화.** 세 호출을 하나씩 갈라 원인을 좁힌다. 그다음 helper가 GPU 명령 없이 장치 상태에 닿는 길(쉬는 중
+  점검의 두 칸을 장치가 호스트 매핑 단어에도 쓰기, NIC로 자기 GPU 메모리를 읽고 쓰기, gdrdrv가 있는 노드의 BAR1 매핑)과 그 원자성을 확인하고, 막힌
+  복사를 감지하면 원인을 알리는 줄을 남긴다. 확인 창 뒤 복사의 완료 시각도 기록한다(리뷰 L4).
+- gin-s2의 미해결 관측(돌고 있는 GIN 받는 커널 옆의 새 GIN 커널). 이 실험에서는 보통 커널이 GIN 받는 커널 옆에서 시작했다.
 
 ## 20. 참고자료
 
 - `../harden/EXPERIMENT.md`(gin-harden, 기준 빌드 `hd`, pilot의 두 실패)
+- [qa/code_review.md](qa/code_review.md), [results/20261009/qa_recount.md](results/20261009/qa_recount.md)(이 실험의 QA)
+- CUDA C++ Programming Guide, lazy loading의 동시 실행 경고(커널 적재가 돌고 있는 커널을 기다릴 수 있음)
 - `../TRANSPARENT_S2.md`(gin-s2, 돌고 있는 GIN 받는 커널 옆에서 시작하지 않은 커널)
 - CUDA C++ Programming Guide, "Implicit Synchronization"(할당이 스트림 사이의 동시 실행을 막는 호출로 적힘)
 - `../oneway/EXPERIMENT.md`(지연 경계)
