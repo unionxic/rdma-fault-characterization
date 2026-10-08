@@ -10,7 +10,7 @@
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-harden` @ `d834f86c` (master) |
 | 사전 등록 태그 | 없음. 예정: `prereg/gin-harden-v1` (메인 세션의 pilot 뒤, 상태를 `PREREGISTERED`로 바꾸는 바로 그 커밋) |
-| 마지막 갱신 | 2026-10-09, 설계, 구현, 빌드, 정적 확인, 1–12절 작성, 독립 리뷰 반영(태그 전) |
+| 마지막 갱신 | 2026-10-09, 설계, 구현, 빌드, 정적 확인, 1–12절 작성, 독립 리뷰 반영, 배포와 pilot 기록, pilot 뒤 예측 확정(태그 전) |
 
 표시: `[측정]` 원자료에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -125,6 +125,24 @@ count 설정) `[소스]`. 기본값 20에서 상대 QP 오류는 약 58 s 뒤에
 채점하지 않는다. 그 결과 폴더(`results/<날짜>_pilot/`)는 채점 대상 폴더와 따로 두고, 무엇을 보고 무엇을 고쳤는지 12절과 13절에 적는다.
 태그 뒤에는 2, 3, 7, 8절과 `predictions.csv`를 고치지 않는다.
 
+**pilot 뒤 확정 (2026-10-09).** 예측과 셀, 반복 수, 제외 기준은 pilot H0(03:24:59–03:31:02 KST, 25회, 채점 안 함, 12절) 뒤에 확정했다. pilot을 보고
+바꾼 것은 셀 사실의 정정과 채점 규칙, 실행 스크립트뿐이다.
+- D1 판정식의 QP 수: `plan_rej_total_r0 == 2`를 `>= 2`로. 이 셀의 라운드는 상대와의 QP 4개(GIN 문맥 4개)를 덮는다. 설계 때 2개로 잘못 셌다
+  (pilot의 훅 줄 "4 context(s)", 라운드 줄 `qps=4`, 거부 줄 "qp 1 of 4") `[측정]`. 예측한 동작(두 번째 QP에서 거부, 아무것도 다시 보내지
+  않음)은 그대로다.
+- 두 번 거부 셀(`hd_ref2_f1_b`)의 훅 요구를 뺐다: 상대가 약 9.6 s에 죽음으로 판정되어 거절되므로 12 s 훅 전에 실행이 끝난다(pilot에서 "장애
+  미적용"으로 잘못 제외됨).
+- 실행기의 남은 프로세스 계수 버그(모든 시행이 `left=1`), CUDA 메모리 오류 중단 기준(`STOP_cuda`) 추가. 예측과 판정식에는 영향이 없다.
+
+pilot이 소스 해석과 어긋난 예측 둘은 고치지 않고 그대로 두며 의심을 적는다(`predictions.csv`의 basis 열에도 적음).
+- GPU가 가득 찬 동안의 투명 복구(C1): pilot 1회에서 두 rank helper의 4 B 장치 상태 복사가 2 s 안에 끝나지 않았고, 응용의 GIN 커널이 끝난 순간에
+  끝났다. 그래서 두 rank가 거절했다 `[측정]`. 복사가 이 GPU에서 빈 SM 자리를 필요로 하는 것으로 보인다 `[추론]`. 원인은 `[미확인]`이다. 이
+  예측은 틀릴 가능성이 높다.
+- shrink 넘기기(A2): pilot에서 두 빌드(`hd`, `ow2`) 모두 `ncclCommShrink`가 0 ms에 `ncclRemoteError`를 돌려주었다 `[측정]`. 원인은 순정 NCCL의
+  `ncclCommInitChildComm`이 `ncclCommEnsureReady`를 불러 부모의 GIN 비동기 오류를 그대로 돌려주는 것이다 `[소스]`(이 계층이 바꾸지 않은 코드).
+  설계 때 이 확인을 놓쳤다. 이 예측도 틀릴 것으로 본다. shrink가 되게 하려면 라이브러리 수정이 필요하다(19절).
+- 4 KiB 지연의 순정 대비 차이(P3): pilot 1실행씩에서 0.93 µs로 예측 범위(0.10–1.00 µs)의 위쪽 끝 근처다 `[측정]`. 범위는 그대로 둔다.
+
 예측 원문은 [predictions.csv](predictions.csv)이고 52줄이다. `kind`는 N(새 동작), R(회귀), C(대조)다. 아래 판정 열, 로그 형식, 셀 키,
 판정식 문법은 태그에서 고정한다.
 
@@ -208,7 +226,7 @@ count 설정) `[소스]`. 기본값 20에서 상대 QP 오류는 약 58 s 뒤에
 | 예측 | id | 셀 | 판정 기준(요약) | 근거 |
 |---|---|---|---|---|
 | 상대 kill 뒤 rank 0의 대기가 shrink 전에 오류로 풀리고, 신호 없이 성공한 대기가 없다 | A1 | `hd_shrink_b@hd` | ≥9/10 | 죽음 즉시 거절과 따로 둔 단어 `[소스]` |
-| `NCCL_SHRINK_ABORT` shrink가 1-rank 통신기를 돌려주고 그 allreduce가 맞다 | A2 | `hd_shrink_b@hd` | ≥9/10 | 이 테스트베드에서 처음 `[미확인]` |
+| `NCCL_SHRINK_ABORT` shrink가 1-rank 통신기를 돌려주고 그 allreduce가 맞다 | A2 | `hd_shrink_b@hd` | ≥9/10 | 이 테스트베드에서 처음 `[미확인]`. pilot 뒤 의심: 순정 `ncclCommEnsureReady`가 GIN 오류로 shrink를 막음(3절 머리) |
 | 대조(ow 라이브러리): shrink 때 옛 커널이 아직 돈다 | A3 | `hd_shrink_b@ow2` | ≥4/5 | 쉬는 중 FIN은 표시만(ow.diff 5462–5467행) `[소스]` |
 | 대조: 마지막 abort가 받는 쪽 대기를 신호 없이 성공으로 풀거나, shrink가 돌아오지 않는다 | A4 | `hd_shrink_b@ow2` | ≥4/5 | ow.diff 1005–1009행, `gin__funcs.h` 101행 `[소스]` |
 | 원격 접근 오류 셀: 받는 쪽 대기가 상대 거절 때 오류로 풀리고 abort가 5 s 안에 돌아온다(gin-oneway의 회귀 판정을 일부러 바꿈) | A5 | `f2rel_b@hd` | 5/5 | gin-oneway는 abort까지 커널이 멈춤 5/5 `[측정]` |
@@ -223,14 +241,14 @@ count 설정) `[소스]`. 기본값 20에서 상대 QP 오류는 약 58 s 뒤에
 | 받기만 하는 rank가 kill 뒤 2 s 안에 비동기 오류를 받고 abort가 돌아온다 | B9 | `hd_rxdeath_b@hd` | ≥9/10 | `[소스]` |
 | 대조(ow): 받기만 하는 rank는 자기 15 s 대기 상한까지 기다린다 | B10 | `hd_rxdeath_b@ow` | ≥4/5 | `[소스]` |
 | 정상 종료의 FIN은 BYE 뒤라 떠남으로 남고 죽음 줄이 없다 | B11 | `f1_b`, `f3_b`, `rc_mute8_f1_b`(모두 `@hd`) | 셀마다 ≥4/5 | gin-oneway는 정상 종료 60/60에 죽음 줄 `[측정]` |
-| GPU 전체를 쓰는 커널이 도는 중에도 투명하게 복구되고 복사 상한 초과가 없다 | C1 | `hd_hog_f1_b@hd` | ≥9/10 | 복구는 복사만 쓴다 `[소스, 추론]` |
+| GPU 전체를 쓰는 커널이 도는 중에도 투명하게 복구되고 복사 상한 초과가 없다 | C1 | `hd_hog_f1_b@hd` | ≥9/10 | 복구는 복사만 쓴다 `[소스, 추론]`. pilot 뒤 의심: 복사가 응용 커널이 끝날 때까지 끝나지 않음(3절 머리) |
 | 8 s 펌웨어 단계에서 3.0–3.5 s에 감시가 발동해 대기를 오류로 풀고 오류를 드러낸다 | C2 | `hd_fwslow_f1_b@hd` | ≥9/10 | `NCCL_GIN_TS_FW_MS=3000` `[소스]` |
 | helper가 아직 그 단계 안이어도 rank 0의 abort가 6 s 안에 돌아온다(helper를 떼어 냄) | C3 | `hd_fwslow_f1_b@hd` | ≥9/10 | `NCCL_GIN_TS_ABORT_JOIN_MS=3000` `[소스]` |
 | rank 1이 거절하고 abort가 돌아온다 | C4 | `hd_fwslow_f1_b@hd` | ≥9/10 | `[소스]` |
 | 대조(ow): 같은 8 s를 라운드 안에서 기다린 뒤 복구한다 | C5 | `hd_fwslow_f1_b@ow` | ≥4/5 | `[소스]` |
 | 멈춘 복사가 2 s 상한을 넘어 첫 분류 기록 뒤 3 s 안에 거절되고, 두 rank의 대기가 오류로 끝난다 | C6 | `hd_copystall_f1_b@hd` | ≥9/10 | `NCCL_GIN_TS_COPY_MS=2000` `[소스]` |
 | 두 rank의 abort가 돌아온다 | C7 | `hd_copystall_f1_b@hd` | ≥9/10 | `[소스]` |
-| 시작 쪽 rank 0의 두 QP 중 두 번째 계획이 거부되면 어느 rank도 다시 보내지 않는다(거부한 rank 0이 응답 쪽인 시행은 8절에서 제외) | D1 | `hd_repost_f1_b@hd` | ≥9/10 | `[소스]`, 독립 리뷰 문제 1 |
+| 시작 쪽 rank 0의 네 QP 중 두 번째 계획이 거부되면 어느 rank도 다시 보내지 않는다(거부한 rank 0이 응답 쪽인 시행은 8절에서 제외) | D1 | `hd_repost_f1_b@hd` | ≥9/10 | `[소스]`, 독립 리뷰 문제 1 |
 | 두 rank가 거절한다 | D2 | `hd_repost_f1_b@hd` | ≥9/10 | `[소스]` |
 | 다섯 장애 중 셋은 복구되고 넷째에서 상한(10 s에 3번)으로 거절한다 | E1 | `hd_esc_f1_b@hd` | ≥9/10 | `[소스]` |
 | rank 0이 오류를 드러내고 rank 1이 상대 거절로 거절한다 | E2 | `hd_esc_f1_b@hd` | ≥9/10 | `[소스]` |
@@ -251,7 +269,7 @@ count 설정) `[소스]`. 기본값 20에서 상대 QP 오류는 약 58 s 뒤에
 | rank 0이 원격 접근 오류를 복구할 수 없다고 거절한다 | R12 | `f2rel_b@hd` | 5/5 | gin-oneway `[측정]` |
 | 4 KiB 지연: 운영 빌드와 gin-oneway 차이 0.40 µs 이하 | P1 | `lat_4k@hdp` 대 `lat_4k@ow` | 같은 hold의 실행 중앙값 | gin-oneway 10.56 µs `[측정]` |
 | 256 KiB 지연: 차이 0.30 µs 이하 | P2 | `lat_256k@hdp` 대 `lat_256k@ow` | 같음 | 38.91 µs `[측정]` |
-| 4 KiB 지연: 운영 빌드가 순정 NCCL보다 0.10–1.00 µs 느리다 | P3 | `lat_4k@hdp` 대 `lat_4k@stk` | 같음 | 복구 켬 − 끔 +0.29 µs, gpudb → 켬 +0.42 µs `[측정]` |
+| 4 KiB 지연: 운영 빌드가 순정 NCCL보다 0.10–1.00 µs 느리다 | P3 | `lat_4k@hdp` 대 `lat_4k@stk` | 같음 | 복구 켬 − 끔 +0.29 µs, gpudb → 켬 +0.42 µs `[측정]`. pilot 1실행씩 0.93 µs |
 | 256 KiB 지연: 0.10–1.00 µs 느리다 | P4 | `lat_256k@hdp` 대 `lat_256k@stk` | 같음 | +0.25, +0.54 µs `[측정]` |
 | 운영 빌드가 kill된 상대를 2 s 안에 죽음 원인으로 거절하고 죽음 1을 세며 abort가 돌아온다 | P5 | `hdp_kill_b@hdp` | 5/5 | `[소스]` |
 | 운영 빌드: iptables로 만든 8 s 관리망 끊김 뒤 재연결, 죽음과 거절 없음, 투명 | P6 | `hdp_mute_b@hdp` | 5/5 | `[추론]`, gin-oneway 한쪽 끊김 `[측정]` |
@@ -292,7 +310,7 @@ count 설정) `[소스]`. 기본값 20에서 상대 QP 오류는 약 58 s 뒤에
 | GPU와 CUDA | rain Quadro RTX 5000(sm_75), sunny RTX A4000(sm_86), PeerMappingOverride=1, CUDA 12.8 | gin-s2-close 5절 |
 | 관리망 소켓 | `NCCL_SOCKET_IFNAME=eno1` | [run_trial_hd.sh](run_trial_hd.sh) |
 | `ow` 번들 | libnccl `b4af65c54b14f192803c88adcd2bf759`, 드라이버 `d4b1f082` | `[측정]` 2026-10-09 rain에서 md5(gin-oneway `deploy_check.txt`와 같음) |
-| `hd`, `hdp`, `stk`, 새 드라이버 | libnccl `hd` `e209032310a2cefd5d71e86533674bd6`, `hdp` `4818e30bb9c4b935edd1604fec0c3f6a`, `stk` `b380e622d299c25ab073417e3ee79aec`. 드라이버 `hd` 헤더판 `c0b73e0966c8350209d8dc71c8fa8c3b`(`hd`, `hdp`, `ow2`가 씀), 순정 헤더판 `472602a2b39bb4735c13b8d62a8ca888`(`stk`). 같은 소스를 다시 컴파일하면 드라이버 md5가 바뀐다(nvcc 출력이 재현되지 않음): 배포 확인은 `out/`의 파일과 비교한다. 소스 `../gin_ts2.cu` md5 `f34e65f0bc712090bbfe939855790aa1`. 배포 뒤 두 노드 md5는 `deploy_check.txt`에 남긴다 | `[측정]` 2026-10-09 빌드 때 rain(세션 스크래치 `agent_ts2hd/out/`). 배포는 아직 |
+| `hd`, `hdp`, `stk`, 새 드라이버 | libnccl `hd` `e209032310a2cefd5d71e86533674bd6`, `hdp` `4818e30bb9c4b935edd1604fec0c3f6a`, `stk` `b380e622d299c25ab073417e3ee79aec`. 드라이버 `hd` 헤더판 `c0b73e0966c8350209d8dc71c8fa8c3b`(`hd`, `hdp`, `ow2`가 씀), 순정 헤더판 `472602a2b39bb4735c13b8d62a8ca888`(`stk`). 같은 소스를 다시 컴파일하면 드라이버 md5가 바뀐다(nvcc 출력이 재현되지 않음): 배포 확인은 `out/`의 파일과 비교한다. 소스 `../gin_ts2.cu` md5 `f34e65f0bc712090bbfe939855790aa1`. 배포 뒤 두 노드 md5는 [deploy_check.txt](deploy_check.txt)에 남겼다 | `[측정]` 2026-10-09 빌드 때 rain(세션 스크래치 `agent_ts2hd/out/`). 배포 2026-10-09 02:18:27–02:18:57: 두 노드 md5가 소스와 같고, 기존 번들 33개 파일은 그대로 |
 | 변경분 | [hd_layer.diff](hd_layer.diff)(`ow` 트리 기준, md5 `2226872e`, 10개 파일 +1675/−329), 전체 diff [gin_transparent_hd.diff](gin_transparent_hd.diff)(pristine 기준, md5 `a9894def`). 순정에 전체 diff를, 그리고 gin-oneway 전체 diff에 이 계층을 더하면 각각 이 트리와 같다 | `[측정]` 2026-10-09 [make_diff_hd.sh](make_diff_hd.sh) |
 
 ## 6. 변수
@@ -329,7 +347,7 @@ count 설정) `[소스]`. 기본값 20에서 상대 QP 오류는 약 58 s 뒤에
 | `hd_hog_f1_b` | `f1_b`와 같고 두 rank가 첫 반복 뒤 모든 SM을 3 s 채우는 커널을 띄운다(`GIN_TS_HOG_MS=3000`) | `@hd` 10 | 새 셀 |
 | `hd_fwslow_f1_b` | `f1_b`와 같고 rank 0의 커밋 단계가 8 s 걸린다(`hd`: `NCCL_GIN_TS_TEST_FW_DELAY=8000@commit`, `ow`: 기존 `NCCL_GIN_TS_TEST_STALL=8000@commit`) | `@hd` 10, `@ow` 5 | 새 셀, 대조 |
 | `hd_copystall_f1_b` | `f1_b`와 같고 rank 0의 첫 라운드 스트림이 4 s 묶인다(`NCCL_GIN_TS_TEST_COPY_STALL=4000`) | `@hd` 10 | 새 셀 |
-| `hd_repost_f1_b` | 양방향(문맥 2개), 두 rank 범위 좁히기 끔(전체 재설정, QP 2개), rank 0 로컬 QP 오류, rank 0 계획이 두 번째 QP를 거부(`NCCL_GIN_TS_TEST_BAD_REPOST=1`). 16 KiB × 400 | `@hd` 10 | 새 셀 |
+| `hd_repost_f1_b` | 양방향, 두 rank 범위 좁히기 끔(전체 재설정: 상대와의 QP 4개, GIN 문맥마다 하나), rank 0 로컬 QP 오류, rank 0 계획이 두 번째 QP를 거부(`NCCL_GIN_TS_TEST_BAD_REPOST=1`). 16 KiB × 400 | `@hd` 10 | 새 셀 |
 | `hd_esc_f1_b` | rank 0 로컬 QP 오류 다섯 번(800 ms, 그 뒤 앞 커밋 300 ms 뒤마다), 두 rank 상한 10 000 ms에 3번. 200번 반복 | `@hd` 10, `@ow` 5 | 새 셀, 대조 |
 | `hd_shrink_b` | 양방향, rank 1 kill 3 500 ms, rank 0이 `GIN_TS_SHRINK=1`(9절 3번). 대기마다 60 s 상한. 16 KiB × 400 | `@hd` 10, `@ow2` 5 | 새 셀, 대조 |
 | `lat_4k`, `lat_256k` | 투명 복구 켬(`stk`는 해당 없음), 장애 없음, 3000번 반복. 같은 hold에서 세 빌드를 섞어 돈다 | `@hdp`, `@ow`, `@stk` 각 5 | 대조 |
@@ -400,6 +418,9 @@ count 설정) `[소스]`. 기본값 20에서 상대 QP 오류는 약 58 s 뒤에
   원격 셸이 남긴 PID를 기록하고, 그 PID와 자식만 신호한다. 원격 PID는 명령줄에 그 시행의 고유 꼬리표가 있을 때만 신호한다(재사용된 PID를 건드리지
   않음). 같은 Unix 계정의 다른 사용자 작업(gds-kv, NVMe-oF, gdsio, mooncake, `prio-` 작업, VS Code)은 건드리지 않는다. `left > 0`이 두 시행
   연속이면 멈춘다.
+- **CUDA 메모리 오류.** hold 안의 어느 시행이든 rank 종료 코드 139이거나 로그나 kv에 illegal address, illegal memory access, unspecified
+  launch failure가 보이면 그 hold 뒤로 멈춘다(`STOP_cuda`, [hold.sh](hold.sh)). 통신기와 함께 풀리는 사용자 devComm 단어를 커널이 아직 읽는
+  경우를 잡는다(11절 pilot 확인 3). pilot 뒤에 더함.
 - **mlx5 오류.** hold 앞뒤에 두 노드의 mlx5 커널 줄 전체와 rain의 펌웨어 명령 계수를 남긴다. 새 mlx5 명령 오류 줄이나 펌웨어 명령 실패 계수
   증가가 보이면 그 hold 뒤로 멈춘다(`STOP_mlx5`). 판정은 gin-oneway 8절과 같다.
 - **배포.** 새 번들은 새 디렉터리 `hd/`, `hdp/`, `ow2/`, `stk/`에만 둔다. 대상 파일이 이미 있으면 배포 스크립트가 멈춘다. 배포 뒤 기존 번들
@@ -518,6 +539,8 @@ helper 소켓은 이제 `FD_CLOEXEC`다.
 | 낮음 | 사용자 단어는 통신기마다 하나다(2262행). 쉬던 대기는 오류 비트를 보면 자기 QP를 실패로 표시하므로(`gin_gdaki.h` 236–239행), 상대 하나에 대한 거절이 건강한 상대와의 게이트도 실패시킨다 | 2 rank라 상대가 하나뿐이다 | (a)와 (c)에 적음 |
 | 낮음 | 연구 빌드의 정리에는 상한 없는 단계가 남는다: 진단 QUERY_QP(5612행 이후)는 초과가 있었을 때만 건너뛰고, 장애 훅과 분할 시험 스레드의 join은 QP 자물쇠를 기다린다 | 운영 빌드는 해당 없음. 연구 빌드의 abort 시간 예측(A5, C3)은 정리 때 펌웨어가 정상이라는 전제다 | 문서 |
 | 낮음 | 쉬는 보내는 스레드는 사용자 단어의 주소를 쉬기 시작할 때 한 번 읽는다(`gin_gdaki.h` 282행) | 단어가 생기기 전에 쉬기 시작한 스레드만 해당하고, 실제로는 그 창이 생기지 않는다 `[추론]` | 문서 |
+| pilot | GPU가 가득 차면 helper의 장치 상태 복사가 끝나지 않는다. pilot 1회에서 두 rank의 4 B 복사(쉬는 중의 게이트 점검)가 응용의 GIN 커널이 끝난 순간에야 끝났다. 그사이 분류기 감시가 "helper가 1 s 넘게 돌지 않음"으로 오류를 드러냈고, 복사 상한(2 s)이 지나 두 rank가 거절했다 `[측정]` | GPU 채우기 셀(C1)은 틀릴 가능성이 높다. 상한 덕분에 멈춤이 아니라 2 s 안팎의 거절로 끝난다. 거절 뒤 늦은 복사가 끝나자 helper 점검이 게이트를 실패로 다시 썼다(2차 리뷰 수정이 동작함) `[측정]` | 예측은 그대로. 원인 `[미확인]`(빈 SM 자리가 필요한 복사로 보임 `[추론]`) |
+| pilot | 순정 NCCL은 GIN 비동기 오류가 있는 통신기의 shrink를 막는다: `ncclCommInitChildComm`이 `ncclCommEnsureReady`로 부모의 비동기 오류를 그대로 돌려준다(`init.cc`, 순정 코드) `[소스]`. pilot에서 `hd`와 `ow2` 모두 `ncclCommShrink`가 0 ms에 `ncclRemoteError`였다 `[측정]` | shrink 넘기기(A2)는 틀릴 것으로 본다. 대기 해제(A1)와 대조(A3, A4)는 영향 없음 | 예측은 그대로. 고치려면 라이브러리 수정이 필요(19절) |
 
 리뷰가 본 대로 정리한 주장별 상태:
 - 있음: 따로 둔 abort 단어(revoke, 중단하는 shrink, 펌웨어 감시도 올림), 고유값, 복사 상한, 운영 빌드(시험 스위치, 진단, 로그 수준만
@@ -593,18 +616,20 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 
 | hold | 내용 | 추정 `[추론]` |
 |---|---|---|
-| H0 pilot | 새 셀 11개 `hd` 1회씩, 대조 5개 1회씩, `hdp_kill_b`, `hdp_mute_b`, 세 빌드 4 KiB 지연 1회씩, IB 타임아웃 셀 2개 1회씩, `rc_mute8_f1_b`와 `ow_kill0_b` `hd` 1회씩(25회). 채점 안 함 | 8–10분 |
-| H1 | 회귀 6셀(`f1_b`, `f3_b`, `bidirf_sym_b`, `f4_b`, `f2rel_b`, `pc_dual_f1c0_r1c2_b`) × 5, 지연 30실행(섞어서) | 6분 |
-| H2 | 회귀 5셀(`rc_mute8_f1_b`, `rc_mutekill_b`, `ow_r1in_f1_b`, `ow_r0in_f1r1_b`, `ow_kill0_b`) × 5 | 8분 |
-| H3 | `ow_hello_f1_b` × 5, `hd_ref1_f1_b`, `hd_ref2_f1_b` × 10 | 8분 |
-| H4 | `hd_nonce_f1_b` × 10, `hd_rround_f1_b` `hd` 10과 `ow` 5(2:1로 섞어서) | 8분 |
-| H5 | `hd_rxdeath_b`(2:1), `hd_hog_f1_b` × 10, `hd_fwslow_f1_b`(2:1) | 8분 |
-| H6 | `hd_esc_f1_b`(2:1), `hd_shrink_b`(`hd` 10, `ow2` 5, 2:1), `hd_copystall_f1_b`, `hd_repost_f1_b` × 10 | 8분 |
-| H7 | `hdp_kill_b`, `hdp_mute_b` × 5, `to20_f3_t` × 3 | 5분 |
-| H8 | `to20_f3_b` × 5(시행마다 약 60–70 s, 감시 상한 110 s) | 6–10분 |
+| H0 pilot | 새 셀 11개 `hd` 1회씩, 대조 5개 1회씩, `hdp_kill_b`, `hdp_mute_b`, 세 빌드 4 KiB 지연 1회씩, IB 타임아웃 셀 2개 1회씩, `rc_mute8_f1_b`와 `ow_kill0_b` `hd` 1회씩(25회). 채점 안 함 | 실제 6분 3초 `[측정]` |
+| H1 | 회귀 6셀(`f1_b`, `f3_b`, `bidirf_sym_b`, `f4_b`, `f2rel_b`, `pc_dual_f1c0_r1c2_b`) × 5, 지연 30실행(섞어서) | 5분 |
+| H2 | 회귀 5셀(`rc_mute8_f1_b`, `rc_mutekill_b`, `ow_r1in_f1_b`, `ow_r0in_f1r1_b`, `ow_kill0_b`) × 5 | 7분 |
+| H3 | `ow_hello_f1_b` × 5, `hd_ref1_f1_b`, `hd_ref2_f1_b` × 10 | 7분 |
+| H4 | `hd_nonce_f1_b` × 10, `hd_rround_f1_b` `hd` 10과 `ow` 5(2:1로 섞어서) | 11분 |
+| H5 | `hd_rxdeath_b`(2:1), `hd_hog_f1_b` × 10, `hd_fwslow_f1_b`(2:1) | 7분 |
+| H6 | `hd_esc_f1_b`(2:1), `hd_shrink_b`(`hd` 10, `ow2` 5, 2:1), `hd_copystall_f1_b`, `hd_repost_f1_b` × 10 | 6분 |
+| H7 | `hdp_kill_b`, `hdp_mute_b` × 5, `to20_f3_t` × 3 | 4분 |
+| H8 | `to20_f3_b` × 5(시행마다 약 61 s, 감시 상한 110 s) | 5–10분 |
 
-시행 시간은 gin-oneway의 hold 기록(끊김 셀 약 19 s, 짧은 셀 약 5 s, `../oneway/EXPERIMENT.md` 12절)으로 어림했다. hold마다 잠금과 유휴 확인이
-약 1분 더 든다. 본 실행(H1–H8)의 클러스터 시간은 60–75분이다 `[추론]`.
+시행 시간은 pilot의 시행별 시간(시행 파일이 생긴 간격, n=1씩)으로 어림했다 `[측정]`: 두 rank 끊김 셀 15–19 s, 라운드 안 리셋 셀 28 s(`hd`),
+31 s(`ow`), kill과 거절 셀 4–9 s, 지연 3–4 s, 막는 IB 타임아웃 셀 61 s. pilot에 없는 회귀 셀은 gin-oneway의 hold 기록(짧은 셀 약 5 s,
+`../oneway/EXPERIMENT.md` 12절)으로 어림했다. hold마다 잠금과 유휴 확인이 약 30 s 더 든다. 가장 긴 H4도 880 s 상한 안이다. 본 실행(H1–H8)의
+클러스터 시간은 잠금 대기를 빼고 50–60분이다 `[추론]`.
 
 ### 채점
 
@@ -627,6 +652,7 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 - [ ] 새 빌드의 md5, 전체 diff, pristine + diff 확인, 운영 빌드의 strings 확인을 5절과 12절에 적었다.
 - [ ] 원자료를 Release에 올리고 `DATA.md`에 적었다.
 - [ ] hold 전후 mlx5 스냅숏에 새 명령 오류가 없었거나, 있었다면 그 줄의 내용을 12절에 적었다. 남은 iptables 규칙이 0이었다.
+- [ ] 모든 시행에서 CUDA 메모리 오류(종료 코드 139, illegal address)가 없었다(`STOP_cuda` 없음).
 
 ## 11. 작업 체크리스트
 
@@ -637,17 +663,17 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 - [x] 고친 부분의 2차 리뷰(다른 에이전트)와 반영
 - [x] `cells.sh`, `hold.sh`, `chain.sh`, `deploy_hd.sh`, `rows_hd.py`, `score.py`, `predictions.csv`
 - [x] 질문, 가설, 셀, 예측 초안 (`DRAFT`)
-- [ ] 배포(메인 세션)
-- [ ] pilot H0(메인 세션, 채점 안 함), 결과로 고칠 것 고치기
-- [ ] pilot 확인 1(리뷰가 확인하지 못함): 끊긴 쪽의 소켓 필터가 RST도 버리는가. `hd_ref1_f1_b`, `hd_ref2_f1_b` pilot에서 rank 0의 첫 다시 걸기
+- [x] 배포(메인 세션, 2026-10-09 02:18:27–02:18:57)
+- [x] pilot H0(메인 세션, 03:24:59–03:31:02, 채점 안 함), 결과로 고칠 것 고치기(12절)
+- [x] pilot 확인 1(리뷰가 확인하지 못함), 결과 "됨": 끊긴 쪽의 소켓 필터가 RST도 버리는가. `hd_ref1_f1_b`, `hd_ref2_f1_b` pilot에서 rank 0의 첫 다시 걸기
   거부(`refusal1_ms_r0`)가 rank 0 끊김 끝(`mute_off_ms_r0`) 뒤이고, `hd_ref1_f1_b`의 거부(`n_refused_dial_r0`)가 한 번뿐이다. 끊김 중에 거부가
   나오면 거부 셀의 전제가 무너지므로, 수신 대기 닫기 창을 끊김 끝 뒤로 옮긴다(8절의 시각 값 변경, 12절과 13절에 기록)
-- [ ] pilot 확인 2(리뷰가 확인하지 못함): GPU가 가득 찬 동안 작은 복사가 2 s 상한 안에 끝나는가. `hd_hog_f1_b` pilot에서 `n_copyto_r*`와
+- [x] pilot 확인 2(리뷰가 확인하지 못함), 결과 "안 됨": GPU가 가득 찬 동안 작은 복사가 2 s 상한 안에 끝나는가. `hd_hog_f1_b` pilot에서 `n_copyto_r*`와
   `rs_copy_timeouts_r*`가 0이고, 훅 발사가 채우기 창 안(`fault_after_launch_r0_ms`가 `hog_launch_after_launch_ms_r0` 뒤 3 000 ms 안)이다
-- [ ] pilot 확인 3(리뷰가 확인하지 못함): `commFree`가 사용자 커널이 끝난 뒤에 사용자 단어를 푸는가. abort 때 커널이 남을 수 있는 `hd` pilot
+- [x] pilot 확인 3(리뷰가 확인하지 못함), 결과 "불분명": `commFree`가 사용자 커널이 끝난 뒤에 사용자 단어를 푸는가. abort 때 커널이 남을 수 있는 `hd` pilot
   시행(`hd_shrink_b`, `hd_rxdeath_b`, `hd_fwslow_f1_b`, `hd_copystall_f1_b`)에서 두 rank의 종료 코드(meta `r0rc`, `r1rc`)가 139가 아니고, 로그와
   kv에 CUDA `illegal address` 오류가 없으며, `teardown_r*`가 `no error`다
-- [ ] pilot에서 펌웨어 초과 제외(8절)에 해당하는 시행 수와 단계 이름(`fwdog_phase_r*`)을 12절에 적는다
+- [x] pilot에서 펌웨어 초과 제외(8절)에 해당하는 시행 수와 단계 이름(`fwdog_phase_r*`)을 12절에 적는다(0회)
 - [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
 - [ ] 본 실행 H1–H8 (`RUNNING`)
 - [ ] 채점 (`QA`)
@@ -675,6 +701,12 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 | 2026-10-09 | 클러스터에서는 아무것도 돌리지 않았다. 배포, pilot, 본 실행은 메인 세션이 한다 | |
 | 2026-10-09 | 독립 리뷰(다른 에이전트가 `hd_layer.diff`와 빌드 트리를 읽음, 코드만): 판정 "조건부로 예", 막는 문제 없음. 중간 3건(다시 보내기 검사가 rank마다, 펌웨어 감시가 영구, 취소와 이미 커밋한 응답 쪽의 엇갈림), 낮음 6건. 확인하지 못한 것 3가지(끊긴 쪽 필터가 RST를 버리는지, GPU가 가득 찬 동안 복사 상한, `commFree`가 사용자 커널을 기다리는지)는 pilot에서 본다. pilot H0은 다른 사용자의 잠금 뒤에 대기 중이고, 그 pilot이 읽는 라이브러리와 실행 스크립트는 바꾸지 않았다 | 9절 1번 (g), 11절 |
 | 2026-10-09 | 태그 전 변경(리뷰 반영, 메커니즘과 실행 스크립트는 그대로): 8절에 제외 둘(계획을 거부한 rank 0이 그 라운드의 응답 쪽, 펌웨어 감시 셀이 아닌 `hd`와 `hdp` 시행의 펌웨어 초과). `rows_hd.py`에 열 넷(`n_init_round_r*`, `plan_rej_ms_r*`, `plan_rej_init_r0`, `fwdog_phase_r*`). D1의 문장과 근거, H4, 질문 3을 시작 쪽의 거부로 좁힘(D1 판정식은 그대로). `predictions.csv` sha256 앞 12자리 `62fb04a71cd0`. 합성 시행으로 두 제외가 의도대로 걸리고 다른 시행은 그대로 판정되는 것을 확인 `[측정]`(실제 로그 아님) | [score.py](score.py), [rows_hd.py](rows_hd.py), [predictions.csv](predictions.csv), 세션 스크래치 `hd_work/synth/fab.py` |
+| 2026-10-09 02:18:27–02:18:57 | 배포(메인 세션, `deploy_hd.sh`, rc 0): 새 디렉터리 `hd/`, `hdp/`, `ow2/`, `stk/`. 두 노드 md5가 소스와 같고(libnccl `e2090323`, `4818e30b`, `b4af65c5`, `b380e622`, 드라이버 `c0b73e09`, `472602a2`), 기존 번들 33개 파일 md5 그대로, 드라이버마다 자기 번들의 libnccl을 씀 `[측정]` | [deploy_check.txt](deploy_check.txt) |
+| 2026-10-09 03:24:59–03:31:02 | pilot H0(메인 세션, `chain.sh results/20261009_pilot H0`, 02:19:04에 대기 시작, 다른 사용자의 잠금이 03:15:20까지, 그 뒤 다른 실험 두 hold, rc 0). 25회, 채점 안 함. mlx5 새 줄 0, 명령 오류 줄(rain 2, sunny 0)과 rain 펌웨어 명령 실패 수(31) 전후 같음, iptables 정리 deleted=0 left=0, 끝난 뒤 두 노드에 `gin_ts2` 없음 `[측정]` | `results/20261009_pilot/`(hold_H0.out, chain.out, mlx5_new_H0.txt, 빌드별 시행 파일. 원자료는 Release 예정) |
+| 2026-10-09 | pilot 분석(`rows.py`와 네 추출기, `score.py`를 계획 수 1로 돌림, 시행 25회 모두 로그와 대조). 셀마다 1회라 판정이 아니라 조건 확인이다. 예측 조건과 맞음: 거부 1회(거부 1번, 투명), 거부 2회(간격 1 001.3 ms, 바로 거절), 틀린 고유값(재연결 끊김 끝 606.7 ms 뒤, 투명), 라운드 안 리셋(리셋이 첫 분류 기록 2 075.8 ms 뒤, 취소 1, 다시 시도 1로 투명), 받기만 하는 rank(kill 뒤 20.2 ms에 대기 오류 해제, 1.9 ms에 비동기 오류), 느린 펌웨어(감시 3 000 ms, 대기 해제, helper 떼어 냄, abort 912 ms), 멈춘 복사(첫 분류 기록 2 000.8 ms 뒤 거절), 계획 거부(시작 쪽 rank 0, 복구 줄 없음, 두 rank 거절), 상한(셋 복구, 넷째 거절), shrink 셀의 대기 해제(신호 없이 성공한 대기 0), 대조 다섯(gin-oneway: REQ 보내기 실패 거절, 받기만 하는 rank 15 s 대기 상한, 8 s 기다린 뒤 복구, 다섯 모두 복구, shrink 때 옛 커널이 돌고 마지막 abort 뒤 받는 쪽 202회가 신호 없이 성공), 운영 빌드(kill 뒤 1.6 ms 거절, iptables 끊김 뒤 재연결과 투명, WARN에 정보성 줄 없음), IB 타임아웃 20(첫 분류 56.0 s 뒤, 10 ms 한 라운드로 투명. 8 s 시간 제한은 시간 초과만), 회귀 둘. 4 KiB 지연 p50: 운영 10.69, gin-oneway 10.56, 순정 9.76 µs `[측정]`. 어긋난 것: GPU 채우기 셀(두 rank 거절), shrink(두 빌드 모두 `ncclRemoteError`), 계획 거부 셀의 QP 수(4개), 두 번 거부 셀이 "장애 미적용"으로 제외됨 | 세션 스크래치 `hd_work/pilot/`(복사본, `SCORE.md`, `trials_scored.csv`) |
+| 2026-10-09 | pilot 확인 넷. (1) 됨: 거부 1회 셀에서 rank 0의 다시 걸기 9번 중 7번째가 rank 1의 수신 대기 닫힘 뒤, rank 0 끊김 끝 약 0.4 s 전에 있었고(시도 수와 500 ms 간격으로 셈, 닫힘 88 ms 뒤) 거부로 기록되지 않았다. 첫 거부는 끊김 끝 93.6 ms 뒤, 두 번 거부 셀은 98.6 ms 뒤 `[측정]` `[추론: 끊긴 쪽 필터가 RST를 버림]`. (2) 안 됨: GPU 채우기 셀에서 두 rank의 4 B 복사가 2 s 안에 끝나지 않고 응용 GIN 커널이 끝날 때 끝남. 감시가 1 s 뒤 오류를 드러내고 두 rank 거절 `[측정]`. (3) 불분명: 25회 모두 종료 코드 139나 illegal address 없음, 그러나 `hd` 시행 중 abort 때 사용자 커널이 아직 돌던 경우가 없어 그 경로를 지나지 않음(커널이 돌던 1회는 `ow2`) `[측정]`. (4) 펌웨어 초과: 느린 펌웨어 셀 1회(단계 commit, 3 000 ms)뿐, 제외에 해당하는 시행 0 `[측정]` | 9절 1번 (g), 11절 |
+| 2026-10-09 | 실행기 `left=1` 원인: 남은 프로세스를 셀 때 원격 명령 `pgrep -f <tag>; rm -f <tag>.pid`를 돌리는 원격 셸의 명령줄 자체에 tag가 들어 있어, `pgrep`이 자기 부모 셸을 셌다(`pgrep`은 자기 자신만 뺀다). 계수 버그이고 실제로 남은 프로세스는 없었다(메인 세션 확인과 일치) `[소스, 측정]` | [run_trial_hd.sh](run_trial_hd.sh) |
+| 2026-10-09 | pilot 뒤 변경(태그 전). 실행 스크립트: `left` 계수가 자기 셸에 걸리지 않는 정규식으로(`[g]in_hd_...`), 원격 pid 파일은 정리 단계에서 지움. `hold.sh`와 `chain.sh`에 CUDA 메모리 오류 중단(`STOP_cuda`, pilot 사본에 돌려 0건 확인). 채점: 두 번 거부 셀의 훅 요구 제거. 예측: D1 판정식 `plan_rej_total_r0 == 2`를 `>= 2`로(셀 사실 정정, 3절 머리), C1, A2, P3의 basis에 pilot 의심을 덧붙임(판정식은 그대로). 시각 값은 바꾸지 않음: 거부 1회 셀의 두 번째 다시 걸기는 수신 대기 다시 열림 393 ms 뒤, 두 번 거부 셀의 두 번째 거부는 다시 열림 1 400 ms 전, 라운드 안 리셋은 4 000 ms 창의 2 076 ms, GPU 채우기 훅은 채우기 시작 599 ms 뒤(3 000 ms 창 안) `[측정]`. 고친 채점으로 pilot 사본을 다시 셈: 제외 0, 조건 불일치는 GPU 채우기(C1)와 shrink(A2)뿐. 라이브러리와 번들은 그대로. 확정한 `predictions.csv` sha256 `0e9e3192d74ba9777e78cabbc0b822290e6db07ae83e930d41a066786096b9e0`(52줄) | [score.py](score.py), [predictions.csv](predictions.csv), [hold.sh](hold.sh), [chain.sh](chain.sh), [run_trial_hd.sh](run_trial_hd.sh) |
 
 ## 13. 사전 등록 이후 변경
 
@@ -713,6 +745,9 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
   - 펌웨어 감시가 발동한 문맥을 다시 쓸 수 있는 길(지금은 영구), 또는 셀 단위가 아닌 판정(둘째 줄).
   - 거절한 상대가 거부한 HELLO나 PROBE에 FAIL이나 BYE로 답해, 다시 시도가 재연결 기다림을 다 쓰지 않게 한다(셋째 줄).
   - 약 5 s 지난 거부는 잊는다(넷째 줄). 상한 넘김에서 다시 시도와 범위 재실행을 빼고, 취소 계수를 두 역할에서 같게 센다(다섯째 줄).
+  - shrink 넘기기: 중단하는 shrink(`NCCL_SHRINK_ABORT`)가 부모의 GIN 비동기 오류를 넘어가게 하거나, 사용자 devComm 단어를 올린 뒤의 GIN 오류를
+    shrink 전에 지울 길(순정 NCCL 2.32.3도 GIN 오류 뒤에는 shrink를 할 수 없다 `[소스]`).
+  - GPU가 가득 찬 동안의 복구: 장치 상태 복사가 SM 없이 진행되는 경로(예: 호스트에 매핑된 게이트를 CPU가 직접 읽고 쓰기)와 그 원인 확인.
 
 ## 20. 참고자료
 
