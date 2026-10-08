@@ -47,7 +47,9 @@ for sz in ("4k", "256k"):
     for b in ("hdp", "ow", "stk"):
         PLANNED[f"lat_{sz}@{b}"] = 5
 # section 8: which rank's hook must fire, kills, order conditions, switches and mutes each cell must show
-HOOK_R0 = {"f1_b", "rc_mute8_f1_b", "ow_r1in_f1_b", "ow_hello_f1_b", "hd_ref1_f1_b", "hd_ref2_f1_b", "hd_nonce_f1_b",
+# (hd_ref2_f1_b is not listed: its peer is judged dead and declined at about 9.6 s, so the run ends before the 12 s hook;
+#  the hook is not the cell's subject. Changed after the pilot, EXPERIMENT.md 12.)
+HOOK_R0 = {"f1_b", "rc_mute8_f1_b", "ow_r1in_f1_b", "ow_hello_f1_b", "hd_ref1_f1_b", "hd_nonce_f1_b",
            "hd_rround_f1_b", "hd_hog_f1_b", "hd_fwslow_f1_b", "hd_copystall_f1_b", "hd_repost_f1_b", "hd_esc_f1_b"}
 HOOK_R1 = {"f3_b", "ow_r0in_f1r1_b", "to20_f3_b", "to20_f3_t"}
 HOOK_BOTH = {"bidirf_sym_b", "pc_dual_f1c0_r1c2_b"}
@@ -90,7 +92,7 @@ LABEL = {
     "C5": "대조(ow): 같은 8 s를 기다린 뒤 복구",
     "C6": "멈춘 복사가 2 s 상한을 넘어 3 s 안에 거절되고 두 rank의 대기가 오류로 끝남",
     "C7": "두 rank의 abort가 돌아옴",
-    "D1": "시작 쪽 rank 0의 두 번째 QP 다시 보내기 계획이 거부되면 어느 rank도 다시 보내지 않음",
+    "D1": "시작 쪽 rank 0의 두 번째 QP(네 QP 중) 다시 보내기 계획이 거부되면 어느 rank도 다시 보내지 않음",
     "D2": "두 rank가 거절",
     "E1": "다섯 장애 중 셋은 복구되고 넷째에서 상한(10 s에 3번)으로 거절",
     "E2": "rank 0이 오류를 드러내고 rank 1이 상대 거절로 거절",
