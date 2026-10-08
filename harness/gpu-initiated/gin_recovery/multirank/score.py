@@ -37,8 +37,9 @@ FIRES = {"mr4_f1_01": "0:0", "mr4_f1_02": "0:1", "mr4_f3_01": "1:0", "mr4_f1_01_
 KILL = {"mr4_kill3", "mr4_kill3_peer"}
 STALLED = {"mr4_cyc_stall": "0:300;1:300;2:300", "mr4_chain_stall": "0:300;1:300"}
 PEER_FLUSH = {"mr4_none_peer", "mr4_kill3_peer"}
-# build marker lines: every rank of a trial of that build must show them (n_<marker> == n); a build not listed has none
-BUILD_MARK = {"ow": "n_ow"}
+# build marker lines: every rank of a trial of that build must show them (n_<marker> == n); a build not listed has none.
+# hd (gin-harden) keeps gin-oneway's start line and adds "GIN/TS: harden=1 rank=<r> ..." (gin_host_gdaki.cc gdakiTsStart).
+BUILD_MARK = {"ow": ["n_ow"], "hd": ["n_ow", "n_hd"]}
 
 LABEL = {
     "I1": "랭크 4개(GPU마다 프로세스 2개)가 통신기와 문맥 12개의 devComm을 만들고, 네 랭크 모두 투명 복구가 켜짐",
@@ -64,13 +65,14 @@ LABEL = {
     "F1": "rank 0의 모든 문맥 장애를 상대별 전체 범위 라운드 세 번으로 복구",
     "F2": "rank 0의 모든 문맥 장애 뒤에도 간선 12개 모두 투명",
     "F3": "세 라운드가 겹치지 않고, rank 0과 각 상대 사이의 모든 QP가 라운드 한 번을 거쳐 RTS",
-    "K1": "rank 3 kill 뒤 살아남은 세 랭크가 rank 3만 거절(문맥 전체 flush)",
-    "K2": "그 거절이 kill 3.0-5.0 s 뒤",
+    "K1": "rank 3 kill 뒤 살아남은 세 랭크가 소켓으로 rank 3의 죽음을 바로 판정하고 rank 3만 거절(문맥 전체 flush)",
+    "K2": "그 거절이 kill 0–2 s 뒤",
     "K3": "문맥 전체 flush에서는 거절 뒤 살아남은 랭크 사이의 간선 6개도 모두 오류로 멈춤",
     "K4": "상대별 flush에서도 rank 3만 거절",
-    "K5": "상대별 flush에서는 살아남은 랭크 사이의 간선 6개가 모두 정확히 끝남",
+    "K5": "상대별 flush: 거절 뒤 살아남은 랭크 사이의 받는 쪽 6개는 모두 오류, 보내는 쪽 6개는 끝까지 성공",
     "K6": "살아남은 세 랭크의 앱이 모두 통신기 비동기 오류를 봄",
     "K7": "거절은 rank 3으로 가는 QP 12개만 닫음",
+    "R1": "복구 셀에서 라운드 상한, 펌웨어 단계와 복사의 상한 초과, 소켓으로 취소된 라운드, 죽음 판정이 없음",
     "Y1": "순환하는 세 시작 쪽이 서로를 기다려 handshake timeout 거절이 생기고 투명하지 않음",
     "Y2": "첫 handshake timeout이 라운드 시작 24.3-24.8 s 뒤",
     "Y3": "그 한도 전에는 순환 라운드가 끝나지 않고 감시 줄도 없음",
@@ -115,9 +117,9 @@ def status_of(r):
     want_gq = (n - 1) * n * (n - 1)
     if val(r.get("gq_min")) != want_gq or val(r.get("gq_max")) != want_gq:
         return "config_gq"
-    mark = BUILD_MARK.get(r.get("build", ""))
-    if mark and val(r.get(mark)) != n:
-        return "config_build"
+    for mark in BUILD_MARK.get(r.get("build", ""), []):
+        if val(r.get(mark)) != n:
+            return "config_build"
     if (r.get("knob_stall") or "") != STALLED.get(cell, ""):
         return "config_knob"
     if cell not in FIRES and str(r.get("n_fires")) not in ("", "0"):

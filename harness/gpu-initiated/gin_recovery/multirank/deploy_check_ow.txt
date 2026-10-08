@@ -1,0 +1,18 @@
+== source
+c0206b603e74073ee7c176ed6f8635fd  mr/ow/gin_mr
+key=ow built=2026-10-09 00:53:01 nccl_build=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad/agent_ts2ow/build
+gin_mr_md5=c0206b603e74073ee7c176ed6f8635fd
+gin_mr_cu_md5=fd90b11f271f8faf3926d0e212f97c8e
+libnccl_md5=b4af65c54b14f192803c88adcd2bf759
+include_digest=552c7b2c14df40b5d2ecacdf8207b05f
+nvcc=Build cuda_12.8.r12.8/compiler.35583870_0
+== rain
+c0206b603e74073ee7c176ed6f8635fd  mr/ow/gin_mr
+== sunny
+c0206b603e74073ee7c176ed6f8635fd  mr/ow/gin_mr
+rain ow with ow: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/ow/libnccl.so.2 (0x00007f05926aa000)
+sunny ow with ow: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/ow/libnccl.so.2 (0x0000751fc0e00000)
+rain ow libnccl md5: b4af65c54b14f192803c88adcd2bf759
+sunny ow libnccl md5: b4af65c54b14f192803c88adcd2bf759
+deployed md5 == source on both nodes
+existing bundle unchanged on both nodes (32 files each)
