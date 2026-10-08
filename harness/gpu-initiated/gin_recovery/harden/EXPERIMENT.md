@@ -5,12 +5,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `DRAFT` |
+| 상태 | `PREREGISTERED` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-harden` @ `d834f86c` (master) |
-| 사전 등록 태그 | 없음. 예정: `prereg/gin-harden-v1` (메인 세션의 pilot 뒤, 상태를 `PREREGISTERED`로 바꾸는 바로 그 커밋) |
-| 마지막 갱신 | 2026-10-09, 설계, 구현, 빌드, 정적 확인, 1–12절 작성, 독립 리뷰 반영, 배포와 pilot 기록, pilot 뒤 예측 확정(태그 전) |
+| 사전 등록 태그 | `prereg/gin-harden-v1` (상태를 `PREREGISTERED`로 바꾼 바로 그 커밋) |
+| 마지막 갱신 | 2026-10-09 03:42, 사전 등록(pilot 뒤 예측 확정) |
 
 표시: `[측정]` 원자료에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -674,7 +674,7 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
   시행(`hd_shrink_b`, `hd_rxdeath_b`, `hd_fwslow_f1_b`, `hd_copystall_f1_b`)에서 두 rank의 종료 코드(meta `r0rc`, `r1rc`)가 139가 아니고, 로그와
   kv에 CUDA `illegal address` 오류가 없으며, `teardown_r*`가 `no error`다
 - [x] pilot에서 펌웨어 초과 제외(8절)에 해당하는 시행 수와 단계 이름(`fwdog_phase_r*`)을 12절에 적는다(0회)
-- [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
+- [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
 - [ ] 본 실행 H1–H8 (`RUNNING`)
 - [ ] 채점 (`QA`)
 - [ ] 독립 재계산과 코드 리뷰
@@ -707,6 +707,7 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 | 2026-10-09 | pilot 확인 넷. (1) 됨: 거부 1회 셀에서 rank 0의 다시 걸기 9번 중 7번째가 rank 1의 수신 대기 닫힘 뒤, rank 0 끊김 끝 약 0.4 s 전에 있었고(시도 수와 500 ms 간격으로 셈, 닫힘 88 ms 뒤) 거부로 기록되지 않았다. 첫 거부는 끊김 끝 93.6 ms 뒤, 두 번 거부 셀은 98.6 ms 뒤 `[측정]` `[추론: 끊긴 쪽 필터가 RST를 버림]`. (2) 안 됨: GPU 채우기 셀에서 두 rank의 4 B 복사가 2 s 안에 끝나지 않고 응용 GIN 커널이 끝날 때 끝남. 감시가 1 s 뒤 오류를 드러내고 두 rank 거절 `[측정]`. (3) 불분명: 25회 모두 종료 코드 139나 illegal address 없음, 그러나 `hd` 시행 중 abort 때 사용자 커널이 아직 돌던 경우가 없어 그 경로를 지나지 않음(커널이 돌던 1회는 `ow2`) `[측정]`. (4) 펌웨어 초과: 느린 펌웨어 셀 1회(단계 commit, 3 000 ms)뿐, 제외에 해당하는 시행 0 `[측정]` | 9절 1번 (g), 11절 |
 | 2026-10-09 | 실행기 `left=1` 원인: 남은 프로세스를 셀 때 원격 명령 `pgrep -f <tag>; rm -f <tag>.pid`를 돌리는 원격 셸의 명령줄 자체에 tag가 들어 있어, `pgrep`이 자기 부모 셸을 셌다(`pgrep`은 자기 자신만 뺀다). 계수 버그이고 실제로 남은 프로세스는 없었다(메인 세션 확인과 일치) `[소스, 측정]` | [run_trial_hd.sh](run_trial_hd.sh) |
 | 2026-10-09 | pilot 뒤 변경(태그 전). 실행 스크립트: `left` 계수가 자기 셸에 걸리지 않는 정규식으로(`[g]in_hd_...`), 원격 pid 파일은 정리 단계에서 지움. `hold.sh`와 `chain.sh`에 CUDA 메모리 오류 중단(`STOP_cuda`, pilot 사본에 돌려 0건 확인). 채점: 두 번 거부 셀의 훅 요구 제거. 예측: D1 판정식 `plan_rej_total_r0 == 2`를 `>= 2`로(셀 사실 정정, 3절 머리), C1, A2, P3의 basis에 pilot 의심을 덧붙임(판정식은 그대로). 시각 값은 바꾸지 않음: 거부 1회 셀의 두 번째 다시 걸기는 수신 대기 다시 열림 393 ms 뒤, 두 번 거부 셀의 두 번째 거부는 다시 열림 1 400 ms 전, 라운드 안 리셋은 4 000 ms 창의 2 076 ms, GPU 채우기 훅은 채우기 시작 599 ms 뒤(3 000 ms 창 안) `[측정]`. 고친 채점으로 pilot 사본을 다시 셈: 제외 0, 조건 불일치는 GPU 채우기(C1)와 shrink(A2)뿐. 라이브러리와 번들은 그대로. 확정한 `predictions.csv` sha256 `0e9e3192d74ba9777e78cabbc0b822290e6db07ae83e930d41a066786096b9e0`(52줄) | [score.py](score.py), [predictions.csv](predictions.csv), [hold.sh](hold.sh), [chain.sh](chain.sh), [run_trial_hd.sh](run_trial_hd.sh) |
+| 2026-10-09 03:42:57 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/gin-harden-v1` |
 
 ## 13. 사전 등록 이후 변경
 

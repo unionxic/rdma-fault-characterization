@@ -1,0 +1,8 @@
+Pre-registration of gin-harden, 2026-10-09 03:42:57 +0900, before any main-run trial of this study.
+sha256 of the fixed prediction file:
+0e9e3192d74ba9777e78cabbc0b822290e6db07ae83e930d41a066786096b9e0  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/gin-harden-v1 (sections 2, 3, 7, 8).
+A pilot of 25 trials (one per cell key; results/20261009_pilot, hold H0 2026-10-09 03:24:59-03:31:02, never scored) ran
+before this file, on the same deployed builds (hd, hdp, ow, ow2, stk). The predictions come from the hd source and an
+independent code review, and were finalized after the pilot; every change and its pilot evidence is in EXPERIMENT.md
+section 12. C1 (recovery while the GPU is full) and A2 (shrink hand-off) are kept although the pilot contradicted them.
