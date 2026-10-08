@@ -10,7 +10,7 @@
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-peer` @ `45a5588b` (master) |
 | 사전 등록 태그 | 없음. 예정: `prereg/gin-peer-v1`(pilot 뒤, 상태를 `PREREGISTERED`로 바꾼 바로 그 커밋) |
-| 마지막 갱신 | 2026-10-09, 초안: 계층, 빌드, 드라이버, 실행기, 셀, 예측, 채점기, 독립 리뷰와 그 반영, 채점기 합성 시험(1–12절). 클러스터 실행 없음 |
+| 마지막 갱신 | 2026-10-09, pilot(P0, P1) 검토와 확정: 예측은 그대로, 경합 셀 두 개의 조건과 그 설정 확인을 고침, hold 시간을 측정값으로 바꿈(3, 7, 8, 9, 12절). 상태는 `DRAFT`(고정 커밋과 태그는 메인 세션) |
 
 표시: `[측정]` 원자료나 시행별 표에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -95,10 +95,19 @@ shrink가 원인이 로컬인데도 넘어간다 `[소스]`. 같은 리뷰의 M2
 
 ## 3. 사전 예측 (측정 전에 작성)
 
-**고정 시점.** 예측은 메인 세션이 pilot(9절의 hold P0, P1)을 돌린 뒤 태그 `prereg/gin-peer-v1`을 단 커밋에서만 고정된다. 그 전까지 이 절과
-[predictions.csv](predictions.csv)는 고칠 수 있다(pilot에서 셀 조건이 의도대로 만들어지지 않거나, 판정식의 경계가 pilot과 맞지 않으면 고친다).
-pilot 시행은 채점하지 않는다. 그 결과 폴더(`results/<날짜>_pilot/`)는 채점 대상 폴더와 따로 두고, 무엇을 보고 무엇을 고쳤는지 12절과 13절에 적는다.
-태그 뒤에는 2, 3, 7, 8절과 `predictions.csv`를 고치지 않는다.
+**고정 시점.** 예측은 pilot(9절의 hold P0, P1, 2026-10-09) 뒤에 확정했다. pilot 22회(랭크 2개 14회, 랭크 4개 8회)를 시행마다 로그와 kv로
+대조했고, 무엇을 보고 무엇을 고쳤는지는 12절에 있다. pilot 뒤에 예측 문장, 판정식, 기준 수, 셀 키, 반복 수는 하나도 바꾸지 않았다
+([predictions.csv](predictions.csv) sha256 `dccdf05c819976a067950aae2649cd33b8da161a506214633f64cab9402884db`, 초안 커밋과 같음). 바꾼 것은 경합
+셀 두 개의 조건(응답 쪽이 12 s 머묾)과 그것을 확인하는 설정 확인 하나다(7, 8절). 8절의 규칙대로 바뀐 두 셀은 태그 전에 pilot P2로 한 번 더
+돌린다. 예측은 태그 `prereg/gin-peer-v1`을 단 커밋에서 고정된다. pilot 시행은 채점하지 않으며, 그 결과 폴더(`results/20261009_pilot/`)는 채점
+대상 폴더와 따로 둔다. 태그 뒤에는 2, 3, 7, 8절과 `predictions.csv`를 고치지 않는다.
+
+**pilot이 남긴 의심.** pilot은 셀마다 1회라 판정이 아니다.
+- 경합 셀의 예측 넷(C1–C4)은 pilot 4회 모두에서 조건과 달랐다. 원인은 하네스였다: 응답 쪽이 거절 0.34–0.38 s 뒤 끝나, 시작 쪽의 다시 걸기와 확인
+  접속이 모두 연결 거부를 받고 상대를 죽음으로 거절했다 `[측정]`. 셀을 고쳤고 예측은 그대로 두었다. 이 계층의 FAIL 답 경로는 pilot에서 한 번도 돌지
+  않았다 `[미확인]`. P2와 본 실행이 처음 잰다.
+- pilot 시행이 있는 나머지 예측 23개(A1, A2, B1–B5, K1–K4, H1–H3, H5–H8, Q2, Q3, R1의 `f1_b`, R7, P1)는 그 1회에서 조건이 맞았다 `[측정, n=1]`.
+- pilot 시행이 없는 예측: A3, K5, H4, R1의 `f3_b`와 `bidirf_sym_b`, R2–R6, P2. Q1은 본 실행 전체에서 센다(pilot 22회에서 bind 실패 0).
 
 예측 원문은 [predictions.csv](predictions.csv)이고 37줄이다. `kind`는 N(새 동작), C(대조), R(회귀)다.
 
@@ -225,7 +234,7 @@ pilot 시행은 채점하지 않는다. 그 결과 폴더(`results/<날짜>_pilo
 | 항목 | 값 | 확인 방법과 날짜 |
 |---|---|---|
 | 노드, NIC, 펌웨어, GPU, CUDA | gin-harden, gin-multirank와 같다: rain(rank 0, 랭크 4개에서는 0과 2, Quadro RTX 5000), sunny(rank 1, 랭크 4개에서는 1과 3, RTX A4000), ConnectX-6 fw 20.43.4100, CUDA 12.8 | `../harden/EXPERIMENT.md` 5절, `../multirank/EXPERIMENT.md` 5절 |
-| 임시 포트 범위 | rain 32768–60999, 예약 없음. rain에서 수신 대기 중인 TCP 포트는 22, 53, 80, 111, 631, 2377, 7946, 12865, 39109이고 20000–32767에는 어떤 상태의 TCP 소켓도 없었다 | `[측정]` 2026-10-09 rain(`/proc/sys/net/ipv4/ip_local_port_range`, `ss -ltn`, `ss -tan`). sunny `[미확인]`: 메인 세션이 배포 전에 같은 명령으로 확인한다(9절 5번) |
+| 임시 포트 범위 | rain 32768–60999, 예약 없음. rain에서 수신 대기 중인 TCP 포트는 22, 53, 80, 111, 631, 2377, 7946, 12865, 39109이고 20000–32767에는 어떤 상태의 TCP 소켓도 없었다. sunny에서는 로컬 포트가 29000–30999인 TCP 소켓 0개, 원격 포트가 그 범위인 소켓 1개(다른 호스트로 나가는 연결, 이 실험의 수신 대기와 겹치지 않음) | `[측정]` 2026-10-09 rain(`/proc/sys/net/ipv4/ip_local_port_range`, `ss -ltn`, `ss -tan`). sunny는 메인 세션이 08:36에 읽기만 해서 확인 `[측정, 메인 세션]` |
 | `hf`, `hfp` 번들 | libnccl `b6372d8622f6a7eceb9fd4528c00e707`, `1ae4ce9aecb1727248db7eb3699ad110`, 드라이버 `9493584d5a321277c61863f4ed6ac379` | gin-handoff 배포 확인(`../handoff/deploy_check.txt`) `[측정, 이전 실험]`. rain의 스크래치 `agent_ts2hf/out/`에서 같은 md5 `[측정]` 2026-10-09 |
 | `hq`, `hqp`, 새 드라이버 | libnccl `hq` `c1311625c7a06c785bc313558504f982`, `hqp` `4fa076e113e43774a9dc2f46298df43b`, `gin_ts2` `3e053ff2ab069ec64198ed4e0f6e237a`, `gin_mr` `7f0fc272962b293da0bd0d3655aacc4d`. [deploy_hq.sh](deploy_hq.sh)의 기대 md5와 같다. 배포 뒤 두 노드 md5는 `deploy_check.txt`에 남긴다 | `[측정]` 2026-10-09 빌드 때 rain(세션 스크래치 `agent_ts2hq/out/`, `out/build_info.txt`) |
 | 변경분 | [hq_layer.diff](hq_layer.diff)(`hf` 트리 기준, md5 `34ab6201`), 전체 diff [gin_transparent_hq.diff](gin_transparent_hq.diff)(pristine 기준, md5 `5b7c3049`). 순정에 전체 diff를, 그리고 gin-oneway 전체 diff + gin-harden 계층 + gin-handoff 계층 + 이 계층을 더하면 각각 이 트리와 같다 | `[측정]` [make_diff_hq.sh](make_diff_hq.sh), 12절 |
@@ -255,8 +264,8 @@ pilot 시행은 채점하지 않는다. 그 결과 폴더(`results/<날짜>_pilo
 | `pq_repost_r1_b` | 양방향, 범위 좁히기 끔(전체 재설정, QP 4개), rank 0 로컬 QP 오류, rank 1(응답 쪽)의 계획이 둘째 QP를 거부(`NCCL_GIN_TS_TEST_BAD_REPOST=1`). 16 KiB × 400 | `@hq` 10, `@hf` 5 | 새 셀, 대조 |
 | `hd_repost_f1_b` | gin-harden 정의(rank 0의 계획이 거부) | `@hq` 5 | 회귀 |
 | `hd_fwslow_f1_b` | gin-harden 정의(rank 0의 commit 단계 8 s) | `@hq` 5 | 회귀 |
-| `pq_ackrace_f1_b` | rank 0 helper 소켓 수신 끊김 500:8000, rank 0 로컬 QP 오류 1 500 ms. REQ는 나가고 ACK와 TCP 확인이 돌아오지 못해 약 5 s 뒤 두 소켓이 ETIMEDOUT `[추론]`. 16 KiB × 1000 | `@hq` 10, `@hf` 5 | 새 셀, 대조 |
-| `pq_ackrace_f1r1_b` | 같은 경합을 rank 1이 시작: 양방향, rank 1 helper 소켓 끊김 500:8000, rank 1 로컬 QP 오류 1 500 ms(문맥 1) | `@hq` 5, `@hf` 5 | 새 셀, 대조 |
+| `pq_ackrace_f1_b` | rank 0 helper 소켓 수신 끊김 500:8000, rank 0 로컬 QP 오류 1 500 ms. REQ는 나가고 ACK와 TCP 확인이 돌아오지 못해 라운드 5.23–5.26 s 뒤 두 소켓이 ETIMEDOUT(pilot 4회 `[측정]`). 응답 쪽(rank 1)은 커널이 끝난 뒤 12 s 머문 뒤 정리한다(`GIN_TS_END_WAIT_S=12`, pilot 뒤 추가, 12절). 16 KiB × 1000 | `@hq` 10, `@hf` 5 | 새 셀, 대조 |
+| `pq_ackrace_f1r1_b` | 같은 경합을 rank 1이 시작: 양방향, rank 1 helper 소켓 끊김 500:8000, rank 1 로컬 QP 오류 1 500 ms(문맥 1). 응답 쪽(rank 0)이 12 s 머묾(같은 스위치) | `@hq` 5, `@hf` 5 | 새 셀, 대조 |
 | `pq_copystall_shrink_b` | `f1_b`에 rank 0의 첫 라운드 스트림 4 s 묶기(`NCCL_GIN_TS_TEST_COPY_STALL=4000`)와 rank 0의 중단 shrink(살아 있는 rank 1 제외) | `@hq` 10, `@hf` 5 | 새 셀, 대조 |
 | `pq_copystall1_shrink_b` | 같고 묶기는 rank 1(응답 쪽) | `@hq` 5 | 새 셀 |
 | `hd_shrink_b` | gin-harden 정의(rank 1 kill, rank 0 중단 shrink) | `@hq` 5 | 회귀 |
@@ -304,8 +313,10 @@ pilot 시행은 채점하지 않는다. 그 결과 폴더(`results/<날짜>_pilo
   사용자 devComm abort 단어 줄. `hf` 시행: 이 실험 시작 줄만 없음. `hqp`, `hfp`: 시작 줄이 WARN에 없고 kv에 `rs_api=1`, `rs_contexts >= 1`.
 - 시험 스위치 줄이 셀과 같다(gin-harden 스위치 줄의 값: 계획 거부, 펌웨어 지연, 복사 묶기가 그 셀의 그 rank에만). 끊김 줄은 경합 셀의 끊긴 rank에만.
 - 랭크 4개: 모든 rank의 투명 복구 시작 줄과 abort 단어 줄이 n 이상(아이 devComm이 줄을 더함), 이 실험 시작 줄이 `hq`에서 n, `hf`에서 0.
+- 경합 셀: 응답 쪽 rank의 환경에 `GIN_TS_END_WAIT_S=12`(실행기 meta의 `r<r>env`, `rows_pq.py`의 `end_wait_r*`). pilot 뒤에 더했다.
 
-**pilot에서 보이는 결함.** 태그 전이므로 고칠 수 있다. 고친 것은 12절과 13절에 적고, 고친 뒤에는 그 셀의 pilot을 다시 돈다. 예:
+**pilot에서 보이는 결함.** 태그 전이므로 고칠 수 있다. 고친 것은 12절에 적고, 고친 뒤에는 그 셀의 pilot을 다시 돈다. pilot P0, P1에서 실제로 나온
+결함은 경합 셀 두 개의 응답 쪽이 너무 일찍 끝나는 것 하나였다(12절). 아래는 미리 정해 둔 예다:
 - 경합 셀: 취소가 ACK 기다림이 아닌 단계(REQ 전)에서 생김, 또는 응답 쪽이 커밋 전에 끊김을 봄. 장애 시각(1 500 ms)이나 끊김 창을 한 번 바꿀 수
   있다.
 - `pq4_fwslow`: rank 2의 장애가 rank 0의 거절 전에 옴. 둘째 장애 시각(11 500 ms)을 한 번 바꿀 수 있다.
@@ -499,7 +510,7 @@ pilot 시행은 채점하지 않는다. 그 결과 폴더(`results/<날짜>_pilo
 ### 배포 ([deploy_hq.sh](deploy_hq.sh), 메인 세션)
 
 두 노드의 새 디렉터리 `hq/`, `hqp/`, `mr/hq/`에 둔다(8절 배포). 확인 출력은 파일로만 받는다. 배포 전에 sunny에서 포트 범위가 비어 있는지 읽기만 해서
-확인한다(5절). 예상 1분 `[추론]`.
+확인한다(5절). 2026-10-09에 메인 세션이 확인하고 배포했다(29 s, 12절).
 
 ```
 ssh <sunny> "ss -Htan '( sport >= :29000 and sport <= :30999 )' | wc -l; ss -ltn"   # 0이어야 함(메인 세션)
@@ -512,26 +523,38 @@ bash deploy_hq.sh deploy_check.txt
 hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t gpq-<hold>`에 넣는다. 결과 폴더 아래 랭크 2개 시행은 빌드별 폴더(`hq/`, `hf/`, `hqp/`, `hfp/`)에,
 랭크 4개 시행은 `mr_hq/`, `mr_hf/`에 쌓인다.
 
-| hold | 내용 | 추정 `[추론]` |
+| hold | 내용 | 시간 |
 |---|---|---|
-| P0 pilot | 랭크 2개 새 셀과 대조 1회씩, `hd_fwslow_f1_b`, `pq_copystall1_shrink_b`, `pq_rdv_b`, `f1_b` 1회씩, 4 KiB 지연 두 빌드 1회씩(14회). 채점 안 함 | 4분 |
-| P1 pilot | 랭크 4개 새 셀과 대조 1회씩(8회). 채점 안 함 | 5분 |
-| H1 | 랭크 2개 회귀 6셀 × 5, `hdp_kill_b` 5, 지연 20실행 | 7분 |
-| H2 | `pq_repost_r1_b`(`hq` 10, `hf` 5, 2:1), `hd_repost_f1_b` 5, `hd_fwslow_f1_b` 5, `pq_rdv_b` 5 | 5분 |
-| H3 | `pq_ackrace_f1_b`(2:1), `pq_ackrace_f1r1_b`(1:1) | 8분 |
-| H4 | `pq_copystall_shrink_b`(2:1), `pq_copystall1_shrink_b` 5, `hd_shrink_b` 5 | 5분 |
-| H5 | `mr4_kill3_peer`(2:1), `mr4_kill3` 5 | 10분 |
-| H6 | `pq4_fwslow`(2:1) | 7분 |
-| H7 | `pq4_kill3_shrink` 10, `mr4_none` 5, `mr4_f1_01` 5 | 11분 |
-| H8 | `pq4_local_shrink`(1:1), `pq4_rdv` 3 | 7분 |
+| P0 pilot | 랭크 2개 새 셀과 대조 1회씩, `hd_fwslow_f1_b`, `pq_copystall1_shrink_b`, `pq_rdv_b`, `f1_b` 1회씩, 4 KiB 지연 두 빌드 1회씩(14회). 채점 안 함 | 실행 118 s `[측정]` |
+| P1 pilot | 랭크 4개 새 셀과 대조 1회씩(8회). 채점 안 함 | 실행 187 s `[측정]` |
+| P2 pilot | pilot 뒤 바꾼 경합 셀 두 개를 빌드마다 1회씩(4회). 채점 안 함. 태그 전에 돈다(8절) | 약 2분 |
+| H1 | 랭크 2개 회귀 6셀 × 5, `hdp_kill_b` 5, 지연 20실행 | 약 6.5분 |
+| H2 | `pq_repost_r1_b`(`hq` 10, `hf` 5, 2:1), `hd_repost_f1_b` 5, `hd_fwslow_f1_b` 5, `pq_rdv_b` 5 | 약 3.5분 |
+| H3 | `pq_ackrace_f1_b`(2:1), `pq_ackrace_f1r1_b`(1:1) | 약 10분 |
+| H4 | `pq_copystall_shrink_b`(2:1), `pq_copystall1_shrink_b` 5, `hd_shrink_b` 5 | 약 4분 |
+| H5 | `mr4_kill3_peer`(2:1), `mr4_kill3` 5 | 약 8분 |
+| H6 | `pq4_fwslow`(2:1) | 약 6.5분 |
+| H7 | `pq4_kill3_shrink` 10, `mr4_none` 5, `mr4_f1_01` 5 | 약 8분 |
+| H8 | `pq4_local_shrink`(1:1), `pq4_rdv` 3 | 약 6분 |
 
-시행 시간은 앞 실험의 같은 꼴 셀에서 어림했다 `[측정, 추론]`: 랭크 2개 짧은 셀 약 5–9 s(gin-handoff pilot `wall_s` 3.8–6.1 s에 시행마다 약 1.5 s),
-경합 셀 `hq` 약 10 s, `hf` 약 18 s(재연결 한도 10 s), 랭크 4개 kill 셀 약 28 s(gin-multirank H6 15회 약 7분), shrink 셀은 거기에 5–15 s. hold마다
-잠금과 스냅숏에 약 1분이 더 든다. 가장 긴 H7도 880 s 안이다. 본 실행(H1–H8)의 클러스터 시간은 잠금 대기를 빼고 60–65분이다 `[추론]`.
+시간 어림 `[측정, 추론]`. hold 하나 = 시행마다 (`wall_s` + 2.7 s) + 31 s다.
+- 2.7 s는 pilot에서 잰 시행 사이 비용이다(포트 고르기, 원격 실행, 스냅숏; P0 (118 − 81.5) s / 14회 = 2.6 s, P1 (187 − 165.1) s / 8회 = 2.7 s).
+- 31 s는 hold마다 유휴 링크를 기다린 시간이다(P0 30 s, P1 31 s).
+- `wall_s`:
+  - pilot에서 잰 셀: `pq_repost_r1_b` 2.8 s, `hd_fwslow_f1_b` 5.8 s, `pq_copystall_shrink_b` 5.6 s와 6.8 s, `pq_copystall1_shrink_b` 5.3 s, `pq_rdv_b`
+    3.8 s, `mr4_kill3_peer` 20.1 s와 18.1 s, `pq4_fwslow` 22.0 s와 18.1 s, `pq4_kill3_shrink` 21.1 s, `pq4_local_shrink` 29.1 s와 18.6 s, `pq4_rdv`
+    18.0 s(각 n=1, `hq`와 `hf` 순).
+  - 회귀 셀은 gin-harden과 gin-handoff 본 실행의 중앙값이다(`f3_b` 7.3 s, `f4_b`와 `hdp_kill_b` 5.3 s 등, 각 n=5).
+  - `mr4_none`, `mr4_f1_01`은 gin-multirank 18.0–18.1 s(각 n=10)다.
+  - 바뀐 경합 셀은 약 20 s다 `[추론]`: 응답 쪽 거절이 helper 시작 뒤 약 6.3 s, 그 뒤 12 s 머묾과 정리.
+  - `mr4_kill3`은 약 20 s다 `[추론]`: kill 9 s, 생존 rank 받기의 한도 10 s.
+
+가장 긴 H3도 880 s 안이다. 본 실행(H1–H8)의 클러스터 시간은 잠금 대기를 빼고 약 52분이다 `[추론]`.
 
 ```
 cd /home/unionxic/rdma-error-wt/gin-peer/harness/gpu-initiated/gin_recovery/peer
-bash chain.sh results/<날짜>_pilot P0 P1                    # pilot, 채점 안 함
+bash chain.sh results/20261009_pilot P0 P1                  # pilot(끝남), 채점 안 함
+bash chain.sh results/20261009_pilot2 P2                    # 바뀐 경합 셀의 pilot, 태그 전, 채점 안 함
 bash chain.sh results/<날짜> H1 H2 H3 H4 H5 H6 H7 H8          # 본 실행(태그 뒤)
 bash chain.sh results/<날짜> fill:<폴더>:<셀>@<빌드>:<수>:<시작번호>[,...]   # 제외된 시행 채우기
 ```
@@ -546,7 +569,7 @@ python3 score.py results/<날짜>
 
 ## 10. 완료 조건과 QA 기준
 
-- [ ] 메인 세션이 pilot(P0, P1)을 돌리고 결과를 12절에 적은 뒤, 고칠 것을 고치고 태그를 달았다.
+- [ ] 메인 세션이 pilot(P0, P1, P2)을 돌리고 결과를 12절에 적은 뒤, 고칠 것을 고치고 태그를 달았다(P0, P1과 그 반영은 끝남).
 - [ ] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외와 실패를 따로 센 표가 있다(SCORE.md 끝 표).
 - [ ] 예측 37줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
 - [ ] 다른 에이전트가 `score.py`를 보지 않고 원자료에서 핵심 수치를 다시 셌다(생존 간선의 결과, 거절 대상과 원인, 상대별 해제 줄, 감시 발동과
@@ -568,8 +591,9 @@ python3 score.py results/<날짜>
   `predictions.csv`
 - [x] 채점 스크립트 합성 시험(실제 측정 아님, 12절)
 - [x] 질문, 가설, 셀, 예측 초안 (`DRAFT`)
-- [ ] sunny 포트 범위 확인과 배포(메인 세션)
-- [ ] pilot P0, P1(메인 세션, 채점 안 함), 결과로 고칠 것 고치기
+- [x] sunny 포트 범위 확인과 배포(메인 세션, 12절)
+- [x] pilot P0, P1(메인 세션, 채점 안 함), 결과로 고칠 것 고치기(12절)
+- [ ] pilot P2: 바뀐 경합 셀 두 개(메인 세션, 태그 전)
 - [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
 - [ ] 본 실행 H1–H8 (`RUNNING`)
 - [ ] 채점 (`QA`)
@@ -588,7 +612,38 @@ python3 score.py results/<날짜>
 | 2026-10-09 | 독립 리뷰(다른 에이전트, 읽기만, 빌드 안 함): 판정 "usable with fixes". blocker와 high 없음, 중간 4, 낮음 8, 사소 4. 코드로 반영: M1(FAIL과 NACK에 보낸 쪽 원인, 받는 쪽은 local일 때만 peer-reported), M2(펌웨어 감시가 단계마다 한 번 매김), L2(NACK 16), 사소 넷(`ovPeer` 삭제, 중복 선언 삭제, 응답 쪽 NACK의 고유값, REQ를 받을 때 단어 확인). 문서로만: M3(sticky는 문맥별), M4(상대를 모르는 대기), L1, L3–L8(9절 1번 (b), (d), (e), (f), (h)). 셀과 예측은 바꾸지 않았다. 영향 확인 `[소스]`: A1과 C1에서 rank 0의 원인이 peer-reported에서 unknown이 되지만 두 예측은 원인을 보지 않는다. H3은 rank 1의 NACK(정지 실패, 코드 3)가 local을 실어 rank 0이 그대로 peer-reported다 | 9절 1번 |
 | 2026-10-09 | 리뷰 반영 빌드: 증분 빌드가 컴파일한 객체 2개(장치 0), 컴파일 경고 0. libnccl `hq` `c1311625`, `hqp` `4fa076e1`, `gin_ts2` `3e053ff2`, `gin_mr` `7f0fc272`. [make_diff_hq.sh](make_diff_hq.sh): `hq_layer.diff` `34ab6201`(5개 파일, +565/−147줄), 전체 diff `5b7c3049`, VERIFIED 둘(순정 + 전체 diff, 순정 + 네 계층 diff가 각각 빌드 트리와 같음). strings: `NCCL_GIN_TS_TEST_` 문자열이 `hq`에 16개, `hqp`에 0개. `hqp`에 이 실험 시작 줄 형식 1개 `[측정]` | 5절, `agent_ts2hq/out/build_info.txt` |
 | 2026-10-09 | 채점기 합성 시험(측정 아님). 세션 스크래치 폴더에 세 가지를 두고 `score.py`를 돌렸다: gin-handoff 본 실행의 실제 `f1_b@hf` 시행 5개, 실제 gin-handoff `f1_b` 시행에 이 계층 형식의 줄을 손으로 붙인 랭크 2개 시행 1개, 실제 gin-multirank `mr4_kill3_peer` 시행에 이 계층 줄과 아이 kv를 붙인 랭크 4개 시행 1개. 결과: 예외 없이 37줄을 모두 평가했다(Q1 맞음, 나머지는 계획 수 부족으로 자료 부족). 붙인 줄에서 나온 열이 모두 기대값과 같았다(예: `planrej_qp_r1` 1, `fwover_ms_r1` 3012, `decl_after_unmute_ms_r0` 100, `uapeer` "0-3;1-3;2-3", `ch_ok_ranks` 3, `ch_tx_ok_sum` 6). 감시 줄을 붙인 랭크 2개 시행은 펌웨어 초과로 제외되어 제외 규칙도 동작했다. 예측 37줄의 판정식이 쓰는 열 이름은 모두 그 시행 종류의 행에 있다 | 세션 스크래치 `hq_work/make_synth.py`, `hq_work/synth_res/` |
-| 2026-10-09 | 클러스터에서는 아무것도 돌리지 않았다. 배포, pilot, 본 실행은 메인 세션이 한다 | |
+| 2026-10-09 | (초안까지) 클러스터에서는 아무것도 돌리지 않았다. 배포, pilot, 본 실행은 메인 세션이 한다 | |
+| 2026-10-09 08:36 | sunny 포트 범위 확인(메인 세션, 읽기만): 로컬 포트가 29000–30999인 TCP 소켓 0개, 원격 포트가 그 범위인 소켓 1개(다른 호스트로 나가는 연결). rain은 양쪽 모두 0 `[측정, 메인 세션]` | 5절 |
+| 2026-10-09 08:36:53–08:37:22 | 배포(메인 세션) `bash deploy_hq.sh deploy_check.txt`, rc 0. "deployed md5 == source on both nodes", "existing bundle unchanged on both nodes (46 files each)". 두 노드의 md5 5개가 5절과 같다 `[측정]` | [deploy_check.txt](deploy_check.txt)(128줄, 주소 없음) |
+| 2026-10-09 08:37:26–08:43:32 | pilot(메인 세션) `bash chain.sh results/20261009_pilot P0 P1`. P0: 잠금 08:37:26, 유휴 링크 08:37:56, 끝 08:39:54(실행 118 s, 14회). P1: 잠금 08:39:54, 유휴 링크 08:40:25, 끝 08:43:32(실행 187 s, 8회). 두 hold 모두 rc 0. hold 앞뒤 `gin-` iptables 규칙 0, 새 mlx5 줄 0, cmd_err rain 2와 sunny 0, rain 펌웨어 명령 실패 합 31로 그대로, 남은 프로세스 0, STOP 파일 없음. rank 종료 코드: 의도한 거절 셀 4, 투명 셀 0, kill된 rank 255(3회), 단계 한도의 rank 8(2회) `[측정]` | `results/20261009_pilot/`(`chain.out`, `hold_P0.out`, `hold_P1.out`, `snap_*`), 세션 스크래치 `cluster_run.log` 1669–1674줄 |
+| 2026-10-09 | pilot 검토(채점 아님). `score.py`를 pilot 사본에 돌려 열을 만들고, 22회 모두 로그와 kv를 직접 대조했다(아래 표). 하네스 결함 하나: 경합 셀 두 개에서 응답 쪽이 거절 0.34–0.38 s 뒤 끝나(드라이버 기본 끝 대기 0.3 s), 시작 쪽의 끊김 끝 0.24–0.27 s 뒤 첫 다시 걸기나 확인 접속이 연결 거부를 받고 1.24–1.28 s 뒤 상대를 죽음으로 거절했다(4회 모두). 그래서 FAIL 답 경로는 돌지 않았다. 다른 셀의 시행 18회는 해당 예측 조건과 맞았다. 파서 결함은 찾지 못했다 `[측정]` | 아래 pilot 표, 세션 스크래치 `hq_work/pilot_eval.py` |
+| 2026-10-09 | pilot 뒤 변경. 예측은 바꾸지 않았다(`predictions.csv` sha256 `dccdf05c…`, 초안과 같음). (1) [cells.sh](cells.sh): 경합 셀 두 개의 응답 쪽에 `GIN_TS_END_WAIT_S=12`(드라이버 스위치, 두 번들의 드라이버에 있음). 12 s는 시작 쪽의 재연결 한도(취소에서 10 s)에 2 s를 더한 값이다. 끊김 끝은 취소 1.73–1.77 s 뒤였다. (2) [rows_pq.py](rows_pq.py) `end_wait_r*`, [score.py](score.py) 설정 확인 `config_linger`. pilot 경합 시행 4회는 이 확인에 걸린다. (3) [hold.sh](hold.sh) P2. (4) 시각 값은 측정으로 확인하고 그대로 두었다: 경합 셀의 장애 1 500 ms와 끊김 500:8000(4회 모두 ACK 기다림 중 취소, 응답 쪽은 커밋 뒤 거절), `pq4_fwslow` 둘째 장애 11 500 ms(rank 0 거절 1.43 s 뒤, 두 빌드), `pq4_local_shrink` 단계 한도 12 s, `pq4_kill3_shrink` 40 s(아이 단계 전체 3 s 미만). (5) 9절 hold 시간을 측정값으로 다시 어림했다: 본 실행 약 52분 | 3, 7, 8, 9절 |
+
+### pilot 시행별 확인 (채점 아님, 셀마다 n=1)
+
+`[측정]` `results/20261009_pilot/`의 로그와 kv에서 직접 읽었다. "맞음"은 그 시행 하나가 해당 예측의 조건을 만족했다는 뜻이다.
+
+| 셀@빌드 | 원자료에서 본 것 | 예측 조건 |
+|---|---|---|
+| `pq_repost_r1_b@hq` | rank 1이 커밋 전에 계획을 거부했다(QP 4개 중 둘째). rank 0에는 계획 검사 줄이 없고, 라운드 3.5 ms 뒤 NACK 15 사유로 거절했다. 두 rank 모두 복구 줄 0, 원인 unknown | 맞음 (A1) |
+| `pq_repost_r1_b@hf` | rank 0이 복구 줄을 남기고 WQE 2개를 다시 보낸 뒤, rank 1의 FAIL로 거절했다 | 맞음 (A2) |
+| `pq_ackrace_f1_b@hq`, `@hf` | rank 0이 ACK 기다림 중 취소했다(라운드 5.26 s 뒤 ETIMEDOUT). rank 1은 커밋 뒤 "peer closed the socket before DONE (ETIMEDOUT)"로 거절하고 0.35–0.38 s 뒤 끝났다. 끊김 끝 0.26–0.27 s 뒤 첫 다시 걸기부터 연결 거부, 1.27–1.28 s 뒤 죽음으로 거절 | 아님, 하네스 (C1, C2) |
+| `pq_ackrace_f1r1_b@hq`, `@hf` | 같은 꼴을 rank 1이 시작했다(취소 5.23 s). rank 0은 거절 0.34–0.35 s 뒤 끝났고, 확인 접속이 거부되어 끊김 끝 1.24 s 뒤 죽음으로 거절 | 아님, 하네스 (C3, C4) |
+| `pq_copystall_shrink_b@hq` | 첫 복사가 2 000 ms 상한을 넘겨 rank 0이 원인 local로 거절했다. shrink는 유지 줄("(local)")과 순정 답(remote error). rank 1은 FAIL을 받아 원인 peer-reported | 맞음 (H1) |
+| `pq_copystall_shrink_b@hf` | shrink가 넘어가 1-rank communicator의 allreduce가 맞았다 | 맞음 (H2) |
+| `hd_fwslow_f1_b@hq` | 감시가 commit 단계 3 000 ms에 한 번 발동했다. rank 1의 단어 다음 devComm 단어(fw-watchdog)가 올라가고 원인 local. abort 937.5 ms, helper 떼어 냄, rank 1 거절 | 맞음 (B1) |
+| `pq_copystall1_shrink_b@hq` | rank 1이 복사 초과로 NACK(정지 실패)를 보내고 local로 거절했다. rank 0은 "peer NACK", peer-reported로 거절했다. shrink가 넘어가 1-rank allreduce가 맞았다 | 맞음 (H3) |
+| `pq_rdv_b@hq` | 막아 둔 첫 후보 29342를 건너뛰고 29343을 썼다. 가짜 수신 대기(29344)는 연결 1, 바이트 0. rank 1 거부, 두 rank 확인, 투명 | 맞음 (Q2) |
+| `f1_b@hq` | 투명. 통계 API는 두 rank 모두 라운드 1, 복구 1, 거절 0 | 맞음 (R1의 `f1_b`, R7) |
+| `lat_4k@hqp`, `@hfp` | p50 10.75 µs와 10.69 µs, 차이 0.06 µs(각 1실행) | 맞음 (P1) |
+| `mr4_kill3_peer@hq` | kill 9 000 ms. 세 생존 rank가 FIN을 보고 8 ms 안에 rank 3을 peer-dead로 거절했고, rank 3의 단어만 올렸다(devComm 단어는 정리 때 abort뿐). 생존 간선 6개 1 000회 정상, rank 3으로 보내기 3개 실패, rank 3에서 받기 3개 timeout, 세 rank 비동기 오류 | 맞음 (K1, K2, K3) |
+| `mr4_kill3_peer@hf` | 생존 받기 6개 실패, 생존 보내기 실패 0 | 맞음 (K4) |
+| `pq4_fwslow@hq` | rank 0의 rank 1 라운드가 commit 3 000 ms를 한 번 넘겼고, 장애 4.07 s 뒤 rank 1만 거절했다. rank 2의 장애는 그 1.43 s 뒤 왔다. rank 0이 좁힌 범위를 거부(rank 1 쪽 QP가 RTS 아님)해 전체 재설정으로 다시 돌았고, rank 2 시작, rank 0 응답으로 복구됐다. 나쁜 간선은 0>1, 1>0뿐, 올라간 단어는 0-1, 1-0뿐, devComm 단어 없음 | 맞음 (B2, B3, B4) |
+| `pq4_fwslow@hf` | 감시가 오류를 드러내 rank 0이 rank 2의 라운드를 "the watchdog surfaced a fault earlier"로 거절했다. 간선 0>2, 0>3, 2>0, 3>0 중 3개 실패 | 맞음 (B5) |
+| `pq4_kill3_shrink@hq` | 세 생존 rank의 shrink가 넘어갔다(10–1 191 ms). 3-rank 아이가 GIN 문맥 6개의 devComm을 163 ms에 열고 간선 6개 200회 정상 | 맞음 (H5) |
+| `pq4_local_shrink@hq` | rank 0이 복사 초과로 local 거절, shrink 유지("(local)"), 아이 없음. rank 2, 3은 단계 한도 12 s에서 끝남(종료 코드 8) | 맞음 (H6, H7) |
+| `pq4_local_shrink@hf` | rank 0의 shrink가 넘어가고 세 rank 모두 3-rank 아이를 얻음 | 맞음 (H8) |
+| `pq4_rdv@hq` | 막아 둔 후보 30088을 건너뜀. 가짜 수신 대기는 연결 3, 바이트 0. rank 1–3 거부, 네 rank 확인, 투명 | 맞음 (Q3) |
 
 ## 13. 사전 등록 이후 변경
 
@@ -599,6 +654,7 @@ python3 score.py results/<날짜>
 
 | 무엇 | 경로 또는 Release 자산 | n |
 |---|---|--:|
+| pilot P0, P1(채점 안 함) | `results/20261009_pilot/`(원자료, 커밋하지 않음. Release 예정) | 22 |
 
 ## 15. 결과 요약
 
