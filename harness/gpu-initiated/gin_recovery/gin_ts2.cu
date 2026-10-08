@@ -74,6 +74,14 @@
 //   GIN_TS_SHRINK_DEVCOMM_DESTROY=1 (with GIN_TS_SHRINK): ncclDevCommDestroy before the shrink, once the old kernel has
 //     ended (kv ho_devcomm_destroy_rc, ho_devcomm_destroy_ms); the final signal read is then skipped
 //     (kv final_signal_read=skipped_devcomm_destroyed).
+// gin-peer (optional; without it the program does what it did):
+//   GIN_RDV_NONCE=<16 hex digits>: a verified rendezvous. Rank 0 greets every connection on its port with a 16-byte
+//     record (magic "GINRDV01" + the nonce) and accepts only a connection that answers with the same record and rank 1;
+//     rank 1 sends nothing until it has read and checked that greeting (a foreign listener on the port gets no byte from
+//     it; a foreign greeting is closed and the connect retried). kv rdv=verified|legacy, rdv_rejected (rank 1: greetings
+//     that failed the check), rdv_foreign (rank 0: connections that did not answer correctly), rdv_port.
+//   GIN_RDV_TEST_DECOY_PORT=<p> (rank 1, test): before the real rendezvous, connect once to <p> (a decoy listener of the
+//     runner that sends a wrong greeting) and check it the same way (kv rdv_decoy=rejected|accepted|no_connect).
 // exit: 0 all iterations ok and nothing surfaced; 2 NCCL call error; 3 async error seen by the host;
 //       4 a device wait/flush returned an error or timed out; 5 data/signal check failed;
 //       6 CUDA error; 7 watchdog.
@@ -99,6 +107,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <dlfcn.h>
 
 // gin-harden: pristine NCCL's blocking flush returns void; the research builds return the classified error.
@@ -270,6 +279,39 @@ static int recvall(int fd, void* b, size_t n) {
     o += (size_t)k;
   }
   return 0;
+}
+
+// gin-peer: verified rendezvous (see the header). 16-byte greeting from rank 0; 24-byte answer (greeting + rank).
+struct RdvGreet {
+  char magic[8];
+  uint64_t nonce;
+};
+struct RdvAnswer {
+  char magic[8];
+  uint64_t nonce;
+  int32_t rank;
+  int32_t pad;
+};
+static const char kRdvMagic[8] = {'G', 'I', 'N', 'R', 'D', 'V', '0', '1'};
+static bool rdvNonce(uint64_t* n) {
+  const char* e = getenv("GIN_RDV_NONCE");
+  if (e == nullptr || *e == '\0') return false;
+  *n = strtoull(e, nullptr, 16);
+  return true;
+}
+static void rdvTimeout(int fd, int ms) {
+  struct timeval tv;
+  tv.tv_sec = ms / 1000;
+  tv.tv_usec = (ms % 1000) * 1000;
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+}
+// the connecting side: read the greeting (bounded) and check it before sending anything; true if it is rank 0's
+static bool rdvCheckGreeting(int fd, uint64_t nonce, int ms) {
+  rdvTimeout(fd, ms);
+  RdvGreet g;
+  if (recvall(fd, &g, sizeof g)) return false;
+  return memcmp(g.magic, kRdvMagic, 8) == 0 && g.nonce == nonce;
 }
 
 // Deterministic per-(iteration, byte) pattern (gin_ts1's for seed 0; bidir uses seed = sender rank + 1).
@@ -842,6 +884,8 @@ int main(int argc, char** argv) {
   // ncclUniqueId over TCP (setup only)
   int one = 1, sock = -1;
   ncclUniqueId id;
+  uint64_t rdvN = 0;
+  const bool rdv = rdvNonce(&rdvN);  // gin-peer: verified rendezvous
   if (rank == 0) {
     NK(ncclGetUniqueId(&id));
     int ls = socket(AF_INET, SOCK_STREAM, 0);
@@ -851,22 +895,68 @@ int main(int argc, char** argv) {
     a.sin_addr.s_addr = INADDR_ANY;
     a.sin_port = htons(port);
     if (bind(ls, (sockaddr*)&a, sizeof a)) { perror("bind"); return 1; }
-    listen(ls, 1);
-    sock = accept(ls, nullptr, nullptr);
+    listen(ls, 4);
+    int foreign = 0;
+    while (true) {
+      sock = accept(ls, nullptr, nullptr);
+      if (sock < 0) {
+        if (errno == EINTR) continue;
+        return 1;
+      }
+      if (!rdv) break;
+      RdvGreet g;
+      memcpy(g.magic, kRdvMagic, 8);
+      g.nonce = rdvN;
+      RdvAnswer an;
+      rdvTimeout(sock, 2000);
+      if (sendall(sock, &g, sizeof g) == 0 && recvall(sock, &an, sizeof an) == 0 && memcmp(an.magic, kRdvMagic, 8) == 0 &&
+          an.nonce == rdvN && an.rank == 1) {
+        rdvTimeout(sock, 0);
+        break;
+      }
+      foreign++;  // not our rank 1: closed, nothing of ours was read from it
+      close(sock);
+    }
     close(ls);
+    kv("rdv=%s rdv_foreign=%d rdv_port=%d", rdv ? "verified" : "legacy", foreign, port);
     if (sendall(sock, &id, sizeof id)) return 1;
   } else {
     sockaddr_in a{};
     a.sin_family = AF_INET;
     a.sin_port = htons(port);
     inet_pton(AF_INET, peerIp, &a.sin_addr);
+    if (rdv && getenv("GIN_RDV_TEST_DECOY_PORT")) {  // gin-peer (test): a decoy listener first; nothing is sent to it
+      sockaddr_in d = a;
+      d.sin_port = htons(atoi(getenv("GIN_RDV_TEST_DECOY_PORT")));
+      int ds = socket(AF_INET, SOCK_STREAM, 0);
+      const char* res = "no_connect";
+      if (connect(ds, (sockaddr*)&d, sizeof d) == 0) res = rdvCheckGreeting(ds, rdvN, 1000) ? "accepted" : "rejected";
+      close(ds);
+      kv("rdv_decoy=%s rdv_decoy_port=%d", res, ntohs(d.sin_port));
+    }
+    int rejected = 0;
     for (int t = 0;; t++) {
       sock = socket(AF_INET, SOCK_STREAM, 0);
-      if (connect(sock, (sockaddr*)&a, sizeof a) == 0) break;
+      if (connect(sock, (sockaddr*)&a, sizeof a) == 0) {
+        if (!rdv) break;
+        if (rdvCheckGreeting(sock, rdvN, 2000)) {
+          RdvAnswer an;
+          memcpy(an.magic, kRdvMagic, 8);
+          an.nonce = rdvN;
+          an.rank = rank;
+          an.pad = 0;
+          if (sendall(sock, &an, sizeof an) == 0) {
+            rdvTimeout(sock, 0);
+            break;
+          }
+        }
+        rejected++;  // not our rank 0 (or it went away): closed without a byte of ours unless it greeted correctly
+      }
       close(sock);
       if (t > 600) return 1;
       usleep(200000);
     }
+    kv("rdv=%s rdv_rejected=%d rdv_port=%d", rdv ? "verified" : "legacy", rejected, port);
     if (recvall(sock, &id, sizeof id)) return 1;
   }
   setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
