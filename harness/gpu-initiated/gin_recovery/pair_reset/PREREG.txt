@@ -1,0 +1,10 @@
+Pre-registration of gin-pair-reset, 2026-10-08 12:08:13 +0900, before any measured run of this study.
+sha256 of the fixed prediction file:
+dcb00afb48e7a3633b62f8f86491dda86c6c0449c8442f85cb749e8e305cf36c  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/gin-pair-reset-v1 (sections 2, 3, 7, 8).
+The scoring fields, log-line formats, decline texts, kv keys of the dual-context driver mode, cell keys (cell@build) and
+the acceptance grammar (that of ../s2_close/EXPERIMENT.md 3.2, plus plain arithmetic outside count() and median()) are
+fixed in EXPERIMENT.md section 3.
+The predictions come from the gin-reconnect library tree (../reconnect/gin_transparent_rc.diff on NCCL v2.32.3-1), the
+pair-reset design of EXPERIMENT.md section 9, and the gin-reconnect raw data of 2026-10-08 (rc build); no code for this
+study was written or built and nothing was run on the cluster before this file.
