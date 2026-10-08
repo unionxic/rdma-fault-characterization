@@ -1,0 +1,8 @@
+Pre-registration of nccl-builtin, 2026-10-09 01:27:17 +0900, before any main-run trial of this study.
+sha256 of the fixed prediction file:
+d6804c5490ba0d497a44053670bcd804d8403870e659672ddd6bc9cc95f7f515  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/nccl-builtin-v1 (sections 2, 3, 7, 8).
+A pilot of 34 trials (one per cell key, results/20261009_pilot, 2026-10-09 01:03:42-01:10:21, never scored) ran before this
+file. The predictions and trial counts were finalized after it; every change and its pilot evidence is in EXPERIMENT.md
+section 12. The other sources are the NCCL v2.32.3-1 source (p2p_resiliency.cc and callers), the v2.23.4 source and the
+stage2 records (../stage2/, Release data-20261006).
