@@ -7,7 +7,7 @@
 # rain (comment "gin-harden-<pid>", added only by run_trial_hd.sh's MGMT_MUTE). New mlx5 lines are written to
 # mlx5_new_<hold>.txt and printed. A new command-error line, a growth of the firmware-command failure counters, or a
 # gin-harden iptables rule that is still present after the hold writes <resultsdir>/STOP_mlx5 (or STOP_iptables), and
-# chain.sh runs no further hold (EXPERIMENT.md 8). Processes are never killed here (run_trial_hd.sh kills only PIDs it
+# chain.sh runs no further hold (EXPERIMENT.md 8). So does a CUDA memory fault in a trial (STOP_cuda). Processes are never killed here (run_trial_hd.sh kills only PIDs it
 # recorded).
 set -u
 R=${1:?resultsdir}; H=${2:?hold}
@@ -96,4 +96,12 @@ fi
 left=$(ipt_ours)
 if [ "$left" != 0 ]; then
   echo "$(date '+%F %T') hold $H: $left gin-harden iptables rule(s) still present after the hold" | tee -a "$R/STOP_iptables"
+fi
+# a CUDA memory fault in any trial of this hold (the user devComm's abort word is freed with the communicator: a kernel
+# still reading it would fault; EXPERIMENT.md 8): rank exit code 139 or an illegal-address / launch-failure line
+cudafail=$( { find "$R" -name '*_meta.txt' -newer "$R/snap_before-$HT.txt" -exec grep -lE ' r[01]rc=139 ' {} + 2>/dev/null
+  find "$R" \( -name '*_r0.log' -o -name '*_r1.log' -o -name '*_r0.kv' -o -name '*_r1.kv' \) -newer "$R/snap_before-$HT.txt" \
+    -exec grep -liE 'illegal address|illegal memory access|unspecified launch failure' {} + 2>/dev/null; } | sort -u)
+if [ -n "$cudafail" ]; then
+  echo "$(date '+%F %T') hold $H: CUDA memory fault or exit 139 in: $(echo "$cudafail" | tr '\n' ' ')" | tee -a "$R/STOP_cuda"
 fi
