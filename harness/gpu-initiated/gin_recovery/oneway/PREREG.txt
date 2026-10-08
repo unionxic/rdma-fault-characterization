@@ -1,0 +1,11 @@
+Pre-registration of gin-oneway, 2026-10-08 15:13:18 +0900, before any measured run of this study.
+sha256 of the fixed prediction file:
+8f5c0602f1149102b5a0c4f50a1cb872d5f7bdf5b3d3dcbc5899ead83d750add  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/gin-oneway-v1 (sections 2, 3, 7, 8).
+The scoring fields, log-line formats, cell keys (cell@build) and the acceptance grammar (that of ../s2_close/EXPERIMENT.md 3.2,
+plus plain arithmetic outside count() and median(), as ../pair_reset/EXPERIMENT.md 3.2) are fixed in EXPERIMENT.md section 3.
+The predictions come from the gin-pair-check library tree (build pc: ../pair_check/pc_layer.diff on the gin-pair-reset tree),
+the gin-reconnect code review (../reconnect/qa/code_review.md findings 1, 2 and 4), the gin-reconnect and gin-s2-close raw logs
+(Release data-20261008 and data-20261007: socket timeout order in 65 symmetric-mute trials, kill to first classifier record in
+15 kill trials) and the design of EXPERIMENT.md section 9. No code for this study was written or built and nothing was run on
+the cluster before this file.
