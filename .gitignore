@@ -9,6 +9,7 @@
 
 # and track these.
 !.gitignore
+!LICENSE
 !Makefile
 # code
 !*.c
