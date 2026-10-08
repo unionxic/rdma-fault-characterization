@@ -36,6 +36,12 @@
 //   remote offset), GIN_TS_R1_BYTES (bidir: rank 1's message size; default = bytes)
 // gin-s2-close: GIN_TS_GET=1 (the one-thread loop of mode none, rank 0 sends): a get of GIN_TS_GET_BYTES (65536) per
 //   iteration from rank 1's send window into rank 0's receive window, checked after a successful flush (kv get_n, get_bad).
+// gin-pair-reset: GIN_TS_DUAL=1 (mode none): the one-thread loop on two GIN contexts at once. Rank 0 runs ONE kernel of two
+//   CTAs; CTA c sends on context c into its own slot region (c * iters * bytes, pattern seed c + 1) with context c's
+//   signal 0, and keeps every iteration's start and end (globaltimer). Rank 1 runs ONE kernel of two CTAs; CTA c waits for
+//   context c's signal 0 and checks region c on the device; the host then checks every slot and both final signals. The
+//   usual kv keys combine both contexts (tx_done: the smaller; tx_rc, rx_rc: the first error; slots and signals: both);
+//   rank 0 adds dual_* keys about context 1 while context 0 was held (its longest iteration), see dualReport.
 // exit: 0 all iterations ok and nothing surfaced; 2 NCCL call error; 3 async error seen by the host;
 //       4 a device wait/flush returned an error or timed out; 5 data/signal check failed;
 //       6 CUDA error; 7 watchdog.
@@ -552,6 +558,86 @@ __global__ void readSigKernel(struct ncclDevComm devComm, unsigned long long* v,
   for (int s = threadIdx.x; s < n; s += blockDim.x) v[s] = gin.readSignal((ncclGinSignal_t)s);
 }
 
+// ---- gin-pair-reset: two contexts at once (GIN_TS_DUAL=1) ------------------------------------------------------
+__global__ void dualTxKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t bytes, int iters, unsigned long long gapNs,
+                             struct ncclDevComm devComm, int useTimeout, unsigned long long timeoutCycles,
+                             unsigned long long* tS, unsigned long long* tE, volatile int* progress, TxOut* outs, int peer) {
+  const int c = blockIdx.x;
+  ncclGin gin{devComm, c};
+  TxOut* out = outs + c;
+  const size_t region = (size_t)c * (size_t)iters * bytes;
+  if (threadIdx.x == 0) out->tStart = gtNow();
+  for (int i = 0; i < iters; i++) {
+    const size_t off = region + (size_t)i * bytes;
+    const unsigned long long t0 = gtNow();
+    if (threadIdx.x == 0) gin.put(ncclTeamWorld(devComm), peer, recvWin, off, sendWin, off, bytes, ncclGin_WeakSignalInc{0});
+    ncclResult_t rc;
+    if (useTimeout) rc = gin.flush(ncclCoopCta(), cuda::memory_order_acquire, ncclGin_None{}, timeoutCycles);
+    else rc = gin.flush(ncclCoopCta());
+    const unsigned long long t1 = gtNow();
+    if (threadIdx.x == 0) {
+      tS[(size_t)c * iters + i] = t0;
+      tE[(size_t)c * iters + i] = t1;
+      if (c == 0) {
+        *progress = i + 1;
+        __threadfence_system();
+      }
+    }
+    if (rc != ncclSuccess) {
+      if (threadIdx.x == 0) {
+        out->rc = (int)rc;
+        out->rcIt = i;
+        out->done = i;
+        out->firstErrLatNs = t1 - t0;
+        out->nErr++;
+      }
+      return;
+    }
+    if (gapNs) {
+      const unsigned long long g0 = gtNow();
+      while (gtNow() - g0 < gapNs) {}
+    }
+  }
+  if (threadIdx.x == 0) out->done = iters;
+}
+__global__ void dualRxKernel(const uint8_t* recvBuf, size_t bytes, int iters, const unsigned long long* bases,
+                             struct ncclDevComm devComm, unsigned long long waitCycles, volatile int* progress, RxOut* outs) {
+  const int c = blockIdx.x;
+  ncclGin gin{devComm, c};
+  RxOut* out = outs + c;
+  __shared__ int bad;
+  for (int i = 0; i < iters; i++) {
+    const ncclResult_t rc = gin.waitSignal(ncclCoopCta(), 0, bases[c] + (unsigned long long)(i + 1), 64,
+                                           cuda::memory_order_acquire, waitCycles);
+    if (rc != ncclSuccess) {
+      if (threadIdx.x == 0) {
+        out->rc = (int)rc;
+        out->rcIt = i;
+        out->done = i;
+      }
+      return;
+    }
+    if (threadIdx.x == 0) bad = 0;
+    __syncthreads();
+    const uint8_t* slot = recvBuf + ((size_t)c * iters + i) * bytes;
+    int b = 0;
+    for (size_t k = threadIdx.x; k < bytes; k += blockDim.x) b |= (((volatile const uint8_t*)slot)[k] != pat(i, k, (uint32_t)c + 1));
+    if (b) atomicOr(&bad, 1);
+    __syncthreads();
+    if (threadIdx.x == 0) {
+      if (bad) {
+        if (out->badSlots == 0) out->firstBad = c * iters + i;
+        out->badSlots++;
+      }
+      if (c == 0) {
+        *progress = i + 1;
+        __threadfence_system();
+      }
+    }
+  }
+  if (threadIdx.x == 0) out->done = iters;
+}
+
 static int cmpU64(const void* a, const void* b) {
   unsigned long long x = *(const unsigned long long*)a, y = *(const unsigned long long*)b;
   return x < y ? -1 : x > y ? 1 : 0;
@@ -614,10 +700,14 @@ int main(int argc, char** argv) {
   if ((rank != 0 && rank != 1) || iters <= 0 || bytes == 0 || P <= 0 || K <= 0 || (isBurst && bytes % 4) || P % NS)
     return 1;
   if (getMode && (isBurst || isBidir || isLat || getBytes == 0 || getBytes > bytes)) return 1;  // one-thread loop only
+  // gin-pair-reset: two contexts at once (the one-thread loop of mode none only)
+  const bool dual = getenv("GIN_TS_DUAL") && atoi(getenv("GIN_TS_DUAL")) != 0;
+  if (dual && (strcmp(mode, "none") != 0 || getMode)) return 1;
   signal(SIGALRM, onAlarm);
   kv("rank=%d iters=%d bytes=%zu wait_mode=%s mode=%s dev_timeout_s=%.1f gap_us=%ld t0_mono_ms=%.3f", rank, iters,
      bytes, argv[6], mode, devTimeoutS, gapUs, monoMs());
   if (getMode) kv("get_mode=1 get_bytes=%zu", getBytes);
+  if (dual) kv("dual=1 dual_contexts=2");
   if (isBurst) kv("burst_blocks=%d burst_threads=%d burst_P=%d burst_K=%d burst_agg=%d qdepth=%d burst_signals=%d "
                   "burst_agg_gap_us=%ld burst_bad_it=%d", txBlocks, txThreads, P, K, agg, qDepth, NS, aggGapUs, badIt);
   std::thread([watchdogS]() {
@@ -691,7 +781,7 @@ int main(int argc, char** argv) {
   const size_t bytesR1 = (isBidir && getenv("GIN_TS_R1_BYTES")) ? strtoul(getenv("GIN_TS_R1_BYTES"), nullptr, 10) : bytes;
   const size_t txBytes = (isBidir && rank == 1) ? bytesR1 : bytes, rxBytes = (isBidir && rank == 0) ? bytesR1 : bytes;
   const size_t maxBytes = std::max(bytes, bytesR1);
-  const size_t winBytes = reuse ? maxBytes : maxBytes * (size_t)iters * (size_t)P * (size_t)K;
+  const size_t winBytes = (reuse ? maxBytes : maxBytes * (size_t)iters * (size_t)P * (size_t)K) * (dual ? 2 : 1);
   void *dSend = nullptr, *dRecv = nullptr;
   ncclWindow_t sendWin, recvWin;
   NK(ncclMemAlloc(&dSend, winBytes));
@@ -727,6 +817,10 @@ int main(int argc, char** argv) {
         for (int t = 0; t < P; t++)
           for (int k = 0; k < K; k++)
             for (size_t w = 0; w < words; w++) hw[(((size_t)i * P + t) * K + k) * words + w] = patW(i, t, k, w);
+    } else if (dual) {  // gin-pair-reset: region c with seed c + 1
+      for (int c = 0; c < 2; c++)
+        for (int i = 0; i < iters; i++)
+          for (size_t k = 0; k < txBytes; k++) h[((size_t)c * iters + i) * txBytes + k] = pat(i, k, (uint32_t)c + 1);
     } else {
       for (int i = 0; i < (reuse ? 1 : iters); i++)
         for (size_t k = 0; k < txBytes; k++) h[(size_t)i * txBytes + k] = pat(i, k, txSeed);
@@ -752,6 +846,18 @@ int main(int argc, char** argv) {
     CK(cudaStreamSynchronize(st));
     CK(cudaMemcpy(bases.data(), dBases, sizeof(unsigned long long) * NS, cudaMemcpyDeviceToHost));
     kv("signal_base=%llu", bases[0]);
+  }
+  std::vector<unsigned long long> dualBases(2, 0);  // gin-pair-reset: signal 0 of contexts 0 and 1
+  unsigned long long* dDualBases = nullptr;
+  CK(cudaMalloc(&dDualBases, sizeof(unsigned long long) * 2));
+  if (dual && receiver) {
+    for (int c = 0; c < 2; c++) {
+      readSigKernel<<<1, 256, 0, st>>>(devComm, dBases, 1, c);
+      CK(cudaStreamSynchronize(st));
+      CK(cudaMemcpy(&dualBases[c], dBases, sizeof(unsigned long long), cudaMemcpyDeviceToHost));
+    }
+    CK(cudaMemcpy(dDualBases, dualBases.data(), sizeof(unsigned long long) * 2, cudaMemcpyHostToDevice));
+    kv("dual_signal_base0=%llu dual_signal_base1=%llu", dualBases[0], dualBases[1]);
   }
   CK(cudaDeviceSynchronize());
 
@@ -784,6 +890,17 @@ int main(int argc, char** argv) {
   CK(cudaMemset(dRx, 0, sizeof(RxOut)));
   CK(cudaMemset(dTxT, 0, sizeof(TxThr) * P));
   CK(cudaMemset(dRxT, 0, sizeof(RxThr) * P));
+  TxOut* dTxD = nullptr;  // gin-pair-reset: per context
+  RxOut* dRxD = nullptr;
+  unsigned long long *dTS = nullptr, *dTE = nullptr;
+  CK(cudaMalloc(&dTxD, sizeof(TxOut) * 2));
+  CK(cudaMalloc(&dRxD, sizeof(RxOut) * 2));
+  CK(cudaMalloc(&dTS, sizeof(unsigned long long) * 2 * iters));
+  CK(cudaMalloc(&dTE, sizeof(unsigned long long) * 2 * iters));
+  CK(cudaMemset(dTxD, 0, sizeof(TxOut) * 2));
+  CK(cudaMemset(dRxD, 0, sizeof(RxOut) * 2));
+  CK(cudaMemset(dTS, 0, sizeof(unsigned long long) * 2 * iters));
+  CK(cudaMemset(dTE, 0, sizeof(unsigned long long) * 2 * iters));
   CK(cudaDeviceSynchronize());
 
   // Load every kernel now (CUDA lazy loading) and record their stack frames. GIN_TS_STACK_LIMIT=<bytes> reserves
@@ -797,6 +914,9 @@ int main(int argc, char** argv) {
     CK(cudaFuncGetAttributes(&fb, txBurstKernel));
     CK(cudaFuncGetAttributes(&frb, rxBurstKernel));
     CK(cudaFuncGetAttributes(&fg, readSigKernel));
+    cudaFuncAttributes fdt, fdr;  // gin-pair-reset
+    CK(cudaFuncGetAttributes(&fdt, dualTxKernel));
+    CK(cudaFuncGetAttributes(&fdr, dualRxKernel));
     size_t lim = 0, lim2 = 0;
     CK(cudaDeviceGetLimit(&lim, cudaLimitStackSize));
     const long want = getenv("GIN_TS_STACK_LIMIT") ? atol(getenv("GIN_TS_STACK_LIMIT")) : 0;
@@ -825,7 +945,9 @@ int main(int argc, char** argv) {
                                         dLatR, dSig, dProgR, dRx, rxSeed, rxCtx);
     kv("bidir_fused=1");
   }
-  if (receiver && !fusedBidir) {
+  if (dual && receiver) {
+    dualRxKernel<<<2, 256, 0, st>>>((const uint8_t*)dRecv, bytes, iters, dDualBases, devComm, rxWaitCycles, dProg, dRxD);
+  } else if (receiver && !fusedBidir) {
     cudaStream_t rs = isBidir ? st2 : st;
     if (isBurst)
       rxBurstKernel<<<(NS + 255) / 256, NS < 256 ? NS : 256, 0, rs>>>((const uint32_t*)dRecv, bytes, iters, K, P, dBases, devComm,
@@ -834,7 +956,10 @@ int main(int argc, char** argv) {
       rxKernel<<<1, 256, 0, rs>>>(recvWin, (const uint8_t*)dRecv, rxBytes, iters, reuse, bases[0], devComm, rxWaitCycles,
                                   isBidir ? dLatR : dLat, dSig, isBidir ? dProgR : dProg, dRx, rxSeed, rxCtx);
   }
-  if (sender && !fusedBidir) {
+  if (dual && sender) {
+    dualTxKernel<<<2, 256, 0, st>>>(sendWin, recvWin, bytes, iters, (unsigned long long)gapUs * 1000ull, devComm,
+                                    useTimeout ? 1 : 0, timeoutCycles, dTS, dTE, dProg, dTxD, peer);
+  } else if (sender && !fusedBidir) {
     const size_t badOff = winBytes + (size_t)64 * 1024 * 1024;
     if (isBurst)
       txBurstKernel<<<txBlocks, txThreads, 0, st>>>(sendWin, recvWin, bytes, iters, K, agg, NS,
@@ -877,7 +1002,44 @@ int main(int argc, char** argv) {
   const double tEnd = monoMs();
   const bool kernelDone = !busy();
   kv("kernel_done=%d kernel_ms=%.1f progress=%d progress_rx=%d", kernelDone ? 1 : 0, tEnd - tLaunch, *hProg, *hProgR);
-  if (sender && kernelDone) {
+  if (sender && kernelDone && dual) {
+    std::vector<TxOut> o(2);
+    CK(cudaMemcpy(o.data(), dTxD, sizeof(TxOut) * 2, cudaMemcpyDeviceToHost));
+    std::vector<unsigned long long> tS(2 * (size_t)iters), tE(2 * (size_t)iters);
+    CK(cudaMemcpy(tS.data(), dTS, sizeof(unsigned long long) * 2 * iters, cudaMemcpyDeviceToHost));
+    CK(cudaMemcpy(tE.data(), dTE, sizeof(unsigned long long) * 2 * iters, cudaMemcpyDeviceToHost));
+    const int firstRc = o[0].rc ? o[0].rc : o[1].rc, firstRcIt = o[0].rc ? o[0].rcIt : o[1].rc ? o[1].rcIt : -1;
+    kv("tx_done=%d tx_rc=%s tx_rc_it=%d dual_c0_done=%d dual_c1_done=%d dual_c0_rc=%s dual_c1_rc=%s",
+       std::min(o[0].done, o[1].done), ncclGetErrorString((ncclResult_t)firstRc), firstRcIt, o[0].done, o[1].done,
+       ncclGetErrorString((ncclResult_t)o[0].rc), ncclGetErrorString((ncclResult_t)o[1].rc));
+    if (firstRc != 0 && exitCode == 0) { exitCode = 4; outcome = "device_error"; }
+    // the held window W of context 0 (its longest completed iteration) and context 1 around it
+    auto lat = [&](int c, int i) { return tE[(size_t)c * iters + i] - tS[(size_t)c * iters + i]; };
+    int m = -1;
+    for (int i = 0; i < o[0].done; i++)
+      if (m < 0 || lat(0, i) > lat(0, m)) m = i;
+    if (m >= 0 && o[1].done > 0) {
+      const unsigned long long ws = tS[m], we = tE[m];
+      int inWin = 0;
+      long long maxIn = -1;
+      unsigned long long max1 = 0;
+      for (int i = 0; i < o[1].done; i++) {
+        const unsigned long long s1 = tS[(size_t)iters + i], e1 = tE[(size_t)iters + i];
+        if (s1 >= ws && e1 <= we) inWin++;
+        if (e1 > ws && s1 < we && (long long)(e1 - s1) > maxIn) maxIn = (long long)(e1 - s1);
+        if (e1 - s1 > max1) max1 = e1 - s1;
+      }
+      const unsigned long long last1 = tE[(size_t)iters + o[1].done - 1];
+      kv("dual_win_us=%.1f dual_win_it=%d dual_c1_in_win=%d dual_c1_max_in_win_us=%.1f dual_c1_end_after_win=%d "
+         "dual_c1_max_us=%.1f dual_win_start_gt=%llu dual_win_end_gt=%llu dual_c1_last_end_gt=%llu",
+         (we - ws) / 1e3, m, inWin, maxIn < 0 ? -1.0 : maxIn / 1e3, last1 > we ? 1 : 0, max1 / 1e3, ws, we, last1);
+    }
+    for (int c = 0; c < 2; c++) {
+      std::vector<unsigned long long> l((size_t)std::max(0, o[c].done));
+      for (int i = 0; i < o[c].done; i++) l[i] = lat(c, i);
+      latStats(c == 0 ? "lat_" : "lat1_", l);
+    }
+  } else if (sender && kernelDone) {
     if (isBurst) {
       std::vector<TxThr> o(P);
       CK(cudaMemcpy(o.data(), dTxT, sizeof(TxThr) * P, cudaMemcpyDeviceToHost));
@@ -926,7 +1088,56 @@ int main(int argc, char** argv) {
       }
     }
   }
-  if (receiver && kernelDone) {
+  if (receiver && kernelDone && dual) {
+    std::vector<RxOut> o(2);
+    CK(cudaMemcpy(o.data(), dRxD, sizeof(RxOut) * 2, cudaMemcpyDeviceToHost));
+    const int rxRc = o[0].rc ? o[0].rc : o[1].rc, rxRcIt = o[0].rc ? o[0].rcIt : o[1].rc ? o[1].rcIt : -1;
+    const int rxDone = std::min(o[0].done, o[1].done), devBad = o[0].badSlots + o[1].badSlots;
+    const int devFirstBad = o[0].badSlots ? o[0].firstBad : o[1].badSlots ? o[1].firstBad : -1;
+    kv("rx_done=%d rx_rc=%s rx_rc_it=%d dev_bad_slots=%d dev_first_bad=%d dual_rx_c0_done=%d dual_rx_c1_done=%d", rxDone,
+       ncclGetErrorString((ncclResult_t)rxRc), rxRcIt, devBad, devFirstBad, o[0].done, o[1].done);
+    if (rxRc != 0 && exitCode == 0) { exitCode = 4; outcome = "device_error"; }
+    int badSlots = 0, firstBad = -1, missing = 0;
+    const long nSlots = 2L * iters;
+    CK(cudaMemcpy(h.data(), dRecv, winBytes, cudaMemcpyDeviceToHost));
+    for (long s = 0; s < nSlots; s++) {
+      const int c = (int)(s / iters), i = (int)(s % iters);
+      size_t bad = 0, pois = 0;
+      for (size_t k = 0; k < bytes; k++) {
+        const uint8_t x = h[(size_t)s * bytes + k];
+        if (x != pat(i, k, (uint32_t)c + 1)) bad++;
+        if (x == POISON) pois++;
+      }
+      if (bad && pois == bytes) missing++;
+      if (bad) {
+        if (firstBad < 0) firstBad = (int)s;
+        badSlots++;
+      }
+    }
+    std::vector<unsigned long long> fin(2);
+    for (int c = 0; c < 2; c++) {
+      readSigKernel<<<1, 256, 0, st>>>(devComm, dBases, 1, c);
+      CK(cudaStreamSynchronize(st));
+      CK(cudaMemcpy(&fin[c], dBases, sizeof(unsigned long long), cudaMemcpyDeviceToHost));
+    }
+    int sigBad = 0, sigHigh = 0, sigLow = 0;
+    for (int c = 0; c < 2; c++) {
+      const unsigned long long want = dualBases[c] + (unsigned long long)iters;
+      if (fin[c] != want) {
+        sigBad++;
+        if (fin[c] > want) sigHigh++;
+        else sigLow++;
+      }
+    }
+    kv("host_bad_slots=%d host_first_bad=%d host_missing_slots=%d host_slots=%ld final_signal=%llu expected_final=%llu "
+       "signal_exact=%d signals=2 signals_bad=%d signals_high=%d signals_low=%d dual_final_signal1=%llu dual_expected_final1=%llu",
+       badSlots, firstBad, missing, nSlots, fin[0], dualBases[0] + (unsigned long long)iters, sigBad == 0 ? 1 : 0, sigBad,
+       sigHigh, sigLow, fin[1], dualBases[1] + (unsigned long long)iters);
+    if (rxDone == iters && (badSlots || devBad || sigBad) && exitCode == 0) {
+      exitCode = 5;
+      outcome = "check_failed";
+    }
+  } else if (receiver && kernelDone) {
     int rxRc = 0, rxRcIt = -1, rxDone = iters, devBad = 0, devFirstBad = -1;
     if (isBurst) {
       std::vector<RxThr> o(NS);
