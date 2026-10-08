@@ -1,0 +1,237 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 20a785f..e968f07 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -1973,6 +1973,10 @@ ncclResult_t ncclGinRecoverAbort(ncclComm_t comm, int peer) {
+ //   this rank's other QPs to the peer are RTS and no other context's fault for the peer is queued; otherwise, and after
+ //   a scope conflict of simultaneous rounds, every context as before; the scope travels in REQ/ACK), test only:
+ //   NCCL_GIN_FAULT_INJECT_CTX=<c> (the fault hook moves only GIN context c's QPs to ERR)
++//   NCCL_GIN_TS_PAIR_CHECK=0|1 (gin-pair-check, default 1: before answering a narrowed REQ the answering rank queries its
++//   own QPs to the initiator outside the scope and refuses (NACK 12) if any is not RTS; the initiator then reruns the
++//   round as a full reset. A rank with NCCL_GIN_TS_PAIR_RESET=0 refuses every narrowed REQ. After a scope conflict the
++//   higher rank's fault is decided again; a second conflict on it runs as a full reset)
+ //   NCCL_GIN_TS_DIAG=norebase|noring  negative controls only: waiters keep their stale ticket / the
+ //                                 host does not ring the doorbell for the re-posted WQEs
+ // The application's kernels and host code are unchanged. A helper thread per GDAKI context (not the
+@@ -2003,6 +2007,7 @@ NCCL_PARAM(GinTsRescueLaps, "GIN_TS_RESCUE_LAPS", 32);
+ NCCL_PARAM(GinTsReconnect, "GIN_TS_RECONNECT", 1);          // gin-reconnect
+ NCCL_PARAM(GinTsReconnectMs, "GIN_TS_RECONNECT_MS", 10000); // gin-reconnect
+ NCCL_PARAM(GinTsPairReset, "GIN_TS_PAIR_RESET", 1);         // gin-pair-reset
++NCCL_PARAM(GinTsPairCheck, "GIN_TS_PAIR_CHECK", 1);         // gin-pair-check
+ static std::atomic<uint32_t> gdakiTsCtxSeqNext{0};          // gin-reconnect: helper creation order
+ 
+ #define GDAKI_TS_MAGIC 0x31535447u  // "GTS1"
+@@ -2071,7 +2076,9 @@ struct gdakiTsQp {        // host copy, per qp_idx
+ struct gdakiTsFault {
+   struct ncclGinGdakiQ4Record rec;
+   double monoMs;          // when the Q4 watcher read the record
+-  bool full = false;      // gin-pair-reset: requeued after a scope conflict: this round covers every context
++  bool full = false;      // gin-pair-reset: this round covers every context (gin-pair-check: see fullWhy)
++  int fullWhy = 0;        // gin-pair-check: 1 = the peer refused the narrowed scope, 2 = a second scope conflict
++  int conflicts = 0;      // gin-pair-check: scope conflicts this fault has met
+ };
+ 
+ struct gdakiTs {
+@@ -2109,6 +2116,7 @@ struct gdakiTs {
+   int reconnect = 1;                      // gin-reconnect: NCCL_GIN_TS_RECONNECT
+   int reconnectMs = 10000;                // gin-reconnect: NCCL_GIN_TS_RECONNECT_MS (bound of the wait in a fault)
+   int pairReset = 1;                      // gin-pair-reset: NCCL_GIN_TS_PAIR_RESET
++  int pairCheck = 1;                      // gin-pair-check: NCCL_GIN_TS_PAIR_CHECK
+   const std::vector<struct gdakiTsFault>* batch = nullptr;  // gin-pair-reset: the fault batch the helper is handling
+   size_t batchPos = 0;                                       //   and the position of the fault being initiated
+   std::atomic<int> dead{0};
+@@ -2198,12 +2206,19 @@ struct gdakiTsScopeGuard {
+   explicit gdakiTsScopeGuard(uint32_t s) { gdakiTsScope = s; }
+   ~gdakiTsScopeGuard() { gdakiTsScope = GDAKI_TS_SCOPE_ALL; }
+ };
+-// A fault requeued after a scope conflict (gdakiTsInitiate): it runs again as a full reset once the peer's round is done.
+-static void gdakiTsRequeueFull(struct gdakiRecHost* r, const struct gdakiTsFault& f) {
++// A fault put back into the queue (gdakiTsInitiate). gin-pair-check: fullWhy != 0 makes its next round a full reset
++// (1: the peer refused the narrowed scope; 2: a second scope conflict); fullWhy == 0 lets the next round decide its scope
++// again (a scope conflict). front: ahead of the other queued faults.
++static void gdakiTsRequeue(struct gdakiRecHost* r, const struct gdakiTsFault& f, int fullWhy, bool front, bool conflict) {
+   struct gdakiTsFault c = f;
+-  c.full = true;
++  if (conflict) c.conflicts++;
++  if (fullWhy != 0) {
++    c.full = true;
++    c.fullWhy = fullWhy;
++  }
+   std::lock_guard<std::mutex> lk(r->ts->qMu);
+-  r->ts->faults.push_back(c);
++  if (front) r->ts->faults.insert(r->ts->faults.begin(), c);
++  else r->ts->faults.push_back(c);
+   r->ts->nQueued.fetch_add(1, std::memory_order_acq_rel);
+ }
+ // The scope of a round this rank initiates for fault `f` (before the quiesce): the faulted GIN context alone when
+@@ -2222,7 +2237,7 @@ static uint32_t gdakiTsDecideScope(struct gdakiRecHost* r, const struct gdakiTsF
+     return GDAKI_TS_SCOPE_ALL;
+   }
+   if (f.full) {
+-    *reason = "requeued";
++    *reason = f.fullWhy == 1 ? "peer" : "requeued";
+     return GDAKI_TS_SCOPE_ALL;
+   }
+   if (c < 0 || c >= g->nContexts || c >= 32 || peer + c * nranks >= (int)r->qps.size() || !r->qps[peer + c * nranks].used) {
+@@ -2261,9 +2276,50 @@ static uint32_t gdakiTsDecideScope(struct gdakiRecHost* r, const struct gdakiTsF
+     return GDAKI_TS_SCOPE_ALL;
+   }
+   *reason = "pair";
++  // gin-pair-check: a single context's mask that is every context (one GIN context) is the full scope (sent as 0)
++  if ((1u << c) == gdakiTsAllMask(r, peer)) return GDAKI_TS_SCOPE_ALL;
+   return 1u << c;
+ }
+ 
++// gin-pair-check: the answering rank's check of a narrowed scope from `peer`, before anything is paused. Returns 0 to
++// accept, 1 to refuse because a QP of this rank to `peer` outside the scope is not RTS (QUERY_QP; a failed query counts as
++// not RTS), 2 to refuse because this rank's own NCCL_GIN_TS_PAIR_RESET is 0. With NCCL_GIN_TS_PAIR_CHECK=0 it accepts
++// without a query (*checked = 0).
++static int gdakiTsCheckScope(struct gdakiRecHost* r, int peer, uint32_t scope, int* checked, int* notRts, double* us) {
++  struct gdakiTs* ts = r->ts;
++  *checked = 0;
++  *notRts = 0;
++  *us = 0;
++  if (!ts->pairReset) return 2;
++  if (!ts->pairCheck) return 0;
++  const double t0 = gdakiQ4MonoMs();
++  const uint32_t saved = gdakiTsScope;
++  gdakiTsScope = GDAKI_TS_SCOPE_ALL;
++  {
++    std::lock_guard<std::mutex> op(r->opMu);  // QUERY_QP never overlaps a QP state change (see gdakiTsQuiesce)
++    gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
++      if (rq.ctxIdx < 32 && (scope & (1u << rq.ctxIdx)) != 0) return;
++      (*checked)++;
++      uint32_t st = 0;
++      if (doca_verbs_qp_query_seq(q->qp, nullptr, nullptr, nullptr, &st) != DOCA_SUCCESS || st != 0x3u /* PRM RTS */)
++        (*notRts)++;
++    });
++  }
++  gdakiTsScope = saved;
++  *us = (gdakiQ4MonoMs() - t0) * 1e3;
++  return *notRts ? 1 : 0;
++}
++static void gdakiTsCheckLog(struct gdakiRecHost* r, int peer, const struct gdakiTsMsg& req, int res, int checked, int notRts,
++                            double us) {
++  if (res == 0)
++    WARN("GIN/TS: rank %d: REQ round %lu from rank %d scope=%#x checked=%d not_rts=0 check_us=%.0f accepted mono_ms=%.3f",
++         r->ctx->rank, (unsigned long)req.round, peer, req.pad, checked, us, gdakiQ4MonoMs());
++  else
++    WARN("GIN/TS: rank %d: REQ round %lu from rank %d scope=%#x checked=%d not_rts=%d check_us=%.0f refused reason=%s "
++         "mono_ms=%.3f", r->ctx->rank, (unsigned long)req.round, peer, req.pad, checked, notRts, us,
++         res == 2 ? "off" : "not_rts", gdakiQ4MonoMs());
++}
++
+ // Test knob (S2, NCCL_GIN_TS_TEST_SELF_REPORT=1): right after the fault hook fired on this rank, hand the helper a
+ // LOCAL_QP_ERR record for its QPs to the first peer, as a device waiter would have. With the hook firing on both
+ // ranks at once, both helpers then initiate a round within milliseconds of each other, which exercises the
+@@ -3475,6 +3531,16 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+       if (a.pad != reqScope) return gdakiTsDecline(r, peer, "scope mismatch in ACK", true, cls);  // gin-pair-reset
+       break;
+     }
++    if (a.type == GDAKI_TS_NACK && a.arg == 12 && a.round == round && reqScope != 0) {
++      // gin-pair-check: the peer refused the narrowed scope before pausing anything (a QP of its own outside the scope
++      // is not RTS, or its switch is off). Release our prepared QPs (they stay in ERR, gates closed) and rerun this fault
++      // at once as a full reset, with a new round and token.
++      WARN("GIN/TS: rank %d: peer %d refused the scope of round %lu; rerunning as a full reset mono_ms=%.3f", g->rank, peer,
++           (unsigned long)round, gdakiQ4MonoMs());
++      (void)ncclGinRecoverAbort(comm, peer);
++      gdakiTsRequeue(r, f, 1, true, false);
++      return;
++    }
+     if (a.type == GDAKI_TS_NACK || a.type == GDAKI_TS_FAIL)
+       return gdakiTsDecline(r, peer, a.type == GDAKI_TS_NACK ? "peer NACK" : "peer FAIL", false, cls);
+     if (a.type == GDAKI_TS_REQ && a.from == peer) {
+@@ -3492,11 +3558,13 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+         // gin-pair-reset: simultaneous rounds with different scopes. Our prepared QPs cannot answer the lower rank's
+         // REQ: release them (they stay in ERR, their gates closed), requeue our fault as a full reset, and answer the
+         // lower rank's round from the start. Our fault runs after it (stale if that round covered its context).
++        // gin-pair-check: the requeued fault decides its scope again; a second conflict on it runs as a full reset.
++        const bool second = f.conflicts >= 1;
+         WARN("GIN/TS: rank=%d scope conflict: REQ round %lu from rank %d scope=%#x, ours scope=%#x round %lu; ours is "
+-             "requeued as a full reset", g->rank, (unsigned long)a.round, peer, gdakiTsShownScope(r, peer, a.pad ? a.pad : GDAKI_TS_SCOPE_ALL),
+-             shownScope, (unsigned long)round);
++             "requeued %s", g->rank, (unsigned long)a.round, peer, gdakiTsShownScope(r, peer, a.pad ? a.pad : GDAKI_TS_SCOPE_ALL),
++             shownScope, (unsigned long)round, second ? "as a full reset" : "for a new scope decision");
+         (void)ncclGinRecoverAbort(comm, peer);
+-        gdakiTsRequeueFull(r, f);
++        gdakiTsRequeue(r, f, second ? 2 : 0, false, true);
+         gdakiTsScope = GDAKI_TS_SCOPE_ALL;
+         gdakiTsRespond(r, peer, a);
+         return;
+@@ -3507,6 +3575,26 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+              "(round %lu); the peer answers it", g->rank, (unsigned long)a.round, peer, (unsigned long)round);
+         continue;
+       }
++      if (reqScope != 0) {
++        // gin-pair-check: before answering the lower rank's narrowed round with our own prepared QPs, the same check as a
++        // plain responder. On a refusal: release ours, requeue our fault (its scope is decided again), NACK 12.
++        int checked = 0, notRts = 0;
++        double cus = 0;
++        const int cr = gdakiTsCheckScope(r, peer, reqScope, &checked, &notRts, &cus);
++        if (cr != 0 || ts->pairCheck) gdakiTsCheckLog(r, peer, a, cr, checked, notRts, cus);
++        if (cr != 0) {
++          (void)ncclGinRecoverAbort(comm, peer);
++          gdakiTsRequeue(r, f, 0, false, false);
++          struct gdakiTsMsg n;
++          memset(&n, 0, sizeof(n));
++          n.type = GDAKI_TS_NACK;
++          n.round = a.round;
++          n.from = g->rank;
++          n.arg = 12;
++          (void)gdakiTsSend(pe.fd, &n, 200);
++          return;
++        }
++      }
+       ts->nYielded++;
+       WARN("GIN/TS: rank=%d simultaneous REQ round %lu from rank %d: the higher rank yields its round %lu and "
+            "responds", g->rank, (unsigned long)a.round, peer, (unsigned long)round);
+@@ -3575,6 +3663,13 @@ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiT
+       nack(11);
+       return gdakiTsDecline(r, peer, "invalid scope in REQ", false, req.arg);
+     }
++    // gin-pair-check: refuse (NACK 12, nothing paused or changed, no decline) when a QP of ours to the initiator outside
++    // the scope is not RTS or our own switch is off; the initiator reruns the round as a full reset.
++    int checked = 0, notRts = 0;
++    double cus = 0;
++    const int cr = gdakiTsCheckScope(r, peer, req.pad, &checked, &notRts, &cus);
++    if (cr != 0 || ts->pairCheck) gdakiTsCheckLog(r, peer, req, cr, checked, notRts, cus);
++    if (cr != 0) return nack(12);
+     scope = req.pad;
+   }
+   gdakiTsScopeGuard scopeGuard(scope);
+@@ -4014,6 +4109,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+   ts->reconnect = ncclParamGinTsReconnect() != 0 ? 1 : 0;  // gin-reconnect
+   ts->reconnectMs = (int)std::max<int64_t>(0, ncclParamGinTsReconnectMs());
+   ts->pairReset = ncclParamGinTsPairReset() != 0 ? 1 : 0;  // gin-pair-reset
++  ts->pairCheck = ncclParamGinTsPairCheck() != 0 ? 1 : 0;  // gin-pair-check
+   {
+     const int maxRc = std::max(0, ts->holdMs - ts->handshakeMs - 1000);
+     if (ts->reconnectMs > maxRc) {
+@@ -4081,6 +4177,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+        ts->gidType, ts->diag);
+   WARN("GIN/TS: helper socket reconnect=%d bound_ms=%d rank=%d", ts->reconnect, ts->reconnectMs, g->rank);
+   WARN("GIN/TS: pair reset=%d rank=%d", ts->pairReset, g->rank);  // gin-pair-reset
++  WARN("GIN/TS: pair check=%d rank=%d", ts->pairCheck, g->rank);  // gin-pair-check
+ }
+ 
+ // Called by ncclCommAbort as soon as the abort flags are set (before the teardown, whose cudaFree calls
+@@ -4145,6 +4242,19 @@ extern void ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
+                    : snprintf(ep + el, sizeof(ep) - el, "%s?", el ? "," : "");
+       });
+       WARN("GIN/TS: rank %d gate epochs to rank %d: [%s]", r->ctx->rank, p, ep);
++      // gin-pair-check: the PRM state of every QP to the peer (QUERY_QP; 3 = RTS, 6 = ERR, ? = query failed), in GIN-context
++      // order. The helper, watcher, hook and test threads are joined: no QP state change overlaps.
++      char qs[160];
++      size_t ql = 0;
++      qs[0] = '\0';
++      gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
++        uint32_t st = 0;
++        const bool ok = doca_verbs_qp_query_seq(q->qp, nullptr, nullptr, nullptr, &st) == DOCA_SUCCESS;
++        if (ql < sizeof(qs) - 1)
++          ql += ok ? snprintf(qs + ql, sizeof(qs) - ql, "%s%u", ql ? "," : "", st)
++                   : snprintf(qs + ql, sizeof(qs) - ql, "%s?", ql ? "," : "");
++      });
++      WARN("GIN/TS: rank %d qp states to rank %d: [%s]", r->ctx->rank, p, qs);
+     }
+     int nPoison = 0, nPoisonErr = 0;
+     for (int p = 0; p < (int)ts->peers.size(); p++) {
