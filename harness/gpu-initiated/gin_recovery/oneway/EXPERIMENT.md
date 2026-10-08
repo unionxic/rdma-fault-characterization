@@ -6,12 +6,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `PREREGISTERED` |
+| 상태 | `RUNNING` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-08 |
 | 기준 브랜치와 커밋 | `exp/gin-oneway` @ `f21e2cb0` (master, gin-pair-check 합친 뒤로 rebase) |
 | 사전 등록 태그 | `prereg/gin-oneway-v1` (상태를 `PREREGISTERED`로 바꾼 바로 그 커밋) |
-| 마지막 갱신 | 2026-10-08 15:13, 사전 등록 |
+| 마지막 갱신 | 2026-10-08 15:29, 본 실행 시작 |
 
 표시: `[측정]` 원자료에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -270,7 +270,7 @@ Python의 산술과 비교다(`../pair_reset/EXPERIMENT.md` 3.2절과 같음). �
 | GPU와 CUDA | rain Quadro RTX 5000(sm_75), sunny RTX A4000(sm_86), PeerMappingOverride=1, CUDA 12.8 | gin-s2-close 5절 |
 | 관리망 소켓 인터페이스 | `NCCL_SOCKET_IFNAME=eno1` | `../scripts/ts2/run_trial.sh` |
 | 기준 빌드 `pc` | libnccl `93d9ffeed6d30e6467a3c5474035fd61`, 드라이버 `d4b1f082` | `[측정]` 2026-10-08 gin-pair-check 배포 때 두 노드 같음(gin-pair-check 5절, `deploy_check.txt`) |
-| 이 실험의 빌드 `pcm`, `ow` | libnccl md5와 배포 확인 | `[미확인]` 빌드 전. 배포 때 기록 |
+| 이 실험의 빌드 `pcm`, `ow` | `pcm` libnccl `cd72f67a58a3a8cbc7cff8db2de229d9`, `ow` libnccl `b4af65c54b14f192803c88adcd2bf759`, 두 번들 모두 드라이버 `d4b1f082`. 변경분 [pcm_layer.diff](pcm_layer.diff)(md5 `c2fc15fb`, `pc` 트리 기준), [ow_layer.diff](ow_layer.diff)(md5 `06f450ec`, `pcm` 트리 기준). pristine 기준 전체 diff [gin_transparent_pcm.diff](gin_transparent_pcm.diff)(md5 `d42d53ef`), [gin_transparent_ow.diff](gin_transparent_ow.diff)(md5 `e681ec31`) | `[측정]` 2026-10-08 배포 때 두 노드 md5가 소스와 같음, 기존 번들 28개 파일 md5 그대로([deploy_check.txt](deploy_check.txt)). pristine v2.32.3-1에 각 전체 diff를 적용하면, 그리고 `pc` 전체 diff에 변경분을 차례로 더하면 각 빌드 트리와 같다 `[측정]`([make_diff_ow.sh](make_diff_ow.sh)). 두 빌드 모두 다시 컴파일된 파일은 `gin_host_gdaki.cc`와 버전 표시뿐([build_ow.sh](build_ow.sh)) |
 
 ## 6. 변수
 
@@ -494,7 +494,7 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 클러스터 시간�
   시각, 받아들여지지 않은 다시 걸기, 확인 접속, 기다림, 거절 사유와 시각, 투명 여부다.
 - [ ] 다른 에이전트가 `pcm_layer.diff`와 `ow_layer.diff`, 실행기 변경을 읽고 리뷰했다.
 - [ ] smoke와 제외 시행이 결과에 섞이지 않았다.
-- [ ] 새 빌드의 md5, 전체 diff, pristine + diff 확인 결과를 5절에 적었다.
+- [x] 새 빌드의 md5, 전체 diff, pristine + diff 확인 결과를 5절에 적었다.
 - [ ] 원자료를 Release에 올리고 `DATA.md`에 적었다.
 - [ ] hold 전후 mlx5 스냅숏에 새 명령 오류가 없었거나, 있었다면 그 줄의 내용을 12절에 적었다.
 
@@ -502,9 +502,9 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 클러스터 시간�
 
 - [x] 질문, 가설, 셀 작성 (`DRAFT`)
 - [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
-- [ ] 코드 변경(시험 스위치, 생존 규칙, 실행기), 빌드, 배포
-- [ ] `cells.sh`, `hold.sh`, `chain.sh`, `rows_ow.py`, `score.py`
-- [ ] smoke 실행(채점 제외)
+- [x] 코드 변경(시험 스위치, 생존 규칙, 실행기), 빌드, 배포
+- [x] `cells.sh`, `hold.sh`, `chain.sh`, `rows_ow.py`, `score.py`
+- [x] smoke 실행(채점 제외)
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 채점 (`QA`)
 - [ ] 독립 재계산과 코드 리뷰
@@ -519,6 +519,11 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 클러스터 시간�
 | 2026-10-08 | Release 원자료에서 양쪽 끊김 65회의 닫힘 시각을 다시 셈 `[측정]`. rank 0이 먼저 닫힘 56회, rank 1이 먼저 9회. 닫힘은 자기 끊김 시작 4 571.6–4 833.5 ms 뒤. gin-reconnect kill 셀 15회에서 kill부터 첫 분류 기록까지 3 594.1–3 819.8 ms | `data-20261008`(`d1dd5ebd0e92`), `data-20261007`(`f2d11a86cc83`), `../reconnect/results/20261008/trials_scored.csv`, 세션 스크래치 `gow/race.py` |
 | 2026-10-08 | 사용자가 이 후속 실험을 승인 | |
 | 2026-10-08 15:13:18 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/gin-oneway-v1` |
+| 2026-10-08 15:14–15:17 | 시험 스위치 계층과 생존 규칙 계층 작성(`gin_host_gdaki.cc` 한 파일), 차례로 증분 빌드(두 번 모두 다시 컴파일된 파일은 `gin_host_gdaki.cc`와 버전 표시뿐). libnccl `pcm` `cd72f67a`, `ow` `b4af65c5`. 두 전체 diff로 pristine에서 각 트리 재현 확인. 실행기에 `KILL_R0` 선택 추가 | [build_ow.sh](build_ow.sh), [make_diff_ow.sh](make_diff_ow.sh), [pcm_layer.diff](pcm_layer.diff), [ow_layer.diff](ow_layer.diff), `../scripts/ts2/run_trial.sh` |
+| 2026-10-08 15:18:42 | 두 노드의 새 디렉터리 `pcm/`, `ow/`에 배포. 두 노드 md5가 소스와 같고, 기존 번들 28개 파일의 md5가 배포 전후 같다 `[측정]`. 확인 출력은 파일로만 받았다 | [deploy_check.txt](deploy_check.txt), [deploy_ow.sh](deploy_ow.sh) |
+| 2026-10-08 15:22:49–15:27:15 | smoke(`gow-H0`, 잠금 15:22:18), 15회, 채점 제외. 시험 조건은 의도대로 만들어졌다: 기준 빌드 한쪽 끊김 4회 모두 안 끊긴 쪽이 ECONNRESET을 받아 죽음으로 보고 장애를 거절했다. 새 빌드는 같은 조건에서 "모름"으로 두고 다시 연결해 투명했다. rank 0 kill 2회는 끊김이 끝난 뒤 rank 1의 확인 접속이 거부되어(ECONNREFUSED) 분류 기록 뒤 1.8, 2.1 ms에 거절했다. HELLO 거부는 새 빌드에서 다음 다시 걸기로 연결되고(끊김 끝 뒤 607 ms), 기준 빌드에서 FIN 죽음으로 거절됐다 `[측정]`. 8절의 구현 결함 조건과 시험 조건 변경에는 하나도 해당하지 않았다. 정상 종료 때 상대의 FIN이 죽음 줄로 남는 것을 보았다([DEVIATIONS.md](DEVIATIONS.md) 2절). mlx5 명령 오류 줄(rain 2, sunny 0)과 rain 펌웨어 명령 실패 수(31)는 전후가 같고 새 mlx5 줄은 0이다 | `results/20261008_smoke/`, `hold_H0.out`, `mlx5_new_H0.txt` |
+| 2026-10-08 15:28 | smoke를 본 뒤 사후 분석 열(상대 정리 전 죽음 줄)을 정의하고 계산 스크립트를 둠. 판정식은 그대로 | [DEVIATIONS.md](DEVIATIONS.md) 2, 3절, [posthoc_ow.py](posthoc_ow.py) |
+| 2026-10-08 15:29:04 | 본 실행 시작(상태 `RUNNING`). H1–H5를 [chain.sh](chain.sh)로 차례로 잡는다(`cluster_run.sh -w 10800`, 태그 `gow-H<k>`) | `results/20261008/chain.out` |
 
 ## 13. 사전 등록 이후 변경
 
@@ -526,6 +531,7 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 클러스터 시간�
 
 | 날짜 | 무엇을 | 이유 | 영향 범위 | 커밋 |
 |---|---|---|---|---|
+| 2026-10-08 | 사전 등록 뒤 정한 구현 세부, smoke에서 본 것(정상 종료 FIN이 죽음 줄로 세어짐), 사후 분석 열 | 각 행은 [DEVIATIONS.md](DEVIATIONS.md)에 있다 | 가설, 예측, 판정식, 셀, 반복 수, 제외 기준은 그대로 | `DEVIATIONS.md`의 git 기록 |
 
 ## 14. 원자료와 결과표
 
