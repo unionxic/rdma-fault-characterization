@@ -55,7 +55,7 @@ SWITCH_OFF_R0 = {"hf_shrinkoff_b", "hf_shrinkdc_b"}  # NCCL_GIN_SHRINK_HANDOFF=0
 LABEL = {
     "S1": "죽은 rank를 뺀 중단 shrink가 1-rank 통신기를 돌려주고, 그 allreduce가 맞고, 새 통신기에 비동기 오류가 없음",
     "S2": "넘김 줄이 rank 1만 적고, 유지 줄이 없으며, 부모는 shrink 뒤에도 GIN 오류를 그대로 보고함",
-    "S3": "shrink가 5 s 안에 돌아오고 새 통신기 해제와 부모 abort가 오류 없이 끝남",
+    "S3": "shrink가 500 ms 안에 돌아오고 새 통신기 해제와 부모 abort가 오류 없이 끝남",
     "S4": "대조(gin-harden 라이브러리): shrink가 부모의 GIN 오류로 바로 실패함",
     "S5": "대조(스위치 끔): shrink가 부모의 GIN 오류로 실패하고 유지 줄이 스위치를 사유로 적음",
     "S6": "운영 빌드도 같은 shrink를 넘기고, 넘김 줄은 WARN에 보이지 않음",
