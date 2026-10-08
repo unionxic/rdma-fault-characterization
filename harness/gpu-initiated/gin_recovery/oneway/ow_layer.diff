@@ -1,0 +1,401 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index eae36d4..36f5f1f 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -2013,7 +2013,8 @@ static std::atomic<uint32_t> gdakiTsCtxSeqNext{0};          // gin-reconnect: he
+ #define GDAKI_TS_MAGIC 0x31535447u  // "GTS1"
+ #define GDAKI_TS_DIAG_NOREBASE 0x1u
+ #define GDAKI_TS_DIAG_NORING 0x2u
+-enum { GDAKI_TS_HELLO = 1, GDAKI_TS_REQ = 2, GDAKI_TS_ACK = 3, GDAKI_TS_NACK = 4, GDAKI_TS_DONE = 5, GDAKI_TS_FAIL = 6 };
++enum { GDAKI_TS_HELLO = 1, GDAKI_TS_REQ = 2, GDAKI_TS_ACK = 3, GDAKI_TS_NACK = 4, GDAKI_TS_DONE = 5, GDAKI_TS_FAIL = 6,
++       GDAKI_TS_HELLO_ACK = 7, GDAKI_TS_PROBE = 8 };  // gin-oneway: reconnect confirmation, liveness probe
+ 
+ static const char* gdakiTsMsgName(uint32_t t) {
+   switch (t) {
+@@ -2023,6 +2024,8 @@ static const char* gdakiTsMsgName(uint32_t t) {
+   case GDAKI_TS_NACK: return "NACK";
+   case GDAKI_TS_DONE: return "DONE";
+   case GDAKI_TS_FAIL: return "FAIL";
++  case GDAKI_TS_HELLO_ACK: return "HELLO_ACK";
++  case GDAKI_TS_PROBE: return "PROBE";
+   default: return "?";
+   }
+ }
+@@ -2061,7 +2064,19 @@ struct gdakiTsPeer {
+   double dialStartMs = 0, nextDialMs = 0;
+   int attempts = 0;           // re-dial attempts since the loss
+   bool haveAddr = false;      // the higher rank's listen address (setup all-gather), for the re-dial
+-  union ncclSocketAddress addr;
++  union ncclSocketAddress addr;  // gin-oneway: kept for lower ranks too (the higher rank's probe)
++  // gin-oneway: the lower rank installs a re-dial only after the higher rank's HELLO-ACK; the higher rank probes an
++  // unknown lower rank's listen port (refused: dead).
++  int pendFd = -1;            // lower rank: re-dial whose HELLO was sent, waiting for the HELLO-ACK
++  double pendStartMs = 0;
++  uint32_t pendGen = 0;       // generation in that HELLO
++  uint32_t helloSeq = 0;      // last generation sent in a HELLO (grows with every attempt)
++  size_t pendHave = 0;
++  struct gdakiTsMsg pendBuf;
++  char pendCause[24] = {0};
++  int probeFd = -1;           // higher rank: probe connect in flight
++  double probeStartMs = 0, nextProbeMs = 0;
++  bool probeAnswered = false; // an answered probe was logged since the last loss
+ };
+ 
+ struct gdakiTsQp {        // host copy, per qp_idx
+@@ -2440,6 +2455,8 @@ static const char* gdakiTsErrName(int e) {
+     case ECONNREFUSED: return "ECONNREFUSED";
+     case ECONNABORTED: return "ECONNABORTED";
+     case ENOTCONN: return "ENOTCONN";
++    case EHOSTDOWN: return "EHOSTDOWN";  // gin-oneway
++    case ENONET: return "ENONET";        // gin-oneway
+     case EBADF: return "EBADF";
+     default: return nullptr;
+   }
+@@ -2447,30 +2464,35 @@ static const char* gdakiTsErrName(int e) {
+ 
+ // Reads what is available. 1: a whole record is in *out; 0: not yet; -1: FIN, error or bad magic
+ // (pe.closeCause then says which).
+-static int gdakiTsPump(struct gdakiTsPeer& pe, struct gdakiTsMsg* out) {
+-  while (pe.have < sizeof(struct gdakiTsMsg)) {
+-    ssize_t k = recv(pe.fd, (char*)&pe.buf + pe.have, sizeof(struct gdakiTsMsg) - pe.have, MSG_DONTWAIT);
++// gin-oneway: the same on any fd with its own partial-record state (the pending re-dial uses it too).
++static int gdakiTsPumpRaw(int fd, struct gdakiTsMsg* buf, size_t* have, struct gdakiTsMsg* out, char* cause, size_t clen) {
++  while (*have < sizeof(struct gdakiTsMsg)) {
++    ssize_t k = recv(fd, (char*)buf + *have, sizeof(struct gdakiTsMsg) - *have, MSG_DONTWAIT);
+     if (k == 0) {
+-      snprintf(pe.closeCause, sizeof(pe.closeCause), "FIN");
++      snprintf(cause, clen, "FIN");
+       return -1;
+     }
+     if (k < 0) {
+       const int e = errno;
+       if (e == EAGAIN || e == EWOULDBLOCK || e == EINTR) return 0;
+       const char* n = gdakiTsErrName(e);
+-      if (n) snprintf(pe.closeCause, sizeof(pe.closeCause), "%s", n);
+-      else snprintf(pe.closeCause, sizeof(pe.closeCause), "errno%d", e);
++      if (n) snprintf(cause, clen, "%s", n);
++      else snprintf(cause, clen, "errno%d", e);
+       return -1;
+     }
+-    pe.have += (size_t)k;
++    *have += (size_t)k;
+   }
+-  *out = pe.buf;
+-  pe.have = 0;
++  *out = *buf;
++  *have = 0;
+   if (out->magic == GDAKI_TS_MAGIC) return 1;
+-  snprintf(pe.closeCause, sizeof(pe.closeCause), "BADMAGIC");
++  snprintf(cause, clen, "BADMAGIC");
+   return -1;
+ }
+ 
++static int gdakiTsPump(struct gdakiTsPeer& pe, struct gdakiTsMsg* out) {
++  return gdakiTsPumpRaw(pe.fd, &pe.buf, &pe.have, out, pe.closeCause, sizeof(pe.closeCause));
++}
++
+ // Waits up to timeoutMs for one record. 1 record, 0 timeout, -1 FIN/error.
+ static int gdakiTsRecv(struct gdakiTsPeer& pe, struct gdakiTsMsg* out, int timeoutMs, std::atomic<bool>* stop) {
+   const double deadline = gdakiQ4MonoMs() + timeoutMs;
+@@ -2485,14 +2507,20 @@ static int gdakiTsRecv(struct gdakiTsPeer& pe, struct gdakiTsMsg* out, int timeo
+ }
+ 
+ // gin-reconnect: liveness of a peer from its helper socket, three ways.
+-//   dead:        FIN, ECONNRESET, EPIPE, a refused re-dial (ECONNREFUSED), BADMAGIC, any other errno
+-//   unknown:     ETIMEDOUT, EHOSTUNREACH, ENETUNREACH (the socket is closed; the lower rank re-dials)
++// gin-oneway: a reset is no longer death by itself (after a one-way outage the kernel of the side that timed out first
++// resets a live connection). On an established socket:
++//   dead:        FIN, BADMAGIC, any other errno
++//   unknown:     ETIMEDOUT, EHOSTUNREACH, ENETUNREACH, EHOSTDOWN, ENONET, ECONNRESET, EPIPE, ECONNABORTED, ECONNREFUSED
++//                (the socket is closed; the lower rank re-dials, the higher rank probes)
+ //   no evidence: EAGAIN, EWOULDBLOCK, EINTR (the socket is as good as before)
++// A connect refused by the peer's host (re-dial or probe: ECONNREFUSED, no listener on the port) is dead.
+ enum { GDAKI_TS_LV_NOEVIDENCE = 0, GDAKI_TS_LV_UNKNOWN = 1, GDAKI_TS_LV_DEAD = 2 };
+ 
+ static int gdakiTsCauseLiveness(const char* cause) {
+-  if (!strcmp(cause, "ETIMEDOUT") || !strcmp(cause, "EHOSTUNREACH") || !strcmp(cause, "ENETUNREACH"))
+-    return GDAKI_TS_LV_UNKNOWN;
++  static const char* const unknown[] = {"ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN", "ENONET",
++                                        "ECONNRESET", "EPIPE", "ECONNABORTED", "ECONNREFUSED"};
++  for (const char* u : unknown)
++    if (!strcmp(cause, u)) return GDAKI_TS_LV_UNKNOWN;
+   return GDAKI_TS_LV_DEAD;
+ }
+ 
+@@ -2501,11 +2529,11 @@ static void gdakiTsTestMute(struct gdakiTs* ts, int rank);  // test knob, below
+ 
+ // The helper socket to `p` failed (pe.closeCause). Dead: recovery with this peer ends, as before. Unknown: the socket
+ // is closed and the peer waits for a reconnect. One WARN either way.
+-static int gdakiTsSocketLost(struct gdakiRecHost* r, int p) {
++static int gdakiTsSocketLost(struct gdakiRecHost* r, int p, bool connectRefused = false) {
+   struct gdakiTs* ts = r->ts;
+   struct gdakiTsPeer& pe = ts->peers[p];
+   const char* cause = pe.closeCause[0] ? pe.closeCause : "unknown";
+-  const int lv = gdakiTsCauseLiveness(cause);
++  const int lv = connectRefused ? GDAKI_TS_LV_DEAD : gdakiTsCauseLiveness(cause);  // gin-oneway
+   snprintf(pe.lostCause, sizeof(pe.lostCause), "%s", cause);
+   if (lv == GDAKI_TS_LV_UNKNOWN) {
+     if (pe.fd >= 0) close(pe.fd);
+@@ -2515,6 +2543,8 @@ static int gdakiTsSocketLost(struct gdakiRecHost* r, int p) {
+     pe.lostMs = gdakiQ4MonoMs();
+     pe.nextDialMs = pe.lostMs;
+     pe.attempts = 0;
++    pe.nextProbeMs = pe.lostMs;  // gin-oneway: the higher rank probes at once, then every 500 ms
++    pe.probeAnswered = false;
+   } else {
+     pe.gone = true;
+     pe.unknown = false;
+@@ -2562,11 +2592,33 @@ static void gdakiTsInstall(struct gdakiRecHost* r, int p, int fd, uint32_t gen,
+        gdakiQ4MonoMs());
+ }
+ 
++// gin-oneway: close with a reset, so that a peer that already installed this socket reads ECONNRESET (unknown), not FIN.
++static void gdakiTsAbortClose(int fd) {
++  struct linger lg = {1, 0};
++  (void)setsockopt(fd, SOL_SOCKET, SO_LINGER, &lg, sizeof(lg));
++  close(fd);
++}
++
++// gin-oneway: the pending re-dial to `p` was not accepted; the peer stays unknown and is re-dialled.
++static void gdakiTsNotAccepted(struct gdakiRecHost* r, int p, const char* why) {
++  struct gdakiTsPeer& pe = r->ts->peers[p];
++  if (pe.pendFd >= 0) gdakiTsAbortClose(pe.pendFd);
++  pe.pendFd = -1;
++  pe.pendHave = 0;
++  WARN("GIN/TS: rank %d: re-dial to rank %d not accepted (%s) attempts=%d mono_ms=%.3f", r->ctx->rank, p, why,
++       pe.attempts, gdakiQ4MonoMs());
++}
++
+ // One step of the reconnect machinery, never blocking for long (the helper loop and a fault's wait call it):
+-//  - lower rank, for every unknown higher peer: a non-blocking re-dial every 500 ms, each attempt bounded by 500 ms;
+-//    connected -> HELLO (context number, generation + 1) -> installed; a refused re-dial (ECONNREFUSED) -> dead;
+-//  - higher rank: accept on the kept listen socket, read the HELLO (bounded), install if it comes from a lower rank of
+-//    this context with a newer generation (an old socket to that rank is replaced).
++//  - lower rank, for every unknown higher peer: a non-blocking re-dial every 500 ms, each connect bounded by 500 ms;
++//    connected -> HELLO (context number, a new generation) -> wait up to 1000 ms for the HELLO-ACK -> installed
++//    (gin-oneway; anything else ends the attempt with a reset and the peer stays unknown); a refused re-dial
++//    (ECONNREFUSED) -> dead;
++//  - higher rank, for every unknown lower peer (gin-oneway): a probe connect at once and then every 500 ms, bounded by
++//    500 ms; answered -> one PROBE record and close (the peer stays unknown; the lower rank re-dials); refused -> dead;
++//  - every rank: accept on the kept listen socket, read the first record (bounded); a PROBE is closed quietly; a HELLO
++//    from a lower rank of this context with a newer generation is answered with a HELLO-ACK and installed (an old
++//    socket to that rank is replaced).
+ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+   struct gdakiTs* ts = r->ts;
+   const int rank = r->ctx->rank;
+@@ -2575,6 +2627,22 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+   for (int p = rank + 1; p < (int)ts->peers.size(); p++) {
+     struct gdakiTsPeer& pe = ts->peers[p];
+     if (!pe.gated || !pe.unknown || pe.declined || !pe.haveAddr) continue;
++    if (pe.pendFd >= 0) {  // gin-oneway: HELLO sent, waiting for the HELLO-ACK
++      struct gdakiTsMsg a;
++      const int got = gdakiTsPumpRaw(pe.pendFd, &pe.pendBuf, &pe.pendHave, &a, pe.pendCause, sizeof(pe.pendCause));
++      if (got == 1 && a.type == GDAKI_TS_HELLO_ACK && a.from == p && a.arg == (int32_t)ts->ctxSeq &&
++          a.round == (uint64_t)pe.pendGen) {
++        const int fd = pe.pendFd;
++        pe.pendFd = -1;
++        pe.pendHave = 0;
++        gdakiTsInstall(r, p, fd, pe.pendGen, pe.attempts);
++        continue;
++      }
++      if (got == 1) gdakiTsNotAccepted(r, p, "unexpected reply");
++      else if (got < 0) gdakiTsNotAccepted(r, p, pe.pendCause[0] ? pe.pendCause : "closed");
++      else if (now - pe.pendStartMs >= 1000.0) gdakiTsNotAccepted(r, p, "no HELLO-ACK within 1000 ms");
++      else continue;
++    }
+     if (pe.dialFd >= 0) {
+       struct pollfd pf = {pe.dialFd, POLLOUT, 0};
+       const int pr = poll(&pf, 1, 0);
+@@ -2588,20 +2656,24 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+           h.type = GDAKI_TS_HELLO;
+           h.from = rank;
+           h.arg = (int32_t)ts->ctxSeq;
+-          h.round = pe.gen + 1;
++          pe.helloSeq = std::max(pe.helloSeq, pe.gen) + 1;  // gin-oneway: a new number for every attempt
++          h.round = pe.helloSeq;
+           if (gdakiTsSend(pe.dialFd, &h, 200) == 0) {
+-            const int fd = pe.dialFd;
++            pe.pendFd = pe.dialFd;  // gin-oneway: installed only on the HELLO-ACK
+             pe.dialFd = -1;
+-            gdakiTsInstall(r, p, fd, pe.gen + 1, pe.attempts);
++            pe.pendGen = pe.helloSeq;
++            pe.pendStartMs = now;
++            pe.pendHave = 0;
++            pe.pendCause[0] = '\0';
+             continue;
+           }
+-          close(pe.dialFd);
++          gdakiTsAbortClose(pe.dialFd);
+           pe.dialFd = -1;
+         } else if (err == ECONNREFUSED) {
+           close(pe.dialFd);
+           pe.dialFd = -1;
+           snprintf(pe.closeCause, sizeof(pe.closeCause), "ECONNREFUSED");
+-          (void)gdakiTsSocketLost(r, p);  // dead: the peer's listen socket is gone
++          (void)gdakiTsSocketLost(r, p, true);  // dead: the peer's listen socket is gone
+           continue;
+         } else {
+           close(pe.dialFd);
+@@ -2627,7 +2699,74 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+       } else if (errno == ECONNREFUSED) {
+         close(fd);
+         snprintf(pe.closeCause, sizeof(pe.closeCause), "ECONNREFUSED");
+-        (void)gdakiTsSocketLost(r, p);
++        (void)gdakiTsSocketLost(r, p, true);
++      } else {
++        close(fd);
++      }
++    }
++  }
++  // gin-oneway: the higher rank probes every unknown lower rank's listen port
++  for (int p = 0; p < rank && p < (int)ts->peers.size(); p++) {
++    struct gdakiTsPeer& pe = ts->peers[p];
++    if (!pe.gated || !pe.unknown || pe.declined || !pe.haveAddr) {
++      if (pe.probeFd >= 0) {
++        close(pe.probeFd);
++        pe.probeFd = -1;
++      }
++      continue;
++    }
++    if (pe.probeFd >= 0) {
++      struct pollfd pf = {pe.probeFd, POLLOUT, 0};
++      const int pr = poll(&pf, 1, 0);
++      if (pr == 1) {
++        int err = 0;
++        socklen_t elen = sizeof(err);
++        if (getsockopt(pe.probeFd, SOL_SOCKET, SO_ERROR, &err, &elen) != 0) err = errno;
++        if (err == 0) {
++          struct gdakiTsMsg m;
++          memset(&m, 0, sizeof(m));
++          m.type = GDAKI_TS_PROBE;
++          m.from = rank;
++          m.arg = (int32_t)ts->ctxSeq;
++          (void)gdakiTsSend(pe.probeFd, &m, 50);
++          close(pe.probeFd);
++          pe.probeFd = -1;
++          if (!pe.probeAnswered) {
++            pe.probeAnswered = true;
++            WARN("GIN/TS: rank %d: probe of rank %d answered mono_ms=%.3f", rank, p, gdakiQ4MonoMs());
++          }
++        } else if (err == ECONNREFUSED) {
++          close(pe.probeFd);
++          pe.probeFd = -1;
++          WARN("GIN/TS: rank %d: probe of rank %d refused (ECONNREFUSED) mono_ms=%.3f", rank, p, gdakiQ4MonoMs());
++          snprintf(pe.closeCause, sizeof(pe.closeCause), "ECONNREFUSED");
++          (void)gdakiTsSocketLost(r, p, true);
++          continue;
++        } else {
++          close(pe.probeFd);
++          pe.probeFd = -1;
++        }
++      } else if (now - pe.probeStartMs >= 500.0) {
++        close(pe.probeFd);
++        pe.probeFd = -1;
++      }
++    }
++    if (pe.probeFd < 0 && now >= pe.nextProbeMs) {
++      const socklen_t alen = pe.addr.sa.sa_family == AF_INET6 ? sizeof(pe.addr.sin6) : sizeof(pe.addr.sin);
++      const int fd = socket(pe.addr.sa.sa_family, SOCK_STREAM, 0);
++      pe.nextProbeMs = now + 500.0;
++      if (fd < 0) continue;
++      gdakiTsSockOpts(fd);
++      gdakiTsMuteFd(ts, fd);
++      const int rc = connect(fd, &pe.addr.sa, alen);
++      if (rc == 0 || errno == EINPROGRESS) {
++        pe.probeFd = fd;
++        pe.probeStartMs = now;
++      } else if (errno == ECONNREFUSED) {
++        close(fd);
++        WARN("GIN/TS: rank %d: probe of rank %d refused (ECONNREFUSED) mono_ms=%.3f", rank, p, gdakiQ4MonoMs());
++        snprintf(pe.closeCause, sizeof(pe.closeCause), "ECONNREFUSED");
++        (void)gdakiTsSocketLost(r, p, true);
+       } else {
+         close(fd);
+       }
+@@ -2645,6 +2784,10 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+       struct gdakiTsMsg h;
+       memset(&h, 0, sizeof(h));
+       const int got = gdakiTsRecv(tmp, &h, 500, &ts->stop);
++      if (got == 1 && h.type == GDAKI_TS_PROBE) {  // gin-oneway: a peer's liveness probe
++        close(fd);
++        continue;
++      }
+       const int from = h.from;
+       if (got != 1 || h.type != GDAKI_TS_HELLO || from < 0 || from >= rank || from >= (int)ts->peers.size() ||
+           !ts->peers[from].gated || ts->peers[from].declined || h.arg != (int32_t)ts->ctxSeq ||
+@@ -2661,6 +2804,21 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+         close(fd);
+         continue;
+       }
++      struct gdakiTsMsg a;  // gin-oneway: confirm before installing
++      memset(&a, 0, sizeof(a));
++      a.type = GDAKI_TS_HELLO_ACK;
++      a.from = rank;
++      a.arg = (int32_t)ts->ctxSeq;
++      a.round = h.round;
++      if (gdakiTsSend(fd, &a, 200) != 0) {
++        INFO(NCCL_NET, "GIN/TS: rank %d: cannot send the HELLO-ACK to rank %d", rank, from);
++        gdakiTsAbortClose(fd);
++        continue;
++      }
++      if (ts->peers[from].probeFd >= 0) {
++        close(ts->peers[from].probeFd);
++        ts->peers[from].probeFd = -1;
++      }
+       gdakiTsInstall(r, from, fd, (uint32_t)h.round, 0);
+     }
+   }
+@@ -3781,8 +3939,11 @@ static void gdakiTsTestMute(struct gdakiTs* ts, int rank) {
+       if (gdakiTsMuteAttach(pe.fd) == 0) n++;
+       else bad++;
+     }
+-    for (auto& pe : ts->peers)
++    for (auto& pe : ts->peers) {
+       if (pe.dialFd >= 0 && gdakiTsMuteAttach(pe.dialFd) != 0) bad++;
++      if (pe.pendFd >= 0 && gdakiTsMuteAttach(pe.pendFd) != 0) bad++;    // gin-oneway
++      if (pe.probeFd >= 0 && gdakiTsMuteAttach(pe.probeFd) != 0) bad++;  // gin-oneway
++    }
+     if (ts->listenFd >= 0 && gdakiTsMuteAttach(ts->listenFd) != 0) bad++;
+     ts->muteOn = true;
+     if (bad) WARN("GIN/TS: TEST socket mute: SO_ATTACH_FILTER failed on %d socket(s) rank=%d errno=%d", bad, rank, errno);
+@@ -3794,6 +3955,8 @@ static void gdakiTsTestMute(struct gdakiTs* ts, int rank) {
+     ts->muteOn = false;
+     for (auto& pe : ts->peers) {
+       if (pe.dialFd >= 0) (void)setsockopt(pe.dialFd, SOL_SOCKET, SO_DETACH_FILTER, &dummy, sizeof(dummy));
++      if (pe.pendFd >= 0) (void)setsockopt(pe.pendFd, SOL_SOCKET, SO_DETACH_FILTER, &dummy, sizeof(dummy));    // gin-oneway
++      if (pe.probeFd >= 0) (void)setsockopt(pe.probeFd, SOL_SOCKET, SO_DETACH_FILTER, &dummy, sizeof(dummy));  // gin-oneway
+       if (pe.fd < 0) continue;
+       if (setsockopt(pe.fd, SOL_SOCKET, SO_DETACH_FILTER, &dummy, sizeof(dummy)) == 0) n++;
+     }
+@@ -4005,6 +4168,8 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+     }
+     ts->peers[h.from].fd = fd;
+     ts->peers[h.from].gated = true;
++    ts->peers[h.from].addr = all[h.from].a;  // gin-oneway: for the higher rank's probe
++    ts->peers[h.from].haveAddr = true;
+     lower--;
+   }
+   if (why != nullptr && ls >= 0) close(ls);  // gin-reconnect: on success the listen socket stays, for re-accepts
+@@ -4205,6 +4370,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+   WARN("GIN/TS: helper socket reconnect=%d bound_ms=%d rank=%d", ts->reconnect, ts->reconnectMs, g->rank);
+   WARN("GIN/TS: pair reset=%d rank=%d", ts->pairReset, g->rank);  // gin-pair-reset
+   WARN("GIN/TS: pair check=%d rank=%d", ts->pairCheck, g->rank);  // gin-pair-check
++  WARN("GIN/TS: helper liveness oneway=1 rank=%d", g->rank);      // gin-oneway
+ }
+ 
+ // Called by ncclCommAbort as soon as the abort flags are set (before the teardown, whose cudaFree calls
+@@ -4330,6 +4496,14 @@ static void gdakiTsStop(struct gdakiRecHost* r) {
+       close(pe.dialFd);
+       pe.dialFd = -1;
+     }
++    if (pe.pendFd >= 0) {  // gin-oneway
++      close(pe.pendFd);
++      pe.pendFd = -1;
++    }
++    if (pe.probeFd >= 0) {  // gin-oneway
++      close(pe.probeFd);
++      pe.probeFd = -1;
++    }
+   }
+   if (ts->listenFd >= 0) {
+     close(ts->listenFd);

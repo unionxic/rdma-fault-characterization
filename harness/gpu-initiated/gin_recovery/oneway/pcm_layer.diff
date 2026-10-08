@@ -1,0 +1,67 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index e968f07..eae36d4 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -2117,6 +2117,7 @@ struct gdakiTs {
+   int reconnectMs = 10000;                // gin-reconnect: NCCL_GIN_TS_RECONNECT_MS (bound of the wait in a fault)
+   int pairReset = 1;                      // gin-pair-reset: NCCL_GIN_TS_PAIR_RESET
+   int pairCheck = 1;                      // gin-pair-check: NCCL_GIN_TS_PAIR_CHECK
++  int testRefuseHello = 0;                // gin-oneway (test switch): NCCL_GIN_TS_TEST_REFUSE_HELLO, HELLOs still to refuse
+   const std::vector<struct gdakiTsFault>* batch = nullptr;  // gin-pair-reset: the fault batch the helper is handling
+   size_t batchPos = 0;                                       //   and the position of the fault being initiated
+   std::atomic<int> dead{0};
+@@ -2379,13 +2380,24 @@ static void gdakiTsWatchdog(struct gdakiRecHost* r) {
+ }
+ 
+ // ---- socket helpers (every fd is non-blocking; every wait is bounded) ----
++// gin-oneway (test switch): NCCL_GIN_TS_TEST_SOCK_UTO_MS replaces the helper sockets' TCP_USER_TIMEOUT (default
++// 5000 ms) in this process; keepalive is unchanged. Read once.
++static unsigned int gdakiTsTestUtoMs() {
++  static const unsigned int v = [] {
++    const char* e = getenv("NCCL_GIN_TS_TEST_SOCK_UTO_MS");
++    const int x = (e && *e) ? atoi(e) : 0;
++    return x > 0 ? (unsigned int)x : 5000u;
++  }();
++  return v;
++}
++
+ static void gdakiTsSockOpts(int fd) {
+   int one = 1;
+   setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+   // A host that dies without FIN/RST is detected by keepalive / user timeout within about 5 s.
+   setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+   int idle = 2, intvl = 1, cnt = 3;
+-  unsigned int uto = 5000;
++  unsigned int uto = gdakiTsTestUtoMs();  // gin-oneway: 5000 unless the test switch is set
+   setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+   setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+   setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+@@ -2642,6 +2654,13 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+         close(fd);
+         continue;
+       }
++      if (ts->testRefuseHello > 0) {  // gin-oneway (test switch): refuse as a failed check would
++        ts->testRefuseHello--;
++        WARN("GIN/TS: TEST refused a reconnect HELLO from rank %d gen=%lu mono_ms=%.3f", from, (unsigned long)h.round,
++             gdakiQ4MonoMs());
++        close(fd);
++        continue;
++      }
+       gdakiTsInstall(r, from, fd, (uint32_t)h.round, 0);
+     }
+   }
+@@ -4080,6 +4099,14 @@ static void gdakiTsTestKnobs(struct gdakiRecHost* r) {
+       WARN("GIN/TS: TEST socket mute: cannot parse NCCL_GIN_TS_TEST_SOCK_MUTE=%s", e);
+     }
+   }
++  {  // gin-oneway (test switches)
++    const char* u = getenv("NCCL_GIN_TS_TEST_SOCK_UTO_MS");
++    const char* h = getenv("NCCL_GIN_TS_TEST_REFUSE_HELLO");
++    if (h && *h) ts->testRefuseHello = std::max(0, atoi(h));
++    if ((u && *u) || (h && *h))
++      WARN("GIN/TS: TEST socket knobs rank=%d uto_ms=%u refuse_hello=%d", r->ctx->rank, gdakiTsTestUtoMs(),
++           ts->testRefuseHello);
++  }
+   if (ts->stallMs || ts->dieStage || ts->test || ts->muteStartMs >= 0)
+     WARN("GIN/TS: TEST knobs rank=%d stall_ms=%d stage=%d die=%d split=%s sock_mute=%d:%d", r->ctx->rank, ts->stallMs,
+          ts->stallStage, ts->dieStage, split, ts->muteStartMs, ts->muteLenMs);
