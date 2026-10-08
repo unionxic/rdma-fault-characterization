@@ -1,0 +1,8 @@
+Pre-registration of gin-handoff, 2026-10-09 05:12:42 +0900, before any main-run trial of this study.
+sha256 of the fixed prediction file:
+04ac4a66cb4c2ea64bafb9a412d49f0dbd3fff5d26c36fafeecb361ded88799a  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/gin-handoff-v1 (sections 2, 3, 7, 8).
+A pilot of 14 trials (one per cell key that ran; results/20261009_pilot, hold H0 2026-10-09 05:04:28-05:05:52, never
+scored) ran before this file on the deployed builds (hf, hfp, hd, hdp). The predictions come from the hf source, an
+independent code review and the gin-harden pilot, and were finalized after this pilot (only the S3 bound changed); every
+change and its pilot evidence is in EXPERIMENT.md section 12.
