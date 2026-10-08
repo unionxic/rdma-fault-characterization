@@ -46,7 +46,11 @@ of rank 0's kv.
                                                first round line (own clock)
   n_hs hs_first_after_round_ms                 "handshake timeout" declines; for the earliest of them (rank 0's clock), its
                                                delay after its own rank's first round line
-  init_total_ms_min init_total_ms_max          total_us / 1000 of the recovered lines with role=initiator
+  rec_first_after_round_ms rec_last_after_round_ms
+                                               the earliest / latest t_resumed of every recovered line (either role, rank
+                                               0's clock) minus the earliest round_ms_r; empty without a recovered line
+  init_total_ms_min init_total_ms_max          total_us / 1000 of the recovered lines with role=initiator (a refused round
+                                               that reruns as a full reset counts from the rerun only)
   f3_detect_ms                                 rank 0's first classifier record minus the first fire of rank 1, rank 0's clock
   resp_overlap_r0 init_overlap_r0              1 if two of rank 0's responder rounds [t_req, t_resumed] (initiator rounds
                                                [t_start, t_resumed]) overlap; 0 if not; empty with fewer than two
@@ -338,6 +342,14 @@ def rows_of(stem):
     hs = [h for h in hs if h[0] is not None]
     d["n_hs"] = sum(1 for r in range(n) for y in lg[r]["decl"] if y[2] == "handshake timeout")
     d["hs_first_after_round_ms"] = min(hs)[1] if hs else ""
+    # recoveries (either role) relative to the earliest round line of the trial, rank 0's clock. A round that the
+    # responder's scope check refuses reruns as a full reset, and its recovered line counts total_us from the rerun
+    # only (pilot P0, EXPERIMENT.md 12), so these use t_resumed against the first round line instead.
+    t_res = [to0(r, fnum(x.get("t_resumed"))) for r in range(n) for x in lg[r]["rec"]]
+    t_res = [t for t in t_res if t is not None]
+    t_first_round = min(rts) if rts else None
+    d["rec_first_after_round_ms"] = (min(t_res) - t_first_round) if (t_res and t_first_round is not None) else ""
+    d["rec_last_after_round_ms"] = (max(t_res) - t_first_round) if (t_res and t_first_round is not None) else ""
     # initiator rounds that recovered: their total_us (round start to resumed), in ms
     tot = [fnum(x.get("total_us")) for x in rec if x.get("role") == "initiator"]
     tot = [t / 1000.0 for t in tot if t is not None]
