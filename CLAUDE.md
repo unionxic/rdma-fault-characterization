@@ -76,6 +76,7 @@ RDMA 장애가 NIC에서 응용까지 어디서 남고 어디서 사라지는지
     검증 방식과 AI 도구 사용은 "작업 방식"에 밝힌다.
 - **용어**
   - "fingerprint"는 쓰지 않는다. "오류 코드" 또는 "status와 vendor_err 조합"으로 쓴다.
+  - NCCL communicator는 "통신기"로 옮기지 않고 "communicator"로 쓴다. 어색한 번역이나 음차보다 영어 단어를 쓴다(release, smoke 등).
   - 내부 단계 암호(Q4, S1/S2, T1 등)는 문서 본문에서 기능 이름으로 풀어 쓴다. 폴더, 파일, 환경변수
     이름은 그대로 둔다.
   - gate, park, poison, sentinel, mailbox는 README에서 기능을 풀어 쓴다.
