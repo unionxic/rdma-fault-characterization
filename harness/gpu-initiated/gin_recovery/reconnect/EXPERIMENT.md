@@ -6,12 +6,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `PREREGISTERED` |
+| 상태 | `QA` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-08 |
 | 기준 브랜치와 커밋 | `exp/gin-reconnect` @ `90731cdb` (master) |
 | 사전 등록 태그 | `prereg/gin-reconnect-v1` (상태를 `PREREGISTERED`로 바꾼 바로 그 커밋) |
-| 마지막 갱신 | 2026-10-08 10:35, 사전 등록 |
+| 마지막 갱신 | 2026-10-08 11:45, 본 실행과 채점 끝(상태 `QA`) |
 
 표시: `[측정]` 원자료에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -185,7 +185,7 @@
 | 커널, OFED | rain 커널 5.15.0-97-generic. OFED | 커널 `[측정]` 2026-10-07. OFED `[미확인]` |
 | GPU와 CUDA | rain Quadro RTX 5000(sm_75), sunny RTX A4000(sm_86), PeerMappingOverride=1, CUDA 12.8 | gin-s2-close 5절 |
 | 기준 라이브러리 `s2r` | libnccl `ba4984bd`, 드라이버 `d4b1f082` | `[측정]` 2026-10-07 배포 때 두 노드 같음(`../s2_close/deploy_check.txt`) |
-| 이 실험의 라이브러리 `rc` | libnccl md5와 배포 확인 | `[미확인]` 빌드 전. 배포 때 기록 |
+| 이 실험의 라이브러리 `rc` | libnccl `8354411f198e9d980b8b3459918afbea`, 드라이버 `d4b1f082e3e3150d8ceff7313475e6aa`(`$HOME/gi-bundle/gin_ts2/rc/`). 변경분 [rc_layer.diff](rc_layer.diff)(md5 `fb72ffd3`), pristine 기준 전체 diff [gin_transparent_rc.diff](gin_transparent_rc.diff)(md5 `411919a4`). smoke 1에만 쓴 빌드는 libnccl `1193a5f8`(`rc_smoke_1193a5f8/`) | `[측정]` 2026-10-08 배포 때 두 노드 md5 같음, 기존 번들 18개 파일 md5 그대로([deploy_check.txt](deploy_check.txt)). pristine v2.32.3-1에 전체 diff를 적용하면 빌드 트리와 같다 `[측정]`([make_diff_rc.sh](make_diff_rc.sh)) |
 
 ## 6. 변수
 
@@ -362,25 +362,25 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 클러스터 시간�
 
 ## 10. 완료 조건과 QA 기준
 
-- [ ] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외와 실패를 따로 센 표가 있다.
-- [ ] 예측 20줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
+- [x] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외와 실패를 따로 센 표가 있다.
+- [x] 예측 20줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
 - [ ] 다른 에이전트가 `score.py`를 보지 않고 원자료에서 핵심 수치를 다시 셌다. 대상은 재연결 시각, 기다림 시간, 거절 사유,
   투명 여부다.
 - [ ] 다른 에이전트가 `rc_layer.diff`를 읽고 리뷰했다.
-- [ ] smoke와 제외 시행이 결과에 섞이지 않았다.
-- [ ] 새 빌드의 md5, 전체 diff, pristine + diff 확인 결과를 5절에 적었다.
+- [x] smoke와 제외 시행이 결과에 섞이지 않았다.
+- [x] 새 빌드의 md5, 전체 diff, pristine + diff 확인 결과를 5절에 적었다.
 - [ ] 원자료를 Release에 올리고 `DATA.md`에 적었다.
-- [ ] hold 전후 mlx5 스냅숏에 새 명령 오류가 없었거나, 있었다면 12절에 적었다.
+- [x] hold 전후 mlx5 스냅숏에 새 명령 오류가 없었거나, 있었다면 12절에 적었다.
 
 ## 11. 작업 체크리스트
 
 - [x] 질문, 가설, 셀 작성 (`DRAFT`)
 - [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
-- [ ] 코드 변경, 빌드, 배포
-- [ ] `cells.sh`, `hold.sh`, `chain.sh`, `rows_rc.py`, `score.py`
-- [ ] smoke 실행(채점 제외)
-- [ ] 본 실행 (`RUNNING`)
-- [ ] 채점 (`QA`)
+- [x] 코드 변경, 빌드, 배포
+- [x] `cells.sh`, `hold.sh`, `chain.sh`, `rows_rc.py`, `score.py`
+- [x] smoke 실행(채점 제외)
+- [x] 본 실행 (`RUNNING`)
+- [x] 채점 (`QA`)
 - [ ] 독립 재계산과 코드 리뷰
 - [ ] 결과 정리, 원자료 릴리스, PR
 - [ ] 결론 확정 (`COMPLETE`)
@@ -392,22 +392,117 @@ hold마다 잠금과 유휴 확인이 약 1분 더 든다. 클러스터 시간�
 | 2026-10-08 | gin-s2-close의 원자료(Release `data-20261007`)에서 시각의 기준을 셈 `[측정]`. 상대 kill 5회에서 kill은 `KILL_DELAY_MS`보다 462–565 ms 이르게(devComm 생성 기준) 일어났다. 끊김 셀 25회에서 끊김 시작 줄은 설정 시각보다 0–15 ms 이르게(devComm 생성 기준) 찍혔다 | sha256 앞 12자 `f2d11a86cc83`, 7절 |
 | 2026-10-08 | 사용자가 이 후속 실험을 승인 | |
 | 2026-10-08 10:35:21 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/gin-reconnect-v1` |
+| 2026-10-08 10:36–10:43 | 재연결 계층 작성(`gin_host_gdaki.cc` 한 파일), 증분 빌드(다시 컴파일된 파일은 `gin_host_gdaki.cc`와 버전 표시뿐), 두 노드 배포(libnccl `1193a5f8`) | [build_rc.sh](build_rc.sh), [deploy_check_smoke1.txt](deploy_check_smoke1.txt) |
+| 2026-10-08 10:45:18–10:49:02 | smoke 1(`grc-H0`), 12회, 채점 제외. 8 s 끊김 뒤 로컬 QP 오류는 다시 연결되어 투명했다(1회, 다른 1회는 랑데부 포트 충돌). 긴 끊김은 "peer liveness unknown", 끊김 중 kill은 "shows ECONNREFUSED", 끊김 없는 kill은 "shows FIN", 재연결 끈 대조는 "no helper socket to the peer: ...reconnect off"로 거절됐다. 짧은 끊김 중 상대 QP 오류는 rank 0의 끊김이 끝나지 않아(시험 스위치 결함) 상한까지 기다린 뒤 거절됐다 `[측정]`. 새 mlx5 줄 0 | `results/20261008_smoke/smoke/`, `hold_H0.out` |
+| 2026-10-08 10:50 | 시험 스위치 결함을 고쳐 다시 빌드(libnccl `8354411f`), smoke 1 번들은 `rc_smoke_1193a5f8/`로 옮기고 새 `rc/`에 배포. 전체 diff로 트리 재현 확인 | [DEVIATIONS.md](DEVIATIONS.md) 2절, [deploy_check.txt](deploy_check.txt), [gin_transparent_rc.diff](gin_transparent_rc.diff), [rc_layer.diff](rc_layer.diff) |
+| 2026-10-08 10:52:12–10:54:42 | smoke 2(`grc-H0b`), 끊김 셀 7회, 채점 제외. 짧은 끊김 중 상대 QP 오류 2회 모두 끊김이 끝난 뒤 다시 연결되어(기다림 2 900, 2 950 ms) 투명했다. 나머지 다섯 셀도 smoke 1과 같은 결과다 `[측정]`. 새 mlx5 줄 0 | `results/20261008_smoke/smoke2/`, `hold_H0b.out` |
+| 2026-10-08 10:56 | 본 실행 시작(상태 `RUNNING`). H1–H4를 [chain.sh](chain.sh)로 차례로 잡는다(`cluster_run.sh -w 10800`, 태그 `grc-H<k>`) | `results/20261008/chain.out` |
+| 2026-10-08 11:02:18–11:08:04 | H1(`grc-H1`, 잠금은 다른 실험 뒤 11:01:47): 지연 20회(`rc`와 `s2r` 섞어서), 회귀 셀 40회(여섯 개 셀, 끊김 없는 kill, 받는 쪽 abort 해제). 상대 QP 오류 1회(n2)가 드라이버 랑데부 포트 충돌로 시작하지 못해 제외, 나중에 채운다. mlx5 명령 오류 줄(rain 2, sunny 0)과 펌웨어 명령 실패 수(31)는 전후가 같고 새 mlx5 줄은 0이다 | `results/20261008/lat/`, `results/20261008/rep_rc/`, `hold_H1.out`, `mlx5_new_H1.txt` |
+| 2026-10-08 11:13:41–11:19:27 | H2(`grc-H2`, 잠금 11:13:10): 8 s 끊김 뒤 로컬 QP 오류 10회는 모두 소켓이 "모름"으로 닫힌 뒤 끊김이 끝나고 다시 연결되어 투명했다. 1 s 끊김 5회는 소켓이 닫히지 않고 투명했다. 재연결을 끈 대조 5회는 모두 "no helper socket to the peer: peer liveness unknown (ETIMEDOUT, reconnect off)"로 거절됐다 `[측정]`. 시작 실패 0. mlx5 명령 오류 줄(rain 2, sunny 0)과 펌웨어 명령 실패 수(31)는 전후가 같고 새 mlx5 줄은 0이다 | `results/20261008/mute/`, `hold_H2.out`, `mlx5_new_H2.txt` |
+| 2026-10-08 11:24:36–11:31:03 | H3(`grc-H3`, 잠금 11:24:05): 짧은 끊김 중 상대 QP 오류 10회는 모두 rank 0이 재연결을 기다렸고(기다림 끝 `reconnected`) 투명했다. 끊김 중 kill 10회는 모두 소켓이 먼저 ETIMEDOUT("모름")으로 닫히고, 끊김이 끝난 뒤 다시 걸기가 ECONNREFUSED("죽음")를 받고, 분류 기록 뒤 "RETRY_EXC and the peer's socket shows ECONNREFUSED"로 거절됐다 `[측정]`. 시작 실패 0. mlx5 명령 오류 줄(rain 2, sunny 0)과 펌웨어 명령 실패 수(31)는 전후가 같고 새 mlx5 줄은 0이다 | `results/20261008/mute/`, `hold_H3.out`, `mlx5_new_H3.txt` |
+| 2026-10-08 11:31:34–11:37:47 | H4(`grc-H4`, 잠금 11:31:03): 긴 끊김 중 상대 QP 오류 10회 중 9회는 소켓이 ETIMEDOUT("모름")으로 닫힌 뒤 rank 0이 상한까지 기다리고(기다림 끝 `bound`) 거절됐다 `[측정]`. 1회(n10)는 드라이버 랑데부 포트 충돌로 시작하지 못해 제외, 나중에 채운다. mlx5 명령 오류 줄(rain 2, sunny 0)과 펌웨어 명령 실패 수(31)는 전후가 같고 새 mlx5 줄은 0이다 | `results/20261008/mute/`, `hold_H4.out`, `mlx5_new_H4.txt` |
+| 2026-10-08 11:38:49–11:39:34 | 채우기 hold(`grc-fill`, 잠금 11:38:18): 제외한 두 시행을 다음 번호로 채웠다. 상대 QP 오류 n6은 투명, 긴 끊김 중 상대 QP 오류 n11은 상한까지 기다린 뒤 "peer liveness unknown"으로 거절됐다 `[측정]`. 두 셀 모두 다시 돈 시행은 1회로 계획의 50% 이하다. mlx5 명령 오류 줄(rain 2, sunny 0)과 펌웨어 명령 실패 수(31)는 전후가 같고 새 mlx5 줄은 0이다 | `results/20261008/rep_rc/`, `results/20261008/mute/`, `hold_fill.out`, `mlx5_new_fill.txt` |
+| 2026-10-08 11:40 | 채점(`python3 score.py results/20261008`). 시행 112, 판정 110, 제외 2(둘 다 랑데부 포트 충돌). 예측 20개 모두 맞음. 상태 `QA` | [results/20261008/SCORE.md](results/20261008/SCORE.md), [results/20261008/trials_scored.csv](results/20261008/trials_scored.csv) |
 
 ## 13. 사전 등록 이후 변경
 
 > 기존 문장을 고치지 않고 여기에 덧붙인다. 변경이 많으면 `DEVIATIONS.md`에 두고 링크한다.
 
+사전 등록 내용은 바꾸지 않았다. smoke에서 찾아 고친 시험 스위치 결함과 구현 세부는 [DEVIATIONS.md](DEVIATIONS.md)에 적었다.
+
 | 날짜 | 무엇을 | 이유 | 영향 범위 | 커밋 |
 |---|---|---|---|---|
+| 2026-10-08 | 끊김 시험 스위치의 일정이 재연결 기다림 중에도 돌게 고침, 빌드를 다시 하고 새 `rc/`에 배포 | smoke 1에서 짧은 끊김 셀의 조건이 만들어지지 않았다 | 시험 스위치뿐, 예측과 셀 조건은 그대로 | `4dd52754` |
 
 ## 14. 원자료와 결과표
 
 | 무엇 | 경로 또는 Release 자산 | n |
 |---|---|--:|
+| 채점 결과(예측별 판정, 대입한 식, 셀별 시행 수와 제외) | [results/20261008/SCORE.md](results/20261008/SCORE.md) | 예측 20 |
+| 시행별 판정 열(3.1의 열 전부와 `status`) | [results/20261008/trials_scored.csv](results/20261008/trials_scored.csv) | 112행(판정 110, 제외 2) |
+| 끊김 셀 시행 로그(rank별 로그, kv, meta, kill 기록) | `results/20261008/mute/`, Release 예정 | 51 |
+| 회귀 셀 시행 로그 | `results/20261008/rep_rc/`, Release 예정 | 41 |
+| 지연 실행 로그와 반복별 지연 | `results/20261008/lat/`, Release 예정 | 20 실행 |
+| hold 기록과 mlx5, 펌웨어 명령 스냅숏 | `results/20261008/`의 `chain.out`, `hold_*.out`, `snap_*`, `mlx5_*`, `fwcmd_*`, Release 예정 | hold 5(H1–H4, 채우기) |
+| smoke(채점 제외) | `results/20261008_smoke/`, Release 예정 | 19(smoke 1 12회, smoke 2 7회) |
+| 빌드와 배포 | [rc_layer.diff](rc_layer.diff), [gin_transparent_rc.diff](gin_transparent_rc.diff), [deploy_check.txt](deploy_check.txt), 사전 등록 이후 변경 [DEVIATIONS.md](DEVIATIONS.md) | |
 
 ## 15. 결과 요약
 
 > 예측별 판정과 핵심 수치. 수치마다 n과 근거 링크를 붙인다. 아직이면 `[미확인]`.
+
+**판정.** 예측 20개가 모두 맞았다 `[측정]`. 근거는 [results/20261008/SCORE.md](results/20261008/SCORE.md)다. 판정한 시행은 110회다.
+제외 2회는 둘 다 드라이버 랑데부 포트 충돌로 시작하지 못한 시행(`f3_b_n2`, `rc_mutef3l_b_n10`)이고, 채우기 hold에서 다음 번호로
+채웠다. smoke 19회는 따로 셌고 채점하지 않았다. 아래 범위와 중앙값은 [trials_scored.csv](results/20261008/trials_scored.csv)의
+열에서 셌다(`score.py`가 원시 로그에서 만든 열). 끊김 중 kill의 ECONNREFUSED 시각만 rank 0 로그의 닫힘 줄에서 직접 셌다.
+다른 에이전트의 독립 재계산은 아직이다(16절).
+
+| 질문 | 예측 | 결과 `[측정]` | n | 판정 | id |
+|---|---|---|--:|---|---|
+| 잠깐 끊긴 뒤 복구 | 8 s 끊김 뒤 로컬 QP 오류가 투명하게 복구된다 | 10/10 투명 | 10 | 맞음 | M1a |
+| 잠깐 끊긴 뒤 복구 | 소켓이 시간 초과로 닫히고 "모름"으로 분류된다 | 10/10 ETIMEDOUT, `liveness=unknown` | 10 | 맞음 | M1b |
+| 잠깐 끊긴 뒤 복구 | 끊김이 끝난 뒤 1.5 s 안에 다시 연결된다 | 10/10, 끊김 끝 뒤 75.9–104.4 ms | 10 | 맞음 | M1c |
+| 잠깐 끊긴 뒤 복구 | 장애 전까지 앱에 알려지지 않는다 | 장애 전 비동기 오류 0/10 | 10 | 맞음 | M1d |
+| 끊김 중 재시도 초과 | 상한 안에 끝나는 끊김이면 투명하게 복구된다 | 10/10 투명 | 10 | 맞음 | M2a |
+| 끊김 중 재시도 초과 | 시작 쪽이 기다렸고 기다림이 재연결로 끝났다 | 10/10 `ended=reconnected`, 기다림 2 848.2–3 037.4 ms | 10 | 맞음 | M2b |
+| 끊김 중 재시도 초과 | 상한을 넘는 끊김이면 "상대 생존 모름"으로 거절된다 | 10/10 "RETRY_EXC and peer liveness unknown (ETIMEDOUT, no reconnect within 10000 ms)" | 10 | 맞음 | M3a |
+| 끊김 중 재시도 초과 | 죽음 원인 문구로 거절된 시행이 없다 | 0/10 | 10 | 맞음 | M3b |
+| 끊김 중 재시도 초과 | 거절은 첫 분류 기록 뒤 10.0–11.5 s에 온다 | 10/10, 10 001.7–10 003.0 ms | 10 | 맞음 | M3c |
+| 끊김 중 재시도 초과 | 거절 시각에 rank 1이 살아 있다 | 10/10 | 10 | 맞음 | M3d |
+| 죽은 상대 | 끊김 중 kill된 상대는 ECONNREFUSED로 죽음 판정된다 | 10/10 "RETRY_EXC and the peer's socket shows ECONNREFUSED" | 10 | 맞음 | M4a |
+| 죽은 상대 | 끊김 중 kill이 "모름"으로 거절되거나 복구되지 않는다 | 0/10, 0/10 | 10 | 맞음 | M4b |
+| 죽은 상대 | 거절은 첫 분류 기록 뒤 2 s 안에 온다 | 10/10, 1.1–2.1 ms | 10 | 맞음 | M4c |
+| 기존 동작 | 회귀 셀 여섯 개가 그대로 투명하다 | 셀마다 5/5 | 30 | 맞음 | G1 |
+| 기존 동작 | 끊김 없는 kill은 죽음 원인으로 거절되고 살아남은 쪽 abort가 돌아온다 | 5/5 "RETRY_EXC and the peer's socket shows FIN", rank 0 abort `no error` | 5 | 맞음 | G2 |
+| 기존 동작 | 받는 쪽 abort 해제가 그대로다 | 5/5 rank 1 abort `no error` | 5 | 맞음 | G3 |
+| 대조 | 1 s 끊김은 소켓을 닫지 않고 재연결도 없으며 투명하다 | 5/5 | 5 | 맞음 | C1 |
+| 대조 | 재연결을 끄면 8 s 끊김 뒤 "no helper socket"으로 거절된다 | 5/5 "no helper socket to the peer: peer liveness unknown (ETIMEDOUT, reconnect off)" | 5 | 맞음 | C2 |
+| 지연 | 4 KiB 지연 차이 0.40 µs 이하 | `rc` 10.59 µs, `s2r` 10.59 µs, 차이 0.00 µs | 5 + 5 실행 | 맞음 | L1 |
+| 지연 | 256 KiB 지연 차이 0.30 µs 이하 | `rc` 38.91 µs, `s2r` 38.88 µs, 차이 0.03 µs | 5 + 5 실행 | 맞음 | L2 |
+
+표의 범위는 모두 그 셀의 판정한 시행 전부(n열)에 걸친 범위다. 지연 값은 같은 hold(H1)에서 섞어 돈 실행 5개의 p50을 다시 중앙값으로
+낸 것이다.
+
+**셀별 시간 경과** `[측정]`. 시각은 rank 0의 `mono_ms`이고, 범위는 그 셀 시행 전부의 범위다.
+
+- **8 s 끊김 뒤 로컬 QP 오류** (`rc_mute8_f1_b@rc`, n=10).
+  - 소켓은 끊김 시작 4 573.0–4 599.7 ms 뒤 ETIMEDOUT으로 닫혔다.
+  - 두 rank 모두 재연결 줄이 시행마다 1개였다. rank 0은 끊김이 끝난 뒤 75.9–104.4 ms(중앙값 90.7 ms)에 다시 연결됐다.
+  - 장애는 끊김이 끝난 뒤 3 501.3–3 504.9 ms에 났고, 거절 없이 투명했다.
+- **짧은 끊김 중 상대 QP 오류** (`rc_mutef3s_b@rc`, n=10).
+  - 소켓은 끊김 시작 4 772.1–4 801.1 ms 뒤 ETIMEDOUT("모름")으로 닫혔다.
+  - 첫 분류 기록은 소켓 닫힘 4 467.1–4 656.8 ms 뒤, 끊김이 끝나기 2 552.8–2 760.9 ms 전에 왔다.
+  - rank 0은 2 848.2–3 037.4 ms(중앙값 2 978.4 ms) 기다렸다. 기다림은 끊김이 끝난 뒤 276.9–305.3 ms에 재연결로 끝났고, 그 뒤
+    라운드가 진행되어 투명했다.
+- **긴 끊김 중 상대 QP 오류** (`rc_mutef3l_b@rc`, n=10).
+  - 소켓은 끊김 시작 4 768.1–4 801.5 ms 뒤 ETIMEDOUT("모름")으로 닫혔고, 첫 분류 기록은 그 4 425.8–4 698.6 ms 뒤에 왔다.
+  - 기다림은 10 000.0–10 001.0 ms에 상한으로 끝났고(`ended=bound`), 재연결 줄은 0이었다.
+  - 거절은 첫 분류 기록 뒤 10 001.7–10 003.0 ms에 왔다. 예측 범위의 아래 끝(10 000 ms)과 2–3 ms 차이다. 기다림이 정확히
+    상한만큼이므로 이 간격은 구조상 상한보다 조금 크다 `[추론]`.
+- **끊김 중 kill** (`rc_mutekill_b@rc`, n=10).
+  - 소켓은 끊김 시작 4 772.7–4 801.3 ms 뒤 먼저 ETIMEDOUT("모름")으로 닫혔다.
+  - 끊김이 끝난 뒤 276.0–305.5 ms에 다시 걸기가 ECONNREFUSED를 받아 "죽음"으로 바뀌었다(rank 0 로그의 두 번째 닫힘 줄에서 셈).
+  - 첫 분류 기록은 그 1 000.2–1 221.8 ms 뒤에 왔고, 거절은 분류 기록 뒤 1.1–2.1 ms에 왔다.
+  - 그래서 이 셀에서는 기다리는 도중 죽음의 증거가 와서 기다림이 끝나는 경로(`ended=dead`)를 한 번도 지나지 않았다. 10/10 기다림
+    줄이 없다. 거절은 이미 "죽음"으로 바뀐 소켓을 보고 바로 났다. M4a, M4c의 판정식은 이 경우도 맞음으로 센다.
+- **대조.**
+  - 1 s 끊김(`rc_mute1_f1_b@rc`, n=5): 닫힘 0, 재연결 0, 장애는 끊김이 끝난 뒤 1 513.1–1 514.1 ms에 났고 5/5 투명했다.
+  - 재연결 끔(`rc_mute8off_b@rc`, n=5): 소켓은 끊김 시작 4 586.4–4 597.7 ms 뒤 ETIMEDOUT으로 닫혔고, 기다림 없이(`ended=off`)
+    분류 기록 뒤 0.3–1.0 ms에 거절됐다. 거절 시각에 rank 1은 5/5 살아 있었다.
+- **기존 동작.**
+  - 끊김 없는 kill(`f4_b@rc`, n=5): 소켓 닫힘 원인 5/5 FIN, 거절은 분류 기록 뒤 1.2–2.0 ms.
+  - 받는 쪽 abort 해제(`f2rel_b@rc`, n=5): rank 1 abort 854.7–876.4 ms, 5/5 `no error`.
+  - 지연 실행별 p50의 범위(각 5 실행): 4 KiB `rc` 10.56–10.59 µs, `s2r` 10.56–10.59 µs. 256 KiB `rc` 38.88–38.91 µs, `s2r` 38.88–38.91 µs.
+
+**재연결 시각이 셀마다 좁게 모인 이유** `[추론]`. 다시 걸기는 소켓을 잃은 시각부터 500 ms마다 새로 시작한다(9절). 소켓을 잃은 시각에서
+끊김이 끝날 때까지의 거리가 셀마다 거의 같아서(8 s 끊김은 약 3 410 ms, 끊김 시작 300 ms인 두 셀은 약 3 210 ms나 7 210 ms), 끊김이
+끝난 뒤 첫 시도까지의 시간이 약 90 ms와 약 290 ms로 정해진다. 계산 값과 잰 값(75.9–104.4 ms, 276.9–305.3 ms, 276.0–305.5 ms)이 맞는다.
+
+**mlx5.** hold 5개 모두 새 mlx5 줄이 0이었고, 명령 오류 줄(rain 2, sunny 0)과 rain의 펌웨어 명령 실패 수(31)는 hold 전후가 같았다
+`[측정]`(`results/20261008/mlx5_new_*.txt`, `snap_*.txt`).
+
+**다른 날의 자료.** 1절의 "바꾸기 전" 수치는 2026-10-07 `s2r` 빌드의 다른 hold에서 잰 것이다. 이 절의 셀과 같은 셀로 놓고
+비교하지 않는다.
 
 ## 16. QA와 재현성
 
