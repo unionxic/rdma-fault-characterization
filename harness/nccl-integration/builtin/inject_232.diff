@@ -1,0 +1,135 @@
+# Test-only fault-injection hook for NCCL v2.32.3-1 (study nccl-builtin; EXPERIMENT.md section 9). No recovery code.
+# Upstream: github.com/NVIDIA/nccl   Tag: v2.32.3-1   Commit: 12df1a11afad322be5a204a2db890161cbf8131d
+# File: src/transport/net_ib/p2p.cc only. Knobs NCCL_RDMA_FAULT_INJECT, NCCL_RDMA_FAULT_INJECT_RECV and
+# NCCL_RDMA_FAULT_INJECT_RECV_SILENT have the names and trigger points of the Stage 2 hook (../stage2/net_ib_stage2.diff);
+# with all three unset the library behaves as v2.32.3-1. Each firing prints one WARN "NET/IB: [FAULT-INJECT] forced ...".
+# Apply: git clone --branch v2.32.3-1 https://github.com/NVIDIA/nccl && cd nccl && sed '/^# /d;/^#$/d' inject_232.diff | git apply
+#
+diff --git a/src/transport/net_ib/p2p.cc b/src/transport/net_ib/p2p.cc
+index 906b4e7..af08f31 100644
+--- a/src/transport/net_ib/p2p.cc
++++ b/src/transport/net_ib/p2p.cc
+@@ -9,6 +9,99 @@
+ #include "common.h"
+ #include "compiler.h"
+ #include "p2p_resiliency.h"
++#include <time.h>
++
++// ===== [RDMA-FAULT-INJECT] test-only fault-injection hooks (rdma-error study nccl-builtin) =====
++// Ported from the Stage 2 patch (harness/nccl-integration/stage2/net_ib_stage2.diff) WITHOUT any recovery code.
++// With every knob unset nothing below acts (one cached parameter read per call). Knobs (environment, read once):
++//   NCCL_RDMA_FAULT_INJECT=k              force the data QPs of a send comm to ERR right before this process's k-th
++//                                         first-time multi-send (counted over all send comms of the process)
++//   NCCL_RDMA_FAULT_INJECT_RECV=k         force the data QPs of a recv comm to ERR right before this process's k-th
++//                                         receive post (counted over all recv comms of the process), unless _SILENT
++//   NCCL_RDMA_FAULT_INJECT_RECV_SILENT=1  instead: on the first recv comm that completes a receive, from its k-th
++//                                         receive completion on, force its data QPs to ERR right after a receive
++//                                         completed while another receive of that comm is still pending (its CTS
++//                                         is out, so the sender writes into the dead QP). Nothing tells the peer.
++// Each firing prints one WARN line "NET/IB: [FAULT-INJECT] forced ..." ending in mono_ms (CLOCK_MONOTONIC, taken
++// just before the QP state change). Each knob fires at most once per process.
++NCCL_PARAM(RdmaFaultInject, "RDMA_FAULT_INJECT", 0);
++NCCL_PARAM(RdmaFaultInjectRecv, "RDMA_FAULT_INJECT_RECV", 0);
++NCCL_PARAM(RdmaFaultInjectRecvSilent, "RDMA_FAULT_INJECT_RECV_SILENT", 0);
++
++static double faultInjMonoMs() {
++  struct timespec t;
++  clock_gettime(CLOCK_MONOTONIC, &t);
++  return t.tv_sec * 1e3 + t.tv_nsec * 1e-6;
++}
++
++// Moves every data QP of the comm to ERR (the Stage 2 hook moved qps[0]; NCCL_IB_QPS_PER_CONNECTION defaults to 1).
++static int faultInjQpsToErr(struct ncclIbNetCommBase* base) {
++  int rc = 0;
++  for (int q = 0; q < base->nqps; q++) {
++    struct ibv_qp_attr attr;
++    memset(&attr, 0, sizeof(attr));
++    attr.qp_state = IBV_QPS_ERR;
++    if (wrap_ibv_modify_qp(base->qps[q].qp, &attr, IBV_QP_STATE) != ncclSuccess) rc = 1;
++  }
++  return rc;
++}
++
++static int faultInjSendCount = 0, faultInjSendFired = 0, faultInjRecvCount = 0, faultInjRecvFired = 0;
++
++static void faultInjMaybeSend(struct ncclIbSendComm* comm) {
++  int64_t k = ncclParamRdmaFaultInject();
++  if (k <= 0 || __atomic_load_n(&faultInjSendFired, __ATOMIC_RELAXED)) return;
++  int c = __atomic_add_fetch(&faultInjSendCount, 1, __ATOMIC_RELAXED);
++  if (c == k && !__atomic_exchange_n(&faultInjSendFired, 1, __ATOMIC_RELAXED)) {
++    double t = faultInjMonoMs();
++    int rc = faultInjQpsToErr(&comm->base);
++    WARN("NET/IB: [FAULT-INJECT] forced send QP (qpn=%u) to ERR before multi-send #%d (nqps=%d, rc=%d) mono_ms=%.3f",
++         comm->base.qps[0].qp->qp_num, c, comm->base.nqps, rc, t);
++  }
++}
++
++static void faultInjMaybeRecv(struct ncclIbRecvComm* comm) {
++  int64_t k = ncclParamRdmaFaultInjectRecv();
++  if (k <= 0 || ncclParamRdmaFaultInjectRecvSilent() || __atomic_load_n(&faultInjRecvFired, __ATOMIC_RELAXED)) return;
++  int c = __atomic_add_fetch(&faultInjRecvCount, 1, __ATOMIC_RELAXED);
++  if (c == k && !__atomic_exchange_n(&faultInjRecvFired, 1, __ATOMIC_RELAXED)) {
++    double t = faultInjMonoMs();
++    int rc = faultInjQpsToErr(&comm->base);
++    WARN("NET/IB: [FAULT-INJECT] forced recv QP (qpn=%u) to ERR before receive post #%d (nqps=%d, rc=%d) mono_ms=%.3f",
++         comm->base.qps[0].qp->qp_num, c, comm->base.nqps, rc, t);
++  }
++}
++
++static struct ncclIbNetCommBase* faultInjSilentComm = NULL;
++static int faultInjSilentCount = 0, faultInjSilentFired = 0;
++
++// Called from the receive-completion path with the request whose data just arrived (its event already counted).
++static void faultInjMaybeSilent(struct ncclIbNetCommBase* base, struct ncclIbRequest* cur) {
++  int64_t k = ncclParamRdmaFaultInjectRecv();
++  if (k <= 0 || !ncclParamRdmaFaultInjectRecvSilent() || __atomic_load_n(&faultInjSilentFired, __ATOMIC_RELAXED)) return;
++  struct ncclIbNetCommBase* first = NULL;
++  if (!__atomic_compare_exchange_n(&faultInjSilentComm, &first, base, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED) &&
++      first != base)
++    return;  // armed on the first recv comm that completed a receive only
++  int c = __atomic_add_fetch(&faultInjSilentCount, 1, __ATOMIC_RELAXED);
++  if (c < k) return;
++  int pending = 0;
++  for (int i = 0; i < NET_IB_MAX_REQUESTS; i++) {
++    struct ncclIbRequest* r = base->reqs + i;
++    if (r == cur || r->type != NCCL_NET_IB_REQ_RECV) continue;
++    int ev = 0;
++    for (int d = 0; d < base->vProps.ndevs; d++) ev += r->events[d];
++    if (ev > 0) pending++;
++  }
++  if (pending < 1) return;  // firing with nothing pending would leave the sender idle, waiting for a CTS
++  if (__atomic_exchange_n(&faultInjSilentFired, 1, __ATOMIC_RELAXED)) return;
++  double t = faultInjMonoMs();
++  int rc = faultInjQpsToErr(base);
++  WARN("NET/IB: [FAULT-INJECT] forced recv QP (qpn=%u) to ERR after a receive completion [silent] (nqps=%d, "
++       "pending=%d, completion #%d, rc=%d) mono_ms=%.3f",
++       base->qps[0].qp->qp_num, base->nqps, pending, c, rc, t);
++}
++// ===== end of [RDMA-FAULT-INJECT] =====
+ 
+ NCCL_PARAM(IbArThreshold, "IB_AR_THRESHOLD", -2);
+ int64_t ncclIbArThreshold = 8192;
+@@ -377,6 +470,7 @@ ncclResult_t ncclIbIsend(void* sendComm, void* data, size_t size, int tag, void*
+     if (comm->sendReqsCnt[slot] < nreqs) return ncclSuccess;
+ 
+     TIME_START(0);
++    faultInjMaybeSend(comm);  // [RDMA-FAULT-INJECT] test hook, off unless NCCL_RDMA_FAULT_INJECT>0
+     NCCLCHECK(ncclIbMultiSend(comm, slot));
+ 
+     comm->base.fifoHead++;
+@@ -464,6 +558,7 @@ ncclResult_t ncclIbIrecv(void* recvComm, int n, void** data, size_t* sizes, int*
+   }
+   if (n > NCCL_NET_IB_MAX_RECVS) return ncclInternalError;
+   NCCLCHECK(ncclIbStatsCheckFatalCount(&comm->base.stats, __func__));
++  faultInjMaybeRecv(comm);  // [RDMA-FAULT-INJECT] test hook, off unless NCCL_RDMA_FAULT_INJECT_RECV>0
+ 
+   int nqps = 0;
+   NCCLCHECK(ncclIbCommBaseGetNqpsPerRequest(&comm->base, &nqps));
+@@ -883,6 +978,7 @@ static inline ncclResult_t ncclIbCompletionEventProcess(struct ncclIbNetCommBase
+         ncclIbPostRecvWorkRequest(qp->qp, &recvComm->ibRecvWorkRequest);
+       }
+       req->events[devIndex]--;
++      faultInjMaybeSilent(commBase, req);  // [RDMA-FAULT-INJECT] test hook, off unless _RECV_SILENT=1
+     } else if (wc->opcode == IBV_WC_RDMA_READ) {
+       TRACE(NCCL_NET,
+             "NET/IB: %s: Got completion for a flush request (req=%p, comm=%p, id=%ld, devIndex=%d, qp_num=%u)",
