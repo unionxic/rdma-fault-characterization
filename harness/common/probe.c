@@ -40,6 +40,7 @@ static const char *fault_names[FAULT__COUNT] = {
     [FAULT_LIVE_STOP_OK]       = "live_stop_ok",
     [FAULT_LIVE_CTL_CLOSE]     = "live_ctl_close",
     [FAULT_LIVE_QP_RECREATE]   = "live_qp_recreate",
+    [FAULT_LIVE_STOP_PROBE]    = "live_stop_probe",
 };
 const char *fault_name(fault_type_t f) {
     if (f < 0 || f >= FAULT__COUNT || !fault_names[f]) return "?";

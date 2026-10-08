@@ -236,6 +236,8 @@ static void usage(const char *prog) {
       "         -f fault -r recovery -n iters -o out.csv [-C cpu] [-S msgsize] [-k counter] [-t detect_ms]\n"
       "faults: none local_qp_err rem_access rem_inv_req rnr retry_server_qp_err retry_proc_kill\n"
       "        retry_proc_sigkill retry_link_down partial_write\n"
+      "        live_qp_reset live_qp_init live_qp_rtr live_transient live_stop_err live_stop_ok\n"
+      "        live_ctl_close live_qp_recreate live_stop_probe\n"
       "recovery: qp_only full_rebuild none\n"
       "exit: 0 ok, 1 failure/incomplete, 2 bad args, 3 fault refused by server\n", prog);
 }
@@ -281,7 +283,8 @@ int main(int argc, char **argv) {
     /* both end the server on GO: retry_proc_kill by exiting, retry_proc_sigkill by SIGKILL */
     const bool proc_kill = (fault == FAULT_RETRY_PROC_KILL || fault == FAULT_RETRY_PROC_SIGKILL);
     const bool live_fault = fault >= FAULT_LIVE_QP_RESET;
-    const bool live_stop = (fault == FAULT_LIVE_STOP_ERR || fault == FAULT_LIVE_STOP_OK);
+    const bool live_stop = (fault == FAULT_LIVE_STOP_ERR || fault == FAULT_LIVE_STOP_OK ||
+                            fault == FAULT_LIVE_STOP_PROBE);
     if (proc_kill && iters != 1) {
         fprintf(stderr, "ERROR: %s ends the server each trial: use -n 1 "
                         "(run.sh restarts the server per trial)\n", fault_name(fault));
@@ -319,7 +322,7 @@ int main(int argc, char **argv) {
                 "bytes_sent_psn,sq_psn_delta,bytes_landed_readback,matching_bytes_total,mtu_bytes,"
                 "counter,cnt_delta,sub_cause,peer_rx_delta,"
                 "srv_qp_state,srv_async,cli_async,"
-                "cqe_ns,t_post_mono_ns,resync_ms,stale_lines,truth_alive,truth_how\n");
+                "cqe_ns,t_post_mono_ns,resync_ms,stale_lines,truth_alive,truth_how,probe_ms\n");
     fflush(fo);
 
     int completed = 0;
@@ -388,7 +391,8 @@ int main(int argc, char **argv) {
             case FAULT_LIVE_STOP_ERR:
             case FAULT_LIVE_STOP_OK:
             case FAULT_LIVE_CTL_CLOSE:
-            case FAULT_LIVE_QP_RECREATE: {
+            case FAULT_LIVE_QP_RECREATE:
+            case FAULT_LIVE_STOP_PROBE: {
                 /* F0 control and the live_peer faults: the normal write, polled to its own
                  * first completion (success or error) */
                 t_post_mono = mono_ns();
@@ -508,6 +512,7 @@ int main(int argc, char **argv) {
          * going silent (../teardown_order/), so an unanswered PROBE turns them into
          * proc_kill (peer dead, not recoverable) instead of an access bug. */
         char sub_cause[24] = "-";
+        double probe_ms = -1;   /* live_boundary: PROBE send -> answer read or wait end */
         long peer_rx = -1, peer_tx = -1;
         int peer_port_up = -1;
         bool retry_exc = got == 1 && wc.status == IBV_WC_RETRY_EXC_ERR;
@@ -519,8 +524,13 @@ int main(int argc, char **argv) {
                 struct timeval tv = { 1, 0 };
                 setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
                 errno = 0;
-                if (ctrl_send_line(fd, "PROBE") == 0 &&
-                    ctrl_recv_line(fd, line, sizeof(line)) > 0 &&
+                const uint64_t t_pr0 = now_ns();
+                const int sent = ctrl_send_line(fd, "PROBE");
+                const int got_line = (sent == 0) ? ctrl_recv_line(fd, line, sizeof(line)) : -1;
+                const int probe_errno = errno;
+                probe_ms = (double)(now_ns() - t_pr0) / 1e6;
+                errno = probe_errno;
+                if (sent == 0 && got_line > 0 &&
                     sscanf(line, "PROBED %ld %ld %d", &peer_rx, &peer_tx, &peer_port_up) >= 1) {
                     if (retry_exc)
                         snprintf(sub_cause, sizeof(sub_cause), peer_port_up == 0 ? "link_down" : "server_qp_err");
@@ -610,14 +620,14 @@ int main(int argc, char **argv) {
         long recover_ns = (t_rec1 > t_rec0 && t_rec0) ? (long)(t_rec1 - t_rec0) : -1;
 
         fprintf(fo, "%s,%d,%s,%ld,%d,%s,0x%x,\"%s\",\"%s\",%d,%d,%ld,%d,%ld,%ld,%ld,%ld,%d,%s,%ld,%s,%ld,"
-                    "%s,%s,%s,%ld,%" PRIu64 ",%ld,%d,%d,%s\n",
+                    "%s,%s,%s,%ld,%" PRIu64 ",%ld,%d,%d,%s,%.3f\n",
                 fault_name(fault), it, recovery_name(recovery),
                 detect_ns, st_code, st_name, ven, cause, action,
                 peer_alive, auto_rec, recover_ns, verify_ok,
                 bytes_sent_psn, sq_delta, landed_rb, match_total, ep.mtu_bytes,
                 counter, cnt_delta, sub_cause, peer_rx,
                 srv_qp, srv_async, cli_async,
-                cqe_ns, t_post_mono, resync_ms, stale_lines, truth_alive, truth_how);
+                cqe_ns, t_post_mono, resync_ms, stale_lines, truth_alive, truth_how, probe_ms);
         fflush(fo);
         completed++;
 
@@ -628,8 +638,8 @@ int main(int argc, char **argv) {
         if (fault == FAULT_PARTIAL_WRITE)
             fprintf(stderr, " sent_psn=%ld (sq_delta=%ld) landed_readback=%ld match_total=%ld",
                     bytes_sent_psn, sq_delta, landed_rb, match_total);
-        fprintf(stderr, " cqe_ns=%ld resync_ms=%ld stale_lines=%d truth_alive=%d(%s)",
-                cqe_ns, resync_ms, stale_lines, truth_alive, truth_how);
+        fprintf(stderr, " cqe_ns=%ld resync_ms=%ld stale_lines=%d truth_alive=%d(%s) probe_ms=%.3f",
+                cqe_ns, resync_ms, stale_lines, truth_alive, truth_how, probe_ms);
         fputc('\n', stderr);
 
         if (ctl_dead) break;   /* the control connection is gone: no further trial */

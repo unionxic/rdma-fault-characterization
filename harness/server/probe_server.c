@@ -35,6 +35,8 @@
  *                         process lives on; a new connection gets "ALIVE <pid> <QP state>" to
  *                         "ALIVE?" (20 s), then the server exits normally
  *     live_qp_recreate  : own QP destroyed and a new one created and left in INIT
+ *     live_stop_probe   : own QP -> ERR on GO; on the first PROBE the process stops itself for
+ *                         LIVE_STOP_MS (0 = no stop) before it answers (live_boundary study)
  *   RESYNC <n> is answered with RESYNCED <n> (the client drops late answers after a stop).
  *   retry_link_down     : `sudo -n ip link set dev <iface> down` on GO. Checked at
  *                         TRIAL time: if the link cannot be toggled the reply is
@@ -393,6 +395,7 @@ int main(int argc, char **argv) {
             case FAULT_RETRY_SERVER_QP_ERR:
             case FAULT_LIVE_STOP_ERR:
             case FAULT_LIVE_CTL_CLOSE:
+            case FAULT_LIVE_STOP_PROBE:
                 applied = ep_to_err(&ep) == 0; break;
             case FAULT_LIVE_QP_RESET:
                 applied = ep_to_reset(&ep) == 0; break;
@@ -454,12 +457,23 @@ int main(int argc, char **argv) {
         uint64_t tx0 = port_counter_read(ep.dev_name, ep.ib_port, "port_xmit_packets");
 
         /* recovery coordination (client drives), answering PROBE liveness queries */
-        bool trial_done = false, stop = false;
+        bool trial_done = false, stop = false, probe_stalled = false;
         while (!trial_done) {
             n = ctrl_recv_line(fd, line, sizeof(line));
             if (n < 0) { fprintf(stderr, "[server] client closed mid-trial\n"); stop = true; break; }
             if (strcmp(line, "PROBE") == 0) {
                 if (g_no_probe_reply) continue;   /* test only: a live peer that does not answer */
+                if (fault == FAULT_LIVE_STOP_PROBE && !probe_stalled && live_stop_ms > 0) {
+                    /* live_boundary: stop at the moment the liveness probe arrives, then answer */
+                    probe_stalled = true;
+                    uint64_t t_stop = 0, t_cont = 0;
+                    if (lp_stall_self(&g_stall, (uint32_t)live_stop_ms, &t_stop, &t_cont) < 0) {
+                        fprintf(stderr, "[server] stall helper gone\n"); stop = true; break;
+                    }
+                    fprintf(stderr, "[server] stall_begin mono_ns=%" PRIu64 " ms=%ld on=probe\n", t_stop, live_stop_ms);
+                    fprintf(stderr, "[server] stall_end mono_ns=%" PRIu64 " measured_ms=%.3f\n", t_cont,
+                            (double)(t_cont - t_stop) / 1e6);
+                }
                 uint64_t rx = port_counter_read(ep.dev_name, ep.ib_port, "port_rcv_packets");
                 uint64_t tx = port_counter_read(ep.dev_name, ep.ib_port, "port_xmit_packets");
                 long rxd = (rx0 != UINT64_MAX && rx != UINT64_MAX) ? (long)(rx - rx0) : -1;
