@@ -42,6 +42,18 @@
 //   context c's signal 0 and checks region c on the device; the host then checks every slot and both final signals. The
 //   usual kv keys combine both contexts (tx_done: the smaller; tx_rc, rx_rc: the first error; slots and signals: both);
 //   rank 0 adds dual_* keys about context 1 while context 0 was held (its longest iteration), see dualReport.
+// gin-harden (all optional; without them the program does what it did):
+//   rx_phantom (kv, every receiver of the one-thread loop): iterations whose signal wait returned ncclSuccess while the
+//     signal value it read was still below the iteration's target (a wait released without its signal).
+//   GIN_TS_HOG_MS=<ms>: once the GIN kernel(s) made their first iteration, launch a kernel that fills every SM (blocks
+//     per SM from the occupancy calculator x SMs, 256 threads) and spins <ms> on its own stream (kv hog_*).
+//   GIN_TS_SHRINK=1 (rank 0): after the main wait, ncclCommShrink(comm, {1}, NCCL_SHRINK_ABORT); if it returns a
+//     communicator, check it with a 1024-float ncclAllReduce (bounded 5 s) and destroy it (kv ho_*); then wait up to
+//     GIN_TS_HO_WAIT_S (3) for the old kernel; after the final ncclCommAbort the receiver's results are read again
+//     (kv post_abort_rx_*), so a wait the abort released with ncclSuccess shows as a phantom.
+//   rs_* (kv): ncclGinGetRecoveryStats of the communicator before the teardown, looked up with dlsym (rs_api=0 when the
+//     library has no such API).
+//   -DGIN_TS_STOCK_API: build against pristine NCCL (the blocking flush returns void there).
 // exit: 0 all iterations ok and nothing surfaced; 2 NCCL call error; 3 async error seen by the host;
 //       4 a device wait/flush returned an error or timed out; 5 data/signal check failed;
 //       6 CUDA error; 7 watchdog.
@@ -66,11 +78,28 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <dlfcn.h>
+
+// gin-harden: pristine NCCL's blocking flush returns void; the research builds return the classified error.
+#ifdef GIN_TS_STOCK_API
+#define GIN_TS_FLUSH_BLOCKING(gin, coop) ((gin).flush(coop), ncclSuccess)
+#else
+#define GIN_TS_FLUSH_BLOCKING(gin, coop) (gin).flush(coop)
+#endif
 
 static int g_rank = -1;
 static FILE* g_kv = nullptr;
 static ncclComm_t g_comm = nullptr;
 static cudaStream_t g_stream = nullptr;  // the kernel's stream (post-abort observation only)
+// gin-harden (GIN_TS_SHRINK): what teardownExit reads again after the final ncclCommAbort
+struct RxOut;
+static bool g_hoPost = false;
+static RxOut* g_hoRx = nullptr;
+static unsigned long long* g_hoSig = nullptr;
+static unsigned long long g_hoBase = 0;
+static int g_hoIters = 0;
+static cudaStream_t g_hoStream2 = nullptr;
+static void hoPostAbortRead();  // below
 static const uint8_t POISON = 0xA5;
 
 static double nowSec() {
@@ -149,6 +178,13 @@ static void teardownExit(int code) {
          g_mon->lastAbortSampleMs.load() < 0 ? -1.0 : g_mon->lastAbortSampleMs.load() - a0);
     }
     const char* pw = getenv("GIN_TS_POST_ABORT_WAIT_S");
+    if (pw && g_stream && g_hoPost) {  // gin-harden: the old kernel finished only after the abort: read it now
+      const double lim = atof(pw) * 1000.0, t0 = monoMs();
+      while ((cudaStreamQuery(g_stream) == cudaErrorNotReady ||
+              (g_hoStream2 && cudaStreamQuery(g_hoStream2) == cudaErrorNotReady)) && monoMs() - t0 < lim)
+        usleep(1000);
+      hoPostAbortRead();
+    }
     if (pw && g_stream) {
       const double lim = atof(pw) * 1000.0, t0 = monoMs();
       cudaError_t q = cudaStreamQuery(g_stream);
@@ -262,7 +298,7 @@ __device__ void txBody(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t bytes,
     if (threadIdx.x == 0) gin.put(ncclTeamWorld(devComm), peer, recvWin, dst, sendWin, off, bytes, ncclGin_WeakSignalInc{0});
     ncclResult_t rc;
     if (useTimeout) rc = gin.flush(ncclCoopCta(), cuda::memory_order_acquire, ncclGin_None{}, timeoutCycles);
-    else rc = gin.flush(ncclCoopCta());
+    else rc = GIN_TS_FLUSH_BLOCKING(gin, ncclCoopCta());
     unsigned long long t1 = gtNow();
     if (threadIdx.x == 0) {
       lat[i] = t1 - t0;
@@ -322,7 +358,7 @@ __global__ void txGetKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t b
     gin.get(ncclTeamWorld(devComm), peer, sendWin, goff, recvWin, goff, getBytes);
     ncclResult_t rc;
     if (useTimeout) rc = gin.flush(ncclCoopCta(), cuda::memory_order_acquire, ncclGin_None{}, timeoutCycles);
-    else rc = gin.flush(ncclCoopCta());
+    else rc = GIN_TS_FLUSH_BLOCKING(gin, ncclCoopCta());
     unsigned long long t1 = gtNow();
     lat[i] = t1 - t0;
     if (rc != ncclSuccess) {
@@ -459,7 +495,7 @@ __global__ void txBurstKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t
     gin.signal(ncclTeamWorld(devComm), 1, ncclGin_StrongSignalInc{(ncclGinSignal_t)(t % NS)}, ncclCoopThread{});
     ncclResult_t rc;
     if (useTimeout) rc = gin.flush(ncclCoopThread(), cuda::memory_order_acquire, ncclGin_None{}, timeoutCycles);
-    else rc = gin.flush(ncclCoopThread());
+    else rc = GIN_TS_FLUSH_BLOCKING(gin, ncclCoopThread());
     const unsigned long long dt = gtNow() - t0;
     if (dt > o.maxLatNs) {
       o.maxLatNs = dt;
@@ -573,7 +609,7 @@ __global__ void dualTxKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t 
     if (threadIdx.x == 0) gin.put(ncclTeamWorld(devComm), peer, recvWin, off, sendWin, off, bytes, ncclGin_WeakSignalInc{0});
     ncclResult_t rc;
     if (useTimeout) rc = gin.flush(ncclCoopCta(), cuda::memory_order_acquire, ncclGin_None{}, timeoutCycles);
-    else rc = gin.flush(ncclCoopCta());
+    else rc = GIN_TS_FLUSH_BLOCKING(gin, ncclCoopCta());
     const unsigned long long t1 = gtNow();
     if (threadIdx.x == 0) {
       tS[(size_t)c * iters + i] = t0;
@@ -636,6 +672,65 @@ __global__ void dualRxKernel(const uint8_t* recvBuf, size_t bytes, int iters, co
     }
   }
   if (threadIdx.x == 0) out->done = iters;
+}
+
+// ---- gin-harden: a kernel that fills every SM for a while (GIN_TS_HOG_MS) ------------------------------------------
+__global__ void hogKernel(unsigned long long ns, unsigned long long* sink) {
+  const unsigned long long t0 = gtNow();
+  unsigned long long x = 0;
+  while (gtNow() - t0 < ns) x += threadIdx.x;
+  if (x == 1ull) *sink = x;  // never true in practice; keeps the loop
+}
+
+// gin-harden: count the receiver's iterations whose wait returned ncclSuccess while the signal it read (sigSeen) was
+// below the iteration's target base + i + 1 (a wait released without its signal).
+static int phantomCount(const unsigned long long* seen, int done, unsigned long long base, int* first) {
+  int n = 0;
+  *first = -1;
+  for (int i = 0; i < done; i++)
+    if (seen[i] < base + (unsigned long long)(i + 1)) {
+      if (n == 0) *first = i;
+      n++;
+    }
+  return n;
+}
+
+static void hoPostAbortRead() {
+  if (!g_hoRx || !g_hoSig || g_hoIters <= 0) return;
+  RxOut o;
+  std::vector<unsigned long long> seen((size_t)g_hoIters);
+  const cudaError_t e1 = cudaMemcpy(&o, g_hoRx, sizeof(o), cudaMemcpyDeviceToHost);
+  const cudaError_t e2 = cudaMemcpy(seen.data(), g_hoSig, sizeof(unsigned long long) * g_hoIters, cudaMemcpyDeviceToHost);
+  if (e1 != cudaSuccess || e2 != cudaSuccess) {
+    kv("post_abort_read=failed post_abort_cuda=%s", cudaGetErrorName(e1 != cudaSuccess ? e1 : e2));
+    return;
+  }
+  int first = -1;
+  const int ph = phantomCount(seen.data(), std::max(0, std::min(o.done, g_hoIters)), g_hoBase, &first);
+  kv("post_abort_read=ok post_abort_rx_done=%d post_abort_rx_rc=%s post_abort_rx_phantom=%d post_abort_rx_phantom_first=%d "
+     "post_abort_dev_bad_slots=%d", o.done, ncclGetErrorString((ncclResult_t)o.rc), ph, first, o.badSlots);
+}
+
+// gin-harden: ncclGinGetRecoveryStats (research builds only), looked up at run time so that one binary runs with every
+// library (rs_api=0 when the symbol is absent).
+static void recoveryStats(ncclComm_t comm) {
+#ifdef NCCL_GIN_RECOVERY_STATS_VERSION
+  typedef ncclResult_t (*fn_t)(ncclComm_t, ncclGinRecoveryStats_t*);
+  fn_t f = (fn_t)dlsym(RTLD_DEFAULT, "ncclGinGetRecoveryStats");
+  if (f == nullptr) {
+    kv("rs_api=0");
+    return;
+  }
+  ncclGinRecoveryStats_t st;
+  const ncclResult_t rc = f(comm, &st);
+  kv("rs_api=1 rs_rc=%s rs_version=%d rs_contexts=%d rs_rounds=%llu rs_recovered=%llu rs_declined=%llu rs_reconnects=%llu "
+     "rs_deaths=%llu rs_escalations=%llu rs_cancelled=%llu rs_fw_overruns=%llu rs_copy_timeouts=%llu rs_escalated=%d",
+     ncclGetErrorString(rc), st.version, st.contexts, st.roundsStarted, st.recovered, st.declined, st.reconnects,
+     st.deathsJudged, st.escalations, st.cancelled, st.fwOverruns, st.copyTimeouts, st.escalatedNow);
+#else
+  (void)comm;
+  kv("rs_api=0");
+#endif
 }
 
 static int cmpU64(const void* a, const void* b) {
@@ -975,6 +1070,25 @@ int main(int argc, char** argv) {
   }
   CK(cudaGetLastError());
   kv("launch_mono_ms=%.3f", tLaunch);
+  // gin-harden: GIN_TS_HOG_MS fills every SM with a spinning kernel once the GIN kernel(s) made their first iteration
+  // (they are resident by then), so a recovery has to run while the application occupies the whole GPU.
+  const long hogMs = getenv("GIN_TS_HOG_MS") ? atol(getenv("GIN_TS_HOG_MS")) : 0;
+  cudaStream_t st3 = nullptr;
+  if (hogMs > 0) {
+    int sms = 0, perSm = 0;
+    CK(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0));
+    CK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm, hogKernel, 256, 0));
+    unsigned long long* dSink = nullptr;
+    CK(cudaMalloc(&dSink, sizeof(unsigned long long)));
+    CK(cudaStreamCreateWithFlags(&st3, cudaStreamNonBlocking));
+    const double w0 = monoMs();
+    while (*(volatile int*)hProg < 1 && *(volatile int*)hProgR < 1 && monoMs() - w0 < 2000.0) usleep(100);
+    const double tHog = monoMs();
+    hogKernel<<<sms * perSm, 256, 0, st3>>>((unsigned long long)hogMs * 1000000ull, dSink);
+    const cudaError_t he = cudaGetLastError();
+    kv("hog_ms=%ld hog_sms=%d hog_blocks_per_sm=%d hog_blocks=%d hog_launch_after_launch_ms=%.1f hog_launch_err=%s", hogMs,
+       sms, perSm, sms * perSm, tHog - tLaunch, cudaGetErrorName(he));
+  }
   // wait for the kernel(s); if the host sees an async error the application gives up (exit 3), bounded
   int exitCode = 0;
   const char* outcome = "ok";
@@ -999,9 +1113,75 @@ int main(int argc, char** argv) {
     }
     usleep(500);
   }
-  const double tEnd = monoMs();
+  double tEnd = monoMs();
+  // gin-harden: GIN_TS_SHRINK=1 on rank 0 (rank 1 is killed by the runner): hand the failure to the application, which
+  // shrinks the communicator to the survivors with NCCL_SHRINK_ABORT and checks that the result works.
+  const bool shrinkMode = rank == 0 && getenv("GIN_TS_SHRINK") && atoi(getenv("GIN_TS_SHRINK")) != 0;
+  if (shrinkMode) {
+    const bool doneBefore = !busy();
+    kv("ho_kernel_done_before_shrink=%d ho_async_seen=%d kernel_ms_before_shrink=%.1f", doneBefore ? 1 : 0,
+       mon.firstMs.load() >= 0 ? 1 : 0, tEnd - tLaunch);
+    const double wdS = getenv("GIN_TS_SHRINK_WD_S") ? atof(getenv("GIN_TS_SHRINK_WD_S")) : 30.0;
+    int excl[1] = {1};
+    ncclComm_t nc = nullptr;
+    const double s0 = monoMs();
+    kv("ho_shrink_start_mono_ms=%.3f", s0);
+    alarm((unsigned)wdS);
+    const ncclResult_t sr = ncclCommShrink(g_comm, excl, 1, &nc, nullptr, NCCL_SHRINK_ABORT);
+    alarm(0);
+    const double s1 = monoMs();
+    kv("ho_shrink_rc=%s ho_shrink_ms=%.1f ho_newcomm=%d", ncclGetErrorString(sr), s1 - s0, nc != nullptr ? 1 : 0);
+    if (sr == ncclSuccess && nc != nullptr) {
+      int nr = -1;
+      (void)ncclCommCount(nc, &nr);
+      float* dbuf = nullptr;
+      std::vector<float> hin(1024), hout(1024, -1.0f);
+      for (int i = 0; i < 1024; i++) hin[i] = (float)(i + 1);
+      cudaStream_t s4;
+      CK(cudaStreamCreateWithFlags(&s4, cudaStreamNonBlocking));
+      CK(cudaMalloc(&dbuf, 2 * 1024 * sizeof(float)));
+      CK(cudaMemcpy(dbuf, hin.data(), 1024 * sizeof(float), cudaMemcpyHostToDevice));
+      const double c0 = monoMs();
+      const ncclResult_t ar = ncclAllReduce(dbuf, dbuf + 1024, 1024, ncclFloat, ncclSum, nc, s4);
+      bool fin = false;
+      while (ar == ncclSuccess && monoMs() - c0 < 5000.0) {
+        const cudaError_t q = cudaStreamQuery(s4);
+        if (q == cudaSuccess) { fin = true; break; }
+        if (q != cudaErrorNotReady) break;
+        usleep(200);
+      }
+      int ok = 0;
+      if (fin && cudaMemcpy(hout.data(), dbuf + 1024, 1024 * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess) {
+        ok = 1;
+        for (int i = 0; i < 1024; i++) ok &= (hout[i] == hin[i] * (float)nr);
+      }
+      ncclResult_t na = ncclSuccess;
+      ncclCommGetAsyncError(nc, &na);
+      kv("ho_newcomm_nranks=%d ho_allreduce_rc=%s ho_allreduce_done=%d ho_check_ok=%d ho_check_ms=%.1f ho_newcomm_async=%s",
+         nr, ncclGetErrorString(ar), fin ? 1 : 0, ok, monoMs() - c0, ncclGetErrorString(na));
+      alarm(15);
+      const double d0 = monoMs();
+      const ncclResult_t dr = ncclCommDestroy(nc);
+      alarm(0);
+      kv("ho_newcomm_destroy_rc=%s ho_newcomm_destroy_ms=%.1f", ncclGetErrorString(dr), monoMs() - d0);
+    }
+    // the old kernel: exited by now? (released with an error in the research build; see post_abort_* otherwise)
+    const double hoWaitMs = (getenv("GIN_TS_HO_WAIT_S") ? atof(getenv("GIN_TS_HO_WAIT_S")) : 3.0) * 1000.0;
+    const double w0 = monoMs();
+    while (busy() && monoMs() - w0 < hoWaitMs) usleep(1000);
+    kv("ho_old_kernel_done=%d ho_old_kernel_exit_after_shrink_ms=%.1f", busy() ? 0 : 1, busy() ? -1.0 : monoMs() - s1);
+    tEnd = monoMs();
+  }
   const bool kernelDone = !busy();
   kv("kernel_done=%d kernel_ms=%.1f progress=%d progress_rx=%d", kernelDone ? 1 : 0, tEnd - tLaunch, *hProg, *hProgR);
+  if (shrinkMode && !kernelDone && receiver && !dual && !isBurst) {  // read the receiver again after the final abort
+    g_hoPost = true;
+    g_hoRx = dRx;
+    g_hoSig = dSig;
+    g_hoBase = bases[0];
+    g_hoIters = iters;
+    g_hoStream2 = st2;
+  }
   if (sender && kernelDone && dual) {
     std::vector<TxOut> o(2);
     CK(cudaMemcpy(o.data(), dTxD, sizeof(TxOut) * 2, cudaMemcpyDeviceToHost));
@@ -1156,6 +1336,12 @@ int main(int argc, char** argv) {
       rxDone = o.done;
       devBad = o.badSlots;
       devFirstBad = o.badSlots ? o.firstBad : -1;
+      // gin-harden: waits that returned ncclSuccess without their signal (the value read was below the target)
+      std::vector<unsigned long long> seen((size_t)iters);
+      CK(cudaMemcpy(seen.data(), dSig, sizeof(unsigned long long) * iters, cudaMemcpyDeviceToHost));
+      int pf = -1;
+      const int ph = phantomCount(seen.data(), std::max(0, std::min(o.done, iters)), bases[0], &pf);
+      kv("rx_phantom=%d rx_phantom_first=%d", ph, pf);
     }
     kv("rx_done=%d rx_rc=%s rx_rc_it=%d dev_bad_slots=%d dev_first_bad=%d", rxDone,
        ncclGetErrorString((ncclResult_t)rxRc), rxRcIt, devBad, devFirstBad);
@@ -1226,6 +1412,8 @@ int main(int argc, char** argv) {
   ncclResult_t fa = ncclSuccess;
   ncclCommGetAsyncError(g_comm, &fa);
   if (mon.firstMs.load() >= 0 && exitCode == 0) { exitCode = 3; outcome = "async_error"; }
+  recoveryStats(g_comm);  // gin-harden
+  if (st3 != nullptr) kv("hog_running_at_end=%d", cudaStreamQuery(st3) == cudaErrorNotReady ? 1 : 0);
   kv("async_first=%s async_first_ms_after_launch=%.1f async_err_samples=%ld async_samples=%ld final_async=%s",
      mon.firstMs.load() >= 0 ? ncclGetErrorString((ncclResult_t)mon.firstErr.load()) : "none",
      mon.firstMs.load() >= 0 ? mon.firstMs.load() - tLaunch : -1.0, mon.errSamples.load(), mon.samples.load(),
