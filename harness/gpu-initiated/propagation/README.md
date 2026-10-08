@@ -1,8 +1,7 @@
 # propagation: 계층별 오류 전파 측정
 
 같은 RDMA 장애가 NIC에서 앱까지 올라가는 동안 어느 계층에서 정보가 남고 어디서 사라지는지 쟀다.
-예측을 실행 전에 고정하고(태그 `prereg/propagation-v1`), 2026-10-06에 캠페인 325회를 돌려 비교했다.
-진행 기록 전체는 [EXPERIMENT.md](EXPERIMENT.md)에 있다.
+예측을 실행 전에 고정하고(태그 `prereg/propagation-v1`), 2026-10-06에 325회를 돌려 비교했다.
 
 ## 무엇을 쟀나
 
@@ -10,7 +9,7 @@
   GPU 장치 코드), 앱이 받는 API 값, 호스트(비동기 오류와 로그), 정리(abort나 finalize).
 - **장애 다섯 가지:** 장애 없음, 로컬 QP 오류, 원격 접근 오류(MR 밖 주소에 쓰기), 재시도 초과(상대 QP를
   오류 상태로), 상대 프로세스 kill.
-- **스택:** CPU verbs 하네스, NCCL GIN(프록시, GPU가 직접 doorbell을 울리는 GDAKI, GDAKI + 장치 쪽 분류기),
+- **스택:** CPU verbs harness, NCCL GIN(프록시, GPU가 직접 doorbell을 울리는 GDAKI, GDAKI + 장치 쪽 분류기),
   NVSHMEM(공식 3.8.0, devel, FT v2.2), NCCL 2.23.4 net_ib(원본과 복구 패치).
 - **두 가지 척도:** 계층마다 장애가 장애 없음과 다르게 보인 비율(전파율)과, 서로 구분되는 원인 묶음 수.
 
@@ -18,18 +17,17 @@
 
 - **원본 스택에서는 위로 갈수록 정보가 줄어든다.**
   - GIN 프록시는 CQE에서 4묶음으로 갈리던 장애가 API에서는 "오류 있음/없음" 2묶음이 된다.
-  - GIN GDAKI의 blocking 대기는 로컬 QP 오류, 원격 접근 오류, 재시도 초과를 성공으로 돌려준다(25/25).
+  - GIN GDAKI의 blocking 대기는 로컬 QP 오류, 원격 접근 오류, 재시도 초과를 성공으로 돌려준다.
     호스트는 10 s 주기 검사에서야 안다.
-  - NVSHMEM 3.8.0의 GPU 처리 경로는 상대가 죽어도 API가 성공을 돌려주고(10/10), 정리에서 멈춘다.
+  - NVSHMEM 3.8.0의 GPU 처리 경로는 상대가 죽어도 API가 성공을 돌려주고, 정리에서 멈춘다.
 - **위가 바로 아래 계층보다 잘게 나뉜 곳은 11곳이고, 모두 설명된다.**
-  - 덧붙인 채널(3곳): 상대 생존 확인(CPU 하네스, NVSHMEM FT), 원인 CQE를 다시 찾는 장치 쪽 분류기.
+  - 덧붙인 채널(3곳): 상대 생존 확인(CPU harness, NVSHMEM FT), 원인 CQE를 다시 찾는 장치 쪽 분류기.
   - 아래 계층에서 곧장 온 경로(3곳): 프록시 스레드가 쓰는 로그, 호스트의 주기 검사, NIC의 비동기 QP 이벤트.
   - 앞 계층이 이미 멈춘 결과(3곳): 대기가 멈춰서 정리도 멈춘 경우다. API보다 잘게 나뉘지는 않는다.
   - 나머지 2곳은 NVSHMEM 3.8.0 GPU 처리 경로와 버그 수정본의 정리 단계다. 2026-10-07 후속 측정에서 정리는
-    장치 장벽에서 상대의 신호를 기다리다 멈췄다(10/10). 상대의 참여를 기다리는 대기가 통로다
-    ([teardown_channel](../nvshmem_rootcause/teardown_channel/EXPERIMENT.md)).
-- **단방향 GIN의 받는 쪽은 원인을 모른다.** 프록시의 받는 쪽 API는 장애 30/30에서 "신호가 오지 않음"
-  하나로만 끝났고, 비동기 오류는 한 번도 받지 못했다. GDAKI의 받는 쪽은 40/40에서 대기와 정리가 멈췄다.
+    장치 장벽에서 상대의 신호를 기다리다 멈췄다. 상대의 참여를 기다리는 대기가 통로다.
+- **단방향 GIN의 받는 쪽은 원인을 모른다.** 프록시의 받는 쪽 API는 모든 장애에서 "신호가 오지 않음" 하나로만
+  끝났고, 비동기 오류는 한 번도 받지 못했다. GDAKI의 받는 쪽은 대기와 정리가 매번 멈췄다.
 - **사전 등록 예측은 대부분 맞았다.** 계층별 분할은 비교한 20줄 중 19줄, 개별 예측은 25줄 중 21줄이
   맞았다. 틀린 것은 상대 kill과 net_ib 복구 경로에 대한 예측이다.
 
@@ -40,7 +38,7 @@
 
 | 스택 | CQE | CQ를 읽는 코드 | API | 호스트 비동기 오류 | 호스트 로그 | 정리 |
 |---|--:|--:|--:|--:|--:|--:|
-| CPU verbs 하네스 | 4 | 5 (생존 확인) | - | 1 | - | 1 |
+| CPU verbs harness | 4 | 5 (생존 확인) | - | 1 | - | 1 |
 | GIN 프록시 | 4 | 4 | 2 | 2 | 4 | 1 |
 | GIN GDAKI | - | - | 2 (상대 kill만 따로) | 2 | 2 | 1 |
 | GDAKI + 장치 쪽 분류기 | 4 | 4 | 2 | 2 | 4 | 1 |
@@ -48,24 +46,27 @@
 | NVSHMEM 3.8.0 GPU 처리, CPU 프록시 + 버그 수정 | - | - | 1 | - | 1 | 2 |
 | NVSHMEM FT v2.2 | 4 | 4 | 4 | - | 5 (생존 확인) | 1 |
 
+| 관찰 | 결과 |
+|---|---|
+| GIN GDAKI blocking 대기가 로컬 QP 오류, 원격 접근 오류, 재시도 초과를 성공으로 돌려줌 | 25/25 |
+| NVSHMEM 3.8.0 GPU 처리 경로, 상대 kill 뒤 API 성공 | 10/10 |
+| NVSHMEM 3.8.0 GPU 처리 경로와 버그 수정본, 정리가 장치 장벽에서 멈춤(2026-10-07 후속 측정) | 10/10 |
+| 단방향 GIN 프록시, 받는 쪽 API가 "신호가 오지 않음"으로만 끝남 | 30/30 |
+| 단방향 GIN GDAKI, 받는 쪽 대기와 정리가 멈춤 | 40/40 |
+
 - NVSHMEM 3.8.0은 장애 없음과 상대 kill만, NVSHMEM devel은 로컬, 원격, 재시도 세 장애만 돌렸다.
   devel은 GPU 처리 경로에서 CQE가 3묶음, CPU 프록시 경로에서는 오류 CQE가 아예 없었다(0/30).
 - net_ib는 장애 없음과 원격 접근 오류만 돌렸고, 모든 계층에서 둘이 갈렸다. 받는 쪽 API까지 오류가 갔다.
 - 포트 오류 카운터는 verbs로 만든 QP에서만 올랐다(130/130, DEVX 스택은 0/150). 혼잡 알림 처리
   카운터는 재시도 초과와 상대 kill에서만 9–13 올랐다(105/115). 이것은 DEVX 스택에서도 마찬가지였다.
-- 표 전체와 시행별 값: [LAYERS.md](results/20261006_campaign/LAYERS.md),
-  [layers_trials.csv](results/20261006_campaign/layers_trials.csv). 예측 채점:
-  [SCORE.md](results/20261006_campaign/SCORE.md).
 
 ## 한계
 
 - 노드 한 쌍, NIC 한 종류(ConnectX-6)에서만 쟀다. 범위는 mlx5 기반 스택이다.
 - 장애는 소프트웨어로 주입했다. 실제 link down은 하지 않았다.
 - GIN GDAKI와 NVSHMEM 3.8.0은 CQE를 남기지 않아 그 계층을 재지 못했다.
-- 상대 kill 20회는 러너 실수로 무효여서 다시 돌렸다. 이 결정과 옛 로그 묶음 선택은 1차 채점을 본 뒤
-  했다([DEVIATIONS.md](DEVIATIONS.md) 10, 11).
-- 표는 한 에이전트가 만들고 다른 에이전트가 원자료에서 따로 다시 만들어 대조했다. 정의 차이 두 곳 외에는
-  같았다.
+- 상대 kill 20회는 실행기 실수로 무효여서 다시 돌렸다. 이 결정과 옛 로그 묶음 선택은 1차 채점을 본 뒤 했다.
+- 표는 한 agent가 만들고 다른 agent가 원자료에서 따로 다시 만들어 대조했다. 정의 차이 두 곳 외에는 같았다.
 
 ## 파일
 
@@ -74,8 +75,10 @@
 | [EXPERIMENT.md](EXPERIMENT.md) | 기획부터 결론까지 진행 기록 |
 | [PREDICTIONS.md](PREDICTIONS.md), [predictions.csv](predictions.csv), [PREREG.txt](PREREG.txt) | 사전 등록 예측과 해시(태그로 고정) |
 | [REVIEW_20261006.md](REVIEW_20261006.md), [review_20261006/](review_20261006/) | 기존 결과 검토와 예측한 계층별 분할 |
-| [DEVIATIONS.md](DEVIATIONS.md) | 사전 등록 뒤 바뀐 것 |
+| [DEVIATIONS.md](DEVIATIONS.md) | 사전 등록 뒤 바뀐 것. 상대 kill 재실행과 옛 로그 묶음 선택은 10, 11번 |
 | [results/20261006_campaign/](results/20261006_campaign/) | 채점, 계층별 표, 독립 검증 |
+| [LAYERS.md](results/20261006_campaign/LAYERS.md), [layers_trials.csv](results/20261006_campaign/layers_trials.csv) | 계층별 표 전체와 시행별 값 |
+| [SCORE.md](results/20261006_campaign/SCORE.md) | 예측 채점 |
+| [teardown_channel](../nvshmem_rootcause/teardown_channel/EXPERIMENT.md) | NVSHMEM 정리가 상대의 참여를 기다리다 멈추는 후속 측정 |
 | `campaign/`, `evrec/` | 실행기, 채점기, 계층별 표 생성기, 이벤트 기록기 |
-
-원자료는 Release `data-20261006`에 있다([DATA.md](../../../DATA.md)).
+| Release `data-20261006` | 원자료. 목록과 체크섬은 [DATA.md](../../../DATA.md) |
