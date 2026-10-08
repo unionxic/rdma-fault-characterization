@@ -11,7 +11,7 @@
 #      = uniform in [FAULT_LO, FAULT_HI]), SHOTS (",d2,d3,..." extra F1 shots), KILL_MS (F4: SIGKILL of
 #      PE1 this long after PE0 starts its kernel), CUT_S (FLAP: outage seconds), CUT_AT_MS (FLAP: cut
 #      this long after PE0 starts its kernel), FETCH=1 (--fetch), PROC_TIMEOUT KTIMEOUT, TAG, BUNDLE
-#      BUNDLE_V22 BIN, XENV (one extra VAR=value exported in both processes, e.g.
+#      BUNDLE_V22 BUNDLE_STOCK BIN (nvt1_drv | nvt1v22_drv | nvt1st_drv), HANDLER (auto), XENV (one extra VAR=value exported in both processes, e.g.
 #      CUDA_DEVICE_MAX_CONNECTIONS=32), SOCK_DIR (both|in), and the knobs
 #      of env_t1.sh (FT RING T1 T1SKIP SKIP HOLD_MS ... GID_R GID_S RC_PER_PE RC_MAP); NOFIN=1 (--no-finalize).
 set -u
@@ -22,8 +22,10 @@ mkdir -p "$OUTDIR"
 RAIN_MGMT=192.0.2.193
 SUNNY_SSH=unionxic@192.0.2.194
 BIN=${BIN:-nvt1_drv}
-case "$BIN" in nvt1_drv|nvt1v22_drv) ;; *) echo "refusing binary name $BIN" >&2; exit 2 ;; esac
+case "$BIN" in nvt1_drv|nvt1v22_drv|nvt1st_drv) ;; *) echo "refusing binary name $BIN" >&2; exit 2 ;; esac
 [ "$BIN" = nvt1v22_drv ] && BUNDLE=${BUNDLE_V22:-$HOME/gi-bundle/nvshmem_t1/v22ref}
+# t1_380: the driver built against unmodified NVSHMEM v3.8.0-0 (latency baseline)
+[ "$BIN" = nvt1st_drv ] && BUNDLE=${BUNDLE_STOCK:-$HOME/gi-bundle/nvshmem_t1_380/stock380}
 LBIN=$BUNDLE/bin/$BIN
 RBIN=$(echo "$BUNDLE" | sed "s#^$HOME#\$HOME#")/bin/$BIN
 PORT=${PORT:-18411}
@@ -56,10 +58,10 @@ case "$FAULT" in
   *) echo "unknown fault $FAULT" >&2; exit 2 ;;
 esac
 {
-  echo "tag=$tag fault=$FAULT mode=$MODE trial=$TRIAL ft=${FT:-1} ring=${RING:-1} t1=${T1:-1} t1skip=${T1SKIP:-} skip=${SKIP:-} fetch=${FETCH:-0} fetch_every=${FETCH_EVERY:-1} fill=${FILL:-0} sock_s=${SOCK_S:-} sock_at_ms=${SOCK_AT_MS:-} sock_dir=${SOCK_DIR:-both} xenv=${XENV:-} nofin=${NOFIN:-0} rc_per_pe=${RC_PER_PE:-1} rc_map=${RC_MAP:-none}"
+  echo "tag=$tag fault=$FAULT mode=$MODE trial=$TRIAL ft=${FT:-1} ring=${RING:-1} t1=${T1:-1} t1skip=${T1SKIP:-} skip=${SKIP:-} fetch=${FETCH:-0} fetch_every=${FETCH_EVERY:-1} fill=${FILL:-0} sock_s=${SOCK_S:-} sock_at_ms=${SOCK_AT_MS:-} sock_dir=${SOCK_DIR:-both} xenv=${XENV:-} nofin=${NOFIN:-0} rc_per_pe=${RC_PER_PE:-1} rc_map=${RC_MAP:-none} handler=${HANDLER:-auto}"
   echo "iters=$ITERS bytes=$BYTES gap_us=$GAP_US ctas=${CTAS:-} threads=${THREADS:-} burst=${BURST:-} reps=${REPS:-} fault_ms=$FMS shots=${SHOTS:-} kill_ms=${KILL_MS:-} cut_s=${CUT_S:-} cut_at_ms=${CUT_AT_MS:-}"
   echo "hold_ms=${HOLD_MS:-} gid_r=${GID_R:-4} gid_s=${GID_S:-3} ib_timeout=${NVSHMEM_IB_TIMEOUT:-14} bundle=$BUNDLE bin=$BIN start=$(date '+%F %T')"
-  echo "md5_bin=$(md5sum < $LBIN | cut -c1-12) md5_transport=$(md5sum < $BUNDLE/lib/nvshmem_transport_ibgda.so.7.0.0 | cut -c1-12) md5_host=$(md5sum < $BUNDLE/lib/libnvshmem_host.so.3.9.0 | cut -c1-12)"
+  echo "md5_bin=$(md5sum < $LBIN | cut -c1-12) md5_transport=$(md5sum < $BUNDLE/lib/nvshmem_transport_ibgda.so.7.0.0 | cut -c1-12) md5_host=$(md5sum < $BUNDLE/lib/libnvshmem_host.so.3 | cut -c1-12)"
 } > "$META"
 pkill -x "$BIN" 2>/dev/null
 ssh -n -o ConnectTimeout=5 "$SUNNY_SSH" "pkill -x $BIN 2>/dev/null; true"
