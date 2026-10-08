@@ -1,0 +1,674 @@
+# GIN 투명 복구: 운영 수준으로 다지기 (gin-harden)
+
+**목적:** 비판적 리뷰 다섯 건이 짚은 정확성, 생존 판정, 상한, 운영 문제를 한 계층으로 고치고, 고친 동작과 바뀌지 않아야 할 동작을
+사전 등록한 예측으로 잰다. 시험 스위치가 없는 운영 빌드의 지연과 장애 동작, 기본 IB 타임아웃에서의 동작도 함께 잰다.
+
+| 항목 | 값 |
+|---|---|
+| 상태 | `DRAFT` |
+| 담당자 | @unionxic |
+| 작성일 | 2026-10-09 |
+| 기준 브랜치와 커밋 | `exp/gin-harden` @ `d834f86c` (master) |
+| 사전 등록 태그 | 없음. 예정: `prereg/gin-harden-v1` (메인 세션의 pilot 뒤, 상태를 `PREREGISTERED`로 바꾸는 바로 그 커밋) |
+| 마지막 갱신 | 2026-10-09, 설계, 구현, 빌드, 정적 확인, 1–12절 작성 |
+
+표시: `[측정]` 원자료에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
+
+이 문서의 `ow.diff N행`은 gin-oneway의 전체 diff [../oneway/gin_transparent_ow.diff](../oneway/gin_transparent_ow.diff)의 줄 번호다. 리뷰가 그
+번호로 문제를 짚었고, 아래 1절의 줄은 모두 그 파일에서 다시 확인했다 `[소스]`. 이 실험의 코드는 함수 이름으로 가리킨다(파일은
+`src/transport/net_ib/gdaki/gin_host_gdaki.cc`, 다른 파일은 이름을 적는다).
+
+**용어.**
+- helper: GIN 투명 복구가 GDAKI 문맥마다 띄우는 호스트 스레드. 장치 쪽 오류 분류기가 남긴 장애 기록을 받아 상대와 복구 라운드를 돈다.
+- helper 소켓: helper가 rank 쌍마다 여는 관리망 TCP 소켓.
+- 사용자 devComm: 응용이 `ncclDevCommCreate`로 만든 장치 통신기. 그 커널의 GIN 대기(`waitSignal`, `flush`, `wait`)가 abort 단어를
+  읽는다.
+- abort 단어: 장치 대기가 주기적으로 읽는 32비트 값. 0이 아니면 대기를 끝낸다. 지금은 사용자 devComm이 통신기 전체의 단어를 같이 쓴다.
+- 죽음, 모름: helper가 소켓으로 정하는 상대의 생존 상태(gin-reconnect, gin-oneway). 이 실험에서 "떠남"을 더한다: 상대가 떠난다고
+  알린(BYE) 뒤의 소켓 끝.
+- 고유값(nonce): 문맥을 만들 때 모든 rank가 낸 난수를 섞은 64비트 값. 모든 rank에서 같고 문맥마다 새로 정해진다.
+- 라운드: 한 장애를 위해 두 rank가 주고받는 REQ, ACK, DONE과 그 사이의 QP 리셋, 재연결, 다시 보내기. 커밋은 그 rank가 QP를 리셋해
+  새 incarnation으로 연결한 순간이다(되돌릴 수 없다).
+- 펌웨어 명령 단계: QP 상태 바꾸기(2ERR, 2RST, INIT/RTR/RTS)와 QUERY_QP처럼 NIC 펌웨어 명령으로 가는 호출들. 중간에 끊을 수 없다.
+- 첫 분류 기록: 장애 뒤 그 rank의 장치 쪽 오류 분류기가 남긴 첫 "device-classified error CQE" 줄.
+
+장애 기호, 셀 이름, 예측 id는 원자료를 찾는 키로만 괄호나 표의 열에 둔다.
+
+| 장애 | 기호 |
+|---|---|
+| 로컬 QP 오류 | F1 |
+| 원격 접근 오류 | F2 |
+| 상대 QP 오류 | F3 |
+| 상대 프로세스 kill | F4 |
+
+빌드 키는 다섯 가지다. 모두 번들 디렉터리 `$HOME/gi-bundle/gin_ts2/<키>/`다.
+
+| 키 | 내용 | 쓰는 곳 |
+|---|---|---|
+| `ow` | gin-oneway의 libnccl `b4af65c5`와 드라이버 `d4b1f082`(배포된 번들, 그대로) | 대조 셀, 지연 기준 |
+| `hd` | 이 실험의 연구 빌드: `ow` 위에 9절 1번의 계층. 시험 스위치와 장애 훅이 있다. 이 실험의 새 드라이버 | 새 셀, 회귀 셀, IB 타임아웃 셀 |
+| `hdp` | 같은 소스를 `-DNCCL_GIN_TS_PRODUCTION`으로 컴파일한 운영 빌드. 같은 드라이버 | 지연, 훅 없는 kill과 관리망 끊김 |
+| `ow2` | `ow`의 libnccl과 이 실험의 새 드라이버(shrink를 부르는 대조) | shrink 대조 |
+| `stk` | 순정 NCCL v2.32.3-1과 그 헤더로 빌드한 드라이버 | 지연 기준 |
+
+`base` 번들은 순정이 아니다: libnccl `1ed8e0a1`은 gpudb v2 빌드(장애 훅, 분류기, 복구 v1, gpudb v2 네 diff)다 `[측정]`
+(`../TRANSPARENT_S2.md` provenance 표, `../NOTES.md` 466행, `../pair_check/deploy_check.txt`의 `./base/libnccl.so.2.32.3`). 그래서
+순정 기준은 이 실험에서 새로 빌드한 `stk`이고, 그 소스 트리는 상위 NCCL의 태그 `v2.32.3-1`(`12df1a11`)과 파일 단위로 같다 `[측정]`
+(9절 빌드 4번).
+
+## 1. 배경과 연구 질문
+
+gin-oneway까지의 투명 복구는 2 rank, 노드 한 쌍에서 로컬 QP 오류, 상대 QP 오류, 관리망 끊김을 응용 모르게 복구했다
+(`../oneway/EXPERIMENT.md` 15절). 비판적 리뷰 다섯 건이 그 코드에서 아래 문제를 짚었다. 줄은 모두 다시 확인했다 `[소스]`.
+
+**1. 정확성.**
+- (a) 사용자 devComm이 통신기의 abort 단어를 같이 쓴다(ow.diff 32–35행, `dev_runtime.cc`). 그래서 `ncclCommShrink`의 abort,
+  `ncclCommRevoke`, 그룹 실패도 사용자 대기를 푼다. 풀린 대기는 `ncclSuccess`를 돌려준다(ow.diff 1005–1009행, `gin__funcs.h` 101행).
+  커널은 도착하지 않은 신호를 받은 것으로 알고 다음으로 간다(`../s2_close/qa/code_review.md` R1, R2).
+- (b) 생존 판정.
+  - 연결 거부 한 번이 죽음이다(ow.diff 3891행). 방화벽 거부나 다시 여는 중인 수신 대기 소켓도 거부한다.
+  - HELLO, HELLO-ACK, PROBE에 고유값이 없다. 같은 포트를 다른 프로세스가 쓰면 잘못 연결되거나 죽은 상대가 계속 모름으로 남는다
+    (`../oneway/qa/code_review.md` 항목 4).
+  - 라운드 안의 리셋이나 FIN은 영구 거절이다(ow.diff 5104, 5122, 4917, 4927행).
+  - 쉬는 중 FIN은 상대를 `gone`으로 표시할 뿐이다(ow.diff 5462–5467행). 보내지 않고 받기만 하는 rank는 자기 장애가 없으니 거절도 없고,
+    자기 대기 상한까지 기다린다.
+- (c) 상한.
+  - 장치 상태 복사가 `cudaStreamSynchronize`로 끝없이 기다린다(ow.diff 2537–2551, 4205–4221행).
+  - `ncclCommAbort`가 helper를 기다린 뒤 복사와 펌웨어 명령을 내고, 진단용 QUERY_QP도 낸다(ow.diff 5877–5926행, 5910행). helper가
+    펌웨어 명령 안에서 멈추면 abort도 멈춘다.
+  - 펌웨어 명령은 끊을 수 없는데, 라운드의 펌웨어 단계에 상한이 없다.
+- (d) 한 라운드의 다시 보내기를 QP마다 검사하고 바로 보낸다(ow.diff 4475–4683행). 뒤 QP가 거절되어도 앞 QP는 이미 다시 보냈다.
+- (e) HELLO에 담는 문맥 번호가 프로세스 전체의 계수기다(ow.diff 5566, 5619–5621행).
+
+**2. 운영.**
+- (a) 시험 스위치, 장애 훅, 진단 코드가 라이브러리에 들어 있다. 정보성 줄이 WARN이다.
+- (b) 복구 계수를 응용이 볼 방법이 없다.
+- (c) 장애가 계속 와도 끝없이 복구한다. 상위 계층(예: PyTorch 감시)이 노드를 뺄 신호가 없다.
+
+**3. shrink 넘기기.** 복구가 거절한 장애(상대 kill) 뒤 응용은 `ncclCommShrink`로 죽은 rank를 빼고 이어 가야 한다. 지금은 그때 풀리는
+대기가 성공을 돌려준다(1a).
+
+**4. 기본 IB 타임아웃.** GDAKI QP는 `NCCL_IB_TIMEOUT`과 `NCCL_IB_RETRY_CNT`를 그대로 쓴다(`gdakiConnectQp`의 ack timeout과 retry
+count 설정) `[소스]`. 기본값 20에서 상대 QP 오류는 약 58 s 뒤에야 보인다: verbs 새 프로세스 58.46–58.79 s
+(n=10, `../../../ack_timeout/README.md` 46행), GIN GDAKI는 QP가 ERR이 되기까지 약 57 s, 호스트가 알기까지 59.4 s(기준 실행 1회, `../../gin/NOTES.md` 268–269행) `[측정, 이전 실험. 원자료에서 다시 세지 않음]`. NCCL 2.31.2부터 GIN
+장치 API에 시간 제한 판(`flush`, `wait`, `waitSignal`, `waitCounter`의 `timeoutCycles` 인자)이 생겼다 `[소스]`(상위 태그 비교:
+`gin__funcs.h`의 `timeoutCycles`가 v2.30.3-1에 0개, v2.31.2-1에 12개).
+
+**질문.**
+1. 사용자 devComm에 따로 둔 abort 단어로, 복구 거절, 죽음, abort가 사용자 대기를 오류로 풀고 성공으로 풀지 않는가. 그 뒤
+   `ncclCommShrink`가 쓸 수 있는 통신기를 돌려주는가.
+2. 거부 한 번에는 죽음으로 보지 않고 1 s 이상 떨어진 두 번에는 죽음으로 보는가. 고유값이 틀린 재연결은 연결로도 죽음으로도 세지
+   않는가. 라운드 안의 리셋 뒤 재연결하고 라운드를 다시 돌아 복구하는가. 받기만 하는 rank에 상대의 죽음이 2 s 안에 드러나는가.
+3. GPU 전체를 응용 커널이 쓰는 중에도 복구가 되는가. 멈춘 복사, 느린 펌웨어 단계, 멈춘 helper에서도 거절과 abort가 상한 안에 끝나는가.
+   다시 보내기 대상 하나가 거부되면 어느 QP에도 다시 보내지 않는가.
+4. 상한(정한 시간 안의 라운드 수)을 넘으면 거절하고 복구를 멈추는가. 통계 API가 라운드, 복구, 거절, 죽음을 바로 세는가.
+5. 시험 스위치를 뺀 운영 빌드는 gin-oneway, 순정 NCCL과 지연이 얼마나 다르고, 훅 없는 kill과 실제 관리망 끊김(iptables)을 바르게
+   다루는가.
+6. 기존 셀(gin-oneway, gin-reconnect, gin-pair-check)은 바뀐 줄을 빼면 판정이 그대로인가.
+7. IB 타임아웃 20에서 상대 QP 오류는 언제 보이고, 막는 대기와 장치 쪽 시간 제한 대기는 투명 복구와 어떻게 맞물리는가.
+
+## 2. 가설
+
+| id | 가설 | 다음이 관측되면 틀린 것이다 |
+|---|---|---|
+| H1 | 사용자 devComm의 따로 둔 단어는 거절, 죽음, abort, 중단하는 shrink에서만 올라가고, 그 단어로 풀린 대기는 오류를 돌려준다. 죽은 상대를 뺀 shrink는 쓸 수 있는 1-rank 통신기를 돌려준다 | shrink 셀에서 신호 없이 성공한 대기가 하나라도 있다. 또는 shrink나 그 통신기의 allreduce가 9/10 미만으로 된다. 또는 원격 접근 오류 셀에서 받는 쪽 대기가 오류로 풀리지 않는다 |
+| H2 | 생존 판정은 거부 두 번(1 s 이상 간격), BYE, 고유값으로 살아 있는 상대를 죽음으로 보지 않고, 죽은 상대는 받기만 하는 rank에서도 2 s 안에 드러낸다. 라운드 안의 리셋은 재연결 뒤 다시 돈 라운드로 복구된다 | 거부 한 번, 틀린 고유값, 라운드 안 리셋 셀에서 죽음 줄이 2회 이상이다. 또는 각 셀의 복구가 9/10 미만이다. 또는 받기만 하는 rank의 해제가 2 s를 넘은 시행이 2회 이상이다 |
+| H3 | 복사, 펌웨어 단계, abort의 helper 대기에 상한을 두면 멈춘 복사와 느린 펌웨어 단계도 정한 시간 안에 거절과 대기 해제로 끝나고, GPU가 가득 찬 정상 복구는 그대로다 | GPU가 가득 찬 셀의 투명 복구가 9/10 미만이다. 또는 느린 펌웨어 셀에서 감시가 3.0–3.5 s 밖에서 발동하거나 abort가 6 s를 넘은 시행이 2회 이상이다. 또는 멈춘 복사 셀의 거절이 3 s를 넘은 시행이 2회 이상이다 |
+| H4 | 다시 보내기 계획을 모든 QP에서 먼저 검사하면 하나가 거부될 때 아무것도 다시 보내지 않는다 | 계획 거부 셀에서 어느 rank든 복구 줄이 나온 시행이 2회 이상이다 |
+| H5 | 상한과 계수, 운영 스위치는 기존 동작과 빠른 경로를 바꾸지 않는다. 운영 빌드는 훅 없이도 kill과 관리망 끊김을 바르게 다룬다 | 회귀 셀에서 예측과 다른 시행이 나온다. 또는 지연 차이가 예측 범위 밖이다. 또는 운영 빌드의 kill, 끊김 셀이 5/5가 아니다 |
+| H6 | IB 타임아웃 20에서 상대 QP 오류는 50–70 s 뒤 분류되고, 막는 flush는 그만큼 기다린 뒤 투명하게 복구된다. 장치 쪽 시간 제한이 그보다 짧으면 대기는 시간 초과로 끝나고 복구는 시작되지 않는다 | 분류가 50–70 s 밖인 시행이 있다. 또는 막는 셀의 투명 복구가 4/5 미만이다. 또는 시간 제한 셀에서 복구나 거절이 나온다 |
+
+## 3. 사전 예측 (측정 전에 작성)
+
+**고정 시점.** 예측은 메인 세션이 pilot(9절의 hold H0)을 돌린 뒤 태그 `prereg/gin-harden-v1`을 단 커밋에서만 고정된다. 그 전까지 이 절과
+[predictions.csv](predictions.csv)는 고칠 수 있다(pilot에서 셀 조건이 의도대로 만들어지지 않으면 셀 조건이나 판정식을 고친다). pilot 시행은
+채점하지 않는다. 그 결과 폴더(`results/<날짜>_pilot/`)는 채점 대상 폴더와 따로 두고, 무엇을 보고 무엇을 고쳤는지 12절과 13절에 적는다.
+태그 뒤에는 2, 3, 7, 8절과 `predictions.csv`를 고치지 않는다.
+
+예측 원문은 [predictions.csv](predictions.csv)이고 52줄이다. `kind`는 N(새 동작), R(회귀), C(대조)다. 아래 판정 열, 로그 형식, 셀 키,
+판정식 문법은 태그에서 고정한다.
+
+### 3.1 판정에 쓰는 열
+
+시행마다 한 줄이다. 열은 다섯 곳에서 온다. 앞의 네 곳의 열은 원래 정의 그대로다 `[소스]`.
+- `../scripts/ts2/rows.py`: `transparent_ok`, `r1_outcome`, `tx_rc`(rank 0 보내는 쪽), `rx_rc`(rank 1 받는 쪽), `rx_rc_r0`(양방향의 rank 0
+  받는 쪽), `r0_async`, `decl_r0`, `decl_r1`, `rec_init_r0`, `teardown_r*`, `teardown_ms_r*`, `lat_p50_us`, `q4_class_r0`, `ts_on_r*`,
+  `n_fires_r*`, `killed`, `bind_fail`, `trigger_miss`, `fault_mono_r0`.
+- `../s2_close/rows_extra.py`: `ua_r*`(사용자 devComm abort 단어 줄 수).
+- `../pair_check/rows_pc.py`: `n_notrts_r*`, `n_refused_r1`, `n_rerun_r0`, `n_rec_r*`, `inj_ctx_r*`, `pr_mode_r*`.
+- `../oneway/rows_ow.py`(정의는 `../oneway/EXPERIMENT.md` 3.1절): `ow_mode_r*`, `knob_uto_r*`, `knob_refuse_r*`, `n_mute_on_r*`,
+  `mute_off_ms_r*`, `close1_cause_r*`, `close1_lv_r*`, `close1_ms_r*`, `n_dead_r*`, `n_reconn_r*`, `reconn_after_unmute_ms_r*`,
+  `wait_end_r1`, `n_notacc_r0`, `n_probe_ref_r1`, `n_refuse_test_r1`, `q4_ms_r*`, `r0_killed`. 이 실험의 닫힘 줄은 `liveness=left`를 더
+  가질 수 있다. `n_dead_r*`는 그대로 `liveness=dead`만 센다.
+- 이 폴더의 [rows_hd.py](rows_hd.py)가 붙이는 새 열. 정의는 그 파일 머리말이 원문이다. 요약:
+
+| 열 | 정의 |
+|---|---|
+| `hd_on_r*`, `prod_r*` | `GIN/TS: harden=1 rank=<r> ... production=<0\|1>` 줄이 있으면 1, 그 `production` 값 |
+| `hk_gap_r*`, `hk_badnonce_r*`, `hk_fwdelay_r*`, `hk_copystall_r*`, `hk_badrepost_r*` | `GIN/TS: TEST harden knobs ...` 줄의 값 |
+| `n_judged_r*`, `judged_cause_r*`, `judged_ms_r*` | `GIN/TS: rank <r>: rank <p> judged dead (cause=<C>) mono_ms=<t>` 줄 수, 첫 줄의 원인과 시각 |
+| `n_left_r*` | `GIN/TS: rank <r>: rank <p> left the communicator (BYE)` 줄 수 |
+| `n_refused_dial_r*`, `n_probe_refused_r*` | 다시 걸기와 확인 접속의 거부 줄 수(`... refused (ECONNREFUSED) mono_ms=<t> refusal=<n>`) |
+| `refusal_span_ms_r*` | 죽음 판정 시각 − 그 rank의 첫 거부 시각 |
+| `n_nonce_ref_r*`, `n_badnonce_sent_r*`, `n_probe_noans_r*` | 고유값이 틀린 재연결 거부 줄, 틀린 고유값을 보낸 시험 줄, 응답 없는 확인 접속 줄 수 |
+| `n_cancel_r*`, `sock_retries_max_r*` | 라운드 취소 줄 수, 시작 쪽 복구 줄의 `sock_retries` 최댓값 |
+| `rec_total_us_r*` | 그 rank의 첫 시작 쪽 복구 줄의 `total_us` |
+| `n_fwdog_r*`, `fwdog_run_ms_r*` | 펌웨어 단계 감시 줄 수와 첫 줄의 `has run <x> ms` |
+| `n_uarel_r*`, `uarel_why_r*` | `GIN/TS: user devComm waits released rank=<r> why=<w>` 줄 수와 첫 `why` |
+| `n_copyto_r*`, `n_esc_r*`, `n_orphan_r*`, `n_dump_r*` | 복사 상한 초과, 상한 넘김(escalation), 떼어 낸 helper, 장치 대기 시간 초과 기록 줄 수 |
+| `n_plan_rej_r*`, `plan_rej_qp_r*`, `plan_rej_total_r*` | `re-post plan to rank <p> rejected at qp <i> of <n>` 줄 수와 첫 줄의 `i`, `n` |
+| `rs_*_r*` | 드라이버 kv의 `ncclGinGetRecoveryStats` 값(`rs_api`, `rs_rounds`, `rs_recovered`, `rs_declined`, `rs_reconnects`, `rs_deaths`, `rs_escalations`, `rs_cancelled`, `rs_fw_overruns`, `rs_copy_timeouts`, `rs_contexts`) |
+| `rx_phantom_r*`, `post_abort_rx_phantom_r*` | 드라이버 kv: 성공을 돌려준 신호 대기 중 그때 읽은 신호 값이 목표보다 작은 반복 수(통상 읽기, 마지막 abort 뒤 다시 읽기) |
+| `ho_*` | 드라이버 kv(shrink 넘기기, rank 0): shrink 전 커널 끝남, shrink 결과, 새 통신기 rank 수, allreduce 확인 |
+| `hog_*_r*`, `fault_after_launch_r0_ms` | GPU를 채우는 커널의 kv(블록 수, SM 수, 띄운 시각, 오류 이름), rank 0 훅 발사 − 커널 시작 |
+| `q4_after_fault_ms_r0`, `decl_after_q4_ms_r0` | 첫 분류 기록 − 장애 시각(rank 0 시계), 첫 거절 − 첫 분류 기록 |
+| `release_after_kill_ms_r1`, `async_after_kill_ms_r1` | rank 0 kill을 rank 1 시계로 옮긴 시각에서 rank 1 커널 끝, 첫 비동기 오류까지 |
+| `decl_after_kill_ms_r0` | rank 1 kill을 rank 0 시계로 옮긴 시각에서 rank 0의 첫 거절까지 |
+| `r1close_after_q4_ms` | rank 1 첫 소켓 닫힘(rank 0 시계) − rank 0 첫 분류 기록 |
+| `mute_applied`, `mute_rules_on`, `mute_rules_left`, `left_rules` | 운영 빌드 관리망 끊김의 iptables 적용 기록(`mute.out`, 실행기 meta) |
+
+**새 로그 줄과 바뀐 줄** `[소스, 9절의 변경으로 고정]`. 연구 빌드(`hd`)에서는 모두 WARN이다. 운영 빌드(`hdp`)에서는 "정보" 줄이 INFO라
+`NCCL_DEBUG=WARN`에서는 보이지 않는다.
+
+| 줄 | 수준(운영) | 형식 |
+|---|---|---|
+| 시작 | 정보 | `GIN/TS: harden=1 rank=<r> nonce=<x> fw_ms=<n> copy_ms=<n> join_ms=<n> join_max_ms=<n> escalate=<k>/<w> port=<p> sock_retries=3 production=<0\|1>` |
+| 거부 | 정보 | `GIN/TS: rank <r>: re-dial to rank <p> refused (ECONNREFUSED) mono_ms=<t> refusal=<n>`, `... probe of rank <p> refused (ECONNREFUSED) mono_ms=<t> refusal=<n>` |
+| 죽음 판정 | WARN | `GIN/TS: rank <r>: rank <p> judged dead (cause=<C>) mono_ms=<t>`. 바로 뒤에 거절 `reason="peer judged dead: the peer's socket shows <C>"` |
+| 떠남 | 정보 | `GIN/TS: rank <r>: rank <p> left the communicator (BYE) mono_ms=<t>`. 그 뒤 닫힘 줄은 `liveness=left`(설치 전 연결의 BYE면 닫힘 줄 없음) |
+| 고유값 | 정보 | `GIN/TS: rank <r>: refused a reconnect from rank <p> (nonce mismatch) gen=<g> mono_ms=<t>`, `... probe of rank <p> not answered by the peer (<why>)` |
+| 라운드 취소 | WARN | `GIN/TS: rank <r>: round <n> with rank <p> cancelled (<stage>, socket <C>) before the commit; the fault is retried after the reconnect (retry <i> of 3)`, 응답 쪽 `... round <n> from rank <p> cancelled before the commit (socket <C>)` |
+| 복구 | 정보 | 형식 그대로, 시작 쪽 줄 끝에 `sock_retries=<n>` |
+| 대기 해제 | WARN(abort, revoke, shrink는 정보) | `GIN/TS: user devComm waits released rank=<r> why=<abort\|revoke\|shrink\|declined\|peer-dead\|fw-watchdog> mono_ms=<t>` |
+| 복사 상한 | WARN | `GIN/TS: rank <r>: device-state copy (<dir>, <n> B) not complete after <ms> ms (NCCL_GIN_TS_COPY_MS); the round declines` |
+| 펌웨어 감시 | WARN | `GIN/TS: watchdog rank=<r>: firmware command phase <phase> has run <x> ms, more than NCCL_GIN_TS_FW_MS=<n>; ...` |
+| helper 떼어 냄 | WARN | `GIN/TS: communicator teardown rank=<r>: the recovery helper did not stop within <ms> ms ...`(`<ms>`는 실제로 기다린 시간) |
+| 계획 거부 | WARN | `GIN/TS: rank <r>: re-post plan to rank <p> rejected at qp <i> of <n> (<why>); nothing re-posted` |
+| 상한 넘김 | WARN | `GIN/TS: escalated rank=<r>: more than <k> recovery rounds within <w> ms (...); recovery stops on this communicator`, 거절 `reason="escalation: more than <k> recovery rounds within <w> ms"` |
+| 요약 | INFO | `GIN/TS: summary rank=<r> rounds=.. recovered=.. declined=.. cancelled=.. reconnects=.. deaths=.. escalations=.. fw_overruns=.. copy_timeouts=.. orphan=<0\|1>` |
+| 시험 스위치 | 연구 빌드만 | `GIN/TS: TEST harden knobs rank=<r> listen_gap=<a>:<b> bad_nonce=<n> fw_delay=<ms>@<phase> copy_stall=<ms> bad_repost=<k>`, `GIN/TS: TEST listen gap on/off ...`, `GIN/TS: TEST sent a wrong nonce in <HELLO\|PROBE> ...`, `GIN/TS: TEST firmware delay ...`, `GIN/TS: TEST copy stall ...`, `GIN/TS: TEST re-post plan of qp <i> ... rejected` |
+
+**드라이버 kv**(이 실험의 드라이버, 9절 3번): `rx_phantom`, `rx_phantom_first`, `post_abort_read`, `post_abort_rx_done`, `post_abort_rx_rc`,
+`post_abort_rx_phantom`, `ho_kernel_done_before_shrink`, `ho_shrink_rc`, `ho_shrink_ms`, `ho_newcomm`, `ho_newcomm_nranks`, `ho_allreduce_rc`,
+`ho_check_ok`, `ho_old_kernel_done`, `hog_ms`, `hog_sms`, `hog_blocks`, `hog_launch_after_launch_ms`, `hog_launch_err`, `rs_api`과 `rs_*`.
+
+### 3.2 셀 키와 판정식 문법
+
+셀 키(`cell@build`), 판정 대상(8절 제외를 거친 시행), "자료 부족" 규칙, 판정식 문법(`count`, 빈칸 규칙, `has`, `nonempty`, `median`,
+`abs`, `per cell:`)은 `../s2_close/EXPERIMENT.md` 3.2절과 같다. `count(...)`와 `median(...)` 밖의 나머지는 Python의 산술과 비교다
+(`../pair_reset/EXPERIMENT.md` 3.2절과 같음). 이 실험의 [score.py](score.py)는 `../s2_close/score.py`의 판정식 평가 함수를 그대로 불러
+쓴다. 두 셀 키를 쓰는 판정식은 두 셀 모두 계획한 수를 채워야 판정한다. 판정은 맞음, 틀림, 자료 부족 중 하나다.
+
+### 3.3 예측 요약
+
+전체 판정식은 [predictions.csv](predictions.csv)에 있다. 아래는 요약이다. "n"은 계획한 판정 시행 수다.
+
+| 예측 | id | 셀 | 판정 기준(요약) | 근거 |
+|---|---|---|---|---|
+| 상대 kill 뒤 rank 0의 대기가 shrink 전에 오류로 풀리고, 신호 없이 성공한 대기가 없다 | A1 | `hd_shrink_b@hd` | ≥9/10 | 죽음 즉시 거절과 따로 둔 단어 `[소스]` |
+| `NCCL_SHRINK_ABORT` shrink가 1-rank 통신기를 돌려주고 그 allreduce가 맞다 | A2 | `hd_shrink_b@hd` | ≥9/10 | 이 테스트베드에서 처음 `[미확인]` |
+| 대조(ow 라이브러리): shrink 때 옛 커널이 아직 돈다 | A3 | `hd_shrink_b@ow2` | ≥4/5 | 쉬는 중 FIN은 표시만(ow.diff 5462–5467행) `[소스]` |
+| 대조: 마지막 abort가 받는 쪽 대기를 신호 없이 성공으로 풀거나, shrink가 돌아오지 않는다 | A4 | `hd_shrink_b@ow2` | ≥4/5 | ow.diff 1005–1009행, `gin__funcs.h` 101행 `[소스]` |
+| 원격 접근 오류 셀: 받는 쪽 대기가 상대 거절 때 오류로 풀리고 abort가 5 s 안에 돌아온다(gin-oneway의 회귀 판정을 일부러 바꿈) | A5 | `f2rel_b@hd` | 5/5 | gin-oneway는 abort까지 커널이 멈춤 5/5 `[측정]` |
+| 거부 한 번으로는 살아 있는 상대를 죽음으로 보지 않는다 | B1 | `hd_ref1_f1_b@hd` | ≥9/10 | 거부 두 번 규칙 `[소스]` |
+| 1 s 뒤 다시 걸기로 재연결되고 12 s 장애가 투명하다 | B2 | `hd_ref1_f1_b@hd` | ≥9/10 | gin-oneway HELLO 거부 셀 10/10 `[측정]` |
+| 1 s 이상 떨어진 거부 두 번은 죽음이고 바로 거절과 대기 해제로 드러난다 | B3 | `hd_ref2_f1_b@hd` | ≥9/10 | `[소스]` |
+| 틀린 고유값의 HELLO는 거부되고 받아들여지지 않음으로 남으며 죽음 판정이 없다 | B4 | `hd_nonce_f1_b@hd` | ≥9/10 | `[소스]` |
+| 다음 다시 걸기로 끊김 끝 2 s 안에 재연결되고 투명하다 | B5 | `hd_nonce_f1_b@hd` | ≥9/10 | gin-oneway 582.1–606.7 ms(n=10) `[측정]` |
+| 라운드 안의 리셋은 라운드를 취소하고, 재연결 뒤 다시 돈 라운드로 투명하게 복구된다 | B6 | `hd_rround_f1_b@hd` | ≥9/10 | `[소스]`, 한쪽 끊김의 리셋 25/25 `[측정]` |
+| 대조(ow): 같은 리셋에서 REQ 보내기 실패로 거절한다 | B7 | `hd_rround_f1_b@ow` | ≥4/5 | ow.diff 5104행 `[소스]` |
+| 받기만 하는 rank가 죽은 보내는 쪽을 죽음으로 보고 대기가 kill 뒤 2 s 안에 오류로 풀린다 | B8 | `hd_rxdeath_b@hd` | ≥9/10 | `[소스]` |
+| 받기만 하는 rank가 kill 뒤 2 s 안에 비동기 오류를 받고 abort가 돌아온다 | B9 | `hd_rxdeath_b@hd` | ≥9/10 | `[소스]` |
+| 대조(ow): 받기만 하는 rank는 자기 15 s 대기 상한까지 기다린다 | B10 | `hd_rxdeath_b@ow` | ≥4/5 | `[소스]` |
+| 정상 종료의 FIN은 BYE 뒤라 떠남으로 남고 죽음 줄이 없다 | B11 | `f1_b`, `f3_b`, `rc_mute8_f1_b`(모두 `@hd`) | 셀마다 ≥4/5 | gin-oneway는 정상 종료 60/60에 죽음 줄 `[측정]` |
+| GPU 전체를 쓰는 커널이 도는 중에도 투명하게 복구되고 복사 상한 초과가 없다 | C1 | `hd_hog_f1_b@hd` | ≥9/10 | 복구는 복사만 쓴다 `[소스, 추론]` |
+| 8 s 펌웨어 단계에서 3.0–3.5 s에 감시가 발동해 대기를 오류로 풀고 오류를 드러낸다 | C2 | `hd_fwslow_f1_b@hd` | ≥9/10 | `NCCL_GIN_TS_FW_MS=3000` `[소스]` |
+| helper가 아직 그 단계 안이어도 rank 0의 abort가 6 s 안에 돌아온다(helper를 떼어 냄) | C3 | `hd_fwslow_f1_b@hd` | ≥9/10 | `NCCL_GIN_TS_ABORT_JOIN_MS=3000` `[소스]` |
+| rank 1이 거절하고 abort가 돌아온다 | C4 | `hd_fwslow_f1_b@hd` | ≥9/10 | `[소스]` |
+| 대조(ow): 같은 8 s를 라운드 안에서 기다린 뒤 복구한다 | C5 | `hd_fwslow_f1_b@ow` | ≥4/5 | `[소스]` |
+| 멈춘 복사가 2 s 상한을 넘어 첫 분류 기록 뒤 3 s 안에 거절되고, 두 rank의 대기가 오류로 끝난다 | C6 | `hd_copystall_f1_b@hd` | ≥9/10 | `NCCL_GIN_TS_COPY_MS=2000` `[소스]` |
+| 두 rank의 abort가 돌아온다 | C7 | `hd_copystall_f1_b@hd` | ≥9/10 | `[소스]` |
+| 두 QP 중 두 번째 계획이 거부되면 어느 QP에도 다시 보내지 않는다 | D1 | `hd_repost_f1_b@hd` | ≥9/10 | `[소스]` |
+| 두 rank가 거절한다 | D2 | `hd_repost_f1_b@hd` | ≥9/10 | `[소스]` |
+| 다섯 장애 중 셋은 복구되고 넷째에서 상한(10 s에 3번)으로 거절한다 | E1 | `hd_esc_f1_b@hd` | ≥9/10 | `[소스]` |
+| rank 0이 오류를 드러내고 rank 1이 상대 거절로 거절한다 | E2 | `hd_esc_f1_b@hd` | ≥9/10 | `[소스]` |
+| 대조(ow): 다섯 번 모두 복구한다 | E3 | `hd_esc_f1_b@ow` | ≥4/5 | `[소스]` |
+| 통계 API가 두 rank에서 라운드 1, 복구 1, 거절 0을 센다 | E4 | `f1_b@hd` | 5/5 | `[소스]` |
+| kill 뒤 통계 API가 죽음 1, 거절 1을 센다 | E5 | `f4_b@hd` | 5/5 | `[소스]` |
+| 복구 재현 셀이 그대로 투명하다 | R1 | `f1_b`, `f3_b`, `bidirf_sym_b`, `rc_mute8_f1_b`(모두 `@hd`) | 셀마다 5/5 | gin-oneway 5/5 `[측정]` |
+| 상대 QP 오류 뒤 teardown 때 모든 QP가 RTS다 | R2 | `f3_b@hd` | 5/5 | gin-oneway 5/5 `[측정]` |
+| 끊김 없는 kill은 죽음 원인으로 거절되고 abort가 돌아온다 | R3 | `f4_b@hd` | 5/5 | gin-oneway 5/5 `[측정]` |
+| 그 거절이 kill 뒤 2 s 안에 온다(gin-oneway는 kill 약 3.6 s 뒤 첫 분류 기록에서 거절) | R4 | `f4_b@hd` | 5/5 | `[소스]`, gin-reconnect `[측정]` |
+| pair-check 동작(좁은 범위 거부, 전체 재실행, teardown 때 모두 RTS)이 그대로다 | R5 | `pc_dual_f1c0_r1c2_b@hd` | 5/5 | gin-pair-check `[측정]` |
+| 양쪽 8 s 끊김에서 한 번씩 1.5 s 안에 재연결되고 죽음 줄이 없다(정상 종료 포함) | R6 | `rc_mute8_f1_b@hd` | 5/5 | gin-oneway `[측정]` |
+| 끊김 중 kill된 rank 1은 1 s 이상 떨어진 다시 걸기 거부 두 번 뒤 죽음으로 거절되고 모름 거절이 없다 | R7 | `rc_mutekill_b@hd` | 5/5 | gin-oneway 5/5 `[측정]` |
+| rank 0이 리셋을 받는 한쪽 끊김: 모름, 죽음 없음, 1.5 s 안 재연결, 투명 | R8 | `ow_r1in_f1_b@hd` | 5/5 | gin-oneway 10/10 `[측정]` |
+| rank 1이 리셋을 받는 한쪽 끊김: 모름, 재연결 기다림, 죽음 없음, 투명 | R9 | `ow_r0in_f1r1_b@hd` | 5/5 | gin-oneway 10/10 `[측정]` |
+| 끊김 중 kill된 rank 0이 1 s 이상 떨어진 확인 접속 거부 두 번 뒤 죽음으로 판정되고 거절된다 | R10 | `ow_kill0_b@hd` | 5/5 | gin-oneway 10/10 `[측정]` |
+| 거부된 재연결 HELLO가 받아들여지지 않음으로 남고 2 s 안 재연결, 투명 | R11 | `ow_hello_f1_b@hd` | 5/5 | gin-oneway 10/10 `[측정]` |
+| rank 0이 원격 접근 오류를 복구할 수 없다고 거절한다 | R12 | `f2rel_b@hd` | 5/5 | gin-oneway `[측정]` |
+| 4 KiB 지연: 운영 빌드와 gin-oneway 차이 0.40 µs 이하 | P1 | `lat_4k@hdp` 대 `lat_4k@ow` | 같은 hold의 실행 중앙값 | gin-oneway 10.56 µs `[측정]` |
+| 256 KiB 지연: 차이 0.30 µs 이하 | P2 | `lat_256k@hdp` 대 `lat_256k@ow` | 같음 | 38.91 µs `[측정]` |
+| 4 KiB 지연: 운영 빌드가 순정 NCCL보다 0.10–1.00 µs 느리다 | P3 | `lat_4k@hdp` 대 `lat_4k@stk` | 같음 | 복구 켬 − 끔 +0.29 µs, gpudb → 켬 +0.42 µs `[측정]` |
+| 256 KiB 지연: 0.10–1.00 µs 느리다 | P4 | `lat_256k@hdp` 대 `lat_256k@stk` | 같음 | +0.25, +0.54 µs `[측정]` |
+| 운영 빌드가 kill된 상대를 2 s 안에 죽음 원인으로 거절하고 죽음 1을 세며 abort가 돌아온다 | P5 | `hdp_kill_b@hdp` | 5/5 | `[소스]` |
+| 운영 빌드: iptables로 만든 8 s 관리망 끊김 뒤 재연결, 죽음과 거절 없음, 투명 | P6 | `hdp_mute_b@hdp` | 5/5 | `[추론]`, gin-oneway 한쪽 끊김 `[측정]` |
+| 운영 빌드는 WARN 수준에서 정보성 복구 줄을 남기지 않으면서 복구는 켜져 있다 | P7 | `hdp_kill_b`, `hdp_mute_b`(`@hdp`) | 셀마다 5/5 | `[소스]` |
+| IB 타임아웃 20: 상대 QP 오류의 첫 분류(RETRY_EXC)가 장애 50–70 s 뒤 | T1 | `to20_f3_b@hd` | 5/5 | verbs 58.46–58.79 s(n=10), GDAKI QP ERR 약 57 s(1회) `[측정, 이전 실험. 다시 세지 않음]` |
+| 막는 flush가 그동안 기다리고 100 ms 이하의 한 라운드로 투명하게 복구된다 | T2 | `to20_f3_b@hd` | ≥4/5 | 9절 5번 `[소스]` |
+| 장치 쪽 8 s 시간 제한에서 flush가 시간 초과를 돌려주고 복구도 거절도 없다 | T3 | `to20_f3_t@hd` | 3/3 | 9절 5번 `[소스]` |
+
+셀 조건은 7절에 있다.
+
+## 4. 범위
+
+**포함.**
+- 9절 1번의 라이브러리 계층 하나([hd_layer.diff](hd_layer.diff), `ow` 트리 기준)와 그 운영 빌드. 바뀌는 파일은 9절 1번의 표에 있다.
+- 9절 3번의 드라이버 선택(신호 없이 성공한 대기 세기, GPU 채우기, shrink 넘기기, 통계)과 9절 4번의 실행기.
+- 7절의 셀: 회귀 12셀, 새 셀 11개, 대조 5개, 운영 빌드 셀 2개와 지연 6셀, IB 타임아웃 20 셀 2개.
+
+**제외와 이 테스트베드가 할 수 없는 것.**
+- 실제 링크 내리기나 flap: 클러스터 규칙으로 금지다(링크를 공유하는 다른 사용자의 저장 장치가 있다). RoCE 주소 변경, 드라이버 재적재, 재부팅도
+  하지 않는다. 그래서 링크 장애 뒤의 복구는 이 실험이 재지 않는다. 관리망 끊김은 우리 소켓에 붙이는 필터(연구 빌드)와 우리 포트에만 거는
+  iptables 규칙(운영 빌드)으로만 만든다.
+- 더 새로운 GPU와 NIC: 이 테스트베드에는 Turing(sm_75)과 Ampere(sm_86), ConnectX-6뿐이다. Hopper 이후(TMA, BlueFlame 장치 doorbell,
+  CPU proxy가 없는 다른 doorbell 경로)와 ConnectX-7 이후의 동작은 재지 않는다.
+- 3 rank 이상: 다른 실험(gin-multirank)이다. 이 실험의 코드는 rank 수를 가정하지 않게 썼지만 2 rank로만 잰다.
+- 실제 펌웨어 명령의 멈춤: 시험 스위치의 잠으로 흉내 낸다. 실제로 멈춘 펌웨어 명령에서는 helper 스레드가 그 명령이 돌아올 때까지 남는다(9절
+  1번 (c)).
+- 그룹 실패와 split/shrink로 공유하는 abort 플래그가 사용자 대기를 풀지 않게 된 것은 코드로만 확인한다(`ncclCommRevoke`와 그룹 실패 셀은
+  없다).
+- 정보성 줄을 INFO로 낮춘 운영 빌드의 로그 전체 비교, 64 rank 규모의 계수 오버헤드.
+
+## 5. 테스트베드와 버전
+
+| 항목 | 값 | 확인 방법과 날짜 |
+|---|---|---|
+| 노드 | rain(rank 0, 낮은 rank), sunny(rank 1, 높은 rank) | 루트 `README.md` 테스트베드 표 |
+| NIC와 펌웨어 | ConnectX-6 VPI, fw 20.43.4100. rain `mlx5_1`, sunny `mlx5_0` | `[측정]` 2026-10-06(`../../completion_contract/EXPERIMENT.md` 5절). hold 스냅숏에서 다시 기록 |
+| 커널 | rain 5.15.0-97-generic | `[측정]` 2026-10-09(이 세션). sunny 커널과 OFED `[미확인]` |
+| GPU와 CUDA | rain Quadro RTX 5000(sm_75), sunny RTX A4000(sm_86), PeerMappingOverride=1, CUDA 12.8 | gin-s2-close 5절 |
+| 관리망 소켓 | `NCCL_SOCKET_IFNAME=eno1` | [run_trial_hd.sh](run_trial_hd.sh) |
+| `ow` 번들 | libnccl `b4af65c54b14f192803c88adcd2bf759`, 드라이버 `d4b1f082` | `[측정]` 2026-10-09 rain에서 md5(gin-oneway `deploy_check.txt`와 같음) |
+| `hd`, `hdp`, `stk`, 새 드라이버 | libnccl `hd` `e209032310a2cefd5d71e86533674bd6`, `hdp` `4818e30bb9c4b935edd1604fec0c3f6a`, `stk` `b380e622d299c25ab073417e3ee79aec`. 드라이버 `hd` 헤더판 `c0b73e0966c8350209d8dc71c8fa8c3b`(`hd`, `hdp`, `ow2`가 씀), 순정 헤더판 `472602a2b39bb4735c13b8d62a8ca888`(`stk`). 같은 소스를 다시 컴파일하면 드라이버 md5가 바뀐다(nvcc 출력이 재현되지 않음): 배포 확인은 `out/`의 파일과 비교한다. 소스 `../gin_ts2.cu` md5 `f34e65f0bc712090bbfe939855790aa1`. 배포 뒤 두 노드 md5는 `deploy_check.txt`에 남긴다 | `[측정]` 2026-10-09 빌드 때 rain(세션 스크래치 `agent_ts2hd/out/`). 배포는 아직 |
+| 변경분 | [hd_layer.diff](hd_layer.diff)(`ow` 트리 기준, md5 `2226872e`, 10개 파일 +1675/−329), 전체 diff [gin_transparent_hd.diff](gin_transparent_hd.diff)(pristine 기준, md5 `a9894def`). 순정에 전체 diff를, 그리고 gin-oneway 전체 diff에 이 계층을 더하면 각각 이 트리와 같다 | `[측정]` 2026-10-09 [make_diff_hd.sh](make_diff_hd.sh) |
+
+## 6. 변수
+
+- **독립변수.**
+  - 빌드: `hd`, `hdp`, `ow`, `ow2`, `stk`.
+  - 장애: 로컬 QP 오류(rank 0 훅, 다섯 번 연속 포함), 상대 QP 오류(rank 1 훅), 원격 접근 오류, rank 0 kill, rank 1 kill.
+  - 관리망: 우리 소켓 필터 끊김(한쪽, 양쪽), 우리 포트 iptables 끊김(운영 빌드), 수신 대기 소켓 닫기(1.2 s, 3 s).
+  - 시험 스위치: 틀린 고유값 1회, 라운드 안 4 s 멈춤(기존), 8 s 펌웨어 단계, 4 s 멈춘 복사 스트림, 계획 거부, 상한(10 s에 3번).
+  - GPU 채우기(3 s), shrink 넘기기, IB 타임아웃(14, 20), 장치 쪽 시간 제한(없음, 8 s).
+- **종속변수.** 3.1의 열: 생존 판정과 원인, 거부 수와 간격, 재연결, 라운드 취소와 재시도, 복구와 거절과 사유, 대기 해제의 원인과 시각,
+  드라이버의 대기 결과와 신호 없이 성공한 대기 수, shrink 결과, abort 시간, 통계 API 값, 지연 p50.
+- **통제변수.**
+  - IB 타임아웃 14(IB 타임아웃 셀 빼고), GPU doorbell, 재연결 스위치와 기다림 상한, 범위와 검사 스위치 기본값(1).
+  - 새 상한의 기본값: 복사 2 000 ms, 펌웨어 단계 3 000 ms, abort의 helper 대기 3 000 ms, 상한 넘김 60 000 ms에 8번(상한 셀만 10 000 ms에 3번).
+  - 기존 셀 정의는 `../scripts/ts2/batch.sh`, `../reconnect/cells.sh`, `../oneway/cells.sh`, `../pair_check/cells.sh`의 값 그대로다(빌드와
+    실행기만 바꿈).
+  - 시행마다 프로세스를 새로 띄운다.
+
+## 7. 실험 셀, 반복 수, 대조군
+
+반복 수: 새 셀 10, 회귀 5, 대조 5, IB 타임아웃 20의 막는 셀 5와 시간 제한 셀 3. 지연 셀의 반복은 실행 수다(실행마다 3000번). 끊김
+스위치와 수신 대기 닫기 시각은 각 rank helper 시작부터, 훅 시각은 devComm 생성부터, kill 지연은 실행기가 그 rank를 띄운 때부터 잰다.
+"끊김 X:Y"는 `NCCL_GIN_TS_TEST_SOCK_MUTE=X:Y`다. 정의 원문은 [cells.sh](cells.sh)다.
+
+| 셀 | 조건 | 빌드와 반복 수 | 종류 |
+|---|---|---|---|
+| `f1_b`, `f3_b`, `bidirf_sym_b`, `f4_b`, `f2rel_b`, `pc_dual_f1c0_r1c2_b`, `rc_mute8_f1_b`, `rc_mutekill_b`, `ow_r1in_f1_b`, `ow_r0in_f1r1_b`, `ow_kill0_b`, `ow_hello_f1_b` | 기존 정의 그대로 | `@hd` 각 5 | 회귀 |
+| `hd_ref1_f1_b` | 두 rank 끊김 500:8000. rank 1이 8 000 ms부터 1 200 ms 동안 수신 대기 소켓을 닫는다(`NCCL_GIN_TS_TEST_LISTEN_GAP=8000:1200`). rank 0 로컬 QP 오류 12 000 ms. 16 KiB × 1000 | `@hd` 10 | 새 셀 |
+| `hd_ref2_f1_b` | 같고 닫는 시간 3 000 ms | `@hd` 10 | 새 셀 |
+| `hd_nonce_f1_b` | 두 rank 끊김 500:8000. rank 0의 첫 재연결 HELLO에 틀린 고유값(`NCCL_GIN_TS_TEST_BAD_NONCE=1`). rank 0 로컬 QP 오류 12 000 ms | `@hd` 10 | 새 셀 |
+| `hd_rround_f1_b` | rank 1만 끊김 500:8000, rank 0 소켓 시간 초과 20 000 ms, rank 0 로컬 QP 오류 3 000 ms, rank 0 라운드가 정지 뒤 4 000 ms 멈춤(`NCCL_GIN_TS_TEST_STALL=4000@quiesce`). rank 1의 리셋이 그 사이에 온다 | `@hd` 10, `@ow` 5 | 새 셀, 대조 |
+| `hd_rxdeath_b` | rank 0(보내는 쪽) kill(`KILL_R0=1`, 3 000 ms). rank 1은 받기만 하고 대기마다 15 s 상한. 끊김 없음 | `@hd` 10, `@ow` 5 | 새 셀, 대조 |
+| `hd_hog_f1_b` | `f1_b`와 같고 두 rank가 첫 반복 뒤 모든 SM을 3 s 채우는 커널을 띄운다(`GIN_TS_HOG_MS=3000`) | `@hd` 10 | 새 셀 |
+| `hd_fwslow_f1_b` | `f1_b`와 같고 rank 0의 커밋 단계가 8 s 걸린다(`hd`: `NCCL_GIN_TS_TEST_FW_DELAY=8000@commit`, `ow`: 기존 `NCCL_GIN_TS_TEST_STALL=8000@commit`) | `@hd` 10, `@ow` 5 | 새 셀, 대조 |
+| `hd_copystall_f1_b` | `f1_b`와 같고 rank 0의 첫 라운드 스트림이 4 s 묶인다(`NCCL_GIN_TS_TEST_COPY_STALL=4000`) | `@hd` 10 | 새 셀 |
+| `hd_repost_f1_b` | 양방향(문맥 2개), 두 rank 범위 좁히기 끔(전체 재설정, QP 2개), rank 0 로컬 QP 오류, rank 0 계획이 두 번째 QP를 거부(`NCCL_GIN_TS_TEST_BAD_REPOST=1`). 16 KiB × 400 | `@hd` 10 | 새 셀 |
+| `hd_esc_f1_b` | rank 0 로컬 QP 오류 다섯 번(800 ms, 그 뒤 앞 커밋 300 ms 뒤마다), 두 rank 상한 10 000 ms에 3번. 200번 반복 | `@hd` 10, `@ow` 5 | 새 셀, 대조 |
+| `hd_shrink_b` | 양방향, rank 1 kill 3 500 ms, rank 0이 `GIN_TS_SHRINK=1`(9절 3번). 대기마다 60 s 상한. 16 KiB × 400 | `@hd` 10, `@ow2` 5 | 새 셀, 대조 |
+| `lat_4k`, `lat_256k` | 투명 복구 켬(`stk`는 해당 없음), 장애 없음, 3000번 반복. 같은 hold에서 세 빌드를 섞어 돈다 | `@hdp`, `@ow`, `@stk` 각 5 | 대조 |
+| `hdp_kill_b` | `f4_b`와 같다(훅 없음) | `@hdp` 5 | 새 셀 |
+| `hdp_mute_b` | 장애 없음. 두 rank helper 포트 51700(`NCCL_GIN_TS_PORT`). rank 0 커널 시작 2 s 뒤부터 8 s 동안 rain이 sunny 관리망 주소에서 오는 포트 51700–51715 TCP를 버린다(iptables 규칙 2개, 9절 4번). 16 KiB × 1000 | `@hdp` 5 | 새 셀 |
+| `to20_f3_b` | `NCCL_IB_TIMEOUT=20`, rank 1 상대 QP 오류 700 ms, 막는 대기, 받는 대기 상한 120 s, 감시 110 s | `@hd` 5 | 새 셀 |
+| `to20_f3_t` | 같고 시간 제한 대기(`DEV_TIMEOUT_S=8`), 받는 대기 상한 20 s | `@hd` 3 | 새 셀 |
+
+**합계.**
+
+| 종류 | 셀 시행 | 지연 실행 |
+|---|--:|--:|
+| 회귀(`hd`) | 60 | |
+| 새 셀(`hd`, `hdp`) | 128 | |
+| 대조(`ow`, `ow2`) | 25 | 30 |
+| 합 | 213 | 30 |
+
+새 셀 128은 `hd` 새 셀 110, `hdp` 셀 10, IB 타임아웃 셀 8이다.
+
+## 8. 제외 기준과 중단 기준
+
+**제외 기준.** 제외한 시행은 셀별로 따로 세어 보고한다([score.py](score.py) `status_of`).
+- pilot(`results/<날짜>_pilot/`)은 채점하지 않는다.
+- NCCL 초기화 전 실패(`bind_fail == 1`)는 제외하고 다음 번호로 계획한 반복 수를 채운다.
+- 장애 미적용은 제외하고 다음 번호로 채운다.
+  - rank 0 훅 셀에서 `n_fires_r0 == 0`, rank 1 훅 셀에서 `n_fires_r1 == 0`, 두 rank 훅 셀에서 어느 하나가 0. `trigger_miss > 0`.
+  - rank 1 kill 셀(`f4_b`, `rc_mutekill_b`, `hd_shrink_b`, `hdp_kill_b`)에서 `killed != 1`, rank 0 kill 셀(`ow_kill0_b`, `hd_rxdeath_b`)에서
+    `r0_killed != 1`.
+  - `hdp_mute_b`에서 iptables 끊김이 걸리지 않음(`mute_applied != 1`: sudo 실패, 포트를 다른 프로세스가 씀, 커널 시작 없음).
+- 순서 미적용은 제외하고 다음 번호로 채운다.
+  - `ow_r0in_f1r1_b`: gin-oneway 8절 그대로(rank 1 닫힘 줄이 없거나 첫 분류 기록이 그보다 앞섬).
+  - `rc_mutekill_b`, `ow_kill0_b`: 살아남은 rank(각각 rank 0, rank 1)의 닫힘 줄이 없거나, 첫 분류 기록이 있고 닫힘보다 앞섬. 이 실험에서는
+    죽음이 장애보다 먼저 거절될 수 있어 첫 분류 기록은 없어도 된다.
+  - `hd_rround_f1_b`: rank 1의 리셋이 rank 0 라운드 안에 오지 않음(`r1close_after_q4_ms`가 0 초과 4 000 미만이 아님).
+- 채우려고 다시 돈 시행이 셀 키마다 계획의 50%를 넘으면 그 셀 키는 멈추고 "자료 부족"으로 둔다.
+
+**설정 확인.** 하나라도 어긋나면 제외가 아니라 그 블록을 멈춘다.
+- `hd` 시행: 두 rank(kill된 rank 빼고)에 시작 줄 `harden=1 ... production=0`, 투명 복구 시작 줄, 사용자 devComm abort 단어 줄,
+  `oneway=1` 줄이 있다.
+- `hdp` 시행: 시작 줄이 WARN에 없고(`hd_on == 0`), kv에 `rs_api=1`, `rs_contexts >= 1`.
+- `ow`, `ow2` 시행: `oneway=1` 줄, 투명 복구 시작 줄, abort 단어 줄이 있고 `harden` 줄이 없다. `stk` 시행: 셋 다 없다.
+- 시험 스위치 줄이 셀과 같다: 기존 스위치 줄은 gin-oneway 8절과 같은 규칙(`hd_rround_f1_b`는 rank 0에 `uto_ms=20000`). 이 실험의 스위치 줄은
+  `hd_ref1_f1_b`(rank 1 `listen_gap=8000:1200`), `hd_ref2_f1_b`(rank 1 `8000:3000`), `hd_nonce_f1_b`(rank 0 `bad_nonce=1`),
+  `hd_fwslow_f1_b@hd`(rank 0 `fw_delay=8000@commit`), `hd_copystall_f1_b`(rank 0 `copy_stall=4000`), `hd_repost_f1_b`(rank 0 `bad_repost=1`)에만
+  있고 다른 `hd` 셀에는 없다.
+- 끊김 줄: 두 rank 끊김 셀은 두 rank 모두, 한쪽 끊김 셀은 그 rank만, 나머지는 없다. `ow_r0in_f1r1_b`는 훅 문맥이 1이다.
+- 실행기 meta의 `left_rules`(시행 뒤 남은 이 실험의 iptables 규칙)가 0이다.
+
+**pilot에서 보이는 결함.** 태그 전이므로 고칠 수 있다. 고친 것은 12절과 13절에 적고, 고친 뒤에는 그 셀의 pilot을 다시 돈다. 예:
+- 시험 조건이 만들어지지 않음: `hd_ref1_f1_b`에서 거부가 0번(수신 대기 닫기 창과 다시 걸기 시각이 어긋남), `hd_rround_f1_b`에서 리셋이 라운드
+  밖, `hd_hog_f1_b`에서 훅이 GPU 채우기 창 밖, `hdp_mute_b`에서 소켓이 끊기지 않음. 시각 값을 한 번 바꿀 수 있다.
+- 구현 결함: 회귀 셀이나 새 셀에서 예측과 다른 동작이 구현 탓으로 보이면 고치고 다시 빌드, 배포(새 디렉터리)한다.
+
+**중단 기준.**
+- **잠금.** 모든 클러스터 명령은 `harness/gpu-initiated/common/cluster_run.sh -w 10800` 안에서 돈다. 10 800 s 안에 잠금이나 유휴 링크를 얻지
+  못하면(종료 코드 75) 그 hold를 미룬다. `prio-` 작업에는 양보한다. hold 하나는 15분 이하이고 `timeout -s KILL 880`으로 묶는다.
+- **하지 않는 것.** 실제 link down이나 flap, 재부팅, 드라이버 재적재, 커널 모듈 적재, RoCE 주소 변경, 시스템 TCP 설정(sysctl) 변경.
+  iptables는 `hdp_mute_b`에서만, rain에서만, sunny 관리망 주소에서 오는 포트 51700–51715 TCP에만, 규칙 2개를 주석 `gin-harden-<pid>`로 붙여 8 s
+  동안 건다. 실행기가 끝에서, 종료 trap에서 지우고 남았는지 센다. `chain.sh`가 hold마다 남은 `gin-harden-` 규칙을 다시 지우고, 하나라도 지우지
+  못하면 `STOP_iptables`로 멈춘다.
+- **프로세스.** 우리가 띄운 프로세스만 그 PID로 끈다. 이름으로 끄지 않는다(`pkill`, `killall` 없음). 실행기는 rank 0의 `timeout` PID와 rank 1
+  원격 셸이 남긴 PID를 기록하고, 그 PID와 자식만 신호한다. 원격 PID는 명령줄에 그 시행의 고유 꼬리표가 있을 때만 신호한다(재사용된 PID를 건드리지
+  않음). 같은 Unix 계정의 다른 사용자 작업(gds-kv, NVMe-oF, gdsio, mooncake, `prio-` 작업, VS Code)은 건드리지 않는다. `left > 0`이 두 시행
+  연속이면 멈춘다.
+- **mlx5 오류.** hold 앞뒤에 두 노드의 mlx5 커널 줄 전체와 rain의 펌웨어 명령 계수를 남긴다. 새 mlx5 명령 오류 줄이나 펌웨어 명령 실패 계수
+  증가가 보이면 그 hold 뒤로 멈춘다(`STOP_mlx5`). 판정은 gin-oneway 8절과 같다.
+- **배포.** 새 번들은 새 디렉터리 `hd/`, `hdp/`, `ow2/`, `stk/`에만 둔다. 대상 파일이 이미 있으면 배포 스크립트가 멈춘다. 배포 뒤 기존 번들
+  파일의 md5가 두 노드에서 그대로인지 확인한다.
+
+## 9. 실행 방법과 경로
+
+### 1. 라이브러리 계층 (`hd`, `hdp`)
+
+[hd_layer.diff](hd_layer.diff)(`ow` 트리 기준)와 전체 diff [gin_transparent_hd.diff](gin_transparent_hd.diff). 바뀐 파일(+/−줄):
+
+| 파일 | +/− | 무엇 |
+|---|--:|---|
+| `src/transport/net_ib/gdaki/gin_host_gdaki.cc` | +1548/−321 | 거의 모든 변경 |
+| `src/include/nccl_device/utility.h` | +17/−0 | `NCCL_DEVCOMM_ABORT_ERROR`, `abortIsError` |
+| `src/include/nccl_device/impl/gin__funcs.h` | +4/−1 | 신호, 계수 대기가 오류 비트로 풀리면 `ncclRemoteError` |
+| `src/include/nccl_device/gin/gdaki/gin_gdaki.h` | +31/−0 | 대기와 flush의 해제 결과, 게이트에서 쉬는 대기와 보내는 스레드의 해제 |
+| `src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h` | +2/−1 | 게이트 `test` 칸의 새 쓰임(주석만) |
+| `src/dev_runtime.cc` | +16/−2 | 사용자 devComm에 따로 둔 단어 |
+| `src/init.cc` | +17/−1 | abort, revoke, 중단하는 shrink가 그 단어를 올림. 통신기와 함께 해제 |
+| `src/gin/gin_host.cc` | +12/−3 | 떼어 낸 helper가 쓰는 collComm은 닫지 않음 |
+| `src/nccl.h.in` | +24/−0 | `ncclGinGetRecoveryStats`(실험용) |
+| `src/transport/net_ib/gin.cc` | +4/−0 | 운영 빌드에서 proxy 장애 훅 제거 |
+
+(a) **사용자 devComm의 단어.** 통신기마다 host-pinned 단어 하나를 둔다(`ncclGinTsUserAbortWord`, 첫 사용자 devComm 때 만들고
+`commFree`에서 푼다). `ncclCommAbort`, `ncclCommRevoke`, `NCCL_SHRINK_ABORT`인 `ncclCommShrink`, 복구의 거절(`gdakiTsDecline`), 죽음 판정,
+펌웨어 단계 감시가 `NCCL_DEVCOMM_ABORT_ERROR | 원인`을 쓴다(`ncclGinTsUserAbortRaise`, 한 번, 지우지 않음). 장치 쪽은 이 비트로 풀린 대기를
+오류로 끝낸다: `waitRollingLessEq`(`waitSignal`, `waitCounter`)는 `ncclRemoteError`, 게이트 대기(`tsPoll`)와 게이트에서 쉬는 대기
+(`tsParkStable`, 64번마다 확인)는 QP를 장치 쪽에서 실패로 표시하고 `ncclRemoteError`. 게이트에서 쉬는 *보내는* 스레드도 같은 단어를 본다: helper가
+단어의 주소에 비트 0을 붙여 게이트의 `test` 칸에 써 둔다(4바이트 복사 두 번, 위 절반 먼저. 장치는 비트 0이 선 뒤에만 그 값을 쓴다.
+분할 시험 스위치를 켠 때만 그 칸이 시험용이라 빠진다. 구조체 배치는 그대로라
+`ow` 라이브러리에서는 칸이 0이고 아무것도 바뀌지 않는다). NCCL 자신의 단어(0 또는 1)는 그대로 성공이다. 그룹 실패와 shrink가 잠깐 올리는
+통신기 플래그는 이제 사용자 대기를 풀지 않는다. CPU 저장 한 번이라 복사나 펌웨어 명령 없이 쉬는 장치 스레드까지 푼다.
+남는 점: 값을 반환하지 않는 대기(`waitSignal`과 `waitCounter`의 void 판, `wait`, `flush`의 void 판, LSA와 CFT 배리어, ll_a2a, GIN proxy 경로)는
+같은 단어에 풀리면서 오류를 돌려줄 수 없다. 이제 이 단어는 abort 때만이 아니라 응용이 도는 중의 거절, 죽음, 펌웨어 단계 감시에서도 올라가므로,
+그런 대기는 짝 없이 끝난 것처럼 보일 수 있다. 같은 순간에 비동기 오류가 서므로 응용은 `ncclCommGetAsyncError`로 알아야 한다.
+
+(b) **생존 판정.**
+- 거부: 다시 걸기나 확인 접속이 거부되면 한 번째는 기록만 하고 다음 시도를 1 000 ms 뒤로 미룬다. 첫 거부 뒤 1 000 ms 이상 지나 다시 거부되면
+  죽음이다(`gdakiTsRefused`). 연결이 되면 거부 수를 지운다.
+- 고유값: 각 rank가 준비 all-gather에 64비트 난수를 넣고, 모든 rank가 같은 순서로 섞어 문맥의 고유값을 정한다. HELLO, HELLO-ACK, PROBE,
+  PROBE-ACK와 BYE가 싣는다. 받는 쪽은 고유값이 다른 HELLO를 리셋으로 닫는다(다시 거는 쪽에는 "받아들여지지 않음"). 확인 접속은 이제 응답
+  (PROBE-ACK)을 기다리고, 고유값이 같은 응답만 "응답"으로 센다. 다른 값이나 무응답은 그대로 모름이다. 프로세스 전체 계수기였던 문맥 번호는
+  쓰지 않는다(HELLO의 `arg`는 표시용).
+- BYE: 죽지 않은 rank가 연결된 helper 소켓을 닫을 때는 언제나 BYE를 먼저 보낸다: 정상 정리(`gdakiTsStop`), 떼어 낸 helper가 끝날 때, 준비나
+  시작이 실패해 이 rank의 복구가 꺼질 때, HELLO를 보낸 다시 걸기. 수신 대기 소켓을 닫기 전에는 backlog에 남은 연결도 받아 BYE로 닫는다(닫기만
+  하면 리셋이 간다). 상대는 그 뒤의 FIN을 "떠남"으로 남긴다(죽음이 아니고 드러내지 않는다). 설치 전의 다시 걸기나 확인 접속이 BYE를 받아도
+  떠남이다: 그 뒤로는 다시 걸지도 확인하지도 않고, 거부를 세지 않는다.
+- 라운드 안의 소켓 끊김: 시작 쪽은 REQ 전에 소켓을 엿보고(FIN이나 오류), REQ 보내기 실패와 ACK 기다림 중 FIN이나 오류도 같게 다룬다. 라운드를
+  취소하고(준비한 QP를 놓음, QP는 ERR, 게이트는 닫힌 채), 상대를 모름으로 두고(리셋으로 닫음), 장애를 큐 맨 앞에 다시 넣는다. 그 장애는 재연결
+  기다림(`NCCL_GIN_TS_RECONNECT_MS`) 뒤 새 라운드를 돈다. 한 장애에 3번까지. 응답 쪽은 커밋 직전에 소켓을 엿보고, 끊겼으면 준비를 놓고 모름으로
+  두며 거절하지 않는다(시작 쪽이 다시 돈다). 동시 시작에서 자기 라운드를 양보한 높은 rank는 자기 장애도 다시 큐에 넣는다. 커밋 뒤의 끊김은
+  되돌릴 수 없어 지금처럼 거절한다. 그사이 거절한 상대는 다시 연결되지 않으므로(거절한 높은 rank는 HELLO를 거부하고, 거절한 낮은 rank는 다시
+  걸지 않는다) 다시 넣은 장애는 재연결 기다림이 끝난 뒤 "모름"으로 거절된다. 다시 시도와 그 기다림이 `NCCL_GIN_TS_HOLD_MS`보다 길어지면
+  쉬던 장치 스레드가 먼저 포기하고, 다시 돈 라운드는 그 때문에 거절된다.
+- 죽음은 바로 드러난다: 죽음 판정(BYE 없는 FIN, 거부 두 번)은 helper 루프가 곧바로 거절한다: 비동기 오류, QP를 ERR로, 게이트 실패, 사용자
+  devComm 단어. 받기만 하는 rank도 상대의 죽음을 바로 안다.
+
+(c) **상한.**
+- 장치 상태 복사: 비동기 복사 뒤 event를 기록해 `NCCL_GIN_TS_COPY_MS`(2 000 ms)까지 확인한다(`gdakiRecCopyWait`). 넘으면 그 라운드는 거절한다.
+  늦은 복사는 스트림에 남아 staging 버퍼를 쓸 수 있으므로, 그 event가 끝날 때까지 다음 복사는 바로 실패한다(`gdakiRecCopyBlocked`).
+- 펌웨어 단계: 라운드의 QP 상태 바꾸기와 QUERY_QP를 단계로 감싼다(`gdakiRecFwGuard`: 2ERR, commit, QUERY_QP). 단계 안의 펌웨어 명령 하나하나와
+  복사 하나하나가 시계를 다시 맞춘다(`gdakiRecFwMark`). 그래서 감시는 단계 전체가 아니라 명령 하나의 시간을 본다. 복사는 자기 상한(2 000 ms)이
+  더 짧아 단계 초과로 세지 않는다. 분류기 감시 스레드가 매 확인마다 그 시간을 보고, `NCCL_GIN_TS_FW_MS`(3 000 ms)를 넘으면 사용자 devComm
+  단어를 올려 장치 대기를 오류로 풀고 비동기 오류를 드러낸다. 명령이 돌아오면 라운드는 거절한다(`gdakiTsFwCheck`, REQ를 보내기 직전에도 확인).
+  초과 표시는 한 번 서면 지우지 않는다(그때 단어가 올라가므로 이후 라운드는 모두 거절된다).
+- 거절의 순서: 먼저 QP를 ERR로 바꾼다(펌웨어 명령. 오래 걸리면 감시가 단어와 비동기 오류를 대신 올린다). 그래서 오류로 풀린 대기는 NIC가 그
+  상대의 QP에서 더는 일하지 않는다는 뜻이다(단어가 통신기마다 하나라서, 건강한 상대와의 QP는 RTS인 채 그 대기도 오류로 풀린다). 다음으로 복사
+  없이 할 수 있는 것: 사용자 devComm 단어, 비동기 오류, 상대에게 FAIL, 거절 줄. 마지막이 게이트 실패와 장치 오류 상태(상한 있는 복사)다. 복사가
+  막혀 못 쓴 것은 helper의 100 ms 점검(`gdakiTsScan`)이 복사가 풀리는 대로 다시 쓴다. 복사 상한은 펌웨어 감시 상한보다 짧게 고정한다
+  (`NCCL_GIN_TS_COPY_MS`가 `NCCL_GIN_TS_FW_MS` 이상이면 그 절반으로).
+- `ncclCommAbort`: helper의 지금 펌웨어 명령 하나가 `NCCL_GIN_TS_ABORT_JOIN_MS`(3 000 ms)를 넘을 때까지, 전체로는
+  `NCCL_GIN_TS_ABORT_JOIN_MAX_MS`(15 000 ms)까지 기다린다(`gdakiTsJoinBounded`. 펌웨어 명령 밖의 기다림은 모두 상한이 있고, 멈추라는 신호 뒤
+  helper는 새 장애를 잡지 않는다). 넘으면 떼어 낸다. 떼어 낸 helper의 collComm은 어느 정리 경로에서 떼어 냈든 기록해 닫지 않는다. helper의 끝("끝남")과 정리의 포기("떼어 냄")는
+  비교 후 교환 한 번씩이라 둘 중 하나만 이긴다. 떼어 냄은 helper가 통신기에 쓰는 자물쇠(`gdakiTsToComm`: 비동기 오류 칸, 사용자 devComm 단어)
+  안에서 정해지므로, 그 뒤 helper는 통신기에 아무것도 쓰지 않는다. 떼어 낸 helper는 명령이 돌아오면 루프를 나가며 자기 소켓을 BYE와 함께 닫는다.
+  정리 쪽은 복사를 내지 않고(장치 대기와 쉬는 보내는 스레드는 abort의 단어로 풀림), 그 collComm을 닫지 않는다(`ncclGinHostFinalize`). 나중의
+  `ncclDevCommDestroy`는 helper가 10 s 안에 끝나지 않거나 늦은 복사가 10 s 뒤에도 스트림에 있으면 그 GDAKI 문맥(QP, 스트림, staging, 분류기
+  상태)을 통째로 남긴다(해제하지 않음). 진단용 게이트 읽기와 QUERY_QP는 연구 빌드에서만, helper가 제때 끝나고 상한을 넘은
+  복사나 단계가 없었을 때만 한다. 운영 빌드에는 없다.
+- 남는 점: 멈춘 펌웨어 명령 자체는 끊을 수 없다. 그 helper 스레드와 문맥, collComm은 명령이 돌아올 때까지(또는 프로세스 끝까지) 남는다. 연구
+  빌드의 정리 때 진단 QUERY_QP는 감시 밖의 펌웨어 명령이고, 떼어 낸 뒤에도 정리가 기다리는 장애 훅과 분할 시험 스레드는 막 발사하려던 참이면
+  helper가 쥔 QP 자물쇠를 기다린다(연구 빌드만. 이 실험의 셀에서는 훅이 이미 끝나 있다). 죽음은 문맥마다 판정하지만 사용자 devComm 단어는 통신기마다 하나라서, 관리망
+  끊김 중에 한 rank가 devComm 하나만 없애면(그 소켓은 이미 닫혀 BYE가 갈 길이 없다) 상대는 거부 두 번 뒤 죽음으로 보고 통신기 전체의 대기를
+  푼다.
+
+(d) **다시 보내기 계획.** `gdakiTsReplayResume`을 두 번에 나눈다. 첫째, 커밋 지점 전에 라운드의 모든 QP에서 범위, 덮인 슬롯, 사본 영역,
+opcode를 검사해 다시 보낼 WQE를 모두 만든다. 하나라도 거부되면 아무것도 보내지 않고 거절한다. 둘째, QP마다 보내고, doorbell을 울리고, 새
+에폭을 낸다. 둘째 단계의 실패는 복사나 doorbell의 실패다.
+
+(e) **상한 넘김과 계수.** 시작과 응답 라운드(응답 쪽은 범위 검사를 통과한 것만)의 시작 시각을 창(`NCCL_GIN_TS_ESCALATE_WINDOW_MS`, 60 000)에 모아, 이미 `NCCL_GIN_TS_ESCALATE_ROUNDS`
+(8)번이면 새 라운드 대신 상한 넘김이다: 거절(사유에 상한을 적음, `ncclGetLastError`에도 그 WARN이 남음), 비동기 오류, 그 문맥의 복구를 멈춤.
+`ncclGinGetRecoveryStats(comm, &stats)`(실험용, `nccl.h`)는 시작한 라운드(두 역할), 복구, 거절, 재연결, 죽음 판정, 상한 넘김, 취소, 펌웨어
+단계 초과, 복사 초과를 돌려준다. 정리 때 INFO 요약 줄 하나를 남긴다.
+
+(f) **운영 스위치.** `-DNCCL_GIN_TS_PRODUCTION`은 장애 훅(`NCCL_GIN_FAULT_INJECT*`, proxy 훅 포함), 모든 시험 스위치
+(`NCCL_GIN_TS_TEST_*`), 음성 대조(`NCCL_GIN_TS_DIAG`, `NCCL_GIN_RECOVERY_DIAG`), 진단(`NCCL_GIN_Q4_QPWATCH_MS`, `NCCL_GIN_Q4_LATE_READ_US`,
+`NCCL_GIN_GDAKI_CQ_TYPE`, 분류 줄의 QUERY_QP, 정리 때의 게이트 읽기와 QUERY_QP)를 지우고, 정보성 줄(`GIN_TS_NOTE`)을 INFO로 낮춘다. 장치
+헤더의 분할 시험 분기는 남는다(호스트가 그 표시를 켜지 않으면 닿지 않음). `NCCL_GIN_TS_PORT=<p>`(헬퍼 수신 대기 포트, 기본 0)는 운영 옵션이다.
+helper 소켓은 이제 `FD_CLOEXEC`다.
+
+### 2. 시험 스위치 (`hd`만)
+
+기존 스위치(gin-oneway까지)는 그대로다. 새 스위치는 다섯이다. 하나라도 켜면 helper 시작 때 `TEST harden knobs` 줄을 남긴다.
+- `NCCL_GIN_TS_TEST_LISTEN_GAP=<시작 ms>:<길이 ms>`: 그때 수신 대기 소켓을 닫고 길이 뒤 같은 주소와 포트로 다시 연다.
+- `NCCL_GIN_TS_TEST_BAD_NONCE=<n>`: 이 rank가 보내는 재연결 HELLO나 PROBE 중 처음 n개에 틀린 고유값.
+- `NCCL_GIN_TS_TEST_FW_DELAY=<ms>@<commit|2ERR|QUERY_QP>`: 그 펌웨어 단계에 처음 들어갈 때 그 안에서 <ms> 잔다(정리 때도 깨지 않음).
+- `NCCL_GIN_TS_TEST_COPY_STALL=<ms>`: 첫 라운드의 정지 전에 복구 스트림에 <ms> 자는 호스트 콜백을 넣는다.
+- `NCCL_GIN_TS_TEST_BAD_REPOST=<k>`: 다시 보내기 계획이 k번째 QP를 거부한다.
+
+### 3. 드라이버 (`../gin_ts2.cu`)
+
+응용 코드에 복구는 넣지 않는다. 선택 몇 개만 더했다(설정하지 않으면 동작은 그대로다).
+- `rx_phantom`: 받는 쪽(한 스레드 루프)이 성공을 받은 반복 중 그때 읽은 신호 값(`sigSeen`)이 목표보다 작은 반복 수. 1a가 막으려는 "도착하지 않은
+  신호를 받은 것으로 앎"을 직접 센다.
+- `GIN_TS_HOG_MS`: GIN 커널이 첫 반복을 마친 뒤(상주한 뒤) SM 수 × SM당 블록 수(점유율 계산기, 256 스레드)인 커널을 다른 스트림에 띄워 그
+  시간 동안 돈다.
+- `GIN_TS_SHRINK=1`(rank 0): 주 대기 뒤 `ncclCommShrink(comm, {1}, NCCL_SHRINK_ABORT)`. 새 통신기가 오면 1024개 float `ncclAllReduce`로
+  확인(5 s 상한)하고 없앤다. 옛 커널을 `GIN_TS_HO_WAIT_S`(3 s) 기다리고, 마지막 `ncclCommAbort` 뒤 받는 쪽 결과를 다시 읽는다.
+- `rs_*`: 정리 전 `ncclGinGetRecoveryStats`(실행 때 `dlsym`으로 찾아 `ow` 라이브러리에서도 같은 바이너리가 돈다).
+- `-DGIN_TS_STOCK_API`: 순정 헤더에서 막는 `flush`가 값을 돌려주지 않는 것만 맞춘다(`stk` 드라이버).
+- `ow2` 대조: 이 드라이버의 장치 코드는 `hd` 헤더로 컴파일된다. 장치와 호스트 사이 구조체의 배치는 바꾸지 않았다. 바뀐 장치 분기는 오류 비트와
+  게이트 `test` 칸의 비트 0에서만 달라지는데, `ow` 라이브러리는 그 비트를 쓰지 않고 그 칸을 0으로 둔다(분할 시험 스위치를 켠 때만 시험용
+  포인터). 그래서 `ow2`의 대기 해제는 `ow`와 같다 `[소스]`.
+
+### 4. 실행기 ([run_trial_hd.sh](run_trial_hd.sh))
+
+`../scripts/ts2/run_trial.sh`에서 갈라졌다. 같은 인자, 같은 시행 파일, meta에 몇 키를 더한다. 다른 점:
+- 프로세스는 기록한 PID로만 끈다(8절 프로세스). rank 1 파일은 시행마다 고유한 이름이다.
+- 주소 흔들기와 보조 GID는 없다. rank 0의 관리망 주소는 sunny 관리망 주소로 가는 경로의 출발 주소로 실행 때 찾는다(주소를 적지 않음).
+- `MGMT_MUTE=<시작 ms>:<길이 ms>`, `MGMT_PORT=<p>`: 8절의 iptables 끊김. 걸기 전에 `sudo -n iptables`와 포트 범위의 소켓 주인을 확인한다.
+
+### 5. IB 타임아웃 20과 장치 쪽 시간 제한 (소스에서 한 예측)
+
+- 막는 대기(`flush(coop)`): 투명 복구에서 `tsPoll`은 CQE를 기다리는 동안 게이트의 계수 영역 안에서 폴링하고, 상한은 호출자의 시간 제한(없음)과
+  abort뿐이다. 게이트의 대기 상한(`NCCL_GIN_TS_HOLD_MS`)은 복구 중 *쉬는* 시간에만 걸린다. 그래서 상대 QP 오류는 재시도가 다 끝나는 약 58 s
+  뒤 RETRY_EXC로 분류되고, 그때 상대가 살아 있으면(소켓이 멀쩡함) 보통의 라운드로 복구된다. 투명 복구는 감지 시간을 줄이지 않는다
+  (예측 T1, T2).
+- 시간 제한 대기(NCCL 2.31.2부터의 `timeoutCycles` 판): 시간 제한이 감지 시간보다 짧으면 `tsPoll`은 제한 시각에 시간 초과 기록(분류는
+  "오류 CQE 없음")을 남기고 `ncclTimeout`을 돌려준다. 오류 CQE를 보고 기록을 내는 것은 장치 대기뿐이라, 커널이 끝나면 58 s 뒤의 오류 CQE를
+  아무도 읽지 않는다. 복구도 거절도 시작되지 않고 응용은 시간 초과만 본다(예측 T3). 응용이 같은 QP에서 다시 기다리면 그때 분류되어 복구될
+  것이다 `[추론]`. 시간 제한이 감지 시간보다 길면 막는 대기와 같다. 복구 중 쉬는 시간은 호출자의 시간 제한에 들어가므로, 제한이 라운드보다
+  짧으면 그 대기는 시간 초과로 끝나고 작업은 나중에 완료될 수 있다(gin-s2 설계 그대로).
+- 운영 권고 `[추론]`: 장치 쪽 시간 제한은 IB 재시도 시간(타임아웃 20이면 약 60 s)보다 길게 두거나, 시간 초과를 받은 응용이 같은 QP에서 다시
+  기다려야 투명 복구가 장애를 본다.
+
+### 빌드 ([build_hd.sh](build_hd.sh), 세션 스크래치)
+
+1. `setup`: `agent_ts2ow`의 소스와 빌드 디렉터리를 `agent_ts2hd`로 복사하고, 의존 파일과 장치 manifest의 경로를 바꾸고 원래 시각을 돌려준다.
+   `agent_ts2ow` 작업 트리(= `ow_layer.diff`, md5 `06f450ec`, 빌드 libnccl `b4af65c5`)를 스크래치 저장소에 "gin-oneway ow" 커밋으로 남긴다.
+2. `hd`: 이 계층을 작업 트리에 두고 증분 빌드(장치 헤더가 바뀌어 장치 객체도 다시 컴파일). libnccl → `out/hd`.
+3. `hdp`: `build/`를 `build-hdp/`로 복사(경로 바꿈, 시각 유지), 호스트 객체를 모두 지우고 `CXXFLAGS=-DNCCL_GIN_TS_PRODUCTION`으로 빌드. `make -n`에
+   장치 객체가 하나도 없어야 한다(스위치는 호스트 파일만 읽음). libnccl → `out/hdp`.
+4. `stock`: 스크래치 저장소의 루트 커밋을 세션의 NCCL 클론(읽기만)의 태그 `v2.32.3-1`(`12df1a11`)과 파일 단위로 비교하고, 같으면 git worktree로
+   꺼내 처음부터 빌드한다. libnccl → `out/stk`.
+5. `drivers`: `../gin_ts2.cu`를 `build/` 헤더로(→ `out/drv`, `hd`, `hdp`, `ow2`가 씀), `build-stock/` 헤더와 `-DGIN_TS_STOCK_API`로(→ `out/drv-stk`)
+   컴파일한다.
+
+### 배포 ([deploy_hd.sh](deploy_hd.sh))
+
+두 노드의 새 디렉터리 `hd/`, `hdp/`, `ow2/`, `stk/`에 둔다(8절 배포). 확인 출력은 파일로만 받는다.
+
+### 실행 ([hold.sh](hold.sh), [chain.sh](chain.sh), [cells.sh](cells.sh))
+
+hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. 결과 폴더 아래 빌드별 폴더(`hd/`, `ow/`, `ow2/`, `hdp/`, `stk/`)에 시행 파일이 쌓인다.
+
+| hold | 내용 | 추정 `[추론]` |
+|---|---|---|
+| H0 pilot | 새 셀 11개 `hd` 1회씩, 대조 5개 1회씩, `hdp_kill_b`, `hdp_mute_b`, 세 빌드 4 KiB 지연 1회씩, IB 타임아웃 셀 2개 1회씩, `rc_mute8_f1_b`와 `ow_kill0_b` `hd` 1회씩(25회). 채점 안 함 | 8–10분 |
+| H1 | 회귀 6셀(`f1_b`, `f3_b`, `bidirf_sym_b`, `f4_b`, `f2rel_b`, `pc_dual_f1c0_r1c2_b`) × 5, 지연 30실행(섞어서) | 6분 |
+| H2 | 회귀 5셀(`rc_mute8_f1_b`, `rc_mutekill_b`, `ow_r1in_f1_b`, `ow_r0in_f1r1_b`, `ow_kill0_b`) × 5 | 8분 |
+| H3 | `ow_hello_f1_b` × 5, `hd_ref1_f1_b`, `hd_ref2_f1_b` × 10 | 8분 |
+| H4 | `hd_nonce_f1_b` × 10, `hd_rround_f1_b` `hd` 10과 `ow` 5(2:1로 섞어서) | 8분 |
+| H5 | `hd_rxdeath_b`(2:1), `hd_hog_f1_b` × 10, `hd_fwslow_f1_b`(2:1) | 8분 |
+| H6 | `hd_esc_f1_b`(2:1), `hd_shrink_b`(`hd` 10, `ow2` 5, 2:1), `hd_copystall_f1_b`, `hd_repost_f1_b` × 10 | 8분 |
+| H7 | `hdp_kill_b`, `hdp_mute_b` × 5, `to20_f3_t` × 3 | 5분 |
+| H8 | `to20_f3_b` × 5(시행마다 약 60–70 s, 감시 상한 110 s) | 6–10분 |
+
+시행 시간은 gin-oneway의 hold 기록(끊김 셀 약 19 s, 짧은 셀 약 5 s, `../oneway/EXPERIMENT.md` 12절)으로 어림했다. hold마다 잠금과 유휴 확인이
+약 1분 더 든다. 본 실행(H1–H8)의 클러스터 시간은 60–75분이다 `[추론]`.
+
+### 채점
+
+1. `../scripts/ts2/rows.py`로 hold 폴더마다 시행 CSV를 만든다.
+2. `../s2_close/rows_extra.py`, `../pair_check/rows_pc.py`, `../oneway/rows_ow.py`, 이 폴더의 `rows_hd.py`가 3.1의 열을 붙인다.
+3. `score.py`가 [predictions.csv](predictions.csv)의 판정식을 3.2 문법대로 적용한다. 결과는 `results/<날짜>/SCORE.md`와
+   `results/<날짜>/trials_scored.csv`다.
+
+**출력.** 결과 폴더 `results/<날짜>/<빌드>/`. 원시 로그는 Release에 올린다.
+
+## 10. 완료 조건과 QA 기준
+
+- [ ] 메인 세션이 pilot(H0)을 돌리고 결과를 12절에 적은 뒤, 고칠 것을 고치고 태그를 달았다.
+- [ ] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외와 실패를 따로 센 표가 있다.
+- [ ] 예측 52줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
+- [ ] 다른 에이전트가 `score.py`를 보지 않고 원자료에서 핵심 수치를 다시 셌다(생존 판정과 원인, 거부 수와 간격, 취소와 재시도, 대기 해제 원인과
+  시각, 신호 없이 성공한 대기, shrink 결과, abort 시간, 통계 값, 지연).
+- [ ] 다른 에이전트가 `hd_layer.diff`, 드라이버와 실행기 변경을 읽고 리뷰했다(설계 단계 리뷰는 12절).
+- [ ] smoke와 pilot, 제외 시행이 결과에 섞이지 않았다.
+- [ ] 새 빌드의 md5, 전체 diff, pristine + diff 확인, 운영 빌드의 strings 확인을 5절과 12절에 적었다.
+- [ ] 원자료를 Release에 올리고 `DATA.md`에 적었다.
+- [ ] hold 전후 mlx5 스냅숏에 새 명령 오류가 없었거나, 있었다면 그 줄의 내용을 12절에 적었다. 남은 iptables 규칙이 0이었다.
+
+## 11. 작업 체크리스트
+
+- [x] 리뷰가 짚은 줄 확인, 설계(1, 9절)
+- [x] 라이브러리 계층, 운영 스위치, 드라이버, 실행기 구현
+- [x] 빌드: `hd`, `hdp`, `stk`, 드라이버 두 개. pristine + diff 확인, 운영 빌드 strings 확인
+- [x] 설계 단계 코드 리뷰 1차(다른 에이전트)와 반영
+- [x] 고친 부분의 2차 리뷰(다른 에이전트)와 반영
+- [x] `cells.sh`, `hold.sh`, `chain.sh`, `deploy_hd.sh`, `rows_hd.py`, `score.py`, `predictions.csv`
+- [x] 질문, 가설, 셀, 예측 초안 (`DRAFT`)
+- [ ] 배포(메인 세션)
+- [ ] pilot H0(메인 세션, 채점 안 함), 결과로 고칠 것 고치기
+- [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
+- [ ] 본 실행 H1–H8 (`RUNNING`)
+- [ ] 채점 (`QA`)
+- [ ] 독립 재계산과 코드 리뷰
+- [ ] 결과 정리, 원자료 Release, PR
+- [ ] 결론 확정 (`COMPLETE`)
+
+## 12. 실행 기록 (시간순)
+
+| 시각 | 무엇을 했나 | 결과와 근거(경로, 커밋, 실행 ID) |
+|---|---|---|
+| 2026-10-09 | 리뷰가 짚은 ow.diff 줄을 모두 다시 읽어 확인 `[소스]`. `base` 번들이 순정이 아님을 확인(gpudb v2, libnccl `1ed8e0a1`) `[측정]` | 1절, 이 문서 머리 |
+| 2026-10-09 | 스크래치 `agent_ts2hd` 준비: `agent_ts2ow`(작업 트리 = `ow_layer.diff` md5 `06f450ec`, 빌드 `b4af65c5`) 복사, 경로 바꿈, "gin-oneway ow" 커밋. 복사 직후 `make -n`이 버전 표시만 다시 컴파일함을 확인 `[측정]` | [build_hd.sh](build_hd.sh) `setup` |
+| 2026-10-09 | 계층 구현(9절 1번), 드라이버 선택(9절 3번), 실행기(9절 4번). 연구와 운영 두 변형 모두 경고 없이 컴파일. 운영 객체에 시험 스위치 이름 0개, 연구 객체 20개 `[측정]` | [hd_layer.diff](hd_layer.diff) |
+| 2026-10-09 | 순정 빌드: 스크래치 루트 커밋이 상위 태그 `v2.32.3-1`(`12df1a11`)과 파일 단위로 같음(VERIFIED), 처음부터 빌드 4분 `[측정]`. libnccl `stk` `b380e622` | `build_hd.sh stock` |
+| 2026-10-09 | 드라이버를 `hd` 헤더와 순정 헤더(`-DGIN_TS_STOCK_API`) 두 쪽으로 경고 없이 컴파일 `[측정]` | `build_hd.sh drivers` |
+| 2026-10-09 | 설계 단계 코드 리뷰 1차(다른 에이전트, 코드만 읽음): 16건. 버그 3(떼어 낸 helper가 도는 중 `ncclDevCommDestroy`가 문맥을 해제함, 거절의 장치 오류 상태 쓰기가 상한 없이 막힌 복사를 기다림, BYE 없이 닫는 경로가 남아 상대가 고장 없는 통신기를 죽음으로 거절함), 위험 8, 사소 5 | 9절 1번 (a)–(e)에 반영 |
+| 2026-10-09 | 반영: helper의 끝과 떼어 냄을 비교 후 교환 한 번으로 정함, 통신기 쓰기를 자물쇠 안으로, 떼어 낸 helper가 쓰는 문맥은 해제하지 않음, 늦은 복사가 남은 staging은 해제하지 않음, 장치 오류 상태 쓰기에 복사 상한, 거절에서 복사 없는 단계를 먼저, 못 쓴 게이트는 helper 점검이 다시 씀, 펌웨어 감시를 명령 하나 단위로, 쉬는 보내는 스레드도 사용자 단어를 봄(게이트 `test` 칸), 모든 닫기 경로에 BYE와 backlog 비우기, 양보한 장애를 다시 큐에, 응답 쪽 상한 넘김 계수를 범위 검사 뒤로, REQ 직전 펌웨어 확인, 취소 계수는 다시 시도할 때만. 문서로 남긴 것: 값을 반환하지 않는 대기, 연구 빌드의 정리 때 QUERY_QP, 문맥 단위 죽음과 통신기 단위 단어 | [hd_layer.diff](hd_layer.diff) |
+| 2026-10-09 | 고친 부분의 2차 리뷰(다른 에이전트, 코드만 읽음): 문제 10건. 반영: 떼어 낸 helper의 collComm을 두 정리 경로 모두에서 기록(`ncclDevCommDestroy` 경로에서 닫히던 문제), 설치 전 연결(다시 걸기, 확인 접속)이 받은 BYE를 떠남으로 처리하고 떠난 상대의 거부는 세지 않음(떠난 상대가 죽음으로 판정되던 문제), 기다림 상한을 "명령 하나가 3 s"로(진행 중인 helper를 떼어 내던 문제), 멈추라는 신호 뒤 새 장애를 잡지 않음, 보내는 스레드용 단어를 4바이트 두 번으로 씀, 거절에서 QP를 ERR로 먼저, 복사 상한을 펌웨어 상한 아래로 고정, 시작 실패 때 늦은 복사를 기다림, 늦은 복사가 남으면 문맥을 통째로 남김, 낡은 주석. 연구 빌드만의 남는 점(정리가 기다리는 훅과 시험 스레드)은 문서로 남김 | 9절 1번 (a)–(c) |
+| 2026-10-09 | 다시 빌드(빌드됨, 실행 안 함). `hd` libnccl `e2090323`, `hdp` `4818e30b`(`make -n`의 장치 객체 0), 드라이버 `c0b73e09`(`hd` 헤더), `472602a2`(순정 헤더). 컴파일 경고는 이 계층이 고치지 않은 `scheduler/symmetric_sched.cc` 하나뿐 `[측정]` | 세션 스크래치 `hd_work/build_hd4.log`, `build_hdp2.log`, `build_drv2.log` |
+| 2026-10-09 | 운영 빌드 확인: `strings`에서 `NCCL_GIN_TS_TEST`, `GIN_FAULT_INJECT`, `GIN/FAULT`, `GIN_TS_DIAG`, `GIN_RECOVERY_DIAG`, `Q4_QPWATCH`, `Q4_LATE_READ`, `GDAKI_CQ_TYPE`, `GIN/TS: TEST`가 `hdp`에 0개(`hd`에는 각각 16, 4, 11, 1, 2, 1, 1, 3, 23개). 두 빌드 모두 `ncclGinGetRecoveryStats`를 내보냄(`nm -D`) `[측정]` | |
+| 2026-10-09 | `make_diff_hd.sh`: 두 재현 확인 VERIFIED. `hd_layer.diff` md5 `2226872e`(10개 파일 +1675/−329), 전체 diff md5 `a9894def` `[측정]` | [make_diff_hd.sh](make_diff_hd.sh) |
+| 2026-10-09 | 채점 스크립트 합성 시험: 라이브러리의 printf 형식 문자열로 시행 파일 11개(셀 9개와 지연 2개)를 만들어 `score.py`에 넣음. 3.1의 열이 모두 뽑히고, 해당 판정식의 조건이 시행마다 1/1로 셈. 설정 확인과 제외는 0건(의도대로) `[측정]`. 실제 로그가 아니므로 형식 일치만 보인다 | 세션 스크래치 `hd_work/synth/fab.py` |
+| 2026-10-09 | 마지막 hold를 둘로 나눔(H7: 운영 빌드 셀과 장치 시간 제한 셀, H8: 막는 flush 셀). 막는 셀이 감시 상한(110 s)까지 가도 hold 하나가 880 s 안에 들도록 | [hold.sh](hold.sh) |
+| 2026-10-09 | 클러스터에서는 아무것도 돌리지 않았다. 배포, pilot, 본 실행은 메인 세션이 한다 | |
+
+## 13. 사전 등록 이후 변경
+
+> 기존 문장을 고치지 않고 여기에 덧붙인다. 변경이 많으면 `DEVIATIONS.md`에 두고 링크한다.
+
+| 날짜 | 무엇을 | 이유 | 영향 범위 | 커밋 |
+|---|---|---|---|---|
+
+## 14. 원자료와 결과표
+
+아직 없다. 계획: `results/<날짜>/SCORE.md`, `results/<날짜>/trials_scored.csv`(커밋), 빌드별 시행 파일과 hold 출력(Release).
+
+## 15. 결과 요약
+
+`[미확인]` 아직 측정 전이다.
+
+## 16. QA와 재현성
+
+- 재현: [gin_transparent_hd.diff](gin_transparent_hd.diff)(pristine NCCL v2.32.3-1 기준)로 만든다. `hdp`는 같은 소스에
+  `-DNCCL_GIN_TS_PRODUCTION`. 빌드 절차는 [build_hd.sh](build_hd.sh).
+
+## 17. 결론
+
+아직 없다.
+
+## 18. 한계
+
+측정 전이라 결과의 한계는 아직 없다. 설계상 알려진 한계는 4절 제외와 9절 1번 (a), (c)의 "남는 점"에 있다.
+
+## 19. 다음 작업
+
+- 3 rank 이상(gin-multirank).
+- 실제 멈춘 펌웨어 명령에서 떼어 낸 helper가 남기는 자원의 정리.
+
+## 20. 참고자료
+
+- `../oneway/EXPERIMENT.md`, `../oneway/qa/code_review.md`(gin-oneway, 기준 빌드 `ow`)
+- `../s2_close/qa/code_review.md` R1, R2(사용자 devComm의 abort 단어)
+- `../reconnect/EXPERIMENT.md`, `../pair_check/EXPERIMENT.md`(회귀 셀)
+- `../s2_close/EXPERIMENT.md` 3.2절(판정식 문법)
+- `../../../ack_timeout/README.md`(IB 타임아웃과 재시도 시간)
