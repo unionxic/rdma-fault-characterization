@@ -23,12 +23,20 @@ Columns (_r<r>: from rank r's log or kv):
   n_cancel_r*                "round <n> with rank <p> cancelled" (initiator) + "round <n> from rank <p> cancelled" (responder)
   sock_retries_max_r*        largest sock_retries= of the rank's "GIN/TS: recovered" lines (initiator); empty if none
   rec_total_us_r*            total_us of the rank's first "GIN/TS: recovered ... role=initiator" line
-  n_fwdog_r*, fwdog_run_ms_r*, fwdog_ms_r*     "GIN/TS: watchdog rank=<r>: firmware command phase <ph> has run <x> ms";
-                             x and the mono_ms of the first such line
+  n_fwdog_r*, fwdog_run_ms_r*, fwdog_ms_r*, fwdog_phase_r*
+                             "GIN/TS: watchdog rank=<r>: firmware command phase <ph> has run <x> ms";
+                             x, the mono_ms and the phase of the first such line
   n_uarel_r*, uarel_why_r*, uarel_ms_r*        "GIN/TS: user devComm waits released rank=<r> why=<w> mono_ms=<t>" (first)
   n_copyto_r*                "device-state copy (...) not complete after" lines
   n_esc_r*                   "GIN/TS: escalated rank=" lines
-  n_plan_rej_r*, plan_rej_qp_r*, plan_rej_total_r*   "re-post plan to rank <p> rejected at qp <i> of <n>" (first)
+  n_plan_rej_r*, plan_rej_qp_r*, plan_rej_total_r*, plan_rej_ms_r*
+                             "re-post plan to rank <p> rejected at qp <i> of <n> (...); nothing re-posted mono_ms=<t>"
+                             (first)
+  n_init_round_r*            initiator round-start lines "GIN/TS: rank <r>: round <n> peer <p> scope=.. qps=.. reason=..
+                             mono_ms=<t>" (only the initiator of a round logs this line)
+  plan_rej_init_r0           1 if rank 0 logged an initiator round-start line at or before its first plan rejection (the
+                             rejecting rank was the round's initiator: a lower rank never yields its round), 0 if it
+                             rejected without one (it was the responder), empty without a rejection
   n_orphan_r*                "the recovery helper did not stop within" lines
   n_dump_r*                  "device wait-timeout dump" lines
   gap_on_ms_r1, gap_off_ms_r1, gap_listening_r1   "GIN/TS: TEST listen gap on/off rank=1 ... listening=<0|1>"
@@ -67,11 +75,12 @@ RE_NOANS = re.compile(r"GIN/TS: rank \d+: probe of rank \d+ not answered by the 
 RE_CANCEL = re.compile(r"GIN/TS: rank \d+: round \d+ (?:with|from) rank \d+ cancelled")
 RE_REC = re.compile(r"GIN/TS: recovered ")
 RE_KV = re.compile(r"([\w/]+)=(\[[^\]]*\]|\S+)")
-RE_FWDOG = re.compile(r"GIN/TS: watchdog rank=\d+: firmware command phase \S+ has run ([\d.]+) ms.*?mono_ms=([\d.]+)")
+RE_FWDOG = re.compile(r"GIN/TS: watchdog rank=\d+: firmware command phase (\S+) has run ([\d.]+) ms.*?mono_ms=([\d.]+)")
 RE_UAREL = re.compile(r"GIN/TS: user devComm waits released rank=\d+ why=(\S+) mono_ms=([\d.]+)")
 RE_COPYTO = re.compile(r"device-state copy \(.*\) not complete after")
 RE_ESC = re.compile(r"GIN/TS: escalated rank=")
-RE_PLANREJ = re.compile(r"re-post plan to rank \d+ rejected at qp (-?\d+) of (\d+)")
+RE_PLANREJ = re.compile(r"re-post plan to rank \d+ rejected at qp (-?\d+) of (\d+).*?mono_ms=([\d.]+)")
+RE_INITROUND = re.compile(r"GIN/TS: rank \d+: round \d+ peer \d+ scope=\S+ qps=\d+ reason=\S+ mono_ms=([\d.]+)")
 RE_ORPHAN = re.compile(r"the recovery helper did not stop within")
 RE_DUMP = re.compile(r"device wait-timeout dump")
 RE_GAPON = re.compile(r"GIN/TS: TEST listen gap on rank=\d+ .*?mono_ms=([\d.]+)")
@@ -105,7 +114,7 @@ def fnum(x):
 def scan(path):
     o = {"hd": None, "hk": None, "judged": [], "left": 0, "dialref": [], "proberef": [], "nonceref": 0, "badnonce": 0,
          "noans": 0, "cancel": 0, "rec": [], "fwdog": [], "uarel": [], "copyto": 0, "esc": 0, "planrej": [], "orphan": 0,
-         "dump": 0, "gapon": None, "gapoff": None, "close": [], "q4": None, "decl": None, "fire": None}
+         "dump": 0, "gapon": None, "gapoff": None, "close": [], "q4": None, "decl": None, "fire": None, "initround": []}
     if not os.path.exists(path):
         return o
     for line in open(path, errors="replace"):
@@ -138,7 +147,7 @@ def scan(path):
             o["rec"].append(dict(RE_KV.findall(line)))
         m = RE_FWDOG.search(line)
         if m:
-            o["fwdog"].append((float(m.group(1)), float(m.group(2))))
+            o["fwdog"].append((float(m.group(2)), float(m.group(3)), m.group(1)))
         m = RE_UAREL.search(line)
         if m:
             o["uarel"].append((m.group(1), float(m.group(2))))
@@ -148,7 +157,10 @@ def scan(path):
             o["esc"] += 1
         m = RE_PLANREJ.search(line)
         if m:
-            o["planrej"].append((m.group(1), m.group(2)))
+            o["planrej"].append((m.group(1), m.group(2), float(m.group(3))))
+        m = RE_INITROUND.search(line)
+        if m:
+            o["initround"].append(float(m.group(1)))
         if RE_ORPHAN.search(line):
             o["orphan"] += 1
         if RE_DUMP.search(line):
@@ -218,6 +230,7 @@ def extra_hd(stem, fault_mono_r0=None):
         d["n_fwdog_r%d" % r] = len(o["fwdog"])
         d["fwdog_run_ms_r%d" % r] = o["fwdog"][0][0] if o["fwdog"] else ""
         d["fwdog_ms_r%d" % r] = o["fwdog"][0][1] if o["fwdog"] else ""
+        d["fwdog_phase_r%d" % r] = o["fwdog"][0][2] if o["fwdog"] else ""
         d["n_uarel_r%d" % r] = len(o["uarel"])
         d["uarel_why_r%d" % r] = o["uarel"][0][0] if o["uarel"] else ""
         d["uarel_ms_r%d" % r] = o["uarel"][0][1] if o["uarel"] else ""
@@ -226,6 +239,8 @@ def extra_hd(stem, fault_mono_r0=None):
         d["n_plan_rej_r%d" % r] = len(o["planrej"])
         d["plan_rej_qp_r%d" % r] = o["planrej"][0][0] if o["planrej"] else ""
         d["plan_rej_total_r%d" % r] = o["planrej"][0][1] if o["planrej"] else ""
+        d["plan_rej_ms_r%d" % r] = o["planrej"][0][2] if o["planrej"] else ""
+        d["n_init_round_r%d" % r] = len(o["initround"])
         d["n_orphan_r%d" % r] = o["orphan"]
         d["n_dump_r%d" % r] = o["dump"]
         for key in RS_KEYS:
@@ -240,6 +255,8 @@ def extra_hd(stem, fault_mono_r0=None):
         d["hog_launch_after_launch_ms_r%d" % r] = k[r].get("hog_launch_after_launch_ms", "")
     for key in HO_KEYS:
         d[key] = k[0].get(key, "")
+    pr0 = l[0]["planrej"]
+    d["plan_rej_init_r0"] = (1 if any(t <= pr0[0][2] for t in l[0]["initround"]) else 0) if pr0 else ""
     d["gap_on_ms_r1"] = blank(l[1]["gapon"])
     d["gap_off_ms_r1"] = l[1]["gapoff"][1] if l[1]["gapoff"] else ""
     d["gap_listening_r1"] = l[1]["gapoff"][0] if l[1]["gapoff"] else ""

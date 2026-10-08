@@ -10,8 +10,10 @@ Steps (EXPERIMENT.md 3 and 8):
   2. ../s2_close/rows_extra.extra(), ../pair_check/rows_pc.extra_pc(), ../oneway/rows_ow.extra_ow() and
      rows_hd.extra_hd() add the section 3.1 columns from the per-trial files;
   3. each trial gets its cell key cell@build and a status: scored, excluded (section 8: bind failure, fault not applied,
-     trigger missed, no kill, order not met, mute not applied), config (a section 8 configuration check failed: the block
-     stops), or surplus (non-excluded trials beyond the planned count; the first ones by trial number are scored);
+     trigger missed, no kill, order not met, mute not applied, the re-post plan rejected by the responder in
+     hd_repost_f1_b, a firmware-command overrun in a cell not meant to trip the watchdog), config (a section 8
+     configuration check failed: the block stops), or surplus (non-excluded trials beyond the planned count; the first
+     ones by trial number are scored);
   4. every prediction is evaluated on the scored trials with the grammar of ../s2_close/EXPERIMENT.md 3.2, using the
      evaluation functions of ../s2_close/score.py unchanged; a prediction whose cells have fewer scored trials than
      planned is "자료 부족".
@@ -88,7 +90,7 @@ LABEL = {
     "C5": "대조(ow): 같은 8 s를 기다린 뒤 복구",
     "C6": "멈춘 복사가 2 s 상한을 넘어 3 s 안에 거절되고 두 rank의 대기가 오류로 끝남",
     "C7": "두 rank의 abort가 돌아옴",
-    "D1": "두 QP 중 두 번째의 다시 보내기 계획이 거부되면 어느 QP에도 다시 보내지 않음",
+    "D1": "시작 쪽 rank 0의 두 번째 QP 다시 보내기 계획이 거부되면 어느 rank도 다시 보내지 않음",
     "D2": "두 rank가 거절",
     "E1": "다섯 장애 중 셋은 복구되고 넷째에서 상한(10 s에 3번)으로 거절",
     "E2": "rank 0이 오류를 드러내고 rank 1이 상대 거절로 거절",
@@ -124,7 +126,9 @@ EXCL_LABEL = {"bind": "드라이버 랑데부 포트 충돌", "no_fault": "장�
               "config_build": "설정 확인 실패: 빌드 시작 줄이 빌드와 다름", "config_ts_off": "설정 확인 실패: 투명 복구 시작 줄 없음",
               "config_no_ua": "설정 확인 실패: abort 단어 줄 없음", "config_knobs": "설정 확인 실패: 시험 스위치 줄이 셀과 다름",
               "config_mute": "설정 확인 실패: 끊김 줄이 셀과 다름", "config_inj_ctx": "설정 확인 실패: 훅의 문맥 지정이 셀과 다름",
-              "config_rules_left": "설정 확인 실패: iptables 규칙이 시행 뒤 남음", "surplus": "계획 수를 넘은 시행"}
+              "config_rules_left": "설정 확인 실패: iptables 규칙이 시행 뒤 남음", "surplus": "계획 수를 넘은 시행",
+              "rej_responder": "순서 미적용: 계획을 거부한 rank 0이 그 라운드의 응답 쪽(시작 쪽이 이미 다시 보냄)",
+              "fw_overrun": "펌웨어 명령 하나가 NCCL_GIN_TS_FW_MS를 넘음(감시가 발동하는 셀이 아님)"}
 
 
 def status_of(r):
@@ -160,6 +164,16 @@ def status_of(r):
             return "cond_order"
     if cell == "hdp_mute_b" and str(r.get("mute_applied")) != "1":
         return "mute_not_applied"
+    # (added before the tag, after the independent review of 2026-10-09, EXPERIMENT.md 8 and 12)
+    # re-post validation is per rank: only a rejection by the round's initiator stops every re-post
+    if cell == "hd_repost_f1_b" and val(r.get("n_plan_rej_r0")) >= 1 and str(r.get("plan_rej_init_r0")) == "0":
+        return "rej_responder"
+    # one firmware command over NCCL_GIN_TS_FW_MS trips the watchdog for good (user word raised, later rounds decline):
+    # outside the cell made to trip it, that is a testbed event (a slow firmware command), not the cell's subject
+    if build in ("hd", "hdp") and not (cell == "hd_fwslow_f1_b" and build == "hd"):
+        if any(isinstance(val(r.get(c)), float) and val(r.get(c)) > 0
+               for c in ("n_fwdog_r0", "n_fwdog_r1", "rs_fw_overruns_r0", "rs_fw_overruns_r1")):
+            return "fw_overrun"
     # ---- configuration (a failure here stops the block, EXPERIMENT.md 8)
     if val(r.get("left_rules")) not in (0.0,) and r.get("left_rules") not in ("", None):
         return "config_rules_left"
