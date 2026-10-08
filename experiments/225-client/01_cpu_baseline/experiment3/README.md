@@ -10,7 +10,7 @@
   프로세스 종료와 link down은 자원을 전부 다시 만들어야 해서 뺐다.
 - **100회.** 감지, 남은 CQE 비우기, ERR→RESET, RESET→INIT, INIT→RTR, RTR→RTS, 시험 쓰기 1회를 따로 쟀다.
   양쪽 동기화 두 번(INIT 뒤, RTS 뒤)도 따로 쟀다.
-- **같은 QP를 계속 썼다.** QP 번호, MR, PSN을 바꾸지 않고 제자리에서 되돌렸다. QP 설정은 experiment1과 같다.
+- **같은 QP를 계속 썼다.** QP 번호, MR, PSN을 바꾸지 않고 제자리에서 되돌렸다. QP 설정은 감지 시간 기준선 실험과 같다.
 
 ## 결론
 
@@ -41,11 +41,11 @@
 
 ## 한계와 주의
 
-- **응답 QP를 ERR로 바꾼 경우만 쟀다.** 다른 오류의 복구 비용은 [06_recovery](../../06_recovery/README.md)에 있다.
+- **응답 QP를 ERR로 바꾼 경우만 쟀다.** 다른 오류의 복구 비용은 복구 비용 실험에 있다.
 - **운영 시스템의 진단 시간과 비교하면 안 된다.** Minder나 Holmes의 값은 감지, 진단, 조율을 모두 포함한다. 여기 값은 복구 동작만이다.
-- **응답 쪽 단계는 따로 기록했다.** 응답 쪽 ERR→RESET 중앙값은 323 µs로 요청 쪽보다 훨씬 짧다([224 쪽 README](../../../224-server/01_cpu_baseline/experiment3/README.md)).
+- **응답 쪽 단계는 따로 기록했다.** 응답 쪽 ERR→RESET 중앙값은 323 µs로 요청 쪽보다 훨씬 짧다.
 - **CPU를 고정하지 않았다.** 값은 호스트 부하에 따라 움직일 수 있다.
-- **옛 클러스터 값이다.** 새 테스트베드의 QP 복구(0.8 ms 안팎, `../../../../harness/`)와 정의가 달라 직접 비교하지 않는다.
+- **옛 클러스터 값이다.** 새 테스트베드의 QP 복구(0.8 ms 안팎)와 정의가 달라 직접 비교하지 않는다.
 
 ## 파일
 
@@ -55,4 +55,6 @@
 | `results/recovery.csv` | 요청 쪽 시험별 기록 100행. 시험용 짧은 기록은 태그 `archive/results-tables-20261006`에만 있다 |
 | `../../plots/data/exp3_stages.csv` | 위 표의 요약 |
 | [224 쪽 README](../../../224-server/01_cpu_baseline/experiment3/README.md) | 응답 쪽 기록 |
+| [06_recovery](../../06_recovery/README.md) | 복구 비용 실험. 다른 오류의 복구 비용 |
 | [docs/experiments/01](../../../../docs/experiments/01_detection_firmware_retry.md) | 감지와 복구 비교(1.3절) |
+| [../../../../harness/](../../../../harness/README.md) | 새 테스트베드의 QP 복구 |

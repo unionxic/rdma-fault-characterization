@@ -1,7 +1,7 @@
 # experiment2: polling 간격과 감지 지연
 
 CPU가 다른 일을 하느라 CQ를 띄엄띄엄 polling하면 장애 감지가 얼마나 늦어지는지 쟀다.
-장애 주입 뒤 정해진 시간만큼 잠들었다가 polling을 시작했다. 장애는 experiment1의 세 가지를 다시 썼다.
+장애 주입 뒤 정해진 시간만큼 잠들었다가 polling을 시작했다. 장애는 감지 시간 기준선 실험의 세 가지를 다시 썼다.
 수치는 옛 클러스터(225 요청 ConnectX-6, 224 응답 ConnectX-5)에서 쟀다.
 
 ## 무엇을 쟀나
@@ -9,7 +9,7 @@ CPU가 다른 일을 하느라 CQ를 띄엄띄엄 polling하면 장애 감지가
 - **잠드는 시간 7단계.** 0(바로 polling), 1 ms, 10 ms, 100 ms, 1 s, 5 s, 10 s.
 - **장애 세 가지.** 응답 QP를 ERR로 바꾸기, 응답 프로세스 종료, 응답 쪽 link down이다.
 - **조합마다 30회.** 장애 주입부터 오류 CQE를 본 시각까지, 그리고 깨어난 뒤 오류를 보기까지를 기록했다.
-- **조건.** IB 타임아웃 14, retry_cnt 7. 응답 서버는 experiment1 것을 다시 썼다.
+- **조건.** IB 타임아웃 14, retry_cnt 7. 응답 서버는 감지 시간 기준선 실험 것을 다시 썼다.
 
 ## 결론
 
@@ -35,7 +35,7 @@ CPU가 다른 일을 하느라 CQ를 띄엄띄엄 polling하면 장애 감지가
 
 ## 한계와 주의
 
-- **해설 문서와 남은 표가 다르다.** [docs/experiments/01](../../../../docs/experiments/01_detection_firmware_retry.md) 1.9절은 QP ERR이 "잠든 시간과 3.7 s 중 큰 값"을 따른다고 적었다.
+- **해설 문서와 남은 표가 다르다.** 감지 시간 해설 1.9절은 QP ERR이 "잠든 시간과 3.7 s 중 큰 값"을 따른다고 적었다.
   남은 표에서는 QP ERR도 다른 두 장애처럼 더해졌다. 왜 1 s 이상에서 겹치지 않는지는 확인하지 않았다.
 - **프로세스 종료는 잠들지 않는 칸(0)이 표에 없다.** 그래서 이 장애만 7칸이 아니라 6칸이다.
 - **예전 README의 "예상 결과"는 측정값이 아니다.** 5 s에서 약 5,000 ms라는 예상은 맞지 않았다.
@@ -48,4 +48,5 @@ CPU가 다른 일을 하느라 CQ를 띄엄띄엄 polling하면 장애 감지가
 | [NOTES.md](NOTES.md) | 예전 README(영문). 매개변수, CSV 형식, 예상 결과, 실행 방법 |
 | `../../plots/data/exp2_sleep_curve.csv` | 위 표의 원본 요약(평균, 표준편차, 중앙값, 최소, 최대) |
 | `results/` | 시험별 원본 표. 태그 `archive/results-tables-20261006`에만 있다 |
-| [docs/experiments/01](../../../../docs/experiments/01_detection_firmware_retry.md) | 1.9절 polling 간격 해설 |
+| [docs/experiments/01](../../../../docs/experiments/01_detection_firmware_retry.md) | 감지 시간 해설. 1.9절 polling 간격 |
+| [experiment1](../experiment1/README.md) | 감지 시간 기준선 실험. 같은 장애와 응답 서버 |
