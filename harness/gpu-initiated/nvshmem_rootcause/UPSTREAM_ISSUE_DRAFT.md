@@ -5,6 +5,8 @@ form "NVSHMEM issue or bug". The body was edited once, on 2026-10-07 10:31 KST, 
 "Steps to Reproduce" got one paragraph with the direct CQ read of ../cq380/. Below is the body as it
 stands after that edit, copied from GitHub. The longer write-up is UPSTREAM_ISSUE_EVIDENCE.md; the
 reproducer and the full logs are for follow-up if asked. The issue does not link this repository.
+Closed by the maintainer on 2026-10-08 05:13 KST as completed: "Fixed internally, closing and the fix will
+pop out next time we sync."
 -->
 
 **Title:** [Issue]: IBGDA CPU proxy writes the SQ producer index into the wrong word of the QP doorbell record

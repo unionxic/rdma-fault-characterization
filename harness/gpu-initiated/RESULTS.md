@@ -180,4 +180,5 @@ Still open:
 5. DeepEP cannot run here: its internode and low-latency kernels require SM90 (`setup.py` asserts
    for any other arch), and rain's GPU is sm_75, below even the legacy SM80 path.
 6. That GDAKI used GPU doorbells in `gpu_doorbell/` is inferred (neither NCCL nor DOCA logs it).
-7. The NVSHMEM doorbell-record bug was reported upstream on 2026-10-07 as NVIDIA/nvshmem#117; the next step depends on the maintainers.
+7. The NVSHMEM doorbell-record bug was reported upstream on 2026-10-07 as NVIDIA/nvshmem#117. NVIDIA closed it as fixed
+   internally on 2026-10-08 ("the fix will pop out next time we sync"); the fix is not public yet.
