@@ -5,12 +5,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `PREREGISTERED` |
+| 상태 | `RUNNING` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-08 |
 | 기준 브랜치와 커밋 | `exp/nvshmem-t1-380` @ `90731cdb` (master) |
 | 사전 등록 태그 | `prereg/nvshmem-t1-380-v1` (이 상태로 바꾼 커밋) |
-| 마지막 갱신 | 2026-10-08 10:31, 사전 등록 |
+| 마지막 갱신 | 2026-10-08 10:53, 본 실행 시작 |
 
 표시: `[측정]` 원자료나 파일에서 확인, `[소스]` 코드나 문서에서 확인, `[추론]` 해석, `[미확인]` 확인 안 함.
 칸과 장애의 기호(R2, F1 등)는 원자료를 찾는 키로만 괄호나 id 열에 둔다. 파일과 환경변수 이름의 T1은 그대로 둔다.
@@ -271,8 +271,8 @@ spec 줄(`../scripts/t1/run_matrix_t1.sh` 형식; `BUNDLE`의 기본은 묶음 P
 
 - [x] 질문, 가설, 셀 작성 (`DRAFT`)
 - [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
-- [ ] 계측과 실행기 구현, 빌드, 리뷰
-- [ ] smoke 실행(채점 제외)
+- [x] 계측과 실행기 구현, 빌드, 리뷰(리뷰는 자체 검토만, 12절)
+- [x] smoke 실행(채점 제외)
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 채점과 재계산 (`QA`)
 - [ ] 결과 정리, 원자료 릴리스, PR
@@ -285,6 +285,11 @@ spec 줄(`../scripts/t1/run_matrix_t1.sh` 형식; `BUNDLE`의 기본은 묶음 P
 | 2026-10-07 18:18–18:41 | t1_close 범위 조사에서 공식 3.8.0과 비교: IBGDA 소스 차이, 투명 복구 diff 적용 시험(hunk 하나 거부) | 1절 숫자, 조사 메모는 저장소 밖(scratchpad) |
 | 2026-10-08 10:24 | t1_close diff를 pristine v3.8.0-0 + 두 층에 적용 시험(scratchpad, 빌드 없음): 두 층 그대로, `barrier.cpp` hunk 하나 거부. 두 빌드의 cmake 선택과 공식 그대로 묶음 md5 확인 | `<scratch>/agent_t1_380/applycheck`(저장소 밖) |
 | 2026-10-08 10:31:23 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/nvshmem-t1-380-v1` |
+| 2026-10-08 10:32–10:34 | scratch 소스 트리 `<scratch>/agent_t1_380/src`: pristine v3.8.0-0(`270759e5`) 커밋, 두 층 적용 뒤 "base" 커밋, t1_close diff 적용. 거부된 `barrier.cpp` hunk는 같은 코드를 3.8.0의 include 목록 아래에 손으로 넣음. 넣은 코드 줄이 t1_close diff와 같음(주석 정렬 공백만 다름) | 저장소 밖. 결과 diff는 [nvshmem_ibgda_t1_380.diff](nvshmem_ibgda_t1_380.diff)(5765줄, md5 `187507e0`). pristine v3.8.0-0 + 두 층 위 재적용과 트리 재현 확인(`make_diff.sh`) `[측정]` |
+| 2026-10-08 10:32–10:47 | 빌드(`build.sh`): official380과 같은 cmake 선택으로 전체 빌드 14 m 5 s(다른 실험과 CPU를 나눔), 드라이버 둘(`nvt1_drv`, `-DT1_STOCK`의 `nvt1st_drv`). 경고는 nvcc의 옛 아키텍처 안내 4줄뿐 | md5: transport `d6ae3699`, host `825443f8`(`libnvshmem_host.so.3.8.0`), `nvt1_drv` `e309d516`, `nvt1st_drv` `4dae151f` `[측정]` |
+| 2026-10-08 10:48:57 | 배포(`deploy.sh`): 새 묶음 `~/gi-bundle/nvshmem_t1_380`(`lib`, `bin`, `stock380/lib`, `stock380/bin`) 두 노드. 두 노드 md5 같음(14파일). 기존 묶음 파일 변경 0건(rain 244, sunny 296파일) | 공식 그대로 묶음 md5: transport `4aa4dda2`, host `80eea986` `[측정]` |
+| 2026-10-08 10:49:39–10:51:40 | smoke(`t1x-smoke`, 15회, 채점 제외): 칸마다 1회, 지연은 공식 그대로와 옮긴 빌드 투명 켬 4 KiB 1회씩 | `results/20261008_smoke/smoke/`. 모든 칸이 예측대로(장애 칸 투명, 거절 칸 거절, CPU 프록시는 두 PE 거부 줄과 장치 기록 0, 커널 시간 제한). 중단 규칙 해당 없음. 두 노드 새 dmesg 0줄, mlx5 명령 오류 0, iptables 규칙 0, 남은 프로세스 0 |
+| 2026-10-08 10:53 | 본 실행 시작(`run_main.sh`, hold A, B, C 차례로, hold마다 `cluster_run.sh -w 10800 -t t1x-<hold>`). 상태 `RUNNING` | `results/20261008/run_main.out` |
 
 ## 13. 사전 등록 이후 변경
 
