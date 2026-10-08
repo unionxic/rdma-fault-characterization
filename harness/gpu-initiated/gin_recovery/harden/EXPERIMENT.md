@@ -21,9 +21,9 @@
 **용어.**
 - helper: GIN 투명 복구가 GDAKI 문맥마다 띄우는 호스트 스레드. 장치 쪽 오류 분류기가 남긴 장애 기록을 받아 상대와 복구 라운드를 돈다.
 - helper 소켓: helper가 rank 쌍마다 여는 관리망 TCP 소켓.
-- 사용자 devComm: 응용이 `ncclDevCommCreate`로 만든 장치 통신기. 그 커널의 GIN 대기(`waitSignal`, `flush`, `wait`)가 abort 단어를
+- 사용자 devComm: 응용이 `ncclDevCommCreate`로 만든 장치 communicator. 그 커널의 GIN 대기(`waitSignal`, `flush`, `wait`)가 abort 단어를
   읽는다.
-- abort 단어: 장치 대기가 주기적으로 읽는 32비트 값. 0이 아니면 대기를 끝낸다. 지금은 사용자 devComm이 통신기 전체의 단어를 같이 쓴다.
+- abort 단어: 장치 대기가 주기적으로 읽는 32비트 값. 0이 아니면 대기를 끝낸다. 지금은 사용자 devComm이 communicator 전체의 단어를 같이 쓴다.
 - 죽음, 모름: helper가 소켓으로 정하는 상대의 생존 상태(gin-reconnect, gin-oneway). 이 실험에서 "떠남"을 더한다: 상대가 떠난다고
   알린(BYE) 뒤의 소켓 끝.
 - 고유값(nonce): 문맥을 만들 때 모든 rank가 낸 난수를 섞은 64비트 값. 모든 rank에서 같고 문맥마다 새로 정해진다.
@@ -62,7 +62,7 @@ gin-oneway까지의 투명 복구는 2 rank, 노드 한 쌍에서 로컬 QP 오�
 (`../oneway/EXPERIMENT.md` 15절). 비판적 리뷰 다섯 건이 그 코드에서 아래 문제를 짚었다. 줄은 모두 다시 확인했다 `[소스]`.
 
 **1. 정확성.**
-- (a) 사용자 devComm이 통신기의 abort 단어를 같이 쓴다(ow.diff 32–35행, `dev_runtime.cc`). 그래서 `ncclCommShrink`의 abort,
+- (a) 사용자 devComm이 communicator의 abort 단어를 같이 쓴다(ow.diff 32–35행, `dev_runtime.cc`). 그래서 `ncclCommShrink`의 abort,
   `ncclCommRevoke`, 그룹 실패도 사용자 대기를 푼다. 풀린 대기는 `ncclSuccess`를 돌려준다(ow.diff 1005–1009행, `gin__funcs.h` 101행).
   커널은 도착하지 않은 신호를 받은 것으로 알고 다음으로 간다(`../s2_close/qa/code_review.md` R1, R2).
 - (b) 생존 판정.
@@ -96,7 +96,7 @@ count 설정) `[소스]`. 기본값 20에서 상대 QP 오류는 약 58 s 뒤에
 
 **질문.**
 1. 사용자 devComm에 따로 둔 abort 단어로, 복구 거절, 죽음, abort가 사용자 대기를 오류로 풀고 성공으로 풀지 않는가. 그 뒤
-   `ncclCommShrink`가 쓸 수 있는 통신기를 돌려주는가.
+   `ncclCommShrink`가 쓸 수 있는 communicator를 돌려주는가.
 2. 거부 한 번에는 죽음으로 보지 않고 1 s 이상 떨어진 두 번에는 죽음으로 보는가. 고유값이 틀린 재연결은 연결로도 죽음으로도 세지
    않는가. 라운드 안의 리셋 뒤 재연결하고 라운드를 다시 돌아 복구하는가. 받기만 하는 rank에 상대의 죽음이 2 s 안에 드러나는가.
 3. GPU 전체를 응용 커널이 쓰는 중에도 복구가 되는가. 멈춘 복사, 느린 펌웨어 단계, 멈춘 helper에서도 거절과 abort가 상한 안에 끝나는가.
@@ -440,12 +440,12 @@ pilot이 소스 해석과 어긋난 예측 둘은 고치지 않고 그대로 두
 | `src/include/nccl_device/gin/gdaki/gin_gdaki.h` | +31/−0 | 대기와 flush의 해제 결과, 게이트에서 쉬는 대기와 보내는 스레드의 해제 |
 | `src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h` | +2/−1 | 게이트 `test` 칸의 새 쓰임(주석만) |
 | `src/dev_runtime.cc` | +16/−2 | 사용자 devComm에 따로 둔 단어 |
-| `src/init.cc` | +17/−1 | abort, revoke, 중단하는 shrink가 그 단어를 올림. 통신기와 함께 해제 |
+| `src/init.cc` | +17/−1 | abort, revoke, 중단하는 shrink가 그 단어를 올림. communicator와 함께 해제 |
 | `src/gin/gin_host.cc` | +12/−3 | 떼어 낸 helper가 쓰는 collComm은 닫지 않음 |
 | `src/nccl.h.in` | +24/−0 | `ncclGinGetRecoveryStats`(실험용) |
 | `src/transport/net_ib/gin.cc` | +4/−0 | 운영 빌드에서 proxy 장애 훅 제거 |
 
-(a) **사용자 devComm의 단어.** 통신기마다 host-pinned 단어 하나를 둔다(`ncclGinTsUserAbortWord`, 첫 사용자 devComm 때 만들고
+(a) **사용자 devComm의 단어.** communicator마다 host-pinned 단어 하나를 둔다(`ncclGinTsUserAbortWord`, 첫 사용자 devComm 때 만들고
 `commFree`에서 푼다). `ncclCommAbort`, `ncclCommRevoke`, `NCCL_SHRINK_ABORT`인 `ncclCommShrink`, 복구의 거절(`gdakiTsDecline`), 죽음 판정,
 펌웨어 단계 감시가 `NCCL_DEVCOMM_ABORT_ERROR | 원인`을 쓴다(`ncclGinTsUserAbortRaise`, 한 번, 지우지 않음). 장치 쪽은 이 비트로 풀린 대기를
 오류로 끝낸다: `waitRollingLessEq`(`waitSignal`, `waitCounter`)는 `ncclRemoteError`, 게이트 대기(`tsPoll`)와 게이트에서 쉬는 대기
@@ -453,7 +453,7 @@ pilot이 소스 해석과 어긋난 예측 둘은 고치지 않고 그대로 두
 단어의 주소에 비트 0을 붙여 게이트의 `test` 칸에 써 둔다(4바이트 복사 두 번, 위 절반 먼저. 장치는 비트 0이 선 뒤에만 그 값을 쓴다.
 분할 시험 스위치를 켠 때만 그 칸이 시험용이라 빠진다. 구조체 배치는 그대로라
 `ow` 라이브러리에서는 칸이 0이고 아무것도 바뀌지 않는다). NCCL 자신의 단어(0 또는 1)는 그대로 성공이다. 그룹 실패와 shrink가 잠깐 올리는
-통신기 플래그는 이제 사용자 대기를 풀지 않는다. CPU 저장 한 번이라 복사나 펌웨어 명령 없이 쉬는 장치 스레드까지 푼다.
+communicator 플래그는 이제 사용자 대기를 풀지 않는다. CPU 저장 한 번이라 복사나 펌웨어 명령 없이 쉬는 장치 스레드까지 푼다.
 남는 점: 값을 반환하지 않는 대기(`waitSignal`과 `waitCounter`의 void 판, `wait`, `flush`의 void 판, LSA와 CFT 배리어, ll_a2a, GIN proxy 경로)는
 같은 단어에 풀리면서 오류를 돌려줄 수 없다. 이제 이 단어는 abort 때만이 아니라 응용이 도는 중의 거절, 죽음, 펌웨어 단계 감시에서도 올라가므로,
 그런 대기는 짝 없이 끝난 것처럼 보일 수 있다. 같은 순간에 비동기 오류가 서므로 응용은 `ncclCommGetAsyncError`로 알아야 한다.
@@ -488,23 +488,23 @@ pilot이 소스 해석과 어긋난 예측 둘은 고치지 않고 그대로 두
   단어를 올려 장치 대기를 오류로 풀고 비동기 오류를 드러낸다. 명령이 돌아오면 라운드는 거절한다(`gdakiTsFwCheck`, REQ를 보내기 직전에도 확인).
   초과 표시는 한 번 서면 지우지 않는다(그때 단어가 올라가므로 이후 라운드는 모두 거절된다).
 - 거절의 순서: 먼저 QP를 ERR로 바꾼다(펌웨어 명령. 오래 걸리면 감시가 단어와 비동기 오류를 대신 올린다). 그래서 오류로 풀린 대기는 NIC가 그
-  상대의 QP에서 더는 일하지 않는다는 뜻이다(단어가 통신기마다 하나라서, 건강한 상대와의 QP는 RTS인 채 그 대기도 오류로 풀린다). 다음으로 복사
+  상대의 QP에서 더는 일하지 않는다는 뜻이다(단어가 communicator마다 하나라서, 건강한 상대와의 QP는 RTS인 채 그 대기도 오류로 풀린다). 다음으로 복사
   없이 할 수 있는 것: 사용자 devComm 단어, 비동기 오류, 상대에게 FAIL, 거절 줄. 마지막이 게이트 실패와 장치 오류 상태(상한 있는 복사)다. 복사가
   막혀 못 쓴 것은 helper의 100 ms 점검(`gdakiTsScan`)이 복사가 풀리는 대로 다시 쓴다. 복사 상한은 펌웨어 감시 상한보다 짧게 고정한다
   (`NCCL_GIN_TS_COPY_MS`가 `NCCL_GIN_TS_FW_MS` 이상이면 그 절반으로).
 - `ncclCommAbort`: helper의 지금 펌웨어 명령 하나가 `NCCL_GIN_TS_ABORT_JOIN_MS`(3 000 ms)를 넘을 때까지, 전체로는
   `NCCL_GIN_TS_ABORT_JOIN_MAX_MS`(15 000 ms)까지 기다린다(`gdakiTsJoinBounded`. 펌웨어 명령 밖의 기다림은 모두 상한이 있고, 멈추라는 신호 뒤
   helper는 새 장애를 잡지 않는다). 넘으면 떼어 낸다. 떼어 낸 helper의 collComm은 어느 정리 경로에서 떼어 냈든 기록해 닫지 않는다. helper의 끝("끝남")과 정리의 포기("떼어 냄")는
-  비교 후 교환 한 번씩이라 둘 중 하나만 이긴다. 떼어 냄은 helper가 통신기에 쓰는 자물쇠(`gdakiTsToComm`: 비동기 오류 칸, 사용자 devComm 단어)
-  안에서 정해지므로, 그 뒤 helper는 통신기에 아무것도 쓰지 않는다. 떼어 낸 helper는 명령이 돌아오면 루프를 나가며 자기 소켓을 BYE와 함께 닫는다.
+  비교 후 교환 한 번씩이라 둘 중 하나만 이긴다. 떼어 냄은 helper가 communicator에 쓰는 자물쇠(`gdakiTsToComm`: 비동기 오류 칸, 사용자 devComm 단어)
+  안에서 정해지므로, 그 뒤 helper는 communicator에 아무것도 쓰지 않는다. 떼어 낸 helper는 명령이 돌아오면 루프를 나가며 자기 소켓을 BYE와 함께 닫는다.
   정리 쪽은 복사를 내지 않고(장치 대기와 쉬는 보내는 스레드는 abort의 단어로 풀림), 그 collComm을 닫지 않는다(`ncclGinHostFinalize`). 나중의
   `ncclDevCommDestroy`는 helper가 10 s 안에 끝나지 않거나 늦은 복사가 10 s 뒤에도 스트림에 있으면 그 GDAKI 문맥(QP, 스트림, staging, 분류기
   상태)을 통째로 남긴다(해제하지 않음). 진단용 게이트 읽기와 QUERY_QP는 연구 빌드에서만, helper가 제때 끝나고 상한을 넘은
   복사나 단계가 없었을 때만 한다. 운영 빌드에는 없다.
 - 남는 점: 멈춘 펌웨어 명령 자체는 끊을 수 없다. 그 helper 스레드와 문맥, collComm은 명령이 돌아올 때까지(또는 프로세스 끝까지) 남는다. 연구
   빌드의 정리 때 진단 QUERY_QP는 감시 밖의 펌웨어 명령이고, 떼어 낸 뒤에도 정리가 기다리는 장애 훅과 분할 시험 스레드는 막 발사하려던 참이면
-  helper가 쥔 QP 자물쇠를 기다린다(연구 빌드만. 이 실험의 셀에서는 훅이 이미 끝나 있다). 죽음은 문맥마다 판정하지만 사용자 devComm 단어는 통신기마다 하나라서, 관리망
-  끊김 중에 한 rank가 devComm 하나만 없애면(그 소켓은 이미 닫혀 BYE가 갈 길이 없다) 상대는 거부 두 번 뒤 죽음으로 보고 통신기 전체의 대기를
+  helper가 쥔 QP 자물쇠를 기다린다(연구 빌드만. 이 실험의 셀에서는 훅이 이미 끝나 있다). 죽음은 문맥마다 판정하지만 사용자 devComm 단어는 communicator마다 하나라서, 관리망
+  끊김 중에 한 rank가 devComm 하나만 없애면(그 소켓은 이미 닫혀 BYE가 갈 길이 없다) 상대는 거부 두 번 뒤 죽음으로 보고 communicator 전체의 대기를
   푼다.
 
 (d) **다시 보내기 계획.** `gdakiTsReplayResume`을 두 번에 나눈다. 첫째, 커밋 지점 전에 라운드의 모든 QP에서 범위, 덮인 슬롯, 사본 영역,
@@ -515,7 +515,7 @@ opcode를 검사해 다시 보낼 WQE를 모두 만든다. 하나라도 거부�
 (e) **상한 넘김과 계수.** 시작과 응답 라운드(응답 쪽은 범위 검사를 통과한 것만)의 시작 시각을 창(`NCCL_GIN_TS_ESCALATE_WINDOW_MS`, 60 000)에 모아, 이미 `NCCL_GIN_TS_ESCALATE_ROUNDS`
 (8)번이면 새 라운드 대신 상한 넘김이다: 거절(사유에 상한을 적음, `ncclGetLastError`에도 그 WARN이 남음), 비동기 오류, 그 문맥의 복구를 멈춤.
 `ncclGinGetRecoveryStats(comm, &stats)`(실험용, `nccl.h`)는 시작한 라운드(두 역할), 복구, 거절, 재연결, 죽음 판정, 상한 넘김, 취소, 펌웨어
-단계 초과, 복사 초과를 돌려준다. 통신기에 등록된 문맥만 세므로 `ncclCommAbort`나 `ncclCommDestroy` 전에 불러야 한다(이 실험의 드라이버는 정리
+단계 초과, 복사 초과를 돌려준다. communicator에 등록된 문맥만 세므로 `ncclCommAbort`나 `ncclCommDestroy` 전에 불러야 한다(이 실험의 드라이버는 정리
 전에 부른다). 정리 때 INFO 요약 줄 하나를 남긴다.
 
 (f) **운영 스위치.** `-DNCCL_GIN_TS_PRODUCTION`은 장애 훅(`NCCL_GIN_FAULT_INJECT*`, proxy 훅 포함), 모든 시험 스위치
@@ -536,11 +536,11 @@ helper 소켓은 이제 `FD_CLOEXEC`다.
 | 낮음 | 오래된 첫 거부도 죽음 판정에 센다(3043–3064행). 거부 수는 연결이나 PROBE-ACK 때만 지우고(3122, 3226, 3304행) 시간이 지나도 지우지 않는다 | 지금 셀 중 해당하는 것이 없다 `[소스]` | 문서 |
 | 낮음 | 상한 넘김은 다시 시도와 범위 재실행도 라운드로 센다(`gdakiTsEscalated` 4211행, 4498, 4751행에서 부름). 취소 계수는 비대칭이다: 시작 쪽은 다시 넣은 것만(4271행), 응답 쪽은 모든 취소를 센다(4293행) | 상한 넘김 셀(E1)은 영향 없음. 취소 계수는 판정식에 쓰지 않는다 `[소스]` | 문서 |
 | 낮음 | 라운드 안의 BYE 없는 FIN은 이제 죽음이 아니라 모름이다(4554, 4338행). 라운드 중 kill된 상대는 다시 시도의 재연결 기다림 중 1 s 이상 떨어진 거부 두 번으로만 죽음이 된다. 죽은 호스트가 아예 답하지 않으면 10 s 뒤 "모름"으로 거절된다 | kill 셀은 모두 쉬는 중(라운드 밖)에 kill한다 `[소스]`. 라운드 중 kill은 재지 않는다 | 문서 |
-| 낮음 | 사용자 단어는 통신기마다 하나다(2262행). 쉬던 대기는 오류 비트를 보면 자기 QP를 실패로 표시하므로(`gin_gdaki.h` 236–239행), 상대 하나에 대한 거절이 건강한 상대와의 게이트도 실패시킨다 | 2 rank라 상대가 하나뿐이다 | (a)와 (c)에 적음 |
+| 낮음 | 사용자 단어는 communicator마다 하나다(2262행). 쉬던 대기는 오류 비트를 보면 자기 QP를 실패로 표시하므로(`gin_gdaki.h` 236–239행), 상대 하나에 대한 거절이 건강한 상대와의 게이트도 실패시킨다 | 2 rank라 상대가 하나뿐이다 | (a)와 (c)에 적음 |
 | 낮음 | 연구 빌드의 정리에는 상한 없는 단계가 남는다: 진단 QUERY_QP(5612행 이후)는 초과가 있었을 때만 건너뛰고, 장애 훅과 분할 시험 스레드의 join은 QP 자물쇠를 기다린다 | 운영 빌드는 해당 없음. 연구 빌드의 abort 시간 예측(A5, C3)은 정리 때 펌웨어가 정상이라는 전제다 | 문서 |
 | 낮음 | 쉬는 보내는 스레드는 사용자 단어의 주소를 쉬기 시작할 때 한 번 읽는다(`gin_gdaki.h` 282행) | 단어가 생기기 전에 쉬기 시작한 스레드만 해당하고, 실제로는 그 창이 생기지 않는다 `[추론]` | 문서 |
 | pilot | (본 실행 뒤 정정: GPU가 가득 찬 적이 없었고 원인은 드라이버의 호출 순서다, 13절) GPU가 가득 차면 helper의 장치 상태 복사가 끝나지 않는다. pilot 1회에서 두 rank의 4 B 복사(쉬는 중의 게이트 점검)가 응용의 GIN 커널이 끝난 순간에야 끝났다. 그사이 분류기 감시가 "helper가 1 s 넘게 돌지 않음"으로 오류를 드러냈고, 복사 상한(2 s)이 지나 두 rank가 거절했다 `[측정]` | GPU 채우기 셀(C1)은 틀릴 가능성이 높다. 상한 덕분에 멈춤이 아니라 2 s 안팎의 거절로 끝난다. 거절 뒤 늦은 복사가 끝나자 helper 점검이 게이트를 실패로 다시 썼다(2차 리뷰 수정이 동작함) `[측정]` | 예측은 그대로. 원인 `[미확인]`(빈 SM 자리가 필요한 복사로 보임 `[추론]`) |
-| pilot | (본 실행 뒤 정정: "그 오류를 가진 devComm이 아직 등록된 동안", 13절) 순정 NCCL은 GIN 비동기 오류가 있는 통신기의 shrink를 막는다: `ncclCommInitChildComm`이 `ncclCommEnsureReady`로 부모의 비동기 오류를 그대로 돌려준다(`init.cc`, 순정 코드) `[소스]`. pilot에서 `hd`와 `ow2` 모두 `ncclCommShrink`가 0 ms에 `ncclRemoteError`였다 `[측정]` | shrink 넘기기(A2)는 틀릴 것으로 본다. 대기 해제(A1)와 대조(A3, A4)는 영향 없음 | 예측은 그대로. 고치려면 라이브러리 수정이 필요(19절) |
+| pilot | (본 실행 뒤 정정: "그 오류를 가진 devComm이 아직 등록된 동안", 13절) 순정 NCCL은 GIN 비동기 오류가 있는 communicator의 shrink를 막는다: `ncclCommInitChildComm`이 `ncclCommEnsureReady`로 부모의 비동기 오류를 그대로 돌려준다(`init.cc`, 순정 코드) `[소스]`. pilot에서 `hd`와 `ow2` 모두 `ncclCommShrink`가 0 ms에 `ncclRemoteError`였다 `[측정]` | shrink 넘기기(A2)는 틀릴 것으로 본다. 대기 해제(A1)와 대조(A3, A4)는 영향 없음 | 예측은 그대로. 고치려면 라이브러리 수정이 필요(19절) |
 
 리뷰가 본 대로 정리한 주장별 상태:
 - 있음: 따로 둔 abort 단어(revoke, 중단하는 shrink, 펌웨어 감시도 올림), 고유값, 복사 상한, 운영 빌드(시험 스위치, 진단, 로그 수준만
@@ -566,7 +566,7 @@ helper 소켓은 이제 `FD_CLOEXEC`다.
 - `GIN_TS_HOG_MS`: GIN 커널이 첫 반복을 마친 뒤(상주한 뒤) SM 수 × SM당 블록 수(점유율 계산기, 256 스레드)인 커널을 다른 스트림에 띄워 그
   시간 동안 돈다. (본 실행 뒤 정정, 13절: 이 커널의 점유율 질의(커널 적재), `cudaMalloc`, 스트림 생성이 GIN 커널을 띄운 뒤에 있어, 이 커널은
   GIN 커널 옆에서 시작하지 않았다.)
-- `GIN_TS_SHRINK=1`(rank 0): 주 대기 뒤 `ncclCommShrink(comm, {1}, NCCL_SHRINK_ABORT)`. 새 통신기가 오면 1024개 float `ncclAllReduce`로
+- `GIN_TS_SHRINK=1`(rank 0): 주 대기 뒤 `ncclCommShrink(comm, {1}, NCCL_SHRINK_ABORT)`. 새 communicator가 오면 1024개 float `ncclAllReduce`로
   확인(5 s 상한)하고 없앤다. 옛 커널을 `GIN_TS_HO_WAIT_S`(3 s) 기다리고, 마지막 `ncclCommAbort` 뒤 받는 쪽 결과를 다시 읽는다.
 - `rs_*`: 정리 전 `ncclGinGetRecoveryStats`(실행 때 `dlsym`으로 찾아 `ow` 라이브러리에서도 같은 바이너리가 돈다).
 - `-DGIN_TS_STOCK_API`: 순정 헤더에서 막는 `flush`가 값을 돌려주지 않는 것만 맞춘다(`stk` 드라이버).
@@ -693,8 +693,8 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 | 2026-10-09 | 계층 구현(9절 1번), 드라이버 선택(9절 3번), 실행기(9절 4번). 연구와 운영 두 변형 모두 경고 없이 컴파일. 운영 객체에 시험 스위치 이름 0개, 연구 객체 20개 `[측정]` | [hd_layer.diff](hd_layer.diff) |
 | 2026-10-09 | 순정 빌드: 스크래치 루트 커밋이 상위 태그 `v2.32.3-1`(`12df1a11`)과 파일 단위로 같음(VERIFIED), 처음부터 빌드 4분 `[측정]`. libnccl `stk` `b380e622` | `build_hd.sh stock` |
 | 2026-10-09 | 드라이버를 `hd` 헤더와 순정 헤더(`-DGIN_TS_STOCK_API`) 두 쪽으로 경고 없이 컴파일 `[측정]` | `build_hd.sh drivers` |
-| 2026-10-09 | 설계 단계 코드 리뷰 1차(다른 에이전트, 코드만 읽음): 16건. 버그 3(떼어 낸 helper가 도는 중 `ncclDevCommDestroy`가 문맥을 해제함, 거절의 장치 오류 상태 쓰기가 상한 없이 막힌 복사를 기다림, BYE 없이 닫는 경로가 남아 상대가 고장 없는 통신기를 죽음으로 거절함), 위험 8, 사소 5 | 9절 1번 (a)–(e)에 반영 |
-| 2026-10-09 | 반영: helper의 끝과 떼어 냄을 비교 후 교환 한 번으로 정함, 통신기 쓰기를 자물쇠 안으로, 떼어 낸 helper가 쓰는 문맥은 해제하지 않음, 늦은 복사가 남은 staging은 해제하지 않음, 장치 오류 상태 쓰기에 복사 상한, 거절에서 복사 없는 단계를 먼저, 못 쓴 게이트는 helper 점검이 다시 씀, 펌웨어 감시를 명령 하나 단위로, 쉬는 보내는 스레드도 사용자 단어를 봄(게이트 `test` 칸), 모든 닫기 경로에 BYE와 backlog 비우기, 양보한 장애를 다시 큐에, 응답 쪽 상한 넘김 계수를 범위 검사 뒤로, REQ 직전 펌웨어 확인, 취소 계수는 다시 시도할 때만. 문서로 남긴 것: 값을 반환하지 않는 대기, 연구 빌드의 정리 때 QUERY_QP, 문맥 단위 죽음과 통신기 단위 단어 | [hd_layer.diff](hd_layer.diff) |
+| 2026-10-09 | 설계 단계 코드 리뷰 1차(다른 에이전트, 코드만 읽음): 16건. 버그 3(떼어 낸 helper가 도는 중 `ncclDevCommDestroy`가 문맥을 해제함, 거절의 장치 오류 상태 쓰기가 상한 없이 막힌 복사를 기다림, BYE 없이 닫는 경로가 남아 상대가 고장 없는 communicator를 죽음으로 거절함), 위험 8, 사소 5 | 9절 1번 (a)–(e)에 반영 |
+| 2026-10-09 | 반영: helper의 끝과 떼어 냄을 비교 후 교환 한 번으로 정함, communicator 쓰기를 자물쇠 안으로, 떼어 낸 helper가 쓰는 문맥은 해제하지 않음, 늦은 복사가 남은 staging은 해제하지 않음, 장치 오류 상태 쓰기에 복사 상한, 거절에서 복사 없는 단계를 먼저, 못 쓴 게이트는 helper 점검이 다시 씀, 펌웨어 감시를 명령 하나 단위로, 쉬는 보내는 스레드도 사용자 단어를 봄(게이트 `test` 칸), 모든 닫기 경로에 BYE와 backlog 비우기, 양보한 장애를 다시 큐에, 응답 쪽 상한 넘김 계수를 범위 검사 뒤로, REQ 직전 펌웨어 확인, 취소 계수는 다시 시도할 때만. 문서로 남긴 것: 값을 반환하지 않는 대기, 연구 빌드의 정리 때 QUERY_QP, 문맥 단위 죽음과 communicator 단위 단어 | [hd_layer.diff](hd_layer.diff) |
 | 2026-10-09 | 고친 부분의 2차 리뷰(다른 에이전트, 코드만 읽음): 문제 10건. 반영: 떼어 낸 helper의 collComm을 두 정리 경로 모두에서 기록(`ncclDevCommDestroy` 경로에서 닫히던 문제), 설치 전 연결(다시 걸기, 확인 접속)이 받은 BYE를 떠남으로 처리하고 떠난 상대의 거부는 세지 않음(떠난 상대가 죽음으로 판정되던 문제), 기다림 상한을 "명령 하나가 3 s"로(진행 중인 helper를 떼어 내던 문제), 멈추라는 신호 뒤 새 장애를 잡지 않음, 보내는 스레드용 단어를 4바이트 두 번으로 씀, 거절에서 QP를 ERR로 먼저, 복사 상한을 펌웨어 상한 아래로 고정, 시작 실패 때 늦은 복사를 기다림, 늦은 복사가 남으면 문맥을 통째로 남김, 낡은 주석. 연구 빌드만의 남는 점(정리가 기다리는 훅과 시험 스레드)은 문서로 남김 | 9절 1번 (a)–(c) |
 | 2026-10-09 | 다시 빌드(빌드됨, 실행 안 함). `hd` libnccl `e2090323`, `hdp` `4818e30b`(`make -n`의 장치 객체 0), 드라이버 `c0b73e09`(`hd` 헤더), `472602a2`(순정 헤더). 컴파일 경고는 이 계층이 고치지 않은 `scheduler/symmetric_sched.cc` 하나뿐 `[측정]` | 세션 스크래치 `hd_work/build_hd4.log`, `build_hdp2.log`, `build_drv2.log` |
 | 2026-10-09 | 운영 빌드 확인: `strings`에서 `NCCL_GIN_TS_TEST`, `GIN_FAULT_INJECT`, `GIN/FAULT`, `GIN_TS_DIAG`, `GIN_RECOVERY_DIAG`, `Q4_QPWATCH`, `Q4_LATE_READ`, `GDAKI_CQ_TYPE`, `GIN/TS: TEST`가 `hdp`에 0개(`hd`에는 각각 16, 4, 11, 1, 2, 1, 1, 3, 23개). 두 빌드 모두 `ncclGinGetRecoveryStats`를 내보냄(`nm -D`) `[측정]` | |
@@ -720,6 +720,7 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 | 2026-10-09 | 측정 코드 리뷰(다른 에이전트, 읽기만): 쓸 수 있음, 막는 문제 없음, 태그 뒤 채점에 영향 주는 변경 없음. 높음 1(GPU 채우기 셀에 GPU가 가득 찬 적이 없음), 중간 3(랑데부 포트가 임시 포트 범위 안, shrink가 GIN 오류를 가진 devComm이 등록된 채 불림, 초기화 실패가 제외로 빠질 수 있음), 낮음 8 | [qa/code_review.md](qa/code_review.md), 13절 |
 | 2026-10-09 06:23:50 | Release `data-20261009`(메인 세션). 본 실행 `harness__gpu-initiated__gin_recovery__harden__results__20261009.tar.xz`(1 419개 파일, 0.48 MB, sha256 앞 12자리 `1aa4e4028a10`), pilot `harness__gpu-initiated__gin_recovery__harden__results__20261009_pilot.tar.xz`(146개 파일, 0.06 MB, `17c66b513608`, 채점 안 함). 내려받아 `sha256sum -c` 통과, 주소를 바꾼 것 말고는 원본과 같고 실제 주소 접두사 없음 `[측정, 메인 세션]` | Release `data-20261009`, [DATA.md](../../../../DATA.md)(메인 세션이 같은 PR에서 적음) |
 | 2026-10-09 | 결과 정리. 15절 범위를 `trials_scored.csv`에서 다시 세어 독립 재계산의 값과 같음을 확인 `[측정]`. 2, 3, 7, 8절은 고치지 않고 정정은 13절에 둠. 상태 `COMPLETE` | 13–19절, [README.md](README.md) |
+| 2026-10-09 | 용어: 본문의 "통신기"를 "communicator"로 바꿈(사용자 요청). 고정 절(2, 3, 7, 8절)과 `predictions.csv`, 채점기가 만든 `SCORE.md`는 그대로 둠 | 이 PR |
 
 ## 13. 사전 등록 이후 변경
 
@@ -728,7 +729,7 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 | 날짜 | 무엇을 | 이유 | 영향 범위 | 커밋 |
 |---|---|---|---|---|
 | 2026-10-09 | **GPU 채우기 셀(C1)의 조건 정정.** 3.3의 C1 줄 "GPU 전체를 쓰는 커널이 도는 중에도", 7절 `hd_hog_f1_b` 줄 "모든 SM을 3 s 채우는 커널", 3절 머리의 "복사가 이 GPU에서 빈 SM 자리를 필요로 하는 것으로 보인다 `[추론]`"은 이 셀에서 생긴 일이 아니다. 드라이버는 GIN 커널을 띄운 뒤, 채우기 커널을 띄우기 전에 그 커널의 점유율을 묻고(이때 커널이 지연 적재됨) `cudaMalloc`과 스트림 생성을 했다(`../gin_ts2.cu` 1080–1083행) `[소스]`. 이 순서에서 채우기 커널은 GIN 커널 옆에서 시작하지 않았다: rank 1의 abort가 GIN 커널이 끝난 뒤 3 299.2–3 300.3 ms에 시작했다(채우기 3 000 ms와 끝 기다림 300 ms, n=10. `f1_b`는 353.9–379.3 ms, n=5) `[측정]`. 12절의 "GPU 채우기 훅은 채우기 시작 599 ms 뒤"와 11절 pilot 확인 2의 창도 채우기 커널의 launch 호출부터 잰 값이다. 다른 실험 gin-handoff에서 같은 순서는 시작한 채우기 블록 0, 새 스트림의 4 B 복사 200 ms 안 완료 0/8이었고, 세 호출을 GIN 커널 전에 하면 블록 191/192, 287/288, 복사 8/8, 투명 복구 5/5였다 `[측정, 다른 실험, 그 실험의 QA 전]` | 코드 리뷰 H1 | C1의 판정(틀림, 0/10)은 고정 규칙대로 그대로다. 이 셀이 잰 것은 "응용이 GIN 커널이 도는 중에 커널 적재와 할당을 한 뒤의 복구"다. H3의 "GPU가 가득 찬 정상 복구" 조항은 이 실행으로 시험되지 않았다. 9절 3번, 9절 1번 (g), 11절에는 정정 표시를 달았다 | 이 정리 커밋 |
-| 2026-10-09 | **shrink 넘기기(A2)의 원인 문장을 좁힘.** 3절 머리, 9절 1번 (g)의 "순정 NCCL은 GIN 비동기 오류가 있는 통신기의 shrink를 막는다"는 "그 GIN 오류를 가진 devComm이 아직 등록된 동안"으로 좁혀야 한다. 드라이버는 그 devComm을 없애지 않고 `ncclCommShrink(NCCL_SHRINK_ABORT)`를 불렀다(`../gin_ts2.cu` 1117–1131행) `[소스]`. gin-handoff의 대조(같은 드라이버, devComm을 먼저 없앰, 그 실험의 계층은 끔)에서는 shrink, 1-rank 통신기, allreduce 확인이 5/5 됐다 `[측정, 다른 실험, 그 실험의 QA 전]` | 코드 리뷰 M2 | A2의 판정(틀림, 0/10)은 고정 셀(이 호출 순서 포함)대로 그대로다. A1, A3, A4는 영향 없음. 결론(17절)은 좁힌 문장을 쓴다 | 이 정리 커밋 |
+| 2026-10-09 | **shrink 넘기기(A2)의 원인 문장을 좁힘.** 3절 머리, 9절 1번 (g)의 "순정 NCCL은 GIN 비동기 오류가 있는 communicator의 shrink를 막는다"는 "그 GIN 오류를 가진 devComm이 아직 등록된 동안"으로 좁혀야 한다. 드라이버는 그 devComm을 없애지 않고 `ncclCommShrink(NCCL_SHRINK_ABORT)`를 불렀다(`../gin_ts2.cu` 1117–1131행) `[소스]`. gin-handoff의 대조(같은 드라이버, devComm을 먼저 없앰, 그 실험의 계층은 끔)에서는 shrink, 1-rank communicator, allreduce 확인이 5/5 됐다 `[측정, 다른 실험, 그 실험의 QA 전]` | 코드 리뷰 M2 | A2의 판정(틀림, 0/10)은 고정 셀(이 호출 순서 포함)대로 그대로다. A1, A3, A4는 영향 없음. 결론(17절)은 좁힌 문장을 쓴다 | 이 정리 커밋 |
 | 2026-10-09 | **받기만 하는 rank의 "15 s 대기 상한" 정정.** 3.3 B10 줄과 7절 `hd_rxdeath_b` 줄의 15 s는 sunny에서 약 12.4 s였다: 장치 대기 상한은 `cudaDevAttrClockRate` 기준 cycle 수로 세는데 sunny에서는 약 17% 일찍 끝난다. 대조의 대기는 kill 뒤 12 351.4–12 458.6 ms에 끝났다(n=5) `[측정]` | 코드 리뷰 L6 | B10의 기준(kill 뒤 10 000 ms 이상)은 충족, 판정 그대로 | 이 정리 커밋 |
 | 2026-10-09 | **운영 빌드의 WARN 줄(P7) 문장이 판정식보다 넓음.** 판정식은 "transparent recovery ON" 시작 줄만 센다. 운영 빌드도 WARN에서 `NCCL_GIN_TS_PATH_WAIT_MS=30000 exceeds ... clamped to 21000 ms` 줄을 rank마다 시행마다 한 줄 남긴다. 이 줄은 이 계층보다 오래됐고 `ow`, `hd`에도 있다 `[측정]` | 코드 리뷰 L2, 독립 재계산 6절 | P7 판정(맞음)은 그대로. "정보성 복구 줄을 남기지 않는다"는 이 줄을 빼고 읽는다 | 이 정리 커밋 |
 | 2026-10-09 | **3.1의 `fault_after_launch_r0_ms` 정의.** "rank 0 훅 발사 − 커널 시작"의 기준은 실제로 kv `launch_mono_ms`(launch 직전 호스트 시각)다 `[소스]` | 코드 리뷰 nit | 판정 영향 없음 | 이 정리 커밋 |
@@ -770,7 +771,7 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 | 상대 kill 뒤 거절(rank 0 시계, kill부터) | 1.44–1.75 ms(`f4_b`), 1.51–1.60 ms(운영 빌드), 1.49–1.65 ms(shrink 셀) | | 5, 5, 10 |
 | 받기만 하는 rank, 보내는 rank kill 뒤 | 대기가 20.3–21.7 ms에 오류로 풀림, 비동기 오류 1.8–2.1 ms | 자기 대기 상한까지 기다림, 12.35–12.46 s에 시간 초과 | 10, 5 |
 | shrink 셀, 상대 kill 뒤 대기 | shrink 전에 오류로 풀림, 신호 없이 성공한 대기 0 | shrink 때 커널이 아직 돎, 마지막 abort 뒤 201–204회가 신호 없이 성공 | 10, 5 |
-| `NCCL_SHRINK_ABORT` shrink | 0.0 ms에 `ncclRemoteError`, 새 통신기 없음 | 같음 | 10, 5 |
+| `NCCL_SHRINK_ABORT` shrink | 0.0 ms에 `ncclRemoteError`, 새 communicator 없음 | 같음 | 10, 5 |
 | 원격 접근 오류, 받는 쪽 | 상대 거절 때 대기가 오류로 풀림, abort 769.1–777.4 ms | | 5 |
 | 거부 한 번(수신 대기 1.2 s 닫힘) | 거부 1번, 죽음 판정 없음, 끊김 끝 1 081.5–1 107.8 ms 뒤 재연결, 투명 | | 10 |
 | 거부 두 번 | 1 001.1–1 002.2 ms 간격의 거부 둘 뒤 죽음, 2.25–2.35 ms 뒤 거절 | | 10 |
@@ -795,7 +796,7 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 | 256 KiB | 38.91 µs | 38.91 µs | 37.86 µs | 0.00 µs | +1.05 µs |
 
 **틀린 셋.**
-- **shrink 넘기기(A2).** 0/10. shrink가 0.0 ms에 `remote process exited or there was a network error`를 돌려주고 새 통신기가 없었다. pilot과
+- **shrink 넘기기(A2).** 0/10. shrink가 0.0 ms에 `remote process exited or there was a network error`를 돌려주고 새 communicator가 없었다. pilot과
   사전 등록 문서(3절 머리)가 예상한 실패다. 원인은 13절: 그 GIN 오류를 가진 devComm이 등록된 채 shrink를 불렀기 때문이다 `[소스, 다른 실험 측정]`.
 - **GPU 채우기 셀의 투명 복구(C1).** 0/10. 셀의 판정 조건(채우기 커널 launch 성공, 훅이 그 창 안)은 10/10 섰지만, 채우기 커널은 GIN 커널 옆에서
   돈 적이 없다(13절). 두 rank의 쉬는 중 게이트 점검 복사가 GIN 커널이 끝날 때까지 끝나지 않아 복사 상한(2 s)에 걸렸고, rank 0은 분류기 감시가
@@ -850,7 +851,7 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 
 - 2 rank, 노드 한 쌍, Turing과 Ampere GPU, ConnectX-6에서만 쟀다. 실제 링크 장애는 만들지 않았다(4절).
 - GPU가 가득 찬 동안의 복구는 시험되지 않았다. GPU 채우기 셀은 응용이 GIN 커널 뒤에 할당과 커널 적재를 하는 경우를 쟀다(13절).
-- 사용자 devComm 단어가 통신기마다 하나라, 상대 하나에 대한 거절이 건강한 상대와의 대기까지 오류로 끝낸다. 2 rank에서는 드러나지 않는다.
+- 사용자 devComm 단어가 communicator마다 하나라, 상대 하나에 대한 거절이 건강한 상대와의 대기까지 오류로 끝낸다. 2 rank에서는 드러나지 않는다.
 - 값을 돌려주지 않는 대기, 배리어, proxy 경로는 풀려도 오류를 돌려줄 수 없다(재지 않음).
 - 펌웨어 감시는 한 번 발동하면 그 문맥에 영구적이고, 다시 보내기 계획 검사는 rank 단위다(9절 1번 (g)).
 - 운영 빌드도 WARN에서 오래된 설정 경고 한 줄을 남긴다. 순정 NCCL 대비 지연은 약 1 µs다.
@@ -866,7 +867,7 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
   - 펌웨어 감시가 발동한 문맥을 다시 쓸 수 있게 하거나, 판정을 문맥 단위로 좁힌다(둘째 줄).
   - 거절한 상대가 거부한 HELLO나 PROBE에 FAIL이나 BYE로 답해, 다시 시도가 재연결 기다림을 다 쓰지 않게 한다(셋째 줄).
   - 약 5 s 지난 거부는 잊는다. 상한 넘김에서 다시 시도와 범위 재실행을 빼고, 취소 계수를 두 역할에서 같게 센다.
-  - 사용자 devComm 단어를 통신기 하나가 아니라 상대나 문맥 단위로: 한 상대의 거절이나 죽음이 살아 있는 상대와의 통신까지 끝내지 않게
+  - 사용자 devComm 단어를 communicator 하나가 아니라 상대나 문맥 단위로: 한 상대의 거절이나 죽음이 살아 있는 상대와의 통신까지 끝내지 않게
     (gin-multirank가 랭크 4개에서 이 문제를 쟀다).
   - helper의 장치 상태 복사가 응용의 CUDA 호출에 막히지 않는 경로(예: 호스트에 매핑된 게이트를 CPU가 직접 읽고 쓰기). 그 전까지는 응용이 할당과
     커널 적재를 GIN 커널을 띄우기 전에 마치도록 문서에 적는다.
@@ -887,4 +888,4 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t ghd-<hold>`에 넣는다. �
 - `../../../ack_timeout/README.md`(IB 타임아웃과 재시도 시간)
 - gin-handoff(브랜치 `exp/gin-handoff`, `handoff/`): GPU 채우기 호출 순서와 devComm을 먼저 없애는 shrink의 대조. 이 문서가 인용한 값은 코드
   리뷰가 그 원자료에서 다시 센 것이고, 그 실험은 QA 전이다.
-- gin-multirank(브랜치 `exp/gin-multirank`, `multirank/`): 랭크 4개에서 통신기 단위 abort 단어의 영향
+- gin-multirank(브랜치 `exp/gin-multirank`, `multirank/`): 랭크 4개에서 communicator 단위 abort 단어의 영향
