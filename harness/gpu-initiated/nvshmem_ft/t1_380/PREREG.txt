@@ -1,0 +1,5 @@
+Pre-registration of nvshmem-t1-380, 2026-10-08 10:31:23 +0900, before any build or measured run of this study.
+sha256 of the fixed prediction file:
+ff428525565afae7ff679b803b9830179c7f4be7e47d302bfd17c166e1879cb2  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/nvshmem-t1-380-v1 (sections 2, 3, 7, 8).
+The basis values were recounted from t1_close/results/20261007/trials_scored.csv (build b2 on devel 7bb2e99c); the apply check of nvshmem_ibgda_t1close.diff on pristine v3.8.0-0 ran on 2026-10-08 in the scratchpad, without a build.
