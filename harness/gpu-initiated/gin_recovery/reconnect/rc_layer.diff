@@ -1,0 +1,590 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index ab69116..a519637 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -1954,6 +1954,9 @@ ncclResult_t ncclGinRecoverAbort(ncclComm_t comm, int peer) {
+ //   NCCL_GIN_TS_TEST_SOCK_MUTE=<start ms>:<length ms> (gin-s2-close: drop every segment arriving on the helper
+ //   sockets for that window, a silent management-network outage of this connection; see gdakiTsTestMute)
+ //   NCCL_GIN_TS_USER_ABORT=0|1 (gin-s2-close, default 1: a user devComm gets the communicator's device abort flag)
++//   NCCL_GIN_TS_RECONNECT=0|1 (gin-reconnect, default 1: a helper socket lost without evidence of death is re-dialled
++//   by the lower rank every 500 ms and re-accepted by the higher rank), NCCL_GIN_TS_RECONNECT_MS=<ms> (10000: how
++//   long a fault on such a peer waits for the reconnect before it is declined as "peer liveness unknown")
+ //   NCCL_GIN_TS_DIAG=norebase|noring  negative controls only: waiters keep their stale ticket / the
+ //                                 host does not ring the doorbell for the re-posted WQEs
+ // The application's kernels and host code are unchanged. A helper thread per GDAKI context (not the
+@@ -1981,6 +1984,9 @@ NCCL_PARAM(GinTsRoundMs, "GIN_TS_ROUND_MS", 25000);
+ NCCL_PARAM(GinTsPathWaitMs, "GIN_TS_PATH_WAIT_MS", 30000);
+ NCCL_PARAM(GinTsTieBreak, "GIN_TS_TIE_BREAK", 1);
+ NCCL_PARAM(GinTsRescueLaps, "GIN_TS_RESCUE_LAPS", 32);
++NCCL_PARAM(GinTsReconnect, "GIN_TS_RECONNECT", 1);          // gin-reconnect
++NCCL_PARAM(GinTsReconnectMs, "GIN_TS_RECONNECT_MS", 10000); // gin-reconnect
++static std::atomic<uint32_t> gdakiTsCtxSeqNext{0};          // gin-reconnect: helper creation order
+ 
+ #define GDAKI_TS_MAGIC 0x31535447u  // "GTS1"
+ #define GDAKI_TS_DIAG_NOREBASE 0x1u
+@@ -2022,6 +2028,18 @@ struct gdakiTsPeer {
+   size_t have = 0;        // bytes of a partial record in buf
+   struct gdakiTsMsg buf;
+   char closeCause[24] = {0};  // gin-s2-close: why gdakiTsPump last failed (FIN, BADMAGIC or the errno name)
++  // gin-reconnect: a socket lost without evidence of death (timeout, unreachable) is "unknown": it is closed and the
++  // lower rank re-dials while the higher rank re-accepts. `gone` stays the dead state (FIN, reset, refused re-dial...).
++  bool gated = false;         // this peer had a helper socket after setup (its QPs are gated)
++  bool unknown = false;       // no current socket, no evidence of death: waiting for a reconnect
++  char lostCause[24] = {0};   // the cause that made the peer unknown or dead
++  uint32_t gen = 0;           // generation of the current connection (0 = the one from setup)
++  double lostMs = 0;          // when the socket was lost (unknown)
++  int dialFd = -1;            // lower rank: re-dial in progress
++  double dialStartMs = 0, nextDialMs = 0;
++  int attempts = 0;           // re-dial attempts since the loss
++  bool haveAddr = false;      // the higher rank's listen address (setup all-gather), for the re-dial
++  union ncclSocketAddress addr;
+ };
+ 
+ struct gdakiTsQp {        // host copy, per qp_idx
+@@ -2065,6 +2083,13 @@ struct gdakiTs {
+   int stallMs = 0, stallStage = 0;        // stage 1 = after quiesce, 2 = after commit, 3 = after the commit point
+   int dieStage = 0;                       // 1 = helper thread exits after quiesce
+   int muteStartMs = -1, muteLenMs = 0;    // gin-s2-close: NCCL_GIN_TS_TEST_SOCK_MUTE=<start ms>:<length ms>
++  bool muteOn = false;                    // gin-reconnect: the mute is on (new sockets get the filter too)
++  int muteState = 0;                      // gin-reconnect: 0 before, 1 on, 2 off (kept here so that a fault's wait
++  double muteT0 = 0;                      //   for a reconnect also runs the mute schedule); origin of the schedule
++  int listenFd = -1;                      // gin-reconnect: the setup's listen socket, kept for re-accepts
++  uint32_t ctxSeq = 0;                    // gin-reconnect: helper creation order (equal on every rank), in HELLO.arg
++  int reconnect = 1;                      // gin-reconnect: NCCL_GIN_TS_RECONNECT
++  int reconnectMs = 10000;                // gin-reconnect: NCCL_GIN_TS_RECONNECT_MS (bound of the wait in a fault)
+   std::atomic<int> dead{0};
+   struct ncclGinTsTest* test = nullptr;   // host-mapped (NCCL_GIN_TS_TEST_SPLIT)
+   struct ncclGinTsTest* testDev = nullptr;
+@@ -2123,7 +2148,7 @@ static bool gdakiTsActive(struct gdakiRecHost* r) {
+ static bool gdakiTsRoutes(struct gdakiRecHost* r, const struct ncclGinGdakiQ4Record& rec) {
+   if (!gdakiTsActive(r)) return false;
+   const int p = (int)rec.peer;
+-  return p >= 0 && p < (int)r->ts->peers.size() && p != r->ctx->rank && r->ts->peers[p].fd >= 0;
++  return p >= 0 && p < (int)r->ts->peers.size() && p != r->ctx->rank && r->ts->peers[p].gated;
+ }
+ 
+ static void gdakiTsPushFault(struct gdakiRecHost* r, const struct ncclGinGdakiQ4Record& rec, double monoMs) {
+@@ -2143,7 +2168,7 @@ static void gdakiTsTestSelfReport(struct gdakiRecHost* r) {
+   struct gdakiTs* ts = r->ts;
+   int peer = -1;
+   for (int p = 0; p < (int)ts->peers.size() && peer < 0; p++)
+-    if (p != g->rank && ts->peers[p].fd >= 0) peer = p;
++    if (p != g->rank && ts->peers[p].gated) peer = p;
+   if (peer < 0 || peer >= (int)ts->qs.size()) return;
+   struct ncclGinGdakiQ4Record rec;
+   memset(&rec, 0, sizeof(rec));
+@@ -2284,15 +2309,179 @@ static int gdakiTsRecv(struct gdakiTsPeer& pe, struct gdakiTsMsg* out, int timeo
+   }
+ }
+ 
+-// Liveness from the socket: FIN or a TCP error = dead; EAGAIN = no evidence of death.
+-static bool gdakiTsAlive(struct gdakiTsPeer& pe) {
+-  if (pe.fd < 0 || pe.gone) return false;
+-  if (pe.have > 0) return true;
++// gin-reconnect: liveness of a peer from its helper socket, three ways.
++//   dead:        FIN, ECONNRESET, EPIPE, a refused re-dial (ECONNREFUSED), BADMAGIC, any other errno
++//   unknown:     ETIMEDOUT, EHOSTUNREACH, ENETUNREACH (the socket is closed; the lower rank re-dials)
++//   no evidence: EAGAIN, EWOULDBLOCK, EINTR (the socket is as good as before)
++enum { GDAKI_TS_LV_NOEVIDENCE = 0, GDAKI_TS_LV_UNKNOWN = 1, GDAKI_TS_LV_DEAD = 2 };
++
++static int gdakiTsCauseLiveness(const char* cause) {
++  if (!strcmp(cause, "ETIMEDOUT") || !strcmp(cause, "EHOSTUNREACH") || !strcmp(cause, "ENETUNREACH"))
++    return GDAKI_TS_LV_UNKNOWN;
++  return GDAKI_TS_LV_DEAD;
++}
++
++static void gdakiTsMuteFd(struct gdakiTs* ts, int fd);  // test knob, below
++static void gdakiTsTestMute(struct gdakiTs* ts, int rank);  // test knob, below
++
++// The helper socket to `p` failed (pe.closeCause). Dead: recovery with this peer ends, as before. Unknown: the socket
++// is closed and the peer waits for a reconnect. One WARN either way.
++static int gdakiTsSocketLost(struct gdakiRecHost* r, int p) {
++  struct gdakiTs* ts = r->ts;
++  struct gdakiTsPeer& pe = ts->peers[p];
++  const char* cause = pe.closeCause[0] ? pe.closeCause : "unknown";
++  const int lv = gdakiTsCauseLiveness(cause);
++  snprintf(pe.lostCause, sizeof(pe.lostCause), "%s", cause);
++  if (lv == GDAKI_TS_LV_UNKNOWN) {
++    if (pe.fd >= 0) close(pe.fd);
++    pe.fd = -1;
++    pe.have = 0;
++    pe.unknown = true;
++    pe.lostMs = gdakiQ4MonoMs();
++    pe.nextDialMs = pe.lostMs;
++    pe.attempts = 0;
++  } else {
++    pe.gone = true;
++    pe.unknown = false;
++  }
++  WARN("GIN/TS: rank %d: socket to rank %d closed cause=%s mono_ms=%.3f liveness=%s", r->ctx->rank, p, cause,
++       gdakiQ4MonoMs(), lv == GDAKI_TS_LV_UNKNOWN ? "unknown" : "dead");
++  return lv;
++}
++
++// Liveness of `p` now (a peek at the socket; a failure found here is recorded as by the idle loop).
++static int gdakiTsPeerLiveness(struct gdakiRecHost* r, int p, const char** cause) {
++  struct gdakiTsPeer& pe = r->ts->peers[p];
++  *cause = pe.lostCause[0] ? pe.lostCause : "no socket";
++  if (pe.gone) return GDAKI_TS_LV_DEAD;
++  if (pe.unknown) return GDAKI_TS_LV_UNKNOWN;
++  if (pe.fd < 0) return GDAKI_TS_LV_DEAD;
++  if (pe.have > 0) return GDAKI_TS_LV_NOEVIDENCE;
+   char c;
+   ssize_t k = recv(pe.fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
+-  if (k > 0) return true;
+-  if (k == 0) return false;
+-  return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
++  if (k > 0) return GDAKI_TS_LV_NOEVIDENCE;
++  if (k < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return GDAKI_TS_LV_NOEVIDENCE;
++  if (k == 0) snprintf(pe.closeCause, sizeof(pe.closeCause), "FIN");
++  else {
++    const int e = errno;
++    const char* n = gdakiTsErrName(e);
++    if (n) snprintf(pe.closeCause, sizeof(pe.closeCause), "%s", n);
++    else snprintf(pe.closeCause, sizeof(pe.closeCause), "errno%d", e);
++  }
++  const int lv = gdakiTsSocketLost(r, p);
++  *cause = pe.lostCause;
++  return lv;
++}
++
++// Install `fd` as the connection of generation `gen` to `p`.
++static void gdakiTsInstall(struct gdakiRecHost* r, int p, int fd, uint32_t gen, int attempts) {
++  struct gdakiTsPeer& pe = r->ts->peers[p];
++  if (pe.fd >= 0 && pe.fd != fd) close(pe.fd);
++  pe.fd = fd;
++  pe.have = 0;
++  pe.gen = gen;
++  pe.unknown = false;
++  pe.gone = false;
++  pe.closeCause[0] = '\0';
++  WARN("GIN/TS: rank %d: socket to rank %d reconnected gen=%u attempts=%d mono_ms=%.3f", r->ctx->rank, p, gen, attempts,
++       gdakiQ4MonoMs());
++}
++
++// One step of the reconnect machinery, never blocking for long (the helper loop and a fault's wait call it):
++//  - lower rank, for every unknown higher peer: a non-blocking re-dial every 500 ms, each attempt bounded by 500 ms;
++//    connected -> HELLO (context number, generation + 1) -> installed; a refused re-dial (ECONNREFUSED) -> dead;
++//  - higher rank: accept on the kept listen socket, read the HELLO (bounded), install if it comes from a lower rank of
++//    this context with a newer generation (an old socket to that rank is replaced).
++static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
++  struct gdakiTs* ts = r->ts;
++  const int rank = r->ctx->rank;
++  if (!ts->reconnect) return;
++  const double now = gdakiQ4MonoMs();
++  for (int p = rank + 1; p < (int)ts->peers.size(); p++) {
++    struct gdakiTsPeer& pe = ts->peers[p];
++    if (!pe.gated || !pe.unknown || pe.declined || !pe.haveAddr) continue;
++    if (pe.dialFd >= 0) {
++      struct pollfd pf = {pe.dialFd, POLLOUT, 0};
++      const int pr = poll(&pf, 1, 0);
++      if (pr == 1) {
++        int err = 0;
++        socklen_t elen = sizeof(err);
++        if (getsockopt(pe.dialFd, SOL_SOCKET, SO_ERROR, &err, &elen) != 0) err = errno;
++        if (err == 0) {
++          struct gdakiTsMsg h;
++          memset(&h, 0, sizeof(h));
++          h.type = GDAKI_TS_HELLO;
++          h.from = rank;
++          h.arg = (int32_t)ts->ctxSeq;
++          h.round = pe.gen + 1;
++          if (gdakiTsSend(pe.dialFd, &h, 200) == 0) {
++            const int fd = pe.dialFd;
++            pe.dialFd = -1;
++            gdakiTsInstall(r, p, fd, pe.gen + 1, pe.attempts);
++            continue;
++          }
++          close(pe.dialFd);
++          pe.dialFd = -1;
++        } else if (err == ECONNREFUSED) {
++          close(pe.dialFd);
++          pe.dialFd = -1;
++          snprintf(pe.closeCause, sizeof(pe.closeCause), "ECONNREFUSED");
++          (void)gdakiTsSocketLost(r, p);  // dead: the peer's listen socket is gone
++          continue;
++        } else {
++          close(pe.dialFd);
++          pe.dialFd = -1;
++        }
++      } else if (now - pe.dialStartMs >= 500.0) {
++        close(pe.dialFd);
++        pe.dialFd = -1;
++      }
++    }
++    if (pe.dialFd < 0 && now >= pe.nextDialMs) {
++      const socklen_t alen = pe.addr.sa.sa_family == AF_INET6 ? sizeof(pe.addr.sin6) : sizeof(pe.addr.sin);
++      const int fd = socket(pe.addr.sa.sa_family, SOCK_STREAM, 0);
++      pe.nextDialMs = now + 500.0;
++      if (fd < 0) continue;
++      gdakiTsSockOpts(fd);
++      gdakiTsMuteFd(ts, fd);
++      pe.attempts++;
++      const int rc = connect(fd, &pe.addr.sa, alen);
++      if (rc == 0 || errno == EINPROGRESS) {
++        pe.dialFd = fd;
++        pe.dialStartMs = now;
++      } else if (errno == ECONNREFUSED) {
++        close(fd);
++        snprintf(pe.closeCause, sizeof(pe.closeCause), "ECONNREFUSED");
++        (void)gdakiTsSocketLost(r, p);
++      } else {
++        close(fd);
++      }
++    }
++  }
++  if (ts->listenFd >= 0) {
++    struct pollfd pf = {ts->listenFd, POLLIN, 0};
++    while (poll(&pf, 1, 0) == 1 && (pf.revents & POLLIN)) {
++      const int fd = accept(ts->listenFd, nullptr, nullptr);
++      if (fd < 0) break;
++      gdakiTsSockOpts(fd);
++      gdakiTsMuteFd(ts, fd);
++      struct gdakiTsPeer tmp;
++      tmp.fd = fd;
++      struct gdakiTsMsg h;
++      memset(&h, 0, sizeof(h));
++      const int got = gdakiTsRecv(tmp, &h, 500, &ts->stop);
++      const int from = h.from;
++      if (got != 1 || h.type != GDAKI_TS_HELLO || from < 0 || from >= rank || from >= (int)ts->peers.size() ||
++          !ts->peers[from].gated || ts->peers[from].declined || h.arg != (int32_t)ts->ctxSeq ||
++          h.round <= ts->peers[from].gen) {
++        INFO(NCCL_NET, "GIN/TS: rank %d: refused a reconnect (got=%d type=%u from=%d ctx=%d gen=%lu)", rank, got, h.type,
++             from, h.arg, (unsigned long)h.round);
++        close(fd);
++        continue;
++      }
++      gdakiTsInstall(r, from, fd, (uint32_t)h.round, 0);
++    }
++  }
+ }
+ 
+ static bool gdakiTsTestStall(struct gdakiTs* ts, int ms, const char* where, int rank);  // test knob, below
+@@ -2992,16 +3181,21 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
+   m.t[2] = (tC - tG) * 1e3;
+   m.t[3] = (tC - t0) * 1e3;
+   if (gdakiTsSend(pe.fd, &m, ts->handshakeMs) != 0) {
++    char w[80];
++    const char* n = gdakiTsErrName(errno);
++    snprintf(w, sizeof(w), "cannot send ACK (%s)", n ? n : "send failed");
+     pe.gone = true;
+-    return gdakiTsDecline(r, peer, "cannot send ACK", false, req.arg);
++    return gdakiTsDecline(r, peer, w, false, req.arg);
+   }
+   // DONE: the initiator committed (its QPs are at RTR), so our own re-posted WQEs and new posts can go. The
+   // initiator may first wait for its own address (path wait). Bounded by what is left of the round.
+   struct gdakiTsMsg d;
+   const int got = gdakiTsRecv(pe, &d, gdakiTsRoundLeftMs(ts, 2 * ts->handshakeMs + ts->pathWaitMs), &ts->stop);
+   if (got < 0) {
++    char w[96];
++    snprintf(w, sizeof(w), "peer closed the socket before DONE (%s)", pe.closeCause[0] ? pe.closeCause : "unknown");
+     pe.gone = true;
+-    return gdakiTsDecline(r, peer, "peer closed the socket before DONE", false, req.arg);
++    return gdakiTsDecline(r, peer, w, false, req.arg);
+   }
+   if (got == 0) return gdakiTsDecline(r, peer, "DONE timeout", true, req.arg);
+   if (d.type != GDAKI_TS_DONE || d.round != req.round)
+@@ -3042,14 +3236,54 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+   const double t0 = gdakiQ4MonoMs();
+   const int cls = rec.cls;
+   // Policy (as gin_recovery's driver did, now inside the library).
+-  if (cls == NCCL_GIN_Q4_CLASS_RETRY_EXC) {
+-    if (!gdakiTsAlive(pe)) return gdakiTsDecline(r, peer, "RETRY_EXC and the peer's socket shows FIN/RST", false, cls);
+-  } else if (cls != NCCL_GIN_Q4_CLASS_LOCAL_QP_ERR) {
++  if (cls != NCCL_GIN_Q4_CLASS_RETRY_EXC && cls != NCCL_GIN_Q4_CLASS_LOCAL_QP_ERR) {
+     char why[64];
+     snprintf(why, sizeof(why), "class %s is not recoverable", gdakiTsClassName(cls));
+     return gdakiTsDecline(r, peer, why, true, cls);
+   }
+-  if (pe.gone || pe.fd < 0) return gdakiTsDecline(r, peer, "no helper socket to the peer", false, cls);
++  {
++    // gin-reconnect: the helper socket's liveness, three ways. No evidence: go on. Dead: decline, naming the cause.
++    // Unknown: wait (bounded by NCCL_GIN_TS_RECONNECT_MS, before the round starts, heartbeat kept fresh) for the
++    // reconnect machinery; a reconnect means the peer answered; dead evidence or the bound ends the wait.
++    const bool retry = cls == NCCL_GIN_Q4_CLASS_RETRY_EXC;
++    const char* cause = nullptr;
++    int lv = gdakiTsPeerLiveness(r, peer, &cause);
++    if (lv == GDAKI_TS_LV_UNKNOWN) {
++      const double w0 = gdakiQ4MonoMs();
++      const char* ended = "off";
++      if (ts->reconnect) {
++        ended = "bound";
++        while (gdakiQ4MonoMs() - w0 < (double)ts->reconnectMs) {
++          if (ts->stop.load(std::memory_order_acquire)) break;
++          ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
++          gdakiTsTestMute(ts, g->rank);  // test knob: the mute schedule runs while the helper waits here
++          gdakiTsReconnectStep(r);
++          lv = gdakiTsPeerLiveness(r, peer, &cause);
++          if (lv != GDAKI_TS_LV_UNKNOWN) {
++            ended = lv == GDAKI_TS_LV_DEAD ? "dead" : "reconnected";
++            break;
++          }
++          std::this_thread::sleep_for(std::chrono::milliseconds(1));
++        }
++      }
++      WARN("GIN/TS: rank %d: reconnect wait for rank %d ended=%s wait_ms=%.1f mono_ms=%.3f", g->rank, peer, ended,
++           gdakiQ4MonoMs() - w0, gdakiQ4MonoMs());
++    }
++    char why[160];
++    if (lv == GDAKI_TS_LV_DEAD) {
++      if (retry) snprintf(why, sizeof(why), "RETRY_EXC and the peer's socket shows %s", cause);
++      else snprintf(why, sizeof(why), "no helper socket to the peer (%s)", cause);
++      return gdakiTsDecline(r, peer, why, false, cls);
++    }
++    if (lv == GDAKI_TS_LV_UNKNOWN) {
++      char tail[96];
++      if (ts->reconnect) snprintf(tail, sizeof(tail), "%s, no reconnect within %d ms", cause, ts->reconnectMs);
++      else snprintf(tail, sizeof(tail), "%s, reconnect off", cause);
++      if (retry) snprintf(why, sizeof(why), "RETRY_EXC and peer liveness unknown (%s)", tail);
++      else snprintf(why, sizeof(why), "no helper socket to the peer: peer liveness unknown (%s)", tail);
++      return gdakiTsDecline(r, peer, why, false, cls);
++    }
++  }
+   if (ts->surfaced.load(std::memory_order_acquire))
+     return gdakiTsDecline(r, peer, "the watchdog surfaced a fault earlier", true, cls);
+   gdakiTsBusy busy(ts);
+@@ -3091,8 +3325,11 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+   m.nqp = nqp;
+   tP = gdakiQ4MonoMs();
+   if (gdakiTsSend(pe.fd, &m, ts->handshakeMs) != 0) {
++    char w[80];
++    const char* n = gdakiTsErrName(errno);
++    snprintf(w, sizeof(w), "cannot send REQ (%s)", n ? n : "send failed");
+     pe.gone = true;
+-    return gdakiTsDecline(r, peer, "cannot send REQ", false, cls);
++    return gdakiTsDecline(r, peer, w, false, cls);
+   }
+   // ACK (bounded: the handshake bound plus the responder's own quiesce, drain and path-wait bounds). A REQ
+   // from the peer meanwhile is a simultaneous initiation (S2 tie-break, deterministic, no extra message):
+@@ -3106,8 +3343,11 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+     const int rem = (int)(deadline - gdakiQ4MonoMs());
+     const int got = rem > 0 ? gdakiTsRecv(pe, &a, rem, &ts->stop) : 0;
+     if (got < 0) {
++      char w[96];
++      snprintf(w, sizeof(w), "peer closed the socket during the handshake (%s)",
++               pe.closeCause[0] ? pe.closeCause : "unknown");
+       pe.gone = true;
+-      return gdakiTsDecline(r, peer, "peer closed the socket during the handshake", false, cls);
++      return gdakiTsDecline(r, peer, w, false, cls);
+     }
+     if (got == 0) return gdakiTsDecline(r, peer, "handshake timeout", true, cls);
+     if (a.type == GDAKI_TS_ACK && a.round == round) break;
+@@ -3227,7 +3467,7 @@ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiT
+ static void gdakiTsScan(struct gdakiRecHost* r) {
+   struct gdakiTs* ts = r->ts;
+   for (int p = 0; p < (int)ts->peers.size(); p++) {
+-    if (ts->peers[p].fd < 0 || ts->peers[p].declined) continue;
++    if (!ts->peers[p].gated || ts->peers[p].declined) continue;
+     const char* why = nullptr;
+     gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+       if (why) return;
+@@ -3253,30 +3493,50 @@ static void gdakiTsScan(struct gdakiRecHost* r) {
+ // thread, which follows the socket setup): attach a drop-everything classic BPF filter to every helper socket at the
+ // start and detach it at the end. The kernel then discards every segment that arrives on those sockets (no FIN, no
+ // RST), as a silent outage of the management network would, for these connections only. Test only.
+-static void gdakiTsTestMute(struct gdakiTs* ts, int rank, double t0, int* state) {
++// gin-reconnect: while the mute is on, the listen socket and every new socket (re-dial, re-accept) get the filter
++// too, so that a reconnect cannot succeed during the mute.
++static int gdakiTsMuteAttach(int fd) {
++  struct sock_filter code[1] = {BPF_STMT(BPF_RET | BPF_K, 0)};
++  struct sock_fprog prog;
++  prog.len = 1;
++  prog.filter = code;
++  return setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &prog, sizeof(prog));
++}
++
++static void gdakiTsMuteFd(struct gdakiTs* ts, int fd) {
++  if (ts->muteOn && fd >= 0 && gdakiTsMuteAttach(fd) != 0)
++    WARN("GIN/TS: TEST socket mute: SO_ATTACH_FILTER failed on a new socket errno=%d", errno);
++}
++
++static void gdakiTsTestMute(struct gdakiTs* ts, int rank) {
++  const double t0 = ts->muteT0;
++  int* state = &ts->muteState;
+   if (ts->muteStartMs < 0 || *state >= 2) return;
+   const double now = gdakiQ4MonoMs();
+   if (*state == 0 && now >= t0 + ts->muteStartMs) {
+-    struct sock_filter code[1] = {BPF_STMT(BPF_RET | BPF_K, 0)};
+-    struct sock_fprog prog;
+-    prog.len = 1;
+-    prog.filter = code;
+     int n = 0, bad = 0;
+     for (auto& pe : ts->peers) {
+       if (pe.fd < 0) continue;
+-      if (setsockopt(pe.fd, SOL_SOCKET, SO_ATTACH_FILTER, &prog, sizeof(prog)) == 0) n++;
++      if (gdakiTsMuteAttach(pe.fd) == 0) n++;
+       else bad++;
+     }
++    for (auto& pe : ts->peers)
++      if (pe.dialFd >= 0 && gdakiTsMuteAttach(pe.dialFd) != 0) bad++;
++    if (ts->listenFd >= 0 && gdakiTsMuteAttach(ts->listenFd) != 0) bad++;
++    ts->muteOn = true;
+     if (bad) WARN("GIN/TS: TEST socket mute: SO_ATTACH_FILTER failed on %d socket(s) rank=%d errno=%d", bad, rank, errno);
+     WARN("GIN/TS: TEST socket mute on rank=%d peers=%d mono_ms=%.3f", rank, n, now);
+     *state = 1;
+   }
+   if (*state == 1 && now >= t0 + ts->muteStartMs + ts->muteLenMs) {
+     int n = 0, dummy = 0;
++    ts->muteOn = false;
+     for (auto& pe : ts->peers) {
++      if (pe.dialFd >= 0) (void)setsockopt(pe.dialFd, SOL_SOCKET, SO_DETACH_FILTER, &dummy, sizeof(dummy));
+       if (pe.fd < 0) continue;
+       if (setsockopt(pe.fd, SOL_SOCKET, SO_DETACH_FILTER, &dummy, sizeof(dummy)) == 0) n++;
+     }
++    if (ts->listenFd >= 0) (void)setsockopt(ts->listenFd, SOL_SOCKET, SO_DETACH_FILTER, &dummy, sizeof(dummy));
+     WARN("GIN/TS: TEST socket mute off rank=%d peers=%d mono_ms=%.3f", rank, n, now);
+     *state = 2;
+   }
+@@ -3291,11 +3551,11 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+   std::vector<struct pollfd> pfds;
+   std::vector<int> who;
+   double nextScan = gdakiQ4MonoMs() + 100.0;
+-  const double tMain0 = gdakiQ4MonoMs();  // gin-s2-close: origin of the socket-mute test knob
+-  int muteState = 0;
++  ts->muteT0 = gdakiQ4MonoMs();  // gin-s2-close: origin of the socket-mute test knob
+   while (!ts->stop.load(std::memory_order_acquire) && !ts->dead.load(std::memory_order_acquire)) {
+     ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
+-    gdakiTsTestMute(ts, g->rank, tMain0, &muteState);
++    gdakiTsTestMute(ts, g->rank);
++    gdakiTsReconnectStep(r);  // gin-reconnect
+     pfds.clear();
+     who.clear();
+     for (int p = 0; p < (int)ts->peers.size(); p++) {
+@@ -3320,13 +3580,11 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+           INFO(NCCL_NET, "GIN/TS: ignoring %s from rank %d while idle", gdakiTsMsgName(msg.type), p);
+         if (pe.gone) break;
+       }
+-      if (got < 0 && !pe.gone) {
+-        // FIN/RST while idle is not a fault (the peer may just be tearing down): recovery with this
+-        // peer becomes impossible and a later fault on it is declined. (gin-s2-close: logged as a WARN with
+-        // its cause; the behaviour is unchanged.)
+-        pe.gone = true;
+-        WARN("GIN/TS: rank %d: socket to rank %d closed cause=%s mono_ms=%.3f", g->rank, p,
+-             pe.closeCause[0] ? pe.closeCause : "unknown", gdakiQ4MonoMs());
++      if (got < 0 && !pe.gone && pe.fd >= 0) {
++        // A socket loss while idle is not a fault. gin-reconnect: with evidence of death (FIN, reset, ...) recovery
++        // with this peer becomes impossible and a later fault on it is declined, as before; without it (timeout,
++        // unreachable) the socket is closed and the reconnect machinery takes over.
++        (void)gdakiTsSocketLost(r, p);
+       }
+     }
+     std::vector<struct gdakiTsFault> fs;
+@@ -3421,9 +3679,11 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+     return ret;
+   }
+   struct gdakiTs* ts = nullptr;
++  const uint32_t ctxSeq = gdakiTsCtxSeqNext.fetch_add(1);  // gin-reconnect: same order on every rank (collective)
+   const double deadline = gdakiQ4MonoMs() + (double)ncclParamGinTsConnectMs();
+   if (why == nullptr) {
+     ts = new gdakiTs();
++    ts->ctxSeq = ctxSeq;
+     ts->peers.resize(nranks);
+     ts->qs.resize(r->qps.size());
+     for (size_t i = 0; i < ts->qs.size(); i++) ts->qs[i].rmsn0 = rmsn0[i];
+@@ -3453,8 +3713,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+     memset(&h, 0, sizeof(h));
+     h.type = GDAKI_TS_HELLO;
+     h.from = rank;
++    h.arg = (int32_t)ctxSeq;  // gin-reconnect: context number; generation 0 (h.round)
+     if (gdakiTsSend(fd, &h, std::max(1, (int)(deadline - gdakiQ4MonoMs()))) != 0) { close(fd); why = "hello failed"; break; }
+     ts->peers[p].fd = fd;
++    ts->peers[p].gated = true;
++    ts->peers[p].addr = pa;
++    ts->peers[p].haveAddr = true;
+   }
+   int lower = 0;
+   for (int p = rankOff; p < rank; p += g->rankStride) lower++;
+@@ -3469,14 +3733,21 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+     tmp.fd = fd;
+     struct gdakiTsMsg h;
+     if (gdakiTsRecv(tmp, &h, std::max(1, (int)(deadline - gdakiQ4MonoMs())), nullptr) != 1 ||
+-        h.type != GDAKI_TS_HELLO || h.from < 0 || h.from >= rank || ts->peers[h.from].fd >= 0) {
++        h.type != GDAKI_TS_HELLO || h.from < 0 || h.from >= rank || ts->peers[h.from].fd >= 0 ||
++        h.arg != (int32_t)ctxSeq) {
+       close(fd);
+       continue;
+     }
+     ts->peers[h.from].fd = fd;
++    ts->peers[h.from].gated = true;
+     lower--;
+   }
+-  if (ls >= 0) close(ls);
++  if (why != nullptr && ls >= 0) close(ls);  // gin-reconnect: on success the listen socket stays, for re-accepts
++  if (why == nullptr) {
++    ts->listenFd = ls;  // non-blocking from here on: re-accepts run inside the helper loop
++    const int fl = fcntl(ls, F_GETFL, 0);
++    if (fl >= 0) fcntl(ls, F_SETFL, fl | O_NONBLOCK);
++  }
+   if (why != nullptr) {
+     WARN("GIN/TS: transparent recovery OFF on rank %d: %s", rank, why);
+     if (ts) {
+@@ -3589,8 +3860,18 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+     }
+   }
+   gdakiTsTestKnobs(r);
++  ts->reconnect = ncclParamGinTsReconnect() != 0 ? 1 : 0;  // gin-reconnect
++  ts->reconnectMs = (int)std::max<int64_t>(0, ncclParamGinTsReconnectMs());
++  {
++    const int maxRc = std::max(0, ts->holdMs - ts->handshakeMs - 1000);
++    if (ts->reconnectMs > maxRc) {
++      WARN("GIN/TS: rank=%d NCCL_GIN_TS_RECONNECT_MS=%d exceeds hold_ms=%d - handshake_ms=%d - 1000; clamped to %d ms",
++           g->rank, ts->reconnectMs, ts->holdMs, ts->handshakeMs, maxRc);
++      ts->reconnectMs = maxRc;
++    }
++  }
+   for (int p = 0; p < (int)ts->peers.size() && ok; p++) {
+-    if (ts->peers[p].fd < 0) continue;
++    if (!ts->peers[p].gated) continue;
+     gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+       struct ncclGinTsGate gate;
+       memset(&gate, 0, sizeof(gate));
+@@ -3620,8 +3901,9 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+   }
+   if (!ok) {
+     WARN("GIN/TS: transparent recovery OFF on rank %d (gate setup failed)", g->rank);
++    if (ts->listenFd >= 0) close(ts->listenFd);
+     for (int p = 0; p < (int)ts->peers.size(); p++) {
+-      if (ts->peers[p].fd < 0) continue;
++      if (!ts->peers[p].gated) continue;
+       gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
+         struct ncclGinTsGate gate;
+         memset(&gate, 0, sizeof(gate));
+@@ -3645,6 +3927,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+        "socket; the application sees no recovered fault)",
+        g->rank, nq, ts->handshakeMs, ts->holdMs, ts->quiesceMs, ts->roundMs, ts->pathWaitMs, ts->tieBreak, g->gid_index,
+        ts->gidType, ts->diag);
++  WARN("GIN/TS: helper socket reconnect=%d bound_ms=%d rank=%d", ts->reconnect, ts->reconnectMs, g->rank);
+ }
+ 
+ // Called by ncclCommAbort as soon as the abort flags are set (before the teardown, whose cudaFree calls
+@@ -3696,7 +3979,7 @@ extern void ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
+     const int64_t tJoin = gdakiTsNowUs();
+     int nPoison = 0, nPoisonErr = 0;
+     for (int p = 0; p < (int)ts->peers.size(); p++) {
+-      if (ts->peers[p].fd < 0) continue;
++      if (!ts->peers[p].gated) continue;
+       gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+         if (gdakiTsWordHiWrite(r, q->qp_gverbs, NCCL_GIN_TS_W_HOST_FAILED | ts->qs[rq.qpIdx].epoch) == ncclSuccess)
+           nPoison++;
+@@ -3732,11 +4015,20 @@ static void gdakiTsStop(struct gdakiRecHost* r) {
+   if (ts->testTh.joinable()) ts->testTh.join();
+   if (ts->test)
+     WARN("GIN/TS: TEST split rank=%d nsplit=%u no_ack=%u", r->ctx->rank, ts->test->nsplit, ts->test->nsplitNoAck);
+-  for (auto& pe : ts->peers)
++  for (auto& pe : ts->peers) {
+     if (pe.fd >= 0) {
+       close(pe.fd);
+       pe.fd = -1;
+     }
++    if (pe.dialFd >= 0) {  // gin-reconnect
++      close(pe.dialFd);
++      pe.dialFd = -1;
++    }
++  }
++  if (ts->listenFd >= 0) {
++    close(ts->listenFd);
++    ts->listenFd = -1;
++  }
+   ts->stopped = true;
+ }
+ 
