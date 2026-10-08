@@ -2,8 +2,7 @@
 
 RDMA 통신에서 장애가 났을 때, 그 정보가 NIC에서 응용까지 어디서 남고 어디서 사라지는지 측정한다. 남은 정보로 원인을
 얼마나 구분할 수 있는지, 언제 응용을 고치지 않고 안전하게 복구할 수 있는지도 보인다. 대상은 CPU verbs, NCCL, 그리고 GPU가
-직접 통신을 시작하는 GPU-initiated RDMA 스택(NVIDIA NCCL GIN, NVSHMEM IBGDA)이다. 아주대학교 소프트웨어학과 학부
-자기주도연구로 2026년 9–10월에 진행했다.
+직접 통신을 시작하는 GPU-initiated RDMA 스택(NVIDIA NCCL GIN, NVSHMEM IBGDA)이다.
 
 ## 요약
 
@@ -48,7 +47,7 @@ RDMA 통신에서 장애가 났을 때, 그 정보가 NIC에서 응용까지 어
 
 - 장애 난 QP 쌍만 재설정할 때 응답 쪽도 자기 QP를 확인하게 하기, 오판이 시작되는 경계 재기, 관리망이 한쪽 방향으로만 끊길 때의
   오판 고치기.
-- NVIDIA의 #117 수정이 공개되면 그 릴리스로 다시 재기.
+- NVIDIA의 #117 수정이 공개되면 그 release로 다시 재기.
 
 ## 범위와 한계
 
@@ -79,7 +78,6 @@ RDMA 통신에서 장애가 났을 때, 그 정보가 NIC에서 응용까지 어
 | `experiments/`, `docs/` | 초기 연구 |
 
 결과를 인용할 때는 브랜치가 아니라 태그나 커밋을 가리킨다. 사전 등록은 `prereg/...` 태그, 원시 데이터는 `data-...` 태그다.
-질문과 오류 제보는 GitHub Issues로 받는다(관리자 [@unionxic](https://github.com/unionxic)).
 
 ## 라이선스
 
