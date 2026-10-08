@@ -33,8 +33,14 @@
 #include <nvshmemx.h>
 #include "device_host_transport/nvshmem_common_ibgda.h"
 #include "non_abi/device/pt-to-pt/ibgda_device.cuh"
+#ifdef T1_STOCK
+/* t1_380: built against an unmodified NVSHMEM (no FT API): the status is always 0 and the host error
+ * view is absent. Used only for the fault-free latency baseline (lat mode). */
+#define nvshmemx_ibgda_ft_status(pe) (0u)
+#else
 #ifndef __CUDA_ARCH__
 __device__ uint32_t nvshmemx_ibgda_ft_status(int pe);
+#endif
 #endif
 
 #include <cuda_runtime.h>
@@ -237,6 +243,10 @@ static int waitStream(cudaStream_t s, double limit_s) {
 
 /* End-of-run observation of the library's host error view (FT API, if exported). */
 static int hostErrorView(char *name, size_t n) {
+#ifdef T1_STOCK
+    snprintf(name, n, "none");
+    return -1;
+#else
     void *h = dlopen("nvshmem_transport_ibgda.so.7", RTLD_NOW | RTLD_NOLOAD);
     if (!h) return -1;
     auto q = (int (*)(nvshmemt_ibgda_ft_info_t *, int))dlsym(h, "nvshmemt_ibgda_ft_query");
@@ -246,6 +256,7 @@ static int hostErrorView(char *name, size_t n) {
     int r = q(&info, 0);
     snprintf(name, n, "%s", r == 1 ? info.name : "none");
     return r == 1 ? 1 : 0;
+#endif
 }
 
 int main(int argc, char **argv) {

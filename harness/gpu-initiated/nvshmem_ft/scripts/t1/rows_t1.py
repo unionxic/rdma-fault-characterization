@@ -38,7 +38,8 @@ def parse_trial(meta_path):
               'burst', 'reps', 'fault_ms', 'shots', 'kill_ms', 'cut_s', 'cut_at_ms', 'hold_ms', 'gid_r', 'gid_s',
               'bin', 'md5_bin', 'md5_transport', 'md5_host', 'pe0_rc', 'pe1_rc', 'leftover_rain', 'leftover_sunny',
               'kill_mono1_s', 'cut_start_rain_mono_ms', 'cut_end_rain_mono_ms', 'start',
-              'nofin', 'rc_per_pe', 'rc_map', 'xenv', 'sock_dir', 'bundle'):  # t1_close: last six
+              'nofin', 'rc_per_pe', 'rc_map', 'xenv', 'sock_dir', 'bundle',  # t1_close
+              'handler'):  # t1_380
         r[k] = m.get(k, '')
     # t1_close: fetch counts of PE0's first round line (RECOVERED initiator or DECLINE), the exit
     # without nvshmem_finalize (T1EXIT) and the library's atexit hook (ATEXIT)
@@ -53,6 +54,10 @@ def parse_trial(meta_path):
         rec_t, shots, declines, faults, gid_moves = [], [], [], [], []
         wd = 0
         sock_lost, sock_back, dci_lines = [], [], []
+        # t1_380: transparent recovery on (enabled line) or refused (stays-off line), FT NIC handler
+        r[f't1_enabled{pe}'] = 0
+        r[f't1_refused{pe}'] = 0
+        r[f'ft_handler{pe}'] = ''
         for line in open(p, errors='replace'):
             if line.startswith('T1APP '):
                 d = kv(line)
@@ -111,8 +116,14 @@ def parse_trial(meta_path):
             elif 'device-classified error CQE' in line:
                 d = kv(line)
                 rec_t.append((d.get('mono_ms'), d.get('class'), d.get('fp')))
+            elif '[nvshmem-ft] PE%d enabled:' % pe in line:
+                r[f'ft_handler{pe}'] = kv(line).get('handler', '')
             elif '[nvshmem-t1]' in line:
-                if ' ATEXIT ' in line:
+                if 'transparent mode stays off' in line:
+                    r[f't1_refused{pe}'] = 1
+                elif ' enabled: gates=' in line:
+                    r[f't1_enabled{pe}'] = 1
+                elif ' ATEXIT ' in line:
                     d = kv(line)
                     mm = re.search(r'PE\d ([\d.]+) ATEXIT', line)
                     r[f'atexit_mono{pe}'] = mm.group(1) if mm else ''
