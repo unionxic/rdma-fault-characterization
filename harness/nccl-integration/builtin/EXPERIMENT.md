@@ -54,7 +54,7 @@
   빌드 `a037de42`에서 3/3, 2.308–2.400 ms(A5).
 - 수신 QP 주입(T3): `f7f45278` 30/30, 중앙값 2.154 ms(2.114–2.271 ms, A). `a037de42` 3/3, 2.152–2.290 ms(A5).
 - 받는 중 상대 SIGKILL(T8): `a037de42` 3/3에서 생존 rank 0의 오류가 상대의 마지막 반복 줄 뒤 50.144–50.183 ms, OOB 소켓의 FIN 줄 뒤
-  0.013–0.030 ms에 올라왔다(A5). 플래그를 끈 `78f96f38` 3/3은 생존 rank가 통신기 준비 줄 뒤 아무 줄도 남기지 않았고, 실행기가 60 s에
+  0.013–0.030 ms에 올라왔다(A5). 플래그를 끈 `78f96f38` 3/3은 생존 rank가 communicator 준비 줄 뒤 아무 줄도 남기지 않았고, 실행기가 60 s에
   죽였다(C7, 실행 61.2 s).
 - 수신 QP를 조용히 ERR로, 64 MiB 방송(T4, `78f96f38`, C6): 훅 3/3. rank 1은 3/3 모두 비우기만 하고 알리지 않았다. rank 0의
   RETRY_EXC는 1/3이고(훅 뒤 3 557.7 ms), 그 회차는 1.935 ms에 복구했다. 나머지 2/3은 오류 없이 실행 제한(91.2 s)까지 갔다.
@@ -70,7 +70,7 @@
 있다(v2.30.7-1에는 없음). 이 실험은 v2.32.3-1을 쓴다.
 
 **v2.32.3-1이 하는 일** `[소스]`.
-1. **켜는 조건.** `NCCL_IB_RESILIENCY_PORT_FAILOVER=1`이 아니면 통신기마다 복원력 문맥을 만들지 않는다(`p2p_resiliency.cc` 618–623행).
+1. **켜는 조건.** `NCCL_IB_RESILIENCY_PORT_FAILOVER=1`이 아니면 communicator마다 복원력 문맥을 만들지 않는다(`p2p_resiliency.cc` 618–623행).
    port recovery는 그 문맥 안에서만 쓰인다. `NCCL_IB_RESILIENCY_PORT_RECOVERY=1`만 켜면 복구 스레드만 뜨고(`p2p_resiliency_recovery.cc`
    1470–1488행, `init.cc` 682행) 데이터 경로는 그대로다.
 2. **failover가 바꾸는 데이터 경로.** 수신 매칭을 ID 방식으로 바꾸고(`common.cc` 76–81행), 수신 WR을 미리 걸어 두고(93–98행), CTS
@@ -86,13 +86,13 @@
    - 보내는 쪽은 10 ms 뒤 받는 쪽 완료 기록을 RDMA READ로 읽어 빠진 QP만 다시 보낸다(458–545행, 414–456행).
    - recovery를 켰으면 실패한 장치를 비동기 스레드에 넣는다. 200 ms 뒤 QP를 다시 설정하고, "살아 있음" 메시지를 500 ms 간격으로
      주고받아(응답 상한 4 000 ms와 5 000 ms, 20회) 성공하면 원래 QP를 되돌린다(`p2p_resiliency_recovery.cc` 10–19행, 1234–1308행).
-5. **장치가 하나면.** 연결 때 송신, 수신 통신기 모두 "... with a single device. This does not make sense since there is no other device
+5. **장치가 하나면.** 연결 때 송신, 수신 communicator 모두 "... with a single device. This does not make sense since there is no other device
    to fail over to."를 경고한다(840–844행). 오류 CQE 하나가 곧 "모든 장치 실패"라서 치명 판정이 먼저 난다. QP 교체, 확인 읽기, port
    recovery는 어느 것도 시작되지 않는다 `[추론]`.
-6. **앱이 보는 것.** 복원력이 없을 때와 같은 ncclRemoteError다. 프록시가 그 값을 통신기의 비동기 오류로 둔다(`proxy.cc` 980행).
+6. **앱이 보는 것.** 복원력이 없을 때와 같은 ncclRemoteError다. 프록시가 그 값을 communicator의 비동기 오류로 둔다(`proxy.cc` 980행).
    로그만 다르다. 복원력이 없으면 "Got CQE with error"와 "Got completion from peer ... status=...(n)"이 남고, 있으면 "Got completion with
    error"(INFO)와 치명 판정 줄이 남는다.
-7. **상대 프로세스의 죽음.** 이 경로에는 CQE로만 보인다. RAS는 통신기 상태를 읽기만 한다(`ras/collectives.cc` 725–731행).
+7. **상대 프로세스의 죽음.** 이 경로에는 CQE로만 보인다. RAS는 communicator 상태를 읽기만 한다(`ras/collectives.cc` 725–731행).
 8. **오류 뒤의 진행 스레드와 abort.** 2.32.3의 프록시 진행 스레드는 첫 오류를 비동기 오류로 두고 루프를 빠져나간다(`proxy.cc`
    978–983행). 그래서 오류를 받은 rank는 그 뒤 어떤 연결로도 더 보내지 않는다. 2.23.4는 오류를 기록하고 루프를 계속 돈다(v2.23.4-1
    `proxy.cc` 894–899행). 두 버전 모두 앱이 `ncclCommAbort`를 부르면 GPU 커널이 오지 않을 데이터를 기다리던 루프를 빠져나와 다음 단계로
@@ -356,13 +356,13 @@ pilot은 따로 34회다(셀 키마다 1회, 9절, 채점 안 함).
 
 **1. 주입 훅(`n232`).** [inject_232.diff](inject_232.diff), `src/transport/net_ib/p2p.cc` 한 파일. 다중 요청 복구 빌드와 같은 변수 이름과
 발사 지점을 쓰고, 복구 코드는 없다. 변수가 모두 꺼져 있으면 v2.32.3-1과 같다 `[소스]`.
-- `NCCL_RDMA_FAULT_INJECT=k`: 프로세스의 k번째 첫 multi-send 직전(`ncclIbIsend`에서 `ncclIbMultiSend` 앞), 그 송신 통신기의 데이터 QP를
+- `NCCL_RDMA_FAULT_INJECT=k`: 프로세스의 k번째 첫 multi-send 직전(`ncclIbIsend`에서 `ncclIbMultiSend` 앞), 그 송신 communicator의 데이터 QP를
   모두 ERR로.
-- `NCCL_RDMA_FAULT_INJECT_RECV=k`: 프로세스의 k번째 수신 게시 직전(`ncclIbIrecv` 앞부분), 그 수신 통신기의 데이터 QP를 모두 ERR로.
-- `NCCL_RDMA_FAULT_INJECT_RECV_SILENT=1`과 함께: 처음 수신을 완료한 수신 통신기에서, k번째 수신 완료부터 다른 수신이 하나 이상 걸려
-  있을 때 그 통신기의 데이터 QP를 모두 ERR로. 상대에게 알리지 않는다(`ncclIbCompletionEventProcess`의 수신 완료 처리 뒤).
+- `NCCL_RDMA_FAULT_INJECT_RECV=k`: 프로세스의 k번째 수신 게시 직전(`ncclIbIrecv` 앞부분), 그 수신 communicator의 데이터 QP를 모두 ERR로.
+- `NCCL_RDMA_FAULT_INJECT_RECV_SILENT=1`과 함께: 처음 수신을 완료한 수신 communicator에서, k번째 수신 완료부터 다른 수신이 하나 이상 걸려
+  있을 때 그 communicator의 데이터 QP를 모두 ERR로. 상대에게 알리지 않는다(`ncclIbCompletionEventProcess`의 수신 완료 처리 뒤).
 - 발사마다 WARN 한 줄 `NET/IB: [FAULT-INJECT] forced ...`, 끝에 `mono_ms`. 변수마다 프로세스당 한 번만 발사한다.
-- 다중 요청 복구의 훅은 `qps[0]` 하나를 바꿨다. 이 훅은 그 통신기의 데이터 QP를 모두 바꾼다. 연결당 QP 기본값이 1이라 이 실험에서는 같다
+- 다중 요청 복구의 훅은 `qps[0]` 하나를 바꿨다. 이 훅은 그 communicator의 데이터 QP를 모두 바꾼다. 연결당 QP 기본값이 1이라 이 실험에서는 같다
   `[소스]`(`connect.cc` 62행).
 
 **2. 빌드.** [build_nb.sh](build_nb.sh). 세션 스크래치 `agent_nb/`에서만 한다.
@@ -482,7 +482,7 @@ pilot은 따로 34회다(셀 키마다 1회, 9절, 채점 안 함).
 - **훅 위치.** 모든 주입 셀에서 정한 rank의 훅이 정한 종류로 한 번 발사됐다.
   - 송신, 수신 QP 훅은 두 라이브러리 모두 301번째에서 발사됐고 그 rank의 반복 18(150회 중)에서 멈췄다.
   - 2.32.3의 조용한 훅: 방송은 수신 완료 301번째(걸린 수신 4–6개), 반복 2. all-reduce는 403번째(걸린 수신 1개), 반복 100–101.
-  - 다중 요청 복구의 조용한 훅은 통신기 준비 뒤 64–69 ms에 발사됐다.
+  - 다중 요청 복구의 조용한 훅은 communicator 준비 뒤 64–69 ms에 발사됐다.
   - 모두 검사하는 반복 안이다.
   - kill은 rank 0을 띄우고 5.0 s 뒤 요청했고, ssh 명령은 246–250 ms에 돌아왔다(5회). 그때 생존 rank는 41 658–44 641회를 마쳤다.
 - **파서.** 두 라이브러리의 WARN 줄 종류를 모두 모아 보았다. 3.1의 정규식이 읽는 줄 밖에는 예상하지 못한 경고(비동기 이벤트, RAS)가 없었다.
@@ -536,6 +536,7 @@ pilot은 따로 34회다(셀 키마다 1회, 9절, 채점 안 함).
 | 반복 수: 2.32.3의 새 장애 셀을 모두 10회로(`fo`, `forec`의 송신, 수신 QP는 원래 10회), 장애 없는 셀을 10회로. 기준을 B1–B4, F3, F4는 ≥4/5에서 ≥9/10으로, O5는 5/5에서 10/10으로 맞췄다([score.py](score.py)의 `PLANNED`, [hold.sh](hold.sh)의 H1–H15) | pilot 34회의 두 hold는 실행 5.5분, 잠금과 유휴 확인을 넣어 6.7분이었다(추정 약 12분). 늘린 본 실행이 약 65분으로 1.5시간 안이다. 장애 없는 실행은 실행 하나의 차이가 4.7 %까지 나서, 키마다 실행을 늘려 중앙값의 잡음을 줄인다 | 기준을 늦춘 예측은 없다. 대조와 재현 셀(`rec`, `s2on`, `s2off`)은 5회 그대로 |
 | 5절: sunny의 커널과 포트, 배포 확인 | hold 스냅숏, `deploy_check.txt` | |
 | 그대로 둔 예측: O3 | `forec`가 `fo`보다 4.0 %, 4.7 % 느림(실행 하나) | 소스로 설명하지 못해 그대로 두고 의문을 위에 적었다 |
+| 2026-10-09 | 용어: 본문의 "통신기"를 "communicator"로 바꿈(사용자 요청). 고정 절(2, 3, 7, 8절)과 `predictions.csv`, 채점기가 만든 `SCORE.md`는 그대로 둠 | 이 PR |
 
 ## 13. 사전 등록 이후 변경
 
@@ -550,7 +551,7 @@ pilot은 따로 34회다(셀 키마다 1회, 9절, 채점 안 함).
 | 2026-10-09 | 3.4절의 pilot 문장 "2.23.4로 부른 7개는 모두 감시 시간에 끝났다"에 덧붙임: 본 실행에서 2.23.4로 abort를 부른 rank 로그 40개 중 35개가 감시 시간(10 s)에 끝났다. 5개(`sqp@s2off`의 rank 1)는 abort 중에 실행기의 6 s 유예로 끝났다. 돌아온 것은 0이다 `[측정]` | 독립 재계산 3번 | 탐색 관찰만 | 이 커밋 |
 | 2026-10-09 | 12절 pilot 검토의 "방송에서는 rank 0도 3 591–3 684 ms 뒤 RETRY_EXC를 받았다"(pilot 3회)에 덧붙임: 본 실행에서는 `slbc@off` 10/10에서만 그렇다. `slbc@fo` 1/10, `slbc@forec` 4/10이고, 나머지 15회는 rank 0이 오류 CQE 없이 유예로 끝났다. 훅이 발사될 때 걸린 수신 수가 `off` 3, `fo`, `forec` 2였다. 원인은 `[미확인]`이다 | 독립 재계산 2번, 코드 리뷰 M2 | 탐색 관찰만. 판정식은 rank 1과 결과 분류만 본다 | 이 커밋 |
 | 2026-10-09 | 3.3절 O4의 근거("+1.27 %, −0.22 %(3회씩)")에 덧붙임: 그 측정(`../perf/completion_time.py`, 빌드 `3b0b760d`)은 다른 방식이었다. `--check last --quiet`, 64 KiB 400회, 16 MiB 25회, warmup 20이다(그 원시 로그의 SUMMARY `iters`로 확인) `[측정]`. 이 실험은 `--check every`이고, 반복마다 `IT` 줄을 내고, 2 000회와 200회, 빌드 `9ed03e1d`다 | 코드 리뷰 M1 | O4의 해석만. 판정은 고정한 대로 틀림 | 이 커밋 |
-| 2026-10-09 | 3.1절 `s2_rec_ms`의 "첫 송신 통신기 복구 줄"은 시각 순이 아니라 rank 순(rank 0 먼저)의 첫 줄로 구현됐다 | 코드 리뷰 N3 | 없음. 복구한 시행 15회 모두 송신 통신기 복구 줄이 하나다 `[측정]` | 이 커밋 |
+| 2026-10-09 | 3.1절 `s2_rec_ms`의 "첫 송신 communicator 복구 줄"은 시각 순이 아니라 rank 순(rank 0 먼저)의 첫 줄로 구현됐다 | 코드 리뷰 N3 | 없음. 복구한 시행 15회 모두 송신 communicator 복구 줄이 하나다 `[측정]` | 이 커밋 |
 | 2026-10-09 | 3.1절 `outcome`은 TIMEOUT 뒤의 오류 줄에도 ERROR를 HANG보다 먼저 매긴다. TIMEOUT 뒤의 MISMATCH를 빼는 규칙과 짝이 맞지 않는다 | 코드 리뷰 N4 | 없음. 295회 중 TIMEOUT 뒤에 오류나 MISMATCH 줄이 있는 시행은 0이다 `[측정]` | 이 커밋 |
 | 2026-10-09 | 8절의 "채운 시행이 계획의 50 %를 넘으면 그 셀 키를 멈춤"은 코드에 없다. meta 파일이 없는 시행은 `rows_nb.py`에 보이지 않는다 | 코드 리뷰 L3 | 없음. 제외, 채움, meta 없는 시행 모두 0이다(로그 590개 = meta 295개 × 2) `[측정]` | 이 커밋 |
 
@@ -618,7 +619,7 @@ CLOCK_MONOTONIC)으로, 장애 시각(훅 줄을 받은 시각, kill 셀은 kill
   - `off`, `rec`는 원본 오류 줄과 상태 5(WR_FLUSH_ERR)를 남겼다.
   - `fo`, `forec`는 원본 오류 줄 없이 "The error is fatal (No functional devices left)"를 남겼다.
   - rank 1은 35/35 오류 없이 실행기의 유예로 끝났다.
-- 다중 요청 복구 켬: 5/5 투명. 송신 통신기 복구 2.270–2.482 ms(중앙값 2.306).
+- 다중 요청 복구 켬: 5/5 투명. 송신 communicator 복구 2.270–2.482 ms(중앙값 2.306).
 - 끔: rank 0이 0.047–0.096 ms에 오류를 받았다(n=5). rank 1은 11 998.6–11 998.7 ms에 반복 제한(TIMEOUT)에 닿은 뒤 유예로 끝났다.
 
 **2. 수신 QP 오류**(`rqp`, rank 1) `[측정]`.
@@ -667,7 +668,7 @@ CLOCK_MONOTONIC)으로, 장애 시각(훅 줄을 받은 시각, kill 셀은 kill
   - 80번은 장애를 낸 rank에서였다(failover QP 장애 시행 80/80).
   - 20번은 `rqp@fo`, `rqp@forec`의 rank 0(RETRY_EXC)에서였다.
   - 5번은 `slbc@fo`, `slbc@forec`의 rank 0에서였다.
-- 단일 장치 경고는 failover를 켠 시행 140회 모두 두 rank에 있었다. 통신기를 닫을 때 recovery 대기열에서 지운 항목은 close 요청 168개
+- 단일 장치 경고는 failover를 켠 시행 140회 모두 두 rank에 있었다. communicator를 닫을 때 recovery 대기열에서 지운 항목은 close 요청 168개
   모두 0개였다.
 
 **6. ncclCommAbort** `[측정]`.
