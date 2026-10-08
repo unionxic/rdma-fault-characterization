@@ -87,3 +87,13 @@ The full checksums are in the `SHA256SUMS` asset of that release.
 | `harness/live_peer/results/20261007_smoke` | `harness__live_peer__results__20261007_smoke.tar.xz` | 98 | 0.02 | `f029e949f2cf` | smoke runs, not scored |
 | `harness/gpu-initiated/gin_recovery/s2_close/results/20261007` | `harness__gpu-initiated__gin_recovery__s2_close__results__20261007.tar.xz` | 1112 | 0.76 | `f2d11a86cc83` |  |
 | `harness/gpu-initiated/gin_recovery/s2_close/results/20261007_smoke` | `harness__gpu-initiated__gin_recovery__s2_close__results__20261007_smoke.tar.xz` | 73 | 0.02 | `12b660398860` | smoke runs, not scored |
+
+## Release `data-20261008`
+
+2 raw-data archives, 699 files, 0.30 MB compressed. Packed by `tools/pack_release.py --whole`.
+The full checksums are in the `SHA256SUMS` asset of that release.
+
+| folder | asset | files | MB | sha256 (first 12) | note |
+|---|---|--:|--:|---|---|
+| `harness/gpu-initiated/nvshmem_ft/t1_380/results/20261008` | `harness__gpu-initiated__nvshmem_ft__t1_380__results__20261008.tar.xz` | 641 | 0.20 | `cb99b81a5f87` |  |
+| `harness/gpu-initiated/nvshmem_ft/t1_380/results/20261008_smoke` | `harness__gpu-initiated__nvshmem_ft__t1_380__results__20261008_smoke.tar.xz` | 58 | 0.09 | `c4a526b28641` | smoke run, not scored |
