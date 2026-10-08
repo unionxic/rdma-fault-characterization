@@ -54,6 +54,17 @@
 //   rs_* (kv): ncclGinGetRecoveryStats of the communicator before the teardown, looked up with dlsym (rs_api=0 when the
 //     library has no such API).
 //   -DGIN_TS_STOCK_API: build against pristine NCCL (the blocking flush returns void there).
+// gin-handoff (all optional; without them the program does what it did; the latency loop is unchanged):
+//   hog blocks record their start (globaltimer) in host-mapped memory; kv hog_started_probe (blocks started when the
+//     probe ran), and after the main wait hog_started_end and hog_start_spread_ms (last start - first start).
+//   GIN_TS_HOG_SLACK=<k> (0): launch the GPU-filling kernel with k blocks fewer than SMs x blocks per SM (kv hog_slack),
+//     so that it can be fully resident next to a resident GIN kernel that holds k block slots.
+//   GIN_TS_HOG_PROBE=1: right after the GPU-filling kernel's stream, create P non-blocking streams (P =
+//     CUDA_DEVICE_MAX_CONNECTIONS, default 8: one per hardware work queue if streams take the queues in turn); 20 ms after
+//     that kernel's launch, issue one 4-byte device-to-host copy (+ event) on each and poll them for 200 ms (kv probe_n,
+//     probe_done_200ms, probe_stuck = the indices still running, probe_max_ms); after the main wait, probe_done_end.
+//     No kernel and no default-stream call is issued between the launch and the end of the probe.
+//   GIN_TS_SHRINK=1: kv ho_parent_async_after, the parent's ncclCommGetAsyncError right after ncclCommShrink.
 // exit: 0 all iterations ok and nothing surfaced; 2 NCCL call error; 3 async error seen by the host;
 //       4 a device wait/flush returned an error or timed out; 5 data/signal check failed;
 //       6 CUDA error; 7 watchdog.
@@ -71,6 +82,7 @@
 #include <atomic>
 #include <thread>
 #include <vector>
+#include <string>
 #include <algorithm>
 #include <unistd.h>
 #include <csignal>
@@ -675,8 +687,12 @@ __global__ void dualRxKernel(const uint8_t* recvBuf, size_t bytes, int iters, co
 }
 
 // ---- gin-harden: a kernel that fills every SM for a while (GIN_TS_HOG_MS) ------------------------------------------
-__global__ void hogKernel(unsigned long long ns, unsigned long long* sink) {
+__global__ void hogKernel(unsigned long long ns, unsigned long long* sink, unsigned long long* starts) {
   const unsigned long long t0 = gtNow();
+  if (starts != nullptr && threadIdx.x == 0) {  // gin-handoff: when this block started (host-mapped, nonzero)
+    starts[blockIdx.x] = t0 | 1ull;
+    __threadfence_system();
+  }
   unsigned long long x = 0;
   while (gtNow() - t0 < ns) x += threadIdx.x;
   if (x == 1ull) *sink = x;  // never true in practice; keeps the loop
@@ -1074,20 +1090,88 @@ int main(int argc, char** argv) {
   // (they are resident by then), so a recovery has to run while the application occupies the whole GPU.
   const long hogMs = getenv("GIN_TS_HOG_MS") ? atol(getenv("GIN_TS_HOG_MS")) : 0;
   cudaStream_t st3 = nullptr;
+  // gin-handoff: per-block start times of the GPU-filling kernel and the copy probe (GIN_TS_HOG_SLACK, GIN_TS_HOG_PROBE)
+  unsigned long long* hHogStart = nullptr;
+  int hogBlocks = 0;
+  std::vector<cudaStream_t> probeSt;
+  std::vector<cudaEvent_t> probeEv;
+  auto hogStarted = [&](double* spreadMs) {
+    int n = 0;
+    unsigned long long lo = ~0ull, hi = 0;
+    for (int b = 0; b < hogBlocks; b++) {
+      const unsigned long long s = ((volatile unsigned long long*)hHogStart)[b];
+      if (s == 0) continue;
+      n++;
+      lo = std::min(lo, s);
+      hi = std::max(hi, s);
+    }
+    if (spreadMs) *spreadMs = n ? (double)(hi - lo) / 1e6 : -1.0;
+    return n;
+  };
   if (hogMs > 0) {
     int sms = 0, perSm = 0;
     CK(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0));
     CK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm, hogKernel, 256, 0));
+    const int slack = getenv("GIN_TS_HOG_SLACK") ? atoi(getenv("GIN_TS_HOG_SLACK")) : 0;
+    hogBlocks = std::max(1, sms * perSm - std::max(0, slack));
     unsigned long long* dSink = nullptr;
     CK(cudaMalloc(&dSink, sizeof(unsigned long long)));
+    unsigned long long* dHogStart = nullptr;
+    CK(cudaHostAlloc((void**)&hHogStart, sizeof(unsigned long long) * hogBlocks, cudaHostAllocMapped));
+    memset(hHogStart, 0, sizeof(unsigned long long) * hogBlocks);
+    CK(cudaHostGetDevicePointer((void**)&dHogStart, hHogStart, 0));
     CK(cudaStreamCreateWithFlags(&st3, cudaStreamNonBlocking));
+    const bool probe = getenv("GIN_TS_HOG_PROBE") && atoi(getenv("GIN_TS_HOG_PROBE")) != 0;
+    const char* mc = getenv("CUDA_DEVICE_MAX_CONNECTIONS");
+    const int np = probe ? std::max(1, std::min(32, mc ? atoi(mc) : 8)) : 0;
+    unsigned int *dP = nullptr, *hP = nullptr;
+    if (probe) {  // everything the probe needs exists before the launch; its streams follow st3 directly
+      CK(cudaMalloc(&dP, sizeof(unsigned int) * np));
+      CK(cudaHostAlloc((void**)&hP, sizeof(unsigned int) * np, cudaHostAllocDefault));
+      probeSt.resize(np);
+      probeEv.resize(np);
+      for (int i = 0; i < np; i++) CK(cudaStreamCreateWithFlags(&probeSt[i], cudaStreamNonBlocking));
+      for (int i = 0; i < np; i++) CK(cudaEventCreateWithFlags(&probeEv[i], cudaEventDisableTiming));
+    }
     const double w0 = monoMs();
     while (*(volatile int*)hProg < 1 && *(volatile int*)hProgR < 1 && monoMs() - w0 < 2000.0) usleep(100);
     const double tHog = monoMs();
-    hogKernel<<<sms * perSm, 256, 0, st3>>>((unsigned long long)hogMs * 1000000ull, dSink);
+    hogKernel<<<hogBlocks, 256, 0, st3>>>((unsigned long long)hogMs * 1000000ull, dSink, dHogStart);
     const cudaError_t he = cudaGetLastError();
-    kv("hog_ms=%ld hog_sms=%d hog_blocks_per_sm=%d hog_blocks=%d hog_launch_after_launch_ms=%.1f hog_launch_err=%s", hogMs,
-       sms, perSm, sms * perSm, tHog - tLaunch, cudaGetErrorName(he));
+    kv("hog_ms=%ld hog_sms=%d hog_blocks_per_sm=%d hog_blocks=%d hog_launch_after_launch_ms=%.1f hog_launch_err=%s "
+       "hog_slack=%d", hogMs, sms, perSm, hogBlocks, tHog - tLaunch, cudaGetErrorName(he), std::max(0, slack));
+    if (probe) {
+      usleep(20000);  // the GPU-filling kernel takes every block slot it can get
+      const int started = hogStarted(nullptr);
+      const double p0 = monoMs();
+      for (int i = 0; i < np; i++) {
+        CK(cudaMemcpyAsync(hP + i, dP + i, sizeof(unsigned int), cudaMemcpyDeviceToHost, probeSt[i]));
+        CK(cudaEventRecord(probeEv[i], probeSt[i]));
+      }
+      std::vector<double> doneMs(np, -1.0);
+      int nDone = 0;
+      while (nDone < np && monoMs() - p0 < 200.0) {
+        for (int i = 0; i < np; i++) {
+          if (doneMs[i] >= 0) continue;
+          const cudaError_t q = cudaEventQuery(probeEv[i]);
+          if (q == cudaSuccess) {
+            doneMs[i] = monoMs() - p0;
+            nDone++;
+          } else if (q != cudaErrorNotReady) {
+            CK(q);
+          }
+        }
+        usleep(100);
+      }
+      std::string stuck;
+      double maxMs = 0;
+      for (int i = 0; i < np; i++) {
+        if (doneMs[i] < 0) stuck += (stuck.empty() ? "" : ",") + std::to_string(i);
+        else maxMs = std::max(maxMs, doneMs[i]);
+      }
+      kv("probe_n=%d probe_done_200ms=%d probe_stuck=%s probe_max_ms=%.3f hog_started_probe=%d probe_after_hog_ms=%.1f", np,
+         nDone, stuck.empty() ? "none" : stuck.c_str(), maxMs, started, p0 - tHog);
+    }
   }
   // wait for the kernel(s); if the host sees an async error the application gives up (exit 3), bounded
   int exitCode = 0;
@@ -1131,6 +1215,11 @@ int main(int argc, char** argv) {
     alarm(0);
     const double s1 = monoMs();
     kv("ho_shrink_rc=%s ho_shrink_ms=%.1f ho_newcomm=%d", ncclGetErrorString(sr), s1 - s0, nc != nullptr ? 1 : 0);
+    {  // gin-handoff: the parent keeps its error after the shrink
+      ncclResult_t pa = ncclSuccess;
+      (void)ncclCommGetAsyncError(g_comm, &pa);
+      kv("ho_parent_async_after=%s", ncclGetErrorString(pa));
+    }
     if (sr == ncclSuccess && nc != nullptr) {
       int nr = -1;
       (void)ncclCommCount(nc, &nr);
@@ -1414,6 +1503,13 @@ int main(int argc, char** argv) {
   if (mon.firstMs.load() >= 0 && exitCode == 0) { exitCode = 3; outcome = "async_error"; }
   recoveryStats(g_comm);  // gin-harden
   if (st3 != nullptr) kv("hog_running_at_end=%d", cudaStreamQuery(st3) == cudaErrorNotReady ? 1 : 0);
+  if (st3 != nullptr) {  // gin-handoff
+    double spread = -1.0;
+    const int started = hogStarted(&spread);
+    int pDone = 0;
+    for (auto& e : probeEv) pDone += cudaEventQuery(e) == cudaSuccess ? 1 : 0;
+    kv("hog_started_end=%d hog_start_spread_ms=%.1f probe_done_end=%d", started, spread, pDone);
+  }
   kv("async_first=%s async_first_ms_after_launch=%.1f async_err_samples=%ld async_samples=%ld final_async=%s",
      mon.firstMs.load() >= 0 ? ncclGetErrorString((ncclResult_t)mon.firstErr.load()) : "none",
      mon.firstMs.load() >= 0 ? mon.firstMs.load() - tLaunch : -1.0, mon.errSamples.load(), mon.samples.load(),
