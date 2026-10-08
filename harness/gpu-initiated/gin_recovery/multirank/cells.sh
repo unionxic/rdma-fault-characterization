@@ -3,7 +3,8 @@
 # ../../common/cluster_run.sh through chain.sh). Every trial is run_mr.sh: N processes of the unmodified gin_mr, rank r on
 # rain (r even) or sunny (r odd), libnccl of the recovery build <lib>, driver mr/<MRKEY>/gin_mr (MRKEY defaults to <lib>).
 # usage: cells.sh <logdir> <cell> <lib> <n> [start]
-# Timing values that the pilot may change once before the pre-registration tag (EXPERIMENT.md 3.4):
+# Timing values, kept unchanged after the pilot P0 (EXPERIMENT.md 3.4 and 12: hook 5.96-5.98 s and kill 7.98-8.03 s after
+# the common kernel launch, cycle round starts within 17.4 ms):
 #   F_MS (6000)      fault hook delay after the GDAKI context is created (NCCL_GIN_FAULT_INJECT=local_err:<F_MS>)
 #   KILL_MS (9000)   SIGKILL delay after the runner started the killed rank
 #   STALL (300)      NCCL_GIN_TS_TEST_STALL=<STALL>@quiesce in the cycle and chain cells
