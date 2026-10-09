@@ -1,0 +1,460 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index da31b3a..2760d43 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -2675,6 +2675,15 @@ NCCL_PARAM(GinTsQpWatchGraceMs, "GIN_TS_QPWATCH_GRACE_MS", 5);
+ NCCL_PARAM(GinTsQpWatchNoCqeMs, "GIN_TS_QPWATCH_NOCQE_MS", 50);
+ NCCL_PARAM(GinTsDegradedRounds, "GIN_TS_DEGRADED_ROUNDS", 0);
+ #define GDAKI_TS_SOCK_RETRIES 3  // gin-harden: retries of one fault after a socket loss inside its round
++// gpu-detect (hk; DESIGN_POLICY.md of gin-restore, 2 and 4.10): detection is common to both reactions, the reaction is a
++// per-communicator policy. NCCL_GIN_FAULT_POLICY=failfast (default: hw's reaction: decline, degraded, ...) or hold
++// (hold the waits and restore the dead rank; the restore layer). This build has no restore layer: the effective policy is
++// always fail-fast, and every policy hook (gdakiPolicy* below, G1-G9) returns what hw did. The hooks are the seams the
++// restore layer fills. NCCL_GIN_TS_DEGRADED_MS and NCCL_GIN_TS_DEGRADED_ROUNDS are fail-fast reaction parameters; the QP
++// watch parameters (NCCL_GIN_TS_QPWATCH_*) are detection parameters, the same under both policies.
++enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };
++static const char* gdakiPolicyName(int p) { return p == GDAKI_POLICY_HOLD ? "hold" : "failfast"; }
++static int gdakiPolicyEffOf(struct gdakiRecHost* r);  // below (needs gdakiTs)
+ 
+ // ---- gin-harden: the user devComm abort word of a communicator ----
+ // One host-pinned word per communicator (ncclCudaHostCalloc, read by the device through UVA), created for the first
+@@ -2722,6 +2731,10 @@ struct gdakiUa {
+   double degradedAtMs = 0;        // when word [0] goes up for the first peer judged dead (0: not scheduled)
+   int degradedPeer = -1;          // that peer
+   double deadMs = 0;              // when it was judged dead
++  // gpu-detect (hk, G1): the communicator's effective fault policy, the strictest of its helpers' (fail-fast if any is);
++  // fail-fast in this build. Read by nothing yet (the restore layer's seam).
++  int policy = GDAKI_POLICY_FAILFAST;
++  bool policySet = false;
+ };
+ static std::mutex gdakiUaMu;
+ static std::vector<struct gdakiUa> gdakiUaReg;
+@@ -2756,6 +2769,9 @@ uint32_t* ncclGinTsUserAbortWord(void* comm, int rank, int nRanks) {
+       gdakiTsGatedPeers(r, e->expected);
+       r->uaN.store(e->n, std::memory_order_relaxed);
+       r->uaBase.store((uintptr_t)e->word, std::memory_order_release);
++      const int pol = gdakiPolicyEffOf(r);  // gpu-detect (hk, G1)
++      e->policy = e->policySet ? std::min(e->policy, pol) : pol;
++      e->policySet = true;
+     }
+   }
+   return e->word;
+@@ -3032,6 +3048,12 @@ struct gdakiTsPeer {
+   struct gdakiTsMsg deferred;
+   uint32_t deferredGen = 0;   // the connection generation it came on (a REQ of an older connection is dropped)
+   double deferredMs = 0;
++  // gpu-detect (hk): this rank, as a responder, lost the socket to the peer after its Commit and before the round
++  // published (ACK not sent, or no DONE): set first thing on that path, before the decline (gdakiTsDeclineAfterCommit).
++  // Weak evidence for the policy hook gdakiPolicyOnDecline (never held). Cleared only when a connection to the peer is
++  // installed again (gdakiTsInstall, through which the restore layer's REJOIN installs; a declined peer is never re-dialed,
++  // so in this build a set flag stays).
++  bool lostAfterCommit = false;
+ };
+ 
+ // gin-peer: FAIL and NACK carry the sender's cause class in `pad` (1 + gdakiCause; 0 = none, an older peer). A peer that
+@@ -3167,6 +3189,12 @@ struct gdakiTs {
+   uint64_t detQueries = 0, detQueryFail = 0;
+   double detQueryUsSum = 0, detQueryUsMax = 0;
+   int detFound = 0, detOther = 0, detIdle = 0;
++  bool detReported = false;               // hk: the teardown watch line was written (once per context)
++  // gpu-detect (hk): the fault policy (G1; set in gdakiTsSetup, before the helper and the watcher run; never changed after)
++  int policyReq = GDAKI_POLICY_FAILFAST;  // NCCL_GIN_FAULT_POLICY on this rank
++  int policyAgreed = 1;                   // every rank of the setup all-gather asked the same
++  int policyEff = GDAKI_POLICY_FAILFAST;  // effective: always fail-fast in this build (no restore layer)
++  int exitAfterAck = 0, acksSeen = 0;     // NCCL_GIN_TS_TEST_EXIT_AFTER_ACK (research build; helper thread only)
+ };
+ 
+ static int64_t gdakiTsNowUs() {
+@@ -3189,6 +3217,49 @@ static bool gdakiTsToComm(struct gdakiTs* ts, F f) {
+   return true;
+ }
+ 
++// ---- gpu-detect (hk): the fault-policy hooks (gin-restore's DESIGN_POLICY.md 4.10, G1-G9) ----
++// Each hook sits where that design names it and returns what hw does. The effective policy of this build is always
++// fail-fast (gdakiTsSetup, G1), so every hook below is that value; the hold branches (the restore layer's per-peer state
++// OFF/ARMED/HELD/COMMITTING/PUBLISHED, read without a lock and changed by compare-and-swap only) are not in this build.
++static int gdakiPolicyEffOf(struct gdakiRecHost* r) {
++  return (r != nullptr && r->ts != nullptr) ? r->ts->policyEff : GDAKI_POLICY_FAILFAST;
++}
++// G2, first thing in gdakiTsDecline: true = the policy took this decline (a hold start, or the fallback of a held peer)
++// and the caller returns. Fail-fast: false, the decline runs as in hw. A decline after this rank's Commit sets
++// r->ts->peers[peer].lostAfterCommit first (weak evidence: the restore layer never holds on it).
++static bool gdakiPolicyOnDecline(struct gdakiRecHost* r, int peer, const char* why, gdakiCause cause, int uaWhy) {
++  (void)r; (void)peer; (void)why; (void)cause; (void)uaWhy;
++  return false;
++}
++// G3 (gdakiDetWatchStep's peer filter) and G5 (gdakiTsScan's lost-record check): false for a held peer whose QPs are in
++// ERR (HELD, COMMITTING). Fail-fast: true (watched, checked).
++static bool gdakiPolicyWatch(struct gdakiRecHost* r, int peer) {
++  (void)r; (void)peer;
++  return true;
++}
++// G4, the helper's fault-record loop: false = the record is absorbed (a held peer) or marks a fallback (a published peer);
++// the loop's own bookkeeping (ts->batch, heartbeat, nQueued) runs either way. Fail-fast: true (the round runs).
++static bool gdakiPolicyRoute(struct gdakiRecHost* r, const struct gdakiTsFault& f) {
++  (void)r; (void)f;
++  return true;
++}
++// G6: the epoch an epoch comparison takes as covered. The restore layer's empty rounds (a checkpoint's input pause) move
++// the gate's epoch without covering a fault; then the two differ. Fail-fast has no empty round: the gate's epoch.
++static uint32_t gdakiTsCoveredEpoch(const struct gdakiTsQp& s) { return s.epoch; }
++// G7: the responder MSN that the watch's QUERY_QP returns with the state (the same firmware command; the restore layer's
++// cumulative executed count). Fail-fast: nothing.
++static void gdakiPolicyObserveRmsn(struct gdakiRecHost* r, int qpIdx, uint32_t rmsn) {
++  (void)r; (void)qpIdx; (void)rmsn;
++}
++// G8, the Q4 watcher's watchdog step (next to gdakiUaDegradedStep): the restore deadline of a held peer. Fail-fast: no
++// held peer, nothing.
++static void gdakiPolicyWatchdogStep(struct gdakiRecHost* r) { (void)r; }
++// G9: the blame cause of a firmware overrun charged to `peer` (PeerDead for a held peer). Fail-fast: `cause` unchanged.
++static gdakiCause gdakiPolicyBlameCause(struct gdakiRecHost* r, int peer, gdakiCause cause) {
++  (void)r; (void)peer;
++  return cause;
++}
++
+ // Marks the helper busy for one round (watchdog input); clears it on every exit path. The heartbeat is
+ // refreshed first (release order: the watcher loads busySince with acquire, then the heartbeat), so the
+ // end of a long round is never mistaken for a helper that stopped looping.
+@@ -3358,7 +3429,7 @@ static uint32_t gdakiTsDecideScope(struct gdakiRecHost* r, const struct gdakiTsF
+   auto live = [&](const struct gdakiTsFault& o) {  // another context's record for this peer that is not stale
+     if ((int)o.rec.peer != peer || (int)o.rec.ctx_id == c) return false;
+     const int qi = peer + (int)o.rec.ctx_id * nranks;
+-    return qi < 0 || qi >= (int)ts->qs.size() || o.rec.ts_epoch >= ts->qs[qi].epoch;
++    return qi < 0 || qi >= (int)ts->qs.size() || o.rec.ts_epoch >= gdakiTsCoveredEpoch(ts->qs[qi]);  // hk: G6
+   };
+   bool queued = false;
+   if (ts->batch != nullptr)
+@@ -3488,6 +3559,7 @@ static void gdakiTsSurface(struct gdakiRecHost* r, const char* why) {
+ static void gdakiTsWatchdog(struct gdakiRecHost* r) {
+   if (!gdakiTsActive(r)) return;
+   gdakiUaDegradedStep();  // gin-remaining: a degraded communicator's word [0], when its time has come
++  gdakiPolicyWatchdogStep(r);  // gpu-detect (hk, G8): the restore deadline (fail-fast: nothing)
+   struct gdakiTs* ts = r->ts;
+   // gin-harden: a firmware-command phase of the helper longer than NCCL_GIN_TS_FW_MS. The command cannot be
+   // interrupted: release the device threads now (the user devComm's own word, a CPU store), surface the fault; the
+@@ -3527,7 +3599,8 @@ static void gdakiTsWatchdog(struct gdakiRecHost* r) {
+            r->ctx->rank, phase, ranMs, ts->fwMs, peer, (unsigned long)(rd - 1), gdakiQ4MonoMs());
+       struct gdakiQ4Host* q4 = r->ctx->q4;
+       (void)gdakiTsToComm(ts, [&] {
+-        gdakiBlameNote(q4->asyncResult, peer, gdakiCause::Local);  // before the flags below
++        // before the flags below; gpu-detect (hk, G9): the cause through the policy (fail-fast: Local, as hw)
++        gdakiBlameNote(q4->asyncResult, peer, gdakiPolicyBlameCause(r, peer, gdakiCause::Local));
+         gdakiUaRaisePeer(r->commKey, peer, GDAKI_UA_FW_WATCHDOG);   // peer -1: every word
+         if (q4->asyncResult) {
+           __atomic_store_n(q4->asyncResult, ncclRemoteError, __ATOMIC_RELEASE);
+@@ -3891,6 +3964,7 @@ static void gdakiTsInstall(struct gdakiRecHost* r, int p, int fd, uint32_t gen,
+   pe.gone = false;
+   pe.closeCause[0] = '\0';
+   pe.refusals = 0;  // gin-harden
++  pe.lostAfterCommit = false;  // gpu-detect (hk): a connection installed again (the restore layer's REJOIN installs here)
+   r->ts->cReconnects.fetch_add(1, std::memory_order_relaxed);
+   GIN_TS_NOTE("GIN/TS: rank %d: socket to rank %d reconnected gen=%u attempts=%d mono_ms=%.3f", r->ctx->rank, p, gen,
+               attempts, gdakiQ4MonoMs());
+@@ -4940,6 +5014,7 @@ static ncclResult_t gdakiTsRepostApply(struct gdakiRecHost* r, int peer, std::ve
+ // the peer for an aborting shrink and logged.
+ static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bool sendFail, int cls, gdakiCause cause,
+                            int uaWhy = GDAKI_UA_DECLINED) {
++  if (gdakiPolicyOnDecline(r, peer, why, cause, uaWhy)) return;  // gpu-detect (hk, G2): fail-fast never takes it
+   struct gdakiTs* ts = r->ts;
+   gdakiTsScope = GDAKI_TS_SCOPE_ALL;  // gin-pair-reset: a decline covers every context's QPs to the peer, as before
+   struct gdakiTsPeer& pe = ts->peers[peer];
+@@ -5197,6 +5272,46 @@ static void gdakiTsCancelResponder(struct gdakiRecHost* r, int peer, uint64_t ro
+   }
+ }
+ 
++// gpu-detect (hk): the responder lost the initiator's socket after its Commit, before the round published: the ACK could
++// not be sent (`sendFailed`, errno `sendErr`), or the socket ended while it waited for DONE (pe.closeCause, which
++// gdakiTsPump wrote from that receive). The Commit cannot be undone, so the round declines, as in hw. pe.lostAfterCommit is
++// set first, before any other step or return (the policy hook G2 reads it inside the decline; gin-restore's contract).
++// New (EXPERIMENT.md 9.1 (g)): a loss while waiting for DONE first gets the idle loop's liveness verdict (gdakiTsCauseLiveness
++// on the receive's cause), without that loop's side effects. Dead (a FIN without BYE, BADMAGIC, an errno outside the unknown
++// list): the peer is judged dead through gdakiTsSocketLost (the idle loop's two lines, the death count, the socket closed,
++// gone) and declined with cause PeerDead and GDAKI_UA_PEER_DEAD, so the communicator degrades NCCL_GIN_TS_DEGRADED_MS later
++// as after any death. hw declined with Unknown and DECLINED: no degraded raise, and with three or more ranks this rank's
++// waits that name no peer stayed held, while the other survivors judged the same death from their own sockets. Anything
++// else (unknown: a reset, a timeout; after the peer's BYE) is declined as in hw (gone, cause Unknown); the unknown verdict is
++// not handed to the reconnect machinery (a declined peer is never re-dialed).
++// A failed ACK send takes no death verdict: a send fails with an error only after the connection was reset or timed out
++// (unknown), or for this rank's own socket state, while a peer's FIN alone leaves the socket writable. The send's errno is
++// named into pe.closeCause (gdakiTsSend writes none; as hw does at its other send failures) and the receive side is not
++// peeked: the failed send consumed the socket error, so a peek would read a reset as a FIN (review of hk, finding 1).
++static void gdakiTsDeclineAfterCommit(struct gdakiRecHost* r, int peer, uint64_t round, const char* what, int cls,
++                                      bool sendFailed, int sendErr) {
++  struct gdakiTsPeer& pe = r->ts->peers[peer];
++  pe.lostAfterCommit = true;
++  bool dead = false;
++  if (sendFailed) {
++    const char* n = gdakiTsErrName(sendErr);
++    snprintf(pe.closeCause, sizeof(pe.closeCause), "%s", n ? n : "send failed");
++  } else if (!pe.left && pe.fd >= 0) {
++    dead = pe.closeCause[0] != '\0' && gdakiTsCauseLiveness(pe.closeCause) == GDAKI_TS_LV_DEAD;
++  }
++  if (!dead) {
++    pe.gone = true;
++    return gdakiTsDecline(r, peer, what, false, cls, gdakiCause::Unknown);
++  }
++  GIN_TS_NOTE("GIN/TS: rank %d: socket to rank %d lost after this rank's commit of round %lu (%s, cause=%s): judged as the "
++              "idle loop judges it mono_ms=%.3f", r->ctx->rank, peer, (unsigned long)round, what, pe.closeCause,
++              gdakiQ4MonoMs());
++  (void)gdakiTsSocketLost(r, peer);
++  char why[160];
++  snprintf(why, sizeof(why), "%s after this rank's commit: peer judged dead", what);
++  gdakiTsDecline(r, peer, why, false, cls, gdakiCause::PeerDead, GDAKI_UA_PEER_DEAD);
++}
++
+ // Responder part of a round once this rank's QPs to `peer` are quiesced and prepared: Commit with the
+ // initiator's token, take the baseline, ACK with this rank's token and executed counts, wait for DONE (the
+ // initiator reached RTR), then re-post from the initiator's counts. Used by a plain responder and (S2
+@@ -5286,10 +5401,10 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
+     // after this rank's Commit: the commit cannot be undone, so this round declines (the initiator's retry, if any,
+     // is answered NACK 2)
+     char w[80];
+-    const char* n = gdakiTsErrName(errno);
++    const int se = errno;  // gpu-detect (hk): kept for the cause (gdakiTsDeclineAfterCommit)
++    const char* n = gdakiTsErrName(se);
+     snprintf(w, sizeof(w), "cannot send ACK (%s)", n ? n : "send failed");
+-    pe.gone = true;
+-    return gdakiTsDecline(r, peer, w, false, req.arg, gdakiCause::Unknown);
++    return gdakiTsDeclineAfterCommit(r, peer, req.round, w, req.arg, true, se);  // gpu-detect (hk): flag, then as hw
+   }
+   // DONE: the initiator committed (its QPs are at RTR), so our own re-posted WQEs and new posts can go. The
+   // initiator may first wait for its own address (path wait). Bounded by what is left of the round.
+@@ -5298,8 +5413,7 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
+   if (got < 0) {
+     char w[96];
+     snprintf(w, sizeof(w), "peer closed the socket before DONE (%s)", pe.closeCause[0] ? pe.closeCause : "unknown");
+-    pe.gone = true;
+-    return gdakiTsDecline(r, peer, w, false, req.arg, gdakiCause::Unknown);
++    return gdakiTsDeclineAfterCommit(r, peer, req.round, w, req.arg, false, 0);  // gpu-detect (hk): judged first
+   }
+   if (got == 0) return gdakiTsDecline(r, peer, "DONE timeout", true, req.arg, gdakiCause::Unknown);
+   if (d.type == GDAKI_TS_BYE) {  // gin-harden
+@@ -5457,9 +5571,11 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+   if (pe.declined) return;
+   const int qpIdx = peer + (int)rec.ctx_id * nranks;
+   if (qpIdx < (int)ts->qs.size()) ts->qs[qpIdx].handled = std::max(ts->qs[qpIdx].handled, rec.ts_epoch + 2u);
+-  if (qpIdx < (int)ts->qs.size() && ts->qs[qpIdx].epoch > rec.ts_epoch) {  // an earlier round covered it
++  // an earlier round covered it (gpu-detect (hk, G6): the covered epoch, the gate's epoch under fail-fast)
++  if (qpIdx < (int)ts->qs.size() && gdakiTsCoveredEpoch(ts->qs[qpIdx]) > rec.ts_epoch) {
+     ts->nStale++;
+-    INFO(NCCL_NET, "GIN/TS: stale fault record (epoch %u < %u) ignored", rec.ts_epoch, ts->qs[qpIdx].epoch);
++    INFO(NCCL_NET, "GIN/TS: stale fault record (epoch %u < %u) ignored", rec.ts_epoch,
++         gdakiTsCoveredEpoch(ts->qs[qpIdx]));
+     return;
+   }
+   const double t0 = gdakiQ4MonoMs();
+@@ -5714,6 +5830,19 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+     GIN_TS_NOTE("GIN/TS: ignoring %s (round %lu) while waiting for ACK %lu", gdakiTsMsgName(a.type), (unsigned long)a.round,
+          (unsigned long)round);
+   }
++#ifndef NCCL_GIN_TS_PRODUCTION
++  // gpu-detect (hk) test switch NCCL_GIN_TS_TEST_EXIT_AFTER_ACK=<k>: the k-th ACK this context's initiator receives ends the process
++  // here, after the responder's Commit and before this rank's own Commit and DONE (the responder's window of EXPERIMENT.md
++  // 9.1 (g)). No BYE: the kernel closes the helper sockets with a FIN (the ACK was read; the responder sends nothing while it
++  // waits for DONE). Research build only.
++  if (ts->exitAfterAck > 0 && ++ts->acksSeen == ts->exitAfterAck) {
++    WARN("GIN/TS: TEST exit after ACK rank=%d peer=%d round=%lu: the process ends (_exit 73) before its commit and DONE, "
++         "without BYE mono_ms=%.3f", g->rank, peer, (unsigned long)round, gdakiQ4MonoMs());
++    fflush(stdout);
++    fflush(stderr);
++    _exit(73);
++  }
++#endif
+   tA = gdakiQ4MonoMs();
+   {
+     bool ab = false;
+@@ -5908,6 +6037,7 @@ static void gdakiTsScan(struct gdakiRecHost* r) {
+   for (int p = 0; p < (int)ts->peers.size(); p++) {
+     if (!ts->peers[p].gated || ts->peers[p].declined) continue;
+     const char* why = nullptr;
++    const bool lostCheck = gdakiPolicyWatch(r, p);  // gpu-detect (hk, G5): fail-fast checks every peer
+     gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+       if (why) return;
+       struct gdakiTsQp& s = ts->qs[rq.qpIdx];
+@@ -5920,7 +6050,7 @@ static void gdakiTsScan(struct gdakiRecHost* r) {
+         return;
+       if (ab >= s.epoch + 2u) why = "a device waiter gave up with no recovery running";
+       else if (gdakiTsWordDevFailed(w)) why = "a device thread failed the QP (second hold expired after the commit point)";
+-      else if (reported >= s.epoch + 2u && reported > s.handled) {
++      else if (lostCheck && reported >= s.epoch + 2u && reported > s.handled) {
+         if (++s.lostScans >= 2) why = "a fault record never reached the helper (mailbox overflow)";
+       } else s.lostScans = 0;
+     });
+@@ -6063,7 +6193,7 @@ static bool gdakiDetQueued(struct gdakiRecHost* r, int peer) {
+   for (const auto& f : ts->faults) {
+     if ((int)f.rec.peer != peer) continue;
+     const int qi = peer + (int)f.rec.ctx_id * r->nranks;
+-    if (qi < 0 || qi >= (int)ts->qs.size() || f.rec.ts_epoch >= ts->qs[qi].epoch) return true;
++    if (qi < 0 || qi >= (int)ts->qs.size() || f.rec.ts_epoch >= gdakiTsCoveredEpoch(ts->qs[qi])) return true;  // hk: G6
+   }
+   return false;
+ }
+@@ -6091,7 +6221,7 @@ static void gdakiDetWatchStep(struct gdakiRecHost* r) {
+   struct gdaki_context* g = r->ctx;
+   for (int p = 0; p < (int)ts->peers.size(); p++) {
+     struct gdakiTsPeer& pe = ts->peers[p];
+-    if (p == g->rank || !pe.gated || pe.declined) continue;
++    if (p == g->rank || !pe.gated || pe.declined || !gdakiPolicyWatch(r, p)) continue;  // hk: G3
+     struct Bad {
+       gdakiRecQp* rq;
+       struct doca_gpu_verbs_qp_hl* q;
+@@ -6106,9 +6236,10 @@ static void gdakiDetWatchStep(struct gdakiRecHost* r) {
+       // returns stalls the helper, which the heartbeat check sees once a record is queued (gdakiTsWatchdog).
+       std::lock_guard<std::mutex> op(r->opMu);
+       gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+-        uint32_t st = 0;
++        uint32_t st = 0, rmsn = 0;
+         const double t0 = gdakiQ4MonoMs();
+-        const bool ok = doca_verbs_qp_query_seq(q->qp, nullptr, nullptr, nullptr, &st) == DOCA_SUCCESS;
++        // hk (G7): the same QUERY_QP also returns the responder MSN (one firmware command, as before)
++        const bool ok = doca_verbs_qp_query_seq(q->qp, &rmsn, nullptr, nullptr, &st) == DOCA_SUCCESS;
+         const double us = (gdakiQ4MonoMs() - t0) * 1e3;
+         ts->detQueries++;
+         ts->detQueryUsSum += us;
+@@ -6117,6 +6248,7 @@ static void gdakiDetWatchStep(struct gdakiRecHost* r) {
+           ts->detQueryFail++;
+           return;
+         }
++        gdakiPolicyObserveRmsn(r, rq.qpIdx, rmsn);  // hk (G7): fail-fast does nothing with it
+         if (st == 0x3u) {  // RTS
+           ts->qs[rq.qpIdx].detErrMs = 0;
+           return;
+@@ -6136,7 +6268,7 @@ static void gdakiDetWatchStep(struct gdakiRecHost* r) {
+         continue;
+       }
+       if (s.detPushedEpoch == (int64_t)s.epoch) continue;  // queued once for this epoch already
+-      if (s.handled >= s.epoch + 2u) continue;              // a record of this epoch was taken: its handling decides
++      if (s.handled >= gdakiTsCoveredEpoch(s) + 2u) continue;  // a record of this epoch was taken (hk: G6)
+       if (s.detErrMs == 0 || s.detErrEpoch != s.epoch) {    // first sight: the grace starts
+         s.detErrMs = now;
+         s.detErrEpoch = s.epoch;
+@@ -6402,7 +6534,7 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+       if (ts->dead.load(std::memory_order_acquire) || ts->stop.load(std::memory_order_acquire)) break;
+       ts->batch = &fs;  // gin-pair-reset: the scope decision looks at the faults still to be handled
+       ts->batchPos = k;
+-      gdakiTsInitiate(r, f);
++      if (gdakiPolicyRoute(r, f)) gdakiTsInitiate(r, f);  // gpu-detect (hk, G4): fail-fast always routes
+       ts->batch = nullptr;
+       ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);  // before the count drops (watchdog)
+       ts->nQueued.fetch_sub(1, std::memory_order_acq_rel);
+@@ -6460,6 +6592,8 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+     int32_t rank;
+     union ncclSocketAddress a;
+     uint64_t salt;  // gin-harden
++    uint32_t policy;     // gpu-detect (hk, G1): NCCL_GIN_FAULT_POLICY of this rank (GDAKI_POLICY_*). The record grows:
++    uint32_t policyPad;  //   every rank of a job must run the same library (this all-gather always assumed it)
+   };
+   std::vector<struct gdakiTsAddr> all(nranks);
+   struct gdakiTsAddr mine;
+@@ -6468,6 +6602,16 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+     std::random_device rd;
+     mine.salt = ((uint64_t)rd() << 32) ^ (uint64_t)rd() ^ (uint64_t)clockNano() ^ ((uint64_t)rank << 48);
+   }
++  // gpu-detect (hk, G1): this rank's fault policy (default failfast); every rank compares the record's values after the
++  // all-gather. A rank that differs makes the context fail-fast. hold needs the restore layer: fail-fast in this build.
++  const char* polEnv = getenv("NCCL_GIN_FAULT_POLICY");
++  int polReq = GDAKI_POLICY_FAILFAST, polOther = -1;
++  bool polBad = false;
++  if (polEnv && *polEnv) {
++    if (strcmp(polEnv, "hold") == 0) polReq = GDAKI_POLICY_HOLD;
++    else if (strcmp(polEnv, "failfast") != 0) polBad = true;
++  }
++  mine.policy = (uint32_t)polReq;
+   int ls = -1;
+   int boundPort = 0;
+   if (why == nullptr) {
+@@ -6537,6 +6681,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+     for (size_t i = 0; i < ts->qs.size(); i++) ts->qs[i].rmsn0 = rmsn0[i];
+     for (int p = rankOff; p < nranks && why == nullptr; p += g->rankStride)
+       if (p != rank && all[p].magic != GDAKI_TS_MAGIC) why = "a peer has transparent recovery off";
++    // gpu-detect (hk, G1): the policy every rank of this helper asked for; the effective one is fail-fast in this build
++    for (int p = rankOff; p < nranks && why == nullptr && polOther < 0; p += g->rankStride)
++      if (p != rank && all[p].policy != mine.policy) polOther = p;
++    ts->policyReq = polReq;
++    ts->policyAgreed = polOther < 0 ? 1 : 0;
++    ts->policyEff = GDAKI_POLICY_FAILFAST;  // no restore layer: fail-fast whatever was asked
+   }
+   // connect to higher ranks (completes through the peer's backlog), then accept the lower ranks
+   for (int p = rankOff; p < nranks && why == nullptr; p += g->rankStride) {
+@@ -6622,6 +6772,14 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+       ts->gidType[0] = '\0';
+     }
+   }
++  // gpu-detect (hk, G1): one WARN when the policy asked for cannot be had (transparent recovery is on for this context)
++  if (polBad) WARN("GIN/TS: rank %d: NCCL_GIN_FAULT_POLICY=%s is neither failfast nor hold; fail-fast", rank, polEnv);
++  if (!ts->policyAgreed)
++    WARN("GIN/TS: rank %d: NCCL_GIN_FAULT_POLICY differs across ranks (this rank %s, rank %d %s); fail-fast", rank,
++         gdakiPolicyName(polReq), polOther, gdakiPolicyName((int)all[polOther].policy));
++  else if (polReq == GDAKI_POLICY_HOLD)
++    WARN("GIN/TS: rank %d: NCCL_GIN_FAULT_POLICY=hold requested, not available in this build (no restore layer); "
++         "fail-fast", rank);
+   r->ts = ts;
+   return ncclSuccess;
+ }
+@@ -6664,6 +6822,12 @@ static void gdakiTsTestKnobs(struct gdakiRecHost* r) {
+   }
+   e = getenv("NCCL_GIN_TS_TEST_DIE");
+   if (e && *e) ts->dieStage = 1;
++  e = getenv("NCCL_GIN_TS_TEST_EXIT_AFTER_ACK");  // gpu-detect (hk): see gdakiTsInitiate
++  if (e && *e && atoi(e) > 0) {
++    ts->exitAfterAck = atoi(e);
++    WARN("GIN/TS: TEST exit-after-ACK knob rank=%d ack=%d (the process ends with code 73 after that ACK)", r->ctx->rank,
++         ts->exitAfterAck);
++  }
+   e = getenv("NCCL_GIN_TS_TEST_SPLIT");
+   if (e && *e) {
+     if (cudaHostAlloc((void**)&ts->test, sizeof(struct ncclGinTsTest), cudaHostAllocMapped) != cudaSuccess ||
+@@ -7207,6 +7371,10 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+   // (L-C), the degraded publish rule (M-C)
+   GIN_TS_NOTE("GIN/TS: detect=1 rank=%d qpwatch_ms=%d grace_ms=%d nocqe_ms=%d nest_once=1 selftest=nic degraded_rounds=%d",
+               g->rank, ts->detWatchMs, ts->detGraceMs, ts->detNoCqeMs, ncclParamGinTsDegradedRounds() != 0 ? 1 : 0);
++  // gpu-detect (hk): the fault policy (hooks G1-G9; no restore layer in this build) and the responder's verdict on a
++  // socket lost after its commit (EXPERIMENT.md 9.1 (f), (g))
++  GIN_TS_NOTE("GIN/TS: fault policy rank=%d requested=%s agreed=%d effective=%s restore_layer=0 after_commit_verdict=1",
++              g->rank, gdakiPolicyName(ts->policyReq), ts->policyAgreed, gdakiPolicyName(ts->policyEff));
+ }
+ 
+ // Called by ncclCommAbort as soon as the abort flags are set (before the teardown, whose cudaFree calls
+@@ -7271,6 +7439,19 @@ static bool gdakiTsJoinBounded(struct gdakiRecHost* r, struct gdakiTs* ts) {
+   return true;
+ }
+ 
++// gpu-detect: the QP-state watch of a context at its end (written by the helper only: called once the helper has
++// stopped). hk: once per context, from the communicator teardown for a context still registered, else from gdakiTsFree
++// (an application that destroys its devComm before the communicator, as NCCL's GIN example: pilot 1 had no such line).
++static void gdakiDetTeardownLine(struct gdakiTs* ts, int rank) {
++  if (ts->detReported) return;
++  ts->detReported = true;
++  GIN_TS_NOTE("GIN/TS: rank %d QP watch at teardown: qpwatch_ms=%d queries=%lu query_fail=%lu query_us_mean=%.1f "
++              "query_us_max=%.1f detections=%d other_states=%d idle_err=%d", rank, ts->detWatchMs,
++              (unsigned long)ts->detQueries, (unsigned long)ts->detQueryFail,
++              ts->detQueries ? ts->detQueryUsSum / (double)ts->detQueries : 0.0, ts->detQueryUsMax, ts->detFound,
++              ts->detOther, ts->detIdle);
++}
++
+ extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
+   std::vector<struct gdakiRecHost*> rs;
+   int orphansOnColl = 0;
+@@ -7389,12 +7570,7 @@ extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
+                 ts->cServed.load(), ts->cDeferred.load(), lbs ? (unsigned long)lbs->nFallbacks.load() : 0ul,
+                 (lbs && !lbs->ok) ? " why=" : "", (lbs && !lbs->ok) ? lbs->why : "");
+     // gpu-detect: the QP-state watch of this context (written by the helper only: read after the join)
+-    if (joined)
+-      GIN_TS_NOTE("GIN/TS: rank %d QP watch at teardown: qpwatch_ms=%d queries=%lu query_fail=%lu query_us_mean=%.1f "
+-                  "query_us_max=%.1f detections=%d other_states=%d idle_err=%d", rank, ts->detWatchMs,
+-                  (unsigned long)ts->detQueries, (unsigned long)ts->detQueryFail,
+-                  ts->detQueries ? ts->detQueryUsSum / (double)ts->detQueries : 0.0, ts->detQueryUsMax, ts->detFound,
+-                  ts->detOther, ts->detIdle);
++    if (joined) gdakiDetTeardownLine(ts, rank);
+   }
+   return orphansOnColl;
+ }
+@@ -7438,6 +7614,8 @@ static bool gdakiTsFree(struct gdakiRecHost* r) {
+       return true;
+     }
+   }
++  // hk: the helper has stopped here (joined, or detached and exited); a context whose helper ran gets its watch line
++  if (ts->active.load(std::memory_order_acquire)) gdakiDetTeardownLine(ts, r->ctx->rank);
+   INFO(NCCL_NET, "GIN/TS: closed rank=%d rounds=%d recovered=%d declined=%d stale=%d", r->ctx->rank, ts->nRounds,
+        ts->nRecovered, ts->nDeclined, ts->nStale);
+   gdakiLbDestroy(r);  // gin-remaining: before the memory it registered goes (the staging buffer goes in gdakiRecFree)
