@@ -10,7 +10,7 @@
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-restore` @ `02a640aa` (master) |
 | 사전 등록 태그 | 없음. 라이브러리 계층(9.9절)과 pilot 뒤 `prereg/gin-restore-v1` 예정 |
-| 마지막 갱신 | 2026-10-09, 초안: 설계(9.1–9.8절), 필요한 hook(9.9절). 사용자 결정으로 감지와 반응을 나눈 정책 설계와 통합 상호작용 표, 막는 문제를 [DESIGN_POLICY.md](DESIGN_POLICY.md)로 옮김. 충돌이 남은 동안 구현 없음(시제품 멈춤, 9.13절). 사용자 결정(2026-10-09): B4는 (나), B1–B3은 실행 가능성 시험(9.15절, 채점 안 함). 복원 계층은 여전히 구현하지 않음 |
+| 마지막 갱신 | 2026-10-09, 초안: 설계(9.1–9.8절), 필요한 hook(9.9절). 사용자 결정으로 감지와 반응을 나눈 정책 설계와 통합 상호작용 표, 막는 문제를 [DESIGN_POLICY.md](DESIGN_POLICY.md)로 옮김. 충돌이 남은 동안 구현 없음(시제품 멈춤, 9.13절). 사용자 결정(2026-10-09): B4는 (나)(검토 3과 재확인: 풀리지 않은 충돌 없음), B1–B3은 실행 가능성 시험(9.15절, 채점 안 함; 설계와 코드의 독립 검토 반영, 빌드됨, 실행 전). 복원 계층은 여전히 구현하지 않음 |
 
 **설계의 기준 문서.** 장애 반응 정책(fail-fast와 hold-for-restore), 기존 장치와의 통합 상호작용 표, gpu-detect 계층에 넣을 변경, 막는 문제는
 [DESIGN_POLICY.md](DESIGN_POLICY.md)에 있다. 이 문서의 9.9–9.11절은 그것을 가리키기만 한다. 사용자 결정(2026-10-09): 충돌이 남아 있는 동안 아무것도
@@ -688,7 +688,8 @@ connect 수(루프백도 그 노드 자신의 주소도 아닌 AF_INET, AF_INET6
 - `b1_rep0`: rain에서 rank 0의 기록으로 같은 것(bootstrap root였던 rank).
 - `b1_neg`(음성 대조, T1-8): rank 1의 기록을 반으로 자른 사본과, 항목 하나의 크기 칸을 바꾼 사본으로 재생 두 번. 둘 다 재생이 실패해야 한다.
 - 위 넷을 2회. 그다음 선택으로 `b1_live`(위가 통과했을 때만, 같은 hold 안): 2-rank 실행이 교환 뒤 30 s 쉬는 동안 sunny에서 rank 1의 기록을 재생. 살아 있는
-  rank의 로그와 복구 통계에 변화(라운드, 거절, 재연결, 모르는 연결)가 없어야 한다.
+  rank의 로그와 복구 통계에 변화(라운드, 거절, 재연결, 모르는 연결)가 없어야 한다. 여기서는 예비 프로세스와 살아 있는 rank 1이 같은 노드라 상대로의 connect가
+  "자기 주소"로 셀 수 있으므로, 자기 주소 connect 수가 순차 재생(`b1_rep1`)의 수를 넘으면 3번 실패로 본다(코드 재검토 N5, 실행 전).
 
 **판정(실행 전 고정).** 재생 실행 하나가 통과하려면 다음이 모두 참이다.
 1. 예비 프로세스가 `ncclCommInitRankConfig`, window 등록 둘, `ncclDevCommCreate`를 ncclSuccess로 끝내고, `ncclCommAbort`가 ncclSuccess를 10 s 안에 돌려주고,
@@ -714,7 +715,7 @@ RAS 꺼짐)에서 된다고 본다. 남는 부분(REJOIN, 복원 라운드의 �
 
 빌드(rain, 컴파일만; 이 에이전트가 함): `bash feas/build_feas.sh b1-lib`, `app`, `b3`, `info`. 결과물과 md5는 `agent_restore/out/build_info.txt`와 12절에 있다:
 `rsx` libnccl `cc8ed9dd6ba3418c72aa0102cc3c251e`(hw 트리 `c7d7f7f` + [feas/rs_spike.diff](feas/rs_spike.diff) md5 `0ee31358`), `rs_spike`
-`13ba26330c2fd698b01b9b63c3ea4640`, `rs_drain_test` `7e2e4fde5941ad54e673b77f91ee190e`. 장치 헤더는 hw와 같다(include digest `a27dac89`). 모두 빌드만 됐고
+`40d43ed2c8ca4d19202084b7457da4c7`, `rs_drain_test` `7e2e4fde5941ad54e673b77f91ee190e`. 장치 헤더는 hw와 같다(include digest `a27dac89`). 모두 빌드만 됐고
 어느 것도 실행하지 않았다.
 배포와 실행은 메인 세션이 한다. 아래에서 `F`는 `feas/`의 절대 경로, `R`은 결과 폴더(`results/<실행 날짜>_feasibility`), `SUNNY_SSH`는 관리망 설정
 파일에서 읽은 `user@sunny 관리 주소`다(저장소에 적지 않음).
@@ -727,7 +728,7 @@ SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b
 export SUNNY_SSH=...        # 관리망 설정 파일에서
 # 배포(새 디렉터리만; 대상이 있으면 스크립트가 거절): 약 1분
 ls -d ~/rs-bundle; ssh -n "$SUNNY_SSH" 'ls -d ~/rs-bundle'          # 둘 다 "No such file"이어야 함
-WANT_RSX=cc8ed9dd6ba3418c72aa0102cc3c251e WANT_APP=13ba26330c2fd698b01b9b63c3ea4640 WANT_B3=7e2e4fde5941ad54e673b77f91ee190e \
+WANT_RSX=cc8ed9dd6ba3418c72aa0102cc3c251e WANT_APP=40d43ed2c8ca4d19202084b7457da4c7 WANT_B3=7e2e4fde5941ad54e673b77f91ee190e \
   bash $F/deploy_feas.sh $SCR/agent_restore/deploy_check.txt
 grep -E "MISMATCH|CHANGED|not found|missing" $SCR/agent_restore/deploy_check.txt   # 아무 줄도 없어야 함(strace missing이면 B1 3번은 [미확인])
 # hold마다(앞의 hold에 STOP 파일이 없을 때만)
@@ -741,10 +742,10 @@ hold의 차례와 예상 시간(잠금과 한가한 링크를 기다리는 30 s 
 
 | 차례 | hold | 무엇 | 예상 | 끝난 뒤 볼 것 |
 |---|---|---|---|---|
-| 1 | `S3` | B3 smoke(노드 사이, rain 응답, ro, 208반복) | 1–2분 | `$R/b3_smoke/b3_x_rain_ro_resp.kv`에 `setup_error`, `nic_error`가 없고 `result=` 줄이 있음(smoke라 PASS가 아니어도 됨), writer `result=WRITER_DONE`, `path_mtu`, `query_p50_us`/`query_max_us`, `query_qp_total`(208반복에 1 000 아래가 좋음), `edge_fraction` ≥ 0.5, `early_iters_stale` ≥ 1, `boundary_iters_stale_last` ≥ 1, 새 mlx5 줄 0, STOP 파일 없음. `edge_fraction` < 0.5면 `RS_LAST_KB=4096`으로 S3을 다시 하고 그 값을 12절에 적은 뒤 B3r, B3s에도 같은 env를 준다 |
+| 1 | `S3` | B3 smoke(노드 사이, rain 응답, ro, 208반복) | 1–2분 | `$R/b3_smoke/b3_x_rain_ro_resp.kv`에 `setup_error`, `nic_error`가 없고 `result=` 줄이 있음(smoke라 PASS가 아니어도 됨), writer `result=WRITER_DONE`, `path_mtu`, `query_p50_us`/`query_max_us`, `query_qp_total`(208반복에 1 000 아래가 좋음), `edge_fraction` ≥ 0.5, `early_iters_stale` ≥ 1, `boundary_iters_stale_last` ≥ 1, 새 mlx5 줄 0, STOP 파일 없음. `edge_fraction` < 0.5면 `RS_LAST_KB=4096`으로 S3을 다시 하고, 그 값과 바뀐 셀당 전송량(window 약 5 MiB, 셀당 약 20 GB)을 12절에 적은 뒤 B3r, B3s에도 같은 env를 준다(9.15.1의 2 MiB, 8 GB에서 바뀜) |
 | 1b | `S3s` | 같은 smoke(sunny 응답) | 1–2분 | 같은 것(`b3_x_sunny_ro`) |
 | 2 | `B2` | 4 rank 번갈아 2회 | 1–2분 | `summ_feas.py`의 B2 줄: 네 rank `lsaSize=1`, `nLsaTeams=4`, `nvls=0`, `runtimeConn=1`, `xchg=ok` |
-| 3 | `B1` | 기록 + 재생 둘 + 음성 대조 둘, 2회 | 2–4분 | B1 줄: `rep1`, `rep0` PASS, `neg_cut`, `neg_field` "replay failed as required", `meta`의 `strace_sunny=1`(0이면 그 항목 `[미확인]`) |
+| 3 | `B1` | 기록 + 재생 둘 + 음성 대조 둘, 2회 | 2–4분 | B1 줄: `rep1`, `rep0` PASS, `neg_cut`, `neg_field` "replay failed as required", `meta`의 `strace_sunny`가 2(`--seccomp-bpf`) 또는 1(0이면 3번 항목 `[미확인]`), 재생의 `init_ms`가 기록과 크게 다르지 않음 |
 | 4 | `B3r` | B3 셀 여섯(rain 응답; S3, S3s가 위 조건을 채웠을 때만) | 3–6분 | B3 표의 rain 셀: `result`, `valid`, fence 실패 0, `query_max_us` < 50 000, rain QUERY_QP 수의 증가(`snap_*-B3r.txt`), `skipped.txt`, `STOP_nic` 없음 |
 | 5 | `B3s` | B3 셀 여섯(sunny 응답) | 3–6분 | 같은 것(sunny 셀) |
 | 6(선택) | `B2c` | 4 rank 연달아 1회(대조) | 1분 | `lsaSize=2`가 보이면 읽기가 2 이상도 보여 줌. 실패하면 사실만 적음 |
@@ -807,7 +808,8 @@ hold의 차례와 예상 시간(잠금과 한가한 링크를 기다리는 30 s 
 | 2026-10-09 | B1–B3 시험 설계의 독립 검토(읽기 전용 에이전트 둘). B3 "고치면 답함": 꼬리의 신호 원자 연산이 그 자체로 drain을 보장해 시험을 무력하게 함(T3-1, 높음), READ 대상이 설계와 다름(T3-2, 높음), RO가 실제로 켜졌는지의 증거, 경계 대조와 경계 덮기, `cuFlushGPUDirectRDMAWrites` 길, cuMem과 GPU 원본, 경합, QUERY_QP 간격과 상한, 노드별 통계(T3-3–T3-12). B1 "고치면 답함": host RMA proxy가 hook 밖에서 상대마다 IB 연결을 맺음(T1-1, 높음), hook의 셈으로는 hook 밖 연결을 못 봄 → strace(T1-2), 자리별 가면 비교, 판정 항목 추가, 음성 대조, 주소 처리(T1-3–T1-11). B2 "답함", lsaSize 1이어도 남는 매핑 길을 무장 조건으로(T2-3). 모두 9.15절, 9.4절 3단계, 9.7절 6번, DESIGN_POLICY.md 2.3절, A3, D3에 반영하고 판정 기준을 실행 전에 다시 고정함. B3 프로그램은 검토가 도는 동안 초안을 쓰기 시작했고, 반영 뒤에만 빌드함 | 9.15절 |
 | 2026-10-09 | 시험 코드를 씀([feas/](feas/)): B3 `rs_drain_test.cu`, B1 hook `rs_spike.diff`(hw 트리의 복사 `agent_restore/b1/`, 파일 8개), B1과 B2 application `rs_spike.cu`, 실행기(`hold_feas.sh`, `run_b3.sh`, `run_spike.sh`), 빌드와 배포(`build_feas.sh`, `deploy_feas.sh`), 판정 스크립트(`summ_feas.py`). B2는 hw 복사본 대신 `rsx`에 보고 줄만 켜서 하기로 바꿈(같은 코드에 hook이 닿지 않음; 배포할 라이브러리를 하나로) | 커밋 `bc6e47d5`와 이 커밋 |
 | 2026-10-09 | 실행 전 독립 코드 검토(읽기 전용 에이전트): B2 "실행 가능", B1 "먼저 고칠 것 C8, C9", B3 "먼저 고칠 것 C1, C2, C3, C6". 고친 것: early 반복 셈(C1), 경로 MTU 교환(C2), 도달 시간을 M을 본 질의의 시작으로(C3), 반복당 QUERY_QP 200(C4), 결과 차례(C5), 셀마다 STOP 검사와 hold 시간 보호(C6, C7), strace `--seccomp-bpf`(C8), strace 해석의 PID 접두와 양성 대조와 루프백 판별(C9), 자기 주소 connect 따로(C10), umask 077(C11), 끊긴 hold의 자기 파일 지움(C12), devComm 내부 window 보고(C13), 비교 칸의 명세(C15), sunny 응답 smoke(C17). 스스로 찾은 것: GDAKI dump의 자기 lkey를 비교에서 가림, 보내는 쪽 SGE 주소를 iova 0 MR에 맞춤. 남긴 것: C14(무해), C16(재생에서 RESET QP의 QUERY_QP가 거절되면 투명 복구가 꺼진다는 WARN으로 드러남, `[미확인]`) | 9.15절 |
-| 2026-10-09 | 빌드됨(rain, nice 19, ionice idle; 실행 안 함): `rsx` libnccl `cc8ed9dd6ba3418c72aa0102cc3c251e`(diff md5 `0ee313583f7e5d2d0e305d3ec1e4d28d`, 장치 헤더는 hw와 같음), `rs_spike` `13ba26330c2fd698b01b9b63c3ea4640`, `rs_drain_test` `7e2e4fde5941ad54e673b77f91ee190e`. 배포와 실행은 9.15.5절의 명령으로 메인 세션이 함 | `agent_restore/out/build_info.txt` |
+| 2026-10-09 | 빌드됨(rain, nice 19, ionice idle; 실행 안 함): `rsx` libnccl `cc8ed9dd6ba3418c72aa0102cc3c251e`(diff md5 `0ee313583f7e5d2d0e305d3ec1e4d28d`, 장치 헤더는 hw와 같음), `rs_spike` `40d43ed2c8ca4d19202084b7457da4c7`, `rs_drain_test` `7e2e4fde5941ad54e673b77f91ee190e`. 배포와 실행은 9.15.5절의 명령으로 메인 세션이 함 | `agent_restore/out/build_info.txt` |
+| 2026-10-09 | 코드 재검토(같은 에이전트, 커밋 `269c2d78` 대상): C1–C13, C15, C17 풀림. 새로 고친 것: 자기 rank의 peer 줄(gated=0)을 5번 검사에서 뺌(N1, 높음), B3 셀 다시 하기를 `b3_rerun<k>/`에 두고 판정은 마지막 것(N2), application의 stdout 줄 버퍼(N3: `_exit` 때 NCCL WARN 줄을 잃지 않게), 음성 대조는 init, reg, devcomm 가운데 하나라도 실패하면 실패로 봄(N4), live 셀의 자기 주소 connect 상한(N5), strace가 없는 노드는 3번 `[미확인]`(N6), B3 결론의 갈래 차례(N7), 기록 끝 표시는 위치만 비교(N8), B2 시행 둘을 묶은 판정(N9). dump 비교는 끼어든 로그 줄을 건너뜀. 판정 스크립트를 합성 파일로 시험함(B1 통과와 음성 대조, B2 해결 A, B3의 네 갈래). `rs_spike` 다시 빌드됨 `40d43ed2c8ca4d19202084b7457da4c7`(나머지 md5는 같음) | 이 커밋 |
 
 ## 13. 사전 등록 이후 변경
 

@@ -41,23 +41,24 @@ def warn_lines(path, prefix="GIN/RS: "):
 
 
 def dump_lines(path):
-    """ncclDevCommDump output (stdout): the lines from '**** Dev Comm Dump' until the next log line, pointers and own
-    lkeys masked."""
+    """ncclDevCommDump output (stdout): from '**** Dev Comm Dump' to its last line (' GIN World Barrier signal0'), log
+    lines of other threads that land in between are skipped; pointers and this process's own lkeys masked (they differ
+    between processes by nature)."""
     out, on = [], False
     if not os.path.exists(path):
         return out
     for line in open(path, errors="replace"):
+        line = line.rstrip("\n")
         if line.startswith("**** Dev Comm Dump"):
             on = True
             out.append("**** Dev Comm Dump PTR ****")
             continue
-        if on:
-            if line.startswith("[") or "NCCL WARN" in line or "NCCL INFO" in line:
-                on = False
-                continue
-            # pointers and this process's own local keys (lkey %x of the GDAKI dump) differ between processes by nature
-            l2 = re.sub(r"0x[0-9a-fA-F]+|\(nil\)", "PTR", line.rstrip("\n"))
-            out.append(re.sub(r"lkey [0-9a-fA-F]+", "lkey LKEY", l2))
+        if not on or "NCCL " in line or line.startswith("["):
+            continue
+        l2 = re.sub(r"0x[0-9a-fA-F]+|\(nil\)", "PTR", line)
+        out.append(re.sub(r"lkey [0-9a-fA-F]+", "lkey LKEY", l2))
+        if line.startswith(" GIN World Barrier signal0"):
+            on = False
     return out
 
 
@@ -70,17 +71,27 @@ def num(d, k, default=-1):
 
 # ---------------------------------------------------------------- B3
 def b3():
-    files = sorted(glob.glob(os.path.join(R, "b3", "*_resp.kv")))
+    dirs = [os.path.join(R, "b3")] + sorted(glob.glob(os.path.join(R, "b3_rerun*")),
+                                            key=lambda d: int(re.sub(r"\D", "", os.path.basename(d)) or 0))
+    latest, history = {}, {}
+    for d in dirs:
+        for f in sorted(glob.glob(os.path.join(d, "*_resp.kv"))):
+            cell = os.path.basename(f)[:-len("_resp.kv")]
+            if cell in latest:
+                history.setdefault(cell, []).append("%s:%s" % (os.path.basename(os.path.dirname(latest[cell])),
+                                                                kv(latest[cell]).get("result", "none")))
+            latest[cell] = f
+    files = [latest[c] for c in sorted(latest)]
     if not files:
         return
-    say("== B3 (9.15.3): per cell")
+    say("== B3 (9.15.3): per cell (the latest run; earlier runs of a cell are listed after the table)")
     say("cell | result | valid | fence W/AW bad of n | early stale | boundary stale-last | edge | nofence bad | fsame bad | "
         "cuflush bad | WA bad | probe stale | query p50/p99/max us | gdr_order | flush_opt | ro_cap")
     cells = {}
     for f in files:
         cell = os.path.basename(f)[:-len("_resp.kv")]
         d = kv(f)
-        meta = kv(os.path.join(R, "b3", cell + "_meta.txt"))
+        meta = kv(os.path.join(os.path.dirname(f), cell + "_meta.txt"))
         fw = int(num(d, "fence_W_iters_bad", 0)) + int(num(d, "fence_AW_iters_bad", 0))
         fn = int(num(d, "fence_W_n", 0)) + int(num(d, "fence_AW_n", 0))
         cells[cell] = d
@@ -92,6 +103,8 @@ def b3():
             d.get("fence_WA_iters_bad", "?"), d.get("probe_W_iters_stale_before", "?"), d.get("query_p50_us", "?"),
             d.get("query_p99_us", "?"), d.get("query_max_us", "?"), d.get("gdr_writes_ordering", "?"),
             d.get("gdr_flush_options", "?"), d.get("hca_ro_write_cap", "?")))
+    for c in sorted(history):
+        say("earlier runs of %s: %s" % (c, ", ".join(history[c])))
     say()
     say("== B3: per responder node and ordering (every cell x, s, h valid and passing; pooled fence n)")
     verdict = {}
@@ -118,10 +131,11 @@ def b3():
         concl = "B3: READ-fence drain check holds on this platform as configured for ro and so (strict condition: user decision)"
     elif all(v[(n, "ro")] == "fail" and v[(n, "so")] == "pass" for n in nodes):
         concl = "B3 resolved by the arming condition 'windows registered strict' (ro fails, so passes)"
-    elif any(v[(n, "so")] == "fail" for n in nodes) and not any(v[(n, "so")] == "pass" and v[(n, "ro")] == "fail" for n in nodes):
-        concl = "B3 open: strict also fails (look at the cuflush path)"
-    else:
+    elif any(v[(n, "ro")] == "pass" and v[(n, "so")] == "fail" for n in nodes) or \
+            len(set((v[(n, "ro")], v[(n, "so")]) for n in nodes)) > 1:
         concl = "B3 open: unstable or node-dependent result"
+    else:
+        concl = "B3 open: strict also fails (look at the cuflush path)"
     say("B3 conclusion: " + concl)
     say()
 
@@ -132,6 +146,7 @@ def b2():
     if not files:
         return
     say("== B2 (9.15.2)")
+    trials = {}
     for mf in files:
         stem = os.path.basename(mf)[:-len("_meta.txt")]
         rows, okA = [], True
@@ -145,8 +160,17 @@ def b2():
                     c.get("runtimeConn") == "1" and d.get("xchg") == "ok")
         say("%s: %s" % (stem, " ; ".join("r%d lsaSize=%s lsaRank=%s nLsaTeams=%s nvls=%s runtimeConn=%s rma=%s xchg=%s exit=%s" % x
                                           for x in rows)))
-        if stem.startswith("b2_inter"):
-            say("  -> %s" % ("resolution A holds for this trial" if okA else "not A (see the values)"))
+        anyB = any(x[1] not in (None, "1") and str(x[1]).isdigit() and int(x[1]) >= 2 for x in rows)
+        cls = "A" if okA else "B" if anyB else "open"
+        trials.setdefault(stem.rsplit("_t", 1)[0], []).append(cls)
+        say("  -> trial class %s" % cls)
+    for cellname, cl in sorted(trials.items()):
+        if cellname == "b2_inter":
+            res = ("resolution A (both trials)" if cl.count("A") >= 2 and len(cl) == cl.count("A") else
+                   "resolution B (an LSA team of 2 or more)" if "B" in cl else "open")
+            say("B2 conclusion (%s, %d trials): %s" % (cellname, len(cl), res))
+        else:
+            say("%s (control): %s" % (cellname, ", ".join(cl)))
     say()
 
 
@@ -155,9 +179,12 @@ def kv_from_line(line):
 
 
 # ---------------------------------------------------------------- B1
-def b1_compare(rec_kv, rec_log, rep_kv, rep_log, strace_file, rep_rc):
-    """the five pass items of 9.15.4 for one replay against its recorded rank; returns (pass, list of failures)"""
-    fails = []
+def b1_compare(rec_kv, rec_log, rep_kv, rep_log, strace_file, rep_rc, strace_avail, self_max=None):
+    """the five pass items of 9.15.4 for one replay against its recorded rank; returns (pass, failures, notes).
+    strace_avail: the node's strace mode from the meta (0: no strace, item 3 unverified). self_max: the live cell's bound on
+    connects to this node's own addresses (the sequential replays' count; a connect to the live rank on the same node
+    would show there)."""
+    fails, notes = [], []
     a, b = kv(rec_kv), kv(rep_kv)
     # 1. finished, abort in time, own exit
     for k in ("init_rc", "reg_rc", "devcomm_rc", "abort_rc"):
@@ -176,19 +203,26 @@ def b1_compare(rec_kv, rec_log, rep_kv, rep_log, strace_file, rep_rc):
     else:
         ke = kv_from_line(rm[-1]).get("entry")
         m = re.search(r"entry=(\d+) of (\d+)", pm[-1])
-        if not m or m.group(1) != ke or m.group(2) != ke:
+        if not m or m.group(1) != ke:
             fails.append("2:mark entry record=%s replay=%s" % (ke, pm[-1]))
     sm = [kv_from_line(l) for l in lb if l.startswith("GIN/RS: summary")]
     if not sm or sm[-1].get("diverged") != "0" or sm[-1].get("beyond") != "0" or sm[-1].get("strict_mismatch") != "0":
         fails.append("2:summary %s" % (sm[-1] if sm else "missing"))
     # 3. no network contact
     st = kv(strace_file)
-    if not st:
+    if not st and str(strace_avail) == "0":
+        notes.append("3:unverified (no strace on the node)")
+    elif not st:
         fails.append("3:strace counts missing")
     elif num(st, "socket", 0) <= 0 or num(st, "lines_matched", 0) <= 0:
         fails.append("3:strace parser saw no socket (positive control) %s" % st)
     elif st.get("inet_connect_peer_total") != "0":
         fails.append("3:connects to a peer %s" % st.get("inet_connect_peer_total"))
+    if st and self_max is not None and num(st, "inet_connect_self", 0) > self_max:
+        fails.append("3:connects to this node's own addresses %s > %s (sequential replays)" % (st.get("inet_connect_self"),
+                                                                                              self_max))
+    elif st and num(st, "inet_connect_self", 0) > 0:
+        notes.append("3:self connects %s (review)" % st.get("inet_connect_self"))
     # 4. same as the recorded rank
     for k in ("comm_rank", "comm_count", "dc_rank", "dc_nranks", "dc_lsa_rank", "dc_lsa_size", "dc_gin_contexts",
               "dc_gin_signals", "dc_gin_counters", "dc_gin_connections", "win_bytes", "ts_contexts"):
@@ -208,8 +242,10 @@ def b1_compare(rec_kv, rec_log, rep_kv, rep_log, strace_file, rep_rc):
         fails.append("4:ncclDevCommDump differs (pointers masked)")
     # 5. gates and endpoints of every peer
     strip_fd = lambda ls: [re.sub(r" fd=\d", "", x) for x in ls]
+    me = b.get("dc_rank")
+    others = lambda ls: [x for x in ls if not x.startswith("GIN/RS: peer %s " % me)]  # this rank's own index: gated=0
     pa, pb = strip_fd(pick(la, "GIN/RS: peer ")), strip_fd(pick(lb, "GIN/RS: peer "))
-    if pa != pb or not pb or any("gated=1" not in x for x in pb):
+    if pa != pb or not others(pb) or any("gated=1" not in x for x in others(pb)):
         fails.append("5:peer lines")
     qa, qb = pick(la, "GIN/RS: qp "), pick(lb, "GIN/RS: qp ")
     if qa != qb or not qb or any(("epoch=0" not in x or "count=0" not in x or "gate_read=1" not in x) for x in qb):
@@ -217,7 +253,7 @@ def b1_compare(rec_kv, rec_log, rep_kv, rep_log, strace_file, rep_rc):
     co = [kv_from_line(l) for l in lb if l.startswith("GIN/RS: replay connect_once")]
     if not co or co[-1].get("failed") != "0" or co[-1].get("ok") != str(len(qb)):
         fails.append("5:connect_once %s" % (co[-1] if co else "missing"))
-    return (len(fails) == 0, fails)
+    return (len(fails) == 0, fails, notes)
 
 
 def b1():
@@ -226,7 +262,7 @@ def b1():
     if not metas and not lives:
         return
     say("== B1 (9.15.4)")
-    allpass, negok = True, True
+    allpass, negok, unverified, selfmax = True, True, False, None
     for mf in metas:
         stem = os.path.basename(mf)[:-len("_meta.txt")]
         meta = kv(mf)
@@ -240,29 +276,40 @@ def b1():
             say("  %s: strace_mode=%s self_connects=%s init_ms record/replay=%s/%s" % (
                 part, st.get("strace_mode"), st.get("inet_connect_self"), kv(P("rec_r%d" % r, "kv")).get("init_ms"),
                 kv(P(part, "kv")).get("init_ms")))
-            ok, fails = b1_compare(P("rec_r%d" % r, "kv"), P("rec_r%d" % r, "log"), P(part, "kv"), P(part, "log"),
-                                   os.path.join(R, "b1", "%s_%s_strace.txt" % (stem, part)), meta.get("rc_" + part, "none"))
+            ok, fails, notes = b1_compare(P("rec_r%d" % r, "kv"), P("rec_r%d" % r, "log"), P(part, "kv"), P(part, "log"),
+                                          os.path.join(R, "b1", "%s_%s_strace.txt" % (stem, part)),
+                                          meta.get("rc_" + part, "none"), meta.get("strace_" + ("sunny" if r == 1 else "rain")))
             allpass &= ok and rec_ok
-            say("  %s: %s %s" % (part, "PASS" if ok else "FAIL", "; ".join(fails)))
+            unverified |= any(n.startswith("3:unverified") for n in notes)
+            if r == 1 and st:
+                selfmax = min(selfmax, num(st, "inet_connect_self", 0)) if selfmax is not None else num(st, "inet_connect_self", 0)
+            say("  %s: %s %s %s" % (part, "PASS" if ok else "FAIL", "; ".join(fails), "; ".join(notes)))
         for part in ("neg_cut", "neg_field"):
             d = kv(P(part, "kv"))
             lg = " ".join(warn_lines(P(part, "log")))
-            failed_ok = d.get("init_rc") not in (None, "0") and re.search(r"cut|damaged|diverged|not usable", lg)
+            failed = any(d.get(k) not in (None, "0") for k in ("init_rc", "reg_rc", "devcomm_rc")) or d.get("exit") != "0"
+            failed_ok = failed and re.search(r"cut|damaged|diverged|not usable|after the end", lg)
             negok &= bool(failed_ok)
-            say("  %s: %s (init_rc=%s)" % (part, "replay failed as required" if failed_ok else "DID NOT FAIL", d.get("init_rc")))
+            say("  %s: %s (init_rc=%s reg_rc=%s devcomm_rc=%s exit=%s)" % (
+                part, "replay failed as required" if failed_ok else "DID NOT FAIL", d.get("init_rc"), d.get("reg_rc"),
+                d.get("devcomm_rc"), d.get("exit")))
     if metas:
-        say("B1 conclusion: %s" % ("init replay works in this scope (2 ranks, cross-node, lsaSize 1, RMA and RAS off)"
+        say("B1 conclusion: %s" % (("init replay works in this scope (2 ranks, cross-node, lsaSize 1, RMA and RAS off)" +
+                                   ("; item 3 unverified on a node without strace" if unverified else ""))
                                   if allpass and negok and len(metas) >= 2 else
-                                  "B1 stays blocked or open (see the failing items)" if metas else "-"))
+                                  "B1 stays blocked or open (see the failing items)"))
     for mf in lives:
         stem = os.path.basename(mf)[:-len("_meta.txt")]
         meta = kv(mf)
         P = lambda part, ext: os.path.join(R, "b1", "%s_%s.%s" % (stem, part, ext))
-        ok, fails = b1_compare(P("live_r1", "kv"), P("live_r1", "log"), P("live_rep1", "kv"), P("live_rep1", "log"),
-                               os.path.join(R, "b1", "%s_live_rep1_strace.txt" % stem), meta.get("rc_live_rep1", "none"))
+        ok, fails, notes = b1_compare(P("live_r1", "kv"), P("live_r1", "log"), P("live_rep1", "kv"), P("live_rep1", "log"),
+                                      os.path.join(R, "b1", "%s_live_rep1_strace.txt" % stem),
+                                      meta.get("rc_live_rep1", "none"), meta.get("strace_sunny"),
+                                      self_max=selfmax if selfmax is not None else 0)
         quiet = all(kv(P("live_r%d" % r, "kv")).get(k) == "0" for r in (0, 1)
                     for k in ("after_hold_rounds", "after_hold_declined", "after_hold_reconnects", "after_hold_deaths"))
-        say("%s: replay %s %s; live ranks undisturbed=%s" % (stem, "PASS" if ok else "FAIL", "; ".join(fails), quiet))
+        say("%s: replay %s %s %s; live ranks undisturbed=%s" % (stem, "PASS" if ok else "FAIL", "; ".join(fails),
+                                                                 "; ".join(notes), quiet))
     say()
 
 

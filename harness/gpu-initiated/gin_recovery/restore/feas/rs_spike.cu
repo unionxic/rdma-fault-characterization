@@ -173,6 +173,7 @@ static void rcvTimeout(int s, int ms) {
 }
 
 int main(int argc, char** argv) {
+  setvbuf(stdout, nullptr, _IOLBF, 0);  // NCCL logs to stdout: keep its lines on a later _exit
   if (argc < 6) {
     fprintf(stderr, "usage: %s <rank> <nranks> <rank0_ip> <port> <out_kv>\n", argv[0]);
     return 1;

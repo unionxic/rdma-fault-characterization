@@ -4,7 +4,8 @@
 # usage: hold_feas.sh <resultsdir> <hold>
 #   S3     B3 smoke: one cross-node cell, rain responder, relaxed MR, 208 iterations (setup check; not used in any verdict)
 #   S3s    the same with sunny as the responder (sunny listens on the control port; run before B3s)
-#   B3one-<cell>  one B3 cell again, 4 000 iterations (a cell that skipped.txt lists, or an inconclusive one)
+#   B3one-<cell>  one B3 cell again, 4 000 iterations, into b3_rerun<k>/ (a cell that skipped.txt lists, or an
+#          inconclusive one; the earlier run stays)
 #   B3r    B3, rain is the responder: b3_x_rain_<ro|so>, b3_s_rain_<ro|so>, b3_h_rain_<ro|so>, 4 000 iterations each
 #   B3s    B3, sunny is the responder: the same six cells with sunny
 #   B2     B2: four ranks interleaved (rain 0, 2; sunny 1, 3), report lines only, 2 trials
@@ -82,7 +83,9 @@ sp() {  # sp <cell> <trial> <logdir>: one trial if it fits
 case "$H" in
   S3) b3 b3_x_rain_ro 208 "$R/b3_smoke" ;;
   S3s) b3 b3_x_sunny_ro 208 "$R/b3_smoke" ;;
-  B3one-*) b3 "${H#B3one-}" 4000 "$R/b3" ;;  # one B3 cell again (a skipped or inconclusive one)
+  B3one-*)  # one B3 cell again (a skipped or inconclusive one) into its own folder b3_rerun<k>; summ_feas reads the latest
+    k=1; while [ -e "$R/b3_rerun$k/${H#B3one-}_meta.txt" ]; do k=$((k + 1)); done
+    b3 "${H#B3one-}" 4000 "$R/b3_rerun$k" ;;
   B3r) for c in x s h; do for o in ro so; do b3 "b3_${c}_rain_$o" 4000 "$R/b3"; done; done ;;
   B3s) for c in x s h; do for o in ro so; do b3 "b3_${c}_sunny_$o" 4000 "$R/b3"; done; done ;;
   B2) for t in 1 2; do sp b2_inter "$t" "$R/b2"; done ;;
