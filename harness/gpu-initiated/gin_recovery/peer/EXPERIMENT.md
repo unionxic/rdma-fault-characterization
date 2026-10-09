@@ -10,7 +10,7 @@
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-peer` @ `45a5588b` (master) |
 | 사전 등록 태그 | 없음. 예정: `prereg/gin-peer-v1`(pilot 뒤, 상태를 `PREREGISTERED`로 바꾼 바로 그 커밋) |
-| 마지막 갱신 | 2026-10-09, pilot(P0, P1) 검토와 확정: 예측은 그대로, 경합 셀 두 개의 조건과 그 설정 확인을 고침, hold 시간을 측정값으로 바꿈(3, 7, 8, 9, 12절). 상태는 `DRAFT`(고정 커밋과 태그는 메인 세션) |
+| 마지막 갱신 | 2026-10-09, pilot(P0, P1) 검토와 확정, 바뀐 경합 셀의 pilot P2 기록: 예측은 그대로, 경합 셀 두 개의 조건과 그 설정 확인을 고침, hold 시간을 측정값으로 바꿈(3, 7, 8, 9, 12절). 상태는 `DRAFT`(고정 커밋과 태그는 메인 세션) |
 
 표시: `[측정]` 원자료나 시행별 표에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -104,8 +104,9 @@ shrink가 원인이 로컬인데도 넘어간다 `[소스]`. 같은 리뷰의 M2
 
 **pilot이 남긴 의심.** pilot은 셀마다 1회라 판정이 아니다.
 - 경합 셀의 예측 넷(C1–C4)은 pilot 4회 모두에서 조건과 달랐다. 원인은 하네스였다: 응답 쪽이 거절 0.34–0.38 s 뒤 끝나, 시작 쪽의 다시 걸기와 확인
-  접속이 모두 연결 거부를 받고 상대를 죽음으로 거절했다 `[측정]`. 셀을 고쳤고 예측은 그대로 두었다. 이 계층의 FAIL 답 경로는 pilot에서 한 번도 돌지
-  않았다 `[미확인]`. P2와 본 실행이 처음 잰다.
+  접속이 모두 연결 거부를 받고 상대를 죽음으로 거절했다 `[측정]`. 셀을 고쳤고 예측은 그대로 두었다. 고친 셀의 pilot P2(4회, 12절)에서는 네
+  예측의 조건이 모두 맞았다: `hq`는 응답 쪽이 FAIL로 답하고 시작 쪽이 끊김 끝 233 ms와 272 ms 뒤 거절했고, `hf`는 끊김 끝 8 375 ms와 8 270 ms 뒤
+  "liveness unknown"으로 거절했다 `[측정, 셀마다 n=1]`. P2로 읽기 오류는 드러나지 않아 예측은 바꾸지 않았다.
 - pilot 시행이 있는 나머지 예측 23개(A1, A2, B1–B5, K1–K4, H1–H3, H5–H8, Q2, Q3, R1의 `f1_b`, R7, P1)는 그 1회에서 조건이 맞았다 `[측정, n=1]`.
 - pilot 시행이 없는 예측: A3, K5, H4, R1의 `f3_b`와 `bidirf_sym_b`, R2–R6, P2. Q1은 본 실행 전체에서 센다(pilot 22회에서 bind 실패 0).
 
@@ -527,7 +528,7 @@ hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t gpq-<hold>`에 넣는다. �
 |---|---|---|
 | P0 pilot | 랭크 2개 새 셀과 대조 1회씩, `hd_fwslow_f1_b`, `pq_copystall1_shrink_b`, `pq_rdv_b`, `f1_b` 1회씩, 4 KiB 지연 두 빌드 1회씩(14회). 채점 안 함 | 실행 118 s `[측정]` |
 | P1 pilot | 랭크 4개 새 셀과 대조 1회씩(8회). 채점 안 함 | 실행 187 s `[측정]` |
-| P2 pilot | pilot 뒤 바꾼 경합 셀 두 개를 빌드마다 1회씩(4회). 채점 안 함. 태그 전에 돈다(8절) | 약 2분 |
+| P2 pilot | pilot 뒤 바꾼 경합 셀 두 개를 빌드마다 1회씩(4회). 채점 안 함. 태그 전에 돈다(8절) | 실행 92 s `[측정]` |
 | H1 | 랭크 2개 회귀 6셀 × 5, `hdp_kill_b` 5, 지연 20실행 | 약 6.5분 |
 | H2 | `pq_repost_r1_b`(`hq` 10, `hf` 5, 2:1), `hd_repost_f1_b` 5, `hd_fwslow_f1_b` 5, `pq_rdv_b` 5 | 약 3.5분 |
 | H3 | `pq_ackrace_f1_b`(2:1), `pq_ackrace_f1r1_b`(1:1) | 약 10분 |
@@ -569,7 +570,7 @@ python3 score.py results/<날짜>
 
 ## 10. 완료 조건과 QA 기준
 
-- [ ] 메인 세션이 pilot(P0, P1, P2)을 돌리고 결과를 12절에 적은 뒤, 고칠 것을 고치고 태그를 달았다(P0, P1과 그 반영은 끝남).
+- [ ] 메인 세션이 pilot(P0, P1, P2)을 돌리고 결과를 12절에 적은 뒤, 고칠 것을 고치고 태그를 달았다(pilot 셋과 그 반영은 끝남, 태그 남음).
 - [ ] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외와 실패를 따로 센 표가 있다(SCORE.md 끝 표).
 - [ ] 예측 37줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
 - [ ] 다른 에이전트가 `score.py`를 보지 않고 원자료에서 핵심 수치를 다시 셌다(생존 간선의 결과, 거절 대상과 원인, 상대별 해제 줄, 감시 발동과
@@ -593,7 +594,7 @@ python3 score.py results/<날짜>
 - [x] 질문, 가설, 셀, 예측 초안 (`DRAFT`)
 - [x] sunny 포트 범위 확인과 배포(메인 세션, 12절)
 - [x] pilot P0, P1(메인 세션, 채점 안 함), 결과로 고칠 것 고치기(12절)
-- [ ] pilot P2: 바뀐 경합 셀 두 개(메인 세션, 태그 전)
+- [x] pilot P2: 바뀐 경합 셀 두 개(메인 세션, 태그 전, 12절)
 - [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
 - [ ] 본 실행 H1–H8 (`RUNNING`)
 - [ ] 채점 (`QA`)
@@ -618,6 +619,7 @@ python3 score.py results/<날짜>
 | 2026-10-09 08:37:26–08:43:32 | pilot(메인 세션) `bash chain.sh results/20261009_pilot P0 P1`. P0: 잠금 08:37:26, 유휴 링크 08:37:56, 끝 08:39:54(실행 118 s, 14회). P1: 잠금 08:39:54, 유휴 링크 08:40:25, 끝 08:43:32(실행 187 s, 8회). 두 hold 모두 rc 0. hold 앞뒤 `gin-` iptables 규칙 0, 새 mlx5 줄 0, cmd_err rain 2와 sunny 0, rain 펌웨어 명령 실패 합 31로 그대로, 남은 프로세스 0, STOP 파일 없음. rank 종료 코드: 의도한 거절 셀 4, 투명 셀 0, kill된 rank 255(3회), 단계 한도의 rank 8(2회) `[측정]` | `results/20261009_pilot/`(`chain.out`, `hold_P0.out`, `hold_P1.out`, `snap_*`), 세션 스크래치 `cluster_run.log` 1669–1674줄 |
 | 2026-10-09 | pilot 검토(채점 아님). `score.py`를 pilot 사본에 돌려 열을 만들고, 22회 모두 로그와 kv를 직접 대조했다(아래 표). 하네스 결함 하나: 경합 셀 두 개에서 응답 쪽이 거절 0.34–0.38 s 뒤 끝나(드라이버 기본 끝 대기 0.3 s), 시작 쪽의 끊김 끝 0.24–0.27 s 뒤 첫 다시 걸기나 확인 접속이 연결 거부를 받고 1.24–1.28 s 뒤 상대를 죽음으로 거절했다(4회 모두). 그래서 FAIL 답 경로는 돌지 않았다. 다른 셀의 시행 18회는 해당 예측 조건과 맞았다. 파서 결함은 찾지 못했다 `[측정]` | 아래 pilot 표, 세션 스크래치 `hq_work/pilot_eval.py` |
 | 2026-10-09 | pilot 뒤 변경. 예측은 바꾸지 않았다(`predictions.csv` sha256 `dccdf05c…`, 초안과 같음). (1) [cells.sh](cells.sh): 경합 셀 두 개의 응답 쪽에 `GIN_TS_END_WAIT_S=12`(드라이버 스위치, 두 번들의 드라이버에 있음). 12 s는 시작 쪽의 재연결 한도(취소에서 10 s)에 2 s를 더한 값이다. 끊김 끝은 취소 1.73–1.77 s 뒤였다. (2) [rows_pq.py](rows_pq.py) `end_wait_r*`, [score.py](score.py) 설정 확인 `config_linger`. pilot 경합 시행 4회는 이 확인에 걸린다. (3) [hold.sh](hold.sh) P2. (4) 시각 값은 측정으로 확인하고 그대로 두었다: 경합 셀의 장애 1 500 ms와 끊김 500:8000(4회 모두 ACK 기다림 중 취소, 응답 쪽은 커밋 뒤 거절), `pq4_fwslow` 둘째 장애 11 500 ms(rank 0 거절 1.43 s 뒤, 두 빌드), `pq4_local_shrink` 단계 한도 12 s, `pq4_kill3_shrink` 40 s(아이 단계 전체 3 s 미만). (5) 9절 hold 시간을 측정값으로 다시 어림했다: 본 실행 약 52분 | 3, 7, 8, 9절 |
+| 2026-10-09 08:56:53–08:58:56 | pilot P2(메인 세션) `bash chain.sh results/20261009_pilot2 P2`, rc 0. 잠금 08:56:53, 유휴 링크 08:57:24, 끝 08:58:56(실행 92 s, 4회). hold 앞뒤 `gin-` iptables 규칙 0, 새 mlx5 줄 0, cmd_err rain 2와 sunny 0, rain 펌웨어 명령 실패 합 31로 그대로, 남은 프로세스 0. 네 시행 모두 응답 쪽이 거절 12.04–12.07 s 뒤 정리했고(`GIN_TS_END_WAIT_S=12`), 설정 확인 `config_linger`를 통과했으며, ACK 기다림 중 취소와 응답 쪽의 커밋 뒤 거절이 함께 생겼다(제외 없음). `hq` HELLO 형태: rank 1 "answered a re-dial of declined rank 0 with FAIL", rank 0 "rank 1 declined this pair (FAIL on re-dial)" 뒤 끊김 끝 233 ms에 "the peer declined this pair (FAIL on reconnect)"로 거절(원인 unknown). `hq` PROBE 형태: rank 0 "answered a probe of declined rank 1 with FAIL", rank 1이 끊김 끝 272 ms에 같은 사유로 거절. `hf` HELLO 형태: 다시 걸기 16번이 "not accepted (FIN)"이고, 끊김 끝 8 375 ms에 "peer liveness unknown (ETIMEDOUT, no reconnect within 10000 ms)"로 거절. `hf` PROBE 형태: 확인 접속은 답을 받았으나 rank 0이 다시 걸지 않아, 끊김 끝 8 270 ms에 같은 사유로 거절. 네 예측(C1–C4)의 조건이 각 1회에서 맞았다. 시각은 모두 거절한 rank 자신의 시계다. 읽기 오류는 없어 예측은 그대로다(`predictions.csv` sha256 `dccdf05c…`) `[측정]` | `results/20261009_pilot2/`(`chain.out`, `hold_P2.out`, 시행 로그) |
 
 ### pilot 시행별 확인 (채점 아님, 셀마다 n=1)
 
@@ -655,6 +657,7 @@ python3 score.py results/<날짜>
 | 무엇 | 경로 또는 Release 자산 | n |
 |---|---|--:|
 | pilot P0, P1(채점 안 함) | `results/20261009_pilot/`(원자료, 커밋하지 않음. Release 예정) | 22 |
+| pilot P2(채점 안 함) | `results/20261009_pilot2/`(원자료, 커밋하지 않음. Release 예정) | 4 |
 
 ## 15. 결과 요약
 
