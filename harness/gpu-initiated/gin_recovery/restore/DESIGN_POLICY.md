@@ -10,7 +10,7 @@
 | 실험 | [EXPERIMENT.md](EXPERIMENT.md)(gin-restore, `DRAFT`). 그 문서의 상호작용 표와 막는 문제는 이 문서로 옮겼다 |
 | 작성일 | 2026-10-09 |
 | 근거 트리 | hr: 세션 스크래치 `agent_ts2hr/nccl-src`(gin-remaining). hw: `agent_gd/gin/nccl-src`(기준 커밋 `382bbb4` = hr, gpu-detect worktree의 `harness/gpu-detect/hw_layer.diff` md5 `be0ea9ed`, libnccl md5 `efc48ca1`). nvs: `agent_gd/nvs/src`(t1_380 위의 t1w, t1w_layer.diff md5 `ac24448b`). 모두 2026-10-09에 읽기만 함 |
-| 독립 검토 | 검토 1(EXPERIMENT.md 초안 표 대상), 검토 2(이 문서 대상) 반영. 반영 뒤 확인은 6절 |
+| 독립 검토 | 검토 1(EXPERIMENT.md 초안 표 대상), 검토 2(이 문서 대상, 재확인 다섯 번) 반영. 검토 2의 마지막 판정(커밋 `0af9190e`): "막는 문제 B1–B4 밖에 풀리지 않은 충돌 없음"(6절) |
 
 표시: `[소스]` 코드에서 읽음, `[측정]` 원자료에서 확인, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -437,7 +437,10 @@ EXPERIMENT.md에 반영.
 **검토 2 재확인 4**(커밋 `70b23f28` 대상). Q1–Q5 풀림, 인용 쌍 171개 불일치 0(`gdakiTsRespond`의 끝 줄 하나 고침), fail-fast 동치 그대로(조건 N5).
 남은 것 R1(낮음: 미룬 RESTORED보다 같은 상대의 REQ가 먼저 처리될 수 있음 → 같은 상대의 메시지는 도착 차례대로, NACK 17 전에 RESTORED 적용). 3절에 반영.
 
-**검토 2 재확인 5**: 아래에 적는다.
+**검토 2 재확인 5**(커밋 `0af9190e` 대상). R1 풀림(두 길 모두 덮음; 미룬 FALLBACK을 기다림 안에서 처리하는 것은 hw가 FAIL을 그 자리에서 처리하는
+방식 hw 5391–5397과 같은 꼴), `gdakiTsRespond` 끝 줄 확인, fail-fast 동치 그대로(조건 N5). **판정: 막는 문제 B1–B4 밖에 풀리지 않은 충돌 없음.**
+
+남은 것은 5절의 B1–B4다. B4는 사용자의 결정이 필요하고, B1과 B3은 빌드가 필요한 시험이므로 이 문서의 승인 뒤에 한다.
 
 ## 7. 참고
 

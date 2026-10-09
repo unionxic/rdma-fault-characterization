@@ -515,7 +515,7 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 - [x] 앞 실험의 측정 다시 셈(1절), `hr` 소스와 gpu-detect 초안 읽기
 - [x] 설계 초안(9.1–9.8절), hook 목록(9.9절)
 - [x] 감지와 반응을 나눈 정책 설계와 통합 상호작용 표([DESIGN_POLICY.md](DESIGN_POLICY.md))
-- [ ] 독립 충돌 검토 둘(EXPERIMENT.md 초안 표, DESIGN_POLICY.md)과 반영
+- [x] 독립 충돌 검토 둘(EXPERIMENT.md 초안 표, DESIGN_POLICY.md)과 반영. 검토 2의 마지막 판정: B1–B4 밖에 풀리지 않은 충돌 없음
 - [ ] 사용자의 설계 승인(그 전에는 구현과 빌드 없음)
 - [ ] gpu-detect 계층에 정책 hook G1–G9(DESIGN_POLICY.md 4.10절)
 - [ ] 시제품: 로그, 체크포인트, 복원 계획, 억제, 모의, 단위 시험(9.13절, 멈춤)
@@ -534,6 +534,7 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 | 2026-10-09 | 독립 충돌 검토 1(읽기 전용 에이전트)에 이 문서의 초안 표를 맡김 | [DESIGN_POLICY.md](DESIGN_POLICY.md) 6절 |
 | 2026-10-09 | gpu-detect `hw` 계층이 빌드됨(실행, 병합 전; diff md5 `be0ea9ed`, libnccl `efc48ca1`) → 줄 번호를 hr/hw 둘로, 표에 hw 행(QP 감시, `DEGRADED_ROUNDS`, 감시의 펌웨어 부하) 더함 | DESIGN_POLICY.md 4절 |
 | 2026-10-09 | 사용자 결정: 충돌이 남은 동안 구현 없음, 감지와 반응을 나눈 통합 설계 문서를 먼저. 시제품 초안(빌드, 실행 안 함)을 스크래치로 옮기고 멈춤. [DESIGN_POLICY.md](DESIGN_POLICY.md) 작성 | 9.13절 |
+| 2026-10-09 | 검토 1 결과(F1–F28) 반영. 검토 2(이 문서 대상, 읽기 전용 에이전트): 첫 검토 V1–V20, 재확인 N1–N5, P1–P7, Q1–Q5, R1을 차례로 반영. 마지막 판정(커밋 `0af9190e`): 막는 문제 B1–B4 밖에 풀리지 않은 충돌 없음 | DESIGN_POLICY.md 6절, 커밋 `fb27b091`–`0af9190e` |
 
 ## 13. 사전 등록 이후 변경
 
