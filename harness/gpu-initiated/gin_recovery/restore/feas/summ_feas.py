@@ -70,6 +70,20 @@ def num(d, k, default=-1):
 
 
 # ---------------------------------------------------------------- B3
+def b3_runlabel(d):
+    """one run of a cell, for the earlier-runs list: an error exit has no verdict (its kv's result=FAIL is the exit, not a
+    fence failure); otherwise the result with its fence and control counts"""
+    for k in ("setup_error", "nic_error", "cuda_error"):
+        if k in d:
+            return "error %s=\"%s\" (no verdict)" % (k, d[k])
+    if d.get("watchdog") == "1":
+        return "error watchdog=1 (no verdict)"
+    return "%s (fence bad %d/%d, early stale %s, boundary stale-last %s, iterations %s)" % (
+        d.get("result", "none"), int(num(d, "fence_W_iters_bad", 0)) + int(num(d, "fence_AW_iters_bad", 0)),
+        int(num(d, "fence_W_n", 0)) + int(num(d, "fence_AW_n", 0)), d.get("early_iters_stale", "?"),
+        d.get("boundary_iters_stale_last", "?"), d.get("iterations_done", "?"))
+
+
 def b3():
     dirs = [os.path.join(R, "b3")] + sorted(glob.glob(os.path.join(R, "b3_rerun*")),
                                             key=lambda d: int(re.sub(r"\D", "", os.path.basename(d)[len("b3_rerun"):]) or 0))
@@ -78,8 +92,8 @@ def b3():
         for f in sorted(glob.glob(os.path.join(d, "*_resp.kv"))):
             cell = os.path.basename(f)[:-len("_resp.kv")]
             if cell in latest:
-                history.setdefault(cell, []).append("%s:%s" % (os.path.basename(os.path.dirname(latest[cell])),
-                                                                kv(latest[cell]).get("result", "none")))
+                history.setdefault(cell, []).append("%s: %s" % (os.path.basename(os.path.dirname(latest[cell])),
+                                                                 b3_runlabel(kv(latest[cell]))))
             latest[cell] = f
     files = [latest[c] for c in sorted(latest)]
     if not files:
@@ -104,7 +118,19 @@ def b3():
             d.get("query_p99_us", "?"), d.get("query_max_us", "?"), d.get("gdr_writes_ordering", "?"),
             d.get("gdr_flush_options", "?"), d.get("hca_ro_write_cap", "?")))
     for c in sorted(history):
-        say("earlier runs of %s: %s" % (c, ", ".join(history[c])))
+        say("earlier runs of %s: %s" % (c, "; ".join(history[c])))
+    allbad = alln = 0
+    notally = []
+    for d in dirs:
+        for f in sorted(glob.glob(os.path.join(d, "*_resp.kv"))):
+            x = kv(f)
+            if "fence_W_n" not in x:
+                notally.append("%s/%s" % (os.path.basename(d), os.path.basename(f)[:-len("_resp.kv")]))
+                continue
+            allbad += int(num(x, "fence_W_iters_bad", 0)) + int(num(x, "fence_AW_iters_bad", 0))
+            alln += int(num(x, "fence_W_n", 0)) + int(num(x, "fence_AW_n", 0))
+    say("every run of every main cell (b3, b3_rerun<k>; smoke excluded; valid or not): bad scored fence iterations %d of %d; "
+        "runs without tallies (error exits): %s" % (allbad, alln, ", ".join(notally) or "none"))
     say("cell | run folder | build | last_kb | query budget (stop) | iterations done | selfcheck attempts fence/same (read) | hog")
     for c in sorted(latest):
         f = latest[c]
@@ -136,8 +162,10 @@ def b3():
             else:
                 verdict[(node, o)] = "open"
             n = sum(int(num(x, "fence_W_n", 0)) + int(num(x, "fence_AW_n", 0)) for x in ds if x)
-            say("%s %s: %s (scored fence iterations %d; 95%% upper bound of the failure rate if 0 failed: %s)" % (
-                node, o, verdict[(node, o)], n, ("%.4f%%" % (300.0 / n)) if n else "-"))
+            say("%s %s: %s (scored fence iterations %d%s)" % (
+                node, o, verdict[(node, o)], n,
+                ("; 95%% upper bound of the failure rate: %.4f%%" % (300.0 / n)) if n and verdict[(node, o)] == "pass"
+                else "; no bound: a cell is not valid and passing" if verdict[(node, o)] != "fail" else ""))
     v = verdict
     nodes = ("rain", "sunny")
     if any(v[(n, o)] in ("missing", "open") for n in nodes for o in ("ro", "so")):
