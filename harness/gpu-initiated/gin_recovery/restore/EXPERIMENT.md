@@ -814,7 +814,8 @@ fence 1 200) 새 hold로 다시 하는 것을 사용자나 이 에이전트와 �
 # b3v2 배포: 새 디렉터리 ~/rs-bundle/b3v2/ 하나만(있으면 거절), 그 밖의 ~/rs-bundle과 다른 묶음은 앞뒤 md5가 같아야 함. 약 30 s
 ls -d ~/rs-bundle/b3v2; ssh -n "$SUNNY_SSH" 'ls -d ~/rs-bundle/b3v2'      # 둘 다 "No such file"이어야 함
 WANT_B3V2=db5541eb7195619410b2113b137ad0df bash $F/deploy_feas.sh $SCR/agent_restore/deploy_check_b3v2.txt b3v2
-test -s $SCR/agent_restore/deploy_check_b3v2.txt && echo written
+test -s $SCR/agent_restore/deploy_check_b3v2.txt && echo written               # 확인 파일이 있어야 함(ssh가 중간에 끊기면 없음:
+#   그때는 두 노드의 ~/rs-bundle/b3v2를 손으로 보고 올린다)
 grep -E "MISMATCH|CHANGED|not found" $SCR/agent_restore/deploy_check_b3v2.txt   # 아무 줄도 없어야 함
 # STOP_nic 풀기(위 규칙의 1–4를 확인한 뒤, 12절에 진단이 있을 때)
 mv $R/STOP_nic $R/STOP_nic.cleared-$(date +%Y%m%d-%H%M%S)
@@ -827,8 +828,11 @@ python3 $F/summ_feas.py $R
 ```
 
 다시 한 셀은 `b3_rerun<k>/`에 있고 `summ_feas.py`가 그 셀의 마지막 실행으로 읽는다(앞의 실행은 표 아래 "earlier runs"에 남음). 노드와 순서마다의 묶음은 셀
-`x`, `s`, `h`의 마지막 실행으로 한다. 끝난 뒤 볼 것: 다시 한 경합 셀의 kv에 `selfcheck_fence_attempts`, `selfcheck_same_attempts`(1이 아니면 그 수를 12절에
-적음), `result=PASS`, `valid=1`, fence 실패 0, `query_qp_total` < 20 000, hog의 `HOG_DONE`; B3s 셀 여섯은 B3r과 같은 것; 마지막에 B3 결론 줄.
+`x`, `s`, `h`의 마지막 실행으로 한다(rain의 `x`, `s`는 첫 빌드, `h`는 `b3v2`; summ_feas가 셀마다 빌드와 `last_kb`, 자체 시험의 시도 수, hog 결과를 표로
+보임). 끝난 뒤 볼 것: 다시 한 경합 셀의 kv에 `selfcheck_fence_attempts`, `selfcheck_same_attempts`, `result=PASS`, `valid=1`, fence 실패 0, `query_qp_total`
+< 20 000, hog의 `HOG_DONE`; B3s 셀 여섯은 B3r과 같은 것; 마지막에 B3 결론 줄. 진단대로라면 시도 수는 늘 1이다. 1보다 크면 셀이 통과해도 그 수를 측정으로
+12절에 적고 B3s 전에 올린다(진단과 맞지 않음; 본 반복의 판정에는 영향 없음; 다시 검토 S3). 한계: `b3v2`는 READ 전에 staging을 0으로 지우므로, 읽은 값 0은
+"옛 낱말"과 "READ가 아무것도 쓰지 않음"을 가르지 못한다(S2, 바이너리를 다시 만들지 않고 둠).
 
 ## 10. 완료 조건과 QA 기준
 
@@ -902,7 +906,10 @@ python3 $F/summ_feas.py $R
 | 2026-10-09 22:50 | 메인 세션이 `rsx2`를 배포(새 `~/rs-bundle/rsx2/`): rain과 sunny 같음, 원본과 같음, ldd 맞음, 기존 파일 그대로(rain 328, sunny 380개) | `agent_restore/deploy_check_rsx2.txt` |
 | 2026-10-09 22:50–22:51 | hold `B1`(태그 `rs-B1`, `rsx2`, QP 감시 100 ms, hold 28 s): 2회 모두 `rep1`, `rep0` 통과, 음성 대조 둘 다 init에서 실패(init_rc 2), 기록 12 117 B, 기록 29항목을 재생 29항목으로 정확히 소비(어긋남 0, 기록 밖 0, 자리별 가면 비교의 다름 0, 자기 칸의 다른 바이트 46과 49), 한 번 잇기 2/2, strace `--seccomp-bpf`에서 socket 13, 상대로의 connect 0, 자기 주소 0, AF_UNIX 1(자기 proxy), init_ms 기록/재생 211.8/174.3, 187.2/170.4, 223.0/185.5, 186.3/189.3, 재생의 abort 약 0.9 s, "no protection domain" 줄 없음. 판정(9.15.4): 이 범위(2 rank, 노드 사이, 문맥 2개, lsaSize 1, host RMA와 RAS 꺼짐)에서 초기화 재생은 된다 `[측정: summ_feas.py와 원자료로 다시 셈]` | `results/20261009_feasibility/b1/` |
 | 2026-10-09 22:51–22:53 | hold `B3r`(태그 `rs-B3r`, 첫 빌드 `rs_drain_test`, 3 200반복, `RS_LAST_KB=4096`, hold 43 s): `b3_x_rain_ro`, `b3_x_rain_so`, `b3_s_rain_ro`, `b3_s_rain_so` 모두 유효, PASS(채점 fence W와 AW 1 600반복 실패 0, `early` 200/200, `boundary` 200/200, 경계 덮기 1.000, fsame, nofence, cuflush, WA, 탐침의 실패 0, QUERY_QP 17 447–17 583, p50 54.1–60.6 µs, 최대 122.0 µs). 넷의 QUERY_QP 합은 rain debugfs 셈의 차이(69 993)와 맞음. `b3_h_rain_ro`(경합 셀)는 설정에서 멈춤: 응답 쪽 `setup_error="loopback READ self-check"`(본 반복 전), 보내는 쪽은 그 때문에 `nic_error="control receive"`, hog는 `HOG_DONE`(3.42 s). 실행기가 `STOP_nic`를 쓰고 `b3_h_rain_so`를 건너뜀(`skipped.txt`). 새 mlx5 줄 0, rain 펌웨어 명령 실패 셈 31 → 31, `cmd_err` 2 → 2 `[측정]` | `results/20261009_feasibility/b3/`, `STOP_nic` |
-| 2026-10-09 | 경합 셀 멈춤의 진단: 자체 시험은 무늬를 스택 변수(페이지 가능 메모리)에서 `cudaMemcpy` H2D로 fence 낱말과 window 경계 낱말에 쓴 뒤 곧바로 NIC 루프백 READ로 읽는다(첫 빌드의 925–934줄). 페이지 가능 메모리에서 장치로의 `cudaMemcpy`는 무늬를 staging 버퍼에 옮기면 돌아올 수 있고 장치로의 DMA는 아직 끝나지 않았을 수 있다(CUDA 런타임의 동기 동작 설명) `[문서]`. hog가 GPU 메모리 대역을 채운 셀에서만 멈췄으므로 그 틈에 READ가 옛 낱말을 읽은 것으로 본다 `[추론]`(읽은 값은 첫 빌드가 적지 않아 `[미확인]`). kv의 errno 28은 앞선 다른 호출이 남긴 값이다(이 실패는 값 비교라 errno가 없음) `[소스]`. 통과한 셀 넷은 영향을 받지 않는다: 자체 시험은 본 반복 전에 한 번이고 넷 모두 통과했으며, 본 반복의 판정은 그 낱말을 읽지 않는다(fence READ는 값을 보지 않음) `[소스]`. 고침: `b3v2`(md5 `db5541eb7195619410b2113b137ad0df`; pinned 무늬, 장치 동기화, 1 ms 간격 50번까지 다시 읽기, 시도 수와 읽은 값을 kv에, errno 0). 본 반복 코드는 같음. 배포는 새 `~/rs-bundle/b3v2/`(`deploy_feas.sh <확인 파일> b3v2`), 실행기의 기본 바이너리를 `b3v2`로. `STOP_nic`를 푸는 규칙을 9.15.5에 적음 | 9.15.5, 이 커밋 |
+| 2026-10-09 | 경합 셀 멈춤의 진단: 자체 시험은 무늬를 스택 변수(페이지 가능 메모리)에서 `cudaMemcpy` H2D로 fence 낱말과 window 경계 낱말에 쓴 뒤 곧바로 NIC 루프백 READ로 읽는다(첫 빌드의 925–934줄). 페이지 가능 메모리에서 장치로의 `cudaMemcpy`는 무늬를 staging 버퍼에 옮기면 돌아올 수 있고 장치로의 DMA는 아직 끝나지 않았을 수 있다(CUDA 런타임의 동기 동작 설명) `[문서]`. hog가 GPU 메모리 대역을 채운 셀에서만 멈췄으므로 그 틈에 READ가 옛 낱말을 읽은 것으로 본다 `[추론]`(읽은 값은 첫 빌드가 적지 않아 `[미확인]`). 둘째 `cudaMemcpy`(window 경계 낱말)는 시작 전에 스트림을 동기화하므로 첫째(fence 낱말)는 이미 닿았고,
+늦은 것은 같은 할당의 경계 낱말(same=1)이었을 가능성이 크다 `[추론, 다시 검토 S1]`. kv의 errno 28은 앞선 다른 호출이 남긴 값이다(이 실패는 값 비교라 errno가
+없음; 보내는 쪽 kv도 시스템 호출 실패가 없는 수신 끝에서 같은 errno 28을 적음) `[소스, 측정]`. 통과한 셀 넷은 영향을 받지 않는다: 자체 시험은 본 반복 전에 한 번이고 넷 모두 통과했으며, 본 반복의 판정은 그 낱말을 읽지 않는다(fence READ는 값을 보지 않음) `[소스]`. 고침: `b3v2`(빌드됨, 실행 안 함; md5 `db5541eb7195619410b2113b137ad0df`, 소스 md5 `c0e8db87` = 커밋 `78473506`의 파일; pinned 무늬, 장치 동기화, 1 ms 간격 50번까지 다시 읽기, 시도 수와 읽은 값을 kv에, errno 0). 본 반복 코드는 같음. 배포는 새 `~/rs-bundle/b3v2/`(`deploy_feas.sh <확인 파일> b3v2`), 실행기의 기본 바이너리를 `b3v2`로. `STOP_nic`를 푸는 규칙을 9.15.5에 적음 | 9.15.5, 커밋 `78473506` |
+| 2026-10-09 | `b3v2`와 다시 하기 계획의 독립 검토(읽기 전용 에이전트, 커밋 `78473506` 대상): 진단은 그럴듯함(추론), 통과한 rain 셀 넷은 영향 없음(본 반복은 그 낱말을 읽지 않고 검사 커널은 [0, L.total)만 봄), 고침은 맞고 본 반복의 동작은 같음, b3v2 배포 방식 맞음, `STOP_nic` 푸는 조건 1–4가 파일에서 모두 참(이 검토가 조건 2), 다시 하기와 summ_feas의 묶음 맞음, md5 확인. 막는 것 없음; 낮음 S1–S8을 문서와 스크립트에 반영(S2는 한계로 적고 바이너리는 그대로). 판정: "b3v2 and the rerun plan: ready to run" | 이 커밋 |
 
 ## 13. 사전 등록 이후 변경
 

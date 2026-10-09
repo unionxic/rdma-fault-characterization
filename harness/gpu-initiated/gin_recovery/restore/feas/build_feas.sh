@@ -73,6 +73,7 @@ b3() {  # B3OUT (b3v2): the output folder; out/b3 holds the first, deployed buil
   # the mlx5 PRM layouts: the DOCA GPUNetIO copy inside the hw tree (read only)
   nice -n 19 "$CUDA/bin/nvcc" -std=c++17 -O2 $GENCODE -Xcompiler "-Wall,-Wextra,-Werror" -I"$PRM" "$D/rs_drain_test.cu" \
     -o "$o/rs_drain_test" -libverbs -lmlx5 -lcuda
+  echo "rs_drain_test.cu $(md5 "$D/rs_drain_test.cu") built $(date '+%F %T')" > "$o/build_src.txt"  # the source at compile time
   echo "rs_drain_test $(md5 "$o/rs_drain_test")"
 }
 info() {
@@ -83,7 +84,9 @@ info() {
     echo "hw include_digest $(cd "$SCR/agent_gd/gin/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32) (the app is built against these headers)"
     [ -f "$OUT/app/rs_spike" ] && echo "rs_spike $(md5 "$OUT/app/rs_spike") rs_spike.cu $(md5 "$D/rs_spike.cu") sass $("$CUDA/bin/cuobjdump" --list-elf "$OUT/app/rs_spike" 2>/dev/null | grep -o 'sm_[0-9]*' | sort -u | tr '\n' ' ')"
     [ -f "$OUT/b3/rs_drain_test" ] && echo "rs_drain_test (first build, deployed 2026-10-09) $(md5 "$OUT/b3/rs_drain_test")"
-    [ -f "$OUT/b3v2/rs_drain_test" ] && echo "rs_drain_test b3v2 $(md5 "$OUT/b3v2/rs_drain_test") rs_drain_test.cu $(md5 "$D/rs_drain_test.cu")"
+    for k in b3v2 ${B3OUT:-}; do
+      [ -f "$OUT/$k/rs_drain_test" ] && echo "rs_drain_test $k $(md5 "$OUT/$k/rs_drain_test") source at compile: $(cat "$OUT/$k/build_src.txt" 2>/dev/null || echo "not recorded (built before build_src.txt); source now $(md5 "$D/rs_drain_test.cu")")"
+    done | sort -u
   } > "$OUT/build_info.txt"
   cat "$OUT/build_info.txt"
 }

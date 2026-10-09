@@ -72,7 +72,7 @@ def num(d, k, default=-1):
 # ---------------------------------------------------------------- B3
 def b3():
     dirs = [os.path.join(R, "b3")] + sorted(glob.glob(os.path.join(R, "b3_rerun*")),
-                                            key=lambda d: int(re.sub(r"\D", "", os.path.basename(d)) or 0))
+                                            key=lambda d: int(re.sub(r"\D", "", os.path.basename(d)[len("b3_rerun"):]) or 0))
     latest, history = {}, {}
     for d in dirs:
         for f in sorted(glob.glob(os.path.join(d, "*_resp.kv"))):
@@ -105,6 +105,19 @@ def b3():
             d.get("gdr_flush_options", "?"), d.get("hca_ro_write_cap", "?")))
     for c in sorted(history):
         say("earlier runs of %s: %s" % (c, ", ".join(history[c])))
+    say("cell | run folder | build | last_kb | selfcheck attempts fence/same (read) | hog")
+    for c in sorted(latest):
+        f = latest[c]
+        d = kv(f)
+        meta = kv(os.path.join(os.path.dirname(f), c + "_meta.txt"))
+        hog = kv(os.path.join(os.path.dirname(f), c + "_hog.kv"))
+        say("%s | %s | %s | %s | %s/%s (%s/%s) | %s" % (
+            c, os.path.basename(os.path.dirname(f)), os.path.basename(os.path.dirname(meta.get("bin", "?/?"))),
+            meta.get("last_kb", "?"), d.get("selfcheck_fence_attempts", "-"), d.get("selfcheck_same_attempts", "-"),
+            d.get("selfcheck_fence_read", "-"), d.get("selfcheck_same_read", "-"),
+            ("%s %s" % (hog.get("result"), hog.get("stopped_by"))) if hog else "-"))
+        if num(d, "selfcheck_fence_attempts", 1) > 1 or num(d, "selfcheck_same_attempts", 1) > 1:
+            say("  NOTE %s: the setup self-check needed more than one READ (record it and raise it before further cells)" % c)
     say()
     say("== B3: per responder node and ordering (every cell x, s, h valid and passing; pooled fence n)")
     verdict = {}
