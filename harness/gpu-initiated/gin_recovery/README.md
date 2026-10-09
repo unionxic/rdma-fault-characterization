@@ -104,3 +104,4 @@ GPU 쪽에서 장애 원인을 분류하는 기존 구현 위에 복구를 얹�
 | [`multirank/`](multirank/README.md) | 랭크 4개, GPU마다 프로세스 2개(사전 등록, 42개 예측 모두 맞음): 쌍마다 복구, 동시 장애를 차례로 복구. 한 랭크가 죽으면 나머지끼리의 받기도 실패, 세 랭크 순환 대기 |
 | [`handoff/`](handoff/README.md) | 거절 뒤 communicator 줄이기와 GPU 가득 참(사전 등록, 24개 예측 모두 맞음): 죽은 rank를 뺀 shrink가 약 17 ms에 됨. 복구를 막은 것은 GIN 커널 뒤의 application CUDA 호출 |
 | [`peer/`](peer/README.md) | 상대별 중단 신호, 앞 리뷰의 남은 지적, 원인을 보는 shrink, 랑데부 포트(사전 등록, 37개 예측 모두 맞음): 랭크 4개에서 한 rank가 죽어도 나머지끼리 통신. 상대를 지정하지 않는 대기는 그 죽음에 풀리지 않음. 원인이 자기 쪽인 거절 뒤 shrink는 원래 답을 지킴. 포트 bind 실패 없음 |
+| [`remaining/`](remaining/README.md) | 남은 세 문제(사전 등록, 34개 예측 중 33개 맞음): 세 rank 순환 대기를 0.7–1.0 s에 복구, 상대를 지정하지 않는 대기를 죽음 판정 2 s 뒤 오류로 풀기, 복구 상태 복사를 NIC 루프백으로 옮겨 application의 커널 첫 적재에 막히지 않음 |
