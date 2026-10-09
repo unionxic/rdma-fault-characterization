@@ -11,7 +11,7 @@
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/blind-apps` @ `ae3dafc9` (master) |
 | 사전 등록 태그 | 없음(예정: `prereg/blind-apps-v1`, 상태를 `PREREGISTERED`로 바꾸는 바로 그 커밋) |
-| 마지막 갱신 | 2026-10-09 13:30, 초안: 1–12절, 스크립트, rain 준비(설치, 빌드). 클러스터에서는 아무것도 돌리지 않았다 |
+| 마지막 갱신 | 2026-10-09 14:20, pilot P1, P2 검토와 그에 따른 하네스 수정(12절), pilot P3 대기. 상태는 `DRAFT` |
 
 표시: `[측정]` 원자료나 파일에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -111,7 +111,7 @@
 | `id`, `kind`, `hold`, `workload`, `cls`, `target`, `dir` | 시행 id(봉인의 무작위 8자리 16진수), 종류(blind, baseline, demo), hold, 작업, 장애, 대상 rank, 끊김 방향 |
 | `k`, `t_ms`, `t_after_anchor_s`, `d_s` | 장애 매개변수: DDP 훅의 순번 k, GIN과 NVSHMEM 훅의 지연(ms), 기준 줄 뒤 kill, stop, mute 시각(s), 멈춤과 끊김 길이(s) |
 | `applied` | 장애가 실제로 걸렸으면 1. 훅: 대상 rank 로그에 그 훅의 발화 줄(NVSHMEM과 GIN은 옮긴 QP 수가 1 이상인 줄)이 있음. kill, stop: 에이전트가 `rc=0`으로 신호를 보냈다고 답함. mute: 규칙을 하나 이상 넣음 |
-| `void` | rank 0이 작업의 기준 줄(`ddp` `iter 0: loss`, `gin` `=== Comparing GIN ring-exchange implementations ===`, `nvs` `[nvshmem-t1] PE0 <t> enabled:`)을 남기지 않았고 그 전에 걸린 장애도 없음(시작 실패) |
+| `void` | 시작 실패: rank 0이 작업의 기준 줄(`ddp` `iter 0: loss`, `gin` `=== Comparing GIN ring-exchange implementations ===`, `nvs` `[nvshmem-t1] PE0 <t> enabled:`)을 남기지 않았거나 어느 rank든 시작 실패 줄(`nvs`: `nvshmemi_setup_transport failed`, `heap registration setup failed`. `nvs`의 기준 줄은 연결 직후라 heap 등록보다 먼저 나온다)을 남겼고, 그보다 먼저 걸린 장애가 없음. pilot 뒤 시작 실패 줄을 더했다(12절) |
 | `config_ok` | 줄을 남긴 모든 rank에 빌드 확인 줄이 있고, 복구가 꺼졌다는 줄이 어느 rank에도 없음. `ddp`: `NCCL version 2.23.4`와 `[FAULT-RECOVERY2] recovery on for`가 있고 `recovery off for this`가 없음(QP 하나, NIC 하나, AR 없음인 연결만 복구한다). `gin`: `GIN/TS: transparent recovery ON rank=`가 있고 `transparent recovery OFF`가 없음. `nvs`: `[nvshmem-t1] PE<p> <t> enabled:`가 있고 `transparent mode off`가 없음 |
 | `valid` | `applied == 1`, `void == 0`, `config_ok == 1` |
 | `killed_rank`, `rc0`, `rc1`, `end0`, `end1` | kill된 rank. rank마다 종료 코드(음수는 신호)와 하네스가 끝냈는지(`grace`, `wall`, 빈칸) |
@@ -225,6 +225,7 @@
 | 다중 요청 복구 | `libnccl.so.2.23.4` md5 `9ed03e1d4b9833c0c2e01f3aa1f84d1c`(a037de42 + 쓰지 않는 rkey 훅), SASS sm_75, sm_86. rain에서는 `<scratch>/nccl_rkey_build/lib`과 `~/nb-bundle/s2`에 있다. 지시문의 `~/nccl-ct/stage2rkey`는 rain에 없고 sunny의 디렉터리다(`../nccl-integration/perf/ctlib.py` `PEER_DIR`) | `[측정]` md5sum, cuobjdump. `[소스]` ctlib.py |
 | GIN `hq` | libnccl `c1311625c7a06c785bc313558504f982`, 헤더 `<scratch>/agent_ts2hq/build/include`(include digest `26f38f43`, gin-peer 빌드 기록과 같음) | `[측정]` |
 | NVSHMEM t1_380 | `~/gi-bundle/nvshmem_t1_380/lib`: transport `d6ae3699`, host `825443f8`, UID 부트스트랩 `26da2c31`, 설치 `<scratch>/agent_t1_380/install`과 같음 | `[측정]` md5sum |
+| GPU BAR1 | rain Quadro RTX 5000 BAR1 256 MiB(쓰는 중 5 MiB). 그래서 256 MiB 대칭 heap은 GPUDirect 등록에 실패한다(12절 P1). t1_380은 160 MiB heap을 두 노드에서 썼다. sunny의 BAR1 크기는 `[미확인]` | `[측정]` 2026-10-09 rain `nvidia-smi -q -d MEMORY`, `[측정, 이전 실험]` t1_380 hold 사양 |
 | nanoGPT와 데이터 | 커밋 `3adf61e154c3fe3fca428ad6bc3818b27a3b8291`(수정 없음), `data/shakespeare_char/prepare.py`가 만든 학습 1 003 854 토큰, 검증 111 540 토큰, 어휘 65 | `[측정]` install_info.txt |
 | 빌드한 실행 파일(빌드됨, 돌리지 않음) | `blind_gin_ring` `074ee68c`(main.cu `d7e8a7f1`, kernels.cuh `f919b590` 그대로), `blind_nvs_rr` `26187ab9`(ring-reduce.cu `16a2d9c3` 그대로), `blind_nvs_boot.so` `e3264e83`. 모두 SASS sm_75, sm_86 | `[측정]` `<scratch>/agent_blind/out/build_info.txt` |
 
@@ -243,8 +244,10 @@
     (`INIT,NET`), NCCL 소켓은 `eno1`(관리망).
   - `gin`: gin-peer 실행기와 같은 NCCL 환경(`NCCL_GIN_TYPE=3`, 분류, 복구, 투명 복구 켬, IB 타임아웃 14, `NCCL_DEBUG=WARN`), helper 포트
     `NCCL_GIN_TS_PORT`는 시행마다 고른 16개 묶음.
-  - `nvs`: t1_380의 `env_t1.sh` 설정(IBGDA, GPU NIC 처리, RC QP 하나, 링 CQ, 투명 복구 켬, IB 타임아웃 14), 대칭 heap 256 MiB,
-    `ring-reduce -b 16M -e 64M -n 30 -w 2`(크기마다 준비 2번, 측정 30번, 크기마다 검증).
+  - `nvs`: t1_380의 `env_t1.sh` 설정(IBGDA, GPU NIC 처리, RC QP 하나, 링 CQ, 투명 복구 켬, IB 타임아웃 14), 대칭 heap 160 MiB,
+    `ring-reduce -b 16M -e 64M -n 150 -w 2`(크기마다 준비 2번, 측정 150번, 크기마다 검증). 처음 정한 256 MiB heap과 `-n 30`은 pilot 뒤 바꿨다(12절).
+  - `ddp`의 출력 양: NCCL 2.23.4는 오류 뒤 실패한 프록시 호출마다 INFO 추적 줄(`<file>:<line> -> <code>`)을 남긴다(pilot kill 데모에서 0.4 s에
+    88 247줄). 에이전트가 이 꼴의 줄을 200줄까지만 넘기고 나머지는 센다. 평가 폴더에는 남기지 않은 줄 수가 적힌다(pilot 뒤 추가, 12절).
   - 하네스의 끝내기: 한 rank가 끝난 뒤 유예 `ddp` 45 s, `gin`과 `nvs` 20 s. 시행 시간 상한 `ddp` 150 s, `gin`과 `nvs` 60 s.
   - application의 환경: 에이전트의 작은 기본 환경(PATH, HOME 등)에 작업의 변수만 더하고, 노드의 LD_LIBRARY_PATH(GDRCopy 등)는 작업의 경로 뒤에
     붙인다(앞 실험의 실행기와 같다). C 표준 출력은 `stdbuf -oL -eL`로 줄 단위로 받는다.
@@ -265,19 +268,24 @@
 1회).
 
 **시각 대응**(`blindrun.py` `derive()`).
-- `kill`, `stop`, `mute`: rank 0의 기준 줄 뒤 `lo + u_t (hi − lo)` s. `[lo, hi]`는 `calib.json`의 `anchor_window_s`.
+- `kill`, `stop`, `mute`(`gin`, `nvs`): rank 0의 기준 줄 뒤 `lo + u_t (hi − lo)` s. `[lo, hi]`는 `calib.json`의 `anchor_window_s`.
+- `kill`, `stop`, `mute`(`ddp`): rank 0이 `iter <n>: loss`를 찍을 때. `n = lo + u_t (hi − lo)`(반올림), `[lo, hi]`는 `calib.json`의 `iter_window`.
+  pilot 뒤 초에서 반복 번호로 바꿨다(12절).
 - GIN과 NVSHMEM 훅: 라이브러리의 시계(GDAKI 문맥 생성, NVSHMEM 연결)로 `hook_ms` 구간.
 - DDP 훅: 순번 k(송신은 multi-send, 수신은 receive post, 알리지 않는 수신은 첫 수신 연결의 수신 완료)를 `k_send`, `k_recv`, `k_silent` 구간에서.
 - 길이: `stop` `ddp` 2–12 s, `gin`과 `nvs` 1–8 s. `mute` `ddp` 6–14 s, `gin` 2–8 s, `nvs` 4–10 s. 방향은 양방향과 sunny→rain 반씩.
 - `calib.json`은 pilot의 장애 없는 실행에서 기준 줄부터 끝 줄까지의 시간 T(중앙값)로 `calib.py`가 정한다: `ddp` 0.05–0.80 T, `gin` 0.02–0.85 T,
-  `nvs` 0.10–0.85 T. DDP 순번은 훅마다 두 탐침(k가 다른 두 시행)의 발화 시각을 지나는 직선으로 같은 구간에 맞춘다. 이 규칙은 pilot 전에 고정했다
-  (`calib.py` 머리말). 지금의 `calib.json`은 pilot 전의 짐작이다.
+  `nvs` 0.10–0.85 T. 이 규칙은 pilot 전에 고정했다(`calib.py` 머리말).
+- DDP만 pilot 뒤 바꿨다(12절). 같은 300 반복이 실행마다 5.2–15.0 s 걸려, 초로 정한 구간은 실행 안에 머물지 않는다. 같은 비율을 반복 수에 적용한다:
+  `iter_window` = 0.05–0.80 × 300 = 반복 15–240. 훅의 k는 탐침 두 시행(k가 다른 데모 `ddp-<sqp|rqp|srq>-k<K>`)에서 발화 줄 전에 rank 0이 찍은
+  마지막 반복 번호를 지나는 직선 k(i)로 반복 15–240에 맞춘다.
 
 **시간 어림** `[추론]`. 시행 사이 비용(포트 확인, ssh, 남은 프로세스 확인) 약 3 s, hold마다 스냅숏과 유휴 링크 대기 약 45 s.
 - `ddp`: 시작 약 6 s(import, CUDA, NCCL 초기화) + 300 반복(반복 약 25 ms, 짐작) + 종료 약 2 s ≈ 16 s. `srq`는 시간 제한 30 s가 더해져 약 50 s,
   `stop`은 길이만큼 더해진다. 56회 ≈ 26분(4 hold).
 - `gin`: 시작 약 4 s, 트래픽 1 s 안, 종료 1 s ≈ 7 s. `kill`에서 살아남은 rank가 멈추면 유예 20 s. 56회 ≈ 13–17분(2 hold).
-- `nvs`: 비슷하게 ≈ 8 s, 54회 ≈ 12–16분(2 hold).
+  pilot에서는 장애 없는 실행 1.6–1.7 s, `qperr` 데모 1회가 시간 상한 60 s까지 멈췄다(12절). `qperr` 16회가 모두 멈추면 약 16분이 더 든다.
+- `nvs`: 비슷하게 ≈ 8 s, 54회 ≈ 12–16분(2 hold). `-n 150`의 실제 길이는 pilot P3에서 잰다 `[미확인]`.
 - 기준 실행 12회 ≈ 4분. pilot(P1 12회, P2 12회) ≈ 10분. hold 13개의 고정 비용 ≈ 10분.
 - 합계 약 75–85분, 나쁜 경우(모든 `kill`, `remacc`이 유예까지 멈춤, hold 재실행) 약 110분. 2.5시간 안이다. hold 하나는 800 s 예산을 넘기 전에 멈추고,
   남은 시행은 `chain.sh`가 같은 hold로 다시 돈다(두 번까지).
@@ -385,8 +393,11 @@ IPv4 주소는 `<ip>`로 바꾼다(판단 파일을 커밋하므로). 훅 줄은
    실행에서 0줄, `python3 harness/blind/handoff.py --results $R/pilot --out <scratch>/blind_pilot_view --include-demo`가 누설 없이 끝난다. 고칠 것은
    하네스와 정규식뿐이다(3절). DDP 탐침이 발화하지 않았거나(k가 실행의 전송 수보다 큼) 두 탐침이 같은 쪽에 몰리면, `blindrun.py demo --workload ddp
    --cls <sqp|rqp|srq> --target <r> --k <K> --name ddp-<cls>-k<K>`로 다른 k를 더 돌리고 `calib.py`를 다시 돈다. 시각 대응을 바꾼 것은 12절에 적는다.
-5. **사전 등록**: `PREREG.txt`를 쓴다.
-   `cd harness/blind && { echo "blind-apps pre-registration"; for f in predictions.csv schedule_config.json calib.json schedule_gen.py blindrun.py node_agent.py ddp/ddp_entry.py rows_blind.py strip_hooks.py handoff.py score.py calib.py boot/rdv.h boot/gin_boot.cc boot/nvs_boot.cc; do echo "$f sha256 $(sha256sum < $f | cut -c1-64)"; done; echo "schedule.json sha256 $(cut -c1-64 ~/blind-seal/schedule.json.sha256)"; } > PREREG.txt`.
+   P1, P2 검토 뒤 고친 것(12절)을 확인하는 pilot P3(약 4분): `bash harness/blind/chain.sh $R/pilot P3`, 그다음 `python3 harness/blind/calib.py $R/pilot`
+   (NVSHMEM 구간이 P3의 장애 없는 두 실행에서 정해지고, DDP와 GIN은 P1 자료에서 같은 값이 다시 나온다). 확인: `nvs-none-3`, `nvs-none-4`의 결과
+   검사가 맞음, P3 데모마다 `applied`, `ddp-sqp-top`과 `ddp-srq-top`(구간의 맨 위 k)이 발화, 누설 검사.
+5. **사전 등록**: `PREREG.txt`를 쓴다. `SEAL`은 장애 에이전트가 알려 준 봉인의 sha256이다(봉인 폴더를 열지 않는다).
+   `cd harness/blind && SEAL=<64자리> && { echo "blind-apps pre-registration"; for f in predictions.csv schedule_config.json calib.json schedule_gen.py blindrun.py node_agent.py ddp/ddp_entry.py rows_blind.py strip_hooks.py handoff.py score.py calib.py boot/rdv.h boot/gin_boot.cc boot/nvs_boot.cc hold.sh chain.sh; do echo "$f sha256 $(sha256sum < $f | cut -c1-64)"; done; echo "schedule.json sha256 $SEAL"; } > PREREG.txt`.
    상태 `PREREGISTERED`, 12절 기록과 함께 커밋 하나, 그 커밋에 `prereg/blind-apps-v1`.
 6. **본 실행**(약 75–110분): `bash harness/blind/chain.sh $R/<날짜> B0 G1 G2 N1 N2 D1 D2 D3 D4 B9`. hold마다 `rows_blind.py --progress`가 시행 수,
    시작 실패, 남은 프로세스만 찍는다.
@@ -474,9 +485,11 @@ judgments.csv: judgments_template.csv에 시행마다 한 줄을 채운다.
 - [x] 스크립트: 일정 생성기, 실행기와 에이전트, 훅 줄 필터, 평가 폴더 생성기, 파서와 채점기, 시각 대응, 설치, 빌드, 배포, hold와 chain
 - [x] rain 준비: Python 스택 설치, 두 예제와 부트스트랩 빌드(빌드됨, 돌리지 않음)
 - [x] 클러스터 없이 할 수 있는 시험: 에이전트(신호, 줄 억제, 표준 입력 종료), 파서와 채점기와 판정식(가짜 결과 폴더)
-- [ ] sunny 설치와 배포(메인 세션)
-- [ ] 예측 커밋, 장애 에이전트의 일정 생성
-- [ ] pilot P1, `calib.py`, pilot P2, 누설 검사(채점 안 함)
+- [x] sunny 설치와 배포(메인 세션)
+- [x] 예측 커밋, 장애 에이전트의 일정 생성
+- [x] pilot P1, `calib.py`, pilot P2, 누설 검사(채점 안 함)
+- [x] P1, P2 검토와 하네스 수정(NVSHMEM heap과 반복 수, DDP 반복 번호 기준, 출력 억제, 시작 실패 판정)
+- [ ] pilot P3, `calib.py` 다시, `PREREG.txt` 다시 쓰기
 - [ ] 고정 절 완성, 상태 `PREREGISTERED`, `PREREG.txt`를 커밋 하나로, 그 커밋에 `prereg/` 태그
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 평가 폴더, 평가 에이전트의 판단, 판단 커밋
@@ -493,6 +506,16 @@ judgments.csv: judgments_template.csv에 시행마다 한 줄을 채운다.
 | 2026-10-09 12:49 | 빌드: `blind_gin_ring`(hq 헤더), `blind_nvs_rr`, `blind_nvs_boot.so`. 빌드됨, 돌리지 않음 | `<scratch>/agent_blind/out/build_info.txt` `[측정]` |
 | 2026-10-09 13:00 | rain에서 GPU 없이 확인: torch import에 Stage 2 라이브러리를 `LD_PRELOAD`하면 매핑된 libnccl이 그 파일 하나, torch가 쓰는 NCCL 심볼 26개가 모두 있음, `ncclConfig_t` 정의가 같음 | 5절 `[측정]` |
 | 2026-10-09 13:05–13:25 | 클러스터 없이 하는 시험: `node_agent.py`(STOP, CONT, KILL, 줄 억제 5줄 남기고 195줄 셈, 표준 입력이 닫히면 자식 종료, 남은 프로세스 0, 작은 기본 환경과 노드의 LD_LIBRARY_PATH 덧붙임), 가짜 결과 폴더(시행 10개)로 `rows_blind.py`, `score.py`(판정식, 봉인 확인, 시드 재생성), `handoff.py`(훅 줄이 평가 폴더에 0줄, 누설 검사), `blindrun.py`의 `derive()`와 `rank_spec()` | 스크래치 `blind_selftest`(저장소 밖). 클러스터에서는 아무것도 돌리지 않았다 |
+| 2026-10-09 13:21:11–13:23:06 | 메인 세션: `deploy_blind.sh`(rc 0) | [deploy_check.txt](deploy_check.txt): 번들 13개 파일 rain == sunny, sunny venv `md5sum -c` 18 856개 통과, 두 노드에서 torch 2.4.1+cu121에 매핑된 libnccl은 `~/blind-bundle/s2/libnccl.so.2.23.4` 하나, 기존 번들 바뀜 없음(rain 295, sunny 356개). 주소 없음 `[측정]` |
+| 2026-10-09 13:23 | 장애 에이전트: `schedule_gen.py check`, `make`(예측과 설정은 커밋 `0eeca70c`, `5895faa9`에서 바뀌지 않음) | 봉인 sha256 `14ae5e56d31294db2d3837088fa32b5eaceecaa6a8b6d237325aae69ab7bc8a2`, 31 282바이트, 권한 600. hold: `ddp` 56(D1–D4 14개씩), `gin` 56(G1, G2 28개씩), `nvs` 54(N1, N2 27개씩) `[측정, 메인 세션 보고]`. 이 문서의 작성자는 봉인을 열지 않았다 |
+| 2026-10-09 13:23:23–13:26:25 | pilot P1(`chain.sh results/pilot P1`, 데모 12회, 채점 안 함) | hold rc 0, 시작 못 한 시행 0, 남은 프로세스 0. mlx5 새 줄 0(명령 오류 줄 rain 2, sunny 0 그대로, 펌웨어 명령 실패 합 31 그대로), `blind-` iptables 0/0 `[측정]` `results/pilot/`(원자료, Release 예정) |
+| 2026-10-09 13:26 | 메인 세션: `calib.py results/pilot`(처음 규칙) | `ddp` T 10.407 s(2회: 9.658, 11.157), k 구간 시간 기준(`k_send` 172–12 300 등). `gin` T 0.136 s(0.138, 0.134), `hook_ms` 3–116. `nvs` "kept": 두 장애 없는 실행이 기준 줄 뒤 끝 줄 없이 끝남 `[측정]` |
+| 2026-10-09 13:26:39–13:30:05 | pilot P2(데모 12회, 채점 안 함) | hold rc 0, 시작 못 한 시행 0, 남은 프로세스 0, mlx5 그대로, iptables 0/0 `[측정]` |
+| 2026-10-09 14:00 | P1, P2 검토(9.4절 4단계의 확인, `rows_blind.py`로 다시 셈, 이 문서 작성자) | (1) DDP 해시: 끝까지 간 DDP 10회(장애 없음 2, 송신 2, 수신 2, 알리지 않는 수신 2, 멈춤 1, 끊김 1) 모두 두 rank가 같은 `9d051c49…` `[측정]`. 결정성과 복구의 exactly-once가 이 10회에서 성립. (2) 적용: DDP 11회와 GIN 6회 모두 `applied` 1. NVSHMEM 7회는 모두 시작 실패라 장애가 걸리지 않음(아래). (3) 오류와 복구 정규식이 장애 없는 DDP 2회, GIN 2회에서 0줄. GIN의 관리망 정규식은 시작 줄 `helper socket reconnect=1`에도 걸려 장애 없는 실행에서 rank마다 2줄 → 정규식을 고침(아래). (4) `handoff.py --include-demo`: 데모 24회, 누설 0줄, IPv4 0개(스크래치 `blind_pilot_view`) `[측정]` |
+| 2026-10-09 14:00 | NVSHMEM 시작 실패의 원인 | 두 PE 모두 `transport_ib_common.cpp:517 mem registration failed (errno 14)` → `heap registration setup failed` → `nvshmemi_setup_transport failed`, 그 뒤 예제가 `cuda failed with invalid argument`로 종료 코드 255(7회 모두). rain GPU의 BAR1이 256 MiB라 256 MiB 대칭 heap을 GPUDirect로 등록할 수 없다 `[측정, 추론]`. 기준 줄(`[nvshmem-t1] PE0 … enabled:`)은 연결 직후라 heap 등록보다 먼저 나와, 처음 규칙으로는 이 실행들이 시작 실패가 아니라 거절로 셈해졌다 |
+| 2026-10-09 14:00 | pilot의 관찰(예측은 그대로, 채점하지 않음) | DDP 알리지 않는 수신 QP 오류 2/2는 멈추지 않고 보내는 쪽 RETRY_EXC(훅 뒤 3.6–3.7 s)로 복구되어 투명했다. 예측 D4(멈춤)와 다르다. GIN `qperr` 1/1은 복구 줄 없이 두 rank가 시간 상한 60 s까지 멈췄다(rank 0의 QP를 ERR로 옮긴 뒤 어느 rank에도 다른 줄 없음). 예측 G2(투명)와 다르다. 예제 커널은 put 뒤 `waitSignal`로 상대의 신호를 기다린 다음에야 flush로 CQ를 보는데, 두 rank가 모두 신호를 기다리면 오류 CQE를 읽는 장치 스레드가 없어 분류와 복구가 시작되지 않는 것으로 본다 `[추론, n=1]`. GIN kill 1/1은 살아남은 rank가 FIN으로 바로 죽음 판정 뒤 유예 20 s까지 멈춤. DDP kill 1/1 거절 0.05 s, 종료 0.37 s. 멈춤과 끊김 데모는 모두 투명 `[측정, 데모마다 n=1–2]`. 예측은 측정 전에 고정했으므로 바꾸지 않는다(3절) |
+| 2026-10-09 14:00 | DDP 시각 대응의 문제 | 같은 300 반복이 5.16–14.96 s 걸렸다(데모 6회의 반복 0–300 시간). 송신 탐침은 빠른 두 실행에서 나와 시간 기준 직선의 위 끝 k 12 300이 반복 약 512에 해당했다(실행은 300 반복, 송신은 반복당 약 23.9). 그대로면 `sqp`의 절반 가까이가 발화하지 않는다. `kill`, `stop`, `mute`의 초 단위 구간(0.52–8.33 s)도 빠른 실행에서는 학습 뒤에 떨어진다 `[측정, 추론]` |
+| 2026-10-09 14:10 | 하네스 수정(태그 전, 예측과 설정은 그대로) | (a) NVSHMEM: `NVSHMEM_SYMMETRIC_SIZE` 256M → 160M(t1_380이 두 노드에서 쓴 값), 앱 인수 `-n 30` → `-n 150`(같은 세 크기, 트래픽을 몇 초로). (b) DDP: `kill`, `stop`, `mute`는 `iter <n>` 줄에서, 훅 k는 반복 번호 기준 직선으로(7절, `calib.py` 머리말). 다시 낸 값: `iter_window` 15–240, `k_send`, `k_recv` 428–5 814(k(i) = 69.1 + 23.94 i), `k_silent` 212–2 912(k(i) = 32.0 + 12.00 i). `calib.py`는 탐침 이름(`demo-ddp-<cls>-k<K>`)인 데모만 탐침으로 쓴다. (c) `rows_blind.py`: 시작 실패 줄(`nvs`)을 `void`에, GIN 관리망 정규식에서 `reconnect` 뺌. 다시 세면 NVSHMEM pilot 7회는 시작 실패(제외), GIN 장애 없는 실행의 관리망 줄 0. (d) DDP 출력: NCCL INFO 추적 줄 억제(200줄 뒤 셈, 6절), 평가 폴더의 안내 문구를 억제한 줄의 종류에 맞춤. (e) `hold.sh`에 pilot P3. (f) 사전 등록의 `PREREG.txt`에 봉인 폴더 대신 장애 에이전트가 알려 준 sha256을 쓰고 `hold.sh`, `chain.sh`도 넣음 | 이 커밋. GIN `hook_ms` 3–116은 그대로(데모 발화가 기준 줄 뒤 58 ms, 트래픽 안) `[측정]` |
 
 ## 13. 사전 등록 이후 변경
 
@@ -515,6 +538,10 @@ judgments.csv: judgments_template.csv에 시행마다 한 줄을 채운다.
 ## 18. 한계
 
 - 9.1절의 "이 절차가 막지 못하는 것": 메인 세션과 평가 에이전트가 같은 사용자 권한이라 봉인을 읽을 수 있다. 순서와 sha256 기록으로만 지킨다.
+- pilot이 보인 짧은 실행 `[측정, 추론]`: GIN 예제의 트래픽은 0.13–0.14 s라 2–8 s 관리망 끊김은 거의 모두 트래픽 뒤 정리 단계와 겹치고, 시행이 끝나면
+  끊김도 끝난다(실제 끊김 길이는 시행 끝까지). DDP의 6–14 s 끊김도 학습 끝을 넘기면 시행 끝에서 잘린다(pilot 데모: 10 s 중 4.8 s).
+- pilot 뒤 바꾼 하네스(12절 14:10): 시각 대응의 단위(DDP), NVSHMEM heap과 반복 수. 예측과 장애 구성은 바꾸지 않았지만, 이 변경은 일정(봉인) 뒤, 태그
+  전에 했다.
 
 ## 19. 다음 작업
 

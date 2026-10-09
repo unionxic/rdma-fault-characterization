@@ -1,0 +1,42 @@
+== 2026-10-09 13:23:02 blind-bundle md5 (rain)
+f7f036be96854f022d9dd3f637a81b48  ./agent/node_agent.py
+9114b9931fc333e6c3eb4be9c3262fde  ./ddp/ddp_entry.py
+074ee68c40b6e40af3bde1692ecb86e0  ./hq/blind_gin_ring
+c1311625c7a06c785bc313558504f982  ./hq/libnccl.so.2.32.3
+e3264e83213d6db2e82a60034ade0b7d  ./nvs/blind_nvs_boot.so
+26187ab91a3791773584cbb910686bc7  ./nvs/blind_nvs_rr
+825443f85d5932a13f6fe061768235ea  ./nvs/lib/libnvshmem_host.so.3.8.0
+7d5666c0d46c248068d614c05de23d89  ./nvs/lib/nvshmem_bootstrap_pmi2.so.3.0.0
+5a8e78beb24db0d8505a6342398bb2e7  ./nvs/lib/nvshmem_bootstrap_pmi.so.3.0.0
+26da2c3138ce2cfcfdf37712234a780b  ./nvs/lib/nvshmem_bootstrap_uid.so.3.0.0
+d6ae3699f95bfeaf0f36af6ebba95b7e  ./nvs/lib/nvshmem_transport_ibgda.so.7.0.0
+bd56b29c621dd0b37ea3d4e6ab9309fc  ./nvs/lib/nvshmem_transport_ibrc.so.7.0.0
+9ed03e1d4b9833c0c2e01f3aa1f84d1c  ./s2/libnccl.so.2.23.4
+== sunny
+f7f036be96854f022d9dd3f637a81b48  ./agent/node_agent.py
+9114b9931fc333e6c3eb4be9c3262fde  ./ddp/ddp_entry.py
+074ee68c40b6e40af3bde1692ecb86e0  ./hq/blind_gin_ring
+c1311625c7a06c785bc313558504f982  ./hq/libnccl.so.2.32.3
+e3264e83213d6db2e82a60034ade0b7d  ./nvs/blind_nvs_boot.so
+26187ab91a3791773584cbb910686bc7  ./nvs/blind_nvs_rr
+825443f85d5932a13f6fe061768235ea  ./nvs/lib/libnvshmem_host.so.3.8.0
+7d5666c0d46c248068d614c05de23d89  ./nvs/lib/nvshmem_bootstrap_pmi2.so.3.0.0
+5a8e78beb24db0d8505a6342398bb2e7  ./nvs/lib/nvshmem_bootstrap_pmi.so.3.0.0
+26da2c3138ce2cfcfdf37712234a780b  ./nvs/lib/nvshmem_bootstrap_uid.so.3.0.0
+d6ae3699f95bfeaf0f36af6ebba95b7e  ./nvs/lib/nvshmem_transport_ibgda.so.7.0.0
+bd56b29c621dd0b37ea3d4e6ab9309fc  ./nvs/lib/nvshmem_transport_ibrc.so.7.0.0
+9ed03e1d4b9833c0c2e01f3aa1f84d1c  ./s2/libnccl.so.2.23.4
+bundle: rain == sunny (13 files)
+source == deployed: nvs/blind_nvs_rr
+source == deployed: hq/libnccl.so.2.32.3
+source == deployed: hq/blind_gin_ring
+source == deployed: s2/libnccl.so.2.23.4
+source == deployed: ddp/ddp_entry.py
+source == deployed: nvs/blind_nvs_boot.so
+source == deployed: agent/node_agent.py
+venv on sunny against rain's MANIFEST.md5 (18856 files): venv_ok
+rain gin: 	libnccl.so.2 => /home/unionxic/blind-bundle/hq/libnccl.so.2 (0x00007efeef700000); nvs: 	libnvshmem_host.so.3 => /home/unionxic/blind-bundle/nvs/lib/libnvshmem_host.so.3 (0x00007f392eecd000); 
+sunny gin: 	libnccl.so.2 => /home/unionxic/blind-bundle/hq/libnccl.so.2 (0x000079d6a3600000); nvs: 	libnvshmem_host.so.3 => /home/unionxic/blind-bundle/nvs/lib/libnvshmem_host.so.3 (0x00007ba3bcc00000); 
+rain torch 2.4.1+cu121 libnccl mapped: ['/home/unionxic/blind-bundle/s2/libnccl.so.2.23.4']
+sunny torch 2.4.1+cu121 libnccl mapped: ['/home/unionxic/blind-bundle/s2/libnccl.so.2.23.4']
+existing bundles unchanged (rain 295 files, sunny 356 files)
