@@ -155,8 +155,8 @@ rank를 새 프로세스로 잇는 길, 보낸 메시지를 다시 넣는 길, �
 | `rs4_kill1` | rank 1 kill(rank 3과 같은 GPU) | `@rs` 5 | 일반성 |
 | gin-remaining, gpu-detect 회귀 셀 | 복원 계층을 켠 채 기존 셀 | `@rs` 각 5 | 회귀 |
 | `lat_4k`, `lat_256k` | 로그 켬 대 끔 | `@rsp` 각 5 | 비용 |
-| `lat_hold_unarmed` | 4 KiB, 256 KiB: hold 정책이지만 무장 전(키 다시 읽기만) 대 fail-fast | `@rsp` 각 5 | 비용(B4 (나)의 다시 읽기, 검토 3 W2) |
-| `lat_ff_branch` | 4 KiB, 256 KiB: fail-fast에서 이 계층의 빌드 대 `hw` 운영 빌드(분기 하나와 내부 인자 하나) | `@rsp`, `@hwp` 각 5 | 비용(검토 3 W2, W8) |
+| `lat_hold_unarmed` | 4 KiB, 256 KiB: hold 정책이지만 무장 전 대 fail-fast. `ncclGinRestoreStep`을 부르지 않아 멈춤이 없고 로그도 없음. 잼 = 키 다시 읽기 + coop 추가 동기화 | `@rsp` 각 5 | 비용(B4 (나), 검토 3 W2, 재확인 X1) |
+| `lat_ff_branch` | 4 KiB, 256 KiB put과 4 KiB get: fail-fast에서 이 계층의 빌드 대 `hw` 운영 빌드(put은 분기 하나와 내부 인자 하나, get은 포인터 읽기 하나와 분기 하나) | `@rsp`, `@hwp` 각 5 | 비용(검토 3 W2, W8, 재확인 X3) |
 
 ## 8. 제외 기준과 중단 기준
 
@@ -446,7 +446,7 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 | RL7 | 새 함수, `opMu` 안 | QP마다 `rq.exch`를 새 끝점으로(Commit의 검사 hr 2360 / hw 2361, 연결 hr 2450 / hw 2451 전) |
 | RL8 | 새 함수 | 계획 `U = S, n = 0`으로 `gdakiTsRepostApply`(hr 4692 / hw 4717) |
 | RL9 | `ncclGinGdakiRegMrSym`(hr 7879–7931 / hw 8198–8250), 문맥 생성(hr 7311–7315 / hw 7630–7634), `gdakiLbSetup`(hr 6474– / hw 6761–) | window 등록은 rkey 표의 자리만 등록부에 적고, 루프백 MR 등록(`gdakiLbAddRange`)은 GDAKI 문맥을 만들 때(devComm 생성, `gin_host.cc` 374) 그때까지의 표에만 한다. 그 뒤 등록한 window가 있으면 무장 안 함. 복원 때 칸 r을 NIC 루프백으로 쓰고, 다 쓴 뒤 READ 하나로 확인하고 나서 게시(DESIGN_POLICY.md T5, A1 (3)) |
-| RL10 | 문맥 생성, `gdakiLbSetup`(hr 6474–6735 / hw 6761–7040), `gdakiTsStart`(hw 7040–) | 로그 고리와 측 표 할당, 루프백 MR, `ncclGinGdakiGPUContext`의 새 칸. GPU 문맥은 `gdakiTsSetup`보다 먼저 장치로 복사되므로(hw 7964) 측 표 포인터 칸은 `gdakiTsStart` 안에서 H2D 한 번으로 따로 쓰고, `ncclGinGdakiCreateContext`가 돌아온 뒤에는 쓰지 않음(DESIGN_POLICY.md 2.3절, 검토 3 W1) |
+| RL10 | 문맥 생성, `gdakiLbSetup`(hr 6474–6735 / hw 6761–7040), `gdakiTsStart`(hw 7040–) | 로그 고리와 측 표 할당, 루프백 MR, `ncclGinGdakiGPUContext`의 새 칸. GPU 문맥은 `gdakiTsSetup`보다 먼저 장치로 복사되므로(hw 7966) 측 표 포인터 칸은 `gdakiTsStart` 안에서 H2D 한 번으로 따로 쓰고, `ncclGinGdakiCreateContext`가 돌아온 뒤에는 쓰지 않음(DESIGN_POLICY.md 2.3절, 검토 3 W1) |
 | RL11 | `gdakiTsMsg`(hr 2953 / hw 2966), helper 루프의 메시지 처리(hr 6074–6083 / hw 6359–6368) | 새 메시지 종류 |
 | RL12 | 새 함수 + 낡은 기록 검사(hr 5431 / hw 5460) | 입력 멈춤의 빈 라운드. 검사는 `coveredEpoch`로 |
 | RL13 | `gdakiTsExecuted`(hr 4330 / hw 4355), `gdakiTsBaseline`(hr 4351 / hw 4376) | 누적 실행 수 |
@@ -463,7 +463,7 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 |---|---|
 | DV1 | `ncclGinGdakiGPUContext`(common.h 222–236)에 측 표 포인터 `restore` 칸: QP마다 로그 고리 설명, "로그 켬" 낱말(검토 3 W2), 보낸 메시지 수, 억제 예산. 포인터는 hold 정책이면 문맥을 만들 때부터 0이 아님(RL10) |
 | DV2 | `putImplMode`(gin_gdaki.h 458–547), `putValueImplMode`(577–), 신호 길에서 게이트 안 로그 쓰기(9.5절). hold가 아니면 측 표 포인터가 0. 포인터가 0이 아니어도 그 QP의 "로그 켬" 낱말(게이트 안 strong 읽기)이 서 있을 때만 씀 |
-| DV3 | 결정 (나)(2026-10-09, DESIGN_POLICY.md 5절 B4, 검토 3 반영): hold 정책의 communicator(측 표 포인터 ≠ 0)에서만 `tsGateEnter`가 참을 돌려준 뒤 키를 다시 읽음. `putImplMode`는 게이트(501) 뒤 보내기 갈림(509) 앞에서 `raddr.key`(`hasWins`일 때만)와 `sig_raddr.key`(키 주소가 null이 아닐 때만), `putValueImplMode`는 604 뒤, `getImplMode`는 704 뒤에 `raddr.key`. 읽기는 L1을 거치지 않는 시스템 범위 relaxed 32비트 읽기. `signalKey`는 지금처럼 호출자가 계산해 값으로 넘기고(1458–1468, 1483–1494), 호출자는 그 키를 읽은 주소(`signals_table.rkeys + peer` 또는 `signalMh->rkeys + peer`, 신호가 없으면 null)를 내부 인자 하나로 더 넘김. fail-fast는 키 읽기 자리와 종류가 지금과 같고 DV2와 같은 포인터의 분기 하나와 내부 인자 하나만 더해짐. 비용은 LT1, LT2와 7절의 비용 셀 |
+| DV3 | 결정 (나)(2026-10-09, DESIGN_POLICY.md 5절 B4, 검토 3 반영): hold 정책의 communicator(측 표 포인터 ≠ 0)에서만 `tsGateEnter`가 참을 돌려준 뒤 키를 다시 읽음. `putImplMode`는 게이트(501) 뒤 보내기 갈림(509) 앞에서 `raddr.key`(`hasWins`일 때만)와 `sig_raddr.key`(키 주소가 null이 아닐 때만), `putValueImplMode`는 604 뒤, `getImplMode`는 704 뒤에 `raddr.key`. 읽기는 L1을 거치지 않는 시스템 범위 relaxed 32비트 읽기. `signalKey`는 지금처럼 호출자가 계산해 값으로 넘기고(1458–1468, 1483–1494), 호출자는 그 키를 읽은 주소(`signals_table.rkeys + peer` 또는 `signalMh->rkeys + peer`, 신호가 없으면 null)를 내부 인자 하나로 더 넘김. fail-fast는 키 읽기 자리와 종류가 지금과 같고 put에는 DV2와 같은 포인터의 분기 하나와 내부 인자 하나, get에는 포인터 읽기 하나와 분기 하나만 더해짐(검토 3 재확인 X3). 비용은 LT1, LT2와 7절의 비용 셀 |
 | DV4 | 게이트 에폭 반쪽의 SUPPRESS 비트(`EPOCH_MASK`를 `0x1fffffff`로). 보내기의 열림 검사(`tsGateEnter` 333)에만 넣고 공용 `tsWordOpen`(146–148)과 대기 쪽(`tsPollEnter` 365, `tsParkStable` 264)에는 넣지 않음. 장치가 에폭 반쪽을 값으로 쓰는 자리(364–366, 1106–1108, 1037, 206–207)에서 지움. 느린 길의 억제와 put+신호 나누기(DESIGN_POLICY.md C6) |
 
 | id | 무엇을 |
@@ -664,7 +664,7 @@ ginContextCount, ginSignalCount, ginCounterCount, ginConnectionCount, window 크
 - [x] 감지와 반응을 나눈 정책 설계와 통합 상호작용 표([DESIGN_POLICY.md](DESIGN_POLICY.md))
 - [x] 독립 충돌 검토 둘(EXPERIMENT.md 초안 표, DESIGN_POLICY.md)과 반영. 검토 2의 마지막 판정: B1–B4 밖에 풀리지 않은 충돌 없음
 - [x] B4 결정: (나)(2026-10-09, 사용자)
-- [ ] (나)와 `pe.lostAfterCommit` 계약의 독립 충돌 검토(DESIGN_POLICY.md 6절)
+- [x] (나)와 `pe.lostAfterCommit` 계약의 독립 충돌 검토(DESIGN_POLICY.md 6절 검토 3과 재확인: 풀리지 않은 충돌 없음)
 - [ ] 사용자의 설계 승인(그 전에는 복원 계층의 구현과 빌드 없음. B1–B3 실행 가능성 시험은 2026-10-09 허용)
 - [ ] gpu-detect 계층에 정책 hook G1–G9(DESIGN_POLICY.md 4.10절)
 - [ ] 시제품: 로그, 체크포인트, 복원 계획, 억제, 모의, 단위 시험(9.13절, 멈춤)
@@ -686,6 +686,7 @@ ginContextCount, ginSignalCount, ginCounterCount, ginConnectionCount, window 크
 | 2026-10-09 | 검토 1 결과(F1–F28) 반영. 검토 2(이 문서 대상, 읽기 전용 에이전트): 첫 검토 V1–V20, 재확인 N1–N5, P1–P7, Q1–Q5, R1을 차례로 반영. 마지막 판정(커밋 `0af9190e`): 막는 문제 B1–B4 밖에 풀리지 않은 충돌 없음 | DESIGN_POLICY.md 6절, 커밋 `fb27b091`–`0af9190e` |
 | 2026-10-09 | 사용자 결정 둘. (1) B4는 (나): 게이트 뒤의 키 다시 읽기는 hold 정책의 communicator에서만, fail-fast는 측 표 포인터의 분기 하나만 더함(4 KiB, 256 KiB 지연은 계층을 만들 때 잼). (2) B1(예비 프로세스의 초기화 재생), B2(GPU를 나눠 쓰는 rank의 LSA 팀 크기), B3(relaxed ordering window MR에서 체크포인트 drain이 보이는가)의 실행 가능성 시험을 한다. 복원 계층은 여전히 구현하지 않고, 스크래치의 시제품 초안도 빌드하지 않는다 | 9.1, 9.6절, 9.9절 DV3, DESIGN_POLICY.md 5절 B4 |
 | 2026-10-09 | 병렬로 도는 gpu-detect 고침과의 계약을 설계에 넣음(메인 세션이 정함): 응답 쪽 Commit 뒤 게시 전에 소켓을 잃은 길(hw 5285–5292, 5298–5303)에서 거절 바로 전에 `pe.lostAfterCommit = true`, 죽음 판정이면 그 거절은 PeerDead/`GDAKI_UA_PEER_DEAD`(degraded 예약), 아니면 지금과 같음. 복원 설계는 이 창을 계속 붙잡지 않는다: G2의 강한 증거 검사가 그 표시가 선 거절을 뺀다(NOHOLD), REJOIN이 표시를 지운다 | 9.3절 8단계, DESIGN_POLICY.md 2.4, 3절, D4, R3, 4.10절 끝 |
+| 2026-10-09 | 검토 3(읽기 전용 에이전트): 결정 (나)와 `lostAfterCommit` 계약 대상. 중간 W1–W3(측 표 포인터를 쓰는 때와 무장 조건, 포인터의 두 뜻 → QP마다 "로그 켬" 낱말, get 키도 다시 읽음), 낮음과 메모 W4–W11 반영. 재확인: W1–W11 풀림, 낮음 X1–X5 반영(표시를 세우는 자리는 "잃은 자리에서, `gdakiTsSocketLost` 전" 하나로; gpu-detect에 넘길 것). 판정: 풀리지 않은 충돌 없음 | DESIGN_POLICY.md 6절 검토 3, 커밋 `daa63c69`, `6b33627e`와 이 커밋 |
 
 ## 13. 사전 등록 이후 변경
 
