@@ -794,6 +794,42 @@ cell reached"로 멈추면(`STOP_nic`) 그것은 예산 멈춤이지 시험 결�
 fence 1 200) 새 hold로 다시 하는 것을 사용자나 이 에이전트와 정한다(다시 검토 Q2, 실행 전). B1의 `abort_rc=0`은 깔끔한 정리를 증명하지 않는다: application이
 `ncclDevCommDestroy`를 부르지 않아 collComm을 닫을 때 PD 해제가 EBUSY로 실패할 수 있고, 기록 실행도 같으며 NCCL이 그 오류를 숨긴다(Q1, 판정에 영향 없음).
 
+**`STOP_nic`를 푸는 규칙(2026-10-09, B3r 뒤에 정함).** `STOP_nic`는 지우지 않는다. 메인 세션은 다음이 모두 참일 때만 그 파일을
+`STOP_nic.cleared-<날짜시각>`으로 옮기고, 진단을 12절에 적는다.
+1. 멈춘 셀의 응답 쪽 kv가 `setup_error`로 끝났고(설정 단계: 본 반복 전), `nic_error`, `watchdog=1`, `cuda_error`가 없다. 보내는 쪽의 `nic_error="control receive
+   (peer gone or bound)"`는 응답 쪽이 끝나서 생긴 것이라 이 조건에 든다.
+2. 그 원인이 시험 프로그램이나 실행기의 결함으로 진단되어 12절에 적혔고, 그것을 고친 새 바이너리(새 디렉터리)가 독립 검토를 받았다.
+3. 그 hold의 새 mlx5 커널 줄이 0이고, rain의 펌웨어 명령 실패 셈(`fwcmd failed sum`)과 `cmd_err` 줄 수가 hold 앞과 같고, 남은 시험 프로세스가 0이다.
+4. 같은 hold의 다른 셀에는 `setup_error`, `nic_error`가 없다.
+`nic_error`로 멈춘 경우는 위 규칙으로 풀지 않는다: "QUERY_QP cap of the cell reached"는 예산 멈춤(위)이라 반복 수를 정한 뒤에, CQE 오류, rmsn 2 s 초과, QUERY_QP
+50 ms 초과, 반복당 200회 초과는 이 에이전트나 사용자에게 올리고 원인을 본 뒤에만 푼다. `STOP_mlx5`, `STOP_cuda`, `STOP_left`도 같다(올림).
+
+**2026-10-09 B3r 뒤: `b3v2`와 남은 B3 hold.** B3r의 `b3_h_rain_ro`는 설정의 loopback READ 자체 시험에서 멈췄다(12절의 진단: 첫 빌드는 그 시험의 무늬를 페이지
+가능한 호스트 메모리에서 `cudaMemcpy`로 써서, 복사의 DMA가 끝나기 전에 READ가 옛 낱말을 읽을 수 있었고 GPU가 바쁘면 그 틈이 커짐). 고친 `rs_drain_test`
+(`b3v2`, md5 `db5541eb7195619410b2113b137ad0df`)는 무늬를 pinned 메모리에서 쓰고 장치를 동기화한 뒤 READ가 옛 낱말이면 1 ms 간격으로 50번까지 다시 읽고 그
+횟수와 읽은 값을 kv에 적는다. 본 반복의 코드는 첫 빌드와 같다(바뀐 것은 이 자체 시험과 머리 주석뿐). 그래서 첫 빌드로 통과한 rain 셀 넷은 그대로 쓰고,
+남은 셀(`b3_h_rain_ro`, `b3_h_rain_so`, B3s 여섯)은 `b3v2`로 한다(실행기 기본값; meta의 `bin=`에 남음).
+
+```
+# b3v2 배포: 새 디렉터리 ~/rs-bundle/b3v2/ 하나만(있으면 거절), 그 밖의 ~/rs-bundle과 다른 묶음은 앞뒤 md5가 같아야 함. 약 30 s
+ls -d ~/rs-bundle/b3v2; ssh -n "$SUNNY_SSH" 'ls -d ~/rs-bundle/b3v2'      # 둘 다 "No such file"이어야 함
+WANT_B3V2=db5541eb7195619410b2113b137ad0df bash $F/deploy_feas.sh $SCR/agent_restore/deploy_check_b3v2.txt b3v2
+test -s $SCR/agent_restore/deploy_check_b3v2.txt && echo written
+grep -E "MISMATCH|CHANGED|not found" $SCR/agent_restore/deploy_check_b3v2.txt   # 아무 줄도 없어야 함
+# STOP_nic 풀기(위 규칙의 1–4를 확인한 뒤, 12절에 진단이 있을 때)
+mv $R/STOP_nic $R/STOP_nic.cleared-$(date +%Y%m%d-%H%M%S)
+# 경합 셀 둘을 다시(셀마다 hold 하나, b3v2, 3 200반복, RS_LAST_KB=4096; 결과는 $R/b3_rerun1/): 셀마다 약 1분
+bash $CR -w 10800 -t rs-B3one-hro -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3one-b3_h_rain_ro > $R/hold_B3one-hro.out 2>&1
+bash $CR -w 10800 -t rs-B3one-hso -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3one-b3_h_rain_so > $R/hold_B3one-hso.out 2>&1
+# 둘 다 STOP 없이 끝났을 때만
+bash $CR -w 10800 -t rs-B3s -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3s > $R/hold_B3s.out 2>&1
+python3 $F/summ_feas.py $R
+```
+
+다시 한 셀은 `b3_rerun<k>/`에 있고 `summ_feas.py`가 그 셀의 마지막 실행으로 읽는다(앞의 실행은 표 아래 "earlier runs"에 남음). 노드와 순서마다의 묶음은 셀
+`x`, `s`, `h`의 마지막 실행으로 한다. 끝난 뒤 볼 것: 다시 한 경합 셀의 kv에 `selfcheck_fence_attempts`, `selfcheck_same_attempts`(1이 아니면 그 수를 12절에
+적음), `result=PASS`, `valid=1`, fence 실패 0, `query_qp_total` < 20 000, hog의 `HOG_DONE`; B3s 셀 여섯은 B3r과 같은 것; 마지막에 B3 결론 줄.
+
 ## 10. 완료 조건과 QA 기준
 
 - [ ] [DESIGN_POLICY.md](DESIGN_POLICY.md) 5절의 막는 문제가 풀렸고, 그 문서의 독립 검토가 남은 충돌이 없다고 했다.
@@ -823,10 +859,10 @@ fence 1 200) 새 hold로 다시 하는 것을 사용자나 이 에이전트와 �
 - [x] B2: 시험 application으로 확인(2회, 해결 A; 2026-10-09)
 - [x] B3: `rs_drain_test` 빌드됨
 - [x] B3: smoke(1 024에서 rain 미결, 4 096에서 rain, sunny 유효)
-- [ ] B3: 본 셀 열둘(3 200반복, `RS_LAST_KB=4096`)
+- [ ] B3: 본 셀 열둘(3 200반복, `RS_LAST_KB=4096`): rain 넷 통과, rain 경합 둘과 sunny 여섯 남음(`b3v2`)
 - [x] B1: `rsx` hook과 `rs_spike` 빌드됨
 - [x] B1: 검토 3차의 막는 결함 P1 고침, 둘째 빌드 `rsx2`
-- [ ] B1: 기록과 재생, 음성 대조(`rsx2`, 독립 재검토 뒤)
+- [x] B1: 기록과 재생, 음성 대조(2회 통과, 2026-10-09)
 - [ ] 배포(`~/rs-bundle/`)와 실행 명령(메인 세션), 결과 정리(`results/<날짜>_feasibility/`)
 - [ ] gpu-detect 계층 확정 뒤 이 계층 구현, 리뷰
 - [ ] 실행기, 셀, 채점기, 예측 고정, pilot, 사전 등록
@@ -863,6 +899,10 @@ fence 1 200) 새 hold로 다시 하는 것을 사용자나 이 에이전트와 �
 | 2026-10-09 | B3 본 셀의 결정(실행 전, 판정 기준은 그대로): `RS_LAST_KB=4096`을 B3r, B3s, 다시 하는 셀에 실행기가 명시해 meta에 남김(이유: 1 024 smoke의 `boundary` 대조가 한 번도 늦은 낱말을 보지 못함). 4 096에서 rain은 반복당 QUERY_QP 약 4.9번이라 4 000반복이면 셀당 상한 20 000에 닿으므로 상한은 두고 반복을 셀당 3 200으로 줄임(예상 rain 약 16 800, sunny 약 12 000). 채점 fence는 셀당 1 600, 노드와 순서마다 4 800, 실패율 95% 상한 약 0.0625%. 셀당 전송량 약 17 GB | 9.15.1, 9.15.3 |
 | 2026-10-09 | gpu-detect의 `hk` 빌드(`~/rdma-error-wt/gpu-detect/harness/gpu-detect/hk_layer.diff`, 사전 등록 태그 `prereg/gpu-detect-v1`)를 읽어 계약 확인(읽기만): `gdakiTsDeclineAfterCommit`가 맨 처음에 `pe.lostAfterCommit = true`를 세우고(어느 돌아가기, `gdakiTsSocketLost`보다 먼저), 두 자리(ACK 보내기 실패, DONE 기다림 중 잃음)가 모두 이 함수를 부른다. ACK 실패 길은 죽음 판정을 하지 않고 errno 이름을 `closeCause`에 넣는다(hk 검토 지적 1로 받기 쪽 peek을 뺌). DONE 길은 `gdakiTsCauseLiveness`가 죽음이면 `gdakiTsSocketLost` 뒤 PeerDead, `GDAKI_UA_PEER_DEAD`로 거절. 표시는 `gdakiTsInstall`에서 지운다(REJOIN이 설치하는 자리). 그래서 검토 3의 W10/X5와 W11을 hk가 채운다 `[소스: hk_layer.diff]` | DESIGN_POLICY.md 2.4절 |
 | 2026-10-09 | 3차 반영의 독립 재검토(읽기 전용 에이전트, 커밋 `4bd76410` 대상): md5 확인(`rsx2` `c72cdad0`, diff `10271487`가 트리와 같음, `rs_spike` `40d43ed2`), P1 고침(PD 참조 셈, 장치 번호, 잠금, 실패 길, 해제), P2 고침이 맞음, 스크립트와 문서가 맞음. 재생이 시험 결함으로 실패할 남은 길은 찾지 못함. 낮음: Q2(B3 QUERY_QP 예산은 노드 사이 smoke에서만 잼 → 9.15.5에 예산 멈춤의 처리), Q3(dump 비교에서 빈 줄을 뺌), Q4, Q5(문서), Q1(정보: 정리의 PD 해제 EBUSY는 기록과 같고 숨겨짐). 판정: "B1: ready to run", "B3 main cells (B3r/B3s): ready to run" | 이 커밋 |
+| 2026-10-09 22:50 | 메인 세션이 `rsx2`를 배포(새 `~/rs-bundle/rsx2/`): rain과 sunny 같음, 원본과 같음, ldd 맞음, 기존 파일 그대로(rain 328, sunny 380개) | `agent_restore/deploy_check_rsx2.txt` |
+| 2026-10-09 22:50–22:51 | hold `B1`(태그 `rs-B1`, `rsx2`, QP 감시 100 ms, hold 28 s): 2회 모두 `rep1`, `rep0` 통과, 음성 대조 둘 다 init에서 실패(init_rc 2), 기록 12 117 B, 기록 29항목을 재생 29항목으로 정확히 소비(어긋남 0, 기록 밖 0, 자리별 가면 비교의 다름 0, 자기 칸의 다른 바이트 46과 49), 한 번 잇기 2/2, strace `--seccomp-bpf`에서 socket 13, 상대로의 connect 0, 자기 주소 0, AF_UNIX 1(자기 proxy), init_ms 기록/재생 211.8/174.3, 187.2/170.4, 223.0/185.5, 186.3/189.3, 재생의 abort 약 0.9 s, "no protection domain" 줄 없음. 판정(9.15.4): 이 범위(2 rank, 노드 사이, 문맥 2개, lsaSize 1, host RMA와 RAS 꺼짐)에서 초기화 재생은 된다 `[측정: summ_feas.py와 원자료로 다시 셈]` | `results/20261009_feasibility/b1/` |
+| 2026-10-09 22:51–22:53 | hold `B3r`(태그 `rs-B3r`, 첫 빌드 `rs_drain_test`, 3 200반복, `RS_LAST_KB=4096`, hold 43 s): `b3_x_rain_ro`, `b3_x_rain_so`, `b3_s_rain_ro`, `b3_s_rain_so` 모두 유효, PASS(채점 fence W와 AW 1 600반복 실패 0, `early` 200/200, `boundary` 200/200, 경계 덮기 1.000, fsame, nofence, cuflush, WA, 탐침의 실패 0, QUERY_QP 17 447–17 583, p50 54.1–60.6 µs, 최대 122.0 µs). 넷의 QUERY_QP 합은 rain debugfs 셈의 차이(69 993)와 맞음. `b3_h_rain_ro`(경합 셀)는 설정에서 멈춤: 응답 쪽 `setup_error="loopback READ self-check"`(본 반복 전), 보내는 쪽은 그 때문에 `nic_error="control receive"`, hog는 `HOG_DONE`(3.42 s). 실행기가 `STOP_nic`를 쓰고 `b3_h_rain_so`를 건너뜀(`skipped.txt`). 새 mlx5 줄 0, rain 펌웨어 명령 실패 셈 31 → 31, `cmd_err` 2 → 2 `[측정]` | `results/20261009_feasibility/b3/`, `STOP_nic` |
+| 2026-10-09 | 경합 셀 멈춤의 진단: 자체 시험은 무늬를 스택 변수(페이지 가능 메모리)에서 `cudaMemcpy` H2D로 fence 낱말과 window 경계 낱말에 쓴 뒤 곧바로 NIC 루프백 READ로 읽는다(첫 빌드의 925–934줄). 페이지 가능 메모리에서 장치로의 `cudaMemcpy`는 무늬를 staging 버퍼에 옮기면 돌아올 수 있고 장치로의 DMA는 아직 끝나지 않았을 수 있다(CUDA 런타임의 동기 동작 설명) `[문서]`. hog가 GPU 메모리 대역을 채운 셀에서만 멈췄으므로 그 틈에 READ가 옛 낱말을 읽은 것으로 본다 `[추론]`(읽은 값은 첫 빌드가 적지 않아 `[미확인]`). kv의 errno 28은 앞선 다른 호출이 남긴 값이다(이 실패는 값 비교라 errno가 없음) `[소스]`. 통과한 셀 넷은 영향을 받지 않는다: 자체 시험은 본 반복 전에 한 번이고 넷 모두 통과했으며, 본 반복의 판정은 그 낱말을 읽지 않는다(fence READ는 값을 보지 않음) `[소스]`. 고침: `b3v2`(md5 `db5541eb7195619410b2113b137ad0df`; pinned 무늬, 장치 동기화, 1 ms 간격 50번까지 다시 읽기, 시도 수와 읽은 값을 kv에, errno 0). 본 반복 코드는 같음. 배포는 새 `~/rs-bundle/b3v2/`(`deploy_feas.sh <확인 파일> b3v2`), 실행기의 기본 바이너리를 `b3v2`로. `STOP_nic`를 푸는 규칙을 9.15.5에 적음 | 9.15.5, 이 커밋 |
 
 ## 13. 사전 등록 이후 변경
 
