@@ -30,8 +30,10 @@
 
 | 빌드 키 | 내용 | 쓰는 곳 |
 |---|---|---|
-| `hw` | 이 실험의 GIN 연구 빌드: gin-remaining `hr` 위에 9.1절의 계층(파일 하나, 호스트 코드만) | 새 셀, 회귀, 지연 |
-| `hwp` | 같은 소스의 운영 빌드(`-DNCCL_GIN_TS_PRODUCTION`). 빌드만 하고 배포하지 않는다 | 컴파일 확인 |
+| `hk` | 이 실험의 GIN 연구 빌드: `hw` 위에 정책 hook, 응답 쪽 틈의 고침, 시험 스위치 하나, 정리 줄(9.1절 (f)–(h), 같은 파일 하나) | 새 셀, 회귀, 지연(pilot 2부터) |
+| `hkp` | `hk`와 같은 소스의 운영 빌드(`-DNCCL_GIN_TS_PRODUCTION`). 빌드만 하고 배포하지 않는다 | 컴파일 확인 |
+| `hw` | 첫 GIN 계층: gin-remaining `hr` 위에 9.1절 (a)–(e)(파일 하나, 호스트 코드만). pilot 1의 빌드. 배포된 번들은 읽기만 | 응답 쪽 틈의 대조 |
+| `hwp` | `hw`의 운영 빌드. 빌드만 함 | 컴파일 확인(지난 것) |
 | `hr`, `hq` | gin-remaining, gin-peer의 연구 빌드(배포된 번들, 읽기만) | 대조 |
 | `t1w` | 이 실험의 NVSHMEM 빌드: t1_380 위에 9.2절의 계층(파일 셋) | 새 셀 |
 | `t1_380` | blind-apps가 쓴 NVSHMEM 투명 복구 빌드(배포된 번들, 읽기만) | 대조 |
@@ -422,6 +424,83 @@ application은 건강한 상대까지 빼거나 abort해야 한다. degraded 뒤
 | degraded 뒤 건강한 쌍의 라운드 | 계속 | 기본은 거절(`=1`이면 계속) |
 | 비용 | 없음 | rank마다 10 ms당 QUERY_QP 4번(랭크 2개, 문맥 4개). 감지 때 장치 QP 구조와 CQ 링 읽기(뿌리 CQE가 없으면 50 ms까지 회마다 다시) |
 
+(f) **정책 hook 아홉(빌드 `hk`)** `[소스]`. 사용자 승인(2026-10-09)으로 `hw` 위에 gin-restore의 통합 정책 설계(`DESIGN_POLICY.md` 4.10절, gin-restore
+worktree `harness/gpu-initiated/gin_recovery/restore/`)가 정한 hook을 같은 파일에 넣는다. 감지는 두 정책에 공통이고 반응만 communicator마다의 정책이다.
+복원 계층이 없으므로 이 빌드의 유효 정책은 늘 fail-fast이고, 모든 hook은 fail-fast에서 `hw`가 하던 일을 그대로 한다. hook은 복원 계층이 나중에
+채울 얇은 자리다. 줄 번호는 `hw`의 `gin_host_gdaki.cc`다.
+
+| hook | 자리(hw 줄) | fail-fast(이 빌드) | 복원 계층이 채울 것 |
+|---|---|---|---|
+| 정책 칸(G1) | `gdakiTsSetup` 6438–, 설정 all-gather 레코드 6458–6518 | `NCCL_GIN_FAULT_POLICY`(기본 `failfast`, `hold`)를 읽어 레코드에 싣는다. `hold`이면 WARN 한 줄("hold requested, not available in this build; fail-fast"), rank마다 다르면 WARN 한 줄 뒤 fail-fast. 유효 정책을 문맥과 communicator 등록부(`gdakiUa`)에 둔다. 레코드가 커지므로 한 job의 모든 rank는 같은 라이브러리여야 한다(지금도 같은 전제) | hold의 무장 |
+| 거절 hook(G2) | `gdakiTsDecline` 4941 맨 앞 | 거짓을 돌려 거절은 그대로. 상대의 `lostAfterCommit`(아래 (g))을 읽을 수 있다 | 붙잡은 상대의 fallback, hold 시작 |
+| 감시 hook(G3) | `gdakiDetWatchStep`의 상대 거르기 6094 | 참(감시함) | 붙잡은 상대(HELD, COMMITTING)를 뺌 |
+| 기록 처리 hook(G4) | helper의 기록 루프 6405 | 참(라운드를 연다). 뒷정리(`ts->batch`, heartbeat, `nQueued`)는 hook 밖에서 그대로 돈다 | 흡수, fallback 표시 |
+| 훑기 hook(G5) | `gdakiTsScan`의 유실 검사 5923 | 검사함 | 붙잡은 상대에서 건너뜀 |
+| 에폭 기준(G6) | 6066, 6139, 그리고 hr에서 물려받은 5460, 3361 | `gdakiTsCoveredEpoch(s)`가 `s.epoch`를 돌려준다(빈 라운드가 없음) | 빈 라운드의 기준 |
+| rmsn 전달(G7) | 감시의 QUERY_QP 6111 | 같은 펌웨어 명령이 rmsn 칸도 돌려주고(DOCA `query_seq`는 한 명령의 출력에서 칸을 고를 뿐) hook은 아무것도 하지 않는다 | 누적 실행 수 |
+| 감시 스레드 걸음(G8) | `gdakiTsWatchdog` 3490(`gdakiUaDegradedStep` 옆) | 아무것도 하지 않음(붙잡은 상대가 없음) | 복원 시한 |
+| 펌웨어 초과의 책임 원인(G9) | 3530 | Local 그대로 | 붙잡은 상대면 PeerDead |
+
+같은 설계가 문서로만 정한 것: `NCCL_GIN_TS_DEGRADED_MS`, `NCCL_GIN_TS_DEGRADED_ROUNDS`는 fail-fast 반응의 변수이고, QP 감시의 변수(`NCCL_GIN_TS_QPWATCH_MS`,
+`_GRACE_MS`, `_NOCQE_MS`)는 감지의 변수라 두 정책에 같다. hold 정책에서 앞의 둘은 거절(fallback)이 일어난 뒤에만 효과가 있다.
+
+(g) **응답 쪽 Commit 뒤 소켓 손실(빌드 `hk`)** `[소스]`. 응답 쪽(`gdakiTsRespondPrepared` 5206–)이 Commit(5253)한 뒤 ACK를 못 보내거나(5285–5292) DONE을
+기다리다 소켓을 잃으면(5298–5303) `hw`는 죽음 판정 없이 `pe.gone`을 세우고 원인 Unknown, 단어 이유 `GDAKI_UA_DECLINED`로 거절한다. degraded는
+`GDAKI_UA_PEER_DEAD`의 거절에서만 예약되고(`gdakiUaRaisePeer` 2833–2847), `pe.gone`이 다시 걸기를 막아 그 죽음은 이 rank에서 다른 길로도 판정되지
+않는다. 그래서 랭크 3개 이상에서 이 rank의 상대를 모르는 대기(`waitSignal` 등, 칸 0만 읽음)는 풀리지 않는다. 랭크 2개에서는 "모든 상대 거절" 규칙(2820–2831)이
+칸 0을 바로 올린다. 같은 죽음을 FIN으로 본 다른 생존 rank는 판정하고 degraded가 되므로 이 rank 하나만 남는다.
+- 고침: 두 자리에서 거절 직전에 상대별 새 칸 `pe.lostAfterCommit = true`를 세우고(gin-restore와 정한 이름: 거절 hook이 읽는 약한 증거, hold 정책에서도
+  붙잡지 않음), idle 루프와 같은 판정 규칙을 부작용 없이 먼저 적용한다. 원인은 DONE 기다림이면 `gdakiTsPump`가 남긴 `pe.closeCause`, ACK 보내기 실패면
+  받는 쪽을 엿본 결과(`gdakiTsRoundPeekLost` 3863–: 보내기 실패만으로는 증거가 아님)다. 죽음(BYE 없는 FIN, BADMAGIC, 모름 목록 밖의 errno:
+  `gdakiTsCauseLiveness` 3737–3743)이면 `gdakiTsSocketLost`(3771–3802)로 판정하고(idle 루프와 같은 WARN 두 줄, 죽음 계수, 소켓 닫음) 원인 PeerDead, 단어 이유
+  `GDAKI_UA_PEER_DEAD`로 거절한다. 그 밖(모름, BYE 뒤, 엿보아 아무것도 없음)은 `hw` 그대로다. `pe.lostAfterCommit`은 상대의 손실 상태를 되돌리는 곳
+  (`gdakiTsInstall` 3884–3897, `gdakiTsMakeUnknown` 3749–3766, 복원 계층의 REJOIN)에서 지운다.
+- 시험 스위치(연구 빌드만, `#ifndef NCCL_GIN_TS_PRODUCTION`): `NCCL_GIN_TS_TEST_EXIT_AFTER_ACK=<k>`이면 시작 쪽이 k번째로 받은 ACK 직후(자기 Commit과 DONE
+  전, 5717 앞) WARN 한 줄을 쓰고 `_exit(73)`으로 끝난다. BYE를 보내지 않으므로 커널이 소켓을 FIN으로 닫는다(받는 버퍼가 비어 있음: ACK는 읽었고 응답 쪽은
+  DONE을 기다리며 아무것도 보내지 않음).
+
+**충돌 표**(구현 전에 작성). 고침이 닿는 기존 장치마다 지금과 고친 뒤를 비교했다.
+
+| 기존 장치(hw 줄) | 지금(`hw`) | 고친 뒤(`hk`) | 충돌 | 해결과 근거 |
+|---|---|---|---|---|
+| 시작 쪽 재시도와 NACK 2(`gdakiTsCancelRound` 5152–5171, 거절된 상대의 REQ에 NACK 2 5785) | Commit 뒤 손실은 거절. 시작 쪽이 살아서 다시 오면 NACK 2(원인 Unknown) | 죽음 판정이면 소켓을 닫아 재시도가 올 길이 없음. 모름이면 같음 | 없음 | 죽음으로 보는 원인은 idle 루프도 죽음으로 보고 소켓을 닫는다(3771–3802). 살아 있는 시작 쪽에서 BADMAGIC이 난 경우 그 쪽이 이 rank의 FIN을 죽음으로 보는 사슬도 idle 루프와 같다 |
+| `pe.gone`과 다시 걸지 않음(다시 걸기와 탐침이 `declined`를 거름 3997, 4094; idle 루프가 `gone`을 거름 6346, 6356) | gone, 소켓은 정리 때까지 열림, 재연결 없음 | 죽음: 소켓 닫고 gone. 모름: 같음 | 없음 | 둘 다 재연결이 없다(거절은 종단) |
+| 취소 길(`gdakiTsCancelRound` 5152–5171, `gdakiTsCancelResponder` 5177–5198, Commit 전 엿보기 3863–) | Commit 전 손실은 취소(상대 모름, 시작 쪽 재시도) | 바꾸지 않음 | 없음 | 고친 자리는 Commit 뒤 두 곳뿐 |
+| 재연결 기계와 liveness 판정(3737–3743, 3749–3766, 3771–3802, `gdakiTsRefused` 3809–3835) | 이 창에서는 판정을 부르지 않음 | 같은 규칙으로 먼저 분류하고 죽음일 때만 `gdakiTsSocketLost`. 모름이면 `gdakiTsMakeUnknown`을 부르지 않음 | 없음 | 판정 규칙은 그대로. 모름을 재연결 기계에 넘기지 않는 것은 `hw`와 같다(거절된 상대는 다시 걸지 않음). 그래서 reset으로 보인 죽음은 이 창에서 여전히 degraded 없이 거절된다(18절) |
+| 시작 쪽 ACK 기다림, DONE 보내기 실패(5600–5716, 5745–5753) | 그대로 | 그대로 | 없음 | 시험 스위치만 5717 앞에 들어간다(연구 빌드) |
+| degraded와 "모든 상대 거절"(2820–2831, 2833–2847, `gdakiUaDegradedStep` 2874–2901) | 단어 이유 DECLINED: 그 상대 단어만, degraded 예약 없음. 랭크 2개는 칸 0이 바로 | 죽음: 이유 PEER_DEAD. 첫 죽음이면 `NCCL_GIN_TS_DEGRADED_MS`(2 000 ms) 뒤 칸 0. 랭크 2개는 지금처럼 바로(이유 값만 peer-dead) | 없음(의도한 변화) | 같은 죽음을 판정한 다른 생존 rank와 같아진다 |
+| M-C 게시 전 확인(`gdakiUaPeerRaised` 2918–2925, `NCCL_GIN_TS_DEGRADED_ROUNDS=0`) | 이 rank는 degraded가 안 되어 건강한 상대와의 라운드가 계속 게시됨 | degraded 뒤 건강한 쌍의 라운드는 거절(원인 Local) | 없음 | 다른 죽음 뒤와 같은 대가(9.1절 (d)), 규칙은 그대로 |
+| 책임 원인과 shrink 넘김(`gdakiBlameNote` 841–859, 거절의 기록 4962, `ncclGinTsBlameQuery` 865–885) | Unknown은 상대 쪽 원인이 아니라 질의가 −3, 그 상대를 빼는 중단 shrink는 일반 실패 | 죽음: PeerDead(상대 쪽 원인)라 넘김이 통과. 모름: 같음 | 없음 | 넘김 규칙은 그대로, 원인만 맞게 적힘 |
+| QP 감시(6094), 훑기(5909) | 거절된 상대는 다루지 않음 | 같음 | 없음 | |
+| 통계 계수(`cDeclined` 4952, `cDeaths` 3798, `ncclGinGetRecoveryStats` 7454–) | 거절 +1 | 죽음: 거절 +1, 죽음 판정 +1 | 없음 | 판정이 있었으므로 맞는 수. 기존 회귀 셀은 이 창을 지나지 않음 |
+| 비동기 오류(4964–4967) | 거절이 세움 | 같음 | 없음 | |
+| FAIL(거절의 FAIL 4970–4979, 거절한 상대의 재연결에 FAIL 3935–3948, 4201–4205, 4229–4232) | 이 거절은 FAIL을 보내지 않음 | 같음(죽음이면 소켓도 닫힘) | 없음 | |
+| 정리의 BYE(`gdakiTsCloseAll` 3637–3660: gone이면 BYE 없이 close) | 정리 때 BYE 없이 닫힘 | 죽음: 판정 때 이미 닫힘 | 없음 | 상대가 살아 있었다면 FIN을 보는 때만 앞당겨진다(둘 다 BYE 없음) |
+| helper 루프의 죽음 거절(6380–6386, `deadJudged`) | 해당 없음 | `gdakiTsSocketLost`가 세운 `deadJudged`를 바로 뒤의 거절이 지움(4948) | 없음 | 두 번 거절하지 않음 |
+| 기다림 안 응답과 미룬 REQ(`gdakiTsServeLower` 5341–5407, `gdakiTsRecvServing` 5422–, 미룬 REQ 6308–6341) | 중첩 응답 라운드도 같은 거절 | 같은 함수라 같은 고침. 닫힌 소켓은 바깥 기다림의 poll 목록(fd < 0, gone을 거름)과 미룬 REQ(6312)가 이미 다룸 | 없음 | |
+| 양보한 시작 쪽(`gdakiTsRespondPrepared`의 `yf`) | 같은 거절, 자기 장애는 다시 줄에 서지 않음 | 원인만 바뀜 | 없음 | |
+| 거절 hook과 새 칸 `pe.lostAfterCommit` | 없음 | 거절 직전에 세움, 거절 hook이 읽을 수 있음(fail-fast에서는 거절 그대로) | 없음 | 이 빌드에서 깃발이 선 상대는 거절된 상대(종단)라 다시 설치되지 않는다 |
+| 라운드 한도(3542–3550), 펌웨어 단계 감시(3497–3541) | 해당 없음 | 라운드 안에서 소켓 close 하나가 더해질 뿐, 펌웨어 명령은 더하지 않음 | 없음 | |
+| 장치 쪽(`gin_gdaki.h`) | 그대로 | 그대로. 칸 0이 degraded로 오르면 상대를 모르는 대기가 오류로 돌아온다(gin-remaining 규칙) | 없음 | |
+| 기존 열과 셀(`n_judged`, `n_death`, gin-remaining의 `judged`; GIN app kill, `f4_b`, `rm4_kill3_untimed`) | | 이 창의 죽음은 이제 "judged dead" 줄을 남긴다 | 없음 | 기존 셀의 kill은 라운드 밖이라 이 창을 지나지 않는다. 새 셀만 지난다 |
+
+**어느 rank가 멈추고 왜인가**(새 셀 `rm4_gap`, `rm4_gapx`, 실행 전에 작성) `[소스, 추론]`. 랭크 4개(짝수 rain, 홀수 sunny), 모든 방향의 간선, 시간 제한 없는
+받기(`GIN_MR_RX_UNTIMED=1`), 상대별 flush, 장애 뒤 application의 유예 15 s(`GIN_MR_GRACE_S=15`). rank 3의 문맥 `ctx(3, 0)`에 로컬 QP 오류를 넣어 rank 3이
+시작 쪽, rank 0이 응답 쪽인 라운드를 만든다.
+- `rm4_gap`(두 빌드에 같은 조건): rank 3에 `NCCL_GIN_TS_TEST_STALL=8000@commit`(시작 쪽이 자기 Commit 뒤 DONE 전에 8 s 멈춤, `hw`에 이미 있는 스위치),
+  장애 4 000 ms(문맥 뒤), 실행기가 rank 3을 SIGKILL 9 000 ms(실행 뒤). pilot에서 실행 뒤 9 000 ms의 kill은 devComm 뒤 8.02 s였으므로 kill은 멈춤 창
+  (devComm 뒤 약 4.1–12 s) 가운데에 든다 `[측정: pilot 1, n=1]`. 창에 든 시행은 rank 0의 로그에 "peer closed the socket before DONE" 거절 줄이 있다.
+- `rm4_gapx`(`hk`만): rank 3에 `NCCL_GIN_TS_TEST_EXIT_AFTER_ACK=1`. 창을 결정적으로 맞춘다.
+- rank 0(응답 쪽): Commit 뒤 DONE 기다림에서 FIN. `hw`: 원인 Unknown 거절, 판정과 degraded 없음 → rank 3에서 오는 받기는 칸 0을 기다리며 풀리지 않고,
+  application은 비동기 오류를 본 뒤 15 s 유예가 지나도 커널이 끝나지 않아 `async_error_kernel_stuck`(종료 코드 3)로 abort한다. `hk`: 죽음 판정(cause=FIN),
+  PeerDead 거절, 2 000 ms 뒤 칸 0 → 받기가 풀리고 커널이 끝난다.
+- rank 1, 2: rank 3의 helper 소켓에서 BYE 없는 FIN을 idle 루프에서 보고 판정, PeerDead 거절, 2 000 ms 뒤 칸 0(두 빌드 같음, gin-remaining RG9와 같은 길).
+- 그래서 `hw`에서는 rank 0만 멈추고, `hk`에서는 세 생존 rank 모두 자기 판정 뒤 2 000–3 000 ms에 rank 3에서 오는 받기가 풀린다. 랭크 2개라면 두 빌드 모두 바로 풀린다.
+
+(h) **정리 때 감시 줄(빌드 `hk`)** `[소스]`. 감시의 정리 줄(QUERY_QP 수와 소요)은 `ncclGinGdakiTsCommTeardown`이 등록된 문맥에만 썼다. GIN 예제는
+communicator보다 devComm을 먼저 지우므로(`ncclDevCommDestroy` → `gdakiRecFree` → `gdakiTsFree`) 그 줄이 나오지 않았다(pilot 1, 12절). `hk`는 그 줄을
+`gdakiTsFree`에서도 쓴다(문맥마다 한 번). 로그만 바뀐다.
+
 ### 9.2 NVSHMEM 계층 `t1w` ([t1w_layer.diff](t1w_layer.diff))
 
 (a) **작별과 FIN 판정** `[소스]`.
@@ -552,7 +631,10 @@ md5와 다르면 멈춘다(기대값은 스크립트의 `WANT_*`, 12절의 마�
 - [x] 질문, 가설, 셀, 예측 초안 (`DRAFT`)
 - [x] 배포(메인 세션, `hw`와 `t1w`)
 - [x] pilot P1, P2(메인 세션, 채점 안 함)
-- [ ] pilot 1 점검
+- [x] pilot 1 점검(12절)
+- [x] 응답 쪽 틈의 충돌 표(9.1절 (g), 구현 전)
+- [ ] 정책 hook, 응답 쪽 틈의 고침, 빌드 `hk`, `hkp`, 독립 충돌 리뷰
+- [ ] 배포 `hk`, pilot 2(메인 세션), 점검
 - [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
 - [ ] 본 실행 G1–R3 (`RUNNING`)
 - [ ] 채점 (`QA`), 독립 재계산과 측정 코드 리뷰
@@ -580,6 +662,12 @@ md5와 다르면 멈춘다(기대값은 스크립트의 `WANT_*`, 12절의 마�
 | 2026-10-09 17:37–17:41:41 | 메인 세션이 pilot P1(app 14회), P2(회귀와 지연 8회)를 `chain.sh`로 돌림. 채점하지 않음. 빌드 `hw` `efc48ca1`과 `t1w`에 묶인 증거다 | `[측정]` `results/20261009_pilot/`(커밋 안 함, 원자료는 Release 예정). `chain.out`: P1 17:37:10–17:39:44, P2 17:39:44–17:41:41, 두 hold 모두 rc=0, iptables 규칙(gin-, blind-) 0 → 0. 네 스냅숏 모두 새 mlx5 줄 0, rain 펌웨어 명령 실패 합 31 → 31, 남은 프로세스 0, STOP 파일 없음 |
 | 2026-10-09 | 사용자 결정으로 보류. 이 실험의 fail-fast 반응(NVSHMEM fail-stop, GIN degraded 해제와 `NCCL_GIN_TS_DEGRADED_ROUNDS=0`, QP 감시에서 라운드나 거절로 가는 길)이 병렬 실험 gin-restore의 설계(대기를 붙잡고 예비 프로세스로 죽은 rank를 되살림)와 충돌했다. 규칙: 설계 충돌이 남아 있는 동안 아무것도 구현하지 않는다 | 사용자 지시(2026-10-09). 보류 동안 pilot을 검토하지 않았고 빌드도 하지 않았다 |
 | 2026-10-09 | 통합 정책 설계 `DESIGN_POLICY.md`(gin-restore worktree `harness/gpu-initiated/gin_recovery/restore/`, 이 실험은 읽기만): 감지는 두 정책에 공통, 반응은 communicator마다의 정책(기본 fail-fast). 그 문서의 독립 검토 마지막 판정은 "복원 계층 안의 막는 문제 넷 밖에 풀리지 않은 충돌 없음". 사용자 승인: GIN 계층에 정책 hook 아홉(G1–G9)을 넣고, 응답 쪽 틈을 고치고, pilot을 다시 돈 뒤 사전 등록하고 실행한다. 사용자가 정한 복원 계층의 키 읽기 자리(B4 (나))는 복원 계층의 일이라 이 실험의 장치 코드는 바뀌지 않는다 | `DESIGN_POLICY.md` 2, 3, 4.10절 `[소스]` |
+| 2026-10-09 | pilot 1 점검(채점 안 함). `rows_gd.py`의 출력은 세션 스크래치 `gd_pilot1/trials_app.csv`로, `score.py`는 pilot 폴더의 사본 `gd_pilot1/copy`에 돌렸다. pilot 폴더에는 아무것도 쓰지 않았다. P1 14회 모두 장애가 걸렸고(시작 실패 0), 설정 확인을 통과했다(`hw` 시작 줄과 셀의 감시 주기, NIC 경로의 QP 구조 비교 4개, `t1w` 줄과 셀의 `failstop_ms`) | `[측정, 셀마다 1–2회]` |
+| 2026-10-09 | pilot 1, GIN. QP 오류 `hw` 2회: 투명, 대상 rank에서 감시가 먼저 감지(분류 출처 CQ) 훅 뒤 11.9, 14.9 ms, 복구 줄 23.2, 27.1 ms. 감시 100 ms 1회: 투명, 105.3 ms, 116.6 ms. `hr` 1회: 시간 상한까지 멈춤, 감지 줄 없음. 장애 없음 1회와 멈춤 4.9 s 1회: 투명, 감시 감지, 거절, 죽음 줄 없음. kill 1회: 살아남은 rank의 첫 오류 줄 0.000 s(FIN으로 죽음 판정, 랭크 2개라 대기가 바로 풀림), 그 뒤 예제가 다음 단계에 머물러 하네스 유예로 끝남(blind-apps와 같은 모습, 예측 GR1이 허용) | `[측정]` 위 파일 |
+| 2026-10-09 | pilot 1, NVSHMEM. kill 1회: FIN 판정 kill 뒤 0.1 ms, 살아남은 PE 종료 코드 70, kill 뒤 0.096 s. 원격 접근 회수 1회: 두 PE 종료 코드 70, 0.102 s. 장애 없음 1회: 투명, 작별 보냄 1, 받음 1, 떠남 1, 거절과 FIN 판정 0. PE 0 멈춤 4.9 s 1회, QP 오류 1회: 투명(QP 오류는 복구 줄 2). release 셀 2회: 해제 줄은 있으나(1, 2) 결과 분류가 HUNG. 살아남은 PE가 틀린 원소 줄을 찍는 중에 하네스 유예(첫 프로세스가 끝난 뒤 10 s)로 끝났다. kill 셀은 kill 뒤 10.2 s에 PE 1이 16 049 814줄(에이전트가 센 수), 원격 접근 셀은 PE 0이 8 388 408줄 뒤 스스로 0으로 끝나고 PE 1이 24 337 704줄에서 끊김. 원소는 세 크기 합 29 360 128개, 관측 속도 약 1.5M줄/s라 끝까지 약 20 s | `[측정]` 에이전트 줄 `AGENT suppressed name=validation count=...`. 원소 수는 `[소스: ring-reduce 16M, 32M, 64M int]` |
+| 2026-10-09 | pilot 1, 회귀(P2). `f1_b`: 투명, 통계 API 라운드 1 복구 1(두 rank). `f2rel_b`: rank 0 거절(REM_ACCESS), rank 1 장치 오류로 대기 해제, 정리 762 ms. 4 KiB 지연 p50: 감시 끔 10.91, 1 ms 10.50, 10 ms 10.50 µs(각 1회). 감시의 QUERY_QP(두 rank 합) 0, 2 136, 260번, 평균 53–68 µs, 최대 93 µs. M-A 셀: rank 3이 rank 0, 1의 REQ에 기다림 안에서 답함, 라운드 퍼짐 4.2 ms, 투명. M-C 기본 규칙: 쌍 0-1 거절 1, 복구 0. M-C 대조(`=1`): 복구 1, 거절 0. 두 M-C 셀 모두 발화와 kill이 트래픽 안 | `[측정]` 사본의 `trials_scored.csv` |
+| 2026-10-09 | pilot 1에서 찾은 결함(태그 전, 3절 규칙). (1) 셀 조건: release 셀은 60 s 상한만 두고 유예는 두지 않아, 유예 10 s가 살아남은 PE를 끊었다 → 셀마다 `grace_s`를 두고 release 셀은 50 s(`cells.json`, `apprun.py`). (2) 구현: GIN app 7회 모두 정리 때 감시 줄이 없어 `wq_*` 열이 비었다(9.1절 (h)) → 새 빌드에서 고침. 판정식은 이 열을 쓰지 않는다. (3) 문서: 9.6절 2번의 "nvs_none의 두 PE가 작별을 보냄"은 리뷰 H2 뒤의 예측(적어도 한 PE)과 어긋남 → 고침. 설명용 관찰: 4 KiB 지연의 감시 10 ms와 끔의 차이 0.41 µs(예측 LT1 한도 0.40)이나 느린 쪽이 감시 끔이고 각 1회라 예측은 바꾸지 않는다. 걸린 시간: P1 2분 34초(어림 4분), P2 1분 57초(어림 3분) | 고친 것은 아래 줄 |
+| 2026-10-09 | 응답 쪽 틈의 충돌 표와 정책 hook 계획을 구현 전에 9.1절 (f)–(h)에 씀. 고침이 닿는 기존 장치 20줄 모두 충돌 없음(해결과 근거 열). 줄 번호는 `hw` 트리에서 다시 확인 | 9.1절 `[소스]` |
 
 ## 13. 사전 등록 이후 변경
 
