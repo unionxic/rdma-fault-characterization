@@ -1,0 +1,179 @@
+id,kind,hold,workload,cls,target,dir,k,t_ms,t_after_anchor_s,d_s,applied,void,config_ok,valid,t_fault_rel_anchor,killed_rank,rc0,rc1,end0,end1,n_err0,n_err1,err0,err1,timeout_first,n_rec,n_death,n_mgmt,result,outcome,dt_err,dt_end,max_gap0,wall_s,left,mute_rules_on,mute_rules_left,mute_skipped,rerun,j_class,j_target,j_outcome,j_result_ok,j_first_error_s,j_confidence,j_ok_outcome,j_ok_class,j_ok_target
+01b1e4de,blind,N2,nvs,mute,,both,,,1.897,6.188,1,0,1,1,1.935,,0,0,,,0,0,,,0,0,0,3,correct,TRANSPARENT,,6.43,3.09,9.316,"0,0",6,0,,0,mute,-,transparent,yes,,0.90,1,1,1
+02cdcf6e,blind,G2,gin,kill,0,,,,0.024,,1,0,1,1,0.025,0,-9,-9,,grace,0,4,,[2026-10-09 14:21:17] sunny:2628894:2628922 [0] transport/net_ib/gdaki/gin_host_gdaki.cc:3305 (gdakiTsSocketLost) NCCL WARN GIN/TS: rank 1: rank 0 judged dead (,0,0,4,1,none,HUNG,0.001,20.343,0.0,21.575,"0,0",,,,0,kill,0,hung,no,1.224,0.85,1,1,1
+072436e2,blind,N1,nvs,qperr,0,,,2893,,,1,0,1,1,2.889,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,2.437,2.289,6.259,"0,0",,,,0,qperr,0,transparent,yes,,0.85,1,1,1
+087042c4,blind,G2,gin,mute,,oneway,,,0.108,7.184,1,0,1,1,0.124,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.331,0.221,1.7,"0,0",2,0,,0,none,-,transparent,yes,,0.80,1,0,1
+08abd11c,blind,D1,ddp,rqp,0,,2320,,,,1,0,1,1,3.018,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,4.478,0.518,10.795,"0,0",,,,0,rqp,0,transparent,yes,,0.90,1,1,1
+0c39f264,blind,G1,gin,mute,,oneway,,,0.111,3.793,1,0,1,1,0.127,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.312,0.188,1.69,"0,0",2,0,,0,none,-,transparent,yes,,0.80,1,0,1
+1051552a,blind,D3,ddp,stop,1,,,,0.0,8.459,1,0,1,1,9.634,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,11.682,8.509,24.585,"0,0",,,,0,stop,1,transparent,yes,,0.55,1,1,1
+14b53b80,blind,D2,ddp,sqp,0,,2845,,,,1,0,1,1,3.31,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,6.065,0.519,12.635,"0,0",,,,0,sqp,0,transparent,yes,,0.90,1,1,1
+16d4f188,blind,G1,gin,mute,,oneway,,,0.004,3.866,1,0,1,1,0.02,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.441,0.219,1.691,"0,0",2,0,,0,none,-,transparent,yes,,0.80,1,0,1
+17c44ef4,blind,D3,ddp,kill,0,,,,0.0,,1,0,1,1,2.882,0,-9,-6,,,0,14,,sunny:2681479:2681544 [0] transport/net_ib.cc:2751 NCCL WARN NET/IB: [FAULT-RECOVERY2] recv comm: the peer closed its OOB socket (FIN) while requests are outsta,0,0,1,0,none,DECLINED,0.07,0.373,0.042,6.491,"0,0",,,,0,kill,0,declined,no,6.188,0.95,1,1,1
+1bcf6936,blind,N2,nvs,mute,,oneway,,,4.194,5.844,0,0,1,0,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,1.77,4.259,"0,0",,,ended_before_fault,0,none,-,transparent,yes,,0.80,1,0,1
+1c53ff53,blind,G1,gin,kill,0,,,,0.013,,1,0,1,1,0.013,0,-9,1,,,0,5,,[2026-10-09 13:56:43] sunny:2578783:2578797 [0] transport/net_ib/gdaki/gin_host_gdaki.cc:3305 (gdakiTsSocketLost) NCCL WARN GIN/TS: rank 1: rank 0 judged dead (,0,0,4,1,none,DECLINED,0.001,0.208,0.0,1.442,"0,0",,,,0,kill,0,declined,no,1.233,0.90,1,1,1
+1f215dc7,blind,G2,gin,kill,1,,,,0.056,,1,0,1,1,0.057,1,-9,-9,grace,,4,0,[2026-10-09 14:15:32] rain:2721791:2721818 [0] transport/net_ib/gdaki/gin_host_gdaki.cc:3305 (gdakiTsSocketLost) NCCL WARN GIN/TS: rank 0: rank 1 judged dead (c,,0,0,4,1,none,HUNG,0.0,20.415,0.057,21.717,"0,0",,,,0,kill,1,hung,no,1.297,0.85,1,1,1
+1f3a059c,blind,G1,gin,qperr,1,,,53,,,1,0,1,1,0.053,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.884,0.0,60.141,"0,0",,,,0,qperr,1,hung,no,,0.70,1,1,1
+20579d16,blind,N2,nvs,kill,1,,,,4.324,,0,0,1,0,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,1.77,4.318,"0,0",,,ended_before_fault,0,none,-,transparent,yes,,0.80,1,0,0
+2110ff21,blind,N1,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,2.886,6.219,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+21a06d5e,blind,N2,nvs,kill,0,,,,3.233,,1,0,1,1,3.233,0,-9,-9,,grace,0,0,,,0,0,0,0,none,HUNG,,20.205,1.468,24.397,"0,0",,,,0,kill,0,hung,no,,0.90,1,1,1
+2213fe62,blind,D1,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.519,12.013,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+25277b30,blind,D1,ddp,mute,,oneway,,,0.0,10.991,1,0,1,1,7.147,,0,0,,,0,0,,,0,0,0,8,correct,TRANSPARENT,,5.72,0.519,16.24,"0,0",7,0,,0,mute,-,transparent,yes,,0.90,1,1,1
+26186903,blind,N1,nvs,remacc,0,,,3217,,,1,0,1,1,3.213,,-9,-9,wall,wall,2,2,"[nvshmem-t1] PE0 2678690993.236 DECLINE peer=1 class=WR_FLUSH fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""class WR_FLUSH is not recoverable""","[nvshmem-t1] PE1 1547631885.069 DECLINE peer=0 class=WR_FLUSH fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""the peer declined""",0,0,0,0,none,HUNG,0.005,55.959,1.444,60.119,"0,0",,,,0,remacc,0,hung,no,4.156,0.55,1,1,1
+26569698,blind,N2,nvs,mute,,both,,,3.757,6.268,1,0,1,1,3.796,,0,0,,,0,0,,,0,0,0,3,correct,TRANSPARENT,,6.606,3.177,11.448,"0,0",6,0,,0,mute,-,transparent,yes,,0.90,1,1,1
+2917ca09,blind,G1,gin,stop,0,,,,0.06,1.32,1,0,1,1,0.06,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,1.929,1.452,3.114,"0,0",,,,0,mute,-,transparent,yes,,0.50,1,0,0
+2985f04b,blind,G1,gin,qperr,0,,,44,,,1,0,1,1,0.043,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.882,0.043,60.147,"0,0",,,,0,qperr,0,hung,no,,0.70,1,1,1
+2b9ee5a1,blind,G1,gin,stop,1,,,,0.086,2.377,1,0,1,1,0.087,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,2.977,2.549,4.288,"0,0",,,,0,stop,0,transparent,yes,,0.40,1,1,0
+2da6c3bf,blind,D3,ddp,kill,0,,,,0.0,,1,0,1,1,3.541,0,-9,-6,,,0,14,,sunny:2682983:2683046 [0] transport/net_ib.cc:2751 NCCL WARN NET/IB: [FAULT-RECOVERY2] recv comm: the peer closed its OOB socket (FIN) while requests are outsta,0,0,1,0,none,DECLINED,0.06,0.342,0.044,7.115,"0,0",,,,0,kill,0,declined,no,6.830,0.95,1,1,1
+2f25fbbd,blind,N1,nvs,qperr,0,,,2790,,,1,0,1,1,2.786,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,2.503,2.363,6.239,"0,0",,,,0,qperr,0,transparent,yes,,0.85,1,1,1
+2f9ea2f0,blind,N1,nvs,kill,1,,,,1.443,,1,0,1,1,1.444,1,-9,-9,grace,,0,0,,,0,0,0,0,none,HUNG,,20.195,0.791,22.569,"0,0",,,,0,kill,1,hung,no,,0.90,1,1,1
+31931f8f,blind,N1,nvs,mute,,oneway,,,2.616,8.434,1,0,1,1,2.655,,0,0,,,0,0,,,0,0,0,4,correct,TRANSPARENT,,9.868,5.31,13.44,"0,0",3,0,,0,mute,-,transparent,yes,,0.90,1,1,1
+31d1a0b1,blind,N2,nvs,qperr,0,,,1744,,,1,0,1,1,1.74,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,7.285,3.753,9.959,"0,0",,,,0,qperr,0,transparent,yes,,0.80,1,1,1
+373e7f03,blind,N1,nvs,qperr,1,,,1861,,,1,0,1,1,1.857,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,7.195,4.779,10.01,"0,0",,,,0,qperr,1,transparent,yes,,0.80,1,1,1
+37bd4c3d,blind,N1,nvs,stop,1,,,,1.321,5.144,1,0,1,1,1.322,,0,0,,,0,0,,,0,0,0,0,wrong,SILENT_WRONG,,13.223,12.164,15.472,"0,0",,,,0,stop,0,silent_wrong,no,,0.60,1,1,0
+37f61f7b,blind,D1,ddp,srq,1,,2888,,,,1,0,1,1,6.082,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,5.837,3.776,15.17,"0,0",,,,0,srq,1,transparent,yes,,0.90,1,1,1
+39157764,blind,D4,ddp,stop,1,,,,0.0,5.037,1,0,1,1,5.893,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,7.678,5.067,16.831,"0,0",,,,0,stop,1,transparent,yes,,0.55,1,1,1
+3c4b5ea8,blind,D3,ddp,stop,0,,,,0.0,11.991,1,0,1,1,5.487,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,14.799,12.016,23.53,"0,0",,,,0,stop,0,transparent,yes,,0.80,1,1,1
+3fa9efe0,blind,N1,nvs,qperr,1,,,3100,,,1,0,1,1,3.096,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,3.826,5.199,7.93,"0,0",,,,0,qperr,1,transparent,yes,,0.80,1,1,1
+3fd25800,blind,N2,nvs,qperr,0,,,3177,,,1,0,1,1,3.174,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,0.174,1.748,4.287,"0,0",,,,0,qperr,0,transparent,yes,,0.85,1,1,1
+401d627f,blind,N1,nvs,qperr,0,,,3039,,,1,0,1,1,3.035,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,2.243,2.101,6.218,"0,0",,,,0,qperr,0,transparent,yes,,0.85,1,1,1
+40cf0279,blind,D2,ddp,sqp,1,,430,,,,1,0,1,1,0.614,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,11.75,0.519,15.603,"0,0",,,,0,sqp,1,transparent,yes,,0.90,1,1,1
+42ccd0c4,blind,D4,ddp,rqp,0,,3327,,,,1,0,1,1,5.171,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,7.619,0.52,16.086,"0,0",,,,0,rqp,0,transparent,yes,,0.90,1,1,1
+46548938,blind,G1,gin,qperr,0,,,87,,,1,0,1,1,0.086,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.852,0.086,60.149,"0,0",,,,0,qperr,0,hung,no,,0.70,1,1,1
+4697f8f1,blind,G1,gin,qperr,1,,,8,,,1,0,1,1,0.008,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.881,0.0,60.129,"0,0",,,,0,qperr,1,hung,no,,0.70,1,1,1
+4730fa06,blind,N1,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,2.885,6.209,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+4b4069cd,blind,D4,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.518,13.863,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+4b99dd0a,blind,D1,ddp,kill,0,,,,0.0,,1,0,1,1,2.552,0,-9,-6,,,0,15,,sunny:2664945:2665025 [0] transport/net_ib.cc:2751 NCCL WARN NET/IB: [FAULT-RECOVERY2] recv comm: the peer closed its OOB socket (FIN) while requests are outsta,0,0,1,0,none,DECLINED,0.07,0.32,0.043,6.097,"0,0",,,,0,kill,0,declined,no,5.838,0.95,1,1,1
+50b1ee08,blind,N2,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,2.883,6.178,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+51031ab3,blind,D4,ddp,kill,0,,,,0.0,,1,0,1,1,0.787,0,-9,-6,,,0,14,,sunny:2713820:2713897 [0] transport/net_ib.cc:2751 NCCL WARN NET/IB: [FAULT-RECOVERY2] recv comm: the peer closed its OOB socket (FIN) while requests are outsta,0,0,1,0,none,DECLINED,0.069,0.295,0.042,4.439,"0,0",,,,0,kill,0,declined,no,4.205,0.95,1,1,1
+52612053,blind,G2,gin,kill,1,,,,0.08,,1,0,1,1,0.081,1,-9,-9,grace,,4,0,[2026-10-09 14:19:49] rain:2725127:2725185 [0] transport/net_ib/gdaki/gin_host_gdaki.cc:3305 (gdakiTsSocketLost) NCCL WARN GIN/TS: rank 0: rank 1 judged dead (c,,0,0,4,1,none,HUNG,0.0,20.408,0.081,21.705,"0,0",,,,0,kill,1,hung,no,1.295,0.85,1,1,1
+526f5e19,blind,D2,ddp,rqp,1,,620,,,,1,0,1,1,0.688,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,8.08,0.519,12.063,"0,0",,,,0,rqp,1,transparent,yes,,0.90,1,1,1
+54f4eacd,blind,G2,gin,kill,1,,,,0.061,,1,0,1,1,0.062,1,-9,-9,grace,,4,0,[2026-10-09 14:20:18] rain:2725539:2725574 [0] transport/net_ib/gdaki/gin_host_gdaki.cc:3305 (gdakiTsSocketLost) NCCL WARN GIN/TS: rank 0: rank 1 judged dead (c,,0,0,4,1,none,HUNG,0.0,20.416,0.062,21.705,"0,0",,,,0,kill,1,hung,no,1.285,0.85,1,1,1
+557f5388,blind,G2,gin,stop,0,,,,0.028,7.398,1,0,1,1,0.028,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,8.01,7.547,9.239,"0,0",,,,0,mute,-,transparent,yes,,0.50,1,0,0
+55f19881,blind,D3,ddp,srq,1,,1478,,,,1,0,1,1,4.125,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,11.506,3.707,18.831,"0,0",,,,0,srq,1,transparent,yes,,0.90,1,1,1
+55fa6493,blind,G2,gin,qperr,0,,,114,,,1,0,1,1,0.113,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,3.862,3.681,5.223,"0,0",,,,0,qperr,0,transparent,yes,,0.85,1,1,1
+5b41efa1,blind,G1,gin,qperr,1,,,115,,,1,0,1,1,0.115,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,3.841,3.659,5.142,"0,0",,,,0,qperr,1,transparent,yes,,0.85,1,1,1
+5b434150,blind,G2,gin,kill,1,,,,0.029,,1,0,1,1,0.03,1,-9,-9,grace,,4,0,[2026-10-09 14:15:10] rain:2721511:2721538 [0] transport/net_ib/gdaki/gin_host_gdaki.cc:3305 (gdakiTsSocketLost) NCCL WARN GIN/TS: rank 0: rank 1 judged dead (c,,0,0,4,1,none,HUNG,0.002,20.386,0.032,21.635,"0,0",,,,0,kill,1,hung,no,1.245,0.85,1,1,1
+5cc2b822,blind,G1,gin,qperr,0,,,58,,,1,0,1,1,0.057,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.862,0.057,60.15,"0,0",,,,0,qperr,0,hung,no,,0.70,1,1,1
+63e81d2a,blind,G2,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.189,1.684,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+66925fa7,blind,D3,ddp,stop,0,,,,0.0,8.286,1,0,1,1,1.164,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,17.272,8.31,21.703,"0,0",,,,0,stop,0,transparent,yes,,0.80,1,1,1
+673c0940,blind,G2,gin,mute,,both,,,0.038,3.839,1,0,1,1,0.054,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.398,0.211,1.731,"0,0",4,0,,0,none,-,transparent,yes,,0.80,1,0,1
+67d07f50,blind,D3,ddp,kill,1,,,,0.0,,1,0,1,1,6.019,1,-6,-9,,,15,0,rain:2749600:2749651 [0] transport/net_ib.cc:2751 NCCL WARN NET/IB: [FAULT-RECOVERY2] recv comm: the peer closed its OOB socket (FIN) while requests are outstan,,0,0,1,0,none,DECLINED,0.057,0.325,0.057,9.548,"0,0",,,,0,kill,1,declined,no,9.279,0.95,1,1,1
+68cd5cee,blind,D2,ddp,sqp,1,,1060,,,,1,0,1,1,1.369,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,9.546,0.519,14.164,"0,0",,,,0,sqp,1,transparent,yes,,0.90,1,1,1
+6c4d85ca,blind,N2,nvs,mute,,both,,,3.038,6.219,0,0,1,0,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,1.771,4.278,"0,0",,,foreign_socket:1@36398,0,none,-,transparent,yes,,0.80,1,0,1
+6d031cad,blind,D1,ddp,stop,1,,,,0.0,7.59,1,0,1,1,3.558,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,13.403,7.642,20.292,"0,0",,,,0,stop,1,transparent,yes,,0.55,1,1,1
+6f1e1436,blind,G2,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.205,1.644,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+6fd46a59,blind,N1,nvs,kill,0,,,,1.509,,1,0,1,1,1.509,0,-9,-9,,grace,0,0,,,0,0,0,0,none,HUNG,,20.188,0.893,22.629,"0,0",,,,0,kill,0,hung,no,,0.90,1,1,1
+713f4748,blind,D4,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.519,13.591,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+74d999b1,blind,D1,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.518,11.287,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+7538e907,blind,N2,nvs,remacc,0,,,3712,,,1,0,1,1,3.708,,-9,-9,wall,wall,2,2,"[nvshmem-t1] PE0 2679259075.662 DECLINE peer=1 class=REM_INV_REQ fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""the peer declined""","[nvshmem-t1] PE1 1548199951.773 DECLINE peer=0 class=REM_INV_REQ fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""class REM_INV_REQ is not recoverab",0,0,0,0,none,HUNG,0.007,55.467,1.46,60.117,"0,0",,,,0,remacc,0,hung,no,4.648,0.85,1,1,1
+753e63ae,blind,D1,ddp,sqp,1,,692,,,,1,0,1,1,0.48,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,11.909,0.52,15.583,"0,0",,,,0,sqp,1,transparent,yes,,0.90,1,1,1
+7614d2ac,blind,G2,gin,stop,0,,,,0.087,1.879,1,0,1,1,0.088,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,2.491,2.023,3.798,"0,0",,,,0,stop,0,transparent,yes,,0.40,1,1,1
+76712ff9,blind,N1,nvs,kill,1,,,,3.788,,1,0,1,1,3.789,1,-9,-9,grace,,0,0,,,0,0,0,0,none,HUNG,,20.195,1.547,24.933,"0,0",,,,0,kill,1,hung,no,,0.90,1,1,1
+767c64bc,blind,G1,gin,stop,1,,,,0.11,6.0,1,0,1,1,0.111,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,6.596,6.131,7.929,"0,0",,,,0,stop,1,transparent,yes,,0.40,1,1,1
+76dced25,blind,N2,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,2.884,6.208,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+77ce7ec4,blind,G2,gin,mute,,oneway,,,0.045,7.549,1,0,1,1,0.061,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.38,0.204,1.7,"0,0",2,0,,0,none,-,transparent,yes,,0.80,1,0,1
+7f1ed43a,blind,D1,ddp,stop,1,,,,0.0,4.415,1,0,1,1,7.806,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,9.146,4.464,20.22,"0,0",,,,0,stop,1,transparent,yes,,0.55,1,1,1
+800579c9,blind,N1,nvs,stop,1,,,,1.085,2.756,1,0,1,1,1.086,,0,0,,,0,0,,,0,0,0,0,wrong,SILENT_WRONG,,9.561,9.079,11.62,"0,0",,,,0,stop,0,silent_wrong,no,,0.60,1,1,0
+80b0e284,blind,G2,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.216,1.583,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+81718e63,blind,N1,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,2.889,6.168,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+85ddb86e,blind,D3,ddp,rqp,1,,1445,,,,1,0,1,1,2.229,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,10.91,0.518,16.428,"0,0",,,,0,rqp,1,transparent,yes,,0.90,1,1,1
+8a13fdcd,blind,G2,gin,stop,1,,,,0.06,7.353,1,0,1,1,0.061,,0,0,,,0,0,,,0,0,0,1,correct,TRANSPARENT,,7.939,7.534,9.179,"0,0",,,,0,mute,-,transparent,yes,,0.50,1,0,0
+8a85d9e2,blind,D3,ddp,mute,,oneway,,,0.0,13.69,1,0,1,1,3.77,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,3.416,0.519,10.508,"0,0",7,0,,0,none,-,transparent,yes,,0.80,1,0,1
+8b6b2848,blind,D2,ddp,sqp,0,,4845,,,,1,0,1,1,7.017,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,5.155,0.519,15.452,"0,0",,,,0,sqp,0,transparent,yes,,0.90,1,1,1
+8e9aefc9,blind,G1,gin,mute,,both,,,0.022,5.021,1,0,1,1,0.039,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.424,0.24,1.728,"0,0",4,0,,0,none,-,transparent,yes,,0.80,1,0,1
+912a5e0e,blind,G1,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.201,1.683,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+91596709,blind,G1,gin,stop,0,,,,0.07,3.331,1,0,1,1,0.07,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,3.944,3.472,5.199,"0,0",,,,0,mute,-,transparent,yes,,0.50,1,0,0
+920f63f0,blind,G2,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.217,1.683,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+9246c035,blind,D2,ddp,mute,,oneway,,,0.0,7.986,1,0,1,1,2.931,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,3.066,0.52,9.303,"0,0",7,0,,0,none,-,transparent,yes,,0.80,1,0,1
+929d7e4b,blind,N2,nvs,kill,0,,,,3.567,,1,0,1,1,3.567,0,-9,-9,,grace,0,0,,,0,0,0,0,none,HUNG,,20.204,1.452,24.74,"0,0",,,,0,kill,0,hung,no,,0.90,1,1,1
+93b96765,blind,G1,gin,qperr,1,,,79,,,1,0,1,1,0.079,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.945,0.0,60.148,"0,0",,,,0,qperr,1,hung,no,,0.70,1,1,1
+98f780ef,blind,N2,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,2.883,6.188,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+990cf62f,blind,G2,gin,stop,0,,,,0.082,4.253,1,0,1,1,0.083,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,4.863,4.409,6.157,"0,0",,,,0,stop,0,transparent,yes,,0.40,1,1,1
+99ff04ad,blind,D2,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.52,12.416,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+9dd7d30d,blind,D4,ddp,sqp,1,,1837,,,,1,0,1,1,3.06,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,6.147,0.52,12.445,"0,0",,,,0,sqp,1,transparent,yes,,0.90,1,1,1
+9de3c621,blind,N1,nvs,remacc,1,,,4070,,,1,0,1,1,4.067,,-9,-9,wall,wall,2,2,"[nvshmem-t1] PE0 2678752870.736 DECLINE peer=1 class=REM_INV_REQ fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""class REM_INV_REQ is not recoverab","[nvshmem-t1] PE1 1547693761.166 DECLINE peer=0 class=REM_INV_REQ fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""the peer declined""",0,0,0,0,none,HUNG,0.008,55.124,1.829,60.118,"0,0",,,,0,remacc,1,hung,no,4.991,0.85,1,1,1
+9fbfecaa,blind,G2,gin,mute,,oneway,,,0.113,2.832,1,0,1,1,0.129,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.321,0.212,1.69,"0,0",2,0,,0,none,-,transparent,yes,,0.80,1,0,1
+a0d64814,blind,N1,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,2.899,6.219,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+a0d8988c,blind,D2,ddp,rqp,0,,3175,,,,1,0,1,1,5.291,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,7.859,0.52,16.378,"0,0",,,,0,rqp,0,transparent,yes,,0.90,1,1,1
+a12a8def,blind,G2,gin,mute,,both,,,0.079,7.898,1,0,1,1,0.095,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.368,0.216,1.729,"0,0",4,0,,0,none,-,transparent,yes,,0.80,1,0,1
+a1f9b58f,blind,D4,ddp,rqp,0,,4745,,,,1,0,1,1,7.94,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,3.07,0.518,14.274,"0,0",,,,0,rqp,0,transparent,yes,,0.90,1,1,1
+a27938a8,blind,D1,ddp,srq,0,,405,,,,1,0,1,1,1.287,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,9.295,3.603,13.851,"0,0",,,,0,srq,0,transparent,yes,,0.90,1,1,1
+a3b9c7be,blind,G1,gin,kill,0,,,,0.012,,1,0,1,1,0.012,0,-9,1,,,0,5,,[2026-10-09 13:55:36] sunny:2575235:2575249 [0] transport/net_ib/gdaki/gin_host_gdaki.cc:3305 (gdakiTsSocketLost) NCCL WARN GIN/TS: rank 1: rank 0 judged dead (,0,0,4,1,none,DECLINED,0.001,0.237,0.0,1.442,"0,0",,,,0,kill,0,declined,no,1.202,0.90,1,1,1
+a4157450,blind,G2,gin,qperr,0,,,63,,,1,0,1,1,0.062,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.874,0.061,60.149,"0,0",,,,0,qperr,0,hung,no,,0.70,1,1,1
+a4be5433,blind,N1,nvs,stop,1,,,,2.391,4.051,1,0,1,1,2.391,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,4.208,3.288,7.618,"0,0",,,,0,stop,1,transparent,yes,,0.55,1,1,1
+a5497f6d,blind,D2,ddp,srq,1,,1173,,,,1,0,1,1,3.667,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,9.743,3.703,16.688,"0,0",,,,0,srq,1,transparent,yes,,0.90,1,1,1
+a6a93f41,blind,D4,ddp,mute,,both,,,0.0,9.393,1,0,1,1,6.093,,0,0,,,0,0,,,0,0,0,8,correct,TRANSPARENT,,7.129,0.519,16.567,"0,0",14,0,,0,mute,-,transparent,yes,,0.90,1,1,1
+a8607fe2,blind,D1,ddp,kill,1,,,,0.0,,1,0,1,1,2.735,1,-6,-9,,,14,0,rain:2742812:2742870 [0] transport/net_ib.cc:2751 NCCL WARN NET/IB: [FAULT-RECOVERY2] recv comm: the peer closed its OOB socket (FIN) while requests are outstan,,0,0,1,0,none,DECLINED,0.056,0.359,0.057,6.391,"0,0",,,,0,kill,1,declined,no,6.086,0.95,1,1,1
+ac3281ef,blind,N2,nvs,stop,0,,,,2.258,5.637,1,0,1,1,2.258,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,8.683,8.554,11.97,"0,0",,,,0,stop,1,transparent,yes,,0.45,1,1,0
+ac3f9861,blind,N2,nvs,qperr,0,,,4089,,,1,0,1,1,4.085,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,1.181,1.843,6.178,"0,0",,,,0,qperr,0,transparent,yes,,0.85,1,1,1
+ac6e8117,blind,D3,ddp,sqp,1,,1574,,,,1,0,1,1,1.464,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,6.14,0.518,10.846,"0,0",,,,0,sqp,1,transparent,yes,,0.90,1,1,1
+ad469aca,blind,G2,gin,mute,,both,,,0.024,7.252,1,0,1,1,0.04,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.419,0.209,1.699,"0,0",4,0,,0,none,-,transparent,yes,,0.80,1,0,1
+afffcaba,blind,G1,gin,mute,,oneway,,,0.063,4.179,1,0,1,1,0.079,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.373,0.21,1.691,"0,0",2,0,,0,none,-,transparent,yes,,0.80,1,0,1
+b0a59128,blind,D4,ddp,kill,1,,,,0.0,,1,0,1,1,0.809,1,-6,-9,,,14,0,rain:2760330:2760381 [0] transport/net_ib.cc:2751 NCCL WARN NET/IB: [FAULT-RECOVERY2] recv comm: the peer closed its OOB socket (FIN) while requests are outstan,,0,0,1,0,none,DECLINED,0.057,0.383,0.057,4.471,"0,0",,,,0,kill,1,declined,no,4.137,0.95,1,1,1
+b11ce946,blind,G1,gin,qperr,0,,,77,,,1,0,1,1,0.076,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.888,0.076,60.148,"0,0",,,,0,qperr,0,hung,no,,0.70,1,1,1
+b16bf1c7,blind,D2,ddp,rqp,0,,1103,,,,1,0,1,1,1.757,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,5.914,0.519,10.959,"0,0",,,,0,rqp,0,transparent,yes,,0.90,1,1,1
+b29e12db,blind,N2,nvs,qperr,0,,,768,,,1,0,1,1,0.765,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,4.53,2.888,6.249,"0,0",,,,0,qperr,0,transparent,yes,,0.85,1,1,1
+b3596cab,blind,D2,ddp,srq,0,,774,,,,1,0,1,1,2.288,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,12.675,3.606,18.188,"0,0",,,,0,srq,0,transparent,yes,,0.90,1,1,1
+b3e21f6d,blind,D4,ddp,stop,1,,,,0.0,6.038,1,0,1,1,3.403,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,13.066,6.087,19.757,"0,0",,,,0,stop,1,transparent,yes,,0.55,1,1,1
+b5b7e060,blind,G2,gin,kill,1,,,,0.055,,1,0,1,1,0.056,1,-9,-9,grace,,4,0,[2026-10-09 14:19:21] rain:2724664:2724714 [0] transport/net_ib/gdaki/gin_host_gdaki.cc:3305 (gdakiTsSocketLost) NCCL WARN GIN/TS: rank 0: rank 1 judged dead (c,,0,0,4,1,none,HUNG,0.0,20.411,0.056,21.666,"0,0",,,,0,kill,1,hung,no,1.247,0.85,1,1,1
+b89b7575,blind,D3,ddp,sqp,0,,4836,,,,1,0,1,1,5.719,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,2.772,0.517,11.78,"0,0",,,,0,sqp,0,transparent,yes,,0.90,1,1,1
+b9acd57e,blind,N2,nvs,qperr,0,,,3975,,,1,0,1,1,3.972,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,1.302,1.729,6.218,"0,0",,,,0,qperr,0,transparent,yes,,0.85,1,1,1
+bbbe4795,blind,G2,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.205,1.664,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+bbeabcee,blind,D1,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.518,16.498,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+bd0e9205,blind,N2,nvs,qperr,1,,,2319,,,1,0,1,1,2.315,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,6.574,3.683,9.838,"0,0",,,,0,qperr,1,transparent,yes,,0.80,1,1,1
+bdc23a73,blind,N1,nvs,kill,1,,,,2.835,,1,0,1,1,2.836,1,-9,-9,grace,,0,0,,,0,0,0,0,none,HUNG,,20.198,1.405,24.066,"0,0",,,,0,kill,1,hung,no,,0.90,1,1,1
+be33f162,blind,G1,gin,qperr,0,,,66,,,1,0,1,1,0.065,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.871,0.065,60.149,"0,0",,,,0,qperr,0,hung,no,,0.70,1,1,1
+be9e8f24,blind,N2,nvs,mute,,both,,,0.675,5.367,1,0,1,1,0.713,,0,0,,,0,0,,,0,0,0,3,correct,TRANSPARENT,,6.584,2.846,8.332,"0,0",6,0,,0,mute,-,transparent,yes,,0.90,1,1,1
+c082f02e,blind,N1,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,2.887,6.199,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+c09b8f90,blind,N1,nvs,qperr,1,,,1306,,,1,0,1,1,1.303,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,5.592,4.329,7.838,"0,0",,,,0,qperr,1,transparent,yes,,0.80,1,1,1
+c2b466da,blind,N2,nvs,stop,0,,,,2.442,3.4,1,0,1,1,2.442,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,3.536,3.569,6.988,"0,0",,,,0,stop,1,transparent,yes,,0.45,1,1,0
+c39b768b,blind,G1,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.228,1.653,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+c39b9f83,blind,D4,ddp,sqp,0,,5259,,,,1,0,1,1,6.096,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,2.431,0.518,11.741,"0,0",,,,0,sqp,0,transparent,yes,,0.90,1,1,1
+c6c09d83,blind,N2,nvs,remacc,0,,,2568,,,1,0,1,1,2.564,,-9,-9,wall,wall,2,2,"[nvshmem-t1] PE0 2679107905.412 DECLINE peer=1 class=WR_FLUSH fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""class WR_FLUSH is not recoverable""","[nvshmem-t1] PE1 1548048787.337 DECLINE peer=0 class=WR_FLUSH fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""the peer declined""",0,0,0,0,none,HUNG,0.006,56.526,1.446,60.119,"0,0",,,,0,remacc,0,hung,no,3.589,0.55,1,1,1
+c83766de,blind,N1,nvs,qperr,0,,,3759,,,1,0,1,1,3.755,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,1.545,1.486,6.309,"0,0",,,,0,qperr,0,transparent,yes,,0.85,1,1,1
+cbeece3e,blind,G1,gin,qperr,0,,,81,,,1,0,1,1,0.08,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.855,0.08,60.148,"0,0",,,,0,qperr,0,hung,no,,0.70,1,1,1
+d047aadd,blind,N1,nvs,kill,0,,,,2.762,,1,0,1,1,2.762,0,-9,-9,,grace,0,0,,,0,0,0,0,none,HUNG,,20.195,0.892,23.88,"0,0",,,,0,kill,0,hung,no,,0.90,1,1,1
+d0d42caf,blind,D1,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.515,13.983,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+d0f237cb,blind,D3,ddp,kill,0,,,,0.0,,1,0,1,1,6.398,0,-9,-6,,,0,16,,sunny:2683986:2684056 [0] transport/net_ib.cc:2751 NCCL WARN NET/IB: [FAULT-RECOVERY2] recv comm: the peer closed its OOB socket (FIN) while requests are outsta,0,0,1,0,none,DECLINED,0.069,0.339,0.042,10.001,"0,0",,,,0,kill,0,declined,no,9.723,0.95,1,1,1
+d21d7a88,blind,N2,nvs,qperr,1,,,1954,,,1,0,1,1,1.95,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,6.987,4.817,9.889,"0,0",,,,0,qperr,1,transparent,yes,,0.80,1,1,1
+d272651a,blind,N2,nvs,remacc,0,,,3335,,,1,0,1,1,3.331,,-9,-9,wall,wall,2,2,"[nvshmem-t1] PE0 2679363322.870 DECLINE peer=1 class=WR_FLUSH fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""class WR_FLUSH is not recoverable""","[nvshmem-t1] PE1 1548304199.974 DECLINE peer=0 class=WR_FLUSH fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""the peer declined""",0,0,0,0,none,HUNG,0.008,55.831,1.446,60.117,"0,0",,,,0,remacc,0,hung,no,4.284,0.55,1,1,1
+d3b36aba,blind,G1,gin,qperr,0,,,38,,,1,0,1,1,0.037,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.904,0.037,60.146,"0,0",,,,0,qperr,0,hung,no,,0.70,1,1,1
+d41df043,blind,G1,gin,kill,1,,,,0.105,,1,0,1,1,0.106,1,1,-9,,,5,0,[2026-10-09 14:00:29] rain:2710636:2710655 [0] transport/net_ib/gdaki/gin_host_gdaki.cc:3305 (gdakiTsSocketLost) NCCL WARN GIN/TS: rank 0: rank 1 judged dead (c,,0,0,4,1,none,DECLINED,0.0,0.4,0.259,1.734,"0,0",,,,0,kill,1,declined,no,1.331,0.90,1,1,1
+d4c78b66,blind,N1,nvs,mute,,oneway,,,1.229,7.9,1,0,1,1,1.268,,0,0,,,0,0,,,0,0,0,4,correct,TRANSPARENT,,8.099,4.092,10.282,"0,0",3,0,,0,mute,-,transparent,yes,,0.90,1,1,1
+d58e960b,blind,N1,nvs,remacc,0,,,1665,,,1,0,1,1,1.662,,-9,-9,wall,wall,2,2,"[nvshmem-t1] PE0 2678835019.468 DECLINE peer=1 class=REM_INV_REQ fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""the peer declined""","[nvshmem-t1] PE1 1547775908.161 DECLINE peer=0 class=REM_INV_REQ fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""class REM_INV_REQ is not recoverab",0,0,0,0,none,HUNG,0.007,57.457,0.863,60.119,"0,0",,,,0,remacc,0,hung,no,2.660,0.85,1,1,1
+dcd30cbc,blind,N1,nvs,stop,0,,,,3.917,2.177,0,0,1,0,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,1.766,4.329,"0,0",,,ended_before_fault,0,none,-,transparent,yes,,0.80,1,0,0
+dd65aa32,blind,N1,nvs,remacc,0,,,3295,,,1,0,1,1,3.291,,-9,-9,wall,wall,2,2,"[nvshmem-t1] PE0 2678904747.595 DECLINE peer=1 class=WR_FLUSH fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""class WR_FLUSH is not recoverable""","[nvshmem-t1] PE1 1547845635.516 DECLINE peer=0 class=WR_FLUSH fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""the peer declined""",0,0,0,0,none,HUNG,0.006,55.891,1.446,60.12,"0,0",,,,0,remacc,0,hung,no,4.226,0.55,1,1,1
+de94807c,blind,G1,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.202,1.633,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+e031cd26,blind,D4,ddp,mute,,both,,,0.0,9.838,1,0,1,1,2.329,,0,0,,,0,0,,,0,0,0,8,correct,TRANSPARENT,,9.801,0.519,15.511,"0,0",14,0,,0,mute,-,transparent,yes,,0.90,1,1,1
+e0aca552,blind,D1,ddp,stop,1,,,,0.0,11.072,1,0,1,1,3.285,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,17.563,11.109,24.103,"0,0",,,,0,stop,1,transparent,yes,,0.55,1,1,1
+e0b7f5e4,blind,D2,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.518,15.594,"0,0",,,,0,none,-,transparent,yes,,0.80,1,1,1
+e1a39229,blind,G1,gin,qperr,1,,,80,,,1,0,1,1,0.08,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.855,0.0,60.15,"0,0",,,,0,qperr,1,hung,no,,0.70,1,1,1
+e20b80f2,blind,G2,gin,mute,,oneway,,,0.09,2.138,1,0,1,1,0.107,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.346,0.21,1.68,"0,0",2,0,,0,none,-,transparent,yes,,0.80,1,0,1
+e303601e,blind,G2,gin,mute,,oneway,,,0.017,6.512,1,0,1,1,0.033,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,0.427,0.228,1.711,"0,0",2,0,,0,none,-,transparent,yes,,0.80,1,0,1
+e392a0dd,blind,N2,nvs,stop,1,,,,2.431,5.644,1,0,1,1,2.432,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,5.801,4.915,9.157,"0,0",,,,0,stop,1,transparent,yes,,0.55,1,1,1
+e599a827,blind,D2,ddp,rqp,1,,562,,,,1,0,1,1,0.854,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,9.358,0.519,13.441,"0,0",,,,0,rqp,1,transparent,yes,,0.90,1,1,1
+e5b41fdd,blind,G2,gin,qperr,1,,,104,,,1,0,1,1,0.104,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.794,0.0,60.141,"0,0",,,,0,qperr,1,hung,no,,0.70,1,1,1
+e6515f7d,blind,G2,gin,kill,1,,,,0.101,,1,0,1,1,0.102,1,-9,-9,grace,,4,0,[2026-10-09 14:20:41] rain:2725868:2725895 [0] transport/net_ib/gdaki/gin_host_gdaki.cc:3305 (gdakiTsSocketLost) NCCL WARN GIN/TS: rank 0: rank 1 judged dead (c,,0,0,4,1,none,HUNG,0.0,20.285,0.102,21.603,"0,0",,,,0,kill,1,hung,no,1.316,0.85,1,1,1
+e89250ce,blind,N2,nvs,stop,0,,,,1.39,4.547,1,0,1,1,1.39,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,6.462,5.401,8.802,"0,0",,,,0,stop,1,transparent,yes,,0.45,1,1,0
+e912f461,blind,D3,ddp,sqp,1,,5530,,,,1,0,1,1,9.298,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,3.915,0.519,16.427,"0,0",,,,0,sqp,1,transparent,yes,,0.90,1,1,1
+eaa902ae,blind,D4,ddp,rqp,1,,5339,,,,1,0,1,1,4.451,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,2.365,0.519,10.072,"0,0",,,,0,rqp,1,transparent,yes,,0.90,1,1,1
+ed8a659a,blind,G2,gin,qperr,1,,,99,,,1,0,1,1,0.099,,-9,-9,wall,wall,0,0,,,0,0,0,0,none,HUNG,,58.812,0.0,60.143,"0,0",,,,0,qperr,1,hung,no,,0.70,1,1,1
+edad63f4,blind,D3,ddp,mute,,both,,,0.0,9.023,1,0,1,1,1.806,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,4.984,0.519,10.161,"0,0",14,0,,0,none,-,transparent,yes,,0.80,1,0,1
+ee951050,blind,N2,nvs,remacc,0,,,3193,,,1,0,1,1,3.19,,-9,-9,wall,wall,2,2,"[nvshmem-t1] PE0 2679169508.084 DECLINE peer=1 class=WR_FLUSH fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""class WR_FLUSH is not recoverable""","[nvshmem-t1] PE1 1548110387.455 DECLINE peer=0 class=WR_FLUSH fetch_cr=-1 fetch_exec=-1 fetch_reposted=-1 ops_cr=- reason=""the peer declined""",0,0,0,0,none,HUNG,0.007,55.953,1.447,60.118,"0,0",,,,0,remacc,0,hung,no,4.162,0.55,1,1,1
+ef3878e1,blind,N2,nvs,mute,,oneway,,,2.22,6.714,1,0,1,1,2.259,,0,0,,,0,0,,,0,0,0,4,correct,TRANSPARENT,,7.133,2.886,10.423,"0,0",3,0,,0,mute,-,transparent,yes,,0.90,1,1,1
+f3e32915,blind,D4,ddp,rqp,1,,5550,,,,1,0,1,1,9.154,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,2.758,0.519,15.13,"0,0",,,,0,rqp,1,transparent,yes,,0.90,1,1,1
+f91cd813,blind,G1,gin,stop,0,,,,0.004,7.243,1,0,1,1,0.005,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,7.931,7.374,9.139,"0,0",,,,0,mute,-,transparent,yes,,0.50,1,0,0
+fb20e695,blind,D2,ddp,srq,0,,1879,,,,1,0,1,1,6.28,,0,0,,,0,0,,,0,2,0,0,correct,TRANSPARENT,,7.123,3.569,16.689,"0,0",,,,0,srq,0,transparent,yes,,0.90,1,1,1
+fc2c1bd7,blind,G1,gin,stop,1,,,,0.105,7.264,1,0,1,1,0.106,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,7.87,7.415,9.188,"0,0",,,,0,mute,-,transparent,yes,,0.50,1,0,0
+ref-ddp-1,baseline,,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.52,13.702,"0,0",,,,0,,,,,,,,,
+ref-ddp-2,baseline,,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.519,13.209,"0,0",,,,0,,,,,,,,,
+ref-ddp-3,baseline,,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.519,16.417,"0,0",,,,0,,,,,,,,,
+ref-ddp-4,baseline,,ddp,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.519,16.347,"0,0",,,,0,,,,,,,,,
+ref-gin-1,baseline,,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.188,1.683,"0,0",,,,0,,,,,,,,,
+ref-gin-2,baseline,,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.203,1.653,"0,0",,,,0,,,,,,,,,
+ref-gin-3,baseline,,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.218,1.663,"0,0",,,,0,,,,,,,,,
+ref-gin-4,baseline,,gin,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,0.214,1.684,"0,0",,,,0,,,,,,,,,
+ref-nvs-1,baseline,,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,2.89,6.27,"0,0",,,,0,,,,,,,,,
+ref-nvs-2,baseline,,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,1.767,4.238,"0,0",,,,0,,,,,,,,,
+ref-nvs-3,baseline,,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,2.885,6.178,"0,0",,,,0,,,,,,,,,
+ref-nvs-4,baseline,,nvs,none,,,,,,,1,0,1,1,,,0,0,,,0,0,,,0,0,0,0,correct,TRANSPARENT,,,2.899,6.289,"0,0",,,,0,,,,,,,,,
