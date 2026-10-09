@@ -12,7 +12,7 @@
 #   app       rs_spike.cu (B1 and B2 application) against the hw headers -> agent_restore/out/app/rs_spike (B2 runs on rsx
 #             with only the report lines on: NCCL_GIN_RESTORE_REPORT=1)
 #   b3        rs_drain_test.cu (no NCCL; libibverbs, libmlx5, libcuda) -> agent_restore/out/$B3OUT/rs_drain_test (B3OUT
-#             default b3v2, the second build; out/b3 holds the first, deployed build)
+#             required, a NEW folder name: out/b3, out/b3v2, out/b3v3 hold the recorded builds and are refused)
 #   info      agent_restore/out/build_info.txt: md5 of every output and input
 # All compiles run at nice 19 and idle I/O priority. nvcc output is not byte-reproducible: a rerun changes the md5 of the
 # executables; the deployed values are those recorded in EXPERIMENT.md 12.
@@ -67,8 +67,9 @@ app() {
     -Xcompiler "-Wall,-Wextra" "$D/rs_spike.cu" -o "$o/rs_spike" -L"$SCR/agent_gd/gin/build/lib" -lnccl -lcudart -lpthread
   echo "rs_spike $(md5 "$o/rs_spike")"
 }
-b3() {  # B3OUT (b3v2): the output folder; out/b3 holds the first, deployed build
-  local o=$OUT/${B3OUT:-b3v2}
+b3() {  # B3OUT (required): a new output folder; a folder that already holds a build (b3, b3v2, b3v3) is refused
+  local o=$OUT/${B3OUT:?set B3OUT to a new folder name}
+  [ -e "$o/rs_drain_test" ] && { echo "refusing: $o already holds a build (nvcc output is not reproducible)" >&2; exit 1; }
   mkdir -p "$o"
   # the mlx5 PRM layouts: the DOCA GPUNetIO copy inside the hw tree (read only)
   nice -n 19 "$CUDA/bin/nvcc" -std=c++17 -O2 $GENCODE -Xcompiler "-Wall,-Wextra,-Werror" -I"$PRM" "$D/rs_drain_test.cu" \

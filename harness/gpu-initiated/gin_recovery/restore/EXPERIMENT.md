@@ -623,11 +623,14 @@ ordering(기본, `gdakiRegMr` 192)일 때와 strict일 때 따로.
   그대로 두고 반복 수를 셀당 3 200으로 줄인다(QUERY_QP 예상 rain 약 16 800, sunny 약 12 000). 그래서 채점하는 `fence` 반복은 셀마다 1 600, 노드와 순서마다
   4 800이고 실패율 95% 상한은 약 0.0625%(3/4 800)다(아래 판정의 2 000, 6 000, 약 0.05%를 이 수로 바꿔 읽는다. 통과의 조건, 실패 0은 같다).
 - 경합 셀의 바꿈(2026-10-09, `b3_h_rain_ro`를 다시 한 뒤, 판정 기준은 그대로): GPU 경합 셀은 3 200반복을 다 하기 전에 셀당 QUERY_QP 상한 20 000에 닿았다(12절).
-  상한은 rain의 새는 명령 slot 때문에 그대로 둔다. 경합 셀(`b3_h_*`)만 `RS_QUERY_BUDGET=19000`으로 돌린다: QUERY_QP가 19 000을 넘으면 그 반복이 끝난 자리에서
-  고리를 마치고 한 반복까지의 결과로 판정한다(멈추는 때는 질의 수로만 정해지고 결과와 무관하다). 상한까지 남는 1 000은 한 반복이 낼 수 있는 최대 400(질의 고리
+  상한은 rain의 새는 명령 slot 때문에 그대로 둔다. 경합 셀(`b3_h_*`)만 `RS_QUERY_BUDGET=19000`으로 돌린다: 반복을 시작할 때마다 QUERY_QP 수를 보고 19 000 이상이면
+  그 자리(반복 경계)에서 고리를 마치고 한 반복까지의 결과로 판정한다(멈추는 때는 질의 수로만 정해지고 결과와 무관하다). 이 끝(`budget_stop=1`)은
+  정상 끝이라 STOP 파일을 쓰지 않는다(결과가 `INCONCLUSIVE`여도 실행기는 다음 셀로 간다). 상한까지 남는 1 000은 한 반복이 낼 수 있는 최대 400(질의 고리
   둘 × 200)보다 크다. 그래서 경합 셀의 채점 fence 반복 수는 미리 정해지지 않는다(최대 1 600). 노드와 순서마다의 묶음은 `x`, `s`의 3 200과 `h`가 실제로 한 수의
   합이고, 실패율 95% 상한은 3/(3 200 + `h`의 수)로 0.0625%(`h`가 1 600)에서 약 0.094%(`h`가 0에 가까움) 사이다. `h` 셀의 유효 조건(early와 boundary가 각 10반복
-  이상, 경계 덮기 50% 이상)은 그대로라 반복이 너무 적으면 그 셀은 미결이다. `x`, `s` 셀은 3 200반복 그대로다.
+  이상, 경계 덮기 50% 이상)은 그대로라 반복이 너무 적으면 그 셀은 미결이다. `x`, `s` 셀은 3 200반복 그대로다(예산은 빈 값으로 넘겨 꺼짐). 순서 탐침은
+  본 반복 3 200 뒤에 하므로 예산으로 끝난 경합 셀에는 탐침 자료가 거의 없거나 없다: 경합에서 GPU가 NIC 쓰기를 차례 밖으로 보는지의 진단이 빠진다(탐침은
+  정보 항목이라 판정과 무관, 다시 검토 U8).
 - 셀(각 4 000반복, 위의 바꿈으로 본 셀은 3 200반복; 응답 쪽 노드마다 hold 하나):
   - `b3_x_<rain|sunny>_<ro|so>`: 노드 사이(이름의 노드가 응답 쪽).
   - `b3_s_<rain|sunny>_<ro|so>`: 같은 노드(보내는 프로세스가 같은 GPU, 같은 HCA; GIN의 노드 안 쌍).
@@ -796,8 +799,8 @@ python3 $F/summ_feas.py $R
 | `B3s` | 3–5분 | 같은 것(sunny 셀). 끝나면 B3 결론 줄 |
 
 B3 본 셀의 QUERY_QP 예상(rain 셀당 약 16 800)은 노드 사이 smoke에서만 나왔다. 같은 노드 셀과 경합 셀은 4 MiB에서 잰 적이 없다. 어느 셀이 "QUERY_QP cap of the
-cell reached"로 멈추면(`STOP_nic`) 그것은 예산 멈춤이지 시험 결과가 아니다: 남은 셀을 하지 않고(실행기가 막음) 올리며, 그 셀만 반복을 줄여(예: 2 400, 채점
-fence 1 200) 새 hold로 다시 하는 것을 사용자나 이 에이전트와 정한다(다시 검토 Q2, 실행 전). B1의 `abort_rc=0`은 깔끔한 정리를 증명하지 않는다: application이
+cell reached"로 멈추면(`STOP_nic`) 그것은 상한 멈춤이지 시험 결과가 아니다: 남은 셀을 하지 않고(실행기가 막음) 올리며, 그 셀만 반복을 줄여(예: 2 400, 채점
+fence 1 200) 새 hold로 다시 하는 것을 사용자나 이 에이전트와 정한다(다시 검토 Q2, 실행 전; 경합 셀은 아래 `b3v3` 블록의 질의 예산으로 정함). B1의 `abort_rc=0`은 깔끔한 정리를 증명하지 않는다: application이
 `ncclDevCommDestroy`를 부르지 않아 collComm을 닫을 때 PD 해제가 EBUSY로 실패할 수 있고, 기록 실행도 같으며 NCCL이 그 오류를 숨긴다(Q1, 판정에 영향 없음).
 
 **`STOP_nic`를 푸는 규칙(2026-10-09, B3r 뒤에 정함).** `STOP_nic`는 지우지 않는다. 메인 세션은 다음이 모두 참일 때만 그 파일을
@@ -807,7 +810,7 @@ fence 1 200) 새 hold로 다시 하는 것을 사용자나 이 에이전트와 �
 2. 그 원인이 시험 프로그램이나 실행기의 결함으로 진단되어 12절에 적혔고, 그것을 고친 새 바이너리(새 디렉터리)가 독립 검토를 받았다.
 3. 그 hold의 새 mlx5 커널 줄이 0이고, rain의 펌웨어 명령 실패 셈(`fwcmd failed sum`)과 `cmd_err` 줄 수가 hold 앞과 같고, 남은 시험 프로세스가 0이다.
 4. 같은 hold의 다른 셀에는 `setup_error`, `nic_error`가 없다.
-`nic_error`로 멈춘 경우는 위 규칙으로 풀지 않는다: "QUERY_QP cap of the cell reached"는 예산 멈춤(위)이라 반복 수를 정한 뒤에, CQE 오류, rmsn 2 s 초과, QUERY_QP
+`nic_error`로 멈춘 경우는 위 규칙으로 풀지 않는다: "QUERY_QP cap of the cell reached"는 상한 멈춤(위)이라 반복 수를 정한 뒤에, CQE 오류, rmsn 2 s 초과, QUERY_QP
 50 ms 초과, 반복당 200회 초과는 이 에이전트나 사용자에게 올리고 원인을 본 뒤에만 푼다. `STOP_mlx5`, `STOP_cuda`, `STOP_left`도 같다(올림).
 
 **2026-10-09 B3r 뒤: `b3v2`와 남은 B3 hold.** B3r의 `b3_h_rain_ro`는 설정의 loopback READ 자체 시험에서 멈췄다(12절의 진단: 첫 빌드는 그 시험의 무늬를 페이지
@@ -833,13 +836,17 @@ bash $CR -w 10800 -t rs-B3s -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3s >
 python3 $F/summ_feas.py $R
 ```
 
-**2026-10-09 경합 셀의 예산 멈춤 뒤: `b3v3`.** `b3v2`로 다시 한 `b3_h_rain_ro`는 자체 시험을 한 번에 통과했지만(진단 확인) 고리 도중 셀당 QUERY_QP 상한
+**2026-10-09 경합 셀의 상한 멈춤 뒤: `b3v3`.** `b3v2`로 다시 한 `b3_h_rain_ro`는 자체 시험을 한 번에 통과했지만(진단 확인) 고리 도중 셀당 QUERY_QP 상한
 20 000에 닿아 `nic_error`로 멈췄고, 그 출구는 진행 정도를 적지 않았다(12절). `rs_drain_test` `b3v3`(빌드됨, 실행 안 함; md5 `62fed1fd2104cdfe92b3c50defcc0093`,
-소스 `bcf58d50`)은 (1) 모든 출구(NIC 오류, CUDA 오류, watchdog, 정상 끝)에서 `progress_*`(한 반복, 채점 fence 수, QUERY_QP 수, 반복당 질의 수)를 적고,
-(2) `RS_QUERY_BUDGET`(기본 꺼짐)이 있으면 그 수를 넘은 뒤 반복 경계에서 고리를 마친다(`budget_stop=1`, 위 9.15.3). 예산이 꺼져 있으면 고리는 `b3v2`와 같다.
+소스 `bcf58d50`)은 (1) 오류 출구(NIC 오류, CUDA 오류, watchdog)에서 `progress_*`(한 반복, 채점 fence 수, QUERY_QP 수, 주 대기의 반복당 질의 수)를 적고,
+정상 끝에서는 같은 값을 `iterations_done`, `scored_n`, `query_qp_total`, `polls_per_iter_mean`으로 적는다(소스 주석 89–90행은 정상 끝에서도 `progress_*`를
+쓴다고 하지만 틀린 말이다. 빌드 소스의 md5를 지키려고 주석은 고치지 않는다, 다시 검토 U1). `progress_polls_per_iter`와 `polls_per_iter_mean`은 `early`,
+`boundary`를 뺀 길의 주 대기만 센다. 반복당 질의 수를 정할 때는 `query_qp_total / iterations_done`(오류 출구면 `progress_query_qp /
+progress_iterations_done`)을 쓴다(U2). (2) `RS_QUERY_BUDGET`(기본 꺼짐)이 있으면 반복을 시작할 때 QUERY_QP가 그 수 이상인지 보고 그러면 고리를 마친다
+(`budget_stop=1`, 위 9.15.3; 정상 끝이라 STOP 파일 없음). 예산이 꺼져 있으면 고리는 `b3v2`와 같다.
 실행기는 `b3v3`을 기본으로 쓰고 경합 셀에만 `RS_QUERY_BUDGET=19000`을 넘긴다(meta의 `query_budget=`).
 
-예산 멈춤의 `STOP_nic`("QUERY_QP cap of the cell reached")를 푸는 단계: 다음이 모두 참일 때 `STOP_nic.cleared-<날짜시각>`으로 옮기고 12절에 적는다. (1) 응답 쪽 kv의
+상한 멈춤의 `STOP_nic`("QUERY_QP cap of the cell reached")를 푸는 단계: 다음이 모두 참일 때 `STOP_nic.cleared-<날짜시각>`으로 옮기고 12절에 적는다. (1) 응답 쪽 kv의
 오류가 정확히 그 문구이고 `watchdog=1`, `cuda_error`, 다른 `nic_error`가 없음(보내는 쪽의 "the peer reported an error"는 그 결과), (2) 그 셀들의 새 계획(여기서는
 예산 19 000)이 12절에 정해졌고 그것을 담은 새 바이너리가 독립 검토를 받음, (3) 새 mlx5 줄 0, rain 펌웨어 명령 실패 셈과 `cmd_err` 그대로, 남은 시험 프로세스 0,
 (4) 그 hold의 rain debugfs QUERY_QP 증가가 20 000을 넘지 않음(상한이 지켜짐).
@@ -850,7 +857,7 @@ ls -d ~/rs-bundle/b3v3; ssh -n "$SUNNY_SSH" 'ls -d ~/rs-bundle/b3v3'      # 둘 
 WANT_B3V3=62fed1fd2104cdfe92b3c50defcc0093 bash $F/deploy_feas.sh $SCR/agent_restore/deploy_check_b3v3.txt b3v3
 test -s $SCR/agent_restore/deploy_check_b3v3.txt && echo written
 grep -E "MISMATCH|CHANGED|not found" $SCR/agent_restore/deploy_check_b3v3.txt   # 아무 줄도 없어야 함
-# 예산 멈춤의 STOP_nic 풀기(위 1–4를 확인한 뒤)
+# 상한 멈춤의 STOP_nic 풀기(위 1–4를 확인한 뒤)
 mv $R/STOP_nic $R/STOP_nic.cleared-$(date +%Y%m%d-%H%M%S)
 # 경합 셀 둘(b3v3, 3 200반복 상한, RS_LAST_KB=4096, RS_QUERY_BUDGET=19000; b3_h_rain_ro는 b3_rerun2/, b3_h_rain_so는 b3_rerun1/): 셀마다 약 30–40 s
 bash $CR -w 10800 -t rs-B3one-hro2 -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3one-b3_h_rain_ro > $R/hold_B3one-hro2.out 2>&1
@@ -860,10 +867,11 @@ bash $CR -w 10800 -t rs-B3s -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3s >
 python3 $F/summ_feas.py $R
 ```
 
-끝난 뒤 볼 것(경합 셀): `budget_stop`(1이면 예산으로 끝남), `iterations_done`, 채점 fence 수(`fence_W_n` + `fence_AW_n`), `query_qp_total` ≤ 19 400, 자체 시험 시도
-1/1, `result`, `valid`, hog의 `HOG_DONE`. B3s의 `x`, `s` 셀은 앞과 같다. 마지막의 B3 결론 줄은 노드마다 실제 채점 수로 상한을 다시 적는다.
+끝난 뒤 볼 것(경합 셀): `budget_stop`(1이면 예산으로 끝남), `iterations_done`, 채점 fence 수(`fence_W_n` + `fence_AW_n`), `query_qp_total` ≤ 19 400, 반복당 질의 수
+(`query_qp_total / iterations_done`), 자체 시험 시도 1/1, `result`, `valid`, hog의 `HOG_DONE`. B3s의 `x`, `s` 셀은 앞과 같다. 마지막의 B3 결론 줄은 노드마다 실제 채점 수로 상한을 다시 적는다.
 
-다시 한 셀은 `b3_rerun<k>/`에 있고 `summ_feas.py`가 그 셀의 마지막 실행으로 읽는다(앞의 실행은 표 아래 "earlier runs"에 남음). 노드와 순서마다의 묶음은 셀
+(이 문단은 `b3v2` 때의 것이다. 경합 셀은 이제 `b3v3`과 질의 예산으로 하고, 확인은 위 `b3v3` 블록의 것(`query_qp_total` ≤ 19 400,
+`budget_stop`, 실제 채점 수)을 따른다. 아래의 `query_qp_total` < 20 000은 예산이 꺼진 셀에만 맞다, 다시 검토 U4.) 다시 한 셀은 `b3_rerun<k>/`에 있고 `summ_feas.py`가 그 셀의 마지막 실행으로 읽는다(앞의 실행은 표 아래 "earlier runs"에 남음). 노드와 순서마다의 묶음은 셀
 `x`, `s`, `h`의 마지막 실행으로 한다(rain의 `x`, `s`는 첫 빌드, `h`는 `b3v2`; summ_feas가 셀마다 빌드와 `last_kb`, 자체 시험의 시도 수, hog 결과를 표로
 보임). 끝난 뒤 볼 것: 다시 한 경합 셀의 kv에 `selfcheck_fence_attempts`, `selfcheck_same_attempts`, `result=PASS`, `valid=1`, fence 실패 0, `query_qp_total`
 < 20 000, hog의 `HOG_DONE`; B3s 셀 여섯은 B3r과 같은 것; 마지막에 B3 결론 줄. 진단대로라면 시도 수는 늘 1이다. 1보다 크면 셀이 통과해도 그 수를 측정으로
@@ -950,6 +958,7 @@ python3 $F/summ_feas.py $R
 | 2026-10-09 23:07 | 메인 세션이 9.15.5의 조건 1–4를 스스로 확인하고(응답 쪽 kv는 `setup_error`뿐, 두 노드에 남은 시험 프로세스 0, B3r의 새 mlx5 줄 0, 다른 넷에 오류 없음) `STOP_nic`를 `STOP_nic.cleared-20261009-230739`로 옮김 | `results/20261009_feasibility/STOP_nic.cleared-20261009-230739` |
 | 2026-10-09 23:07–23:08 | hold `B3one-b3_h_rain_ro`(`b3v2`, 3 200반복, `RS_LAST_KB=4096`, hold 36 s): 자체 시험 fence와 same 시도 1/1, 읽은 값 둘 다 무늬 `0x7273647261696e32`(첫 빌드의 멈춤 진단과 맞음). 그러나 고리 도중 응답 쪽이 `nic_error="QUERY_QP cap of the cell reached"`(exit 3)로 멈춤; 보내는 쪽은 "the peer reported an error"(exit 3), hog `HOG_DONE`(2 135회 × 4 GiB, 29.45 s), 셀 29.8 s. rain debugfs QUERY_QP 증가 정확히 20 000(5 701 339 → 5 721 339; 상한이 지켜짐). 그 출구는 한 반복 수와 채점 수를 적지 않아 몇 반복까지 갔는지 모른다 `[미확인]`. 같은 상한 안에서 노드 사이 셀은 3 400반복을 3.97 s에 했으므로(질의 17 472) 경합은 반복을 크게 늦추고 반복당 질의를 늘린 것으로 본다 `[추론]`. 새 mlx5 줄 0, 펌웨어 명령 실패 31 → 31. 실행기가 새 `STOP_nic`를 씀(예산 멈춤), `b3_h_rain_so`와 B3s는 돌지 않음 `[측정]` | `results/20261009_feasibility/b3_rerun1/`, `STOP_nic` |
 | 2026-10-09 | 예산 멈춤의 결정(판정 기준은 그대로): 상한 20 000은 그대로(rain의 새는 명령 slot), 경합 셀만 `RS_QUERY_BUDGET=19000`(반복 경계에서 고리를 마치고 한 반복까지로 판정; 상한까지 1 000이 남아 한 반복의 최대 400보다 큼), `x`, `s` 셀은 3 200반복 그대로. 노드와 순서마다의 실패율 95% 상한은 3/(3 200 + 경합 셀의 채점 수)로 다시 적음(0.0625%–약 0.094%). 미리 반복 수를 줄이는 대신 예산을 쓴 이유: 경합에서의 반복당 질의 수를 잴 자료가 없음(그 출구가 진행을 적지 않음). 그래서 `rs_drain_test` `b3v3`을 만듦(빌드됨, 실행 안 함; md5 `62fed1fd2104cdfe92b3c50defcc0093`, 소스 `bcf58d50` 컴파일 때 기록): 모든 출구에서 `progress_*`, `RS_QUERY_BUDGET`, 끝에 `budget_stop`과 반복당 질의 평균. 예산이 꺼지면 고리는 `b3v2`와 같음. 배포는 새 `~/rs-bundle/b3v3/`, 실행기 기본 `b3v3`, hold가 경합 셀에만 예산을 넘김. 예산 멈춤의 `STOP_nic` 푸는 단계는 9.15.5 | 9.15.3, 9.15.5, 이 커밋 |
+| 2026-10-09 | `b3v3`과 경합 셀 계획의 독립 검토(읽기 전용 에이전트, 커밋 `31092b76` 대상, 실행과 빌드와 ssh 없음): 판정 "b3v3 and the h-cell plan: ready to run", 막는 문제 없음. 확인한 것: 예산이 꺼지면 고리가 `b3v2`(와 첫 빌드의 채점 고리)와 같음; 예산 검사는 반복 시작(탐침 커널 전)에 있고 질의 수에 처음 질의가 들어가 debugfs 셈과 맞음; 한 반복은 최대 400(`boundary`의 대기 둘 × 200)이라 최대 18 999 + 400 = 19 399 < 20 000; 멈추는 때는 질의 수로만 정해짐; 오류 출구의 진행 기록; 실행기의 환경 전달과 `b3_rerun` 번호(`b3_h_rain_ro`는 `b3_rerun2/`, `b3_h_rain_so`는 `b3_rerun1/`); 상한 3/3 200 = 0.09375%, 3/4 800 = 0.0625%; 상한 멈춤의 풀기 조건 1–4가 파일과 맞음(조건 2의 독립 검토가 이 검토); md5(`b3v3` `62fed1fd`, 컴파일 때 소스 `bcf58d50` = 커밋 `31092b76`의 파일, `b3v2` `db5541eb` 그대로). 낮음, 반영(바이너리는 그대로, 다시 빌드하지 않음): U1(정상 끝은 `progress_*`가 아니라 `iterations_done` 등을 씀 → 9.15.5 문구; 소스 주석은 md5를 지키려고 둠), U2(반복당 질의 평균은 `early`, `boundary`를 뺀 주 대기만 → 계획에는 `query_qp_total / iterations_done`), U3(상한 20 000에 닿은 `nic_error` 멈춤은 이제 "상한 멈춤"으로 부르고 `budget_stop=1`("예산으로 끝남", 정상 끝, STOP 없음)과 가름; 앞 행의 "예산 멈춤"은 상한 멈춤을 뜻하며 고치지 않음; 9.15.3의 "넘으면"은 "19 000 이상이면"), U4(9.15.5의 `b3v2` 문단에 `b3v3` 안내), U5(`hold_feas.sh`가 `x`, `s` 셀과 smoke에 빈 `RS_QUERY_BUDGET`을 넘겨 호출 쪽 환경을 막음), U6(`build_feas.sh b3`는 `B3OUT`이 있어야 하고 이미 빌드가 있는 폴더는 거절: 기록된 `b3`, `b3v2`, `b3v3`을 덮지 않음), U8(예산으로 끝난 경합 셀은 순서 탐침 자료가 거의 없음 → 9.15.3). 정보: U7(watchdog 스레드가 진행 값을 읽는 경합과 kv 동시 쓰기는 x86-64와 glibc에서 무해; `fclose` 뒤 watchdog의 옛 틈은 무시할 만함). 스크립트 고침 뒤 `bash -n` 통과(실행 안 함) | 9.15.3, 9.15.5, `feas/hold_feas.sh`, `feas/build_feas.sh`, 이 커밋 |
 
 ## 13. 사전 등록 이후 변경
 

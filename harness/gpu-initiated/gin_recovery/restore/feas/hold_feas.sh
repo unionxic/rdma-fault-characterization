@@ -10,8 +10,9 @@
 #   B3s    B3, sunny is the responder: the same six cells with sunny
 #          B3r, B3s and B3one run B3_ITERS (3 200) iterations with RS_LAST_KB=4096, both passed explicitly (EXPERIMENT.md
 #          9.15.3 and 12: the 1 024 smoke had no boundary hit; 3 200 keeps rain's QUERY_QP under the 20 000 cap); the
-#          contention cells (b3_h_*) also get RS_QUERY_BUDGET=19000: they end at an iteration boundary after 19 000 QUERY_QP
-#          (the first rain h rerun hit the 20 000 cap) and are scored over the iterations done
+#          contention cells (b3_h_*) also get RS_QUERY_BUDGET=19000: they end at the first iteration boundary with >= 19 000
+#          QUERY_QP issued (the first rain h rerun hit the 20 000 cap) and are scored over the iterations done; the other
+#          cells get an empty RS_QUERY_BUDGET (off even if the caller exported it)
 #   B2     B2: four ranks interleaved (rain 0, 2; sunny 1, 3), report lines only, 2 trials, into b2/ (a repeat: b2_run<k>/)
 #   B2c    B2 control (optional): four ranks consecutive (rain 0, 1; sunny 2, 3), 1 trial, into the latest B2 folder
 #   B1     B1: record (2 ranks), replay rank 1 on sunny and rank 0 on rain (strace), two negative replays; 2 trials, into
@@ -92,10 +93,10 @@ b3() {  # b3 <cell> <iters> <logdir> [main]: one cell if it fits, then the per-c
   if [ "${4:-}" = main ]; then
     case "$cell" in
       b3_h_*) RS_LAST_KB=$B3_LAST_KB RS_QUERY_BUDGET=$B3_H_BUDGET bash "$D/run_b3.sh" "$cell" "$iters" "$dir" ;;
-      *) RS_LAST_KB=$B3_LAST_KB bash "$D/run_b3.sh" "$cell" "$iters" "$dir" ;;
+      *) RS_LAST_KB=$B3_LAST_KB RS_QUERY_BUDGET= bash "$D/run_b3.sh" "$cell" "$iters" "$dir" ;;  # empty: off even if exported
     esac
   else
-    bash "$D/run_b3.sh" "$cell" "$iters" "$dir"
+    RS_QUERY_BUDGET= bash "$D/run_b3.sh" "$cell" "$iters" "$dir"
   fi
   kvf="$dir/${cell}_resp.kv"
   if [ ! -f "$kvf" ] || grep -qE 'nic_error=|setup_error=|watchdog=1|cuda_error=' "$kvf"; then
