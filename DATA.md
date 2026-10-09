@@ -110,7 +110,7 @@ The full checksums are in the `SHA256SUMS` asset of that release.
 
 ## Release `data-20261009`
 
-8 raw-data archives, 4967 files, 2.37 MB compressed. Packed by `tools/pack_release.py --whole`.
+11 raw-data archives, 6624 files, 3.02 MB compressed. Packed by `tools/pack_release.py --whole`.
 The full checksums are in the `SHA256SUMS` asset of that release.
 
 | folder | asset | files | MB | sha256 (first 12) | note |
@@ -123,3 +123,6 @@ The full checksums are in the `SHA256SUMS` asset of that release.
 | `harness/gpu-initiated/gin_recovery/handoff/results/20261009_pilot` | `harness__gpu-initiated__gin_recovery__handoff__results__20261009_pilot.tar.xz` | 90 | 0.05 | `688ff55d71f0` | pilot runs, not scored |
 | `harness/nccl-integration/builtin/results/20261009` | `harness__nccl-integration__builtin__results__20261009.tar.xz` | 1039 | 1.04 | `5e331f890677` |  |
 | `harness/nccl-integration/builtin/results/20261009_pilot` | `harness__nccl-integration__builtin__results__20261009_pilot.tar.xz` | 125 | 0.13 | `618c9cc3eb41` | pilot runs, not scored |
+| `harness/gpu-initiated/gin_recovery/peer/results/20261009` | `harness__gpu-initiated__gin_recovery__peer__results__20261009.tar.xz` | 1454 | 0.56 | `3521f5bf229c` |  |
+| `harness/gpu-initiated/gin_recovery/peer/results/20261009_pilot` | `harness__gpu-initiated__gin_recovery__peer__results__20261009_pilot.tar.xz` | 171 | 0.07 | `b726295b203f` | pilot runs, not scored |
+| `harness/gpu-initiated/gin_recovery/peer/results/20261009_pilot2` | `harness__gpu-initiated__gin_recovery__peer__results__20261009_pilot2.tar.xz` | 32 | 0.02 | `5deb8bad60d7` | pilot runs, not scored |
