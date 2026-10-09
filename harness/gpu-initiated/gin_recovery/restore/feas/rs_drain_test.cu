@@ -33,7 +33,7 @@
 // GO spins on the last word of the window until it holds this iteration's value, then reads every other word: a late one
 // means the GPU saw the NIC's writes out of order.
 // QUERY_QP (DEVX on the verbs QP): the first one 0.7 x the last reach time after PAUSED, then at least 50 us between starts
-// (growing to 1 ms after 50), one at a time; <= 400 per iteration and <= 20 000 per cell, and a single one longer than
+// (growing to 1 ms after 50), one at a time; <= 200 per iteration and <= 20 000 per cell, and a single one longer than
 // 50 ms, stop the cell (exit 3). The rmsn comparison is modulo 2^24 from a baseline (unit-tested at start).
 //
 // usage: rs_drain_test <out_kv> resp   <ib_dev> <gid_index> <ro|so> <iters> <listen:<port>|connect:<ip>:<port>>
@@ -41,7 +41,8 @@
 //        rs_drain_test <out_kv> hog <secs> <stopfile>
 // env: RS_RDV_NONCE (16 hex; the listener greets with "RSDRAIN2"+nonce, the other side sends nothing before it has checked
 //      it), RS_WATCHDOG_S (300: hard bound, exit 7), RS_CELL_S (iters / 100 + 60: soft bound, result INCOMPLETE),
-//      RS_CUDA_DEV (0), RS_SEED (0x5253)
+//      RS_CUDA_DEV (0), RS_SEED (0x5253), RS_LAST_KB (1024: the last write; only changed if the smoke shows too few
+//      edge iterations, recorded in EXPERIMENT.md 12; both sides must use the same value)
 // exit: 0 PASS; 1 FENCE_FAIL; 4 INCONCLUSIVE; 5 INCOMPLETE; 2 usage or setup error; 3 NIC, rmsn, QUERY_QP-cap or
 //       control-channel error; 6 CUDA error; 7 watchdog. The writer exits 0 when the responder ended the run.
 #include <cuda.h>
@@ -127,12 +128,13 @@ static const int NSMALL = 16, NMED = 14, NW = NSMALL + NMED + 1;  // 31 writes; 
 struct Layout {
   size_t off[NW], len[NW], total, lastStart;
 };
-static Layout makeLayout() {
+static Layout makeLayout() {  // RS_LAST_KB (1024): the last write's size (both sides must agree; checked at hello)
   static const size_t small[4] = {64, 256, 1024, 4096};
+  const size_t lastKb = getenv("RS_LAST_KB") ? (size_t)atol(getenv("RS_LAST_KB")) : 1024;
   Layout l;
   size_t o = 0;
   for (int k = 0; k < NW; k++) {
-    const size_t n = k < NSMALL ? small[k % 4] : k < NSMALL + NMED ? (size_t)64 << 10 : (size_t)1 << 20;
+    const size_t n = k < NSMALL ? small[k % 4] : k < NSMALL + NMED ? (size_t)64 << 10 : lastKb << 10;
     l.off[k] = o;
     l.len[k] = n;
     o += n;
@@ -276,7 +278,8 @@ static ibv_qp* makeQp(ibv_pd* pd, ibv_cq* cq, int sendWr) {
   a.cap.max_recv_sge = 1;
   return ibv_create_qp(pd, &a);
 }
-static bool connectQp(ibv_qp* q, uint32_t dest, int gidIndex, const uint8_t* dgid) {
+static int g_pathMtu = 0;  // the path MTU of the RC connection to the peer: min of both sides (as NCCL); 0 = local
+static bool connectQp(ibv_qp* q, uint32_t dest, int gidIndex, const uint8_t* dgid, int mtu = 0) {
   ibv_qp_attr a;
   memset(&a, 0, sizeof(a));
   a.qp_state = IBV_QPS_INIT;
@@ -286,7 +289,7 @@ static bool connectQp(ibv_qp* q, uint32_t dest, int gidIndex, const uint8_t* dgi
   if (ibv_modify_qp(q, &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) != 0) return false;
   memset(&a, 0, sizeof(a));
   a.qp_state = IBV_QPS_RTR;
-  a.path_mtu = g_pa.active_mtu;
+  a.path_mtu = (enum ibv_mtu)(mtu ? mtu : (int)g_pa.active_mtu);
   a.dest_qp_num = dest;
   a.rq_psn = 0;
   a.max_dest_rd_atomic = 16;
@@ -522,13 +525,14 @@ static uint64_t g_wrId = 1;
 enum Path { P_FENCE = 0, P_FSAME, P_NOFENCE, P_CUFLUSH, P_EARLY, P_BOUNDARY, P_PROBE, NPATH };
 static const char* PATHN[NPATH] = {"fence", "fsame", "nofence", "cuflush", "early", "boundary", "probe"};
 struct Tally {
-  long n = 0, itersBad = 0, itersStaleBefore = 0, itersStaleLast = 0, itersCorrupt = 0, sigLate = 0, sigBad = 0;
+  long n = 0, itersBad = 0, itersStale = 0, itersStaleBefore = 0, itersStaleLast = 0, itersCorrupt = 0, sigLate = 0,
+       sigBad = 0;
   unsigned long long staleBefore = 0, staleLast = 0, corrupt = 0;
 };
 static Tally T[NPATH][3];        // [path][tail]
 static Tally TS[3];               // fence: the SM check of the window (information)
 static long probeTimeouts = 0, boundaryMissed = 0, edgeSeen = 0, scoredN = 0;
-static std::vector<double> reachUs, readUs, flushUs;
+static std::vector<double> reachUs, readUs, flushUs, goPausedUs;
 static long pollsMax = 0;
 static std::vector<long> fenceFail;
 static double estReachUs = 0;
@@ -555,7 +559,9 @@ static void readFence(Resp& r, bool sameAlloc, bool record) {
   if (record) readUs.push_back(nowUs() - t0);
 }
 // poll until rmsn - rmsn0 == target (mod 2^24); returns the number of polls; sawBelow: a poll saw less than target
-static long waitRmsn(Resp& r, uint64_t target, double tPaused, bool* sawBelow, bool stopAtBelowOne) {
+// *reachStart (if not null): start of the poll that saw the target, after tPaused (the poll's own latency is not in it)
+static long waitRmsn(Resp& r, uint64_t target, double tPaused, bool* sawBelow, bool stopAtBelowOne,
+                     double* reachStart = nullptr) {
   const double start = tPaused + 0.7 * estReachUs;
   while (nowUs() < start) {
   }
@@ -568,7 +574,10 @@ static long waitRmsn(Resp& r, uint64_t target, double tPaused, bool* sawBelow, b
     queryRmsn(r.qp, polls < 50 ? 50.0 : std::min(1000.0, 50.0 * (polls - 48)), &rmsn, &st);
     polls++;
     const uint32_t got = rmsnDelta(rmsn, r.rmsn0);
-    if (got == want) break;
+    if (got == want) {
+      if (reachStart) *reachStart = g_lastQueryStart - tPaused;
+      break;
+    }
     const uint32_t behind = (want - got) & MASK24;
     if (behind > (uint32_t)(NW + 1)) nicFail("rmsn outside the window of this iteration");
     if (stopAtBelowOne && behind == 1) {
@@ -577,7 +586,7 @@ static long waitRmsn(Resp& r, uint64_t target, double tPaused, bool* sawBelow, b
     }
     *sawBelow = true;
     if (st != 0x3) nicFail("responder QP not in RTS");
-    if (polls >= 400) nicFail("more than 400 QUERY_QP in one iteration");
+    if (polls >= 200) nicFail("more than 200 QUERY_QP in one iteration");
     if (nowUs() - t0 > 2e6) nicFail("rmsn did not reach M within 2 s");
   }
   return polls;
@@ -609,6 +618,7 @@ static void snapshotCheck(Resp& r, int path, int tail, uint32_t iter, bool alsoS
     t.staleBefore += x.staleBefore;
     t.staleLast += x.staleLast;
     t.corrupt += x.corrupt;
+    if (x.staleBefore || x.staleLast) t.itersStale++;
     if (x.staleBefore) t.itersStaleBefore++;
     if (x.staleLast) t.itersStaleLast++;
     if (x.corrupt) t.itersCorrupt++;
@@ -821,7 +831,7 @@ int main(int argc, char** argv) {
   }
   ctlOpen(ctl);
   struct Hello {
-    uint32_t qpn, iters, order, nw, winRkey, sigRkey;
+    uint32_t qpn, iters, order, nw, winRkey, sigRkey, mtu, lastKb;
     uint8_t gid[16];
     uint64_t total;
   } me, peer;
@@ -834,10 +844,14 @@ int main(int argc, char** argv) {
   me.sigRkey = isResp ? r.sigMr->rkey : 0;
   memcpy(me.gid, g_myGid, 16);
   me.total = L.total;
+  me.mtu = (uint32_t)g_pa.active_mtu;
+  me.lastKb = (uint32_t)(L.len[NW - 1] >> 10);
   if (!sendAll(g_ctl, &me, sizeof(me)) || !recvAll(g_ctl, &peer, sizeof(peer), 10000)) setupFail("hello exchange");
-  if (peer.iters != me.iters || peer.order != me.order || peer.nw != me.nw || peer.total != me.total)
+  if (peer.iters != me.iters || peer.order != me.order || peer.nw != me.nw || peer.total != me.total || peer.lastKb != me.lastKb)
     setupFail("the two sides disagree on iters, order or layout");
-  if (!connectQp(isResp ? r.qp : wqp, peer.qpn, g_gid, peer.gid)) setupFail("connect to the peer");
+  g_pathMtu = (int)std::min(me.mtu, peer.mtu);
+  kvf("path_mtu=%d peer_mtu=%u\n", g_pathMtu, peer.mtu);
+  if (!connectQp(isResp ? r.qp : wqp, peer.qpn, g_gid, peer.gid, g_pathMtu)) setupFail("connect to the peer");
   {
     Msg x = {M_READY, 0, 0, 0, 0}, y;
     if (!sendAll(g_ctl, &x, sizeof(x)) || !recvAll(g_ctl, &y, sizeof(y), 10000) || y.type != M_READY)
@@ -860,7 +874,7 @@ int main(int argc, char** argv) {
       memset(wr, 0, sizeof(wr));
       int k = 0;
       auto addWrite = [&](int idx) {
-        sg[k].addr = (uint64_t)(uintptr_t)((uint8_t*)src + L.off[idx]);
+        sg[k].addr = (uint64_t)L.off[idx];  // the source MR is registered with iova 0: local addresses are offsets
         sg[k].length = (uint32_t)L.len[idx];
         sg[k].lkey = srcMr->lkey;
         wr[k].wr_id = g_wrId++;
@@ -945,9 +959,11 @@ int main(int argc, char** argv) {
       probeKernel<<<1, 1024, 0, r.pst>>>((const unsigned long long*)r.win, L.total / 8, it + 1, r.res, r.timedOut);
       CK(cudaGetLastError());
     }
+    const double tGo = nowUs();
     ctlSend(M_GO, it, (uint32_t)a.tail, 0);
     const Msg x = ctlRecv(10000);
     const double tp = nowUs();
+    goPausedUs.push_back(tp - tGo);
     if (x.type != M_PAUSED || x.iter != it) nicFail("control message out of order (responder)");
     m += (uint64_t)msgsOf(a.tail);
     if (x.m != m) nicFail("PAUSED count differs from the expected M");
@@ -969,8 +985,8 @@ int main(int argc, char** argv) {
         break;
       }
       default: {
-        polls = waitRmsn(r, m, tp, &sawBelow, false);
-        const double reach = nowUs() - tp;
+        double reach = 0;
+        polls = waitRmsn(r, m, tp, &sawBelow, false, &reach);
         reachUs.push_back(reach);
         pollsMax = std::max(pollsMax, polls);
         estReachUs = estReachUs == 0 ? reach : 0.8 * estReachUs + 0.2 * reach;
@@ -1045,18 +1061,18 @@ int main(int argc, char** argv) {
   for (long v : fenceFail) ff += (ff.empty() ? "" : ",") + std::to_string(v);
   kvf("reach_p50_us=%.1f reach_p99_us=%.1f reach_max_us=%.1f polls_max=%ld query_qp_total=%llu query_p50_us=%.1f "
       "query_p99_us=%.1f query_max_us=%.1f read_p50_us=%.1f read_max_us=%.1f cuflush_p50_us=%.1f boundary_missed=%ld "
-      "probe_timeouts=%ld scored_n=%ld edge_seen=%ld iterations_done=%ld run_s=%.2f fence_fail_iters=%s\n",
+      "probe_timeouts=%ld scored_n=%ld edge_seen=%ld iterations_done=%ld run_s=%.2f fence_fail_iters=%s go_paused_p50_us=%.1f\n",
       pct(reachUs, 0.5), pct(reachUs, 0.99), pct(reachUs, 1.0), pollsMax, g_queryQp, pct(g_qLat, 0.5),
       pct(g_qLat, 0.99), pct(g_qLat, 1.0), pct(readUs, 0.5), pct(readUs, 1.0), pct(flushUs, 0.5), boundaryMissed,
-      probeTimeouts, scoredN, edgeSeen, done, runS, ff.empty() ? "none" : ff.c_str());
+      probeTimeouts, scoredN, edgeSeen, done, runS, ff.empty() ? "none" : ff.c_str(), pct(goPausedUs, 0.5));
   const Tally &fw = T[P_FENCE][T_W], &faw = T[P_FENCE][T_AW], &ea = T[P_EARLY][T_W], &bd = T[P_BOUNDARY][T_W];
   const bool fenceClean = fw.itersBad == 0 && faw.itersBad == 0;
-  const bool valid = ea.itersStaleBefore + ea.itersStaleLast >= 10 && ea.corrupt == 0 && bd.itersStaleLast >= 10 &&
+  const bool valid = ea.itersStale >= 10 && ea.corrupt == 0 && bd.itersStaleLast >= 10 &&
                      scoredN > 0 && 2 * edgeSeen >= scoredN;
-  const char* result = incomplete ? "INCOMPLETE" : !fenceClean ? "FENCE_FAIL" : valid ? "PASS" : "INCONCLUSIVE";
-  const int ex = incomplete ? 5 : !fenceClean ? 1 : valid ? 0 : 4;
+  const char* result = !fenceClean ? "FENCE_FAIL" : incomplete ? "INCOMPLETE" : valid ? "PASS" : "INCONCLUSIVE";
+  const int ex = !fenceClean ? 1 : incomplete ? 5 : valid ? 0 : 4;
   kvf("fence_clean=%d valid=%d early_iters_stale=%ld boundary_iters_stale_last=%ld edge_fraction=%.3f result=%s exit=%d\n",
-      fenceClean ? 1 : 0, valid ? 1 : 0, ea.itersStaleBefore + ea.itersStaleLast, bd.itersStaleLast,
+      fenceClean ? 1 : 0, valid ? 1 : 0, ea.itersStale, bd.itersStaleLast,
       scoredN ? (double)edgeSeen / scoredN : 0.0, result, ex);
   fclose(g_kv);
   return ex;

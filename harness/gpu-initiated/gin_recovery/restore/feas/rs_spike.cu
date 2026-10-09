@@ -11,7 +11,7 @@
 // usage: rs_spike <rank> <nranks> <rank0_ip> <port> <out_kv>     (spare: rank0_ip and port are ignored)
 // env: RS_SPARE, RS_RDV_NONCE (16 hex; normal mode: rank 0 greets with "RSSPIKE1"+nonce, the others send nothing before
 //      they checked it), RS_ITERS (20), RS_BYTES (4096), RS_HOLD_S (0), RS_WATCHDOG_S (90), RS_DEV (0), RS_WAIT_S (10)
-// kv: mode, rank, nranks, init_rc, init_ms, reg_rc, reg_ms, devcomm_rc, devcomm_ms, comm_rank, comm_count, dc_rank,
+// kv (every *_rc is the numeric ncclResult_t, 0 = success): mode, rank, nranks, init_rc, init_ms, reg_rc, reg_ms, devcomm_rc, devcomm_ms, comm_rank, comm_count, dc_rank,
 //   dc_nranks, dc_lsa_rank, dc_lsa_size, dc_gin_contexts, dc_gin_signals, dc_gin_counters, dc_gin_connections, win_bytes,
 //   ts_contexts, xchg (ok|bad|skipped), tx_err, rx_err, rx_bad, abort_rc, abort_ms, exit
 // exit: 0 every step ok; 2 an NCCL call failed; 4 the exchange failed; 6 CUDA error; 7 watchdog; 1 usage or rendezvous.
@@ -310,7 +310,7 @@ int main(int argc, char** argv) {
   cfg.blocking = 1;
   double t0 = monoMs();
   ncclResult_t r0 = ncclCommInitRankConfig(&comm, N, id, rank, &cfg);
-  kv("init_rc=%s init_ms=%.1f", ncclGetErrorString(r0), monoMs() - t0);
+  kv("init_rc=%d init_ms=%.1f", (int)r0, monoMs() - t0);
   if (r0 != ncclSuccess) {
     kv("exit=2");
     return 2;
@@ -325,7 +325,7 @@ int main(int argc, char** argv) {
   if (r1 == ncclSuccess) r1 = ncclMemAlloc(&dRecv, winBytes);
   if (r1 == ncclSuccess) r1 = ncclCommWindowRegister(comm, dSend, winBytes, &sendWin, NCCL_WIN_COLL_SYMMETRIC);
   if (r1 == ncclSuccess) r1 = ncclCommWindowRegister(comm, dRecv, winBytes, &recvWin, NCCL_WIN_COLL_SYMMETRIC);
-  kv("reg_rc=%s reg_ms=%.1f win_bytes=%zu", ncclGetErrorString(r1), monoMs() - t0, winBytes);
+  kv("reg_rc=%d reg_ms=%.1f win_bytes=%zu", (int)r1, monoMs() - t0, winBytes);
   if (r1 != ncclSuccess) {
     kv("exit=2");
     _exit(2);
@@ -338,7 +338,7 @@ int main(int argc, char** argv) {
   reqs.ginConnectionType = NCCL_GIN_CONNECTION_FULL;
   t0 = monoMs();
   ncclResult_t r2 = ncclDevCommCreate(comm, &reqs, &devComm);
-  kv("devcomm_rc=%s devcomm_ms=%.1f", ncclGetErrorString(r2), monoMs() - t0);
+  kv("devcomm_rc=%d devcomm_ms=%.1f", (int)r2, monoMs() - t0);
   if (r2 != ncclSuccess) {
     kv("exit=2");
     _exit(2);
@@ -350,10 +350,9 @@ int main(int argc, char** argv) {
   memset(&st, 0, sizeof(st));
   const ncclResult_t rs = ncclGinGetRecoveryStats(comm, &st);
   kv("comm_rank=%d comm_count=%d dc_rank=%d dc_nranks=%d dc_lsa_rank=%d dc_lsa_size=%d dc_gin_contexts=%u dc_gin_signals=%d "
-     "dc_gin_counters=%d dc_gin_connections=%d ts_contexts=%d ts_stats_rc=%s",
+     "dc_gin_counters=%d dc_gin_connections=%d ts_contexts=%d ts_stats_rc=%d",
      cr, cc, devComm.rank, devComm.nRanks, devComm.lsaRank, devComm.lsaSize, devComm.ginContextCount,
-     devComm.ginSignalCount, devComm.ginCounterCount, (int)devComm.ginConnectionCount, (int)st.contexts,
-     ncclGetErrorString(rs));
+     devComm.ginSignalCount, devComm.ginCounterCount, (int)devComm.ginConnectionCount, (int)st.contexts, (int)rs);
 
   int ex = 0;
   if (spare) {
@@ -409,7 +408,7 @@ int main(int argc, char** argv) {
   }
   t0 = monoMs();
   const ncclResult_t ra = ncclCommAbort(comm);
-  kv("abort_rc=%s abort_ms=%.1f exit=%d", ncclGetErrorString(ra), monoMs() - t0, ra == ncclSuccess ? ex : 2);
+  kv("abort_rc=%d abort_ms=%.1f exit=%d", (int)ra, monoMs() - t0, ra == ncclSuccess ? ex : 2);
   fflush(stdout);
   _exit(ra == ncclSuccess ? ex : 2);
 }

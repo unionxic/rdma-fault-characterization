@@ -10,7 +10,8 @@
 #   nodes by ../../remaining/portpick.sh); the writer connects to the responder's management address, or to 127.0.0.1.
 # files in <logdir>: <cell>_resp.kv/.log, <cell>_writer.kv/.log, <cell>_hog.kv/.log (h cells), <cell>_topo_<node>.txt
 #   (nvidia-smi topo -m), <cell>_gpu_<node>_<before|after>.txt (compute apps), <cell>_meta.txt
-# env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), B3BIN ($HOME/rs-bundle/b3/rs_drain_test)
+# env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), B3BIN ($HOME/rs-bundle/b3/rs_drain_test),
+#      RS_LAST_KB (passed to both sides if set; see rs_drain_test.cu)
 set -u
 CELL=${1:?cell}; ITERS=${2:?iters}; LOGDIR=${3:?logdir}
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
@@ -20,8 +21,11 @@ BIN=${B3BIN:-$HOME/rs-bundle/b3/rs_drain_test}
 [ -x "$BIN" ] || { echo "missing $BIN on rain" >&2; exit 1; }
 IFS=_ read -r _ MODE NODE ORDER <<< "$CELL"
 case "$MODE:$NODE:$ORDER" in [xsh]:rain:ro|[xsh]:rain:so|[xsh]:sunny:ro|[xsh]:sunny:so) ;; *) echo "bad cell $CELL" >&2; exit 2 ;; esac
+umask 077
 WORK=$(mktemp -d /tmp/rs_b3.XXXXXX)
 RT=/tmp/rs_b3_$$_$RANDOM            # sunny-side file prefix of this cell
+cleanup() { ssh -n "$SUNNY_SSH" "rm -f $RT.*" 2>/dev/null || true; rm -rf "$WORK"; }
+trap cleanup EXIT
 D=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../../remaining/portpick.sh
 . "$D/../../remaining/portpick.sh"
@@ -50,7 +54,7 @@ gidx() { [ "$1" = rain ] && echo "$GID_R" || echo "$GID_S"; }
 declare -A PIDS
 start() {
   local node=$1 name=$2; shift 2
-  local envs="RS_RDV_NONCE=$NONCE RS_WATCHDOG_S=$WD RS_CELL_S=$CELL_S"
+  local envs="RS_RDV_NONCE=$NONCE RS_WATCHDOG_S=$WD RS_CELL_S=$CELL_S${RS_LAST_KB:+ RS_LAST_KB=$RS_LAST_KB}"
   if [ "$node" = rain ]; then
     ( env $envs timeout -s KILL "$TMO" "$BIN" "$WORK/$name.kv" "$@" > "$WORK/$name.log" 2>&1; echo $? > "$WORK/$name.rc" ) &
   else
@@ -91,7 +95,6 @@ for name in resp writer hog; do
     scp -q "$SUNNY_SSH:$RT.$name.log" "$WORK/$name.log" 2>/dev/null || true
   fi
 done
-ssh -n "$SUNNY_SSH" "rm -f $RT.*" || true
 mkdir -p "$LOGDIR"
 for f in resp.kv resp.log writer.kv writer.log hog.kv hog.log; do [ -f "$WORK/$f" ] && cp "$WORK/$f" "$LOGDIR/${CELL}_$f"; done
 for n in rain sunny; do cp "$WORK/topo_$n.txt" "$LOGDIR/${CELL}_topo_$n.txt"
@@ -99,9 +102,8 @@ for n in rain sunny; do cp "$WORK/topo_$n.txt" "$LOGDIR/${CELL}_topo_$n.txt"
 rc() { tr -d '\n' < "$WORK/$1.rc" 2>/dev/null || echo none; }
 echo "cell=$CELL mode=$MODE responder=$RESP writer=$WRITER order=$ORDER iters=$ITERS hca_rain=$HCA_RAIN hca_sunny=$HCA_SUNNY \
 gid_rain=$GID_R gid_sunny=$GID_S rc_resp=$(rc resp) rc_writer=$(rc writer) rc_hog=$( [ "$MODE" = h ] && rc hog || echo none) \
-port=$PORT port_tries=$PORT_TRIES rdv_nonce_set=1 cell_s=$CELL_S timeout_s=$TMO \
+port=$PORT port_tries=$PORT_TRIES rdv_nonce_set=1 cell_s=$CELL_S timeout_s=$TMO last_kb=${RS_LAST_KB:-1024} \
 wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') bin=$BIN" > "$LOGDIR/${CELL}_meta.txt"
 echo "[$CELL] rc resp=$(rc resp) writer=$(rc writer) :: $(grep -ho 'result=[A-Z_]*\|setup_error=[^ ]*\|nic_error=[^ ]*' \
   "$WORK"/*.kv 2>/dev/null | tr '\n' ' ')" >&2
-rm -rf "$WORK"
 exit 0
