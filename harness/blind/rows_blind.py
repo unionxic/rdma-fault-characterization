@@ -56,6 +56,9 @@ FIRE_DONE = {("nvs", "qperr"): r"\[nvshmem-fault-inject\] moved [1-9]\d* QP",
              ("gin", "qperr"): r"GIN/FAULT: GDAKI fault fired.*moved [1-9]\d*/"}
 CONFIG = {"ddp": [r"NCCL version 2\.23\.4", r"\[FAULT-RECOVERY2\] recovery on for"],
           "gin": [r"GIN/TS: transparent recovery ON rank="], "nvs": [r"^\[nvshmem-t1\] PE\d+ [0-9.]+ enabled:"]}
+CONFIG_OFF = {"ddp": r"\[FAULT-RECOVERY2\] recovery off for this|helper thread not started",
+              "gin": r"GIN/TS: transparent recovery OFF|GIN/REC: .*recovery disabled",
+              "nvs": r"transparent mode (stays )?off|FT stays off"}  # any of these on any rank: the build is not as planned
 ANCHOR = {"ddp": r"^iter 0: loss", "gin": r"=== Comparing GIN ring-exchange implementations ===",
           "nvs": r"^\[nvshmem-t1\] PE0 [0-9.]+ enabled:"}
 HASH = re.compile(r"^\[ddp-entry\] rank=(\d) final iter=(\d+) parameters sha256=([0-9a-f]{64})")
@@ -219,7 +222,8 @@ def row_of(results, d, refs, ref_ok):
     # configuration check: every rank that printed anything shows the build's start lines (a rank killed before its
     # start lines were written is not checked)
     row["config_ok"] = int(all(first_match(logs[r], rx)[0] is not None for r in (0, 1) for rx in CONFIG[wl]
-                               if logs[r] and not (r == killed and first_match(logs[r], CONFIG[wl][0])[0] is None)))
+                               if logs[r] and not (r == killed and first_match(logs[r], CONFIG[wl][0])[0] is None))
+                           and not any(first_match(logs[r], CONFIG_OFF[wl])[0] is not None for r in (0, 1)))
     row["valid"] = int(applied and not row["void"] and row["config_ok"] == 1)
     return row
 

@@ -9,7 +9,8 @@ Dropped (HOOK): the Stage 2 hook lines ([FAULT-INJECT], the silent-mode drain li
 (GIN/FAULT: armed, fired, trigger, shot) and test-switch lines (GIN/TS: TEST ...), the NVSHMEM hook lines
 ([nvshmem-fault-inject] ...) and test switches (FT_TEST, T1_TEST), any line naming a hook variable (FAULT_INJECT) or a
 harness variable (BLIND_), any line carrying a hook fire time (fire_mono_ms).
-A kept line must not match LEAK (audit): handoff.py refuses to build the evaluator's folder if one does.
+Every IPv4 address in a kept line is replaced by <ip>. A kept line must not match LEAK (audit): handoff.py refuses to
+build the evaluator's folder if one does.
 
     strip_hooks.py <raw log> [t0]     print the view of one log (for checking by hand)
 """
@@ -21,9 +22,13 @@ LEAK = re.compile(r"inject|hook (armed|fired)|fault fired|forced (send|recv) QP|
                   r"iptables|blind-\d+-|^AGENT ", re.I)
 
 
+IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+
+
 def view(lines, t0):
-    """lines: [(rain mono, text)] -> [(seconds since t0, text)] without hook lines."""
-    return [(t - t0, l) for t, l in lines if not HOOK.search(l)]
+    """lines: [(rain mono, text)] -> [(seconds since t0, text)] without hook lines; IPv4 addresses become <ip> (the
+    management addresses are never written into the repository, and the evaluator's notes are committed)."""
+    return [(t - t0, IPV4.sub("<ip>", l)) for t, l in lines if not HOOK.search(l)]
 
 
 def leaks(view_lines):
