@@ -82,9 +82,12 @@ def main():
             bad += ["%s r%d: %s" % (tid, r, l[:120]) for l in leaks(v)]
             txt = "".join("%9.3f %s\n" % (t, l) for t, l in v)
             for t, l in read_log(os.path.join(d, "a%d.log" % r)):
-                mm = re.match(r"AGENT suppressed name=(\w+) count=(\d+)", l)
+                mm = re.match(r"AGENT suppressed name=([\w-]+) count=(\d+)", l)
                 if mm:
-                    txt += "(note: %s further lines like the validation lines above were not kept)\n" % mm.group(2)
+                    what = {"validation": 'validation lines ("error, data[")', "mismatch": 'mismatch lines',
+                            "nccl-trace": 'NCCL INFO error-trace lines ("<file>:<line> -> <code>")'}.get(mm.group(1),
+                                                                                                    mm.group(1))
+                    txt += "(note: %s further %s were not kept; the first 200 are above)\n" % (mm.group(2), what)
             files["r%d.txt" % r] = txt
         ex = m.get("exit", {})
         files["exit.txt"] = "".join("rank %d: %s\n" % (r, exit_text(ex.get(str(r), ex.get(r, {})) or {}))

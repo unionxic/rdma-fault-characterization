@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # blind-apps holds (each <= 15 min, each inside ../gpu-initiated/common/cluster_run.sh -w 10800; see chain.sh).
-# usage: hold.sh <resultsdir> <P1|P2|B0|B9|D1..D4|G1|G2|N1|N2>
+# usage: hold.sh <resultsdir> <P1|P2|P3|B0|B9|D1..D4|G1|G2|N1|N2>
 #   P1  pilot (never scored): two fault-free runs per workload, then the DDP hook probes for calib.py
 #   P2  pilot (never scored): one demo of every runtime fault and of the GIN and NVSHMEM hooks, with calib.json
+#   P3  pilot after the P1/P2 fixes (never scored): NVSHMEM again (160M heap, -n 150: two fault-free runs and its five
+#       faults), and the DDP changes (faults anchored on "iter <n>", hooks at the top of the iteration-based k range)
 #   B0  fault-free reference runs before the blind trials (ddp 3, gin 3, nvs 3); B9 one more of each after them
 #   D*, G*, N*  the sealed schedule's trials of that hold (blindrun.py hold; the schedule is read by the runner only)
 # Before and after every hold: GPU users and compute mode of both nodes; the full mlx5 kernel lines of both nodes
@@ -70,6 +72,19 @@ case "$H" in
     demo --workload nvs --cls kill --target 1 --name nvs-kill
     demo --workload nvs --cls stop --target 0 --name nvs-stop
     demo --workload nvs --cls mute --dir oneway --name nvs-mute ;;
+  P3)  # pilot after the fixes of 2026-10-09 (EXPERIMENT.md 12): NVSHMEM with the 160M heap and -n 150, then the DDP
+       # iteration anchor (stop at u=0.5, kill at u=0.95, mute) and the top of each DDP hook range (u=1.0)
+    for k in 3 4; do demo --workload nvs --cls none --name nvs-none-$k; done
+    demo --workload nvs --cls qperr --target 0 --name nvs-qperr-2
+    demo --workload nvs --cls remacc --target 1 --name nvs-remacc-2
+    demo --workload nvs --cls kill --target 1 --name nvs-kill-2
+    demo --workload nvs --cls stop --target 0 --name nvs-stop-2
+    demo --workload nvs --cls mute --dir oneway --name nvs-mute-2
+    demo --workload ddp --cls stop --target 0 --u-t 0.5 --name ddp-stop-iter
+    demo --workload ddp --cls kill --target 0 --u-t 0.95 --name ddp-kill-iter
+    demo --workload ddp --cls mute --dir oneway --u-t 0.5 --name ddp-mute-iter
+    demo --workload ddp --cls sqp --target 1 --u-t 1.0 --name ddp-sqp-top
+    demo --workload ddp --cls srq --target 0 --u-t 1.0 --name ddp-srq-top ;;
   B0)  # fault-free references before the blind trials
     for wl in ddp gin nvs; do [ -e "$R/STOP_left" ] || $BR baseline --results "$R" --workload $wl --n 3 --first 1 --budget-s $BUDGET; done ;;
   B9)  # one more reference of each after the blind trials (drift check)

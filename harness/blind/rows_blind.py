@@ -46,7 +46,7 @@ REC = {"ddp": r"\[FAULT-RECOVERY2\] (send|recv) comm: recovered", "gin": r"GIN/T
        "nvs": r"\[nvshmem-t1\] PE\d+ [0-9.]+ RECOVERED"}
 DEATH = {"ddp": r"peer process gone|closed its OOB socket \(FIN\)", "gin": r"judged dead|why=peer-dead",
          "nvs": r"peer_fin=1|library socket closed \(FIN\)"}
-MGMT = {"ddp": r"OOB socket lost", "gin": r"socket to rank \d+ closed cause=|reconnect",
+MGMT = {"ddp": r"OOB socket lost", "gin": r"socket to rank \d+ closed cause=",
         "nvs": r"library socket lost|re-dialed|re-accepted"}
 FIRE = {("ddp", "sqp"): r"\[FAULT-INJECT\] forced send QP", ("ddp", "rqp"): r"\[FAULT-INJECT\] forced recv QP .*before receive post",
         ("ddp", "srq"): r"\[FAULT-INJECT\] forced recv QP .*\[silent\]", ("gin", "qperr"): r"GIN/FAULT: GDAKI fault fired",
@@ -61,6 +61,9 @@ CONFIG_OFF = {"ddp": r"\[FAULT-RECOVERY2\] recovery off for this|helper thread n
               "nvs": r"transparent mode (stays )?off|FT stays off"}  # any of these on any rank: the build is not as planned
 ANCHOR = {"ddp": r"^iter 0: loss", "gin": r"=== Comparing GIN ring-exchange implementations ===",
           "nvs": r"^\[nvshmem-t1\] PE0 [0-9.]+ enabled:"}
+# a start failure after the anchor line (nvs: the anchor is printed at connect, before the heap is registered)
+INIT_FAIL = {"ddp": r"(?!x)x", "gin": r"(?!x)x",
+             "nvs": r"nvshmemi_setup_transport failed|heap registration setup failed|nvshmem_init.*failed"}
 HASH = re.compile(r"^\[ddp-entry\] rank=(\d) final iter=(\d+) parameters sha256=([0-9a-f]{64})")
 NVS_SIZE = re.compile(r"^(\d+)B\s+[0-9.]+ms")
 NVS_SIZES = 3
@@ -154,8 +157,13 @@ def row_of(results, d, refs, ref_ok):
         x = ex.get(str(r), ex.get(r, {})) or {}
         row["rc%d" % r] = "" if x.get("rc") is None else x["rc"]
         row["end%d" % r] = x.get("harness_end", "")
-    # void: the workload never started (no anchor line on rank 0) and no fault was applied before that
-    row["void"] = int(t_anchor is None and not (applied and cls != "none" and t_fault is not None))
+    # void: the workload never started (no anchor line on rank 0, or a start-failure line on any rank) and no fault
+    # was applied before that
+    t_init_fail = min([t for r in (0, 1) for t in [first_match(logs[r], INIT_FAIL[wl])[0]] if t is not None],
+                      default=None)
+    started = t_anchor is not None and t_init_fail is None
+    row["void"] = int(not started and not (applied and cls != "none" and t_fault is not None and
+                                           (t_init_fail is None or t_fault < t_init_fail)))
     if t_fault is not None and t_anchor is not None:
         row["t_fault_rel_anchor"] = round(t_fault - t_anchor, 3)
     errs = {r: err_lines(wl, logs[r]) for r in (0, 1)}

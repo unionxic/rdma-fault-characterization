@@ -126,10 +126,13 @@ NANOGPT_ARGS = ["config/train_shakespeare_char.py", "--compile=False", "--dtype=
                 "--log_interval=1", "--batch_size=16", "--block_size=128", "--n_layer=4", "--n_head=4",
                 "--n_embd=256", "--dropout=0.1", "--gradient_accumulation_steps=2",
                 "--always_save_checkpoint=False"]
-NVS_ARGS = ["-b", "16M", "-e", "64M", "-n", "30", "-w", "2"]
+NVS_ARGS = ["-b", "16M", "-e", "64M", "-n", "150", "-w", "2"]  # pilot: -n 30 gave too short a run (EXPERIMENT.md 12)
 
 WL = {
-    "ddp": {"anchor": (0, r"^iter 0: loss"), "wall_s": 150.0, "grace_s": 45.0, "suppress": [], "rdv": "MASTER_PORT"},
+    "ddp": {"anchor": (0, r"^iter 0: loss"), "wall_s": 150.0, "grace_s": 45.0, "rdv": "MASTER_PORT",
+            # NCCL 2.23.4 at INFO prints one "<file>:<line> -> <code>" trace line per failing proxy call after an
+            # error (88 247 lines in 0.4 s in the pilot's kill demo); the agent keeps 200 and counts the rest
+            "suppress": [["nccl-trace", r"NCCL INFO \S+:\d+ -> \d+\s*$"]]},
     "gin": {"anchor": (0, r"=== Comparing GIN ring-exchange implementations ==="), "wall_s": 60.0, "grace_s": 20.0,
             "suppress": [["mismatch", r"mismatch at CTA"]], "rdv": "BLIND_RDV_PORT"},
     "nvs": {"anchor": (0, r"^\[nvshmem-t1\] PE0 [0-9.]+ enabled:"), "wall_s": 60.0, "grace_s": 20.0,
@@ -170,7 +173,7 @@ def rank_spec(wl, rank, site, ports, nonce, hook_env, tag):
                     "NVSHMEM_REMOTE_TRANSPORT": "none", "NVSHMEM_DISABLE_CUDA_VMM": "1",
                     "NVSHMEM_CUMEM_GRANULARITY": "2097152", "NVSHMEM_MAX_TEAMS": "4", "NVSHMEM_G_BUF_SIZE": "262144",
                     "NVSHMEM_G_COALESCING_BUF_SIZE": "4194304", "NVSHMEM_IBGDA_NUM_RC_PER_PE": "1",
-                    "NVSHMEM_IBGDA_RC_MAP_BY": "none", "NVSHMEM_IBGDA_NUM_DCI": "1", "NVSHMEM_SYMMETRIC_SIZE": "256M",
+                    "NVSHMEM_IBGDA_RC_MAP_BY": "none", "NVSHMEM_IBGDA_NUM_DCI": "1", "NVSHMEM_SYMMETRIC_SIZE": "160M",  # BAR1 is 256 MiB: 256M failed (12)
                     "NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME": "eno1", "NVSHMEM_IB_ADDR_FAMILY": "AF_INET",
                     "NVSHMEM_DEBUG": "WARN", "NVSHMEM_IB_TIMEOUT": "14", "NVSHMEM_IB_RETRY_CNT": "7",
                     "NVSHMEM_IBGDA_FT_POLL_US": "50", "NVSHMEM_IBGDA_FT": "1", "NVSHMEM_IBGDA_FT_RING_CQ": "1",
@@ -213,7 +216,13 @@ def derive(entry, calib, cfg):
     elif (wl, cls) in HOOKS:
         out["t_ms"] = int(round(lerp(c["hook_ms"], entry["u_t"])))
     if cls in ("kill", "stop", "mute"):
-        out["t_after_anchor_s"] = round(lerp(c["anchor_window_s"], entry["u_t"]), 3)
+        if wl == "ddp" and "iter_window" in c:
+            # DDP: the fault starts when rank 0 prints "iter <n>: loss" (training progress, not seconds: the pilot's
+            # 300 iterations took 5.2-15.0 s)
+            out["at_iter"] = int(round(lerp(c["iter_window"], entry["u_t"])))
+            out["t_after_anchor_s"] = 0.0
+        else:
+            out["t_after_anchor_s"] = round(lerp(c["anchor_window_s"], entry["u_t"]), 3)
     if cls in ("stop", "mute"):
         out["d_s"] = round(lerp(cfg["durations_s"][cls][wl], entry["u_d"]), 3)
     return out
@@ -445,6 +454,8 @@ def run_trial(results, tid, entry, params, site, kind):
             "gid": site.gid, "md5_match": site.md5_match, "date": time.strftime("%F %T"), "runner_pid": os.getpid(),
             "hook_env": henv, "hook_rank": target if henv else None}
     anchor_rank, anchor_rx = W["anchor"]
+    if "at_iter" in params:  # DDP kill, stop, mute: the iteration line is the anchor
+        anchor_rx = r"^iter %d: loss" % params["at_iter"]
     anchor_ev, anchor_hold = threading.Event(), []
     done_ev = threading.Event()
     t0 = mono()
@@ -643,6 +654,7 @@ def main():
             p.add_argument("--k", type=int, default=None)
             p.add_argument("--t-ms", type=int, default=None)
             p.add_argument("--t-after-anchor-s", type=float, default=None)
+            p.add_argument("--at-iter", type=int, default=None)
             p.add_argument("--d-s", type=float, default=None)
             p.add_argument("--name", required=True)
     a = ap.parse_args()
@@ -669,7 +681,8 @@ def main():
         e = {"id": "demo-" + a.name, "workload": a.workload, "cls": a.cls, "target": a.target, "u_t": a.u_t,
              "u_d": a.u_d, "dir": a.dir if a.cls == "mute" else None}
         params = derive(e, calib, cfg)
-        for k, v in (("k", a.k), ("t_ms", a.t_ms), ("t_after_anchor_s", a.t_after_anchor_s), ("d_s", a.d_s)):
+        for k, v in (("k", a.k), ("t_ms", a.t_ms), ("t_after_anchor_s", a.t_after_anchor_s), ("d_s", a.d_s),
+                     ("at_iter", a.at_iter)):
             if v is not None:
                 params[k] = v
         run_list(results, [(e["id"], e, params)], calib, cfg, a.budget_s, "demo")
