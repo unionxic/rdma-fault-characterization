@@ -22,6 +22,7 @@ APP=${APP:-$HOME/rs-bundle/app/rs_spike}
 LIBDIR=${LIBDIR:-$HOME/rs-bundle/rsx}
 [ -x "$APP" ] && [ -f "$LIBDIR/libnccl.so.2" ] || { echo "missing $APP or $LIBDIR on rain" >&2; exit 1; }
 case "$CELL" in b1|b1_live|b2_inter|b2_consec) ;; *) echo "bad cell $CELL" >&2; exit 2 ;; esac
+umask 077
 WORK=$(mktemp -d /tmp/rs_sp.XXXXXX)
 RT=/tmp/rs_sp_$$_$RANDOM            # this trial's file prefix on both nodes (transcripts, kv, logs)
 D=$(cd "$(dirname "$0")" && pwd)
@@ -40,20 +41,26 @@ done; exit 1'
 GID_R=$(bash -c "$GID_PROBE" _ mlx5_1) || { echo "no GID on rain" >&2; exit 1; }
 GID_S=$(ssh -n "$SUNNY_SSH" bash -c "'$GID_PROBE'" _ mlx5_0) || { echo "no GID on sunny" >&2; exit 1; }
 HKEY=$(od -An -N8 -tx8 /dev/urandom | tr -d ' \n')   # the report hashes' key: in the processes' environment only
-STRACE_S=$(ssh -n "$SUNNY_SSH" "command -v strace >/dev/null && echo 1 || echo 0" 2>/dev/null)
-STRACE_R=$(command -v strace >/dev/null && echo 1 || echo 0)
+# strace with --seccomp-bpf where it works (only the traced calls stop the process; review C8), else plain -f; 0: no strace
+SPROBE='if strace --seccomp-bpf -f -qq -e trace=connect -o /dev/null true 2>/dev/null; then echo 2; elif command -v strace >/dev/null; then echo 1; else echo 0; fi'
+STRACE_S=$(ssh -n "$SUNNY_SSH" "$SPROBE" 2>/dev/null); STRACE_R=$(bash -c "$SPROBE")
 BASE="NCCL_DEBUG=WARN NCCL_DEBUG_SUBSYS=INIT,NET NCCL_SOCKET_IFNAME=eno1 NCCL_GIN_TYPE=3 NCCL_GIN_ENABLE=1 NCCL_IB_TIMEOUT=14 \
 NCCL_GIN_FAULT_CLASSIFY=1 NCCL_GIN_FAULT_RECOVERY=1 NCCL_GIN_FAULT_TRANSPARENT=1 NCCL_NUM_RMA_CTX=0 NCCL_RMA_DISABLE=1 \
 NCCL_RAS_ENABLE=0 NCCL_GIN_RESTORE_HKEY=$HKEY RS_WATCHDOG_S=60 LD_LIBRARY_PATH=$LIBDIR"
 node_env() { [ "$1" = rain ] && echo "NCCL_IB_HCA=mlx5_1 NCCL_IB_GID_INDEX=$GID_R" || echo "NCCL_IB_HCA=mlx5_0 NCCL_IB_GID_INDEX=$GID_S"; }
-# strace counts, computed on the node from the raw trace, which is then deleted (it holds addresses)
+# strace counts, computed on the node from the raw trace, which is then deleted (it holds addresses). argv: the trace, then
+# this node's own addresses (connects to them are counted apart: not a peer). socket= and lines_matched= are the positive
+# control (the spare opens sockets of its own); peer = not loopback and not this node.
 STRACE_PY='import re,sys,collections
-fdt={}; c=collections.Counter()
+own=set(sys.argv[2:]); fdt={}; c=collections.Counter()
+pat=re.compile(r"^\s*(?:\[pid\s+\d+\]\s*|\d+\s+)?(socket|connect|accept4?)\((.*)")
 for ln in open(sys.argv[1], errors="replace"):
-  m=re.match(r"\s*\d+\s+(socket|connect|accept4?)\((.*)", ln)
+  m=pat.match(ln)
   if not m: continue
+  c["lines_matched"]+=1
   call,rest=m.group(1),m.group(2)
   if call=="socket":
+    c["socket"]+=1
     r=re.search(r"=\s*(\d+)\s*$", ln)
     if r: fdt[r.group(1)]=("dgram" if "SOCK_DGRAM" in rest else "stream" if "SOCK_STREAM" in rest else "other")
     continue
@@ -61,28 +68,38 @@ for ln in open(sys.argv[1], errors="replace"):
   fd=rest.split(",")[0].strip()
   if "AF_UNIX" in rest or "AF_LOCAL" in rest: c["unix_connect"]+=1; continue
   if "AF_INET" in rest:
-    loop=("127." in rest) or ("\"::1\"" in rest)
-    c["inet_connect_loop" if loop else "inet_connect_nonloop_"+fdt.get(fd,"unknown")]+=1
+    ips=re.findall(r"inet_addr\(\"([^\"]+)\"\)|inet_pton\(AF_INET6, \"([^\"]+)\"", rest)
+    ip=[a or b for a,b in ips][0] if ips else ""
+    if ip.startswith("127.") or ip=="::1": c["inet_connect_loop"]+=1
+    elif ip in own: c["inet_connect_self"]+=1
+    else: c["inet_connect_peer_"+fdt.get(fd,"unknown")]+=1
     continue
   c["other_connect"]+=1
-keys=["inet_connect_nonloop_stream","inet_connect_nonloop_dgram","inet_connect_nonloop_other","inet_connect_nonloop_unknown","inet_connect_loop","unix_connect","other_connect","accept"]
-print(" ".join("%s=%d"%(k,c[k]) for k in keys)+" inet_connect_nonloop_total=%d"%sum(c[k] for k in keys[:4]))'
+peer=["inet_connect_peer_stream","inet_connect_peer_dgram","inet_connect_peer_other","inet_connect_peer_unknown"]
+keys=["lines_matched","socket"]+peer+["inet_connect_self","inet_connect_loop","unix_connect","other_connect","accept"]
+print(" ".join("%s=%d"%(k,c[k]) for k in keys)+" inet_connect_peer_total=%d"%sum(c[k] for k in peer))'
+OWNIPS='ip -o addr show | awk "{print \$4}" | cut -d/ -f1 | tr "\n" " "'
 # launch <node> <name> <rank> <nranks> <extra env> [strace]: background; PIDS[name]; rc in $WORK/<name>.rc
 declare -A PIDS
 launch() {
   local node=$1 name=$2 r=$3 n=$4 extra=$5 tr=${6:-0} env
   env="$BASE $(node_env "$node") $extra"
   local cmd="timeout -s KILL 75 $APP $r $n $RAIN_MGMT $PORT $RT.$name.kv"
+  local mode=0; [ "$tr" = 1 ] && { [ "$node" = rain ] && mode=$STRACE_R || mode=$STRACE_S; }
   local st=""
-  if [ "$tr" = 1 ]; then st="strace -f -qq -e trace=socket,connect,accept,accept4 -o $RT.$name.strace"; fi
+  [ "$mode" = 2 ] && st="strace --seccomp-bpf -f -qq -e trace=socket,connect,accept,accept4 -o $RT.$name.strace"
+  [ "$mode" = 1 ] && st="strace -f -qq -e trace=socket,connect,accept,accept4 -o $RT.$name.strace"
   if [ "$node" = rain ]; then
-    ( if [ "$tr" = 1 ] && [ "$STRACE_R" = 1 ]; then env $env $st $cmd; else env $env $cmd; fi > "$RT.$name.log" 2>&1
+    ( umask 077; env $env $st $cmd > "$RT.$name.log" 2>&1
       echo $? > "$WORK/$name.rc"
-      if [ -f "$RT.$name.strace" ]; then python3 -c "$STRACE_PY" "$RT.$name.strace" > "$WORK/$name.stracecount"; rm -f "$RT.$name.strace"; fi ) &
+      if [ -f "$RT.$name.strace" ]; then
+        python3 -c "$STRACE_PY" "$RT.$name.strace" $(bash -c "$OWNIPS") > "$WORK/$name.stracecount"
+        echo "strace_mode=$mode" >> "$WORK/$name.stracecount"; rm -f "$RT.$name.strace"
+      fi ) &
   else
-    local use=0; [ "$tr" = 1 ] && [ "$STRACE_S" = 1 ] && use=1
-    ssh -n "$SUNNY_SSH" "if [ $use = 1 ]; then env $env $st $cmd; else env $env $cmd; fi > $RT.$name.log 2>&1; echo \$? > $RT.$name.rc; \
-if [ -f $RT.$name.strace ]; then python3 -c '$STRACE_PY' $RT.$name.strace > $RT.$name.stracecount; rm -f $RT.$name.strace; fi" &
+    ssh -n "$SUNNY_SSH" "umask 077; env $env $st $cmd > $RT.$name.log 2>&1; echo \$? > $RT.$name.rc; \
+if [ -f $RT.$name.strace ]; then python3 -c '$STRACE_PY' $RT.$name.strace \$($OWNIPS) > $RT.$name.stracecount; \
+echo strace_mode=$mode >> $RT.$name.stracecount; rm -f $RT.$name.strace; fi" &
   fi
   PIDS[$name]=$!
 }
@@ -113,7 +130,7 @@ case "$CELL" in
     launch rain rep0 0 2 "RS_SPARE=1 NCCL_GIN_RESTORE_REPLAY=$RT.tr0" 1; wait "${PIDS[rep0]}"
     # negative controls: a cut copy, and a copy whose first entry's element-size field (bytes 32..39 of the first entry
     # header, which starts after the 24-byte file header and the 128-byte commId) is changed
-    ssh -n "$SUNNY_SSH" "head -c \$(( \$(stat -c %s $RT.tr1) / 2 )) $RT.tr1 > $RT.trcut && chmod 600 $RT.trcut && \
+    ssh -n "$SUNNY_SSH" "umask 077; head -c \$(( \$(stat -c %s $RT.tr1) / 2 )) $RT.tr1 > $RT.trcut && chmod 600 $RT.trcut && \
 python3 -c 'import sys; b=bytearray(open(sys.argv[1],\"rb\").read()); b[152+32]^=0x10; open(sys.argv[2],\"wb\").write(bytes(b))' $RT.tr1 $RT.trfld && chmod 600 $RT.trfld"
     launch sunny neg_cut 1 2 "RS_SPARE=1 NCCL_GIN_RESTORE_REPLAY=$RT.trcut"; wait "${PIDS[neg_cut]}"
     launch sunny neg_field 1 2 "RS_SPARE=1 NCCL_GIN_RESTORE_REPLAY=$RT.trfld"; wait "${PIDS[neg_field]}"

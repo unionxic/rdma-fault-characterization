@@ -3,6 +3,8 @@
 # session runs it inside ../../../common/cluster_run.sh (tag rs-<hold>, -w 10800) under timeout -s KILL 880.
 # usage: hold_feas.sh <resultsdir> <hold>
 #   S3     B3 smoke: one cross-node cell, rain responder, relaxed MR, 208 iterations (setup check; not used in any verdict)
+#   S3s    the same with sunny as the responder (sunny listens on the control port; run before B3s)
+#   B3one-<cell>  one B3 cell again, 4 000 iterations (a cell that skipped.txt lists, or an inconclusive one)
 #   B3r    B3, rain is the responder: b3_x_rain_<ro|so>, b3_s_rain_<ro|so>, b3_h_rain_<ro|so>, 4 000 iterations each
 #   B3s    B3, sunny is the responder: the same six cells with sunny
 #   B2     B2: four ranks interleaved (rain 0, 2; sunny 1, 3), report lines only, 2 trials
@@ -12,9 +14,14 @@
 # Before and after the hold (as ../../remaining/hold.sh): GPU users and compute mode of both nodes, the mlx5 kernel lines of
 # both nodes, rain's mlx5_1 firmware-command counters (debugfs, read-only, ../../scripts/ts1/fwcmd_snapshot.sh). A new mlx5
 # command-error line or a growth of the firmware-command failure counters writes <resultsdir>/STOP_mlx5; a CUDA memory fault
-# writes STOP_cuda; a test process left after its trial writes STOP_left. No further hold should run while a STOP file
-# exists (the main session checks). Processes are never killed here: every process is bounded by its own timeout; the
-# leftover check is a read-only count by exact name. No iptables rule.
+# writes STOP_cuda; a test process left after its trial writes STOP_left. Inside B3r/B3s every cell is followed by a check:
+# a NIC, rmsn, QUERY_QP-cap, setup or watchdog error in the responder's kv writes STOP_nic, a growth of rain's
+# firmware-command failure counters writes STOP_mlx5, and the remaining cells are skipped. A cell or trial whose bound would
+# end past 840 s of the hold is skipped (skipped.txt). No further hold should run while a STOP file exists (this script
+# refuses). Processes are never killed here: every process is bounded by its own timeout; the leftover check is a
+# read-only count by exact name. Before the hold, when no test process is left, this user's own leftover files of an
+# earlier hold that was cut (/tmp/rs_sp_*, /tmp/rs_b3_*, and their work directories) are deleted on both nodes: they may
+# hold management addresses. No iptables rule.
 # env: SUNNY_SSH (required)
 set -u
 R=${1:?resultsdir}; H=${2:?hold}
@@ -24,7 +31,7 @@ export SUNNY_SSH
 CMDERR='grep -i mlx5 | grep -iE "cmd|command" | grep -icE "failed|timeout|leak"'
 NAMES="rs_spike rs_drain_test"
 mkdir -p "$R"
-for f in STOP_mlx5 STOP_cuda STOP_left; do [ -e "$R/$f" ] && { echo "$R/$f present: no hold runs" >&2; exit 3; }; done
+for f in STOP_mlx5 STOP_cuda STOP_left STOP_nic; do [ -e "$R/$f" ] && { echo "$R/$f present: no hold runs" >&2; exit 3; }; done
 left() { { for n in $NAMES; do pgrep -x "$n"; done; ssh -n "$SUNNY_SSH" "for n in $NAMES; do pgrep -x \$n; done"; } 2>/dev/null | wc -l; }
 snap() {  # snap <tag>
   echo "== $1 $(date '+%F %T')"
@@ -44,11 +51,38 @@ snap() {  # snap <tag>
 }
 n0=$(left)
 [ "$n0" -eq 0 ] || { echo "$(date '+%F %T') hold $H: $n0 test process(es) present before the hold" | tee -a "$R/STOP_left"; exit 3; }
+OWNCLEAN='find /tmp -maxdepth 1 -user "$(id -un)" \( -name "rs_sp_*" -o -name "rs_sp.*" -o -name "rs_b3_*" -o -name "rs_b3.*" \) -exec rm -rf {} + 2>/dev/null; true'
+bash -c "$OWNCLEAN"; ssh -n "$SUNNY_SSH" "$OWNCLEAN"
+SECONDS=0
+fits() {  # fits <bound_s> <what>: false (and a line in skipped.txt) if the bound would end past 840 s of the hold
+  if [ $((SECONDS + $1)) -gt 840 ]; then echo "$(date '+%F %T') hold $H: skipped $2 (elapsed ${SECONDS} s + bound $1 s > 840 s)" | tee -a "$R/skipped.txt"; return 1; fi
+  return 0
+}
+fwfail() { bash "$D/../../scripts/ts1/fwcmd_snapshot.sh" "$1" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^failed=|^failed_mbox_status=/){split($i,a,"="); s+=a[2]}} END{print s+0}'; }
 snap "before-$H" | tee "$R/snap_before-$H.txt"
-b3() { bash "$D/run_b3.sh" "$@"; }        # b3 <cell> <iters> <logdir>
-sp() { bash "$D/run_spike.sh" "$@"; }     # sp <cell> <trial> <logdir>
+FW0=$(fwfail "start-$H")
+b3() {  # b3 <cell> <iters> <logdir>: one cell if it fits, then the per-cell stop checks
+  local cell=$1 iters=$2 dir=$3 kvf
+  [ -e "$R/STOP_nic" ] || [ -e "$R/STOP_mlx5" ] && { echo "skipped $cell: STOP file" >> "$R/skipped.txt"; return 0; }
+  fits $((iters / 100 + 60 + 30 + 15 + 30)) "$cell" || return 0
+  bash "$D/run_b3.sh" "$cell" "$iters" "$dir"
+  kvf="$dir/${cell}_resp.kv"
+  if [ ! -f "$kvf" ] || grep -qE 'nic_error=|setup_error=|watchdog=1|cuda_error=' "$kvf"; then
+    echo "$(date '+%F %T') hold $H: $cell ended with an error ($(grep -ho 'nic_error="[^"]*"\|setup_error="[^"]*"\|watchdog=1\|cuda_error=[^ ]*' "$kvf" 2>/dev/null | head -1)); no further cell" | tee -a "$R/STOP_nic"
+  fi
+  local fw; fw=$(fwfail "after-$cell")
+  [ "$fw" -gt "$FW0" ] && echo "$(date '+%F %T') hold $H: firmware-command failures grew after $cell ($FW0 -> $fw)" | tee -a "$R/STOP_mlx5"
+  return 0
+}
+sp() {  # sp <cell> <trial> <logdir>: one trial if it fits
+  local bound=120; [ "$1" = b1 ] && bound=380; [ "$1" = b1_live ] && bound=200
+  fits "$bound" "$1 trial $2" || return 0
+  bash "$D/run_spike.sh" "$@"
+}
 case "$H" in
   S3) b3 b3_x_rain_ro 208 "$R/b3_smoke" ;;
+  S3s) b3 b3_x_sunny_ro 208 "$R/b3_smoke" ;;
+  B3one-*) b3 "${H#B3one-}" 4000 "$R/b3" ;;  # one B3 cell again (a skipped or inconclusive one)
   B3r) for c in x s h; do for o in ro so; do b3 "b3_${c}_rain_$o" 4000 "$R/b3"; done; done ;;
   B3s) for c in x s h; do for o in ro so; do b3 "b3_${c}_sunny_$o" 4000 "$R/b3"; done; done ;;
   B2) for t in 1 2; do sp b2_inter "$t" "$R/b2"; done ;;
@@ -70,4 +104,6 @@ cudafail=$(find "$R" \( -name '*.kv' -o -name '*.log' \) -newer "$R/snap_before-
 [ -n "$cudafail" ] && echo "$(date '+%F %T') hold $H: CUDA fault in: $(echo "$cudafail" | tr '\n' ' ')" | tee -a "$R/STOP_cuda"
 n1=$(left)
 [ "$n1" -eq 0 ] || echo "$(date '+%F %T') hold $H: $n1 test process(es) left after the hold" | tee -a "$R/STOP_left"
+[ "$n1" -eq 0 ] && { bash -c "$OWNCLEAN"; ssh -n "$SUNNY_SSH" "$OWNCLEAN"; }
+echo "hold $H elapsed ${SECONDS} s"
 exit 0

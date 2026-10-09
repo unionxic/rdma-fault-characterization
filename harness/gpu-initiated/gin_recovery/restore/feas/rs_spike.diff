@@ -214,7 +214,7 @@ index 7775978..9b69be2 100644
    if (commState == NULL) return ncclSuccess;
    struct bootstrapState* state = (struct bootstrapState*)commState;
 diff --git a/src/dev_runtime.cc b/src/dev_runtime.cc
-index 95f1c14..ade5847 100644
+index 95f1c14..850c17f 100644
 --- a/src/dev_runtime.cc
 +++ b/src/dev_runtime.cc
 @@ -5,6 +5,7 @@
@@ -233,7 +233,7 @@ index 95f1c14..ade5847 100644
    NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, globalSegmentInfo, sizeof(*globalSegmentInfo)), ret,
                  fail_global_segment_info);
    for (int r = 0; r < comm->nRanks; r++) {
-@@ -1822,6 +1824,33 @@ fail:
+@@ -1822,6 +1824,34 @@ fail:
    goto exit;
  }
  
@@ -260,6 +260,7 @@ index 95f1c14..ade5847 100644
 +       "ginConnectionCount=%d",
 +       dc->rank, dc->nRanks, dc->lsaRank, dc->lsaSize, dc->ginContextCount, dc->ginSignalCount, dc->ginCounterCount,
 +       (int)dc->ginConnectionCount);
++  if (dc->resourceWindow != nullptr) rsWinReport(comm, dc->resourceWindow, 0);  // the devComm's internal window
 +  ncclDevCommDump(dc);  // stdout; the compare script masks the pointer values
 +  fflush(stdout);
 +}
@@ -267,7 +268,7 @@ index 95f1c14..ade5847 100644
  NCCL_API(ncclResult_t, ncclCommWindowRegister, ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win,
           int winFlags);
  ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags) {
-@@ -1888,6 +1917,10 @@ exit:
+@@ -1888,6 +1918,10 @@ exit:
    ncclGroupErrCheck(ret);
    NCCLCHECK(ncclGroupEndInternal());
    cudaSetDevice(saveDev);
@@ -278,7 +279,7 @@ index 95f1c14..ade5847 100644
    return ret;
  fail:
    ncclDevrRegAsyncJobFree(regJob);
-@@ -2096,6 +2129,11 @@ exit:
+@@ -2096,6 +2130,11 @@ exit:
    ncclGroupErrCheck(ret);
    NCCLCHECK(ncclGroupEndInternal());
    cudaSetDevice(saveDev);
