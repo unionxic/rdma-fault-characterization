@@ -2,12 +2,13 @@
 # gpu-detect: the regression and latency cells of EXPERIMENT.md 7 (one bounded batch; run inside a hold of hold.sh, itself
 # inside ../gpu-initiated/common/cluster_run.sh through chain.sh). The runners are gin-remaining's, called unchanged from
 # their folder (../gpu-initiated/gin_recovery/remaining/run_trial_hr.sh, run_mr_hr.sh; they pick a checked rendezvous
-# port in 29000-30999 with portpick.sh and kill only PIDs they recorded). Library: the hw bundle
-# ($HOME/gi-bundle/gin_ts2/hw, this study). Drivers: gin-remaining's deployed gin_ts2 (bundle hr, DRVKEY=hr) and gin_mr
-# (mr/hr, MRKEY=hr), built with the hr headers, which equal hw's (the hw layer changes no header; build_info.txt).
+# port in 29000-30999 with portpick.sh and kill only PIDs they recorded). Library: the bundle of <build> under
+# $HOME/gi-bundle/gin_ts2/ (this study: hk from pilot 2 on; hw for the responder-side gap's control). Drivers:
+# gin-remaining's deployed gin_ts2 (bundle hr, DRVKEY=hr) and gin_mr (mr/hr, MRKEY=hr), built with the hr headers, which
+# equal hw's and hk's (neither layer changes a header; build_info.txt).
 # Cell definitions repeated from ../gpu-initiated/gin_recovery/remaining/cells.sh (two-rank regression, four-rank
 # regression, the cycle) and new ones (latency per watch period, two lower REQs in one ACK wait, a late pair fault after
-# a death) below.
+# a death; hk: the responder-side gap, hold asked for, a policy mismatch) below.
 # usage: cells_reg.sh <logdir> <cell> <build> <n> [start]
 set -u
 L=${1:?logdir}; CELL=${2:?cell}; B=${3:?build}; NRUN=${4:?n}; START=${5:-1}
@@ -19,6 +20,10 @@ mr() { CELL=$CELL LIB=$B MRKEY=hr ABORT_WD_S=20 bash "$RM/run_mr_hr.sh" "$@"; }
 BIDIR="GIN_TS_BIDIR_FUSED=1"
 F_MS=${F_MS:-6000}; KILL_MS=${KILL_MS:-9000}; STALL=${STALL:-300}
 LATE_MS=${LATE_MS:-13000}   # the late pair fault: rank 0's QP to rank 1, after the kill (9 s) and the degraded raise (+2 s)
+# the responder-side gap (EXPERIMENT.md 9.1 (g)): rank 3's fault GAP_F_MS after its context; its stall after its own Commit
+# (GAP_STALL ms) and the runner's kill GAP_KILL_MS after its launch (pilot 1: 9000 ms after launch = 8.0 s after devComm),
+# so the kill lands inside the stall (about 4.1-12 s after devComm)
+GAP_F_MS=${GAP_F_MS:-4000}; GAP_STALL=${GAP_STALL:-8000}; GAP_KILL_MS=${GAP_KILL_MS:-9000}
 ctx() { local a=$1 b=$2 n=$3; echo $(( a * (n - 1) + (b < a ? b : b - 1) )); }
 hook() { echo "NCCL_GIN_FAULT_INJECT=local_err:$F_MS NCCL_GIN_FAULT_INJECT_CTX=$(ctx "$1" "$2" "$3")"; }
 ST="NCCL_GIN_TS_TEST_STALL=${STALL}@quiesce"
@@ -76,6 +81,23 @@ for ((k = START; k < START + NRUN; k++)); do
     rm4_late01_rounds) N=4 KILL_RANK=3 KILL_DELAY_MS=$KILL_MS FLUSH=peer \
                      EXTRA_ENV="$BASE GIN_MR_GRACE_S=40 NCCL_GIN_TS_DEGRADED_ROUNDS=1" \
                      R0_ENV="NCCL_GIN_FAULT_INJECT=local_err:$LATE_MS NCCL_GIN_FAULT_INJECT_CTX=$(ctx 0 1 4)" mr $t "$L" ;;
+    # ---- gpu-detect (hk, the responder-side gap, EXPERIMENT.md 9.1 (g)): rank 3 starts a round with rank 0 (local QP error
+    # on rank 3's context ctx(3,0)) and dies inside rank 0's window: after rank 0's Commit, before DONE. rm4_gap: rank 3
+    # stalls after its own Commit (NCCL_GIN_TS_TEST_STALL=<ms>@commit, a switch hw has too) and the runner kills it during
+    # the stall: the same condition on hw (the control) and hk. rm4_gapx (hk only): rank 3 ends itself right after the ACK
+    # (NCCL_GIN_TS_TEST_EXIT_AFTER_ACK=1, _exit 73). Untimed receives, the application's grace 15 s, as rm4_kill3_untimed.
+    rm4_gap)  N=4 KILL_RANK=3 KILL_DELAY_MS=$GAP_KILL_MS FLUSH=peer EXTRA_ENV="GIN_MR_RX_UNTIMED=1 GIN_MR_GRACE_S=15" \
+              R3_ENV="NCCL_GIN_FAULT_INJECT=local_err:$GAP_F_MS NCCL_GIN_FAULT_INJECT_CTX=$(ctx 3 0 4) NCCL_GIN_TS_TEST_STALL=${GAP_STALL}@commit" \
+              mr $t "$L" ;;
+    rm4_gapx) N=4 FLUSH=peer EXTRA_ENV="GIN_MR_RX_UNTIMED=1 GIN_MR_GRACE_S=15" \
+              R3_ENV="NCCL_GIN_FAULT_INJECT=local_err:$GAP_F_MS NCCL_GIN_FAULT_INJECT_CTX=$(ctx 3 0 4) NCCL_GIN_TS_TEST_EXIT_AFTER_ACK=1" \
+              mr $t "$L" ;;
+    # ---- gpu-detect (hk, the policy field G1): hold asked for on every rank (no restore layer: one WARN each, fail-fast; the
+    # kill cell of RG9 otherwise unchanged), and a mismatch (rank 0 hold, rank 1 fail-fast: a WARN on both; f4_b otherwise)
+    rm4_kill3_hold) N=4 KILL_RANK=3 KILL_DELAY_MS=$KILL_MS FLUSH=peer \
+                     EXTRA_ENV="GIN_MR_RX_UNTIMED=1 GIN_MR_GRACE_S=15 NCCL_GIN_FAULT_POLICY=hold" mr $t "$L" ;;
+    f4_mix_b) TS=1 GAP_US=30000 KILL_DELAY_MS=$(( 3500 + (k * 211) % 900 )) WATCHDOG_S=40 R0_ENV="NCCL_GIN_FAULT_POLICY=hold" \
+             run F4 blocking $t "$L" 200 ;;
     *) echo "unknown cell $CELL" >&2; exit 1 ;;
   esac
   streak $t

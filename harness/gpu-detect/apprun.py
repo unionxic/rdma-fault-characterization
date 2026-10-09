@@ -10,13 +10,15 @@ cells.json, on one build. Run only inside hold.sh, itself inside ../gpu-initiate
 Differences from blindrun.py (EXPERIMENT.md 9):
   - not blind: the trial list (schedule.json) is generated from cells.json with a recorded seed and committed before the
     main run (it is pre-registered with its sha256); trial ids name the cell, the build and the number;
-  - builds: gin hq (the blind study's binary and gin-peer's libnccl), hr (gin-remaining's libnccl) and hw (this study's
-    libnccl), the last two with gd_gin_ring (built against the hw headers, which equal hr's); nvs t1_380 (the blind
-    study's binary, plugin and libraries) and t1w (this study's libraries, gd_nvs_rr, gd_nvs_boot.so). Paths: BUILDS;
+  - builds: gin hq (the blind study's binary and gin-peer's libnccl), hr (gin-remaining's libnccl), hw (this study's
+    first libnccl, pilot 1) and hk (this study's libnccl from pilot 2 on: hw + the policy hooks and the responder-side
+    fix), the last three with gd_gin_ring (built against the hw headers, which equal hr's and hk's); nvs t1_380 (the
+    blind study's binary, plugin and libraries) and t1w (this study's libraries, gd_nvs_rr, gd_nvs_boot.so). Paths: BUILDS;
   - a cell may add environment variables to both ranks (env in cells.json): the watch period, the fail-stop policy;
   - faults: none, qperr (gin, nvs), remacc (nvs), kill, stop. No management cut: this study adds no iptables rule;
   - ports 29000-30999 (rendezvous, and gin's 16-port helper block), checked unused on both nodes;
-  - wall and grace times per workload from cells.json (a cell may set its own wall_s).
+  - wall and grace times per workload from cells.json (a cell may set its own wall_s and grace_s: pilot 1 showed that the
+    release cells' survivor, still printing the example's wrong elements, was ended by the 10 s grace, not the wall cap).
 Safety (EXPERIMENT.md 8), as blindrun.py: processes are only signalled through the agents (by the PID they started; the
 agent kills its own process group when its stdin closes); nothing changes a link, an address, a driver or a firewall.
 Outputs per trial: <R>/raw/<id>/{r0.log,r1.log,a0.log,a1.log,trial.meta}. Log lines are "<rain CLOCK_MONOTONIC at
@@ -37,6 +39,7 @@ BUILDS = {
     ("gin", "hq"): {"lib": "~/gi-bundle/gin_ts2/hq", "bin": "~/blind-bundle/hq/blind_gin_ring", "cwd": "~/blind-bundle/hq"},
     ("gin", "hr"): {"lib": "~/gi-bundle/gin_ts2/hr", "bin": "~/gd-bundle/gin/gd_gin_ring", "cwd": "~/gd-bundle/gin"},
     ("gin", "hw"): {"lib": "~/gi-bundle/gin_ts2/hw", "bin": "~/gd-bundle/gin/gd_gin_ring", "cwd": "~/gd-bundle/gin"},
+    ("gin", "hk"): {"lib": "~/gi-bundle/gin_ts2/hk", "bin": "~/gd-bundle/gin/gd_gin_ring", "cwd": "~/gd-bundle/gin"},
     ("nvs", "t1_380"): {"lib": "~/blind-bundle/nvs/lib", "bin": "~/blind-bundle/nvs/blind_nvs_rr",
                         "plugin": "~/blind-bundle/nvs/blind_nvs_boot.so", "cwd": "~/blind-bundle/nvs"},
     ("nvs", "t1w"): {"lib": "~/gd-bundle/nvs/lib", "bin": "~/gd-bundle/nvs/gd_nvs_rr",
@@ -44,7 +47,8 @@ BUILDS = {
 }
 # every file a trial may use, md5-compared between the nodes once per hold (a mismatch writes STOP_md5)
 MD5_FILES = ["gi-bundle/gin_ts2/hq/libnccl.so.2.32.3", "gi-bundle/gin_ts2/hr/libnccl.so.2.32.3",
-             "gi-bundle/gin_ts2/hw/libnccl.so.2.32.3", "blind-bundle/hq/blind_gin_ring", "gd-bundle/gin/gd_gin_ring",
+             "gi-bundle/gin_ts2/hw/libnccl.so.2.32.3", "gi-bundle/gin_ts2/hk/libnccl.so.2.32.3",
+             "blind-bundle/hq/blind_gin_ring", "gd-bundle/gin/gd_gin_ring",
              "blind-bundle/nvs/blind_nvs_rr", "blind-bundle/nvs/blind_nvs_boot.so",
              "blind-bundle/nvs/lib/nvshmem_transport_ibgda.so.7.0.0", "blind-bundle/nvs/lib/libnvshmem_host.so.3.8.0",
              "gd-bundle/nvs/gd_nvs_rr", "gd-bundle/nvs/gd_nvs_boot.so", "gd-bundle/nvs/lib/nvshmem_transport_ibgda.so.7.0.0",
@@ -310,6 +314,8 @@ def run_trial(results, entry, params, site, cells):
     lim = dict(cells["limits"][wl])
     if entry.get("wall_s"):  # a cell's own time cap (the release cells print every wrong element)
         lim["wall_s"] = float(entry["wall_s"])
+    if entry.get("grace_s"):  # and its own grace after the first process ends (pilot 1: the release cells)
+        lim["grace_s"] = float(entry["grace_s"])
     rdv, rdv_tried = pick_ports(1)
     ports = {"rdv": rdv}
     if wl == "gin":
@@ -489,6 +495,8 @@ def plan(cells, cells_sha, seed_hex):
                      "u_t": round(rng.random(), 6), "u_d": round(rng.random(), 6)}
                 if c.get("wall_s"):
                     e["wall_s"] = c["wall_s"]
+                if c.get("grace_s"):
+                    e["grace_s"] = c["grace_s"]
                 trials.append(e)
         rng.shuffle(trials)
         holds[h] = trials

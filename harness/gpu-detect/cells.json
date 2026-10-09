@@ -1,6 +1,6 @@
 {
  "study": "gpu-detect",
- "about": "Input of apprun.py plan: the app-trial cells of EXPERIMENT.md 7 per hold (n, build, fault class, target, extra environment of both ranks), the time windows the drawn fractions map onto, and the wall and grace times. timing.gin is the blind study's calib.json (gin: hook 3-116 ms after the GDAKI context, kill and stop 0.003-0.116 s after the anchor line; traffic ends about 0.14 s after it). timing.nvs is narrowed from the blind study's 0.515-4.374 s to 0.5-2.5 s so that the fault lands inside the traffic of the fast runs too (blind-apps qa/code_review.md L6: 3.2 s runs). The release cells (*_rel) have their own 60 s cap: after a release the example prints every wrong element (millions of lines; the agent forwards 200 and counts the rest, but the application still writes them). The regression holds (R*) are in hold.sh and cells_reg.sh, not here.",
+ "about": "Input of apprun.py plan: the app-trial cells of EXPERIMENT.md 7 per hold (n, build, fault class, target, extra environment of both ranks), the time windows the drawn fractions map onto, and the wall and grace times. timing.gin is the blind study's calib.json (gin: hook 3-116 ms after the GDAKI context, kill and stop 0.003-0.116 s after the anchor line; traffic ends about 0.14 s after it). timing.nvs is narrowed from the blind study's 0.515-4.374 s to 0.5-2.5 s so that the fault lands inside the traffic of the fast runs too (blind-apps qa/code_review.md L6: 3.2 s runs). The GIN cells run on hk (hw + the policy hooks and the responder-side fix; pilot 1 ran hw). The release cells (*_rel) have their own 60 s cap and 50 s grace: after a release the example prints every wrong element (up to 29 360 128 lines, about 1.5M lines/s in pilot 1; the agent forwards 200 and counts the rest), and pilot 1's 10 s grace cut the survivor while it was still printing. P1 is pilot 2's app hold: every changed app cell once. The regression holds (P2, R*) are in hold.sh and cells_reg.sh, not here.",
  "timing": {
   "gin": {"hook_ms": [3, 116], "anchor_window_s": [0.003, 0.116]},
   "nvs": {"hook_ms": [500, 2500], "anchor_window_s": [0.5, 2.5]}
@@ -9,40 +9,36 @@
  "limits": {"gin": {"wall_s": 20.0, "grace_s": 10.0}, "nvs": {"wall_s": 30.0, "grace_s": 10.0}},
  "holds": {
   "P1": [
-   {"cell": "gin_qperr", "build": "hw", "workload": "gin", "cls": "qperr", "n": 2},
-   {"cell": "gin_qperr", "build": "hr", "workload": "gin", "cls": "qperr", "n": 1},
-   {"cell": "gin_qperr_w100", "build": "hw", "workload": "gin", "cls": "qperr", "n": 1, "env": {"NCCL_GIN_TS_QPWATCH_MS": "100"}},
-   {"cell": "gin_kill", "build": "hw", "workload": "gin", "cls": "kill", "n": 1},
-   {"cell": "gin_stop", "build": "hw", "workload": "gin", "cls": "stop", "n": 1},
-   {"cell": "gin_none", "build": "hw", "workload": "gin", "cls": "none", "n": 1},
-   {"cell": "nvs_kill", "build": "t1w", "workload": "nvs", "cls": "kill", "n": 1},
-   {"cell": "nvs_remacc", "build": "t1w", "workload": "nvs", "cls": "remacc", "n": 1},
-   {"cell": "nvs_kill_rel", "build": "t1w", "workload": "nvs", "cls": "kill", "n": 1, "env": {"NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS": "-1"}, "wall_s": 60.0},
-   {"cell": "nvs_remacc_rel", "build": "t1w", "workload": "nvs", "cls": "remacc", "n": 1, "env": {"NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS": "-1"}, "wall_s": 60.0},
-   {"cell": "nvs_stop", "build": "t1w", "workload": "nvs", "cls": "stop", "n": 1, "target": 0},
-   {"cell": "nvs_none", "build": "t1w", "workload": "nvs", "cls": "none", "n": 1},
-   {"cell": "nvs_qperr", "build": "t1w", "workload": "nvs", "cls": "qperr", "n": 1}
+   {"cell": "gin_qperr", "build": "hk", "workload": "gin", "cls": "qperr", "n": 2},
+   {"cell": "gin_qperr_w0", "build": "hk", "workload": "gin", "cls": "qperr", "n": 1, "env": {"NCCL_GIN_TS_QPWATCH_MS": "0"}},
+   {"cell": "gin_qperr_w1", "build": "hk", "workload": "gin", "cls": "qperr", "n": 1, "env": {"NCCL_GIN_TS_QPWATCH_MS": "1"}},
+   {"cell": "gin_qperr_w100", "build": "hk", "workload": "gin", "cls": "qperr", "n": 1, "env": {"NCCL_GIN_TS_QPWATCH_MS": "100"}},
+   {"cell": "gin_kill", "build": "hk", "workload": "gin", "cls": "kill", "n": 1},
+   {"cell": "gin_stop", "build": "hk", "workload": "gin", "cls": "stop", "n": 1},
+   {"cell": "gin_none", "build": "hk", "workload": "gin", "cls": "none", "n": 1},
+   {"cell": "nvs_kill_rel", "build": "t1w", "workload": "nvs", "cls": "kill", "n": 1, "env": {"NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS": "-1"}, "wall_s": 60.0, "grace_s": 50.0},
+   {"cell": "nvs_remacc_rel", "build": "t1w", "workload": "nvs", "cls": "remacc", "n": 1, "env": {"NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS": "-1"}, "wall_s": 60.0, "grace_s": 50.0}
   ],
   "G1": [
-   {"cell": "gin_qperr", "build": "hw", "workload": "gin", "cls": "qperr", "n": 16},
+   {"cell": "gin_qperr", "build": "hk", "workload": "gin", "cls": "qperr", "n": 16},
    {"cell": "gin_qperr", "build": "hr", "workload": "gin", "cls": "qperr", "n": 6},
    {"cell": "gin_qperr", "build": "hq", "workload": "gin", "cls": "qperr", "n": 6},
-   {"cell": "gin_qperr_w0", "build": "hw", "workload": "gin", "cls": "qperr", "n": 4, "env": {"NCCL_GIN_TS_QPWATCH_MS": "0"}}
+   {"cell": "gin_qperr_w0", "build": "hk", "workload": "gin", "cls": "qperr", "n": 4, "env": {"NCCL_GIN_TS_QPWATCH_MS": "0"}}
   ],
   "G2": [
-   {"cell": "gin_qperr_w1", "build": "hw", "workload": "gin", "cls": "qperr", "n": 8, "env": {"NCCL_GIN_TS_QPWATCH_MS": "1"}},
-   {"cell": "gin_qperr_w100", "build": "hw", "workload": "gin", "cls": "qperr", "n": 8, "env": {"NCCL_GIN_TS_QPWATCH_MS": "100"}},
-   {"cell": "gin_kill", "build": "hw", "workload": "gin", "cls": "kill", "n": 6},
-   {"cell": "gin_stop", "build": "hw", "workload": "gin", "cls": "stop", "n": 8},
-   {"cell": "gin_none", "build": "hw", "workload": "gin", "cls": "none", "n": 6}
+   {"cell": "gin_qperr_w1", "build": "hk", "workload": "gin", "cls": "qperr", "n": 8, "env": {"NCCL_GIN_TS_QPWATCH_MS": "1"}},
+   {"cell": "gin_qperr_w100", "build": "hk", "workload": "gin", "cls": "qperr", "n": 8, "env": {"NCCL_GIN_TS_QPWATCH_MS": "100"}},
+   {"cell": "gin_kill", "build": "hk", "workload": "gin", "cls": "kill", "n": 6},
+   {"cell": "gin_stop", "build": "hk", "workload": "gin", "cls": "stop", "n": 8},
+   {"cell": "gin_none", "build": "hk", "workload": "gin", "cls": "none", "n": 6}
   ],
   "N1": [
    {"cell": "nvs_kill", "build": "t1w", "workload": "nvs", "cls": "kill", "n": 8},
    {"cell": "nvs_kill", "build": "t1_380", "workload": "nvs", "cls": "kill", "n": 4},
    {"cell": "nvs_remacc", "build": "t1w", "workload": "nvs", "cls": "remacc", "n": 8},
    {"cell": "nvs_remacc", "build": "t1_380", "workload": "nvs", "cls": "remacc", "n": 4},
-   {"cell": "nvs_kill_rel", "build": "t1w", "workload": "nvs", "cls": "kill", "n": 5, "env": {"NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS": "-1"}, "wall_s": 60.0},
-   {"cell": "nvs_remacc_rel", "build": "t1w", "workload": "nvs", "cls": "remacc", "n": 5, "env": {"NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS": "-1"}, "wall_s": 60.0}
+   {"cell": "nvs_kill_rel", "build": "t1w", "workload": "nvs", "cls": "kill", "n": 5, "env": {"NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS": "-1"}, "wall_s": 60.0, "grace_s": 50.0},
+   {"cell": "nvs_remacc_rel", "build": "t1w", "workload": "nvs", "cls": "remacc", "n": 5, "env": {"NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS": "-1"}, "wall_s": 60.0, "grace_s": 50.0}
   ],
   "N2": [
    {"cell": "nvs_stop", "build": "t1w", "workload": "nvs", "cls": "stop", "n": 8, "target": 0},
