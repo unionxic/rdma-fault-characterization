@@ -1,0 +1,24 @@
+== 2026-10-09 21:19:20 mode hk: new files (rain)
+2913c777aa0b05d4d566c9f7638c6a0e  gi-bundle/gin_ts2/hk/libnccl.so.2.32.3
+== sunny
+2913c777aa0b05d4d566c9f7638c6a0e  gi-bundle/gin_ts2/hk/libnccl.so.2.32.3
+new files: rain == sunny (1 files)
+source == deployed: hk/libnccl.so.2.32.3
+first-deploy files on both nodes with their recorded md5: 7
+rain gin hk: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hk/libnccl.so.2 (0x00007f17af95b000); 
+sunny gin hk: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hk/libnccl.so.2 (0x00007d4815000000); 
+existing bundles unchanged (rain 322 files, sunny 374 files)
+built=2026-10-09 21:14:58 host=rain nvcc=Build cuda_12.8.r12.8/compiler.35583870_0
+gin: hw libnccl efc48ca1a8368eb7feadac5d57f8ff23 include_digest a27dac895f1ba936fa088f94921b31ef
+gin: hwp libnccl d3b4a2fe704d5edfdbe154360bae9f98
+gin: hr include_digest a27dac895f1ba936fa088f94921b31ef (hw changes no header: equal is expected)
+gin: hk libnccl 2913c777aa0b05d4d566c9f7638c6a0e include_digest a27dac895f1ba936fa088f94921b31ef (hk changes no header: equal to hw is expected)
+gin: hkp libnccl 84209c03a497bd28206210205bfc6cf5
+gin: gd_gin_ring 719dfaab5a3f4294ab89b12ea102ed5b main.cu d7e8a7f183e1bbe4bd2b9c01a18df3a3 kernels.cuh f919b5900d1416683cfdd9f9658ca63d gin_boot.cc ebdde28f366fd755dc0c71e217e9ad1b rdv.h 339f594f141356e3705b017b13976a4e
+gin: gd_gin_ring sass sm_75 sm_86 
+nvs: t1w transport 86c39e91e568fed0a271ca7099b1bb2c host f3522de834c20c3ffd2044c598485e5d uid 26da2c3138ce2cfcfdf37712234a780b device_a e5ec0e70f6b37897f17a71245355d419
+nvs: gd_nvs_rr 6e93ba5938b0e8f096817dcfabe01907 gd_nvs_boot.so e3264e83213d6db2e82a60034ade0b7d ring-reduce.cu 16a2d9c3f58b3f020d8e788df0e72cb8 nvs_boot.cc b3a67792c54c1f310a4a6d027d1901a3
+nvs: gd_nvs_rr sass sm_75 sm_86 
+hw_layer.diff be0ea9ed0255b3e332136388b7ec696b
+t1w_layer.diff ac24448b409fdb003249c06dbf40b6bc
+hk_layer.diff c5222c553801af455da0784fd1ac9022
