@@ -6,7 +6,7 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | 검토용 설계. 사용자 결정(2026-10-09)으로 충돌이 남아 있는 동안 구현하지 않는다. 이 문서의 검토가 끝날 때까지 아무것도 빌드하지 않는다 |
+| 상태 | 검토용 설계. 사용자 결정(2026-10-09)으로 충돌이 남아 있는 동안 구현하지 않는다. 이 문서의 검토가 끝날 때까지 아무것도 빌드하지 않는다. 사용자 결정(2026-10-09, 뒤): B4는 (나)(5절), B1–B3은 실행 가능성 시험만 빌드한다(EXPERIMENT.md 9.15절). 복원 계층은 여전히 구현하지 않는다 |
 | 실험 | [EXPERIMENT.md](EXPERIMENT.md)(gin-restore, `DRAFT`). 그 문서의 상호작용 표와 막는 문제는 이 문서로 옮겼다 |
 | 작성일 | 2026-10-09 |
 | 근거 트리 | hr: 세션 스크래치 `agent_ts2hr/nccl-src`(gin-remaining). hw: `agent_gd/gin/nccl-src`(기준 커밋 `382bbb4` = hr, gpu-detect worktree의 `harness/gpu-detect/hw_layer.diff` md5 `be0ea9ed`, libnccl md5 `efc48ca1`). nvs: `agent_gd/nvs/src`(t1_380 위의 t1w, t1w_layer.diff md5 `ac24448b`). 모두 2026-10-09에 읽기만 함 |
@@ -108,8 +108,13 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
   서 있음(`q4->setAsync`; 다른 상대의 거절이 세운 것도 communicator에 대한 것이므로 TOLD), (c) 그 상대로 가는 게이트의 `abandoned`나 DEV_FAILED(게이트
   읽기, NIC 복사 경로). (c)의 읽기가 실패하면 TOLD로 본다(보수적).
 - **강한 죽음 증거**(F9, V11): 거절의 `uaWhy`가 `GDAKI_UA_PEER_DEAD`이고, 그 죽음을 판정한 `gdakiTsSocketLost`가 남긴 `pe.lostCause`가 "FIN"(BYE 없음)
-  이거나 "ECONNREFUSED"(1–5 s 간격 거절 둘)인 경우만. BADMAGIC과 그 밖의 errno로 판정된 죽음은 hold를 시작하지 않고 fail-fast다(흐름이 어긋난 산
-  프로세스일 수 있음). REJOIN은 `lostCause`와 `closeCause`를 지운다(낡은 원인이 남지 않게).
+  이거나 "ECONNREFUSED"(1–5 s 간격 거절 둘)이고, `pe.lostAfterCommit`가 서 있지 않은 경우만. BADMAGIC과 그 밖의 errno로 판정된 죽음은 hold를 시작하지 않고 fail-fast다(흐름이 어긋난 산
+  프로세스일 수 있음). REJOIN은 `lostCause`와 `closeCause`, `lostAfterCommit`를 지운다(낡은 원인이 남지 않게).
+- **`pe.lostAfterCommit`**(2026-10-09, gpu-detect와의 계약, 메인 세션이 정함): gpu-detect는 응답 쪽이 Commit한 뒤 게시 전에 소켓을 잃은 길(3절,
+  hw 5285–5292, 5298–5303)을 고친다. 그 길의 거절 바로 전에 상대별 표시 `pe.lostAfterCommit = true`를 세우고, 그 잃음이 죽음 판정이면 거절을 원인
+  PeerDead, `GDAKI_UA_PEER_DEAD`로 한다(degraded 예약). 죽음 판정이 아니면 지금 동작(원인 Unknown, `uaWhy` DECLINED) 그대로다. 그래서 고친 뒤에는 그 거절이
+  위의 앞 두 조건을 채울 수 있다. 복원 설계는 이 창을 계속 붙잡지 않는다: G2의 강한 증거 검사가 이 표시가 선 거절을 빼고, 그 상대가 ARMED였으면 NOHOLD(p)를
+  보낸 뒤 fail-fast로 거절한다(3절 N4). 표시는 G2가 그 거절 안에서 읽으므로 거절 전에 서 있어야 하고, 지우는 곳은 REJOIN뿐이다(D4).
 - **잘못된 죽음 판정의 막**: (1) 예비 프로세스는 같은 노드에 있으므로 활성화 전에 원래 프로세스(등록 때 받은 PID)가 끝났는지 스스로 확인한다:
   `/proc/<pid>`가 없거나, `/proc/<pid>/stat`의 상태가 Z(거두기 전 zombie)나 X이거나, 시작 시각(22번째 칸)이 등록 때의 값과 다르다(거둔 뒤 PID가 다시
   쓰인 경우; V9). 아니면 활성화를 거절하고 모두 fallback한다. (2) 복원 라운드가 생존
@@ -128,7 +133,8 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
 - (다) 정책 `failfast`에서 호스트 동작은 hw와 같다(검토 2 확인). 정책 `hold`이지만 무장하지 않은 communicator는 반응은 fail-fast와 같아도 설정이
   다르다: 문맥을 만들 때 루프백 MR이 더 많고(복원 버퍼), 그 등록에서 CUDA driver 함수를 부르고, 자체 시험 범위가 넓다(N5). 정책 hook(4.10절 G1–G9)과 같은 파일에 넣는 복원 계층의 코드(4.11절)는 fail-fast에서 늘 같은 값을 돌려주거나
   닿지 않는다. 장치 헤더의 변경(EXPERIMENT.md 9.9절 DV1–DV4)은 fail-fast에서 같은 결과를 내지만 시간을 바꿀 수 있다: 보내기마다 측 표 포인터를 한 번
-  보는 것(DV2), 키 읽기 자리(B4).
+  보는 것(DV2), 키 읽기 자리(B4). B4의 결정 (나)(2026-10-09) 뒤 fail-fast에서 키 읽기의 자리와 종류는 지금과 같고, 더해지는 것은 DV2와 같은 포인터 읽기에
+  기대는 분기 하나다. 게이트 뒤의 키 다시 읽기는 측 표 포인터가 0이 아닌 hold 정책의 communicator에서만 한다(A1).
 
 ## 3. 상태 기계 (상대 하나, hold-for-restore)
 
@@ -207,6 +213,11 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
 `S_pending`은 지웠다). 이 길은 hw에도 틈이 있다: PEER_DEAD가 아니라 degraded가 예약되지 않아, 랭크 3개 이상에서 상대를 모르는 대기가 풀리지 않는다
 `[소스, 추론]`. 정책과 별개의 hw 고칠 거리로 4.10절 끝에 적었다.
 
+2026-10-09: gpu-detect가 이 틈을 고친다(계약은 2.4절 `pe.lostAfterCommit`). 고친 뒤 이 창에서 죽음이 판정되면 거절은 PeerDead, `GDAKI_UA_PEER_DEAD`가 되고
+degraded가 예약된다(fail-fast의 상대를 모르는 대기는 2 s 뒤 풀림). 그래도 hold-for-restore는 이 창을 여전히 붙잡지 않는다: 그 거절에는
+`pe.lostAfterCommit`가 서 있어 G2가 강한 증거로 보지 않고, 상대가 ARMED였으면 NOHOLD(p)를 보낸 뒤 fail-fast로 거절한다. 그래서 "Commit했으나 게시 전인
+에폭"을 복원이 다룰 일은 고친 뒤에도 없다.
+
 **복원 뒤 생존 rank 자신의 무장.** 죽은 rank가 보낸 메시지의 로그는 그 rank와 함께 사라졌다. 모든 rank가 그 복원에 참여했으므로, 각 생존 rank q는 자기
 확정 체크포인트의 절단점(되살린 rank에서 q로 오는 통로)이 복원 뒤 로그의 시작보다 앞임을 알고, 자기 다음 확정 체크포인트까지 DISARM(q)를 보낸다(그
 사이 q가 죽으면 fail-fast). 단일 실패 범위의 약한 창이다 `[추론]`.
@@ -223,7 +234,7 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
 | D1 | 장치 분류와 기록 경로(S1). 붙잡은 상대의 처리는 HELD, COMMITTING에서 흡수, PUBLISHED에서 fallback(3절, P3). 경로 판단은 Q4 감시 스레드(hr 1021, false면 1026–1035에서 비동기 오류), 처리는 helper의 기록 루프 hr 6114–6124 / hw 6399–6409 → `gdakiTsInitiate` hr 5419– / hw 5448– | 기록 → 라운드: liveness 확인 → 살아 있으면 복구, 죽었으면 거절(hr 5478–5489 / hw 5507–5518) | 경로 판단은 그대로 참(helper로; F28). 살아 있는 상대: 같음. 붙잡은 상대의 기록: 라운드를 열지 않고 흡수(`qs[].handled` 올림). 루프의 뒷정리(`ts->batch`, heartbeat, `nQueued` 줄이기)는 그대로 둠(V16) | 감지(반응은 정책) | G4. L: 흡수 |
 | D2 | hw QP 상태 감시(S2) | 거절 안 된 모든 상대의 QP를 10 ms마다 QUERY_QP. ERR/SQER + 유예 5 ms(뿌리 CQE 없으면 50 ms) → 합성 기록 → D1 | HELD와 COMMITTING의 상대는 감시하지 않음(QUERY_QP도, QP와 CQ의 NIC 읽기도 없음). PUBLISHED는 감시함(P3). 이미 줄에 선 기록은 D1처럼 흡수. 복원 뒤(QP가 예비 프로세스와 RTS) 다시 감시. 감시의 에폭 비교(`gdakiDetQueued` hw 6066, `handled >= epoch + 2` hw 6139)는 빈 라운드(M3)에 맞춰 `coveredEpoch`로 | 감지 | G3, G6 |
 | D3 | 감시의 펌웨어 명령 부하(S2) | rank마다 (상대 수 × 문맥 수)번/10 ms, `opMu` 안 | 이 rank에서는 hold 시작과 복원 라운드와 겹치지 않음(같은 helper 스레드, 감시는 기록 줄이 빌 때만 hw 6410). 같은 NIC의 다른 rank의 감시와 예비 프로세스의 초기화(QP 생성, MR 등록)는 겹침. 복원 라운드의 펌웨어 단계가 3 000 ms를 넘으면 감시가 그 상대의 단어를 올림 → TOLD → fallback. 감시의 QUERY_QP가 응답 쪽 rmsn도 받아 누적 실행 수에 쓰므로(G7) 복원 계층이 따로 펌웨어 명령을 내지 않음 | 펌웨어 감시 | G7. L: 복원 셀에서 `detQueryUsMax`와 복원 단계 시간을 잼 |
-| D4 | helper 소켓 liveness(S3). 다시 걸지 않음: `gone`/`declined` 상대(hr 3972, 4069 / hw 3997, 4094). HELLO는 낮은 rank에서만, 더 새 세대만(hr 4209–4215 / hw 4234–4240). 거절한 상대에는 FAIL(hr 3910–3923, 4176–4180, 4204–4207 / hw 3935–3948, 4201–4205, 4229–4232). nonce(hr 6237–6239 / hw 6523–6525). 다시 걸기(hr 4046–4064 / hw 4071–4089), 받기 한 번에 500 ms까지 읽음(hr 4175 / hw 4200) | 죽음 → `deadJudged` → 거절(R1) | 판정과 그 줄은 같음. 반응만 다름(R1). 새 프로세스 받기: 새 메시지 REJOIN을 받기 루프(hr 4164–4243 / hw 4189–4268)에서, 붙잡은 상대에게서만, nonce가 맞고(초기화 재생으로 같은 nonce) 화신 번호 = 지금 + 1일 때. 아직 붙잡지 않은 rank는 REJOIN을 닫고, 예비 프로세스는 시한까지 다시 건다(V6). 받으면 `gone`, `deadJudged`, `refusals`, `left`, `peerFailed`, `failedPending`, `lostCause`, `closeCause`를 지우고, 옛 주소로 진행 중이던 `dialFd`/`pendFd`/`probeFd`를 닫고(늦은 ECONNREFUSED가 새 화신의 죽음으로 세어지지 않게, hr 4032–4036 / hw 4057–4061), 공통 연결 세대를 정해 `gdakiTsInstall`(hr 3859–3872 / hw 3884–3897; F22). 펜싱(F11): HELLO, HELLO-ACK, PROBE-ACK에 화신 번호를 싣고 생존 rank는 지금 화신이 아니면 받지 않음. 예비 프로세스는 설치되기 전에는 REJOIN 말고 아무것에도 답하지 않고, 원래 rank의 listen 주소(기록에 있음)와 다른 포트에 묶음. REJOIN은 고정 크기 제어 메시지이고, rkey 목록 같은 큰 것은 자료 소켓으로(F23) | 감지 | L. hw 변경 없음 |
+| D4 | helper 소켓 liveness(S3). 다시 걸지 않음: `gone`/`declined` 상대(hr 3972, 4069 / hw 3997, 4094). HELLO는 낮은 rank에서만, 더 새 세대만(hr 4209–4215 / hw 4234–4240). 거절한 상대에는 FAIL(hr 3910–3923, 4176–4180, 4204–4207 / hw 3935–3948, 4201–4205, 4229–4232). nonce(hr 6237–6239 / hw 6523–6525). 다시 걸기(hr 4046–4064 / hw 4071–4089), 받기 한 번에 500 ms까지 읽음(hr 4175 / hw 4200) | 죽음 → `deadJudged` → 거절(R1) | 판정과 그 줄은 같음. 반응만 다름(R1). 새 프로세스 받기: 새 메시지 REJOIN을 받기 루프(hr 4164–4243 / hw 4189–4268)에서, 붙잡은 상대에게서만, nonce가 맞고(초기화 재생으로 같은 nonce) 화신 번호 = 지금 + 1일 때. 아직 붙잡지 않은 rank는 REJOIN을 닫고, 예비 프로세스는 시한까지 다시 건다(V6). 받으면 `gone`, `deadJudged`, `refusals`, `left`, `peerFailed`, `failedPending`, `lostCause`, `closeCause`, `lostAfterCommit`(2.4절, 2026-10-09)를 지우고, 옛 주소로 진행 중이던 `dialFd`/`pendFd`/`probeFd`를 닫고(늦은 ECONNREFUSED가 새 화신의 죽음으로 세어지지 않게, hr 4032–4036 / hw 4057–4061), 공통 연결 세대를 정해 `gdakiTsInstall`(hr 3859–3872 / hw 3884–3897; F22). 펜싱(F11): HELLO, HELLO-ACK, PROBE-ACK에 화신 번호를 싣고 생존 rank는 지금 화신이 아니면 받지 않음. 예비 프로세스는 설치되기 전에는 REJOIN 말고 아무것에도 답하지 않고, 원래 rank의 listen 주소(기록에 있음)와 다른 포트에 묶음. REJOIN은 고정 크기 제어 메시지이고, rkey 목록 같은 큰 것은 자료 소켓으로(F23) | 감지 | L. hw 변경 없음 |
 | D5 | 감시(S4) | 펌웨어 단계 초과 → 그 상대의 단어 + 비동기 오류 + 책임(그 상대, Local)(hr 3476–3516 / hw 3501–3541, 책임 hr 3505 / hw 3530). 라운드 25 s 초과, 기록이 쌓였는데 helper가 1 s 넘게 정지 → 드러냄, 이후 모든 라운드 거절(hr 3517–3525 / hw 3542–3550) | 같음. 다만 붙잡은 상대에 대한 펌웨어 초과의 책임 원인은 PeerDead로 적음(G9: 안 그러면 Local 책임이 남아 fallback 뒤 shrink 넘기기가 −3을 돌려줌, V1). 복원 기다림은 라운드가 아님(heartbeat 계속). 복원 상태 기계의 한 걸음은 1 s보다 짧게: 소켓 읽기, 로그와 이미지의 NIC 읽기는 조각으로(고정 사본 크기 = max(CQ 크기 × 64 B, 장치 QP 구조) + 4 KiB, hr 1899–1901 / hw 1900–1902), 기록은 흡수되어 쌓이지 않음(F14). hold 시작과 복원 라운드는 `gdakiTsBusy` 안. 복원 시한은 이 감시 스레드가 지킴(G8, V5): helper가 다른 라운드에 묶여 있어도 시한에 HELD에서 CAS(HELD → TIMED_OUT)에 이기면 그 상대의 단어(PEER_DEAD), 비동기 오류, 책임(PeerDead), degraded 예약을 CPU 쓰기로(hw 감시처럼 `gdakiTsToComm` 안에서) 하고(PUBLISHED에서는 CAS로 상태만, P1), 게이트 실패 쓰기와 FAIL은 helper가 풀리면 fallback 거절로 마저 함(이중 거절은 무해: 단어의 first, degraded의 `deadMs`, 책임의 중복 막기, `!pe.declined`; 검토 2 확인). COMMITTING은 건드리지 않음(3절, N1) | 감시 | G8, G9, L |
 | D6 | 장치의 포기와 훑기(S5) | 포기 → 거절(원인 Local, hr 5892–5893, 5898 / hw 5921–5922, 5927). 기록 유실 두 번 → 거절(hr 5894–5896 / hw 5923–5925) | 포기는 TOLD. 붙잡은 상대에 대한 훑기의 거절은 G2가 fallback(PeerDead)으로 바꿈(V1). 유실 검사: 흡수가 `handled`를 올리므로 보통은 조용함. 장치 기록 우편함이 넘친 경우 HELD, COMMITTING의 상대는 건너뜀 | 장치 실패(TOLD) | G2, G5 |
 | D7 | NVSHMEM t1w FIN 판정(S6) | BYE 없는 FIN → 바로 `t1_decline` | NVSHMEM에는 hold가 없음. hold 정책의 프로세스는 NVSHMEM을 쓰지 않음(X6) | NVSHMEM fail-fast | 없음(제약) |
@@ -234,7 +245,7 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
 |---|---|---|---|---|---|
 | R1 | 거절 `gdakiTsDecline` hr 4916–4966 / hw 4941–4991: 범위 ALL(hr 4919 / hw 4944), 준비 풀기(hr 4930 / hw 4955), QP를 ERR로(hr 4931–4934 / hw 4956–4959), 책임 기록, 상대 단어, 비동기 오류(hr 4936–4943 / hw 4961–4968), FAIL, 게이트 실패(hr 4959–4965 / hw 4984–4990). 죽음이 이 함수에 오는 길: helper 루프(hr 6095–6101 / hw 6380–6386), 라운드의 죽음 길(hr 5478–5489 / hw 5507–5518). 라운드 안의 소켓 끊김(hr 5566–5572, 5594–5600 / hw 5595–5601, 5623–5629)은 보통 거절이 아니라 취소(`gdakiTsCancelRound` hr 5127–5146 / hw 5152–5171, 응답 쪽 `gdakiTsCancelResponder` hr 5152–5173 / hw 5177–5198)로 가서 상대를 "모름"으로 두고 기록을 다시 줄에 세움. 죽은 상대는 다시 걸기와 탐침의 거절 둘로 죽음이 되고, 다시 줄에 선 기록의 라운드(죽음 길)나 helper 루프에서 거절로 옴 | 위 모두 | 거절 맨 앞의 정책 hook(G2), 두 갈래: (가) 그 상대가 이미 붙잡은 상대면 어떤 거절이든(원인, `uaWhy` 무관) fallback 함수 하나로: PeerDead, `GDAKI_UA_PEER_DEAD`로 한 번 거절하고 다시 붙잡지 않음(V1). (나) 붙잡지 않은 상대: 정책 hold, 상대 ARMED, 강한 죽음 증거(2.4절), TOLD 아님 → 3절의 hold 시작, 돌아감. 그 밖은 거절 그대로 | 2.4절 | G2 |
 | R2 | 상대별 abort 단어(hq, `gdakiUaRaisePeer` hr 2793–2862 / hw 2800–2869; 배열 hr 2705–2755 / hw 2712–2762). 장치: `tsWaitWord` gin_gdaki.h 241–245, `tsParkStable` 271–277, `tsPoll` 1123–1139, 보내기 `tsPosterAbortWord` 223–228, `tsQpWordError` 230–233 | 거절이 그 상대의 단어를 바로 올림: 그 상대 QP의 대기, flush, 쉬는 보내기가 바로 실패 | 복원 중에는 올리지 않음. 쉬는 스레드는 64번마다 단어를 읽지만 0이라 계속 쉼(hold 한도까지, T4). fallback(또는 G8의 시한)에서 올림. 단어는 communicator마다라서 문맥이 둘 이상이면 무장하지 않음(2.3절, F6) | 2.4절 | 없음 |
-| R3 | degraded(hr 2826–2840, 2867–2894 / hw 2833–2847, 2874–2901; `NCCL_GIN_TS_DEGRADED_MS` hr 2690 / hw 2697), "모든 상대 거절" 규칙(hr 2813–2824 / hw 2820–2831) | 첫 죽음 거절(PEER_DEAD) 2 s 뒤 칸 0: `waitSignal`, `waitCounter`, 배리어가 오류. 랭크 2개는 바로. 원인 Unknown의 거절(3절의 응답 쪽 Commit 뒤 길)은 degraded를 예약하지 않음(hw의 틈) | 복원 중에는 예약 없음. fallback 거절(PEER_DEAD) 또는 G8이 예약 → 칸 0은 fallback + 2 s(랭크 2개는 fallback 때 바로) | 2.4절 | 없음 |
+| R3 | degraded(hr 2826–2840, 2867–2894 / hw 2833–2847, 2874–2901; `NCCL_GIN_TS_DEGRADED_MS` hr 2690 / hw 2697), "모든 상대 거절" 규칙(hr 2813–2824 / hw 2820–2831) | 첫 죽음 거절(PEER_DEAD) 2 s 뒤 칸 0: `waitSignal`, `waitCounter`, 배리어가 오류. 랭크 2개는 바로. 원인 Unknown의 거절(3절의 응답 쪽 Commit 뒤 길)은 degraded를 예약하지 않음(hw의 틈). gpu-detect가 고친 뒤(2.4절 `pe.lostAfterCommit`, 2026-10-09)에는 그 길의 죽음 판정이 PEER_DEAD 거절이 되어 degraded를 예약함 | 복원 중에는 예약 없음. fallback 거절(PEER_DEAD) 또는 G8이 예약 → 칸 0은 fallback + 2 s(랭크 2개는 fallback 때 바로) | 2.4절 | 없음 |
 | R4 | `NCCL_GIN_TS_DEGRADED_ROUNDS`(hw M-C, `gdakiUaPeerRaised` hw 2918–2925, 변수 2676) | 0(기본): 칸 0이 오르면 어느 상대와도 라운드 게시 없음, 그 거절은 원인 Local | hold 자체는 칸 0을 올리지 않으므로 이 규칙은 복원 중 잠자고 있음. 복원 중 칸 0이 다른 이유로 오르면(abort, revoke, shrink, 모든 상대 거절, 다른 rank의 죽음의 degraded) 복원 라운드의 게시 전 확인(`gdakiTsRepostPlanAll` hr 4566 / hw 4591, `gdakiTsRepostApply` hr 4708 / hw 4733)이 막음 → fallback | 칸 0(TOLD) | 없음. fail-fast의 변수로 문서화 |
 | R5 | 비동기 오류와 문맥의 sticky 오류(거절이 세움 hr 4939–4942 / hw 4964–4967; `tsFail` gin_gdaki.h 1047–1053; Commit은 helper 안에서 지우지 않음 hr 2492–2512 / hw 2493–2513) | 거절 때 비동기 오류. sticky는 실패한 장치 스레드가 그 문맥에 세움 | 복원 중에는 비동기 오류 없음. 비동기 오류가 서 있거나 그 상대의 QP에서 장치 스레드가 실패했으면 TOLD → hold 안 함 | TOLD | 없음 |
 | R6 | t1w fail-stop과 장치 대기 단어(ibgda.cpp `t1w_after_decline` 6841–6858, `t1w_failstop_exit` 6813–6839, `t1_decline`의 호출 6925, 변수 8047–8049; 장치 `nvshmemi_t1w_aborted` wait_until.cuh 41–56) | 0(기본): 거절 직후 `_exit(70)`. −1: 장치 대기 단어를 올려 PE의 모든 대기를 "풀린 채" 돌려줌. 양수: 단어를 올리고 그만큼 뒤 종료 | NVSHMEM에는 hold가 없음. 이 변수들은 NVSHMEM fail-fast 반응의 변수다. NVSHMEM에 hold를 넣는다면 `t1_decline`의 맨 앞에 G2와 같은 hook을 두는 것이 같은 구조다(범위 밖) | NVSHMEM fail-fast | 없음(문서화). X6 |
@@ -262,7 +273,7 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
 
 | # | 장치와 코드 | fail-fast | hold-for-restore | 우선 | 바꿀 것 |
 |---|---|---|---|---|---|
-| A1 | rkey와 주소: window rkey는 등록 때 all-gather(`ncclGinGdakiRegMrSym` hr 7879–7931, all-gather 7902–7905 / hw 8198–8250, 8221–8224), 신호와 카운터 표의 교환(hr 7311–7315 / hw 7630–7634). 장치: 원격 주소는 window 안의 오프셋(gin_gdaki.h 475), rkey는 게이트 전에 읽음(476, 게이트 501; `signalKey`는 호출자가 계산해 값으로 넘김 1458–1468), `loadConst`는 보통 읽기(`utility.h` 449–457) | rkey는 communicator가 사는 동안 고정 | 예비 프로세스의 MR은 새 rkey. 생존 rank는 그 상대로 가는 게이트가 홀수인 동안 모든 window rkey 표와 신호, 카운터 표의 칸 p를 NIC 루프백으로 바꾸고 짝수 에폭을 게시. 그러나 키는 게이트 전에 읽히므로, 게이트가 홀수일 때 옛 키를 읽고 게시 뒤 빠른 경로로 들어간 보내기는 옛 키로 보냄(F5): 남의 MR이 그 키 값을 다시 받으면 조용한 손상 `[미확인]`. 해결은 키 읽기를 게이트에 들어간 뒤로 옮기는 것(DV3)이고, `signalKey`의 계산 자리를 옮기는 구조 변경과 읽기 종류의 변경(L1 적중을 잃을 수 있음)이 따름 → 5절 B4(결정 필요) | 복원 | DV3, 5절 B4 |
+| A1 | rkey와 주소: window rkey는 등록 때 all-gather(`ncclGinGdakiRegMrSym` hr 7879–7931, all-gather 7902–7905 / hw 8198–8250, 8221–8224), 신호와 카운터 표의 교환(hr 7311–7315 / hw 7630–7634). 장치: 원격 주소는 window 안의 오프셋(gin_gdaki.h 475), rkey는 게이트 전에 읽음(476, 게이트 501; `signalKey`는 호출자가 계산해 값으로 넘김 1458–1468), `loadConst`는 보통 읽기(`utility.h` 449–457) | rkey는 communicator가 사는 동안 고정 | 예비 프로세스의 MR은 새 rkey. 생존 rank는 그 상대로 가는 게이트가 홀수인 동안 모든 window rkey 표와 신호, 카운터 표의 칸 p를 NIC 루프백으로 바꾸고 짝수 에폭을 게시. 그러나 키는 게이트 전에 읽히므로, 게이트가 홀수일 때 옛 키를 읽고 게시 뒤 빠른 경로로 들어간 보내기는 옛 키로 보냄(F5): 남의 MR이 그 키 값을 다시 받으면 조용한 손상 `[미확인]`. 해결은 키 읽기를 게이트에 들어간 뒤로 옮기는 것(DV3)이고, `signalKey`의 계산 자리를 옮기는 구조 변경과 읽기 종류의 변경(L1 적중을 잃을 수 있음)이 따름 → 5절 B4. **결정 (나)(2026-10-09)**: (1) 갈림: `putImplMode`, `putValueImplMode`(신호만 보내는 길 포함)에서 측 표 포인터(DV1, `loadConst`로 게이트 전에 한 번; 문맥을 만들 때 hold 정책이면 정하고 communicator가 사는 동안 바뀌지 않음)가 0이 아니면, `tsGateEnter`가 참을 돌려준 뒤(빠른 길이든 느린 길 `tsGateEnterSlow`든) `raddr.key`(`dstMh->rkeys[peer]`)와 `sig_raddr.key`를 다시 읽어 덮어씀. 다시 읽기는 L1을 거치지 않는 GPU 범위 strong 읽기(`ld.relaxed.gpu`). (2) `signalKey`는 지금처럼 호출자가 계산해 값으로 넘기고(gin_gdaki.h 1458–1468, 1483–1494) fail-fast는 그 값을 씀. 호출자는 그 키를 읽은 주소(`signals_table.rkeys + peer`나 `signalMh->rkeys + peer`, 신호가 없으면 null)를 장치 헤더 안의 내부 인자 하나로 더 넘김(공개 API는 같음). (3) 차례의 근거: 생존 rank의 helper는 p로 가는 게이트가 홀수이고 개수가 0일 때 칸 p를 NIC 루프백으로 쓰고 READ로 확인한 뒤 짝수 에폭을 게시함. 게이트에 든 스레드는 개수 0 전에 나갔거나 게시 뒤에 들어왔고, 진입은 acquire 원자 더하기(`tsWordEnter` 126–130)라 그 뒤 읽기가 앞당겨지지 않으므로 새 키를 읽음 `[추론]`. (4) fail-fast(포인터 0): 키 읽기의 자리, 종류(`loadConst`, L1 적중), 명령 차례가 지금과 같고 분기 하나만 더해짐(DV2와 같은 포인터 읽기). (5) hold: 키를 두 번 읽고(호출자의 게이트 전 읽기는 버려짐) 게이트 뒤 읽기는 L1 적중을 잃음. 비용은 계층을 만들 때 4 KiB, 256 KiB에서 잼(EXPERIMENT.md LT1, LT2). (6) 억제(C6): 느린 길이 SUPPRESS로 내지 않으면 다시 읽기도 없음. 일부만 내거나(신호만) 그대로 내면 참을 돌려준 뒤 같은 자리의 다시 읽기를 지남. (7) get(gin_gdaki.h 697)과 카운터 키(자기 rank 칸 493)는 다시 읽지 않음: 되살릴 rank와의 get은 무장 해제(M2), 자기 칸은 바뀌지 않음 | 복원 | DV3, 5절 B4 |
 | A2 | get 표(Commit이 지움 hr 2436–2446 / hw 2437–2447) | 그대로 | 복원 라운드의 Commit이 그 상대의 get 표를 지움. get은 M2대로 없음 | 복원 | 없음 |
 | A3 | GIN collComm 고리(gin.cc 138–229, 연결 231–259: 고리 이웃과 실제로 잇고 받음), helper 설정의 잇기와 받기(hr 6255–6308 / hw 6541–6594: 여기서만 `gated`, `addr`가 섬 hr 6281–6284, 6303–6306 / hw 6567–6570, 6589–6592; 게이트는 `gated` 상대에만 씀 hr 6813–6831 / hw 7121–7139) | rank 하나가 죽으면 고리가 끊겨 그 communicator에서 GIN 집합 교환(새 window 등록, devComm 생성)을 더 못 함 | 같음. 예비 프로세스의 GIN 초기화는 all-gather 대답뿐 아니라 고리 연결과 helper 설정의 잇기/받기도 건너뛰어야 하고, 그러면서 `gated`와 `addr`는 기록으로 세워야 함(안 그러면 게이트가 없어 투명 복구도 억제도 없음, V13). B1. 복원 뒤 새 GIN 자원은 범위 밖 | 범위 | B1 |
 | A4 | LSA(devComm `lsaRank`, `lsaSize`, `comm__types.h` 35; `dev_runtime.cc` 392) | 해당 없음(GIN만) | 같은 노드의 rank가 LSA 팀이면 생존 rank의 devComm이 죽은 rank의 메모리를 load/store로 가리킴 `[추론]` | 막는 문제 | 5절 B2 |
@@ -305,7 +316,7 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
 | C3 | 예비 프로세스와 초기화 재생 | 없음 | NCCL bootstrap, GIN collComm 고리와 helper 설정(A3), `NCCL_MULTI_RANK_GPU_ENABLE`(X4). 막는 문제 B1 |
 | C4 | REJOIN | REJOIN은 닫음 | 재연결 기계와 펜싱(D4) |
 | C5 | 복원 라운드 | 없음 | hold 시작(3절), Prepare/Commit과 양쪽 토큰(M4), rkey(A1), `RepostApply`의 커밋 지점과 PUBLISHING(M2), 비메시지 확인(M2), 펌웨어 감시(T2), hold 한도(T4), 게시 전 확인(R4) |
-| C6 | 예비 프로세스의 억제 | 없음 | 게이트 에폭 반쪽의 새 비트 SUPPRESS(`EPOCH_MASK` 30비트 → 29비트). 보내기만 이 비트로 느린 길에 감: 보내기의 열림 검사(`tsGateEnter` gin_gdaki.h 333)에만 넣고, 대기의 열림 검사(`tsPollEnter` 365)와 `tsParkStable`(264)은 그대로(공용 `tsWordOpen`에 넣으면 flush와 wait가 `tsTicketSlow` 382–386에서 끝없이 돎, F1). 장치가 에폭 반쪽을 값으로 쓰는 모든 자리에서 SUPPRESS를 지움: `tsPollEnter`가 저장하는 값(364–366), `tsPoll`의 비교(1106)와 기록(1107–1108), `tsSwErrReport`(1037), `tsLateFail`(206–207)(V4: 안 그러면 `reported`와 `handled`에 2^29가 붙어 그 QP의 다음 장애 보고가 막힘). 느린 길(`tsGateEnterSlow` 303–328)은 나가기와 쉬기 전에 억제를 먼저 처리. SUPPRESS는 예산을 쓰는 동안 에폭 반쪽의 모든 호스트 쓰기(정지 hr 4425, PUBLISHING 4731, 게시 4881, 거절 4963, 훑기 5871, 정리 7039 / hw 4450, 4756, 4906, 4988, 5900, 7351)에서 유지돼야 하므로 helper가 유일한 쓰는 쪽이고 쓸 때마다 OR함(F18; 거절과 훑기, 정리의 HOST_FAILED 쓰기에서 지워지는 것은 그 QP가 끝났으므로 무해). 보통 rank와 fail-fast에서는 이 비트가 서지 않음 |
+| C6 | 예비 프로세스의 억제 | 없음 | 게이트 에폭 반쪽의 새 비트 SUPPRESS(`EPOCH_MASK` 30비트 → 29비트). 보내기만 이 비트로 느린 길에 감: 보내기의 열림 검사(`tsGateEnter` gin_gdaki.h 333)에만 넣고, 대기의 열림 검사(`tsPollEnter` 365)와 `tsParkStable`(264)은 그대로(공용 `tsWordOpen`에 넣으면 flush와 wait가 `tsTicketSlow` 382–386에서 끝없이 돎, F1). 장치가 에폭 반쪽을 값으로 쓰는 모든 자리에서 SUPPRESS를 지움: `tsPollEnter`가 저장하는 값(364–366), `tsPoll`의 비교(1106)와 기록(1107–1108), `tsSwErrReport`(1037), `tsLateFail`(206–207)(V4: 안 그러면 `reported`와 `handled`에 2^29가 붙어 그 QP의 다음 장애 보고가 막힘). 느린 길(`tsGateEnterSlow` 303–328)은 나가기와 쉬기 전에 억제를 먼저 처리. SUPPRESS는 예산을 쓰는 동안 에폭 반쪽의 모든 호스트 쓰기(정지 hr 4425, PUBLISHING 4731, 게시 4881, 거절 4963, 훑기 5871, 정리 7039 / hw 4450, 4756, 4906, 4988, 5900, 7351)에서 유지돼야 하므로 helper가 유일한 쓰는 쪽이고 쓸 때마다 OR함(F18; 거절과 훑기, 정리의 HOST_FAILED 쓰기에서 지워지는 것은 그 QP가 끝났으므로 무해). 보통 rank와 fail-fast에서는 이 비트가 서지 않음. B4 결정 (나)(2026-10-09)의 키 다시 읽기는 느린 길이 참을 돌려준 뒤(내기로 한 뒤)에 오므로 억제한 연산은 키를 읽지 않음(A1) |
 
 ### 4.10 gpu-detect 계층에 넣을 변경 (최소)
 
@@ -317,7 +328,8 @@ G8, G9는 검토 2 뒤에 더했다.
 - G1. 정책 칸과 변수: `NCCL_GIN_FAULT_POLICY`(기본 `failfast`)를 `gdakiTsSetup`(hw 6438–)에서 읽고 설정 all-gather(`gdakiTsAddr`, hw 6458–6518)에
   싣는다. rank마다 다르면 fail-fast(WARN). 문맥(`gdakiTs`)과 communicator 등록부(`gdakiUa`)에 둔다.
 - G2. 거절 hook: `gdakiTsDecline`(hw 4941) 맨 앞에서 `gdakiPolicyOnDecline(r, peer, why, cause, uaWhy)`를 부르고, 참이면 돌아간다. 두 갈래는 R1. fail-fast에서는
-  늘 거짓이다. 죽음과 붙잡은 상대에 대한 모든 거절이 이 함수로 모이므로 호출 자리는 고치지 않는다.
+  늘 거짓이다. 죽음과 붙잡은 상대에 대한 모든 거절이 이 함수로 모이므로 호출 자리는 고치지 않는다. 강한 증거 검사는 `pe.lostAfterCommit`도 본다(2.4절,
+  2026-10-09): gpu-detect가 응답 쪽 Commit 뒤 길을 PEER_DEAD 거절로 고친 뒤에도 그 거절은 붙잡지 않는다.
 - G3. 감시 hook: `gdakiDetWatchStep`의 상대 거르기(hw 6094)에 `|| !gdakiPolicyWatch(r, p)`. HELD, COMMITTING이면 거짓. fail-fast에서는 늘 참(감시함).
 - G4. 기록 처리 hook: helper의 기록 처리 루프(hw 6399–6409)에서 `gdakiTsInitiate(r, f)`를 `if (gdakiPolicyRoute(r, f)) gdakiTsInitiate(r, f);`로 바꾼다
   (HELD, COMMITTING의 상대는 흡수, PUBLISHED의 상대는 낡은 기록이면 버리고 아니면 fallback을 표시하고 거짓, Q3; `ts->batch`, heartbeat, `nQueued`의 뒷정리는 그대로 돎, V16). fail-fast에서는 늘 참. Q4 감시 스레드의 경로 판단(`gdakiTsRoutes`)은 그대로.
@@ -339,6 +351,11 @@ G8, G9는 검토 2 뒤에 더했다.
 Unknown, `uaWhy` DECLINED로 거절하므로 degraded가 예약되지 않는다. 랭크 3개 이상에서는 그 상대를 기다리는 상대를 모르는 대기가 풀리지 않는다 `[소스,
 추론]`. 그 두 자리에서 먼저 `gdakiTsSocketLost`로 판정하게 하면 FIN이 죽음으로 판정되어 helper 루프의 PEER_DEAD 거절로 간다. fail-fast의 동작을 바꾸는
 고침이므로 gpu-detect가 정할 일이다. 고치기 전에는 이 창의 죽음은 hold에서도 fail-fast다(3절).
+
+2026-10-09: gpu-detect가 이 틈을 고친다(병렬 작업, 메인 세션이 정한 계약). 그 두 자리의 거절 바로 전에 `pe.lostAfterCommit = true`를 세우고, 잃음이 죽음
+판정이면 거절은 PeerDead, `GDAKI_UA_PEER_DEAD`(degraded 예약), 아니면 지금 그대로다. 복원 계층이 이 계약에 기대는 것은 둘이다: G2의 강한 증거 검사가 이
+표시를 본다(2.4절, 붙잡지 않고 NOHOLD), REJOIN이 이 표시를 지운다(D4). 이 문서의 hw 줄 번호는 고치기 전 트리(diff md5 `be0ea9ed`)의 것이다. 고친 뒤 줄이 밀리면
+계층을 만들 때 다시 맞춘다.
 
 **t1w (NVSHMEM).** 코드 변경 없음. `NVSHMEM_IBGDA_FT_T1_FIN_DEATH`, `FAILSTOP_MS`, `FAILSTOP_CODE`는 NVSHMEM fail-fast 반응의 변수로 문서화한다.
 NVSHMEM 정책은 fail-fast 하나다. hold 정책의 프로세스는 NVSHMEM을 쓰지 않는다(X6).
@@ -364,7 +381,7 @@ NVSHMEM 정책은 fail-fast 하나다. hold 정책의 프로세스는 NVSHMEM을
 | B1 | 예비 프로세스의 초기화 재생(C3, A3) | NCCL bootstrap, GIN collComm 고리 연결과 all-gather, helper 설정의 잇기/받기는 모든 rank가 함께 해야 한다. 기록된 결과로 대답하는 길이 NCCL 핵심의 초기화 전체(proxy, 런타임 연결, 대칭 메모리 등록)를 덮는지, 같은 devComm 모양을 만드는지, `gated`와 `addr`를 기록으로 세울 수 있는지 모른다 `[미확인]` | 초기화 재생 시험(빌드가 필요하므로 이 문서의 승인 뒤): 장애 없이 한 rank의 기록을 만들고, 예비 프로세스가 그 기록으로 초기화를 끝내 같은 rank, nRanks, 컨텍스트 수, 신호 수, window 크기, 모든 상대의 게이트를 얻는지 |
 | B2 | LSA 팀(A4) | GPU 하나를 두 프로세스가 나눌 때 devComm의 `lsaSize`가 1인지 모른다. 2 이상이면 생존 rank의 load/store가 죽은 rank의 메모리를 계속 가리키고, 이것을 고치려면 생존 rank에서 CUDA 가상 메모리 호출이 필요하다(생존 rank는 CUDA 호출을 하지 않는다는 원칙과 충돌) `[추론]` | `lsaSize`를 읽어 확인. 2 이상이면 LSA 팀에 든 상대는 무장하지 않음(그 상대의 죽음은 fail-fast)으로 해결한 것으로 본다 |
 | B3 | 체크포인트의 drain 확인(C1) | 응답 쪽 rmsn이 멈춤 때의 메시지 수에 이른 뒤 그 쓰기가 GPU 메모리에 보인다는 것은 NIC 루프백 READ 하나의 차례 보장에 기댄다. 그런데 window MR은 기본으로 relaxed ordering이다(`gdakiRegMr` hr 192 = hw, `NCCL_IB_PCI_RELAXED_ORDERING` 기본 2 net_ib/init.cc 11; strict는 `NCCL_WIN_STRICT_ORDERING`일 때만 gin_host.cc 556; 신호와 카운터 표는 strict hr 7311–7312 / hw 7630–7631). gin-remaining의 flush 근거는 그 계층 자신의 strict 루프백 MR이었다 `[미확인: 이 하드웨어]` | (가) 무장 조건으로 strict window를 요구하고(성능 비용을 잼), (나) NIC 게이트 시험과 같은 꼴로 relaxed와 strict에서 drain 뒤 사본이 맞는지 따로 잼. (나)가 끝나야 풂 |
-| B4 | 빠른 경로의 키 읽기 자리(A1, F5) | 생존 rank의 보내기가 게이트가 홀수일 때 옛 rkey를 읽고, 게시 뒤 빠른 경로로 들어가면 죽은 rank의 rkey로 보낸다. 고치려면 키 읽기를 게이트 진입 뒤로 옮겨야 한다. `signalKey`는 호출자가 계산해 값으로 넘기므로 그 계산 자리를 `putImplMode` 안으로 옮기는 구조 변경이 들고, 보통 읽기(`loadConst`)를 게이트 뒤의 시스템 범위 읽기로 바꾸면 L1 적중을 잃을 수 있다(V2b). 이것은 "빠른 경로는 바꾸지 않는다"는 설계 원칙(EXPERIMENT.md 9.1절)과 충돌한다 | 사용자의 결정: (가) 모든 보내기에서 키 읽기를 게이트 뒤로(지연을 4 KiB, 256 KiB에서 잼), (나) hold 정책의 communicator에서만(측 표 포인터로 가르는 분기가 fail-fast에도 더해짐), (다) 복원을 포기. 결정 전에는 막음 |
+| B4 | 빠른 경로의 키 읽기 자리(A1, F5) | 생존 rank의 보내기가 게이트가 홀수일 때 옛 rkey를 읽고, 게시 뒤 빠른 경로로 들어가면 죽은 rank의 rkey로 보낸다. 고치려면 키 읽기를 게이트 진입 뒤로 옮겨야 한다. `signalKey`는 호출자가 계산해 값으로 넘기므로 그 계산 자리를 `putImplMode` 안으로 옮기는 구조 변경이 들고, 보통 읽기(`loadConst`)를 게이트 뒤의 시스템 범위 읽기로 바꾸면 L1 적중을 잃을 수 있다(V2b). 이것은 "빠른 경로는 바꾸지 않는다"는 설계 원칙(EXPERIMENT.md 9.1절)과 충돌한다 | 사용자의 결정: (가) 모든 보내기에서 키 읽기를 게이트 뒤로(지연을 4 KiB, 256 KiB에서 잼), (나) hold 정책의 communicator에서만(측 표 포인터로 가르는 분기가 fail-fast에도 더해짐), (다) 복원을 포기. 결정 전에는 막음. **2026-10-09 사용자 결정: (나).** 설계는 A1과 EXPERIMENT.md 9.9절 DV3. 4 KiB, 256 KiB 지연은 복원 계층을 만들 때 잰다(LT1, LT2). 결정 뒤의 독립 검토는 6절 검토 3 |
 
 ## 6. 독립 검토
 
@@ -441,6 +458,9 @@ EXPERIMENT.md에 반영.
 방식 hw 5391–5397과 같은 꼴), `gdakiTsRespond` 끝 줄 확인, fail-fast 동치 그대로(조건 N5). **판정: 막는 문제 B1–B4 밖에 풀리지 않은 충돌 없음.**
 
 남은 것은 5절의 B1–B4다. B4는 사용자의 결정이 필요하고, B1과 B3은 빌드가 필요한 시험이므로 이 문서의 승인 뒤에 한다.
+
+2026-10-09 사용자 결정(검토 2 뒤): B4는 (나). B1, B2, B3은 실행 가능성 시험을 한다(시험 프로그램만 빌드, 복원 계층은 구현하지 않음; EXPERIMENT.md
+9.15절). 같은 날 gpu-detect와의 계약 `pe.lostAfterCommit`(2.4절)를 넣었다. 이 두 변경의 검토는 아래 검토 3이다.
 
 ## 7. 참고
 

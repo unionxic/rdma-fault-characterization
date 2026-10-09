@@ -10,7 +10,7 @@
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-restore` @ `02a640aa` (master) |
 | 사전 등록 태그 | 없음. 라이브러리 계층(9.9절)과 pilot 뒤 `prereg/gin-restore-v1` 예정 |
-| 마지막 갱신 | 2026-10-09, 초안: 설계(9.1–9.8절), 필요한 hook(9.9절). 사용자 결정으로 감지와 반응을 나눈 정책 설계와 통합 상호작용 표, 막는 문제를 [DESIGN_POLICY.md](DESIGN_POLICY.md)로 옮김. 충돌이 남은 동안 구현 없음(시제품 멈춤, 9.13절) |
+| 마지막 갱신 | 2026-10-09, 초안: 설계(9.1–9.8절), 필요한 hook(9.9절). 사용자 결정으로 감지와 반응을 나눈 정책 설계와 통합 상호작용 표, 막는 문제를 [DESIGN_POLICY.md](DESIGN_POLICY.md)로 옮김. 충돌이 남은 동안 구현 없음(시제품 멈춤, 9.13절). 사용자 결정(2026-10-09): B4는 (나), B1–B3은 실행 가능성 시험(9.15절, 채점 안 함). 복원 계층은 여전히 구현하지 않음 |
 
 **설계의 기준 문서.** 장애 반응 정책(fail-fast와 hold-for-restore), 기존 장치와의 통합 상호작용 표, gpu-detect 계층에 넣을 변경, 막는 문제는
 [DESIGN_POLICY.md](DESIGN_POLICY.md)에 있다. 이 문서의 9.9–9.11절은 그것을 가리키기만 한다. 사용자 결정(2026-10-09): 충돌이 남아 있는 동안 아무것도
@@ -194,7 +194,8 @@ rank를 새 프로세스로 잇는 길, 보낸 메시지를 다시 넣는 길, �
 - 생존 rank는 CUDA 호출을 하지 않는다(gin-handoff, gin-remaining: application의 CUDA 호출이 helper의 스트림을 묶을 수 있음). 생존 rank 쪽 일은
   helper 소켓, 펌웨어 명령, NIC 루프백 복사(이미 있는 길)뿐이다. 무거운 CUDA 일(초기화, 메모리 복원)은 할 일이 없는 예비 프로세스가 한다.
 - 빠른 경로는 바꾸지 않는다. 로그 쓰기(9.5절)만 빠른 경로에 더한다(hold가 아니면 측 표 포인터를 한 번 보는 것). 억제는 게이트의 느린 길에서만 한다.
-  키 읽기 자리는 이 원칙과 충돌해 결정이 필요하다(DESIGN_POLICY.md 5절 B4).
+  키 읽기 자리는 이 원칙과 충돌했다(DESIGN_POLICY.md 5절 B4). 사용자 결정(2026-10-09, (나)): 키를 게이트 진입 뒤에 다시 읽는 것은 hold 정책의
+  communicator에서만 하고, fail-fast의 빠른 경로는 키 읽기 자리를 그대로 두고 측 표 포인터의 분기 하나만 더한다(9.6절, 9.9절 DV3).
 - 기존 라운드 기계를 다시 쓴다. 생존 rank 쪽 복원 라운드는 `ncclGinRecoverPrepare`(2143), `ncclGinRecoverCommit`(2334),
   `gdakiTsRepostApply`(4692)를 상대 하나에 대해 그대로 부르고, 다른 것은 끝점을 바꾸는 것과 "모든 옛 WQE가 실행됨"으로 계획을 만드는 것뿐이다.
 
@@ -283,7 +284,8 @@ REJOIN은 고정 크기 제어 메시지이고 rkey 목록은 자료 소켓으�
 7. rkey 표 칸 r 바꿈(RL9).
 8. 게시 전 확인(4708) 뒤, 커밋 지점(4713) 전에 상태 CAS(HELD → COMMITTING). 지면(감시 스레드의 시한이 이김) fallback.
    `gdakiTsRepostApply`(4692–4897)를 QP마다 `U = S, n = 0`인 계획으로 부른다(응답 쪽이 Commit 뒤 게시 전에 상대가 죽은 경우는 강한 죽음 증거가 아니라
-   fail-fast다, DESIGN_POLICY.md 3절): 커밋 지점(포기한 장치 대기가 있으면 FALLBACK), PUBLISHING, `lbase += U`, 짝수 에폭 게시. 쉬던 요청 대기는 자기
+   fail-fast다. gpu-detect가 그 길을 고친 뒤에도 그 거절에는 `pe.lostAfterCommit`가 서 있어 붙잡지 않는다, DESIGN_POLICY.md 2.4절과 3절): 커밋 지점(포기한
+   장치 대기가 있으면 FALLBACK), PUBLISHING, `lbase += U`, 짝수 에폭 게시. 쉬던 요청 대기는 자기
    표가 `lbase`보다 작으므로 성공으로 끝난다(`tsPoll` 1086–1092) `[소스]`. 그 WQE들의 효과는 로그 적용으로 예비 프로세스의 메모리에 이미 들어 있으므로
    맞는 의미다 `[추론]`.
 
@@ -345,7 +347,8 @@ D2H와 해시, 전송(비동기로 다음 단계와 겹칠 수 있음). 메모�
 
 **비용 어림** `[추론]`: put마다 원자 더하기 둘, 항목 쓰기 64 B, 내용 복사(읽기와 쓰기 각 `bytes`), coop 동기화 둘. 4 KiB put(앞 빌드 p50 10.5 µs
 `[문서: gin-remaining 15절]`)에는 1–2 µs, 256 KiB put(38.9 µs)에는 CTA 하나의 복사 대역폭에 따라 5–15 µs를 더할 것이다. 로그를 끄면(`NCCL_GIN_RESTORE=0`)
-장치 코드는 측 표 포인터가 0인지 한 번 보고 지나간다.
+장치 코드는 측 표 포인터가 0인지 한 번 보고 지나간다. hold 정책의 communicator는 여기에 게이트 뒤의 키 다시 읽기(9.6절, L1을 거치지 않는 읽기 한둘)가
+더해진다. 이 비용도 LT1, LT2에서 함께 잰다.
 
 ### 9.6 재실행과 중복 억제
 
@@ -371,7 +374,12 @@ D2H와 해시, 전송(비동기로 다음 단계와 겹칠 수 있음). 메모�
 
 **키 읽기 자리.** 생존 rank의 장치 코드는 rkey를 게이트에 들어가기 전에 읽는다(`raddr.key` 476, `signalKey` 1461과 1464, 게이트 501) `[소스]`. 게이트에서
 쉬던 스레드는 복원 전에 읽은 옛 rkey로 보낸다. 느린 길 뒤에만 다시 읽으면 모자란다: 게이트가 홀수일 때 옛 키를 읽고 게시 뒤 빠른 경로로 들어가는 보내기가
-있을 수 있다. 키 읽기를 게이트 진입 뒤로 옮겨야 하고 이는 빠른 경로의 차례를 바꾼다. 결정이 필요한 막는 문제다([DESIGN_POLICY.md](DESIGN_POLICY.md) 5절 B4).
+있을 수 있다. 키 읽기를 게이트 진입 뒤로 옮겨야 하고 이는 빠른 경로의 차례를 바꾼다([DESIGN_POLICY.md](DESIGN_POLICY.md) 5절 B4).
+
+사용자 결정(2026-10-09, (나)): 게이트 진입 뒤의 키 다시 읽기는 hold 정책의 communicator에서만 한다. 갈림은 측 표 포인터(DV1)가 0인지로 한다. 그 포인터는
+문맥을 만들 때 정해 communicator가 사는 동안 바뀌지 않는다. fail-fast는 키를 지금 자리에서 지금 방식(`loadConst`, L1 적중)으로 읽고, 더해지는 것은 DV2와 같은
+포인터 읽기와 분기 하나다. hold는 `tsGateEnter`가 참을 돌려준 뒤(빠른 길이든 느린 길이든) window rkey와 신호 rkey를 L1을 거치지 않는 GPU 범위 읽기로 다시
+읽어 보낸다. 자세한 것은 9.9절 DV3와 [DESIGN_POLICY.md](DESIGN_POLICY.md) A1이다.
 
 ### 9.7 결정성 요구 (piecewise determinism)
 
@@ -448,7 +456,7 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 |---|---|
 | DV1 | `ncclGinGdakiGPUContext`(common.h 222–236)에 측 표 포인터 `restore` 칸: QP마다 로그 고리 설명, 보낸 메시지 수, 억제 예산 |
 | DV2 | `putImplMode`(gin_gdaki.h 458–547), `putValueImplMode`(577–), 신호 길에서 게이트 안 로그 쓰기(9.5절). hold가 아니면 측 표 포인터가 0 |
-| DV3 | `raddr.key`와 `signalKey`를 게이트 진입(501) 뒤에 읽음. `signalKey`는 지금 호출자가 계산해 값으로 넘기므로(1458–1468) 그 계산을 `putImplMode` 안으로 옮김. 빠른 경로의 차례가 바뀌므로 결정 대기(DESIGN_POLICY.md 5절 B4) |
+| DV3 | 결정 (나)(2026-10-09, DESIGN_POLICY.md 5절 B4): hold 정책의 communicator(측 표 포인터 ≠ 0)에서만 `tsGateEnter`가 참을 돌려준 뒤 `raddr.key`와 `sig_raddr.key`를 다시 읽음(`putImplMode` 501 뒤, `putValueImplMode` 604 뒤; 읽기는 L1을 거치지 않는 GPU 범위 strong 읽기). `signalKey`는 지금처럼 호출자가 계산해 값으로 넘기고(1458–1468, 1483–1494), 호출자는 그 키를 읽은 주소(`signals_table.rkeys + peer` 또는 `signalMh->rkeys + peer`, 신호가 없으면 null)를 내부 인자 하나로 더 넘김. fail-fast는 키 읽기 자리와 종류가 지금과 같고 DV2와 같은 포인터의 분기 하나만 더해짐. get(697)은 다시 읽지 않음(되살릴 rank와의 get은 무장 해제, M2). 비용은 LT1, LT2 |
 | DV4 | 게이트 에폭 반쪽의 SUPPRESS 비트(`EPOCH_MASK`를 `0x1fffffff`로). 보내기의 열림 검사(`tsGateEnter` 333)에만 넣고 공용 `tsWordOpen`(146–148)과 대기 쪽(`tsPollEnter` 365, `tsParkStable` 264)에는 넣지 않음. 장치가 에폭 반쪽을 값으로 쓰는 자리(364–366, 1106–1108, 1037, 206–207)에서 지움. 느린 길의 억제와 put+신호 나누기(DESIGN_POLICY.md C6) |
 
 | id | 무엇을 |
@@ -516,7 +524,9 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 - [x] 설계 초안(9.1–9.8절), hook 목록(9.9절)
 - [x] 감지와 반응을 나눈 정책 설계와 통합 상호작용 표([DESIGN_POLICY.md](DESIGN_POLICY.md))
 - [x] 독립 충돌 검토 둘(EXPERIMENT.md 초안 표, DESIGN_POLICY.md)과 반영. 검토 2의 마지막 판정: B1–B4 밖에 풀리지 않은 충돌 없음
-- [ ] 사용자의 설계 승인(그 전에는 구현과 빌드 없음)
+- [x] B4 결정: (나)(2026-10-09, 사용자)
+- [ ] (나)와 `pe.lostAfterCommit` 계약의 독립 충돌 검토(DESIGN_POLICY.md 6절)
+- [ ] 사용자의 설계 승인(그 전에는 복원 계층의 구현과 빌드 없음. B1–B3 실행 가능성 시험은 2026-10-09 허용)
 - [ ] gpu-detect 계층에 정책 hook G1–G9(DESIGN_POLICY.md 4.10절)
 - [ ] 시제품: 로그, 체크포인트, 복원 계획, 억제, 모의, 단위 시험(9.13절, 멈춤)
 - [ ] 시험 프로그램 `gin_rs.cu`
@@ -535,6 +545,8 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 | 2026-10-09 | gpu-detect `hw` 계층이 빌드됨(실행, 병합 전; diff md5 `be0ea9ed`, libnccl `efc48ca1`) → 줄 번호를 hr/hw 둘로, 표에 hw 행(QP 감시, `DEGRADED_ROUNDS`, 감시의 펌웨어 부하) 더함 | DESIGN_POLICY.md 4절 |
 | 2026-10-09 | 사용자 결정: 충돌이 남은 동안 구현 없음, 감지와 반응을 나눈 통합 설계 문서를 먼저. 시제품 초안(빌드, 실행 안 함)을 스크래치로 옮기고 멈춤. [DESIGN_POLICY.md](DESIGN_POLICY.md) 작성 | 9.13절 |
 | 2026-10-09 | 검토 1 결과(F1–F28) 반영. 검토 2(이 문서 대상, 읽기 전용 에이전트): 첫 검토 V1–V20, 재확인 N1–N5, P1–P7, Q1–Q5, R1을 차례로 반영. 마지막 판정(커밋 `0af9190e`): 막는 문제 B1–B4 밖에 풀리지 않은 충돌 없음 | DESIGN_POLICY.md 6절, 커밋 `fb27b091`–`0af9190e` |
+| 2026-10-09 | 사용자 결정 둘. (1) B4는 (나): 게이트 뒤의 키 다시 읽기는 hold 정책의 communicator에서만, fail-fast는 측 표 포인터의 분기 하나만 더함(4 KiB, 256 KiB 지연은 계층을 만들 때 잼). (2) B1(예비 프로세스의 초기화 재생), B2(GPU를 나눠 쓰는 rank의 LSA 팀 크기), B3(relaxed ordering window MR에서 체크포인트 drain이 보이는가)의 실행 가능성 시험을 한다. 복원 계층은 여전히 구현하지 않고, 스크래치의 시제품 초안도 빌드하지 않는다 | 9.1, 9.6절, 9.9절 DV3, DESIGN_POLICY.md 5절 B4 |
+| 2026-10-09 | 병렬로 도는 gpu-detect 고침과의 계약을 설계에 넣음(메인 세션이 정함): 응답 쪽 Commit 뒤 게시 전에 소켓을 잃은 길(hw 5285–5292, 5298–5303)에서 거절 바로 전에 `pe.lostAfterCommit = true`, 죽음 판정이면 그 거절은 PeerDead/`GDAKI_UA_PEER_DEAD`(degraded 예약), 아니면 지금과 같음. 복원 설계는 이 창을 계속 붙잡지 않는다: G2의 강한 증거 검사가 그 표시가 선 거절을 뺀다(NOHOLD), REJOIN이 표시를 지운다 | 9.3절 8단계, DESIGN_POLICY.md 2.4, 3절, D4, R3, 4.10절 끝 |
 
 ## 13. 사전 등록 이후 변경
 
