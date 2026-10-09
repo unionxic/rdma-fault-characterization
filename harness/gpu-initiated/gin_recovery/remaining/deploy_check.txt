@@ -1,0 +1,144 @@
+== source
+2dee2b5bf36b3477dd85f0197987f028  hr/libnccl.so.2.32.3
+4e81d8d8e7418f84fe1804284378d618  hr/gin_ts2
+a00094b07445f2ddc5baff3a5c5626bb  hr/hm_bench
+786f70bcb82ea21cb678dcb056256ed5  hrp/libnccl.so.2.32.3
+4e81d8d8e7418f84fe1804284378d618  hrp/gin_ts2
+d588e9cecfc05fd114e61d83ce9c3074  mr/hr/gin_mr
+built=2026-10-09 13:50:48 nccl_build=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad/agent_ts2hr/build
+gin_ts2_md5=4e81d8d8e7418f84fe1804284378d618 gin_ts2_cu_md5=1779db9d62eaa5dba5758b14a5ba6e17
+gin_mr_md5=d588e9cecfc05fd114e61d83ce9c3074 gin_mr_cu_md5=a6a526ad3df1b853efd48d53a0a11ca7
+hm_bench_md5=a00094b07445f2ddc5baff3a5c5626bb hm_bench_cu_md5=9b13a4b80e4791b98afc31ff04f5e267
+libnccl_hr_md5=2dee2b5bf36b3477dd85f0197987f028
+include_digest=a27dac895f1ba936fa088f94921b31ef
+nvcc=Build cuda_12.8.r12.8/compiler.35583870_0
+== rain
+2dee2b5bf36b3477dd85f0197987f028  hr/libnccl.so.2.32.3
+4e81d8d8e7418f84fe1804284378d618  hr/gin_ts2
+a00094b07445f2ddc5baff3a5c5626bb  hr/hm_bench
+786f70bcb82ea21cb678dcb056256ed5  hrp/libnccl.so.2.32.3
+4e81d8d8e7418f84fe1804284378d618  hrp/gin_ts2
+d588e9cecfc05fd114e61d83ce9c3074  mr/hr/gin_mr
+== sunny
+2dee2b5bf36b3477dd85f0197987f028  hr/libnccl.so.2.32.3
+4e81d8d8e7418f84fe1804284378d618  hr/gin_ts2
+a00094b07445f2ddc5baff3a5c5626bb  hr/hm_bench
+786f70bcb82ea21cb678dcb056256ed5  hrp/libnccl.so.2.32.3
+4e81d8d8e7418f84fe1804284378d618  hrp/gin_ts2
+d588e9cecfc05fd114e61d83ce9c3074  mr/hr/gin_mr
+rain hr: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hr/libnccl.so.2 (0x00007fdb7c700000)
+sunny hr: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hr/libnccl.so.2 (0x0000744f7c600000)
+rain hrp: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hrp/libnccl.so.2 (0x00007f087506d000)
+sunny hrp: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hrp/libnccl.so.2 (0x00007fe892400000)
+rain hr/gin_ts2 with hq: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hq/libnccl.so.2 (0x00007f40009ec000)
+sunny hr/gin_ts2 with hq: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hq/libnccl.so.2 (0x0000793ed8000000)
+rain mr/hr with hr: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hr/libnccl.so.2 (0x00007f2a2eb5c000)
+sunny mr/hr with hr: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hr/libnccl.so.2 (0x000078a6abc00000)
+rain mr/hr with hq: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hq/libnccl.so.2 (0x00007fbd511f1000)
+sunny mr/hr with hq: 	libnccl.so.2 => /home/unionxic/gi-bundle/gin_ts2/hq/libnccl.so.2 (0x000075f5eec00000)
+deployed md5 == source on both nodes
+existing bundle unchanged on both nodes (51 files each)
+== existing bundle md5 (rain)
+9d4c600d5fb2bd7c3f1f9a078caf709e  ./base/gin_bidir_min
+8025cac015e20f6f4bd929f2f935317e  ./base/gin_ts2
+1ed8e0a15dc76fb7cbe672fe463923c3  ./base/libnccl.so.2.32.3
+bd75cc5a26383093db7d6067b6de86a9  ./gate_ce_test
+b981db0006c52f2935fefe7f8837303f  ./gin_bidir_min
+d4b1f082e3e3150d8ceff7313475e6aa  ./gin_ts2
+c0b73e0966c8350209d8dc71c8fa8c3b  ./hd/gin_ts2
+e209032310a2cefd5d71e86533674bd6  ./hd/libnccl.so.2.32.3
+c0b73e0966c8350209d8dc71c8fa8c3b  ./hdp/gin_ts2
+4818e30bb9c4b935edd1604fec0c3f6a  ./hdp/libnccl.so.2.32.3
+9493584d5a321277c61863f4ed6ac379  ./hf/gin_ts2
+b6372d8622f6a7eceb9fd4528c00e707  ./hf/libnccl.so.2.32.3
+9493584d5a321277c61863f4ed6ac379  ./hfp/gin_ts2
+1ae4ce9aecb1727248db7eb3699ad110  ./hfp/libnccl.so.2.32.3
+3e053ff2ab069ec64198ed4e0f6e237a  ./hq/gin_ts2
+c1311625c7a06c785bc313558504f982  ./hq/libnccl.so.2.32.3
+3e053ff2ab069ec64198ed4e0f6e237a  ./hqp/gin_ts2
+4fa076e113e43774a9dc2f46298df43b  ./hqp/libnccl.so.2.32.3
+0a32b87538b169f303ef1190a659d3be  ./libnccl.so.2.32.3
+670509805832745caa3c2c54badb84c5  ./mr/hd/gin_mr
+7f0fc272962b293da0bd0d3655aacc4d  ./mr/hq/gin_mr
+c0206b603e74073ee7c176ed6f8635fd  ./mr/ow/gin_mr
+c0b73e0966c8350209d8dc71c8fa8c3b  ./ow2/gin_ts2
+b4af65c54b14f192803c88adcd2bf759  ./ow2/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./ow/gin_ts2
+b4af65c54b14f192803c88adcd2bf759  ./ow/libnccl.so.2.32.3
+4926edee885af56a99a5ae7165496b87  ./pcd/gin_ts2
+93d9ffeed6d30e6467a3c5474035fd61  ./pcd/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./pc/gin_ts2
+93d9ffeed6d30e6467a3c5474035fd61  ./pc/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./pcm/gin_ts2
+cd72f67a58a3a8cbc7cff8db2de229d9  ./pcm/libnccl.so.2.32.3
+4926edee885af56a99a5ae7165496b87  ./prd/gin_ts2
+51c2426c99ca43859849855ae99b37b5  ./prd/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./pr/gin_ts2
+51c2426c99ca43859849855ae99b37b5  ./pr/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./rc/gin_ts2
+8354411f198e9d980b8b3459918afbea  ./rc/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./rc_smoke_1193a5f8/gin_ts2
+1193a5f85b65a300f7e99808a93b0ae4  ./rc_smoke_1193a5f8/libnccl.so.2.32.3
+8f142f89a5d55b0753a1d6b1b8cc79cf  ./s1/gin_ts2
+f19cbcfe471dd1f2be60d70b4b05d8c2  ./s1/libnccl.so.2.32.3
+f3de7a38faff46beace45a208991b20e  ./s2rget/gin_ts2
+ba4984bd7ec45a31835fd715d37f00cf  ./s2rget/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./s2r/gin_ts2
+ba4984bd7ec45a31835fd715d37f00cf  ./s2r/libnccl.so.2.32.3
+472602a2b39bb4735c13b8d62a8ca888  ./stk/gin_ts2
+b380e622d299c25ab073417e3ee79aec  ./stk/libnccl.so.2.32.3
+c21fb39a4a537a602ae85ac3da1cdebe  ./two_streams_test
+fda38dba0dd0387ed02415039c0d7ff4  ./var_sys/gin_ts2
+0a32b87538b169f303ef1190a659d3be  ./var_sys/libnccl.so.2.32.3
+== existing bundle md5 (sunny)
+9d4c600d5fb2bd7c3f1f9a078caf709e  ./base/gin_bidir_min
+8025cac015e20f6f4bd929f2f935317e  ./base/gin_ts2
+1ed8e0a15dc76fb7cbe672fe463923c3  ./base/libnccl.so.2.32.3
+bd75cc5a26383093db7d6067b6de86a9  ./gate_ce_test
+b981db0006c52f2935fefe7f8837303f  ./gin_bidir_min
+d4b1f082e3e3150d8ceff7313475e6aa  ./gin_ts2
+c0b73e0966c8350209d8dc71c8fa8c3b  ./hd/gin_ts2
+e209032310a2cefd5d71e86533674bd6  ./hd/libnccl.so.2.32.3
+c0b73e0966c8350209d8dc71c8fa8c3b  ./hdp/gin_ts2
+4818e30bb9c4b935edd1604fec0c3f6a  ./hdp/libnccl.so.2.32.3
+9493584d5a321277c61863f4ed6ac379  ./hf/gin_ts2
+b6372d8622f6a7eceb9fd4528c00e707  ./hf/libnccl.so.2.32.3
+9493584d5a321277c61863f4ed6ac379  ./hfp/gin_ts2
+1ae4ce9aecb1727248db7eb3699ad110  ./hfp/libnccl.so.2.32.3
+3e053ff2ab069ec64198ed4e0f6e237a  ./hq/gin_ts2
+c1311625c7a06c785bc313558504f982  ./hq/libnccl.so.2.32.3
+3e053ff2ab069ec64198ed4e0f6e237a  ./hqp/gin_ts2
+4fa076e113e43774a9dc2f46298df43b  ./hqp/libnccl.so.2.32.3
+0a32b87538b169f303ef1190a659d3be  ./libnccl.so.2.32.3
+670509805832745caa3c2c54badb84c5  ./mr/hd/gin_mr
+7f0fc272962b293da0bd0d3655aacc4d  ./mr/hq/gin_mr
+c0206b603e74073ee7c176ed6f8635fd  ./mr/ow/gin_mr
+c0b73e0966c8350209d8dc71c8fa8c3b  ./ow2/gin_ts2
+b4af65c54b14f192803c88adcd2bf759  ./ow2/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./ow/gin_ts2
+b4af65c54b14f192803c88adcd2bf759  ./ow/libnccl.so.2.32.3
+4926edee885af56a99a5ae7165496b87  ./pcd/gin_ts2
+93d9ffeed6d30e6467a3c5474035fd61  ./pcd/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./pc/gin_ts2
+93d9ffeed6d30e6467a3c5474035fd61  ./pc/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./pcm/gin_ts2
+cd72f67a58a3a8cbc7cff8db2de229d9  ./pcm/libnccl.so.2.32.3
+4926edee885af56a99a5ae7165496b87  ./prd/gin_ts2
+51c2426c99ca43859849855ae99b37b5  ./prd/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./pr/gin_ts2
+51c2426c99ca43859849855ae99b37b5  ./pr/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./rc/gin_ts2
+8354411f198e9d980b8b3459918afbea  ./rc/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./rc_smoke_1193a5f8/gin_ts2
+1193a5f85b65a300f7e99808a93b0ae4  ./rc_smoke_1193a5f8/libnccl.so.2.32.3
+8f142f89a5d55b0753a1d6b1b8cc79cf  ./s1/gin_ts2
+f19cbcfe471dd1f2be60d70b4b05d8c2  ./s1/libnccl.so.2.32.3
+f3de7a38faff46beace45a208991b20e  ./s2rget/gin_ts2
+ba4984bd7ec45a31835fd715d37f00cf  ./s2rget/libnccl.so.2.32.3
+d4b1f082e3e3150d8ceff7313475e6aa  ./s2r/gin_ts2
+ba4984bd7ec45a31835fd715d37f00cf  ./s2r/libnccl.so.2.32.3
+472602a2b39bb4735c13b8d62a8ca888  ./stk/gin_ts2
+b380e622d299c25ab073417e3ee79aec  ./stk/libnccl.so.2.32.3
+c21fb39a4a537a602ae85ac3da1cdebe  ./two_streams_test
+fda38dba0dd0387ed02415039c0d7ff4  ./var_sys/gin_ts2
+0a32b87538b169f303ef1190a659d3be  ./var_sys/libnccl.so.2.32.3

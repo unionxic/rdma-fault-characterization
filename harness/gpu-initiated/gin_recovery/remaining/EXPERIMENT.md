@@ -99,14 +99,15 @@
 
 ## 3. 사전 예측 (측정 전에 작성)
 
-**고정 시점.** 예측은 메인 세션이 pilot(9절의 hold P0, P1)을 돌린 뒤 확정한다. pilot 시행은 채점하지 않으며, 그 결과 폴더(`results/<날짜>_pilot/`)는
+**고정 시점.** 예측은 메인 세션이 pilot(9절의 hold P0, P1, 그리고 P0, P1 뒤에 더한 NIC 게이트 시험의 P2)을 돌린 뒤 확정한다. pilot 시행은 채점하지 않으며, 그 결과 폴더(`results/<날짜>_pilot/`)는
 채점 대상 폴더와 따로 둔다. pilot은 판정이 아니라 셀 조건과 열 읽기를 확인하는 데만 쓴다. pilot에서 예측과 다른 결과가 나와도 예측 문장, 판정식,
 기준 수는 바꾸지 않고 의심만 적는다. 읽기 오류(열 정의, 파서)와 셀 조건(장애 시각, 셀이 조건을 만들지 못함)은 고칠 수 있고, 고친 셀은 태그 전에
 pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을 단 커밋에서 고정되고, 그 뒤에는 2, 3, 7, 8절과 `predictions.csv`를 고치지
 않는다.
 
-예측 원문은 [predictions.csv](predictions.csv)이고 33줄이다. `kind`는 N(새 동작), C(대조), R(회귀)다. 호출 하나씩 셀(H4)과 호스트 메모리
-벤치마크(H6)는 이 테스트베드에서 잰 적이 없어 문서에서 이끈 예측이다.
+예측 원문은 [predictions.csv](predictions.csv)이고 34줄이다. `kind`는 N(새 동작), C(대조), R(회귀)다. 호출 하나씩 셀(H4)과 호스트 메모리
+벤치마크(H6)는 이 테스트베드에서 잰 적이 없어 문서에서 이끈 예측이다. 33줄은 pilot 전에 썼고 pilot 뒤에 바꾸지 않았다. NG1(NIC 게이트 시험)은
+재리뷰 M-B를 받아 P0, P1 뒤에 시험과 함께 더했고, 그 시험을 한 번도 돌리기 전에 썼다(12절).
 
 ### 3.1 판정에 쓰는 열
 
@@ -115,7 +116,7 @@ pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을
   `../harden/rows_hd.py`, `../handoff/rows_hf.py`, `../peer/rows_pq.py`가 원래 정의 그대로 만들고(각 실험 3.1절), 이 폴더의 [rows_hr.py](rows_hr.py)
   `extra_hr2()`가 새 열을 붙인다.
 - 랭크 4개 시행: `../multirank/rows_mr.py`의 `rows_of()`와 `../peer/rows_pq.py`의 `extra_pq4()`에 `extra_hr4()`가 새 열을 붙인다.
-- 벤치마크 시행: `bench_row()`.
+- 벤치마크 시행: `bench_row()`. NIC 게이트 시험(9절 5번): `ngt_row()`.
 - 새 열의 정의 원문은 `rows_hr.py` 머리말이다. 요약:
 
 | 열 | 정의 |
@@ -123,11 +124,13 @@ pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을
 | `hr_on_r*`, `copy_path_r*`, `lb_on_r*`, `lb_off_r*` | 이 실험 시작 줄(`GIN/TS: remaining=1 rank=<r> copy_path=<nic\|stream> ...`)의 수와 복사 경로, NIC 복사 경로를 켠 줄과 끈 줄의 수 |
 | `td_path_r*`, `td_stream_copies_r*` | 정리 때 줄 `GIN/TS: rank <r> copy path at teardown: path=... stream_copies=<d> ...`의 경로와, helper가 스트림으로 한 복사의 수 |
 | `hog_calls_after_r*`, `drvkey` | 드라이버 kv `hog_calls_after`(GIN 커널 뒤에 한 호출), 실행기 meta의 드라이버 번들 |
-| `served`, `n_served`, `kept`, `n_kept` | 기다림 안 응답 줄과 미룬 REQ 줄, "R-P"(rank R이 rank P의 REQ에 답함, 미룸) 목록 |
+| `served`, `n_served`, `kept`, `n_kept` | 기다림 안 응답 줄과 미룬 REQ 줄, "R-P"(rank R이 rank P의 REQ에 답함, 미룸) 목록. 기다림 안에서 REQ를 거부한 것(NACK 12, 2, 16)도 응답으로 센다 |
+| `served_rec`, `n_served_rec` | 그중 중첩 라운드가 R의 응답 쪽 복구 줄(상대 P)로 끝난 것(`back to round` 줄 전). 판정에 쓰지 않는 설명용 열이다(재리뷰 L-A, 12절) |
 | `n_degraded`, `degr_ranks`, `degr_after_dead_ms_r*`, `dead_ms_r*` | why=degraded인 칸 0 해제 줄의 수와 rank, 그 줄 − 그 rank의 첫 죽음 판정 줄(같은 프로세스의 시계) |
 | `rel_dead_r*`, `rel_after_dead_ms_r*`, `n_rel_dead`, `n_rel_surv` | 드라이버 kv(9절 2번): 생존 rank의 죽은 rank 받기가 풀렸는지, 풀린 것을 호스트가 본 시각 − 죽음 판정 줄, 그런 생존 rank 수, 생존 rank 사이 받기 중 풀린 것의 수 |
 | `surv_tx_ok`, `n_kdone_surv`, `n_stuck_surv`, `rx_untimed` | 생존 rank 사이 보내기 중 끝까지 성공한 것, 커널이 끝난 생존 rank, application이 포기한 생존 rank, 시간 제한 없는 받기 표시 |
 | `host_native_atomic_*`, `lat_*_ns_*`, `race_*_*` | 벤치마크 kv(노드별 `_rain`, `_sunny`, 9절 4번) |
+| `ng_result_*`, `ng_rounds_*`, `ng_lost_writes_*`, `ng_lost_inc_*`, `ng_dekker_*`, `ng_inside_nonzero_*`, `ng_quiesce_timeouts_*`, `ng_idx_ok_*`, `ng_mr_*`, `ng_gid_kind_*`, `ng_error_*` | NIC 게이트 시험 kv(노드별, 9절 5번): 판정(PASS, FAIL), 두 단계 중 작은 라운드 수, 두 단계 합의 위반 수, 색인 단어 갱신을 모두 지켰는지, GPU MR 종류, 루프백 GID 종류, 준비나 NIC 요청 실패의 이유 |
 
 **새 로그 줄** `[소스, 9절의 변경으로 고정]`. 연구 빌드(`hr`)에서는 모두 WARN이다. 운영 빌드(`hrp`)에서 "정보" 줄은 INFO다.
 
@@ -145,6 +148,7 @@ pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을
 
 **드라이버 kv.** `gin_ts2`: `hog_calls_after=<load,malloc,stream의 부분 목록|none>`. `gin_mr`: `rx_untimed`, 받기 간선마다 `rx_<ab>_rel`,
 `rx_<ab>_rel_it`, `rx_<ab>_rel_mono_ms`, 그리고 `kernel_end_mono_ms`(기존 `kernel_done` 줄에 덧붙임). `hm_bench`: 9절 4번.
+`nic_gate_test`: 9절 5번.
 
 ### 3.2 셀 키와 판정식 문법
 
@@ -190,19 +194,27 @@ pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을
 | 두 플랫폼 모두 호스트 원자 연산 기본 지원 없음 | HB1 | `hm_bench@hr` | 5/5 | PCIe GPU `[추론]` |
 | 호스트 매핑 메모리 원자적 더하기가 장치 메모리보다 400 ns 이상 느림 | HB2 | `hm_bench@hr` | 5/5 | PCIe 왕복 `[추론]` |
 | 경합 단계가 정상으로 끝나고 개수 절반의 장치 갱신을 잃지 않음 | HB3 | `hm_bench@hr` | 5/5 | `[문서]` |
+| NIC 루프백의 4 B 에폭 쓰기와 읽기(이 계층의 NIC 복사 경로와 같은 방식)로 돈 게이트 규약에서 두 GPU 모두 쓰기 손실, 개수 손실, Dekker 위반, 정지 시간 초과가 없음(단계마다 라운드 1 000 이상) | NG1 | `nic_gate@hr` | 5/5 | L2가 NIC의 PCIe 쓰기와 SM 원자 연산을 함께 처리함, 복사 엔진은 gin-s2 `gate_ce_test` 14/14 두 번 `[추론, 복사 엔진은 측정]` |
 
 벤치마크의 `race_lost_host_writes`(호스트가 쓴 높은 절반을 장치의 읽고-고쳐-쓰기가 되돌린 횟수)는 예측 없이 잰다. 이 플랫폼에서 장치가 호스트
 메모리 원자 연산을 PCIe 원자 연산으로 하는지 모른다 `[미확인]`.
+
+판정식을 읽을 때의 주의(재리뷰, 12절).
+- CY3은 기다림 안에서 REQ를 거부한 것도 응답으로 센다(L-A). 순환을 새 규칙이 끊었다는 근거는 CY1(handshake timeout도 거절도 없이 세 쌍 모두
+  복구)이 진다. 중첩 라운드가 실제로 복구로 끝난 수는 설명용 열 `n_served_rec`로 따로 보고한다.
+- degraded 시계는 죽음 판정 줄이 아니라 그 뒤의 거절에서 시작한다(L-B, `gdakiUaRaisePeer`). DG1, DG2의 열은 죽음 판정 줄부터 잰다. 이 실험의 kill
+  셀에는 겹치는 라운드가 없어 거절이 판정 직후에 온다(pilot 6.0–8.5 ms, 9절 1번 (c)). 라운드 도중의 죽음은 그 라운드가 끝날 때까지 거절이 늦고
+  해제도 그만큼 늦는다. 이 실험의 셀에는 없다.
 
 ## 4. 범위
 
 **포함.**
 - 9절 1번의 라이브러리 계층 하나([hr_layer.diff](hr_layer.diff), `hq` 트리 기준, 3개 파일)와 그 운영 빌드.
 - 드라이버: `../gin_ts2.cu`의 세 호출 나누기(`GIN_TS_HOG_CALLS`), 이 폴더의 [gin_mr.cu](gin_mr.cu)(시간 제한 없는 받기), 새 벤치마크
-  [hm_bench.cu](hm_bench.cu).
-- 이 실험의 실행기([run_trial_hr.sh](run_trial_hr.sh), [run_mr_hr.sh](run_mr_hr.sh), [run_bench_hr.sh](run_bench_hr.sh))와 포트 고르기
-  ([portpick.sh](portpick.sh), gin-peer의 복사). 앞 실험의 실행기는 고치지 않는다.
-- 7절의 셀 키 29개.
+  [hm_bench.cu](hm_bench.cu), 새 NIC 게이트 시험 [nic_gate_test.cu](nic_gate_test.cu)(pilot 뒤에 더함, 9절 5번).
+- 이 실험의 실행기([run_trial_hr.sh](run_trial_hr.sh), [run_mr_hr.sh](run_mr_hr.sh), [run_bench_hr.sh](run_bench_hr.sh),
+  [run_ngt_hr.sh](run_ngt_hr.sh))와 포트 고르기([portpick.sh](portpick.sh), gin-peer의 복사). 앞 실험의 실행기는 고치지 않는다.
+- 7절의 셀 키 30개.
 
 **제외와 이 테스트베드가 할 수 없는 것.**
 - 실제 link down, flap, 재부팅, 드라이버 재적재, 커널 모듈 적재(gdrdrv 포함), iptables: 하지 않는다(8절).
@@ -218,9 +230,10 @@ pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을
 | 항목 | 값 | 확인 방법과 날짜 |
 |---|---|---|
 | 노드, NIC, 펌웨어, GPU, CUDA | gin-peer와 같다: rain(rank 0, 랭크 4개에서는 0과 2, Quadro RTX 5000), sunny(rank 1, 랭크 4개에서는 1과 3, RTX A4000), ConnectX-6 fw 20.43.4100, CUDA 12.8 | `../peer/EXPERIMENT.md` 5절 |
-| GPU 드라이버와 모듈 | rain: NVIDIA open kernel module 570.211.01, `nvidia_peermem` 적재됨, `gdrdrv` 없음, `RegistryDwords: "PeerMappingOverride=1;"` | `[측정]` 2026-10-09 rain(`lsmod`, `/proc/driver/nvidia/params`, `/proc/driver/nvidia/version`, 읽기만). sunny는 `[미확인]`(NIC 복사 경로의 자체 시험이 시작 줄로 알림) |
+| GPU 드라이버와 모듈 | rain: NVIDIA open kernel module 570.211.01, `nvidia_peermem` 적재됨, `gdrdrv` 없음, `RegistryDwords: "PeerMappingOverride=1;"` | `[측정]` 2026-10-09 rain(`lsmod`, `/proc/driver/nvidia/params`, `/proc/driver/nvidia/version`, 읽기만). sunny의 모듈은 `[미확인]`. 두 노드 모두 NIC 복사 경로의 GPU MR이 dmabuf로 등록되고 자체 시험을 통과했다 `[측정: pilot, 12절]` |
 | `hq`, `hqp` 번들 | libnccl `c1311625c7a06c785bc313558504f982`, `4fa076e113e43774a9dc2f46298df43b`, 드라이버 `3e053ff2`, `gin_mr` `7f0fc272` | gin-peer 배포 확인(`../peer/deploy_check.txt`) `[측정, 이전 실험]`. 스크래치 `agent_ts2hq/out/`에서 같은 md5 `[측정]` 2026-10-09 |
-| `hr`, `hrp`, 새 드라이버 | 12절의 마지막 빌드 줄. [deploy_hr.sh](deploy_hr.sh)의 기대 md5와 같다 | `[측정]` 빌드 때 rain(세션 스크래치 `agent_ts2hr/out/`, `out/build_info.txt`) |
+| `hr`, `hrp`, 새 드라이버 | 12절의 마지막 빌드 줄. [deploy_hr.sh](deploy_hr.sh)의 기대 md5와 같다. 배포 확인은 [deploy_check.txt](deploy_check.txt) | `[측정]` 빌드 때 rain(세션 스크래치 `agent_ts2hr/out/`, `out/build_info.txt`), 배포 2026-10-09 13:55:57–13:56:28 |
+| NIC 게이트 시험 | `nic_gate_test` `abb2af4cb61a8075242f348c599b407a`(소스 `4d87f2b8`), 새 디렉터리 `ngt/`. [deploy_ngt.sh](deploy_ngt.sh)의 기대 md5와 같다 | `[측정]` 빌드 때 rain(`agent_ts2hr/out/ngt/build_info.txt`). 배포 전 |
 | 변경분 | [hr_layer.diff](hr_layer.diff)(`hq` 트리 기준), 전체 diff [gin_transparent_hr.diff](gin_transparent_hr.diff)(pristine 기준). 순정에 전체 diff를, 그리고 gin-oneway 전체 diff + gin-harden, gin-handoff, gin-peer 계층 + 이 계층을 더하면 각각 이 트리와 같다 | [make_diff_hr.sh](make_diff_hr.sh), 12절 |
 
 ## 6. 변수
@@ -258,17 +271,18 @@ pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을
 | `mr4_none`, `mr4_f1_01` | gin-multirank 정의 | `@hr` 각 5 | 회귀 |
 | `lat_4k`, `lat_256k` | 장애 없음, 3000번. 같은 hold에서 두 빌드를 섞어 돈다 | `@hrp`, `@hqp` 각 5 | 대조 |
 | `hm_bench` | rain과 sunny의 GPU에서 `hm_bench` 한 번씩(9절 4번) | `@hr` 5 | 새 셀 |
+| `nic_gate` | rain(mlx5_1)과 sunny(mlx5_0)의 GPU 0에서 `nic_gate_test` 한 번씩, 단계 a와 b 각 5 s(9절 5번). 재리뷰 M-B로 pilot 뒤에 더함 | `@hr` 5 | 새 셀 |
 
 **합계.** 셀별 계획 수의 원문은 [score.py](score.py)의 `PLANNED`다.
 
-| 종류 | 랭크 2개 시행 | 랭크 4개 시행 | 지연 실행 | 벤치마크 실행 |
-|---|--:|--:|--:|--:|
-| 새 셀 | 34(`hr`: GPU 가득 참 10, 호출 하나씩 9; `hq`: 호출 하나씩 15) | 25(`hr`: 순환 10, 시간 제한 없는 받기 10, gin-peer kill 셀 5) | | 5 |
-| 대조 | 10(GPU 가득 참 `hq` 5, `hr` 스트림 복사 5) | 10(`hq`: 순환 5, 시간 제한 없는 받기 5) | 20(`hrp` 10, `hqp` 10) | |
-| 회귀 | 35(`hr` 30, `hrp` 5) | 15(사슬, 장애 없음, 한 쌍 로컬 QP 오류 각 5) | | |
-| 합 | 79 | 50 | 20 | 5 |
+| 종류 | 랭크 2개 시행 | 랭크 4개 시행 | 지연 실행 | 벤치마크 실행 | NIC 게이트 시험 실행 |
+|---|--:|--:|--:|--:|--:|
+| 새 셀 | 34(`hr`: GPU 가득 참 10, 호출 하나씩 9; `hq`: 호출 하나씩 15) | 25(`hr`: 순환 10, 시간 제한 없는 받기 10, gin-peer kill 셀 5) | | 5 | 5 |
+| 대조 | 10(GPU 가득 참 `hq` 5, `hr` 스트림 복사 5) | 10(`hq`: 순환 5, 시간 제한 없는 받기 5) | 20(`hrp` 10, `hqp` 10) | | |
+| 회귀 | 35(`hr` 30, `hrp` 5) | 15(사슬, 장애 없음, 한 쌍 로컬 QP 오류 각 5) | | | |
+| 합 | 79 | 50 | 20 | 5 | 5 |
 
-셀 키 29개(지연 4개 포함). 예측 33줄: 새 동작 18(벤치마크 셋 포함), 대조 6(지연 2 포함), 회귀 9.
+셀 키 30개(지연 4개 포함). 예측 34줄: 새 동작 19(벤치마크 셋, NIC 게이트 시험 하나 포함), 대조 6(지연 2 포함), 회귀 9.
 
 ## 8. 제외 기준과 중단 기준
 
@@ -282,6 +296,9 @@ pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을
   - 순환과 사슬 셀: 라운드 시작의 퍼짐(`cyc_spread_ms`)이 비었거나 250 ms 초과(gin-multirank 규칙. 라운드가 겹치지 않으면 순환이 생기지 않음).
 - 펌웨어 초과는 제외하고 채운다: 어느 rank든 감시 줄이나 `rs_fw_overruns`가 0이 아님(이 실험의 셀은 모두 펌웨어 초과가 주제가 아님).
 - 벤치마크: 어느 노드든 종료 코드가 0이 아니면 제외하고 따로 센다(종료 코드 139는 아래 `STOP_cuda`).
+- NIC 게이트 시험: 어느 노드든 판정 없이 끝나면(종료 코드가 0, 1이 아님: 준비 실패 2, 단계 중 NIC 요청 실패 3, CUDA 오류 6, 감시 종료 7, 시간 초과
+  137) 제외하고 따로 센다. 판정 FAIL(종료 코드 1)은 제외가 아니라 결과다. 쓰기를 잃어도 다시 써서 이어 가므로, 잃은 쓰기는 감시 종료가 아니라 FAIL로
+  나온다.
 - 채우려고 다시 돈 시행이 셀 키마다 계획의 50%를 넘으면 그 셀 키는 멈추고 "자료 부족"으로 둔다.
 
 **설정 확인.** 하나라도 어긋나면 제외가 아니라 그 블록을 멈춘다.
@@ -291,6 +308,7 @@ pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을
 - 랭크 2개 `hq` 시행: 이 실험 시작 줄만 없음. 드라이버 번들 `hr`.
 - `hrp`, `hqp`: 시작 줄이 WARN에 없고 kv에 `rs_api=1`, `rs_contexts >= 1`. 드라이버 번들은 자기 번들.
 - 시험 스위치 줄이 없음(이 실험의 랭크 2개 셀은 시험 스위치를 쓰지 않음). GPU 가득 참 셀은 kv `hog_calls_after`가 셀과 같음.
+- NIC 게이트 시험: 두 노드 모두 kv `mr=dmabuf`, `gid_kind=link-local`(`config_ngt`).
 - 랭크 4개: 모든 rank의 투명 복구 시작 줄과 abort 단어 줄이 n 이상, gin-peer 시작 줄이 n, 이 실험 시작 줄이 `hr`에서 n이고 `hq`에서 0, `hr`에서
   NIC 경로 켬 줄이 n 이상이고 끔 줄이 0. 드라이버 키 `hr`. 멈춤 스위치 줄이 순환 셀은 "0:300;1:300;2:300", 사슬 셀은 "0:300;1:300", 나머지는 없음.
   시간 제한 없는 받기 셀은 모든 rank의 kv에 `rx_untimed=1`.
@@ -308,14 +326,14 @@ pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을
 - **하지 않는 것.** 실제 link down이나 flap, 재부팅, 드라이버 재적재, 커널 모듈 적재, RoCE 주소 변경, 시스템 TCP 설정 변경, iptables 규칙 추가, GPU
   컴퓨트 모드 변경. `chain.sh`는 hold 앞뒤에 `gin-` 꼬리표 iptables 규칙 수를 읽기만 하고, 늘었으면 `STOP_iptables`로 멈춘다.
 - **프로세스.** 이름으로는 아무것도 끄지 않는다(`pkill`, `killall` 없음). 실행기는 자기가 기록한 PID와 그 자식만 신호한다(gin-peer 실행기 그대로).
-  벤치마크는 `timeout -s KILL 90` 안에서만 돈다. 시행 뒤 남은 프로세스는 읽기만 해서 세고, 두 시행 연속이면 `STOP_left`. 다음 hold는 남은
-  `gin_ts2`, `gin_mr`, `hm_bench`가 없어질 때까지 150 s까지 기다리고, 그래도 있으면 시행을 돌지 않는다.
+  벤치마크와 NIC 게이트 시험은 `timeout -s KILL 90` 안에서만 돈다. 시행 뒤 남은 프로세스는 읽기만 해서 세고, 두 시행 연속이면 `STOP_left`. 다음
+  hold는 남은 `gin_ts2`, `gin_mr`, `hm_bench`, `nic_gate_test`가 없어질 때까지 150 s까지 기다리고, 그래도 있으면 시행을 돌지 않는다.
 - **CUDA 메모리 오류.** hold 안의 어느 시행이든 rank나 벤치마크의 종료 코드 139이거나 로그, kv에 illegal address, illegal memory access, unspecified
   launch failure가 보이면 그 hold 뒤로 멈춘다(`STOP_cuda`).
 - **mlx5 오류.** hold 앞뒤에 두 노드의 mlx5 커널 줄 전체와 rain의 펌웨어 명령 계수를 남긴다. 새 명령 오류 줄이나 펌웨어 명령 실패 계수 증가가 보이면
   그 hold 뒤로 멈춘다(`STOP_mlx5`).
-- **배포.** 새 번들은 새 디렉터리 `hr/`, `hrp/`, `mr/hr/`에만 둔다. 대상 파일이 이미 있거나 소스가 기대 md5와 다르면 배포 스크립트가 멈춘다. 배포 뒤
-  기존 번들 파일의 md5가 두 노드에서 그대로인지 확인한다. `hq/`, `hqp/`는 읽기만 한다(다른 실험 blind-apps가 같은 때 쓴다).
+- **배포.** 새 번들은 새 디렉터리 `hr/`, `hrp/`, `mr/hr/`, NIC 게이트 시험은 `ngt/`에만 둔다. 대상 파일이 이미 있거나 소스가 기대 md5와
+  다르면 배포 스크립트가 멈춘다. 배포 뒤 기존 번들 파일의 md5가 두 노드에서 그대로인지 확인한다. `hq/`, `hqp/`는 읽기만 한다(다른 실험 blind-apps가 같은 때 쓴다).
 
 ## 9. 실행 방법과 경로
 
@@ -442,10 +460,33 @@ pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을
   끝난 뒤 답한다.
 - degraded는 죽음에만 반응한다. 살아 있으나 거절된 상대(예: 펌웨어 초과, 상대가 알린 실패)는 그 상대를 기다리는 상대를 모르는 대기를 풀지 않는다
   (gin-peer와 같음).
-- NIC 경로의 link-local GID 루프백은 이 테스트베드에서 아직 돈 적이 없다 `[미확인]`. 실패하면 GIN GID로, 그것도 실패하면 스트림 경로다(시작 줄로 보임).
-  오류로 꺼진 NIC 경로는 그 문맥에서 다시 켜지지 않는다.
-- NIC 경로의 4 B 게이트 쓰기의 원자성은 위 (d)의 `[미확인]`이다.
+- NIC 경로는 pilot에서 `hr`의 모든 rank에서 link-local GID(색인 1)로 켜졌고 끈 줄은 없었다 `[측정: pilot, 문맥 28개, 12절]`. 실패하면 GIN GID로,
+  그것도 실패하면 스트림 경로다(시작 줄로 보임). 오류로 꺼진 NIC 경로는 그 문맥에서 다시 켜지지 않는다.
+- NIC 경로의 4 B 게이트 쓰기의 원자성은 위 (d)의 `[미확인]`이다. NIC 게이트 시험(9절 5번, NG1)이 이것을 따로 잰다.
 - 장치 대기의 abort 탈출(`tsPoll`)은 QP를 오염 표시하지 않는다(앞 빌드와 같음). degraded 뒤의 안전은 위 (c)의 게시 전 확인에 기댄다 `[소스]`.
+
+(f) **재리뷰가 남긴 점**(리뷰 반영 뒤의 계층, 판정 "조건부로 그대로 실행 가능", 막는 결함과 높음 없음, 12절). 계층은 고치지 않았다(배포한 라이브러리
+그대로). 줄 번호는 `hr_layer.diff`를 적용한 트리의 `gin_host_gdaki.cc`다.
+- 중간 M-A: `gdakiTsServeLower`는 중첩 가능 여부(`gdakiTsCanNest`)를 한 번 훑을 때 한 번만 보고, 중첩 라운드 뒤에도 다음 상대로 넘어간다. 한 번에
+  낮은 rank의 REQ 둘이 오면 첫 중첩의 정지가 최대 5 s 돌고(바깥 시간으로 잘리지 않음), 둘째가 8 s가 안 남은 채 시작해 바깥 라운드가 25 s를 넘길 수
+  있다. 그러면 감시가 드러내고 그 문맥의 다음 라운드는 모두 거절된다. 사전 등록한 셀에서는 생기지 않는다(순환과 사슬 셀에서 한 rank에 낮은 rank의
+  REQ는 하나) `[추론]`. 나중에 고칠 것: 중첩 라운드 뒤 돌아가거나 상대마다 다시 보기.
+- 중간 M-B: NIC의 4 B 게이트 단어 쓰기와 SM 64비트 원자 연산의 관계는 확인하지 않았다. 회귀 셀의 모든 라운드가 이 쓰기를 한다. 잃은 갱신은 드문
+  정지 시간 초과나 거절로만 보이고 n=5로는 잡지 못할 수 있다. `hm_bench`는 호스트 매핑 메모리를 재지 NIC의 GPU 메모리 쓰기를 재지 않는다. 그래서
+  NIC 게이트 시험(9절 5번)을 더했다. 그 결과가 나오기 전까지 이 점은 `[미확인]`이다.
+- 중간 M-C: 앞 헤더로 빌드한 장치 코드는 알아낼 수 없다(`gin_gdaki.h` `tsWaitWord`가 없음). degraded 뒤 그 코드의 건강한 상대 대기가 오류로 끝나고, 그
+  상대와의 다음 라운드가 그 연산을 다시 낼 수 있다(위 (c)). 이 실험의 드라이버는 모두 `hr` 헤더라 생기지 않는다. 나중에 고칠 것: 새 경로가 세우는 게이트
+  깃발, 또는 운영 빌드에서 degraded를 켤 때만 쓰기.
+- 낮음 L-A: CY3은 거부(NACK 12, 2, 16)도 기다림 안 응답으로 센다(3.3 주의). 설명용 열 `n_served_rec`를 더했다.
+- 낮음 L-B: degraded 시계는 거절에서 시작한다(3.3 주의). 라운드 도중의 죽음은 그 라운드가 끝날 때까지 상대 표시만 남는다.
+- 낮음 L-C: 자체 시험은 문맥을 만들 때 스트림 복사를 쓴다. application이 이미 GPU를 붙잡은 채 devComm을 만들면 자체 시험이 시간을 넘겨 NIC 경로가
+  꺼질 수 있다. 이 실험의 셀은 GIN 커널 전에 devComm을 만든다.
+- 낮음 L-D: 잘못된 죽음 판정(살아 있는 rank를 죽었다고 봄)도 2 s 뒤 그 communicator의 상대를 모르는 대기를 모두 푼다. 설계의 대가로 둔다.
+- 첫 리뷰 반영 확인: H1, H2(코드. 루프백은 pilot에서 처음 돔), M2, L1–L6, 사소 넷은 맞음. M1은 부분(위 M-A). L8은 부분: 게이트를 처음 쓸 때 NIC
+  요청이 시간을 넘기면(오류 완료가 아니라) 그 rank의 투명 복구가 꺼진다.
+- 맞다고 확인한 것: 중첩 라운드의 상태, 멈춤 수, 잠금, 범위 복원, 바깥 상대의 ACK, 펌웨어 번호, 교착 없음 논증(16.5 s 뒤에는 앞 빌드처럼 시간 초과로
+  돌아감), 미룬 REQ, degraded 계수와 장치 읽기, 루프백 수명과 스트림으로 이어 하기. flush READ의 순서 보장은 relaxed ordering이 꺼져 있다는 가정에
+  기댄다 `[미확인: 이 하드웨어]`. `hrp`는 새 코드를 더하지 않고 로그 수준만 다르다.
 
 ### 2. 드라이버
 
@@ -467,6 +508,8 @@ pilot을 한 번 더 돈다(8절). 예측은 태그 `prereg/gin-remaining-v1`을
   `drvkey`, `drvbin`뿐이다.
 - [run_mr_hr.sh](run_mr_hr.sh)(랭크 N개): `../peer/run_mr_hq.sh`의 복사본. `MRKEY` 기본 `hr`, 작업 파일 접두, meta `runner=mrr`만 다르다.
 - [run_bench_hr.sh](run_bench_hr.sh): rain에서 `hm_bench`를 한 번, sunny에서 ssh로 한 번 돌린다. 각 실행은 `timeout -s KILL 90` 안이다.
+- [run_ngt_hr.sh](run_ngt_hr.sh): `run_bench_hr.sh`의 복사본. `nic_gate_test`를 rain(mlx5_1)에서 한 번, sunny(mlx5_0)에서 ssh로 한 번 돌린다. 각 실행은
+  `timeout -s KILL 90` 안이다.
 - [portpick.sh](portpick.sh): gin-peer의 복사본(29000–30999, 두 노드 확인, 확인하는 랑데부).
 - 앞 실험의 실행기는 고치지 않는다. 이 실험은 iptables를 쓰지 않는다.
 
@@ -480,6 +523,29 @@ GPU 하나, NCCL과 네트워크 없음. 모든 단계는 정해진 수의 연�
   감소) 호스트가 멈출 때까지 하고, 그동안 호스트는 위 절반에 약 20 µs마다 새 값을 쓰고 64번 다시 읽는다. 쓴 값이 아닌 것을 읽으면 장치의
   읽고-고쳐-쓰기가 호스트의 쓰기를 되돌린 것이다(`race_lost_host_writes`). 끝에 개수 절반이 0이 아니면 장치 갱신을 잃은 것이다.
 
+### 5. NIC 게이트 시험 ([nic_gate_test.cu](nic_gate_test.cu))
+
+재리뷰 M-B(9절 1번 (f))를 받아 P0, P1 뒤에 더했다. 계층과 배포한 번들은 바꾸지 않는 독립 프로그램이다. NCCL 없음. 노드마다 GPU 0과 그 노드의
+HCA(rain mlx5_1, sunny mlx5_0) 포트 1을 쓰고, 트래픽은 NIC 밖으로 나가지 않는다(루프백).
+- gin-s2의 `../gate_ce_test.cu`(복사 엔진으로 같은 규약을 확인한 시험, 14/14 두 번)와 같은 게이트 규약과 확인이다. 다른 점은 호스트의 GPU 메모리 읽기와
+  쓰기를 모두 이 계층의 NIC 복사 경로와 같은 방식으로 한다는 것이다(`gdakiLbXfer`): 4 B 쓰기는 스테이징 버퍼에서 RDMA WRITE 하나와 같은 MR의 8 B
+  RDMA READ(신호), 읽기는 RDMA READ 하나. 루프백 RC QP 쌍은 자기 PD에 있고 RoCE v2 link-local GID로 연결한다. GPU 메모리는 dmabuf MR(안 되면
+  nvidia-peermem), relaxed ordering 없음.
+- 장치: 스레드가 게이트 단어(GPU 메모리 64비트)에 `atom.acquire.gpu.add` 1로 들어가고 `red.release.gpu.add` −1로 나온다(`gin_gdaki.h`
+  `tsWordEnter`, `tsWordLeave`와 같은 명령). 에폭이 홀수면 물러나 쉰다. 게이트 단어는 이 계층처럼 128 B 줄의 88 B 자리에 있고, 안에 들어간 스레드는
+  같은 줄의 0 B와 8 B 자리 색인 단어 둘(보내기가 들어가 있는 동안 원자 연산으로 고치는 `sq_rsvd_index`, `sq_ready_index` 자리)에 1씩 더한다.
+- 호스트: 에폭을 홀수로 쓰고, 단어를 읽어 개수 0을 기다리고(2 s 한도), 0.2 ms 동안 증인을 다시 읽고, 다음 짝수 에폭을 쓰기를 되풀이한다.
+- 확인: 쓴 뒤 읽은 위 절반이 쓴 값과 다름(NIC 쓰기 손실; 멈춤 깃발 쓰기도 다시 읽음; 손실은 세고 다시 써서 시험을 이어 감), 끝난 뒤 개수 절반이
+  0이 아님(장치 갱신 손실), 끝난 뒤 색인 단어가 들어간 수와 다름, 개수 0을 본 뒤 옛 에폭으로 들어간 스레드(Dekker 위반), 홀수 에폭 동안 안에 있는
+  스레드, 정지 시간 초과. 통과에는 시험이 돌았다는 근거도 든다: 라운드, 들어간 스레드, NIC가 쓴 홀수 에폭을 보고 물러난 스레드가 모두 0보다 크고,
+  커널이 끝난 뒤 `cudaMemcpy`로 읽은 위 절반이 마지막 NIC 쓰기와 같아야 한다.
+- 이 계층과 다른 점(시험의 판정이 계층에 대해 말하는 범위): 계층은 드문 느린 길에서 게이트 단어에 `atomicOr`(`tsPoison`)와 CAS 반복(`tsLateFail`)도
+  쓰는데 이 시험은 더하기만 한다. 쉬는 스레드는 `.gpu` 범위로 읽는다(계층은 `.sys`). 호스트는 쉬지 않고 돈다(계층은 양보하거나 잠듦) `[소스]`.
+- 단계 a: 64 블록 × 256 스레드, 안에서 일 없음(단어에 원자 연산이 가장 많음). 단계 b: 8 블록 × 256 스레드, 안에서 2 000 ns(정지 때 안에 스레드가 있음).
+  각 5 s. 시행 하나는 rain과 sunny에서 한 번씩이다. 프로그램 감시 75 s, 실행기 `timeout -s KILL 90`.
+- kv와 종료 코드: 프로그램 머리말. 열: 3.1절 `ng_*`. 예측: NG1. 설정 확인(8절): 두 노드 모두 GPU MR이 dmabuf이고 루프백 GID가 link-local이어야
+  한다(pilot에서 계층이 쓴 것). 다르면 그 블록을 멈춘다.
+
 ### 빌드 ([build_hr.sh](build_hr.sh), 세션 스크래치)
 
 1. `setup`: `agent_ts2hq`의 소스, `build/`, `build-hqp/`를 `agent_ts2hr`로 복사한다(`build-hqp/`는 `build-hrp/`가 됨). 의존 파일과 장치 manifest의
@@ -489,7 +555,9 @@ GPU 하나, NCCL과 네트워크 없음. 모든 단계는 정해진 수의 연�
    `[측정]`. libnccl → `out/hr`.
 3. `hrp`: `build-hrp/`에서 `CXXFLAGS=-DNCCL_GIN_TS_PRODUCTION`으로 증분 빌드. 두 빌드의 설치된 장치 헤더가 같은지 확인한다. libnccl → `out/hrp`.
 4. `drivers`: `../gin_ts2.cu`, `gin_mr.cu`, `hm_bench.cu`를 `build/` 헤더로 컴파일(경고를 오류로). `out/drv/gin_ts2`, `out/drv/hm_bench`,
-   `out/mr/gin_mr`, `out/build_info.txt`.
+   `out/mr/gin_mr`, `out/build_info.txt`. nvcc 출력은 바이트 단위로 재현되지 않아 다시 돌리면 md5가 바뀐다. 배포한 값은 12절에 있다.
+5. `ngt`: `nic_gate_test.cu`(libibverbs, libcuda)를 따로 컴파일. `out/ngt/nic_gate_test`, `out/ngt/build_info.txt`. 배포한 드라이버를 그대로 두려고
+   `drivers`와 나눴다.
 
 빌드는 nice 19, 유휴 I/O 우선순위, 8 작업으로 돌렸다(다른 실험이 같은 노드에서 돈다).
 
@@ -503,33 +571,41 @@ GPU 하나, NCCL과 네트워크 없음. 모든 단계는 정해진 수의 연�
 ssh <sunny> "ss -Htan '( sport >= :29000 and sport <= :30999 )' | wc -l"   # 0이어야 함(메인 세션)
 cd /home/unionxic/rdma-error-wt/gin-remaining/harness/gpu-initiated/gin_recovery/remaining
 bash deploy_hr.sh deploy_check.txt
+bash deploy_ngt.sh deploy_ngt_check.txt     # NIC 게이트 시험(새 디렉터리 ngt/), pilot P2 전
 ```
+
+`deploy_ngt.sh`는 `ngt/nic_gate_test` 하나를 두 노드에 두고 md5, `ldd`(libibverbs, libcuda), 기존 번들 그대로를 확인한다. 포트를 쓰지 않는다.
 
 ### 실행 ([hold.sh](hold.sh), [chain.sh](chain.sh), [cells.sh](cells.sh))
 
 hold마다 `chain.sh`가 `cluster_run.sh -w 10800 -t grm-<hold>`에 넣는다. 결과 폴더 아래 랭크 2개 시행은 빌드별 폴더(`hr/`, `hq/`, `hrp/`, `hqp/`)에,
-랭크 4개 시행은 `mr_hr/`, `mr_hq/`에, 벤치마크는 `bench/`에 쌓인다.
+랭크 4개 시행은 `mr_hr/`, `mr_hq/`에, 벤치마크는 `bench/`에, NIC 게이트 시험은 `ngt/`에 쌓인다.
 
 | hold | 내용 | 시간 어림 |
 |---|---|---|
 | P0 pilot | 랭크 2개 새 셀과 대조 한 번씩(GPU 가득 참 `hr`, `hq`, 스트림 복사 대조, 호출 하나씩 셋 × 두 빌드), `f1_b`, `f4_b`, 4 KiB 지연 두 빌드(13회). 채점 안 함 | 약 2.5분 |
 | P1 pilot | 랭크 4개 새 셀과 대조 한 번씩(순환 두 빌드, 시간 제한 없는 받기 두 빌드, gin-peer kill 셀, 사슬), 벤치마크 한 번(7회). 채점 안 함 | 약 3.5분 |
+| P2 pilot | NIC 게이트 시험 한 번(P0, P1 뒤에 더함). 채점 안 함 | 약 1분 |
 | H1 | 랭크 2개 회귀 6셀 × 5, `hdp_kill_b` 5, 지연 20실행 | 약 6분 |
 | H2 | GPU 가득 참 `hr` 10과 `hq` 5(2:1), 스트림 복사 대조 5, 호출 하나씩 `hq` 15와 `hr` 9(섞어서) | 약 7분 |
 | H3 | 순환 `hr` 10과 `hq` 5(2:1), 사슬 5 | 약 9분 |
-| H4 | 시간 제한 없는 받기 `hr` 10과 `hq` 5(2:1), gin-peer kill 셀 `hr` 5 | 약 8.5분 |
-| H5 | 랭크 4개 회귀 2셀 × 5, 벤치마크 5 | 약 5분 |
+| H4 | 시간 제한 없는 받기 `hr` 10과 `hq` 5(2:1), gin-peer kill 셀 `hr` 5 | 약 8분 |
+| H5 | 랭크 4개 회귀 2셀 × 5, 벤치마크 5, NIC 게이트 시험 5 | 약 7분 |
 
 시간 어림 `[측정, 추론]`. hold 하나 = 시행마다 (`wall_s` + 2.7 s) + 31 s다(gin-peer pilot에서 잰 시행 사이 비용과 유휴 링크 대기).
 - `wall_s`: 랭크 2개 회귀는 gin-peer 본 실행의 값(`f1_b` 3.8 s, `f3_b` 7.3–7.8 s, `bidirf_sym_b`와 `f2rel_b` 2.3 s, `f4_b`와 `hdp_kill_b` 5.3–5.8 s,
   `hd_rxdeath_b` 3.1 s, 4 KiB 지연 1.8 s, 256 KiB 2.3 s, 각 n=5), GPU 가득 참은 gin-handoff의 4.0–6.1 s(셀마다 n=5) `[측정]`.
 - 랭크 4개는 gin-peer pilot의 kill 셀 18.1–20.1 s와 gin-multirank의 장애 없음 18.0 s, 순환 33.6 s(`hq` 대조), 사슬 약 20 s다 `[측정, 추론]`. `hr`의 순환과
   시간 제한 없는 받기는 약 19 s, 그 `hq` 대조는 kill 9 s + application 15 s + 정리로 약 28 s로 어림한다 `[추론]`.
-- 가장 긴 H3도 880 s 안이다. 본 실행(H1–H5)의 클러스터 시간은 잠금 대기를 빼고 약 36분이다 `[추론]`.
+- pilot으로 다시 본 값 `[측정: 12절, 셀마다 n=1]`: 랭크 4개 `hr` 순환 18.6 s, 사슬 18.5 s, 시간 제한 없는 받기와 gin-peer kill 셀 18.1 s, `hq` 순환
+  33.1 s, `hq` 시간 제한 없는 받기 25.6 s, GPU 가득 참 5.8–6.1 s, 벤치마크 5.7 s. pilot hold P0(13회)는 99 s, P1(7회)은 155 s 돌았다.
+- NIC 게이트 시험 시행 하나는 노드마다 준비와 두 단계(각 5.2 s)로 약 12 s, 둘이면 약 26 s로 어림한다 `[추론]`.
+- 가장 긴 H3도 880 s 안이다. 본 실행(H1–H5)의 클러스터 시간은 잠금 대기를 빼고 약 37분이다 `[추론]`.
 
 ```
 cd /home/unionxic/rdma-error-wt/gin-remaining/harness/gpu-initiated/gin_recovery/remaining
 bash chain.sh results/<날짜>_pilot P0 P1          # pilot, 채점 안 함
+bash chain.sh results/<날짜>_pilot2 P2            # NIC 게이트 시험 pilot(deploy_ngt.sh 뒤), 채점 안 함
 bash chain.sh results/<날짜> H1 H2 H3 H4 H5        # 본 실행(태그 뒤)
 bash chain.sh results/<날짜> fill:<폴더>:<셀>@<빌드>:<수>:<시작번호>[,...]   # 제외된 시행 채우기
 ```
@@ -544,12 +620,13 @@ python3 score.py results/<날짜>
 
 ## 10. 완료 조건과 QA 기준
 
-- [ ] 메인 세션이 pilot(P0, P1)을 돌리고 결과를 12절에 적은 뒤, 고칠 것을 고치고 태그를 달았다.
+- [ ] 메인 세션이 pilot(P0, P1, P2)을 돌리고 결과를 12절에 적은 뒤, 고칠 것을 고치고 태그를 달았다(P0, P1은 12절에 적음, P2와 태그는 아직).
 - [ ] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외와 실패를 따로 센 표가 있다(`SCORE.md` 끝 표).
-- [ ] 예측 33줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
+- [ ] 예측 34줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
 - [ ] 다른 에이전트가 `score.py`를 보지 않고 원자료에서 핵심 수치를 다시 셌다(handshake timeout과 복구 시각, 기다림 안 응답, degraded 해제와 받기 해제
   시각, 생존 간선, 복사 경로와 스트림 복사 수, 복사 시간 초과, 확인 복사, 지연, 벤치마크).
-- [x] 다른 에이전트가 `hr_layer.diff`를 읽고 리뷰했다(12절).
+- [x] 다른 에이전트가 `hr_layer.diff`를 읽고 리뷰했다(12절). 반영 뒤의 계층도 다른 에이전트가 다시 리뷰했다(12절).
+- [x] 다른 에이전트가 `nic_gate_test.cu`와 그 실행기, 배포, 채점 부분을 리뷰했다(12절).
 - [ ] 다른 에이전트가 드라이버, 실행기, 채점 코드를 리뷰했다.
 - [ ] smoke와 pilot, 제외 시행이 결과에 섞이지 않았다.
 - [ ] 새 빌드의 md5, 전체 diff, pristine + diff 확인, 운영 빌드의 strings 확인을 5절과 12절에 적었다.
@@ -567,8 +644,10 @@ python3 score.py results/<날짜>
   `predictions.csv`
 - [x] 채점기 합성 시험(실제 측정 아님, 12절)
 - [x] 질문, 가설, 셀, 예측 초안 (`DRAFT`)
-- [ ] sunny 포트 범위 확인과 배포(메인 세션)
-- [ ] pilot P0, P1(메인 세션, 채점 안 함), 결과로 고칠 것 고치기
+- [x] sunny 포트 범위 확인과 배포(메인 세션, 12절)
+- [x] pilot P0, P1(메인 세션, 채점 안 함), 점검(12절). 실행기와 파서 결함 없음
+- [x] 재리뷰 반영: NIC 게이트 시험, `n_served_rec`, 9절 1번 (f)
+- [ ] NIC 게이트 시험 배포(`deploy_ngt.sh`)와 pilot P2(메인 세션)
 - [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
 - [ ] 본 실행 H1–H5 (`RUNNING`)
 - [ ] 채점 (`QA`)
@@ -589,7 +668,16 @@ python3 score.py results/<날짜>
 | 2026-10-09 | 리뷰 반영(9절 1번에 각 항목): H1(미룬 REQ를 그 상대와 라운드가 시작하거나 더 새 REQ에 답할 때 버림, 답하기 전 소켓을 읽음), H2(link-local GID 후보와 루프백 READ 확인, 오류 때 스트림으로 이어 복사), M1(중첩 라운드는 바깥 시계, 8 000 ms가 안 남으면 중첩 안 함), M2(상대 단어가 모든 게이트에 들어가기 전에는 칸 0도 셈, 헤더 요건을 주석과 9절에 적음), L1, L2, L3(모든 MR 읽기와 되쓰기), L4(자기 PD), L5(application 호출은 앞 빌드 의미), L6(주석과 9절), L7(늦은 완료 줄을 gin-handoff 형식으로, 끔 줄을 한 형식으로, `rows_hr.py`에 `lb_gid_r*`, `td_fallbacks_r*`), L8(H2의 이어 복사로), 사소 넷(이유 없는 끔 줄, 포트 1의 GID, 떼어 낸 helper의 정리 줄은 join 뒤에만 경로 상태를 읽음, 람다 이름). 고치지 않음: `tsPoll`의 abort 탈출이 QP를 오염 표시하지 않는 것(앞 빌드와 같음, M2의 게시 전 확인이 막음) | [hr_layer.diff](hr_layer.diff) |
 | 2026-10-09 | 리뷰 반영 뒤 마지막 빌드 `[측정]`: `hr` libnccl `2dee2b5bf36b3477dd85f0197987f028`, `hrp` `786f70bcb82ea21cb678dcb056256ed5`, `gin_ts2` `4e81d8d8e7418f84fe1804284378d618`(소스 `1779db9d`), `gin_mr` `d588e9cecfc05fd114e61d83ce9c3074`(소스 `a6a526ad`), `hm_bench` `a00094b07445f2ddc5baff3a5c5626bb`(소스 `9b13a4b8`). 이 계층 파일의 컴파일 경고 0. `make_diff_hr.sh`: `hr_layer.diff` md5 `66f61272`(1 578줄, 계층 파일 3개 +1 045/−68), `gin_transparent_hr.diff` md5 `de986325`, 두 재구성 모두 VERIFIED. 드라이버 md5는 다시 빌드하면 바뀐다(nvcc가 임시 이름을 넣음) `[측정: 리뷰 전 빌드와 다름]`. 기대 md5는 [deploy_hr.sh](deploy_hr.sh)에 넣음 | 세션 스크래치 `agent_ts2hr/out/build_info.txt` |
 | 2026-10-09 | 채점기 합성 시험 다시(리뷰 반영 뒤의 `rows_hr.py`): 33줄 모두 평가, 새 열 `lb_gid_r*`, `td_fallbacks_r*`가 표에 있음. 새 형식의 시작 줄, 끔 줄, 정리 줄, 미룬 REQ 버림 줄, 늦은 완료 줄을 정규식에 넣어 확인 | 세션 스크래치 `hr_work/synth_res/` |
-| 2026-10-09 | (초안까지) 클러스터에서는 아무것도 돌리지 않았다. 배포, pilot, 본 실행은 메인 세션이 한다 | |
+| 2026-10-09 | (초안까지) 클러스터에서는 아무것도 돌리지 않았다. 배포, pilot, 본 실행은 메인 세션이 한다 | 커밋 `defdde26` |
+| 2026-10-09 13:55–13:56 | 배포(메인 세션). 13:55 sunny의 29000–30999 포트에 소켓 2개: 그때 돌던 blind-apps 시행(같은 범위, 시행마다 portpick) `[메인 세션 보고]`. `deploy_hr.sh` 13:55:57–13:56:28, rc 0: "deployed md5 == source on both nodes", "existing bundle unchanged on both nodes (51 files each)" `[측정]` | [deploy_check.txt](deploy_check.txt) |
+| 2026-10-09 13:56–14:14 | pilot P0, P1(메인 세션, 채점 안 함). `chain.sh results/20261009_pilot P0 P1` 13:56:49 시작. 잠금은 blind-apps hold 사이에 14:07:44(P0)와 14:10:57(P1)에 얻음. P0 14:08:14–14:09:53(13회), P1 14:11:28–14:14:03(7회), 둘 다 rc 0. iptables `gin-` 규칙 0/0, 두 hold 모두 새 mlx5 줄 0, rain 명령 오류 줄 2와 sunny 0, 펌웨어 명령 실패 계수 31이 앞뒤 같음, 모든 시행 `left=0`, STOP 파일 없음 `[측정]` | `results/20261009_pilot/`(`chain.out`, `hold_P0.out`, `hold_P1.out`, `snap_*`), 세션 스크래치 `cluster_run.log` |
+| 2026-10-09 | pilot 점검(이 에이전트, 원자료와 채점기 사본; 채점 아님, 셀 키마다 n=1). 랭크 2개 `[측정]`: `rh_hog_f1_b@hr` 투명(rank 0 시작 쪽 라운드 1 복구), 두 rank 복사 경로 NIC, 스트림 복사 0, 복사 시간 초과 0, 그래도 확인 복사 0/8과 GPU 채우기 블록 시작 0(스트림은 묶임). `@hq`와 `rh_hog_copystream_f1_b@hr`은 4 B 장치에서 호스트 복사가 2 000 ms를 넘겨 거절(그 1 s 전 감시 줄 "fault records are queued and the recovery helper is not running", 거절 이유 "the watchdog surfaced a fault earlier"), 120번 중 41번에서 오류, 스트림 경로 `hr`의 helper 스트림 복사 13. 호출 하나씩: 적재만 뒤면 `hq` 거절, 확인 복사 0/8, `hr` 투명. 할당만 뒤, 스트림 생성만 뒤면 두 빌드 모두 투명, 확인 복사 8/8, GPU 채우기 블록 191(rank 0)과 287(rank 1) 시작. GPU 가득 참 다섯 셀 모두 rank 0 장애가 GIN 실행 597.7–598.8 ms 뒤, GPU 채우기 실행 0.2 ms 뒤로 3 s 창 안. `f1_b@hr` 투명, 통계 API 두 rank 라운드 1 복구 1. `f4_b@hr` kill 1.7 ms 뒤 peer-dead 거절, 칸 0 바로 peer-dead, degraded 줄 없음. 4 KiB 지연 p50 `hrp` 10.46 µs, `hqp` 10.75 µs(3 000번씩) | `results/20261009_pilot/hr/`, `hq/`, `hrp/`, `hqp/` |
+| 2026-10-09 | pilot 점검, NIC 복사 경로 `[측정]`: `hr`의 모든 문맥(랭크 2개 6회 × 2, 랭크 4개 4회 × 4, 28개)에서 켜짐 줄, link-local GID 색인 1, GPU MR 모두 dmabuf(랭크 2개 10개, 랭크 4개 18개, nvidia-peermem 0), 자체 시험 580 B(0 아님 93)와 1 092 B(0 아님 269–277), 준비 3.5–6.5 ms. 끔 줄, 이어 하기(`fallbacks`), NIC 복사 시간 초과 0, NIC 경로 시행의 helper 스트림 복사 0 | 같은 폴더의 `*_r*.log` |
+| 2026-10-09 | pilot 점검, 랭크 4개와 벤치마크 `[측정]`: `mr4_cyc_stall@hr` 투명, 시작 쪽 복구 0-1, 1-2, 2-0, 거절 0, handshake timeout 0, 마지막 복구가 첫 라운드 줄 696.5 ms 뒤, 퍼짐 3.9 ms. 라운드 1(한 쌍 범위)은 기다림 안에서 받은 REQ를 거부(not_rts, NACK 12)해 전체 재설정으로 다시 돌았고, 라운드 2에서 rank 1이 rank 0의 REQ에 자기 기다림 안에서 답하고(중첩 42.7 ms), rank 2가 rank 1의 REQ에 답하고(56.9 ms), rank 0은 rank 2의 REQ를 41.2 ms 미뤘다가 rank 1과의 라운드 뒤 답함(기다림 안 응답 4, 그중 복구로 끝난 것 2, 미룸 1, 미룬 것 답 1). `@hq`: handshake timeout 3, 첫 것이 라운드 시작 24 504.8 ms 뒤, 거절 6, 복구 0, 33.1 s. `mr4_chain_stall@hr` 투명, 650.9 ms(기다림 안 응답 1은 거부). `rm4_kill3_untimed@hr`: 생존 rank마다 죽음 판정 6.0–8.5 ms 뒤 거절, 그 거절 2 000.0–2 000.1 ms 뒤 degraded(죽음 판정부터 2 006.1–2 008.6 ms), 받기 9개 모두 풀림(죽은 rank 3, 생존 rank 사이 6, 판정부터 2 007.4–2 011.6 ms), 생존 rank 사이 보내기 6/6 성공, 커널 3/3 끝남. `@hq`: 풀림 0, 생존 rank 커널 3/3이 application 포기까지 돎, 25.6 s. `mr4_kill3_peer@hr`: 생존 rank 받기 6/6이 한도(10 s)가 아니라 degraded로 실패(반복 653–659에서 "remote exited"), 보내기 6/6 성공, degraded 2 006.7–2 008.3 ms. `hm_bench`: 기본 호스트 원자 연산 없음(두 GPU), 의존 원자 더하기 장치 178.3 ns 대 호스트 매핑 604.2 ns(rain), 186.2 대 612.3 ns(sunny), 경합에서 호스트 쓰기 26 396번 중 4 009번(rain), 26 000번 중 3 971번(sunny)을 장치의 읽고-고쳐-쓰기가 되돌림, 개수 절반 손실 0 | `results/20261009_pilot/mr_hr/`, `mr_hq/`, `bench/` |
+| 2026-10-09 | pilot과 예측(판정 아님: 예측마다 판정식 안의 시행 조건을 pilot 시행에 대 봄). 조건이 맞음: CY1–CY5, DG1–DG6, GR1–GR3, GC1, GC2, GS1, GS3, GS4, RG3, RG7, LT1, HB1–HB3. 안 맞음: GS2(할당만 GIN 실행 뒤에 해도 `hq`의 스트림이 묶이지 않음. 드라이버의 할당은 8 B `cudaMalloc`이고 이미 잡힌 메모리에서 나왔을 수 있다 `[추론]`). 3절 규칙대로 예측은 그대로 두고 의심만 적는다. pilot에 셀이 없음: RG1(`f3_b`, `bidirf_sym_b`), RG2, RG4–RG6, RG8, LT2. HB2는 기준 400 ns에 여유가 적다(+425.9, +426.1 ns). DG4가 말한 대가는 그대로 보였다: rank 0의 rank 1 받기는 끝에 신호 1 000/1 000을 다 받았지만 반복 650–655에서 풀렸다. `mr4_kill3_peer@hr`의 받기 0/3은 DG6의 예측 그대로다. `gin_mr`의 받기 간선은 상대를 모르는 `waitSignal`이고, 상대별 대기(보내기의 `flushAsync(peer)` 뒤 `wait`)는 6/6 끝났다. gin-peer K1(생존 rank 간선 6개 모두 정상)은 `hr`에서 설계대로 성립하지 않는다(9절 1번 (c)) `[측정, 추론]` | 세션 스크래치 `hr_work/pilot/trials_scored.csv`(채점기 사본, 계획 수 1과 시행 조건만 본 판정식) |
+| 2026-10-09 | 재리뷰(다른 에이전트, 읽기만, 리뷰 반영 뒤의 계층 = `hr_layer.diff` `66f61272`이 빌드한 트리와 같음). 판정 "조건부로 그대로 실행 가능", 막는 결함과 높음 없음. 중간 3(M-A 한 번 훑을 때 중첩 둘, M-B NIC 4 B 쓰기와 SM 원자 연산 미확인, M-C 앞 헤더의 장치 코드), 낮음 4(L-A CY3이 거부도 셈, L-B degraded 시계는 거절에서, L-C 자체 시험의 스트림 복사, L-D 잘못된 죽음 판정의 범위). 첫 리뷰 반영은 H1, H2, M2, L1–L6, 사소가 맞고 M1, L8이 부분. 처리: 계층은 고치지 않음(배포한 번들 그대로, 리뷰도 그대로 실행 가능이라 함), M-B는 NIC 게이트 시험을 더함, L-A는 설명용 열 `n_served_rec`, L-B는 DG 열과 대 봄(이 셀은 판정 직후 거절, 3.3 주의), 나머지는 9절 1번 (f)에 남는 점으로 적음 | 리뷰 보고는 메인 세션이 전함(파일 없음) |
+| 2026-10-09 | NIC 게이트 시험 리뷰(다른 에이전트, 읽기만). 판정 "먼저 고칠 것": (1) `deploy_ngt.sh`의 기대 md5가 다시 빌드한 것과 달라 배포가 멈춤, (2) 멈춤 깃발의 NIC 쓰기를 다시 읽지 않아, 그 쓰기를 잃으면 감시 종료로 제외되어 NG1이 "틀림"이 아니라 "자료 부족"이 됨, (3) 정지 기다림 안의 쓰기 손실이 정지 시간 초과로도 세짐, (4) dmabuf가 아니거나 link-local GID가 아닌 실행도 채점됨, (5) 계층과 다른 점(게이트 줄의 다른 원자 연산, 드문 `atomicOr`와 CAS, 읽기 범위). 맞다고 본 것: QP 준비, GID 고르기, dmabuf 등록, CUDA 문맥, 모든 기다림의 한도, 쓰기 경로가 `gdakiLbXfer`와 같음, 장치 원자 연산이 `tsWordEnter`, `tsWordLeave`와 같음, Dekker와 안 확인이 NIC 읽기에도 맞음, 실행기와 채점 열, NG1 식, H5 시간. 반영: (1) 마지막 빌드로 기대 md5를 고침, (2) 모든 NIC 쓰기(에폭, 멈춤)를 다시 읽고 잃으면 세고 다시 씀, (3) 정지 기다림 안에서 다시 쓰고 이어 기다림(시간 초과는 2 s에만), (4) `score.py`의 설정 확인 `config_ngt`, (5) 게이트를 88 B 자리에 두고 같은 줄의 색인 단어 둘을 들어간 스레드가 고침(`ng_idx_ok`), 나머지는 9절 5번에 적음 | 리뷰 보고는 이 세션의 에이전트 응답(파일 없음) |
+| 2026-10-09 | pilot 뒤, 태그 전 바꾼 것. pilot에서 실행기나 파서 결함은 찾지 못했다. 더한 것: NIC 게이트 시험([nic_gate_test.cu](nic_gate_test.cu), [run_ngt_hr.sh](run_ngt_hr.sh), [deploy_ngt.sh](deploy_ngt.sh), `build_hr.sh ngt`), 셀 `nic_gate`, hold P2와 H5의 `nic_gate` 5회, hold의 남은 프로세스 확인에 `nic_gate_test`, `rows_hr.py`의 `ngt_row()`와 `served_rec`, `score.py`의 `ngt/` 폴더와 제외 이유, 예측 NG1(34줄, 앞 33줄은 그대로). `nic_gate_test` 빌드 `abb2af4cb61a8075242f348c599b407a`(소스 `4d87f2b8`), 경고 0 `[측정]`. 채점기 사본을 pilot 사본에 만든 NIC 게이트 시행 하나(측정 아님)와 함께 돌려 NG1이 평가되고 열이 나옴을 확인 | 이 커밋, 세션 스크래치 `agent_ts2hr/out/ngt/build_info.txt` |
 
 ## 13. 사전 등록 이후 변경
 

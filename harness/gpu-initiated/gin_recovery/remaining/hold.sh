@@ -3,8 +3,8 @@
 # ../peer/hold.sh with this study's holds, the benchmark's files in the stale and CUDA-fault checks, nothing else changed.
 # usage: hold.sh <resultsdir> <P0|P1|H1|...|H5|fill:<subdir>:<cell>@<build>:<n>:<start>[,...]>
 # Trial folders under <resultsdir>: two-rank trials in <build>/ (hr/, hq/, hrp/, hqp/), N-rank trials in mr_<lib>/
-# (mr_hr/, mr_hq/), the benchmark in bench/. P0 and P1 are pilots (never scored; chain.sh writes them into their own
-# results folder).
+# (mr_hr/, mr_hq/), the benchmark in bench/, the NIC gate test in ngt/. P0, P1 and P2 are pilots (never scored; chain.sh
+# writes them into their own results folder).
 # Before and after every hold: GPU users and compute mode of both nodes; the full mlx5 kernel lines of both nodes
 # (mlx5_<tag>_<node>.txt); the count of mlx5 command-error lines; rain's mlx5_1 firmware-command counters (debugfs,
 # read-only). New mlx5 lines go to mlx5_new_<hold>.txt. A new command-error line or a growth of the firmware-command
@@ -36,15 +36,15 @@ snap() {  # snap <tag>
 }
 mkdir -p "$R"
 for i in $(seq 1 30); do
-  stale=$( { pgrep -x gin_mr; pgrep -x gin_ts2; pgrep -x hm_bench
-             ssh -n "$SUNNY_SSH" "pgrep -x gin_mr; pgrep -x gin_ts2; pgrep -x hm_bench"; } 2>/dev/null | wc -l)
+  stale=$( { pgrep -x gin_mr; pgrep -x gin_ts2; pgrep -x hm_bench; pgrep -x nic_gate_test
+             ssh -n "$SUNNY_SSH" "pgrep -x gin_mr; pgrep -x gin_ts2; pgrep -x hm_bench; pgrep -x nic_gate_test"; } 2>/dev/null | wc -l)
   [ "$stale" -eq 0 ] && break
-  echo "$(date '+%F %T') hold $HT: $stale gin_mr/gin_ts2/hm_bench process(es) still present; waiting" | tee -a "$R/stale.txt"
+  echo "$(date '+%F %T') hold $HT: $stale gin_mr/gin_ts2/hm_bench/nic_gate_test process(es) still present; waiting" | tee -a "$R/stale.txt"
   sleep 5
 done
-[ "$stale" -eq 0 ] || echo "$(date '+%F %T') hold $HT: gin_mr/gin_ts2/hm_bench still present after 150 s; no trial runs" | tee -a "$R/STOP_left"
+[ "$stale" -eq 0 ] || echo "$(date '+%F %T') hold $HT: gin_mr/gin_ts2/hm_bench/nic_gate_test still present after 150 s; no trial runs" | tee -a "$R/STOP_left"
 snap "before-$HT" | tee "$R/snap_before-$HT.txt"
-sub() { case "$1" in mr4_*|rm4_*) echo "mr_$2" ;; hm_bench) echo bench ;; *) echo "$2" ;; esac; }  # the trial folder
+sub() { case "$1" in mr4_*|rm4_*) echo "mr_$2" ;; hm_bench) echo bench ;; nic_gate) echo ngt ;; *) echo "$2" ;; esac; }  # the trial folder
 c() { [ -e "$R/STOP_left" ] || bash "$D/cells.sh" "$R/$(sub "$1" "$2")" "$1" "$2" "${3:-1}" "${4:-1}"; }  # c <cell> <build> [n] [start]
 alt21() {  # alt21 <cell> <new build> <control build>: 10 trials of the new build and 5 of the control, 2:1
   local k; for k in 1 2 3 4 5; do c "$1" "$2" 2 $((2 * k - 1)); c "$1" "$3" 1 "$k"; done
@@ -61,6 +61,8 @@ case "$H" in
     c rm4_kill3_untimed hr; c rm4_kill3_untimed hq
     c mr4_kill3_peer hr; c mr4_chain_stall hr
     c hm_bench hr ;;
+  P2)  # pilot after the first pilot (not scored): the NIC gate test once (added after P0 and P1, EXPERIMENT.md 12)
+    c nic_gate hr ;;
   H1)  # two-rank regression (hr), the production kill (hrp), then latency (hrp, hqp, two sizes, interleaved)
     for x in f1_b f3_b bidirf_sym_b f4_b f2rel_b hd_rxdeath_b; do c $x hr 5; done
     c hdp_kill_b hrp 5
@@ -81,10 +83,12 @@ case "$H" in
   H4)  # problem 2: rank 3 killed with untimed receives (hr 10, hq 5, 2:1), gin-peer's timed form (hr 5)
     alt21 rm4_kill3_untimed hr hq
     c mr4_kill3_peer hr 5 ;;
-  H5)  # four-rank regression (hr 5 each), then the host-memory benchmark (5 runs, each on both nodes)
+  H5)  # four-rank regression (hr 5 each), the host-memory benchmark (5 runs, each on both nodes), then the NIC gate test
+       # (5 runs, each on both nodes)
     c mr4_none hr 5
     c mr4_f1_01 hr 5
-    c hm_bench hr 5 ;;
+    c hm_bench hr 5
+    c nic_gate hr 5 ;;
   fill:*)  # replacement trials: fill:<subdir>:<cell>@<build>:<n>:<start>[,...] (subdir as above: <build> or mr_<lib>)
     spec=${H#fill:}
     IFS=',' read -ra items <<< "$spec"

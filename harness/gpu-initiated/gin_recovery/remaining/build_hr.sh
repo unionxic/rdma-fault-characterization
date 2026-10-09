@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build this study's libraries and drivers in the session scratch, leaving every earlier tree untouched.
-# usage: build_hr.sh <setup|hr|hrp|drivers|all>
+# usage: build_hr.sh <setup|hr|hrp|drivers|ngt|all>
 #   setup:   once: copy agent_ts2hq's source tree, its research build directory build/ and its production build directory
 #            build-hqp/ -> agent_ts2hr (build-hqp/ becomes build-hrp/); rewrite the absolute paths in the dependency files
 #            (*.d) and device manifests and give them back their original mtimes, so make rebuilds only what changed;
@@ -14,10 +14,13 @@
 #            libnccl -> out/hrp/.
 #   drivers: ../gin_ts2.cu against build/ headers -> out/drv/gin_ts2 (used by the hr and hrp bundles and, with the hq
 #            libnccl, by the hq controls), this folder's gin_mr.cu -> out/mr/gin_mr, and this folder's hm_bench.cu ->
-#            out/drv/hm_bench (+ build_info.txt). Warnings are errors.
+#            out/drv/hm_bench (+ build_info.txt). Warnings are errors. (nvcc output is not byte-reproducible: a rerun
+#            changes these md5 values; the deployed ones are recorded in EXPERIMENT.md 12.)
+#   ngt:     this folder's nic_gate_test.cu (no NCCL; libibverbs, libcuda) -> out/ngt/nic_gate_test (+ out/ngt/build_info.txt).
+#            Built on its own after the pilot (EXPERIMENT.md 12) so the deployed drivers stay as they are.
 # All compiles run at nice 19 and idle I/O priority with JOBS (default 8) jobs: other studies run on this node.
 set -euo pipefail
-STAGE=${1:?setup, hr, hrp, drivers or all}
+STAGE=${1:?setup, hr, hrp, drivers, ngt or all}
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
 SRC=$SCR/agent_ts2hq
 DST=$SCR/agent_ts2hr
@@ -108,8 +111,20 @@ drivers() {
   } > "$DST/out/build_info.txt"
   cat "$DST/out/build_info.txt"
 }
+ngt() {
+  mkdir -p "$DST/out/ngt"
+  nice -n 19 $CUDA/bin/nvcc -std=c++17 -O2 $GENCODE -Xcompiler "-Wall,-Wextra,-Werror" "$D/nic_gate_test.cu" \
+    -o "$DST/out/ngt/nic_gate_test" -libverbs -lcuda
+  {
+    echo "built=$(date '+%F %T')"
+    echo "nic_gate_test_md5=$(md5sum < "$DST/out/ngt/nic_gate_test" | cut -d' ' -f1) nic_gate_test_cu_md5=$(md5sum < "$D/nic_gate_test.cu" | cut -d' ' -f1)"
+    echo "nvcc=$($CUDA/bin/nvcc --version | tail -1)"
+  } > "$DST/out/ngt/build_info.txt"
+  cat "$DST/out/ngt/build_info.txt"
+}
 case "$STAGE" in
   setup) setup ;;
+  ngt) ngt ;;
   hr) hr ;;
   hrp) hrp ;;
   drivers) drivers ;;
