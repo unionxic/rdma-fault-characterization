@@ -84,8 +84,13 @@ NVSHMEM을 쓰지 않는다(X6).
     등록됨(V8, V12). devComm을 만든 뒤 등록한 window가 있으면 무장하지 않는다(그 rkey 표는 루프백 MR에 없음). 도중에 NIC 경로가 꺼지면 fallback.
   - QP 감시가 켜져 있음(`NCCL_GIN_TS_QPWATCH_MS` > 0, hw 6087): 누적 실행 수의 표본(G7, V14).
   - window가 strict ordering으로 등록됨(`NCCL_WIN_STRICT_ORDERING`, 5절 B3의 해결 후보. B3이 풀리기 전에는 조건으로 둔다).
+  - 이 rank의 GPU 문맥(판 3, A5)에 0이 아닌 측 표 포인터가 있음(검토 3 W1, 2026-10-09). hw는 GPU 문맥을 `gdakiTsSetup`(hw 7986)보다 먼저 장치로 복사하므로
+    (`copy_h_to_d`, hw 7964) 포인터는 그 복사에 실리지 않는다. 복원 계층(RL10)은 측 표를 할당한 `gdakiTsStart` 안에서, `ncclGinGdakiCreateContext`가
+    돌아오기 전에 그 칸 하나를 H2D 한 번으로 쓰고 그 뒤에는 쓰지 않는다(그 뒤에 쓰면 이미 도는 커널이 L1에 남은 0을 계속 읽을 수 있음). 정책 `failfast`나
+    `NCCL_GIN_RESTORE=0`이면 포인터는 0이고 그 communicator는 무장하지 않는다.
 - **상대의 무장(ARMED)은 communicator 전체의 합의다**(V6). 상대 p는 다음이 모두 참일 때만 ARMED다.
-  - p의 확정된 체크포인트가 짝에 있고, 그 체크포인트의 입력 멈춤에서 **모든** 생존 rank가 "p에 대해 무장 가능"으로 답했음(PAUSED에 실음).
+  - p의 확정된 체크포인트가 짝에 있고, 그 체크포인트의 입력 멈춤에서 **모든** 생존 rank가 "p에 대해 무장 가능"으로 답했음(PAUSED에 실음. 그 rank의
+    communicator 무장 조건, 위의 측 표 포인터 포함).
   - 그 뒤 어느 rank도 p에 대한 DISARM을 보내지 않았음. rank q는 p로 가는 로그가 넘치거나, p로 `get`을 냈거나(M2), 자기 문맥이 무장 조건을 잃으면
     DISARM(p)를 모든 rank에 보낸다. 받은 rank는 p를 OFF로 둔다(p의 다음 확정 체크포인트까지).
   - p의 예비 프로세스가 짝에 등록돼 있음.
@@ -115,6 +120,14 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
   PeerDead, `GDAKI_UA_PEER_DEAD`로 한다(degraded 예약). 죽음 판정이 아니면 지금 동작(원인 Unknown, `uaWhy` DECLINED) 그대로다. 그래서 고친 뒤에는 그 거절이
   위의 앞 두 조건을 채울 수 있다. 복원 설계는 이 창을 계속 붙잡지 않는다: G2의 강한 증거 검사가 이 표시가 선 거절을 빼고, 그 상대가 ARMED였으면 NOHOLD(p)를
   보낸 뒤 fail-fast로 거절한다(3절 N4). 표시는 G2가 그 거절 안에서 읽으므로 거절 전에 서 있어야 하고, 지우는 곳은 REJOIN뿐이다(D4).
+  검토 3의 다듬음(W10, 메인 세션과 gpu-detect에 넘길 것): 그 고침이 `gdakiTsSocketLost`만 부르고 거절을 helper 루프(hw 6380–6386)나 라운드의 죽음 길
+  (hw 5507–5518)에 맡기면 "거절 바로 전"은 그 창을 모르는 코드가 된다. 그래서 표시는 잃은 자리에서, `gdakiTsSocketLost`를 부르기 전과 어느 돌아가기보다도
+  먼저 세운다. Commit 뒤 응답 쪽의 다른 출구(DONE 시간 초과 hw 5304, BYE 5305–5307, FAIL이나 모르는 레코드 5309–5311, `RepostApply` 실패 5313)에서도
+  세우면 앞으로 원인이 바뀌어도 이 지킴이 따로 선다(선택). 같은 화신에 대해 표시 없는 PEER_DEAD 거절이 뒤따를 수는 없다: 첫 거절이 `pe.declined`를 세우면
+  `gdakiTsSocketLost`가 더는 `deadJudged`를 세우지 않고(hw 3796), 다시 걸기와 탐침이 멈추고(hw 3997, 4094), 그 상대 단어가 TOLD로 G2의 hold 갈래를 막는다
+  `[소스: 검토 3]`. 검토 3 W11(gpu-detect 쪽 메모): ACK 보내기 실패 길에서는 `gdakiTsSend`가 `pe.closeCause`를 세우지 않고 `gdakiTsInstall`이 지우므로
+  (hw 3892), errno를 먼저 `closeCause`에 옮기지 않고 `gdakiTsSocketLost`를 부르면 원인이 "모름"으로 남아 `gdakiTsCauseLiveness`(hw 3737–3743)가 죽음으로
+  분류한다(EPIPE가 거짓 죽음과 degraded가 됨). hw 5606, 5749처럼 errno를 먼저 옮겨야 한다. 복원 설계에는 영향이 없다("모름"은 강한 증거가 아니고 표시가 뺌).
 - **잘못된 죽음 판정의 막**: (1) 예비 프로세스는 같은 노드에 있으므로 활성화 전에 원래 프로세스(등록 때 받은 PID)가 끝났는지 스스로 확인한다:
   `/proc/<pid>`가 없거나, `/proc/<pid>/stat`의 상태가 Z(거두기 전 zombie)나 X이거나, 시작 시각(22번째 칸)이 등록 때의 값과 다르다(거둔 뒤 PID가 다시
   쓰인 경우; V9). 아니면 활성화를 거절하고 모두 fallback한다. (2) 복원 라운드가 생존
@@ -134,7 +147,10 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
   다르다: 문맥을 만들 때 루프백 MR이 더 많고(복원 버퍼), 그 등록에서 CUDA driver 함수를 부르고, 자체 시험 범위가 넓다(N5). 정책 hook(4.10절 G1–G9)과 같은 파일에 넣는 복원 계층의 코드(4.11절)는 fail-fast에서 늘 같은 값을 돌려주거나
   닿지 않는다. 장치 헤더의 변경(EXPERIMENT.md 9.9절 DV1–DV4)은 fail-fast에서 같은 결과를 내지만 시간을 바꿀 수 있다: 보내기마다 측 표 포인터를 한 번
   보는 것(DV2), 키 읽기 자리(B4). B4의 결정 (나)(2026-10-09) 뒤 fail-fast에서 키 읽기의 자리와 종류는 지금과 같고, 더해지는 것은 DV2와 같은 포인터 읽기에
-  기대는 분기 하나다. 게이트 뒤의 키 다시 읽기는 측 표 포인터가 0이 아닌 hold 정책의 communicator에서만 한다(A1).
+  기대는 분기 하나와 내부 인자 하나(신호 키의 주소)다(검토 3 W8: 그 인자가 게이트의 `__noinline__` 느린 길 호출을 건너 살아 있어 레지스터 배치가 바뀔 수
+  있음, 결과는 같음). 게이트 뒤의 키 다시 읽기는 측 표 포인터가 0이 아닌 hold 정책의 communicator에서만 한다(A1). 그래서 hold 정책이지만 무장하지 않은
+  communicator도 장치에서 fail-fast와 다르다: 문맥을 만든 때부터 보내기마다 키를 게이트 뒤에 다시 읽고(L1 적중을 잃음), 로그는 쓰지 않는다(로그는 QP마다의
+  켬 낱말이 선 뒤에만, C2; 검토 3 W2).
 
 ## 3. 상태 기계 (상대 하나, hold-for-restore)
 
@@ -267,13 +283,13 @@ degraded가 예약된다(fail-fast의 상대를 모르는 대기는 2 s 뒤 풀�
 | T2 | 펌웨어 단계 감시(D5) | 그대로 | 복원 라운드의 펌웨어 단계(2ERR, 2RST, INIT/RTR/RTS, Commit 전 QUERY_QP)는 가드 안 → 초과는 TOLD → fallback. 체크포인트와 누적용 QUERY_QP는 가드 밖(hw 감시와 같은 이유: 가드 안에서 SIGSTOP이 오면 감시가 산 쌍의 단어를 올림, gpu-detect 리뷰 M1; F21) | 감시 | L |
 | T3 | 라운드 감시 25 s, 쌓임 감시 1 s(D5) | 그대로 | 복원 기다림은 라운드가 아님. hold 시작과 복원 라운드는 Busy 안. 상태 기계의 한 걸음은 1 s 안(D5) | 감시 | L |
 | T4 | 장치 대기의 hold 한도(게이트 `waitMs` = `NCCL_GIN_TS_HOLD_MS` 30 000, hr 6820 / hw 7128; `tsParkStable` gin_gdaki.h 255, 278–294), `roundMs`는 `gdakiTsStart`에서 정함(hr 6741 / hw 7046), 재연결 기다림의 한도(hr 6773–6778 / hw 7081–7086), helper가 다른 일에 묶이는 시간(라운드 `roundMs`, 재연결 기다림 hr 5461–5472 / hw 5490–5501, 정지 `quiesceMs`) | 라운드를 기다리는 장치 스레드의 한도 | 쉬는 스레드의 시계는 게이트가 처음 홀수가 된 때부터 감(F13). HELD의 실제 시한 = min(hold 시작 + `NCCL_GIN_RESTORE_MS`, 게이트가 홀수가 된 시각 + `holdMs` − 복원 라운드 몫 − 여유). PUBLISHED의 시한은 게시 시각 + `NCCL_GIN_RESTORE_MS`(장치 대기가 붙잡혀 있지 않아 hold 한도 항이 없음, P1). 시한은 Q4 감시 스레드가 지키므로(G8) helper가 묶여 있어도 늦지 않음(V5). 관계 검사는 `gdakiTsStart`에서. 어기면 그 communicator는 fail-fast(WARN). 포기는 TOLD → fallback | hold 한도 | G8, L |
-| T5 | 복사 한도 2 000 ms와 NIC 루프백(hr 1232, `gdakiRecCopyWait` 1388–1440, `gdakiLbXfer` 1586–1668 / hw 1232, 1388–1440, 1587–1669), 루프백 설정과 자체 시험(hr 6474–6735 / hw 6761–7040, hw L-C: NIC만으로 시험), MR 목록(`gdakiLbAddRange`는 설정 때만, CUDA driver 함수를 부름 hr 1498, 1508, 1522 / hw 1499, 1509, 1523; 잠금 없는 찾기 hr 1475–1479 / hw 1476–1480), MR이 없으면 스트림 복사(CUDA 호출, hr 1721–1729 / hw 1722–1730; 묶임 hr 1377–1386 / hw 1377–1386), NIC 경로 끄기(`gdakiLbOff` hr 1483–1496 / hw 1484–1497) | 그대로 | 복원이 쓰는 GPU 메모리는 문맥을 만들 때만 루프백 MR에 넣음(실행 중 등록 없음, V12). 그 뒤 등록한 window가 있으면 무장 안 함(2.3절). 무장된 communicator에서 window 등록 해제(hr 7945 / hw 8264에서 rkey 표를 풂)가 오면 잠금 안에서 DISARM을 먼저 세우고, helper는 같은 잠금 안에서 그 표시와 `ts->stop`을 본 뒤에만 rkey 표에 씀(orphan helper 포함, F15). 풀린 rkey 표를 덮는 루프백 MR은 helper가 DISARM 때 해제(그 전까지 dmabuf 참조가 남는지는 `[미확인]`). `gdakiLbXfer`는 helper 스레드 하나만 씀(스테이징, 루프백 CQ). 자료 스레드는 호스트 버퍼의 소켓 입출력만(F14). NIC 경로가 꺼지면 fallback(V8) | 복사 한도 | L |
+| T5 | 복사 한도 2 000 ms와 NIC 루프백(hr 1232, `gdakiRecCopyWait` 1388–1440, `gdakiLbXfer` 1586–1668 / hw 1232, 1388–1440, 1587–1669), 루프백 설정과 자체 시험(hr 6474–6735 / hw 6761–7040, hw L-C: NIC만으로 시험), MR 목록(`gdakiLbAddRange`는 설정 때만, CUDA driver 함수를 부름 hr 1498, 1508, 1522 / hw 1499, 1509, 1523; 잠금 없는 찾기 hr 1475–1479 / hw 1476–1480), MR이 없으면 스트림 복사(CUDA 호출, hr 1721–1729 / hw 1722–1730; 묶임 hr 1377–1386 / hw 1377–1386), NIC 경로 끄기(`gdakiLbOff` hr 1483–1496 / hw 1484–1497) | 그대로 | 복원이 쓰는 GPU 메모리는 문맥을 만들 때만 루프백 MR에 넣음(실행 중 등록 없음, V12). 복원 라운드는 rkey 표와 신호 표의 칸 p를 모두 쓴 뒤 READ 하나로 GPU 메모리에 닿았음을 확인하고 나서 게시함(검토 3 W5, A1 (3)). 그 뒤 등록한 window가 있으면 무장 안 함(2.3절). 무장된 communicator에서 window 등록 해제(hr 7945 / hw 8264에서 rkey 표를 풂)가 오면 잠금 안에서 DISARM을 먼저 세우고, helper는 같은 잠금 안에서 그 표시와 `ts->stop`을 본 뒤에만 rkey 표에 씀(orphan helper 포함, F15). 풀린 rkey 표를 덮는 루프백 MR은 helper가 DISARM 때 해제(그 전까지 dmabuf 참조가 남는지는 `[미확인]`). `gdakiLbXfer`는 helper 스레드 하나만 씀(스테이징, 루프백 CQ). 자료 스레드는 호스트 버퍼의 소켓 입출력만(F14). NIC 경로가 꺼지면 fallback(V8) | 복사 한도 | L |
 
 ### 4.5 끝점과 메모리
 
 | # | 장치와 코드 | fail-fast | hold-for-restore | 우선 | 바꿀 것 |
 |---|---|---|---|---|---|
-| A1 | rkey와 주소: window rkey는 등록 때 all-gather(`ncclGinGdakiRegMrSym` hr 7879–7931, all-gather 7902–7905 / hw 8198–8250, 8221–8224), 신호와 카운터 표의 교환(hr 7311–7315 / hw 7630–7634). 장치: 원격 주소는 window 안의 오프셋(gin_gdaki.h 475), rkey는 게이트 전에 읽음(476, 게이트 501; `signalKey`는 호출자가 계산해 값으로 넘김 1458–1468), `loadConst`는 보통 읽기(`utility.h` 449–457) | rkey는 communicator가 사는 동안 고정 | 예비 프로세스의 MR은 새 rkey. 생존 rank는 그 상대로 가는 게이트가 홀수인 동안 모든 window rkey 표와 신호, 카운터 표의 칸 p를 NIC 루프백으로 바꾸고 짝수 에폭을 게시. 그러나 키는 게이트 전에 읽히므로, 게이트가 홀수일 때 옛 키를 읽고 게시 뒤 빠른 경로로 들어간 보내기는 옛 키로 보냄(F5): 남의 MR이 그 키 값을 다시 받으면 조용한 손상 `[미확인]`. 해결은 키 읽기를 게이트에 들어간 뒤로 옮기는 것(DV3)이고, `signalKey`의 계산 자리를 옮기는 구조 변경과 읽기 종류의 변경(L1 적중을 잃을 수 있음)이 따름 → 5절 B4. **결정 (나)(2026-10-09)**: (1) 갈림: `putImplMode`, `putValueImplMode`(신호만 보내는 길 포함)에서 측 표 포인터(DV1, `loadConst`로 게이트 전에 한 번; 문맥을 만들 때 hold 정책이면 정하고 communicator가 사는 동안 바뀌지 않음)가 0이 아니면, `tsGateEnter`가 참을 돌려준 뒤(빠른 길이든 느린 길 `tsGateEnterSlow`든) `raddr.key`(`dstMh->rkeys[peer]`)와 `sig_raddr.key`를 다시 읽어 덮어씀. 다시 읽기는 L1을 거치지 않는 GPU 범위 strong 읽기(`ld.relaxed.gpu`). (2) `signalKey`는 지금처럼 호출자가 계산해 값으로 넘기고(gin_gdaki.h 1458–1468, 1483–1494) fail-fast는 그 값을 씀. 호출자는 그 키를 읽은 주소(`signals_table.rkeys + peer`나 `signalMh->rkeys + peer`, 신호가 없으면 null)를 장치 헤더 안의 내부 인자 하나로 더 넘김(공개 API는 같음). (3) 차례의 근거: 생존 rank의 helper는 p로 가는 게이트가 홀수이고 개수가 0일 때 칸 p를 NIC 루프백으로 쓰고 READ로 확인한 뒤 짝수 에폭을 게시함. 게이트에 든 스레드는 개수 0 전에 나갔거나 게시 뒤에 들어왔고, 진입은 acquire 원자 더하기(`tsWordEnter` 126–130)라 그 뒤 읽기가 앞당겨지지 않으므로 새 키를 읽음 `[추론]`. (4) fail-fast(포인터 0): 키 읽기의 자리, 종류(`loadConst`, L1 적중), 명령 차례가 지금과 같고 분기 하나만 더해짐(DV2와 같은 포인터 읽기). (5) hold: 키를 두 번 읽고(호출자의 게이트 전 읽기는 버려짐) 게이트 뒤 읽기는 L1 적중을 잃음. 비용은 계층을 만들 때 4 KiB, 256 KiB에서 잼(EXPERIMENT.md LT1, LT2). (6) 억제(C6): 느린 길이 SUPPRESS로 내지 않으면 다시 읽기도 없음. 일부만 내거나(신호만) 그대로 내면 참을 돌려준 뒤 같은 자리의 다시 읽기를 지남. (7) get(gin_gdaki.h 697)과 카운터 키(자기 rank 칸 493)는 다시 읽지 않음: 되살릴 rank와의 get은 무장 해제(M2), 자기 칸은 바뀌지 않음 | 복원 | DV3, 5절 B4 |
+| A1 | rkey와 주소: window rkey는 등록 때 all-gather(`ncclGinGdakiRegMrSym` hr 7879–7931, all-gather 7902–7905 / hw 8198–8250, 8221–8224), 신호와 카운터 표의 교환(hr 7311–7315 / hw 7630–7634). 장치: 원격 주소는 window 안의 오프셋(gin_gdaki.h 475), rkey는 게이트 전에 읽음(476, 게이트 501; `signalKey`는 호출자가 계산해 값으로 넘김 1458–1468), `loadConst`는 보통 읽기(`utility.h` 449–457) | rkey는 communicator가 사는 동안 고정 | 예비 프로세스의 MR은 새 rkey. 생존 rank는 그 상대로 가는 게이트가 홀수인 동안 모든 window rkey 표와 신호, 카운터 표의 칸 p를 NIC 루프백으로 바꾸고 짝수 에폭을 게시. 그러나 키는 게이트 전에 읽히므로, 게이트가 홀수일 때 옛 키를 읽고 게시 뒤 빠른 경로로 들어간 보내기는 옛 키로 보냄(F5): 남의 MR이 그 키 값을 다시 받으면 조용한 손상 `[미확인]`. 해결은 키 읽기를 게이트에 들어간 뒤로 옮기는 것(DV3)이고, `signalKey`의 계산 자리를 옮기는 구조 변경과 읽기 종류의 변경(L1 적중을 잃을 수 있음)이 따름 → 5절 B4(이 문장은 결정 전의 것: 결정 (나)는 옮기지 않고 hold에서만 다시 읽음, 검토 3 W9). **결정 (나)(2026-10-09, 검토 3 반영)**: (1) 갈림과 자리: 측 표 포인터(DV1, `loadConst`로 게이트 전에 한 번; 문맥을 만드는 중 `gdakiTsStart`에서 한 번 쓰고 그 뒤 바뀌지 않음, 2.3절)가 0이 아니면, `tsGateEnter`가 참을 돌려준 뒤(빠른 길이든 느린 길 `tsGateEnterSlow`든) 키를 다시 읽어 덮어씀. `putImplMode`는 게이트(501) 뒤, 보내기 갈림(509) 앞에서 읽어 `tsTestSplitPut`(516)도 새 키를 씀. `raddr.key`(`dstMh->rkeys[peer]`)는 `hasWins`일 때만(신호만 보내는 길 526–533에서는 `dstMh`가 없을 수 있음), `sig_raddr.key`는 키 주소가 null이 아닐 때만 다시 읽음. `putValueImplMode`는 게이트(604) 뒤에 같은 것(window는 늘 있음). `getImplMode`도 게이트(704) 뒤에 `raddr.key`(`remoteMh->rkeys[peer]`, 697)를 다시 읽음(검토 3 W3: 복원을 건너는 커널의 get이 L1에 남은 옛 키를 쓰지 않게; 같은 포인터의 분기 하나). 다시 읽기는 L1을 거치지 않는 시스템 범위 relaxed 32비트 읽기(`ld.relaxed.sys`, 게이트 안의 다른 호스트 쓰기 칸을 읽는 `tsLoadRelaxedSys64` 390, 404, 769와 같은 종류; 쓰는 쪽이 NIC이므로; 검토 3 W4). (2) `signalKey`는 지금처럼 호출자가 계산해 값으로 넘기고(gin_gdaki.h 1458–1468, 1483–1494) fail-fast는 그 값을 씀. 호출자는 그 키를 읽은 주소(`signals_table.rkeys + peer`나 `signalMh->rkeys + peer`, 신호가 없으면 null)를 장치 헤더 안의 내부 인자 하나로 더 넘김(공개 API는 같음). (3) 차례의 근거: 생존 rank의 helper는 p로 가는 게이트가 홀수이고 개수가 0일 때 모든 window rkey 표와 신호 표의 칸 p를 NIC 루프백으로 쓰고, 다 쓴 뒤 READ 하나로 GPU 메모리에 닿았음을 확인한 다음(검토 3 W5; EXPERIMENT.md 9.3절 7단계, RL9, T5) `gdakiTsRepostApply`의 게시(hw 4906)로 짝수 에폭을 냄. 게이트에 든 스레드는 개수 0 전에 나갔거나 게시 뒤에 들어왔고, 진입은 acquire 원자 더하기(`tsWordEnter` 126–130)라 그 뒤의 strong 읽기가 앞당겨지지 않고 L1의 옛 줄을 보지 않으므로 새 키를 읽음 `[추론]`. (4) fail-fast(포인터 0): 키 읽기의 자리, 종류(`loadConst`, L1 적중), 명령 차례가 지금과 같음. 더해지는 것은 분기 하나(DV2와 같은 포인터 읽기)와 내부 인자 하나다(검토 3 W8). 결과는 같다. (5) hold: 키를 두 번 읽고(호출자의 게이트 전 읽기는 버려짐) 게이트 뒤 읽기는 L1 적중을 잃음. 무장 전에도(문맥을 만든 때부터) 그렇다. 비용은 계층을 만들 때 4 KiB, 256 KiB에서 잼(EXPERIMENT.md LT1, LT2와 다시 읽기만 따로 재는 셀, 7절). (6) 억제(C6): 느린 길이 SUPPRESS로 내지 않으면 다시 읽기도 없음. 일부만 내거나(신호만) 그대로 내면 참을 돌려준 뒤 같은 자리의 다시 읽기를 지남. 억제는 예비 프로세스에서만 서고 그 프로세스의 생존 rank 키는 바뀌지 않으므로 다시 읽기는 같은 값을 읽음. C2의 coop에서는 게이트를 잡은 0번 스레드가 보내기 전에 읽음. (7) 다시 읽지 않는 것: 카운터 키(자기 rank 칸 493, 바뀌지 않음), flush의 mcst(로컬 lkey, 755). 상대 rkey를 읽는 장치 자리는 476, 592, 697, 1461, 1464, 1487, 1492뿐이고 DOCA의 한쪽 연산 도우미는 키를 값으로 받음(검토 3 W7). 투명 복구는 companion(카운터) QP가 있으면 켜지지 않으므로(hw 2180, 6446) hold에서 카운터 길은 쓰이지 않고, 카운터 표의 칸 p 바꿈은 해가 없는 헛일이다 | 복원 | DV3, 5절 B4 |
 | A2 | get 표(Commit이 지움 hr 2436–2446 / hw 2437–2447) | 그대로 | 복원 라운드의 Commit이 그 상대의 get 표를 지움. get은 M2대로 없음 | 복원 | 없음 |
 | A3 | GIN collComm 고리(gin.cc 138–229, 연결 231–259: 고리 이웃과 실제로 잇고 받음), helper 설정의 잇기와 받기(hr 6255–6308 / hw 6541–6594: 여기서만 `gated`, `addr`가 섬 hr 6281–6284, 6303–6306 / hw 6567–6570, 6589–6592; 게이트는 `gated` 상대에만 씀 hr 6813–6831 / hw 7121–7139) | rank 하나가 죽으면 고리가 끊겨 그 communicator에서 GIN 집합 교환(새 window 등록, devComm 생성)을 더 못 함 | 같음. 예비 프로세스의 GIN 초기화는 all-gather 대답뿐 아니라 고리 연결과 helper 설정의 잇기/받기도 건너뛰어야 하고, 그러면서 `gated`와 `addr`는 기록으로 세워야 함(안 그러면 게이트가 없어 투명 복구도 억제도 없음, V13). B1. 복원 뒤 새 GIN 자원은 범위 밖 | 범위 | B1 |
 | A4 | LSA(devComm `lsaRank`, `lsaSize`, `comm__types.h` 35; `dev_runtime.cc` 392) | 해당 없음(GIN만) | 같은 노드의 rank가 LSA 팀이면 생존 rank의 devComm이 죽은 rank의 메모리를 load/store로 가리킴 `[추론]` | 막는 문제 | 5절 B2 |
@@ -312,7 +328,7 @@ degraded가 예약된다(fail-fast의 상대를 모르는 대기는 2 s 뒤 풀�
 | # | 구성 요소 | fail-fast | hold-for-restore에서 닿는 기존 장치와 규칙 |
 |---|---|---|---|
 | C1 | 체크포인트의 입력 멈춤(빈 라운드, EXPERIMENT.md 9.4절) | 없음(체크포인트 없음) | 생존 rank q는 `gdakiTsQuiesce`에서 2ERR만 뺀 차례로 멈춤: 게이트 홀수, 개수 0, 모아 둔 WQE의 doorbell(안 울리면 r의 drain이 끝나지 않음, F20). 에폭 회계(M3: `coveredEpoch`, `nonmsg` 유지), 확대 상한(T1, 세지 않음), 기다림의 메시지 미룸(M1), hold 한도(멈춤은 ms 단위), drain의 QUERY_QP(T2, 가드 밖). RESUME은 q가 그 상대를 거절하지 않았고, 멈춤 뒤 진짜 라운드가 없었고, 게이트가 아직 멈춤 때의 에폭일 때만 게시(`gdakiTsWordHiWrite`는 에폭 반쪽을 통째로 씀 hr 4270–4273 / hw 4295–4298: 거절의 HOST_FAILED를 지우면 안 됨, F7 (b)). 멈춤 중 그 쌍에 라운드가 돌면 라운드가 이기고 그 체크포인트는 버림. 멈춤 요청을 받은 rank가 라운드 중이거나 억제 예산이 남았으면 BUSY(P4). PAUSED는 "p에 대해 무장 가능"을 실음(2.3절). 억제 예산이 남은 rank는 체크포인트를 찍지 않음(V18) |
-| C2 | 송신 쪽 로그(장치) | 꺼짐: 측 표 포인터가 0 | 게이트 안 기록(put 경로 gin_gdaki.h 458–547). 게이트 계수는 coop의 0번 스레드만 잡으므로(465, 501, 537) 0번 스레드가 계수를 잡은 채 자리를 잡고, coop 동기화 뒤 모든 스레드가 내용을 복사하고, 다시 동기화한 뒤 0번이 적고 보내고 나감(V19: 개수 0이 "항목이 다 적힘"을 뜻하게). 0번 스레드의 게이트 진입이 실패하거나 억제되면 coop 전체가 보는 "건너뜀" 깃발로 복사를 건너뜀. 추가 동기화는 측 표 포인터가 0이 아닐 때만. 넘침은 DISARM. 측 표 포인터 칸은 GPU 문맥 판 3(A5) |
+| C2 | 송신 쪽 로그(장치) | 꺼짐: 측 표 포인터가 0 | 측 표의 QP마다 "로그 켬" 낱말이 선 QP에서만 쓴다(검토 3 W2, 2026-10-09: 측 표 포인터 ≠ 0은 B4의 키 다시 읽기를 뜻하고, 로그는 따로 켬). 그 낱말은 helper가 그 QP의 게이트가 홀수이고 개수가 0일 때(체크포인트의 입력 멈춤, C1) NIC 루프백으로 쓰므로 로그의 시작과 절단점이 같은 자리다. 장치는 게이트 안에서 strong 읽기로 본다. DISARM은 낱말을 그대로 두거나 다음 멈춤에서 지운다(로그가 더 쓰여도 해가 없음). 게이트 안 기록(put 경로 gin_gdaki.h 458–547). 게이트 계수는 coop의 0번 스레드만 잡으므로(465, 501, 537) 0번 스레드가 계수를 잡은 채 자리를 잡고, coop 동기화 뒤 모든 스레드가 내용을 복사하고, 다시 동기화한 뒤 0번이 적고 보내고 나감(V19: 개수 0이 "항목이 다 적힘"을 뜻하게). 0번 스레드의 게이트 진입이 실패하거나 억제되면 coop 전체가 보는 "건너뜀" 깃발로 복사를 건너뜀. 추가 동기화는 측 표 포인터가 0이 아닐 때만. 넘침은 DISARM. 측 표 포인터 칸은 GPU 문맥 판 3(A5) |
 | C3 | 예비 프로세스와 초기화 재생 | 없음 | NCCL bootstrap, GIN collComm 고리와 helper 설정(A3), `NCCL_MULTI_RANK_GPU_ENABLE`(X4). 막는 문제 B1 |
 | C4 | REJOIN | REJOIN은 닫음 | 재연결 기계와 펜싱(D4) |
 | C5 | 복원 라운드 | 없음 | hold 시작(3절), Prepare/Commit과 양쪽 토큰(M4), rkey(A1), `RepostApply`의 커밋 지점과 PUBLISHING(M2), 비메시지 확인(M2), 펌웨어 감시(T2), hold 한도(T4), 게시 전 확인(R4) |
@@ -354,7 +370,7 @@ Unknown, `uaWhy` DECLINED로 거절하므로 degraded가 예약되지 않는다.
 
 2026-10-09: gpu-detect가 이 틈을 고친다(병렬 작업, 메인 세션이 정한 계약). 그 두 자리의 거절 바로 전에 `pe.lostAfterCommit = true`를 세우고, 잃음이 죽음
 판정이면 거절은 PeerDead, `GDAKI_UA_PEER_DEAD`(degraded 예약), 아니면 지금 그대로다. 복원 계층이 이 계약에 기대는 것은 둘이다: G2의 강한 증거 검사가 이
-표시를 본다(2.4절, 붙잡지 않고 NOHOLD), REJOIN이 이 표시를 지운다(D4). 이 문서의 hw 줄 번호는 고치기 전 트리(diff md5 `be0ea9ed`)의 것이다. 고친 뒤 줄이 밀리면
+표시를 본다(2.4절, 붙잡지 않고 NOHOLD), REJOIN이 이 표시를 지운다(D4). 표시를 세우는 자리와 ACK 길의 errno에 대한 검토 3의 메모(W10, W11)는 2.4절에 적었다. 이 문서의 hw 줄 번호는 고치기 전 트리(diff md5 `be0ea9ed`)의 것이다. 고친 뒤 줄이 밀리면
 계층을 만들 때 다시 맞춘다.
 
 **t1w (NVSHMEM).** 코드 변경 없음. `NVSHMEM_IBGDA_FT_T1_FIN_DEATH`, `FAILSTOP_MS`, `FAILSTOP_CODE`는 NVSHMEM fail-fast 반응의 변수로 문서화한다.
@@ -366,8 +382,9 @@ NVSHMEM 정책은 fail-fast 하나다. hold 정책의 프로세스는 NVSHMEM을
   기다림의 미룸(RL11, RL17, M1), 낡은 기록 검사의 `coveredEpoch`(RL12), 확대 상한의 세지 않기(RL15), 누적 실행 수(RL13), hold 시작과 복원 라운드(RL1,
   RL4, RL7–RL9), 응답의 NACK 17(RL20). 이들도 fail-fast에서 같다: 새 메시지는 오지 않고, `coveredEpoch == epoch`이고, 세지 않기와 누적은 hold 경로에서만 부르고, 붙잡은 상대가 없어 NACK 17이
   나가지 않는다.
-- 로그, 체크포인트, 예비 프로세스는 정책이 hold이고 그 communicator가 무장 조건(2.3절)을 갖추고 `ncclGinRestoreResume`을 부른 뒤에만 켠다.
-  fail-fast에서는 비용이 보내기마다 측 표 포인터를 한 번 보는 것뿐이다(DV2).
+- 로그, 체크포인트, 예비 프로세스는 정책이 hold이고 그 communicator가 무장 조건(2.3절)을 갖추고 `ncclGinRestoreResume`을 부른 뒤에만 켠다. 로그를 켜는 것은 QP마다의
+  "로그 켬" 낱말이다(C2, 검토 3 W2). 측 표 포인터는 hold 정책이면 문맥을 만들 때부터 0이 아니고 그때부터 키 다시 읽기(A1)가 돈다.
+  fail-fast에서는 비용이 보내기마다 측 표 포인터를 한 번 보는 분기와 내부 인자 하나뿐이다(DV2, A1 (4)).
 - 시제품은 멈췄다: 이 문서의 검토 전에 쓴 초안(로그 고리, 체크포인트 저장소, 복원 계획, CPU 모의)은 빌드도 실행도 하지 않았고, 저장소에 넣지 않고 세션
   스크래치 `agent_restore/proto_draft_unbuilt/`에 두었다. 시험 프로그램 `gin_rs.cu`는 쓰지 않았다. 초안의 억제 판정은 READ를 다루지 않으므로 다시 쓸 때
   M2에 맞춘다.

@@ -155,6 +155,8 @@ rank를 새 프로세스로 잇는 길, 보낸 메시지를 다시 넣는 길, �
 | `rs4_kill1` | rank 1 kill(rank 3과 같은 GPU) | `@rs` 5 | 일반성 |
 | gin-remaining, gpu-detect 회귀 셀 | 복원 계층을 켠 채 기존 셀 | `@rs` 각 5 | 회귀 |
 | `lat_4k`, `lat_256k` | 로그 켬 대 끔 | `@rsp` 각 5 | 비용 |
+| `lat_hold_unarmed` | 4 KiB, 256 KiB: hold 정책이지만 무장 전(키 다시 읽기만) 대 fail-fast | `@rsp` 각 5 | 비용(B4 (나)의 다시 읽기, 검토 3 W2) |
+| `lat_ff_branch` | 4 KiB, 256 KiB: fail-fast에서 이 계층의 빌드 대 `hw` 운영 빌드(분기 하나와 내부 인자 하나) | `@rsp`, `@hwp` 각 5 | 비용(검토 3 W2, W8) |
 
 ## 8. 제외 기준과 중단 기준
 
@@ -281,7 +283,8 @@ REJOIN은 고정 크기 제어 메시지이고 rkey 목록은 자료 소켓으�
 4. 끝점 바꿈(RL7): `rq.exch`를 예비 프로세스의 QPN, GID, LID로.
 5. `ncclGinRecoverCommit(comm, r, &spareToken)`(2334–2529): 2RST, 장치 색인 0, 새 QPN에 연결(예비 프로세스의 보내기 PSN을 받는 PSN으로).
 6. `gdakiTsBaseline`(4351): 새 화신의 rmsn 기준.
-7. rkey 표 칸 r 바꿈(RL9).
+7. rkey 표 칸 r 바꿈(RL9): 모든 window rkey 표와 신호 표의 칸 r을 NIC 루프백으로 쓰고, 다 쓴 뒤 READ 하나로 GPU 메모리에 닿았음을 확인한다(게시 전,
+   DESIGN_POLICY.md A1 (3), 검토 3 W5).
 8. 게시 전 확인(4708) 뒤, 커밋 지점(4713) 전에 상태 CAS(HELD → COMMITTING). 지면(감시 스레드의 시한이 이김) fallback.
    `gdakiTsRepostApply`(4692–4897)를 QP마다 `U = S, n = 0`인 계획으로 부른다(응답 쪽이 Commit 뒤 게시 전에 상대가 죽은 경우는 강한 죽음 증거가 아니라
    fail-fast다. gpu-detect가 그 길을 고친 뒤에도 그 거절에는 `pe.lostAfterCommit`가 서 있어 붙잡지 않는다, DESIGN_POLICY.md 2.4절과 3절): 커밋 지점(포기한
@@ -337,7 +340,9 @@ D2H와 해시, 전송(비동기로 다음 단계와 겹칠 수 있음). 메모�
 
 **언제, 누가.** put 경로(`putImplMode`, `gin_gdaki.h` 458–547)의 게이트 안(`tsGateEnter` 501 뒤, `tsPostLeave` 537 전)에서. 항목과 내용 자리는 원자
 더하기로 잡고(여러 스레드가 한 QP에 보내도 됨), 내용은 그 coop의 스레드가 함께 복사한다. 게이트 안에서 쓰므로 입력 멈춤(게이트 홀수)과 개수 0 확인이
-"그때까지의 항목이 모두 다 적힘"을 뜻한다.
+"그때까지의 항목이 모두 다 적힘"을 뜻한다. 로그는 측 표의 QP마다 "로그 켬" 낱말이 선 QP에서만 쓴다. helper는 그 낱말을 그 QP의 첫 입력 멈춤 안(게이트 홀수,
+개수 0)에서 NIC 루프백으로 세우므로 로그의 시작이 절단점과 같다(DESIGN_POLICY.md C2, 검토 3 W2). 측 표 포인터만으로는 로그를 켜지 않는다(그 포인터는 hold 정책이면
+문맥을 만들 때부터 0이 아니고 키 다시 읽기를 뜻함, 9.6절).
 
 **지우기.** 상대 r의 `CKPT_STABLE(k)`를 받으면 그 QP의 꼬리를 `L_q(k)`로 옮긴다(호스트가 NIC 루프백으로 꼬리 단어를 씀). 쓰는 쪽은 꼬리를 보고 남은
 자리를 안다.
@@ -374,12 +379,14 @@ D2H와 해시, 전송(비동기로 다음 단계와 겹칠 수 있음). 메모�
 
 **키 읽기 자리.** 생존 rank의 장치 코드는 rkey를 게이트에 들어가기 전에 읽는다(`raddr.key` 476, `signalKey` 1461과 1464, 게이트 501) `[소스]`. 게이트에서
 쉬던 스레드는 복원 전에 읽은 옛 rkey로 보낸다. 느린 길 뒤에만 다시 읽으면 모자란다: 게이트가 홀수일 때 옛 키를 읽고 게시 뒤 빠른 경로로 들어가는 보내기가
-있을 수 있다. 키 읽기를 게이트 진입 뒤로 옮겨야 하고 이는 빠른 경로의 차례를 바꾼다([DESIGN_POLICY.md](DESIGN_POLICY.md) 5절 B4).
+있을 수 있다. 키 읽기를 게이트 진입 뒤로 옮겨야 하고 이는 빠른 경로의 차례를 바꾼다([DESIGN_POLICY.md](DESIGN_POLICY.md) 5절 B4). (이 문단은 결정 전의
+것이다. 결정 (나)는 키 읽기를 옮기지 않고 hold에서만 게이트 뒤에 다시 읽는다, 아래.)
 
 사용자 결정(2026-10-09, (나)): 게이트 진입 뒤의 키 다시 읽기는 hold 정책의 communicator에서만 한다. 갈림은 측 표 포인터(DV1)가 0인지로 한다. 그 포인터는
-문맥을 만들 때 정해 communicator가 사는 동안 바뀌지 않는다. fail-fast는 키를 지금 자리에서 지금 방식(`loadConst`, L1 적중)으로 읽고, 더해지는 것은 DV2와 같은
-포인터 읽기와 분기 하나다. hold는 `tsGateEnter`가 참을 돌려준 뒤(빠른 길이든 느린 길이든) window rkey와 신호 rkey를 L1을 거치지 않는 GPU 범위 읽기로 다시
-읽어 보낸다. 자세한 것은 9.9절 DV3와 [DESIGN_POLICY.md](DESIGN_POLICY.md) A1이다.
+문맥을 만드는 중(`gdakiTsStart`, `ncclGinGdakiCreateContext`가 돌아오기 전) 한 번 쓰고 그 뒤 바뀌지 않는다(DESIGN_POLICY.md 2.3절, 검토 3 W1).
+fail-fast는 키를 지금 자리에서 지금 방식(`loadConst`, L1 적중)으로 읽고, 더해지는 것은 DV2와 같은 포인터 읽기에 기대는 분기 하나와 내부 인자 하나다.
+hold는 `tsGateEnter`가 참을 돌려준 뒤(빠른 길이든 느린 길이든) window rkey와 신호 rkey를, get은 원격 window rkey를 L1을 거치지 않는 시스템 범위
+relaxed 읽기로 다시 읽어 보낸다(put, putValue, get 모두; 검토 3 W3, W4). 자세한 것은 9.9절 DV3와 [DESIGN_POLICY.md](DESIGN_POLICY.md) A1이다.
 
 ### 9.7 결정성 요구 (piecewise determinism)
 
@@ -438,8 +445,8 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 | RL6 | 받기 루프(hr 4164–4243 / hw 4189–4268) | REJOIN: 붙잡은 상대(HELD)에게서만, nonce와 화신 번호, 죽음 표시 지우고 `gdakiTsInstall`(hr 3859 / hw 3884) |
 | RL7 | 새 함수, `opMu` 안 | QP마다 `rq.exch`를 새 끝점으로(Commit의 검사 hr 2360 / hw 2361, 연결 hr 2450 / hw 2451 전) |
 | RL8 | 새 함수 | 계획 `U = S, n = 0`으로 `gdakiTsRepostApply`(hr 4692 / hw 4717) |
-| RL9 | `ncclGinGdakiRegMrSym`(hr 7879–7931 / hw 8198–8250), 문맥 생성(hr 7311–7315 / hw 7630–7634), `gdakiLbSetup`(hr 6474– / hw 6761–) | window 등록은 rkey 표의 자리만 등록부에 적고, 루프백 MR 등록(`gdakiLbAddRange`)은 GDAKI 문맥을 만들 때(devComm 생성, `gin_host.cc` 374) 그때까지의 표에만 한다. 그 뒤 등록한 window가 있으면 무장 안 함. 복원 때 칸 r을 NIC 루프백으로(DESIGN_POLICY.md T5) |
-| RL10 | 문맥 생성, `gdakiLbSetup`(hr 6474–6735 / hw 6761–7040) | 로그 고리와 측 표 할당, 루프백 MR, `ncclGinGdakiGPUContext`의 새 칸 |
+| RL9 | `ncclGinGdakiRegMrSym`(hr 7879–7931 / hw 8198–8250), 문맥 생성(hr 7311–7315 / hw 7630–7634), `gdakiLbSetup`(hr 6474– / hw 6761–) | window 등록은 rkey 표의 자리만 등록부에 적고, 루프백 MR 등록(`gdakiLbAddRange`)은 GDAKI 문맥을 만들 때(devComm 생성, `gin_host.cc` 374) 그때까지의 표에만 한다. 그 뒤 등록한 window가 있으면 무장 안 함. 복원 때 칸 r을 NIC 루프백으로 쓰고, 다 쓴 뒤 READ 하나로 확인하고 나서 게시(DESIGN_POLICY.md T5, A1 (3)) |
+| RL10 | 문맥 생성, `gdakiLbSetup`(hr 6474–6735 / hw 6761–7040), `gdakiTsStart`(hw 7040–) | 로그 고리와 측 표 할당, 루프백 MR, `ncclGinGdakiGPUContext`의 새 칸. GPU 문맥은 `gdakiTsSetup`보다 먼저 장치로 복사되므로(hw 7964) 측 표 포인터 칸은 `gdakiTsStart` 안에서 H2D 한 번으로 따로 쓰고, `ncclGinGdakiCreateContext`가 돌아온 뒤에는 쓰지 않음(DESIGN_POLICY.md 2.3절, 검토 3 W1) |
 | RL11 | `gdakiTsMsg`(hr 2953 / hw 2966), helper 루프의 메시지 처리(hr 6074–6083 / hw 6359–6368) | 새 메시지 종류 |
 | RL12 | 새 함수 + 낡은 기록 검사(hr 5431 / hw 5460) | 입력 멈춤의 빈 라운드. 검사는 `coveredEpoch`로 |
 | RL13 | `gdakiTsExecuted`(hr 4330 / hw 4355), `gdakiTsBaseline`(hr 4351 / hw 4376) | 누적 실행 수 |
@@ -454,9 +461,9 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 
 | id | 무엇을 |
 |---|---|
-| DV1 | `ncclGinGdakiGPUContext`(common.h 222–236)에 측 표 포인터 `restore` 칸: QP마다 로그 고리 설명, 보낸 메시지 수, 억제 예산 |
-| DV2 | `putImplMode`(gin_gdaki.h 458–547), `putValueImplMode`(577–), 신호 길에서 게이트 안 로그 쓰기(9.5절). hold가 아니면 측 표 포인터가 0 |
-| DV3 | 결정 (나)(2026-10-09, DESIGN_POLICY.md 5절 B4): hold 정책의 communicator(측 표 포인터 ≠ 0)에서만 `tsGateEnter`가 참을 돌려준 뒤 `raddr.key`와 `sig_raddr.key`를 다시 읽음(`putImplMode` 501 뒤, `putValueImplMode` 604 뒤; 읽기는 L1을 거치지 않는 GPU 범위 strong 읽기). `signalKey`는 지금처럼 호출자가 계산해 값으로 넘기고(1458–1468, 1483–1494), 호출자는 그 키를 읽은 주소(`signals_table.rkeys + peer` 또는 `signalMh->rkeys + peer`, 신호가 없으면 null)를 내부 인자 하나로 더 넘김. fail-fast는 키 읽기 자리와 종류가 지금과 같고 DV2와 같은 포인터의 분기 하나만 더해짐. get(697)은 다시 읽지 않음(되살릴 rank와의 get은 무장 해제, M2). 비용은 LT1, LT2 |
+| DV1 | `ncclGinGdakiGPUContext`(common.h 222–236)에 측 표 포인터 `restore` 칸: QP마다 로그 고리 설명, "로그 켬" 낱말(검토 3 W2), 보낸 메시지 수, 억제 예산. 포인터는 hold 정책이면 문맥을 만들 때부터 0이 아님(RL10) |
+| DV2 | `putImplMode`(gin_gdaki.h 458–547), `putValueImplMode`(577–), 신호 길에서 게이트 안 로그 쓰기(9.5절). hold가 아니면 측 표 포인터가 0. 포인터가 0이 아니어도 그 QP의 "로그 켬" 낱말(게이트 안 strong 읽기)이 서 있을 때만 씀 |
+| DV3 | 결정 (나)(2026-10-09, DESIGN_POLICY.md 5절 B4, 검토 3 반영): hold 정책의 communicator(측 표 포인터 ≠ 0)에서만 `tsGateEnter`가 참을 돌려준 뒤 키를 다시 읽음. `putImplMode`는 게이트(501) 뒤 보내기 갈림(509) 앞에서 `raddr.key`(`hasWins`일 때만)와 `sig_raddr.key`(키 주소가 null이 아닐 때만), `putValueImplMode`는 604 뒤, `getImplMode`는 704 뒤에 `raddr.key`. 읽기는 L1을 거치지 않는 시스템 범위 relaxed 32비트 읽기. `signalKey`는 지금처럼 호출자가 계산해 값으로 넘기고(1458–1468, 1483–1494), 호출자는 그 키를 읽은 주소(`signals_table.rkeys + peer` 또는 `signalMh->rkeys + peer`, 신호가 없으면 null)를 내부 인자 하나로 더 넘김. fail-fast는 키 읽기 자리와 종류가 지금과 같고 DV2와 같은 포인터의 분기 하나와 내부 인자 하나만 더해짐. 비용은 LT1, LT2와 7절의 비용 셀 |
 | DV4 | 게이트 에폭 반쪽의 SUPPRESS 비트(`EPOCH_MASK`를 `0x1fffffff`로). 보내기의 열림 검사(`tsGateEnter` 333)에만 넣고 공용 `tsWordOpen`(146–148)과 대기 쪽(`tsPollEnter` 365, `tsParkStable` 264)에는 넣지 않음. 장치가 에폭 반쪽을 값으로 쓰는 자리(364–366, 1106–1108, 1037, 206–207)에서 지움. 느린 길의 억제와 put+신호 나누기(DESIGN_POLICY.md C6) |
 
 | id | 무엇을 |
@@ -507,6 +514,138 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 
 계층이 생긴 뒤: 빌드는 gpu-detect의 `build_gd.sh`를 본뜬 `build_rs.sh`의 `layer` 단계, 배포는 새 디렉터리 `rs/`, `rsp/`, 실행은 gin-remaining의
 `run_mr_hr.sh`를 본떠 예비 프로세스를 함께 띄우는 실행기, 모두 `cluster_run.sh` 안. 실행기와 셀 파일은 아직 쓰지 않았다.
+
+### 9.15 실행 가능성 시험 B1, B2, B3 (DRAFT 단계, 채점하지 않음)
+
+사용자 결정(2026-10-09)으로 막는 문제 B1–B3([DESIGN_POLICY.md](DESIGN_POLICY.md) 5절)이 풀릴 수 있는지 먼저 시험한다. 사전 등록하지 않고 채점하지 않는다.
+판정 기준은 아래에 실행 전에 적었다. 시험 코드는 [feas/](feas/)에 두고(시험 프로그램, B1의 기록과 재생 hook, 실행기), 결과는
+`results/<날짜>_feasibility/`에 두며 12절에 적는다. 복원 계층(9.9절)은 구현하지 않는다. 클러스터 실행은 모두 메인 세션이 `cluster_run.sh` 안에서 한다.
+
+#### 9.15.1 기존 장치와 병렬 작업과의 충돌 (세 시험 공통)
+
+| 자원 | 이 시험 | 겹치는 것 | 처리 |
+|---|---|---|---|
+| 빌드 트리 | 세션 스크래치 `agent_restore/b1/`(hw 트리의 복사), `agent_restore/b3/`, `agent_restore/out/` | gpu-detect가 쓰고 다른 에이전트도 복사하는 `agent_gd/gin`(hw, libnccl `efc48ca1`, diff md5 `be0ea9ed`) | 그 트리는 읽기만 한다. 복사본에서만 고치고 빌드한다(nice 19, ionice idle, rain에서 컴파일만) |
+| 노드의 파일 | 새 디렉터리 `~/rs-bundle/`(rain, sunny 둘 다) | `~/gi-bundle`, `~/gd-bundle`, `~/blind-bundle` | 건드리지 않는다. 배포는 대상 디렉터리가 두 노드에 없을 때만 하고, 배포 뒤 두 노드의 md5를 원본과 맞춘다. 기존 묶음의 md5가 배포 앞뒤로 같은지도 본다 |
+| 라이브러리 | B1: hw에 기록과 재생 hook만 더한 `rsx` libnccl. B2: hw libnccl의 바이트 복사 | gpu-detect가 배포한 `~/gi-bundle/gin_ts2/hw` | 그 파일을 쓰지 않고 `~/rs-bundle/` 안의 복사본을 쓴다. `rsx`의 hook은 환경 변수가 없으면 닿지 않는다 |
+| 클러스터 잠금 | 실행마다 `cluster_run.sh`, 태그 `rs-b1-*`, `rs-b2-*`, `rs-b3-*` | gpu-detect의 실행, 다른 사용자의 작업 | 잠금이 줄 세운다. 메인 세션만 실행한다 |
+| TCP 포트 | 시험 프로그램의 랑데부만 29000–30999에서, 실행마다 두 노드에서 비어 있음을 보고 고른다(`../remaining/portpick.sh`). nonce가 맞지 않는 상대에게는 아무것도 보내지 않는다 | 같은 범위를 쓰는 다른 실험 | 고르기와 nonce. NCCL bootstrap과 helper는 지금처럼 임시 포트 |
+| NIC 펌웨어 명령 | QP, MR, CQ는 프로세스마다 시작 때 한 번 만든다. B3은 반복마다 QUERY_QP를 몇 번 낸다(한 스레드가 차례로, 셀마다 반복 수와 시간에 상한) | rain의 새는 명령 slot | 만들고 지우기를 되풀이하지 않는다. QUERY_QP는 동시에 하나만. 셀마다 낸 수를 기록한다 |
+| iptables | 쓰지 않는다 | | |
+| 프로세스 | 모두 `timeout -s KILL`로 묶는다. 끄는 일은 실행기가 기록한 자기 PID만 | 다른 사용자의 GPU, RDMA 작업(gds-kv, NVMe-oF, gdsio, mooncake, `prio-` 작업) | 이름으로 끄지 않는다 |
+| 링크 | B3 셀마다 수십 GB를 짧게(셀당 1분 안) | NVMe-oF, gdsio | `cluster_run.sh`가 한가한 링크를 기다린다 |
+| gpu-detect의 고침(G1–G9, `lostAfterCommit`) | 기대지 않는다. B1은 hw `be0ea9ed` 위에서 한다 | 그 고침이 같은 파일(`gin_host_gdaki.cc`)을 바꿈 | B1의 hook은 시험용 복사본에만 있고 그 고침과 합치지 않는다. 계층을 만들 때 다시 맞춘다 |
+| 관리망 주소 | 실행기는 주소를 파일에 적지 않는다. B1의 기록 파일(bootstrap과 helper 주소가 듦)은 노드의 `/tmp`에만 두고 실행 뒤 지운다. 보고 줄은 주소 대신 해시와 포트만 | 저장소와 Release에 주소가 들어가면 안 됨 | 결과 폴더에는 요약만 둔다 |
+
+#### 9.15.2 B2: GPU를 나눠 쓰는 rank의 LSA 팀 크기
+
+**기존 자료.** gin-multirank 본 실행 보관본(`multirank/results/20261009`, sha256 `3c22ffd4d260`)을 풀어 보았다: 4-rank 로그는 WARN 수준이고 시행별
+kv에 LSA 값이 없다 `[측정: 보관본의 h1/mr4_none_n10_r1.log, .kv]`. NCCL은 `lsaSize`를 cross-clique 갈래에서만 찍고(`dev_runtime.cc` 140),
+`ncclDevCommDump`(1373)는 부르는 곳이 주석이다(1742) `[소스]`. gin-remaining은 같은 driver(`gin_mr.cu`)와 같은 로그 수준이다. 그래서 기존 원자료로는 확인할
+수 없다.
+
+**소스 판단.** `computeLsaSize`(`dev_runtime.cc` 129–156)는 `NCCL_LSA_TEAM_SIZE`(기본 0)와, 같은 노드에 연달아 있는 rank 묶음 길이들의 최대공약수다.
+예외(cross-clique, `init.cc` 1695)는 MNNVL일 때만이다. 번갈아 둔 배치(rain 0, 2, sunny 1, 3)는 묶음 길이가 모두 1이라 1, 연달아 둔 배치(rain 0, 1,
+sunny 2, 3)는 2다 `[소스, 추론]`. 이 판단을 실제 값으로 확인한다.
+
+**확인.** B1의 시험 application [feas/rs_spike.cu](feas/rs_spike.cu)를 hw libnccl 복사본으로, 복원 셀과 같은 배치(4 rank, 번갈아,
+`NCCL_MULTI_RANK_GPU_ENABLE=1`, GIN 문맥 12개, FULL)로 띄워 `ncclDevCommCreate`가 채운 `devComm.lsaSize`, `lsaRank`(`dev_runtime.cc` 1510–1511)를 rank마다 kv에
+적는다. 짧은 장애 없는 GIN 교환이 맞게 끝나는지도 본다.
+- `b2_inter`: 번갈아 둔 배치, 2회.
+- `b2_consec`(대조, 선택): 연달아 둔 배치 1회. 읽기가 2 이상도 보여 줄 수 있는지 본다. 같은 GPU의 두 프로세스가 서로의 메모리를 매핑하므로 초기화가
+  실패할 수 있고, 실패하면 그 사실만 적고 판정에 쓰지 않는다.
+
+**판정(실행 전 고정).**
+- 해결 A: `b2_inter` 2회에서 네 rank 모두 `lsaSize = 1`, `lsaRank = 0`이고 GIN 교환이 맞음 → 복원 셀 배치에는 LSA로 묶인 상대가 없다. 무장 규칙은 그대로
+  지킴 장치로 둔다(LSA 팀에 든 상대는 무장하지 않음).
+- 해결 B: 어느 rank든 `lsaSize ≥ 2` → 5절 B2의 풀 조건대로 LSA 팀에 든 상대는 무장하지 않는다(그 상대의 죽음은 fail-fast). 복원 셀 배치를 그 규칙에 맞게
+  다시 본다.
+- 미결: 초기화나 devComm 생성이 실패해 값을 읽지 못함 → B2는 열린 채 둔다.
+
+#### 9.15.3 B3: 체크포인트 drain 뒤 GPU 메모리에 쓰기가 보이는가
+
+**질문.** 응답 쪽 QP의 rmsn(QUERY_QP)이 멈춤 때 상대가 보낸 메시지 수 M에 이른 뒤, NIC 루프백 READ 하나를 끝내고 GPU 안에서 window를 복사하면, 그 M개의
+RDMA 쓰기가 모두 복사본에 들어 있는가. window MR이 relaxed ordering(기본, `gdakiRegMr` 192)일 때와 strict일 때 따로.
+
+**시험 프로그램.** [feas/rs_drain_test.cu](feas/rs_drain_test.cu)(NCCL 없음, libibverbs와 mlx5dv, CUDA). 9.4절 3단계를 그대로 흉내 낸다.
+- 응답 쪽: GPU window(약 7 MiB, cudaMalloc)를 dmabuf MR로 등록한다(`ro`: `IBV_ACCESS_RELAXED_ORDERING`을 더함, GIN window와 같음; `so`: 더하지 않음).
+  신호 칸 하나는 strict MR(GIN 신호 표와 같음). 따로 된 protection domain의 루프백 RC QP 쌍과 같은 window의 strict MR(NIC 복사 경로와 같은 꼴,
+  `../remaining/nic_gate_test.cu`).
+- 보내는 쪽: 반복 i마다 33개의 RDMA WRITE(64 B–256 KiB 섞음, 마지막은 4 MiB)로 window 전체를 반복 번호가 든 무늬(8바이트 낱말 = (i+1) << 32 | 낱말 번호)로
+  덮고, 끝에 신호 칸에 원자 더하기 1(GIN의 put + 신호와 같은 차례), doorbell 뒤 완료를 기다리지 않고 `PAUSED(i, M)`(M = 이 QP로 낸 누적 요청 메시지 수)를
+  보낸다(9.4절 2단계의 차례).
+- 응답 쪽은 반복마다 셋 중 하나를 한다(8반복마다 6, 1, 1의 차례로 섞음).
+  - `fence`(설계의 길): rmsn ≥ M을 QUERY_QP로 기다림(반복당 2 s 상한) → 루프백 8바이트 READ(이번 반복에 쓰지 않은 칸, signaled, 완료 확인) → GPU 안 복사
+    (cudaMemcpyAsync D2D) → GPU에서 검사.
+  - `nofence`(진단): rmsn ≥ M 뒤 READ 없이 바로 복사와 검사. READ가 이 하드웨어에서 필요한지 본다.
+  - `early`(양성 대조): `PAUSED`를 받자마자 rmsn을 기다리지 않고 복사와 검사. 날아가는 쓰기를 검사가 잡는지 보여 준다.
+  검사는 이번 반복에 쓴 모든 낱말과 신호 칸이 기대값인지 보고, 틀린 것을 "늦음"(앞 반복의 값)과 "깨짐"(그 밖)으로 나눠 센다. 반복마다 끝에는 모든 길에서
+  rmsn ≥ M과 READ를 마친 뒤 `DONE(i)`를 보내고, 보내는 쪽은 자기 마지막 완료와 `DONE(i)`를 본 뒤에만 다음 반복의 무늬를 쓴다(다음 반복의 쓰기가 검사와
+  겹치지 않음).
+- 셀: 방향 둘(rain이 응답 쪽, sunny가 응답 쪽) × 순서 둘(`ro`, `so`)의 노드 사이 셀 넷(`b3_x_<응답 노드>_<순서>`)과, 같은 노드 안 루프백(보내는 QP와
+  응답 QP가 같은 HCA, GIN의 노드 안 쌍) × 노드 둘 × 순서 둘의 셀 넷(`b3_l_<노드>_<순서>`). 셀마다 8 000반복(`fence` 6 000, `nofence` 1 000, `early`
+  1 000). 먼저 smoke 하나(`b3_smoke`, 200반복, 채점과 판정에 쓰지 않음).
+- 함께 적는 것: 반복마다 `PAUSED`에서 rmsn ≥ M까지 시간과 QUERY_QP 수, 첫 QUERY_QP에서 이미 M이었던 반복 수, READ 시간, 셀마다 낸 QUERY_QP 총수,
+  HCA 능력의 `relaxed_ordering_write`(QUERY_HCA_CAP, 읽을 수 있으면). PCIe 장치 제어의 RO 허용 비트는 root가 아니면 읽지 못해 `[미확인]`으로 둔다.
+
+**판정(실행 전 고정).**
+- 셀이 유효: 설정 오류와 CQE 오류가 없고, 모든 반복에서 rmsn이 상한 안에 M에 이르렀고, `early`의 1 000반복 가운데 10반복 이상에서 늦은 낱말을 잡음(검사가
+  늦은 쓰기를 볼 수 있다는 증거). `early`가 10반복 미만이면 그 셀은 미결이다.
+- 순서 하나(`ro` 또는 `so`)가 통과: 그 순서의 유효한 셀 넷 모두에서 `fence` 6 000반복의 늦은 낱말 0, 깨진 낱말 0, 신호 칸 틀림 0. 이때 셀 하나의 실패율 95%
+  상한은 약 0.05%(3/6 000), 네 셀을 합하면 약 0.0125%(3/24 000)다.
+- B3의 결론:
+  - `ro` 통과 → relaxed window에서도 이 하드웨어에서 drain 확인이 맞다. 그래도 2.3절의 strict 조건을 뺄지는 사용자 결정으로 둔다(다른 하드웨어와 RO 허용
+    여부는 `[미확인]`).
+  - `ro` 실패, `so` 통과 → 무장 조건 "window는 strict"(DESIGN_POLICY.md 2.3절)를 확정하고 B3을 그 조건으로 푼다. strict의 지연 비용은 계층을 만들 때 잰다.
+  - `so`도 실패 → B3은 열린 채 둔다(READ 하나로는 모자람. 다른 길, 예컨대 `cuFlushGPUDirectRDMAWrites`가 필요).
+  - 미결 셀이 있으면 그 셀만 다시 하고, 다시 해도 미결이면 사용자에게 올린다.
+- `nofence` 결과는 판정에 쓰지 않는다(READ가 이 하드웨어에서 필요한지의 진단).
+
+#### 9.15.4 B1: 예비 프로세스의 초기화 재생 spike
+
+**질문.** 장애 없는 2-rank 실행에서 한 rank의 초기화 기록을 남기면, 같은 노드의 예비 프로세스가 다른 rank의 참여 없이 그 기록만으로 초기화를 끝내고
+같은 rank, nRanks, GIN 문맥 수, 신호 수, window 크기, 모든 상대에 대한 게이트 상태(`gated`, `addr`, 장치 게이트 낱말)를 얻는가(DESIGN_POLICY.md A3, C3, V13).
+장애 주입과 복원 라운드는 없다.
+
+**hook**(`rsx` 빌드 = hw 트리의 복사 + [feas/rs_spike.diff](feas/rs_spike.diff), 모두 환경 변수가 있을 때만 닿음).
+- `NCCL_GIN_RESTORE_RECORD=<파일>`(기록): 이 프로세스의 첫 communicator가 초기화와 window 등록, devComm 생성 동안 받은 모든 집합 교환의 결과를 차례로
+  적는다. 대상: commId(`ncclCommInitRankFunc`), bootstrap의 공개 함수 전부(`bootstrapAllGather`, `bootstrapIntraNodeAllGather`, `bootstrapBarrier`,
+  `bootstrapIntraNodeBarrier`, `bootstrapSend`, `bootstrapRecv`, `bootstrapBroadcast`, `bootstrapIntraNodeBroadcast`; 안에서 부르는 것은 다시 적지 않음.
+  상대가 없는 노드 안 호출은 적지 않음), GIN collComm의 all-gather(`ncclGinIbAllGather`; all-to-all과 P2P barrier도 이것을 거침). window 등록 끝과
+  devComm 생성 끝에 표시 항목을 넣는다.
+- `NCCL_GIN_RESTORE_REPLAY=<파일>`(재생, 예비 프로세스): commId와 rank, nRanks를 기록에서 가져와 맞는지 보고, bootstrap의 root 연락과 ring 연결을 건너뛰고,
+  위의 모든 호출을 네트워크 대신 기록의 다음 항목으로 대답한다(종류, 태그, 상대, 크기, 참여 rank 수가 다르면 그 자리에서 실패하고 어긋남을 적음). 자기 칸은
+  새 값으로 두고, 기록의 자기 칸과 다른 바이트 수를 항목마다 적는다(어느 교환이 프로세스마다 다른 값을 싣는지의 진단). GIN collComm의 ring 연결
+  (`ncclGinIbConnect`의 connect와 accept)을 건너뛴다. helper 설정(`gdakiTsSetup`)은 salt를 기록의 자기 값으로 써서 nonce를 처음과 같게 하고, 상대에게
+  잇거나 받지 않고 `gated`, `addr`를 기록의 all-gather 결과로 세운다. `gdakiTsStart`는 게이트 설정까지 하고 helper 스레드를 띄우지 않는다(설치 전에는
+  아무에게도 말하지 않는 예비 프로세스, DESIGN_POLICY.md D4). RAS는 꺼야 한다(`NCCL_RAS_ENABLE=0`이 아니면 재생을 거절). QP는 만들고 기록의 상대 QPN으로
+  로컬 연결 상태만 바꾼다(패킷을 보내지 않음; 실제 설계에서는 복원 라운드의 토큰으로 잇는다, 9.3절).
+- 두 모드 모두 `GIN/RS:` 보고 줄을 남긴다: window와 신호, 카운터 표 등록마다 크기와 상대 rkey의 해시, GIN 문맥마다 상대별 `gated`, `addr`의 해시, QP 수,
+  장치 게이트 낱말(cudaMemcpy로 읽음: 에폭, 개수, 깃발), helper nonce. 주소 자체는 찍지 않는다.
+
+**시험 application.** [feas/rs_spike.cu](feas/rs_spike.cu): 보통 모드는 `gin_mr.cu`와 같은 nonce 랑데부와 초기화(`ncclCommInitRankConfig`, `ncclMemAlloc`과
+`ncclCommWindowRegister` 둘, GIN 문맥 N(N−1)개, 신호 1, FULL), 짧은 장애 없는 교환(모든 간선 put + 신호 20회, 자료 검사), 보고, `ncclCommAbort`. 예비 모드
+(`RS_SPARE=1`)는 랑데부 없이 같은 초기화, 보고, `ncclCommAbort`만 한다(커널 없음). kv: rank, nranks, devComm의 rank, nRanks, lsaRank, lsaSize,
+ginContextCount, ginSignalCount, ginCounterCount, ginConnectionCount, window 크기, `ncclGinGetRecoveryStats`의 문맥 수, 각 API의 결과와 시간.
+
+**셀.**
+- `b1_rec`: rain rank 0, sunny rank 1. 두 rank 모두 기록을 남기고 끝난다(장애 없음, 교환 맞음).
+- `b1_rep1`: 이어서 sunny에서 rank 1의 기록으로 예비 프로세스 하나(상대는 이미 끝나 있음. 가로채지 못한 연결이 있으면 오류로 드러남).
+- `b1_rep0`: rain에서 rank 0의 기록으로 같은 것(bootstrap root였던 rank).
+- 위 셋을 2회. 그다음 선택으로 `b1_live`(위가 통과했을 때만): 2-rank 실행이 교환 뒤 30 s 쉬는 동안 sunny에서 rank 1의 기록을 재생. 살아 있는 rank의
+  로그와 복구 통계에 변화(라운드, 거절, 재연결, 모르는 연결)가 없어야 한다.
+
+**판정(실행 전 고정).** 재생 실행 하나가 통과하려면 다음이 모두 참이다.
+1. 예비 프로세스가 `ncclCommInitRankConfig`, window 등록 둘, `ncclDevCommCreate`를 ncclSuccess로 끝낸다.
+2. 기록을 정확히 소비한다: devComm 생성 끝 표시까지의 모든 항목을 차례로 썼고 어긋남이 0이다.
+3. 상대와 말하지 않았다: hook을 거치지 않은 집합 교환 0(hook의 셈), 연결 오류 줄 없음.
+4. 같은 rank의 기록 실행과 같다: rank, nRanks, devComm의 rank, nRanks, lsaRank, lsaSize, ginContextCount, ginSignalCount, ginCounterCount,
+   ginConnectionCount, window 크기, 투명 복구 문맥 수, helper nonce, 상대 칸의 window rkey와 신호, 카운터 표 rkey 해시.
+5. 모든 상대 p에 대해 `gated = 1`, `addr` 해시가 기록 실행과 같고, p로 가는 모든 QP의 장치 게이트 낱말이 에폭 0, 개수 0, 깃발 ON.
+
+결론: `b1_rep1`, `b1_rep0`가 2회 모두 통과하면 B1의 "초기화 재생" 부분은 이 범위(2 rank, 노드 사이, 문맥 2개)에서 된다고 본다. 남는 부분(REJOIN, 복원
+라운드의 토큰 연결, rkey 바꿈, 4 rank와 노드 안 상대의 재생)은 계층을 만들 때의 일로 적는다. 어느 항목이든 실패하면 그 항목과 원인을 증거로 B1을 막힌 채 둔다.
+기록으로 대답할 수 없는 NCCL 핵심 상태(상대가 꼭 참여해야 하는 것)가 나오면 spike를 거기서 멈추고 근거와 함께 올린다.
 
 ## 10. 완료 조건과 QA 기준
 
