@@ -84,7 +84,7 @@ info() {
     echo "hw include_digest $(cd "$SCR/agent_gd/gin/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32) (the app is built against these headers)"
     [ -f "$OUT/app/rs_spike" ] && echo "rs_spike $(md5 "$OUT/app/rs_spike") rs_spike.cu $(md5 "$D/rs_spike.cu") sass $("$CUDA/bin/cuobjdump" --list-elf "$OUT/app/rs_spike" 2>/dev/null | grep -o 'sm_[0-9]*' | sort -u | tr '\n' ' ')"
     [ -f "$OUT/b3/rs_drain_test" ] && echo "rs_drain_test (first build, deployed 2026-10-09) $(md5 "$OUT/b3/rs_drain_test")"
-    for k in b3v2 ${B3OUT:-}; do
+    for k in b3v2 b3v3 ${B3OUT:-}; do
       [ -f "$OUT/$k/rs_drain_test" ] && echo "rs_drain_test $k $(md5 "$OUT/$k/rs_drain_test") source at compile: $(cat "$OUT/$k/build_src.txt" 2>/dev/null || echo "not recorded (built before build_src.txt); source now $(md5 "$D/rs_drain_test.cu")")"
     done | sort -u
   } > "$OUT/build_info.txt"

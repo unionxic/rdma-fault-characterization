@@ -105,15 +105,17 @@ def b3():
             d.get("gdr_flush_options", "?"), d.get("hca_ro_write_cap", "?")))
     for c in sorted(history):
         say("earlier runs of %s: %s" % (c, ", ".join(history[c])))
-    say("cell | run folder | build | last_kb | selfcheck attempts fence/same (read) | hog")
+    say("cell | run folder | build | last_kb | query budget (stop) | iterations done | selfcheck attempts fence/same (read) | hog")
     for c in sorted(latest):
         f = latest[c]
         d = kv(f)
         meta = kv(os.path.join(os.path.dirname(f), c + "_meta.txt"))
         hog = kv(os.path.join(os.path.dirname(f), c + "_hog.kv"))
-        say("%s | %s | %s | %s | %s/%s (%s/%s) | %s" % (
+        say("%s | %s | %s | %s | %s (%s) | %s | %s/%s (%s/%s) | %s" % (
             c, os.path.basename(os.path.dirname(f)), os.path.basename(os.path.dirname(meta.get("bin", "?/?"))),
-            meta.get("last_kb", "?"), d.get("selfcheck_fence_attempts", "-"), d.get("selfcheck_same_attempts", "-"),
+            meta.get("last_kb", "?"), meta.get("query_budget", "0"), d.get("budget_stop", "-"),
+            d.get("iterations_done", d.get("progress_iterations_done", "-")),
+            d.get("selfcheck_fence_attempts", "-"), d.get("selfcheck_same_attempts", "-"),
             d.get("selfcheck_fence_read", "-"), d.get("selfcheck_same_read", "-"),
             ("%s %s" % (hog.get("result"), hog.get("stopped_by"))) if hog else "-"))
         if num(d, "selfcheck_fence_attempts", 1) > 1 or num(d, "selfcheck_same_attempts", 1) > 1:

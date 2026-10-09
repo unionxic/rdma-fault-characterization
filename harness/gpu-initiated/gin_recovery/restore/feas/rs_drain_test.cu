@@ -45,6 +45,8 @@
 //      edge iterations, recorded in EXPERIMENT.md 12; both sides must use the same value)
 // v2 (2026-10-09): only the setup self-check of the loopback READ targets changed (pinned source, device sync, bounded
 // re-read, attempts in the kv); the scored loop is the same as in the first build.
+// v3 (2026-10-09): progress keys on every exit path; RS_QUERY_BUDGET (default off) ends the loop at an iteration boundary
+// once that many QUERY_QP were issued (the contention cells); with the budget off the loop is the same as in v2.
 // exit: 0 PASS; 1 FENCE_FAIL; 4 INCONCLUSIVE; 5 INCOMPLETE; 2 usage or setup error; 3 NIC, rmsn, QUERY_QP-cap or
 //       control-channel error; 6 CUDA error; 7 watchdog. The writer exits 0 when the responder ended the run.
 #include <cuda.h>
@@ -84,11 +86,23 @@ static void kvf(const char* fmt, ...) {
   va_end(ap);
   fflush(g_kv);
 }
+// v3 (2026-10-09): the responder loop's progress, written on EVERY exit path (nic error, CUDA error, watchdog, normal end):
+// iterations done, scored fence iterations, QUERY_QP issued, polls per iteration so far. -1: the loop has not started.
+static volatile long g_progIter = -1, g_progDone = 0, g_progScored = 0, g_progPollIters = 0;
+static volatile unsigned long long g_progPolls = 0, g_queryQp = 0;
+static void progressKv() {
+  if (g_progIter < 0 || g_kv == nullptr) return;
+  fprintf(g_kv, "progress_at_iter=%ld progress_iterations_done=%ld progress_scored_n=%ld progress_query_qp=%llu "
+          "progress_polls_per_iter=%.2f\n", (long)g_progIter, (long)g_progDone, (long)g_progScored,
+          (unsigned long long)g_queryQp, g_progPollIters ? (double)g_progPolls / (double)g_progPollIters : 0.0);
+  fflush(g_kv);
+}
 #define CK(c)                                                                         \
   do {                                                                                \
     cudaError_t e_ = (c);                                                             \
     if (e_ != cudaSuccess) {                                                          \
       fprintf(stderr, "CUDA %s:%d %s\n", __FILE__, __LINE__, cudaGetErrorString(e_)); \
+      progressKv();                                                                   \
       kvf("cuda_error=%s line=%d exit=6\n", cudaGetErrorName(e_), __LINE__);          \
       _exit(6);                                                                       \
     }                                                                                 \
@@ -100,6 +114,7 @@ static void kvf(const char* fmt, ...) {
       const char* n_ = nullptr;                                       \
       cuGetErrorName(r_, &n_);                                        \
       fprintf(stderr, "CU %s:%d %s\n", __FILE__, __LINE__, n_ ? n_ : "?"); \
+      progressKv();                                                   \
       kvf("cuda_error=%s line=%d exit=6\n", n_ ? n_ : "?", __LINE__); \
       _exit(6);                                                       \
     }                                                                 \
@@ -111,8 +126,10 @@ static int g_ctl = -1;
   _exit(2);
 }
 [[noreturn]] static void nicFail(const char* what) {
-  fprintf(stderr, "nic: %s (errno %d)\n", what, errno);
-  kvf("nic_error=\"%s\" errno=%d result=FAIL exit=3\n", what, errno);
+  const int e = errno;
+  fprintf(stderr, "nic: %s (errno %d)\n", what, e);
+  progressKv();
+  kvf("nic_error=\"%s\" errno=%d result=FAIL exit=3\n", what, e);
   if (g_ctl >= 0) {  // tell the other side (best effort, one whole Msg of 24 bytes): it exits instead of waiting
     uint32_t m[6] = {4, 0, 0, 0, 0, 0};
     (void)send(g_ctl, m, sizeof(m), MSG_NOSIGNAL);
@@ -347,7 +364,6 @@ static bool rmsnSelfTest() {  // T3-9: the modulo-2^24 comparison across the wra
     if (rmsnDelta(x.cur, x.base) != x.want) return false;
   return true;
 }
-static unsigned long long g_queryQp = 0;
 static std::vector<double> g_qLat;
 static double g_lastQueryStart = 0;
 static const long CELL_QUERY_CAP = 20000;
@@ -751,6 +767,7 @@ int main(int argc, char** argv) {
     ssize_t k = write(2, m, sizeof(m) - 1);
     (void)k;
     if (g_kv) {
+      progressKv();
       fprintf(g_kv, "watchdog=1 exit=7\n");
       fflush(g_kv);
     }
@@ -957,11 +974,23 @@ int main(int argc, char** argv) {
   const std::vector<Arm> sched = schedule(iters, seed);
   const long probeIters = iters / 16;
   uint64_t m = 0;
-  bool incomplete = false;
+  bool incomplete = false, budgetStop = false;
   long done = 0;
+  // v3: RS_QUERY_BUDGET (0: off) ends the loop at an iteration boundary once this many QUERY_QP were issued; the result is
+  // taken over the iterations done (a planned end, independent of the outcome). It must leave 400 under the hard cap (an
+  // iteration issues at most 2 x 200), which still stops the cell with an error if ever reached.
+  const unsigned long long qBudget = getenv("RS_QUERY_BUDGET") ? strtoull(getenv("RS_QUERY_BUDGET"), nullptr, 10) : 0;
+  if (qBudget && qBudget + 400 > (unsigned long long)CELL_QUERY_CAP) setupFail("RS_QUERY_BUDGET must leave 400 under the cap");
+  kvf("query_budget=%llu query_cap=%ld\n", qBudget, CELL_QUERY_CAP);
+  g_progIter = 0;
   for (long i = 0; i < iters + probeIters; i++) {
+    g_progIter = i;
     if ((nowUs() - tRun0) / 1e6 > cellS) {
       incomplete = true;
+      break;
+    }
+    if (qBudget && g_queryQp >= qBudget) {
+      budgetStop = true;
       break;
     }
     const bool probe = i >= iters;
@@ -1010,6 +1039,8 @@ int main(int argc, char** argv) {
         polls = waitRmsn(r, m, tp, &sawBelow, false, &reach);
         reachUs.push_back(reach);
         pollsMax = std::max(pollsMax, polls);
+        g_progPolls = g_progPolls + (unsigned long long)polls;
+        g_progPollIters = g_progPollIters + 1;
         estReachUs = estReachUs == 0 ? reach : 0.8 * estReachUs + 0.2 * reach;
         if (a.path == P_FENCE) {
           readFence(r, false, true);
@@ -1058,6 +1089,8 @@ int main(int argc, char** argv) {
     }
     ctlSend(M_DONE, it, (uint32_t)a.tail, 0);
     done++;
+    g_progDone = done;
+    g_progScored = scoredN;
   }
   ctlSend(M_END, (uint32_t)done, 0, 0);
   const double runS = (nowUs() - tRun0) / 1e6;
@@ -1087,6 +1120,8 @@ int main(int argc, char** argv) {
       pct(g_qLat, 0.99), pct(g_qLat, 1.0), pct(readUs, 0.5), pct(readUs, 1.0), pct(flushUs, 0.5), boundaryMissed,
       probeTimeouts, scoredN, edgeSeen, done, runS, ff.empty() ? "none" : ff.c_str(), pct(goPausedUs, 0.5));
   const Tally &fw = T[P_FENCE][T_W], &faw = T[P_FENCE][T_AW], &ea = T[P_EARLY][T_W], &bd = T[P_BOUNDARY][T_W];
+  kvf("budget_stop=%d polls_per_iter_mean=%.2f\n", budgetStop ? 1 : 0,
+      g_progPollIters ? (double)g_progPolls / (double)g_progPollIters : 0.0);
   const bool fenceClean = fw.itersBad == 0 && faw.itersBad == 0;
   const bool valid = ea.itersStale >= 10 && ea.corrupt == 0 && bd.itersStaleLast >= 10 &&
                      scoredN > 0 && 2 * edgeSeen >= scoredN;
