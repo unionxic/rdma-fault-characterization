@@ -5,12 +5,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `DRAFT` |
+| 상태 | `PREREGISTERED` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gpu-detect` @ `02a640aa` (master) |
-| 사전 등록 태그 | 없음. pilot 뒤 `prereg/gpu-detect-v1` 예정(3절) |
-| 마지막 갱신 | 2026-10-09 21:30, pilot 1 점검, 계층 `hk`(정책 hook, 응답 쪽 틈), 독립 충돌 리뷰, 새 셀과 예측, pilot 2 명령 |
+| 사전 등록 태그 | `prereg/gpu-detect-v1`: 상태를 `PREREGISTERED`로 바꾼 커밋(12절)에 단다. 고정 파일의 sha256은 [PREREG.txt](PREREG.txt) |
+| 마지막 갱신 | 2026-10-09, pilot 2 점검, 태그 전 고침, 사전 등록 |
 
 표시: `[측정]` 원자료나 빌드 산출물에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -99,7 +99,7 @@ pilot 2와 본 실행은 `hk`로 돈다.
 
 ## 3. 사전 예측 (측정 전에 작성)
 
-**고정 시점.** 예측 원문은 [predictions.csv](predictions.csv)(41줄)다. 지금은 초안이다.
+**고정 시점.** 예측 원문은 [predictions.csv](predictions.csv)(41줄)다. 사전 등록으로 고정했다(태그 `prereg/gpu-detect-v1`, sha256은 [PREREG.txt](PREREG.txt)).
 - 메인 세션이 pilot(hold P1, P2, 9.6절)을 돌린 뒤 예측을 확정한다. pilot 시행은 채점하지 않고, 결과 폴더(`results/<날짜>_pilot/`, pilot 2는
   `results/<날짜>_pilot2/`)도 따로 둔다. pilot 1(`hw`)을 점검한 뒤 계층 `hk`와 새 셀을 더했으므로 pilot 2가 바뀐 셀과 새 셀을 덮는다(7절).
 - pilot에서 고칠 수 있는 것: 읽기 오류(열 정의, 정규식), 셀 조건(장애 시각 창, 셀이 조건을 만들지 못함), 실행기 결함, 구현 결함(다시 빌드, 새
@@ -721,7 +721,7 @@ DECLINE 줄, 호스트 기록, "marked failed" 줄, 상대에게 FAIL(보낼 수
 - [x] 하네스, 예측(41줄), `schedule.json`(시드 `f739ae41811c2212`), 채점기 합성 시험
 - [x] 배포 `hk`, pilot 2(메인 세션), 점검(12절)
 - [x] 태그 전 고침: GC1, GC2, GD5, H1의 반증 문장, 열 셋(12절)
-- [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
+- [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로(태그 `prereg/gpu-detect-v1`은 메인 세션이 그 커밋에 단다)
 - [ ] 본 실행 G1–R3 (`RUNNING`)
 - [ ] 채점 (`QA`), 독립 재계산과 측정 코드 리뷰
 - [ ] 결과 정리, 원자료 Release, PR
@@ -771,6 +771,7 @@ DECLINE 줄, 호스트 기록, "marked failed" 줄, 상대에게 FAIL(보낼 수
 | 2026-10-09 | 태그 전 고침(3절 규칙) 1: GC2, GC1, H1의 반증 문장. 대조의 목적은 "감시 없이는 아무것도 장애를 빨리 감지하지 못한다"인데 문장이 "멈춤"으로 적혀 있어, 감시가 없어도 앱의 CQ를 읽는 호출이 상대의 RETRY_EXC(약 3.6 s)를 읽어 늦게 복구하는 기존 길(H1이 말하는 호출 안의 감지)을 반례로 셌다. 새 조건: 감시 감지 없음, 어느 rank도 훅 뒤 100 ms 안에 감지하지 않음, 1 000 ms 안에 복구하지 않음(GD2, GD3의 한도). GC2는 N − 1 그대로, GC1은 N − 2에서 N − 1로(N − 2는 늦은 복구 둘을 실패로 세던 여유였고 새 조건은 그것을 길로 덮음). 근거: blind-apps 원자료를 이 파서로 다시 셈(스크래치 `gd_blind_recount/`, `hq`, n=16): 멈춤 14(훅 8–104 ms, 두 rank 모두 감지 줄 없음), 투명 2(훅 114, 115 ms; 대상 아닌 rank의 장치 경로가 3.679, 3.544 s에 감지, 3.689, 3.554 s에 복구). pilot 2 `gin_qperr_w0.hk.n1`(훅 11 ms)은 같은 길로 3.757 s에 감지, 3.767 s에 복구: 늦은 길은 훅 시각에 묶이지 않음. 새 조건을 따져 봄: pilot 2 감시 끔 1/1, pilot 1 `hr` 1/1, blind-apps 16/16 참이고, 감시를 켠 pilot 시행 7회는 모두 거짓(빠른 감지를 가려냄). 열 `det1_s`, `det1_by`를 더함(두 rank 중 첫 감지, rain 수신 시각) | `predictions.csv` GC1, GC2, 2절 H1, `rows_gd.py` |
 | 2026-10-09 | 태그 전 고침 2: GD5. 근거 문장("주기의 절반 + 유예 5 ms")이 리뷰 M2의 50 ms 기다림(뿌리 CQE가 없는 창은 주기와 상관없이 50 ms를 기다림)보다 먼저 쓰였고, 그때 GD2, GD4의 한도는 고쳤으나 GD5는 고치지 않았다. pilot 2에서 감시 감지 4회 중 1회가 그 경우(56.7 ms, 주기 10 ms). 그런 시행이 섞이면 중앙값이 주기가 아니라 섞인 비율을 따르므로, 감시가 먼저였고 분류가 뿌리 CQE에서 온 시행의 지연(열 `det_wcq_ms`)으로 비교한다 | `predictions.csv` GD5, `rows_gd.py` |
 | 2026-10-09 | 셀은 바뀌지 않았다: `cells.json`, `schedule.json`(시드 `f739ae41811c2212`) 그대로. 바뀐 것은 파서의 열 셋과 예측 셋, H1의 반증 문장이다. 새 열은 pilot 1, pilot 2(사본), blind-apps 원자료에서 다시 계산해 위 값을 냈으므로 pilot을 다시 돌 필요는 없다고 본다 `[추론]`. 채점기 합성 시험을 다시 돌림: 41줄 모두 예외 없이 평가, 새 여섯 줄 맞음, 합성 폴더의 `hq` 시행(blind-apps 실제 6회, 늦은 복구 2 포함)에서 새 GC1 조건 6/6 참 | `[측정: 채점기 동작만]` 스크래치 `gd_selftest/res2` |
+| 2026-10-09 | 사전 등록(이 커밋 하나): 고정 절 2(가설 H1–H8), 3(예측 41줄, 판정식 원문 `predictions.csv`), 7(셀 45개: app 19, 회귀와 지연 26; app 130회, 회귀와 지연 118회; hold P1, P2와 본 실행 G1, G2, N1, N2, R1–R4), 8(제외와 중단 기준). 시행 목록 `schedule.json`(시드 `f739ae41811c2212`, `cells.json`의 sha256이 머리에 있음). [PREREG.txt](PREREG.txt)에 예측, 셀, 시행 목록, 실행기, 파서, 채점기, 회귀 실행기, hold, chain, 세 계층 diff의 sha256과 배포된 빌드의 md5. 측정 전 확인: `results/`에는 채점하지 않는 pilot 폴더 둘(`20261009_pilot`, `20261009_pilot2`)뿐이고 본 실행은 아직 없다. 태그 `prereg/gpu-detect-v1`은 메인 세션이 이 커밋에 달고 push한다. PR을 rebase로 합친 뒤 `git diff prereg/gpu-detect-v1 <master 커밋> -- harness/gpu-detect/predictions.csv cells.json schedule.json`(그리고 PREREG.txt의 나머지)이 비어 있는지 확인해 이 절에 적는다 | 이 커밋, [PREREG.txt](PREREG.txt) |
 
 ## 13. 사전 등록 이후 변경
 
