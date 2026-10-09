@@ -2,7 +2,8 @@
 """gin-remaining: the columns of EXPERIMENT.md section 3.1 that the earlier extractors do not produce, read from the
 per-trial files. score.py imports extra_hr2() (two-rank trials of run_trial_hr.sh: <stem>_r0.log, _r1.log, _r0.kv,
 _r1.kv, _meta.txt), extra_hr4() (N-rank trials of run_mr_hr.sh: <stem>_r<r>.log/.kv for every rank, _meta.txt, _kill.out,
-plus the row of ../multirank/rows_mr.py) and bench_row() (run_bench_hr.sh: <stem>_rain.kv, _sunny.kv, _meta.txt).
+plus the row of ../multirank/rows_mr.py), bench_row() (run_bench_hr.sh: <stem>_rain.kv, _sunny.kv, _meta.txt) and ngt_row()
+(run_ngt_hr.sh: the same files; columns in its docstring).
 Times are mono_ms (CLOCK_MONOTONIC, ms) of the process whose file they come from; a difference of two times is taken
 within one process only. Lists are sorted and joined with ";".
 
@@ -32,7 +33,10 @@ Two-rank columns (_r<r> for rank r = 0, 1):
   drvkey                                      meta drvkey (the driver's bundle)
 N-rank columns (sums over the ranks unless _r<r>; "R-P" = rank R and peer P):
   n_hr_on, n_lb_on, n_lb_off                  ranks with START; LBON lines; LBOFF lines
-  served, n_served                            SERVED lines as "R-P" (R answered P inside its own wait)
+  served, n_served                            SERVED lines as "R-P" (R answered P inside its own wait; a refusal of the
+                                              REQ, NACK 12, 2 or 16, counts too)
+  served_rec, n_served_rec                    of those, the ones whose nested round ended in R's responder recovery line
+                                              with P before R's BACK line (descriptive; added after the re-review, L-A)
   kept, n_kept, n_kept_answered, n_kept_dropped   KEPT lines as "R-P"; KEPTANS lines; KEPTDROP lines
   td_stream_copies, n_td                      sum of TDCOPY stream_copies over the ranks that have the line (empty if
                                               none has it); the number of such ranks
@@ -68,6 +72,8 @@ RE_KEPTDROP = re.compile(r"GIN/TS: rank (\d+): the kept REQ round \d+ from rank 
 RE_DEGSCHED = re.compile(r"GIN/TS: rank (\d+): communicator degraded in (-?\d+) ms: rank (\d+) was judged dead")
 RE_UAALL = re.compile(r"GIN/TS: user devComm waits released rank=(\d+) why=(\S+) mono_ms=([\d.]+)")
 RE_JUDGED = re.compile(r"GIN/TS: rank (\d+): rank (\d+) judged dead \(cause=\S+\) mono_ms=([\d.]+)")
+RE_RECRESP = re.compile(r"GIN/TS: recovered rank=(\d+) peer=(\d+) role=responder")
+RE_BACK = re.compile(r"GIN/TS: rank (\d+): back to round \d+ with rank \d+ after answering rank (\d+)")
 
 
 def kvfile(path):  # as ../scripts/ts2/rows.py: a value may hold blanks up to the next key
@@ -87,11 +93,20 @@ def fnum(x):
 
 
 def scan(path):
-    o = {"start": [], "lbon": 0, "lbgid": "", "lboff": [], "td": None, "served": [], "kept": [], "keptans": 0, "keptdrop": 0,
+    o = {"start": [], "lbon": 0, "lbgid": "", "lboff": [], "td": None, "served": [], "served_rec": [], "pending": None, "kept": [], "keptans": 0, "keptdrop": 0,
          "degsched": 0, "degraded": [], "judged": []}
     if not os.path.exists(path):
         return o
     for line in open(path, errors="replace"):
+        m = RE_RECRESP.search(line)
+        if m:
+            if o["pending"] is not None and o["pending"] == (m.group(1), m.group(2)):
+                o["served_rec"].append("%s-%s" % o["pending"])
+                o["pending"] = None
+            continue
+        if RE_BACK.search(line):
+            o["pending"] = None
+            continue
         m = RE_START.search(line)
         if m:
             o["start"].append(m.groups())
@@ -113,6 +128,7 @@ def scan(path):
         m = RE_SERVED.search(line)
         if m:
             o["served"].append("%s-%s" % (m.group(1), m.group(2)))
+            o["pending"] = (m.group(1), m.group(2))
             continue
         m = RE_KEPT.search(line)
         if m:
@@ -178,6 +194,9 @@ def extra_hr4(stem, row):
     d["n_lb_on"] = sum(o["lbon"] for o in logs)
     d["n_lb_off"] = sum(len(o["lboff"]) for o in logs)
     served = sorted(x for o in logs for x in o["served"])
+    served_rec = sorted(x for o in logs for x in o["served_rec"])
+    d["served_rec"] = ";".join(served_rec)
+    d["n_served_rec"] = len(served_rec)
     kept = sorted(x for o in logs for x in o["kept"])
     d["served"] = ";".join(served)
     d["n_served"] = len(served)
@@ -234,3 +253,36 @@ def bench_row(stem):
         for key in BENCH_KEYS:
             d[f"{key}_{node}"] = k.get(key, "")
     return d
+
+
+def ngt_row(stem):
+    """The NIC gate test (run_ngt_hr.sh: <stem>_rain.kv, _sunny.kv, _meta.txt; nic_gate_test.cu). Per node:
+    ng_result (PASS|FAIL, empty if the run did not finish), ng_rc (meta), ng_mr (dmabuf|peermem), ng_gid_kind,
+    ng_rounds (the smaller of the two phases' rounds), and the sums over phases a and b of ng_lost_writes, ng_lost_inc,
+    ng_dekker, ng_inside_nonzero, ng_quiesce_timeouts; ng_idx_ok (1 if both phases kept every index-word update);
+    ng_q_max_ms (larger phase maximum), ng_nic_errors,
+    ng_error (setup_error or nic_error, if any)."""
+    mt = meta(stem)
+    d = {"cell": mt.get("cell", "nic_gate"), "build": mt.get("build", ""), "trial": mt.get("trial", ""),
+         "stem": os.path.basename(stem), "rc_rain": mt.get("rc_rain", ""), "rc_sunny": mt.get("rc_sunny", "")}
+    for node in ("rain", "sunny"):
+        k = kvfile(f"{stem}_{node}.kv")
+        d[f"ng_rc_{node}"] = mt.get(f"rc_{node}", "")
+        d[f"ng_result_{node}"] = k.get("result", "")
+        d[f"ng_mr_{node}"] = k.get("mr", "")
+        d[f"ng_gid_kind_{node}"] = k.get("gid_kind", "")
+        d[f"ng_name_{node}"] = k.get("name", "")
+        rounds = [fnum(k.get(f"{ph}_rounds")) for ph in ("a", "b")]
+        d[f"ng_rounds_{node}"] = min(rounds) if all(x is not None for x in rounds) else ""
+        for col, key in (("lost_writes", "lost_writes"), ("lost_inc", "lost_inc"), ("dekker", "dekker"),
+                         ("inside_nonzero", "inside_nonzero"), ("quiesce_timeouts", "quiesce_timeouts")):
+            v = [fnum(k.get(f"{ph}_{key}")) for ph in ("a", "b")]
+            d[f"ng_{col}_{node}"] = sum(v) if all(x is not None for x in v) else ""
+        ix = [fnum(k.get(f"{ph}_idx_ok")) for ph in ("a", "b")]
+        d[f"ng_idx_ok_{node}"] = min(ix) if all(x is not None for x in ix) else ""
+        q = [fnum(k.get(f"{ph}_q_max_ms")) for ph in ("a", "b")]
+        d[f"ng_q_max_ms_{node}"] = max(q) if all(x is not None for x in q) else ""
+        d[f"ng_nic_errors_{node}"] = k.get("nic_errors", "")
+        d[f"ng_error_{node}"] = k.get("setup_error", "") or k.get("nic_error", "") or k.get("cuda_error", "")
+    return d
+

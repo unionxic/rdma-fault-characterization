@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # gin-remaining: every cell of EXPERIMENT.md section 7 (one bounded batch; run inside a hold of hold.sh, itself inside
 # ../../common/cluster_run.sh through chain.sh). Two-rank cells run this folder's run_trial_hr.sh, N-rank cells this
-# folder's run_mr_hr.sh, the host-memory benchmark run_bench_hr.sh. The runners kill only PIDs they recorded and pick a
-# checked rendezvous port below the ephemeral range (portpick.sh).
+# folder's run_mr_hr.sh, the host-memory benchmark run_bench_hr.sh, the NIC gate test run_ngt_hr.sh. The runners kill only
+# PIDs they recorded and pick a checked rendezvous port below the ephemeral range (portpick.sh).
 # usage: cells.sh <logdir> <cell> <build> <n> [start]
 # Builds (<build> = the libnccl bundle): hr (this study, research), hrp (production, same source), hq and hqp (gin-peer's
 # bundles, deployed, read only: the controls and the latency baseline). Drivers: two ranks use this study's gin_ts2 (bundle
@@ -19,6 +19,7 @@ case "$B" in hr|hq) DRV=hr ;; *) DRV=$B ;; esac
 run() { CELL=$CELL BUILD=$B DRVKEY=$DRV bash "$D/run_trial_hr.sh" "$@"; }
 mr() { CELL=$CELL LIB=$B MRKEY=hr ABORT_WD_S=20 bash "$D/run_mr_hr.sh" "$@"; }
 bench() { CELL=$CELL BENCHKEY=hr bash "$D/run_bench_hr.sh" "$@"; }
+ngt() { CELL=$CELL NGTKEY=ngt bash "$D/run_ngt_hr.sh" "$@"; }
 BIDIR="GIN_TS_BIDIR_FUSED=1"
 # N-rank timing (../multirank/cells.sh, kept): hook F_MS after the GDAKI context is created, kill KILL_MS after the runner
 # starts the killed rank, the helper stall of the cycle and chain cells after its quiesce
@@ -86,6 +87,8 @@ for ((k = START; k < START + NRUN; k++)); do
     mr4_f1_01)       N=4 EXTRA_ENV="$BASE" R0_ENV="$(hook 0 1 4)" mr $t "$L" ;;
     # ================= the host-memory benchmark (run_bench_hr.sh; both nodes, one GPU each) =================
     hm_bench) bench $t "$L" ;;
+    # ================= the NIC gate test (run_ngt_hr.sh; both nodes, one GPU and the node's HCA each) =================
+    nic_gate) ngt $t "$L" ;;
     *) echo "unknown cell $CELL" >&2; exit 1 ;;
   esac
   streak $t

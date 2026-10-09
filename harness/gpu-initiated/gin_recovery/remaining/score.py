@@ -10,7 +10,7 @@ Steps (EXPERIMENT.md 3 and 8), as ../peer/score.py:
      ../s2_close/rows_extra.py, ../pair_check/rows_pc.py, ../oneway/rows_ow.py, ../harden/rows_hd.py, ../handoff/rows_hf.py,
      ../peer/rows_pq.extra_pq2() and this folder's rows_hr.extra_hr2(); N-rank trial folders (mr_hr/, mr_hq/):
      ../multirank/rows_mr.rows_of() per trial, then rows_pq.extra_pq4() and rows_hr.extra_hr4(); the benchmark folder
-     (bench/): rows_hr.bench_row();
+     (bench/): rows_hr.bench_row(); the NIC gate test folder (ngt/): rows_hr.ngt_row();
   2. each trial gets its cell key cell@build (N-rank: build = the libnccl key, LIB) and a status: scored, excluded
      (section 8), config (a section 8 configuration check failed: the block stops) or surplus (non-excluded trials beyond
      the planned count; the first ones by trial number are scored);
@@ -36,7 +36,7 @@ from rows_hf import extra_hf  # noqa: E402
 from rows_mr import rows_of  # noqa: E402
 from rows_pq import extra_pq2, extra_pq4  # noqa: E402
 sys.path.insert(0, HERE)
-from rows_hr import extra_hr2, extra_hr4, bench_row  # noqa: E402
+from rows_hr import extra_hr2, extra_hr4, bench_row, ngt_row  # noqa: E402
 
 # section 7: planned scored trials per cell key (latency cells: runs; the benchmark: runs, each on both nodes)
 PLANNED = {
@@ -44,7 +44,7 @@ PLANNED = {
     "hdp_kill_b@hrp": 5,
     "mr4_cyc_stall@hr": 10, "mr4_cyc_stall@hq": 5, "mr4_chain_stall@hr": 5,
     "rm4_kill3_untimed@hr": 10, "rm4_kill3_untimed@hq": 5, "mr4_kill3_peer@hr": 5,
-    "mr4_none@hr": 5, "mr4_f1_01@hr": 5, "hm_bench@hr": 5}
+    "mr4_none@hr": 5, "mr4_f1_01@hr": 5, "hm_bench@hr": 5, "nic_gate@hr": 5}
 for c in ("load", "malloc", "stream"):
     PLANNED[f"rh_hogcall_{c}_f1_b@hq"] = 5
     PLANNED[f"rh_hogcall_{c}_f1_b@hr"] = 3
@@ -103,6 +103,7 @@ LABEL = {
     "HB1": "두 플랫폼 모두 호스트 원자 연산을 기본으로 지원하지 않음(cudaDevAttrHostNativeAtomicSupported = 0)",
     "HB2": "호스트 매핑 메모리의 원자적 더하기가 장치 메모리보다 400 ns 이상 느림(두 GPU 모두)",
     "HB3": "경합 단계가 정상으로 끝나고 개수 절반의 장치 갱신을 잃지 않음",
+    "NG1": "NIC 루프백의 4 B 에폭 쓰기와 SM 64비트 원자 연산: 두 GPU 모두 쓰기 손실, 개수 손실, Dekker 위반, 정지 시간 초과가 없음",
 }
 EXCL_LABEL = {"bind": "드라이버 랑데부 포트 bind 실패", "no_fault": "장애 미적용(훅 발사 없음)", "trigger_miss": "트리거 미도달",
               "no_kill": "kill 기록 없음", "no_kill0": "rank 0 kill 기록 없음", "no_kill4": "kill 없음 또는 트래픽 밖",
@@ -110,9 +111,12 @@ EXCL_LABEL = {"bind": "드라이버 랑데부 포트 bind 실패", "no_fault": "
               "cond_order": "순서 미적용: 순환/사슬 라운드 시작의 퍼짐이 비었거나 250 ms 초과",
               "fw_overrun": "펌웨어 명령 하나가 NCCL_GIN_TS_FW_MS를 넘음(이 실험의 주제가 아님)",
               "bench_fail": "벤치마크 실행이 0이 아닌 코드로 끝남",
+              "ngt_fail": "NIC 게이트 시험이 끝나지 못함(준비 실패, NIC 요청 실패, CUDA 오류, 감시 종료)",
               "config_build": "설정 확인 실패: 빌드 시작 줄이 빌드와 다름", "config_ts_off": "설정 확인 실패: 투명 복구 시작 줄 없음",
               "config_no_ua": "설정 확인 실패: abort 단어 줄 없음", "config_knobs": "설정 확인 실패: 시험 스위치나 셀 설정이 셀과 다름",
-              "config_copy": "설정 확인 실패: 복사 경로가 셀과 다름", "config_driver": "설정 확인 실패: 드라이버 번들이 셀과 다름",
+              "config_copy": "설정 확인 실패: 복사 경로가 셀과 다름",
+              "config_ngt": "설정 확인 실패: NIC 게이트 시험의 GPU MR이 dmabuf가 아니거나 루프백 GID가 link-local이 아님",
+              "config_driver": "설정 확인 실패: 드라이버 번들이 셀과 다름",
               "surplus": "계획 수를 넘은 시행"}
 
 
@@ -222,16 +226,28 @@ def statusb(r):  # the benchmark
     return "candidate" if r.get("rc_rain") == "0" and r.get("rc_sunny") == "0" else "bench_fail"
 
 
+def statusg(r):  # the NIC gate test: a run that ended with a verdict (exit 0 PASS or 1 FAIL) on both nodes is scored
+    ok = all(str(r.get(f"rc_{n}")) in ("0", "1") and r.get(f"ng_result_{n}") in ("PASS", "FAIL") for n in ("rain", "sunny"))
+    if not ok:
+        return "ngt_fail"
+    # configuration (a failure stops the block): the GPU memory registered as the library registers it (dmabuf) and the
+    # loopback on the GID the library chose in the pilot (link-local), on both nodes
+    if not all(r.get(f"ng_mr_{n}") == "dmabuf" and r.get(f"ng_gid_kind_{n}") == "link-local" for n in ("rain", "sunny")):
+        return "config_ngt"
+    return "candidate"
+
+
 def main():
     R = os.path.abspath(sys.argv[1])
     subs = sorted(d for d in os.listdir(R) if os.path.isdir(os.path.join(R, d)) and glob.glob(os.path.join(R, d, "*_meta.txt")))
     trials = []
     for sub in subs:
-        if sub == "bench":
+        if sub in ("bench", "ngt"):
             for meta in sorted(glob.glob(os.path.join(R, sub, "*_meta.txt"))):
-                r = {k: ("" if v is None else v) for k, v in bench_row(meta[: -len("_meta.txt")]).items()}
+                fn = bench_row if sub == "bench" else ngt_row
+                r = {k: ("" if v is None else v) for k, v in fn(meta[: -len("_meta.txt")]).items()}
                 r["sub"] = sub
-                r["kind"] = "b"
+                r["kind"] = "b" if sub == "bench" else "g"
                 trials.append(r)
             continue
         if sub.startswith("mr_"):
@@ -263,7 +279,7 @@ def main():
         r["key"] = f'{r["cell"]}@{r["build"]}'
         m = re.search(r"n(\d+)$", r.get("trial") or "")
         r["tnum"] = int(m.group(1)) if m else 0
-        r["status"] = {"n": status4, "b": statusb}.get(r["kind"], status2)(r)
+        r["status"] = {"n": status4, "b": statusb, "g": statusg}.get(r["kind"], status2)(r)
     by_key = {}
     for r in sorted(trials, key=lambda x: (x["key"], x["tnum"], x["sub"])):
         by_key.setdefault(r["key"], []).append(r)
