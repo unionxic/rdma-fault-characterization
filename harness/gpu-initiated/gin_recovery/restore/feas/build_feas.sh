@@ -6,7 +6,8 @@
 #             against "gin-remaining hr" = hw_layer.diff md5 be0ea9ed, built libnccl md5 efc48ca1); the copy, the path
 #             rewrite of the .d files and that commit were made once by hand (EXPERIMENT.md 12).
 #   b1-lib    apply rs_spike.diff to that working tree unless it already carries it (the changed files must be exactly
-#             RS_FILES), incremental make into agent_restore/b1/build -> agent_restore/out/rsx/libnccl.so.2.32.3 (build key rsx).
+#             RS_FILES), incremental make into agent_restore/b1/build -> agent_restore/out/$RSX/libnccl.so.2.32.3 (build key
+#             $RSX, default rsx2: the second build after the pass-3 review; out/rsx holds the first, deployed build).
 #             rs_spike.diff changes no device header: the include tree must stay equal to the hw one.
 #   app       rs_spike.cu (B1 and B2 application) against the hw headers -> agent_restore/out/app/rs_spike (B2 runs on rsx
 #             with only the report lines on: NCCL_GIN_RESTORE_REPORT=1)
@@ -21,6 +22,7 @@ D=$(cd "$(dirname "$0")" && pwd)
 CUDA=/usr/local/cuda-12.8
 GENCODE="-gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_86,code=sm_86"
 JOBS=${JOBS:-8}
+RSX=${RSX:-rsx2}
 W=$SCR/agent_restore
 B1=$W/b1
 OUT=$W/out
@@ -52,10 +54,10 @@ b1_tree() {
 b1_lib() {
   b1_tree
   MK "$B1/build"
-  mkdir -p "$OUT/rsx"; cp "$B1/build/lib/libnccl.so.2.32.3" "$OUT/rsx/"
+  mkdir -p "$OUT/$RSX"; cp "$B1/build/lib/libnccl.so.2.32.3" "$OUT/$RSX/"
   diff -r -q "$B1/build/include/nccl_device" "$SCR/agent_gd/gin/build/include/nccl_device" > /dev/null ||
     { echo "the rsx device headers differ from hw" >&2; exit 1; }
-  echo "rsx libnccl $(md5 "$OUT/rsx/libnccl.so.2.32.3")"
+  echo "$RSX libnccl $(md5 "$OUT/$RSX/libnccl.so.2.32.3")"
 }
 app() {
   local o=$OUT/app inc=$SCR/agent_gd/gin/build/include
@@ -75,7 +77,8 @@ b3() {
 info() {
   {
     echo "built=$(date '+%F %T') host=$(hostname -s) nvcc=$("$CUDA/bin/nvcc" --version | tail -1)"
-    [ -f "$OUT/rsx/libnccl.so.2.32.3" ] && echo "rsx libnccl $(md5 "$OUT/rsx/libnccl.so.2.32.3") rs_spike.diff $(md5 "$D/rs_spike.diff") base $(GG rev-parse --short HEAD) include_digest $(cd "$B1/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
+    [ -f "$OUT/rsx/libnccl.so.2.32.3" ] && echo "rsx (first build, deployed 2026-10-09) libnccl $(md5 "$OUT/rsx/libnccl.so.2.32.3")"
+    [ -f "$OUT/$RSX/libnccl.so.2.32.3" ] && echo "$RSX libnccl $(md5 "$OUT/$RSX/libnccl.so.2.32.3") rs_spike.diff $(md5 "$D/rs_spike.diff") base $(GG rev-parse --short HEAD) include_digest $(cd "$B1/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
     echo "hw include_digest $(cd "$SCR/agent_gd/gin/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32) (the app is built against these headers)"
     [ -f "$OUT/app/rs_spike" ] && echo "rs_spike $(md5 "$OUT/app/rs_spike") rs_spike.cu $(md5 "$D/rs_spike.cu") sass $("$CUDA/bin/cuobjdump" --list-elf "$OUT/app/rs_spike" 2>/dev/null | grep -o 'sm_[0-9]*' | sort -u | tr '\n' ' ')"
     [ -f "$OUT/b3/rs_drain_test" ] && echo "rs_drain_test $(md5 "$OUT/b3/rs_drain_test") rs_drain_test.cu $(md5 "$D/rs_drain_test.cu")"

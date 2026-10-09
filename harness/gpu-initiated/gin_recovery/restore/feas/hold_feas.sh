@@ -4,14 +4,18 @@
 # usage: hold_feas.sh <resultsdir> <hold>
 #   S3     B3 smoke: one cross-node cell, rain responder, relaxed MR, 208 iterations (setup check; not used in any verdict)
 #   S3s    the same with sunny as the responder (sunny listens on the control port; run before B3s)
-#   B3one-<cell>  one B3 cell again, 4 000 iterations, into b3_rerun<k>/ (a cell that skipped.txt lists, or an
-#          inconclusive one; the earlier run stays)
-#   B3r    B3, rain is the responder: b3_x_rain_<ro|so>, b3_s_rain_<ro|so>, b3_h_rain_<ro|so>, 4 000 iterations each
+#   B3one-<cell>  one B3 cell again, into b3_rerun<k>/ (a cell that skipped.txt lists, or an inconclusive one; the earlier
+#          run stays)
+#   B3r    B3, rain is the responder: b3_x_rain_<ro|so>, b3_s_rain_<ro|so>, b3_h_rain_<ro|so>
 #   B3s    B3, sunny is the responder: the same six cells with sunny
-#   B2     B2: four ranks interleaved (rain 0, 2; sunny 1, 3), report lines only, 2 trials
-#   B2c    B2 control (optional): four ranks consecutive (rain 0, 1; sunny 2, 3), 1 trial
-#   B1     B1: record (2 ranks), replay rank 1 on sunny and rank 0 on rain (strace), two negative replays; 2 trials
-#   B1live B1 optional (only after B1 passed): 2 ranks hold 30 s while a spare replays rank 1 on sunny; 1 trial
+#          B3r, B3s and B3one run B3_ITERS (3 200) iterations with RS_LAST_KB=4096, both passed explicitly (EXPERIMENT.md
+#          9.15.3 and 12: the 1 024 smoke had no boundary hit; 3 200 keeps rain's QUERY_QP under the 20 000 cap)
+#   B2     B2: four ranks interleaved (rain 0, 2; sunny 1, 3), report lines only, 2 trials, into b2/ (a repeat: b2_run<k>/)
+#   B2c    B2 control (optional): four ranks consecutive (rain 0, 1; sunny 2, 3), 1 trial, into the latest B2 folder
+#   B1     B1: record (2 ranks), replay rank 1 on sunny and rank 0 on rain (strace), two negative replays; 2 trials, into
+#          b1/ (a repeat: b1_run<k>/)
+#   B1live B1 optional (only after B1 passed): 2 ranks hold 30 s while a spare replays rank 1 on sunny; 1 trial, into the
+#          latest B1 folder (its self-connect bound comes from that folder's sequential replays)
 # Before and after the hold (as ../../remaining/hold.sh): GPU users and compute mode of both nodes, the mlx5 kernel lines of
 # both nodes, rain's mlx5_1 firmware-command counters (debugfs, read-only, ../../scripts/ts1/fwcmd_snapshot.sh). A new mlx5
 # command-error line or a growth of the firmware-command failure counters writes <resultsdir>/STOP_mlx5; a CUDA memory fault
@@ -22,7 +26,9 @@
 # refuses). Processes are never killed here: every process is bounded by its own timeout; the leftover check is a
 # read-only count by exact name. Before the hold, when no test process is left, this user's own leftover files of an
 # earlier hold that was cut (/tmp/rs_sp_*, /tmp/rs_b3_*, and their work directories) are deleted on both nodes: they may
-# hold management addresses. No iptables rule.
+# hold management addresses. The same is done when the hold refuses because of a STOP file and no test process is left;
+# when it refuses because a test process is still there, clean by hand once that process has ended (its own timeout).
+# No iptables rule.
 # env: SUNNY_SSH (required)
 set -u
 R=${1:?resultsdir}; H=${2:?hold}
@@ -32,8 +38,15 @@ export SUNNY_SSH
 CMDERR='grep -i mlx5 | grep -iE "cmd|command" | grep -icE "failed|timeout|leak"'
 NAMES="rs_spike rs_drain_test"
 mkdir -p "$R"
-for f in STOP_mlx5 STOP_cuda STOP_left STOP_nic; do [ -e "$R/$f" ] && { echo "$R/$f present: no hold runs" >&2; exit 3; }; done
 left() { { for n in $NAMES; do pgrep -x "$n"; done; ssh -n "$SUNNY_SSH" "for n in $NAMES; do pgrep -x \$n; done"; } 2>/dev/null | wc -l; }
+OWNCLEAN='find /tmp -maxdepth 1 -user "$(id -un)" \( -name "rs_sp_*" -o -name "rs_sp.*" -o -name "rs_b3_*" -o -name "rs_b3.*" \) -exec rm -rf {} + 2>/dev/null; true'
+for f in STOP_mlx5 STOP_cuda STOP_left STOP_nic; do
+  if [ -e "$R/$f" ]; then
+    echo "$R/$f present: no hold runs" >&2
+    [ "$(left)" -eq 0 ] && { bash -c "$OWNCLEAN"; ssh -n "$SUNNY_SSH" "$OWNCLEAN"; }
+    exit 3
+  fi
+done
 snap() {  # snap <tag>
   echo "== $1 $(date '+%F %T')"
   nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null | sed 's/^/rain gpu: /'
@@ -52,9 +65,16 @@ snap() {  # snap <tag>
 }
 n0=$(left)
 [ "$n0" -eq 0 ] || { echo "$(date '+%F %T') hold $H: $n0 test process(es) present before the hold" | tee -a "$R/STOP_left"; exit 3; }
-OWNCLEAN='find /tmp -maxdepth 1 -user "$(id -un)" \( -name "rs_sp_*" -o -name "rs_sp.*" -o -name "rs_b3_*" -o -name "rs_b3.*" \) -exec rm -rf {} + 2>/dev/null; true'
 bash -c "$OWNCLEAN"; ssh -n "$SUNNY_SSH" "$OWNCLEAN"
 SECONDS=0
+B3_ITERS=3200; B3_LAST_KB=4096
+newdir() {  # newdir <base>: $R/<base> if it holds no trial yet, else the first free $R/<base>_run<k> (k >= 2)
+  if ! ls "$R/$1"/*_meta.txt >/dev/null 2>&1; then echo "$R/$1"; return; fi
+  local k=2; while [ -e "$R/$1_run$k" ]; do k=$((k + 1)); done; echo "$R/$1_run$k"
+}
+lastdir() {  # lastdir <base>: the latest existing folder of <base> ($R/<base> if none)
+  local d="$R/$1" k=2; while [ -e "$R/$1_run$k" ]; do d="$R/$1_run$k"; k=$((k + 1)); done; echo "$d"
+}
 fits() {  # fits <bound_s> <what>: false (and a line in skipped.txt) if the bound would end past 840 s of the hold
   if [ $((SECONDS + $1)) -gt 840 ]; then echo "$(date '+%F %T') hold $H: skipped $2 (elapsed ${SECONDS} s + bound $1 s > 840 s)" | tee -a "$R/skipped.txt"; return 1; fi
   return 0
@@ -62,11 +82,11 @@ fits() {  # fits <bound_s> <what>: false (and a line in skipped.txt) if the boun
 fwfail() { bash "$D/../../scripts/ts1/fwcmd_snapshot.sh" "$1" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^failed=|^failed_mbox_status=/){split($i,a,"="); s+=a[2]}} END{print s+0}'; }
 snap "before-$H" | tee "$R/snap_before-$H.txt"
 FW0=$(fwfail "start-$H")
-b3() {  # b3 <cell> <iters> <logdir>: one cell if it fits, then the per-cell stop checks
+b3() {  # b3 <cell> <iters> <logdir> [main]: one cell if it fits, then the per-cell stop checks; main: RS_LAST_KB=4096
   local cell=$1 iters=$2 dir=$3 kvf
   [ -e "$R/STOP_nic" ] || [ -e "$R/STOP_mlx5" ] && { echo "skipped $cell: STOP file" >> "$R/skipped.txt"; return 0; }
   fits $((iters / 100 + 60 + 30 + 15 + 30)) "$cell" || return 0
-  bash "$D/run_b3.sh" "$cell" "$iters" "$dir"
+  if [ "${4:-}" = main ]; then RS_LAST_KB=$B3_LAST_KB bash "$D/run_b3.sh" "$cell" "$iters" "$dir"; else bash "$D/run_b3.sh" "$cell" "$iters" "$dir"; fi
   kvf="$dir/${cell}_resp.kv"
   if [ ! -f "$kvf" ] || grep -qE 'nic_error=|setup_error=|watchdog=1|cuda_error=' "$kvf"; then
     echo "$(date '+%F %T') hold $H: $cell ended with an error ($(grep -ho 'nic_error="[^"]*"\|setup_error="[^"]*"\|watchdog=1\|cuda_error=[^ ]*' "$kvf" 2>/dev/null | head -1)); no further cell" | tee -a "$R/STOP_nic"
@@ -85,13 +105,13 @@ case "$H" in
   S3s) b3 b3_x_sunny_ro 208 "$R/b3_smoke" ;;
   B3one-*)  # one B3 cell again (a skipped or inconclusive one) into its own folder b3_rerun<k>; summ_feas reads the latest
     k=1; while [ -e "$R/b3_rerun$k/${H#B3one-}_meta.txt" ]; do k=$((k + 1)); done
-    b3 "${H#B3one-}" 4000 "$R/b3_rerun$k" ;;
-  B3r) for c in x s h; do for o in ro so; do b3 "b3_${c}_rain_$o" 4000 "$R/b3"; done; done ;;
-  B3s) for c in x s h; do for o in ro so; do b3 "b3_${c}_sunny_$o" 4000 "$R/b3"; done; done ;;
-  B2) for t in 1 2; do sp b2_inter "$t" "$R/b2"; done ;;
-  B2c) sp b2_consec 1 "$R/b2" ;;
-  B1) for t in 1 2; do sp b1 "$t" "$R/b1"; done ;;
-  B1live) sp b1_live 1 "$R/b1" ;;
+    b3 "${H#B3one-}" "$B3_ITERS" "$R/b3_rerun$k" main ;;
+  B3r) for c in x s h; do for o in ro so; do b3 "b3_${c}_rain_$o" "$B3_ITERS" "$R/b3" main; done; done ;;
+  B3s) for c in x s h; do for o in ro so; do b3 "b3_${c}_sunny_$o" "$B3_ITERS" "$R/b3" main; done; done ;;
+  B2) d=$(newdir b2); for t in 1 2; do sp b2_inter "$t" "$d"; done ;;
+  B2c) sp b2_consec 1 "$(lastdir b2)" ;;
+  B1) d=$(newdir b1); for t in 1 2; do sp b1 "$t" "$d"; done ;;
+  B1live) d=$(lastdir b1); t=1; while [ -e "$d/b1_live_t${t}_meta.txt" ]; do t=$((t + 1)); done; sp b1_live "$t" "$d" ;;
   *) echo "unknown hold $H" >&2; exit 2 ;;
 esac
 snap "after-$H" | tee "$R/snap_after-$H.txt"

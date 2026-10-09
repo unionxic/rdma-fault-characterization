@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # run_spike.sh - one trial of gin-restore's feasibility tests B1 and B2 (EXPERIMENT.md 9.15.2, 9.15.4) with rs_spike and the
 # rsx libnccl (hw + rs_spike.diff). Called by hold_feas.sh inside ../../../common/cluster_run.sh. Every process is bounded
-# by timeout -s KILL (and its own watchdog); nothing is killed here. Every run has host RMA and RAS off and NCCL_DEBUG=WARN.
+# by timeout -s KILL (and its own watchdog); nothing is killed here. Every run has host RMA and RAS off and NCCL_DEBUG=WARN,
+# and the hw QP watch at 100 ms (NCCL_GIN_TS_QPWATCH_MS=100, record and replay alike; the default 10 ms would make about
+# 3 600 QUERY_QP/s per rank with 4 ranks; review pass 3, P3).
 # usage: run_spike.sh <cell> <trial> <logdir>
 #   b1         rec: rank 0 on rain, rank 1 on sunny, both record their init transcript (NCCL_GIN_RESTORE_RECORD) and end;
 #              rep1: a spare on sunny replays rank 1's transcript alone (NCCL_GIN_RESTORE_REPLAY, RS_SPARE=1) under strace;
@@ -13,13 +15,14 @@
 #   b2_consec  four ranks, rain 0, 1 and sunny 2, 3 (control), report lines only
 # files in <logdir>: <stem>_<part>_r<rank>.kv/.log (part rec, rep1, rep0, neg_cut, neg_field, live, rank), <stem>_<part>_strace.txt
 #   (counts only), <stem>_meta.txt
-# env: SUNNY_SSH (required), APP ($HOME/rs-bundle/app/rs_spike), LIBDIR ($HOME/rs-bundle/rsx)
+# env: SUNNY_SSH (required), APP ($HOME/rs-bundle/app/rs_spike), LIBDIR ($HOME/rs-bundle/rsx2: the second rsx build, after
+#      the pass-3 review; ~/rs-bundle/rsx is the first build, used by the B2 hold of 2026-10-09)
 set -u
 CELL=${1:?cell}; TRIAL=${2:?trial}; LOGDIR=${3:?logdir}
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 SUNNY_HOST=${SUNNY_SSH#*@}
 APP=${APP:-$HOME/rs-bundle/app/rs_spike}
-LIBDIR=${LIBDIR:-$HOME/rs-bundle/rsx}
+LIBDIR=${LIBDIR:-$HOME/rs-bundle/rsx2}
 [ -x "$APP" ] && [ -f "$LIBDIR/libnccl.so.2" ] || { echo "missing $APP or $LIBDIR on rain" >&2; exit 1; }
 case "$CELL" in b1|b1_live|b2_inter|b2_consec) ;; *) echo "bad cell $CELL" >&2; exit 2 ;; esac
 umask 077
@@ -46,7 +49,7 @@ SPROBE='if strace --seccomp-bpf -f -qq -e trace=connect -o /dev/null true 2>/dev
 STRACE_S=$(ssh -n "$SUNNY_SSH" "$SPROBE" 2>/dev/null); STRACE_R=$(bash -c "$SPROBE")
 BASE="NCCL_DEBUG=WARN NCCL_DEBUG_SUBSYS=INIT,NET NCCL_SOCKET_IFNAME=eno1 NCCL_GIN_TYPE=3 NCCL_GIN_ENABLE=1 NCCL_IB_TIMEOUT=14 \
 NCCL_GIN_FAULT_CLASSIFY=1 NCCL_GIN_FAULT_RECOVERY=1 NCCL_GIN_FAULT_TRANSPARENT=1 NCCL_NUM_RMA_CTX=0 NCCL_RMA_DISABLE=1 \
-NCCL_RAS_ENABLE=0 NCCL_GIN_RESTORE_HKEY=$HKEY RS_WATCHDOG_S=60 LD_LIBRARY_PATH=$LIBDIR"
+NCCL_RAS_ENABLE=0 NCCL_GIN_TS_QPWATCH_MS=100 NCCL_GIN_RESTORE_HKEY=$HKEY RS_WATCHDOG_S=60 LD_LIBRARY_PATH=$LIBDIR"
 node_env() { [ "$1" = rain ] && echo "NCCL_IB_HCA=mlx5_1 NCCL_IB_GID_INDEX=$GID_R" || echo "NCCL_IB_HCA=mlx5_0 NCCL_IB_GID_INDEX=$GID_S"; }
 # strace counts, computed on the node from the raw trace, which is then deleted (it holds addresses). argv: the trace, then
 # this node's own addresses (connects to them are counted apart: not a peer). socket= and lines_matched= are the positive

@@ -134,9 +134,12 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
   먼저 세운다. Commit 뒤 응답 쪽의 다른 출구(DONE 시간 초과 hw 5304, BYE 5305–5307, FAIL이나 모르는 레코드 5309–5311, `RepostApply` 실패 5313)에서도
   세우면 앞으로 원인이 바뀌어도 이 지킴이 따로 선다(선택). 같은 화신에 대해 표시 없는 PEER_DEAD 거절이 뒤따를 수는 없다: 첫 거절이 `pe.declined`를 세우면
   `gdakiTsSocketLost`가 더는 `deadJudged`를 세우지 않고(hw 3796), 다시 걸기와 탐침이 멈추고(hw 3997, 4094), 그 상대 단어가 TOLD로 G2의 hold 갈래를 막는다
-  `[소스: 검토 3]`. 검토 3 W11(gpu-detect 쪽 메모): ACK 보내기 실패 길에서는 `gdakiTsSend`가 `pe.closeCause`를 세우지 않고 `gdakiTsInstall`이 지우므로
+  `[소스: 검토 3]`. 2026-10-09 확인: gpu-detect의 `hk` 빌드(`hk_layer.diff`, `prereg/gpu-detect-v1`)의 `gdakiTsDeclineAfterCommit`가 이 규칙대로 두 자리에서
+  표시를 맨 먼저 세우고, 표시는 `gdakiTsInstall`에서 지운다 `[소스: hk_layer.diff, 읽기만]`. 검토 3 W11(gpu-detect 쪽 메모): ACK 보내기 실패 길에서는 `gdakiTsSend`가 `pe.closeCause`를 세우지 않고 `gdakiTsInstall`이 지우므로
   (hw 3892), errno를 먼저 `closeCause`에 옮기지 않고 `gdakiTsSocketLost`를 부르면 원인이 "모름"으로 남아 `gdakiTsCauseLiveness`(hw 3737–3743)가 죽음으로
   분류한다(EPIPE가 거짓 죽음과 degraded가 됨). hw 5606, 5749처럼 errno를 먼저 옮겨야 한다. 복원 설계에는 영향이 없다("모름"은 강한 증거가 아니고 표시가 뺌).
+  2026-10-09 확인: `hk`는 ACK 보내기 실패 길에서 죽음 판정을 하지 않고 errno 이름을 `closeCause`에 넣는다(hk 검토 지적 1로 받기 쪽 peek을 뺌) `[소스: hk_layer.diff]`.
+  복원 계층을 만들 때의 기준은 그때의 gpu-detect 빌드(지금은 `hk`)이고, 이 문서의 hw 줄 번호는 그때 다시 맞춘다.
 - **잘못된 죽음 판정의 막**: (1) 예비 프로세스는 같은 노드에 있으므로 활성화 전에 원래 프로세스(등록 때 받은 PID)가 끝났는지 스스로 확인한다:
   `/proc/<pid>`가 없거나, `/proc/<pid>/stat`의 상태가 Z(거두기 전 zombie)나 X이거나, 시작 시각(22번째 칸)이 등록 때의 값과 다르다(거둔 뒤 PID가 다시
   쓰인 경우; V9). 아니면 활성화를 거절하고 모두 fallback한다. (2) 복원 라운드가 생존
@@ -407,7 +410,7 @@ NVSHMEM 정책은 fail-fast 하나다. hold 정책의 프로세스는 NVSHMEM을
 | id | 무엇 | 왜 막는가 | 풀 조건 |
 |---|---|---|---|
 | B1 | 예비 프로세스의 초기화 재생(C3, A3) | NCCL bootstrap, GIN collComm 고리 연결과 all-gather, helper 설정의 잇기/받기는 모든 rank가 함께 해야 한다. 기록된 결과로 대답하는 길이 NCCL 핵심의 초기화 전체(proxy, 런타임 연결, 대칭 메모리 등록)를 덮는지, 같은 devComm 모양을 만드는지, `gated`와 `addr`를 기록으로 세울 수 있는지 모른다 `[미확인]` | 초기화 재생 시험(빌드가 필요하므로 이 문서의 승인 뒤): 장애 없이 한 rank의 기록을 만들고, 예비 프로세스가 그 기록으로 초기화를 끝내 같은 rank, nRanks, 컨텍스트 수, 신호 수, window 크기, 모든 상대의 게이트를 얻는지. 2026-10-09: 시험 설계, 판정 기준, 코드가 검토를 거쳐 빌드됨, 실행 전(EXPERIMENT.md 9.15.4). 설계 검토로 host RMA proxy와 runtime connect, NVLS를 무장 조건에 더함(2.3절) |
-| B2 | LSA 팀(A4) | GPU 하나를 두 프로세스가 나눌 때 devComm의 `lsaSize`가 1인지 모른다. 2 이상이면 생존 rank의 load/store가 죽은 rank의 메모리를 계속 가리키고, 이것을 고치려면 생존 rank에서 CUDA 가상 메모리 호출이 필요하다(생존 rank는 CUDA 호출을 하지 않는다는 원칙과 충돌) `[추론]` | `lsaSize`를 읽어 확인. 2 이상이면 LSA 팀에 든 상대는 무장하지 않음(그 상대의 죽음은 fail-fast)으로 해결한 것으로 본다. 2026-10-09: 기존 원자료에는 값이 없음, 확인 시험이 빌드됨, 실행 전(EXPERIMENT.md 9.15.2) |
+| B2 | LSA 팀(A4) | GPU 하나를 두 프로세스가 나눌 때 devComm의 `lsaSize`가 1인지 모른다. 2 이상이면 생존 rank의 load/store가 죽은 rank의 메모리를 계속 가리키고, 이것을 고치려면 생존 rank에서 CUDA 가상 메모리 호출이 필요하다(생존 rank는 CUDA 호출을 하지 않는다는 원칙과 충돌) `[추론]` | `lsaSize`를 읽어 확인. 2 이상이면 LSA 팀에 든 상대는 무장하지 않음(그 상대의 죽음은 fail-fast)으로 해결한 것으로 본다. 2026-10-09: 기존 원자료에는 값이 없음, 확인 시험이 빌드됨, 실행 전(EXPERIMENT.md 9.15.2). **2026-10-09 풀림(해결 A)**: 복원 셀 배치(4 rank 번갈아, GPU마다 둘)에서 2회 모두 네 rank `lsaSize=1`, `nLsaTeams=4`(EXPERIMENT.md 9.15.2, 12절). 다른 배치를 지키는 장치로 "LSA 팀에 든 상대는 무장하지 않음" 규칙과 runtime connect, NVLS 조건(2.3절)은 그대로 둔다 |
 | B3 | 체크포인트의 drain 확인(C1) | 응답 쪽 rmsn이 멈춤 때의 메시지 수에 이른 뒤 그 쓰기가 GPU 메모리에 보인다는 것은 NIC 루프백 READ 하나의 차례 보장에 기댄다. 그런데 window MR은 기본으로 relaxed ordering이다(`gdakiRegMr` hr 192 = hw, `NCCL_IB_PCI_RELAXED_ORDERING` 기본 2 net_ib/init.cc 11; strict는 `NCCL_WIN_STRICT_ORDERING`일 때만 gin_host.cc 556; 신호와 카운터 표는 strict hr 7311–7312 / hw 7630–7631). gin-remaining의 flush 근거는 그 계층 자신의 strict 루프백 MR이었다 `[미확인: 이 하드웨어]` | (가) 무장 조건으로 strict window를 요구하고(성능 비용을 잼), (나) NIC 게이트 시험과 같은 꼴로 relaxed와 strict에서 drain 뒤 사본이 맞는지 따로 잼. (나)가 끝나야 풂. 2026-10-09: (나)의 시험(READ 대상은 다른 할당의 fence 낱말, copy engine 복사, 꼬리 셋, 대조 둘)이 검토를 거쳐 빌드됨, 실행 전(EXPERIMENT.md 9.4절 3단계, 9.15.3) |
 | B4 | 빠른 경로의 키 읽기 자리(A1, F5) | 생존 rank의 보내기가 게이트가 홀수일 때 옛 rkey를 읽고, 게시 뒤 빠른 경로로 들어가면 죽은 rank의 rkey로 보낸다. 고치려면 키 읽기를 게이트 진입 뒤로 옮겨야 한다. `signalKey`는 호출자가 계산해 값으로 넘기므로 그 계산 자리를 `putImplMode` 안으로 옮기는 구조 변경이 들고, 보통 읽기(`loadConst`)를 게이트 뒤의 시스템 범위 읽기로 바꾸면 L1 적중을 잃을 수 있다(V2b). 이것은 "빠른 경로는 바꾸지 않는다"는 설계 원칙(EXPERIMENT.md 9.1절)과 충돌한다 | 사용자의 결정: (가) 모든 보내기에서 키 읽기를 게이트 뒤로(지연을 4 KiB, 256 KiB에서 잼), (나) hold 정책의 communicator에서만(측 표 포인터로 가르는 분기가 fail-fast에도 더해짐), (다) 복원을 포기. 결정 전에는 막음. **2026-10-09 사용자 결정: (나).** 설계는 A1과 EXPERIMENT.md 9.9절 DV3. 4 KiB, 256 KiB 지연은 복원 계층을 만들 때 잰다(LT1, LT2). 결정 뒤의 독립 검토는 6절 검토 3 |
 
