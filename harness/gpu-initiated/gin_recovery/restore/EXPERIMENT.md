@@ -36,8 +36,8 @@ gin-remaining `hr` 빌드 트리(세션 스크래치 `agent_ts2hr/nccl-src`, 202
 - 송신 쪽 로그: 각 rank가 상대마다(QP마다) 자기가 보낸 put과 신호를 내용과 함께 적어 두는 장치 메모리 고리. 상대의 다음 체크포인트가 확정되면 지운다.
 - 재실행(replay): 예비 프로세스가 체크포인트의 단계부터 application 커널을 다시 도는 것.
 - 중복 억제(suppression): 재실행이 다시 내는 보내기 가운데 생존 rank가 이미 받은 것을 내지 않는 것. 단위는 RC 요청 메시지다.
-- 복원 중(RESTORING): 생존 rank의 helper가 죽은 상대 하나를 거절하지 않고 복원을 기다리는 상태. 복원 시한(`NCCL_GIN_RESTORE_MS`)이 끝나면 앞
-  빌드의 거절로 돌아간다(fallback).
+- 붙잡음(hold): 생존 rank의 helper가 죽은 상대 하나를 거절하지 않고 복원을 기다리는 것. 상태는 HELD, COMMITTING, PUBLISHED(DESIGN_POLICY.md 3절).
+  복원 시한(`NCCL_GIN_RESTORE_MS`)이 끝나거나 실패하면 앞 빌드의 거절로 돌아간다(fallback).
 - 초기화 기록(init transcript): 논리 rank r이 처음 초기화 때 받은 모든 집합 교환(bootstrap, GIN collComm)의 결과. 예비 프로세스가 초기화를 다시 할 때
   이것을 받아 쓴다(초기화 재생).
 
@@ -199,26 +199,29 @@ rank를 새 프로세스로 잇는 길, 보낸 메시지를 다시 넣는 길, �
 ### 9.2 복원 중 대기 유지와 시한 (생존 rank)
 
 **상태.** 생존 rank의 helper는 상대 r마다 상태 하나를 둔다: `OFF`(복원 꺼짐), `ARMED`(r의 확정된 체크포인트가 있고 r로 가는 로그가 그 절단점부터
-빠짐없음), `RESTORING`(복원 중), `FALLBACK`(복원 포기, 앞 빌드의 거절로), `CANCELLED`(abort, shrink, revoke, 정리).
+빠짐없음), `HELD`, `COMMITTING`, `PUBLISHED`(붙잡음: 복원 라운드의 커밋 지점 전, 게시 중, 게시 뒤 예비 프로세스의 RESTORED 전), `FALLBACK`(복원 포기, 앞 빌드의
+거절로), `CANCELLED`(abort, shrink, revoke, 정리). 전이와 무장의 원문은 [DESIGN_POLICY.md](DESIGN_POLICY.md) 2.3절과 3절이다.
 
 **죽음 판정에서.** 지금은 FIN이 보이면 `gdakiTsSocketLost`(3746–3777)가 `deadJudged`를 세우고, helper 루프(6095–6101)가 바로
 `gdakiTsDecline(..., GDAKI_UA_PEER_DEAD)`를 부른다. 거절은 QP를 ERR로 보내고(4933), 그 상대의 단어와 비동기 오류를 올리고(4936–4943),
 degraded를 예약하고(2828–2840), 게이트를 실패로 쓴다(4960–4964) `[소스]`. 계층은 `gdakiTsDecline` 맨 앞의 정책 hook(G2, [DESIGN_POLICY.md](DESIGN_POLICY.md) 4.10절)에 hold 분기(RL1)를 둔다. 그 상대가 `ARMED`이고
-죽음의 증거가 있으면(아래) 거절하지 않고 `RESTORING`으로 간다.
+죽음의 증거가 있으면(아래) 거절하지 않고 붙잡는다(상태 HELD → COMMITTING → PUBLISHED, DESIGN_POLICY.md 3절).
 - 죽음의 증거: 강한 증거(BYE 없는 FIN, 또는 1–5 s 간격의 거절 둘)만 쓴다. 라운드 안의 FIN은 지금 거절이 아니라 취소(`gdakiTsCancelRound` 5127–5146)로
-  가서 상대를 "모름"으로 두므로, 그 경우는 다시 걸기와 탐침의 거절 둘로 죽음이 판정된 뒤 helper 루프의 거절로 온다. 다른 거절(분류 불가, 확대 상한, 상대의
+  가서 상대를 "모름"으로 두므로, 그 경우는 다시 걸기와 탐침의 거절 둘로 죽음이 판정된 뒤 다시 줄에 선 기록의 라운드(죽음 길)나 helper 루프의 거절로 온다. 두 길 모두 G2를 거친다. 다른 거절(분류 불가, 확대 상한, 상대의
   FAIL, 펌웨어 초과, BADMAGIC 같은 약한 죽음)은 가로채지 않는다. 판단의 원문은 [DESIGN_POLICY.md](DESIGN_POLICY.md) 2.4절과 R1이다.
-- `RESTORING`으로 갈 때 하는 일: 범위를 모든 문맥으로 두고, 준비된 라운드를 풀고, `gdakiTsQuiesce`(4416)를 그대로 부른다(게이트 홀수, QP를 ERR로,
+- 붙잡을 때 하는 일: 상태를 맨 먼저 HELD로 두고, 범위를 모든 문맥으로 두고, 준비된 라운드를 풀고, `gdakiTsQuiesce`(4416)를 그대로 부른다(게이트 홀수, QP를 ERR로,
   개수 0, 모아 둔 WQE의 doorbell, `abandoned` 확인). `deadJudged`와 `failedPending`을 지운다. 이 모두를 `gdakiTsBusy` 안에서 한다.
   차례의 원문은 [DESIGN_POLICY.md](DESIGN_POLICY.md) 3절이다. 보내기는 게이트에서 쉬고, r의 QP를 기다리는 요청 대기와 flush는 다음 짝수 에폭까지 쉰다
-  (`tsParkStable`, `gin_gdaki.h` 252–297). 상대별 단어, 칸 0, 비동기 오류, degraded 예약, 오류 줄은 하나도 만들지 않는다. 상대를 모르는 대기(`waitSignal`)는
+  (`tsParkStable`, `gin_gdaki.h` 252–297). 상대별 단어, 칸 0, 비동기 오류, degraded 예약, 거절의 WARN 줄은 만들지 않는다(죽음 판정의 WARN 줄은 감지라서 남는다). 상대를 모르는 대기(`waitSignal`)는
   칸 0만 읽으므로 그냥 계속 돈다.
 - 장치 대기의 한도: 쉬는 장치 스레드는 게이트의 `waitMs`(= `NCCL_GIN_TS_HOLD_MS`, 기본 30 000 ms, 6820) 뒤 포기한다(`tsGiveUp` → poison)
   `[소스]`. 그래서 복원 시한 `NCCL_GIN_RESTORE_MS`(초안 기본 20 000)는 `holdMs`보다 짧아야 하고, 계층은 `gdakiTsStart`(`roundMs`를 정하는 곳)에서
   관계를 확인해 어기면 복원을 끈다(시작 줄로 보임). 쉬는 스레드의 시계는 게이트가 처음 홀수가 된 때부터 가므로 실제 시한은 그것으로 줄인다
   ([DESIGN_POLICY.md](DESIGN_POLICY.md) T4).
-- 시한이 지나면(`FALLBACK`): 앞 빌드의 거절을 그대로 부른다(`gdakiTsDecline(..., PeerDead, GDAKI_UA_PEER_DEAD)`). degraded 시계는 그 거절에서 시작하므로
-  상대를 모르는 대기는 죽음 판정 + 시한 + 2 000 ms에 풀린다. 연결된 예비 프로세스에는 BYE를 보낸다.
+- 시한이 지나면(`FALLBACK`): Q4 감시 스레드가 시한을 지킨다(G8). CAS(HELD 또는 PUBLISHED → TIMED_OUT)에 이기면 그 상대의 단어(PEER_DEAD), 비동기 오류,
+  책임(PeerDead), degraded 예약을 CPU 쓰기로 하고, helper가 풀리면 앞 빌드의 거절(`gdakiTsDecline(..., PeerDead, GDAKI_UA_PEER_DEAD)`)로 게이트와 FAIL을
+  마저 한다. degraded 시계는 시한에서 시작하므로 상대를 모르는 대기는 시한 + 2 000 ms에 풀린다. 모든 rank와 예비 프로세스에 FALLBACK(p)를 보내고, 예비
+  프로세스는 BYE 없이 끝난다(DESIGN_POLICY.md 3절).
 - 시한 안의 실패도 같은 길이다: 예비 프로세스 없음(짝이 ACTIVATE를 못 보냄), 예비 프로세스의 소켓 끊김, 상태 적용 실패, 복원 라운드의 거절(아래),
   장치 대기의 포기(`abandoned`, 4303–4313; 복원 라운드의 커밋 지점이 본다).
 - 복원 라운드 안에서 펌웨어 단계가 `NCCL_GIN_TS_FW_MS`를 넘으면 감시(3476–3516)가 그 상대의 단어를 올린다. application이 이미 실패를 들었으므로 복원은
@@ -261,14 +264,15 @@ CUDA 문맥과 모듈 적재까지 미리 하고(시간이 드는 일), `ncclCom
 
 **다시 잇기(REJOIN).** 지금의 재연결 기계는 낮은 rank만 높은 rank에 다시 걸고(3970), 높은 rank는 낮은 rank의 HELLO만 받으며(4209–4215), `gone`인
 상대에게는 다시 걸지 않는다(3972) `[소스]`. 예비 프로세스는 새 메시지 REJOIN으로 모든 생존 rank의 남겨 둔 listen 소켓(`ts->listenFd`)에 건다. 생존 rank는
-그 상대가 `RESTORING`이고, nonce가 맞고, 화신 번호가 지금 + 1일 때만 받는다(RL6). 받으면 `pe`의 죽음 표시(`gone`, `deadJudged`, `refusals`, `left`,
+그 상대가 `HELD`이고, nonce가 맞고, 화신 번호가 지금 + 1일 때만 받는다(RL6). 받으면 `pe`의 죽음 표시(`gone`, `deadJudged`, `refusals`, `left`,
 `peerFailed`, `failedPending`)를 지우고, 옛 주소로 진행 중이던 다시 걸기와 탐침을 닫고, 공통 연결 세대를 정해 `gdakiTsInstall`(3859)로 설치하고, 새 listen
 주소를 `pe.addr`에 둔다. 그 뒤의 소켓 끊김은 앞과 같은 규칙(낮은 rank가 다시 건다)을 따르고, HELLO와 탐침 답은 화신 번호가 맞아야 받는다(펜싱).
 REJOIN은 고정 크기 제어 메시지이고 rkey 목록은 자료 소켓으로 온다.
 
 **생존 rank 쪽 복원 라운드**(상대 r 하나, `gdakiTsBusy` 안, 한도 `roundMs`):
 1. `ncclGinRecoverPrepare(comm, r)`(2143–2330): 생산자 정지 확인, QP를 ERR로(2243–2255; hold 시작에서 이미 ERR), drain(2257–2303: 죽은 상대로 간 WQE는
-   flush 오류 CQE로 끝난다), 각 QP의 이 에폭 WQE 수 S와 새 보내기 PSN을 얻는다. 2ERR 뒤라서 이때 응답 쪽 rmsn을 한 번 더 읽어 누적 실행 수 X를 정한다(RL13).
+   flush 오류 CQE로 끝난다), 각 QP의 이 에폭 WQE 수 S와 새 보내기 PSN을 얻는다. 응답 쪽 rmsn을 이때 한 번 더 읽어 누적 실행 수 X를 확인한다(RL13). QP는 hold 시작의 2ERR 뒤로
+   아무것도 실행하지 않으므로, 예비 프로세스에 X를 먼저 보낸 값(그림)과 같다.
 2. `gdakiTsNonMsg`를 읽어 READ나 DUMP가 있으면 FALLBACK(get은 실행된 것으로 칠 수 없음).
 3. 생존 rank의 토큰(QPN, 새 PSN)을 예비 프로세스에 보내고, 예비 프로세스가 자기 QP를 그 PSN으로 이은 READY를 기다린다.
 4. 끝점 바꿈(RL7): `rq.exch`를 예비 프로세스의 QPN, GID, LID로.
@@ -356,7 +360,8 @@ D2H와 해시, 전송(비동기로 다음 단계와 겹칠 수 있음). 메모�
   검사(`tsPollEnter` 365)와 `tsParkStable`(264)은 이 비트를 보지 않는다(공용 `tsWordOpen`에 넣으면 flush와 wait가 끝없이 돎, DESIGN_POLICY.md C6).
   느린 길(`tsGateEnterSlow`, 303–328)이 나가기와 쉬기 전에 예산을 보고 내지 않거나 일부만 낸다. 빠른 경로의 명령 수는 그대로다 `[추론]`. 비트는 helper만
   쓰고, 예산이 남은 동안 에폭 반쪽을 쓸 때마다 OR한다. 예산이 0이 되면 helper가 지운다.
-- READ는 응답 쪽 MSN이 세는 요청 메시지라 예산을 쓰지만, 무장 조건으로 되살릴 rank와의 get은 없다. 0바이트 put의 NOP와 flush의 DUMP는 메시지가 아니라
+- READ는 응답 쪽 MSN이 세는 요청 메시지라 X − P에 섞인다. 되살릴 rank의 get은 9.7절 8번의 application 요구이고, 억제 느린 길은 예산이 남은 QP에 들어온
+  get을 실패로 표시해 복원을 실패시킨다(DESIGN_POLICY.md M2 (c)). 0바이트 put의 NOP와 flush의 DUMP는 메시지가 아니라
   예산을 쓰지 않는다.
 - 누적 실행 수는 화신마다 mod 2^24라서, 감시의 QUERY_QP(G7)와 기준 바꿈마다 증분을 더하고 복원 라운드가 2ERR 뒤 Commit 전에 한 번 더 읽는다.
 - 억제한 연산은 WQE를 쓰지 않으므로 그 요청의 대기와 flush는 바로 끝난다(요청 표는 실제로 낸 WQE만 셈) `[소스: waitImplCore 1175]`.
@@ -406,18 +411,20 @@ GIN 연결 수가 하나인지는 확인하지 않았다 `[미확인]`.
 
 **gpu-detect 계층에 넣을 정책 hook(G1–G9).** 감지와 반응을 나누는 최소 변경이다. fail-fast(기본)에서 지금의 hw 동작을 그대로 낸다. 원문은
 [DESIGN_POLICY.md](DESIGN_POLICY.md) 4.10절이다: G1 정책 칸과 `NCCL_GIN_FAULT_POLICY`, G2 `gdakiTsDecline` 맨 앞의 거절 hook(hr 4916 / hw 4941),
-G3 QP 감시의 상대 거르기 hook(hw 6094), G4 기록 처리 루프의 hook(hr 6114–6124 / hw 6399–6409), G5 훑기 유실 검사의 hook(hr 5894–5896 / hw 5923–5925).
+G3 QP 감시의 상대 거르기 hook(hw 6094), G4 기록 처리 루프의 hook(hr 6114–6124 / hw 6399–6409), G5 훑기 유실 검사의 hook(hr 5894–5896 / hw 5923–5925),
+G6 에폭 비교의 `coveredEpoch`(hw 6066, 6139, 5460, 3361), G7 감시의 QUERY_QP가 rmsn을 넘김(hw 6111), G8 감시 스레드의 복원 시한(`gdakiTsWatchdog` hw 3488),
+G9 펌웨어 초과 책임의 원인(hw 3530).
 
 **복원 계층(hold 분기의 내용).**
 
 | id | 어디에 | 무엇을 |
 |---|---|---|
 | RL1 | G2의 hold 분기 | (가) 붙잡은 상대에 대한 모든 거절 → fallback(PeerDead, PEER_DEAD), (나) 강한 죽음 증거, ARMED, TOLD 아님 → hold 시작(DESIGN_POLICY.md 3절) |
-| RL2 | G4의 hold 분기 | 복원 중인 상대의 기록 흡수, `qs[].handled` 올림 |
+| RL2 | G4의 hold 분기 | 붙잡은 상대의 기록 흡수, `qs[].handled` 올림 |
 | RL3 | G5, G3, G6, G7, G8, G9의 hold 분기 | 붙잡은 상대는 감시와 유실 검사에서 뺌, `coveredEpoch`, rmsn 표본, 감시 스레드의 복원 시한, 펌웨어 초과 책임의 원인 |
-| RL4 | helper 루프(hr 6013–6129 / hw 6298–6415) | 복원 상태 기계 한 걸음(시한, 활성화, REJOIN, 로그 보내기, 복원 라운드). `gdakiTsBusy`는 복원 라운드에서만 |
+| RL4 | helper 루프(hr 6013–6129 / hw 6298–6415) | 복원 상태 기계 한 걸음(TIMED_OUT 확인, 활성화, REJOIN, 로그 보내기, 복원 라운드, FALLBACK(p)와 RESTORED(p) 처리). `gdakiTsBusy`는 hold 시작과 복원 라운드에서. 상태는 상대마다 원자 칸(DESIGN_POLICY.md 3절) |
 | RL5 | `gdakiTsStart`(hr 6735– / hw 7040–; `roundMs`를 정하는 곳 hr 6741 / hw 7046) | 복원 시한, `holdMs`, `roundMs`의 관계 검사, communicator 무장 조건(DESIGN_POLICY.md 2.3절). 어기면 fail-fast |
-| RL6 | 받기 루프(hr 4164–4243 / hw 4189–4268) | REJOIN: 복원 중인 상대에게서만, nonce와 화신 번호, 죽음 표시 지우고 `gdakiTsInstall`(hr 3859 / hw 3884) |
+| RL6 | 받기 루프(hr 4164–4243 / hw 4189–4268) | REJOIN: 붙잡은 상대(HELD)에게서만, nonce와 화신 번호, 죽음 표시 지우고 `gdakiTsInstall`(hr 3859 / hw 3884) |
 | RL7 | 새 함수, `opMu` 안 | QP마다 `rq.exch`를 새 끝점으로(Commit의 검사 hr 2360 / hw 2361, 연결 hr 2450 / hw 2451 전) |
 | RL8 | 새 함수 | 계획 `U = S, n = 0`으로 `gdakiTsRepostApply`(hr 4692 / hw 4717) |
 | RL9 | `ncclGinGdakiRegMrSym`(hr 7879–7931 / hw 8198–8250), 문맥 생성(hr 7311–7315 / hw 7630–7634) | rkey 표와 신호, 카운터 표의 등록부. 복원 때 칸 r을 NIC 루프백으로. 이 버퍼들을 `gdakiLbAddRange`에 |
