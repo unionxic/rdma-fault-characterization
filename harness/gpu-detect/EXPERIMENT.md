@@ -10,7 +10,7 @@
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gpu-detect` @ `02a640aa` (master) |
 | 사전 등록 태그 | `prereg/gpu-detect-v1`: 상태를 `PREREGISTERED`로 바꾼 커밋(12절)에 단다. 고정 파일의 sha256은 [PREREG.txt](PREREG.txt) |
-| 마지막 갱신 | 2026-10-09, 본 실행과 채점(12절) |
+| 마지막 갱신 | 2026-10-09, 본 실행, 채점, 독립 재계산(12절) |
 
 표시: `[측정]` 원자료나 빌드 산출물에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -694,11 +694,12 @@ DECLINE 줄, 호스트 기록, "marked failed" 줄, 상대에게 FAIL(보낼 수
 - [ ] pilot(P1, P2)을 돌리고 12절에 적은 뒤 고칠 것을 고치고 태그를 달았다(pilot 1 `hw`, pilot 2 `hk`).
 - [x] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외를 셀마다 따로 센 표가 있다(`SCORE.md` 끝 표). 시행 248, 제외 0.
 - [x] 예측 41줄마다 판정(맞음, 틀림, 자료 부족)과 조건을 만족하지 않은 시행 목록이 있다([SCORE.md](results/20261009/SCORE.md)).
-- [ ] 다른 에이전트가 `score.py`를 보지 않고 원자료에서 핵심 수치를 다시 셌다(결과 분류, 감지 지연, FIN 판정과 종료 시각, 지연 중앙값, 회귀 판정).
+- [x] 다른 에이전트가 `score.py`를 보지 않고 원자료에서 핵심 수치를 다시 셌다(결과 분류, 감지 지연, FIN 판정과 종료 시각, 지연 중앙값, 회귀 판정)
+  ([qa_recount.md](results/20261009/qa_recount.md)).
 - [x] 다른 에이전트가 두 계층을 읽고 리뷰했다(12절).
-- [ ] 다른 에이전트가 실행기와 채점기를 리뷰했다.
-- [ ] pilot과 제외 시행이 결과에 섞이지 않았다.
-- [ ] 새 빌드의 md5, diff 셋, 재적용 확인을 5절과 12절에 적었다.
+- [x] 다른 에이전트가 실행기와 채점기를 리뷰했다([qa/code_review.md](qa/code_review.md)).
+- [x] pilot과 제외 시행이 결과에 섞이지 않았다(pilot은 다른 결과 폴더, 본 실행 폴더의 시행 파일은 모두 태그 뒤에 생김, 제외 0).
+- [x] 새 빌드의 md5, diff 셋, 재적용 확인을 5절과 12절에 적었다.
 - [x] 다른 에이전트가 정책 hook과 응답 쪽 틈의 고침을 충돌 표와 함께 리뷰했다(12절).
 - [ ] 원자료를 Release에 올리고 `DATA.md`에 적었다.
 - [ ] hold 전후 mlx5 스냅숏에 새 명령 오류가 없었고, iptables 규칙이 늘지 않았고, CUDA 메모리 오류가 없었다.
@@ -723,7 +724,7 @@ DECLINE 줄, 호스트 기록, "marked failed" 줄, 상대에게 FAIL(보낼 수
 - [x] 태그 전 고침: GC1, GC2, GD5, H1의 반증 문장, 열 셋(12절)
 - [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로(태그 `prereg/gpu-detect-v1`은 메인 세션이 그 커밋에 단다)
 - [x] 본 실행 G1–R3 (`RUNNING`). 실제로는 R4까지 돌았다(G1–R4, 21:35:03–22:20:41, 12절, 13절)
-- [ ] 채점 (`QA`), 독립 재계산과 측정 코드 리뷰
+- [x] 채점 (`QA`), 독립 재계산과 측정 코드 리뷰
 - [ ] 결과 정리, 원자료 Release, PR
 - [ ] 결론 확정 (`COMPLETE`)
 
@@ -776,6 +777,8 @@ DECLINE 줄, 호스트 기록, "marked failed" 줄, 상대에게 FAIL(보낼 수
 | 2026-10-09 21:35:03–22:20:41 | 본 실행(메인 세션): `bash $D/chain.sh $R/20261009 G1 G2 N1 N2 R1 R2 R3 R4`. 여덟 hold 모두 첫 회에 rc=0: G1 21:35:03–21:41:50(6분 47초, app 32회), G2 –21:45:39(3분 49초, 36회), N1 –21:52:16(6분 37초, 34회), N2 –21:56:38(4분 22초, 28회), R1 –22:02:51(6분 13초), R2 –22:10:15(7분 24초), R3 –22:14:36(4분 21초), R4 –22:20:41(6분 5초). 합계 45분 38초(어림 약 60분, 7절). 다시 돈 hold와 다시 돈 시행 0, 880 s KILL 0. iptables 규칙(`gin-`, `blind-`) 여덟 hold 모두 0 → 0. 새 mlx5 줄 0(`mlx5_new_*` 여덟 파일 모두 빈 파일), 스냅숏 16개 모두 rain 명령 오류 줄 2, sunny 0, rain 펌웨어 명령 실패 합 31. STOP 파일 없음, `LEFT_STREAK` 0, 모든 시행의 남은 프로세스 0. 시행 파일 1 495개에 illegal address, illegal memory access, unspecified launch failure 0. app hold 넷의 `schedule.json` sha256이 모두 `7a5e4875…`(= PREREG). 본 실행의 첫 시행 파일은 21:35:41로 태그 뒤다. 시행 248(app 130, 회귀와 지연 118). 본 실행 동안 문서 커밋은 없었다(상태는 태그 커밋의 `PREREGISTERED` 그대로였고 채점 뒤 `QA`로 바꿈) | `[측정]` `results/20261009/`(`chain.out`, `hold_*_p1.out`, `schedule_sha256.txt`, `snap_*`, `mlx5_*`, `fwcmd_*`; 원자료는 Release, 14절) |
 | 2026-10-09 21:53(본 실행 중) | 측정 코드 리뷰(다른 에이전트, 읽기만; 실행기, 파서, 채점기, 셀과 시행 목록, 부르는 gin-remaining 실행기와 blind-apps 에이전트). 막는 결함과 높음 없음. 중간 4: M1 GD5는 걸러 낸 시행의 중앙값이라 빈 셀이면 기계적으로 "틀림", M2 LC1과 PH1의 정책 항은 빠진 줄이 설정 확인 제외가 되므로 "틀림"이 될 수 없음, M3 NC1, NC2 판정식이 예측 문장보다 약함, M4 880 s KILL이 rain의 application을 남기고 hold 뒤 확인을 건너뜀. 낮음 10(L1 GD2의 아래 한도와 음의 지연, L2 응답 쪽 틈의 창 밖 제외, L3 SIGCONT 응답을 보지 않음, L4 다시 돈 시행, L5 채점 때의 해시 확인, L6 빠진 열의 NameError, L7 랭크 4개 감시 시작 줄 수, L8 hk로 처음 도는 회귀 셀, L9 대상 rank의 균형, L10 iptables 확인). 리뷰가 고정 파일 12개의 sha256을 PREREG.txt와 대 보았고 같았다 | [qa/code_review.md](qa/code_review.md), 처리는 13, 16절 |
 | 2026-10-09 22:21 | 채점(메인 세션): `python3 harness/gpu-detect/score.py harness/gpu-detect/results/20261009`. 시행 248, 판정 248, 제외 0(설정 확인 실패 0). 예측 41개 모두 맞음. N − 1 허용을 쓴 것은 감시 끔 대조(GC2)의 `gin_qperr_w0.hk.n3` 하나뿐 `[측정]` | [SCORE.md](results/20261009/SCORE.md), [trials_scored.csv](results/20261009/trials_scored.csv). 중간 표 `trials_reg_hk.csv`는 행이 모두 `trials_scored.csv`에 있어 커밋하지 않음 |
+| 2026-10-09 22:26–22:34 | 독립 재계산(다른 에이전트; `score.py`, `rows_gd.py`, `SCORE.md`, 채점된 CSV를 열지 않고 자기 정규식으로 원자료에서 열을 다시 뽑음). 41개 판정 모두 채점과 같음. 문장과 판정식의 차이와 눈여겨볼 것 일곱: GC2의 `n3`(감시 없이 장치가 훅 도중 감지하고 빠르게 복구), 음의 감지 지연 둘, GD5의 거른 중앙값과 50 ms 기다림, NC1과 NC2의 문장 확인, 대상 rank의 균형, NVSHMEM 실행 속도 둘, release 시행의 틀린 결과(13, 16절) | [qa_recount.md](results/20261009/qa_recount.md), 스크립트 [qa/app_recount.py](qa/app_recount.py), [qa/reg_recount.py](qa/reg_recount.py), [qa/verdicts.py](qa/verdicts.py). 세 스크립트에 관리망 주소나 IPv4 꼴의 문자열 없음(grep) |
+| 2026-10-09 | 내 확인(이 에이전트, 독립 확인 아님): 고정 파일 12개의 sha256 = PREREG.txt, `git diff prereg/gpu-detect-v1 -- harness/gpu-detect/predictions.csv harness/gpu-detect/cells.json harness/gpu-detect/schedule.json`과 `-- harness/gpu-initiated harness/blind` 모두 비어 있음, rain의 배포된 `hk` libnccl md5 `2913c777…`(= PREREG; sunny는 다시 보지 않음). 재계산 스크립트 셋을 결과 폴더 밖에서 다시 돌려 재계산 에이전트의 출력과 바이트 단위로 같은 파일을 얻음. `trials_scored.csv`와 원시 로그에서 15절의 수치를 따로 셈(재계산과 같음). 채점기와 재계산의 정의가 다른 열 둘(`n_bye_sent`, `release_after_kill_ms_r1`, 13절). stop 셀 16회의 SIGCONT 응답 모두 rc=0, 다시 돈 app 시행 0 | 이 커밋 `[측정]` |
 
 ## 13. 사전 등록 이후 변경
 
