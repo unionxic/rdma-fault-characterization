@@ -110,7 +110,7 @@ The full checksums are in the `SHA256SUMS` asset of that release.
 
 ## Release `data-20261009`
 
-16 raw-data archives, 9114 files, 4.30 MB compressed. Packed by `tools/pack_release.py --whole`.
+19 raw-data archives, 11020 files, 5.17 MB compressed. Packed by `tools/pack_release.py --whole`.
 The full checksums are in the `SHA256SUMS` asset of that release.
 
 | folder | asset | files | MB | sha256 (first 12) | note |
@@ -131,3 +131,6 @@ The full checksums are in the `SHA256SUMS` asset of that release.
 | `harness/gpu-initiated/gin_recovery/remaining/results/20261009` | `harness__gpu-initiated__gin_recovery__remaining__results__20261009.tar.xz` | 1109 | 0.42 | `c7ccdebad261` |  |
 | `harness/gpu-initiated/gin_recovery/remaining/results/20261009_pilot` | `harness__gpu-initiated__gin_recovery__remaining__results__20261009_pilot.tar.xz` | 152 | 0.06 | `200e2da615fa` | pilot runs, not scored |
 | `harness/gpu-initiated/gin_recovery/remaining/results/20261009_pilot2` | `harness__gpu-initiated__gin_recovery__remaining__results__20261009_pilot2.tar.xz` | 17 | 0.01 | `4a3e34390a88` | pilot runs, not scored |
+| `harness/gpu-detect/results/20261009` | `harness__gpu-detect__results__20261009.tar.xz` | 1579 | 0.71 | `ce1b710ed93a` | added 2026-10-09 22:37 |
+| `harness/gpu-detect/results/20261009_pilot` | `harness__gpu-detect__results__20261009_pilot.tar.xz` | 151 | 0.08 | `6de4f10ea9d8` | added 2026-10-09 22:37; pilot runs, not scored |
+| `harness/gpu-detect/results/20261009_pilot2` | `harness__gpu-detect__results__20261009_pilot2.tar.xz` | 176 | 0.09 | `0e7ae195cfe2` | added 2026-10-09 22:37; pilot runs, not scored |
