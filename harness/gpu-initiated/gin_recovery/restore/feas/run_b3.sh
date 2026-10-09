@@ -10,14 +10,14 @@
 #   nodes by ../../remaining/portpick.sh); the writer connects to the responder's management address, or to 127.0.0.1.
 # files in <logdir>: <cell>_resp.kv/.log, <cell>_writer.kv/.log, <cell>_hog.kv/.log (h cells), <cell>_topo_<node>.txt
 #   (nvidia-smi topo -m), <cell>_gpu_<node>_<before|after>.txt (compute apps), <cell>_meta.txt
-# env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), B3BIN ($HOME/rs-bundle/b3/rs_drain_test),
+# env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), B3BIN ($HOME/rs-bundle/b3v2/rs_drain_test),
 #      RS_LAST_KB (passed to both sides if set; see rs_drain_test.cu)
 set -u
 CELL=${1:?cell}; ITERS=${2:?iters}; LOGDIR=${3:?logdir}
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 SUNNY_HOST=${SUNNY_SSH#*@}
 HCA_RAIN=${HCA_RAIN:-mlx5_1}; HCA_SUNNY=${HCA_SUNNY:-mlx5_0}
-BIN=${B3BIN:-$HOME/rs-bundle/b3/rs_drain_test}
+BIN=${B3BIN:-$HOME/rs-bundle/b3v2/rs_drain_test}   # b3v2: setup self-check fix (2026-10-09); b3/ is the first build
 [ -x "$BIN" ] || { echo "missing $BIN on rain" >&2; exit 1; }
 IFS=_ read -r _ MODE NODE ORDER <<< "$CELL"
 case "$MODE:$NODE:$ORDER" in [xsh]:rain:ro|[xsh]:rain:so|[xsh]:sunny:ro|[xsh]:sunny:so) ;; *) echo "bad cell $CELL" >&2; exit 2 ;; esac

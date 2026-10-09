@@ -43,6 +43,8 @@
 //      it), RS_WATCHDOG_S (300: hard bound, exit 7), RS_CELL_S (iters / 100 + 60: soft bound, result INCOMPLETE),
 //      RS_CUDA_DEV (0), RS_SEED (0x5253), RS_LAST_KB (1024: the last write; only changed if the smoke shows too few
 //      edge iterations, recorded in EXPERIMENT.md 12; both sides must use the same value)
+// v2 (2026-10-09): only the setup self-check of the loopback READ targets changed (pinned source, device sync, bounded
+// re-read, attempts in the kv); the scored loop is the same as in the first build.
 // exit: 0 PASS; 1 FENCE_FAIL; 4 INCONCLUSIVE; 5 INCOMPLETE; 2 usage or setup error; 3 NIC, rmsn, QUERY_QP-cap or
 //       control-channel error; 6 CUDA error; 7 watchdog. The writer exits 0 when the responder ended the run.
 #include <cuda.h>
@@ -922,16 +924,35 @@ int main(int argc, char** argv) {
     if (!queryRmsnRaw(r.qp, &r.rmsn0, &st)) setupFail("QUERY_QP (DEVX) refused");
     g_queryQp++;
     kvf("rmsn0=%u qp_state=%u\n", r.rmsn0, st);
-    const uint64_t pat = 0x7273647261696e32ull;  // self-check: both loopback READ targets
-    CK(cudaMemcpy(r.fence, &pat, 8, cudaMemcpyHostToDevice));
-    CK(cudaMemcpy((uint8_t*)r.win + L.total + 64, &pat, 8, cudaMemcpyHostToDevice));
+    // self-check of both loopback READ targets (v2, 2026-10-09): the pattern is copied from PINNED host memory (a
+    // cudaMemcpy from pageable memory may return before its DMA lands, which a busy GPU made visible: b3_h_rain_ro of
+    // the first build read the old word), the device is synchronized, and a READ that still sees the old word is retried
+    // up to 50 times, 1 ms apart. Attempts and the value read are written to the kv; the check is not part of any verdict.
+    uint64_t* hpat = nullptr;
+    CK(cudaMallocHost((void**)&hpat, 8));
+    *hpat = 0x7273647261696e32ull;
+    CK(cudaMemcpy(r.fence, hpat, 8, cudaMemcpyHostToDevice));
+    CK(cudaMemcpy((uint8_t*)r.win + L.total + 64, hpat, 8, cudaMemcpyHostToDevice));
+    CK(cudaDeviceSynchronize());
     for (int same = 0; same < 2; same++) {
-      memset(r.stage, 0, 8);
-      readFence(r, same == 1, false);
       uint64_t back = 0;
-      memcpy(&back, r.stage, 8);
-      if (back != pat) setupFail("loopback READ self-check");
+      int attempts = 0;
+      while (attempts < 50) {
+        memset(r.stage, 0, 8);
+        readFence(r, same == 1, false);
+        attempts++;
+        memcpy(&back, r.stage, 8);
+        if (back == *hpat) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      kvf("selfcheck_%s_attempts=%d selfcheck_%s_read=%#lx\n", same ? "same" : "fence", attempts, same ? "same" : "fence",
+          (unsigned long)back);
+      if (back != *hpat) {
+        errno = 0;  // the failure is a value mismatch, not a system call: no errno (the first build printed a stale one)
+        setupFail("loopback READ self-check");
+      }
     }
+    CK(cudaFreeHost(hpat));
   }
   const std::vector<Arm> sched = schedule(iters, seed);
   const long probeIters = iters / 16;

@@ -11,7 +11,8 @@
 #             rs_spike.diff changes no device header: the include tree must stay equal to the hw one.
 #   app       rs_spike.cu (B1 and B2 application) against the hw headers -> agent_restore/out/app/rs_spike (B2 runs on rsx
 #             with only the report lines on: NCCL_GIN_RESTORE_REPORT=1)
-#   b3        rs_drain_test.cu (no NCCL; libibverbs, libmlx5, libcuda) -> agent_restore/out/b3/rs_drain_test
+#   b3        rs_drain_test.cu (no NCCL; libibverbs, libmlx5, libcuda) -> agent_restore/out/$B3OUT/rs_drain_test (B3OUT
+#             default b3v2, the second build; out/b3 holds the first, deployed build)
 #   info      agent_restore/out/build_info.txt: md5 of every output and input
 # All compiles run at nice 19 and idle I/O priority. nvcc output is not byte-reproducible: a rerun changes the md5 of the
 # executables; the deployed values are those recorded in EXPERIMENT.md 12.
@@ -66,8 +67,8 @@ app() {
     -Xcompiler "-Wall,-Wextra" "$D/rs_spike.cu" -o "$o/rs_spike" -L"$SCR/agent_gd/gin/build/lib" -lnccl -lcudart -lpthread
   echo "rs_spike $(md5 "$o/rs_spike")"
 }
-b3() {
-  local o=$OUT/b3
+b3() {  # B3OUT (b3v2): the output folder; out/b3 holds the first, deployed build
+  local o=$OUT/${B3OUT:-b3v2}
   mkdir -p "$o"
   # the mlx5 PRM layouts: the DOCA GPUNetIO copy inside the hw tree (read only)
   nice -n 19 "$CUDA/bin/nvcc" -std=c++17 -O2 $GENCODE -Xcompiler "-Wall,-Wextra,-Werror" -I"$PRM" "$D/rs_drain_test.cu" \
@@ -81,7 +82,8 @@ info() {
     [ -f "$OUT/$RSX/libnccl.so.2.32.3" ] && echo "$RSX libnccl $(md5 "$OUT/$RSX/libnccl.so.2.32.3") rs_spike.diff $(md5 "$D/rs_spike.diff") base $(GG rev-parse --short HEAD) include_digest $(cd "$B1/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
     echo "hw include_digest $(cd "$SCR/agent_gd/gin/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32) (the app is built against these headers)"
     [ -f "$OUT/app/rs_spike" ] && echo "rs_spike $(md5 "$OUT/app/rs_spike") rs_spike.cu $(md5 "$D/rs_spike.cu") sass $("$CUDA/bin/cuobjdump" --list-elf "$OUT/app/rs_spike" 2>/dev/null | grep -o 'sm_[0-9]*' | sort -u | tr '\n' ' ')"
-    [ -f "$OUT/b3/rs_drain_test" ] && echo "rs_drain_test $(md5 "$OUT/b3/rs_drain_test") rs_drain_test.cu $(md5 "$D/rs_drain_test.cu")"
+    [ -f "$OUT/b3/rs_drain_test" ] && echo "rs_drain_test (first build, deployed 2026-10-09) $(md5 "$OUT/b3/rs_drain_test")"
+    [ -f "$OUT/b3v2/rs_drain_test" ] && echo "rs_drain_test b3v2 $(md5 "$OUT/b3v2/rs_drain_test") rs_drain_test.cu $(md5 "$D/rs_drain_test.cu")"
   } > "$OUT/build_info.txt"
   cat "$OUT/build_info.txt"
 }

@@ -18,36 +18,46 @@
 #                                                    ~/rs-bundle/rsx2 exists on neither node; every other file of
 #                                                    ~/rs-bundle and of the other bundles must be the same before and after.
 #                                                    env WANT_RSX2 (the rsx2 md5, EXPERIMENT.md 12)
+#        deploy_feas.sh <check output file> b3v2     the second rs_drain_test build (setup self-check fix) into the NEW
+#                                                    directory ~/rs-bundle/b3v2/, with the same refusals and checks;
+#                                                    env WANT_B3V2
 set -euo pipefail
 OUTF=${1:?output file (the check is written to a file only; never pipe it)}
-if [ "${2:-}" = rsx2 ]; then
+if [ "${2:-}" = rsx2 ] || [ "${2:-}" = b3v2 ]; then
+  K=$2
   SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH (user@address) from the management env file}
   SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
-  SRC=$SCR/agent_restore/out/rsx2/libnccl.so.2.32.3
-  WANT_RSX2=${WANT_RSX2:?expected md5 of the rsx2 libnccl (EXPERIMENT.md 12)}
+  if [ "$K" = rsx2 ]; then
+    SRC=$SCR/agent_restore/out/rsx2/libnccl.so.2.32.3; FN=libnccl.so.2.32.3
+    WANT=${WANT_RSX2:?expected md5 of the rsx2 libnccl (EXPERIMENT.md 12)}
+    LDD2='cd $HOME/rs-bundle && echo "app rsx2: $(LD_LIBRARY_PATH=$HOME/rs-bundle/rsx2 ldd app/rs_spike | grep -E "nccl|not found" | tr -s " " | tr "\n" ";")"'
+  else
+    SRC=$SCR/agent_restore/out/b3v2/rs_drain_test; FN=rs_drain_test
+    WANT=${WANT_B3V2:?expected md5 of the b3v2 rs_drain_test (EXPERIMENT.md 12)}
+    LDD2='cd $HOME/rs-bundle && echo "b3v2: $(ldd b3v2/rs_drain_test | grep -E "ibverbs|mlx5|libcuda|not found" | tr -s " " | tr "\n" ";")"'
+  fi
   md5() { md5sum < "$1" | cut -c1-32; }
-  [ "$(md5 "$SRC")" = "$WANT_RSX2" ] || { echo "rsx2 libnccl is not the expected build" >&2; exit 1; }
+  [ "$(md5 "$SRC")" = "$WANT" ] || { echo "$K is not the expected build" >&2; exit 1; }
   [ -d ~/rs-bundle ] && ssh -n "$SUNNY_SSH" '[ -d $HOME/rs-bundle ]' || { echo "~/rs-bundle missing on a node" >&2; exit 1; }
-  if [ -e ~/rs-bundle/rsx2 ] || ssh -n "$SUNNY_SSH" '[ -e $HOME/rs-bundle/rsx2 ]'; then echo "~/rs-bundle/rsx2 exists on a node: refusing" >&2; exit 1; fi
-  ex2='cd $HOME && { for d in gi-bundle gd-bundle blind-bundle; do [ -d "$d" ] && find "$d" -type f -print; done; find rs-bundle -path rs-bundle/rsx2 -prune -o \( -type f -o -type l \) -print; } | sort | xargs -r md5sum'
+  if [ -e ~/rs-bundle/$K ] || ssh -n "$SUNNY_SSH" "[ -e \$HOME/rs-bundle/$K ]"; then echo "~/rs-bundle/$K exists on a node: refusing" >&2; exit 1; fi
+  ex2="cd \$HOME && { for d in gi-bundle gd-bundle blind-bundle; do [ -d \"\$d\" ] && find \"\$d\" -type f -print; done; find rs-bundle -path rs-bundle/$K -prune -o \\( -type f -o -type l \\) -print; } | sort | xargs -r md5sum"
   BEFORE_L=$(bash -c "$ex2"); BEFORE_S=$(ssh -n "$SUNNY_SSH" "$ex2")
-  mkdir ~/rs-bundle/rsx2
-  cp "$SRC" ~/rs-bundle/rsx2/
-  (cd ~/rs-bundle/rsx2 && ln -s libnccl.so.2.32.3 libnccl.so.2 && ln -s libnccl.so.2 libnccl.so)
-  ssh -n "$SUNNY_SSH" 'mkdir $HOME/rs-bundle/rsx2'
-  rsync -a ~/rs-bundle/rsx2/ "$SUNNY_SSH:rs-bundle/rsx2/"
-  SUM2='cd $HOME && find rs-bundle/rsx2 -type f -print0 | sort -z | xargs -0 md5sum; ls -l rs-bundle/rsx2 | grep -c " -> "'
+  mkdir ~/rs-bundle/$K
+  cp "$SRC" ~/rs-bundle/$K/
+  if [ "$K" = rsx2 ]; then (cd ~/rs-bundle/rsx2 && ln -s libnccl.so.2.32.3 libnccl.so.2 && ln -s libnccl.so.2 libnccl.so); else chmod +x ~/rs-bundle/$K/$FN; fi
+  ssh -n "$SUNNY_SSH" "mkdir \$HOME/rs-bundle/$K"
+  rsync -a ~/rs-bundle/$K/ "$SUNNY_SSH:rs-bundle/$K/"
+  SUM2="cd \$HOME && find rs-bundle/$K -type f -print0 | sort -z | xargs -0 md5sum; ls -l rs-bundle/$K | grep -c ' -> ' || true"
   L=$(bash -c "$SUM2"); S=$(ssh -n "$SUNNY_SSH" "$SUM2")
-  LDD2='cd $HOME/rs-bundle && echo "app rsx2: $(LD_LIBRARY_PATH=$HOME/rs-bundle/rsx2 ldd app/rs_spike | grep -E "nccl|not found" | tr -s " " | tr "\n" ";")"'
   AFTER_L=$(bash -c "$ex2"); AFTER_S=$(ssh -n "$SUNNY_SSH" "$ex2")
   {
-    echo "== $(date '+%F %T') rsx2 (rain)"; echo "$L"
+    echo "== $(date '+%F %T') $K (rain)"; echo "$L"
     echo "== sunny"; echo "$S"
-    [ "$L" = "$S" ] && echo "rsx2: rain == sunny" || echo "RSX2 MD5 MISMATCH"
-    [ "$(md5 "$SRC")" = "$(md5 ~/rs-bundle/rsx2/libnccl.so.2.32.3)" ] && echo "source == deployed: rsx2/libnccl.so.2.32.3" || echo "SOURCE MISMATCH: rsx2"
+    [ "$L" = "$S" ] && echo "$K: rain == sunny" || echo "$K MD5 MISMATCH"
+    [ "$(md5 "$SRC")" = "$(md5 ~/rs-bundle/$K/$FN)" ] && echo "source == deployed: $K/$FN" || echo "SOURCE MISMATCH: $K"
     echo "rain $(bash -c "$LDD2")"; echo "sunny $(ssh -n "$SUNNY_SSH" "$LDD2")"
     [ "$BEFORE_L" = "$AFTER_L" ] && [ "$BEFORE_S" = "$AFTER_S" ] &&
-      echo "existing files unchanged (rain $(echo "$BEFORE_L" | grep -c .) files, sunny $(echo "$BEFORE_S" | grep -c .) files, rs-bundle outside rsx2 included)" ||
+      echo "existing files unchanged (rain $(echo "$BEFORE_L" | grep -c .) files, sunny $(echo "$BEFORE_S" | grep -c .) files, rs-bundle outside $K included)" ||
       echo "EXISTING FILE CHANGED"
   } > "$OUTF"
   exit 0
