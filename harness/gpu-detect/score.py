@@ -7,12 +7,15 @@ usage: score.py <resultsdir>          (e.g. results/<date>)
 
 Steps (EXPERIMENT.md 3 and 8):
   1. app trials (raw/<id>/): rows_gd.all_rows(); status scored when valid (rows_gd.py), else the exclusion reason.
-  2. regression trials (reg/hw/, two ranks): gin-remaining's columns, made by its own code unchanged
-     (../gpu-initiated/gin_recovery/remaining/score.py imports: ../scripts/ts2/rows.py, rows_extra, rows_pc, rows_ow,
-     rows_hd, rows_hf, rows_pq.extra_pq2, rows_hr.extra_hr2), then rows_gd.extra_gd2(); status: gin-remaining's status2
-     with the build checked as hr (hw carries every hr start line) plus the hw start line with the cell's qpwatch_ms.
-     reg/mr_hw/ (four ranks): rows_mr.rows_of, rows_pq.extra_pq4, rows_hr.extra_hr4, rows_gd.extra_gd4; status:
-     gin-remaining's status4 (as hr) for its cells, status4_new() for this study's two new cells.
+  2. regression trials (reg/<build>/, two ranks; build hk, and hw for the responder-side gap's control): gin-remaining's
+     columns, made by its own code unchanged (../gpu-initiated/gin_recovery/remaining/score.py imports:
+     ../scripts/ts2/rows.py, rows_extra, rows_pc, rows_ow, rows_hd, rows_hf, rows_pq.extra_pq2, rows_hr.extra_hr2), then
+     rows_gd.extra_gd2(); status: gin-remaining's status2 with the build checked as hr (hw and hk carry every hr start
+     line; f4_mix_b is checked as f4_b) plus the detect start line with the cell's qpwatch_ms, plus on hk the policy line
+     on every checked rank (effective=failfast, requested as the cell asks).
+     reg/mr_<build>/ (four ranks): rows_mr.rows_of, rows_pq.extra_pq4, rows_hr.extra_hr4, rows_gd.extra_gd4; status:
+     gin-remaining's status4 (as hr) for its cells (rm4_kill3_hold as rm4_kill3_untimed), status4_new() for this study's
+     cells, then the detect lines and on hk the policy lines.
   3. per cell key (cell@build), the first PLANNED scored trials in trial order are scored, later ones are surplus.
      Excluded trials are not refilled. A prediction is "자료 부족" when a cell it names has fewer scored trials than
      ceil(0.75 x planned).
@@ -39,20 +42,28 @@ for h, cl in CELLS["holds"].items():
         k = "%s@%s" % (c["cell"], c["build"])
         PLANNED[k] = PLANNED.get(k, 0) + c["n"]
 for c in ("f1_b", "f3_b", "bidirf_sym_b", "f4_b", "f2rel_b", "hd_rxdeath_b"):
-    PLANNED[c + "@hw"] = 5
+    PLANNED[c + "@hk"] = 5
 for sz in ("4k", "256k"):
     for w in (0, 1, 10, 100):
-        PLANNED["lat_%s_w%d@hw" % (sz, w)] = 5
-for c in ("mr4_none", "mr4_f1_01", "rm4_kill3_untimed", "mr4_cyc_stall", "mr4_twolow_stall"):
-    PLANNED[c + "@hw"] = 5
-PLANNED["rm4_late01@hw"] = 3
-PLANNED["rm4_late01_rounds@hw"] = 3
+        PLANNED["lat_%s_w%d@hk" % (sz, w)] = 5
+for c in ("mr4_none", "mr4_f1_01", "rm4_kill3_untimed", "mr4_cyc_stall", "mr4_twolow_stall", "rm4_gap"):
+    PLANNED[c + "@hk"] = 5
+for c in ("rm4_late01", "rm4_late01_rounds", "rm4_gapx", "rm4_kill3_hold", "f4_mix_b"):
+    PLANNED[c + "@hk"] = 3
+PLANNED["rm4_gap@hw"] = 3  # the responder-side gap's control on the first layer
 OLD4 = {"mr4_none", "mr4_f1_01", "rm4_kill3_untimed", "mr4_cyc_stall"}
-FIRES_NEW = {"mr4_twolow_stall": "0:2;1:5;2:7;3:11", "rm4_late01": "0:0", "rm4_late01_rounds": "0:0"}
-STALL_NEW = {"mr4_twolow_stall": "0:300;1:300;2:300;3:300", "rm4_late01": "", "rm4_late01_rounds": ""}
+AS_OLD = {"rm4_kill3_hold": "rm4_kill3_untimed", "f4_mix_b": "f4_b"}  # checked with the rules of the cell they repeat
+FIRES_NEW = {"mr4_twolow_stall": "0:2;1:5;2:7;3:11", "rm4_late01": "0:0", "rm4_late01_rounds": "0:0", "rm4_gap": "3:9",
+             "rm4_gapx": "3:9"}
+STALL_NEW = {"mr4_twolow_stall": "0:300;1:300;2:300;3:300", "rm4_late01": "", "rm4_late01_rounds": "", "rm4_gap": "3:8000",
+             "rm4_gapx": ""}
+# the policy each rank must report on hk ("r<r>:<requested>"; every line effective=failfast)
+POL_REQ = {"rm4_kill3_hold": "hold", "f4_mix_b": {0: "hold"}}
 LABEL = {}
 EXCL = {"not_applied": "장애 미적용", "void": "시작 실패", "config": "설정 확인 실패(블록을 멈춤)", "surplus": "계획 수를 넘은 시행",
-        "config_detect": "설정 확인 실패: hw 시작 줄(detect=1, 셀의 qpwatch_ms) 없음"}
+        "config_detect": "설정 확인 실패: 감지 시작 줄(detect=1, 셀의 qpwatch_ms) 없음",
+        "config_policy": "설정 확인 실패: hk 정책 줄(셀이 요청한 정책, effective=failfast) 없음, 또는 hw에 정책 줄",
+        "cond_window_gap": "창 밖: 응답 쪽(rank 0)의 Commit 뒤 DONE 전 손실 거절 줄 없음", "no_exit": "rank 3의 ACK 뒤 종료 줄 없음"}
 EXCL.update(getattr(rem, "EXCL_LABEL", {}))
 
 
@@ -71,14 +82,30 @@ def status_app(r):
     return "candidate"
 
 
+def want_pol(cell, ranks):
+    """The pol_req string a hk trial of `cell` must show for `ranks` (every line effective=failfast)."""
+    w = POL_REQ.get(cell, "failfast")
+    return ";".join("r%d:%s" % (k, w.get(k, "failfast") if isinstance(w, dict) else w) for k in ranks)
+
+
+def pol_ok(r, ranks):
+    """hk: the policy line on exactly `ranks`, as the cell asks, effective=failfast; hw: no policy line."""
+    if r["build"] != "hk":
+        return int(r.get("pol_n") or 0) == 0
+    req = ";".join(x for x in str(r.get("pol_req") or "").split(";") if x and int(x[1:x.index(":")]) in ranks)
+    return req == want_pol(r["cell"], ranks) and str(r.get("pol_eff_ff")) == "1"
+
+
 def status2(r):
-    st = rem.status2(dict(r, build="hr"))  # hw carries every start line of hr; drivers are hr's (DRVKEY=hr)
+    cell = AS_OLD.get(r["cell"], r["cell"])
+    st = rem.status2(dict(r, build="hr", cell=cell))  # hw and hk carry every start line of hr; drivers are hr's (DRVKEY=hr)
     if st != "candidate":
         return st
-    cell = r["cell"]
     ranks = (0,) if cell in rem.KILL_R1 else (1,) if cell in rem.KILL_R0 else (0, 1)
     if not all(int(r.get("det_on_r%d" % k) or 0) >= 1 for k in ranks) or str(r.get("det_ms_cfg")) != watch_of(cell):
         return "config_detect"
+    if not pol_ok(r, ranks):
+        return "config_policy"
     return "candidate"
 
 
@@ -88,8 +115,13 @@ def status4_new(r):
         return "bind"
     if r.get("fires") != FIRES_NEW[cell] or str(r.get("fire_in_traffic")) != "1":
         return "no_fault"
-    if cell.startswith("rm4_late01") and not (str(r.get("killed")) == "1" and str(r.get("kill_in_traffic")) == "1"):
+    if (cell.startswith("rm4_late01") or cell == "rm4_gap") and not (str(r.get("killed")) == "1" and
+                                                                     str(r.get("kill_in_traffic")) == "1"):
         return "no_kill4"
+    if cell == "rm4_gapx" and str(r.get("gap_exit_line")) != "1":
+        return "no_exit"
+    if cell in ("rm4_gap", "rm4_gapx") and str(r.get("gap_hit")) != "1":
+        return "cond_window_gap"
     if cell == "mr4_twolow_stall":
         sp = rem.num(r.get("cyc_spread_ms"))
         if sp is None or sp > 250:
@@ -112,39 +144,44 @@ def status4_new(r):
 
 
 def status4(r):
-    if r["cell"] in OLD4:
-        st = rem.status4(dict(r, build="hr"))
+    cell = AS_OLD.get(r["cell"], r["cell"])
+    if cell in OLD4:
+        st = rem.status4(dict(r, build="hr", cell=cell))
     else:
         st = status4_new(r)
-    if st == "candidate" and (rem.num(r.get("n_det_on")) or 0) < int(r.get("n") or 0):
+    n = int(r.get("n") or 0)
+    if st == "candidate" and (rem.num(r.get("n_det_on")) or 0) < n:
         return "config_detect"
+    if st == "candidate" and not pol_ok(r, range(n)):  # every rank writes it at setup (a killed one too)
+        return "config_policy"
     return st
 
 
 def reg_rows(R):
     out = []
-    sub = os.path.join(R, "reg", "hw")
-    if glob.glob(os.path.join(sub, "*_meta.txt")):
-        csvp = os.path.join(R, "trials_reg_hw.csv")
-        subprocess.run([sys.executable, rem.ROWS, sub, "--out", csvp], check=True, stderr=subprocess.DEVNULL)
-        for r in csv.DictReader(open(csvp)):
-            stem = os.path.join(sub, r["stem"])
-            for fn in (lambda: rem.extra(r, stem), lambda: rem.extra_pc(stem), lambda: rem.extra_ow(stem),
-                       lambda: rem.extra_hd(stem, r.get("fault_mono_r0")), lambda: rem.extra_hf(stem),
-                       lambda: rem.extra_pq2(stem), lambda: rem.extra_hr2(stem), lambda: rows_gd.extra_gd2(stem)):
-                r.update({k: ("" if v is None else v) for k, v in fn().items()})
-            r["sub"], r["kind"] = "reg/hw", "2"
+    for b in ("hk", "hw"):
+        sub = os.path.join(R, "reg", b)
+        if glob.glob(os.path.join(sub, "*_meta.txt")):
+            csvp = os.path.join(R, "trials_reg_%s.csv" % b)
+            subprocess.run([sys.executable, rem.ROWS, sub, "--out", csvp], check=True, stderr=subprocess.DEVNULL)
+            for r in csv.DictReader(open(csvp)):
+                stem = os.path.join(sub, r["stem"])
+                for fn in (lambda: rem.extra(r, stem), lambda: rem.extra_pc(stem), lambda: rem.extra_ow(stem),
+                           lambda: rem.extra_hd(stem, r.get("fault_mono_r0")), lambda: rem.extra_hf(stem),
+                           lambda: rem.extra_pq2(stem), lambda: rem.extra_hr2(stem), lambda: rows_gd.extra_gd2(stem)):
+                    r.update({k: ("" if v is None else v) for k, v in fn().items()})
+                r["sub"], r["kind"] = "reg/" + b, "2"
+                out.append(r)
+        sub = os.path.join(R, "reg", "mr_" + b)
+        for meta in sorted(glob.glob(os.path.join(sub, "*_meta.txt"))):
+            stem = meta[: -len("_meta.txt")]
+            r = {k: ("" if v is None else v) for k, v in rem.rows_of(stem).items()}
+            r.update({k: ("" if v is None else v) for k, v in rem.extra_pq4(stem, r).items()})
+            r.update({k: ("" if v is None else v) for k, v in rem.extra_hr4(stem, r).items()})
+            r.update({k: ("" if v is None else v) for k, v in rows_gd.extra_gd4(stem, int(r.get("n") or 4)).items()})
+            r["build"] = r.get("lib", "")
+            r["sub"], r["kind"] = "reg/mr_" + b, "4"
             out.append(r)
-    sub = os.path.join(R, "reg", "mr_hw")
-    for meta in sorted(glob.glob(os.path.join(sub, "*_meta.txt"))):
-        stem = meta[: -len("_meta.txt")]
-        r = {k: ("" if v is None else v) for k, v in rem.rows_of(stem).items()}
-        r.update({k: ("" if v is None else v) for k, v in rem.extra_pq4(stem, r).items()})
-        r.update({k: ("" if v is None else v) for k, v in rem.extra_hr4(stem, r).items()})
-        r.update({k: ("" if v is None else v) for k, v in rows_gd.extra_gd4(stem, int(r.get("n") or 4)).items()})
-        r["build"] = r.get("lib", "")
-        r["sub"], r["kind"] = "reg/mr_hw", "4"
-        out.append(r)
     for r in out:
         m = re.search(r"n(\d+)$", r.get("trial") or "")
         r["tnum"] = int(m.group(1)) if m else 0
