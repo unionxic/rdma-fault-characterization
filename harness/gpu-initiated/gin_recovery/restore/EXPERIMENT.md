@@ -169,25 +169,30 @@ rank를 새 프로세스로 잇는 길, 보낸 메시지를 다시 넣는 길, �
 ### 9.1 설계 개요
 
 ```
-[생존 rank q의 helper]                           [짝 b(r)]                     [예비 프로세스 s(r)]
- r의 helper 소켓 FIN ─▶ 죽음 판정(3774)           r의 체크포인트 k와 초기화 기록     같은 실행 파일, CUDA 문맥까지 만들고
-   ├─ ARMED(r)이면 거절 대신 RESTORING(r)          을 호스트 메모리에 둠              ncclCommInitRank 안에서 대기
-   │   게이트(q→r) 홀수: 보내기와 상대별 대기 붙잡음
-   │   상대를 모르는 대기: 칸 0을 올리지 않음 ─────▶ ACTIVATE(r, k) ─────────────────▶ 초기화 재생(기록으로 집합 교환 대답)
-   │                                                                                 QP 새로 만듦(생존 rank의 옛 QPN에 연결)
-   │◀──────────────── REJOIN(r, 화신+1, nonce, 새 QPN/PSN, 새 rkey, 주소) ───────────
-   ├─ 실행 수 X_q(r→q)와 로그(절단점 이후) 보냄 ───────────────────────────────────▶ 체크포인트 k 받아 window와 신호 복원
-   │                                                                                 로그 적용(쓰기, 신호 더하기), 억제 예산 = X_q − P_q
-   │◀──────────────── READY ────────────────────────────────────────────────────────
-   ├─ 복원 라운드: Prepare(2ERR, drain) → 끝점 바꿈 → Commit(2RST, 새 QPN에 연결) → rkey 표 [r] 바꿈
-   │   → 모든 옛 WQE를 실행된 것으로(lbase += S) → 짝수 에폭 게시 ──▶ DONE ───────────▶ (모든 생존 rank의 DONE) 커널을 단계 k부터 재실행
-   └─ 시한(NCCL_GIN_RESTORE_MS)까지 안 되면 앞 빌드의 거절(죽음) → 2 s 뒤 degraded                 억제 예산만큼 보내기를 내지 않음
+[생존 rank q의 helper]                         [짝 b(r)]                       [예비 프로세스 s(r)]
+ r의 helper 소켓 FIN → 죽음 판정                 r의 체크포인트 k, 초기화 기록     같은 실행 파일. CUDA 문맥까지 만들고
+  ├─ ARMED(r)이고 TOLD 아니면 거절 대신 hold      을 호스트 메모리에 둠            ncclCommInitRank 안에서 대기
+  │   게이트(q→r) 홀수, QP ERR, 개수 0
+  │   칸 0, 상대 단어, 비동기 오류 없음
+  ├─ HOLDING(r) ─────────────────────────────▶ 모든 생존 rank가 HOLDING이면
+  │                                             ACTIVATE(r, k) ──────────────▶ PID 확인(원래 프로세스가 끝났는지)
+  │                                                                            초기화 재생(기록으로 집합 교환 대답), QP는 만들기만
+  │◀──────────── REJOIN(r, 화신+1, nonce, 새 QPN, 보내기 PSN) ──────────────────
+  ├─ X_q(r→q)와 로그(절단점 이후) 보냄 ─────────────────────────────────────────▶ 체크포인트 k 받아 window와 신호 복원
+  │                                                                            로그 적용(쓰기, 신호 더하기), 억제 예산 = X_q − P_q
+  ├─ 복원 라운드 시작: Prepare(drain, 새 PSN) → 토큰(QPN, 새 PSN) ────────────────▶ 그 PSN으로 자기 QP를 RTR/RTS로 이음
+  │◀──────────── READY ──────────────────────────────────────────────────────
+  ├─ 끝점 바꿈 → Commit(2RST, 새 QPN에 연결) → Baseline → rkey 표 [r] 바꿈
+  │   → 모든 옛 WQE를 실행된 것으로(lbase += S) → 짝수 에폭 게시 → DONE_RS ──────▶ (모든 생존 rank의 DONE_RS) 단계 k부터 재실행,
+  │                                                                            억제 예산만큼 보내기를 내지 않음
+  └─ 시한(감시 스레드가 지킴)이나 실패, 누구든 FALLBACK(r) → PeerDead 거절 → 2 s 뒤 degraded
 ```
 
 원칙 셋 `[추론]`:
 - 생존 rank는 CUDA 호출을 하지 않는다(gin-handoff, gin-remaining: application의 CUDA 호출이 helper의 스트림을 묶을 수 있음). 생존 rank 쪽 일은
   helper 소켓, 펌웨어 명령, NIC 루프백 복사(이미 있는 길)뿐이다. 무거운 CUDA 일(초기화, 메모리 복원)은 할 일이 없는 예비 프로세스가 한다.
-- 빠른 경로는 바꾸지 않는다. 로그 쓰기(9.5절)만 빠른 경로에 더한다. 억제와 키 다시 읽기는 게이트의 느린 길에서만 한다.
+- 빠른 경로는 바꾸지 않는다. 로그 쓰기(9.5절)만 빠른 경로에 더한다(hold가 아니면 측 표 포인터를 한 번 보는 것). 억제는 게이트의 느린 길에서만 한다.
+  키 읽기 자리는 이 원칙과 충돌해 결정이 필요하다(DESIGN_POLICY.md 5절 B4).
 - 기존 라운드 기계를 다시 쓴다. 생존 rank 쪽 복원 라운드는 `ncclGinRecoverPrepare`(2143), `ncclGinRecoverCommit`(2334),
   `gdakiTsRepostApply`(4692)를 상대 하나에 대해 그대로 부르고, 다른 것은 끝점을 바꾸는 것과 "모든 옛 WQE가 실행됨"으로 계획을 만드는 것뿐이다.
 
@@ -204,7 +209,7 @@ degraded를 예약하고(2828–2840), 게이트를 실패로 쓴다(4960–4964
   가서 상대를 "모름"으로 두므로, 그 경우는 다시 걸기와 탐침의 거절 둘로 죽음이 판정된 뒤 helper 루프의 거절로 온다. 다른 거절(분류 불가, 확대 상한, 상대의
   FAIL, 펌웨어 초과, BADMAGIC 같은 약한 죽음)은 가로채지 않는다. 판단의 원문은 [DESIGN_POLICY.md](DESIGN_POLICY.md) 2.4절과 R1이다.
 - `RESTORING`으로 갈 때 하는 일: 범위를 모든 문맥으로 두고, 준비된 라운드를 풀고, `gdakiTsQuiesce`(4416)를 그대로 부른다(게이트 홀수, QP를 ERR로,
-  개수 0, 모아 둔 WQE의 doorbell, `abandoned` 확인). `deadJudged`와 `failedPending`을 지운다. Commit 뒤 게시 전에 죽은 응답 쪽 라운드의 WQE 수를 남긴다.
+  개수 0, 모아 둔 WQE의 doorbell, `abandoned` 확인). `deadJudged`와 `failedPending`을 지운다. 이 모두를 `gdakiTsBusy` 안에서 한다.
   차례의 원문은 [DESIGN_POLICY.md](DESIGN_POLICY.md) 3절이다. 보내기는 게이트에서 쉬고, r의 QP를 기다리는 요청 대기와 flush는 다음 짝수 에폭까지 쉰다
   (`tsParkStable`, `gin_gdaki.h` 252–297). 상대별 단어, 칸 0, 비동기 오류, degraded 예약, 오류 줄은 하나도 만들지 않는다. 상대를 모르는 대기(`waitSignal`)는
   칸 0만 읽으므로 그냥 계속 돈다.
@@ -270,8 +275,8 @@ REJOIN은 고정 크기 제어 메시지이고 rkey 목록은 자료 소켓으�
 5. `ncclGinRecoverCommit(comm, r, &spareToken)`(2334–2529): 2RST, 장치 색인 0, 새 QPN에 연결(예비 프로세스의 보내기 PSN을 받는 PSN으로).
 6. `gdakiTsBaseline`(4351): 새 화신의 rmsn 기준.
 7. rkey 표 칸 r 바꿈(RL9).
-8. `gdakiTsRepostApply`(4692–4897)를 QP마다 `U = S_pending + S, n = 0`인 계획으로 부른다(`S_pending`은 응답 쪽이 Commit 뒤 게시 전에 상대가 죽은 경우의
-   옛 에폭 WQE 수, DESIGN_POLICY.md 3절 6): 커밋 지점(포기한 장치 대기가 있으면 FALLBACK), PUBLISHING, `lbase += U`, 짝수 에폭 게시. 쉬던 요청 대기는 자기
+8. `gdakiTsRepostApply`(4692–4897)를 QP마다 `U = S, n = 0`인 계획으로 부른다(응답 쪽이 Commit 뒤 게시 전에 상대가 죽은 경우는 강한 죽음 증거가 아니라
+   fail-fast다, DESIGN_POLICY.md 3절): 커밋 지점(포기한 장치 대기가 있으면 FALLBACK), PUBLISHING, `lbase += U`, 짝수 에폭 게시. 쉬던 요청 대기는 자기
    표가 `lbase`보다 작으므로 성공으로 끝난다(`tsPoll` 1086–1092) `[소스]`. 그 WQE들의 효과는 로그 적용으로 예비 프로세스의 메모리에 이미 들어 있으므로
    맞는 의미다 `[추론]`.
 
@@ -370,7 +375,7 @@ D2H와 해시, 전송(비동기로 다음 단계와 겹칠 수 있음). 메모�
    v1의 범위 밖이다.
 4. 원격 읽기(`get`)는 체크포인트에서 재실행 끝까지 바뀌지 않는 메모리에서만. 생존 rank의 메모리가 그 사이 바뀌면 다른 값을 읽기 때문이다.
 5. 되살린 rank에서 한 QP로 가는 보내기는 프로그램 차례 하나(스레드 하나 또는 coop 하나)로 낸다. 억제가 "앞의 B개"를 프로그램 차례로 세기 때문이다.
-6. GIN 밖의 통신(collective, NCCL P2P, LSA)을 되살릴 rank와 주고받지 않는다.
+6. GIN 밖의 통신(collective, NCCL P2P, LSA)을 되살릴 rank와 주고받지 않고, hold 정책의 프로세스는 NVSHMEM을 쓰지 않는다(DESIGN_POLICY.md X6).
 7. 단계 hook은 그 rank의 커널이 끝나고 마지막 flush가 끝난 뒤에만 부른다(체크포인트 때 r의 보내기가 모두 실행됨: `P_q`가 r이 낸 수와 같음).
 8. 되살릴 수 있는 rank와는 어느 방향으로도 `get`을 하지 않는다(4번보다 강함: 생존 rank의 get이 죽음 때 날아가던 중이면 자료 없이 끝나고, 재실행 중인
    rank의 메모리를 읽으면 옛 값을 읽음. DESIGN_POLICY.md M2).
@@ -399,7 +404,7 @@ GIN 연결 수가 하나인지는 확인하지 않았다 `[미확인]`.
 
 두 겹이다. 줄 번호는 "hr / hw"다(장치 헤더는 하나).
 
-**gpu-detect 계층에 넣을 정책 hook(G1–G5).** 감지와 반응을 나누는 최소 변경이다. fail-fast(기본)에서 지금의 hw 동작을 그대로 낸다. 원문은
+**gpu-detect 계층에 넣을 정책 hook(G1–G9).** 감지와 반응을 나누는 최소 변경이다. fail-fast(기본)에서 지금의 hw 동작을 그대로 낸다. 원문은
 [DESIGN_POLICY.md](DESIGN_POLICY.md) 4.10절이다: G1 정책 칸과 `NCCL_GIN_FAULT_POLICY`, G2 `gdakiTsDecline` 맨 앞의 거절 hook(hr 4916 / hw 4941),
 G3 QP 감시의 상대 거르기 hook(hw 6094), G4 기록 처리 루프의 hook(hr 6114–6124 / hw 6399–6409), G5 훑기 유실 검사의 hook(hr 5894–5896 / hw 5923–5925).
 
@@ -407,9 +412,9 @@ G3 QP 감시의 상대 거르기 hook(hw 6094), G4 기록 처리 루프의 hook(
 
 | id | 어디에 | 무엇을 |
 |---|---|---|
-| RL1 | G2의 hold 분기 | 죽음의 증거, ARMED, TOLD 아님 → 준비 풀기, 게이트 홀수, RESTORING(9.2절) |
+| RL1 | G2의 hold 분기 | (가) 붙잡은 상대에 대한 모든 거절 → fallback(PeerDead, PEER_DEAD), (나) 강한 죽음 증거, ARMED, TOLD 아님 → hold 시작(DESIGN_POLICY.md 3절) |
 | RL2 | G4의 hold 분기 | 복원 중인 상대의 기록 흡수, `qs[].handled` 올림 |
-| RL3 | G5, G3의 hold 분기 | 복원 중인 상대는 감시와 유실 검사에서 뺌 |
+| RL3 | G5, G3, G6, G7, G8, G9의 hold 분기 | 붙잡은 상대는 감시와 유실 검사에서 뺌, `coveredEpoch`, rmsn 표본, 감시 스레드의 복원 시한, 펌웨어 초과 책임의 원인 |
 | RL4 | helper 루프(hr 6013–6129 / hw 6298–6415) | 복원 상태 기계 한 걸음(시한, 활성화, REJOIN, 로그 보내기, 복원 라운드). `gdakiTsBusy`는 복원 라운드에서만 |
 | RL5 | `gdakiTsStart`(hr 6735– / hw 7040–; `roundMs`를 정하는 곳 hr 6741 / hw 7046) | 복원 시한, `holdMs`, `roundMs`의 관계 검사, communicator 무장 조건(DESIGN_POLICY.md 2.3절). 어기면 fail-fast |
 | RL6 | 받기 루프(hr 4164–4243 / hw 4189–4268) | REJOIN: 복원 중인 상대에게서만, nonce와 화신 번호, 죽음 표시 지우고 `gdakiTsInstall`(hr 3859 / hw 3884) |
@@ -432,8 +437,8 @@ G3 QP 감시의 상대 거르기 hook(hw 6094), G4 기록 처리 루프의 hook(
 |---|---|
 | DV1 | `ncclGinGdakiGPUContext`(common.h 222–236)에 측 표 포인터 `restore` 칸: QP마다 로그 고리 설명, 보낸 메시지 수, 억제 예산 |
 | DV2 | `putImplMode`(gin_gdaki.h 458–547), `putValueImplMode`(577–), 신호 길에서 게이트 안 로그 쓰기(9.5절). hold가 아니면 측 표 포인터가 0 |
-| DV3 | `tsGateEnterSlow`(303–328)가 참을 돌려준 뒤 `raddr.key`, `signalKey`를 `ld.relaxed.sys`로 다시 읽음 |
-| DV4 | 게이트 에폭 반쪽의 SUPPRESS 비트(`EPOCH_MASK`를 `0x1fffffff`로), `tsWordOpen`(146–148)의 검사 상수에 포함, 느린 길의 억제와 put+신호 나누기 |
+| DV3 | `raddr.key`와 `signalKey`를 게이트 진입(501) 뒤에 읽음. `signalKey`는 지금 호출자가 계산해 값으로 넘기므로(1458–1468) 그 계산을 `putImplMode` 안으로 옮김. 빠른 경로의 차례가 바뀌므로 결정 대기(DESIGN_POLICY.md 5절 B4) |
+| DV4 | 게이트 에폭 반쪽의 SUPPRESS 비트(`EPOCH_MASK`를 `0x1fffffff`로). 보내기의 열림 검사(`tsGateEnter` 333)에만 넣고 공용 `tsWordOpen`(146–148)과 대기 쪽(`tsPollEnter` 365, `tsParkStable` 264)에는 넣지 않음. 장치가 에폭 반쪽을 값으로 쓰는 자리(364–366, 1106–1108, 1037, 206–207)에서 지움. 느린 길의 억제와 put+신호 나누기(DESIGN_POLICY.md C6) |
 
 | id | 무엇을 |
 |---|---|
@@ -501,7 +506,7 @@ G3 QP 감시의 상대 거르기 hook(hw 6094), G4 기록 처리 루프의 hook(
 - [x] 감지와 반응을 나눈 정책 설계와 통합 상호작용 표([DESIGN_POLICY.md](DESIGN_POLICY.md))
 - [ ] 독립 충돌 검토 둘(EXPERIMENT.md 초안 표, DESIGN_POLICY.md)과 반영
 - [ ] 사용자의 설계 승인(그 전에는 구현과 빌드 없음)
-- [ ] gpu-detect 계층에 정책 hook G1–G5(DESIGN_POLICY.md 4.10절)
+- [ ] gpu-detect 계층에 정책 hook G1–G9(DESIGN_POLICY.md 4.10절)
 - [ ] 시제품: 로그, 체크포인트, 복원 계획, 억제, 모의, 단위 시험(9.13절, 멈춤)
 - [ ] 시험 프로그램 `gin_rs.cu`
 - [ ] B1 시험(초기화 재생), B2 확인(LSA), B3 시험(drain)
