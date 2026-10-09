@@ -669,7 +669,12 @@ ginContextCount, ginSignalCount, ginCounterCount, ginConnectionCount, window 크
 - [ ] gpu-detect 계층에 정책 hook G1–G9(DESIGN_POLICY.md 4.10절)
 - [ ] 시제품: 로그, 체크포인트, 복원 계획, 억제, 모의, 단위 시험(9.13절, 멈춤)
 - [ ] 시험 프로그램 `gin_rs.cu`
-- [ ] B1 시험(초기화 재생), B2 확인(LSA), B3 시험(drain)
+- [x] B1–B3 실행 가능성 시험의 설계, 충돌 표, 판정 기준(9.15절, 실행 전)
+- [ ] B1–B3 시험 설계의 독립 검토와 반영
+- [ ] B2: 기존 원자료 확인(없음, 9.15.2절), 시험 application과 hw 복사본으로 확인
+- [ ] B3: `rs_drain_test` 빌드, smoke, 셀 여덟
+- [ ] B1: `rsx` hook과 `rs_spike` 빌드, 기록과 재생 셀
+- [ ] 배포(`~/rs-bundle/`)와 실행 명령(메인 세션), 결과 정리(`results/<날짜>_feasibility/`)
 - [ ] gpu-detect 계층 확정 뒤 이 계층 구현, 리뷰
 - [ ] 실행기, 셀, 채점기, 예측 고정, pilot, 사전 등록
 - [ ] 본 실행, 채점, QA, 결론
@@ -687,6 +692,8 @@ ginContextCount, ginSignalCount, ginCounterCount, ginConnectionCount, window 크
 | 2026-10-09 | 사용자 결정 둘. (1) B4는 (나): 게이트 뒤의 키 다시 읽기는 hold 정책의 communicator에서만, fail-fast는 측 표 포인터의 분기 하나만 더함(4 KiB, 256 KiB 지연은 계층을 만들 때 잼). (2) B1(예비 프로세스의 초기화 재생), B2(GPU를 나눠 쓰는 rank의 LSA 팀 크기), B3(relaxed ordering window MR에서 체크포인트 drain이 보이는가)의 실행 가능성 시험을 한다. 복원 계층은 여전히 구현하지 않고, 스크래치의 시제품 초안도 빌드하지 않는다 | 9.1, 9.6절, 9.9절 DV3, DESIGN_POLICY.md 5절 B4 |
 | 2026-10-09 | 병렬로 도는 gpu-detect 고침과의 계약을 설계에 넣음(메인 세션이 정함): 응답 쪽 Commit 뒤 게시 전에 소켓을 잃은 길(hw 5285–5292, 5298–5303)에서 거절 바로 전에 `pe.lostAfterCommit = true`, 죽음 판정이면 그 거절은 PeerDead/`GDAKI_UA_PEER_DEAD`(degraded 예약), 아니면 지금과 같음. 복원 설계는 이 창을 계속 붙잡지 않는다: G2의 강한 증거 검사가 그 표시가 선 거절을 뺀다(NOHOLD), REJOIN이 표시를 지운다 | 9.3절 8단계, DESIGN_POLICY.md 2.4, 3절, D4, R3, 4.10절 끝 |
 | 2026-10-09 | 검토 3(읽기 전용 에이전트): 결정 (나)와 `lostAfterCommit` 계약 대상. 중간 W1–W3(측 표 포인터를 쓰는 때와 무장 조건, 포인터의 두 뜻 → QP마다 "로그 켬" 낱말, get 키도 다시 읽음), 낮음과 메모 W4–W11 반영. 재확인: W1–W11 풀림, 낮음 X1–X5 반영(표시를 세우는 자리는 "잃은 자리에서, `gdakiTsSocketLost` 전" 하나로; gpu-detect에 넘길 것). 판정: 풀리지 않은 충돌 없음 | DESIGN_POLICY.md 6절 검토 3, 커밋 `daa63c69`, `6b33627e`와 이 커밋 |
+| 2026-10-09 | B2의 기존 원자료 확인: gin-multirank 본 실행 보관본(Release `data-20261009`의 `harness__gpu-initiated__gin_recovery__multirank__results__20261009.tar.xz`, sha256 앞 12자 `3c22ffd4d260`, 세션 스크래치에 풂)의 4-rank 로그와 kv에 LSA 값이 없음. NCCL도 이 경우 값을 찍지 않음(`dev_runtime.cc` 140, 1742) | 9.15.2절 `[측정, 소스]` |
+| 2026-10-09 | B1–B3 실행 가능성 시험의 설계와 충돌 표, 판정 기준을 실행 전에 적음. B1 빌드 트리를 hw 트리에서 복사(`agent_restore/b1/`, 복사본의 hw 커밋 `c7d7f7f`, diff md5 `be0ea9ed` 확인; hw 트리는 고치지 않음) | 9.15절 |
 
 ## 13. 사전 등록 이후 변경
 
