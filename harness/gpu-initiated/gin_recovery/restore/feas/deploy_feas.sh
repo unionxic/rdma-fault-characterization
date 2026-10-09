@@ -59,6 +59,7 @@ if [ "${2:-}" = rsx2 ] || [ "${2:-}" = b3v2 ]; then
     [ "$BEFORE_L" = "$AFTER_L" ] && [ "$BEFORE_S" = "$AFTER_S" ] &&
       echo "existing files unchanged (rain $(echo "$BEFORE_L" | grep -c .) files, sunny $(echo "$BEFORE_S" | grep -c .) files, rs-bundle outside $K included)" ||
       echo "EXISTING FILE CHANGED"
+    grep -E "^$K |^rs_drain_test $K |^rsx2 " "$SCR/agent_restore/out/build_info.txt" 2>/dev/null
   } > "$OUTF"
   exit 0
 fi
