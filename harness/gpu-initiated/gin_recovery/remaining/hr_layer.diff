@@ -1,0 +1,1578 @@
+diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki.h b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
+index c849598..d158067 100644
+--- a/src/include/nccl_device/gin/gdaki/gin_gdaki.h
++++ b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
+@@ -231,6 +231,18 @@ NCCL_DEVICE_INLINE static bool tsQpWordError(doca_gpu_dev_verbs_qp* qp, uint32_t
+   uint32_t* w = tsPosterAbortWord(qp);
+   return w != nullptr && w != other && nccl::utility::abortIsError(w);
+ }
++// gin-remaining: the abort word of a wait on one QP (the request waits and flushes below, and their parked phases). They
++// name their QP's peer, so they read that peer's word (raised by a decline or the death of that peer, a firmware overrun
++// in a round with it, ncclCommAbort, an aborting shrink, a revoke) instead of the devComm word the caller passes (word [0]:
++// also raised once the communicator is degraded, for the waits that name no peer: waitSignal, waitCounter, the barriers).
++// Without a peer word in the gate (an older library, the split test, a gate not written yet): the caller's word, as
++// before. A caller without a word keeps none. Resolved only where the word is read (every 64 polls of a parked thread,
++// every 10000 polls of a waiting one): the fast path of a wait loads nothing more.
++NCCL_DEVICE_INLINE static uint32_t* tsWaitWord(doca_gpu_dev_verbs_qp* qp, uint32_t* abortFlag) {
++  if (abortFlag == nullptr) return nullptr;
++  uint32_t* w = tsPosterAbortWord(qp);
++  return w != nullptr ? w : abortFlag;
++}
+ 
+ // Park until the epoch is stable and differs from `notEpoch` (NCCL_GIN_TS_EPOCH_ANY: any stable epoch),
+ // bounded by the caller's deadline (TIMEOUT) and by the gate's waitMs: a give-up through the commit point;
+@@ -255,10 +267,13 @@ NCCL_DEVICE_INLINE static int tsParkStable(doca_gpu_dev_verbs_qp* qp, uint32_t n
+     // failed from the device too (DEV_FAILED: the host then never publishes a round whose waiter saw an error).
+     // gin-peer: every 64 polls, the caller's word (a waiter's devComm word, raised by ncclCommAbort, an aborting
+     // shrink, a revoke, or once every peer is declined; a poster's: the word below) and the word of this QP's peer.
+-    if ((++abortSteps & 0x3fu) == 0 &&
+-        ((dl.abortFlag != nullptr && nccl::utility::abortIsError(dl.abortFlag)) || tsQpWordError(qp, dl.abortFlag))) {
+-      tsPoison(qp, q4, ctxId);
+-      return NCCL_GIN_TS_FAIL;
++    // gin-remaining: the peer's word in place of the caller's devComm word (tsWaitWord)
++    if ((++abortSteps & 0x3fu) == 0) {
++      uint32_t* aw = tsWaitWord(qp, dl.abortFlag);
++      if ((aw != nullptr && nccl::utility::abortIsError(aw)) || tsQpWordError(qp, aw)) {
++        tsPoison(qp, q4, ctxId);
++        return NCCL_GIN_TS_FAIL;
++      }
+     }
+     if (tsNowNs() - t0 > holdNs) {
+       // The stable epoch we wait for: the next one after an odd epoch, else the one after notEpoch.
+@@ -1045,7 +1060,6 @@ __device__ __noinline__ static ncclResult_t tsPoll(ncclGinCtx ctx, struct ncclGi
+                                                    int peer, uint64_t lticket, bool entered, uint32_t epoch,
+                                                    uint64_t phys, cuda::memory_order ord, uint32_t* abortFlag,
+                                                    uint64_t startCycle, uint64_t timeoutCycles, uint8_t path) {
+-  using nccl::utility::testAbort;
+   struct ncclGinTsGate* g = tsGate(qp);
+   const bool noRebase = (g->flags & NCCL_GIN_TS_F_DIAG_NOREBASE) != 0;
+   struct ncclGinTsDeadline dl;
+@@ -1106,17 +1120,22 @@ __device__ __noinline__ static ncclResult_t tsPoll(ncclGinCtx ctx, struct ncclGi
+       tsPollLeave(qp);
+       return ncclTimeout;
+     }
+-    if (testAbort(abortFlag, abortSteps)) {
+-      tsPollLeave(qp);
+-      // gin-harden: released by a user devComm's own word (error bit): the operation did not complete
+-      if (nccl::utility::abortIsError(abortFlag)) return tsFail(ctx, q4);
+-      cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
+-      return ncclSuccess;
+-    }
+-    // gin-peer: on the same cadence (testAbort just looked: every 10000 polls), the word of this QP's peer
+-    if (abortSteps == 0 && tsQpWordError(qp, abortFlag)) {
+-      tsPollLeave(qp);
+-      return tsFail(ctx, q4);
++    // gin-harden: testAbort's cadence (every 10000 polls) on the caller's word; gin-peer: also the word of this QP's peer;
++    // gin-remaining: the peer's word in place of the caller's devComm word (tsWaitWord), resolved only here
++    if (++abortSteps >= 10000u) {
++      abortSteps = 0;
++      uint32_t* aw = tsWaitWord(qp, abortFlag);
++      if (aw != nullptr && tsLoadRelaxedSys(aw) != 0) {
++        tsPollLeave(qp);
++        // gin-harden: released by a user devComm's own word (error bit): the operation did not complete
++        if (nccl::utility::abortIsError(aw)) return tsFail(ctx, q4);
++        cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
++        return ncclSuccess;
++      }
++      if (tsQpWordError(qp, aw)) {
++        tsPollLeave(qp);
++        return tsFail(ctx, q4);
++      }
+     }
+   }
+ }
+@@ -1248,7 +1267,7 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+       struct ncclGinTsDeadline dl;  // the flush's own deadline covers parking too
+       dl.start = HasTimeout ? startCycle : 0;
+       dl.cycles = HasTimeout ? timeoutCycles : 0;
+-      dl.abortFlag = abortFlag;  // gin-harden
++      dl.abortFlag = abortFlag;  // gin-harden (gin-remaining: tsParkStable and tsPoll read this peer's word instead)
+       const int tr = tsTicket<resource_sharing_mode>(&qps[peer], &e, &n, &l, /*stay=*/true, q4, ctx.contextId, dl);
+       if (tr == NCCL_GIN_TS_TIMEOUT) return ncclTimeout;
+       if (tr != NCCL_GIN_TS_OK) return tsFail(ctx, q4);
+diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
+index 0386168..a1916cc 100644
+--- a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
++++ b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
+@@ -167,6 +167,9 @@ struct ncclGinTsGate {
+                          // gin-peer: that word is the one of this QP's peer (a decline toward that peer raises it;
+                          // ncclCommAbort, an aborting shrink and a revoke raise every peer's word); parked waiters and
+                          // pollers of this QP read it too
++                         // gin-remaining: the request waits and flushes of this QP read it INSTEAD of the devComm word
++                         // their caller passes (gin_gdaki.h tsWaitWord), which a degraded communicator raises for the
++                         // waits that name no peer
+   uint32_t testPuts;     // test only (TEST_SPLIT): signalled puts seen on this QP (device atomics)
+   uint32_t swErr;        // device (the vendored slot wait): the first error CQE it saw in this epoch, bit 31 valid,
+                          // bits 8..15 syndrome, 0..7 vendor syndrome, 16..19 opcode (CAS from 0; the host zeroes it
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 15808a6..2945ab8 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -1262,15 +1262,19 @@ struct gdakiRecQp {
+   int dbMode = 0;                // GDAKI_REC_DB_* at Prepare (v2)
+ };
+ 
++struct gdakiLb;  // gin-remaining: the NIC copy path (below)
+ struct gdakiRecHost {
+   void* commKey = nullptr;
+   struct gdaki_context* ctx = nullptr;
+   std::vector<gdakiRecQp> qps;   // indexed by qp_idx = rank + ctx * nranks
+-  std::atomic<int> paused{0};    // proxy progress skips this context while set
++  std::atomic<int> paused{0};    // proxy progress skips this context while set (gin-remaining: a count of prepared peers)
+   std::atomic<int> busy{0};      // proxy progress calls inside this context
+   std::mutex opMu;               // Prepare/Commit bodies vs. the test hook's fire
+-  int state = 0;                 // 0 idle, 1 prepared
+-  int preparedPeer = -1;
++  // gin-remaining: prepared state per GIN peer (was one state and one peer). The helper may hold a prepared round with
++  // one peer while it answers a lower rank's REQ (gdakiTsServeLower); the QPs of two peers are disjoint. The application
++  // API (transparent recovery off) still prepares one peer at a time.
++  std::vector<uint8_t> prepared; // by GIN peer
++  int nPrepared = 0;
+   cudaStream_t stream = nullptr; // private non-blocking stream: never waits for user kernels
+   uint8_t* pinned = nullptr;     // pinned staging for D2H/H2D copies
+   size_t pinnedSize = 0;
+@@ -1312,6 +1316,9 @@ struct gdakiRecHost {
+   std::atomic<uintptr_t> uaBase{0};
+   std::atomic<int> uaN{0};                // GIN peers with a word (the communicator's rank count)
+   bool posterWordDone = false;            // helper only: the gates hold their peer's word
++  // gin-remaining: the NIC copy path (struct gdakiLb). nullptr: every device-state copy is a stream copy (as before)
++  struct gdakiLb* lb = nullptr;
++  std::atomic<uint64_t> nStreamCopies{0}; // device-state copies that went through the private stream
+ };
+ 
+ static std::mutex gdakiRecRegMu;
+@@ -1336,12 +1343,14 @@ struct gdakiRecProgressGuard {
+   }
+ };
+ 
++// gin-remaining: `paused` counts the prepared peers (a nested responder round prepares a second peer); proxy progress
++// skips the context while it is not 0. Every successful Pause is matched by one Resume (Commit, failed Commit, Abort).
+ static ncclResult_t gdakiRecPause(struct gdakiRecHost* r) {
+-  r->paused.store(1, std::memory_order_seq_cst);
++  r->paused.fetch_add(1, std::memory_order_seq_cst);
+   const double t0 = gdakiQ4MonoMs();
+   while (r->busy.load(std::memory_order_seq_cst) != 0) {
+     if (gdakiQ4MonoMs() - t0 > 1000) {
+-      r->paused.store(0, std::memory_order_seq_cst);
++      r->paused.fetch_sub(1, std::memory_order_seq_cst);
+       WARN("GIN/REC: proxy progress did not leave the context within 1 s");
+       return ncclInternalError;
+     }
+@@ -1350,7 +1359,7 @@ static ncclResult_t gdakiRecPause(struct gdakiRecHost* r) {
+   return ncclSuccess;
+ }
+ 
+-static void gdakiRecResume(struct gdakiRecHost* r) { r->paused.store(0, std::memory_order_seq_cst); }
++static void gdakiRecResume(struct gdakiRecHost* r) { r->paused.fetch_sub(1, std::memory_order_seq_cst); }
+ 
+ // gin-harden: the firmware-phase watchdog times single commands (see gdakiRecFwGuard below): a mark restarts the clock
+ // of the phase the calling thread is inside, if any.
+@@ -1406,24 +1415,320 @@ static ncclResult_t gdakiRecCopyWait(struct gdakiRecHost* r, const char* what, s
+   }
+ }
+ 
+-static ncclResult_t gdakiRecD2H(struct gdakiRecHost* r, void* dst, const void* src, size_t n) {
++// ---- gin-remaining: the NIC copy path ----
++// gin-handoff measured that a device-state copy of a round (cudaMemcpyAsync on the private non-blocking stream, polled by
++// event) does not run while the application's GIN kernel runs once the application has, after launching that kernel,
++// loaded a kernel for the first time, allocated device memory or created a stream (CUDA's implicit synchronization: later
++// work of every stream waits for the running kernel; the GIN kernel waits for the round and the copy for the GIN kernel;
++// the round declined at NCCL_GIN_TS_COPY_MS). What a round reads and writes stays in GPU memory: the device QP struct with
++// the gate (SM atomics on every post), the send and completion rings and the doorbell record (written and read by the GPU
++// and the NIC on the fast path), the rescue areas and the get tickets. A host-memory gate would put PCIe round trips on
++// every post, and the host's write of the epoch half would race SM read-modify-writes that are not atomic with host
++// stores (CUDA: atomics on mapped host memory are not atomic for the host); without gdrdrv (not loaded; loading modules is
++// not allowed here) the CPU has no mapping of GPU memory. So the copies go through the NIC: a loopback RC QP pair of the
++// helper on the GIN context's ibv context, in a protection domain of its own (review L4: the rkeys of the GPU MRs, which
++// grant remote write to QP structs, rings and gates, are valid on no QP connected to another rank); the staging buffer
++// registered as a host MR; every GPU allocation a round touches registered as a GPU MR (dmabuf over its page-aligned part,
++// else nvidia-peermem). A device-to-host copy is one RDMA READ into the staging buffer; a host-to-device copy is one RDMA
++// WRITE from it followed by an 8-byte RDMA READ of the same MR (the read cannot pass the write: once it completes the
++// written bytes are in GPU memory, visible to the SMs; the flush NCCL uses for GPUDirect RDMA before Hopper). No CUDA
++// call is made, so no stream and no implicit synchronization is involved. RoCE: the loopback uses a link-local GID of
++// the GIN GID's RoCE type (fe80::/10, derived from the port's MAC: it stays while addresses come and go; review H2), else
++// the GIN context's own GID; each candidate must pass a loopback READ before it is kept. A copy is bounded by
++// NCCL_GIN_TS_COPY_MS as before; a late completion blocks later copies until it arrives (the staging buffer may still be
++// written). Set up in gdakiTsStart with a self-test; a setup failure keeps the stream path (WARN). An error completion or
++// a failed post (the loopback QP went to ERR: nothing more lands) turns the NIC path off for the context and that copy
++// and every later one runs on the private stream (WARN; review H2, L8); a copy that misses its bound fails as before (the
++// round declines; the late request may still land, so it is not repeated). NCCL_GIN_TS_COPY_PATH=stream keeps the stream
++// path. Test switch NCCL_GIN_TS_TEST_COPY_STALL with the NIC path: the completions are held, the data lands at once
++// (review L6; no cell of gin-remaining uses it).
++struct gdakiLbMr {
++  uintptr_t lo = 0, hi = 0;
++  struct ibv_mr* mr = nullptr;
++  bool dmabuf = false;
++  uintptr_t sample = 0;   // the first range registered in it (self-test)
++  size_t sampleLen = 0;   // min(its length, 64)
++};
++struct gdakiLb {
++  struct ibv_pd* pd = nullptr;      // the loopback's own protection domain
++  struct ibv_cq* cq = nullptr;
++  struct ibv_qp* qa = nullptr;      // requester: posts the READs and WRITEs
++  struct ibv_qp* qb = nullptr;      // responder: grants remote read and write
++  struct ibv_mr* stage = nullptr;   // the staging buffer (gdakiRecHost::pinned)
++  uint64_t* flush = nullptr;        // landing of the flushing 8-byte READ (64 bytes: [1] is the setup ping's source)
++  struct ibv_mr* flushMr = nullptr;
++  std::vector<struct gdakiLbMr> mrs;
++  bool ok = false;                  // set up and self-tested, no failed transfer since
++  int outstanding = 0;              // signaled requests posted and not completed (a late completion after a timeout)
++  uint64_t nextId = 1;
++  std::atomic<uint64_t> nOps{0}, nBytes{0}, nTimeouts{0}, nFallbacks{0};
++  double stallUntilMs = 0;          // test switch NCCL_GIN_TS_TEST_COPY_STALL: no completion is taken before then
++  int nDmabuf = 0, nPeermem = 0;
++  bool warned = false;              // the off line was written
++  int gidIndex = -1;                // RoCE: the loopback's GID index (-1: IB, LIDs)
++  const char* gidKind = "lid";      // "link-local" or "gin" (the GIN context's own GID)
++  size_t testBytes = 0, testNonzero = 0;
++  char why[224] = {0};              // why the path is off
++};
++
++static bool gdakiLbOn(struct gdakiRecHost* r) { return r->lb != nullptr && r->lb->ok; }
++static const struct gdakiLbMr* gdakiLbFind(struct gdakiLb* lb, uintptr_t a, size_t n) {
++  for (const auto& m : lb->mrs)
++    if (a >= m.lo && a + n <= m.hi) return &m;
++  return nullptr;
++}
++
++// The path goes off: both loopback QPs to ERR (an error completion put one there already; nothing more lands after
++// this), one WARN. Later copies use the private stream.
++static void gdakiLbOff(struct gdakiRecHost* r, const char* why) {
++  struct gdakiLb* lb = r->lb;
++  if (lb == nullptr || !lb->ok) return;
++  lb->ok = false;
++  snprintf(lb->why, sizeof(lb->why), "%s", why);
++  struct ibv_qp_attr a;
++  memset(&a, 0, sizeof(a));
++  a.qp_state = IBV_QPS_ERR;
++  if (lb->qa) (void)wrap_ibv_modify_qp(lb->qa, &a, IBV_QP_STATE);
++  if (lb->qb) (void)wrap_ibv_modify_qp(lb->qb, &a, IBV_QP_STATE);
++  lb->warned = true;
++  WARN("GIN/TS: rank %d: the NIC copy path is off (%s); device-state copies use the private stream from now mono_ms=%.3f",
++       r->ctx ? r->ctx->rank : -1, lb->why, gdakiQ4MonoMs());
++}
++
++// Register the GPU allocation that holds [p, p + n), once (setup only).
++static ncclResult_t gdakiLbAddRange(struct gdakiLb* lb, const void* p, size_t n, const char* what) {
++  const uintptr_t a = (uintptr_t)p;
++  if (p == nullptr || n == 0 || gdakiLbFind(lb, a, n) != nullptr) return ncclSuccess;
++  static const uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE);
++  const int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;  // strict ordering
++  CUdeviceptr base = 0;
++  size_t size = 0;
++  uintptr_t lo = a & ~(pg - 1), hi = (a + n + pg - 1) & ~(pg - 1);  // without the allocation's bounds: the pages of the range
++  uintptr_t plo = a, phi = a + n;                                   // nvidia-peermem: the range (it aligns by itself)
++  if (pfn_cuMemGetAddressRange(&base, &size, (CUdeviceptr)a) == CUDA_SUCCESS && size != 0 && a >= (uintptr_t)base &&
++      a + n <= (uintptr_t)base + size) {
++    plo = (uintptr_t)base;
++    phi = (uintptr_t)base + size;
++    const uintptr_t ilo = ((uintptr_t)base + pg - 1) & ~(pg - 1), ihi = ((uintptr_t)base + size) & ~(pg - 1);
++    if (ilo <= a && a + n <= ihi) {  // the page-aligned part of the allocation covers the range
++      lo = ilo;
++      hi = ihi;
++    }
++  }
++  struct gdakiLbMr m;
++#if CUDA_VERSION >= 11070
++  if (ncclParamDmaBufEnable() != 0 && lo <= a && a + n <= hi) {
++    int fd = -1;
++    if (pfn_cuMemGetHandleForAddressRange((void*)&fd, (CUdeviceptr)lo, hi - lo, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, 0) ==
++          CUDA_SUCCESS &&
++        fd >= 0) {
++      struct ibv_mr* mr = wrap_direct_ibv_reg_dmabuf_mr(lb->pd, 0, hi - lo, (uint64_t)lo, fd, access);
++      if (mr != nullptr) {
++        m.lo = lo;
++        m.hi = hi;
++        m.mr = mr;
++        m.dmabuf = true;
++      }
++      close(fd);
++    }
++  }
++#endif
++  if (m.mr == nullptr) {
++    struct ibv_mr* mr = wrap_direct_ibv_reg_mr(lb->pd, (void*)plo, phi - plo, access);
++    if (mr != nullptr) {
++      m.lo = plo;
++      m.hi = phi;
++      m.mr = mr;
++    }
++  }
++  if (m.mr == nullptr) {
++    snprintf(lb->why, sizeof(lb->why), "cannot register the GPU memory of the %s (errno %d)", what, errno);
++    return ncclSystemError;
++  }
++  m.sample = a;
++  m.sampleLen = std::min<size_t>(n, 64);
++  if (m.dmabuf) lb->nDmabuf++;
++  else lb->nPeermem++;
++  lb->mrs.push_back(m);
++  return ncclSuccess;
++}
++
++// Take completions (non-blocking): the request `want` completed -> *got. An error completion: *err, the first one's
++// reason in `why` (the caller turns the path off).
++static void gdakiLbPoll(struct gdakiLb* lb, uint64_t want, bool* got, bool* err, char* why, size_t whyLen) {
++  if (lb->stallUntilMs != 0) {  // test switch: the copy is held
++    if (gdakiQ4MonoMs() < lb->stallUntilMs) return;
++    lb->stallUntilMs = 0;
++  }
++  struct ibv_wc wc[4];
++  int n = 0;
++  if (wrap_ibv_poll_cq(lb->cq, 4, wc, &n) != ncclSuccess || n < 0) {
++    *err = true;
++    snprintf(why, whyLen, "polling the loopback CQ failed");
++    return;
++  }
++  for (int k = 0; k < n; k++) {
++    if (wc[k].status != IBV_WC_SUCCESS) {
++      if (!*err)
++        snprintf(why, whyLen, "a loopback request completed with status %d (vendor_err %#x)", (int)wc[k].status,
++                 wc[k].vendor_err);
++      *err = true;
++      continue;  // the rest of the batch: flushed requests
++    }
++    lb->outstanding--;
++    if (wc[k].wr_id == want) *got = true;
++  }
++}
++
++// One device-state copy over the NIC: write = staging -> GPU (then a flushing READ), else GPU -> staging. Bounded by
++// NCCL_GIN_TS_COPY_MS like the stream copies. *fallback (if given): the path went off before the data could land (error
++// completion, failed post): the caller makes this copy on the stream.
++static ncclResult_t gdakiLbXfer(struct gdakiRecHost* r, bool write, const void* dev, size_t n, bool* fallback = nullptr) {
++  struct gdakiLb* lb = r->lb;
++  const struct gdakiLbMr* m = gdakiLbFind(lb, (uintptr_t)dev, n);
++  if (m == nullptr || n > r->pinnedSize) return ncclInternalError;
++  char why[128];
++  auto off = [&](const char* w) -> ncclResult_t {
++    gdakiLbOff(r, w);
++    if (fallback) *fallback = true;
++    lb->nFallbacks.fetch_add(1, std::memory_order_relaxed);
++    return ncclSystemError;
++  };
++  if (lb->outstanding > 0) {  // a late completion: the staging buffer may still be written
++    bool dummy = false, err = false;
++    gdakiLbPoll(lb, 0, &dummy, &err, why, sizeof(why));
++    if (err) {
++      char w[200];
++      snprintf(w, sizeof(w), "the late copy failed: %s", why);
++      return off(w);
++    }
++    if (lb->outstanding > 0) return ncclSystemError;
++    GIN_TS_NOTE("GIN/TS: rank %d: the late device-state copy completed (over the NIC); copies are allowed again "
++                "mono_ms=%.3f", r->ctx->rank, gdakiQ4MonoMs());
++  }
++  const uint64_t id = lb->nextId++;
++  struct ibv_sge sg, fsg;
++  struct ibv_send_wr wr, fwr, *bad = nullptr;
++  memset(&wr, 0, sizeof(wr));
++  memset(&fwr, 0, sizeof(fwr));
++  sg.addr = (uint64_t)(uintptr_t)r->pinned;
++  sg.length = (uint32_t)n;
++  sg.lkey = lb->stage->lkey;
++  wr.wr_id = id;
++  wr.sg_list = &sg;
++  wr.num_sge = 1;
++  wr.opcode = write ? IBV_WR_RDMA_WRITE : IBV_WR_RDMA_READ;
++  wr.send_flags = write ? 0 : IBV_SEND_SIGNALED;
++  wr.wr.rdma.remote_addr = (uint64_t)(uintptr_t)dev;
++  wr.wr.rdma.rkey = m->mr->rkey;
++  if (write) {  // the flushing READ of 8 bytes of the same MR, signaled: its completion follows the WRITE's
++    uintptr_t fa = (uintptr_t)dev & ~(uintptr_t)7;
++    if (fa < m->lo || fa + 8 > m->hi) fa = m->lo;
++    fsg.addr = (uint64_t)(uintptr_t)lb->flush;
++    fsg.length = 8;
++    fsg.lkey = lb->flushMr->lkey;
++    fwr.wr_id = id;
++    fwr.sg_list = &fsg;
++    fwr.num_sge = 1;
++    fwr.opcode = IBV_WR_RDMA_READ;
++    fwr.send_flags = IBV_SEND_SIGNALED;
++    fwr.wr.rdma.remote_addr = (uint64_t)fa;
++    fwr.wr.rdma.rkey = m->mr->rkey;
++    wr.next = &fwr;
++  }
++  gdakiRecFwMark(r);  // a copy is bounded by itself (NCCL_GIN_TS_COPY_MS): not charged to a firmware phase
++  if (wrap_ibv_post_send(lb->qa, &wr, &bad) != ncclSuccess) return off("posting to the loopback QP failed");
++  lb->outstanding++;
++  const double t0 = gdakiQ4MonoMs();
++  bool got = false, err = false;
++  while (true) {
++    gdakiLbPoll(lb, id, &got, &err, why, sizeof(why));
++    if (err) {
++      char w[200];
++      snprintf(w, sizeof(w), "%s, %zu B: %s", write ? "host to device" : "device to host", n, why);
++      return off(w);
++    }
++    if (got) break;
++    const double el = gdakiQ4MonoMs() - t0;
++    if (el > (double)r->copyMs) {
++      lb->nTimeouts.fetch_add(1, std::memory_order_relaxed);
++      r->nCopyTimeouts.fetch_add(1, std::memory_order_relaxed);
++      WARN("GIN/TS: rank %d: device-state copy (over the NIC, %s, %zu B) not complete after %d ms (NCCL_GIN_TS_COPY_MS); "
++           "the round declines mono_ms=%.3f", r->ctx->rank, write ? "host to device" : "device to host", n, r->copyMs,
++           gdakiQ4MonoMs());
++      return ncclSystemError;
++    }
++    if (el < 2.0) std::this_thread::yield();  // a loopback request takes a few microseconds
++    else std::this_thread::sleep_for(std::chrono::microseconds(50));
++  }
++  gdakiRecFwMark(r);
++  lb->nOps.fetch_add(1, std::memory_order_relaxed);
++  lb->nBytes.fetch_add(n, std::memory_order_relaxed);
++  return ncclSuccess;
++}
++
++static void gdakiLbDestroy(struct gdakiRecHost* r) {
++  struct gdakiLb* lb = r->lb;
++  if (lb == nullptr) return;
++  r->lb = nullptr;
++  if (lb->qa) (void)wrap_ibv_destroy_qp(lb->qa);
++  if (lb->qb) (void)wrap_ibv_destroy_qp(lb->qb);
++  if (lb->cq) (void)wrap_ibv_destroy_cq(lb->cq);
++  for (auto& m : lb->mrs) (void)wrap_ibv_dereg_mr(m.mr);
++  if (lb->stage) (void)wrap_ibv_dereg_mr(lb->stage);
++  if (lb->flushMr) (void)wrap_ibv_dereg_mr(lb->flushMr);
++  if (lb->pd) (void)wrap_ibv_dealloc_pd(lb->pd);
++  free(lb->flush);
++  delete lb;
++}
++
++// The original stream copies (gin-harden), also the fallback of the NIC path.
++static ncclResult_t gdakiRecD2HStream(struct gdakiRecHost* r, void* dst, const void* src, size_t n) {
+   if (n > r->pinnedSize) return ncclInternalError;
+   if (gdakiRecCopyBlocked(r)) return ncclSystemError;
++  if (gdakiTsInHelper) r->nStreamCopies.fetch_add(1, std::memory_order_relaxed);  // gin-remaining
+   CUDACHECK(cudaMemcpyAsync(r->pinned, src, n, cudaMemcpyDeviceToHost, r->stream));
+   NCCLCHECK(gdakiRecCopyWait(r, "device to host", n));
+   memcpy(dst, r->pinned, n);
+   return ncclSuccess;
+ }
+ 
+-static ncclResult_t gdakiRecH2D(struct gdakiRecHost* r, void* dst, const void* src, size_t n) {
++static ncclResult_t gdakiRecH2DStream(struct gdakiRecHost* r, void* dst, const void* src, size_t n) {
+   if (n > r->pinnedSize) return ncclInternalError;
+   if (gdakiRecCopyBlocked(r)) return ncclSystemError;
++  if (gdakiTsInHelper) r->nStreamCopies.fetch_add(1, std::memory_order_relaxed);  // gin-remaining
+   memcpy(r->pinned, src, n);
+   CUDACHECK(cudaMemcpyAsync(dst, r->pinned, n, cudaMemcpyHostToDevice, r->stream));
+   NCCLCHECK(gdakiRecCopyWait(r, "host to device", n));
+   return ncclSuccess;
+ }
+ 
++// gin-remaining: the NIC path when it is on and covers the range, else (or when it just went off) the stream.
++static ncclResult_t gdakiRecD2H(struct gdakiRecHost* r, void* dst, const void* src, size_t n) {
++  if (n > r->pinnedSize) return ncclInternalError;
++  if (gdakiLbOn(r) && gdakiLbFind(r->lb, (uintptr_t)src, n) != nullptr) {
++    bool fallback = false;
++    const ncclResult_t res = gdakiLbXfer(r, false, src, n, &fallback);
++    if (res == ncclSuccess) {
++      memcpy(dst, r->pinned, n);
++      return ncclSuccess;
++    }
++    if (!fallback) return res;
++  }
++  return gdakiRecD2HStream(r, dst, src, n);
++}
++
++static ncclResult_t gdakiRecH2D(struct gdakiRecHost* r, void* dst, const void* src, size_t n) {
++  if (n > r->pinnedSize) return ncclInternalError;
++  if (gdakiLbOn(r) && gdakiLbFind(r->lb, (uintptr_t)dst, n) != nullptr) {
++    bool fallback = false;
++    memcpy(r->pinned, src, n);
++    const ncclResult_t res = gdakiLbXfer(r, true, dst, n, &fallback);
++    if (res == ncclSuccess || !fallback) return res;
++  }
++  return gdakiRecH2DStream(r, dst, src, n);
++}
++
+ // gin-harden: a firmware-command phase of the helper (QP state changes, QUERY_QP). A firmware command cannot be
+ // interrupted; the Q4 watcher's watchdog (gdakiTsWatchdog) reads how long the helper has been inside the current phase
+ // and, past NCCL_GIN_TS_FW_MS, releases the device threads with an error and surfaces the fault; the round then
+@@ -1786,6 +2091,15 @@ static void gdakiRecHookStart(struct gdaki_context* g, const std::vector<int>& d
+ #endif  // NCCL_GIN_TS_PRODUCTION
+ 
+ static const char* gdakiRecStateStr(int s) { return s == 0 ? "idle" : s == 1 ? "prepared" : "?"; }
++// gin-remaining: prepared state of `peer` (0 idle, 1 prepared); out of range: idle
++static int gdakiRecPrepared(struct gdakiRecHost* r, int peer) {
++  return peer >= 0 && peer < (int)r->prepared.size() ? (int)r->prepared[peer] : 0;
++}
++static void gdakiRecSetPrepared(struct gdakiRecHost* r, int peer, bool on) {
++  if (peer < 0 || peer >= (int)r->prepared.size() || (r->prepared[peer] != 0) == on) return;
++  r->prepared[peer] = on ? 1 : 0;
++  r->nPrepared += on ? 1 : -1;
++}
+ 
+ NCCL_API(ncclResult_t, ncclGinFaultQuery, ncclComm_t comm, int waitMs, ncclGinFaultInfo_t* info);
+ ncclResult_t ncclGinFaultQuery(ncclComm_t comm, int waitMs, ncclGinFaultInfo_t* info) {
+@@ -1856,7 +2170,12 @@ ncclResult_t ncclGinRecoverPrepare(ncclComm_t comm, int peer, ncclGinRecoverToke
+   for (auto* r : rs) {
+     struct gdaki_context* g = r->ctx;
+     if (peer < 0 || peer >= r->nranks || peer == g->rank) { why = "invalid peer"; goto decline; }
+-    if (r->state != 0) { why = "a recovery is already prepared"; goto decline; }
++    // gin-remaining: the helper may hold a prepared round with another peer (a nested responder round); the application
++    // API prepares one peer at a time as before
++    if (peer >= (int)r->prepared.size() || (gdakiTsInHelper ? gdakiRecPrepared(r, peer) != 0 : r->nPrepared != 0)) {
++      why = "a recovery is already prepared";
++      goto decline;
++    }
+     if (g->companion_gqps != nullptr) { why = "companion (counter) QPs present"; goto decline; }
+     int n = 0;
+     gdakiRecForPeer(r, peer, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
+@@ -1994,8 +2313,7 @@ ncclResult_t ncclGinRecoverPrepare(ncclComm_t comm, int peer, ncclGinRecoverToke
+       local->epochWqes[n] = rq.epochWqes;
+       st.epochWqes += rq.epochWqes;
+     });
+-    r->state = 1;
+-    r->preparedPeer = peer;
++    gdakiRecSetPrepared(r, peer, true);  // gin-remaining: per peer
+   }
+   st.nqp = (int)local->nqp;
+   st.prepareUs = (gdakiQ4MonoMs() - t0) * 1e3;
+@@ -2034,8 +2352,8 @@ ncclResult_t ncclGinRecoverCommit(ncclComm_t comm, int peer, const ncclGinRecove
+     unsigned n = 0;
+     bool bad = remote->magic != NCCL_GIN_RECOVERY_TOKEN_MAGIC;
+     for (auto* r : rs) {
+-      if (r->state != 1 || r->preparedPeer != peer) {
+-        WARN("GIN/REC: commit: context not prepared for peer %d (state %s)", peer, gdakiRecStateStr(r->state));
++      if (gdakiRecPrepared(r, peer) != 1) {  // gin-remaining: per peer
++        WARN("GIN/REC: commit: context not prepared for peer %d (state %s)", peer, gdakiRecStateStr(gdakiRecPrepared(r, peer)));
+         return ncclInvalidUsage;
+       }
+       gdakiRecForPeer(r, peer, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+@@ -2147,7 +2465,7 @@ ncclResult_t ncclGinRecoverCommit(ncclComm_t comm, int peer, const ncclGinRecove
+   }
+   if (ret != ncclSuccess) {
+     for (auto* r : rs) {
+-      r->state = 0;
++      gdakiRecSetPrepared(r, peer, false);  // gin-remaining: per peer
+       r->nAborts++;
+       gdakiRecResume(r);
+     }
+@@ -2192,7 +2510,7 @@ ncclResult_t ncclGinRecoverCommit(ncclComm_t comm, int peer, const ncclGinRecove
+       __atomic_compare_exchange_n(q->asyncResult, &expect, ncclSuccess, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+     }
+     }
+-    r->state = 0;
++    gdakiRecSetPrepared(r, peer, false);  // gin-remaining: per peer
+     r->nCommits++;
+     gdakiRecResume(r);
+     {
+@@ -2222,12 +2540,17 @@ ncclResult_t ncclGinRecoverAbort(ncclComm_t comm, int peer) {
+         return ncclInvalidUsage;
+       }
+   }
++  // gin-remaining: the helper aborts the named peer's prepared round only (it may hold several, one per peer); the
++  // application (one prepared round per context, Prepare enforces it) aborts the context's prepared round whatever peer
++  // it names, as before this layer (review L5)
+   for (auto* r : rs) {
+-    if (r->state != 1) continue;
+-    r->state = 0;
+-    r->nAborts++;
+-    gdakiRecResume(r);  // QPs stay in ERR; the Q4 error stays set
+-    WARN("GIN/REC: recovery aborted (peer=%d); QPs left in ERR", peer);
++    for (int p = 0; p < (int)r->prepared.size(); p++) {
++      if (gdakiRecPrepared(r, p) != 1 || (gdakiTsInHelper && p != peer)) continue;
++      gdakiRecSetPrepared(r, p, false);
++      r->nAborts++;
++      gdakiRecResume(r);  // QPs stay in ERR; the Q4 error stays set
++      WARN("GIN/REC: recovery aborted (peer=%d); QPs left in ERR", p);
++    }
+   }
+   return ncclSuccess;
+ }
+@@ -2295,6 +2618,19 @@ ncclResult_t ncclGinRecoverAbort(ncclComm_t comm, int peer) {
+ //     HELLOs or PROBEs this rank sends carry a wrong nonce), NCCL_GIN_TS_TEST_FW_DELAY=<ms>@<phase>,
+ //     NCCL_GIN_TS_TEST_COPY_STALL=<ms> (the first round's stream is held by a host callback for <ms>),
+ //     NCCL_GIN_TS_TEST_BAD_REPOST=<k> (the re-post plan rejects the k-th QP of the round)
++// gin-remaining (harness/gpu-initiated/gin_recovery/remaining/EXPERIMENT.md section 9):
++//   - NCCL_GIN_TS_COPY_PATH=nic|stream (default nic): every device-state copy of a round is an RDMA READ or WRITE on a
++//     loopback QP pair of the helper (struct gdakiLb, own PD, a link-local GID on RoCE), not a cudaMemcpyAsync: no CUDA
++//     call, so the application's CUDA calls after its GIN launch (first kernel load, cudaMalloc, stream creation:
++//     implicit synchronization) cannot hold a round. A loopback error turns it off for the context (stream copies)
++//   - NCCL_GIN_TS_SERVE_WAIT=0|1 (default 1): an initiator waiting for its ACK answers a lower rank's REQ at once (nested
++//     responder round, on the outer round's clock) and keeps a higher rank's for after its round (dropped if a round with
++//     that rank runs first): no circular wait (gdakiTsServeLower)
++//   - NCCL_GIN_TS_DEGRADED_MS=<ms> (default 2000; 0 at once; -1 never): that long after the first GIN peer is judged dead,
++//     word [0] of the user abort words goes up (why=degraded): waits that name no peer return an error; waits on one
++//     peer's QPs read that peer's word (gin_gdaki.h tsWaitWord) and keep running. Device code built with headers older
++//     than this layer reads word [0] in those waits too: then they return an error as well (applications that rely on
++//     per-peer waits after a death must be built with these headers; the helper cannot tell which headers built them)
+ // The application's kernels and host code are unchanged. A helper thread per GDAKI context (not the
+ // application) takes the device-classified fault from the Q4 mailbox, applies the policy (LOCAL_QP_ERR:
+ // recover; RETRY_EXC: recover iff the peer's socket shows no FIN/RST; else decline), pauses the device
+@@ -2330,6 +2666,7 @@ NCCL_PARAM(GinTsAbortJoinMaxMs, "GIN_TS_ABORT_JOIN_MAX_MS", 15000); // gin-harde
+ NCCL_PARAM(GinTsEscalateRounds, "GIN_TS_ESCALATE_ROUNDS", 8);      // gin-harden (0: no cap)
+ NCCL_PARAM(GinTsEscalateWindowMs, "GIN_TS_ESCALATE_WINDOW_MS", 60000);  // gin-harden
+ NCCL_PARAM(GinTsPort, "GIN_TS_PORT", 0);                           // gin-harden
++NCCL_PARAM(GinTsServeWait, "GIN_TS_SERVE_WAIT", 1);                // gin-remaining (gdakiTsServeLower)
+ #define GDAKI_TS_SOCK_RETRIES 3  // gin-harden: retries of one fault after a socket loss inside its round
+ 
+ // ---- gin-harden: the user devComm abort word of a communicator ----
+@@ -2345,8 +2682,14 @@ NCCL_PARAM(GinTsPort, "GIN_TS_PORT", 0);                           // gin-harden
+ // other peers keep running. ncclCommAbort, an aborting shrink and a revoke raise every word (ncclGinTsUserAbortRaise).
+ // Word [0] also goes up once every peer that a helper of this communicator gates has its word raised (with two ranks:
+ // the first decline, as before). A word is raised once and never cleared.
++// gin-remaining: the communicator is degraded (struct gdakiUa below): a GIN peer was judged dead NCCL_GIN_TS_DEGRADED_MS
++// ago (default 2000 ms; 0: at once; -1: never, as gin-peer). Word [0] then goes up (why=degraded): the waits that name no
++// peer (waitSignal, waitCounter, the barriers, ll_a2a, the void forms) return an error, whether or not they wait for the
++// dead rank (the device cannot tell). The waits of the GDAKI device code on one QP read that QP's peer word instead of
++// word [0] (gin_gdaki.h tsWaitWord), so the posts, flushes and request waits of healthy peers keep running.
++NCCL_PARAM(GinTsDegradedMs, "GIN_TS_DEGRADED_MS", 2000);
+ enum { GDAKI_UA_ABORT = 1, GDAKI_UA_REVOKE = 2, GDAKI_UA_SHRINK = 3, GDAKI_UA_DECLINED = 4, GDAKI_UA_PEER_DEAD = 5,
+-       GDAKI_UA_FW_WATCHDOG = 6 };
++       GDAKI_UA_FW_WATCHDOG = 6, GDAKI_UA_DEGRADED = 7 };
+ static const char* gdakiUaName(int why) {
+   switch (why) {
+     case GDAKI_UA_ABORT: return "abort";
+@@ -2355,6 +2698,7 @@ static const char* gdakiUaName(int why) {
+     case GDAKI_UA_DECLINED: return "declined";
+     case GDAKI_UA_PEER_DEAD: return "peer-dead";
+     case GDAKI_UA_FW_WATCHDOG: return "fw-watchdog";
++    case GDAKI_UA_DEGRADED: return "degraded";  // gin-remaining
+     default: return "?";
+   }
+ }
+@@ -2366,9 +2710,15 @@ struct gdakiUa {
+   int why;                        // why word [0] was raised (0: not yet)
+   std::vector<int> peerWhy;       // gin-peer: why word [1 + p] was raised (0: not yet)
+   std::vector<uint8_t> expected;  // gin-peer: GIN peers a helper of this communicator gates
++  // gin-remaining
++  int allWhy = 0;                 // ncclCommAbort, an aborting shrink or a revoke raised every word (0: not yet)
++  double degradedAtMs = 0;        // when word [0] goes up for the first peer judged dead (0: not scheduled)
++  int degradedPeer = -1;          // that peer
++  double deadMs = 0;              // when it was judged dead
+ };
+ static std::mutex gdakiUaMu;
+ static std::vector<struct gdakiUa> gdakiUaReg;
++static std::atomic<int> gdakiUaDegradedPending{0};  // gin-remaining: scheduled degraded raises (lock-free look first)
+ static void gdakiTsGatedPeers(struct gdakiRecHost* r, std::vector<uint8_t>& out);  // gin-peer: below (needs gdakiTs)
+ 
+ uint32_t* ncclGinTsUserAbortWord(void* comm, int rank, int nRanks) {
+@@ -2380,7 +2730,15 @@ uint32_t* ncclGinTsUserAbortWord(void* comm, int rank, int nRanks) {
+   if (e == nullptr) {
+     uint32_t* w = nullptr;
+     if (ncclCudaHostCalloc(&w, (size_t)nRanks + 1) != ncclSuccess || w == nullptr) return nullptr;
+-    gdakiUaReg.push_back({comm, rank, nRanks, w, 0, std::vector<int>(nRanks, 0), std::vector<uint8_t>(nRanks, 0)});
++    struct gdakiUa u;
++    u.comm = comm;
++    u.rank = rank;
++    u.n = nRanks;
++    u.word = w;
++    u.why = 0;
++    u.peerWhy.assign(nRanks, 0);
++    u.expected.assign(nRanks, 0);
++    gdakiUaReg.push_back(u);
+     e = &gdakiUaReg.back();
+   }
+   {  // the recovery helpers of this communicator's contexts (those of this devComm included: they are registered by now)
+@@ -2397,6 +2755,8 @@ uint32_t* ncclGinTsUserAbortWord(void* comm, int rank, int nRanks) {
+ }
+ 
+ // ncclCommAbort, an aborting shrink, a revoke (init.cc): every word of the communicator.
++// gin-remaining: once per communicator (allWhy), also after word [0] alone went up (every peer declined, or degraded): the
++// words still down are raised. The line below is written only when word [0] itself goes up here (as before).
+ void ncclGinTsUserAbortRaise(void* comm, int why) {
+   if (comm == nullptr) return;
+   int rank = -1;
+@@ -2405,15 +2765,21 @@ void ncclGinTsUserAbortRaise(void* comm, int why) {
+     struct gdakiUa* e = nullptr;
+     for (auto& x : gdakiUaReg)
+       if (x.comm == comm) e = &x;
+-    if (e == nullptr || e->why != 0) return;
+-    e->why = why;
+-    rank = e->rank;
+-    __atomic_store_n(&e->word[0], NCCL_DEVCOMM_ABORT_ERROR | (uint32_t)why, __ATOMIC_RELEASE);
++    if (e == nullptr || e->allWhy != 0) return;
++    e->allWhy = why;
++    if (e->degradedAtMs != 0) {  // a scheduled degraded raise is not needed any more
++      e->degradedAtMs = 0;
++      gdakiUaDegradedPending.fetch_sub(1, std::memory_order_acq_rel);
++    }
+     for (int p = 0; p < e->n; p++)
+       if (e->peerWhy[p] == 0) {
+         e->peerWhy[p] = why;
+         __atomic_store_n(&e->word[1 + p], NCCL_DEVCOMM_ABORT_ERROR | (uint32_t)why, __ATOMIC_RELEASE);
+       }
++    if (e->why != 0) return;
++    e->why = why;
++    rank = e->rank;
++    __atomic_store_n(&e->word[0], NCCL_DEVCOMM_ABORT_ERROR | (uint32_t)why, __ATOMIC_RELEASE);
+   }
+   if (why == GDAKI_UA_ABORT || why == GDAKI_UA_REVOKE || why == GDAKI_UA_SHRINK)
+     GIN_TS_NOTE("GIN/TS: user devComm waits released rank=%d why=%s mono_ms=%.3f", rank, gdakiUaName(why), gdakiQ4MonoMs());
+@@ -2428,6 +2794,8 @@ static void gdakiUaRaisePeer(void* comm, int peer, int why) {
+   if (comm == nullptr) return;
+   int rank = -1;
+   bool first = false, every = false, all = false;
++  int degraded = 0;  // gin-remaining: 1 scheduled, 2 raised at once (NCCL_GIN_TS_DEGRADED_MS=0)
++  const int64_t degMs = ncclParamGinTsDegradedMs();
+   {
+     std::lock_guard<std::mutex> lk(gdakiUaMu);
+     struct gdakiUa* e = nullptr;
+@@ -2455,6 +2823,21 @@ static void gdakiUaRaisePeer(void* comm, int peer, int why) {
+         every = true;
+       }
+     }
++    // gin-remaining: the first peer judged dead (not merely declined) degrades the communicator: word [0] goes up
++    // NCCL_GIN_TS_DEGRADED_MS later (gdakiUaDegradedStep), unless it is up by then
++    if (!all && why == GDAKI_UA_PEER_DEAD && degMs >= 0 && e->why == 0 && e->degradedAtMs == 0 && e->deadMs == 0) {
++      e->deadMs = gdakiQ4MonoMs();
++      e->degradedPeer = peer;
++      if (degMs == 0) {
++        e->why = GDAKI_UA_DEGRADED;
++        __atomic_store_n(&e->word[0], NCCL_DEVCOMM_ABORT_ERROR | (uint32_t)GDAKI_UA_DEGRADED, __ATOMIC_RELEASE);
++        degraded = 2;
++      } else {
++        e->degradedAtMs = e->deadMs + (double)degMs;
++        gdakiUaDegradedPending.fetch_add(1, std::memory_order_acq_rel);
++        degraded = 1;
++      }
++    }
+   }
+   if (all) {
+     ncclGinTsUserAbortRaise(comm, why);
+@@ -2467,15 +2850,64 @@ static void gdakiUaRaisePeer(void* comm, int peer, int why) {
+     WARN("GIN/TS: user devComm waits released rank=%d why=%s mono_ms=%.3f", rank, gdakiUaName(why), gdakiQ4MonoMs());
+     GIN_TS_NOTE("GIN/TS: rank %d: every peer of this rank is declined: waits that name no peer are released too", rank);
+   }
++  if (degraded == 1)
++    GIN_TS_NOTE("GIN/TS: rank %d: communicator degraded in %ld ms: rank %d was judged dead; waits that name no peer are "
++                "released then (NCCL_GIN_TS_DEGRADED_MS) mono_ms=%.3f", rank, (long)degMs, peer, gdakiQ4MonoMs());
++  if (degraded == 2) {
++    WARN("GIN/TS: user devComm waits released rank=%d why=%s mono_ms=%.3f", rank, gdakiUaName(GDAKI_UA_DEGRADED),
++         gdakiQ4MonoMs());
++    GIN_TS_NOTE("GIN/TS: rank %d: communicator degraded: rank %d was judged dead 0.0 ms ago; waits that name no peer return "
++                "an error, waits on one peer's QPs keep that peer's word mono_ms=%.3f", rank, peer, gdakiQ4MonoMs());
++  }
++}
++
++// gin-remaining: raise word [0] of every communicator whose degraded time has come (called by every Q4 watcher poll,
++// through gdakiTsWatchdog; independent of the helpers). Under gdakiUaMu, which ncclGinTsUserAbortFree also takes before it
++// frees a word array, so a word is never written after the communicator freed it.
++static void gdakiUaDegradedStep() {
++  if (gdakiUaDegradedPending.load(std::memory_order_acquire) == 0) return;
++  struct Raised {
++    int rank, peer;
++    double deadMs;
++  };
++  std::vector<struct Raised> done;
++  const double now = gdakiQ4MonoMs();
++  {
++    std::lock_guard<std::mutex> lk(gdakiUaMu);
++    for (auto& e : gdakiUaReg) {
++      if (e.degradedAtMs == 0 || now < e.degradedAtMs) continue;
++      e.degradedAtMs = 0;
++      gdakiUaDegradedPending.fetch_sub(1, std::memory_order_acq_rel);
++      if (e.why != 0) continue;  // up meanwhile (every peer declined)
++      e.why = GDAKI_UA_DEGRADED;
++      __atomic_store_n(&e.word[0], NCCL_DEVCOMM_ABORT_ERROR | (uint32_t)GDAKI_UA_DEGRADED, __ATOMIC_RELEASE);
++      done.push_back({e.rank, e.degradedPeer, e.deadMs});
++    }
++  }
++  for (auto& d : done) {
++    WARN("GIN/TS: user devComm waits released rank=%d why=%s mono_ms=%.3f", d.rank, gdakiUaName(GDAKI_UA_DEGRADED),
++         gdakiQ4MonoMs());
++    GIN_TS_NOTE("GIN/TS: rank %d: communicator degraded: rank %d was judged dead %.1f ms ago; waits that name no peer return "
++                "an error, waits on one peer's QPs keep that peer's word mono_ms=%.3f", d.rank, d.peer, now - d.deadMs,
++                gdakiQ4MonoMs());
++  }
+ }
+ 
+ // gin-peer: GIN peer `peer`'s word (or every word) of this communicator is raised: the device threads that wait on its
+ // QPs were released with an error, so no round with it may publish (they would see a stale failure, and later waits on
+ // it fail at once).
+-static bool gdakiUaPeerRaised(void* comm, int peer) {
++// gin-remaining: per peer. Word [0] alone (every peer declined: then every gated peer's word is up anyway; degraded: the
++// device threads on QPs read their peer's word, not word [0]) does not stop a round with a peer whose word is down, but
++// only once every gate of this context carries its peer's word (gdakiTsPeerWords). Before that, and under
++// NCCL_GIN_TS_TEST_SPLIT (the gates keep the test pointer), the device threads on QPs read word [0], so word [0] counts
++// (review M2: else a wait on a healthy peer told failed by the degraded raise could see its operations re-posted).
++static bool gdakiTsPeerWords(struct gdakiRecHost* r);  // below (needs gdakiTs)
++static bool gdakiUaPeerRaised(struct gdakiRecHost* r, int peer) {
++  const bool peerWords = gdakiTsPeerWords(r);
+   std::lock_guard<std::mutex> lk(gdakiUaMu);
+   for (auto& x : gdakiUaReg)
+-    if (x.comm == comm) return x.why != 0 || (peer >= 0 && peer < x.n && x.peerWhy[peer] != 0);
++    if (x.comm == r->commKey)
++      return x.allWhy != 0 || (peer >= 0 && peer < x.n ? x.peerWhy[peer] != 0 || (!peerWords && x.why != 0) : x.why != 0);
+   return false;
+ }
+ 
+@@ -2485,6 +2917,7 @@ void ncclGinTsUserAbortFree(void* comm) {
+     std::lock_guard<std::mutex> lk(gdakiUaMu);
+     for (size_t i = 0; i < gdakiUaReg.size(); i++)
+       if (gdakiUaReg[i].comm == comm) {
++        if (gdakiUaReg[i].degradedAtMs != 0) gdakiUaDegradedPending.fetch_sub(1, std::memory_order_acq_rel);  // gin-remaining
+         w = gdakiUaReg[i].word;
+         gdakiUaReg.erase(gdakiUaReg.begin() + i);
+         break;
+@@ -2580,6 +3013,12 @@ struct gdakiTsPeer {
+   bool failedPending = false; // ... and this rank has not declined it yet (the helper loop does, at once)
+   gdakiCause failCause = gdakiCause::Unknown;  // the cause that FAIL carried (gdakiTsRemoteCause)
+   gdakiCause declCause = gdakiCause::Unknown;  // this rank's cause when it declined the peer (sent in FAIL, NACK 2)
++  // gin-remaining: the REQ of a higher rank read while this rank waited for an ACK (gdakiTsServeLower); the helper loop
++  // answers it once that round is over. A peer has at most one REQ outstanding (it waits for the answer).
++  bool deferredReq = false;
++  struct gdakiTsMsg deferred;
++  uint32_t deferredGen = 0;   // the connection generation it came on (a REQ of an older connection is dropped)
++  double deferredMs = 0;
+ };
+ 
+ // gin-peer: FAIL and NACK carry the sender's cause class in `pad` (1 + gdakiCause; 0 = none, an older peer). A peer that
+@@ -2605,7 +3044,8 @@ struct gdakiTsQp {        // host copy, per qp_idx
+   uint32_t handled = 0;   // highest record epoch + 2 the helper has taken (for the lost-record scan)
+   int lostScans = 0;      // consecutive scans that saw gate.reported ahead of `handled`
+   uint32_t rmsn0 = 0;     // responder MSN at the start of the current incarnation
+-  void* rescue = nullptr; // S2: device rescue area of this QP (rescueLaps x sq_wqe_num x 64 B)
++  void* rescue = nullptr; // S2: device rescue area of this QP (rescueLaps x sq_wqe_num x 64 B; gin-remaining: inside
++                          // gdakiTs::rescueBlock, never freed by itself)
+ };
+ 
+ struct gdakiTsFault {
+@@ -2695,6 +3135,13 @@ struct gdakiTs {
+   int copyStallMs = 0;                    // NCCL_GIN_TS_TEST_COPY_STALL
+   bool copyStallDone = false;
+   int badRepost = -1;                     // NCCL_GIN_TS_TEST_BAD_REPOST
++  // gin-remaining
++  void* rescueAlloc = nullptr;            // the rescue areas of every QP: one cudaMalloc (freed with ts) ...
++  void* rescueBlock = nullptr;            // ... aligned up to 4 KiB (gdakiTsQp::rescue points into it)
++  size_t rescueBlockSize = 0;
++  int serveWait = 1;                      // NCCL_GIN_TS_SERVE_WAIT: answer a lower rank's REQ while waiting for an ACK
++  bool inServe = false;                   // a nested round of gdakiTsServeLower runs (helper thread only)
++  std::atomic<int> cServed{0}, cDeferred{0};  // REQs answered inside an ACK wait / kept for after the round
+ };
+ 
+ static int64_t gdakiTsNowUs() {
+@@ -2720,13 +3167,24 @@ static bool gdakiTsToComm(struct gdakiTs* ts, F f) {
+ // Marks the helper busy for one round (watchdog input); clears it on every exit path. The heartbeat is
+ // refreshed first (release order: the watcher loads busySince with acquire, then the heartbeat), so the
+ // end of a long round is never mistaken for a helper that stopped looping.
++// gin-remaining: a round inside another round (a REQ answered while waiting for an ACK, gdakiTsServeLower) runs on the
++// outer round's clock: busySince keeps the outer start, so every bound of the nested round taken from what is left of the
++// round (gdakiTsRoundLeftMs) is clipped to the outer round's time, and the watchdog's round bound covers both together
++// (review M1: a nested round on its own clock could push the outer round past NCCL_GIN_TS_ROUND_MS once the outer start
++// came back). gdakiTsServeLower starts no nested round once too little of the outer round is left (gdakiTsCanNest). The
++// responder rounds the initiator runs itself at a crossing (yield, scope conflict) start a clock of their own, as before;
++// every round gives the previous start back when it ends (0 at the top level, as before).
+ struct gdakiTsBusy {
+   struct gdakiTs* ts;
+-  explicit gdakiTsBusy(struct gdakiTs* t) : ts(t) { ts->busySinceUs.store(gdakiTsNowUs(), std::memory_order_release); }
++  int64_t prev;
++  explicit gdakiTsBusy(struct gdakiTs* t) : ts(t) {
++    prev = ts->busySinceUs.load(std::memory_order_acquire);
++    if (prev == 0 || !ts->inServe) ts->busySinceUs.store(gdakiTsNowUs(), std::memory_order_release);
++  }
+   ~gdakiTsBusy() {
+     if (ts->dead.load(std::memory_order_acquire)) return;
+     ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
+-    ts->busySinceUs.store(0, std::memory_order_release);
++    ts->busySinceUs.store(prev, std::memory_order_release);
+   }
+ };
+ 
+@@ -2739,6 +3197,13 @@ static int gdakiTsRoundLeftMs(struct gdakiTs* ts, int wantMs) {
+   return (int)std::max<int64_t>(50, std::min<int64_t>(wantMs, left));
+ }
+ 
++// gin-remaining (review M1): a nested round starts only while the outer round has room for one, the responder's quiesce
++// bound plus a handshake bound (defaults: until 16.5 s into a 25 s round); otherwise a lower rank's REQ stays in its socket
++// until the outer round ends, as without this layer.
++static bool gdakiTsCanNest(struct gdakiTs* ts) {
++  const int need = ts->quiesceMs + ts->handshakeMs;
++  return gdakiTsRoundLeftMs(ts, need + 1) > need;
++}
+ 
+ static uint32_t gdakiTsDiag() {
+ #ifdef NCCL_GIN_TS_PRODUCTION
+@@ -2820,9 +3285,12 @@ static uint32_t gdakiTsShownScope(struct gdakiRecHost* r, int peer, uint32_t sco
+   return scope == GDAKI_TS_SCOPE_ALL ? gdakiTsAllMask(r, peer) : scope;
+ }
+ // The helper thread's scope for one round; every return path gives the walks every context back.
++// gin-remaining: gives back the scope it found (a nested round restores the outer round's scope; at the top level that
++// is every context, as before).
+ struct gdakiTsScopeGuard {
+-  explicit gdakiTsScopeGuard(uint32_t s) { gdakiTsScope = s; }
+-  ~gdakiTsScopeGuard() { gdakiTsScope = GDAKI_TS_SCOPE_ALL; }
++  uint32_t prev;
++  explicit gdakiTsScopeGuard(uint32_t s) : prev(gdakiTsScope) { gdakiTsScope = s; }
++  ~gdakiTsScopeGuard() { gdakiTsScope = prev; }
+ };
+ // A fault put back into the queue (gdakiTsInitiate). gin-pair-check: fullWhy != 0 makes its next round a full reset
+ // (1: the peer refused the narrowed scope; 2: a second scope conflict); fullWhy == 0 lets the next round decide its scope
+@@ -2994,6 +3462,7 @@ static void gdakiTsSurface(struct gdakiRecHost* r, const char* why) {
+ // surface the fault instead of letting it vanish with a stalled or dead helper.
+ static void gdakiTsWatchdog(struct gdakiRecHost* r) {
+   if (!gdakiTsActive(r)) return;
++  gdakiUaDegradedStep();  // gin-remaining: a degraded communicator's word [0], when its time has come
+   struct gdakiTs* ts = r->ts;
+   // gin-harden: a firmware-command phase of the helper longer than NCCL_GIN_TS_FW_MS. The command cannot be
+   // interrupted: release the device threads now (the user devComm's own word, a CPU store), surface the fault; the
+@@ -3814,7 +4283,14 @@ static inline bool gdakiTsWordDevFailed(uint64_t w) { return ((uint32_t)w & NCCL
+ // buffer (gdakiRecCopyBlocked).
+ static ncclResult_t gdakiTsZeroDev(struct gdakiRecHost* r, void* dst, size_t n, uint8_t byte) {
+   if (n > r->pinnedSize) return ncclInternalError;
++  if (gdakiLbOn(r) && gdakiLbFind(r->lb, (uintptr_t)dst, n) != nullptr) {  // gin-remaining: the NIC path
++    bool fallback = false;
++    memset(r->pinned, byte, n);
++    const ncclResult_t res = gdakiLbXfer(r, true, dst, n, &fallback);
++    if (res == ncclSuccess || !fallback) return res;  // else the stream, below (the path just went off)
++  }
+   if (gdakiRecCopyBlocked(r)) return ncclSystemError;
++  if (gdakiTsInHelper) r->nStreamCopies.fetch_add(1, std::memory_order_relaxed);  // gin-remaining
+   memset(r->pinned, byte, n);
+   gdakiRecFwMark(r);
+   CUDACHECK(cudaMemcpyAsync(dst, r->pinned, n, cudaMemcpyHostToDevice, r->stream));
+@@ -3922,6 +4398,12 @@ static void gdakiTsTestCopyStall(struct gdakiRecHost* r) {
+   struct gdakiTs* ts = r->ts;
+   if (ts->copyStallMs <= 0 || ts->copyStallDone) return;
+   ts->copyStallDone = true;
++  if (gdakiLbOn(r)) {  // gin-remaining: with the NIC path the copies do not use the stream: hold its completions instead
++    WARN("GIN/TS: TEST copy stall rank=%d: the NIC copy completions are held %d ms mono_ms=%.3f", r->ctx->rank,
++         ts->copyStallMs, gdakiQ4MonoMs());
++    r->lb->stallUntilMs = gdakiQ4MonoMs() + ts->copyStallMs;
++    return;
++  }
+   WARN("GIN/TS: TEST copy stall rank=%d: the recovery stream is held %d ms by a host callback mono_ms=%.3f", r->ctx->rank,
+        ts->copyStallMs, gdakiQ4MonoMs());
+   if (cudaLaunchHostFunc(r->stream, gdakiTsTestStallFn, (void*)(intptr_t)ts->copyStallMs) != cudaSuccess)
+@@ -4081,7 +4563,7 @@ static ncclResult_t gdakiTsRepostPlanAll(struct gdakiRecHost* r, int peer, const
+     *why = "the communicator is being destroyed";
+     return ncclSystemError;
+   }
+-  if (gdakiUaPeerRaised(r->commKey, peer)) {  // gin-peer (a firmware overrun charged to another phase of this peer)
++  if (gdakiUaPeerRaised(r, peer)) {  // gin-peer (a firmware overrun charged to another phase of this peer)
+     *why = "the device waits on the peer were already released";
+     return ncclSystemError;
+   }
+@@ -4223,7 +4705,7 @@ static ncclResult_t gdakiTsRepostApply(struct gdakiRecHost* r, int peer, std::ve
+   // gin-peer: a firmware overrun in this round's last phase (the baseline QUERY_QP after the Commit), or one charged to
+   // another round number while this peer's device waits were released, declines here, before anything is published
+   if (gdakiTsFwCheck(r, why)) return ncclSystemError;
+-  if (gdakiUaPeerRaised(r->commKey, peer)) {
++  if (gdakiUaPeerRaised(r, peer)) {
+     *why = "the device waits on the peer were already released";
+     return ncclSystemError;
+   }
+@@ -4445,7 +4927,7 @@ static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bo
+     ts->nDeclined++;
+     ts->cDeclined.fetch_add(1, std::memory_order_relaxed);
+   }
+-  if (r->state == 1 && r->preparedPeer == peer) (void)ncclGinRecoverAbort((ncclComm_t)r->commKey, peer);
++  if (gdakiRecPrepared(r, peer) == 1) (void)ncclGinRecoverAbort((ncclComm_t)r->commKey, peer);  // gin-remaining: per peer
+   {
+     std::lock_guard<std::mutex> op(r->opMu);  // QP state changes are serialized (see gdakiTsQuiesce)
+     gdakiRecAllToErr(r, peer);
+@@ -4820,6 +5302,119 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
+ 
+ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiTsMsg& req);  // gin-pair-reset: below
+ 
++// gin-remaining (the circular wait measured by gin-multirank): while an initiator waits for its ACK it also reads the other
++// peers' sockets. A REQ from a LOWER rank is answered at once, inside the wait: a nested responder round on the QPs to that
++// rank, which are disjoint from the QPs of the waiting round (its own prepared state, scope, round clock and firmware
++// round number are kept and given back). A REQ from a HIGHER rank is kept (gdakiTsPeer::deferredReq) and answered by the
++// helper loop once the round is over. FAIL and BYE are handled as the idle loop handles them; anything else is ignored, as
++// there. Why this ends every cycle: in a cycle of initiators that wait for one another, the lowest rank sends its REQ to a
++// higher rank, which answers it inside its own wait; a nested round depends only on the lower rank it answers, which has
++// its ACK and needs nobody else, so the dependencies of waits that remain go from higher to lower ranks and cannot close a
++// cycle. A nested round answers no further REQ (it waits for DONE on its initiator's socket only), and no initiator starts
++// inside one. Returns true if a nested round ran (the caller then looks at its own socket first).
++static bool gdakiTsServeLower(struct gdakiRecHost* r, int waitPeer, uint64_t waitRound) {
++  struct gdakiTs* ts = r->ts;
++  const int me = r->ctx->rank;
++  bool nested = false;
++  const bool canNest = gdakiTsCanNest(ts);  // review M1: else lower ranks' sockets are left unread
++  for (int p = 0; p < (int)ts->peers.size(); p++) {
++    if (p == waitPeer || p == me || (p < me && !canNest)) continue;
++    struct gdakiTsPeer& pe = ts->peers[p];
++    if (!pe.gated || pe.fd < 0 || pe.gone || pe.deferredReq) continue;
++    if (pe.have == 0) {  // nothing buffered: read only when something arrived
++      char c;
++      const ssize_t k = recv(pe.fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
++      if (k < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) continue;
++    }
++    struct gdakiTsMsg m;
++    const int got = gdakiTsPump(pe, &m);
++    if (got == 0) continue;
++    if (got < 0) {  // as the idle loop: unknown (closed, the reconnect takes over) or dead (the helper loop declines it)
++      if (!pe.gone && pe.fd >= 0) (void)gdakiTsSocketLost(r, p);
++      continue;
++    }
++    const uint32_t savedScope = gdakiTsScope;  // a decline below walks every context; the waiting round's scope comes back
++    if (m.type == GDAKI_TS_REQ && m.from == p) {
++      if (p < me) {
++        const double t0 = gdakiQ4MonoMs();
++        ts->cServed.fetch_add(1, std::memory_order_relaxed);
++        GIN_TS_NOTE("GIN/TS: rank %d: answering REQ round %lu from rank %d while waiting for the ACK of round %lu from rank "
++                    "%d (a lower rank is answered at once) mono_ms=%.3f", me, (unsigned long)m.round, p,
++                    (unsigned long)waitRound, waitPeer, t0);
++        ts->inServe = true;  // the nested round runs on the waiting round's clock (gdakiTsBusy)
++        gdakiTsRespond(r, p, m);
++        ts->inServe = false;
++        // the waiting round's later firmware phases get a number of their own: an overrun charged to the nested round
++        // never declines it, and its own number is never reused
++        r->fwRound.fetch_add(1, std::memory_order_acq_rel);
++        GIN_TS_NOTE("GIN/TS: rank %d: back to round %lu with rank %d after answering rank %d (%.1f ms) mono_ms=%.3f", me,
++                    (unsigned long)waitRound, waitPeer, p, gdakiQ4MonoMs() - t0, gdakiQ4MonoMs());
++        nested = true;
++      } else {
++        pe.deferredReq = true;
++        pe.deferred = m;
++        pe.deferredGen = pe.gen;
++        pe.deferredMs = gdakiQ4MonoMs();
++        ts->cDeferred.fetch_add(1, std::memory_order_relaxed);
++        GIN_TS_NOTE("GIN/TS: rank %d: REQ round %lu from rank %d kept until round %lu with rank %d ends (a higher rank waits) "
++                    "mono_ms=%.3f", me, (unsigned long)m.round, p, (unsigned long)waitRound, waitPeer, pe.deferredMs);
++      }
++    } else if (m.type == GDAKI_TS_FAIL) {
++      if (!pe.declined) {
++        gdakiTsDecline(r, p, "the peer declined", false, m.arg, gdakiTsRemoteCause(m));
++        // review L1: the decline's firmware phases ran under the waiting round's number; a new number, as after a
++        // nested round, so an overrun in them never declines the waiting round
++        r->fwRound.fetch_add(1, std::memory_order_acq_rel);
++      }
++    } else if (m.type == GDAKI_TS_BYE) {
++      pe.left = true;
++      GIN_TS_NOTE("GIN/TS: rank %d: rank %d left the communicator (BYE) mono_ms=%.3f", me, p, gdakiQ4MonoMs());
++    } else {
++      INFO(NCCL_NET, "GIN/TS: ignoring %s from rank %d while waiting for an ACK", gdakiTsMsgName(m.type), p);
++    }
++    gdakiTsScope = savedScope;
++  }
++  return nested;
++}
++
++// gin-remaining (review H1): a kept REQ of `p` is dropped when a round with `p` starts or runs: our own round as initiator
++// (we are the lower rank, so `p` yields to it at the crossing, or answers it if its own round already ended), or a newer
++// REQ of `p` answered. Answering the kept one afterwards would undo the pair just recovered.
++static void gdakiTsDropKept(struct gdakiRecHost* r, int p, const char* why) {
++  struct gdakiTsPeer& pe = r->ts->peers[p];
++  if (!pe.deferredReq) return;
++  pe.deferredReq = false;
++  GIN_TS_NOTE("GIN/TS: rank %d: the kept REQ round %lu from rank %d is dropped (%s) mono_ms=%.3f", r->ctx->rank,
++              (unsigned long)pe.deferred.round, p, why, gdakiQ4MonoMs());
++}
++
++// gin-remaining: gdakiTsRecv for the initiator's ACK wait (one record from `peer`: 1, 0 on timeout, -1 on a socket
++// failure), serving the other peers meanwhile (gdakiTsServeLower). NCCL_GIN_TS_SERVE_WAIT=0: gdakiTsRecv (as before).
++static int gdakiTsRecvServing(struct gdakiRecHost* r, int peer, uint64_t round, struct gdakiTsMsg* out, int timeoutMs) {
++  struct gdakiTs* ts = r->ts;
++  if (!ts->serveWait) return gdakiTsRecv(ts->peers[peer], out, timeoutMs, &ts->stop);
++  const double deadline = gdakiQ4MonoMs() + timeoutMs;
++  std::vector<struct pollfd> pf;
++  while (true) {
++    struct gdakiTsPeer& pe = ts->peers[peer];
++    const int got = gdakiTsPump(pe, out);
++    if (got != 0) return got;
++    if (gdakiTsServeLower(r, peer, round)) continue;  // a nested round ran: this socket first again
++    const int rem = (int)(deadline - gdakiQ4MonoMs());
++    if (rem <= 0 || ts->stop.load(std::memory_order_acquire)) return 0;
++    pf.clear();
++    pf.push_back({pe.fd, POLLIN, 0});
++    const bool canNest = gdakiTsCanNest(ts);
++    for (int p = 0; p < (int)ts->peers.size(); p++) {
++      const struct gdakiTsPeer& o = ts->peers[p];
++      if (p == peer || p == r->ctx->rank || !o.gated || o.fd < 0 || o.gone || o.deferredReq) continue;
++      if (p < r->ctx->rank && !canNest) continue;  // left unread (gdakiTsServeLower)
++      pf.push_back({o.fd, POLLIN, 0});
++    }
++    (void)poll(pf.data(), pf.size(), std::min(rem, 5));
++  }
++}
++
+ // Initiator: the device reported a fault on a QP to rec.peer.
+ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f) {
+   struct gdakiTs* ts = r->ts;
+@@ -4914,6 +5509,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+   gdakiTsBusy busy(ts);
+   const uint64_t round = ++ts->round;
+   r->fwRound.fetch_add(1, std::memory_order_acq_rel);  // gin-peer: a new round for the firmware watchdog
++  gdakiTsDropKept(r, peer, "a round of this rank with that rank starts; the higher rank yields to it or answers it");
+   ts->nRounds++;
+   ts->cRounds.fetch_add(1, std::memory_order_relaxed);
+   // gin-pair-reset: the scope of this round (EXPERIMENT.md 9, item 3), before anything is paused.
+@@ -4993,7 +5589,8 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+                                                                         (int)ncclParamGinRecoveryDrainMs() + ts->pathWaitMs);
+   while (true) {
+     const int rem = (int)(deadline - gdakiQ4MonoMs());
+-    const int got = rem > 0 ? gdakiTsRecv(pe, &a, rem, &ts->stop) : 0;
++    // gin-remaining: other peers' REQs are served (a lower rank's) or kept (a higher rank's) meanwhile
++    const int got = rem > 0 ? gdakiTsRecvServing(r, peer, round, &a, rem) : 0;
+     if (got < 0) {
+       char w[96];
+       snprintf(w, sizeof(w), "peer closed the socket during the handshake (%s)",
+@@ -5155,8 +5752,9 @@ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiT
+     m.pad = gdakiTsNackPad(reason, pe);   // gin-peer: the cause on this side
+     (void)gdakiTsSend(pe.fd, &m, 200);
+   };
++  gdakiTsDropKept(r, peer, "a newer REQ of that rank is answered");  // gin-remaining (review H1)
+   if (pe.declined) return nack(2);
+-  if (gdakiUaPeerRaised(r->commKey, peer)) {  // gin-peer: the device waits on this peer were already released
++  if (gdakiUaPeerRaised(r, peer)) {  // gin-peer: the device waits on this peer were already released
+     nack(16);
+     return gdakiTsDecline(r, peer, "the device waits on the peer were already released", false, req.arg, gdakiCause::Local);
+   }
+@@ -5230,6 +5828,12 @@ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiT
+ // ever goes from 0 to (word | 1): the word lives as long as the communicator.
+ // gin-peer: the gate of a QP to peer p gets peer p's word (word [1 + p] of ncclGinTsUserAbortWord), which parked posters,
+ // parked waiters and pollers of that QP read (gin_gdaki.h tsPosterAbortWord). A failed write is retried on the next loop.
++// gin-remaining (review M2): every gate of this context carries its peer's word, so the device threads on its QPs read that
++// word, not word [0] (helper thread only: posterWordDone is the helper's).
++static bool gdakiTsPeerWords(struct gdakiRecHost* r) {
++  return r->ts != nullptr && r->posterWordDone && r->ts->testDev == nullptr;
++}
++
+ static void gdakiTsPosterWordStep(struct gdakiRecHost* r) {
+   struct gdakiTs* ts = r->ts;
+   if (r->posterWordDone || ts->testDev != nullptr) return;
+@@ -5412,6 +6016,44 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+     gdakiTsTestListenGap(r);  // gin-harden (test switch)
+     gdakiTsPosterWordStep(r);  // gin-harden
+     gdakiTsReconnectStep(r);  // gin-reconnect
++    // gin-remaining: the REQs of higher ranks kept during a round (gdakiTsServeLower), in rank order; one that came on an
++    // older connection of that peer is dropped (that round was cancelled by the socket loss and is retried). Review L2:
++    // what that peer sent after it is read first: a FAIL or a BYE ends it (handled as the idle loop does), a newer REQ
++    // replaces it.
++    for (int p = 0; p < (int)ts->peers.size(); p++) {
++      struct gdakiTsPeer& pe = ts->peers[p];
++      if (!pe.deferredReq) continue;
++      if (pe.fd < 0 || pe.gone || pe.gen != pe.deferredGen) {
++        gdakiTsDropKept(r, p, "its connection is gone");
++        continue;
++      }
++      const struct gdakiTsMsg m = pe.deferred;
++      struct gdakiTsMsg q;
++      int got;
++      while (pe.deferredReq && (got = gdakiTsPump(pe, &q)) != 0) {
++        if (got < 0) {
++          gdakiTsDropKept(r, p, "its connection is gone");
++          if (!pe.gone && pe.fd >= 0) (void)gdakiTsSocketLost(r, p);
++        } else if (q.type == GDAKI_TS_REQ && q.from == p) {
++          gdakiTsDropKept(r, p, "a newer REQ of that rank follows it");
++          gdakiTsRespond(r, p, q);  // as the idle loop answers it
++        } else if (q.type == GDAKI_TS_FAIL) {
++          gdakiTsDropKept(r, p, "that rank declined");
++          if (!pe.declined) gdakiTsDecline(r, p, "the peer declined", false, q.arg, gdakiTsRemoteCause(q));
++        } else if (q.type == GDAKI_TS_BYE) {
++          gdakiTsDropKept(r, p, "that rank left");
++          pe.left = true;
++          GIN_TS_NOTE("GIN/TS: rank %d: rank %d left the communicator (BYE) mono_ms=%.3f", g->rank, p, gdakiQ4MonoMs());
++        } else {
++          INFO(NCCL_NET, "GIN/TS: ignoring %s from rank %d after its kept REQ", gdakiTsMsgName(q.type), p);
++        }
++      }
++      if (!pe.deferredReq) continue;
++      pe.deferredReq = false;
++      GIN_TS_NOTE("GIN/TS: rank %d: answering the kept REQ round %lu from rank %d (kept %.1f ms) mono_ms=%.3f", g->rank,
++                  (unsigned long)m.round, p, gdakiQ4MonoMs() - pe.deferredMs, gdakiQ4MonoMs());
++      gdakiTsRespond(r, p, m);
++    }
+     pfds.clear();
+     who.clear();
+     for (int p = 0; p < (int)ts->peers.size(); p++) {
+@@ -5820,6 +6462,276 @@ static void gdakiTsTestKnobs(struct gdakiRecHost* r) {
+ #endif
+ }
+ 
++// gin-remaining: set up the NIC copy path of this context (struct gdakiLb, above gdakiRecD2H). Called by gdakiTsStart
++// once the rescue block exists and before any gate is written, while no kernel can use these QPs yet (context creation).
++// Its own PD; RoCE: the loopback GID candidates in order (a link-local entry of the GIN GID's RoCE type, then the GIN
++// context's own GID), the first whose loopback READ completes is kept. Registers every GPU allocation a round touches: the
++// exported device QP arrays (with the gates), the send and completion rings, the doorbell records, the rescue block and
++// the get tickets. Self-test (review L3): a NIC write of a gate's test counter and of the first 64 bytes of the rescue
++// block, each read back by a stream copy and restored; for every registered allocation, the bytes of its first range (at
++// most 64) read over the NIC and by a stream copy and compared, then written back unchanged over the NIC and read again
++// by a stream copy (every MR is read and written once). On any failure the path stays off (stream copies, WARN).
++static void gdakiLbSetup(struct gdakiRecHost* r) {
++  struct gdakiTs* ts = r->ts;
++  struct gdaki_context* g = r->ctx;
++  const char* e = getenv("NCCL_GIN_TS_COPY_PATH");
++  if (e != nullptr && strcmp(e, "stream") == 0) return;  // the stream path, as before this layer
++  if (e != nullptr && *e && strcmp(e, "nic") != 0)
++    WARN("GIN/TS: rank %d: NCCL_GIN_TS_COPY_PATH=%s is neither nic nor stream; using nic", g->rank, e);
++  const double t0 = gdakiQ4MonoMs();
++  struct gdakiLb* lb = new gdakiLb();
++  r->lb = lb;
++  struct ibv_context* ictx = g->collComm ? g->collComm->ib.context : nullptr;
++  bool ok = true;
++  auto fail = [&](const char* what) {
++    if (lb->why[0] == '\0') snprintf(lb->why, sizeof(lb->why), "%s", what);
++    ok = false;
++  };
++  if (ictx == nullptr) fail("no ibv context");
++  if (ok && wrap_ibv_alloc_pd(&lb->pd, ictx) != ncclSuccess) fail("cannot allocate the loopback PD");
++  if (ok && wrap_ibv_create_cq(&lb->cq, ictx, 64, nullptr, nullptr, 0) != ncclSuccess) fail("cannot create the loopback CQ");
++  if (ok) {
++    struct ibv_qp_init_attr ia;
++    memset(&ia, 0, sizeof(ia));
++    ia.send_cq = lb->cq;
++    ia.recv_cq = lb->cq;
++    ia.qp_type = IBV_QPT_RC;
++    ia.cap.max_send_wr = 16;
++    ia.cap.max_recv_wr = 1;
++    ia.cap.max_send_sge = 1;
++    ia.cap.max_recv_sge = 1;
++    if (wrap_ibv_create_qp(&lb->qa, lb->pd, &ia) != ncclSuccess || wrap_ibv_create_qp(&lb->qb, lb->pd, &ia) != ncclSuccess)
++      fail("cannot create the loopback QPs");
++  }
++  if (ok) {
++    lb->stage = wrap_direct_ibv_reg_mr(lb->pd, r->pinned, r->pinnedSize, IBV_ACCESS_LOCAL_WRITE);
++    if (posix_memalign((void**)&lb->flush, 64, 64) != 0) lb->flush = nullptr;
++    if (lb->flush) {
++      memset(lb->flush, 0, 64);
++      lb->flushMr = wrap_direct_ibv_reg_mr(lb->pd, lb->flush, 64, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ);
++    }
++    if (lb->stage == nullptr || lb->flushMr == nullptr) fail("cannot register the staging buffer");
++  }
++  const bool roce = g->port_attr.link_layer == IBV_LINK_LAYER_ETHERNET;
++  auto lbConnect = [&](struct ibv_qp* q, uint32_t dest, int gidIndex, const union ibv_gid& gid) -> bool {
++    struct ibv_qp_attr a;
++    memset(&a, 0, sizeof(a));
++    a.qp_state = IBV_QPS_RESET;  // a candidate before may have left it anywhere
++    if (wrap_ibv_modify_qp(q, &a, IBV_QP_STATE) != ncclSuccess) return false;
++    memset(&a, 0, sizeof(a));
++    a.qp_state = IBV_QPS_INIT;
++    a.pkey_index = (uint16_t)g->pkey_index;
++    a.port_num = g->port_num;
++    a.qp_access_flags = IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE;
++    if (wrap_ibv_modify_qp(q, &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) != ncclSuccess)
++      return false;
++    memset(&a, 0, sizeof(a));
++    a.qp_state = IBV_QPS_RTR;
++    a.path_mtu = g->port_attr.active_mtu;
++    a.dest_qp_num = dest;
++    a.rq_psn = 0;
++    a.max_dest_rd_atomic = 1;
++    a.min_rnr_timer = 12;
++    a.ah_attr.port_num = g->port_num;
++    if (roce) {  // RoCE: to this port's own GID (NIC loopback)
++      a.ah_attr.is_global = 1;
++      a.ah_attr.grh.dgid = gid;
++      a.ah_attr.grh.sgid_index = (uint8_t)gidIndex;
++      a.ah_attr.grh.hop_limit = 255;
++    } else {
++      a.ah_attr.dlid = g->port_attr.lid;
++    }
++    if (wrap_ibv_modify_qp(q, &a, IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
++                                    IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER) != ncclSuccess)
++      return false;
++    memset(&a, 0, sizeof(a));
++    a.qp_state = IBV_QPS_RTS;
++    a.timeout = 14;
++    a.retry_cnt = 7;
++    a.rnr_retry = 7;
++    a.sq_psn = 0;
++    a.max_rd_atomic = 1;
++    return wrap_ibv_modify_qp(q, &a, IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN |
++                                       IBV_QP_MAX_QP_RD_ATOMIC) == ncclSuccess;
++  };
++  // one 8-byte loopback READ (host memory both ends), bounded by 2 s (RoCE retries end in about 0.5 s)
++  auto ping = [&]() -> bool {
++    struct ibv_wc wc[4];
++    int n = 0;
++    while (wrap_ibv_poll_cq(lb->cq, 4, wc, &n) == ncclSuccess && n > 0) {}  // what an earlier candidate left
++    lb->flush[1] = 0x6c6f6f706261636bull;
++    struct ibv_sge sg;
++    struct ibv_send_wr wr, *bad = nullptr;
++    memset(&wr, 0, sizeof(wr));
++    sg.addr = (uint64_t)(uintptr_t)r->pinned;
++    sg.length = 8;
++    sg.lkey = lb->stage->lkey;
++    wr.wr_id = 0x70696e67ull;
++    wr.sg_list = &sg;
++    wr.num_sge = 1;
++    wr.opcode = IBV_WR_RDMA_READ;
++    wr.send_flags = IBV_SEND_SIGNALED;
++    wr.wr.rdma.remote_addr = (uint64_t)(uintptr_t)&lb->flush[1];
++    wr.wr.rdma.rkey = lb->flushMr->rkey;
++    memset(r->pinned, 0, 8);
++    if (wrap_ibv_post_send(lb->qa, &wr, &bad) != ncclSuccess) return false;
++    const double p0 = gdakiQ4MonoMs();
++    while (gdakiQ4MonoMs() - p0 < 2000.0) {
++      n = 0;
++      if (wrap_ibv_poll_cq(lb->cq, 4, wc, &n) != ncclSuccess) return false;
++      for (int k = 0; k < n; k++)
++        if (wc[k].wr_id == wr.wr_id) return wc[k].status == IBV_WC_SUCCESS && memcmp(r->pinned, &lb->flush[1], 8) == 0;
++      std::this_thread::sleep_for(std::chrono::microseconds(20));
++    }
++    return false;
++  };
++  if (ok) {
++    int cand[2];
++    union ibv_gid cgid[2];
++    const char* ckind[2];
++    int nc = 0;
++    if (roce) {
++      const int n = std::max(1, (int)g->port_attr.gid_tbl_len);
++      for (int k = 0; k < n && nc == 0 && ts->gidType[0] != '\0'; k++) {
++        uint8_t gid[16];
++        char type[32];
++        if (!gdakiTsSysfsGid(g->ib_dev_name, g->port_num, k, gid, type, sizeof(type))) continue;
++        if (gid[0] != 0xfe || (gid[1] & 0xc0) != 0x80 || strcmp(type, ts->gidType) != 0) continue;
++        cand[nc] = k;
++        memcpy(cgid[nc].raw, gid, 16);
++        ckind[nc++] = "link-local";
++      }
++      union ibv_gid own;
++      if (wrap_ibv_query_gid(ictx, g->port_num, g->gid_index, &own) == ncclSuccess &&
++          (nc == 0 || cand[0] != g->gid_index)) {  // review nit: the GIN GID of this port (not port 1)
++        cand[nc] = g->gid_index;
++        cgid[nc] = own;
++        ckind[nc++] = "gin";
++      }
++    } else {
++      cand[0] = -1;
++      memset(&cgid[0], 0, sizeof(cgid[0]));
++      ckind[nc++] = "lid";
++    }
++    bool up = false;
++    for (int c = 0; c < nc && !up; c++) {
++      if (lbConnect(lb->qa, lb->qb->qp_num, cand[c], cgid[c]) && lbConnect(lb->qb, lb->qa->qp_num, cand[c], cgid[c]) &&
++          ping()) {
++        up = true;
++        lb->gidIndex = cand[c];
++        lb->gidKind = ckind[c];
++      } else {
++        INFO(NCCL_NET, "GIN/TS: rank %d: loopback GID candidate %d (%s) failed", g->rank, cand[c], ckind[c]);
++      }
++    }
++    if (!up) fail(nc == 0 ? "no loopback GID" : "no loopback GID candidate passed the loopback READ");
++    else {  // the ping's completion was taken; nothing is outstanding
++      struct ibv_wc wc[4];
++      int n = 0;
++      while (wrap_ibv_poll_cq(lb->cq, 4, wc, &n) == ncclSuccess && n > 0) {}
++    }
++  }
++  // every GPU allocation a round reads or writes
++  for (int p = 0; ok && p < (int)ts->peers.size(); p++) {
++    if (!ts->peers[p].gated) continue;
++    gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
++      if (!ok) return;
++      struct doca_gpu_verbs_qp* v = q->qp_gverbs;
++      const struct doca_gpu_dev_verbs_qp* c = v->qp_cpu;  // the host shadow holds the device addresses
++      if (gdakiLbAddRange(lb, v->qp_gpu, sizeof(struct doca_gpu_dev_verbs_qp), "device QP") != ncclSuccess ||
++          gdakiLbAddRange(lb, c->sq_wqe_daddr, (size_t)c->sq_wqe_num * 64, "send ring") != ncclSuccess ||
++          gdakiLbAddRange(lb, c->cq_sq.cqe_daddr, (size_t)c->cq_sq.cqe_num * DOCA_GPUNETIO_VERBS_CQE_SIZE,
++                          "completion ring") != ncclSuccess ||
++          gdakiLbAddRange(lb, c->sq_dbrec, sizeof(uint32_t), "doorbell record") != ncclSuccess)
++        ok = false;
++      (void)rq;
++    });
++  }
++  const size_t nTickets = (size_t)g->nContexts * (size_t)r->nranks * sizeof(uint64_t);
++  if (ok && (gdakiLbAddRange(lb, ts->rescueBlock, ts->rescueBlockSize, "rescue areas") != ncclSuccess ||
++             gdakiLbAddRange(lb, g->last_issued_get, nTickets, "get tickets") != ncclSuccess ||
++             gdakiLbAddRange(lb, g->last_visible_get, nTickets, "get tickets") != ncclSuccess))
++    ok = false;
++  // self-test (the stream copies are allowed here: context creation, no round)
++  if (ok) {
++    lb->ok = true;
++    auto check = [&](const char* what) {
++      if (ok && !lb->warned) snprintf(lb->why, sizeof(lb->why), "self-test failed: %s", what);
++      ok = false;
++      lb->ok = false;
++    };
++    struct doca_gpu_verbs_qp* v0 = nullptr;
++    for (int p = 0; v0 == nullptr && p < (int)ts->peers.size(); p++)
++      if (ts->peers[p].gated)
++        gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
++          if (v0 == nullptr) v0 = q->qp_gverbs;
++        });
++    if (v0 != nullptr) {  // a write of a gate's test counter (written again by the gate setup that follows)
++      uint8_t* tp = gdakiTsGateDev(v0) + offsetof(struct ncclGinTsGate, testPuts);
++      const uint32_t pat = 0x5a5a1234u, zero = 0;
++      uint32_t back = 0;
++      memcpy(r->pinned, &pat, 4);
++      if (gdakiLbXfer(r, true, tp, 4) != ncclSuccess || gdakiRecD2HStream(r, &back, tp, 4) != ncclSuccess || back != pat)
++        check("gate write");
++      memcpy(r->pinned, &zero, 4);
++      if (ok && (gdakiLbXfer(r, true, tp, 4) != ncclSuccess || gdakiRecD2HStream(r, &back, tp, 4) != ncclSuccess || back != 0))
++        check("gate write back");
++    }
++    if (ok && ts->rescueBlock != nullptr && ts->rescueBlockSize >= 64) {  // 64 bytes of the rescue block, then zeros again
++      uint8_t pat[64], back[64];
++      for (int k = 0; k < 64; k++) pat[k] = (uint8_t)(0xa5 ^ k);
++      memcpy(r->pinned, pat, 64);
++      if (gdakiLbXfer(r, true, ts->rescueBlock, 64) != ncclSuccess ||
++          gdakiRecD2HStream(r, back, ts->rescueBlock, 64) != ncclSuccess || memcmp(back, pat, 64) != 0)
++        check("rescue write");
++      const uint8_t zeros[64] = {0};
++      memset(r->pinned, 0, 64);
++      if (ok && (gdakiLbXfer(r, true, ts->rescueBlock, 64) != ncclSuccess ||
++                 gdakiRecD2HStream(r, back, ts->rescueBlock, 64) != ncclSuccess || memcmp(back, zeros, 64) != 0))
++        check("rescue write back");
++    }
++    for (size_t k = 0; ok && k < lb->mrs.size(); k++) {  // every registered allocation: read, then written back unchanged
++      uint8_t a[64], b[64], c[64];
++      const void* s = (const void*)lb->mrs[k].sample;
++      const size_t len = lb->mrs[k].sampleLen;
++      if (gdakiRecD2HStream(r, a, s, len) != ncclSuccess || gdakiLbXfer(r, false, s, len) != ncclSuccess) {
++        check("read");
++        break;
++      }
++      memcpy(b, r->pinned, len);
++      if (memcmp(a, b, len) != 0) {
++        check("read mismatch");
++        break;
++      }
++      memcpy(r->pinned, b, len);
++      if (gdakiLbXfer(r, true, s, len) != ncclSuccess || gdakiRecD2HStream(r, c, s, len) != ncclSuccess ||
++          memcmp(a, c, len) != 0) {
++        check("write back");
++        break;
++      }
++      lb->testBytes += len;
++      for (size_t i = 0; i < len; i++) lb->testNonzero += a[i] != 0;
++    }
++  }
++  if (!ok) {
++    lb->ok = false;
++    struct ibv_qp_attr a;  // a request that missed its bound may still be queued: nothing lands after this
++    memset(&a, 0, sizeof(a));
++    a.qp_state = IBV_QPS_ERR;
++    if (lb->qa) (void)wrap_ibv_modify_qp(lb->qa, &a, IBV_QP_STATE);
++    if (lb->qb) (void)wrap_ibv_modify_qp(lb->qb, &a, IBV_QP_STATE);
++    if (!lb->warned)
++      WARN("GIN/TS: rank %d: the NIC copy path is off (%s); device-state copies use the private stream", g->rank, lb->why);
++    return;
++  }
++  lb->nOps.store(0);
++  lb->nBytes.store(0);
++  GIN_TS_NOTE("GIN/TS: rank %d: NIC copy path on: loopback qpn %#x->%#x, own PD, gid_index %d (%s), %zu GPU MR(s) (dmabuf "
++              "%d, peermem %d), self-test ok (%zu B read and written back, %zu nonzero), setup_ms=%.1f mono_ms=%.3f",
++              g->rank, lb->qa->qp_num, lb->qb->qp_num, lb->gidIndex, lb->gidKind, lb->mrs.size(), lb->nDmabuf,
++              lb->nPeermem, lb->testBytes, lb->testNonzero, gdakiQ4MonoMs() - t0, gdakiQ4MonoMs());
++}
++
+ static void gdakiTsStart(struct gdakiRecHost* r) {
+   if (r == nullptr || r->ts == nullptr) return;
+   struct gdakiTs* ts = r->ts;
+@@ -5856,6 +6768,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+   ts->reconnectMs = (int)std::max<int64_t>(0, ncclParamGinTsReconnectMs());
+   ts->pairReset = ncclParamGinTsPairReset() != 0 ? 1 : 0;  // gin-pair-reset
+   ts->pairCheck = ncclParamGinTsPairCheck() != 0 ? 1 : 0;  // gin-pair-check
++  ts->serveWait = ncclParamGinTsServeWait() != 0 ? 1 : 0;  // gin-remaining
+   {
+     const int maxRc = std::max(0, ts->holdMs - ts->handshakeMs - 1000);
+     if (ts->reconnectMs > maxRc) {
+@@ -5864,6 +6777,39 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+       ts->reconnectMs = maxRc;
+     }
+   }
++  // S2: the rescue areas (see struct ncclGinTsGate), zeroed before any kernel can use the QPs.
++  // gin-remaining: one block for every QP of the context (one registration for the NIC copy path), each area at a 4 KiB
++  // boundary, the block's start too (cudaMalloc + 4 KiB, aligned up: the page-aligned part covers every area)
++  if (ts->rescueLaps != 0) {
++    size_t total = 0;
++    for (int p = 0; p < (int)ts->peers.size(); p++) {
++      if (!ts->peers[p].gated) continue;
++      gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
++        total += (((size_t)ts->rescueLaps * q->qp_gverbs->qp_cpu->sq_wqe_num * 64) + 4095) & ~(size_t)4095;
++      });
++    }
++    if (total != 0) {
++      if (cudaMalloc(&ts->rescueAlloc, total + 4096) != cudaSuccess) {
++        ts->rescueAlloc = nullptr;
++        ok = false;
++      } else {
++        ts->rescueBlock = (void*)(((uintptr_t)ts->rescueAlloc + 4095) & ~(uintptr_t)4095);
++        ts->rescueBlockSize = total;
++        if (cudaMemsetAsync(ts->rescueBlock, 0, total, r->stream) != cudaSuccess ||
++            cudaStreamSynchronize(r->stream) != cudaSuccess)
++          ok = false;
++        size_t off = 0;
++        for (int p = 0; p < (int)ts->peers.size(); p++) {
++          if (!ts->peers[p].gated) continue;
++          gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
++            ts->qs[rq.qpIdx].rescue = (uint8_t*)ts->rescueBlock + off;
++            off += (((size_t)ts->rescueLaps * q->qp_gverbs->qp_cpu->sq_wqe_num * 64) + 4095) & ~(size_t)4095;
++          });
++        }
++      }
++    }
++  }
++  if (ok) gdakiLbSetup(r);  // gin-remaining: the NIC copy path (the gate writes below already use it)
+   for (int p = 0; p < (int)ts->peers.size() && ok; p++) {
+     if (!ts->peers[p].gated) continue;
+     gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+@@ -5873,16 +6819,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+                    (ts->testDev ? NCCL_GIN_TS_F_TEST_SPLIT : 0u);
+       gate.waitMs = (uint32_t)ts->holdMs;
+       gate.test = (uint64_t)(uintptr_t)ts->testDev;
+-      // S2: the rescue area (see struct ncclGinTsGate), zeroed before any kernel can use the QP
+       struct gdakiTsQp& sq = ts->qs[rq.qpIdx];
+-      if (ts->rescueLaps != 0 && sq.rescue == nullptr) {
+-        const size_t sz = (size_t)ts->rescueLaps * q->qp_gverbs->qp_cpu->sq_wqe_num * 64;
+-        if (cudaMalloc(&sq.rescue, sz) != cudaSuccess || cudaMemsetAsync(sq.rescue, 0, sz, r->stream) != cudaSuccess ||
+-            cudaStreamSynchronize(r->stream) != cudaSuccess) {
+-          ok = false;
+-          return;
+-        }
+-      }
+       gate.rescue = (uint64_t)(uintptr_t)sq.rescue;
+       gate.rescueLaps = sq.rescue ? ts->rescueLaps : 0;
+       const uint64_t word = 0;  // epoch 0 (stable), count 0
+@@ -5914,9 +6851,9 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+       });
+       gdakiTsByeClose(ts->peers[p].fd, g->rank, ts->nonce);  // gin-harden
+     }
++    gdakiLbDestroy(r);  // gin-remaining: before the memory it registered goes
+     if (ts->test) cudaFreeHost(ts->test);
+-    for (auto& sq : ts->qs)
+-      if (sq.rescue) cudaFree(sq.rescue);
++    if (ts->rescueAlloc) cudaFree(ts->rescueAlloc);  // gin-remaining: one block
+     delete ts;
+     r->ts = nullptr;
+     return;
+@@ -5953,6 +6890,11 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+   // to a declined peer's re-dial or probe, cause-based hand-off, refusals forgotten after 5 s
+   GIN_TS_NOTE("GIN/TS: peer=1 rank=%d per_peer_words=1 fw_watchdog=per_round plan_before_commit=1 fail_on_reconnect=1 "
+               "handoff_rule=cause refusal_forget_ms=%.0f", g->rank, GDAKI_TS_REFUSAL_FORGET_MS);
++  // gin-remaining: device-state copies over the NIC (no CUDA call in a round), a lower rank's REQ answered inside an ACK
++  // wait, the degraded rule for waits that name no peer
++  GIN_TS_NOTE("GIN/TS: remaining=1 rank=%d copy_path=%s lb_mrs=%zu serve_wait=%d degraded_ms=%ld", g->rank,
++              gdakiLbOn(r) ? "nic" : "stream", r->lb ? r->lb->mrs.size() : (size_t)0, ts->serveWait,
++              (long)ncclParamGinTsDegradedMs());
+ }
+ 
+ // Called by ncclCommAbort as soon as the abort flags are set (before the teardown, whose cudaFree calls
+@@ -6122,6 +7064,18 @@ extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
+          "escalations=%d fw_overruns=%d copy_timeouts=%d orphan=%d", rank, ts->cRounds.load(), ts->cRecovered.load(),
+          ts->cDeclined.load(), ts->cCancelled.load(), ts->cReconnects.load(), ts->cDeaths.load(), ts->cEscalations.load(),
+          ts->cFwOverruns.load(), r->nCopyTimeouts.load(), joined ? 0 : 1);
++    // gin-remaining: how the device-state copies of this context's rounds went (stream_copies: copies of the helper thread
++    // through the private stream; 0 when every round copy went over the NIC; fallbacks: copies made on the stream because
++    // the NIC path had just gone off), and the REQs answered inside an ACK wait. The path's state is read only after the
++    // join (an orphaned helper may still write it: path=orphan).
++    const struct gdakiLb* lbs = joined ? r->lb : nullptr;
++    GIN_TS_NOTE("GIN/TS: rank %d copy path at teardown: path=%s nic_ops=%lu nic_bytes=%lu nic_timeouts=%lu stream_copies=%lu "
++                "served_in_wait=%d kept=%d fallbacks=%lu%s%s", rank,
++                !joined ? "orphan" : lbs == nullptr ? "stream" : lbs->ok ? "nic" : "nic-off",
++                lbs ? (unsigned long)lbs->nOps.load() : 0ul, lbs ? (unsigned long)lbs->nBytes.load() : 0ul,
++                lbs ? (unsigned long)lbs->nTimeouts.load() : 0ul, (unsigned long)r->nStreamCopies.load(),
++                ts->cServed.load(), ts->cDeferred.load(), lbs ? (unsigned long)lbs->nFallbacks.load() : 0ul,
++                (lbs && !lbs->ok) ? " why=" : "", (lbs && !lbs->ok) ? lbs->why : "");
+   }
+   return orphansOnColl;
+ }
+@@ -6167,9 +7121,9 @@ static bool gdakiTsFree(struct gdakiRecHost* r) {
+   }
+   INFO(NCCL_NET, "GIN/TS: closed rank=%d rounds=%d recovered=%d declined=%d stale=%d", r->ctx->rank, ts->nRounds,
+        ts->nRecovered, ts->nDeclined, ts->nStale);
++  gdakiLbDestroy(r);  // gin-remaining: before the memory it registered goes (the staging buffer goes in gdakiRecFree)
+   if (ts->test) cudaFreeHost(ts->test);
+-  for (auto& sq : ts->qs)
+-    if (sq.rescue) cudaFree(sq.rescue);
++  if (ts->rescueAlloc) cudaFree(ts->rescueAlloc);  // gin-remaining: one block
+   delete ts;
+   r->ts = nullptr;
+   return false;
+@@ -6532,6 +7486,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+     gdaki_ctx->rec->commKey = ncclGinRecCommKey;
+     gdaki_ctx->rec->nranks = nranks;  // gin-harden: the helper never reads the collComm for it
+     gdaki_ctx->rec->qps.resize(nqps_for_comm);
++    gdaki_ctx->rec->prepared.assign(nranks, 0);  // gin-remaining: prepared state per GIN peer
+   }
+ 
+   for (int rank_idx = rankOff; rank_idx < nranks; rank_idx += rankStride) {

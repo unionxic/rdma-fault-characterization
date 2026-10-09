@@ -82,6 +82,12 @@
 //     that failed the check), rdv_foreign (rank 0: connections that did not answer correctly), rdv_port.
 //   GIN_RDV_TEST_DECOY_PORT=<p> (rank 1, test): before the real rendezvous, connect once to <p> (a decoy listener of the
 //     runner that sends a wrong greeting) and check it the same way (kv rdv_decoy=rejected|accepted|no_connect).
+// gin-remaining (optional; without it the program does what it did):
+//   GIN_TS_HOG_CALLS=<comma list of load, malloc, stream | all | none> (with GIN_TS_HOG_MS; default all = gin-harden's
+//     order): which of gin-harden's three calls run between the GIN launch and the GPU-filling launch; the others run before
+//     the GIN launch. load = the occupancy query of hogKernel (its first use loads the kernel under lazy loading; run before
+//     the GIN launch it is followed by a read of the kernel's attributes, kv hog_preloaded), malloc = cudaMalloc of the
+//     sink, stream = the creation of its stream. GIN_TS_HOG_PREALLOC=1 is none. kv hog_calls_after=<list|none>.
 // exit: 0 all iterations ok and nothing surfaced; 2 NCCL call error; 3 async error seen by the host;
 //       4 a device wait/flush returned an error or timed out; 5 data/signal check failed;
 //       6 CUDA error; 7 watchdog.
@@ -1145,6 +1151,15 @@ int main(int argc, char** argv) {
   // module load or stream creation between them.
   const long hogMs = getenv("GIN_TS_HOG_MS") ? atol(getenv("GIN_TS_HOG_MS")) : 0;
   const bool hogPrealloc = getenv("GIN_TS_HOG_PREALLOC") && atoi(getenv("GIN_TS_HOG_PREALLOC")) != 0;
+  // gin-remaining: GIN_TS_HOG_CALLS, which of the three calls run after the GIN launch (default all; PREALLOC: none)
+  bool hogLoadAfter = !hogPrealloc, hogMallocAfter = !hogPrealloc, hogStreamAfter = !hogPrealloc;
+  if (!hogPrealloc && getenv("GIN_TS_HOG_CALLS") && *getenv("GIN_TS_HOG_CALLS") &&
+      strcmp(getenv("GIN_TS_HOG_CALLS"), "all") != 0) {
+    const std::string hc = std::string(",") + getenv("GIN_TS_HOG_CALLS") + ",";
+    hogLoadAfter = hc.find(",load,") != std::string::npos;
+    hogMallocAfter = hc.find(",malloc,") != std::string::npos;
+    hogStreamAfter = hc.find(",stream,") != std::string::npos;
+  }
   const int hogSlack = getenv("GIN_TS_HOG_SLACK") ? std::max(0, atoi(getenv("GIN_TS_HOG_SLACK"))) : 0;
   cudaStream_t st3 = nullptr;
   unsigned long long *hHogStart = nullptr, *hogStartDev = nullptr, *hogSink = nullptr, hogLaunchRtNs = 0;
@@ -1170,14 +1185,23 @@ int main(int argc, char** argv) {
       for (int i = 0; i < np; i++) CK(cudaStreamCreateWithFlags(&probeSt[i], cudaStreamNonBlocking));
       for (int i = 0; i < np; i++) CK(cudaEventCreateWithFlags(&probeEv[i], cudaEventDisableTiming));
     }
-    if (hogPrealloc) {
+    // gin-handoff: GIN_TS_HOG_PREALLOC=1 makes all three calls here; gin-remaining: each call not listed in
+    // GIN_TS_HOG_CALLS is made here
+    if (!hogLoadAfter) {
       hogSms = sms;
       CK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&hogPerSm, hogKernel, 256, 0));
       cudaFuncAttributes fh;
       CK(cudaFuncGetAttributes(&fh, hogKernel));
       kv("hog_preloaded=1 hog_local_bytes=%zu hog_regs=%d", fh.localSizeBytes, fh.numRegs);
-      CK(cudaMalloc(&hogSink, sizeof(unsigned long long)));
-      CK(cudaStreamCreateWithFlags(&st3, cudaStreamNonBlocking));
+    }
+    if (!hogMallocAfter) CK(cudaMalloc(&hogSink, sizeof(unsigned long long)));
+    if (!hogStreamAfter) CK(cudaStreamCreateWithFlags(&st3, cudaStreamNonBlocking));
+    {
+      std::string after;
+      if (hogLoadAfter) after += "load";
+      if (hogMallocAfter) after += std::string(after.empty() ? "" : ",") + "malloc";
+      if (hogStreamAfter) after += std::string(after.empty() ? "" : ",") + "stream";
+      kv("hog_calls_after=%s", after.empty() ? "none" : after.c_str());
     }
   }
   // hog blocks started so far (the start-time array), and the first and last start (globaltimer, ns)
@@ -1252,12 +1276,13 @@ int main(int argc, char** argv) {
   // loads hogKernel under lazy loading, cudaMalloc of the sink, the stream); the start-time array and the probe's buffers
   // and streams are made before the GIN launch (see there), so they add nothing between the two launches.
   if (hogMs > 0) {
-    if (!hogPrealloc) {
+    // gin-harden's order of the three calls; gin-remaining: only the ones GIN_TS_HOG_CALLS lists
+    if (hogLoadAfter) {
       CK(cudaDeviceGetAttribute(&hogSms, cudaDevAttrMultiProcessorCount, 0));
       CK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&hogPerSm, hogKernel, 256, 0));
-      CK(cudaMalloc(&hogSink, sizeof(unsigned long long)));
-      CK(cudaStreamCreateWithFlags(&st3, cudaStreamNonBlocking));
     }
+    if (hogMallocAfter) CK(cudaMalloc(&hogSink, sizeof(unsigned long long)));
+    if (hogStreamAfter) CK(cudaStreamCreateWithFlags(&st3, cudaStreamNonBlocking));
     hogBlocks = std::min(hogCap, std::max(1, hogSms * hogPerSm - hogSlack));
     const double w0 = monoMs();
     while (*(volatile int*)hProg < 1 && *(volatile int*)hProgR < 1 && monoMs() - w0 < 2000.0) usleep(100);
