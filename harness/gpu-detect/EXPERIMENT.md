@@ -10,7 +10,7 @@
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gpu-detect` @ `02a640aa` (master) |
 | 사전 등록 태그 | 없음. pilot 뒤 `prereg/gpu-detect-v1` 예정(3절) |
-| 마지막 갱신 | 2026-10-09 17:40, 초안(1–12절, 계층 둘, 실행기, 채점기, 독립 리뷰와 반영) |
+| 마지막 갱신 | 2026-10-09, 배포와 pilot 1 기록, 보류와 승인 기록 |
 
 표시: `[측정]` 원자료나 빌드 산출물에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -550,8 +550,9 @@ md5와 다르면 멈춘다(기대값은 스크립트의 `WANT_*`, 12절의 마�
 - [x] 채점기 합성 시험(실제 측정 아님, 12절)
 - [x] 독립 리뷰(두 계층)와 반영(12절)
 - [x] 질문, 가설, 셀, 예측 초안 (`DRAFT`)
-- [ ] 배포(메인 세션)
-- [ ] pilot P1, P2(메인 세션, 채점 안 함), 점검
+- [x] 배포(메인 세션, `hw`와 `t1w`)
+- [x] pilot P1, P2(메인 세션, 채점 안 함)
+- [ ] pilot 1 점검
 - [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
 - [ ] 본 실행 G1–R3 (`RUNNING`)
 - [ ] 채점 (`QA`), 독립 재계산과 측정 코드 리뷰
@@ -575,6 +576,10 @@ md5와 다르면 멈춘다(기대값은 스크립트의 `WANT_*`, 12절의 마�
 | 2026-10-09 | 리뷰 반영. GIN: M1 감시의 펌웨어 단계 묶음 뺌, M2 뿌리 CQE가 없으면 50 ms 기다림(`NCCL_GIN_TS_QPWATCH_NOCQE_MS`), L1 기록 전후 heartbeat, 쓰지 않은 QP 규칙과 `ncclGinFaultQuery`의 범위를 주석과 9.1절에, 사소 둘(링 CQ만, 큰 CQ는 `unread`)을 주석에. NVSHMEM: L4 `NVSHMEMI_STATIC`, L5 깃발 `T1W`로 칸 읽기를 막음, L7 FIN을 엿보기 전에 버퍼의 BYE를 찾음, L8과 L9 fail-stop 줄을 `write(2)`와 저장한 PE 번호로. 하네스: H2 NF2를 "적어도 한 PE의 작별"로, M5 release 셀의 시간 상한 60 s(`cells.json`, `apprun.py`), GD2와 GD4의 감지 한도를 50 ms 기다림에 맞춰 100 ms, 70 ms, 200 ms로, 열 `det_src`. 문서로만 둔 것: M3(9.1절 (d)), M4(9.1절 (a), 8절), L3(9.1절 (c)), L6(19절), L10(9.2절 (c)), L9의 종료 코드(9.2절 (e)), 낮음 11의 둘째(훅이 펌웨어 명령에 갇히면 쉬는 helper도 `opMu`에서 기다림: 연구 빌드의 훅만) | `hw_layer.diff`, `t1w_layer.diff` |
 | 2026-10-09 17:33 | 리뷰 반영 뒤 마지막 빌드: `hw` `efc48ca1`, `hwp` `d3b4a2fe`(둘 다 경고 0), `t1w` 전송 모듈 `86c39e91`, 호스트 `f3522de8`(전체 빌드 14분 25초, 경고는 nvcc의 아키텍처 안내뿐), `gd_nvs_rr` `6e93ba59`. `gd_gin_ring` `719dfaab`는 다시 빌드하지 않음(헤더가 같다). `make_diff_gd.sh`: `hw_layer.diff` md5 `be0ea9ed`(546줄, 파일 하나 +358/−39), `t1w_layer.diff` `ac24448b`(427줄, 파일 셋), 둘 다 VERIFIED. 기대 md5는 [deploy_gd.sh](deploy_gd.sh)에. 채점기 합성 시험을 다시 돌려 35줄 모두 평가됨. `schedule.json`을 새 시드 `677fa4700b478c9c`로 다시 만듦(셀 파일이 바뀜) | `[측정]` 스크래치 `agent_gd/out/build_info.txt` |
 | 2026-10-09 | 초안까지 클러스터에서는 아무것도 돌리지 않았다(배포, pilot, 본 실행은 메인 세션). rain에서는 컴파일, 정적 확인, 합성 채점 시험만 | 이 커밋 |
+| 2026-10-09 17:36–17:37 | 메인 세션이 배포(`deploy_gd.sh`): 빌드 `hw`(libnccl `efc48ca1`, `hw_layer.diff` md5 `be0ea9ed`), `gd_gin_ring` `719dfaab`, `t1w`(전송 모듈 `86c39e91`, 호스트 `f3522de8`), `gd_nvs_rr` `6e93ba59`를 두 노드의 새 디렉터리 `~/gi-bundle/gin_ts2/hw/`, `~/gd-bundle/`에 둠 | `[측정]` [deploy_check.txt](deploy_check.txt): "new files: rain == sunny (11 files)", 파일 11개 모두 "source == deployed", ldd가 번들 안의 libnccl과 libnvshmem_host를 찾음, "existing bundles unchanged (rain 311 files, sunny 363 files)" |
+| 2026-10-09 17:37–17:41:41 | 메인 세션이 pilot P1(app 14회), P2(회귀와 지연 8회)를 `chain.sh`로 돌림. 채점하지 않음. 빌드 `hw` `efc48ca1`과 `t1w`에 묶인 증거다 | `[측정]` `results/20261009_pilot/`(커밋 안 함, 원자료는 Release 예정). `chain.out`: P1 17:37:10–17:39:44, P2 17:39:44–17:41:41, 두 hold 모두 rc=0, iptables 규칙(gin-, blind-) 0 → 0. 네 스냅숏 모두 새 mlx5 줄 0, rain 펌웨어 명령 실패 합 31 → 31, 남은 프로세스 0, STOP 파일 없음 |
+| 2026-10-09 | 사용자 결정으로 보류. 이 실험의 fail-fast 반응(NVSHMEM fail-stop, GIN degraded 해제와 `NCCL_GIN_TS_DEGRADED_ROUNDS=0`, QP 감시에서 라운드나 거절로 가는 길)이 병렬 실험 gin-restore의 설계(대기를 붙잡고 예비 프로세스로 죽은 rank를 되살림)와 충돌했다. 규칙: 설계 충돌이 남아 있는 동안 아무것도 구현하지 않는다 | 사용자 지시(2026-10-09). 보류 동안 pilot을 검토하지 않았고 빌드도 하지 않았다 |
+| 2026-10-09 | 통합 정책 설계 `DESIGN_POLICY.md`(gin-restore worktree `harness/gpu-initiated/gin_recovery/restore/`, 이 실험은 읽기만): 감지는 두 정책에 공통, 반응은 communicator마다의 정책(기본 fail-fast). 그 문서의 독립 검토 마지막 판정은 "복원 계층 안의 막는 문제 넷 밖에 풀리지 않은 충돌 없음". 사용자 승인: GIN 계층에 정책 hook 아홉(G1–G9)을 넣고, 응답 쪽 틈을 고치고, pilot을 다시 돈 뒤 사전 등록하고 실행한다. 사용자가 정한 복원 계층의 키 읽기 자리(B4 (나))는 복원 계층의 일이라 이 실험의 장치 코드는 바뀌지 않는다 | `DESIGN_POLICY.md` 2, 3, 4.10절 `[소스]` |
 
 ## 13. 사전 등록 이후 변경
 
