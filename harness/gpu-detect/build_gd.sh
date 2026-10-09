@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # build_gd.sh - build gpu-detect's two library layers and the two unmodified examples on rain, in NEW scratch trees
 # (every earlier tree, bundle and worktree stays untouched). No GPU or RDMA program runs here.
-# usage: build_gd.sh <gin-setup|gin-hw|gin-hwp|gin-app|nvs-setup|nvs-lib|nvs-app|info|all>
+# usage: build_gd.sh <gin-setup|gin-hw|gin-hwp|gin-app|hk-setup|gin-hk|gin-hkp|nvs-setup|nvs-lib|nvs-app|info|all>
 #
 # GIN (layer hw on gin-remaining's hr):
 #   gin-setup  once: copy agent_ts2hr/{nccl-src,build,build-hrp} -> agent_gd/gin/{nccl-src,build,build-hwp}; rewrite the
@@ -25,6 +25,17 @@
 #   nvs-app    NVSHMEM 3.8.0 example examples/ring-reduce.cu (unchanged) against the t1w install -> agent_gd/out/nvs/gd_nvs_rr,
 #              and ../blind/boot/nvs_boot.cc as a bootstrap plugin -> agent_gd/out/nvs/gd_nvs_boot.so (as build_blind.sh nvs).
 #              The device code of the waits is compiled into the application, so the example must be rebuilt (not changed).
+# GIN, second layer (hk on hw: the policy hooks, the responder-side fix, one test switch, the teardown watch line;
+# EXPERIMENT.md 9.1 (f)-(h)). The hw tree and its builds above stay as they are (pilot 1 is tied to libnccl efc48ca1):
+#   hk-setup   once: copy agent_gd/gin/{nccl-src,build,build-hwp} -> agent_gd/gin_hk/{nccl-src,build,build-hkp} after
+#              checking that the working tree is hw_layer.diff (md5 be0ea9ed) and the builds are hw efc48ca1 and hwp
+#              d3b4a2fe; rewrite the absolute paths as gin-setup does; commit hw's working tree in the copy as
+#              "gpu-detect hw (libnccl efc48ca1)".
+#   gin-hk     apply hk_layer.diff unless the working tree already carries it (exactly GIN_FILES); incremental make into
+#              agent_gd/gin_hk/build; libnccl -> agent_gd/out/hk/.
+#   gin-hkp    the production build of the same source into agent_gd/gin_hk/build-hkp -> agent_gd/out/hkp/ (not deployed).
+#              No device header changes: gd_gin_ring (built against the hw headers) serves hk too (info compares the
+#              include digests).
 #   info       agent_gd/out/build_info.txt: md5 of every output and of the inputs.
 # All compiles run at nice 19 and idle I/O priority (other studies use this node). nvcc output is not byte-reproducible:
 # a rerun changes the md5 of the executables; the deployed values are those in EXPERIMENT.md 12.
@@ -44,7 +55,13 @@ EX=$SCR/agent_nb/nccl-232/docs/examples
 GIN_FILES="src/transport/net_ib/gdaki/gin_host_gdaki.cc"
 NVS_FILES="src/include/device_host_transport/nvshmem_common_ibgda.h src/include/non_abi/device/wait/nvshmemi_wait_until_apis.cuh src/modules/transport/ibgda/ibgda.cpp"
 mkdir -p "$OUT"
+HK=$W/gin_hk
 GG() { git -C "$W/gin/nccl-src" -c user.name=build -c user.email=build@localhost "$@"; }
+KG() { git -C "$HK/nccl-src" -c user.name=build -c user.email=build@localhost "$@"; }
+MKS() {  # MKS <srcdir> <builddir> [make args]
+  local s=$1 b=$2; shift 2
+  nice -n 19 ionice -c3 make -j"$JOBS" -C "$s" src.build BUILDDIR="$b" CUDA_HOME=$CUDA NVCC_GENCODE="$GENCODE" "$@"
+}
 NG() { git -C "$W/nvs/src" -c user.name=build -c user.email=build@localhost "$@"; }
 MK() {  # MK <builddir> [make args]
   local b=$1; shift
@@ -98,6 +115,45 @@ gin_hwp() {
   diff -r -q "$W/gin/build/include/nccl_device" "$W/gin/build-hwp/include/nccl_device" > /dev/null ||
     { echo "the hwp device headers differ from hw" >&2; exit 1; }
   echo "hwp libnccl $(md5 "$OUT/hwp/libnccl.so.2.32.3")"
+}
+hk_setup() {
+  [ -d "$HK/nccl-src" ] && return 0
+  case "$(GG log -1 --format=%s)" in "gin-remaining hr"*) ;; *) echo "agent_gd/gin head is not the hr commit" >&2; exit 1 ;; esac
+  [ "$(GG diff HEAD -- src | md5sum | cut -c1-8)" = be0ea9ed ] || { echo "agent_gd/gin working tree is not hw_layer.diff" >&2; exit 1; }
+  [ "$(md5 "$W/gin/build/lib/libnccl.so.2.32.3")" = efc48ca1a8368eb7feadac5d57f8ff23 ] || { echo "agent_gd/gin build is not hw" >&2; exit 1; }
+  [ "$(md5 "$W/gin/build-hwp/lib/libnccl.so.2.32.3")" = d3b4a2fe704d5edfdbe154360bae9f98 ] || { echo "agent_gd/gin build-hwp is not hwp" >&2; exit 1; }
+  mkdir -p "$HK"
+  cp -a "$W/gin/nccl-src" "$W/gin/build" "$HK/"
+  cp -a "$W/gin/build-hwp" "$HK/build-hkp"
+  rm -rf "$HK/nccl-src/.git/worktrees"
+  rewrite "$W/gin/build-hwp/" "$HK/build-hkp/" "$HK/build-hkp"
+  rewrite "$W/gin/" "$HK/" "$HK/build-hkp"
+  rewrite "$W/gin/" "$HK/" "$HK/build"
+  KG add -A src
+  KG commit -qm "gpu-detect hw (libnccl efc48ca1)"
+  [ "$(KG diff HEAD~1 HEAD -- src | md5sum | cut -c1-8)" = be0ea9ed ] || { echo "the hw commit is not hw_layer.diff" >&2; exit 1; }
+  echo "hk-setup: agent_gd/gin_hk at $(KG rev-parse --short HEAD) ($(KG log -1 --format=%s))"
+  echo "hk-setup: make -n in build/ after the copy: $(MKS "$HK/nccl-src" "$HK/build" -n 2>/dev/null | grep -c -- ' -c ' || true) compile commands"
+}
+gin_hk_tree() {  # the hk layer on the working tree of the copy
+  case "$(KG log -1 --format=%s)" in "gpu-detect hw"*) ;; *) echo "unexpected head commit in agent_gd/gin_hk" >&2; exit 1 ;; esac
+  if KG diff --quiet HEAD -- src; then KG apply "$D/hk_layer.diff"; fi
+  [ "$(KG diff --name-only HEAD -- src | sort | tr '\n' ' ')" = "$(echo $GIN_FILES | tr ' ' '\n' | sort | tr '\n' ' ')" ] ||
+    { echo "the working tree changes other files than $GIN_FILES" >&2; exit 1; }
+}
+gin_hk() {
+  hk_setup; gin_hk_tree
+  MKS "$HK/nccl-src" "$HK/build"
+  mkdir -p "$OUT/hk"; cp "$HK/build/lib/libnccl.so.2.32.3" "$OUT/hk/"
+  echo "hk libnccl $(md5 "$OUT/hk/libnccl.so.2.32.3")"
+}
+gin_hkp() {
+  hk_setup; gin_hk_tree
+  CXXFLAGS=-DNCCL_GIN_TS_PRODUCTION MKS "$HK/nccl-src" "$HK/build-hkp"
+  mkdir -p "$OUT/hkp"; cp "$HK/build-hkp/lib/libnccl.so.2.32.3" "$OUT/hkp/"
+  diff -r -q "$HK/build/include/nccl_device" "$HK/build-hkp/include/nccl_device" > /dev/null ||
+    { echo "the hkp device headers differ from hk" >&2; exit 1; }
+  echo "hkp libnccl $(md5 "$OUT/hkp/libnccl.so.2.32.3")"
 }
 gin_app() {
   local src=$EX/09_gin_optimizations/01_ring_exchange/c o=$OUT/gin inc=$W/gin/build/include
@@ -155,6 +211,8 @@ info() {
     [ -f "$OUT/hw/libnccl.so.2.32.3" ] && echo "gin: hw libnccl $(md5 "$OUT/hw/libnccl.so.2.32.3") include_digest $(cd "$W/gin/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
     [ -f "$OUT/hwp/libnccl.so.2.32.3" ] && echo "gin: hwp libnccl $(md5 "$OUT/hwp/libnccl.so.2.32.3")"
     echo "gin: hr include_digest $(cd "$HR/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32) (hw changes no header: equal is expected)"
+    [ -f "$OUT/hk/libnccl.so.2.32.3" ] && echo "gin: hk libnccl $(md5 "$OUT/hk/libnccl.so.2.32.3") include_digest $(cd "$HK/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32) (hk changes no header: equal to hw is expected)"
+    [ -f "$OUT/hkp/libnccl.so.2.32.3" ] && echo "gin: hkp libnccl $(md5 "$OUT/hkp/libnccl.so.2.32.3")"
     [ -f "$OUT/gin/gd_gin_ring" ] && {
       echo "gin: gd_gin_ring $(md5 "$OUT/gin/gd_gin_ring") main.cu $(md5 "$EX/09_gin_optimizations/01_ring_exchange/c/main.cu") kernels.cuh $(md5 "$EX/09_gin_optimizations/01_ring_exchange/c/kernels.cuh") gin_boot.cc $(md5 "$D/../blind/boot/gin_boot.cc") rdv.h $(md5 "$D/../blind/boot/rdv.h")"
       echo "gin: gd_gin_ring sass $("$CUDA/bin/cuobjdump" --list-elf "$OUT/gin/gd_gin_ring" 2>/dev/null | grep -o 'sm_[0-9]*' | sort -u | tr '\n' ' ')"
@@ -168,6 +226,7 @@ info() {
     }
     [ -f "$D/hw_layer.diff" ] && echo "hw_layer.diff $(md5 "$D/hw_layer.diff")"
     [ -f "$D/t1w_layer.diff" ] && echo "t1w_layer.diff $(md5 "$D/t1w_layer.diff")"
+    [ -f "$D/hk_layer.diff" ] && echo "hk_layer.diff $(md5 "$D/hk_layer.diff")"
   } > "$OUT/build_info.txt"
   cat "$OUT/build_info.txt"
 }
@@ -176,6 +235,9 @@ case "$STAGE" in
   gin-hw) gin_hw ;;
   gin-hwp) gin_hwp ;;
   gin-app) gin_app ;;
+  hk-setup) hk_setup ;;
+  gin-hk) gin_hk ;;
+  gin-hkp) gin_hkp ;;
   nvs-setup) nvs_setup ;;
   nvs-lib) nvs_lib ;;
   nvs-app) nvs_app ;;
