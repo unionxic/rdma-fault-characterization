@@ -112,7 +112,7 @@
 | `k`, `t_ms`, `t_after_anchor_s`, `d_s` | 장애 매개변수: DDP 훅의 순번 k, GIN과 NVSHMEM 훅의 지연(ms), 기준 줄 뒤 kill, stop, mute 시각(s), 멈춤과 끊김 길이(s) |
 | `applied` | 장애가 실제로 걸렸으면 1. 훅: 대상 rank 로그에 그 훅의 발화 줄(NVSHMEM과 GIN은 옮긴 QP 수가 1 이상인 줄)이 있음. kill, stop: 에이전트가 `rc=0`으로 신호를 보냈다고 답함. mute: 규칙을 하나 이상 넣음 |
 | `void` | rank 0이 작업의 기준 줄(`ddp` `iter 0: loss`, `gin` `=== Comparing GIN ring-exchange implementations ===`, `nvs` `[nvshmem-t1] PE0 <t> enabled:`)을 남기지 않았고 그 전에 걸린 장애도 없음(시작 실패) |
-| `config_ok` | 줄을 남긴 모든 rank에 빌드 확인 줄이 있음. `ddp`: `NCCL version 2.23.4`와 `[FAULT-RECOVERY2] recovery on for`. `gin`: `GIN/TS: transparent recovery ON rank=`. `nvs`: `[nvshmem-t1] PE<p> <t> enabled:` |
+| `config_ok` | 줄을 남긴 모든 rank에 빌드 확인 줄이 있고, 복구가 꺼졌다는 줄이 어느 rank에도 없음. `ddp`: `NCCL version 2.23.4`와 `[FAULT-RECOVERY2] recovery on for`가 있고 `recovery off for this`가 없음(QP 하나, NIC 하나, AR 없음인 연결만 복구한다). `gin`: `GIN/TS: transparent recovery ON rank=`가 있고 `transparent recovery OFF`가 없음. `nvs`: `[nvshmem-t1] PE<p> <t> enabled:`가 있고 `transparent mode off`가 없음 |
 | `valid` | `applied == 1`, `void == 0`, `config_ok == 1` |
 | `killed_rank`, `rc0`, `rc1`, `end0`, `end1` | kill된 rank. rank마다 종료 코드(음수는 신호)와 하네스가 끝냈는지(`grace`, `wall`, 빈칸) |
 | `n_err0`, `n_err1`, `err0`, `err1`, `timeout_first` | 오류 줄 수와 첫 줄. 살아남은 rank의 첫 오류 줄이 시간 제한 오류면 1 |
@@ -334,7 +334,8 @@
 
 **훅 줄 지우기**([strip_hooks.py](strip_hooks.py) `HOOK`): 다중 요청 복구의 `[FAULT-INJECT]` 줄과 알리지 않는 수신의 drain 줄, `RDMA_FAULT_TEST`, GIN의
 `GIN/FAULT:` 줄과 `GIN/TS: TEST` 줄, NVSHMEM의 `[nvshmem-fault-inject]` 줄과 `FT_TEST`, `T1_TEST`, 훅 변수 이름(`FAULT_INJECT`)이나 하네스 변수
-(`BLIND_`)가 나오는 줄, 발화 시각(`fire_mono_ms`)이 있는 줄. 라이브러리가 스스로 본 것(오류 CQE의 분류, 복구, 거절, 소켓 손실)은 남긴다. 훅 줄은 장애
+(`BLIND_`)가 나오는 줄, 발화 시각(`fire_mono_ms`)이 있는 줄. 라이브러리가 스스로 본 것(오류 CQE의 분류, 복구, 거절, 소켓 손실)은 남긴다. 남는 줄의
+IPv4 주소는 `<ip>`로 바꾼다(판단 파일을 커밋하므로). 훅 줄은 장애
 없는 시행에는 원래 없으므로, 지운 뒤에는 장애가 걸린 시행과 걸리지 않은 시행이 훅 줄로는 구별되지 않는다 `[추론]`.
 
 **이 절차가 막지 못하는 것** `[추론]`. 실행기를 돌리는 메인 세션은 봉인을 읽을 수 있는 같은 사용자다. 지키는 것은 순서(예측 고정이 일정보다 먼저,
@@ -447,7 +448,7 @@ judgments.csv: judgments_template.csv에 시행마다 한 줄을 채운다.
 - result_ok: yes, no, unknown.
 - first_error_s: 시행 시작부터 첫 오류 줄까지의 초. 오류가 없으면 빈칸.
 - confidence: 0.0–1.0.
-- evidence: 판단의 근거가 된 파일과 시각, 짧게.
+- evidence: 판단의 근거가 된 파일과 시각, 짧게. 주소는 적지 않는다(평가 폴더의 IPv4 주소는 이미 <ip>로 바뀌어 있다).
 다 끝나면 judgments.csv 하나만 돌려준다.
 <!-- evaluator-brief:end -->
 
