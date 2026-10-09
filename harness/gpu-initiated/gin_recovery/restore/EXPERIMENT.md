@@ -200,15 +200,18 @@ rank를 새 프로세스로 잇는 길, 보낸 메시지를 다시 넣는 길, �
 `gdakiTsDecline(..., GDAKI_UA_PEER_DEAD)`를 부른다. 거절은 QP를 ERR로 보내고(4933), 그 상대의 단어와 비동기 오류를 올리고(4936–4943),
 degraded를 예약하고(2828–2840), 게이트를 실패로 쓴다(4960–4964) `[소스]`. 계층은 `gdakiTsDecline` 맨 앞의 정책 hook(G2, [DESIGN_POLICY.md](DESIGN_POLICY.md) 4.10절)에 hold 분기(RL1)를 둔다. 그 상대가 `ARMED`이고
 죽음의 증거가 있으면(아래) 거절하지 않고 `RESTORING`으로 간다.
-- 죽음의 증거: `uaWhy == GDAKI_UA_PEER_DEAD`(helper 루프와 `gdakiTsInitiate`의 죽음 길 5478–5489), 또는 라운드 안에서 소켓이 FIN으로 끊긴 거절
-  (5594–5600, 5566–5572: 원인 Unknown으로 거절하지만 `pe.closeCause`가 FIN이고 BYE도 FAIL도 없음). 다른 거절(분류 불가, 확대 상한, 상대의 FAIL,
-  펌웨어 초과)은 가로채지 않는다. 상대가 살아 있기 때문이다.
-- `RESTORING`으로 갈 때 하는 일: r로 가는 모든 QP의 게이트 에폭을 홀수로 쓰고 개수 0을 기다린다(`gdakiTsQuiesce` 4416과 같은 쓰기, 한도
-  `quiesceMs`). 보내기는 게이트에서 쉬고, r의 QP를 기다리는 요청 대기와 flush는 다음 짝수 에폭까지 쉰다(`tsParkStable`, `gin_gdaki.h` 252–297).
-  상대별 단어, 칸 0, 비동기 오류, degraded 예약, 오류 줄은 하나도 만들지 않는다. 상대를 모르는 대기(`waitSignal`)는 칸 0만 읽으므로 그냥 계속 돈다.
+- 죽음의 증거: 강한 증거(BYE 없는 FIN, 또는 1–5 s 간격의 거절 둘)만 쓴다. 라운드 안의 FIN은 지금 거절이 아니라 취소(`gdakiTsCancelRound` 5127–5146)로
+  가서 상대를 "모름"으로 두므로, 그 경우는 다시 걸기와 탐침의 거절 둘로 죽음이 판정된 뒤 helper 루프의 거절로 온다. 다른 거절(분류 불가, 확대 상한, 상대의
+  FAIL, 펌웨어 초과, BADMAGIC 같은 약한 죽음)은 가로채지 않는다. 판단의 원문은 [DESIGN_POLICY.md](DESIGN_POLICY.md) 2.4절과 R1이다.
+- `RESTORING`으로 갈 때 하는 일: 범위를 모든 문맥으로 두고, 준비된 라운드를 풀고, `gdakiTsQuiesce`(4416)를 그대로 부른다(게이트 홀수, QP를 ERR로,
+  개수 0, 모아 둔 WQE의 doorbell, `abandoned` 확인). `deadJudged`와 `failedPending`을 지운다. Commit 뒤 게시 전에 죽은 응답 쪽 라운드의 WQE 수를 남긴다.
+  차례의 원문은 [DESIGN_POLICY.md](DESIGN_POLICY.md) 3절이다. 보내기는 게이트에서 쉬고, r의 QP를 기다리는 요청 대기와 flush는 다음 짝수 에폭까지 쉰다
+  (`tsParkStable`, `gin_gdaki.h` 252–297). 상대별 단어, 칸 0, 비동기 오류, degraded 예약, 오류 줄은 하나도 만들지 않는다. 상대를 모르는 대기(`waitSignal`)는
+  칸 0만 읽으므로 그냥 계속 돈다.
 - 장치 대기의 한도: 쉬는 장치 스레드는 게이트의 `waitMs`(= `NCCL_GIN_TS_HOLD_MS`, 기본 30 000 ms, 6820) 뒤 포기한다(`tsGiveUp` → poison)
-  `[소스]`. 그래서 복원 시한 `NCCL_GIN_RESTORE_MS`(초안 기본 20 000)는 `holdMs`보다 짧아야 하고, 계층은 시작할 때 `NCCL_GIN_RESTORE_MS +
-  roundMs의 복원 라운드 몫 < holdMs`를 확인해 어기면 복원을 끈다(시작 줄로 보임).
+  `[소스]`. 그래서 복원 시한 `NCCL_GIN_RESTORE_MS`(초안 기본 20 000)는 `holdMs`보다 짧아야 하고, 계층은 `gdakiTsStart`(`roundMs`를 정하는 곳)에서
+  관계를 확인해 어기면 복원을 끈다(시작 줄로 보임). 쉬는 스레드의 시계는 게이트가 처음 홀수가 된 때부터 가므로 실제 시한은 그것으로 줄인다
+  ([DESIGN_POLICY.md](DESIGN_POLICY.md) T4).
 - 시한이 지나면(`FALLBACK`): 앞 빌드의 거절을 그대로 부른다(`gdakiTsDecline(..., PeerDead, GDAKI_UA_PEER_DEAD)`). degraded 시계는 그 거절에서 시작하므로
   상대를 모르는 대기는 죽음 판정 + 시한 + 2 000 ms에 풀린다. 연결된 예비 프로세스에는 BYE를 보낸다.
 - 시한 안의 실패도 같은 길이다: 예비 프로세스 없음(짝이 ACTIVATE를 못 보냄), 예비 프로세스의 소켓 끊김, 상태 적용 실패, 복원 라운드의 거절(아래),
@@ -234,7 +237,10 @@ CUDA 문맥과 모듈 적재까지 미리 하고(시간이 드는 일), `ncclCom
   짝에게 둔다.
 - 재생: 예비 프로세스의 같은 호출이 기록의 다음 항목을 받는다. 호출 종류, 태그, 크기가 기록과 다르면 복원을 포기한다(검사). 결과 가운데 자기 몫(자기
   rank 칸)은 새 값으로 바꾼다(자기 QPN, rkey, 주소). 단 GIN helper 설정의 salt(6183, 6237–6239)는 기록의 옛 값을 써서 nonce가 처음과 같게 한다.
-- GIN 문맥: 예비 프로세스는 QP를 새로 만들어 기록에 있는 생존 rank의 QPN(옛 rank r과 이어졌던 그 QP들)에 연결한다(`gdakiConnectQp` 517).
+- GIN 문맥: 예비 프로세스는 QP를 새로 만들기만 하고 잇지 않는다. 생존 rank의 새 PSN이 든 토큰을 받은 뒤 기록의 생존 rank QPN(옛 rank r과 이어졌던 그
+  QP들)에 잇는다(`gdakiConnectQp` 517; 양쪽 토큰 교환은 DESIGN_POLICY.md M4). GIN collComm 고리 연결(`ncclGinIbConnect`, gin.cc 231–259)과 helper 설정의
+  잇기와 받기(6255–6308)도 건너뛴다(DESIGN_POLICY.md A3). 원래 rank의 listen 주소와 다른 포트에 묶고, 설치되기 전에는 REJOIN 말고 아무것에도 답하지
+  않는다(DESIGN_POLICY.md D4). 활성화 전에 원래 프로세스의 PID가 없어졌는지 확인한다(같은 노드, DESIGN_POLICY.md 2.4절).
   생존 rank 쪽은 복원 라운드에서 자기 QP를 새 QPN에 다시 잇는다(아래).
 - 범위: 생존 rank의 NCCL 핵심(collective 전송, proxy, RAS)은 예비 프로세스를 모른다. 복원한 communicator에서는 GIN 장치 통신만 된다(DESIGN_POLICY.md X2).
   초기화 재생이 NCCL 핵심의 결정성에 기대는 것은 이 설계에서 가장 큰 위험이다(DESIGN_POLICY.md 5절 B1).
@@ -251,19 +257,23 @@ CUDA 문맥과 모듈 적재까지 미리 하고(시간이 드는 일), `ncclCom
 **다시 잇기(REJOIN).** 지금의 재연결 기계는 낮은 rank만 높은 rank에 다시 걸고(3970), 높은 rank는 낮은 rank의 HELLO만 받으며(4209–4215), `gone`인
 상대에게는 다시 걸지 않는다(3972) `[소스]`. 예비 프로세스는 새 메시지 REJOIN으로 모든 생존 rank의 남겨 둔 listen 소켓(`ts->listenFd`)에 건다. 생존 rank는
 그 상대가 `RESTORING`이고, nonce가 맞고, 화신 번호가 지금 + 1일 때만 받는다(RL6). 받으면 `pe`의 죽음 표시(`gone`, `deadJudged`, `refusals`, `left`,
-`peerFailed`)를 지우고 `gdakiTsInstall`(3859)로 설치하고, 새 listen 주소를 `pe.addr`에 둔다. 그 뒤의 소켓 끊김은 앞과 같은 규칙(낮은 rank가 다시
-건다)을 따른다.
+`peerFailed`, `failedPending`)를 지우고, 옛 주소로 진행 중이던 다시 걸기와 탐침을 닫고, 공통 연결 세대를 정해 `gdakiTsInstall`(3859)로 설치하고, 새 listen
+주소를 `pe.addr`에 둔다. 그 뒤의 소켓 끊김은 앞과 같은 규칙(낮은 rank가 다시 건다)을 따르고, HELLO와 탐침 답은 화신 번호가 맞아야 받는다(펜싱).
+REJOIN은 고정 크기 제어 메시지이고 rkey 목록은 자료 소켓으로 온다.
 
 **생존 rank 쪽 복원 라운드**(상대 r 하나, `gdakiTsBusy` 안, 한도 `roundMs`):
-1. `ncclGinRecoverPrepare(comm, r)`(2143–2330): 생산자 정지 확인, QP를 ERR로(2243–2255), drain(2257–2303: 죽은 상대로 간 WQE는 flush 오류 CQE로
-   끝난다), 각 QP의 이 에폭 WQE 수 S를 얻는다.
-2. 끝점 바꿈(RL7): `rq.exch`를 예비 프로세스의 QPN, GID, LID로.
-3. `ncclGinRecoverCommit(comm, r, &spareToken)`(2334–2529): 2RST, 장치 색인 0, 새 QPN에 연결(새 PSN).
-4. `gdakiTsBaseline`(4351): 새 화신의 rmsn 기준. 그 전에 옛 화신의 실행 수를 누적에 더한다(RL13).
-5. rkey 표 칸 r 바꿈(RL9).
-6. `gdakiTsRepostApply`(4692–4897)를 QP마다 `U = S, n = 0`인 계획으로 부른다: 커밋 지점(포기한 장치 대기가 있으면 FALLBACK), PUBLISHING, `lbase += S`,
-   짝수 에폭 게시. 쉬던 요청 대기는 자기 표가 `lbase`보다 작으므로 성공으로 끝난다(`tsPoll` 1086–1092) `[소스]`. 그 WQE들의 효과는 로그 적용으로
-   예비 프로세스의 메모리에 이미 들어 있으므로 맞는 의미다 `[추론]`.
+1. `ncclGinRecoverPrepare(comm, r)`(2143–2330): 생산자 정지 확인, QP를 ERR로(2243–2255; hold 시작에서 이미 ERR), drain(2257–2303: 죽은 상대로 간 WQE는
+   flush 오류 CQE로 끝난다), 각 QP의 이 에폭 WQE 수 S와 새 보내기 PSN을 얻는다. 2ERR 뒤라서 이때 응답 쪽 rmsn을 한 번 더 읽어 누적 실행 수 X를 정한다(RL13).
+2. `gdakiTsNonMsg`를 읽어 READ나 DUMP가 있으면 FALLBACK(get은 실행된 것으로 칠 수 없음).
+3. 생존 rank의 토큰(QPN, 새 PSN)을 예비 프로세스에 보내고, 예비 프로세스가 자기 QP를 그 PSN으로 이은 READY를 기다린다.
+4. 끝점 바꿈(RL7): `rq.exch`를 예비 프로세스의 QPN, GID, LID로.
+5. `ncclGinRecoverCommit(comm, r, &spareToken)`(2334–2529): 2RST, 장치 색인 0, 새 QPN에 연결(예비 프로세스의 보내기 PSN을 받는 PSN으로).
+6. `gdakiTsBaseline`(4351): 새 화신의 rmsn 기준.
+7. rkey 표 칸 r 바꿈(RL9).
+8. `gdakiTsRepostApply`(4692–4897)를 QP마다 `U = S_pending + S, n = 0`인 계획으로 부른다(`S_pending`은 응답 쪽이 Commit 뒤 게시 전에 상대가 죽은 경우의
+   옛 에폭 WQE 수, DESIGN_POLICY.md 3절 6): 커밋 지점(포기한 장치 대기가 있으면 FALLBACK), PUBLISHING, `lbase += U`, 짝수 에폭 게시. 쉬던 요청 대기는 자기
+   표가 `lbase`보다 작으므로 성공으로 끝난다(`tsPoll` 1086–1092) `[소스]`. 그 WQE들의 효과는 로그 적용으로 예비 프로세스의 메모리에 이미 들어 있으므로
+   맞는 의미다 `[추론]`.
 
 **시간 어림** `[추론]`: 죽음 판정은 kill 뒤 수 ms(gin-remaining의 kill 셀). 예비 프로세스 활성화와 초기화 재생(CUDA 문맥은 미리 있음: NCCL 초기화,
 window 등록, devComm과 GIN 문맥, NIC 루프백 설정 3.0–10.9 ms `[문서: gin-remaining 15절]`) 0.5–3 s, 체크포인트와 로그 받기(MB 단위, TCP) 0.1 s 안팎,
@@ -285,11 +295,13 @@ window 등록, devComm과 GIN 문맥, NIC 루프백 설정 3.0–10.9 ms `[문�
 
 **언제, 어떻게(입력 멈춤).** 단계 hook에서 r의 helper가:
 1. 모든 상대 q에게 `CKPT_PAUSE(k)`를 보낸다.
-2. q의 helper는 r로 가는 QP의 게이트를 홀수 에폭으로 쓰고 개수 0을 기다린 뒤(보내기가 모두 게이트를 나옴), 로그의 쓰기 위치 `L_q`와 r로 보낸 누적
+2. q의 helper는 r로 가는 QP의 게이트를 홀수 에폭으로 쓰고 개수 0을 기다리고 모아 둔 WQE의 doorbell을 울린 뒤(보내기가 모두 게이트를 나오고 낸 것은
+   모두 NIC로 감; `gdakiTsQuiesce`에서 2ERR만 뺀 차례), 로그의 쓰기 위치 `L_q`와 r로 보낸 누적
    메시지 수 `M_q`, 자기 응답 쪽 누적 실행 수 `P_q`(r→q)를 `PAUSED`로 답한다. q가 라운드 중이면 `BUSY`로 답하고 r은 이번 체크포인트를 건너뛴다.
-3. r은 응답 쪽 QP의 rmsn이 `M_q`에 이를 때까지(QUERY_QP, 한도 있음) 기다린 뒤, NIC 루프백 READ 하나로 그 쓰기들이 GPU 메모리에 닿았음을 확인하고
+3. r은 응답 쪽 QP의 rmsn이 `M_q`에 이를 때까지(QUERY_QP, 펌웨어 가드 밖, 한도 있음) 기다린 뒤, NIC 루프백 READ 하나로 그 쓰기들이 GPU 메모리에 닿았음을 확인하고
    (gin-remaining의 flush 규칙과 같은 근거, DESIGN_POLICY.md 5절 B3), window와 신호 표를 GPU 안의 사본으로 복사한다(장치 안 복사).
-4. `CKPT_RESUME(k)`: q는 짝수 에폭을 새로 게시한다(빈 라운드: `lbase` 그대로). 생존 rank의 멈춤은 1–4의 시간이다.
+4. `CKPT_RESUME(k)`: q는 짝수 에폭을 새로 게시한다(빈 라운드: `lbase` 그대로). 단 q가 그동안 r을 거절하지 않았고, 멈춤 뒤 진짜 라운드가 없었고, 게이트가
+   아직 멈춤 때의 에폭일 때만이다. 아니면 그 체크포인트는 버린다(DESIGN_POLICY.md C1). 생존 rank의 멈춤은 1–4의 시간이다.
 5. r은 사본을 블록(초안 64 KiB)으로 나눠 해시하고, 지난 확정 체크포인트와 다른 블록만 짝에게 보낸다(증분). 짝이 다 받으면 `CKPT_STABLE(k)`를 모든
    상대에게 보내고, 상대는 그때 로그를 `L_q`까지 지운다.
 
@@ -335,14 +347,18 @@ D2H와 해시, 전송(비동기로 다음 단계와 겹칠 수 있음). 메모�
 (죽음 때 날아가던 것과 그 뒤의 것).
 - 누적 실행 수: 지금의 실행 수는 화신마다다(`gdakiTsExecuted` 4330–4348이 `rmsn − rmsn0`). 계층은 라운드가 기준을 바꿀 때(`gdakiTsBaseline` 4351) 옛
   화신의 실행 수를 누적에 더한다(RL13). 죽은 프로세스의 QP는 없어도 생존 rank 쪽 QP는 남아 있어 QUERY_QP가 된다(ERR에서도, 라운드가 이미 그렇게 함).
-- 장치 쪽: 예산이 0이 아닌 QP는 게이트 에폭 반쪽에 새 비트(SUPPRESS)를 두어 빠른 경로의 열림 검사(`tsWordOpen`, 146–148)가 실패하게 한다. 느린
-  길(`tsGateEnterSlow`, 303–328)이 예산을 보고 내지 않거나 일부만 낸다. 그래서 빠른 경로의 명령 수는 그대로다 `[추론]`. 예산이 0이 되면 helper가 비트를
-  지운다.
+- 장치 쪽: 예산이 0이 아닌 QP는 게이트 에폭 반쪽에 새 비트(SUPPRESS)를 두어 **보내기의** 열림 검사(`tsGateEnter` 333)만 실패하게 한다. 대기의 열림
+  검사(`tsPollEnter` 365)와 `tsParkStable`(264)은 이 비트를 보지 않는다(공용 `tsWordOpen`에 넣으면 flush와 wait가 끝없이 돎, DESIGN_POLICY.md C6).
+  느린 길(`tsGateEnterSlow`, 303–328)이 나가기와 쉬기 전에 예산을 보고 내지 않거나 일부만 낸다. 빠른 경로의 명령 수는 그대로다 `[추론]`. 비트는 helper만
+  쓰고, 예산이 남은 동안 에폭 반쪽을 쓸 때마다 OR한다. 예산이 0이 되면 helper가 지운다.
+- READ는 응답 쪽 MSN이 세는 요청 메시지라 예산을 쓰지만, 무장 조건으로 되살릴 rank와의 get은 없다. 0바이트 put의 NOP와 flush의 DUMP는 메시지가 아니라
+  예산을 쓰지 않는다.
+- 누적 실행 수는 화신마다 mod 2^24라서, 감시의 QUERY_QP(G7)와 기준 바꿈마다 증분을 더하고 복원 라운드가 2ERR 뒤 Commit 전에 한 번 더 읽는다.
 - 억제한 연산은 WQE를 쓰지 않으므로 그 요청의 대기와 flush는 바로 끝난다(요청 표는 실제로 낸 WQE만 셈) `[소스: waitImplCore 1175]`.
 
-**키 다시 읽기.** 생존 rank의 장치 코드는 rkey를 게이트에 들어가기 전에 읽는다(`raddr.key` 476, `signalKey` 1461과 1464, 게이트 501) `[소스]`. 게이트에서
-쉬던 스레드는 복원 전에 읽은 옛 rkey로 보낸다. 계층의 헤더는 `tsGateEnterSlow`가 참을 돌려준 뒤(새 에폭이 게시됨) 키를 다시 읽는다(DV3). 빠른 경로는
-그대로다.
+**키 읽기 자리.** 생존 rank의 장치 코드는 rkey를 게이트에 들어가기 전에 읽는다(`raddr.key` 476, `signalKey` 1461과 1464, 게이트 501) `[소스]`. 게이트에서
+쉬던 스레드는 복원 전에 읽은 옛 rkey로 보낸다. 느린 길 뒤에만 다시 읽으면 모자란다: 게이트가 홀수일 때 옛 키를 읽고 게시 뒤 빠른 경로로 들어가는 보내기가
+있을 수 있다. 키 읽기를 게이트 진입 뒤로 옮겨야 하고 이는 빠른 경로의 차례를 바꾼다. 결정이 필요한 막는 문제다([DESIGN_POLICY.md](DESIGN_POLICY.md) 5절 B4).
 
 ### 9.7 결정성 요구 (piecewise determinism)
 
@@ -356,9 +372,15 @@ D2H와 해시, 전송(비동기로 다음 단계와 겹칠 수 있음). 메모�
 5. 되살린 rank에서 한 QP로 가는 보내기는 프로그램 차례 하나(스레드 하나 또는 coop 하나)로 낸다. 억제가 "앞의 B개"를 프로그램 차례로 세기 때문이다.
 6. GIN 밖의 통신(collective, NCCL P2P, LSA)을 되살릴 rank와 주고받지 않는다.
 7. 단계 hook은 그 rank의 커널이 끝나고 마지막 flush가 끝난 뒤에만 부른다(체크포인트 때 r의 보내기가 모두 실행됨: `P_q`가 r이 낸 수와 같음).
+8. 되살릴 수 있는 rank와는 어느 방향으로도 `get`을 하지 않는다(4번보다 강함: 생존 rank의 get이 죽음 때 날아가던 중이면 자료 없이 끝나고, 재실행 중인
+   rank의 메모리를 읽으면 옛 값을 읽음. DESIGN_POLICY.md M2).
+9. 체크포인트에서 재실행 끝까지, 다른 rank가 더하는 신호와 카운터를 초기화하지 않는다(재실행 전에 적용한 로그의 더하기를 지움. DESIGN_POLICY.md P5).
+10. 복원한 communicator는 `ncclCommAbort`로 끝낸다(정상 정리의 노드 안 bootstrap 배리어에 되살린 rank가 들어감. DESIGN_POLICY.md P3).
+11. communicator마다 투명 복구 GDAKI 문맥이 하나다(devComm 하나, GIN 연결 하나). 둘 이상이면 무장하지 않는다(DESIGN_POLICY.md 2.3절).
 
 **시험 workload가 이를 지키는 방법**(9.8절): 단계마다 칸이 따로 있어 단일 대입(3), 받은 칸은 신호 문턱 뒤에만 읽음(1), 분기는 단계 번호뿐(2), get 없음(4),
-보내는 QP마다 스레드 하나(5), GIN만 씀(6), 커널 하나가 단계 하나이고 끝에 flush(7).
+보내는 QP마다 스레드 하나(5), GIN만 씀(6), 커널 하나가 단계 하나이고 끝에 flush(7), 신호 초기화 없음(9), 끝은 `ncclCommAbort`(10), devComm 하나(11).
+GIN 연결 수가 하나인지는 확인하지 않았다 `[미확인]`.
 
 ### 9.8 시험 workload와 판정 기준
 
@@ -389,7 +411,7 @@ G3 QP 감시의 상대 거르기 hook(hw 6094), G4 기록 처리 루프의 hook(
 | RL2 | G4의 hold 분기 | 복원 중인 상대의 기록 흡수, `qs[].handled` 올림 |
 | RL3 | G5, G3의 hold 분기 | 복원 중인 상대는 감시와 유실 검사에서 뺌 |
 | RL4 | helper 루프(hr 6013–6129 / hw 6298–6415) | 복원 상태 기계 한 걸음(시한, 활성화, REJOIN, 로그 보내기, 복원 라운드). `gdakiTsBusy`는 복원 라운드에서만 |
-| RL5 | `gdakiTsSetup`(hr 6152– / hw 6438–) | 복원 시한, `holdMs`, `roundMs`의 관계 검사. 어기면 fail-fast |
+| RL5 | `gdakiTsStart`(hr 6735– / hw 7040–; `roundMs`를 정하는 곳 hr 6741 / hw 7046) | 복원 시한, `holdMs`, `roundMs`의 관계 검사, communicator 무장 조건(DESIGN_POLICY.md 2.3절). 어기면 fail-fast |
 | RL6 | 받기 루프(hr 4164–4243 / hw 4189–4268) | REJOIN: 복원 중인 상대에게서만, nonce와 화신 번호, 죽음 표시 지우고 `gdakiTsInstall`(hr 3859 / hw 3884) |
 | RL7 | 새 함수, `opMu` 안 | QP마다 `rq.exch`를 새 끝점으로(Commit의 검사 hr 2360 / hw 2361, 연결 hr 2450 / hw 2451 전) |
 | RL8 | 새 함수 | 계획 `U = S, n = 0`으로 `gdakiTsRepostApply`(hr 4692 / hw 4717) |
