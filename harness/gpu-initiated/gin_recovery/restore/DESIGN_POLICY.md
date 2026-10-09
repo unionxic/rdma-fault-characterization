@@ -178,10 +178,13 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
   다른 라운드에 묶여 있어도 RESTORED를 읽을 수 있게).
 - **PUBLISHED의 낡은 기록**(Q3). PUBLISHED 상대의 장애 기록은 fallback 전에 `ts_epoch < coveredEpoch`인지 보고 그러면 낡은 기록으로 버린다(복원 라운드의
   게시가 `coveredEpoch`를 올리므로, hold 시작의 2ERR이 낸 flush 기록이 늦게 와도 성공한 복원을 무너뜨리지 않음).
-- **예비 프로세스가 여는 라운드**(Q5). `gdakiTsRespond`(hr 5739–5832 / hw 5768–5861)는 상대가 거절됐는지만 보고 REQ에 답한다. 복원 계층은 그 맨 앞에서
+- **예비 프로세스가 여는 라운드**(Q5). `gdakiTsRespond`(hr 5739–5820 / hw 5768–5849)는 상대가 거절됐는지만 보고 REQ에 답한다. 복원 계층은 그 맨 앞에서
   붙잡은 상대(HELD, COMMITTING, PUBLISHED)의 REQ에 NACK(새 이유 17, "복원 중")로 답하고, PUBLISHED이면 fallback한다(P3과 같이 PUBLISHED에서는 라운드를 열지
   않음). HELD에서 보통 라운드가 게시하면 계획이 `U = S − 날아가던 것`이 되어 로그로 이미 넣은 연산을 다시 보내기 때문이다. 예비 프로세스는 RESTORED 전에는
   라운드를 시작하지 않는다.
+- **같은 상대의 메시지 차례**(R1). 같은 상대에게서 미룬 제어 메시지(M1)는 그 상대의 REQ보다 먼저, 소켓에 도착한 차례대로 처리한다(기다림 안 응답
+  `gdakiTsServeLower` hr 5315–5378 / hw 5341–5407에서 바로 답하는 REQ와 미룬 REQ hr 6023–6056 / hw 6308–6341 모두). NACK 17을 보내기 전에도 그 상대의 미룬
+  RESTORED를 먼저 적용한다. 그래야 RESTORED 뒤에 같은 소켓으로 온 REQ가 성공한 복원을 무너뜨리지 않는다.
 
 **hold의 시작**(F8, V10). 거절 hook(G2) 안에서 `gdakiTsBusy` 안으로(라운드처럼 25 s 감시를 받고, 쌓임 감시는 Busy 동안 보지 않음 hr
 3522 / hw 3547) 차례로, 걸음마다 heartbeat를 갱신하고 TIMED_OUT을 보며:
@@ -431,7 +434,10 @@ EXPERIMENT.md에 반영.
 붙잡았거나 되살린 rank만), Q2(PUBLISHED에서 RESTORED가 시한을 이김, 시한 ≥ roundMs + handshake), Q3(PUBLISHED의 낡은 기록 버림), Q4(Commit부터 CAS까지의
 문장), Q5(예비 프로세스의 REQ에 NACK 17). 모두 3절에 반영.
 
-**검토 2 재확인 4**: 아래에 적는다.
+**검토 2 재확인 4**(커밋 `70b23f28` 대상). Q1–Q5 풀림, 인용 쌍 171개 불일치 0(`gdakiTsRespond`의 끝 줄 하나 고침), fail-fast 동치 그대로(조건 N5).
+남은 것 R1(낮음: 미룬 RESTORED보다 같은 상대의 REQ가 먼저 처리될 수 있음 → 같은 상대의 메시지는 도착 차례대로, NACK 17 전에 RESTORED 적용). 3절에 반영.
+
+**검토 2 재확인 5**: 아래에 적는다.
 
 ## 7. 참고
 
