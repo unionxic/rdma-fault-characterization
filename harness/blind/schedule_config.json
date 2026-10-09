@@ -1,0 +1,30 @@
+{
+  "study": "blind-apps",
+  "about": "Input of schedule_gen.py (the fault agent). Fixed in git before any schedule exists. Per workload: how many trials of each fault class (none = no fault), which classes take a target rank, the hold packing, and the ranges that the drawn fractions u_d map onto. The time of a fault inside the run (u_t) is mapped by calib.json, which the pilot fixes before the pre-registration commit.",
+  "workloads": {
+    "ddp": {
+      "classes": {"none": 8, "sqp": 10, "rqp": 10, "srq": 6, "kill": 8, "stop": 8, "mute": 6},
+      "targeted": ["sqp", "rqp", "srq", "kill", "stop"],
+      "per_hold": 14,
+      "hold_prefix": "D"
+    },
+    "gin": {
+      "classes": {"none": 8, "qperr": 16, "kill": 10, "stop": 10, "mute": 12},
+      "targeted": ["qperr", "kill", "stop"],
+      "per_hold": 28,
+      "hold_prefix": "G"
+    },
+    "nvs": {
+      "classes": {"none": 8, "qperr": 14, "remacc": 8, "kill": 8, "stop": 8, "mute": 8},
+      "targeted": ["qperr", "remacc", "kill", "stop"],
+      "per_hold": 27,
+      "hold_prefix": "N"
+    }
+  },
+  "durations_s": {
+    "stop": {"ddp": [2.0, 12.0], "gin": [1.0, 8.0], "nvs": [1.0, 8.0]},
+    "mute": {"ddp": [6.0, 14.0], "gin": [2.0, 8.0], "nvs": [4.0, 10.0]}
+  },
+  "mute_directions": ["both", "oneway"],
+  "trial_id_hex_digits": 8
+}
