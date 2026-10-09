@@ -1,0 +1,546 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 2945ab8..da31b3a 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -1468,6 +1468,7 @@ struct gdakiLb {
+   int gidIndex = -1;                // RoCE: the loopback's GID index (-1: IB, LIDs)
+   const char* gidKind = "lid";      // "link-local" or "gin" (the GIN context's own GID)
+   size_t testBytes = 0, testNonzero = 0;
++  int testShadow = 0;               // gpu-detect: device QP structs that matched the host shadow (self-test, NIC only)
+   char why[224] = {0};              // why the path is off
+ };
+ 
+@@ -2667,6 +2668,12 @@ NCCL_PARAM(GinTsEscalateRounds, "GIN_TS_ESCALATE_ROUNDS", 8);      // gin-harden
+ NCCL_PARAM(GinTsEscalateWindowMs, "GIN_TS_ESCALATE_WINDOW_MS", 60000);  // gin-harden
+ NCCL_PARAM(GinTsPort, "GIN_TS_PORT", 0);                           // gin-harden
+ NCCL_PARAM(GinTsServeWait, "GIN_TS_SERVE_WAIT", 1);                // gin-remaining (gdakiTsServeLower)
++// gpu-detect: the helper's QP-state watch (gdakiDetWatchStep): its period (0: off, as hr) and how long a QP must stay out
++// of RTS with no fault record before the watch queues one; and the degraded publish rule (gdakiUaPeerRaised, review M-C)
++NCCL_PARAM(GinTsQpWatchMs, "GIN_TS_QPWATCH_MS", 10);
++NCCL_PARAM(GinTsQpWatchGraceMs, "GIN_TS_QPWATCH_GRACE_MS", 5);
++NCCL_PARAM(GinTsQpWatchNoCqeMs, "GIN_TS_QPWATCH_NOCQE_MS", 50);
++NCCL_PARAM(GinTsDegradedRounds, "GIN_TS_DEGRADED_ROUNDS", 0);
+ #define GDAKI_TS_SOCK_RETRIES 3  // gin-harden: retries of one fault after a socket loss inside its round
+ 
+ // ---- gin-harden: the user devComm abort word of a communicator ----
+@@ -2902,8 +2909,14 @@ static void gdakiUaDegradedStep() {
+ // NCCL_GIN_TS_TEST_SPLIT (the gates keep the test pointer), the device threads on QPs read word [0], so word [0] counts
+ // (review M2: else a wait on a healthy peer told failed by the degraded raise could see its operations re-posted).
+ static bool gdakiTsPeerWords(struct gdakiRecHost* r);  // below (needs gdakiTs)
++// gpu-detect (review M-C): device code built with headers older than gin-remaining reads word [0] in its waits on a
++// QP, and the host cannot tell which headers an application used. NCCL_GIN_TS_DEGRADED_ROUNDS=0 (the default) therefore
++// counts word [0] for every peer, as before gin-remaining: once word [0] is up (degraded, or every peer declined), no
++// round publishes with any peer (the pair declines; the application was told by the degraded raise that the communicator
++// must be shrunk or aborted). NCCL_GIN_TS_DEGRADED_ROUNDS=1 is gin-remaining's rule, for applications built with these
++// headers (gin_gdaki.h tsWaitWord): rounds with healthy peers go on after a degraded raise.
+ static bool gdakiUaPeerRaised(struct gdakiRecHost* r, int peer) {
+-  const bool peerWords = gdakiTsPeerWords(r);
++  const bool peerWords = gdakiTsPeerWords(r) && ncclParamGinTsDegradedRounds() != 0;
+   std::lock_guard<std::mutex> lk(gdakiUaMu);
+   for (auto& x : gdakiUaReg)
+     if (x.comm == r->commKey)
+@@ -3046,6 +3059,12 @@ struct gdakiTsQp {        // host copy, per qp_idx
+   uint32_t rmsn0 = 0;     // responder MSN at the start of the current incarnation
+   void* rescue = nullptr; // S2: device rescue area of this QP (rescueLaps x sq_wqe_num x 64 B; gin-remaining: inside
+                           // gdakiTs::rescueBlock, never freed by itself)
++  // gpu-detect: the QP-state watch (gdakiDetWatchStep, helper thread only)
++  double detErrMs = 0;          // when the watch first saw this QP out of RTS in epoch detErrEpoch (0: not seen)
++  uint32_t detErrEpoch = 0;
++  int64_t detPushedEpoch = -1;  // the epoch the watch queued a fault record for (-1: none)
++  bool detOtherLogged = false;  // a state other than RTS, ERR or SQER was logged once
++  bool detIdleLogged = false;   // in ERR and never posted to: logged once, no record until the first post
+ };
+ 
+ struct gdakiTsFault {
+@@ -3142,6 +3161,12 @@ struct gdakiTs {
+   int serveWait = 1;                      // NCCL_GIN_TS_SERVE_WAIT: answer a lower rank's REQ while waiting for an ACK
+   bool inServe = false;                   // a nested round of gdakiTsServeLower runs (helper thread only)
+   std::atomic<int> cServed{0}, cDeferred{0};  // REQs answered inside an ACK wait / kept for after the round
++  // gpu-detect: the QP-state watch (gdakiDetWatchStep; helper thread only, read at teardown after the join)
++  int detWatchMs = 0, detGraceMs = 5, detNoCqeMs = 50;
++  double detNextMs = 0;
++  uint64_t detQueries = 0, detQueryFail = 0;
++  double detQueryUsSum = 0, detQueryUsMax = 0;
++  int detFound = 0, detOther = 0, detIdle = 0;
+ };
+ 
+ static int64_t gdakiTsNowUs() {
+@@ -5311,11 +5336,11 @@ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiT
+ // higher rank, which answers it inside its own wait; a nested round depends only on the lower rank it answers, which has
+ // its ACK and needs nobody else, so the dependencies of waits that remain go from higher to lower ranks and cannot close a
+ // cycle. A nested round answers no further REQ (it waits for DONE on its initiator's socket only), and no initiator starts
+-// inside one. Returns true if a nested round ran (the caller then looks at its own socket first).
++// inside one. Returns true if a nested round ran (the caller then looks at its own socket first). gpu-detect (review M-A):
++// it returns right after one nested round, so whether another may nest is decided again (gdakiTsCanNest) for each.
+ static bool gdakiTsServeLower(struct gdakiRecHost* r, int waitPeer, uint64_t waitRound) {
+   struct gdakiTs* ts = r->ts;
+   const int me = r->ctx->rank;
+-  bool nested = false;
+   const bool canNest = gdakiTsCanNest(ts);  // review M1: else lower ranks' sockets are left unread
+   for (int p = 0; p < (int)ts->peers.size(); p++) {
+     if (p == waitPeer || p == me || (p < me && !canNest)) continue;
+@@ -5349,7 +5374,11 @@ static bool gdakiTsServeLower(struct gdakiRecHost* r, int waitPeer, uint64_t wai
+         r->fwRound.fetch_add(1, std::memory_order_acq_rel);
+         GIN_TS_NOTE("GIN/TS: rank %d: back to round %lu with rank %d after answering rank %d (%.1f ms) mono_ms=%.3f", me,
+                     (unsigned long)waitRound, waitPeer, p, gdakiQ4MonoMs() - t0, gdakiQ4MonoMs());
+-        nested = true;
++        // gpu-detect (review M-A): at most one nested round per pass. canNest was taken before it; a second lower REQ
++        // waiting in this pass could start with less than a quiesce and a handshake left of the outer round and push it
++        // past NCCL_GIN_TS_ROUND_MS. The caller reads its own socket first and calls again, which decides afresh.
++        gdakiTsScope = savedScope;
++        return true;
+       } else {
+         pe.deferredReq = true;
+         pe.deferred = m;
+@@ -5374,7 +5403,7 @@ static bool gdakiTsServeLower(struct gdakiRecHost* r, int waitPeer, uint64_t wai
+     }
+     gdakiTsScope = savedScope;
+   }
+-  return nested;
++  return false;
+ }
+ 
+ // gin-remaining (review H1): a kept REQ of `p` is dropped when a round with `p` starts or runs: our own round as initiator
+@@ -5899,6 +5928,262 @@ static void gdakiTsScan(struct gdakiRecHost* r) {
+   }
+ }
+ 
++
++// ---- gpu-detect: host-side detection (the helper's QP-state watch) ----
++// blind-apps measured that a fault is detected only inside an application call: the device classifies an error CQE in
++// flush and request waits (tsPoll), never in waitSignal or the GIN barrier, which read only the signal and abort words.
++// NCCL's GIN example 01_ring_exchange spins in waitSignal while both ranks wait for the batch's signals, so a QP moved to
++// ERR then went unread and 14 of 16 trials hung (blind-apps qa/root_cause.md 2). The watch looks from the host: every
++// NCCL_GIN_TS_QPWATCH_MS (default 10; 0 = off, as hr) the idle helper reads the PRM state of every QP to every gated,
++// undeclined peer (QUERY_QP, a firmware command, under opMu like every QUERY_QP of the helper; not a guarded firmware
++// phase, review M1). A QP in ERR or SQER whose current epoch has no fault record (none taken by the helper, none queued)
++// for NCCL_GIN_TS_QPWATCH_GRACE_MS (default 5: a device thread that polls reports first, with the root CQE in its
++// record) gets one: the record the device would have written, built on the host from what the NIC wrote
++// (gdakiDetRecord), with the QP's current epoch, and queued like a device record (gdakiTsPushFault, as
++// gdakiTsTestSelfReport). Without a root error CQE the QP must stay out of RTS for NCCL_GIN_TS_QPWATCH_NOCQE_MS (default
++// 50) first (review M2, below). The helper then runs the normal round: classify, liveness, quiesce, re-post. At most one
++// record per QP and epoch, and one per peer and pass (the round decides its scope: a full reset when another QP to the
++// peer is not RTS). A state other than RTS, ERR and SQER (RST, INIT, RTR: only inside a round, which the idle helper is
++// not in) is logged once and not acted on; a failed query is not evidence and is counted. A QP in ERR with no WQE
++// reserved in its current incarnation (sq_rsvd_index 0: never posted to, or nothing re-posted at the last commit; a GIN
++// context whose QP to this peer the application does not use; the test hook with NCCL_GIN_FAULT_INJECT_CTX moves every
++// peer's QP of a context) gets no record until its next post: no round runs for a QP nobody uses, and the next post
++// (flushed at once) makes it "used", so the next pass queues it. Such a QP that only receives keeps the hr behaviour: the
++// sender's RETRY_EXC starts the round. The watch reads only this rank's QPs: the peer of a faulted rank is reached by
++// that rank's round (REQ), whatever its own device threads do. Records the watch builds do not pass through
++// gdakiQ4Handle, so ncclGinFaultQuery does not report them (transparent recovery owns them, as the device's).
++#define GDAKI_DET_PATH_HOST_WATCH 7  // ncclGinGdakiQ4Record::path of a record the watch built (host only)
++
++// mlx5 error-CQE syndrome (byte 55) and vendor syndrome (byte 54) -> class (gin_gdaki.h q4Classify, on the host)
++static uint8_t gdakiDetClassify(uint8_t syndrome, uint8_t vendor) {
++  switch (syndrome) {
++  case 0x05:
++    return vendor == 0xf5 ? NCCL_GIN_Q4_CLASS_LOCAL_QP_ERR :
++           vendor == 0xf9 ? NCCL_GIN_Q4_CLASS_FLUSH_TRAILING : NCCL_GIN_Q4_CLASS_FLUSH_OTHER;
++  case 0x04: return NCCL_GIN_Q4_CLASS_LOC_PROT;
++  case 0x12: return NCCL_GIN_Q4_CLASS_REM_INV_REQ;
++  case 0x13: return NCCL_GIN_Q4_CLASS_REM_ACCESS;
++  case 0x15: return NCCL_GIN_Q4_CLASS_RETRY_EXC;
++  case 0x16: return NCCL_GIN_Q4_CLASS_RNR_RETRY_EXC;
++  case 0x01: return NCCL_GIN_Q4_CLASS_LOC_LEN;
++  case 0x02: return NCCL_GIN_Q4_CLASS_LOC_QP_OP;
++  case 0x14: return NCCL_GIN_Q4_CLASS_REM_OP;
++  case 0x22: return NCCL_GIN_Q4_CLASS_REM_ABORT;
++  case 0x11: return NCCL_GIN_Q4_CLASS_LOC_ACCESS;
++  case 0x10: return NCCL_GIN_Q4_CLASS_BAD_RESP;
++  default: return NCCL_GIN_Q4_CLASS_OTHER;
++  }
++}
++
++// The fault record of a QP the watch found out of RTS, as q4Report would write it: the device QP struct and its CQ ring
++// are read over the copy path (gdakiRecD2H: over the NIC when that path is on, no CUDA call), and the first error CQE of
++// the current lap in the unconsumed window [cqe_ci, sq_rsvd_index) is the root. Without one, the poster-side record of
++// the vendored slot wait (gate swErr) is used. Without either, the QP left RTS with nothing in flight (a local QP moved
++// to ERR, or a responder-side error): class LOCAL_QP_ERR, which the round recovers (a QP reset with nothing to re-post),
++// root_src 3. Returns where the class came from: "cq", "slot-wait", "none", or "unread" (a copy failed: LOCAL_QP_ERR); or
++// "idle": no WQE reserved in this incarnation (sq_rsvd_index 0), and no record is made (the caller waits for a post).
++// Ring CQs only (the research knob NCCL_GIN_GDAKI_CQ_TYPE=collapsed gives "none"; transparent recovery needs a ring).
++static const char* gdakiDetRecord(struct gdakiRecHost* r, int peer, const gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q,
++                                  struct ncclGinGdakiQ4Record* rec) {
++  memset(rec, 0, sizeof(*rec));
++  rec->kind = NCCL_GIN_Q4_KIND_ERR_CQE;
++  rec->path = GDAKI_DET_PATH_HOST_WATCH;
++  rec->cq_type = DOCA_GPUNETIO_VERBS_CQ_64B;
++  rec->peer = (uint32_t)peer;
++  rec->ctx_id = (uint32_t)rq.ctxIdx;
++  rec->ts_epoch = r->ts->qs[rq.qpIdx].epoch;
++  rec->qpn = gdakiRecQpn(q);
++  rec->cls = NCCL_GIN_Q4_CLASS_LOCAL_QP_ERR;
++  rec->root_src = 3;
++  struct doca_gpu_verbs_qp* v = q->qp_gverbs;
++  struct doca_gpu_dev_verbs_qp snap;
++  if (v->qp_gpu == nullptr || gdakiRecD2H(r, &snap, v->qp_gpu, sizeof(snap)) != ncclSuccess) return "unread";
++  const struct doca_gpu_dev_verbs_cq& cq = snap.cq_sq;
++  const uint64_t S = snap.sq_rsvd_index;
++  if (S == 0) return "idle";
++  const uint32_t cqeNum = cq.cqe_num;
++  rec->cqe_num = cqeNum;
++  rec->cqe_ci = cq.cqe_ci;
++  rec->ticket = S != 0 ? S - 1 : 0;
++  rec->root_index = rec->ticket;
++  if (cqeNum == 0 || (cqeNum & (cqeNum - 1)) != 0 || (size_t)cqeNum * DOCA_GPUNETIO_VERBS_CQE_SIZE > r->pinnedSize)
++    return "unread";
++  std::vector<uint8_t> ring((size_t)cqeNum * DOCA_GPUNETIO_VERBS_CQE_SIZE);
++  if (gdakiRecD2H(r, ring.data(), cq.cqe_daddr, ring.size()) != ncclSuccess) return "unread";
++  uint64_t lo = cq.cqe_ci;
++  if (S > cqeNum && lo < S - cqeNum) lo = S - cqeNum;
++  const uint8_t* root = nullptr;
++  for (uint64_t i = lo; i < S; i++) {
++    const uint64_t pos = i + cq.cqe_rsvd;
++    const uint8_t* c = ring.data() + (pos & (cqeNum - 1)) * DOCA_GPUNETIO_VERBS_CQE_SIZE;
++    if (!gdakiRecCqeCurrent(c, pos, cqeNum, i)) continue;
++    const uint8_t op = c[63] >> 4;
++    if (op == 0xd || op == 0xe) {
++      if (root == nullptr) {
++        root = c;
++        rec->root_index = i;
++      }
++      rec->n_err_window++;
++    } else {
++      rec->n_ok_window++;
++    }
++  }
++  if (root != nullptr) {
++    memcpy(rec->root_cqe, root, 64);
++    rec->hw_err_synd = root[52];
++    rec->hw_synd_type = root[53];
++    rec->vendor_err = root[54];
++    rec->syndrome = root[55];
++    rec->wqe_counter = ((uint16_t)root[60] << 8) | root[61];
++    rec->root_opcode = root[63] >> 4;
++    rec->cls = gdakiDetClassify(rec->syndrome, rec->vendor_err);
++    rec->root_src = 0;
++  }
++  // as q4Report: the poster-side record replaces a window with no root or with only a trailing flush (syndrome 0x05,
++  // not the head-of-SQ vendor syndrome 0xf5; the root CQE's slot was reused by the WQE that poster posted next)
++  if (root == nullptr || (rec->syndrome == 0x05 && rec->vendor_err != 0xf5)) {
++    uint32_t sw = 0;
++    if (gdakiTsGateRead(r, v, offsetof(struct ncclGinTsGate, swErr), &sw, sizeof(sw)) == ncclSuccess &&
++        (sw & NCCL_GIN_TS_SWERR_VALID) != 0) {
++      rec->syndrome = (uint8_t)(sw >> 8);
++      rec->vendor_err = (uint8_t)sw;
++      rec->root_opcode = (uint8_t)((sw >> 16) & 0xf);
++      rec->cls = gdakiDetClassify(rec->syndrome, rec->vendor_err);
++      rec->root_src = 1;
++      return "slot-wait";
++    }
++  }
++  return root != nullptr ? "cq" : "none";
++}
++
++// A fault record for a QP to `peer` that is waiting in the helper's queue and not stale.
++static bool gdakiDetQueued(struct gdakiRecHost* r, int peer) {
++  struct gdakiTs* ts = r->ts;
++  std::lock_guard<std::mutex> lk(ts->qMu);
++  for (const auto& f : ts->faults) {
++    if ((int)f.rec.peer != peer) continue;
++    const int qi = peer + (int)f.rec.ctx_id * r->nranks;
++    if (qi < 0 || qi >= (int)ts->qs.size() || f.rec.ts_epoch >= ts->qs[qi].epoch) return true;
++  }
++  return false;
++}
++
++static const char* gdakiDetStateName(uint32_t st) {
++  switch (st) {
++  case 0x0: return "RST";
++  case 0x1: return "INIT";
++  case 0x2: return "RTR";
++  case 0x3: return "RTS";
++  case 0x4: return "SQER";
++  case 0x5: return "SQD";
++  case 0x6: return "ERR";
++  default: return "?";
++  }
++}
++
++// One pass of the watch (helper thread, idle: no round runs, the fault queue was empty at the top of the loop).
++static void gdakiDetWatchStep(struct gdakiRecHost* r) {
++  struct gdakiTs* ts = r->ts;
++  if (ts->detWatchMs <= 0) return;
++  const double now = gdakiQ4MonoMs();
++  if (now < ts->detNextMs) return;
++  ts->detNextMs = now + ts->detWatchMs;
++  struct gdaki_context* g = r->ctx;
++  for (int p = 0; p < (int)ts->peers.size(); p++) {
++    struct gdakiTsPeer& pe = ts->peers[p];
++    if (p == g->rank || !pe.gated || pe.declined) continue;
++    struct Bad {
++      gdakiRecQp* rq;
++      struct doca_gpu_verbs_qp_hl* q;
++      uint32_t st;
++    };
++    std::vector<Bad> bad;
++    {
++      // QUERY_QP never overlaps a QP state change (the fault hook, a round). Review M1: no firmware-phase guard here
++      // (gdakiRecFwGuard). The round watchdog charges an overrun of a guarded phase to the peer (its word goes up, the
++      // async error is raised); a process stopped (SIGSTOP) inside a guarded phase looks like an overrun to the watcher
++      // thread right after SIGCONT, and the idle watch is inside a phase a few percent of the time. A QUERY_QP that never
++      // returns stalls the helper, which the heartbeat check sees once a record is queued (gdakiTsWatchdog).
++      std::lock_guard<std::mutex> op(r->opMu);
++      gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
++        uint32_t st = 0;
++        const double t0 = gdakiQ4MonoMs();
++        const bool ok = doca_verbs_qp_query_seq(q->qp, nullptr, nullptr, nullptr, &st) == DOCA_SUCCESS;
++        const double us = (gdakiQ4MonoMs() - t0) * 1e3;
++        ts->detQueries++;
++        ts->detQueryUsSum += us;
++        ts->detQueryUsMax = std::max(ts->detQueryUsMax, us);
++        if (!ok) {
++          ts->detQueryFail++;
++          return;
++        }
++        if (st == 0x3u) {  // RTS
++          ts->qs[rq.qpIdx].detErrMs = 0;
++          return;
++        }
++        bad.push_back({&rq, q, st});
++      });
++    }
++    for (auto& b : bad) {
++      struct gdakiTsQp& s = ts->qs[b.rq->qpIdx];
++      if (b.st != 0x6u && b.st != 0x4u) {  // RST, INIT, RTR, SQD outside a round: logged once, not acted on
++        if (!s.detOtherLogged) {
++          s.detOtherLogged = true;
++          ts->detOther++;
++          GIN_TS_NOTE("GIN/TS: rank %d: QP watch: qpn %#x (rank %d, context %d) is in state %s outside a round; not acted on "
++                      "mono_ms=%.3f", g->rank, gdakiRecQpn(b.q), p, b.rq->ctxIdx, gdakiDetStateName(b.st), gdakiQ4MonoMs());
++        }
++        continue;
++      }
++      if (s.detPushedEpoch == (int64_t)s.epoch) continue;  // queued once for this epoch already
++      if (s.handled >= s.epoch + 2u) continue;              // a record of this epoch was taken: its handling decides
++      if (s.detErrMs == 0 || s.detErrEpoch != s.epoch) {    // first sight: the grace starts
++        s.detErrMs = now;
++        s.detErrEpoch = s.epoch;
++        ts->detNextMs = std::min(ts->detNextMs, now + ts->detGraceMs);
++        continue;
++      }
++      if (now - s.detErrMs < ts->detGraceMs) {
++        ts->detNextMs = std::min(ts->detNextMs, s.detErrMs + ts->detGraceMs);
++        continue;
++      }
++      if (gdakiDetQueued(r, p)) break;  // a device record for this peer is waiting: the next loop handles it
++      struct ncclGinGdakiQ4Record rec;
++      ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);  // review L1: the copies below are bounded (2 s)
++      const char* src = gdakiDetRecord(r, p, *b.rq, b.q, &rec);
++      ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
++      // review M2: without a root CQE (none, unread) the error may be on the responder side of a write the peer made (a
++      // remote access error leaves no CQE here); that peer's requester CQE says it, and its device thread or its own
++      // watch declines the pair and sends FAIL. A record here would start a LOCAL_QP_ERR round that re-posts the failing
++      // write. So such a QP waits NCCL_GIN_TS_QPWATCH_NOCQE_MS (default 50) out of RTS before its record is queued.
++      if ((strcmp(src, "none") == 0 || strcmp(src, "unread") == 0) && now - s.detErrMs < ts->detNoCqeMs) {
++        ts->detNextMs = std::min(ts->detNextMs, s.detErrMs + ts->detNoCqeMs);
++        continue;
++      }
++      if (strcmp(src, "idle") == 0) {  // never posted to: no round for a QP nobody uses (read again next pass)
++        if (!s.detIdleLogged) {
++          s.detIdleLogged = true;
++          ts->detIdle++;
++          GIN_TS_NOTE("GIN/TS: rank %d: QP watch: qpn %#x (rank %d, context %d) is in state %s and was never posted to; no "
++                      "record until its first post mono_ms=%.3f", g->rank, rec.qpn, p, b.rq->ctxIdx,
++                      gdakiDetStateName(b.st), gdakiQ4MonoMs());
++        }
++        continue;
++      }
++      s.detPushedEpoch = (int64_t)s.epoch;
++      ts->detFound++;
++      const double t = gdakiQ4MonoMs();
++      GIN_TS_NOTE("GIN/TS: rank %d: QP watch: qpn %#x (rank %d, context %d) is in state %s with no fault record for %.1f "
++                  "ms; class %s from %s (syndrome %#x vendor %#x err_cqes %u); fault queued (qpwatch_ms=%d grace_ms=%d) "
++                  "epoch=%u mono_ms=%.3f", g->rank, rec.qpn, p, b.rq->ctxIdx, gdakiDetStateName(b.st), t - s.detErrMs,
++                  gdakiTsClassName(rec.cls), src, rec.syndrome, rec.vendor_err, rec.n_err_window, ts->detWatchMs,
++                  ts->detGraceMs, rec.ts_epoch, t);
++      gdakiTsPushFault(r, rec, t);
++      break;  // one record per peer and pass
++    }
++  }
++}
++
+ #ifndef NCCL_GIN_TS_PRODUCTION
+ // gin-s2-close test knob NCCL_GIN_TS_TEST_SOCK_MUTE=<start ms>:<length ms> (times from the start of the helper
+ // thread, which follows the socket setup): attach a drop-everything classic BPF filter to every helper socket at the
+@@ -6122,6 +6407,7 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+       ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);  // before the count drops (watchdog)
+       ts->nQueued.fetch_sub(1, std::memory_order_acq_rel);
+     }
++    if (fs.empty()) gdakiDetWatchStep(r);  // gpu-detect: host-side detection (QUERY_QP every NCCL_GIN_TS_QPWATCH_MS)
+     if (fs.empty() && gdakiQ4MonoMs() >= nextScan) {
+       gdakiTsScan(r);
+       nextScan = gdakiQ4MonoMs() + 100.0;
+@@ -6462,6 +6748,7 @@ static void gdakiTsTestKnobs(struct gdakiRecHost* r) {
+ #endif
+ }
+ 
++// gpu-detect (review L-C): the self-test below makes no CUDA call (see there).
+ // gin-remaining: set up the NIC copy path of this context (struct gdakiLb, above gdakiRecD2H). Called by gdakiTsStart
+ // once the rescue block exists and before any gate is written, while no kernel can use these QPs yet (context creation).
+ // Its own PD; RoCE: the loopback GID candidates in order (a link-local entry of the GIN GID's RoCE type, then the GIN
+@@ -6652,7 +6939,17 @@ static void gdakiLbSetup(struct gdakiRecHost* r) {
+              gdakiLbAddRange(lb, g->last_issued_get, nTickets, "get tickets") != ncclSuccess ||
+              gdakiLbAddRange(lb, g->last_visible_get, nTickets, "get tickets") != ncclSuccess))
+     ok = false;
+-  // self-test (the stream copies are allowed here: context creation, no round)
++  // self-test. gpu-detect (review L-C): over the NIC only, no CUDA call. gin-remaining compared each NIC read and write
++  // with a stream copy; a devComm created while the application's kernel held every CUDA stream (implicit
++  // synchronization) then saw that stream copy time out, and the path went off for the context with copyStuck set (every
++  // later stream copy refused). Here:
++  //   (1) every gated QP: its device QP struct is read over the NIC and the fields DOCA set at creation and never changes
++  //       (SQ number, ring size and address, doorbell record, CQ number, size and address) must equal the host shadow's
++  //       (v->qp_cpu, copied to the device at export): the NIC reads the bytes the device uses;
++  //   (2) a gate's test counter and the first 64 bytes of the rescue block: a pattern written over the NIC reads back
++  //       over the NIC, then zeros again (no kernel can use these QPs yet: context creation);
++  //   (3) every registered allocation: its first range (at most 64 bytes) read over the NIC, written back unchanged and
++  //       read again.
+   if (ok) {
+     lb->ok = true;
+     auto check = [&](const char* what) {
+@@ -6660,58 +6957,65 @@ static void gdakiLbSetup(struct gdakiRecHost* r) {
+       ok = false;
+       lb->ok = false;
+     };
++    auto nicRead = [&](void* dst, const void* src, size_t len) -> bool {  // over the NIC, never the stream
++      if (gdakiLbXfer(r, false, src, len) != ncclSuccess) return false;
++      memcpy(dst, r->pinned, len);
++      return true;
++    };
++    auto nicWrite = [&](void* dst, const void* src, size_t len) -> bool {
++      memcpy(r->pinned, src, len);
++      return gdakiLbXfer(r, true, dst, len) == ncclSuccess;
++    };
++    int nShadow = 0;
+     struct doca_gpu_verbs_qp* v0 = nullptr;
+-    for (int p = 0; v0 == nullptr && p < (int)ts->peers.size(); p++)
+-      if (ts->peers[p].gated)
+-        gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
+-          if (v0 == nullptr) v0 = q->qp_gverbs;
+-        });
+-    if (v0 != nullptr) {  // a write of a gate's test counter (written again by the gate setup that follows)
++    for (int p = 0; ok && p < (int)ts->peers.size(); p++) {
++      if (!ts->peers[p].gated) continue;
++      gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
++        if (!ok) return;
++        struct doca_gpu_verbs_qp* v = q->qp_gverbs;
++        if (v0 == nullptr) v0 = v;
++        struct doca_gpu_dev_verbs_qp d;
++        const struct doca_gpu_dev_verbs_qp* c = v->qp_cpu;
++        if (!nicRead(&d, v->qp_gpu, sizeof(d))) return check("QP struct read");
++        if (d.sq_num != c->sq_num || d.sq_wqe_num != c->sq_wqe_num || d.sq_wqe_daddr != c->sq_wqe_daddr ||
++            d.sq_dbrec != c->sq_dbrec || d.cq_sq.cqe_daddr != c->cq_sq.cqe_daddr || d.cq_sq.cq_num != c->cq_sq.cq_num ||
++            d.cq_sq.cqe_num != c->cq_sq.cqe_num)
++          return check("QP struct differs from the host shadow");
++        nShadow++;
++      });
++    }
++    if (ok && v0 != nullptr) {  // a gate's test counter (written again by the gate setup that follows)
+       uint8_t* tp = gdakiTsGateDev(v0) + offsetof(struct ncclGinTsGate, testPuts);
+       const uint32_t pat = 0x5a5a1234u, zero = 0;
+       uint32_t back = 0;
+-      memcpy(r->pinned, &pat, 4);
+-      if (gdakiLbXfer(r, true, tp, 4) != ncclSuccess || gdakiRecD2HStream(r, &back, tp, 4) != ncclSuccess || back != pat)
+-        check("gate write");
+-      memcpy(r->pinned, &zero, 4);
+-      if (ok && (gdakiLbXfer(r, true, tp, 4) != ncclSuccess || gdakiRecD2HStream(r, &back, tp, 4) != ncclSuccess || back != 0))
+-        check("gate write back");
++      if (!nicWrite(tp, &pat, 4) || !nicRead(&back, tp, 4) || back != pat) check("gate write");
++      if (ok && (!nicWrite(tp, &zero, 4) || !nicRead(&back, tp, 4) || back != 0)) check("gate write back");
+     }
+     if (ok && ts->rescueBlock != nullptr && ts->rescueBlockSize >= 64) {  // 64 bytes of the rescue block, then zeros again
+       uint8_t pat[64], back[64];
++      const uint8_t zeros[64] = {0};
+       for (int k = 0; k < 64; k++) pat[k] = (uint8_t)(0xa5 ^ k);
+-      memcpy(r->pinned, pat, 64);
+-      if (gdakiLbXfer(r, true, ts->rescueBlock, 64) != ncclSuccess ||
+-          gdakiRecD2HStream(r, back, ts->rescueBlock, 64) != ncclSuccess || memcmp(back, pat, 64) != 0)
++      if (!nicWrite(ts->rescueBlock, pat, 64) || !nicRead(back, ts->rescueBlock, 64) || memcmp(back, pat, 64) != 0)
+         check("rescue write");
+-      const uint8_t zeros[64] = {0};
+-      memset(r->pinned, 0, 64);
+-      if (ok && (gdakiLbXfer(r, true, ts->rescueBlock, 64) != ncclSuccess ||
+-                 gdakiRecD2HStream(r, back, ts->rescueBlock, 64) != ncclSuccess || memcmp(back, zeros, 64) != 0))
++      if (ok && (!nicWrite(ts->rescueBlock, zeros, 64) || !nicRead(back, ts->rescueBlock, 64) || memcmp(back, zeros, 64) != 0))
+         check("rescue write back");
+     }
+-    for (size_t k = 0; ok && k < lb->mrs.size(); k++) {  // every registered allocation: read, then written back unchanged
+-      uint8_t a[64], b[64], c[64];
+-      const void* s = (const void*)lb->mrs[k].sample;
++    for (size_t k = 0; ok && k < lb->mrs.size(); k++) {  // every registered allocation: read, written back unchanged, read
++      uint8_t a[64], c[64];
++      const void* sp = (const void*)lb->mrs[k].sample;
+       const size_t len = lb->mrs[k].sampleLen;
+-      if (gdakiRecD2HStream(r, a, s, len) != ncclSuccess || gdakiLbXfer(r, false, s, len) != ncclSuccess) {
++      if (!nicRead(a, sp, len)) {
+         check("read");
+         break;
+       }
+-      memcpy(b, r->pinned, len);
+-      if (memcmp(a, b, len) != 0) {
+-        check("read mismatch");
+-        break;
+-      }
+-      memcpy(r->pinned, b, len);
+-      if (gdakiLbXfer(r, true, s, len) != ncclSuccess || gdakiRecD2HStream(r, c, s, len) != ncclSuccess ||
+-          memcmp(a, c, len) != 0) {
++      if (!nicWrite((void*)sp, a, len) || !nicRead(c, sp, len) || memcmp(a, c, len) != 0) {
+         check("write back");
+         break;
+       }
+       lb->testBytes += len;
+       for (size_t i = 0; i < len; i++) lb->testNonzero += a[i] != 0;
+     }
++    lb->testShadow = nShadow;
+   }
+   if (!ok) {
+     lb->ok = false;
+@@ -6727,9 +7031,10 @@ static void gdakiLbSetup(struct gdakiRecHost* r) {
+   lb->nOps.store(0);
+   lb->nBytes.store(0);
+   GIN_TS_NOTE("GIN/TS: rank %d: NIC copy path on: loopback qpn %#x->%#x, own PD, gid_index %d (%s), %zu GPU MR(s) (dmabuf "
+-              "%d, peermem %d), self-test ok (%zu B read and written back, %zu nonzero), setup_ms=%.1f mono_ms=%.3f",
++              "%d, peermem %d), self-test ok (%zu B read and written back, %zu nonzero, %d QP struct(s) equal to the host "
++              "shadow, NIC only), setup_ms=%.1f mono_ms=%.3f",
+               g->rank, lb->qa->qp_num, lb->qb->qp_num, lb->gidIndex, lb->gidKind, lb->mrs.size(), lb->nDmabuf,
+-              lb->nPeermem, lb->testBytes, lb->testNonzero, gdakiQ4MonoMs() - t0, gdakiQ4MonoMs());
++              lb->nPeermem, lb->testBytes, lb->testNonzero, lb->testShadow, gdakiQ4MonoMs() - t0, gdakiQ4MonoMs());
+ }
+ 
+ static void gdakiTsStart(struct gdakiRecHost* r) {
+@@ -6769,6 +7074,9 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+   ts->pairReset = ncclParamGinTsPairReset() != 0 ? 1 : 0;  // gin-pair-reset
+   ts->pairCheck = ncclParamGinTsPairCheck() != 0 ? 1 : 0;  // gin-pair-check
+   ts->serveWait = ncclParamGinTsServeWait() != 0 ? 1 : 0;  // gin-remaining
++  ts->detWatchMs = (int)std::max<int64_t>(0, ncclParamGinTsQpWatchMs());          // gpu-detect
++  ts->detGraceMs = (int)std::max<int64_t>(0, ncclParamGinTsQpWatchGraceMs());     // gpu-detect
++  ts->detNoCqeMs = (int)std::max<int64_t>(ts->detGraceMs, ncclParamGinTsQpWatchNoCqeMs());  // gpu-detect (review M2)
+   {
+     const int maxRc = std::max(0, ts->holdMs - ts->handshakeMs - 1000);
+     if (ts->reconnectMs > maxRc) {
+@@ -6895,6 +7203,10 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+   GIN_TS_NOTE("GIN/TS: remaining=1 rank=%d copy_path=%s lb_mrs=%zu serve_wait=%d degraded_ms=%ld", g->rank,
+               gdakiLbOn(r) ? "nic" : "stream", r->lb ? r->lb->mrs.size() : (size_t)0, ts->serveWait,
+               (long)ncclParamGinTsDegradedMs());
++  // gpu-detect: the helper's QP-state watch, one nested round per pass of an ACK wait (M-A), the NIC-only self-test
++  // (L-C), the degraded publish rule (M-C)
++  GIN_TS_NOTE("GIN/TS: detect=1 rank=%d qpwatch_ms=%d grace_ms=%d nocqe_ms=%d nest_once=1 selftest=nic degraded_rounds=%d",
++              g->rank, ts->detWatchMs, ts->detGraceMs, ts->detNoCqeMs, ncclParamGinTsDegradedRounds() != 0 ? 1 : 0);
+ }
+ 
+ // Called by ncclCommAbort as soon as the abort flags are set (before the teardown, whose cudaFree calls
+@@ -7076,6 +7388,13 @@ extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
+                 lbs ? (unsigned long)lbs->nTimeouts.load() : 0ul, (unsigned long)r->nStreamCopies.load(),
+                 ts->cServed.load(), ts->cDeferred.load(), lbs ? (unsigned long)lbs->nFallbacks.load() : 0ul,
+                 (lbs && !lbs->ok) ? " why=" : "", (lbs && !lbs->ok) ? lbs->why : "");
++    // gpu-detect: the QP-state watch of this context (written by the helper only: read after the join)
++    if (joined)
++      GIN_TS_NOTE("GIN/TS: rank %d QP watch at teardown: qpwatch_ms=%d queries=%lu query_fail=%lu query_us_mean=%.1f "
++                  "query_us_max=%.1f detections=%d other_states=%d idle_err=%d", rank, ts->detWatchMs,
++                  (unsigned long)ts->detQueries, (unsigned long)ts->detQueryFail,
++                  ts->detQueries ? ts->detQueryUsSum / (double)ts->detQueries : 0.0, ts->detQueryUsMax, ts->detFound,
++                  ts->detOther, ts->detIdle);
+   }
+   return orphansOnColl;
+ }
