@@ -39,14 +39,14 @@ gin-harden은 GIN GDAKI 투명 복구를 다지는 계층(`hd`)을 만들고, �
 안 함). 두 예측이 pilot과 어긋났고, gin-harden은 예측을 고치지 않고 의심만 적었다(`../harden/EXPERIMENT.md` 3절 머리, 9절 1번 (g)의 pilot 두 줄).
 아래 수치는 모두 그 pilot 원자료(`../harden/results/20261009_pilot/`)에서 다시 셌다 `[측정, n=1씩]`.
 
-**1. shrink 넘기기.** 상대 kill 뒤 rank 0은 FIN에서 죽음을 판정하고 1.3 ms 뒤 거절했다(`hd_shrink_b_n1_r0.log`의 닫힘 줄과 거절 줄). 그 뒤 응용이
+**1. shrink 넘기기.** 상대 kill 뒤 rank 0은 FIN에서 죽음을 판정하고 1.3 ms 뒤 거절했다(`hd_shrink_b_n1_r0.log`의 닫힘 줄과 거절 줄). 그 뒤 application이
 부른 중단 shrink는 0.0 ms에 `ncclRemoteError`를 돌려주었다(`hd`, `ow2` 각 1회, kv `ho_shrink_rc`, `ho_shrink_ms`). 원인 `[소스]`:
 `ncclCommShrink`는 abort 플래그를 올렸다 내린 뒤 `ncclCommInitChildComm`을 부르고, 그 함수는 순정 코드 그대로 `ncclCommEnsureReady`로 부모의
 `ncclCommGetAsyncError`를 확인한다(`init.cc`, 이 함수는 순정과 같음: 순정 트리와 비교). 그 값은 GDAKI 문맥의 오류 표시(`q4->hasError`,
 `ncclGinGdakiQueryLastError`)에서 오는 `ncclRemoteError`다. 그래서 순정 NCCL 2.32.3은 GIN 오류가 난 communicator를 그대로는 shrink할 수 없다. 오류를
-낸 rank를 빼려는 shrink도 마찬가지다. 응용이 먼저 devComm을 없애면(`ncclDevCommDestroy`는 그 확인을 부르지 않고, `ncclGinDevCommFree`가 devComm을
+낸 rank를 빼려는 shrink도 마찬가지다. application이 먼저 devComm을 없애면(`ncclDevCommDestroy`는 그 확인을 부르지 않고, `ncclGinDevCommFree`가 devComm을
 목록에서 빼므로 그 GDAKI 문맥의 오류도 함께 사라진다) 순정 확인을 지날 것으로 읽힌다 `[소스, 독립 리뷰. 미확인]`. 그 길은 살아 있는 상대에 대한
-오류까지 모두 지우고 응용을 바꿔야 한다. 이 실험은 그 길도 대조로 잰다(7절).
+오류까지 모두 지우고 application을 바꿔야 한다. 이 실험은 그 길도 대조로 잰다(7절).
 
 **2. GPU가 가득 찬 동안의 복구.** GPU 채우기 커널이 도는 동안 두 rank 모두 복구가 거절로 끝났다(`hd_hog_f1_b_n1`). 원자료에서 다시 센 순서(rank 0
 시계, ms는 GIN 커널 시작 기준):
@@ -84,7 +84,7 @@ rank 0은 GIN 커널 끝 301.0 ms 뒤 abort를 시작했다 `[측정]`. 이 값�
 
 **질문.**
 1. 중단 shrink가, 부모의 GIN 오류가 모두 빼는 rank를 상대로 낸 것일 때 그 오류를 넘어가 1-rank communicator를 돌려주는가. 그 communicator의 allreduce가
-   맞고, 새 communicator에 부모의 오류가 따라오지 않는가. 상대를 적지 않은 오류가 있거나 스위치를 끄면 순정 판정(실패)을 지키는가. 응용이 devComm을
+   맞고, 새 communicator에 부모의 오류가 따라오지 않는가. 상대를 적지 않은 오류가 있거나 스위치를 끄면 순정 판정(실패)을 지키는가. application이 devComm을
    먼저 없애는 길은 순정 확인으로도 통하는가.
 2. GPU가 가득 찬 동안 helper 복사가 멈추는 것은 GIN 커널과 GPU 채우기 커널 사이의 할당과 커널 적재 때문인가, 다 올라갈 수 없는 격자 때문인가.
    두 커널 사이에 아무것도 없게 하거나 격자를 블록 하나 줄이면(GPU는 그대로 가득 참) 복구가 투명해지는가. 그때 새 스트림의 복사는 끝나는가.
@@ -378,18 +378,18 @@ GDAKI 문맥마다 `q4->asyncResult`)를 키로 한다. `ncclCommGetAsyncError`�
 
 (c) **아이 communicator는 부모의 오류를 물려받지 않는다** `[소스]`. 중단 shrink에서는 `shareResources`가 거짓이라(`ncclCommInitChildComm`) 아이가 자기
 `sharedRes`(GIN 상태 포함), abort 플래그, 비동기 결과(0으로 시작)를 새로 만든다(`commAlloc`). 아이 GIN 상태는 devComm을 만들 때까지 연결되지 않는다
-(`ncclGinConnectOnce`는 devComm 생성에서만). 부모의 오류는 지우지 않는다. 응용은 부모를 abort하거나 없애야 한다. 1-rank 아이의 `bootstrapSplit`은 부모
+(`ncclGinConnectOnce`는 devComm 생성에서만). 부모의 오류는 지우지 않는다. application은 부모를 abort하거나 없애야 한다. 1-rank 아이의 `bootstrapSplit`은 부모
 bootstrap으로 자기 자신에게만 보내므로 빠진 rank에 연결하지 않는다 `[소스, 추론]`. 독립 리뷰가 이 셋(자원, 비동기 결과, 스레드 지역 변수)을 소스에서
 다시 확인했다(12절).
 
-응용 쪽의 다른 길: devComm을 모두 없앤 뒤 shrink하면 순정 확인도 지날 것으로 읽힌다(1절). 넘김과 다른 점은 둘이다: 응용을 바꿔야 하고, 그 devComm의
+application 쪽의 다른 길: devComm을 모두 없앤 뒤 shrink하면 순정 확인도 지날 것으로 읽힌다(1절). 넘김과 다른 점은 둘이다: application을 바꿔야 하고, 그 devComm의
 모든 오류(살아 있는 상대에 대한 것까지)가 함께 사라진다. 대조 셀 `hf_shrinkdc_b`가 이 길을 잰다.
 
 (d) **남는 점** `[추론]`.
 - 판정은 rank마다다. 3 rank 이상에서 살아남은 rank 하나만 유지하면(그 rank의 오류가 살아 있는 상대 탓) 다른 rank의 shrink는 그 rank를 기다린다. 순정에서
   어느 rank든 shrink가 실패할 때와 같다.
 - 감시의 드러냄처럼 상대를 적지 않은 올림이 한 번이라도 있으면, 나중에 거절이 상대를 적어도 넘기지 않는다(보수적).
-- 기록은 오류 표시가 지워져도(응용 스레드 복구 API의 커밋) 남는다. 그 뒤 새 오류가 나면 옛 상대까지 빼야 넘긴다(보수적).
+- 기록은 오류 표시가 지워져도(application 스레드 복구 API의 커밋) 남는다. 그 뒤 새 오류가 나면 옛 상대까지 빼야 넘긴다(보수적).
 - 2 rank, 노드마다 GPU 하나에서는 올림의 상대가 언제나 rank 1이고 stride가 1이라, "빼지 않은 rank" 사유와 rank 옮기기 식은 소스로만 확인했다. 이
   실험이 실제로 지나는 유지 경로는 스위치 끔(S5)과 상대 없는 올림(S7) 둘뿐이다.
 
@@ -416,7 +416,7 @@ bootstrap으로 자기 자신에게만 보내므로 빠진 rank에 연결하지 
 
 H2가 맞다면 뜻하는 것 `[추론]`: GIN 커널이 복구 중에 기다리는 동안 같은 프로세스의 어느 스레드든 `cudaMalloc`, `cudaHostAlloc`을 하거나 처음 쓰는 커널을
 지연 적재하면, helper의 복사가 GIN 커널이 끝날 때까지 묶이고 복구는 복사 상한(2 s) 뒤 거절로 끝난다. 문제는 "GPU가 바쁨"이 아니라 "기다리는 GIN
-커널 뒤의 암묵적 동기화"다. 응용 쪽 대책은 GIN 커널을 띄우기 전에 할당하고 커널을 미리 적재하는 것이다.
+커널 뒤의 암묵적 동기화"다. application 쪽 대책은 GIN 커널을 띄우기 전에 할당하고 커널을 미리 적재하는 것이다.
 
 라이브러리에서 고치지 않는 이유.
 - H2가 맞다면 복사를 묶는 호출은 라이브러리 밖에 있다. 라이브러리의 복사 자체는 이미 non-blocking 스트림의 비동기 복사다.
@@ -437,7 +437,7 @@ H2가 맞다면 뜻하는 것 `[추론]`: GIN 커널이 복구 중에 기다리�
 
 ### 3. 드라이버 (`../gin_ts2.cu`)
 
-응용 코드에 복구는 넣지 않는다. 선택 몇 개만 더했다(설정하지 않으면 동작은 그대로이고 지연 루프는 바뀌지 않았다 `[소스]`).
+application 코드에 복구는 넣지 않는다. 선택 몇 개만 더했다(설정하지 않으면 동작은 그대로이고 지연 루프는 바뀌지 않았다 `[소스]`).
 - GPU 채우기 블록은 시작할 때 자기 시작 시각(globaltimer)을 호스트 매핑 배열에 쓴다. 배열은 GIN 커널 전에 만든다. kv `hog_started_probe`(확인 때
   시작한 블록 수), 주 대기 뒤 `hog_started_end`, `hog_start_spread_ms`, `hog_first_start_rel_ms`, `hog_last_start_rel_ms`(띄운 때의 호스트 실시간
   기준, 어림).
@@ -561,7 +561,7 @@ python3 score.py results/<날짜>
 | 2026-10-09 | 운영 빌드 확인: `strings`에서 `NCCL_GIN_TS_TEST`, `GIN_FAULT_INJECT`, `GIN/FAULT`, `GIN_TS_DIAG`, `GIN_RECOVERY_DIAG`, `Q4_QPWATCH`, `Q4_LATE_READ`, `GDAKI_CQ_TYPE`, `GIN/TS: TEST`가 `hfp`에 0개(`hf`에는 16, 4, 11, 1, 2, 1, 1, 3, 23개, gin-harden의 `hd`와 같은 수). 새 함수는 내보내지 않음(`nm -D`). `init.o`의 운영 빌드 컴파일 명령에 `-DNCCL_GIN_TS_PRODUCTION`이 있음(`make -n`) `[측정]` | |
 | 2026-10-09 | `make_diff_hf.sh`: 두 재현 확인 VERIFIED. `hf_layer.diff` md5 `3ee4854b`(2개 파일 +168/−1), 전체 diff md5 `502f8627`(첫 판. 아래에서 바뀜) `[측정]` | [make_diff_hf.sh](make_diff_hf.sh) |
 | 2026-10-09 | 채점 스크립트 합성 시험: gin-harden pilot의 실제 시행 파일을 복사해 이 계층과 드라이버가 낼 줄과 kv를 넣은 시행 92개(예상 결과대로, 첫 판의 셀)로 `score.py`를 돌림. 새 열이 모두 뽑히고, 설정 확인을 통과하며, 일부러 넣은 제외 둘(GPU 채우기 창 밖의 장애, kill 기록 없음)이 걸리고, 넣은 셀의 예측이 모두 "맞음"으로 판정됨(넣지 않은 셀 셋의 R1, R3은 "자료 부족") `[측정]`. 실제 측정이 아니므로 형식과 판정 흐름만 보인다 | 세션 스크래치 `hf_work/synth/fab_hf.py` |
-| 2026-10-09 | 독립 리뷰(다른 에이전트가 `hf_layer.diff`, 빌드 트리, 드라이버 변경, gin-harden pilot 원자료를 읽음, 코드만): 판정 "조건부로 예". 넘김 계층에서 제외하지 않은 상대의 오류를 넘기는 결함은 없음(오류 올림 넷 모두 표시 전에 기록, 순서와 자물쇠 순서, 아이 communicator의 자원과 스레드 지역 변수, rank 옮기기를 소스에서 확인). 막는 문제 둘은 GPU 가득 참 진단 쪽: (1) pilot의 rank 1 셈은 "블록 하나가 늦게 시작"이 아니라 "커널 (거의) 전체가 GIN 커널 끝 무렵 시작"을 뜻함, (2) 이 드라이버가 두 커널 사이에 할당을 더했음(CUDA 가이드의 암묵적 동기화 대상). 중간: 응용이 devComm을 먼저 없애면 순정 확인을 지날 것으로 읽힘, 진단 셀이 두 읽기를 가르지 못함, 2 rank에서는 "빼지 않은 rank" 경로를 지나지 않음. 낮음: 매크로 인자 안의 `#ifdef`, 64개 넘는 상대의 사유, 끝나지 않은 그룹 작업, 기록의 수명. 제안: 쉬는 중 점검을 복사 없이 하는 부분 완화 | 9절 1, 2번 |
+| 2026-10-09 | 독립 리뷰(다른 에이전트가 `hf_layer.diff`, 빌드 트리, 드라이버 변경, gin-harden pilot 원자료를 읽음, 코드만): 판정 "조건부로 예". 넘김 계층에서 제외하지 않은 상대의 오류를 넘기는 결함은 없음(오류 올림 넷 모두 표시 전에 기록, 순서와 자물쇠 순서, 아이 communicator의 자원과 스레드 지역 변수, rank 옮기기를 소스에서 확인). 막는 문제 둘은 GPU 가득 참 진단 쪽: (1) pilot의 rank 1 셈은 "블록 하나가 늦게 시작"이 아니라 "커널 (거의) 전체가 GIN 커널 끝 무렵 시작"을 뜻함, (2) 이 드라이버가 두 커널 사이에 할당을 더했음(CUDA 가이드의 암묵적 동기화 대상). 중간: application이 devComm을 먼저 없애면 순정 확인을 지날 것으로 읽힘, 진단 셀이 두 읽기를 가르지 못함, 2 rank에서는 "빼지 않은 rank" 경로를 지나지 않음. 낮음: 매크로 인자 안의 `#ifdef`, 64개 넘는 상대의 사유, 끝나지 않은 그룹 작업, 기록의 수명. 제안: 쉬는 중 점검을 복사 없이 하는 부분 완화 | 9절 1, 2번 |
 | 2026-10-09 | 리뷰 반영. 계층: 매크로 인자 밖으로 로그 분기, 64개 넘는 상대에 따로 된 사유, 끝나지 않은 그룹 작업이 있으면 유지, 순정 확인에 대한 설명 고침(devComm을 먼저 없애는 길). 드라이버: 새 배열과 새 스트림 확인 준비를 GIN 커널 전으로(두 커널 사이는 gin-harden 그대로), `GIN_TS_HOG_PREALLOC`, 블록 시작 시각의 처음과 끝, `GIN_TS_SHRINK_DEVCOMM_DESTROY`. 셀: GPU 채우기 2 × 2(가득과 하나 작게 × 두 커널 사이 호출 있음과 없음, 각 5), `hf_shrinkdc_b` 5. 예측: G를 다섯으로 다시 쓰고(H2 고침), 스트림 번호 예측(옛 G4) 뺌, S8 더함. 다시 빌드(빌드됨, 실행 안 함): `hf` `b6372d86`, `hfp` `1ae4ce9a`, 드라이버 `9493584d`, 경고 0. `make_diff_hf.sh` 두 재현 VERIFIED, `hf_layer.diff` `a2bcaf69`(+176/−1), 전체 diff `882dfff7`. 운영 빌드 strings 수는 위와 같음 `[측정]`. 합성 시험을 새 셀까지 넣어 다시 돌림: 시행 102개, 판정 100, 예상대로(R1, R3만 자료 부족) `[측정, 실제 측정 아님]` | 세션 스크래치 `hf_work/build_hf2.log`, `build_hfp2.log`, `build_drv3.log`, `synth/fab_hf.py` |
 | 2026-10-09 | 클러스터에서는 아무것도 돌리지 않았다(ssh, 배포, cluster_run.sh, GPU와 RDMA 프로그램 모두 없음). 배포, pilot, 본 실행은 메인 세션이 한다 | |
 | 2026-10-09 04:50:54–04:51:18 | 배포(메인 세션, `bash deploy_hf.sh deploy_check.txt`, rc 0): 새 디렉터리 `hf/`, `hfp/`. 두 노드 md5가 소스와 같고(libnccl `b6372d86`, `1ae4ce9a`, 드라이버 `9493584d`), 드라이버마다 자기 번들의 libnccl을 쓰며, 기존 번들 42개 파일 md5가 두 노드에서 그대로 `[측정]` | [deploy_check.txt](deploy_check.txt) |
@@ -583,6 +583,7 @@ python3 score.py results/<날짜>
 | 2026-10-09 06:23:50 | Release `data-20261009`(메인 세션): 본 실행 자산(파일 712개, 0.37 MB)과 pilot 자산(파일 90개, 0.05 MB)을 내려받아 확인. `sha256sum -c` 통과, 주소를 바꾼 뒤 원본과 같고 실제 주소 접두가 없음 `[측정]` | 14절 |
 | 2026-10-09 | 마감: 상태 `COMPLETE`, 13–19절, 폴더 [README.md](README.md). 고정 절(2, 3, 7, 8절)은 고치지 않고 정정은 13절에 둠. 클러스터 명령은 이 마감에서 돌리지 않음 | |
 | 2026-10-09 | 용어: 본문의 "통신기"를 "communicator"로 바꿈(사용자 요청). 고정 절(2, 3, 7, 8절)과 `predictions.csv`, 채점기가 만든 `SCORE.md`는 그대로 둠 | 이 PR |
+| 2026-10-09 | 용어: 본문의 "응용"을 "application"으로 바꿈(사용자 요청). 고정 절(2, 3, 7, 8절)과 채점 코드, 채점기가 만든 `SCORE.md`는 그대로 둠 | 이 PR |
 
 ## 13. 사전 등록 이후 변경
 
@@ -684,20 +685,20 @@ python3 score.py results/<날짜>
 
 ## 17. 결론
 
-1. **GIN 오류 뒤 죽은 rank를 빼는 shrink가 응용을 바꾸지 않고 된다.** 순정 NCCL 2.32.3과 gin-harden 빌드는 GIN 오류가 난 communicator의 중단 shrink를 바로
+1. **GIN 오류 뒤 죽은 rank를 빼는 shrink가 application을 바꾸지 않고 된다.** 순정 NCCL 2.32.3과 gin-harden 빌드는 GIN 오류가 난 communicator의 중단 shrink를 바로
    `ncclRemoteError`로 돌려준다(대조 5/5, 스위치 끔 5/5). 이 실험의 계층은 라이브러리가 그 GIN 오류를 올릴 때 누구를 상대로 올렸는지 적어 두고, 그
    상대가 모두 빠지면 오류를 넘어간다. 그래서 죽은 rank를 뺀 1-rank communicator를 약 17 ms에 돌려줬고(연구 빌드 10/10, 운영 빌드 5/5), 그 allreduce는
    맞았으며, 새 communicator는 부모의 오류를 물려받지 않았다. 부모는 오류를 그대로 지녀 여전히 abort해야 한다. 상대를 적지 않은 오류(감시의 드러냄)가
    한 번이라도 있으면 순정 답을 지켰다(5/5) `[측정]`.
    - 한계: 규칙은 오류가 "누구를 상대로 올려졌는가"를 본다. 원인이 자기 rank에 있는 거절도 상대를 적으므로, 3 rank 이상에서는 원인이 남은 채
      넘어갈 수 있다. 2 rank라 "빼지 않은 rank" 거부 경로는 지나지 않았다. 아이 communicator는 GIN 문맥 없이만 썼다(13, 18절) `[추론, 소스]`.
-   - 응용이 devComm을 먼저 없애면 순정 확인으로도 shrink가 된다(5/5). 그 길은 devComm의 모든 오류를 지우고 응용을 바꿔야 한다 `[측정, 추론]`.
-2. **GPU가 가득 찬 동안 복구가 실패한 원인은 GPU가 가득 찬 것이 아니라, GIN 커널을 띄운 뒤 GPU 채우기 커널을 띄우기 전에 응용이 한 세 호출의 묶음이다.**
+   - application이 devComm을 먼저 없애면 순정 확인으로도 shrink가 된다(5/5). 그 길은 devComm의 모든 오류를 지우고 application을 바꿔야 한다 `[측정, 추론]`.
+2. **GPU가 가득 찬 동안 복구가 실패한 원인은 GPU가 가득 찬 것이 아니라, GIN 커널을 띄운 뒤 GPU 채우기 커널을 띄우기 전에 application이 한 세 호출의 묶음이다.**
    묶음은 그 커널의 점유율 질의(지연 적재로 커널 코드를 올림), `cudaMalloc`, 스트림 생성이다. 묶음이 있으면 격자 크기와 상관없이 그 뒤의 GPU 명령
    (GPU 채우기 커널, helper의 복사, 새 스트림 8개의 복사)이 GIN 커널이 끝날 때까지 시작하지 않았고 복구는 2 s 복사 상한 뒤 거절로 끝났다(10/10).
    묶음을 GIN 커널 전으로 옮기면 GPU가 똑같이 가득 차도 새 스트림 복사는 0.11 ms 안에 끝나고 복구는 투명했다(10/10). 다 올라가지 못한 블록 하나가 1.8 s 동안
    남아도 복사와 복구를 막지 않았으므로, 하드웨어 작업 큐를 나누어 쓴다는 읽기는 맞지 않았다 `[측정]`. 셋 중 어느 호출이 원인인지는 가르지
-   못했다. CUDA 문서의 암묵적 동기화(할당)와 지연 적재 경고에 맞는 동작이다 `[추론]`. 응용 쪽 대책은 GIN 커널이 복구 중 기다릴 수 있는 동안
+   못했다. CUDA 문서의 암묵적 동기화(할당)와 지연 적재 경고에 맞는 동작이다 `[추론]`. application 쪽 대책은 GIN 커널이 복구 중 기다릴 수 있는 동안
    할당, 첫 커널 적재, 스트림 생성을 하지 않고 미리 해 두는 것이다 `[추론]`. 라이브러리는 이 경우를 고치지 않았다(9절 2번).
 3. **기존 동작과 지연은 그대로다.** 회귀 7셀이 모두 예측대로였고(n=35), 운영 빌드의 지연은 gin-harden 빌드와 4 KiB에서 같고 256 KiB에서 타이머
    한 눈금(0.03 µs) 달랐다 `[측정]`.
@@ -712,7 +713,7 @@ python3 score.py results/<날짜>
   않았다.
 - **GPU 가득 참.** 한 테스트베드(Turing과 Ampere, CUDA 12.8, 드라이버 570)의 CUDA 동작이다. 세 호출 묶음만 갈랐고 하나씩은 가르지 않았다(리뷰
   L6). 멈춘 복사가 실행 끝에는 끝나 있었다는 것만 알고 끝난 시각은 남기지 않았다(리뷰 L4). 블록 시작의 절대 시각 열은 시계 차가 변해 같은 hold
-  안에서만 쓸 수 있다(리뷰 L5). 라이브러리는 이 경우를 고치지 않아, 복구 중 응용이 그 호출을 하면 helper는 여전히 2 s 뒤 거절한다.
+  안에서만 쓸 수 있다(리뷰 L5). 라이브러리는 이 경우를 고치지 않아, 복구 중 application이 그 호출을 하면 helper는 여전히 2 s 뒤 거절한다.
 - **판정식.** S6, S8에는 부모 오류의 전제가 없다(데이터에서는 섰다, 리뷰 L3). 8절의 규칙 셋은 자동이 아니다(해당 없음, 리뷰 L2).
 - **실행기.** 랑데부 포트를 rain의 임시 포트 범위(32768–60999) 안에서 골라 116회 중 1회가 bind에 실패했다(리뷰 L1). 채운 시행은 32분 늦게 혼자
   돌았다(리뷰 L8, 값은 같음).

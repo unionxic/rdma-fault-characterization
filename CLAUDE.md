@@ -1,6 +1,6 @@
 # rdma-error: Claude Code 작업 규칙
 
-RDMA 장애가 NIC에서 응용까지 어디서 남고 어디서 사라지는지 재는 연구 저장소다. 이 파일은 이
+RDMA 장애가 NIC에서 application까지 어디서 남고 어디서 사라지는지 재는 연구 저장소다. 이 파일은 이
 저장소에서 일하는 Claude Code가 따를 규칙이다.
 
 ## 먼저 볼 문서
@@ -77,6 +77,7 @@ RDMA 장애가 NIC에서 응용까지 어디서 남고 어디서 사라지는지
 - **용어**
   - "fingerprint"는 쓰지 않는다. "오류 코드" 또는 "status와 vendor_err 조합"으로 쓴다.
   - NCCL communicator는 "통신기"로 옮기지 않고 "communicator"로 쓴다. 어색한 번역이나 음차보다 영어 단어를 쓴다(release, smoke 등).
+  - "응용"은 쓰지 않고 "application"으로 쓴다.
   - 내부 단계 암호(Q4, S1/S2, T1 등)는 문서 본문에서 기능 이름으로 풀어 쓴다. 폴더, 파일, 환경변수
     이름은 그대로 둔다.
   - gate, park, poison, sentinel, mailbox는 README에서 기능을 풀어 쓴다.
