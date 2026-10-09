@@ -36,8 +36,8 @@ ERR = {
             r"GIN/REC: (commit failed|recovery aborted|prepare declined)", r"escalated rank=",
             r"NET/IB ?: Got completion from peer", r"Segmentation fault|Aborted"],
     "nvs": [r"\[nvshmem-t1\] PE\d+ [0-9.]+ DECLINE", r"\[nvshmem-ft\] PE\d+ marked failed", r"transparent mode (stays )?off",
-            r"cuda failed with", r"NVSHMEM.*(ERROR|[Ee]rror)", r"nvshmem.*failed", r"CUDA error",
-            r"Segmentation fault|Aborted"],
+            r"cuda failed with", r"NVSHMEM.*(ERROR|[Ee]rror)", r"error status: -?\d+ \(|non-zero status: -?\d+",
+            r"CUDA error", r"Segmentation fault|Aborted"],  # pilot P3: "nvshmem.*failed" matched dci_failed=0 (12)
 }
 NOT_ERR = r"error, data\["  # the example's own validation line: the oracle, not an error signal
 TIMEOUT = {"ddp": r"Watchdog caught collective operation timeout|ran for \d+ milliseconds before timing out|WAIT_?REQ",
@@ -45,7 +45,7 @@ TIMEOUT = {"ddp": r"Watchdog caught collective operation timeout|ran for \d+ mil
 REC = {"ddp": r"\[FAULT-RECOVERY2\] (send|recv) comm: recovered", "gin": r"GIN/TS: recovered rank=",
        "nvs": r"\[nvshmem-t1\] PE\d+ [0-9.]+ RECOVERED"}
 DEATH = {"ddp": r"peer process gone|closed its OOB socket \(FIN\)", "gin": r"judged dead|why=peer-dead",
-         "nvs": r"peer_fin=1|library socket closed \(FIN\)"}
+         "nvs": r"peer_fin=1"}  # pilot P3: "library socket closed (FIN)" is also the normal teardown line (12)
 MGMT = {"ddp": r"OOB socket lost", "gin": r"socket to rank \d+ closed cause=",
         "nvs": r"library socket lost|re-dialed|re-accepted"}
 FIRE = {("ddp", "sqp"): r"\[FAULT-INJECT\] forced send QP", ("ddp", "rqp"): r"\[FAULT-INJECT\] forced recv QP .*before receive post",
