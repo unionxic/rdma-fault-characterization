@@ -1,0 +1,10 @@
+Pre-registration of gin-remaining, 2026-10-09 14:49:16 +0900, before any main-run trial of this study.
+sha256 of the fixed prediction file:
+a63389f26f1f2e1ed9b09efb4d0460e88c1922a4116b189004c7668d51a1cb5b  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/gin-remaining-v1 (sections 2, 3, 7, 8).
+Pilots ran before this file on the deployed builds (libnccl hr 2dee2b5b, hrp 786f70bc; gin-peer hq c1311625,
+hqp 4fa076e1; drivers gin_ts2 4e81d8d8, gin_mr d588e9ce, hm_bench a00094b0; nic_gate_test abb2af4c) and were never
+scored: P0 and P1 (results/20261009_pilot, 2026-10-09 14:08:14-14:14:03, 20 runs) and P2 (results/20261009_pilot2,
+2026-10-09 14:48:24-14:48:50, 1 run of the NIC gate test). The 33 predictions written before the pilots did not change
+after them (GS2's trial condition failed in P0; recorded in section 12 and kept). NG1 was added after P0 and P1, before
+any run of the NIC gate test (re-review M-B). Every pilot finding and harness change is in EXPERIMENT.md section 12.
