@@ -9,7 +9,9 @@
 #   B3r    B3, rain is the responder: b3_x_rain_<ro|so>, b3_s_rain_<ro|so>, b3_h_rain_<ro|so>
 #   B3s    B3, sunny is the responder: the same six cells with sunny
 #          B3r, B3s and B3one run B3_ITERS (3 200) iterations with RS_LAST_KB=4096, both passed explicitly (EXPERIMENT.md
-#          9.15.3 and 12: the 1 024 smoke had no boundary hit; 3 200 keeps rain's QUERY_QP under the 20 000 cap)
+#          9.15.3 and 12: the 1 024 smoke had no boundary hit; 3 200 keeps rain's QUERY_QP under the 20 000 cap); the
+#          contention cells (b3_h_*) also get RS_QUERY_BUDGET=19000: they end at an iteration boundary after 19 000 QUERY_QP
+#          (the first rain h rerun hit the 20 000 cap) and are scored over the iterations done
 #   B2     B2: four ranks interleaved (rain 0, 2; sunny 1, 3), report lines only, 2 trials, into b2/ (a repeat: b2_run<k>/)
 #   B2c    B2 control (optional): four ranks consecutive (rain 0, 1; sunny 2, 3), 1 trial, into the latest B2 folder
 #   B1     B1: record (2 ranks), replay rank 1 on sunny and rank 0 on rain (strace), two negative replays; 2 trials, into
@@ -68,6 +70,7 @@ n0=$(left)
 bash -c "$OWNCLEAN"; ssh -n "$SUNNY_SSH" "$OWNCLEAN"
 SECONDS=0
 B3_ITERS=3200; B3_LAST_KB=4096
+B3_H_BUDGET=19000  # contention cells (b3_h_*): RS_QUERY_BUDGET (EXPERIMENT.md 9.15.3 and 12: the first h rerun hit the 20 000 cap)
 newdir() {  # newdir <base>: $R/<base> if it holds no trial yet, else the first free $R/<base>_run<k> (k >= 2)
   if ! ls "$R/$1"/*_meta.txt >/dev/null 2>&1; then echo "$R/$1"; return; fi
   local k=2; while [ -e "$R/$1_run$k" ]; do k=$((k + 1)); done; echo "$R/$1_run$k"
@@ -86,7 +89,14 @@ b3() {  # b3 <cell> <iters> <logdir> [main]: one cell if it fits, then the per-c
   local cell=$1 iters=$2 dir=$3 kvf
   [ -e "$R/STOP_nic" ] || [ -e "$R/STOP_mlx5" ] && { echo "skipped $cell: STOP file" >> "$R/skipped.txt"; return 0; }
   fits $((iters / 100 + 60 + 30 + 15 + 30)) "$cell" || return 0
-  if [ "${4:-}" = main ]; then RS_LAST_KB=$B3_LAST_KB bash "$D/run_b3.sh" "$cell" "$iters" "$dir"; else bash "$D/run_b3.sh" "$cell" "$iters" "$dir"; fi
+  if [ "${4:-}" = main ]; then
+    case "$cell" in
+      b3_h_*) RS_LAST_KB=$B3_LAST_KB RS_QUERY_BUDGET=$B3_H_BUDGET bash "$D/run_b3.sh" "$cell" "$iters" "$dir" ;;
+      *) RS_LAST_KB=$B3_LAST_KB bash "$D/run_b3.sh" "$cell" "$iters" "$dir" ;;
+    esac
+  else
+    bash "$D/run_b3.sh" "$cell" "$iters" "$dir"
+  fi
   kvf="$dir/${cell}_resp.kv"
   if [ ! -f "$kvf" ] || grep -qE 'nic_error=|setup_error=|watchdog=1|cuda_error=' "$kvf"; then
     echo "$(date '+%F %T') hold $H: $cell ended with an error ($(grep -ho 'nic_error="[^"]*"\|setup_error="[^"]*"\|watchdog=1\|cuda_error=[^ ]*' "$kvf" 2>/dev/null | head -1)); no further cell" | tee -a "$R/STOP_nic"
