@@ -131,6 +131,13 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
   - CPU harness의 1 s 마감은 커널 타이머가 32 ms 격자로 올려 잡아 실제로 1001.6–1027.1 ms에 끝났다. 정지 990 ms 이하는
     늘 살아 있음, 1040 ms 이상은 늘 응답 없음이었다.
   - GIN 복구의 3 s 핸드셰이크 마감에서는 정지 2992 ms 이하면 늘 복구, 2998 ms 이상이면 늘 거절이었다.
+- 관리망 소켓으로 보는 생존 판정을 다듬어 오판을 줄였다(사전 등록).
+  - 연결 거부 한 번, 틀린 고유값의 연결, 복구 도중의 소켓 리셋은 죽음으로 보지 않고 다시 연결해 투명하게 복구했다(셀마다 10/10).
+    1 s 이상 떨어진 거부 두 번만 죽음으로 정했다(10/10, 첫 거부 뒤 1001.1–1002.2 ms).
+  - 거절한 쪽이 재연결에 FAIL로 답하면 상대도 바로 끝낸다. 끊김이 끝난 뒤 0.23–0.44 s에 거절했고(15회), 답하지 않던 이전
+    빌드는 8.2–8.5 s를 기다렸다(10회).
+- 오류가 어느 상대를 향해 올라왔는지와 그 원인은 다르다. 로컬 원인으로 상대를 거절한 뒤 그 상대를 빼는 중단 shrink는 원래
+  오류를 지켰고(rank 2개 10/10, rank 4개 5/5), 원인이 상대 쪽일 때만 넘어갔다.
 
 **한계.** 경계 근처(CPU harness 990–1040 ms, GIN 복구 2992–2998 ms)에서 오판이 날 확률은 재지 않았다.
 원인을 가를 수 있는데 아무도 쓰지 않는 정보도 있다.
@@ -154,8 +161,18 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
 - 알려 주는 통로가 있으면, 받는 쪽 장치 대기까지 잇는 데는 abort 신호 하나면 된다. GIN 투명 복구에서 사용자
   devComm에 abort 플래그를 이으니 거절 뒤 받는 쪽 abort가 1 s 안에 돌아왔다(20/20). 잇지 않으면 14.3 s 걸렸다(5/5).
 - 그 통로가 끊기면 받는 쪽은 다시 아무것도 모른다. 관리망 소켓이 끊긴 뒤의 거절에서 받는 쪽 비동기 오류는 0/10이었다.
+- 받기만 하는 rank도 관리망 소켓으로 상대의 죽음을 알고 그것을 대기에 이으면 오류로 끝난다. 대기가 kill 뒤 20.3–21.7 ms에
+  오류로 풀렸고(10/10), 잇지 않은 이전 빌드는 12.35–12.46 s 동안 자기 시간 제한까지 기다렸다(5/5).
+- 알리는 통로를 communicator 하나에 묶으면 한 상대의 장애가 다른 상대로 번진다. rank 4개에서 rank 3이 죽자, 중단 신호가
+  communicator에 하나뿐인 빌드에서는 살아남은 세 rank 사이의 받기 6개가 모두 실패했다(5/5). 중단 신호를 상대마다 두자
+  그 간선 6개가 모두 끝까지 동작했다(10/10).
+- 상대를 지정하지 않는 대기는 상대별로 풀 수 없다. 문맥 전체를 기다리는 flush에서는 받는 쪽 6개가 일찍 풀리지 않고 자기
+  시간 제한까지 기다렸다(5/5). signal 대기와 배리어도 같아서, 시간 제한으로만 끝난다.
+- 오류 뒤에도 데이터 경로가 돌면 받는 쪽은 틀린 결과를 성공으로 받는다. NCCL 2.23.4(복구 끔)에서 rank 1의 수신 QP 오류 뒤
+  진행 스레드가 멈추지 않고 중단하는 커널이 덜 된 데이터를 보내, rank 0은 오류 없이 결과의 1/8이 틀린 채 반복을 끝냈다(5/5).
+  첫 오류에서 진행 스레드를 멈추는 2.32.3에서는 틀린 결과가 없었다(30/30).
 
-**한계.** 받는 쪽 QP의 상태 변화는 GIN에서 직접 재지 않았다.
+**한계.** 받는 쪽 QP의 상태 변화는 GIN에서 직접 재지 않았다. rank 셋 이상은 GPU 두 개를 프로세스 둘씩 나눠 써서 쟀다.
 
 ## 규칙 5. 복구에는 실행 여부를 모르는 구간이 있다
 
@@ -177,10 +194,18 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
   보내 투명하게 끝났고(27/27), 이미 실행된 fetch가 있을 때만 거절했다(3/3). 그 거절을 끄고 다시 보내게 하면 실제로
   두 번 적용됐다(2/2).
 - GIN 투명 복구는 다시 보낼 수 없는 읽기(get)가 낀 라운드를 성공으로 내보내지 않고 거절했다(10/10, 조용한 실패 0).
+- 다시 보낼지는 양쪽이 커밋 전에 합의해야 한다. 응답 쪽이 다시 보내기 계획을 거부했을 때, 시작 쪽이 먼저 다시 보내는
+  빌드는 시작 쪽이 다시 보낸 뒤 거절됐다(5/5). 양쪽이 커밋 전에 계획을 검사하게 하자 어느 rank도 다시 보내지 않았다(10/10).
+- 같은 포트에서 연결을 다시 세우는 복구는 다른 경로 없이도 된다. NCCL 2.32.3의 port failover와 port recovery는 다른 포트가
+  있어야 동작해서, 노드마다 포트가 하나인 환경에서는 295회 중 한 번도 동작하지 않고 QP 장애를 바로 치명적 오류로 끝냈다.
+  같은 장애를 같은 포트에서 다시 세우는 다중 요청 복구는 약 2.2–2.3 ms에 투명하게 복구했다(송신, 수신 QP 장애 각 5/5).
 
 **한계.** 이전 판의 "이미 실행된 경우는 강제로만 만들었다"는 원자료와 달라 2026-10-07에 바로잡았다. 더하기까지 실행된
 라운드는 GIN 투명 복구에서 실제 장애로도 나왔다(1단계 14/30과 73/150, 2단계 21/30). NVSHMEM에서도 이미 실행된 fetch가 실제
 장애로 나왔다(3/10). 강제로만 만든 것은 "쓰기만 실행되고 더하기는 아직" 경우다. 읽기의 재전송은 아직 지원하지 않고 거절한다.
+라이브러리 안의 복구가 CUDA 스트림을 거치면 응용의 CUDA 호출에 막힐 수 있다. GIN 커널을 띄운 뒤 응용이 커널 첫 적재, 메모리
+할당, 스트림 생성을 하면 복구용 복사가 그 커널이 끝날 때까지 막혀 거절됐다(10/10). 같은 호출을 커널 전에 하면 GPU가 가득 차
+있어도 투명하게 복구됐다(10/10).
 
 ## 규칙끼리의 관계
 
@@ -202,11 +227,15 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
 | 받는 쪽에 알리는 통로가 있나 | 받는 쪽은 기다리다 멈춘다 | 4 |
 | 상대 생존을 보는 통로가 있나 | 재시도 초과와 상대 kill은 미확정이다 | 3 |
 | 다시 보낼 때 실행 여부를 확인하나 | atomic이 두 번 적용될 수 있다 | 5 |
+| 받는 쪽 대기가 어느 상대를 기다리는지 아나 | 한 상대의 장애가 다른 상대로 번지거나, 시간 제한으로만 끝난다 | 4 |
+| 오류 뒤에 진행 스레드와 커널이 데이터를 그만 보내나 | 받는 쪽이 틀린 결과를 성공으로 받는다 | 4 |
+| 복구에 다른 포트나 장치가 필요한가 | 포트가 하나면 복구가 동작하지 않는다 | 5 |
 
 ## 범위와 남은 확인
 
 - 노드 한 쌍, NIC 한 종류(ConnectX-6)에서 쟀다. 장애는 소프트웨어로 주입했다.
 - 규칙 3의 오판 경계는 쟀지만, 경계 근처에서 오판이 날 확률은 재지 않았다.
+- rank 셋 이상(규칙 4)은 GPU 두 개를 프로세스 둘씩 나눠 쓴 rank 4개까지 쟀다.
 - 규칙 1은 스택 14개에 소스로 적용해 봤고, 그중 이 테스트베드에서 잴 수 있는 경로만 쟀다. 소스로만 예측한
   경로(UCX GPU의 지연 게시, rocSHMEM 등)는 재지 않았다.
 
@@ -216,9 +245,9 @@ QP가 오류인지, 느린지를 가를 수 없다. 반대로 같은 원인도 �
 |---|---|
 | 1 | [nvshmem_rootcause/README.md](harness/gpu-initiated/nvshmem_rootcause/README.md), [official380/README.md](harness/gpu-initiated/nvshmem_rootcause/official380/README.md), [cq380/README.md](harness/gpu-initiated/nvshmem_rootcause/cq380/README.md), [completion_contract/README.md](harness/gpu-initiated/completion_contract/README.md) |
 | 2, 4 | [propagation/README.md](harness/gpu-initiated/propagation/README.md), [LAYERS.md](harness/gpu-initiated/propagation/results/20261006_campaign/LAYERS.md), [REVIEW_20261006.md](harness/gpu-initiated/propagation/REVIEW_20261006.md) |
-| 3 | [teardown_order/README.md](harness/teardown_order/README.md), [ack_timeout/README.md](harness/ack_timeout/README.md), [stage2/README.md](harness/nccl-integration/stage2/README.md), [live_peer/README.md](harness/live_peer/README.md), [boundary/README.md](harness/live_peer/boundary/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md), [oneway/README.md](harness/gpu-initiated/gin_recovery/oneway/README.md) |
-| 4 | [gin/README.md](harness/gpu-initiated/gin/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md) |
-| 5 | [gin_recovery/README.md](harness/gpu-initiated/gin_recovery/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md), [t1_close/README.md](harness/gpu-initiated/nvshmem_ft/t1_close/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md) |
+| 3 | [teardown_order/README.md](harness/teardown_order/README.md), [ack_timeout/README.md](harness/ack_timeout/README.md), [stage2/README.md](harness/nccl-integration/stage2/README.md), [live_peer/README.md](harness/live_peer/README.md), [boundary/README.md](harness/live_peer/boundary/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md), [oneway/README.md](harness/gpu-initiated/gin_recovery/oneway/README.md), [harden/README.md](harness/gpu-initiated/gin_recovery/harden/README.md), [handoff/README.md](harness/gpu-initiated/gin_recovery/handoff/README.md), [peer/README.md](harness/gpu-initiated/gin_recovery/peer/README.md) |
+| 4 | [gin/README.md](harness/gpu-initiated/gin/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md), [harden/README.md](harness/gpu-initiated/gin_recovery/harden/README.md), [multirank/README.md](harness/gpu-initiated/gin_recovery/multirank/README.md), [peer/README.md](harness/gpu-initiated/gin_recovery/peer/README.md), [builtin/README.md](harness/nccl-integration/builtin/README.md) |
+| 5 | [gin_recovery/README.md](harness/gpu-initiated/gin_recovery/README.md), [nvshmem_ft/README.md](harness/gpu-initiated/nvshmem_ft/README.md), [t1_close/README.md](harness/gpu-initiated/nvshmem_ft/t1_close/README.md), [s2_close/README.md](harness/gpu-initiated/gin_recovery/s2_close/README.md), [harden/README.md](harness/gpu-initiated/gin_recovery/harden/README.md), [handoff/README.md](harness/gpu-initiated/gin_recovery/handoff/README.md), [peer/README.md](harness/gpu-initiated/gin_recovery/peer/README.md), [builtin/README.md](harness/nccl-integration/builtin/README.md) |
 
 참고 문헌:
 - Mellanox Adapters Programmer's Reference Manual, Rev 0.40.
