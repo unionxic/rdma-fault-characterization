@@ -185,7 +185,9 @@ rank를 새 프로세스로 잇는 길, 보낸 메시지를 다시 넣는 길, �
   ├─ 끝점 바꿈 → Commit(2RST, 새 QPN에 연결) → Baseline → rkey 표 [r] 바꿈
   │   → 모든 옛 WQE를 실행된 것으로(lbase += S) → 짝수 에폭 게시 → DONE_RS ──────▶ (모든 생존 rank의 DONE_RS) 단계 k부터 재실행,
   │                                                                            억제 예산만큼 보내기를 내지 않음
-  └─ 시한(감시 스레드가 지킴)이나 실패, 누구든 FALLBACK(r) → PeerDead 거절 → 2 s 뒤 degraded
+  │                                                                            모든 DONE_RS 뒤 RESTORED(r)를 모두에게
+  ├─ (게시 전 CAS: HELD → COMMITTING; 게시 뒤 PUBLISHED; RESTORED 받으면 무장 조건에 따라 ARMED 또는 OFF)
+  └─ 시한(감시 스레드), 실패, 누구든 FALLBACK(r, 화신) → 그 화신을 PeerDead 거절 → 2 s 뒤 degraded. 예비 프로세스는 BYE 없이 끝남
 ```
 
 원칙 셋 `[추론]`:
@@ -279,7 +281,8 @@ REJOIN은 고정 크기 제어 메시지이고 rkey 목록은 자료 소켓으�
 5. `ncclGinRecoverCommit(comm, r, &spareToken)`(2334–2529): 2RST, 장치 색인 0, 새 QPN에 연결(예비 프로세스의 보내기 PSN을 받는 PSN으로).
 6. `gdakiTsBaseline`(4351): 새 화신의 rmsn 기준.
 7. rkey 표 칸 r 바꿈(RL9).
-8. `gdakiTsRepostApply`(4692–4897)를 QP마다 `U = S, n = 0`인 계획으로 부른다(응답 쪽이 Commit 뒤 게시 전에 상대가 죽은 경우는 강한 죽음 증거가 아니라
+8. 게시 전 확인(4708) 뒤, 커밋 지점(4713) 전에 상태 CAS(HELD → COMMITTING). 지면(감시 스레드의 시한이 이김) fallback.
+   `gdakiTsRepostApply`(4692–4897)를 QP마다 `U = S, n = 0`인 계획으로 부른다(응답 쪽이 Commit 뒤 게시 전에 상대가 죽은 경우는 강한 죽음 증거가 아니라
    fail-fast다, DESIGN_POLICY.md 3절): 커밋 지점(포기한 장치 대기가 있으면 FALLBACK), PUBLISHING, `lbase += U`, 짝수 에폭 게시. 쉬던 요청 대기는 자기
    표가 `lbase`보다 작으므로 성공으로 끝난다(`tsPoll` 1086–1092) `[소스]`. 그 WQE들의 효과는 로그 적용으로 예비 프로세스의 메모리에 이미 들어 있으므로
    맞는 의미다 `[추론]`.
@@ -427,7 +430,7 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 | RL6 | 받기 루프(hr 4164–4243 / hw 4189–4268) | REJOIN: 붙잡은 상대(HELD)에게서만, nonce와 화신 번호, 죽음 표시 지우고 `gdakiTsInstall`(hr 3859 / hw 3884) |
 | RL7 | 새 함수, `opMu` 안 | QP마다 `rq.exch`를 새 끝점으로(Commit의 검사 hr 2360 / hw 2361, 연결 hr 2450 / hw 2451 전) |
 | RL8 | 새 함수 | 계획 `U = S, n = 0`으로 `gdakiTsRepostApply`(hr 4692 / hw 4717) |
-| RL9 | `ncclGinGdakiRegMrSym`(hr 7879–7931 / hw 8198–8250), 문맥 생성(hr 7311–7315 / hw 7630–7634) | rkey 표와 신호, 카운터 표의 등록부. 복원 때 칸 r을 NIC 루프백으로. 이 버퍼들을 `gdakiLbAddRange`에 |
+| RL9 | `ncclGinGdakiRegMrSym`(hr 7879–7931 / hw 8198–8250), 문맥 생성(hr 7311–7315 / hw 7630–7634), `gdakiLbSetup`(hr 6474– / hw 6761–) | window 등록은 rkey 표의 자리만 등록부에 적고, 루프백 MR 등록(`gdakiLbAddRange`)은 GDAKI 문맥을 만들 때(devComm 생성, `gin_host.cc` 374) 그때까지의 표에만 한다. 그 뒤 등록한 window가 있으면 무장 안 함. 복원 때 칸 r을 NIC 루프백으로(DESIGN_POLICY.md T5) |
 | RL10 | 문맥 생성, `gdakiLbSetup`(hr 6474–6735 / hw 6761–7040) | 로그 고리와 측 표 할당, 루프백 MR, `ncclGinGdakiGPUContext`의 새 칸 |
 | RL11 | `gdakiTsMsg`(hr 2953 / hw 2966), helper 루프의 메시지 처리(hr 6074–6083 / hw 6359–6368) | 새 메시지 종류 |
 | RL12 | 새 함수 + 낡은 기록 검사(hr 5431 / hw 5460) | 입력 멈춤의 빈 라운드. 검사는 `coveredEpoch`로 |
