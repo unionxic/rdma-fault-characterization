@@ -1,5 +1,5 @@
 {
- "about": "Maps a schedule entry's u_t onto the run (blindrun.py derive). These are the pre-pilot guesses; calib.py rewrites the windows from the pilot (EXPERIMENT.md 9) and the result is fixed by the pre-registration commit.",
+ "about": "Maps a schedule entry's u_t onto the run (blindrun.py derive). Derived by calib.py from results/pilot: DDP and GIN from pilot P1 (fault-free runs, DDP hook probes), NVSHMEM from pilot P3's fault-free runs (EXPERIMENT.md 7, 12). Fixed by the pre-registration commit.",
  "ddp": {
   "anchor_window_s": [
    0.52,
@@ -34,12 +34,12 @@
  },
  "nvs": {
   "anchor_window_s": [
-   0.2,
-   2.0
+   0.515,
+   4.374
   ],
   "hook_ms": [
-   200,
-   2000
+   515,
+   4374
   ]
  },
  "source": "calib.py /home/unionxic/rdma-error-wt/blind-apps/harness/blind/results/pilot"
