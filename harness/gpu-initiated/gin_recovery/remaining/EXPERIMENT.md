@@ -5,12 +5,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `DRAFT` |
+| 상태 | `PREREGISTERED` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-remaining` @ `ae3dafc9` (master) |
-| 사전 등록 태그 | 없음. 메인 세션의 pilot 뒤 `prereg/gin-remaining-v1`을 상태를 `PREREGISTERED`로 바꾼 바로 그 커밋에 단다(3절) |
-| 마지막 갱신 | 2026-10-09, 초안: 계층 구현, 빌드, 실행기와 채점기, 예측 초안, 독립 리뷰와 반영, 마지막 빌드(1–12절) |
+| 사전 등록 태그 | `prereg/gin-remaining-v1` (상태를 `PREREGISTERED`로 바꾼 바로 그 커밋) |
+| 마지막 갱신 | 2026-10-09 14:49, 사전 등록(pilot P0, P1, P2 뒤) |
 
 표시: `[측정]` 원자료나 시행별 표에서 확인, `[소스]` 코드에서 읽음, `[문서]` CUDA 문서의 설명, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -620,7 +620,7 @@ python3 score.py results/<날짜>
 
 ## 10. 완료 조건과 QA 기준
 
-- [ ] 메인 세션이 pilot(P0, P1, P2)을 돌리고 결과를 12절에 적은 뒤, 고칠 것을 고치고 태그를 달았다(P0, P1은 12절에 적음, P2와 태그는 아직).
+- [x] 메인 세션이 pilot(P0, P1, P2)을 돌리고 결과를 12절에 적은 뒤, 고칠 것을 고치고 태그를 달았다(P0, P1은 12절에 적음, P2와 태그는 아직).
 - [ ] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외와 실패를 따로 센 표가 있다(`SCORE.md` 끝 표).
 - [ ] 예측 34줄마다 판정(맞음, 틀림, 자료 부족)과 놓친 시행 목록이 있다.
 - [ ] 다른 에이전트가 `score.py`를 보지 않고 원자료에서 핵심 수치를 다시 셌다(handshake timeout과 복구 시각, 기다림 안 응답, degraded 해제와 받기 해제
@@ -648,7 +648,7 @@ python3 score.py results/<날짜>
 - [x] pilot P0, P1(메인 세션, 채점 안 함), 점검(12절). 실행기와 파서 결함 없음
 - [x] 재리뷰 반영: NIC 게이트 시험, `n_served_rec`, 9절 1번 (f)
 - [ ] NIC 게이트 시험 배포(`deploy_ngt.sh`)와 pilot P2(메인 세션)
-- [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
+- [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/` 태그
 - [ ] 본 실행 H1–H5 (`RUNNING`)
 - [ ] 채점 (`QA`)
 - [ ] 독립 재계산과 측정 코드 리뷰
@@ -678,6 +678,9 @@ python3 score.py results/<날짜>
 | 2026-10-09 | 재리뷰(다른 에이전트, 읽기만, 리뷰 반영 뒤의 계층 = `hr_layer.diff` `66f61272`이 빌드한 트리와 같음). 판정 "조건부로 그대로 실행 가능", 막는 결함과 높음 없음. 중간 3(M-A 한 번 훑을 때 중첩 둘, M-B NIC 4 B 쓰기와 SM 원자 연산 미확인, M-C 앞 헤더의 장치 코드), 낮음 4(L-A CY3이 거부도 셈, L-B degraded 시계는 거절에서, L-C 자체 시험의 스트림 복사, L-D 잘못된 죽음 판정의 범위). 첫 리뷰 반영은 H1, H2, M2, L1–L6, 사소가 맞고 M1, L8이 부분. 처리: 계층은 고치지 않음(배포한 번들 그대로, 리뷰도 그대로 실행 가능이라 함), M-B는 NIC 게이트 시험을 더함, L-A는 설명용 열 `n_served_rec`, L-B는 DG 열과 대 봄(이 셀은 판정 직후 거절, 3.3 주의), 나머지는 9절 1번 (f)에 남는 점으로 적음 | 리뷰 보고는 메인 세션이 전함(파일 없음) |
 | 2026-10-09 | NIC 게이트 시험 리뷰(다른 에이전트, 읽기만). 판정 "먼저 고칠 것": (1) `deploy_ngt.sh`의 기대 md5가 다시 빌드한 것과 달라 배포가 멈춤, (2) 멈춤 깃발의 NIC 쓰기를 다시 읽지 않아, 그 쓰기를 잃으면 감시 종료로 제외되어 NG1이 "틀림"이 아니라 "자료 부족"이 됨, (3) 정지 기다림 안의 쓰기 손실이 정지 시간 초과로도 세짐, (4) dmabuf가 아니거나 link-local GID가 아닌 실행도 채점됨, (5) 계층과 다른 점(게이트 줄의 다른 원자 연산, 드문 `atomicOr`와 CAS, 읽기 범위). 맞다고 본 것: QP 준비, GID 고르기, dmabuf 등록, CUDA 문맥, 모든 기다림의 한도, 쓰기 경로가 `gdakiLbXfer`와 같음, 장치 원자 연산이 `tsWordEnter`, `tsWordLeave`와 같음, Dekker와 안 확인이 NIC 읽기에도 맞음, 실행기와 채점 열, NG1 식, H5 시간. 반영: (1) 마지막 빌드로 기대 md5를 고침, (2) 모든 NIC 쓰기(에폭, 멈춤)를 다시 읽고 잃으면 세고 다시 씀, (3) 정지 기다림 안에서 다시 쓰고 이어 기다림(시간 초과는 2 s에만), (4) `score.py`의 설정 확인 `config_ngt`, (5) 게이트를 88 B 자리에 두고 같은 줄의 색인 단어 둘을 들어간 스레드가 고침(`ng_idx_ok`), 나머지는 9절 5번에 적음 | 리뷰 보고는 이 세션의 에이전트 응답(파일 없음) |
 | 2026-10-09 | pilot 뒤, 태그 전 바꾼 것. pilot에서 실행기나 파서 결함은 찾지 못했다. 더한 것: NIC 게이트 시험([nic_gate_test.cu](nic_gate_test.cu), [run_ngt_hr.sh](run_ngt_hr.sh), [deploy_ngt.sh](deploy_ngt.sh), `build_hr.sh ngt`), 셀 `nic_gate`, hold P2와 H5의 `nic_gate` 5회, hold의 남은 프로세스 확인에 `nic_gate_test`, `rows_hr.py`의 `ngt_row()`와 `served_rec`, `score.py`의 `ngt/` 폴더와 제외 이유, 예측 NG1(34줄, 앞 33줄은 그대로). `nic_gate_test` 빌드 `abb2af4cb61a8075242f348c599b407a`(소스 `4d87f2b8`), 경고 0 `[측정]`. 채점기 사본을 pilot 사본에 만든 NIC 게이트 시행 하나(측정 아님)와 함께 돌려 NG1이 평가되고 열이 나옴을 확인 | 이 커밋, 세션 스크래치 `agent_ts2hr/out/ngt/build_info.txt` |
+| 2026-10-09 14:44 | NIC 게이트 시험 배포(`deploy_ngt.sh`, rc 0): 두 노드의 md5가 소스와 같음, 기존 번들 57개 파일 그대로 | [deploy_ngt_check.txt](deploy_ngt_check.txt) |
+| 2026-10-09 14:48:24–14:48:50 | pilot P2(메인 세션, 채점 안 함): `chain.sh results/20261009_pilot2 P2`, rc 0. NIC 게이트 시험이 두 노드에서 PASS(결과 줄 12개), `mr=dmabuf`, `gid_kind=link-local`, 라운드 a 8677, 8749와 b 8797, 8806, 물러남 1802만–1억4334만. 새 mlx5 줄 0, iptables 0/0 | `results/20261009_pilot2/`(원자료는 Release) |
+| 2026-10-09 14:49:16 | 사전 등록 | [PREREG.txt](PREREG.txt), 태그 `prereg/gin-remaining-v1` |
 
 ## 13. 사전 등록 이후 변경
 

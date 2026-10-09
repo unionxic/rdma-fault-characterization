@@ -1,0 +1,13 @@
+== source
+abb2af4cb61a8075242f348c599b407a  ngt/nic_gate_test
+built=2026-10-09 14:41:19
+nic_gate_test_md5=abb2af4cb61a8075242f348c599b407a nic_gate_test_cu_md5=4d87f2b83ff7ddc1d975685250fef7a0
+nvcc=Build cuda_12.8.r12.8/compiler.35583870_0
+== rain
+abb2af4cb61a8075242f348c599b407a  ngt/nic_gate_test
+== sunny
+abb2af4cb61a8075242f348c599b407a  ngt/nic_gate_test
+rain ldd:  libibverbs.so.1 => /usr/lib/x86_64-linux-gnu/libibverbs.so.1 (0x00007f18e9636000); libcuda.so.1 => /usr/lib/x86_64-linux-gnu/libcuda.so.1 (0x00007f18e5171000);
+sunny ldd:  libibverbs.so.1 => /lib/x86_64-linux-gnu/libibverbs.so.1 (0x0000768c2a1f7000); libcuda.so.1 => /lib/x86_64-linux-gnu/libcuda.so.1 (0x0000768c24400000);
+deployed md5 == source on both nodes
+existing bundle unchanged on both nodes (57 files each)
