@@ -135,24 +135,37 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
 ```
  OFF ──(Resume 호출, communicator 무장 조건, 모든 생존 rank가 무장 가능으로 답한 확정 체크포인트, 예비 등록)──▶ ARMED ──(DISARM)──▶ OFF
  ARMED ──(강한 죽음 증거, TOLD 아님)──▶ HELD ──(hold 시작, 모두 HOLDING, PID 확인, REJOIN, 상태 적용, 복원 라운드)
- HELD ──(helper CAS, 커밋 지점 직전)──▶ COMMITTING ──(게시)──▶ PUBLISHED ──(예비 프로세스의 RESTORED(p))──▶ ARMED(화신 + 1)
- HELD 또는 PUBLISHED ──(시한: G8 CAS, 실패, TOLD, 다른 죽음, FALLBACK(p) 받음)──▶ FALLBACK = 그 화신을 PeerDead 거절(fail-fast와 같은 상태)
- COMMITTING ──(그 사이 온 FALLBACK(p)나 실패)──▶ 게시를 마친 뒤 PUBLISHED에서 FALLBACK
+ HELD ──(helper CAS, 커밋 지점 직전)──▶ COMMITTING ──(게시)──▶ PUBLISHED ──(예비 프로세스의 RESTORED(p))──▶ ARMED(화신 + 1) 또는 OFF
+ HELD ──(시한: G8 CAS와 CPU 쓰기, 실패, TOLD, 다른 죽음, FALLBACK(p, 화신))──▶ FALLBACK = 그 화신을 PeerDead 거절
+ COMMITTING ──(커밋 지점 뒤 복사나 doorbell 실패: 게시가 일어나지 않음)──▶ 그 자리에서 PeerDead 거절
+ COMMITTING ──(그 사이 온 FALLBACK(p, 화신))──▶ 게시를 마친 뒤 PUBLISHED에서 FALLBACK
+ PUBLISHED ──(시한: G8은 상태만, 실패, 그 상대 QP의 장애 기록, FALLBACK(p, 화신))──▶ helper가 PeerDead 거절(2ERR 먼저)
+ 어느 상태든 ──(FALLBACK(p, 화신) 받음)──▶ 그 화신을 PeerDead 거절, 그 화신은 다시 붙잡지 않음
  HELD, COMMITTING, PUBLISHED ──(abort, revoke, shrink, destroy)──▶ CANCELLED
- OFF 또는 ARMED가 아닌 상대의 죽음 ──▶ fail-fast 거절(ARMED였으면 FALLBACK(p)도 보냄)
+ OFF 또는 ARMED가 아닌 상대의 죽음 ──▶ fail-fast 거절(ARMED였으면 FALLBACK(p, 화신)도 보냄)
 ```
 
-"붙잡은 상대"는 HELD, COMMITTING, PUBLISHED의 상대다. 이 상태는 상대마다 원자 칸 하나이고, helper와 Q4 감시 스레드(G8, G9)는 잠금 없이 읽고 CAS로만
+"붙잡은 상대"는 HELD, COMMITTING, PUBLISHED의 상대다. 다만 감시와 기록과 훑기에서 빼는 규칙(G3, G4의 흡수, G5)은 QP가 ERR인 HELD와 COMMITTING에만
+걸린다. PUBLISHED의 QP는 예비 프로세스와 RTS로 살아 있으므로 감시하고, 그 QP의 장애 기록은 복원 실패로 보아 fallback한다(라운드를 열지 않음; P3). 이 상태는 상대마다 원자 칸 하나이고, helper와 Q4 감시 스레드(G8, G9)는 잠금 없이 읽고 CAS로만
 바꾼다(N3: G9는 outMu 안 hw 3530에서 불리고 helper의 거절은 정책 칸을 본 뒤 outMu로 가므로, 정책 잠금을 두면 차례가 뒤집혀 교착될 수 있음).
 
 - **시한과 게시의 다툼**(N1). helper는 복원 라운드의 게시 전 확인(hr 4708 / hw 4733) 뒤, 커밋 지점(hr 4713 / hw 4738) 전에 CAS(HELD → COMMITTING)를 한다.
-  G8은 CAS(HELD → TIMED_OUT) 또는 CAS(PUBLISHED → TIMED_OUT)를 하고 이겼을 때만 CPU 쓰기를 한다. COMMITTING은 G8이 건드리지 않는다: 남은 일은 정해진
+  G8은 HELD에서 CAS(HELD → TIMED_OUT)에 이겼을 때만 CPU 쓰기(단어, 비동기 오류, 책임, degraded)를 한다. HELD의 QP는 hold 시작에서 이미 ERR이므로 "QP를
+  ERR로 먼저, 그 다음 단어"라는 거절의 차례(hr 4931–4943 / hw 4956–4968)가 지켜진다. PUBLISHED에서는 QP가 RTS라 CPU로 단어부터 올리면 그 차례가 깨지므로
+  (P1) G8은 CAS(PUBLISHED → TIMED_OUT)로 상태만 바꾸고, 거절 전체(2ERR 먼저)는 helper가 한다. PUBLISHED에서는 게이트가 이미 짝수라 장치 대기가 붙잡혀
+  있지 않으므로 급할 일이 없다. PUBLISHED의 시한은 hold 한도 항이 없는 따로 된 값(게시 시각 + `NCCL_GIN_RESTORE_MS`)이다. COMMITTING은 G8이 건드리지 않는다: 남은 일은 정해진
   복사와 게시뿐이고 그 시간은 T4의 "복원 라운드 몫"에 든다(라운드 감시도 덮음). CAS에서 진 helper는 커밋 지점 전에 fallback한다. hold 시작의 걸음마다,
   특히 HOLDING을 보내기 전에 TIMED_OUT을 본다. 이렇게 하면 게시 전 확인 뒤에 라이브러리가 스스로 상대 단어를 올리는 일이 없다(불변식 (나)).
 - **게시 뒤의 실패**(N2). 생존 rank가 게시한 뒤(PUBLISHED)에도 예비 프로세스가 모든 DONE_RS를 받아 재실행을 시작하고 RESTORED(p)를 모두에게 보내기 전까지는
-  붙잡은 상대다. 그 사이 FALLBACK(p)를 받거나 G8의 시한(PUBLISHED에서도 감)이 오면 새 화신을 PeerDead/PEER_DEAD로 거절한다(G2 갈래 (가)는 "RESTORED 전의
-  화신"을 덮음). 그 거절은 게시 뒤 그 상대 QP에 낸 연산의 실패를 application에 알리는 보통의 거절이다. 예비 프로세스는 FALLBACK을 받으면 BYE 없이
-  끝난다(BYE를 보내면 생존 rank가 LEFT로 보고 degraded 없이 거절할 수 있음, hr 5487–5488 / hw 5516–5517). 재실행은 모든 DONE_RS 뒤에만 한다.
+  붙잡은 상대다. 그 사이 FALLBACK(p)를 받거나 PUBLISHED의 시한이 오면 helper가 새 화신을 PeerDead/PEER_DEAD로 거절한다(G2 갈래 (가)는 "RESTORED 전의
+  화신"을 덮음). 그 거절은 게시 뒤 그 상대 QP에 낸 연산의 실패를 application에 알리는 보통의 거절이다. FALLBACK은 화신 번호를 싣고, 어느 상태에서 받든 그
+  화신을 PeerDead로 거절하며 그 화신은 다시 붙잡지 않는다(RESTORED와 FALLBACK이 엇갈려 와도 모든 rank가 거절로 모임, P2). 예비 프로세스는 RESTORED
+  뒤에도 FALLBACK을 받으면 BYE 없이 끝난다(BYE를 보내면 생존 rank가 LEFT로 보고 degraded 없이 거절할 수 있음, hr 5487–5488 / hw 5516–5517). 재실행은 모든 DONE_RS 뒤에만 한다.
+- **RESTORED 뒤**(P5). ARMED(화신 + 1)는 무장 조건(2.3절)이 맞을 때만이고 아니면 OFF다: 새 예비 프로세스가 짝에 등록됐고, 짝은 그 논리 rank를 지금 맡은 프로세스
+  (첫 예비 프로세스)의 PID와 시작 시각을 받았고(다음 PID 확인용), 붙잡은 동안 받은 DISARM(p)가 없어야 한다(그 동안 받은 DISARM은 RESTORED 때 적용). 같은
+  rank의 두 번째 복원은 체크포인트 k와 그 뒤의 로그로 다시 할 수 있다(예산 X − P_k가 첫 예비 프로세스의 실행까지 덮음, 검토 2 확인).
+- **억제 중인 rank와 남의 체크포인트**(P4). 억제 예산이 남은 rank는 다른 rank의 CKPT_PAUSE에 BUSY로 답한다. 그 rank의 보내기 위치가 상대가 실행한 수보다
+  예산만큼 뒤라 절단점을 맞출 수 없기 때문이다. 그래서 생존 rank의 다음 체크포인트는 예비 프로세스의 억제가 끝난 뒤에 확정된다.
 - **붙잡지 않고 거절하는 rank**(N4). ARMED인 p를 hold 없이 거절하는 rank(약한 죽음 판정, 3절의 응답 쪽 Commit 뒤 거절, hold 시작 때의 TOLD, 시작 실패)는
   FALLBACK(p)를 모두에게 보낸다. 다른 rank가 시한까지 HOLDING을 기다리지 않게 한다.
 
@@ -190,12 +203,12 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
 
 | # | 장치와 코드 | fail-fast | hold-for-restore | 우선 | 바꿀 것 |
 |---|---|---|---|---|---|
-| D1 | 장치 분류와 기록 경로(S1). 경로 판단은 Q4 감시 스레드(hr 1021, false면 1026–1035에서 비동기 오류), 처리는 helper의 기록 루프 hr 6114–6124 / hw 6399–6409 → `gdakiTsInitiate` hr 5419– / hw 5448– | 기록 → 라운드: liveness 확인 → 살아 있으면 복구, 죽었으면 거절(hr 5478–5489 / hw 5507–5518) | 경로 판단은 그대로 참(helper로; F28). 살아 있는 상대: 같음. 붙잡은 상대의 기록: 라운드를 열지 않고 흡수(`qs[].handled` 올림). 루프의 뒷정리(`ts->batch`, heartbeat, `nQueued` 줄이기)는 그대로 둠(V16) | 감지(반응은 정책) | G4. L: 흡수 |
-| D2 | hw QP 상태 감시(S2) | 거절 안 된 모든 상대의 QP를 10 ms마다 QUERY_QP. ERR/SQER + 유예 5 ms(뿌리 CQE 없으면 50 ms) → 합성 기록 → D1 | 붙잡은 상대는 감시하지 않음(QUERY_QP도, QP와 CQ의 NIC 읽기도 없음). 이미 줄에 선 기록은 D1처럼 흡수. 복원 뒤(QP가 예비 프로세스와 RTS) 다시 감시. 감시의 에폭 비교(`gdakiDetQueued` hw 6066, `handled >= epoch + 2` hw 6139)는 빈 라운드(M3)에 맞춰 `coveredEpoch`로 | 감지 | G3, G6 |
+| D1 | 장치 분류와 기록 경로(S1). 붙잡은 상대의 처리는 HELD, COMMITTING에서 흡수, PUBLISHED에서 fallback(3절, P3). 경로 판단은 Q4 감시 스레드(hr 1021, false면 1026–1035에서 비동기 오류), 처리는 helper의 기록 루프 hr 6114–6124 / hw 6399–6409 → `gdakiTsInitiate` hr 5419– / hw 5448– | 기록 → 라운드: liveness 확인 → 살아 있으면 복구, 죽었으면 거절(hr 5478–5489 / hw 5507–5518) | 경로 판단은 그대로 참(helper로; F28). 살아 있는 상대: 같음. 붙잡은 상대의 기록: 라운드를 열지 않고 흡수(`qs[].handled` 올림). 루프의 뒷정리(`ts->batch`, heartbeat, `nQueued` 줄이기)는 그대로 둠(V16) | 감지(반응은 정책) | G4. L: 흡수 |
+| D2 | hw QP 상태 감시(S2) | 거절 안 된 모든 상대의 QP를 10 ms마다 QUERY_QP. ERR/SQER + 유예 5 ms(뿌리 CQE 없으면 50 ms) → 합성 기록 → D1 | HELD와 COMMITTING의 상대는 감시하지 않음(QUERY_QP도, QP와 CQ의 NIC 읽기도 없음). PUBLISHED는 감시함(P3). 이미 줄에 선 기록은 D1처럼 흡수. 복원 뒤(QP가 예비 프로세스와 RTS) 다시 감시. 감시의 에폭 비교(`gdakiDetQueued` hw 6066, `handled >= epoch + 2` hw 6139)는 빈 라운드(M3)에 맞춰 `coveredEpoch`로 | 감지 | G3, G6 |
 | D3 | 감시의 펌웨어 명령 부하(S2) | rank마다 (상대 수 × 문맥 수)번/10 ms, `opMu` 안 | 이 rank에서는 hold 시작과 복원 라운드와 겹치지 않음(같은 helper 스레드, 감시는 기록 줄이 빌 때만 hw 6410). 같은 NIC의 다른 rank의 감시와 예비 프로세스의 초기화(QP 생성, MR 등록)는 겹침. 복원 라운드의 펌웨어 단계가 3 000 ms를 넘으면 감시가 그 상대의 단어를 올림 → TOLD → fallback. 감시의 QUERY_QP가 응답 쪽 rmsn도 받아 누적 실행 수에 쓰므로(G7) 복원 계층이 따로 펌웨어 명령을 내지 않음 | 펌웨어 감시 | G7. L: 복원 셀에서 `detQueryUsMax`와 복원 단계 시간을 잼 |
 | D4 | helper 소켓 liveness(S3). 다시 걸지 않음: `gone`/`declined` 상대(hr 3972, 4069 / hw 3997, 4094). HELLO는 낮은 rank에서만, 더 새 세대만(hr 4209–4215 / hw 4234–4240). 거절한 상대에는 FAIL(hr 3910–3923, 4176–4180, 4204–4207 / hw 3935–3948, 4201–4205, 4229–4232). nonce(hr 6237–6239 / hw 6523–6525). 다시 걸기(hr 4046–4064 / hw 4071–4089), 받기 한 번에 500 ms까지 읽음(hr 4175 / hw 4200) | 죽음 → `deadJudged` → 거절(R1) | 판정과 그 줄은 같음. 반응만 다름(R1). 새 프로세스 받기: 새 메시지 REJOIN을 받기 루프(hr 4164–4243 / hw 4189–4268)에서, 붙잡은 상대에게서만, nonce가 맞고(초기화 재생으로 같은 nonce) 화신 번호 = 지금 + 1일 때. 아직 붙잡지 않은 rank는 REJOIN을 닫고, 예비 프로세스는 시한까지 다시 건다(V6). 받으면 `gone`, `deadJudged`, `refusals`, `left`, `peerFailed`, `failedPending`, `lostCause`, `closeCause`를 지우고, 옛 주소로 진행 중이던 `dialFd`/`pendFd`/`probeFd`를 닫고(늦은 ECONNREFUSED가 새 화신의 죽음으로 세어지지 않게, hr 4032–4036 / hw 4057–4061), 공통 연결 세대를 정해 `gdakiTsInstall`(hr 3859–3872 / hw 3884–3897; F22). 펜싱(F11): HELLO, HELLO-ACK, PROBE-ACK에 화신 번호를 싣고 생존 rank는 지금 화신이 아니면 받지 않음. 예비 프로세스는 설치되기 전에는 REJOIN 말고 아무것에도 답하지 않고, 원래 rank의 listen 주소(기록에 있음)와 다른 포트에 묶음. REJOIN은 고정 크기 제어 메시지이고, rkey 목록 같은 큰 것은 자료 소켓으로(F23) | 감지 | L. hw 변경 없음 |
-| D5 | 감시(S4) | 펌웨어 단계 초과 → 그 상대의 단어 + 비동기 오류 + 책임(그 상대, Local)(hr 3476–3516 / hw 3501–3541, 책임 hr 3505 / hw 3530). 라운드 25 s 초과, 기록이 쌓였는데 helper가 1 s 넘게 정지 → 드러냄, 이후 모든 라운드 거절(hr 3517–3525 / hw 3542–3550) | 같음. 다만 붙잡은 상대에 대한 펌웨어 초과의 책임 원인은 PeerDead로 적음(G9: 안 그러면 Local 책임이 남아 fallback 뒤 shrink 넘기기가 −3을 돌려줌, V1). 복원 기다림은 라운드가 아님(heartbeat 계속). 복원 상태 기계의 한 걸음은 1 s보다 짧게: 소켓 읽기, 로그와 이미지의 NIC 읽기는 조각으로(고정 사본 크기 = max(CQ 크기 × 64 B, 장치 QP 구조) + 4 KiB, hr 1899–1901 / hw 1900–1902), 기록은 흡수되어 쌓이지 않음(F14). hold 시작과 복원 라운드는 `gdakiTsBusy` 안. 복원 시한은 이 감시 스레드가 지킴(G8, V5): helper가 다른 라운드에 묶여 있어도 시한에 CAS(HELD 또는 PUBLISHED → TIMED_OUT)에 이기면 그 상대의 단어(PEER_DEAD), 비동기 오류, 책임(PeerDead), degraded 예약을 CPU 쓰기로(hw 감시처럼 `gdakiTsToComm` 안에서) 하고, 게이트 실패 쓰기와 FAIL은 helper가 풀리면 fallback 거절로 마저 함(이중 거절은 무해: 단어의 first, degraded의 `deadMs`, 책임의 중복 막기, `!pe.declined`; 검토 2 확인). COMMITTING은 건드리지 않음(3절, N1) | 감시 | G8, G9, L |
-| D6 | 장치의 포기와 훑기(S5) | 포기 → 거절(원인 Local, hr 5892–5893, 5898 / hw 5921–5922, 5927). 기록 유실 두 번 → 거절(hr 5894–5896 / hw 5923–5925) | 포기는 TOLD. 붙잡은 상대에 대한 훑기의 거절은 G2가 fallback(PeerDead)으로 바꿈(V1). 유실 검사: 흡수가 `handled`를 올리므로 보통은 조용함. 장치 기록 우편함이 넘친 경우 붙잡은 상대는 건너뜀 | 장치 실패(TOLD) | G2, G5 |
+| D5 | 감시(S4) | 펌웨어 단계 초과 → 그 상대의 단어 + 비동기 오류 + 책임(그 상대, Local)(hr 3476–3516 / hw 3501–3541, 책임 hr 3505 / hw 3530). 라운드 25 s 초과, 기록이 쌓였는데 helper가 1 s 넘게 정지 → 드러냄, 이후 모든 라운드 거절(hr 3517–3525 / hw 3542–3550) | 같음. 다만 붙잡은 상대에 대한 펌웨어 초과의 책임 원인은 PeerDead로 적음(G9: 안 그러면 Local 책임이 남아 fallback 뒤 shrink 넘기기가 −3을 돌려줌, V1). 복원 기다림은 라운드가 아님(heartbeat 계속). 복원 상태 기계의 한 걸음은 1 s보다 짧게: 소켓 읽기, 로그와 이미지의 NIC 읽기는 조각으로(고정 사본 크기 = max(CQ 크기 × 64 B, 장치 QP 구조) + 4 KiB, hr 1899–1901 / hw 1900–1902), 기록은 흡수되어 쌓이지 않음(F14). hold 시작과 복원 라운드는 `gdakiTsBusy` 안. 복원 시한은 이 감시 스레드가 지킴(G8, V5): helper가 다른 라운드에 묶여 있어도 시한에 HELD에서 CAS(HELD → TIMED_OUT)에 이기면 그 상대의 단어(PEER_DEAD), 비동기 오류, 책임(PeerDead), degraded 예약을 CPU 쓰기로(hw 감시처럼 `gdakiTsToComm` 안에서) 하고(PUBLISHED에서는 CAS로 상태만, P1), 게이트 실패 쓰기와 FAIL은 helper가 풀리면 fallback 거절로 마저 함(이중 거절은 무해: 단어의 first, degraded의 `deadMs`, 책임의 중복 막기, `!pe.declined`; 검토 2 확인). COMMITTING은 건드리지 않음(3절, N1) | 감시 | G8, G9, L |
+| D6 | 장치의 포기와 훑기(S5) | 포기 → 거절(원인 Local, hr 5892–5893, 5898 / hw 5921–5922, 5927). 기록 유실 두 번 → 거절(hr 5894–5896 / hw 5923–5925) | 포기는 TOLD. 붙잡은 상대에 대한 훑기의 거절은 G2가 fallback(PeerDead)으로 바꿈(V1). 유실 검사: 흡수가 `handled`를 올리므로 보통은 조용함. 장치 기록 우편함이 넘친 경우 HELD, COMMITTING의 상대는 건너뜀 | 장치 실패(TOLD) | G2, G5 |
 | D7 | NVSHMEM t1w FIN 판정(S6) | BYE 없는 FIN → 바로 `t1_decline` | NVSHMEM에는 hold가 없음. hold 정책의 프로세스는 NVSHMEM을 쓰지 않음(X6) | NVSHMEM fail-fast | 없음(제약) |
 
 ### 4.2 반응
@@ -215,7 +228,7 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
 |---|---|---|---|---|---|
 | M1 | 라운드: 쌍 범위와 전체 재설정(`gdakiTsDecideScope` hr 3315–3375 / hw 3340–3400), NACK 12(hr 5611–5619 / hw 5640–5648), 범위 충돌(hr 5639–5653 / hw 5668–5682), 커밋 전 계획과 NACK 15/16(hr 4542–4570, 5621–5627 / hw 4567–4595, 5650–5656), 중첩 응답 라운드(`gdakiTsServeLower` hr 5315–5378 / hw 5341–5407, hw M-A: 한 번에 하나), 미룬 REQ(hr 6023–6056 / hw 6308–6341). 모르는 메시지 종류: 시작 쪽 ACK 기다림이 무시(hr 5685 / hw 5714), 미룬 REQ 뒤 무시(hr 6048 / hw 6333), 기다림 안 응답이 무시(hr 5373 / hw 5402), 응답 쪽 DONE 기다림은 살아 있는 상대를 거절(hr 5284–5286 / hw 5309–5311) | 그대로 | 살아 있는 상대와는 그대로(복원 중에도). 라운드 도중의 죽음은 R1. 새 제어 메시지(CKPT_*, HOLDING, DISARM, FALLBACK)는 설치된 소켓으로 오므로 위의 모든 기다림에서 버리지도, 거절의 이유로 삼지도 않고 그 상대 칸에 미룸(F7 (a)). REJOIN은 listen 소켓으로 와서 받기 루프까지 backlog에 남음. 제어 메시지는 고정 크기이고 helper 스레드만 씀(`gdakiTsPumpRaw`가 정확히 한 레코드를 읽고 magic을 봄 hr 3657–3679 / hw 3682–3704: 섞이면 BADMAGIC → 죽음, F7 (c)) | 라운드(살아 있는 상대) | L |
 | M2 | 정확히 한 번: 응답 쪽 실행 수(`gdakiTsExecuted` hr 4330–4348 / hw 4355–4373, 화신마다 mod 2^24 hr 4342 / hw 4367; `gdakiTsBaseline` hr 4351–4367 / hw 4376–4392, 2RST가 rmsn을 0으로 안 할 수 있음 hr 4361–4363 / hw 4386–4388), 다시 보내기 계획과 적용(hr 4552–4897 / hw 4577–4922), 장치의 `lbase` 다시 매핑(`tsPoll` gin_gdaki.h 1086–1095), 비메시지 표시(`gdakiTsNonMsg`, 라운드가 거절에 씀 hr 5548, 5810 / hw 5577, 5839; 게시 때 지움 hr 4875 / hw 4900; get은 READ 표시 gin_gdaki.h 709) | 상대가 REQ/ACK로 알려 준 rmsn으로 실행 안 된 WQE를 다시 보냄 | 죽은 쪽 QP는 없어 QUERY_QP를 못 함. (a) 생존 rank → 죽은 rank: SQ에서 다시 보내지 않고 모든 옛 WQE를 실행된 것으로(계획 `U = S, n = 0`: `lbase += S`), 효과는 생존 rank의 로그를 예비 프로세스에 적용해 넣음. 순서와 번호는 로그 항목 번호와 통로의 누적 메시지 수. 복원 라운드는 게시 전에 `gdakiTsNonMsg`를 읽어 READ(또는 get이 남았다는 DUMP)가 있으면 fallback(F2). 생존 rank가 p로 get을 내면 그때 DISARM(p)(2.3절). (b) 죽은 rank → 생존 rank: 생존 rank의 응답 쪽 QP는 남아 있어 누적 실행 수 X를 읽음. 누적은 화신마다의 증분(mod 2^24)을 감시의 QUERY_QP(G7)와 기준 바꿈(Baseline) 때마다 더해 만들고, 복원 라운드는 2ERR 뒤, Commit 전에 한 번 더 읽음(F19). 표본 사이에 한 QP로 2^23개보다 많은 메시지가 오면 wrap을 놓치므로 이 율을 무장 조건의 한계로 적음(V14 `[추론]`). 억제 예산 X − P. 단위는 RC 요청 메시지. (c) 되살린 rank의 get(V7): READ도 응답 쪽 MSN에 들어 X − P에 섞이고 생존 rank는 WRITE와 가르지 못함 → 결정성 요구(EXPERIMENT.md 9.7절 8번, 검사하지 않는 application 요구). 억제 느린 길이 예산이 남은 QP에 들어온 get을 직접 실패로 표시하고(예산이 남은 동안의 get은 게시 전에 억제 길로 오므로 READ 표시 gin_gdaki.h 709는 서지 않음), 예비 프로세스의 helper가 그 표시를 보면 복원 실패(FALLBACK(p)). NOP, DUMP는 메시지가 아니라 예산을 쓰지 않음 | 복원 | L, G7 |
-| M3 | 낡은 기록 검사(hr 5431–5435 / hw 5460–5464), 범위 판단의 산 기록 검사(hr 3336 / hw 3361), hw 감시의 에폭 비교(D2)와 장치의 에폭 회계(`tsPoll` 1106–1116: 에폭이 바뀌면 `notEpoch`로 쉼) | 빈 라운드 없음 | 체크포인트의 입력 멈춤은 에폭을 홀수로 했다가 +2로 게시(빈 라운드: 같은 짝수로 돌려놓으면 `notEpoch`로 쉬던 대기가 hold 한도까지 쉬다 포기함). 그러면 에폭을 쓰는 모든 비교가 빈 라운드를 진짜 라운드로 봄 → 모두 `coveredEpoch`(진짜 라운드와 거절만 올림)로(F12). 빈 라운드는 `nonmsg`와 `swErr`를 지우지 않음(멈춤 전에 낸 get이 날아가는 중이면 잊지 않게, V17). fail-fast에서는 빈 라운드가 없어 `coveredEpoch == epoch` | 정확성 | G6, L |
+| M3 | 낡은 기록 검사(hr 5431–5435 / hw 5460–5464), 범위 판단의 산 기록 검사(hr 3336 / hw 3361), hw 감시의 에폭 비교(D2)와 장치의 에폭 회계(`tsPoll` 1106–1116: 에폭이 바뀌면 `notEpoch`로 쉼) | 빈 라운드 없음 | 체크포인트의 입력 멈춤은 에폭을 홀수로 했다가 +2로 게시(빈 라운드: 같은 짝수로 돌려놓으면 `notEpoch`로 쉬던 대기가 hold 한도까지 쉬다 포기함). 그러면 에폭을 쓰는 모든 비교가 빈 라운드를 진짜 라운드로 봄 → 모두 `coveredEpoch`(진짜 라운드와 거절만 올림; 복원 라운드의 게시도 진짜 라운드라 올림)로(F12). 빈 라운드는 `nonmsg`와 `swErr`를 지우지 않음(멈춤 전에 낸 get이 날아가는 중이면 잊지 않게, V17). fail-fast에서는 빈 라운드가 없어 `coveredEpoch == epoch` | 정확성 | G6, L |
 | M4 | Prepare/Commit(`ncclGinRecoverPrepare` hr 2143–2330 / hw 2144–2331, Commit hr 2334–2529 / hw 2335–2530; 토큰 검사 hr 2350–2369 / hw 2351–2370, 다시 연결 hr 2450 / hw 2451, drain hr 2257–2303 / hw 2258–2304, 새 PSN hr 2308 / hw 2309) | 살아 있는 상대와의 라운드 | 복원 라운드: Prepare(p)(2ERR은 hold 시작에서 이미, drain: 죽은 상대로 간 WQE는 flush 오류 CQE로 끝남 `[추론, 미확인]`), `rq.exch`를 예비 프로세스의 끝점으로(`opMu` 안; 토큰 검사가 `rq.exch.qpn`을 보므로 먼저), Commit. 양쪽 토큰 교환(F10)의 차례: REJOIN(예비 프로세스의 QPN, 보내기 PSN) → 생존 rank Prepare → 생존 rank 토큰(QPN, 새 보내기 PSN)을 예비 프로세스에 → 예비 프로세스가 그 PSN으로 자기 QP를 RTR/RTS로 잇고 READY → 생존 rank Commit(예비 프로세스의 PSN을 받는 PSN으로), Baseline, rkey 바꿈, 게시 → DONE_RS. 예비 프로세스는 초기화 재생 때 QP를 만들기만 하고 잇지 않는다. 새 QPN이 기록의 죽은 QPN과 같은지 보고 남김(같은 NIC의 QPN 재사용 `[미확인]`; 생존 rank의 QP는 hold 시작에서 ERR이라 옛 패킷을 다시 보내지 않음) | 복원 | L |
 
 ### 4.4 한도와 감시
@@ -225,7 +238,7 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
 | T1 | 확대 상한 8회/60 s(`gdakiTsEscalated` hr 5081–5102 / hw 5106–5127; 쓰는 곳: 시작 쪽 hr 5444, 5503–5508 / hw 5473, 5532–5537, 응답 쪽 hr 5786 / hw 5815; 멈춘 표시 hr 5083–5086 / hw 5108–5111) | 그대로 | 살아 있는 상대의 라운드는 그대로 셈. 복원 라운드와 빈 라운드는 복구 라운드가 아니므로 세지 않음(`count = false`). 상한으로 멈춘 문맥은 무장하지 않음(2.3절, F26) | 상한 | L |
 | T2 | 펌웨어 단계 감시(D5) | 그대로 | 복원 라운드의 펌웨어 단계(2ERR, 2RST, INIT/RTR/RTS, Commit 전 QUERY_QP)는 가드 안 → 초과는 TOLD → fallback. 체크포인트와 누적용 QUERY_QP는 가드 밖(hw 감시와 같은 이유: 가드 안에서 SIGSTOP이 오면 감시가 산 쌍의 단어를 올림, gpu-detect 리뷰 M1; F21) | 감시 | L |
 | T3 | 라운드 감시 25 s, 쌓임 감시 1 s(D5) | 그대로 | 복원 기다림은 라운드가 아님. hold 시작과 복원 라운드는 Busy 안. 상태 기계의 한 걸음은 1 s 안(D5) | 감시 | L |
-| T4 | 장치 대기의 hold 한도(게이트 `waitMs` = `NCCL_GIN_TS_HOLD_MS` 30 000, hr 6820 / hw 7128; `tsParkStable` gin_gdaki.h 255, 278–294), `roundMs`는 `gdakiTsStart`에서 정함(hr 6741 / hw 7046), 재연결 기다림의 한도(hr 6773–6778 / hw 7081–7086), helper가 다른 일에 묶이는 시간(라운드 `roundMs`, 재연결 기다림 hr 5461–5472 / hw 5490–5501, 정지 `quiesceMs`) | 라운드를 기다리는 장치 스레드의 한도 | 쉬는 스레드의 시계는 게이트가 처음 홀수가 된 때부터 감(F13). 실제 시한 = min(hold 시작 + `NCCL_GIN_RESTORE_MS`, 게이트가 홀수가 된 시각 + `holdMs` − 복원 라운드 몫 − 여유). 시한은 Q4 감시 스레드가 지키므로(G8) helper가 묶여 있어도 늦지 않음(V5). 관계 검사는 `gdakiTsStart`에서. 어기면 그 communicator는 fail-fast(WARN). 포기는 TOLD → fallback | hold 한도 | G8, L |
+| T4 | 장치 대기의 hold 한도(게이트 `waitMs` = `NCCL_GIN_TS_HOLD_MS` 30 000, hr 6820 / hw 7128; `tsParkStable` gin_gdaki.h 255, 278–294), `roundMs`는 `gdakiTsStart`에서 정함(hr 6741 / hw 7046), 재연결 기다림의 한도(hr 6773–6778 / hw 7081–7086), helper가 다른 일에 묶이는 시간(라운드 `roundMs`, 재연결 기다림 hr 5461–5472 / hw 5490–5501, 정지 `quiesceMs`) | 라운드를 기다리는 장치 스레드의 한도 | 쉬는 스레드의 시계는 게이트가 처음 홀수가 된 때부터 감(F13). HELD의 실제 시한 = min(hold 시작 + `NCCL_GIN_RESTORE_MS`, 게이트가 홀수가 된 시각 + `holdMs` − 복원 라운드 몫 − 여유). PUBLISHED의 시한은 게시 시각 + `NCCL_GIN_RESTORE_MS`(장치 대기가 붙잡혀 있지 않아 hold 한도 항이 없음, P1). 시한은 Q4 감시 스레드가 지키므로(G8) helper가 묶여 있어도 늦지 않음(V5). 관계 검사는 `gdakiTsStart`에서. 어기면 그 communicator는 fail-fast(WARN). 포기는 TOLD → fallback | hold 한도 | G8, L |
 | T5 | 복사 한도 2 000 ms와 NIC 루프백(hr 1232, `gdakiRecCopyWait` 1388–1440, `gdakiLbXfer` 1586–1668 / hw 1232, 1388–1440, 1587–1669), 루프백 설정과 자체 시험(hr 6474–6735 / hw 6761–7040, hw L-C: NIC만으로 시험), MR 목록(`gdakiLbAddRange`는 설정 때만, CUDA driver 함수를 부름 hr 1498, 1508, 1522 / hw 1499, 1509, 1523; 잠금 없는 찾기 hr 1475–1479 / hw 1476–1480), MR이 없으면 스트림 복사(CUDA 호출, hr 1721–1729 / hw 1722–1730; 묶임 hr 1377–1386 / hw 1377–1386), NIC 경로 끄기(`gdakiLbOff` hr 1483–1496 / hw 1484–1497) | 그대로 | 복원이 쓰는 GPU 메모리는 문맥을 만들 때만 루프백 MR에 넣음(실행 중 등록 없음, V12). 그 뒤 등록한 window가 있으면 무장 안 함(2.3절). 무장된 communicator에서 window 등록 해제(hr 7945 / hw 8264에서 rkey 표를 풂)가 오면 잠금 안에서 DISARM을 먼저 세우고, helper는 같은 잠금 안에서 그 표시와 `ts->stop`을 본 뒤에만 rkey 표에 씀(orphan helper 포함, F15). 풀린 rkey 표를 덮는 루프백 MR은 helper가 DISARM 때 해제(그 전까지 dmabuf 참조가 남는지는 `[미확인]`). `gdakiLbXfer`는 helper 스레드 하나만 씀(스테이징, 루프백 CQ). 자료 스레드는 호스트 버퍼의 소켓 입출력만(F14). NIC 경로가 꺼지면 fallback(V8) | 복사 한도 | L |
 
 ### 4.5 끝점과 메모리
@@ -270,7 +283,7 @@ fallback + `NCCL_GIN_TS_DEGRADED_MS`, 랭크 2개면 바로).
 
 | # | 구성 요소 | fail-fast | hold-for-restore에서 닿는 기존 장치와 규칙 |
 |---|---|---|---|
-| C1 | 체크포인트의 입력 멈춤(빈 라운드, EXPERIMENT.md 9.4절) | 없음(체크포인트 없음) | 생존 rank q는 `gdakiTsQuiesce`에서 2ERR만 뺀 차례로 멈춤: 게이트 홀수, 개수 0, 모아 둔 WQE의 doorbell(안 울리면 r의 drain이 끝나지 않음, F20). 에폭 회계(M3: `coveredEpoch`, `nonmsg` 유지), 확대 상한(T1, 세지 않음), 기다림의 메시지 미룸(M1), hold 한도(멈춤은 ms 단위), drain의 QUERY_QP(T2, 가드 밖). RESUME은 q가 그 상대를 거절하지 않았고, 멈춤 뒤 진짜 라운드가 없었고, 게이트가 아직 멈춤 때의 에폭일 때만 게시(`gdakiTsWordHiWrite`는 에폭 반쪽을 통째로 씀 hr 4270–4273 / hw 4295–4298: 거절의 HOST_FAILED를 지우면 안 됨, F7 (b)). 멈춤 중 그 쌍에 라운드가 돌면 라운드가 이기고 그 체크포인트는 버림. 멈춤 요청을 받은 rank가 라운드 중이면 BUSY. PAUSED는 "p에 대해 무장 가능"을 실음(2.3절). 억제 예산이 남은 rank는 체크포인트를 찍지 않음(V18) |
+| C1 | 체크포인트의 입력 멈춤(빈 라운드, EXPERIMENT.md 9.4절) | 없음(체크포인트 없음) | 생존 rank q는 `gdakiTsQuiesce`에서 2ERR만 뺀 차례로 멈춤: 게이트 홀수, 개수 0, 모아 둔 WQE의 doorbell(안 울리면 r의 drain이 끝나지 않음, F20). 에폭 회계(M3: `coveredEpoch`, `nonmsg` 유지), 확대 상한(T1, 세지 않음), 기다림의 메시지 미룸(M1), hold 한도(멈춤은 ms 단위), drain의 QUERY_QP(T2, 가드 밖). RESUME은 q가 그 상대를 거절하지 않았고, 멈춤 뒤 진짜 라운드가 없었고, 게이트가 아직 멈춤 때의 에폭일 때만 게시(`gdakiTsWordHiWrite`는 에폭 반쪽을 통째로 씀 hr 4270–4273 / hw 4295–4298: 거절의 HOST_FAILED를 지우면 안 됨, F7 (b)). 멈춤 중 그 쌍에 라운드가 돌면 라운드가 이기고 그 체크포인트는 버림. 멈춤 요청을 받은 rank가 라운드 중이거나 억제 예산이 남았으면 BUSY(P4). PAUSED는 "p에 대해 무장 가능"을 실음(2.3절). 억제 예산이 남은 rank는 체크포인트를 찍지 않음(V18) |
 | C2 | 송신 쪽 로그(장치) | 꺼짐: 측 표 포인터가 0 | 게이트 안 기록(put 경로 gin_gdaki.h 458–547). 게이트 계수는 coop의 0번 스레드만 잡으므로(465, 501, 537) 0번 스레드가 계수를 잡은 채 자리를 잡고, coop 동기화 뒤 모든 스레드가 내용을 복사하고, 다시 동기화한 뒤 0번이 적고 보내고 나감(V19: 개수 0이 "항목이 다 적힘"을 뜻하게). 0번 스레드의 게이트 진입이 실패하거나 억제되면 coop 전체가 보는 "건너뜀" 깃발로 복사를 건너뜀. 추가 동기화는 측 표 포인터가 0이 아닐 때만. 넘침은 DISARM. 측 표 포인터 칸은 GPU 문맥 판 3(A5) |
 | C3 | 예비 프로세스와 초기화 재생 | 없음 | NCCL bootstrap, GIN collComm 고리와 helper 설정(A3), `NCCL_MULTI_RANK_GPU_ENABLE`(X4). 막는 문제 B1 |
 | C4 | REJOIN | REJOIN은 닫음 | 재연결 기계와 펜싱(D4) |
@@ -288,17 +301,17 @@ G8, G9는 검토 2 뒤에 더했다.
   싣는다. rank마다 다르면 fail-fast(WARN). 문맥(`gdakiTs`)과 communicator 등록부(`gdakiUa`)에 둔다.
 - G2. 거절 hook: `gdakiTsDecline`(hw 4941) 맨 앞에서 `gdakiPolicyOnDecline(r, peer, why, cause, uaWhy)`를 부르고, 참이면 돌아간다. 두 갈래는 R1. fail-fast에서는
   늘 거짓이다. 죽음과 붙잡은 상대에 대한 모든 거절이 이 함수로 모이므로 호출 자리는 고치지 않는다.
-- G3. 감시 hook: `gdakiDetWatchStep`의 상대 거르기(hw 6094)에 `|| !gdakiPolicyWatch(r, p)`. fail-fast에서는 늘 참(감시함).
+- G3. 감시 hook: `gdakiDetWatchStep`의 상대 거르기(hw 6094)에 `|| !gdakiPolicyWatch(r, p)`. HELD, COMMITTING이면 거짓. fail-fast에서는 늘 참(감시함).
 - G4. 기록 처리 hook: helper의 기록 처리 루프(hw 6399–6409)에서 `gdakiTsInitiate(r, f)`를 `if (gdakiPolicyRoute(r, f)) gdakiTsInitiate(r, f);`로 바꾼다
-  (흡수는 hook이 함; `ts->batch`, heartbeat, `nQueued`의 뒷정리는 그대로 돎, V16). fail-fast에서는 늘 참. Q4 감시 스레드의 경로 판단(`gdakiTsRoutes`)은 그대로.
+  (HELD, COMMITTING의 상대는 흡수, PUBLISHED의 상대는 fallback을 표시하고 거짓; `ts->batch`, heartbeat, `nQueued`의 뒷정리는 그대로 돎, V16). fail-fast에서는 늘 참. Q4 감시 스레드의 경로 판단(`gdakiTsRoutes`)은 그대로.
 - G5. 훑기 hook: `gdakiTsScan`의 유실 검사(hw 5923–5925)를 `gdakiPolicyWatch(r, p)`가 거짓인 상대에서 건너뜀. fail-fast에서는 늘 검사.
 - G6. 에폭 비교의 기준: `gdakiDetQueued`(hw 6066)와 `gdakiDetWatchStep`(hw 6139)의 `qs[].epoch`를 `gdakiTsCoveredEpoch(s)`로. fail-fast에서는 빈 라운드가
   없어 `epoch`와 같다. 같은 바꿈을 hr에서 물려받은 비교(hw 5460, 3361)에도 한다.
 - G7. 감시의 QUERY_QP가 받는 값: `doca_verbs_qp_query_seq`(hw 6111)에 rmsn 자리를 넘겨 `gdakiPolicyObserveRmsn(r, qp, rmsn)`에 전한다. fail-fast에서는
   아무것도 하지 않는 함수다(펌웨어 명령 수는 그대로).
 - G8. 감시 스레드의 정책 걸음: `gdakiTsWatchdog`(hw 3488) 맨 앞, `gdakiUaDegradedStep` 옆에 `gdakiPolicyWatchdogStep(r)`. 복원 시한이 지난 붙잡은 상대에
-  대해 CAS(HELD 또는 PUBLISHED → TIMED_OUT)에 이기면 `gdakiTsToComm` 안에서 CPU 쓰기로 그 상대의 단어(PEER_DEAD), 비동기 오류, 책임(PeerDead), degraded
-  예약을 하고, helper가 나중에 fallback 거절로 마저 하게 표시한다(V5, N1). 정책 칸은 원자 칸이라 잠금을 잡지 않는다(N3).
+  대해, HELD면 CAS(HELD → TIMED_OUT)에 이겼을 때 `gdakiTsToComm` 안에서 CPU 쓰기로 그 상대의 단어(PEER_DEAD), 비동기 오류, 책임(PeerDead), degraded
+  예약을 하고(PUBLISHED면 CAS로 상태만 바꾸고 거절은 helper가, P1), helper가 나중에 fallback 거절로 마저 하게 표시한다(V5, N1). 정책 칸은 원자 칸이라 잠금을 잡지 않는다(N3).
   fail-fast에서는 붙잡은 상대가 없어 아무것도 하지 않는다.
 - G9. 펌웨어 초과의 책임 원인: `gdakiTsWatchdog`의 책임 기록(hw 3530)에서 원인을 `gdakiPolicyBlameCause(r, peer, gdakiCause::Local)`로. 붙잡은 상대면
   PeerDead, 아니면 그대로(fail-fast에서는 늘 그대로, V1).
@@ -392,7 +405,13 @@ N1(높음, G8과 게시의 다툼 → 3절 CAS), N2(높음, 게시 뒤의 FALLBA
 rank의 알림 → 3절), N5(정책 hold 무장 전의 설정 차이 → 2.5절 (다)), V7의 남은 부분(→ M2 (c)), V9, V12, V19의 낮은 메모(→ 2.4절, T5, C2), EXPERIMENT.md에 남은
 문장 일곱(→ 고침).
 
-**검토 2 재확인 2**: 아래에 적는다.
+**검토 2 재확인 2**(커밋 `568af8c1` 대상). N1–N5, V7, EXPERIMENT.md 7문장 풀림, 인용 쌍 167개 불일치 0, fail-fast 동치 그대로(조건 N5). 새 충돌:
+P1(높음, PUBLISHED에서 G8이 단어부터 올리면 거절의 차례가 깨짐 → G8은 PUBLISHED에서 상태만, 따로 된 시한), P2(RESTORED와 FALLBACK의 경쟁 → 화신 번호, 어느
+상태든 거절), P3(PUBLISHED의 산 QP를 감시에서 뺌 → HELD, COMMITTING에만, PUBLISHED의 장애는 fallback), P4(억제 중 남의 체크포인트 → BUSY), P5(RESTORED 뒤
+무장 조건 → ARMED 또는 OFF, PID 등록, DISARM 적용), P6(COMMITTING의 실패 → 바로 거절), P7(EXPERIMENT.md 그림, 9.3절 8단계, RL9). 모두 3절과 해당 행,
+EXPERIMENT.md에 반영.
+
+**검토 2 재확인 3**: 아래에 적는다.
 
 ## 7. 참고
 
