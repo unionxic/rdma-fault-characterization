@@ -1,0 +1,8 @@
+Pre-registration of gin-peer, 2026-10-09 09:00:54 +0900, before any main-run trial of this study.
+sha256 of the fixed prediction file:
+dccdf05c819976a067950aae2649cd33b8da161a506214633f64cab9402884db  predictions.csv
+EXPERIMENT.md is fixed by the tag prereg/gin-peer-v1 (sections 2, 3, 7, 8).
+Pilots ran before this file on the deployed builds (hq, hqp, hf, hfp) and were never scored: P0 and P1
+(results/20261009_pilot, 2026-10-09 08:37:26-08:43:32, 22 trials) and P2 (results/20261009_pilot2, 08:56:53-08:58:56,
+4 trials, after a runner fix for the ACK-race cells). The predictions come from the hq source and an independent code
+review; none changed after the pilots. Every pilot finding and harness change is in EXPERIMENT.md section 12.
