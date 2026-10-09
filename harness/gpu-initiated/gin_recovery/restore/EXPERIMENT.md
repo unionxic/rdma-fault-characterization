@@ -440,6 +440,7 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 | RL17 | `gdakiTsServeLower`(hr 5372–5373 / hw 5401–5402) | 새 메시지 미루기 |
 | RL18 | 자료 서버(새 스레드, 새 포트) | 체크포인트 블록, 로그 내보내기 |
 | RL19 | 통계 API(hr 7135 / hw 7454) | 복원 수 |
+| RL20 | `gdakiTsRespond` 맨 앞(hr 5739 / hw 5768) | 붙잡은 상대의 REQ에 NACK 17, PUBLISHED면 fallback(DESIGN_POLICY.md 3절 Q5) |
 
 장치 쪽(DV1–DV4)과 예비 프로세스 쪽(SP1–SP6)은 아래 그대로다.
 
