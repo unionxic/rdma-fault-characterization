@@ -5,12 +5,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `PREREGISTERED` |
+| 상태 | `QA` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gpu-detect` @ `02a640aa` (master) |
 | 사전 등록 태그 | `prereg/gpu-detect-v1`: 상태를 `PREREGISTERED`로 바꾼 커밋(12절)에 단다. 고정 파일의 sha256은 [PREREG.txt](PREREG.txt) |
-| 마지막 갱신 | 2026-10-09, pilot 2 점검, 태그 전 고침, 사전 등록 |
+| 마지막 갱신 | 2026-10-09, 본 실행과 채점(12절) |
 
 표시: `[측정]` 원자료나 빌드 산출물에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -692,8 +692,8 @@ DECLINE 줄, 호스트 기록, "marked failed" 줄, 상대에게 FAIL(보낼 수
 ## 10. 완료 조건과 QA 기준
 
 - [ ] pilot(P1, P2)을 돌리고 12절에 적은 뒤 고칠 것을 고치고 태그를 달았다(pilot 1 `hw`, pilot 2 `hk`).
-- [ ] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외를 셀마다 따로 센 표가 있다(`SCORE.md` 끝 표).
-- [ ] 예측 41줄마다 판정(맞음, 틀림, 자료 부족)과 조건을 만족하지 않은 시행 목록이 있다.
+- [x] 모든 셀이 계획한 반복 수만큼 실행됐다. 제외를 셀마다 따로 센 표가 있다(`SCORE.md` 끝 표). 시행 248, 제외 0.
+- [x] 예측 41줄마다 판정(맞음, 틀림, 자료 부족)과 조건을 만족하지 않은 시행 목록이 있다([SCORE.md](results/20261009/SCORE.md)).
 - [ ] 다른 에이전트가 `score.py`를 보지 않고 원자료에서 핵심 수치를 다시 셌다(결과 분류, 감지 지연, FIN 판정과 종료 시각, 지연 중앙값, 회귀 판정).
 - [x] 다른 에이전트가 두 계층을 읽고 리뷰했다(12절).
 - [ ] 다른 에이전트가 실행기와 채점기를 리뷰했다.
@@ -722,7 +722,7 @@ DECLINE 줄, 호스트 기록, "marked failed" 줄, 상대에게 FAIL(보낼 수
 - [x] 배포 `hk`, pilot 2(메인 세션), 점검(12절)
 - [x] 태그 전 고침: GC1, GC2, GD5, H1의 반증 문장, 열 셋(12절)
 - [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로(태그 `prereg/gpu-detect-v1`은 메인 세션이 그 커밋에 단다)
-- [ ] 본 실행 G1–R3 (`RUNNING`)
+- [x] 본 실행 G1–R3 (`RUNNING`). 실제로는 R4까지 돌았다(G1–R4, 21:35:03–22:20:41, 12절, 13절)
 - [ ] 채점 (`QA`), 독립 재계산과 측정 코드 리뷰
 - [ ] 결과 정리, 원자료 Release, PR
 - [ ] 결론 확정 (`COMPLETE`)
@@ -772,6 +772,10 @@ DECLINE 줄, 호스트 기록, "marked failed" 줄, 상대에게 FAIL(보낼 수
 | 2026-10-09 | 태그 전 고침 2: GD5. 근거 문장("주기의 절반 + 유예 5 ms")이 리뷰 M2의 50 ms 기다림(뿌리 CQE가 없는 창은 주기와 상관없이 50 ms를 기다림)보다 먼저 쓰였고, 그때 GD2, GD4의 한도는 고쳤으나 GD5는 고치지 않았다. pilot 2에서 감시 감지 4회 중 1회가 그 경우(56.7 ms, 주기 10 ms). 그런 시행이 섞이면 중앙값이 주기가 아니라 섞인 비율을 따르므로, 감시가 먼저였고 분류가 뿌리 CQE에서 온 시행의 지연(열 `det_wcq_ms`)으로 비교한다 | `predictions.csv` GD5, `rows_gd.py` |
 | 2026-10-09 | 셀은 바뀌지 않았다: `cells.json`, `schedule.json`(시드 `f739ae41811c2212`) 그대로. 바뀐 것은 파서의 열 셋과 예측 셋, H1의 반증 문장이다. 새 열은 pilot 1, pilot 2(사본), blind-apps 원자료에서 다시 계산해 위 값을 냈으므로 pilot을 다시 돌 필요는 없다고 본다 `[추론]`. 채점기 합성 시험을 다시 돌림: 41줄 모두 예외 없이 평가, 새 여섯 줄 맞음, 합성 폴더의 `hq` 시행(blind-apps 실제 6회, 늦은 복구 2 포함)에서 새 GC1 조건 6/6 참 | `[측정: 채점기 동작만]` 스크래치 `gd_selftest/res2` |
 | 2026-10-09 | 사전 등록(이 커밋 하나): 고정 절 2(가설 H1–H8), 3(예측 41줄, 판정식 원문 `predictions.csv`), 7(셀 45개: app 19, 회귀와 지연 26; app 130회, 회귀와 지연 118회; hold P1, P2와 본 실행 G1, G2, N1, N2, R1–R4), 8(제외와 중단 기준). 시행 목록 `schedule.json`(시드 `f739ae41811c2212`, `cells.json`의 sha256이 머리에 있음). [PREREG.txt](PREREG.txt)에 예측, 셀, 시행 목록, 실행기, 파서, 채점기, 회귀 실행기, hold, chain, 세 계층 diff의 sha256과 배포된 빌드의 md5. 측정 전 확인: `results/`에는 채점하지 않는 pilot 폴더 둘(`20261009_pilot`, `20261009_pilot2`)뿐이고 본 실행은 아직 없다. 태그 `prereg/gpu-detect-v1`은 메인 세션이 이 커밋에 달고 push한다. PR을 rebase로 합친 뒤 `git diff prereg/gpu-detect-v1 <master 커밋> -- harness/gpu-detect/predictions.csv cells.json schedule.json`(그리고 PREREG.txt의 나머지)이 비어 있는지 확인해 이 절에 적는다 | 이 커밋, [PREREG.txt](PREREG.txt) |
+| 2026-10-09 21:34:56 | 메인 세션이 사전 등록 커밋 `1891614e`(21:33:54)에 annotated 태그 `prereg/gpu-detect-v1`을 닮 | `git rev-parse prereg/gpu-detect-v1^{commit}` = `1891614e`, 태그 날짜 21:34:56 `[측정]` |
+| 2026-10-09 21:35:03–22:20:41 | 본 실행(메인 세션): `bash $D/chain.sh $R/20261009 G1 G2 N1 N2 R1 R2 R3 R4`. 여덟 hold 모두 첫 회에 rc=0: G1 21:35:03–21:41:50(6분 47초, app 32회), G2 –21:45:39(3분 49초, 36회), N1 –21:52:16(6분 37초, 34회), N2 –21:56:38(4분 22초, 28회), R1 –22:02:51(6분 13초), R2 –22:10:15(7분 24초), R3 –22:14:36(4분 21초), R4 –22:20:41(6분 5초). 합계 45분 38초(어림 약 60분, 7절). 다시 돈 hold와 다시 돈 시행 0, 880 s KILL 0. iptables 규칙(`gin-`, `blind-`) 여덟 hold 모두 0 → 0. 새 mlx5 줄 0(`mlx5_new_*` 여덟 파일 모두 빈 파일), 스냅숏 16개 모두 rain 명령 오류 줄 2, sunny 0, rain 펌웨어 명령 실패 합 31. STOP 파일 없음, `LEFT_STREAK` 0, 모든 시행의 남은 프로세스 0. 시행 파일 1 495개에 illegal address, illegal memory access, unspecified launch failure 0. app hold 넷의 `schedule.json` sha256이 모두 `7a5e4875…`(= PREREG). 본 실행의 첫 시행 파일은 21:35:41로 태그 뒤다. 시행 248(app 130, 회귀와 지연 118). 본 실행 동안 문서 커밋은 없었다(상태는 태그 커밋의 `PREREGISTERED` 그대로였고 채점 뒤 `QA`로 바꿈) | `[측정]` `results/20261009/`(`chain.out`, `hold_*_p1.out`, `schedule_sha256.txt`, `snap_*`, `mlx5_*`, `fwcmd_*`; 원자료는 Release, 14절) |
+| 2026-10-09 21:53(본 실행 중) | 측정 코드 리뷰(다른 에이전트, 읽기만; 실행기, 파서, 채점기, 셀과 시행 목록, 부르는 gin-remaining 실행기와 blind-apps 에이전트). 막는 결함과 높음 없음. 중간 4: M1 GD5는 걸러 낸 시행의 중앙값이라 빈 셀이면 기계적으로 "틀림", M2 LC1과 PH1의 정책 항은 빠진 줄이 설정 확인 제외가 되므로 "틀림"이 될 수 없음, M3 NC1, NC2 판정식이 예측 문장보다 약함, M4 880 s KILL이 rain의 application을 남기고 hold 뒤 확인을 건너뜀. 낮음 10(L1 GD2의 아래 한도와 음의 지연, L2 응답 쪽 틈의 창 밖 제외, L3 SIGCONT 응답을 보지 않음, L4 다시 돈 시행, L5 채점 때의 해시 확인, L6 빠진 열의 NameError, L7 랭크 4개 감시 시작 줄 수, L8 hk로 처음 도는 회귀 셀, L9 대상 rank의 균형, L10 iptables 확인). 리뷰가 고정 파일 12개의 sha256을 PREREG.txt와 대 보았고 같았다 | [qa/code_review.md](qa/code_review.md), 처리는 13, 16절 |
+| 2026-10-09 22:21 | 채점(메인 세션): `python3 harness/gpu-detect/score.py harness/gpu-detect/results/20261009`. 시행 248, 판정 248, 제외 0(설정 확인 실패 0). 예측 41개 모두 맞음. N − 1 허용을 쓴 것은 감시 끔 대조(GC2)의 `gin_qperr_w0.hk.n3` 하나뿐 `[측정]` | [SCORE.md](results/20261009/SCORE.md), [trials_scored.csv](results/20261009/trials_scored.csv). 중간 표 `trials_reg_hk.csv`는 행이 모두 `trials_scored.csv`에 있어 커밋하지 않음 |
 
 ## 13. 사전 등록 이후 변경
 
