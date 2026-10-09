@@ -141,18 +141,30 @@ def b3():
 
 
 # ---------------------------------------------------------------- B2
+def runs(base):
+    """the folders of one test: <base>, then <base>_run2, _run3, ... (repeats never mix into one folder)"""
+    ds = [os.path.join(R, base)] + sorted(glob.glob(os.path.join(R, base + "_run*")),
+                                          key=lambda d: int(re.sub(r"\D", "", os.path.basename(d)[len(base):]) or 0))
+    return [d for d in ds if os.path.isdir(d)]
+
+
 def b2():
-    files = sorted(glob.glob(os.path.join(R, "b2", "b2_*_meta.txt")))
+    for d in runs("b2"):
+        b2_dir(d)
+
+
+def b2_dir(DIR):
+    files = sorted(glob.glob(os.path.join(DIR, "b2_*_meta.txt")))
     if not files:
         return
-    say("== B2 (9.15.2)")
+    say("== B2 (9.15.2) folder %s" % os.path.basename(DIR))
     trials = {}
     for mf in files:
         stem = os.path.basename(mf)[:-len("_meta.txt")]
         rows, okA = [], True
         for r in range(4):
-            d = kv(os.path.join(R, "b2", "%s_rank_r%d.kv" % (stem, r)))
-            comm = [l for l in warn_lines(os.path.join(R, "b2", "%s_rank_r%d.log" % (stem, r))) if l.startswith("GIN/RS: comm ")]
+            d = kv(os.path.join(DIR, "%s_rank_r%d.kv" % (stem, r)))
+            comm = [l for l in warn_lines(os.path.join(DIR, "%s_rank_r%d.log" % (stem, r))) if l.startswith("GIN/RS: comm ")]
             c = kv_from_line(comm[0]) if comm else {}
             rows.append((r, d.get("dc_lsa_size"), d.get("dc_lsa_rank"), c.get("nLsaTeams"), c.get("nvlsSupport"),
                          c.get("runtimeConn"), c.get("numRmaCtx"), d.get("xchg"), d.get("exit")))
@@ -232,6 +244,14 @@ def b1_compare(rec_kv, rec_log, rep_kv, rep_log, strace_file, rep_rc, strace_ava
     for p in ("GIN/RS: comm ", "GIN/RS: devcomm ", "GIN/RS: window ", "GIN/RS: rkeys "):
         if pick(la, p) != pick(lb, p):
             fails.append("4:lines '%s' differ" % p.strip())
+    # the compared lines must exist (two user windows and the devComm's resource window; rkey lines of windows and
+    # tables), and no hash may be the keyless "nokey" (review pass 3, P5, P6)
+    if len(pick(lb, "GIN/RS: window size=")) < 3 or not pick(lb, "GIN/RS: rkeys window ") or \
+            not pick(lb, "GIN/RS: comm ") or not pick(lb, "GIN/RS: devcomm "):
+        fails.append("4:report lines missing (window %d, rkeys window %d)" % (len(pick(lb, "GIN/RS: window size=")),
+                                                                            len(pick(lb, "GIN/RS: rkeys window "))))
+    if any("nokey" in x for x in la + lb):
+        fails.append("4:a hash printed without key (nokey)")
     c = kv_from_line((pick(lb, "GIN/RS: comm ") or [""])[0])
     if c.get("runtimeConn") != "1" or c.get("nvlsSupport") != "0" or c.get("numRmaCtx") != "0":
         fails.append("4:comm conditions %s" % c)
@@ -257,27 +277,32 @@ def b1_compare(rec_kv, rec_log, rep_kv, rep_log, strace_file, rep_rc, strace_ava
 
 
 def b1():
-    metas = sorted(glob.glob(os.path.join(R, "b1", "b1_t*_meta.txt")))
-    lives = sorted(glob.glob(os.path.join(R, "b1", "b1_live_t*_meta.txt")))
+    for d in runs("b1"):
+        b1_dir(d)
+
+
+def b1_dir(DIR):
+    metas = sorted(glob.glob(os.path.join(DIR, "b1_t*_meta.txt")))
+    lives = sorted(glob.glob(os.path.join(DIR, "b1_live_t*_meta.txt")))
     if not metas and not lives:
         return
-    say("== B1 (9.15.4)")
+    say("== B1 (9.15.4) folder %s" % os.path.basename(DIR))
     allpass, negok, unverified, selfmax = True, True, False, None
     for mf in metas:
         stem = os.path.basename(mf)[:-len("_meta.txt")]
         meta = kv(mf)
-        P = lambda part, ext: os.path.join(R, "b1", "%s_%s.%s" % (stem, part, ext))
+        P = lambda part, ext: os.path.join(DIR, "%s_%s.%s" % (stem, part, ext))
         rec_ok = all(kv(P("rec_r%d" % r, "kv")).get("xchg") == "ok" and kv(P("rec_r%d" % r, "kv")).get("exit") == "0"
                      for r in (0, 1))
         say("%s: record xchg ok=%s transcript bytes r0=%s r1=%s" % (stem, rec_ok, meta.get("transcript_bytes_r0"),
                                                                     meta.get("transcript_bytes_r1")))
         for r, part in ((1, "rep1"), (0, "rep0")):
-            st = kv(os.path.join(R, "b1", "%s_%s_strace.txt" % (stem, part)))
+            st = kv(os.path.join(DIR, "%s_%s_strace.txt" % (stem, part)))
             say("  %s: strace_mode=%s self_connects=%s init_ms record/replay=%s/%s" % (
                 part, st.get("strace_mode"), st.get("inet_connect_self"), kv(P("rec_r%d" % r, "kv")).get("init_ms"),
                 kv(P(part, "kv")).get("init_ms")))
             ok, fails, notes = b1_compare(P("rec_r%d" % r, "kv"), P("rec_r%d" % r, "log"), P(part, "kv"), P(part, "log"),
-                                          os.path.join(R, "b1", "%s_%s_strace.txt" % (stem, part)),
+                                          os.path.join(DIR, "%s_%s_strace.txt" % (stem, part)),
                                           meta.get("rc_" + part, "none"), meta.get("strace_" + ("sunny" if r == 1 else "rain")))
             allpass &= ok and rec_ok
             unverified |= any(n.startswith("3:unverified") for n in notes)
@@ -288,7 +313,7 @@ def b1():
             d = kv(P(part, "kv"))
             lg = " ".join(warn_lines(P(part, "log")))
             failed = any(d.get(k) not in (None, "0") for k in ("init_rc", "reg_rc", "devcomm_rc")) or d.get("exit") != "0"
-            failed_ok = failed and re.search(r"cut|damaged|diverged|not usable|after the end", lg)
+            failed_ok = failed and re.search(r"is cut|damaged or cut|diverged at|not usable|after the end", lg)
             negok &= bool(failed_ok)
             say("  %s: %s (init_rc=%s reg_rc=%s devcomm_rc=%s exit=%s)" % (
                 part, "replay failed as required" if failed_ok else "DID NOT FAIL", d.get("init_rc"), d.get("reg_rc"),
@@ -301,9 +326,9 @@ def b1():
     for mf in lives:
         stem = os.path.basename(mf)[:-len("_meta.txt")]
         meta = kv(mf)
-        P = lambda part, ext: os.path.join(R, "b1", "%s_%s.%s" % (stem, part, ext))
+        P = lambda part, ext: os.path.join(DIR, "%s_%s.%s" % (stem, part, ext))
         ok, fails, notes = b1_compare(P("live_r1", "kv"), P("live_r1", "log"), P("live_rep1", "kv"), P("live_rep1", "log"),
-                                      os.path.join(R, "b1", "%s_live_rep1_strace.txt" % stem),
+                                      os.path.join(DIR, "%s_live_rep1_strace.txt" % stem),
                                       meta.get("rc_live_rep1", "none"), meta.get("strace_sunny"),
                                       self_max=selfmax if selfmax is not None else 0)
         quiet = all(kv(P("live_r%d" % r, "kv")).get(k) == "0" for r in (0, 1)

@@ -538,12 +538,12 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 | 라이브러리 | B1, B2: hw에 기록, 재생, 보고 hook만 더한 `rsx` libnccl | gpu-detect가 배포한 `~/gi-bundle/gin_ts2/hw` | 그 파일을 쓰지 않는다. `rsx`의 hook은 환경 변수가 없으면 닿지 않는다(보고만 켜는 `NCCL_GIN_RESTORE_REPORT=1`은 읽기만 함) |
 | 클러스터 잠금 | hold마다 `cluster_run.sh`, 태그 `rs-<hold>` | gpu-detect의 실행, 다른 사용자의 작업 | 잠금이 줄 세운다. 메인 세션만 실행한다. B3에서 rain이 응답 쪽인 셀과 sunny가 응답 쪽인 셀은 다른 hold다 |
 | TCP 포트 | 시험 프로그램의 랑데부만 29000–30999에서, 실행마다 두 노드에서 비어 있음을 보고 고른다(`../remaining/portpick.sh`). nonce가 맞지 않는 상대에게는 아무것도 보내지 않는다 | 같은 범위를 쓰는 다른 실험 | 고르기와 nonce. NCCL bootstrap과 helper는 지금처럼 임시 포트(`NCCL_GIN_TS_PORT`는 두지 않음: p–p+15가 이 범위와 겹칠 수 있음, T1-11) |
-| NIC 펌웨어 명령 | QP, MR, CQ는 프로세스마다 시작 때 한 번 만든다. B3의 QUERY_QP는 PAUSED 뒤 지난 반복의 도달 시간 × 0.7에 처음, 그 뒤 시작 간격 50 µs 이상, 한 번에 하나, 반복당 200개, 셀당 20 000개 상한(넘으면 그 셀을 멈춤), QUERY_QP 하나가 50 ms를 넘으면 그 셀을 멈춤. rain의 QUERY_QP 평균은 약 71 µs다 `[측정: multirank 보관본 fwcmd_before-H1.txt]` | rain의 새는 명령 slot, 같은 HCA를 쓰는 다른 사용자 | 만들고 지우기를 되풀이하지 않는다. hold마다 앞뒤로 rain mlx5_1의 명령 셈(debugfs, 읽기만)과 mlx5 커널 줄을 남기고, 명령 오류가 늘면 `STOP_mlx5` |
+| NIC 펌웨어 명령 | QP, MR, CQ는 프로세스마다 시작 때 한 번 만든다. B3의 QUERY_QP는 PAUSED 뒤 지난 반복의 도달 시간 × 0.7에 처음, 그 뒤 시작 간격 50 µs 이상, 한 번에 하나, 반복당 200개, 셀당 20 000개 상한(넘으면 그 셀을 멈춤), QUERY_QP 하나가 50 ms를 넘으면 그 셀을 멈춤. rain의 QUERY_QP 평균은 약 71 µs다 `[측정: multirank 보관본 fwcmd_before-H1.txt]`. B1, B2의 NCCL 프로세스는 hw QP 감시를 돌린다: 기본 10 ms면 gated QP마다 초당 100번이라 4 rank, 문맥 12개(rank마다 QP 36개)에서 rank마다 초당 약 3 600번이다. 2026-10-09 B2 hold는 이 기본값으로 돌았고(rank의 helper가 사는 몇 초 동안, 새 mlx5 줄 0), 그 뒤의 B1, B2는 `NCCL_GIN_TS_QPWATCH_MS=100`(기록과 재생이 같게; 검토 3차 P3)이다 | rain의 새는 명령 slot, 같은 HCA를 쓰는 다른 사용자 | 만들고 지우기를 되풀이하지 않는다. hold마다 앞뒤로 rain mlx5_1의 명령 셈(debugfs, 읽기만)과 mlx5 커널 줄을 남기고, 명령 오류가 늘면 `STOP_mlx5` |
 | GID와 traffic class | GIN과 같은 RoCE v2 IPv4 대응 GID(gin-remaining 실행기의 고르기), TC 0(`NCCL_IB_TC` 기본) | 남의 우선순위 class | GIN과 같게 둔다 |
 | GPU | B3: 응답 쪽 GPU에 같은 노드의 다른 프로세스(같은 노드 셀의 보내는 쪽, 경합 셀의 hog). B1: 예비 프로세스는 기본 셀에서 원래 rank가 끝난 뒤에 돈다 | 다른 사용자의 GPU 작업 | hold 앞뒤로 두 노드의 `nvidia-smi` compute app을 적는다. 모든 프로세스는 자기 시간 상한이 있다 |
 | iptables | 쓰지 않는다 | | |
 | 프로세스 | 모두 `timeout -s KILL`로 묶는다. 끄는 일은 실행기가 기록한 자기 PID만. hog는 실행기가 만드는 stop 파일을 보고 스스로 끝난다 | 다른 사용자의 GPU, RDMA 작업(gds-kv, NVMe-oF, gdsio, mooncake, `prio-` 작업) | 이름으로 끄지 않는다(남은 프로세스는 정확한 이름으로 세기만) |
-| 링크 | B3 셀마다 약 8 GB(window 약 2 MiB × 4 000반복, 셀당 1분 안). `cluster_run.sh`는 시작 때만 링크가 한가한지 본다 | NVMe-oF, gdsio | window를 줄이고(T3-12) 셀을 짧게 둔다 |
+| 링크 | B3 셀마다 약 8 GB(window 약 2 MiB × 4 000반복, 셀당 1분 안). 2026-10-09 바꿈: 본 셀은 마지막 쓰기 4 MiB(window 약 5 MiB) × 3 400반복(본 3 200 + 탐침 200)이라 셀당 약 17 GB, 셀당 1분 안(9.15.3, 12절). `cluster_run.sh`는 시작 때만 링크가 한가한지 본다 | NVMe-oF, gdsio | 셀을 짧게 둔다 |
 | gpu-detect의 고침(G1–G9, `lostAfterCommit`) | 기대지 않는다. B1은 hw `be0ea9ed` 위에서 한다 | 그 고침이 같은 파일(`gin_host_gdaki.cc`)을 바꿈 | B1의 hook은 시험용 복사본에만 있고 그 고침과 합치지 않는다. 계층을 만들 때 다시 맞춘다 |
 | 관리망 주소 | B1의 기록 파일에는 commId(root 주소), bootstrap ring 정보(P2P, proxy listen 주소), GIN listen handle, helper 주소, QP 교환 정보의 GID가 든다(T1-10). 파일은 노드의 `/tmp`에 mode 0600으로 만들고 실행기가 trial 뒤 지운다(프로세스가 kill돼도). 보고 줄은 주소나 그 해시를 찍지 않고, trial마다 메모리에만 있는 열쇠(`NCCL_GIN_RESTORE_HKEY`, 파일에 적지 않음)로 만든 열쇠 해시만 찍는다. 모든 B1, B2 실행은 RAS를 끄고(`NCCL_RAS_ENABLE=0`) `NCCL_DEBUG=WARN`이다(INFO는 eno1 주소를 찍음). strace 출력은 노드에서 셈으로만 바꾸고 지운다 | 저장소와 Release에 주소가 들어가면 안 됨 | 결과 폴더에는 셈과 요약만 둔다 |
 
@@ -574,6 +574,8 @@ kv에 LSA 값이 없다 `[측정: 보관본의 h1/mr4_none_n10_r1.log, .kv]`. NC
   `runtimeConn = 1`, `nvlsSupport = 0`, host RMA 꺼짐(B1 T1-1), 그리고 application 요구로 host에서 띄우는 NCCL 통신 없음(9.7절 6번). DESIGN_POLICY.md 2.3절.
 - 해결 B: 어느 rank든 `lsaSize ≥ 2` → 5절 B2의 풀 조건대로 LSA 팀에 든 상대는 무장하지 않는다(그 상대의 죽음은 fail-fast). 복원 셀 배치를 다시 본다.
 - 미결: 초기화나 devComm 생성이 실패해 값을 읽지 못함 → B2는 열린 채 둔다.
+
+**결과(2026-10-09).** 해결 A: `b2_inter` 2회 모두 네 rank `lsaSize=1`, `nLsaTeams=4`, `nvlsSupport=0`, `runtimeConn=1`, GIN 교환 맞음 `[측정: `results/20261009_feasibility/b2/`, summ_feas.py로 다시 셈]`. 대조 `b2_consec`는 하지 않았다.
 
 #### 9.15.3 B3: 체크포인트 drain 뒤 GPU 메모리에 쓰기가 보이는가
 
@@ -614,7 +616,13 @@ ordering(기본, `gdakiRegMr` 192)일 때와 strict일 때 따로.
 - 코드 검토(실행 전)로 고친 것: `early`의 반복 수를 반복 단위로 셈(C1), 경로 MTU는 두 쪽의 작은 값(C2), 도달 시간은 M을 본 QUERY_QP의 시작 시각으로 재어
   첫 질의가 경계로 다가가게 함(C3), 반복당 QUERY_QP 상한 200(9.15.1과 맞춤, C4), FENCE_FAIL이 INCOMPLETE에 가려지지 않음(C5), 셀마다 멈춤 검사와 hold 시간
   보호(C6, C7). 마지막 쓰기 크기는 `RS_LAST_KB`(기본 1 024)로 바꿀 수 있고, smoke에서 경계 덮기가 50% 아래면 그 값을 키워 12절에 적은 뒤에만 본 셀을 한다.
-- 셀(각 4 000반복; 응답 쪽 노드마다 hold 하나):
+- smoke 뒤의 바꿈(2026-10-09, 본 셀 전, 판정 기준은 그대로): 기본값(마지막 쓰기 1 MiB)의 rain smoke는 `boundary` 12반복에서 마지막 메시지의 늦은 낱말이
+  한 번도 보이지 않아(경계 덮기 0.692와 `early` 13/13은 채움) 미결이었다. 마지막 쓰기가 짧으면 rmsn = M − 1을 보는 순간에 그 쓰기가 이미 끝나 있기
+  때문이다 `[추론]`. 그래서 `RS_LAST_KB=4096`으로 smoke 둘을 다시 했고 둘 다 유효했다(12절). 본 셀(B3r, B3s, 다시 하는 셀)은 `RS_LAST_KB=4096`을 실행기가
+  명시해 셀마다 meta에 남긴다. 4 MiB에서 rain은 반복당 QUERY_QP 약 4.9번이라(smoke 221반복에 1 091번) 4 000반복이면 셀당 상한 20 000에 닿는다. 상한은
+  그대로 두고 반복 수를 셀당 3 200으로 줄인다(QUERY_QP 예상 rain 약 16 800, sunny 약 12 000). 그래서 채점하는 `fence` 반복은 셀마다 1 600, 노드와 순서마다
+  4 800이고 실패율 95% 상한은 약 0.0625%(3/4 800)다(아래 판정의 2 000, 6 000, 약 0.05%를 이 수로 바꿔 읽는다. 통과의 조건, 실패 0은 같다).
+- 셀(각 4 000반복, 위의 바꿈으로 본 셀은 3 200반복; 응답 쪽 노드마다 hold 하나):
   - `b3_x_<rain|sunny>_<ro|so>`: 노드 사이(이름의 노드가 응답 쪽).
   - `b3_s_<rain|sunny>_<ro|so>`: 같은 노드(보내는 프로세스가 같은 GPU, 같은 HCA; GIN의 노드 안 쌍).
   - `b3_h_<rain|sunny>_<ro|so>`: 노드 사이 + 응답 쪽 GPU에서 다른 프로세스가 메모리 대역 커널을 계속 돌림(경합).
@@ -664,8 +672,10 @@ ordering(기본, `gdakiRegMr` 192)일 때와 strict일 때 따로.
   GIN collComm의 ring 연결은 `ncclGinIbConnect`의 connect와 accept 고리(246–255)만 건너뛰고 필드 설정(257–264)은 그대로 둔다(T1-3). helper 설정
   (`gdakiTsSetup`)은 salt를 기록의 자기 값으로 써서 nonce를 처음과 같게 하고, 잇거나 받지 않고 `gated`, `addr`를 기록의 all-gather 결과로 세운다.
   `gdakiTsStart`는 게이트 설정까지 하고 helper 스레드를 띄우지 않는다(설치 전에는 아무에게도 말하지 않는 예비 프로세스, DESIGN_POLICY.md D4). 상대에 이어진
-  QP는 만들기만 하고 잇지 않고(9.3절과 같음), 보고 직전에 기록의 상대 QPN과 GID(`rq.exch`)로 새 무작위 PSN을 써서 한 번 잇는다(로컬 상태만 바뀜, 패킷 없음;
-  RTR이 이웃 탐색 ARP만 부를 수 있음, T1-5).
+  QP는 만들기만 하고 잇지 않고(9.3절과 같음), 게이트 보고 줄 바로 뒤에 기록의 상대 QPN과 GID(`rq.exch`)로 새 무작위 PSN을 써서 한 번 잇고, 그때 응답 쪽
+  MSN 기준(rmsn0)을 잡는다(`gdakiTsSetup`에서는 RESET인 QP에 QUERY_QP를 내지 않음; 검토 3차 P2, P7). 로컬 상태만 바뀌고 패킷은 없다(RTR이 이웃 탐색 ARP만
+  부를 수 있음, T1-5). 재생은 ring 연결을 하지 않으므로 그 연결이 하던 장치 protection domain의 참조를 직접 잡고(처음이면 할당, `ncclIbInitCommDevBase`와
+  같음) collComm을 닫을 때 놓는다. 없으면 WARN과 함께 실패한다(검토 3차 P1: 첫 빌드는 이것이 빠져 GDAKI의 첫 MR 등록에서 멈췄을 것).
 - `NCCL_GIN_RESTORE_REPORT=1`(또는 위 둘): `GIN/RS:` 보고 줄. communicator의 `runtimeConn`, `nvlsSupport`, `numRmaCtx`, lsaSize, `nLsaTeams`; window마다
   (내부 window 포함) 크기, `winFlags`, 그 밖의 등록 정보; GPU에서 다시 읽은 window rkey 표와 신호, 카운터 표의 상대 칸(열쇠 해시); GIN 문맥마다 상대별
   `gated`, `addr`(열쇠 해시), QP마다 `rq.exch`(열쇠 해시), 장치 게이트 구조 전체(flags, waitMs, rescue 유무)와 게이트 낱말; helper nonce(열쇠 해시);
@@ -701,7 +711,7 @@ connect 수(루프백도 그 노드 자신의 주소도 아닌 AF_INET, AF_INET6
    window 크기와 등록 정보(내부 window 포함), `runtimeConn = 1`, `nvlsSupport = 0`, `numRmaCtx = 0`, 투명 복구 문맥 수, helper nonce, GPU에서 다시 읽은 상대
    rkey 칸, `ncclDevCommDump` 출력(포인터 값은 가림).
 5. 모든 상대 p에 대해 `gated = 1`, `addr`와 p로 가는 모든 QP의 `rq.exch`가 기록 실행과 같고, 장치 게이트 구조(flags, waitMs, rescue 유무)와 게이트 낱말(에폭 0,
-   개수 0)이 기록 실행의 같은 자리와 같다. 보고 직전의 한 번 잇기(QP를 RTS로)가 성공한다.
+   개수 0)이 기록 실행의 같은 자리와 같다. 게이트 보고 뒤의 한 번 잇기(QP를 RTS로)가 성공한다.
 비교에서 원래 다를 수밖에 없는 것은 뺀다(코드 검토 C15, 실행 전): 상대별 `fd`(기록 1, 재생 0), helper의 `listen` 표시, 재생에만 있는 한 번 잇기 줄,
 `ncclDevCommDump`의 포인터 값과 이 프로세스 자신의 lkey. 비교하는 칸은 gated, haveAddr, addr 해시, exch 해시, flags, waitMs, rescue, rescueLaps, lbase, 에폭,
 개수와 4번의 줄들이다. 비교는 [feas/summ_feas.py](feas/summ_feas.py)가 한다.
@@ -754,6 +764,29 @@ hold의 차례와 예상 시간(잠금과 한가한 링크를 기다리는 30 s 
 어느 hold든 `STOP_mlx5`, `STOP_cuda`, `STOP_left`, `STOP_nic`를 남기면 hold_feas.sh가 다음 hold를 거절한다. 그때는 이 에이전트나 사용자에게 올린다.
 `skipped.txt`에 줄이 생기면(hold 시간 보호로 건너뛴 셀) 그 셀만 hold `B3one-<셀>`로 다시 한다(B3 셀 하나, 1–2분). 미결 셀을 다시 할 때도 같다.
 
+**2차 배포와 남은 hold(2026-10-09, 검토 3차 뒤).** 위의 첫 배포, `S3`, `B2`는 돌았다(12절). 그 뒤 B1의 라이브러리를 다시 빌드했고(`rsx2`
+`c72cdad0bfe4307a117784e821f26b35`, diff md5 `10271487`), B3 본 셀은 3 200반복과 `RS_LAST_KB=4096`으로 바꿨다(9.15.3). `rs_spike` `40d43ed2`와
+`rs_drain_test` `7e2e4fde`는 이미 배포한 것을 그대로 쓴다. B1은 독립 재검토가 "B1 ready to run"이라고 한 뒤에만 돈다.
+
+```
+# 2차 배포: 새 디렉터리 ~/rs-bundle/rsx2/ 하나만(있으면 거절), 그 밖의 ~/rs-bundle과 다른 묶음은 앞뒤 md5가 같아야 함. 약 30 s
+ls -d ~/rs-bundle/rsx2; ssh -n "$SUNNY_SSH" 'ls -d ~/rs-bundle/rsx2'      # 둘 다 "No such file"이어야 함
+WANT_RSX2=c72cdad0bfe4307a117784e821f26b35 bash $F/deploy_feas.sh $SCR/agent_restore/deploy_check_rsx2.txt rsx2
+grep -E "MISMATCH|CHANGED|not found" $SCR/agent_restore/deploy_check_rsx2.txt   # 아무 줄도 없어야 함
+# B1(기본 LIBDIR = ~/rs-bundle/rsx2, NCCL_GIN_TS_QPWATCH_MS=100; 결과는 $R/b1/, 다시 하면 $R/b1_run<k>/)
+bash $CR -w 10800 -t rs-B1 -- timeout -s KILL 880 bash $F/hold_feas.sh $R B1 > $R/hold_B1.out 2>&1
+# B3 본 셀(셀마다 3 200반복, RS_LAST_KB=4096을 실행기가 넘김; 결과는 $R/b3/)
+bash $CR -w 10800 -t rs-B3r -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3r > $R/hold_B3r.out 2>&1
+bash $CR -w 10800 -t rs-B3s -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3s > $R/hold_B3s.out 2>&1
+python3 $F/summ_feas.py $R
+```
+
+| hold | 예상(잠금과 링크 기다림 빼고) | 끝난 뒤 볼 것 |
+|---|---|---|
+| `B1` | 2–3분(시행마다 기록 약 10 s, 재생 둘, 음성 대조 둘) | B1 줄: `rep1`, `rep0` PASS, `neg_cut`, `neg_field` "replay failed as required", `strace_mode` 2, 재생 `init_ms`가 기록과 비슷함, 재생 로그에 "no protection domain"이 없음, `hold_B1.out`의 새 mlx5 줄 0 |
+| `B3r` | 3–5분(셀 여섯, 셀마다 약 3 400반복, 1–2 ms씩) | B3 표의 rain 셀: `result`, `valid`, fence 실패 0, `query_qp_total` < 20 000, `query_max_us` < 50 000, meta의 `last_kb=4096`, `skipped.txt`와 `STOP_nic` 없음 |
+| `B3s` | 3–5분 | 같은 것(sunny 셀). 끝나면 B3 결론 줄 |
+
 ## 10. 완료 조건과 QA 기준
 
 - [ ] [DESIGN_POLICY.md](DESIGN_POLICY.md) 5절의 막는 문제가 풀렸고, 그 문서의 독립 검토가 남은 충돌이 없다고 했다.
@@ -780,11 +813,13 @@ hold의 차례와 예상 시간(잠금과 한가한 링크를 기다리는 30 s 
 - [x] B1–B3 시험 설계의 독립 검토와 반영
 - [x] 시험 코드의 독립 검토와 반영(실행 전)
 - [x] B2: 기존 원자료 확인(값 없음, 9.15.2절)
-- [ ] B2: 시험 application으로 확인(빌드됨, 실행 전)
+- [x] B2: 시험 application으로 확인(2회, 해결 A; 2026-10-09)
 - [x] B3: `rs_drain_test` 빌드됨
-- [ ] B3: smoke 둘, 셀 열둘
+- [x] B3: smoke(1 024에서 rain 미결, 4 096에서 rain, sunny 유효)
+- [ ] B3: 본 셀 열둘(3 200반복, `RS_LAST_KB=4096`)
 - [x] B1: `rsx` hook과 `rs_spike` 빌드됨
-- [ ] B1: 기록과 재생, 음성 대조
+- [x] B1: 검토 3차의 막는 결함 P1 고침, 둘째 빌드 `rsx2`
+- [ ] B1: 기록과 재생, 음성 대조(`rsx2`, 독립 재검토 뒤)
 - [ ] 배포(`~/rs-bundle/`)와 실행 명령(메인 세션), 결과 정리(`results/<날짜>_feasibility/`)
 - [ ] gpu-detect 계층 확정 뒤 이 계층 구현, 리뷰
 - [ ] 실행기, 셀, 채점기, 예측 고정, pilot, 사전 등록
@@ -810,6 +845,16 @@ hold의 차례와 예상 시간(잠금과 한가한 링크를 기다리는 30 s 
 | 2026-10-09 | 실행 전 독립 코드 검토(읽기 전용 에이전트): B2 "실행 가능", B1 "먼저 고칠 것 C8, C9", B3 "먼저 고칠 것 C1, C2, C3, C6". 고친 것: early 반복 셈(C1), 경로 MTU 교환(C2), 도달 시간을 M을 본 질의의 시작으로(C3), 반복당 QUERY_QP 200(C4), 결과 차례(C5), 셀마다 STOP 검사와 hold 시간 보호(C6, C7), strace `--seccomp-bpf`(C8), strace 해석의 PID 접두와 양성 대조와 루프백 판별(C9), 자기 주소 connect 따로(C10), umask 077(C11), 끊긴 hold의 자기 파일 지움(C12), devComm 내부 window 보고(C13), 비교 칸의 명세(C15), sunny 응답 smoke(C17). 스스로 찾은 것: GDAKI dump의 자기 lkey를 비교에서 가림, 보내는 쪽 SGE 주소를 iova 0 MR에 맞춤. 남긴 것: C14(무해), C16(재생에서 RESET QP의 QUERY_QP가 거절되면 투명 복구가 꺼진다는 WARN으로 드러남, `[미확인]`) | 9.15절 |
 | 2026-10-09 | 빌드됨(rain, nice 19, ionice idle; 실행 안 함): `rsx` libnccl `cc8ed9dd6ba3418c72aa0102cc3c251e`(diff md5 `0ee313583f7e5d2d0e305d3ec1e4d28d`, 장치 헤더는 hw와 같음), `rs_spike` `40d43ed2c8ca4d19202084b7457da4c7`, `rs_drain_test` `7e2e4fde5941ad54e673b77f91ee190e`. 배포와 실행은 9.15.5절의 명령으로 메인 세션이 함 | `agent_restore/out/build_info.txt` |
 | 2026-10-09 | 코드 재검토(같은 에이전트, 커밋 `269c2d78` 대상): C1–C13, C15, C17 풀림. 새로 고친 것: 자기 rank의 peer 줄(gated=0)을 5번 검사에서 뺌(N1, 높음), B3 셀 다시 하기를 `b3_rerun<k>/`에 두고 판정은 마지막 것(N2), application의 stdout 줄 버퍼(N3: `_exit` 때 NCCL WARN 줄을 잃지 않게), 음성 대조는 init, reg, devcomm 가운데 하나라도 실패하면 실패로 봄(N4), live 셀의 자기 주소 connect 상한(N5), strace가 없는 노드는 3번 `[미확인]`(N6), B3 결론의 갈래 차례(N7), 기록 끝 표시는 위치만 비교(N8), B2 시행 둘을 묶은 판정(N9). dump 비교는 끼어든 로그 줄을 건너뜀. 판정 스크립트를 합성 파일로 시험함(B1 통과와 음성 대조, B2 해결 A, B3의 네 갈래). `rs_spike` 다시 빌드됨 `40d43ed2c8ca4d19202084b7457da4c7`(나머지 md5는 같음) | 이 커밋 |
+| 2026-10-09 22:22 | 메인 세션이 배포(첫 빌드: `rsx` `cc8ed9dd`, `rs_spike` `40d43ed2`, `rs_drain_test` `7e2e4fde`를 두 노드의 새 `~/rs-bundle/`에). 확인 파일: 새 파일 rain과 sunny 같음(3개), 원본과 같음, ldd 맞음, 두 노드에 strace 있음, 기존 묶음 그대로(rain 323, sunny 375개) | `agent_restore/deploy_check.txt` |
+| 2026-10-09 22:23 | hold `S3`(smoke, 기본 `RS_LAST_KB=1024`, rain 응답, ro, 221반복 = 208 + 탐침 13): 미결. `boundary` 12반복에서 마지막 메시지의 늦은 낱말 0(`boundary_missed` 1), `early` 13/13, 경계 덮기 0.692, fence W와 AW 104반복 실패 0, QUERY_QP 383(p50 59.9 µs, 최대 90.9 µs), 경로 MTU 5(4096 B). 채점 아님 `[측정: 원자료에서 다시 셈]` | `results/20261009_feasibility/b3_smoke/b3_x_rain_ro_resp.kv` |
+| 2026-10-09 22:24–22:26 | smoke를 `RS_LAST_KB=4096`으로 다시(hold `S3`, `S3s`, 태그 `rs-S3k`, `rs-S3s`). 문서의 스위치를 문서에 적은 이유(경계 덮기 < 0.5)가 아닌 이유로 썼다: 경계 덮기는 채웠고 모자란 것은 `boundary` 대조였다. rain 응답: 유효, PASS, `boundary` 13/13, `early` 13/13, 경계 덮기 1.000, QUERY_QP 1 091(p50 55.3 µs, 최대 81.1 µs), 도달 p50 770 µs. sunny 응답: 유효, PASS, 13/13, 13/13, 1.000, QUERY_QP 777(p50 71.5 µs, 최대 113.5 µs), 도달 p50 648 µs. 두 smoke 모두 fence, fsame, nofence, cuflush, 탐침의 실패 0, `gdr_writes_ordering=0`, `gdr_flush_options=1`, HCA `relaxed_ordering_write` 능력 1. rain의 S3 hold 앞뒤 debugfs QUERY_QP 셈의 차이가 1 091로 프로그램의 셈과 같음. 채점 아님 `[측정: 원자료에서 다시 셈]` | `results/20261009_feasibility/s3_last4096/b3_smoke/` |
+| 2026-10-09 22:26 | hold `B2`(태그 `rs-B2`, 첫 빌드 `rsx`, 보고 줄만, hw QP 감시 기본 10 ms): 2회 모두 네 rank `lsaSize=1`, `nLsaTeams=4`, `nvlsSupport=0`, `runtimeConn=1`, `numRmaCtx=0`, GIN 교환 맞음, 종료 0(시행마다 2.0 s, hold 14 s). 판정: 해결 A(9.15.2) `[측정: summ_feas.py로 다시 셈]`. 이 배치에서 생존 rank는 다른 프로세스의 GPU 메모리를 LSA로 매핑하지 않는다 | `results/20261009_feasibility/b2/`, `results/20261009_feasibility/SUMMARY.txt` |
+| 2026-10-09 | 모든 hold에서 STOP 파일 없음, 새 mlx5 커널 줄 0 `[측정: mlx5_new_*.txt]`. B1은 돌지 않았다 | `results/20261009_feasibility/` |
+| 2026-10-09 | 독립 검토 3차(B1 중심, 메인 세션이 맡김, 보고는 세션 스크래치의 `rs_review_b1_pass3.md`): 막는 결함 P1 — 재생은 GIN ring 연결을 건너뛰는데 그 연결만 장치 protection domain을 할당하므로 `cComm->ib.pd`가 NULL로 남아 `ncclDevCommCreate`의 첫 GDAKI MR 등록에서 멈췄을 것(첫 빌드 `cc8ed9dd`로 B1을 돌렸다면 B1이 막힌 것처럼 읽혔을 것). 그 밖에 P2(재생에서 RESET QP에 QUERY_QP), P3(hw QP 감시의 펌웨어 명령, 9.15.1에 없음), P4–P7, P9, P10 낮음 | 9.15.1, 9.15.4 |
+| 2026-10-09 | 3차 반영: P1 재생 collComm이 장치 PD 참조를 직접 잡고(0에서 1이면 할당) 닫을 때 놓음, 없으면 WARN과 실패; P2 재생에서는 `gdakiTsSetup`의 rmsn 기준 질의를 하지 않고 한 번 잇기 뒤에 잡음; P3 B1, B2의 NCCL 프로세스는 `NCCL_GIN_TS_QPWATCH_MS=100`(기록과 재생이 같게; 이미 돈 B2의 부하는 9.15.1에 적음); P4 음성 대조의 문구 맞춤을 좁힘(`diverged=0`이 맞지 않게); P5 비교할 보고 줄이 있어야 함(window 줄 셋 이상 등); P6 `nokey` 해시 거부; P7 한 번 잇기는 게이트 보고 뒤(문서); P9 STOP으로 거절하는 hold도 남은 프로세스가 없으면 자기 파일을 지움; P10 B1, B2를 다시 하면 새 폴더(`b1_run<k>`, `b2_run<k>`), 판정은 폴더마다 | 이 커밋 |
+| 2026-10-09 | 둘째 빌드(rain, nice 19, ionice idle; 실행 안 함): `rsx2` libnccl `c72cdad0bfe4307a117784e821f26b35`(diff md5 `102714874d19c61e0659aecae0995fca`, 장치 헤더는 hw와 같음). `rs_spike`와 `rs_drain_test`는 바뀌지 않음. 배포는 새 디렉터리 `~/rs-bundle/rsx2/`에만(`deploy_feas.sh <확인 파일> rsx2`, 이미 배포한 파일은 덮어쓰지 않고 앞뒤 md5를 봄), B1 실행기의 기본 라이브러리는 `rsx2` | `agent_restore/out/build_info.txt` |
+| 2026-10-09 | B3 본 셀의 결정(실행 전, 판정 기준은 그대로): `RS_LAST_KB=4096`을 B3r, B3s, 다시 하는 셀에 실행기가 명시해 meta에 남김(이유: 1 024 smoke의 `boundary` 대조가 한 번도 늦은 낱말을 보지 못함). 4 096에서 rain은 반복당 QUERY_QP 약 4.9번이라 4 000반복이면 셀당 상한 20 000에 닿으므로 상한은 두고 반복을 셀당 3 200으로 줄임(예상 rain 약 16 800, sunny 약 12 000). 채점 fence는 셀당 1 600, 노드와 순서마다 4 800, 실패율 95% 상한 약 0.0625%. 셀당 전송량 약 17 GB | 9.15.1, 9.15.3 |
+| 2026-10-09 | gpu-detect의 `hk` 빌드(`~/rdma-error-wt/gpu-detect/harness/gpu-detect/hk_layer.diff`, 사전 등록 태그 `prereg/gpu-detect-v1`)를 읽어 계약 확인(읽기만): `gdakiTsDeclineAfterCommit`가 맨 처음에 `pe.lostAfterCommit = true`를 세우고(어느 돌아가기, `gdakiTsSocketLost`보다 먼저), 두 자리(ACK 보내기 실패, DONE 기다림 중 잃음)가 모두 이 함수를 부른다. ACK 실패 길은 죽음 판정을 하지 않고 errno 이름을 `closeCause`에 넣는다(hk 검토 지적 1로 받기 쪽 peek을 뺌). DONE 길은 `gdakiTsCauseLiveness`가 죽음이면 `gdakiTsSocketLost` 뒤 PeerDead, `GDAKI_UA_PEER_DEAD`로 거절. 표시는 `gdakiTsInstall`에서 지운다(REJOIN이 설치하는 자리). 그래서 검토 3의 W10/X5와 W11을 hk가 채운다 `[소스: hk_layer.diff]` | DESIGN_POLICY.md 2.4절 |
 
 ## 13. 사전 등록 이후 변경
 

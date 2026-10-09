@@ -860,7 +860,7 @@ index 0000000..403b51a
 +       nBeyond, ownDiffBytes, nStrictMismatch);
 +}
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index da31b3a..9d8dcc1 100644
+index da31b3a..427504a 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -6,6 +6,7 @@
@@ -901,7 +901,18 @@ index da31b3a..9d8dcc1 100644
      return ncclSuccess;
    }
  
-@@ -6515,6 +6532,15 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6505,7 +6522,9 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+   }
+   // Responder MSN baselines before anyone can send on these QPs (every rank is inside this collective).
+   std::vector<uint32_t> rmsn0(r ? r->qps.size() : 0, 0);
+-  if (why == nullptr) {
++  // gin-restore spike B1: a replay's peer QPs are still in RESET here (connected once in gdakiTsStart, which takes the
++  // baseline then); no QUERY_QP on them here
++  if (why == nullptr && !rsReplaying()) {
+     for (int p = rankOff; p < nranks; p += g->rankStride) {
+       if (p == rank) continue;
+       gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+@@ -6515,6 +6534,15 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
        });
      }
    }
@@ -917,7 +928,7 @@ index da31b3a..9d8dcc1 100644
    ncclResult_t ret = cComm->allGather(cComm, &mine, all.data(), sizeof(mine));
    if (ret != ncclSuccess) {
      if (ls >= 0) close(ls);
-@@ -6538,8 +6564,17 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6538,8 +6566,17 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
      for (int p = rankOff; p < nranks && why == nullptr; p += g->rankStride)
        if (p != rank && all[p].magic != GDAKI_TS_MAGIC) why = "a peer has transparent recovery off";
    }
@@ -936,7 +947,7 @@ index da31b3a..9d8dcc1 100644
      if (p <= rank) continue;
      const union ncclSocketAddress& pa = all[p].a;
      socklen_t alen = pa.sa.sa_family == AF_INET6 ? sizeof(pa.sin6) : sizeof(pa.sin);
-@@ -6570,7 +6605,7 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6570,7 +6607,7 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
      ts->peers[p].haveAddr = true;
    }
    int lower = 0;
@@ -945,7 +956,7 @@ index da31b3a..9d8dcc1 100644
    while (why == nullptr && lower > 0) {
      struct pollfd pf = {ls, POLLIN, 0};
      const int rem = (int)(deadline - gdakiQ4MonoMs());
-@@ -7037,6 +7072,42 @@ static void gdakiLbSetup(struct gdakiRecHost* r) {
+@@ -7037,6 +7074,42 @@ static void gdakiLbSetup(struct gdakiRecHost* r) {
                lb->nPeermem, lb->testBytes, lb->testNonzero, lb->testShadow, gdakiQ4MonoMs() - t0, gdakiQ4MonoMs());
  }
  
@@ -988,7 +999,7 @@ index da31b3a..9d8dcc1 100644
  static void gdakiTsStart(struct gdakiRecHost* r) {
    if (r == nullptr || r->ts == nullptr) return;
    struct gdakiTs* ts = r->ts;
-@@ -7166,6 +7237,23 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+@@ -7166,6 +7239,25 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
      r->ts = nullptr;
      return;
    }
@@ -998,12 +1009,14 @@ index da31b3a..9d8dcc1 100644
 +    for (int p = 0; p < (int)ts->peers.size(); p++) {
 +      if (!ts->peers[p].gated) continue;
 +      gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
-+        uint32_t st = 0;
++        uint32_t st = 0, rmsn = 0;
 +        if (gdakiConnectQp(g, q, &rq.exch, rq.lag, rsRandom24(), rsRandom24()) == ncclSuccess &&
-+            doca_verbs_qp_query_seq(q->qp, nullptr, nullptr, nullptr, &st) == DOCA_SUCCESS && st == 0x3u)
++            doca_verbs_qp_query_seq(q->qp, &rmsn, nullptr, nullptr, &st) == DOCA_SUCCESS && st == 0x3u) {
++          ts->qs[rq.qpIdx].rmsn0 = rmsn;  // the responder MSN baseline, taken here (not in gdakiTsSetup) in a replay
 +          okq++;
-+        else
++        } else {
 +          failq++;
++        }
 +      });
 +    }
 +    WARN("GIN/RS: replay connect_once ok=%d failed=%d (spare: no helper thread before a REJOIN)", okq, failq);
@@ -1012,7 +1025,7 @@ index da31b3a..9d8dcc1 100644
    ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
    ts->active.store(1, std::memory_order_release);
    ts->th = std::thread(gdakiTsMain, r);
-@@ -7816,7 +7904,9 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -7816,7 +7908,9 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
  
        uint8_t lagTxPortAffinity = (numLagPorts > 0) ? (ctx_idx % numLagPorts) + 1 : 0;
  
@@ -1023,7 +1036,7 @@ index da31b3a..9d8dcc1 100644
        if (gdaki_ctx->rec) {  // GIN recovery
          struct gdakiRecQp& rq = gdaki_ctx->rec->qps[qp_idx];
          rq.used = true;
-@@ -8222,6 +8312,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8222,6 +8316,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
    NCCLCHECKGOTO(rkeys_hd_mhandle->allocate(cComm->nranks), status, out);
    NCCLCHECKGOTO(cComm->allGather(cComm, &rkey, rkeys_hd_mhandle->host_buf, sizeof(__be32)), status, out);
    NCCLCHECKGOTO(rkeys_hd_mhandle->copy_h_to_d(), status, out);
@@ -1032,10 +1045,10 @@ index da31b3a..9d8dcc1 100644
    NCCLCHECKGOTO(gdaki_mhandle_hd_mhandle->allocate(1), status, out);
    gdaki_mhandle_hd_mhandle->host_buf->rkeys = rkeys_hd_mhandle->gpu_buf;
 diff --git a/src/transport/net_ib/gin.cc b/src/transport/net_ib/gin.cc
-index 6e0b5a1..821fd95 100644
+index 6e0b5a1..38557f2 100644
 --- a/src/transport/net_ib/gin.cc
 +++ b/src/transport/net_ib/gin.cc
-@@ -5,6 +5,7 @@
+@@ -5,12 +5,15 @@
   * See LICENSE.txt for more license information
   *************************************************************************/
  
@@ -1043,7 +1056,15 @@ index 6e0b5a1..821fd95 100644
  #include "common.h"
  
  #include "gin/gin_host.h"
-@@ -135,7 +136,15 @@ ncclResult_t ncclGinIbFinalize(void* ctx) {
+ #include "gin.h"
+ 
+ #include <thread>
++#include <vector>
++#include <mutex>
+ #include <chrono>
+ #include <cstdlib>
+ #include <cstring>
+@@ -135,7 +138,15 @@ ncclResult_t ncclGinIbFinalize(void* ctx) {
    return ncclIbFinalizeDevices();
  }
  
@@ -1059,7 +1080,37 @@ index 6e0b5a1..821fd95 100644
    ncclResult_t status = ncclSuccess;
    void *rMhandle = NULL, *sMhandle = NULL;
    void *srequest = NULL, *rrequest = NULL;
-@@ -243,7 +252,8 @@ ncclResult_t ncclGinIbConnect(void* ctx, void* handles[], int nranks, int rank,
+@@ -228,6 +239,29 @@ ncclResult_t ncclGinIbP2PBarrier(struct ncclGinIbCollComm* cComm) {
+   return ncclSuccess;
+ }
+ 
++// gin-restore spike B1: a replayed collComm connects no ring, and the ring's connect/accept is the only place where the
++// device's protection domain is allocated (ncclIbInitCommDevBase). The replay takes the same reference on that PD
++// (allocated on 0 -> 1) and releases it in ncclGinIbCloseColl. Only replayed collComms are in this list.
++static std::mutex rsPdMu;
++static std::vector<void*> rsPdComms;
++static ncclResult_t rsReplayPdRef(int dev) {
++  ncclIbDev* ibDev = ncclIbDevs + dev;
++  std::lock_guard<std::mutex> lock(ibDev->mutex);
++  if (0 == ibDev->pdRefs++) {
++    ncclResult_t r = wrap_ibv_alloc_pd(&ibDev->pd, ibDev->context);
++    if (r != ncclSuccess) {
++      ibDev->pdRefs--;
++      return r;
++    }
++  }
++  return ncclSuccess;
++}
++static ncclResult_t rsReplayPdUnref(int dev) {
++  std::lock_guard<std::mutex> lock(ncclIbDevs[dev].mutex);
++  if (0 == --ncclIbDevs[dev].pdRefs) NCCLCHECK(wrap_ibv_dealloc_pd(ncclIbDevs[dev].pd));
++  return ncclSuccess;
++}
++
+ ncclResult_t ncclGinIbConnect(void* ctx, void* handles[], int nranks, int rank, void* listenComm, void** collComm) {
+   struct ncclIbListenComm* lComm = (struct ncclIbListenComm*)listenComm;
+   struct ncclGinIbCollComm* cCommArray = nullptr;
+@@ -243,7 +277,8 @@ ncclResult_t ncclGinIbConnect(void* ctx, void* handles[], int nranks, int rank,
    cComm->rank = rank;
  
    next = (cComm->rank + 1) % nranks;
@@ -1069,3 +1120,61 @@ index 6e0b5a1..821fd95 100644
      if (cComm->sendComm == NULL) {
        NCCLCHECKGOTO(ncclIbConnectImpl(ctx, lComm->dev, handles[next], &cComm->sendComm, NULL, /*nQpsPerDev*/ 1,
                                        ncclParamGinIbTc() != -1 ? ncclParamGinIbTc() : ncclParamIbTc()),
+@@ -260,8 +295,18 @@ ncclResult_t ncclGinIbConnect(void* ctx, void* handles[], int nranks, int rank,
+   cComm->getGidIndex = ncclIbGetGidIndex;
+   cComm->dev = lComm->dev;
+ 
++  if (rsReplaying()) {  // gin-restore spike B1: the PD reference the ring connect would have taken
++    NCCLCHECKGOTO(rsReplayPdRef(cComm->dev), ret, fail);
++    std::lock_guard<std::mutex> lk(rsPdMu);
++    rsPdComms.push_back(cComm);
++  }
+   cComm->ib.context = ncclIbDevs[cComm->dev].context;
+   cComm->ib.pd = ncclIbDevs[cComm->dev].pd;
++  if (rsReplaying() && cComm->ib.pd == NULL) {  // fail closed: every GDAKI registration needs this PD
++    WARN("GIN/RS: replay: no protection domain for GIN device %d", cComm->dev);
++    ret = ncclInternalError;
++    goto fail;
++  }
+ 
+   *collComm = cCommArray;
+   return ncclSuccess;
+@@ -269,6 +314,19 @@ ncclResult_t ncclGinIbConnect(void* ctx, void* handles[], int nranks, int rank,
+ fail:
+   if (cComm->recvComm) ncclNetIb.closeRecv(cComm->recvComm);
+   if (cComm->sendComm) ncclNetIb.closeSend(cComm->sendComm);
++  {  // gin-restore spike B1: a replay that took the PD reference and then failed gives it back
++    bool held = false;
++    {
++      std::lock_guard<std::mutex> lk(rsPdMu);
++      for (size_t i = 0; i < rsPdComms.size(); i++)
++        if (rsPdComms[i] == (void*)cComm) {
++          rsPdComms.erase(rsPdComms.begin() + i);
++          held = true;
++          break;
++        }
++    }
++    if (held) (void)rsReplayPdUnref(cComm->dev);
++  }
+   free(cCommArray);
+   return ret;
+ }
+@@ -288,6 +346,18 @@ ncclResult_t ncclGinIbCloseColl(void* collComm) {
+     cComm->sendComm = NULL;
+   }
+ 
++  bool rsPd = false;  // gin-restore spike B1: a replayed collComm releases its PD reference
++  {
++    std::lock_guard<std::mutex> lk(rsPdMu);
++    for (size_t i = 0; i < rsPdComms.size(); i++)
++      if (rsPdComms[i] == (void*)cComm) {
++        rsPdComms.erase(rsPdComms.begin() + i);
++        rsPd = true;
++        break;
++      }
++  }
++  if (rsPd) NCCLCHECK(rsReplayPdUnref(cComm->dev));
++
+   memset(cComm, 0, sizeof(*cComm));
+ 
+   free(cCommArray);

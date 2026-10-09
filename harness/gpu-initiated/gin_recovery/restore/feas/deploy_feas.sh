@@ -12,8 +12,46 @@
 # libcuda. No GPU program, no RDMA traffic: ssh, scp and rsync on the management network only.
 # env: SUNNY_SSH (required: user@sunny's management address, from ~/.config/rdma-error/mgmt.env), WANT_RSX,
 #      WANT_APP, WANT_B3 (override only after a rebuild recorded in EXPERIMENT.md 12)
+# usage: deploy_feas.sh <check output file>          the first deploy (2026-10-09; ~/rs-bundle must not exist)
+#        deploy_feas.sh <check output file> rsx2     the second rsx build (after the pass-3 review) into the NEW directory
+#                                                    ~/rs-bundle/rsx2/ (+ links); refuses unless ~/rs-bundle exists and
+#                                                    ~/rs-bundle/rsx2 exists on neither node; every other file of
+#                                                    ~/rs-bundle and of the other bundles must be the same before and after.
+#                                                    env WANT_RSX2 (the rsx2 md5, EXPERIMENT.md 12)
 set -euo pipefail
 OUTF=${1:?output file (the check is written to a file only; never pipe it)}
+if [ "${2:-}" = rsx2 ]; then
+  SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH (user@address) from the management env file}
+  SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
+  SRC=$SCR/agent_restore/out/rsx2/libnccl.so.2.32.3
+  WANT_RSX2=${WANT_RSX2:?expected md5 of the rsx2 libnccl (EXPERIMENT.md 12)}
+  md5() { md5sum < "$1" | cut -c1-32; }
+  [ "$(md5 "$SRC")" = "$WANT_RSX2" ] || { echo "rsx2 libnccl is not the expected build" >&2; exit 1; }
+  [ -d ~/rs-bundle ] && ssh -n "$SUNNY_SSH" '[ -d $HOME/rs-bundle ]' || { echo "~/rs-bundle missing on a node" >&2; exit 1; }
+  if [ -e ~/rs-bundle/rsx2 ] || ssh -n "$SUNNY_SSH" '[ -e $HOME/rs-bundle/rsx2 ]'; then echo "~/rs-bundle/rsx2 exists on a node: refusing" >&2; exit 1; fi
+  ex2='cd $HOME && { for d in gi-bundle gd-bundle blind-bundle; do [ -d "$d" ] && find "$d" -type f -print; done; find rs-bundle -path rs-bundle/rsx2 -prune -o \( -type f -o -type l \) -print; } | sort | xargs -r md5sum'
+  BEFORE_L=$(bash -c "$ex2"); BEFORE_S=$(ssh -n "$SUNNY_SSH" "$ex2")
+  mkdir ~/rs-bundle/rsx2
+  cp "$SRC" ~/rs-bundle/rsx2/
+  (cd ~/rs-bundle/rsx2 && ln -s libnccl.so.2.32.3 libnccl.so.2 && ln -s libnccl.so.2 libnccl.so)
+  ssh -n "$SUNNY_SSH" 'mkdir $HOME/rs-bundle/rsx2'
+  rsync -a ~/rs-bundle/rsx2/ "$SUNNY_SSH:rs-bundle/rsx2/"
+  SUM2='cd $HOME && find rs-bundle/rsx2 -type f -print0 | sort -z | xargs -0 md5sum; ls -l rs-bundle/rsx2 | grep -c " -> "'
+  L=$(bash -c "$SUM2"); S=$(ssh -n "$SUNNY_SSH" "$SUM2")
+  LDD2='cd $HOME/rs-bundle && echo "app rsx2: $(LD_LIBRARY_PATH=$HOME/rs-bundle/rsx2 ldd app/rs_spike | grep -E "nccl|not found" | tr -s " " | tr "\n" ";")"'
+  AFTER_L=$(bash -c "$ex2"); AFTER_S=$(ssh -n "$SUNNY_SSH" "$ex2")
+  {
+    echo "== $(date '+%F %T') rsx2 (rain)"; echo "$L"
+    echo "== sunny"; echo "$S"
+    [ "$L" = "$S" ] && echo "rsx2: rain == sunny" || echo "RSX2 MD5 MISMATCH"
+    [ "$(md5 "$SRC")" = "$(md5 ~/rs-bundle/rsx2/libnccl.so.2.32.3)" ] && echo "source == deployed: rsx2/libnccl.so.2.32.3" || echo "SOURCE MISMATCH: rsx2"
+    echo "rain $(bash -c "$LDD2")"; echo "sunny $(ssh -n "$SUNNY_SSH" "$LDD2")"
+    [ "$BEFORE_L" = "$AFTER_L" ] && [ "$BEFORE_S" = "$AFTER_S" ] &&
+      echo "existing files unchanged (rain $(echo "$BEFORE_L" | grep -c .) files, sunny $(echo "$BEFORE_S" | grep -c .) files, rs-bundle outside rsx2 included)" ||
+      echo "EXISTING FILE CHANGED"
+  } > "$OUTF"
+  exit 0
+fi
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH (user@address) from the management env file}
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
 O=$SCR/agent_restore/out
