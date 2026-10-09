@@ -437,10 +437,10 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 | RL13 | `gdakiTsExecuted`(hr 4330 / hw 4355), `gdakiTsBaseline`(hr 4351 / hw 4376) | 누적 실행 수 |
 | RL14 | `ncclGinTsUserAbortRaise`(hr 2760 / hw 2767), 정리(hr 6962, 7086 / hw 7274, 7405) | CANCELLED, 예비 프로세스에 BYE |
 | RL15 | 확대 상한(hr 5081 / hw 5106) | 복원 라운드와 빈 라운드는 세지 않음 |
-| RL17 | `gdakiTsServeLower`(hr 5372–5373 / hw 5401–5402) | 새 메시지 미루기 |
+| RL17 | `gdakiTsServeLower`(hr 5372–5373 / hw 5401–5402) | 새 메시지 미루기. 같은 상대의 미룬 메시지는 그 상대의 REQ보다 먼저, 도착 차례대로 처리(DESIGN_POLICY.md 3절 R1) |
 | RL18 | 자료 서버(새 스레드, 새 포트) | 체크포인트 블록, 로그 내보내기 |
 | RL19 | 통계 API(hr 7135 / hw 7454) | 복원 수 |
-| RL20 | `gdakiTsRespond` 맨 앞(hr 5739 / hw 5768) | 붙잡은 상대의 REQ에 NACK 17, PUBLISHED면 fallback(DESIGN_POLICY.md 3절 Q5) |
+| RL20 | `gdakiTsRespond` 맨 앞(hr 5739 / hw 5768) | 그 상대의 미룬 RESTORED를 먼저 적용한 뒤, 붙잡은 상대의 REQ에 NACK 17, PUBLISHED면 fallback(DESIGN_POLICY.md 3절 Q5, R1) |
 
 장치 쪽(DV1–DV4)과 예비 프로세스 쪽(SP1–SP6)은 아래 그대로다.
 
