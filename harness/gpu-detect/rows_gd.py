@@ -26,6 +26,8 @@ clock), n_decl, n_judged, det_cfg (ranks with the "GIN/TS: detect=1" start line)
 "r0:10;r1:10"), lb_on (ranks with "NIC copy path on"), lb_shadow (the smallest "N QP struct(s) equal to the host shadow"),
 wq_queries, wq_us_mean, wq_us_max (the teardown watch line: the sum over ranks, the largest mean, the largest max),
 us_case1..us_case4 (rank 0's us/batch per case).
+hk (pilot 2 on): pol_cfg (ranks whose "GIN/TS: fault policy" start line says requested=failfast effective=failfast),
+wq_lines (teardown watch lines; hk writes one per rank also when the devComm is destroyed first).
 New columns (nvs): t1w_cfg (PEs with the "t1w: gpu-detect=1" line), failstop_cfg (its failstop_ms values), n_fin_verdict
 (survivor lines "FIN) without a goodbye: the peer process is gone"), n_bye_sent ("goodbye sent to" lines), n_bye_seen
 ("said goodbye"), n_left ("after its goodbye: it left"), n_failstop ("t1w: FAILSTOP: exiting"), n_released ("device waits
@@ -69,6 +71,9 @@ RE_LBON = re.compile(r"GIN/TS: rank (\d+): NIC copy path on: .*?(\d+) QP struct\
 RE_WQ_TD = re.compile(r"GIN/TS: rank (\d+) QP watch at teardown: qpwatch_ms=(\d+) queries=(\d+) query_fail=(\d+) "
                       r"query_us_mean=([0-9.]+) query_us_max=([0-9.]+) detections=(\d+) other_states=(\d+)")
 RE_CASE = re.compile(r"^\s+([1-4])\s+([0-9.]+)\s+([0-9.]+)\s+[0-9.]+x\s+\S+")
+RE_POL = re.compile(r"GIN/TS: fault policy rank=(\d+) requested=(\w+) agreed=(\d) effective=(\w+)")
+RE_HOLD_WARN = re.compile(r"NCCL_GIN_FAULT_POLICY=hold requested, not available in this build")
+RE_MIX_WARN = re.compile(r"NCCL_GIN_FAULT_POLICY differs across ranks")
 RE_T1W_CFG = re.compile(r"\[nvshmem-t1\] PE(\d+) [0-9.]+ t1w: gpu-detect=1 fin_death=(\d) goodbye=1 failstop_ms=(-?\d+) "
                         r"failstop_code=(\d+) wait_word=(\w+)")
 NVS_SIZE = re.compile(r"^(\d+)B\s+([0-9.]+)ms")
@@ -77,7 +82,7 @@ COLS = ["id", "key", "hold", "cell", "build", "workload", "cls", "target", "env"
         "n_err0",
         "n_err1", "err0", "err1", "n_rec", "n_death", "result", "outcome", "dt_err", "dt_end", "wall_s", "left", "rerun",
         "det_by", "det_ms", "det_src", "n_watch", "n_q4", "rec_ms", "rec_rx_s", "n_decl", "n_judged", "det_cfg", "watch_cfg",
-        "lb_on", "lb_shadow", "wq_queries", "wq_us_mean", "wq_us_max", "us_case1", "us_case2", "us_case3", "us_case4",
+        "lb_on", "lb_shadow", "wq_queries", "wq_us_mean", "wq_us_max", "wq_lines", "pol_cfg", "us_case1", "us_case2", "us_case3", "us_case4",
         "t1w_cfg", "failstop_cfg", "n_fin_verdict", "n_bye_sent", "n_bye_seen", "n_left", "n_failstop", "n_released",
         "n_declines", "surv_rc", "surv_end", "verdict_s", "n_val", "ms_16m", "ms_32m", "ms_64m"]
 
@@ -119,7 +124,7 @@ def err_lines(wl, lines):
 def expected_cfg(wl, build, env):
     """What the start lines must show for this build and cell environment."""
     if wl == "gin":
-        return {"watch": int(env.get("NCCL_GIN_TS_QPWATCH_MS", "10"))} if build == "hw" else {}
+        return {"watch": int(env.get("NCCL_GIN_TS_QPWATCH_MS", "10"))} if build in ("hw", "hk") else {}
     return {"failstop": int(env.get("NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS", "0"))} if build == "t1w" else {}
 
 
@@ -224,6 +229,7 @@ def row_of(d):
         row["n_judged"] = sum(count(logs[r], r"judged dead") for r in (0, 1))
         cfg = {}
         lbs = {}
+        pol = {}
         for r in (0, 1):
             for _, l in logs[r]:
                 mm = RE_DET_CFG.search(l)
@@ -232,6 +238,10 @@ def row_of(d):
                 mm = RE_LBON.search(l)
                 if mm:
                     lbs[r] = int(mm.group(2))
+                mm = RE_POL.search(l)
+                if mm:
+                    pol[r] = (mm.group(2), mm.group(4))
+        row["pol_cfg"] = sum(1 for r in pol if pol[r] == ("failfast", "failfast"))
         row["det_cfg"] = len(cfg)
         row["watch_cfg"] = ";".join("r%d:%d" % (r, cfg[r]) for r in sorted(cfg))
         row["lb_on"] = sum(1 for r in (0, 1) if first_match(logs[r], r"NIC copy path on:")[0] is not None)
@@ -244,9 +254,13 @@ def row_of(d):
             why = "hq shows a later layer"
         elif build == "hr" and (not all(rem_on.values()) or cfg):
             why = "hr is not gin-remaining's layer alone"
-        elif build == "hw" and not (all(r in cfg and cfg[r] == exp["watch"] for r in present) and
-                                    all(r in lbs and lbs[r] >= 1 for r in present)):
+        elif build in ("hw", "hk") and not (all(r in cfg and cfg[r] == exp["watch"] for r in present) and
+                                            all(r in lbs and lbs[r] >= 1 for r in present)):
             why = "hw start lines (detect=1 with the cell's qpwatch_ms, NIC path with its NIC-only self-test) missing"
+        elif build == "hk" and not all(pol.get(r) == ("failfast", "failfast") for r in present):
+            why = "hk policy line (requested=failfast effective=failfast) missing"
+        elif build == "hw" and pol:
+            why = "hw shows the hk policy line"
         # detection and recovery (target rank, its own clock)
         if cls == "qperr" and target is not None:
             fire = None
@@ -279,6 +293,7 @@ def row_of(d):
         row["n_watch"] = sum(count(logs[r], r"GIN/TS: rank \d+: QP watch: .* fault queued") for r in (0, 1))
         row["n_q4"] = sum(count(logs[r], r"GIN/Q4: device-classified error CQE") for r in (0, 1))
         tds = [mm for r in (0, 1) for _, l in logs[r] for mm in [RE_WQ_TD.search(l)] if mm]
+        row["wq_lines"] = len(tds)
         if tds:
             row["wq_queries"] = sum(int(x.group(3)) for x in tds)
             row["wq_us_mean"] = max(float(x.group(5)) for x in tds)
@@ -340,8 +355,41 @@ def _lines(path):
         return []
 
 
+def policy_cols(paths):
+    """hk's policy lines over the given rank logs (paths in rank order): pol_n (ranks with the "GIN/TS: fault policy" line),
+    pol_req ("r<r>:<requested>"), pol_agreed_min, pol_eff_ff (1 if every such line says effective=failfast), n_hold_warn and
+    hold_warn_ranks (ranks with exactly one "hold requested, not available in this build" WARN), n_mix_warn and
+    mix_warn_ranks (the same for "differs across ranks")."""
+    out = {"pol_n": 0, "pol_req": "", "pol_agreed_min": "", "pol_eff_ff": "", "n_hold_warn": 0, "hold_warn_ranks": 0,
+           "n_mix_warn": 0, "mix_warn_ranks": 0}
+    req, agreed, eff = [], [], []
+    for r, path in enumerate(paths):
+        hw = mw = 0
+        for l in _lines(path):
+            mm = RE_POL.search(l)
+            if mm:
+                req.append("r%d:%s" % (r, mm.group(2)))
+                agreed.append(int(mm.group(3)))
+                eff.append(mm.group(4))
+            if RE_HOLD_WARN.search(l):
+                hw += 1
+            if RE_MIX_WARN.search(l):
+                mw += 1
+        out["n_hold_warn"] += hw
+        out["n_mix_warn"] += mw
+        out["hold_warn_ranks"] += int(hw == 1)
+        out["mix_warn_ranks"] += int(mw == 1)
+    out["pol_n"] = len(req)
+    out["pol_req"] = ";".join(req)
+    if agreed:
+        out["pol_agreed_min"] = min(agreed)
+        out["pol_eff_ff"] = int(all(e == "failfast" for e in eff))
+    return out
+
+
 def extra_gd2(stem):
-    """Two-rank regression trial (run_trial_hr.sh files): the hw start line, the watch's teardown counters."""
+    """Two-rank regression trial (run_trial_hr.sh files): the hw/hk start line, the watch's teardown counters, hk's
+    policy lines."""
     out = {"det_on_r0": 0, "det_on_r1": 0, "det_ms_cfg": "", "n_watch2": 0, "wq_queries2": "", "wq_us_mean2": "",
            "wq_us_max2": "", "lb_shadow2": ""}
     cfgs, sh, tds = [], [], []
@@ -365,11 +413,109 @@ def extra_gd2(stem):
         out["wq_queries2"] = sum(int(x.group(3)) for x in tds)
         out["wq_us_mean2"] = max(float(x.group(5)) for x in tds)
         out["wq_us_max2"] = max(float(x.group(6)) for x in tds)
+    out.update(policy_cols(["%s_r%d.log" % (stem, r) for r in (0, 1)]))
+    return out
+
+
+def _kvs(path):
+    """key=value tokens of a gin_mr kv file or a run_*.sh meta line (the last value of a key wins)."""
+    d = {}
+    for l in _lines(path):
+        for k, v in re.findall(r"(\S+?)=(\S*)", l):
+            d[k] = v
+    return d
+
+
+def _num(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+RE_JUDGED = re.compile(r"GIN/TS: rank (\d+): rank (\d+) judged dead \(cause=[^)]*\) mono_ms=([0-9.]+)")
+RE_DECL = re.compile(r'GIN/TS: declined rank=(\d+) peer=(\d+) reason="([^"]*)"')
+RE_CAUSE = re.compile(r"GIN/TS: rank (\d+): GIN error raised for rank (\d+) cause=(\S+)")
+RE_LAC = re.compile(r"GIN/TS: rank (\d+): socket to rank (\d+) lost after this rank's commit")
+RE_EXIT_ACK = re.compile(r"GIN/TS: TEST exit after ACK rank=(\d+) peer=(\d+)")
+
+
+def gap_cols(stem, n):
+    """The responder-side gap cells (EXPERIMENT.md 9.1 (g), 3.1): X = the rank that dies (the meta's kill_rank, else the rank
+    with the exit-after-ACK test line). gap_x, gap_exit_line (X's "TEST exit after ACK" lines), gap_rc_x (X's exit code from
+    the meta), gap_resp (the first rank whose decline of X says "peer closed the socket before DONE"; empty: the window was
+    not hit), gap_hit, gap_cause (gap_resp's "GIN error raised for rank X cause=..."), gap_lac (gap_resp's "lost after this
+    rank's commit" lines), gap_judged_r (1 if gap_resp judged X dead), per survivor s gap_rel_r<s> (kv rx_<X><s>_rel) and
+    gap_relms_r<s> (rx_<X><s>_rel_mono_ms minus s's "rank X judged dead" mono_ms, s's own clock), gap_n_rel, gap_n_rel23
+    (survivors released 2000-3000 ms after their judgment), gap_kdone (survivors with kernel_done=1), gap_stuck (survivors
+    whose outcome is async_error_kernel_stuck), gap_resp_rel, gap_resp_stuck, gap_others_rel23 (gap_n_rel23 without
+    gap_resp)."""
+    keys = ["gap_x", "gap_exit_line", "gap_rc_x", "gap_resp", "gap_hit", "gap_cause", "gap_lac", "gap_judged_r", "gap_n_rel",
+            "gap_n_rel23", "gap_kdone", "gap_stuck", "gap_resp_rel", "gap_resp_stuck", "gap_others_rel23"]
+    out = {k: "" for k in keys}
+    for r in range(n):
+        out["gap_rel_r%d" % r] = ""
+        out["gap_relms_r%d" % r] = ""
+    meta = _kvs(stem + "_meta.txt")
+    logs = [_lines("%s_r%d.log" % (stem, r)) for r in range(n)]
+    x = meta.get("kill_rank", "")
+    x = int(x) if x.isdigit() else None
+    exits = {r: sum(1 for l in logs[r] for mm in [RE_EXIT_ACK.search(l)] if mm and int(mm.group(1)) == r) for r in range(n)}
+    if x is None:
+        xs = [r for r in range(n) if exits[r]]
+        x = xs[0] if xs else None
+    if x is None:
+        return out
+    kvs = [_kvs("%s_r%d.kv" % (stem, r)) for r in range(n)]
+    surv = [s for s in range(n) if s != x]
+    out["gap_x"] = x
+    out["gap_exit_line"] = exits[x]
+    out["gap_rc_x"] = meta.get("r%drc" % x, "")
+    resp = None
+    for r in surv:
+        for l in logs[r]:
+            mm = RE_DECL.search(l)
+            if mm and int(mm.group(2)) == x and mm.group(3).startswith("peer closed the socket before DONE"):
+                resp = r
+                break
+        if resp is not None:
+            break
+    out["gap_hit"] = int(resp is not None)
+    judged = {}
+    for s in surv:
+        for l in logs[s]:
+            mm = RE_JUDGED.search(l)
+            if mm and int(mm.group(2)) == x and s not in judged:
+                judged[s] = float(mm.group(3))
+    n_rel = n_rel23 = others23 = kdone = stuck = 0
+    for s in surv:
+        rel = kvs[s].get("rx_%d%d_rel" % (x, s), "")
+        out["gap_rel_r%d" % s] = rel
+        t = _num(kvs[s].get("rx_%d%d_rel_mono_ms" % (x, s)))
+        ms = (t - judged[s]) if (t is not None and t >= 0 and s in judged) else None
+        out["gap_relms_r%d" % s] = "" if ms is None else round(ms, 3)
+        n_rel += int(rel == "1")
+        in23 = ms is not None and 2000 <= ms <= 3000
+        n_rel23 += int(in23)
+        others23 += int(in23 and s != resp)
+        kdone += int(kvs[s].get("kernel_done") == "1")
+        stuck += int(kvs[s].get("outcome") == "async_error_kernel_stuck")
+    out.update({"gap_n_rel": n_rel, "gap_n_rel23": n_rel23, "gap_kdone": kdone, "gap_stuck": stuck,
+                "gap_others_rel23": others23})
+    if resp is not None:
+        out["gap_resp"] = resp
+        cause = [mm.group(3) for l in logs[resp] for mm in [RE_CAUSE.search(l)] if mm and int(mm.group(2)) == x]
+        out["gap_cause"] = cause[0] if cause else ""
+        out["gap_lac"] = sum(1 for l in logs[resp] for mm in [RE_LAC.search(l)] if mm and int(mm.group(2)) == x)
+        out["gap_judged_r"] = int(resp in judged)
+        out["gap_resp_rel"] = kvs[resp].get("rx_%d%d_rel" % (x, resp), "")
+        out["gap_resp_stuck"] = int(kvs[resp].get("outcome") == "async_error_kernel_stuck")
     return out
 
 
 def extra_gd4(stem, n):
-    """N-rank regression trial (run_mr_hr.sh files): the hw start lines, watch detections, the pair 0-1's end."""
+    """N-rank regression trial (run_mr_hr.sh files): the hw/hk start lines, watch detections, the pair 0-1's end, hk's
+    policy lines, the responder-side gap columns."""
     out = {"n_det_on": 0, "n_watch4": 0, "served3": "", "rec01": 0, "decl01": 0}
     served = set()
     for r in range(n):
@@ -386,6 +532,8 @@ def extra_gd4(stem, n):
             if r == 0 and re.search(r"GIN/TS: declined rank=0 peer=1 ", l):
                 out["decl01"] += 1
     out["served3"] = ";".join(sorted(served))
+    out.update(policy_cols(["%s_r%d.log" % (stem, r) for r in range(n)]))
+    out.update(gap_cols(stem, n))
     return out
 
 
@@ -401,7 +549,7 @@ def progress(results):
         o["left"] += int(any(str(x) not in ("0", "") for x in m.get("left", [])))
     for h in sorted(out):
         print("%s: %s" % (h, out[h]))
-    for sub in ("hw", "mr_hw"):
+    for sub in ("hk", "mr_hk", "hw", "mr_hw"):
         n = len(glob.glob(os.path.join(results, "reg", sub, "*_meta.txt")))
         if n:
             print("reg/%s: %d trial(s)" % (sub, n))
