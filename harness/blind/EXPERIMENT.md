@@ -6,12 +6,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `DRAFT` |
+| 상태 | `PREREGISTERED` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/blind-apps` @ `ae3dafc9` (master) |
-| 사전 등록 태그 | 없음(예정: `prereg/blind-apps-v1`, 상태를 `PREREGISTERED`로 바꾸는 바로 그 커밋) |
-| 마지막 갱신 | 2026-10-09 13:55, pilot P3 검토, 시각 대응 확정, 첫 봉인 폐기와 새 봉인 순서(12, 18절). 상태는 `DRAFT` |
+| 사전 등록 태그 | `prereg/blind-apps-v1` (상태를 `PREREGISTERED`로 바꾼 바로 그 커밋) |
+| 마지막 갱신 | 2026-10-09 13:52, 사전 등록(새 봉인 sha256 `ff04f711…`) |
 
 표시: `[측정]` 원자료나 파일에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -494,7 +494,7 @@ judgments.csv: judgments_template.csv에 시행마다 한 줄을 채운다.
 - [x] P1, P2 검토와 하네스 수정(NVSHMEM heap과 반복 수, DDP 반복 번호 기준, 출력 억제, 시작 실패 판정)
 - [x] pilot P3, `calib.py` 다시, P3 검토와 정규식 수정
 - [ ] 첫 봉인 폐기(메인 세션), 장애 에이전트의 새 봉인, 새 sha256으로 `PREREG.txt` 쓰기
-- [ ] 고정 절 완성, 상태 `PREREGISTERED`, `PREREG.txt`를 커밋 하나로, 그 커밋에 `prereg/` 태그
+- [x] 고정 절 완성, 상태 `PREREGISTERED`, `PREREG.txt`를 커밋 하나로, 그 커밋에 `prereg/` 태그
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 평가 폴더, 평가 에이전트의 판단, 판단 커밋
 - [ ] 공개와 채점, 재계산 (`QA`)
@@ -526,6 +526,9 @@ judgments.csv: judgments_template.csv에 시행마다 한 줄을 채운다.
 | 2026-10-09 13:48–13:55 | P3의 관찰(예측은 그대로, 채점하지 않음) | NVSHMEM `qperr` 1/1 투명(시작 쪽 복구 9.7 ms). `remacc` 1/1: 두 PE가 REM_INV_REQ로 7 ms 안에 거절한 뒤 예제가 신호를 기다리며 시간 상한 60 s까지 멈춤. `kill` 1/1: 살아남은 PE는 `library socket closed (FIN)`만 남기고 거절이나 오류 줄 없이 유예 20 s까지 멈춤. 이것이 되풀이되면 예측 N4의 "3 s 안 오류"는 맞지 않는다. `stop`, `mute` 1/1 투명(끊김은 소켓 손실 뒤 다시 연결). DDP `srq-top` 1/1은 멈췄고 torch 집합 연산 시간 제한(30 s)이 두 rank를 끝냄(P1의 2/2는 투명이었다). `sqp-top` 투명, `kill-iter` 거절 0.07 s, `stop-iter`, `mute-iter` 투명(`mute-iter`에서 OOB 소켓 손실 줄) `[측정, 데모마다 n=1]` |
 | 2026-10-09 13:55 | 정규식 수정(태그 전, 예측과 설정은 그대로) | `rows_blind.py`: `nvs` 오류 정규식에서 `nvshmem.*failed`를 빼고 NVSHMEM의 오류 출력 형식(`error status: <n> (`, `non-zero status:`)을 넣음. `nvs` 죽음 정규식은 라이브러리의 죽음 판정(`FAULT ... peer_fin=1`)만. 처음 정규식의 `library socket closed (FIN)`은 정상 종료에서도 나온다. 오류 정규식에 FIN 줄을 넣지는 않았다(앱에 드러난 오류가 아니다) |
 | 2026-10-09 13:55 | 첫 봉인 폐기 결정(메인 세션) | 첫 봉인(sha256 `14ae5e56d31294db2d3837088fa32b5eaceecaa6a8b6d237325aae69ab7bc8a2`, 13:23 생성)은 그 뒤 하네스의 시각 대응(DDP 반복 기준, `calib.json`), NVSHMEM heap과 실행 길이, 정규식이 바뀌었으므로 쓰지 않는다. 메인 세션이 이 커밋 뒤 `~/blind-seal`을 열지 않은 채 `~/blind-seal-discarded-1`로 옮긴다(옮긴 시각은 메인 세션이 적는다). 새 봉인은 모든 하네스 변경(이 커밋까지) 뒤, 태그 전에 장애 에이전트가 `schedule_gen.py make`로 만든다. `predictions.csv`와 `schedule_config.json`은 첫 봉인 때와 같다(커밋 `0eeca70c` 이후 diff 없음) |
+| 2026-10-09 13:47:48 | 메인 세션이 첫 봉인 폴더를 열지 않은 채 `~/blind-seal-discarded-1`로 옮김. 옮긴 뒤 읽은 것은 `.sha256` 한 줄뿐이고 기록과 같음(`14ae5e56…`) | |
+| 2026-10-09 13:52 | 새 장애 에이전트가 `schedule_gen.py check`, `make`로 새 봉인을 만듦: sha256 `ff04f71187601c36deb73ff51aab182af0e274f6443aec128bb1f7d556d048bd`, 31277 B, 모드 0600. hold D1–D4 각 14, G1–G2 각 28, N1–N2 각 27. 메인 세션은 해시와 hold 목록만 받음 | [PREREG.txt](PREREG.txt) |
+| 2026-10-09 13:52:59 | 사전 등록: 예측, 설정, 보정, 실행과 채점 도구의 sha256과 새 봉인의 sha256을 `PREREG.txt`에 적음 | [PREREG.txt](PREREG.txt), 태그 `prereg/blind-apps-v1` |
 
 ## 13. 사전 등록 이후 변경
 
