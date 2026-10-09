@@ -2,18 +2,22 @@
 # gpu-detect holds (each <= 15 min, each inside ../gpu-initiated/common/cluster_run.sh -w 10800; see chain.sh). Merged from
 # ../blind/hold.sh (app trials through apprun.py) and ../gpu-initiated/gin_recovery/remaining/hold.sh (regression cells
 # through cells_reg.sh); neither of those files is changed.
-# usage: hold.sh <resultsdir> <P1|P2|G1|G2|N1|N2|R1|R2|R3>
-#   P1      pilot, app trials (never scored): one or two of each app cell (cells.json "P1")
-#   P2      pilot, regression and latency (never scored): f1_b, f2rel_b, 4 KiB latency with the watch off, at 1 ms and at
-#           10 ms, the two new four-rank cells (one each)
+# usage: hold.sh <resultsdir> <P1|P2|G1|G2|N1|N2|R1|R2|R3|R4>
+#   P1      pilot, app trials (never scored): cells.json "P1" (pilot 2: every changed app cell once)
+#   P2      pilot, regression and latency (never scored; pilot 2): on hk f1_b, f2rel_b, 4 KiB latency with the watch off,
+#           at 1 ms and at 10 ms, the M-A and both M-C cells, the responder-side gap (rm4_gap, rm4_gapx), hold asked for
+#           (rm4_kill3_hold), a policy mismatch (f4_mix_b); on hw the gap's control (rm4_gap)
 #   G1, G2  GIN example trials of schedule.json (apprun.py hold)
 #   N1, N2  NVSHMEM example trials of schedule.json
-#   R1      two-rank regression on hw (6 cells x 5), then fault-free latency per watch period (0, 1, 10, 100 ms; 4 KiB and
+#   R1      two-rank regression on hk (6 cells x 5), then fault-free latency per watch period (0, 1, 10, 100 ms; 4 KiB and
 #           256 KiB; 5 runs each, interleaved)
-#   R2      four-rank regression on hw (4 cells x 5)
-#   R3      the two new four-rank cells: two lower REQs in one ACK wait (5), the late pair fault after a death under the
+#   R2      four-rank regression on hk (4 cells x 5)
+#   R3      the two review cells on hk: two lower REQs in one ACK wait (5), the late pair fault after a death under the
 #           default rule (3) and under NCCL_GIN_TS_DEGRADED_ROUNDS=1 (3), interleaved
-# App trials are written to <resultsdir>/raw/<id>/, regression trials to <resultsdir>/reg/hw/ and <resultsdir>/reg/mr_hw/.
+#   R4      the hk cells: the responder-side gap on hk (5) and its control on hw (3), the exit-after-ACK form on hk (3), hold
+#           asked for (3), a policy mismatch (3), interleaved
+# App trials are written to <resultsdir>/raw/<id>/, regression trials to <resultsdir>/reg/<build>/ (two ranks) and
+# <resultsdir>/reg/mr_<build>/ (four ranks).
 # Before and after every hold: GPU users and compute mode of both nodes; the full mlx5 kernel lines of both nodes
 # (mlx5_<tag>_<node>.txt); the count of mlx5 command-error lines; rain's mlx5_1 firmware-command counters (debugfs,
 # read-only). A new command-error line or a growth of the firmware-command failure counters writes <resultsdir>/STOP_mlx5;
@@ -55,15 +59,18 @@ for i in $(seq 1 30); do
 done
 [ "$stale" -eq 0 ] || echo "$(date '+%F %T') hold $H: processes of this study still present after 150 s; no trial runs" | tee -a "$R/STOP_left"
 snap "before-$H" | tee "$R/snap_before-$H.txt"
-c() {  # c <cell> [n] [start]: a regression cell on hw (the trial folder: reg/mr_hw for four ranks, else reg/hw)
-  local sub=hw
-  case "$1" in mr4_*|rm4_*) sub=mr_hw ;; esac
-  [ -e "$R/STOP_left" ] || RES=$R bash "$D/cells_reg.sh" "$R/reg/$sub" "$1" hw "${2:-1}" "${3:-1}"
+c() {  # c <cell> [n] [start] [build]: a regression cell (build hk unless given; folder reg/mr_<build> for four ranks, else
+       # reg/<build>)
+  local b=${4:-hk} sub
+  sub=$b
+  case "$1" in mr4_*|rm4_*) sub=mr_$b ;; esac
+  [ -e "$R/STOP_left" ] || RES=$R bash "$D/cells_reg.sh" "$R/reg/$sub" "$1" "$b" "${2:-1}" "${3:-1}"
 }
 app() { [ -e "$R/STOP_left" ] || $AR hold --results "$R" --hold "$1" --budget-s $BUDGET; }
 case "$H" in
   P1) app P1 ;;
-  P2) c f1_b; c f2rel_b; c lat_4k_w0; c lat_4k_w1; c lat_4k_w10; c mr4_twolow_stall; c rm4_late01; c rm4_late01_rounds ;;
+  P2) c f1_b; c f2rel_b; c lat_4k_w0; c lat_4k_w1; c lat_4k_w10; c mr4_twolow_stall; c rm4_late01; c rm4_late01_rounds
+      c rm4_gap 1 1 hw; c rm4_gap; c rm4_gapx; c rm4_kill3_hold; c f4_mix_b ;;
   G1|G2|N1|N2) app "$H" ;;
   R1)
     for x in f1_b f3_b bidirf_sym_b f4_b f2rel_b hd_rxdeath_b; do c $x 5; done
@@ -73,6 +80,11 @@ case "$H" in
     for k in 1 2 3 4 5; do
       c mr4_twolow_stall 1 "$k"
       if [ "$k" -le 3 ]; then c rm4_late01 1 "$k"; c rm4_late01_rounds 1 "$k"; fi
+    done ;;
+  R4)
+    for k in 1 2 3 4 5; do
+      c rm4_gap 1 "$k"
+      if [ "$k" -le 3 ]; then c rm4_gap 1 "$k" hw; c rm4_gapx 1 "$k"; c rm4_kill3_hold 1 "$k"; c f4_mix_b 1 "$k"; fi
     done ;;
   *) echo "unknown hold $H" >&2; exit 2 ;;
 esac
