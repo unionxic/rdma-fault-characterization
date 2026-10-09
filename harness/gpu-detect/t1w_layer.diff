@@ -1,0 +1,427 @@
+diff --git a/src/include/device_host_transport/nvshmem_common_ibgda.h b/src/include/device_host_transport/nvshmem_common_ibgda.h
+index cda7b8f..f442d46 100644
+--- a/src/include/device_host_transport/nvshmem_common_ibgda.h
++++ b/src/include/device_host_transport/nvshmem_common_ibgda.h
+@@ -396,6 +396,10 @@ enum {
+                                                 with a gate: posters pause, waits hold across a
+                                                 recovery, a library helper thread recovers). Needs
+                                                 RING_CQ and PARK. */
++    NVSHMEMI_IBGDA_FT_FLAG_T1W = 256,        /* t1w (gpu-detect): the transport knows
++                                                nvshmemi_ibgda_ft_dev_t::t1w_abort (set with T1 by a
++                                                t1w transport only; device code built with these
++                                                headers reads that field only when it is set) */
+ };
+ 
+ /* ---------------------------------------------------------------------------------------------
+@@ -593,6 +597,10 @@ typedef struct {
+     uint64_t t1_hold_ns;
+     uint32_t t1_gaveup;
+     uint32_t t1_pad;
++    /* t1w (gpu-detect): device pointer of a host-mapped uint32_t that a T1 decline raises when it must reach every
++     * device wait of this PE (NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS != 0, see ibgda.cpp t1w_after_decline); NULL without T1.
++     * Read by the application-facing wait loops of non_abi/device/wait/nvshmemi_wait_until_apis.cuh every 1024 spins. */
++    uint32_t *t1w_abort;
+ } nvshmemi_ibgda_ft_dev_t;
+ 
+ /* Host API of the IBGDA transport plugin (exported from nvshmem_transport_ibgda.so; an application
+diff --git a/src/include/non_abi/device/wait/nvshmemi_wait_until_apis.cuh b/src/include/non_abi/device/wait/nvshmemi_wait_until_apis.cuh
+index 8b98e69..effe3c6 100644
+--- a/src/include/non_abi/device/wait/nvshmemi_wait_until_apis.cuh
++++ b/src/include/non_abi/device/wait/nvshmemi_wait_until_apis.cuh
+@@ -14,9 +14,49 @@
+ #include "non_abi/device/threadgroup/nvshmemi_common_device_defines.cuh"
+ #include "device_host/nvshmem_common.cuh"
+ #include "non_abi/nvshmem_build_options.h"
++#if defined(NVSHMEM_IBGDA_SUPPORT)
++#include "device_host_transport/nvshmem_common_ibgda.h"  // t1w: nvshmemi_ibgda_device_state_d, nvshmemi_ibgda_ft_dev_t
++#endif
+ 
+ #define TIMEOUT_NCYCLES 1e10
+ 
++/* t1w (gpu-detect, research): a decline of the IBGDA transparent-recovery layer (T1) that must reach the application
++ * raises a host-mapped word (nvshmemi_ibgda_ft_dev_t::t1w_abort; the host sets it with a plain store when
++ * NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS != 0, see ibgda.cpp t1w_after_decline). The application-facing waits below read it
++ * every 1024 spins (one PCIe read) and return as if their condition held once it is up: these waits name no peer, so
++ * they cannot tell a dead PE from a slow one, and NVSHMEM's wait APIs have no error return. Released waits do not mean
++ * the data arrived; the application learns the failure from the transport's host query (nvshmemt_ibgda_ft_query), and
++ * the default policy (NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS=0) ends the process at the decline instead. Checked only at the
++ * call sites the application reaches (wait_until, signal_wait_until, the collectives' pSync waits, call sites
++ * BARRIER* and *WAIT_UNTIL*), never in the proxy channel's credit and completion waits (PROXY_*, AMO_FETCH_*,
++ * G_WAIT_FLAG), whose early return would corrupt the channel. Without T1 and T1W (a t1w transport with T1 on) nothing
++ * is read beyond the constant-memory flags. Not covered: waits that spin on nvshmem_test themselves (wait_until_any,
++ * _any_vector, _some) and application loops around a wait's return value. The condition the wait tests is read first, so a wait that is already
++ * satisfied costs one counter and one compare more than before. */
++#define NVSHMEMI_T1W_ABORT_MASK 1023u
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE bool nvshmemi_t1w_abortable(int caller) {
++    return caller <= NVSHMEMI_CALL_SITE_WAIT_NE ||
++           (caller >= NVSHMEMI_CALL_SITE_SIGNAL_WAIT_UNTIL_GE && caller <= NVSHMEMI_CALL_SITE_SIGNAL_WAIT_UNTIL_LE);
++}
++__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE bool nvshmemi_t1w_aborted(int caller, uint32_t &spins) {
++#if defined(NVSHMEM_IBGDA_SUPPORT)
++    if (!nvshmemi_t1w_abortable(caller)) return false;
++    if ((++spins & NVSHMEMI_T1W_ABORT_MASK) != 0) return false;
++    /* review L5: only a t1w transport sets T1W; with an older transport the FT block has no t1w_abort field */
++    if ((nvshmemi_ibgda_device_state_d.ft_flags & (NVSHMEMI_IBGDA_FT_FLAG_T1 | NVSHMEMI_IBGDA_FT_FLAG_T1W)) !=
++        (NVSHMEMI_IBGDA_FT_FLAG_T1 | NVSHMEMI_IBGDA_FT_FLAG_T1W))
++        return false;
++    const nvshmemi_ibgda_ft_dev_t *ft = (const nvshmemi_ibgda_ft_dev_t *)nvshmemi_ibgda_device_state_d.ft;
++    if (ft == NULL) return false;
++    const uint32_t *w = *(uint32_t *const volatile *)&ft->t1w_abort;
++    return w != NULL && *(const volatile uint32_t *)w != 0;
++#else
++    (void)caller;
++    (void)spins;
++    return false;
++#endif
++}
++
+ template <typename T>
+ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_check_timeout_and_log(
+     long long int start, int caller, uintptr_t signal_addr, T signal_val_found,
+@@ -40,10 +80,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_wait_until_greater_than(v
+     long long int start;
+     asm volatile("mov.u64  %0, %%globaltimer;" : "=l"(start));
+ #endif
++    uint32_t t1w_spins = 0;
+     while (*addr <= val) {
+ #ifdef NVSHMEM_TIMEOUT_DEVICE_POLLING
+         nvshmemi_check_timeout_and_log<T>(start, caller, (uintptr_t)addr, *addr, val);
+ #endif
++        if (nvshmemi_t1w_aborted(caller, t1w_spins)) break;
+     }
+ }
+ 
+@@ -54,10 +96,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_wait_until_greater_than_e
+     long long int start;
+     asm volatile("mov.u64  %0, %%globaltimer;" : "=l"(start));
+ #endif
++    uint32_t t1w_spins = 0;
+     while (*addr < val) {
+ #ifdef NVSHMEM_TIMEOUT_DEVICE_POLLING
+         nvshmemi_check_timeout_and_log<T>(start, caller, (uintptr_t)addr, *addr, val);
+ #endif
++        if (nvshmemi_t1w_aborted(caller, t1w_spins)) break;
+     }
+ }
+ 
+@@ -68,10 +112,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_wait_until_lesser_than(vo
+     long long int start;
+     asm volatile("mov.u64  %0, %%globaltimer;" : "=l"(start));
+ #endif
++    uint32_t t1w_spins = 0;
+     while (*addr >= val) {
+ #ifdef NVSHMEM_TIMEOUT_DEVICE_POLLING
+         nvshmemi_check_timeout_and_log<T>(start, caller, (uintptr_t)addr, *addr, val);
+ #endif
++        if (nvshmemi_t1w_aborted(caller, t1w_spins)) break;
+     }
+ }
+ 
+@@ -82,10 +128,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_wait_until_lesser_than_eq
+     long long int start;
+     asm volatile("mov.u64  %0, %%globaltimer;" : "=l"(start));
+ #endif
++    uint32_t t1w_spins = 0;
+     while (*addr > val) {
+ #ifdef NVSHMEM_TIMEOUT_DEVICE_POLLING
+         nvshmemi_check_timeout_and_log<T>(start, caller, (uintptr_t)addr, *addr, val);
+ #endif
++        if (nvshmemi_t1w_aborted(caller, t1w_spins)) break;
+     }
+ }
+ 
+@@ -96,10 +144,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_wait_until_equals(volatil
+     long long int start;
+     asm volatile("mov.u64  %0, %%globaltimer;" : "=l"(start));
+ #endif
++    uint32_t t1w_spins = 0;
+     while (*addr != val) {
+ #ifdef NVSHMEM_TIMEOUT_DEVICE_POLLING
+         nvshmemi_check_timeout_and_log<T>(start, caller, (uintptr_t)addr, *addr, val);
+ #endif
++        if (nvshmemi_t1w_aborted(caller, t1w_spins)) break;
+     }
+ }
+ 
+@@ -110,10 +160,12 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_wait_until_not_equals(vol
+     long long int start;
+     asm volatile("mov.u64  %0, %%globaltimer;" : "=l"(start));
+ #endif
++    uint32_t t1w_spins = 0;
+     while (*addr == val) {
+ #ifdef NVSHMEM_TIMEOUT_DEVICE_POLLING
+         nvshmemi_check_timeout_and_log<T>(start, caller, (uintptr_t)addr, *addr, val);
+ #endif
++        if (nvshmemi_t1w_aborted(caller, t1w_spins)) break;
+     }
+ }
+ 
+@@ -124,12 +176,14 @@ __device__ NVSHMEMI_DEVICE_ALWAYS_INLINE void nvshmemi_wait_until_greater_than_e
+     long long int start;
+     asm volatile("mov.u64  %0, %%globaltimer;" : "=l"(start));
+ #endif
++    uint32_t t1w_spins = 0;
+     T valataddr;
+     do {
+         valataddr = *addr;
+ #ifdef NVSHMEM_TIMEOUT_DEVICE_POLLING
+         nvshmemi_check_timeout_and_log<T>(start, caller, (uintptr_t)addr, valataddr + toadd, val);
+ #endif
++        if (nvshmemi_t1w_aborted(caller, t1w_spins)) break;
+     } while (valataddr + toadd < val);
+ }
+ 
+diff --git a/src/modules/transport/ibgda/ibgda.cpp b/src/modules/transport/ibgda/ibgda.cpp
+index bd37c61..c9caa61 100644
+--- a/src/modules/transport/ibgda/ibgda.cpp
++++ b/src/modules/transport/ibgda/ibgda.cpp
+@@ -6123,7 +6123,8 @@ enum {
+     T1_SKIP_FETCHEXEC = 1 << 7,   /* t1_close negative control: re-post an executed fetch too */
+ };
+ 
+-enum { T1_M_HELLO = 1, T1_M_REQ, T1_M_ACK, T1_M_NACK, T1_M_DONE, T1_M_FAIL, T1_M_NOTIFY };
++enum { T1_M_HELLO = 1, T1_M_REQ, T1_M_ACK, T1_M_NACK, T1_M_DONE, T1_M_FAIL, T1_M_NOTIFY,
++       T1_M_BYE /* t1w (gpu-detect): sent by t1_fini before the sockets close (normal teardown) */ };
+ #define T1_MAGIC 0x31544e56u /* "VNT1" */
+ 
+ struct t1_msg {
+@@ -6187,6 +6188,15 @@ struct t1_state {
+     std::vector<int> fd;
+     std::vector<int> peer_fin;  /* FIN seen on the peer's library socket: the peer process is gone */
+     std::vector<int> sock_err;  /* errno that killed the socket (reset, timeout): OOB lost, not death */
++    /* t1w (gpu-detect): host-side death verdict and the decline's reach into the application */
++    std::vector<int> peer_bye;  /* BYE read from the peer: it is in nvshmem_finalize, its FIN is not death */
++    std::vector<int> fin_seen;  /* the helper acted on the peer's FIN (verdict, or a log line) */
++    int fin_death;              /* NVSHMEM_IBGDA_FT_T1_FIN_DEATH (1): a FIN without a BYE declines the peer at once */
++    int failstop_ms;            /* NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS (0): exit at the decline; -1 never; > 0 that much later */
++    int failstop_code;          /* NVSHMEM_IBGDA_FT_T1_FAILSTOP_CODE (70) */
++    int my_pe;                  /* cached at init for the fail-stop line */
++    uint32_t *abort_h, *abort_d; /* the device-wait word (host-mapped; nvshmemi_ibgda_ft_dev_t::t1w_abort) */
++    std::atomic<int> waits_released, failstop_armed;
+     std::vector<double> sock_next_dial;
+     std::vector<uint32_t> peer_ip, peer_port; /* the peers' listeners (re-dial) */
+     int ls;                     /* our listener, kept open for re-dials */
+@@ -6436,6 +6446,14 @@ static int t1_peer_fin(int peer) {
+     char c;
+     ssize_t k = recv(fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
+     if (k == 0) {
++        /* t1w (review L7): a BYE already read into the buffer but not parsed yet (it came with an earlier message) is
++         * marked before the FIN, which would otherwise read as a death */
++        const std::string &rx = ibgda_t1.rx[peer];
++        for (size_t o = 0; o + sizeof(t1_msg) <= rx.size() && peer < (int)ibgda_t1.peer_bye.size(); o += sizeof(t1_msg)) {
++            t1_msg m;
++            memcpy(&m, rx.data() + o, sizeof(m));
++            if (m.magic == T1_MAGIC && m.type == T1_M_BYE) ibgda_t1.peer_bye[peer] = 1;
++        }
+         ibgda_t1.peer_fin[peer] = 1;
+     } else if (k < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+         t1_sock_lost(peer, errno);
+@@ -6552,6 +6570,8 @@ static int t1_recv(int peer, t1_msg *m, int wait_ms) {
+             memcpy(m, rx.data(), sizeof(*m));
+             rx.erase(0, sizeof(*m));
+             if (m->magic != T1_MAGIC) return -1;
++            /* t1w: whoever reads the socket (the idle loop or a round), a BYE marks the peer as leaving */
++            if (m->type == T1_M_BYE && peer < (int)ibgda_t1.peer_bye.size()) ibgda_t1.peer_bye[peer] = 1;
+             return 1;
+         }
+         char buf[4096];
+@@ -6583,6 +6603,8 @@ static int t1_sockets_setup(nvshmem_transport_t t, int ok) {
+     ibgda_t1.fd.assign(n, -1);
+     ibgda_t1.peer_fin.assign(n, 0);
+     ibgda_t1.sock_err.assign(n, 0);
++    ibgda_t1.peer_bye.assign(n, 0); /* t1w */
++    ibgda_t1.fin_seen.assign(n, 0); /* t1w */
+     ibgda_t1.sock_next_dial.assign(n, 0.0);
+     ibgda_t1.peer_ip.assign(n, 0);
+     ibgda_t1.peer_port.assign(n, 0);
+@@ -6786,6 +6808,65 @@ static void t1_host_record(int peer, int cls, const char *why) {
+     ibgda_ft.nrecords++;
+ }
+ 
++/* t1w (gpu-detect): the process ends (fail-stop). Called by the helper thread (or the fail-stop timer) only; _exit skips
++ * atexit handlers and static destructors, which would wait for the helper or for a kernel that never ends. */
++__attribute__((noreturn)) static void t1w_failstop_exit(int peer, const char *when) {
++    /* review L8, L9: one write(2) of a line formatted here (no stdio lock: an application thread blocked on stderr
++     * cannot delay the exit) with the PE number cached at init (the transport may be gone after finalize) */
++    char line[256];
++    const int n = snprintf(line, sizeof(line), "[nvshmem-t1] PE%d %.3f t1w: FAILSTOP: exiting with code %d after the "
++                           "decline of peer %d (%s)\n", ibgda_t1.my_pe, ibgda_ft_mono_ms(), ibgda_t1.failstop_code,
++                           peer, when);
++    if (n > 0) {
++        ssize_t w = write(STDERR_FILENO, line, (size_t)std::min(n, (int)sizeof(line) - 1));
++        (void)w;
++    }
++    if (ftrylockfile(stdout) == 0) { /* never wait for a lock the application's thread may hold */
++        fflush_unlocked(stdout);
++        funlockfile(stdout);
++    }
++    _exit(ibgda_t1.failstop_code);
++}
++
++/* t1w (gpu-detect): what a decline does to the application. NVSHMEM's device waits (signal_wait_until, wait_until, the
++ * pSync waits of barriers and collectives) name no peer and have no error return, so in t1_380 a declined pair left them
++ * spinning (blind-apps: 8 of 8 remote-access revokes hung after the decline, qa/root_cause.md 3).
++ *   NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS=0 (default): fail-stop. Right after the DECLINE line the process exits with
++ *     NVSHMEM_IBGDA_FT_T1_FAILSTOP_CODE (70). An application that does not check nvshmemt_ibgda_ft_query cannot go on
++ *     with data that never arrived; its peers see a FIN without a goodbye and decline in turn.
++ *   -1: no exit. The device-wait word goes up; every application-facing device wait returns within 1024 spins as if its
++ *     condition held (released, not satisfied), so kernels end and the host thread gets control back. The application
++ *     must check the transport's state (nvshmemt_ibgda_ft_query); without that check it continues with wrong data.
++ *   > 0: the word goes up as for -1, and the process exits that many ms later unless it exits first. */
++static void t1w_after_decline(int peer) {
++    const int ms = ibgda_t1.failstop_ms;
++    if (ms != 0 && ibgda_t1.abort_h && ibgda_t1.waits_released.exchange(1) == 0) {
++        __atomic_store_n(ibgda_t1.abort_h, 1u, __ATOMIC_SEQ_CST);
++        std::atomic_thread_fence(std::memory_order_seq_cst);
++        t1_log("t1w: device waits released: the decline of peer %d reaches every application-facing device wait of this "
++               "PE (released waits return without their data)", peer);
++    }
++    if (ms < 0 || ibgda_t1.failstop_armed.exchange(1) != 0) return;
++    if (ms == 0) t1w_failstop_exit(peer, "NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS=0");
++    t1_log("t1w: FAILSTOP armed: the process exits with code %d in %d ms unless it ends first (decline of peer %d)",
++           ibgda_t1.failstop_code, ms, peer);
++    std::thread([peer, ms]() {
++        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
++        t1w_failstop_exit(peer, "NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS elapsed");
++    }).detach();
++}
++
++/* t1w: any gate to `peer` not failed yet (the peer is not declined) */
++static bool t1w_peer_live(int peer) {
++    struct ibgda_ep *eps[NVSHMEMT_IBGDA_FT_MAX_QPS];
++    struct ibgda_device *devs[NVSHMEMT_IBGDA_FT_MAX_QPS];
++    int n = ibgda_ft_rc_eps(peer, eps, devs, NVSHMEMT_IBGDA_FT_MAX_QPS);
++    bool live = false;
++    for (int i = 0; i < n; i++)
++        if (eps[i]->user_index < ibgda_t1.ngates) live |= !ibgda_t1.qs[eps[i]->user_index].failed;
++    return live;
++}
++
+ struct t1_qpround;
+ static void t1_decline(int peer, int cls, const char *why, bool tell_peer,
+                        const std::vector<t1_qpround> *rq = NULL) {
+@@ -6841,6 +6922,7 @@ static void t1_decline(int peer, int cls, const char *why, bool tell_peer,
+         t1_send(peer, &m);
+     }
+     ibgda_ft_set_failed("T1 recovery declined");
++    t1w_after_decline(peer); /* t1w: fail-stop (default) or the device-wait word */
+ }
+ 
+ /* Quiesce every gated QP to `peer`: epoch odd, QPs to ERR, wait until every counted device thread
+@@ -7831,6 +7913,8 @@ static void t1_helper_main() {
+                 t1_round(p, m.cls, false, &m);
+             } else if (m.type == T1_M_NOTIFY) {
+                 if (ibgda_ft.t->my_pe < p) t1_fault(p, m.cls, "peer NOTIFY");
++            } else if (m.type == T1_M_BYE) { /* t1w: t1_recv marked it */
++                t1_log("t1w: peer %d said goodbye (normal teardown): its FIN is not death", p);
+             } else if (m.type == T1_M_FAIL) {
+                 bool live = false;
+                 struct ibgda_ep *eps[NVSHMEMT_IBGDA_FT_MAX_QPS];
+@@ -7843,6 +7927,28 @@ static void t1_helper_main() {
+         }
+         if (ibgda_t1.ls >= 0) t1_sock_accept(0); /* a lower PE may have re-dialed before we saw the loss */
+         (void)lost_lower;
++        /* t1w (gpu-detect): host-side death verdict. A FIN (clean close) is what the peer's kernel sends when its process
++         * ends; an orderly teardown sends BYE first (t1_fini). A FIN without a BYE is the peer process's end outside
++         * nvshmem_finalize (killed, crashed, exited early): decline at once, without waiting for an error CQE that a
++         * survivor with nothing in flight never polls (t1_380 only logged it: blind-apps qa/root_cause.md 3). A FIN read
++         * by any reader of the socket (this loop, a round, t1_fault) is acted on once, here. An RST or a timeout is a lost
++         * management path (t1_sock_lost), not death, as before. */
++        for (int p = 0; p < ibgda_ft.t->n_pes; p++) {
++            if (p == ibgda_ft.t->my_pe || !ibgda_t1.peer_fin[p] || ibgda_t1.fin_seen[p]) continue;
++            ibgda_t1.fin_seen[p] = 1;
++            if (ibgda_t1.peer_bye[p]) {
++                t1_log("t1w: peer %d library socket closed (FIN) after its goodbye: it left", p);
++            } else if (!ibgda_t1.fin_death) {
++                t1_log("t1w: peer %d library socket closed (FIN) without a goodbye; NVSHMEM_IBGDA_FT_T1_FIN_DEATH=0: no "
++                       "verdict", p);
++            } else if (!t1w_peer_live(p)) {
++                t1_log("t1w: peer %d library socket closed (FIN) without a goodbye; the peer is already declined", p);
++            } else {
++                t1_log("t1w: peer %d library socket closed (FIN) without a goodbye: the peer process is gone", p);
++                t1_decline(p, 0, "the peer's library socket closed (FIN) without a goodbye (peer process gone)", false);
++                any = true;
++            }
++        }
+         if (any) continue;
+         /* 3. idle scan every 100 ms */
+         if (ibgda_ft_mono_ms() - last_scan > 100) {
+@@ -7937,6 +8043,15 @@ static int t1_init(nvshmem_transport_t t, nvshmemt_ibgda_state_t *st, nvshmemi_i
+     ibgda_t1.handshake_ms = t1_env("NVSHMEM_IBGDA_FT_T1_HANDSHAKE_MS", 5000);
+     ibgda_t1.gid_wait_ms = t1_env("NVSHMEM_IBGDA_FT_T1_GID_WAIT_MS", 30000);
+     ibgda_t1.copy_ms = std::max(100, t1_env("NVSHMEM_IBGDA_FT_T1_COPY_MS", 2000));
++    /* t1w (gpu-detect) */
++    ibgda_t1.fin_death = t1_env("NVSHMEM_IBGDA_FT_T1_FIN_DEATH", 1) != 0 ? 1 : 0;
++    ibgda_t1.failstop_ms = std::max(-1, t1_env("NVSHMEM_IBGDA_FT_T1_FAILSTOP_MS", 0));
++    ibgda_t1.failstop_code = t1_env("NVSHMEM_IBGDA_FT_T1_FAILSTOP_CODE", 70) & 0xff;
++    if (ibgda_t1.failstop_code == 0) ibgda_t1.failstop_code = 70; /* an exit code of 0 would read as success */
++    ibgda_t1.abort_h = ibgda_t1.abort_d = NULL;
++    ibgda_t1.my_pe = t->my_pe;
++    ibgda_t1.waits_released.store(0);
++    ibgda_t1.failstop_armed.store(0);
+     ibgda_t1.stream_stalled.store(false);
+     ibgda_t1.helper_done.store(false);
+     ibgda_t1.hflag = ibgda_t1.hflag_d = NULL;
+@@ -8019,6 +8134,11 @@ static int t1_init(nvshmem_transport_t t, nvshmemt_ibgda_state_t *st, nvshmemi_i
+     if (ok && (cudaHostAlloc((void **)&ibgda_t1.hflag, (size_t)std::max(1u, nrc) * 4, cudaHostAllocMapped) ||
+                cudaHostGetDevicePointer((void **)&ibgda_t1.hflag_d, ibgda_t1.hflag, 0)))
+         ok = 0;
++    /* t1w: the device-wait word, one host-mapped cache line (a plain store reaches every wait without a CUDA call) */
++    if (ok && (cudaHostAlloc((void **)&ibgda_t1.abort_h, 64, cudaHostAllocMapped) ||
++               cudaHostGetDevicePointer((void **)&ibgda_t1.abort_d, ibgda_t1.abort_h, 0)))
++        ok = 0;
++    if (ok) memset(ibgda_t1.abort_h, 0, 64);
+     if (ok) {
+         memset(ibgda_t1.hflag, 0, (size_t)std::max(1u, nrc) * 4);
+         std::vector<nvshmemi_ibgda_ft_gate_t> z(nrc);
+@@ -8058,14 +8178,17 @@ static int t1_init(nvshmem_transport_t t, nvshmemt_ibgda_state_t *st, nvshmemi_i
+     if (t1_sockets_setup(t, ok)) return -1;
+     /* device side on: gates, flag, hold bound */
+     ibgda_ft.flags |= NVSHMEMI_IBGDA_FT_FLAG_T1;
++    if (ibgda_t1.abort_d) ibgda_ft.flags |= NVSHMEMI_IBGDA_FT_FLAG_T1W; /* t1w: the device may read t1w_abort */
+     dstate->ft_gates = ibgda_t1.gates_d;
+     dstate->ft_ngates = nrc;
+     dstate->ft_flags = ibgda_ft.flags;
+     {
+         const uint64_t hold_ns = (uint64_t)ibgda_t1.hold_ms * 1000000ULL;
+         if (cudaMemcpy(&ibgda_ft.dev_d->flags, &ibgda_ft.flags, 4, cudaMemcpyHostToDevice) ||
+-            cudaMemcpy(&ibgda_ft.dev_d->t1_hold_ns, &hold_ns, 8, cudaMemcpyHostToDevice)) {
+-            ibgda_ft.flags &= ~(uint32_t)NVSHMEMI_IBGDA_FT_FLAG_T1;
++            cudaMemcpy(&ibgda_ft.dev_d->t1_hold_ns, &hold_ns, 8, cudaMemcpyHostToDevice) ||
++            cudaMemcpy(&ibgda_ft.dev_d->t1w_abort, &ibgda_t1.abort_d, sizeof(ibgda_t1.abort_d),
++                       cudaMemcpyHostToDevice)) { /* t1w: the device-wait word */
++            ibgda_ft.flags &= ~(uint32_t)(NVSHMEMI_IBGDA_FT_FLAG_T1 | NVSHMEMI_IBGDA_FT_FLAG_T1W);
+             dstate->ft_flags = ibgda_ft.flags;
+             dstate->ft_gates = NULL;
+             dstate->ft_ngates = 0;
+@@ -8108,6 +8231,9 @@ static int t1_init(nvshmem_transport_t t, nvshmemt_ibgda_state_t *st, nvshmemi_i
+            ((struct ibgda_device *)st->common.devices + st->selected_dev_ids[0])
+                ->common_device.gid_info[st->selected_port_ids[0] - 1].local_gid_index,
+            ibgda_t1.gid_ver.empty() ? 0 : ibgda_t1.gid_ver[0], ibgda_t1.pin_bytes);
++    t1_log("t1w: gpu-detect=1 fin_death=%d goodbye=1 failstop_ms=%d failstop_code=%d wait_word=%s", ibgda_t1.fin_death,
++           ibgda_t1.failstop_ms, ibgda_t1.failstop_code,
++           (ibgda_ft.flags & NVSHMEMI_IBGDA_FT_FLAG_T1W) ? "on" : "off");
+     return 0;
+ }
+ 
+@@ -8119,6 +8245,20 @@ static void t1_fini() {
+     ibgda_t1.stop.store(true);
+     t1_join_helper();
+     for (uint32_t gi = 0; gi < ibgda_t1.ngates; gi++) t1_hflag_fail(gi); /* reaches held waits without a copy */
++    /* t1w (gpu-detect): BYE on every live socket before it closes, so the peer reads the FIN that follows as an orderly
++     * leave (nvshmem_finalize, after its barriers), not as death. A process that ends without nvshmem_finalize sends
++     * none. */
++    {
++        int bye = 0;
++        for (size_t p = 0; p < ibgda_t1.fd.size(); p++) {
++            if (ibgda_t1.fd[p] < 0 || ibgda_t1.peer_fin[p]) continue;
++            t1_msg m;
++            memset(&m, 0, sizeof(m));
++            m.type = T1_M_BYE;
++            if (t1_send((int)p, &m) == 0) bye++;
++        }
++        t1_log("t1w: goodbye sent to %d peer(s) before the library sockets close", bye);
++    }
+     for (size_t p = 0; p < ibgda_t1.fd.size(); p++)
+         if (ibgda_t1.fd[p] >= 0) {
+             close(ibgda_t1.fd[p]);
