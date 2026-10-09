@@ -53,8 +53,8 @@ def dump_lines(path):
             on = True
             out.append("**** Dev Comm Dump PTR ****")
             continue
-        if not on or "NCCL " in line or line.startswith("["):
-            continue
+        if not on or "NCCL " in line or line.startswith("[") or not line.strip():
+            continue  # other threads' log lines and the empty lines around them (re-review Q3)
         l2 = re.sub(r"0x[0-9a-fA-F]+|\(nil\)", "PTR", line)
         out.append(re.sub(r"lkey [0-9a-fA-F]+", "lkey LKEY", l2))
         if line.startswith(" GIN World Barrier signal0"):
