@@ -28,6 +28,11 @@ wq_queries, wq_us_mean, wq_us_max (the teardown watch line: the sum over ranks, 
 us_case1..us_case4 (rank 0's us/batch per case).
 hk (pilot 2 on): pol_cfg (ranks whose "GIN/TS: fault policy" start line says requested=failfast effective=failfast),
 wq_lines (teardown watch lines; hk writes one per rank also when the devComm is destroyed first).
+det1_s, det1_by (gin QP error, added before the tag): the first detection line on EITHER rank (a QP-watch detection or a
+device-classified error CQE) minus the hook's fire line, both at rain receipt (s); and which ("r<r>:watch" or
+"r<r>:device"). det_by/det_ms look at the target only; a late RETRY_EXC read by the other rank's flush is found here.
+det_wcq_ms (added before the tag): det_ms when the watch came first with its class from a root CQE (det_src "cq"), else
+empty: the watch's own delay (period phase + grace), without the fixed 50 ms wait of a window with no root CQE.
 New columns (nvs): t1w_cfg (PEs with the "t1w: gpu-detect=1" line), failstop_cfg (its failstop_ms values), n_fin_verdict
 (survivor lines "FIN) without a goodbye: the peer process is gone"), n_bye_sent ("goodbye sent to" lines), n_bye_seen
 ("said goodbye"), n_left ("after its goodbye: it left"), n_failstop ("t1w: FAILSTOP: exiting"), n_released ("device waits
@@ -82,7 +87,7 @@ COLS = ["id", "key", "hold", "cell", "build", "workload", "cls", "target", "env"
         "n_err0",
         "n_err1", "err0", "err1", "n_rec", "n_death", "result", "outcome", "dt_err", "dt_end", "wall_s", "left", "rerun",
         "det_by", "det_ms", "det_src", "n_watch", "n_q4", "rec_ms", "rec_rx_s", "n_decl", "n_judged", "det_cfg", "watch_cfg",
-        "lb_on", "lb_shadow", "wq_queries", "wq_us_mean", "wq_us_max", "wq_lines", "pol_cfg", "us_case1", "us_case2", "us_case3", "us_case4",
+        "lb_on", "lb_shadow", "wq_queries", "wq_us_mean", "wq_us_max", "wq_lines", "pol_cfg", "det1_s", "det1_by", "det_wcq_ms", "us_case1", "us_case2", "us_case3", "us_case4",
         "t1w_cfg", "failstop_cfg", "n_fin_verdict", "n_bye_sent", "n_bye_seen", "n_left", "n_failstop", "n_released",
         "n_declines", "surv_rc", "surv_end", "verdict_s", "n_val", "ms_16m", "ms_32m", "ms_64m"]
 
@@ -282,6 +287,8 @@ def row_of(d):
                 if firsts:
                     t0, by = min(firsts)
                     row["det_by"], row["det_ms"] = by, round(t0 - fire, 3)
+                    if by == "watch" and row["det_src"] == "cq":
+                        row["det_wcq_ms"] = row["det_ms"]
                 else:
                     row["det_by"] = "none"
                 if rec:
@@ -290,6 +297,17 @@ def row_of(d):
             tr = min([t for r in (0, 1) for t in [first_match(logs[r], REC[wl])[0]] if t is not None], default=None)
             if tf is not None and tr is not None:
                 row["rec_rx_s"] = round(tr - tf, 3)
+            # the first detection on either rank (rain receipt clock), after the fire line
+            d1 = []
+            for r in (0, 1):
+                for kind, rx in (("watch", RE_WATCH), ("device", RE_Q4)):
+                    for t, l in logs[r]:
+                        if tf is not None and t >= tf and rx.search(l):
+                            d1.append((t, "r%d:%s" % (r, kind)))
+                            break
+            if tf is not None and d1:
+                t1, by1 = min(d1)
+                row["det1_s"], row["det1_by"] = round(t1 - tf, 3), by1
         row["n_watch"] = sum(count(logs[r], r"GIN/TS: rank \d+: QP watch: .* fault queued") for r in (0, 1))
         row["n_q4"] = sum(count(logs[r], r"GIN/Q4: device-classified error CQE") for r in (0, 1))
         tds = [mm for r in (0, 1) for _, l in logs[r] for mm in [RE_WQ_TD.search(l)] if mm]
