@@ -26,6 +26,10 @@
 #          After every run: an error exit or an error key in either rank's kv writes STOP_nic, a process of the run left
 #          behind (run_ord.sh counts them by the run's unique tag) writes STOP_left, a growth of rain's firmware-command
 #          failures writes STOP_mlx5, and the remaining runs are skipped
+#   ORDSMOKE-<rain|sunny>[-<tag>]  the comparison's diagnostic smoke (2026-10-11, after the first ORD-sunny hold stopped on
+#          the bw cell's registration; never a reading): bw256k strict, then relaxed, once each, with ORD_DIAG=1 (NCCL INFO
+#          log kept on the node under ~/rs-ordlogs), into ord_smoke_<node>/ (a repeat: ord_smoke_<node>_run<k>/); the same
+#          stop checks as ORD
 #   B2     B2: four ranks interleaved (rain 0, 2; sunny 1, 3), report lines only, 2 trials, into b2/ (a repeat: b2_run<k>/)
 #   B2c    B2 control (optional): four ranks consecutive (rain 0, 1; sunny 2, 3), 1 trial, into the latest B2 folder
 #   B1     B1: record (2 ranks), replay rank 1 on sunny and rank 0 on rain (strace), two negative replays; 2 trials, into
@@ -126,7 +130,7 @@ b3() {  # b3 <cell> <iters> <logdir> [main]: one cell if it fits, then the per-c
   [ "$fw" -gt "$FW0" ] && echo "$(date '+%F %T') hold $H: firmware-command failures grew after $cell ($FW0 -> $fw)" | tee -a "$R/STOP_mlx5"
   return 0
 }
-ordrun() {  # ordrun <cell> <tag> <logdir>: one comparison run if it fits, then the stop checks (9.15.6)
+ordrun() {  # ordrun <cell> <tag> <logdir>: one comparison run if it fits, then the stop checks (9.15.6); ORD_DIAG passes through
   local cell=$1 tag=$2 dir=$3 f bad=""
   [ -e "$R/STOP_nic" ] || [ -e "$R/STOP_mlx5" ] || [ -e "$R/STOP_left" ] && { echo "skipped ${cell}_$tag: STOP file" >> "$R/skipped.txt"; return 0; }
   fits 90 "${cell}_$tag" || return 0
@@ -166,6 +170,14 @@ case "$H" in
     case "$cell" in b3_m_rain_ro|b3_m_rain_so|b3_m_sunny_ro|b3_m_sunny_so) ;; *) echo "unknown cell $cell" >&2; exit 2 ;; esac
     k=1; while [ -e "$R/b3m_run$k/${cell}_meta.txt" ]; do k=$((k + 1)); done
     b3 "$cell" "$B3_ITERS" "$R/b3m_run$k" main ;;
+  ORDSMOKE-*)
+    node=${H#ORDSMOKE-}; node=${node%%-*}
+    case "$node" in rain|sunny) ;; *) echo "ORDSMOKE-<rain|sunny>[-<tag>]" >&2; exit 2 ;; esac
+    d=$R/ord_smoke_$node; k=1; while ls "$d"/*_meta.txt >/dev/null 2>&1; do k=$((k + 1)); d=$R/ord_smoke_${node}_run$k; done
+    mkdir -p "$d"
+    LIBMD5='f=$(readlink -f $HOME/gi-bundle/gin_ts2/hk/libnccl.so.2); echo "$(md5sum < "$f" | cut -c1-32) $(basename "$f")"'
+    echo "hk libnccl rain: $(bash -c "$LIBMD5") sunny: $(ssh -n "$SUNNY_SSH" "$LIBMD5")" | tee "$d/lib_md5.txt"
+    for a in strict relaxed; do ORD_DIAG=1 ordrun "ord_bw256k_${a}_$node" s1 "$d"; done ;;
   ORD-*)
     node=${H#ORD-}; node=${node%%-*}
     case "$node" in rain|sunny) ;; *) echo "ORD-<rain|sunny>[-<tag>]" >&2; exit 2 ;; esac
