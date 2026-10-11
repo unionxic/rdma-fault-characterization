@@ -5,23 +5,35 @@
 # usage: run_b3.sh <cell> <iters> <logdir>
 #   cells: b3_x_<rain|sunny>_<ro|so>  cross-node: the named node is the responder (GPU window), the other node writes
 #          b3_s_<rain|sunny>_<ro|so>  same node: the writer is another process on the same node, GPU and HCA
-#          b3_h_<rain|sunny>_<ro|so>  cross-node, plus a memory-bound hog process on the responder's GPU
+#          b3_h_<rain|sunny>_<ro|so>  cross-node, plus a memory-bound hog PROCESS on the responder's GPU (the old contention
+#                                     cell, superseded on 2026-10-11 by b3_m)
+#          b3_m_<rain|sunny>_<ro|so>  cross-node, plus the in-process hog of the responder (RS_HOG=stream; rs_drain_test v4)
+#          b3_d<n|p|m>_<rain|sunny>_ro diagnostic (no verdict): cross-node with no hog (dn), the hog process (dp) or the
+#                                     in-process hog (dm); the copy timing is the point (EXPERIMENT.md 9.15.3, 2026-10-11)
 #   The responder always listens for the control connection (TCP, nonce-verified, port 29000-30999 picked free on both
 #   nodes by ../../remaining/portpick.sh); the writer connects to the responder's management address, or to 127.0.0.1.
-# files in <logdir>: <cell>_resp.kv/.log, <cell>_writer.kv/.log, <cell>_hog.kv/.log (h cells), <cell>_topo_<node>.txt
+# files in <logdir>: <cell>_resp.kv/.log, <cell>_resp_timing.tsv (b3v4: every snapshot copy; raw data, not tracked),
+#   <cell>_writer.kv/.log,
+#   <cell>_hog.kv/.log (h and dp cells), <cell>_topo_<node>.txt
 #   (nvidia-smi topo -m), <cell>_gpu_<node>_<before|after>.txt (compute apps), <cell>_meta.txt
-# env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), B3BIN ($HOME/rs-bundle/b3v3/rs_drain_test),
+# env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), B3BIN ($HOME/rs-bundle/b3v3/rs_drain_test; b3v4 for m, d),
 #      RS_QUERY_BUDGET (passed to the responder if set: the contention cells; see rs_drain_test.cu v3),
 #      RS_LAST_KB (passed to both sides if set; see rs_drain_test.cu)
 set -u
 CELL=${1:?cell}; ITERS=${2:?iters}; LOGDIR=${3:?logdir}
+unset RS_HOG RS_TIMING_FILE   # set per process below (the responder only), never inherited
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 SUNNY_HOST=${SUNNY_SSH#*@}
 HCA_RAIN=${HCA_RAIN:-mlx5_1}; HCA_SUNNY=${HCA_SUNNY:-mlx5_0}
-BIN=${B3BIN:-$HOME/rs-bundle/b3v3/rs_drain_test}   # b3v3: progress on every exit, query budget (2026-10-09); b3/, b3v2/ earlier
+BIN=${B3BIN:-$HOME/rs-bundle/b3v3/rs_drain_test}   # b3v3: progress on every exit, query budget (2026-10-09); b3/, b3v2/ earlier;
+                                                    # the m and d cells need b3v4: hold_feas.sh passes B3BIN for them (2026-10-11)
 [ -x "$BIN" ] || { echo "missing $BIN on rain" >&2; exit 1; }
 IFS=_ read -r _ MODE NODE ORDER <<< "$CELL"
-case "$MODE:$NODE:$ORDER" in [xsh]:rain:ro|[xsh]:rain:so|[xsh]:sunny:ro|[xsh]:sunny:so) ;; *) echo "bad cell $CELL" >&2; exit 2 ;; esac
+case "$MODE:$NODE:$ORDER" in [xshm]:rain:ro|[xshm]:rain:so|[xshm]:sunny:ro|[xshm]:sunny:so|d[npm]:rain:ro|d[npm]:sunny:ro) ;;
+  *) echo "bad cell $CELL" >&2; exit 2 ;; esac
+case "$MODE" in m|d[npm]) case "$BIN" in */b3v4/*) ;; *) echo "cell $CELL needs the b3v4 build (B3BIN)" >&2; exit 2 ;; esac ;; esac
+HOGPROC=0; HOGSTREAM=0
+case "$MODE" in h|dp) HOGPROC=1 ;; m|dm) HOGSTREAM=1 ;; esac
 umask 077
 WORK=$(mktemp -d /tmp/rs_b3.XXXXXX)
 RT=/tmp/rs_b3_$$_$RANDOM            # sunny-side file prefix of this cell
@@ -55,7 +67,7 @@ gidx() { [ "$1" = rain ] && echo "$GID_R" || echo "$GID_S"; }
 declare -A PIDS
 start() {
   local node=$1 name=$2; shift 2
-  local envs="RS_RDV_NONCE=$NONCE RS_WATCHDOG_S=$WD RS_CELL_S=$CELL_S${RS_LAST_KB:+ RS_LAST_KB=$RS_LAST_KB}${RS_QUERY_BUDGET:+ RS_QUERY_BUDGET=$RS_QUERY_BUDGET}"
+  local envs="RS_RDV_NONCE=$NONCE RS_WATCHDOG_S=$WD RS_CELL_S=$CELL_S${RS_LAST_KB:+ RS_LAST_KB=$RS_LAST_KB}${RS_QUERY_BUDGET:+ RS_QUERY_BUDGET=$RS_QUERY_BUDGET}${XENV:+ $XENV}"
   if [ "$node" = rain ]; then
     ( env $envs timeout -s KILL "$TMO" "$BIN" "$WORK/$name.kv" "$@" > "$WORK/$name.log" 2>&1; echo $? > "$WORK/$name.rc" ) &
   else
@@ -72,16 +84,22 @@ ssh -n "$SUNNY_SSH" "nvidia-smi topo -m" > "$WORK/topo_sunny.txt" 2>&1
 snapgpu before
 T0=$(date +%s.%N)
 STOPF=/tmp/rs_b3_hogstop_$$_$RANDOM
-if [ "$MODE" = h ]; then
+XENV=""
+if [ "$HOGPROC" = 1 ]; then
   if [ "$RESP" = rain ]; then rm -f "$STOPF"; else ssh -n "$SUNNY_SSH" "rm -f $STOPF"; fi
   start "$RESP" hog hog "$CELL_S" "$STOPF"
   sleep 2
 fi
+# the responder only: the timing file (b3v4 writes it; older builds ignore it) and, for m and dm, the in-process hog (an
+# empty RS_HOG otherwise; b3v4 refuses a non-empty RS_HOG in the writer and hog roles)
+if [ "$RESP" = rain ]; then TF=$WORK/resp.tsv; else TF=$RT.resp.tsv; fi
+XENV="RS_TIMING_FILE=$TF RS_HOG=$( [ "$HOGSTREAM" = 1 ] && echo stream )"
 start "$RESP" resp resp "$(hca "$RESP")" "$(gidx "$RESP")" "$ORDER" "$ITERS" "listen:$PORT"
+XENV=""
 sleep 1
 start "$WRITER" writer writer "$(hca "$WRITER")" "$(gidx "$WRITER")" "$ORDER" "$ITERS" "connect:$RESP_ADDR:$PORT"
 wait "${PIDS[resp]}"; wait "${PIDS[writer]}"
-if [ "$MODE" = h ]; then
+if [ "$HOGPROC" = 1 ]; then
   if [ "$RESP" = rain ]; then touch "$STOPF"; else ssh -n "$SUNNY_SSH" "touch $STOPF"; fi
   wait "${PIDS[hog]}"
   if [ "$RESP" = rain ]; then rm -f "$STOPF"; else ssh -n "$SUNNY_SSH" "rm -f $STOPF"; fi
@@ -94,15 +112,18 @@ for name in resp writer hog; do
   if [ "$node" = sunny ]; then
     scp -q "$SUNNY_SSH:$RT.$name.kv" "$WORK/$name.kv" 2>/dev/null || true
     scp -q "$SUNNY_SSH:$RT.$name.log" "$WORK/$name.log" 2>/dev/null || true
+    [ "$name" = resp ] && { scp -q "$SUNNY_SSH:$RT.resp.tsv" "$WORK/resp.tsv" 2>/dev/null || true; }
   fi
 done
 mkdir -p "$LOGDIR"
 for f in resp.kv resp.log writer.kv writer.log hog.kv hog.log; do [ -f "$WORK/$f" ] && cp "$WORK/$f" "$LOGDIR/${CELL}_$f"; done
+[ -f "$WORK/resp.tsv" ] && cp "$WORK/resp.tsv" "$LOGDIR/${CELL}_resp_timing.tsv"
 for n in rain sunny; do cp "$WORK/topo_$n.txt" "$LOGDIR/${CELL}_topo_$n.txt"
   for t in before after; do cp "$WORK/gpu_${n}_$t.txt" "$LOGDIR/${CELL}_gpu_${n}_$t.txt"; done; done
 rc() { tr -d '\n' < "$WORK/$1.rc" 2>/dev/null || echo none; }
 echo "cell=$CELL mode=$MODE responder=$RESP writer=$WRITER order=$ORDER iters=$ITERS hca_rain=$HCA_RAIN hca_sunny=$HCA_SUNNY \
-gid_rain=$GID_R gid_sunny=$GID_S rc_resp=$(rc resp) rc_writer=$(rc writer) rc_hog=$( [ "$MODE" = h ] && rc hog || echo none) \
+gid_rain=$GID_R gid_sunny=$GID_S rc_resp=$(rc resp) rc_writer=$(rc writer) rc_hog=$( [ "$HOGPROC" = 1 ] && rc hog || echo none) \
+hog=$( [ "$HOGPROC" = 1 ] && echo proc || { [ "$HOGSTREAM" = 1 ] && echo stream || echo none; } ) \
 port=$PORT port_tries=$PORT_TRIES rdv_nonce_set=1 cell_s=$CELL_S timeout_s=$TMO last_kb=${RS_LAST_KB:-1024} query_budget=${RS_QUERY_BUDGET:-0} \
 wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') bin=$BIN" > "$LOGDIR/${CELL}_meta.txt"
 echo "[$CELL] rc resp=$(rc resp) writer=$(rc writer) :: $(grep -ho 'result=[A-Z_]*\|setup_error=[^ ]*\|nic_error=[^ ]*' \
