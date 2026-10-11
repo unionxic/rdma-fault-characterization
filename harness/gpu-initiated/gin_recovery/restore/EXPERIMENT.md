@@ -1811,6 +1811,28 @@ rm -rf ~/rs-ordlogs; ssh -n "$SUNNY_SSH" 'rm -rf $HOME/rs-ordlogs'
 `0x1`)와 `ro_requested=1`; `SUMMARY_ORD.txt`의 셀마다 n(6, 6), 갈림, 읽기, 노드마다의 마지막 줄. sunny가 받는 relaxed 지연이 10.50, 38.88 µs 안팎에서 크게
 벗어나면 결과를 해석하기 전에 올린다. 실행이 오류로 멈추면(STOP 파일) 9.15.5의 STOP 규칙대로 올린다.
 
+**결과(2026-10-11).** `[측정: results/20261011_ordering/ord_rain/, ord_sunny_run2/(정하는 폴더, 각 36실행), ord_smoke_*/; 이 에이전트가 원자료에서 다시 셈: 지연
+셀 48실행의 p50을 반복마다의 원자료 `lat_raw.csv.gz`에서 다시 구해 kv와 모두 같음, summ_ord.py로 표 다시 만듦]`
+
+| 받는 쪽 노드 | 셀 | strict 중앙값(범위) | relaxed 중앙값(범위) | 차(strict 손해 +) | 갈림 | 읽기 |
+|---|---|---|---|---|---|---|
+| rain | 4 KiB 지연 | 11.260 µs(11.260–11.260) | 11.260 µs(11.260–11.260) | 0 | 아니오 | 차이를 잴 수 없음 |
+| rain | 256 KiB 지연 | 39.940 µs(38.910–40.960) | 39.940 µs(38.910–39.940) | 0 | 아니오 | 차이를 잴 수 없음 |
+| rain | 대역(256 KiB × 8) | 5.491 GB/s(5.476–5.491) | 5.491 GB/s(5.476–5.491) | 0 | 아니오 | 차이를 잴 수 없음 |
+| sunny | 4 KiB 지연 | 10.500 µs(10.460–10.500) | 10.500 µs(10.500–10.530) | 0 | 아니오 | 차이를 잴 수 없음 |
+| sunny | 256 KiB 지연 | 38.880 µs(38.880–38.880) | 38.880 µs(38.880–38.880) | 0 | 아니오 | 차이를 잴 수 없음 |
+| sunny | 대역(256 KiB × 8) | 6.492 GB/s(6.482–6.507) | 6.490 GB/s(6.480–6.507) | −0.002(−0.03%) | 아니오 | 차이를 잴 수 없음 |
+
+- n: 셀과 팔마다 6실행, 모두 유효(무효 0). 노드 줄은 두 노드 모두 "relaxed의 2% 이상 이득을 재지 못함"이다(relaxed 최적화는 사용자 결정으로 남고 이 측정은
+  아무것도 정하지 않음). sunny가 받는 relaxed 지연은 gpu-detect의 `w0` 값(10.50, 38.88 µs `[문서]`)과 같다.
+- 첫 `ord_sunny/`(5실행, 대역 셀 등록 실패)는 정보로만 남는다. 진단 smoke 넷(두 노드 × 두 팔, 반복 12의 p50: rain 381.95 µs 둘 다, sunny relaxed 322.82,
+  strict 323.36 µs)은 판정에 쓰지 않았고, 노드의 진단 파일은 smoke 뒤 지웠다(메인 세션; 이 에이전트가 rain에서 없음을 확인).
+- 한계: 대역 셀은 반복 12개의 p50이고 flush 하나당 2 MiB라 "갈리지 않음"의 무게가 처음 계획보다 작다. relaxed 팔은 NCCL이 RO를 요청했고(`ro_requested=1`) 두 노드의
+  NIC 쪽에서 허용도 됐다(DevCtl `RlxdOrd+`, `PCI_WR_ORDERING` `per_mkey`, 12절) `[측정]`. 그러나 root complex가 그 쓰기를 실제로 바꿔 놓았는지는 보지 못한다
+  `[미확인]`. 그래서 결과는 "이 두 노드, 이 크기에서 RO를 요청하고 허용해도 지연과 대역에 잴 만한 차이가 없음"이고, "RO가 효과 없음"을 뜻하지 않는다. 같은
+  노드 GIN 쌍, 보내는 쪽 여럿, 큰 대역(BAR1이 막음)은 재지 않았다.
+- 9.10.8절의 strict 강제가 이 두 노드의 정상 경로에 잴 만한 비용을 더하지 않는다는 근거가 된다 `[측정, 위 한계 안에서]`.
+
 ## 10. 완료 조건과 QA 기준
 
 - [ ] 9.11.12절의 막는 문제가 풀렸고, 정책 설계의 독립 검토(9.11.13절)가 남은 충돌이 없다고 했다.
@@ -1854,7 +1876,7 @@ rm -rf ~/rs-ordlogs; ssh -n "$SUNNY_SSH" 'rm -rf $HOME/rs-ordlogs'
 - [x] 반영의 독립 재확인(열린 충돌 없음까지; 2026-10-11 마지막 판정: 열린 충돌 없음, 남은 설계 선택 넷 대기)
 - [x] 남은 설계 선택 넷의 사용자 결정(2026-10-11: 복원을 켤 수 없으면 `ncclGinRestoreResume`이 이유와 함께 오류, 모든 rank가 같은 오류)
 - [x] 정상 경로의 strict와 relaxed 비교(9.15.6): 설계와 빌드
-- [ ] 그 비교의 실행과 기록
+- [x] 그 비교의 실행과 기록(2026-10-11: 두 노드, 셀 셋 모두 차이를 잴 수 없음, 9.15.6 결과)
 - [ ] 복원 실험의 예측과 셀(DRAFT)
 - [ ] 체크포인트와 복원 경로 구현, pilot, 사전 등록(태그), 본 실행
 - [x] B1: `rsx` hook과 `rs_spike` 빌드됨
@@ -1938,6 +1960,8 @@ rm -rf ~/rs-ordlogs; ssh -n "$SUNNY_SSH" 'rm -rf $HOME/rs-ordlogs'
 | 2026-10-11 | 고침의 독립 검토(읽기 전용 에이전트, 커밋 `5e50aa76` 대상): 판정 "ord fix: ready to clear STOP_nic and run the smoke", 막는 것 없음. 진단이 소스와 맞음(오류 문자열, strict와 relaxed는 RO 비트만, WARN이 사라진 까닭; 정상 지연 실행 넷의 로그도 4 KiB에서 잘림 `[측정]`), `ncclCommRegister`는 MR을 만들지 않고 내부 devComm은 크기와 무관, 24 MiB는 이미 된 4 × 16 MiB보다 작음, eval과 stdbuf, summ의 값과 정하는 폴더(`ORD-sunny-2` → `ord_sunny_run2`), smoke 폴더가 맞음, STOP_nic 풀기 조건 (1), (3)이 원자료와 맞음. 중간: O1(`skipped.txt`도 옮겨야 함). 낮음: O2(`~/rs-ordlogs`를 만든 결과 확인), O3(BAR1 문턱과 snap), O4(NVRM dmesg 줄), O5(낡은 문장), O6(본 hold는 ORD_DIAG=0, summ이 구성과 diag를 확인), O7(진단 파일 지우기), O8(이미 돈 명령 표시). 정보: O9, O10(뒷받침 사실과 반증 조건), O11(대역 셀의 민감도, smoke는 relaxed 먼저). 모두 반영(스크립트만, 바이너리와 배포 그대로) | 9.15.6, `feas/run_ord.sh`, `feas/hold_feas.sh`, `feas/summ_ord.py` |
 | 2026-10-11 | 메인 세션의 읽기 전용 확인(passwordless sudo): `lspci -vvv` DevCtl은 rain NIC mlx5_1 `0000:17:00.1` RlxdOrd+ NoSnoop+, rain GPU `65:00.0` RlxdOrd+, sunny NIC mlx5_0 `0000:17:00.0` RlxdOrd+, sunny GPU `65:00.0` RlxdOrd+(두 NIC 링크 "8GT/s (downgraded), x16", 정보); `mlxconfig q PCI_WR_ORDERING`은 두 ConnectX6 모두 `per_mkey(0)`; BAR1은 rain Total 256 MiB(Used 5, Free 251), sunny 16 384 MiB(Used 21, Free 16 363); rain `dmesg`에 17:23–17:25의 `NVRM: dmaAllocMapping_GM107: can't alloc VA space for mapping.` 19줄(버퍼 전체 913줄; `dmesg -T` 시계는 어긋날 수 있음) `[측정]`. 뜻: (가) 첫 `ORD-sunny`의 대역 셀 실패는 rain의 BAR1 VA 부족으로 `[측정]`이 됨, sunny의 16 GiB BAR1이 같은 등록이 된 까닭; (나) B3의 relaxed(`ro`) 셀은 NIC 쪽에서 relaxed ordering이 실제로 허용된 채 돌았다(RO access flag + NIC DevCtl RlxdOrd+ + per_mkey 펌웨어) `[측정]`, root complex가 그 쓰기를 실제로 바꿔 놓았는지는 볼 수 없다 `[미확인]`(9.15.3의 결과 해석은 바꾸지 않음); (다) 펌웨어가 relaxed 쓰기를 강제하는지는 이 두 NIC에서 확인됨(per_mkey, 강제 안 함), 다른 기계에는 한계로 남고 sudo 읽기 한 번이면 풀림; (라) per_mkey이므로 strict 강제(MR에 RO flag 없음)는 이 두 노드에서 NIC의 strict 쓰기다. 풀기 조건 1–4가 맞아 메인 세션이 STOP_nic와 `skipped.txt`를 같은 시각 꼬리표로 옮김. ORDSMOKE hold는 도는 중(결과는 따로) | 9.10.8, 9.15.6, 18절 |
 | 2026-10-11 | 사용자 결정(메인 세션이 전함, 설계 선택 넷): "application이 복원을 요청했는데(ncclGinRestoreResume 호출) 켤 수 없으면, 이유가 무엇이든 그 함수가 이유와 함께 오류를 돌려준다. 모든 rank가 같은 오류를 받는다." 적용: GDAKI 밖 backend의 hold → Resume이 이유와 함께 오류; hold에는 `NCCL_SYM_GIN_KERNELS_ENABLE=0`이 조건으로 남고 어기면 Resume이 오류; 오류의 자리는 (b)(devComm 생성은 `ncclInternalError`와 WARN, Resume이 "이 communicator는 복원할 수 없음"을 이유와 함께; hold 프로세스는 `NCCL_RMA_DISABLE=1`, `NCCL_GIN_TYPE=3`, Resume에서 확인); rank 사이에서 `NCCL_GIN_RESTORE`만 다르면 모든 rank의 Resume이 오류. 첫 결정의 "등록 오류"는 이렇게 다듬어짐: 명시적 오류는 window 등록이 아니라 Resume(과 devComm 생성)에서 나옴(한 rank만 등록에서 오류를 내면 다른 rank가 rkey all-gather에서 멈추므로). 같은 날 사용자 지적("U1-U4 처럼 또 은어 만들어서 쓰지말고")으로 이 문서의 설계 선택 표지 U1–U4를 내용을 말하는 이름으로 바꾸고 새 짧은 부호를 만들지 않기로 함(12절의 지난 행도 그 표지를 풀어 씀; 2026-10-09 b3v3 검토의 지적 번호 U1–U8은 다른 것으로 괄호 안의 찾는 키로 남음) | 9.10.8, 9.10.4, 9.9절 RL21, 11절 |
+| 2026-10-11 19:58–20:00 | 진단 smoke hold 둘(`cluster_run.sh` 안, rc 0, 각 18 s, 새 mlx5 줄 0, 펌웨어 명령 실패 31 → 31, `cmd_err` 2 → 2, NVRM 매핑 실패 줄 913 → 913): `ORDSMOKE-rain`(잠금 19:58:42; 메인 세션의 글은 17:46:06이나 그것은 STOP 파일을 옮긴 시각이고 hold 출력의 잠금 시각은 19:58:42 — 원자료를 따름), `ORDSMOKE-sunny`(19:59:32). 네 실행 모두 `rc_r0=0 rc_r1=0 left=0`, kv `exit=0`, `iters=12`, `burst_K=8`, `diag_files=1/1`; 반복 12의 p50 rain 381.95 µs(두 팔), sunny 322.82(relaxed)와 323.36(strict) µs; BAR1 rain 256/5/251 MiB, sunny 16 384/2/16 382 MiB. 노드의 진단 파일은 smoke 뒤 메인 세션이 지움(WARN 줄은 필요 없었음) `[측정]` | `results/20261011_ordering/ord_smoke_rain/`, `ord_smoke_sunny/`, `hold_ORDSMOKE-*.out` |
+| 2026-10-11 20:00–21:16 | 본 hold 둘: `ORD-sunny-2`(잠금 20:00:40, 232 s) → `ord_sunny_run2/` 36실행, `ORD-rain`(21:12:34, 229 s) → `ord_rain/` 36실행; 둘 다 rc 0, 새 mlx5 줄 0, 펌웨어 31 → 31, `cmd_err` 2 → 2, STOP 파일 없음. 이 에이전트가 다시 셈: 지연 셀 48실행의 p50을 원자료 `lat_raw.csv.gz`에서 다시 구해 kv와 모두 같음, summ_ord.py의 표가 메인 세션의 값과 같음: 모든 셀 6 대 6, 갈림 없음, 읽기 "차이를 잴 수 없음"(9.15.6 결과의 표). 노드 줄은 둘 다 "relaxed의 2% 이상 이득을 재지 못함". 한계(작은 대역 셀, RO는 요청되고 NIC 쪽에서 허용됐으나 root complex의 실제 순서 바꿈은 보지 못함)는 9.15.6 결과에 | `results/20261011_ordering/ord_sunny_run2/`, `ord_rain/`, `SUMMARY_ORD.txt` |
 | 2026-10-11 | 정책 설계 문서를 이 문서로 합침(사용자 결정, 메인 세션이 전함: 실험 하나에 `EXPERIMENT.md` 하나, 단계별 문서를 따로 두지 않는다는 저장소 규칙과 `DESIGN_POLICY.md`가 어긋나 9절로 합침, 선택지 (가)). 옮긴 곳: 그 문서의 1절 → 9.10.1, 2.1–2.5절 → 9.10.2–9.10.6, 3절 → 9.10.7, 4절과 4.1–4.11절 → 9.11과 9.11.1–9.11.11, 5절 → 9.11.12, 6절 → 9.11.13, 7절 → 20절(이미 있던 항목과 합침), 머리말의 목적, 상태, 근거 트리, 독립 검토, 줄 번호 규칙 → 9.10의 첫 문단들. 내용은 그대로이고 안의 절 참조만 새 번호로 고침("EXPERIMENT.md N절"은 "N절"로, "이 문서"는 "이 정책 설계"로). 9.10, 9.11의 옛 가리킴 문단과 머리말의 "설계의 기준 문서" 문단은 바꿈. 이 문서 안의 모든 가리킴(본문, 9.15 판정 글의 절 번호 둘, 11절, 12절의 지난 행, 19절)을 경로와 절 번호만 새 자리로 고침. gpu-detect 문서의 자리는 그 사이 master로 옮겨져(PR #63) 경로 글만 고침. `DESIGN_POLICY.md`는 이 커밋에서 지움(git 역사에 남음). 해석이나 결과는 바꾸지 않음 | 9.10–9.11절 |
 
 ## 13. 사전 등록 이후 변경
