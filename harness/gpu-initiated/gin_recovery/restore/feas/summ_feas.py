@@ -89,7 +89,8 @@ def b3_runlabel(d):
         d.get("boundary_iters_stale_last", "?"), d.get("iterations_done", "?"))
 
 
-def b3():
+def b3(gates=None):
+    gates = gates or {}
     def bynum(prefix):
         return sorted(glob.glob(os.path.join(R, prefix + "*")),
                       key=lambda d: int(re.sub(r"\D", "", os.path.basename(d)[len(prefix):]) or 0))
@@ -187,7 +188,11 @@ def b3():
                 else "; no bound: a cell is not valid and passing" if verdict[(node, o)] != "fail" else ""))
     v = verdict
     nodes = ("rain", "sunny")
-    if any(v[(n, o)] in ("missing", "open") for n in nodes for o in ("ro", "so")):
+    gated = [n for n in nodes if gates.get(n) is False and any("b3_m_%s_%s" % (n, o) not in cells for o in ("ro", "so"))]
+    if gated:
+        concl = "B3 open: the diagnostic gate of %s did not pass, so its b3_m cells were not run; report to the user " \
+                "(EXPERIMENT.md 9.15.3)" % ", ".join(gated)
+    elif any(v[(n, o)] in ("missing", "open") for n in nodes for o in ("ro", "so")):
         concl = "B3 open (missing or inconclusive cells: repeat those cells; if still open, ask the user)"
     elif all(v[(n, "ro")] == "pass" and v[(n, "so")] == "pass" for n in nodes):
         concl = "B3: READ-fence drain check holds on this platform as configured for ro and so (strict condition: user decision)"
@@ -202,11 +207,13 @@ def b3():
     say()
 
 
-def b3_diag():
+def b3_diag(emit):
     """the B3 diagnostic (2026-10-11, EXPERIMENT.md 9.15.3): never a verdict; readings and gate fixed before the run.
     Per snapshot (timing tsv): the copy's end lies in [end_lo, end_hi] and its start in [end_lo - exec, end_hi - exec], all
     relative to PAUSED. "late": start_lo > the run's reach p50 (the copy began after the writes had reached M); "prompt":
-    end_hi < the run's reach p50."""
+    end_hi < the run's reach p50. The deciding run of a node is its latest diagnostic folder in which dn, dp and dm all ended
+    without an error exit (EXPERIMENT.md 9.15.3). Returns {node: True (gate passed) | False (not passed)} for the nodes that
+    have a deciding run."""
     def pctl(v, p):
         if not v:
             return None
@@ -216,35 +223,75 @@ def b3_diag():
     def f1(x):
         return "-" if x is None else "%.1f" % x
 
-    for d in sorted(glob.glob(os.path.join(R, "b3_diag*"))):
-        say("== B3 diagnostic (no verdict) folder %s" % os.path.basename(d))
-        say("cell | hog | d2d engine | result | iterations | reach p50 us | early stale n/N | early late/prompt of N | early copy "
-            "start_lo p50/p90 us | early start_lo p50 stale/not stale us | boundary stale-last n/N (with a snapshot) | boundary "
-            "copy start_hi after rmsn=M-1 p50/p90 us | copy exec p50 us | hog GB/s")
-        st = {}
-        for node in ("rain", "sunny"):
+    def errlabel(k):
+        for key in ("setup_error", "nic_error", "cuda_error"):
+            if key in k:
+                return "error %s=\"%s\"" % (key, k[key])
+        if k.get("watchdog") == "1":
+            return "error watchdog=1"
+        return None
+
+    def bynum(prefix):
+        return sorted(glob.glob(os.path.join(R, prefix + "*")),
+                      key=lambda d: int(re.sub(r"\D", "", os.path.basename(d)[len(prefix):]) or 0))
+    folders = [d for d in bynum("b3_diag") if os.path.isdir(d)]
+    cols = ["iter", "path", "tail", "t_paused_us", "enq_us", "end_lo_us", "end_hi_us", "exec_us", "ref_us", "reach_us",
+            "stale_before_words", "stale_last_words", "corrupt_words"]
+    runs_by_node = {"rain": [], "sunny": []}
+    for d in folders:
+        nodes_here = [n for n in ("rain", "sunny") if any(os.path.exists(os.path.join(d, "b3_%s_%s_ro_meta.txt" % (h, n)))
+                                                          for h in ("dn", "dp", "dm"))]
+        if not nodes_here:
+            continue
+        emit("== B3 diagnostic (no verdict) folder %s" % os.path.basename(d))
+        emit("cell | hog (meta) | d2d engine (copy us) | result | iterations | reach p50 us | early stale n/N | early late/prompt "
+             "of N | early copy start_lo p50/p90 us | early start_lo p50 stale/not stale us | boundary stale-last n/N (with a "
+             "snapshot) | boundary copy start_hi after rmsn=M-1 p50/p90 us | copy exec p50 us | hog GB/s | notes")
+        for node in nodes_here:
+            st, errs = {}, []
             for hm in ("dn", "dp", "dm"):
                 cell = "b3_%s_%s_ro" % (hm, node)
                 k = kv(os.path.join(d, cell + "_resp.kv"))
                 meta = kv(os.path.join(d, cell + "_meta.txt"))
-                if not k:
+                if not meta and not k:
+                    errs.append("%s missing" % hm)
+                    emit("%s | missing" % cell)
                     continue
-                rows = []
+                notes = []
+                el = errlabel(k) if k else "error (no responder kv)"
+                if el:
+                    errs.append("%s %s" % (hm, el))
+                rows, bad = [], 0
                 tf = os.path.join(d, cell + "_resp_timing.tsv")
                 if os.path.exists(tf):
                     with open(tf) as fh:
-                        rows = list(csv.DictReader(fh, delimiter="\t"))
+                        for r in csv.DictReader(fh, delimiter="\t"):
+                            try:
+                                [float(r[c]) for c in cols if c not in ("path", "tail")]
+                                rows.append(r)
+                            except (TypeError, ValueError, KeyError):
+                                bad += 1
+                if bad:
+                    notes.append("%d incomplete tsv rows skipped" % bad)
+                if not rows and not el:
+                    notes.append("no timing rows")
                 F = lambda r, c: float(r[c])
                 ea = [r for r in rows if r["path"] == "early"]
                 bd = [r for r in rows if r["path"] == "boundary"]
                 reach = num(k, "reach_p50_us", -1)
                 slo = lambda r: F(r, "end_lo_us") - F(r, "exec_us")
-                stale = lambda r: int(r["stale_before_words"]) + int(r["stale_last_words"]) > 0
+                stale = lambda r: F(r, "stale_before_words") + F(r, "stale_last_words") > 0
                 e_lo = [slo(r) for r in ea]
                 e_late = sum(1 for r in ea if reach > 0 and slo(r) > reach)
                 e_prompt = sum(1 for r in ea if reach > 0 and F(r, "end_hi_us") < reach)
                 e_stale = sum(1 for r in ea if stale(r))
-                b_stale = sum(1 for r in bd if int(r["stale_last_words"]) > 0)
+                b_stale = sum(1 for r in bd if F(r, "stale_last_words") > 0)
+                # the kv carries the same counts (same definitions): cross-check
+                for name, a_, b_ in (("early n", len(ea), k.get("early_W_n")), ("early stale", e_stale, k.get("early_iters_stale")),
+                                     ("boundary n", len(bd), k.get("boundary_W_n")),
+                                     ("boundary stale-last", b_stale, k.get("boundary_iters_stale_last"))):
+                    if rows and b_ is not None and str(a_) != b_:
+                        notes.append("%s tsv %s vs kv %s" % (name, a_, b_))
                 b_aft = [F(r, "end_hi_us") - F(r, "exec_us") - F(r, "ref_us") for r in bd]
                 ex = [F(r, "exec_us") for r in rows]
                 if hm == "dp":
@@ -255,52 +302,81 @@ def b3_diag():
                     gbps = None if gbps < 0 else gbps
                 else:
                     gbps = None
-                hi_p90 = pctl([F(r, "end_hi_us") - F(r, "exec_us") for r in ea], 0.9)
-                st[(node, hm)] = dict(reach=reach, e_n=len(ea), e_late=e_late, e_prompt=e_prompt, e_stale=e_stale,
-                                      b_n=len(bd), b_stale=b_stale, hi_p90=hi_p90)
-                say("%s | %s | %s | %s | %s | %s | %d/%d | %d/%d of %d | %s/%s | %s/%s | %d/%d | %s/%s | %s | %s" % (
-                    cell, meta.get("hog", "?"), k.get("d2d_engine", "?"),
-                    k.get("result", "error (%s)" % (k.get("nic_error") or k.get("setup_error") or k.get("cuda_error") or "?")),
+                eng, ecu = k.get("d2d_engine"), num(k, "d2d_engine_copy_us", -1)
+                if eng is not None and ecu >= 0 and ((eng == "ce" and ecu >= 1000) or (eng == "sm" and ecu < 1000)):
+                    notes.append("engine %s contradicts its copy time %.1f us (report)" % (eng, ecu))
+                st[hm] = dict(reach=reach, e_n=len(ea), e_late=e_late, e_prompt=e_prompt, e_stale=e_stale, b_n=len(bd),
+                              b_stale=b_stale, eng=eng, ecu=ecu,
+                              hi_p90=pctl([F(r, "end_hi_us") - F(r, "exec_us") for r in ea], 0.9),
+                              endhi_p90=pctl([F(r, "end_hi_us") for r in ea], 0.9),
+                              exec_p90=pctl([F(r, "exec_us") for r in ea], 0.9), rows=len(rows))
+                emit("%s | %s | %s (%s) | %s | %s | %s | %d/%d | %d/%d of %d | %s/%s | %s/%s | %d/%d | %s/%s | %s | %s | %s" % (
+                    cell, meta.get("hog", "?"), eng or "?", f1(ecu if ecu >= 0 else None), el or k.get("result", "none"),
                     k.get("iterations_done", k.get("progress_iterations_done", "-")), f1(reach if reach > 0 else None),
                     e_stale, len(ea), e_late, e_prompt, len(ea), f1(pctl(e_lo, 0.5)), f1(pctl(e_lo, 0.9)),
                     f1(pctl([slo(r) for r in ea if stale(r)], 0.5)), f1(pctl([slo(r) for r in ea if not stale(r)], 0.5)),
-                    b_stale, len(bd), f1(pctl(b_aft, 0.5)), f1(pctl(b_aft, 0.9)), f1(pctl(ex, 0.5)), f1(gbps)))
-        for node in ("rain", "sunny"):
-            n_, p_, m_ = st.get((node, "dn")), st.get((node, "dp")), st.get((node, "dm"))
-            # reading 1 (fixed before the run; decides nothing): the time-slicing inference
-            if not n_ or not p_ or not n_["e_n"] or not p_["e_n"] or n_["reach"] <= 0 or p_["reach"] <= 0:
-                inf = "missing data"
-            elif 2 * p_["e_prompt"] >= p_["e_n"]:
-                inf = "refuted (with the hog process at least half of the early copies ended before the writes reached M)"
-            elif 10 * p_["e_late"] >= 9 * p_["e_n"] and 10 * n_["e_prompt"] >= 9 * n_["e_n"]:
-                inf = "confirmed (hog process: >= 90% of the early copies began after the writes reached M; no hog: >= 90% " \
-                      "ended before)"
-            else:
-                inf = "unclear"
-            say("%s: reading 1, time-slicing inference: %s" % (node, inf))
-            # reading 2 (fixed before the run; decides nothing): the in-process copy is prompt
-            if not m_ or m_["hi_p90"] is None or m_["reach"] <= 0:
-                say("%s: reading 2, in-process copy prompt: missing data" % node)
-            else:
-                say("%s: reading 2, in-process copy prompt: %s (early start_hi p90 %.1f us vs 1/4 of reach p50 %.1f us)" % (
-                    node, "yes" if m_["hi_p90"] < 0.25 * m_["reach"] else "no", m_["hi_p90"], 0.25 * m_["reach"]))
-            # the gate (fixed before the run; the only thing that decides here): run that node's b3_m cells or not
-            why = []
-            if not m_ or not p_ or not n_:
-                why.append("dn, dp or dm missing")
-            else:
-                if not (m_["e_stale"] >= 10 and 2 * m_["e_stale"] >= m_["e_n"]):
-                    why.append("dm early stale %d of %d" % (m_["e_stale"], m_["e_n"]))
-                if not (m_["b_stale"] >= 10 and 2 * m_["b_stale"] >= m_["b_n"]):
-                    why.append("dm boundary stale-last %d of %d (with a snapshot)" % (m_["b_stale"], m_["b_n"]))
-                if min(n_["reach"], p_["reach"], m_["reach"]) <= 0:
-                    why.append("a reach p50 is missing")
-                elif m_["reach"] - n_["reach"] < 0.5 * (p_["reach"] - n_["reach"]):
-                    why.append("dm reach rise %.1f us < half the dp rise %.1f us" % (
-                        m_["reach"] - n_["reach"], p_["reach"] - n_["reach"]))
-            say("%s: gate for b3_m_%s_ro and b3_m_%s_so: %s" % (
-                node, node, node, "passed (run them)" if not why else "NOT passed (do not run them; report): " + "; ".join(why)))
-        say()
+                    b_stale, len(bd), f1(pctl(b_aft, 0.5)), f1(pctl(b_aft, 0.9)), f1(pctl(ex, 0.5)), f1(gbps),
+                    "; ".join(notes) or "-"))
+            runs_by_node[node].append((os.path.basename(d), st, errs))
+        emit()
+    gates = {}
+    for node in ("rain", "sunny"):
+        runs = runs_by_node[node]
+        if not runs:
+            continue
+        ok = [x for x in runs if not x[2] and all(h in x[1] and x[1][h]["rows"] > 0 for h in ("dn", "dp", "dm"))]
+        if not ok:
+            emit("%s: no diagnostic run without an error exit (%s): no reading, gate NOT passed (report)" % (
+                node, "; ".join("%s: %s" % (x[0], ", ".join(x[2]) or "timing rows missing") for x in runs)))
+            gates[node] = False
+            continue
+        folder, st, _ = ok[-1]
+        n_, p_, m_ = st["dn"], st["dp"], st["dm"]
+        emit("%s: deciding diagnostic run %s (the latest of %d without an error exit)" % (node, folder, len(ok)))
+        # reading 1 (fixed before the run; decides nothing): the time-slicing inference
+        if not n_["e_n"] or not p_["e_n"] or n_["reach"] <= 0 or p_["reach"] <= 0:
+            inf = "missing data"
+        elif 2 * p_["e_prompt"] >= p_["e_n"]:
+            inf = "refuted (with the hog process at least half of the early copies ended before the writes reached M)"
+        elif 10 * p_["e_late"] >= 9 * p_["e_n"] and 10 * n_["e_prompt"] >= 9 * n_["e_n"]:
+            inf = "confirmed (hog process: >= 90% of the early copies began after the writes reached M; no hog: >= 90% ended " \
+                  "before)"
+        else:
+            inf = "unclear"
+        emit("%s: reading 1, time-slicing inference: %s (dp late %d of %d, dn prompt %d of %d)" % (
+            node, inf, p_["e_late"], p_["e_n"], n_["e_prompt"], n_["e_n"]))
+        # reading 2 (fixed before the run; decides nothing): the in-process copy is prompt
+        if m_["hi_p90"] is None or m_["reach"] <= 0:
+            emit("%s: reading 2, in-process copy prompt: missing data" % node)
+        else:
+            emit("%s: reading 2, in-process copy prompt: %s (early start_hi p90 %.1f us vs 1/4 of reach p50 %.1f us; "
+                 "information: early end_hi p90 %s us, exec p90 %s us)" % (
+                     node, "yes" if m_["hi_p90"] < 0.25 * m_["reach"] else "no", m_["hi_p90"], 0.25 * m_["reach"],
+                     f1(m_["endhi_p90"]), f1(m_["exec_p90"])))
+        # the engine: dn decides, dm should agree, dp is information (time slicing can disturb its check)
+        emit("%s: d2d engine: dn %s, dm %s%s; dp %s (information)" % (
+            node, n_["eng"], m_["eng"], "" if n_["eng"] == m_["eng"] else " (DISAGREE: report)", p_["eng"]))
+        # the gate (fixed before the run; the only thing that decides here): run that node's b3_m cells or not
+        why = []
+        if not (m_["e_stale"] >= 10 and 2 * m_["e_stale"] >= m_["e_n"]):
+            why.append("dm early stale %d of %d" % (m_["e_stale"], m_["e_n"]))
+        if not (m_["b_stale"] >= 10 and 2 * m_["b_stale"] >= m_["b_n"]):
+            why.append("dm boundary stale-last %d of %d (with a snapshot)" % (m_["b_stale"], m_["b_n"]))
+        rises = "-"
+        if min(n_["reach"], p_["reach"], m_["reach"]) <= 0:
+            why.append("a reach p50 is missing")
+        else:
+            rm, rp = m_["reach"] - n_["reach"], p_["reach"] - n_["reach"]
+            rises = "dm %.1f us, dp %.1f us" % (rm, rp)
+            if rm < 0.5 * rp:
+                why.append("dm reach rise %.1f us < half the dp rise %.1f us" % (rm, rp))
+        emit("%s: reach p50 rise over dn: %s" % (node, rises))
+        gates[node] = not why
+        emit("%s: gate for b3_m_%s_ro and b3_m_%s_so: %s" % (
+            node, node, node, "passed (run them)" if not why else "NOT passed (do not run them; report): " + "; ".join(why)))
+    if gates:
+        emit()
+    return gates
 
 
 # ---------------------------------------------------------------- B2
@@ -501,8 +577,9 @@ def b1_dir(DIR):
     say()
 
 
-b3()
-b3_diag()
+GATES = b3_diag(lambda line="": None)  # computed first: the B3 conclusion names a node whose gate did not pass
+b3(GATES)
+b3_diag(say)
 b2()
 b1()
 with open(os.path.join(R, "SUMMARY.txt"), "w") as f:
