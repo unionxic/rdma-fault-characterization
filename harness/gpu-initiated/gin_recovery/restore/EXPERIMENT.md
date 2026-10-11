@@ -679,47 +679,63 @@ ordering(기본, `gdakiRegMr` 192)일 때와 strict일 때 따로.
 
 **2026-10-11 사용자 결정: 경합 셀 넷만 제대로 다시 확인.** 사용자: "4셀만 제대로 확인 후 다시 결정해보자". 경합 셀 넷(rain과 sunny, `ro`와 `so`)만 다시
 확인하고 그 뒤 사용자가 B3을 다시 정한다. 그때까지 B3은 "열림, 사용자 결정 대기"이고 무장 조건 "window는 strict"([DESIGN_POLICY.md](DESIGN_POLICY.md) 2.3절)는
-그대로다. 노드 사이 셀과 같은 노드 셀(`x`, `s`)은 다시 하지 않는다. 판정 기준(채점 fence 실패 0; `early` 10반복 이상, `boundary` 10반복 이상, 경계 덮기 50%
-이상; 질의 예산 19 000, 상한 20 000)은 그대로다. 아래는 그 확인의 설계다(빌드 전에 적고 충돌 표와 독립 검토를 먼저 함).
-- 옛 경합 셀(`b3_h_*`, 다른 프로세스의 hog): 실행과 원자료는 그대로 두고 "다른 프로세스 hog, rain에서 대조의 힘 없음"으로 적는다. 노드와 순서마다의 묶음에서는
-  뺀다(summ_feas가 따로 보임).
-- 진단(판정 없음, 폴더 `b3_diag/`): 응답 쪽이 사본 복사의 바로 앞과 뒤에 CUDA event를 넣고, 호스트가 뒤 event의 끝을 본 시각에서 두 event 사이의 GPU 시간을
-  빼서 복사가 GPU에서 시작한 때를 어림한다. 복사 앞에 시각을 찍는 커널을 넣지 않는다(커널은 그 자체가 시간 나눔을 기다려 재려는 것을 바꿈). 이 값을 PAUSED를
-  받은 때, rmsn = M − 1을 본 때(`boundary`), rmsn = M을 본 때(그 밖의 길)와 견주어 반복마다 CSV(`<cell>_resp_timing.csv`)에 적는다. 셀은 노드마다 셋, `ro`만,
-  각 320반복(`early`, `boundary` 각 20, 채점 fence 160, 뒤에 탐침 20), `RS_LAST_KB=4096`, 예산 19 000(셀마다 QUERY_QP 약 2 400 예상): `b3_dn_<node>_ro` hog
-  없음, `b3_dp_<node>_ro` 옛 경합 셀과 같은 다른 프로세스의 hog, `b3_dm_<node>_ro` 아래 새 경합 셀과 같은 프로세스 안의 hog.
-- 진단의 읽기(실행 전 고정, 노드마다, B3 판정에는 쓰지 않음): `dp`에서 `early` 복사 시작(PAUSED 뒤) p50이 같은 실행의 rmsn = M까지 p50보다 길고, `dn`에서
-  그 p90이 `dn`의 rmsn = M까지 p50의 1/4보다 짧으면 시간 나눔 추론은 "맞음"이다. `dp`에서 그 p50이 `dp`의 rmsn = M까지 p50의 1/4보다 짧으면 "틀림"(복사는
-  제때인데 대조가 0이니 다른 까닭)이고, 그 밖은 "불분명"이다.
-- 새 경합 셀 `b3_m_<rain|sunny>_<ro|so>`(옛 `b3_h_*`를 대신함): 노드 사이(이름의 노드가 응답 쪽)이고, 응답 프로세스 안에서 가장 낮은 우선순위의 stream 하나가
-  첫 반복 전부터 마지막 반복 뒤까지 메모리 대역 복사 커널을 쉬지 않고 낸다(block마다 64 KiB를 복사하고 끝나는 짧은 block, 256 MiB 두 버퍼 사이를 오감, round마다
-  커널 8개). 사본 복사와 검사, 탐침의 stream은 가장 높은 우선순위다. 같은 CUDA 문맥이라 시간 나눔이 없고, block이 짧아 높은 우선순위 커널이 수십 µs 안에
-  SM을 얻는다 `[추론: 진단의 dm으로 확인]`. 3 200반복, `RS_LAST_KB=4096`, 예산 19 000, 상한 20 000. 판정 기준은 위와 같고 묶음에서 `h` 자리에 `m`이 들어간다
-  (노드와 순서 하나는 `x`, `s`, `m`이 모두 유효하고 통과일 때 통과; 실패율 95% 상한 3/(3 200 + `m`의 채점 수)).
-- 새 셀이 대표하는 경합: 응답 쪽 GPU의 메모리 대역을 같은 프로세스의 다른 커널(같은 application의 다른 stream 작업 등)이 채우는 동안 NIC 쓰기가 들어오고,
-  체크포인트의 복사는 제때 시작하는 경우다. 메모리가 바쁠 때 rmsn = M 뒤에도 쓰기가 늦게 보이는 틈이 있다면 드러날 수 있는 경우이고, 대조가 힘을 가지므로
-  B3의 물음(rmsn = M과 READ 하나 뒤 복사에 모든 쓰기가 보이는가)에 경합 아래에서 답한다. 다른 프로세스가 GPU를 시간 나눔으로 쓰는 경우(GPU를 나눠 쓰는
-  rank 등)는 대표하지 않는다. 그 경우는 복사가 늦어져 rmsn = M과 복사 사이가 넓어지는 쪽이고, 옛 셀의 자료(실패 0, 대조의 힘 없음)만 있다.
-- 실행 차례와 관문(실행 전 고정): 배포 → 진단 hold 하나 → 노드마다 관문 → 새 경합 셀(셀마다 hold 하나, `b3m_run<k>/`). 관문: 그 노드의 `dm`에서 `early`의
-  늦은 낱말이 10반복 이상이면서 `early` 반복의 50% 이상, `boundary`의 마지막 메시지 늦은 낱말도 같은 조건, `dm`의 hog 대역이 `dp`의 hog 대역의 50% 이상.
-  관문을 넘지 못한 노드의 새 셀은 하지 않고 사용자에게 올린다.
-- 새 셀이 다시 미결이면 그 셀만 한 번 다시 하고(`b3m_run2/` 등), 그래도 미결이면 사용자에게 올린다. 그 뒤의 재설계나 실행은 사용자 결정 뒤에만 한다.
-  `FENCE_FAIL`은 다시 하지 않고 결과로 올린다. 오류 멈춤은 9.15.5의 STOP 규칙을 따른다.
-- 바이너리 `b3v4`(새 디렉터리 `~/rs-bundle/b3v4/`): 위의 event 시각과 CSV를 모든 셀에서 적고(채점 고리의 차례와 판정은 그대로, 사본 복사 앞뒤의 event 둘과
-  호스트의 완료 확인만 더함), `RS_HOG=stream`이면 프로세스 안 hog를 돌리고, 사본과 탐침의 stream을 가장 높은 우선순위로 만든다. `x`, `s` 셀은 `b3v4`로 다시 하지
-  않는다(그 결과는 첫 빌드와 `b3v3`의 것).
+그대로다. 노드 사이 셀과 같은 노드 셀(`x`, `s`)은 다시 하지 않는다. 셀의 판정 기준(채점 fence 실패 0; `early` 10반복 이상, `boundary` 10반복 이상, 경계 덮기
+50% 이상; 질의 예산 19 000, 상한 20 000)은 그대로다. 묶음 규칙은 바뀐다: 노드와 순서 하나는 `x`, `s`, `h` 대신 `x`, `s`, 새 경합 셀 `m`의 마지막 실행으로
+묶는다(사용자 결정, 12절). 아래는 그 확인의 설계다. 빌드 전에 충돌 표와 설계의 독립 검토(D1–D15, 12절)를 거쳤다.
+- 옛 경합 셀(`b3_h_*`, 다른 프로세스의 hog): 실행과 원자료, 2026-10-09 결과 문단은 그대로 둔다. 사실만 적는다: rain은 `ro`, `so` 각 두 실행 모두 미결
+  (`early` 0/191, `boundary` 0/190–191), sunny `ro`는 통과(22, 13), sunny `so`는 미결 뒤 다시 해서 통과(19, 10). 묶음에서 빠지고, 그 결과는 새 판정을 살리지도
+  깎지도 않는다(summ_feas가 따로 보임).
+- 복사 시각(새 바이너리 `b3v4`, 모든 셀): 응답 쪽이 사본 복사의 바로 앞과 뒤에 CUDA event(기본 flag)를 넣고, 뒤 event를 넣은 바로 다음(다른 CUDA 호출 없이)
+  호스트가 그 event를 돌며 묻는다. 복사의 끝은 [아직이라고 답한 마지막 질문의 시작, 끝났다고 답한 첫 질문의 끝] 안에 있고(호스트 시계), 두 event 사이의
+  GPU 시간을 빼면 시작의 구간이 된다. 기준 시각은 `early`는 PAUSED를 받은 때, `boundary`는 rmsn = M − 1을 돌려준 QUERY_QP가 돌아온 때, 그 밖의 길은 rmsn = M을
+  돌려준 QUERY_QP가 돌아온 때다. 도달(reach)은 지금처럼 M을 돌려준 QUERY_QP의 시작이다. 사본마다 길, 꼬리, 이 시각들, 낱말 셈을 메모리에 두었다가 고리 뒤에
+  `<cell>_resp_timing.tsv`로 쓴다(원자료, git이 따르지 않음, release에 올림). 복사 앞에 시각을 찍는 커널은 넣지 않는다(커널은 그 자체가 시간 나눔을 기다려
+  재려는 것을 바꿈). 채점 고리의 차례는 그대로이고, 뒤 event를 기다리는 동안 그 반복의 신호 읽기와 검사가 복사 시간만큼(µs) 늦어진다(AW의 원자 연산이
+  4 MiB 쓰기 앞이라 신호 검사의 힘은 그대로 `[추론]`). 응답 쪽의 stream은 모두 non-blocking이고 사본과 탐침의 stream은 가장 높은 우선순위다(kv에 적음).
+- 엔진 확인(`b3v4`, 셀마다 한 번, 자체 시험 뒤, hog 스레드 전): 모든 SM을 채우는 5 ms 회전 커널을 다른 stream에 낸 뒤 window 크기의 D2D 복사를 event와 함께
+  낸다. 복사가 회전이 끝나기 전에 끝나면 copy engine(`d2d_engine=ce`), 아니면 SM(`sm`)이다. 시간 나눔 설명은 복사가 GPU 시간 조각을 기다릴 때만 맞으므로
+  읽기에 함께 적는다.
+- 진단(판정 없음, `b3_diag/`; 노드마다 hold 하나): 셀은 노드마다 셋, `ro`만, 각 640반복(`early`, `boundary` 각 40, 채점 fence 320, 뒤에 탐침 40),
+  `RS_LAST_KB=4096`, 예산 19 000(셀마다 QUERY_QP 약 4 200 예상): `b3_dn_<node>_ro` hog 없음, `b3_dp_<node>_ro` 옛 경합 셀과 같은 다른 프로세스의 hog,
+  `b3_dm_<node>_ro` 새 경합 셀과 같은 프로세스 안의 hog.
+- 진단의 읽기(실행 전 고정, 노드마다; 아무것도 정하지 않는다): `early` 반복에서 시작 구간의 아래 끝이 그 실행의 reach p50보다 뒤면 "늦음", 끝의 위 끝이 reach
+  p50보다 앞이면 "제때"다. 읽기 1(시간 나눔 추론): `dp`의 `early` 반복 90% 이상이 늦음이고 `dn`의 90% 이상이 제때면 "맞음", `dp`의 50% 이상이 제때면 "틀림"
+  (복사는 쓰기가 끝나기 전에 끝났는데 대조가 0이니 다른 까닭), 그 밖은 "불분명"이다. 읽기 2(프로세스 안 복사가 제때인가): `dm`의 `early` 시작 위 끝 p90이 `dm`
+  reach p50의 1/4보다 짧으면 "예". 함께 적는 것: 늦은 낱말이 잡힌 `early` 반복과 아닌 반복의 시작 p50(sunny의 약 10%가 일찍 시작한 반복인지), 엔진, hog 대역.
+- 관문(실행 전 고정; 진단에서 정하는 것은 이것뿐): 노드마다 `dm`에서 (1) `early` 늦은 낱말이 10반복 이상이면서 `early` 반복의 50% 이상, (2) `boundary`의 마지막
+  메시지 늦은 낱말이 10반복 이상이면서 사본을 뜬 `boundary` 반복의 50% 이상, (3) reach p50의 오름(`dm` − `dn`)이 `dp`의 오름(`dp` − `dn`)의 절반 이상(NIC 쪽이
+  비슷한 경합을 봄; 옛 rain은 795 → 1 076 µs)이면 그 노드의 새 셀 둘을 한다. 넘지 못하면 하지 않고 사용자에게 올린다. hog 대역은 정보다(`dp`와 `dm`은 프로세스
+  경계와 커널 모양이 둘 다 달라 대역 차이를 프로세스 경계 탓으로만 돌릴 수 없다).
+- 새 경합 셀 `b3_m_<rain|sunny>_<ro|so>`(옛 `b3_h_*`를 대신함): 노드 사이(이름의 노드가 응답 쪽)이고, 응답 프로세스 안의 hog 스레드가 엔진 확인 뒤부터 마지막
+  반복 뒤까지 가장 낮은 우선순위의 non-blocking stream에 round마다 복사 커널 8개를 내고 그 stream만 기다린다. 커널은 SM 수의 3/4만큼의 256-thread block이
+  256 MiB 두 버퍼 사이를 grid-stride로 옮긴다(스레드마다 float4 8개를 한꺼번에 읽고 씀). 나머지 SM은 비어 사본 복사(SM 커널일 경우), 검사, 1 024-thread
+  탐침 block(Turing은 SM마다 1 024 thread)이 hog block이 빠지기를 기다리지 않는다. 같은 CUDA 문맥이라 시간 나눔이 없다. 3 200반복, `RS_LAST_KB=4096`, 예산
+  19 000, 상한 20 000, 셀마다 hold 하나, 결과는 `b3m_run<k>/`. 새 셀과 `dm`의 탐침은 시작이 늦을 수 있어 정보로만 적는다. 판정 기준은 위와 같다(노드와 순서
+  하나는 `x`, `s`, `m`이 모두 유효하고 통과일 때 통과; 실패율 95% 상한 3/(3 200 + `m`의 채점 수)).
+- 새 셀이 대표하는 경합 `[추론]`: 응답 쪽 GPU의 메모리 대역을 같은 프로세스의 다른 커널이 채우는 동안 NIC 쓰기가 들어오고, 체크포인트의 복사가 제때 시작하는
+  경우다. 메모리가 바쁠 때 rmsn = M 뒤에도 쓰기가 늦게 보이는 틈이 있다면 드러날 수 있는 경우이고, 대조가 힘을 가지면 B3의 물음(rmsn = M과 READ 하나 뒤 복사에
+  모든 쓰기가 보이는가)에 경합 아래에서 답한다. 사본 복사를 가장 높은 우선순위로 내는 것은 실제 설계(application의 stream에서 커널 사이에 복사, 9.4절 3단계)보다
+  엄한 쪽이다. 배치에서 실제로 생기는 경우는 다른 프로세스와의 시간 나눔이다(GPU를 나눠 쓰는 rank와 예비 프로세스, B2). 시간 나눔은 rmsn = M과 READ 뒤에
+  넣은 복사를 늦출 수만 있고 NIC 쓰기가 보이는 것은 어느 문맥이 GPU를 잡고 있는지와 무관하므로, 그 경우는 rmsn = M과 복사 사이가 넓어지는 쪽이다. 그 경우의
+  자료는 옛 셀(실패 0, 대조가 rain에서 잡히지 않음)뿐이다.
+- 새 셀이 다시 미결이면 그 셀만 한 번 다시 하고(`b3m_run2/` 등, hold 이름에 꼬리표를 붙여 hold마다 다른 이름), 그래도 미결이면 사용자에게 올린다. 그 뒤의
+  재설계나 실행은 사용자 결정 뒤에만 한다. `FENCE_FAIL`은 다시 하지 않고 결과로 올린다. 오류 멈춤은 9.15.5의 STOP 규칙을 따른다. 응답 쪽 GPU에 다른 사용자의
+  compute app이 `dm`이나 새 셀 동안 있었으면(실행기가 셀 앞뒤로 적음) 시간 나눔이 돌아오므로 12절에 적는다.
+- 결과 폴더는 `x`, `s` 셀과 같은 `results/20261009_feasibility/`다(9.15.5의 날짜 규칙에서 벗어남: summ_feas가 한 폴더에서 묶음). `b3v4`는 `~/rs-bundle/b3v4/`에
+  새로 둔다. 실행기의 기본 바이너리는 `b3v3` 그대로이고 hold가 새 셀과 진단 셀에만 `b3v4`를 넘긴다(`x`, `s` 셀을 다시 해도 바이너리가 몰래 바뀌지 않음).
 
 충돌 표(2026-10-11 바꿈, 9.15.1에 더함):
 
 | 자원 | 이 바꿈 | 겹치는 것 | 처리 |
 |---|---|---|---|
-| GPU 메모리와 SM | 진단 `dm`과 새 셀: 응답 프로세스 안의 hog 버퍼 512 MiB와 복사 커널. 진단 `dp`: 옛 hog 프로세스(같은 크기) | 다른 사용자의 GPU 작업 | 옛 경합 셀과 같은 크기. hold 앞뒤로 두 노드의 compute app을 적음. hog 스레드는 고리가 끝나면 멈추고, 프로세스는 `timeout`과 watchdog으로 묶임 |
-| NIC 펌웨어 명령 | 진단 셀마다 QUERY_QP 약 2 400, 새 셀마다 19 400 이하(예산 19 000, 상한 20 000 그대로). rain이 응답 쪽인 것은 진단 셋과 새 셀 둘, 합 약 46 000(다시 하면 셀마다 19 400까지 더함) | rain의 새는 명령 slot | 셀마다 상한, hold 앞뒤로 rain debugfs 셈을 적음, 9.15.5의 STOP 규칙 |
-| 링크 | 진단 셀마다 약 1.7 GB, 새 셀마다 약 17 GB(옛 경합 셀과 같음) | 다른 사용자의 RDMA 작업 | `cluster_run.sh`가 링크가 한가할 때 시작 |
-| 노드의 파일 | 새 `~/rs-bundle/b3v4/`. 응답 쪽 CSV는 rain에서 실행기의 작업 디렉터리, sunny에서 `/tmp/rs_b3_*`(실행기와 hold의 자기 파일 지우기 대상) | `~/rs-bundle`의 다른 파일, 다른 묶음 | 배포는 새 디렉터리만, 앞뒤 md5 |
-| 결과 폴더 | 새 `b3_diag/`, `b3m_run<k>/` | 옛 `b3/`, `b3_rerun<k>/` | 옛 것을 덮지 않음. summ_feas는 진단을 판정에서 빼고, 묶음은 `x`, `s`, `m`의 마지막 실행 |
-| 판정 규칙 | 그대로(셀 이름만 `h` → `m`) | 9.15.3의 판정 | 사용자 결정으로 12절에 적음 |
-| 프로세스 | 프로세스 안 hog는 스레드라 끄는 일이 없음(고리 끝의 멈춤 표시) | 다른 사용자의 프로세스 | 이름으로 끄지 않음. 남은 프로세스 검사는 그대로(`rs_drain_test`) |
+| GPU 메모리와 SM | 진단 `dm`과 새 셀: 응답 프로세스 안의 hog 버퍼 512 MiB와 복사 커널(SM의 3/4), 셀마다 엔진 확인의 5 ms 회전 커널 한 번. 진단 `dp`: 옛 hog 프로세스(같은 크기) | 다른 사용자의 GPU 작업 | 옛 경합 셀과 같은 크기. 셀 앞뒤로 두 노드의 compute app을 적음. hog 스레드는 고리 뒤에 멈추고 결과 줄 전에 합류, 프로세스는 `timeout`과 watchdog으로 묶임 |
+| NIC 펌웨어 명령 | 진단 셀마다 QUERY_QP 약 4 200, 새 셀마다 19 400 이하(예산 19 000, 상한 20 000 그대로). rain이 응답 쪽인 것은 진단 셋과 새 셀 둘, 합 약 51 400(다시 하면 셀마다 19 400까지 더함), hold 셋 이상에 나뉨 | rain의 새는 명령 slot | 셀마다 상한, hold 앞뒤로 rain debugfs 셈을 적음, 9.15.5의 STOP 규칙. 앞선 예: B3r은 hold 하나에 69 993, 실패 셈 31 → 31 |
+| 링크 | 진단 셀마다 약 3.5 GB, 새 셀마다 약 17 GB(옛 경합 셀과 같음) | 다른 사용자의 RDMA 작업 | `cluster_run.sh`가 링크가 한가할 때 시작 |
+| 노드의 파일 | 새 `~/rs-bundle/b3v4/`. 응답 쪽 시각 파일은 rain에서 실행기의 작업 디렉터리, sunny에서 `/tmp/rs_b3_*`(실행기와 hold의 자기 파일 지우기 대상) | `~/rs-bundle`의 다른 파일, 다른 묶음 | 배포는 새 디렉터리만, 앞뒤 md5 |
+| 결과 폴더와 git | 새 `b3_diag/`, `b3_diag_run<k>/`, `b3m_run<k>/`(모두 `20261009_feasibility/` 안). 시각 파일은 `.tsv`(git이 따르지 않음) | 옛 `b3/`, `b3_rerun<k>/`; `.gitignore`가 `*.csv`를 따름 | 옛 것을 덮지 않음. 원자료는 release에 올림. summ_feas는 진단을 판정과 모든 실행의 합에서 뺌 |
+| 판정 규칙 | 셀의 유효와 통과 기준은 그대로, 묶음은 `x`, `s`, `h` → `x`, `s`, `m` | 9.15.3의 판정 | 사용자 결정으로 12절에 날짜, 까닭, 범위를 적음 |
+| hold와 셀 | 진단은 노드마다 hold 하나(`B3diag-<node>`), 새 셀은 셀마다 hold 하나(`B3m-<cell>`), 다시 하는 hold는 꼬리표로 이름을 다르게 | 9.15.1의 "rain과 sunny가 응답 쪽인 셀은 다른 hold" | 그대로 지킴. `mlx5_new_<hold>.txt`가 덮이지 않음 |
+| 프로세스와 CPU | 프로세스 안 hog는 스레드라 끄는 일이 없음(고리 끝의 멈춤 표시). hog 스레드의 기다림이 CPU 코어 하나를 씀(`nproc`을 kv에 적음) | 다른 사용자의 프로세스 | 이름으로 끄지 않음. 남은 프로세스 검사는 그대로(`rs_drain_test`) |
 | 라이브러리와 다른 실험 | NCCL을 쓰지 않음 | gpu-detect, 다른 에이전트의 트리 | 겹침 없음 |
 
 #### 9.15.4 B1: 예비 프로세스의 초기화 재생 spike
@@ -945,6 +961,38 @@ python3 $F/summ_feas.py $R
 12절에 적고 B3s 전에 올린다(진단과 맞지 않음; 본 반복의 판정에는 영향 없음; 다시 검토 S3). 한계: `b3v2`는 READ 전에 staging을 0으로 지우므로, 읽은 값 0은
 "옛 낱말"과 "READ가 아무것도 쓰지 않음"을 가르지 못한다(S2, 바이너리를 다시 만들지 않고 둠).
 
+**2026-10-11 경합 셀 넷의 다시 확인: `b3v4`, 진단, 새 경합 셀(9.15.3).** `rs_drain_test` `b3v4`(빌드됨, 실행 안 함; md5 `c7cad09beb0092b3840899964bfee746`,
+컴파일 때 소스 `a3534807`). 결과 폴더는 `x`, `s` 셀과 같은 `results/20261009_feasibility/`다. hold는 노드마다 진단 하나, 새 셀마다 하나다. 아래 차례대로 하고, 앞
+단계에 STOP 파일이 생기면 9.15.5의 STOP 규칙대로 멈춘다.
+
+```
+R=~/rdma-error-wt/gin-restore/harness/gpu-initiated/gin_recovery/restore/results/20261009_feasibility
+# b3v4 배포: 새 디렉터리 ~/rs-bundle/b3v4/ 하나만(있으면 거절), 그 밖의 ~/rs-bundle과 다른 묶음은 앞뒤 md5가 같아야 함. 약 30 s
+ls -d ~/rs-bundle/b3v4; ssh -n "$SUNNY_SSH" 'ls -d ~/rs-bundle/b3v4'      # 둘 다 "No such file"이어야 함
+WANT_B3V4=c7cad09beb0092b3840899964bfee746 bash $F/deploy_feas.sh $SCR/agent_restore/deploy_check_b3v4.txt b3v4
+test -s $SCR/agent_restore/deploy_check_b3v4.txt && echo written
+grep -E "MISMATCH|CHANGED|not found" $SCR/agent_restore/deploy_check_b3v4.txt   # 아무 줄도 없어야 함
+# 진단(판정 없음): rain이 응답 쪽인 hold, 그다음 sunny. hold마다 셀 셋(dn, dp, dm) x 640반복, 약 1–2분
+bash $CR -w 10800 -t rs-B3diag-rain -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3diag-rain > $R/hold_B3diag-rain.out 2>&1
+bash $CR -w 10800 -t rs-B3diag-sunny -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3diag-sunny > $R/hold_B3diag-sunny.out 2>&1
+python3 $F/summ_feas.py $R      # "reading 1", "reading 2", "gate for b3_m_<node>_ro and ..._so" 줄을 봄
+# 관문을 넘은 노드의 새 경합 셀만(셀마다 hold 하나, 3 200반복, 예산 19 000; 결과는 b3m_run1/). 셀마다 약 30–60 s
+bash $CR -w 10800 -t rs-B3m-rain-ro -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3m-b3_m_rain_ro > $R/hold_B3m-b3_m_rain_ro.out 2>&1
+bash $CR -w 10800 -t rs-B3m-rain-so -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3m-b3_m_rain_so > $R/hold_B3m-b3_m_rain_so.out 2>&1
+bash $CR -w 10800 -t rs-B3m-sunny-ro -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3m-b3_m_sunny_ro > $R/hold_B3m-b3_m_sunny_ro.out 2>&1
+bash $CR -w 10800 -t rs-B3m-sunny-so -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3m-b3_m_sunny_so > $R/hold_B3m-b3_m_sunny_so.out 2>&1
+python3 $F/summ_feas.py $R
+# 미결인 새 셀만 한 번 다시(꼬리표 -r2로 hold 이름을 다르게; 결과는 b3m_run2/). 예:
+bash $CR -w 10800 -t rs-B3m-rain-ro-r2 -- timeout -s KILL 880 bash $F/hold_feas.sh $R B3m-b3_m_rain_ro-r2 > $R/hold_B3m-b3_m_rain_ro-r2.out 2>&1
+```
+
+진단 뒤 볼 것: 셀마다 응답 쪽 kv에 `d2d_engine`, `hog=`(`dm`은 `hog_rounds`, `hog_gbps`도), `early_copy_n`, `early_copy_late`, `early_copy_prompt`,
+`timing_file_rows`가 있고 `nic_error`, `setup_error`, `cuda_error`, `watchdog=1`이 없음(셀의 `result`는 쓰지 않음); 결과 폴더의 `b3_diag/<cell>_resp_timing.tsv`;
+hold마다 새 mlx5 줄 0, 펌웨어 명령 실패 31 → 31, rain debugfs QUERY_QP 증가가 rain 응답 쪽 셀마다 약 4 200; summ_feas의 읽기 1, 2와 노드마다의 관문 줄.
+새 셀 뒤 볼 것: `result`, `valid`, 채점 fence 실패 0, `early`와 `boundary` 대조 수, 경계 덮기, `query_qp_total` ≤ 19 400, `budget_stop`, `d2d_engine`,
+`early_copy_late`/`early_copy_prompt`, `hog_gbps`, reach p50(노드 사이 셀보다 오른 정도), 셀 앞뒤의 compute app에 남의 프로세스가 없음(있으면 12절에 적음);
+마지막에 summ_feas의 노드와 순서마다의 줄과 B3 결론 줄. 관문을 넘지 못한 노드의 새 셀, 두 번 미결인 새 셀, `FENCE_FAIL`은 사용자에게 올린다.
+
 ## 10. 완료 조건과 QA 기준
 
 - [ ] [DESIGN_POLICY.md](DESIGN_POLICY.md) 5절의 막는 문제가 풀렸고, 그 문서의 독립 검토가 남은 충돌이 없다고 했다.
@@ -978,8 +1026,9 @@ python3 $F/summ_feas.py $R
   두 번씩 미결(9.15.3 결과)
 - [x] B3: 열린 rain 경합 셀의 사용자 결정(2026-10-11: 경합 셀 넷만 다시 확인한 뒤 다시 정함)
 - [x] B3 경합 셀 다시 확인의 설계와 충돌 표(9.15.3, 빌드 전)
-- [ ] 그 설계의 독립 검토
-- [ ] `b3v4` 빌드와 코드의 독립 검토
+- [x] 그 설계의 독립 검토(D1–D15)와 반영
+- [x] `b3v4` 빌드됨
+- [ ] `b3v4`와 스크립트의 독립 검토
 - [ ] 진단(`b3_diag/`)과 새 경합 셀 넷(`b3_m_*`) 실행
 - [ ] B3의 사용자 결정(다시)
 - [x] B1: `rsx` hook과 `rs_spike` 빌드됨
@@ -1040,6 +1089,9 @@ python3 $F/summ_feas.py $R
 | 2026-10-09 23:30:44–23:34:05 | 미결 셀을 한 번씩 다시(9.15.3의 규칙, hold 셋, 각 34–36 s): `b3_h_rain_ro` → `b3_rerun3/` 예산으로 끝남 3 054반복(QUERY_QP 19 005), 0/1 527, 대조 0/191, 0/190 → 미결; `b3_h_rain_so` → `b3_rerun2/` 3 058반복(19 006), 0/1 529, 대조 0/191, 0/191 → 미결; `b3_h_sunny_so` → `b3_rerun1/` 통과(0/1 600, `early` 19, `boundary` 10). 세 hold 모두 새 mlx5 줄 0, 펌웨어 31 → 31, `cmd_err` 2 → 2, rain debugfs 증가는 kv의 `query_qp_total`과 같음 `[측정]`. `mlx5_new_<hold>.txt`는 hold 이름마다 하나라 다시 한 hold가 첫 hold의 파일을 덮었다. hold마다의 줄 수는 각 `hold_*.out`의 "new mlx5 kernel lines" 줄에 남아 있다 | `results/20261009_feasibility/b3_rerun1/`–`b3_rerun3/`, `hold_B3one-rep-*.out` |
 | 2026-10-09 | B3 상태(이 에이전트가 원자료에서 다시 셈, `summ_feas.py`): rain `ro`, `so` 열림(경합 셀이 두 번 다 미결), sunny `ro`, `so` 통과(채점 4 800씩, 상한 0.0625%), B3 결론 "열림". 본 셀 폴더의 모든 실행에서 채점 fence 실패 0/23 707(유효 여부와 무관한 합), 모든 셀의 `nofence`도 실패 0. 메인 세션의 판단(rain 경합에서는 대조가 힘을 잃어 이 방법으로 유효해질 수 없음, sunny 경합은 약 10%)과 함께 사용자에게 올림: B3은 사용자 결정 대기. 대조가 0인 까닭의 추론과 미확인은 9.15.3 결과. `summ_feas.py` 고침: 앞 실행 목록에서 오류 출구를 "error ... (no verdict)"로 적음(전의 "FAIL"은 `nicFail`이 쓰는 `result=FAIL`이지 fence 실패가 아님), 모든 실행의 합 줄을 더함, 실패율 상한은 통과한 묶음에만 적음. 이 고침으로 `SUMMARY.txt`를 다시 만듦(23:39, 원자료는 그대로) | 9.15.3, [DESIGN_POLICY.md](DESIGN_POLICY.md) 5절 B3, `feas/summ_feas.py` |
 | 2026-10-11 | 사용자 결정(메인 세션이 전함): "4셀만 제대로 확인 후 다시 결정해보자". 경합 셀 넷만 다시 확인하고 그 뒤 B3을 다시 정함; 그때까지 B3은 열림, 무장 조건 "window는 strict" 유지, `x`, `s` 셀은 다시 하지 않음, 판정 기준 그대로. 옛 경합 셀(`b3_h_*`)과 그 실행은 그대로 두고 "다른 프로세스 hog, rain에서 대조의 힘 없음"으로 적고 묶음에서 뺌. 설계(빌드 전): 진단(판정 없음, `b3_diag/`, 노드마다 hog 없음, 다른 프로세스 hog, 프로세스 안 hog 각 320반복, 복사 시작 시각을 event로 잼)과 새 경합 셀 `b3_m_*`(응답 프로세스 안 낮은 우선순위 stream의 hog, 사본 stream은 높은 우선순위), 미리 정한 진단의 읽기, 노드마다의 관문, 다시 하기 규칙, 충돌 표 | 9.15.3 |
+| 2026-10-11 | 묶음 규칙의 바꿈(사용자 결정, 위 행): B3의 노드와 순서 하나는 `x`, `s`, `h` 대신 `x`, `s`, `m`(프로세스 안 hog의 새 경합 셀)의 마지막 실행으로 묶는다. 까닭: 옛 `h`(다른 프로세스의 hog)는 rain에서 대조가 한 번도 잡히지 않아 그 노드에서 유효해질 수 없었고, 사용자가 경합 셀만 제대로 다시 확인하기로 함. 범위: B3의 묶음과 결론 줄(`summ_feas.py`)만. 셀의 유효와 통과 기준, 예산과 상한, `x`, `s`의 결과는 그대로. 옛 `h`의 실행과 2026-10-09 결과 문단, 그때의 `SUMMARY.txt` 내용은 그대로 두고, 옛 sunny `h`의 통과는 새 판정을 살리지도 깎지도 않는다 | 9.15.3 |
+| 2026-10-11 | 설계의 독립 검토(읽기 전용 에이전트, 커밋 `09f28e1b` 대상, 빌드 전): 판정 "design: not ready: D1". 막는 것 D1(재는 자리와 적는 값이 정해지지 않음: 복사 뒤 다음 CUDA 호출인 페이지 가능한 8바이트 D2H가 호스트를 붙잡아 시작 어림이 늦어질 수 있음). 중간: D2(D2D 복사의 엔진을 모름), D3(관문이 NIC 쪽 경합을 보지 않음), D4(묶음 바꿈을 규칙 바꿈으로 적기, 옛 셀은 사실로), D5(결과 폴더), D6(`.gitignore`가 `*.csv`를 따름), D7(`run_b3.sh`), D8(hold, 배포, 기본 바이너리, 노드마다 hold, hold 이름), D9(hog의 kv 키와 합류), D10(읽기를 조이기: 구간, 90%, 반복마다의 연결, `dm` 읽기, 기준 시각, 관문만 정함, boundary 분모), D11(Turing에서 1 024-thread 탐침이 굶을 수 있음). 낮음: D12, D13, D14. 정보: D15(펌웨어 명령, 링크, 프로세스 충돌 없음). 반영(이 커밋): 뒤 event를 넣은 바로 다음 다른 CUDA 호출 없이 돌며 묻고 끝의 구간과 시작의 구간을 적음(D1), 셀마다 엔진 확인(D2), 관문 (3) reach 오름(D3), 위 행(D4), 결과 폴더 `20261009_feasibility/`(D5), 시각 파일 `.tsv`(D6), 실행기의 셀 문법, 응답 쪽에만 `RS_HOG`, 다른 역할은 거절, `hog=` meta(D7), hold `B3diag-<node>`, `B3m-<cell>`, 꼬리표, `B3BIN`을 hold가 넘김, 배포 `b3v4`(D8), `hog_*` 키만, 결과 줄 전에 합류, 오류 출구의 hog round(D9), 읽기 1, 2와 관문을 위처럼 고정하고 진단 셀을 640반복으로(D10), hog를 SM의 3/4 grid-stride로 바꿔 나머지 SM이 비게 함, 탐침은 정보(D11), 문구(D12, D13), `nproc`과 남의 compute app(D14) | 9.15.3 |
+| 2026-10-11 | `rs_drain_test` `b3v4` 빌드됨(실행 안 함; md5 `c7cad09beb0092b3840899964bfee746`, 컴파일 때 소스 `a3534807` 기록, `out/b3v4/`): 복사 시각과 `.tsv`, 엔진 확인, 프로세스 안 hog(`RS_HOG=stream`, 응답 쪽만), 높은 우선순위의 non-blocking stream. 스크립트: `run_b3.sh`(셀 `m`, `dn`, `dp`, `dm`; `RS_HOG`와 시각 파일은 응답 쪽만; `m`, `d` 셀은 `b3v4`가 아니면 거절; meta `hog=`), `hold_feas.sh`(`B3diag-<node>[-<꼬리표>]`, `B3m-<cell>[-<꼬리표>]`, 640반복, `B3BIN`을 넘김, 예산), `summ_feas.py`(`b3m_run<k>/`를 읽고 `x`, `s`, `m`으로 묶음, 옛 `h`는 따로, 진단의 읽기와 관문), `deploy_feas.sh`(`b3v4`), `build_feas.sh`(info). summ_feas는 이 폴더의 복사본에 만든 가짜 진단과 새 셀 파일로만 돌려 봄(진짜 결과 없음). 명령은 9.15.5 | 9.15.3, 9.15.5, `feas/` |
 
 ## 13. 사전 등록 이후 변경
 
