@@ -462,7 +462,7 @@ G9 펌웨어 초과 책임의 원인(hw 3530).
 | RL18 | 자료 서버(새 스레드, 새 포트) | 체크포인트 블록, 로그 내보내기 |
 | RL19 | 통계 API(hr 7135 / hw 7454) | 복원 수 |
 | RL20 | `gdakiTsRespond` 맨 앞(hr 5739 / hw 5768) | 그 상대의 미룬 RESTORED를 먼저 적용한 뒤, 붙잡은 상대의 REQ에 NACK 17, PUBLISHED면 fallback(9.10.7절 Q5, R1) |
-| RL21 | `ncclGinGdakiRegMrSym`(hw 8198–8250 / hk 8376–8428), 정책 도우미(G1과 같이 씀), G1 기록의 `policyPad`, 예비 프로세스 모드 | 2026-10-11 사용자 결정(9.10.8절): hold 프로세스(`NCCL_GIN_FAULT_POLICY=hold`, `NCCL_GIN_RESTORE` ≠ 0)와 예비 프로세스의 모든 GDAKI window MR을 `force_strict_ordering`으로 등록(application의 `winFlags`는 그대로, 등록 호출에는 오류 길 없음, 지킴은 단위 시험 E1). rank마다 strict 비트와 복원 켬을 G1 기록에 싣고, 모두 hold인데 어느 rank가 strict가 아니거나 복원이 꺼졌으면 모든 rank의 사용자 `ncclDevCommCreate`가 같은 `ncclInvalidUsage`와 WARN(그 communicator는 끝, 다시 하지 않음). hold가 RO=1을 이기면 WARN 한 줄 2026-10-11 다시 확인(K13–K18): 오류는 모든 rank가 복원을 요청했는데 어느 rank의 비트가 0일 때만, 결정은 `all[]` 전체로 all-gather 바로 뒤, 오류의 자리와 값은 사용자 선택 U3, 자원 window는 `ncclGinRestoreResume`에서 찾아 잠금 안에서 루프백 MR에 더함 |
+| RL21 | `ncclGinGdakiRegMrSym`(hw 8198–8250 / hk 8376–8428), 정책 도우미(G1과 같이 씀), G1 기록의 `policyPad`, 예비 프로세스 모드 | 2026-10-11 사용자 결정(9.10.8절): hold 프로세스(`NCCL_GIN_FAULT_POLICY=hold`, `NCCL_GIN_RESTORE` ≠ 0)와 예비 프로세스의 모든 GDAKI window MR을 `force_strict_ordering`으로 등록(application의 `winFlags`는 그대로, 등록 호출에는 오류 길 없음, 지킴은 단위 시험 E1). rank마다 strict 비트와 복원 켬을 G1 기록에 싣고, 모든 rank가 복원을 요청했는데 어느 rank의 비트가 0이면 모든 rank에서 명시적 오류와 WARN(자리와 값은 U3; 그 communicator는 끝, 다시 하지 않음; K25로 고침). hold가 RO=1을 이기면 WARN 한 줄 2026-10-11 다시 확인(K13–K18): 오류는 모든 rank가 복원을 요청했는데 어느 rank의 비트가 0일 때만, 결정은 `all[]` 전체로 all-gather 바로 뒤, 오류의 자리와 값은 사용자 선택 U3, 자원 window는 `ncclGinRestoreResume`에서 찾아 잠금 안에서 루프백 MR에 더함 |
 
 장치 쪽(DV1–DV4)과 예비 프로세스 쪽(SP1–SP6)은 아래 그대로다.
 
@@ -568,7 +568,7 @@ NVSHMEM을 쓰지 않는다(X6).
     강제하고, 강제할 수 없을 때만 명시적 오류를 돌려준다(9.10.8절). 다른 무장 조건은 그대로 WARN과 fail-fast다.
   - (2026-10-11, 충돌 검토 K2, K4, K18) 그 communicator에 NCCL 안의 GIN devComm이 없음(symmetric 커널의 GIN devComm: `NCCL_SYM_GIN_KERNELS_ENABLE=0`이거나
     COLL_SYMMETRIC window가 없음; 9.10.8절 표; `ncclGinRestoreResume`에서 검사하고 그 뒤 사용자 문맥이 아닌 `createContext`가 오면 DISARM), 모든 rank의 G1 기록에 strict 비트가 1(9.10.8절). 앞의 것은 어기면 WARN과 fail-fast, 뒤의 것은 모든 rank가
-    hold를 원했을 때 명시적 오류다.
+    복원을 요청했을 때(9.10.8절의 K13 정의) 명시적 오류다. 오류의 자리와 값은 사용자 선택 U3(9.10.8절, K25).
   - 이 rank의 GPU 문맥(판 3, A5)에 0이 아닌 측 표 포인터가 있음(검토 3 W1, 2026-10-09). hw는 GPU 문맥을 `gdakiTsSetup`(hw 7986)보다 먼저 장치로 복사하므로
     (`copy_h_to_d`, hw 7966) 포인터는 그 복사에 실리지 않는다. 복원 계층(RL10)은 측 표를 할당한 `gdakiTsStart` 안에서, `ncclGinGdakiCreateContext`가
     돌아오기 전에 그 칸 하나를 동기 H2D 한 번으로 쓰고(hw 7106처럼 돌아오기 전에 동기화; 호스트 사본 `host_buf`에도 같은 값) 그 뒤에는 쓰지 않는다(그 뒤에
@@ -776,9 +776,9 @@ flag를 넘길 필요만 없앤다. 순서(사용자): (1) 강제의 범위와 �
   `initialized`(`sym_kernels.cc` 191)를 되돌리지 않아 다시 하기도 깨짐, K1). 등록 길의 지킴은 단위 시험과 자체 시험으로 둔다(E1: hold 프로세스에서
   window MR이 RO 비트 없이 등록됨을 시험). 강제가 안 될 수 있는 경우는 rank 사이에서 생긴다: 변수가 hold가 아니거나 `NCCL_GIN_RESTORE=0`인 rank, 강제가
   없는 라이브러리(예: `hk`)를 쓰는 rank(이 경우는 아래 K16 고침: 섞인 라이브러리는 지원하지 않음). 그래서 rank마다 "내 GDAKI window MR이 모두 strict"인지를 한 비트로 G1 기록에 싣고(`policyPad` 칸; 복원 계층의
-  빌드에서만 채움, `hk`는 0을 실으므로 strict 아님으로 읽힘), 사용자 문맥의 all-gather 뒤 모든 rank가 같은 자료로 정한다: 모든 rank가 hold를 원했는데
-  어느 rank의 비트가 0이거나 그 rank의 `NCCL_GIN_RESTORE`가 0이면 모든 rank의 `ncclDevCommCreate`가 같은 오류(`ncclInvalidUsage`)와 WARN 한 줄(그 rank
-  번호)을 돌려준다. 이 오류는 그 communicator에 대해 끝이다: 모든 rank가 `ncclCommAbort`나 `ncclCommDestroy`로 끝내고 다시 하지 않는다(K1). rank 사이에서
+  빌드에서만 채움, `hk`는 0을 실으므로 strict 아님으로 읽힘), 사용자 문맥의 all-gather 뒤 모든 rank가 같은 자료로 정한다: 모든 rank가 복원을
+  요청했는데(아래 K13 정의) 어느 rank의 비트가 0이면 모든 rank에서 명시적 오류와 WARN 한 줄(그 rank 번호)이다. 오류가 나오는 자리와 값은 사용자 선택 U3이다
+  (아래 "다시 확인" 블록; 처음 쓴 `ncclInvalidUsage`는 그대로 나오지 않음, K14, K25). 이 오류는 그 communicator에 대해 끝이다: 모든 rank가 `ncclCommAbort`나 `ncclCommDestroy`로 끝내고 다시 하지 않는다(K1). rank 사이에서
   정책 자체가 다르면 지금처럼 G1의 WARN과 fail-fast다(정책 불일치는 강제의 문제가 아님). ARMED에는 모든 rank의 비트가 1이어야 한다(9.10.4절). (E2) HCA가
   MR flag와 상관없이 relaxed 쓰기를 강제하는 설정(펌웨어 설정 `PCI_WR_ORDERING`의 force relax)은 사용자 공간에서 알아낼 길을 찾지 못했다 `[미확인]`. 한계로
   18절에 적는다(K11 (h)).
@@ -801,11 +801,17 @@ flag를 넘길 필요만 없앤다. 순서(사용자): (1) 강제의 범위와 �
   "조용히 복원을 끔"이다. 그리고 오류의 자리가 결정 문장의 "등록 오류"(window 등록 호출)에서 devComm 생성으로 옮겨졌다. 셋 가운데 사용자 선택(U3): (a)
   `gin_host.cc`를 조금 고쳐 복원의 오류를 그대로 넘기고 다음 backend로 넘어가지 않음(복원 계층 코드를 GDAKI 파일에만 둔다는 규칙을 깸), (b) 값은 `ncclInternalError`와
   복원 계층의 WARN 한 줄로 적고 hold 프로세스에 `NCCL_GIN_TYPE=3`(GDAKI만)을 요구함, (c) 오류를 `ncclGinRestoreResume`에서 돌려줌(communicator는 fail-fast로 쓸 수
-  있음, "등록 오류"에서 더 멀어짐). 어느 것이든 오류의 자리에 대한 사용자 확인을 12절에 적는다. 이 에이전트의 생각: (b)가 규칙을 덜 깨고 결정 문장의 "조용히
-  끄지 않음"을 지킨다.
-- 자원 window의 자리(K17): GDAKI 층은 `RegMrSym`에서 그 window를 알아볼 수 없다(`winFlags`도 부른 쪽도 넘어오지 않음, 등록은 `createContext`가 돌아오고
-  `ncclGinFaultUserCtx`가 지워진 뒤, `gin_host.cc` 390, 419). 그래서 `ncclGinRestoreResume`에서 `devComm.resourceWindow`의 주소로 그 window를 찾고, 그 rkey 표를
-  거기서 루프백 MR에 더한다. `lb->mrs`는 잠금 없는 `std::vector`이고 helper 스레드가 읽으므로(hw 1452–1460, 1476) 더하기는 새 lb 잠금 안이나 `gdakiTsBusy`
+  있음, "등록 오류"에서 더 멀어짐). 어느 것이든 오류의 자리에 대한 사용자 확인을 12절에 적는다. (b)만으로는 "조용히 끄지 않음"이 보장되지 않는다: NCCL의 안쪽
+  plugin 목록은 GDAKI 옆에 GIN proxy를 늘 넣고(`plugin/gin.cc` 248–257) RMA backend가 있으면 그것이 active가 된다(`gin_host_proxy.cc` 702–709). hold의
+  `numRmaCtx == 0`이 그 RMA backend를 없애는지는 `[미확인]`이고, GDAKI의 `createContext` 안에서는 `NCCL_GIN_TYPE=3`을 강제할 수 없다(거기서 오류를 내면 그것이
+  proxy로 넘어감, K26). 그래서 (b)는 "(b) + `ncclGinRestoreResume`의 검사"로 적는다: Resume이 그 communicator의 복원이 거절됐거나 그 devComm이 GDAKI 투명 복구
+  문맥이 아니면 오류를 돌려주고, hold 프로세스에 `NCCL_RMA_DISABLE=1`과 `NCCL_GIN_TYPE=3`을 요구해 Resume에서 확인한다. 이 에이전트의 생각: "(b) + Resume
+  검사"가 규칙을 덜 깨고 결정 문장의 "조용히 끄지 않음"을 지킨다(K26으로 고친 권함).
+- 자원 window의 자리(K17, K27): GDAKI 층은 `RegMrSym`에서 그 window를 알아볼 수 없다(`winFlags`도 부른 쪽도 넘어오지 않음, 등록은 `createContext`가 돌아오고
+  `ncclGinFaultUserCtx`가 지워진 뒤, `gin_host.cc` 390, 419). 그래서 `ncclGinRestoreResume`에서 그 window를 찾고, 그 rkey 표를
+  거기서 루프백 MR에 더한다. Resume은 devComm을 받아야 한다(9.4절의 `ncclGinRestoreResume(comm, &step, blob, &bytes)`에 `const ncclDevComm*`를 더하거나, 사용자
+  devComm을 만들 때 기록해 둠). `devComm.resourceWindow`는 장치 handle이고, GDAKI 등록부가 `RegMrSym`에서 본 주소는
+  `resourceWindow_inlined.lsaFlatBase + lsaRank·(stride4G << 32)`(= 그 메모리의 `primaryAddr`, `dev_runtime.cc` 1725–1727)이므로 그 주소로 찾는다(K27). `lb->mrs`는 잠금 없는 `std::vector`이고 helper 스레드가 읽으므로(hw 1452–1460, 1476) 더하기는 새 lb 잠금 안이나 `gdakiTsBusy`
   안에서 한다. 복원 등록부에 window 번호를 주어 로그와 rkey 바꾸기가 덮게 한다. 9.4절 (a)에 이름을 적었다. 크기 0인 자원 window(신호, 배리어, 자원이 없음)는
   없으므로 넘어간다.
 - 안의 GIN devComm 검사 시점(K18): `ncclSymkInitOnce`는 사용자 devComm 뒤에도(뒤의 COLL_SYMMETRIC 등록, NCCL collective: `symmetric_sched.cc` 246,
@@ -829,7 +835,7 @@ flag를 넘길 필요만 없앤다. 순서(사용자): (1) 강제의 범위와 �
 | 메모리 재사용과 동일성 | `winFlags`가 같은 같은 메모리만 재사용(736) | `winFlags`를 바꾸지 않으므로 그대로 | 충돌 없음. `winFlags`에 flag를 더하는 길은 쓰지 않음 |
 | `ncclCommRegister`의 로컬 등록(`dev_runtime.cc` 1176) | net 경로의 로컬 MR | 강제가 닿지 않음 | 복원 대상이 아님(K11 (b)) |
 | devComm 전 window, devComm 뒤 window, `ncclGinRestoreResume` 뒤 window | 미뤄진 등록(1486–1492) 또는 바로 등록(873–879) | 모두 강제. 사용자 문맥 뒤 사용자 window는 복원 대상이 아니고 무장 안 함(그대로) | 오류 길은 등록 호출에 없음(위 정의). 명시적 오류는 사용자 `ncclDevCommCreate`에서 모든 rank가 같이 |
-| 정책을 아는 길과 rank 사이 불일치 | G1이 `gdakiTsSetup`에서 읽고 all-gather로 비교, 다르면 fail-fast(WARN, hk). G1 기록은 정책만 비교 | strict 비트와 `NCCL_GIN_RESTORE`를 G1 기록에 더함 | 정책이 다르면 WARN과 fail-fast(그대로), 모두 hold인데 strict가 아니거나 복원이 꺼진 rank가 있으면 모든 rank의 명시적 오류(K4) |
+| 정책을 아는 길과 rank 사이 불일치 | G1이 `gdakiTsSetup`에서 읽고 all-gather로 비교, 다르면 fail-fast(WARN, hk). G1 기록은 정책만 비교 | strict 비트와 `NCCL_GIN_RESTORE`를 G1 기록에 더함 | 정책이 다르면 WARN과 fail-fast(그대로), 모든 rank가 복원을 요청했는데 strict 비트가 0인 rank가 있으면 모든 rank의 명시적 오류(K4; 정의는 K13, 자리와 값은 U3, 아래 "다시 확인" 블록, K25) |
 | 예비 프로세스 | 기록을 재생해 같은 rank로 초기화(9.15.4) | 예비 프로세스 모드에서는 늘 강제, strict 비트 1 | 예비 프로세스의 변수가 hold가 아니어도 강제(K4) |
 | `ncclGinRestoreResume`을 부르지 않는 communicator | hold 프로세스여도 무장 안 함 | window는 강제됨(비용만) | 기록: hold 프로세스의 모든 GDAKI window는 strict |
 | GDAKI가 아닌 GIN backend(proxy와 in-tree `net_ib`는 `FORCE_SO`를 따름 `net_ib/reg.cc` 30; 바깥 net plugin, GPI, EFA-GDA는 `[미확인]`) | hold여도 무장 조건 "투명 복구 GDAKI 문맥이 정확히 하나"를 못 채워 WARN과 fail-fast. devComm 생성에서 backend는 조용히 다음 후보로 넘어감(`gin_host.cc` 454–471) | 강제 hook은 GDAKI 안이라 닿지 않음. 그 window는 복원 대상이 될 수 없음 | 기존 WARN과 fail-fast를 둠(결정 문장은 복원 대상 window에 대한 것). 사용자 확인 권함: `ncclGinRestoreResume`이 "무장할 수 없음"(GDAKI 아님, 투명 복구 꺼짐, host RMA 켬 등 정적인 까닭)을 반환값으로 명시적으로 알리게 할지(검토 K Q3의 제안) |
@@ -1775,7 +1781,8 @@ python3 $F/summ_ord.py $R2      # SUMMARY_ORD.txt
 - [x] B3의 사용자 결정(다시): 2026-10-11, 복원 대상 window는 런타임이 strict를 강제, 못 하면 명시적 등록 오류(9.10.8절)
 - [x] strict 강제의 범위와 등록 flag 충돌 표(9.10.8절)
 - [x] 그 충돌 표의 독립 검토(K1–K12)와 반영
-- [ ] 반영의 독립 재확인(열린 충돌 없음까지)
+- [x] 반영의 독립 재확인(열린 충돌 없음까지; 2026-10-11 마지막 판정: 열린 충돌 없음, 사용자 선택 U1–U4 대기)
+- [ ] 사용자 선택 U1–U4(강제 구현 전)
 - [x] 정상 경로의 strict와 relaxed 비교(9.15.6): 설계와 빌드
 - [ ] 그 비교의 실행과 기록
 - [ ] 복원 실험의 예측과 셀(DRAFT)
@@ -1855,6 +1862,7 @@ python3 $F/summ_ord.py $R2      # SUMMARY_ORD.txt
 | 2026-10-11 | (2)의 빌드(실행 안 함): `gin_ts2` ord md5 `64418f216c68bf1f518b25737a7e5c9d`(`out/ord/`; 소스 `1779db9d` + `gin_ts2_winflags.diff` `fb9d2d8d` → `fa30bb70`, hw 헤더, gin-remaining `build_hr.sh` drivers()의 flag). 새 파일 `feas/run_ord.sh`, `feas/summ_ord.py`(가짜 실행 파일로만 시험), `hold_feas.sh`에 hold `ORD-<노드>[-꼬리표]`, `build_feas.sh`의 `ord`, `deploy_feas.sh`의 `ord`. 명령은 9.15.6 | 9.15.6, `feas/` |
 | 2026-10-11 | 반영의 독립 재확인(같은 에이전트, 커밋 `df0c2352` 대상): K1–K12 닫힘(K3은 자리만). `policyPad` 칸은 hk 기록 모양과 G1 비교를 깨지 않음, 안의 GIN devComm 길은 `sym_kernels.cc` 254 하나, ord 빌드는 diff와 맞음(`fa30bb70`, 64418f21), `ro_requested`는 NCCL의 계산과 같음 `[소스]`. 비교 코드와 9.15.6은 대체로 맞고 지속 시간은 hold마다 약 6분으로 맞음(gpu-detect 지연 실행 1.8–2.4 s를 다시 셈). 열린 것: K13(hold이고 `NCCL_GIN_RESTORE=0`이 오류가 됨), K14(오류가 `ncclDevCommCreate`에서 `ncclInternalError`로 나오거나 다른 backend로 조용히 넘어감, 자리의 옮김은 사용자 확인 필요), K17(자원 window를 GDAKI 층이 알아볼 수 없고 루프백 MR 더하기는 잠금 없는 벡터라 다툼), K19(`summ_ord.py`에서 무효 실행 하나가 노드 전체를 "비교 불가"로). 낮음 K15, K16, K18, K20–K23, 정보 K24 | 9.10.8, 9.15.6 |
 | 2026-10-11 | 재확인 반영: K13 "복원 요청"으로 정의를 바꿔 모두 `NCCL_GIN_RESTORE=0`이면 오류 없음; K14 오류의 자리와 값을 사용자 선택 U3((a) `gin_host.cc` 고침, (b) `ncclInternalError`와 WARN, `NCCL_GIN_TYPE=3` 요구, (c) `ncclGinRestoreResume`; 이 에이전트는 (b)를 권함); K15 결정은 `all[]` 전체로 all-gather 바로 뒤, FULL 연결 요구; K16 섞인 라이브러리는 지원하지 않음; K17 자원 window는 `ncclGinRestoreResume`에서 `devComm.resourceWindow`로 찾고 잠금 안에서 루프백 MR에 더함, 9.4절 (a)에 적음; K18 안의 GIN devComm 검사는 `ncclGinRestoreResume`에서, 그 뒤 사용자 문맥이 아닌 문맥이면 DISARM; 사용자 선택 U1–U4 목록을 9.10.8절에 둠(강제 구현 전에 받음). 비교 코드: K19 `summ_ord.py`(RO는 유효 실행에서만, 노드 줄이 비교 불가와 미완을 말함, 정하는 폴더 규칙과 meta 없는 kv), K20 hold(STOP_left도 건너뜀, `/tmp/rs_ord` 남은 프로세스와 자기 파일 지우기), K21 `NCCL_*`, `GIN_*`를 모두 지우고 sunny에 umask, K22 지연 원자료 `lat_raw.csv.gz`, K23 정하는 폴더, K24 hold 시작의 `lib_md5.txt`. 바이너리는 그대로(`64418f21`) | 9.4, 9.10.4, 9.10.8, 9.9절 RL21, 9.15.6, `feas/` |
+| 2026-10-11 | 반영의 마지막 재확인(같은 에이전트, 커밋 `adc5b8c0` 대상): K13–K24 닫힘. 판정 "strict forcing scope: no open conflict (user choices U1-U4 pending); comparison: ready to run". 낮음 셋(K25 옛 오류 규칙의 문장이 몇 자리에 남음, K26 U3 (b)만으로는 proxy로 조용히 넘어감을 막지 못함, K27 Resume에 devComm이 없음)과 정보(정하는 폴더가 없으면 한 줄) → 반영: 옛 문장들을 "복원 요청"과 U3로 고침, U3 (b)를 "(b) + Resume 검사"로(`NCCL_RMA_DISABLE=1`, `NCCL_GIN_TYPE=3` 요구), Resume에 devComm(또는 기록)과 주소 규칙, `summ_ord.py`가 정하는 폴더가 없는 노드를 한 줄로 알림. 사용자 선택 U1–U4는 강제 구현 전에 받음 | 9.10.4, 9.10.8, 9.9절 RL21, `feas/summ_ord.py` |
 | 2026-10-11 | 정책 설계 문서를 이 문서로 합침(사용자 결정, 메인 세션이 전함: 실험 하나에 `EXPERIMENT.md` 하나, 단계별 문서를 따로 두지 않는다는 저장소 규칙과 `DESIGN_POLICY.md`가 어긋나 9절로 합침, 선택지 (가)). 옮긴 곳: 그 문서의 1절 → 9.10.1, 2.1–2.5절 → 9.10.2–9.10.6, 3절 → 9.10.7, 4절과 4.1–4.11절 → 9.11과 9.11.1–9.11.11, 5절 → 9.11.12, 6절 → 9.11.13, 7절 → 20절(이미 있던 항목과 합침), 머리말의 목적, 상태, 근거 트리, 독립 검토, 줄 번호 규칙 → 9.10의 첫 문단들. 내용은 그대로이고 안의 절 참조만 새 번호로 고침("EXPERIMENT.md N절"은 "N절"로, "이 문서"는 "이 정책 설계"로). 9.10, 9.11의 옛 가리킴 문단과 머리말의 "설계의 기준 문서" 문단은 바꿈. 이 문서 안의 모든 가리킴(본문, 9.15 판정 글의 절 번호 둘, 11절, 12절의 지난 행, 19절)을 경로와 절 번호만 새 자리로 고침. gpu-detect 문서의 자리는 그 사이 master로 옮겨져(PR #63) 경로 글만 고침. `DESIGN_POLICY.md`는 이 커밋에서 지움(git 역사에 남음). 해석이나 결과는 바꾸지 않음 | 9.10–9.11절 |
 
 ## 13. 사전 등록 이후 변경
