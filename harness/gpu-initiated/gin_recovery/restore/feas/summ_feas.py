@@ -362,18 +362,25 @@ def b3_diag(emit):
             why.append("dm early stale %d of %d" % (m_["e_stale"], m_["e_n"]))
         if not (m_["b_stale"] >= 10 and 2 * m_["b_stale"] >= m_["b_n"]):
             why.append("dm boundary stale-last %d of %d (with a snapshot)" % (m_["b_stale"], m_["b_n"]))
-        rises = "-"
+        rises, item3 = "-", ""
         if min(n_["reach"], p_["reach"], m_["reach"]) <= 0:
             why.append("a reach p50 is missing")
         else:
             rm, rp = m_["reach"] - n_["reach"], p_["reach"] - n_["reach"]
             rises = "dm %.1f us, dp %.1f us" % (rm, rp)
-            if rm < 0.5 * rp:
+            if node == "sunny":
+                # user decision 2026-10-11 (EXPERIMENT.md 9.15.3 and 12; sunny only, gate item 3 only): neither hog delayed the
+                # NIC-side arrival on sunny (both rises negative), so "half of the dp rise" carries no meaning there
+                item3 = "; gate item 3 not applicable (user decision 2026-10-11)"
+                if rp > 0 or rm > 0:
+                    item3 += "; NOTE: a rise is positive in this run, unlike the run the decision was made on (report)"
+            elif rm < 0.5 * rp:
                 why.append("dm reach rise %.1f us < half the dp rise %.1f us" % (rm, rp))
-        emit("%s: reach p50 rise over dn: %s" % (node, rises))
+        emit("%s: reach p50 rise over dn: %s%s" % (node, rises, item3))
         gates[node] = not why
         emit("%s: gate for b3_m_%s_ro and b3_m_%s_so: %s" % (
-            node, node, node, "passed (run them)" if not why else "NOT passed (do not run them; report): " + "; ".join(why)))
+            node, node, node, ("passed (run them)" + ("; gate item 3 not applicable (user decision 2026-10-11)" if item3 else ""))
+            if not why else "NOT passed (do not run them; report): " + "; ".join(why)))
     if gates:
         emit()
     return gates
