@@ -54,8 +54,11 @@ export SUNNY_SSH
 CMDERR='grep -i mlx5 | grep -iE "cmd|command" | grep -icE "failed|timeout|leak"'
 NAMES="rs_spike rs_drain_test"
 mkdir -p "$R"
-left() { { for n in $NAMES; do pgrep -x "$n"; done; ssh -n "$SUNNY_SSH" "for n in $NAMES; do pgrep -x \$n; done"; } 2>/dev/null | wc -l; }
-OWNCLEAN='find /tmp -maxdepth 1 -user "$(id -un)" \( -name "rs_sp_*" -o -name "rs_sp.*" -o -name "rs_b3_*" -o -name "rs_b3.*" \) -exec rm -rf {} + 2>/dev/null; true'
+# the B1/B3 programs by exact name, and the comparison runs' gin_ts2 by their per-run files under /tmp/rs_ord (gin_ts2 itself
+# is also the name of other studies' drivers: never counted by name; 9.15.6, review K20)
+left() { { for n in $NAMES; do pgrep -x "$n"; done; pgrep -f '[/]tmp/rs_ord'
+           ssh -n "$SUNNY_SSH" "for n in $NAMES; do pgrep -x \$n; done; pgrep -f '[/]tmp/rs_ord'"; } 2>/dev/null | wc -l; }
+OWNCLEAN='find /tmp -maxdepth 1 -user "$(id -un)" \( -name "rs_sp_*" -o -name "rs_sp.*" -o -name "rs_b3_*" -o -name "rs_b3.*" -o -name "rs_ord_*" -o -name "rs_ord.*" \) -exec rm -rf {} + 2>/dev/null; true'
 for f in STOP_mlx5 STOP_cuda STOP_left STOP_nic; do
   if [ -e "$R/$f" ]; then
     echo "$R/$f present: no hold runs" >&2
@@ -125,7 +128,7 @@ b3() {  # b3 <cell> <iters> <logdir> [main]: one cell if it fits, then the per-c
 }
 ordrun() {  # ordrun <cell> <tag> <logdir>: one comparison run if it fits, then the stop checks (9.15.6)
   local cell=$1 tag=$2 dir=$3 f bad=""
-  [ -e "$R/STOP_nic" ] || [ -e "$R/STOP_mlx5" ] && { echo "skipped ${cell}_$tag: STOP file" >> "$R/skipped.txt"; return 0; }
+  [ -e "$R/STOP_nic" ] || [ -e "$R/STOP_mlx5" ] || [ -e "$R/STOP_left" ] && { echo "skipped ${cell}_$tag: STOP file" >> "$R/skipped.txt"; return 0; }
   fits 90 "${cell}_$tag" || return 0
   bash "$D/run_ord.sh" "$cell" "$tag" "$dir"
   for f in "$dir/${cell}_${tag}_r0.kv" "$dir/${cell}_${tag}_r1.kv"; do
@@ -167,6 +170,10 @@ case "$H" in
     node=${H#ORD-}; node=${node%%-*}
     case "$node" in rain|sunny) ;; *) echo "ORD-<rain|sunny>[-<tag>]" >&2; exit 2 ;; esac
     d=$R/ord_$node; k=1; while ls "$d"/*_meta.txt >/dev/null 2>&1; do k=$((k + 1)); d=$R/ord_${node}_run$k; done
+    mkdir -p "$d"
+    # the library the runs use, on both nodes (review K24): resolved path and md5 (gpu-detect's hk: 2913c777...)
+    LIBMD5='f=$(readlink -f $HOME/gi-bundle/gin_ts2/hk/libnccl.so.2); echo "$(md5sum < "$f" | cut -c1-32) $(basename "$f")"'
+    echo "hk libnccl rain: $(bash -c "$LIBMD5") sunny: $(ssh -n "$SUNNY_SSH" "$LIBMD5")" | tee "$d/lib_md5.txt"
     M=(lat4k lat256k bw256k)
     for k in 1 2 3 4 5 6; do
       for j in 0 1 2; do
