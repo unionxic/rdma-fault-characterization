@@ -2,12 +2,16 @@
 // and 2). build_rs.sh unit cuts the region between the two "gin-restore: pure functions" markers out of the working
 // tree's gin_host_gdaki.cc into rs_pure.inc and compiles it here, so the test runs the library's own text. No NCCL, no
 // CUDA, no network. Fake record sets stand for the all-gather of a 4-rank communicator.
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };  // hk's line (build_rs.sh checks the host file has it)
@@ -335,12 +339,332 @@ static void testRandom() {
   }
 }
 
+// ---- work package 2: Resume ----
+static bool namesRank(const char* s) {
+  for (const char* q = strstr(s, "rank "); q != nullptr; q = strstr(q + 1, "rank "))
+    if (q[5] >= '0' && q[5] <= '9') return true;
+  return false;
+}
+// Every local condition alone, then all of them in order: each gives its own code and text, the first one wins.
+static void testLocal() {
+  char why[GDAKI_RS_WHY_LEN];
+  struct gdakiRsLocalIn ok;  // a rank that can enable: GDAKI, one connection, FULL, setup with recovery on, ...
+  ok.ginType = 3;
+  ok.nConn = 1;
+  ok.haveSetup = true;
+  ok.nUserCtx = 1;
+  ok.tsOn = true;
+  CHECK(gdakiRsLocalCheck(ok, why, sizeof(why)) == GDAKI_RS_L_OK && has(why, "can enable"));
+  struct Case {
+    const char* key;
+    void (*make)(struct gdakiRsLocalIn&);
+  };
+  static const char* toldText = "every wait word raised: abort";
+  static const Case cases[] = {
+    {"NULL devComm", [](struct gdakiRsLocalIn& x) { x.argsOk = false; }},
+    {"another NCCL version (23100)", [](struct gdakiRsLocalIn& x) { x.devCommVersion = 23100; }},
+    {"a fault already reached", [](struct gdakiRsLocalIn& x) { x.told = toldText; }},
+    {"spare process", [](struct gdakiRsLocalIn& x) { x.spare = true; }},
+    {"no GIN connection", [](struct gdakiRsLocalIn& x) { x.nConn = 0; }},
+    {"not GDAKI (type 2)", [](struct gdakiRsLocalIn& x) { x.ginType = 2; }},
+    {"GIN connection is not FULL", [](struct gdakiRsLocalIn& x) { x.commFull = false; }},
+    {"rank stride is 2", [](struct gdakiRsLocalIn& x) { x.ctxStride = 2; }},
+    {"has 2 GIN connections", [](struct gdakiRsLocalIn& x) { x.nConn = 2; }},
+    {"host RMA is on", [](struct gdakiRsLocalIn& x) { x.numRmaCtx = 1; }},
+    {"runtime connect is off", [](struct gdakiRsLocalIn& x) { x.runtimeConn = false; }},
+    {"NVLS is on", [](struct gdakiRsLocalIn& x) { x.nvls = true; }},
+    {"LSA team has 2 ranks", [](struct gdakiRsLocalIn& x) { x.lsaSize = 2; }},
+    {"symmetric kernels made their own GIN devComm", [](struct gdakiRsLocalIn& x) { x.symGinDevComm = true; }},
+    {"transparent recovery is off for this devComm", [](struct gdakiRsLocalIn& x) { x.haveSetup = false; }},
+    {"has 2 GDAKI contexts", [](struct gdakiRsLocalIn& x) { x.nUserCtx = 2; }},
+    {"went off on this rank after the setup agreement (the helper", [](struct gdakiRsLocalIn& x) { x.tsOn = false; }},
+    {"NCCL_GIN_TS_RECONNECT is not 1", [](struct gdakiRsLocalIn& x) { x.reconnect = 0; }},
+    {"QP watch is off", [](struct gdakiRsLocalIn& x) { x.qpwatchMs = 0; }},
+    {"NCCL_GIN_RESTORE_MS (30000) is not between 0 and NCCL_GIN_TS_HOLD_MS (30000)",
+     [](struct gdakiRsLocalIn& x) { x.restoreMs = 30000; }},
+    {"NIC copy path is off", [](struct gdakiRsLocalIn& x) { x.lbOn = false; }},
+    {"round cap stopped recovery", [](struct gdakiRsLocalIn& x) { x.escalated = true; }},
+  };
+  const int nCases = (int)(sizeof(cases) / sizeof(cases[0]));
+  for (int i = 0; i < nCases; i++) {
+    struct gdakiRsLocalIn x = ok;
+    cases[i].make(x);
+    memset(why, 'Z', sizeof(why));
+    const int code = gdakiRsLocalCheck(x, why, sizeof(why));
+    CHECK(code == i + 1);
+    CHECK(has(why, cases[i].key));
+    CHECK(!namesRank(why));  // the local text names no rank number (the decision adds "rank p: "); the told text
+                             // used here names none either (a real one may name the peer whose word was raised)
+    CHECK(noScorerPhrase(why));
+  }
+  {  // all at once: the first in the order
+    struct gdakiRsLocalIn x = ok;
+    for (int i = nCases - 1; i >= 0; i--) cases[i].make(x);
+    CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 1);
+  }
+  {  // a known reason why recovery went off is named
+    struct gdakiRsLocalIn x = ok;
+    x.tsOn = false;
+    x.offWhy = "connect timed out";
+    gdakiRsLocalCheck(x, why, sizeof(why));
+    CHECK(has(why, "(connect timed out)"));
+    x.restoreMs = 0;  // a zero deadline is refused too (after the earlier conditions are met)
+    x.tsOn = true;
+    CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 20);
+    x.restoreMs = 29999;
+    CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == GDAKI_RS_L_OK);
+  }
+}
+
+static struct gdakiRsXRec xrec(int rank, bool req, int policy, int setupVerdict, const char* setupWhy, int localCode,
+                               const char* localWhy) {
+  struct gdakiRsXRec r;
+  memset(&r, 0, sizeof(r));
+  r.magic = GDAKI_RS_X_MAGIC;
+  r.rank = rank;
+  r.req = req ? 1u : 0u;
+  r.policy = (uint32_t)policy;
+  r.setupVerdict = setupVerdict;
+  snprintf(r.setupWhy, sizeof(r.setupWhy), "%s", setupWhy);
+  r.localCode = localCode;
+  snprintf(r.localWhy, sizeof(r.localWhy), "%s", localWhy);
+  return r;
+}
+// Every rank decides from the same exchanged records: same verdict, same text.
+static Outcome resumeAgree(const std::vector<struct gdakiRsXRec>& x) {
+  Outcome first{-1, ""};
+  for (int self = 0; self < (int)x.size(); self++) {
+    char why[GDAKI_RS_RWHY_LEN];
+    memset(why, 'a' + self, sizeof(why));
+    const int v = gdakiRsResumeDecide((int)x.size(), x.data(), why, sizeof(why));
+    CHECK(memchr(why, '\0', sizeof(why)) != nullptr && noScorerPhrase(why));
+    if (self == 0) first = {v, why};
+    else CHECK(v == first.verdict && first.why == why);
+  }
+  return first;
+}
+static void testResumeDecide() {
+  const int H = GDAKI_POLICY_HOLD, F = GDAKI_POLICY_FAILFAST;
+  std::vector<struct gdakiRsXRec> x;
+  for (int p = 0; p < 4; p++) x.push_back(xrec(p, true, H, GDAKI_RS_ENABLE, "every rank asks", 0, "ok"));
+  CHECK(resumeAgree(x).verdict == GDAKI_RS_ENABLE);
+  {  // nobody asks: success, whatever the local judgments
+    auto y = x;
+    for (auto& r : y) { r.req = 0; r.policy = F; r.localCode = 4; r.setupVerdict = -1; }
+    CHECK(resumeAgree(y).verdict == GDAKI_RS_NOT_REQUESTED);
+  }
+  {  // one rank with the restore off (the refusal cell): every rank refuses with the same text
+    auto y = x;
+    y[2].req = 0;
+    Outcome o = resumeAgree(y);
+    CHECK(o.verdict == GDAKI_RS_REFUSE && has(o.why, "rank 0 asks for it, rank 2 does not: hold with NCCL_GIN_RESTORE=0"));
+    y[2].policy = F;
+    CHECK(has(resumeAgree(y).why, "rank 2 does not: failfast policy"));
+  }
+  {  // a setup decision that refused (e.g. NCCL_SYM_GIN_KERNELS_ENABLE): named as the setup agreement's
+    auto y = x;
+    for (auto& r : y) {
+      r.setupVerdict = GDAKI_RS_REFUSE;
+      snprintf(r.setupWhy, sizeof(r.setupWhy), "NCCL_SYM_GIN_KERNELS_ENABLE is not 0 on rank 1");
+    }
+    Outcome o = resumeAgree(y);
+    CHECK(o.verdict == GDAKI_RS_REFUSE && has(o.why, "setup agreement: NCCL_SYM_GIN_KERNELS_ENABLE is not 0 on rank 1"));
+    y[3].localCode = 5;  // a setup refusal comes before local judgments
+    CHECK(resumeAgree(y).why == o.why);
+  }
+  {  // the strict-bit setup verdict (the context was not created) reaches Resume as well
+    auto y = x;
+    for (auto& r : y) {
+      r.setupVerdict = GDAKI_RS_REFUSE_FATAL;
+      snprintf(r.setupWhy, sizeof(r.setupWhy), "rank 1 asks for the restore but does not register strict");
+    }
+    CHECK(resumeAgree(y).verdict == GDAKI_RS_REFUSE && has(resumeAgree(y).why, "setup agreement: rank 1"));
+  }
+  {  // a local judgment that refuses (non-GDAKI backend on rank 3, NCCL_GIN_TYPE): the lowest rank's text
+    auto y = x;
+    y[3].localCode = 5;
+    snprintf(y[3].localWhy, sizeof(y[3].localWhy), "the devComm's GIN backend is not GDAKI (type 2)");
+    Outcome o = resumeAgree(y);
+    CHECK(o.verdict == GDAKI_RS_REFUSE && o.why == "rank 3: the devComm's GIN backend is not GDAKI (type 2)");
+    y[1].localCode = 16;
+    snprintf(y[1].localWhy, sizeof(y[1].localWhy), "transparent recovery went off on this rank after the setup "
+             "agreement (connect timed out)");
+    CHECK(has(resumeAgree(y).why, "rank 1: transparent recovery went off"));
+  }
+  {  // a record of another library or another rank's slot
+    auto y = x;
+    y[2].magic = 0;
+    CHECK(resumeAgree(y).verdict == GDAKI_RS_REFUSE && has(resumeAgree(y).why, "rank 2 sent no valid restore record"));
+    y = x;
+    y[1].rank = 3;
+    CHECK(has(resumeAgree(y).why, "rank 1 sent no valid"));
+  }
+  {  // a setup text that fills its whole field (no terminator) is read within the field
+    auto y = x;
+    for (auto& r : y) { r.setupVerdict = GDAKI_RS_REFUSE; memset(r.setupWhy, 'q', sizeof(r.setupWhy)); }
+    Outcome o = resumeAgree(y);
+    CHECK(o.verdict == GDAKI_RS_REFUSE && o.why.size() < GDAKI_RS_RWHY_LEN);
+  }
+}
+
+// Random exchanged record sets: the verdict follows the order of the rules, and every rank's text is the same.
+static void testResumeRandom() {
+  std::mt19937 rng(20261012);
+  for (int it = 0; it < 50000; it++) {
+    const int n = 1 + (int)(rng() % 6);
+    std::vector<struct gdakiRsXRec> x;
+    for (int p = 0; p < n; p++) {
+      const bool req = rng() % 4 != 0;
+      const int sv = (int)(rng() % 5) - 1;  // -1 .. 3
+      const int lc = rng() % 3 == 0 ? 1 + (int)(rng() % 21) : 0;
+      x.push_back(xrec(p, req, (int)(rng() % 2), sv, "setup text", lc, "local text"));
+    }
+    if (rng() % 50 == 0) x[rng() % n].magic = 7;
+    int nReq = 0;
+    bool bad = false, setupRefused = false, localRefused = false;
+    for (int p = 0; p < n; p++) {
+      if (x[p].magic != GDAKI_RS_X_MAGIC) bad = true;
+      if (x[p].req) nReq++;
+      if (x[p].setupVerdict == GDAKI_RS_REFUSE || x[p].setupVerdict == GDAKI_RS_REFUSE_FATAL) setupRefused = true;
+      if (x[p].localCode != 0) localRefused = true;
+    }
+    const int want = bad ? GDAKI_RS_REFUSE
+                     : nReq == 0 ? GDAKI_RS_NOT_REQUESTED
+                     : (nReq < n || setupRefused || localRefused) ? GDAKI_RS_REFUSE
+                     : GDAKI_RS_ENABLE;
+    Outcome o = resumeAgree(x);
+    CHECK(o.verdict == want);
+    if (!bad && nReq == n && setupRefused) CHECK(has(o.why, "setup agreement: setup text"));
+    if (!bad && nReq == n && !setupRefused && localRefused) CHECK(has(o.why, ": local text"));
+  }
+}
+
+// A stand-in for the communicator's bootstrap all-gather: each rank's call blocks until every rank has called, or until
+// that rank's own abort flag is set (as the bootstrap socket loops end on the communicator's abort flag).
+struct FakeBoot {
+  int n;
+  std::mutex mu;
+  std::condition_variable cv;
+  int arrived = 0;
+  bool completed = false, broken = false;  // a rank that aborted before completion breaks the ring for good
+  std::vector<struct gdakiRsXRec> buf;
+  std::vector<int> aborted, abortCalls;
+  explicit FakeBoot(int n_) : n(n_), buf((size_t)n_), aborted((size_t)n_, 0), abortCalls((size_t)n_, 0) {}
+  int allGather(int self, struct gdakiRsXRec* data) {
+    std::unique_lock<std::mutex> lk(mu);
+    buf[(size_t)self] = data[self];
+    arrived++;
+    if (arrived == n && !broken) completed = true;
+    cv.notify_all();
+    cv.wait(lk, [&] { return completed || aborted[(size_t)self]; });
+    if (!completed) return 3;  // ncclInternalError from the socket loop
+    for (int p = 0; p < n; p++) data[p] = buf[(size_t)p];
+    return 0;
+  }
+  void abortRank(int self) {
+    std::lock_guard<std::mutex> lk(mu);
+    aborted[(size_t)self] = 1;
+    abortCalls[(size_t)self]++;
+    if (!completed) broken = true;
+    cv.notify_all();
+  }
+};
+struct RankResult {
+  int verdict = -1;
+  bool expired = false;
+  int xr = -1;
+  std::string why;
+  double ms = 0;
+};
+// One rank's Resume as the library runs it: its record, the bounded exchange, the decision.
+static RankResult runRank(FakeBoot& fb, int self, const struct gdakiRsXRec& mine, long long boundMs) {
+  RankResult rr;
+  std::vector<struct gdakiRsXRec> all((size_t)fb.n);
+  all[(size_t)self] = mine;
+  const auto t0 = std::chrono::steady_clock::now();
+  rr.xr = gdakiRsRunBounded([&] { return fb.allGather(self, all.data()); }, [&] { fb.abortRank(self); }, boundMs,
+                            &rr.expired);
+  rr.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  if (!rr.expired && rr.xr == 0) {
+    char why[GDAKI_RS_RWHY_LEN];
+    rr.verdict = gdakiRsResumeDecide(fb.n, all.data(), why, sizeof(why));
+    rr.why = why;
+  }
+  return rr;
+}
+static void testExchange() {
+  const int H = GDAKI_POLICY_HOLD;
+  {  // four ranks, rank 2 cannot enable: every rank returns the same refusal, no bound expired, no abort
+    FakeBoot fb(4);
+    std::vector<RankResult> res(4);
+    std::vector<std::thread> th;
+    for (int p = 0; p < 4; p++)
+      th.emplace_back([&, p] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10 * p));  // ranks arrive at different times
+        struct gdakiRsXRec mine = xrec(p, true, H, GDAKI_RS_ENABLE, "ok", p == 2 ? 9 : 0,
+                                       p == 2 ? "host RMA is on (1 contexts; NCCL_NUM_RMA_CTX=0 turns it off)" : "ok");
+        res[(size_t)p] = runRank(fb, p, mine, 5000);
+      });
+    for (auto& t : th) t.join();
+    for (int p = 0; p < 4; p++) {
+      CHECK(!res[(size_t)p].expired && res[(size_t)p].xr == 0 && fb.abortCalls[(size_t)p] == 0);
+      CHECK(res[(size_t)p].verdict == GDAKI_RS_REFUSE && res[(size_t)p].why == res[0].why);
+    }
+    CHECK(has(res[0].why, "rank 2: host RMA is on"));
+  }
+  {  // every rank can enable
+    FakeBoot fb(4);
+    std::vector<RankResult> res(4);
+    std::vector<std::thread> th;
+    for (int p = 0; p < 4; p++)
+      th.emplace_back([&, p] { res[(size_t)p] = runRank(fb, p, xrec(p, true, H, GDAKI_RS_ENABLE, "ok", 0, "ok"), 5000); });
+    for (auto& t : th) t.join();
+    for (int p = 0; p < 4; p++) CHECK(res[(size_t)p].verdict == GDAKI_RS_ENABLE && res[(size_t)p].why == res[0].why);
+  }
+  {  // rank 3 never calls Resume: the others end within the bound (+ slack), each sets its own abort flag once
+    const long long bound = 300;
+    FakeBoot fb(4);
+    std::vector<RankResult> res(3);
+    std::vector<std::thread> th;
+    for (int p = 0; p < 3; p++)
+      th.emplace_back([&, p] { res[(size_t)p] = runRank(fb, p, xrec(p, true, H, GDAKI_RS_ENABLE, "ok", 0, "ok"), bound); });
+    for (auto& t : th) t.join();
+    for (int p = 0; p < 3; p++) {
+      CHECK(res[(size_t)p].expired && res[(size_t)p].xr != 0 && fb.abortCalls[(size_t)p] == 1);
+      CHECK(res[(size_t)p].ms >= bound - 5 && res[(size_t)p].ms < bound + 2000);
+    }
+    CHECK(fb.abortCalls[3] == 0);
+    // the late rank arrives after the others aborted: its exchange cannot complete either (its own bound, short here)
+    RankResult late = runRank(fb, 3, xrec(3, true, H, GDAKI_RS_ENABLE, "ok", 0, "ok"), 100);
+    CHECK(late.expired && late.verdict == -1 && fb.abortCalls[3] == 1);
+  }
+  {  // no bound (<= 0): the exchange runs alone, nothing is aborted
+    FakeBoot fb(1);
+    RankResult r = runRank(fb, 0, xrec(0, false, GDAKI_POLICY_FAILFAST, -1, "", 0, "ok"), 0);
+    CHECK(!r.expired && r.xr == 0 && r.verdict == GDAKI_RS_NOT_REQUESTED && fb.abortCalls[0] == 0);
+  }
+  {  // the exchange ending near the bound: either it completed (no abort) or the bound expired (abort called once)
+    for (int it = 0; it < 200; it++) {
+      int aborts = 0;
+      bool expired = false;
+      const int rc = gdakiRsRunBounded(
+        [&] { std::this_thread::sleep_for(std::chrono::microseconds(1000 + (it % 7) * 150)); return 0; },
+        [&] { aborts++; }, 1, &expired);
+      CHECK(rc == 0 && aborts == (expired ? 1 : 0));
+    }
+  }
+}
+
 int main() {
   testCfg();
   testWinStrict();
   testBits();
   testDecide();
   testRandom();
+  testLocal();
+  testResumeDecide();
+  testResumeRandom();
+  testExchange();
   printf("rs_unit: %d checks, %d failed\n", nChecks, nFail);
   return nFail == 0 ? 0 : 1;
 }
