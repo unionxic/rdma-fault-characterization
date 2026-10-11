@@ -1664,7 +1664,9 @@ hold마다 새 mlx5 줄 0, 펌웨어 명령 실패 31 → 31, rain debugfs QUERY
   RO를 요청하는 조건을 그대로 셈: 변수 1이나 2(없으면 2)이고 NCCL이 여는 libibverbs에 `ibv_reg_mr_iova2@IBVERBS_1.8`이 있음, `net_ib/init.cc` 153–161,
   `ibvsymbols.cc` 125). burst 모드의 0번 스레드 반복 시간 통계는 원래 있다(`gin_ts2.cu` 1500–1504). hw 헤더(hk와 같음)로 빌드, 새 디렉터리
   `~/rs-bundle/ord/`에 배포.
-- 실행기: [feas/run_ord.sh](feas/run_ord.sh). 보내는 rank 0과 받는 rank 1을 노드 둘에 나눠, 받는 쪽 노드를 셀 이름으로 고른다(rain과 sunny 둘 다 받는 쪽으로
+- 실행기: [feas/run_ord.sh](feas/run_ord.sh). 두 rank 모두 `stdbuf -oL -eL`로 돈다(2026-10-11 바꿈: gin_ts2는 `_exit`로 끝나므로 블록 버퍼의 stdout에서 NCCL의 WARN
+  줄이 사라졌다; NCCL은 `NCCL_DEBUG_FILE`만 줄 버퍼로 둠, `debug.cc` 35, 268–270). `ORD_DIAG=1`(진단 smoke)이면 NCCL INFO(`INIT,NET,REG`)를 노드의
+  `~/rs-ordlogs/`(mode 700) 파일에 남기고 옮기지 않는다(관리망 주소가 들어감; 노드에서 읽음). 보내는 rank 0과 받는 rank 1을 노드 둘에 나눠, 받는 쪽 노드를 셀 이름으로 고른다(rain과 sunny 둘 다 받는 쪽으로
   잼). 포트는 `portpick.sh`, 랑데부 nonce, 프로세스마다 `timeout -s KILL`, 개인 작업 디렉터리와 `ulimit -c 0`(gpu-detect 묶음에 아무것도 남기지 않음, K12), 끄는
   일 없음(run_b3.sh와 같은 꼴). 고정한 값(K6): wait `blocking`, gap 0, `NCCL_DEBUG=WARN`(INFO 줄은 관리망 주소를 담으므로 쓰지 않음, K9; RO는 위의 kv로 앎),
   `NCCL_IB_TIMEOUT=14`, 투명 복구 켬, QP 감시 끔(`NCCL_GIN_TS_QPWATCH_MS=0`: rain의 펌웨어 명령을 줄임, 두 팔에 같음; gpu-detect의 `lat_4k_w0`,
@@ -1680,7 +1682,10 @@ hold마다 새 mlx5 줄 0, 펌웨어 명령 실패 31 → 31, rain debugfs QUERY
   원자 연산, flush의 시간: flush는 신호 원자 연산의 ACK로 끝나고 PCIe에서 읽기가 앞선 쓰기를 앞지르지 못하므로 받는 쪽이 데이터 쓰기를 비우는 시간이 든다
   `[추론]`; 받는 쪽에서 보이는 때는 재지 않음, K7).
 - `ord_lat256k_<...>`: `lat` 모드, 3 000반복, 256 KiB. 값: `lat_p50_us`.
-- `ord_bw256k_<...>`: burst 모드, 스레드 하나, 반복마다 256 KiB put 16개(4 MiB) 뒤 신호와 flush, 200반복. 값: 대역 = 4 MiB / 0번 스레드 반복 시간 p50(GB/s).
+- `ord_bw256k_<...>`: burst 모드, 스레드 하나, 반복마다 256 KiB put 8개(2 MiB) 뒤 신호와 flush, 12반복(window 24 MiB). 값: 대역 = K × 256 KiB / 0번 스레드 반복
+  시간 p50(GB/s; K는 kv의 `burst_K`). (2026-10-11 바꿈, 첫 `ORD-sunny` hold 뒤: 처음 정한 256 KiB × 16 × 200반복은 window가 rank마다 800 MiB 둘이라 rain의
+  BAR1(256 MiB; rain에서 50 MiB를 넘는 GIN window 등록은 "Bad address"로 실패한 기록이 있음, `../TRANSPARENT_S2.md`, 저장소 규칙은 64 MiB 이하
+  `../../DESIGN.md`)을 넘어 등록에 실패했다. 판정 규칙은 그대로이고 이 셀의 크기와 값의 식만 바뀜. 12절)
 - 정하는 폴더(실행 전 고정, K23): 한 노드의 결과는 그 노드의 `ord_<노드>[_run<k>]` 폴더 가운데 36실행이 모두 있는(meta 파일 36개) 가장 나중의 것 하나로
   읽는다. 앞의 폴더와 모자란 폴더는 정보로만 보인다. meta가 없는 kv는 세지 않고 이름을 적는다.
 - 반복과 섞기(실행 전 고정): 받는 쪽 노드마다 hold 하나, 그 안에서 k = 1–6마다 세 셀을 (k−1)만큼 돌린 차례로 하고, 셀마다 strict와 relaxed를 붙여서(k가
@@ -1720,6 +1725,25 @@ hold마다 새 mlx5 줄 0, 펌웨어 명령 실패 31 → 31, rain debugfs QUERY
 | 관리망 주소 | `NCCL_DEBUG=WARN`이라 INFO의 주소 줄이 없음. 랑데부 주소(보내는 쪽 노드)는 meta와 stderr에 적지 않음 | 공개 저장소와 release | 옮길 때 IPv4를 그래도 가림, 노드의 원본은 실행기가 지움(umask 077), release는 `tools/pack_release.py`의 검사를 거침 |
 | 복원 계층과 정책 | 쓰지 않음(`NCCL_GIN_FAULT_POLICY` 없음, 강제 없음) | 9.10.8절의 강제 | strict는 드라이버의 flag로만 |
 
+**2026-10-11 첫 hold 뒤: 진단, 고침, STOP_nic 풀기.** 첫 `ORD-sunny` hold(17:23:14 잠금, hold 79 s, rc 0, 새 mlx5 줄 0, 펌웨어 명령 실패 31 → 31, `cmd_err` 2 → 2,
+`lib_md5.txt` 두 노드 `2913c777`)는 k1의 지연 셀 넷을 마쳤고(4 KiB strict, relaxed 둘 다 `lat_p50_us` 10.50, 256 KiB 둘 다 38.88: gpu-detect의 `w0` 값과 같음) `[측정]`,
+`ord_bw256k_strict_sunny_k1`에서 rank 0(rain, 보냄)이 첫 `ncclCommWindowRegister`(dSend, `gin_ts2.cu` 패치 뒤 1022행)에서 "unhandled system error"(exit 2),
+rank 1이 watchdog(exit 7)으로 끝나 실행기가 STOP_nic를 쓰고 남은 31실행을 건너뛰었다 `[측정]`. 진단 `[소스, 추론]`: (1) 그 셀의 window는 `bytes × iters × P × K` =
+256 KiB × 200 × 1 × 16 = 800 MiB씩 둘(지연 셀은 슬롯을 다시 써서 4 KiB와 256 KiB); (2) "unhandled system error"는 `ncclSystemError`이고, 이 길에서 그것을 내는
+것은 ibverbs 등록 실패(`wrap_ibv_reg_mr_iova2`의 `IBV_PTR_CHECK_ERRNO`, `ibvwrap.cc` 38–45, 211–219, WARN "Call to ibv_reg_mr_iova2 failed with error ...")나
+GIN 등록부의 NULL(`gin_host.cc` 573–576)이다; (3) GDAKI의 strict 길은 relaxed와 access의 RO 비트 하나만 다르고 같은 dmabuf와 `ibv_reg_mr_iova2` 길을 탄다(hw 188–199)
+`[소스]`; (4) rain의 BAR1은 256 MiB이고(blind 2026-10-09 `nvidia-smi -q -d MEMORY` `[측정: 그 실험]`) GIN window가 50 MiB를 넘으면 "Bad address"로 등록에 실패한
+기록이 있다(`../TRANSPARENT_S2.md`). 그래서 실패는 strict가 아니라 window 크기 때문으로 본다 `[추론]`(relaxed의 같은 크기는 돌지 않아 직접 견주지 못함). WARN
+줄이 로그에 없던 것은 stdout이 블록 버퍼였고 gin_ts2가 `_exit`로 끝났기 때문이다 `[소스]`. 고침(판정 규칙은 그대로): 대역 셀을 256 KiB × 8 × 12반복(window
+24 MiB)으로, 두 rank를 `stdbuf -oL -eL`로, 진단 smoke hold `ORDSMOKE-<노드>`(대역 셀 strict와 relaxed 한 번씩, NCCL INFO는 노드에 남김)를 더함. `ord_sunny/`(5실행)는
+정하는 폴더 규칙대로 정보로만 남고, 다시 하는 hold는 `ord_sunny_run2/`에 36실행을 쓴다.
+
+이 STOP_nic를 푸는 단계: 다음이 모두 참일 때 `STOP_nic.cleared-<날짜시각>`으로 옮기고 12절에 적는다. (1) 그 hold의 오류는 `ord_bw256k_strict_sunny_k1` 하나이고 rank 0의
+`nccl_error=unhandled system error`(첫 window 등록)와 그 결과인 rank 1의 watchdog뿐, 다른 실행의 kv에 오류 키가 없음; (2) 원인 진단과 고침이 12절에 있고 바뀐 스크립트가
+독립 검토를 받음; (3) 새 mlx5 줄 0, rain 펌웨어 명령 실패와 `cmd_err` 그대로, 남은 프로세스 0(`left=0`, STOP_left 없음); (4) 두 노드의 BAR1 크기를 읽기 전용으로
+읽어 12절에 적음. 그 뒤 smoke hold가 오류 없이 끝나야(두 노드, strict와 relaxed 모두 `exit=0`, 대역 값이 있음) 본 hold를 한다. smoke에서 다시 등록 오류가 나면 노드의
+`~/rs-ordlogs/` 파일에서 WARN 줄만(주소를 가려) 읽어 올린다.
+
 **명령(메인 세션).** 드라이버 `gin_ts2` ord(빌드됨, 실행 안 함; md5 `64418f216c68bf1f518b25737a7e5c9d`, 컴파일 때 소스 `gin_ts2.cu` `1779db9d` +
 `gin_ts2_winflags.diff` `fb9d2d8d` → `fa30bb70`). 변수 `F`, `CR`, `SCR`는 9.15.5와 같다. sunny가 받는 hold를 먼저 한다(정상 확인을 gpu-detect의 값과 견줌).
 
@@ -1734,6 +1758,15 @@ mkdir -p $R2
 bash $CR -w 10800 -t rs-ORD-sunny -- timeout -s KILL 880 bash $F/hold_feas.sh $R2 ORD-sunny > $R2/hold_ORD-sunny.out 2>&1
 bash $CR -w 10800 -t rs-ORD-rain -- timeout -s KILL 880 bash $F/hold_feas.sh $R2 ORD-rain > $R2/hold_ORD-rain.out 2>&1
 python3 $F/summ_ord.py $R2      # SUMMARY_ORD.txt
+# 2026-10-11 첫 hold가 멈춘 뒤(위 진단): 스크립트만 바뀜, 드라이버와 배포는 그대로(다시 배포하지 않음)
+nvidia-smi -q -d MEMORY | sed -n '/BAR1/,/Free/p'; ssh -n "$SUNNY_SSH" "nvidia-smi -q -d MEMORY | sed -n '/BAR1/,/Free/p'"   # 읽기만, 12절에 적음
+mv $R2/STOP_nic $R2/STOP_nic.cleared-$(date +%Y%m%d-%H%M%S)      # 위 풀기 단계 1–4를 확인한 뒤
+bash $CR -w 10800 -t rs-ORDSMOKE-rain -- timeout -s KILL 880 bash $F/hold_feas.sh $R2 ORDSMOKE-rain > $R2/hold_ORDSMOKE-rain.out 2>&1      # 2실행, 약 1분
+bash $CR -w 10800 -t rs-ORDSMOKE-sunny -- timeout -s KILL 880 bash $F/hold_feas.sh $R2 ORDSMOKE-sunny > $R2/hold_ORDSMOKE-sunny.out 2>&1    # 2실행, 약 1분
+# 두 smoke 모두 오류 없이(rc_r0=0 rc_r1=0 left=0, kv exit=0, lat_p50_us 있음) 끝났을 때만 본 hold(sunny는 ord_sunny_run2/에 새로 36실행)
+bash $CR -w 10800 -t rs-ORD-sunny2 -- timeout -s KILL 880 bash $F/hold_feas.sh $R2 ORD-sunny-2 > $R2/hold_ORD-sunny-2.out 2>&1
+bash $CR -w 10800 -t rs-ORD-rain -- timeout -s KILL 880 bash $F/hold_feas.sh $R2 ORD-rain > $R2/hold_ORD-rain.out 2>&1
+python3 $F/summ_ord.py $R2
 ```
 
 볼 것: 배포 확인에 rain == sunny, source == deployed, `ord: libnccl.so.2 => .../gi-bundle/gin_ts2/hk/...`, 그 밖의 파일 그대로(`~/gi-bundle` 포함); hold마다
@@ -1863,6 +1896,8 @@ python3 $F/summ_ord.py $R2      # SUMMARY_ORD.txt
 | 2026-10-11 | 반영의 독립 재확인(같은 에이전트, 커밋 `df0c2352` 대상): K1–K12 닫힘(K3은 자리만). `policyPad` 칸은 hk 기록 모양과 G1 비교를 깨지 않음, 안의 GIN devComm 길은 `sym_kernels.cc` 254 하나, ord 빌드는 diff와 맞음(`fa30bb70`, 64418f21), `ro_requested`는 NCCL의 계산과 같음 `[소스]`. 비교 코드와 9.15.6은 대체로 맞고 지속 시간은 hold마다 약 6분으로 맞음(gpu-detect 지연 실행 1.8–2.4 s를 다시 셈). 열린 것: K13(hold이고 `NCCL_GIN_RESTORE=0`이 오류가 됨), K14(오류가 `ncclDevCommCreate`에서 `ncclInternalError`로 나오거나 다른 backend로 조용히 넘어감, 자리의 옮김은 사용자 확인 필요), K17(자원 window를 GDAKI 층이 알아볼 수 없고 루프백 MR 더하기는 잠금 없는 벡터라 다툼), K19(`summ_ord.py`에서 무효 실행 하나가 노드 전체를 "비교 불가"로). 낮음 K15, K16, K18, K20–K23, 정보 K24 | 9.10.8, 9.15.6 |
 | 2026-10-11 | 재확인 반영: K13 "복원 요청"으로 정의를 바꿔 모두 `NCCL_GIN_RESTORE=0`이면 오류 없음; K14 오류의 자리와 값을 사용자 선택 U3((a) `gin_host.cc` 고침, (b) `ncclInternalError`와 WARN, `NCCL_GIN_TYPE=3` 요구, (c) `ncclGinRestoreResume`; 이 에이전트는 (b)를 권함); K15 결정은 `all[]` 전체로 all-gather 바로 뒤, FULL 연결 요구; K16 섞인 라이브러리는 지원하지 않음; K17 자원 window는 `ncclGinRestoreResume`에서 `devComm.resourceWindow`로 찾고 잠금 안에서 루프백 MR에 더함, 9.4절 (a)에 적음; K18 안의 GIN devComm 검사는 `ncclGinRestoreResume`에서, 그 뒤 사용자 문맥이 아닌 문맥이면 DISARM; 사용자 선택 U1–U4 목록을 9.10.8절에 둠(강제 구현 전에 받음). 비교 코드: K19 `summ_ord.py`(RO는 유효 실행에서만, 노드 줄이 비교 불가와 미완을 말함, 정하는 폴더 규칙과 meta 없는 kv), K20 hold(STOP_left도 건너뜀, `/tmp/rs_ord` 남은 프로세스와 자기 파일 지우기), K21 `NCCL_*`, `GIN_*`를 모두 지우고 sunny에 umask, K22 지연 원자료 `lat_raw.csv.gz`, K23 정하는 폴더, K24 hold 시작의 `lib_md5.txt`. 바이너리는 그대로(`64418f21`) | 9.4, 9.10.4, 9.10.8, 9.9절 RL21, 9.15.6, `feas/` |
 | 2026-10-11 | 반영의 마지막 재확인(같은 에이전트, 커밋 `adc5b8c0` 대상): K13–K24 닫힘. 판정 "strict forcing scope: no open conflict (user choices U1-U4 pending); comparison: ready to run". 낮음 셋(K25 옛 오류 규칙의 문장이 몇 자리에 남음, K26 U3 (b)만으로는 proxy로 조용히 넘어감을 막지 못함, K27 Resume에 devComm이 없음)과 정보(정하는 폴더가 없으면 한 줄) → 반영: 옛 문장들을 "복원 요청"과 U3로 고침, U3 (b)를 "(b) + Resume 검사"로(`NCCL_RMA_DISABLE=1`, `NCCL_GIN_TYPE=3` 요구), Resume에 devComm(또는 기록)과 주소 규칙, `summ_ord.py`가 정하는 폴더가 없는 노드를 한 줄로 알림. 사용자 선택 U1–U4는 강제 구현 전에 받음 | 9.10.4, 9.10.8, 9.9절 RL21, `feas/summ_ord.py` |
+| 2026-10-11 ≈17:22–17:25 | 메인 세션: ord 배포(확인 파일: rain == sunny, source == deployed, ldd가 두 노드에서 `~/gi-bundle/gin_ts2/hk`, 그 밖의 파일 그대로 rain 334, sunny 386; 이 에이전트가 다시 읽음). hold `ORD-sunny`(17:23:14 잠금, hold 79 s, rc 0, 새 mlx5 줄 0, 펌웨어 명령 실패 31 → 31, `cmd_err` 2 → 2, `lib_md5.txt` 두 노드 `2913c777`): k1의 지연 셀 넷 완료(4 KiB strict와 relaxed 모두 p50 10.50 µs, 256 KiB 모두 38.88 µs, `win_flags` 0x3/0x1, `ro_requested=1`), `ord_bw256k_strict_sunny_k1`에서 rank 0(rain)이 첫 window 등록에서 "unhandled system error"(exit 2), rank 1 watchdog(exit 7), wall 46.5 s, left 0. 실행기가 STOP_nic를 쓰고 31실행을 건너뜀, `ORD-rain`은 시작 안 함 `[측정: 이 에이전트가 원자료에서 다시 셈]` | `results/20261011_ordering/ord_sunny/`, `hold_ORD-sunny.out`, `STOP_nic`, `skipped.txt` |
+| 2026-10-11 | 진단과 고침(9.15.6의 "첫 hold 뒤" 문단): 대역 셀의 window가 800 MiB씩 둘(256 KiB × 200 × 16)이라 rain의 BAR1(256 MiB, GIN window 50 MiB 넘으면 등록 실패의 기록)을 넘음 `[추론]`; "unhandled system error" = `ncclSystemError`, 이 길에서는 ibverbs 등록 실패나 GIN 등록부 NULL `[소스]`; strict와 relaxed는 RO 비트만 다름 `[소스]`; WARN 줄이 없던 것은 블록 버퍼 stdout과 `_exit` `[소스: debug.cc 35, 268–270]`. 고침: 대역 셀 256 KiB × 8 × 12(window 24 MiB, 값 = K × 256 KiB / p50, `summ_ord.py`는 K를 kv에서 읽음), `stdbuf -oL -eL`, 진단 smoke hold `ORDSMOKE-<노드>`(NCCL INFO는 노드의 `~/rs-ordlogs/`에만). 판정 규칙(유효 조건, 6 대 6 갈림, 2% 문턱, 정하는 폴더)은 그대로이고 대역 셀의 크기와 값의 식만 바뀜(측정 전 바꿈, 그 셀의 결과는 아직 없음). STOP_nic 푸는 단계와 명령은 9.15.6 | 9.15.6, `feas/run_ord.sh`, `feas/summ_ord.py`, `feas/hold_feas.sh` |
 | 2026-10-11 | 정책 설계 문서를 이 문서로 합침(사용자 결정, 메인 세션이 전함: 실험 하나에 `EXPERIMENT.md` 하나, 단계별 문서를 따로 두지 않는다는 저장소 규칙과 `DESIGN_POLICY.md`가 어긋나 9절로 합침, 선택지 (가)). 옮긴 곳: 그 문서의 1절 → 9.10.1, 2.1–2.5절 → 9.10.2–9.10.6, 3절 → 9.10.7, 4절과 4.1–4.11절 → 9.11과 9.11.1–9.11.11, 5절 → 9.11.12, 6절 → 9.11.13, 7절 → 20절(이미 있던 항목과 합침), 머리말의 목적, 상태, 근거 트리, 독립 검토, 줄 번호 규칙 → 9.10의 첫 문단들. 내용은 그대로이고 안의 절 참조만 새 번호로 고침("EXPERIMENT.md N절"은 "N절"로, "이 문서"는 "이 정책 설계"로). 9.10, 9.11의 옛 가리킴 문단과 머리말의 "설계의 기준 문서" 문단은 바꿈. 이 문서 안의 모든 가리킴(본문, 9.15 판정 글의 절 번호 둘, 11절, 12절의 지난 행, 19절)을 경로와 절 번호만 새 자리로 고침. gpu-detect 문서의 자리는 그 사이 master로 옮겨져(PR #63) 경로 글만 고침. `DESIGN_POLICY.md`는 이 커밋에서 지움(git 역사에 남음). 해석이나 결과는 바꾸지 않음 | 9.10–9.11절 |
 
 ## 13. 사전 등록 이후 변경
