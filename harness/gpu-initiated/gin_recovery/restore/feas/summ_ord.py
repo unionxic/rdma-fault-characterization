@@ -5,8 +5,9 @@ two arms are completely separated, and the readings fixed before the run. Writes
 the kv and meta files that run_ord.sh writes. DRAFT stage, never scored; the forcing itself is decided (9.10.8).
 The deciding folder of a node is its latest ord_<node>[_run<k>] folder that holds all 36 runs (each with a meta file);
 earlier or incomplete folders are printed for information only (fixed before the run, review K23).
-Values: lat4k, lat256k: rank 0's lat_p50_us (one put + signal atomic + flush of one thread, us); bw256k: 16 x 256 KiB / rank 0's lat_p50_us (thread 0's
-iteration: 16 puts + signal + flush), in GB/s (1e9 bytes/s). "worse" for strict means a higher latency or a lower bandwidth.
+Values: lat4k, lat256k: rank 0's lat_p50_us (one put + signal atomic + flush of one thread, us); bw256k: burst_K x bytes /
+rank 0's lat_p50_us (thread 0's iteration: K puts + signal + flush; K = 8, bytes = 256 KiB, 12 iterations since the change of
+2026-10-11, EXPERIMENT.md 9.15.6), in GB/s (1e9 bytes/s). "worse" for strict means a higher latency or a lower bandwidth.
 """
 import glob
 import os
@@ -16,7 +17,7 @@ import sys
 R = sys.argv[1] if len(sys.argv) > 1 else "."
 OUT = []
 CELLS = ("lat4k", "lat256k", "bw256k")
-ITERS = {"lat4k": 3000, "lat256k": 3000, "bw256k": 200}
+ITERS = {"lat4k": 3000, "lat256k": 3000, "bw256k": 12}   # bw256k: 12 x 8 x 256 KiB since 2026-10-11 (was 200 x 16)
 WANT_FLAGS = {"strict": "0x3", "relaxed": "0x1"}
 
 
@@ -43,7 +44,9 @@ def median(v):
 
 def value(metric, k0):
     p50 = float(k0["lat_p50_us"])
-    return p50 if metric != "bw256k" else 16 * 262144 / (p50 * 1e-6) / 1e9
+    if metric != "bw256k":
+        return p50
+    return int(k0["burst_K"]) * int(k0["bytes"]) / (p50 * 1e-6) / 1e9
 
 
 def folders(node):
