@@ -19,6 +19,13 @@
 #          EXPERIMENT.md 9.15.3. <tag> only makes the hold name unique (mlx5_new_<hold>.txt is per hold name)
 #   B3m-<cell>[-<tag>]  one new contention cell b3_m_<rain|sunny>_<ro|so> (in-process hog; 2026-10-11), b3v4, into
 #          b3m_run<k>/, k = the first folder without that cell (a repeat goes to the next one); <tag> as above
+#   ORD-<rain|sunny>[-<tag>]  the normal-path comparison of strict and relaxed windows (EXPERIMENT.md 9.15.6; 2026-10-11; no
+#          verdict on the forcing): the named node receives; for k = 1-6 the three cells (lat4k, lat256k, bw256k, rotated by
+#          k - 1), each as strict and relaxed back to back (strict first when k is odd), 36 runs, run_ord.sh, into ord_<node>/
+#          (a repeat of that node: ord_<node>_run<k>/). Run it with a results directory of its own (results/<date>_ordering).
+#          After every run: an error exit or an error key in either rank's kv writes STOP_nic, a process of the run left
+#          behind (run_ord.sh counts them by the run's unique tag) writes STOP_left, a growth of rain's firmware-command
+#          failures writes STOP_mlx5, and the remaining runs are skipped
 #   B2     B2: four ranks interleaved (rain 0, 2; sunny 1, 3), report lines only, 2 trials, into b2/ (a repeat: b2_run<k>/)
 #   B2c    B2 control (optional): four ranks consecutive (rain 0, 1; sunny 2, 3), 1 trial, into the latest B2 folder
 #   B1     B1: record (2 ranks), replay rank 1 on sunny and rank 0 on rain (strace), two negative replays; 2 trials, into
@@ -116,6 +123,24 @@ b3() {  # b3 <cell> <iters> <logdir> [main]: one cell if it fits, then the per-c
   [ "$fw" -gt "$FW0" ] && echo "$(date '+%F %T') hold $H: firmware-command failures grew after $cell ($FW0 -> $fw)" | tee -a "$R/STOP_mlx5"
   return 0
 }
+ordrun() {  # ordrun <cell> <tag> <logdir>: one comparison run if it fits, then the stop checks (9.15.6)
+  local cell=$1 tag=$2 dir=$3 f bad=""
+  [ -e "$R/STOP_nic" ] || [ -e "$R/STOP_mlx5" ] && { echo "skipped ${cell}_$tag: STOP file" >> "$R/skipped.txt"; return 0; }
+  fits 90 "${cell}_$tag" || return 0
+  bash "$D/run_ord.sh" "$cell" "$tag" "$dir"
+  for f in "$dir/${cell}_${tag}_r0.kv" "$dir/${cell}_${tag}_r1.kv"; do
+    if [ ! -f "$f" ]; then bad="missing $(basename "$f")"; break; fi
+    if grep -qE 'nccl_error=|cuda_error=|watchdog' "$f" || ! grep -q '^exit=0$' "$f"; then
+      bad="$(basename "$f"): $(grep -hoE 'nccl_error=[^ ]*|cuda_error=[^ ]*|exit=[0-9]+' "$f" | tr '\n' ' ')"; break
+    fi
+  done
+  [ -n "$bad" ] && echo "$(date '+%F %T') hold $H: ${cell}_$tag ended with an error ($bad); no further run" | tee -a "$R/STOP_nic"
+  local left; left=$(sed -n 's/.* left=\([0-9]*\) .*/\1/p' "$dir/${cell}_${tag}_meta.txt" 2>/dev/null)
+  [ -n "$left" ] && [ "$left" -gt 0 ] && echo "$(date '+%F %T') hold $H: ${cell}_$tag left $left process(es)" | tee -a "$R/STOP_left"
+  local fw; fw=$(fwfail "after-${cell}_$tag")
+  [ "$fw" -gt "$FW0" ] && echo "$(date '+%F %T') hold $H: firmware-command failures grew after ${cell}_$tag ($FW0 -> $fw)" | tee -a "$R/STOP_mlx5"
+  return 0
+}
 sp() {  # sp <cell> <trial> <logdir>: one trial if it fits
   local bound=120; [ "$1" = b1 ] && bound=380; [ "$1" = b1_live ] && bound=200
   fits "$bound" "$1 trial $2" || return 0
@@ -138,6 +163,18 @@ case "$H" in
     case "$cell" in b3_m_rain_ro|b3_m_rain_so|b3_m_sunny_ro|b3_m_sunny_so) ;; *) echo "unknown cell $cell" >&2; exit 2 ;; esac
     k=1; while [ -e "$R/b3m_run$k/${cell}_meta.txt" ]; do k=$((k + 1)); done
     b3 "$cell" "$B3_ITERS" "$R/b3m_run$k" main ;;
+  ORD-*)
+    node=${H#ORD-}; node=${node%%-*}
+    case "$node" in rain|sunny) ;; *) echo "ORD-<rain|sunny>[-<tag>]" >&2; exit 2 ;; esac
+    d=$R/ord_$node; k=1; while ls "$d"/*_meta.txt >/dev/null 2>&1; do k=$((k + 1)); d=$R/ord_${node}_run$k; done
+    M=(lat4k lat256k bw256k)
+    for k in 1 2 3 4 5 6; do
+      for j in 0 1 2; do
+        m=${M[$(( (j + k - 1) % 3 ))]}
+        if [ $((k % 2)) = 1 ]; then arms="strict relaxed"; else arms="relaxed strict"; fi
+        for a in $arms; do ordrun "ord_${m}_${a}_$node" "k$k" "$d"; done
+      done
+    done ;;
   B3r) for c in x s h; do for o in ro so; do b3 "b3_${c}_rain_$o" "$B3_ITERS" "$R/b3" main; done; done ;;
   B3s) for c in x s h; do for o in ro so; do b3 "b3_${c}_sunny_$o" "$B3_ITERS" "$R/b3" main; done; done ;;
   B2) d=$(newdir b2); for t in 1 2; do sp b2_inter "$t" "$d"; done ;;
