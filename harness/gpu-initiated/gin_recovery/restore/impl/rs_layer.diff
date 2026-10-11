@@ -1,5 +1,175 @@
+diff --git a/src/gin/gin_host.cc b/src/gin/gin_host.cc
+index 2f8749f..511dd7b 100644
+--- a/src/gin/gin_host.cc
++++ b/src/gin/gin_host.cc
+@@ -14,6 +14,9 @@
+ #include "gin/gin_host.h"
+ #include "gin/gin_host_proxy.h"
+ #include "compiler.h"
++#include "argcheck.h"  // gin-restore (rs): CommCheck for ncclGinRestoreResume
++#include "bootstrap.h"
++#include "group.h"  // gin-restore (rs): ncclGroupJobAbort, as ncclCommEnsureReady
+ #include <cmath>
+ 
+ NCCL_PARAM(GinEnable, "GIN_ENABLE", 1);
+@@ -606,3 +609,79 @@ ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError
+   }
+   return ncclSuccess;
+ }
++
++// ---- gin-restore (rs, work package 2): the public restore API's entry (nccl.h; EXPERIMENT.md 9.10.8, user decisions
++// 2026-10-11 and 2026-10-12) ----
++// The one exception to "restore code only in the GDAKI host file": this entry reads the communicator's and the devComm's
++// facts, gives the GDAKI restore layer the communicator's bootstrap all-gather for the exchange every rank takes part in,
++// and the setter of the communicator's abort flags for an exchange that passes its bound (the bootstrap socket loops end on
++// that flag; the communicator must then be ended with ncclCommAbort). Every judgment and the decision are in
++// transport/net_ib/gdaki/gin_host_gdaki.cc. ncclGinRestoreStep and ncclGinRestoreRegister are there too (not built yet).
++static ncclResult_t ginRestoreExchange(void* c, void* data, int bytesPerRank) {
++  return bootstrapAllGather(((struct ncclComm*)c)->bootstrap, data, bytesPerRank);
++}
++static void ginRestoreAbortComm(void* c) {  // the first step of ncclCommAbort (init.cc setCommAbortFlags)
++  struct ncclComm* comm = (struct ncclComm*)c;
++  // runs on the bound's watcher thread: each pointer is read once (a split may change the child's concurrently)
++  uint32_t* const childFlag = COMPILER_ATOMIC_LOAD(&comm->childAbortFlag, std::memory_order_acquire);
++  uint32_t* const childFlagDev = COMPILER_ATOMIC_LOAD(&comm->childAbortFlagDev, std::memory_order_acquire);
++  if (childFlag != nullptr) COMPILER_ATOMIC_STORE(childFlag, 1u, std::memory_order_release);
++  if (childFlagDev != nullptr) COMPILER_ATOMIC_STORE(childFlagDev, 1u, std::memory_order_release);
++  COMPILER_ATOMIC_STORE(comm->abortFlag, 1u, std::memory_order_release);
++  COMPILER_ATOMIC_STORE(comm->abortFlagDev, 1u, std::memory_order_release);
++}
++NCCL_API(ncclResult_t, ncclGinRestoreResume, ncclComm_t comm, const struct ncclDevComm* devComm, unsigned long long* step,
++         void* blob, size_t* bytes);
++ncclResult_t ncclGinRestoreResume(ncclComm_t comm, const struct ncclDevComm* devComm, unsigned long long* step,
++                                  void* blob, size_t* bytes) {
++  NCCLCHECK(CommCheck(comm, "ncclGinRestoreResume", "comm"));
++  const bool aborted = COMPILER_ATOMIC_LOAD(comm->abortFlag, std::memory_order_acquire) != 0;
++  if (aborted) ncclGroupJobAbort(comm->groupJob);  // as ncclCommEnsureReady: a nonblocking job still running is joined
++  // A communicator whose initialization failed has no usable bootstrap: its error, at once (read after the join above).
++  const ncclResult_t initState = COMPILER_ATOMIC_LOAD(&comm->initState, std::memory_order_acquire);
++  if (initState != ncclSuccess && initState != ncclInProgress) {
++    WARN("ncclGinRestoreResume: the communicator's initialization failed (%s)", ncclGetErrorString(initState));
++    return initState;
++  }
++  // As ncclCommEnsureReady otherwise, but an asynchronous error does not return here: it is this rank's judgment and goes
++  // through the exchange, so every rank returns the same result (an early return would leave the others waiting for the
++  // bound). A failure of the query itself counts as such an error.
++  ncclResult_t asyncErr = ncclSuccess;
++  if (!aborted) {
++    const ncclResult_t q = ncclCommGetAsyncError(comm, &asyncErr);
++    if (q != ncclSuccess) asyncErr = q;
++    if (asyncErr == ncclInProgress) {  // a nonblocking operation still owns the communicator (and its bootstrap)
++      WARN("ncclGinRestoreResume: attempt to use the communicator before the previous operation returned ncclSuccess");
++      return ncclInvalidArgument;
++    }
++  }
++  struct ncclGinRestoreCommFacts f;
++  memset(&f, 0, sizeof(f));
++  f.rank = comm->rank;
++  f.nRanks = comm->nRanks;
++  f.commHash = comm->commHash;
++  f.bootstrap = comm->bootstrap;
++  f.asyncErr = (int)asyncErr;
++  f.argsOk = devComm != nullptr && step != nullptr && bytes != nullptr;
++  // a devComm written for device headers of another NCCL version has another layout (ncclDevCommDestroy converts it):
++  // its other fields are not read here, and the restore is refused
++  f.devCommVersion = devComm != nullptr ? (devComm->magic == NCCL_API_MAGIC ? (int)devComm->version : -1) : 0;
++  const bool layoutOk = devComm != nullptr && f.devCommVersion == NCCL_VERSION_CODE;
++  struct ncclGinState* gs = &comm->sharedRes->ginState;
++  f.commFull = gs->connected && gs->ginConnectionType == NCCL_GIN_CONNECTION_FULL;
++  f.lsaSize = 1;
++  f.ctxStride = 1;
++  if (layoutOk) {
++    f.nConn = std::min<int>(devComm->ginConnectionCount, NCCL_GIN_MAX_CONNECTIONS);
++    for (int c = 0; c < f.nConn; c++) f.handles[c] = devComm->ginHandles[c];
++    if (f.nConn > 0 && devComm->backendIndex < gs->numActiveBackends)
++      f.ginType = (int)gs->backends[devComm->backendIndex].ginType;
++    f.ctxStride = devComm->ginContextStride;
++    f.lsaSize = devComm->lsaSize;
++  }
++  f.numRmaCtx = comm->config.numRmaCtx;
++  f.runtimeConn = comm->runtimeConn ? 1 : 0;
++  f.nvls = comm->nvlsSupport ? 1 : 0;
++  f.symGinDevComm = comm->symkState.initialized && comm->symkState.kcomm.devComm.ginConnectionCount > 0;
++  return ncclGinGdakiRestoreResume((void*)comm, &f, ginRestoreExchange, ginRestoreAbortComm, step, blob, bytes);
++}
+diff --git a/src/include/gin/gin_host.h b/src/include/gin/gin_host.h
+index 86abd02..87df6ae 100644
+--- a/src/include/gin/gin_host.h
++++ b/src/include/gin/gin_host.h
+@@ -83,4 +83,30 @@ ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError
+ 
+ ncclResult_t ncclGinSetDefaultBackend(struct ncclComm* comm, uint64_t globalBitmask);
+ 
++// gin-restore (rs, work package 2): what the public entry ncclGinRestoreResume (gin/gin_host.cc) tells the GDAKI restore
++// layer (transport/net_ib/gdaki/gin_host_gdaki.cc), which judges, runs the bounded exchange through `exchange` (the
++// communicator's bootstrap all-gather) and decides; `abortComm` sets the communicator's abort flags.
++struct ncclGinRestoreCommFacts {
++  int rank, nRanks;           // in the communicator
++  uint64_t commHash;          // with bootstrap: which communicator this is (a later one may reuse its address)
++  void* bootstrap;
++  int asyncErr;               // the communicator's asynchronous error (ncclCommGetAsyncError; 0: none)
++  int argsOk;                 // devComm, step and bytes are not NULL
++  int devCommVersion;         // the devComm's device-code version (-1: unversioned; 0: no devComm)
++  int ginType;                // the devComm's GIN backend (NCCL_GIN_TYPE_*; 0: none)
++  int nConn;                  // the devComm's GIN connections
++  void* handles[NCCL_GIN_MAX_CONNECTIONS];  // the devComm's GIN handles (ncclDevComm::ginHandles)
++  int commFull;               // the communicator's GIN connection is FULL
++  int ctxStride;              // the devComm's GIN context stride
++  int numRmaCtx;              // host RMA contexts (comm->config.numRmaCtx)
++  int runtimeConn;            // runtime connect is on
++  int nvls;                   // NVLS support is on
++  int lsaSize;                // the devComm's LSA team size
++  int symGinDevComm;          // NCCL's symmetric kernels have a GIN devComm on this communicator
++};
++ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCommFacts* facts,
++                                       ncclResult_t (*exchange)(void* comm, void* data, int bytesPerRank),
++                                       void (*abortComm)(void* comm), unsigned long long* step, void* blob,
++                                       size_t* bytes);
++
+ #endif
+diff --git a/src/nccl.h.in b/src/nccl.h.in
+index f2149a2..209145c 100644
+--- a/src/nccl.h.in
++++ b/src/nccl.h.in
+@@ -1100,6 +1100,36 @@ typedef struct {
+ ncclResult_t  ncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* stats);
+ ncclResult_t pncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* stats);
+ 
++/*
++ * GIN GDAKI restore (research build, gin-restore). EXPERIMENTAL: the calls and their meaning may change.
++ * ncclGinRestoreResume: every rank of the communicator calls it, in the same order relative to the communicator's other
++ * calls, after ncclDevCommCreate of the devComm its kernels use and before their first launch. Every rank contributes its
++ * own judgment and the ranks decide together over the communicator's bootstrap, so every rank returns the same result:
++ *   ncclSuccess: the restore can be enabled, or no rank asks for it (NCCL_GIN_FAULT_POLICY is not hold, or
++ *     NCCL_GIN_RESTORE=0). A first incarnation gets *step = 0 and *bytes = 0 (*bytes in: the capacity of blob).
++ *   ncclInvalidUsage: the restore is asked for and cannot be enabled; ncclGetLastError(comm), read right after the
++ *     call, holds the reason, the same on every rank.
++ *   ncclSystemError: the exchange did not complete within NCCL_GIN_RESTORE_RESUME_MS (default 30000 ms, the same on every
++ *     rank; <= 0: no bound) or failed: a rank did not call it. The communicator's abort flag is set (it is shared with
++ *     communicators split from or into it with shared resources, which then end too): end it with ncclCommAbort. A rank
++ *     that arrives just as the bound expires may complete while others do not.
++ * Before the exchange it returns at once only for an invalid comm, a communicator whose initialization failed (that
++ * error), or one still busy with a nonblocking operation (ncclInvalidArgument); every rank of such a job should see the
++ * same. Do not call it between ncclGroupStart and ncclGroupEnd. ncclGetLastError is
++ * process-wide: another thread's warning can replace the reason before it is read. A second call returns the first
++ * call's result. This build has no hold reaction yet: the communicator stays fail-fast.
++ * ncclGinRestoreStep and ncclGinRestoreRegister are not implemented in this build: they return ncclInvalidUsage.
++ */
++struct ncclDevComm;
++ncclResult_t  ncclGinRestoreResume(ncclComm_t comm, const struct ncclDevComm* devComm, unsigned long long* step,
++                                   void* blob, size_t* bytes);
++ncclResult_t pncclGinRestoreResume(ncclComm_t comm, const struct ncclDevComm* devComm, unsigned long long* step,
++                                   void* blob, size_t* bytes);
++ncclResult_t  ncclGinRestoreStep(ncclComm_t comm, unsigned long long step, const void* blob, size_t bytes);
++ncclResult_t pncclGinRestoreStep(ncclComm_t comm, unsigned long long step, const void* blob, size_t bytes);
++ncclResult_t  ncclGinRestoreRegister(ncclComm_t comm, void* buff, size_t size);
++ncclResult_t pncclGinRestoreRegister(ncclComm_t comm, void* buff, size_t size);
++
+ #ifdef __cplusplus
+ } // end extern "C"
+ #endif
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 2760d43..73f1e00 100644
+index 2760d43..2d28eee 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -186,10 +186,11 @@ out:
@@ -15,7 +185,34 @@ index 2760d43..73f1e00 100644
  
    NOWARN(status = gdakiRegMrDmaBuf(mr, pd, addr, length, access), NCCL_NET);
    if (status == ncclSuccess) return ncclSuccess;
-@@ -2685,6 +2686,177 @@ enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };
+@@ -426,6 +427,8 @@ static void gdakiTsStart(struct gdakiRecHost* r);
+ static bool gdakiTsFree(struct gdakiRecHost* r);
+ static inline void gdakiRecFwMark(struct gdakiRecHost* r);  // gin-harden: below
+ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollComm* cComm);
++static bool gdakiRsRequested();                                       // gin-restore (rs): below
++static void gdakiRsNoteOff(void* comm, void* handle, const char* offWhy);  // gin-restore (rs): below
+ static thread_local bool gdakiTsInHelper = false;  // the helper thread may call the gin_recovery host API
+ static thread_local struct gdakiRecHost* gdakiTsOwner = nullptr;  // the helper's own context (gdakiRecFind)
+ static ncclResult_t gdakiTsZeroDev(struct gdakiRecHost* r, void* dst, size_t n, uint8_t byte);
+@@ -1892,6 +1895,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
+   if (r == nullptr) return;
+   if (g->q4 == nullptr) {
+     WARN("GIN/REC: NCCL_GIN_FAULT_RECOVERY=1 needs NCCL_GIN_FAULT_CLASSIFY=1; recovery disabled on rank %d", g->rank);
++    if (gdakiRsRequested() && g->devHandle)  // gin-restore (rs): for ncclGinRestoreResume (fail-fast: nothing)
++      gdakiRsNoteOff(r->commKey, g->devHandle->handle, "recovery registration: NCCL_GIN_FAULT_CLASSIFY is off");
+     gdakiTsFree(r);
+     delete r;
+     g->rec = nullptr;
+@@ -1903,6 +1908,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
+   if (cudaStreamCreateWithFlags(&r->stream, cudaStreamNonBlocking) != cudaSuccess ||
+       cudaHostAlloc((void**)&r->pinned, r->pinnedSize, cudaHostAllocDefault) != cudaSuccess) {
+     WARN("GIN/REC: could not allocate the recovery stream/staging; recovery disabled on rank %d", g->rank);
++    if (gdakiRsRequested() && g->devHandle)  // gin-restore (rs): for ncclGinRestoreResume (fail-fast: nothing)
++      gdakiRsNoteOff(r->commKey, g->devHandle->handle, "recovery registration: stream or staging allocation failed");
+     if (r->stream) cudaStreamDestroy(r->stream);
+     gdakiTsFree(r);
+     delete r;
+@@ -2685,6 +2692,403 @@ enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };
  static const char* gdakiPolicyName(int p) { return p == GDAKI_POLICY_HOLD ? "hold" : "failfast"; }
  static int gdakiPolicyEffOf(struct gdakiRecHost* r);  // below (needs gdakiTs)
  
@@ -108,6 +305,11 @@ index 2760d43..73f1e00 100644
 +static const char* gdakiRsVerdictName(int v) {
 +  return v == GDAKI_RS_ENABLE ? "can be enabled" : v == GDAKI_RS_NOT_REQUESTED ? "not requested" : "refused";
 +}
++// The reason when rank a asks for the restore and rank b does not (the setup decision and the Resume exchange both use it)
++static void gdakiRsWhyRequestDiffers(char* why, size_t whyLen, int a, int b, uint32_t policyB) {
++  snprintf(why, whyLen, "the restore request differs across ranks (rank %d asks for it, rank %d does not: %s)", a, b,
++           policyB == GDAKI_POLICY_HOLD ? "hold with NCCL_GIN_RESTORE=0" : "failfast policy");
++}
 +static int gdakiRsDecide(int n, const uint32_t* policy, const uint32_t* bits, const uint8_t* recOn, char* why,
 +                         size_t whyLen) {
 +  int nReq = 0, a = -1, b = -1;
@@ -121,8 +323,7 @@ index 2760d43..73f1e00 100644
 +  }
 +  if (nReq < n) {  // b does not ask: fail-fast, or hold with NCCL_GIN_RESTORE=0 (a library without this layer is not
 +                   // supported, 9.10.8 K16: its hold rank would read as the latter)
-+    snprintf(why, whyLen, "the restore request differs across ranks (rank %d asks for it, rank %d does not: %s)", a, b,
-+             policy[b] == GDAKI_POLICY_HOLD ? "hold with NCCL_GIN_RESTORE=0" : "failfast policy");
++    gdakiRsWhyRequestDiffers(why, whyLen, a, b, policy[b]);
 +    return GDAKI_RS_REFUSE;
 +  }
 +  for (int p = 0; p < n; p++)
@@ -156,6 +357,159 @@ index 2760d43..73f1e00 100644
 +  snprintf(why, whyLen, "every rank asks for the restore and meets its conditions");
 +  return GDAKI_RS_ENABLE;
 +}
++
++// ---- ncclGinRestoreResume (work package 2; user decision 2026-10-12, EXPERIMENT.md 9.10.8) ----
++// Resume is a call every rank of the communicator makes. Each rank judges locally whether it can enable the restore
++// (gdakiRsLocalCheck), puts that with its request and its setup decision into one fixed-size record, and the records are
++// all-gathered over the communicator's bootstrap; every rank then decides from the same records (gdakiRsResumeDecide).
++// What one rank sees, with the facts it is judged on. The decision adds "rank p: " to this rank's text; the text names no
++// rank of its own except inside `told` (a peer whose wait word was raised), which the record carries as it is.
++struct gdakiRsLocalIn {
++  bool argsOk = true;            // devComm, step and bytes are not NULL
++  int devCommVersion = 0;        // the devComm's device-code version when it is not this library's (0: it is)
++  const char* told = nullptr;    // a fault already reached the application on this communicator (what), nullptr: none
++  bool spare = false;            // this process is a spare process (not built yet)
++  int ginType = 0, nConn = 0;    // the devComm's GIN backend (3: GDAKI) and its GIN connections
++  bool commFull = true;          // the communicator's GIN connection is FULL
++  int ctxStride = 1;             // the devComm's GIN context stride (1: every rank)
++  int numRmaCtx = 0;             // host RMA contexts of the communicator
++  bool runtimeConn = true;       // runtime connect is on
++  bool nvls = false;             // NVLS is on
++  int lsaSize = 1;               // the devComm's LSA team size
++  bool symGinDevComm = false;    // NCCL's symmetric kernels have a GIN devComm on this communicator
++  bool haveSetup = false;        // this devComm's GDAKI context ran the setup with transparent recovery's variables on
++  int nUserCtx = 0;              // GDAKI contexts of this communicator that ran that setup (every user devComm, connection)
++  bool tsOn = false;             // this devComm's context still has transparent recovery on this rank
++  const char* offWhy = nullptr;  // why it went off after the setup agreement, when known
++  long long reconnect = 1;       // NCCL_GIN_TS_RECONNECT
++  long long qpwatchMs = 10;      // the QP watch period (NCCL_GIN_TS_QPWATCH_MS)
++  long long restoreMs = 20000;   // NCCL_GIN_RESTORE_MS
++  long long holdMs = 30000;      // NCCL_GIN_TS_HOLD_MS as the context uses it
++  bool lbOn = true;              // the NIC copy path is set up and self-tested
++  bool escalated = false;        // the round cap stopped recovery on this context
++};
++enum { GDAKI_RS_L_OK = 0 };
++// The first local condition that keeps the restore off on this rank, in a fixed order (0: none). The conditions are the
++// arming conditions of 9.10.4 that can be judged at Resume, and the facts of 9.10.8 and 9.14 (work package 2). Work package
++// 3 adds the side table, the restore buffers in the loopback MR and the user windows registered after the user context.
++static int gdakiRsLocalCheck(const struct gdakiRsLocalIn& in, char* why, size_t whyLen) {
++  int code = 0;
++#define GDAKI_RS_L(cond, ...)                 \
++  do {                                        \
++    code++;                                   \
++    if (cond) {                               \
++      snprintf(why, whyLen, __VA_ARGS__);     \
++      return code;                            \
++    }                                         \
++  } while (0)
++  GDAKI_RS_L(!in.argsOk, "ncclGinRestoreResume got a NULL devComm, step or bytes");
++  GDAKI_RS_L(in.devCommVersion != 0, "the devComm was written for device headers of another NCCL version (%d)",
++             in.devCommVersion);
++  GDAKI_RS_L(in.told != nullptr, "a fault already reached the application on this communicator (%s)", in.told);
++  GDAKI_RS_L(in.spare, "this build cannot run a spare process yet");
++  GDAKI_RS_L(in.nConn <= 0, "the devComm has no GIN connection");
++  GDAKI_RS_L(in.ginType != 3, "the devComm's GIN backend is not GDAKI (type %d)", in.ginType);
++  GDAKI_RS_L(!in.commFull, "the communicator's GIN connection is not FULL");
++  GDAKI_RS_L(in.ctxStride != 1, "the devComm's GIN rank stride is %d, not 1", in.ctxStride);
++  GDAKI_RS_L(in.nConn != 1, "the devComm has %d GIN connections (NCCL_GIN_NCONNECTIONS), the restore needs one", in.nConn);
++  GDAKI_RS_L(in.numRmaCtx != 0, "host RMA is on (%d contexts; NCCL_NUM_RMA_CTX=0 turns it off)", in.numRmaCtx);
++  GDAKI_RS_L(!in.runtimeConn, "runtime connect is off (NCCL_RUNTIME_CONNECT)");
++  GDAKI_RS_L(in.nvls, "NVLS is on (NCCL_NVLS_ENABLE)");
++  GDAKI_RS_L(in.lsaSize != 1, "the devComm's LSA team has %d ranks, the restore needs 1", in.lsaSize);
++  GDAKI_RS_L(in.symGinDevComm, "NCCL's symmetric kernels made their own GIN devComm on this communicator");
++  GDAKI_RS_L(!in.haveSetup, "transparent recovery is off for this devComm (NCCL_GIN_FAULT_RECOVERY, "
++             "NCCL_GIN_FAULT_TRANSPARENT and NCCL_GIN_FAULT_CLASSIFY must be 1)");
++  GDAKI_RS_L(in.nUserCtx != 1, "the communicator has %d GDAKI contexts with transparent recovery, the restore needs one",
++             in.nUserCtx);
++  GDAKI_RS_L(!in.tsOn, "transparent recovery went off on this rank after the setup agreement (%s)",
++             in.offWhy && *in.offWhy ? in.offWhy : "the helper is not running");
++  GDAKI_RS_L(in.reconnect != 1, "NCCL_GIN_TS_RECONNECT is not 1");
++  GDAKI_RS_L(in.qpwatchMs <= 0, "the QP watch is off (NCCL_GIN_TS_QPWATCH_MS)");
++  GDAKI_RS_L(in.restoreMs <= 0 || in.restoreMs >= in.holdMs,
++             "NCCL_GIN_RESTORE_MS (%lld) is not between 0 and NCCL_GIN_TS_HOLD_MS (%lld)", in.restoreMs, in.holdMs);
++  GDAKI_RS_L(!in.lbOn, "the NIC copy path is off (its setup or self-test failed, or it was turned off)");
++  GDAKI_RS_L(in.escalated, "the round cap stopped recovery on this context (NCCL_GIN_TS_ESCALATE_ROUNDS)");
++#undef GDAKI_RS_L
++  snprintf(why, whyLen, "this rank can enable the restore");
++  return GDAKI_RS_L_OK;
++}
++
++// One rank's record in the Resume exchange (fixed size; every rank runs the same library, 9.10.8 K16).
++#define GDAKI_RS_X_MAGIC 0x32535247u  // "GRS2"
++struct gdakiRsXRec {
++  uint32_t magic;
++  int32_t rank;
++  uint32_t req;           // 1: this process asks for the restore
++  uint32_t policy;        // GDAKI_POLICY_*
++  int32_t setupVerdict;   // this devComm's setup decision on this rank (GDAKI_RS_*), -1: none
++  int32_t localCode;      // gdakiRsLocalCheck (0: can enable)
++  char setupWhy[GDAKI_RS_WHY_LEN];
++  char localWhy[GDAKI_RS_WHY_LEN];
++};
++static_assert(sizeof(struct gdakiRsXRec) == 24 + 2 * GDAKI_RS_WHY_LEN, "the Resume exchange record has no padding");
++#define GDAKI_RS_RWHY_LEN (GDAKI_RS_WHY_LEN + 32)  // a Resume reason: a prefix ("rank p: ", "setup agreement: ") + a field
++// The decision every rank takes from the n exchanged records (no argument says which rank decides): nobody asks
++// (success, the communicator stays fail-fast); the request differs; a setup decision that refused; a rank whose local
++// judgment refuses; else the restore can be enabled. Each refusal names the lowest rank that has it.
++static int gdakiRsResumeDecide(int n, const struct gdakiRsXRec* x, char* why, size_t whyLen) {
++  for (int p = 0; p < n; p++)
++    if (x[p].magic != GDAKI_RS_X_MAGIC || x[p].rank != p) {
++      snprintf(why, whyLen, "rank %d sent no valid restore record (a different library?)", p);
++      return GDAKI_RS_REFUSE;
++    }
++  int nReq = 0, a = -1, b = -1;
++  for (int p = 0; p < n; p++) {
++    if (x[p].req) { nReq++; if (a < 0) a = p; }
++    else if (b < 0) b = p;
++  }
++  if (nReq == 0) {
++    snprintf(why, whyLen, "the restore is not requested on any rank");
++    return GDAKI_RS_NOT_REQUESTED;
++  }
++  if (nReq < n) {
++    gdakiRsWhyRequestDiffers(why, whyLen, a, b, x[b].policy);
++    return GDAKI_RS_REFUSE;
++  }
++  for (int p = 0; p < n; p++)
++    if (x[p].setupVerdict == GDAKI_RS_REFUSE || x[p].setupVerdict == GDAKI_RS_REFUSE_FATAL) {
++      snprintf(why, whyLen, "setup agreement: %.*s", (int)sizeof(x[p].setupWhy), x[p].setupWhy);
++      return GDAKI_RS_REFUSE;
++    }
++  for (int p = 0; p < n; p++)
++    if (x[p].localCode != GDAKI_RS_L_OK) {
++      snprintf(why, whyLen, "rank %d: %.*s", p, (int)sizeof(x[p].localWhy), x[p].localWhy);
++      return GDAKI_RS_REFUSE;
++    }
++  snprintf(why, whyLen, "every rank asks for the restore and can enable it");
++  return GDAKI_RS_ENABLE;
++}
++
++// The exchange with a bound: exchange() runs on the calling thread; if it has not returned after ms milliseconds, a
++// watcher thread calls abortFn() once, which must make exchange() return (the communicator's abort flag ends the bootstrap
++// socket loops). *expired tells whether the bound passed; ms <= 0: no bound. Returns exchange()'s result.
++template <typename X, typename A>
++static int gdakiRsRunBounded(X exchange, A abortFn, long long ms, bool* expired) {
++  *expired = false;
++  if (ms <= 0) return exchange();
++  std::mutex mu;
++  std::condition_variable cv;
++  bool done = false;
++  std::thread watcher([&] {
++    std::unique_lock<std::mutex> lk(mu);
++    if (!cv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return done; })) {
++      *expired = true;  // decided under the lock: the caller reads it after the join
++      abortFn();
++    }
++  });
++  const int rc = exchange();
++  {
++    std::lock_guard<std::mutex> lk(mu);
++    done = true;
++  }
++  cv.notify_all();
++  watcher.join();
++  return rc;
++}
 +// ---- gin-restore: pure functions (end) ----
 +
 +// This process's restore request, read once (NCCL_GIN_FAULT_POLICY and NCCL_GIN_RESTORE_SPARE with getenv as hk's G1,
@@ -172,6 +526,75 @@ index 2760d43..73f1e00 100644
 +  }();
 +  return c;
 +}
++
++// The setup decisions and Resume results of this process, for ncclGinRestoreResume (work package 2). A setup entry is
++// keyed by the communicator and the user devComm's GIN handle of that context (the value ncclDevComm::ginHandles holds);
++// handle nullptr: a setup that ended its context's creation (the strict-bit verdict). Only a setup with a verdict other than
++// "not requested" leaves an entry, so a fail-fast job leaves none (a fail-fast process in a job where another rank asks
++// keeps one, in memory only). Entries go with the context (ncclGinGdakiDestroyContext) and with the communicator
++// (ncclGinGdakiTsCommTeardown). Writers: the application thread (setup, start, Resume, teardown); no helper thread.
++NCCL_PARAM(GinRestoreMs, "GIN_RESTORE_MS", 20000);              // the restore deadline (below NCCL_GIN_TS_HOLD_MS)
++NCCL_PARAM(GinRestoreResumeMs, "GIN_RESTORE_RESUME_MS", 30000);  // the Resume exchange's bound (<= 0: none)
++struct gdakiRsEntry {
++  void* comm = nullptr;
++  void* handle = nullptr;
++  bool setup = false;              // a setup decision: verdict, why, offWhy
++  int verdict = GDAKI_RS_NOT_REQUESTED;
++  char why[GDAKI_RS_WHY_LEN] = {0};
++  char offWhy[96] = {0};           // this rank's transparent recovery went off after the agreement (setup or start)
++};
++// The Resume result of a communicator (one per communicator: a second call returns it, whatever devComm it names). The
++// communicator is identified by its address, commHash and bootstrap state: a later communicator at the same address
++// (one that never connected GIN is not torn down here, or an abort raced with Resume) does not get it.
++struct gdakiRsResumed {
++  void* comm = nullptr;
++  uint64_t commHash = 0;
++  void* bootstrap = nullptr;
++  ncclResult_t rc = ncclSuccess;
++  int verdict = GDAKI_RS_NOT_REQUESTED;
++  char why[GDAKI_RS_RWHY_LEN] = {0};
++};
++static std::mutex gdakiRsRegMu;
++static std::vector<struct gdakiRsEntry> gdakiRsReg;
++static std::vector<struct gdakiRsResumed> gdakiRsResumedReg;
++static struct gdakiRsEntry* gdakiRsFindLocked(void* comm, void* handle) {
++  for (auto& e : gdakiRsReg)
++    if (e.comm == comm && e.handle == handle) return &e;
++  return nullptr;
++}
++static void gdakiRsNoteSetup(void* comm, void* handle, int verdict, const char* why) {
++  std::lock_guard<std::mutex> lk(gdakiRsRegMu);
++  struct gdakiRsEntry* e = gdakiRsFindLocked(comm, handle);
++  if (e == nullptr) {
++    gdakiRsReg.emplace_back();
++    e = &gdakiRsReg.back();
++  }
++  *e = gdakiRsEntry();  // a new context at a reused address replaces the old entry
++  e->comm = comm;
++  e->handle = handle;
++  e->setup = true;
++  e->verdict = verdict;
++  snprintf(e->why, sizeof(e->why), "%s", why);
++}
++static void gdakiRsNoteOff(void* comm, void* handle, const char* offWhy) {
++  std::lock_guard<std::mutex> lk(gdakiRsRegMu);
++  struct gdakiRsEntry* e = gdakiRsFindLocked(comm, handle);
++  if (e != nullptr && e->offWhy[0] == '\0') snprintf(e->offWhy, sizeof(e->offWhy), "%s", offWhy);
++}
++static void gdakiRsForget(void* comm, void* handle) {  // comm nullptr: every entry of handle; handle nullptr: of comm
++  std::lock_guard<std::mutex> lk(gdakiRsRegMu);
++  gdakiRsReg.erase(std::remove_if(gdakiRsReg.begin(), gdakiRsReg.end(),
++                                  [&](const struct gdakiRsEntry& e) {
++                                    return comm != nullptr ? e.comm == comm : (handle != nullptr && e.handle == handle);
++                                  }),
++                   gdakiRsReg.end());
++  if (comm != nullptr)
++    gdakiRsResumedReg.erase(std::remove_if(gdakiRsResumedReg.begin(), gdakiRsResumedReg.end(),
++                                           [&](const struct gdakiRsResumed& e) { return e.comm == comm; }),
++                            gdakiRsResumedReg.end());
++}
++
++static bool gdakiRsRequested() { return gdakiRsProc().requested; }
 +
 +// Report of one GDAKI window MR of a process under hold or in spare mode (a fail-fast process writes nothing, as hk):
 +// strict = the ordering asked of gdakiRegMr, forced = the restore request makes it strict whatever the flags,
@@ -193,7 +616,7 @@ index 2760d43..73f1e00 100644
  // ---- gin-harden: the user devComm abort word of a communicator ----
  // One host-pinned word per communicator (ncclCudaHostCalloc, read by the device through UVA), created for the first
  // user devComm (dev_runtime.cc) and freed with the communicator (init.cc commFree). Raised once, never cleared, always
-@@ -6604,13 +6776,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6604,13 +7008,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    }
    // gpu-detect (hk, G1): this rank's fault policy (default failfast); every rank compares the record's values after the
    // all-gather. A rank that differs makes the context fail-fast. hold needs the restore layer: fail-fast in this build.
@@ -213,7 +636,7 @@ index 2760d43..73f1e00 100644
    mine.policy = (uint32_t)polReq;
    int ls = -1;
    int boundPort = 0;
-@@ -6659,6 +6830,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6659,6 +7062,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
        });
      }
    }
@@ -226,13 +649,14 @@ index 2760d43..73f1e00 100644
    ncclResult_t ret = cComm->allGather(cComm, &mine, all.data(), sizeof(mine));
    if (ret != ncclSuccess) {
      if (ls >= 0) close(ls);
-@@ -6667,6 +6844,28 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6667,6 +7076,31 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    uint64_t nonce = 0x6e6f6e6365ull;  // gin-harden: every rank's salt, in rank order: the same on every rank
    for (int p = 0; p < nranks; p++) nonce = gdakiTsMix64(nonce ^ all[p].salt);
    if (nonce == 0) nonce = 1;
 +  // gin-restore (rs, 9.10.8, K15): whether the restore can be enabled, decided by every rank from the same records, before
-+  // any helper socket connects. Only "a rank that asks does not register strict" ends here (ncclInternalError: the devComm
-+  // is not created on any rank); every other refusal leaves a fail-fast context. A rank that does not ask writes nothing.
++  // any helper socket connects. Only "a rank that asks does not register strict" ends here (ncclInternalError: this GDAKI
++  // context is not created on any rank; NCCL may try another GIN backend); every other refusal leaves a fail-fast context.
++  // A rank that does not ask writes nothing. The verdict is kept for ncclGinRestoreResume (unless nobody asks).
 +  char rsWhy[GDAKI_RS_WHY_LEN];
 +  int rsVerdict;
 +  {
@@ -245,6 +669,8 @@ index 2760d43..73f1e00 100644
 +    }
 +    rsVerdict = gdakiRsDecide(nranks, rsPol.data(), rsBits.data(), rsOn.data(), rsWhy, sizeof(rsWhy));
 +  }
++  void* const rsHandle = (rsVerdict != GDAKI_RS_REFUSE_FATAL && g->devHandle) ? g->devHandle->handle : nullptr;
++  if (rsVerdict != GDAKI_RS_NOT_REQUESTED) gdakiRsNoteSetup(ncclGinRecCommKey, rsHandle, rsVerdict, rsWhy);
 +  if (rsVerdict == GDAKI_RS_REFUSE_FATAL) {
 +    WARN("GIN/RS: rank %d: the restore is asked for on every rank but cannot be had: %s; this GDAKI context is not "
 +         "created (ncclInternalError; NCCL may try another GIN backend, ncclGinRestoreResume returns this reason)", rank,
@@ -255,11 +681,12 @@ index 2760d43..73f1e00 100644
    const uint32_t ctxSeq = (uint32_t)(nonce & 0x7fffffffu);  // display only (HELLO.arg); the nonce is checked
    struct gdakiTs* ts = nullptr;
    const double deadline = gdakiQ4MonoMs() + (double)ncclParamGinTsConnectMs();
-@@ -6750,6 +6949,13 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6750,6 +7184,14 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    }
    if (why != nullptr) {
      WARN("GIN/TS: transparent recovery OFF on rank %d: %s", rank, why);
 +    if (rsc.requested) {  // gin-restore (rs): on a rank that asks (fail-fast: nothing)
++      gdakiRsNoteOff(ncclGinRecCommKey, rsHandle, why);  // for ncclGinRestoreResume's local judgment
 +      if (rsVerdict == GDAKI_RS_ENABLE)  // the records said yes; this rank lost its recovery after the all-gather
 +        WARN("GIN/RS: rank %d: restore refused on this rank: transparent recovery went off after the setup agreement "
 +             "(%s); the other ranks decided from the records", rank, why);
@@ -269,7 +696,7 @@ index 2760d43..73f1e00 100644
      if (ts) {
        for (auto& pe : ts->peers)
          if (pe.fd >= 0) gdakiTsByeClose(pe.fd, rank, nonce);  // gin-harden: the peers read "left", not death
-@@ -6777,9 +6983,13 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6777,9 +7219,13 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    if (!ts->policyAgreed)
      WARN("GIN/TS: rank %d: NCCL_GIN_FAULT_POLICY differs across ranks (this rank %s, rank %d %s); fail-fast", rank,
           gdakiPolicyName(polReq), polOther, gdakiPolicyName((int)all[polOther].policy));
@@ -286,7 +713,240 @@ index 2760d43..73f1e00 100644
    r->ts = ts;
    return ncclSuccess;
  }
-@@ -8385,7 +8595,11 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -7304,6 +7750,8 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+   }
+   if (!ok) {
+     WARN("GIN/TS: transparent recovery OFF on rank %d (gate setup failed)", g->rank);
++    if (gdakiRsProc().requested && g->devHandle)  // gin-restore (rs): for ncclGinRestoreResume (fail-fast: nothing)
++      gdakiRsNoteOff(r->commKey, g->devHandle->handle, "gate setup failed");
+     gdakiTsCloseListen(ts->listenFd, g->rank, ts->nonce);  // gin-harden: BYE, not a reset, for a pending connection
+     ts->listenFd = -1;
+     if (r->copyStuck && r->copyEv != nullptr) {  // gin-harden: the gate writes below need the late copy done (bounded)
+@@ -7455,6 +7903,7 @@ static void gdakiDetTeardownLine(struct gdakiTs* ts, int rank) {
+ extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
+   std::vector<struct gdakiRecHost*> rs;
+   int orphansOnColl = 0;
++  if (commKey != nullptr) gdakiRsForget(commKey, nullptr);  // gin-restore (rs): the restore entries of this communicator
+   {
+     std::lock_guard<std::mutex> lk(gdakiRecRegMu);
+     for (auto* r : gdakiRecReg)
+@@ -7652,6 +8101,207 @@ ncclResult_t ncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* st
+   return ncclSuccess;
+ }
+ 
++// ---- gin-restore (rs, work package 2): ncclGinRestoreResume's judgment and decision (nccl.h; the entry is in
++// gin/gin_host.cc, which passes the communicator's facts, the bootstrap all-gather and the abort-flag setter) ----
++// Every rank of the communicator calls it (user decision 2026-10-12, EXPERIMENT.md 9.10.8). This rank's judgment reads the
++// GDAKI context under gdakiRecRegMu (as ncclGinGetRecoveryStats) and only fields fixed before its helper started, atomics,
++// or (the NIC copy path's flag) an atomic load; the abort words under gdakiUaMu. It writes nothing the helper reads.
++// A second call returns the first call's result without an exchange.
++// Whether a fault already reached the application on this communicator (the TOLD of 9.10.5 (a), (b)); "" if not. Takes
++// gdakiUaMu alone (ncclGinTsUserAbortWord takes gdakiUaMu, then gdakiRecRegMu: never hold them the other way round).
++static void gdakiRsTold(void* comm, bool asyncSet, char* out, size_t outLen) {
++  out[0] = '\0';
++  if (asyncSet) {
++    snprintf(out, outLen, "the communicator's GIN asynchronous error is set");
++    return;
++  }
++  std::lock_guard<std::mutex> lk(gdakiUaMu);
++  for (auto& x : gdakiUaReg) {
++    if (x.comm != comm) continue;
++    if (x.allWhy != 0) snprintf(out, outLen, "every wait word raised: %s", gdakiUaName(x.allWhy));
++    else if (x.why != 0) snprintf(out, outLen, "the devComm wait word raised: %s", gdakiUaName(x.why));
++    else if (x.degradedAtMs != 0) snprintf(out, outLen, "degraded scheduled after rank %d was judged dead", x.degradedPeer);
++    else
++      for (int p = 0; p < (int)x.peerWhy.size(); p++)
++        if (x.peerWhy[p] != 0) {
++          snprintf(out, outLen, "rank %d's wait word raised: %s", p, gdakiUaName(x.peerWhy[p]));
++          break;
++        }
++    return;
++  }
++}
++
++ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCommFacts* f,
++                                       ncclResult_t (*exchange)(void* comm, void* data, int bytesPerRank),
++                                       void (*abortComm)(void* comm), unsigned long long* step, void* blob,
++                                       size_t* bytes) {
++  (void)blob;
++  void* const key = f->nConn > 0 ? f->handles[0] : nullptr;
++  char why[GDAKI_RS_RWHY_LEN];
++  {  // a second call on this communicator: the first call's result
++    bool again = false;
++    ncclResult_t rc = ncclSuccess;
++    {
++      std::lock_guard<std::mutex> lk(gdakiRsRegMu);
++      for (size_t i = 0; i < gdakiRsResumedReg.size(); i++) {
++        struct gdakiRsResumed& e = gdakiRsResumedReg[i];
++        if (e.comm != comm) continue;
++        if (e.commHash == f->commHash && e.bootstrap == f->bootstrap) {
++          again = true;
++          rc = e.rc;
++          snprintf(why, sizeof(why), "%s", e.why);
++        } else {  // a former communicator at this address
++          gdakiRsResumedReg.erase(gdakiRsResumedReg.begin() + i);
++        }
++        break;
++      }
++    }
++    if (again) {
++      if (rc != ncclSuccess) {
++        WARN("GIN/RS: ncclGinRestoreResume: the restore cannot be enabled on this communicator: %s", why);
++      } else if (step != nullptr && bytes != nullptr) {
++        *step = 0;
++        *bytes = 0;
++      }
++      INFO(NCCL_NET, "GIN/RS: rank %d: ncclGinRestoreResume called again: the first call's result, no exchange", f->rank);
++      return rc;
++    }
++  }
++  // this rank's judgment
++  const struct gdakiRsCfg& c = gdakiRsProc();
++  struct gdakiRsLocalIn in;
++  in.argsOk = f->argsOk != 0;
++  in.devCommVersion = (f->devCommVersion == 0 || f->devCommVersion == (int)NCCL_VERSION_CODE) ? 0 : f->devCommVersion;
++  in.spare = c.spare >= 0;
++  in.ginType = f->ginType;
++  in.nConn = f->nConn;
++  in.commFull = f->commFull != 0;
++  in.ctxStride = f->ctxStride;
++  in.numRmaCtx = f->numRmaCtx;
++  in.runtimeConn = f->runtimeConn != 0;
++  in.nvls = f->nvls != 0;
++  in.lsaSize = f->lsaSize;
++  in.symGinDevComm = f->symGinDevComm != 0;
++  in.reconnect = (long long)ncclParamGinTsReconnect();
++  in.restoreMs = (long long)ncclParamGinRestoreMs();
++  struct gdakiRsXRec mine;
++  memset(&mine, 0, sizeof(mine));
++  mine.magic = GDAKI_RS_X_MAGIC;
++  mine.rank = f->rank;
++  mine.req = c.requested ? 1u : 0u;
++  mine.policy = (uint32_t)c.policy;
++  mine.setupVerdict = -1;
++  char offWhy[96] = {0};
++  {
++    std::lock_guard<std::mutex> lk(gdakiRsRegMu);
++    struct gdakiRsEntry* fatal = gdakiRsFindLocked(comm, nullptr);
++    struct gdakiRsEntry* e = key != nullptr ? gdakiRsFindLocked(comm, key) : nullptr;
++    if (fatal != nullptr && fatal->setup && fatal->verdict == GDAKI_RS_REFUSE_FATAL) e = fatal;  // the communicator ended
++    if (e != nullptr && e->setup) {
++      mine.setupVerdict = e->verdict;
++      snprintf(mine.setupWhy, sizeof(mine.setupWhy), "%s", e->why);
++      snprintf(offWhy, sizeof(offWhy), "%s", e->offWhy);
++      in.haveSetup = e->handle != nullptr;
++    }
++    for (const auto& x : gdakiRsReg)
++      if (x.comm == comm && x.setup && x.handle != nullptr) in.nUserCtx++;
++  }
++  in.offWhy = offWhy;
++  struct gdakiRecHost* rFound = nullptr;
++  bool asyncSet = false;
++  char told[160];
++  {
++    std::lock_guard<std::mutex> lk(gdakiRecRegMu);
++    for (auto* r : gdakiRecReg)
++      if (key != nullptr && r->commKey == comm && r->ctx != nullptr && r->ctx->devHandle != nullptr &&
++          r->ctx->devHandle->handle == key)
++        rFound = r;
++    if (rFound != nullptr && rFound->ts != nullptr) {
++      struct gdakiTs* ts = rFound->ts;
++      in.tsOn = ts->active.load(std::memory_order_acquire) != 0 && ts->dead.load(std::memory_order_acquire) == 0;
++      in.qpwatchMs = ts->detWatchMs;  // set in gdakiTsStart, before the helper ran
++      in.holdMs = ts->holdMs;         // set in gdakiTsSetup
++      in.escalated = ts->escalated.load(std::memory_order_acquire);
++      in.lbOn = rFound->lb != nullptr && __atomic_load_n(&rFound->lb->ok, __ATOMIC_ACQUIRE);
++    }
++    if (rFound != nullptr && rFound->ctx != nullptr && rFound->ctx->q4 != nullptr &&
++        rFound->ctx->q4->asyncResult != nullptr)
++      asyncSet = __atomic_load_n(rFound->ctx->q4->asyncResult, __ATOMIC_ACQUIRE) != ncclSuccess;
++  }
++  if (f->asyncErr != (int)ncclSuccess)  // the communicator's asynchronous error (ncclCommGetAsyncError, the entry)
++    snprintf(told, sizeof(told), "the communicator has an asynchronous error: %s",
++             ncclGetErrorString((ncclResult_t)f->asyncErr));
++  else
++    gdakiRsTold(comm, asyncSet, told, sizeof(told));  // after gdakiRecRegMu is released
++  in.told = told[0] ? told : nullptr;
++  mine.localCode = gdakiRsLocalCheck(in, mine.localWhy, sizeof(mine.localWhy));
++  // the exchange over the communicator's bootstrap, bounded
++  const int n = f->nRanks;
++  std::vector<struct gdakiRsXRec> all((size_t)n);
++  all[(size_t)f->rank] = mine;
++  bool expired = false;
++  const long long boundMs = std::min<long long>((long long)ncclParamGinRestoreResumeMs(), 86400000LL);  // <= 1 day
++  const int xr = gdakiRsRunBounded([&] { return (int)exchange(comm, all.data(), (int)sizeof(struct gdakiRsXRec)); },
++                                   [&] { abortComm(comm); }, boundMs, &expired);
++  int verdict;
++  ncclResult_t rc;
++  if (expired || xr != (int)ncclSuccess) {
++    if (!expired) abortComm(comm);  // the bootstrap ring is out of step either way
++    verdict = GDAKI_RS_REFUSE;
++    rc = ncclSystemError;
++    snprintf(why, sizeof(why), "the Resume exchange did not complete within its bound (NCCL_GIN_RESTORE_RESUME_MS) or "
++             "failed: a rank did not call ncclGinRestoreResume, or the bootstrap failed; the communicator's abort flag "
++             "is set, end it with ncclCommAbort");
++  } else {
++    verdict = gdakiRsResumeDecide(n, all.data(), why, sizeof(why));
++    rc = verdict == GDAKI_RS_REFUSE ? ncclInvalidUsage : ncclSuccess;
++  }
++  {
++    std::lock_guard<std::mutex> lk(gdakiRsRegMu);
++    gdakiRsResumedReg.emplace_back();
++    struct gdakiRsResumed& e = gdakiRsResumedReg.back();
++    e.comm = comm;
++    e.commHash = f->commHash;
++    e.bootstrap = f->bootstrap;
++    e.rc = rc;
++    e.verdict = verdict;
++    snprintf(e.why, sizeof(e.why), "%s", why);
++  }
++  if (rc != ncclSuccess) {  // the reason, the same on every rank: ncclGetLastError(comm) returns this line's text
++    WARN("GIN/RS: ncclGinRestoreResume: the restore cannot be enabled on this communicator: %s", why);
++    return rc;
++  }
++  if (step != nullptr && bytes != nullptr) {  // the first incarnation: step 0, no host blob
++    *step = 0;
++    *bytes = 0;
++  }
++  if (verdict == GDAKI_RS_ENABLE)
++    GIN_TS_NOTE("GIN/RS: rank %d: ncclGinRestoreResume: the restore can be enabled (%s); first incarnation, step 0; this "
++                "build has no hold reaction yet: the communicator stays fail-fast", f->rank, why);
++  else
++    INFO(NCCL_NET, "GIN/RS: rank %d: ncclGinRestoreResume: %s; the communicator stays fail-fast", f->rank, why);
++  return ncclSuccess;
++}
++
++// The checkpoint step hook and the registration of more device buffers (EXPERIMENT.md 9.4): not in this build yet.
++NCCL_API(ncclResult_t, ncclGinRestoreStep, ncclComm_t comm, unsigned long long step, const void* blob, size_t bytes);
++ncclResult_t ncclGinRestoreStep(ncclComm_t comm, unsigned long long step, const void* blob, size_t bytes) {
++  (void)step;
++  (void)blob;
++  (void)bytes;
++  if (comm == nullptr) return ncclInvalidArgument;
++  WARN("GIN/RS: ncclGinRestoreStep is not implemented in this build yet (no checkpoint is taken)");
++  return ncclInvalidUsage;
++}
++NCCL_API(ncclResult_t, ncclGinRestoreRegister, ncclComm_t comm, void* buff, size_t size);
++ncclResult_t ncclGinRestoreRegister(ncclComm_t comm, void* buff, size_t size) {
++  (void)buff;
++  (void)size;
++  if (comm == nullptr) return ncclInvalidArgument;
++  WARN("GIN/RS: ncclGinRestoreRegister is not implemented in this build yet (nothing is registered)");
++  return ncclInvalidUsage;
++}
++
+ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, void** outGinCtx,
+                                        ncclNetDeviceHandle_t** outDevHandle) {
+   ncclResult_t status = ncclSuccess;
+@@ -8281,6 +8931,7 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+   gdaki_ctx->rec = nullptr;
+   gdakiQ4Free(gdaki_ctx->q4);  // GIN Q4: stop the watcher before the QPs go away
+   gdaki_ctx->q4 = nullptr;
++  if (gdaki_ctx->devHandle != nullptr) gdakiRsForget(nullptr, gdaki_ctx->devHandle->handle);  // gin-restore (rs)
+ 
+   if (gdaki_ctx->docaEvent) {
+     doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
+@@ -8385,7 +9036,11 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
    __be32 rkey;
  
    struct gdaki_mem_handle* gdaki_mhandle = nullptr;
@@ -299,7 +959,7 @@ index 2760d43..73f1e00 100644
  
    gdaki_mhandle = (struct gdaki_mem_handle*)calloc(1, sizeof(*gdaki_mhandle));
    EQCHECKGOTO(gdaki_mhandle, nullptr, status, out);
-@@ -8393,7 +8607,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8393,7 +9048,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
    NCCLCHECKGOTO(gdakiRegMr(&mr, cComm->ib.pd, data, size,
                             IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
                               IBV_ACCESS_REMOTE_ATOMIC,
@@ -308,7 +968,7 @@ index 2760d43..73f1e00 100644
                  status, out);
  
    rkey = htobe32(mr->rkey);
-@@ -8413,6 +8627,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8413,6 +9068,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
  
    INFO(NCCL_NET, "[%d] Registered MR: data=%p, size=%zu, lkey(be32)=%#x, rkey(be32)=%#x", cComm->rank, data, size,
         htobe32(mr->lkey), htobe32(mr->rkey));
