@@ -23,9 +23,11 @@
 #                                                    env WANT_B3V2
 #        deploy_feas.sh <check output file> b3v3     the third rs_drain_test build (progress on every exit, query budget)
 #                                                    into the NEW directory ~/rs-bundle/b3v3/, same checks; env WANT_B3V3
+#        deploy_feas.sh <check output file> b3v4     the fourth rs_drain_test build (copy timing, in-process hog; 2026-10-11)
+#                                                    into the NEW directory ~/rs-bundle/b3v4/, same checks; env WANT_B3V4
 set -euo pipefail
 OUTF=${1:?output file (the check is written to a file only; never pipe it)}
-if [ "${2:-}" = rsx2 ] || [ "${2:-}" = b3v2 ] || [ "${2:-}" = b3v3 ]; then
+if [ "${2:-}" = rsx2 ] || [ "${2:-}" = b3v2 ] || [ "${2:-}" = b3v3 ] || [ "${2:-}" = b3v4 ]; then
   K=$2
   SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH (user@address) from the management env file}
   SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
@@ -37,10 +39,14 @@ if [ "${2:-}" = rsx2 ] || [ "${2:-}" = b3v2 ] || [ "${2:-}" = b3v3 ]; then
     SRC=$SCR/agent_restore/out/b3v2/rs_drain_test; FN=rs_drain_test
     WANT=${WANT_B3V2:?expected md5 of the b3v2 rs_drain_test (EXPERIMENT.md 12)}
     LDD2='cd $HOME/rs-bundle && echo "b3v2: $(ldd b3v2/rs_drain_test | grep -E "ibverbs|mlx5|libcuda|not found" | tr -s " " | tr "\n" ";")"'
-  else
+  elif [ "$K" = b3v3 ]; then
     SRC=$SCR/agent_restore/out/b3v3/rs_drain_test; FN=rs_drain_test
     WANT=${WANT_B3V3:?expected md5 of the b3v3 rs_drain_test (EXPERIMENT.md 12)}
     LDD2='cd $HOME/rs-bundle && echo "b3v3: $(ldd b3v3/rs_drain_test | grep -E "ibverbs|mlx5|libcuda|not found" | tr -s " " | tr "\n" ";")"'
+  else
+    SRC=$SCR/agent_restore/out/b3v4/rs_drain_test; FN=rs_drain_test
+    WANT=${WANT_B3V4:?expected md5 of the b3v4 rs_drain_test (EXPERIMENT.md 12)}
+    LDD2='cd $HOME/rs-bundle && echo "b3v4: $(ldd b3v4/rs_drain_test | grep -E "ibverbs|mlx5|libcuda|not found" | tr -s " " | tr "\n" ";")"'
   fi
   md5() { md5sum < "$1" | cut -c1-32; }
   [ "$(md5 "$SRC")" = "$WANT" ] || { echo "$K is not the expected build" >&2; exit 1; }
