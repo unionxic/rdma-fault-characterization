@@ -8,7 +8,10 @@
 #          (rank 0, which also listens for the driver's rendezvous)
 #     lat4k    lat mode, 3 000 iterations of one 4 KiB put + flush (gpu-detect's lat_4k)
 #     lat256k  lat mode, 3 000 iterations of one 256 KiB put + flush
-#     bw256k   burst mode, one thread, 200 iterations of 16 puts of 256 KiB + signal + flush (bandwidth = 4 MiB / p50)
+#     bw256k   burst mode, one thread, 12 iterations of 8 puts of 256 KiB + signal + flush (bandwidth = 2 MiB / p50).
+#              Changed 2026-10-11 after the first ORD-sunny hold (EXPERIMENT.md 9.15.6, 12): the planned 200 x 16 x 256 KiB
+#              needed two 800 MiB windows per rank, beyond rain's BAR1 (256 MiB; registrations above about 50 MiB fail
+#              there). Now 24 MiB per window, under the repo's 64 MiB rule for rain (harness/gpu-initiated/DESIGN.md)
 #     strict   GIN_TS_WIN_STRICT=1 on both ranks: both windows NCCL_WIN_COLL_SYMMETRIC | NCCL_WIN_STRICT_ORDERING
 #     relaxed  no GIN_TS_WIN_STRICT: NCCL_WIN_COLL_SYMMETRIC only (NCCL asks RO for the window MRs when ro_requested=1 in
 #              the driver's kv: NCCL_IB_PCI_RELAXED_ORDERING unset = 2 and ibv_reg_mr_iova2@IBVERBS_1.8 present)
@@ -19,11 +22,17 @@
 #   nodes are deleted), <cell>_<tag>_lat_raw.csv.gz (lat cells: rank 0's per-iteration ns, review K22),
 #   <cell>_<tag>_meta.txt (left: processes of this run still there after both ended, by the run's unique tag;
 #   gin_ts2_before/after: every process named gin_ts2 on both nodes, information only)
+# env: ORD_DIAG=1 (the diagnostic smoke): NCCL_DEBUG=INFO with subsystems INIT,NET,REG into a file that stays on the node
+#      (NCCL_DEBUG_FILE=$HOME/rs-ordlogs/<cell>_<tag>.<host>.<pid>.log, mode 600; it holds management addresses, so it is
+#      never copied; read it on the node); the copied logs then hold gin_ts2's own lines only
+# Both ranks run under stdbuf -oL -eL (as run_trial_hr.sh): gin_ts2 leaves with _exit, so a block-buffered stdout loses
+#   NCCL's WARN lines (the first ORD-sunny hold lost the registration WARN; NCCL line-buffers only NCCL_DEBUG_FILE)
 # env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), ORDBIN ($HOME/rs-bundle/ord/gin_ts2),
 #      ORDLIB ($HOME/gi-bundle/gin_ts2/hk: gpu-detect's deployed hk bundle, read only)
 set -u
 CELL=${1:?cell}; TAG=${2:?run tag}; LOGDIR=${3:?logdir}
 # every NCCL_ and GIN_ variable of the caller is dropped: the run's environment is exactly NENV below (review K21)
+DIAG=${ORD_DIAG:-0}
 for v in $(env | sed -n 's/^\(\(NCCL\|GIN\)_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 SUNNY_HOST=${SUNNY_SSH#*@}
@@ -38,7 +47,7 @@ case "$RX" in rain) TX=sunny ;; sunny) TX=rain ;; *) echo "bad cell $CELL" >&2; 
 case "$METRIC" in
   lat4k)   MODE=lat;   ITERS=3000; BYTES=4096;   XENV="" ;;
   lat256k) MODE=lat;   ITERS=3000; BYTES=262144; XENV="" ;;
-  bw256k)  MODE=burst; ITERS=200;  BYTES=262144; XENV="GIN_TS_TX_BLOCKS=1 GIN_TS_TX_THREADS=1 GIN_TS_BURST_K=16 GIN_TS_AGG=1" ;;
+  bw256k)  MODE=burst; ITERS=12;   BYTES=262144; XENV="GIN_TS_TX_BLOCKS=1 GIN_TS_TX_THREADS=1 GIN_TS_BURST_K=8 GIN_TS_AGG=1" ;;
 esac
 umask 077
 WORK=$(mktemp -d /tmp/rs_ord.XXXXXX)
@@ -64,7 +73,13 @@ pick_port
 NONCE=$(new_nonce)
 hca() { [ "$1" = rain ] && echo "$HCA_RAIN" || echo "$HCA_SUNNY"; }
 gidx() { [ "$1" = rain ] && echo "$GID_R" || echo "$GID_S"; }
-NENV="NCCL_DEBUG=WARN NCCL_SOCKET_IFNAME=eno1 NCCL_GIN_TYPE=3 NCCL_GIN_ENABLE=1 \
+if [ "$DIAG" = 1 ]; then
+  DBG="NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,NET,REG NCCL_DEBUG_FILE=\$HOME/rs-ordlogs/${CELL}_${TAG}.%h.%p.log"
+  mkdir -p -m 700 "$HOME/rs-ordlogs"; ssh -n "$SUNNY_SSH" 'mkdir -p -m 700 $HOME/rs-ordlogs'
+else
+  DBG="NCCL_DEBUG=WARN"
+fi
+NENV="$DBG NCCL_SOCKET_IFNAME=eno1 NCCL_GIN_TYPE=3 NCCL_GIN_ENABLE=1 \
 NCCL_IB_TIMEOUT=14 NCCL_GIN_FAULT_CLASSIFY=1 NCCL_GIN_FAULT_RECOVERY=1 NCCL_GIN_FAULT_TRANSPARENT=1 \
 NCCL_GIN_TS_QPWATCH_MS=0 GIN_ABORT_WATCHDOG_S=15 GIN_RDV_NONCE=$NONCE LD_LIBRARY_PATH=$LIB \
 $( [ "$STRICT" = 1 ] && echo GIN_TS_WIN_STRICT=1 ) $XENV"
@@ -80,10 +95,10 @@ start() {
   fi
   # a private working directory per process and no core files (not in gpu-detect's bundle; review K12)
   if [ "$node" = rain ]; then
-    ( mkdir -p "$WORK/cwd$r" && cd "$WORK/cwd$r" && ulimit -c 0 && env $envs timeout -s KILL "$TMO" "$BIN" $args "$WORK/r$r.kv" 0 \
+    ( mkdir -p "$WORK/cwd$r" && cd "$WORK/cwd$r" && ulimit -c 0 && eval "env $envs stdbuf -oL -eL timeout -s KILL $TMO $BIN $args $WORK/r$r.kv 0" \
         > "$WORK/r$r.log" 2>&1; echo $? > "$WORK/r$r.rc" ) &
   else
-    ssh -n "$SUNNY_SSH" "umask 077 && mkdir -p $RT.cwd$r && cd $RT.cwd$r && ulimit -c 0 && $envs timeout -s KILL $TMO $BIN $args $RT.r$r.kv 0 \
+    ssh -n "$SUNNY_SSH" "umask 077 && mkdir -p $RT.cwd$r && cd $RT.cwd$r && ulimit -c 0 && $envs stdbuf -oL -eL timeout -s KILL $TMO $BIN $args $RT.r$r.kv 0 \
 > $RT.r$r.log 2>&1; echo \$?" > "$WORK/r$r.rc" 2>/dev/null &
   fi
   PIDS[$r]=$!
@@ -126,7 +141,7 @@ rc() { tr -d '\n' < "$WORK/r$1.rc" 2>/dev/null || echo none; }
 echo "cell=$CELL tag=$TAG metric=$METRIC arm=$ARM win_strict=$STRICT rx=$RX tx=$TX mode=$MODE iters=$ITERS bytes=$BYTES \
 burst=$(echo "$XENV" | tr ' ' '+') hca_rain=$HCA_RAIN hca_sunny=$HCA_SUNNY gid_rain=$GID_R gid_sunny=$GID_S \
 rc_r0=$(rc 0) rc_r1=$(rc 1) left=$LEFT gin_ts2_before=$TS_BEFORE gin_ts2_after=$TS_AFTER port=$PORT port_tries=$PORT_TRIES rdv_nonce_set=1 \
-qpwatch_ms=0 wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') bin=$BIN lib=$LIB" > "$LOGDIR/${stem}_meta.txt"
+qpwatch_ms=0 diag=$DIAG wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') bin=$BIN lib=$LIB" > "$LOGDIR/${stem}_meta.txt"
 echo "[$stem] rc r0=$(rc 0) r1=$(rc 1) left=$LEFT :: $(grep -ho 'win_flags=[0-9a-fx]*\|ro_requested=[01]\|lat_p50_us=[0-9.]*\|exit=[0-9]*' \
   "$WORK/r0.kv" 2>/dev/null | tr '\n' ' ')" >&2
 exit 0
