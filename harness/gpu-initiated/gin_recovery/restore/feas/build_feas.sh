@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # build_feas.sh - build gin-restore's feasibility tests (EXPERIMENT.md 9.15) on rain, in NEW scratch trees only. No GPU or
 # RDMA program runs here; nothing outside agent_restore/ is written (the gpu-detect hw tree agent_gd/gin is read only).
-# usage: build_feas.sh <b1-setup|b1-lib|app|b3|info|all>
+# usage: build_feas.sh <b1-setup|b1-lib|app|b3|ord|info|all>
 #   b1-setup  check that agent_restore/b1/{nccl-src,build} is the copy of the hw tree (head commit "gpu-detect hw", its diff
 #             against "gin-remaining hr" = hw_layer.diff md5 be0ea9ed, built libnccl md5 efc48ca1); the copy, the path
 #             rewrite of the .d files and that commit were made once by hand (EXPERIMENT.md 12).
@@ -13,6 +13,10 @@
 #             with only the report lines on: NCCL_GIN_RESTORE_REPORT=1)
 #   b3        rs_drain_test.cu (no NCCL; libibverbs, libmlx5, libcuda) -> agent_restore/out/$B3OUT/rs_drain_test (B3OUT
 #             required, a NEW folder name: out/b3, out/b3v2, out/b3v3, out/b3v4 hold the recorded builds and are refused)
+#   ord       the normal-path comparison driver (EXPERIMENT.md 9.15.6, 2026-10-11): ../../gin_ts2.cu (gin-remaining's driver,
+#             md5 1779db9d = the source of the deployed hr gin_ts2) + feas/gin_ts2_winflags.diff, patched in
+#             agent_restore/ord_src/, against the hw headers (= hk's) -> agent_restore/out/ord/gin_ts2 (a folder that already
+#             holds a build is refused); the flags of gin-remaining's build_hr.sh drivers()
 #   info      agent_restore/out/build_info.txt: md5 of every output and input
 # All compiles run at nice 19 and idle I/O priority. nvcc output is not byte-reproducible: a rerun changes the md5 of the
 # executables; the deployed values are those recorded in EXPERIMENT.md 12.
@@ -77,6 +81,20 @@ b3() {  # B3OUT (required): a new output folder; a folder that already holds a b
   echo "rs_drain_test.cu $(md5 "$D/rs_drain_test.cu") built $(date '+%F %T')" > "$o/build_src.txt"  # the source at compile time
   echo "rs_drain_test $(md5 "$o/rs_drain_test")"
 }
+ord() {
+  local o=$OUT/ord w=$W/ord_src src=$D/../../gin_ts2.cu inc=$SCR/agent_gd/gin/build/include lib=$SCR/agent_gd/gin/build/lib
+  [ -e "$o/gin_ts2" ] && { echo "refusing: $o already holds a build (nvcc output is not reproducible)" >&2; exit 1; }
+  [ "$(md5 "$src")" = 1779db9d62eaa5dba5758b14a5ba6e17 ] || { echo "gin_ts2.cu is not the deployed driver's source" >&2; exit 1; }
+  mkdir -p "$o" "$w"
+  cp "$src" "$w/gin_ts2.cu"
+  (cd "$w" && patch -p1 --forward --quiet < "$D/gin_ts2_winflags.diff") || { echo "the patch does not apply" >&2; exit 1; }
+  nice -n 19 "$CUDA/bin/nvcc" -std=c++17 -O2 --expt-relaxed-constexpr $GENCODE -isystem "$inc" \
+    -Xcompiler "-Wall,-Wextra,-Werror,-Wno-missing-field-initializers" "$w/gin_ts2.cu" -o "$o/gin_ts2" \
+    -L "$lib" -lnccl -lcudart -ldl
+  echo "gin_ts2.cu $(md5 "$src") + gin_ts2_winflags.diff $(md5 "$D/gin_ts2_winflags.diff") -> $(md5 "$w/gin_ts2.cu") built $(date '+%F %T')" \
+    > "$o/build_src.txt"
+  echo "gin_ts2 ord $(md5 "$o/gin_ts2")"
+}
 info() {
   {
     echo "built=$(date '+%F %T') host=$(hostname -s) nvcc=$("$CUDA/bin/nvcc" --version | tail -1)"
@@ -85,6 +103,7 @@ info() {
     echo "hw include_digest $(cd "$SCR/agent_gd/gin/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32) (the app is built against these headers)"
     [ -f "$OUT/app/rs_spike" ] && echo "rs_spike $(md5 "$OUT/app/rs_spike") rs_spike.cu $(md5 "$D/rs_spike.cu") sass $("$CUDA/bin/cuobjdump" --list-elf "$OUT/app/rs_spike" 2>/dev/null | grep -o 'sm_[0-9]*' | sort -u | tr '\n' ' ')"
     [ -f "$OUT/b3/rs_drain_test" ] && echo "rs_drain_test (first build, deployed 2026-10-09) $(md5 "$OUT/b3/rs_drain_test")"
+    [ -f "$OUT/ord/gin_ts2" ] && echo "gin_ts2 ord $(md5 "$OUT/ord/gin_ts2") source at compile: $(cat "$OUT/ord/build_src.txt" 2>/dev/null)"
     for k in b3v2 b3v3 b3v4 ${B3OUT:-}; do
       [ -f "$OUT/$k/rs_drain_test" ] && echo "rs_drain_test $k $(md5 "$OUT/$k/rs_drain_test") source at compile: $(cat "$OUT/$k/build_src.txt" 2>/dev/null || echo "not recorded (built before build_src.txt); source now $(md5 "$D/rs_drain_test.cu")")"
     done | sort -u
@@ -96,6 +115,7 @@ case "$STAGE" in
   b1-lib) b1_lib ;;
   app) app ;;
   b3) b3 ;;
+  ord) ord ;;
   info) info ;;
   all) b1_lib; app; b3; info ;;
   *) echo "unknown stage $STAGE" >&2; exit 2 ;;
