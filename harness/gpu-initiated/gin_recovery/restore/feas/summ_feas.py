@@ -2,9 +2,14 @@
 """summ_feas.py <resultsdir> - verdicts of gin-restore's feasibility tests from their raw files (EXPERIMENT.md 9.15).
 
 Applies the criteria fixed in 9.15.2 (B2), 9.15.3 (B3) and 9.15.4 (B1) before the runs; prints one table per test and
-writes <resultsdir>/SUMMARY.txt. Reads only the kv, log, strace-count and meta files of run_b3.sh and run_spike.sh. Never
-scored: these are DRAFT-stage feasibility checks.
+writes <resultsdir>/SUMMARY.txt. Reads only the kv, log, strace-count, meta and timing (tsv) files of run_b3.sh and
+run_spike.sh. Never scored: these are DRAFT-stage feasibility checks.
+B3 since the user's decision of 2026-10-11 (EXPERIMENT.md 9.15.3): a node and ordering is pooled over the latest runs of x,
+s and m (the in-process contention cell, b3m_run<k>/) instead of x, s and h; the old contention cells h (hog process) are
+listed apart with their counts and are not pooled; the diagnostic folders b3_diag*/ never enter a verdict or the all-run
+total (their readings and the per-node gate for the m cells, fixed before the run, are printed).
 """
+import csv
 import glob
 import os
 import re
@@ -85,8 +90,10 @@ def b3_runlabel(d):
 
 
 def b3():
-    dirs = [os.path.join(R, "b3")] + sorted(glob.glob(os.path.join(R, "b3_rerun*")),
-                                            key=lambda d: int(re.sub(r"\D", "", os.path.basename(d)[len("b3_rerun"):]) or 0))
+    def bynum(prefix):
+        return sorted(glob.glob(os.path.join(R, prefix + "*")),
+                      key=lambda d: int(re.sub(r"\D", "", os.path.basename(d)[len(prefix):]) or 0))
+    dirs = [os.path.join(R, "b3")] + bynum("b3_rerun") + bynum("b3m_run")
     latest, history = {}, {}
     for d in dirs:
         for f in sorted(glob.glob(os.path.join(d, "*_resp.kv"))):
@@ -129,29 +136,41 @@ def b3():
                 continue
             allbad += int(num(x, "fence_W_iters_bad", 0)) + int(num(x, "fence_AW_iters_bad", 0))
             alln += int(num(x, "fence_W_n", 0)) + int(num(x, "fence_AW_n", 0))
-    say("every run of every main cell (b3, b3_rerun<k>; smoke excluded; valid or not): bad scored fence iterations %d of %d; "
+    say("every run of every main cell (b3, b3_rerun<k>, b3m_run<k>; smoke and diagnostic excluded; valid or not): bad scored "
+        "fence iterations %d of %d; "
         "runs without tallies (error exits): %s" % (allbad, alln, ", ".join(notally) or "none"))
-    say("cell | run folder | build | last_kb | query budget (stop) | iterations done | selfcheck attempts fence/same (read) | hog")
+    say("cell | run folder | build | last_kb | query budget (stop) | iterations done | selfcheck attempts fence/same (read) | hog "
+        "| d2d engine | early copies late/prompt of n | in-process hog GB/s")
     for c in sorted(latest):
         f = latest[c]
         d = kv(f)
         meta = kv(os.path.join(os.path.dirname(f), c + "_meta.txt"))
         hog = kv(os.path.join(os.path.dirname(f), c + "_hog.kv"))
-        say("%s | %s | %s | %s | %s (%s) | %s | %s/%s (%s/%s) | %s" % (
+        say("%s | %s | %s | %s | %s (%s) | %s | %s/%s (%s/%s) | %s | %s | %s/%s of %s | %s" % (
             c, os.path.basename(os.path.dirname(f)), os.path.basename(os.path.dirname(meta.get("bin", "?/?"))),
             meta.get("last_kb", "?"), meta.get("query_budget", "0"), d.get("budget_stop", "-"),
             d.get("iterations_done", d.get("progress_iterations_done", "-")),
             d.get("selfcheck_fence_attempts", "-"), d.get("selfcheck_same_attempts", "-"),
             d.get("selfcheck_fence_read", "-"), d.get("selfcheck_same_read", "-"),
-            ("%s %s" % (hog.get("result"), hog.get("stopped_by"))) if hog else "-"))
+            ("%s %s" % (hog.get("result"), hog.get("stopped_by"))) if hog else meta.get("hog", "-"),
+            d.get("d2d_engine", "-"), d.get("early_copy_late", "-"), d.get("early_copy_prompt", "-"), d.get("early_copy_n", "-"),
+            d.get("hog_gbps", "-")))
         if num(d, "selfcheck_fence_attempts", 1) > 1 or num(d, "selfcheck_same_attempts", 1) > 1:
             say("  NOTE %s: the setup self-check needed more than one READ (record it and raise it before further cells)" % c)
     say()
-    say("== B3: per responder node and ordering (every cell x, s, h valid and passing; pooled fence n)")
+    say("old contention cells (hog process; replaced in the pooling by b3_m on 2026-10-11, user decision; not pooled; the "
+        "old results neither rescue nor sink the new verdict): " + "; ".join(
+            "%s latest %s (fence bad %d/%d, early stale %s, boundary stale-last %s)" % (
+                c, cells[c].get("result", "none"),
+                int(num(cells[c], "fence_W_iters_bad", 0)) + int(num(cells[c], "fence_AW_iters_bad", 0)),
+                int(num(cells[c], "fence_W_n", 0)) + int(num(cells[c], "fence_AW_n", 0)), cells[c].get("early_iters_stale", "?"),
+                cells[c].get("boundary_iters_stale_last", "?")) for c in sorted(cells) if c.startswith("b3_h_")))
+    say()
+    say("== B3: per responder node and ordering (every cell x, s, m valid and passing; pooled fence n)")
     verdict = {}
     for node in ("rain", "sunny"):
         for o in ("ro", "so"):
-            names = ["b3_%s_%s_%s" % (m, node, o) for m in "xsh"]
+            names = ["b3_%s_%s_%s" % (m, node, o) for m in "xsm"]
             ds = [cells.get(n) for n in names]
             if any(x is None for x in ds):
                 verdict[(node, o)] = "missing"
@@ -181,6 +200,107 @@ def b3():
         concl = "B3 open: strict also fails (look at the cuflush path)"
     say("B3 conclusion: " + concl)
     say()
+
+
+def b3_diag():
+    """the B3 diagnostic (2026-10-11, EXPERIMENT.md 9.15.3): never a verdict; readings and gate fixed before the run.
+    Per snapshot (timing tsv): the copy's end lies in [end_lo, end_hi] and its start in [end_lo - exec, end_hi - exec], all
+    relative to PAUSED. "late": start_lo > the run's reach p50 (the copy began after the writes had reached M); "prompt":
+    end_hi < the run's reach p50."""
+    def pctl(v, p):
+        if not v:
+            return None
+        v = sorted(v)
+        return v[int(p * (len(v) - 1) + 0.5)]
+
+    def f1(x):
+        return "-" if x is None else "%.1f" % x
+
+    for d in sorted(glob.glob(os.path.join(R, "b3_diag*"))):
+        say("== B3 diagnostic (no verdict) folder %s" % os.path.basename(d))
+        say("cell | hog | d2d engine | result | iterations | reach p50 us | early stale n/N | early late/prompt of N | early copy "
+            "start_lo p50/p90 us | early start_lo p50 stale/not stale us | boundary stale-last n/N (with a snapshot) | boundary "
+            "copy start_hi after rmsn=M-1 p50/p90 us | copy exec p50 us | hog GB/s")
+        st = {}
+        for node in ("rain", "sunny"):
+            for hm in ("dn", "dp", "dm"):
+                cell = "b3_%s_%s_ro" % (hm, node)
+                k = kv(os.path.join(d, cell + "_resp.kv"))
+                meta = kv(os.path.join(d, cell + "_meta.txt"))
+                if not k:
+                    continue
+                rows = []
+                tf = os.path.join(d, cell + "_resp_timing.tsv")
+                if os.path.exists(tf):
+                    with open(tf) as fh:
+                        rows = list(csv.DictReader(fh, delimiter="\t"))
+                F = lambda r, c: float(r[c])
+                ea = [r for r in rows if r["path"] == "early"]
+                bd = [r for r in rows if r["path"] == "boundary"]
+                reach = num(k, "reach_p50_us", -1)
+                slo = lambda r: F(r, "end_lo_us") - F(r, "exec_us")
+                stale = lambda r: int(r["stale_before_words"]) + int(r["stale_last_words"]) > 0
+                e_lo = [slo(r) for r in ea]
+                e_late = sum(1 for r in ea if reach > 0 and slo(r) > reach)
+                e_prompt = sum(1 for r in ea if reach > 0 and F(r, "end_hi_us") < reach)
+                e_stale = sum(1 for r in ea if stale(r))
+                b_stale = sum(1 for r in bd if int(r["stale_last_words"]) > 0)
+                b_aft = [F(r, "end_hi_us") - F(r, "exec_us") - F(r, "ref_us") for r in bd]
+                ex = [F(r, "exec_us") for r in rows]
+                if hm == "dp":
+                    h = kv(os.path.join(d, cell + "_hog.kv"))
+                    gbps = (num(h, "rounds", 0) * num(h, "bytes_per_round", 0) / num(h, "run_s", 1) / 1e9) if h else None
+                elif hm == "dm":
+                    gbps = num(k, "hog_gbps", -1)
+                    gbps = None if gbps < 0 else gbps
+                else:
+                    gbps = None
+                hi_p90 = pctl([F(r, "end_hi_us") - F(r, "exec_us") for r in ea], 0.9)
+                st[(node, hm)] = dict(reach=reach, e_n=len(ea), e_late=e_late, e_prompt=e_prompt, e_stale=e_stale,
+                                      b_n=len(bd), b_stale=b_stale, hi_p90=hi_p90)
+                say("%s | %s | %s | %s | %s | %s | %d/%d | %d/%d of %d | %s/%s | %s/%s | %d/%d | %s/%s | %s | %s" % (
+                    cell, meta.get("hog", "?"), k.get("d2d_engine", "?"),
+                    k.get("result", "error (%s)" % (k.get("nic_error") or k.get("setup_error") or k.get("cuda_error") or "?")),
+                    k.get("iterations_done", k.get("progress_iterations_done", "-")), f1(reach if reach > 0 else None),
+                    e_stale, len(ea), e_late, e_prompt, len(ea), f1(pctl(e_lo, 0.5)), f1(pctl(e_lo, 0.9)),
+                    f1(pctl([slo(r) for r in ea if stale(r)], 0.5)), f1(pctl([slo(r) for r in ea if not stale(r)], 0.5)),
+                    b_stale, len(bd), f1(pctl(b_aft, 0.5)), f1(pctl(b_aft, 0.9)), f1(pctl(ex, 0.5)), f1(gbps)))
+        for node in ("rain", "sunny"):
+            n_, p_, m_ = st.get((node, "dn")), st.get((node, "dp")), st.get((node, "dm"))
+            # reading 1 (fixed before the run; decides nothing): the time-slicing inference
+            if not n_ or not p_ or not n_["e_n"] or not p_["e_n"] or n_["reach"] <= 0 or p_["reach"] <= 0:
+                inf = "missing data"
+            elif 2 * p_["e_prompt"] >= p_["e_n"]:
+                inf = "refuted (with the hog process at least half of the early copies ended before the writes reached M)"
+            elif 10 * p_["e_late"] >= 9 * p_["e_n"] and 10 * n_["e_prompt"] >= 9 * n_["e_n"]:
+                inf = "confirmed (hog process: >= 90% of the early copies began after the writes reached M; no hog: >= 90% " \
+                      "ended before)"
+            else:
+                inf = "unclear"
+            say("%s: reading 1, time-slicing inference: %s" % (node, inf))
+            # reading 2 (fixed before the run; decides nothing): the in-process copy is prompt
+            if not m_ or m_["hi_p90"] is None or m_["reach"] <= 0:
+                say("%s: reading 2, in-process copy prompt: missing data" % node)
+            else:
+                say("%s: reading 2, in-process copy prompt: %s (early start_hi p90 %.1f us vs 1/4 of reach p50 %.1f us)" % (
+                    node, "yes" if m_["hi_p90"] < 0.25 * m_["reach"] else "no", m_["hi_p90"], 0.25 * m_["reach"]))
+            # the gate (fixed before the run; the only thing that decides here): run that node's b3_m cells or not
+            why = []
+            if not m_ or not p_ or not n_:
+                why.append("dn, dp or dm missing")
+            else:
+                if not (m_["e_stale"] >= 10 and 2 * m_["e_stale"] >= m_["e_n"]):
+                    why.append("dm early stale %d of %d" % (m_["e_stale"], m_["e_n"]))
+                if not (m_["b_stale"] >= 10 and 2 * m_["b_stale"] >= m_["b_n"]):
+                    why.append("dm boundary stale-last %d of %d (with a snapshot)" % (m_["b_stale"], m_["b_n"]))
+                if min(n_["reach"], p_["reach"], m_["reach"]) <= 0:
+                    why.append("a reach p50 is missing")
+                elif m_["reach"] - n_["reach"] < 0.5 * (p_["reach"] - n_["reach"]):
+                    why.append("dm reach rise %.1f us < half the dp rise %.1f us" % (
+                        m_["reach"] - n_["reach"], p_["reach"] - n_["reach"]))
+            say("%s: gate for b3_m_%s_ro and b3_m_%s_so: %s" % (
+                node, node, node, "passed (run them)" if not why else "NOT passed (do not run them; report): " + "; ".join(why)))
+        say()
 
 
 # ---------------------------------------------------------------- B2
@@ -382,6 +502,7 @@ def b1_dir(DIR):
 
 
 b3()
+b3_diag()
 b2()
 b1()
 with open(os.path.join(R, "SUMMARY.txt"), "w") as f:
