@@ -13,6 +13,12 @@
 #          contention cells (b3_h_*) also get RS_QUERY_BUDGET=19000: they end at the first iteration boundary with >= 19 000
 #          QUERY_QP issued (the first rain h rerun hit the 20 000 cap) and are scored over the iterations done; the other
 #          cells get an empty RS_QUERY_BUDGET (off even if the caller exported it)
+#   B3diag-<rain|sunny>[-<tag>]  the B3 diagnostic of one responder node (2026-10-11; no verdict): b3_dn_<node>_ro (no hog),
+#          b3_dp_<node>_ro (the hog process), b3_dm_<node>_ro (the in-process hog), B3_DIAG_ITERS (640) iterations each, b3v4,
+#          into b3_diag/ (a repeat of that node: b3_diag_run<k>/); summ_feas prints the readings and the gate fixed in
+#          EXPERIMENT.md 9.15.3. <tag> only makes the hold name unique (mlx5_new_<hold>.txt is per hold name)
+#   B3m-<cell>[-<tag>]  one new contention cell b3_m_<rain|sunny>_<ro|so> (in-process hog; 2026-10-11), b3v4, into
+#          b3m_run<k>/, k = the first folder without that cell (a repeat goes to the next one); <tag> as above
 #   B2     B2: four ranks interleaved (rain 0, 2; sunny 1, 3), report lines only, 2 trials, into b2/ (a repeat: b2_run<k>/)
 #   B2c    B2 control (optional): four ranks consecutive (rain 0, 1; sunny 2, 3), 1 trial, into the latest B2 folder
 #   B1     B1: record (2 ranks), replay rank 1 on sunny and rank 0 on rain (strace), two negative replays; 2 trials, into
@@ -71,7 +77,10 @@ n0=$(left)
 bash -c "$OWNCLEAN"; ssh -n "$SUNNY_SSH" "$OWNCLEAN"
 SECONDS=0
 B3_ITERS=3200; B3_LAST_KB=4096
-B3_H_BUDGET=19000  # contention cells (b3_h_*): RS_QUERY_BUDGET (EXPERIMENT.md 9.15.3 and 12: the first h rerun hit the 20 000 cap)
+B3_H_BUDGET=19000  # contention cells (b3_h_*): RS_QUERY_BUDGET (EXPERIMENT.md 9.15.3 and 12: the first h rerun hit the 20 000 cap);
+                   # also the new contention cells (b3_m_*) and the diagnostic cells (b3_d[npm]_*) (2026-10-11)
+B3_DIAG_ITERS=640  # diagnostic cells: 40 early, 40 boundary, 320 scored fence, then 40 probe iterations
+B3V4BIN=$HOME/rs-bundle/b3v4/rs_drain_test  # the m and d cells only (passed explicitly; run_b3.sh's default stays b3v3)
 newdir() {  # newdir <base>: $R/<base> if it holds no trial yet, else the first free $R/<base>_run<k> (k >= 2)
   if ! ls "$R/$1"/*_meta.txt >/dev/null 2>&1; then echo "$R/$1"; return; fi
   local k=2; while [ -e "$R/$1_run$k" ]; do k=$((k + 1)); done; echo "$R/$1_run$k"
@@ -93,6 +102,7 @@ b3() {  # b3 <cell> <iters> <logdir> [main]: one cell if it fits, then the per-c
   if [ "${4:-}" = main ]; then
     case "$cell" in
       b3_h_*) RS_LAST_KB=$B3_LAST_KB RS_QUERY_BUDGET=$B3_H_BUDGET bash "$D/run_b3.sh" "$cell" "$iters" "$dir" ;;
+      b3_m_*|b3_d[npm]_*) B3BIN=$B3V4BIN RS_LAST_KB=$B3_LAST_KB RS_QUERY_BUDGET=$B3_H_BUDGET bash "$D/run_b3.sh" "$cell" "$iters" "$dir" ;;
       *) RS_LAST_KB=$B3_LAST_KB RS_QUERY_BUDGET= bash "$D/run_b3.sh" "$cell" "$iters" "$dir" ;;  # empty: off even if exported
     esac
   else
@@ -115,8 +125,19 @@ case "$H" in
   S3) b3 b3_x_rain_ro 208 "$R/b3_smoke" ;;
   S3s) b3 b3_x_sunny_ro 208 "$R/b3_smoke" ;;
   B3one-*)  # one B3 cell again (a skipped or inconclusive one) into its own folder b3_rerun<k>; summ_feas reads the latest
+    case "${H#B3one-}" in b3_x_*|b3_s_*|b3_h_*) ;; *) echo "B3one is for the x, s and h cells (b3_m: B3m-<cell>)" >&2; exit 2 ;; esac
     k=1; while [ -e "$R/b3_rerun$k/${H#B3one-}_meta.txt" ]; do k=$((k + 1)); done
     b3 "${H#B3one-}" "$B3_ITERS" "$R/b3_rerun$k" main ;;
+  B3diag-*)
+    node=${H#B3diag-}; node=${node%%-*}
+    case "$node" in rain|sunny) ;; *) echo "B3diag-<rain|sunny>[-<tag>]" >&2; exit 2 ;; esac
+    d=$R/b3_diag; k=1; while [ -e "$d/b3_dn_${node}_ro_meta.txt" ]; do k=$((k + 1)); d=$R/b3_diag_run$k; done
+    for hm in dn dp dm; do b3 "b3_${hm}_${node}_ro" "$B3_DIAG_ITERS" "$d" main; done ;;
+  B3m-*)
+    cell=${H#B3m-}; cell=${cell%%-*}
+    case "$cell" in b3_m_rain_ro|b3_m_rain_so|b3_m_sunny_ro|b3_m_sunny_so) ;; *) echo "unknown cell $cell" >&2; exit 2 ;; esac
+    k=1; while [ -e "$R/b3m_run$k/${cell}_meta.txt" ]; do k=$((k + 1)); done
+    b3 "$cell" "$B3_ITERS" "$R/b3m_run$k" main ;;
   B3r) for c in x s h; do for o in ro so; do b3 "b3_${c}_rain_$o" "$B3_ITERS" "$R/b3" main; done; done ;;
   B3s) for c in x s h; do for o in ro so; do b3 "b3_${c}_sunny_$o" "$B3_ITERS" "$R/b3" main; done; done ;;
   B2) d=$(newdir b2); for t in 1 2; do sp b2_inter "$t" "$d"; done ;;
