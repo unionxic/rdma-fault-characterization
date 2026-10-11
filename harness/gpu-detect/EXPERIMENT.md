@@ -781,6 +781,8 @@ DECLINE 줄, 호스트 기록, "marked failed" 줄, 상대에게 FAIL(보낼 수
 | 2026-10-09 | 내 확인(이 에이전트, 독립 확인 아님): 고정 파일 12개의 sha256 = PREREG.txt, `git diff prereg/gpu-detect-v1 -- harness/gpu-detect/predictions.csv harness/gpu-detect/cells.json harness/gpu-detect/schedule.json`과 `-- harness/gpu-initiated harness/blind` 모두 비어 있음, rain의 배포된 `hk` libnccl md5 `2913c777…`(= PREREG; sunny는 다시 보지 않음). 재계산 스크립트 셋을 결과 폴더 밖에서 다시 돌려 재계산 에이전트의 출력과 바이트 단위로 같은 파일을 얻음. `trials_scored.csv`와 원시 로그에서 15절의 수치를 따로 셈(재계산과 같음). 채점기와 재계산의 정의가 다른 열 둘(`n_bye_sent`, `release_after_kill_ms_r1`, 13절). stop 셀 16회의 SIGCONT 응답 모두 rc=0, 다시 돈 app 시행 0 | 이 커밋 `[측정]` |
 | 2026-10-09 22:37 | Release `data-20261009`에 원자료 세 묶음(본 실행 1 579개, pilot 1 151개, pilot 2 176개)을 더함(메인 세션). `SHA256SUMS`는 19줄. 메인 세션이 내려받아 `sha256sum -c` 통과, 묶음의 모든 파일이 관리망 주소를 바꾼 것 말고 작업 트리의 파일과 바이트 단위로 같음(1 579, 151, 176개, 다름 0, 빠짐 0), 실제 주소 접두 0. release 설명에 빠져 있던 blind-apps와 gin-remaining 폴더도 더함 | 14절, [DATA.md](../../DATA.md)(파일 수와 크기는 release의 자산 목록에서 다시 셈) |
 | 2026-10-09 | 마감: 13–20절, [README.md](README.md), [NOTES.md](NOTES.md), 상태 `COMPLETE`. 루트 README는 따로 커밋 | 이 커밋 |
+| 2026-10-09 23:00 무렵 | PR #63을 rebase로 합친 뒤(master `2f038e7b`) 메인 세션이 고정 파일 13개(`predictions.csv`, `cells.json`, `schedule.json`, `apprun.py`, `rows_gd.py`, `score.py`, `cells_reg.sh`, `hold.sh`, `chain.sh`, `hw_layer.diff`, `t1w_layer.diff`, `hk_layer.diff`, `PREREG.txt`)를 `git diff prereg/gpu-detect-v1 2f038e7b`로 비교: 차이 0줄. 이 문서의 2, 3, 7, 8절도 태그의 것과 같음 | `[측정]` master `2f038e7b`, 태그 `prereg/gpu-detect-v1` |
+| 2026-10-11 | 절차 점검(사용자 요청)에서 찾은 skill과 다른 점 둘을 적는다. (1) `DRAFT` 때 draft PR을 열지 않았고, 브랜치는 마감 뒤 처음 push했다(PR #63). (2) 본 실행 동안 상태를 `RUNNING`으로 커밋하지 않았다(바로 위 본 실행 줄). 두 가지 모두 결과와 판정에는 영향이 없다 `[추론]` | 이 줄의 커밋 |
 
 ## 13. 사전 등록 이후 변경
 
