@@ -781,7 +781,9 @@ flag를 넘길 필요만 없앤다. 순서(사용자): (1) 강제의 범위와 �
   (아래 "다시 확인" 블록; 처음 쓴 `ncclInvalidUsage`는 그대로 나오지 않음, K14, K25). 이 오류는 그 communicator에 대해 끝이다: 모든 rank가 `ncclCommAbort`나 `ncclCommDestroy`로 끝내고 다시 하지 않는다(K1). rank 사이에서
   정책 자체가 다르면 지금처럼 G1의 WARN과 fail-fast다(정책 불일치는 강제의 문제가 아님). ARMED에는 모든 rank의 비트가 1이어야 한다(9.10.4절). (E2) HCA가
   MR flag와 상관없이 relaxed 쓰기를 강제하는 설정(펌웨어 설정 `PCI_WR_ORDERING`의 force relax)은 사용자 공간에서 알아낼 길을 찾지 못했다 `[미확인]`. 한계로
-  18절에 적는다(K11 (h)).
+  18절에 적는다(K11 (h)). 2026-10-11 메인 세션의 읽기 전용 sudo 읽기로 이 두 NIC는 확인됐다: rain과 sunny의 ConnectX6 모두 `PCI_WR_ORDERING`이 `per_mkey(0)`
+  (펌웨어가 relaxed 쓰기를 강제하지 않고 MR마다의 access flag를 따름) `[측정]`. 그래서 이 두 노드에서 강제(MR에 RO access flag 없음)는 NIC가 strict 쓰기를 낸다는
+  뜻이다 `[측정: 설정]`. 다른 기계에서는 한계로 남고, sudo 읽기 한 번(`mlxconfig -d <bdf> q PCI_WR_ORDERING`)이면 풀린다.
 
 **다시 확인(검토 K13–K18, 2026-10-11) 뒤의 고침과 사용자 선택.**
 - 복원 요청(K13): rank마다 "복원 요청" = (`NCCL_GIN_FAULT_POLICY=hold`이고 `NCCL_GIN_RESTORE` ≠ 0) 또는 예비 프로세스 모드. 위 정의의 "strict 비트"는 실제로는
@@ -1378,6 +1380,9 @@ ordering(기본, `gdakiRegMr` 192)일 때와 strict일 때 따로.
   53.9–69.8 µs)만큼의 창에 한정된다.
 - 보이지 않는 것: 다른 프로세스가 GPU를 시간 나눔으로 쓰는 경우(옛 경합 셀, 대조의 힘 없음), 다른 하드웨어와 설정 `[미확인]`. strict window 무장 조건을
   뺄지는 사용자 결정으로 남는다(이 에이전트는 정하지 않음).
+- relaxed(`ro`) 셀의 RO가 NIC 쪽에서 허용됐는가(2026-10-11 메인 세션의 읽기 전용 sudo 읽기, 12절): 두 노드의 NIC와 GPU DevCtl이 `RlxdOrd+`, 두 NIC의
+  `PCI_WR_ORDERING`이 `per_mkey(0)`이므로, `ro` 셀은 window MR의 RO flag가 실제로 허용된 채 돌았다 `[측정]`. root complex가 그 쓰기를 실제로 바꿔 놓았는지는
+  볼 수 없다 `[미확인]`. 위 결과와 그 해석은 바꾸지 않는다.
 
 충돌 표(2026-10-11 바꿈, 9.15.1에 더함):
 
@@ -1695,7 +1700,10 @@ hold마다 새 mlx5 줄 0, 펌웨어 명령 실패 31 → 31, rain debugfs QUERY
 - 실행이 유효: 두 rank의 kv에 `exit=0`, rank 0의 `tx_done`이 반복 수, `nccl_error`, `cuda_error`가 없음, strict 팔의 kv에 `win_flags=0x3`, relaxed 팔에
   `0x1`. 두 rank의 `ro_requested`가 1이 아니면 relaxed 팔에서 NCCL이 RO를 요청하지 않은 것이므로 그 노드의 비교는 "비교 불가"다. `ro_requested=1`은 "RO를
   요청함"이지 NIC가 실제로 relaxed 쓰기를 냈다는 뜻이 아니다(HCA 능력 `relaxed_ordering_write`는 B3에서 1, NIC의 PCIe 장치 제어 RO 비트는 `[미확인]`; 관리자의
-  읽기 전용 `lspci -vvv` 한 번이면 풀림, K5). 무효 실행은 셈에서 빼고 바꿔 하지 않는다. 한
+  읽기 전용 `lspci -vvv` 한 번이면 풀림, K5). 2026-10-11 메인 세션의 읽기 전용 sudo 읽기: 두 노드의 NIC(rain `0000:17:00.1`, sunny `0000:17:00.0`)와 GPU(두 노드
+  `65:00.0`)의 DevCtl이 `RlxdOrd+`, 두 NIC의 `PCI_WR_ORDERING`이 `per_mkey(0)` `[측정]`. 그래서 이 두 노드에서는 relaxed 팔의 "RO 요청"이 "RO 허용"이기도 하다(MR의
+  RO flag + NIC DevCtl RO 허용 + MR마다를 따르는 펌웨어). root complex가 그 쓰기를 실제로 바꿔 놓았는지는 여전히 볼 수 없다 `[미확인]`. (두 NIC 링크 모두
+  "8GT/s (downgraded), x16", 정보.) 무효 실행은 셈에서 빼고 바꿔 하지 않는다. 한
   팔의 유효 실행이 5보다 적으면 그 셀은 "미완"이다.
 - 셀마다 두 팔의 실행 값 중앙값, 차(strict − relaxed; 대역은 relaxed − strict로 써서 양수가 strict의 손해), 그 차를 relaxed 중앙값에 대한 %로, 팔마다의
   범위(최소–최대)를 적는다. "갈림": 한 팔의 모든 유효 실행이 다른 팔의 모든 유효 실행보다 크다(같은 값은 갈리지 않음: 지연 p50은 32 ns 단위로 끊김; 6 대
@@ -1738,7 +1746,10 @@ GIN 등록부의 NULL(`gin_host.cc` 573–576)이다; (3) GDAKI의 strict 길은
 1.83 s 뒤에 실패했고(bootstrap 시한보다 훨씬 이름), sunny의 rank 1은 같은 0x3, 800 MiB에서 `nccl_error` 없이 watchdog으로 끝났다(sunny에서는 등록이 되었음
 `[추론]`) `[측정]`; gin-remaining의 `../scripts/ts2/batch.sh`(82, 109–110)는 rain에서 window 4 × 16 MiB는 되고 4 × 30 MiB는 NVRM "can't alloc VA space"로
 실패했다고 적는다; `ncclCommRegister`는 regCache에 적기만 하고 MR을 만들지 않는다(`register.cc` 26–75, 150–158). 반증 조건: 두 노드의 BAR1을 읽어 sunny도
-256 MiB이면 sunny에서 같은 등록이 된 것을 설명하지 못하므로 smoke 전에 올린다. 또 첫 hold의 정상 지연 실행 넷의 로그도 모두 4 KiB 블록에서 잘려 있었다
+256 MiB이면 sunny에서 같은 등록이 된 것을 설명하지 못하므로 smoke 전에 올린다. 2026-10-11 메인 세션의 읽기 전용 읽기: rain BAR1 Total 256 MiB(Used 5, Free 251),
+sunny 16 384 MiB(Used 21, Free 16 363); rain `dmesg`에 첫 hold 시각(17:23–17:25, `dmesg -T` 시계는 어긋날 수 있음; 처음 보인 것 17:25:30)의
+`NVRM: dmaAllocMapping_GM107: can't alloc VA space for mapping.` 19줄(버퍼 전체 913줄) `[측정]`. 그래서 진단은 `[측정]`이다: rain의 BAR1 VA가 모자랐고, sunny의
+16 GiB BAR1은 sunny에서 같은 window가 등록된 것을 설명한다. 풀기 조건 1–4가 맞아 메인 세션이 STOP_nic와 `skipped.txt`를 같은 시각 꼬리표로 옮김. 또 첫 hold의 정상 지연 실행 넷의 로그도 모두 4 KiB 블록에서 잘려 있었다
 (같은 버퍼 까닭). WARN
 줄이 로그에 없던 것은 stdout이 블록 버퍼였고 gin_ts2가 `_exit`로 끝났기 때문이다 `[소스]`. 고침(판정 규칙은 그대로): 대역 셀을 256 KiB × 8 × 12반복(window
 24 MiB)으로, 두 rank를 `stdbuf -oL -eL`로, 진단 smoke hold `ORDSMOKE-<노드>`(대역 셀 strict와 relaxed 한 번씩, NCCL INFO는 노드에 남김)를 더함. `ord_sunny/`(5실행)는
@@ -1911,6 +1922,7 @@ rm -rf ~/rs-ordlogs; ssh -n "$SUNNY_SSH" 'rm -rf $HOME/rs-ordlogs'
 | 2026-10-11 ≈17:22–17:25 | 메인 세션: ord 배포(확인 파일: rain == sunny, source == deployed, ldd가 두 노드에서 `~/gi-bundle/gin_ts2/hk`, 그 밖의 파일 그대로 rain 334, sunny 386; 이 에이전트가 다시 읽음). hold `ORD-sunny`(17:23:14 잠금, hold 79 s, rc 0, 새 mlx5 줄 0, 펌웨어 명령 실패 31 → 31, `cmd_err` 2 → 2, `lib_md5.txt` 두 노드 `2913c777`): k1의 지연 셀 넷 완료(4 KiB strict와 relaxed 모두 p50 10.50 µs, 256 KiB 모두 38.88 µs, `win_flags` 0x3/0x1, `ro_requested=1`), `ord_bw256k_strict_sunny_k1`에서 rank 0(rain)이 첫 window 등록에서 "unhandled system error"(exit 2), rank 1 watchdog(exit 7), wall 46.5 s, left 0. 실행기가 STOP_nic를 쓰고 31실행을 건너뜀, `ORD-rain`은 시작 안 함 `[측정: 이 에이전트가 원자료에서 다시 셈]` | `results/20261011_ordering/ord_sunny/`, `hold_ORD-sunny.out`, `STOP_nic`, `skipped.txt` |
 | 2026-10-11 | 진단과 고침(9.15.6의 "첫 hold 뒤" 문단): 대역 셀의 window가 800 MiB씩 둘(256 KiB × 200 × 16)이라 rain의 BAR1(256 MiB, GIN window 50 MiB 넘으면 등록 실패의 기록)을 넘음 `[추론]`; "unhandled system error" = `ncclSystemError`, 이 길에서는 ibverbs 등록 실패나 GIN 등록부 NULL `[소스]`; strict와 relaxed는 RO 비트만 다름 `[소스]`; WARN 줄이 없던 것은 블록 버퍼 stdout과 `_exit` `[소스: debug.cc 35, 268–270]`. 고침: 대역 셀 256 KiB × 8 × 12(window 24 MiB, 값 = K × 256 KiB / p50, `summ_ord.py`는 K를 kv에서 읽음), `stdbuf -oL -eL`, 진단 smoke hold `ORDSMOKE-<노드>`(NCCL INFO는 노드의 `~/rs-ordlogs/`에만). 판정 규칙(유효 조건, 6 대 6 갈림, 2% 문턱, 정하는 폴더)은 그대로이고 대역 셀의 크기와 값의 식만 바뀜(측정 전 바꿈, 그 셀의 결과는 아직 없음). STOP_nic 푸는 단계와 명령은 9.15.6 | 9.15.6, `feas/run_ord.sh`, `feas/summ_ord.py`, `feas/hold_feas.sh` |
 | 2026-10-11 | 고침의 독립 검토(읽기 전용 에이전트, 커밋 `5e50aa76` 대상): 판정 "ord fix: ready to clear STOP_nic and run the smoke", 막는 것 없음. 진단이 소스와 맞음(오류 문자열, strict와 relaxed는 RO 비트만, WARN이 사라진 까닭; 정상 지연 실행 넷의 로그도 4 KiB에서 잘림 `[측정]`), `ncclCommRegister`는 MR을 만들지 않고 내부 devComm은 크기와 무관, 24 MiB는 이미 된 4 × 16 MiB보다 작음, eval과 stdbuf, summ의 값과 정하는 폴더(`ORD-sunny-2` → `ord_sunny_run2`), smoke 폴더가 맞음, STOP_nic 풀기 조건 (1), (3)이 원자료와 맞음. 중간: O1(`skipped.txt`도 옮겨야 함). 낮음: O2(`~/rs-ordlogs`를 만든 결과 확인), O3(BAR1 문턱과 snap), O4(NVRM dmesg 줄), O5(낡은 문장), O6(본 hold는 ORD_DIAG=0, summ이 구성과 diag를 확인), O7(진단 파일 지우기), O8(이미 돈 명령 표시). 정보: O9, O10(뒷받침 사실과 반증 조건), O11(대역 셀의 민감도, smoke는 relaxed 먼저). 모두 반영(스크립트만, 바이너리와 배포 그대로) | 9.15.6, `feas/run_ord.sh`, `feas/hold_feas.sh`, `feas/summ_ord.py` |
+| 2026-10-11 | 메인 세션의 읽기 전용 확인(passwordless sudo): `lspci -vvv` DevCtl은 rain NIC mlx5_1 `0000:17:00.1` RlxdOrd+ NoSnoop+, rain GPU `65:00.0` RlxdOrd+, sunny NIC mlx5_0 `0000:17:00.0` RlxdOrd+, sunny GPU `65:00.0` RlxdOrd+(두 NIC 링크 "8GT/s (downgraded), x16", 정보); `mlxconfig q PCI_WR_ORDERING`은 두 ConnectX6 모두 `per_mkey(0)`; BAR1은 rain Total 256 MiB(Used 5, Free 251), sunny 16 384 MiB(Used 21, Free 16 363); rain `dmesg`에 17:23–17:25의 `NVRM: dmaAllocMapping_GM107: can't alloc VA space for mapping.` 19줄(버퍼 전체 913줄; `dmesg -T` 시계는 어긋날 수 있음) `[측정]`. 뜻: (가) 첫 `ORD-sunny`의 대역 셀 실패는 rain의 BAR1 VA 부족으로 `[측정]`이 됨, sunny의 16 GiB BAR1이 같은 등록이 된 까닭; (나) B3의 relaxed(`ro`) 셀은 NIC 쪽에서 relaxed ordering이 실제로 허용된 채 돌았다(RO access flag + NIC DevCtl RlxdOrd+ + per_mkey 펌웨어) `[측정]`, root complex가 그 쓰기를 실제로 바꿔 놓았는지는 볼 수 없다 `[미확인]`(9.15.3의 결과 해석은 바꾸지 않음); (다) 펌웨어가 relaxed 쓰기를 강제하는지는 이 두 NIC에서 확인됨(per_mkey, 강제 안 함), 다른 기계에는 한계로 남고 sudo 읽기 한 번이면 풀림; (라) per_mkey이므로 strict 강제(MR에 RO flag 없음)는 이 두 노드에서 NIC의 strict 쓰기다. 풀기 조건 1–4가 맞아 메인 세션이 STOP_nic와 `skipped.txt`를 같은 시각 꼬리표로 옮김. ORDSMOKE hold는 도는 중(결과는 따로) | 9.10.8, 9.15.6, 18절 |
 | 2026-10-11 | 정책 설계 문서를 이 문서로 합침(사용자 결정, 메인 세션이 전함: 실험 하나에 `EXPERIMENT.md` 하나, 단계별 문서를 따로 두지 않는다는 저장소 규칙과 `DESIGN_POLICY.md`가 어긋나 9절로 합침, 선택지 (가)). 옮긴 곳: 그 문서의 1절 → 9.10.1, 2.1–2.5절 → 9.10.2–9.10.6, 3절 → 9.10.7, 4절과 4.1–4.11절 → 9.11과 9.11.1–9.11.11, 5절 → 9.11.12, 6절 → 9.11.13, 7절 → 20절(이미 있던 항목과 합침), 머리말의 목적, 상태, 근거 트리, 독립 검토, 줄 번호 규칙 → 9.10의 첫 문단들. 내용은 그대로이고 안의 절 참조만 새 번호로 고침("EXPERIMENT.md N절"은 "N절"로, "이 문서"는 "이 정책 설계"로). 9.10, 9.11의 옛 가리킴 문단과 머리말의 "설계의 기준 문서" 문단은 바꿈. 이 문서 안의 모든 가리킴(본문, 9.15 판정 글의 절 번호 둘, 11절, 12절의 지난 행, 19절)을 경로와 절 번호만 새 자리로 고침. gpu-detect 문서의 자리는 그 사이 master로 옮겨져(PR #63) 경로 글만 고침. `DESIGN_POLICY.md`는 이 커밋에서 지움(git 역사에 남음). 해석이나 결과는 바꾸지 않음 | 9.10–9.11절 |
 
 ## 13. 사전 등록 이후 변경
@@ -1943,7 +1955,8 @@ rm -rf ~/rs-ordlogs; ssh -n "$SUNNY_SSH" 'rm -rf $HOME/rs-ordlogs'
 - 결정성 요구(9.7절)가 application을 크게 제한한다: 단일 대입, 신호 문턱에만 기대는 분기, 변하는 메모리의 get 없음, GIN만 씀.
 - 동시 다중 실패, 복원 중 실패, 노드 고장은 다루지 않는다.
 - strict 강제(9.10.8절)는 MR의 RO 비트만 뺀다. HCA의 펌웨어 설정이 MR과 상관없이 relaxed 쓰기를 강제하는 경우(`PCI_WR_ORDERING`의 force relax)는 사용자
-  공간에서 알아낼 길을 찾지 못해 막지 못한다 `[미확인]`(2026-10-11 충돌 검토 K11 (h)).
+  공간에서 알아낼 길을 찾지 못해 막지 못한다 `[미확인]`(2026-10-11 충돌 검토 K11 (h)). 이 실험의 두 NIC는 2026-10-11 sudo 읽기로 `per_mkey(0)`(강제 안 함)임을
+  확인했다 `[측정]`. 다른 기계에는 한계로 남고, sudo 읽기 한 번(`mlxconfig -d <bdf> q PCI_WR_ORDERING`)이면 풀린다.
 
 ## 19. 다음 작업
 
