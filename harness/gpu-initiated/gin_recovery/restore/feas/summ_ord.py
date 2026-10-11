@@ -76,6 +76,12 @@ def one_folder(d, node):
                     why.append("%s %s=%s" % (name, bad, k[bad]))
             if k and k.get("win_flags") != WANT_FLAGS.get(arm):
                 why.append("%s win_flags=%s (want %s)" % (name, k.get("win_flags"), WANT_FLAGS.get(arm)))
+        # the cell's configuration as fixed (review O6): no diagnostic logging, the iterations, bytes and K of the cell
+        want = {"lat4k": ("3000", "4096", None), "lat256k": ("3000", "262144", None), "bw256k": ("12", "262144", "8")}.get(metric)
+        if meta.get("diag", "0") != "0":
+            why.append("diag=%s" % meta.get("diag"))
+        if k0 and want and (k0.get("iters") != want[0] or k0.get("bytes") != want[1] or (want[2] and k0.get("burst_K") != want[2])):
+            why.append("configuration iters=%s bytes=%s K=%s (want %s)" % (k0.get("iters"), k0.get("bytes"), k0.get("burst_K"), "/".join(x or "-" for x in want)))
         if k0 and k0.get("tx_done") != str(ITERS.get(metric)):
             why.append("tx_done=%s" % k0.get("tx_done"))
         if k0 and "lat_p50_us" not in k0:
