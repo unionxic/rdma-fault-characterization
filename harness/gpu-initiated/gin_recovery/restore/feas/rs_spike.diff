@@ -1,0 +1,1180 @@
+diff --git a/src/bootstrap.cc b/src/bootstrap.cc
+index 7775978..9b69be2 100644
+--- a/src/bootstrap.cc
++++ b/src/bootstrap.cc
+@@ -14,6 +14,7 @@
+ #include "param.h"
+ #include "ras.h"
+ #include "crypt.h"
++#include "rs_spike.h"
+ #include <condition_variable>
+ #include <mutex>
+ #include "os.h"
+@@ -774,6 +775,11 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm, s
+   state->abortFlag = comm->abortFlag;
+   state->net = comm->ncclNet;
+   comm->bootstrap = state;
++  // gin-restore spike B1: bind the bootstrap state of the recorded/replayed communicator; a replay skips the root and the
++  // ring (no peer takes part) and refuses without RAS, OOB net and host RMA off
++  rsBindState(state);
++  const bool rsReplay = rsStateHooked(state) && rsReplaying();
++  if (rsReplay) NCCLCHECK(rsReplayPreconditions(ncclParamRasEnable(), ncclParamBootstrapNetEnable(), comm->config.numRmaCtx));
+ 
+   // Set magic: for grow existing ranks, receive from coordinator; otherwise use handle magic.
+   // This is consistent with the magic created in ncclCommGetUniqueId.
+@@ -824,7 +830,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm, s
+     }
+   }
+   int curr_root = rootIdFromRank(rank, nranks, nHandles, offset);
+-  if (curr_root >= 0) {
++  if (curr_root >= 0 && !rsReplay) {
+     NCCLCHECK(createListenSocket(comm, BOOTSTRAP_HANDLE(handles, curr_root)->magic, &listenSockRoot,
+                                  &info.listenRootAddress, ncclSocketTypeBootstrap));
+   }
+@@ -833,7 +839,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm, s
+   // stagger connection times to avoid an overload of the root
+   BOOTSTRAP_PROF_OPEN(timers[BOOTSTRAP_INIT_TIME_DELAY]);
+   int nRankRoot = nRankFromRoot(curr_root, nranks, nHandles, offset);
+-  if (nRankRoot > ncclParamStaggerThreshold()) {
++  if (nRankRoot > ncclParamStaggerThreshold() && !rsReplay) {
+     // for socket the message rate in microsec
+     double msg_rate = ncclParamStaggerRate() / 1.0e6;
+     long musec = localIdFromRoot(rank, curr_root, nranks, nHandles, offset) / msg_rate;
+@@ -848,14 +854,14 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm, s
+   info.rank = rank;
+   info.iroot = curr_root;
+   info.offset = offset;
+-  if (curr_root >= 0) NCCLCHECK(sendToRoot(BOOTSTRAP_HANDLE(handles, curr_root), comm, &info));
++  if (curr_root >= 0 && !rsReplay) NCCLCHECK(sendToRoot(BOOTSTRAP_HANDLE(handles, curr_root), comm, &info));
+   if (parent && comm->isGrow && rank != 0) {
+     // Grow: Ranks 1 to N-1 use the parent bootstrap to send connection information to the previous rank
+     NCCLCHECK(bootstrapSend(parent->bootstrap, rank - 1, 0, &info.connectInfo, sizeof(info.connectInfo)));
+   }
+   // if needed, send the connection info to the previous root
+   // commGrow with more than = 1 rank in the parent comm is a special case of multiroot
+-  if (((comm->isGrow && parent && (parent->nRanks > 1)) || nHandles > 1) &&
++  if (((comm->isGrow && parent && (parent->nRanks > 1)) || nHandles > 1) && !rsReplay &&
+       isFirstFromRoot(rank, curr_root, nranks, nHandles, offset)) {
+     int prev_rank = BOOTSTRAP_PID(rank - 1, nranks);
+     int prev_root = rootIdFromRank(prev_rank, nranks, nHandles, offset);
+@@ -868,7 +874,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm, s
+ 
+   // get info on my "next" rank in the bootstrap ring from root
+   BOOTSTRAP_PROF_OPEN(timers[BOOTSTRAP_INIT_TIME_RECV]);
+-  if (curr_root >= 0) {
++  if (curr_root >= 0 && !rsReplay) {
+     NCCLCHECK(ncclSocketInit(&sock));
+     NCCLCHECK(ncclSocketAccept(&sock, &listenSockRoot));
+     NCCLCHECK(socketRecv(&sock, &nextPeer, sizeof(nextPeer)));
+@@ -883,7 +889,10 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm, s
+   BOOTSTRAP_PROF_CLOSE(timers[BOOTSTRAP_INIT_TIME_RECV]);
+ 
+   // accept and connect the ring network
+-  if (ncclParamBootstrapNetEnable()) {
++  if (rsReplay) {  // gin-restore spike B1: no ring; the sockets only initialised (closed as unused)
++    NCCLCHECK(ncclSocketInit(&STATE_RING(state, socket.send)));
++    NCCLCHECK(ncclSocketInit(&STATE_RING(state, socket.recv)));
++  } else if (ncclParamBootstrapNetEnable()) {
+     NCCLCHECK(netRingConnect(comm->netContext, state->net, &state->listen, nextPeer.handle,
+                              &STATE_RING(state, net.sendComm), &STATE_RING(state, net.sendDevHandle),
+                              &STATE_RING(state, net.recvComm), &STATE_RING(state, net.recvDevHandle),
+@@ -1158,7 +1167,7 @@ static ncclResult_t bootstrapAsyncSendDrain(struct bootstrapState* state) {
+   return COMPILER_ATOMIC_LOAD(&state->asyncSendError, std::memory_order_acquire);
+ }
+ 
+-ncclResult_t bootstrapSend(void* commState, int peer, int tag, void* data, int size) {
++static ncclResult_t bootstrapSendImpl(void* commState, int peer, int tag, void* data, int size) {
+   struct bootstrapState* state = (struct bootstrapState*)commState;
+   ncclResult_t ret = ncclSuccess;
+   bool encrypted;
+@@ -1300,7 +1309,7 @@ fail:
+ }
+ 
+ // We can't know who we'll receive from, so we need to receive everything at once
+-ncclResult_t bootstrapRecv(void* commState, int peer, int tag, void* data, int size) {
++static ncclResult_t bootstrapRecvImpl(void* commState, int peer, int tag, void* data, int size) {
+   ncclResult_t ret;
+   struct ncclSocket sock;
+   struct bootstrapState* state = (struct bootstrapState*)commState;
+@@ -1410,7 +1419,7 @@ static ncclResult_t socketRingAllGather(struct ncclSocket* nextSock, struct nccl
+ exit:
+   return res;
+ }
+-ncclResult_t bootstrapAllGather(void* commState, void* allData, int size) {
++static ncclResult_t bootstrapAllGatherImpl(void* commState, void* allData, int size) {
+   ncclResult_t res = ncclSuccess;
+   struct bootstrapState* state = (struct bootstrapState*)commState;
+   int rank = state->rank;
+@@ -1454,7 +1463,7 @@ static ncclResult_t bootstrapP2PBarrier(void* commState, int* ranks, int rank, i
+   return ncclSuccess;
+ }
+ 
+-ncclResult_t bootstrapIntraNodeBarrier(void* commState, int* ranks, int rank, int nranks, int tag) {
++static ncclResult_t bootstrapIntraNodeBarrierImpl(void* commState, int* ranks, int rank, int nranks, int tag) {
+   uint64_t time = 0;
+   BOOTSTRAP_PROF_OPEN(time);
+   NCCLCHECK(bootstrapP2PBarrier(commState, ranks, rank, nranks, tag));
+@@ -1463,7 +1472,7 @@ ncclResult_t bootstrapIntraNodeBarrier(void* commState, int* ranks, int rank, in
+   return ncclSuccess;
+ }
+ 
+-ncclResult_t bootstrapBarrier(void* commState, int rank, int nranks, int tag) {
++static ncclResult_t bootstrapBarrierImpl(void* commState, int rank, int nranks, int tag) {
+   uint64_t time = 0;
+   BOOTSTRAP_PROF_OPEN(time);
+   NCCLCHECK(bootstrapP2PBarrier(commState, NULL, rank, nranks, tag));
+@@ -1491,7 +1500,8 @@ static ncclResult_t bootstrapPeerAcceptOp(void* opaque) {
+   return ncclSuccess;
+ }
+ 
+-ncclResult_t bootstrapIntraNodeAllGather(void* commState, int* ranks, int rank, int nranks, void* allData, int size) {
++static ncclResult_t bootstrapIntraNodeAllGatherImpl(void* commState, int* ranks, int rank, int nranks, void* allData,
++                                                    int size) {
+   if (nranks == 1) return ncclSuccess;
+   ncclResult_t ret = ncclSuccess;
+   TRACE(NCCL_INIT, "rank %d nranks %d size %d - ENTER", rank, nranks, size);
+@@ -1536,8 +1546,8 @@ static ncclResult_t bootstrapP2PBroadcast(void* commState, int* ranks, int rank,
+   return ncclSuccess;
+ }
+ 
+-ncclResult_t bootstrapIntraNodeBroadcast(void* commState, int* ranks, int rank, int nranks, int root, void* bcastData,
+-                                         int size) {
++static ncclResult_t bootstrapIntraNodeBroadcastImpl(void* commState, int* ranks, int rank, int nranks, int root,
++                                                    void* bcastData, int size) {
+   uint64_t time = 0;
+   BOOTSTRAP_PROF_OPEN(time);
+   NCCLCHECK(bootstrapP2PBroadcast(commState, ranks, rank, nranks, root, bcastData, size));
+@@ -1546,7 +1556,7 @@ ncclResult_t bootstrapIntraNodeBroadcast(void* commState, int* ranks, int rank,
+         time / 1e9, (nranks * size / 1e6) / (time / 1e9));
+   return ncclSuccess;
+ }
+-ncclResult_t bootstrapBroadcast(void* commState, int rank, int nranks, int root, void* bcastData, int size) {
++static ncclResult_t bootstrapBroadcastImpl(void* commState, int rank, int nranks, int root, void* bcastData, int size) {
+   uint64_t time = 0;
+   BOOTSTRAP_PROF_OPEN(time);
+   NCCLCHECK(bootstrapP2PBroadcast(commState, NULL, rank, nranks, root, bcastData, size));
+@@ -1555,6 +1565,59 @@ ncclResult_t bootstrapBroadcast(void* commState, int rank, int nranks, int root,
+   return ncclSuccess;
+ }
+ 
++// gin-restore spike B1 (EXPERIMENT.md 9.15.4): the public bootstrap exchanges go through the record/replay hooks of the
++// bound communicator (rs_spike.h); only the outermost call is hooked (the sends and receives inside a barrier or a
++// broadcast are not), and calls with one participant have no network and are not hooked. Inert without the environment.
++ncclResult_t bootstrapSend(void* commState, int peer, int tag, void* data, int size) {
++  RsGuard g(commState);
++  if (!g.hooked) return bootstrapSendImpl(commState, peer, tag, data, size);
++  return rsSend(peer, tag, data, (size_t)size, [&]() { return bootstrapSendImpl(commState, peer, tag, data, size); });
++}
++ncclResult_t bootstrapRecv(void* commState, int peer, int tag, void* data, int size) {
++  RsGuard g(commState);
++  if (!g.hooked) return bootstrapRecvImpl(commState, peer, tag, data, size);
++  return rsRecv(peer, tag, data, (size_t)size, [&]() { return bootstrapRecvImpl(commState, peer, tag, data, size); });
++}
++ncclResult_t bootstrapAllGather(void* commState, void* allData, int size) {
++  RsGuard g(commState);
++  struct bootstrapState* state = (struct bootstrapState*)commState;
++  if (!g.hooked || state->nranks <= 1) return bootstrapAllGatherImpl(commState, allData, size);
++  return rsAllGather(RSK_AG, state->rank, state->nranks, allData, (size_t)size,
++                     [&]() { return bootstrapAllGatherImpl(commState, allData, size); });
++}
++ncclResult_t bootstrapIntraNodeBarrier(void* commState, int* ranks, int rank, int nranks, int tag) {
++  RsGuard g(commState);
++  if (!g.hooked || nranks <= 1) return bootstrapIntraNodeBarrierImpl(commState, ranks, rank, nranks, tag);
++  return rsNoData(RSK_INTRA_BARRIER, tag, nranks,
++                  [&]() { return bootstrapIntraNodeBarrierImpl(commState, ranks, rank, nranks, tag); });
++}
++ncclResult_t bootstrapBarrier(void* commState, int rank, int nranks, int tag) {
++  RsGuard g(commState);
++  if (!g.hooked || nranks <= 1) return bootstrapBarrierImpl(commState, rank, nranks, tag);
++  return rsNoData(RSK_BARRIER, tag, nranks, [&]() { return bootstrapBarrierImpl(commState, rank, nranks, tag); });
++}
++ncclResult_t bootstrapIntraNodeAllGather(void* commState, int* ranks, int rank, int nranks, void* allData, int size) {
++  RsGuard g(commState);
++  if (!g.hooked || nranks <= 1) return bootstrapIntraNodeAllGatherImpl(commState, ranks, rank, nranks, allData, size);
++  return rsAllGather(RSK_INTRA_AG, rank, nranks, allData, (size_t)size,
++                     [&]() { return bootstrapIntraNodeAllGatherImpl(commState, ranks, rank, nranks, allData, size); });
++}
++ncclResult_t bootstrapIntraNodeBroadcast(void* commState, int* ranks, int rank, int nranks, int root, void* bcastData,
++                                         int size) {
++  RsGuard g(commState);
++  if (!g.hooked || nranks <= 1)
++    return bootstrapIntraNodeBroadcastImpl(commState, ranks, rank, nranks, root, bcastData, size);
++  return rsBcast(RSK_INTRA_BCAST, root, rank, nranks, bcastData, (size_t)size, [&]() {
++    return bootstrapIntraNodeBroadcastImpl(commState, ranks, rank, nranks, root, bcastData, size);
++  });
++}
++ncclResult_t bootstrapBroadcast(void* commState, int rank, int nranks, int root, void* bcastData, int size) {
++  RsGuard g(commState);
++  if (!g.hooked || nranks <= 1) return bootstrapBroadcastImpl(commState, rank, nranks, root, bcastData, size);
++  return rsBcast(RSK_BCAST, root, rank, nranks, bcastData, (size_t)size,
++                 [&]() { return bootstrapBroadcastImpl(commState, rank, nranks, root, bcastData, size); });
++}
++
+ ncclResult_t bootstrapClose(void* commState) {
+   if (commState == NULL) return ncclSuccess;
+   struct bootstrapState* state = (struct bootstrapState*)commState;
+diff --git a/src/dev_runtime.cc b/src/dev_runtime.cc
+index 95f1c14..850c17f 100644
+--- a/src/dev_runtime.cc
++++ b/src/dev_runtime.cc
+@@ -5,6 +5,7 @@
+  * See LICENSE.txt for more license information
+  *************************************************************************/
+ 
++#include "rs_spike.h"
+ #include "dev_runtime_internal.h"
+ #include "comm.h"
+ #include "nccl_device/core.h"
+@@ -753,6 +754,7 @@ static ncclResult_t symMemoryObtain(struct ncclComm* comm, CUmemGenericAllocatio
+   globalSegmentInfo[comm->rank].totalSize = size;
+   globalSegmentInfo[comm->rank].hostCftMode = comm->config.hostCftMode;
+   globalSegmentInfo[comm->rank].candidateRegistryId = candidateRegistryId;
++  rsSite(RS_SITE_SEGMENTS);  // gin-restore spike B1: must equal the recorded rank's
+   NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, globalSegmentInfo, sizeof(*globalSegmentInfo)), ret,
+                 fail_global_segment_info);
+   for (int r = 0; r < comm->nRanks; r++) {
+@@ -1822,6 +1824,34 @@ fail:
+   goto exit;
+ }
+ 
++// gin-restore spike B1 (EXPERIMENT.md 9.15.4): report lines of the library's view (no addresses)
++static void rsWinReport(struct ncclComm* comm, ncclWindow_t win, size_t size) {
++  if (!rsReportOn()) return;
++  struct ncclWindow_vidmem* h = nullptr;
++  if (ncclShadowPoolToHost(&comm->devrState.shadows, win, &h) != ncclSuccess || h == nullptr) {
++    WARN("GIN/RS: window report: no host shadow");
++    return;
++  }
++  WARN("GIN/RS: window size=%zu lsaRank=%d worldRank=%d stride4G=%u mcOffset4K=%u ginOffset4K=%u winFlags=%#x "
++       "numSegments=%d",
++       size, h->lsaRank, h->worldRank, h->stride4G, h->mcOffset4K, h->ginOffset4K, h->winFlags, h->numSegments);
++}
++static void rsDevCommReport(struct ncclComm* comm, struct ncclDevComm* dc) {
++  if (!rsReportOn()) return;
++  WARN("GIN/RS: comm rank=%d nranks=%d runtimeConn=%d nvlsSupport=%d numRmaCtx=%d lsaSize=%d nLsaTeams=%d localRanks=%d "
++       "nNodes=%d symmetricSupport=%d globalGinSupport=%d",
++       comm->rank, comm->nRanks, comm->runtimeConn ? 1 : 0, comm->nvlsSupport ? 1 : 0, comm->config.numRmaCtx,
++       comm->devrState.lsaSize, comm->devrState.nLsaTeams, comm->localRanks, comm->nNodes,
++       comm->symmetricSupport ? 1 : 0, (int)comm->globalGinSupport);
++  WARN("GIN/RS: devcomm rank=%d nRanks=%d lsaRank=%d lsaSize=%d ginContextCount=%u ginSignalCount=%d ginCounterCount=%d "
++       "ginConnectionCount=%d",
++       dc->rank, dc->nRanks, dc->lsaRank, dc->lsaSize, dc->ginContextCount, dc->ginSignalCount, dc->ginCounterCount,
++       (int)dc->ginConnectionCount);
++  if (dc->resourceWindow != nullptr) rsWinReport(comm, dc->resourceWindow, 0);  // the devComm's internal window
++  ncclDevCommDump(dc);  // stdout; the compare script masks the pointer values
++  fflush(stdout);
++}
++
+ NCCL_API(ncclResult_t, ncclCommWindowRegister, ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win,
+          int winFlags);
+ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags) {
+@@ -1888,6 +1918,10 @@ exit:
+   ncclGroupErrCheck(ret);
+   NCCLCHECK(ncclGroupEndInternal());
+   cudaSetDevice(saveDev);
++  if (ret == ncclSuccess && *win != nullptr) {  // gin-restore spike B1: report, then the "win" mark of the transcript
++    rsWinReport(comm, *win, size);
++    NCCLCHECK(rsMark("win"));
++  }
+   return ret;
+ fail:
+   ncclDevrRegAsyncJobFree(regJob);
+@@ -2096,6 +2130,11 @@ exit:
+   ncclGroupErrCheck(ret);
+   NCCLCHECK(ncclGroupEndInternal());
+   cudaSetDevice(saveDev);
++  if (ret == ncclSuccess) {  // gin-restore spike B1: report, then the "devcomm" mark of the transcript
++    rsDevCommReport(comm, outDevComm);
++    NCCLCHECK(rsMark("devcomm"));
++    rsSummary("devcomm");
++  }
+   return ret;
+ fail:
+   if (createJob) {
+diff --git a/src/gin/gin_host.cc b/src/gin/gin_host.cc
+index 2f8749f..4398cc5 100644
+--- a/src/gin/gin_host.cc
++++ b/src/gin/gin_host.cc
+@@ -5,6 +5,7 @@
+  * See LICENSE.txt for more license information
+  *************************************************************************/
+ 
++#include "rs_spike.h"
+ #include "comm.h"
+ #include "gin.h"
+ #include "param.h"
+@@ -192,6 +193,7 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
+     }
+ 
+     ginCommCountHandles[comm->rank] = backend->ginCommCount;
++    rsSite(RS_SITE_GINCOUNT);  // gin-restore spike B1: must equal the recorded rank's
+     NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, ginCommCountHandles, sizeof(int)), ret, fail);
+     for (int r = 0; r < comm->nRanks; r++) {
+       backend->ginCommCount = std::min(backend->ginCommCount, ginCommCountHandles[r]);
+diff --git a/src/include/rs_spike.h b/src/include/rs_spike.h
+new file mode 100644
+index 0000000..f53ed9c
+--- /dev/null
++++ b/src/include/rs_spike.h
+@@ -0,0 +1,72 @@
++/*************************************************************************
++ * gin-restore feasibility spike B1 (EXPERIMENT.md 9.15.4): record the collective exchanges of a communicator's init,
++ * window registration and devComm creation, and replay them in a spare process without any peer. Research only; every
++ * hook is inert unless one of these is set:
++ *   NCCL_GIN_RESTORE_RECORD=<file>  record the first communicator of this process into <file> (created 0600, O_EXCL)
++ *   NCCL_GIN_RESTORE_REPLAY=<file>  answer every hooked exchange of the first communicator from <file>
++ *   NCCL_GIN_RESTORE_REPORT=1       only the "GIN/RS:" report lines (also on with RECORD or REPLAY)
++ *   NCCL_GIN_RESTORE_HKEY=<16 hex>  key of the hashes in the report lines (no key: no hashes are printed)
++ ************************************************************************/
++#ifndef NCCL_RS_SPIKE_H_
++#define NCCL_RS_SPIKE_H_
++
++#include "nccl.h"
++#include <functional>
++#include <stddef.h>
++#include <stdint.h>
++
++enum { RS_OFF = 0, RS_RECORD = 1, RS_REPLAY = 2 };
++enum { RS_SITE_NONE = 0, RS_SITE_PEERINFO = 1, RS_SITE_AG3 = 2, RS_SITE_GINCOUNT = 3, RS_SITE_SEGMENTS = 4 };
++enum {
++  RSK_AG = 1,
++  RSK_INTRA_AG = 2,
++  RSK_BARRIER = 3,
++  RSK_INTRA_BARRIER = 4,
++  RSK_SEND = 5,
++  RSK_RECV = 6,
++  RSK_BCAST = 7,
++  RSK_INTRA_BCAST = 8,
++  RSK_GIN_AG = 9,
++  RSK_MARK = 10
++};
++
++int rsMode();          // RS_OFF, RS_RECORD or RS_REPLAY (from the environment, once)
++bool rsReplaying();    // replay mode and a communicator is bound
++bool rsReportOn();     // report lines wanted
++// init.cc, before the commHash: record the commId (record) or put the recorded one in its place (replay). Binds the
++// first communicator of the process; later communicators are not hooked.
++ncclResult_t rsBeginComm(void* commId, size_t commIdBytes, int nranks, int rank);
++// bootstrap.cc: the bootstrap state of the bound communicator; the replay preconditions (RAS, OOB net, host RMA off)
++void rsBindState(void* state);
++bool rsStateHooked(void* state);
++ncclResult_t rsReplayPreconditions(int64_t rasEnable, int64_t oobNetEnable, int numRmaCtx);
++// the call site of the next hooked exchange (thread local): strict own-slot comparison with allowed byte ranges
++void rsSite(int site, int nAllowed = 0, const size_t* off = nullptr, const size_t* len = nullptr);
++// depth guard: only the outermost hooked call records or replays
++struct RsGuard {
++  bool hooked;
++  explicit RsGuard(void* state);
++  ~RsGuard();
++};
++// the hooks: `real` performs the original exchange (record mode, and every call that is not hooked)
++ncclResult_t rsAllGather(int kind, int myIdx, int n, void* buf, size_t elt, const std::function<ncclResult_t()>& real);
++ncclResult_t rsNoData(int kind, int tag, int n, const std::function<ncclResult_t()>& real);
++ncclResult_t rsSend(int peer, int tag, const void* data, size_t size, const std::function<ncclResult_t()>& real);
++ncclResult_t rsRecv(int peer, int tag, void* data, size_t size, const std::function<ncclResult_t()>& real);
++ncclResult_t rsBcast(int kind, int root, int myIdx, int n, void* data, size_t size,
++                     const std::function<ncclResult_t()>& real);
++// GIN collComm all-gather (transport/net_ib/gin.cc): recvBuf holds n slots of len bytes, srcBuf is this rank's slot
++ncclResult_t rsGinAllGather(int myIdx, int n, const void* srcBuf, void* recvBuf, size_t len,
++                            const std::function<ncclResult_t()>& real);
++bool rsGinHooked();
++// the recorded own slot of the next GIN all-gather (replay: the helper salt)
++ncclResult_t rsPeekGinOwn(void* out, size_t len);
++// window registration end ("win"), devComm creation end ("devcomm")
++ncclResult_t rsMark(const char* name);
++// keyed hash for the report lines; false (and 0) without a key
++bool rsHash(const void* p, size_t n, uint64_t* out);
++void rsHashStr(const void* p, size_t n, char* out, size_t outLen);  // "h:<16 hex>" or "nokey"
++uint32_t rsRandom24();
++void rsSummary(const char* where);  // entries used, divergences, own-slot differences, calls beyond the transcript
++
++#endif
+diff --git a/src/init.cc b/src/init.cc
+index b8e46b8..4bfbbfb 100644
+--- a/src/init.cc
++++ b/src/init.cc
+@@ -10,6 +10,7 @@
+ #include "nvmlwrap.h"
+ #include "gdrwrap.h"
+ #include "bootstrap.h"
++#include "rs_spike.h"
+ #include "transport.h"
+ #include "group.h"
+ #include "net.h"
+@@ -1251,6 +1252,11 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
+   // AllGather1 - begin
+   NCCLCHECKGOTO(ncclCalloc(&comm->peerInfo, nranks + 1), ret, fail); // Extra rank to represent CollNet root
+   NCCLCHECKGOTO(fillInfo(comm, comm->peerInfo + rank, comm->commHash), ret, fail);
++  {  // gin-restore spike B1: this rank's peerInfo may differ from the recorded one only in pidHash and comm
++    const size_t off[2] = {offsetof(struct ncclPeerInfo, pidHash), offsetof(struct ncclPeerInfo, comm)};
++    const size_t len[2] = {sizeof(uint64_t), sizeof(struct ncclComm*)};
++    rsSite(RS_SITE_PEERINFO, 2, off, len);
++  }
+   NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, comm->peerInfo, sizeof(struct ncclPeerInfo)), ret, fail);
+   COMPILER_ATOMIC_STORE(&comm->peerInfoValid, true, std::memory_order_release);
+ 
+@@ -1546,6 +1552,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
+   comm->nChannels = std::min(treeGraph->nChannels, ringGraph->nChannels);
+   NCCLCHECKGOTO(ncclTopoPreset(comm, graphs, &allGather3Data[rank].topoRanks), ret, fail);
+ 
++  rsSite(RS_SITE_AG3);  // gin-restore spike B1: topology and graphs must equal the recorded rank's
+   NCCLCHECKGOTO(bootstrapAllGather(comm->bootstrap, allGather3Data, sizeof(*allGather3Data)), ret, fail);
+ 
+   // Determine nNodes, firstRanks, ...
+@@ -2191,6 +2198,9 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
+       INFO(NCCL_INIT, "Rank %d: Generated commHash 0x%lx from baseMagic 0x%lx and newNRanks %d", job->myrank,
+            comm->commHash, baseMagic, job->nranks);
+     } else {
++      // gin-restore spike B1: record the commId, or (replay) put the recorded one in its place, before the hash and the
++      // bootstrap magic are taken from it
++      NCCLCHECKGOTO(rsBeginComm(job->commId, sizeof(ncclUniqueId) * (size_t)job->nId, job->nranks, job->myrank), res, fail);
+       // obtain a unique hash using the first commId
+       comm->commHash = commIdHash = getHash(job->commId->internal, NCCL_UNIQUE_ID_BYTES);
+     }
+diff --git a/src/misc/rs_spike.cc b/src/misc/rs_spike.cc
+new file mode 100644
+index 0000000..403b51a
+--- /dev/null
++++ b/src/misc/rs_spike.cc
+@@ -0,0 +1,422 @@
++/*************************************************************************
++ * gin-restore feasibility spike B1 (EXPERIMENT.md 9.15.4): see rs_spike.h. Research only.
++ ************************************************************************/
++#include "rs_spike.h"
++#include "debug.h"
++#include "checks.h"
++
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include <atomic>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <random>
++#include <string>
++#include <vector>
++
++namespace {
++const uint32_t kFileMagic = 0x52535431u;   // "RST1"
++const uint32_t kEntryMagic = 0x52534531u;  // "RSE1"
++struct FileHeader {
++  uint32_t magic, version;
++  int32_t nranks, rank;
++  uint64_t commIdBytes;
++};
++struct EntryHeader {
++  uint32_t magic, kind;
++  int32_t site, tag, peer, n, myIdx, pad;
++  uint64_t elt, payload;  // element size (all-gathers) or message size; payload bytes that follow
++};
++struct Entry {
++  EntryHeader h;
++  std::vector<uint8_t> data;
++};
++struct Site {
++  int site = RS_SITE_NONE;
++  std::vector<std::pair<size_t, size_t>> allowed;
++};
++
++std::mutex mu;
++int mode = -1;
++bool report = false;
++bool bound = false;          // a communicator is bound (the first one after the environment asked for it)
++void* boundState = nullptr;  // its bootstrap state
++FILE* recFile = nullptr;
++std::vector<uint8_t> commIdRec;
++std::vector<Entry> entries;  // replay
++size_t cursor = 0;
++long nRecorded = 0, nReplayed = 0, nDiverged = 0, nBeyond = 0, nStrictMismatch = 0;
++unsigned long long ownDiffBytes = 0;
++bool haveKey = false;
++uint64_t hkey = 0;
++thread_local int depth = 0;
++thread_local Site pendingSite;
++
++void initOnce() {
++  if (mode >= 0) return;
++  const char* rec = getenv("NCCL_GIN_RESTORE_RECORD");
++  const char* rep = getenv("NCCL_GIN_RESTORE_REPLAY");
++  const char* rpt = getenv("NCCL_GIN_RESTORE_REPORT");
++  const char* key = getenv("NCCL_GIN_RESTORE_HKEY");
++  mode = (rep && rep[0]) ? RS_REPLAY : (rec && rec[0]) ? RS_RECORD : RS_OFF;
++  report = mode != RS_OFF || (rpt && rpt[0] == '1');
++  if (key && strlen(key) == 16) {
++    hkey = strtoull(key, nullptr, 16);
++    haveKey = true;
++  }
++}
++uint64_t mix64(uint64_t z) {
++  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
++  z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
++  return z ^ (z >> 31);
++}
++const char* kindName(uint32_t k) {
++  static const char* n[] = {"?", "allgather", "intra_allgather", "barrier", "intra_barrier", "send", "recv", "bcast",
++                            "intra_bcast", "gin_allgather", "mark"};
++  return k <= RSK_MARK ? n[k] : "?";
++}
++bool writeAll(FILE* f, const void* p, size_t n) { return n == 0 || fwrite(p, 1, n, f) == n; }
++ncclResult_t recordEntry(uint32_t kind, int site, int tag, int peer, int n, int myIdx, size_t elt, const void* data,
++                         size_t len) {
++  EntryHeader h;
++  memset(&h, 0, sizeof(h));
++  h.magic = kEntryMagic;
++  h.kind = kind;
++  h.site = site;
++  h.tag = tag;
++  h.peer = peer;
++  h.n = n;
++  h.myIdx = myIdx;
++  h.elt = elt;
++  h.payload = len;
++  if (!writeAll(recFile, &h, sizeof(h)) || !writeAll(recFile, data, len) || fflush(recFile) != 0) {
++    WARN("GIN/RS: cannot write the transcript entry %ld", nRecorded);
++    return ncclSystemError;
++  }
++  nRecorded++;
++  return ncclSuccess;
++}
++// the next replay entry; checks kind, site, tag, peer, n, myIdx, elt and the payload length
++ncclResult_t nextEntry(uint32_t kind, int site, int tag, int peer, int n, int myIdx, size_t elt, size_t len,
++                       const Entry** out) {
++  if (cursor >= entries.size()) {
++    nBeyond++;
++    WARN("GIN/RS: replay: a %s call after the end of the transcript (%zu entries); refused", kindName(kind),
++         entries.size());
++    return ncclSystemError;
++  }
++  const Entry& e = entries[cursor];
++  if (e.h.kind != kind || e.h.site != site || e.h.tag != tag || e.h.peer != peer || e.h.n != n || e.h.myIdx != myIdx ||
++      e.h.elt != elt || e.h.payload != len) {
++    nDiverged++;
++    WARN("GIN/RS: replay diverged at entry %zu: transcript %s site=%d tag=%d peer=%d n=%d idx=%d elt=%lu len=%lu; "
++         "call %s site=%d tag=%d peer=%d n=%d idx=%d elt=%zu len=%zu",
++         cursor, kindName(e.h.kind), e.h.site, e.h.tag, e.h.peer, e.h.n, e.h.myIdx, (unsigned long)e.h.elt,
++         (unsigned long)e.h.payload, kindName(kind), site, tag, peer, n, myIdx, elt, len);
++    return ncclSystemError;
++  }
++  *out = &e;
++  cursor++;
++  nReplayed++;
++  return ncclSuccess;
++}
++// own slot comparison: bytes that differ, and bytes that differ outside the allowed ranges of the site
++void compareOwn(const Site& s, const uint8_t* now, const uint8_t* rec, size_t len, size_t idx) {
++  size_t diff = 0, strict = 0;
++  for (size_t b = 0; b < len; b++) {
++    if (now[b] == rec[b]) continue;
++    diff++;
++    bool ok = s.site == RS_SITE_NONE;
++    for (auto& a : s.allowed)
++      if (b >= a.first && b < a.first + a.second) ok = true;
++    if (!ok) strict++;
++  }
++  ownDiffBytes += diff;
++  if (strict) {
++    nStrictMismatch++;
++    WARN("GIN/RS: replay entry %zu (site %d): %zu own-slot bytes differ from the recorded rank outside the allowed fields",
++         idx, s.site, strict);
++  }
++  if (report)
++    WARN("GIN/RS: replay entry %zu site=%d own_slot_bytes=%zu own_diff_bytes=%zu strict_diff_bytes=%zu", idx, s.site,
++         len, diff, strict);
++}
++Site takeSite() {
++  Site s = pendingSite;
++  pendingSite = Site();
++  return s;
++}
++}  // namespace
++
++int rsMode() {
++  std::lock_guard<std::mutex> lk(mu);
++  initOnce();
++  return mode;
++}
++bool rsReplaying() {
++  std::lock_guard<std::mutex> lk(mu);
++  initOnce();
++  return mode == RS_REPLAY && bound;
++}
++bool rsReportOn() {
++  std::lock_guard<std::mutex> lk(mu);
++  initOnce();
++  return report;
++}
++bool rsGinHooked() {
++  std::lock_guard<std::mutex> lk(mu);
++  initOnce();
++  return mode != RS_OFF && bound;
++}
++
++ncclResult_t rsBeginComm(void* commId, size_t bytes, int nranks, int rank) {
++  std::lock_guard<std::mutex> lk(mu);
++  initOnce();
++  if (mode == RS_OFF || bound) return ncclSuccess;
++  if (mode == RS_RECORD) {
++    const char* path = getenv("NCCL_GIN_RESTORE_RECORD");
++    const int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
++    if (fd < 0) {
++      WARN("GIN/RS: record: cannot create the transcript (errno %d)", errno);
++      return ncclSystemError;
++    }
++    recFile = fdopen(fd, "wb");
++    FileHeader h = {kFileMagic, 1, nranks, rank, (uint64_t)bytes};
++    if (!recFile || !writeAll(recFile, &h, sizeof(h)) || !writeAll(recFile, commId, bytes) || fflush(recFile) != 0) {
++      WARN("GIN/RS: record: cannot write the transcript header");
++      return ncclSystemError;
++    }
++    bound = true;
++    WARN("GIN/RS: record ON rank=%d nranks=%d", rank, nranks);
++    return ncclSuccess;
++  }
++  // replay: read the whole transcript, check rank and nranks, put the recorded commId in place
++  const char* path = getenv("NCCL_GIN_RESTORE_REPLAY");
++  FILE* f = fopen(path, "rb");
++  if (!f) {
++    WARN("GIN/RS: replay: cannot open the transcript (errno %d)", errno);
++    return ncclSystemError;
++  }
++  FileHeader h;
++  bool ok = fread(&h, 1, sizeof(h), f) == sizeof(h) && h.magic == kFileMagic && h.version == 1 &&
++            h.commIdBytes == bytes;
++  if (ok) {
++    commIdRec.resize(bytes);
++    ok = fread(commIdRec.data(), 1, bytes, f) == bytes;
++  }
++  while (ok) {
++    Entry e;
++    const size_t got = fread(&e.h, 1, sizeof(e.h), f);
++    if (got == 0) break;
++    if (got != sizeof(e.h) || e.h.magic != kEntryMagic || e.h.payload > (1ull << 30)) {
++      WARN("GIN/RS: replay: transcript entry %zu is damaged or cut", entries.size());
++      ok = false;
++      break;
++    }
++    e.data.resize(e.h.payload);
++    if (e.h.payload && fread(e.data.data(), 1, e.h.payload, f) != e.h.payload) {
++      WARN("GIN/RS: replay: transcript entry %zu is cut", entries.size());
++      ok = false;
++      break;
++    }
++    entries.push_back(std::move(e));
++  }
++  fclose(f);
++  if (!ok) {
++    WARN("GIN/RS: replay: the transcript is not usable");
++    return ncclSystemError;
++  }
++  if (h.nranks != nranks || h.rank != rank) {
++    WARN("GIN/RS: replay: the transcript is rank %d of %d, the call asks for rank %d of %d", h.rank, h.nranks, rank,
++         nranks);
++    return ncclInvalidArgument;
++  }
++  memcpy(commId, commIdRec.data(), bytes);
++  bound = true;
++  WARN("GIN/RS: replay ON rank=%d nranks=%d entries=%zu", rank, nranks, entries.size());
++  return ncclSuccess;
++}
++void rsBindState(void* state) {
++  std::lock_guard<std::mutex> lk(mu);
++  if (bound && boundState == nullptr) boundState = state;
++}
++bool rsStateHooked(void* state) {
++  std::lock_guard<std::mutex> lk(mu);
++  return mode != RS_OFF && bound && state != nullptr && state == boundState;
++}
++ncclResult_t rsReplayPreconditions(int64_t rasEnable, int64_t oobNetEnable, int numRmaCtx) {
++  if (!rsReplaying()) return ncclSuccess;
++  if (rasEnable != 0 || oobNetEnable != 0 || numRmaCtx != 0) {
++    WARN("GIN/RS: replay refused: needs NCCL_RAS_ENABLE=0 (is %ld), NCCL_OOB_NET_ENABLE=0 (is %ld) and no host RMA "
++         "(NCCL_NUM_RMA_CTX=0; numRmaCtx is %d)",
++         (long)rasEnable, (long)oobNetEnable, numRmaCtx);
++    return ncclInvalidUsage;
++  }
++  return ncclSuccess;
++}
++void rsSite(int site, int nAllowed, const size_t* off, const size_t* len) {
++  pendingSite = Site();
++  pendingSite.site = site;
++  for (int i = 0; i < nAllowed; i++) pendingSite.allowed.push_back({off[i], len[i]});
++}
++RsGuard::RsGuard(void* state) {
++  hooked = depth == 0 && rsStateHooked(state);
++  depth++;
++}
++RsGuard::~RsGuard() { depth--; }
++
++ncclResult_t rsAllGather(int kind, int myIdx, int n, void* buf, size_t elt, const std::function<ncclResult_t()>& real) {
++  const Site s = takeSite();
++  uint8_t* b = (uint8_t*)buf;
++  if (rsReplaying()) {
++    std::lock_guard<std::mutex> lk(mu);
++    const Entry* e = nullptr;
++    const size_t idx = cursor;
++    NCCLCHECK(nextEntry(kind, s.site, 0, -1, n, myIdx, elt, elt * n, &e));
++    compareOwn(s, b + elt * myIdx, e->data.data() + elt * myIdx, elt, idx);
++    for (int r = 0; r < n; r++)
++      if (r != myIdx) memcpy(b + elt * r, e->data.data() + elt * r, elt);
++    return ncclSuccess;
++  }
++  NCCLCHECK(real());
++  std::lock_guard<std::mutex> lk(mu);
++  return recordEntry(kind, s.site, 0, -1, n, myIdx, elt, buf, elt * n);
++}
++ncclResult_t rsNoData(int kind, int tag, int n, const std::function<ncclResult_t()>& real) {
++  const Site s = takeSite();
++  if (rsReplaying()) {
++    std::lock_guard<std::mutex> lk(mu);
++    const Entry* e = nullptr;
++    return nextEntry(kind, s.site, tag, -1, n, -1, 0, 0, &e);
++  }
++  NCCLCHECK(real());
++  std::lock_guard<std::mutex> lk(mu);
++  return recordEntry(kind, s.site, tag, -1, n, -1, 0, nullptr, 0);
++}
++ncclResult_t rsSend(int peer, int tag, const void* data, size_t size, const std::function<ncclResult_t()>& real) {
++  const Site s = takeSite();
++  if (rsReplaying()) {
++    std::lock_guard<std::mutex> lk(mu);
++    const Entry* e = nullptr;
++    const size_t idx = cursor;
++    NCCLCHECK(nextEntry(RSK_SEND, s.site, tag, peer, 0, -1, size, size, &e));
++    compareOwn(s, (const uint8_t*)data, e->data.data(), size, idx);
++    return ncclSuccess;
++  }
++  NCCLCHECK(real());
++  std::lock_guard<std::mutex> lk(mu);
++  return recordEntry(RSK_SEND, s.site, tag, peer, 0, -1, size, data, size);
++}
++ncclResult_t rsRecv(int peer, int tag, void* data, size_t size, const std::function<ncclResult_t()>& real) {
++  const Site s = takeSite();
++  if (rsReplaying()) {
++    std::lock_guard<std::mutex> lk(mu);
++    const Entry* e = nullptr;
++    NCCLCHECK(nextEntry(RSK_RECV, s.site, tag, peer, 0, -1, size, size, &e));
++    if (size) memcpy(data, e->data.data(), size);
++    return ncclSuccess;
++  }
++  NCCLCHECK(real());
++  std::lock_guard<std::mutex> lk(mu);
++  return recordEntry(RSK_RECV, s.site, tag, peer, 0, -1, size, data, size);
++}
++ncclResult_t rsBcast(int kind, int root, int myIdx, int n, void* data, size_t size,
++                     const std::function<ncclResult_t()>& real) {
++  const Site s = takeSite();
++  if (rsReplaying()) {
++    std::lock_guard<std::mutex> lk(mu);
++    const Entry* e = nullptr;
++    const size_t idx = cursor;
++    NCCLCHECK(nextEntry(kind, s.site, 0, root, n, myIdx, size, size, &e));
++    if (root == myIdx) compareOwn(s, (const uint8_t*)data, e->data.data(), size, idx);
++    else if (size) memcpy(data, e->data.data(), size);
++    return ncclSuccess;
++  }
++  NCCLCHECK(real());
++  std::lock_guard<std::mutex> lk(mu);
++  return recordEntry(kind, s.site, 0, root, n, myIdx, size, data, size);
++}
++ncclResult_t rsGinAllGather(int myIdx, int n, const void* srcBuf, void* recvBuf, size_t len,
++                            const std::function<ncclResult_t()>& real) {
++  const Site s = takeSite();
++  uint8_t* b = (uint8_t*)recvBuf;
++  if (rsReplaying()) {
++    std::lock_guard<std::mutex> lk(mu);
++    const Entry* e = nullptr;
++    const size_t idx = cursor;
++    NCCLCHECK(nextEntry(RSK_GIN_AG, s.site, 0, -1, n, myIdx, len, len * n, &e));
++    memcpy(b + len * myIdx, srcBuf, len);
++    compareOwn(s, b + len * myIdx, e->data.data() + len * myIdx, len, idx);
++    for (int r = 0; r < n; r++)
++      if (r != myIdx) memcpy(b + len * r, e->data.data() + len * r, len);
++    return ncclSuccess;
++  }
++  NCCLCHECK(real());
++  std::lock_guard<std::mutex> lk(mu);
++  return recordEntry(RSK_GIN_AG, s.site, 0, -1, n, myIdx, len, recvBuf, len * n);
++}
++ncclResult_t rsPeekGinOwn(void* out, size_t len) {
++  std::lock_guard<std::mutex> lk(mu);
++  if (cursor >= entries.size() || entries[cursor].h.kind != RSK_GIN_AG || entries[cursor].h.elt != len) {
++    WARN("GIN/RS: replay: the next transcript entry is not the helper all-gather");
++    return ncclSystemError;
++  }
++  const Entry& e = entries[cursor];
++  memcpy(out, e.data.data() + len * e.h.myIdx, len);
++  return ncclSuccess;
++}
++ncclResult_t rsMark(const char* name) {
++  std::lock_guard<std::mutex> lk(mu);
++  initOnce();
++  if (mode == RS_OFF || !bound) return ncclSuccess;
++  const size_t len = strlen(name);
++  if (mode == RS_REPLAY) {
++    const Entry* e = nullptr;
++    NCCLCHECK(nextEntry(RSK_MARK, RS_SITE_NONE, 0, -1, 0, -1, len, len, &e));
++    if (memcmp(e->data.data(), name, len) != 0) {
++      nDiverged++;
++      WARN("GIN/RS: replay diverged at the mark %s", name);
++      return ncclSystemError;
++    }
++    WARN("GIN/RS: replay mark=%s entry=%zu of %zu", name, cursor, entries.size());
++    return ncclSuccess;
++  }
++  WARN("GIN/RS: record mark=%s entry=%ld", name, nRecorded + 1);
++  return recordEntry(RSK_MARK, RS_SITE_NONE, 0, -1, 0, -1, len, name, len);
++}
++bool rsHash(const void* p, size_t n, uint64_t* out) {
++  {
++    std::lock_guard<std::mutex> lk(mu);
++    initOnce();
++  }
++  if (!haveKey) {
++    *out = 0;
++    return false;
++  }
++  uint64_t h = mix64(hkey ^ 0x6a09e667f3bcc909ull);
++  const uint8_t* b = (const uint8_t*)p;
++  for (size_t i = 0; i < n; i++) h = mix64(h ^ ((uint64_t)b[i] << ((i % 8) * 8)) ^ (i * 0x9e3779b97f4a7c15ull));
++  *out = mix64(h ^ hkey ^ n);
++  return true;
++}
++void rsHashStr(const void* p, size_t n, char* out, size_t outLen) {
++  uint64_t h;
++  if (rsHash(p, n, &h)) snprintf(out, outLen, "h:%016lx", (unsigned long)h);
++  else snprintf(out, outLen, "nokey");
++}
++uint32_t rsRandom24() {
++  std::random_device rd;
++  return ((uint32_t)rd()) & 0xffffffu;
++}
++void rsSummary(const char* where) {
++  std::lock_guard<std::mutex> lk(mu);
++  initOnce();
++  if (mode == RS_OFF) return;
++  WARN("GIN/RS: summary at %s mode=%s bound=%d recorded=%ld replayed=%ld transcript_entries=%zu diverged=%ld "
++       "beyond=%ld own_diff_bytes=%llu strict_mismatch=%ld",
++       where, mode == RS_RECORD ? "record" : "replay", bound ? 1 : 0, nRecorded, nReplayed, entries.size(), nDiverged,
++       nBeyond, ownDiffBytes, nStrictMismatch);
++}
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index da31b3a..427504a 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -6,6 +6,7 @@
+  *************************************************************************/
+ 
+ #include <assert.h>
++#include "rs_spike.h"  // gin-restore spike B1 (EXPERIMENT.md 9.15.4)
+ #include <limits.h>
+ #include <stdbool.h>
+ #include <stddef.h>
+@@ -198,6 +199,21 @@ static ncclResult_t gdakiRegMr(struct ibv_mr** mr, struct ibv_pd* pd, void* addr
+   return ncclSuccess;
+ }
+ 
++// gin-restore spike B1: the peer columns of an rkey table, read back from the GPU after its copy, as a keyed hash (the
++// own column is new in a replay and is left out)
++static void gdakiRsRkeyReport(const char* what, struct ncclGinIbCollComm* cComm, const __be32* gpuTable, unsigned info) {
++  if (!rsReportOn()) return;
++  std::vector<__be32> t(cComm->nranks, 0);
++  if (cudaMemcpy(t.data(), gpuTable, sizeof(__be32) * cComm->nranks, cudaMemcpyDeviceToHost) != cudaSuccess) {
++    WARN("GIN/RS: rkey report: cannot read the %s table back", what);
++    return;
++  }
++  t[cComm->rank] = 0;
++  char h[24];
++  rsHashStr(t.data(), sizeof(__be32) * t.size(), h, sizeof(h));
++  WARN("GIN/RS: rkeys %s info=%u peers=%s", what, info, h);
++}
++
+ template <typename T>
+ class GdakiHostGPUMemHandle {
+ private:
+@@ -306,6 +322,7 @@ public:
+     __be32 rkey = htobe32(this->mr->rkey);
+     NCCLCHECK(cComm->allGather(cComm, &rkey, this->rkeys_hd_mhandle.host_buf, sizeof(__be32)));
+     NCCLCHECK(this->rkeys_hd_mhandle.copy_h_to_d());
++    gdakiRsRkeyReport("table", cComm, this->rkeys_hd_mhandle.gpu_buf, this->num_elements);
+     return ncclSuccess;
+   }
+ 
+@@ -6505,7 +6522,9 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+   }
+   // Responder MSN baselines before anyone can send on these QPs (every rank is inside this collective).
+   std::vector<uint32_t> rmsn0(r ? r->qps.size() : 0, 0);
+-  if (why == nullptr) {
++  // gin-restore spike B1: a replay's peer QPs are still in RESET here (connected once in gdakiTsStart, which takes the
++  // baseline then); no QUERY_QP on them here
++  if (why == nullptr && !rsReplaying()) {
+     for (int p = rankOff; p < nranks; p += g->rankStride) {
+       if (p == rank) continue;
+       gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
+@@ -6515,6 +6534,15 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+       });
+     }
+   }
++  if (rsReplaying()) {  // gin-restore spike B1: the recorded salt, so the nonce is the one of the first incarnation
++    struct gdakiTsAddr rec;
++    ncclResult_t pr = rsPeekGinOwn(&rec, sizeof(rec));
++    if (pr != ncclSuccess) {
++      if (ls >= 0) close(ls);
++      return pr;
++    }
++    mine.salt = rec.salt;
++  }
+   ncclResult_t ret = cComm->allGather(cComm, &mine, all.data(), sizeof(mine));
+   if (ret != ncclSuccess) {
+     if (ls >= 0) close(ls);
+@@ -6538,8 +6566,17 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+     for (int p = rankOff; p < nranks && why == nullptr; p += g->rankStride)
+       if (p != rank && all[p].magic != GDAKI_TS_MAGIC) why = "a peer has transparent recovery off";
+   }
++  // gin-restore spike B1: a replay neither connects nor accepts (no peer takes part, and the spare must not talk before its
++  // REJOIN); `gated` and `addr` come from the recorded all-gather
++  const bool rsRep = rsReplaying();
++  for (int p = rankOff; rsRep && p < nranks && why == nullptr; p += g->rankStride) {
++    if (p == rank) continue;
++    ts->peers[p].gated = true;
++    ts->peers[p].addr = all[p].a;
++    ts->peers[p].haveAddr = true;
++  }
+   // connect to higher ranks (completes through the peer's backlog), then accept the lower ranks
+-  for (int p = rankOff; p < nranks && why == nullptr; p += g->rankStride) {
++  for (int p = rankOff; !rsRep && p < nranks && why == nullptr; p += g->rankStride) {
+     if (p <= rank) continue;
+     const union ncclSocketAddress& pa = all[p].a;
+     socklen_t alen = pa.sa.sa_family == AF_INET6 ? sizeof(pa.sin6) : sizeof(pa.sin);
+@@ -6570,7 +6607,7 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+     ts->peers[p].haveAddr = true;
+   }
+   int lower = 0;
+-  for (int p = rankOff; p < rank; p += g->rankStride) lower++;
++  for (int p = rankOff; !rsRep && p < rank; p += g->rankStride) lower++;
+   while (why == nullptr && lower > 0) {
+     struct pollfd pf = {ls, POLLIN, 0};
+     const int rem = (int)(deadline - gdakiQ4MonoMs());
+@@ -7037,6 +7074,42 @@ static void gdakiLbSetup(struct gdakiRecHost* r) {
+               lb->nPeermem, lb->testBytes, lb->testNonzero, lb->testShadow, gdakiQ4MonoMs() - t0, gdakiQ4MonoMs());
+ }
+ 
++// gin-restore spike B1 (EXPERIMENT.md 9.15.4): per peer `gated`, `addr` (keyed hash), per QP the recorded peer endpoint
++// (`rq.exch`, keyed hash), the device gate struct and word; the helper nonce (keyed hash). No address is printed.
++static void gdakiRsReport(struct gdakiRecHost* r, const char* phase) {
++  struct gdakiTs* ts = r->ts;
++  char hn[24];
++  rsHashStr(&ts->nonce, sizeof(ts->nonce), hn, sizeof(hn));
++  WARN("GIN/RS: ts %s rank=%d peers=%zu qps=%zu nonce=%s listen=%d", phase, r->ctx->rank, ts->peers.size(),
++       ts->qs.size(), hn, ts->listenFd >= 0 ? 1 : 0);
++  for (int p = 0; p < (int)ts->peers.size(); p++) {
++    const struct gdakiTsPeer& pe = ts->peers[p];
++    char ha[24];
++    rsHashStr(&pe.addr, sizeof(pe.addr), ha, sizeof(ha));
++    WARN("GIN/RS: peer %d gated=%d haveAddr=%d addr=%s fd=%d", p, pe.gated ? 1 : 0, pe.haveAddr ? 1 : 0,
++         pe.haveAddr ? ha : "none", pe.fd >= 0 ? 1 : 0);
++    if (!pe.gated) continue;
++    gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
++      struct { int qpn; int lid; uint8_t gid[16]; } ex;
++      memset(&ex, 0, sizeof(ex));
++      ex.qpn = rq.exch.qpn;
++      ex.lid = rq.exch.lid;
++      memcpy(ex.gid, rq.exch.gid.raw, 16);
++      char he[24];
++      rsHashStr(&ex, sizeof(ex), he, sizeof(he));
++      struct ncclGinTsGate gate;
++      memset(&gate, 0, sizeof(gate));
++      uint64_t w = ~0ull;
++      const bool okg = gdakiTsGateRead(r, q->qp_gverbs, 0, &gate, sizeof(gate)) == ncclSuccess;
++      const bool okw = gdakiTsWordRead(r, q->qp_gverbs, &w) == ncclSuccess;
++      WARN("GIN/RS: qp peer=%d ctx=%d idx=%d exch=%s gate_read=%d flags=%#x waitMs=%u rescue=%d rescueLaps=%u lbase=%lu "
++           "word_read=%d epoch=%u count=%u",
++           p, rq.ctxIdx, rq.qpIdx, he, okg ? 1 : 0, gate.flags, gate.waitMs, gate.rescue ? 1 : 0, gate.rescueLaps,
++           (unsigned long)gate.lbase, okw ? 1 : 0, (unsigned)(w >> 32), (unsigned)w);
++    });
++  }
++}
++
+ static void gdakiTsStart(struct gdakiRecHost* r) {
+   if (r == nullptr || r->ts == nullptr) return;
+   struct gdakiTs* ts = r->ts;
+@@ -7166,6 +7239,25 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+     r->ts = nullptr;
+     return;
+   }
++  if (rsReportOn()) gdakiRsReport(r, "gates");  // gin-restore spike B1: before the helper starts
++  if (rsReplaying()) {  // gin-restore spike B1: connect every peer QP once with fresh PSNs; no helper (no REJOIN yet)
++    int okq = 0, failq = 0;
++    for (int p = 0; p < (int)ts->peers.size(); p++) {
++      if (!ts->peers[p].gated) continue;
++      gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl* q) {
++        uint32_t st = 0, rmsn = 0;
++        if (gdakiConnectQp(g, q, &rq.exch, rq.lag, rsRandom24(), rsRandom24()) == ncclSuccess &&
++            doca_verbs_qp_query_seq(q->qp, &rmsn, nullptr, nullptr, &st) == DOCA_SUCCESS && st == 0x3u) {
++          ts->qs[rq.qpIdx].rmsn0 = rmsn;  // the responder MSN baseline, taken here (not in gdakiTsSetup) in a replay
++          okq++;
++        } else {
++          failq++;
++        }
++      });
++    }
++    WARN("GIN/RS: replay connect_once ok=%d failed=%d (spare: no helper thread before a REJOIN)", okq, failq);
++    return;
++  }
+   ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
+   ts->active.store(1, std::memory_order_release);
+   ts->th = std::thread(gdakiTsMain, r);
+@@ -7816,7 +7908,9 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+ 
+       uint8_t lagTxPortAffinity = (numLagPorts > 0) ? (ctx_idx % numLagPorts) + 1 : 0;
+ 
+-      NCCLCHECKGOTO(gdakiConnectQp(gdaki_ctx, gdaki_ctx->gqps[qp_idx], peer_info, lagTxPortAffinity), status, out);
++      // gin-restore spike B1: a replay only creates the peer QPs (EXPERIMENT.md 9.3); they are connected once in the report
++      if (!rsReplaying())
++        NCCLCHECKGOTO(gdakiConnectQp(gdaki_ctx, gdaki_ctx->gqps[qp_idx], peer_info, lagTxPortAffinity), status, out);
+       if (gdaki_ctx->rec) {  // GIN recovery
+         struct gdakiRecQp& rq = gdaki_ctx->rec->qps[qp_idx];
+         rq.used = true;
+@@ -8222,6 +8316,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+   NCCLCHECKGOTO(rkeys_hd_mhandle->allocate(cComm->nranks), status, out);
+   NCCLCHECKGOTO(cComm->allGather(cComm, &rkey, rkeys_hd_mhandle->host_buf, sizeof(__be32)), status, out);
+   NCCLCHECKGOTO(rkeys_hd_mhandle->copy_h_to_d(), status, out);
++  gdakiRsRkeyReport("window", cComm, rkeys_hd_mhandle->gpu_buf, (unsigned)size);
+ 
+   NCCLCHECKGOTO(gdaki_mhandle_hd_mhandle->allocate(1), status, out);
+   gdaki_mhandle_hd_mhandle->host_buf->rkeys = rkeys_hd_mhandle->gpu_buf;
+diff --git a/src/transport/net_ib/gin.cc b/src/transport/net_ib/gin.cc
+index 6e0b5a1..38557f2 100644
+--- a/src/transport/net_ib/gin.cc
++++ b/src/transport/net_ib/gin.cc
+@@ -5,12 +5,15 @@
+  * See LICENSE.txt for more license information
+  *************************************************************************/
+ 
++#include "rs_spike.h"
+ #include "common.h"
+ 
+ #include "gin/gin_host.h"
+ #include "gin.h"
+ 
+ #include <thread>
++#include <vector>
++#include <mutex>
+ #include <chrono>
+ #include <cstdlib>
+ #include <cstring>
+@@ -135,7 +138,15 @@ ncclResult_t ncclGinIbFinalize(void* ctx) {
+   return ncclIbFinalizeDevices();
+ }
+ 
++static ncclResult_t ncclGinIbAllGatherImpl(struct ncclGinIbCollComm* cComm, void* srcBuf, void* recvBuf, size_t len);
++// gin-restore spike B1 (EXPERIMENT.md 9.15.4): record or replay at the top, before any memory registration on the
++// ring comms (a replayed collComm has none). Inert without the environment.
+ static ncclResult_t ncclGinIbAllGather(struct ncclGinIbCollComm* cComm, void* srcBuf, void* recvBuf, size_t len) {
++  if (!rsGinHooked()) return ncclGinIbAllGatherImpl(cComm, srcBuf, recvBuf, len);
++  return rsGinAllGather(cComm->rank, cComm->nranks, srcBuf, recvBuf, len,
++                        [&]() { return ncclGinIbAllGatherImpl(cComm, srcBuf, recvBuf, len); });
++}
++static ncclResult_t ncclGinIbAllGatherImpl(struct ncclGinIbCollComm* cComm, void* srcBuf, void* recvBuf, size_t len) {
+   ncclResult_t status = ncclSuccess;
+   void *rMhandle = NULL, *sMhandle = NULL;
+   void *srequest = NULL, *rrequest = NULL;
+@@ -228,6 +239,29 @@ ncclResult_t ncclGinIbP2PBarrier(struct ncclGinIbCollComm* cComm) {
+   return ncclSuccess;
+ }
+ 
++// gin-restore spike B1: a replayed collComm connects no ring, and the ring's connect/accept is the only place where the
++// device's protection domain is allocated (ncclIbInitCommDevBase). The replay takes the same reference on that PD
++// (allocated on 0 -> 1) and releases it in ncclGinIbCloseColl. Only replayed collComms are in this list.
++static std::mutex rsPdMu;
++static std::vector<void*> rsPdComms;
++static ncclResult_t rsReplayPdRef(int dev) {
++  ncclIbDev* ibDev = ncclIbDevs + dev;
++  std::lock_guard<std::mutex> lock(ibDev->mutex);
++  if (0 == ibDev->pdRefs++) {
++    ncclResult_t r = wrap_ibv_alloc_pd(&ibDev->pd, ibDev->context);
++    if (r != ncclSuccess) {
++      ibDev->pdRefs--;
++      return r;
++    }
++  }
++  return ncclSuccess;
++}
++static ncclResult_t rsReplayPdUnref(int dev) {
++  std::lock_guard<std::mutex> lock(ncclIbDevs[dev].mutex);
++  if (0 == --ncclIbDevs[dev].pdRefs) NCCLCHECK(wrap_ibv_dealloc_pd(ncclIbDevs[dev].pd));
++  return ncclSuccess;
++}
++
+ ncclResult_t ncclGinIbConnect(void* ctx, void* handles[], int nranks, int rank, void* listenComm, void** collComm) {
+   struct ncclIbListenComm* lComm = (struct ncclIbListenComm*)listenComm;
+   struct ncclGinIbCollComm* cCommArray = nullptr;
+@@ -243,7 +277,8 @@ ncclResult_t ncclGinIbConnect(void* ctx, void* handles[], int nranks, int rank,
+   cComm->rank = rank;
+ 
+   next = (cComm->rank + 1) % nranks;
+-  do {
++  // gin-restore spike B1: a replay does not connect the ring (no peer takes part); the fields below are still set
++  if (!rsReplaying()) do {
+     if (cComm->sendComm == NULL) {
+       NCCLCHECKGOTO(ncclIbConnectImpl(ctx, lComm->dev, handles[next], &cComm->sendComm, NULL, /*nQpsPerDev*/ 1,
+                                       ncclParamGinIbTc() != -1 ? ncclParamGinIbTc() : ncclParamIbTc()),
+@@ -260,8 +295,18 @@ ncclResult_t ncclGinIbConnect(void* ctx, void* handles[], int nranks, int rank,
+   cComm->getGidIndex = ncclIbGetGidIndex;
+   cComm->dev = lComm->dev;
+ 
++  if (rsReplaying()) {  // gin-restore spike B1: the PD reference the ring connect would have taken
++    NCCLCHECKGOTO(rsReplayPdRef(cComm->dev), ret, fail);
++    std::lock_guard<std::mutex> lk(rsPdMu);
++    rsPdComms.push_back(cComm);
++  }
+   cComm->ib.context = ncclIbDevs[cComm->dev].context;
+   cComm->ib.pd = ncclIbDevs[cComm->dev].pd;
++  if (rsReplaying() && cComm->ib.pd == NULL) {  // fail closed: every GDAKI registration needs this PD
++    WARN("GIN/RS: replay: no protection domain for GIN device %d", cComm->dev);
++    ret = ncclInternalError;
++    goto fail;
++  }
+ 
+   *collComm = cCommArray;
+   return ncclSuccess;
+@@ -269,6 +314,19 @@ ncclResult_t ncclGinIbConnect(void* ctx, void* handles[], int nranks, int rank,
+ fail:
+   if (cComm->recvComm) ncclNetIb.closeRecv(cComm->recvComm);
+   if (cComm->sendComm) ncclNetIb.closeSend(cComm->sendComm);
++  {  // gin-restore spike B1: a replay that took the PD reference and then failed gives it back
++    bool held = false;
++    {
++      std::lock_guard<std::mutex> lk(rsPdMu);
++      for (size_t i = 0; i < rsPdComms.size(); i++)
++        if (rsPdComms[i] == (void*)cComm) {
++          rsPdComms.erase(rsPdComms.begin() + i);
++          held = true;
++          break;
++        }
++    }
++    if (held) (void)rsReplayPdUnref(cComm->dev);
++  }
+   free(cCommArray);
+   return ret;
+ }
+@@ -288,6 +346,18 @@ ncclResult_t ncclGinIbCloseColl(void* collComm) {
+     cComm->sendComm = NULL;
+   }
+ 
++  bool rsPd = false;  // gin-restore spike B1: a replayed collComm releases its PD reference
++  {
++    std::lock_guard<std::mutex> lk(rsPdMu);
++    for (size_t i = 0; i < rsPdComms.size(); i++)
++      if (rsPdComms[i] == (void*)cComm) {
++        rsPdComms.erase(rsPdComms.begin() + i);
++        rsPd = true;
++        break;
++      }
++  }
++  if (rsPd) NCCLCHECK(rsReplayPdUnref(cComm->dev));
++
+   memset(cComm, 0, sizeof(*cComm));
+ 
+   free(cCommArray);
