@@ -10,7 +10,7 @@
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-restore` @ `02a640aa` (master) |
 | 사전 등록 태그 | 없음. 라이브러리 계층(9.9절)과 pilot 뒤 `prereg/gin-restore-v1` 예정 |
-| 마지막 갱신 | 2026-10-09, 초안: 설계(9.1–9.8절), 필요한 hook(9.9절). 사용자 결정으로 감지와 반응을 나눈 정책 설계와 통합 상호작용 표, 막는 문제를 따로 문서(`DESIGN_POLICY.md`)로 옮겼다가 2026-10-11 사용자 결정으로 9.10–9.11절에 다시 합침. 충돌이 남은 동안 구현 없음(시제품 멈춤, 9.13절). 사용자 결정(2026-10-09): B4는 (나)(검토 3과 재확인: 풀리지 않은 충돌 없음), B1–B3은 실행 가능성 시험(9.15절, 채점 안 함; 설계와 코드의 독립 검토 반영). 시험 결과(2026-10-09): B2 해결 A, B1 초기화 재생이 이 범위에서 됨, B3 열림(rain의 GPU 경합 셀이 두 번 다 미결, 사용자 결정 대기). 2026-10-11: 사용자 결정으로 경합 셀 넷을 같은 프로세스 안의 hog로 다시 해 B3의 drain 확인이 두 노드, 두 순서 모두 통과. 같은 날 사용자 결정으로 B3을 닫음: 복원 대상 window는 런타임이 strict를 강제(9.10.8절), 정상 경로 비용은 9.15.6에서 잼: 두 노드 모두 잴 만한 차이 없음. 같은 날 사용자 결정: 복원을 켤 수 없으면 `ncclGinRestoreResume`이 이유와 함께 오류(모든 rank 같음). 질문, 가설, 예측, 셀, 기준의 초안(DRAFT)과 구현 계획(9.14절). 같은 날 작업 묶음 1(strict 강제와 설정 합의) 구현, 빌드됨, CPU 시험함, 독립 검토(막는 문제 없음); 작업 묶음 2는 충돌 확인에서 설계가 풀지 않은 물음 둘로 멈춤(12절, 사용자 결정 대기) |
+| 마지막 갱신 | 2026-10-09, 초안: 설계(9.1–9.8절), 필요한 hook(9.9절). 사용자 결정으로 감지와 반응을 나눈 정책 설계와 통합 상호작용 표, 막는 문제를 따로 문서(`DESIGN_POLICY.md`)로 옮겼다가 2026-10-11 사용자 결정으로 9.10–9.11절에 다시 합침. 충돌이 남은 동안 구현 없음(시제품 멈춤, 9.13절). 사용자 결정(2026-10-09): B4는 (나)(검토 3과 재확인: 풀리지 않은 충돌 없음), B1–B3은 실행 가능성 시험(9.15절, 채점 안 함; 설계와 코드의 독립 검토 반영). 시험 결과(2026-10-09): B2 해결 A, B1 초기화 재생이 이 범위에서 됨, B3 열림(rain의 GPU 경합 셀이 두 번 다 미결, 사용자 결정 대기). 2026-10-11: 사용자 결정으로 경합 셀 넷을 같은 프로세스 안의 hog로 다시 해 B3의 drain 확인이 두 노드, 두 순서 모두 통과. 같은 날 사용자 결정으로 B3을 닫음: 복원 대상 window는 런타임이 strict를 강제(9.10.8절), 정상 경로 비용은 9.15.6에서 잼: 두 노드 모두 잴 만한 차이 없음. 같은 날 사용자 결정: 복원을 켤 수 없으면 `ncclGinRestoreResume`이 이유와 함께 오류(모든 rank 같음). 질문, 가설, 예측, 셀, 기준의 초안(DRAFT)과 구현 계획(9.14절). 같은 날 작업 묶음 1(strict 강제와 설정 합의) 구현, 빌드됨, CPU 시험함, 독립 검토(막는 문제 없음); 작업 묶음 2는 충돌 확인에서 설계가 풀지 않은 물음 둘로 멈춤(12절). 2026-10-12 사용자 결정(Resume은 모든 rank가 부르고 bootstrap으로 모아 같은 결과, 9.10.8절)으로 작업 묶음 2 구현, 빌드됨, CPU 시험함, 독립 검토(막는 문제 없음) |
 
 **정책 설계의 자리.** 장애 반응 정책(fail-fast와 hold-for-restore), 기존 장치와의 통합 상호작용 표, gpu-detect 계층에 넣을 변경, 막는 문제와
 그 독립 검토는 9.10–9.11절에 있다(2026-10-09에 따로 쓴 `DESIGN_POLICY.md`를 2026-10-11 사용자 결정으로 합침, 12절). 사용자 결정(2026-10-09): 충돌이 남아 있는 동안 아무것도
@@ -45,7 +45,7 @@ gin-remaining `hr` 빌드 트리(세션 스크래치 `agent_ts2hr/nccl-src`, 202
 
 | 빌드 키 | 내용 | 쓰는 곳 |
 |---|---|---|
-| `rs` | 이 실험의 연구 빌드: gpu-detect `hk` 위에 9.9절의 계층(지금은 작업 묶음 1까지, 12절) | 새 셀 |
+| `rs` | 이 실험의 연구 빌드: gpu-detect `hk` 위에 9.9절의 계층(지금은 작업 묶음 2까지, 12절) | 새 셀 |
 | `rsp` | 같은 소스의 운영 빌드(`-DNCCL_GIN_TS_PRODUCTION`) | 지연, 운영 kill |
 | `hw` | gpu-detect의 연구 빌드(대조: 복원 없이 degraded) | 대조 |
 | `hr` | gin-remaining의 연구 빌드(읽기만, 대조) | 대조 |
@@ -139,7 +139,7 @@ rank를 새 프로세스로 잇는 길, 보낸 메시지를 다시 넣는 길, �
 |---|---|---|
 | 노드, NIC, GPU, CUDA | gin-remaining과 같다: rain(Quadro RTX 5000), sunny(RTX A4000), ConnectX-6, CUDA 12.8 | `../remaining/EXPERIMENT.md` 5절 `[문서]` |
 | 랭크 배치 | 랭크 4개, GPU마다 프로세스 둘(`NCCL_MULTI_RANK_GPU_ENABLE=1`, gin-multirank처럼): rain에 0과 2, sunny에 1과 3. rank 3의 예비 프로세스는 sunny GPU의 셋째 프로세스, 짝은 rank 2(rain) | 계획 |
-| 라이브러리 | gpu-detect `hk` + 이 계층(`rs`). 지금은 작업 묶음 1까지(빌드됨, 실행 안 함; 12절) | 9.9절, 9.14절 |
+| 라이브러리 | gpu-detect `hk` + 이 계층(`rs`). 지금은 작업 묶음 2까지(빌드됨, 실행 안 함; 12절) | 9.9절, 9.14절 |
 | 시제품 빌드 | rain, g++ (CPU 시험), nvcc 12.8(빌드만) | 9.13절 |
 
 ## 6. 변수
@@ -151,7 +151,9 @@ rank를 새 프로세스로 잇는 길, 보낸 메시지를 다시 넣는 길, �
   단계별 시각(죽음 판정, 활성화, 초기화 재생, 상태 적용, 재연결, 게이트 재개), 체크포인트마다 입력 멈춤 시간과 단계 시간, `ncclGinRestoreResume`의 반환과
   이유 문자열, 강제된 window 등록 수, put 지연.
 - **통제변수.** hold 프로세스의 고정 설정(9.10.8절의 결정): `NCCL_GIN_FAULT_POLICY=hold`, `NCCL_GIN_RESTORE=1`, `NCCL_SYM_GIN_KERNELS_ENABLE=0`,
-  `NCCL_RMA_DISABLE=1`, `NCCL_GIN_TYPE=3`, GIN 연결 FULL, runtime connect 켬, NVLS 끔; 투명 복구 켬, QP 감시 10 ms(무장 조건); 복원 시한(초안
+  `NCCL_RMA_DISABLE=1`, `NCCL_GIN_TYPE=3`, GIN 연결 FULL, runtime connect 켬, NVLS 끔; 투명 복구 켬, QP 감시 10 ms(무장 조건);
+  2026-10-12 더함(작업 묶음 2 검토): `NCCL_NUM_RMA_CTX=0`(host RMA 문맥은 기본 1이고 `NCCL_RMA_DISABLE`은 proxy만 끄므로, 없으면 Resume이 "host RMA is on"으로
+  거절 `[소스: init.cc 2798, rma/rma.cc 19–21]`), GIN 연결 하나(`NCCL_GIN_NCONNECTIONS=1`; 기본은 이 노드의 GIN 장치 수이고 rain과 sunny의 수는 `[미확인]`); 복원 시한(초안
   `NCCL_GIN_RESTORE_MS` 20 000); 체크포인트 간격(초안 20 단계); window는 rain의 BAR1 때문에 하나에 24 MiB 이하(9.15.6); 시행마다 프로세스를 새로 띄움.
 
 ## 7. 실험 셀, 반복 수, 대조군
@@ -573,6 +575,11 @@ NVSHMEM을 쓰지 않는다(X6).
   부르지 않는 application의 communicator는 변수와 상관없이 fail-fast다. 이 호출은 새 `nccl.h`에만 있으므로 그 application이 새 헤더로 빌드됐다는
   증거로 쓰고(`[추론]`: 한 프로그램이 헤더 둘을 섞는 경우는 막지 못함), 장치 쪽의 확인은 GPU 문맥 판 번호(A5)가 한다.
 - **communicator의 무장 조건**(`gdakiTsStart`에서 확인, 하나라도 아니면 그 communicator는 fail-fast):
+  - (2026-10-12 사용자 결정, 9.10.8절) 아래 조건은 모두 `ncclGinRestoreResume`에서 rank마다 보고, 모든 rank가 bootstrap으로 모은 같은 자료로 정한다. Resume
+    때 하나라도 어긋나면 그 호출이 모든 rank에서 같은 이유의 오류를 돌려준다(전에는 대부분 WARN과 fail-fast였음). LSA 팀 조건은 devComm의 `lsaSize`가 1이
+    아니면 오류로 보고, 복원 시한과 hold 한도의 관계는 우선 "`NCCL_GIN_RESTORE_MS`가 `NCCL_GIN_TS_HOLD_MS`보다 작음"으로 본다(붙잡기 상태 기계에서 다듬을 수
+    있음). Resume 뒤에 잃는 조건(확대 상한, NIC 경로가 꺼짐, 문맥 뒤의 window 등록, 사용자 문맥이 아닌 `createContext`)은 그대로 DISARM이나 fallback이다.
+    측 표와 복원 버퍼의 루프백 MR, 문맥 뒤 window는 작업 묶음 3에서 Resume의 검사에 더한다(9.14절).
   - 투명 복구 GDAKI 문맥이 정확히 하나(F6: helper는 문맥마다, 단어는 communicator마다라 둘 이상이면 한 helper의 fallback이 다른 helper의 복원을 깸). 문맥은
     devComm을 만들 때 생기고(`gin_host.cc` 374) GIN 연결마다 하나다(`ginCommCount`, `gin_host.cc` 277).
   - `NCCL_GIN_TS_RECONNECT=1`(F27).
@@ -583,9 +590,9 @@ NVSHMEM을 쓰지 않는다(X6).
   - QP 감시가 켜져 있음(`NCCL_GIN_TS_QPWATCH_MS` > 0, hw 6087): 누적 실행 수의 표본(G7, V14).
   - (2026-10-11 바꿈) window의 strict ordering은 더는 무장 조건이 아니다. 전에는 "window가 strict ordering으로 등록됨(`NCCL_WIN_STRICT_ORDERING`,
     9.11.12절 B3의 해결 후보. B3이 풀리기 전에는 조건으로 둔다)"이었고 어기면 WARN과 fail-fast였다. 사용자 결정(2026-10-11)으로 런타임이 등록 때 strict를
-    강제하고, 강제할 수 없을 때만 명시적 오류를 돌려준다(9.10.8절). 다른 무장 조건은 그대로 WARN과 fail-fast다.
+    강제하고, 강제할 수 없을 때만 명시적 오류를 돌려준다(9.10.8절). 다른 무장 조건은 그대로 WARN과 fail-fast다(2026-10-12 바뀜: Resume의 오류, 이 목록의 첫 항목).
   - (2026-10-11, 충돌 검토 K2, K4, K18) 그 communicator에 NCCL 안의 GIN devComm이 없음(symmetric 커널의 GIN devComm: `NCCL_SYM_GIN_KERNELS_ENABLE=0`이거나
-    COLL_SYMMETRIC window가 없음; 9.10.8절 표; `ncclGinRestoreResume`에서 검사하고 그 뒤 사용자 문맥이 아닌 `createContext`가 오면 DISARM), 모든 rank의 G1 기록에 strict 비트가 1(9.10.8절). 앞의 것은 어기면 WARN과 fail-fast, 뒤의 것은 모든 rank가
+    COLL_SYMMETRIC window가 없음; 9.10.8절 표; `ncclGinRestoreResume`에서 검사하고 그 뒤 사용자 문맥이 아닌 `createContext`가 오면 DISARM), 모든 rank의 G1 기록에 strict 비트가 1(9.10.8절). 앞의 것은 어기면 WARN과 fail-fast(2026-10-12 바뀜: Resume의 오류), 뒤의 것은 모든 rank가
     복원을 요청했을 때(9.10.8절의 K13 정의) 명시적 오류다. 오류는 2026-10-11 사용자 결정대로 `ncclGinRestoreResume`(과 devComm 생성)에서 이유와 함께 나온다(9.10.8절).
   - 이 rank의 GPU 문맥(판 3, A5)에 0이 아닌 측 표 포인터가 있음(검토 3 W1, 2026-10-09). hw는 GPU 문맥을 `gdakiTsSetup`(hw 7986)보다 먼저 장치로 복사하므로
     (`copy_h_to_d`, hw 7966) 포인터는 그 복사에 실리지 않는다. 복원 계층(RL10)은 측 표를 할당한 `gdakiTsStart` 안에서, `ncclGinGdakiCreateContext`가
@@ -855,6 +862,24 @@ flag를 넘길 필요만 없앤다. 순서(사용자): (1) 강제의 범위와 �
 
 이로써 강제의 범위에 열린 충돌도, 남은 설계 선택도 없다. 강제와 Resume의 검사는 사용자 순서 (4)(체크포인트와 복원 경로 구현)에서 만든다. 비교 측정(9.15.6)은
 이 결정과 무관하다.
+
+**2026-10-12 사용자 결정(원문 그대로: "가로가야지").** 작업 묶음 2의 충돌 확인이 멈춘 물음 둘(12절 2026-10-11 마지막 행: 설정 합의 뒤의 지역 실패, 나머지 무장
+조건)에 대해 메인 세션이 사용자에게 올린 선택지 (가)를 골랐다. 메인 세션이 전한 내용:
+- `ncclGinRestoreResume`은 communicator의 모든 rank가 부르는 호출이다(다른 NCCL 집합 호출처럼). 그 안에서 rank마다 한 번, 자기 지역 판정("켤 수 있음" 또는
+  "켤 수 없음과 이유")을 내놓고 communicator의 bootstrap으로 모은다. 지역 판정은 설정 때의 지역 결과(helper 소켓의 connect, accept, HELLO, 게이트 설정, NIC 복사
+  경로의 설정과 자체 시험, 뒤의 측 표 할당)와 Resume 때 보는 모든 조건을 덮는다. 모든 rank는 모은 같은 자료로 정해 같은 결과와 같은 이유 문자열을 돌려준다(정한
+  차례에서 처음 걸리는 이유).
+- 앞의 사용자 규칙("이유가 무엇이든")에 따라 9.10.4절이 WARN과 fail-fast로 남겨 둔 무장 조건(문맥 하나, 재연결 변수, QP 감시, 복원 시한과 hold 한도, NIC 복사
+  경로, 측 표, runtime connect와 NVLS, LSA 팀 등)은 모두 이유와 함께 Resume의 오류가 된다.
+- fail-fast 프로세스는 Resume을 부르지 않으므로 `hk`와 같다.
+- 이 결정이 대신하는 것: 12절 2026-10-11 행에서 이 에이전트가 낸 고를 길 (가) 설정 끝의 두 번째 GIN all-gather와 (나) 한계로 둠은 쓰지 않는다. (다)의 앞 반쪽
+  (변수로 정해지는 무장 조건을 Resume 오류로)은 이 결정에 들어가되 기록 비트가 아니라 Resume의 모음으로 한다. 위 "Resume의 오류는 ... all-gather 뒤의 결정과 같은
+  기록에서 나온다"는 "설정 기록의 결정과 Resume에서 모은 지역 판정에서 나온다"로 넓어진다(설정 기록의 결정은 그 모음의 한 항목으로 남음).
+- 이 결정 아래 작업 묶음 2의 충돌 확인과 풀이는 12절(2026-10-12)과 9.14절 2번에 있다. 정한 것: 모음을 기다리는 한도 `NCCL_GIN_RESTORE_RESUME_MS`(기본 30 000 ms),
+  넘으면 Resume이 그 communicator의 abort 깃발을 세워(`ncclCommAbort`의 첫 걸음과 같음) 모음을 풀고 오류를 돌려주며 그 communicator는 `ncclCommAbort`로만 끝낸다,
+  두 번째 호출은 첫 호출의 결과를 모음 없이 돌려준다, 이미 장애가 application에 닿았으면 Resume의 오류다. 남는 한계 `[추론]`: 한도가 끝나는 바로 그때
+  도착한 rank가 있으면 일부 rank는 모음을 끝내고 일부는 한도로 끝날 수 있다(모음을 끝낸 rank는 다른 rank의 abort를 실행 중 장애로 본다). abort 깃발은 자원을
+  나누는 split의 communicator와 함께 쓰여 그것도 함께 끝난다. 마지막 오류 글은 프로세스에 하나라 그 사이 다른 스레드의 WARN이 이유를 덮을 수 있다.
 
 **충돌 표(강제가 닿는 모든 자리; 2026-10-11 검토 K1–K12 반영).**
 
@@ -1197,10 +1222,18 @@ hook(`feas/rs_spike.diff`)은 hw 위에 있었으므로 hk 위로 옮긴다. 빌
    rank 사이 `NCCL_GIN_RESTORE` 다름, strict 비트 0, FULL이 아님)을 이유 문자열과 함께 모든 rank에서 같게 돌려준다. 충돌 확인: 9.10.4절 무장 조건, 9.10.8절의
    사용자 결정, 복원 계층 코드를 GDAKI 파일에만 둔다는 규칙의 예외(공개 API의 입구) 기록. 빌드와 단위 확인: 이유 함수의 CPU 시험. pilot: 켤 수 없는 셀 셋
    (`refuse_reason`).
+   2026-10-12 사용자 결정(9.10.8절)으로 바뀐 것: Resume은 모든 rank가 부르는 집합 호출이다. rank마다 지역 판정(설정 기록의 결정, 설정 때의 지역 결과, Resume 때
+   보는 9.10.4절의 모든 무장 조건과 위 까닭, 이미 application에 닿은 장애)을 만들어 communicator의 bootstrap all-gather로 모으고, 모든 rank가 같은 자료로
+   정한 결과와 이유를 돌려준다. 모음은 `NCCL_GIN_RESTORE_RESUME_MS`(기본 30 000 ms)까지 기다리고, 넘으면 communicator의 abort 깃발을 세워 모음을 풀고 오류를
+   돌려준다(그 communicator는 `ncclCommAbort`로만 끝냄). 두 번째 호출은 첫 결과를 모음 없이 돌려준다. 이유는 그 호출 바로 전의 WARN이라 `ncclGetLastError`로
+   읽는다. 입구는 `nccl.h.in`과 `gin/gin_host.cc`(communicator의 사실, bootstrap 모음, abort 깃발)이고 판정과 정하기는 호스트 파일에 둔다. `ncclGinRestoreStep`과
+   `ncclGinRestoreRegister`는 이 묶음에서 "이 빌드에 아직 없음"으로 오류를 돌려주는 자리만 둔다. 빌드와 단위 확인에 더함: 여러 rank를 흉내 낸 모음에서 모든 rank가
+   같은 결과, 부르지 않는 rank가 있을 때의 시한, 이유마다.
 3. **측 표, GPU 문맥 판, 복원 버퍼의 루프백 MR, 자원 window.** 장치 헤더(`ncclGinGdakiGPUContext`의 측 표 포인터 칸과 판 번호; DV1, A5)와 호스트 파일
    (`gdakiTsStart`에서 측 표와 로그 고리 할당, 동기 H2D 한 번; 루프백 MR에 rkey 표, 신호와 카운터 표, 로그 고리, 측 표; Resume에서 사용자 devComm의 자원
    window를 새 lb 잠금 안에서 더함; RL9, RL10). 충돌 확인: 9.11.5절(A1, A5), 9.10.4절의 측 표 포인터 조건, 9.10.8절의 자원 window 행. 빌드와 단위 확인: sm_75와
    sm_86 빌드, fail-fast에서 포인터 0이고 장치 동작이 hk와 같음을 gpu-detect 회귀 셀의 판정으로 확인할 준비. pilot: `regression`(fail-fast 같음).
+   2026-10-12 더함: 측 표 할당의 실패, 복원 버퍼가 루프백 MR에 없음, 사용자 문맥 뒤에 등록한 사용자 window를 Resume의 지역 판정에 더한다(9.10.8절).
 4. **장치 보내기 길.** 장치 헤더(`gin_gdaki.h`): 게이트 뒤 키 다시 읽기(결정 (나), DV3), SUPPRESS 비트와 느린 길(DV4), 게이트 안의 로그 쓰기와 "로그 켬"
    낱말(DV2). 충돌 확인: 9.11.9절(C2, C6), 9.11.5절(A1), 9.10.6절 (다)의 fail-fast 같음. 빌드와 단위 확인: 두 아키텍처 빌드, fail-fast의 명령 차례가 hk와
    같음을 SASS 비교 또는 코드 검토로, 비용 셀의 준비. pilot: `cost_ff`(갈리지 않음), `cost_unarmed`, `cost_log`의 첫 값.
@@ -1216,6 +1249,9 @@ hook(`feas/rs_spike.diff`)은 hw 위에 있었으므로 hk 위로 옮긴다. 빌
    실행 가능성 시험의 hook을 다듬음) + 호스트 파일(REJOIN RL6, 끝점 바꾸기 RL7, 원래 프로세스의 PID 확인, 예비 프로세스 모드의 strict 강제). 장치 헤더는 아님.
    충돌 확인: 9.15.4절의 범위(그때는 2 rank; 이제 4 rank, GPU마다 둘), 9.10.4절 무장 조건, 9.11.5절(A3). 빌드와 단위 확인: 실행 가능성 시험 B1과 같은 재생 시험
    (상대로의 connect 0, 음성 대조 둘)을 4 rank 배치로. pilot: 활성화와 초기화 재생 시간.
+   2026-10-12 더함(9.10.8절): Resume이 bootstrap all-gather를 하는 집합 호출이 되었으므로, 원래 rank는 첫 Resume의 모음 결과를 초기화 기록에 넣고, 예비
+   프로세스의 Resume은 그 모음을 기록으로 대답한다(생존 rank는 그때 Resume을 부르지 않음). 예비 프로세스 자신의 지역 판정이 "켤 수 없음"이면 복원을
+   포기한다(fallback). 설정 기록에서 살아 있는 설정의 예비 프로세스를 거절하는 규칙(작업 묶음 1)과 예비 프로세스 자신의 결정도 이때 정한다.
 9. **다시 넣기와 억제.** 호스트 파일(로그 적용, 계획 `U = S, n = 0` RL8, 누적 실행 수 RL13, 억제 예산을 측 표에) + 장치 쪽은 4의 SUPPRESS를 씀. 충돌 확인:
    9.11.3절(M2), 9.6절. 빌드와 단위 확인: 억제 예산 계산의 CPU 시험. pilot: `suppress_exact`, `data_equal`, `no_reexec`, `revived_done`, `restore_time`.
 10. **시험 프로그램, 실행기, 채점기, pilot.** `gin_rs.cu`(9.8절의 workload; COLL_SYMMETRIC window 없이 또는 `NCCL_SYM_GIN_KERNELS_ENABLE=0`), 예비 프로세스를
@@ -1943,7 +1979,7 @@ rm -rf ~/rs-ordlogs; ssh -n "$SUNNY_SSH" 'rm -rf $HOME/rs-ordlogs'
 - [x] 구현 계획(작업 묶음 열, 9.14절)
 - [ ] 체크포인트와 복원 경로 구현, pilot, 사전 등록(태그), 본 실행
 - [x] 작업 묶음 1(9.14절): 새 빌드 트리와 [impl/build_rs.sh](impl/build_rs.sh), 정책 도우미, strict 강제, 설정 기록 넓히기, 정하는 자료. 충돌 확인, 빌드됨(`rs_p1`, `rsp_p1`), CPU 단위 시험함, 독립 검토와 재확인(막는 문제 없음), [impl/rs_layer.diff](impl/rs_layer.diff)와 다시 적용 확인(2026-10-11)
-- [ ] 작업 묶음 2(9.14절): 공개 API와 `ncclGinRestoreResume`의 검사. 충돌 확인에서 설계가 풀지 않은 물음 둘(합의 뒤의 지역 실패, 나머지 무장 조건)로 멈춤, 사용자 결정 대기(12절, 2026-10-11)
+- [x] 작업 묶음 2(9.14절): 공개 API와 `ncclGinRestoreResume`의 검사. 충돌 확인에서 멈춤(2026-10-11), 사용자 결정(2026-10-12, Resume은 모든 rank가 부르는 모음), 새 설계 아래 충돌 확인, 빌드됨(`rs_p2d`, `rsp_p2d`), CPU 단위 시험함, 독립 검토와 재확인(막는 문제 없음), diff와 다시 적용 확인(2026-10-12)
 - [x] B1: `rsx` hook과 `rs_spike` 빌드됨
 - [x] B1: 검토 3차의 막는 결함 P1 고침, 둘째 빌드 `rsx2`
 - [x] B1: 기록과 재생, 음성 대조(2회 통과, 2026-10-09)
@@ -2036,6 +2072,12 @@ rm -rf ~/rs-ordlogs; ssh -n "$SUNNY_SSH" 'rm -rf $HOME/rs-ordlogs'
 | 2026-10-11 | 작업 묶음 1 시험함(CPU 단위 시험, rain, g++ 8.4 ASan과 UBSan; `rs_unit.cc` md5 `068095683531dcace29a0f0331029cb1`): `rs_unit: 600422 checks, 0 failed` `[측정]`. 가짜 기록 묶음(4 rank가 각자 변수로 기록을 만들고, 같은 배열로 rank마다 결정): 모두 failfast, 모두 hold이고 복원 끔(오류 없음), 모두 hold(켤 수 있음), 한 rank 복원 끔(가장 낮은 rank인 경우 포함), 정책 섞임(정책 변수 없음과 모르는 값 포함), failfast 사이의 hold 하나, devComm rank stride 2, symmetric 커널 GIN 켬, strict 비트 0(문맥을 만들지 않는 결정), 투명 복구 꺼짐(magic 0, 기준 질의 실패), `NCCL_GIN_TYPE`, `NCCL_RMA_DISABLE`, 예비 프로세스, 우선순위, 1과 2 rank, 짧은 이유 버퍼, 무작위 기록 묶음 200 000개(규칙과 같은 결정). 모든 경우에 rank마다의 결정과 이유가 바이트 단위로 같고, 무작위 묶음을 포함한 모든 이유에 gpu-detect 채점기 문구(정책 불일치 WARN, hold WARN, 정책 시작 줄, 투명 복구 꺼짐 줄)가 없음. 변수 읽기(`gdakiRsCfgOf`)와 강제 판단(`gdakiRsWinStrict`)도 시험함. 표시 밖의 감싸는 함수(한 번 읽기, 보고 줄)와 실제 등록 길은 시험하지 않음 `[미확인]` | `impl/rs_unit.cc` |
 | 2026-10-11 | 작업 묶음 1의 독립 검토(읽기 전용 에이전트, 고정한 사본 대상). 첫 판정: 막는 문제 없음. 기준 넷 모두 통과(fail-fast에서 hk와 같음, 같은 기록이면 모든 rank가 같은 결정, window 등록에 rank 하나만의 오류 없음, 운영 빌드에 시험 스위치로 켤 것 없음). 막지 않는 지적을 반영함: stride 이유 문구(연결이 FULL인지는 communicator의 사실이라 작업 묶음 2에서 넘김), all-gather 전 기준 질의 실패를 기록 비트로(hk는 그때도 magic을 유지), 이유 문구에서 gpu-detect 채점기 문구 빼기, 보고 줄의 RO 비트를 `gdakiRegMr`가 실제로 쓴 access flag에서, 그 GDAKI 문맥을 만들지 않을 때의 WARN 문구(NCCL이 다른 backend로 넘어갈 수 있음), 복원을 요청한 rank는 모든 길에서 결정 한 줄, 예비 프로세스의 WARN 문구. 기록만 하는 것: 정책 변수 값이 127자를 넘으면 WARN에서 잘림, hold 프로세스의 새 로그 줄, 프로세스마다 한 번 읽기(설계대로), 문맥을 만들지 않는 결정은 지금의 어느 빌드로도 생기지 않아 pilot으로는 볼 수 없고 단위 시험만 다룸 `[소스]`, 예비 프로세스 자신의 결정은 작업 묶음 8에서 정함. 재확인(같은 에이전트, diff md5 `a2f84a36`): 반영이 모두 맞고 fail-fast는 hk와 같음(`gdakiRegMr`의 새 출력 인자, fail-fast rank의 `policyPad`는 0). 판정: 막는 문제 없음. 남은 메모 셋: 주석 한 줄이 WARN과 어긋남(동작 없음, 기록한 빌드와 diff를 맞추려고 다음 묶음에서 고침), 빌드 md5 기록(위 행), 무작위 묶음의 채점기 문구 확인(반영함, 위 행의 시험 수) | 세션 스크래치 `agent_rs/review_p1/`, `review_p1b/` |
 | 2026-10-11 | 작업 묶음 2(공개 API와 `ncclGinRestoreResume`의 검사)의 충돌 확인(코딩 전): **설계가 풀지 않은 물음 둘이 있어 멈춤, 코드 없음**. (1) 합의 뒤의 지역 실패: 9.10.8절은 "Resume의 오류는 all-gather 뒤의 결정과 같은 기록에서 나온다"로 모든 rank가 같은 오류를 받게 한다. 그러나 같은 GDAKI 문맥 생성 안에서 합의 뒤에 rank마다 따로 일어나는 일이 있다: helper 소켓의 connect, accept, HELLO(`gdakiTsSetup`), 게이트 설정과 NIC 복사 경로의 설정과 자체 시험(`gdakiTsStart`) `[소스]`. 이것이 한 rank에서 실패하면 그 rank만 투명 복구가 꺼지고, 기록에는 없으므로 다른 rank의 Resume은 성공하고 그 communicator는 조용히 무장하지 않는다(사용자 결정의 "모든 rank가 같은 오류"와 어긋남) `[추론]`. 9.14절 작업 묶음 2의 이유 목록에 "투명 복구 꺼짐"이 있어 이 묶음의 범위다. (2) 나머지 무장 조건: 9.10.4절은 "다른 무장 조건은 그대로 WARN과 fail-fast"(문맥 하나, `NCCL_GIN_TS_RECONNECT=1`, 복원 시한과 hold 한도의 관계, NIC 복사 경로, QP 감시, 측 표 포인터, runtime connect와 NVLS, LSA 팀)라 하고, 뒤의 사용자 결정은 "이유가 무엇이든 Resume이 오류"라 하며, 9.14절의 이유 목록은 그 가운데 일부만 든다. 어느 쪽을 따를지 정해지지 않았다. 고를 길(이 에이전트의 제안, 사용자 결정 대기): (가) 두 번째 합의: 첫 결정이 "아무도 요청하지 않음"이 아닐 때만(fail-fast의 선 위 동작은 hk 그대로) 그 GDAKI 문맥 생성의 끝(`gdakiTsStart` 뒤, 아직 문맥 생성 안)에서 GIN collComm all-gather를 한 번 더 해 rank마다 "투명 복구가 아직 켜짐"과 무장 조건의 지역 결과를 싣고, Resume은 두 기록으로 정함. 새 집합 교환이므로 예비 프로세스의 초기화 재생(작업 묶음 8)도 이것을 기록하고 재생해야 함. (나) 한계로 둠: 그 rank의 Resume만 이유와 함께 오류, 다른 rank는 성공하고 무장 합의에서 빠짐(조용히 꺼짐을 받아들임). (다) 무장 조건 가운데 변수로 정해지는 것(`NCCL_GIN_TS_RECONNECT`, `NCCL_GIN_TS_QPWATCH_MS`, 복원 시한과 hold 한도, 문맥 수)은 지금의 기록 비트에 더해 Resume 오류로 하고, 지역 결과(소켓, 게이트, NIC 경로)는 (가)나 (나). 작업 묶음 3(측 표, 루프백 MR)은 이 물음에 기대지 않으나, 측 표 할당 실패도 같은 종류의 지역 결과다 | 9.10.4, 9.10.8, 9.14절 |
+| 2026-10-12 | 사용자 결정(메인 세션이 전함, 원문 그대로: "가로가야지"): 작업 묶음 2가 멈춘 물음 둘에 메인 세션의 선택지 (가). `ncclGinRestoreResume`은 모든 rank가 부르는 호출이고, rank마다 지역 판정(설정 때의 지역 결과와 Resume 때의 모든 조건)을 bootstrap으로 모아 모든 rank가 같은 결과와 이유를 돌려준다. 9.10.4절이 WARN과 fail-fast로 남긴 무장 조건은 모두 Resume의 오류가 된다. fail-fast 프로세스는 Resume을 부르지 않아 `hk`와 같다. 이 에이전트가 2026-10-11 행에 낸 (가) 설정 끝의 두 번째 all-gather와 (나) 한계로 둠은 쓰지 않음. 9.10.8절에 결정과 대신하는 것, 9.10.4절 머리에 바뀐 규칙, 9.14절 2번(바뀐 내용), 3번(측 표와 복원 버퍼, 문맥 뒤 window를 Resume 판정에 더함), 8번(예비 프로세스의 Resume 모음을 초기화 기록으로 대답)에 적음 | 9.10.4, 9.10.8, 9.14절 |
+| 2026-10-12 | 작업 묶음 2의 충돌 확인(새 설계 아래, 코딩 전). 결과: 설계가 풀지 못한 충돌 없음. 정한 것과 근거: (1) Resume을 부르지 않는 rank: 모음은 `bootstrapAllGather`(고리, 시간 제한 없음)이고 그 소켓 고리는 communicator의 abort 깃발을 보면 끝난다 `[소스: misc/socket.cc 459–463, 511–514, bootstrap.cc의 net 길 checkAbort]`. 그래서 한도 `NCCL_GIN_RESTORE_RESUME_MS`(기본 30 000 ms)를 넘으면 Resume이 abort 깃발(호스트와 장치, 자식 communicator의 것; `ncclCommAbort`의 첫 걸음과 같음)을 세워 모음을 풀고 `ncclSystemError`와 고정 문구를 돌려준다. 고리가 어긋났으므로 그 communicator는 `ncclCommAbort`로만 끝낸다(9.10.8절이 strict 비트의 오류에 쓴 "그 communicator는 끝"과 같은 뜻). 부른 rank는 모두 한도 안에 오류를 받는다. 한도 끝에 늦게 온 rank는 모음이 끝나지 못해 자기 한도에서 오류다. 남는 경합: 한도의 마지막 순간에 도착하면 일부 rank는 모음을 끝내고 일부는 한도로 끝날 수 있다 `[추론]`(끝낸 rank는 상대의 abort를 실행 중 장애로 본다). 자원을 나누는 split의 자식은 abort 깃발을 나눠 함께 끝난다(이 실험은 split을 쓰지 않음). (2) 장애가 이미 application에 닿은 뒤의 Resume: 지역 판정 "이미 닿음"(communicator의 대기 단어, degraded 예약, GIN 비동기 오류)으로 모든 rank의 오류. (3) 두 번 부름: 첫 결과를 모음 없이 돌려줌(멈춤 없음). (4) 예비 프로세스의 초기화 재생: 그때 생존 rank는 Resume을 부르지 않으므로 작업 묶음 8에서 원래 rank의 첫 Resume 모음 결과를 기록에 넣고 예비 프로세스가 그것으로 대답(9.14절 8번에 적음). (5) bootstrap을 쓰는 때: Resume은 application 스레드의 차례 있는 집합 호출이다(다른 NCCL 호출과 같은 규칙: 모든 rank가 같은 차례로, 같은 communicator에 동시에 부르지 않음). NCCL 안의 다른 bootstrap 사용도 application 스레드의 집합 호출이고, GDAKI helper는 bootstrap을 쓰지 않는다(GIN collComm과 자기 소켓) `[소스: bootstrap 호출 자리 grep]`. (6) helper 스레드와의 안전: Resume은 GDAKI 문맥을 `gdakiRecRegMu` 안에서 읽고(`ncclGinGetRecoveryStats`와 같음), helper가 쓰는 값은 원자 칸(active, dead, escalated)이나 helper 시작 전에 정해진 값(QP 감시 주기, hold 한도)만 읽고, NIC 복사 경로의 깃발은 원자 읽기로 읽음. 대기 단어는 `gdakiUaMu` 안에서. 두 잠금을 한꺼번에 잡지 않음(`ncclGinTsUserAbortWord`가 거꾸로 잡으므로). Resume이 쓰는 등록부는 helper가 읽지 않음. (7) `ncclGetLastError`: 이유는 돌아가기 바로 전 호출한 스레드의 WARN 글이다. 마지막 오류 글은 프로세스에 하나라 그 사이 다른 스레드의 WARN이 덮을 수 있음(한계). (8) 규칙의 예외: 공개 API의 입구는 `nccl.h.in`, `gin/gin_host.cc`(communicator와 devComm의 사실, bootstrap 모음, abort 깃발), `include/gin/gin_host.h`(그 둘을 잇는 구조체 하나와 함수 선언 하나). 판정과 정하기, `ncclGinRestoreStep`과 `ncclGinRestoreRegister`의 자리는 호스트 파일. (9) 9.10.4절 조건 가운데 측 표, 복원 버퍼의 루프백 MR, 사용자 문맥 뒤의 사용자 window는 작업 묶음 3에서 더함. 복원 시한과 hold 한도는 우선 "`NCCL_GIN_RESTORE_MS`(기본 20 000)가 0보다 크고 `NCCL_GIN_TS_HOLD_MS`보다 작음" | 9.10.4, 9.10.8, 9.14절 |
+| 2026-10-12 | 작업 묶음 2 구현. (가) `nccl.h.in`: `ncclGinRestoreResume(comm, devComm, &step, blob, &bytes)`, `ncclGinRestoreStep`, `ncclGinRestoreRegister`와 `pnccl` 짝, 쓰는 법의 주석(모든 rank가 부름, 결과 셋, 이유는 `ncclGetLastError`). (나) `gin/gin_host.cc`: 입구. communicator와 devComm의 사실(devComm의 GIN backend 종류, GIN 연결 수와 handle, communicator의 GIN 연결이 FULL인지, devComm의 GIN context stride, host RMA 문맥 수, runtime connect, NVLS, devComm의 LSA 팀 크기, symmetric 커널의 GIN devComm)과 bootstrap all-gather, abort 깃발 세우기를 호스트 파일에 넘김. `include/gin/gin_host.h`: 그 사실의 구조체와 함수 선언. (다) 호스트 파일: 지역 판정(정한 차례의 조건 스물둘: 인자, devComm이 다른 판의 장치 헤더로 쓰임, 이미 닿은 장애, 예비 프로세스, GIN 연결 없음, GDAKI 아님, FULL 아님, stride, GIN 연결 둘 이상, host RMA, runtime connect, NVLS, LSA 팀, symmetric 커널의 GIN devComm, 투명 복구 꺼짐, 문맥 둘 이상, 합의 뒤 꺼짐(까닭과 함께), 재연결 변수, QP 감시, 복원 시한과 hold 한도, NIC 복사 경로, 확대 상한), 고정 크기 기록 하나(요청, 정책, 설정 결정과 이유, 지역 판정과 이유), 한도 있는 모음, 정하기(아무도 요청 안 함 → 성공; 요청이 다름; 설정 결정의 거절; 가장 낮은 rank의 지역 거절; 켤 수 있음). 지역 문구에는 rank 번호가 없고 정하기가 "rank p: "를 붙임. 설정 결정과 합의 뒤 꺼진 까닭(설정의 connect, accept, HELLO 실패와 게이트 설정 실패)은 등록부에 두고(아무도 요청하지 않으면 두지 않음), 그 GDAKI 문맥을 없앨 때와 communicator를 정리할 때 지움. 두 번째 호출은 첫 결과. 켤 수 있으면 첫 화신(단계 0, 덩어리 0바이트)이고 붙잡기 반응이 아직 없어 fail-fast로 남는다는 줄 하나. (라) `ncclGinRestoreStep`, `ncclGinRestoreRegister`: 이 빌드에 아직 없다는 WARN과 `ncclInvalidUsage`. (마) 작업 묶음 1 검토의 남은 메모(주석 한 줄)를 고침. 검토를 반영해 더한 것(아래 검토 행): 입구가 `ncclCommEnsureReady`처럼 돌아가지 않고 communicator의 비동기 오류(와 그 질의의 실패)를 지역 판정 "이미 닿은 장애"로 모음에 실음(먼저 돌아가는 것은 잘못된 comm, 초기화가 실패한 communicator(그 오류), 아직 끝나지 않은 nonblocking 작업뿐), devComm의 magic과 판이 이 라이브러리의 것이 아니면 다른 칸을 읽지 않고 지역 거절, 저장한 Resume 결과는 communicator마다 하나(주소, commHash, bootstrap 상태로 알아봄), 자식 abort 깃발 포인터는 한 번 원자 읽기, 한도는 하루로 자름, 설정 등록 실패 길도 꺼진 까닭을 남김, `nccl.h`의 설명(나누는 abort 깃발, 한도 ≤ 0은 없음, 끝의 경합, 먼저 돌아가는 경우, group 안에서 부르지 않음, 마지막 오류 글). fail-fast(Resume을 부르지 않는 프로세스)에서 바뀌는 것: 정리 때 빈 등록부를 훑는 것(잠금 하나)뿐 `[소스]` | `impl/rs_layer.diff` |
+| 2026-10-12 | 작업 묶음 2 빌드됨(rain, nice 19, ionice idle; 실행 안 함). 마지막 빌드: 연구 `out/rs_p2d` libnccl `105a68a5f9d6332925b65936a9378f0f`, 운영 `out/rsp_p2d` `1902c01fd2b1827d5415448f58cdcf01`, 이 계층의 파일에서 경고 0 `[측정]`. `nccl.h.in`을 바꿔 처음 다시 빌드할 때 호스트 파일 185개가 다시 컴파일되었고 그때 경고는 손대지 않은 `scheduler/symmetric_sched.cc:327` 하나뿐이다(v2.32.3-1 원본 그대로의 줄, 다른 실험의 예전 전체 빌드 기록에도 같은 경고) `[측정]`. 장치 코드는 다시 컴파일되지 않음(장치 객체가 `nccl.h`에 기대지 않음) `[측정: 의존 파일]`. 검토 전 빌드(`rs_p2` `dfa61319`, `rsp_p2` `a0a2fdcb`)와 반영 중의 빌드(`rs_p2b` `1db0fe59`, `rsp_p2b` `c1201716`; `rs_p2c` `b31d85a0`, `rsp_p2c` `116ac40d`)는 폴더에 그대로 둠(배포하지 않음). 이때의 diff(파일 넷, 978줄) md5 `13563bf6b271a1d1bbd7d6da6b317a6e`, 다시 적용 확인과 hr에서의 차례 적용 확인 통과 `[측정]`. 장치 헤더는 그대로(include 차이는 `nccl.h`와 그 생성본뿐) | 세션 스크래치 `agent_rs/out/` |
+| 2026-10-12 | 작업 묶음 2 시험함(CPU 단위 시험, rain, g++ 8.4 ASan과 UBSan, 스레드): `rs_unit: 967454 checks, 0 failed`, 네 번 되풀이해 같음 `[측정]`. 더한 시험: 지역 판정의 조건 스물둘을 하나씩(제 번호와 문구, rank 번호 없음, 채점기 문구 없음)과 한꺼번에(첫 조건이 이김), 모음 정하기(아무도 요청 안 함, 요청이 다름, 설정 결정의 거절과 문맥을 만들지 않은 결정, 가장 낮은 rank의 지역 거절, 다른 라이브러리의 기록, 꽉 찬 문구 칸), 무작위 기록 묶음 50 000개(규칙의 차례와 같은 결정, 모든 rank의 문구가 같음), 스레드 넷이 흉내 낸 bootstrap 모음(같은 결과와 문구, abort 없음), 한 rank가 부르지 않을 때(나머지 셋이 한도 300 ms 안팎에 끝나고 저마다 abort를 한 번), 늦게 온 rank(이미 깨진 고리라 자기 한도에서 끝), 한도 없음, 한도 끝에서 끝나는 모음(끝났으면 abort 없음, 한도면 abort 한 번) 200번. 시험하지 않은 것 `[미확인]`: 입구와 등록부를 잇는 코드(두 번째 호출, 저장한 결과, 비동기 오류와 초기화 실패 길), 실제 bootstrap(흉내 낸 모음은 모두 끝나거나 아무도 못 끝냄; 실제 고리에서 일부만 끝나는 경합은 위 한계) | `impl/rs_unit.cc` |
+| 2026-10-12 | 작업 묶음 2의 독립 검토(읽기 전용 에이전트, 고정한 사본 `review_p2`, diff md5 `c62f649c`). 첫 판정: 막는 문제 하나. 비동기 오류가 이미 선 rank는 입구의 `ncclCommEnsureReady`에서 모음 없이 돌아가 다른 rank가 한도까지 기다리고 다른 이유로 끝남(설계의 "이미 닿은 장애는 모든 rank에 같은 Resume 오류"와 어긋남). 막지 않는 것: 두 번째 호출이 devComm마다였음, 같은 주소의 다음 communicator가 옛 결과를 받을 수 있음, 6절 설정에 `NCCL_NUM_RMA_CTX=0`이 없어 Resume이 늘 "host RMA is on"으로 거절할 것(host RMA 문맥 기본 1, `NCCL_RMA_DISABLE`은 proxy만 끔) `[소스]`, 다른 판의 devComm 배치, `nccl.h` 설명, 자식 abort 깃발 포인터. 모두 반영(위 구현 행, 6절에 `NCCL_NUM_RMA_CTX=0`과 GIN 연결 하나). 재확인(`review_p2b`, `69bb2547`): 판정 막는 문제 없음, 막지 않는 둘(초기화가 실패한 communicator에서 Resume이 NULL을 읽을 수 있음, 비동기 오류 질의 자체의 실패) 반영. 그 확인(`review_p2c`, `49f31845`): 막는 문제 없음, 메모 하나(abort 깃발이 선 뒤에는 nonblocking 초기화를 기다린 다음 초기화 상태를 읽음)를 반영하고 같은 에이전트가 다시 확인(`13563bf6`): 막는 문제 없음. 기준별: fail-fast는 `hk`와 같음, 같은 기록이면 모든 rank가 같은 결과와 문구, 한도 있는 기다림이 맞음(abort 깃발이 bootstrap 소켓 고리를 끝냄 `[소스: os/linux.cc 375–378, bootstrap.cc 206]`), 교착 없음(잠금 셋을 하나씩), 운영 빌드에 시험 스위치 없음, 9.10.4절에서 Resume 때 볼 수 있는 조건을 모두 덮음 | 세션 스크래치 `agent_rs/review_p2/`, `review_p2b/`, `review_p2c/` |
 
 ## 13. 사전 등록 이후 변경
 
