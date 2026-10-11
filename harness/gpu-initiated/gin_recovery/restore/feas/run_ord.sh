@@ -15,9 +15,9 @@
 #     strict   GIN_TS_WIN_STRICT=1 on both ranks: both windows NCCL_WIN_COLL_SYMMETRIC | NCCL_WIN_STRICT_ORDERING
 #     relaxed  no GIN_TS_WIN_STRICT: NCCL_WIN_COLL_SYMMETRIC only (NCCL asks RO for the window MRs when ro_requested=1 in
 #              the driver's kv: NCCL_IB_PCI_RELAXED_ORDERING unset = 2 and ibv_reg_mr_iova2@IBVERBS_1.8 present)
-#   pinned (EXPERIMENT.md 9.15.6, review K6): wait blocking, gap 0, NCCL_DEBUG=WARN, NCCL_IB_TIMEOUT=14, transparent recovery
-#   on, QP watch off, NCCL_IB_PCI_RELAXED_ORDERING unset, queue depth NCCL's default, burst: one block of one thread,
-#   K=16, GIN_TS_AGG=1 (the 16 puts are rung with the signal)
+#   pinned (EXPERIMENT.md 9.15.6, review K6): wait blocking, gap 0, NCCL_DEBUG=WARN (INFO only with ORD_DIAG=1, into a file
+#   kept on the node), NCCL_IB_TIMEOUT=14, transparent recovery on, QP watch off, NCCL_IB_PCI_RELAXED_ORDERING unset, queue
+#   depth NCCL's default, burst: one block of one thread, K=8, GIN_TS_AGG=1 (the 8 puts are rung with the signal)
 # files in <logdir>: <cell>_<tag>_r0.kv, _r1.kv, _r0.log, _r1.log (IPv4 addresses masked anyway; the originals on the
 #   nodes are deleted), <cell>_<tag>_lat_raw.csv.gz (lat cells: rank 0's per-iteration ns, review K22),
 #   <cell>_<tag>_meta.txt (left: processes of this run still there after both ended, by the run's unique tag;
@@ -75,7 +75,9 @@ hca() { [ "$1" = rain ] && echo "$HCA_RAIN" || echo "$HCA_SUNNY"; }
 gidx() { [ "$1" = rain ] && echo "$GID_R" || echo "$GID_S"; }
 if [ "$DIAG" = 1 ]; then
   DBG="NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,NET,REG NCCL_DEBUG_FILE=\$HOME/rs-ordlogs/${CELL}_${TAG}.%h.%p.log"
-  mkdir -p -m 700 "$HOME/rs-ordlogs"; ssh -n "$SUNNY_SSH" 'mkdir -p -m 700 $HOME/rs-ordlogs'
+  # the INFO log holds management addresses: it must land in a private directory on each node, or nothing runs (review O2)
+  MKD='mkdir -p -m 700 $HOME/rs-ordlogs && chmod 700 $HOME/rs-ordlogs && test -w $HOME/rs-ordlogs'
+  bash -c "$MKD" && ssh -n "$SUNNY_SSH" "$MKD" || { echo "cannot prepare ~/rs-ordlogs on a node: not running $CELL" >&2; exit 1; }
 else
   DBG="NCCL_DEBUG=WARN"
 fi
@@ -138,10 +140,14 @@ done
 for n in rain sunny; do for t in before after; do cp "$WORK/gpu_${n}_$t.txt" "$LOGDIR/${stem}_gpu_${n}_$t.txt"; done; done
 [ -f "$WORK/lat_raw.csv" ] && gzip -c "$WORK/lat_raw.csv" > "$LOGDIR/${stem}_lat_raw.csv.gz"   # raw data: .gz is not tracked
 rc() { tr -d '\n' < "$WORK/r$1.rc" 2>/dev/null || echo none; }
+DFILES=0
+if [ "$DIAG" = 1 ]; then   # how many NCCL INFO files this run left on the nodes (they stay there; review O2)
+  DFILES="$(ls "$HOME/rs-ordlogs/${CELL}_${TAG}".* 2>/dev/null | wc -l)/$(ssh -n "$SUNNY_SSH" "ls \$HOME/rs-ordlogs/${CELL}_${TAG}.* 2>/dev/null | wc -l")"
+fi
 echo "cell=$CELL tag=$TAG metric=$METRIC arm=$ARM win_strict=$STRICT rx=$RX tx=$TX mode=$MODE iters=$ITERS bytes=$BYTES \
 burst=$(echo "$XENV" | tr ' ' '+') hca_rain=$HCA_RAIN hca_sunny=$HCA_SUNNY gid_rain=$GID_R gid_sunny=$GID_S \
 rc_r0=$(rc 0) rc_r1=$(rc 1) left=$LEFT gin_ts2_before=$TS_BEFORE gin_ts2_after=$TS_AFTER port=$PORT port_tries=$PORT_TRIES rdv_nonce_set=1 \
-qpwatch_ms=0 diag=$DIAG wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') bin=$BIN lib=$LIB" > "$LOGDIR/${stem}_meta.txt"
+qpwatch_ms=0 diag=$DIAG diag_files=$DFILES wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') bin=$BIN lib=$LIB" > "$LOGDIR/${stem}_meta.txt"
 echo "[$stem] rc r0=$(rc 0) r1=$(rc 1) left=$LEFT :: $(grep -ho 'win_flags=[0-9a-fx]*\|ro_requested=[01]\|lat_p50_us=[0-9.]*\|exit=[0-9]*' \
   "$WORK/r0.kv" 2>/dev/null | tr '\n' ' ')" >&2
 exit 0
