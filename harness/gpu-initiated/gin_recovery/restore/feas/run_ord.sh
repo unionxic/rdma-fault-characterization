@@ -16,13 +16,15 @@
 #   on, QP watch off, NCCL_IB_PCI_RELAXED_ORDERING unset, queue depth NCCL's default, burst: one block of one thread,
 #   K=16, GIN_TS_AGG=1 (the 16 puts are rung with the signal)
 # files in <logdir>: <cell>_<tag>_r0.kv, _r1.kv, _r0.log, _r1.log (IPv4 addresses masked anyway; the originals on the
-#   nodes are deleted), <cell>_<tag>_meta.txt (left: processes of this run still there after both ended, by the run's
-#   unique tag; gin_ts2_before/after: every process named gin_ts2 on both nodes, information only)
+#   nodes are deleted), <cell>_<tag>_lat_raw.csv.gz (lat cells: rank 0's per-iteration ns, review K22),
+#   <cell>_<tag>_meta.txt (left: processes of this run still there after both ended, by the run's unique tag;
+#   gin_ts2_before/after: every process named gin_ts2 on both nodes, information only)
 # env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), ORDBIN ($HOME/rs-bundle/ord/gin_ts2),
 #      ORDLIB ($HOME/gi-bundle/gin_ts2/hk: gpu-detect's deployed hk bundle, read only)
 set -u
 CELL=${1:?cell}; TAG=${2:?run tag}; LOGDIR=${3:?logdir}
-unset GIN_TS_WIN_STRICT NCCL_IB_PCI_RELAXED_ORDERING GIN_TS_AGG GIN_TS_QDEPTH   # pinned below, never inherited
+# every NCCL_ and GIN_ variable of the caller is dropped: the run's environment is exactly NENV below (review K21)
+for v in $(env | sed -n 's/^\(\(NCCL\|GIN\)_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 SUNNY_HOST=${SUNNY_SSH#*@}
 HCA_RAIN=${HCA_RAIN:-mlx5_1}; HCA_SUNNY=${HCA_SUNNY:-mlx5_0}
@@ -72,12 +74,16 @@ start() {
   local node=$1 r=$2 envs
   envs="$NENV NCCL_IB_HCA=$(hca "$node") NCCL_IB_GID_INDEX=$(gidx "$node")"
   local args="$r $R0_ADDR $PORT $ITERS $BYTES blocking $MODE 8 $WD"
+  # rank 0 of a lat cell writes every iteration's time (GIN_LAT_RAW, as run_trial_hr.sh)
+  if [ "$r" = 0 ] && [ "$MODE" = lat ]; then
+    if [ "$node" = rain ]; then envs="$envs GIN_LAT_RAW=$WORK/lat_raw.csv"; else envs="$envs GIN_LAT_RAW=$RT.lat_raw.csv"; fi
+  fi
   # a private working directory per process and no core files (not in gpu-detect's bundle; review K12)
   if [ "$node" = rain ]; then
     ( mkdir -p "$WORK/cwd$r" && cd "$WORK/cwd$r" && ulimit -c 0 && env $envs timeout -s KILL "$TMO" "$BIN" $args "$WORK/r$r.kv" 0 \
         > "$WORK/r$r.log" 2>&1; echo $? > "$WORK/r$r.rc" ) &
   else
-    ssh -n "$SUNNY_SSH" "mkdir -p $RT.cwd$r && cd $RT.cwd$r && ulimit -c 0 && $envs timeout -s KILL $TMO $BIN $args $RT.r$r.kv 0 \
+    ssh -n "$SUNNY_SSH" "umask 077 && mkdir -p $RT.cwd$r && cd $RT.cwd$r && ulimit -c 0 && $envs timeout -s KILL $TMO $BIN $args $RT.r$r.kv 0 \
 > $RT.r$r.log 2>&1; echo \$?" > "$WORK/r$r.rc" 2>/dev/null &
   fi
   PIDS[$r]=$!
@@ -104,6 +110,7 @@ for r in 0 1; do
   if [ "$node" = sunny ]; then
     scp -q "$SUNNY_SSH:$RT.r$r.kv" "$WORK/r$r.kv" 2>/dev/null || true
     scp -q "$SUNNY_SSH:$RT.r$r.log" "$WORK/r$r.log" 2>/dev/null || true
+    [ "$r" = 0 ] && [ "$MODE" = lat ] && { scp -q "$SUNNY_SSH:$RT.lat_raw.csv" "$WORK/lat_raw.csv" 2>/dev/null || true; }
   fi
 done
 mkdir -p "$LOGDIR"
@@ -114,6 +121,7 @@ for r in 0 1; do
   [ -f "$WORK/r$r.log" ] && sed "$MASK" "$WORK/r$r.log" > "$LOGDIR/${stem}_r$r.log"
 done
 for n in rain sunny; do for t in before after; do cp "$WORK/gpu_${n}_$t.txt" "$LOGDIR/${stem}_gpu_${n}_$t.txt"; done; done
+[ -f "$WORK/lat_raw.csv" ] && gzip -c "$WORK/lat_raw.csv" > "$LOGDIR/${stem}_lat_raw.csv.gz"   # raw data: .gz is not tracked
 rc() { tr -d '\n' < "$WORK/r$1.rc" 2>/dev/null || echo none; }
 echo "cell=$CELL tag=$TAG metric=$METRIC arm=$ARM win_strict=$STRICT rx=$RX tx=$TX mode=$MODE iters=$ITERS bytes=$BYTES \
 burst=$(echo "$XENV" | tr ' ' '+') hca_rain=$HCA_RAIN hca_sunny=$HCA_SUNNY gid_rain=$GID_R gid_sunny=$GID_S \
