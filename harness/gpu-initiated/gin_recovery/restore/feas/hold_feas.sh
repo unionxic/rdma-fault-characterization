@@ -27,7 +27,7 @@
 #          behind (run_ord.sh counts them by the run's unique tag) writes STOP_left, a growth of rain's firmware-command
 #          failures writes STOP_mlx5, and the remaining runs are skipped
 #   ORDSMOKE-<rain|sunny>[-<tag>]  the comparison's diagnostic smoke (2026-10-11, after the first ORD-sunny hold stopped on
-#          the bw cell's registration; never a reading): bw256k strict, then relaxed, once each, with ORD_DIAG=1 (NCCL INFO
+#          the bw cell's registration; never a reading): bw256k relaxed, then strict, once each, with ORD_DIAG=1 (NCCL INFO
 #          log kept on the node under ~/rs-ordlogs), into ord_smoke_<node>/ (a repeat: ord_smoke_<node>_run<k>/); the same
 #          stop checks as ORD
 #   B2     B2: four ranks interleaved (rain 0, 2; sunny 1, 3), report lines only, 2 trials, into b2/ (a repeat: b2_run<k>/)
@@ -75,6 +75,10 @@ snap() {  # snap <tag>
   nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null | sed 's/^/rain gpu: /'
   ssh -n "$SUNNY_SSH" "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader" 2>/dev/null | sed 's/^/sunny gpu: /'
   nvidia-smi --query-gpu=index,name,compute_mode --format=csv,noheader 2>/dev/null | sed 's/^/rain gpu mode: /'
+  # BAR1 use of both GPUs and rain's NVRM mapping failures (read only; 2026-10-11, review O3, O4)
+  nvidia-smi -q -d MEMORY 2>/dev/null | sed -n '/BAR1/,/Free/p' | tr -s ' ' | tr '\n' ' ' | sed 's/^/rain bar1: /'; echo
+  ssh -n "$SUNNY_SSH" "nvidia-smi -q -d MEMORY | sed -n '/BAR1/,/Free/p'" 2>/dev/null | tr -s ' ' | tr '\n' ' ' | sed 's/^/sunny bar1: /'; echo
+  echo "rain nvrm mapping-failure lines: $(sudo -n dmesg 2>/dev/null | grep -ciE 'NVRM.*(dmaAllocMapping|alloc VA)')"
   ssh -n "$SUNNY_SSH" "nvidia-smi --query-gpu=index,name,compute_mode --format=csv,noheader" 2>/dev/null | sed 's/^/sunny gpu mode: /'
   sudo -n dmesg 2>/dev/null | grep -i mlx5 > "$R/mlx5_$1_rain.txt"
   ssh -n "$SUNNY_SSH" "sudo -n dmesg 2>/dev/null | grep -i mlx5" > "$R/mlx5_$1_sunny.txt"
@@ -177,7 +181,8 @@ case "$H" in
     mkdir -p "$d"
     LIBMD5='f=$(readlink -f $HOME/gi-bundle/gin_ts2/hk/libnccl.so.2); echo "$(md5sum < "$f" | cut -c1-32) $(basename "$f")"'
     echo "hk libnccl rain: $(bash -c "$LIBMD5") sunny: $(ssh -n "$SUNNY_SSH" "$LIBMD5")" | tee "$d/lib_md5.txt"
-    for a in strict relaxed; do ORD_DIAG=1 ordrun "ord_bw256k_${a}_$node" s1 "$d"; done ;;
+    # relaxed first: if strict fails again, the relaxed result of the same size exists (review O11)
+    for a in relaxed strict; do ORD_DIAG=1 ordrun "ord_bw256k_${a}_$node" s1 "$d"; done ;;
   ORD-*)
     node=${H#ORD-}; node=${node%%-*}
     case "$node" in rain|sunny) ;; *) echo "ORD-<rain|sunny>[-<tag>]" >&2; exit 2 ;; esac
@@ -191,7 +196,7 @@ case "$H" in
       for j in 0 1 2; do
         m=${M[$(( (j + k - 1) % 3 ))]}
         if [ $((k % 2)) = 1 ]; then arms="strict relaxed"; else arms="relaxed strict"; fi
-        for a in $arms; do ordrun "ord_${m}_${a}_$node" "k$k" "$d"; done
+        for a in $arms; do ORD_DIAG=0 ordrun "ord_${m}_${a}_$node" "k$k" "$d"; done   # never INFO in the timed runs (O6)
       done
     done ;;
   B3r) for c in x s h; do for o in ro so; do b3 "b3_${c}_rain_$o" "$B3_ITERS" "$R/b3" main; done; done ;;
