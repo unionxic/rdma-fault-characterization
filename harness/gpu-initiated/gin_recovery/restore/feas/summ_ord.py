@@ -97,6 +97,8 @@ def main():
         counts = [len(glob.glob(os.path.join(d, "ord_*_meta.txt"))) for d in fl]
         complete = [d for d, n in zip(fl, counts) if n == 36]
         deciding = complete[-1] if complete else None
+        if fl and deciding is None:
+            say("%s: no deciding folder (no ord_%s folder holds all 36 runs)" % (node, node))
         for d in fl:
             any_folder = True
             vals, invalid, ro_missing, orphans, nmeta = one_folder(d, node)
