@@ -254,21 +254,25 @@ static ncclResult_t gdakiRsLogExport(struct gdakiRecHost* r, int peer, uint64_t 
 // QPs to this rank and from no other; to = this rank, the checkpoint, the incarnation, this context's nonce, its trailer
 // OK, nqp, a P for its rank, X >= P per QP, every target inside this process's windows or signal table, no put over a
 // signal word), the signal additions are summed again from the entries and compared per target and in total, and every
-// signal target must be 8-byte aligned inside an MR with remote atomic access while the loopback path passed its atomic
-// self-test. Before any device access it waits for the context's device (cudaDeviceSynchronize: the image's copies have
-// landed). Then, with the window registry's lock held, in this order: (1) the data (puts, putValues) as CUDA copies on the
-// log state's stream (by survivor rank, then position), waited for; (2) the signal additions, summed per target, as NIC
-// fetch-and-add over the loopback QP, each completed before the next; (3) per QP to each survivor: msgs = X, suppress =
-// X - P, the responder count's base = M. Refused with nothing applied when a check fails; refused part way (the restore
-// falls back) when a copy or an atomic fails.
+// signal target must be 8-byte aligned inside the GIN MR the survivors' atomics name while the GIN-PD loopback pair passed
+// its atomic self-test. Before any device access it waits for the context's device (cudaDeviceSynchronize: the image's
+// copies have landed). Then, with the window registry's lock held, in this order: (1) the data (puts, putValues) as CUDA
+// copies on the log state's stream (by survivor rank, then position), waited for; (2) the signal additions, summed per
+// target, as NIC fetch-and-add on the pair, each completed before the next; (3) per QP to each survivor: msgs = X,
+// suppress = X - P, the responder count's base = M. Refused with nothing applied when a check fails; refused part way
+// (the restore falls back) when a copy or an atomic fails.
 // Why NIC atomics (the main session's decision of 2026-10-12 on review finding B1, option (b)): the spare serves the
 // survivors one at a time (impl/rs_spare_api.h), so earlier survivors have published, and send their signal atomics to
-// these words, before the import; a host read-add-write would lose one landing in between. The loopback QP is a QP of the
-// same HCA, which makes all its QPs' atomics atomic with respect to each other when atomic_cap >= IBV_ATOMIC_HCA (a Resume
-// condition on every rank). The data copies need no such care: by 9.7 item 3 (single assignment from the checkpoint to
-// the end of the replay) a survivor's new put never targets a location a logged put targets.
-// Precondition: the NIC copy path has no other user during the import (the spare's application thread, before its helper
-// starts).
+// these words, before the import; a host read-add-write would lose one landing in between. With review finding A1 (decided
+// the same day) the fetch-and-adds go through a loopback QP pair of their own on the GIN protection domain and name the
+// very GIN MRs the survivors' atomics name (the signal table's signals_table->mr, a VA signal window's
+// gdaki_mem_handle::mr; zero-based offsets): one memory key, one location, on the same HCA, whose atomics are atomic with
+// respect to each other when atomic_cap >= IBV_ATOMIC_HCA. Resume refuses on a rank whose HCA is below that or whose pair
+// failed its setup or self-test (+1 then -1 on the side table's first reserved word, offset 32, registered in the GIN PD by
+// GIN's own routine), with the reason; the NIC copy path is not involved. The data copies need no such care: by 9.7 item
+// 3 (single assignment from the checkpoint to the end of the replay) a survivor's new put never targets a location a
+// logged put targets.
+// Precondition: the pair has no other user during the import (the spare's application thread, before its helper starts).
 // The suppress line, WARN, one per QP whose budget the import set (B = 0 included), once the spare's replay used the budget
 // (from gdakiRsLogPoll) or at its context's end: "GIN/RS: rank R: suppress peer=P qp=Q budget=B suppressed=S left=L"
 // (Q: the side table's QP index, context x nranks + peer; B = X - P, S = B - L).
