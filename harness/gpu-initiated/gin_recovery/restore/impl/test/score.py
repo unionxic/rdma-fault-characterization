@@ -48,12 +48,26 @@ EXCL = {"void": "시작 실패(생존 rank가 교환 전에 끝남)", "not_appli
         "kill_before_ckpt": "kill이 첫 확정 체크포인트 전", "spare_start_fail": "예비 프로세스가 활성화 전에 시작에 실패함",
         "foreign_gpu": "시행 시작 때 GPU에 다른 프로세스",
         "spare_not_killed": "예비 프로세스가 rank보다 먼저 꺼지지 않음(예비 프로세스 없음 셀)", "cost_invalid": "비용 실행 무효(오류, 값 없음, win_flags나 tx_done이 다름)",
-        "surplus": "계획 수를 넘은 시행"}
+        "config_driver": "셀이 정한 빌드가 아닌 프로그램으로 돎", "surplus": "계획 수를 넘은 시행"}
 EXCL.update(getattr(rem, "EXCL_LABEL", {}))
 
 
 def load_cells():
     return json.load(open(CELLS))
+
+
+def expected_drivers(c):
+    """cell@build -> the build the cell names (cells_rs.json "driver"); the cost arms' program file names"""
+    e = {}
+    for h, cl in c["holds"].items():
+        for x in cl:
+            e["%s@%s" % (x["cell"], x["build"])] = x.get("driver", "")
+    for fam in c["cost"]["families"].values():
+        for m in fam["metrics"]:
+            for a in fam["arms"]:
+                lib = fam["lib"][a] if isinstance(fam["lib"], dict) else fam["lib"]
+                e["cost_%s_%s@%s" % (m, a, lib)] = "gin_ts2_ff" if a == "ffb-rs" else "gin_ts2"
+    return e
 
 
 def planned(c):
@@ -81,9 +95,19 @@ def reg_columns(stem, r):
     return out
 
 
+EXPECT_DRIVER = {}
+
+
+def driver_ok(r):
+    want = EXPECT_DRIVER.get(r["key"], "")
+    return not want or str(r.get("driver", "")) == want
+
+
 def status_rs(r):
     if int(r.get("void") or 0):
         return "void"
+    if not driver_ok(r):
+        return "config_driver"  # the trial ran another build than its cell names (2026-10-12 design change)
     if str(r.get("kill_rank", "")).isdigit() and int(r.get("applied") or 0) == 0:
         return "not_applied"
     if str(r.get("spare_start_fail")) == "1":
@@ -105,6 +129,8 @@ def status_rs(r):
 def status_reg(r, orig):
     if not orig:
         return "config"
+    if not driver_ok(r):
+        return "config_driver"
     mk = str(r.get("mrkey") or "")
     ours = mk.endswith("rs-bundle/mr/ff") or mk.endswith("rs-bundle/mr/hold") or mk == "hr"
     return rem.status4(dict(r, build="hr", cell=orig, mrkey="hr" if ours else mk))
@@ -140,6 +166,7 @@ def cost_eval(p, rows, cells):
     rule = p["acceptance"].split("rule=", 1)[1].strip()
     fam = cells["cost"]["families"][fam_name]
     base = fam["base"]
+    judged = set(fam.get("judged", fam["arms"]))  # the arms the not-separated rule judges (the others are reported)
     lines, short, sep = [], False, False
     for node in cells["cost"]["nodes"]:
         for m in fam["metrics"]:
@@ -169,8 +196,10 @@ def cost_eval(p, rows, cells):
                     s_worse, s_better = max(v) < min(bv), min(v) > max(bv)
                     d = bmed - med
                 tag = "갈림(나쁨)" if s_worse else "갈림(좋음)" if s_better else "차이를 잴 수 없음"
-                if s_worse or s_better:
+                if (s_worse or s_better) and a in judged:
                     sep = True
+                if a not in judged and rule != "report":
+                    tag += "(보고만)"
                 lines.append("| %s | %s | %s | %d | %.3f | %+.3f (%+.1f%%) | %s |" % (
                     node, m, a, len(v), med, d, 100.0 * d / bmed if bmed else 0.0, tag))
     if short:
@@ -185,6 +214,8 @@ def cost_eval(p, rows, cells):
 def score(R):
     cells = load_cells()
     PLANNED = planned(cells)
+    EXPECT_DRIVER.clear()
+    EXPECT_DRIVER.update(expected_drivers(cells))
     orig = cells.get("regression_orig", {})
     rows = rows_rs.all_rows(R)
     for r in rows:
@@ -192,7 +223,8 @@ def score(R):
             r.update(reg_columns(r["stem"], r))
             r["status"] = status_reg(r, orig.get(r["cell"]))
         elif r["runner"] == "cost":
-            r["status"] = "candidate" if str(r.get("cost_valid")) == "1" else "cost_invalid"
+            r["status"] = ("candidate" if driver_ok(r) else "config_driver") if str(r.get("cost_valid")) == "1" \
+                else "cost_invalid"
         else:
             r["status"] = status_rs(r)
     cols = []
@@ -289,7 +321,7 @@ GOOD = dict(init_rc=0, reg_rc=0, devcomm_rc=0, resume_rc=0, resume_why="none", s
 
 def _rs(d, cell, build, k, *, kill=None, spare=False, spare_addr=False, policy="hold", restore="1", live=True,
         surv=None, sp=None, refuse=None, ff_rank=None, win=None, lib_lines=None, t0=100.0, spare_fail=False, gpu="0/0",
-        negs=(), neg_ok=True, strace=None, spare_kill=None):
+        negs=(), neg_ok=True, strace=None, spare_kill=None, driver=None, ran_after_refusal=False):
     """one synthetic restore trial in the run_rs.sh format (stamped logs, kv, meta)"""
     os.makedirs(d, exist_ok=True)
     stem = os.path.join(d, "%s_%s_n%d" % (cell, build, k))
@@ -299,13 +331,16 @@ def _rs(d, cell, build, k, *, kill=None, spare=False, spare_addr=False, policy="
     meta = dict(cell=cell, lib=build, n=4, policy=policy, restore=restore, kill_rank=("" if kill is None else kill),
                 spare=int(spare), spare_wanted=int(spare), spare_ready=int(spare and not spare_fail), gpu_apps_before=gpu,
                 spare_addr_set=int(spare or spare_addr), restore_ms=20000, runner="rsr", wall_s=5.0, negs=",".join(negs),
-                spare_kill_first=int(spare_kill is not None))
+                spare_kill_first=int(spare_kill is not None),
+                driver=(driver or ("gin_rs_hk" if build == "hk" else "gin_rs")))
     meta.update({"r%drc" % r: rcs[r] for r in range(4)})
     _w(stem + "_meta.txt", _kvline(**meta))
     for r in range(4):
         kv = dict(GOOD, rank=r, rs_hooks_live=int(live))
         if refuse is not None:
             kv.update(resume_rc=(0 if r == ff_rank else 3), resume_why=refuse[r] if isinstance(refuse, list) else refuse)
+            if ran_after_refusal:
+                kv.update(refused_then_ran=1, xchg="ok")
         if kill is not None and r == kill:
             kv = dict(rank=r, init_rc=0, reg_rc=0, devcomm_rc=0, resume_rc=0, steps=400, rs_hooks_live=int(live))
         elif surv:
@@ -347,7 +382,8 @@ def _rs(d, cell, build, k, *, kill=None, spare=False, spare_addr=False, policy="
 def _reg(d, cell, k, cols):
     os.makedirs(d, exist_ok=True)
     stem = os.path.join(d, "%s_n%d" % (cell, k))
-    _w(stem + "_meta.txt", _kvline(cell=cell, lib="../../rs-bundle/lib/rs", mrkey="../../../rs-bundle/mr/ff", n=4,
+    mk = "hold" if cell.endswith("_hold") else "ff"
+    _w(stem + "_meta.txt", _kvline(cell=cell, lib="../../rs-bundle/lib/rs", mrkey="../../../rs-bundle/mr/" + mk, n=4,
                                    runner="mrr", selftest=json.dumps(cols).replace(" ", "")))
 
 
@@ -357,7 +393,8 @@ def _cost(d, metric, arm, node, k, value):
     stem = os.path.join(d, "%s_k%d" % (cell, k))
     lib = "hkp" if arm == "ffb-hk" else "rsp"
     iters = 12 if metric == "bw256k" else 3000
-    _w(stem + "_meta.txt", _kvline(cell=cell, metric=metric, arm=arm, rx=node, lib=lib, runner="cost", iters=iters))
+    _w(stem + "_meta.txt", _kvline(cell=cell, metric=metric, arm=arm, rx=node, lib=lib, runner="cost", iters=iters,
+                                   bin=("gin_ts2_ff" if arm == "ffb-rs" else "gin_ts2")))
     if metric == "bw256k":
         _w(stem + "_r0.kv", _kvline(lat_p50_us=value, burst_K=8, bytes=262144, win_flags="0x3", tx_done=iters, exit=0))
     else:
@@ -390,6 +427,7 @@ def _all_cost(d, ffb_sep=False):
                     _cost(d, m, a, node, k, round(base + 0.001 * k, 4))
                 _cost(d, m, "ffb-hk", node, k, round(base + 0.001 * k, 4))
                 _cost(d, m, "ffb-rs", node, k, round(base + (1.0 if ffb_sep else 0.001) * k, 4))
+                _cost(d, m, "ffb-rs-macro", node, k, round(base + 0.5 + 0.001 * k, 4))  # separates: reported only
 
 
 def _build_A(d, *, live=True, bad_data=False, refuse_ff=False, reg_bad=False, ffb_sep=False, slow_fb=False):
@@ -432,6 +470,8 @@ def _build_A(d, *, live=True, bad_data=False, refuse_ff=False, reg_bad=False, ff
             ff_rank=(0 if refuse_ff else None))
         _rs(raw, "rs4_refuse_gintype", "rs", k, live=False, refuse="the_devComm_is_not_GDAKI")
         _rs(raw, "rs4_refuse_restoreoff1", "rs", k, live=False, refuse="NCCL_GIN_RESTORE_differs")
+        _rs(raw, "rs4_refuse_nomacro", "rs", k, live=False, driver="gin_rs_nomacro", ran_after_refusal=True,
+            refuse="program_not_built_with_NCCL_GIN_RESTORE_DEVICE")
     for k in range(1, 6):
         _reg(reg, "reg_mr4_none", k, REG_OK_NONE)
         _reg(reg, "reg_mr4_none_hold", k, REG_OK_NONE)
@@ -456,7 +496,7 @@ def selftest():
         vA = score(dA)
         for pid in ("wait_held", "data_equal", "no_reexec", "revived_done", "suppress_exact", "restore_time", "ckpt_kill",
                     "kill_other", "nospare_failfast", "spare_absent_fallback", "control_degraded", "none_clean", "strict_forced", "strict_notforced",
-                    "refuse_reason", "regression_none", "regression_kill3", "cost_ff"):
+                    "refuse_reason", "regression_none", "regression_kill3", "cost_ff", "refuse_nomacro_clean"):
             expect("A/" + pid, vA.get(pid), "맞음")
         expect("A/cost_log", vA.get("cost_log"), "문턱 대기(pilot 뒤)")
         expect("A/cost_unarmed", vA.get("cost_unarmed"), "문턱 대기(pilot 뒤)")
@@ -473,6 +513,8 @@ def selftest():
             _rs(raw, "rs4_refuse_symgin", "rs", k, live=False, refuse="r")
             _rs(raw, "rs4_refuse_gintype", "rs", k, live=False, refuse="g")
             _rs(raw, "rs4_refuse_restoreoff1", "rs", k, live=False, refuse="o")
+            _rs(raw, "rs4_refuse_nomacro", "rs", k, live=False, driver="gin_rs_nomacro", ran_after_refusal=True,
+                refuse="program_not_built_with_NCCL_GIN_RESTORE_DEVICE")
         for k in range(1, 6):
             nsp = {r: [(3.0, "GIN/TS: rank %d: peer 3 judged dead" % r), (3.0, "GIN/TS: declined rank=3 why=peer-dead"),
                        (5.4, "GINRS step rank=%d step=120 released=1 got=1 want=2" % r)] for r in (0, 1, 2)}
@@ -483,7 +525,7 @@ def selftest():
         for pid in ("wait_held", "data_equal", "no_reexec", "revived_done", "suppress_exact", "restore_time", "none_clean",
                     "regression_none", "cost_ff", "spare_absent_fallback"):
             expect("B/" + pid, vB.get(pid), "자료 부족")
-        for pid in ("strict_forced", "strict_notforced", "refuse_reason", "nospare_failfast"):
+        for pid in ("strict_forced", "strict_notforced", "refuse_reason", "nospare_failfast", "refuse_nomacro_clean"):
             expect("B/" + pid, vB.get(pid), "맞음")
         # C: failures are 틀림: a refusal that fell through on one rank, two trials with a bad received slot (10 scored,
         # 8 good < 9), one regression trial with a stuck survivor, a fail-fast branch arm that separates
@@ -522,6 +564,15 @@ def selftest():
         _rs(raw, "rs4_kill3_spareabsent", "rs", 1, kill=3, spare=True, spare_kill=2.5)
         rsa = {r["id"]: r for r in rows_rs.all_rows(dD)}["rs4_kill3_spareabsent_rs_n1"]
         expect("D/spare killed after its rank is excluded", status_rs(rsa), "spare_not_killed")
+        EXPECT_DRIVER.update(expected_drivers(load_cells()))
+        _rs(raw, "rs4_refuse_nomacro", "rs", 1, live=False, driver="gin_rs",
+            refuse="program_not_built_with_NCCL_GIN_RESTORE_DEVICE", ran_after_refusal=True)
+        rnm = {r["id"]: r for r in rows_rs.all_rows(dD)}["rs4_refuse_nomacro_rs_n1"]
+        expect("D/a trial on another build than its cell names is excluded", status_rs(rnm), "config_driver")
+        _rs(raw, "rs4_refuse_nomacro", "rs", 2, live=False, driver="gin_rs_nomacro", refuse="something_else",
+            ran_after_refusal=True)
+        rn2 = {r["id"]: r for r in rows_rs.all_rows(dD)}["rs4_refuse_nomacro_rs_n2"]
+        expect("D/a refusal for another reason is not the no-macro refusal", rn2["nomacro_reason"], 0)
         expect("D/foreign GPU app excluded", status_rs(rows["rs4_kill3_rs_n5"]), "foreign_gpu")
         expect("D/refusal in a hold cell is config", status_rs(rows["rs4_none_rs_n2"]), "config")
         expect("D/negatives failed", (rows["rs4_spare_neg_rs_n1"]["neg_cut_failed"], rows["rs4_spare_neg_rs_n1"]["neg_field_failed"]), (1, 1))
