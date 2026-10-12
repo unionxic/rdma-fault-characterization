@@ -25,9 +25,12 @@
 #                                                    into the NEW directory ~/rs-bundle/b3v3/, same checks; env WANT_B3V3
 #        deploy_feas.sh <check output file> b3v4     the fourth rs_drain_test build (copy timing, in-process hog; 2026-10-11)
 #                                                    into the NEW directory ~/rs-bundle/b3v4/, same checks; env WANT_B3V4
+#        deploy_feas.sh <check output file> ord      the comparison driver gin_ts2 (EXPERIMENT.md 9.15.6, 2026-10-11) into the
+#                                                    NEW directory ~/rs-bundle/ord/, same checks (the before/after md5 cover
+#                                                    ~/gi-bundle, whose hk bundle it runs on, read only); env WANT_ORD
 set -euo pipefail
 OUTF=${1:?output file (the check is written to a file only; never pipe it)}
-if [ "${2:-}" = rsx2 ] || [ "${2:-}" = b3v2 ] || [ "${2:-}" = b3v3 ] || [ "${2:-}" = b3v4 ]; then
+if [ "${2:-}" = rsx2 ] || [ "${2:-}" = b3v2 ] || [ "${2:-}" = b3v3 ] || [ "${2:-}" = b3v4 ] || [ "${2:-}" = ord ]; then
   K=$2
   SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH (user@address) from the management env file}
   SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
@@ -43,6 +46,10 @@ if [ "${2:-}" = rsx2 ] || [ "${2:-}" = b3v2 ] || [ "${2:-}" = b3v3 ] || [ "${2:-
     SRC=$SCR/agent_restore/out/b3v3/rs_drain_test; FN=rs_drain_test
     WANT=${WANT_B3V3:?expected md5 of the b3v3 rs_drain_test (EXPERIMENT.md 12)}
     LDD2='cd $HOME/rs-bundle && echo "b3v3: $(ldd b3v3/rs_drain_test | grep -E "ibverbs|mlx5|libcuda|not found" | tr -s " " | tr "\n" ";")"'
+  elif [ "$K" = ord ]; then
+    SRC=$SCR/agent_restore/out/ord/gin_ts2; FN=gin_ts2
+    WANT=${WANT_ORD:?expected md5 of the ord gin_ts2 (EXPERIMENT.md 12)}
+    LDD2='cd $HOME/rs-bundle && echo "ord: $(LD_LIBRARY_PATH=$HOME/gi-bundle/gin_ts2/hk ldd ord/gin_ts2 | grep -E "nccl|not found" | tr -s " " | tr "\n" ";")"'
   else
     SRC=$SCR/agent_restore/out/b3v4/rs_drain_test; FN=rs_drain_test
     WANT=${WANT_B3V4:?expected md5 of the b3v4 rs_drain_test (EXPERIMENT.md 12)}
@@ -71,7 +78,7 @@ if [ "${2:-}" = rsx2 ] || [ "${2:-}" = b3v2 ] || [ "${2:-}" = b3v3 ] || [ "${2:-
     [ "$BEFORE_L" = "$AFTER_L" ] && [ "$BEFORE_S" = "$AFTER_S" ] &&
       echo "existing files unchanged (rain $(echo "$BEFORE_L" | grep -c .) files, sunny $(echo "$BEFORE_S" | grep -c .) files, rs-bundle outside $K included)" ||
       echo "EXISTING FILE CHANGED"
-    grep -E "^$K |^rs_drain_test $K |^rsx2 " "$SCR/agent_restore/out/build_info.txt" 2>/dev/null
+    grep -E "^$K |^rs_drain_test $K |^rsx2 |^gin_ts2 $K " "$SCR/agent_restore/out/build_info.txt" 2>/dev/null
     [ -f "$SCR/agent_restore/out/$K/build_src.txt" ] && echo "$K $(cat "$SCR/agent_restore/out/$K/build_src.txt")"
   } > "$OUTF"
   exit 0
