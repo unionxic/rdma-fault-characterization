@@ -18,7 +18,7 @@ TAG=${1:?tag}
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
 D=$(cd "$(dirname "$0")" && pwd)
 CU=/usr/local/cuda-12.8/bin
-W=$SCR/agent_rs_dev
+W=${RS_TREE:-$SCR/agent_rs_dev}  # integration: RS_TREE=<another scratch tree>
 HK=$SCR/agent_gd/gin_hk
 O=$W/sass_$TAG
 X=${OUT:-$O/exact}
