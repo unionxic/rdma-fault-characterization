@@ -61,6 +61,10 @@ def parser_fix_cases():
     p3 = os.path.join(raw, "rs4_kill3_rs_n1_spare.log")
     open(p3, "w").write("100.000000 GINRS start rank=3 mode=spare\n101.250000 GINRS spare_ready rank=3 rt_s=1.0\n"
                         "161.300000 GINRS resume rank=3 rc=2 step=0\n")
+    # 4: the checkpoint-pause cell without the test-switch line (the rank ended by a SIGKILL of its timeout): not applied
+    score._rs(raw, "rs4_kill3_ckpt", "rs", 3, kill=3, spare=True, hook=(120, 300))
+    p4 = os.path.join(raw, "rs4_kill3_ckpt_rs_n3_r3.log")
+    open(p4, "w").write("".join(l for l in open(p4) if "TEST_DIE_IN_CKPT" not in l))
     rows = {r["id"]: r for r in rows_rs.all_rows(d)}
     out = []
 
@@ -75,6 +79,7 @@ def parser_fix_cases():
     expect("kill time = the test-switch line (activation 4.0 - 2.0005 s)", r1["spare_activate_ms"], 1999.5)
     expect("the buddy's activation line", (r1["activate_ms"], r1["later_n"], r1["later_ms"]), (41.7, 2, 20.4))
     expect("meta kill_in_hook", r1["kill_in_hook"], "1")
+    expect("no test-switch line: not applied (exit 137 alone)", rows["rs4_kill3_ckpt_rs_n3"]["applied"], 0)
     expect("stable only after the death", r2["ckpt_before"], 0)
     expect("no stable checkpoint before the death", r2["ckpt_stable_before_kill"], 0)
     expect("the pause of another checkpoint", r2["die_in_pause"], 0)
