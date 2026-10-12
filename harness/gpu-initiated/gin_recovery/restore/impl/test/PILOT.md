@@ -72,9 +72,13 @@
   모든 프로세스는 `NCCL_GIN_Q4_QPWATCH_MS=0`이다.
   pilot이 함께 볼 것: 살아 있는 rank가 끝난 뒤에도 기록 파일이 남아 음성 대조가 도는지(라이브러리가 끝날 때 지우면 `negs`가
   비고 열이 빔), 시행 시작 때 `foreign_gpu`가 앞 시행의 막 끝난 프로세스를 세지 않는지.
-- 비용 셀(@rsp, @hkp): 로그 팔 넷(`off`, `on`, `sampled`, `full`; 4 KiB, 256 KiB 지연과 대역), 무장 전 hold 대 fail-fast
-  (`ua-ff`, `ua-hold`), fail-fast 분기(`ffb-hk` 대 `ffb-rs`(매크로 없음, 갈리지 않음을 판정)와 `ffb-rs-macro`(매크로, 보고만)). 9.15.6의 6 대 6 섞기. 7절의 4 KiB get 팔은 다루지 못한다
-  (gin_ts2에 get 지연 모드가 없음).
+- 비용 셀(@rsp, @hkp; 2026-10-12 메인 세션 결정): 복원 길의 팔 다섯은 모두 매크로로 빌드한 driver이고 라이브러리의 재기만
+  하는 모드를 쓴다(`NCCL_GIN_RESTORE_LOG_MEASURE`가 Resume 없이 문맥을 만들 때 측 표 포인터를 싣고,
+  `NCCL_GIN_RESTORE_LOG_MEASURE_LOG=0|1`이 로그를 끄거나 켬). `off`(fail-fast, 모든 비교의 기준), `ua-hold`(hold 길, 로그 0:
+  키 다시 읽기만; `cost_unarmed`), `on`, `sampled`, `full`(로그 1, checksum 끔, 표본, 전부; `cost_log`, 로그만의 몫은 같은
+  섞기 안의 `ua-hold`와의 차). 4 KiB, 256 KiB 지연과 대역(256 KiB × 8). fail-fast 분기는 `ffb-hk` 대 `ffb-rs`(매크로 없음,
+  갈리지 않음을 판정)와 `ffb-rs-macro`(매크로, 보고만). 9.15.6의 6 대 6 섞기. 7절의 4 KiB get 팔은 다루지 못한다(gin_ts2에
+  get 지연 모드가 없음).
 
 ## pilot이 고정하는 문턱과 n
 
@@ -121,22 +125,23 @@ bash $T/chain_rs.sh $R/<날짜>_pilot P1 P2 P3 COSTPILOT-rain COSTPILOT-sunny
 python3 $T/score.py $R/<날짜>_pilot        # 열을 읽기만(판정 아님)
 # 4. pilot 뒤 고칠 목록 -> 7절 n, 3절 문턱, cells_rs.json, predictions_rs.csv 고정 -> 사전 등록(커밋 하나, 태그)
 # 5. 본 실행
-bash $T/chain_rs.sh $R/<날짜> G1 G2 R1 COST-log-rain COST-log-sunny COST-unarmed-rain COST-unarmed-sunny \
-  COST-ffbranch-rain COST-ffbranch-sunny
+bash $T/chain_rs.sh $R/<날짜> G1 G2 R1 \
+  COST-log-rain-lat4k COST-log-rain-lat256k COST-log-rain-bw256k COST-log-sunny-lat4k COST-log-sunny-lat256k \
+  COST-log-sunny-bw256k COST-ffbranch-rain COST-ffbranch-sunny
 # 6. 채점
 python3 $T/score.py $R/<날짜>
 ```
 
 어느 hold든 STOP 파일을 남기면 다음 hold는 돌지 않는다. `skipped.txt`에 줄이 생기면 그 셀만 다시 돈다.
 
-## 설계 바꿈(2026-10-12)이 남긴 물음 (결정 필요)
+## 설계 바꿈(2026-10-12)이 남긴 물음과 결정
 
-- 비용 셀의 로그 팔과 무장 전 hold 팔: 측 표 포인터는 Resume이 성공해야 실린다. 비용 driver(gin_ts2)는 Resume을 부르지 않고,
-  Resume은 재기만 하는 모드(`NCCL_GIN_RESTORE_LOG_MEASURE`)를 거절한다. 그래서 `on`, `sampled`, `full`, `ua-hold` 팔은 hold
-  보내기 길에 닿지 않아 `off`, `ua-ff`와 같은 것을 잰다. 재기만 하는 모드가 Resume 없이 포인터를 싣게 하거나, Resume과
-  체크포인트를 부르는 비용 driver를 쓰는 것 가운데 정해야 한다(그 전에는 `cost_log`, `cost_unarmed`의 값이 뜻이 없음).
-- 회귀 셀의 hold 변형: gin_mr은 Resume을 부르지 않으므로 매크로로 빌드해도 hold 보내기 길을 지나지 않는다. 이 행은 "hold
-  정책과 매크로 빌드에서도 결과가 hk와 같음"을 보이지만, 처음 목적(hold 보내기 길이 hk와 같은 결과를 냄)은 재지 않는다.
+- 비용 셀의 로그 팔과 무장 전 hold 팔: 측 표 포인터는 Resume이 성공해야 실리므로 Resume을 부르지 않는 비용 driver는 hold 길에
+  닿지 않았다. 결정(메인 세션): 라이브러리의 재기만 하는 모드가 Resume 없이 포인터를 싣고 새 변수
+  `NCCL_GIN_RESTORE_LOG_MEASURE_LOG`(dev 브랜치가 더함, 기본 1)가 로그를 고른다. 위 비용 셀의 팔이 그것이다. pilot은
+  `ua-hold`와 `on`이 실제로 hold 길을 지나는지(측 표가 실렸다는 라이브러리 줄)를 본다.
+- 회귀 셀의 hold 변형: gin_mr은 Resume을 부르지 않아 매크로로 빌드해도 hold 보내기 길을 지나지 않는다. 결정(메인 세션): 이 행의
+  목적을 "hold 정책과 매크로 빌드에서도 결과가 hk와 같음"(정책 설정의 회귀)으로 바꾸고, 장치의 hold 길은 복원 셀이 지나게 한다.
 
 ## 통합 뒤 다시 확인할 것 (지금 실행하지 못한 것)
 
