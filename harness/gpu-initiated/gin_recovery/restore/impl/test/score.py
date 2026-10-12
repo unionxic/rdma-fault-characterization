@@ -287,7 +287,13 @@ def score(R):
         scored[k] = [r for r in rs if r["status"] == "scored"]
     preds = list(csv.DictReader(open(PREDS)))
     sha = hashlib.sha256(open(PREDS, "rb").read()).hexdigest()
-    frozen = open(os.path.join(HERE, "PREREG.txt")).read() if os.path.exists(os.path.join(HERE, "PREREG.txt")) else ""
+    # PREREG.txt lives next to EXPERIMENT.md (the study folder, two levels up); the older location next to this file is
+    # still read so a copied test folder keeps working
+    frozen = ""
+    for pr in (os.path.join(HERE, "..", "..", "PREREG.txt"), os.path.join(HERE, "PREREG.txt")):
+        if os.path.exists(pr):
+            frozen = open(pr).read()
+            break
     results, cost_tables = [], {}
     for p in preds:
         if p["acceptance"].startswith("cost:"):
@@ -302,9 +308,10 @@ def score(R):
         w.writeheader()
         for r in sorted(rows, key=lambda x: (x["sub"], x["key"], x.get("tnum") or 0)):
             w.writerow(r)
-    L = ["# gin-restore 시험 채점 결과 (work package 10, DRAFT)", "",
-         "`score.py`가 원자료에서 만들었다. 손으로 고친 값은 없다. 문턱과 반복 수는 pilot 뒤에 고정한다(PILOT.md).", "",
-         "- 예측 파일 sha256: `%s`. `PREREG.txt`의 값과 %s." % (sha, "같다" if sha in frozen else "다르다(사전 등록 전)"),
+    L = ["# gin-restore 채점 결과 (work package 10)", "",
+         "`score.py`가 원자료에서 만들었다. 손으로 고친 값은 없다. 문턱과 반복 수는 2026-10-13 사전 등록으로 고정했다(EXPERIMENT.md 3, 7, 8절, "
+         "태그 `prereg/gin-restore-v1`).", "",
+         "- 예측 파일 sha256: `%s`. `PREREG.txt`의 값과 %s." % (sha, "같다" if sha in frozen else "다르다(사전 등록한 파일이 아님)"),
          "- 시행 수: %d. 판정한 시행: %d." % (len(rows), sum(len(v) for v in scored.values())),
          "- 판정식 원문은 `predictions_rs.csv`, 문법은 `../../../s2_close/EXPERIMENT.md` 3.2.", "",
          "## 판정 요약", "", "| 예측 | 셀 | n | 판정 |", "|---|---|--:|---|"]
@@ -319,7 +326,8 @@ def score(R):
         for k, ok, det, expr in evals:
             L.append("- 셀 `%s`: 판정한 시행 %d회, 대입한 식 `%s` → %s" % (k, len(scored.get(k, [])), expr, "참" if ok else "거짓"))
             for inner, c, n, fs, ts, tail in det:
-                L.append("  - `count(%s)` = %d/%d. 만족하지 않은 시행: %s" % (inner, c, n, ", ".join(fs) if fs else "없음"))
+                L.append("  - `count(%s)` = %d/%d. 만족하지 않은 시행: %s" % (
+                    inner, c, n, ", ".join(os.path.basename(str(x)) for x in fs) if fs else "없음"))
         if p["id"] in cost_tables:
             L += ["", "| 받는 노드 | 크기 | 팔 | n | 중앙값 | 기준 팔과의 차 | 읽기 |", "|---|---|---|--:|--:|---|---|"]
             L += cost_tables[p["id"]] or ["| (비용 실행 없음) |  |  |  |  |  |  |"]
