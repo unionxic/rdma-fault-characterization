@@ -93,8 +93,73 @@ def parser_fix_cases():
     return out
 
 
+# a cell variable -> the key of run_rs.sh's configuration line (RS_DRY_CONFIG=1) that must show it (2026-10-13: the
+# refusal cell's GIN_TYPE was dropped by run_rs.sh, which unsets the caller's NCCL_ and GIN_ variables)
+CELL_KEYS = {"DRIVER": "driver", "CELL_GIN_TYPE": "gin_type", "SYM_GIN": "sym_gin", "RESTORE": "restore",
+             "FAULT_POLICY": "policy", "KILL_RANK": "kill_rank", "SPARE": "spare_wanted", "KILL_IN_HOOK": "kill_in_hook",
+             "CKPT_STEPS": "ckpt_steps", "SPARE_KILL_FIRST": "spare_kill_first", "SPARE_STRACE": "spare_strace",
+             "NEG_REPLAY": "neg_replay", "NEG_RANK": "neg_rank", "CONTINUE_AFTER_REFUSAL": "continue_after_refusal",
+             "R0_ENV": "r0_env", "R1_ENV": "r1_env", "R2_ENV": "r2_env", "R3_ENV": "r3_env"}
+
+
+def cell_config_cases():
+    """every cell variable of cells_rs.json reaches the runner: no variable starts with NCCL_ or GIN_ (the runners drop
+    those of the caller), and for every rs cell, cells_rs.sh -> run_rs.sh in its dry mode (RS_DRY_CONFIG=1: the
+    configuration line, then exit before any file, address, ssh or process) shows each of the cell's values; the reg cells'
+    variables are cells_rs.sh's own (MR_*, FAULT_POLICY, RESTORE, DRIVER). Also the shared RS_SET check (rs_set.sh)."""
+    import json
+    out = []
+    cells = json.load(open(os.path.join(HERE, "cells_rs.json")))
+    d = tempfile.mkdtemp(prefix="rs_cfg_")
+    seen = 0
+    for hold, cl in cells["holds"].items():
+        for e in cl:
+            env = dict(e.get("env", {}))
+            for k in env:
+                if k.startswith("NCCL_") or k.startswith("GIN_"):
+                    out.append("cells: %s/%s: variable %s would be dropped by the runner" % (hold, e["cell"], k))
+            if e["kind"] != "rs":
+                for k in env:
+                    if not (k.startswith("MR_") or k in ("FAULT_POLICY", "RESTORE")):
+                        out.append("cells: %s/%s: %s is not a regression variable" % (hold, e["cell"], k))
+                continue
+            args = ["bash", os.path.join(HERE, "cells_rs.sh"), os.path.join(d, hold, "raw"), e["cell"], e["build"],
+                    "rs", "1", "1", "DRIVER=%s" % e["driver"]] + ["%s=%s" % kv for kv in env.items()]
+            os.makedirs(os.path.join(d, hold, "raw"), exist_ok=True)
+            run_env = {k: v for k, v in os.environ.items() if not k.startswith(("NCCL_", "GIN_", "RS_"))}
+            run_env.update(RS_DRY_CONFIG="1", SUNNY_SSH="nobody@localhost", GIN_TYPE="7", NCCL_GIN_TYPE="7")
+            r = subprocess.run(args, env=run_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            line = [l for l in r.stdout.splitlines() if l.startswith("cell=")]
+            if r.returncode != 0 or len(line) != 1:
+                out.append("cells: %s/%s: no configuration line (rc %d: %s)" % (hold, e["cell"], r.returncode,
+                                                                                r.stderr.strip()[:200]))
+                continue
+            conf = dict(t.split("=", 1) for t in line[0].split() if "=" in t)
+            for k, v in dict(env, DRIVER=e["driver"]).items():
+                key = CELL_KEYS.get(k)
+                if key is None:
+                    out.append("cells: %s/%s: variable %s has no configuration key in this test" % (hold, e["cell"], k))
+                elif conf.get(key) != v.replace(" ", "+"):
+                    out.append("cells: %s/%s: %s=%s reached the runner as %s=%s" % (hold, e["cell"], k, v, key,
+                                                                                  conf.get(key)))
+            if e["cell"] == "rs4_refuse_gintype" and conf.get("gin_type") != "2":
+                out.append("cells: the GIN-type refusal cell does not run with type 2")
+            if "CELL_GIN_TYPE" not in env and conf.get("gin_type") != "3":
+                out.append("cells: %s/%s: the caller's GIN_TYPE leaked into the runner" % (hold, e["cell"]))
+            seen += 1
+    if seen == 0:
+        out.append("cells: no rs cell checked")
+    for v, ok in (("", True), ("i5", True), ("I5x", True), ("9a", True), ("-x", False), ("a/b", False), ("..", False),
+                  ("a..b", False), (".x", False), ("lib", False), ("mr", False)):
+        r = subprocess.run(["bash", "-c", '. "$1"; rs_set_check', "_", os.path.join(HERE, "rs_set.sh")],
+                           env=dict(os.environ, RS_SET=v), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if (r.returncode == 0) != ok:
+            out.append("rs_set.sh: RS_SET=%r read as %s" % (v, "valid" if r.returncode == 0 else "invalid"))
+    return out
+
+
 def main():
-    fails = parser_command() + parser_fix_cases()
+    fails = parser_command() + parser_fix_cases() + cell_config_cases()
     if fails:
         print("PARSER SELFTEST FAILED:")
         for f in fails:
