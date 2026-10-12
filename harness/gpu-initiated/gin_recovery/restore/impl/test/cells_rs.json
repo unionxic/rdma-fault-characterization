@@ -57,12 +57,11 @@
   "reg_rm4_kill3_untimed_hold": "rm4_kill3_untimed"
  },
  "cost": {
-  "about": "cost_<metric>_<arm>_<node> (run_cost.sh). Each family is one hold per receiving node in hold_rs.sh: for k = 1-6 every metric, its arms back to back (rotated: the first arm alternates with k). Scored key cost_<metric>_<arm>@<lib>, over both receiving nodes kept apart in score.py (planned n_per_arm per node). The 4 KiB get arm of lat_ff_branch is not covered (gin_ts2 has no get latency mode). The fail-fast branch cell measures both builds of this layer (2026-10-12 design change): ffb-rs (no macro, judged: must not separate from hk) and ffb-rs-macro (with the macro, fail-fast; reported).",
+  "about": "cost_<metric>_<arm>_<node> (run_cost.sh). Each family runs in holds per receiving node (and per metric for the log family: COST-log-<node>-<metric>): for k = 1-6 the metric's arms back to back, the first arm alternating with k. Scored key cost_<metric>_<arm>@<lib>, the receiving nodes kept apart in score.py (planned n_per_arm per node). The log family (supervisor decision 2026-10-12) uses the macro-built driver in every arm and the library's measurement mode (NCCL_GIN_RESTORE_LOG_MEASURE publishes the side table without Resume; NCCL_GIN_RESTORE_LOG_MEASURE_LOG=0|1): off is fail-fast, ua-hold the hold path without the log, on/sampled/full with the log and its checksum. The fail-fast branch measures both builds of this layer: ffb-rs (no macro, judged: must not separate from hk) and ffb-rs-macro (reported). The 4 KiB get arm of lat_ff_branch is not covered (gin_ts2 has no get latency mode).",
   "n_per_arm": 6,
   "nodes": ["rain", "sunny"],
   "families": {
-   "log": {"metrics": ["lat4k", "lat256k", "bw256k"], "arms": ["off", "on", "sampled", "full"], "lib": "rsp", "base": "off", "search_key": "cost_log", "drivers": {"off": "gin_ts2 (macro)", "on": "gin_ts2 (macro)", "sampled": "gin_ts2 (macro)", "full": "gin_ts2 (macro)"}},
-   "unarmed": {"metrics": ["lat4k", "lat256k"], "arms": ["ua-ff", "ua-hold"], "lib": "rsp", "base": "ua-ff", "search_key": "cost_unarmed", "drivers": {"ua-ff": "gin_ts2 (macro)", "ua-hold": "gin_ts2 (macro)"}},
+   "log": {"metrics": ["lat4k", "lat256k", "bw256k"], "arms": ["off", "ua-hold", "on", "sampled", "full"], "lib": "rsp", "base": "off", "search_key": "cost_log (on, sampled, full against off) and cost_unarmed (ua-hold against off)", "drivers": {"off": "gin_ts2 (macro)", "ua-hold": "gin_ts2 (macro)", "on": "gin_ts2 (macro)", "sampled": "gin_ts2 (macro)", "full": "gin_ts2 (macro)"}},
    "ffbranch": {"metrics": ["lat4k", "lat256k"], "arms": ["ffb-hk", "ffb-rs", "ffb-rs-macro"], "lib": {"ffb-hk": "hkp", "ffb-rs": "rsp", "ffb-rs-macro": "rsp"}, "base": "ffb-hk", "search_key": "cost_ff", "drivers": {"ffb-hk": "ord gin_ts2 (hk headers)", "ffb-rs": "gin_ts2_ff (no macro)", "ffb-rs-macro": "gin_ts2 (macro)"}, "judged": ["ffb-rs"]}
   }
  }
