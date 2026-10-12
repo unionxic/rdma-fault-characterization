@@ -2,9 +2,32 @@
 
 이 문서는 pilot이 셀마다 무엇을 보여야 하는지, pilot이 어떤 문턱과 반복 수(n)를 고정하는지 미리 적는다. pilot은
 모든 셀을 작은 n으로 돌려(hold `P1`, `P2`, `P3`, `COSTPILOT-<노드>`) 2, 3, 7, 8절의 초안 값을 정하고, 그 뒤 사전 등록한다.
-문턱과 n은 지금 모두 초안(DRAFT)이다. `score.py`는 `predictions_rs.csv`의 초안 판정식을 그대로 적용한다.
+문턱과 n은 2026-10-13 사전 등록으로 고정했다(`EXPERIMENT.md` 2, 3, 7, 8절, 태그 `prereg/gin-restore-v1`; 바로 아래 절). `score.py`는
+`predictions_rs.csv`의 판정식을 그대로 적용한다. 그 아래 절들은 pilot 전후에 쓴 글이라 "초안"이라는 말이 남아 있다.
 
 표시: `[측정]` 원자료에서 확인, `[미확인]` 아직 확인하지 않음, `[추론]` 해석.
+
+## 사전 등록으로 고정한 값과 본 실행 명령 (2026-10-13, 메인 세션)
+
+pilot i3(`results/20261013_pilot/`), 비용 pilot 2(`results/20261013_pilot_cost/`, 6라운드 두 노드), i4(`results/20261013_pilot_i4/`),
+i5(`results/20261013_pilot_i5/`)의 수치로 정했다(`EXPERIMENT.md` 12절).
+
+- 복원 시간 T = 2 000 ms(pilot i4, i5의 364–402 ms의 약 5배). 입력 멈춤 ≤ 10 ms(pilot 최대 5.9 ms). fallback 창은 초안 그대로(pilot 통과).
+- 체크포인트 멈춤 중 kill 셀은 스위치의 죽음 줄과 생존 rank 셋의 멈춤(`die_in_pause` = 3)을 판정식 안에 둔다(제외가 아니라 조건).
+- 반복 수는 7절 표 그대로(G1 45, G2 12, R1 20, 비용 팔마다 노드마다 6). 같은 hold를 다시 돌리면 빠진 시행만 잇는다.
+- QUERY_QP 상한: 복원 시행과 비용 실행 40 000, 회귀 150 000(`hold_rs.sh` 기본값). 복원 시행의 시간 한도 60 s.
+- checksum 기본 끔(`sampled`, `full`은 보고만, `cost_checksum`). 비용 판정은 `within:10`(`cost_log`의 on, `cost_unarmed`의 ua-hold), `cost_ff`는
+  갈리지 않음.
+- 빌드: 배포 묶음 i5(라이브러리 `rs_i5` `4811f28f`, `rsp_i5` `be91b270`, `hkp` `84209c03`, driver는 i3 빌드).
+
+```
+# 본 실행 (사전 등록 태그 뒤; 메인 세션, cluster_run.sh 안; T = impl/test, R = results)
+RS_SET=i5 bash $T/chain_rs.sh $R/20261013_main G1 G2 R1 \
+  COST-log-rain-lat4k COST-log-rain-lat256k COST-log-rain-bw256k COST-log-sunny-lat4k COST-log-sunny-lat256k \
+  COST-log-sunny-bw256k COST-ffbranch-rain COST-ffbranch-sunny G1 G2 R1
+# (마지막 G1 G2 R1은 시간 한도로 빠진 시행을 잇기 위함; 모두 돌았으면 "already done"으로 지나감)
+python3 $T/score.py $R/20261013_main
+```
 
 ## 지금 상태 (배포 묶음 i4로 다시 한 pilot 뒤, 2026-10-13)
 
@@ -134,7 +157,8 @@ P1–P3과 비용 pilot을 다시.
 ## 사용자 보류 중인 overhead 예산 (사용자 확인 대기)
 
 3절 표 아래의 "제안한 비용 한도"다. pilot이 수를 재어 적고, 사용자가 확인하면 비용 예측의 문턱으로 고정한다.
-지금은 보류(pending)이고 `score.py`는 `cost_log`, `cost_unarmed`를 "문턱 대기(pilot 뒤)"로 적는다.
+2026-10-13 사전 등록: 사용자가 자는 동안 메인 세션이 이 한도를 그대로 문턱으로 썼다(`within:10`; 비용 pilot 2의 수치로 4 KiB 지연은 틀릴
+가능성이 크다고 3절에 미리 적음). 사용자 확인은 본 실행 뒤에 받는다.
 
 - fail-fast: 잴 만한 차이 없음(`cost_ff`, 갈리지 않음을 예측).
 - 복원 모드의 put 지연과 대역: 10% 안.
