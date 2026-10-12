@@ -308,7 +308,7 @@ if [ -n "$KILL_RANK" ] && [ "$KILL_IN_HOOK" = 1 ]; then
     [ "$s" = "$KILL_RANK" ] && continue
     t=$(wait_line "$WORK/r$s.log" "GIN/RS: rank $s: rank $KILL_RANK armed at its stable checkpoint [0-9]+" 0 0 "$aend")
     if [ -z "$t" ]; then ARM_WAIT=timeout; break; fi
-    T_ARMED=$(awk -v a="$T_ARMED" -v b="$t" 'BEGIN{print (b > a ? b : a)}')
+    T_ARMED=$(awk -v a="$T_ARMED" -v b="$t" 'BEGIN{printf "%.6f", (b > a ? b : a)}')
   done
   if [ "$ARM_WAIT" = ok ]; then
     if [ "$(node_of "$KILL_RANK")" = sunny ]; then ssh -n "$SUNNY_SSH" "touch $RT.arm"; else touch "$WORK/arm"; fi
