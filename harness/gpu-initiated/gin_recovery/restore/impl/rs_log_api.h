@@ -30,7 +30,9 @@
 //     24 ovfHead u64   1 + the ring head when this QP last overflowed (device atomic max; diagnostic)
 //     32 logOn u32     the device logs this QP's operations only while it is 1 (host, over the NIC, in a pause)
 //     36 getRefused u32  a get was asked while suppress was not 0 (device; read only once the QP's gate count is 0)
-//     40..127 reserved
+//     40 gets u64     gets with data the hold path posted on the QP (device atomic add): a survivor's get toward a peer
+//                     it may have to restore DISARMs that peer (9.7 item 8, 9.10.4)
+//     48..127 reserved
 //   the ring: nEntries entries of 64 B, 256-byte aligned after the QP entries; position p lives in slot p mod nEntries.
 //   struct ncclGinRsLogEntry (64 B):
 //      0 pos u32     low 32 bits of the entry's position  } one 8-byte store: the entry's identity word. A slot whose
@@ -49,10 +51,10 @@
 //
 // ---- build-time opt-in (user decision 2026-10-12, (나)) ----
 // The device hold path exists only in programs compiled with -DNCCL_GIN_RESTORE_DEVICE (every translation unit of one
-// device link unit alike). Without it put, putValue and get load the side-table pointer and trap when it is not null, so
-// a program built without the macro stops at its first GIN operation in a process that asks for the restore (it never
-// posts outside the log). NCCL's own kernels are built without it; their contexts never get the pointer (only a user
-// transparent-recovery context does).
+// device link unit alike). Without it put, putValue and get load the side-table pointer, compare it with 0 and trap
+// (a predicated trap, no branch) when it is not null, so a program built without the macro stops at its first GIN
+// operation in a process that asks for the restore (it never posts outside the log). NCCL's own kernels are built without
+// it; their contexts never get the pointer (only a user transparent-recovery context does).
 //
 // ---- helper-socket message types ----
 // hk uses 1..10, the host branch 11..20 (rs_hold_api.h), the spare branch 32..47 (rs_spare_api.h); this branch 21..31
@@ -89,6 +91,7 @@ struct gdakiRsLogPause {
   int nqp = 0;            // QPs to the peer, in GIN-context order (gdakiRecForPeer)
   uint64_t msgs[NCCL_GIN_RECOVERY_MAX_QPS] = {};  // M per QP: request messages posted to the peer (the device's count)
   uint64_t ovf[NCCL_GIN_RECOVERY_MAX_QPS] = {};   // per QP: operations not logged (ring full), so far
+  uint64_t gets[NCCL_GIN_RECOVERY_MAX_QPS] = {};  // per QP: gets with data posted to the peer, so far (the get rule)
   bool logComplete = false;  // the peer's log has lost nothing since its last stable cut (the log's part of "armable")
   bool firstPause = false;   // this pause set the QPs' logOn: the peer's log starts at `head`
 };
@@ -116,6 +119,10 @@ static ncclResult_t gdakiRsLogReadHeadApp(struct gdakiRecHost* r, uint64_t* head
 // helper: per QP to `peer` (GIN-context order), the request messages posted (M). Exact only while the peer's QPs are
 // quiesced; otherwise a value the count has passed.
 static ncclResult_t gdakiRsLogReadMsgs(struct gdakiRecHost* r, int peer, uint64_t* msgs, int* nqp);
+// helper: per QP to `peer`, the suppress budget left (request messages the spare still holds back; 0 on a survivor and
+// once the spare's replay passed it: a pause answers BUSY while any is left), and the gets with data posted so far.
+static ncclResult_t gdakiRsLogReadSuppress(struct gdakiRecHost* r, int peer, uint64_t* left, int* nqp);
+static ncclResult_t gdakiRsLogReadGets(struct gdakiRecHost* r, int peer, uint64_t* gets, int* nqp);
 
 // any: every logged entry below this position is covered (max of the tail and the lowest cut over the QPs that log;
 // GDAKI_RS_POS_INF when no QP logs). ncclGinRestoreStep: step t is stable once this is >= the head read at Step(t).
@@ -125,9 +132,11 @@ static uint64_t gdakiRsLogCoveredUpTo(struct gdakiRecHost* r);
 static uint64_t gdakiRsStableStepOf(const uint64_t* steps, const uint64_t* heads, int n, uint64_t coveredUpTo,
                                     uint64_t none);
 
-// helper, periodic (the idle helper loop): overflow detection (a peer whose QP lost an operation since its last stable
-// cut is appended to *broke once: the caller DISARMs it, 9.5; its entries are covered until its next pause), the tail's
-// advance over covered entries (a slot still being written stops it until the next call), an occupancy sample.
+// helper, periodic (the idle helper loop): the peers to DISARM are appended to *broke, each once per cause: a peer whose
+// QP lost an operation since its last stable cut (overflow, 9.5; its entries are covered until its next pause), and a
+// peer toward which this rank posted a get since its last stable cut (the get rule, 9.7 item 8 and 9.10.4: the per-QP
+// get count moved past the count read at that cut's pause). The caller DISARMs them (gdakiHoldDisarm). Also the tail's
+// advance over covered entries (a slot still being written stops it until the next call) and an occupancy sample.
 static ncclResult_t gdakiRsLogPoll(struct gdakiRecHost* r, std::vector<int>* broke);
 
 // helper: whether the peer's log is complete since its last stable cut (no overflow seen since; false before the
@@ -147,8 +156,9 @@ struct gdakiRsLogOcc {
 };
 static void gdakiRsLogOccupancy(struct gdakiRecHost* r, struct gdakiRsLogOcc* out);
 
-// any: windows of this context's collComm deregistered since the context started (9.11.4 T5, 9.11.9 C2): when it
-// changes, every peer is DISARMed until its next stable checkpoint (a covered entry may name the window as a source).
+// any: windows of this context's collComm deregistered after the context started (their deregistration sequence is above
+// the context's registry sequence; 9.11.4 T5, 9.11.9 C2). On a change the caller DISARMs every peer until that peer's next
+// stable checkpoint whose pause comes after the change (an entry since a cut may name the window as a put's source).
 static uint64_t gdakiRsWinGoneCount(struct gdakiRecHost* r);
 
 // ---- work package 9 (provisional until its hand-back; the names and meaning are meant to stay) ----
