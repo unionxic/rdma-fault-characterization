@@ -2,9 +2,9 @@
 // 9.11.3 M2): the send-side log as one ring per rank, and the host functions the checkpoint (host branch, work package 5)
 // and the restore round (integration) call.
 //
-// Binding interface between branches. The block between the two "gin-restore (dev): log API" markers below is copied
-// byte for byte into src/transport/net_ib/gdaki/gin_host_gdaki.cc (the dev branch's region, early in the file so that
-// every later region sees it); build_rs_dev.sh `api` checks that the two are equal. The definitions are static functions
+// Binding interface between branches. The block between the two "gin-restore (dev): log API" markers below is to be
+// copied byte for byte into src/transport/net_ib/gdaki/gin_host_gdaki.cc with work package 6 (the dev branch's region,
+// early in the file so that every later region sees it); from then build_rs_dev.sh `api` checks that the two are equal. The definitions are static functions
 // of the same file, in the dev branch's regions fenced "gin-restore (dev): log, suppress and replay" (host) and
 // "gin-restore (dev): log, suppress and replay, pure" (no NCCL, unit-tested on the CPU). This file is not included
 // anywhere in the build; outside the block it only adds what a standalone syntax check needs.
@@ -36,8 +36,10 @@
 //   the ring: nEntries entries of 64 B, 256-byte aligned after the QP entries; position p lives in slot p mod nEntries.
 //   struct ncclGinRsLogEntry (64 B):
 //      0 pos u32     low 32 bits of the entry's position  } one 8-byte store: the entry's identity word. A slot whose
-//      4 qpKf u32    qp (bits 0..23) | kind (24..25)       } pos is not the position asked for holds an older entry or
-//                    | flags (26..31)                      } one still being written; the identity word never tears.
+//      4 qpKf u32    qp (bits 0..23) | kind (24..25)       } pos is not the position asked for, or whose kind is 0 (the
+//                    | flags (26..31)                      } ring starts zeroed), holds an older entry or one still being
+//                    written. The device writes the word with one 8-byte store; that a NIC read never sees it half
+//                    written is an inference (an aligned 8-byte store served from L2), not measured.
 //      8 csum u32    checksum of a put's data as posted (scheme in the flags; 0: off)
 //     12 sigWin u32  the signal's window: 0 = the context's signal table (an indexed signal), else the VA signal window's
 //                    number (ncclGinGdakiMemHandle::rsWinId)
