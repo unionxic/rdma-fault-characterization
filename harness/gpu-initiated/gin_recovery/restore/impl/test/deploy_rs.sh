@@ -7,7 +7,8 @@
 # program, no RDMA traffic.
 #   ~/rs-bundle/lib/rs/      the restore research libnccl (+ .so.2, .so links)   source RS_LIB_SRC,  md5 WANT_RS
 #   ~/rs-bundle/lib/rsp/     the restore production libnccl (+ links)            source RSP_LIB_SRC, md5 WANT_RSP
-#   ~/rs-bundle/rstest/      gin_rs (macro) and gin_rs_hk (the hk control)       out/<RSTOUT>/, md5 WANT_GINRS, WANT_GINRS_HK
+#   ~/rs-bundle/rstest/      gin_rs (macro), gin_rs_nomacro, gin_rs_hk (control) out/<RSTOUT>/, md5 WANT_GINRS,
+#                                                                                  WANT_GINRS_NOMACRO, WANT_GINRS_HK
 #   ~/rs-bundle/rscost/      gin_ts2 (macro) and gin_ts2_ff (cost drivers)       out/cost/,     md5 WANT_COST, WANT_COST_FF
 #   ~/rs-bundle/mr/ff/, mr/hold/   gin_mr against this layer's headers          out/mr/,       md5 WANT_MR_FF, WANT_MR_HOLD
 # An artifact is deployed only when its WANT_* is set, and then its source must exist and match (else the script refuses
@@ -26,6 +27,7 @@ ART=(
   "WANT_RS|${RS_LIB_SRC:-}|rs-bundle/lib/rs|libnccl.so.2.32.3|1"
   "WANT_RSP|${RSP_LIB_SRC:-}|rs-bundle/lib/rsp|libnccl.so.2.32.3|1"
   "WANT_GINRS|$T/$RSTOUT/gin_rs|rs-bundle/rstest|gin_rs|0"
+  "WANT_GINRS_NOMACRO|$T/$RSTOUT/gin_rs_nomacro|rs-bundle/rstest|gin_rs_nomacro|0"
   "WANT_GINRS_HK|$T/$RSTOUT/gin_rs_hk|rs-bundle/rstest|gin_rs_hk|0"
   "WANT_COST|$T/cost/gin_ts2|rs-bundle/rscost|gin_ts2|0"
   "WANT_COST_FF|$T/cost/gin_ts2_ff|rs-bundle/rscost|gin_ts2_ff|0"
@@ -64,7 +66,7 @@ for dir in "${DIRS[@]}"; do rsync -a "$HOME/$dir/" "$SUNNY_SSH:$dir/"; done
 AFTER_L=$(bash -c "$EXIST"); AFTER_S=$(ssh -n "$SUNNY_SSH" "$EXIST")
 NEWSUM="cd \$HOME && find ${DIRS[*]} -type f -print0 | sort -z | xargs -0 md5sum; find ${DIRS[*]} -type l | sort"
 L=$(bash -c "$NEWSUM"); S=$(ssh -n "$SUNNY_SSH" "$NEWSUM")
-LDD='cd $HOME/rs-bundle && for p in rstest/gin_rs:lib/rs rstest/gin_rs_hk:../gi-bundle/gin_ts2/hk rscost/gin_ts2:lib/rsp rscost/gin_ts2_ff:lib/rsp mr/ff/gin_mr:lib/rs mr/hold/gin_mr:lib/rs; do b=${p%%:*}; l=${p#*:}; [ -f "$b" ] && echo "$b: $(LD_LIBRARY_PATH=$HOME/rs-bundle/$l ldd $b | grep -E "nccl|not found" | tr -s " " | tr "\n" ";")"; done'
+LDD='cd $HOME/rs-bundle && for p in rstest/gin_rs:lib/rs rstest/gin_rs_nomacro:lib/rs rstest/gin_rs_hk:../gi-bundle/gin_ts2/hk rscost/gin_ts2:lib/rsp rscost/gin_ts2_ff:lib/rsp mr/ff/gin_mr:lib/rs mr/hold/gin_mr:lib/rs; do b=${p%%:*}; l=${p#*:}; [ -f "$b" ] && echo "$b: $(LD_LIBRARY_PATH=$HOME/rs-bundle/$l ldd $b | grep -E "nccl|not found" | tr -s " " | tr "\n" ";")"; done'
 {
   echo "== $(date '+%F %T') deploy (rain)"; echo "$L"
   echo "== sunny"; echo "$S"
