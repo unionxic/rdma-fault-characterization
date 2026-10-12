@@ -6,7 +6,19 @@
 
 표시: `[측정]` 원자료에서 확인, `[미확인]` 아직 확인하지 않음, `[추론]` 해석.
 
-## 지금 상태 (통합 뒤, 2026-10-12)
+## 지금 상태 (pilot P1과 고침 뒤, 2026-10-13)
+
+pilot P1을 통합 빌드(배포 i3: `rs_i3`, `rsp_i3`, 드라이버 `test/out/i3`)로 돌렸다(메인 세션; `results/20261013_pilot/`, `EXPERIMENT.md`
+12절의 2026-10-13 행). 장애 없음 셀 둘(`rs4_none`, `rs4_none_off`)은 깨끗했고 `[측정]`, 예비 프로세스가 있는 kill 셀 셋은 결함
+둘로 복원하지 못했다 `[측정]`. (1) 예비 프로세스가 SIGKILL 뒤 아직 정리 중인 원래 프로세스(상태 R, kill 뒤 2.8–4.4 ms)를 보고
+거절했고 짝은 그것을 마지막 답으로 받아 fallback했다. (2) 체크포인트 멈춤 중 kill 셀이 체크포인트 밖에서, 무장 전에 죽였다.
+고침(라이브러리와 실행기, 빌드됨, CPU 단위 시험과 채점기 자체 시험함, 클러스터에서 돌리지 않음): 활성화의 '나중에' 답과 짝의
+20 ms 재시도, 라이브러리 시험 스위치 `NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT`, 예비 프로세스 대기 60 s(`SPARE_WAIT_MS`), 이어 하는
+hold, 회귀 셀의 QUERY_QP 상한(`RS_QUERY_CAP_REG`), 둘째 배포 묶음(`RS_SET=i4`)과 hkp 배포. 고친 라이브러리는 `rs_i4b`, `rsp_i4b`
+(md5는 아래 명령), 드라이버는 i3 그대로(`gin_rs.cu`는 바뀌지 않음, 헤더 요약 `6a1a3f29` 그대로). 다음: i4 배포, 새 결과 폴더로
+P1–P3과 비용 pilot을 다시.
+
+### 통합 뒤 상태 (2026-10-12, 그때의 글)
 
 복원 라이브러리 계층(작업 묶음 1–10)을 네 갈래에서 하나로 합쳤다(`EXPERIMENT.md` 12절의 통합 행, `impl/rs_layer.diff`).
 라이브러리와 시험 프로그램은 빌드만 됐고 GPU에서 돌리지 않았다("빌드됨"). 순수 함수는 CPU 단위 시험을 했고("시험함"),
@@ -33,9 +45,14 @@
   (`GINRS spare_ready`) 뒤 rank 3의 100단계 이상 줄이 rain에 닿으면 500 µs 뒤에 기록한 PID로 rank 3을 kill하고 되살린다. 생존 rank의 대기가 풀리지 않고(`wait_held`), 모든 rank의 데이터가 기준과 같고(`data_equal`), 생존 rank는
   다시 실행하지 않고(`no_reexec`), 되살린 rank가 끝까지 가며(`revived_done`), 억제 수가 통로마다 맞고
   (`suppress_exact`), 복원 시간(`restore_time`).
-- `rs4_kill3_ckpt` (@rs, 통합 뒤): 예비 프로세스가 준비된 뒤 무장되어, rank 3이 다음 체크포인트 단계(단계 % 20 = 0으로
-  가정)의 hook에 들어간 뒤 300 µs에 자기에게 SIGKILL(입력 멈춤 중). kill 앞에 확정된 체크포인트에서 복원(`ckpt_kill`).
-  pilot은 그 단계가 실제로 체크포인트를 찍는지와 멈춤이 300 µs보다 긴지를 라이브러리의 체크포인트 줄로 확인한다.
+- `rs4_kill3_ckpt` (@rs, 통합 뒤): kill 앞에 확정된 체크포인트에서 복원(`ckpt_kill`). 2026-10-13부터 kill은 라이브러리의 연구
+  빌드 시험 스위치 `NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT=<노드의 무장 파일>:300`이 한다(pilot P1에서 드라이버의 자기 kill은
+  "단계 % 20 = 0"이라는 틀린 가정 때문에 체크포인트 밖, 무장 전이었음). 실행기는 출발 문이 열린 뒤 모든 생존 rank가
+  `rank 3 armed at its stable checkpoint K`를 찍으면 무장 파일을 만들고, rank 3은 다음 체크포인트의 멈춤 요청(모든 상대에게
+  CKPT_PAUSE) 300 µs 뒤에 `test switch NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT: dying 300 us after the pause request of checkpoint K'`를
+  찍고 스스로 SIGKILL한다(그 줄의 수신 시각이 kill 시각, `_kill.out` 없음). pilot은 생존 rank의 `input pause for rank 3's
+  checkpoint K' ended (a hold of that rank took its gates)` 줄(`die_in_pause`, 3이면 세 생존 rank 모두 멈춤 안)과 복원한
+  체크포인트가 K'보다 앞의 확정된 것인지(`ckpt_before`)를 본다.
 - `rs4_kill1` (@rs, 통합 뒤): rank 1(rank 3과 같은 GPU) kill도 같은 결과(`kill_other`).
 - 예비 프로세스가 없는 경우는 두 셀로 나눈다(2026-10-12 메인 세션 결정; 앞의 초안 셀 하나를 대신함).
   - `rs4_kill3_nospare` (@rs): 예비 프로세스를 등록하지 않음. 그 rank는 무장되지 않아 hk와 같은 fail-fast다: hold 시작 줄이
@@ -91,7 +108,15 @@
   단계 사이 쉼 5000 µs. pilot에서 예비 프로세스의 준비 시간과 kill이 traffic 안에 떨어지는지 보고 고정한다.
 - QP 감시: 6절은 10 ms다. 문맥 4개 × 상대 3이면 rank마다 초당 약 1200번의 QUERY_QP라 rain(rank 둘)에서 한 시행에
   초안 상한 20 000을 넘을 수 있다 `[추론]`. pilot hold에서는 넘으면 `qp_over.txt`에 적기만 하고, pilot이 100 ms로
-  바꿀지, 상한을 바꿀지, 시행을 짧게 할지를 정한다(`QPWATCH` 변수).
+  바꿀지, 상한을 바꿀지, 시행을 짧게 할지를 정한다(`QPWATCH` 변수). pilot P1–P2(2026-10-13): 복원 셀은 20 000 안이었고,
+  회귀 셀 넷(gin-remaining의 `run_mr_hr.sh`, 시행마다 약 17 s)은 시행마다 90 228–107 616 늘렸다 `[측정: qp_over.txt]`. 그래서
+  회귀 셀(kind reg)만 `RS_QUERY_CAP_REG`(기본 150 000)를 쓰고 나머지는 `RS_QUERY_CAP`(20 000) 그대로다(`hold_rs.sh`).
+- 시행 한도(`fits`): 복원 시행의 한도 `RS_TRIAL_BOUND_S`(기본 300 s). pilot P1에서 예비 프로세스가 활성화되지 않은 시행은
+  201.4–201.5 s였다(예비 프로세스가 감시 한도 200 s까지 기다림) `[측정]`. 2026-10-13부터 예비 프로세스는 활성화를 60 s만
+  기다린다(`SPARE_WAIT_MS`; 출발 문 뒤 kill은 준비 줄 뒤 몇 초 안, hold 시한은 20 s). pilot의 벽시계 시간(meta `wall_s`)을 보고
+  한도를 정한다.
+- 체크포인트 멈춤 중 kill의 무장 대기: `ARM_WAIT_S`(기본 60 s) 안에 모든 생존 rank의 무장 줄이 없으면 무장 파일을 만들지 않고
+  (kill 없음, 장애 미적용으로 빠짐) meta에 `arm_wait=timeout`.
 - 판정식의 k/n(≥ 9/10 등): 초안 그대로 두고 pilot의 유효 시행 수를 보고 사전 등록에서 고정한다.
 
 ## 사용자 보류 중인 overhead 예산 (사용자 확인 대기)
@@ -104,7 +129,39 @@
 - 4 rank에서 rank마다 더하는 메모리: 64 MiB 이하(rain BAR1의 4분의 1). 설명만 적는 로그에서 항목 4096이면 약 3.0 MiB다
   (9.5절) `[추론]`.
 
-## 메인 세션 명령 (차례대로)
+## 메인 세션 명령: 둘째 배포 묶음 i4와 pilot 다시 하기 (2026-10-13)
+
+변수는 아래 절과 같다(`T`, `R`, `SUNNY_SSH`, `I` = 세션 스크래치의 `agent_rs_int`), `G`는 세션 스크래치의 `agent_gd/gin_hk`(gpu-detect
+트리, 읽기만). 첫 묶음(i3, `~/rs-bundle/{lib,rstest,rscost,mr}`)은 건드리지 않는다: 새 묶음은 `~/rs-bundle/i4/` 아래에만 생기고,
+`deploy_rs.sh`는 대상이 있으면 거절하며 첫 묶음을 포함한 모든 기존 묶음 파일을 앞뒤 md5로 비교한다. 라이브러리는 고친 빌드
+(`rs_i4b`, `rsp_i4b`; 같은 소스의 첫 빌드 `rs_i4`는 로그 글 하나가 달라 쓰지 않음), hkp는 gpu-detect의 운영 빌드(비용 가족의
+`ffb-hk` 팔; `~/gi-bundle/gin_ts2/hkp`가 없어 COSTPILOT-rain이 그 팔에서 멈췄음), 드라이버는 i3 그대로다.
+
+```
+# 1. 배포 (새 디렉터리 ~/rs-bundle/i4/... 만; 대상이 있으면 거절)
+RS_SET=i4 RS_LIB_SRC=$I/out/rs_i4b/libnccl.so.2.32.3 RSP_LIB_SRC=$I/out/rsp_i4b/libnccl.so.2.32.3 \
+  HKP_LIB_SRC=$G/build-hkp/lib/libnccl.so.2.32.3 \
+  WANT_RS=22599ef3c34007445ca1a6961b3e082c WANT_RSP=be91b270155005827bfa0e79c527165c \
+  WANT_HKP=84209c03a497bd28206210205bfc6cf5 \
+  WANT_GINRS=303e812dfd4352769bcac89c8f9451c8 WANT_GINRS_NOMACRO=0f0826e6546cfdc927df9a9e6b9dc64a \
+  WANT_GINRS_HK=4ec9b84640dc584c1a86f8095023ef33 WANT_COST=dd44e14ef4af4e5a1200706965b1c771 \
+  WANT_COST_FF=5e4db845a693f65fd18341fa2e30eb7d WANT_MR_FF=41f3ce3a14923c37d943825034d6467a \
+  WANT_MR_HOLD=169f59c55381c5aa5f6040afd43ba672 RSTOUT=i3 bash $T/deploy_rs.sh $I/deploy_check_i4.txt
+grep -E "MISMATCH|CHANGED|not found" $I/deploy_check_i4.txt     # 아무 줄도 없어야 함
+# 2. 자체 시험 (CPU, 클러스터 없음)
+python3 $T/selftest_rs.py
+# 3. pilot 다시 (새 결과 폴더: 앞 pilot 폴더의 같은 시행은 "already done"으로 건너뛰므로 섞지 않음)
+RS_SET=i4 bash $T/chain_rs.sh $R/20261013_pilot_i4 P1 P2 P3 COSTPILOT-rain COSTPILOT-sunny
+#    한 hold가 840 s 안에 끝나지 않아 skipped.txt에 줄이 생기면 같은 hold를 같은 폴더로 다시(남은 시행만 돎)
+RS_SET=i4 bash $T/chain_rs.sh $R/20261013_pilot_i4 P1
+python3 $T/rows_rs.py $R/20261013_pilot_i4      # 열을 읽기만(판정 아님): die_ckpt, die_in_pause, later_n, later_ms
+```
+
+pilot에서 볼 것(고침의 확인): kill 셀마다 예비 프로세스의 `activation answered 'later'` 줄과 활성화 줄, 짝의 `its spare activated
+(..., X ms after this rank's hold start), N 'later' answers over Y ms` 줄(N과 Y: SIGKILL 뒤 원래 프로세스가 사라지기까지),
+복원 시간, `rs4_kill3_ckpt`의 `die_in_pause`와 `ckpt_before`, 예비 프로세스가 활성화되지 않은 시행의 벽시계 시간(약 60 s로 줄었는지).
+
+## 메인 세션 명령 (차례대로; 통합 뒤 첫 배포 i3, 2026-10-12에 쓴 글)
 
 변수: `T`는 이 폴더(`impl/test`)의 절대 경로, `R`은 결과 폴더, `SUNNY_SSH`는 관리망 설정 파일에서(저장소에 적지 않음),
 `I`는 세션 스크래치의 `agent_rs_int`. 통합 빌드(2026-10-12): 라이브러리는 `../build_rs.sh`의 `rs_i3`, `rsp_i3`, 시험 드라이버는
