@@ -413,6 +413,12 @@ static void testLocal() {
     {"round cap stopped recovery", [](struct gdakiRsLocalIn& x) { x.escalated = true; }},
     {"measurement mode is on (NCCL_GIN_RESTORE_LOG_MEASURE)", [](struct gdakiRsLocalIn& x) { x.logMeasure = true; }},
     {"program not built with NCCL_GIN_RESTORE_DEVICE", [](struct gdakiRsLocalIn& x) { x.deviceBuilt = false; }},
+    {"atomic capability is below IBV_ATOMIC_HCA (atomic_cap 0)", [](struct gdakiRsLocalIn& x) { x.atomicCap = 0; }},
+    {"NIC atomics of the restore are not ready on this rank (the self-test's fetch-and-add",
+     [](struct gdakiRsLocalIn& x) {
+       x.atomicOk = false;
+       x.atomicWhy = "the self-test's fetch-and-add of 1 to 0 read 0 then 0x100000000000000 (not host byte order?)";
+     }},
   };
   const int nCases = (int)(sizeof(cases) / sizeof(cases[0]));
   for (int i = 0; i < nCases; i++) {
@@ -425,6 +431,13 @@ static void testLocal() {
     CHECK(!namesRank(why));  // the local text names no rank number (the decision adds "rank p: "); the told text
                              // used here names none either (a real one may name the peer whose word was raised)
     CHECK(noScorerPhrase(why));
+  }
+  {  // option (b): an HCA whose atomics are atomic beyond the HCA (IBV_ATOMIC_GLOB, 2) is accepted too
+    struct gdakiRsLocalIn x = ok;
+    x.atomicCap = 2;
+    CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == GDAKI_RS_L_OK);
+    x.atomicCap = GDAKI_RS_ATOMIC_HCA;
+    CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == GDAKI_RS_L_OK);
   }
   {  // all at once: the first in the order
     struct gdakiRsLocalIn x = ok;
@@ -1606,7 +1619,7 @@ static void testLogX() {
 // The import plan against a direct application of every entry in order (the memory the spare must end with).
 static void testImportPlan() {
   std::mt19937_64 rng(93);
-  int plans = 0;
+  int plans = 0, sigChecks = 0, sigTampered = 0;
   const uint64_t nonce = 0x1234567890ull;
   for (int it = 0; it < 300; it++) {
     const int nranks = 3 + (int)(rng() % 3), me = (int)(rng() % nranks), nctx = 1 + (int)(rng() % 2);
@@ -1674,6 +1687,48 @@ static void testImportPlan() {
       memcpy(got[s.win].data() + s.off, &v, 8);
     }
     CHECK(got == mem);
+    // option (b): the CPU-side check of the signal additions the import posts as NIC atomics (an independent second pass
+    // over the exports) passes and gives the entries' total; a plan whose additions differ in any way fails it
+    {
+      uint64_t want = 0, tot = ~0ull;
+      for (const auto& ex : exports) {
+        if (ex.empty()) continue;
+        struct gdakiRsLogXParsed px;
+        char pw[200];
+        CHECK(gdakiRsLogXParse(ex.data(), ex.size(), &px, pw, sizeof(pw)));
+        for (const auto& itm : px.items)
+          if (ncclGinRsEntryFlags(itm.e.qpKf) & NCCL_GIN_RS_LOGF_SIGNAL) want += itm.e.sigVal;
+      }
+      char cw[256];
+      CHECK(gdakiRsImportSigCheck(exports, plan, &tot, cw, sizeof(cw)) && tot == want);
+      sigChecks++;
+      if (!plan.sigs.empty()) {
+        const size_t k = (size_t)(rng() % plan.sigs.size());
+        struct gdakiRsImportPlan t = plan;  // one addition off by one
+        t.sigs[k].add++;
+        CHECK(!gdakiRsImportSigCheck(exports, t, &tot, cw, sizeof(cw)));
+        t = plan;  // one target dropped (and its count)
+        t.sigAdds -= 1;
+        t.sigs.erase(t.sigs.begin() + (long)k);
+        CHECK(!gdakiRsImportSigCheck(exports, t, &tot, cw, sizeof(cw)));
+        t = plan;  // one target split in two (same total, same count of entries)
+        t.sigs.insert(t.sigs.begin() + (long)k, t.sigs[k]);
+        t.sigs[k].add = 0;
+        CHECK(!gdakiRsImportSigCheck(exports, t, &tot, cw, sizeof(cw)));
+        t = plan;  // one target moved to another word (same total)
+        t.sigs[k].off += 8;
+        CHECK(!gdakiRsImportSigCheck(exports, t, &tot, cw, sizeof(cw)));
+        t = plan;  // two targets' additions swapped (same total; caught when they differ)
+        if (plan.sigs.size() > 1 && plan.sigs[0].add != plan.sigs[1].add) {
+          std::swap(t.sigs[0].add, t.sigs[1].add);
+          CHECK(!gdakiRsImportSigCheck(exports, t, &tot, cw, sizeof(cw)));
+        }
+        t = plan;  // the count of signal entries
+        t.sigAdds++;
+        CHECK(!gdakiRsImportSigCheck(exports, t, &tot, cw, sizeof(cw)));
+        sigTampered++;
+      }
+    }
     for (size_t i = 1; i < plan.sigs.size(); i++)  // one addition per target, in target order
       CHECK(plan.sigs[i - 1].win < plan.sigs[i].win ||
             (plan.sigs[i - 1].win == plan.sigs[i].win && plan.sigs[i - 1].off < plan.sigs[i].off));
@@ -1775,8 +1830,9 @@ static void testImportPlan() {
     CHECK(!gdakiRsImportPlanOf(me, kTestCkpt, inc, nonce, nqpOf.data(), nranks, pp.data(), (int)pp.size(), exports, dup.data(), 2,
                                sigBytes, &pl, w, sizeof(w)));
   }
-  CHECK(plans == 300);
-  printf("import plan: %d plans equal to the direct application\n", plans);
+  CHECK(plans == 300 && sigChecks == 300 && sigTampered > 250);
+  printf("import plan: %d plans equal to the direct application; signal sum check %d, refused tampered plans %d\n", plans,
+         sigChecks, sigTampered);
 }
 
 int main() {
