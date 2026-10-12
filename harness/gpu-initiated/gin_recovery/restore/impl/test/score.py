@@ -161,24 +161,27 @@ def evaluate_pred(p, scored, PLANNED):
 
 
 def cost_eval(p, rows, cells):
-    """9.15.6's 6-vs-6 reading per receiving node; returns (verdict, table lines)."""
-    fam_name = p["cells"].split(":", 1)[1].strip()
+    """9.15.6's 6-vs-6 reading per receiving node; returns (verdict, table lines). cells: cost:<family>[:<arm>,<arm>...]
+    (the arms this prediction reads, each against the family's base arm; none named: every arm)"""
+    parts = [x.strip() for x in p["cells"].split(":")]
+    fam_name = parts[1]
     rule = p["acceptance"].split("rule=", 1)[1].strip()
     fam = cells["cost"]["families"][fam_name]
     base = fam["base"]
+    shown = [a for a in fam["arms"] if len(parts) < 3 or a == base or a in parts[2].split(",")]
     judged = set(fam.get("judged", fam["arms"]))  # the arms the not-separated rule judges (the others are reported)
     lines, short, sep = [], False, False
     for node in cells["cost"]["nodes"]:
         for m in fam["metrics"]:
             vals = {}
-            for a in fam["arms"]:
+            for a in shown:
                 v = [float(r["value"]) for r in rows if r["runner"] == "cost" and r["status"] == "scored"
                      and r["metric"] == m and r["arm"] == a and r["rx"] == node]
                 vals[a] = sorted(v)
             if any(len(v) < 5 for v in vals.values()):
                 short = True
             bv = vals.get(base, [])
-            for a in fam["arms"]:
+            for a in shown:
                 v = vals[a]
                 if not v:
                     lines.append("| %s | %s | %s | 0 | - | - | - |" % (node, m, a))
@@ -419,12 +422,10 @@ def _all_cost(d, ffb_sep=False):
         for k in range(1, 7):
             for m in ("lat4k", "lat256k", "bw256k"):
                 base = {"lat4k": 10.5, "lat256k": 38.9, "bw256k": 6.4}[m]
-                for i, a in enumerate(("off", "on", "sampled", "full")):
+                for i, a in enumerate(("off", "ua-hold", "on", "sampled", "full")):
                     _cost(d, m, a, node, k, round(base + 0.01 * i + 0.001 * k, 4))
             for m in ("lat4k", "lat256k"):
                 base = {"lat4k": 10.5, "lat256k": 38.9}[m]
-                for a in ("ua-ff", "ua-hold"):
-                    _cost(d, m, a, node, k, round(base + 0.001 * k, 4))
                 _cost(d, m, "ffb-hk", node, k, round(base + 0.001 * k, 4))
                 _cost(d, m, "ffb-rs", node, k, round(base + (1.0 if ffb_sep else 0.001) * k, 4))
                 _cost(d, m, "ffb-rs-macro", node, k, round(base + 0.5 + 0.001 * k, 4))  # separates: reported only
