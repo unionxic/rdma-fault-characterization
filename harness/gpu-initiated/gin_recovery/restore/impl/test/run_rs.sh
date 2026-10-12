@@ -23,14 +23,31 @@
 # its own watchdog (or an init error): bounded, harmless.
 #
 # usage: run_rs.sh <trial-tag> <logdir>
-# env: SUNNY_SSH (required), N (4), CELL, LIB (rs: $HOME/rs-bundle/lib/rs and $HOME/rs-bundle/rstest/gin_rs; hk: gpu-detect's
-#   deployed $HOME/gi-bundle/gin_ts2/hk, read only, and $HOME/rs-bundle/rstest/gin_rs_hk), STEPS (600), BYTES (4096),
+# env: SUNNY_SSH (required), N (4), CELL, RS_SET (empty: today's deployment, $HOME/rs-bundle/{lib/rs,lib/rsp,rstest};
+#   a name: the deployment set $HOME/rs-bundle/<RS_SET>/{lib/rs,lib/rsp,rstest}, deploy_rs.sh with the same RS_SET),
+#   LIB (rs: <set>/lib/rs and <set>/rstest/gin_rs; hk: gpu-detect's deployed $HOME/gi-bundle/gin_ts2/hk, read only, and
+#   <set>/rstest/gin_rs_hk), STEPS (600), BYTES (4096),
 #   STEP_GAP_US (5000: pacing between steps, so a kill lands inside the traffic), WATCHDOG_S (90; 200 in kill cells with
 #   a spare),
 #   KILL_RANK (the rank to kill; empty = none). The traffic kill: by its recorded PID, KILL_DELAY_US (500) after KR's first
 #   stamped line of a step >= KILL_AT_STEP (100) that arrived after the spare was ready (fallback: KILL_DELAY_MS 30000).
-#   KILL_IN_HOOK=1 instead: the checkpoint-pause kill, GIN_RS_DIE_IN_STEP=<CKPT_STEPS>:<KILL_HOOK_US (300)> armed by a
-#   node-local file the runner creates once the spare is ready (a self-SIGKILL inside the next checkpoint hook).
+#   KILL_IN_HOOK=1 instead: the checkpoint-pause kill (2026-10-13, after the pilot P1): the library's research-build test
+#   switch NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT=<node-local arm file>:<KILL_HOOK_US (300)>, given to KR only: once the arm file
+#   exists and KR has a checkpoint it sent as armable and stable, KR SIGKILLs itself KILL_HOOK_US after the pause request
+#   (CKPT_PAUSE to every peer) of its next checkpoint, with one WARN line ("test switch NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT:
+#   dying ..."), whose receipt time is the kill time (no _kill.out). The arm file is created once the spare is ready (or
+#   its wait ran out) AND every survivor printed "GIN/RS: rank <s>: rank <KR> armed at its stable checkpoint <k>" (the
+#   library's line when KR's CKPT_STABLE marked KR armed there; bounded by ARM_WAIT_S, 60; none: no arm file, no kill,
+#   meta arm_wait=timeout). The driver's own GIN_RS_DIE_IN_STEP (still in gin_rs.cu) is not used any more: it assumed a
+#   checkpoint at every step divisible by CKPT_STEPS, while the library takes checkpoint 0 at step 0 and the next ones
+#   CKPT_STEPS steps after the previous one became stable (the pilot P1, EXPERIMENT.md 12).
+#   SPARE_WAIT_MS (60000): the spare's NCCL_GIN_RESTORE_SPARE_WAIT_MS (the library's default is one hour). A spare never
+#   activated ends on its own that long after its ready line (its Resume returns an error; the driver aborts and exits)
+#   instead of at its 200 s watchdog. Safe: the start gate holds the live ranks until the spare is ready, so the kill
+#   comes about 1-3 s after the ready line (the traffic kill at step >= 100 of 5 ms steps; the checkpoint kill after the
+#   first stable checkpoint, about 1 s after the steps begin, and 20 steps more), and a held rank falls back at its hold
+#   deadline (NCCL_GIN_RESTORE_MS 20 000 ms; LATER answers are retried until then): an activation comes at most about
+#   23 s after the ready line, well inside 60 s.
 #   SPARE (1 = a spare for KILL_RANK, started after KR's Resume line, replaying KR's init transcript; its address is
 #   registered with KR: NCCL_GIN_RESTORE_SPARE_ADDR), SPARE_KILL_FIRST (1 with SPARE=1: the spare-absent cell, the spare is
 #   SIGKILLed by its recorded PID once ready, before KR dies), SPARE_ADDR (1 with SPARE=0: an address registered with no
@@ -48,8 +65,11 @@
 # Restore variable names (fixed by the dev, host and spare branches: impl/rs_spare_api.h, rs_hold_api.h, rs_ckpt_api.h;
 #   the spare branch's rs_layer_spare.diff): NCCL_GIN_RESTORE_RECORD (each hold rank's init transcript, node-local),
 #   NCCL_GIN_RESTORE_REPLAY (the spare replays its rank's transcript), NCCL_GIN_RESTORE_SPARE, NCCL_GIN_RESTORE_SPARE_PORT
-#   (the spare's activation port), NCCL_GIN_RESTORE_SPARE_ADDR (given to the original rank only), NCCL_GIN_RESTORE_CKPT_STEPS.
-# files in <logdir>: <stem>_r<r>.kv/.log, <stem>_spare.kv/.log, <stem>_kill.out, <stem>_meta.txt (stem = <cell>_<lib>_<tag>)
+#   (the spare's activation port), NCCL_GIN_RESTORE_SPARE_ADDR (given to the original rank only), NCCL_GIN_RESTORE_CKPT_STEPS,
+#   NCCL_GIN_RESTORE_SPARE_WAIT_MS (the spare's activation wait), NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT (the test switch above).
+# files in <logdir>: <stem>_r<r>.kv/.log, <stem>_spare.kv/.log, <stem>_kill.out, <stem>_meta.txt (stem = <cell>_<lib>_<tag>);
+# the meta line also names the deployment (rs_set, or -) and the md5 of the library and the driver this trial used on rain
+# (lib_md5, driver_md5; read after the trial).
 set -u
 TRIAL=${1:?trial tag}; LOGDIR=${2:?logdir}
 # the caller's NCCL_ and GIN_ variables are dropped: the processes get exactly NENV below (R<r>_ENV/EXTRA_ENV are kept)
@@ -59,16 +79,20 @@ SUNNY_HOST=${SUNNY_SSH#*@}
 N=${N:-4}
 [ "$N" = 4 ] || { echo "run_rs.sh is the 4-rank workload (N=4)" >&2; exit 1; }
 LIB=${LIB:-rs}
+RS_SET=${RS_SET:-}
+case "$RS_SET" in ""|[A-Za-z0-9]*) ;; *) echo "RS_SET must be a plain name" >&2; exit 1 ;; esac
+case "$RS_SET" in */*|*..*) echo "RS_SET must be a plain name" >&2; exit 1 ;; esac
+RSB=$HOME/rs-bundle${RS_SET:+/$RS_SET}   # the deployment set (deploy_rs.sh with the same RS_SET)
 # the driver build each cell names (cells_rs.json "driver"): gin_rs (macro), gin_rs_nomacro (this layer's headers, no
 # macro), gin_rs_hk (hk headers); the default follows the library
 case "$LIB" in
-  rs|rsp) LIBDIR=$HOME/rs-bundle/lib/$LIB; DRIVER=${DRIVER:-gin_rs} ;;
+  rs|rsp) LIBDIR=$RSB/lib/$LIB; DRIVER=${DRIVER:-gin_rs} ;;
   hk) LIBDIR=$HOME/gi-bundle/gin_ts2/hk; DRIVER=${DRIVER:-gin_rs_hk} ;;   # read only
   *) echo "unknown LIB $LIB" >&2; exit 1 ;;
 esac
 case "$LIB:$DRIVER" in rs:gin_rs|rs:gin_rs_nomacro|rsp:gin_rs|rsp:gin_rs_nomacro|hk:gin_rs_hk) ;;
   *) echo "driver $DRIVER does not belong with library $LIB" >&2; exit 1 ;; esac
-RSBIN=$HOME/rs-bundle/rstest/$DRIVER
+RSBIN=$RSB/rstest/$DRIVER
 BINNAME=$(basename "$RSBIN")
 STEPS=${STEPS:-600}; BYTES=${BYTES:-4096}; STEP_GAP_US=${STEP_GAP_US:-5000}
 KILL_AT_STEP=${KILL_AT_STEP:-100}; KILL_DELAY_US=${KILL_DELAY_US:-500}
@@ -76,7 +100,8 @@ FAULT_POLICY=${FAULT_POLICY:-hold}; RESTORE=${RESTORE:-1}; SYM_GIN=${SYM_GIN:-0}
 RMA_DISABLE=${RMA_DISABLE:-1}; NUM_RMA_CTX=${NUM_RMA_CTX:-0}; NCONN=${NCONN:-1}; QPWATCH=${QPWATCH:-10}
 RESTORE_MS=${RESTORE_MS:-20000}; RESUME_MS=${RESUME_MS:-30000}; LOG_MEASURE=${LOG_MEASURE:-0}; CHECKSUM=${CHECKSUM:-off}
 KILL_RANK=${KILL_RANK:-}; KILL_DELAY_MS=${KILL_DELAY_MS:-30000}; KILL_IN_HOOK=${KILL_IN_HOOK:-0}; KILL_HOOK_US=${KILL_HOOK_US:-300}
-SPARE=${SPARE:-0}
+ARM_WAIT_S=${ARM_WAIT_S:-60}
+SPARE=${SPARE:-0}; SPARE_WAIT_MS=${SPARE_WAIT_MS:-60000}
 # the processes' own bound: kill cells with a spare also wait at the start gate (up to 2 x 60 s for the spare)
 WATCHDOG_S=${WATCHDOG_S:-$( [ -n "$KILL_RANK" ] && [ "$SPARE" = 1 ] && echo 200 || echo 90 )}
 [ -x "$RSBIN" ] && [ -f "$LIBDIR/libnccl.so.2" ] || { echo "missing $RSBIN or $LIBDIR/libnccl.so.2 on rain" >&2; exit 1; }
@@ -136,9 +161,9 @@ renv() { local v="R${1}_ENV"; echo "${!v:-}"; }
 npath() { [ "$1" = sunny ] && echo "$RT.$2" || echo "$WORK/$2"; }
 rec_env() { [ "$FAULT_POLICY" = hold ] && echo "NCCL_GIN_RESTORE_RECORD=$(npath "$(node_of "$1")" "r$1.rec")"; }
 sa_env() { [ -n "$SADDR_ENV" ] && [ "$1" = "$KILL_RANK" ] && echo "$SADDR_ENV"; }  # only the rank that may be revived
-die_env() {  # the checkpoint-pause kill: armed by a node-local file the runner creates once the spare is ready
+die_env() {  # the checkpoint-pause kill: the library's test switch, armed by a node-local file (see the header)
   [ -n "$KILL_RANK" ] && [ "$1" = "$KILL_RANK" ] && [ "$KILL_IN_HOOK" = 1 ] &&
-    echo "GIN_RS_DIE_IN_STEP=${CKPT_STEPS:-20}:$KILL_HOOK_US GIN_RS_ARM_FILE=$(npath "$(node_of "$1")" arm)"
+    echo "NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT=$(npath "$(node_of "$1")" arm):$KILL_HOOK_US"
 }
 # wait_line <file> <regex with one group or none> <min receipt time> <min group value> <timeout s>: prints the receipt time
 # of the first stamped line that matches with time >= min and group >= min value; nothing on timeout
@@ -266,7 +291,7 @@ if [ -n "$SPORT" ] && [ "$SPARE" = 1 ]; then
   KR=$KILL_RANK; knode=$(node_of "$KR")
   if [ -n "$(wait_line "$WORK/r$KR.log" "GINRS resume rank=$KR " 0 0 60)" ]; then
     SPRE=""; [ "${SPARE_STRACE:-0}" = 1 ] && SPRE=$(strace_pre "$knode" spare)
-    launch spare "$KR" "$knode" "NCCL_GIN_RESTORE_SPARE=$KR NCCL_GIN_RESTORE_SPARE_PORT=$SPORT NCCL_GIN_RESTORE_REPLAY=$(npath "$knode" "r$KR.rec")" "$SPRE"
+    launch spare "$KR" "$knode" "NCCL_GIN_RESTORE_SPARE=$KR NCCL_GIN_RESTORE_SPARE_PORT=$SPORT NCCL_GIN_RESTORE_SPARE_WAIT_MS=$SPARE_WAIT_MS NCCL_GIN_RESTORE_REPLAY=$(npath "$knode" "r$KR.rec")" "$SPRE"
     SPARE_ON=1
     # ready: its init replay is done and its Resume waits for the activation (bounded; a slow spare is a pilot finding)
     T_READY=$(wait_line "$WORK/spare.log" "GINRS spare_ready rank=$KR " 0 0 60); T_READY=${T_READY:-0}
@@ -274,8 +299,20 @@ if [ -n "$SPORT" ] && [ "$SPARE" = 1 ]; then
   fi
 fi
 [ -n "$GATE" ] && touch "$GATE"   # open the start gate: the spare is ready, or its waits ran out (meta spare_ready says which)
-if [ -n "$KILL_RANK" ] && [ "$KILL_IN_HOOK" = 1 ]; then  # arm the in-hook kill once the spare is ready (or at once)
-  if [ "$(node_of "$KILL_RANK")" = sunny ]; then ssh -n "$SUNNY_SSH" "touch $RT.arm"; else touch "$WORK/arm"; fi
+ARM_WAIT=-; T_ARMED=0
+if [ -n "$KILL_RANK" ] && [ "$KILL_IN_HOOK" = 1 ]; then
+  # arm the checkpoint-pause kill once every survivor printed the library's line that KR is armed at a stable checkpoint
+  # (after the start gate: the spare is ready, or its waits ran out); KR then dies in its next checkpoint's pause
+  ARM_WAIT=ok; aend=$(awk -v s="$ARM_WAIT_S" 'BEGIN{printf "%.3f", s}')
+  for ((s = 0; s < N; s++)); do
+    [ "$s" = "$KILL_RANK" ] && continue
+    t=$(wait_line "$WORK/r$s.log" "GIN/RS: rank $s: rank $KILL_RANK armed at its stable checkpoint [0-9]+" 0 0 "$aend")
+    if [ -z "$t" ]; then ARM_WAIT=timeout; break; fi
+    T_ARMED=$(awk -v a="$T_ARMED" -v b="$t" 'BEGIN{print (b > a ? b : a)}')
+  done
+  if [ "$ARM_WAIT" = ok ]; then
+    if [ "$(node_of "$KILL_RANK")" = sunny ]; then ssh -n "$SUNNY_SSH" "touch $RT.arm"; else touch "$WORK/arm"; fi
+  fi
 fi
 
 KILLER=""; RECORDER=""
@@ -334,6 +371,9 @@ python3 -c 'import sys; b=bytearray(open(sys.argv[1],\"rb\").read()); b[int(sys.
   fi
   if [ "$nnode" = sunny ]; then ssh -n "$SUNNY_SSH" "rm -f $cut $fld"; else rm -f "$cut" "$fld"; fi
 fi
+# what this trial ran on rain (read after the trial, so the reads do not touch its timing)
+LIB_MD5=$(md5sum < "$LIBDIR/libnccl.so.2" 2>/dev/null | cut -c1-32); LIB_MD5=${LIB_MD5:-none}
+DRIVER_MD5=$(md5sum < "$RSBIN" 2>/dev/null | cut -c1-32); DRIVER_MD5=${DRIVER_MD5:-none}
 # the sunny-side kv and exit codes
 names="r0 r1 r2 r3"; [ "$SPARE_ON" = 1 ] && names="$names spare"; names="$names$NEGS"
 for name in $names; do
@@ -360,9 +400,10 @@ rcs=""; for name in $names; do rcs="$rcs ${name}rc=$(tr -d '\n' < "$WORK/$name.r
 echo "cell=${CELL:-} lib=$LIB n=$N steps=$STEPS bytes=$BYTES policy=$FAULT_POLICY restore=$RESTORE sym_gin=$SYM_GIN \
 gin_type=$GIN_TYPE num_rma_ctx=$NUM_RMA_CTX nconn=$NCONN qpwatch_ms=$QPWATCH restore_ms=$RESTORE_MS checksum=$CHECKSUM \
 log_measure=$LOG_MEASURE step_gap_us=$STEP_GAP_US kill_rank=${KILL_RANK:-} kill_at_step=$KILL_AT_STEP kill_delay_us=$KILL_DELAY_US kill_fallback_ms=$KILL_DELAY_MS kill_in_hook=$KILL_IN_HOOK kill_hook_us=$KILL_HOOK_US \
+die_switch=$([ "$KILL_IN_HOOK" = 1 ] && echo NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT || echo -) arm_wait=$ARM_WAIT arm_wait_s=$ARM_WAIT_S armed_rt=$T_ARMED spare_wait_ms=$SPARE_WAIT_MS \
 spare=$SPARE_ON spare_wanted=$SPARE spare_kill_first=${SPARE_KILL_FIRST:-0} spare_ready=$([ "$T_READY" != 0 ] && echo 1 || echo 0) gpu_apps_before=$GPU_APPS \
 spare_strace=${SPARE_STRACE:-0} neg_replay=${NEG_REPLAY:-0} negs=$(echo $NEGS | tr " " ",") end_grace_ms=$END_GRACE_MS spare_addr_set=$([ -n "$SADDR_ENV" ] && echo 1 || echo 0) trial=$TRIAL extra=$(echo ${EXTRA_ENV:-} | tr ' ' '+')$rcs left=$LEFT gid0=$GID0 gid1=$GID1 port=$PORT \
 port_tries=$PORT_TRIES rdv_nonce_set=1 runner=rsr driver=$DRIVER continue_after_refusal=${CONTINUE_AFTER_REFUSAL:-0} wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') \
-bin=$BINNAME" > "$LOGDIR/${stem}_meta.txt"
+bin=$BINNAME rs_set=${RS_SET:--} lib_md5=$LIB_MD5 driver_md5=$DRIVER_MD5" > "$LOGDIR/${stem}_meta.txt"
 echo "[$tag]$rcs left=$LEFT wall=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}')s :: $(grep -ho 'xchg=[a-z]*' "$WORK"/*.kv 2>/dev/null | tr '\n' ' ')" >&2
 exit 0
