@@ -16,7 +16,8 @@ CR=$D/../../../../common/cluster_run.sh
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 export SUNNY_SSH
 RS_SET=${RS_SET:-}
-case "$RS_SET" in */*|*..*|-*) echo "RS_SET must be a plain name" >&2; exit 1 ;; esac
+. "$D/rs_set.sh"   # the one RS_SET check of every script
+rs_set_check || exit 1
 export RS_SET
 mkdir -p "$R"
 stopped() { ls "$R"/STOP_* > /dev/null 2>&1; }
