@@ -118,6 +118,8 @@ unit() {
          '^// ---- gin-restore [(]dev[)]: log, suppress and replay, pure [(]end' "$src" > "$o/rs_dev_pure.inc"
   [ -s "$o/rs_pure.inc" ] || { echo "no pure-function region in $HOSTF" >&2; exit 1; }
   [ -s "$o/rs_dev_pure.inc" ] || echo "// (no dev pure region in the host file yet)" > "$o/rs_dev_pure.inc"
+  region '^// ---- gin-restore [(]dev[)]: log API [(]begin' '^// ---- gin-restore [(]dev[)]: log API [(]end' "$src" > "$o/rs_dev_api.inc"
+  [ -s "$o/rs_dev_api.inc" ] || { echo "no log API block in $HOSTF" >&2; exit 1; }
   grep -qxF 'enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };' "$src" || { echo "hk's policy enum changed" >&2; exit 1; }
   nice -n 19 g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -I"$o" -I"$D" \
     -I"$W/nccl-src/src/include" "$D/rs_unit_dev.cc" -o "$o/rs_unit_dev"
