@@ -10,7 +10,7 @@
 set -uo pipefail
 LIST=${1:?list}
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
-W=$SCR/agent_rs_dev
+W=${RS_TREE:-$SCR/agent_rs_dev}  # integration: RS_TREE=<another scratch tree>
 HK=$SCR/agent_gd/gin_hk
 E=$W/samelen2
 CU=/usr/local/cuda-12.8/bin

@@ -30,7 +30,7 @@ Restore trial columns. Survivors = the live ranks other than kill_rank; the spar
   ff_fallthrough  1 iff some live rank's Resume returned success in a refusal cell
   strict_forced / strict_notforced / strict_bad   the library's window-report lines: forced=1 strict=1 ro=0 / forced=0 /
                   forced=1 with strict=0 or ro=1 (rs_layer.diff gdakiRsWinReport; printed for hold and spare processes)
-Library-provided columns (assumed line patterns, impl/notes_test.md; empty until the library emits them):
+Library-provided columns (line patterns checked against the integrated library, EXPERIMENT.md 12; empty without them):
   t_dead          first survivor "judged dead" line (receipt, s)          (hk's detection line, exists)
   suppress_ok     (e) "GIN/RS: rank R: suppress ... budget=B ... suppressed=S" lines: 1 iff every S = B (>= 1 line)
   restore_time_ms "judged dead" -> the last survivor's first "GIN/RS: rank R: ... published" line after it

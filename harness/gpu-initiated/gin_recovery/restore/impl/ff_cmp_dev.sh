@@ -16,7 +16,7 @@ SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b
 D=$(cd "$(dirname "$0")" && pwd)
 CU=/usr/local/cuda-12.8/bin
 REF=$SCR/agent_rs/sass4          # work package 4's references (read only)
-W=$SCR/agent_rs_dev
+W=${RS_TREE:-$SCR/agent_rs_dev}  # integration: RS_TREE=<another scratch tree>
 O=$W/sass_$TAG
 LIB=${LIB:-rs_$TAG}
 mkdir -p "$O"
