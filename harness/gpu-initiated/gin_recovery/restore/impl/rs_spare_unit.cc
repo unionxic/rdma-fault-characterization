@@ -298,17 +298,22 @@ static void testLocalSpare() {
   x.spare = true;  // a spare that did not replay a transcript: still condition 4, the new text
   CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 4 && has(why, "spare process") && has(why, "NCCL_GIN_RESTORE_REPLAY"));
   x = ok;
-  x.transcriptOk = false;  // the original does not record: the last condition
+  x.transcriptOk = false;  // the original does not record: after the dev branch's condition 29 (integration, 2026-10-12)
   const int code = gdakiRsLocalCheck(x, why, sizeof(why));
-  CHECK(code == 29 && has(why, "NCCL_GIN_RESTORE_RECORD"));
+  CHECK(code == 30 && has(why, "NCCL_GIN_RESTORE_RECORD"));
   x.logMeasure = true;  // an earlier condition wins
   CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 28);
   x = ok;
   x.replayClean = false;  // a spare whose replay was not clean: the condition after it
   x.replayWhy = "1 own-slot mismatch(es) outside the allowed fields";
-  CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 30 && has(why, "not clean") && has(why, "own-slot mismatch"));
+  CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 31 && has(why, "not clean") && has(why, "own-slot mismatch"));
   x.transcriptOk = false;
-  CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 29);
+  CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 30);
+  x = ok;
+  x.deviceBuilt = false;  // the dev branch's condition (program not built with the macro) comes before both
+  x.transcriptOk = false;
+  x.replayClean = false;
+  CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 29 && has(why, "NCCL_GIN_RESTORE_DEVICE"));
 }
 
 int main() {

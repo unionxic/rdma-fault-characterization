@@ -6,20 +6,16 @@
 
 표시: `[측정]` 원자료에서 확인, `[미확인]` 아직 확인하지 않음, `[추론]` 해석.
 
-## 지금 상태 (통합 전)
+## 지금 상태 (통합 뒤, 2026-10-12)
 
-복원 라이브러리 계층(작업 묶음 5–9)은 아직 통합되지 않았다. 시험 프로그램은 빌드만 됐고 GPU에서 돌리지 않았다
-("빌드됨"). 통합 전 빌드에서는 `ncclGinRestoreResume`이 첫 화신(단계 0)을 돌려주고 communicator는 fail-fast로 남으며,
-`ncclGinRestoreStep`은 `ncclInvalidUsage`를 돌려준다. 그래서 kill 셀에서 되살림이 일어나지 않는다. `score.py`는
-복원 반응이 필요한 셀(`rs4_kill3`, `rs4_kill3_ckpt`, `rs4_kill1`, `rs4_kill3_nospare`의 `@rs`)을 "복원 계층
-미통합"으로 빼고 그 예측을 "자료 부족"으로 적는다. 라이브러리가 아직 내보내지 않는 열(억제 수, 게이트 재개, 체크포인트
-확정, 입력 멈춤, fallback 줄)을 읽는 예측도 "자료 부족"이다. 예비 프로세스는 작업 묶음 8 전에는 빈 unique id로
-시작해 자기 watchdog(또는 초기화 오류)으로 끝난다. 시간 상한이 있어 해가 없다. 모든 hold rank는 초기화 기록
-(`NCCL_GIN_RESTORE_RECORD`)을 그 노드의 시행 전용 경로에 남기고, 실행기가 시행 뒤 지운다(관리 주소가 들어 있어 노드 밖으로
-옮기지 않음).
-
-통합 전에도 pilot이 확인할 수 있는 것: strict 강제(`rs4_none`, `rs4_none_off`), 켤 수 없는 설정의 명시적 오류
-(`rs4_refuse_*`), 회귀 셀(`reg_*`), 복원 없는 대조(`rs4_kill3@hk`의 degraded 해제는 hk의 줄로 잼), 비용 셀의 지연.
+복원 라이브러리 계층(작업 묶음 1–10)을 네 갈래에서 하나로 합쳤다(`EXPERIMENT.md` 12절의 통합 행, `impl/rs_layer.diff`).
+라이브러리와 시험 프로그램은 빌드만 됐고 GPU에서 돌리지 않았다("빌드됨"). 순수 함수는 CPU 단위 시험을 했고("시험함"),
+호스트 쪽의 소켓, 스레드, NIC 복사 경로와 CUDA의 길(입력 멈춤, drain 확인, FETCH와 STATE, 복원 라운드, 로그 내보내기와
+가져오기, 예비 프로세스의 활성화와 handshake)은 단위 시험 밖이라 pilot에서 처음 돈다. 모든 hold rank는 초기화
+기록(`NCCL_GIN_RESTORE_RECORD`)을 그 노드의 시행 전용 경로에 남기고, 실행기가 시행 뒤 지운다(관리 주소가 들어 있어 노드
+밖으로 옮기지 않음). 예비 프로세스는 `NCCL_GIN_RESTORE_SPARE`, `NCCL_GIN_RESTORE_REPLAY`, `NCCL_GIN_RESTORE_SPARE_PORT`로
+뜨고, `ncclGinRestoreResume` 안에서 활성화를 기다린다(`NCCL_GIN_RESTORE_SPARE_WAIT_MS`, 기본 1시간; 실행기는 따로 주지
+않음). 통합의 빌드와 드라이버의 md5는 아래 "메인 세션 명령"에 있다.
 
 ## 셀마다 pilot이 보여야 할 것
 
@@ -57,8 +53,8 @@
   실패할 수 있다(그러면 시행은 시작 실패로 빠지고 셀은 자료 부족). pilot이 이 셀이 Resume까지 가는지 확인한다.
 - `rs4_refuse_nomacro` (@rs, `gin_rs_nomacro`): 매크로 없이 이 계층의 헤더로 빌드한 프로그램이 hold 정책으로 Resume을
   부른다. 모든 rank가 같은 이유("program not built with NCCL_GIN_RESTORE_DEVICE")의 오류를 받고(`refuse_reason`), 그 뒤
-  fail-fast로 끝까지 돌아 trap 없이 결과가 기준과 같다(`refuse_nomacro_clean`). 이 거절은 설계 바꿈이 들어간 라이브러리에서만
-  나온다(지금의 계층은 아직 매크로를 보지 않음).
+  fail-fast로 끝까지 돌아 trap 없이 결과가 기준과 같다(`refuse_nomacro_clean`). 이 거절은 지역 판정의 29번 조건이다(통합한
+  계층에 있음).
 - `reg_mr4_none`, `reg_rm4_kill3_untimed`와 hold 변형 (@rs): gin-remaining의 `gin_mr.cu`를 이 계층의 헤더로 빌드한
   것(fail-fast는 매크로 없이, hold 변형은 매크로와 함께). 원래 판정(gpu-detect RG8, RG9의 꼴)과 같다(`regression`).
 - 예비 프로세스(작업 묶음 8이 넘긴 pilot 항목, hold `P3`와 kill 셀): (1) 4 rank에서 예비 프로세스의 재생 시간(시작 줄 →
@@ -88,7 +84,8 @@
   게이트 재개)을 보고 고정한다.
 - 입력 멈춤 문턱: 초안 5 ms. `rs4_none`의 체크포인트마다 멈춤 시간을 보고 고정한다.
 - fallback 창: 초안은 hold 시작 → fallback 500–1500 ms, fallback → 풀림 2000–2500 ms, 등록 없음은 죽음 판정 → 풀림
-  2000–2500 ms. host 브랜치가 `notes_host.md`에 적을 정확한 규칙과 pilot의 실제 시각을 보고 고정한다.
+  2000–2500 ms. 코드의 규칙(`EXPERIMENT.md` 9.2절 끝의 시한 메모: 첫 활성화 시도 뒤 약 1000–1500 ms에 fallback)과 pilot의 실제
+  시각을 보고 고정한다.
 - kill 시점: 예비 프로세스가 있는 kill 셀은 rank 0이 출발 문에서 예비 프로세스의 준비를 기다린 뒤 시작한다. 준비 뒤 100단계
   이상 + 500 µs(정상 중), 체크포인트 hook 안 300 µs(멈춤 중). 단계 600개,
   단계 사이 쉼 5000 µs. pilot에서 예비 프로세스의 준비 시간과 kill이 traffic 안에 떨어지는지 보고 고정한다.
@@ -109,15 +106,19 @@
 
 ## 메인 세션 명령 (차례대로)
 
-변수: `T`는 이 폴더(`impl/test`)의 절대 경로, `R`은 결과 폴더, `SUNNY_SSH`는 관리망 설정 파일에서(저장소에 적지 않음).
-빌드는 이 브랜치에서 했고(`build_rs_test.sh rs|nomacro|hk|cost|mr`), 통합한 라이브러리는 메인 세션이 만든다.
+변수: `T`는 이 폴더(`impl/test`)의 절대 경로, `R`은 결과 폴더, `SUNNY_SSH`는 관리망 설정 파일에서(저장소에 적지 않음),
+`I`는 세션 스크래치의 `agent_rs_int`. 통합 빌드(2026-10-12): 라이브러리는 `../build_rs.sh`의 `rs_i3`, `rsp_i3`, 시험 드라이버는
+`build_rs_test.sh rs|nomacro|hk|cost|mr`(`RSTOUT=i3`, 통합 트리의 헤더)이고 md5는 아래 줄에 그대로 있다(`EXPERIMENT.md` 12절의 통합 행).
 
 ```
 # 1. 배포 (새 디렉터리만, ~/rs-bundle 아래; 대상이 있으면 거절)
-RS_LIB_SRC=<통합 rs libnccl> RSP_LIB_SRC=<통합 rsp libnccl> WANT_RS=<md5> WANT_RSP=<md5> \
-  WANT_GINRS=<md5> WANT_GINRS_NOMACRO=<md5> WANT_GINRS_HK=<md5> WANT_COST=<md5> WANT_COST_FF=<md5> WANT_MR_FF=<md5> WANT_MR_HOLD=<md5> \
-  RSTOUT=<빌드 폴더> bash $T/deploy_rs.sh $SCR/agent_rs_test/deploy_check.txt
-grep -E "MISMATCH|CHANGED|not found" $SCR/agent_rs_test/deploy_check.txt     # 아무 줄도 없어야 함
+RS_LIB_SRC=$I/out/rs_i3/libnccl.so.2.32.3 RSP_LIB_SRC=$I/out/rsp_i3/libnccl.so.2.32.3 \
+  WANT_RS=ac8d830575e9a194587e43faf76cb21a WANT_RSP=7d418e54e08374d7a359f6e357314d58 \
+  WANT_GINRS=303e812dfd4352769bcac89c8f9451c8 WANT_GINRS_NOMACRO=0f0826e6546cfdc927df9a9e6b9dc64a \
+  WANT_GINRS_HK=4ec9b84640dc584c1a86f8095023ef33 WANT_COST=dd44e14ef4af4e5a1200706965b1c771 \
+  WANT_COST_FF=5e4db845a693f65fd18341fa2e30eb7d WANT_MR_FF=41f3ce3a14923c37d943825034d6467a \
+  WANT_MR_HOLD=169f59c55381c5aa5f6040afd43ba672 RSTOUT=i3 bash $T/deploy_rs.sh $I/deploy_check.txt
+grep -E "MISMATCH|CHANGED|not found" $I/deploy_check.txt     # 아무 줄도 없어야 함
 # 2. 자체 시험 (CPU, 클러스터 없음)
 python3 $T/selftest_rs.py
 # 3. pilot (결과 폴더를 본 실행과 따로; pilot은 채점하지 않음)
@@ -147,5 +148,5 @@ python3 $T/score.py $R/<날짜>
 
 - kill 셀의 복원 반응 전체(붙잡기, 되살림, 억제, 복원 시간, fallback).
 - 예비 프로세스의 활성화와 초기화 재생 시간(작업 묶음 8).
-- 라이브러리가 내보낼 줄의 꼴(notes_test.md의 "가정한 줄"): 다르면 `rows_rs.py`의 정규식을 맞춘다.
-- 예비 프로세스에 넘기는 환경 변수 이름(notes_test.md): 다르면 `run_rs.sh`를 맞춘다.
+- 라이브러리 줄의 꼴과 예비 프로세스에 넘기는 환경 변수 이름: 통합 검토가 `rows_rs.py`의 정규식과 `run_rs.sh`, `run_cost.sh`에 맞음을
+  확인했다(`EXPERIMENT.md` 12절의 통합 행; 앞서 가정한 줄은 같은 절의 test 갈래 행). pilot에서 실제 줄로 다시 본다.
