@@ -116,7 +116,8 @@ json_hold() {
   python3 - "$CELLS" "$1" <<'PY'
 import json, sys
 for e in json.load(open(sys.argv[1]))["holds"].get(sys.argv[2], []):
-    print("\t".join([e["cell"], e["build"], e["kind"], str(e["n"])] + ["%s=%s" % kv for kv in e.get("env", {}).items()]))
+    env = ["DRIVER=%s" % e["driver"]] + ["%s=%s" % kv for kv in e.get("env", {}).items()]  # every cell names its driver
+    print("\t".join([e["cell"], e["build"], e["kind"], str(e["n"])] + env))
 PY
 }
 do_json_hold() {
