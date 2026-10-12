@@ -162,10 +162,21 @@ static bool gdakiRsTakeRestored(struct gdakiRecHost* r, int peer, const struct g
 // The spare finishes its init replay (ncclCommInitRank, window registration, devComm creation: no peer contact, peer QPs
 // in RESET, no helper) and waits for this record in its handshake driver, which its ncclGinRestoreResume runs
 // (integration; the driver is gdakiRsSpareRun(r, activatePort, activateWaitMs, handshakeMs, dataFd, dataArg, &step) in the
-// host file). One record per TCP connection (read within 500 ms); the spare answers with the same struct (kind ACCEPTED or
-// REFUSED) and closes. It takes the incarnation and the step from the record. Before activating it checks that the process
-// that held the rank is gone (same node: /proc/<pid> absent, or its state Z or X, or its start time differs); never while
-// it lives, and never without a PID (refused). A process with NCCL_GIN_RESTORE_SPARE set but no NCCL_GIN_RESTORE_REPLAY
+// host file). One record per TCP connection (read within 500 ms); the spare answers with the same struct and closes. It
+// takes the incarnation and the step from the record. Before activating it checks that the process that held the rank is
+// gone (same node: /proc/<pid> absent, or its state Z or X, or its start time differs); never while it lives. Its answer
+// (gdakiRsActAnswerOf, the host file's spare pure region, which also holds the kinds' enum):
+//   ACCEPTED  the original is gone: the spare activates.
+//   LATER     (2026-10-13, after the pilot P1) the original is still present with the recorded start time. A SIGKILLed
+//             CUDA process stays in /proc while its context is torn down (2.8 ms after the signal in the pilot,
+//             EXPERIMENT.md 12), so this is the usual first answer to a kill; the spare keeps waiting, and the buddy asks
+//             again every 20 ms until its hold's deadline (the watcher's timeout then falls back as before). The spare
+//             logs the first LATER and then at most one line per 1000 ms; its activation line counts them, and the buddy's
+//             "its spare activated" line (WARN) ends with "N 'later' answers over X ms".
+//   REFUSED   the record can never be confirmed (no PID, or no recorded start time while that PID lives): final, the
+//             buddy falls back at once. The buddy never sends such a record (it falls back first: "the peer's
+//             registration has no PID / no start time of the original process").
+// A process with NCCL_GIN_RESTORE_SPARE set but no NCCL_GIN_RESTORE_REPLAY
 // fails ncclCommInitRank (it never runs a live initialization), and the spare's Resume refuses unless its replay was clean
 // (no divergence, nothing past the transcript's end, no own-slot mismatch outside the allowed fields).
 // The data fd: for each survivor the driver calls dataFd(dataArg, peer) once, right after that survivor's REJOIN_ACK, and
@@ -173,7 +184,8 @@ static bool gdakiRsTakeRestored(struct gdakiRecHost* r, int peer, const struct g
 // success or on failure (its no-BYE exit closes only the helper sockets): the callback's owner (the host branch's work
 // package 5 data path) keeps it and closes it. A return below 0 fails the restore.
 #define GDAKI_RS_ACT_MAGIC 0x41535247u  // "GRSA"
-enum { GDAKI_RS_ACT_ACTIVATE = 1, GDAKI_RS_ACT_ABANDON = 2, GDAKI_RS_ACT_ACCEPTED = 3, GDAKI_RS_ACT_REFUSED = 4 };
+enum { GDAKI_RS_ACT_ACTIVATE = 1, GDAKI_RS_ACT_ABANDON = 2, GDAKI_RS_ACT_ACCEPTED = 3, GDAKI_RS_ACT_REFUSED = 4,
+       GDAKI_RS_ACT_LATER = 5 };  // ABANDON reserved (nothing sends it)
 struct gdakiRsActivate {   // 64 bytes
   uint32_t magic, version;   // GDAKI_RS_ACT_MAGIC, 1
   uint32_t kind, pad;        // GDAKI_RS_ACT_*
@@ -181,8 +193,9 @@ struct gdakiRsActivate {   // 64 bytes
   uint32_t incarnation;      // the new incarnation (the survivors' gdakiRsPeerInc + 1)
   uint64_t nonce;            // the GIN context's nonce (the spare checks its replay against it)
   uint64_t step;             // the checkpoint step to restore
-  int64_t pid;               // the process that held the rank (required: 0 is refused)
-  uint64_t pidStart;         // its start time, /proc/<pid>/stat field 22 (0: refused while that PID lives)
+  int64_t pid;               // the process that held the rank (required: 0 is refused; the buddy never sends 0)
+  uint64_t pidStart;         // its start time, /proc/<pid>/stat field 22 (required: 0 is refused while that PID lives;
+                             // the buddy never sends 0)
   uint64_t reserved;
 };
 // The buddy's helper sends it (host branch); bounded; returns the spare's answer kind, or -1 (no answer). Without the

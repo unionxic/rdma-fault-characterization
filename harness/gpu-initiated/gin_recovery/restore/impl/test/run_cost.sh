@@ -30,8 +30,14 @@
 # own file paths only (gin_ts2 is also other studies' driver name).
 #
 # usage: run_cost.sh <cell> <run-tag> <logdir>
-# env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), LOG_MEASURE_MS (50)
+# env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), LOG_MEASURE_MS (50), RS_SET (2026-10-13; empty: today's
+#   paths ~/rs-bundle/lib/rsp, ~/rs-bundle/rscost and gpu-detect's ~/gi-bundle/gin_ts2/hkp; a name: the deployment set
+#   ~/rs-bundle/<RS_SET>/{lib/rsp,rscost} and ~/rs-bundle/<RS_SET>/lib/hkp, gpu-detect's production libnccl deployed by
+#   deploy_rs.sh WANT_HKP: the pilot found ~/gi-bundle/gin_ts2/hkp absent, and nothing may be written into ~/gi-bundle).
+#   The hk-header ord driver stays ~/rs-bundle/ord/gin_ts2 (9.15.6's deployment, read only).
 # files in <logdir>: <cell>_<tag>_r0.kv/_r1.kv/_r0.log/_r1.log, <cell>_<tag>_lat_raw.csv.gz (lat), <cell>_<tag>_meta.txt
+# (its meta line names the deployment, rs_set or -, and the md5 of the library and the program used on rain: lib_md5,
+# driver_md5)
 set -u
 CELL=${1:?cell}; TAG=${2:?run tag}; LOGDIR=${3:?logdir}
 for v in $(env | sed -n 's/^\(\(NCCL\|GIN\)_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
@@ -46,8 +52,12 @@ case "$METRIC" in
   bw256k)  MODE=burst; ITERS=12;   BYTES=262144; XENV="GIN_TS_TX_BLOCKS=1 GIN_TS_TX_THREADS=1 GIN_TS_BURST_K=8 GIN_TS_AGG=1" ;;
   *) echo "bad metric in $CELL" >&2; exit 2 ;;
 esac
-RSPLIB=$HOME/rs-bundle/lib/rsp; HKPLIB=$HOME/gi-bundle/gin_ts2/hkp
-MACRO=$HOME/rs-bundle/rscost/gin_ts2; FFBIN=$HOME/rs-bundle/rscost/gin_ts2_ff; HKBIN=$HOME/rs-bundle/ord/gin_ts2
+RS_SET=${RS_SET:-}
+case "$RS_SET" in */*|*..*|-*) echo "RS_SET must be a plain name" >&2; exit 2 ;; esac
+RSB=$HOME/rs-bundle${RS_SET:+/$RS_SET}
+RSPLIB=$RSB/lib/rsp
+if [ -n "$RS_SET" ]; then HKPLIB=$RSB/lib/hkp; else HKPLIB=$HOME/gi-bundle/gin_ts2/hkp; fi
+MACRO=$RSB/rscost/gin_ts2; FFBIN=$RSB/rscost/gin_ts2_ff; HKBIN=$HOME/rs-bundle/ord/gin_ts2
 MEAS="NCCL_GIN_FAULT_POLICY=hold NCCL_GIN_RESTORE=1 NCCL_GIN_RESTORE_LOG_MEASURE=$LOG_MEASURE_MS"
 case "$ARM" in
   off)      BIN=$MACRO; LIB=$RSPLIB; RSENV="NCCL_GIN_FAULT_POLICY=failfast" ;;
@@ -61,7 +71,8 @@ case "$ARM" in
   *) echo "bad arm in $CELL" >&2; exit 2 ;;
 esac
 case "$RX" in rain) TX=sunny ;; sunny) TX=rain ;; *) echo "bad node in $CELL" >&2; exit 2 ;; esac
-[ -x "$BIN" ] && [ -f "$LIB/libnccl.so.2" ] || { echo "missing $BIN or $LIB/libnccl.so.2 on rain" >&2; exit 1; }
+[ -x "$BIN" ] || { echo "missing $BIN on rain" >&2; exit 1; }
+[ -f "$LIB/libnccl.so.2" ] || { echo "missing $LIB/libnccl.so.2 on rain" >&2; exit 1; }
 umask 077
 WORK=$(mktemp -d /tmp/rs_cost.XXXXXX)
 RT=/tmp/rs_cost_$$_$RANDOM
@@ -130,9 +141,11 @@ done
 [ -f "$WORK/lat_raw.csv" ] && gzip -c "$WORK/lat_raw.csv" > "$LOGDIR/${stem}_lat_raw.csv.gz"
 rc() { tr -d '\n' < "$WORK/r$1.rc" 2>/dev/null || echo none; }
 case "$LIB" in "$HKPLIB") LIBKEY=hkp ;; *) LIBKEY=rsp ;; esac
+LIB_MD5=$(md5sum < "$LIB/libnccl.so.2" 2>/dev/null | cut -c1-32); DRIVER_MD5=$(md5sum < "$BIN" 2>/dev/null | cut -c1-32)
 echo "cell=$CELL tag=$TAG metric=$METRIC arm=$ARM rx=$RX tx=$TX mode=$MODE iters=$ITERS bytes=$BYTES lib=$LIBKEY \
 bin=$(basename "$BIN") log_measure_ms=$LOG_MEASURE_MS rc_r0=$(rc 0) rc_r1=$(rc 1) left=$LEFT hca_rain=$HCA_RAIN \
 hca_sunny=$HCA_SUNNY gid_rain=$GID_R gid_sunny=$GID_S port=$PORT port_tries=$PORT_TRIES rdv_nonce_set=1 qpwatch_ms=0 \
-runner=cost wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}')" > "$LOGDIR/${stem}_meta.txt"
+runner=cost wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') rs_set=${RS_SET:--} lib_md5=${LIB_MD5:-none} \
+driver_md5=${DRIVER_MD5:-none}" > "$LOGDIR/${stem}_meta.txt"
 echo "[$stem] rc r0=$(rc 0) r1=$(rc 1) left=$LEFT :: $(grep -ho 'lat_p50_us=[0-9.]*\|exit=[0-9]*' "$WORK/r0.kv" 2>/dev/null | tr '\n' ' ')" >&2
 exit 0

@@ -126,14 +126,19 @@ def status_rs(r):
     return "candidate"
 
 
+def ours_mrkey(mk):
+    """this study's gin_mr builds: rs-bundle/mr/<ff|hold>, or a deployment set's rs-bundle/<RS_SET>/mr/<ff|hold>
+    (2026-10-13), or gin-remaining's own hr"""
+    return bool(re.search(r"rs-bundle/(?:[A-Za-z0-9][^/]*/)?mr/(?:ff|hold)/?$", mk)) or mk == "hr"
+
+
 def status_reg(r, orig):
     if not orig:
         return "config"
     if not driver_ok(r):
         return "config_driver"
     mk = str(r.get("mrkey") or "")
-    ours = mk.endswith("rs-bundle/mr/ff") or mk.endswith("rs-bundle/mr/hold") or mk == "hr"
-    return rem.status4(dict(r, build="hr", cell=orig, mrkey="hr" if ours else mk))
+    return rem.status4(dict(r, build="hr", cell=orig, mrkey="hr" if ours_mrkey(mk) else mk))
 
 
 def val_empty(v):
@@ -324,8 +329,10 @@ GOOD = dict(init_rc=0, reg_rc=0, devcomm_rc=0, resume_rc=0, resume_why="none", s
 
 def _rs(d, cell, build, k, *, kill=None, spare=False, spare_addr=False, policy="hold", restore="1", live=True,
         surv=None, sp=None, refuse=None, ff_rank=None, win=None, lib_lines=None, t0=100.0, spare_fail=False, gpu="0/0",
-        negs=(), neg_ok=True, strace=None, spare_kill=None, driver=None, ran_after_refusal=False):
-    """one synthetic restore trial in the run_rs.sh format (stamped logs, kv, meta)"""
+        negs=(), neg_ok=True, strace=None, spare_kill=None, driver=None, ran_after_refusal=False, hook=None):
+    """one synthetic restore trial in the run_rs.sh format (stamped logs, kv, meta). hook=(checkpoint, us): the
+    checkpoint-pause kill of 2026-10-13 (meta kill_in_hook=1, no _kill.out; the killed rank's log ends with the library's
+    test-switch line at t0 + 2.0)"""
     os.makedirs(d, exist_ok=True)
     stem = os.path.join(d, "%s_%s_n%d" % (cell, build, k))
     rcs = {r: 0 for r in range(4)}
@@ -334,7 +341,8 @@ def _rs(d, cell, build, k, *, kill=None, spare=False, spare_addr=False, policy="
     meta = dict(cell=cell, lib=build, n=4, policy=policy, restore=restore, kill_rank=("" if kill is None else kill),
                 spare=int(spare), spare_wanted=int(spare), spare_ready=int(spare and not spare_fail), gpu_apps_before=gpu,
                 spare_addr_set=int(spare or spare_addr), restore_ms=20000, runner="rsr", wall_s=5.0, negs=",".join(negs),
-                spare_kill_first=int(spare_kill is not None),
+                spare_kill_first=int(spare_kill is not None), kill_in_hook=int(hook is not None),
+                die_switch=("NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT" if hook is not None else "-"),
                 driver=(driver or ("gin_rs_hk" if build == "hk" else "gin_rs")))
     meta.update({"r%drc" % r: rcs[r] for r in range(4)})
     _w(stem + "_meta.txt", _kvline(**meta))
@@ -357,8 +365,12 @@ def _rs(d, cell, build, k, *, kill=None, spare=False, spare_addr=False, policy="
             lines.append("%.6f %s" % (t0 + t, txt))
         if kill is not None and r == kill:
             lines.append("%.6f GINRS step rank=%d step=100 released=0" % (t0 + 2.0, r))
+            if hook is not None:
+                lines.append("%.6f host:1:1 [0] NCCL WARN GIN/RS: rank %d: test switch NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT: "
+                             "dying %d us after the pause request of checkpoint %d (stable checkpoints before: 2) "
+                             "mono_ms=1.000" % (t0 + 2.0005, r, hook[1], hook[0]))
         _w(stem + "_r%d.log" % r, "\n".join(lines) + "\n")
-    if kill is not None:
+    if kill is not None and hook is None:
         _w(stem + "_kill.out", "%.6f GINRS killed rank=%d node=sunny pid=999\n" % (t0 + 2.001, kill))
     if spare_kill is not None:  # the spare's recorded-PID kill, spare_kill seconds after t0
         _w(stem + "_spare_kill.out", "%.6f GINRS killed rank=%d node=sunny pid=998\n" % (t0 + spare_kill, kill))
@@ -443,7 +455,12 @@ def _build_A(d, *, live=True, bad_data=False, refuse_ff=False, reg_bad=False, ff
         _rs(raw, "rs4_kill3", "rs", k, kill=3, spare=True, live=live,
             surv=(dict(recv_bad=1) if bad_data and k <= 2 else None), lib_lines=dead())
     for k in range(1, 6):
-        _rs(raw, "rs4_kill3_ckpt", "rs", k, kill=3, spare=True, live=live, lib_lines=dead())
+        # the checkpoint-pause kill (2026-10-13): the library's test-switch line, the survivors' pauses for checkpoint 120
+        # ended by the hold, the restored checkpoint 100 stable and armed before it
+        ck = {r: dead()[r] + [(2.0012, "GIN/RS: rank %d: input pause for rank 3's checkpoint 120 ended (a hold of that "
+                                       "rank took its gates) pause_us=900" % r),
+                              (0.51, "GIN/RS: rank %d: rank 3 armed at its stable checkpoint 100" % r)] for r in (0, 1, 2)}
+        _rs(raw, "rs4_kill3_ckpt", "rs", k, kill=3, spare=True, live=live, lib_lines=ck, hook=(120, 300))
         _rs(raw, "rs4_kill1", "rs", k, kill=1, spare=True, live=live,
             lib_lines={r: [(0.5, "GIN/RS: rank 1: checkpoint 100 stable")] for r in (0, 2, 3)})
         # no spare registered: never armed, no hold start, the decline and the degraded release 2.3 s after the death
