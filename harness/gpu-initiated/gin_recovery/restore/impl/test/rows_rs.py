@@ -12,7 +12,9 @@ own columns). cost*/ hold run_cost.sh runs.
 Restore trial columns. Survivors = the live ranks other than kill_rank; the spare is apart.
   void            a live survivor failed before its exchange (init/registration/devComm error, exit 2, rendezvous)
   applied         kill cell: the killed rank ended by SIGKILL (exit 137) or a kill line ("GINRS killed", "GINRS die")
-                  arrived; other cells: 1
+                  arrived; the checkpoint-pause cell since 2026-10-13 (meta die_switch=NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT):
+                  only the library's test-switch line (below) is its kill record (an exit 137 alone may be a timeout's
+                  kill); other cells: 1
   config_ok       the cell's intended configuration (policy/restore as the cell asks; the refusal cells: 1)
   restore_live    1 when some live rank's Step hook returned success (the library implements it)
   surv_released   survivors whose untimed wait was let go below its target (kv released)
@@ -208,7 +210,10 @@ def rs_row(stem, sub):
         die = [(t, int(m.group(3))) for t, l in logs[kr] if t is not None for m in [DIE_CKPT.search(l)]
                if m and int(m.group(1)) == kr]
         killed_line = [t for t, l in kout + logs[kr] if t is not None and KILLED.search(l)] + [t for t, _ in die]
-        applied = 1 if (rc.get(kr) == 137 or killed_line) else 0
+        if meta.get("die_switch") == "NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT":
+            applied = 1 if die else 0  # the library's switch (run_rs.sh since 2026-10-13): its line is the kill record
+        else:
+            applied = 1 if (rc.get(kr) == 137 or killed_line) else 0
         t_kill = min(killed_line) if killed_line else None
         if die:
             die_k = min(die)[1]

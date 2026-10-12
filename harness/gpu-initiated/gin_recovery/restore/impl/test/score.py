@@ -342,6 +342,7 @@ def _rs(d, cell, build, k, *, kill=None, spare=False, spare_addr=False, policy="
                 spare=int(spare), spare_wanted=int(spare), spare_ready=int(spare and not spare_fail), gpu_apps_before=gpu,
                 spare_addr_set=int(spare or spare_addr), restore_ms=20000, runner="rsr", wall_s=5.0, negs=",".join(negs),
                 spare_kill_first=int(spare_kill is not None), kill_in_hook=int(hook is not None),
+                die_switch=("NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT" if hook is not None else "-"),
                 driver=(driver or ("gin_rs_hk" if build == "hk" else "gin_rs")))
     meta.update({"r%drc" % r: rcs[r] for r in range(4)})
     _w(stem + "_meta.txt", _kvline(**meta))
