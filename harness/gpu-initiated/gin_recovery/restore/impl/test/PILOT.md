@@ -23,6 +23,12 @@
 
 ## 셀마다 pilot이 보여야 할 것
 
+셀마다 돌릴 빌드를 `cells_rs.json`의 `driver`로 정한다(2026-10-12 사용자의 설계 바꿈: 측 표 포인터는 Resume이 성공해야
+장치에 실리고, 매크로 없이 빌드한 프로그램이 부른 Resume은 모든 rank에서 같은 이유로 거절됨). 복원 셀은 모두 매크로로 빌드한
+`gin_rs`, 복원 없는 대조는 hk 헤더의 `gin_rs_hk`, 회귀 셀은 fail-fast가 `mr/ff`(매크로 없음)이고 hold 변형이 `mr/hold`(매크로)다.
+다른 빌드로 돈 시행은 뺀다(`config_driver`).
+
+
 - `rs4_none` (@rs): 모든 rank가 장애 없이 600단계를 끝내고(exit 0), 받은 칸과 상태 이력과 최종 신호 값이 호스트 기준과
   비트 단위로 같다(`data_equal`). 라이브러리의 window 등록 보고 줄이 모든 등록을 strict로 강제한다(`strict_forced`).
   통합 뒤: 체크포인트마다 생존 rank의 입력 멈춤 시간(`ckpt_pause_ms`)과 복원 0.
@@ -49,6 +55,10 @@
   오류를 돌려주고, 이유(`ncclGetLastError`)가 rank 사이에서 같으며, 오류 없이 fail-fast로 넘어간 rank가 없다
   (`refuse_reason`). 작업 묶음 2가 이미 구현했으므로 통합 전에도 확인된다. `rs4_refuse_gintype`은 Resume 전에 devComm 생성이
   실패할 수 있다(그러면 시행은 시작 실패로 빠지고 셀은 자료 부족). pilot이 이 셀이 Resume까지 가는지 확인한다.
+- `rs4_refuse_nomacro` (@rs, `gin_rs_nomacro`): 매크로 없이 이 계층의 헤더로 빌드한 프로그램이 hold 정책으로 Resume을
+  부른다. 모든 rank가 같은 이유("program not built with NCCL_GIN_RESTORE_DEVICE")의 오류를 받고(`refuse_reason`), 그 뒤
+  fail-fast로 끝까지 돌아 trap 없이 결과가 기준과 같다(`refuse_nomacro_clean`). 이 거절은 설계 바꿈이 들어간 라이브러리에서만
+  나온다(지금의 계층은 아직 매크로를 보지 않음).
 - `reg_mr4_none`, `reg_rm4_kill3_untimed`와 hold 변형 (@rs): gin-remaining의 `gin_mr.cu`를 이 계층의 헤더로 빌드한
   것(fail-fast는 매크로 없이, hold 변형은 매크로와 함께). 원래 판정(gpu-detect RG8, RG9의 꼴)과 같다(`regression`).
 - 예비 프로세스(작업 묶음 8이 넘긴 pilot 항목, hold `P3`와 kill 셀): (1) 4 rank에서 예비 프로세스의 재생 시간(시작 줄 →
@@ -63,7 +73,7 @@
   pilot이 함께 볼 것: 살아 있는 rank가 끝난 뒤에도 기록 파일이 남아 음성 대조가 도는지(라이브러리가 끝날 때 지우면 `negs`가
   비고 열이 빔), 시행 시작 때 `foreign_gpu`가 앞 시행의 막 끝난 프로세스를 세지 않는지.
 - 비용 셀(@rsp, @hkp): 로그 팔 넷(`off`, `on`, `sampled`, `full`; 4 KiB, 256 KiB 지연과 대역), 무장 전 hold 대 fail-fast
-  (`ua-ff`, `ua-hold`), fail-fast 분기(`ffb-rs` 대 `ffb-hk`). 9.15.6의 6 대 6 섞기. 7절의 4 KiB get 팔은 다루지 못한다
+  (`ua-ff`, `ua-hold`), fail-fast 분기(`ffb-hk` 대 `ffb-rs`(매크로 없음, 갈리지 않음을 판정)와 `ffb-rs-macro`(매크로, 보고만)). 9.15.6의 6 대 6 섞기. 7절의 4 KiB get 팔은 다루지 못한다
   (gin_ts2에 get 지연 모드가 없음).
 
 ## pilot이 고정하는 문턱과 n
@@ -96,12 +106,12 @@
 ## 메인 세션 명령 (차례대로)
 
 변수: `T`는 이 폴더(`impl/test`)의 절대 경로, `R`은 결과 폴더, `SUNNY_SSH`는 관리망 설정 파일에서(저장소에 적지 않음).
-빌드는 이 브랜치에서 했고(`build_rs_test.sh rs|hk|cost|mr`), 통합한 라이브러리는 메인 세션이 만든다.
+빌드는 이 브랜치에서 했고(`build_rs_test.sh rs|nomacro|hk|cost|mr`), 통합한 라이브러리는 메인 세션이 만든다.
 
 ```
 # 1. 배포 (새 디렉터리만, ~/rs-bundle 아래; 대상이 있으면 거절)
 RS_LIB_SRC=<통합 rs libnccl> RSP_LIB_SRC=<통합 rsp libnccl> WANT_RS=<md5> WANT_RSP=<md5> \
-  WANT_GINRS=<md5> WANT_GINRS_HK=<md5> WANT_COST=<md5> WANT_COST_FF=<md5> WANT_MR_FF=<md5> WANT_MR_HOLD=<md5> \
+  WANT_GINRS=<md5> WANT_GINRS_NOMACRO=<md5> WANT_GINRS_HK=<md5> WANT_COST=<md5> WANT_COST_FF=<md5> WANT_MR_FF=<md5> WANT_MR_HOLD=<md5> \
   RSTOUT=<빌드 폴더> bash $T/deploy_rs.sh $SCR/agent_rs_test/deploy_check.txt
 grep -E "MISMATCH|CHANGED|not found" $SCR/agent_rs_test/deploy_check.txt     # 아무 줄도 없어야 함
 # 2. 자체 시험 (CPU, 클러스터 없음)
@@ -118,6 +128,15 @@ python3 $T/score.py $R/<날짜>
 ```
 
 어느 hold든 STOP 파일을 남기면 다음 hold는 돌지 않는다. `skipped.txt`에 줄이 생기면 그 셀만 다시 돈다.
+
+## 설계 바꿈(2026-10-12)이 남긴 물음 (결정 필요)
+
+- 비용 셀의 로그 팔과 무장 전 hold 팔: 측 표 포인터는 Resume이 성공해야 실린다. 비용 driver(gin_ts2)는 Resume을 부르지 않고,
+  Resume은 재기만 하는 모드(`NCCL_GIN_RESTORE_LOG_MEASURE`)를 거절한다. 그래서 `on`, `sampled`, `full`, `ua-hold` 팔은 hold
+  보내기 길에 닿지 않아 `off`, `ua-ff`와 같은 것을 잰다. 재기만 하는 모드가 Resume 없이 포인터를 싣게 하거나, Resume과
+  체크포인트를 부르는 비용 driver를 쓰는 것 가운데 정해야 한다(그 전에는 `cost_log`, `cost_unarmed`의 값이 뜻이 없음).
+- 회귀 셀의 hold 변형: gin_mr은 Resume을 부르지 않으므로 매크로로 빌드해도 hold 보내기 길을 지나지 않는다. 이 행은 "hold
+  정책과 매크로 빌드에서도 결과가 hk와 같음"을 보이지만, 처음 목적(hold 보내기 길이 hk와 같은 결과를 냄)은 재지 않는다.
 
 ## 통합 뒤 다시 확인할 것 (지금 실행하지 못한 것)
 
