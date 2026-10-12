@@ -1,5 +1,5 @@
 diff --git a/src/gin/gin_host.cc b/src/gin/gin_host.cc
-index 2f8749f..b5f6cbc 100644
+index 2f8749f..fbb1f97 100644
 --- a/src/gin/gin_host.cc
 +++ b/src/gin/gin_host.cc
 @@ -14,6 +14,9 @@
@@ -12,7 +12,7 @@ index 2f8749f..b5f6cbc 100644
  #include <cmath>
  
  NCCL_PARAM(GinEnable, "GIN_ENABLE", 1);
-@@ -606,3 +609,82 @@ ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError
+@@ -606,3 +609,86 @@ ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError
    }
    return ncclSuccess;
  }
@@ -37,10 +37,13 @@ index 2f8749f..b5f6cbc 100644
 +  COMPILER_ATOMIC_STORE(comm->abortFlag, 1u, std::memory_order_release);
 +  COMPILER_ATOMIC_STORE(comm->abortFlagDev, 1u, std::memory_order_release);
 +}
-+NCCL_API(ncclResult_t, ncclGinRestoreResume, ncclComm_t comm, const struct ncclDevComm* devComm, unsigned long long* step,
-+         void* blob, size_t* bytes);
-+ncclResult_t ncclGinRestoreResume(ncclComm_t comm, const struct ncclDevComm* devComm, unsigned long long* step,
-+                                  void* blob, size_t* bytes) {
++// gin-restore (dev; user direction 2026-10-12): the library's entry is ncclGinRestoreResumeBuilt; nccl.h's
++// ncclGinRestoreResume is a static inline wrapper that passes whether the calling program was compiled with
++// NCCL_GIN_RESTORE_DEVICE (deviceBuilt; the restore is refused without it).
++NCCL_API(ncclResult_t, ncclGinRestoreResumeBuilt, ncclComm_t comm, const struct ncclDevComm* devComm,
++         unsigned long long* step, void* blob, size_t* bytes, int deviceBuilt);
++ncclResult_t ncclGinRestoreResumeBuilt(ncclComm_t comm, const struct ncclDevComm* devComm, unsigned long long* step,
++                                       void* blob, size_t* bytes, int deviceBuilt) {
 +  NCCLCHECK(CommCheck(comm, "ncclGinRestoreResume", "comm"));
 +  const bool aborted = COMPILER_ATOMIC_LOAD(comm->abortFlag, std::memory_order_acquire) != 0;
 +  if (aborted) ncclGroupJobAbort(comm->groupJob);  // as ncclCommEnsureReady: a nonblocking job still running is joined
@@ -70,6 +73,7 @@ index 2f8749f..b5f6cbc 100644
 +  f.bootstrap = comm->bootstrap;
 +  f.asyncErr = (int)asyncErr;
 +  f.argsOk = devComm != nullptr && step != nullptr && bytes != nullptr;
++  f.deviceBuilt = deviceBuilt != 0 ? 1 : 0;
 +  // a devComm written for device headers of another NCCL version has another layout (ncclDevCommDestroy converts it):
 +  // its other fields are not read here, and the restore is refused
 +  f.devCommVersion = devComm != nullptr ? (devComm->magic == NCCL_API_MAGIC ? (int)devComm->version : -1) : 0;
@@ -96,10 +100,10 @@ index 2f8749f..b5f6cbc 100644
 +  return ncclGinGdakiRestoreResume((void*)comm, &f, ginRestoreExchange, ginRestoreAbortComm, step, blob, bytes);
 +}
 diff --git a/src/include/gin/gin_host.h b/src/include/gin/gin_host.h
-index 86abd02..fb2d480 100644
+index 86abd02..28f8556 100644
 --- a/src/include/gin/gin_host.h
 +++ b/src/include/gin/gin_host.h
-@@ -83,4 +83,31 @@ ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError
+@@ -83,4 +83,33 @@ ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError
  
  ncclResult_t ncclGinSetDefaultBackend(struct ncclComm* comm, uint64_t globalBitmask);
  
@@ -124,6 +128,8 @@ index 86abd02..fb2d480 100644
 +  int lsaSize;                // the devComm's LSA team size
 +  int symGinDevComm;          // NCCL's symmetric kernels have a GIN devComm on this communicator
 +  void* resAddr;              // the devComm's resource window, this rank's address (null: none)
++  int deviceBuilt;            // gin-restore (dev; user direction 2026-10-12): the caller's program was compiled with
++                              // NCCL_GIN_RESTORE_DEVICE (nccl.h's ncclGinRestoreResume wrapper passes it)
 +};
 +ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCommFacts* facts,
 +                                       ncclResult_t (*exchange)(void* comm, void* data, int bytesPerRank),
@@ -132,23 +138,23 @@ index 86abd02..fb2d480 100644
 +
  #endif
 diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki.h b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
-index d158067..7f02959 100644
+index d158067..39d027b 100644
 --- a/src/include/nccl_device/gin/gdaki/gin_gdaki.h
 +++ b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
-@@ -454,16 +454,394 @@ __device__ __noinline__ static bool tsTestSplitPut(doca_gpu_dev_verbs_qp* qp, do
+@@ -454,16 +454,386 @@ __device__ __noinline__ static bool tsTestSplitPut(doca_gpu_dev_verbs_qp* qp, do
    return true;
  }
  
 +// ---------------------------------------------------------------------------
 +// gin-restore (rs, work package 4, redone 2026-10-12; EXPERIMENT.md 9.5, 9.6, 9.11.5 A1, 9.11.9 C2 and C6): the hold path.
-+// put, putValue and get read the GPU context's side-table pointer once (ncclGinGdakiGPUContext::restore); it is not null
-+// only in a process that asks for the restore (NCCL_GIN_FAULT_POLICY=hold with NCCL_GIN_RESTORE != 0, or a spare process).
-+// Build-time opt-in (user decision 2026-10-12): the hold path below exists only in a program compiled with
-+// NCCL_GIN_RESTORE_DEVICE; such a program calls it when the pointer is not null. A program compiled without the macro
-+// traps there instead (it must never post outside the log), so its kernels keep hk's code apart from that load, its
-+// compare and branch, and the trap. Null (fail-fast): hk's body either way. NCCL's own kernels are compiled without the
-+// macro; their contexts never get the pointer (only a user transparent-recovery context does). Every translation unit of
-+// one device link unit must agree on the macro: the API specializations at the end of this file differ with it.
++// Build-time opt-in (user direction 2026-10-12): it exists only in a program compiled with NCCL_GIN_RESTORE_DEVICE. Such
++// a program's put, putValue and get read the side-table pointer of the classification block (ncclGinGdakiQ4::restore,
++// through the GPU context's `fault`) and take the not inlined functions below when it is not null; it is null until
++// ncclGinRestoreResume succeeds (the library publishes it then; also in the log measurement mode, a test mode). A program
++// compiled without the macro is hk's code instruction for instruction: no load, no branch (ncclGinRestoreResume refuses
++// such a program: the nccl.h wrapper passes the macro's presence). Every translation unit of one device link unit must
++// agree on the macro (mixing them is not supported: a kernel compiled without it would post outside the log). NCCL's own
++// kernels are compiled without it.
 +// Inside the gate, in this order: the suppress budget (the spare process holds back what the survivor already executed;
 +// in the side table, not in the gate word, so hk's shared gate, wait, flush and park code is unchanged), the remote keys
 +// read after the gate entry (a restore rewrites them while the gate is odd), the request-message count (every post), the
@@ -167,6 +173,12 @@ index d158067..7f02959 100644
 +// signal table). A program compiled without the macro has neither.
 +#define NCCL_GIN_RS_SIG_PARAMS const __be32 *signalKeyAddr, uint32_t signalWin,
 +#define NCCL_GIN_RS_SIG_ARGS signalKeyAddr, signalWin,
++// The side table of the context, or null (no classification block, or not published by ncclGinRestoreResume). The
++// block's pointer is loaded near the gate by hk's code too; the second load is this layer's.
++NCCL_DEVICE_INLINE static struct ncclGinRsSide* rsSideOf(ncclGinGdakiGPUContext* gdaki) {
++  struct ncclGinGdakiQ4* const q4 = nccl::utility::loadConst(&gdaki->fault);
++  return q4 != nullptr ? nccl::utility::loadConst(&q4->restore) : nullptr;
++}
 +// The side table's entry of the QP to `peer` of this context, and its index (the host's: context * nranks + peer).
 +NCCL_DEVICE_INLINE static struct ncclGinRsQp* rsQpOf(struct ncclGinRsSide* rs, const ncclGinCtx& ctx, int peer,
 +                                                     uint32_t* idx) {
@@ -491,16 +503,6 @@ index d158067..7f02959 100644
 +#else   // NCCL_GIN_RESTORE_DEVICE
 +#define NCCL_GIN_RS_SIG_PARAMS
 +#define NCCL_GIN_RS_SIG_ARGS
-+// A program compiled without the device restore path stops where the side-table pointer is set, before anything is
-+// posted: a predicated trap in PTX (no new control flow at the source and PTX level; ptxas still emits a short branch
-+// around the trap instruction). Measured for work package 4 redone (sm_75, sm_86; gin-restore impl/notes_dev.md): an
-+// `if (rs) __trap();` moved some kernels' register counts by up to 16; with this one 48 of 54 kernels keep hk's count and
-+// the rest differ by at most 2. The memory clobber keeps every later access of hk's body after it. Such a program traps
-+// in every process that asks for the restore (the pointer is set at context creation, Resume or not): it must be compiled
-+// with NCCL_GIN_RESTORE_DEVICE to run there.
-+NCCL_DEVICE_INLINE static void rsNoRestorePath(const struct ncclGinRsSide* rs) {
-+  asm volatile("{\n\t.reg .pred p;\n\tsetp.ne.u64 p, %0, 0;\n\t@p trap;\n\t}" ::"l"(rs) : "memory");
-+}
 +#endif  // NCCL_GIN_RESTORE_DEVICE
 +
  template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode, typename Coop>
@@ -515,32 +517,30 @@ index d158067..7f02959 100644
    coop.sync();
    if (coop.thread_rank() == 0) {
      ncclGinGdakiGPUContext* gdaki = &((struct ncclGinGdakiGPUContext*)ctx.handle)[ctx.contextId];
-+    // gin-restore (rs, work package 4): a process that asks for the restore takes the hold path (rsPutHold, above) in a
-+    // program compiled with NCCL_GIN_RESTORE_DEVICE and traps in one compiled without it; fail-fast (null): hk's body
-+    // below, unchanged and not re-indented.
-+    struct ncclGinRsSide* const rs = loadConst(&gdaki->restore);
 +#ifdef NCCL_GIN_RESTORE_DEVICE
++    // gin-restore (rs, work package 4): a published side table takes the hold path (rsPutHold, above); null: hk's body
++    // below, unchanged and not re-indented (compiled without the macro there is nothing else)
++    struct ncclGinRsSide* const rs = rsSideOf(gdaki);
 +    if (rs != nullptr) {
 +      rsPutHoldCall<resource_sharing_mode>(ctx, peer, hasWins, dstWin, dstOff, srcWin, srcOff, bytes, hasSignal,
 +                                           signalOffset, signalKeyAddr, signalWin, signalOp, signalOpArg, hasCounter,
 +                                           required, given, optFlags, rs);
 +    } else {
-+#else
-+    rsNoRestorePath(rs);  // compiled without the device restore path: trap when it is set (never post outside the log)
-+    {
 +#endif
      doca_gpu_dev_verbs_qp* qp = loadConst(&gdaki->gdqp) + peer;
      doca_gpu_dev_verbs_qp* companion_qp;
      ncclGinGdakiMemHandle* dstMh = (ncclGinGdakiMemHandle*)dstWin;
-@@ -542,6 +920,7 @@ NCCL_DEVICE_INLINE static void putImplMode(
+@@ -541,6 +911,9 @@ NCCL_DEVICE_INLINE static void putImplMode(
+ #ifdef NCCL_DEVICE_GIN_GDAKI_ENABLE_DEBUG
      doca_gpu_dev_verbs_wait(qp);
      if (hasCounter) doca_gpu_dev_verbs_wait(companion_qp);
- #endif
++#endif
++#ifdef NCCL_GIN_RESTORE_DEVICE
 +    }  // gin-restore: end of hk's body
+ #endif
    }
    coop.sync();
- }
-@@ -549,26 +928,29 @@ NCCL_DEVICE_INLINE static void putImplMode(
+@@ -549,26 +922,29 @@ NCCL_DEVICE_INLINE static void putImplMode(
  template <typename Coop>
  NCCL_DEVICE_INLINE static void putImpl(
    ncclGinCtx ctx, Coop coop, int peer, bool hasWins, ncclGinWindow_t dstWin, size_t dstOff, ncclGinWindow_t srcWin,
@@ -580,7 +580,7 @@ index d158067..7f02959 100644
      break;
    }
  }
-@@ -576,13 +958,27 @@ NCCL_DEVICE_INLINE static void putImpl(
+@@ -576,13 +952,24 @@ NCCL_DEVICE_INLINE static void putImpl(
  template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode, typename Coop, typename T>
  NCCL_DEVICE_INLINE static void putValueImplMode(
    ncclGinCtx ctx, Coop coop, int peer, ncclGinWindow_t dstWin, size_t dstOff, T srcData, bool hasSignal,
@@ -594,31 +594,30 @@ index d158067..7f02959 100644
    coop.sync();
    if (coop.thread_rank() == 0) {
      ncclGinGdakiGPUContext* gdaki = &((struct ncclGinGdakiGPUContext*)ctx.handle)[ctx.contextId];
-+    // gin-restore (rs, work package 4): the hold path (rsPutValueHold) with NCCL_GIN_RESTORE_DEVICE, a trap without it;
-+    // fail-fast: hk's body below, unchanged
-+    struct ncclGinRsSide* const rs = loadConst(&gdaki->restore);
 +#ifdef NCCL_GIN_RESTORE_DEVICE
++    // gin-restore (rs, work package 4): a published side table takes the hold path (rsPutValueHold); null: hk's body
++    // below, unchanged (compiled without the macro there is nothing else)
++    struct ncclGinRsSide* const rs = rsSideOf(gdaki);
 +    if (rs != nullptr) {
 +      rsPutValueHoldCall<resource_sharing_mode, T>(ctx, peer, dstWin, dstOff, srcData, hasSignal, signalOffset,
 +                                                   signalKeyAddr, signalWin, signalOp, signalOpArg, required, given,
 +                                                   optFlags, rs);
 +    } else {
-+#else
-+    rsNoRestorePath(rs);  // compiled without the device restore path: trap when it is set (never post outside the log)
-+    {
 +#endif
      doca_gpu_dev_verbs_qp* qp = loadConst(&gdaki->gdqp) + peer;
      ncclGinGdakiMemHandle* dstMh = (ncclGinGdakiMemHandle*)dstWin;
      uint32_t codeOpt = q4CollapsedCodeOpt(qp, nccl::gin::gdaki::docaOptFlagsFromGinOptFlags(optFlags));
-@@ -621,6 +1017,7 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
+@@ -620,6 +1007,9 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
+ 
  #ifdef NCCL_DEVICE_GIN_GDAKI_ENABLE_DEBUG
      doca_gpu_dev_verbs_wait(qp);
- #endif
++#endif
++#ifdef NCCL_GIN_RESTORE_DEVICE
 +    }  // gin-restore: end of hk's body
+ #endif
    }
    coop.sync();
- }
-@@ -628,27 +1025,28 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
+@@ -628,27 +1018,28 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
  template <typename Coop, typename T>
  NCCL_DEVICE_INLINE static void putValueImpl(ncclGinCtx ctx, Coop coop, int peer, ncclGinWindow_t dstWin, size_t dstOff,
                                              T srcData, bool hasSignal, size_t signalOffset, __be32 signalKey,
@@ -659,7 +658,7 @@ index d158067..7f02959 100644
      break;
    }
  }
-@@ -680,6 +1078,60 @@ NCCL_DEVICE_INLINE static uint64_t loadAtIndex(uint64_t* arr, int index) {
+@@ -680,6 +1071,60 @@ NCCL_DEVICE_INLINE static uint64_t loadAtIndex(uint64_t* arr, int index) {
    }
  }
  
@@ -720,34 +719,33 @@ index d158067..7f02959 100644
  template <enum doca_gpu_dev_verbs_resource_sharing_mode doca_sharing_mode,
            enum ncclGinResourceSharingMode gin_sharing_mode, typename Coop>
  NCCL_DEVICE_INLINE static void getImplMode(ncclGinCtx ctx, Coop coop, int peer, ncclGinWindow_t remoteWin,
-@@ -689,6 +1141,18 @@ NCCL_DEVICE_INLINE static void getImplMode(ncclGinCtx ctx, Coop coop, int peer,
+@@ -689,6 +1134,15 @@ NCCL_DEVICE_INLINE static void getImplMode(ncclGinCtx ctx, Coop coop, int peer,
    coop.sync();
    if (coop.thread_rank() == 0) {
      ncclGinGdakiGPUContext* gdaki = &((struct ncclGinGdakiGPUContext*)ctx.handle)[ctx.contextId];
-+    // gin-restore (rs, work package 4): the hold path (rsGetHold) with NCCL_GIN_RESTORE_DEVICE, a trap without it;
-+    // fail-fast: hk's body below, unchanged
-+    struct ncclGinRsSide* const rs = loadConst(&gdaki->restore);
 +#ifdef NCCL_GIN_RESTORE_DEVICE
++    // gin-restore (rs, work package 4): a published side table takes the hold path (rsGetHold); null: hk's body below,
++    // unchanged (compiled without the macro there is nothing else)
++    struct ncclGinRsSide* const rs = rsSideOf(gdaki);
 +    if (rs != nullptr) {
 +      rsGetHold<doca_sharing_mode, gin_sharing_mode>(ctx, peer, remoteWin, remoteOff, localWin, localOff, bytes,
 +                                                     optFlags, rs);
 +    } else {
-+#else
-+    rsNoRestorePath(rs);  // compiled without the device restore path: trap when it is set (never post outside the log)
-+    {
 +#endif
      doca_gpu_dev_verbs_qp* qp = loadConst(&gdaki->gdqp) + peer;
      ncclGinGdakiMemHandle* remoteMh = (ncclGinGdakiMemHandle*)remoteWin;
      ncclGinGdakiMemHandle* localMh = (ncclGinGdakiMemHandle*)localWin;
-@@ -710,6 +1174,7 @@ NCCL_DEVICE_INLINE static void getImplMode(ncclGinCtx ctx, Coop coop, int peer,
+@@ -710,6 +1164,9 @@ NCCL_DEVICE_INLINE static void getImplMode(ncclGinCtx ctx, Coop coop, int peer,
        tsPostLeave(ctx, loadConst(&gdaki->fault), qp, peer);
      }
    tsSkipped:;
++#ifdef NCCL_GIN_RESTORE_DEVICE
 +    }  // gin-restore: end of hk's body
++#endif
    }
    coop.sync();
  }
-@@ -1454,19 +1919,30 @@ struct ncclGinApi_Put<NCCL_NET_DEVICE_GIN_GDAKI> {
+@@ -1454,19 +1911,30 @@ struct ncclGinApi_Put<NCCL_NET_DEVICE_GIN_GDAKI> {
      using nccl::utility::loadConst;
      size_t signalOffset = 0;
      __be32 signalKey = 0;
@@ -780,7 +778,7 @@ index d158067..7f02959 100644
    }
  };
  
-@@ -1481,18 +1957,30 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_GDAKI> {
+@@ -1481,18 +1949,30 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_GDAKI> {
      using nccl::utility::loadConst;
      size_t signalOffset = 0;
      __be32 signalKey = 0;
@@ -813,16 +811,25 @@ index d158067..7f02959 100644
  };
  
 diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
-index a1916cc..82b1cc9 100644
+index a1916cc..fec5dc0 100644
 --- a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
 +++ b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
-@@ -219,6 +219,301 @@ struct ncclGinGdakiQ4 {
+@@ -217,8 +217,310 @@ struct ncclGinGdakiQ4 {
+   uint32_t seq;                                 // atomically incremented by the GPU
+   uint32_t late_read_ns;                        // collapsed CQ: re-read slot 0 this long after detection (0 = off)
    uint32_t sticky[NCCL_GIN_GDAKI_Q4_MAX_CTX];   // per GIN context: 1 once an error CQE was classified
++  // gin-restore (rs; user direction 2026-10-12, impl/rs_log_api.h): the side table of this GDAKI context, null until
++  // ncclGinRestoreResume succeeds (or the log measurement mode, a test mode) and in every other process. Appended to this
++  // block, not to ncclGinGdakiGPUContext: the GPU context keeps hk's layout and stride, so device code compiled without
++  // NCCL_GIN_RESTORE_DEVICE is hk's instruction for instruction; only code compiled with it reads this field (gin_gdaki.h).
++  // No device code uses this block's size; its other fields keep their offsets.
++  struct ncclGinRsSide* restore;
  };
  
 +// gin-restore (rs, work packages 3 and 4; EXPERIMENT.md 9.5, 9.6, 9.9, 9.11.5): the side table of one GDAKI context, in
-+// device memory, zeroed at creation. Only a process that asks for the restore has one; elsewhere
-+// ncclGinGdakiGPUContext::restore is null and no device code below runs. A 128-byte header (its second half: the send-side
++// device memory, zeroed at creation. Only a process that asks for the restore has one; the device reaches it through
++// ncclGinGdakiQ4::restore, which stays null until ncclGinRestoreResume succeeds, and only code compiled with
++// NCCL_GIN_RESTORE_DEVICE reads it. A 128-byte header (its second half: the send-side
 +// log ring's control words), then one ncclGinRsQp per QP of the context array (qp index = peer + context * nranks), then
 +// the send-side log: ONE ring for every QP of the context (user decision 2026-10-12: its memory follows the operations
 +// between checkpoints, not the number of peers; the restore needs one such context per communicator, so it is one ring per
@@ -1118,19 +1125,7 @@ index a1916cc..82b1cc9 100644
  struct ncclGinGdakiGPUContext {
    struct doca_gpu_dev_verbs_qp* gdqp;
    struct doca_gpu_dev_verbs_qp* companion_gdqp;
-@@ -233,11 +528,30 @@ struct ncclGinGdakiGPUContext {
-   uint64_t* last_visible_get; // per-peer
- 
-   struct ncclGinGdakiQ4* fault; // GIN Q4: nullptr unless NCCL_GIN_FAULT_CLASSIFY=1 (research build)
-+  // gin-restore (rs): the side table, null unless this process asks for the restore. Appended without a context-layout
-+  // version change (user decision 2026-10-12, EXPERIMENT.md 9.11.5): a program must be built with these headers; one built
-+  // with older headers and more than one context would misread contexts from index 1 on (not supported). Written once,
-+  // before the context is handed out. put, putValue and get read it once (gin_gdaki.h): null, hk's code; not null, the
-+  // hold path in a program compiled with NCCL_GIN_RESTORE_DEVICE, a trap in one compiled without it (user decision
-+  // 2026-10-12: only the programs that use the restore pay for its device code).
-+  struct ncclGinRsSide* restore;
- };
- 
+@@ -238,6 +540,18 @@ struct ncclGinGdakiGPUContext {
  struct ncclGinGdakiMemHandle {
    __be32* rkeys;
    __be32 lkey;
@@ -1150,10 +1145,10 @@ index a1916cc..82b1cc9 100644
  
  #endif /* _NCCL_DEVICE_GIN_GDAKI_DEVICE_HOST_COMMON_H_ */
 diff --git a/src/nccl.h.in b/src/nccl.h.in
-index f2149a2..f9b706d 100644
+index f2149a2..e47e9ef 100644
 --- a/src/nccl.h.in
 +++ b/src/nccl.h.in
-@@ -1100,6 +1100,49 @@ typedef struct {
+@@ -1100,6 +1100,73 @@ typedef struct {
  ncclResult_t  ncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* stats);
  ncclResult_t pncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* stats);
  
@@ -1174,7 +1169,8 @@ index f2149a2..f9b706d 100644
 + * error), or one still busy with a nonblocking operation (ncclInvalidArgument); every rank of such a job should see the
 + * same. Do not call it between ncclGroupStart and ncclGroupEnd. ncclGetLastError is
 + * process-wide: another thread's warning can replace the reason before it is read. A second call returns the first
-+ * call's result. This build has no hold reaction yet: the communicator stays fail-fast.
++ * call's result. Until it succeeds the side table is not given to the device: a communicator whose ncclGinRestoreResume
++ * was not called, or refused, runs the GIN kernels' stock path, fail-fast (see the build-time opt-in below).
 + * ncclGinRestoreStep(comm, step, blob, bytes, &stableStep): the step hook, called after the kernels of `step` and their
 + *   last flush finished. *stableStep (may be NULL) is the highest step number s <= step such that every put, putValue and
 + *   signal this rank made in steps <= s is covered by its receiver's stable checkpoint. The send-side log holds
@@ -1188,10 +1184,33 @@ index f2149a2..f9b706d 100644
 + * *stableStep to NCCL_GIN_RESTORE_STEP_NONE).
 + */
 +struct ncclDevComm;
-+ncclResult_t  ncclGinRestoreResume(ncclComm_t comm, const struct ncclDevComm* devComm, unsigned long long* step,
-+                                   void* blob, size_t* bytes);
-+ncclResult_t pncclGinRestoreResume(ncclComm_t comm, const struct ncclDevComm* devComm, unsigned long long* step,
-+                                   void* blob, size_t* bytes);
++/* The library's entry: deviceBuilt says whether the calling program was compiled with NCCL_GIN_RESTORE_DEVICE. Call it
++ * through the wrapper below; a binding that calls it directly passes 1 only for kernels compiled with the macro. */
++ncclResult_t  ncclGinRestoreResumeBuilt(ncclComm_t comm, const struct ncclDevComm* devComm, unsigned long long* step,
++                                        void* blob, size_t* bytes, int deviceBuilt);
++ncclResult_t pncclGinRestoreResumeBuilt(ncclComm_t comm, const struct ncclDevComm* devComm, unsigned long long* step,
++                                        void* blob, size_t* bytes, int deviceBuilt);
++/* Build-time opt-in of the device restore path (gin-restore, user direction 2026-10-12): a program that uses the restore
++ * compiles every translation unit of its device link unit with -DNCCL_GIN_RESTORE_DEVICE (on the command line, so that it
++ * is defined before this header). Its GIN kernels then carry the device restore path (the send-side log, the suppress
++ * budget, the key re-read), used only once ncclGinRestoreResume has succeeded. Compiled without it, the kernels are the
++ * stock GDAKI code (not one instruction more) and ncclGinRestoreResume refuses with the reason "program not built with
++ * NCCL_GIN_RESTORE_DEVICE" (every rank gets the same result). The flag describes the translation unit that calls
++ * ncclGinRestoreResume; it and every unit of the kernels' device link unit must agree. Mixing translation units compiled
++ * with and without it in one program is not supported and not detected here: a kernel compiled without it would post
++ * outside the send-side log. The log measurement mode (NCCL_GIN_RESTORE_LOG_MEASURE=<ms>, a test mode for the cost
++ * cells) gives the side table to the device when the GIN context is created, without ncclGinRestoreResume (which refuses
++ * in that mode); it needs a program compiled with NCCL_GIN_RESTORE_DEVICE. NCCL_GIN_RESTORE_LOG_MEASURE_LOG=0 keeps the
++ * log off there (the hold path unarmed). */
++#ifdef NCCL_GIN_RESTORE_DEVICE
++#define NCCL_GIN_RESTORE_DEVICE_BUILT 1
++#else
++#define NCCL_GIN_RESTORE_DEVICE_BUILT 0
++#endif
++static inline ncclResult_t ncclGinRestoreResume(ncclComm_t comm, const struct ncclDevComm* devComm,
++                                                unsigned long long* step, void* blob, size_t* bytes) {
++  return ncclGinRestoreResumeBuilt(comm, devComm, step, blob, bytes, NCCL_GIN_RESTORE_DEVICE_BUILT);
++}
 +#define NCCL_GIN_RESTORE_STEP_NONE (~0ULL)
 +ncclResult_t  ncclGinRestoreStep(ncclComm_t comm, unsigned long long step, const void* blob, size_t bytes,
 +                                 unsigned long long* stableStep);
@@ -1204,7 +1223,7 @@ index f2149a2..f9b706d 100644
  } // end extern "C"
  #endif
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 2760d43..a6266a1 100644
+index 2760d43..a547e9f 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -186,10 +186,11 @@ out:
@@ -1230,7 +1249,7 @@ index 2760d43..a6266a1 100644
  
    GdakiGlobalGPUBufferTable() : cumemhandle(0), num_elements(0), next_unused_idx(0), gpu_ptr(nullptr), mr(nullptr) {};
    ~GdakiGlobalGPUBufferTable() {
-@@ -426,6 +430,10 @@ static void gdakiTsStart(struct gdakiRecHost* r);
+@@ -426,6 +430,176 @@ static void gdakiTsStart(struct gdakiRecHost* r);
  static bool gdakiTsFree(struct gdakiRecHost* r);
  static inline void gdakiRecFwMark(struct gdakiRecHost* r);  // gin-harden: below
  static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollComm* cComm);
@@ -1238,21 +1257,188 @@ index 2760d43..a6266a1 100644
 +static void gdakiRsNoteOff(void* comm, void* handle, const char* offWhy);  // gin-restore (rs): below
 +static void gdakiRsMeasureStep(struct gdakiRecHost* r);                // gin-restore (rs, work package 4): below
 +static void gdakiRsTeardownLine(struct gdakiRecHost* r);               // gin-restore (rs, work package 4): below
++// ---- gin-restore (dev): log API (begin; impl/rs_log_api.h, byte for byte) ----
++// Positions are 64-bit counts of entries reserved on this rank's ring before the entry (the ring's head when it was
++// reserved). Threads: "helper" = the context's helper thread only (the NIC copy path has one user at a time); "app" = the
++// application thread (CUDA calls allowed); "any" = any thread. A process that does not ask for the restore has no ring:
++// gdakiRsLogReady is false and every other call returns ncclInvalidUsage (or does nothing).
++struct gdakiRecHost;
++struct gdakiTsRepostPlan;
++#define GDAKI_RS_POS_INF (~0ULL)             // "every position": the cover of a peer whose log broke (until its next pause)
++#define GDAKI_RS_MSG_FIRST 21                // helper-socket message types of this branch: 21..31 (none used yet)
++#define GDAKI_RS_MSG_LAST 31
++
++// What the sender's helper reads in a checkpoint's input pause toward `peer` (9.4 step 2), every QP to the peer
++// quiesced (gate odd, count 0, held WQEs rung): the cut and the counts PAUSED carries. The caller keeps it until the
++// checkpoint is stable (CKPT_STABLE) or abandoned.
++struct gdakiRsLogPause {
++  uint64_t head = 0;      // L: the ring's head with the peer's QPs quiesced; every entry of the peer is below it
++  int nqp = 0;            // QPs to the peer, in GIN-context order (gdakiRecForPeer)
++  uint64_t msgs[NCCL_GIN_RECOVERY_MAX_QPS] = {};  // M per QP: request messages posted to the peer (the device's count)
++  uint64_t ovf[NCCL_GIN_RECOVERY_MAX_QPS] = {};   // per QP: operations not logged (ring full), so far
++  uint64_t gets[NCCL_GIN_RECOVERY_MAX_QPS] = {};  // per QP: gets with data posted to the peer, so far (the get rule)
++  bool logComplete = false;  // the log toward the peer is kept from this pause on (logOn set and read back on every QP to
++                             // it): the log's part of PAUSED's "armable" (an overflow or a get later DISARMs, gdakiRsLogPoll)
++  bool firstPause = false;   // this pause set the QPs' logOn: the peer's log starts at `head`
++};
++
++// any. The side table and the ring are set up on this context (a process that asks for the restore, setup succeeded).
++static bool gdakiRsLogReady(struct gdakiRecHost* r);
++
++// helper, in the input pause toward `peer` (its QPs quiesced), before the pause's even epoch is published: sets the
++// QPs' logOn over the NIC if not set (and reads it back), then reads the head, the per-QP msgs and overflow counts.
++// A peer whose log broke (overflow since its last stable cut) is covered up to here and its log restarts at `head`.
++static ncclResult_t gdakiRsLogPauseRead(struct gdakiRecHost* r, int peer, struct gdakiRsLogPause* out, char* why,
++                                        size_t whyLen);
++
++// helper, on the peer's CKPT_STABLE for the checkpoint taken at `atPause`: the peer's entries below atPause->head are
++// covered (the trim of 9.5), and the tail advances over every covered entry from the tail on (written to the device over
++// the NIC). ncclInvalidUsage (with why) when one of the peer's QPs overflowed after the pause (read now): the log since
++// this cut is broken, the caller must not arm the peer on it (gdakiRsLogPoll reports it for DISARM too).
++static ncclResult_t gdakiRsLogStable(struct gdakiRecHost* r, int peer, const struct gdakiRsLogPause* atPause,
++                                     char* why, size_t whyLen);
++
++// helper: the ring's head over the NIC.  app: the same with a synchronous CUDA copy (ncclGinRestoreStep, after the step's
++// kernels and their last flush: every entry of the step is below it).
++static ncclResult_t gdakiRsLogReadHead(struct gdakiRecHost* r, uint64_t* head);
++static ncclResult_t gdakiRsLogReadHeadApp(struct gdakiRecHost* r, uint64_t* head);
++
++// helper: per QP to `peer` (GIN-context order), the request messages posted (M). Exact only while the peer's QPs are
++// quiesced; otherwise a value the count has passed.
++static ncclResult_t gdakiRsLogReadMsgs(struct gdakiRecHost* r, int peer, uint64_t* msgs, int* nqp);
++// helper: per QP to `peer`, the suppress budget left (request messages the spare still holds back; 0 on a survivor and
++// once the spare's replay passed it: a pause answers BUSY while any is left), and the gets with data posted so far.
++static ncclResult_t gdakiRsLogReadSuppress(struct gdakiRecHost* r, int peer, uint64_t* left, int* nqp);
++static ncclResult_t gdakiRsLogReadGets(struct gdakiRecHost* r, int peer, uint64_t* gets, int* nqp);
++
++// any: every logged entry below this position is covered (max of the tail and the lowest cut over the QPs that log;
++// GDAKI_RS_POS_INF when no QP logs). ncclGinRestoreStep: step t is stable once this is >= the head read at Step(t).
++static uint64_t gdakiRsLogCoveredUpTo(struct gdakiRecHost* r);
++
++// pure: the highest step whose head is covered, over `n` (step, head) pairs in increasing order; `none` if none.
++static uint64_t gdakiRsStableStepOf(const uint64_t* steps, const uint64_t* heads, int n, uint64_t coveredUpTo,
++                                    uint64_t none);
++
++// helper, periodic (the host branch's helper step, every 10 ms; nobody else calls it): the peers to DISARM are appended to
++// *broke, each once per cause: a peer whose QP lost an operation since its cut (overflow, 9.5; its entries are covered
++// until its next pause, or from its last pause on when nothing was lost since that one), a peer toward which this rank
++// posted a get since its stable cut (the get rule, 9.7 item 8 and 9.10.4: the per-QP get count moved past the count read
++// at that cut's pause), and every peer once a second user transparent-recovery context exists on this communicator (one
++// ring per context is then no longer one per rank). The caller DISARMs them (gdakiHoldDisarm). Also the tail's advance
++// over covered entries (a slot still being written stops it until the next call) and an occupancy sample.
++static ncclResult_t gdakiRsLogPoll(struct gdakiRecHost* r, std::vector<int>* broke);
++
++// helper: whether the peer's log is complete since its last stable cut (every QP to it logs from a stable cut, no break,
++// no get reported since; false before the peer's first stable checkpoint).
++static bool gdakiRsLogComplete(struct gdakiRecHost* r, int peer);
++
++// helper: the peer's entries at positions [from, to) in position order (the export of 9.6). `to` must have been read
++// with the peer's QPs quiesced (a hold start, or a pause), so each of the peer's entries is complete. `from` may be the
++// cut of any checkpoint this rank confirmed since the peer's last stable one (at or above the kept cut). Refused (with
++// why) when an entry of the peer from `from` on may be gone: `from` below the kept cut, an operation lost or a get posted
++// toward the peer since the cut (counts read now), or [from, to) not inside the ring.
++static ncclResult_t gdakiRsLogCollect(struct gdakiRecHost* r, int peer, uint64_t from, uint64_t to,
++                                      std::vector<struct ncclGinRsLogEntry>* out, char* why, size_t whyLen);
++
++// any: the ring's use, from host counters only (no device cost; the helper samples head - tail in gdakiRsLogPoll).
++struct gdakiRsLogOcc {
++  uint64_t nEntries = 0, samples = 0, occSum = 0, occMax = 0, trims = 0, tail = 0, headSeen = 0, ovfOps = 0;
++  uint64_t blockedPending = 0;  // tail advances stopped by a slot still being written
++};
++static void gdakiRsLogOccupancy(struct gdakiRecHost* r, struct gdakiRsLogOcc* out);
++
++// any: windows of this context's collComm deregistered after the context started (their deregistration sequence is above
++// the context's registry sequence; 9.11.4 T5, 9.11.9 C2). On a change the caller DISARMs every peer until that peer's next
++// stable checkpoint whose pause comes after the change (an entry since a cut may name the window as a put's source).
++static uint64_t gdakiRsWinGoneCount(struct gdakiRecHost* r);
++
++// ---- work package 9 (provisional until its hand-back; the names and meaning are meant to stay) ----
++// helper: the cumulative responder executed count per QP (RL13): every QUERY_QP's rmsn of the QP (G7's watch sample,
++// gdakiTsExecuted) adds (rmsn - last) mod 2^24; a Baseline after a Commit restarts `last` at the new rmsn0 without a
++// step. A process that does not ask for the restore keeps nothing.
++static void gdakiRsExecObserve(struct gdakiRecHost* r, int qpIdx, uint32_t rmsn);
++static void gdakiRsExecRebase(struct gdakiRecHost* r, int qpIdx, uint32_t rmsn0);
++// helper: one QUERY_QP per QP to `peer` now (outside the firmware guard, as the watch), folded in: P at a pause
++// (9.4 step 2), X at a hold start after 2ERR and again before the restore round's Commit (9.3 step 1).
++static ncclResult_t gdakiRsExecRead(struct gdakiRecHost* r, int peer, uint64_t* cum, int* nqp);
++// helper (the spare, before its replay): its responder counts toward `peer` start at the survivor's M read at the hold
++// start (every old WQE counts as executed).
++static void gdakiRsExecSetBase(struct gdakiRecHost* r, int qpIdx, uint64_t cum);
++// helper (the spare, before its replay): per QP to `peer`, suppress = X - P and msgs = X (9.6), over the NIC; refused
++// when X < P for a QP.
++static ncclResult_t gdakiRsSuppressSet(struct gdakiRecHost* r, int peer, const uint64_t* x, const uint64_t* p, int nqp,
++                                       char* why, size_t whyLen);
++// helper (a survivor's restore round, after ncclGinRecoverPrepare): every WQE of the ending epoch counts as executed:
++// plans with U = S and n = 0 for gdakiTsRepostApply (RL8), with the checks gdakiTsRepostPlanAll makes first.
++static ncclResult_t gdakiRsPlanAllExecuted(struct gdakiRecHost* r, int peer, std::vector<struct gdakiTsRepostPlan>& plans,
++                                           const char** why);
++// The log export on the data socket (survivor -> the restored rank's spare), after REJOIN: a header, then per entry the
++// entry and, for a put with data, its source bytes as read now, then a trailer with the verdict. The receiver applies
++// nothing unless the trailer says OK.
++#define GDAKI_RS_LOGX_MAGIC 0x4c535247u  // "GRSL"
++struct gdakiRsLogXHdr {
++  uint32_t magic, version;   // GDAKI_RS_LOGX_MAGIC, 1
++  int32_t from, to;          // the survivor's rank, the restored rank
++  uint32_t incarnation, nqp; // the restored rank's new incarnation; QPs of the survivor to it (GIN-context order)
++  uint64_t nonce;            // the GIN context's nonce
++  uint64_t cut, head;        // positions: the restored rank's stable cut on this survivor's ring, the head at the hold
++  uint64_t nEntries;         // entries that follow
++  uint64_t x[NCCL_GIN_RECOVERY_MAX_QPS];  // X per QP: this survivor's cumulative executed count of the restored rank's
++                                          // messages (responder side), after the hold start's 2ERR
++  uint64_t m[NCCL_GIN_RECOVERY_MAX_QPS];  // M per QP: messages this survivor posted to the restored rank (its count at
++                                          // the hold start; the spare's responder counts start there)
++};
++struct gdakiRsLogXEnd {
++  uint32_t magic, ok;        // GDAKI_RS_LOGX_MAGIC; 1: every source read and every checksum matched
++  char why[120];             // else why (e.g. "source buffer changed")
++};
++// helper (survivor): writes the export through `put` (bytes in order; false: the socket failed). Each put's source is
++// read over the NIC copy path under the window registry's lock after checking that the window is still registered;
++// with a checksum the data is counted again and a mismatch ends the export with ok = 0 and "source buffer changed".
++static ncclResult_t gdakiRsLogExport(struct gdakiRecHost* r, int peer, uint64_t cut, uint64_t head, uint32_t incarnation,
++                                     const uint64_t* x, const uint64_t* m, int nqp,
++                                     bool (*put)(void* arg, const void* p, size_t n), void* arg, char* why,
++                                     size_t whyLen);
++// The spare's import (app thread: the spare's ncclGinRestoreResume, after its image is written and before its kernels
++// and its helper start; CUDA calls are allowed there). exports[q]: the bytes survivor q sent in its STATE (the host
++// branch's gdakiCkptSpareData::exports, kept unparsed; empty for this rank); peerP, nPeers: the survivors' P per QP at
++// the checkpoint the spare restores from (gdakiCkptSpareData::hdr[0].peerP and nPeers, impl/rs_ckpt_api.h). Every export
++// is parsed and checked first (to = this rank, the incarnation, this context's nonce, its verdict OK, a P for its rank,
++// X >= P per QP); then the entries are applied to this process's windows and signal table in a fixed order (by survivor
++// rank, then position) and per QP to each survivor: suppress = X - P, msgs = X, the responder count's base = M. Refused
++// with nothing applied when a check fails; refused part way (the restore falls back) when a copy fails.
++// One WARN line per QP with a budget when the spare's replay has used it (or at its context's end): "GIN/RS: rank R:
++// suppress peer=P qp=Q budget=B suppressed=S left=L" (B = X - P, S = B - L).
++struct gdakiCkptPeerP;  // impl/rs_ckpt_api.h (host branch)
++static ncclResult_t gdakiRsSpareImport(struct gdakiRecHost* r, const struct gdakiCkptPeerP* peerP, uint32_t nPeers,
++                                       const std::vector<std::vector<uint8_t>>& exports, uint32_t incarnation,
++                                       char* why, size_t whyLen);
++// ---- gin-restore (dev): log API (end) ----
++// gin-restore (dev, work package 6): the log's host state is made in gdakiRsStart and freed in gdakiRecFree (region
++// "log, suppress and replay" below)
++static void gdakiRsLogCreate(struct gdakiRecHost* r, uint32_t nEntries, size_t ringOff);
++static void gdakiRsLogFree(struct gdakiRecHost* r);
++static uint64_t gdakiRsLogTrimErrors(struct gdakiRecHost* r);
++// gin-restore (dev; user direction 2026-10-12): the side table's address goes to the device (the classification block)
++// only when ncclGinRestoreResume succeeds, or in the log measurement mode (region "log, suppress and replay" below)
++static void gdakiRsPublishFor(void* comm, void* handle);
++static bool gdakiRsPublish(struct gdakiRecHost* r, char* why, size_t whyLen);
  static thread_local bool gdakiTsInHelper = false;  // the helper thread may call the gin_recovery host API
  static thread_local struct gdakiRecHost* gdakiTsOwner = nullptr;  // the helper's own context (gdakiRecFind)
  static ncclResult_t gdakiTsZeroDev(struct gdakiRecHost* r, void* dst, size_t n, uint8_t byte);
-@@ -1319,6 +1327,27 @@ struct gdakiRecHost {
+@@ -1319,6 +1493,29 @@ struct gdakiRecHost {
    // gin-remaining: the NIC copy path (struct gdakiLb). nullptr: every device-state copy is a stream copy (as before)
    struct gdakiLb* lb = nullptr;
    std::atomic<uint64_t> nStreamCopies{0}; // device-state copies that went through the private stream
 +  // gin-restore (rs, work package 3): the side table and the send-side log rings of this context (one device allocation,
 +  // a process that asks for the restore only). Owned here, not by the helper's state: freed in gdakiRecFree after the NIC
-+  // copy path's MRs are gone, so the context's pointer to it never outlives it. rsPtrSet: written into every context of
-+  // the device array (gdakiTsStart, last step before the helper starts).
++  // copy path's MRs are gone, so no published pointer outlives it while a kernel can run. rsPtrSet: set up (gdakiTsStart,
++  // before the helper starts); rsPublished: its address given to the device by a successful ncclGinRestoreResume.
 +  void* rsAlloc = nullptr;         // the allocation (rsBytes + 4 KiB)
 +  void* rsBase = nullptr;          // its first 4 KiB-aligned address: the side table (the NIC path registers whole pages)
 +  size_t rsBytes = 0;              // a multiple of 4 KiB
-+  bool rsPtrSet = false;
++  bool rsPtrSet = false;           // the side table is set up (since the user direction of 2026-10-12: not yet published)
++  std::atomic<bool> rsPublished{false};  // its address is in the classification block (ncclGinRestoreResume; gdakiRsPublish)
 +  uint64_t rsWinSeq = 0;          // the window registry's sequence when this context started (later windows: "after")
 +  bool rsLbOk = false;            // the restore buffers are in the NIC copy path's MRs and the side table read back
 +  char rsLbWhy[128] = {0};        // why not
@@ -1266,10 +1452,11 @@ index 2760d43..a6266a1 100644
 +  double rsMeasureNext = 0;
 +  uint64_t rsMeasureRounds = 0, rsMeasureErrs = 0;
 +  uint64_t rsOccSamples = 0, rsOccSum = 0, rsOccMax = 0;
++  struct gdakiRsLogHost* rsLog = nullptr;  // gin-restore (dev, work package 6): the log's host state (no measurement mode)
  };
  
  static std::mutex gdakiRecRegMu;
-@@ -1470,14 +1499,26 @@ struct gdakiLb {
+@@ -1470,14 +1667,26 @@ struct gdakiLb {
    size_t testBytes = 0, testNonzero = 0;
    int testShadow = 0;               // gpu-detect: device QP structs that matched the host shadow (self-test, NIC only)
    char why[224] = {0};              // why the path is off
@@ -1297,7 +1484,7 @@ index 2760d43..a6266a1 100644
  
  // The path goes off: both loopback QPs to ERR (an error completion put one there already; nothing more lands after
  // this), one WARN. Later copies use the private stream.
-@@ -1496,10 +1537,12 @@ static void gdakiLbOff(struct gdakiRecHost* r, const char* why) {
+@@ -1496,10 +1705,12 @@ static void gdakiLbOff(struct gdakiRecHost* r, const char* why) {
         r->ctx ? r->ctx->rank : -1, lb->why, gdakiQ4MonoMs());
  }
  
@@ -1313,7 +1500,7 @@ index 2760d43..a6266a1 100644
    static const uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE);
    const int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;  // strict ordering
    CUdeviceptr base = 0;
-@@ -1543,7 +1586,8 @@ static ncclResult_t gdakiLbAddRange(struct gdakiLb* lb, const void* p, size_t n,
+@@ -1543,7 +1754,8 @@ static ncclResult_t gdakiLbAddRange(struct gdakiLb* lb, const void* p, size_t n,
      }
    }
    if (m.mr == nullptr) {
@@ -1323,7 +1510,7 @@ index 2760d43..a6266a1 100644
      return ncclSystemError;
    }
    m.sample = a;
-@@ -1892,6 +1936,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
+@@ -1892,6 +2104,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
    if (r == nullptr) return;
    if (g->q4 == nullptr) {
      WARN("GIN/REC: NCCL_GIN_FAULT_RECOVERY=1 needs NCCL_GIN_FAULT_CLASSIFY=1; recovery disabled on rank %d", g->rank);
@@ -1332,7 +1519,7 @@ index 2760d43..a6266a1 100644
      gdakiTsFree(r);
      delete r;
      g->rec = nullptr;
-@@ -1903,6 +1949,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
+@@ -1903,6 +2117,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
    if (cudaStreamCreateWithFlags(&r->stream, cudaStreamNonBlocking) != cudaSuccess ||
        cudaHostAlloc((void**)&r->pinned, r->pinnedSize, cudaHostAllocDefault) != cudaSuccess) {
      WARN("GIN/REC: could not allocate the recovery stream/staging; recovery disabled on rank %d", g->rank);
@@ -1341,10 +1528,11 @@ index 2760d43..a6266a1 100644
      if (r->stream) cudaStreamDestroy(r->stream);
      gdakiTsFree(r);
      delete r;
-@@ -1956,6 +2004,10 @@ static bool gdakiRecFree(struct gdakiRecHost* r) {
+@@ -1956,6 +2172,11 @@ static bool gdakiRecFree(struct gdakiRecHost* r) {
    if (r->copyEv) cudaEventDestroy(r->copyEv);  // gin-harden
    if (r->stream) cudaStreamDestroy(r->stream);
    if (r->pinned) cudaFreeHost(r->pinned);
++  gdakiRsLogFree(r);  // gin-restore (dev, work package 6): the log's host state (nothing in a fail-fast process)
 +  if (r->rsAlloc != nullptr) {  // gin-restore (rs): the side table and log rings, after the NIC path's MRs are gone and
 +    (void)cudaFree(r->rsAlloc);  // once the context is not kept
 +    r->rsAlloc = nullptr;
@@ -1352,7 +1540,7 @@ index 2760d43..a6266a1 100644
    INFO(NCCL_NET, "GIN/REC: closed: %d commit(s), %d abort(s)", r->nCommits, r->nAborts);
    delete r;
    return false;
-@@ -2685,6 +2737,601 @@ enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };
+@@ -2685,6 +2906,860 @@ enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };
  static const char* gdakiPolicyName(int p) { return p == GDAKI_POLICY_HOLD ? "hold" : "failfast"; }
  static int gdakiPolicyEffOf(struct gdakiRecHost* r);  // below (needs gdakiTs)
  
@@ -1539,6 +1727,9 @@ index 2760d43..a6266a1 100644
 +  // work package 4: the send-side log's measurement mode (NCCL_GIN_RESTORE_LOG_MEASURE) logs from the context's start and
 +  // trims outside any checkpoint: such a log does not start at a cut
 +  bool logMeasure = false;
++  // user direction 2026-10-12: the program that calls Resume was compiled with NCCL_GIN_RESTORE_DEVICE (the nccl.h
++  // wrapper passes it); its kernels have the device restore path
++  bool deviceBuilt = true;
 +};
 +enum { GDAKI_RS_L_OK = 0 };
 +// The first local condition that keeps the restore off on this rank, in a fixed order (0: none). The conditions are the
@@ -1590,6 +1781,7 @@ index 2760d43..a6266a1 100644
 +  GDAKI_RS_L(in.escalated, "the round cap stopped recovery on this context (NCCL_GIN_TS_ESCALATE_ROUNDS)");
 +  GDAKI_RS_L(in.logMeasure, "the send-side log measurement mode is on (NCCL_GIN_RESTORE_LOG_MEASURE): the log does not "
 +             "start at a checkpoint's cut");
++  GDAKI_RS_L(!in.deviceBuilt, "program not built with NCCL_GIN_RESTORE_DEVICE (its kernels have no device restore path)");
 +#undef GDAKI_RS_L
 +  snprintf(why, whyLen, "this rank can enable the restore");
 +  return GDAKI_RS_L_OK;
@@ -1767,6 +1959,257 @@ index 2760d43..a6266a1 100644
 +}
 +// ---- gin-restore: pure functions (end) ----
 +
++// ---- gin-restore (dev): log, suppress and replay, pure (begin; impl/rs_unit_dev.cc compiles this region on the CPU) ----
++// Work package 6 (EXPERIMENT.md 9.4, 9.5; impl/rs_log_api.h): the sender's host state of its one log ring per context.
++// The "covered" mark of an entry (user decision 2026-10-12: the peers' different checkpoint times are erased by marking
++// entries) is kept here, not in device memory: the device never reads it, a mark written over the NIC would cost a WQE per
++// entry and could race with the device writing the next slot. An entry at position s of QP q is covered when s is below
++// q's cut (the head read at the pause of the peer's checkpoint that the log is kept from), or always while q's log is
++// broken past its last pause (an overflow after it: until the next pause). The identity word read from a slot says which
++// QP's entry it is. The tail moves over covered entries in position order and stops at the first entry that is not
++// covered, or at a slot whose identity word is not yet its position's (an entry of another peer still being written: a
++// pause quiesces one peer's QPs only). All of it runs on the helper thread, except the atomics (any thread).
++// Assumption (review of work package 6, note 5): an entry the tail may pass without its peer's pause (a QP that covers all
++// after a break, or one whose logOn landed in a failed pause) may show its identity word before its other seven words; its
++// slot is reused only n reservations later, which no single store window spans in practice.
++struct gdakiRsPauseSnap {     // what a pause toward a peer read, per QP
++  uint64_t head = 0, ovf = 0, gets = 0;
++  bool valid = false;
++};
++struct gdakiRsLogQpState {
++  bool logs = false;       // a pause set this QP's logOn: its operations are logged
++  bool stable = false;     // `cut` is a stable checkpoint's pause head (the log since it is complete so far)
++  bool coverAll = false;   // an overflow after the last pause: every entry is covered until the next pause
++  bool getReported = false;  // a get since the stable cut was reported (once per cut)
++  uint64_t cut = 0;        // entries below it are covered
++  uint64_t ovfAtCut = 0;   // the device's overflow count of the QP at the pause of `cut`
++  uint64_t getsAtCut = 0;  // its get count then
++  uint64_t ovfSeen = 0;    // the last overflow count read
++  struct gdakiRsPauseSnap last;  // the latest pause toward the peer
++};
++struct gdakiRsLogState {
++  uint32_t n = 0;          // ring entries (a power of two)
++  int nqp = 0, nranks = 1;
++  uint64_t tail = 0;       // the tail this host last wrote to the device
++  std::vector<uint64_t> slotId;  // per slot: the identity word last read there (~0: none)
++  std::vector<struct gdakiRsLogQpState> qp;
++  std::atomic<uint64_t> coveredUpTo{~0ull};  // every logged entry below it is covered (any thread)
++  std::atomic<uint64_t> samples{0}, occSum{0}, occMax{0}, trims{0}, blockedPending{0}, headSeen{0}, tailNow{0},
++    trimErrors{0};
++};
++static void gdakiRsLogStateInit(struct gdakiRsLogState* L, uint32_t n, int nqp, int nranks) {
++  L->n = n;
++  L->nqp = nqp > 0 ? nqp : 0;
++  L->nranks = nranks > 0 ? nranks : 1;
++  L->tail = 0;
++  L->slotId.assign(n, ~0ull);
++  L->qp.assign((size_t)L->nqp, gdakiRsLogQpState());
++  L->coveredUpTo.store(~0ull, std::memory_order_release);
++}
++static bool gdakiRsLogQpCovers(const struct gdakiRsLogQpState& q, uint64_t pos) {
++  return !q.logs || q.coverAll || pos < q.cut;
++}
++// max(tail, the lowest cut over the QPs whose log is kept): every logged entry below it is covered (~0: no QP keeps a log).
++static uint64_t gdakiRsLogStateCoveredOf(const struct gdakiRsLogState* L) {
++  uint64_t m = ~0ull;
++  for (const auto& q : L->qp)
++    if (q.logs && !q.coverAll && q.cut < m) m = q.cut;
++  return m == ~0ull ? m : (m > L->tail ? m : L->tail);
++}
++static void gdakiRsLogStatePublish(struct gdakiRsLogState* L) {
++  L->coveredUpTo.store(gdakiRsLogStateCoveredOf(L), std::memory_order_release);
++  L->tailNow.store(L->tail, std::memory_order_release);
++}
++// A QP's log lost an operation (its overflow count passed the count at its cut's pause): keep what can be kept. If the
++// latest pause came after its cut and nothing overflowed since that pause, the log is good from that pause on: cover below
++// its head and wait for that checkpoint's stability. Else cover everything until the next pause.
++static void gdakiRsLogQpBreak(struct gdakiRsLogQpState& q, uint64_t ovfNow) {
++  q.stable = false;
++  if (q.last.valid && q.last.head >= q.cut && q.last.ovf == ovfNow) {
++    q.cut = q.last.head;
++    q.ovfAtCut = q.last.ovf;
++    q.getsAtCut = q.last.gets;
++    q.coverAll = false;
++  } else {
++    q.coverAll = true;
++  }
++}
++// A pause toward a peer (its QPs `qps`, n of them, quiesced; the caller has set their logOn): the head and the QPs'
++// overflow and get counts as read then. A QP that did not log starts its log at the head; a QP whose log was broken past
++// its last pause restarts at the head. Returns how many QPs started their log now.
++static int gdakiRsLogStateNotePause(struct gdakiRsLogState* L, const int* qps, int n, uint64_t head, const uint64_t* ovf,
++                                    const uint64_t* gets) {
++  int started = 0;
++  for (int k = 0; k < n; k++) {
++    if (qps[k] < 0 || qps[k] >= L->nqp) continue;
++    struct gdakiRsLogQpState& q = L->qp[(size_t)qps[k]];
++    if (ovf[k] > q.ovfSeen) q.ovfSeen = ovf[k];
++    if (!q.logs || q.coverAll) {
++      if (!q.logs) started++;
++      q.logs = true;
++      q.coverAll = false;
++      q.stable = false;
++      q.cut = head;  // entries before it: none (not logged) or useless (the break)
++      q.ovfAtCut = ovf[k];
++      q.getsAtCut = gets[k];
++      q.getReported = false;
++    }
++    q.last.head = head;
++    q.last.ovf = ovf[k];
++    q.last.gets = gets[k];
++    q.last.valid = true;
++  }
++  gdakiRsLogStatePublish(L);
++  return started;
++}
++// The checkpoint taken at a pause (its per-QP snapshots `at`, as gdakiRsLogStateNotePause got them) is stable now:
++// each QP's entries below that pause's head are covered, unless the QP overflowed after that pause (ovfNow above the
++// pause's count: its log since there lost an operation; the break rule above). A stable of an older pause than the cut
++// (a later checkpoint already moved the cut) changes nothing. Returns how many QPs broke now.
++static int gdakiRsLogStateNoteStable(struct gdakiRsLogState* L, const int* qps, int n, const struct gdakiRsPauseSnap* at,
++                                     const uint64_t* ovfNow) {
++  int broke = 0;
++  for (int k = 0; k < n; k++) {
++    if (qps[k] < 0 || qps[k] >= L->nqp) continue;
++    struct gdakiRsLogQpState& q = L->qp[(size_t)qps[k]];
++    if (ovfNow[k] > q.ovfSeen) q.ovfSeen = ovfNow[k];
++    if (!q.logs || !at[k].valid || q.coverAll || at[k].head < q.cut) continue;
++    if (ovfNow[k] > at[k].ovf) {
++      gdakiRsLogQpBreak(q, ovfNow[k]);
++      broke++;
++      continue;
++    }
++    q.cut = at[k].head;
++    q.ovfAtCut = at[k].ovf;
++    q.getsAtCut = at[k].gets;
++    q.stable = true;
++    q.getReported = false;
++  }
++  gdakiRsLogStatePublish(L);
++  return broke;
++}
++// The periodic poll's counts of one QP: true once per break when the QP's log lost an operation since its cut (the caller
++// DISARMs its peer); *gotGet once per cut when a get with data was posted on it since its stable cut's pause.
++static bool gdakiRsLogStateNoteCounts(struct gdakiRsLogState* L, int qpIdx, uint64_t ovfNow, uint64_t getsNow,
++                                      bool* gotGet) {
++  *gotGet = false;
++  if (qpIdx < 0 || qpIdx >= L->nqp) return false;
++  struct gdakiRsLogQpState& q = L->qp[(size_t)qpIdx];
++  bool broke = false;
++  if (ovfNow > q.ovfSeen) q.ovfSeen = ovfNow;
++  // checked whoever saw the count first (a pause or a stable raises ovfSeen too): once per break, as QpBreak covers all
++  // or moves the cut and its count to the last pause's (review of work package 6, finding 1)
++  if (q.logs && !q.coverAll && ovfNow > q.ovfAtCut) {
++    gdakiRsLogQpBreak(q, ovfNow);
++    broke = true;
++  }
++  if (q.logs && q.stable && !q.getReported && getsNow > q.getsAtCut) {
++    q.getReported = true;
++    *gotGet = true;
++  }
++  if (broke) gdakiRsLogStatePublish(L);
++  return broke;
++}
++// Whether the peer's log is complete since its stable cut: every QP to it that logs has a stable cut and no break, no get
++// since that cut, and at least one QP logs.
++static bool gdakiRsLogStateComplete(const struct gdakiRsLogState* L, int peer) {
++  bool any = false;
++  for (int i = peer; i >= 0 && i < L->nqp; i += L->nranks) {
++    const struct gdakiRsLogQpState& q = L->qp[(size_t)i];
++    if (!q.logs) continue;
++    any = true;
++    if (!q.stable || q.coverAll || q.getReported) return false;
++  }
++  return any;
++}
++// The tail's advance from L->tail toward `head`: readIds(from, to, ids) fills the identity words of positions [from, to)
++// (one read of whole entries, to - from <= chunk, never across the ring's end) and returns false on a failed read. The
++// tail stops at the first slot whose identity is not its position's (still being written) or whose entry is not covered.
++// Sets L->tail to the new tail (the caller writes it to the device) and returns it.
++template <typename R>
++static uint64_t gdakiRsLogStateAdvance(struct gdakiRsLogState* L, uint64_t head, uint64_t chunk, R readIds,
++                                       bool* readFailed) {
++  *readFailed = false;
++  uint64_t t = L->tail;
++  std::vector<uint64_t> ids;
++  if (chunk == 0) chunk = 1;
++  while (t < head) {
++    const uint64_t slot = t & (uint64_t)(L->n - 1);
++    if (!ncclGinRsIdIs(L->slotId[(size_t)slot], t) ||
++        (uint32_t)(L->slotId[(size_t)slot] >> 32) == ~0u) {  // not read yet, or read before it was written: read from t
++      uint64_t e = head < t + chunk ? head : t + chunk;
++      const uint64_t wrap = t + (L->n - slot);
++      if (e > wrap) e = wrap;
++      ids.assign((size_t)(e - t), ~0ull);
++      if (!readIds(t, e, ids.data())) {
++        *readFailed = true;
++        break;
++      }
++      for (uint64_t p = t; p < e; p++) L->slotId[(size_t)(p & (uint64_t)(L->n - 1))] = ids[(size_t)(p - t)];
++      if (!ncclGinRsIdIs(L->slotId[(size_t)slot], t)) {
++        L->blockedPending.fetch_add(1, std::memory_order_relaxed);
++        break;
++      }
++    }
++    const uint32_t qpIdx = ncclGinRsEntryQp((uint32_t)(L->slotId[(size_t)slot] >> 32));
++    if (qpIdx >= (uint32_t)L->nqp || !gdakiRsLogQpCovers(L->qp[qpIdx], t)) break;
++    t++;
++  }
++  if (t != L->tail) L->trims.fetch_add(1, std::memory_order_relaxed);
++  L->tail = t;
++  gdakiRsLogStatePublish(L);
++  return t;
++}
++// The positions of `peer`'s entries in [from, to) given the identity words of those positions (ids[i] for from + i): the
++// entries whose identity is their position's and whose QP goes to the peer.
++static std::vector<uint64_t> gdakiRsLogStatePeerPositions(const struct gdakiRsLogState* L, int peer, uint64_t from,
++                                                          uint64_t to, const uint64_t* ids) {
++  std::vector<uint64_t> out;
++  for (uint64_t p = from; p < to; p++) {
++    const uint64_t id = ids[(size_t)(p - from)];
++    if (!ncclGinRsIdIs(id, p)) continue;
++    const uint32_t qpIdx = ncclGinRsEntryQp((uint32_t)(id >> 32));
++    if (qpIdx < (uint32_t)L->nqp && (int)(qpIdx % (uint32_t)L->nranks) == peer) out.push_back(p);
++  }
++  return out;
++}
++// Whether the peer's entries from position `from` on are all kept and complete (the export to its spare, 9.6): for each
++// of its QPs (qps, n; their overflow and get counts read now), the QP logs, its entries are not all covered, `from` is at or
++// above its cut (a checkpoint the survivor confirmed but whose CKPT_STABLE it did not get has a later cut than the stable
++// one: its entries are kept too), and nothing was lost nor a get posted since that cut. False: why.
++static bool gdakiRsLogStateCanExport(const struct gdakiRsLogState* L, const int* qps, int n, uint64_t from,
++                                     const uint64_t* ovfNow, const uint64_t* getsNow, char* why, size_t whyLen) {
++  if (n <= 0) {
++    snprintf(why, whyLen, "no QP to the peer");
++    return false;
++  }
++  for (int k = 0; k < n; k++) {
++    if (qps[k] < 0 || qps[k] >= L->nqp) {
++      snprintf(why, whyLen, "qp %d is outside the side table", qps[k]);
++      return false;
++    }
++    const struct gdakiRsLogQpState& q = L->qp[(size_t)qps[k]];
++    if (!q.logs) snprintf(why, whyLen, "qp %d does not log (no pause toward the peer yet)", qps[k]);
++    else if (q.coverAll) snprintf(why, whyLen, "qp %d lost an operation (ring full) since its last pause", qps[k]);
++    else if (from < q.cut) snprintf(why, whyLen, "qp %d keeps entries from position %lu only, not %lu", qps[k],
++                                    (unsigned long)q.cut, (unsigned long)from);
++    else if (ovfNow[k] != q.ovfAtCut) snprintf(why, whyLen, "qp %d lost an operation (ring full) since its cut", qps[k]);
++    else if (getsNow[k] != q.getsAtCut) snprintf(why, whyLen, "qp %d posted a get to the peer since its cut", qps[k]);
++    else continue;
++    return false;
++  }
++  return true;
++}
++// The highest step whose head (read at ncclGinRestoreStep) is covered, over n (step, head) pairs; `none` if none.
++static uint64_t gdakiRsStableStepOf(const uint64_t* steps, const uint64_t* heads, int n, uint64_t coveredUpTo,
++                                    uint64_t none) {
++  uint64_t best = none;
++  for (int i = 0; i < n; i++)
++    if (heads[i] <= coveredUpTo && (best == none || steps[i] > best)) best = steps[i];
++  return best;
++}
++// ---- gin-restore (dev): log, suppress and replay, pure (end) ----
++
 +// This process's restore request, read once (NCCL_GIN_FAULT_POLICY and NCCL_GIN_RESTORE_SPARE with getenv as hk's G1,
 +// NCCL_GIN_RESTORE as an NCCL parameter, under hold only). hk's G1 (gdakiTsSetup) and the window registration share it.
 +static long long gdakiRsRestoreVar() { return (long long)ncclParamGinRestore(); }
@@ -1860,6 +2303,10 @@ index 2760d43..a6266a1 100644
 +                                                                     // pilot's placeholder, EXPERIMENT.md 9.5)
 +// work package 4: measurement only: log from the context's start, the helper trims every <ms> (0: off; Resume refuses)
 +NCCL_PARAM(GinRestoreLogMeasure, "GIN_RESTORE_LOG_MEASURE", 0);
++// the measurement mode's log switch (user direction 2026-10-12, the cost cells): 1 (default) logs every gated QP from the
++// start (with NCCL_GIN_RESTORE_CHECKSUM's scheme); 0 publishes the side table without logging (the hold path unarmed:
++// gate, suppress-budget read, key re-read, message count)
++NCCL_PARAM(GinRestoreLogMeasureLog, "GIN_RESTORE_LOG_MEASURE_LOG", 1);
 +// work package 4: the checksum scheme of the send-side log (NCCL_GIN_RESTORE_CHECKSUM), read once per process
 +static uint32_t gdakiRsCsumScheme() {
 +  static const uint32_t s = [] {
@@ -1954,7 +2401,7 @@ index 2760d43..a6266a1 100644
  // ---- gin-harden: the user devComm abort word of a communicator ----
  // One host-pinned word per communicator (ncclCudaHostCalloc, read by the device through UVA), created for the first
  // user devComm (dev_runtime.cc) and freed with the communicator (init.cc commFree). Raised once, never cleared, always
-@@ -6540,6 +7187,7 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+@@ -6540,6 +7615,7 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
        ts->nQueued.fetch_sub(1, std::memory_order_acq_rel);
      }
      if (fs.empty()) gdakiDetWatchStep(r);  // gpu-detect: host-side detection (QUERY_QP every NCCL_GIN_TS_QPWATCH_MS)
@@ -1962,7 +2409,7 @@ index 2760d43..a6266a1 100644
      if (fs.empty() && gdakiQ4MonoMs() >= nextScan) {
        gdakiTsScan(r);
        nextScan = gdakiQ4MonoMs() + 100.0;
-@@ -6604,13 +7252,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6604,13 +7680,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    }
    // gpu-detect (hk, G1): this rank's fault policy (default failfast); every rank compares the record's values after the
    // all-gather. A rank that differs makes the context fail-fast. hold needs the restore layer: fail-fast in this build.
@@ -1982,7 +2429,7 @@ index 2760d43..a6266a1 100644
    mine.policy = (uint32_t)polReq;
    int ls = -1;
    int boundPort = 0;
-@@ -6659,6 +7306,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6659,6 +7734,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
        });
      }
    }
@@ -1995,7 +2442,7 @@ index 2760d43..a6266a1 100644
    ncclResult_t ret = cComm->allGather(cComm, &mine, all.data(), sizeof(mine));
    if (ret != ncclSuccess) {
      if (ls >= 0) close(ls);
-@@ -6667,6 +7320,31 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6667,6 +7748,31 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    uint64_t nonce = 0x6e6f6e6365ull;  // gin-harden: every rank's salt, in rank order: the same on every rank
    for (int p = 0; p < nranks; p++) nonce = gdakiTsMix64(nonce ^ all[p].salt);
    if (nonce == 0) nonce = 1;
@@ -2027,7 +2474,7 @@ index 2760d43..a6266a1 100644
    const uint32_t ctxSeq = (uint32_t)(nonce & 0x7fffffffu);  // display only (HELLO.arg); the nonce is checked
    struct gdakiTs* ts = nullptr;
    const double deadline = gdakiQ4MonoMs() + (double)ncclParamGinTsConnectMs();
-@@ -6750,6 +7428,14 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6750,6 +7856,14 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    }
    if (why != nullptr) {
      WARN("GIN/TS: transparent recovery OFF on rank %d: %s", rank, why);
@@ -2042,7 +2489,7 @@ index 2760d43..a6266a1 100644
      if (ts) {
        for (auto& pe : ts->peers)
          if (pe.fd >= 0) gdakiTsByeClose(pe.fd, rank, nonce);  // gin-harden: the peers read "left", not death
-@@ -6777,9 +7463,13 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6777,9 +7891,13 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    if (!ts->policyAgreed)
      WARN("GIN/TS: rank %d: NCCL_GIN_FAULT_POLICY differs across ranks (this rank %s, rank %d %s); fail-fast", rank,
           gdakiPolicyName(polReq), polOther, gdakiPolicyName((int)all[polOther].policy));
@@ -2059,7 +2506,7 @@ index 2760d43..a6266a1 100644
    r->ts = ts;
    return ncclSuccess;
  }
-@@ -7201,6 +7891,213 @@ static void gdakiLbSetup(struct gdakiRecHost* r) {
+@@ -7201,6 +8319,616 @@ static void gdakiLbSetup(struct gdakiRecHost* r) {
                lb->nPeermem, lb->testBytes, lb->testNonzero, lb->testShadow, gdakiQ4MonoMs() - t0, gdakiQ4MonoMs());
  }
  
@@ -2112,13 +2559,15 @@ index 2760d43..a6266a1 100644
 +    h->entries = L.nEntries ? (char*)r->rsBase + L.ringsOff : nullptr;
 +    for (int i = 0; i < nqp; i++) {
 +      struct ncclGinRsQp* q = (struct ncclGinRsQp*)(img.data() + L.qpOff) + i;
-+      if (logged[(size_t)i]) q->logOn = measureMs > 0 ? 1u : 0u;  // the measurement mode logs from the start (9.5)
++      if (logged[(size_t)i])  // the measurement mode logs from the start (9.5) unless NCCL_GIN_RESTORE_LOG_MEASURE_LOG=0
++        q->logOn = (measureMs > 0 && ncclParamGinRestoreLogMeasureLog() != 0) ? 1u : 0u;
 +    }
 +    r->rsNqp = nqp;
 +    r->rsLogged = logged;
 +    r->rsEntries = L.nEntries;
 +    r->rsMeasureMs = measureMs;
 +    r->rsOccSamples = r->rsOccSum = r->rsOccMax = 0;
++    if (L.nEntries > 0 && measureMs == 0) gdakiRsLogCreate(r, L.nEntries, L.ringsOff);  // gin-restore (dev, package 6)
 +    if (cudaMemsetAsync(r->rsBase, 0, L.bytes, r->stream) != cudaSuccess ||
 +        cudaMemcpyAsync(r->rsBase, img.data(), img.size(), cudaMemcpyHostToDevice, r->stream) != cudaSuccess ||
 +        cudaStreamSynchronize(r->stream) != cudaSuccess)
@@ -2164,31 +2613,20 @@ index 2760d43..a6266a1 100644
 +  }
 +  r->rsLbOk = lbWhy[0] == '\0';
 +  snprintf(r->rsLbWhy, sizeof(r->rsLbWhy), "%s", r->rsLbOk ? "" : lbWhy);
-+  // (3) the side table's address into every context of the device array, and the host copy
-+  if (sideOk) {
-+    struct ncclGinRsSide* side = (struct ncclGinRsSide*)r->rsBase;
-+    struct ncclGinGdakiGPUContext* dev = (struct ncclGinGdakiGPUContext*)g->gin_gdaki_gpu_ctx_hd_mhandle->gpu_buf;
-+    struct ncclGinGdakiGPUContext* host = (struct ncclGinGdakiGPUContext*)g->gin_gdaki_gpu_ctx_hd_mhandle->host_buf;
-+    bool ok = true;
-+    for (int c = 0; c < g->nContexts && ok; c++)
-+      ok = cudaMemcpyAsync(&dev[c].restore, &side, sizeof(side), cudaMemcpyHostToDevice, r->stream) == cudaSuccess &&
-+           cudaStreamSynchronize(r->stream) == cudaSuccess;
-+    if (ok) {
-+      for (int c = 0; c < g->nContexts; c++) host[c].restore = side;
-+      r->rsPtrSet = true;
-+    } else {
-+      snprintf(why, sizeof(why), "cannot write the side table's address into the GPU context");
-+      struct ncclGinRsSide* zero = nullptr;  // no context may keep a pointer the restore does not stand behind
-+      for (int c = 0; c < g->nContexts; c++) {
-+        (void)cudaMemcpyAsync(&dev[c].restore, &zero, sizeof(zero), cudaMemcpyHostToDevice, r->stream);
-+        (void)cudaStreamSynchronize(r->stream);
-+      }
-+    }
-+  }
++  // (3) the side table is ready. Its address is NOT given to the device here (user direction 2026-10-12): the
++  // classification block's pointer stays null until ncclGinRestoreResume succeeds (gdakiRsPublish), so a program that
++  // never enables the restore runs hk's device code even in a process that asks for it.
++  if (sideOk && g->q4 == nullptr) snprintf(why, sizeof(why), "no classification block to publish the side table in");
++  else if (sideOk) r->rsPtrSet = true;
++  // the log measurement mode (a test mode; its communicator's Resume refuses): published here, at creation, as the cost
++  // drivers never call Resume. It needs a program compiled with NCCL_GIN_RESTORE_DEVICE (else the kernels ignore it).
++  char pubWhy[128] = {0};
++  if (r->rsPtrSet && r->rsMeasureMs > 0 && !gdakiRsPublish(r, pubWhy, sizeof(pubWhy)))
++    WARN("GIN/RS: rank %d: the log measurement mode could not publish the side table (%s)", g->rank, pubWhy);
 +  snprintf(r->rsSideWhy, sizeof(r->rsSideWhy), "%s", why);
-+  GIN_TS_NOTE("GIN/RS: rank %d: side table %s bytes=%zu qps=%d logged=%d ring_entries=%u checksum=%s log_measure_ms=%lld "
++  GIN_TS_NOTE("GIN/RS: rank %d: side table %s published=%d bytes=%zu qps=%d logged=%d ring_entries=%u checksum=%s log_measure_ms=%lld "
 +              "restore_buffers_in_nic_path=%d%s%s",
-+              g->rank, r->rsPtrSet ? "set" : "not set", r->rsBytes, nqp, nLogged, sideOk ? L.nEntries : 0u,
++              g->rank, r->rsPtrSet ? "ready" : "not set", (int)r->rsPublished.load(), r->rsBytes, nqp, nLogged, sideOk ? L.nEntries : 0u,
 +              gdakiRsCsumName(gdakiRsCsumScheme()), r->rsMeasureMs, (int)r->rsLbOk, r->rsLbOk ? "" : " why=",
 +              r->rsLbOk ? "" : r->rsLbWhy);
 +}
@@ -2261,6 +2699,15 @@ index 2760d43..a6266a1 100644
 +              (unsigned long)t.msgs, t.getRefused, gdakiRsCsumName(gdakiRsCsumScheme()), r->rsMeasureMs,
 +              (unsigned long)r->rsMeasureRounds, (unsigned long)r->rsMeasureErrs, (unsigned long)r->rsOccSamples,
 +              r->rsOccSamples ? (double)r->rsOccSum / (double)r->rsOccSamples : 0.0, (unsigned long)r->rsOccMax);
++  if (r->rsLog != nullptr) {  // gin-restore (dev, work package 6): the host's trims and occupancy samples (gdakiRsLogPoll)
++    struct gdakiRsLogOcc o;
++    gdakiRsLogOccupancy(r, &o);
++    GIN_TS_NOTE("GIN/RS: rank %d: send-side log state: tail=%lu trims=%lu trim_errors=%lu blocked_pending=%lu "
++                "poll_samples=%lu occupancy_avg=%.1f occupancy_max=%lu", rank, (unsigned long)o.tail,
++                (unsigned long)o.trims, (unsigned long)gdakiRsLogTrimErrors(r),
++                (unsigned long)o.blockedPending, (unsigned long)o.samples,
++                o.samples ? (double)o.occSum / (double)o.samples : 0.0, (unsigned long)o.occMax);
++  }
 +  if (r->rsMeasureMs <= 0) return;
 +  const int nranks = r->nranks > 0 ? r->nranks : 1;
 +  for (int i = 0; i < r->rsNqp; i++) {
@@ -2270,10 +2717,413 @@ index 2760d43..a6266a1 100644
 +  }
 +}
 +
++// ---- gin-restore (dev): log, suppress and replay (begin; work packages 6 and 9, impl/rs_log_api.h) ----
++// Work package 6 (EXPERIMENT.md 9.4, 9.5): the host management of the context's one log ring. The state is the pure
++// gdakiRsLogState (region "log, suppress and replay, pure"); these routines read and write the side table over the NIC
++// copy path (no CUDA call, helper thread only: the host branch's helper step calls gdakiRsLogPoll every 10 ms, its pause
++// gdakiRsLogPauseRead, its CKPT_STABLE gdakiRsLogStable), except gdakiRsLogReadHeadApp (the application thread, a CUDA
++// copy on a stream of its own) and the atomics (any thread). A process that does not ask for the restore, or runs the
++// measurement mode, has no log state (gdakiRsLogReady false).
++struct gdakiRsLogHost {
++  struct gdakiRsLogState st;
++  char* ringDev = nullptr;          // the ring's device address
++  std::vector<int> disarm;          // peers to DISARM found since the last gdakiRsLogPoll (overflow, get), each once
++  bool userCtxReported = false;     // a second user transparent-recovery context was reported (every peer, once)
++  std::mutex appMu;                 // the application thread's stream
++  cudaStream_t appStream = nullptr;
++};
++static void gdakiRsLogDisarmOnce(struct gdakiRsLogHost* lh, int peer) {
++  for (int p : lh->disarm)
++    if (p == peer) return;
++  lh->disarm.push_back(peer);
++}
++static struct ncclGinRsQp* gdakiRsQpDev(struct gdakiRecHost* r, int qpIdx) {
++  return (struct ncclGinRsQp*)((char*)r->rsBase + sizeof(struct ncclGinRsSide)) + qpIdx;
++}
++// The QPs to `peer` in GIN-context order, every context (not narrowed by a round's scope, unlike gdakiRecForPeer).
++static int gdakiRsQpsOfPeer(struct gdakiRecHost* r, int peer, int* idx) {
++  int n = 0;
++  if (r->ctx == nullptr || peer < 0 || peer >= r->nranks) return 0;
++  for (int c = 0; c < r->ctx->nContexts && n < NCCL_GIN_RECOVERY_MAX_QPS; c++) {
++    const int i = peer + c * r->nranks;
++    if (i < (int)r->qps.size() && r->qps[(size_t)i].used && i < r->rsNqp) idx[n++] = i;
++  }
++  return n;
++}
++static bool gdakiRsLogReady(struct gdakiRecHost* r) { return r != nullptr && r->rsPtrSet && r->rsLog != nullptr; }
++// The side table's address into the classification block (ncclGinGdakiQ4::restore, one synchronous 8-byte write on a
++// stream of its own, on the context's device), once. The application thread, inside ncclGinRestoreResume before the
++// program's first launch (nccl.h: a kernel running then could read the pointer half way through it), or at the context's
++// creation in the log measurement mode.
++static bool gdakiRsPublish(struct gdakiRecHost* r, char* why, size_t whyLen) {
++  if (r->rsPublished.load(std::memory_order_acquire)) return true;
++  if (!r->rsPtrSet || r->ctx == nullptr || r->ctx->q4 == nullptr || r->ctx->q4->dev == nullptr) {
++    snprintf(why, whyLen, "no side table or no classification block");
++    return false;
++  }
++  int dev = -1;
++  if (cudaGetDevice(&dev) != cudaSuccess || (dev != r->ctx->cuda_id && cudaSetDevice(r->ctx->cuda_id) != cudaSuccess)) {
++    snprintf(why, whyLen, "cannot select CUDA device %d", r->ctx->cuda_id);
++    return false;
++  }
++  struct DevBack {
++    int d, want;
++    ~DevBack() { if (d >= 0 && d != want) (void)cudaSetDevice(d); }
++  } back{dev, r->ctx->cuda_id};
++  cudaStream_t st = nullptr;
++  struct ncclGinRsSide* side = (struct ncclGinRsSide*)r->rsBase;
++  bool ok = cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) == cudaSuccess;
++  ok = ok && cudaMemcpyAsync(&r->ctx->q4->dev->restore, &side, sizeof(side), cudaMemcpyHostToDevice, st) == cudaSuccess &&
++       cudaStreamSynchronize(st) == cudaSuccess;
++  if (st != nullptr) (void)cudaStreamDestroy(st);
++  if (!ok) {
++    snprintf(why, whyLen, "the write into the classification block failed");
++    return false;
++  }
++  r->rsPublished.store(true, std::memory_order_release);
++  return true;
++}
++static void gdakiRsPublishFor(void* comm, void* handle) {
++  std::lock_guard<std::mutex> lk(gdakiRecRegMu);  // the context stays registered (and its blocks allocated) while held
++  struct gdakiRecHost* r = nullptr;
++  for (auto* x : gdakiRecReg)
++    if (handle != nullptr && x->commKey == comm && x->ctx != nullptr && x->ctx->devHandle != nullptr &&
++        x->ctx->devHandle->handle == handle)
++      r = x;
++  if (r == nullptr) return;
++  char why[128] = {0};
++  if (gdakiRsPublish(r, why, sizeof(why)))
++    GIN_TS_NOTE("GIN/RS: rank %d: side table published to the device (ncclGinRestoreResume%s)", r->ctx->rank,
++                r->rsMeasureMs > 0 ? ", log measurement mode" : "");
++  else  // this rank's log never starts: its pauses refuse (gdakiRsLogPauseRead), so no peer is armed on it
++    WARN("GIN/RS: rank %d: the side table could not be published to the device (%s): this rank keeps no send-side log "
++         "and its checkpoint pauses refuse", r->ctx->rank, why);
++}
++static ncclResult_t gdakiRsLogNotReady(char* why, size_t whyLen) {
++  if (why && whyLen) snprintf(why, whyLen, "this context has no send-side log");
++  return ncclInvalidUsage;
++}
++// The identity words of positions [from, to) (to - from entries, one NIC read, not across the ring's end).
++static bool gdakiRsLogReadIds(struct gdakiRecHost* r, uint64_t from, uint64_t to, uint64_t* ids) {
++  struct gdakiRsLogHost* lh = r->rsLog;
++  const uint64_t n = lh->st.n, slot = from & (n - 1);
++  const size_t bytes = (size_t)(to - from) * sizeof(struct ncclGinRsLogEntry);
++  if (to <= from || slot + (to - from) > n || bytes > r->pinnedSize) return false;
++  if (gdakiLbXfer(r, false, lh->ringDev + slot * sizeof(struct ncclGinRsLogEntry), bytes) != ncclSuccess) return false;
++  for (uint64_t p = from; p < to; p++) memcpy(&ids[p - from], r->pinned + (size_t)(p - from) * sizeof(struct ncclGinRsLogEntry), 8);
++  return true;
++}
++// Entries per NIC read of the ring (whole entries within the staging buffer, at most 64 KiB).
++static uint64_t gdakiRsLogChunk(struct gdakiRecHost* r) {
++  const size_t b = std::min<size_t>(r->pinnedSize, 64 * 1024) / sizeof(struct ncclGinRsLogEntry);
++  return b > 0 ? b : 1;
++}
++static void gdakiRsLogCreate(struct gdakiRecHost* r, uint32_t nEntries, size_t ringOff) {
++  r->rsLog = new gdakiRsLogHost();
++  gdakiRsLogStateInit(&r->rsLog->st, nEntries, r->rsNqp, r->nranks);
++  r->rsLog->ringDev = (char*)r->rsBase + ringOff;
++}
++static uint64_t gdakiRsLogTrimErrors(struct gdakiRecHost* r) {
++  return r->rsLog ? r->rsLog->st.trimErrors.load(std::memory_order_relaxed) : 0;
++}
++static void gdakiRsLogFree(struct gdakiRecHost* r) {
++  if (r->rsLog == nullptr) return;
++  if (r->rsLog->appStream != nullptr) (void)cudaStreamDestroy(r->rsLog->appStream);
++  delete r->rsLog;
++  r->rsLog = nullptr;
++}
++// The tail's advance (pure rule) and, when it moved, its write to the device.
++static ncclResult_t gdakiRsLogTrim(struct gdakiRecHost* r, uint64_t head) {
++  struct gdakiRsLogHost* lh = r->rsLog;
++  const uint64_t old = lh->st.tail;
++  bool failed = false;
++  const uint64_t t = gdakiRsLogStateAdvance(
++    &lh->st, head, gdakiRsLogChunk(r),
++    [&](uint64_t a, uint64_t b, uint64_t* ids) { return gdakiRsLogReadIds(r, a, b, ids); }, &failed);
++  if (t != old) {
++    memcpy(r->pinned, &t, sizeof(t));
++    if (gdakiLbXfer(r, true, &((struct ncclGinRsSide*)r->rsBase)->tail, sizeof(uint64_t)) != ncclSuccess) {
++      lh->st.tail = old;  // the device keeps the old tail: so does the host (the next trim writes again)
++      return ncclSystemError;
++    }
++  }
++  return failed ? ncclSystemError : ncclSuccess;
++}
++static ncclResult_t gdakiRsLogPauseRead(struct gdakiRecHost* r, int peer, struct gdakiRsLogPause* out, char* why,
++                                        size_t whyLen) {
++  if (!gdakiRsLogReady(r)) return gdakiRsLogNotReady(why, whyLen);
++  if (!r->rsPublished.load(std::memory_order_acquire)) {  // the device does not log before ncclGinRestoreResume succeeded
++    snprintf(why, whyLen, "the side table is not published to the device (ncclGinRestoreResume did not succeed here)");
++    return ncclInvalidUsage;
++  }
++  struct gdakiRsLogHost* lh = r->rsLog;
++  int idx[NCCL_GIN_RECOVERY_MAX_QPS];
++  const int n = gdakiRsQpsOfPeer(r, peer, idx);
++  if (n == 0) {
++    snprintf(why, whyLen, "no QP to rank %d", peer);
++    return ncclInvalidUsage;
++  }
++  for (int k = 0; k < n; k++) {  // the log of these QPs starts at this pause (before its even epoch is published)
++    if (lh->st.qp[(size_t)idx[k]].logs) continue;
++    const uint32_t one = 1;
++    memcpy(r->pinned, &one, sizeof(one));
++    if (gdakiLbXfer(r, true, &gdakiRsQpDev(r, idx[k])->logOn, sizeof(uint32_t)) != ncclSuccess) {
++      snprintf(why, whyLen, "cannot set logOn of qp %d over the NIC copy path", idx[k]);
++      return ncclSystemError;
++    }
++  }
++  struct ncclGinRsSide h;
++  std::vector<struct ncclGinRsQp> v;
++  const char* w = nullptr;
++  if (!gdakiRsReadSide(r, &h, &v, &w)) {
++    snprintf(why, whyLen, "%s", w ? w : "cannot read the side table");
++    return ncclSystemError;
++  }
++  *out = gdakiRsLogPause();
++  out->head = h.head;
++  out->nqp = n;
++  bool on = true;
++  uint64_t ovf[NCCL_GIN_RECOVERY_MAX_QPS], gets[NCCL_GIN_RECOVERY_MAX_QPS];
++  for (int k = 0; k < n; k++) {
++    const struct ncclGinRsQp& q = v[(size_t)idx[k]];
++    out->msgs[k] = q.msgs;
++    out->ovf[k] = ovf[k] = q.ovfCount;
++    out->gets[k] = gets[k] = q.gets;
++    on = on && q.logOn == 1;
++  }
++  if (!on) {  // the read back: a logOn write that did not land is not a log that starts here
++    snprintf(why, whyLen, "logOn of a QP to rank %d did not read back as set", peer);
++    return ncclSystemError;
++  }
++  out->firstPause = gdakiRsLogStateNotePause(&lh->st, idx, n, h.head, ovf, gets) > 0;
++  out->logComplete = true;
++  lh->st.headSeen.store(h.head, std::memory_order_relaxed);
++  return ncclSuccess;
++}
++static ncclResult_t gdakiRsLogStable(struct gdakiRecHost* r, int peer, const struct gdakiRsLogPause* atPause,
++                                     char* why, size_t whyLen) {
++  if (!gdakiRsLogReady(r)) return gdakiRsLogNotReady(why, whyLen);
++  struct gdakiRsLogHost* lh = r->rsLog;
++  int idx[NCCL_GIN_RECOVERY_MAX_QPS];
++  const int n = gdakiRsQpsOfPeer(r, peer, idx);
++  if (n != atPause->nqp) {
++    snprintf(why, whyLen, "rank %d has %d QPs, the pause record %d", peer, n, atPause->nqp);
++    return ncclInvalidUsage;
++  }
++  struct ncclGinRsSide h;
++  std::vector<struct ncclGinRsQp> v;
++  const char* w = nullptr;
++  if (!gdakiRsReadSide(r, &h, &v, &w)) {
++    snprintf(why, whyLen, "%s", w ? w : "cannot read the side table");
++    return ncclSystemError;
++  }
++  struct gdakiRsPauseSnap at[NCCL_GIN_RECOVERY_MAX_QPS];
++  uint64_t ovfNow[NCCL_GIN_RECOVERY_MAX_QPS];
++  for (int k = 0; k < n; k++) {
++    at[k].head = atPause->head;
++    at[k].ovf = atPause->ovf[k];
++    at[k].gets = atPause->gets[k];
++    at[k].valid = true;
++    ovfNow[k] = v[(size_t)idx[k]].ovfCount;
++  }
++  const int broke = gdakiRsLogStateNoteStable(&lh->st, idx, n, at, ovfNow);
++  if (broke > 0) gdakiRsLogDisarmOnce(lh, peer);
++  lh->st.headSeen.store(h.head, std::memory_order_relaxed);
++  const bool trimmed = gdakiRsLogTrim(r, h.head) == ncclSuccess;
++  if (broke > 0) {  // the caller does not arm the peer on this checkpoint (review of work package 6, finding 2)
++    snprintf(why, whyLen, "the log toward rank %d lost an operation (ring full) after this checkpoint's pause: not armable",
++             peer);
++    return ncclInvalidUsage;
++  }
++  if (!trimmed) {
++    snprintf(why, whyLen, "the tail could not be moved over the NIC copy path (it is kept; the next trim retries)");
++    return ncclSystemError;
++  }
++  return ncclSuccess;
++}
++static ncclResult_t gdakiRsLogReadHead(struct gdakiRecHost* r, uint64_t* head) {
++  if (!gdakiRsLogReady(r)) return ncclInvalidUsage;
++  struct ncclGinRsSide h;
++  if (!gdakiRsReadSide(r, &h, nullptr)) return ncclSystemError;
++  *head = h.head;
++  r->rsLog->st.headSeen.store(h.head, std::memory_order_relaxed);
++  return ncclSuccess;
++}
++static ncclResult_t gdakiRsLogReadHeadApp(struct gdakiRecHost* r, uint64_t* head) {
++  if (!gdakiRsLogReady(r)) return ncclInvalidUsage;
++  struct gdakiRsLogHost* lh = r->rsLog;
++  std::lock_guard<std::mutex> lk(lh->appMu);
++  int dev = -1;  // the context's device for this thread's calls, then the thread's own back (review of package 6, note 7)
++  if (cudaGetDevice(&dev) != cudaSuccess || (dev != r->ctx->cuda_id && cudaSetDevice(r->ctx->cuda_id) != cudaSuccess))
++    return ncclUnhandledCudaError;
++  struct DevBack {
++    int d, want;
++    ~DevBack() { if (d != want) (void)cudaSetDevice(d); }
++  } back{dev, r->ctx->cuda_id};
++  if (lh->appStream == nullptr && cudaStreamCreateWithFlags(&lh->appStream, cudaStreamNonBlocking) != cudaSuccess) {
++    lh->appStream = nullptr;
++    return ncclUnhandledCudaError;
++  }
++  uint64_t v = 0;
++  if (cudaMemcpyAsync(&v, &((struct ncclGinRsSide*)r->rsBase)->head, sizeof(v), cudaMemcpyDeviceToHost, lh->appStream) !=
++        cudaSuccess ||
++      cudaStreamSynchronize(lh->appStream) != cudaSuccess)
++    return ncclUnhandledCudaError;
++  *head = v;
++  return ncclSuccess;
++}
++// The per-QP field `f` of the QPs to `peer` (helper).
++template <typename F>
++static ncclResult_t gdakiRsLogReadQpField(struct gdakiRecHost* r, int peer, uint64_t* vals, int* nqp, F f) {
++  if (!gdakiRsLogReady(r)) return ncclInvalidUsage;
++  int idx[NCCL_GIN_RECOVERY_MAX_QPS];
++  const int n = gdakiRsQpsOfPeer(r, peer, idx);
++  struct ncclGinRsSide h;
++  std::vector<struct ncclGinRsQp> v;
++  if (!gdakiRsReadSide(r, &h, &v)) return ncclSystemError;
++  for (int k = 0; k < n; k++) vals[k] = f(v[(size_t)idx[k]]);
++  *nqp = n;
++  return ncclSuccess;
++}
++static ncclResult_t gdakiRsLogReadMsgs(struct gdakiRecHost* r, int peer, uint64_t* msgs, int* nqp) {
++  return gdakiRsLogReadQpField(r, peer, msgs, nqp, [](const struct ncclGinRsQp& q) { return (uint64_t)q.msgs; });
++}
++static ncclResult_t gdakiRsLogReadSuppress(struct gdakiRecHost* r, int peer, uint64_t* left, int* nqp) {
++  return gdakiRsLogReadQpField(r, peer, left, nqp, [](const struct ncclGinRsQp& q) { return (uint64_t)q.suppress; });
++}
++static ncclResult_t gdakiRsLogReadGets(struct gdakiRecHost* r, int peer, uint64_t* gets, int* nqp) {
++  return gdakiRsLogReadQpField(r, peer, gets, nqp, [](const struct ncclGinRsQp& q) { return (uint64_t)q.gets; });
++}
++static uint64_t gdakiRsLogCoveredUpTo(struct gdakiRecHost* r) {
++  return gdakiRsLogReady(r) ? r->rsLog->st.coveredUpTo.load(std::memory_order_acquire) : GDAKI_RS_POS_INF;
++}
++// The number of user transparent-recovery GDAKI contexts of this communicator (their setup decisions; Resume counted the
++// same at its call): one ring per context is one ring per rank only while it is one (9.10.4).
++static int gdakiRsUserCtxCount(void* comm) {
++  std::lock_guard<std::mutex> lk(gdakiRsRegMu);
++  int n = 0;
++  for (const auto& x : gdakiRsReg)
++    if (x.comm == comm && x.setup && x.handle != nullptr) n++;
++  return n;
++}
++// gdakiRsLogPoll (the host branch's helper step, every 10 ms; nobody else calls it): the counts (overflow, gets) of every
++// QP that may log, a second user context, the tail's advance and an occupancy sample. Peers to DISARM go to *broke, each
++// once per cause.
++static ncclResult_t gdakiRsLogPoll(struct gdakiRecHost* r, std::vector<int>* broke) {
++  if (!gdakiRsLogReady(r)) return ncclInvalidUsage;
++  // nothing is logged before ncclGinRestoreResume published the side table: no NIC read (review of the trap removal,
++  // note 6; a hold process that never enables the restore pays no helper reads)
++  if (!r->rsPublished.load(std::memory_order_acquire)) return ncclSuccess;
++  struct gdakiRsLogHost* lh = r->rsLog;
++  const int nranks = r->nranks > 0 ? r->nranks : 1;
++  struct ncclGinRsSide h;
++  std::vector<struct ncclGinRsQp> v;
++  if (!gdakiRsReadSide(r, &h, &v)) return ncclSystemError;  // the DISARM list is kept for the next call
++  {
++    for (int i = 0; i < r->rsNqp; i++) {
++      if (!r->rsLogged[(size_t)i]) continue;
++      bool gotGet = false;
++      if (gdakiRsLogStateNoteCounts(&lh->st, i, v[(size_t)i].ovfCount, v[(size_t)i].gets, &gotGet) || gotGet)
++        gdakiRsLogDisarmOnce(lh, i % nranks);
++    }
++    lh->st.headSeen.store(h.head, std::memory_order_relaxed);
++    if (gdakiRsLogTrim(r, h.head) != ncclSuccess) lh->st.trimErrors.fetch_add(1, std::memory_order_relaxed);
++    const uint64_t occ = h.head >= lh->st.tail ? h.head - lh->st.tail : 0;
++    lh->st.samples.fetch_add(1, std::memory_order_relaxed);
++    lh->st.occSum.fetch_add(occ, std::memory_order_relaxed);
++    if (occ > lh->st.occMax.load(std::memory_order_relaxed)) lh->st.occMax.store(occ, std::memory_order_relaxed);
++  }
++  if (!lh->userCtxReported && gdakiRsUserCtxCount(r->commKey) > 1) {  // a second user context after Resume
++    lh->userCtxReported = true;
++    GIN_TS_NOTE("GIN/RS: rank %d: a second user transparent-recovery GDAKI context on this communicator: the send-side log "
++                "is no longer one ring per rank; every peer is reported for DISARM", r->ctx ? r->ctx->rank : -1);
++    for (int p = 0; p < nranks; p++)
++      if (r->ctx == nullptr || p != r->ctx->rank) gdakiRsLogDisarmOnce(lh, p);
++  }
++  for (int p : lh->disarm) broke->push_back(p);  // delivered with ncclSuccess only (the caller reads it then)
++  lh->disarm.clear();
++  return ncclSuccess;
++}
++static bool gdakiRsLogComplete(struct gdakiRecHost* r, int peer) {
++  return gdakiRsLogReady(r) && gdakiRsLogStateComplete(&r->rsLog->st, peer);
++}
++static ncclResult_t gdakiRsLogCollect(struct gdakiRecHost* r, int peer, uint64_t from, uint64_t to,
++                                      std::vector<struct ncclGinRsLogEntry>* out, char* why, size_t whyLen) {
++  if (!gdakiRsLogReady(r)) return gdakiRsLogNotReady(why, whyLen);
++  struct gdakiRsLogHost* lh = r->rsLog;
++  int idx[NCCL_GIN_RECOVERY_MAX_QPS];
++  const int n = gdakiRsQpsOfPeer(r, peer, idx);
++  struct ncclGinRsSide h;
++  std::vector<struct ncclGinRsQp> v;
++  if (!gdakiRsReadSide(r, &h, &v)) {
++    snprintf(why, whyLen, "cannot read the side table");
++    return ncclSystemError;
++  }
++  uint64_t ovfNow[NCCL_GIN_RECOVERY_MAX_QPS], getsNow[NCCL_GIN_RECOVERY_MAX_QPS];
++  for (int k = 0; k < n; k++) {
++    ovfNow[k] = v[(size_t)idx[k]].ovfCount;
++    getsNow[k] = v[(size_t)idx[k]].gets;
++  }
++  char cw[160];
++  if (!gdakiRsLogStateCanExport(&lh->st, idx, n, from, ovfNow, getsNow, cw, sizeof(cw))) {  // complete since `from`, now
++    snprintf(why, whyLen, "the log toward rank %d is not complete from position %lu: %s", peer, (unsigned long)from, cw);
++    return ncclInvalidUsage;
++  }
++  if (to > h.head || to < from) {
++    snprintf(why, whyLen, "positions [%lu, %lu) are not all in the ring (head %lu, tail %lu)", (unsigned long)from,
++             (unsigned long)to, (unsigned long)h.head, (unsigned long)lh->st.tail);
++    return ncclInvalidUsage;
++  }
++  out->clear();  // empty when the tail already passed `to` (the peer has no entry there: CanExport passed)
++  const uint64_t chunk = gdakiRsLogChunk(r);
++  for (uint64_t s = std::max(from, lh->st.tail); s < to;) {
++    const uint64_t slot = s & (uint64_t)(lh->st.n - 1);
++    uint64_t e = std::min<uint64_t>(to, s + chunk);
++    if (e > s + (lh->st.n - slot)) e = s + (lh->st.n - slot);
++    const size_t bytes = (size_t)(e - s) * sizeof(struct ncclGinRsLogEntry);
++    if (gdakiLbXfer(r, false, lh->ringDev + slot * sizeof(struct ncclGinRsLogEntry), bytes) != ncclSuccess) {
++      snprintf(why, whyLen, "cannot read the ring over the NIC copy path");
++      return ncclSystemError;
++    }
++    std::vector<uint64_t> ids((size_t)(e - s));
++    for (uint64_t p = s; p < e; p++)
++      memcpy(&ids[(size_t)(p - s)], r->pinned + (size_t)(p - s) * sizeof(struct ncclGinRsLogEntry), 8);
++    for (uint64_t p : gdakiRsLogStatePeerPositions(&lh->st, peer, s, e, ids.data())) {  // the tested filter
++      struct ncclGinRsLogEntry en;
++      memcpy(&en, r->pinned + (size_t)(p - s) * sizeof(en), sizeof(en));
++      out->push_back(en);
++    }
++    s = e;
++  }
++  return ncclSuccess;
++}
++static void gdakiRsLogOccupancy(struct gdakiRecHost* r, struct gdakiRsLogOcc* out) {
++  *out = gdakiRsLogOcc();
++  if (!gdakiRsLogReady(r)) return;
++  const struct gdakiRsLogState& s = r->rsLog->st;
++  out->nEntries = s.n;
++  out->samples = s.samples.load(std::memory_order_relaxed);
++  out->occSum = s.occSum.load(std::memory_order_relaxed);
++  out->occMax = s.occMax.load(std::memory_order_relaxed);
++  out->trims = s.trims.load(std::memory_order_relaxed);
++  out->tail = s.tailNow.load(std::memory_order_relaxed);
++  out->headSeen = s.headSeen.load(std::memory_order_relaxed);
++  out->blockedPending = s.blockedPending.load(std::memory_order_relaxed);
++}
++static uint64_t gdakiRsWinGoneCount(struct gdakiRecHost* r) {
++  if (r == nullptr || r->ctx == nullptr || !r->rsPtrSet) return 0;
++  std::lock_guard<std::mutex> lk(gdakiRsWinMu);
++  uint64_t n = 0;
++  for (const auto& w : gdakiRsWins)
++    if (w.coll == (void*)r->ctx->collComm && w.gone && w.goneSeq > r->rsWinSeq) n++;
++  return n;
++}
++// ---- gin-restore (dev): log, suppress and replay (end) ----
++
  static void gdakiTsStart(struct gdakiRecHost* r) {
    if (r == nullptr || r->ts == nullptr) return;
    struct gdakiTs* ts = r->ts;
-@@ -7304,6 +8201,8 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+@@ -7304,6 +9032,8 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
    }
    if (!ok) {
      WARN("GIN/TS: transparent recovery OFF on rank %d (gate setup failed)", g->rank);
@@ -2282,7 +3132,7 @@ index 2760d43..a6266a1 100644
      gdakiTsCloseListen(ts->listenFd, g->rank, ts->nonce);  // gin-harden: BYE, not a reset, for a pending connection
      ts->listenFd = -1;
      if (r->copyStuck && r->copyEv != nullptr) {  // gin-harden: the gate writes below need the late copy done (bounded)
-@@ -7330,6 +8229,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+@@ -7330,6 +9060,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
      r->ts = nullptr;
      return;
    }
@@ -2290,7 +3140,7 @@ index 2760d43..a6266a1 100644
    ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
    ts->active.store(1, std::memory_order_release);
    ts->th = std::thread(gdakiTsMain, r);
-@@ -7455,6 +8355,8 @@ static void gdakiDetTeardownLine(struct gdakiTs* ts, int rank) {
+@@ -7455,6 +9186,8 @@ static void gdakiDetTeardownLine(struct gdakiTs* ts, int rank) {
  extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
    std::vector<struct gdakiRecHost*> rs;
    int orphansOnColl = 0;
@@ -2299,7 +3149,7 @@ index 2760d43..a6266a1 100644
    {
      std::lock_guard<std::mutex> lk(gdakiRecRegMu);
      for (auto* r : gdakiRecReg)
-@@ -7616,6 +8518,11 @@ static bool gdakiTsFree(struct gdakiRecHost* r) {
+@@ -7616,6 +9349,11 @@ static bool gdakiTsFree(struct gdakiRecHost* r) {
    }
    // hk: the helper has stopped here (joined, or detached and exited); a context whose helper ran gets its watch line
    if (ts->active.load(std::memory_order_acquire)) gdakiDetTeardownLine(ts, r->ctx->rank);
@@ -2311,7 +3161,7 @@ index 2760d43..a6266a1 100644
    INFO(NCCL_NET, "GIN/TS: closed rank=%d rounds=%d recovered=%d declined=%d stale=%d", r->ctx->rank, ts->nRounds,
         ts->nRecovered, ts->nDeclined, ts->nStale);
    gdakiLbDestroy(r);  // gin-remaining: before the memory it registered goes (the staging buffer goes in gdakiRecFree)
-@@ -7652,6 +8559,273 @@ ncclResult_t ncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* st
+@@ -7652,6 +9390,277 @@ ncclResult_t ncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* st
    return ncclSuccess;
  }
  
@@ -2398,6 +3248,7 @@ index 2760d43..a6266a1 100644
 +  in.symGinDevComm = f->symGinDevComm != 0;
 +  in.reconnect = (long long)ncclParamGinTsReconnect();
 +  in.restoreMs = (long long)ncclParamGinRestoreMs();
++  in.deviceBuilt = f->deviceBuilt != 0;  // gin-restore (dev; user direction 2026-10-12): the nccl.h wrapper's flag
 +  struct gdakiRsXRec mine;
 +  memset(&mine, 0, sizeof(mine));
 +  mine.magic = GDAKI_RS_X_MAGIC;
@@ -2532,6 +3383,9 @@ index 2760d43..a6266a1 100644
 +    verdict = gdakiRsResumeDecide(n, all.data(), why, sizeof(why));
 +    rc = verdict == GDAKI_RS_REFUSE ? ncclInvalidUsage : ncclSuccess;
 +  }
++  // gin-restore (dev; user direction 2026-10-12): the side table goes to the device only now, on success (the log
++  // measurement mode published it at the context's creation)
++  if (rc == ncclSuccess && verdict == GDAKI_RS_ENABLE) gdakiRsPublishFor(comm, key);
 +  {
 +    std::lock_guard<std::mutex> lk(gdakiRsRegMu);
 +    gdakiRsResumedReg.emplace_back();
@@ -2553,7 +3407,7 @@ index 2760d43..a6266a1 100644
 +  }
 +  if (verdict == GDAKI_RS_ENABLE)
 +    GIN_TS_NOTE("GIN/RS: rank %d: ncclGinRestoreResume: the restore can be enabled (%s); first incarnation, step 0; this "
-+                "build has no hold reaction yet: the communicator stays fail-fast", f->rank, why);
++                "build has no hold reaction yet: a fault still fails fast", f->rank, why);
 +  else
 +    INFO(NCCL_NET, "GIN/RS: rank %d: ncclGinRestoreResume: %s; the communicator stays fail-fast", f->rank, why);
 +  return ncclSuccess;
@@ -2585,7 +3439,7 @@ index 2760d43..a6266a1 100644
  ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, void** outGinCtx,
                                         ncclNetDeviceHandle_t** outDevHandle) {
    ncclResult_t status = ncclSuccess;
-@@ -8281,6 +9455,7 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+@@ -8281,6 +10290,7 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
    gdaki_ctx->rec = nullptr;
    gdakiQ4Free(gdaki_ctx->q4);  // GIN Q4: stop the watcher before the QPs go away
    gdaki_ctx->q4 = nullptr;
@@ -2593,7 +3447,7 @@ index 2760d43..a6266a1 100644
  
    if (gdaki_ctx->docaEvent) {
      doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
-@@ -8385,7 +9560,14 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8385,7 +10395,14 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
    __be32 rkey;
  
    struct gdaki_mem_handle* gdaki_mhandle = nullptr;
@@ -2609,7 +3463,7 @@ index 2760d43..a6266a1 100644
  
    gdaki_mhandle = (struct gdaki_mem_handle*)calloc(1, sizeof(*gdaki_mhandle));
    EQCHECKGOTO(gdaki_mhandle, nullptr, status, out);
-@@ -8393,7 +9575,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8393,7 +10410,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
    NCCLCHECKGOTO(gdakiRegMr(&mr, cComm->ib.pd, data, size,
                             IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
                               IBV_ACCESS_REMOTE_ATOMIC,
@@ -2618,7 +3472,7 @@ index 2760d43..a6266a1 100644
                  status, out);
  
    rkey = htobe32(mr->rkey);
-@@ -8404,6 +9586,10 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8404,6 +10421,10 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
    NCCLCHECKGOTO(gdaki_mhandle_hd_mhandle->allocate(1), status, out);
    gdaki_mhandle_hd_mhandle->host_buf->rkeys = rkeys_hd_mhandle->gpu_buf;
    gdaki_mhandle_hd_mhandle->host_buf->lkey = htobe32(mr->lkey);
@@ -2629,7 +3483,7 @@ index 2760d43..a6266a1 100644
    NCCLCHECKGOTO(gdaki_mhandle_hd_mhandle->copy_h_to_d(), status, out);
  
    gdaki_mhandle->type = type;
-@@ -8413,6 +9599,10 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8413,6 +10434,10 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
  
    INFO(NCCL_NET, "[%d] Registered MR: data=%p, size=%zu, lkey(be32)=%#x, rkey(be32)=%#x", cComm->rank, data, size,
         htobe32(mr->lkey), htobe32(mr->rkey));
@@ -2640,7 +3494,7 @@ index 2760d43..a6266a1 100644
  
    *mhandle = (void*)gdaki_mhandle;
    *ginHandle = (void*)gdaki_mhandle_hd_mhandle->gpu_buf;
-@@ -8434,6 +9624,7 @@ ncclResult_t ncclGinGdakiDeregMrSym(void* collComm, void* mhandle) {
+@@ -8434,6 +10459,7 @@ ncclResult_t ncclGinGdakiDeregMrSym(void* collComm, void* mhandle) {
  
    INFO(NCCL_NET, "[%d] Unregistering MR: lkey(be32)=%#x, rkey(be32)=%#x", cComm->rank, htobe32(mr->lkey),
         htobe32(mr->rkey));
