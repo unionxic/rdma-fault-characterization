@@ -413,6 +413,9 @@ static void testLocal() {
     {"round cap stopped recovery", [](struct gdakiRsLocalIn& x) { x.escalated = true; }},
     {"measurement mode is on (NCCL_GIN_RESTORE_LOG_MEASURE)", [](struct gdakiRsLocalIn& x) { x.logMeasure = true; }},
     {"program not built with NCCL_GIN_RESTORE_DEVICE", [](struct gdakiRsLocalIn& x) { x.deviceBuilt = false; }},
+    // integration (2026-10-12): the spare branch's two conditions (30, 31) come before this branch's two (32, 33)
+    {"does not record its init transcript (NCCL_GIN_RESTORE_RECORD)", [](struct gdakiRsLocalIn& x) { x.transcriptOk = false; }},
+    {"replay of the init transcript was not clean (unknown)", [](struct gdakiRsLocalIn& x) { x.replayClean = false; }},
     {"atomic capability is below IBV_ATOMIC_HCA (atomic_cap 0)", [](struct gdakiRsLocalIn& x) { x.atomicCap = 0; }},
     {"NIC atomics of the restore are not ready on this rank (the self-test's fetch-and-add",
      [](struct gdakiRsLocalIn& x) {
