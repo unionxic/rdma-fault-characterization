@@ -5,7 +5,7 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `RUNNING` |
+| 상태 | `QA` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-09 |
 | 기준 브랜치와 커밋 | `exp/gin-restore` @ `02a640aa` (master) |
@@ -2207,7 +2207,10 @@ rm -rf ~/rs-ordlogs; ssh -n "$SUNNY_SSH" 'rm -rf $HOME/rs-ordlogs'
 - [x] 둘째 배포 묶음 `i4` 배포와 pilot 다시 하기(메인 세션, 2026-10-13: 두 결함의 고침이 돎, 12절)
 - [x] 다시 한 pilot의 실행기 결함(GIN 종류 셀 변수)과 체크포인트 멈춤 중 kill의 1 s 감지 지연 고침, 검토 메모 넷, 비용 규칙 `within`(2026-10-13; 빌드됨, CPU 시험함)
 - [x] 배포 묶음 `i5` 배포와 pilot(메인 세션, 2026-10-13: GIN 종류 셀이 거절되고 체크포인트 멈춤 중 kill의 1 s 지연이 사라짐, 12절)
-- [ ] 본 실행, 채점, QA, 결론
+- [x] 본 실행(2026-10-13 02:58–03:45, 329시행, 제외 0, STOP 없음)과 채점(18 맞음, 3 틀림: 4 KiB 비용 한도)
+- [x] 독립 재계산(복원, 거절, 회귀 18개 판정 같음; 비용 가족은 12절), 채점기 머리말 고침(13절)
+- [x] 15–19절, README, NOTES, DATA.md, Release 자산(`data-20261013`)
+- [ ] PR 합치기(rebase)와 합친 뒤 고정 파일 확인(12절), 상태 `COMPLETE`
 
 ## 12. 실행 기록 (시간순)
 
@@ -2448,10 +2451,16 @@ rm -rf ~/rs-ordlogs; ssh -n "$SUNNY_SSH" 'rm -rf $HOME/rs-ordlogs'
 | 2026-10-13 | 사전 등록(메인 세션, 측정 전: 본 실행은 아직 없음). 고정한 것: 2절 가설(비용 가설의 문턱을 10%와 "갈리지 않음"으로 씀), 3절 예측(복원 시간 T = 2 000 ms, 체크포인트 멈춤 중 kill 셀의 조건에 `die_in_pause` = 3, 멈춤 ≤ 10 ms, 비용 `cost_log`와 `cost_unarmed`는 `within:10`, 새 행 `cost_checksum`은 보고만, `cost_ff`는 갈리지 않음), 7절 셀과 반복 수(표 그대로; 빌드 i5의 md5; hold 목록), 8절 제외와 중단(QUERY_QP 상한 40 000과 150 000, 시행 한도 60 s, 이어 돌리기). 고정 파일 [impl/test/predictions_rs.csv](impl/test/predictions_rs.csv)(sha256 `752c8329…`)와 [impl/test/cells_rs.json](impl/test/cells_rs.json)(`99b7165c…`)은 [PREREG.txt](PREREG.txt)에, 라이브러리와 driver의 md5도 거기에. `hold_rs.sh`의 기본값(상한, 시행 한도)을 8절과 같게 바꿈. 상태를 `PREREGISTERED`로. 이 변경 전부가 커밋 하나이고 그 커밋에 annotated 태그 `prereg/gin-restore-v1`. 사용자 확인 없이 메인 세션이 정한 것(아침에 보고): 비용 한도를 문턱으로 쓴 것, checksum 기본 끔, T = 2 000 ms. | 커밋 `11c06438`, `PREREG.txt`, 태그 `prereg/gin-restore-v1` |
 | 2026-10-13 | 셋째 고침 묶음(`efd4c8a7..fd7fc78b`, 커밋 다섯)의 독립 검토(다른 Opus 에이전트, 읽기만): 판정 "막는 문제 없음". 확인한 것: 시험 스위치의 shutdown은 `#ifndef NCCL_GIN_TS_PRODUCTION` 안이고 자기 helper 소켓(`r->ts->peers[].fd`)뿐이며 같은 fd를 닫는 다른 스레드 없음, 운영 빌드 `rsp_i4`, `rsp_i4b`, `rsp_i5`의 md5가 모두 같음(스위치 덩어리의 줄 수가 그대로라 `__LINE__`이 안 바뀜), `RS_DRY_CONFIG`는 ssh, mktemp, port 고르기 전에 끝남, `rs_set.sh`의 검사와 빈 값의 뜻, 다시 하기 전 지우기는 정확한 stem 접두어만, 무장 대기는 절대 마감 하나, `within:<pct>`의 방향과 판정 팔, 문서는 9.10.5, 11, 12절만 바뀜, 원자료 대조(복원 시간, 'later' 수, `gin_type`, rank 1의 RST 뒤 거절 둘) 모두 맞음. 막지 않는 메모: (1) 고침은 FIN 뒤 RST가 와도 recv가 EOF를 돌려주는 Linux 동작에 기댐(i5 pilot이 `cause=FIN`으로 확인함); (2) `rs_set.sh`가 둘째 글자부터 공백, `;`, `*`, `$`를 통과시킴(원격 명령에 따옴표 없이 들어감) → `[A-Za-z0-9._-]`만 허용할 것; (3) dry 설정 줄과 meta 줄이 같은 코드가 아니고 `hold_rs.sh`, `chain_rs.sh`가 `RS_DRY_CONFIG`를 거절하지 않으며 시험의 `/tmp/rs_cfg_*`를 지우지 않음; (4) `score.py`: 이름 없는 `cost_ff`는 보고만 하는 팔이 5회 미만이면 자료 부족, "판정하지 않는 팔이 범위 밖이어도 맞음" fixture 없음, 대역 판정이 `bw256k` 이름에 고정, 기준 팔만 이름으로 주면 판정 팔 없이 맞음, 머리 설명에 within 없음; (5) 장치 단위 시험 수가 판마다 다름(13 223 397, 13 219 481, 13 218 481; 장치 코드는 안 바뀜, 시각에 따라 달라지는 것으로 봄 `[추론]`); (6) PILOT.md의 "약 125–145 ms" 중 145는 미확인. 메인 세션: 2, 3은 본 실행 뒤 고침 대상(실행 경로를 바꾸지 않음), 나머지는 메모. | 이 행(검토는 메시지로 받음) |
 | 2026-10-13 | 본 실행 시작(메인 세션, 03:1x; 사전 등록 태그 뒤, 측정 전 상태 `RUNNING`): `RS_SET=i5 chain_rs.sh <results/20261013_main> G1 G2 R1 COST-log-rain-lat4k COST-log-rain-lat256k COST-log-rain-bw256k COST-log-sunny-lat4k COST-log-sunny-lat256k COST-log-sunny-bw256k COST-ffbranch-rain COST-ffbranch-sunny G1 G2 R1`(마지막 셋은 시간 한도로 빠진 시행을 잇기 위함). hold마다 `cluster_run.sh`(락, 링크 한가함) 안, 시행마다 QUERY_QP 상한 40 000(회귀 150 000), STOP 규칙은 8절. | `results/20261013_main/` |
+| 2026-10-13 | 본 실행 끝(02:58:38–03:45:53). hold: G1 549 s(45시행), G2 81 s(12), R1 408 s(20), COST-log 여섯 151–178 s(각 30회), COST-ffbranch 둘 180–182 s(각 36회), 이어 돌리기 G1, G2, R1은 모두 "already done"(각 4 s). 시행 329회 모두 meta 있음, `skipped.txt`, `refused.txt`, `qp_over.txt`, `spare_wait.txt`, STOP 파일 없음, 모든 hold에서 새 mlx5 커널 줄 0, rain 펌웨어 명령 실패 31 → 31, 남은 프로세스 0(두 노드 GPU 앱 0) `[측정]`. 채점(`score.py`, 사전 등록한 판정식, 예측 파일 sha256이 `PREREG.txt`와 같음): 판정한 시행 329, 제외 0; 예측 18개 맞음(대기 붙잡기, 데이터 같음, 재실행 없음, 되살린 rank 끝까지, 억제 정확, 복원 시간, 멈춤 중 kill 4/5, rank 1 kill, 예비 미등록 fail-fast, 예비 없어짐 fallback, hk 대조, 장애 없음, strict 강제 둘, 거절 넷, 매크로 없음, 회귀 둘), 3개 틀림(`cost_log` sunny 4 KiB +15.1%, `cost_unarmed` sunny 4 KiB +13.3%, `cost_ff` sunny 4 KiB 6 대 6 갈림 +0.06 µs), `cost_checksum`은 보고만. 수치는 15절. 상태 `QA`. | [results/20261013_main/SCORE.md](results/20261013_main/SCORE.md), [results/20261013_main/trials_scored.csv](results/20261013_main/trials_scored.csv) |
+| 2026-10-13 | 독립 재계산(다른 Opus 에이전트, 읽기만; 채점기, 파서, 시행별 표를 보지 않고 원자료에서 다시 셈, 그 뒤에만 `SCORE.md`와 견줌): 복원, 거절, 회귀 셀 77시행의 예측 18개가 모두 맞음이고 채점표와 다른 판정 없음, 제외 0. 복원 시간 278.0–397.9 ms(rank 3), 372.5–400.8 ms(rank 1); 억제는 예비 프로세스의 `suppress` 줄과 원자료에서 센 X − P를 통로 60개에서 견줘 모두 같음; 풀림 시각은 15절. 짚은 것 셋(16절): 채점표 머리말의 `PREREG.txt` 비교 오류(13절에서 고침), 멈춤 중 kill의 시각 해석, 복원 뒤 짝 rank의 체크포인트가 모두 void(18절). 비용 가족의 재계산은 아래 행. | [results/20261013_main/qa_recount.md](results/20261013_main/qa_recount.md), [results/20261013_main/qa/](results/20261013_main/qa/) |
+| 2026-10-13 | 비용 가족의 독립 재계산(같은 에이전트, 같은 규칙; 지연은 보내는 rank 0의 kv `lat_p50_us`, 대역은 `burst_K × bytes / lat_p50_us`): 252실행 모두 유효(두 rank exit 0, 보낸 수와 받은 수, `win_flags=0x3`, 라이브러리와 driver md5가 `PREREG.txt`와 같음), 판정 `cost_log` 틀림(sunny 4 KiB +15.15%, 나머지 +3.83–+9.15%), `cost_unarmed` 틀림(sunny 4 KiB +13.32%), `cost_ff` 틀림(sunny 4 KiB `ffb-hk` 6회 모두 10.56 µs, `ffb-rs` 10.62–10.66 µs: 섞어 돌린 6라운드 모두 같은 방향, 나머지 셋은 안 갈림), checksum과 매크로 빌드는 보고만 — 채점표와 모두 같음(% 차이는 반올림뿐). 알아 둘 것: rain이 받는 4 KiB 지연은 약 1.02 µs 간격으로만 나와 +9.15%는 한 칸이고 10% 문턱에 0.85%p 가까움; `cost_ff`의 갈림은 60 ns라 결과 문장은 "잴 수 있는 작은 차이"로 씀. QUERY_QP는 비용 실행마다 16 증가. | [results/20261013_main/qa_recount.md](results/20261013_main/qa_recount.md) 6절 |
+| 2026-10-13 | 15–19절, [README.md](README.md), [NOTES.md](NOTES.md)를 씀. 채점기 머리말 고침(13절) 뒤 본 실행 채점표를 다시 만듦(판정 같음). Release 자산: 결과 폴더 일곱을 `harness__gpu-initiated__gin_recovery__restore__results__<폴더>.tar.xz`로 묶어(묶는 스크립트는 세션 스크래치 `rel_rs/pack_release_rs.py`; 다시 풀어 원본과 바이트 비교, sha256, IPv4 검사: 실행기가 가린 문서용 주소 외 0) `data-20261013`에 올림(루트 `DATA.md`). | 루트 `DATA.md`, 이 폴더의 `README.md`, `NOTES.md` |
 
 ## 13. 사전 등록 이후 변경
 
-없음(사전 등록 전).
+| 날짜 | 무엇을 | 이유 | 영향 범위 | 커밋 |
+|---|---|---|---|---|
+| 2026-10-13 | `impl/test/score.py`의 채점표 머리말: `PREREG.txt`를 시험 폴더가 아니라 실험 폴더에서 읽고, "DRAFT"와 "pilot 뒤 고정" 문구를 사전 등록 문구로, 만족하지 않은 시행을 절대 경로 대신 이름으로 | 독립 재계산이 머리말의 "sha256이 다르다"가 틀렸음을 찾음(값은 같음) | 머리말 글과 시행 이름 표기만. 판정식, 열, 판정은 그대로(자체 시험 통과, 본 실행 채점표를 다시 만들어 판정 같음) | 본 실행 뒤 QA 커밋 |
 
 | 날짜 | 무엇을 | 이유 | 영향 범위 | 커밋 |
 |---|---|---|---|---|
@@ -2460,18 +2469,73 @@ rm -rf ~/rs-ordlogs; ssh -n "$SUNNY_SSH" 'rm -rf $HOME/rs-ordlogs'
 
 | 무엇 | 경로 또는 Release 자산 | n |
 |---|---|--:|
+| 본 실행 채점표와 시행별 표 | [results/20261013_main/SCORE.md](results/20261013_main/SCORE.md), [results/20261013_main/trials_scored.csv](results/20261013_main/trials_scored.csv) | 329 |
+| 본 실행 독립 재계산 | [results/20261013_main/qa_recount.md](results/20261013_main/qa_recount.md), 스크립트 [results/20261013_main/qa/](results/20261013_main/qa/) | 77 + 252 |
+| 본 실행 원자료(시행별 로그, kv, meta, hold 스냅숏, 비용 실행의 원시 지연 표) | Release `data-20261013`의 `harness__gpu-initiated__gin_recovery__restore__results__20261013_main.tar.xz`(`DATA.md`) | 329 |
+| pilot 셋과 비용 pilot(채점하지 않음) | 같은 Release의 `…__results__20261013_pilot.tar.xz`, `…_pilot_cost.tar.xz`, `…_pilot_i4.tar.xz`, `…_pilot_i5.tar.xz` | 12 + 180 + 23 + 12 |
+| 실행 가능성 시험 B1–B3과 strict 대 relaxed 비교 | 같은 Release의 `…__results__20261009_feasibility.tar.xz`, `…__results__20261011_ordering.tar.xz`; 요약은 [results/20261009_feasibility/](results/20261009_feasibility/), [results/20261011_ordering/](results/20261011_ordering/) | 9.15절 |
+| 라이브러리 계층과 빌드 md5 | [impl/rs_layer.diff](impl/rs_layer.diff), [PREREG.txt](PREREG.txt) | – |
 
 ## 15. 결과 요약
 
-`[미확인]` 본 실험 전이다.
+본 실행(2026-10-13 02:58–03:45, 배포 묶음 i5, hold 11개와 이어 돌리기 셋, 모두 `cluster_run.sh` 안; 채점 [results/20261013_main/SCORE.md](results/20261013_main/SCORE.md),
+독립 재계산 [results/20261013_main/qa_recount.md](results/20261013_main/qa_recount.md)). 시행 329회(복원과 거절 57, 회귀 20, 비용 252) 모두 유효, 제외 0,
+STOP 없음, 모든 hold에서 새 mlx5 커널 줄 0, rain 펌웨어 명령 실패 31 → 31 `[측정]`. 사전 등록한 예측 21개 가운데 18개가 맞고 3개(비용 한도 10%)가 틀렸다.
+범위는 그 셀의 모든 시행에 걸친 범위다.
+
+| 무엇을 예측했나 | 결과 | n |
+|---|---|--:|
+| rank 3 kill: 생존 rank의 상대를 모르는 대기가 풀리지 않고 붙잡힘 | 10/10. 비동기 오류 0, 거절 줄 0 | 10 |
+| 같은 셀: 최종 데이터가 장애 없는 기준과 비트 단위로 같음 | 10/10(받은 칸, 상태 이력, 신호 값) | 10 |
+| 같은 셀: 생존 rank는 다시 실행하지 않음, 되살린 rank가 끝까지 감 | 10/10, 10/10(되살린 rank는 확정 체크포인트의 다음 단계부터 600단계까지) | 10 |
+| 같은 셀: 다시 보내기 억제가 통로마다 정확함 | 10/10(통로 40개 모두 억제 수 = 누적 실행 수 − 체크포인트 때의 실행 수) | 10 |
+| 같은 셀: 복원 시간 ≤ 2 000 ms | 10/10. 첫 죽음 판정부터 마지막 생존 rank의 복원 완료까지 278–397 ms(중앙값 376). 활성화는 hold 시작 뒤 2–129 ms('later' 답 0–6번: SIGKILL된 CUDA 프로세스가 /proc에서 사라지기까지 0–126 ms), 예비 프로세스의 초기화 재생은 kill 전에 379–418 ms | 10 |
+| 체크포인트 멈춤 중 kill(스위치, 생존 rank 셋 모두 멈춤 안)도 앞 체크포인트에서 복원 | 4/5(≥ 4/5 맞음). 한 시행은 짝 rank가 그 체크포인트의 멈춤에 들지 않아 조건 불충족. 복원 378–395 ms | 5 |
+| 같은 GPU의 다른 rank(rank 1) kill | 5/5. 복원 372–401 ms | 5 |
+| 예비 프로세스를 등록하지 않음 → 무장되지 않아 hk와 같은 fail-fast | 5/5. hold 시작 줄 없음, 거절, 대기가 죽음 판정 뒤 2 002–2 006 ms에 degraded로 풀림 | 5 |
+| 예비 프로세스를 등록했으나 활성화 전에 없어짐 → fallback | 5/5. hold 시작 뒤 1 000.5–1 003.0 ms에 fallback, 그 뒤 2 000.5–2 004.5 ms에 풀림 | 5 |
+| 대조: 복원 없는 빌드(hk)는 degraded로 풀림 | 5/5. 죽음 판정 뒤 2 001.5–2 004.7 ms | 5 |
+| 장애 없음: 데이터 같음, 복원 0, 체크포인트마다 입력 멈춤 ≤ 10 ms | 5/5. 멈춤 최대 5.2–5.6 ms(체크포인트 20단계마다, 단계 5 ms) | 5 |
+| hold 프로세스의 window는 모두 strict로 강제 / 복원을 끈 셀은 강제 0 | 5/5(16/16 강제) / 5/5(16/16 비강제) | 5 + 5 |
+| 켤 수 없는 설정 넷에서 모든 rank가 같은 이유의 오류 | 각 3/3(symmetric 커널의 GIN 켬, GIN 종류 proxy, rank 하나만 복원 끔, 매크로 없는 프로그램); 오류 없이 fail-fast로 넘어간 rank 0 | 12 |
+| 매크로 없는 프로그램은 거절 뒤 fail-fast로 끝까지 돌아 결과가 같음 | 3/3 | 3 |
+| 회귀(gin-remaining의 셀, fail-fast와 hold 변형) | 각 5/5. 장애 없음 투명, rank 3 kill의 degraded 풀림 2 006–2 013 ms | 20 |
+| 복원 모드(로그 켬, checksum 끔)의 put 비용이 fail-fast의 10% 안 | **틀림**: sunny 4 KiB 지연 +1.66 µs(+15.1%); 나머지 다섯(rain 4 KiB +9.1%, 256 KiB +3.8% / +4.8%, 대역 −4.2% / −4.9%)은 안 | 6 × 5 × 2 |
+| 무장 전 hold 길(로그 없음)의 비용이 10% 안 | **틀림**: sunny 4 KiB +1.46 µs(+13.3%); 나머지 다섯은 2.6–9.1% | 같음 |
+| 매크로 없는 fail-fast가 hk 운영 빌드와 갈리지 않음 | **틀림**: sunny 4 KiB에서 6 대 6 완전 갈림(+0.06 µs, +0.6%: 10.56 대 10.62–10.66). rain 4 KiB와 256 KiB, sunny 256 KiB는 갈리지 않음. 매크로 빌드(보고만)는 sunny 4 KiB +0.38 µs | 6 × 3 × 2 × 2 |
+| checksum의 비용(보고만) | 표본: 4 KiB +18% / +46%, 256 KiB +18% / +16%, 대역 −50% / −52%; 전부: 4 KiB 2.7배 / 3.0배, 256 KiB 24배 / 25배, 대역 −97.5% / −97.7%(rain / sunny) | 같음 |
+
+수치 `[측정]`: 비용은 받는 노드마다 팔마다 6회의 중앙값(µs 또는 GB/s)이고 off 대비 차이다. 억제 수는 예비 프로세스의 `suppress` 줄과 원자료에서 따로 센 값을
+견준 것(재계산 1절). 복원 시간의 정의는 3절(첫 죽음 판정 줄 → 마지막 생존 rank의 복원 완료 줄, 모두 rain의 수신 시각).
 
 ## 16. QA와 재현성
 
-아직 없다.
+- 채점: `score.py`가 사전 등록한 판정식(`predictions_rs.csv`, sha256이 `PREREG.txt`와 같음)을 원자료에 적용했다. 시행 329회 모두 판정, 제외 0.
+- 독립 재계산(다른 Opus 에이전트, 채점기와 시행별 표를 보지 않고 원자료에서): 복원, 거절, 회귀 셀의 예측 18개 판정이 모두 같고, 제외도 0으로 같다
+  ([results/20261013_main/qa_recount.md](results/20261013_main/qa_recount.md)). 비용 가족의 재계산은 12절의 마지막 행.
+- 재계산이 짚은 것 셋: (1) 채점표 머리말이 `PREREG.txt`를 시험 폴더에서 찾아 "다르다"고 잘못 적었고 사전 등록 전 문구가 남아 있었다 → 13절(태그 뒤 채점기
+  머리말 고침, 판정식과 값은 그대로). (2) 체크포인트 멈춤 중 kill 셀에서 생존 rank의 멈춤 기록은 각자 시계로 죽음 판정과 같은 때나 그 뒤(0–1.6 ms)에 시작했다:
+  "kill 순간에 생존 rank가 멈춰 있었다"가 아니라 "멈춤 요청을 보낸 뒤 죽었고 생존 rank의 멈춤을 hold가 넘겨받았다"가 맞다. (3) 복원 뒤 되살린 rank가 짝의
+  증분 체크포인트를 모두 거절해(기반이 확정 이미지가 아님) 짝 rank의 남은 체크포인트 23–26개가 모두 void였다 → 18절.
+- 측정 코드의 독립 검토: 통합(12절), 고침 묶음 둘(12절), 모두 "막는 문제 없음". 실행기는 기록한 PID만 끄고 이름으로 끄지 않는다.
+- 재현: 라이브러리는 [impl/rs_layer.diff](impl/rs_layer.diff)(md5 `f005bb67`), 빌드와 driver의 md5는 [PREREG.txt](PREREG.txt), 실행 명령은
+  [impl/test/PILOT.md](impl/test/PILOT.md), 구현 메모는 [NOTES.md](NOTES.md).
 
 ## 17. 결론
 
-아직 없다.
+- **죽은 rank 하나를 예비 프로세스에 되살려 생존 rank의 상대를 모르는 대기를 지킬 수 있다.** rank 3 kill 10회, rank 1 kill 5회, 체크포인트 멈춤 중 kill 4회(5회
+  중 조건을 채운 것)에서 생존 rank의 대기가 오류 없이 붙잡혔다가 원래 값으로 끝났고, 모든 rank의 최종 데이터가 장애 없는 실행과 비트 단위로 같았다. 생존 rank는
+  되돌아가지 않았고 되살린 rank만 확정 체크포인트부터 다시 돌았다. 복원은 죽음 판정 뒤 278–401 ms에 끝났다(hold 시한 20 s의 2%).
+- **복원할 수 없으면 설계대로 fail-fast로 돌아간다.** 예비 프로세스가 없으면 무장되지 않아 hk와 같이 2 s 뒤 degraded로 풀렸고, 등록했으나 없어졌으면 1 s 뒤
+  fallback하고 2 s 뒤 풀렸다. 켤 수 없는 설정 넷에서는 모든 rank가 같은 이유의 오류를 받았다.
+- **비용은 로그가 아니라 hold 보내기 길에 있고, 4 KiB에서 10% 한도를 넘는다.** 로그 켬과 로그 없는 hold 길의 차이는 0–0.2 µs였고, hold 길 자체가 put마다
+  1.0–1.5 µs(4 KiB에서 9–15%, 256 KiB와 대역에서 3–6%)였다. 사용자가 제안한 10% 한도는 sunny의 4 KiB 지연에서 틀렸다. 표본 checksum은 묶음 대역을 반으로,
+  전부 checksum은 97%를 줄여 기본값을 끔으로 두는 것이 맞았다. 매크로 없는 fail-fast는 hk와 거의 같지만 sunny 4 KiB에서 0.06 µs(0.6%)가 갈려 "갈리지
+  않음"은 엄밀히는 틀렸다.
+- **pilot이 잡은 결함 셋은 설계가 아니라 구현과 시험 장치에 있었다.** SIGKILL된 CUDA 프로세스가 /proc에 수십–수백 ms 남아 예비 프로세스가 활성화를 거절한 것
+  ('later' 답으로 고침), 체크포인트 시점 가정이 틀린 시험 driver(라이브러리 시험 스위치로 고침), 시험 스위치가 남긴 미읽기 자료 때문에 FIN 대신 RST가 가서
+  같은 노드 생존 rank의 판정이 1 s 늦은 것(스위치가 먼저 FIN을 보내게 고침). 마지막 것은 실제 죽음에서도 읽지 않은 자료가 남으면 감지가 약 1 s 늦을 수 있다는
+  한계를 드러냈다(18절).
 
 ## 18. 한계
 
@@ -2511,11 +2575,30 @@ rm -rf ~/rs-ordlogs; ssh -n "$SUNNY_SSH" 'rm -rf $HOME/rs-ordlogs'
 - (같은 날) 호스트 쪽의 소켓, 스레드, NIC 복사 경로와 CUDA의 길(멈춤, drain, FETCH와 STATE, 복원 라운드, 내보내기와 가져오기, 활성화와 handshake)은 CPU 단위
   시험 밖이고 pilot에서 처음 돈다.
 
+- (2026-10-13 본 실행 뒤) **복원 뒤 짝 rank의 보호가 사라진다.** 되살린 rank는 자기 체크포인트만 받았으므로 짝 rank의 증분 체크포인트를 "기반이 확정 이미지가
+  아님"으로 모두 거절한다(재계산 3번: 시행마다 23–26개 void). 복원 뒤 그 짝 rank가 죽으면 되살리지 못할 것이다 `[추론, 실행 안 함]`. 되살린 rank가 짝의 전체
+  이미지를 새 기반으로 다시 받는 단계가 필요하다(19절).
+- (같은 날) 같은 노드 상대의 죽음을 FIN이 아니라 RST로 받으면(죽을 때 소켓에 읽지 않은 자료가 있으면 Linux는 RST를 보냄) gpu-detect 규칙은 "모름"으로 보고
+  1 s 간격의 거절 둘로만 죽음을 판정하므로 감지가 약 1 s 늦는다(pilot i4의 체크포인트 멈춤 중 kill에서 측정, 시험 장치를 고쳐 본 실행에서는 안 남). 실제 장애에서도
+  같은 조건이면 복원이 그만큼 늦지만 시한 안에서 된다 `[추론]`.
+- (같은 날) 예비 프로세스의 "원래 프로세스 없음" 판정은 `/proc/<pid>/stat`의 주 스레드 상태만 본다. 주 스레드가 끝난 뒤에도 다른 스레드가 CUDA 문맥을 정리 중일
+  수 있어 'later' 시간은 GPU 문맥이 풀린 시각이 아니다. 안전은 펜싱(옛 QP는 오류 상태, 새 QPN)이 지킨다.
+- (같은 날) hold 보내기 길의 put마다 1.0–1.5 µs(게이트 뒤 억제 칸과 키의 sys 읽기, `msgs` RED, post 뒤 `logOn` 읽기로 서로 의존하는 L2 왕복 3–4번 `[소스, 추론]`)는
+  4 KiB put에서 9–15%다. 읽기를 한 번에 묶으면 0.8–1.0 µs를 줄일 수 있다고 추정하지만 하지 않았다.
+- (같은 날) 체크포인트 멈춤 중 kill 셀의 죽음은 멈춤 요청을 보낸 뒤 300 µs에 일어나고, 생존 rank의 멈춤은 각자 시계로 죽음 판정과 같은 때나 그 뒤에 시작한다.
+  "생존 rank가 멈춘 동안의 죽음"은 라이브러리 줄(hold가 멈춤을 넘겨받음)로만 정의된다.
+- (같은 날) 장애는 SIGKILL 하나, 동시에 하나, 4 rank, 노드 둘, GPU 둘이다. 노드 고장, 두 rank의 동시 죽음, 복원 중의 둘째 죽음, 예비 프로세스가 다른 노드에
+  있는 경우, 큰 window(rain BAR1 256 MiB 안의 8 MiB 둘)는 재지 않았다.
+- (같은 날) 비용은 gin_ts2의 put 지연과 8개 묶음 대역(두 노드, 4 KiB와 256 KiB)이고 실제 학습 application의 단계 시간은 재지 않았다. 4 KiB 지연의 rain
+  값은 1.024 µs 단위로 양자화돼 있다.
+
 ## 19. 다음 작업
 
-- 막는 문제를 먼저 푼다(9.11.12절). 2026-10-12: 통합한 계층이 있다(12절).
-- gpu-detect 계층이 확정되면 그 위에 9.9절 계층을 만든다. 2026-10-12: 만듦.
-- 배포와 pilot(메인 세션, `cluster_run.sh` 안; 명령은 [impl/test/PILOT.md](impl/test/PILOT.md)), pilot 뒤 2, 3, 7, 8절의 문턱과 n을 고정해 사전 등록.
+- 복원 뒤 짝 rank의 전체 이미지를 새 기반으로 다시 받아 짝의 보호를 되살리는 단계(18절). 그 뒤 "복원 뒤 둘째 죽음" 셀.
+- hold 보내기 길의 sys 읽기를 한 번에 묶어 4 KiB 비용을 10% 안으로(추정 0.8–1.0 µs 절감), 그 뒤 비용 셀 다시 측정.
+- 같은 노드 상대의 RST를 죽음 증거로 쓸 수 있는지: 짝이 예비 프로세스의 /proc 판정을 생존 확인으로 쓰는 설계(고침 에이전트의 제안)와 그 충돌 검토.
+- 검토 메모 가운데 남긴 것: `rs_set.sh`의 허용 글자, dry 설정 줄과 meta 줄의 공통 코드, 운영 빌드의 활성화 줄 수준(12절).
+- 사용자 확인: 비용 한도(10%)와 checksum 기본값 끔을 메인 세션이 정한 것(12절의 사전 등록 행).
 
 ## 20. 참고자료
 
