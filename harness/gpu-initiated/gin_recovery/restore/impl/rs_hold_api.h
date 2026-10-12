@@ -20,10 +20,10 @@
 // PUBLISHED after the last publish), gdakiRsSendDone; and, in PUBLISHED, RESTORED through gdakiRsTakeRestored.
 //
 // Threads. The cell (state and incarnation in one 64-bit atomic, and the deadline) is read without a lock by any thread
-// and changed only by compare-and-swap (N3: the watcher's G8 and G9 run under outMu, the helper's decline takes outMu after
-// the policy hook, so a lock here could invert that order). Writers: the helper thread (every transition but two) and the
-// Q4 watcher thread (G8 only: HELD -> TIMED_OUT_HELD with the CPU writes, PUBLISHED -> TIMED_OUT_PUBLISHED, the state
-// alone). Every other entry point runs on the helper thread only (gdakiTsInHelper) and takes no lock of its own.
+// and changed only by compare-and-swap (N3: G9 is read under outMu and G8's CPU writes take outMu, the helper's decline
+// takes outMu after the policy hook, so a lock here could invert that order; G8's compare-and-swap takes no lock).
+// Writers: the helper thread (every transition but two) and the Q4 watcher thread (G8 only: HELD -> TIMED_OUT_HELD with
+// the CPU writes, PUBLISHED -> TIMED_OUT_PUBLISHED, the state alone). Every other entry point runs on the helper thread only (gdakiTsInHelper) and takes no lock of its own.
 // A process that does not ask for the restore (fail-fast; NCCL_GIN_RESTORE=0) has no hold state: every query answers
 // GDAKI_HOLD_OFF and every hook returns what hk does.
 
@@ -36,10 +36,10 @@
 #include <stdint.h>
 
 // ---- helper-socket records of the restore (struct gdakiTsMsg, fixed size, magic GDAKI_TS_MAGIC) ----
-// hk uses types 1..10. The restore's records use 11..63: this branch 11..20, the spare branch 32..47 (impl/rs_spare_api.h:
-// REJOIN 32 .. RESTORED 37), the dev branch 56..63 (impl/rs_log_api.h: reserved, none used yet); 21..31 and 48..55 are
-// free. The spare's activation is not a helper-socket record (struct gdakiRsActivate on the spare's own port), and the
-// log export and the checkpoint blocks go over the data socket (work package 5), not the helper socket.
+// hk uses types 1..10. The restore's records use 11..63: this branch 11..20, the dev branch 21..31 (impl/rs_log_api.h:
+// none used yet), the spare branch 32..47 (impl/rs_spare_api.h: REJOIN 32 .. RESTORED 37); 48..63 are free. The spare's
+// activation is not a helper-socket record (struct gdakiRsActivate on the spare's own port), and the log export, the
+// spare's rkey list and the checkpoint blocks go over the data socket (work package 5), not the helper socket.
 enum : uint32_t {
   GDAKI_TS_CKPT_PAUSE = 11,   // r -> every peer q: checkpoint k's input pause (work package 5)
   GDAKI_TS_PAUSED = 12,       // q -> r: paused; its log write position, messages sent to r, executed from r; armable
@@ -54,9 +54,11 @@ enum : uint32_t {
 };
 // Fields of the host branch's records: from = the sender's rank, nonce = the GIN context's nonce, arg = the subject rank
 // p (the rank the record is about), round = the incarnation it concerns (DISARM: the incarnation the sender knows;
-// NOHOLD, HOLDING, FALLBACK: the incarnation that died, i), pad = flags (none yet), nqp = 0. CKPT_*: round = the checkpoint
-// number; their payload is fixed by work package 5. Incarnations: 0 at setup; a restore of the death of incarnation i
-// brings i + 1 (the spare's gdakiRsPeerInc is i + 1 once its REJOIN is accepted).
+// NOHOLD, HOLDING, FALLBACK: the incarnation that died, i, also after the spare's REJOIN of i + 1 was accepted: every
+// survivor holds i, while gdakiRsPeerInc differs between survivors that accepted the REJOIN and those that did not),
+// pad = flags (none yet), nqp = 0. CKPT_*: round = the checkpoint number; their payload is fixed by work package 5.
+// Incarnations: 0 at setup; a restore of the death of incarnation i brings i + 1 (the spare's gdakiRsPeerInc is i + 1
+// once its REJOIN is accepted).
 // NACK reason 17 (gdakiTsMsg::arg of a NACK): "restoring": the REQ came from a peer this rank holds (9.10.7 Q5; RL20).
 #define GDAKI_TS_NACK_RESTORING 17
 // A record of the restore: types 11..63.
@@ -82,7 +84,8 @@ static inline bool gdakiHoldIsRestoreRecord(uint32_t type) { return type >= 11u 
 //                      the helper declines next (the fallback)
 // TIMED_OUT_PUBLISHED  the deadline won from PUBLISHED (state only); a RESTORED read first still wins, else the fallback
 // FALLBACK     given up for this incarnation: the peer was declined (PeerDead, GDAKI_UA_PEER_DEAD); never held again
-// CANCELLED    ncclCommAbort, ncclCommRevoke, an aborting shrink or the teardown ended a hold
+// CANCELLED    ncclCommAbort, ncclCommRevoke or an aborting shrink ended a hold (ncclCommDestroy's teardown stops the
+//              helper and leaves the state as it is)
 enum : uint32_t {
   GDAKI_HOLD_OFF = 0,
   GDAKI_HOLD_ARMED = 1,
