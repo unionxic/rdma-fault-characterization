@@ -2,7 +2,12 @@
 // and 2). build_rs.sh unit cuts the region between the two "gin-restore: pure functions" markers out of the working
 // tree's gin_host_gdaki.cc into rs_pure.inc and compiles it here, so the test runs the library's own text. No NCCL, no
 // CUDA, no network. Fake record sets stand for the all-gather of a 4-rank communicator.
+// Work package 4: the working tree's device-host common header is included too: the send path's checksum (its walk run
+// with an emulated device loader that allows only aligned loads inside the buffer, against the host function and an
+// independent reading of the scheme), the log entry layout, the suppression plan and the ring's overflow rule.
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -15,6 +20,7 @@
 #include <vector>
 
 enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };  // hk's line (build_rs.sh checks the host file has it)
+#include "nccl_device/gin/gdaki/gin_gdaki_device_host_common.h"
 #include "rs_pure.inc"
 
 static int nChecks = 0, nFail = 0;
@@ -390,6 +396,7 @@ static void testLocal() {
     {"resource window could not be added to the NIC copy path (list full)",
      [](struct gdakiRsLocalIn& x) { x.resOk = false; x.resWhy = "list full"; }},
     {"round cap stopped recovery", [](struct gdakiRsLocalIn& x) { x.escalated = true; }},
+    {"measurement mode is on (NCCL_GIN_RESTORE_LOG_MEASURE)", [](struct gdakiRsLocalIn& x) { x.logMeasure = true; }},
   };
   const int nCases = (int)(sizeof(cases) / sizeof(cases[0]));
   for (int i = 0; i < nCases; i++) {
@@ -422,24 +429,27 @@ static void testLocal() {
   }
 }
 
-// The side table's layout: sizes rounded down to powers of two and bounded, rings 256-byte aligned, no overlap.
+// The side table's layout (work package 4: entry rings only): the entry count rounded down to a power of two and bounded,
+// rings 256-byte aligned, whole pages, no overlap; EXPERIMENT.md 9.5's 4-rank value.
 static void testSideLayout() {
   struct gdakiRsSideLayout L;
-  CHECK(gdakiRsSideLayoutOf(4, 3, 4096, 1 << 20, &L));
-  CHECK(L.nEntries == 4096 && L.payBytes == (1u << 20) && L.qpOff == 64);
+  CHECK(gdakiRsSideLayoutOf(4, 3, 4096, &L));
+  CHECK(L.nEntries == 4096 && L.qpOff == 64);
   CHECK(L.ringsOff == ((64 + 4 * 128 + 255) & ~(size_t)255) && L.ringsOff % 256 == 0);
-  CHECK(L.ringBytes == (size_t)4096 * 64 + (1u << 20));
+  CHECK(L.ringBytes == (size_t)4096 * 64);
   CHECK(L.bytes == ((L.ringsOff + 3 * L.ringBytes + 4095) & ~(size_t)4095) && L.bytes % 4096 == 0);
-  CHECK(gdakiRsSideLayoutOf(8, 7, 5000, 3000000, &L) && L.nEntries == 4096 && L.payBytes == (1u << 21));
-  CHECK(gdakiRsSideLayoutOf(1, 0, 1, 1, &L) && L.nEntries == 64 && L.payBytes == 4096 && L.bytes == 4096);
-  CHECK(gdakiRsSideLayoutOf(2, 1, 1LL << 40, 1LL << 40, &L) && L.nEntries == (1u << 20) && L.payBytes == (1ull << 30));
-  CHECK(!gdakiRsSideLayoutOf(2, 3, 4096, 4096, &L));                     // more logged QPs than QPs
-  CHECK(!gdakiRsSideLayoutOf(2000000, 2000000, 1 << 20, 1 << 30, &L));    // past the bound (1 TiB)
+  CHECK(L.bytes == 790528);  // 4 ranks, 1 context: 3 logged QPs (EXPERIMENT.md 9.5)
+  CHECK(gdakiRsSideLayoutOf(16, 12, 4096, &L) && L.bytes == 3149824);  // 4 ranks, 4 contexts: 12 logged QPs
+  CHECK(gdakiRsSideLayoutOf(8, 7, 5000, &L) && L.nEntries == 4096);
+  CHECK(gdakiRsSideLayoutOf(1, 0, 1, &L) && L.nEntries == 64 && L.bytes == 4096);
+  CHECK(gdakiRsSideLayoutOf(2, 1, 1LL << 40, &L) && L.nEntries == (1u << 20));
+  CHECK(!gdakiRsSideLayoutOf(2, 3, 4096, &L));                     // more logged QPs than QPs
+  CHECK(!gdakiRsSideLayoutOf(20000000, 20000000, 1 << 20, &L));    // past the bound (1 TiB)
   for (int nqp = 1; nqp <= 64; nqp += 7)
     for (int k = 0; k <= nqp; k += 3) {
-      CHECK(gdakiRsSideLayoutOf(nqp, k, 100 + nqp, 10000 * k + 1, &L));
+      CHECK(gdakiRsSideLayoutOf(nqp, k, 100 + nqp, &L));
       CHECK(L.ringsOff >= L.qpOff + (size_t)nqp * 128 && L.ringsOff % 256 == 0 && (L.ringBytes % 256) == 0);
-      CHECK((L.nEntries & (L.nEntries - 1)) == 0 && (L.payBytes & (L.payBytes - 1)) == 0);
+      CHECK((L.nEntries & (L.nEntries - 1)) == 0 && L.ringBytes == (size_t)L.nEntries * 64);
       CHECK(L.bytes % 4096 == 0 && L.bytes >= L.ringsOff + (size_t)k * L.ringBytes && L.bytes < L.ringsOff + (size_t)k * L.ringBytes + 4096);
     }
   CHECK(gdakiRsPow2Floor(1) == 1 && gdakiRsPow2Floor(2) == 2 && gdakiRsPow2Floor(3) == 2 && gdakiRsPow2Floor(4096) == 4096);
@@ -710,6 +720,262 @@ static void testExchange() {
   }
 }
 
+// ---- work package 4 ----
+// An independent reading of EXPERIMENT.md 9.5's checksum: the picked words (FULL: all; SAMPLED: j mod 1024 < 16 or one of
+// the last 16), little-endian 4-byte words with the last one zero-padded, the two lanes and the 64-bit mix folded to 32.
+static uint32_t refCsum(uint32_t scheme, const uint8_t* p, uint64_t bytes) {
+  if (scheme != 1 && scheme != 2) return 0;
+  const uint64_t n = (bytes + 3) / 4;
+  uint32_t a = 0, b = 0;
+  for (uint64_t j = 0; j < n; j++) {
+    const bool pick = scheme == 2 || (j % 1024) < 16 || j + 16 >= n;
+    if (!pick) continue;
+    uint32_t u = 0;
+    for (uint64_t k = 0; k < 4; k++)
+      if (4 * j + k < bytes) u |= (uint32_t)p[4 * j + k] << (8 * k);
+    const uint32_t x = u ^ (uint32_t)((uint32_t)(j & 0xffffffffu) * 2654435761u);
+    a += x * 2246822519u;
+    b += (x ^ (x >> 15)) * 3266489917u;
+  }
+  uint64_t h = ((uint64_t)b << 32 | a) ^ (bytes * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)scheme << 56);
+  h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ull;
+  h = (h ^ (h >> 27)) * 0x94D049BB133111EBull;
+  h ^= h >> 31;
+  return (uint32_t)(h ^ (h >> 32));
+}
+// The bytes the scheme reads: what the device must read, no more, no less.
+static uint64_t refBytesRead(uint32_t scheme, uint64_t bytes) {
+  if (scheme != 1 && scheme != 2) return 0;
+  const uint64_t n = (bytes + 3) / 4;
+  uint64_t r = 0;
+  for (uint64_t j = 0; j < n; j++)
+    if (scheme == 2 || (j % 1024) < 16 || j + 16 >= n) r += std::min<uint64_t>(4, bytes - 4 * j);
+  return r;
+}
+// The device's loads, emulated: only aligned loads inside [lo, hi) are allowed (as ld.global.cg needs), and counted.
+struct EmuDevLoad {
+  const uint8_t* lo;
+  const uint8_t* hi;
+  mutable uint64_t bytesRead = 0;
+  mutable bool bad = false;
+  uint8_t b1(const uint8_t* q) const {
+    if (q < lo || q + 1 > hi) { bad = true; return 0; }
+    bytesRead += 1;
+    return *q;
+  }
+  uint32_t w4(const uint8_t* q) const {
+    if (((uintptr_t)q & 3) != 0 || q < lo || q + 4 > hi) { bad = true; return 0; }
+    bytesRead += 4;
+    uint32_t v;
+    memcpy(&v, q, 4);
+    return v;
+  }
+  struct ncclGinRsQuad w16(const uint8_t* q) const {
+    struct ncclGinRsQuad v = {0, 0, 0, 0};
+    if (((uintptr_t)q & 15) != 0 || q < lo || q + 16 > hi) { bad = true; return v; }
+    bytesRead += 16;
+    memcpy(&v, q, 16);
+    return v;
+  }
+};
+static void testCsum() {
+  std::mt19937_64 rng(20261012);
+  std::vector<uint8_t> mem(600000 + 64);
+  for (auto& c : mem) c = (uint8_t)rng();
+  uint8_t* const base = (uint8_t*)(((uintptr_t)mem.data() + 63) & ~(uintptr_t)63);  // 64-aligned, then misaligned below
+  std::vector<uint64_t> lens = {0, 1, 2, 3, 4, 5, 7, 8, 15, 16, 17, 63, 64, 65, 67, 127, 128, 129, 255, 256, 4092, 4093,
+                                4095, 4096, 4097, 4100, 4160, 4161, 8191, 8192, 8193, 12288 + 13, 65536, 65537, 262144,
+                                262147, 524288 + 5};
+  for (int i = 0; i < 400; i++) lens.push_back(rng() % 300000);
+  int walks = 0;
+  for (uint64_t len : lens)
+    for (int mis = 0; mis < 16; mis++) {
+      if (mis > 3 && (rng() % 3) != 0 && len > 4096) continue;  // keep the run short: every misalignment on short lengths
+      const uint8_t* p = base + mis;
+      for (uint32_t scheme = 0; scheme <= 2; scheme++) {
+        const uint32_t want = refCsum(scheme, p, len);
+        CHECK(ncclGinRsCsumBuf(scheme, p, len) == want);
+        EmuDevLoad ld{p, p + len};
+        CHECK(ncclGinRsCsumWalk(scheme, p, len, ld) == want);
+        CHECK(!ld.bad);
+        CHECK(ld.bytesRead == refBytesRead(scheme, len));
+        walks++;
+      }
+    }
+  CHECK(ncclGinRsCsumBuf(3, base, 100) == 0 && ncclGinRsCsumBuf(NCCL_GIN_RS_CSUM_OFF, base, 100) == 0);
+  // the documented amounts: 4 KiB reads 128 bytes sampled, 256 KiB reads 4 160 bytes (EXPERIMENT.md 9.5)
+  CHECK(refBytesRead(1, 4096) == 128 && refBytesRead(1, 262144) == 4160 && refBytesRead(2, 262144) == 262144);
+  // detection: a changed byte in a sampled word changes both schemes; outside them only the full one
+  std::vector<uint8_t> buf(262144);
+  for (auto& c : buf) c = (uint8_t)rng();
+  const uint32_t s0 = ncclGinRsCsumBuf(1, buf.data(), buf.size()), f0 = ncclGinRsCsumBuf(2, buf.data(), buf.size());
+  int sampledHit = 0, sampledMiss = 0;
+  for (int t = 0; t < 3000; t++) {
+    const uint64_t pos = rng() % buf.size();
+    const uint8_t old = buf[pos];
+    buf[pos] = (uint8_t)(old ^ (1u + rng() % 255));
+    const uint64_t j = pos / 4, n = buf.size() / 4;
+    const bool sampled = (j % 1024) < 16 || j + 16 >= n;
+    const uint32_t s1 = ncclGinRsCsumBuf(1, buf.data(), buf.size()), f1 = ncclGinRsCsumBuf(2, buf.data(), buf.size());
+    CHECK(f1 != f0);  // one word changed: always caught
+    if (sampled) { CHECK(s1 != s0); sampledHit++; }
+    else { CHECK(s1 == s0); sampledMiss++; }
+    buf[pos] = old;
+  }
+  CHECK(sampledMiss > 0);
+  for (int t = 0; t < 64; t++) {  // the sampled positions themselves
+    const uint64_t pos = (rng() % 64) * 4096 + rng() % 64;
+    buf[pos] ^= 0x5a;
+    CHECK(ncclGinRsCsumBuf(1, buf.data(), buf.size()) != s0);
+    buf[pos] ^= 0x5a;
+  }
+  for (int t = 0; t < 2000; t++) {  // two different words swapped: the position tag catches it (full)
+    const uint64_t a = rng() % (buf.size() / 4), b = rng() % (buf.size() / 4);
+    uint32_t wa, wb;
+    memcpy(&wa, &buf[4 * a], 4);
+    memcpy(&wb, &buf[4 * b], 4);
+    if (a == b || wa == wb) continue;
+    memcpy(&buf[4 * a], &wb, 4);
+    memcpy(&buf[4 * b], &wa, 4);
+    CHECK(ncclGinRsCsumBuf(2, buf.data(), buf.size()) != f0);
+    memcpy(&buf[4 * a], &wa, 4);
+    memcpy(&buf[4 * b], &wb, 4);
+  }
+  // a whole-buffer overwrite with new data (the usual reuse) is caught by the sampled scheme
+  for (int t = 0; t < 200; t++) {
+    std::vector<uint8_t> nb(buf.size());
+    for (auto& c : nb) c = (uint8_t)rng();
+    CHECK(ncclGinRsCsumBuf(1, nb.data(), nb.size()) != s0);
+  }
+  (void)sampledHit;
+  (void)walks;
+}
+static void testCsumScheme() {
+  uint32_t s = 9;
+  CHECK(gdakiRsCsumSchemeOf(nullptr, &s) && s == NCCL_GIN_RS_CSUM_OFF);
+  CHECK(gdakiRsCsumSchemeOf("", &s) && s == NCCL_GIN_RS_CSUM_OFF);
+  CHECK(gdakiRsCsumSchemeOf("off", &s) && s == NCCL_GIN_RS_CSUM_OFF);
+  CHECK(gdakiRsCsumSchemeOf("0", &s) && s == NCCL_GIN_RS_CSUM_OFF);
+  CHECK(gdakiRsCsumSchemeOf("sampled", &s) && s == NCCL_GIN_RS_CSUM_SAMPLED);
+  CHECK(gdakiRsCsumSchemeOf("1", &s) && s == NCCL_GIN_RS_CSUM_SAMPLED);
+  CHECK(gdakiRsCsumSchemeOf("full", &s) && s == NCCL_GIN_RS_CSUM_FULL);
+  CHECK(gdakiRsCsumSchemeOf("2", &s) && s == NCCL_GIN_RS_CSUM_FULL);
+  CHECK(!gdakiRsCsumSchemeOf("Full", &s) && s == NCCL_GIN_RS_CSUM_OFF);
+  CHECK(!gdakiRsCsumSchemeOf("3", &s) && s == NCCL_GIN_RS_CSUM_OFF);
+  CHECK(strcmp(gdakiRsCsumName(NCCL_GIN_RS_CSUM_SAMPLED), "sampled") == 0 && strcmp(gdakiRsCsumName(7), "off") == 0);
+}
+// The entry's layout as EXPERIMENT.md 9.5's table (byte offsets) and the side table QP entry's fields the host reads.
+static void testEntryLayout() {
+  CHECK(sizeof(struct ncclGinRsLogEntry) == 64 && offsetof(struct ncclGinRsLogEntry, kind) == 0 &&
+        offsetof(struct ncclGinRsLogEntry, flags) == 1 && offsetof(struct ncclGinRsLogEntry, msgs) == 2 &&
+        offsetof(struct ncclGinRsLogEntry, csum) == 4 && offsetof(struct ncclGinRsLogEntry, dstWin) == 8 &&
+        offsetof(struct ncclGinRsLogEntry, srcWin) == 12 && offsetof(struct ncclGinRsLogEntry, dstOff) == 16 &&
+        offsetof(struct ncclGinRsLogEntry, bytes) == 24 && offsetof(struct ncclGinRsLogEntry, src) == 32 &&
+        offsetof(struct ncclGinRsLogEntry, sigSlot) == 40 && offsetof(struct ncclGinRsLogEntry, sigOff) == 48 &&
+        offsetof(struct ncclGinRsLogEntry, sigVal) == 56);
+  CHECK(sizeof(struct ncclGinRsQp) == 128 && sizeof(struct ncclGinRsSide) == 64);
+  CHECK(offsetof(struct ncclGinRsSide, csum) == 16 && offsetof(struct ncclGinRsQp, getRefused) == 64);
+  CHECK(sizeof(struct ncclGinGdakiMemHandle) == 24 && offsetof(struct ncclGinGdakiMemHandle, lkey) == 8);
+  // the flags byte: three flags below the 2-bit scheme field
+  CHECK(((NCCL_GIN_RS_LOGF_SIGNAL | NCCL_GIN_RS_LOGF_SPLIT | NCCL_GIN_RS_LOGF_NOBASE) >> NCCL_GIN_RS_LOGF_CSUM_SHIFT) == 0);
+  CHECK(((NCCL_GIN_RS_CSUM_FULL << NCCL_GIN_RS_LOGF_CSUM_SHIFT) & 0xffu) >> NCCL_GIN_RS_LOGF_CSUM_SHIFT == NCCL_GIN_RS_CSUM_FULL);
+}
+// The suppression plan against an explicit list of the operation's messages: chunks of 1 GiB (or one NOP for 0 bytes,
+// not a message), then the signal; the first `skip` are held back.
+static void testPlan() {
+  const uint64_t G = 1ull << 30;
+  CHECK(ncclGinRsDataMsgs(true, 0) == 0 && ncclGinRsDataMsgs(true, 1) == 1 && ncclGinRsDataMsgs(true, G) == 1 &&
+        ncclGinRsDataMsgs(true, G + 1) == 2 && ncclGinRsDataMsgs(false, 4096) == 0);
+  CHECK(ncclGinRsTake(0, 2) == 0 && ncclGinRsTake(1, 2) == 1 && ncclGinRsTake(5, 2) == 2 && ncclGinRsTake(5, 0) == 0);
+  const uint64_t sizes[] = {0, 1, 8, 4096, 262144, G - 1, G, G + 1, 3 * G, 5 * G + 7};
+  for (int hd = 0; hd < 2; hd++)
+    for (uint64_t bytes : sizes)
+      for (int hs = 0; hs < 2; hs++) {
+        std::vector<int> msgs;  // 1 = a data chunk, 2 = the signal
+        const uint64_t nChunks = hd ? (bytes + G - 1) / G : 0;
+        for (uint64_t c = 0; c < nChunks; c++) msgs.push_back(1);
+        if (hs) msgs.push_back(2);
+        for (uint64_t skip = 0; skip <= msgs.size() + 1; skip++) {
+          const struct ncclGinRsPlan pl = ncclGinRsPlanOf(hd != 0, bytes, hs != 0, skip);
+          const uint64_t k = std::min<uint64_t>(skip, msgs.size());
+          const uint64_t chunksLeft = nChunks > k ? nChunks - k : 0;
+          CHECK(pl.m == msgs.size());
+          CHECK(pl.mPost == msgs.size() - k);
+          CHECK(pl.all == (k > 0 && k == msgs.size()));
+          const bool wantData = hd && (chunksLeft > 0 || (nChunks == 0 && k == 0));  // a 0-byte put's NOP only if nothing held
+          CHECK(pl.postData == wantData);
+          CHECK(pl.adv == ((k > 0 && chunksLeft > 0) ? k * G : 0));
+          if (pl.postData && bytes > 0) CHECK(bytes - pl.adv == (chunksLeft == nChunks ? bytes : bytes - k * G));
+        }
+      }
+  // the units of EXPERIMENT.md 9.6 (data 1 below 1 GiB, signal 1, 0-byte put 0, putValue 1): put+signal with budget 1 posts
+  // only the signal; a putValue is a one-chunk put
+  struct ncclGinRsPlan pl = ncclGinRsPlanOf(true, 4096, true, 1);
+  CHECK(!pl.postData && !pl.all && pl.mPost == 1);
+  pl = ncclGinRsPlanOf(true, 0, true, 1);
+  CHECK(pl.all && pl.m == 1);
+  pl = ncclGinRsPlanOf(true, 0, false, 0);
+  CHECK(!pl.all && pl.postData && pl.mPost == 0 && pl.m == 0);
+  pl = ncclGinRsPlanOf(true, sizeof(uint64_t), false, 1);
+  CHECK(pl.all && pl.m == 1);
+  pl = ncclGinRsPlanOf(false, 0, true, 0);
+  CHECK(!pl.postData && pl.mPost == 1);
+}
+// The ring: a reservation is written only if it does not reach a kept entry (slot - tail < n), else it is an overflow
+// (highest lost number, one more count). Random reserve/trim sequences, with stale tail reads, never overwrite a kept
+// entry, and every lost entry is visible as ovfSeq > its number.
+static void testRing() {
+  std::mt19937 rng(42);
+  for (int it = 0; it < 2000; it++) {
+    const uint32_t n = 1u << (1 + rng() % 5);
+    std::vector<uint64_t> ring(n, ~0ull);
+    std::vector<uint8_t> lost;
+    uint64_t head = 0, tail = 0, staleTail = 0, ovfSeq = 0, ovfCount = 0;
+    for (int op = 0; op < 400; op++) {
+      if (rng() % 3 == 0) {  // the host moves the tail to some point it saw (a cut: a head it read earlier)
+        if (head > tail) tail += rng() % (head - tail + 1);
+        if (rng() % 2) staleTail = tail;  // the device may read an older tail
+      } else {
+        const uint64_t slot = head++;
+        lost.push_back(0);
+        const uint64_t seen = staleTail <= tail ? staleTail : tail;
+        if (!ncclGinRsLogFits(slot, seen, n)) {
+          ovfSeq = std::max(ovfSeq, slot + 1);
+          ovfCount++;
+          lost[slot] = 1;
+        } else {
+          const uint64_t prev = ring[slot & (n - 1)];
+          CHECK(prev == ~0ull || prev < tail);  // the entry it replaces is no longer kept
+          ring[slot & (n - 1)] = slot;
+        }
+      }
+      for (uint64_t s = tail; s < head; s++)  // every kept entry is intact or recorded as lost
+        CHECK(lost[s] ? ovfSeq > s : ring[s & (n - 1)] == s);
+    }
+    uint64_t cnt = 0;
+    for (auto l : lost) cnt += l;
+    CHECK(cnt == ovfCount);
+  }
+  // the measurement mode: the helper may move the tail past a reservation still in flight; that slot is not an overflow
+  // (code review of work package 4: the unsigned difference wrapped and counted false overflows)
+  CHECK(ncclGinRsLogFits(5, 6, 4) && ncclGinRsLogFits(5, 1000, 4) && ncclGinRsLogFits(0, 1, 64));
+  CHECK(ncclGinRsLogFits(9, 6, 4) && !ncclGinRsLogFits(10, 6, 4) && !ncclGinRsLogFits(4096, 0, 4096));
+  CHECK(ncclGinRsLogFits(4095, 0, 4096) && ncclGinRsLogFits((1ull << 40) + 3, (1ull << 40), 4));
+}
+// The readout's sums over a copy of the QP entries.
+static void testSums() {
+  struct ncclGinRsQp q[4];
+  memset(q, 0, sizeof(q));
+  const uint8_t logged[4] = {0, 1, 1, 1};
+  q[0].msgs = 7;  // this rank's own QP: no log, but a message count
+  q[1].head = 100, q[1].tail = 40, q[1].msgs = 150, q[1].ovfCount = 0;
+  q[2].head = 900, q[2].tail = 100, q[2].msgs = 1000, q[2].ovfCount = 3, q[2].ovfSeq = 850;
+  q[3].head = 5, q[3].tail = 5, q[3].msgs = 9, q[3].ovfSeq = 2, q[3].getRefused = 1;
+  const struct gdakiRsSums t = gdakiRsSumsOf(q, 4, logged);
+  CHECK(t.logged == 3 && t.entries == 1005 && t.msgs == 1166 && t.ovfCount == 3 && t.maxOcc == 800);
+  CHECK(t.gaps == 1 && t.getRefused == 1);
+}
+
 int main() {
   testCfg();
   testWinStrict();
@@ -722,6 +988,12 @@ int main() {
   testResumeDecide();
   testResumeRandom();
   testExchange();
+  testCsum();
+  testCsumScheme();
+  testEntryLayout();
+  testPlan();
+  testRing();
+  testSums();
   printf("rs_unit: %d checks, %d failed\n", nChecks, nFail);
   return nFail == 0 ? 0 : 1;
 }
