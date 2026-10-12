@@ -8,6 +8,7 @@
 // with an emulated device loader that allows only aligned loads inside the buffer, against the host function and an
 // independent reading of the scheme), the log entry layout, the suppression plan and the ring's overflow rule.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <condition_variable>
@@ -25,7 +26,6 @@ enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };  // hk's line (build_
 #include "nccl_device/gin/gdaki/gin_gdaki_device_host_common.h"
 #include "rs_pure.inc"
 #include "rs_dev_pure.inc"
-#include <atomic>
 
 static int nChecks = 0, nFail = 0;
 #define CHECK(c)                                                                  \
@@ -401,6 +401,7 @@ static void testLocal() {
      [](struct gdakiRsLocalIn& x) { x.resOk = false; x.resWhy = "list full"; }},
     {"round cap stopped recovery", [](struct gdakiRsLocalIn& x) { x.escalated = true; }},
     {"measurement mode is on (NCCL_GIN_RESTORE_LOG_MEASURE)", [](struct gdakiRsLocalIn& x) { x.logMeasure = true; }},
+    {"program not built with NCCL_GIN_RESTORE_DEVICE", [](struct gdakiRsLocalIn& x) { x.deviceBuilt = false; }},
   };
   const int nCases = (int)(sizeof(cases) / sizeof(cases[0]));
   for (int i = 0; i < nCases; i++) {
@@ -1086,6 +1087,217 @@ static void testSums() {
   CHECK(t.logged == 3 && t.msgs == 1166 && t.ovfOps == 5 && t.ovfQps == 2 && t.getRefused == 1);
 }
 
+// ---- work package 6: the host log state (model test) ----
+// A model of the device ring (the reservation of rsLogPut: a position only when it fits; the identity word written at
+// some later step, before the peer's next pause, which quiesces that peer's QPs) and of the host's calls (pauses,
+// stables in order or late, polls with overflows and gets, tail advances), with the invariants checked after each step:
+//   (1) the tail never passes an entry that is not covered;
+//   (2) a peer whose log is complete (and whose QPs did not overflow since its cut) has every entry posted to it at or
+//       after its cut still in the ring, and the peer filter finds exactly those;
+//   (3) every logged entry below coveredUpTo is covered;
+//   (4) liveness: with every peer pausing and turning stable, the tail follows the head.
+struct LogModel {
+  int nranks, nctx, nqp;
+  uint32_t n;
+  uint64_t head = 0, tail = 0;
+  std::vector<uint64_t> slot;  // identity words
+  std::vector<uint8_t> logOn;
+  std::vector<uint64_t> ovf, gets;
+  struct Post { uint64_t pos; int qp; bool written; };
+  std::vector<Post> posts;      // every logged post, by position
+  LogModel(int r, int c, uint32_t n_) : nranks(r), nctx(c), nqp(r * c), n(n_), slot(n_, ~0ull), logOn(r * c, 0),
+                                        ovf(r * c, 0), gets(r * c, 0) {}
+  int peerOf(int qp) const { return qp % nranks; }
+  void post(int qp) {
+    if (!logOn[(size_t)qp]) return;
+    if (!ncclGinRsLogFits(head, tail, n)) { ovf[(size_t)qp]++; return; }
+    posts.push_back({head, qp, false});
+    head++;
+  }
+  void write(Post& p) {
+    if (p.written) return;
+    slot[(size_t)(p.pos & (n - 1))] = ncclGinRsIdWord(p.pos, ncclGinRsQpKf((uint32_t)p.qp, NCCL_GIN_RS_LOG_PUT, 0));
+    p.written = true;
+  }
+  void quiesce(int peer) {  // a pause: every post to the peer's QPs has written its entry
+    for (auto& p : posts) if (peerOf(p.qp) == peer) write(p);
+  }
+  bool readIds(uint64_t from, uint64_t to, uint64_t* ids) const {
+    for (uint64_t p = from; p < to; p++) ids[p - from] = slot[(size_t)(p & (n - 1))];
+    return true;
+  }
+};
+static void testLogState() {
+  std::mt19937_64 rng(6);
+  int completeChecks = 0, lateStables = 0, breaks = 0, getsSeen = 0;
+  for (int it = 0; it < 600; it++) {
+    const int nranks = 2 + (int)(rng() % 3), nctx = 1 + (int)(rng() % 3);
+    const uint32_t n = 1u << (3 + rng() % 4);
+    LogModel m(nranks, nctx, n);
+    const int self = (int)(rng() % nranks);
+    struct gdakiRsLogState L;
+    gdakiRsLogStateInit(&L, n, m.nqp, nranks);
+    std::vector<std::vector<std::vector<struct gdakiRsPauseSnap>>> pending((size_t)nranks);  // per peer: pauses waiting
+    std::vector<std::vector<int>> qpsOf((size_t)nranks);
+    for (int c = 0; c < nctx; c++)
+      for (int p = 0; p < nranks; p++) if (p != self) qpsOf[(size_t)p].push_back(c * nranks + p);
+    const bool steady = rng() % 3 == 0;  // every peer pauses and turns stable often: liveness
+    uint64_t maxLag = 0;
+    for (int op = 0; op < 1500; op++) {
+      const int r = (int)(rng() % 100);
+      if (r < 50) {  // a post to a random QP of a peer
+        int p = (int)(rng() % nranks);
+        if (p == self) continue;
+        m.post(qpsOf[(size_t)p][rng() % qpsOf[(size_t)p].size()]);
+      } else if (r < 58) {  // some in-flight entries land
+        for (auto& p : m.posts) if (!p.written && rng() % 2) m.write(p);
+      } else if (r < 61) {  // a get on a random QP
+        int p = (int)(rng() % nranks);
+        if (p == self || steady) continue;
+        m.gets[(size_t)qpsOf[(size_t)p][0]]++;
+      } else if (r < 72) {  // a pause toward a peer
+        int p = (int)(rng() % nranks);
+        if (p == self) continue;
+        m.quiesce(p);
+        const auto& qs = qpsOf[(size_t)p];
+        std::vector<uint64_t> ov, gt;
+        std::vector<struct gdakiRsPauseSnap> snap;
+        for (int q : qs) {
+          m.logOn[(size_t)q] = 1;
+          ov.push_back(m.ovf[(size_t)q]);
+          gt.push_back(m.gets[(size_t)q]);
+          struct gdakiRsPauseSnap s; s.head = m.head; s.ovf = m.ovf[(size_t)q]; s.gets = m.gets[(size_t)q]; s.valid = true;
+          snap.push_back(s);
+        }
+        gdakiRsLogStateNotePause(&L, qs.data(), (int)qs.size(), m.head, ov.data(), gt.data());
+        pending[(size_t)p].push_back(snap);
+      } else if (r < 84) {  // a peer's checkpoint turns stable: usually the oldest pending, sometimes a later one first
+        int p = (int)(rng() % nranks);
+        if (p == self || pending[(size_t)p].empty()) continue;
+        size_t k = (rng() % 4 == 0) ? (size_t)(rng() % pending[(size_t)p].size()) : 0;
+        if (k != 0) lateStables++;
+        const auto& qs = qpsOf[(size_t)p];
+        std::vector<uint64_t> on;
+        for (int q : qs) on.push_back(m.ovf[(size_t)q]);
+        breaks += gdakiRsLogStateNoteStable(&L, qs.data(), (int)qs.size(), pending[(size_t)p][k].data(), on.data());
+        pending[(size_t)p].erase(pending[(size_t)p].begin() + (long)k);  // the older ones may still come (late)
+      } else {  // the poll: counts, then the tail's advance
+        for (int q = 0; q < m.nqp; q++) {
+          bool gotGet = false;
+          if (gdakiRsLogStateNoteCounts(&L, q, m.ovf[(size_t)q], m.gets[(size_t)q], &gotGet)) breaks++;
+          if (gotGet) getsSeen++;
+        }
+        const uint64_t old = L.tail;
+        bool failed = false;
+        const uint64_t t = gdakiRsLogStateAdvance(&L, m.head, 1 + rng() % 9,
+                                                  [&](uint64_t a, uint64_t b, uint64_t* ids) { return m.readIds(a, b, ids); },
+                                                  &failed);
+        CHECK(!failed && t >= old && t <= m.head);
+        // (1) every position the tail passed now held a written entry that was covered then
+        for (uint64_t s = old; s < t; s++) {
+          bool found = false;
+          for (const auto& p : m.posts)
+            if (p.pos == s) {
+              found = true;
+              CHECK(p.written);
+              CHECK(gdakiRsLogQpCovers(L.qp[(size_t)p.qp], s));
+            }
+          CHECK(found);
+        }
+        m.tail = t;  // the host writes the tail
+        // after a poll: a peer the state calls complete lost nothing and had no get since its cut (review of work package
+        // 6, finding 1: an overflow first seen by a pause or a stable was never reported)
+        for (int p = 0; p < nranks; p++) {
+          if (p == self || !gdakiRsLogStateComplete(&L, p)) continue;
+          for (int q : qpsOf[(size_t)p]) {
+            const auto& s = L.qp[(size_t)q];
+            if (s.logs) CHECK(m.ovf[(size_t)q] == s.ovfAtCut && m.gets[(size_t)q] == s.getsAtCut);
+          }
+        }
+      }
+      if (steady && op % 20 == 19) {  // pause and stabilize every peer
+        for (int p = 0; p < nranks; p++) {
+          if (p == self) continue;
+          m.quiesce(p);
+          const auto& qs = qpsOf[(size_t)p];
+          std::vector<uint64_t> ov, gt;
+          std::vector<struct gdakiRsPauseSnap> snap;
+          for (int q : qs) {
+            m.logOn[(size_t)q] = 1;
+            ov.push_back(m.ovf[(size_t)q]);
+            gt.push_back(m.gets[(size_t)q]);
+            struct gdakiRsPauseSnap s; s.head = m.head; s.ovf = m.ovf[(size_t)q]; s.gets = m.gets[(size_t)q]; s.valid = true;
+            snap.push_back(s);
+          }
+          gdakiRsLogStateNotePause(&L, qs.data(), (int)qs.size(), m.head, ov.data(), gt.data());
+          gdakiRsLogStateNoteStable(&L, qs.data(), (int)qs.size(), snap.data(), ov.data());
+          pending[(size_t)p].clear();
+        }
+        for (auto& p : m.posts) m.write(p);
+        bool failed = false;
+        m.tail = gdakiRsLogStateAdvance(&L, m.head, 8,
+                                        [&](uint64_t a, uint64_t b, uint64_t* ids) { return m.readIds(a, b, ids); }, &failed);
+        maxLag = std::max<uint64_t>(maxLag, m.head - m.tail);
+      }
+      // (2) a complete peer: its entries since its cut are all in the ring and the filter finds them
+      for (int p = 0; p < nranks; p++) {
+        if (p == self || !gdakiRsLogStateComplete(&L, p)) continue;
+        bool noOvf = true;
+        uint64_t cut = ~0ull;
+        for (int q : qpsOf[(size_t)p]) {
+          const auto& s = L.qp[(size_t)q];
+          if (!s.logs) continue;
+          if (m.ovf[(size_t)q] != s.ovfAtCut || m.gets[(size_t)q] != s.getsAtCut) noOvf = false;  // not seen by a poll yet
+          if (cut == ~0ull) cut = s.cut;
+          CHECK(s.cut == cut);  // every QP of the peer has the same cut (one pause)
+        }
+        if (!noOvf) continue;  // the poll has not seen this overflow or get yet: the export re-reads the counts
+        completeChecks++;
+        CHECK(cut >= m.tail || [&] {  // nothing of the peer below the tail at or after its cut
+          for (const auto& x : m.posts) if (m.peerOf(x.qp) == p && x.pos >= cut && x.pos < m.tail) return false;
+          return true;
+        }());
+        const uint64_t from = std::max(cut, m.tail);
+        std::vector<uint64_t> ids((size_t)(m.head - from));
+        m.quiesce(p);
+        m.readIds(from, m.head, ids.data());
+        const std::vector<uint64_t> got = gdakiRsLogStatePeerPositions(&L, p, from, m.head, ids.data());
+        std::vector<uint64_t> want;
+        for (const auto& x : m.posts) if (m.peerOf(x.qp) == p && x.pos >= cut) want.push_back(x.pos);
+        CHECK(got == want);
+        std::vector<uint64_t> ovn, gtn;
+        for (int q : qpsOf[(size_t)p]) { ovn.push_back(m.ovf[(size_t)q]); gtn.push_back(m.gets[(size_t)q]); }
+        char w[160];
+        const auto& qs = qpsOf[(size_t)p];
+        CHECK(gdakiRsLogStateCanExport(&L, qs.data(), (int)qs.size(), cut, ovn.data(), gtn.data(), w, sizeof(w)));
+        CHECK(gdakiRsLogStateCanExport(&L, qs.data(), (int)qs.size(), m.head, ovn.data(), gtn.data(), w, sizeof(w)));
+        if (cut > 0) CHECK(!gdakiRsLogStateCanExport(&L, qs.data(), (int)qs.size(), cut - 1, ovn.data(), gtn.data(), w,
+                                                     sizeof(w)));
+        ovn[0]++;  // an overflow since the cut
+        CHECK(!gdakiRsLogStateCanExport(&L, qs.data(), (int)qs.size(), cut, ovn.data(), gtn.data(), w, sizeof(w)));
+        ovn[0]--;
+        gtn[0]++;  // a get since the cut
+        CHECK(!gdakiRsLogStateCanExport(&L, qs.data(), (int)qs.size(), cut, ovn.data(), gtn.data(), w, sizeof(w)));
+      }
+      // (3) the covered position
+      const uint64_t cov = L.coveredUpTo.load();
+      for (const auto& x : m.posts)
+        if (x.pos < cov && x.pos >= m.tail) CHECK(gdakiRsLogQpCovers(L.qp[(size_t)x.qp], x.pos));
+    }
+    if (steady) CHECK(maxLag <= (uint64_t)n);  // (4) the tail follows the head (bounded by the ring)
+  }
+  CHECK(completeChecks > 1000 && lateStables > 50 && breaks > 50 && getsSeen > 20);
+  printf("log state model: %d complete-peer checks, %d late stables, %d breaks, %d gets\n", completeChecks, lateStables,
+         breaks, getsSeen);
+  // the stable step
+  const uint64_t NONE = ~0ull, steps[] = {3, 4, 5, 6}, heads[] = {10, 20, 20, 35};
+  CHECK(gdakiRsStableStepOf(steps, heads, 4, 9, NONE) == NONE);
+  CHECK(gdakiRsStableStepOf(steps, heads, 4, 10, NONE) == 3);
+  CHECK(gdakiRsStableStepOf(steps, heads, 4, 34, NONE) == 5);
+  CHECK(gdakiRsStableStepOf(steps, heads, 4, ~0ull, NONE) == 6);
+  CHECK(gdakiRsStableStepOf(steps, heads, 0, 100, NONE) == NONE);
+}
+
 int main() {
   testCfg();
   testWinStrict();
@@ -1104,6 +1316,7 @@ int main() {
   testPlan();
   testRing();
   testSums();
+  testLogState();
   printf("rs_unit_dev: %d checks, %d failed\n", nChecks, nFail);
   return nFail == 0 ? 0 : 1;
 }
