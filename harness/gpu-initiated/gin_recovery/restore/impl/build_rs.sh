@@ -30,7 +30,8 @@ HK=$SCR/agent_gd/gin_hk
 W=$SCR/agent_rs
 OUT=$W/out
 HOSTF=src/transport/net_ib/gdaki/gin_host_gdaki.cc
-RS_FILES="src/gin/gin_host.cc src/include/gin/gin_host.h src/nccl.h.in $HOSTF"  # work package 2: + the public entry
+RS_FILES="src/gin/gin_host.cc src/include/gin/gin_host.h src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h src/nccl.h.in $HOSTF"
+# work package 2: + the public entry; work package 3: + the device-host common header (the side-table pointer)
 KG() { git -C "$HK/nccl-src" -c user.name=build -c user.email=build@localhost "$@"; }
 RG() { git -C "$W/nccl-src" -c user.name=build -c user.email=build@localhost "$@"; }
 md5() { md5sum < "$1" | cut -c1-32; }
@@ -75,19 +76,41 @@ tree() {  # the restore layer on the working tree of the copy
   [ "$(RG diff --name-only HEAD -- src | sort | tr '\n' ' ')" = "$(echo $RS_FILES | tr ' ' '\n' | sort | tr '\n' ' ')" ] ||
     { echo "the working tree changes other files than RS_FILES: $(RG diff --name-only HEAD -- src | tr '\n' ' ')" >&2; exit 1; }
 }
+# NCCL's device dependency pass (src/device/Makefile: nvcc -MM -dc) does not see headers that are included only in device
+# compilation (gin__funcs.h -> gin_device_api.h under __CUDACC__, gin_gdaki.h under __CUDA_ARCH__), so a change of
+# src/include/nccl_device/** does not rebuild the device objects that use them (work package 3's review: the symmetric GIN
+# kernels kept the old GPU context stride). devsync <builddir>: when that tree differs from the one recorded at the build
+# directory's last build, remove its device objects so that make rebuilds every one; the digest is recorded after a
+# successful make (devdone).
+# The vendored DOCA device headers are installed under nccl_device too (src/Makefile) and reached the same way: both trees.
+NDEV=src/include/nccl_device
+NDOCA=src/transport/net_ib/gdaki/doca-gpunetio/include
+ndevDigest() { (cd "$W/nccl-src" && find "$NDEV" "$NDOCA" -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32); }
+devsync() {
+  local b=$1
+  if [ "$(cat "$b/.rs_nccl_device_digest" 2>/dev/null)" != "$(ndevDigest)" ]; then
+    echo "devsync: $NDEV or $NDOCA differs from the last build of $(basename "$b"): its device objects are rebuilt"
+    rm -rf "$b/obj/device" "$b/obj/diagnostics/device"
+  fi
+}
+devdone() { ndevDigest > "$1/.rs_nccl_device_digest"; }
 fresh() {  # fresh <dir>: refuse a folder that already holds a build
   [ ! -e "$1/libnccl.so.2.32.3" ] || { echo "$1 already holds a build; give a new folder name" >&2; exit 1; }
   mkdir -p "$1"
 }
 rs() {
   tree; fresh "$OUT/$RSOUT"
+  devsync "$W/build"
   MKS "$W/build"
+  devdone "$W/build"
   cp "$W/build/lib/libnccl.so.2.32.3" "$OUT/$RSOUT/"
   echo "$RSOUT libnccl $(md5 "$OUT/$RSOUT/libnccl.so.2.32.3")"
 }
 rsp() {
   tree; fresh "$OUT/$RSPOUT"
+  devsync "$W/build-rsp"
   CXXFLAGS=-DNCCL_GIN_TS_PRODUCTION MKS "$W/build-rsp"
+  devdone "$W/build-rsp"
   cp "$W/build-rsp/lib/libnccl.so.2.32.3" "$OUT/$RSPOUT/"
   diff -r -q "$W/build/include" "$W/build-rsp/include" > /dev/null ||
     { echo "the production build's headers differ from the research build's" >&2; exit 1; }
