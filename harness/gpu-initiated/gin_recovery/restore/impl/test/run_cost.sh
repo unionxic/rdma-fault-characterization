@@ -15,8 +15,9 @@
 #   hold before arming vs fail-fast (lat_hold_unarmed; 9.10.6 (다)): the macro driver in both arms, so only the policy differs
 #     ua-ff     NCCL_GIN_FAULT_POLICY=failfast
 #     ua-hold   NCCL_GIN_FAULT_POLICY=hold (unarmed)
-#   the fail-fast branch (lat_ff_branch; 9.11.5 decision (나) (4)): fail-fast programs, this layer vs hk
-#     ffb-rs    the restore production libnccl (rsp) + gin_ts2_ff (this layer's headers, no macro)
+#   the fail-fast branch (lat_ff_branch; 9.11.5 decision (나) (4)): fail-fast programs, this layer vs hk, both builds
+#     ffb-rs    the restore production libnccl (rsp) + gin_ts2_ff (this layer's headers, no macro: judged, must not separate)
+#     ffb-rs-macro  the same library + gin_ts2 built with the macro, fail-fast policy (the restore build's cost; reported)
 #     ffb-hk    gpu-detect's production libnccl (hkp, read only) + the deployed ord driver (hw = hk headers)
 #   Not covered: section 7's 4 KiB get arm of lat_ff_branch (gin_ts2 has no get latency mode: GIN_TS_GET refuses lat mode).
 # Common: NCCL_RMA_DISABLE=1, NCCL_NUM_RMA_CTX=0, NCCL_GIN_TYPE=3, NCCL_SYM_GIN_KERNELS_ENABLE=0, one GIN connection, QP watch
@@ -55,6 +56,7 @@ case "$ARM" in
   ua-ff)    BIN=$MACRO; LIB=$RSPLIB; RSENV="NCCL_GIN_FAULT_POLICY=failfast" ;;
   ua-hold)  BIN=$MACRO; LIB=$RSPLIB; RSENV="$HOLDLOG" ;;
   ffb-rs)   BIN=$FFBIN; LIB=$RSPLIB; RSENV="NCCL_GIN_FAULT_POLICY=failfast" ;;
+  ffb-rs-macro) BIN=$MACRO; LIB=$RSPLIB; RSENV="NCCL_GIN_FAULT_POLICY=failfast" ;;
   ffb-hk)   BIN=$HKBIN; LIB=$HKPLIB; RSENV="" ;;
   *) echo "bad arm in $CELL" >&2; exit 2 ;;
 esac
