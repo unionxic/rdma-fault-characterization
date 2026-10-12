@@ -2,9 +2,9 @@
 // 9.11.3 M2): the send-side log as one ring per rank, and the host functions the checkpoint (host branch, work package 5)
 // and the restore round (integration) call.
 //
-// Binding interface between branches. The block between the two "gin-restore (dev): log API" markers below is to be
-// copied byte for byte into src/transport/net_ib/gdaki/gin_host_gdaki.cc with work package 6 (the dev branch's region,
-// early in the file so that every later region sees it); from then build_rs_dev.sh `api` checks that the two are equal. The definitions are static functions
+// Binding interface between branches. The block between the two "gin-restore (dev): log API" markers below is in
+// src/transport/net_ib/gdaki/gin_host_gdaki.cc byte for byte (since work package 6; the dev branch's region, early in the
+// file so that every later region sees it); build_rs_dev.sh `api` checks that the two are equal. The definitions are static functions
 // of the same file, in the dev branch's regions fenced "gin-restore (dev): log, suppress and replay" (host) and
 // "gin-restore (dev): log, suppress and replay, pure" (no NCCL, unit-tested on the CPU). This file is not included
 // anywhere in the build; outside the block it only adds what a standalone syntax check needs.
@@ -13,7 +13,10 @@
 //      copy path by these offsets) ----
 // One device allocation per GDAKI context of a process that asks for the restore (NCCL_GIN_FAULT_POLICY=hold with
 // NCCL_GIN_RESTORE != 0, or a spare process); the restore needs exactly one such context per communicator (9.10.4), so
-// in a restorable communicator the ring is one per rank. Every GPU context of the array points at the same side table.
+// in a restorable communicator the ring is one per rank. The device reaches it through the context's classification block
+// (ncclGinGdakiQ4::restore, appended to that block; the GPU context keeps hk's layout and stride), which stays null until
+// ncclGinRestoreResume succeeds and then holds the side table's address (one synchronous write; in the log measurement
+// mode, a test mode, at the context's creation). The side table, its MRs and the strict window MRs are set up at creation.
 //   struct ncclGinRsSide (128 B, offset 0)
 //      0 magic u32 "RSS3" | 4 nqp u32 | 8 fence u64 (the drain check's READ target) | 16 csum u32 (checksum scheme) |
 //     20 nEntries u32 (ring entries, a power of two; 0: no ring) | 24 entries ptr (the ring) | 32..63 reserved
@@ -51,12 +54,16 @@
 //   bits). The request messages of an entry follow from kind, flags and bytes (ncclGinRsEntryMsgs; 9.6's units).
 // Per rank: pages(256-aligned(128 + 128 x nqp) + 64 x nEntries) bytes (4 ranks, 4 contexts, 4 096 entries: 266 240 B).
 //
-// ---- build-time opt-in (user decision 2026-10-12, (나)) ----
+// ---- build-time opt-in (user decisions 2026-10-12, (나), then the direction that removed the trap) ----
 // The device hold path exists only in programs compiled with -DNCCL_GIN_RESTORE_DEVICE (every translation unit of one
-// device link unit alike). Without it put, putValue and get load the side-table pointer, compare it with 0 and trap
-// (a predicated trap, no branch) when it is not null, so a program built without the macro stops at its first GIN
-// operation in a process that asks for the restore (it never posts outside the log). NCCL's own kernels are built without
-// it; their contexts never get the pointer (only a user transparent-recovery context does).
+// device link unit alike; mixing is not supported). Such a program's put, putValue and get load the classification
+// block's side-table pointer and take the hold path when it is not null. Compiled without the macro they are hk's code,
+// instruction for instruction (no load, no branch). nccl.h's ncclGinRestoreResume is a static inline wrapper that passes
+// whether the calling translation unit defines the macro to the library's ncclGinRestoreResumeBuilt; without it the
+// restore is refused ("program not built with NCCL_GIN_RESTORE_DEVICE", the same on every rank) and the pointer is never
+// published. NCCL's own kernels are built without the macro. The log measurement mode (NCCL_GIN_RESTORE_LOG_MEASURE=<ms>)
+// publishes at the context's creation and needs a macro-built program; NCCL_GIN_RESTORE_LOG_MEASURE_LOG=0 keeps the log
+// off there (the hold path's cost without the log).
 //
 // ---- helper-socket message types ----
 // hk uses 1..10, the host branch 11..20 (rs_hold_api.h), the spare branch 32..47 (rs_spare_api.h); this branch 21..31
@@ -94,7 +101,8 @@ struct gdakiRsLogPause {
   uint64_t msgs[NCCL_GIN_RECOVERY_MAX_QPS] = {};  // M per QP: request messages posted to the peer (the device's count)
   uint64_t ovf[NCCL_GIN_RECOVERY_MAX_QPS] = {};   // per QP: operations not logged (ring full), so far
   uint64_t gets[NCCL_GIN_RECOVERY_MAX_QPS] = {};  // per QP: gets with data posted to the peer, so far (the get rule)
-  bool logComplete = false;  // the peer's log has lost nothing since its last stable cut (the log's part of "armable")
+  bool logComplete = false;  // the log toward the peer is kept from this pause on (logOn set and read back on every QP to
+                             // it): the log's part of PAUSED's "armable" (an overflow or a get later DISARMs, gdakiRsLogPoll)
   bool firstPause = false;   // this pause set the QPs' logOn: the peer's log starts at `head`
 };
 
@@ -109,7 +117,8 @@ static ncclResult_t gdakiRsLogPauseRead(struct gdakiRecHost* r, int peer, struct
 
 // helper, on the peer's CKPT_STABLE for the checkpoint taken at `atPause`: the peer's entries below atPause->head are
 // covered (the trim of 9.5), and the tail advances over every covered entry from the tail on (written to the device over
-// the NIC). The peer's log is complete since this cut unless one of its QPs overflowed after the pause (read now).
+// the NIC). ncclInvalidUsage (with why) when one of the peer's QPs overflowed after the pause (read now): the log since
+// this cut is broken, the caller must not arm the peer on it (gdakiRsLogPoll reports it for DISARM too).
 static ncclResult_t gdakiRsLogStable(struct gdakiRecHost* r, int peer, const struct gdakiRsLogPause* atPause,
                                      char* why, size_t whyLen);
 
@@ -134,20 +143,24 @@ static uint64_t gdakiRsLogCoveredUpTo(struct gdakiRecHost* r);
 static uint64_t gdakiRsStableStepOf(const uint64_t* steps, const uint64_t* heads, int n, uint64_t coveredUpTo,
                                     uint64_t none);
 
-// helper, periodic (the idle helper loop): the peers to DISARM are appended to *broke, each once per cause: a peer whose
-// QP lost an operation since its last stable cut (overflow, 9.5; its entries are covered until its next pause), and a
-// peer toward which this rank posted a get since its last stable cut (the get rule, 9.7 item 8 and 9.10.4: the per-QP
-// get count moved past the count read at that cut's pause). The caller DISARMs them (gdakiHoldDisarm). Also the tail's
-// advance over covered entries (a slot still being written stops it until the next call) and an occupancy sample.
+// helper, periodic (the host branch's helper step, every 10 ms; nobody else calls it): the peers to DISARM are appended to
+// *broke, each once per cause: a peer whose QP lost an operation since its cut (overflow, 9.5; its entries are covered
+// until its next pause, or from its last pause on when nothing was lost since that one), a peer toward which this rank
+// posted a get since its stable cut (the get rule, 9.7 item 8 and 9.10.4: the per-QP get count moved past the count read
+// at that cut's pause), and every peer once a second user transparent-recovery context exists on this communicator (one
+// ring per context is then no longer one per rank). The caller DISARMs them (gdakiHoldDisarm). Also the tail's advance
+// over covered entries (a slot still being written stops it until the next call) and an occupancy sample.
 static ncclResult_t gdakiRsLogPoll(struct gdakiRecHost* r, std::vector<int>* broke);
 
-// helper: whether the peer's log is complete since its last stable cut (no overflow seen since; false before the
-// peer's first stable checkpoint).
+// helper: whether the peer's log is complete since its last stable cut (every QP to it logs from a stable cut, no break,
+// no get reported since; false before the peer's first stable checkpoint).
 static bool gdakiRsLogComplete(struct gdakiRecHost* r, int peer);
 
 // helper: the peer's entries at positions [from, to) in position order (the export of 9.6). `to` must have been read
-// with the peer's QPs quiesced (a hold start, or a pause), so each of the peer's entries is complete. Refused (with why)
-// when the tail passed `from` while an entry of the peer was not covered, or the peer's log is not complete since from.
+// with the peer's QPs quiesced (a hold start, or a pause), so each of the peer's entries is complete. `from` may be the
+// cut of any checkpoint this rank confirmed since the peer's last stable one (at or above the kept cut). Refused (with
+// why) when an entry of the peer from `from` on may be gone: `from` below the kept cut, an operation lost or a get posted
+// toward the peer since the cut (counts read now), or [from, to) not inside the ring.
 static ncclResult_t gdakiRsLogCollect(struct gdakiRecHost* r, int peer, uint64_t from, uint64_t to,
                                       std::vector<struct ncclGinRsLogEntry>* out, char* why, size_t whyLen);
 
@@ -210,6 +223,20 @@ static ncclResult_t gdakiRsLogExport(struct gdakiRecHost* r, int peer, uint64_t 
                                      const uint64_t* x, const uint64_t* m, int nqp,
                                      bool (*put)(void* arg, const void* p, size_t n), void* arg, char* why,
                                      size_t whyLen);
+// The spare's import (app thread: the spare's ncclGinRestoreResume, after its image is written and before its kernels
+// and its helper start; CUDA calls are allowed there). exports[q]: the bytes survivor q sent in its STATE (the host
+// branch's gdakiCkptSpareData::exports, kept unparsed; empty for this rank); peerP, nPeers: the survivors' P per QP at
+// the checkpoint the spare restores from (gdakiCkptSpareData::hdr[0].peerP and nPeers, impl/rs_ckpt_api.h). Every export
+// is parsed and checked first (to = this rank, the incarnation, this context's nonce, its verdict OK, a P for its rank,
+// X >= P per QP); then the entries are applied to this process's windows and signal table in a fixed order (by survivor
+// rank, then position) and per QP to each survivor: suppress = X - P, msgs = X, the responder count's base = M. Refused
+// with nothing applied when a check fails; refused part way (the restore falls back) when a copy fails.
+// One WARN line per QP with a budget when the spare's replay has used it (or at its context's end): "GIN/RS: rank R:
+// suppress peer=P qp=Q budget=B suppressed=S left=L" (B = X - P, S = B - L).
+struct gdakiCkptPeerP;  // impl/rs_ckpt_api.h (host branch)
+static ncclResult_t gdakiRsSpareImport(struct gdakiRecHost* r, const struct gdakiCkptPeerP* peerP, uint32_t nPeers,
+                                       const std::vector<std::vector<uint8_t>>& exports, uint32_t incarnation,
+                                       char* why, size_t whyLen);
 // ---- gin-restore (dev): log API (end) ----
 
 #endif
