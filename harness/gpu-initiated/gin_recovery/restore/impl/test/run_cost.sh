@@ -6,15 +6,16 @@
 #
 # Cells cost_<metric>_<arm>_<node>; metric lat4k | lat256k (3 000 iterations of one put + signal + flush) | bw256k (burst,
 # one thread, 12 iterations of 8 x 256 KiB + signal + flush; bandwidth = burst_K x bytes / p50). Arms:
-#   the send-side log (lat_4k, lat_256k and the bandwidth cell of section 7; 9.5): hold policy, the macro driver, Resume never
-#   called (unarmed), the log turned on only by the "measure only" variable NCCL_GIN_RESTORE_LOG_MEASURE:
-#     off       no LOG_MEASURE (the hold path without the log)
-#     on        LOG_MEASURE, checksum off
-#     sampled   LOG_MEASURE, NCCL_GIN_RESTORE_CHECKSUM=sampled
-#     full      LOG_MEASURE, NCCL_GIN_RESTORE_CHECKSUM=full
-#   hold before arming vs fail-fast (lat_hold_unarmed; 9.10.6 (다)): the macro driver in both arms, so only the policy differs
-#     ua-ff     NCCL_GIN_FAULT_POLICY=failfast
-#     ua-hold   NCCL_GIN_FAULT_POLICY=hold (unarmed)
+#   the restore path (lat_4k, lat_256k, the bandwidth cell and lat_hold_unarmed of section 7; 9.5, 9.10.6 (다)), all with the
+#   macro-built driver (supervisor decision 2026-10-12). The side table reaches the device only after a successful Resume, or
+#   in the library's measurement mode: NCCL_GIN_RESTORE_LOG_MEASURE=<ms> publishes it at context creation without Resume, and
+#   NCCL_GIN_RESTORE_LOG_MEASURE_LOG=0|1 (the dev branch's switch, default 1) chooses the hold path without the log (the key
+#   re-read only) or with it:
+#     off       NCCL_GIN_FAULT_POLICY=failfast (the macro build's fail-fast path; the base of every comparison here)
+#     ua-hold   hold, LOG_MEASURE, LOG_MEASURE_LOG=0 (the hold path before arming: cost_unarmed against off)
+#     on        hold, LOG_MEASURE, LOG_MEASURE_LOG=1, checksum off (cost_log: against off; against ua-hold the log alone)
+#     sampled   the same with NCCL_GIN_RESTORE_CHECKSUM=sampled
+#     full      the same with NCCL_GIN_RESTORE_CHECKSUM=full
 #   the fail-fast branch (lat_ff_branch; 9.11.5 decision (나) (4)): fail-fast programs, this layer vs hk, both builds
 #     ffb-rs    the restore production libnccl (rsp) + gin_ts2_ff (this layer's headers, no macro: judged, must not separate)
 #     ffb-rs-macro  the same library + gin_ts2 built with the macro, fail-fast policy (the restore build's cost; reported)
@@ -47,14 +48,13 @@ case "$METRIC" in
 esac
 RSPLIB=$HOME/rs-bundle/lib/rsp; HKPLIB=$HOME/gi-bundle/gin_ts2/hkp
 MACRO=$HOME/rs-bundle/rscost/gin_ts2; FFBIN=$HOME/rs-bundle/rscost/gin_ts2_ff; HKBIN=$HOME/rs-bundle/ord/gin_ts2
-HOLDLOG="NCCL_GIN_FAULT_POLICY=hold NCCL_GIN_RESTORE=1"
+MEAS="NCCL_GIN_FAULT_POLICY=hold NCCL_GIN_RESTORE=1 NCCL_GIN_RESTORE_LOG_MEASURE=$LOG_MEASURE_MS"
 case "$ARM" in
-  off)      BIN=$MACRO; LIB=$RSPLIB; RSENV="$HOLDLOG" ;;
-  on)       BIN=$MACRO; LIB=$RSPLIB; RSENV="$HOLDLOG NCCL_GIN_RESTORE_LOG_MEASURE=$LOG_MEASURE_MS NCCL_GIN_RESTORE_CHECKSUM=off" ;;
-  sampled)  BIN=$MACRO; LIB=$RSPLIB; RSENV="$HOLDLOG NCCL_GIN_RESTORE_LOG_MEASURE=$LOG_MEASURE_MS NCCL_GIN_RESTORE_CHECKSUM=sampled" ;;
-  full)     BIN=$MACRO; LIB=$RSPLIB; RSENV="$HOLDLOG NCCL_GIN_RESTORE_LOG_MEASURE=$LOG_MEASURE_MS NCCL_GIN_RESTORE_CHECKSUM=full" ;;
-  ua-ff)    BIN=$MACRO; LIB=$RSPLIB; RSENV="NCCL_GIN_FAULT_POLICY=failfast" ;;
-  ua-hold)  BIN=$MACRO; LIB=$RSPLIB; RSENV="$HOLDLOG" ;;
+  off)      BIN=$MACRO; LIB=$RSPLIB; RSENV="NCCL_GIN_FAULT_POLICY=failfast" ;;
+  ua-hold)  BIN=$MACRO; LIB=$RSPLIB; RSENV="$MEAS NCCL_GIN_RESTORE_LOG_MEASURE_LOG=0" ;;
+  on)       BIN=$MACRO; LIB=$RSPLIB; RSENV="$MEAS NCCL_GIN_RESTORE_LOG_MEASURE_LOG=1 NCCL_GIN_RESTORE_CHECKSUM=off" ;;
+  sampled)  BIN=$MACRO; LIB=$RSPLIB; RSENV="$MEAS NCCL_GIN_RESTORE_LOG_MEASURE_LOG=1 NCCL_GIN_RESTORE_CHECKSUM=sampled" ;;
+  full)     BIN=$MACRO; LIB=$RSPLIB; RSENV="$MEAS NCCL_GIN_RESTORE_LOG_MEASURE_LOG=1 NCCL_GIN_RESTORE_CHECKSUM=full" ;;
   ffb-rs)   BIN=$FFBIN; LIB=$RSPLIB; RSENV="NCCL_GIN_FAULT_POLICY=failfast" ;;
   ffb-rs-macro) BIN=$MACRO; LIB=$RSPLIB; RSENV="NCCL_GIN_FAULT_POLICY=failfast" ;;
   ffb-hk)   BIN=$HKBIN; LIB=$HKPLIB; RSENV="" ;;
