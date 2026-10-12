@@ -2,7 +2,8 @@
 // 9.10.5, 9.11.3 M4). build_rs_spare.sh unit cuts the region between the two "gin-restore (rs, work package 8, spare
 // branch): pure functions" markers of gin_host_gdaki.cc into rs_spare_pure.inc and compiles it here, so the test runs the
 // library's own text. No NCCL, no CUDA, no network.
-// Coverage: the activation gate (gdakiRsActExamine: absent, zombie/dead, reused PID, alive, no recorded start, no PID);
+// Coverage: the activation gate (gdakiRsActExamine: absent, zombie/dead, reused PID, alive, no recorded start, no PID)
+// and the spare's answer to it (gdakiRsActAnswerOf: ACCEPTED, LATER, REFUSED; 2026-10-13);
 // the REJOIN record validation (gdakiRsRejoinValidate: version, nonce, incarnation, QP count, QPN match); the two-sided
 // token-exchange state sequence (gdakiRsXchgStep: the legal order, out-of-order, nothing after RESTORED) and a CPU
 // simulation of the exchange through the library's pure pieces (gdakiRsTokenMatch for READY against REJOIN,
@@ -63,6 +64,57 @@ static void testActivate() {
   CHECK(gdakiRsActExamine(4242, 555, p, why, sizeof(why)) == GDAKI_RS_ACT_WAIT);
   // alive but no start time was recorded: cannot confirm it is gone -> wait (conservative)
   CHECK(gdakiRsActExamine(4242, 0, p, why, sizeof(why)) == GDAKI_RS_ACT_WAIT && has(why, "cannot confirm"));
+}
+
+// ---- the spare's answer to an ACTIVATE (2026-10-13: LATER while the original is still present) ----
+// The verdict of the gate on each /proc state, mapped by gdakiRsActAnswerOf to what the spare sends back: ACCEPTED when
+// gone, LATER while alive with the recorded start time (a SIGKILLed CUDA process is still being torn down: the buddy asks
+// again), REFUSED for a record that can never be confirmed (no PID, no recorded start time).
+static void testActivateAnswer() {
+  char why[192];
+  struct gdakiRsActProbe p;
+  auto answer = [&](long long pid, unsigned long long start) {
+    return gdakiRsActAnswerOf(gdakiRsActExamine(pid, start, p, why, sizeof(why)), pid, start);
+  };
+  // the kinds of the record: the wire values are fixed (rs_spare_api.h; LATER is new, the others as before)
+  CHECK(GDAKI_RS_ACT_ACTIVATE == 1 && GDAKI_RS_ACT_ABANDON == 2 && GDAKI_RS_ACT_ACCEPTED == 3 &&
+        GDAKI_RS_ACT_REFUSED == 4 && GDAKI_RS_ACT_LATER == 5);
+  // gone: absent, zombie, dead task, PID reused -> ACCEPTED
+  p = gdakiRsActProbe();
+  p.exists = false;
+  CHECK(answer(4242, 555) == GDAKI_RS_ACT_ACCEPTED);
+  CHECK(answer(4242, 0) == GDAKI_RS_ACT_ACCEPTED);  // absent is gone even without a recorded start time
+  p.exists = true;
+  p.start = 555;
+  p.state = 'Z';
+  CHECK(answer(4242, 555) == GDAKI_RS_ACT_ACCEPTED);
+  p.state = 'X';
+  CHECK(answer(4242, 555) == GDAKI_RS_ACT_ACCEPTED);
+  p.state = 'S';
+  p.start = 999;
+  CHECK(answer(4242, 555) == GDAKI_RS_ACT_ACCEPTED);
+  // still present with the recorded start time (R: running its exit, D: in the driver's teardown, S) -> LATER
+  p.start = 555;
+  for (char st : {'R', 'D', 'S'}) {
+    p.state = st;
+    CHECK(answer(4242, 555) == GDAKI_RS_ACT_LATER && has(why, "still alive"));
+  }
+  // the same process later gone (the buddy's next ACTIVATE): LATER, LATER, then ACCEPTED
+  p.state = 'R';
+  CHECK(answer(4242, 555) == GDAKI_RS_ACT_LATER);
+  p.state = 'Z';
+  CHECK(answer(4242, 555) == GDAKI_RS_ACT_ACCEPTED);
+  // never confirmable: no PID, or alive with no recorded start time -> REFUSED (final)
+  p.state = 'S';
+  CHECK(answer(0, 555) == GDAKI_RS_ACT_REFUSED);
+  CHECK(answer(-1, 555) == GDAKI_RS_ACT_REFUSED);
+  CHECK(answer(4242, 0) == GDAKI_RS_ACT_REFUSED);
+  // the mapping alone, on every verdict and record
+  CHECK(gdakiRsActAnswerOf(GDAKI_RS_ACT_GO, 4242, 555) == GDAKI_RS_ACT_ACCEPTED);
+  CHECK(gdakiRsActAnswerOf(GDAKI_RS_ACT_WAIT, 4242, 555) == GDAKI_RS_ACT_LATER);
+  CHECK(gdakiRsActAnswerOf(GDAKI_RS_ACT_WAIT, 0, 555) == GDAKI_RS_ACT_REFUSED);
+  CHECK(gdakiRsActAnswerOf(GDAKI_RS_ACT_WAIT, 4242, 0) == GDAKI_RS_ACT_REFUSED);
+  CHECK(gdakiRsActAnswerOf(GDAKI_RS_ACT_GO, 0, 0) == GDAKI_RS_ACT_ACCEPTED);
 }
 
 // ---- the REJOIN record validation (RL6) ----
@@ -318,6 +370,7 @@ static void testLocalSpare() {
 
 int main() {
   testActivate();
+  testActivateAnswer();
   testRejoinValidate();
   testXchgSequence();
   testExchangeSim();
