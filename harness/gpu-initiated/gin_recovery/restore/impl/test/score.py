@@ -167,15 +167,32 @@ def evaluate_pred(p, scored, PLANNED):
 
 def cost_eval(p, rows, cells):
     """9.15.6's 6-vs-6 reading per receiving node; returns (verdict, table lines). cells: cost:<family>[:<arm>,<arm>...]
-    (the arms this prediction reads, each against the family's base arm; none named: every arm)"""
+    (the arms this prediction reads, each against the family's base arm; none named: every arm of the family). The judged
+    arms: the arms named here (2026-10-13), or, with none named, the family's "judged" list (else every arm); the other
+    shown arms are reported only. Rules (acceptance "cost: rule=<rule>"):
+      report         no verdict ("문턱 대기(pilot 뒤)")
+      not_separated  맞음 iff no judged arm separates from the base arm on any node and metric (every run of one worse
+                     than every run of the other; equal values do not separate)
+      within:<pct>   (2026-10-13) 맞음 iff every judged arm's median is within <pct> percent of the base arm's median in the
+                     worse direction (latency higher, bandwidth lower) on every node and metric
+    Fewer than 5 valid runs in a shown arm on a node: "자료 부족" (9.15.6's 미완)."""
     parts = [x.strip() for x in p["cells"].split(":")]
     fam_name = parts[1]
     rule = p["acceptance"].split("rule=", 1)[1].strip()
+    within = None
+    if rule.startswith("within:"):
+        within = float(rule.split(":", 1)[1])
+    elif rule not in ("report", "not_separated"):
+        raise ValueError("unknown cost rule %r in prediction %s" % (rule, p.get("id")))
     fam = cells["cost"]["families"][fam_name]
     base = fam["base"]
-    shown = [a for a in fam["arms"] if len(parts) < 3 or a == base or a in parts[2].split(",")]
-    judged = set(fam.get("judged", fam["arms"]))  # the arms the not-separated rule judges (the others are reported)
-    lines, short, sep = [], False, False
+    named = [a for a in parts[2].split(",") if a] if len(parts) >= 3 else []
+    for a in named:
+        if a not in fam["arms"]:
+            raise ValueError("arm %r is not in cost family %s (prediction %s)" % (a, fam_name, p.get("id")))
+    shown = [a for a in fam["arms"] if not named or a == base or a in named]
+    judged = (set(named) - {base}) if named else set(fam.get("judged", fam["arms"]))
+    lines, short, sep, outside = [], False, False, False
     for node in cells["cost"]["nodes"]:
         for m in fam["metrics"]:
             vals = {}
@@ -203,17 +220,26 @@ def cost_eval(p, rows, cells):
                 else:
                     s_worse, s_better = max(v) < min(bv), min(v) > max(bv)
                     d = bmed - med
-                tag = "갈림(나쁨)" if s_worse else "갈림(좋음)" if s_better else "차이를 잴 수 없음"
-                if (s_worse or s_better) and a in judged:
-                    sep = True
+                pct = 100.0 * d / bmed if bmed else float("inf")  # positive: worse than the base arm
+                if within is not None:
+                    ok = pct <= within
+                    tag = ("범위 안(%+.1f%% ≤ %g%%)" if ok else "범위 밖(%+.1f%% > %g%%)") % (pct, within)
+                    if a in judged and not ok:
+                        outside = True
+                else:
+                    tag = "갈림(나쁨)" if s_worse else "갈림(좋음)" if s_better else "차이를 잴 수 없음"
+                    if (s_worse or s_better) and a in judged:
+                        sep = True
                 if a not in judged and rule != "report":
                     tag += "(보고만)"
                 lines.append("| %s | %s | %s | %d | %.3f | %+.3f (%+.1f%%) | %s |" % (
-                    node, m, a, len(v), med, d, 100.0 * d / bmed if bmed else 0.0, tag))
+                    node, m, a, len(v), med, d, pct if bmed else 0.0, tag))
     if short:
         verdict = "자료 부족"
     elif rule == "report":
         verdict = "문턱 대기(pilot 뒤)"
+    elif within is not None:
+        verdict = "틀림" if outside else "맞음"
     else:
         verdict = "틀림" if sep else "맞음"
     return verdict, lines
@@ -498,6 +524,48 @@ def _build_A(d, *, live=True, bad_data=False, refuse_ff=False, reg_bad=False, ff
     _all_cost(cost, ffb_sep=ffb_sep)
 
 
+def _within_rows(scale_on, n_on=6, bad=None):
+    """synthetic scored cost rows of the log family's off and on arms on both nodes: on = off x scale_on in the worse
+    direction (latency higher, bandwidth lower); bad=(node, metric, scale): one node and metric worse instead; n_on runs of
+    on (fewer than 5: short)"""
+    rows = []
+    for node in ("rain", "sunny"):
+        for m, b in (("lat4k", 10.5), ("lat256k", 38.9), ("bw256k", 6.4)):
+            sc = bad[2] if bad and (node, m) == bad[:2] else scale_on
+            for k in range(6):
+                rows.append(dict(runner="cost", status="scored", metric=m, arm="off", rx=node, value=b + 0.001 * k))
+            for k in range(n_on):
+                v = b * sc if m != "bw256k" else b / sc
+                rows.append(dict(runner="cost", status="scored", metric=m, arm="on", rx=node, value=v + 0.001 * k))
+    return rows
+
+
+def _within_cases(fails):
+    """rule=within:<pct> (2026-10-13): one passing, one failing, one short; the judged arms from the cells column"""
+    cells = load_cells()
+    p = {"id": "within_self", "cells": "cost:log:on", "acceptance": "cost: rule=within:10"}
+    v, lines = cost_eval(p, _within_rows(1.05), cells)
+    if v != "맞음":
+        fails.append("within/5%% worse within 10%%: got %r" % v)
+    if not any("범위 안" in l for l in lines) or any("범위 밖" in l for l in lines):
+        fails.append("within/the lines do not read 범위 안 for every arm")
+    v, lines = cost_eval(p, _within_rows(1.05, bad=("sunny", "bw256k", 1.15)), cells)
+    if v != "틀림":
+        fails.append("within/15%% worse bandwidth on one node: got %r" % v)
+    if sum("범위 밖" in l for l in lines) != 1:
+        fails.append("within/exactly one line outside")
+    v, _ = cost_eval(p, _within_rows(1.05, n_on=4), cells)
+    if v != "자료 부족":
+        fails.append("within/4 runs of an arm: got %r" % v)
+    # a better arm (faster) passes; a reported-only arm does not judge
+    v, _ = cost_eval(p, _within_rows(0.9), cells)
+    if v != "맞음":
+        fails.append("within/a better arm: got %r" % v)
+    v, _ = cost_eval({"id": "r", "cells": "cost:log:on", "acceptance": "cost: rule=report"}, _within_rows(1.5), cells)
+    if v != "문턱 대기(pilot 뒤)":
+        fails.append("within/report stays report: got %r" % v)
+
+
 def selftest():
     global reg_columns
     real = reg_columns
@@ -603,6 +671,7 @@ def selftest():
                                                  rows["rs4_kill3_strace_rs_n1"]["spare_activate_ms"]), (1250.0, 1999.0))
         expect("D/strace counts", (rows["rs4_kill3_strace_rs_n1"]["spare_peer_before"],
                                    rows["rs4_kill3_strace_rs_n1"]["spare_uds_own"]), (0, 2))
+        _within_cases(fails)
     finally:
         reg_columns = real
     if fails:
