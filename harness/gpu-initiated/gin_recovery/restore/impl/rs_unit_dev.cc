@@ -414,6 +414,11 @@ static void testLocal() {
     {"measurement mode is on (NCCL_GIN_RESTORE_LOG_MEASURE)", [](struct gdakiRsLocalIn& x) { x.logMeasure = true; }},
     {"program not built with NCCL_GIN_RESTORE_DEVICE", [](struct gdakiRsLocalIn& x) { x.deviceBuilt = false; }},
     {"atomic capability is below IBV_ATOMIC_HCA (atomic_cap 0)", [](struct gdakiRsLocalIn& x) { x.atomicCap = 0; }},
+    {"NIC atomics of the restore are not ready on this rank (the self-test's fetch-and-add",
+     [](struct gdakiRsLocalIn& x) {
+       x.atomicOk = false;
+       x.atomicWhy = "the self-test's fetch-and-add of 1 to 0 read 0 then 0x100000000000000 (not host byte order?)";
+     }},
   };
   const int nCases = (int)(sizeof(cases) / sizeof(cases[0]));
   for (int i = 0; i < nCases; i++) {
