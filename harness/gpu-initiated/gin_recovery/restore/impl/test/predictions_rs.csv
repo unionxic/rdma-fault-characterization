@@ -17,6 +17,6 @@ id,predicted,cells,acceptance
 "refuse_nomacro_clean","복원 매크로(NCCL_GIN_RESTORE_DEVICE) 없이 빌드한 프로그램이 hold 정책으로 Resume을 부르면 모든 rank가 그 매크로를 이유로 든 같은 오류를 받고, trap 없이 fail-fast로 끝까지 돌아 결과가 기준과 같다","rs4_refuse_nomacro@rs","count(resume_err_all == 1 and reason_same == 1 and nomacro_reason == 1 and refused_ran_ok == 1) >= N_SCORED"
 "regression_none","회귀: 장애 없는 4 rank가 복원 계층과 hold 정책에서도 투명하다 (gpu-detect RG8의 꼴)","reg_mr4_none@rs; reg_mr4_none_hold@rs","per cell: count(transparent_ok == 1) == N_SCORED"
 "regression_kill3","회귀: rank 3 kill의 degraded 해제가 원래 판정과 같다 (gpu-detect RG9의 꼴, gin-remaining DG1과 DG3)","reg_rm4_kill3_untimed@rs; reg_rm4_kill3_untimed_hold@rs","per cell: count(n_rel_dead == 3 and 2000 <= rel_after_dead_ms_r0 <= 3000 and 2000 <= rel_after_dead_ms_r1 <= 3000 and 2000 <= rel_after_dead_ms_r2 <= 3000 and n_surv_edges == 6 and surv_tx_ok == 6 and n_kdone_surv == 3 and n_stuck_surv == 0) == N_SCORED"
-"cost_log","로그의 비용 (끔 대비 켬, 켬+표본, 켬+전부)","cost:log","cost: rule=report"
-"cost_unarmed","무장 전 hold의 비용 (fail-fast 대비)","cost:unarmed","cost: rule=report"
+"cost_log","로그의 비용: 재기만 하는 모드의 로그 켬, 켬+표본 checksum, 켬+전부 checksum을 매크로 빌드의 fail-fast(off)와 견줌 (로그만의 몫은 같은 섞기 안의 ua-hold와의 차)","cost:log:on,sampled,full","cost: rule=report"
+"cost_unarmed","무장 전 hold의 비용: 로그 없는 hold 길(재기만 하는 모드, 로그 0)을 매크로 빌드의 fail-fast(off)와 견줌","cost:log:ua-hold","cost: rule=report"
 "cost_ff","fail-fast의 분기 비용 없음 (이 계층 대 hk 운영 빌드): 갈리지 않음","cost:ffbranch","cost: rule=not_separated"
