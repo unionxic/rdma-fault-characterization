@@ -11,7 +11,7 @@
 # is written into ~/gi-bundle), so LIB and MRKEY are relative paths that resolve there:
 #   LIB=../../rs-bundle/lib/<rs|rsp>           -> $HOME/rs-bundle/lib/<rs|rsp>
 #   MRKEY=../../../rs-bundle/mr/<ff|hold>      -> $HOME/rs-bundle/mr/<ff|hold>/gin_mr (gin_mr.cu built against this layer's
-#                                                 headers: without the macro for the fail-fast cells, with it for hold)
+#                                                 headers: the cell's DRIVER, mr/ff without the macro, mr/hold with it)
 # CELL is the unique cells_rs.json name (run_mr_hr.sh uses it as the label of its files: no two cells share a stem); the mr
 # behaviour comes from MR_KILL_RANK, MR_FLUSH, MR_EXTRA of the cell, as gin-remaining's cells.sh passes them.
 #
@@ -24,9 +24,11 @@ RES=$(dirname "$L")
 for kv in "$@"; do export "${kv%%=*}"="${kv#*=}"; done
 run_rs() { CELL=$CELL LIB=$B bash "$D/run_rs.sh" "$@"; }
 run_reg() {
-  local t=$1 ldir=$2 extra mrkey=ff
+  local t=$1 ldir=$2 extra mrkey
   extra="NCCL_GIN_RESTORE=${RESTORE:-1} NCCL_NUM_RMA_CTX=0 NCCL_RMA_DISABLE=1 NCCL_SYM_GIN_KERNELS_ENABLE=0 NCCL_RAS_ENABLE=0 NCCL_GIN_Q4_QPWATCH_MS=0 ${MR_EXTRA:-}"
-  if [ "${FAULT_POLICY:-}" = hold ]; then extra="NCCL_GIN_FAULT_POLICY=hold $extra"; mrkey=hold; fi
+  [ "${FAULT_POLICY:-}" = hold ] && extra="NCCL_GIN_FAULT_POLICY=hold $extra"
+  # the driver build the cell names: mr/ff (gin_mr.cu, this layer's headers, no macro) or mr/hold (the same with the macro)
+  case "${DRIVER:-}" in mr/ff) mrkey=ff ;; mr/hold) mrkey=hold ;; *) echo "cell $CELL names no regression driver" >&2; return 1 ;; esac
   env CELL="$CELL" LIB="../../rs-bundle/lib/$B" MRKEY="../../../rs-bundle/mr/$mrkey" N=4 ABORT_WD_S=20 \
     ${MR_KILL_RANK:+KILL_RANK=$MR_KILL_RANK} ${MR_KILL_RANK:+KILL_DELAY_MS=${MR_KILL_DELAY_MS:-9000}} \
     ${MR_FLUSH:+FLUSH=$MR_FLUSH} EXTRA_ENV="$extra" \
