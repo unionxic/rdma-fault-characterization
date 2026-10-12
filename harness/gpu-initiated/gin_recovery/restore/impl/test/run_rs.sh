@@ -37,8 +37,8 @@
 #   (CKPT_PAUSE to every peer) of its next checkpoint, with one WARN line ("test switch NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT:
 #   dying ..."), whose receipt time is the kill time (no _kill.out). The arm file is created once the spare is ready (or
 #   its wait ran out) AND every survivor printed "GIN/RS: rank <s>: rank <KR> armed at its stable checkpoint <k>" (the
-#   library's line when KR's CKPT_STABLE marked KR armed there; bounded by ARM_WAIT_S, 60; none: no arm file, no kill,
-#   meta arm_wait=timeout). The driver's own GIN_RS_DIE_IN_STEP (still in gin_rs.cu) is not used any more: it assumed a
+#   library's line when KR's CKPT_STABLE marked KR armed there; ARM_WAIT_S, 60, bounds the wait for all survivors
+#   together; none: no arm file, no kill, meta arm_wait=timeout). The driver's own GIN_RS_DIE_IN_STEP (still in gin_rs.cu) is not used any more: it assumed a
 #   checkpoint at every step divisible by CKPT_STEPS, while the library takes checkpoint 0 at step 0 and the next ones
 #   CKPT_STEPS steps after the previous one became stable (the pilot P1, EXPERIMENT.md 12).
 #   SPARE_WAIT_MS (60000): the spare's NCCL_GIN_RESTORE_SPARE_WAIT_MS (the library's default is one hour). A spare never
@@ -52,7 +52,8 @@
 #   registered with KR: NCCL_GIN_RESTORE_SPARE_ADDR), SPARE_KILL_FIRST (1 with SPARE=1: the spare-absent cell, the spare is
 #   SIGKILLed by its recorded PID once ready, before KR dies), SPARE_ADDR (1 with SPARE=0: an address registered with no
 #   process ever started; unused by the cells), FAULT_POLICY (hold|failfast; hold ranks record their init transcript),
-#   RESTORE (1|0), SYM_GIN (0), GIN_TYPE (3), RMA_DISABLE (1), NUM_RMA_CTX (0), NCONN (1), RESTORE_MS (20000),
+#   RESTORE (1|0), SYM_GIN (0), CELL_GIN_TYPE (3; NCCL_GIN_TYPE: a cell's variable may not start with NCCL_ or GIN_, those
+#   of the caller are dropped first), RMA_DISABLE (1), NUM_RMA_CTX (0), NCONN (1), RESTORE_MS (20000),
 #   RESUME_MS (30000), CKPT_STEPS (empty = library default), LOG_MEASURE (0), CHECKSUM (off), QPWATCH (10, EXPERIMENT.md 6),
 #   DRIVER (gin_rs | gin_rs_nomacro | gin_rs_hk: the build the cell names; default gin_rs for rs, gin_rs_hk for hk),
 #   CONTINUE_AFTER_REFUSAL (1: after a refused Resume the ranks run the workload fail-fast: the no-macro refusal cell),
@@ -61,7 +62,8 @@
 #   the spare is ready, so a slow init replay cannot let the run end before the kill. Pilot only: SPARE_STRACE=1 (strace the spare: peer connects before/after its ready point, own and other
 #   ranks' proxy UDS apart; counts only leave the node), NEG_REPLAY=1 with NEG_RANK (3) and NEG_FIELD_OFF (184): after the
 #   trial, two spares replay a cut and a field-changed copy of NEG_RANK's transcript (both must fail). NCCL_GIN_Q4_QPWATCH_MS
-#   is 0 for every process (the spare branch's requirement).
+#   is 0 for every process (the spare branch's requirement). RS_DRY_CONFIG=1 (CPU self-test): print the configuration
+#   line and exit before anything is touched.
 # Restore variable names (fixed by the dev, host and spare branches: impl/rs_spare_api.h, rs_hold_api.h, rs_ckpt_api.h;
 #   the spare branch's rs_layer_spare.diff): NCCL_GIN_RESTORE_RECORD (each hold rank's init transcript, node-local),
 #   NCCL_GIN_RESTORE_REPLAY (the spare replays its rank's transcript), NCCL_GIN_RESTORE_SPARE, NCCL_GIN_RESTORE_SPARE_PORT
@@ -80,8 +82,9 @@ N=${N:-4}
 [ "$N" = 4 ] || { echo "run_rs.sh is the 4-rank workload (N=4)" >&2; exit 1; }
 LIB=${LIB:-rs}
 RS_SET=${RS_SET:-}
-case "$RS_SET" in ""|[A-Za-z0-9]*) ;; *) echo "RS_SET must be a plain name" >&2; exit 1 ;; esac
-case "$RS_SET" in */*|*..*) echo "RS_SET must be a plain name" >&2; exit 1 ;; esac
+D=$(cd "$(dirname "$0")" && pwd)
+. "$D/rs_set.sh"   # the one RS_SET check of every script
+rs_set_check || exit 1
 RSB=$HOME/rs-bundle${RS_SET:+/$RS_SET}   # the deployment set (deploy_rs.sh with the same RS_SET)
 # the driver build each cell names (cells_rs.json "driver"): gin_rs (macro), gin_rs_nomacro (this layer's headers, no
 # macro), gin_rs_hk (hk headers); the default follows the library
@@ -96,7 +99,9 @@ RSBIN=$RSB/rstest/$DRIVER
 BINNAME=$(basename "$RSBIN")
 STEPS=${STEPS:-600}; BYTES=${BYTES:-4096}; STEP_GAP_US=${STEP_GAP_US:-5000}
 KILL_AT_STEP=${KILL_AT_STEP:-100}; KILL_DELAY_US=${KILL_DELAY_US:-500}
-FAULT_POLICY=${FAULT_POLICY:-hold}; RESTORE=${RESTORE:-1}; SYM_GIN=${SYM_GIN:-0}; GIN_TYPE=${GIN_TYPE:-3}
+# the cell's GIN type comes as CELL_GIN_TYPE (2026-10-13: a cell's GIN_TYPE was dropped with the caller's GIN_ variables
+# above, so the proxy-type refusal cell ran with type 3); GIN_TYPE below is this script's own name
+FAULT_POLICY=${FAULT_POLICY:-hold}; RESTORE=${RESTORE:-1}; SYM_GIN=${SYM_GIN:-0}; GIN_TYPE=${CELL_GIN_TYPE:-3}
 RMA_DISABLE=${RMA_DISABLE:-1}; NUM_RMA_CTX=${NUM_RMA_CTX:-0}; NCONN=${NCONN:-1}; QPWATCH=${QPWATCH:-10}
 RESTORE_MS=${RESTORE_MS:-20000}; RESUME_MS=${RESUME_MS:-30000}; LOG_MEASURE=${LOG_MEASURE:-0}; CHECKSUM=${CHECKSUM:-off}
 KILL_RANK=${KILL_RANK:-}; KILL_DELAY_MS=${KILL_DELAY_MS:-30000}; KILL_IN_HOOK=${KILL_IN_HOOK:-0}; KILL_HOOK_US=${KILL_HOOK_US:-300}
@@ -104,13 +109,23 @@ ARM_WAIT_S=${ARM_WAIT_S:-60}
 SPARE=${SPARE:-0}; SPARE_WAIT_MS=${SPARE_WAIT_MS:-60000}
 # the processes' own bound: kill cells with a spare also wait at the start gate (up to 2 x 60 s for the spare)
 WATCHDOG_S=${WATCHDOG_S:-$( [ -n "$KILL_RANK" ] && [ "$SPARE" = 1 ] && echo 200 || echo 90 )}
+# RS_DRY_CONFIG=1 (the CPU self-test, selftest_rs.py): print the configuration as the meta line names it and stop, before
+# any file, address, ssh or process is touched
+if [ "${RS_DRY_CONFIG:-0}" = 1 ]; then
+  echo "cell=${CELL:-} lib=$LIB driver=$DRIVER policy=$FAULT_POLICY restore=$RESTORE sym_gin=$SYM_GIN gin_type=$GIN_TYPE \
+rma_disable=$RMA_DISABLE num_rma_ctx=$NUM_RMA_CTX nconn=$NCONN qpwatch_ms=$QPWATCH restore_ms=$RESTORE_MS checksum=$CHECKSUM \
+log_measure=$LOG_MEASURE ckpt_steps=${CKPT_STEPS:-} kill_rank=${KILL_RANK:-} kill_in_hook=$KILL_IN_HOOK spare_wanted=$SPARE \
+spare_kill_first=${SPARE_KILL_FIRST:-0} spare_strace=${SPARE_STRACE:-0} neg_replay=${NEG_REPLAY:-0} neg_rank=${NEG_RANK:-} \
+continue_after_refusal=${CONTINUE_AFTER_REFUSAL:-0} r0_env=$(echo ${R0_ENV:-} | tr ' ' '+') r1_env=$(echo ${R1_ENV:-} | tr ' ' '+') \
+r2_env=$(echo ${R2_ENV:-} | tr ' ' '+') r3_env=$(echo ${R3_ENV:-} | tr ' ' '+') rs_set=${RS_SET:--} spare_wait_ms=$SPARE_WAIT_MS"
+  exit 0
+fi
 [ -x "$RSBIN" ] && [ -f "$LIBDIR/libnccl.so.2" ] || { echo "missing $RSBIN or $LIBDIR/libnccl.so.2 on rain" >&2; exit 1; }
 RAIN_MGMT=$(ip -4 route get "$SUNNY_HOST" 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
 [ -n "$RAIN_MGMT" ] || { echo "cannot find rain's management address" >&2; exit 1; }
 umask 077
 WORK=$(mktemp -d /tmp/rs_rt.XXXXXX)
 RT=/tmp/rs_rt_$$_$RANDOM      # sunny-side file prefix of this trial
-D=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../../../remaining/portpick.sh
 . "$D/../../../remaining/portpick.sh"
 cleanup() { ssh -n "$SUNNY_SSH" "rm -f $RT.*" 2>/dev/null || true; rm -rf "$WORK"; }
@@ -303,10 +318,12 @@ ARM_WAIT=-; T_ARMED=0
 if [ -n "$KILL_RANK" ] && [ "$KILL_IN_HOOK" = 1 ]; then
   # arm the checkpoint-pause kill once every survivor printed the library's line that KR is armed at a stable checkpoint
   # (after the start gate: the spare is ready, or its waits ran out); KR then dies in its next checkpoint's pause
-  ARM_WAIT=ok; aend=$(awk -v s="$ARM_WAIT_S" 'BEGIN{printf "%.3f", s}')
+  # one bound for all survivors together (ARM_WAIT_S from here), not per survivor
+  ARM_WAIT=ok; aend=$(awk -v n="$(date +%s.%N)" -v s="$ARM_WAIT_S" 'BEGIN{printf "%.3f", n + s}')
   for ((s = 0; s < N; s++)); do
     [ "$s" = "$KILL_RANK" ] && continue
-    t=$(wait_line "$WORK/r$s.log" "GIN/RS: rank $s: rank $KILL_RANK armed at its stable checkpoint [0-9]+" 0 0 "$aend")
+    left=$(awk -v n="$(date +%s.%N)" -v e="$aend" 'BEGIN{x = e - n; printf "%.3f", (x > 0 ? x : 0)}')
+    t=$(wait_line "$WORK/r$s.log" "GIN/RS: rank $s: rank $KILL_RANK armed at its stable checkpoint [0-9]+" 0 0 "$left")
     if [ -z "$t" ]; then ARM_WAIT=timeout; break; fi
     T_ARMED=$(awk -v a="$T_ARMED" -v b="$t" 'BEGIN{printf "%.6f", (b > a ? b : a)}')
   done
@@ -387,6 +404,9 @@ LEFT=$( { pgrep -x "$BINNAME"; ssh -n "$SUNNY_SSH" "pgrep -x $BINNAME"; } 2>/dev
 mkdir -p "$LOGDIR"
 stem="${CELL:-rs}_${LIB}_${TRIAL}"   # the build is in the stem: rs4_kill3@rs and rs4_kill3@hk never collide in one folder
 MASK='s/[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/<ip>/g'
+# a rerun of a trial (its meta was missing: hold_rs.sh skips a trial whose meta exists) first removes every file of the
+# stem, so no file of the earlier run (a _kill.out, _spare_kill.out, _strace.txt, a spare's or a negative's kv/log) stays
+rm -f "$LOGDIR/${stem}"_*
 for name in $names; do
   [ -f "$WORK/$name.kv" ] && sed "$MASK" "$WORK/$name.kv" > "$LOGDIR/${stem}_$name.kv"
   [ -f "$WORK/$name.log" ] && sed "$MASK" "$WORK/$name.log" > "$LOGDIR/${stem}_$name.log"

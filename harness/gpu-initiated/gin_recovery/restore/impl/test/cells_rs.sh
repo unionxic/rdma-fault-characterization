@@ -27,7 +27,8 @@ D=$(cd "$(dirname "$0")" && pwd)
 RES=$(dirname "$L")
 for kv in "$@"; do export "${kv%%=*}"="${kv#*=}"; done
 RS_SET=${RS_SET:-}
-case "$RS_SET" in */*|*..*|-*) echo "RS_SET must be a plain name" >&2; exit 1 ;; esac
+. "$D/rs_set.sh"   # the one RS_SET check of every script
+rs_set_check || exit 1
 export RS_SET
 SETP=rs-bundle${RS_SET:+/$RS_SET}   # the deployment set, relative to $HOME
 run_rs() { CELL=$CELL LIB=$B bash "$D/run_rs.sh" "$@"; }

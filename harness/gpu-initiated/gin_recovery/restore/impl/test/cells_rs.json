@@ -12,7 +12,7 @@
    {"cell": "rs4_kill3_spareabsent", "build": "rs", "kind": "rs", "n": 1, "driver": "gin_rs", "env": {"KILL_RANK": "3", "SPARE": "1", "SPARE_KILL_FIRST": "1", "CKPT_STEPS": "20"}},
    {"cell": "rs4_kill3", "build": "hk", "kind": "rs", "n": 1, "driver": "gin_rs_hk", "env": {"KILL_RANK": "3", "FAULT_POLICY": "failfast", "RESTORE": "0"}},
    {"cell": "rs4_refuse_symgin", "build": "rs", "kind": "rs", "n": 1, "driver": "gin_rs", "env": {"SYM_GIN": "1"}},
-   {"cell": "rs4_refuse_gintype", "build": "rs", "kind": "rs", "n": 1, "driver": "gin_rs", "env": {"GIN_TYPE": "2"}},
+   {"cell": "rs4_refuse_gintype", "build": "rs", "kind": "rs", "n": 1, "driver": "gin_rs", "env": {"CELL_GIN_TYPE": "2"}},
    {"cell": "rs4_refuse_restoreoff1", "build": "rs", "kind": "rs", "n": 1, "driver": "gin_rs", "env": {"R3_ENV": "NCCL_GIN_RESTORE=0"}},
    {"cell": "rs4_refuse_nomacro", "build": "rs", "kind": "rs", "n": 1, "driver": "gin_rs_nomacro", "env": {"CONTINUE_AFTER_REFUSAL": "1"}}
   ],
@@ -38,7 +38,7 @@
   ],
   "G2": [
    {"cell": "rs4_refuse_symgin", "build": "rs", "kind": "rs", "n": 3, "driver": "gin_rs", "env": {"SYM_GIN": "1"}},
-   {"cell": "rs4_refuse_gintype", "build": "rs", "kind": "rs", "n": 3, "driver": "gin_rs", "env": {"GIN_TYPE": "2"}},
+   {"cell": "rs4_refuse_gintype", "build": "rs", "kind": "rs", "n": 3, "driver": "gin_rs", "env": {"CELL_GIN_TYPE": "2"}},
    {"cell": "rs4_refuse_restoreoff1", "build": "rs", "kind": "rs", "n": 3, "driver": "gin_rs", "env": {"R3_ENV": "NCCL_GIN_RESTORE=0"}},
    {"cell": "rs4_refuse_nomacro", "build": "rs", "kind": "rs", "n": 3, "driver": "gin_rs_nomacro", "env": {"CONTINUE_AFTER_REFUSAL": "1"}}
   ],

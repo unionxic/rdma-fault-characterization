@@ -53,7 +53,8 @@ case "$METRIC" in
   *) echo "bad metric in $CELL" >&2; exit 2 ;;
 esac
 RS_SET=${RS_SET:-}
-case "$RS_SET" in */*|*..*|-*) echo "RS_SET must be a plain name" >&2; exit 2 ;; esac
+. "$(cd "$(dirname "$0")" && pwd)/rs_set.sh"   # the one RS_SET check of every script
+rs_set_check || exit 2
 RSB=$HOME/rs-bundle${RS_SET:+/$RS_SET}
 RSPLIB=$RSB/lib/rsp
 if [ -n "$RS_SET" ]; then HKPLIB=$RSB/lib/hkp; else HKPLIB=$HOME/gi-bundle/gin_ts2/hkp; fi
@@ -134,6 +135,7 @@ done
 mkdir -p "$LOGDIR"
 stem="${CELL}_${TAG}"
 MASK='s/[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/<ip>/g'
+rm -f "$LOGDIR/${stem}"_*   # a rerun of this run tag: no file of the earlier run stays
 for r in 0 1; do
   [ -f "$WORK/r$r.kv" ] && sed "$MASK" "$WORK/r$r.kv" > "$LOGDIR/${stem}_r$r.kv"
   [ -f "$WORK/r$r.log" ] && sed "$MASK" "$WORK/r$r.log" > "$LOGDIR/${stem}_r$r.log"
