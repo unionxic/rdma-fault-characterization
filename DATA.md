@@ -134,3 +134,21 @@ The full checksums are in the `SHA256SUMS` asset of that release.
 | `harness/gpu-detect/results/20261009` | `harness__gpu-detect__results__20261009.tar.xz` | 1579 | 0.71 | `ce1b710ed93a` | added 2026-10-09 22:37 |
 | `harness/gpu-detect/results/20261009_pilot` | `harness__gpu-detect__results__20261009_pilot.tar.xz` | 151 | 0.08 | `6de4f10ea9d8` | added 2026-10-09 22:37; pilot runs, not scored |
 | `harness/gpu-detect/results/20261009_pilot2` | `harness__gpu-detect__results__20261009_pilot2.tar.xz` | 176 | 0.09 | `0e7ae195cfe2` | added 2026-10-09 22:37; pilot runs, not scored |
+
+## Release `data-20261013`
+
+7 raw-data archives of the gin-restore study (`harness/gpu-initiated/gin_recovery/restore`), 5766 files, 7.36 MB compressed.
+Packed with the study's packer (same layout as `tools/pack_release.py --whole`: one `.tar.xz` per result folder, unpacking to the
+folder's repository path; every archive re-extracted and compared byte for byte with the source folder before upload). The full
+checksums are in the `SHA256SUMS` asset of that release. The `hold_*.out` files of the pilots and the main run carry the
+documentation placeholder addresses stated above (the runner masks the real ones).
+
+| folder | asset | files | MB | sha256 (first 12) | note |
+|---|---|--:|--:|---|---|
+| `harness/gpu-initiated/gin_recovery/restore/results/20261009_feasibility` | `harness__gpu-initiated__gin_recovery__restore__results__20261009_feasibility.tar.xz` | 578 | 0.29 | `efe2f46e1b4c` | feasibility tests B1 and B2 (EXPERIMENT.md 9.15) |
+| `harness/gpu-initiated/gin_recovery/restore/results/20261011_ordering` | `harness__gpu-initiated__gin_recovery__restore__results__20261011_ordering.tar.xz` | 839 | 0.40 | `4d4e480f2e9b` | B3 relaxed-ordering cells and the strict vs relaxed comparison (9.15.3, 9.15.6) |
+| `harness/gpu-initiated/gin_recovery/restore/results/20261013_pilot` | `harness__gpu-initiated__gin_recovery__restore__results__20261013_pilot.tar.xz` | 250 | 0.54 | `b847af7bf335` | pilot on set i3, not scored |
+| `harness/gpu-initiated/gin_recovery/restore/results/20261013_pilot_cost` | `harness__gpu-initiated__gin_recovery__restore__results__20261013_pilot_cost.tar.xz` | 1083 | 0.91 | `82cc5f776ce8` | cost pilot, six rounds on both nodes, not scored |
+| `harness/gpu-initiated/gin_recovery/restore/results/20261013_pilot_i4` | `harness__gpu-initiated__gin_recovery__restore__results__20261013_pilot_i4.tar.xz` | 495 | 0.83 | `9c35192c4a9d` | pilot on set i4, not scored |
+| `harness/gpu-initiated/gin_recovery/restore/results/20261013_pilot_i5` | `harness__gpu-initiated__gin_recovery__restore__results__20261013_pilot_i5.tar.xz` | 137 | 0.49 | `8ac225fade0a` | pilot on set i5, not scored |
+| `harness/gpu-initiated/gin_recovery/restore/results/20261013_main` | `harness__gpu-initiated__gin_recovery__restore__results__20261013_main.tar.xz` | 2384 | 3.90 | `0eb3b1d7fcdc` | pre-registered main run, 329 trials (the tracked `SCORE.md`, `trials_scored.csv`, `qa_recount.md`, `qa/` are included) |
