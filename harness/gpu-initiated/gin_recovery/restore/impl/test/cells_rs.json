@@ -1,0 +1,65 @@
+{
+ "study": "gin-restore",
+ "about": "The cells of EXPERIMENT.md 7 (DRAFT: n are the draft counts of section 7, frozen only after the pilot, PILOT.md). Input of hold_rs.sh (what to run) and score.py (planned scored trials per cell@build). kind: rs -> run_rs.sh (the 4-rank restore workload gin_rs), reg -> ../../../remaining/run_mr_hr.sh (gin-remaining's 4-rank runner, the regression cells). build: rs (restore research, ~/rs-bundle/lib/rs), hk (gpu-detect research, ~/gi-bundle/gin_ts2/hk, read only: the no-restore control). env: the cell's runner variables (each value one argument; spaces kept). Pilot holds (P*) are never scored; P3 holds the spare's pilot checks (its strace, the two negative replays), cells named by description, not section-7 cells. The cost cells are in 'cost' (run_cost.sh through hold_rs.sh's interleave). Cell names keep the search keys of sections 3 and 7.",
+ "holds": {
+  "P1": [
+   {"cell": "rs4_none", "build": "rs", "kind": "rs", "n": 1, "env": {"CKPT_STEPS": "20"}},
+   {"cell": "rs4_none_off", "build": "rs", "kind": "rs", "n": 1, "env": {"RESTORE": "0", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3", "build": "rs", "kind": "rs", "n": 1, "env": {"KILL_RANK": "3", "SPARE": "1", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3_ckpt", "build": "rs", "kind": "rs", "n": 1, "env": {"KILL_RANK": "3", "SPARE": "1", "KILL_IN_HOOK": "1", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill1", "build": "rs", "kind": "rs", "n": 1, "env": {"KILL_RANK": "1", "SPARE": "1", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3_nospare", "build": "rs", "kind": "rs", "n": 1, "env": {"KILL_RANK": "3", "SPARE": "0", "SPARE_ADDR": "1", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3", "build": "hk", "kind": "rs", "n": 1, "env": {"KILL_RANK": "3", "FAULT_POLICY": "failfast", "RESTORE": "0"}},
+   {"cell": "rs4_refuse_symgin", "build": "rs", "kind": "rs", "n": 1, "env": {"SYM_GIN": "1"}},
+   {"cell": "rs4_refuse_gintype", "build": "rs", "kind": "rs", "n": 1, "env": {"GIN_TYPE": "2"}},
+   {"cell": "rs4_refuse_restoreoff1", "build": "rs", "kind": "rs", "n": 1, "env": {"R3_ENV": "NCCL_GIN_RESTORE=0"}}
+  ],
+  "P2": [
+   {"cell": "reg_mr4_none", "build": "rs", "kind": "reg", "n": 1, "env": {}},
+   {"cell": "reg_rm4_kill3_untimed", "build": "rs", "kind": "reg", "n": 1, "env": {"MR_KILL_RANK": "3", "MR_FLUSH": "peer", "MR_EXTRA": "GIN_MR_RX_UNTIMED=1 GIN_MR_GRACE_S=15"}},
+   {"cell": "reg_mr4_none_hold", "build": "rs", "kind": "reg", "n": 1, "env": {"FAULT_POLICY": "hold"}},
+   {"cell": "reg_rm4_kill3_untimed_hold", "build": "rs", "kind": "reg", "n": 1, "env": {"MR_KILL_RANK": "3", "MR_FLUSH": "peer", "MR_EXTRA": "GIN_MR_RX_UNTIMED=1 GIN_MR_GRACE_S=15", "FAULT_POLICY": "hold"}}
+  ],
+  "P3": [
+   {"cell": "rs4_kill3_strace", "build": "rs", "kind": "rs", "n": 1, "env": {"KILL_RANK": "3", "SPARE": "1", "SPARE_STRACE": "1", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_spare_neg", "build": "rs", "kind": "rs", "n": 1, "env": {"NEG_REPLAY": "1", "NEG_RANK": "3", "CKPT_STEPS": "20"}}
+  ],
+  "G1": [
+   {"cell": "rs4_none", "build": "rs", "kind": "rs", "n": 5, "env": {"CKPT_STEPS": "20"}},
+   {"cell": "rs4_none_off", "build": "rs", "kind": "rs", "n": 5, "env": {"RESTORE": "0", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3", "build": "rs", "kind": "rs", "n": 10, "env": {"KILL_RANK": "3", "SPARE": "1", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3_ckpt", "build": "rs", "kind": "rs", "n": 5, "env": {"KILL_RANK": "3", "SPARE": "1", "KILL_IN_HOOK": "1", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill1", "build": "rs", "kind": "rs", "n": 5, "env": {"KILL_RANK": "1", "SPARE": "1", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3_nospare", "build": "rs", "kind": "rs", "n": 5, "env": {"KILL_RANK": "3", "SPARE": "0", "SPARE_ADDR": "1", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3", "build": "hk", "kind": "rs", "n": 5, "env": {"KILL_RANK": "3", "FAULT_POLICY": "failfast", "RESTORE": "0"}}
+  ],
+  "G2": [
+   {"cell": "rs4_refuse_symgin", "build": "rs", "kind": "rs", "n": 3, "env": {"SYM_GIN": "1"}},
+   {"cell": "rs4_refuse_gintype", "build": "rs", "kind": "rs", "n": 3, "env": {"GIN_TYPE": "2"}},
+   {"cell": "rs4_refuse_restoreoff1", "build": "rs", "kind": "rs", "n": 3, "env": {"R3_ENV": "NCCL_GIN_RESTORE=0"}}
+  ],
+  "R1": [
+   {"cell": "reg_mr4_none", "build": "rs", "kind": "reg", "n": 5, "env": {}},
+   {"cell": "reg_rm4_kill3_untimed", "build": "rs", "kind": "reg", "n": 5, "env": {"MR_KILL_RANK": "3", "MR_FLUSH": "peer", "MR_EXTRA": "GIN_MR_RX_UNTIMED=1 GIN_MR_GRACE_S=15"}},
+   {"cell": "reg_mr4_none_hold", "build": "rs", "kind": "reg", "n": 5, "env": {"FAULT_POLICY": "hold"}},
+   {"cell": "reg_rm4_kill3_untimed_hold", "build": "rs", "kind": "reg", "n": 5, "env": {"MR_KILL_RANK": "3", "MR_FLUSH": "peer", "MR_EXTRA": "GIN_MR_RX_UNTIMED=1 GIN_MR_GRACE_S=15", "FAULT_POLICY": "hold"}}
+  ]
+ },
+ "regression_orig": {
+  "about": "The original cell each regression cell repeats, for score.py's status (gin-remaining's status4 as hr) and its verdict (gpu-detect's RG8/RG9 form of gin-remaining's RG8 and DG1+DG3 at n=5).",
+  "reg_mr4_none": "mr4_none",
+  "reg_mr4_none_hold": "mr4_none",
+  "reg_rm4_kill3_untimed": "rm4_kill3_untimed",
+  "reg_rm4_kill3_untimed_hold": "rm4_kill3_untimed"
+ },
+ "cost": {
+  "about": "cost_<metric>_<arm>_<node> (run_cost.sh). Each family is one hold per receiving node in hold_rs.sh: for k = 1-6 every metric, its arms back to back (rotated: the first arm alternates with k). Scored key cost_<metric>_<arm>@<lib>, over both receiving nodes kept apart in score.py (planned n_per_arm per node). The 4 KiB get arm of lat_ff_branch is not covered (gin_ts2 has no get latency mode).",
+  "n_per_arm": 6,
+  "nodes": ["rain", "sunny"],
+  "families": {
+   "log": {"metrics": ["lat4k", "lat256k", "bw256k"], "arms": ["off", "on", "sampled", "full"], "lib": "rsp", "base": "off", "search_key": "cost_log"},
+   "unarmed": {"metrics": ["lat4k", "lat256k"], "arms": ["ua-ff", "ua-hold"], "lib": "rsp", "base": "ua-ff", "search_key": "cost_unarmed"},
+   "ffbranch": {"metrics": ["lat4k", "lat256k"], "arms": ["ffb-hk", "ffb-rs"], "lib": {"ffb-hk": "hkp", "ffb-rs": "rsp"}, "base": "ffb-hk", "search_key": "cost_ff"}
+  }
+ }
+}
