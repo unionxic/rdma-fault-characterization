@@ -14,7 +14,8 @@
 #          agent_rs/out/$RSPOUT/ (default rsp; same refusal).
 #   unit   the CPU unit test of the decision and reason functions: the region between the two "gin-restore: pure
 #          functions" markers of the working tree's gin_host_gdaki.cc is cut out and compiled with rs_unit.cc (g++, no
-#          NCCL, no CUDA, no network) -> agent_rs/out/unit/rs_unit, then run.
+#          NCCL, no CUDA, no network) -> agent_rs/out/unit/rs_unit, then run. Work package 4: rs_unit.cc also includes the
+#          working tree's device-host common header (the checksum, the log entry, the suppression plan the device uses).
 #   info   agent_rs/out/build_info.txt: md5 of every output and input.
 # All compiles run at nice 19 and idle I/O priority (other studies use this node).
 set -euo pipefail
@@ -30,8 +31,9 @@ HK=$SCR/agent_gd/gin_hk
 W=$SCR/agent_rs
 OUT=$W/out
 HOSTF=src/transport/net_ib/gdaki/gin_host_gdaki.cc
-RS_FILES="src/gin/gin_host.cc src/include/gin/gin_host.h src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h src/nccl.h.in $HOSTF"
-# work package 2: + the public entry; work package 3: + the device-host common header (the side-table pointer)
+RS_FILES="src/gin/gin_host.cc src/include/gin/gin_host.h src/include/nccl_device/gin/gdaki/gin_gdaki.h src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h src/nccl.h.in $HOSTF"
+# work package 2: + the public entry; work package 3: + the device-host common header (the side-table pointer);
+# work package 4: + the device header (the hold path)
 KG() { git -C "$HK/nccl-src" -c user.name=build -c user.email=build@localhost "$@"; }
 RG() { git -C "$W/nccl-src" -c user.name=build -c user.email=build@localhost "$@"; }
 md5() { md5sum < "$1" | cut -c1-32; }
@@ -124,8 +126,8 @@ unit() {
   [ -s "$o/rs_pure.inc" ] || { echo "no pure-function region in $HOSTF" >&2; exit 1; }
   # the region uses hk's policy enum: the test defines it, and it must be the line the host file has
   grep -qxF 'enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };' "$src" || { echo "hk's policy enum changed" >&2; exit 1; }
-  nice -n 19 g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -I"$o" "$D/rs_unit.cc" \
-    -o "$o/rs_unit"
+  nice -n 19 g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -I"$o" \
+    -I"$W/nccl-src/src/include" "$D/rs_unit.cc" -o "$o/rs_unit"
   "$o/rs_unit"
 }
 info() {
