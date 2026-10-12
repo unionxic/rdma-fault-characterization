@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hold_rs.sh - one hold of gin-restore work package 10 (EXPERIMENT.md 7, 8; DRAFT until the pilot freezes n). The main session
+# hold_rs.sh - one hold of gin-restore work package 10 (EXPERIMENT.md 7, 8; n and caps pre-registered 2026-10-13). The main session
 # runs it inside ../../../../common/cluster_run.sh (tag rs-<hold>, -w 10800) under timeout -s KILL 880, through chain_rs.sh.
 # Modeled on ../../feas/hold_feas.sh and ../../../remaining/hold.sh. Before and after the hold: the GPU users and compute
 # mode of both nodes, both GPUs' BAR1, rain's NVRM mapping-failure lines, the mlx5 kernel lines, rain's firmware-command
@@ -21,11 +21,12 @@
 #                              by k (9.15.6's interleave), into cost_<family>_<node>[_<metric>]/ (a repeat: ..._run<k>/)
 #   COSTPILOT-<rain|sunny>     pilot: one round (k=1) of every family, into costpilot_<node>/
 # env: SUNNY_SSH (required), RS_SET (empty: today's deployment under ~/rs-bundle; a name: the set ~/rs-bundle/<RS_SET>/,
-#   passed to the runners), RS_QUERY_CAP (20000: rain's QUERY_QP growth per trial of the restore cells and the cost runs),
-#   RS_QUERY_CAP_REG (150000: the same for the regression cells, kind reg: gin-remaining's run_mr_hr.sh trials of about
-#   17 s grew it by 90 000-108 000 in the pilot P2, results/20261013_pilot/qp_over.txt, while the restore cells stayed
-#   under 20 000), RS_TRIAL_BOUND_S (300: the bound `fits` assumes for one restore trial, kind rs; the pilot fixes it from
-#   the measured wall times)
+#   passed to the runners), RS_QUERY_CAP (40000: rain's QUERY_QP growth per trial of the restore cells and the cost runs;
+#   pre-registered 2026-10-13 from the draft 20 000: the kill trials with a spare grew it by 22 092-23 608 in the pilots i4
+#   and i5), RS_QUERY_CAP_REG (150000: the same for the regression cells, kind reg: gin-remaining's run_mr_hr.sh trials of
+#   about 17 s grew it by 90 000-108 000 in the pilot P2, results/20261013_pilot/qp_over.txt), RS_TRIAL_BOUND_S (60: the
+#   bound `fits` assumes for one restore trial, kind rs; pre-registered from the pilots' wall times of 2.0-11.5 s and the
+#   spare's 60 s wait; draft 300)
 # Resumable (2026-10-13): a cell trial whose <stem>_meta.txt already exists in its logdir is skipped with an "already done"
 # line, so the same hold run again into the same results folder runs only the trials still missing (the cost holds are not
 # resumed: a repeat goes to a new _run<k> folder as before). A hold run again keeps the earlier run's files: its snapshot,
@@ -42,9 +43,9 @@ export RS_SET
 CELLS=$D/cells_rs.json
 FW=$D/../../../scripts/ts1/fwcmd_snapshot.sh
 [ -f "$FW" ] || { echo "missing $FW" >&2; exit 2; }
-QCAP=${RS_QUERY_CAP:-20000}
+QCAP=${RS_QUERY_CAP:-40000}
 QCAP_REG=${RS_QUERY_CAP_REG:-150000}
-TRIAL_BOUND=${RS_TRIAL_BOUND_S:-300}
+TRIAL_BOUND=${RS_TRIAL_BOUND_S:-60}
 case "$H" in P*|COSTPILOT-*) PILOT=1 ;; *) PILOT=0 ;; esac
 CMDERR='grep -i mlx5 | grep -iE "cmd|command" | grep -icE "failed|timeout|leak"'
 mkdir -p "$R"

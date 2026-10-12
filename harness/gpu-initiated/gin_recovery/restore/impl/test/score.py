@@ -21,7 +21,7 @@ Steps (EXPERIMENT.md 3 and 8), as ../../../../gpu-detect/score.py (master) does:
      functions, unchanged). The cost rows ("cost: rule=...") use 9.15.6's method per receiving node: an arm is
      "separated" from the family's base arm when every valid run of one is worse than every valid run of the other (equal
      values do not separate); fewer than 5 valid runs in an arm on a node: "자료 부족" (9.15.6's 미완). rule=report: the
-     threshold is fixed after the pilot (PILOT.md), so the verdict is "문턱 대기"; rule=not_separated: 맞음 iff no metric on
+     arms are reported without a verdict ("보고만(판정 없음)"); rule=not_separated: 맞음 iff no metric on
      no node separates.
 """
 import csv, hashlib, importlib.util, json, math, os, re, statistics, sys, tempfile
@@ -170,7 +170,7 @@ def cost_eval(p, rows, cells):
     (the arms this prediction reads, each against the family's base arm; none named: every arm of the family). The judged
     arms: the arms named here (2026-10-13), or, with none named, the family's "judged" list (else every arm); the other
     shown arms are reported only. Rules (acceptance "cost: rule=<rule>"):
-      report         no verdict ("문턱 대기(pilot 뒤)")
+      report         no verdict ("보고만(판정 없음)")
       not_separated  맞음 iff no judged arm separates from the base arm on any node and metric (every run of one worse
                      than every run of the other; equal values do not separate)
       within:<pct>   (2026-10-13) 맞음 iff every judged arm's median is within <pct> percent of the base arm's median in the
@@ -237,7 +237,7 @@ def cost_eval(p, rows, cells):
     if short:
         verdict = "자료 부족"
     elif rule == "report":
-        verdict = "문턱 대기(pilot 뒤)"
+        verdict = "보고만(판정 없음)"
     elif within is not None:
         verdict = "틀림" if outside else "맞음"
     else:
@@ -473,7 +473,7 @@ def _build_A(d, *, live=True, bad_data=False, refuse_ff=False, reg_bad=False, ff
     raw, reg, cost = os.path.join(d, "raw"), os.path.join(d, "reg"), os.path.join(d, "cost_selftest")
     W = [(1, 1, 0), (1, 1, 0), (1, 1, 0)]
     dead = lambda: {r: [(3.0, "host:1:1 [0] NCCL WARN GIN/TS: rank %d: peer 3 judged dead (FIN without a goodbye)" % r),
-                        (7.5, "host:1:1 [0] NCCL WARN GIN/RS: rank %d: hold peer=3 published epoch=4" % r),
+                        (3.4, "host:1:1 [0] NCCL WARN GIN/RS: rank %d: hold peer=3 published epoch=4" % r),
                         (0.5, "host:1:1 [0] NCCL WARN GIN/RS: rank 3: checkpoint 100 stable"),
                         (0.6, "host:1:1 [0] NCCL WARN GIN/RS: rank %d: suppress peer=3 ctx=%d budget=2 suppressed=2" % (r, r))]
                     for r in (0, 1, 2)}
@@ -562,7 +562,7 @@ def _within_cases(fails):
     if v != "맞음":
         fails.append("within/a better arm: got %r" % v)
     v, _ = cost_eval({"id": "r", "cells": "cost:log:on", "acceptance": "cost: rule=report"}, _within_rows(1.5), cells)
-    if v != "문턱 대기(pilot 뒤)":
+    if v != "보고만(판정 없음)":
         fails.append("within/report stays report: got %r" % v)
 
 
@@ -584,8 +584,10 @@ def selftest():
                     "kill_other", "nospare_failfast", "spare_absent_fallback", "control_degraded", "none_clean", "strict_forced", "strict_notforced",
                     "refuse_reason", "regression_none", "regression_kill3", "cost_ff", "refuse_nomacro_clean"):
             expect("A/" + pid, vA.get(pid), "맞음")
-        expect("A/cost_log", vA.get("cost_log"), "문턱 대기(pilot 뒤)")
-        expect("A/cost_unarmed", vA.get("cost_unarmed"), "문턱 대기(pilot 뒤)")
+        # pre-registered 2026-10-13: cost_log (on) and cost_unarmed (ua-hold) are within:10, cost_checksum is reported only
+        expect("A/cost_log", vA.get("cost_log"), "맞음")
+        expect("A/cost_unarmed", vA.get("cost_unarmed"), "맞음")
+        expect("A/cost_checksum", vA.get("cost_checksum"), "보고만(판정 없음)")
         # B: not integrated (the Step hook never ran; no library lines): the kill cells are 자료 부족, the library-column
         # predictions too; strict, refusal, regression and the hk control without its library lines as stated
         dB = tempfile.mkdtemp(prefix="rs_self_B_")
