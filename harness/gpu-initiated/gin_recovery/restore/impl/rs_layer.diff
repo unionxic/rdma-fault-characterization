@@ -2164,7 +2164,7 @@ index f2149a2..3795828 100644
  } // end extern "C"
  #endif
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 2760d43..d72dba5 100644
+index 2760d43..6864b92 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -6,6 +6,7 @@
@@ -7884,13 +7884,9 @@ index 2760d43..d72dba5 100644
 +// cell rs4_kill3_ckpt, EXPERIMENT.md 12). Read once. At the start of each of this rank's checkpoints, right after
 +// CKPT_PAUSE went to every peer (they pause their sends to this rank for that checkpoint), and only while the arm file
 +// exists and this rank already sent at least one stable checkpoint as armable (its peers are armed for it): wait <us>
-+// microseconds, print one WARN line and SIGKILL this process. Unset: nothing happens. It runs only in the hold's checkpoint
-+// machine (a process that asks for the restore); no device code.
-+struct gdakiCkptTestDieCfg {
-+  bool on = false;
-+  char arm[512] = {0};
-+  int us = 0;
-+};
++// microseconds, print one WARN line, shut its helper sockets for writing (a FIN to every peer), SIGKILL this process.
++// Unset: nothing. Only the hold's checkpoint machine (a process that asks for the restore) runs it; no device code.
++struct gdakiCkptTestDieCfg { bool on = false; char arm[512] = {0}; int us = 0; };
 +static const struct gdakiCkptTestDieCfg& gdakiCkptTestDieOf() {
 +  static const struct gdakiCkptTestDieCfg c = [] {
 +    struct gdakiCkptTestDieCfg v;
@@ -7922,6 +7918,10 @@ index 2760d43..d72dba5 100644
 +       (unsigned long long)ck->nStable.load(std::memory_order_relaxed), gdakiQ4MonoMs());
 +  fflush(stdout);
 +  fflush(stderr);
++  // re-pilot on set i4: the wait leaves peers' records unread here; a socket closed with unread data sends a reset,
++  // which hk reads as unknown (ECONNRESET; the death took 1 s). FIN first (the helper owns these sockets).
++  for (auto& pe : r->ts->peers)
++    if (pe.fd >= 0) (void)shutdown(pe.fd, SHUT_WR);
 +  kill(getpid(), SIGKILL);
 +}
 +#endif
