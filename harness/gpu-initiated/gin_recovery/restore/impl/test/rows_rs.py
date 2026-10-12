@@ -37,9 +37,14 @@ Library-provided columns (assumed line patterns, impl/notes_test.md; empty until
   ckpt_before     the killed rank's "GIN/RS: rank R: checkpoint K stable" line for the spare's resume step K arrived
                   before the kill line (the checkpoint-pause cell)
   ckpt_stable_before_kill  1/0 any such stable line of the killed rank before the kill (section 8 exclusion when 0)
-  fallback_ok     every survivor released (r)estore_ms + 2000-2500 ms after t_dead and a "GIN/RS: ... fallback" line
+  hold_started    survivor "GIN/RS: rank R: hold of rank P started" lines (the host branch's hold start)
+  nospare_failfast_ok  no spare registered: hold_started = 0, a decline line, degraded_release = 1 (the hk reaction)
+  hold_to_fallback_ms  the first hold-start line -> the first "the restore of rank P (incarnation I) is given up" line
+  spare_absent_ok spare registered but absent: hold start and fallback lines, hold_to_fallback_ms 500-1500 (draft "about
+                  1 s"), every survivor released 2000-2500 ms after the fallback (empty when neither line exists)
+  spare_killed_first  the spare-absent cell: the spare's recorded-PID kill line arrived before the rank's kill line
   degraded_release every survivor released 2000-2500 ms after t_dead (the hk control)
-  restore_count   "GIN/RS: ... restored rank=" lines
+  restore_count   "GIN/RS: rank R: rank P restored as incarnation" lines
   ckpt_pause_ms   the largest "GIN/RS: rank R: ... input pause ... pause_us=U" over survivors, in ms
 The spare and the trial (meta and the spare's stamped lines; the spare branch's pilot items):
   spare_start_fail  a spare was wanted and did not start, never printed "GINRS spare_ready", or failed its init (section 8:
@@ -58,7 +63,8 @@ Cost trial: metric, arm, rx, lib, value (lat: lat_p50_us; bw: burst_K x bytes / 
 import argparse, csv, glob, os, re
 
 KVTOK = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)")
-LIBCOLS = ["t_dead", "suppress_ok", "restore_time_ms", "ckpt_before", "ckpt_stable_before_kill", "fallback_ok",
+LIBCOLS = ["t_dead", "suppress_ok", "restore_time_ms", "ckpt_before", "ckpt_stable_before_kill", "hold_to_fallback_ms",
+           "spare_absent_ok",
            "degraded_release", "restore_count", "ckpt_pause_ms"]
 RS_COLS = ["id", "stem", "sub", "key", "cell", "build", "runner", "tnum", "n", "void", "applied", "config_ok",
            "restore_live", "kill_rank", "spare", "surv_released", "surv_async", "surv_unfinished", "decline_n",
@@ -66,7 +72,7 @@ RS_COLS = ["id", "stem", "sub", "key", "cell", "build", "runner", "tnum", "n", "
            "strict_forced", "strict_notforced", "strict_bad", "steps", "wall_s"] + LIBCOLS + \
           ["spare_start_fail", "foreign_gpu", "spare_replay_ms", "spare_activate_ms", "spare_peer_before",
            "spare_peer_after", "spare_uds_own", "spare_uds_other", "strace_known", "neg_cut_failed", "neg_field_failed",
-           "neg_peer_connects"] + \
+           "neg_peer_connects", "hold_started", "nospare_failfast_ok", "spare_killed_first"] + \
           ["metric", "arm", "rx", "lib", "value", "exit0", "exit1", "win0", "win1", "tx_done", "iters", "cost_valid"]
 DECLINE = re.compile(r"GIN/TS: declined rank=|why=(declined|peer-dead|degraded)")
 DEAD = re.compile(r"judged dead")
@@ -74,8 +80,10 @@ WINREP = re.compile(r"GIN/RS: window MR rank=\d+ .*?\bstrict=(\d+) forced=(\d+) 
 SUPPRESS = re.compile(r"GIN/RS: rank \d+: suppress .*\bbudget=(\d+) .*\bsuppressed=(\d+)")
 PUBLISHED = re.compile(r"GIN/RS: rank \d+: .*\bpublished\b")
 STABLE = re.compile(r"GIN/RS: rank (\d+): checkpoint (\d+) stable")
-FALLBACK = re.compile(r"GIN/RS: .*\bfallback\b")
-RESTORED = re.compile(r"GIN/RS: .*\brestored rank=")
+# the host branch's lines (impl/rs_layer_host.diff): the hold start of a survivor, the restore given up (FALLBACK), restored
+HOLD_START = re.compile(r"GIN/RS: rank \d+: hold of rank \d+ started")
+FALLBACK = re.compile(r"GIN/RS: rank \d+: the restore of rank \d+ \(incarnation \d+\) is given up")
+RESTORED = re.compile(r"GIN/RS: rank \d+: rank \d+ restored as incarnation")
 PAUSE = re.compile(r"GIN/RS: rank \d+: .*input pause .*\bpause_us=(\d+)")
 RELEASED = re.compile(r"GINRS step rank=(\d+) step=\d+ released=1")
 SPARE_START = re.compile(r"GINRS start rank=\d+ mode=spare")
@@ -248,14 +256,22 @@ def rs_row(stem, sub):
         ts = [t for t, l in logs[r] if t is not None and RELEASED.search(l)]
         if ts:
             rel_t[r] = min(ts)
-    fallback_ok = degraded_release = ""
+    degraded_release = ""
+    all_rel = len(rel_t) == len(surv) and bool(surv)
     if t_dead is not None:
-        delays = [(rel_t[r] - t_dead) * 1000.0 for r in surv if r in rel_t]
-        all_rel = len(delays) == len(surv) and bool(surv)
-        rms = num(meta, "restore_ms", 20000) or 20000
-        has_fb = any(FALLBACK.search(l) for _, l in sl)
-        fallback_ok = int(all_rel and has_fb and all(rms + 2000 <= d <= rms + 2500 for d in delays))
-        degraded_release = int(all_rel and all(2000 <= d <= 2500 for d in delays))
+        degraded_release = int(all_rel and all(2000 <= (rel_t[r] - t_dead) * 1000.0 <= 2500 for r in surv))
+    # the no-spare split (supervisor decision 2026-10-12; draft windows, the host branch states the exact rule):
+    # (1) no spare registered: never armed, no hold start, a decline line, degraded release 2000-2500 ms after the death
+    # (2) spare registered but absent: a hold start, the fallback about 1 s after it (draft 500-1500 ms), then every
+    #     survivor released 2000-2500 ms after the fallback
+    hold_started = sum(1 for _, l in sl if HOLD_START.search(l))
+    nospare_failfast_ok = int(hold_started == 0 and decl > 0 and degraded_release == 1)
+    t_hold, t_fb = first_t(sl, HOLD_START), first_t(sl, FALLBACK)
+    hold_to_fallback_ms = round((t_fb - t_hold) * 1000.0, 1) if (t_hold is not None and t_fb is not None) else ""
+    spare_absent_ok = ""
+    if t_hold is not None or t_fb is not None:
+        spare_absent_ok = int(t_hold is not None and t_fb is not None and 500.0 <= hold_to_fallback_ms <= 1500.0 and
+                              all_rel and all(2000 <= (rel_t[r] - t_fb) * 1000.0 <= 2500 for r in surv))
     rcount = sum(1 for _, l in sl + slog if RESTORED.search(l))
     pauses = [int(m.group(1)) for _, l in sl for m in [PAUSE.search(l)] if m]
     ckpt_pause_ms = round(max(pauses) / 1000.0, 3) if pauses else ""
@@ -267,7 +283,9 @@ def rs_row(stem, sub):
             "reason_same": reason_same, "ff_fallthrough": ff_fallthrough, "strict_forced": sf,
             "strict_notforced": snf, "strict_bad": sbad, "steps": steps, "wall_s": meta.get("wall_s", ""),
             "t_dead": "" if t_dead is None else t_dead, "suppress_ok": suppress_ok, "restore_time_ms": restore_time_ms,
-            "ckpt_before": ckpt_before, "ckpt_stable_before_kill": ckpt_stable_before_kill, "fallback_ok": fallback_ok,
+            "ckpt_before": ckpt_before, "ckpt_stable_before_kill": ckpt_stable_before_kill,
+            "hold_started": hold_started, "nospare_failfast_ok": nospare_failfast_ok,
+            "hold_to_fallback_ms": hold_to_fallback_ms, "spare_absent_ok": spare_absent_ok,
             "degraded_release": degraded_release, "restore_count": rcount if (rcount or restore_live) else 0,
             "ckpt_pause_ms": ckpt_pause_ms}
     base.update(spare_cols(stem, meta, sk, slog, t_kill))
@@ -286,6 +304,11 @@ def spare_cols(stem, meta, sk, slog, t_kill):
     ready = meta.get("spare_ready") == "1"
     init_bad = any((num(sk, k, 0) or 0) != 0 for k in ("init_rc", "reg_rc", "devcomm_rc"))
     out = {"spare_start_fail": int(wanted and (not started or not ready or init_bad)) if wanted else 0}
+    if meta.get("spare_kill_first") == "1":
+        tk = [t for t, l in stamped(stem + "_spare_kill.out") if t is not None and "GINRS killed" in l]
+        out["spare_killed_first"] = int(bool(tk) and (t_kill is None or min(tk) < t_kill))
+    else:
+        out["spare_killed_first"] = ""
     apps = meta.get("gpu_apps_before", "")
     out["foreign_gpu"] = int(any(x not in ("", "0") for x in apps.split("/"))) if apps else ""
     t0 = first_t(slog, SPARE_START)

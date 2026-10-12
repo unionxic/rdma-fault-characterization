@@ -35,8 +35,14 @@
   가정)의 hook에 들어간 뒤 300 µs에 자기에게 SIGKILL(입력 멈춤 중). kill 앞에 확정된 체크포인트에서 복원(`ckpt_kill`).
   pilot은 그 단계가 실제로 체크포인트를 찍는지와 멈춤이 300 µs보다 긴지를 라이브러리의 체크포인트 줄로 확인한다.
 - `rs4_kill1` (@rs, 통합 뒤): rank 1(rank 3과 같은 GPU) kill도 같은 결과(`kill_other`).
-- `rs4_kill3_nospare` (@rs, 통합 뒤): 예비 프로세스 주소는 등록하고 프로세스는 없음. 대기가 복원 시한 + 2000–2500 ms
-  안에 오류로 풀리고 fallback 줄이 있다(`fallback_nospare`).
+- 예비 프로세스가 없는 경우는 두 셀로 나눈다(2026-10-12 메인 세션 결정; 앞의 초안 셀 하나를 대신함).
+  - `rs4_kill3_nospare` (@rs): 예비 프로세스를 등록하지 않음. 그 rank는 무장되지 않아 hk와 같은 fail-fast다: hold 시작 줄이
+    없고, 거절 줄이 있고, 생존 rank의 대기가 죽음 판정 + 2000–2500 ms 안에 degraded로 풀린다(`nospare_failfast`). 무장이
+    필요 없으므로 통합 전에도 잰다.
+  - `rs4_kill3_spareabsent` (@rs, 통합 뒤): 예비 프로세스를 등록하고 준비시킨 뒤, rank 3보다 먼저 기록한 PID로 끈다
+    (활성화 전에 없음). 생존 rank는 붙잡았다가 hold 시작 뒤 약 1 s(초안 500–1500 ms)에 fallback하고, 그 뒤 2000–2500 ms
+    안에 대기가 degraded로 풀린다(`spare_absent_fallback`). 시각은 host 브랜치의 줄(`hold of rank P started`, `the restore
+    of rank P ... is given up`)과 GINRS 풀림 줄의 수신 시각으로 잰다. 예비 프로세스가 rank보다 먼저 꺼지지 않은 시행은 뺀다.
 - `rs4_kill3` (@hk): 복원이 없는 빌드(`gin_rs_hk`, hk 헤더). 생존 rank의 대기가 죽음 판정 + 2000–2500 ms 안에 degraded로
   풀린다(`control_degraded`). 통합과 상관없이 돈다.
 - `rs4_refuse_symgin`, `rs4_refuse_gintype`(GIN 종류 proxy = 2), `rs4_refuse_restoreoff1` (@rs): 모든 rank의 Resume이
@@ -67,7 +73,8 @@
 - 복원 시간 문턱 T: 초안 10000 ms. pilot의 복원 단계별 시각(죽음 판정 → 활성화 → 초기화 재생 → 상태 적용 → 재연결 →
   게이트 재개)을 보고 고정한다.
 - 입력 멈춤 문턱: 초안 5 ms. `rs4_none`의 체크포인트마다 멈춤 시간을 보고 고정한다.
-- fallback 창: 복원 시한 + 2000–2500 ms. `rs4_kill3_nospare`의 실제 풀림 시각을 보고 고정한다.
+- fallback 창: 초안은 hold 시작 → fallback 500–1500 ms, fallback → 풀림 2000–2500 ms, 등록 없음은 죽음 판정 → 풀림
+  2000–2500 ms. host 브랜치가 `notes_host.md`에 적을 정확한 규칙과 pilot의 실제 시각을 보고 고정한다.
 - kill 시점: 예비 프로세스가 있는 kill 셀은 rank 0이 출발 문에서 예비 프로세스의 준비를 기다린 뒤 시작한다. 준비 뒤 100단계
   이상 + 500 µs(정상 중), 체크포인트 hook 안 300 µs(멈춤 중). 단계 600개,
   단계 사이 쉼 5000 µs. pilot에서 예비 프로세스의 준비 시간과 kill이 traffic 안에 떨어지는지 보고 고정한다.

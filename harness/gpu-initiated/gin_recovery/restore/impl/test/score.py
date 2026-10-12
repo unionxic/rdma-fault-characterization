@@ -10,8 +10,8 @@ Steps (EXPERIMENT.md 3 and 8), as ../../../../gpu-detect/score.py (master) does:
      Regression rows get gin-remaining's own columns (its score.py imported as a library, unchanged: rows_of, extra_pq4,
      extra_hr4) and its status4 for the cell they repeat (cells_rs.json regression_orig), with the build checked as hr
      and the driver as hr: our gin_mr is gin-remaining's gin_mr.cu unchanged, built against this layer's headers.
-  2. a status per trial: scored, or an exclusion of section 8 (void, not_applied, spare_start_fail, config, foreign_gpu,
-     kill_before_ckpt), or
+  2. a status per trial: scored, or an exclusion of section 8 (void, not_applied, spare_start_fail, spare_not_killed,
+     config, foreign_gpu, kill_before_ckpt), or
      restore_not_live (the cells that need the restore reaction, while the library layer is not integrated), or surplus.
      Excluded trials are not refilled by the scorer (the hold refills them, section 8).
   3. per key cell@build the first PLANNED candidates by trial number are scored. A prediction is "자료 부족" when a cell
@@ -39,13 +39,15 @@ import rows_rs  # noqa: E402
 
 CELLS = os.path.join(HERE, "cells_rs.json")
 PREDS = os.path.join(HERE, "predictions_rs.csv")
-NEEDS_LIVE = {"rs4_kill3", "rs4_kill3_ckpt", "rs4_kill1", "rs4_kill3_nospare"}  # @rs: the restore reaction must be live
+# @rs: the restore reaction must be live (rs4_kill3_nospare is not here: no spare registered, never armed, hk's reaction)
+NEEDS_LIVE = {"rs4_kill3", "rs4_kill3_ckpt", "rs4_kill1", "rs4_kill3_spareabsent"}
 LIB_COLS = set(rows_rs.LIBCOLS)
 EXCL = {"void": "시작 실패(생존 rank가 교환 전에 끝남)", "not_applied": "장애 미적용(kill 기록 없음)",
         "config": "설정 확인 실패(셀이 요구한 정책/복원 설정 아님)",
         "restore_not_live": "복원 계층 미통합(Step hook이 실행되지 않음; 통합 뒤에만 채점)",
         "kill_before_ckpt": "kill이 첫 확정 체크포인트 전", "spare_start_fail": "예비 프로세스가 활성화 전에 시작에 실패함",
-        "foreign_gpu": "시행 시작 때 GPU에 다른 프로세스", "cost_invalid": "비용 실행 무효(오류, 값 없음, win_flags나 tx_done이 다름)",
+        "foreign_gpu": "시행 시작 때 GPU에 다른 프로세스",
+        "spare_not_killed": "예비 프로세스가 rank보다 먼저 꺼지지 않음(예비 프로세스 없음 셀)", "cost_invalid": "비용 실행 무효(오류, 값 없음, win_flags나 tx_done이 다름)",
         "surplus": "계획 수를 넘은 시행"}
 EXCL.update(getattr(rem, "EXCL_LABEL", {}))
 
@@ -86,6 +88,8 @@ def status_rs(r):
         return "not_applied"
     if str(r.get("spare_start_fail")) == "1":
         return "spare_start_fail"  # section 8: the spare failed to start before its activation (counted apart)
+    if str(r.get("spare_killed_first")) == "0":
+        return "spare_not_killed"  # the spare-absent cell: the spare was not killed before its rank died
     if int(r.get("config_ok") or 0) == 0:
         return "config"
     if str(r.get("foreign_gpu")) == "1":
@@ -285,7 +289,7 @@ GOOD = dict(init_rc=0, reg_rc=0, devcomm_rc=0, resume_rc=0, resume_why="none", s
 
 def _rs(d, cell, build, k, *, kill=None, spare=False, spare_addr=False, policy="hold", restore="1", live=True,
         surv=None, sp=None, refuse=None, ff_rank=None, win=None, lib_lines=None, t0=100.0, spare_fail=False, gpu="0/0",
-        negs=(), neg_ok=True, strace=None):
+        negs=(), neg_ok=True, strace=None, spare_kill=None):
     """one synthetic restore trial in the run_rs.sh format (stamped logs, kv, meta)"""
     os.makedirs(d, exist_ok=True)
     stem = os.path.join(d, "%s_%s_n%d" % (cell, build, k))
@@ -294,7 +298,8 @@ def _rs(d, cell, build, k, *, kill=None, spare=False, spare_addr=False, policy="
         rcs[kill] = 137
     meta = dict(cell=cell, lib=build, n=4, policy=policy, restore=restore, kill_rank=("" if kill is None else kill),
                 spare=int(spare), spare_wanted=int(spare), spare_ready=int(spare and not spare_fail), gpu_apps_before=gpu,
-                spare_addr_set=int(spare or spare_addr), restore_ms=20000, runner="rsr", wall_s=5.0, negs=",".join(negs))
+                spare_addr_set=int(spare or spare_addr), restore_ms=20000, runner="rsr", wall_s=5.0, negs=",".join(negs),
+                spare_kill_first=int(spare_kill is not None))
     meta.update({"r%drc" % r: rcs[r] for r in range(4)})
     _w(stem + "_meta.txt", _kvline(**meta))
     for r in range(4):
@@ -317,6 +322,8 @@ def _rs(d, cell, build, k, *, kill=None, spare=False, spare_addr=False, policy="
         _w(stem + "_r%d.log" % r, "\n".join(lines) + "\n")
     if kill is not None:
         _w(stem + "_kill.out", "%.6f GINRS killed rank=%d node=sunny pid=999\n" % (t0 + 2.001, kill))
+    if spare_kill is not None:  # the spare's recorded-PID kill, spare_kill seconds after t0
+        _w(stem + "_spare_kill.out", "%.6f GINRS killed rank=%d node=sunny pid=998\n" % (t0 + spare_kill, kill))
     if spare:
         skv = dict(GOOD, rank=kill, mode="spare", resume_step=100, revived=1, start_step=101, rs_hooks_live=1)
         if sp:
@@ -385,7 +392,7 @@ def _all_cost(d, ffb_sep=False):
                 _cost(d, m, "ffb-rs", node, k, round(base + (1.0 if ffb_sep else 0.001) * k, 4))
 
 
-def _build_A(d, *, live=True, bad_data=False, refuse_ff=False, reg_bad=False, ffb_sep=False):
+def _build_A(d, *, live=True, bad_data=False, refuse_ff=False, reg_bad=False, ffb_sep=False, slow_fb=False):
     raw, reg, cost = os.path.join(d, "raw"), os.path.join(d, "reg"), os.path.join(d, "cost_selftest")
     W = [(1, 1, 0), (1, 1, 0), (1, 1, 0)]
     dead = lambda: {r: [(3.0, "host:1:1 [0] NCCL WARN GIN/TS: rank %d: peer 3 judged dead (FIN without a goodbye)" % r),
@@ -400,10 +407,18 @@ def _build_A(d, *, live=True, bad_data=False, refuse_ff=False, reg_bad=False, ff
         _rs(raw, "rs4_kill3_ckpt", "rs", k, kill=3, spare=True, live=live, lib_lines=dead())
         _rs(raw, "rs4_kill1", "rs", k, kill=1, spare=True, live=live,
             lib_lines={r: [(0.5, "GIN/RS: rank 1: checkpoint 100 stable")] for r in (0, 2, 3)})
-        fb = {r: [(3.0, "GIN/TS: rank %d: peer 3 judged dead" % r), (25.3, "GIN/RS: rank %d: hold peer=3 fallback why=no spare" % r),
-                  (25.3, "GINRS step rank=%d step=120 released=1 got=1 want=2" % r), (0.5, "GIN/RS: rank 3: checkpoint 100 stable")]
-              for r in (0, 1, 2)}
-        _rs(raw, "rs4_kill3_nospare", "rs", k, kill=3, spare=False, spare_addr=True, live=live,
+        # no spare registered: never armed, no hold start, the decline and the degraded release 2.3 s after the death
+        nsp = {r: [(3.0, "GIN/TS: rank %d: peer 3 judged dead" % r), (3.0, "GIN/TS: declined rank=3 why=peer-dead" % ()),
+                   (5.3, "GINRS step rank=%d step=120 released=1 got=1 want=2" % r)] for r in (0, 1, 2)}
+        _rs(raw, "rs4_kill3_nospare", "rs", k, kill=3, live=live, surv=dict(released=1, steps_done=120), lib_lines=nsp)
+        # a spare registered but absent: hold start, the fallback 1.0 s later, the release 2.3 s after the fallback
+        fb = {r: [(3.0, "GIN/TS: rank %d: peer 3 judged dead" % r),
+                  (3.01, "GIN/RS: rank %d: hold of rank 3 started: gates odd since 0.4 ms before the start" % r),
+                  (4.01, "GIN/RS: rank %d: the restore of rank 3 (incarnation 1) is given up (no spare) in state HELD" % r),
+                  (6.31 + 0.01 * r * (1 if slow_fb else 0) + (1.5 if slow_fb else 0.0),
+                   "GINRS step rank=%d step=120 released=1 got=1 want=2" % r),
+                  (0.5, "GIN/RS: rank 3: checkpoint 100 stable")] for r in (0, 1, 2)}
+        _rs(raw, "rs4_kill3_spareabsent", "rs", k, kill=3, spare=True, live=live, spare_kill=1.5,
             surv=dict(released=1, steps_done=120), lib_lines=fb)
         _rs(raw, "rs4_none", "rs", k, live=live, win=W,
             lib_lines={r: [(1.0, "GIN/RS: rank %d: checkpoint 20 input pause peer=0 pause_us=2300" % r)] for r in range(4)})
@@ -440,7 +455,7 @@ def selftest():
         _build_A(dA)
         vA = score(dA)
         for pid in ("wait_held", "data_equal", "no_reexec", "revived_done", "suppress_exact", "restore_time", "ckpt_kill",
-                    "kill_other", "fallback_nospare", "control_degraded", "none_clean", "strict_forced", "strict_notforced",
+                    "kill_other", "nospare_failfast", "spare_absent_fallback", "control_degraded", "none_clean", "strict_forced", "strict_notforced",
                     "refuse_reason", "regression_none", "regression_kill3", "cost_ff"):
             expect("A/" + pid, vA.get(pid), "맞음")
         expect("A/cost_log", vA.get("cost_log"), "문턱 대기(pilot 뒤)")
@@ -458,18 +473,24 @@ def selftest():
             _rs(raw, "rs4_refuse_symgin", "rs", k, live=False, refuse="r")
             _rs(raw, "rs4_refuse_gintype", "rs", k, live=False, refuse="g")
             _rs(raw, "rs4_refuse_restoreoff1", "rs", k, live=False, refuse="o")
+        for k in range(1, 6):
+            nsp = {r: [(3.0, "GIN/TS: rank %d: peer 3 judged dead" % r), (3.0, "GIN/TS: declined rank=3 why=peer-dead"),
+                       (5.4, "GINRS step rank=%d step=120 released=1 got=1 want=2" % r)] for r in (0, 1, 2)}
+            _rs(raw, "rs4_kill3_nospare", "rs", k, kill=3, live=False, surv=dict(released=1, steps_done=120), lib_lines=nsp)
+            _rs(raw, "rs4_kill3_spareabsent", "rs", k, kill=3, spare=True, live=False, spare_kill=1.5,
+                surv=dict(released=1, steps_done=120), lib_lines=nsp)
         vB = score(dB)
         for pid in ("wait_held", "data_equal", "no_reexec", "revived_done", "suppress_exact", "restore_time", "none_clean",
-                    "regression_none", "cost_ff"):
+                    "regression_none", "cost_ff", "spare_absent_fallback"):
             expect("B/" + pid, vB.get(pid), "자료 부족")
-        for pid in ("strict_forced", "strict_notforced", "refuse_reason"):
+        for pid in ("strict_forced", "strict_notforced", "refuse_reason", "nospare_failfast"):
             expect("B/" + pid, vB.get(pid), "맞음")
         # C: failures are 틀림: a refusal that fell through on one rank, two trials with a bad received slot (10 scored,
         # 8 good < 9), one regression trial with a stuck survivor, a fail-fast branch arm that separates
         dC = tempfile.mkdtemp(prefix="rs_self_C_")
-        _build_A(dC, bad_data=True, refuse_ff=True, reg_bad=True, ffb_sep=True)
+        _build_A(dC, bad_data=True, refuse_ff=True, reg_bad=True, ffb_sep=True, slow_fb=True)
         vC = score(dC)
-        for pid in ("refuse_reason", "data_equal", "regression_kill3", "cost_ff"):
+        for pid in ("refuse_reason", "data_equal", "regression_kill3", "cost_ff", "spare_absent_fallback"):
             expect("C/" + pid, vC.get(pid), "틀림")
         expect("C/wait_held", vC.get("wait_held"), "맞음")
         # D: the parser's rules
@@ -498,6 +519,9 @@ def selftest():
             strace=dict(peer_connect_before_ready=0, peer_connect_after_ready=3, uds_own_rank=2, uds_other_rank=0, rt_known=1))
         rows = {r["id"]: r for r in rows_rs.all_rows(dD)}
         expect("D/spare start failure excluded", status_rs(rows["rs4_kill3_rs_n4"]), "spare_start_fail")
+        _rs(raw, "rs4_kill3_spareabsent", "rs", 1, kill=3, spare=True, spare_kill=2.5)
+        rsa = {r["id"]: r for r in rows_rs.all_rows(dD)}["rs4_kill3_spareabsent_rs_n1"]
+        expect("D/spare killed after its rank is excluded", status_rs(rsa), "spare_not_killed")
         expect("D/foreign GPU app excluded", status_rs(rows["rs4_kill3_rs_n5"]), "foreign_gpu")
         expect("D/refusal in a hold cell is config", status_rs(rows["rs4_none_rs_n2"]), "config")
         expect("D/negatives failed", (rows["rs4_spare_neg_rs_n1"]["neg_cut_failed"], rows["rs4_spare_neg_rs_n1"]["neg_field_failed"]), (1, 1))

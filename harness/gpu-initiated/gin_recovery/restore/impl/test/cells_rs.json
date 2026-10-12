@@ -1,6 +1,6 @@
 {
  "study": "gin-restore",
- "about": "The cells of EXPERIMENT.md 7 (DRAFT: n are the draft counts of section 7, frozen only after the pilot, PILOT.md). Input of hold_rs.sh (what to run) and score.py (planned scored trials per cell@build). kind: rs -> run_rs.sh (the 4-rank restore workload gin_rs), reg -> ../../../remaining/run_mr_hr.sh (gin-remaining's 4-rank runner, the regression cells). build: rs (restore research, ~/rs-bundle/lib/rs), hk (gpu-detect research, ~/gi-bundle/gin_ts2/hk, read only: the no-restore control). env: the cell's runner variables (each value one argument; spaces kept). Pilot holds (P*) are never scored; P3 holds the spare's pilot checks (its strace, the two negative replays), cells named by description, not section-7 cells. The cost cells are in 'cost' (run_cost.sh through hold_rs.sh's interleave). Cell names keep the search keys of sections 3 and 7.",
+ "about": "The cells of EXPERIMENT.md 7 (DRAFT: n are the draft counts of section 7, frozen only after the pilot, PILOT.md). Input of hold_rs.sh (what to run) and score.py (planned scored trials per cell@build). kind: rs -> run_rs.sh (the 4-rank restore workload gin_rs), reg -> ../../../remaining/run_mr_hr.sh (gin-remaining's 4-rank runner, the regression cells). build: rs (restore research, ~/rs-bundle/lib/rs), hk (gpu-detect research, ~/gi-bundle/gin_ts2/hk, read only: the no-restore control). env: the cell's runner variables (each value one argument; spaces kept). Pilot holds (P*) are never scored; P3 holds the spare's pilot checks (its strace, the two negative replays), cells named by description, not section-7 cells. The cost cells are in 'cost' (run_cost.sh through hold_rs.sh's interleave). Cell names keep the search keys of sections 3 and 7. The draft cell of the no-spare fallback is split (supervisor decision, 2026-10-12): rs4_kill3_nospare = no spare registered (never armed: the fail-fast reaction as hk) and rs4_kill3_spareabsent = a spare registered, ready, then killed by its recorded PID before the rank dies (hold, then fallback).",
  "holds": {
   "P1": [
    {"cell": "rs4_none", "build": "rs", "kind": "rs", "n": 1, "env": {"CKPT_STEPS": "20"}},
@@ -8,7 +8,8 @@
    {"cell": "rs4_kill3", "build": "rs", "kind": "rs", "n": 1, "env": {"KILL_RANK": "3", "SPARE": "1", "CKPT_STEPS": "20"}},
    {"cell": "rs4_kill3_ckpt", "build": "rs", "kind": "rs", "n": 1, "env": {"KILL_RANK": "3", "SPARE": "1", "KILL_IN_HOOK": "1", "CKPT_STEPS": "20"}},
    {"cell": "rs4_kill1", "build": "rs", "kind": "rs", "n": 1, "env": {"KILL_RANK": "1", "SPARE": "1", "CKPT_STEPS": "20"}},
-   {"cell": "rs4_kill3_nospare", "build": "rs", "kind": "rs", "n": 1, "env": {"KILL_RANK": "3", "SPARE": "0", "SPARE_ADDR": "1", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3_nospare", "build": "rs", "kind": "rs", "n": 1, "env": {"KILL_RANK": "3", "SPARE": "0", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3_spareabsent", "build": "rs", "kind": "rs", "n": 1, "env": {"KILL_RANK": "3", "SPARE": "1", "SPARE_KILL_FIRST": "1", "CKPT_STEPS": "20"}},
    {"cell": "rs4_kill3", "build": "hk", "kind": "rs", "n": 1, "env": {"KILL_RANK": "3", "FAULT_POLICY": "failfast", "RESTORE": "0"}},
    {"cell": "rs4_refuse_symgin", "build": "rs", "kind": "rs", "n": 1, "env": {"SYM_GIN": "1"}},
    {"cell": "rs4_refuse_gintype", "build": "rs", "kind": "rs", "n": 1, "env": {"GIN_TYPE": "2"}},
@@ -30,7 +31,8 @@
    {"cell": "rs4_kill3", "build": "rs", "kind": "rs", "n": 10, "env": {"KILL_RANK": "3", "SPARE": "1", "CKPT_STEPS": "20"}},
    {"cell": "rs4_kill3_ckpt", "build": "rs", "kind": "rs", "n": 5, "env": {"KILL_RANK": "3", "SPARE": "1", "KILL_IN_HOOK": "1", "CKPT_STEPS": "20"}},
    {"cell": "rs4_kill1", "build": "rs", "kind": "rs", "n": 5, "env": {"KILL_RANK": "1", "SPARE": "1", "CKPT_STEPS": "20"}},
-   {"cell": "rs4_kill3_nospare", "build": "rs", "kind": "rs", "n": 5, "env": {"KILL_RANK": "3", "SPARE": "0", "SPARE_ADDR": "1", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3_nospare", "build": "rs", "kind": "rs", "n": 5, "env": {"KILL_RANK": "3", "SPARE": "0", "CKPT_STEPS": "20"}},
+   {"cell": "rs4_kill3_spareabsent", "build": "rs", "kind": "rs", "n": 5, "env": {"KILL_RANK": "3", "SPARE": "1", "SPARE_KILL_FIRST": "1", "CKPT_STEPS": "20"}},
    {"cell": "rs4_kill3", "build": "hk", "kind": "rs", "n": 5, "env": {"KILL_RANK": "3", "FAULT_POLICY": "failfast", "RESTORE": "0"}}
   ],
   "G2": [

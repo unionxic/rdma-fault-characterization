@@ -15,6 +15,7 @@
 | 2026-10-12 | 재검토(같은 모델의 읽기 전용 에이전트): 첫 검토의 막는 문제 열하나는 모두 풀림. 새 막는 문제 셋: 활성화되지 않은 예비 프로세스의 watchdog이 STOP_nic를 씀, 8절의 "예비 프로세스가 활성화 전에 시작에 실패함" 제외가 없음, 복원을 기대하는 셀의 Resume 거절이 "틀림"으로 셈. 모두 반영: 오류 키는 살아 있는 rank의 kv에서만 보고 예비 프로세스의 watchdog은 `spare_wait.txt`에 적기만; `spare_start_fail` 제외(meta `spare_wanted`, `spare_ready`); 그런 거절은 설정 실패로 빼고 hold는 STOP_nic. 막지 않는 것도 반영: 시행 한도 240 s, 되살림 조건을 예비 프로세스와 덩어리로, kill 셀의 생존 rank는 abort 전 3000 ms 기다림, hold 고리의 입력을 fd 3으로, 비용 실행의 유효성(win_flags 0x3, tx_done = 반복 수), 시행 시작 때 GPU의 다른 프로세스(`foreign_gpu` 제외). 회귀 판정은 gpu-detect처럼 RG9의 꼴(gin-remaining DG1과 DG3)이고 DG2, DG4는 넣지 않음 | `[시험함]` 자체 시험 통과 |
 | 2026-10-12 | 메인 세션이 전한 예비 프로세스 브랜치(작업 묶음 8)의 요구: 모든 프로세스 `NCCL_GIN_Q4_QPWATCH_MS=0`(실행기 셋 모두); 예비 프로세스의 env(`NCCL_GIN_RESTORE_SPARE`, 같은 노드의 기록 파일을 `NCCL_GIN_RESTORE_REPLAY`로, `NCCL_GIN_RESTORE_SPARE_PORT`, `NCCL_MULTI_RANK_GPU_ENABLE=1`)는 이미 맞음. pilot 항목 셋을 더함: 4 rank에서 예비 프로세스의 재생과 활성화 시간(`spare_replay_ms`, `spare_activate_ms`), 예비 프로세스의 strace(`SPARE_STRACE=1`: 준비 전후의 상대 connect, 자기 rank와 다른 rank의 proxy UDS를 따로; 원문은 노드에서 셈으로만 바꾸고 지움), 음성 대조 둘(`NEG_REPLAY=1`: 자른 사본, 크기 칸을 바꾼 사본; 9.15.4 B1의 같은 자리). hold `P3`(`rs4_kill3_strace`, `rs4_spare_neg`) | `[빌드됨]`, `[시험함]` 자체 시험 통과(셈 프로그램은 합성 trace로도 시험) |
 | 2026-10-12 | 마지막 확인(같은 모델의 읽기 전용 에이전트): 막는 문제 없음. 메모 반영: 음성 대조의 재생 실패 판정을 예비 프로세스 브랜치의 실제 WARN 줄(잘림, diverged, 쓸 수 없는 기록, 끝 뒤의 호출, 허용 밖의 바이트)로 좁힘(정보 줄 `replay ON`, `replay mark=`은 실패가 아님; 합성 시험 더함); Resume이 덩어리 없이 돌아온 예비 프로세스는 단계 0부터 돌지 않고 abort와 exit 3; kill 셀(예비 프로세스 있음)에서 rank 0이 출발 문(`RS_START_GATE`)에서 예비 프로세스의 준비를 기다리고 barrier가 다른 rank를 붙잡음(느린 재생에 kill이 놓치지 않게), 그래서 그 셀의 watchdog 200 s, hold의 시행 한도 300 s. 남은 pilot 확인: 시행 시작 때의 `foreign_gpu`가 앞 시행의 끝난 프로세스를 세지 않는지, 살아 있는 rank가 끝난 뒤 기록 파일이 남아 음성 대조가 도는지 | `[빌드됨]` gin_rs `db13fb7e`, gin_rs_hk `a42374bc`(경고 0), `[시험함]` 자체 시험 통과 |
+| 2026-10-12 | 메인 세션 결정(초안, 사전 등록 전): 예비 프로세스 없음 셀을 둘로 나눔. (1) `rs4_kill3_nospare`, 예측 `nospare_failfast`: 예비 프로세스를 등록하지 않음(`NCCL_GIN_RESTORE_SPARE_ADDR` 없음) → 무장되지 않음 → hk와 같은 fail-fast(hold 시작 줄 없음, 거절 줄, 죽음 판정 + 2000–2500 ms에 degraded로 풀림); 무장이 필요 없어 통합 전에도 채점. (2) `rs4_kill3_spareabsent`, 예측 `spare_absent_fallback`: 예비 프로세스를 등록하고 준비시킨 뒤 rank 3보다 먼저 기록한 PID로 끔(`SPARE_KILL_FIRST=1`) → hold → hold 시작 뒤 약 1 s(초안 500–1500 ms)에 fallback → 그 뒤 2000–2500 ms에 degraded로 풀림. 시각 열 `hold_to_fallback_ms`, `spare_absent_ok`, `nospare_failfast_ok`, `hold_started`; 예비 프로세스가 rank보다 먼저 꺼지지 않으면 제외(`spare_not_killed`). host 브랜치의 실제 줄(`hold of rank P started`, `the restore of rank P (incarnation I) is given up`, `rank P restored as incarnation`)에 맞춤(앞서 가정한 fallback과 복원 줄의 꼴은 틀렸음). 창은 초안이고 host 브랜치가 `notes_host.md`에 적을 규칙과 pilot으로 고정 | `[시험함]` 자체 시험 통과(사례 A 둘 다 맞음, B 등록 없음은 맞음과 등록했으나 없음은 자료 부족, C 늦은 fallback은 틀림, D 늦게 꺼진 예비 프로세스는 제외) |
 | 2026-10-12 | 사전 상태: `impl/test/PILOT.md`(셀마다 pilot이 보일 것, pilot이 고정하는 문턱과 n, 보류 중인 overhead 예산, 메인 세션 명령, 통합 뒤 확인할 것) | 문서 |
 
 ## 통합자에게: 이름과 가정한 줄
@@ -42,9 +43,11 @@
   정한다. `*step`이 체크포인트의 이름이든 다음 단계든 같게 동작한다(kv `revived`, `start_step`, `blob_step`).
 - 가정한 라이브러리 줄(`rows_rs.py`가 읽음; 없으면 그 예측은 자료 부족; 통합 때 실제 줄에 맞춤):
   `GIN/RS: rank R: suppress ... budget=B ... suppressed=S`(억제), `GIN/RS: rank R: ... published`(생존 rank의 게이트 재개),
-  `GIN/RS: rank R: checkpoint K stable`(확정 체크포인트), `GIN/RS: ... fallback`(fallback), `GIN/RS: ... restored rank=`(복원),
-  `GIN/RS: rank R: ... input pause ... pause_us=U`(입력 멈춤). 죽음 판정 줄 `judged dead`와 거절 줄 `GIN/TS: declined rank=`,
-  `why=peer-dead|declined|degraded`는 hk에 이미 있다.
+  `GIN/RS: rank R: checkpoint K stable`(확정 체크포인트),
+  `GIN/RS: rank R: ... input pause ... pause_us=U`(입력 멈춤). host 브랜치에서 확인한 줄: `GIN/RS: rank R: hold of rank P
+  started`(hold 시작), `GIN/RS: rank R: the restore of rank P (incarnation I) is given up`(fallback), `GIN/RS: rank R: rank P
+  restored as incarnation`(복원), `GIN/RS: rank R: restore round with rank P published`(게이트 재개). 죽음 판정 줄 `judged dead`와
+  거절 줄 `GIN/TS: declined rank=`, `why=peer-dead|declined|degraded`는 hk에 이미 있다.
 - 실행기가 모든 rank에 넣는 설정(9.10.8절): GIN 연결 FULL, `NCCL_GIN_NCONNECTIONS=1`, `NCCL_MULTI_RANK_GPU_ENABLE=1`,
   `NCCL_SYM_GIN_KERNELS_ENABLE=0`, `NCCL_RMA_DISABLE=1`, `NCCL_NUM_RMA_CTX=0`, `NCCL_GIN_TYPE=3`, `NCCL_RAS_ENABLE=0`.
 - 셀 이름과 예측 ID는 3절, 7절의 찾는 키를 그대로 쓴다. 회귀 예측은 `regression_none`, `regression_kill3`으로 나눴고 비용
