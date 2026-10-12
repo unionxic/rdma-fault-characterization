@@ -1,0 +1,9 @@
+# gin-restore 사전 등록 (2026-10-13, 태그 prereg/gin-restore-v1)
+# 고정 파일의 sha256. EXPERIMENT.md는 진행 기록이 바뀌므로 태그로 고정한다(2, 3, 7, 8절은 태그 뒤 바뀌지 않아야 함).
+752c832926acf42a18a8b84482cc30119a283c0f6dfe7385894f516dfe26b596  harness/gpu-initiated/gin_recovery/restore/impl/test/predictions_rs.csv
+99b7165c41aa2632c2391e6b41a005bbedbb7a30218e4ffe89801649dd3cfcd5  harness/gpu-initiated/gin_recovery/restore/impl/test/cells_rs.json
+# 본 실행에 쓰는 빌드(배포 묶음 i5; 라이브러리 계층 impl/rs_layer.diff md5 f005bb6794f549377025216599f06293)
+# libnccl.so.2.32.3 md5: rs_i5 4811f28f93294338812d8f83dafa8b61, rsp_i5 be91b270155005827bfa0e79c527165c, hkp 84209c03a497bd28206210205bfc6cf5
+# driver md5: gin_rs 303e812dfd4352769bcac89c8f9451c8, gin_rs_nomacro 0f0826e6546cfdc927df9a9e6b9dc64a, gin_rs_hk 4ec9b84640dc584c1a86f8095023ef33,
+#   gin_ts2 dd44e14ef4af4e5a1200706965b1c771, gin_ts2_ff 5e4db845a693f65fd18341fa2e30eb7d, mr/ff gin_mr 41f3ce3a14923c37d943825034d6467a,
+#   mr/hold gin_mr 169f59c55381c5aa5f6040afd43ba672, ord gin_ts2 64418f216c68bf1f518b25737a7e5c9d
