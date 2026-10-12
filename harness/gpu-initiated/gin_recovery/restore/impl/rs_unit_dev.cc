@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <random>
 #include <string>
@@ -25,6 +26,16 @@
 enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };  // hk's line (build_rs.sh checks the host file has it)
 #include "nccl_device/gin/gdaki/gin_gdaki_device_host_common.h"
 #include "rs_pure.inc"
+// The dev branch's log API block, cut from the host file (the library's text) by build_rs_dev.sh unit: its records and
+// constants for the dev pure region (work package 9); its functions are declared there and never defined here.
+typedef int ncclResult_t;
+#ifndef NCCL_GIN_RECOVERY_MAX_QPS
+#define NCCL_GIN_RECOVERY_MAX_QPS 64  // nccl.h.in
+#endif
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#include "rs_dev_api.inc"
+#pragma GCC diagnostic pop
 #include "rs_dev_pure.inc"
 
 static int nChecks = 0, nFail = 0;
@@ -1102,13 +1113,14 @@ struct LogModel {
   uint64_t head = 0, tail = 0;
   std::vector<uint64_t> slot;  // identity words
   std::vector<uint8_t> logOn;
-  std::vector<uint64_t> ovf, gets;
+  std::vector<uint64_t> ovf, gets, msgs;  // msgs: every post (logged or not), as the device's count
   struct Post { uint64_t pos; int qp; bool written; };
   std::vector<Post> posts;      // every logged post, by position
   LogModel(int r, int c, uint32_t n_) : nranks(r), nctx(c), nqp(r * c), n(n_), slot(n_, ~0ull), logOn(r * c, 0),
-                                        ovf(r * c, 0), gets(r * c, 0) {}
+                                        ovf(r * c, 0), gets(r * c, 0), msgs(r * c, 0) {}
   int peerOf(int qp) const { return qp % nranks; }
   void post(int qp) {
+    msgs[(size_t)qp]++;
     if (!logOn[(size_t)qp]) return;
     if (!ncclGinRsLogFits(head, tail, n)) { ovf[(size_t)qp]++; return; }
     posts.push_back({head, qp, false});
@@ -1129,7 +1141,7 @@ struct LogModel {
 };
 static void testLogState() {
   std::mt19937_64 rng(6);
-  int completeChecks = 0, lateStables = 0, breaks = 0, getsSeen = 0;
+  int completeChecks = 0, lateStables = 0, breaks = 0, getsSeen = 0, msgsChecks = 0, laterChecks = 0;
   for (int it = 0; it < 600; it++) {
     const int nranks = 2 + (int)(rng() % 3), nctx = 1 + (int)(rng() % 3);
     const uint32_t n = 1u << (3 + rng() % 4);
@@ -1142,6 +1154,7 @@ static void testLogState() {
     for (int c = 0; c < nctx; c++)
       for (int p = 0; p < nranks; p++) if (p != self) qpsOf[(size_t)p].push_back(c * nranks + p);
     const bool steady = rng() % 3 == 0;  // every peer pauses and turns stable often: liveness
+    std::map<std::pair<int, uint64_t>, uint64_t> msgsAtPause;  // (qp, head) -> the message count that pause read
     uint64_t maxLag = 0;
     for (int op = 0; op < 1500; op++) {
       const int r = (int)(rng() % 100);
@@ -1160,16 +1173,18 @@ static void testLogState() {
         if (p == self) continue;
         m.quiesce(p);
         const auto& qs = qpsOf[(size_t)p];
-        std::vector<uint64_t> ov, gt;
+        std::vector<uint64_t> ov, gt, ms;
         std::vector<struct gdakiRsPauseSnap> snap;
         for (int q : qs) {
           m.logOn[(size_t)q] = 1;
           ov.push_back(m.ovf[(size_t)q]);
           gt.push_back(m.gets[(size_t)q]);
+          ms.push_back(m.msgs[(size_t)q]);
+          msgsAtPause[std::make_pair(q, m.head)] = m.msgs[(size_t)q];
           struct gdakiRsPauseSnap s; s.head = m.head; s.ovf = m.ovf[(size_t)q]; s.gets = m.gets[(size_t)q]; s.valid = true;
           snap.push_back(s);
         }
-        gdakiRsLogStateNotePause(&L, qs.data(), (int)qs.size(), m.head, ov.data(), gt.data());
+        gdakiRsLogStateNotePause(&L, qs.data(), (int)qs.size(), m.head, ov.data(), gt.data(), ms.data());
         pending[(size_t)p].push_back(snap);
       } else if (r < 84) {  // a peer's checkpoint turns stable: usually the oldest pending, sometimes a later one first
         int p = (int)(rng() % nranks);
@@ -1220,16 +1235,18 @@ static void testLogState() {
           if (p == self) continue;
           m.quiesce(p);
           const auto& qs = qpsOf[(size_t)p];
-          std::vector<uint64_t> ov, gt;
+          std::vector<uint64_t> ov, gt, ms;
           std::vector<struct gdakiRsPauseSnap> snap;
           for (int q : qs) {
             m.logOn[(size_t)q] = 1;
             ov.push_back(m.ovf[(size_t)q]);
             gt.push_back(m.gets[(size_t)q]);
+            ms.push_back(m.msgs[(size_t)q]);
+            msgsAtPause[std::make_pair(q, m.head)] = m.msgs[(size_t)q];
             struct gdakiRsPauseSnap s; s.head = m.head; s.ovf = m.ovf[(size_t)q]; s.gets = m.gets[(size_t)q]; s.valid = true;
             snap.push_back(s);
           }
-          gdakiRsLogStateNotePause(&L, qs.data(), (int)qs.size(), m.head, ov.data(), gt.data());
+          gdakiRsLogStateNotePause(&L, qs.data(), (int)qs.size(), m.head, ov.data(), gt.data(), ms.data());
           gdakiRsLogStateNoteStable(&L, qs.data(), (int)qs.size(), snap.data(), ov.data());
           pending[(size_t)p].clear();
         }
@@ -1265,6 +1282,29 @@ static void testLogState() {
         std::vector<uint64_t> want;
         for (const auto& x : m.posts) if (m.peerOf(x.qp) == p && x.pos >= cut) want.push_back(x.pos);
         CHECK(got == want);
+        // work package 9: M at the cut's pause is kept, and the entries since the cut are exactly M now minus M then (every
+        // post since the cut is logged: none overflowed)
+        for (int q : qpsOf[(size_t)p]) {
+          if (!L.qp[(size_t)q].logs) continue;
+          uint64_t mc = 0;
+          const bool kept = gdakiRsLogStateMsgsAt(&L, q, cut, &mc);
+          CHECK(kept && mc == msgsAtPause[std::make_pair(q, cut)]);
+          uint64_t since = 0;
+          for (const auto& x : m.posts) if (x.qp == q && x.pos >= cut) since++;
+          CHECK(kept && since == m.msgs[(size_t)q] - mc);
+          msgsChecks++;
+        }
+        // and at every later pause of the peer still pending (a checkpoint confirmed but not yet stable: the host branch
+        // may export from its cut; review of work package 9, note 5)
+        for (const auto& snap : pending[(size_t)p]) {
+          for (size_t k = 0; k < snap.size(); k++) {
+            const int q = qpsOf[(size_t)p][k];
+            if (!L.qp[(size_t)q].logs || snap[k].head < cut) continue;
+            uint64_t mc = 0;
+            CHECK(gdakiRsLogStateMsgsAt(&L, q, snap[k].head, &mc) && mc == msgsAtPause[std::make_pair(q, snap[k].head)]);
+            laterChecks++;
+          }
+        }
         std::vector<uint64_t> ovn, gtn;
         for (int q : qpsOf[(size_t)p]) { ovn.push_back(m.ovf[(size_t)q]); gtn.push_back(m.gets[(size_t)q]); }
         char w[160];
@@ -1286,9 +1326,10 @@ static void testLogState() {
     }
     if (steady) CHECK(maxLag <= (uint64_t)n);  // (4) the tail follows the head (bounded by the ring)
   }
-  CHECK(completeChecks > 1000 && lateStables > 50 && breaks > 50 && getsSeen > 20);
-  printf("log state model: %d complete-peer checks, %d late stables, %d breaks, %d gets\n", completeChecks, lateStables,
-         breaks, getsSeen);
+  CHECK(completeChecks > 1000 && lateStables > 50 && breaks > 50 && getsSeen > 20 && msgsChecks > 1000 &&
+        laterChecks > 1000);
+  printf("log state model: %d complete-peer checks, %d late stables, %d breaks, %d gets, %d message counts at the cut, %d "
+         "at later pauses\n", completeChecks, lateStables, breaks, getsSeen, msgsChecks, laterChecks);
   // the stable step
   const uint64_t NONE = ~0ull, steps[] = {3, 4, 5, 6}, heads[] = {10, 20, 20, 35};
   CHECK(gdakiRsStableStepOf(steps, heads, 4, 9, NONE) == NONE);
@@ -1296,6 +1337,446 @@ static void testLogState() {
   CHECK(gdakiRsStableStepOf(steps, heads, 4, 34, NONE) == 5);
   CHECK(gdakiRsStableStepOf(steps, heads, 4, ~0ull, NONE) == 6);
   CHECK(gdakiRsStableStepOf(steps, heads, 0, 100, NONE) == NONE);
+}
+
+
+// ---- work package 9: executed counts, budgets, the export's stream, the import plan ----
+static void testExec() {
+  std::mt19937_64 rng(9);
+  for (int it = 0; it < 200; it++) {
+    struct gdakiRsExecQp e;
+    uint32_t rmsn = (uint32_t)(rng() & 0xffffff);
+    uint64_t truth = 0;
+    gdakiRsExecStepQp(e, rmsn | 0x5a000000u);  // the first read only sets `last` (high bits are not the MSN's)
+    CHECK(e.on && e.cum == 0 && e.last == rmsn);
+    for (int s = 0; s < 300; s++) {
+      const int r = (int)(rng() % 10);
+      if (r == 0) {  // a Commit and its Baseline: a new connection whose MSN starts anywhere (2RST may not zero it)
+        rmsn = (uint32_t)(rng() & 0xffffff);
+        gdakiRsExecRebaseQp(e, rmsn);
+        CHECK(e.cum == truth && e.last == rmsn);
+        continue;
+      }
+      const uint64_t d = r == 1 ? (1u << 23) - 1 : rng() % 5000;  // at most 2^23 - 1 between two reads
+      rmsn = (rmsn + (uint32_t)d) & 0xffffffu;
+      truth += d;
+      gdakiRsExecStepQp(e, rmsn);
+      CHECK(e.cum == truth);
+    }
+  }
+  uint64_t b = 7;
+  CHECK(gdakiRsBudgetOf(10, 4, &b) && b == 6);
+  CHECK(gdakiRsBudgetOf(4, 4, &b) && b == 0);
+  b = 7;
+  CHECK(!gdakiRsBudgetOf(3, 4, &b) && b == 7);
+}
+static struct ncclGinRsLogEntry entryOf(uint32_t qp, uint32_t kind, uint32_t flags, uint32_t dstWin, uint32_t srcWin,
+                                        uint64_t dstOff, uint64_t bytes, uint64_t src, uint32_t sigWin, uint64_t sigOff,
+                                        uint64_t sigVal) {
+  struct ncclGinRsLogEntry e;
+  memset(&e, 0, sizeof(e));
+  e.qpKf = ncclGinRsQpKf(qp, kind, flags);
+  e.dstWin = dstWin, e.srcWin = srcWin, e.dstOff = dstOff, e.bytes = bytes, e.src = src;
+  e.sigWin = sigWin, e.sigOff = sigOff, e.sigVal = sigVal;
+  return e;
+}
+static void testEntryCheck() {
+  const uint32_t S = NCCL_GIN_RS_LOGF_SIGNAL;
+  CHECK(gdakiRsEntryCheck(entryOf(1, NCCL_GIN_RS_LOG_PUT, 0, 2, 3, 0, 100, 0, 0, 0, 0)) == nullptr);
+  CHECK(gdakiRsEntryCheck(entryOf(1, NCCL_GIN_RS_LOG_PUT, S, 2, 3, 0, 0, 0, 0, 8, 1)) == nullptr);  // 0 bytes + signal
+  CHECK(gdakiRsEntryCheck(entryOf(1, NCCL_GIN_RS_LOG_PUT, 0, 0, 3, 0, 100, 0, 0, 0, 0)) != nullptr);
+  CHECK(gdakiRsEntryCheck(entryOf(1, NCCL_GIN_RS_LOG_PUT, 0, 2, 0, 0, 100, 0, 0, 0, 0)) != nullptr);
+  CHECK(gdakiRsEntryCheck(entryOf(1, NCCL_GIN_RS_LOG_PUT, 0, 2, 3, 0, (1ull << 40) + 1, 0, 0, 0, 0)) != nullptr);
+  CHECK(gdakiRsEntryCheck(entryOf(1, NCCL_GIN_RS_LOG_PUTVALUE, 0, 2, 0, 0, 8, 9, 0, 0, 0)) == nullptr);
+  CHECK(gdakiRsEntryCheck(entryOf(1, NCCL_GIN_RS_LOG_PUTVALUE, 0, 2, 0, 0, 9, 9, 0, 0, 0)) != nullptr);
+  CHECK(gdakiRsEntryCheck(entryOf(1, NCCL_GIN_RS_LOG_PUTVALUE, 0, 2, 0, 0, 0, 9, 0, 0, 0)) != nullptr);
+  CHECK(gdakiRsEntryCheck(entryOf(1, NCCL_GIN_RS_LOG_PUTVALUE, 0, 0, 0, 0, 4, 9, 0, 0, 0)) != nullptr);
+  CHECK(gdakiRsEntryCheck(entryOf(1, NCCL_GIN_RS_LOG_SIGNAL, S, 0, 0, 0, 0, 0, 5, 16, 2)) == nullptr);
+  CHECK(gdakiRsEntryCheck(entryOf(1, NCCL_GIN_RS_LOG_SIGNAL, 0, 0, 0, 0, 0, 0, 5, 16, 2)) != nullptr);
+  CHECK(gdakiRsEntryCheck(entryOf(1, 0, S, 0, 0, 0, 0, 0, 5, 16, 2)) != nullptr);
+  // the scheme an entry was counted with
+  const uint32_t full = NCCL_GIN_RS_CSUM_FULL << NCCL_GIN_RS_LOGF_CSUM_SHIFT;
+  CHECK(gdakiRsEntryCsumScheme(ncclGinRsQpKf(3, NCCL_GIN_RS_LOG_PUT, full | S)) == NCCL_GIN_RS_CSUM_FULL);
+  CHECK(gdakiRsEntryCsumScheme(ncclGinRsQpKf(3, NCCL_GIN_RS_LOG_PUT, full | NCCL_GIN_RS_LOGF_NOBASE)) ==
+        NCCL_GIN_RS_CSUM_OFF);
+  CHECK(gdakiRsEntryCsumScheme(ncclGinRsQpKf(3, NCCL_GIN_RS_LOG_PUTVALUE, full)) == NCCL_GIN_RS_CSUM_OFF);
+  CHECK(gdakiRsEntryCsumScheme(ncclGinRsQpKf(3, NCCL_GIN_RS_LOG_PUT, 0)) == NCCL_GIN_RS_CSUM_OFF);
+}
+// The chunked count equals the device's walk over the whole data, for chunk sizes and orders the export may use.
+static void testCsumChunk() {
+  std::mt19937_64 rng(91);
+  int n = 0;
+  for (int it = 0; it < 3000; it++) {
+    const uint64_t bytes = 1 + (it < 1500 ? rng() % 300 : rng() % 40000);
+    std::vector<uint8_t> d((size_t)bytes);
+    for (auto& c : d) c = (uint8_t)rng();
+    const uint32_t scheme = (it & 1) ? NCCL_GIN_RS_CSUM_FULL : NCCL_GIN_RS_CSUM_SAMPLED;
+    const uint32_t want = ncclGinRsCsumWalk(scheme, d.data(), bytes, ncclGinRsCsumHostLoad());
+    const uint64_t chunk = 4 * (1 + rng() % 2048);
+    std::vector<uint64_t> offs;
+    for (uint64_t o = 0; o < bytes; o += chunk) offs.push_back(o);
+    std::shuffle(offs.begin(), offs.end(), rng);
+    uint32_t a = 0, b = 0;
+    bool ok = true;
+    for (uint64_t o : offs) {
+      const uint64_t len = std::min<uint64_t>(chunk, bytes - o);
+      std::vector<uint8_t> buf(d.begin() + (long)o, d.begin() + (long)(o + len));  // a staging buffer of its own
+      ok = ok && gdakiRsCsumChunk(scheme, bytes, o, buf.data(), len, a, b);
+    }
+    CHECK(ok && ncclGinRsCsumFinal(a, b, bytes, scheme) == want);
+    n++;
+  }
+  uint32_t a = 0, b = 0;
+  uint8_t z[16] = {0};
+  CHECK(!gdakiRsCsumChunk(NCCL_GIN_RS_CSUM_FULL, 16, 2, z, 4, a, b));   // not on a word
+  CHECK(!gdakiRsCsumChunk(NCCL_GIN_RS_CSUM_FULL, 16, 4, z, 6, a, b));   // ends inside a word, not at the end
+  CHECK(!gdakiRsCsumChunk(NCCL_GIN_RS_CSUM_FULL, 16, 12, z, 8, a, b));  // past the end
+  CHECK(gdakiRsCsumChunk(NCCL_GIN_RS_CSUM_FULL, 14, 12, z, 2, a, b));   // the last, partial word
+  printf("chunked checksum: %d data sets\n", n);
+}
+// A survivor's log toward one peer for the stream tests: entries and the source windows' bytes they read.
+struct XLog {
+  std::vector<struct ncclGinRsLogEntry> e;
+  std::map<uint32_t, std::vector<uint8_t>> src;  // source window number -> its bytes
+};
+static XLog makeLog(std::mt19937_64& rng, int nqp, const int* qps, int nEnt, uint32_t scheme) {
+  XLog x;
+  for (uint32_t w = 1; w <= 3; w++) {
+    x.src[w].resize(1 + rng() % 9000);
+    for (auto& c : x.src[w]) c = (uint8_t)rng();
+  }
+  for (int i = 0; i < nEnt; i++) {
+    const uint32_t qp = (uint32_t)qps[rng() % nqp];
+    const int k = (int)(rng() % 3);
+    const bool sig = rng() % 2;
+    const uint32_t sigWin = rng() % 3 == 0 ? 0u : 4u + (uint32_t)(rng() % 2);
+    const uint64_t sigOff = 8 * (rng() % 16), sigVal = 1 + rng() % 5;
+    if (k == 0) {
+      const uint32_t w = 1 + (uint32_t)(rng() % 3);
+      const uint64_t sz = x.src[w].size(), off = rng() % sz, bytes = rng() % (sz - off + 1);
+      uint32_t flags = sig ? NCCL_GIN_RS_LOGF_SIGNAL : 0u;
+      uint32_t csum = 0;
+      if (bytes != 0 && scheme != NCCL_GIN_RS_CSUM_OFF) {
+        flags |= scheme << NCCL_GIN_RS_LOGF_CSUM_SHIFT;
+        csum = ncclGinRsCsumWalk(scheme, x.src[w].data() + off, bytes, ncclGinRsCsumHostLoad());
+      }
+      const uint32_t dw = 4 + (uint32_t)(rng() % 2);
+      const uint64_t doff = 256 + 8 * (rng() % 64);  // data at 256 and up, signal words below 128: no overlap
+      struct ncclGinRsLogEntry e = entryOf(qp, NCCL_GIN_RS_LOG_PUT, flags, dw, w, doff, bytes, off, sig ? sigWin : 0,
+                                           sig ? sigOff : 0, sig ? sigVal : 0);
+      e.csum = csum;
+      x.e.push_back(e);
+    } else if (k == 1) {
+      x.e.push_back(entryOf(qp, NCCL_GIN_RS_LOG_PUTVALUE, sig ? NCCL_GIN_RS_LOGF_SIGNAL : 0u, 4 + (uint32_t)(rng() % 2), 0,
+                            256 + 8 * (rng() % 64), 1 + rng() % 8, rng(), sig ? sigWin : 0, sig ? sigOff : 0,
+                            sig ? sigVal : 0));
+    } else {
+      x.e.push_back(entryOf(qp, NCCL_GIN_RS_LOG_SIGNAL, NCCL_GIN_RS_LOGF_SIGNAL, 0, 0, 0, 0, 0, sigWin, sigOff, sigVal));
+    }
+    x.e.back().pos = (uint32_t)i;
+  }
+  return x;
+}
+static int buildX(const XLog& x, const struct gdakiRsLogXHdr& h, uint64_t chunk, std::vector<uint8_t>* out,
+                  int failReadAt = -1, int failPutAt = -1, char* why = nullptr) {
+  int reads = 0, puts = 0;
+  char w[160];
+  auto read = [&](const struct ncclGinRsLogEntry& e, uint64_t off, uint64_t len, const char** bad) -> const uint8_t* {
+    if (reads++ == failReadAt) {
+      *bad = "test: no source";
+      return nullptr;
+    }
+    auto it = x.src.find(e.srcWin);
+    if (it == x.src.end() || e.src + off + len > it->second.size()) {
+      *bad = "test: out of range";
+      return nullptr;
+    }
+    return it->second.data() + e.src + off;
+  };
+  auto put = [&](const void* p, size_t n) {
+    if (puts++ == failPutAt) return false;
+    out->insert(out->end(), (const uint8_t*)p, (const uint8_t*)p + n);
+    return true;
+  };
+  return gdakiRsLogXBuild(h, x.e.data(), x.e.size(), chunk, read, put, why ? why : w, sizeof(w));
+}
+static const uint64_t kTestCkpt = 41;  // the checkpoint the test exports name and the test spare restores
+static struct gdakiRsLogXHdr hdrOf(int from, int to, uint32_t inc, uint64_t nonce, int nqp, uint64_t cut, size_t nEnt) {
+  struct gdakiRsLogXHdr h;
+  memset(&h, 0, sizeof(h));
+  h.magic = GDAKI_RS_LOGX_MAGIC;
+  h.version = 1;
+  h.from = from, h.to = to, h.incarnation = inc, h.nonce = nonce, h.nqp = (uint32_t)nqp;
+  h.ckpt = kTestCkpt, h.cut = cut, h.head = cut + nEnt + 3, h.nEntries = nEnt;
+  for (int k = 0; k < nqp; k++) h.x[k] = 100 + k, h.m[k] = 200 + k;
+  return h;
+}
+static void testLogX() {
+  std::mt19937_64 rng(92);
+  int whole = 0, refused = 0;
+  for (int it = 0; it < 400; it++) {
+    const int qps[3] = {1, 5, 9};
+    const uint32_t scheme = (uint32_t)(it % 3);
+    XLog x = makeLog(rng, 3, qps, (int)(rng() % 40), scheme);
+    const struct gdakiRsLogXHdr h = hdrOf(1, 2, 7, 0xabcdefull, 3, 1000, x.e.size());
+    std::vector<uint8_t> s;
+    const uint64_t chunk = 1 + rng() % 5000;
+    CHECK(buildX(x, h, chunk, &s) == GDAKI_RS_LOGX_OK);
+    struct gdakiRsLogXParsed px;
+    char w[200];
+    CHECK(gdakiRsLogXParse(s.data(), s.size(), &px, w, sizeof(w)));
+    CHECK(memcmp(&px.hdr, &h, sizeof(h)) == 0 && px.end.ok == 1 && px.items.size() == x.e.size());
+    for (size_t i = 0; i < x.e.size() && i < px.items.size(); i++) {
+      CHECK(memcmp(&px.items[i].e, &x.e[i], sizeof(x.e[i])) == 0);
+      const auto& e = x.e[i];
+      if (ncclGinRsEntryKind(e.qpKf) == NCCL_GIN_RS_LOG_PUT && e.bytes != 0)
+        CHECK(px.items[i].dataOff != 0 && memcmp(s.data() + px.items[i].dataOff, x.src[e.srcWin].data() + e.src, e.bytes) == 0);
+      else
+        CHECK(px.items[i].dataOff == 0);
+    }
+    whole++;
+    // a source changed after its post (FULL: any byte; SAMPLED: a sampled byte, the first): refused, the trailer says why
+    for (size_t i = 0; i < x.e.size(); i++) {
+      const auto& e = x.e[i];
+      if (scheme == NCCL_GIN_RS_CSUM_OFF || ncclGinRsEntryKind(e.qpKf) != NCCL_GIN_RS_LOG_PUT || e.bytes == 0) continue;
+      XLog y = x;
+      y.src[e.srcWin][(size_t)(e.src + (scheme == NCCL_GIN_RS_CSUM_FULL ? rng() % e.bytes : 0))] ^= 0x40;
+      std::vector<uint8_t> t;
+      char bw[160];
+      CHECK(buildX(y, h, chunk, &t, -1, -1, bw) == GDAKI_RS_LOGX_REFUSED && strstr(bw, "source buffer changed") != nullptr);
+      CHECK(!gdakiRsLogXParse(t.data(), t.size(), &px, w, sizeof(w)) && strstr(w, "source buffer changed") != nullptr &&
+            strstr(w, "refused") != nullptr);
+      refused++;
+      break;
+    }
+    // a failed source read: refused; a failed put: the stream is cut
+    bool anyData = false;
+    for (const auto& e : x.e) anyData = anyData || (ncclGinRsEntryKind(e.qpKf) == NCCL_GIN_RS_LOG_PUT && e.bytes != 0);
+    if (anyData) {
+      std::vector<uint8_t> t;
+      CHECK(buildX(x, h, chunk, &t, 0) == GDAKI_RS_LOGX_REFUSED);
+      CHECK(!gdakiRsLogXParse(t.data(), t.size(), &px, w, sizeof(w)) && strstr(w, "test: no source") != nullptr);
+    }
+    std::vector<uint8_t> t;
+    CHECK(buildX(x, h, chunk, &t, -1, (int)(rng() % (2 + x.e.size()))) == GDAKI_RS_LOGX_STREAM);
+    // damaged streams
+    if (s.size() > sizeof(h) + sizeof(struct gdakiRsLogXEnd)) {
+      std::vector<uint8_t> u(s.begin(), s.end() - 1);
+      CHECK(!gdakiRsLogXParse(u.data(), u.size(), &px, w, sizeof(w)));
+    }
+    std::vector<uint8_t> u = s;
+    u.insert(u.end() - sizeof(struct gdakiRsLogXEnd), 0);
+    CHECK(!gdakiRsLogXParse(u.data(), u.size(), &px, w, sizeof(w)));
+    u = s;
+    u[0] ^= 1;
+    CHECK(!gdakiRsLogXParse(u.data(), u.size(), &px, w, sizeof(w)));
+    u = s;
+    u[u.size() - sizeof(struct gdakiRsLogXEnd)] ^= 1;
+    CHECK(!gdakiRsLogXParse(u.data(), u.size(), &px, w, sizeof(w)));
+    if (!x.e.empty()) {  // an entry the spare cannot apply
+      XLog y = x;
+      y.e[0].qpKf = ncclGinRsQpKf(1, 0, 0);
+      std::vector<uint8_t> v;
+      buildX(y, h, chunk, &v);
+      CHECK(!gdakiRsLogXParse(v.data(), v.size(), &px, w, sizeof(w)) && strstr(w, "unknown kind") != nullptr);
+    }
+    struct gdakiRsLogXHdr hb = h;  // more entries than positions
+    hb.nEntries = hb.head - hb.cut + 1;
+    u = s;
+    memcpy(u.data(), &hb, sizeof(hb));
+    CHECK(!gdakiRsLogXParse(u.data(), u.size(), &px, w, sizeof(w)));
+    CHECK(!gdakiRsLogXParse(s.data(), sizeof(h), &px, w, sizeof(w)));
+  }
+  CHECK(whole == 400 && refused > 150);
+  // the message check: per QP, the entries' messages equal M at the hold minus M at the cut
+  const int qps[2] = {3, 7};
+  std::vector<struct ncclGinRsLogEntry> e;
+  e.push_back(entryOf(3, NCCL_GIN_RS_LOG_PUT, NCCL_GIN_RS_LOGF_SIGNAL, 1, 2, 0, (3ull << 30) + 1, 0, 0, 0, 1));  // 4 + 1
+  e.push_back(entryOf(7, NCCL_GIN_RS_LOG_PUTVALUE, 0, 1, 0, 0, 8, 5, 0, 0, 0));                                // 1
+  e.push_back(entryOf(3, NCCL_GIN_RS_LOG_SIGNAL, NCCL_GIN_RS_LOGF_SIGNAL, 0, 0, 0, 0, 0, 0, 8, 1));            // 1
+  e.push_back(entryOf(4, NCCL_GIN_RS_LOG_SIGNAL, NCCL_GIN_RS_LOGF_SIGNAL, 0, 0, 0, 0, 0, 0, 8, 1));            // not the peer's
+  const uint64_t mCut[2] = {10, 20}, mOk[2] = {16, 21}, mBad[2] = {17, 21}, mLow[2] = {9, 21};
+  char w[200];
+  CHECK(gdakiRsLogXMsgsCheck(e.data(), e.size(), qps, 2, mOk, mCut, w, sizeof(w)));
+  CHECK(!gdakiRsLogXMsgsCheck(e.data(), e.size(), qps, 2, mBad, mCut, w, sizeof(w)) && strstr(w, "qp 3") != nullptr);
+  CHECK(!gdakiRsLogXMsgsCheck(e.data(), e.size(), qps, 2, mLow, mCut, w, sizeof(w)));
+  CHECK(!gdakiRsLogXMsgsCheck(e.data(), 1, qps, 2, mOk, mCut, w, sizeof(w)));  // an entry missing
+  printf("export stream: %d whole, %d refused for a changed source\n", whole, refused);
+}
+// The import plan against a direct application of every entry in order (the memory the spare must end with).
+static void testImportPlan() {
+  std::mt19937_64 rng(93);
+  int plans = 0;
+  const uint64_t nonce = 0x1234567890ull;
+  for (int it = 0; it < 300; it++) {
+    const int nranks = 3 + (int)(rng() % 3), me = (int)(rng() % nranks), nctx = 1 + (int)(rng() % 2);
+    const uint32_t inc = 2 + (uint32_t)(rng() % 5);
+    std::vector<int> nqpOf((size_t)nranks, nctx);
+    nqpOf[(size_t)me] = 0;
+    const int noGin = rng() % 3 == 0 ? (me + 1) % nranks : -1;  // a rank with no GIN QP to this one
+    if (noGin >= 0) nqpOf[(size_t)noGin] = 0;
+    std::vector<struct gdakiRsImportWin> wins = {{4, 256 + 8 * 64 + 9000}, {5, 256 + 8 * 64 + 9000}};
+    const uint64_t sigBytes = 8 * 16;
+    std::vector<std::vector<uint8_t>> exports((size_t)nranks);
+    std::vector<std::vector<uint64_t>> P((size_t)nranks);
+    std::vector<struct gdakiRsImportP> pp;
+    std::map<uint32_t, std::vector<uint8_t>> mem;  // the expected memory: window number (0: the signal table)
+    mem[4].assign((size_t)wins[0].bytes, 0);
+    mem[5].assign((size_t)wins[1].bytes, 0);
+    mem[0].assign((size_t)sigBytes, 0);
+    uint64_t entries = 0;
+    for (int q = 0; q < nranks; q++) {
+      if (nqpOf[(size_t)q] == 0) continue;
+      std::vector<int> qps;
+      for (int c = 0; c < nctx; c++) qps.push_back(c * nranks + me);  // the survivor's QPs to this rank
+      XLog x = makeLog(rng, (int)qps.size(), qps.data(), (int)(rng() % 25), (uint32_t)(rng() % 3));
+      struct gdakiRsLogXHdr h = hdrOf(q, me, inc, nonce, nctx, 50, x.e.size());
+      P[(size_t)q].resize((size_t)nctx);
+      for (int k = 0; k < nctx; k++) P[(size_t)q][(size_t)k] = h.x[k] - rng() % 50;
+      CHECK(buildX(x, h, 4096, &exports[(size_t)q]) == GDAKI_RS_LOGX_OK);
+      for (const auto& e : x.e) {  // the direct application, in order
+        const uint32_t kind = ncclGinRsEntryKind(e.qpKf);
+        if (kind == NCCL_GIN_RS_LOG_PUT && e.bytes)
+          memcpy(mem[e.dstWin].data() + e.dstOff, x.src[e.srcWin].data() + e.src, e.bytes);
+        if (kind == NCCL_GIN_RS_LOG_PUTVALUE) memcpy(mem[e.dstWin].data() + e.dstOff, &e.src, e.bytes);
+        if (ncclGinRsEntryFlags(e.qpKf) & NCCL_GIN_RS_LOGF_SIGNAL) {
+          uint64_t v;
+          memcpy(&v, mem[e.sigWin].data() + e.sigOff, 8);
+          v += e.sigVal;
+          memcpy(mem[e.sigWin].data() + e.sigOff, &v, 8);
+        }
+        entries++;
+      }
+    }
+    for (int q = 0; q < nranks; q++)
+      if (!P[(size_t)q].empty()) pp.push_back({q, (uint32_t)nctx, P[(size_t)q].data()});
+    std::shuffle(pp.begin(), pp.end(), rng);
+    struct gdakiRsImportPlan plan;
+    char w[256];
+    const bool ok = gdakiRsImportPlanOf(me, kTestCkpt, inc, nonce, nqpOf.data(), nranks, pp.data(), (int)pp.size(), exports,
+                                        wins.data(), (int)wins.size(), sigBytes, &plan, w, sizeof(w));
+    CHECK(ok);
+    if (!ok) {
+      fprintf(stderr, "import plan: %s\n", w);
+      continue;
+    }
+    plans++;
+    CHECK(plan.entries == entries);
+    std::map<uint32_t, std::vector<uint8_t>> got;
+    got[4].assign((size_t)wins[0].bytes, 0);
+    got[5].assign((size_t)wins[1].bytes, 0);
+    got[0].assign((size_t)sigBytes, 0);
+    for (const auto& c : plan.copies) memcpy(got[c.win].data() + c.off, c.data ? c.data : (const uint8_t*)&c.value, c.bytes);
+    for (const auto& s : plan.sigs) {
+      uint64_t v;
+      memcpy(&v, got[s.win].data() + s.off, 8);
+      v += s.add;
+      memcpy(got[s.win].data() + s.off, &v, 8);
+    }
+    CHECK(got == mem);
+    for (size_t i = 1; i < plan.sigs.size(); i++)  // one addition per target, in target order
+      CHECK(plan.sigs[i - 1].win < plan.sigs[i].win ||
+            (plan.sigs[i - 1].win == plan.sigs[i].win && plan.sigs[i - 1].off < plan.sigs[i].off));
+    for (const auto& pe : plan.peers) {
+      CHECK(pe.nqp == nctx && !P[(size_t)pe.rank].empty());
+      for (int k = 0; k < pe.nqp; k++)
+        CHECK(pe.budget[k] == 100 + (uint64_t)k - P[(size_t)pe.rank][(size_t)k] && pe.x[k] == 100 + (uint64_t)k &&
+              pe.m[k] == 200 + (uint64_t)k);
+    }
+    // refusals, nothing planned
+    auto refuseCk = [&](const std::vector<std::vector<uint8_t>>& ex, const std::vector<struct gdakiRsImportP>& p,
+                        uint64_t ck, uint32_t incn, uint64_t non, const char* frag) {
+      struct gdakiRsImportPlan pl;
+      char rw[256];
+      const bool r = gdakiRsImportPlanOf(me, ck, incn, non, nqpOf.data(), nranks, p.data(), (int)p.size(), ex, wins.data(),
+                                         (int)wins.size(), sigBytes, &pl, rw, sizeof(rw));
+      CHECK(!r && strstr(rw, frag) != nullptr);
+      if (r || strstr(rw, frag) == nullptr) fprintf(stderr, "expected '%s', got '%s'\n", frag, r ? "(accepted)" : rw);
+    };
+    auto refuse = [&](const std::vector<std::vector<uint8_t>>& ex, const std::vector<struct gdakiRsImportP>& p,
+                      uint32_t incn, uint64_t non, const char* frag) { refuseCk(ex, p, kTestCkpt, incn, non, frag); };
+    refuse(exports, pp, inc + 1, nonce, "not for this restore");
+    refuseCk(exports, pp, kTestCkpt + 1, inc, nonce, "not for this restore");  // an export of another checkpoint
+    refuse(exports, pp, inc, nonce ^ 1, "not for this restore");
+    int q0 = -1;
+    for (int q = 0; q < nranks && q0 < 0; q++) if (nqpOf[(size_t)q] > 0) q0 = q;
+    {
+      auto ex = exports;
+      ex[(size_t)q0].clear();
+      refuse(ex, pp, inc, nonce, "no log export from rank");
+      if (noGin >= 0) {
+        ex = exports;
+        ex[(size_t)noGin] = exports[(size_t)q0];
+        refuse(ex, pp, inc, nonce, "has no QP to this rank");
+      }
+      ex = exports;
+      std::vector<uint8_t>& v = ex[(size_t)q0];
+      struct gdakiRsLogXHdr h;
+      memcpy(&h, v.data(), sizeof(h));
+      h.to = (me + 1) % nranks;
+      memcpy(v.data(), &h, sizeof(h));
+      refuse(ex, pp, inc, nonce, "not for this restore");
+      ex = exports;
+      struct gdakiRsLogXEnd en;
+      memcpy(&en, ex[(size_t)q0].data() + ex[(size_t)q0].size() - sizeof(en), sizeof(en));
+      en.ok = 0;
+      snprintf(en.why, sizeof(en.why), "source buffer changed (test)");
+      memcpy(ex[(size_t)q0].data() + ex[(size_t)q0].size() - sizeof(en), &en, sizeof(en));
+      refuse(ex, pp, inc, nonce, "source buffer changed");
+    }
+    {
+      auto p = pp;
+      p.erase(std::remove_if(p.begin(), p.end(), [&](const struct gdakiRsImportP& a) { return a.rank == q0; }), p.end());
+      refuse(exports, p, inc, nonce, "no P of rank");
+      p = pp;
+      for (const auto& a : pp) if (a.rank == q0) p.push_back(a);
+      refuse(exports, p, inc, nonce, "two P records");
+      std::vector<uint64_t> big((size_t)nctx, ~0ull);
+      p = pp;
+      for (auto& a : p) if (a.rank == q0) a.p = big.data();
+      refuse(exports, p, inc, nonce, "at the checkpoint");
+    }
+    {  // a target outside this process's windows, a misaligned signal
+      XLog x;
+      x.src[1].assign(64, 1);
+      x.e.push_back(entryOf((uint32_t)me, NCCL_GIN_RS_LOG_PUT, 0, 4, 1, wins[0].bytes - 8, 16, 0, 0, 0, 0));
+      auto ex = exports;
+      ex[(size_t)q0].clear();
+      struct gdakiRsLogXHdr h = hdrOf(q0, me, inc, nonce, nctx, 50, 1);
+      CHECK(buildX(x, h, 4096, &ex[(size_t)q0]) == GDAKI_RS_LOGX_OK);
+      refuse(ex, pp, inc, nonce, "is not a window of this process");
+      x.e[0] = entryOf((uint32_t)me, NCCL_GIN_RS_LOG_SIGNAL, NCCL_GIN_RS_LOGF_SIGNAL, 0, 0, 0, 0, 0, 0, 4, 1);
+      ex[(size_t)q0].clear();
+      CHECK(buildX(x, h, 4096, &ex[(size_t)q0]) == GDAKI_RS_LOGX_OK);
+      refuse(ex, pp, inc, nonce, "is not in this process");
+      x.e[0] = entryOf((uint32_t)me, NCCL_GIN_RS_LOG_SIGNAL, NCCL_GIN_RS_LOGF_SIGNAL, 0, 0, 0, 0, 0, 9, 8, 1);
+      ex[(size_t)q0].clear();
+      CHECK(buildX(x, h, 4096, &ex[(size_t)q0]) == GDAKI_RS_LOGX_OK);
+      refuse(ex, pp, inc, nonce, "is not in this process");
+      // a put over a signal word of the same window (here the put carries it; any entry's would do): refused
+      for (uint64_t at : {0ull, 8ull, 128ull}) {
+        x.e[0] = entryOf((uint32_t)me, NCCL_GIN_RS_LOG_PUT, NCCL_GIN_RS_LOGF_SIGNAL, 5, 1, at, 16, 0, 5, 8, 1);
+        struct gdakiRsLogXHdr h2 = hdrOf(q0, me, inc, nonce, nctx, 50, 1);
+        ex[(size_t)q0].clear();
+        CHECK(buildX(x, h2, 4096, &ex[(size_t)q0]) == GDAKI_RS_LOGX_OK);
+        if (at == 128) {  // [128, 144) touches no signal word (the random ones are below 128): accepted
+          struct gdakiRsImportPlan pl;
+          char rw[256];
+          const bool r = gdakiRsImportPlanOf(me, kTestCkpt, inc, nonce, nqpOf.data(), nranks, pp.data(), (int)pp.size(), ex,
+                                             wins.data(), (int)wins.size(), sigBytes, &pl, rw, sizeof(rw));
+          CHECK(r);
+        } else {
+          refuse(ex, pp, inc, nonce, "overlaps the signal word");
+        }
+      }
+    }
+    const std::vector<struct gdakiRsImportWin> dup = {{4, 100}, {4, 200}};
+    struct gdakiRsImportPlan pl;
+    CHECK(!gdakiRsImportPlanOf(me, kTestCkpt, inc, nonce, nqpOf.data(), nranks, pp.data(), (int)pp.size(), exports, dup.data(), 2,
+                               sigBytes, &pl, w, sizeof(w)));
+  }
+  CHECK(plans == 300);
+  printf("import plan: %d plans equal to the direct application\n", plans);
 }
 
 int main() {
@@ -1317,6 +1798,11 @@ int main() {
   testRing();
   testSums();
   testLogState();
+  testExec();
+  testEntryCheck();
+  testCsumChunk();
+  testLogX();
+  testImportPlan();
   printf("rs_unit_dev: %d checks, %d failed\n", nChecks, nFail);
   return nFail == 0 ? 0 : 1;
 }
