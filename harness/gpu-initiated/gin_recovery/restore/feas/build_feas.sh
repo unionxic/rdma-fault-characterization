@@ -12,7 +12,7 @@
 #   app       rs_spike.cu (B1 and B2 application) against the hw headers -> agent_restore/out/app/rs_spike (B2 runs on rsx
 #             with only the report lines on: NCCL_GIN_RESTORE_REPORT=1)
 #   b3        rs_drain_test.cu (no NCCL; libibverbs, libmlx5, libcuda) -> agent_restore/out/$B3OUT/rs_drain_test (B3OUT
-#             required, a NEW folder name: out/b3, out/b3v2, out/b3v3 hold the recorded builds and are refused)
+#             required, a NEW folder name: out/b3, out/b3v2, out/b3v3, out/b3v4 hold the recorded builds and are refused)
 #   info      agent_restore/out/build_info.txt: md5 of every output and input
 # All compiles run at nice 19 and idle I/O priority. nvcc output is not byte-reproducible: a rerun changes the md5 of the
 # executables; the deployed values are those recorded in EXPERIMENT.md 12.
@@ -67,7 +67,7 @@ app() {
     -Xcompiler "-Wall,-Wextra" "$D/rs_spike.cu" -o "$o/rs_spike" -L"$SCR/agent_gd/gin/build/lib" -lnccl -lcudart -lpthread
   echo "rs_spike $(md5 "$o/rs_spike")"
 }
-b3() {  # B3OUT (required): a new output folder; a folder that already holds a build (b3, b3v2, b3v3) is refused
+b3() {  # B3OUT (required): a new output folder; a folder that already holds a build (b3, b3v2, b3v3, b3v4) is refused
   local o=$OUT/${B3OUT:?set B3OUT to a new folder name}
   [ -e "$o/rs_drain_test" ] && { echo "refusing: $o already holds a build (nvcc output is not reproducible)" >&2; exit 1; }
   mkdir -p "$o"
@@ -85,7 +85,7 @@ info() {
     echo "hw include_digest $(cd "$SCR/agent_gd/gin/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32) (the app is built against these headers)"
     [ -f "$OUT/app/rs_spike" ] && echo "rs_spike $(md5 "$OUT/app/rs_spike") rs_spike.cu $(md5 "$D/rs_spike.cu") sass $("$CUDA/bin/cuobjdump" --list-elf "$OUT/app/rs_spike" 2>/dev/null | grep -o 'sm_[0-9]*' | sort -u | tr '\n' ' ')"
     [ -f "$OUT/b3/rs_drain_test" ] && echo "rs_drain_test (first build, deployed 2026-10-09) $(md5 "$OUT/b3/rs_drain_test")"
-    for k in b3v2 b3v3 ${B3OUT:-}; do
+    for k in b3v2 b3v3 b3v4 ${B3OUT:-}; do
       [ -f "$OUT/$k/rs_drain_test" ] && echo "rs_drain_test $k $(md5 "$OUT/$k/rs_drain_test") source at compile: $(cat "$OUT/$k/build_src.txt" 2>/dev/null || echo "not recorded (built before build_src.txt); source now $(md5 "$D/rs_drain_test.cu")")"
     done | sort -u
   } > "$OUT/build_info.txt"
