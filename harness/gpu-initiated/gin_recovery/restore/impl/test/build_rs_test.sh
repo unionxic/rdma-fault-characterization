@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # build_rs_test.sh - gin-restore work package 10: compile the test programs LOCALLY on rain (nice 19, idle I/O). COMPILE ONLY:
-# no library build on this branch, no GPU or RDMA program runs. Header trees are read through COPIES under
-# $SCR/agent_rs_test/ (nothing in agent_rs or agent_gd is written).
+# no library build here, no GPU or RDMA program runs. Header trees are read through COPIES under $SCR/agent_rs_int/test/
+# (nothing in agent_rs_int's build, agent_rs_test or agent_gd is written). Integration (2026-10-12): the layer's headers and
+# research libnccl are the integrated tree's (agent_rs_int/build, impl/build_rs.sh); the outputs go to agent_rs_int/test/.
 #
-#   rs     gin_rs.cu against this layer's headers ($SCR/agent_rs/build/include) with -DNCCL_GIN_RESTORE_DEVICE (the
+#   rs     gin_rs.cu against this layer's headers ($SCR/agent_rs_int/build/include) with -DNCCL_GIN_RESTORE_DEVICE (the
 #          build-time opt-in, EXPERIMENT.md 12 choice (b)), linked to the layer's research libnccl -> out/<RSTOUT>/gin_rs
 #   nomacro  the same source against this layer's headers without the macro -> out/<RSTOUT>/gin_rs_nomacro (the no-macro
 #          refusal cell)
@@ -22,9 +23,9 @@ SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b
 D=$(cd "$(dirname "$0")" && pwd)
 CUDA=/usr/local/cuda-12.8
 GENCODE="-gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_86,code=sm_86"
-RSINC=$SCR/agent_rs/build/include; RSLIB=$SCR/agent_rs/build/lib
+RSINC=$SCR/agent_rs_int/build/include; RSLIB=$SCR/agent_rs_int/build/lib
 HKINC=$SCR/agent_gd/gin_hk/build/include; HKLIB=$SCR/agent_gd/gin_hk/build/lib
-W=$SCR/agent_rs_test
+W=$SCR/agent_rs_int/test
 OUT=$W/out/${RSTOUT:-rs}
 md5() { md5sum < "$1" | cut -c1-32; }
 ndigest() { (cd "$1" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32); }
