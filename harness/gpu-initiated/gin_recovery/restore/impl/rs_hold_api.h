@@ -36,9 +36,10 @@
 #include <stdint.h>
 
 // ---- helper-socket records of the restore (struct gdakiTsMsg, fixed size, magic GDAKI_TS_MAGIC) ----
-// hk uses types 1..10. The restore's records use 11..63: this branch 11..20, the dev branch 21..31 (its LOG_REQ and any
-// other record of its own), the spare branch 32..47 (impl/rs_spare_api.h: REJOIN 32 .. RESTORED 37); 48..63 are free.
-// The spare's activation is not a helper-socket record (struct gdakiRsActivate on the spare's own port).
+// hk uses types 1..10. The restore's records use 11..63: this branch 11..20, the spare branch 32..47 (impl/rs_spare_api.h:
+// REJOIN 32 .. RESTORED 37), the dev branch 56..63 (impl/rs_log_api.h: reserved, none used yet); 21..31 and 48..55 are
+// free. The spare's activation is not a helper-socket record (struct gdakiRsActivate on the spare's own port), and the
+// log export and the checkpoint blocks go over the data socket (work package 5), not the helper socket.
 enum : uint32_t {
   GDAKI_TS_CKPT_PAUSE = 11,   // r -> every peer q: checkpoint k's input pause (work package 5)
   GDAKI_TS_PAUSED = 12,       // q -> r: paused; its log write position, messages sent to r, executed from r; armable
