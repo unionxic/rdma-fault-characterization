@@ -1,5 +1,5 @@
 diff --git a/src/gin/gin_host.cc b/src/gin/gin_host.cc
-index 2f8749f..511dd7b 100644
+index 2f8749f..b5f6cbc 100644
 --- a/src/gin/gin_host.cc
 +++ b/src/gin/gin_host.cc
 @@ -14,6 +14,9 @@
@@ -12,7 +12,7 @@ index 2f8749f..511dd7b 100644
  #include <cmath>
  
  NCCL_PARAM(GinEnable, "GIN_ENABLE", 1);
-@@ -606,3 +609,79 @@ ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError
+@@ -606,3 +609,82 @@ ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError
    }
    return ncclSuccess;
  }
@@ -85,6 +85,9 @@ index 2f8749f..511dd7b 100644
 +      f.ginType = (int)gs->backends[devComm->backendIndex].ginType;
 +    f.ctxStride = devComm->ginContextStride;
 +    f.lsaSize = devComm->lsaSize;
++    if (devComm->resourceWindow != nullptr)  // this rank's address of it, as ncclDevCommCreate computes it (dev_runtime.cc)
++      f.resAddr = add4G(devComm->resourceWindow_inlined.lsaFlatBase,
++                        devComm->lsaRank * (int)devComm->resourceWindow_inlined.stride4G);
 +  }
 +  f.numRmaCtx = comm->config.numRmaCtx;
 +  f.runtimeConn = comm->runtimeConn ? 1 : 0;
@@ -93,10 +96,10 @@ index 2f8749f..511dd7b 100644
 +  return ncclGinGdakiRestoreResume((void*)comm, &f, ginRestoreExchange, ginRestoreAbortComm, step, blob, bytes);
 +}
 diff --git a/src/include/gin/gin_host.h b/src/include/gin/gin_host.h
-index 86abd02..87df6ae 100644
+index 86abd02..fb2d480 100644
 --- a/src/include/gin/gin_host.h
 +++ b/src/include/gin/gin_host.h
-@@ -83,4 +83,30 @@ ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError
+@@ -83,4 +83,31 @@ ncclResult_t ncclGinQueryLastError(struct ncclGinState* ginState, bool* hasError
  
  ncclResult_t ncclGinSetDefaultBackend(struct ncclComm* comm, uint64_t globalBitmask);
  
@@ -120,6 +123,7 @@ index 86abd02..87df6ae 100644
 +  int nvls;                   // NVLS support is on
 +  int lsaSize;                // the devComm's LSA team size
 +  int symGinDevComm;          // NCCL's symmetric kernels have a GIN devComm on this communicator
++  void* resAddr;              // the devComm's resource window, this rank's address (null: none)
 +};
 +ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCommFacts* facts,
 +                                       ncclResult_t (*exchange)(void* comm, void* data, int bytesPerRank),
@@ -127,6 +131,60 @@ index 86abd02..87df6ae 100644
 +                                       size_t* bytes);
 +
  #endif
+diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
+index a1916cc..00213ff 100644
+--- a/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
++++ b/src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
+@@ -219,6 +219,37 @@ struct ncclGinGdakiQ4 {
+   uint32_t sticky[NCCL_GIN_GDAKI_Q4_MAX_CTX];   // per GIN context: 1 once an error CQE was classified
+ };
+ 
++// gin-restore (rs, work package 3; EXPERIMENT.md 9.9, 9.11.5): the side table of one GDAKI context, in device memory,
++// zeroed at creation. Only a process that asks for the restore has one; elsewhere ncclGinGdakiGPUContext::restore is null.
++// A 64-byte header, then one ncclGinRsQp per QP of the context array (qp index = peer + context * nranks). The QP's
++// send-side log follows the format of the study's prototype (its LogRing: 64-byte entries and a payload ring). This build
++// allocates and zeroes it; the device code reads it from work package 4 on, the helper from work package 5 on (the layout
++// may change with them: every program is built with this layer's headers).
++#define NCCL_GIN_RS_SIDE_MAGIC 0x31535352u  // "RSS1"
++struct ncclGinRsSide {
++  uint32_t magic;
++  uint32_t nqp;
++  uint64_t fence;        // the 8-byte READ target of the checkpoint's drain check (9.4 step 3; in the strict loopback MR)
++  uint64_t reserved[6];
++};
++struct ncclGinRsQp {
++  uint64_t head;         // log entries reserved (device, atomic add)
++  uint64_t payHead;      // log payload bytes reserved (device, atomic add)
++  uint64_t msgs;         // request messages logged (device, atomic add)
++  uint64_t tail;         // first entry kept (host, at the peer's stable checkpoint)
++  uint64_t payTail;      // first payload byte kept (host)
++  uint64_t ovfSeq;       // 1 + the highest entry number that could not be logged (0: none)
++  void* entries;         // nEntries entries of 64 bytes (null: this QP has no log, e.g. this rank's own)
++  void* pay;             // payBytes bytes
++  uint64_t payBytes;     // power of two
++  uint32_t nEntries;     // power of two
++  uint32_t logOn;        // the helper sets it in the QP's first checkpoint input pause; the device logs only then
++  uint64_t suppress;     // request messages the spare process still holds back on this QP (0 otherwise)
++  uint64_t reserved[5];
++};
++static_assert(sizeof(struct ncclGinRsSide) == 64, "the side table header is 64 bytes");
++static_assert(sizeof(struct ncclGinRsQp) == 128, "a side table QP entry is 128 bytes");
++
+ struct ncclGinGdakiGPUContext {
+   struct doca_gpu_dev_verbs_qp* gdqp;
+   struct doca_gpu_dev_verbs_qp* companion_gdqp;
+@@ -233,6 +264,11 @@ struct ncclGinGdakiGPUContext {
+   uint64_t* last_visible_get; // per-peer
+ 
+   struct ncclGinGdakiQ4* fault; // GIN Q4: nullptr unless NCCL_GIN_FAULT_CLASSIFY=1 (research build)
++  // gin-restore (rs): the side table, null unless this process asks for the restore. Appended without a context-layout
++  // version change (user decision 2026-10-12, EXPERIMENT.md 9.11.5): a program must be built with these headers; one built
++  // with older headers and more than one context would misread contexts from index 1 on (not supported). Written once,
++  // before the context is handed out; no device code reads it in this build.
++  struct ncclGinRsSide* restore;
+ };
+ 
+ struct ncclGinGdakiMemHandle {
 diff --git a/src/nccl.h.in b/src/nccl.h.in
 index f2149a2..209145c 100644
 --- a/src/nccl.h.in
@@ -169,7 +227,7 @@ index f2149a2..209145c 100644
  } // end extern "C"
  #endif
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 2760d43..2d28eee 100644
+index 2760d43..9f3a2ff 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -186,10 +186,11 @@ out:
@@ -185,7 +243,17 @@ index 2760d43..2d28eee 100644
  
    NOWARN(status = gdakiRegMrDmaBuf(mr, pd, addr, length, access), NCCL_NET);
    if (status == ncclSuccess) return ncclSuccess;
-@@ -426,6 +427,8 @@ static void gdakiTsStart(struct gdakiRecHost* r);
+@@ -328,6 +329,9 @@ public:
+   uint32_t* get_rkeys_d() {
+     return this->rkeys_hd_mhandle.gpu_buf;
+   }
++  // gin-restore (rs): the sizes of the buffer and of its rkey table, for the NIC copy path's MRs
++  size_t buffer_bytes() const { return (size_t)this->num_elements * sizeof(T); }
++  size_t rkeys_bytes() const { return this->num_elements == 0 ? 0 : (size_t)this->num_ranks * sizeof(uint32_t); }
+ 
+   GdakiGlobalGPUBufferTable() : cumemhandle(0), num_elements(0), next_unused_idx(0), gpu_ptr(nullptr), mr(nullptr) {};
+   ~GdakiGlobalGPUBufferTable() {
+@@ -426,6 +430,8 @@ static void gdakiTsStart(struct gdakiRecHost* r);
  static bool gdakiTsFree(struct gdakiRecHost* r);
  static inline void gdakiRecFwMark(struct gdakiRecHost* r);  // gin-harden: below
  static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollComm* cComm);
@@ -194,7 +262,80 @@ index 2760d43..2d28eee 100644
  static thread_local bool gdakiTsInHelper = false;  // the helper thread may call the gin_recovery host API
  static thread_local struct gdakiRecHost* gdakiTsOwner = nullptr;  // the helper's own context (gdakiRecFind)
  static ncclResult_t gdakiTsZeroDev(struct gdakiRecHost* r, void* dst, size_t n, uint8_t byte);
-@@ -1892,6 +1895,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
+@@ -1319,6 +1325,18 @@ struct gdakiRecHost {
+   // gin-remaining: the NIC copy path (struct gdakiLb). nullptr: every device-state copy is a stream copy (as before)
+   struct gdakiLb* lb = nullptr;
+   std::atomic<uint64_t> nStreamCopies{0}; // device-state copies that went through the private stream
++  // gin-restore (rs, work package 3): the side table and the send-side log rings of this context (one device allocation,
++  // a process that asks for the restore only). Owned here, not by the helper's state: freed in gdakiRecFree after the NIC
++  // copy path's MRs are gone, so the context's pointer to it never outlives it. rsPtrSet: written into every context of
++  // the device array (gdakiTsStart, last step before the helper starts).
++  void* rsAlloc = nullptr;         // the allocation (rsBytes + 4 KiB)
++  void* rsBase = nullptr;          // its first 4 KiB-aligned address: the side table (the NIC path registers whole pages)
++  size_t rsBytes = 0;              // a multiple of 4 KiB
++  bool rsPtrSet = false;
++  uint64_t rsWinSeq = 0;          // the window registry's sequence when this context started (later windows: "after")
++  bool rsLbOk = false;            // the restore buffers are in the NIC copy path's MRs and the side table read back
++  char rsLbWhy[128] = {0};        // why not
++  char rsSideWhy[128] = {0};      // why the side table is not set (empty: it is, or the process does not ask)
+ };
+ 
+ static std::mutex gdakiRecRegMu;
+@@ -1470,14 +1488,26 @@ struct gdakiLb {
+   size_t testBytes = 0, testNonzero = 0;
+   int testShadow = 0;               // gpu-detect: device QP structs that matched the host shadow (self-test, NIC only)
+   char why[224] = {0};              // why the path is off
++  // gin-restore (rs): in a process that asks for the restore, ncclGinRestoreResume adds the devComm's resource window
++  // while the helper reads the list: then the list's capacity is reserved at setup (its entries never move) and both sides
++  // take mrsMu. A fail-fast process never sets rsShared: no lock, as hk.
++  bool rsShared = false;
++  std::mutex mrsMu;
+ };
+ 
+ static bool gdakiLbOn(struct gdakiRecHost* r) { return r->lb != nullptr && r->lb->ok; }
+-static const struct gdakiLbMr* gdakiLbFind(struct gdakiLb* lb, uintptr_t a, size_t n) {
++static const struct gdakiLbMr* gdakiLbFindLocked(struct gdakiLb* lb, uintptr_t a, size_t n) {
+   for (const auto& m : lb->mrs)
+     if (a >= m.lo && a + n <= m.hi) return &m;
+   return nullptr;
+ }
++static const struct gdakiLbMr* gdakiLbFind(struct gdakiLb* lb, uintptr_t a, size_t n) {
++  if (lb->rsShared) {  // gin-restore (rs): see gdakiLb::rsShared
++    std::lock_guard<std::mutex> lk(lb->mrsMu);
++    return gdakiLbFindLocked(lb, a, n);
++  }
++  return gdakiLbFindLocked(lb, a, n);
++}
+ 
+ // The path goes off: both loopback QPs to ERR (an error completion put one there already; nothing more lands after
+ // this), one WARN. Later copies use the private stream.
+@@ -1496,10 +1526,12 @@ static void gdakiLbOff(struct gdakiRecHost* r, const char* why) {
+        r->ctx ? r->ctx->rank : -1, lb->why, gdakiQ4MonoMs());
+ }
+ 
+-// Register the GPU allocation that holds [p, p + n), once (setup only).
+-static ncclResult_t gdakiLbAddRange(struct gdakiLb* lb, const void* p, size_t n, const char* what) {
++// Register the GPU allocation that holds [p, p + n), once (setup only; gin-restore: also ncclGinRestoreResume, under
++// lb->mrsMu, with whyOut so that the path's own reason stays the helper's).
++static ncclResult_t gdakiLbAddRange(struct gdakiLb* lb, const void* p, size_t n, const char* what,
++                                    char* whyOut = nullptr, size_t whyLen = 0) {
+   const uintptr_t a = (uintptr_t)p;
+-  if (p == nullptr || n == 0 || gdakiLbFind(lb, a, n) != nullptr) return ncclSuccess;
++  if (p == nullptr || n == 0 || gdakiLbFindLocked(lb, a, n) != nullptr) return ncclSuccess;
+   static const uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE);
+   const int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;  // strict ordering
+   CUdeviceptr base = 0;
+@@ -1543,7 +1575,8 @@ static ncclResult_t gdakiLbAddRange(struct gdakiLb* lb, const void* p, size_t n,
+     }
+   }
+   if (m.mr == nullptr) {
+-    snprintf(lb->why, sizeof(lb->why), "cannot register the GPU memory of the %s (errno %d)", what, errno);
++    if (whyOut != nullptr) snprintf(whyOut, whyLen, "cannot register the GPU memory of the %s (errno %d)", what, errno);
++    else snprintf(lb->why, sizeof(lb->why), "cannot register the GPU memory of the %s (errno %d)", what, errno);
+     return ncclSystemError;
+   }
+   m.sample = a;
+@@ -1892,6 +1925,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
    if (r == nullptr) return;
    if (g->q4 == nullptr) {
      WARN("GIN/REC: NCCL_GIN_FAULT_RECOVERY=1 needs NCCL_GIN_FAULT_CLASSIFY=1; recovery disabled on rank %d", g->rank);
@@ -203,7 +344,7 @@ index 2760d43..2d28eee 100644
      gdakiTsFree(r);
      delete r;
      g->rec = nullptr;
-@@ -1903,6 +1908,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
+@@ -1903,6 +1938,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
    if (cudaStreamCreateWithFlags(&r->stream, cudaStreamNonBlocking) != cudaSuccess ||
        cudaHostAlloc((void**)&r->pinned, r->pinnedSize, cudaHostAllocDefault) != cudaSuccess) {
      WARN("GIN/REC: could not allocate the recovery stream/staging; recovery disabled on rank %d", g->rank);
@@ -212,7 +353,18 @@ index 2760d43..2d28eee 100644
      if (r->stream) cudaStreamDestroy(r->stream);
      gdakiTsFree(r);
      delete r;
-@@ -2685,6 +2692,403 @@ enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };
+@@ -1956,6 +1993,10 @@ static bool gdakiRecFree(struct gdakiRecHost* r) {
+   if (r->copyEv) cudaEventDestroy(r->copyEv);  // gin-harden
+   if (r->stream) cudaStreamDestroy(r->stream);
+   if (r->pinned) cudaFreeHost(r->pinned);
++  if (r->rsAlloc != nullptr) {  // gin-restore (rs): the side table and log rings, after the NIC path's MRs are gone and
++    (void)cudaFree(r->rsAlloc);  // once the context is not kept
++    r->rsAlloc = nullptr;
++  }
+   INFO(NCCL_NET, "GIN/REC: closed: %d commit(s), %d abort(s)", r->nCommits, r->nAborts);
+   delete r;
+   return false;
+@@ -2685,6 +2726,530 @@ enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };
  static const char* gdakiPolicyName(int p) { return p == GDAKI_POLICY_HOLD ? "hold" : "failfast"; }
  static int gdakiPolicyEffOf(struct gdakiRecHost* r);  // below (needs gdakiTs)
  
@@ -386,6 +538,15 @@ index 2760d43..2d28eee 100644
 +  long long restoreMs = 20000;   // NCCL_GIN_RESTORE_MS
 +  long long holdMs = 30000;      // NCCL_GIN_TS_HOLD_MS as the context uses it
 +  bool lbOn = true;              // the NIC copy path is set up and self-tested
++  // work package 3: the side table and the restore buffers in the NIC copy path's MRs
++  bool sideOk = true;            // the side table was set up and its pointer written into every context
++  const char* sideWhy = nullptr; // why not
++  bool rsLbOk = true;            // the restore buffers are in the NIC copy path's MRs (and the side table read back)
++  const char* rsLbWhy = nullptr; // why not
++  int winsAfter = 0;             // user windows registered after this context (the devComm's resource window excepted)
++  int winsGone = 0;              // windows of this context's MRs deregistered since
++  bool resOk = true;             // the devComm's resource window was added to the NIC copy path's MRs (or it has none)
++  const char* resWhy = nullptr;  // why not
 +  bool escalated = false;        // the round cap stopped recovery on this context
 +};
 +enum { GDAKI_RS_L_OK = 0 };
@@ -428,10 +589,77 @@ index 2760d43..2d28eee 100644
 +  GDAKI_RS_L(in.restoreMs <= 0 || in.restoreMs >= in.holdMs,
 +             "NCCL_GIN_RESTORE_MS (%lld) is not between 0 and NCCL_GIN_TS_HOLD_MS (%lld)", in.restoreMs, in.holdMs);
 +  GDAKI_RS_L(!in.lbOn, "the NIC copy path is off (its setup or self-test failed, or it was turned off)");
++  GDAKI_RS_L(!in.sideOk, "the side table is not set up on this rank (%s)", in.sideWhy ? in.sideWhy : "unknown");
++  GDAKI_RS_L(!in.rsLbOk, "the restore buffers are not in the NIC copy path (%s)", in.rsLbWhy ? in.rsLbWhy : "unknown");
++  GDAKI_RS_L(in.winsAfter > 0, "%d window(s) were registered after the devComm's GDAKI context (their rkey tables are "
++             "not in the NIC copy path)", in.winsAfter);
++  GDAKI_RS_L(in.winsGone > 0, "%d window(s) of this context's restore buffers were deregistered", in.winsGone);
++  GDAKI_RS_L(!in.resOk, "the devComm's resource window could not be added to the NIC copy path (%s)",
++             in.resWhy ? in.resWhy : "unknown");
 +  GDAKI_RS_L(in.escalated, "the round cap stopped recovery on this context (NCCL_GIN_TS_ESCALATE_ROUNDS)");
 +#undef GDAKI_RS_L
 +  snprintf(why, whyLen, "this rank can enable the restore");
 +  return GDAKI_RS_L_OK;
++}
++
++// The layout of one allocation that holds the side table (a 64-byte header, nqp QP entries of 128 bytes) and, for each
++// of the nLogged QPs, an entry ring (nEntries x 64 bytes) and a payload ring (payBytes): sizes are rounded down to powers
++// of two and bounded (entries 64 .. 2^20, payload 4 KiB .. 1 GiB), rings start 256-byte aligned. False: too large.
++struct gdakiRsSideLayout {
++  size_t qpOff = 0, ringsOff = 0, ringBytes = 0, bytes = 0;
++  uint32_t nEntries = 0;
++  uint64_t payBytes = 0;
++};
++static uint64_t gdakiRsPow2Floor(uint64_t v) {
++  uint64_t p = 1;
++  while (p <= v / 2) p <<= 1;
++  return p;
++}
++static bool gdakiRsSideLayoutOf(int nqp, int nLogged, long long entriesVar, long long bytesVar,
++                                struct gdakiRsSideLayout* L) {
++  if (nqp < 0 || nLogged < 0 || nLogged > nqp) return false;
++  const uint64_t e = gdakiRsPow2Floor((uint64_t)std::min<long long>(std::max<long long>(entriesVar, 64), 1LL << 20));
++  const uint64_t b = gdakiRsPow2Floor((uint64_t)std::min<long long>(std::max<long long>(bytesVar, 4096), 1LL << 30));
++  L->nEntries = (uint32_t)e;
++  L->payBytes = b;
++  L->qpOff = 64;
++  L->ringsOff = (L->qpOff + (size_t)nqp * 128 + 255) & ~(size_t)255;
++  L->ringBytes = (size_t)(e * 64 + b);
++  const unsigned long long total = (unsigned long long)L->ringsOff + (unsigned long long)nLogged * L->ringBytes;
++  if (total > (1ULL << 40)) return false;
++  L->bytes = (size_t)((total + 4095) & ~4095ULL);  // whole pages (the NIC copy path registers pages)
++  return true;
++}
++
++// Resume's view of the windows of a context's collComm (work package 3): windows registered after the context (seq above
++// ctxSeq, still registered; the devComm's resource window excepted), windows the context covered that were deregistered
++// since, and the resource window, found by an address inside its range (resAddr 0: the devComm has none). res >= 0: the
++// resource window was registered after the context (Resume adds its rkey table to the NIC copy path's MRs).
++struct gdakiRsWinView {
++  uintptr_t lo, hi;
++  uint64_t seq, goneSeq;
++  bool gone;
++};
++struct gdakiRsWinCount {
++  int after = 0, goneSince = 0;
++  bool resFound = false;
++  int res = -1;
++};
++static struct gdakiRsWinCount gdakiRsCountWins(const struct gdakiRsWinView* w, int n, uint64_t ctxSeq, uintptr_t resAddr) {
++  struct gdakiRsWinCount c;
++  c.resFound = resAddr == 0;
++  for (int i = 0; i < n; i++) {
++    const bool isRes = resAddr != 0 && resAddr >= w[i].lo && resAddr < w[i].hi && !w[i].gone;
++    if (isRes) {
++      c.resFound = true;
++      if (w[i].seq > ctxSeq) c.res = i;
++    } else if (w[i].seq > ctxSeq && !w[i].gone) {
++      c.after++;
++    } else if (w[i].seq <= ctxSeq && w[i].gone && w[i].goneSeq > ctxSeq) {
++      c.goneSince++;
++    }
++  }
++  return c;
 +}
 +
 +// One rank's record in the Resume exchange (fixed size; every rank runs the same library, 9.10.8 K16).
@@ -596,6 +824,57 @@ index 2760d43..2d28eee 100644
 +
 +static bool gdakiRsRequested() { return gdakiRsProc().requested; }
 +
++// gin-restore (rs, work package 3): the GDAKI windows of a process that asks for the restore (ncclGinGdakiRegMrSym and
++// DeregMrSym; a fail-fast process records nothing). A context adds the rkey tables of the windows registered on its
++// collComm before it to the NIC copy path's MRs (9.10.4, 9.11.5: the rkey of a revived rank is written there); a window
++// registered after the context is not covered (Resume refuses), except the devComm's resource window, which Resume adds
++// (9.10.8). seq orders registrations; a deregistered window stays listed as gone until its collComm's contexts are gone.
++NCCL_PARAM(GinRestoreLogEntries, "GIN_RESTORE_LOG_ENTRIES", 4096);   // send-side log entries per QP (power of two)
++NCCL_PARAM(GinRestoreLogBytes, "GIN_RESTORE_LOG_BYTES", 1 << 20);    // send-side log payload bytes per QP (power of two)
++struct gdakiRsWin {
++  void* coll = nullptr;        // the GIN collComm it was registered on
++  void* mhandle = nullptr;     // its gdaki_mem_handle
++  uintptr_t lo = 0, hi = 0;    // the registered range
++  void* rkeys = nullptr;       // its rkey table (device), nranks entries
++  size_t rkeysBytes = 0;
++  uint64_t seq = 0;
++  bool gone = false;
++  uint64_t goneSeq = 0;        // the sequence when it was deregistered
++};
++static std::mutex gdakiRsWinMu;
++static std::vector<struct gdakiRsWin> gdakiRsWins;
++static uint64_t gdakiRsWinSeq = 0;  // gdakiRsWinMu
++static void gdakiRsWinNote(void* coll, void* mhandle, const void* data, size_t size, void* rkeys, size_t rkeysBytes) {
++  std::lock_guard<std::mutex> lk(gdakiRsWinMu);
++  struct gdakiRsWin w;
++  w.coll = coll;
++  w.mhandle = mhandle;
++  w.lo = (uintptr_t)data;
++  w.hi = (uintptr_t)data + size;
++  w.rkeys = rkeys;
++  w.rkeysBytes = rkeysBytes;
++  w.seq = ++gdakiRsWinSeq;
++  gdakiRsWins.push_back(w);
++}
++static void gdakiRsWinGone(void* mhandle) {
++  std::lock_guard<std::mutex> lk(gdakiRsWinMu);
++  for (auto& w : gdakiRsWins)
++    if (w.mhandle == mhandle && !w.gone) {
++      w.gone = true;
++      w.goneSeq = ++gdakiRsWinSeq;
++    }
++}
++static uint64_t gdakiRsWinSeqNow() {
++  std::lock_guard<std::mutex> lk(gdakiRsWinMu);
++  return gdakiRsWinSeq;
++}
++static void gdakiRsWinForgetColl(void* coll) {  // the collComm's last context is gone
++  std::lock_guard<std::mutex> lk(gdakiRsWinMu);
++  gdakiRsWins.erase(std::remove_if(gdakiRsWins.begin(), gdakiRsWins.end(),
++                                   [&](const struct gdakiRsWin& w) { return w.coll == coll; }),
++                    gdakiRsWins.end());
++}
++
 +// Report of one GDAKI window MR of a process under hold or in spare mode (a fail-fast process writes nothing, as hk):
 +// strict = the ordering asked of gdakiRegMr, forced = the restore request makes it strict whatever the flags,
 +// flag_strict = the window flags asked for strict, ro = IBV_ACCESS_RELAXED_ORDERING in the access flags gdakiRegMr actually
@@ -616,7 +895,7 @@ index 2760d43..2d28eee 100644
  // ---- gin-harden: the user devComm abort word of a communicator ----
  // One host-pinned word per communicator (ncclCudaHostCalloc, read by the device through UVA), created for the first
  // user devComm (dev_runtime.cc) and freed with the communicator (init.cc commFree). Raised once, never cleared, always
-@@ -6604,13 +7008,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6604,13 +7169,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    }
    // gpu-detect (hk, G1): this rank's fault policy (default failfast); every rank compares the record's values after the
    // all-gather. A rank that differs makes the context fail-fast. hold needs the restore layer: fail-fast in this build.
@@ -636,7 +915,7 @@ index 2760d43..2d28eee 100644
    mine.policy = (uint32_t)polReq;
    int ls = -1;
    int boundPort = 0;
-@@ -6659,6 +7062,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6659,6 +7223,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
        });
      }
    }
@@ -649,7 +928,7 @@ index 2760d43..2d28eee 100644
    ncclResult_t ret = cComm->allGather(cComm, &mine, all.data(), sizeof(mine));
    if (ret != ncclSuccess) {
      if (ls >= 0) close(ls);
-@@ -6667,6 +7076,31 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6667,6 +7237,31 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    uint64_t nonce = 0x6e6f6e6365ull;  // gin-harden: every rank's salt, in rank order: the same on every rank
    for (int p = 0; p < nranks; p++) nonce = gdakiTsMix64(nonce ^ all[p].salt);
    if (nonce == 0) nonce = 1;
@@ -681,7 +960,7 @@ index 2760d43..2d28eee 100644
    const uint32_t ctxSeq = (uint32_t)(nonce & 0x7fffffffu);  // display only (HELLO.arg); the nonce is checked
    struct gdakiTs* ts = nullptr;
    const double deadline = gdakiQ4MonoMs() + (double)ncclParamGinTsConnectMs();
-@@ -6750,6 +7184,14 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6750,6 +7345,14 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    }
    if (why != nullptr) {
      WARN("GIN/TS: transparent recovery OFF on rank %d: %s", rank, why);
@@ -696,7 +975,7 @@ index 2760d43..2d28eee 100644
      if (ts) {
        for (auto& pe : ts->peers)
          if (pe.fd >= 0) gdakiTsByeClose(pe.fd, rank, nonce);  // gin-harden: the peers read "left", not death
-@@ -6777,9 +7219,13 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6777,9 +7380,13 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    if (!ts->policyAgreed)
      WARN("GIN/TS: rank %d: NCCL_GIN_FAULT_POLICY differs across ranks (this rank %s, rank %d %s); fail-fast", rank,
           gdakiPolicyName(polReq), polOther, gdakiPolicyName((int)all[polOther].policy));
@@ -713,7 +992,140 @@ index 2760d43..2d28eee 100644
    r->ts = ts;
    return ncclSuccess;
  }
-@@ -7304,6 +7750,8 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+@@ -7201,6 +7808,132 @@ static void gdakiLbSetup(struct gdakiRecHost* r) {
+               lb->nPeermem, lb->testBytes, lb->testNonzero, lb->testShadow, gdakiQ4MonoMs() - t0, gdakiQ4MonoMs());
+ }
+ 
++// gin-restore (rs, work package 3; EXPERIMENT.md 9.9, 9.10.4, 9.11.5): in a process that asks for the restore, once the
++// gates are set and before the helper starts (single-threaded): (1) one device allocation holds the side table and a
++// send-side log (entry ring, payload ring) for every gated peer's QP, zeroed; (2) the restore buffers go into the NIC copy
++// path's MRs (that allocation, the signal and counter tables and their rkey tables, the rkey tables of the windows
++// registered on this collComm before this context) and the side table's fence word is read back over the NIC; the list's
++// capacity is reserved and later lookups lock (gdakiLb::rsShared); (3) the side table's address goes into every context
++// of the device array with one synchronous copy each (and the host copy), the last step, so a context never points at
++// memory that is not set up. Any failure leaves the pointer null and is reported by ncclGinRestoreResume. A fail-fast
++// process does none of this: the pointer stays the zero the array was created with.
++static void gdakiRsStart(struct gdakiRecHost* r) {
++  if (!gdakiRsRequested()) return;
++  struct gdakiTs* ts = r->ts;
++  struct gdaki_context* g = r->ctx;
++  r->rsWinSeq = gdakiRsWinSeqNow();
++  char why[128] = {0};
++  const int nqp = (int)r->qps.size();
++  std::vector<uint8_t> logged((size_t)nqp, 0);
++  int nLogged = 0;
++  for (int p = 0; p < (int)ts->peers.size(); p++) {
++    if (!ts->peers[p].gated) continue;
++    gdakiRecForPeer(r, p, [&](gdakiRecQp& rq, struct doca_gpu_verbs_qp_hl*) {
++      if (rq.qpIdx >= 0 && rq.qpIdx < nqp && !logged[(size_t)rq.qpIdx]) {
++        logged[(size_t)rq.qpIdx] = 1;
++        nLogged++;
++      }
++    });
++  }
++  struct gdakiRsSideLayout L;
++  if (g->backendVersion != NCCL_GIN_GDAKI_GPU_CONTEXT_VERSION) {
++    snprintf(why, sizeof(why), "the program's GPU context version is %d", g->backendVersion);
++  } else if (!gdakiRsSideLayoutOf(nqp, nLogged, (long long)ncclParamGinRestoreLogEntries(),
++                                  (long long)ncclParamGinRestoreLogBytes(), &L)) {
++    snprintf(why, sizeof(why), "the side table and log rings would be too large");
++  } else if (cudaMalloc(&r->rsAlloc, L.bytes + 4096) != cudaSuccess) {
++    r->rsAlloc = nullptr;
++    snprintf(why, sizeof(why), "cannot allocate %zu bytes for the side table and log rings", L.bytes);
++  } else {
++    r->rsBase = (void*)(((uintptr_t)r->rsAlloc + 4095) & ~(uintptr_t)4095);  // as the rescue block
++    r->rsBytes = L.bytes;
++    std::vector<char> img(L.ringsOff, 0);
++    struct ncclGinRsSide* h = (struct ncclGinRsSide*)img.data();
++    h->magic = NCCL_GIN_RS_SIDE_MAGIC;
++    h->nqp = (uint32_t)nqp;
++    char* const base = (char*)r->rsBase;
++    size_t ring = L.ringsOff;
++    for (int i = 0; i < nqp; i++) {
++      struct ncclGinRsQp* q = (struct ncclGinRsQp*)(img.data() + L.qpOff) + i;
++      if (!logged[(size_t)i]) continue;
++      q->entries = base + ring;
++      q->pay = base + ring + (size_t)L.nEntries * 64;
++      q->nEntries = L.nEntries;
++      q->payBytes = L.payBytes;
++      ring += L.ringBytes;
++    }
++    if (cudaMemsetAsync(r->rsBase, 0, L.bytes, r->stream) != cudaSuccess ||
++        cudaMemcpyAsync(r->rsBase, img.data(), img.size(), cudaMemcpyHostToDevice, r->stream) != cudaSuccess ||
++        cudaStreamSynchronize(r->stream) != cudaSuccess)
++      snprintf(why, sizeof(why), "cannot initialize the side table");
++  }
++  const bool sideOk = why[0] == '\0';
++  // (2) the restore buffers in the NIC copy path's MRs (still single-threaded: the helper has not started)
++  char lbWhy[128] = {0};
++  if (!sideOk) snprintf(lbWhy, sizeof(lbWhy), "no side table");
++  else if (!gdakiLbOn(r)) snprintf(lbWhy, sizeof(lbWhy), "the NIC copy path is off");
++  else {
++    struct gdakiLb* lb = r->lb;
++    auto add = [&](const void* a, size_t n, const char* what) {
++      if (lbWhy[0] == '\0' && a != nullptr && n != 0) (void)gdakiLbAddRange(lb, a, n, what, lbWhy, sizeof(lbWhy));
++    };
++    add(r->rsBase, r->rsBytes, "side table and log rings");
++    if (g->signals_table) {
++      add(g->signals_table->gpu_ptr, g->signals_table->buffer_bytes(), "signal table");
++      add(g->signals_table->get_rkeys_d(), g->signals_table->rkeys_bytes(), "signal table's rkey table");
++    }
++    if (g->counters_table) {
++      add(g->counters_table->gpu_ptr, g->counters_table->buffer_bytes(), "counter table");
++      add(g->counters_table->get_rkeys_d(), g->counters_table->rkeys_bytes(), "counter table's rkey table");
++    }
++    {
++      std::lock_guard<std::mutex> lk(gdakiRsWinMu);
++      for (const auto& w : gdakiRsWins)
++        if (w.coll == (void*)g->collComm && !w.gone && w.seq <= r->rsWinSeq) add(w.rkeys, w.rkeysBytes, "window rkey table");
++    }
++    if (lbWhy[0] == '\0') {  // the side table's fence word, read back over the NIC (zero)
++      bool fallback = false;
++      const struct ncclGinRsSide* side = (const struct ncclGinRsSide*)r->rsBase;
++      if (gdakiLbXfer(r, false, &side->fence, sizeof(uint64_t), &fallback) != ncclSuccess)
++        snprintf(lbWhy, sizeof(lbWhy), "the NIC copy path could not read the side table");
++      else {
++        uint64_t v = 1;
++        memcpy(&v, r->pinned, sizeof(v));
++        if (v != 0) snprintf(lbWhy, sizeof(lbWhy), "the side table read back over the NIC is not zero");
++      }
++    }
++    lb->mrs.reserve(lb->mrs.size() + 16);  // the devComm's resource window comes later (ncclGinRestoreResume)
++    lb->rsShared = true;
++  }
++  r->rsLbOk = lbWhy[0] == '\0';
++  snprintf(r->rsLbWhy, sizeof(r->rsLbWhy), "%s", r->rsLbOk ? "" : lbWhy);
++  // (3) the side table's address into every context of the device array, and the host copy
++  if (sideOk) {
++    struct ncclGinRsSide* side = (struct ncclGinRsSide*)r->rsBase;
++    struct ncclGinGdakiGPUContext* dev = (struct ncclGinGdakiGPUContext*)g->gin_gdaki_gpu_ctx_hd_mhandle->gpu_buf;
++    struct ncclGinGdakiGPUContext* host = (struct ncclGinGdakiGPUContext*)g->gin_gdaki_gpu_ctx_hd_mhandle->host_buf;
++    bool ok = true;
++    for (int c = 0; c < g->nContexts && ok; c++)
++      ok = cudaMemcpyAsync(&dev[c].restore, &side, sizeof(side), cudaMemcpyHostToDevice, r->stream) == cudaSuccess &&
++           cudaStreamSynchronize(r->stream) == cudaSuccess;
++    if (ok) {
++      for (int c = 0; c < g->nContexts; c++) host[c].restore = side;
++      r->rsPtrSet = true;
++    } else {
++      snprintf(why, sizeof(why), "cannot write the side table's address into the GPU context");
++      struct ncclGinRsSide* zero = nullptr;  // no context may keep a pointer the restore does not stand behind
++      for (int c = 0; c < g->nContexts; c++) {
++        (void)cudaMemcpyAsync(&dev[c].restore, &zero, sizeof(zero), cudaMemcpyHostToDevice, r->stream);
++        (void)cudaStreamSynchronize(r->stream);
++      }
++    }
++  }
++  snprintf(r->rsSideWhy, sizeof(r->rsSideWhy), "%s", why);
++  GIN_TS_NOTE("GIN/RS: rank %d: side table %s bytes=%zu qps=%d logged=%d entries=%u pay_bytes=%lu restore_buffers_in_nic_path=%d%s%s",
++              g->rank, r->rsPtrSet ? "set" : "not set", r->rsBytes, nqp, nLogged, sideOk ? L.nEntries : 0u,
++              sideOk ? (unsigned long)L.payBytes : 0ul, (int)r->rsLbOk, r->rsLbOk ? "" : " why=", r->rsLbOk ? "" : r->rsLbWhy);
++}
++
+ static void gdakiTsStart(struct gdakiRecHost* r) {
+   if (r == nullptr || r->ts == nullptr) return;
+   struct gdakiTs* ts = r->ts;
+@@ -7304,6 +8037,8 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
    }
    if (!ok) {
      WARN("GIN/TS: transparent recovery OFF on rank %d (gate setup failed)", g->rank);
@@ -722,15 +1134,24 @@ index 2760d43..2d28eee 100644
      gdakiTsCloseListen(ts->listenFd, g->rank, ts->nonce);  // gin-harden: BYE, not a reset, for a pending connection
      ts->listenFd = -1;
      if (r->copyStuck && r->copyEv != nullptr) {  // gin-harden: the gate writes below need the late copy done (bounded)
-@@ -7455,6 +7903,7 @@ static void gdakiDetTeardownLine(struct gdakiTs* ts, int rank) {
+@@ -7330,6 +8065,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+     r->ts = nullptr;
+     return;
+   }
++  gdakiRsStart(r);  // gin-restore (rs, work package 3; a fail-fast process: nothing)
+   ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
+   ts->active.store(1, std::memory_order_release);
+   ts->th = std::thread(gdakiTsMain, r);
+@@ -7455,6 +8191,8 @@ static void gdakiDetTeardownLine(struct gdakiTs* ts, int rank) {
  extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
    std::vector<struct gdakiRecHost*> rs;
    int orphansOnColl = 0;
 +  if (commKey != nullptr) gdakiRsForget(commKey, nullptr);  // gin-restore (rs): the restore entries of this communicator
++  if (collComm != nullptr && gdakiRsRequested()) gdakiRsWinForgetColl(collComm);  // gin-restore (rs): its windows
    {
      std::lock_guard<std::mutex> lk(gdakiRecRegMu);
      for (auto* r : gdakiRecReg)
-@@ -7652,6 +8101,207 @@ ncclResult_t ncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* st
+@@ -7652,6 +8390,268 @@ ncclResult_t ncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* st
    return ncclSuccess;
  }
  
@@ -843,6 +1264,9 @@ index 2760d43..2d28eee 100644
 +  struct gdakiRecHost* rFound = nullptr;
 +  bool asyncSet = false;
 +  char told[160];
++  char sideWhy[128] = {0}, rsLbWhy[128] = {0}, resWhy[128] = {0};
++  uint64_t ctxSeq = 0;
++  void* ctxColl = nullptr;
 +  {
 +    std::lock_guard<std::mutex> lk(gdakiRecRegMu);
 +    for (auto* r : gdakiRecReg)
@@ -856,11 +1280,69 @@ index 2760d43..2d28eee 100644
 +      in.holdMs = ts->holdMs;         // set in gdakiTsSetup
 +      in.escalated = ts->escalated.load(std::memory_order_acquire);
 +      in.lbOn = rFound->lb != nullptr && __atomic_load_n(&rFound->lb->ok, __ATOMIC_ACQUIRE);
++      // work package 3 (set in gdakiTsStart before the helper ran)
++      in.sideOk = rFound->rsPtrSet;
++      snprintf(sideWhy, sizeof(sideWhy), "%s", rFound->rsSideWhy[0] ? rFound->rsSideWhy : "the process does not ask");
++      in.rsLbOk = rFound->rsLbOk;
++      snprintf(rsLbWhy, sizeof(rsLbWhy), "%s", rFound->rsLbWhy);
++      ctxSeq = rFound->rsWinSeq;
++      ctxColl = (void*)rFound->ctx->collComm;
 +    }
 +    if (rFound != nullptr && rFound->ctx != nullptr && rFound->ctx->q4 != nullptr &&
 +        rFound->ctx->q4->asyncResult != nullptr)
 +      asyncSet = __atomic_load_n(rFound->ctx->q4->asyncResult, __ATOMIC_ACQUIRE) != ncclSuccess;
 +  }
++  in.sideWhy = sideWhy;
++  in.rsLbWhy = rsLbWhy;
++  // work package 3: the windows of this context's collComm since the context started, and the devComm's resource window
++  // (registered after the context by ncclDevCommCreate, 9.10.8): added to the NIC copy path's MRs here, under the list's
++  // lock (the helper reads the list), only when everything before it is in place on this rank
++  void* resRkeys = nullptr;
++  size_t resRkeysBytes = 0;
++  bool resFound = f->resAddr == nullptr;
++  if (ctxColl != nullptr) {
++    std::lock_guard<std::mutex> lk(gdakiRsWinMu);
++    std::vector<struct gdakiRsWinView> v;
++    std::vector<const struct gdakiRsWin*> src;
++    for (const auto& w : gdakiRsWins)
++      if (w.coll == ctxColl) {
++        v.push_back({w.lo, w.hi, w.seq, w.goneSeq, w.gone});
++        src.push_back(&w);
++      }
++    const struct gdakiRsWinCount wc = gdakiRsCountWins(v.data(), (int)v.size(), ctxSeq, (uintptr_t)f->resAddr);
++    in.winsAfter = wc.after;
++    in.winsGone = wc.goneSince;
++    resFound = wc.resFound;
++    if (wc.res >= 0) {  // registered after the context: Resume adds it
++      resRkeys = src[(size_t)wc.res]->rkeys;
++      resRkeysBytes = src[(size_t)wc.res]->rkeysBytes;
++    }
++  }
++  if (!resFound) {
++    in.resOk = false;
++    snprintf(resWhy, sizeof(resWhy), "it is not among this process's GDAKI windows");
++  } else if (resRkeys != nullptr && c.requested && in.tsOn && in.sideOk && in.rsLbOk && in.lbOn) {
++    std::lock_guard<std::mutex> lk(gdakiRecRegMu);  // rFound stays registered (and its NIC path alive) while held
++    bool still = false;
++    for (auto* r : gdakiRecReg) still = still || r == rFound;
++    struct gdakiLb* lb = still ? rFound->lb : nullptr;
++    if (lb == nullptr || !lb->rsShared) {
++      in.resOk = false;
++      snprintf(resWhy, sizeof(resWhy), "the NIC copy path is gone");
++    } else {
++      std::lock_guard<std::mutex> ml(lb->mrsMu);
++      if (gdakiLbFindLocked(lb, (uintptr_t)resRkeys, resRkeysBytes) == nullptr) {
++        if (lb->mrs.size() >= lb->mrs.capacity()) {  // its entries must not move: the helper may hold a pointer to one
++          in.resOk = false;
++          snprintf(resWhy, sizeof(resWhy), "the NIC copy path's MR list is full");
++        } else if (gdakiLbAddRange(lb, resRkeys, resRkeysBytes, "resource window rkey table", resWhy, sizeof(resWhy)) !=
++                   ncclSuccess) {
++          in.resOk = false;
++        }
++      }
++    }
++  }
++  in.resWhy = resWhy;
 +  if (f->asyncErr != (int)ncclSuccess)  // the communicator's asynchronous error (ncclCommGetAsyncError, the entry)
 +    snprintf(told, sizeof(told), "the communicator has an asynchronous error: %s",
 +             ncclGetErrorString((ncclResult_t)f->asyncErr));
@@ -938,7 +1420,7 @@ index 2760d43..2d28eee 100644
  ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, void** outGinCtx,
                                         ncclNetDeviceHandle_t** outDevHandle) {
    ncclResult_t status = ncclSuccess;
-@@ -8281,6 +8931,7 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+@@ -8281,6 +9281,7 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
    gdaki_ctx->rec = nullptr;
    gdakiQ4Free(gdaki_ctx->q4);  // GIN Q4: stop the watcher before the QPs go away
    gdaki_ctx->q4 = nullptr;
@@ -946,7 +1428,7 @@ index 2760d43..2d28eee 100644
  
    if (gdaki_ctx->docaEvent) {
      doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
-@@ -8385,7 +9036,11 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8385,7 +9386,11 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
    __be32 rkey;
  
    struct gdaki_mem_handle* gdaki_mhandle = nullptr;
@@ -959,7 +1441,7 @@ index 2760d43..2d28eee 100644
  
    gdaki_mhandle = (struct gdaki_mem_handle*)calloc(1, sizeof(*gdaki_mhandle));
    EQCHECKGOTO(gdaki_mhandle, nullptr, status, out);
-@@ -8393,7 +9048,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8393,7 +9398,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
    NCCLCHECKGOTO(gdakiRegMr(&mr, cComm->ib.pd, data, size,
                             IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
                               IBV_ACCESS_REMOTE_ATOMIC,
@@ -968,11 +1450,21 @@ index 2760d43..2d28eee 100644
                  status, out);
  
    rkey = htobe32(mr->rkey);
-@@ -8413,6 +9068,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8413,6 +9418,9 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
  
    INFO(NCCL_NET, "[%d] Registered MR: data=%p, size=%zu, lkey(be32)=%#x, rkey(be32)=%#x", cComm->rank, data, size,
         htobe32(mr->lkey), htobe32(mr->rkey));
 +  gdakiRsWinReport(cComm->rank, size, flag_strict, force_strict_ordering, mr_access);  // gin-restore (rs): hold, spare
++  if (gdakiRsRequested())  // gin-restore (rs, work package 3): its rkey table, for the NIC copy path (fail-fast: nothing)
++    gdakiRsWinNote(collComm, gdaki_mhandle, data, size, rkeys_hd_mhandle->gpu_buf, (size_t)cComm->nranks * sizeof(__be32));
  
    *mhandle = (void*)gdaki_mhandle;
    *ginHandle = (void*)gdaki_mhandle_hd_mhandle->gpu_buf;
+@@ -8434,6 +9442,7 @@ ncclResult_t ncclGinGdakiDeregMrSym(void* collComm, void* mhandle) {
+ 
+   INFO(NCCL_NET, "[%d] Unregistering MR: lkey(be32)=%#x, rkey(be32)=%#x", cComm->rank, htobe32(mr->lkey),
+        htobe32(mr->rkey));
++  if (gdakiRsRequested()) gdakiRsWinGone(mhandle);  // gin-restore (rs, work package 3; fail-fast: nothing)
+ 
+   NCCLCHECK(wrap_ibv_dereg_mr(mr));
+ 
