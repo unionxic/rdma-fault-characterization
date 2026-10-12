@@ -19,8 +19,8 @@
 //      its GID/LID/MTU/ordering, its new listen address). q's accept step (gdakiTsReconnectStep) parks it per peer.
 //   2. q's state machine, on the held peer: gdakiRsRejoinAccept(r, p)  -> ACCEPTED: the socket is installed (death marks
 //      cleared, pe.addr = the spare's listen address, a new connection generation, REJOIN_ACK sent).
-//   3. (work packages 5 and 9: X_q, the log, the checkpoint; the spare's rkey list over the data socket:
-//      gdakiRsRkeysRecv)
+//   3. (work packages 5 and 9: X_q, the log, the checkpoint.) The spare sends its rkey list on the data socket right after
+//      REJOIN_ACK, before it waits for TOKEN; q reads it (gdakiRsRkeysRecv) any time before step 7.
 //   4. q: ncclGinRecoverPrepare(comm, p, &tok) (helper thread), then gdakiRsSendToken(r, p, &tok).
 //   5. The spare connects each of its QPs to q RTR/RTS (receive PSN = q's new send PSN from the token, send PSN = the one
 //      it announced in REJOIN) and sends READY. q hands the READY record to gdakiRsTakeReady.
@@ -53,10 +53,11 @@ enum {
 // Every record of these six types: magic, type, from = the sender's rank, nonce = the GIN context's nonce (the spare
 // replays the recorded salt, so it is the first incarnation's), pad = the incarnation of the restored rank (i + 1).
 // executed[0] = GDAKI_RS_WIRE_VERSION, executed[1] = the sender's own incarnation; REJOIN adds its endpoint in
-// executed[2 ..] (struct gdakiRsRejoinInfo, below). nqp and tok: REJOIN, TOKEN and READY (token order = the QPs to that
+// executed[2 ..] (struct gdakiRsEndpoint, below). nqp and tok: REJOIN, TOKEN and READY (token order = the QPs to that
 // peer in GIN-context order, as gdakiRecForPeer walks them).
 #define GDAKI_RS_WIRE_VERSION 1u
-struct gdakiRsRejoinInfo {   // the spare's endpoint (the same for every QP of its context), in gdakiTsMsg::executed[2 ..]
+struct gdakiRsEndpoint {     // the spare's endpoint (the same for every QP of its context), in gdakiTsMsg::executed[2 ..]
+                             // (named gdakiRsRejoinInfo in commit 28f1262e; same 72-byte layout)
   uint32_t lid;
   int32_t activeMtu;         // enum ibv_mtu
   int32_t ordering;          // enum doca_verbs_qp_ordering_semantic
@@ -68,8 +69,9 @@ struct gdakiRsRejoinInfo {   // the spare's endpoint (the same for every QP of i
 // Existing types the spare branch also uses: FAIL (6) answers a REJOIN of a peer this survivor declined (the
 // FAIL-on-reconnect rule of gin-peer); BYE (10) is never sent by a spare that gives up.
 // HELLO (1), HELLO_ACK (7), PROBE (8) and PROBE_ACK (9) now carry the sender's own incarnation in pad (hk: 0, so the
-// wire of a fail-fast job is hk's). In a process that asks for the restore, a receiver accepts them only when pad is the
-// incarnation it knows for that sender (gdakiRsPeerInc); other incarnations are refused as a foreign nonce is.
+// wire of a fail-fast job is hk's). In a process that asks for the restore, a receiver that knows an incarnation above 0
+// for that sender (gdakiRsPeerInc, after a REJOIN) accepts them only when pad equals it; other incarnations are refused
+// as a foreign nonce is (HELLO and PROBE at the listen socket, HELLO-ACK and PROBE-ACK at the dialer).
 
 // ---- survivor side: called by the hold state machine on a held peer (helper thread) ----
 enum { GDAKI_RS_REJOIN_NONE = 0, GDAKI_RS_REJOIN_ACCEPTED = 1, GDAKI_RS_REJOIN_REFUSED = 2 };
@@ -78,16 +80,18 @@ struct gdakiTsMsg;    // the host file
 
 // The REJOIN acceptance entry point (RL6). Call on the helper thread for a peer this rank holds (HELD), as often as
 // wanted (every step of the held state).
-//   NONE      no REJOIN of `peer` is parked (the accept step parks the latest one per peer; a parked REJOIN that nobody
-//             takes is closed after 1000 ms, and the spare dials again until its deadline).
+//   NONE      no REJOIN of `peer` is parked, or the parked one is older than 1000 ms (closed then). The accept step parks
+//             the latest one per peer; one nobody takes within 1000 ms is closed, and the spare dials again until its
+//             deadline (it waits 1500 ms for REJOIN_ACK, so it never abandons a REJOIN that is accepted).
 //   REFUSED   a parked REJOIN did not qualify and was closed (FIN; the spare retries): `why` says why. Qualifies: the
 //             hold state says HELD (gdakiRsHoldIsHeld, below; checked again here), the peer is not declined, its
 //             incarnation is gdakiRsPeerInc(r, peer) + 1, the nonce is this context's, the QP count and the spare's
 //             view of this rank's QPNs match this rank's QPs to the peer.
-//   ACCEPTED  the socket is this peer's helper socket now: gone, deadJudged, refusals, left, peerFailed, failedPending,
-//             lostCause, closeCause, the kept REQ are cleared; dialFd, pendFd, probeFd closed; pe.addr = the spare's
-//             listen address; gdakiRsPeerInc(r, peer) = i + 1; the spare's endpoint is kept for gdakiRsSwapEndpoint;
-//             REJOIN_ACK sent with generation pe.gen + 1; gdakiTsInstall (which clears lostAfterCommit).
+//   ACCEPTED  REJOIN_ACK went out (generation pe.gen + 1, the survivor's own incarnation in executed[1]); only then: the
+//             socket is this peer's helper socket: gone, deadJudged, refusals, left, peerFailed, failedPending, lostCause,
+//             closeCause, the kept REQ are cleared; dialFd, pendFd, probeFd closed; pe.addr = the spare's listen
+//             address; gdakiRsPeerInc(r, peer) = i + 1; the spare's endpoint and token are kept for the swap;
+//             gdakiTsInstall (which clears lostAfterCommit). If REJOIN_ACK cannot be sent nothing changes (REFUSED).
 // A REJOIN of a peer this rank declined is answered with FAIL by the accept step itself (no call needed); a spare that
 // reads FAIL gives up (no further dial to anybody).
 static int gdakiRsRejoinAccept(struct gdakiRecHost* r, int peer, char* why, size_t whyLen);
@@ -100,17 +104,18 @@ static uint32_t gdakiRsPeerInc(struct gdakiRecHost* r, int peer);
 // socket. Needs an accepted REJOIN of the current incarnation. ncclSuccess or ncclSystemError (socket).
 static ncclResult_t gdakiRsSendToken(struct gdakiRecHost* r, int peer, const ncclGinRecoverToken_t* local);
 
-// A READY record read on `peer`'s installed socket (the state machine reads and defers records as it does for other
-// types): true if it is the spare's READY for the accepted incarnation and its token is the one REJOIN announced (same
-// QPNs, same send PSNs, remoteQpn = this rank's QPNs). False: `why`; the state machine falls back.
+// A READY record read on `peer`'s installed socket (the state machine takes it with gdakiHoldTakeMsg and hands it here):
+// true if it is the spare's READY for the accepted incarnation and its token is the one REJOIN announced (same count,
+// QPNs and send PSNs); it is then marked taken (the swap needs it). False: `why`; the state machine falls back.
 static bool gdakiRsTakeReady(struct gdakiRecHost* r, int peer, const struct gdakiTsMsg* m, char* why, size_t whyLen);
 
 // The endpoint swap (RL7), after TOKEN and READY, before ncclGinRecoverCommit: under r->opMu, rq.exch of every QP to
 // `peer` takes the spare's QPN, LID, GID (gid and vgid), GID index, MTU and ordering semantic (rank, host and device names
 // stay: same node and GPU); *remote is the token Commit takes: magic, nqp, qpn[i] = the spare's QPN, remoteQpn[i] = this
 // rank's QPN, sqPsn[i] = the spare's send PSN, epochWqes[i] = 0. Needs: accepted REJOIN, READY taken, the peer prepared
-// (gdakiRecPrepared == 1). Nothing else of the QP is touched (it stays in ERR until Commit). ncclSuccess, or
-// ncclInvalidUsage with `why` (nothing changed then).
+// (gdakiRecPrepared == 1), the same QP count. Nothing else of the QP is touched (it stays in ERR until Commit).
+// ncclSuccess, or ncclInvalidUsage with `why` (nothing changed then). It takes r->opMu itself: call it outside opMu, and
+// ncclGinRecoverCommit after it returns.
 static ncclResult_t gdakiRsSwapEndpoint(struct gdakiRecHost* r, int peer, ncclGinRecoverToken_t* remote, char* why,
                                         size_t whyLen);
 
@@ -132,10 +137,11 @@ struct gdakiRsRkeys {
 };
 static ncclResult_t gdakiRsRkeysRecv(int fd, int timeoutMs, struct gdakiRsRkeys* out, char* why, size_t whyLen);
 // The rkey swap (RL9), after Commit and gdakiTsBaseline, before the publish: slot `peer` of every window rkey table of
-// this context's collComm (each window the context covers must be in the list, by number), of the signal table's and of
-// the counter table's rkey table is written over the NIC copy path (no CUDA call), read back and compared; the host
-// copies too. Needs the accepted incarnation in the list header and the NIC copy path on. ncclSuccess, or an error with
-// `why` (some slots may be written then: the state machine falls back, which declines the peer).
+// this context's collComm, of the signal table's and of the counter table's rkey table is written over the NIC copy path
+// (no CUDA call), read back and compared; the windows' host copies too (the two tables' host copies are read only at
+// setup and stay). Needs: the list from `peer`, for this context (nonce) and the accepted incarnation; every window still
+// registered on the collComm named in it; the NIC copy path on. ncclSuccess, or an error with `why` (some slots may be
+// written then: the state machine falls back, which declines the peer).
 static ncclResult_t gdakiRsSwapRkeys(struct gdakiRecHost* r, int peer, const struct gdakiRsRkeys* list, char* why,
                                      size_t whyLen);
 
@@ -145,10 +151,13 @@ static ncclResult_t gdakiRsSendDone(struct gdakiRecHost* r, int peer);
 static bool gdakiRsTakeRestored(struct gdakiRecHost* r, int peer, const struct gdakiTsMsg* m);
 
 // ---- the spare's activation (buddy -> the spare's port, NCCL_GIN_RESTORE_SPARE_PORT) ----
-// The spare waits for this record inside ncclCommInitRank (before any bootstrap). One record per TCP connection; the spare
-// answers with the same struct (kind ACCEPTED or REFUSED) and closes. Without the port variable the spare activates at
-// once (the feasibility test's mode). Before activating it checks that the process that held the rank is gone (same node:
-// /proc/<pid> absent, or its state Z or X, or its start time differs); never while it lives.
+// The spare finishes its init replay (ncclCommInitRank, window registration, devComm creation: no peer contact, peer QPs
+// in RESET, no helper) and waits for this record in its handshake driver, which its ncclGinRestoreResume runs
+// (integration; the driver is gdakiRsSpareRun(r, activatePort, activateWaitMs, handshakeMs, dataFd, dataArg, &step) in the
+// host file). One record per TCP connection (read within 500 ms); the spare answers with the same struct (kind ACCEPTED or
+// REFUSED) and closes. It takes the incarnation and the step from the record. Before activating it checks that the process
+// that held the rank is gone (same node: /proc/<pid> absent, or its state Z or X, or its start time differs); never while
+// it lives, and never without a PID (refused).
 #define GDAKI_RS_ACT_MAGIC 0x41535247u  // "GRSA"
 enum { GDAKI_RS_ACT_ACTIVATE = 1, GDAKI_RS_ACT_ABANDON = 2, GDAKI_RS_ACT_ACCEPTED = 3, GDAKI_RS_ACT_REFUSED = 4 };
 struct gdakiRsActivate {   // 64 bytes
@@ -158,18 +167,20 @@ struct gdakiRsActivate {   // 64 bytes
   uint32_t incarnation;      // the new incarnation (the survivors' gdakiRsPeerInc + 1)
   uint64_t nonce;            // the GIN context's nonce (the spare checks its replay against it)
   uint64_t step;             // the checkpoint step to restore
-  int64_t pid;               // the process that held the rank (0: the transcript recorder's)
-  uint64_t pidStart;         // its start time, /proc/<pid>/stat field 22 (0: the transcript's)
+  int64_t pid;               // the process that held the rank (required: 0 is refused)
+  uint64_t pidStart;         // its start time, /proc/<pid>/stat field 22 (0: refused while that PID lives)
   uint64_t reserved;
 };
-// The buddy's helper sends it (host branch); bounded; returns the spare's answer kind, or -1 (no answer).
+// The buddy's helper sends it (host branch); bounded; returns the spare's answer kind, or -1 (no answer). Without the
+// record the spare never activates.
 static int gdakiRsSendActivate(const void* spareAddr /* union ncclSocketAddress */, const struct gdakiRsActivate* a,
                                int timeoutMs);
 
-// ---- read from the host branch (impl/rs_hold_api.h); declared here until it is published ----
-// Whether `peer` is held (HELD: not yet COMMITTING, PUBLISHED, TIMED_OUT or FALLBACK) on this context. Read lock-free (the
-// state is an atomic). The spare branch calls it in gdakiRsRejoinAccept only. Until the host branch publishes it, the
-// spare branch defines a placeholder in its region that returns false (so nothing is ever accepted in that build).
+// ---- read from the host branch (impl/rs_hold_api.h, published in commit a3478d84 of the host branch) ----
+// Whether `peer` is held (HELD only) on this context; lock-free; false in a process that does not ask for the restore.
+// The spare branch calls it in gdakiRsRejoinAccept only. Its build has a placeholder definition that returns false (so
+// nothing is accepted there); integration replaces that definition with a forward declaration, since the host branch's
+// definition comes later in the file.
 static bool gdakiRsHoldIsHeld(struct gdakiRecHost* r, int peer);
 
 #endif
