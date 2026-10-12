@@ -1223,7 +1223,7 @@ index f2149a2..e47e9ef 100644
  } // end extern "C"
  #endif
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 2760d43..119362a 100644
+index 2760d43..123ec1b 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -186,10 +186,11 @@ out:
@@ -1249,7 +1249,7 @@ index 2760d43..119362a 100644
  
    GdakiGlobalGPUBufferTable() : cumemhandle(0), num_elements(0), next_unused_idx(0), gpu_ptr(nullptr), mr(nullptr) {};
    ~GdakiGlobalGPUBufferTable() {
-@@ -426,6 +430,211 @@ static void gdakiTsStart(struct gdakiRecHost* r);
+@@ -426,6 +430,219 @@ static void gdakiTsStart(struct gdakiRecHost* r);
  static bool gdakiTsFree(struct gdakiRecHost* r);
  static inline void gdakiRecFwMark(struct gdakiRecHost* r);  // gin-harden: below
  static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollComm* cComm);
@@ -1429,16 +1429,22 @@ index 2760d43..119362a 100644
 +// impl/rs_ckpt_api.h); ckpt: that checkpoint (hdr[0].ckpt). Every export is parsed and checked (one from every rank with
 +// QPs to this rank and from no other; to = this rank, the checkpoint, the incarnation, this context's nonce, its trailer
 +// OK, nqp, a P for its rank, X >= P per QP, every target inside this process's windows or signal table, no put over a
-+// signal word). Before any device access it waits for the context's device (cudaDeviceSynchronize: the image's copies have
-+// landed). Then, with the window registry's lock held, CUDA copies on the log state's stream apply the entries (by
-+// survivor rank, then position; signal additions summed per target), and per QP to each survivor: msgs = X, suppress =
++// signal word), the signal additions are summed again from the entries and compared per target and in total, and every
++// signal target must be 8-byte aligned inside an MR with remote atomic access while the loopback path passed its atomic
++// self-test. Before any device access it waits for the context's device (cudaDeviceSynchronize: the image's copies have
++// landed). Then, with the window registry's lock held, in this order: (1) the data (puts, putValues) as CUDA copies on the
++// log state's stream (by survivor rank, then position), waited for; (2) the signal additions, summed per target, as NIC
++// fetch-and-add over the loopback QP, each completed before the next; (3) per QP to each survivor: msgs = X, suppress =
 +// X - P, the responder count's base = M. Refused with nothing applied when a check fails; refused part way (the restore
-+// falls back) when a copy fails.
-+// Precondition, OPEN (review of work package 9, B1; a decision of the main session with the spare branch): no survivor
-+// may have published toward this process before the import. A signal addition is a host read-add-write; a survivor's
-+// RDMA atomic landing in between would be lost (a wait that never ends, not a fallback). The spare driver's
-+// one-survivor-at-a-time order (impl/rs_spare_api.h) breaks it as written: either every survivor's STATE comes, and the
-+// import runs, before the first publish, or the additions become NIC atomics (fetch-and-add over the loopback QP).
++// falls back) when a copy or an atomic fails.
++// Why NIC atomics (the main session's decision of 2026-10-12 on review finding B1, option (b)): the spare serves the
++// survivors one at a time (impl/rs_spare_api.h), so earlier survivors have published, and send their signal atomics to
++// these words, before the import; a host read-add-write would lose one landing in between. The loopback QP is a QP of the
++// same HCA, which makes all its QPs' atomics atomic with respect to each other when atomic_cap >= IBV_ATOMIC_HCA (a Resume
++// condition on every rank). The data copies need no such care: by 9.7 item 3 (single assignment from the checkpoint to
++// the end of the replay) a survivor's new put never targets a location a logged put targets.
++// Precondition: the NIC copy path has no other user during the import (the spare's application thread, before its helper
++// starts).
 +// The suppress line, WARN, one per QP whose budget the import set (B = 0 included), once the spare's replay used the budget
 +// (from gdakiRsLogPoll) or at its context's end: "GIN/RS: rank R: suppress peer=P qp=Q budget=B suppressed=S left=L"
 +// (Q: the side table's QP index, context x nranks + peer; B = X - P, S = B - L).
@@ -1454,6 +1460,8 @@ index 2760d43..119362a 100644
 +static uint64_t gdakiRsLogTrimErrors(struct gdakiRecHost* r);
 +// work package 9: the suppress line (gdakiRsLogPoll, and the context's close line)
 +static void gdakiRsSuppressLines(struct gdakiRecHost* r, const std::vector<struct ncclGinRsQp>& v, bool atClose);
++// work package 9, option (b): remote atomic access on the loopback path for the spare's import (gdakiRsStart)
++static void gdakiRsLbAtomicSetup(struct gdakiRecHost* r, char* why, size_t whyLen);
 +// gin-restore (dev; user direction 2026-10-12): the side table's address goes to the device (the classification block)
 +// only when ncclGinRestoreResume succeeds, or in the log measurement mode (region "log, suppress and replay" below)
 +static void gdakiRsPublishFor(void* comm, void* handle);
@@ -1461,7 +1469,7 @@ index 2760d43..119362a 100644
  static thread_local bool gdakiTsInHelper = false;  // the helper thread may call the gin_recovery host API
  static thread_local struct gdakiRecHost* gdakiTsOwner = nullptr;  // the helper's own context (gdakiRecFind)
  static ncclResult_t gdakiTsZeroDev(struct gdakiRecHost* r, void* dst, size_t n, uint8_t byte);
-@@ -1319,6 +1528,29 @@ struct gdakiRecHost {
+@@ -1319,6 +1536,29 @@ struct gdakiRecHost {
    // gin-remaining: the NIC copy path (struct gdakiLb). nullptr: every device-state copy is a stream copy (as before)
    struct gdakiLb* lb = nullptr;
    std::atomic<uint64_t> nStreamCopies{0}; // device-state copies that went through the private stream
@@ -1491,7 +1499,7 @@ index 2760d43..119362a 100644
  };
  
  static std::mutex gdakiRecRegMu;
-@@ -1470,14 +1702,26 @@ struct gdakiLb {
+@@ -1470,14 +1710,26 @@ struct gdakiLb {
    size_t testBytes = 0, testNonzero = 0;
    int testShadow = 0;               // gpu-detect: device QP structs that matched the host shadow (self-test, NIC only)
    char why[224] = {0};              // why the path is off
@@ -1519,7 +1527,7 @@ index 2760d43..119362a 100644
  
  // The path goes off: both loopback QPs to ERR (an error completion put one there already; nothing more lands after
  // this), one WARN. Later copies use the private stream.
-@@ -1496,10 +1740,12 @@ static void gdakiLbOff(struct gdakiRecHost* r, const char* why) {
+@@ -1496,10 +1748,12 @@ static void gdakiLbOff(struct gdakiRecHost* r, const char* why) {
         r->ctx ? r->ctx->rank : -1, lb->why, gdakiQ4MonoMs());
  }
  
@@ -1535,7 +1543,7 @@ index 2760d43..119362a 100644
    static const uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE);
    const int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;  // strict ordering
    CUdeviceptr base = 0;
-@@ -1543,7 +1789,8 @@ static ncclResult_t gdakiLbAddRange(struct gdakiLb* lb, const void* p, size_t n,
+@@ -1543,7 +1797,8 @@ static ncclResult_t gdakiLbAddRange(struct gdakiLb* lb, const void* p, size_t n,
      }
    }
    if (m.mr == nullptr) {
@@ -1545,7 +1553,7 @@ index 2760d43..119362a 100644
      return ncclSystemError;
    }
    m.sample = a;
-@@ -1892,6 +2139,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
+@@ -1892,6 +2147,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
    if (r == nullptr) return;
    if (g->q4 == nullptr) {
      WARN("GIN/REC: NCCL_GIN_FAULT_RECOVERY=1 needs NCCL_GIN_FAULT_CLASSIFY=1; recovery disabled on rank %d", g->rank);
@@ -1554,7 +1562,7 @@ index 2760d43..119362a 100644
      gdakiTsFree(r);
      delete r;
      g->rec = nullptr;
-@@ -1903,6 +2152,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
+@@ -1903,6 +2160,8 @@ static void gdakiRecRegister(struct gdaki_context* g) {
    if (cudaStreamCreateWithFlags(&r->stream, cudaStreamNonBlocking) != cudaSuccess ||
        cudaHostAlloc((void**)&r->pinned, r->pinnedSize, cudaHostAllocDefault) != cudaSuccess) {
      WARN("GIN/REC: could not allocate the recovery stream/staging; recovery disabled on rank %d", g->rank);
@@ -1563,7 +1571,7 @@ index 2760d43..119362a 100644
      if (r->stream) cudaStreamDestroy(r->stream);
      gdakiTsFree(r);
      delete r;
-@@ -1956,6 +2207,11 @@ static bool gdakiRecFree(struct gdakiRecHost* r) {
+@@ -1956,6 +2215,11 @@ static bool gdakiRecFree(struct gdakiRecHost* r) {
    if (r->copyEv) cudaEventDestroy(r->copyEv);  // gin-harden
    if (r->stream) cudaStreamDestroy(r->stream);
    if (r->pinned) cudaFreeHost(r->pinned);
@@ -1575,7 +1583,7 @@ index 2760d43..119362a 100644
    INFO(NCCL_NET, "GIN/REC: closed: %d commit(s), %d abort(s)", r->nCommits, r->nAborts);
    delete r;
    return false;
-@@ -2685,6 +2941,1284 @@ enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };
+@@ -2685,6 +2949,1352 @@ enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };
  static const char* gdakiPolicyName(int p) { return p == GDAKI_POLICY_HOLD ? "hold" : "failfast"; }
  static int gdakiPolicyEffOf(struct gdakiRecHost* r);  // below (needs gdakiTs)
  
@@ -1727,6 +1735,7 @@ index 2760d43..119362a 100644
 +// all-gathered over the communicator's bootstrap; every rank then decides from the same records (gdakiRsResumeDecide).
 +// What one rank sees, with the facts it is judged on. The decision adds "rank p: " to this rank's text; the text names no
 +// rank of its own except inside `told` (a peer whose wait word was raised), which the record carries as it is.
++#define GDAKI_RS_ATOMIC_HCA 1  // IBV_ATOMIC_HCA of enum ibv_atomic_cap (the dev host region static_asserts it)
 +struct gdakiRsLocalIn {
 +  bool argsOk = true;            // devComm, step and bytes are not NULL
 +  int devCommVersion = 0;        // the devComm's device-code version when it is not this library's (0: it is)
@@ -1765,6 +1774,9 @@ index 2760d43..119362a 100644
 +  // user direction 2026-10-12: the program that calls Resume was compiled with NCCL_GIN_RESTORE_DEVICE (the nccl.h
 +  // wrapper passes it); its kernels have the device restore path
 +  bool deviceBuilt = true;
++  // work package 9, option (b) (2026-10-12): the HCA's atomic capability (ibv_device_attr::atomic_cap); the spare's import
++  // adds signals with NIC atomics that must be atomic with the survivors' signal atomics on the same HCA
++  int atomicCap = GDAKI_RS_ATOMIC_HCA;
 +};
 +enum { GDAKI_RS_L_OK = 0 };
 +// The first local condition that keeps the restore off on this rank, in a fixed order (0: none). The conditions are the
@@ -1817,6 +1829,8 @@ index 2760d43..119362a 100644
 +  GDAKI_RS_L(in.logMeasure, "the send-side log measurement mode is on (NCCL_GIN_RESTORE_LOG_MEASURE): the log does not "
 +             "start at a checkpoint's cut");
 +  GDAKI_RS_L(!in.deviceBuilt, "program not built with NCCL_GIN_RESTORE_DEVICE (its kernels have no device restore path)");
++  GDAKI_RS_L(in.atomicCap < GDAKI_RS_ATOMIC_HCA, "the HCA's atomic capability is below IBV_ATOMIC_HCA (atomic_cap %d): a "
++             "restore adds the logged signals with NIC atomics", in.atomicCap);
 +#undef GDAKI_RS_L
 +  snprintf(why, whyLen, "this rank can enable the restore");
 +  return GDAKI_RS_L_OK;
@@ -2667,6 +2681,68 @@ index 2760d43..119362a 100644
 +  }
 +  return true;
 +}
++// The CPU-side check of the signal additions before the import posts them as NIC atomics (option (b) of review finding
++// B1, 2026-10-12): every export is parsed again and its signal values summed in a second pass, independent of the plan's
++// merge; the plan's additions must equal them per target (targets in strictly increasing order, none missing, none extra)
++// and in total (mod 2^64, as the NIC adds). *total: the sum of every signal entry's value.
++static bool gdakiRsImportSigCheck(const std::vector<std::vector<uint8_t>>& exports, const struct gdakiRsImportPlan& plan,
++                                  uint64_t* total, char* why, size_t whyLen) {
++  std::vector<struct gdakiRsImportSig> all;
++  uint64_t sum = 0;
++  for (size_t q = 0; q < exports.size(); q++) {
++    if (exports[q].empty()) continue;
++    struct gdakiRsLogXParsed px;
++    char pw[200];
++    if (!gdakiRsLogXParse(exports[q].data(), exports[q].size(), &px, pw, sizeof(pw))) {
++      snprintf(why, whyLen, "rank %zu's export: %s", q, pw);
++      return false;
++    }
++    for (const auto& it : px.items)
++      if (ncclGinRsEntryFlags(it.e.qpKf) & NCCL_GIN_RS_LOGF_SIGNAL) {
++        all.push_back({it.e.sigWin, it.e.sigOff, it.e.sigVal});
++        sum += it.e.sigVal;
++      }
++  }
++  if ((uint64_t)all.size() != plan.sigAdds) {
++    snprintf(why, whyLen, "%zu signal entries, the plan counted %lu", all.size(), (unsigned long)plan.sigAdds);
++    return false;
++  }
++  uint64_t planSum = 0;
++  for (size_t k = 0; k < plan.sigs.size(); k++) {
++    planSum += plan.sigs[k].add;
++    if (k > 0 && !(plan.sigs[k - 1].win < plan.sigs[k].win ||
++                   (plan.sigs[k - 1].win == plan.sigs[k].win && plan.sigs[k - 1].off < plan.sigs[k].off))) {
++      snprintf(why, whyLen, "the plan's signal targets are not in strictly increasing order at %zu", k);
++      return false;
++    }
++  }
++  if (planSum != sum) {
++    snprintf(why, whyLen, "the plan adds %lu in total, the entries %lu", (unsigned long)planSum, (unsigned long)sum);
++    return false;
++  }
++  std::sort(all.begin(), all.end(), [](const struct gdakiRsImportSig& a, const struct gdakiRsImportSig& b) {
++    return a.win != b.win ? a.win < b.win : a.off < b.off;
++  });
++  size_t i = 0;
++  for (size_t k = 0; k < plan.sigs.size(); k++) {
++    const struct gdakiRsImportSig& t = plan.sigs[k];
++    uint64_t got = 0;
++    size_t n = 0;
++    for (; i < all.size() && all[i].win == t.win && all[i].off == t.off; i++, n++) got += all[i].add;
++    if (n == 0 || got != t.add) {
++      snprintf(why, whyLen, "signal window %u offset %lu: the plan adds %lu, its %zu entries %lu", t.win,
++               (unsigned long)t.off, (unsigned long)t.add, n, (unsigned long)got);
++      return false;
++    }
++  }
++  if (i != all.size()) {
++    snprintf(why, whyLen, "signal window %u offset %lu has entries but no addition in the plan", all[i].win,
++             (unsigned long)all[i].off);
++    return false;
++  }
++  *total = sum;
++  return true;
++}
 +// ---- gin-restore (dev): log, suppress and replay, pure (end) ----
 +
 +// This process's restore request, read once (NCCL_GIN_FAULT_POLICY and NCCL_GIN_RESTORE_SPARE with getenv as hk's G1,
@@ -2860,7 +2936,7 @@ index 2760d43..119362a 100644
  // ---- gin-harden: the user devComm abort word of a communicator ----
  // One host-pinned word per communicator (ncclCudaHostCalloc, read by the device through UVA), created for the first
  // user devComm (dev_runtime.cc) and freed with the communicator (init.cc commFree). Raised once, never cleared, always
-@@ -6540,6 +8074,7 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+@@ -6540,6 +8150,7 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
        ts->nQueued.fetch_sub(1, std::memory_order_acq_rel);
      }
      if (fs.empty()) gdakiDetWatchStep(r);  // gpu-detect: host-side detection (QUERY_QP every NCCL_GIN_TS_QPWATCH_MS)
@@ -2868,7 +2944,7 @@ index 2760d43..119362a 100644
      if (fs.empty() && gdakiQ4MonoMs() >= nextScan) {
        gdakiTsScan(r);
        nextScan = gdakiQ4MonoMs() + 100.0;
-@@ -6604,13 +8139,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6604,13 +8215,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    }
    // gpu-detect (hk, G1): this rank's fault policy (default failfast); every rank compares the record's values after the
    // all-gather. A rank that differs makes the context fail-fast. hold needs the restore layer: fail-fast in this build.
@@ -2888,7 +2964,7 @@ index 2760d43..119362a 100644
    mine.policy = (uint32_t)polReq;
    int ls = -1;
    int boundPort = 0;
-@@ -6659,6 +8193,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6659,6 +8269,12 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
        });
      }
    }
@@ -2901,7 +2977,7 @@ index 2760d43..119362a 100644
    ncclResult_t ret = cComm->allGather(cComm, &mine, all.data(), sizeof(mine));
    if (ret != ncclSuccess) {
      if (ls >= 0) close(ls);
-@@ -6667,6 +8207,31 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6667,6 +8283,31 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    uint64_t nonce = 0x6e6f6e6365ull;  // gin-harden: every rank's salt, in rank order: the same on every rank
    for (int p = 0; p < nranks; p++) nonce = gdakiTsMix64(nonce ^ all[p].salt);
    if (nonce == 0) nonce = 1;
@@ -2933,7 +3009,7 @@ index 2760d43..119362a 100644
    const uint32_t ctxSeq = (uint32_t)(nonce & 0x7fffffffu);  // display only (HELLO.arg); the nonce is checked
    struct gdakiTs* ts = nullptr;
    const double deadline = gdakiQ4MonoMs() + (double)ncclParamGinTsConnectMs();
-@@ -6750,6 +8315,14 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6750,6 +8391,14 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    }
    if (why != nullptr) {
      WARN("GIN/TS: transparent recovery OFF on rank %d: %s", rank, why);
@@ -2948,7 +3024,7 @@ index 2760d43..119362a 100644
      if (ts) {
        for (auto& pe : ts->peers)
          if (pe.fd >= 0) gdakiTsByeClose(pe.fd, rank, nonce);  // gin-harden: the peers read "left", not death
-@@ -6777,9 +8350,13 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -6777,9 +8426,13 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    if (!ts->policyAgreed)
      WARN("GIN/TS: rank %d: NCCL_GIN_FAULT_POLICY differs across ranks (this rank %s, rank %d %s); fail-fast", rank,
           gdakiPolicyName(polReq), polOther, gdakiPolicyName((int)all[polOther].policy));
@@ -2965,10 +3041,12 @@ index 2760d43..119362a 100644
    r->ts = ts;
    return ncclSuccess;
  }
-@@ -7201,6 +8778,1023 @@ static void gdakiLbSetup(struct gdakiRecHost* r) {
+@@ -7201,72 +8854,1347 @@ static void gdakiLbSetup(struct gdakiRecHost* r) {
                lb->nPeermem, lb->testBytes, lb->testNonzero, lb->testShadow, gdakiQ4MonoMs() - t0, gdakiQ4MonoMs());
  }
  
+-static void gdakiTsStart(struct gdakiRecHost* r) {
+-  if (r == nullptr || r->ts == nullptr) return;
 +// gin-restore (rs, work package 3; EXPERIMENT.md 9.9, 9.10.4, 9.11.5): in a process that asks for the restore, once the
 +// gates are set and before the helper starts (single-threaded): (1) one device allocation holds the side table and the
 +// send-side log (work package 4, redone 2026-10-12: ONE ring of descriptors for every gated peer's QP of the context; the
@@ -2981,8 +3059,20 @@ index 2760d43..119362a 100644
 +// process does none of this: the pointer stays the zero the array was created with.
 +static void gdakiRsStart(struct gdakiRecHost* r) {
 +  if (!gdakiRsRequested()) return;
-+  struct gdakiTs* ts = r->ts;
-+  struct gdaki_context* g = r->ctx;
+   struct gdakiTs* ts = r->ts;
+   struct gdaki_context* g = r->ctx;
+-  bool ok = true;
+-  int nq = 0;
+-  ts->roundMs = (int)std::max<int64_t>(100, ncclParamGinTsRoundMs());
+-  ts->rescueLaps = (uint32_t)std::max<int64_t>(0, ncclParamGinTsRescueLaps());
+-  ts->fwMs = (int)std::max<int64_t>(100, ncclParamGinTsFwMs());                    // gin-harden
+-  ts->joinMs = (int)std::max<int64_t>(100, ncclParamGinTsAbortJoinMs());           // gin-harden
+-  ts->joinMaxMs = (int)std::max<int64_t>(ts->joinMs, ncclParamGinTsAbortJoinMaxMs());  // gin-harden
+-  if (r->copyMs >= ts->fwMs) {  // gin-harden: a copy in bound must never count as a firmware-phase overrun
+-    const int c = std::max(10, ts->fwMs / 2);
+-    WARN("GIN/TS: rank=%d NCCL_GIN_TS_COPY_MS=%d is not below NCCL_GIN_TS_FW_MS=%d; clamped to %d ms", g->rank, r->copyMs,
+-         ts->fwMs, c);
+-    r->copyMs = c;
 +  r->rsWinSeq = gdakiRsWinSeqNow();
 +  char why[128] = {0};
 +  const int nqp = (int)r->qps.size();
@@ -2996,7 +3086,19 @@ index 2760d43..119362a 100644
 +        nLogged++;
 +      }
 +    });
-+  }
+   }
+-  ts->escRounds = (int)std::max<int64_t>(0, ncclParamGinTsEscalateRounds());       // gin-harden
+-  ts->escWindowMs = (int)std::max<int64_t>(1, ncclParamGinTsEscalateWindowMs());   // gin-harden
+-  // S2 (review): the GID wait runs inside a round. The watchdog surfaces a round older than roundMs and the
+-  // device threads parked in the gate give up after holdMs, so a wait that fails must end with time for the
+-  // handshake (NACK, decline) before either bound: pathWaitMs <= min(roundMs, holdMs) - handshakeMs - 1 s.
+-  {
+-    const int maxPath = std::min(ts->roundMs, ts->holdMs) - ts->handshakeMs - 1000;
+-    if (ts->pathWaitMs > std::max(0, maxPath)) {
+-      WARN("GIN/TS: rank=%d NCCL_GIN_TS_PATH_WAIT_MS=%d exceeds min(round_ms=%d, hold_ms=%d) - handshake_ms=%d - 1000; "
+-           "clamped to %d ms (raise NCCL_GIN_TS_ROUND_MS and NCCL_GIN_TS_HOLD_MS for a longer path wait)",
+-           g->rank, ts->pathWaitMs, ts->roundMs, ts->holdMs, ts->handshakeMs, std::max(0, maxPath));
+-      ts->pathWaitMs = std::max(0, maxPath);
 +  struct gdakiRsSideLayout L;
 +  if (g->backendVersion != NCCL_GIN_GDAKI_GPU_CONTEXT_VERSION) {
 +    snprintf(why, sizeof(why), "the program's GPU context version is %d", g->backendVersion);
@@ -3042,6 +3144,10 @@ index 2760d43..119362a 100644
 +    auto add = [&](const void* a, size_t n, const char* what) {
 +      if (lbWhy[0] == '\0' && a != nullptr && n != 0) (void)gdakiLbAddRange(lb, a, n, what, lbWhy, sizeof(lbWhy));
 +    };
++    // work package 9, option (b): the buffers the spare's import adds signals to, and the side table (the self-test's
++    // target), get MRs with remote atomic access first (the plain adds below then find them covered), and the loopback
++    // QPs remote atomic access (gdakiRsLbAtomicSetup; a failure keeps the restore off on this rank, with why)
++    gdakiRsLbAtomicSetup(r, lbWhy, sizeof(lbWhy));
 +    add(r->rsBase, r->rsBytes, "side table and log ring");
 +    if (g->signals_table) {
 +      add(g->signals_table->gpu_ptr, g->signals_table->buffer_bytes(), "signal table");
@@ -3050,7 +3156,23 @@ index 2760d43..119362a 100644
 +    if (g->counters_table) {
 +      add(g->counters_table->gpu_ptr, g->counters_table->buffer_bytes(), "counter table");
 +      add(g->counters_table->get_rkeys_d(), g->counters_table->rkeys_bytes(), "counter table's rkey table");
-+    }
+     }
+-  }
+-  gdakiTsTestKnobs(r);
+-  ts->reconnect = ncclParamGinTsReconnect() != 0 ? 1 : 0;  // gin-reconnect
+-  ts->reconnectMs = (int)std::max<int64_t>(0, ncclParamGinTsReconnectMs());
+-  ts->pairReset = ncclParamGinTsPairReset() != 0 ? 1 : 0;  // gin-pair-reset
+-  ts->pairCheck = ncclParamGinTsPairCheck() != 0 ? 1 : 0;  // gin-pair-check
+-  ts->serveWait = ncclParamGinTsServeWait() != 0 ? 1 : 0;  // gin-remaining
+-  ts->detWatchMs = (int)std::max<int64_t>(0, ncclParamGinTsQpWatchMs());          // gpu-detect
+-  ts->detGraceMs = (int)std::max<int64_t>(0, ncclParamGinTsQpWatchGraceMs());     // gpu-detect
+-  ts->detNoCqeMs = (int)std::max<int64_t>(ts->detGraceMs, ncclParamGinTsQpWatchNoCqeMs());  // gpu-detect (review M2)
+-  {
+-    const int maxRc = std::max(0, ts->holdMs - ts->handshakeMs - 1000);
+-    if (ts->reconnectMs > maxRc) {
+-      WARN("GIN/TS: rank=%d NCCL_GIN_TS_RECONNECT_MS=%d exceeds hold_ms=%d - handshake_ms=%d - 1000; clamped to %d ms",
+-           g->rank, ts->reconnectMs, ts->holdMs, ts->handshakeMs, maxRc);
+-      ts->reconnectMs = maxRc;
 +    {
 +      std::lock_guard<std::mutex> lk(gdakiRsWinMu);
 +      for (const auto& w : gdakiRsWins)
@@ -3058,7 +3180,18 @@ index 2760d43..119362a 100644
 +          add(w.rkeys, w.rkeysBytes, "window rkey table");
 +          add((const void*)w.lo, (size_t)(w.hi - w.lo), "window");  // work package 9: a put's source, read by the export
 +        }
-+    }
+     }
+-  }
+-  // S2: the rescue areas (see struct ncclGinTsGate), zeroed before any kernel can use the QPs.
+-  // gin-remaining: one block for every QP of the context (one registration for the NIC copy path), each area at a 4 KiB
+-  // boundary, the block's start too (cudaMalloc + 4 KiB, aligned up: the page-aligned part covers every area)
+-  if (ts->rescueLaps != 0) {
+-    size_t total = 0;
+-    for (int p = 0; p < (int)ts->peers.size(); p++) {
+-      if (!ts->peers[p].gated) continue;
+-      gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
+-        total += (((size_t)ts->rescueLaps * q->qp_gverbs->qp_cpu->sq_wqe_num * 64) + 4095) & ~(size_t)4095;
+-      });
 +    if (lbWhy[0] == '\0') {  // the side table's fence word, read back over the NIC (zero)
 +      bool fallback = false;
 +      const struct ncclGinRsSide* side = (const struct ncclGinRsSide*)r->rsBase;
@@ -3069,7 +3202,14 @@ index 2760d43..119362a 100644
 +        memcpy(&v, r->pinned, sizeof(v));
 +        if (v != 0) snprintf(lbWhy, sizeof(lbWhy), "the side table read back over the NIC is not zero");
 +      }
-+    }
+     }
+-    if (total != 0) {
+-      if (cudaMalloc(&ts->rescueAlloc, total + 4096) != cudaSuccess) {
+-        ts->rescueAlloc = nullptr;
+-        ok = false;
+-      } else {
+-        ts->rescueBlock = (void*)(((uintptr_t)ts->rescueAlloc + 4095) & ~(uintptr_t)4095);
+-        ts->rescueBlockSize = total;
 +    lb->mrs.reserve(lb->mrs.size() + 16);  // the devComm's resource window comes later (ncclGinRestoreResume)
 +    lb->rsShared = true;
 +  }
@@ -3199,6 +3339,16 @@ index 2760d43..119362a 100644
 +  std::vector<struct gdakiRsExecQp> exec;
 +  std::vector<uint64_t> budget;
 +  std::vector<uint8_t> budgetSet, budgetSaid;
++  // work package 9, option (b) (setup only, then read-only): the MRs with remote atomic access (their entries are in the
++  // NIC copy path's list too, which deregisters them), and whether the loopback QPs passed the atomic self-test
++  struct AtomicMr {
++    uintptr_t lo, hi;
++    uint32_t rkey;
++  };
++  std::vector<struct AtomicMr> atomicMrs;
++  bool atomicOk = false;
++  int atomicCap = -1;
++  char atomicWhy[160] = {0};
 +};
 +static void gdakiRsLogDisarmOnce(struct gdakiRsLogHost* lh, int peer) {
 +  for (int p : lh->disarm)
@@ -3757,6 +3907,215 @@ index 2760d43..119362a 100644
 +static ncclResult_t gdakiRsLogReadGetRefused(struct gdakiRecHost* r, int peer, uint64_t* refused, int* nqp) {
 +  return gdakiRsLogReadQpField(r, peer, refused, nqp, [](const struct ncclGinRsQp& q) { return (uint64_t)q.getRefused; });
 +}
++// ---- work package 9, option (b) (the main session's decision of 2026-10-12 on review finding B1) ----
++// The spare's import adds the logged signals with NIC fetch-and-add over the loopback QP, not with a host read-add-write:
++// the survivors that published before the import (the spare serves them one at a time, impl/rs_spare_api.h) send their
++// signal atomics to the same words, and an HCA with atomic_cap >= IBV_ATOMIC_HCA makes atomics of all its QPs atomic with
++// respect to each other (the loopback QP and the GIN QPs are QPs of the same HCA: the loopback lives on the GIN context's
++// ibv context). Both kinds are executed by this process's HCA as the responder, so they also add in the same byte order.
++static_assert(GDAKI_RS_ATOMIC_HCA == IBV_ATOMIC_HCA, "the Resume condition's constant is IBV_ATOMIC_HCA");
++// An MR of the loopback PD with remote atomic access over the GPU allocation that holds [p, p + n), registered as
++// gdakiLbAddRange does (DMA-BUF when it can, else the allocation through nvidia-peermem) plus IBV_ACCESS_REMOTE_ATOMIC. It
++// goes into the NIC copy path's list (deregistered with the path, before its PD; copies may use it) and into the log
++// state's atomic list. Setup only (gdakiRsStart, single-threaded).
++static ncclResult_t gdakiRsLbAddAtomic(struct gdakiRecHost* r, const void* p, size_t n, const char* what, char* why,
++                                       size_t whyLen) {
++  struct gdakiLb* lb = r->lb;
++  struct gdakiRsLogHost* lh = r->rsLog;
++  const uintptr_t a = (uintptr_t)p;
++  if (p == nullptr || n == 0) return ncclSuccess;
++  for (const auto& m : lh->atomicMrs)
++    if (a >= m.lo && a + n <= m.hi) return ncclSuccess;
++  static const uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE);
++  const int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
++  CUdeviceptr base = 0;
++  size_t size = 0;
++  uintptr_t lo = a & ~(pg - 1), hi = (a + n + pg - 1) & ~(pg - 1);
++  uintptr_t plo = a, phi = a + n;
++  if (pfn_cuMemGetAddressRange(&base, &size, (CUdeviceptr)a) == CUDA_SUCCESS && size != 0 && a >= (uintptr_t)base &&
++      a + n <= (uintptr_t)base + size) {
++    plo = (uintptr_t)base;
++    phi = (uintptr_t)base + size;
++    const uintptr_t ilo = ((uintptr_t)base + pg - 1) & ~(pg - 1), ihi = ((uintptr_t)base + size) & ~(pg - 1);
++    if (ilo <= a && a + n <= ihi) {
++      lo = ilo;
++      hi = ihi;
++    }
++  }
++  struct gdakiLbMr m;
++#if CUDA_VERSION >= 11070
++  if (ncclParamDmaBufEnable() != 0 && lo <= a && a + n <= hi) {
++    int fd = -1;
++    if (pfn_cuMemGetHandleForAddressRange((void*)&fd, (CUdeviceptr)lo, hi - lo, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, 0) ==
++          CUDA_SUCCESS &&
++        fd >= 0) {
++      struct ibv_mr* mr = wrap_direct_ibv_reg_dmabuf_mr(lb->pd, 0, hi - lo, (uint64_t)lo, fd, access);
++      if (mr != nullptr) {
++        m.lo = lo;
++        m.hi = hi;
++        m.mr = mr;
++        m.dmabuf = true;
++      }
++      close(fd);
++    }
++  }
++#endif
++  if (m.mr == nullptr) {
++    struct ibv_mr* mr = wrap_direct_ibv_reg_mr(lb->pd, (void*)plo, phi - plo, access);
++    if (mr != nullptr) {
++      m.lo = plo;
++      m.hi = phi;
++      m.mr = mr;
++    }
++  }
++  if (m.mr == nullptr) {
++    snprintf(why, whyLen, "cannot register the %s with remote atomic access (errno %d)", what, errno);
++    return ncclSystemError;
++  }
++  m.sample = a;
++  m.sampleLen = std::min<size_t>(n, 64);
++  if (m.dmabuf) lb->nDmabuf++;
++  else lb->nPeermem++;
++  lb->mrs.push_back(m);
++  lh->atomicMrs.push_back({m.lo, m.hi, m.mr->rkey});
++  return ncclSuccess;
++}
++// The rkey of an atomic MR that holds the 8 bytes at `a` (false: none).
++static bool gdakiRsLbAtomicRkey(const struct gdakiRsLogHost* lh, uintptr_t a, uint32_t* rkey) {
++  for (const auto& m : lh->atomicMrs)
++    if (a >= m.lo && a + 8 <= m.hi) {
++      *rkey = m.rkey;
++      return true;
++    }
++  return false;
++}
++// One fetch-and-add of `add` to the 8 bytes at device address `dev` (8-byte aligned, in an atomic MR) over the loopback
++// QP; the old value comes back through the staging buffer. The NIC copy path's single user only (the setup's self-test,
++// or the spare's application thread before its helper starts). Bounded by NCCL_GIN_TS_COPY_MS. A failed post or an error
++// completion turns the path off (the QP is in ERR then), as gdakiLbXfer does.
++static ncclResult_t gdakiRsLbFetchAdd(struct gdakiRecHost* r, uintptr_t dev, uint32_t rkey, uint64_t add, uint64_t* old,
++                                      char* why, size_t whyLen) {
++  struct gdakiLb* lb = r->lb;
++  char pw[160];
++  if (!gdakiLbOn(r)) {
++    snprintf(why, whyLen, "the NIC copy path is off");
++    return ncclSystemError;
++  }
++  if ((dev & 7) != 0) {
++    snprintf(why, whyLen, "the address %#lx is not 8-byte aligned", (unsigned long)dev);
++    return ncclInvalidUsage;
++  }
++  if (lb->outstanding > 0) {  // a late completion of an earlier request: as gdakiLbXfer
++    bool dummy = false, err = false;
++    gdakiLbPoll(lb, 0, &dummy, &err, pw, sizeof(pw));
++    if (err) {
++      snprintf(why, whyLen, "a late loopback request failed: %.80s", pw);
++      gdakiLbOff(r, why);
++      return ncclSystemError;
++    }
++    if (lb->outstanding > 0) {
++      snprintf(why, whyLen, "a late loopback request is still outstanding");
++      return ncclSystemError;
++    }
++  }
++  const uint64_t id = lb->nextId++;
++  struct ibv_sge sg;
++  struct ibv_send_wr wr, *bad = nullptr;
++  memset(&wr, 0, sizeof(wr));
++  sg.addr = (uint64_t)(uintptr_t)r->pinned;
++  sg.length = 8;
++  sg.lkey = lb->stage->lkey;
++  wr.wr_id = id;
++  wr.sg_list = &sg;
++  wr.num_sge = 1;
++  wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
++  wr.send_flags = IBV_SEND_SIGNALED;
++  wr.wr.atomic.remote_addr = (uint64_t)dev;
++  wr.wr.atomic.compare_add = add;
++  wr.wr.atomic.rkey = rkey;
++  if (wrap_ibv_post_send(lb->qa, &wr, &bad) != ncclSuccess) {
++    snprintf(why, whyLen, "posting a fetch-and-add to the loopback QP failed");
++    gdakiLbOff(r, why);
++    return ncclSystemError;
++  }
++  lb->outstanding++;
++  const double t0 = gdakiQ4MonoMs();
++  bool got = false, err = false;
++  while (true) {
++    gdakiLbPoll(lb, id, &got, &err, pw, sizeof(pw));
++    if (err) {
++      snprintf(why, whyLen, "a fetch-and-add over the loopback QP failed: %.80s", pw);
++      gdakiLbOff(r, why);
++      return ncclSystemError;
++    }
++    if (got) break;
++    const double el = gdakiQ4MonoMs() - t0;
++    if (el > (double)r->copyMs) {
++      snprintf(why, whyLen, "a fetch-and-add over the loopback QP did not complete in %d ms (NCCL_GIN_TS_COPY_MS)",
++               r->copyMs);
++      return ncclSystemError;
++    }
++    if (el < 2.0) std::this_thread::yield();
++    else std::this_thread::sleep_for(std::chrono::microseconds(50));
++  }
++  memcpy(old, r->pinned, sizeof(*old));
++  lb->nOps.fetch_add(1, std::memory_order_relaxed);
++  return ncclSuccess;
++}
++static void gdakiRsLbAtomicSetup(struct gdakiRecHost* r, char* why, size_t whyLen) {
++  struct gdakiRsLogHost* lh = r->rsLog;
++  struct gdaki_context* g = r->ctx;
++  if (lh == nullptr || r->lb == nullptr || g == nullptr) return;  // no log (measurement mode, nothing logs): no import
++  lh->atomicCap = (int)g->ib_dev_attr.atomic_cap;
++  if (lh->atomicCap < IBV_ATOMIC_HCA) {  // Resume's own condition refuses with the capability; nothing registered here
++    snprintf(lh->atomicWhy, sizeof(lh->atomicWhy), "the HCA's atomic capability is %d, below IBV_ATOMIC_HCA", lh->atomicCap);
++    return;
++  }
++  char w[160] = {0};
++  auto fail = [&](const char* text) {
++    snprintf(lh->atomicWhy, sizeof(lh->atomicWhy), "%s", text);
++    snprintf(why, whyLen, "remote atomics on the NIC copy path: %.90s", text);
++  };
++  // the MRs: the side table (the self-test's target), the signal table, every window of this collComm before the context
++  if (gdakiRsLbAddAtomic(r, r->rsBase, r->rsBytes, "side table", w, sizeof(w)) != ncclSuccess ||
++      (g->signals_table != nullptr &&
++       gdakiRsLbAddAtomic(r, g->signals_table->gpu_ptr, g->signals_table->buffer_bytes(), "signal table", w, sizeof(w)) !=
++         ncclSuccess))
++    return fail(w);
++  {
++    std::lock_guard<std::mutex> lk(gdakiRsWinMu);
++    for (const auto& win : gdakiRsWins)
++      if (win.coll == (void*)g->collComm && !win.gone && win.seq <= r->rsWinSeq &&
++          gdakiRsLbAddAtomic(r, (const void*)win.lo, (size_t)(win.hi - win.lo), "window", w, sizeof(w)) != ncclSuccess)
++        return fail(w);
++  }
++  // the loopback QPs: remote atomic access (RTS to RTS); their max_rd_atomic and max_dest_rd_atomic are 1 already
++  struct ibv_qp_attr qa;
++  memset(&qa, 0, sizeof(qa));
++  qa.qp_access_flags = IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
++  if (wrap_ibv_modify_qp(r->lb->qa, &qa, IBV_QP_ACCESS_FLAGS) != ncclSuccess ||
++      wrap_ibv_modify_qp(r->lb->qb, &qa, IBV_QP_ACCESS_FLAGS) != ncclSuccess)
++    return fail("the loopback QPs did not take remote atomic access");
++  // the self-test on the side table's fence word (0 here): +1 reads back as 1 in host byte order, then -1 restores 0
++  struct ncclGinRsSide* side = (struct ncclGinRsSide*)r->rsBase;
++  const uintptr_t fence = (uintptr_t)&side->fence;
++  uint32_t rkey = 0;
++  uint64_t old = ~0ull, now = ~0ull;
++  if (!gdakiRsLbAtomicRkey(lh, fence, &rkey)) return fail("the side table is not in an atomic MR");
++  if (gdakiRsLbFetchAdd(r, fence, rkey, 1, &old, w, sizeof(w)) != ncclSuccess) return fail(w);
++  if (gdakiLbXfer(r, false, &side->fence, sizeof(uint64_t)) != ncclSuccess) return fail("the self-test's read back failed");
++  memcpy(&now, r->pinned, sizeof(now));
++  if (old != 0 || now != 1) {
++    snprintf(w, sizeof(w), "the self-test's fetch-and-add of 1 to 0 read %#lx then %#lx (not host byte order?)",
++             (unsigned long)old, (unsigned long)now);
++    return fail(w);
++  }
++  if (gdakiRsLbFetchAdd(r, fence, rkey, ~0ull, &old, w, sizeof(w)) != ncclSuccess) return fail(w);
++  if (gdakiLbXfer(r, false, &side->fence, sizeof(uint64_t)) != ncclSuccess) return fail("the self-test's read back failed");
++  memcpy(&now, r->pinned, sizeof(now));
++  if (old != 1 || now != 0) return fail("the self-test's fetch-and-add of -1 did not restore 0");
++  lh->atomicOk = true;
++}
 +// The plan that counts every WQE of the ending epoch executed (RL8; the dead rank's spare starts from the checkpoint and
 +// the survivor's entries since the cut are applied to it, so nothing is re-posted): U = S, n = 0 per QP of the round's
 +// scope, after the checks gdakiTsRepostPlanAll makes before it plans.
@@ -3881,10 +4240,14 @@ index 2760d43..119362a 100644
 +  return (b == GDAKI_RS_LOGX_REFUSED && !readFailed) ? ncclInvalidUsage : ncclSystemError;
 +}
 +// The spare's import (the application thread, inside the spare's ncclGinRestoreResume after its image is written and
-+// before its kernels and its helper start). Every export is checked first (gdakiRsImportPlanOf); then, with the window
-+// registry's lock held (the windows stay registered while their memory is written), the copies and the signal additions
-+// on the log state's stream, the suppress budgets and counts (msgs = X, suppress = X - P), and the responder counts' base
-+// (M). Refused with nothing applied when a check fails; refused part way (the restore falls back) when a copy fails.
++// before its kernels and its helper start; the NIC copy path's only user then). Checked first, nothing applied when a check
++// fails: the plan (gdakiRsImportPlanOf), the signal additions against the entries again (gdakiRsImportSigCheck), the
++// loopback path's atomics (set up and self-tested), every signal target 8-byte aligned in an atomic MR. Then, with the
++// window registry's lock held (the windows stay registered while their memory is written), in this order (option (b),
++// 2026-10-12): (1) the data copies on the log state's stream, waited for; (2) the signal additions as NIC fetch-and-add
++// over the loopback QP, one completed before the next; (3) the suppress budgets and counts (msgs = X, suppress = X - P) and
++// the responder counts' base (M). Data before signals as the device posts them (a signal says its data is there, 9.7
++// item 1); budgets last, so a failure part way leaves none (the restore falls back).
 +static ncclResult_t gdakiRsSpareImport(struct gdakiRecHost* r, const struct gdakiCkptPeerP* peerP, uint32_t nPeers,
 +                                       const std::vector<std::vector<uint8_t>>& exports, uint64_t ckpt,
 +                                       uint32_t incarnation, char* why, size_t whyLen) {
@@ -3936,6 +4299,27 @@ index 2760d43..119362a 100644
 +      if (wins[i].id == win) return (uint8_t*)base[i] + off;
 +    return nullptr;  // not reached: the plan checked every target
 +  };
++  uint64_t sigTotal = 0;
++  if (!gdakiRsImportSigCheck(exports, plan, &sigTotal, pw, sizeof(pw))) {
++    snprintf(why, whyLen, "the log import was refused, nothing applied: the signal additions do not match the entries: %s",
++             pw);
++    return ncclInvalidUsage;
++  }
++  std::vector<std::pair<uintptr_t, uint32_t>> sigAt(plan.sigs.size());  // (address, atomic MR's rkey) per target
++  if (!plan.sigs.empty() && (!lh->atomicOk || !gdakiLbOn(r))) {
++    snprintf(why, whyLen, "the log import was refused, nothing applied: this rank cannot add signals with NIC atomics (%s)",
++             !gdakiLbOn(r) ? "the NIC copy path is off" : lh->atomicWhy[0] ? lh->atomicWhy : "not set up");
++    return ncclInvalidUsage;
++  }
++  for (size_t i = 0; i < plan.sigs.size(); i++) {
++    sigAt[i].first = (uintptr_t)addrOf(plan.sigs[i].win, plan.sigs[i].off);
++    if ((sigAt[i].first & 7) != 0 || !gdakiRsLbAtomicRkey(lh, sigAt[i].first, &sigAt[i].second)) {
++      snprintf(why, whyLen, "the log import was refused, nothing applied: signal window %u offset %lu is %s",
++               plan.sigs[i].win, (unsigned long)plan.sigs[i].off,
++               (sigAt[i].first & 7) != 0 ? "not 8-byte aligned" : "not in an MR with remote atomic access");
++      return ncclInvalidUsage;
++    }
++  }
 +  std::lock_guard<std::mutex> al(lh->appMu);
 +  struct gdakiRsDevGuard g;
 +  if (!gdakiRsAppStream(r, &g)) {
@@ -3950,24 +4334,34 @@ index 2760d43..119362a 100644
 +  }
 +  cudaStream_t st = lh->appStream;
 +  bool ok = true;
++  // (1) the data copies, landed before the first signal is added
 +  for (const auto& c : plan.copies)
 +    ok = ok && cudaMemcpyAsync(addrOf(c.win, c.off), c.data ? (const void*)c.data : (const void*)&c.value, (size_t)c.bytes,
 +                               cudaMemcpyHostToDevice, st) == cudaSuccess;
-+  std::vector<uint64_t> cur(plan.sigs.size(), 0);
-+  for (size_t i = 0; i < plan.sigs.size(); i++)
-+    ok = ok && cudaMemcpyAsync(&cur[i], addrOf(plan.sigs[i].win, plan.sigs[i].off), sizeof(uint64_t),
-+                               cudaMemcpyDeviceToHost, st) == cudaSuccess;
-+  ok = ok && cudaStreamSynchronize(st) == cudaSuccess;
-+  for (size_t i = 0; ok && i < plan.sigs.size(); i++) {
-+    cur[i] += plan.sigs[i].add;
-+    ok = cudaMemcpyAsync(addrOf(plan.sigs[i].win, plan.sigs[i].off), &cur[i], sizeof(uint64_t), cudaMemcpyHostToDevice,
-+                         st) == cudaSuccess;
-+  }
 +  ok = ok && cudaStreamSynchronize(st) == cudaSuccess;
 +  if (!ok) {
 +    snprintf(why, whyLen, "the log import failed part way (a CUDA copy); the restore falls back");
 +    return ncclUnhandledCudaError;
 +  }
++  // (2) the signal additions: NIC fetch-and-add, atomic with the survivors' signal atomics on this HCA; what is posted
++  // must add up to the entries' total (checked above per target)
++  uint64_t posted = 0;
++  for (size_t i = 0; i < plan.sigs.size(); i++) {
++    uint64_t old = 0;
++    char aw[200];
++    if (gdakiRsLbFetchAdd(r, sigAt[i].first, sigAt[i].second, plan.sigs[i].add, &old, aw, sizeof(aw)) != ncclSuccess) {
++      snprintf(why, whyLen, "the log import failed part way (signal %zu of %zu: %s); the restore falls back", i,
++               plan.sigs.size(), aw);
++      return ncclSystemError;
++    }
++    posted += plan.sigs[i].add;
++  }
++  if (posted != sigTotal) {  // not reachable after the check above
++    snprintf(why, whyLen, "the log import failed part way (the signal additions posted %lu, the entries %lu)",
++             (unsigned long)posted, (unsigned long)sigTotal);
++    return ncclInternalError;
++  }
++  // (3) below: the suppress budgets and counts, then the responder counts' base
 +  for (const auto& pe : plan.peers) {
 +    int idx[NCCL_GIN_RECOVERY_MAX_QPS];
 +    const int n = gdakiRsQpsOfPeer(r, pe.rank, idx);
@@ -3979,17 +4373,83 @@ index 2760d43..119362a 100644
 +    for (int k = 0; k < n; k++) gdakiRsExecSetBase(r, idx[k], pe.m[k]);
 +  }
 +  GIN_TS_NOTE("GIN/RS: rank %d: log import: checkpoint=%lu survivors=%zu entries=%lu data_bytes=%lu copies=%zu "
-+              "signal_adds=%lu signal_targets=%zu incarnation=%u", me, (unsigned long)ckpt, plan.peers.size(),
-+              (unsigned long)plan.entries, (unsigned long)plan.dataBytes, plan.copies.size(), (unsigned long)plan.sigAdds,
-+              plan.sigs.size(), incarnation);
++              "signal_adds=%lu signal_targets=%zu signal_sum=%lu (NIC fetch-and-add) incarnation=%u", me,
++              (unsigned long)ckpt, plan.peers.size(), (unsigned long)plan.entries, (unsigned long)plan.dataBytes,
++              plan.copies.size(), (unsigned long)plan.sigAdds, plan.sigs.size(), (unsigned long)sigTotal, incarnation);
 +  return ncclSuccess;
 +}
 +// ---- gin-restore (dev): log, suppress and replay (end) ----
 +
- static void gdakiTsStart(struct gdakiRecHost* r) {
-   if (r == nullptr || r->ts == nullptr) return;
-   struct gdakiTs* ts = r->ts;
-@@ -7304,6 +9898,8 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
++static void gdakiTsStart(struct gdakiRecHost* r) {
++  if (r == nullptr || r->ts == nullptr) return;
++  struct gdakiTs* ts = r->ts;
++  struct gdaki_context* g = r->ctx;
++  bool ok = true;
++  int nq = 0;
++  ts->roundMs = (int)std::max<int64_t>(100, ncclParamGinTsRoundMs());
++  ts->rescueLaps = (uint32_t)std::max<int64_t>(0, ncclParamGinTsRescueLaps());
++  ts->fwMs = (int)std::max<int64_t>(100, ncclParamGinTsFwMs());                    // gin-harden
++  ts->joinMs = (int)std::max<int64_t>(100, ncclParamGinTsAbortJoinMs());           // gin-harden
++  ts->joinMaxMs = (int)std::max<int64_t>(ts->joinMs, ncclParamGinTsAbortJoinMaxMs());  // gin-harden
++  if (r->copyMs >= ts->fwMs) {  // gin-harden: a copy in bound must never count as a firmware-phase overrun
++    const int c = std::max(10, ts->fwMs / 2);
++    WARN("GIN/TS: rank=%d NCCL_GIN_TS_COPY_MS=%d is not below NCCL_GIN_TS_FW_MS=%d; clamped to %d ms", g->rank, r->copyMs,
++         ts->fwMs, c);
++    r->copyMs = c;
++  }
++  ts->escRounds = (int)std::max<int64_t>(0, ncclParamGinTsEscalateRounds());       // gin-harden
++  ts->escWindowMs = (int)std::max<int64_t>(1, ncclParamGinTsEscalateWindowMs());   // gin-harden
++  // S2 (review): the GID wait runs inside a round. The watchdog surfaces a round older than roundMs and the
++  // device threads parked in the gate give up after holdMs, so a wait that fails must end with time for the
++  // handshake (NACK, decline) before either bound: pathWaitMs <= min(roundMs, holdMs) - handshakeMs - 1 s.
++  {
++    const int maxPath = std::min(ts->roundMs, ts->holdMs) - ts->handshakeMs - 1000;
++    if (ts->pathWaitMs > std::max(0, maxPath)) {
++      WARN("GIN/TS: rank=%d NCCL_GIN_TS_PATH_WAIT_MS=%d exceeds min(round_ms=%d, hold_ms=%d) - handshake_ms=%d - 1000; "
++           "clamped to %d ms (raise NCCL_GIN_TS_ROUND_MS and NCCL_GIN_TS_HOLD_MS for a longer path wait)",
++           g->rank, ts->pathWaitMs, ts->roundMs, ts->holdMs, ts->handshakeMs, std::max(0, maxPath));
++      ts->pathWaitMs = std::max(0, maxPath);
++    }
++  }
++  gdakiTsTestKnobs(r);
++  ts->reconnect = ncclParamGinTsReconnect() != 0 ? 1 : 0;  // gin-reconnect
++  ts->reconnectMs = (int)std::max<int64_t>(0, ncclParamGinTsReconnectMs());
++  ts->pairReset = ncclParamGinTsPairReset() != 0 ? 1 : 0;  // gin-pair-reset
++  ts->pairCheck = ncclParamGinTsPairCheck() != 0 ? 1 : 0;  // gin-pair-check
++  ts->serveWait = ncclParamGinTsServeWait() != 0 ? 1 : 0;  // gin-remaining
++  ts->detWatchMs = (int)std::max<int64_t>(0, ncclParamGinTsQpWatchMs());          // gpu-detect
++  ts->detGraceMs = (int)std::max<int64_t>(0, ncclParamGinTsQpWatchGraceMs());     // gpu-detect
++  ts->detNoCqeMs = (int)std::max<int64_t>(ts->detGraceMs, ncclParamGinTsQpWatchNoCqeMs());  // gpu-detect (review M2)
++  {
++    const int maxRc = std::max(0, ts->holdMs - ts->handshakeMs - 1000);
++    if (ts->reconnectMs > maxRc) {
++      WARN("GIN/TS: rank=%d NCCL_GIN_TS_RECONNECT_MS=%d exceeds hold_ms=%d - handshake_ms=%d - 1000; clamped to %d ms",
++           g->rank, ts->reconnectMs, ts->holdMs, ts->handshakeMs, maxRc);
++      ts->reconnectMs = maxRc;
++    }
++  }
++  // S2: the rescue areas (see struct ncclGinTsGate), zeroed before any kernel can use the QPs.
++  // gin-remaining: one block for every QP of the context (one registration for the NIC copy path), each area at a 4 KiB
++  // boundary, the block's start too (cudaMalloc + 4 KiB, aligned up: the page-aligned part covers every area)
++  if (ts->rescueLaps != 0) {
++    size_t total = 0;
++    for (int p = 0; p < (int)ts->peers.size(); p++) {
++      if (!ts->peers[p].gated) continue;
++      gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
++        total += (((size_t)ts->rescueLaps * q->qp_gverbs->qp_cpu->sq_wqe_num * 64) + 4095) & ~(size_t)4095;
++      });
++    }
++    if (total != 0) {
++      if (cudaMalloc(&ts->rescueAlloc, total + 4096) != cudaSuccess) {
++        ts->rescueAlloc = nullptr;
++        ok = false;
++      } else {
++        ts->rescueBlock = (void*)(((uintptr_t)ts->rescueAlloc + 4095) & ~(uintptr_t)4095);
++        ts->rescueBlockSize = total;
+         if (cudaMemsetAsync(ts->rescueBlock, 0, total, r->stream) != cudaSuccess ||
+             cudaStreamSynchronize(r->stream) != cudaSuccess)
+           ok = false;
+@@ -7304,6 +10232,8 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
    }
    if (!ok) {
      WARN("GIN/TS: transparent recovery OFF on rank %d (gate setup failed)", g->rank);
@@ -3998,7 +4458,7 @@ index 2760d43..119362a 100644
      gdakiTsCloseListen(ts->listenFd, g->rank, ts->nonce);  // gin-harden: BYE, not a reset, for a pending connection
      ts->listenFd = -1;
      if (r->copyStuck && r->copyEv != nullptr) {  // gin-harden: the gate writes below need the late copy done (bounded)
-@@ -7330,6 +9926,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+@@ -7330,6 +10260,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
      r->ts = nullptr;
      return;
    }
@@ -4006,7 +4466,7 @@ index 2760d43..119362a 100644
    ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
    ts->active.store(1, std::memory_order_release);
    ts->th = std::thread(gdakiTsMain, r);
-@@ -7455,6 +10052,8 @@ static void gdakiDetTeardownLine(struct gdakiTs* ts, int rank) {
+@@ -7455,6 +10386,8 @@ static void gdakiDetTeardownLine(struct gdakiTs* ts, int rank) {
  extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
    std::vector<struct gdakiRecHost*> rs;
    int orphansOnColl = 0;
@@ -4015,7 +4475,7 @@ index 2760d43..119362a 100644
    {
      std::lock_guard<std::mutex> lk(gdakiRecRegMu);
      for (auto* r : gdakiRecReg)
-@@ -7616,6 +10215,11 @@ static bool gdakiTsFree(struct gdakiRecHost* r) {
+@@ -7616,6 +10549,11 @@ static bool gdakiTsFree(struct gdakiRecHost* r) {
    }
    // hk: the helper has stopped here (joined, or detached and exited); a context whose helper ran gets its watch line
    if (ts->active.load(std::memory_order_acquire)) gdakiDetTeardownLine(ts, r->ctx->rank);
@@ -4027,7 +4487,7 @@ index 2760d43..119362a 100644
    INFO(NCCL_NET, "GIN/TS: closed rank=%d rounds=%d recovered=%d declined=%d stale=%d", r->ctx->rank, ts->nRounds,
         ts->nRecovered, ts->nDeclined, ts->nStale);
    gdakiLbDestroy(r);  // gin-remaining: before the memory it registered goes (the staging buffer goes in gdakiRecFree)
-@@ -7652,6 +10256,277 @@ ncclResult_t ncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* st
+@@ -7652,6 +10590,278 @@ ncclResult_t ncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* st
    return ncclSuccess;
  }
  
@@ -4163,6 +4623,7 @@ index 2760d43..119362a 100644
 +      in.rsLbOk = rFound->rsLbOk;
 +      snprintf(rsLbWhy, sizeof(rsLbWhy), "%s", rFound->rsLbWhy);
 +      in.logMeasure = rFound->rsMeasureMs > 0;  // work package 4 (set in gdakiTsStart before the helper ran)
++      in.atomicCap = (int)rFound->ctx->ib_dev_attr.atomic_cap;  // gin-restore (dev, work package 9, option (b))
 +      ctxSeq = rFound->rsWinSeq;
 +      ctxColl = (void*)rFound->ctx->collComm;
 +    }
@@ -4305,7 +4766,7 @@ index 2760d43..119362a 100644
  ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config, void** outGinCtx,
                                         ncclNetDeviceHandle_t** outDevHandle) {
    ncclResult_t status = ncclSuccess;
-@@ -8281,6 +11156,7 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+@@ -8281,6 +11491,7 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
    gdaki_ctx->rec = nullptr;
    gdakiQ4Free(gdaki_ctx->q4);  // GIN Q4: stop the watcher before the QPs go away
    gdaki_ctx->q4 = nullptr;
@@ -4313,7 +4774,7 @@ index 2760d43..119362a 100644
  
    if (gdaki_ctx->docaEvent) {
      doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
-@@ -8385,7 +11261,14 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8385,7 +11596,14 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
    __be32 rkey;
  
    struct gdaki_mem_handle* gdaki_mhandle = nullptr;
@@ -4329,7 +4790,7 @@ index 2760d43..119362a 100644
  
    gdaki_mhandle = (struct gdaki_mem_handle*)calloc(1, sizeof(*gdaki_mhandle));
    EQCHECKGOTO(gdaki_mhandle, nullptr, status, out);
-@@ -8393,7 +11276,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8393,7 +11611,7 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
    NCCLCHECKGOTO(gdakiRegMr(&mr, cComm->ib.pd, data, size,
                             IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
                               IBV_ACCESS_REMOTE_ATOMIC,
@@ -4338,7 +4799,7 @@ index 2760d43..119362a 100644
                  status, out);
  
    rkey = htobe32(mr->rkey);
-@@ -8404,6 +11287,10 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8404,6 +11622,10 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
    NCCLCHECKGOTO(gdaki_mhandle_hd_mhandle->allocate(1), status, out);
    gdaki_mhandle_hd_mhandle->host_buf->rkeys = rkeys_hd_mhandle->gpu_buf;
    gdaki_mhandle_hd_mhandle->host_buf->lkey = htobe32(mr->lkey);
@@ -4349,7 +4810,7 @@ index 2760d43..119362a 100644
    NCCLCHECKGOTO(gdaki_mhandle_hd_mhandle->copy_h_to_d(), status, out);
  
    gdaki_mhandle->type = type;
-@@ -8413,6 +11300,10 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
+@@ -8413,6 +11635,10 @@ ncclResult_t ncclGinGdakiRegMrSym(void* collComm, void* data, size_t size, int t
  
    INFO(NCCL_NET, "[%d] Registered MR: data=%p, size=%zu, lkey(be32)=%#x, rkey(be32)=%#x", cComm->rank, data, size,
         htobe32(mr->lkey), htobe32(mr->rkey));
@@ -4360,7 +4821,7 @@ index 2760d43..119362a 100644
  
    *mhandle = (void*)gdaki_mhandle;
    *ginHandle = (void*)gdaki_mhandle_hd_mhandle->gpu_buf;
-@@ -8434,6 +11325,7 @@ ncclResult_t ncclGinGdakiDeregMrSym(void* collComm, void* mhandle) {
+@@ -8434,6 +11660,7 @@ ncclResult_t ncclGinGdakiDeregMrSym(void* collComm, void* mhandle) {
  
    INFO(NCCL_NET, "[%d] Unregistering MR: lkey(be32)=%#x, rkey(be32)=%#x", cComm->rank, htobe32(mr->lkey),
         htobe32(mr->rkey));
