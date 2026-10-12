@@ -383,6 +383,12 @@ static void testLocal() {
     {"NCCL_GIN_RESTORE_MS (30000) is not between 0 and NCCL_GIN_TS_HOLD_MS (30000)",
      [](struct gdakiRsLocalIn& x) { x.restoreMs = 30000; }},
     {"NIC copy path is off", [](struct gdakiRsLocalIn& x) { x.lbOn = false; }},
+    {"side table is not set up on this rank (no memory)", [](struct gdakiRsLocalIn& x) { x.sideOk = false; x.sideWhy = "no memory"; }},
+    {"restore buffers are not in the NIC copy path (unknown)", [](struct gdakiRsLocalIn& x) { x.rsLbOk = false; }},
+    {"2 window(s) were registered after", [](struct gdakiRsLocalIn& x) { x.winsAfter = 2; }},
+    {"1 window(s) of this context's restore buffers were deregistered", [](struct gdakiRsLocalIn& x) { x.winsGone = 1; }},
+    {"resource window could not be added to the NIC copy path (list full)",
+     [](struct gdakiRsLocalIn& x) { x.resOk = false; x.resWhy = "list full"; }},
     {"round cap stopped recovery", [](struct gdakiRsLocalIn& x) { x.escalated = true; }},
   };
   const int nCases = (int)(sizeof(cases) / sizeof(cases[0]));
@@ -410,10 +416,59 @@ static void testLocal() {
     CHECK(has(why, "(connect timed out)"));
     x.restoreMs = 0;  // a zero deadline is refused too (after the earlier conditions are met)
     x.tsOn = true;
-    CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 20);
+    CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 20);  // the deadline condition's place in the order
     x.restoreMs = 29999;
     CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == GDAKI_RS_L_OK);
   }
+}
+
+// The side table's layout: sizes rounded down to powers of two and bounded, rings 256-byte aligned, no overlap.
+static void testSideLayout() {
+  struct gdakiRsSideLayout L;
+  CHECK(gdakiRsSideLayoutOf(4, 3, 4096, 1 << 20, &L));
+  CHECK(L.nEntries == 4096 && L.payBytes == (1u << 20) && L.qpOff == 64);
+  CHECK(L.ringsOff == ((64 + 4 * 128 + 255) & ~(size_t)255) && L.ringsOff % 256 == 0);
+  CHECK(L.ringBytes == (size_t)4096 * 64 + (1u << 20));
+  CHECK(L.bytes == ((L.ringsOff + 3 * L.ringBytes + 4095) & ~(size_t)4095) && L.bytes % 4096 == 0);
+  CHECK(gdakiRsSideLayoutOf(8, 7, 5000, 3000000, &L) && L.nEntries == 4096 && L.payBytes == (1u << 21));
+  CHECK(gdakiRsSideLayoutOf(1, 0, 1, 1, &L) && L.nEntries == 64 && L.payBytes == 4096 && L.bytes == 4096);
+  CHECK(gdakiRsSideLayoutOf(2, 1, 1LL << 40, 1LL << 40, &L) && L.nEntries == (1u << 20) && L.payBytes == (1ull << 30));
+  CHECK(!gdakiRsSideLayoutOf(2, 3, 4096, 4096, &L));                     // more logged QPs than QPs
+  CHECK(!gdakiRsSideLayoutOf(2000000, 2000000, 1 << 20, 1 << 30, &L));    // past the bound (1 TiB)
+  for (int nqp = 1; nqp <= 64; nqp += 7)
+    for (int k = 0; k <= nqp; k += 3) {
+      CHECK(gdakiRsSideLayoutOf(nqp, k, 100 + nqp, 10000 * k + 1, &L));
+      CHECK(L.ringsOff >= L.qpOff + (size_t)nqp * 128 && L.ringsOff % 256 == 0 && (L.ringBytes % 256) == 0);
+      CHECK((L.nEntries & (L.nEntries - 1)) == 0 && (L.payBytes & (L.payBytes - 1)) == 0);
+      CHECK(L.bytes % 4096 == 0 && L.bytes >= L.ringsOff + (size_t)k * L.ringBytes && L.bytes < L.ringsOff + (size_t)k * L.ringBytes + 4096);
+    }
+  CHECK(gdakiRsPow2Floor(1) == 1 && gdakiRsPow2Floor(2) == 2 && gdakiRsPow2Floor(3) == 2 && gdakiRsPow2Floor(4096) == 4096);
+}
+
+// Resume's view of a collComm's windows: after the context, deregistered since, the resource window by address.
+static void testCountWins() {
+  const uint64_t ctx = 10;  // the context started when the registry's sequence was 10
+  std::vector<struct gdakiRsWinView> w = {
+    {0x1000, 0x2000, 3, 0, false},   // before the context, still registered: covered
+    {0x3000, 0x4000, 5, 12, true},   // before, deregistered after the context: counted as deregistered since
+    {0x5000, 0x6000, 7, 9, true},    // before, deregistered before the context: not covered, not counted
+    {0x7000, 0x8000, 11, 0, false},  // after the context: counted
+    {0x9000, 0xa000, 13, 14, true},  // after, already deregistered: not counted
+    {0xb000, 0xc000, 15, 0, false},  // the resource window (after the context): found, to be added
+  };
+  struct gdakiRsWinCount c = gdakiRsCountWins(w.data(), (int)w.size(), ctx, 0xb800);
+  CHECK(c.after == 1 && c.goneSince == 1 && c.resFound && c.res == 5);
+  c = gdakiRsCountWins(w.data(), (int)w.size(), ctx, 0);  // no resource window: found by definition, the last counts
+  CHECK(c.after == 2 && c.goneSince == 1 && c.resFound && c.res == -1);
+  c = gdakiRsCountWins(w.data(), (int)w.size(), ctx, 0xd000);  // an address no window holds
+  CHECK(!c.resFound && c.res == -1 && c.after == 2);
+  c = gdakiRsCountWins(w.data(), (int)w.size(), ctx, 0x1800);  // a resource window registered before: covered already
+  CHECK(c.resFound && c.res == -1 && c.after == 2);
+  c = gdakiRsCountWins(w.data(), (int)w.size(), ctx, 0x9800);  // its window is gone: not found
+  CHECK(!c.resFound);
+  c = gdakiRsCountWins(w.data(), 0, ctx, 0x1800);
+  CHECK(!c.resFound && c.after == 0 && c.goneSince == 0);
+  CHECK(gdakiRsCountWins(w.data(), (int)w.size(), ctx, 0x2000).resFound == false);  // the range's end is outside
 }
 
 static struct gdakiRsXRec xrec(int rank, bool req, int policy, int setupVerdict, const char* setupWhy, int localCode,
@@ -662,6 +717,8 @@ int main() {
   testDecide();
   testRandom();
   testLocal();
+  testSideLayout();
+  testCountWins();
   testResumeDecide();
   testResumeRandom();
   testExchange();
