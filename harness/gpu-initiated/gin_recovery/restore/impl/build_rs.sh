@@ -26,7 +26,8 @@
 #          functions" and packages 1-4's region (the Resume local check).
 #   api    the host file's log API block is rs_log_api.h's, byte for byte.
 #   units-all  api, unitd, unith, units.
-#   info   agent_rs_int/out/build_info.txt: md5 of every output and input.
+#   info   agent_rs_int/out/build_info.txt: md5 of every output and input (INFO=<file> writes another file instead, so an
+#          earlier set's record stays: 2026-10-13, the fix builds rs_i4b and rsp_i4b wrote out/build_info_i4.txt).
 # The device objects are rebuilt whenever the device header trees differ from the last build of that directory (devsync;
 # NCCL's dependency pass does not see them), so the first build after setup rebuilds every device object (hk's copied
 # build carries 22 stale symmetric GIN objects, EXPERIMENT.md 12).
@@ -40,6 +41,7 @@ GENCODE="-gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_86,code=sm_86
 JOBS=${JOBS:-8}
 RSOUT=${RSOUT:-rs}
 RSPOUT=${RSPOUT:-rsp}
+INFO=${INFO:-}  # the info stage's output file (default out/build_info.txt)
 HK=$SCR/agent_gd/gin_hk
 W=$SCR/agent_rs_int
 OUT=$W/out
@@ -197,8 +199,8 @@ info() {
     echo "include_digest hk $(cd "$HK/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
     for f in rs_unit.cc rs_unit_dev.cc rs_unit_host.cc rs_spare_unit.cc rs_log_api.h rs_hold_api.h rs_ckpt_api.h rs_spare_api.h; do
       echo "$f $(md5 "$D/$f")"; done
-  } > "$OUT/build_info.txt"
-  cat "$OUT/build_info.txt"
+  } > "${INFO:-$OUT/build_info.txt}"
+  cat "${INFO:-$OUT/build_info.txt}"
 }
 case "$STAGE" in
   setup) setup ;;

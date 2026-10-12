@@ -12,7 +12,9 @@ own columns). cost*/ hold run_cost.sh runs.
 Restore trial columns. Survivors = the live ranks other than kill_rank; the spare is apart.
   void            a live survivor failed before its exchange (init/registration/devComm error, exit 2, rendezvous)
   applied         kill cell: the killed rank ended by SIGKILL (exit 137) or a kill line ("GINRS killed", "GINRS die")
-                  arrived; other cells: 1
+                  arrived; the checkpoint-pause cell since 2026-10-13 (meta die_switch=NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT):
+                  only the library's test-switch line (below) is its kill record (an exit 137 alone may be a timeout's
+                  kill); other cells: 1
   config_ok       the cell's intended configuration (policy/restore as the cell asks; the refusal cells: 1)
   restore_live    1 when some live rank's Step hook returned success (the library implements it)
   surv_released   survivors whose untimed wait was let go below its target (kv released)
@@ -35,8 +37,19 @@ Library-provided columns (line patterns checked against the integrated library, 
   suppress_ok     (e) "GIN/RS: rank R: suppress ... budget=B ... suppressed=S" lines: 1 iff every S = B (>= 1 line)
   restore_time_ms "judged dead" -> the last survivor's first "GIN/RS: rank R: ... published" line after it
   ckpt_before     the killed rank's "GIN/RS: rank R: checkpoint K stable" line for the spare's resume step K arrived
-                  before the kill line (the checkpoint-pause cell)
+                  before the kill line (the checkpoint-pause cell); a survivor's "GIN/RS: rank Q: rank R armed at its
+                  stable checkpoint K" line counts as well (CKPT_STABLE goes to the buddy first, 2026-10-13)
   ckpt_stable_before_kill  1/0 any such stable line of the killed rank before the kill (section 8 exclusion when 0)
+  The kill line: the runner's recorded-PID kill ("GINRS killed", _kill.out), the driver's own ("GINRS die"), or, in the
+  checkpoint-pause cell since 2026-10-13 (meta kill_in_hook=1, no _kill.out), the library's test-switch line in the killed
+  rank's log: "GIN/RS: rank R: test switch NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT: dying U us after the pause request of
+  checkpoint K (stable checkpoints before: S)". Its receipt time is the kill time of that cell.
+  die_ckpt        the checkpoint K that line names (empty without it)
+  die_in_pause    survivors whose "input pause for rank R's checkpoint K ended (a hold of that rank took its gates)" line
+                  names that K: the death landed inside that checkpoint's input pause there (the pilot's check; reported)
+  activate_ms / later_n / later_ms  the buddy's "every survivor holds rank P: its spare activated (incarnation I, X ms
+                  after this rank's hold start), N 'later' answers over Y ms" line (2026-10-13: the spare answers 'later'
+                  while the killed process is still present; the buddy asks again every 20 ms)
   hold_started    survivor "GIN/RS: rank R: hold of rank P started" lines (the host branch's hold start)
   nospare_failfast_ok  no spare registered: hold_started = 0, a decline line, degraded_release = 1 (the hk reaction)
   hold_to_fallback_ms  the first hold-start line -> the first "the restore of rank P (incarnation I) is given up" line
@@ -54,7 +67,8 @@ The spare and the trial (meta and the spare's stamped lines; the spare branch's 
                   "예비 프로세스가 활성화 전에 시작에 실패함(따로 셈)")
   foreign_gpu     another process used a GPU when the trial started (meta gpu_apps_before; section 8)
   spare_replay_ms the spare's start line -> its ready line (the init replay with 4 ranks)
-  spare_activate_ms  the kill line -> the spare's Resume line (activation and state transfer)
+  spare_activate_ms  the kill line -> the spare's successful Resume line ("GINRS resume rank=R rc=0": activation and state
+                  transfer; a spare whose wait ran out prints rc != 0 and is not counted)
   spare_peer_before / spare_peer_after  the spare's connects to a peer (not loopback, not its node) before and after its
                   ready point (strace; before must be 0: the replay contacts nobody; after: REJOIN and the data sockets)
   spare_uds_own / spare_uds_other  AF_UNIX connects to NCCL's proxy sockets of its own rank / of other ranks
@@ -69,10 +83,12 @@ KVTOK = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)")
 LIBCOLS = ["t_dead", "suppress_ok", "restore_time_ms", "ckpt_before", "ckpt_stable_before_kill", "hold_to_fallback_ms",
            "spare_absent_ok",
            "degraded_release", "restore_count", "ckpt_pause_ms"]
+# reported only (no acceptance formula reads them): the checkpoint-pause kill and the activation's 'later' answers
+INFOCOLS = ["kill_in_hook", "die_ckpt", "die_in_pause", "activate_ms", "later_n", "later_ms"]
 RS_COLS = ["id", "stem", "sub", "key", "cell", "build", "runner", "tnum", "n", "void", "applied", "config_ok",
            "restore_live", "kill_rank", "spare", "surv_released", "surv_async", "surv_unfinished", "decline_n",
            "wait_held", "data_equal", "no_reexec", "revived_done", "resume_err_all", "reason_same", "ff_fallthrough",
-           "strict_forced", "strict_notforced", "strict_bad", "steps", "wall_s"] + LIBCOLS + \
+           "strict_forced", "strict_notforced", "strict_bad", "steps", "wall_s"] + LIBCOLS + INFOCOLS + \
           ["spare_start_fail", "foreign_gpu", "spare_replay_ms", "spare_activate_ms", "spare_peer_before",
            "spare_peer_after", "spare_uds_own", "spare_uds_other", "strace_known", "neg_cut_failed", "neg_field_failed",
            "neg_peer_connects", "hold_started", "nospare_failfast_ok", "spare_killed_first", "driver", "nomacro_reason",
@@ -92,12 +108,23 @@ PAUSE = re.compile(r"GIN/RS: rank \d+: .*input pause .*\bpause_us=(\d+)")
 RELEASED = re.compile(r"GINRS step rank=(\d+) step=\d+ released=1")
 SPARE_START = re.compile(r"GINRS start rank=\d+ mode=spare")
 SPARE_READY = re.compile(r"GINRS spare_ready ")
-SPARE_RESUME = re.compile(r"GINRS resume rank=")
+SPARE_RESUME = re.compile(r"GINRS resume rank=\d+ rc=0 ")
 # a transcript fault the init replay detects (the spare branch's WARN strings); not the informational "replay ON",
 # "replay mark=", "replay entry ... own_slot_bytes" lines, nor a configuration refusal or a missing file
 REPLAY_FAIL = re.compile(r"GIN/RS: replay(: transcript entry \d+ is (damaged or )?cut| diverged|: the transcript is not usable"
                          r"|: a \w+ call after the end| entry \d+ \(site \d+\): .* outside the allowed fields)")
 KILLED = re.compile(r"GINRS (killed|die) rank=(\d+)")
+# the library's test switch of the checkpoint-pause cell (2026-10-13, rs_layer.diff gdakiCkptTestDie): rank, us, checkpoint
+DIE_CKPT = re.compile(r"GIN/RS: rank (\d+): test switch NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT: dying (\d+) us after the pause "
+                      r"request of checkpoint (\d+) \(stable checkpoints before: (\d+)\)")
+# a survivor: the subject R is armed at its stable checkpoint K (gdakiCkptOnStable)
+ARMED = re.compile(r"GIN/RS: rank \d+: rank (\d+) armed at its stable checkpoint (\d+)")
+# a survivor's input pause for subject R's checkpoint K that a hold of R ended (gdakiCkptOnHoldStart)
+PAUSE_HOLD = re.compile(r"GIN/RS: rank \d+: input pause for rank (\d+)'s checkpoint (\d+) ended \(a hold of that rank "
+                        r"took its gates\)")
+# the buddy's activation line (2026-10-13 wording, WARN)
+ACTIVATED = re.compile(r"GIN/RS: rank \d+: every survivor holds rank (\d+): its spare activated \(incarnation \d+, "
+                       r"([0-9.]+) ms after this rank's hold start\), (\d+) 'later' answers over ([0-9.]+) ms")
 
 
 def parse_kv(path):
@@ -177,11 +204,19 @@ def rs_row(stem, sub):
         d = kv[r]
         if d.get("rdv_error") or any((num(d, k, 0) or 0) != 0 for k in ("init_rc", "reg_rc", "devcomm_rc")) or rc[r] == 2:
             void = 1
-    # applied
+    # applied; the kill time: the recorded-PID kill line, the driver's die line, or the library's test-switch line
+    die_k, die = "", []
     if kr >= 0:
-        killed_line = [t for t, l in kout + logs[kr] if t is not None and KILLED.search(l)]
-        applied = 1 if (rc.get(kr) == 137 or killed_line) else 0
+        die = [(t, int(m.group(3))) for t, l in logs[kr] if t is not None for m in [DIE_CKPT.search(l)]
+               if m and int(m.group(1)) == kr]
+        killed_line = [t for t, l in kout + logs[kr] if t is not None and KILLED.search(l)] + [t for t, _ in die]
+        if meta.get("die_switch") == "NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT":
+            applied = 1 if die else 0  # the library's switch (run_rs.sh since 2026-10-13): its line is the kill record
+        else:
+            applied = 1 if (rc.get(kr) == 137 or killed_line) else 0
         t_kill = min(killed_line) if killed_line else None
+        if die:
+            die_k = min(die)[1]
     else:
         applied, t_kill = 1, None
     pol, restore = meta.get("policy", ""), meta.get("restore", "")
@@ -249,7 +284,7 @@ def rs_row(stem, sub):
         if firsts and len(firsts) == len(surv):
             restore_time_ms = round((max(firsts) - t_dead) * 1000.0, 1)
     stab = [(t, int(m.group(1)), int(m.group(2))) for t, l in [x for r in ranks for x in logs[r]]
-            for m in [STABLE.search(l)] if m and t is not None]
+            for m in [STABLE.search(l) or ARMED.search(l)] if m and t is not None]
     ckpt_before = ckpt_stable_before_kill = ""
     if stab and kr >= 0 and t_kill is not None:
         mine = [(t, k) for t, rr, k in stab if rr == kr]
@@ -281,6 +316,15 @@ def rs_row(stem, sub):
     if t_hold is not None or t_fb is not None:
         spare_absent_ok = int(t_hold is not None and t_fb is not None and 500.0 <= hold_to_fallback_ms <= 1500.0 and
                               all_rel and all(2000 <= (rel_t[r] - t_fb) * 1000.0 <= 2500 for r in surv))
+    # the checkpoint-pause cell: survivors whose input pause for the dying checkpoint was ended by the hold
+    die_in_pause = ""
+    if die_k != "":
+        die_in_pause = sum(1 for r in surv if any(m and int(m.group(1)) == kr and int(m.group(2)) == die_k
+                                                  for _, l in logs[r] for m in [PAUSE_HOLD.search(l)]))
+    act = [m for _, l in sl for m in [ACTIVATED.search(l)] if m and kr >= 0 and int(m.group(1)) == kr]
+    activate_ms = float(act[0].group(2)) if act else ""
+    later_n = int(act[0].group(3)) if act else ""
+    later_ms = float(act[0].group(4)) if act else ""
     rcount = sum(1 for _, l in sl + slog if RESTORED.search(l))
     pauses = [int(m.group(1)) for _, l in sl for m in [PAUSE.search(l)] if m]
     ckpt_pause_ms = round(max(pauses) / 1000.0, 3) if pauses else ""
@@ -297,7 +341,8 @@ def rs_row(stem, sub):
             "nomacro_reason": nomacro_reason, "refused_ran_ok": refused_ran_ok,
             "hold_to_fallback_ms": hold_to_fallback_ms, "spare_absent_ok": spare_absent_ok,
             "degraded_release": degraded_release, "restore_count": rcount if (rcount or restore_live) else 0,
-            "ckpt_pause_ms": ckpt_pause_ms}
+            "ckpt_pause_ms": ckpt_pause_ms, "kill_in_hook": meta.get("kill_in_hook", ""), "die_ckpt": die_k,
+            "die_in_pause": die_in_pause, "activate_ms": activate_ms, "later_n": later_n, "later_ms": later_ms}
     base.update(spare_cols(stem, meta, sk, slog, t_kill))
     return base
 
