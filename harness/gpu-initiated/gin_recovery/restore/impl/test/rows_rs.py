@@ -43,6 +43,9 @@ Library-provided columns (assumed line patterns, impl/notes_test.md; empty until
   spare_absent_ok spare registered but absent: hold start and fallback lines, hold_to_fallback_ms 500-1500 (draft "about
                   1 s"), every survivor released 2000-2500 ms after the fallback (empty when neither line exists)
   spare_killed_first  the spare-absent cell: the spare's recorded-PID kill line arrived before the rank's kill line
+  driver          the build the trial ran (meta driver; regression: mr/ff or mr/hold; cost: the program's file name)
+  nomacro_reason  every rank's refusal reason names NCCL_GIN_RESTORE_DEVICE (the no-macro refusal cell)
+  refused_ran_ok  every rank ran the workload fail-fast to the end after the refusal, exact, exit 0 (no trap)
   degraded_release every survivor released 2000-2500 ms after t_dead (the hk control)
   restore_count   "GIN/RS: rank R: rank P restored as incarnation" lines
   ckpt_pause_ms   the largest "GIN/RS: rank R: ... input pause ... pause_us=U" over survivors, in ms
@@ -72,7 +75,8 @@ RS_COLS = ["id", "stem", "sub", "key", "cell", "build", "runner", "tnum", "n", "
            "strict_forced", "strict_notforced", "strict_bad", "steps", "wall_s"] + LIBCOLS + \
           ["spare_start_fail", "foreign_gpu", "spare_replay_ms", "spare_activate_ms", "spare_peer_before",
            "spare_peer_after", "spare_uds_own", "spare_uds_other", "strace_known", "neg_cut_failed", "neg_field_failed",
-           "neg_peer_connects", "hold_started", "nospare_failfast_ok", "spare_killed_first"] + \
+           "neg_peer_connects", "hold_started", "nospare_failfast_ok", "spare_killed_first", "driver", "nomacro_reason",
+           "refused_ran_ok"] + \
           ["metric", "arm", "rx", "lib", "value", "exit0", "exit1", "win0", "win1", "tx_done", "iters", "cost_valid"]
 DECLINE = re.compile(r"GIN/TS: declined rank=|why=(declined|peer-dead|degraded)")
 DEAD = re.compile(r"judged dead")
@@ -212,6 +216,11 @@ def rs_row(stem, sub):
     whys = [kv[r].get("resume_why", "") for r in ranks]
     reason_same = int(len(set(whys)) == 1 and whys[0] not in ("", "none"))
     ff_fallthrough = int(refuse and any(num(kv[r], "resume_rc") == 0 for r in ranks))
+    # the no-macro refusal (2026-10-12 design change): the reason names the missing build macro on every rank, and after
+    # the refusal every rank ran the workload fail-fast to the end with an exact result (no trap)
+    nomacro_reason = int(bool(ranks) and all("NCCL_GIN_RESTORE_DEVICE" in kv[r].get("resume_why", "") for r in ranks))
+    refused_ran_ok = int(bool(ranks) and all(num(kv[r], "refused_then_ran", 0) == 1 and kv[r].get("xchg") == "ok" and
+                                             num(kv[r], "exit", 1) == 0 for r in ranks))
     # the window-report lines (all live ranks and the spare)
     sf = snf = sbad = 0
     for _, l in [x for r in ranks for x in logs[r]] + slog:
@@ -284,7 +293,8 @@ def rs_row(stem, sub):
             "strict_notforced": snf, "strict_bad": sbad, "steps": steps, "wall_s": meta.get("wall_s", ""),
             "t_dead": "" if t_dead is None else t_dead, "suppress_ok": suppress_ok, "restore_time_ms": restore_time_ms,
             "ckpt_before": ckpt_before, "ckpt_stable_before_kill": ckpt_stable_before_kill,
-            "hold_started": hold_started, "nospare_failfast_ok": nospare_failfast_ok,
+            "hold_started": hold_started, "nospare_failfast_ok": nospare_failfast_ok, "driver": meta.get("driver", ""),
+            "nomacro_reason": nomacro_reason, "refused_ran_ok": refused_ran_ok,
             "hold_to_fallback_ms": hold_to_fallback_ms, "spare_absent_ok": spare_absent_ok,
             "degraded_release": degraded_release, "restore_count": rcount if (rcount or restore_live) else 0,
             "ckpt_pause_ms": ckpt_pause_ms}
@@ -342,9 +352,11 @@ def spare_cols(stem, meta, sk, slog, t_kill):
 def reg_row(stem, sub):
     meta = read_meta(stem)
     lib = meta.get("lib", "")
+    mk = meta.get("mrkey", "").rstrip("/")
+    drv = "mr/" + os.path.basename(mk) if os.path.basename(mk) in ("ff", "hold") else mk
     return {"id": os.path.basename(stem), "stem": stem, "sub": sub, "cell": meta.get("cell", ""),
             "build": os.path.basename(lib.rstrip("/")) if "/" in lib else lib, "runner": "mrr",
-            "n": num(meta, "n", 4) or 4}
+            "n": num(meta, "n", 4) or 4, "driver": drv}
 
 
 def cost_row(stem, sub):
@@ -366,7 +378,8 @@ def cost_row(stem, sub):
     return {"id": os.path.basename(stem), "stem": stem, "sub": sub, "cell": meta.get("cell", ""),
             "build": meta.get("lib", ""), "runner": "cost", "metric": metric, "arm": meta.get("arm", ""),
             "rx": meta.get("rx", ""), "lib": meta.get("lib", ""), "value": value, "exit0": num(r0, "exit"),
-            "exit1": num(r1, "exit"), "win0": win0, "win1": win1, "tx_done": "" if tx is None else tx,
+            "exit1": num(r1, "exit"), "driver": meta.get("bin", ""), "win0": win0, "win1": win1,
+            "tx_done": "" if tx is None else tx,
             "iters": "" if it is None else it, "cost_valid": valid}
 
 
