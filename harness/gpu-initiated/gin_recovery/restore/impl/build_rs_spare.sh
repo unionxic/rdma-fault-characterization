@@ -4,13 +4,15 @@
 # build_rs.sh (unmodified) checks the working tree changes exactly its RS_FILES, which work package 8 extends with
 # bootstrap.cc, init.cc, transport/net_ib/gin.cc, dev_runtime.cc and the new src/misc/rs_spike.cc, src/include/rs_spike.h;
 # this wrapper builds that tree instead. No GPU or RDMA program runs here; nothing outside agent_rs_spare/ is written.
-# usage: build_rs_spare.sh <rs|rsp|unit|info>
+# usage: build_rs_spare.sh <rs|rsp|unit|unit1|info>
 #   rs/rsp  research / production (-DNCCL_GIN_TS_PRODUCTION) build into agent_rs_spare/{build,build-rsp} ->
 #           agent_rs_spare/out/{rs_spare,rsp_spare}/libnccl.so.2.32.3 (sm_75 and sm_86; a folder that already holds a build
 #           is refused: give a new name with RSOUT=/RSPOUT=).
 #   unit    the spare CPU unit test: the region between the two "gin-restore (rs, work package 8, spare branch): pure
 #           functions" markers of gin_host_gdaki.cc is cut into rs_spare_pure.inc and compiled with impl/rs_spare_unit.cc
 #           (g++, no NCCL, no CUDA, no network), then run.
+#   unit1   work packages 1-4's test impl/rs_unit.cc against this tree's "gin-restore: pure functions" region (the Resume
+#           local check gains a condition here; the earlier conditions and their order must still pass).
 #   info    agent_rs_spare/out/build_info_spare.txt: md5 of every output and input.
 # All compiles run at nice 19 and idle I/O priority (other studies use this node).
 set -euo pipefail
@@ -49,19 +51,35 @@ unit() {
   awk '/^\/\/ ==== gin-restore \(rs, work package 8, spare branch\): pure functions \(begin/{on=1} on{print} /^\/\/ ==== gin-restore \(rs, work package 8, spare branch\): pure functions \(end/{on=0}' \
     "$src" > "$o/rs_spare_pure.inc"
   [ -s "$o/rs_spare_pure.inc" ] || { echo "no spare pure-function region in $HOSTF" >&2; exit 1; }
-  nice -n 19 g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -I"$o" "$D/rs_spare_unit.cc" -o "$o/rs_spare_unit"
+  # also packages 1-4's region, for the Resume local check this package changes (its other functions are unused here)
+  awk '/^\/\/ ---- gin-restore: pure functions \(begin/{on=1} on{print} /^\/\/ ---- gin-restore: pure functions \(end/{on=0}' \
+    "$src" > "$o/rs_pure.inc"
+  nice -n 19 g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -Wno-unused-function -pthread -fsanitize=address,undefined \
+    -I"$o" -I"$W/nccl-src/src/include" "$D/rs_spare_unit.cc" -o "$o/rs_spare_unit"
   "$o/rs_spare_unit"
+}
+unit1() {  # packages 1-4's unit test (impl/rs_unit.cc) against this tree's region, as build_rs.sh unit does for agent_rs
+  local o=$OUT/unit1 src=$W/nccl-src/$HOSTF
+  mkdir -p "$o"
+  awk '/^\/\/ ---- gin-restore: pure functions \(begin/{on=1} on{print} /^\/\/ ---- gin-restore: pure functions \(end/{on=0}' \
+    "$src" > "$o/rs_pure.inc"
+  [ -s "$o/rs_pure.inc" ] || { echo "no pure-function region in $HOSTF" >&2; exit 1; }
+  grep -qxF 'enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };' "$src" || { echo "hk's policy enum changed" >&2; exit 1; }
+  nice -n 19 g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -I"$o" \
+    -I"$W/nccl-src/src/include" "$D/rs_unit.cc" -o "$o/rs_unit"
+  "$o/rs_unit"
 }
 info() {
   { echo "built=$(date '+%F %T') host=$(hostname -s) g++=$(g++ -dumpfullversion)"
-    for b in "$OUT"/rs_spare/libnccl.so.2.32.3 "$OUT"/rsp_spare/libnccl.so.2.32.3; do
+    for b in "$OUT"/*/libnccl.so.2.32.3; do
       [ -f "$b" ] && echo "$(basename "$(dirname "$b")") libnccl $(md5 "$b")"; done
+    [ -f "$D/rs_layer_spare.diff" ] && echo "rs_layer_spare.diff $(md5 "$D/rs_layer_spare.diff")"
     echo "host file $HOSTF md5 $(md5 "$W/nccl-src/$HOSTF")"
     [ -f "$OUT/unit_spare/rs_spare_unit" ] && echo "unit: rs_spare_unit.cc $(md5 "$D/rs_spare_unit.cc") rs_spare_pure.inc $(md5 "$OUT/unit_spare/rs_spare_pure.inc")"
   } > "$OUT/build_info_spare.txt"
   cat "$OUT/build_info_spare.txt"
 }
 case "$STAGE" in
-  rs) rs ;; rsp) rsp ;; unit) unit ;; info) info ;;
+  rs) rs ;; rsp) rsp ;; unit) unit ;; unit1) unit1 ;; info) info ;;
   *) echo "unknown stage $STAGE" >&2; exit 2 ;;
 esac
