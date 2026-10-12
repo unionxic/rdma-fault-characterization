@@ -55,8 +55,10 @@
 // transparent-recovery context does).
 //
 // ---- helper-socket message types ----
-// hk uses 1..10, the spare branch 32..47 (rs_spare_api.h). This branch reserves 56..63 and uses none so far: the log
-// export goes over the data socket (format below), which work package 5's data server carries.
+// hk uses 1..10, the host branch 11..20 (rs_hold_api.h), the spare branch 32..47 (rs_spare_api.h); this branch 21..31
+// (the split the host branch published; 48..63 are free). This branch uses none so far: the log export goes over the data
+// socket (format below), which work package 5's data server carries. A record of 21..31 that a wait parks
+// (gdakiHoldDefer) is taken by this branch's code with gdakiHoldTakeMsg.
 #ifndef GIN_RESTORE_RS_LOG_API_H_
 #define GIN_RESTORE_RS_LOG_API_H_
 
@@ -76,8 +78,8 @@
 struct gdakiRecHost;
 struct gdakiTsRepostPlan;
 #define GDAKI_RS_POS_INF (~0ULL)             // "every position": the cover of a peer whose log broke (until its next pause)
-#define GDAKI_RS_MSG_FIRST 56                // helper-socket message types of this branch: 56..63 (none used yet)
-#define GDAKI_RS_MSG_LAST 63
+#define GDAKI_RS_MSG_FIRST 21                // helper-socket message types of this branch: 21..31 (none used yet)
+#define GDAKI_RS_MSG_LAST 31
 
 // What the sender's helper reads in a checkpoint's input pause toward `peer` (9.4 step 2), every QP to the peer
 // quiesced (gate odd, count 0, held WQEs rung): the cut and the counts PAUSED carries. The caller keeps it until the
