@@ -1,7 +1,8 @@
-// rs_unit_host.cc - CPU unit test of the host branch's hold state machine (work package 7; EXPERIMENT.md 9.10.7) and,
-// later, of the checkpoint's accounting (work package 5). No NCCL, no CUDA, no network.
-// Built by impl/build_rs_host.sh unith: impl/rs_hold_api.h (the shared interface) and the region "gin-restore hold: pure
-// functions" cut from the working tree's gin_host_gdaki.cc (rs_hold_pure.inc), with g++ -std=c++17, ASan and UBSan.
+// rs_unit_host.cc - CPU unit test of the host branch's hold state machine (work package 7; EXPERIMENT.md 9.10.7) and of
+// the checkpoint's accounting (work package 5; 9.4). No NCCL, no CUDA, no network.
+// Built by impl/build_rs_host.sh unith: impl/rs_hold_api.h and impl/rs_ckpt_api.h (the shared interfaces) and the regions
+// "gin-restore hold: pure functions" and "gin-restore ckpt: pure functions" cut from the working tree's gin_host_gdaki.cc
+// (rs_hold_pure.inc, rs_ckpt_pure.inc), with g++ -std=c++17, ASan and UBSan.
 // What it checks:
 //   1. every state against every event of 9.10.7, through the pure decisions the host code asks (decline, record,
 //      REQ, helper-socket record, watcher, helper step, arming, RESTORED's state), as an explicit expected table;
@@ -13,7 +14,13 @@
 //      a timed-out publish, no compare-and-swap of one hold hits another (incarnation in the word);
 //   4. the parking rule (the deferral of every wait): restore records 11..63 only, arrival order and the drain's choice
 //      (gdakiHoldDrainTakes, R1), the cap and the age limit, the wait (gdakiHoldRecvParked) on a simulated clock;
-//   5. the deadlines' arithmetic, the time the parked device threads' clock started, and the buddy's holder count.
+//   5. the deadlines' arithmetic (with the spare's one-at-a-time driver: the turn's HELD deadline and a PUBLISHED deadline
+//      that covers the later survivors, as a model over random schedules), the time the parked device threads' clock
+//      started, and the buddy's holder count;
+//   6. the checkpoint (work package 5): when one is due, the drain verdict, the image layout and blocks, the changed
+//      blocks, PAUSED's P, the answers to CKPT_PAUSE and CKPT_RESUME, the covered epoch over empty rounds (G6), the replies,
+//      the stable step, a peer's cuts, the buddy's store, the spare's fetch (answer kind, region match), and the
+//      stable-checkpoint protocol as a model with the subject dying at every point.
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -24,10 +31,12 @@
 #include <algorithm>
 #define GDAKI_HOLD_API_NO_ENTRY_DECLS
 #include "rs_hold_api.h"
+#include "rs_ckpt_api.h"
 // hk's helper-socket types the tests use (gin_host_gdaki.cc)
 enum { GDAKI_TS_HELLO = 1, GDAKI_TS_REQ = 2, GDAKI_TS_ACK = 3, GDAKI_TS_NACK = 4, GDAKI_TS_DONE = 5, GDAKI_TS_FAIL = 6,
        GDAKI_TS_BYE = 10 };
 #include "rs_hold_pure.inc"
+#include "rs_ckpt_pure.inc"
 
 static long gChecks = 0, gFailed = 0;
 #define CHECK(c)                                                                     \
@@ -772,9 +781,62 @@ static void testDeadlinesAndHolders() {
   CHECK(gdakiHoldHeldDeadlineUs(1000000, 1000000, 25000, 30000, 8000, 1000) == 1000000 + 21000 * 1000);
   CHECK(gdakiHoldHeldDeadlineUs(10000000, 1000000, 20000, 30000, 8000, 1000) == 1000000 + 21000 * 1000);  // odd 9 s before
   CHECK(gdakiHoldHeldDeadlineUs(40000000, 1000000, 20000, 30000, 8000, 1000) < 40000000);  // no time left: caller falls back
-  // PUBLISHED: publish + max(restoreMs, roundMs + handshakeMs)
-  CHECK(gdakiHoldPublishedDeadlineUs(5000000, 20000, 25000, 3000) == 5000000 + 28000LL * 1000);
-  CHECK(gdakiHoldPublishedDeadlineUs(5000000, 40000, 25000, 3000) == 5000000 + 40000LL * 1000);
+  // PUBLISHED: publish + max(restoreMs, roundMs + handshakeMs), and at least rejoin + holdMs + handshakeMs
+  CHECK(gdakiHoldPublishedDeadlineUs(5000000, 20000, 25000, 3000, 0, 30000) == 5000000 + 28000LL * 1000);
+  CHECK(gdakiHoldPublishedDeadlineUs(5000000, 40000, 25000, 3000, 0, 30000) == 5000000 + 40000LL * 1000);
+  CHECK(gdakiHoldPublishedDeadlineUs(5000000, 20000, 25000, 3000, 4000000, 30000) == 4000000 + 33000LL * 1000);
+  CHECK(gdakiHoldPublishedDeadlineUs(5000000, 40000, 25000, 3000, 4000000, 30000) == 5000000 + 40000LL * 1000);
+  // the turn at the REJOIN: at least rejoin + turn, never earlier than before, never past the device bound
+  CHECK(gdakiHoldTurnMs(3000, 3000) == 12000);
+  CHECK(gdakiHoldDeviceBoundUs(1000000, 30000, 8000, 1000) == 1000000 + 21000LL * 1000);
+  CHECK(gdakiHoldTurnDeadlineUs(21000000, 22000000, 2000000, 12000) == 21000000);  // early turn: unchanged
+  CHECK(gdakiHoldTurnDeadlineUs(21000000, 30000000, 15000000, 12000) == 27000000);  // late turn: rejoin + turn
+  CHECK(gdakiHoldTurnDeadlineUs(21000000, 25000000, 15000000, 12000) == 25000000);  // capped by the device bound
+  for (int i = 0; i < 5000; i++) {
+    const int64_t dev = 10000000 + (int64_t)((i * 7919) % 20000) * 1000, held = dev - (int64_t)((i * 31) % 9000) * 1000,
+                  rejoin = (int64_t)((i * 104729) % 30000) * 1000, turn = (i * 13) % 15000;
+    const int64_t d = gdakiHoldTurnDeadlineUs(held, dev, rejoin, turn);
+    CHECK(d >= held && d <= dev);
+    CHECK(d == dev || d == held || d == rejoin + turn * 1000);
+    if (d < dev) CHECK(d >= rejoin + turn * 1000);
+  }
+  // the one-at-a-time driver as a model: m survivors hold before the activation; the spare serves them in order; survivor
+  // j's turn starts at its REJOIN and ends at its publish (before its gateOdd + holdMs: the device bound and its share);
+  // RESTORED reaches everyone within a handshake of the last publish. Every survivor's PUBLISHED deadline covers it.
+  {
+    uint64_t rng = 99;
+    auto rnd = [&](int n) {
+      rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+      return (int64_t)((rng >> 33) % (uint64_t)n);
+    };
+    int runs = 0;
+    for (int trial = 0; trial < 20000; trial++) {
+      const int m = 1 + (int)rnd(7);
+      const int64_t holdMs = 30000, restoreMs = 5000 + rnd(30000), roundMs = 1000 + rnd(30000), hs = 100 + rnd(5000);
+      std::vector<int64_t> gateOdd((size_t)m), holdStart((size_t)m), rejoin((size_t)m), publish((size_t)m);
+      int64_t act = 0;
+      for (int j = 0; j < m; j++) {
+        holdStart[(size_t)j] = rnd(5000) * 1000;
+        gateOdd[(size_t)j] = holdStart[(size_t)j] - rnd(3000) * 1000;
+        act = std::max(act, holdStart[(size_t)j] + rnd(500) * 1000);
+      }
+      int64_t t = act;
+      bool ok = true;
+      for (int j = 0; j < m && ok; j++) {
+        rejoin[(size_t)j] = t + rnd(50) * 1000 + 1000;
+        publish[(size_t)j] = rejoin[(size_t)j] + rnd(15000) * 1000;
+        if (publish[(size_t)j] > gateOdd[(size_t)j] + holdMs * 1000) ok = false;  // that survivor fell back: no RESTORED
+        t = publish[(size_t)j];
+      }
+      if (!ok) continue;
+      runs++;
+      const int64_t restored = t + rnd(hs) * 1000;
+      for (int j = 0; j < m; j++)
+        CHECK(gdakiHoldPublishedDeadlineUs(publish[(size_t)j], restoreMs, roundMs, hs, rejoin[(size_t)j], holdMs) >=
+              restored);
+    }
+    CHECK(runs > 1000);
+  }
   // the parked device threads' clock: min of the hold start's quiesce and the oldest record; with odd gates the time they
   // went odd (or the pause), unknown -> < 0
   CHECK(gdakiHoldGateOddMs(5000, false, 0, 0, 0) == 5000);
@@ -818,6 +880,357 @@ static void testDeadlinesAndHolders() {
   CHECK(gdakiHoldHoldersAdd(t, 2, 0, 0) && gdakiHoldHoldersComplete(t, 2, 1));
 }
 
+// ---- 6. the checkpoint (work package 5) ----
+static void testCkptPure() {
+  // when a checkpoint is due
+  CHECK(gdakiCkptDue(7, false, 0, 20));
+  CHECK(!gdakiCkptDue(26, true, 7, 20) && gdakiCkptDue(27, true, 7, 20) && gdakiCkptDue(90, true, 7, 20));
+  CHECK(gdakiCkptDue(8, true, 7, 0) && !gdakiCkptDue(7, true, 7, 1) && !gdakiCkptDue(3, true, 7, 1));
+  // the drain verdict
+  {
+    uint64_t m[3] = {5, 0, 9}, x[3] = {5, 0, 9};
+    CHECK(gdakiCkptDrainVerdict(x, m, 3) == GDAKI_CKPT_DRAINED);
+    x[2] = 8;
+    CHECK(gdakiCkptDrainVerdict(x, m, 3) == GDAKI_CKPT_DRAIN_WAIT);
+    x[0] = 6;
+    CHECK(gdakiCkptDrainVerdict(x, m, 3) == GDAKI_CKPT_DRAIN_VOID);  // more than posted wins over waiting
+    CHECK(gdakiCkptDrainVerdict(x, m, 0) == GDAKI_CKPT_DRAINED);
+  }
+  // the layout and the blocks
+  {
+    uint64_t b[4] = {1, 300, 0, 65536}, off[4], total = 0;
+    CHECK(gdakiCkptLayout(b, 4, off, &total));
+    CHECK(off[0] == 0 && off[1] == 256 && off[2] == 768 && off[3] == 768 && total == 768 + 65536);
+    for (int i = 0; i < 4; i++) CHECK(off[i] % 256 == 0);
+    uint64_t big[1] = {(1ULL << 40) + 1};
+    CHECK(!gdakiCkptLayout(big, 1, off, &total));
+    CHECK(gdakiCkptNBlocks(0) == 0 && gdakiCkptNBlocks(1) == 1 && gdakiCkptNBlocks(GDAKI_CKPT_BLOCK) == 1 &&
+          gdakiCkptNBlocks(GDAKI_CKPT_BLOCK + 1) == 2);
+    CHECK(gdakiCkptBlockLen(0, 100) == 100 && gdakiCkptBlockLen(1, 100) == 0 &&
+          gdakiCkptBlockLen(1, GDAKI_CKPT_BLOCK + 7) == 7 && gdakiCkptBlockLen(0, GDAKI_CKPT_BLOCK + 7) == GDAKI_CKPT_BLOCK);
+  }
+  // the changed blocks
+  {
+    std::vector<uint64_t> base = {1, 2, 3}, cur = {1, 9, 3};
+    CHECK((gdakiCkptChanged(base, true, cur) == std::vector<uint64_t>{1}));
+    CHECK((gdakiCkptChanged(base, false, cur) == std::vector<uint64_t>{0, 1, 2}));
+    CHECK((gdakiCkptChanged(base, true, base).empty()));
+    CHECK((gdakiCkptChanged(base, true, std::vector<uint64_t>{1, 2, 3, 4}) == std::vector<uint64_t>{0, 1, 2, 3}));
+  }
+  // P in PAUSED
+  for (uint64_t p : {0ULL, 1ULL, 0xffffffffULL, 0x100000000ULL, 0xdeadbeefcafef00dULL}) {
+    uint32_t lo = 0, hi = 0;
+    gdakiCkptPackP(p, &lo, &hi);
+    CHECK(gdakiCkptUnpackP(lo, hi) == p);
+  }
+  // the answer to CKPT_PAUSE: every combination, in its order of priority
+  for (int bits = 0; bits < 64; bits++) {
+    const bool has = bits & 1, hold = bits & 2, sup = bits & 4, dec = bits & 8, told = bits & 16, round = bits & 32;
+    const uint32_t r = gdakiCkptBusyReason(has, hold, sup, dec, told, round);
+    const uint32_t want = !has ? GDAKI_CKPT_BUSY_OFF : (dec || told) ? GDAKI_CKPT_BUSY_DECLINED : hold ? GDAKI_CKPT_BUSY_HOLD
+                          : round ? GDAKI_CKPT_BUSY_ROUND : sup ? GDAKI_CKPT_BUSY_SUPPRESS : 0u;
+    CHECK(r == want);
+  }
+  // the answer to CKPT_RESUME (9.11.9 C1): every combination
+  for (int bits = 0; bits < 64; bits++) {
+    const bool paused = bits & 1, same = bits & 2, gaveUp = bits & 4, dec = bits & 8, epoch = bits & 16, odd = bits & 32;
+    const int v = gdakiCkptResumeVerdict(paused, 5, same ? 5 : 6, gaveUp, dec, epoch, odd);
+    int want;
+    if (!paused || !same) want = GDAKI_CKPT_R_IGNORE;
+    else if (gaveUp) want = (dec || !epoch || !odd) ? GDAKI_CKPT_R_IGNORE : GDAKI_CKPT_R_UNPAUSE;
+    else want = (dec || !epoch || !odd) ? GDAKI_CKPT_R_VOIDED : GDAKI_CKPT_R_HELD;
+    CHECK(v == want);
+  }
+  // G6: the covered epoch over empty rounds and real ones; the stale-record rule (rec < covered) on top of it
+  {
+    bool valid = false;
+    uint32_t top = 0, base = 0, epoch = 4;
+    CHECK(gdakiCkptCovered(epoch, valid, top, base) == 4);
+    const uint32_t recAtPause = 4;  // a fault record a device thread published in epoch 4, before or during the pause
+    gdakiCkptAfterEmpty(epoch, &valid, &top, &base);
+    epoch += 2;  // the empty round publishes 6
+    CHECK(gdakiCkptCovered(epoch, valid, top, base) == 4 && !(recAtPause < gdakiCkptCovered(epoch, valid, top, base)));
+    gdakiCkptAfterEmpty(epoch, &valid, &top, &base);
+    epoch += 2;  // a second empty round: still covered 4
+    CHECK(gdakiCkptCovered(epoch, valid, top, base) == 4 && top == 8);
+    epoch += 2;  // a real round publishes 10: covered again, the old record is stale now
+    CHECK(gdakiCkptCovered(epoch, valid, top, base) == 10 && recAtPause < gdakiCkptCovered(epoch, valid, top, base));
+    epoch = (epoch | 1u) + 1u;  // a decline (12)
+    CHECK(gdakiCkptCovered(epoch, valid, top, base) == 12);
+    gdakiCkptAfterEmpty(epoch, &valid, &top, &base);  // an empty round after a real one starts from that one
+    epoch += 2;
+    CHECK(gdakiCkptCovered(epoch, valid, top, base) == 12);
+  }
+  // the replies of one checkpoint
+  {
+    struct gdakiCkptReplies rp;
+    rp.reset(4, 2);
+    CHECK(!rp.allPausedOrBusy() && !rp.anyBusy() && !rp.allConfirmed());
+    rp.state[0] = 1, rp.armable[0] = 1;
+    rp.state[1] = 1, rp.armable[1] = 1;
+    rp.state[3] = 1, rp.armable[3] = 0;
+    CHECK(rp.allPausedOrBusy() && !rp.anyBusy() && !rp.allArmable());
+    rp.armable[3] = 1;
+    CHECK(rp.allArmable());
+    rp.state[0] = rp.state[1] = 3;
+    CHECK(!rp.allConfirmed());
+    rp.state[3] = 4;
+    CHECK(rp.anyBusy() && !rp.allConfirmed());
+    rp.state[3] = 3;
+    CHECK(rp.allConfirmed() && !rp.anyBusy());
+    // a give-up releases every peer that was sent CKPT_PAUSE and did not answer BUSY (paused, or its PAUSED on the way)
+    struct gdakiCkptReplies ab;
+    ab.reset(5, 1);
+    ab.sent[0] = ab.sent[2] = ab.sent[3] = 1;  // rank 4: the send loop stopped before it
+    ab.state[0] = 1;                          // paused
+    ab.state[2] = 0;                          // its PAUSED still on the way (a BUSY of another peer came first)
+    ab.state[3] = 2;                          // BUSY: never paused
+    CHECK(ab.releaseOnAbort(0) && !ab.releaseOnAbort(1) && ab.releaseOnAbort(2) && !ab.releaseOnAbort(3) &&
+          !ab.releaseOnAbort(4) && !ab.releaseOnAbort(-1) && !ab.releaseOnAbort(5));
+    ab.state[0] = 3;  // confirmed or voided peers are past their pause
+    ab.state[2] = 4;
+    CHECK(!ab.releaseOnAbort(0) && !ab.releaseOnAbort(2));
+  }
+  // the gates against a pause (9.11.9 C1): every combination
+  for (int bits = 0; bits < 64; bits++) {
+    const bool dec = bits & 1, round = bits & 2, same = bits & 4, rf = bits & 8, all = bits & 16, any = bits & 32;
+    const int v = gdakiCkptPauseVerdict(dec, round, same, rf, all, any);
+    int want;
+    if (dec || round || !same) want = GDAKI_CKPT_P_ENDED;  // something else ended it: no empty round, no decline
+    else if (rf) want = GDAKI_CKPT_P_BROKEN;                 // unknown gates: declined (never left odd)
+    else if (all) want = GDAKI_CKPT_P_INTACT;
+    else want = any ? GDAKI_CKPT_P_BROKEN : GDAKI_CKPT_P_ENDED;  // a partial write is broken; no odd gate: nothing paused
+    CHECK(v == want);
+  }
+  // the stable step (with the dev branch's gdakiRsStableStepOf as documented)
+  {
+    struct gdakiCkptStepLog sl;
+    const uint64_t NONE = ~0ULL;
+    for (uint64_t t = 0; t < 10; t++) sl.add(t, 100 + 10 * t, 1000);
+    auto stableOf = [&](uint64_t covered) {
+      uint64_t s = NONE;
+      for (size_t i = 0; i < sl.steps.size(); i++)
+        if (sl.heads[i] <= covered) s = sl.steps[i];
+      return s;
+    };
+    sl.settle(stableOf(99), NONE);
+    CHECK(!sl.haveStable && sl.steps.size() == 10);
+    sl.settle(stableOf(135), NONE);  // steps 0..3 have heads <= 135
+    CHECK(sl.haveStable && sl.stable == 3 && sl.steps.size() == 6 && sl.steps.front() == 4);
+    sl.settle(stableOf(135), NONE);  // nothing new: still 3
+    CHECK(sl.stable == 3 && sl.steps.size() == 6);
+    sl.settle(stableOf(1000), NONE);
+    CHECK(sl.stable == 9 && sl.steps.empty());
+    struct gdakiCkptStepLog cap;
+    for (uint64_t t = 0; t < 20; t++) cap.add(t, t, 8);
+    CHECK(cap.steps.size() == 8 && cap.steps.front() == 12);
+  }
+  // a peer's cuts toward one subject
+  {
+    struct Rec {
+      uint64_t head;
+    };
+    struct gdakiCkptCuts<Rec> c;
+    c.confirmed(20, Rec{200});
+    c.confirmed(40, Rec{400});
+    CHECK(c.find(20) && c.find(20)->rec.head == 200 && c.find(40) && !c.find(30));
+    CHECK(c.markStable(20) && c.v.front().stable && c.v.size() == 2);
+    c.confirmed(60, Rec{600});
+    CHECK(c.markStable(60) && c.v.size() == 1 && c.v.front().ckpt == 60 && !c.find(20) && !c.find(40));
+    CHECK(!c.markStable(80));
+    for (uint64_t k = 70; k < 200; k += 10) c.confirmed(k, Rec{k * 10});
+    CHECK(c.v.size() == 8 && c.find(60) != nullptr && c.v.front().stable);  // the cap never drops the last stable cut
+  }
+}
+static void fillHdr(struct gdakiCkptHdr& h, int rank, uint64_t ckpt, uint64_t base, uint64_t bytes, uint64_t nChanged) {
+  memset(&h, 0, sizeof(h));
+  h.magic = GDAKI_CKPT_MAGIC;
+  h.version = GDAKI_CKPT_VERSION;
+  h.rank = rank;
+  h.ckpt = ckpt;
+  h.baseCkpt = base;
+  h.imageBytes = bytes;
+  h.blockBytes = GDAKI_CKPT_BLOCK;
+  h.nChanged = nChanged;
+}
+static void testCkptStore() {
+  const uint64_t bytes = 3 * GDAKI_CKPT_BLOCK + 100;
+  std::vector<uint8_t> img(bytes), blk(GDAKI_CKPT_BLOCK);
+  for (size_t i = 0; i < bytes; i++) img[i] = (uint8_t)(i * 7 + 3);
+  struct gdakiCkptStore st;
+  struct gdakiCkptHdr* h = new gdakiCkptHdr();
+  const char* why = nullptr;
+  fillHdr(*h, 3, 20, 5, bytes, 1);  // a delta without any stable image here
+  CHECK(!st.begin(*h, &why) && strstr(why, "base") != nullptr);
+  fillHdr(*h, 3, 20, ~0ULL, bytes, 2);  // no base but not every block
+  CHECK(!st.begin(*h, &why));
+  fillHdr(*h, 3, 20, ~0ULL, bytes, gdakiCkptNBlocks(bytes));
+  CHECK(st.begin(*h, &why));
+  for (uint64_t i = 0; i < gdakiCkptNBlocks(bytes); i++)
+    CHECK(st.block(i, img.data() + i * GDAKI_CKPT_BLOCK, gdakiCkptBlockLen(i, bytes)));
+  CHECK(!st.block(3, img.data(), 99));  // a wrong length
+  const uint8_t blob[3] = {1, 2, 3};
+  st.finish(blob, 3);
+  CHECK(!st.markStable(19) && st.havePending && !st.haveStable);
+  CHECK(st.markStable(20) && st.haveStable && !st.havePending && st.stable.data == img && st.stable.blob.size() == 3);
+  // a delta on the stable image: block 1 changes
+  std::vector<uint8_t> img2 = img;
+  for (size_t i = GDAKI_CKPT_BLOCK; i < 2 * GDAKI_CKPT_BLOCK; i++) img2[i] ^= 0x5a;
+  fillHdr(*h, 3, 40, 20, bytes, 1);
+  CHECK(st.begin(*h, &why));
+  CHECK(st.block(1, img2.data() + GDAKI_CKPT_BLOCK, GDAKI_CKPT_BLOCK));
+  st.finish(nullptr, 0);
+  // the stable image stays 20 until its CKPT_STABLE; a restore meanwhile uses 20
+  CHECK(st.stable.ckpt == 20 && st.stable.data == img && st.pending.complete && st.pending.data == img2);
+  CHECK(st.markStable(40) && st.stable.data == img2);
+  // a delta naming an older base is refused
+  fillHdr(*h, 3, 60, 20, bytes, 1);
+  CHECK(!st.begin(*h, &why));
+  // malformed headers
+  fillHdr(*h, 3, 60, ~0ULL, bytes, gdakiCkptNBlocks(bytes));
+  h->blockBytes = 4096;
+  CHECK(!st.begin(*h, &why));
+  fillHdr(*h, 3, 60, ~0ULL, bytes, gdakiCkptNBlocks(bytes) + 1);
+  CHECK(!st.begin(*h, &why));
+  fillHdr(*h, 3, 60, ~0ULL, bytes, gdakiCkptNBlocks(bytes));
+  h->nRegions = GDAKI_CKPT_MAX_REGIONS + 1;
+  CHECK(!st.begin(*h, &why));
+  delete h;
+  // the hash: equal data equal hash, a byte changed changes it (this test's blocks)
+  CHECK(gdakiCkptHash(img.data(), 1000, GDAKI_CKPT_HASH_SEED) == gdakiCkptHash(img.data(), 1000, GDAKI_CKPT_HASH_SEED));
+  img[500] ^= 1;
+  CHECK(gdakiCkptHash(img.data(), 1000, GDAKI_CKPT_HASH_SEED) != gdakiCkptHash(img2.data(), 1000, GDAKI_CKPT_HASH_SEED));
+}
+// The stable-checkpoint protocol, as the host code runs it, with the subject r dying at every point: r takes checkpoints
+// 1, 2, ...; each peer confirms (or voids) its pause; the buddy stores the upload; r sends CKPT_STABLE to the buddy first,
+// then to the others, and may die after any number of them. Invariant at the restore: the checkpoint the buddy would
+// activate with (its newest stable image) has a confirmed cut on every survivor, and no survivor trimmed its log past it.
+static void testCkptProtocolModel() {
+  uint64_t rng = 0x1234567;
+  auto rnd = [&](int n) {
+    rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+    return (int)((rng >> 33) % (uint64_t)n);
+  };
+  struct Rec {
+    uint64_t head;
+  };
+  int restores = 0, withImage = 0;
+  for (int trial = 0; trial < 3000; trial++) {
+    const int n = 2 + rnd(5), subject = rnd(n), buddy = gdakiHoldBuddyOf(subject, n);
+    std::vector<struct gdakiCkptCuts<Rec>> cuts((size_t)n);
+    std::vector<uint64_t> tail((size_t)n, 0), head((size_t)n, 0);  // each peer's log toward the subject
+    struct gdakiCkptStore st;  // at the buddy (the image bytes do not matter here)
+    bool dead = false;
+    for (uint64_t k = 1; k <= 12 && !dead; k++) {
+      for (int q = 0; q < n; q++) head[(size_t)q] += (uint64_t)rnd(5);  // puts toward the subject between checkpoints
+      std::vector<uint64_t> cutHead(head);  // the pause: every peer's head now
+      // the confirmations (a round or an early end voids a peer's pause; r then never makes k stable)
+      bool allHeld = true;
+      for (int q = 0; q < n; q++) {
+        if (q == subject) continue;
+        if (rnd(10) == 0) allHeld = false;
+        else cuts[(size_t)q].confirmed(k, Rec{cutHead[(size_t)q]});
+      }
+      // the upload (may fail); the buddy's pending image
+      const bool uploaded = rnd(8) != 0;
+      if (uploaded) {
+        struct gdakiCkptHdr* h = new gdakiCkptHdr();
+        fillHdr(*h, subject, k, ~0ULL, 10, 1);
+        const char* why;
+        CHECK(st.begin(*h, &why));
+        delete h;
+        uint8_t b[10] = {0};
+        CHECK(st.block(0, b, 10));
+        st.finish(nullptr, 0);
+      }
+      if (rnd(6) == 0) {  // r dies before it decides
+        dead = true;
+        break;
+      }
+      if (!allHeld || !uploaded) continue;
+      // CKPT_STABLE: the buddy first, then the others; r may die after any number of them
+      std::vector<int> order;
+      order.push_back(buddy);
+      for (int q = 0; q < n; q++)
+        if (q != subject && q != buddy) order.push_back(q);
+      const int sent = rnd(4) == 0 ? rnd((int)order.size() + 1) : (int)order.size();
+      for (int j = 0; j < sent; j++) {
+        const int q = order[(size_t)j];
+        if (q == buddy) CHECK(st.markStable(k));
+        const auto* c = cuts[(size_t)q].find(k);
+        CHECK(c != nullptr);
+        if (c) {
+          tail[(size_t)q] = c->rec.head;  // the trim (gdakiRsLogStable)
+          CHECK(cuts[(size_t)q].markStable(k));
+        }
+      }
+      if (sent < (int)order.size()) dead = true;
+    }
+    restores++;
+    if (!st.haveStable) {  // no stable image: the subject was never armed (no restore); nothing to check
+      for (int q = 0; q < n; q++) CHECK(q == subject || tail[(size_t)q] == 0);
+      continue;
+    }
+    withImage++;
+    const uint64_t k = st.stable.ckpt;
+    for (int q = 0; q < n; q++) {
+      if (q == subject) continue;
+      const auto* c = cuts[(size_t)q].find(k);
+      CHECK(c != nullptr);                                // every survivor can export from that checkpoint's cut
+      if (c) CHECK(tail[(size_t)q] <= c->rec.head);      // and still holds every entry from it
+    }
+  }
+  printf("checkpoint protocol model: %d runs, %d with a stable image at the buddy\n", restores, withImage);
+}
+// The spare's fetch: the buddy's answer and the region match; the records the drain hands over.
+static void testCkptFetch() {
+  CHECK(gdakiCkptFetchAnswer(GDAKI_CKPT_MAGIC, GDAKI_CKPT_VERSION) == 1);
+  CHECK(gdakiCkptFetchAnswer(GDAKI_CKPT_MAGIC, 0) == 0);
+  CHECK(gdakiCkptFetchAnswer(GDAKI_CKPT_MAGIC, 7) == -1 && gdakiCkptFetchAnswer(0, GDAKI_CKPT_VERSION) == -1);
+  {  // the header and the ack start the same way: the second word tells them apart
+    struct gdakiCkptAck a;
+    memset(&a, 0, sizeof(a));
+    a.magic = GDAKI_CKPT_MAGIC;
+    uint32_t w[2];
+    memcpy(w, &a, sizeof(w));
+    CHECK(gdakiCkptFetchAnswer(w[0], w[1]) == 0);
+    struct gdakiCkptHdr* h = new gdakiCkptHdr();
+    fillHdr(*h, 1, 2, ~0ULL, 10, 1);
+    memcpy(w, h, sizeof(w));
+    CHECK(gdakiCkptFetchAnswer(w[0], w[1]) == 1);
+    delete h;
+  }
+  struct gdakiCkptRegion img[4] = {{GDAKI_CKPT_REGION_WINDOW, 1, 0, 4096},
+                                   {GDAKI_CKPT_REGION_WINDOW, 2, 4096, 100},
+                                   {GDAKI_CKPT_REGION_SIGNALS, 0, 4352, 64},
+                                   {GDAKI_CKPT_REGION_REGISTERED, 0, 4608, 8}};
+  uint32_t kind[4] = {GDAKI_CKPT_REGION_SIGNALS, GDAKI_CKPT_REGION_WINDOW, GDAKI_CKPT_REGION_REGISTERED,
+                      GDAKI_CKPT_REGION_WINDOW};
+  uint32_t id[4] = {0, 2, 0, 1};
+  uint64_t bytes[4] = {64, 100, 8, 4096};
+  int map[4];
+  const char* why = nullptr;
+  CHECK(gdakiCkptRegionMatch(img, 4, kind, id, bytes, 4, map, &why));
+  CHECK(map[0] == 3 && map[1] == 1 && map[2] == 0 && map[3] == 2);
+  bytes[1] = 101;  // another size
+  CHECK(!gdakiCkptRegionMatch(img, 4, kind, id, bytes, 4, map, &why) && strstr(why, "size") != nullptr);
+  bytes[1] = 100;
+  CHECK(!gdakiCkptRegionMatch(img, 3, kind, id, bytes, 4, map, &why));  // another count
+  id[1] = 3;  // no window 2 here
+  CHECK(!gdakiCkptRegionMatch(img, 4, kind, id, bytes, 4, map, &why));
+  id[1] = 1;  // two local windows numbered 1
+  CHECK(!gdakiCkptRegionMatch(img, 4, kind, id, bytes, 4, map, &why));
+  id[1] = 2;
+  img[1].id = 1;  // two image windows numbered 1
+  bytes[1] = 4096;
+  CHECK(!gdakiCkptRegionMatch(img, 4, kind, id, bytes, 4, map, &why));
+  CHECK(gdakiCkptRegionMatch(img, 0, kind, id, bytes, 0, map, &why));  // nothing to restore: an empty match
+  // the checkpoint's records (11..15) are the hold machine's to hand over, nothing else
+  for (uint32_t ty = 0; ty < 70; ty++)
+    CHECK(gdakiCkptIsRecord(ty) == (ty >= GDAKI_TS_CKPT_PAUSE && ty <= GDAKI_TS_CKPT_STABLE));
+  CHECK(GDAKI_TS_DATA == GDAKI_TS_HOST_RESERVED && gdakiHoldIsRestoreRecord(GDAKI_TS_DATA));
+}
+
 int main() {
   testPredicatesAndPacking();
   testDeclineTable();
@@ -827,6 +1240,10 @@ int main() {
   testRaces();
   testPark();
   testDeadlinesAndHolders();
+  testCkptPure();
+  testCkptStore();
+  testCkptProtocolModel();
+  testCkptFetch();
   printf("rs_unit_host: %ld checks, %ld failed\n", gChecks, gFailed);
   return gFailed == 0 ? 0 : 1;
 }
