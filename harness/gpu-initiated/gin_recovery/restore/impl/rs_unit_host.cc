@@ -5,14 +5,15 @@
 // What it checks:
 //   1. every state against every event of 9.10.7, through the pure decisions the host code asks (decline, record,
 //      REQ, helper-socket record, watcher, helper step, arming, RESTORED's state), as an explicit expected table;
-//   2. the paths of 9.10.7 end to end on a cell with the real compare-and-swap helpers (success, deadlines in HELD and in
-//      PUBLISHED, RESTORED read first, FALLBACK crossing RESTORED, NOHOLD, cancel, second death);
-//   3. the deadline compare-and-swap rules with two threads (helper vs watcher), many times: exactly one wins, the CPU
-//      writes happen only when the watcher won from HELD, COMMITTING is never touched, RESTORED wins over a timed-out
-//      publish, no compare-and-swap of one hold hits another (incarnation in the word);
-//   4. the parking rule (the deferral of every wait): restore records 11..63 only, arrival order, the host branch's types
-//      before the peer's REQ (R1), the cap and the age limit, the wait loop's model;
-//   5. the deadlines' arithmetic and the buddy's holder count.
+//   2. the paths of 9.10.7 end to end on a cell with the host code's own moves (gdakiHoldEndMove, CommitMove,
+//      PublishMove, WatchMove, RestoreMove: success, deadlines in HELD and in PUBLISHED, RESTORED read first, FALLBACK
+//      crossing RESTORED, NOHOLD, cancel, second death, TOLD against a parked RESTORED);
+//   3. the deadline compare-and-swap rules with two threads (helper vs watcher), many times, on the same moves: exactly
+//      one wins, the CPU writes happen only when the watcher won from HELD, COMMITTING is never touched, RESTORED wins over
+//      a timed-out publish, no compare-and-swap of one hold hits another (incarnation in the word);
+//   4. the parking rule (the deferral of every wait): restore records 11..63 only, arrival order and the drain's choice
+//      (gdakiHoldDrainTakes, R1), the cap and the age limit, the wait (gdakiHoldRecvParked) on a simulated clock;
+//   5. the deadlines' arithmetic, the time the parked device threads' clock started, and the buddy's holder count.
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -76,7 +77,7 @@ static void testPredicatesAndPacking() {
   CHECK(e == gdakiHoldPack(GDAKI_HOLD_HELD, 4));
   CHECK(gdakiHoldCas(c, e, gdakiHoldPack(GDAKI_HOLD_COMMITTING, 4)));
   CHECK(gdakiHoldLoad(c) == gdakiHoldPack(GDAKI_HOLD_COMMITTING, 4));
-  // record types: the restore's are 11..63 (host 11..20, spare 32..47, dev 56..63), hk's are not
+  // record types: the restore's are 11..63 (host 11..20, dev 21..31, spare 32..47), hk's are not
   for (uint32_t t = 0; t < 80; t++) CHECK(gdakiHoldIsRestoreRecord(t) == (t >= 11 && t <= 63));
   CHECK(GDAKI_TS_CKPT_PAUSE == 11 && GDAKI_TS_FALLBACK == 19 && GDAKI_TS_HOST_RESERVED == 20);
   CHECK(GDAKI_TS_NACK_RESTORING == 17);
@@ -103,9 +104,9 @@ static struct gdakiHoldDeclineIn allGood(uint32_t s) {
   return in;
 }
 static void testDeclineTable() {
-  // G2 (R1, RL1, N4, Q1, 9.10.5): every state x every combination of the eight facts
+  // G2 (R1, RL1, N4, Q1, 9.10.5): every state x every combination of the nine facts
   for (uint32_t s : kStates)
-    for (int bits = 0; bits < 256; bits++) {
+    for (int bits = 0; bits < 512; bits++) {
       struct gdakiHoldDeclineIn in;
       in.state = s;
       in.policyHold = bits & 1;
@@ -116,14 +117,15 @@ static void testDeclineTable() {
       in.told = bits & 32;
       in.otherHeld = bits & 64;
       in.buddyReachable = bits & 128;
+      in.stopping = bits & 256;
       const char* why = nullptr;
       bool fb = true;
       const int a = gdakiHoldDeclineAction(in, &why, &fb);
       int want;
       if (isHeld(s)) want = GDAKI_HOLD_D_FALLBACK;  // (가): any decline of a held peer is its fallback
       else if (s != GDAKI_HOLD_ARMED) want = GDAKI_HOLD_D_PASS;
-      else if (in.policyHold && in.commArmed && in.deathEvidence && in.strongCause && !in.lostAfterCommit && !in.told &&
-               !in.otherHeld && in.buddyReachable)
+      else if (!in.stopping && in.policyHold && in.commArmed && in.deathEvidence && in.strongCause &&
+               !in.lostAfterCommit && !in.told && !in.otherHeld && in.buddyReachable)
         want = GDAKI_HOLD_D_START;  // (나)
       else want = GDAKI_HOLD_D_PASS_NOHOLD;  // N4: an ARMED peer declined without a hold
       CHECK(a == want);
@@ -144,6 +146,9 @@ static void testDeclineTable() {
   in = allGood(GDAKI_HOLD_ARMED);
   in.told = true;
   CHECK(gdakiHoldDeclineAction(in, &why, &fb) == GDAKI_HOLD_D_PASS_NOHOLD && strstr(why, "application") != nullptr);
+  in = allGood(GDAKI_HOLD_ARMED);
+  in.stopping = true;  // the teardown: no new hold, NOHOLD so the other survivors do not wait for this rank
+  CHECK(gdakiHoldDeclineAction(in, &why, &fb) == GDAKI_HOLD_D_PASS_NOHOLD && strstr(why, "stopping") != nullptr);
 }
 
 static void testMsgTable() {
@@ -174,8 +179,9 @@ static void testMsgTable() {
                                                                                                : GDAKI_HOLD_M_NONE;
             } else if (t == GDAKI_TS_HOLDING) want = GDAKI_HOLD_M_HOLDING;
             else if (t == GDAKI_TS_FALLBACK) {
-              if (isHeld(s)) want = mi == inc ? GDAKI_HOLD_M_FALLBACK : GDAKI_HOLD_M_NONE;  // only that incarnation's hold
-              else if ((s == GDAKI_HOLD_ARMED || s == GDAKI_HOLD_OFF) && rv == 1 && inc >= 1 && mi == inc - 1u)
+              const bool revived = rv == 1 && inc >= 1 && mi == inc - 1u;  // this rank revived the incarnation named
+              if (isHeld(s)) want = (mi == inc || revived) ? GDAKI_HOLD_M_FALLBACK : GDAKI_HOLD_M_NONE;  // P2 when held
+              else if ((s == GDAKI_HOLD_ARMED || s == GDAKI_HOLD_OFF) && revived)
                 want = GDAKI_HOLD_M_DECLINE;  // P2: it revived that incarnation
               else if (s == GDAKI_HOLD_ARMED && mi == inc) want = GDAKI_HOLD_M_OFF;  // Q1: never held here: OFF only
             }
@@ -231,14 +237,16 @@ static void testWatcherRouteReqStepArm() {
       int want;
       if (!isHeld(s)) want = GDAKI_HOLD_S_NONE;
       else if (in.cancelled) want = GDAKI_HOLD_S_CANCEL;  // 9.10.5 priority 1: the application's choice wins
-      else if (s == GDAKI_HOLD_TIMED_OUT_HELD) want = GDAKI_HOLD_S_FALLBACK;
-      else if (s == GDAKI_HOLD_TIMED_OUT_PUBLISHED) want = GDAKI_HOLD_S_RESTORED_FIRST;  // Q2
-      else if (s == GDAKI_HOLD_COMMITTING) want = GDAKI_HOLD_S_FALLBACK;
       else if (in.pendingFallback || in.told || in.commLost) want = GDAKI_HOLD_S_FALLBACK;  // priority 2, single failure
+      else if (s == GDAKI_HOLD_TIMED_OUT_HELD) want = GDAKI_HOLD_S_FALLBACK;             // priority 4: the deadline
+      else if (s == GDAKI_HOLD_TIMED_OUT_PUBLISHED) want = GDAKI_HOLD_S_RESTORED_FIRST;  // Q2: below TOLD
+      else if (s == GDAKI_HOLD_COMMITTING) want = GDAKI_HOLD_S_FALLBACK;
       else want = GDAKI_HOLD_S_DRIVE;
       CHECK(a == want);
       CHECK(why != nullptr);
       if (a == GDAKI_HOLD_S_FALLBACK || a == GDAKI_HOLD_S_CANCEL) CHECK(why[0] != '\0');
+      // taken before the held peer's parked records are handed over: exactly the cancel and the fallbacks
+      CHECK(gdakiHoldStepBeforeRecords(a) == (a == GDAKI_HOLD_S_CANCEL || a == GDAKI_HOLD_S_FALLBACK));
     }
   // arming
   for (uint32_t s : kStates)
@@ -260,22 +268,25 @@ static void testWatcherRouteReqStepArm() {
   }
 }
 
-// ---- 2. the paths of 9.10.7 on one cell, with the real compare-and-swap helpers ----
-// A small model of the host code's moves (region "hold machine"): the decisions are the pure functions above; the moves
-// are written out as the host code makes them.
+// ---- 2. the paths of 9.10.7 on one cell, with the host code's own moves ----
+// The decisions and the compare-and-swap moves are the pure region's (the same functions the host code calls); what the
+// host code does around them (the decline, the CPU writes, the records it sends) is counted here.
 struct Model {
   struct gdakiHoldCell c;
   bool wordRaised = false, asyncRaised = false;  // the watcher's CPU writes (HELD timeout)
   int declines = 0, fallbacks = 0, nohold = 0, fallbackRecords = 0, cpuWrites = 0;
   bool revivedValid = false;
   uint32_t revivedFrom = 0;
+  bool parkedRestored = false;  // a RESTORED (pad = parkedPad) waits in the held peer's park
+  uint32_t parkedPad = 0;
   uint32_t st() const { return gdakiHoldStateOf(gdakiHoldLoad(c)); }
   uint32_t inc() const { return gdakiHoldIncOf(gdakiHoldLoad(c)); }
   void fallback() {  // gdakiHoldFallback
-    uint64_t v = gdakiHoldLoad(c);
-    while (gdakiHoldIsHeldState(gdakiHoldStateOf(v)))
-      if (gdakiHoldCas(c, v, gdakiHoldPack(GDAKI_HOLD_FALLBACK, gdakiHoldIncOf(v)))) break;
-    if (!gdakiHoldIsHeldState(gdakiHoldStateOf(v))) return;
+    uint32_t from = 0, i = 0;
+    const bool moved = gdakiHoldEndMove(c, GDAKI_HOLD_FALLBACK, &from, &i);
+    CHECK(moved == isHeld(from));  // unconditional: the check count does not depend on a race's outcome
+    if (!moved) return;
+    c.deadlineUs.store(0);
     fallbacks++;
     fallbackRecords++;
     declines++;  // the PeerDead decline that follows (its G2 passes: FALLBACK is not held)
@@ -308,45 +319,22 @@ struct Model {
     }
   }
   void watcher(int64_t nowUs) {  // gdakiHoldWatchdog
-    uint64_t v = gdakiHoldLoad(c);
-    const int a = gdakiHoldWatchdogAction(gdakiHoldStateOf(v), c.deadlineUs.load(), nowUs);
-    if (a == GDAKI_HOLD_W_TIMEOUT_HELD) {
-      if (!gdakiHoldCas(c, v, gdakiHoldPack(GDAKI_HOLD_TIMED_OUT_HELD, gdakiHoldIncOf(v)))) return;
+    uint32_t i = 0;
+    if (gdakiHoldWatchMove(c, nowUs, &i) == GDAKI_HOLD_W_TIMEOUT_HELD) {
       wordRaised = asyncRaised = true;
       cpuWrites++;
-    } else if (a == GDAKI_HOLD_W_TIMEOUT_PUBLISHED) {
-      (void)gdakiHoldCas(c, v, gdakiHoldPack(GDAKI_HOLD_TIMED_OUT_PUBLISHED, gdakiHoldIncOf(v)));
     }
   }
-  bool commitCas() {  // gdakiHoldBeforeCommitPoint
-    uint64_t v = gdakiHoldLoad(c);
-    if (!gdakiHoldIsHeldState(gdakiHoldStateOf(v))) return true;
-    return gdakiHoldStateOf(v) == GDAKI_HOLD_HELD &&
-           gdakiHoldCas(c, v, gdakiHoldPack(GDAKI_HOLD_COMMITTING, gdakiHoldIncOf(v)));
-  }
-  void published(int64_t deadline) {  // gdakiHoldAfterPublish
-    uint64_t v = gdakiHoldLoad(c);
-    if (gdakiHoldStateOf(v) != GDAKI_HOLD_COMMITTING) return;
-    c.deadlineUs.store(deadline);
-    (void)gdakiHoldCas(c, v, gdakiHoldPack(GDAKI_HOLD_PUBLISHED, gdakiHoldIncOf(v)));
-  }
+  bool commitCas() { return gdakiHoldCommitMove(c); }                      // gdakiHoldBeforeCommitPoint
+  void published(int64_t deadline) { (void)gdakiHoldPublishMove(c, deadline); }  // gdakiHoldAfterPublish
   bool restored(uint32_t pad, bool armOk) {  // gdakiHoldApplyRestored
-    uint64_t v = gdakiHoldLoad(c);
-    for (;;) {
-      struct gdakiHoldMsgIn in;
-      in.restored = true;
-      in.state = gdakiHoldStateOf(v);
-      in.inc = gdakiHoldIncOf(v);
-      in.msgInc = pad;
-      if (gdakiHoldMsgAction(in) != GDAKI_HOLD_M_RESTORED) return false;
-      const uint32_t ns = gdakiHoldRestoredState(armOk, false, armOk);
-      if (gdakiHoldCas(c, v, gdakiHoldPack(ns, in.inc + 1u))) {
-        revivedValid = true;
-        revivedFrom = in.inc;
-        c.deadlineUs.store(0);
-        return true;
-      }
-    }
+    uint32_t from = 0, i = 0;
+    if (!gdakiHoldRestoreMove(c, pad, gdakiHoldRestoredState(armOk, false, armOk), &from, &i)) return false;
+    CHECK(isPublished(from) && pad == i + 1u);
+    revivedValid = true;
+    revivedFrom = i;
+    c.deadlineUs.store(0);
+    return true;
   }
   void msg(uint32_t type, uint32_t mi) {  // gdakiHoldOnMsg
     struct gdakiHoldMsgIn in;
@@ -366,17 +354,27 @@ struct Model {
       default: break;
     }
   }
-  void step(bool cancelled, bool told) {  // gdakiHoldStep for the held peer
+  // gdakiHoldStep for the held peer: the action first; unless it is a cancel or a fallback, the peer's parked records
+  // (here: a parked RESTORED) are handed over and the action is asked again
+  void step(bool cancelled, bool told) {
     struct gdakiHoldStepIn in;
     in.state = st();
     in.cancelled = cancelled;
     in.told = told;
     const char* why;
-    switch (gdakiHoldStepAction(in, &why)) {
+    int a = gdakiHoldStepAction(in, &why);
+    if (!gdakiHoldStepBeforeRecords(a)) {
+      if (parkedRestored) {
+        parkedRestored = false;
+        (void)restored(parkedPad, true);
+      }
+      in.state = st();
+      a = gdakiHoldStepAction(in, &why);
+    }
+    switch (a) {
       case GDAKI_HOLD_S_CANCEL: {
-        uint64_t v = gdakiHoldLoad(c);
-        while (gdakiHoldIsHeldState(gdakiHoldStateOf(v)))
-          if (gdakiHoldCas(c, v, gdakiHoldPack(GDAKI_HOLD_CANCELLED, gdakiHoldIncOf(v)))) break;
+        uint32_t from = 0, i = 0;
+        (void)gdakiHoldEndMove(c, GDAKI_HOLD_CANCELLED, &from, &i);
         break;
       }
       case GDAKI_HOLD_S_FALLBACK: fallback(); break;
@@ -518,6 +516,71 @@ static void testPaths() {
       CHECK(m.st() == GDAKI_HOLD_FALLBACK);
     }
   }
+  {  // 9.10.5: TOLD in PUBLISHED or TIMED_OUT_PUBLISHED with a RESTORED parked: the fallback, the RESTORED is not applied
+    for (uint32_t s : {GDAKI_HOLD_PUBLISHED, GDAKI_HOLD_TIMED_OUT_PUBLISHED}) {
+      Model m;
+      m.c.v.store(gdakiHoldPack(s, 2));
+      m.parkedRestored = true;
+      m.parkedPad = 3;
+      m.step(false, true);
+      CHECK(m.st() == GDAKI_HOLD_FALLBACK && m.inc() == 2 && m.fallbacks == 1 && !m.revivedValid);
+    }
+  }
+  {  // Q2: no TOLD, the deadline passed in PUBLISHED, a RESTORED parked: the RESTORED wins
+    Model m;
+    m.c.v.store(gdakiHoldPack(GDAKI_HOLD_TIMED_OUT_PUBLISHED, 2));
+    m.parkedRestored = true;
+    m.parkedPad = 3;
+    m.step(false, false);
+    CHECK(m.st() == GDAKI_HOLD_ARMED && m.inc() == 3 && m.fallbacks == 0 && m.revivedValid && m.revivedFrom == 2);
+    // and a parked RESTORED in PUBLISHED on time: applied in the same step, no fallback
+    Model n;
+    n.c.v.store(gdakiHoldPack(GDAKI_HOLD_PUBLISHED, 0));
+    n.parkedRestored = true;
+    n.parkedPad = 1;
+    n.step(false, false);
+    CHECK(n.st() == GDAKI_HOLD_ARMED && n.inc() == 1 && n.fallbacks == 0);
+  }
+  {  // P2 when the revived incarnation is held again: a late FALLBACK of the old one is the new hold's fallback
+    Model m;
+    m.c.v.store(gdakiHoldPack(GDAKI_HOLD_ARMED, 0));
+    m.decline(true);
+    CHECK(m.commitCas());
+    m.published(9000);
+    CHECK(m.restored(1, true) && m.st() == GDAKI_HOLD_ARMED && m.inc() == 1);
+    m.decline(true);  // incarnation 1 died: held
+    CHECK(m.st() == GDAKI_HOLD_HELD && m.inc() == 1);
+    m.msg(GDAKI_TS_FALLBACK, 0);  // another survivor gave up the restore of incarnation 0
+    CHECK(m.st() == GDAKI_HOLD_FALLBACK && m.inc() == 1 && m.fallbacks == 1);
+    m.msg(GDAKI_TS_FALLBACK, 7);  // anything else about it: nothing
+    CHECK(m.fallbacks == 1);
+  }
+  {  // the end move: nothing from a state that is not held; the state it found is reported
+    for (uint32_t s : kStates) {
+      struct gdakiHoldCell c;
+      c.v.store(gdakiHoldPack(s, 6));
+      uint32_t from = 99, i = 99;
+      const bool moved = gdakiHoldEndMove(c, GDAKI_HOLD_CANCELLED, &from, &i);
+      CHECK(moved == isHeld(s) && from == s && i == 6);
+      CHECK(gdakiHoldStateOf(gdakiHoldLoad(c)) == (moved ? GDAKI_HOLD_CANCELLED : s));
+    }
+    // the commit move: a peer that is not held is not a restore round (true, unchanged)
+    for (uint32_t s : kStates) {
+      struct gdakiHoldCell c;
+      c.v.store(gdakiHoldPack(s, 1));
+      const bool ok = gdakiHoldCommitMove(c);
+      CHECK(ok == (!isHeld(s) || s == GDAKI_HOLD_HELD));
+      CHECK(gdakiHoldStateOf(gdakiHoldLoad(c)) == (s == GDAKI_HOLD_HELD ? GDAKI_HOLD_COMMITTING : s));
+    }
+    // the publish move: COMMITTING only, deadline first
+    for (uint32_t s : kStates) {
+      struct gdakiHoldCell c;
+      c.v.store(gdakiHoldPack(s, 1));
+      const bool ok = gdakiHoldPublishMove(c, 777);
+      CHECK(ok == (s == GDAKI_HOLD_COMMITTING));
+      CHECK(c.deadlineUs.load() == (ok ? 777 : 0));
+    }
+  }
 }
 
 // ---- 3. the compare-and-swap rules with two threads ----
@@ -551,15 +614,17 @@ static void testRaces() {
     CHECK(won != (s == GDAKI_HOLD_TIMED_OUT_HELD));
     CHECK(m.cpuWrites == (s == GDAKI_HOLD_TIMED_OUT_HELD ? 1 : 0));  // CPU writes only when the watcher won
     CHECK(m.inc() == (uint32_t)i);
+    // the same number of checks whoever won (the run's check count is then the same every time)
+    m.watcher(100);
     if (won) {
       helperWon++;
-      m.watcher(100);  // COMMITTING stays untouched afterwards
-      CHECK(m.st() == GDAKI_HOLD_COMMITTING && m.cpuWrites == 0);
+      CHECK(m.st() == GDAKI_HOLD_COMMITTING && m.cpuWrites == 0);  // COMMITTING stays untouched afterwards
     } else {
       watcherWon++;
-      m.step(false, true);
-      CHECK(m.st() == GDAKI_HOLD_FALLBACK);
+      CHECK(m.st() == GDAKI_HOLD_TIMED_OUT_HELD && m.cpuWrites == 1);  // the CPU writes once
     }
+    m.step(false, !won);  // the watcher's writes are TOLD; a COMMITTING left at a helper step falls back either way
+    CHECK(m.st() == GDAKI_HOLD_FALLBACK);
   }
   CHECK(helperWon + watcherWon == rounds);
   int restoredWins = 0, fbWatcherFirst = 0;
@@ -629,10 +694,13 @@ static void testPark() {
   const uint32_t seq[] = {GDAKI_TS_DISARM, 35, 37, GDAKI_TS_NOHOLD, GDAKI_TS_FALLBACK, GDAKI_TS_HOLDING};
   for (uint32_t t : seq) CHECK(pk.push(Msg{t, t == GDAKI_TS_FALLBACK ? 5 : 1, 0, id++}, 0.0, &dt));
   const int me = 5;
-  auto mine = [me](const Msg& m) {  // gdakiHoldDrain's choice
-    return m.type == GDAKI_TS_DISARM || m.type == GDAKI_TS_NOHOLD || m.type == GDAKI_TS_HOLDING ||
-           (m.type == GDAKI_TS_FALLBACK && m.arg != me) || m.type == 37;
-  };
+  auto mine = [me](const Msg& m) { return gdakiHoldDrainTakes(m.type, m.arg, me, 37u); };  // gdakiHoldDrain's choice
+  for (uint32_t ty = 0; ty < 70; ty++)
+    for (int arg : {me, me + 1}) {
+      const bool want = ty == GDAKI_TS_DISARM || ty == GDAKI_TS_NOHOLD || ty == GDAKI_TS_HOLDING || ty == 37u ||
+                        (ty == GDAKI_TS_FALLBACK && arg != me);
+      CHECK(gdakiHoldDrainTakes(ty, arg, me, 37u) == want);
+    }
   std::vector<int> got;
   Msg m;
   while (pk.takeIf(mine, &m)) got.push_back(m.id);
@@ -653,24 +721,45 @@ static void testPark() {
   const int n = pk.expire(44.0 + GDAKI_HOLD_PARK_MS + 0.5, GDAKI_HOLD_PARK_MS, &one);  // record 1044 came at 44 ms
   CHECK(n == 1 && pk.q.front().m.id == 1045);
   CHECK(pk.expire(1e12, GDAKI_HOLD_PARK_MS, &one) == GDAKI_HOLD_PARK_MAX - 1 && pk.q.empty());
-  // the model of a wait (hk's DONE wait as changed: a restore record is parked and the wait goes on to the same bound;
-  // without hold state the first record decides, as hk)
-  for (int hold = 0; hold < 2; hold++) {
-    const std::vector<uint32_t> arrive = {GDAKI_TS_CKPT_STABLE, GDAKI_TS_HOLDING, 36, GDAKI_TS_DONE};
-    struct gdakiHoldPark<Msg> w;
-    size_t k = 0;
-    uint32_t got = 0;
-    for (;;) {
-      got = arrive[k++];
-      if (hold && gdakiHoldIsRestoreRecord(got)) {
-        CHECK(w.push(Msg{got, 0, 0, 0}, 0.0, &dt));
-        continue;
-      }
-      break;
+  // the wait (hk's DONE wait as changed: gdakiHoldRecvParked) on a simulated clock. Each record arrives after `gap` ms;
+  // the first receive gets the bound unchanged; after parked records the wait goes on to the same end
+  for (int hold = 0; hold < 2; hold++)
+    for (int gap : {0, 3, 400, 2000}) {
+      const std::vector<uint32_t> arrive = {GDAKI_TS_CKPT_STABLE, GDAKI_TS_HOLDING, 36, GDAKI_TS_DONE};
+      double now = 1000.0;
+      size_t k = 0;
+      std::vector<int> asked;
+      uint32_t last = 0;
+      int parked = 0;
+      auto recv = [&](int ms) {
+        asked.push_back(ms);
+        if (k >= arrive.size()) {
+          now += ms;
+          return 0;
+        }
+        if (gap > ms) {  // nothing within the bound
+          now += ms;
+          return 0;
+        }
+        now += gap;
+        last = arrive[k++];
+        return 1;
+      };
+      auto park = [&] {
+        if (hold && gdakiHoldIsRestoreRecord(last)) {
+          parked++;
+          return true;
+        }
+        return false;
+      };
+      const int got = gdakiHoldRecvParked(2500, recv, park, [&] { return now; });
+      CHECK(!asked.empty() && asked[0] == 2500);  // hk's bound for the first receive, unchanged
+      CHECK(now <= 1000.0 + 2500.0 + 1.0);         // never beyond the bound (+ the rounding up of one receive)
+      if (!hold) CHECK(got == (gap <= 2500 ? 1 : 0) && parked == 0 && asked.size() == 1);  // the first record decides
+      if (hold && gap * 4 <= 2500) CHECK(got == 1 && last == GDAKI_TS_DONE && parked == 3);
+      if (hold && gap * 4 > 2500) CHECK(got == 0);
+      for (size_t i = 1; i < asked.size(); i++) CHECK(asked[i] <= asked[i - 1]);  // what is left, never more
     }
-    if (hold) CHECK(got == GDAKI_TS_DONE && w.q.size() == 3);
-    else CHECK(got == GDAKI_TS_CKPT_STABLE);  // hk: an unexpected record before DONE declines; no hold state sends none
-  }
   for (uint32_t t : {(uint32_t)GDAKI_TS_REQ, (uint32_t)GDAKI_TS_ACK, (uint32_t)GDAKI_TS_NACK, (uint32_t)GDAKI_TS_FAIL,
                      (uint32_t)GDAKI_TS_BYE, 0u, 10u, 64u, 100u})
     CHECK(!gdakiHoldIsRestoreRecord(t));  // hk's types and anything outside 11..63 keep hk's handling
@@ -686,6 +775,30 @@ static void testDeadlinesAndHolders() {
   // PUBLISHED: publish + max(restoreMs, roundMs + handshakeMs)
   CHECK(gdakiHoldPublishedDeadlineUs(5000000, 20000, 25000, 3000) == 5000000 + 28000LL * 1000);
   CHECK(gdakiHoldPublishedDeadlineUs(5000000, 40000, 25000, 3000) == 5000000 + 40000LL * 1000);
+  // the parked device threads' clock: min of the hold start's quiesce and the oldest record; with odd gates the time they
+  // went odd (or the pause), unknown -> < 0
+  CHECK(gdakiHoldGateOddMs(5000, false, 0, 0, 0) == 5000);
+  CHECK(gdakiHoldGateOddMs(5000, false, 4200, 0, 0) == 4200);  // waiters parked at their error CQE, gates still even
+  CHECK(gdakiHoldGateOddMs(5000, false, 4200, 1000, 900) == 4200);  // even gates: the odd marks do not count
+  CHECK(gdakiHoldGateOddMs(5000, false, 6000, 0, 0) == 5000);
+  CHECK(gdakiHoldGateOddMs(5000, true, 0, 0, 0) < 0);  // odd since an unknown time: the caller falls back
+  CHECK(gdakiHoldGateOddMs(5000, true, 4200, 3000, 0) == 3000);  // a cancelled round's quiesce
+  CHECK(gdakiHoldGateOddMs(5000, true, 2000, 3000, 0) == 2000);
+  CHECK(gdakiHoldGateOddMs(5000, true, 0, 0, 2500) == 2500);    // the checkpoint's pause
+  CHECK(gdakiHoldGateOddMs(5000, true, 0, 3000, 2500) == 2500);
+  for (int i = 0; i < 2000; i++) {  // never later than any input that counts
+    const double q = 1000 + (i * 37) % 5000, rec = (i % 3) ? (i * 53) % 7000 : 0, odd = (i % 5) ? (i * 71) % 6000 : 0,
+                 pause = (i % 7) ? (i * 13) % 6500 : 0;
+    const bool wasOdd = i & 1;
+    const double g = gdakiHoldGateOddMs(q, wasOdd, rec, odd, pause);
+    if (g < 0) {
+      CHECK(wasOdd && odd <= 0 && pause <= 0);
+      continue;
+    }
+    CHECK(g <= q && (rec <= 0 || g <= rec));
+    if (wasOdd) CHECK((odd <= 0 || g <= odd) && (pause <= 0 || g <= pause));
+    CHECK(g == q || g == rec || (wasOdd && (g == odd || g == pause)));
+  }
   // the buddy's holders: rank 2 is the buddy of 3 in 4 ranks; 0, 1, 2 must hold incarnation i
   struct gdakiHoldHolders h;
   CHECK(!gdakiHoldHoldersComplete(h, 4, 3));
