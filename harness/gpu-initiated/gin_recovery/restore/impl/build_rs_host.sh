@@ -66,6 +66,13 @@ unith() {
   [ -s "$o/rs_pure.inc" ] || { echo "no pure-function region in $HOSTF" >&2; exit 1; }
   [ -s "$o/rs_hold_pure.inc" ] || { echo "no hold pure-function region in $HOSTF" >&2; exit 1; }
   grep -qxF 'enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };' "$src" || { echo "hk's policy enum changed" >&2; exit 1; }
+  # rs_hold_api.h's shared text is in the host file verbatim
+  local fence='/^\/\/ ---- shared text \(begin\) ----$/{on=1} on{print} /^\/\/ ---- shared text \(end\) ----$/{on=0}'
+  awk "$fence" "$D/rs_hold_api.h" > "$o/shared_api.txt"
+  awk "$fence" "$src" > "$o/shared_src.txt"
+  [ -s "$o/shared_api.txt" ] && cmp -s "$o/shared_api.txt" "$o/shared_src.txt" ||
+    { echo "rs_hold_api.h's shared text differs from the host file's" >&2; exit 1; }
+  echo "unith: rs_hold_api.h shared text = host file ($(wc -l < "$o/shared_api.txt") lines)"
   nice -n 19 g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -I"$o" -I"$D" \
     -I"$W/nccl-src/src/include" "$D/rs_unit_host.cc" -o "$o/rs_unit_host"
   "$o/rs_unit_host"
