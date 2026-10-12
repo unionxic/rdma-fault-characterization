@@ -19,7 +19,7 @@ set -euo pipefail
 OUTF=${1:?output file (the check is written to a file only; never pipe it)}
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH (user@address) from the management env file}
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
-T=$SCR/agent_rs_test/out
+T=$SCR/agent_rs_int/test/out  # integration (2026-10-12): the drivers built against the integrated headers
 RSTOUT=${RSTOUT:-rs}
 md5() { md5sum < "$1" | cut -c1-32; }
 # artifact table: <WANT var>|<source>|<target dir relative to $HOME>|<file name>|<lib: 1 = add .so.2/.so links>
