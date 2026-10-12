@@ -37,6 +37,8 @@
 #   process ever started; unused by the cells), FAULT_POLICY (hold|failfast; hold ranks record their init transcript),
 #   RESTORE (1|0), SYM_GIN (0), GIN_TYPE (3), RMA_DISABLE (1), NUM_RMA_CTX (0), NCONN (1), RESTORE_MS (20000),
 #   RESUME_MS (30000), CKPT_STEPS (empty = library default), LOG_MEASURE (0), CHECKSUM (off), QPWATCH (10, EXPERIMENT.md 6),
+#   DRIVER (gin_rs | gin_rs_nomacro | gin_rs_hk: the build the cell names; default gin_rs for rs, gin_rs_hk for hk),
+#   CONTINUE_AFTER_REFUSAL (1: after a refused Resume the ranks run the workload fail-fast: the no-macro refusal cell),
 #   R<r>_ENV, EXTRA_ENV, PORT_LO, PORT_HI, END_GRACE_MS (kill cells with a spare: 3000; the live ranks' pause before their
 #   final abort). Kill cells with a spare also hold the live ranks before step 0 (rank 0's start gate, RS_START_GATE) until
 #   the spare is ready, so a slow init replay cannot let the run end before the kill. Pilot only: SPARE_STRACE=1 (strace the spare: peer connects before/after its ready point, own and other
@@ -57,11 +59,16 @@ SUNNY_HOST=${SUNNY_SSH#*@}
 N=${N:-4}
 [ "$N" = 4 ] || { echo "run_rs.sh is the 4-rank workload (N=4)" >&2; exit 1; }
 LIB=${LIB:-rs}
+# the driver build each cell names (cells_rs.json "driver"): gin_rs (macro), gin_rs_nomacro (this layer's headers, no
+# macro), gin_rs_hk (hk headers); the default follows the library
 case "$LIB" in
-  rs|rsp) LIBDIR=$HOME/rs-bundle/lib/$LIB; RSBIN=${RSBIN:-$HOME/rs-bundle/rstest/gin_rs} ;;
-  hk) LIBDIR=$HOME/gi-bundle/gin_ts2/hk; RSBIN=${RSBIN:-$HOME/rs-bundle/rstest/gin_rs_hk} ;;   # read only
+  rs|rsp) LIBDIR=$HOME/rs-bundle/lib/$LIB; DRIVER=${DRIVER:-gin_rs} ;;
+  hk) LIBDIR=$HOME/gi-bundle/gin_ts2/hk; DRIVER=${DRIVER:-gin_rs_hk} ;;   # read only
   *) echo "unknown LIB $LIB" >&2; exit 1 ;;
 esac
+case "$LIB:$DRIVER" in rs:gin_rs|rs:gin_rs_nomacro|rsp:gin_rs|rsp:gin_rs_nomacro|hk:gin_rs_hk) ;;
+  *) echo "driver $DRIVER does not belong with library $LIB" >&2; exit 1 ;; esac
+RSBIN=$HOME/rs-bundle/rstest/$DRIVER
 BINNAME=$(basename "$RSBIN")
 STEPS=${STEPS:-600}; BYTES=${BYTES:-4096}; STEP_GAP_US=${STEP_GAP_US:-5000}
 KILL_AT_STEP=${KILL_AT_STEP:-100}; KILL_DELAY_US=${KILL_DELAY_US:-500}
@@ -105,7 +112,8 @@ NCCL_GIN_RESTORE_MS=$RESTORE_MS NCCL_GIN_RESTORE_RESUME_MS=$RESUME_MS NCCL_GIN_R
 NCCL_GIN_RESTORE_LOG_MEASURE=$LOG_MEASURE ${CKPT_STEPS:+NCCL_GIN_RESTORE_CKPT_STEPS=$CKPT_STEPS} \
 NCCL_GIN_Q4_QPWATCH_MS=0 NCCL_RAS_ENABLE=0 LD_LIBRARY_PATH=$LIBDIR ${EXTRA_ENV:-}"
 END_GRACE_MS=${END_GRACE_MS:-$( [ -n "$KILL_RANK" ] && [ "$SPARE" = 1 ] && echo 3000 || echo 0 )}
-RS_ENV="RS_STEPS=$STEPS RS_BYTES=$BYTES RS_WATCHDOG_S=$WATCHDOG_S RS_STEP_GAP_US=$STEP_GAP_US RS_END_GRACE_MS=$END_GRACE_MS"
+RS_ENV="RS_STEPS=$STEPS RS_BYTES=$BYTES RS_WATCHDOG_S=$WATCHDOG_S RS_STEP_GAP_US=$STEP_GAP_US RS_END_GRACE_MS=$END_GRACE_MS \
+RS_CONTINUE_AFTER_REFUSAL=${CONTINUE_AFTER_REFUSAL:-0}"
 NONCE=$(new_nonce)
 pick_port
 # the spare's address (9.3): a port on the spare's node, picked before any launch so the original rank gets it at its start.
@@ -354,7 +362,7 @@ gin_type=$GIN_TYPE num_rma_ctx=$NUM_RMA_CTX nconn=$NCONN qpwatch_ms=$QPWATCH res
 log_measure=$LOG_MEASURE step_gap_us=$STEP_GAP_US kill_rank=${KILL_RANK:-} kill_at_step=$KILL_AT_STEP kill_delay_us=$KILL_DELAY_US kill_fallback_ms=$KILL_DELAY_MS kill_in_hook=$KILL_IN_HOOK kill_hook_us=$KILL_HOOK_US \
 spare=$SPARE_ON spare_wanted=$SPARE spare_kill_first=${SPARE_KILL_FIRST:-0} spare_ready=$([ "$T_READY" != 0 ] && echo 1 || echo 0) gpu_apps_before=$GPU_APPS \
 spare_strace=${SPARE_STRACE:-0} neg_replay=${NEG_REPLAY:-0} negs=$(echo $NEGS | tr " " ",") end_grace_ms=$END_GRACE_MS spare_addr_set=$([ -n "$SADDR_ENV" ] && echo 1 || echo 0) trial=$TRIAL extra=$(echo ${EXTRA_ENV:-} | tr ' ' '+')$rcs left=$LEFT gid0=$GID0 gid1=$GID1 port=$PORT \
-port_tries=$PORT_TRIES rdv_nonce_set=1 runner=rsr wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') \
+port_tries=$PORT_TRIES rdv_nonce_set=1 runner=rsr driver=$DRIVER continue_after_refusal=${CONTINUE_AFTER_REFUSAL:-0} wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') \
 bin=$BINNAME" > "$LOGDIR/${stem}_meta.txt"
 echo "[$tag]$rcs left=$LEFT wall=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}')s :: $(grep -ho 'xchg=[a-z]*' "$WORK"/*.kv 2>/dev/null | tr '\n' ' ')" >&2
 exit 0
