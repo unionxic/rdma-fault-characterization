@@ -30,8 +30,13 @@
 //   8. q: CAS HELD -> COMMITTING, publish (gdakiTsRepostApply with U = S, n = 0; work package 9), then gdakiRsSendDone.
 //   9. The spare, after every survivor's DONE_RS, starts its helper and sends RESTORED to every survivor; q's state
 //      machine hands it to gdakiRsTakeRestored (PUBLISHED -> ARMED or OFF is the state machine's).
-// Any refusal on q's side is the state machine's fallback (FALLBACK(p, i+1), PeerDead decline). The spare ends without
-// BYE when anything fails (closing its sockets with a FIN), so q reads death, not "left".
+// Any refusal on q's side is the state machine's fallback (FALLBACK(p, i): the record carries the dead incarnation i, as
+// the host branch's HOLDING/NOHOLD/FALLBACK do in `round`; the declined incarnation is i + 1 once a REJOIN was accepted,
+// PeerDead decline). The spare ends without BYE when anything fails (closing its sockets with a FIN), so q reads death, not
+// "left".
+// The spare's driver serves the survivors one at a time (in rank order): survivor q's REJOIN may come only after every
+// earlier survivor's round has finished (DONE_RS). A survivor's hold deadline must therefore cover the earlier survivors'
+// rounds as well as its own; the host branch's state machine owns that deadline.
 #ifndef GIN_RESTORE_RS_SPARE_API_H_
 #define GIN_RESTORE_RS_SPARE_API_H_
 
@@ -163,6 +168,10 @@ static bool gdakiRsTakeRestored(struct gdakiRecHost* r, int peer, const struct g
 // it lives, and never without a PID (refused). A process with NCCL_GIN_RESTORE_SPARE set but no NCCL_GIN_RESTORE_REPLAY
 // fails ncclCommInitRank (it never runs a live initialization), and the spare's Resume refuses unless its replay was clean
 // (no divergence, nothing past the transcript's end, no own-slot mismatch outside the allowed fields).
+// The data fd: for each survivor the driver calls dataFd(dataArg, peer) once, right after that survivor's REJOIN_ACK, and
+// writes the rkey list on the fd it returns (bounded by the handshake deadline). The driver never closes that fd, on
+// success or on failure (its no-BYE exit closes only the helper sockets): the callback's owner (the host branch's work
+// package 5 data path) keeps it and closes it. A return below 0 fails the restore.
 #define GDAKI_RS_ACT_MAGIC 0x41535247u  // "GRSA"
 enum { GDAKI_RS_ACT_ACTIVATE = 1, GDAKI_RS_ACT_ABANDON = 2, GDAKI_RS_ACT_ACCEPTED = 3, GDAKI_RS_ACT_REFUSED = 4 };
 struct gdakiRsActivate {   // 64 bytes
