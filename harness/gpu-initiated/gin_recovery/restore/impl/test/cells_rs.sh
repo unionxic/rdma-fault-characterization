@@ -14,6 +14,10 @@
 #                                                 headers: the cell's DRIVER, mr/ff without the macro, mr/hold with it)
 # CELL is the unique cells_rs.json name (run_mr_hr.sh uses it as the label of its files: no two cells share a stem); the mr
 # behaviour comes from MR_KILL_RANK, MR_FLUSH, MR_EXTRA of the cell, as gin-remaining's cells.sh passes them.
+# RS_SET (2026-10-13; empty: today's paths): a deployment set ~/rs-bundle/<RS_SET>/ (deploy_rs.sh): run_rs.sh reads it
+# itself; the regression paths become LIB=../../rs-bundle/<RS_SET>/lib/<rs|rsp>, MRKEY=../../../rs-bundle/<RS_SET>/mr/<ff|hold>.
+# run_mr_hr.sh is not changed: after its trial a second line is appended to its meta file with rs_set, lib_md5 and
+# driver_md5 (the library and gin_mr it ran on rain). A trial whose <stem>_meta.txt exists is skipped ("already done").
 #
 # usage: cells_rs.sh <logdir> <cell> <build> <kind> <n> <start> [k=v ...]   (each k=v is one argument: spaces are kept)
 set -u
@@ -22,17 +26,26 @@ shift 6
 D=$(cd "$(dirname "$0")" && pwd)
 RES=$(dirname "$L")
 for kv in "$@"; do export "${kv%%=*}"="${kv#*=}"; done
+RS_SET=${RS_SET:-}
+case "$RS_SET" in */*|*..*|-*) echo "RS_SET must be a plain name" >&2; exit 1 ;; esac
+export RS_SET
+SETP=rs-bundle${RS_SET:+/$RS_SET}   # the deployment set, relative to $HOME
 run_rs() { CELL=$CELL LIB=$B bash "$D/run_rs.sh" "$@"; }
 run_reg() {
-  local t=$1 ldir=$2 extra mrkey
+  local t=$1 ldir=$2 extra mrkey m
   extra="NCCL_GIN_RESTORE=${RESTORE:-1} NCCL_NUM_RMA_CTX=0 NCCL_RMA_DISABLE=1 NCCL_SYM_GIN_KERNELS_ENABLE=0 NCCL_RAS_ENABLE=0 NCCL_GIN_Q4_QPWATCH_MS=0 ${MR_EXTRA:-}"
   [ "${FAULT_POLICY:-}" = hold ] && extra="NCCL_GIN_FAULT_POLICY=hold $extra"
   # the driver build the cell names: mr/ff (gin_mr.cu, this layer's headers, no macro) or mr/hold (the same with the macro)
   case "${DRIVER:-}" in mr/ff) mrkey=ff ;; mr/hold) mrkey=hold ;; *) echo "cell $CELL names no regression driver" >&2; return 1 ;; esac
-  env CELL="$CELL" LIB="../../rs-bundle/lib/$B" MRKEY="../../../rs-bundle/mr/$mrkey" N=4 ABORT_WD_S=20 \
+  env CELL="$CELL" LIB="../../$SETP/lib/$B" MRKEY="../../../$SETP/mr/$mrkey" N=4 ABORT_WD_S=20 \
     ${MR_KILL_RANK:+KILL_RANK=$MR_KILL_RANK} ${MR_KILL_RANK:+KILL_DELAY_MS=${MR_KILL_DELAY_MS:-9000}} \
     ${MR_FLUSH:+FLUSH=$MR_FLUSH} EXTRA_ENV="$extra" \
     bash "$D/../../../remaining/run_mr_hr.sh" "$t" "$ldir"
+  # the deployment this trial used (a second line of run_mr_hr.sh's meta file; its parsers read every line)
+  m="$ldir/${CELL}_${t}_meta.txt"
+  if [ -f "$m" ]; then
+    echo "rs_set=${RS_SET:--} lib_md5=$(md5sum < "$HOME/$SETP/lib/$B/libnccl.so.2" 2>/dev/null | cut -c1-32) driver_md5=$(md5sum < "$HOME/$SETP/mr/$mrkey/gin_mr" 2>/dev/null | cut -c1-32)" >> "$m"
+  fi
 }
 stem_of() { case "$KIND" in rs) echo "${CELL}_${B}_$1" ;; *) echo "${CELL}_$1" ;; esac; }
 streak() {  # after trial $1: two trials in a row that left a process behind write $RES/STOP_left (EXPERIMENT.md 8)
@@ -48,6 +61,7 @@ for ((k = START; k < START + NRUN; k++)); do
     echo "skipped ${CELL}_n$k: STOP file" >&2; break
   fi
   t=n$k
+  if [ -f "$L/$(stem_of "$t")_meta.txt" ]; then echo "${CELL}_n$k ($B): already done" >&2; continue; fi
   case "$KIND" in
     rs)  run_rs "$t" "$L" ;;
     reg) run_reg "$t" "$L" ;;

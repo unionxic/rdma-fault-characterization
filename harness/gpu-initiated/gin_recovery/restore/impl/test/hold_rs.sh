@@ -20,19 +20,37 @@
 #                              5 arms x 6 rounds = 30 runs): for k = 1-6 the arms back to back with the first arm alternating
 #                              by k (9.15.6's interleave), into cost_<family>_<node>[_<metric>]/ (a repeat: ..._run<k>/)
 #   COSTPILOT-<rain|sunny>     pilot: one round (k=1) of every family, into costpilot_<node>/
-# env: SUNNY_SSH (required), RS_QUERY_CAP (20000)
+# env: SUNNY_SSH (required), RS_SET (empty: today's deployment under ~/rs-bundle; a name: the set ~/rs-bundle/<RS_SET>/,
+#   passed to the runners), RS_QUERY_CAP (20000: rain's QUERY_QP growth per trial of the restore cells and the cost runs),
+#   RS_QUERY_CAP_REG (150000: the same for the regression cells, kind reg: gin-remaining's run_mr_hr.sh trials of about
+#   17 s grew it by 90 000-108 000 in the pilot P2, results/20261013_pilot/qp_over.txt, while the restore cells stayed
+#   under 20 000), RS_TRIAL_BOUND_S (300: the bound `fits` assumes for one restore trial, kind rs; the pilot fixes it from
+#   the measured wall times)
+# Resumable (2026-10-13): a cell trial whose <stem>_meta.txt already exists in its logdir is skipped with an "already done"
+# line, so the same hold run again into the same results folder runs only the trials still missing (the cost holds are not
+# resumed: a repeat goes to a new _run<k> folder as before). A hold run again keeps the earlier run's files: its snapshot,
+# mlx5 and firmware-command files get the tag <hold>-r<k> (k = 2, 3, ...).
 set -u
 R=${1:?resultsdir}; H=${2:?hold}
 D=$(cd "$(dirname "$0")" && pwd)
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 export SUNNY_SSH
+RS_SET=${RS_SET:-}
+export RS_SET
 CELLS=$D/cells_rs.json
 FW=$D/../../../scripts/ts1/fwcmd_snapshot.sh
 [ -f "$FW" ] || { echo "missing $FW" >&2; exit 2; }
 QCAP=${RS_QUERY_CAP:-20000}
+QCAP_REG=${RS_QUERY_CAP_REG:-150000}
+TRIAL_BOUND=${RS_TRIAL_BOUND_S:-300}
 case "$H" in P*|COSTPILOT-*) PILOT=1 ;; *) PILOT=0 ;; esac
 CMDERR='grep -i mlx5 | grep -iE "cmd|command" | grep -icE "failed|timeout|leak"'
 mkdir -p "$R"
+# this run's tag for its snapshot, mlx5 and firmware-command files: the hold's name, or <hold>-r<k> when an earlier run of
+# the same hold left its files in this folder
+HT=$H
+if [ -e "$R/snap_before-$HT.txt" ]; then k=2; while [ -e "$R/snap_before-$H-r$k.txt" ]; do k=$((k + 1)); done; HT=$H-r$k; fi
+echo "hold $H (files tagged $HT) rs_set=${RS_SET:--}"
 left() { { pgrep -x gin_rs; pgrep -x gin_rs_hk; pgrep -f '[/]tmp/rs_cost'
            ssh -n "$SUNNY_SSH" "pgrep -x gin_rs; pgrep -x gin_rs_hk; pgrep -f '[/]tmp/rs_cost'"; } 2>/dev/null | wc -l; }
 OWNCLEAN='find /tmp -maxdepth 1 -user "$(id -un)" \( -name "rs_rt_*" -o -name "rs_rt.*" -o -name "rs_cost_*" -o -name "rs_cost.*" \) -exec rm -rf {} + 2>/dev/null; true'
@@ -76,18 +94,19 @@ n0=$(left)
 [ "$n0" -eq 0 ] || { echo "$(date '+%F %T') hold $H: $n0 test process(es) present before the hold" | tee -a "$R/STOP_left"; exit 3; }
 bash -c "$OWNCLEAN"; ssh -n "$SUNNY_SSH" "$OWNCLEAN"
 SECONDS=0
-snap "before-$H" | tee "$R/snap_before-$H.txt"
-read -r FW0 QQ < <(fwread "start-$H")
+snap "before-$HT" | tee "$R/snap_before-$HT.txt"
+read -r FW0 QQ < <(fwread "start-$HT")
 fits() {  # fits <bound_s> <what>: false (and a line in skipped.txt) if the bound would end past 840 s of the hold
   if [ $((SECONDS + $1)) -gt 840 ]; then echo "$(date '+%F %T') hold $H: skipped $2 (elapsed ${SECONDS}s + bound $1s > 840s)" | tee -a "$R/skipped.txt"; return 1; fi
   return 0
 }
 stopped() { [ -e "$R/STOP_left" ] || [ -e "$R/STOP_mlx5" ] || [ -e "$R/STOP_cuda" ] || [ -e "$R/STOP_nic" ]; }
-after_trial() {  # after_trial <what> <kv glob> [refusal-expected 0|1]: the per-trial stop checks (error keys in the live
-                # ranks' kv, a refusal where none is expected, firmware failures, QUERY_QP cap). A spare's kv is not checked
-                # for errors: a spare never activated (no kill, a fallback) waits in Resume to its watchdog by design; that
-                # goes to spare_wait.txt and does not stop the hold
-  local what=$1 f fw qq refuse_ok=${3:-1}
+after_trial() {  # after_trial <what> <kv glob> [refusal-expected 0|1] [QUERY_QP cap]: the per-trial stop checks (error
+                # keys in the live ranks' kv, a refusal where none is expected, firmware failures, QUERY_QP cap: RS_QUERY_CAP,
+                # or the caller's, RS_QUERY_CAP_REG for the regression cells). A spare's kv is not checked for errors: a spare
+                # never activated (no kill, a fallback) waits in Resume to its bound by design (SPARE_WAIT_MS, run_rs.sh; its
+                # watchdog before); a watchdog end goes to spare_wait.txt and does not stop the hold
+  local what=$1 f fw qq refuse_ok=${3:-1} cap=${4:-$QCAP}
   for f in $2; do
     [ -f "$f" ] || continue
     case "$f" in
@@ -104,9 +123,9 @@ after_trial() {  # after_trial <what> <kv glob> [refusal-expected 0|1]: the per-
   done
   read -r fw qq < <(fwread "after-$what")
   [ "$fw" -gt "$FW0" ] && echo "$(date '+%F %T') hold $H: firmware-command failures grew after $what ($FW0 -> $fw)" | tee -a "$R/STOP_mlx5"
-  if [ $((qq - QQ)) -gt "$QCAP" ]; then
-    if [ "$PILOT" = 1 ]; then echo "$(date '+%F %T') $what: rain QUERY_QP +$((qq - QQ)) > $QCAP" >> "$R/qp_over.txt"
-    else echo "$(date '+%F %T') hold $H: $what: rain QUERY_QP +$((qq - QQ)) > cap $QCAP" | tee -a "$R/STOP_mlx5"; fi
+  if [ $((qq - QQ)) -gt "$cap" ]; then
+    if [ "$PILOT" = 1 ]; then echo "$(date '+%F %T') $what: rain QUERY_QP +$((qq - QQ)) > $cap" >> "$R/qp_over.txt"
+    else echo "$(date '+%F %T') hold $H: $what: rain QUERY_QP +$((qq - QQ)) > cap $cap" | tee -a "$R/STOP_mlx5"; fi
   fi
   QQ=$qq
 }
@@ -130,13 +149,18 @@ do_json_hold() {
     case "$kind" in reg) ldir=$R/reg ;; *) ldir=$R/raw ;; esac
     mkdir -p "$ldir"
     for ((k = 1; k <= n; k++)); do
+      if [ "$kind" = rs ]; then stem="${cell}_${build}_n$k"; else stem="${cell}_n$k"; fi
+      if [ -f "$ldir/${stem}_meta.txt" ]; then  # an earlier run of this hold did it (resumable holds)
+        echo "$(date '+%F %T') hold $H: ${cell}@${build}_n$k already done ($(basename "$ldir")/${stem}_meta.txt exists)"
+        continue
+      fi
       stopped && { echo "skipped ${cell}@${build}_n$k: STOP" >> "$R/skipped.txt"; break; }
-      # bound: an rs trial with a spare runs under a 200 s watchdog (+20 s timeout) plus the runner's waits
-      if [ "$kind" = rs ]; then fits 300 "${cell}@${build}_n$k" || break; else fits 150 "${cell}_n$k" || break; fi
+      # bound: an rs trial with a spare: the spare's own wait (60 s, run_rs.sh) or its watchdog, plus the runner's waits
+      if [ "$kind" = rs ]; then fits "$TRIAL_BOUND" "${cell}@${build}_n$k" || break; else fits 150 "${cell}_n$k" || break; fi
       bash "$D/cells_rs.sh" "$ldir" "$cell" "$build" "$kind" 1 "$k" "${envs[@]}" < /dev/null
       case "$cell" in rs4_refuse_*) rok=1 ;; *) rok=$([ "$build" = rs ] && echo 0 || echo 1) ;; esac
       if [ "$kind" = rs ]; then after_trial "${cell}_${build}_n$k" "$ldir/${cell}_${build}_n${k}_*.kv" "$rok"
-      else after_trial "${cell}_n$k" "$ldir/${cell}_n${k}_r*.kv"; fi
+      else after_trial "${cell}_n$k" "$ldir/${cell}_n${k}_r*.kv" 1 "$QCAP_REG"; fi
     done
   done 3< <(json_hold "$1")
 }
@@ -188,15 +212,15 @@ case "$H" in
     cost_family "$fam" "$node" "$d" 6 "$met" ;;
   *) echo "unknown hold $H" >&2; exit 2 ;;
 esac
-snap "after-$H" | tee "$R/snap_after-$H.txt"
+snap "after-$HT" | tee "$R/snap_after-$HT.txt"
 for node in rain sunny; do
-  diff <(sort "$R/mlx5_before-${H}_$node.txt") <(sort "$R/mlx5_after-${H}_$node.txt") | grep '^>' | sed "s/^> /$node: /"
-done > "$R/mlx5_new_$H.txt"
-echo "new mlx5 kernel lines in hold $H: $(wc -l < "$R/mlx5_new_$H.txt")"; cat "$R/mlx5_new_$H.txt"
-b=$(grep -h "cmd_err lines\|fwcmd failed sum" "$R/snap_before-$H.txt" | awk -F': ' '{s+=$2} END{print s+0}')
-a=$(grep -h "cmd_err lines\|fwcmd failed sum" "$R/snap_after-$H.txt" | awk -F': ' '{s+=$2} END{print s+0}')
+  diff <(sort "$R/mlx5_before-${HT}_$node.txt") <(sort "$R/mlx5_after-${HT}_$node.txt") | grep '^>' | sed "s/^> /$node: /"
+done > "$R/mlx5_new_$HT.txt"
+echo "new mlx5 kernel lines in hold $H: $(wc -l < "$R/mlx5_new_$HT.txt")"; cat "$R/mlx5_new_$HT.txt"
+b=$(grep -h "cmd_err lines\|fwcmd failed sum" "$R/snap_before-$HT.txt" | awk -F': ' '{s+=$2} END{print s+0}')
+a=$(grep -h "cmd_err lines\|fwcmd failed sum" "$R/snap_after-$HT.txt" | awk -F': ' '{s+=$2} END{print s+0}')
 [ "$a" -gt "$b" ] && echo "$(date '+%F %T') hold $H: mlx5 command errors or firmware-command failures grew ($b -> $a)" | tee -a "$R/STOP_mlx5"
-cudafail=$(find "$R" \( -name '*.kv' -o -name '*.log' \) -newer "$R/snap_before-$H.txt" \
+cudafail=$(find "$R" \( -name '*.kv' -o -name '*.log' \) -newer "$R/snap_before-$HT.txt" \
   -exec grep -liE 'illegal address|illegal memory access|unspecified launch failure|cuda_error=' {} + 2>/dev/null | sort -u)
 [ -n "$cudafail" ] && echo "$(date '+%F %T') hold $H: CUDA fault in: $(echo "$cudafail" | tr '\n' ' ')" | tee -a "$R/STOP_cuda"
 n1=$(left)
