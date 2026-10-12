@@ -4,11 +4,19 @@
 // kernels, ncclGinRestoreRegister for extra device state. As a spare process (NCCL_GIN_RESTORE_SPARE=<its logical rank>) it
 // re-executes from the step Resume reports.
 //
-// One source, two builds (build_rs_test.sh):
-//   gin_rs     against this layer's headers with -DNCCL_GIN_RESTORE_DEVICE (EXPERIMENT.md 12, the build-time opt-in, choice
-//              (b)): with the integrated library the macro puts the hold branch in the device send path.
-//   gin_rs_hk  against gpu-detect's hk headers, without the macro: the no-restore control (rs4_kill3@hk). hk's libnccl has no
-//              restore symbols, so the three hooks are looked up with dlsym and skipped when absent (kv rs_api=0).
+// One source, three builds (build_rs_test.sh). Each cell names the build it runs (cells_rs.json "driver"):
+//   gin_rs          this layer's headers, -DNCCL_GIN_RESTORE_DEVICE (EXPERIMENT.md 12, the build-time opt-in, choice (b)):
+//                   the device send path carries the hold branch. Every restore cell runs it.
+//   gin_rs_nomacro  this layer's headers, no macro: the program a fail-fast user builds. Under the 2026-10-12 design change
+//                   (user) the public Resume is an inline wrapper that passes the build flag, and Resume refuses on every
+//                   rank ("program not built with NCCL_GIN_RESTORE_DEVICE") when the program lacks the macro; the side
+//                   table is published to the device only after a successful Resume, so this build never traps and runs
+//                   as hk does. The refusal cell rs4_refuse_nomacro runs it (RS_CONTINUE_AFTER_REFUSAL=1: after the
+//                   refusal it runs the workload fail-fast to the end, showing no trap and an exact result).
+//   gin_rs_hk       gpu-detect's hk headers, no macro, no restore API in the header: the no-restore control
+//                   (rs4_kill3@hk); the three hooks are compiled out (kv rs_api=0).
+// The hooks are called through the header (not looked up by name), so the header's inline Resume wrapper passes this
+// program's build flag; with the current header Resume is an exported function and the same call compiles.
 //
 // Not-yet-integrated library (work packages 5-9 pending): Resume returns success with *step = 0 (a first incarnation; the
 // communicator stays fail-fast), Step returns ncclInvalidUsage with NCCL_GIN_RESTORE_STEP_NONE, Register is not implemented.
@@ -52,6 +60,7 @@
 //   RS_START_GATE=<path> and RS_START_GATE_S (150): rank 0 waits for the file before the first step (a spare gets ready),
 //   RS_STEP_GAP_US (0: a host pause after each step's hook; pacing only), RS_END_GRACE_MS (0: a live rank's pause before
 //   its final ncclCommAbort, so a revived rank finishes its last step and checks first),
+//   RS_CONTINUE_AFTER_REFUSAL=1 (after a refused Resume run the workload fail-fast instead of ending: the no-macro cell),
 //   GIN_RS_DIE_AT=<step>:<us> (self-SIGKILL us after launching that step's kernel: a kill during normal traffic),
 //   GIN_RS_DIE_IN_STEP=<every>:<us> and GIN_RS_ARM_FILE=<path> (once the file exists, SIGKILL itself us after entering the
 //     checkpoint hook of the next step s with s % every == 0: a kill inside the checkpoint's input pause)
@@ -66,7 +75,6 @@
 #include "nccl_device.h"
 #include <cuda_runtime.h>
 #include <arpa/inet.h>
-#include <dlfcn.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
@@ -85,12 +93,39 @@
 #include <thread>
 #include <vector>
 
-#ifndef NCCL_GIN_RESTORE_STEP_NONE
-#define NCCL_GIN_RESTORE_STEP_NONE (~0ULL)  // the hk headers have no restore API
+// the restore API is in the header when it defines NCCL_GIN_RESTORE_STEP_NONE (this layer); the hk headers have none
+#ifdef NCCL_GIN_RESTORE_STEP_NONE
+#define RS_API 1
+#else
+#define RS_API 0
+#define NCCL_GIN_RESTORE_STEP_NONE (~0ULL)
 #endif
-typedef ncclResult_t (*RsResumeFn)(ncclComm_t, const struct ncclDevComm*, unsigned long long*, void*, size_t*);
-typedef ncclResult_t (*RsStepFn)(ncclComm_t, unsigned long long, const void*, size_t, unsigned long long*);
-typedef ncclResult_t (*RsRegisterFn)(ncclComm_t, void*, size_t);
+static ncclResult_t rsResume(ncclComm_t comm, const struct ncclDevComm* dc, unsigned long long* step, void* blob,
+                             size_t* bytes) {
+#if RS_API
+  return ncclGinRestoreResume(comm, dc, step, blob, bytes);  // the header's call: an inline wrapper passes the build flag
+#else
+  (void)comm; (void)dc; (void)step; (void)blob; (void)bytes;
+  return ncclSuccess;
+#endif
+}
+static ncclResult_t rsStep(ncclComm_t comm, unsigned long long step, const void* blob, size_t bytes,
+                           unsigned long long* stable) {
+#if RS_API
+  return ncclGinRestoreStep(comm, step, blob, bytes, stable);
+#else
+  (void)comm; (void)step; (void)blob; (void)bytes; (void)stable;
+  return ncclInvalidUsage;
+#endif
+}
+static ncclResult_t rsRegister(ncclComm_t comm, void* buff, size_t size) {
+#if RS_API
+  return ncclGinRestoreRegister(comm, buff, size);
+#else
+  (void)comm; (void)buff; (void)size;
+  return ncclSuccess;
+#endif
+}
 
 static FILE* g_kv = nullptr;
 static int g_rank = -1;
@@ -350,10 +385,9 @@ int main(int argc, char** argv) {
 #else
     0;
 #endif
-  RsResumeFn rsResume = (RsResumeFn)dlsym(RTLD_DEFAULT, "ncclGinRestoreResume");
-  RsStepFn rsStep = (RsStepFn)dlsym(RTLD_DEFAULT, "ncclGinRestoreStep");
-  RsRegisterFn rsRegister = (RsRegisterFn)dlsym(RTLD_DEFAULT, "ncclGinRestoreRegister");
-  const int rsApi = (rsResume && rsStep && rsRegister) ? 1 : 0;
+  const int rsApi = RS_API;
+  // the no-macro refusal cell: after a refused Resume, run the workload fail-fast to the end (no trap, exact result)
+  const bool continueAfterRefusal = getenv("RS_CONTINUE_AFTER_REFUSAL") && atoi(getenv("RS_CONTINUE_AFTER_REFUSAL")) == 1;
   const int buddy = rank ^ 1;
   kv("mode=%s rank=%d nranks=%d buddy=%d steps=%d bytes=%zu rs_device_macro=%d rs_api=%d die_at=%d:%ld die_in_step=%d:%ld "
      "arm_file=%d",
@@ -554,8 +588,10 @@ int main(int argc, char** argv) {
      blobBytes, why.c_str());
   printf("GINRS resume rank=%d rc=%d step=%llu mono_ms=%.3f\n", rank, (int)r3, resumeStep, monoMs());
   // a refusal (the "cannot be enabled" cells): every rank reports it and ends after the abort, so nothing runs fail-fast
-  // silently after a refused Resume
-  if (r3 != ncclSuccess) {
+  // silently after a refused Resume; except the no-macro cell, which runs on fail-fast on purpose (the refusal is reported
+  // in kv, and the run shows the program does not trap)
+  if (r3 != ncclSuccess && continueAfterRefusal) kv("refused_then_ran=1");
+  if (r3 != ncclSuccess && !continueAfterRefusal) {
     t0 = monoMs();
     const ncclResult_t ar = ncclCommAbort(comm);
     kv("xchg=refused abort_rc=%d abort_ms=%.1f exit=0", (int)ar, monoMs() - t0);
