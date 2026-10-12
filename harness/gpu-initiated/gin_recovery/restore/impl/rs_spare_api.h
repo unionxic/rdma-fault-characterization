@@ -81,8 +81,9 @@ struct gdakiTsMsg;    // the host file
 // The REJOIN acceptance entry point (RL6). Call on the helper thread for a peer this rank holds (HELD), as often as
 // wanted (every step of the held state).
 //   NONE      no REJOIN of `peer` is parked, or the parked one is older than 1000 ms (closed then). The accept step parks
-//             the latest one per peer; one nobody takes within 1000 ms is closed, and the spare dials again until its
-//             deadline (it waits 1500 ms for REJOIN_ACK, so it never abandons a REJOIN that is accepted).
+//             the latest one per peer; one nobody takes within 1000 ms is closed (a FIN), and the spare dials again until
+//             its deadline. The spare waits for REJOIN_ACK, a FIN or its deadline, with no timeout of its own, so it never
+//             abandons a REJOIN the survivor still holds.
 //   REFUSED   a parked REJOIN did not qualify and was closed (FIN; the spare retries): `why` says why. Qualifies: the
 //             hold state says HELD (gdakiRsHoldIsHeld, below; checked again here), the peer is not declined, its
 //             incarnation is gdakiRsPeerInc(r, peer) + 1, the nonce is this context's, the QP count and the spare's
@@ -92,8 +93,9 @@ struct gdakiTsMsg;    // the host file
 //             closeCause, the kept REQ are cleared; dialFd, pendFd, probeFd closed; pe.addr = the spare's listen
 //             address; gdakiRsPeerInc(r, peer) = i + 1; the spare's endpoint and token are kept for the swap;
 //             gdakiTsInstall (which clears lostAfterCommit). If REJOIN_ACK cannot be sent nothing changes (REFUSED).
-// A REJOIN of a peer this rank declined is answered with FAIL by the accept step itself (no call needed); a spare that
-// reads FAIL gives up (no further dial to anybody).
+// A REJOIN of a peer this rank declined is answered with FAIL by the accept step itself (no call needed), and by
+// gdakiRsRejoinAccept when the peer was declined after the REJOIN was parked; a spare that reads FAIL gives up (no
+// further dial to anybody).
 static int gdakiRsRejoinAccept(struct gdakiRecHost* r, int peer, char* why, size_t whyLen);
 
 // The incarnation this rank knows for `peer` (0 at setup; i + 1 after an accepted REJOIN). The state machine puts it in
@@ -140,8 +142,9 @@ static ncclResult_t gdakiRsRkeysRecv(int fd, int timeoutMs, struct gdakiRsRkeys*
 // this context's collComm, of the signal table's and of the counter table's rkey table is written over the NIC copy path
 // (no CUDA call), read back and compared; the windows' host copies too (the two tables' host copies are read only at
 // setup and stay). Needs: the list from `peer`, for this context (nonce) and the accepted incarnation; every window still
-// registered on the collComm named in it; the NIC copy path on. ncclSuccess, or an error with `why` (some slots may be
-// written then: the state machine falls back, which declines the peer).
+// registered on the collComm named in it (checked before anything is written); the NIC copy path on. The window slots are
+// written under the window registry's lock, which a deregistration takes before it frees a table. ncclSuccess, or an error
+// with `why` (some slots may be written then: the state machine falls back, which declines the peer).
 static ncclResult_t gdakiRsSwapRkeys(struct gdakiRecHost* r, int peer, const struct gdakiRsRkeys* list, char* why,
                                      size_t whyLen);
 
@@ -157,7 +160,9 @@ static bool gdakiRsTakeRestored(struct gdakiRecHost* r, int peer, const struct g
 // host file). One record per TCP connection (read within 500 ms); the spare answers with the same struct (kind ACCEPTED or
 // REFUSED) and closes. It takes the incarnation and the step from the record. Before activating it checks that the process
 // that held the rank is gone (same node: /proc/<pid> absent, or its state Z or X, or its start time differs); never while
-// it lives, and never without a PID (refused).
+// it lives, and never without a PID (refused). A process with NCCL_GIN_RESTORE_SPARE set but no NCCL_GIN_RESTORE_REPLAY
+// fails ncclCommInitRank (it never runs a live initialization), and the spare's Resume refuses unless its replay was clean
+// (no divergence, nothing past the transcript's end, no own-slot mismatch outside the allowed fields).
 #define GDAKI_RS_ACT_MAGIC 0x41535247u  // "GRSA"
 enum { GDAKI_RS_ACT_ACTIVATE = 1, GDAKI_RS_ACT_ABANDON = 2, GDAKI_RS_ACT_ACCEPTED = 3, GDAKI_RS_ACT_REFUSED = 4 };
 struct gdakiRsActivate {   // 64 bytes
