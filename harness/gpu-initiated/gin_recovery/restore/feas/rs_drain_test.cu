@@ -47,6 +47,25 @@
 // re-read, attempts in the kv); the scored loop is the same as in the first build.
 // v3 (2026-10-09): progress keys on every exit path; RS_QUERY_BUDGET (default off) ends the loop at an iteration boundary
 // once that many QUERY_QP were issued (the contention cells); with the budget off the loop is the same as in v2.
+// v4 (2026-10-11, EXPERIMENT.md 9.15.3 "경합 셀 넷만 제대로 다시 확인"; design review D1-D15):
+//   (a) copy timing: every snapshot copy is bracketed by two CUDA events (default flags) on the snapshot stream; right after
+//       the second one is recorded, with no other CUDA call in between, the host spins on cudaEventQuery of it. The copy's
+//       end lies in [the start of the last query that saw it not ready, the end of the first query that saw it ready] (host
+//       clock; the first bound falls back to the enqueue time); the GPU time between the events is subtracted to give the
+//       start interval. Per snapshot: path, tail, PAUSED time, enqueue, end bounds, exec, the reference (PAUSED for early;
+//       the return of the QUERY_QP that saw rmsn = M - 1 for boundary; the return of the one that saw M for the other
+//       paths), the reach (start of the QUERY_QP that saw M; waiting paths only) and the word counts; kept in memory and
+//       written after the loop to RS_TIMING_FILE (tab-separated). The scored loop keeps its order of operations; the spin
+//       only delays the signal read and the check of that iteration by the copy's own duration.
+//   (b) a one-time engine check after the setup self-check: a 5 ms spin kernel fills every SM on a second stream, then a
+//       window-size D2D copy with events runs on the snapshot stream; if the copy's second event completes while the
+//       spinner still runs, the copy ran on a copy engine (d2d_engine=ce), otherwise it waited for SMs (sm).
+//   (c) RS_HOG=stream (responder only; the writer and hog roles refuse it): an in-process hog thread, started after (b),
+//       launches 8 copy kernels per round (3/4 of the SM count of 256-thread blocks, grid-stride over two 256 MiB buffers,
+//       8 float4 in flight per thread) on its own non-blocking stream of the lowest priority, synchronizes only that stream
+//       after every round, and stops after the loop; the other SMs stay free for the snapshot copy, the check and the
+//       one-block probe. Only hog_* keys go to the kv.
+//   (d) every responder stream is non-blocking; the snapshot and probe streams have the highest priority (recorded).
 // exit: 0 PASS; 1 FENCE_FAIL; 4 INCONCLUSIVE; 5 INCOMPLETE; 2 usage or setup error; 3 NIC, rmsn, QUERY_QP-cap or
 //       control-channel error; 6 CUDA error; 7 watchdog. The writer exits 0 when the responder ended the run.
 #include <cuda.h>
@@ -61,6 +80,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdarg>
@@ -90,11 +110,13 @@ static void kvf(const char* fmt, ...) {
 // iterations done, scored fence iterations, QUERY_QP issued, polls per iteration so far. -1: the loop has not started.
 static volatile long g_progIter = -1, g_progDone = 0, g_progScored = 0, g_progPollIters = 0;
 static volatile unsigned long long g_progPolls = 0, g_queryQp = 0;
+static std::atomic<long> g_hogRounds{-1};  // v4: rounds of the in-process hog (-1: none)
 static void progressKv() {
   if (g_progIter < 0 || g_kv == nullptr) return;
   fprintf(g_kv, "progress_at_iter=%ld progress_iterations_done=%ld progress_scored_n=%ld progress_query_qp=%llu "
-          "progress_polls_per_iter=%.2f\n", (long)g_progIter, (long)g_progDone, (long)g_progScored,
-          (unsigned long long)g_queryQp, g_progPollIters ? (double)g_progPolls / (double)g_progPollIters : 0.0);
+          "progress_polls_per_iter=%.2f progress_hog_rounds=%ld\n", (long)g_progIter, (long)g_progDone,
+          (long)g_progScored, (unsigned long long)g_queryQp,
+          g_progPollIters ? (double)g_progPolls / (double)g_progPollIters : 0.0, g_hogRounds.load());
   fflush(g_kv);
 }
 #define CK(c)                                                                         \
@@ -241,6 +263,23 @@ __global__ void probeKernel(const unsigned long long* win, size_t nwords, unsign
 }
 __global__ void hogKernel(const float4* a, float4* b, size_t n) {
   for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < n; i += (size_t)gridDim.x * blockDim.x) b[i] = a[i];
+}
+// v4 in-process hog: every thread moves 8 float4 per step (8 loads in flight, then 8 stores); n is a multiple of 8 x threads
+__global__ void hogKernel8(const float4* __restrict__ a, float4* __restrict__ b, size_t n) {
+  const size_t T = (size_t)gridDim.x * blockDim.x, t = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+  for (size_t base = 0; base + 8 * T <= n; base += 8 * T) {
+    float4 v[8];
+#pragma unroll
+    for (int k = 0; k < 8; k++) v[k] = a[base + k * T + t];
+#pragma unroll
+    for (int k = 0; k < 8; k++) b[base + k * T + t] = v[k];
+  }
+}
+// v4 engine check: every thread spins for ns nanoseconds (globaltimer)
+__global__ void spinKernel(unsigned long long ns) {
+  const unsigned long long t0 = gtNow();
+  while (gtNow() - t0 < ns) {
+  }
 }
 
 // ---- cuMem allocations (as ncclMemAlloc: pinned device memory, gpuDirectRDMACapable, recommended granularity) ----
@@ -537,6 +576,8 @@ struct Resp {
   Res* res;
   int* timedOut;
   cudaStream_t st, pst;
+  cudaEvent_t ev0, ev1;  // v4: around the snapshot copy
+  int prLeast, prGreatest;
   uint32_t rmsn0;
 };
 static uint64_t g_wrId = 1;
@@ -555,6 +596,41 @@ static long pollsMax = 0;
 static std::vector<long> fenceFail;
 static double estReachUs = 0;
 static uint64_t g_atomics = 0;  // fetch-adds so far (the expected signal value)
+// v4 timing of the snapshot copy (host microseconds; tPaused relative to the start of the run, the rest relative to PAUSED)
+struct TRow {
+  long iter;
+  int path, tail;
+  double tPaused, enq, endLo, endHi, exec, ref, reach;
+  unsigned long long sb, sl, c;
+};
+static std::vector<TRow> g_rows;
+static double g_tPaused = 0, g_tRun0 = 0, g_waitEnd = 0, g_reachRow = -1;
+// the copy and its events, then the spin on the second event (nothing else in between); returns the GPU time between them
+static double timedCopy(cudaStream_t st, cudaEvent_t e0, cudaEvent_t e1, void* dst, const void* src, size_t n, double* enq,
+                        double* endLo, double* endHi) {
+  *enq = nowUs();
+  CK(cudaEventRecord(e0, st));
+  CK(cudaMemcpyAsync(dst, src, n, cudaMemcpyDeviceToDevice, st));
+  CK(cudaEventRecord(e1, st));
+  double lo = *enq;
+  cudaError_t q;
+  while (true) {
+    const double a = nowUs();
+    q = cudaEventQuery(e1);
+    const double b = nowUs();
+    if (q == cudaErrorNotReady) {
+      lo = a;
+      continue;
+    }
+    *endHi = b;
+    break;
+  }
+  CK(q);
+  *endLo = lo;
+  float ms = 0;
+  CK(cudaEventElapsedTime(&ms, e0, e1));
+  return ms * 1000.0;
+}
 
 static void readFence(Resp& r, bool sameAlloc, bool record) {
   ibv_sge sg;
@@ -594,12 +670,14 @@ static long waitRmsn(Resp& r, uint64_t target, double tPaused, bool* sawBelow, b
     const uint32_t got = rmsnDelta(rmsn, r.rmsn0);
     if (got == want) {
       if (reachStart) *reachStart = g_lastQueryStart - tPaused;
+      g_waitEnd = nowUs();  // v4: the return of the QUERY_QP that saw the target
       break;
     }
     const uint32_t behind = (want - got) & MASK24;
     if (behind > (uint32_t)(NW + 1)) nicFail("rmsn outside the window of this iteration");
     if (stopAtBelowOne && behind == 1) {
       *sawBelow = true;
+      g_waitEnd = nowUs();  // v4: the return of the QUERY_QP that saw target - 1
       return -polls;  // boundary: rmsn == target - 1
     }
     *sawBelow = true;
@@ -613,7 +691,8 @@ static void snapshotCheck(Resp& r, int path, int tail, uint32_t iter, bool alsoS
   Res z;
   memset(&z, 0, sizeof(z));
   z.firstCorruptWord = 0xffffffffu;
-  CK(cudaMemcpyAsync(r.snap, r.win, L.total, cudaMemcpyDeviceToDevice, r.st));
+  double enq = 0, endLo = 0, endHi = 0;
+  const double execUs = timedCopy(r.st, r.ev0, r.ev1, r.snap, r.win, L.total, &enq, &endLo, &endHi);
   uint64_t sig = 0;
   CK(cudaMemcpyAsync(&sig, r.sig, 8, cudaMemcpyDeviceToHost, r.st));
   CK(cudaMemcpyAsync(r.res, &z, sizeof(z), cudaMemcpyHostToDevice, r.st));
@@ -656,6 +735,9 @@ static void snapshotCheck(Resp& r, int path, int tail, uint32_t iter, bool alsoS
   };
   const bool bad = tally(T[path][tail], h, true);
   if (alsoSm) tally(TS[tail], hs, false);
+  g_rows.push_back(TRow{(long)iter, path, tail, g_tPaused - g_tRun0, enq - g_tPaused, endLo - g_tPaused, endHi - g_tPaused,
+                        execUs, path == P_EARLY ? 0.0 : g_waitEnd - g_tPaused, g_reachRow, h.staleBefore, h.staleLast,
+                        h.corrupt});
   if (path == P_FENCE && tail != T_WA && bad && fenceFail.size() < 8) fenceFail.push_back(iter);
 }
 static void respSetup(Resp& r, ibv_context* ctx, ibv_pd* pd, ibv_cq* cq, bool relaxed) {
@@ -668,8 +750,11 @@ static void respSetup(Resp& r, ibv_context* ctx, ibv_pd* pd, ibv_cq* cq, bool re
   r.snap = cuMemAllocRdma(L.total, &snapBytes);
   CK(cudaMalloc((void**)&r.res, sizeof(Res)));
   CK(cudaMalloc((void**)&r.timedOut, sizeof(int)));
-  CK(cudaStreamCreateWithFlags(&r.st, cudaStreamNonBlocking));
-  CK(cudaStreamCreateWithFlags(&r.pst, cudaStreamNonBlocking));
+  CK(cudaDeviceGetStreamPriorityRange(&r.prLeast, &r.prGreatest));
+  CK(cudaStreamCreateWithPriority(&r.st, cudaStreamNonBlocking, r.prGreatest));  // v4: highest priority
+  CK(cudaStreamCreateWithPriority(&r.pst, cudaStreamNonBlocking, r.prGreatest));
+  CK(cudaEventCreate(&r.ev0));
+  CK(cudaEventCreate(&r.ev1));
   fillKernel<<<120, 256>>>((unsigned long long*)r.win, L.total / 8, 0);  // "iteration 0"
   CK(cudaGetLastError());
   CK(cudaMemset(r.sig, 0, r.sigBytes));
@@ -773,6 +858,7 @@ int main(int argc, char** argv) {
     }
     _exit(7);
   }).detach();
+  if (role != "resp" && getenv("RS_HOG") != nullptr && *getenv("RS_HOG") != 0) setupFail("RS_HOG is for the responder only");
   if (role == "hog") return runHog(argc, argv);
   if (argc < 8) setupFail("usage");
   const char* dev = argv[3];
@@ -837,6 +923,11 @@ int main(int argc, char** argv) {
     respSetup(r, ctx, pd, cq, order == "ro");
     kvf("mr=dmabuf alloc=cumem_gdr window_mr_relaxed=%d signal_mr_relaxed=0 fence_mr_relaxed=0 fence_target=other_alloc\n",
         order == "ro" ? 1 : 0);
+    int drv = 0;
+    CK(cudaDriverGetVersion(&drv));
+    kvf("stream_priority_snapshot=%d stream_priority_least=%d streams_nonblocking=1 cuda_driver=%d nproc=%ld sm_count=%d "
+        "max_threads_per_sm=%d\n", r.prGreatest, r.prLeast, drv, sysconf(_SC_NPROCESSORS_ONLN), prop.multiProcessorCount,
+        prop.maxThreadsPerMultiProcessor);
   } else {
     size_t srcBytes = 0;
     src = cuMemAllocRdma(L.total, &srcBytes);
@@ -877,6 +968,7 @@ int main(int argc, char** argv) {
       setupFail("ready exchange");
   }
   const double tRun0 = nowUs();
+  g_tRun0 = tRun0;
   if (!isResp) {  // ---- writer loop: GO -> fill -> post -> PAUSED -> own completion -> DONE ----
     uint64_t m = 0;
     long n = 0;
@@ -971,6 +1063,26 @@ int main(int argc, char** argv) {
     }
     CK(cudaFreeHost(hpat));
   }
+  {  // v4 (b): which engine runs the D2D snapshot copy (once, before any hog thread; the snapshot is poisoned per iteration)
+    cudaStream_t sa = nullptr;
+    cudaEvent_t ea = nullptr;
+    CK(cudaStreamCreateWithPriority(&sa, cudaStreamNonBlocking, r.prGreatest));
+    CK(cudaEventCreate(&ea));
+    const int blocks = prop.multiProcessorCount * std::max(1, prop.maxThreadsPerMultiProcessor / 256);
+    spinKernel<<<blocks, 256, 0, sa>>>(5000000ull);
+    CK(cudaGetLastError());
+    CK(cudaEventRecord(ea, sa));
+    std::this_thread::sleep_for(std::chrono::microseconds(500));  // the spinner occupies every SM first
+    double enq = 0, endLo = 0, endHi = 0;
+    const double execUs = timedCopy(r.st, r.ev0, r.ev1, r.snap, r.win, L.total, &enq, &endLo, &endHi);
+    const cudaError_t qa = cudaEventQuery(ea);
+    if (qa != cudaSuccess && qa != cudaErrorNotReady) CK(qa);
+    CK(cudaStreamSynchronize(sa));
+    kvf("d2d_engine=%s d2d_engine_copy_us=%.1f d2d_engine_exec_us=%.1f spin_blocks=%d\n", qa == cudaErrorNotReady ? "ce" : "sm",
+        endHi - enq, execUs, blocks);
+    CK(cudaEventDestroy(ea));
+    CK(cudaStreamDestroy(sa));
+  }
   const std::vector<Arm> sched = schedule(iters, seed);
   const long probeIters = iters / 16;
   uint64_t m = 0;
@@ -982,6 +1094,42 @@ int main(int argc, char** argv) {
   const unsigned long long qBudget = getenv("RS_QUERY_BUDGET") ? strtoull(getenv("RS_QUERY_BUDGET"), nullptr, 10) : 0;
   if (qBudget && qBudget + 400 > (unsigned long long)CELL_QUERY_CAP) setupFail("RS_QUERY_BUDGET must leave 400 under the cap");
   kvf("query_budget=%llu query_cap=%ld\n", qBudget, CELL_QUERY_CAP);
+  // v4 (c): RS_HOG=stream: the in-process hog, started after the self-check and the engine check, stopped after the loop
+  const char* hogEnv = getenv("RS_HOG");
+  const bool hogStream = hogEnv != nullptr && strcmp(hogEnv, "stream") == 0;
+  if (hogEnv != nullptr && *hogEnv != 0 && !hogStream) setupFail("RS_HOG must be empty or stream");
+  std::atomic<bool> hogStop{false};
+  std::thread hogT;
+  double hogT0 = 0;
+  int hogGrid = 0;
+  size_t hogN = 0;
+  if (hogStream) {
+    hogGrid = std::max(1, prop.multiProcessorCount - prop.multiProcessorCount / 4);
+    const size_t thr = (size_t)hogGrid * 256;
+    hogN = ((size_t)(256u << 20) / sizeof(float4)) / (8 * thr) * (8 * thr);
+    float4 *ha = nullptr, *hb = nullptr;
+    CK(cudaMalloc(&ha, hogN * sizeof(float4)));
+    CK(cudaMalloc(&hb, hogN * sizeof(float4)));
+    CK(cudaMemset(ha, 1, hogN * sizeof(float4)));
+    CK(cudaDeviceSynchronize());  // before the hog thread exists
+    cudaStream_t hs = nullptr;
+    CK(cudaStreamCreateWithPriority(&hs, cudaStreamNonBlocking, r.prLeast));  // non-blocking: the legacy stream never waits
+    g_hogRounds.store(0);
+    hogT0 = nowUs();
+    hogT = std::thread([&hogStop, hogGrid, hogN, ha, hb, hs]() {
+      CK(cudaSetDevice(g_dev));
+      long k = 0;
+      while (!hogStop.load()) {
+        for (int j = 0; j < 8; j++) hogKernel8<<<hogGrid, 256, 0, hs>>>(k & 1 ? hb : ha, k & 1 ? ha : hb, hogN);
+        CK(cudaGetLastError());
+        CK(cudaStreamSynchronize(hs));  // the hog drains its own stream every round
+        g_hogRounds.store(++k);
+      }
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }
+  kvf("hog=%s hog_started=after_selfcheck_and_engine_check hog_grid=%d hog_threads=256 hog_bytes_per_round=%zu\n",
+      hogStream ? "stream" : "none", hogGrid, (size_t)8 * 2 * hogN * sizeof(float4));
   g_progIter = 0;
   for (long i = 0; i < iters + probeIters; i++) {
     g_progIter = i;
@@ -1013,6 +1161,9 @@ int main(int argc, char** argv) {
     ctlSend(M_GO, it, (uint32_t)a.tail, 0);
     const Msg x = ctlRecv(10000);
     const double tp = nowUs();
+    g_tPaused = tp;
+    g_waitEnd = tp;
+    g_reachRow = -1;
     goPausedUs.push_back(tp - tGo);
     if (x.type != M_PAUSED || x.iter != it) nicFail("control message out of order (responder)");
     m += (uint64_t)msgsOf(a.tail);
@@ -1038,6 +1189,7 @@ int main(int argc, char** argv) {
         double reach = 0;
         polls = waitRmsn(r, m, tp, &sawBelow, false, &reach);
         reachUs.push_back(reach);
+        g_reachRow = reach;
         pollsMax = std::max(pollsMax, polls);
         g_progPolls = g_progPolls + (unsigned long long)polls;
         g_progPollIters = g_progPollIters + 1;
@@ -1094,6 +1246,56 @@ int main(int argc, char** argv) {
   }
   ctlSend(M_END, (uint32_t)done, 0, 0);
   const double runS = (nowUs() - tRun0) / 1e6;
+  if (hogStream) {  // v4: stop and join the hog before any result line
+    hogStop.store(true);
+    hogT.join();
+    const double hogS = (nowUs() - hogT0) / 1e6;
+    const long hr = g_hogRounds.load();
+    kvf("hog_rounds=%ld hog_s=%.2f hog_gbps=%.1f\n", hr, hogS,
+        hogS > 0 ? (double)hr * 8.0 * 2.0 * (double)(hogN * sizeof(float4)) / hogS / 1e9 : 0.0);
+  }
+  {  // v4 (a): the snapshot-copy timing: percentiles here, every snapshot in RS_TIMING_FILE
+    const double rp50 = pct(reachUs, 0.5);
+    const int paths[3] = {P_EARLY, P_BOUNDARY, P_FENCE};
+    for (int p : paths) {
+      std::vector<double> sLo, sHi, aft, ex;
+      for (const TRow& x : g_rows)
+        if (x.path == p) {
+          sLo.push_back(x.endLo - x.exec);
+          sHi.push_back(x.endHi - x.exec);
+          aft.push_back(x.endHi - x.exec - x.ref);
+          ex.push_back(x.exec);
+        }
+      if (sLo.empty()) continue;
+      const char* nm = PATHN[p];
+      kvf("copy_%s_n=%zu copy_%s_start_lo_p50_us=%.1f copy_%s_start_hi_p50_us=%.1f copy_%s_start_hi_p90_us=%.1f "
+          "copy_%s_start_hi_after_ref_p50_us=%.1f copy_%s_exec_p50_us=%.1f\n",
+          nm, sLo.size(), nm, pct(sLo, 0.5), nm, pct(sHi, 0.5), nm, pct(sHi, 0.9), nm, pct(aft, 0.5), nm, pct(ex, 0.5));
+    }
+    long late = 0, prompt = 0, ne = 0;
+    for (const TRow& x : g_rows)
+      if (x.path == P_EARLY) {
+        ne++;
+        if (x.endLo - x.exec > rp50) late++;
+        if (x.endHi < rp50) prompt++;
+      }
+    kvf("early_copy_n=%ld early_copy_late=%ld early_copy_prompt=%ld reach_ref_p50_us=%.1f\n", ne, late, prompt, rp50);
+    const char* tf = getenv("RS_TIMING_FILE");
+    if (tf != nullptr && *tf != 0) {
+      FILE* f = fopen(tf, "w");
+      if (f == nullptr) {
+        kvf("timing_file_error=open\n");
+      } else {
+        fprintf(f, "iter\tpath\ttail\tt_paused_us\tenq_us\tend_lo_us\tend_hi_us\texec_us\tref_us\treach_us\t"
+                   "stale_before_words\tstale_last_words\tcorrupt_words\n");
+        for (const TRow& x : g_rows)
+          fprintf(f, "%ld\t%s\t%s\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%llu\t%llu\t%llu\n", x.iter, PATHN[x.path],
+                  TAILN[x.tail], x.tPaused, x.enq, x.endLo, x.endHi, x.exec, x.ref, x.reach, x.sb, x.sl, x.c);
+        fclose(f);
+        kvf("timing_file_rows=%zu\n", g_rows.size());
+      }
+    }
+  }
   for (int p = 0; p < NPATH; p++)
     for (int t = 0; t < 3; t++) {
       const Tally& x = T[p][t];
