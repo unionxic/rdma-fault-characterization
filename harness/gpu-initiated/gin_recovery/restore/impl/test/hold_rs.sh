@@ -36,6 +36,8 @@ D=$(cd "$(dirname "$0")" && pwd)
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 export SUNNY_SSH
 RS_SET=${RS_SET:-}
+. "$D/rs_set.sh"   # the one RS_SET check of every script
+rs_set_check || exit 2
 export RS_SET
 CELLS=$D/cells_rs.json
 FW=$D/../../../scripts/ts1/fwcmd_snapshot.sh

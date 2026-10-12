@@ -6,7 +6,16 @@
 
 표시: `[측정]` 원자료에서 확인, `[미확인]` 아직 확인하지 않음, `[추론]` 해석.
 
-## 지금 상태 (pilot P1과 고침 뒤, 2026-10-13)
+## 지금 상태 (배포 묶음 i4로 다시 한 pilot 뒤, 2026-10-13)
+
+i4로 다시 한 pilot(`results/20261013_pilot_i4/`, `EXPERIMENT.md` 12절)에서 두 결함의 고침이 돌았다: kill 셀 셋이 되살아나고(데이터
+같음, 'later' 답 6–7번 약 125–145 ms, 복원 약 400 ms), 체크포인트 멈춤 중 kill도 세 생존 rank 모두 멈춤 안에서 죽음을 맞고 되살아났다
+`[측정, n = 1]`. 남은 둘을 고침(빌드됨, CPU 시험함, 클러스터에서 돌리지 않음): `rs4_refuse_gintype`이 GIN 종류 3으로 돈 실행기 결함(셀
+변수 `CELL_GIN_TYPE`), 체크포인트 멈춤 중 kill에서 같은 노드 생존 rank가 reset을 받아 죽음 판정이 1 s 늦은 것(시험 스위치가 SIGKILL
+전에 FIN을 보냄). 그 밖에 `RS_SET` 검사 하나(`rs_set.sh`), 무장 대기 한도 하나, 다시 한 시행의 앞 파일 지움, 비용 규칙
+`within:<pct>`. 새 라이브러리는 `rs_i5`, `rsp_i5`(운영 빌드는 i4b와 같은 바이트), 드라이버는 i3 그대로다. 다음: i5 배포와 pilot.
+
+### pilot P1과 고침 뒤 (2026-10-13, 그때의 글)
 
 pilot P1을 통합 빌드(배포 i3: `rs_i3`, `rsp_i3`, 드라이버 `test/out/i3`)로 돌렸다(메인 세션; `results/20261013_pilot/`, `EXPERIMENT.md`
 12절의 2026-10-13 행). 장애 없음 셀 둘(`rs4_none`, `rs4_none_off`)은 깨끗했고 `[측정]`, 예비 프로세스가 있는 kill 셀 셋은 결함
@@ -115,8 +124,11 @@ P1–P3과 비용 pilot을 다시.
   201.4–201.5 s였다(예비 프로세스가 감시 한도 200 s까지 기다림) `[측정]`. 2026-10-13부터 예비 프로세스는 활성화를 60 s만
   기다린다(`SPARE_WAIT_MS`; 출발 문 뒤 kill은 준비 줄 뒤 몇 초 안, hold 시한은 20 s). pilot의 벽시계 시간(meta `wall_s`)을 보고
   한도를 정한다.
-- 체크포인트 멈춤 중 kill의 무장 대기: `ARM_WAIT_S`(기본 60 s) 안에 모든 생존 rank의 무장 줄이 없으면 무장 파일을 만들지 않고
-  (kill 없음, 장애 미적용으로 빠짐) meta에 `arm_wait=timeout`.
+- 체크포인트 멈춤 중 kill의 무장 대기: `ARM_WAIT_S`(기본 60 s, 생존 rank 모두에 한 한도) 안에 모든 생존 rank의 무장 줄이 없으면
+  무장 파일을 만들지 않고(kill 없음, 장애 미적용으로 빠짐) meta에 `arm_wait=timeout`.
+- 비용 문턱: `score.py`의 규칙 `within:<pct>`(판정하는 팔의 중앙값이 노드와 지표마다 기준 팔보다 나쁜 쪽으로 pct% 안). 판정하는 팔은
+  예측의 셀 칸 `cost:<가족>:<팔,팔>`이 정하고, 보고만 할 팔은 `rule=report`인 다른 예측 행에 둔다. 문턱은 메인 세션이 사전 등록 때
+  `predictions_rs.csv`에 넣는다.
 - 판정식의 k/n(≥ 9/10 등): 초안 그대로 두고 pilot의 유효 시행 수를 보고 사전 등록에서 고정한다.
 
 ## 사용자 보류 중인 overhead 예산 (사용자 확인 대기)
@@ -129,7 +141,33 @@ P1–P3과 비용 pilot을 다시.
 - 4 rank에서 rank마다 더하는 메모리: 64 MiB 이하(rain BAR1의 4분의 1). 설명만 적는 로그에서 항목 4096이면 약 3.0 MiB다
   (9.5절) `[추론]`.
 
-## 메인 세션 명령: 둘째 배포 묶음 i4와 pilot 다시 하기 (2026-10-13)
+## 메인 세션 명령: 배포 묶음 i5와 pilot (2026-10-13)
+
+i4와 같은 방법이다(아래 절의 변수). 새 것은 라이브러리 `rs_i5`, `rsp_i5`뿐이고(`rsp_i5`는 `rsp_i4b`와 같은 md5), hkp와 드라이버는
+i4와 같다. 묶음 i4는 그대로 둔다.
+
+```
+# 1. 배포 (새 디렉터리 ~/rs-bundle/i5/... 만; 대상이 있으면 거절)
+RS_SET=i5 RS_LIB_SRC=$I/out/rs_i5/libnccl.so.2.32.3 RSP_LIB_SRC=$I/out/rsp_i5/libnccl.so.2.32.3 \
+  HKP_LIB_SRC=$G/build-hkp/lib/libnccl.so.2.32.3 \
+  WANT_RS=4811f28f93294338812d8f83dafa8b61 WANT_RSP=be91b270155005827bfa0e79c527165c \
+  WANT_HKP=84209c03a497bd28206210205bfc6cf5 \
+  WANT_GINRS=303e812dfd4352769bcac89c8f9451c8 WANT_GINRS_NOMACRO=0f0826e6546cfdc927df9a9e6b9dc64a \
+  WANT_GINRS_HK=4ec9b84640dc584c1a86f8095023ef33 WANT_COST=dd44e14ef4af4e5a1200706965b1c771 \
+  WANT_COST_FF=5e4db845a693f65fd18341fa2e30eb7d WANT_MR_FF=41f3ce3a14923c37d943825034d6467a \
+  WANT_MR_HOLD=169f59c55381c5aa5f6040afd43ba672 RSTOUT=i3 bash $T/deploy_rs.sh $I/deploy_check_i5.txt
+grep -E "MISMATCH|CHANGED|not found" $I/deploy_check_i5.txt     # 아무 줄도 없어야 함
+# 2. 자체 시험 (CPU, 클러스터 없음)
+python3 $T/selftest_rs.py
+# 3. pilot (새 결과 폴더). 두 고침의 확인은 P1만으로 된다(rs4_refuse_gintype, rs4_kill3_ckpt)
+RS_SET=i5 bash $T/chain_rs.sh $R/20261013_pilot_i5 P1
+python3 $T/rows_rs.py $R/20261013_pilot_i5
+```
+
+볼 것: `rs4_refuse_gintype`의 meta `gin_type=2`와 모든 rank의 같은 이유의 거절; `rs4_kill3_ckpt`에서 같은 노드 생존 rank(rank 1)가
+`cause=FIN`으로 바로 판정하는지, 복원 시간이 다른 kill 셀(약 400 ms) 근처인지.
+
+## 메인 세션 명령: 둘째 배포 묶음 i4와 pilot 다시 하기 (2026-10-13, 했음)
 
 변수는 아래 절과 같다(`T`, `R`, `SUNNY_SSH`, `I` = 세션 스크래치의 `agent_rs_int`), `G`는 세션 스크래치의 `agent_gd/gin_hk`(gpu-detect
 트리, 읽기만). 첫 묶음(i3, `~/rs-bundle/{lib,rstest,rscost,mr}`)은 건드리지 않는다: 새 묶음은 `~/rs-bundle/i4/` 아래에만 생기고,

@@ -30,8 +30,8 @@ SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b
 T=$SCR/agent_rs_int/test/out  # integration (2026-10-12): the drivers built against the integrated headers
 RSTOUT=${RSTOUT:-rs}
 RS_SET=${RS_SET:-}
-case "$RS_SET" in */*|*..*|-*|.*) echo "RS_SET must be a plain name" >&2; exit 1 ;; esac
-case "$RS_SET" in lib|rstest|rscost|mr|ord) echo "RS_SET may not be a name the first set uses ($RS_SET)" >&2; exit 1 ;; esac
+. "$(cd "$(dirname "$0")" && pwd)/rs_set.sh"   # the one RS_SET check of every script
+rs_set_check || exit 1
 B=rs-bundle${RS_SET:+/$RS_SET}   # the set's folder, relative to $HOME
 md5() { md5sum < "$1" | cut -c1-32; }
 # artifact table: <WANT var>|<source>|<target dir relative to $HOME>|<file name>|<lib: 1 = add .so.2/.so links>
