@@ -303,6 +303,12 @@ static void testLocalSpare() {
   CHECK(code == 29 && has(why, "NCCL_GIN_RESTORE_RECORD"));
   x.logMeasure = true;  // an earlier condition wins
   CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 28);
+  x = ok;
+  x.replayClean = false;  // a spare whose replay was not clean: the condition after it
+  x.replayWhy = "1 own-slot mismatch(es) outside the allowed fields";
+  CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 30 && has(why, "not clean") && has(why, "own-slot mismatch"));
+  x.transcriptOk = false;
+  CHECK(gdakiRsLocalCheck(x, why, sizeof(why)) == 29);
 }
 
 int main() {
