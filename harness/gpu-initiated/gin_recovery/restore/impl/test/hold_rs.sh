@@ -15,9 +15,10 @@
 # usage: hold_rs.sh <resultsdir> <hold>
 #   P1, P2, P3, G1, G2, R1     the cells_rs.json holds (P*: pilot, never scored; run them into a results folder of their own;
 #                              P3: the spare's strace and the two negative replays)
-#   COST-<family>-<rain|sunny>[-<tag>]   one cost family (log | unarmed | ffbranch, cells_rs.json "cost") on the named
-#                              receiving node: for k = 1-6, each metric, its arms back to back with the first arm alternating
-#                              by k (9.15.6's interleave), into cost_<family>_<node>/ (a repeat: ..._run<k>/)
+#   COST-<family>-<rain|sunny>[-<metric>][-<tag>]   one cost family (log | ffbranch, cells_rs.json "cost") on the named
+#                              receiving node, all its metrics or the one named (the log family runs one metric per hold:
+#                              5 arms x 6 rounds = 30 runs): for k = 1-6 the arms back to back with the first arm alternating
+#                              by k (9.15.6's interleave), into cost_<family>_<node>[_<metric>]/ (a repeat: ..._run<k>/)
 #   COSTPILOT-<rain|sunny>     pilot: one round (k=1) of every family, into costpilot_<node>/
 # env: SUNNY_SSH (required), RS_QUERY_CAP (20000)
 set -u
@@ -155,10 +156,13 @@ cost_run() {  # cost_run <cell> <tag> <logdir>
   [ -n "$lft" ] && [ "$lft" -gt 0 ] && echo "$(date '+%F %T') hold $H: ${cell}_$tag left $lft" | tee -a "$R/STOP_left"
   after_trial "${cell}_$tag" ""
 }
-cost_family() {  # cost_family <family> <node> <dir> <rounds>
-  local fam=$1 node=$2 dir=$3 rounds=$4 k m a arms
+cost_family() {  # cost_family <family> <node> <dir> <rounds> [metric]: every metric of the family, or only the one named
+  local fam=$1 node=$2 dir=$3 rounds=$4 only=${5:-} k m a arms
   local -a metrics armlist
   read -r -a metrics <<< "$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["cost"]["families"][sys.argv[2]]["metrics"]))' "$CELLS" "$fam")"
+  if [ -n "$only" ]; then
+    case " ${metrics[*]} " in *" $only "*) metrics=("$only") ;; *) echo "metric $only is not in family $fam" >&2; return 1 ;; esac
+  fi
   read -r -a armlist <<< "$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["cost"]["families"][sys.argv[2]]["arms"]))' "$CELLS" "$fam")"
   for ((k = 1; k <= rounds; k++)); do
     for m in "${metrics[@]}"; do
@@ -173,13 +177,15 @@ case "$H" in
     node=${H#COSTPILOT-}; node=${node%%-*}
     case "$node" in rain|sunny) ;; *) echo "COSTPILOT-<rain|sunny>" >&2; exit 2 ;; esac
     d=$(newdir "costpilot_$node"); mkdir -p "$d"
-    for fam in log unarmed ffbranch; do cost_family "$fam" "$node" "$d" 1; done ;;
+    for fam in log ffbranch; do cost_family "$fam" "$node" "$d" 1; done ;;
   COST-*)
-    rest=${H#COST-}; fam=${rest%%-*}; rest=${rest#*-}; node=${rest%%-*}
-    case "$fam" in log|unarmed|ffbranch) ;; *) echo "COST-<log|unarmed|ffbranch>-<rain|sunny>[-<tag>]" >&2; exit 2 ;; esac
-    case "$node" in rain|sunny) ;; *) echo "COST-<family>-<rain|sunny>[-<tag>]" >&2; exit 2 ;; esac
-    d=$(newdir "cost_${fam}_$node"); mkdir -p "$d"
-    cost_family "$fam" "$node" "$d" 6 ;;
+    rest=${H#COST-}; fam=${rest%%-*}; rest=${rest#*-}; node=${rest%%-*}; met=""
+    case "$rest" in *-*) met=${rest#*-}; met=${met%%-*} ;; esac
+    case "$met" in lat4k|lat256k|bw256k|"") ;; *) met="" ;; esac   # anything else after the node is only a tag
+    case "$fam" in log|ffbranch) ;; *) echo "COST-<log|ffbranch>-<rain|sunny>[-<metric>][-<tag>]" >&2; exit 2 ;; esac
+    case "$node" in rain|sunny) ;; *) echo "COST-<family>-<rain|sunny>[-<metric>][-<tag>]" >&2; exit 2 ;; esac
+    d=$(newdir "cost_${fam}_$node${met:+_$met}"); mkdir -p "$d"
+    cost_family "$fam" "$node" "$d" 6 "$met" ;;
   *) echo "unknown hold $H" >&2; exit 2 ;;
 esac
 snap "after-$H" | tee "$R/snap_after-$H.txt"
