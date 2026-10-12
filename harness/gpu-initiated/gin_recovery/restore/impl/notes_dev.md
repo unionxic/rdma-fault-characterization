@@ -162,3 +162,69 @@
 - (d4f 검토, 제안) 게시가 실패한 rank는 WARN만 낸다. `ncclGetLastError(comm)`에 그 줄을 남길지 정할 것.
 - 호스트 파일 Resume 공유 구역: 성공 줄의 "the communicator stays fail-fast"를 "a fault still fails fast"로 바꿈(host 브랜치가 반응을 넣으면 같은 줄이 만남).
 - 오래된 hk 기준 객체: 이 연구의 앞 작업 묶음(3, 4)에서 hk 빌드 트리의 객체와 견준 라이브러리 SASS 기록이 있으면 같은 까닭으로 다시 볼 것 `[미확인]`.
+
+**작업 묶음 9의 충돌 확인(2026-10-12, 호스트 파일에 넣기 전).**
+
+1. 부르는 쪽(host 브랜치, 읽기만). `gdakiRsExecRead`: 입력 멈춤(P), hold 시작(2ERR 뒤의 X, M, 머리), Commit 전(X가 그대로인지), 확정 확인의 고리(모든
+   rank). 모두 helper이고 opMu를 잡지 않은 자리다(`gdakiTsQuiesce`는 안에서 잡고 놓음) `[소스: rs_layer_host.diff]`. ExecRead는 watch의 QUERY_QP처럼
+   opMu를 잡으므로, 부르는 쪽이 잡고 있으면 교착이다(API 주석에 적음). `gdakiRsPlanAllExecuted`: 복원 round의 Commit 전(hk가 계획을 Commit 전에
+   검사하듯). `gdakiTsRepostApply`는 n = 0 계획이면 아무것도 다시 내지 않고 U만큼 논리 기준을 옮긴다 `[소스]`. `gdakiRsLogExport`: STATE를 보낼 때
+   helper가 이 rank가 확인한 그 체크포인트의 멈춤 머리, hold 시작의 머리와 X, M을 준다. 바이트 수를 먼저 보내므로 벡터에 모은다. 실패면 STATE를
+   보내지 않고 fallback한다. 그래서 "source buffer changed"는 끝까지 쓴 스트림과 함께 ncclInvalidUsage로 돌려준다. `gdakiRsSpareImport`: 예비 프로세스의
+   Resume 안, application 스레드, 커널과 helper 전.
+2. 연결(공유 코드라 이 브랜치가 고치지 않음): G7의 hold 본문(`gdakiPolicyObserveRmsn`), `gdakiTsExecuted`, `gdakiTsBaseline`. 로그 상태가 없는
+   프로세스(fail-fast 포함)에서는 세 함수가 바로 돌아가므로 hk의 호스트 동작은 함수 호출 하나 말고 같다. 설정의 rmsn0 기준선은 로그 상태를 만들 때
+   `ts->qs[i].rmsn0`에서 받는다(`gdakiTsSetup`이 `gdakiTsStart`보다 먼저) `[소스]`.
+3. 잠금 차례. 내보내기: `gdakiRsWinMu` → `lb->mrsMu`(`gdakiLbFind`). 가져오기: `gdakiRsWinMu` → `appMu` → `execMu`. SuppressSet: `appMu` → `execMu`.
+   억제 줄: `execMu`만. 파일 안에 거꾸로 잡는 곳은 없다: Resume은 `gdakiRsWinMu`를 놓은 뒤 `gdakiRecRegMu` → `mrsMu`를 잡는다 `[소스]`.
+4. `gdakiRsWinMu`를 잡은 채 NIC으로 읽는다(덩어리 하나, 1 MiB 이하). 가져오기는 그 전체 동안 잡는다. 그 사이 같은 프로세스의 window 등록과 해제가
+   기다린다. 해제가 기다리는 것은 의도다(읽는 동안 그 메모리가 풀리지 않음).
+5. NIC 복사 경로는 helper 한 사용자 규칙 그대로다: 내보내기만 쓴다. 가져오기와 SuppressSet은 예비 프로세스의 application 스레드에서 CUDA 복사를 쓴다
+   (helper 전).
+6. `gdakiRsStart`가 window의 데이터 범위를 루프백 MR에 더한다(할당마다 MR 하나 더). 실패하면 `rsLbOk`가 거짓이 되어 Resume이 거절한다. 앞에는 rkey
+   표만 넣었으므로 거절 조건이 조금 넓어진다. fail-fast 프로세스는 이 함수에서 바로 돌아간다(hk와 같음). 문맥 뒤에 등록한 window는 Resume이 이미
+   거절하고(`winsAfter`) `[소스]`, devComm의 자원 window가 put의 출처가 되면 그 읽기가 실패해 내보내기가 거절한다(fallback).
+7. 순수 상태가 바뀐다: 멈춤마다 QP의 M을 절단점부터 1024개까지 지킨다. `gdakiRsLogStateNotePause`의 인자가 하나 는다(부르는 곳은 PauseRead와 단위
+   시험뿐). 절단점 멈춤의 M을 지키지 못했으면 내보내기가 거절한다(틀린 데이터 대신 fallback).
+8. 억제 줄: WARN, 예비 프로세스에서 가져오기가 예산을 둔 QP마다 한 번(B = 0 포함). gpu-detect 채점 문구 넷(`noScorerPhrase`)과 겹치지 않는다. window MR
+   줄은 그대로다. 형식은 test 브랜치에 공개한 그대로이고 qp가 측 표의 QP 번호(문맥 × nranks + 상대)라는 것만 덧붙인다.
+9. helper 소켓 메시지 번호(21..31)는 쓰지 않는다. 내보내기는 host 브랜치의 data socket STATE에 실린다.
+10. nonce: 가져오기는 내보낸 쪽의 nonce를 이 문맥의 `ts->nonce`와 견준다. 예비 프로세스의 문맥이 생존 rank와 같은 nonce를 가져야 한다(spare 브랜치의
+    REJOIN; 통합 확인). 다르면 모든 가져오기가 거절한다(fallback, 틀린 적용 없음).
+11. 신호: hold 길의 신호는 모두 더하기다(Inc는 1로 풀림) `[소스: 장치 헤더]`. 가져오기는 데이터를 먼저, 신호를 나중에 더한다. put의 대상이 신호 낱말과
+    겹치면 차례가 결과를 바꾸므로 거절한다(single assignment, 9.7절 3번).
+12. 장치 코드는 바뀌지 않는다. 그래서 매크로 없는 꼴이 hk와 같다는 측정은 그대로다(장치 헤더 diff 없음으로 확인).
+13. 예비 프로세스의 msgs = X: 그 뒤 체크포인트의 P와 M 셈(9.4절)이 생존 쪽과 이어진다 `[추론]`.
+14. host 브랜치의 자리 표시(`gdakiRsExecRead`, `gdakiRsPlanAllExecuted`, `gdakiRsLogExport`)와 이 브랜치의 `gdakiCkptPeerP` 대용 정의
+    (`#ifndef GDAKI_CKPT_MAGIC`, host 브랜치의 공유 글이 그 정의를 앞에 둠)는 통합에서 지운다.
+
+## 이 연구 밖의 사실
+
+메인 세션의 요청(2026-10-12)으로 적는 사실뿐이다. 어느 연구의 결과에 영향이 있었는지는 해석하지 않는다(메인 세션이 셀의 로그로 따로 확인함).
+모두 rain의 세션 스크래치에서 읽었고 GPU와 클러스터에서는 아무것도 돌리지 않았다.
+
+- **오래된 객체 22개**: `build/obj/device/genobj/symmetric/` 아래 `all_gather_gin.cu.o`, `all_gather_gin_profile.cu.o`,
+  `reduce_scatter_gin_{avg,sum}_{bf16,f16,f32}.cu.o`와 그 `_profile.cu.o`(12개),
+  `reduce_scatter_gin_{avg,sum}_{f8e4m3,f8e5m2}_RailA2A_LsaLDMC.cu.o`와 그 `_profile.cu.o`(8개). 목록 파일: 세션 스크래치
+  `agent_rs_dev/samelen2/list.txt`.
+- **객체의 시각**: 2026-10-09 01:02:12–01:03:20(객체마다: 가장 이른 것 `reduce_scatter_gin_avg_f8e5m2_RailA2A_LsaLDMC.cu.o` 01:02:12, 가장 늦은
+  것 `reduce_scatter_gin_sum_f16_profile.cu.o` 01:03:20). 같은 시각의 같은 객체가 빌드 트리 `agent_ts2hd`, `agent_ts2hf`, `agent_ts2hq`,
+  `agent_ts2hr`, `agent_gd/gin`(hw), `agent_gd/gin_hk`(hk)에 있다(트리 복사로 옮겨진 것으로 보임 `[추론]`) `[측정: stat]`.
+- **이 객체가 앞선 장치 헤더 바뀜**:
+  - hd: `src/include/nccl_device/gin/gdaki/gin_gdaki.h`(+31줄)와 `gin_gdaki_device_host_common.h`(+3, −1). `agent_ts2hd`에서 두 파일의 수정 시각은
+    2026-10-09 01:44:49이고, 커밋은 `4965c2a` "gin-harden hd (libnccl e2090323)" 2026-10-09 04:02:31이다. hd의 다른 장치 헤더 바뀜(`impl/gin__funcs.h`
+    00:36:42, `utility.h` 00:36:28)은 객체보다 앞이다.
+  - hq: 같은 두 파일. `agent_ts2hq`의 수정 시각은 07:41:12와 07:41:41, 커밋은 `7b7d12f` "gin-peer hq (libnccl c1311625)" 12:44:30.
+  - hr: 같은 두 파일. 수정 시각은 12:56:46과 13:28:24, 커밋은 `382bbb4` "gin-remaining hr (libnccl 2dee2b5b)" 16:24:54.
+  - gpu-detect hw(`acd1fcd`, 20:47:56)는 장치 헤더를 바꾸지 않았다(`git show --stat`).
+- **이 객체를 담은 라이브러리**(세션 스크래치에 기록된 빌드 출력): hd `e2090323`, hdp `4818e30b`, hf `b6372d86`, hfp `1ae4ce9a`, hq `c1311625`, hqp
+  `4fa076e1`, hr `2dee2b5b`, hrp `786f70bc`, hw `efc48ca1`, hwp `d3b4a2fe`, hk `2913c777`, hkp `84209c03`.
+  - 확인한 방법: 커널 둘(`ncclSymkDevKernel_AllGather_RailRing_LsaSTMC`, `ncclSymkDevKernel_ReduceScatter_RailA2A_LsaLD_sum_f16`)의 명령과 인코딩
+    두 낱말(오프셋을 뺀 `cuobjdump -sass -fun`)이 12개 라이브러리와 01:02–01:03 객체에서 모두 같다(md5 `3973e971`, `aeac90ac`) `[측정]`.
+  - hk 트리를 오늘 다시 컴파일한 커널은 다르다: AllGather sm_75 34 128 → 35 040 명령, sm_86 34 432 → 35 352; ReduceScatter sm_75 52 856 → 53 784, sm_86
+    53 192 → 54 072 `[측정]`.
+  - 확인하지 않은 것: 각 라이브러리에서 나머지 20개 객체의 커널(같은 시각의 같은 객체 파일이라 같다고 봄 `[추론]`); ow `b4af65c5`, pcm `cd72f67a`,
+    stock `b380e622`(코드가 다름; ow 트리의 객체 시각은 2026-09-24 12:00:00이고, 그 트리의 헤더와 견주어 오래됐는지는 보지 않음); 노드에 배포된
+    사본이 이 md5와 같은지(클러스터 접근 없음).
+- **근거 경로**(세션 스크래치): `agent_gd/out/*/`, `agent_ts2h{d,f,q,r}/out/*/`, 각 트리의 `build/obj/device/genobj/symmetric/`,
+  `agent_rs_dev/samelen2/`(오늘 hk 트리에서 다시 컴파일한 객체), `agent_rs_dev/review_d4f_report.md`(검토자가 처음 찾음).
