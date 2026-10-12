@@ -31,8 +31,10 @@
 #   stamped line of a step >= KILL_AT_STEP (100) that arrived after the spare was ready (fallback: KILL_DELAY_MS 30000).
 #   KILL_IN_HOOK=1 instead: the checkpoint-pause kill, GIN_RS_DIE_IN_STEP=<CKPT_STEPS>:<KILL_HOOK_US (300)> armed by a
 #   node-local file the runner creates once the spare is ready (a self-SIGKILL inside the next checkpoint hook).
-#   SPARE (1 = a spare for KILL_RANK, started after KR's Resume line, replaying KR's init transcript), SPARE_ADDR (1 with
-#   SPARE=0: the no-spare cell), FAULT_POLICY (hold|failfast; hold ranks record their init transcript),
+#   SPARE (1 = a spare for KILL_RANK, started after KR's Resume line, replaying KR's init transcript; its address is
+#   registered with KR: NCCL_GIN_RESTORE_SPARE_ADDR), SPARE_KILL_FIRST (1 with SPARE=1: the spare-absent cell, the spare is
+#   SIGKILLed by its recorded PID once ready, before KR dies), SPARE_ADDR (1 with SPARE=0: an address registered with no
+#   process ever started; unused by the cells), FAULT_POLICY (hold|failfast; hold ranks record their init transcript),
 #   RESTORE (1|0), SYM_GIN (0), GIN_TYPE (3), RMA_DISABLE (1), NUM_RMA_CTX (0), NCONN (1), RESTORE_MS (20000),
 #   RESUME_MS (30000), CKPT_STEPS (empty = library default), LOG_MEASURE (0), CHECKSUM (off), QPWATCH (10, EXPERIMENT.md 6),
 #   R<r>_ENV, EXTRA_ENV, PORT_LO, PORT_HI, END_GRACE_MS (kill cells with a spare: 3000; the live ranks' pause before their
@@ -229,6 +231,26 @@ gate_env() { [ -n "$GATE" ] && [ "$1" = 0 ] && echo "RS_START_GATE=$GATE"; }
 for ((r = N - 1; r >= 0; r--)); do
   launch "r$r" "$r" "$(node_of "$r")" "$(renv "$r") $(rec_env "$r") $(sa_env "$r") $(die_env "$r") $(gate_env "$r")"
 done
+# the recorded-PID kill (EXPERIMENT.md 8): PIDREC finds the gin_rs grandchild of the shell whose PID was written at its
+# start (shell -> timeout -> gin_rs) and records "<pid> <its parent>"; PYK SIGKILLs that PID only while it is still the
+# child of the recorded timeout and has the recorded name (no PID reuse). Nothing is ever killed by name.
+PIDREC='for i in $(seq 1 200); do p=$(cat "$1" 2>/dev/null); [ -n "$p" ] || { sleep 0.1; continue; }
+for a in $(pgrep -P "$p"); do for c in $(pgrep -P "$a"); do
+[ "$(cat /proc/$c/comm 2>/dev/null)" = "$3" ] && { echo "$c $a" > "$2"; exit 0; }; done; done; sleep 0.1; done; exit 1'
+PYK='import os,sys; c,p,n=int(sys.argv[1]),sys.argv[2],sys.argv[5]; s=open("/proc/%d/stat"%c).read(); assert s[s.index("(")+1:s.rindex(")")]==n[:15] and s.rsplit(")",1)[1].split()[1]==p, "not the recorded process"; os.kill(c,9); print("GINRS killed rank=%s node=%s pid=%d" % (sys.argv[3],sys.argv[4],c))'
+# kill_spare_now <node> <rank>: the spare-absent cell (SPARE_KILL_FIRST=1): the spare registered and got ready, and is
+# SIGKILLed by its recorded PID before its rank dies, so the buddy's activation finds no spare (not with SPARE_STRACE)
+kill_spare_now() {
+  local node=$1 rk=$2 c p
+  if [ "$node" = sunny ]; then
+    ssh -n "$SUNNY_SSH" "bash -c '$PIDREC' _ $RT.spare.pid $RT.spare.cpid $BINNAME; read c p < $RT.spare.cpid 2>/dev/null; \
+if [ -n \"\$c\" ] && [ -n \"\$p\" ]; then python3 -c '$PYK' \"\$c\" \"\$p\" $rk sunny $BINNAME; else echo GINRS no_process rank=$rk; fi"
+  else
+    bash -c "$PIDREC" _ "$WORK/spare.pid" "$WORK/spare_target.pid" "$BINNAME"
+    read -r c p < "$WORK/spare_target.pid" 2>/dev/null
+    if [ -n "${c:-}" ] && [ -n "${p:-}" ]; then python3 -c "$PYK" "$c" "$p" "$rk" rain "$BINNAME"; else echo "GINRS no_process rank=$rk"; fi
+  fi 2>&1 | python3 -u -c "$STAMP" > "$WORK/spare_kill.out"
+}
 SPARE_ON=0; T_READY=0
 if [ -n "$SPORT" ] && [ "$SPARE" = 1 ]; then
   # the spare (same node and GPU as KILL_RANK) replays KILL_RANK's init transcript: start it once that transcript is
@@ -240,6 +262,7 @@ if [ -n "$SPORT" ] && [ "$SPARE" = 1 ]; then
     SPARE_ON=1
     # ready: its init replay is done and its Resume waits for the activation (bounded; a slow spare is a pilot finding)
     T_READY=$(wait_line "$WORK/spare.log" "GINRS spare_ready rank=$KR " 0 0 60); T_READY=${T_READY:-0}
+    [ "${SPARE_KILL_FIRST:-0}" = 1 ] && [ "$T_READY" != 0 ] && kill_spare_now "$knode" "$KR"
   fi
 fi
 [ -n "$GATE" ] && touch "$GATE"   # open the start gate: the spare is ready, or its waits ran out (meta spare_ready says which)
@@ -251,9 +274,6 @@ KILLER=""; RECORDER=""
 if [ -n "$KILL_RANK" ] && [ "$KILL_IN_HOOK" != 1 ]; then
   KR=$KILL_RANK; knode=$(node_of "$KR")
   # record KR's gin_rs PID and its parent (the recorded `timeout`), a grandchild of the shell PID written at its start
-  PIDREC='for i in $(seq 1 200); do p=$(cat "$1" 2>/dev/null); [ -n "$p" ] || { sleep 0.1; continue; }
-for a in $(pgrep -P "$p"); do for c in $(pgrep -P "$a"); do
-[ "$(cat /proc/$c/comm 2>/dev/null)" = "$3" ] && { echo "$c $a" > "$2"; exit 0; }; done; done; sleep 0.1; done; exit 1'
   if [ "$knode" = sunny ]; then
     ssh -n "$SUNNY_SSH" "bash -c '$PIDREC' _ $RT.r$KR.pid $RT.r$KR.cpid $BINNAME" &
   else
@@ -266,7 +286,6 @@ for a in $(pgrep -P "$p"); do for c in $(pgrep -P "$a"); do
       "$(awk -v d="$KILL_DELAY_MS" 'BEGIN{printf "%.3f", d / 1000}')" > /dev/null
     sleep "$(awk -v u="$KILL_DELAY_US" 'BEGIN{printf "%.6f", u / 1e6}')"
     # SIGKILL the recorded PID only while it is still the child of the recorded timeout and named as recorded
-    PYK='import os,sys; c,p,n=int(sys.argv[1]),sys.argv[2],sys.argv[5]; s=open("/proc/%d/stat"%c).read(); assert s[s.index("(")+1:s.rindex(")")]==n[:15] and s.rsplit(")",1)[1].split()[1]==p, "not the recorded process"; os.kill(c,9); print("GINRS killed rank=%s node=%s pid=%d" % (sys.argv[3],sys.argv[4],c))'
     if [ "$knode" = sunny ]; then
       ssh -n "$SUNNY_SSH" "for i in \$(seq 1 50); do [ -s $RT.r$KR.cpid ] && break; sleep 0.1; done; \
 read c p < $RT.r$KR.cpid 2>/dev/null; \
@@ -325,6 +344,7 @@ for name in $names; do
   [ -f "$WORK/$name.log" ] && sed "$MASK" "$WORK/$name.log" > "$LOGDIR/${stem}_$name.log"
 done
 [ -f "$WORK/kill.out" ] && sed "$MASK" "$WORK/kill.out" > "$LOGDIR/${stem}_kill.out"
+[ -f "$WORK/spare_kill.out" ] && sed "$MASK" "$WORK/spare_kill.out" > "$LOGDIR/${stem}_spare_kill.out"
 for name in $names; do  # strace counts only (the raw traces never left their node)
   [ -f "$WORK/$name.stracecount" ] && sed "$MASK" "$WORK/$name.stracecount" > "$LOGDIR/${stem}_${name}_strace.txt"
 done
@@ -332,7 +352,7 @@ rcs=""; for name in $names; do rcs="$rcs ${name}rc=$(tr -d '\n' < "$WORK/$name.r
 echo "cell=${CELL:-} lib=$LIB n=$N steps=$STEPS bytes=$BYTES policy=$FAULT_POLICY restore=$RESTORE sym_gin=$SYM_GIN \
 gin_type=$GIN_TYPE num_rma_ctx=$NUM_RMA_CTX nconn=$NCONN qpwatch_ms=$QPWATCH restore_ms=$RESTORE_MS checksum=$CHECKSUM \
 log_measure=$LOG_MEASURE step_gap_us=$STEP_GAP_US kill_rank=${KILL_RANK:-} kill_at_step=$KILL_AT_STEP kill_delay_us=$KILL_DELAY_US kill_fallback_ms=$KILL_DELAY_MS kill_in_hook=$KILL_IN_HOOK kill_hook_us=$KILL_HOOK_US \
-spare=$SPARE_ON spare_wanted=$SPARE spare_ready=$([ "$T_READY" != 0 ] && echo 1 || echo 0) gpu_apps_before=$GPU_APPS \
+spare=$SPARE_ON spare_wanted=$SPARE spare_kill_first=${SPARE_KILL_FIRST:-0} spare_ready=$([ "$T_READY" != 0 ] && echo 1 || echo 0) gpu_apps_before=$GPU_APPS \
 spare_strace=${SPARE_STRACE:-0} neg_replay=${NEG_REPLAY:-0} negs=$(echo $NEGS | tr " " ",") end_grace_ms=$END_GRACE_MS spare_addr_set=$([ -n "$SADDR_ENV" ] && echo 1 || echo 0) trial=$TRIAL extra=$(echo ${EXTRA_ENV:-} | tr ' ' '+')$rcs left=$LEFT gid0=$GID0 gid1=$GID1 port=$PORT \
 port_tries=$PORT_TRIES rdv_nonce_set=1 runner=rsr wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') \
 bin=$BINNAME" > "$LOGDIR/${stem}_meta.txt"
