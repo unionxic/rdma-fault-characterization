@@ -176,36 +176,53 @@ static void gdakiRsLogOccupancy(struct gdakiRecHost* r, struct gdakiRsLogOcc* ou
 // stable checkpoint whose pause comes after the change (an entry since a cut may name the window as a put's source).
 static uint64_t gdakiRsWinGoneCount(struct gdakiRecHost* r);
 
-// ---- work package 9 (provisional until its hand-back; the names and meaning are meant to stay) ----
-// helper: the cumulative responder executed count per QP (RL13): every QUERY_QP's rmsn of the QP (G7's watch sample,
-// gdakiTsExecuted) adds (rmsn - last) mod 2^24; a Baseline after a Commit restarts `last` at the new rmsn0 without a
-// step. A process that does not ask for the restore keeps nothing.
+// ---- work package 9 (EXPERIMENT.md 9.3, 9.6, 9.11.3 M2) ----
+// The cumulative responder executed count per QP (RL13): every QUERY_QP's rmsn of the QP adds (rmsn - last) mod 2^24; a
+// Baseline after a Commit restarts `last` at the new rmsn0 without a step; the count starts at the setup's rmsn0. A
+// process without the log keeps nothing (the calls return at once). Wiring (integration): G7's hold body calls
+// gdakiRsExecObserve with the watch's rmsn, gdakiTsExecuted with every rmsn it reads, gdakiTsBaseline calls
+// gdakiRsExecRebase with the rmsn0 it sets; all three are a hard gate of the integration (a missing one gives a wrong X,
+// hence a wrong budget, silently). helper, or the application thread before the helper starts (the spare's handshake):
+// the reads must be folded in the order they were taken (the watch folds under opMu, as gdakiRsExecRead does). On the
+// spare, a Rebase after its QPs connect sets the connected QPs' MSN.
 static void gdakiRsExecObserve(struct gdakiRecHost* r, int qpIdx, uint32_t rmsn);
 static void gdakiRsExecRebase(struct gdakiRecHost* r, int qpIdx, uint32_t rmsn0);
-// helper: one QUERY_QP per QP to `peer` now (outside the firmware guard, as the watch), folded in: P at a pause
-// (9.4 step 2), X at a hold start after 2ERR and again before the restore round's Commit (9.3 step 1).
+// helper: the QP's count can no longer be trusted (a read was lost, e.g. the Baseline QUERY_QP after a Commit failed):
+// from then on gdakiRsExecRead refuses for its peer, so that peer is never restored on a wrong count (fallback). It is
+// permanent and reaches both ranks of the QP: this rank's checkpoints (whose drain reads every peer) and the peer's (whose
+// pause this rank answers BUSY) no longer become stable, and each keeps its last stable one until its log toward the other
+// is DISARMed.
+static void gdakiRsExecInvalidate(struct gdakiRecHost* r, int qpIdx);
+// helper: one QUERY_QP per QP to `peer` now, folded in (P at a pause, 9.4 step 2; X at a hold start after 2ERR and again
+// before the restore round's Commit, 9.3 step 1). It takes opMu as the watch's QUERY_QP does and folds under it (the
+// caller must not hold it); outside the firmware guard. ncclInvalidUsage when a QP's count was invalidated.
 static ncclResult_t gdakiRsExecRead(struct gdakiRecHost* r, int peer, uint64_t* cum, int* nqp);
-// helper (the spare, before its replay): its responder counts toward `peer` start at the survivor's M read at the hold
-// start (every old WQE counts as executed).
+// app (the spare's import): its responder count of the QP starts at the survivor's M read at the hold start (every old
+// WQE counts as executed).
 static void gdakiRsExecSetBase(struct gdakiRecHost* r, int qpIdx, uint64_t cum);
-// helper (the spare, before its replay): per QP to `peer`, suppress = X - P and msgs = X (9.6), over the NIC; refused
-// when X < P for a QP.
+// app (before the spare's helper and kernels start): per QP to `peer`, msgs = X and suppress = X - P, written with CUDA
+// copies on the log state's stream and read back; refused when X < P for a QP. Each such QP gets one suppress line
+// (below). The import writes the same values itself for every survivor (it has the budgets from its plan).
 static ncclResult_t gdakiRsSuppressSet(struct gdakiRecHost* r, int peer, const uint64_t* x, const uint64_t* p, int nqp,
                                        char* why, size_t whyLen);
+// helper: per QP to `peer`, 1 when a get was refused under a suppress budget (the spare's rule: fall back; read once the
+// QP's gate count is 0).
+static ncclResult_t gdakiRsLogReadGetRefused(struct gdakiRecHost* r, int peer, uint64_t* refused, int* nqp);
 // helper (a survivor's restore round, after ncclGinRecoverPrepare): every WQE of the ending epoch counts as executed:
-// plans with U = S and n = 0 for gdakiTsRepostApply (RL8), with the checks gdakiTsRepostPlanAll makes first.
+// plans with U = S and n = 0 for gdakiTsRepostApply (RL8), after the checks gdakiTsRepostPlanAll makes first.
 static ncclResult_t gdakiRsPlanAllExecuted(struct gdakiRecHost* r, int peer, std::vector<struct gdakiTsRepostPlan>& plans,
                                            const char** why);
 // The log export on the data socket (survivor -> the restored rank's spare), after REJOIN: a header, then per entry the
-// entry and, for a put with data, its source bytes as read now, then a trailer with the verdict. The receiver applies
-// nothing unless the trailer says OK.
+// entry and, for a put with data, its source bytes as read now, then a trailer with the verdict. The receiver reads the
+// trailer first and applies nothing unless it says OK.
 #define GDAKI_RS_LOGX_MAGIC 0x4c535247u  // "GRSL"
 struct gdakiRsLogXHdr {
   uint32_t magic, version;   // GDAKI_RS_LOGX_MAGIC, 1
   int32_t from, to;          // the survivor's rank, the restored rank
   uint32_t incarnation, nqp; // the restored rank's new incarnation; QPs of the survivor to it (GIN-context order)
   uint64_t nonce;            // the GIN context's nonce
-  uint64_t cut, head;        // positions: the restored rank's stable cut on this survivor's ring, the head at the hold
+  uint64_t ckpt;             // the checkpoint (its step) the spare restores from: the cut is this rank's pause of it
+  uint64_t cut, head;        // positions: the restored rank's cut on this survivor's ring, the head at the hold
   uint64_t nEntries;         // entries that follow
   uint64_t x[NCCL_GIN_RECOVERY_MAX_QPS];  // X per QP: this survivor's cumulative executed count of the restored rank's
                                           // messages (responder side), after the hold start's 2ERR
@@ -216,27 +233,43 @@ struct gdakiRsLogXEnd {
   uint32_t magic, ok;        // GDAKI_RS_LOGX_MAGIC; 1: every source read and every checksum matched
   char why[120];             // else why (e.g. "source buffer changed")
 };
-// helper (survivor): writes the export through `put` (bytes in order; false: the socket failed). Each put's source is
-// read over the NIC copy path under the window registry's lock after checking that the window is still registered;
-// with a checksum the data is counted again and a mismatch ends the export with ok = 0 and "source buffer changed".
-static ncclResult_t gdakiRsLogExport(struct gdakiRecHost* r, int peer, uint64_t cut, uint64_t head, uint32_t incarnation,
-                                     const uint64_t* x, const uint64_t* m, int nqp,
+// helper (survivor): writes the export through `put` (bytes in order; false: the stream failed). `ckpt` is the checkpoint
+// the spare asked for (it goes into the header; the import checks it against the image), `cut` the head of this rank's
+// pause of that checkpoint toward the peer (gdakiRsLogPauseRead; at or above the kept cut); `head`, x and m are read at
+// the hold start. Refused before anything is written when the log is not whole since `cut` (gdakiRsLogCollect's rule) or when
+// the request messages of its entries per QP differ from m minus M at that pause (kept per QP from the pause on, at most
+// 1024 pauses). Each put's source is read over the NIC copy path, a chunk of the staging buffer at a time, under the
+// window registry's lock with its window still registered; with a checksum the data is counted again. Returns ncclSuccess
+// for a whole OK stream; ncclInvalidUsage (why) when refused before the stream or when the stream ended with ok = 0
+// ("source buffer changed", a source window gone); ncclSystemError when a read over the NIC copy path or `put` failed.
+static ncclResult_t gdakiRsLogExport(struct gdakiRecHost* r, int peer, uint64_t ckpt, uint64_t cut, uint64_t head,
+                                     uint32_t incarnation, const uint64_t* x, const uint64_t* m, int nqp,
                                      bool (*put)(void* arg, const void* p, size_t n), void* arg, char* why,
                                      size_t whyLen);
 // The spare's import (app thread: the spare's ncclGinRestoreResume, after its image is written and before its kernels
-// and its helper start; CUDA calls are allowed there). exports[q]: the bytes survivor q sent in its STATE (the host
-// branch's gdakiCkptSpareData::exports, kept unparsed; empty for this rank); peerP, nPeers: the survivors' P per QP at
-// the checkpoint the spare restores from (gdakiCkptSpareData::hdr[0].peerP and nPeers, impl/rs_ckpt_api.h). Every export
-// is parsed and checked first (to = this rank, the incarnation, this context's nonce, its verdict OK, a P for its rank,
-// X >= P per QP); then the entries are applied to this process's windows and signal table in a fixed order (by survivor
-// rank, then position) and per QP to each survivor: suppress = X - P, msgs = X, the responder count's base = M. Refused
-// with nothing applied when a check fails; refused part way (the restore falls back) when a copy fails.
-// One WARN line per QP with a budget when the spare's replay has used it (or at its context's end): "GIN/RS: rank R:
-// suppress peer=P qp=Q budget=B suppressed=S left=L" (B = X - P, S = B - L).
+// and its helper start). exports[q]: the bytes survivor q sent in its STATE (the host branch's
+// gdakiCkptSpareData::exports, kept unparsed; empty for this rank and for a rank with no GIN QP to it); peerP, nPeers: the
+// survivors' P per QP at the checkpoint the spare restores from (gdakiCkptSpareData::hdr[0].peerP and nPeers,
+// impl/rs_ckpt_api.h); ckpt: that checkpoint (hdr[0].ckpt). Every export is parsed and checked (one from every rank with
+// QPs to this rank and from no other; to = this rank, the checkpoint, the incarnation, this context's nonce, its trailer
+// OK, nqp, a P for its rank, X >= P per QP, every target inside this process's windows or signal table, no put over a
+// signal word). Before any device access it waits for the context's device (cudaDeviceSynchronize: the image's copies have
+// landed). Then, with the window registry's lock held, CUDA copies on the log state's stream apply the entries (by
+// survivor rank, then position; signal additions summed per target), and per QP to each survivor: msgs = X, suppress =
+// X - P, the responder count's base = M. Refused with nothing applied when a check fails; refused part way (the restore
+// falls back) when a copy fails.
+// Precondition, OPEN (review of work package 9, B1; a decision of the main session with the spare branch): no survivor
+// may have published toward this process before the import. A signal addition is a host read-add-write; a survivor's
+// RDMA atomic landing in between would be lost (a wait that never ends, not a fallback). The spare driver's
+// one-survivor-at-a-time order (impl/rs_spare_api.h) breaks it as written: either every survivor's STATE comes, and the
+// import runs, before the first publish, or the additions become NIC atomics (fetch-and-add over the loopback QP).
+// The suppress line, WARN, one per QP whose budget the import set (B = 0 included), once the spare's replay used the budget
+// (from gdakiRsLogPoll) or at its context's end: "GIN/RS: rank R: suppress peer=P qp=Q budget=B suppressed=S left=L"
+// (Q: the side table's QP index, context x nranks + peer; B = X - P, S = B - L).
 struct gdakiCkptPeerP;  // impl/rs_ckpt_api.h (host branch)
 static ncclResult_t gdakiRsSpareImport(struct gdakiRecHost* r, const struct gdakiCkptPeerP* peerP, uint32_t nPeers,
-                                       const std::vector<std::vector<uint8_t>>& exports, uint32_t incarnation,
-                                       char* why, size_t whyLen);
+                                       const std::vector<std::vector<uint8_t>>& exports, uint64_t ckpt,
+                                       uint32_t incarnation, char* why, size_t whyLen);
 // ---- gin-restore (dev): log API (end) ----
 
 #endif
