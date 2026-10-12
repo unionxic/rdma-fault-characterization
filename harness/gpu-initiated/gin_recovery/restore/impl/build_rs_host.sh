@@ -8,9 +8,11 @@
 #          of this branch's base commit, md5 922b2859), copy agent_rs/{nccl-src,build,build-rsp} to agent_rs_host/ (mtimes
 #          kept) and rewrite the absolute paths in the dependency files and device manifests.
 #   rs, rsp, unit, info   build_rs.sh's stages on agent_rs_host (RSOUT, RSPOUT as there; a used folder is refused).
-#   unith  the host branch's CPU unit test: the two marked regions of the working tree's gin_host_gdaki.cc ("gin-restore:
-#          pure functions" and "gin-restore hold: pure functions") are cut out and compiled with rs_unit_host.cc (g++, ASan,
-#          UBSan; no NCCL, no CUDA, no network) -> agent_rs_host/out/unith/rs_unit_host, then run.
+#   unith  the host branch's CPU unit test: the three marked regions of the working tree's gin_host_gdaki.cc ("gin-restore:
+#          pure functions", "gin-restore hold: pure functions", "gin-restore ckpt: pure functions") are cut out and compiled
+#          with rs_unit_host.cc (g++, ASan, UBSan; no NCCL, no CUDA, no network) -> agent_rs_host/out/unith/rs_unit_host,
+#          then run. First: the shared text of rs_hold_api.h and of rs_ckpt_api.h is the host file's (the first and the
+#          second fenced block), byte for byte.
 #   diff   make_diff_rs.sh on agent_rs_host: rs_layer_host.diff (the whole layer over hk) and its re-apply checks.
 # All compiles run at nice 19 and idle I/O priority (other studies use this node).
 set -euo pipefail
@@ -63,16 +65,25 @@ unith() {
     "$src" > "$o/rs_pure.inc"
   awk '/^\/\/ ---- gin-restore hold: pure functions \(begin/{on=1} on{print} /^\/\/ ---- gin-restore hold: pure functions \(end/{on=0}' \
     "$src" > "$o/rs_hold_pure.inc"
+  awk '/^\/\/ ---- gin-restore ckpt: pure functions \(begin/{on=1} on{print} /^\/\/ ---- gin-restore ckpt: pure functions \(end/{on=0}' \
+    "$src" > "$o/rs_ckpt_pure.inc"
   [ -s "$o/rs_pure.inc" ] || { echo "no pure-function region in $HOSTF" >&2; exit 1; }
   [ -s "$o/rs_hold_pure.inc" ] || { echo "no hold pure-function region in $HOSTF" >&2; exit 1; }
+  [ -s "$o/rs_ckpt_pure.inc" ] || { echo "no checkpoint pure-function region in $HOSTF" >&2; exit 1; }
   grep -qxF 'enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };' "$src" || { echo "hk's policy enum changed" >&2; exit 1; }
-  # rs_hold_api.h's shared text is in the host file verbatim
-  local fence='/^\/\/ ---- shared text \(begin\) ----$/{on=1} on{print} /^\/\/ ---- shared text \(end\) ----$/{on=0}'
-  awk "$fence" "$D/rs_hold_api.h" > "$o/shared_api.txt"
-  awk "$fence" "$src" > "$o/shared_src.txt"
+  # rs_hold_api.h's and rs_ckpt_api.h's shared text are in the host file verbatim (its first and second fenced block)
+  local fence='/^\/\/ ---- shared text \(begin\) ----$/{on=1; k++} on && k==N{print} /^\/\/ ---- shared text \(end\) ----$/{on=0}'
+  awk -v N=1 "$fence" "$D/rs_hold_api.h" > "$o/shared_api.txt"
+  awk -v N=1 "$fence" "$src" > "$o/shared_src.txt"
+  awk -v N=1 "$fence" "$D/rs_ckpt_api.h" > "$o/shared_ckpt_api.txt"
+  awk -v N=2 "$fence" "$src" > "$o/shared_ckpt_src.txt"
   [ -s "$o/shared_api.txt" ] && cmp -s "$o/shared_api.txt" "$o/shared_src.txt" ||
     { echo "rs_hold_api.h's shared text differs from the host file's" >&2; exit 1; }
+  [ -s "$o/shared_ckpt_api.txt" ] && cmp -s "$o/shared_ckpt_api.txt" "$o/shared_ckpt_src.txt" ||
+    { echo "rs_ckpt_api.h's shared text differs from the host file's" >&2; exit 1; }
+  [ "$(grep -c '^// ---- shared text (begin) ----$' "$src")" = 2 ] || { echo "the host file has not two shared-text blocks" >&2; exit 1; }
   echo "unith: rs_hold_api.h shared text = host file ($(wc -l < "$o/shared_api.txt") lines)"
+  echo "unith: rs_ckpt_api.h shared text = host file ($(wc -l < "$o/shared_ckpt_api.txt") lines)"
   nice -n 19 g++ -std=c++17 -O1 -g -Wall -Wextra -Werror -pthread -fsanitize=address,undefined -I"$o" -I"$D" \
     -I"$W/nccl-src/src/include" "$D/rs_unit_host.cc" -o "$o/rs_unit_host"
   "$o/rs_unit_host"
