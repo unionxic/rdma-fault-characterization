@@ -1,10 +1,25 @@
-// rs_log_api.h - gin-restore, dev branch (impl/PARALLEL.md: work packages 4 again, 6 and 9; EXPERIMENT.md 9.4, 9.5, 9.6,
-// 9.11.3 M2): the send-side log as one ring per rank, and the host functions the checkpoint (host branch, work package 5)
-// and the restore round (integration) call.
+// rs_log_api.h v2 - gin-mirror (impl/PARALLEL.md; EXPERIMENT.md 9.4, 9.5): gin-restore's rs_log_api.h (copied unchanged
+// in commit 6cde95d6, md5 bd2d0233) with the mirror's changes. What v2 changes, in short:
+//   - the side table's layout is impl/rs_mirror_api.h's (magic "RSS4", the mirror fields at 40..63, miUse in the QP
+//     entry, the cell array between the QP entries and the ring; the MIRROR flag 0x20); the layout notes below follow
+//     it;
+//   - every per-peer function of the block works on the "user only" QP set (gdakiRsQpsOfPeer narrowed; the mirror QP is
+//     read on its own, impl/rs_mirror_api.h);
+//   - the export v2 (mirror on): entries with their step and segment, no source bytes, the mirror QP's X and M, the
+//     survivor's own rkey list after the trailer; the step of an entry (gdakiRsStepOfPos);
+//   - the step-aligned import (mirror on) and the loopback pair's lock;
+//   - with the mirror off every function and format of v1 stays as it was (the export stays version 1).
+// Line numbers NNNN are lines of ../../restore/impl/rs_layer.diff (md5 f005bb67). The rest of this head comment is
+// v1's.
+//
+// v1: rs_log_api.h - gin-restore, dev branch (impl/PARALLEL.md: work packages 4 again, 6 and 9; EXPERIMENT.md 9.4, 9.5,
+// 9.6, 9.11.3 M2): the send-side log as one ring per rank, and the host functions the checkpoint (host branch, work
+// package 5) and the restore round (integration) call.
 //
 // Binding interface between branches. The block between the two "gin-restore (dev): log API" markers below is in
 // src/transport/net_ib/gdaki/gin_host_gdaki.cc byte for byte (since work package 6; the dev branch's region, early in the
-// file so that every later region sees it); build_rs_dev.sh `api` checks that the two are equal. The definitions are static functions
+// file so that every later region sees it); build_mi.sh `api` checks that the two are equal (v1: build_rs_dev.sh). The
+// definitions are static functions
 // of the same file, in the dev branch's regions fenced "gin-restore (dev): log, suppress and replay" (host) and
 // "gin-restore (dev): log, suppress and replay, pure" (no NCCL, unit-tested on the CPU). This file is not included
 // anywhere in the build; outside the block it only adds what a standalone syntax check needs.
@@ -18,8 +33,10 @@
 // ncclGinRestoreResume succeeds and then holds the side table's address (one synchronous write; in the log measurement
 // mode, a test mode, at the context's creation). The side table, its MRs and the strict window MRs are set up at creation.
 //   struct ncclGinRsSide (128 B, offset 0)
-//      0 magic u32 "RSS3" | 4 nqp u32 | 8 fence u64 (the drain check's READ target) | 16 csum u32 (checksum scheme) |
-//     20 nEntries u32 (ring entries, a power of two; 0: no ring) | 24 entries ptr (the ring) | 32..63 reserved
+//      0 magic u32 "RSS4" (v1: "RSS3") | 4 nqp u32 | 8 fence u64 (the drain check's READ target) | 16 csum u32
+//     (checksum scheme) | 20 nEntries u32 (ring entries, a power of two; 0: no ring) | 24 entries ptr (the ring) |
+//     32 pairTest u64 (the loopback pair's self-test word) | 40 miOn u32 | 44 miCtx u32 | 48 miCellsOff u64 |
+//     56 miNCells u32 | 60 reserved (v1: 32..63 reserved; impl/rs_mirror_api.h)
 //     64 head u64   positions reserved so far (device: CAS, only while the reservation fits; so every position below
 //                   head is written once its post leaves the gate, and an overflow takes no position)
 //     72 tail u64   first position kept (host, over the NIC; the device reads it to see the room left)
@@ -53,6 +70,12 @@
 //   first messages back), NOBASE 0x04 (no source address: no checksum), checksum scheme in bits 3..4 (of the 6 flag
 //   bits). The request messages of an entry follow from kind, flags and bytes (ncclGinRsEntryMsgs; 9.6's units).
 // Per rank: pages(256-aligned(128 + 128 x nqp) + 64 x nEntries) bytes (4 ranks, 4 contexts, 4 096 entries: 266 240 B).
+// v2 (gin-mirror): with the mirror nqp counts the mirror context's QPs too ((user contexts + 1) x nranks; the mirror QP
+// to peer b is QP miCtx x nranks + b, entry field 48 miUse), and nranks cells of 64 B (struct ncclGinMiCell) follow the
+// QP entries at miCellsOff = 128 + 128 x nqp; the ring then starts at 256-aligned(miCellsOff + 64 x nranks). The mirror
+// QPs never log (logOn stays 0; the setup leaves them out of rsLogged) and their gets and overflows stay 0. A MIRROR
+// entry (flag 0x20, kind 1, bytes > 0) has, in place of `csum`, its data's offset in the sender's lane in 64-byte
+// units; the mirror and a checksum scheme are never on together (Resume condition 36).
 //
 // ---- build-time opt-in (user decisions 2026-10-12, (나), then the direction that removed the trap) ----
 // The device hold path exists only in programs compiled with -DNCCL_GIN_RESTORE_DEVICE (every translation unit of one
@@ -67,9 +90,10 @@
 //
 // ---- helper-socket message types ----
 // hk uses 1..10, the host branch 11..20 (rs_hold_api.h), the spare branch 32..47 (rs_spare_api.h); this branch 21..31
-// (the split the host branch published; 48..63 are free). This branch uses none so far: the log export goes over the data
-// socket (format below), which work package 5's data server carries. A record of 21..31 that a wait parks
-// (gdakiHoldDefer) is taken by this branch's code with gdakiHoldTakeMsg.
+// (the split the host branch published). gin-mirror: 38 INJECTED (rs_hold_api.h v2), 48 MIRROR_SETUP, 49 CKPT_PULL
+// (rs_mirror_api.h), 50 STORE_REQ, 51 STORE_ACK (rs_store_api.h); 52..63 are free. This branch uses none so far: the
+// log export goes over the data socket (format below), which work package 5's data server carries. A record of 21..31
+// that a wait parks (gdakiHoldDefer) is taken by this branch's code with gdakiHoldTakeMsg.
 #ifndef GIN_RESTORE_RS_LOG_API_H_
 #define GIN_RESTORE_RS_LOG_API_H_
 
@@ -80,8 +104,17 @@
 #ifndef NCCL_GIN_RECOVERY_MAX_QPS
 #define NCCL_GIN_RECOVERY_MAX_QPS 64  // nccl.h.in (the host file has it)
 #endif
+#ifndef NCCL_GIN_RS_LOG_PUT  // v2: the device-host common header has the entry (diff 1216-1250); a standalone check needs it
+struct ncclGinRsLogEntry {
+  uint32_t pos, qpKf, csum, sigWin, dstWin, srcWin;
+  uint64_t dstOff, bytes, src, sigOff, sigVal;
+};
+#endif
 
 // ---- gin-restore (dev): log API (begin; impl/rs_log_api.h, byte for byte) ----
+// gin-mirror (v2): every function below that takes a peer works on the QPs of the user contexts to it ("user only",
+// gdakiRsQpsOfPeer; impl/rs_mirror_api.h); the mirror QP is read on its own (gdakiMiExecReadMirror,
+// gdakiMiReadMsgsMirror).
 // Positions are 64-bit counts of entries reserved on this rank's ring before the entry (the ring's head when it was
 // reserved). Threads: "helper" = the context's helper thread only (the NIC copy path has one user at a time); "app" = the
 // application thread (CUDA calls allowed); "any" = any thread. A process that does not ask for the restore has no ring:
@@ -273,6 +306,9 @@ static ncclResult_t gdakiRsLogExport(struct gdakiRecHost* r, int peer, uint64_t 
 // 3 (single assignment from the checkpoint to the end of the replay) a survivor's new put never targets a location a
 // logged put targets.
 // Precondition: the pair has no other user during the import (the spare's application thread, before its helper starts).
+// gin-mirror (v2): with the mirror the pair has two users, the step-aligned import (application thread, also after the
+// helper started) and a buddy's drain fence (helper: an 8-byte READ of its pool); gdakiRsAtomicOp takes the pair's lock
+// (one request at a time, completed under the lock), so neither needs more care.
 // The suppress line, WARN, one per QP whose budget the import set (B = 0 included), once the spare's replay used the budget
 // (from gdakiRsLogPoll) or at its context's end: "GIN/RS: rank R: suppress peer=P qp=Q budget=B suppressed=S left=L"
 // (Q: the side table's QP index, context x nranks + peer; B = X - P, S = B - L).
@@ -280,6 +316,83 @@ struct gdakiCkptPeerP;  // impl/rs_ckpt_api.h (host branch)
 static ncclResult_t gdakiRsSpareImport(struct gdakiRecHost* r, const struct gdakiCkptPeerP* peerP, uint32_t nPeers,
                                        const std::vector<std::vector<uint8_t>>& exports, uint64_t ckpt,
                                        uint32_t incarnation, char* why, size_t whyLen);
+// ---- gin-mirror (v2): the export v2 and the step of an entry ----
+// With the mirror on a survivor's STATE (impl/rs_ckpt_api.h) carries, inside its counted bytes, in this order:
+//   gdakiRsLogXHdr (version 2; x and m: the user QPs only) | gdakiRsLogXHdr2 | nEntries x gdakiRsLogXEnt2 (no source
+//   bytes ever) | gdakiRsLogXEnd | gdakiRsRkeysHdr + count x gdakiRsRkeyEntry (impl/rs_spare_api.h: the survivor's own
+//   keys, windows, signal and counter tables, and its pool as GDAKI_MI_RKEY_POOL; rank = the survivor, incarnation =
+//   its own).
+// The exporter refuses before the stream (as v1) when: a put with data (kind 1, bytes > 0) toward the restored rank
+// after the cut has no MIRROR flag; a MIRROR entry's segment is 0 (below the oldest live segment); a live segment after
+// the cut had a break; an entry's step is unknown (no (step, head) pair covers it). The importer checks the same again.
+#define GDAKI_RS_LOGX_VERSION_MI 2u
+#define GDAKI_RS_LOGX_F_MIRROR 0x1u
+#define GDAKI_RS_STEP_UNKNOWN (~0ULL)
+struct gdakiRsLogXHdr2 {
+  uint32_t flags;          // GDAKI_RS_LOGX_F_MIRROR
+  uint32_t mirValid;       // 1: mirX and mirM hold (the survivor's mirror QP to the restored rank was in use, its count
+                           // valid at the hold start); 0: the spare leaves its mirror QP to this survivor unused
+  uint64_t mirX;           // the mirror QP's X: the survivor's executed count of the restored rank's mirror WRITEs
+  uint64_t mirM;           // the mirror QP's M: mirror WRITEs the survivor posted to the restored rank (its msgs)
+  uint64_t lastStep;       // the survivor's last ncclGinRestoreStep before the hold (entries after it: lastStep + 1)
+  uint64_t nMirror;        // MIRROR entries
+  uint64_t mirrorBytes;    // their data bytes
+  uint64_t reserved[2];
+};
+struct gdakiRsLogXEnt2 {
+  struct ncclGinRsLogEntry e;  // as logged
+  uint64_t step;               // the sender's step the entry belongs to (gdakiRsStepOfPos)
+  uint64_t seg;                // MIRROR: the sender's segment number for the restored rank (gdakiMiSegOfPos); else 0
+};
+static_assert(sizeof(struct gdakiRsLogXHdr2) == 64 && sizeof(struct gdakiRsLogXEnt2) == 80, "the export v2 records");
+// The step of the entry at ring position `pos`: the first recorded Step(t) whose head (read after step t's kernels and
+// their last flush) is above pos; lastStep + 1 when pos is at or above every head (an entry after the last Step);
+// GDAKI_RS_STEP_UNKNOWN with no pair. steps[] and heads[] increasing (the checkpoint's step log, kept from the oldest
+// live cut on).
+static inline uint64_t gdakiRsStepOfPos(const uint64_t* steps, const uint64_t* heads, int n, uint64_t pos) {
+  if (n <= 0) return GDAKI_RS_STEP_UNKNOWN;
+  for (int i = 0; i < n; i++)
+    if (pos < heads[i]) return steps[i];
+  return steps[n - 1] + 1;
+}
 // ---- gin-restore (dev): log API (end) ----
+
+// ---- gin-mirror (v2): entry points (restated declarations, not in the block; owner in brackets) ----
+#ifndef GDAKI_MI_API_NO_ENTRY_DECLS
+struct gdakiMiFetched;  // impl/rs_store_api.h
+// [host] application thread or helper: a copy of the (step, head) pairs of the checkpoint's step log (ck->steps, under
+// ck->mu) whose head is above `from`, increasing, and the last step recorded (the export v2's step tags).
+static void gdakiCkptStepPairs(struct gdakiRecHost* r, uint64_t from, std::vector<uint64_t>* steps,
+                               std::vector<uint64_t>* heads, uint64_t* lastStep);
+// [spare] helper (survivor): the export v2. As gdakiRsLogExport (x, m: the user QPs at the hold start) plus the mirror
+// QP's counts (from gdakiMiHoldStartRead), the step pairs (gdakiCkptStepPairs) and d's segment view (gdakiMiSegViewOf);
+// the refusals above. Writes the whole stream through `put` (the rkey list included).
+static ncclResult_t gdakiMiLogExport(struct gdakiRecHost* r, int peer, uint64_t ckpt, uint64_t cut, uint64_t head,
+                                     uint32_t incarnation, const uint64_t* x, const uint64_t* m, int nqp,
+                                     bool (*put)(void* arg, const void* p, size_t n), void* arg, char* why,
+                                     size_t whyLen);
+// [dev] application thread (the spare's Resume, in place of gdakiRsSpareImport's call at 11152-11157 when the mirror is
+// on): every check of gdakiRsSpareImport on the v2 exports, plus: each export is version 2 with its rkey list; every
+// entry's step is above ckpt; every MIRROR entry's (sender, segment, lane offset, bytes) lies in `fetched`
+// (gdakiMiFetchedAt); no put with data without MIRROR. Then, under the window registry's lock: the rkey lists into this
+// rank's tables (window rkey tables, the signal and counter tables' rkey tables, device and host copies; the cells'
+// pool rkeys with valid 0); per user QP msgs = X, suppress = X - P, the responder base M; per mirror QP msgs = X,
+// suppress 0, base M (miUse 0 when the survivor's mirValid is 0); then step ckpt + 1's inputs (data as CUDA copies from
+// the FETCH buffer, signals as NIC fetch-and-add on the pair), waited for. The later steps' inputs stay queued by step.
+// Refused with nothing applied when a check fails (the restore falls back as in gin-restore).
+static ncclResult_t gdakiMiImportPrepare(struct gdakiRecHost* r, const struct gdakiCkptPeerP* peerP, uint32_t nPeers,
+                                         const std::vector<std::vector<uint8_t>>& exports, uint64_t ckpt,
+                                         uint32_t incarnation, const struct gdakiMiFetched& fetched, char* why,
+                                         size_t whyLen);
+// [dev] application thread, the spare's ncclGinRestoreStep(t) (first thing after its blob check, 9370, before the early
+// return at 9372): injects step t + 1's inputs and waits for them; after the last queued step it calls
+// gdakiMiInjectedReady(r, t + 1) (impl/rs_hold_api.h v2; also from gdakiMiImportPrepare when step ckpt + 1 is the only
+// one). Nothing when nothing is queued. A failure ends the spare as gin-restore's no-BYE exit (its helper sockets
+// closed with a FIN; ncclGinRestoreStep returns ncclSystemError): the survivors, still PUBLISHED, fall back.
+static ncclResult_t gdakiMiImportStep(struct gdakiRecHost* r, uint64_t step, char* why, size_t whyLen);
+// [dev] any thread: inputs are still queued. gdakiCkptSuppressLeft (8096-8107) ORs it: BUSY_SUPPRESS to every pause and
+// no own checkpoint until the last step is injected.
+static bool gdakiMiImportLeft(struct gdakiRecHost* r);
+#endif  // GDAKI_MI_API_NO_ENTRY_DECLS
 
 #endif

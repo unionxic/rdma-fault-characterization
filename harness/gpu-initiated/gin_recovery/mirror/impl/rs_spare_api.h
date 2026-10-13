@@ -1,4 +1,35 @@
-// rs_spare_api.h - gin-restore, work package 8 (spare branch, EXPERIMENT.md 9.3, 9.10.7, 9.11.1 D4, 9.11.3 M4):
+// rs_spare_api.h v2 - gin-mirror (impl/PARALLEL.md; EXPERIMENT.md 9.4 "활성화 덩어리와 끝점 갱신", the include/exclude
+// table): gin-restore's rs_spare_api.h (copied unchanged in commit 6cde95d6, md5 9540248d) with the mirror's changes.
+// Like v1 it restates declarations (it is not pasted); a definition that differs is a bug of the spare branch.
+// What v2 changes (mirror on unless said; with the mirror off every rule of v1 holds):
+//   - QP lists. REJOIN, TOKEN and READY carry the QPs to the peer "with mirror" (impl/rs_mirror_api.h: the user QPs in
+//     GIN-context order, then the mirror QP last). The mirror QP's number always comes from TOKEN and is left out of
+//     every QPN comparison (the transcript has none): the survivor's REJOIN check compares only the user QPs' numbers.
+//   - The endpoint update (user decision 2026-10-13, the stale endpoints of a second restore): the activation v2's
+//     address table (impl/rs_store_api.h gdakiMiActAddr) overwrites the spare's pe.addr of every survivor before its
+//     first dial (REJOIN, re-dials). A survivor whose incarnation in that table is above 0 was itself restored: the
+//     spare connects to it with TOKEN's QPNs (v1 compares TOKEN's with the transcript's), and that survivor's REJOIN
+//     check compares QPNs only while its own incarnation is 0. For a survivor of incarnation 0 every v1 check stays;
+//     the new comparisons (the table's address, STATE's rkeys against the replayed values) only WARN on a difference
+//     and keep the recorded value. Without the mirror there is no table: the recorded addresses, as v1 (a second
+//     restore of a mirror-off job keeps gin-restore's limit).
+//   - The rkey lists carry the pool (kind 4 = GDAKI_MI_RKEY_POOL, id 0, impl/rs_mirror_api.h): in the spare's list to a
+//     survivor (its new pool) and in each survivor's list to the spare inside STATE (impl/rs_log_api.h v2). The spare
+//     writes the survivors' lists into its tables in its import (gdakiMiImportPrepare); a survivor's gdakiRsSwapRkeys,
+//     on a pool entry, calls gdakiMiPoolRekey(r, e, rkey) for every ward e of the restored rank (cells invalid with the
+//     new pool rkey; before the publish, which is after the swap: 7398-7404).
+//   - The activation v2 (impl/rs_store_api.h): gdakiRsActivate with version GDAKI_RS_ACT_VERSION_MI and the blob; after
+//     ACCEPTED the FETCH endpoint exchange and READY on the same connection. The spare's driver reads its image and its
+//     segments with RDMA READ right after READY, before its first REJOIN (gdakiMiSpareFetch); its dataFd callbacks then
+//     only carry STATE (no TCP FETCH).
+//   - INJECTED (38, in this branch's range) is defined in impl/rs_hold_api.h v2 (GDAKI_TS_RS_INJECTED): the revived
+//     rank's helper sends it (host branch), after the import's last step (dev branch).
+//   - The spare's own mirror: its pool and its FETCH buffer are registered at its init replay (not in the transcript);
+//     its cells start invalid and its segment numbers at 1 (impl/rs_mirror_api.h); it never sends MIRROR_SETUP.
+//   - The survivor side, in the hold start: gdakiMiHoldStartRead (HOLDING's payload, the mirror QP's counts); in the
+//     restore round: gdakiMiCommitCheck; both declared in impl/rs_mirror_api.h, owned by this branch.
+//
+// v1: rs_spare_api.h - gin-restore, work package 8 (spare branch, EXPERIMENT.md 9.3, 9.10.7, 9.11.1 D4, 9.11.3 M4):
 // what the hold state machine (host branch, work package 7) calls on the survivor side, the messages the spare process
 // and the survivors exchange, and what this branch reads from the host branch (impl/rs_hold_api.h).
 //
@@ -46,7 +77,7 @@
 
 // ---- messages on the helper socket (struct gdakiTsMsg, fixed size, magic GDAKI_TS_MAGIC) ----
 // hk uses types 1..10. This branch uses 32..37; the other branches must not use 32..47 (host and dev: please take 48 and
-// above, or below 32 above 10).
+// above, or below 32 above 10). v2: 38 is gin-mirror's INJECTED (impl/rs_hold_api.h v2), sent by the revived rank.
 enum {
   GDAKI_TS_RS_REJOIN = 32,      // spare -> survivor: the first record on a new connection to the survivor's listen socket
   GDAKI_TS_RS_REJOIN_ACK = 33,  // survivor -> spare: accepted and installed; round = the connection generation
@@ -130,6 +161,7 @@ static ncclResult_t gdakiRsSwapEndpoint(struct gdakiRecHost* r, int peer, ncclGi
 // format). One entry per window registered on the context's collComm (by its number, ncclGinGdakiMemHandle::rsWinId), the
 // signal table and the counter table.
 enum { GDAKI_RS_RKEY_WINDOW = 1, GDAKI_RS_RKEY_SIGNALS = 2, GDAKI_RS_RKEY_COUNTERS = 3 };
+// v2: kind 4 is the pool (GDAKI_MI_RKEY_POOL, impl/rs_mirror_api.h; id 0, the rank's own pool MR in the GIN PD).
 #define GDAKI_RS_RKEYS_MAGIC 0x4b525347u  // "GSRK"
 #define GDAKI_RS_RKEYS_MAX 4096
 struct gdakiRsRkeyEntry { uint32_t kind, id, rkeyBe, pad; };  // id: the window number (0 for the two tables); big-endian rkey

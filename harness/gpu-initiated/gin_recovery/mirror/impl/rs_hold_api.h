@@ -1,7 +1,30 @@
-// rs_hold_api.h - gin-restore, work package 7 (host branch; EXPERIMENT.md 9.2, 9.10.4, 9.10.5, 9.10.7, 9.11): the hold
-// state machine's interface for the other branches: the per-peer state cell and its read and compare-and-swap helpers, the
-// helper-socket record types this branch adds, the rule every wait follows for the records of the restore, and the entry
-// points the other branches call.
+// rs_hold_api.h v2 - gin-mirror (impl/PARALLEL.md; EXPERIMENT.md 9.4 "게이트를 INJECTED까지 홀수로", "바뀌는 규칙"): gin-restore's
+// rs_hold_api.h (copied unchanged in commit 6cde95d6, md5 534884e3) with the mirror's changes, all inside the shared
+// text: the record INJECTED (38, in the spare range: the restored rank sends it), PUBLISHED's end and deadline with the
+// mirror, HOLDING's mirror flag (its payload is impl/rs_mirror_api.h's), and the host branch's entry points for them.
+// With the mirror off every rule of v1 holds unchanged (no INJECTED is ever sent: RESTORED ends PUBLISHED).
+// The rule with the mirror on, in one paragraph (user decision 2026-10-13, (가)): the survivor's restore round publishes
+// as v1 (lbase, the plan with U = S and n = 0) but leaves the gate epoch of every USER QP to the revived rank odd (the
+// mirror QP's gate is published even; its cells stay invalid). RESTORED is taken (gdakiRsTakeRestored), recorded and
+// applied for its bookkeeping (the incarnation, gdakiCkptPeerReset, the survivor's own DISARM) but moves no state. The
+// revived rank, once its import injected the inputs of its last tagged step, sends INJECTED to every survivor; the
+// survivor then publishes those gates even (a write like the empty round's: the next even epoch, lbase unchanged),
+// moves PUBLISHED or TIMED_OUT_PUBLISHED -> ARMED or OFF of incarnation i + 1 (gdakiHoldRestoredState, as v1 at
+// RESTORED), clears the deadline and heldPeer, and drops the revived rank's closed segments (gdakiMiSegDropClosed).
+// Until INJECTED the PUBLISHED deadline is min(v1's PUBLISHED deadline, D) with D = the hold's device bound
+// (hp.deviceBoundUs: gates first odd + NCCL_GIN_TS_HOLD_MS - share - 1000 ms, 6897), because the device threads parked
+// at those gates are still parked; past it the watcher moves PUBLISHED -> TIMED_OUT_PUBLISHED (state only) and the
+// helper falls back (its decline's 2ERR first releases the parked threads with the error). INJECTED read before the
+// helper's fallback wins over TIMED_OUT_PUBLISHED, as RESTORED does in v1 (Q2). Everything else of PUBLISHED (its QP
+// watch, a fault record's fallback, the stale-record check, RESTORED and FALLBACK crossing, a REQ from the revived
+// rank: NACK and fallback) is v1's, now until INJECTED.
+// Line numbers NNNN are lines of ../../restore/impl/rs_layer.diff (md5 f005bb67). The rest of this head comment is
+// v1's.
+//
+// v1: rs_hold_api.h - gin-restore, work package 7 (host branch; EXPERIMENT.md 9.2, 9.10.4, 9.10.5, 9.10.7, 9.11): the
+// hold state machine's interface for the other branches: the per-peer state cell and its read and compare-and-swap
+// helpers, the helper-socket record types this branch adds, the rule every wait follows for the records of the restore,
+// and the entry points the other branches call.
 //
 // Binding interface between branches (impl/PARALLEL.md). The part between the two "shared text" fences below is also in
 // src/transport/net_ib/gdaki/gin_host_gdaki.cc, verbatim, at the start of the region
@@ -37,7 +60,8 @@
 
 // ---- helper-socket records of the restore (struct gdakiTsMsg, fixed size, magic GDAKI_TS_MAGIC) ----
 // hk uses types 1..10. The restore's records use 11..63: this branch 11..20, the dev branch 21..31 (impl/rs_log_api.h:
-// none used yet), the spare branch 32..47 (impl/rs_spare_api.h: REJOIN 32 .. RESTORED 37); 48..63 are free. The spare's
+// none used yet), the spare branch 32..47 (impl/rs_spare_api.h: REJOIN 32 .. RESTORED 37; gin-mirror: INJECTED 38,
+// below); gin-mirror 48..51 (impl/rs_mirror_api.h, impl/rs_store_api.h); 52..63 are free. The spare's
 // activation is not a helper-socket record (struct gdakiRsActivate on the spare's own port), and the log export, the
 // spare's rkey list and the checkpoint blocks go over the data socket (work package 5), not the helper socket.
 enum : uint32_t {
@@ -56,13 +80,20 @@ enum : uint32_t {
 // p (the rank the record is about), round = the incarnation it concerns (DISARM: the incarnation the sender knows;
 // NOHOLD, HOLDING, FALLBACK: the incarnation that died, i, also after the spare's REJOIN of i + 1 was accepted: every
 // survivor holds i, while gdakiRsPeerInc differs between survivors that accepted the REJOIN and those that did not),
-// pad = flags (none yet), nqp = 0. CKPT_*: round = the checkpoint number; their payload is fixed by work package 5.
+// pad = flags (v2: GDAKI_HOLD_F_MIRROR on HOLDING, impl/rs_mirror_api.h, its payload in executed), nqp = 0. CKPT_*:
+// round = the checkpoint number; their payload is fixed by work package 5 (v2: impl/rs_store_api.h's CKPT_STABLE flag).
 // Incarnations: 0 at setup; a restore of the death of incarnation i brings i + 1 (the spare's gdakiRsPeerInc is i + 1
 // once its REJOIN is accepted).
 // NACK reason 17 (gdakiTsMsg::arg of a NACK): "restoring": the REQ came from a peer this rank holds (9.10.7 Q5; RL20).
 #define GDAKI_TS_NACK_RESTORING 17
 // A record of the restore: types 11..63.
 static inline bool gdakiHoldIsRestoreRecord(uint32_t type) { return type >= 11u && type <= 63u; }
+// v2 (gin-mirror): INJECTED, revived rank -> every survivor (the spare range's 38; sent by the revived rank's helper
+// once gdakiMiInjectedReady was called). Fields: from = the revived rank, nonce, arg = the revived rank, round = the
+// last step whose inputs it injected, pad = its incarnation (i + 1), nqp = 0, executed[0] = GDAKI_RS_WIRE_VERSION,
+// executed[1] = its own incarnation (as the spare's records 32..37). The survivor's state machine takes it with the
+// host branch's types (gdakiHoldDrain's filter), in arrival order after RESTORED.
+#define GDAKI_TS_RS_INJECTED 38u
 
 // The rule for every wait on an installed helper socket (hk's ACK wait, DONE wait, the waits that serve other peers, the
 // idle loop's pump after a kept REQ, and every wait the restore adds): a record of the restore (gdakiHoldIsRestoreRecord)
@@ -79,10 +110,12 @@ static inline bool gdakiHoldIsRestoreRecord(uint32_t type) { return type >= 11u 
 // ARMED        a stable checkpoint of the peer covers it on every rank: its strong death evidence starts a hold
 // HELD         held: the peer's QPs in ERR, gates odd, no word, no async error; waiting for the spare and the restore round
 // COMMITTING   the restore round passed its compare-and-swap and is past the commit point (the watcher leaves it alone)
-// PUBLISHED    published (gates even, QPs RTS with the spare); the spare's RESTORED ends it
+// PUBLISHED    published (gates even, QPs RTS with the spare); the spare's RESTORED ends it. v2, mirror on: the user
+//              QPs' gates stay odd and INJECTED ends it (RESTORED is taken but moves nothing)
 // TIMED_OUT_HELD       the watcher's deadline won from HELD and made the CPU writes (word, async error, blame, degraded);
 //                      the helper declines next (the fallback)
 // TIMED_OUT_PUBLISHED  the deadline won from PUBLISHED (state only); a RESTORED read first still wins, else the fallback
+//                      (v2, mirror on: an INJECTED read first wins)
 // FALLBACK     given up for this incarnation: the peer was declined (PeerDead, GDAKI_UA_PEER_DEAD); never held again
 // CANCELLED    ncclCommAbort, ncclCommRevoke or an aborting shrink ended a hold (ncclCommDestroy's teardown stops the
 //              helper and leaves the state as it is)
@@ -120,6 +153,19 @@ static inline bool gdakiHoldIsHeldState(uint32_t s) {
 // records (G4: absorbed) leave them alone. PUBLISHED and TIMED_OUT_PUBLISHED are watched (their QPs are RTS with the spare).
 static inline bool gdakiHoldIsQuietState(uint32_t s) {
   return s == GDAKI_HOLD_HELD || s == GDAKI_HOLD_COMMITTING || s == GDAKI_HOLD_TIMED_OUT_HELD;
+}
+// v2 (gin-mirror):
+// What a survivor does with INJECTED of `peer`: apply it only in PUBLISHED or TIMED_OUT_PUBLISHED of the death of
+// incarnation inc, when it is for incarnation inc + 1 and RESTORED of that incarnation was taken before it.
+enum { GDAKI_HOLD_INJ_IGNORE = 0, GDAKI_HOLD_INJ_APPLY = 1 };
+static inline int gdakiHoldInjectedAction(uint32_t state, uint32_t inc, uint32_t msgInc, bool restoredTaken) {
+  const bool published = state == GDAKI_HOLD_PUBLISHED || state == GDAKI_HOLD_TIMED_OUT_PUBLISHED;
+  return published && msgInc == inc + 1u && restoredTaken ? GDAKI_HOLD_INJ_APPLY : GDAKI_HOLD_INJ_IGNORE;
+}
+// PUBLISHED's deadline with the mirror, until INJECTED (us, CLOCK_MONOTONIC): v1's (gdakiHoldPublishedDeadlineUs) but
+// never past the hold's device bound (gdakiHoldDeviceBoundUs at the hold start).
+static inline int64_t gdakiHoldInjectWaitDeadlineUs(int64_t publishedDeadlineUs, int64_t deviceBoundUs) {
+  return publishedDeadlineUs < deviceBoundUs ? publishedDeadlineUs : deviceBoundUs;
 }
 
 // One 64-bit word: the state in bits 0..31, the incarnation it concerns in bits 32..63. A hold of incarnation i happens at
@@ -188,8 +234,21 @@ static bool gdakiHoldArm(struct gdakiRecHost* r, int peer, uint32_t inc, uint64_
 // The count of DISARM(peer) this rank has received or made so far (for gdakiHoldArm).
 static uint64_t gdakiHoldDisarmSeq(struct gdakiRecHost* r, int peer);
 // ARMED -> OFF for `peer` on this rank and, with broadcast, DISARM(peer) to every rank (a log overflow, a get toward the
-// peer, a window deregistered, a lost arming condition). A held peer keeps its hold; the DISARM is applied at its RESTORED.
+// peer, a window deregistered, a lost arming condition). A held peer keeps its hold; the DISARM is applied at its RESTORED
+// (v2, mirror on: at its INJECTED).
 static void gdakiHoldDisarm(struct gdakiRecHost* r, int peer, const char* why, bool broadcast);
+// v2 (gin-mirror), the host branch's PUBLISHED and INJECTED package:
+// Any thread (the revived rank's import, impl/rs_log_api.h v2): the inputs of every tagged step up to lastStep are in;
+// the helper sends INJECTED(lastStep) to every survivor at its next step, once per incarnation. Nothing with the mirror
+// off.
+static void gdakiMiInjectedReady(struct gdakiRecHost* r, uint64_t lastStep);
+// Helper: the restore round's publish (gdakiTsRepostApply in gdakiHoldCommitRound, 7403-7404) keeps the gates of the
+// user QPs to `peer` odd (true with the mirror on).
+static bool gdakiMiKeepGatesOdd(struct gdakiRecHost* r, int peer);
+// Helper: an INJECTED record from `peer` (gdakiHoldOnMsg): gdakiHoldInjectedAction, then the even gates, the state
+// move, the deadline and heldPeer cleared, gdakiMiSegDropClosed(peer). A gate write that fails: the decline (as a
+// failed round).
+static void gdakiHoldApplyInjected(struct gdakiRecHost* r, int peer, const struct gdakiTsMsg& m);
 #endif  // GDAKI_HOLD_API_NO_ENTRY_DECLS
 
 #endif  // GIN_RESTORE_RS_HOLD_API_H_
