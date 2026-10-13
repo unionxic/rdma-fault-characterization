@@ -1,0 +1,990 @@
+{
+ "study": "gin-mirror",
+ "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n are the draft counts of section 7, frozen only after the pilot, PILOT_MI.md). Input of hold_mi.sh (what to run) and score.py (planned scored trials per cell@build). kind: rs -> run_mi.sh (the 4-rank workload gin_mi), reg -> ../../../remaining/run_mr_hr.sh (gin-remaining's 4-rank runner). build: mi (mirror research, ~/rs-bundle/<RS_SET>/lib/mi), mip (mirror production, the cost cells). env: the cell's runner variables (each value one argument). G1 holds the 4 KiB restore and control cells, G3 the segment, interval, pull and overflow cells, G2 the refusals. Pilot holds (P*) are never scored: P1 the 4 KiB cells and the refusals, P2 the training cells, P3 the regression. The training cells carry QPWATCH=50 and SPARE_WAIT_MS=120000 (sections 6, 8); the 4 KiB cells and the regression keep 10 ms. The second-death and the training kills are the driver's step kill (GIN_RS_DIE_AT) drawn from DIE_SEED (a placeholder until the pre-registration fixes it); the 4 KiB kill cells use the recorded-PID traffic kill as gin-restore does. The training hold split of section 8: T1 = mi4_train_none + mi4_train_kill3, T2 = mi4_train_kill2_kill3. The gin-restore regression with the mirror off (section 7) keeps gin-restore's cell names and env (restore/impl/test/cells_rs.json) at @mi with MIRROR=0 (R2, R3, R1 for gin-remaining's runner); the regression with the mirror on uses the suffix _mion (rs4_none_mion, rs4_kill3_mion; R3). The cost family 'mirror' runs through hold_mi.sh's interleave (run_cost_mi.sh). Cell names keep the search keys of sections 3 and 7.",
+ "holds": {
+  "P1": [
+   {
+    "cell": "mi4_none_ow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "mi4_kill3_ow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "3",
+     "SPARE": "1"
+    }
+   },
+   {
+    "cell": "mi4_kill1_ow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "1",
+     "SPARE": "1"
+    }
+   },
+   {
+    "cell": "mi4_kill3_ckpt_ow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "KILL_IN_HOOK": "1"
+    }
+   },
+   {
+    "cell": "mi4_kill2_kill3_ow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "STEPS": "600",
+     "KILL_RANK": "2",
+     "SPARE": "1",
+     "DIE_SEED": "mi-v1",
+     "DIE_LO": "180",
+     "DIE_HI": "220",
+     "KILL2_RANK": "3",
+     "SPARE2": "1",
+     "DIE2_LO": "380",
+     "DIE2_HI": "420"
+    }
+   },
+   {
+    "cell": "mi4_kill3_ow_nomirror",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "0",
+     "CHECKSUM": "off",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "3",
+     "SPARE": "1"
+    }
+   },
+   {
+    "cell": "mi4_kill3_ow_sampled",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "0",
+     "CHECKSUM": "sampled",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "3",
+     "SPARE": "1"
+    }
+   },
+   {
+    "cell": "mi4_seg_4k",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "BYTES": "4096",
+     "STEPS": "600",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "KILL_AFTER_STABLE": "15"
+    }
+   },
+   {
+    "cell": "mi4_seg_128k",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "BYTES": "131072",
+     "STEPS": "60",
+     "MIRROR_LANE": "6291456",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "KILL_AFTER_STABLE": "15"
+    }
+   },
+   {
+    "cell": "mi4_int_20",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "mi4_pull",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "MIRROR_LANE": "49152",
+     "MIRROR_PULL": "50",
+     "KILL_RANK": "3",
+     "SPARE": "1"
+    }
+   },
+   {
+    "cell": "mi4_overflow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "MIRROR_LANE": "2048",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "SPARE_WAIT_MS": "30000"
+    }
+   },
+   {
+    "cell": "mi4_refuse_csum",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "1",
+     "CHECKSUM": "sampled"
+    }
+   },
+   {
+    "cell": "mi4_refuse_mirror1",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "1",
+     "R3_ENV": "NCCL_GIN_RESTORE_MIRROR=0",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "mi4_refuse_sl",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "1",
+     "MIRROR_SLOTS": "3",
+     "R3_ENV": "NCCL_GIN_RESTORE_MIRROR_SLOTS=2",
+     "CKPT_STEPS": "20"
+    }
+   }
+  ],
+  "P2": [
+   {
+    "cell": "mi4_train_none",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "TRAIN": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "MIRROR_LANE": "83886080",
+     "QPWATCH": "50",
+     "SPARE_WAIT_MS": "120000"
+    }
+   },
+   {
+    "cell": "mi4_train_kill3",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "TRAIN": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "MIRROR_LANE": "83886080",
+     "QPWATCH": "50",
+     "SPARE_WAIT_MS": "120000",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "DIE_SEED": "mi-v1",
+     "DIE_LO": "300",
+     "DIE_HI": "1700",
+     "DIE_US_MAX": "8000"
+    }
+   },
+   {
+    "cell": "mi4_train_kill2_kill3",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "TRAIN": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "MIRROR_LANE": "83886080",
+     "QPWATCH": "50",
+     "SPARE_WAIT_MS": "120000",
+     "KILL_RANK": "2",
+     "SPARE": "1",
+     "DIE_SEED": "mi-v1",
+     "DIE_LO": "300",
+     "DIE_HI": "900",
+     "KILL2_RANK": "3",
+     "SPARE2": "1",
+     "DIE2_LO": "1100",
+     "DIE2_HI": "1700",
+     "DIE_US_MAX": "8000"
+    }
+   }
+  ],
+  "P3": [
+   {
+    "cell": "rs4_none",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "rs4_kill3",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "rs4_kill3_ckpt",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "KILL_IN_HOOK": "1",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "rs4_refuse_nomacro",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi_nomacro",
+    "env": {
+     "MIRROR": "0",
+     "CONTINUE_AFTER_REFUSAL": "1"
+    }
+   },
+   {
+    "cell": "rs4_kill3_mion",
+    "build": "mi",
+    "kind": "rs",
+    "n": 1,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "0",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "3",
+     "SPARE": "1"
+    }
+   },
+   {
+    "cell": "reg_mr4_none",
+    "build": "mi",
+    "kind": "reg",
+    "n": 1,
+    "driver": "mr/ff",
+    "env": {
+     "MIRROR": "0"
+    }
+   },
+   {
+    "cell": "reg_rm4_kill3_untimed_hold",
+    "build": "mi",
+    "kind": "reg",
+    "n": 1,
+    "driver": "mr/hold",
+    "env": {
+     "MIRROR": "0",
+     "MR_KILL_RANK": "3",
+     "MR_FLUSH": "peer",
+     "MR_EXTRA": "GIN_MR_RX_UNTIMED=1 GIN_MR_GRACE_S=15",
+     "FAULT_POLICY": "hold"
+    }
+   }
+  ],
+  "G1": [
+   {
+    "cell": "mi4_none_ow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "mi4_kill3_ow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 10,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "3",
+     "SPARE": "1"
+    }
+   },
+   {
+    "cell": "mi4_kill1_ow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "1",
+     "SPARE": "1"
+    }
+   },
+   {
+    "cell": "mi4_kill3_ckpt_ow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "KILL_IN_HOOK": "1"
+    }
+   },
+   {
+    "cell": "mi4_kill2_kill3_ow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "STEPS": "600",
+     "KILL_RANK": "2",
+     "SPARE": "1",
+     "DIE_SEED": "mi-v1",
+     "DIE_LO": "180",
+     "DIE_HI": "220",
+     "KILL2_RANK": "3",
+     "SPARE2": "1",
+     "DIE2_LO": "380",
+     "DIE2_HI": "420"
+    }
+   },
+   {
+    "cell": "mi4_kill3_ow_nomirror",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "0",
+     "CHECKSUM": "off",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "3",
+     "SPARE": "1"
+    }
+   },
+   {
+    "cell": "mi4_kill3_ow_sampled",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "0",
+     "CHECKSUM": "sampled",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "3",
+     "SPARE": "1"
+    }
+   }
+  ],
+  "G3": [
+   {
+    "cell": "mi4_seg_4k",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "BYTES": "4096",
+     "STEPS": "600",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "KILL_AFTER_STABLE": "15"
+    }
+   },
+   {
+    "cell": "mi4_seg_32k",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "BYTES": "32768",
+     "STEPS": "200",
+     "MIRROR_LANE": "2097152",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "KILL_AFTER_STABLE": "15"
+    }
+   },
+   {
+    "cell": "mi4_seg_128k",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "BYTES": "131072",
+     "STEPS": "60",
+     "MIRROR_LANE": "6291456",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "KILL_AFTER_STABLE": "15"
+    }
+   },
+   {
+    "cell": "mi4_int_10",
+    "build": "mi",
+    "kind": "rs",
+    "n": 3,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "10"
+    }
+   },
+   {
+    "cell": "mi4_int_20",
+    "build": "mi",
+    "kind": "rs",
+    "n": 3,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "mi4_int_40",
+    "build": "mi",
+    "kind": "rs",
+    "n": 3,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "40"
+    }
+   },
+   {
+    "cell": "mi4_pull_none",
+    "build": "mi",
+    "kind": "rs",
+    "n": 3,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "MIRROR_LANE": "49152",
+     "MIRROR_PULL": "50"
+    }
+   },
+   {
+    "cell": "mi4_pull",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "MIRROR_LANE": "49152",
+     "MIRROR_PULL": "50",
+     "KILL_RANK": "3",
+     "SPARE": "1"
+    }
+   },
+   {
+    "cell": "mi4_overflow",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "MIRROR_LANE": "2048",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "SPARE_WAIT_MS": "30000"
+    }
+   }
+  ],
+  "T1": [
+   {
+    "cell": "mi4_train_none",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "TRAIN": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "MIRROR_LANE": "83886080",
+     "QPWATCH": "50",
+     "SPARE_WAIT_MS": "120000"
+    }
+   },
+   {
+    "cell": "mi4_train_kill3",
+    "build": "mi",
+    "kind": "rs",
+    "n": 10,
+    "driver": "gin_mi",
+    "env": {
+     "TRAIN": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "MIRROR_LANE": "83886080",
+     "QPWATCH": "50",
+     "SPARE_WAIT_MS": "120000",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "DIE_SEED": "mi-v1",
+     "DIE_LO": "300",
+     "DIE_HI": "1700",
+     "DIE_US_MAX": "8000"
+    }
+   }
+  ],
+  "T2": [
+   {
+    "cell": "mi4_train_kill2_kill3",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "TRAIN": "1",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "MIRROR_LANE": "83886080",
+     "QPWATCH": "50",
+     "SPARE_WAIT_MS": "120000",
+     "KILL_RANK": "2",
+     "SPARE": "1",
+     "DIE_SEED": "mi-v1",
+     "DIE_LO": "300",
+     "DIE_HI": "900",
+     "KILL2_RANK": "3",
+     "SPARE2": "1",
+     "DIE2_LO": "1100",
+     "DIE2_HI": "1700",
+     "DIE_US_MAX": "8000"
+    }
+   }
+  ],
+  "G2": [
+   {
+    "cell": "mi4_refuse_csum",
+    "build": "mi",
+    "kind": "rs",
+    "n": 3,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "1",
+     "CHECKSUM": "sampled"
+    }
+   },
+   {
+    "cell": "mi4_refuse_mirror1",
+    "build": "mi",
+    "kind": "rs",
+    "n": 3,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "1",
+     "R3_ENV": "NCCL_GIN_RESTORE_MIRROR=0",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "mi4_refuse_sl",
+    "build": "mi",
+    "kind": "rs",
+    "n": 3,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "1",
+     "MIRROR_SLOTS": "3",
+     "R3_ENV": "NCCL_GIN_RESTORE_MIRROR_SLOTS=2",
+     "CKPT_STEPS": "20"
+    }
+   }
+  ],
+  "R1": [
+   {
+    "cell": "reg_mr4_none",
+    "build": "mi",
+    "kind": "reg",
+    "n": 5,
+    "driver": "mr/ff",
+    "env": {
+     "MIRROR": "0"
+    }
+   },
+   {
+    "cell": "reg_rm4_kill3_untimed",
+    "build": "mi",
+    "kind": "reg",
+    "n": 5,
+    "driver": "mr/ff",
+    "env": {
+     "MIRROR": "0",
+     "MR_KILL_RANK": "3",
+     "MR_FLUSH": "peer",
+     "MR_EXTRA": "GIN_MR_RX_UNTIMED=1 GIN_MR_GRACE_S=15"
+    }
+   },
+   {
+    "cell": "reg_mr4_none_hold",
+    "build": "mi",
+    "kind": "reg",
+    "n": 5,
+    "driver": "mr/hold",
+    "env": {
+     "MIRROR": "0",
+     "FAULT_POLICY": "hold"
+    }
+   },
+   {
+    "cell": "reg_rm4_kill3_untimed_hold",
+    "build": "mi",
+    "kind": "reg",
+    "n": 5,
+    "driver": "mr/hold",
+    "env": {
+     "MIRROR": "0",
+     "MR_KILL_RANK": "3",
+     "MR_FLUSH": "peer",
+     "MR_EXTRA": "GIN_MR_RX_UNTIMED=1 GIN_MR_GRACE_S=15",
+     "FAULT_POLICY": "hold"
+    }
+   }
+  ],
+  "R2": [
+   {
+    "cell": "rs4_none",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "rs4_none_off",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "RESTORE": "0",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "rs4_kill3",
+    "build": "mi",
+    "kind": "rs",
+    "n": 10,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "rs4_kill3_ckpt",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "KILL_IN_HOOK": "1",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "rs4_kill1",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "KILL_RANK": "1",
+     "SPARE": "1",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "rs4_kill3_nospare",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "KILL_RANK": "3",
+     "SPARE": "0",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "rs4_kill3_spareabsent",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "KILL_RANK": "3",
+     "SPARE": "1",
+     "SPARE_KILL_FIRST": "1",
+     "CKPT_STEPS": "20"
+    }
+   }
+  ],
+  "R3": [
+   {
+    "cell": "rs4_refuse_symgin",
+    "build": "mi",
+    "kind": "rs",
+    "n": 3,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "SYM_GIN": "1"
+    }
+   },
+   {
+    "cell": "rs4_refuse_gintype",
+    "build": "mi",
+    "kind": "rs",
+    "n": 3,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "CELL_GIN_TYPE": "2"
+    }
+   },
+   {
+    "cell": "rs4_refuse_restoreoff1",
+    "build": "mi",
+    "kind": "rs",
+    "n": 3,
+    "driver": "gin_mi",
+    "env": {
+     "MIRROR": "0",
+     "R3_ENV": "NCCL_GIN_RESTORE=0"
+    }
+   },
+   {
+    "cell": "rs4_refuse_nomacro",
+    "build": "mi",
+    "kind": "rs",
+    "n": 3,
+    "driver": "gin_mi_nomacro",
+    "env": {
+     "MIRROR": "0",
+     "CONTINUE_AFTER_REFUSAL": "1"
+    }
+   },
+   {
+    "cell": "rs4_none_mion",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "0",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20"
+    }
+   },
+   {
+    "cell": "rs4_kill3_mion",
+    "build": "mi",
+    "kind": "rs",
+    "n": 5,
+    "driver": "gin_mi",
+    "env": {
+     "OVERWRITE": "0",
+     "MIRROR": "1",
+     "CKPT_STEPS": "20",
+     "KILL_RANK": "3",
+     "SPARE": "1"
+    }
+   }
+  ]
+ },
+ "regression_orig": {
+  "about": "The original cell each regression cell repeats (gin-restore's cells_rs.json regression_orig: gin-remaining's status4 as hr and its RG8/RG9 verdict at n=5). Unchanged from gin-restore: the mirror off leaves its path as gin-restore's.",
+  "reg_mr4_none": "mr4_none",
+  "reg_mr4_none_hold": "mr4_none",
+  "reg_rm4_kill3_untimed": "rm4_kill3_untimed",
+  "reg_rm4_kill3_untimed_hold": "rm4_kill3_untimed"
+ },
+ "cost": {
+  "about": "cost_<metric>_<arm>_<node> (run_cost_mi.sh). The mirror family runs in holds per receiving node (COST-mirror-<node>): for k = 1-6 the arms back to back, the first arm alternating with k (gin-restore 9.15.6's interleave). Scored key cost_<metric>_<arm>@mip, the receiving nodes kept apart in score.py. The arms off/on/mirror-self/mirror-peer use the macro-built gin_ts2_mi and the library's measurement mode (NCCL_GIN_RESTORE_LOG_MEASURE; mirror-self/mirror-peer add NCCL_GIN_RESTORE_LOG_MEASURE_MIRROR). The base arm is 'on' (section 3). The manual-mirror arms one/man-self/man-peer of feas/cost_man.md are a FEASIBILITY check run from mirror/feas (COSTMAN-*), not scored here; they bound the bandwidth ratio before the library exists.",
+  "n_per_arm": 6,
+  "nodes": [
+   "rain",
+   "sunny"
+  ],
+  "families": {
+   "mirror": {
+    "metrics": [
+     "lat4k",
+     "lat256k",
+     "bw256k",
+     "lat2m",
+     "bw2m"
+    ],
+    "arms": [
+     "off",
+     "on",
+     "mirror-self",
+     "mirror-peer"
+    ],
+    "lib": "mip",
+    "base": "on",
+    "judged": [
+     "mirror-self",
+     "mirror-peer"
+    ],
+    "search_key": "cost_mirror (mirror-self, mirror-peer against on)",
+    "drivers": {
+     "off": "gin_ts2_mi",
+     "on": "gin_ts2_mi",
+     "mirror-self": "gin_ts2_mi",
+     "mirror-peer": "gin_ts2_mi"
+    }
+   }
+  }
+ }
+}
