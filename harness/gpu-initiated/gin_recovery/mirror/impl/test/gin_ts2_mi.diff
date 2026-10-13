@@ -1,0 +1,290 @@
+--- a/gin_ts2.cu
++++ b/gin_ts2.cu
+@@ -88,6 +88,19 @@
+ //     the GIN launch. load = the occupancy query of hogKernel (its first use loads the kernel under lazy loading; run before
+ //     the GIN launch it is followed by a read of the kernel's attributes, kv hog_preloaded), malloc = cudaMalloc of the
+ //     sink, stream = the creation of its stream. GIN_TS_HOG_PREALLOC=1 is none. kv hog_calls_after=<list|none>.
++// gin-mirror (mirror/feas/cost_man.md; mirror/impl/test/gin_ts2_mi.diff; optional, without them the program does what it
++//   did, the mirror cost family's arms set only library variables):
++//   GIN_TS_MAN_MIRROR=off|self|peer (rank 0, modes lat and burst only; any other mode with it: kv man_error=, exit 2): the
++//     hand-made mirror. Right after each put the same thread puts the same source (send window, same offset and bytes)
++//     once more on GIN context 1, with no remote signal: self -> rank 0's own receive window at the first put's target
++//     offset; peer -> rank 1's send window at the same offset. Each iteration then flushes context 1 after context 0 (the
++//     same coop and wait mode; the iteration's time covers both; either error is the iteration's). Burst: K x (put_k,
++//     second put_k), the signal, flush 0, flush 1 (the second puts with the first's coop, scopes and opt flags). Context 1
++//     must exist (kv man_contexts; fewer than 2: exit 2). kv (rank 0) man_mirror, man_ctx, man_puts; (rank 1, peer)
++//     man_peer_slots, man_peer_bad_slots (its send window read after the end wait, against the pattern; reported only).
++//   GIN_TS_BURST_REUSE=1 (burst): slot (t, k) instead of (i, t, k), the pattern patW(0, t, k, w) on both sides, so the
++//     window is P x K x bytes (2 MiB x 8 = 16 MiB): every iteration rewrites the same slots with the same bytes. kv
++//     burst_reuse (both ranks).
+ // exit: 0 all iterations ok and nothing surfaced; 2 NCCL call error; 3 async error seen by the host;
+ //       4 a device wait/flush returned an error or timed out; 5 data/signal check failed;
+ //       6 CUDA error; 7 watchdog.
+@@ -358,17 +371,29 @@
+ __device__ void txBody(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t bytes, int iters, int reuseSlot,
+                        int badIt, size_t badOff, unsigned long long gapNs, struct ncclDevComm devComm,
+                        int useTimeout, unsigned long long timeoutCycles, unsigned long long* lat,
+-                       volatile int* progress, TxOut* out, int contOnErr, int peer, int ctx) {
++                       volatile int* progress, TxOut* out, int contOnErr, int peer, int ctx, int man = 0) {
+   ncclGin gin{devComm, ctx};
++  // gin-mirror (GIN_TS_MAN_MIRROR; man: 0 off, 1 self, 2 peer): the second put's context (context 1; unused when off)
++  ncclGin gin1{devComm, man ? 1 : ctx};
+   if (threadIdx.x == 0) out->tStart = gtNow();
+   for (int i = 0; i < iters; i++) {
+     const size_t off = reuseSlot ? 0 : (size_t)i * bytes;
+     const size_t dst = (i == badIt) ? badOff : off;
+     unsigned long long t0 = gtNow();
+     if (threadIdx.x == 0) gin.put(ncclTeamWorld(devComm), peer, recvWin, dst, sendWin, off, bytes, ncclGin_WeakSignalInc{0});
++    if (man && threadIdx.x == 0) {  // the hand-made mirror: the same source once more, no remote signal
++      if (man == 1) gin1.put(ncclTeamWorld(devComm), devComm.rank, recvWin, dst, sendWin, off, bytes, ncclGin_None{});
++      else gin1.put(ncclTeamWorld(devComm), peer, sendWin, off, sendWin, off, bytes, ncclGin_None{});
++    }
+     ncclResult_t rc;
+     if (useTimeout) rc = gin.flush(ncclCoopCta(), cuda::memory_order_acquire, ncclGin_None{}, timeoutCycles);
+     else rc = GIN_TS_FLUSH_BLOCKING(gin, ncclCoopCta());
++    if (man) {  // context 1's flush after context 0's; the first error is the iteration's
++      ncclResult_t rc1;
++      if (useTimeout) rc1 = gin1.flush(ncclCoopCta(), cuda::memory_order_acquire, ncclGin_None{}, timeoutCycles);
++      else rc1 = GIN_TS_FLUSH_BLOCKING(gin1, ncclCoopCta());
++      if (rc == ncclSuccess) rc = rc1;
++    }
+     unsigned long long t1 = gtNow();
+     if (threadIdx.x == 0) {
+       lat[i] = t1 - t0;
+@@ -399,9 +424,9 @@
+ __global__ void txKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t bytes, int iters, int reuseSlot,
+                          int badIt, size_t badOff, unsigned long long gapNs, struct ncclDevComm devComm,
+                          int useTimeout, unsigned long long timeoutCycles, unsigned long long* lat,
+-                         volatile int* progress, TxOut* out, int contOnErr, int peer, int ctx) {
++                         volatile int* progress, TxOut* out, int contOnErr, int peer, int ctx, int man) {
+   txBody(sendWin, recvWin, bytes, iters, reuseSlot, badIt, badOff, gapNs, devComm, useTimeout, timeoutCycles, lat, progress,
+-         out, contOnErr, peer, ctx);
++         out, contOnErr, peer, ctx, man);
+ }
+ 
+ // ---- gin-s2-close: the S1 loop with a get (RDMA READ) per iteration (GIN_TS_GET=1, rank 0 only) ---------
+@@ -543,8 +568,9 @@
+ __global__ void txBurstKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, size_t bytes, int iters, int K, int agg, int NS,
+                               unsigned long long gapNs, unsigned long long aggGapNs, int badIt, size_t badOff,
+                               struct ncclDevComm devComm, int useTimeout, unsigned long long timeoutCycles,
+-                              unsigned long long* lat0, volatile int* progress, TxThr* out) {
++                              unsigned long long* lat0, volatile int* progress, TxThr* out, int man, int reuse) {
+   ncclGin gin{devComm, 0};
++  ncclGin gin1{devComm, man ? 1 : 0};  // gin-mirror: the hand-made mirror's context (GIN_TS_MAN_MIRROR)
+   const int t = blockIdx.x * blockDim.x + threadIdx.x;
+   const int P = gridDim.x * blockDim.x;
+   TxThr o = {0, -1, 0, 0, 0ull, -1, 0};
+@@ -552,11 +578,21 @@
+   for (int i = 0; i < iters; i++) {
+     const unsigned long long t0 = gtNow();
+     for (int k = 0; k < K; k++) {
+-      const size_t off = (((size_t)i * P + t) * K + k) * bytes;
++      // gin-mirror GIN_TS_BURST_REUSE: slot (t, k) in every iteration
++      const size_t off = ((reuse ? (size_t)t : (size_t)i * P + t) * K + k) * bytes;
+       // GIN_TS_BURST_BADIT (F2 in burst mode): the first put of iteration badIt goes to an invalid remote offset
+       const size_t dst = (i == badIt && k == 0 && t == 0) ? badOff : off;
+       gin.put(ncclTeamWorld(devComm), 1, recvWin, dst, sendWin, off, bytes, ncclGin_None{}, ncclGin_None{},
+               ncclCoopThread{}, ncclGin_None{}, cuda::thread_scope_thread, cuda::thread_scope_device, opt);
++      // context 1 has no signal that rings its held WQEs, so its last second put of the iteration rings them (not
++      // aggregated): the same K WQEs and one doorbell per iteration as context 0's K puts and its signal
++      const uint32_t opt1 = (k == K - 1) ? (uint32_t)ncclGinOptFlagsDefault : opt;
++      if (man == 1)  // self: rank 0's own receive window at the first put's target offset
++        gin1.put(ncclTeamWorld(devComm), devComm.rank, recvWin, dst, sendWin, off, bytes, ncclGin_None{}, ncclGin_None{},
++                 ncclCoopThread{}, ncclGin_None{}, cuda::thread_scope_thread, cuda::thread_scope_device, opt1);
++      else if (man == 2)  // peer: rank 1's send window at the same offset
++        gin1.put(ncclTeamWorld(devComm), 1, sendWin, off, sendWin, off, bytes, ncclGin_None{}, ncclGin_None{},
++                 ncclCoopThread{}, ncclGin_None{}, cuda::thread_scope_thread, cuda::thread_scope_device, opt1);
+     }
+     if (aggGapNs) {  // GIN_TS_AGG_GAP_US: the aggregated puts stay unrung for a while before the signal rings
+       const unsigned long long g0 = gtNow();
+@@ -566,6 +602,12 @@
+     ncclResult_t rc;
+     if (useTimeout) rc = gin.flush(ncclCoopThread(), cuda::memory_order_acquire, ncclGin_None{}, timeoutCycles);
+     else rc = GIN_TS_FLUSH_BLOCKING(gin, ncclCoopThread());
++    if (man) {  // context 1's flush after context 0's (with aggregation it also rings context 1's held puts)
++      ncclResult_t rc1;
++      if (useTimeout) rc1 = gin1.flush(ncclCoopThread(), cuda::memory_order_acquire, ncclGin_None{}, timeoutCycles);
++      else rc1 = GIN_TS_FLUSH_BLOCKING(gin1, ncclCoopThread());
++      if (rc == ncclSuccess) rc = rc1;
++    }
+     const unsigned long long dt = gtNow() - t0;
+     if (dt > o.maxLatNs) {
+       o.maxLatNs = dt;
+@@ -601,7 +643,7 @@
+ };
+ __global__ void rxBurstKernel(const uint32_t* recvBuf, size_t bytes, int iters, int K, int P, const unsigned long long* bases,
+                               struct ncclDevComm devComm, unsigned long long waitCycles, volatile int* progress,
+-                              RxThr* out) {
++                              RxThr* out, int reuse) {
+   ncclGin gin{devComm, 0};
+   const int s = blockIdx.x * blockDim.x + threadIdx.x;
+   const int NS = gridDim.x * blockDim.x;
+@@ -610,9 +652,10 @@
+   const size_t words = bytes / 4;
+   auto check = [&](int i, int t) {
+     for (int k = 0; k < K; k++) {
+-      const volatile uint32_t* slot = recvBuf + (((size_t)i * P + t) * K + k) * words;
++      // gin-mirror GIN_TS_BURST_REUSE: slot (t, k) with the pattern of iteration 0 in every iteration
++      const volatile uint32_t* slot = recvBuf + ((reuse ? (size_t)t : (size_t)i * P + t) * K + k) * words;
+       bool b = false;
+-      for (size_t w = 0; w < words; w++) b |= (slot[w] != patW(i, t, k, w));
++      for (size_t w = 0; w < words; w++) b |= (slot[w] != patW(reuse ? 0 : i, t, k, w));
+       if (b) {
+         if (o.badSlots == 0) o.firstBad = (i * P + t) * K + k;
+         o.badSlots++;
+@@ -879,6 +922,18 @@
+   if (dual) kv("dual=1 dual_contexts=2");
+   if (isBurst) kv("burst_blocks=%d burst_threads=%d burst_P=%d burst_K=%d burst_agg=%d qdepth=%d burst_signals=%d "
+                   "burst_agg_gap_us=%ld burst_bad_it=%d", txBlocks, txThreads, P, K, agg, qDepth, NS, aggGapUs, badIt);
++  // gin-mirror (mirror/feas/cost_man.md): the hand-made mirror (rank 0 sends it; rank 1 only checks the peer arm's slots)
++  // and the burst's slot reuse
++  const char* manEnv = getenv("GIN_TS_MAN_MIRROR");
++  const int man = (manEnv == nullptr || *manEnv == '\0' || strcmp(manEnv, "off") == 0) ? 0
++                  : strcmp(manEnv, "self") == 0 ? 1 : strcmp(manEnv, "peer") == 0 ? 2 : -1;
++  const int burstReuse = (isBurst && getenv("GIN_TS_BURST_REUSE") && atoi(getenv("GIN_TS_BURST_REUSE")) != 0) ? 1 : 0;
++  kv("burst_reuse=%d", burstReuse);
++  if (man < 0 || (man && (!(isLat || isBurst) || isBidir || dual || getMode))) {
++    kv("man_error=%s exit=2", man < 0 ? "unknown_value" : "mode_not_lat_or_burst");
++    return 2;
++  }
++  const int manTx = rank == 0 ? man : 0;  // the second put is rank 0's
+   std::thread([watchdogS]() {
+     double dl = nowSec() + watchdogS;
+     while (nowSec() < dl) usleep(50000);
+@@ -998,7 +1053,9 @@
+   const size_t bytesR1 = (isBidir && getenv("GIN_TS_R1_BYTES")) ? strtoul(getenv("GIN_TS_R1_BYTES"), nullptr, 10) : bytes;
+   const size_t txBytes = (isBidir && rank == 1) ? bytesR1 : bytes, rxBytes = (isBidir && rank == 0) ? bytesR1 : bytes;
+   const size_t maxBytes = std::max(bytes, bytesR1);
+-  const size_t winBytes = (reuse ? maxBytes : maxBytes * (size_t)iters * (size_t)P * (size_t)K) * (dual ? 2 : 1);
++  // gin-mirror GIN_TS_BURST_REUSE: P x K slots, every iteration the same
++  const size_t winBytes = (reuse ? maxBytes : maxBytes * (size_t)(burstReuse ? 1 : iters) * (size_t)P * (size_t)K) *
++                          (dual ? 2 : 1);
+   void *dSend = nullptr, *dRecv = nullptr;
+   ncclWindow_t sendWin, recvWin;
+   NK(ncclMemAlloc(&dSend, winBytes));
+@@ -1029,6 +1086,13 @@
+   NK(ncclDevCommCreate(g_comm, &reqs, &devComm));
+   const double tDevComm = monoMs();
+   kv("devcomm_mono_ms=%.3f", tDevComm);
++  if (man) {  // gin-mirror: the hand-made mirror needs GIN context 1 (cost_man.md, 미확인)
++    kv("man_contexts=%u", (unsigned)devComm.ginContextCount);
++    if (devComm.ginContextCount < 2) {
++      kv("man_error=fewer_than_2_contexts exit=2");
++      teardownExit(2);
++    }
++  }
+   cudaStream_t st, st2;
+   CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
+   CK(cudaStreamCreateWithFlags(&st2, cudaStreamNonBlocking));
+@@ -1046,7 +1110,7 @@
+     if (isBurst) {
+       uint32_t* hw = (uint32_t*)h.data();
+       const size_t words = bytes / 4;
+-      for (int i = 0; i < iters; i++)
++      for (int i = 0; i < (burstReuse ? 1 : iters); i++)  // gin-mirror GIN_TS_BURST_REUSE: iteration 0's slots only
+         for (int t = 0; t < P; t++)
+           for (int k = 0; k < K; k++)
+             for (size_t w = 0; w < words; w++) hw[(((size_t)i * P + t) * K + k) * words + w] = patW(i, t, k, w);
+@@ -1073,6 +1137,7 @@
+   std::vector<unsigned long long> bases(NS, 0);
+   unsigned long long* dBases = nullptr;
+   CK(cudaMalloc(&dBases, sizeof(unsigned long long) * NS));
++  if (receiver && man == 2) CK(cudaMemset(dSend, POISON, winBytes));  // gin-mirror: the peer arm's second puts land here
+   if (receiver) {
+     CK(cudaMemset(dRecv, POISON, winBytes));
+     readSigKernel<<<1, 256, 0, st>>>(devComm, dBases, NS, rxCtx);
+@@ -1263,7 +1328,7 @@
+     cudaStream_t rs = isBidir ? st2 : st;
+     if (isBurst)
+       rxBurstKernel<<<(NS + 255) / 256, NS < 256 ? NS : 256, 0, rs>>>((const uint32_t*)dRecv, bytes, iters, K, P, dBases, devComm,
+-                                                    rxWaitCycles, isBidir ? dProgR : dProg, dRxT);
++                                                    rxWaitCycles, isBidir ? dProgR : dProg, dRxT, burstReuse);
+     else
+       rxKernel<<<1, 256, 0, rs>>>(recvWin, (const uint8_t*)dRecv, rxBytes, iters, reuse, bases[0], devComm, rxWaitCycles,
+                                   isBidir ? dLatR : dLat, dSig, isBidir ? dProgR : dProg, dRx, rxSeed, rxCtx);
+@@ -1276,14 +1341,16 @@
+     if (isBurst)
+       txBurstKernel<<<txBlocks, txThreads, 0, st>>>(sendWin, recvWin, bytes, iters, K, agg, NS,
+                                                     (unsigned long long)gapUs * 1000ull, (unsigned long long)aggGapUs * 1000ull,
+-                                                    badIt, badOff, devComm, useTimeout ? 1 : 0, timeoutCycles, dLat, dProg, dTxT);
++                                                    badIt, badOff, devComm, useTimeout ? 1 : 0, timeoutCycles, dLat, dProg, dTxT,
++                                                    manTx, burstReuse);
+     else if (getMode)
+       txGetKernel<<<1, 1, 0, st>>>(sendWin, recvWin, txBytes, iters, getBytes, (const uint8_t*)dRecv,
+                                    (unsigned long long)gapUs * 1000ull, devComm, useTimeout ? 1 : 0, timeoutCycles, dLat, dProg,
+                                    dTx, dGet, peer, txCtx);
+     else
+       txKernel<<<1, 1, 0, st>>>(sendWin, recvWin, txBytes, iters, reuse, badIt, badOff, (unsigned long long)gapUs * 1000ull,
+-                                devComm, useTimeout ? 1 : 0, timeoutCycles, dLat, dProg, dTx, contOnErr ? 1 : 0, peer, txCtx);
++                                devComm, useTimeout ? 1 : 0, timeoutCycles, dLat, dProg, dTx, contOnErr ? 1 : 0, peer, txCtx,
++                                manTx);
+   }
+   CK(cudaGetLastError());
+   kv("launch_mono_ms=%.3f", tLaunch);
+@@ -1546,6 +1613,21 @@
+       }
+     }
+   }
++  if (manTx && sender && kernelDone && !dual) {  // gin-mirror: the hand-made mirror's second puts (one per put sent)
++    int done = 0;
++    if (isBurst) {
++      std::vector<TxThr> o(P);
++      CK(cudaMemcpy(o.data(), dTxT, sizeof(TxThr) * P, cudaMemcpyDeviceToHost));
++      for (int t = 0; t < P; t++) done += o[t].done;
++    } else {
++      TxOut o;
++      CK(cudaMemcpy(&o, dTx, sizeof(o), cudaMemcpyDeviceToHost));
++      done = o.done;
++    }
++    kv("man_mirror=%s man_ctx=1 man_puts=%lld", manTx == 1 ? "self" : "peer", (long long)done * (isBurst ? K : 1));
++  } else if (rank == 0 && !manTx) {  // a man arm whose kernel did not finish is not labelled off
++    kv("man_mirror=off");
++  }
+   if (receiver && kernelDone && dual) {
+     std::vector<RxOut> o(2);
+     CK(cudaMemcpy(o.data(), dRxD, sizeof(RxOut) * 2, cudaMemcpyDeviceToHost));
+@@ -1627,13 +1709,13 @@
+     if (rxRc != 0 && exitCode == 0) { exitCode = 4; outcome = "device_error"; }
+     // host re-check of every slot, and every signal exactly once
+     int badSlots = 0, firstBad = -1, missing = 0;
+-    const long nSlots = reuse ? 0 : (long)iters * P * K;
++    const long nSlots = reuse ? 0 : (long)(burstReuse ? 1 : iters) * P * K;  // gin-mirror: P x K slots with the reuse
+     if (!reuse) {
+       CK(cudaMemcpy(h.data(), dRecv, winBytes, cudaMemcpyDeviceToHost));
+       for (long s = 0; s < nSlots; s++) {
+         size_t bad = 0, pois = 0;
+         if (isBurst) {
+-          const int k = (int)(s % K), t = (int)((s / K) % P), i = (int)(s / K / P);
++          const int k = (int)(s % K), t = (int)((s / K) % P), i = burstReuse ? 0 : (int)(s / K / P);
+           const uint32_t* hw = (const uint32_t*)(h.data() + (size_t)s * bytes);
+           for (size_t w = 0; w < bytes / 4; w++) {
+             if (hw[w] != patW(i, t, k, w)) bad++;
+@@ -1683,6 +1765,28 @@
+   if (!kernelDone && exitCode == 0) { exitCode = 7; outcome = "kernel_stuck"; }
+   const double endWaitS = getenv("GIN_TS_END_WAIT_S") ? atof(getenv("GIN_TS_END_WAIT_S")) : 0.3;
+   usleep((useconds_t)(endWaitS * 1e6));
++  if (man == 2 && rank == 1 && kernelDone) {  // gin-mirror: the peer arm's second puts in this rank's send window
++    // (read after the end wait: rank 0's last flush of context 1 is long done; reported only, the exit code is unchanged)
++    int bad = 0;
++    long nSlots = 0;
++    CK(cudaMemcpy(h.data(), dSend, winBytes, cudaMemcpyDeviceToHost));
++    if (isBurst) {
++      nSlots = (long)(burstReuse ? 1 : iters) * P * K;
++      for (long s = 0; s < nSlots; s++) {
++        const int k = (int)(s % K), t = (int)((s / K) % P), i = burstReuse ? 0 : (int)(s / K / P);
++        const uint32_t* hw = (const uint32_t*)(h.data() + (size_t)s * bytes);
++        bool b = false;
++        for (size_t w = 0; w < bytes / 4; w++) b |= hw[w] != patW(i, t, k, w);
++        bad += b ? 1 : 0;
++      }
++    } else {  // lat: one slot at offset 0, iteration 0's pattern (seed 0)
++      nSlots = 1;
++      bool b = false;
++      for (size_t k = 0; k < bytes; k++) b |= h[k] != pat(0, k, 0);
++      bad = b ? 1 : 0;
++    }
++    kv("man_peer_slots=%ld man_peer_bad_slots=%d", nSlots, bad);
++  }
+   const char* monAbort = getenv("GIN_TS_MON_ABORT");
+   if (monAbort && *monAbort) {
+     mon.abortLimitMs = strcmp(monAbort, "full") == 0 ? 0.0 : atof(monAbort);
