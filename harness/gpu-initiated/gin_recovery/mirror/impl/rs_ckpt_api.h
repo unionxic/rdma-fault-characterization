@@ -1,6 +1,23 @@
-// rs_ckpt_api.h - gin-restore, work package 5 (host branch; EXPERIMENT.md 9.4, 9.11.9 C1): the checkpoint's records on
-// the helper socket and the data socket's wire formats, for the other branches (the spare process fetches its image from
-// the buddy and receives the survivors' state over the data socket; impl/rs_spare_api.h, impl/rs_log_api.h).
+// rs_ckpt_api.h v2 - gin-mirror (impl/PARALLEL.md; EXPERIMENT.md 9.4, 9.6): gin-restore's rs_ckpt_api.h (copied
+// unchanged in commit 6cde95d6, md5 05013b6b). The shared text below is v1's, byte for byte: the host file's copy does
+// not change. What changes around it with the mirror on (gdakiMiOn), each defined elsewhere:
+//   - UPLOAD and FETCH over the data socket are not used: the store path (impl/rs_store_api.h: STORE_REQ/STORE_ACK, the
+//     WRITEs outside the pause, CKPT_STABLE's store payload under pad flag GDAKI_CKPT_STABLE_STORE 0x2, the spare's
+//     RDMA READ). A store slot starts with a gdakiCkptHdr of this file (version 1, baseCkpt ~0, nChanged 0). The helper
+//     socket and the data socket carry no image and no segment byte (prediction store_rdma).
+//   - STATE carries the export v2 and the survivor's rkey list (impl/rs_log_api.h v2); its framing (a u64 count, then
+//     the bytes) is v1's.
+//   - PAUSED's armable has the mirror's part (impl/rs_mirror_api.h gdakiMiPausedArmable); its fields are v1's.
+//   - BUSY_SUPPRESS also answers while a revived rank still has step inputs to inject (impl/rs_log_api.h v2
+//     gdakiMiImportLeft through gdakiCkptSuppressLeft). No new BUSY reason.
+//   - A rank takes no checkpoint while it is not store-ready (impl/rs_store_api.h).
+// With the mirror off: v1, plus 9.6's base reset on the TCP path (an upload that did not end with an OK ack, and
+// RESTORED of the buddy, clear the uploader's base: its next upload is the whole image; impl/rs_store_api.h names the
+// lines).
+//
+// v1: rs_ckpt_api.h - gin-restore, work package 5 (host branch; EXPERIMENT.md 9.4, 9.11.9 C1): the checkpoint's records
+// on the helper socket and the data socket's wire formats, for the other branches (the spare process fetches its image
+// from the buddy and receives the survivors' state over the data socket; impl/rs_spare_api.h, impl/rs_log_api.h).
 //
 // Binding interface between branches (impl/PARALLEL.md). The part between the two "shared text" fences is also in
 // src/transport/net_ib/gdaki/gin_host_gdaki.cc, verbatim, at the start of the region
