@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # deploy_mf.sh <check output file> <set> - put one gin-mirror feasibility build on rain and sunny (main session only), into ONE
 # NEW directory per node, never overwriting a file (as ../../restore/feas/deploy_feas.sh):
-#   mf     ~/rs-bundle/mf/mirror_feas   source $SCR/mirror_feas/$MF_BUILD/mirror_feas (MF_BUILD: mf1), env WANT_MF = its md5
+#   mf     ~/rs-bundle/mf/mirror_feas   source $SCR/mirror_feas/$MF_BUILD/mirror_feas (MF_BUILD: mf2), env WANT_MF = its md5
 #                                       as recorded in EXPERIMENT.md 12 (build_mf.sh prints it)
 #   mfcm   ~/rs-bundle/mfcm/gin_ts2     source CM_SRC (required: the test work package's manual-mirror gin_ts2, cost_man.md),
 #                                       env WANT_MFCM = its md5
@@ -18,7 +18,7 @@ SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH (user@address) from the management env file
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
 CMLIB=${CMLIB:-\$HOME/rs-bundle/i5/lib/rsp}
 case "$K" in
-  mf)   SRC=$SCR/mirror_feas/${MF_BUILD:-mf1}/mirror_feas; FN=mirror_feas
+  mf)   SRC=$SCR/mirror_feas/${MF_BUILD:-mf2}/mirror_feas; FN=mirror_feas
         WANT=${WANT_MF:?expected md5 of mirror_feas (EXPERIMENT.md 12)}
         LDD="cd \$HOME/rs-bundle && echo \"mf: \$(ldd mf/mirror_feas | grep -E 'ibverbs|mlx5|libcuda|not found' | tr -s ' ' | tr '\n' ';')\"" ;;
   mfcm) SRC=${CM_SRC:?CM_SRC: the manual-mirror gin_ts2 build (cost_man.md)}; FN=gin_ts2
