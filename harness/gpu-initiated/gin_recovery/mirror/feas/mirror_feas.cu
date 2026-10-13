@@ -3,15 +3,13 @@
 // vis and store run as two processes (the runner places them on rain and sunny; a TCP control channel on the management
 // address, nonce-verified as ../../restore/feas/rs_drain_test.cu); bar1 runs as three processes on one GPU. Every QP, CQ and
 // MR is created once per process. GPU memory: cuMem with gpuDirectRDMACapable, dmabuf MR at iova 0 (as GIN windows). Host
-// memory: page-aligned, ibv_reg_mr_iova2 at iova 0 without IBV_ACCESS_RELAXED_ORDERING (the pool and store of 9.3, 9.4), in
-// the same PD as every other MR and QP of that process.
+// pool and store memory: page-aligned, ibv_reg_mr_iova2 at iova 0 without IBV_ACCESS_RELAXED_ORDERING (9.3, 9.4), in the same
+// PD as every other MR and QP of that process.
 //   vis    check 1. writer, iteration i, on GO(i, n): a kernel writes ((i + 1) << 32 | word index) into n bytes of its GPU
-//          buffer, ONE RC RDMA WRITE of n bytes to offset 0 of the host MR (MF_SIGNAL=flag: then an 8-byte WRITE of i + 1 to
-//          the flag word behind the data, same QP), POSTED(i, m) (m: request messages so far), its own completion, DONE(i).
-//          host, on POSTED: waits until the responder's completion is observable (MF_SIGNAL=msn, default, the drain of 9.4
-//          step 2: QUERY_QP of the responder QP until rmsn - rmsn0 == m mod 2^24, first query 0.9 x the running reach
-//          estimate after POSTED, then every max(20 us, est / 10); flag: the CPU sees the flag word == i + 1), then ONE path
-//          (a seeded permutation of the three in every block of 3 iterations):
+//          buffer, ONE RC RDMA WRITE of n bytes to offset 0 of the host MR, POSTED(i, m) (m: request messages so far), its
+//          own completion, DONE(i). host, on POSTED: QUERY_QP of the responder QP until rmsn - rmsn0 == m mod 2^24 (the
+//          drain of 9.4 step 2; first query 0.9 x the running reach estimate after POSTED, then every max(20 us, est / 10)),
+//          then ONE path (a seeded permutation of the three in every block of 3 iterations):
 //            a1  the CPU reads the n bytes right away (last word first)
 //            a2  one 8-byte RDMA READ of a pool word (behind the data, same MR) on the loopback QP pair of this PD, then
 //                the CPU read (the READ fence of 9.4 step 2)
@@ -20,24 +18,27 @@
 //          A wrong word is stale (an earlier iteration's value of that word) or corrupt; an iteration is bad if a word is
 //          wrong. Every iteration ends with the READ fence before DONE; a bad one is read again after one more fence
 //          (<path>_after_fence_bad). n: 4k | 256k | 2m | rand (seeded, 4 KiB - 2 MiB in 4 KiB steps).
-//   store  check 3. src: a GPU region of MF_STORE_MIB (30) is RDMA-WRITTEN (one WRITE) to a host MR of host 2 x reps times
-//          in alternating blocks of 10: no other traffic; a second QP of src sends bursts of MF_BG_K (8) WRITEs of MF_BG_MIB
-//          (2) from the same region to a GPU buffer of host. Time: post to the requester's completion. Then src RDMA-READs a
-//          host MR of MF_READ_MIB (150) of host into its own host buffer reps times, in READs of MF_READ_CHUNK_MIB (30).
-//          theta = MF_READ_MIB / the READ p50. Data checks (information): host reads its store MR after the WRITE phase,
-//          src checks the first and the last READ.
+//   store  check 3 (the upload of 9.4: D2H inside the pause, WRITE outside). src: reps D2H copies of a GPU image of
+//          MF_STORE_MIB (30) into a cudaHostAlloc buffer that is also an MR; then 2 x reps RDMA WRITEs of that host buffer
+//          to a host MR of host in alternating blocks of 10: no other traffic; a second QP sends bursts of MF_BG_K (8) WRITEs
+//          of MF_BG_MIB (2) from GPU memory to GPU memory of host (another rank's puts); then reps rounds of RDMA READs of
+//          each size of MF_READ_SIZES_MIB (4,8,16,32,64,128,150; seeded order per round) from a host MR of host into a host
+//          buffer, in READs of MF_READ_CHUNK_MIB (30), timed from the first post to the last completion. Times: host clock;
+//          the fit a + bytes / theta is least squares over the per-size p50. Data checks (information) on all three.
 //   bar1   check 4. One of three processes on one GPU: CUDA context and cuMem windows of MF_BAR1_MIB (6,24) MiB (stage ctx);
-//          on file <ctl_dir>/go_pd1 each window is registered by dmabuf in one PD (stage pd1); on go_pd2, if pd2 = 1, again
-//          in a second PD (stage pd2; pd2_skipped if the file stop comes first); on stop all MRs are deregistered (stage
-//          end). Each stage prints "MFSTAGE <tag> <stage> ok=<0|1>"; the runner reads nvidia-smi BAR1 in between.
+//          on file <ctl_dir>/go_pd1 each window is registered by dmabuf in one PD (stage pd1); on go_host MF_BAR1_HOST_MIB of
+//          host memory is registered in that PD as the pool (stage host: pool, store, D2H staging, FETCH buffer); on go_pd2,
+//          if pd2 = 1, the windows again in a second PD (stage pd2); a stage is skipped if the file stop comes first; on stop
+//          all MRs are deregistered (stage end). Each stage prints "MFSTAGE <tag> <stage> ok=<0|1>"; the runner reads
+//          nvidia-smi BAR1 and MemAvailable in between.
 // usage: mirror_feas <out_kv> vis <writer|host> <ib_dev> <gid_index> <4k|256k|2m|rand> <iters> <ctl>
 //        mirror_feas <out_kv> store <src|host> <ib_dev> <gid_index> <reps (multiple of 10)> <ctl>
 //        mirror_feas <out_kv> bar1 <tag> <ib_dev> <ctl_dir> <pd2 0|1>        <ctl>: listen:<port> | connect:<ip>:<port>
 // env: MF_RDV_NONCE (16 hex; vis, store), MF_WATCHDOG_S (300: exit 7), MF_RUN_S (vis host: iters / 200 + 60, then INCOMPLETE),
-//      MF_CUDA_DEV (0), MF_SEED (0x4d46), MF_SIGNAL (msn | flag; both sides), MF_QUERY_BUDGET (vis host, msn: 30000; the loop
-//      ends at an iteration boundary at that many QUERY_QP, budget_stop=1; hard cap budget + 400, exit 3), MF_TIMING_FILE
-//      (store src: every timed operation), MF_STORE_MIB, MF_READ_MIB, MF_READ_CHUNK_MIB, MF_BG_MIB, MF_BG_K (store; both
-//      sides agree), MF_BAR1_MIB, MF_STAGE_WAIT_S (bar1: 120 per stage file)
+//      MF_CUDA_DEV (0), MF_SEED (0x4d46), MF_QUERY_BUDGET (vis host: 30000, >= 1000; the loop ends at an iteration boundary at
+//      that many QUERY_QP, budget_stop=1; hard cap budget + 400, exit 3), MF_TIMING_FILE (store src: every timed operation),
+//      MF_STORE_MIB, MF_READ_SIZES_MIB, MF_READ_CHUNK_MIB, MF_BG_MIB, MF_BG_K (store; both sides agree), MF_BAR1_MIB,
+//      MF_BAR1_HOST_MIB (0), MF_STAGE_WAIT_S (bar1: 120 per stage file)
 // exit: 0 PASS or done; 1 FAIL (vis: a2 or a3 saw a wrong word); 2 usage or setup; 3 NIC, QUERY_QP or control error;
 //       5 INCOMPLETE; 6 CUDA error; 7 watchdog; 8 bar1: a registration failed (a reading, not a tool error)
 #include <cuda.h>
@@ -93,12 +94,11 @@ static void progressKv() {
   _exit(6);
 }
 #define CK(c) do { cudaError_t e_ = (c); if (e_ != cudaSuccess) cudaFail(cudaGetErrorName(e_), __LINE__); } while (0)
-#define CU(c)                                                                                \
-  do {                                                                                       \
-    CUresult r_ = (c);                                                                       \
-    const char* n_ = "?";                                                                    \
-    if (r_ != CUDA_SUCCESS) cuGetErrorName(r_, &n_), cudaFail(n_, __LINE__);                 \
-  } while (0)
+static void cuCheck(CUresult r, int line) {
+  const char* n = "?";
+  if (r != CUDA_SUCCESS) cuGetErrorName(r, &n), cudaFail(n, line);
+}
+#define CU(c) cuCheck((c), __LINE__)
 enum { M_GO = 1, M_POSTED = 2, M_DONE = 3, M_END = 4, M_ERR = 5, M_READY = 6, M_PHASE = 7 };
 struct Msg { uint32_t type, iter, a, b; uint64_t m; };
 [[noreturn]] static void failExit(const char* key, const char* what, int code) {
@@ -435,7 +435,7 @@ static void ready() {
 }
 
 // ================================================================ vis (check 1)
-static const size_t VIS_MAX = (size_t)2 << 20, VIS_BYTES = VIS_MAX + 4096, FLAG_OFF = VIS_MAX, FENCE_OFF = VIS_MAX + 64;
+static const size_t VIS_MAX = (size_t)2 << 20, VIS_BYTES = VIS_MAX + 4096, FENCE_OFF = VIS_MAX + 64;
 enum { P_A1 = 0, P_A2 = 1, P_A3 = 2 };
 static const char* PN[3] = {"a1", "a2", "a3"};
 static int sizeCodeOf(const std::string& s) { return s == "4k" ? 1 : s == "256k" ? 2 : s == "2m" ? 3 : s == "rand" ? 4 : 0; }
@@ -458,8 +458,7 @@ struct VisHost { ibv_cq* lcq; ibv_qp *rq, *fa, *fb, *ra, *rb; uint64_t *buf, *st
 static unsigned long long g_queryCap = 0;
 static std::vector<double> g_qLat, g_fenceUs, g_read3Us;
 // QUERY_QP until rmsn - base == target (mod 2^24); edge: a query saw less; reach: start of the query that saw it - tp
-static long waitRmsn(ibv_qp* q, uint32_t base, uint64_t target, uint32_t perIter, double tp, double est, bool* edge,
-                     double* reach) {
+static long waitRmsn(ibv_qp* q, uint32_t base, uint64_t target, double tp, double est, bool* edge, double* reach) {
   while (nowUs() < tp + 0.9 * est) continue;
   const uint32_t want = (uint32_t)(target & MASK24);
   const double gap0 = std::max(20.0, est / 10.0);
@@ -480,7 +479,7 @@ static long waitRmsn(ibv_qp* q, uint32_t base, uint64_t target, uint32_t perIter
       *reach = t0 - tp;
       return polls;
     }
-    if (((want - got) & MASK24) > perIter) nicFail("rmsn outside the window of this iteration");
+    if (((want - got) & MASK24) > 1) nicFail("rmsn outside the window of this iteration");
     *edge = true;
     if (state != 0x3) nicFail("responder QP not in RTS");
     if (polls >= 200) nicFail("more than 200 QUERY_QP in one iteration");
@@ -493,14 +492,12 @@ static void visFence(VisHost& h, bool record) {  // one 8-byte READ of the pool 
   runChain(h.fa, h.lcq, IBV_WR_RDMA_READ, &op, 1, 2000, "fence READ post");
   if (record) g_fenceUs.push_back(nowUs() - t0);
 }
-static int visWriter(ibv_cq* cq, ibv_qp* wqp, const Hello& peer, uint32_t perIter) {
+static int visWriter(ibv_cq* cq, ibv_qp* wqp, const Hello& peer) {
   size_t srcBytes = 0;
   void* src = cuMemAllocRdma(VIS_MAX, &srcBytes);
   ibv_pd* pd = wqp->pd;
   ibv_mr* srcMr = regDmabuf(pd, src, srcBytes, ACC_WIN);
-  uint64_t* fsrc = (uint64_t*)hostAlloc(4096);
-  ibv_mr* fsrcMr = ibv_reg_mr(pd, fsrc, 4096, IBV_ACCESS_LOCAL_WRITE);
-  if (srcMr == nullptr || fsrcMr == nullptr) setupFail("writer MRs");
+  if (srcMr == nullptr) setupFail("writer MR");
   cudaStream_t st = nullptr;
   CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
   kvf("source=gpu alloc=cumem_gdr mr=dmabuf mr_relaxed=0\n");
@@ -508,19 +505,17 @@ static int visWriter(ibv_cq* cq, ibv_qp* wqp, const Hello& peer, uint32_t perIte
   uint64_t m = 0;
   long n = 0;
   char err[192];
-  for (g_done = 0;;) {  // GO -> fill -> WRITE (+ flag) -> POSTED -> own completion -> DONE
+  for (g_done = 0;;) {  // GO -> fill -> WRITE -> POSTED -> own completion -> DONE
     const Msg go = ctlRecv(30000);
     if (go.type == M_END) break;
     if (go.type != M_GO || go.a == 0 || go.a > VIS_MAX || go.a % 8 != 0) nicFail("unexpected control message (writer)");
     fillKernel<<<120, 256, 0, st>>>((unsigned long long*)src, go.a / 8, go.iter + 1);
     CK(cudaGetLastError());
     CK(cudaStreamSynchronize(st));
-    *fsrc = (uint64_t)go.iter + 1;
-    const Op ops[2] = {{0 /* iova 0: local addresses are offsets */, srcMr->lkey, go.a, 0, peer.rkey0},
-                       {(uint64_t)(uintptr_t)fsrc, fsrcMr->lkey, 8, FLAG_OFF, peer.rkey0}};
-    const uint64_t last = postChain(wqp, IBV_WR_RDMA_WRITE, ops, (int)perIter);
+    const Op op = {0 /* iova 0: local addresses are offsets */, srcMr->lkey, go.a, 0, peer.rkey0};
+    const uint64_t last = postChain(wqp, IBV_WR_RDMA_WRITE, &op, 1);
     if (last == 0) nicFail("writer post");
-    m += perIter;
+    m++;
     ctlSend(M_POSTED, go.iter, go.a, m);
     if (!cqWait(cq, last, 2000, err, sizeof(err))) nicFail(err);
     const Msg d = ctlRecv(30000);
@@ -536,21 +531,19 @@ static int runVis(int argc, char** argv) {
   g_gid = atoi(argv[5]);
   const long iters = atol(argv[7]);
   const int code = sizeCodeOf(szs);
-  const char* sigs = getenv("MF_SIGNAL") && *getenv("MF_SIGNAL") ? getenv("MF_SIGNAL") : "msn";
-  const bool flag = strcmp(sigs, "flag") == 0, host = role == "host";
-  if ((role != "writer" && !host) || code == 0 || iters < 3 || iters > 300000 || (!flag && strcmp(sigs, "msn") != 0))
-    setupFail("role writer|host, size 4k|256k|2m|rand, iters 3..300000, MF_SIGNAL msn|flag");
+  const bool host = role == "host";
+  if ((role != "writer" && !host) || code == 0 || iters < 3 || iters > 300000)
+    setupFail("role writer|host, size 4k|256k|2m|rand, iters 3..300000");
   if (!rmsnSelfTest()) setupFail("rmsn modulo-2^24 self-test");
   const uint64_t seed = (uint64_t)envL("MF_SEED", 0x4d46);
-  const uint32_t perIter = flag ? 2 : 1;
-  kvf("mode=vis role=%s size=%s iters=%ld signal=%s seed=%#lx rmsn_selftest=ok\n", role.c_str(), szs.c_str(), iters, sigs,
+  kvf("mode=vis role=%s size=%s iters=%ld signal=msn seed=%#lx rmsn_selftest=ok\n", role.c_str(), szs.c_str(), iters,
       (unsigned long)seed);
-  ibv_context* ctx = openDev(argv[4], host && !flag);  // DEVX only where QUERY_QP is issued
+  ibv_context* ctx = openDev(argv[4], host);  // DEVX only where QUERY_QP is issued
   ibv_pd* pd = ibv_alloc_pd(ctx);
   ibv_cq* cq = ibv_create_cq(ctx, 64, nullptr, nullptr, 0);
   if (pd == nullptr || cq == nullptr) setupFail("PD/CQ");
   Hello me{};
-  me.mode = 1, me.sig = perIter, me.iters = (uint32_t)iters, me.sizeCode = (uint32_t)code, me.b3 = VIS_BYTES;
+  me.mode = 1, me.sig = 1, me.iters = (uint32_t)iters, me.sizeCode = (uint32_t)code, me.b3 = VIS_BYTES;
   if (!host) {
     cudaInit();
     ibv_qp* wqp = makeQp(pd, cq, 8);
@@ -558,7 +551,7 @@ static int runVis(int argc, char** argv) {
     ctlOpen(argv[8]);
     const Hello peer = exchange(me);
     if (!connectQp(wqp, peer.qpn0, peer.gid, g_pathMtu)) setupFail("connect to the peer");
-    return visWriter(cq, wqp, peer, perIter);
+    return visWriter(cq, wqp, peer);
   }
   VisHost h;  // the pool and every other MR and QP of this process in ONE PD (9.3, 9.4: the GIN PD)
   h.lcq = ibv_create_cq(ctx, 64, nullptr, nullptr, 0);
@@ -591,11 +584,9 @@ static int runVis(int argc, char** argv) {
   const unsigned long long budget = (unsigned long long)envL("MF_QUERY_BUDGET", 30000);
   g_queryCap = budget + 400;
   uint32_t rmsn0 = 0, qs = 0;
-  if (!flag) {
-    if (!queryRmsnRaw(h.rq, &rmsn0, &qs)) setupFail("QUERY_QP (DEVX) refused");
-    g_queryQp++;
-    kvf("rmsn0=%u qp_state=%u query_budget=%llu query_cap=%llu\n", rmsn0, qs, budget, g_queryCap);
-  }
+  if (budget < 1000 || !queryRmsnRaw(h.rq, &rmsn0, &qs)) setupFail("MF_QUERY_BUDGET >= 1000, QUERY_QP (DEVX)");
+  g_queryQp++;
+  kvf("rmsn0=%u qp_state=%u query_budget=%llu query_cap=%llu\n", rmsn0, qs, budget, g_queryCap);
   h.buf[FENCE_OFF / 8] = 0x6d6972726f723121ull;  // self-check of both loopback READ targets: known pool words come back
   visFence(h, false);
   if (*h.fst != h.buf[FENCE_OFF / 8]) setupFail("loopback READ self-check (fence pair)");
@@ -614,7 +605,7 @@ static int runVis(int argc, char** argv) {
   g_done = 0;
   for (long i = 0; i < iters; i++) {
     if ((incomplete = (nowUs() - g_t0) / 1e6 > runS)) break;
-    if ((budgetStop = !flag && budget > 0 && g_queryQp.load() >= budget)) break;
+    if ((budgetStop = g_queryQp.load() >= budget)) break;
     const int p = path[(size_t)i];
     const uint32_t n = size[(size_t)i], it1 = (uint32_t)i + 1;
     if (p == P_A3) memset(h.stg, 0xff, n);  // poisoned: a READ that delivered nothing cannot pass
@@ -622,23 +613,14 @@ static int runVis(int argc, char** argv) {
     const Msg x = ctlRecv(10000);
     const double tp = nowUs();
     if (x.type != M_POSTED || x.iter != (uint32_t)i || x.a != n) nicFail("control message out of order (host)");
-    if (x.m != (m += perIter)) nicFail("POSTED count differs from the expected messages");
+    if (x.m != ++m) nicFail("POSTED count differs from the expected messages");
     bool edge = false;
-    if (flag) {
-      const volatile uint64_t* fw = (const volatile uint64_t*)((char*)h.buf + FLAG_OFF);
-      for (long spins = 0; *fw != (uint64_t)it1; spins++) {
-        edge = true;
-        if ((spins & 1023) == 1023 && nowUs() - tp > 2e6) nicFail("the flag word did not arrive within 2 s");
-      }
-      reachUs.push_back(nowUs() - tp);
-    } else {
-      double reach = 0;
-      const long polls = waitRmsn(h.rq, rmsn0, m, perIter, tp, est, &edge, &reach);
-      reachUs.push_back(reach);
-      est = est == 0 ? reach : 0.8 * est + 0.2 * reach;
-      pollsMax = std::max(pollsMax, polls);
-      pollsSum += polls;
-    }
+    double reach = 0;
+    const long polls = waitRmsn(h.rq, rmsn0, m, tp, est, &edge, &reach);
+    reachUs.push_back(reach);
+    est = est == 0 ? reach : 0.8 * est + 0.2 * reach;
+    pollsMax = std::max(pollsMax, polls);
+    pollsSum += polls;
     std::atomic_thread_fence(std::memory_order_acquire);
     unsigned long long stale = 0, corrupt = 0;
     if (p == P_A2) visFence(h, true);
@@ -718,6 +700,20 @@ static void bgLoop(Bg& bg, ibv_qp* bq, ibv_cq* bcq, const Op* ops, int k) {
   }
   bg.busy = 0;
 }
+// MiB list of an environment variable: 1..maxN values in lo..hi
+static std::vector<size_t> mibList(const char* name, const char* def, size_t maxN, size_t lo, size_t hi) {
+  const std::string s = getenv(name) && *getenv(name) ? getenv(name) : def;
+  std::vector<size_t> v;
+  for (size_t a = 0; a < s.size();) {
+    const size_t b = std::min(s.find(',', a), s.size());
+    v.push_back((size_t)atol(s.substr(a, b - a).c_str()));
+    a = b + 1;
+  }
+  if (v.empty() || v.size() > maxN) setupFail(name);
+  for (size_t x : v)
+    if (x < lo || x > hi) setupFail(name);
+  return v;
+}
 static int runStore(int argc, char** argv) {
   if (argc < 8) setupFail("usage: store <src|host> <ib_dev> <gid_index> <reps> <ctl>");
   const std::string role = argv[3];
@@ -726,16 +722,19 @@ static int runStore(int argc, char** argv) {
   if ((role != "src" && role != "host") || reps < 10 || reps > 10000 || reps % 10 != 0)
     setupFail("role src|host, reps a multiple of 10 in 10..10000");
   const size_t MiB = (size_t)1 << 20, storeB = (size_t)envL("MF_STORE_MIB", 30) * MiB;
-  const size_t readB = (size_t)envL("MF_READ_MIB", 150) * MiB, chunkB = (size_t)envL("MF_READ_CHUNK_MIB", 30) * MiB;
-  const size_t bgB = (size_t)envL("MF_BG_MIB", 2) * MiB;
+  const size_t chunkB = (size_t)envL("MF_READ_CHUNK_MIB", 30) * MiB, bgB = (size_t)envL("MF_BG_MIB", 2) * MiB;
   const int bgK = (int)envL("MF_BG_K", 8);
-  if (storeB == 0 || storeB > ((size_t)1 << 30) || readB == 0 || readB > ((size_t)4 << 30) || chunkB == 0 ||
-      chunkB > ((size_t)1 << 30) || (readB + chunkB - 1) / chunkB > 32 || bgB == 0 || bgK < 1 || bgK > 32 ||
-      bgB * (size_t)bgK > storeB)
-    setupFail("MF_STORE_MIB, MF_READ_MIB, MF_READ_CHUNK_MIB, MF_BG_MIB or MF_BG_K out of range");
+  const std::vector<size_t> rsz = mibList("MF_READ_SIZES_MIB", "4,8,16,32,64,128,150", 16, 1, 1024);
+  const size_t readB = *std::max_element(rsz.begin(), rsz.end()) * MiB;
+  const size_t G = (size_t)1 << 30;
+  if (storeB == 0 || storeB > G || chunkB == 0 || chunkB > G || (readB + chunkB - 1) / chunkB > 32 || bgB == 0 || bgB > G ||
+      bgK < 1 || bgK > 32)
+    setupFail("MF_STORE_MIB, MF_READ_CHUNK_MIB, MF_BG_MIB or MF_BG_K out of range");
+  std::string rs;
+  for (size_t x : rsz) rs += (rs.empty() ? "" : ",") + std::to_string(x);
   const bool src = role == "src";
-  kvf("mode=store role=%s reps=%ld store_bytes=%zu read_bytes=%zu read_chunk_bytes=%zu bg_bytes=%zu bg_k=%d\n", role.c_str(),
-      reps, storeB, readB, chunkB, bgB, bgK);
+  kvf("mode=store role=%s reps=%ld store_bytes=%zu read_sizes_mib=%s read_chunk_bytes=%zu bg_bytes=%zu bg_k=%d\n", role.c_str(),
+      reps, storeB, rs.c_str(), chunkB, bgB, bgK);
   ibv_context* ctx = openDev(argv[4], false);
   cudaInit();
   ibv_pd* pd = ibv_alloc_pd(ctx);
@@ -743,20 +742,25 @@ static int runStore(int argc, char** argv) {
   if (pd == nullptr || fcq == nullptr || bcq == nullptr) setupFail("PD/CQ");
   ibv_qp *fq = makeQp(pd, fcq, 64), *bq = makeQp(pd, bcq, 64);
   Hello me{};
-  uint64_t *sbuf = nullptr, *rbuf = nullptr;
-  ibv_mr *regMr = nullptr, *rbufMr = nullptr;
-  if (src) {  // the GPU region (the image) and the host buffer the READs land in (the spare's FETCH buffer)
-    size_t rb = 0;
-    void* region = cuMemAllocRdma(storeB, &rb);
+  uint64_t *sbuf = nullptr, *rbuf = nullptr, *stage = nullptr;
+  void* region = nullptr;
+  ibv_mr *bgMr = nullptr, *stageMr = nullptr, *rbufMr = nullptr;
+  if (src) {  // the image (D2H source; the NIC never reads it), another rank's put source, the staging and FETCH buffers
+    size_t rb = 0, bb = 0;
+    region = cuMemAllocRdma(storeB, &rb);
+    void* bgsrc = cuMemAllocRdma(bgB * (size_t)bgK, &bb);
     fillKernel<<<120, 256>>>((unsigned long long*)region, storeB / 8, 1);
+    fillKernel<<<120, 256>>>((unsigned long long*)bgsrc, bgB * (size_t)bgK / 8, 2);
     CK(cudaGetLastError());
     CK(cudaDeviceSynchronize());
-    regMr = regDmabuf(pd, region, rb, ACC_WIN);
+    bgMr = regDmabuf(pd, bgsrc, bb, ACC_WIN);
+    CK(cudaHostAlloc((void**)&stage, storeB, cudaHostAllocDefault));  // pinned for the copy engine, then for the NIC
+    stageMr = ibv_reg_mr(pd, stage, storeB, IBV_ACCESS_LOCAL_WRITE);
     rbuf = (uint64_t*)hostAlloc(readB);
     rbufMr = ibv_reg_mr(pd, rbuf, readB, IBV_ACCESS_LOCAL_WRITE);
-    if (regMr == nullptr || rbufMr == nullptr) setupFail("src MRs (pinned memory limit? see memlock_kib)");
-    kvf("region=gpu alloc=cumem_gdr mr=dmabuf mr_relaxed=0 fetch_buffer=host\n");
-  } else {  // the store MR, the MR the READs fetch from (both as the pool: iova 0, no RO), the background target (GPU)
+    if (bgMr == nullptr || stageMr == nullptr || rbufMr == nullptr) setupFail("src MRs (pinned memory limit? see memlock_kib)");
+    kvf("image=gpu d2h_target=cudaHostAlloc+ibv_reg_mr write_source=host bg_source=gpu fetch_buffer=host same_pd=1\n");
+  } else {  // the store MR and the MR the READs fetch from (both as the pool: iova 0, no RO), the background target (GPU)
     sbuf = (uint64_t*)hostAlloc(storeB);
     uint64_t* rsrc = (uint64_t*)hostAlloc(readB);
     for (size_t w = 0; w < readB / 8; w++) rsrc[w] = (7ull << 32) | (uint32_t)w;
@@ -769,7 +773,8 @@ static int runStore(int argc, char** argv) {
   }
   ctlOpen(argv[7]);
   me.mode = 2, me.iters = (uint32_t)reps, me.qpn0 = fq->qp_num, me.qpn1 = bq->qp_num;
-  me.b3 = (storeB ^ (readB << 1) ^ (chunkB << 2) ^ (bgB << 3)) + (uint64_t)bgK;
+  me.b3 = std::hash<std::string>{}(rs + "/" + std::to_string(storeB) + "/" + std::to_string(chunkB) + "/" + std::to_string(bgB) +
+                                   "/" + std::to_string(bgK));
   const Hello peer = exchange(me);
   if (!connectQp(fq, peer.qpn0, peer.gid, g_pathMtu) || !connectQp(bq, peer.qpn1, peer.gid, g_pathMtu))
     setupFail("connect to the peer");
@@ -786,25 +791,38 @@ static int runStore(int argc, char** argv) {
     kvf("run_s=%.2f result=HOST_DONE exit=0\n", (nowUs() - g_t0) / 1e6);
     return 0;
   }
-  // ---- src: the WRITE phase (blocks of 10: no traffic, background bursts, alternating) ----
+  struct Row { int phase, arm, mib; long rep; double ms; };  // phase 0 d2h, 1 write, 2 read; arm 0 none, 1 bg
+  std::vector<Row> rows;
+  // ---- src: the D2H phase (inside the input pause in the design: the image into the pinned staging buffer) ----
+  cudaStream_t cs = nullptr;
+  CK(cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking));
+  std::vector<double> d2h, wArm[2];
+  std::vector<std::vector<double>> rd(rsz.size());
+  for (long r = 0; r < reps; r++) {
+    const double t0 = nowUs();
+    CK(cudaMemcpyAsync(stage, region, storeB, cudaMemcpyDeviceToHost, cs));
+    CK(cudaStreamSynchronize(cs));
+    d2h.push_back((nowUs() - t0) / 1e3);
+    rows.push_back(Row{0, 0, (int)(storeB / MiB), r, d2h.back()});
+  }
+  unsigned long long d2hBad = 0;
+  for (size_t w = 0; w < storeB / 8; w++) d2hBad += stage[w] != ((1ull << 32) | (uint32_t)w) ? 1 : 0;
+  // ---- the WRITE phase (outside the pause: staging buffer -> the buddy's store; blocks of 10, no traffic / bursts) ----
   Bg bg;
   Op bops[32];
-  for (int k = 0; k < bgK; k++) bops[k] = {(uint64_t)k * bgB, regMr->lkey, (uint32_t)bgB, (uint64_t)k * bgB, peer.rkey2};
+  for (int k = 0; k < bgK; k++) bops[k] = {(uint64_t)k * bgB, bgMr->lkey, (uint32_t)bgB, (uint64_t)k * bgB, peer.rkey2};
   std::thread bgT(bgLoop, std::ref(bg), bq, bcq, bops, bgK);
-  struct Row { int phase, arm; long rep; double ms; };
-  std::vector<Row> rows;
-  std::vector<double> wArm[2], rd;
   g_done = 0;
   for (long j = 0; j < 2 * reps / 10; j++) {
     const int arm = (int)(j & 1);
     bg.on = arm;
     bgWait(bg, arm == 1);  // the stream runs (or is idle) before the first timed WRITE of the block
     for (int r = 0; r < 10; r++) {
-      const Op op = {0, regMr->lkey, (uint32_t)storeB, 0, peer.rkey0};
+      const Op op = {(uint64_t)(uintptr_t)stage, stageMr->lkey, (uint32_t)storeB, 0, peer.rkey0};
       const double t0 = nowUs();
       runChain(fq, fcq, IBV_WR_RDMA_WRITE, &op, 1, 10000, "store WRITE post");
       wArm[arm].push_back((nowUs() - t0) / 1e3);
-      rows.push_back(Row{0, arm, (long)wArm[arm].size() - 1, wArm[arm].back()});
+      rows.push_back(Row{1, arm, (int)(storeB / MiB), (long)wArm[arm].size() - 1, wArm[arm].back()});
     }
     if (bg.err.load()) nicFail(bg.msg);
     g_done = j + 1;
@@ -813,41 +831,58 @@ static int runStore(int argc, char** argv) {
   bgWait(bg, false);
   bg.stop = 1, bgT.join();
   ctlSend(M_PHASE, 1, 0, 0);
-  // ---- the READ phase (the FETCH of 9.4: image + segments from one host MR) ----
-  Op ops[32];
-  int nc = 0;
-  for (size_t o = 0; o < readB; o += chunkB, nc++)
-    ops[nc] = {(uint64_t)(uintptr_t)rbuf + o, rbufMr->lkey, (uint32_t)std::min(chunkB, readB - o), o, peer.rkey1};
+  // ---- the READ phase (the FETCH of 9.4; every size once per round, a seeded order; first READ posted to last done) ----
   unsigned long long readBad = 0;
+  uint64_t sr = (uint64_t)envL("MF_SEED", 0x4d46);
+  std::vector<size_t> order(rsz.size());
   for (long r = 0; r < reps; r++) {
-    const bool check = r == 0 || r == reps - 1;
-    if (check) memset(rbuf, 0xff, readB);
-    const double t0 = nowUs();
-    runChain(fq, fcq, IBV_WR_RDMA_READ, ops, nc, 20000, "store READ post");
-    rd.push_back((nowUs() - t0) / 1e3);
-    rows.push_back(Row{1, 0, r, rd.back()});
-    for (size_t w = 0; check && w < readB / 8; w++) readBad += rbuf[w] != ((7ull << 32) | (uint32_t)w) ? 1 : 0;
+    for (size_t i = 0; i < order.size(); i++) order[i] = i;
+    for (size_t i = order.size(); i > 1; i--) std::swap(order[i - 1], order[splitmix(&sr) % i]);
+    for (size_t idx : order) {
+      const size_t bytes = rsz[idx] * MiB;
+      Op ops[32];
+      int nc = 0;
+      for (size_t o = 0; o < bytes; o += chunkB, nc++)
+        ops[nc] = {(uint64_t)(uintptr_t)rbuf + o, rbufMr->lkey, (uint32_t)std::min(chunkB, bytes - o), o, peer.rkey1};
+      const bool check = (r == 0 || r == reps - 1) && bytes == readB;
+      if (check) memset(rbuf, 0xff, readB);
+      const double t0 = nowUs();
+      runChain(fq, fcq, IBV_WR_RDMA_READ, ops, nc, 20000, "store READ post");
+      rd[idx].push_back((nowUs() - t0) / 1e3);
+      rows.push_back(Row{2, 0, (int)rsz[idx], r, rd[idx].back()});
+      for (size_t w = 0; check && w < readB / 8; w++) readBad += rbuf[w] != ((7ull << 32) | (uint32_t)w) ? 1 : 0;
+    }
   }
   ctlSend(M_END, 0, 0, 0);
   const char* tf = getenv("MF_TIMING_FILE");
   FILE* f = (tf != nullptr && *tf != 0) ? fopen(tf, "w") : nullptr;
   if (f != nullptr) {
-    fprintf(f, "phase\tarm\trep\tms\n");
-    for (const Row& x : rows) fprintf(f, "%s\t%s\t%ld\t%.4f\n", x.phase ? "read" : "write", x.arm ? "bg" : "none", x.rep, x.ms);
+    static const char* PH[3] = {"d2h", "write", "read"};
+    fprintf(f, "phase\tarm\tmib\trep\tms\n");
+    for (const Row& x : rows) fprintf(f, "%s\t%s\t%d\t%ld\t%.4f\n", PH[x.phase], x.arm ? "bg" : "none", x.mib, x.rep, x.ms);
     fclose(f);
   }
   kvf("timing_file_rows=%zu\n", f != nullptr ? rows.size() : (size_t)0);
   const double gib = 1.0 / (1 << 30), bgS = bg.ns.load() / 1e9;
+  kvf("d2h_n=%zu d2h_p50_ms=%.3f d2h_p99_ms=%.3f d2h_max_ms=%.3f d2h_gbps_at_p50=%.2f d2h_bad_words=%llu\n", d2h.size(),
+      pct(d2h, 0.5), pct(d2h, 0.99), pct(d2h, 1.0), (double)storeB / 1e9 / (pct(d2h, 0.5) / 1e3), d2hBad);
   for (int a = 0; a < 2; a++) {
     const char* an = a ? "bg" : "none";
-    kvf("write_%s_n=%zu write_%s_p50_ms=%.3f write_%s_p99_ms=%.3f write_%s_max_ms=%.3f write_%s_gibps_at_p50=%.2f\n", an,
+    kvf("write_%s_n=%zu write_%s_p50_ms=%.3f write_%s_p99_ms=%.3f write_%s_max_ms=%.3f write_%s_gbps_at_p50=%.2f\n", an,
         wArm[a].size(), an, pct(wArm[a], 0.5), an, pct(wArm[a], 0.99), an, pct(wArm[a], 1.0), an,
-        (double)storeB * gib / (pct(wArm[a], 0.5) / 1e3));
+        (double)storeB / 1e9 / (pct(wArm[a], 0.5) / 1e3));
   }
   kvf("bg_rounds=%ld bg_gibps=%.2f\n", bg.rounds.load(), bgS > 0 ? (double)bg.bytes.load() * gib / bgS : 0.0);
-  kvf("read_n=%zu read_p50_ms=%.3f read_p99_ms=%.3f read_max_ms=%.3f theta_gibps=%.2f theta_gbps=%.2f read_bad_words=%llu\n",
-      rd.size(), pct(rd, 0.5), pct(rd, 0.99), pct(rd, 1.0), (double)readB * gib / (pct(rd, 0.5) / 1e3),
-      (double)readB / 1e9 / (pct(rd, 0.5) / 1e3), readBad);
+  double sx = 0, sy = 0, sxx = 0, sxy = 0, worst = 0;  // least squares of the per-size p50 against the bytes
+  for (size_t i = 0; i < rsz.size(); i++) {
+    const double x = (double)(rsz[i] * MiB), y = pct(rd[i], 0.5);
+    sx += x, sy += y, sxx += x * x, sxy += x * y, worst = std::max(worst, pct(rd[i], 0.99));
+    kvf("read_%zum_n=%zu read_%zum_p50_ms=%.3f read_%zum_p99_ms=%.3f read_%zum_max_ms=%.3f\n", rsz[i], rd[i].size(), rsz[i],
+        y, rsz[i], pct(rd[i], 0.99), rsz[i], pct(rd[i], 1.0));
+  }
+  const double nn = (double)rsz.size(), den = nn * sxx - sx * sx, slope = den > 0 ? (nn * sxy - sx * sy) / den : 0;
+  kvf("read_fit_points=%zu read_fit_a_ms=%.3f read_fit_theta_gbps=%.2f read_p99_worst_ms=%.3f read_bad_words=%llu\n",
+      rsz.size(), den > 0 ? (sy - slope * sx) / nn : -1.0, slope > 0 ? 1e-6 / slope : -1.0, worst, readBad);
   kvf("run_s=%.2f result=DONE exit=0\n", (nowUs() - g_t0) / 1e6);
   return 0;
 }
@@ -868,23 +903,27 @@ static void stage(const char* tag, const char* s, int ok) {
   fflush(stdout);
   kvf("stage=%s ok=%d t_s=%.3f\n", s, ok, (nowUs() - g_t0) / 1e6);
 }
+static long vmPinKib() {  // this process's pinned memory as the kernel counts it (ibv_reg_mr pins host pages)
+  FILE* f = fopen("/proc/self/status", "r");
+  char line[256];
+  long v = -1;
+  while (f != nullptr && fgets(line, sizeof(line), f) != nullptr)
+    if (sscanf(line, "VmPin: %ld", &v) == 1) break;
+  if (f != nullptr) fclose(f);
+  return v;
+}
 static int runBar1(int argc, char** argv) {
   if (argc < 7) setupFail("usage: bar1 <tag> <ib_dev> <ctl_dir> <pd2 0|1>");
   const char* tag = argv[3];
-  const std::string dir = argv[5], spec = getenv("MF_BAR1_MIB") && *getenv("MF_BAR1_MIB") ? getenv("MF_BAR1_MIB") : "6,24";
+  const std::string dir = argv[5], stopF = dir + "/stop";
   const bool pd2 = atoi(argv[6]) != 0;
-  std::vector<size_t> mib;
-  for (size_t a = 0; a < spec.size();) {
-    const size_t b = std::min(spec.find(',', a), spec.size());
-    mib.push_back((size_t)atol(spec.substr(a, b - a).c_str()));
-    a = b + 1;
-  }
-  if (mib.empty() || mib.size() > 4) setupFail("MF_BAR1_MIB: one to four sizes in MiB");
-  for (size_t x : mib)
-    if (x == 0 || x > 256) setupFail("MF_BAR1_MIB: sizes in 1..256 MiB");
+  const std::vector<size_t> mib = mibList("MF_BAR1_MIB", "6,24", 4, 1, 256);
+  const long hostMib = envL("MF_BAR1_HOST_MIB", 0);
+  if (hostMib < 0 || hostMib > 16384) setupFail("MF_BAR1_HOST_MIB: 0..16384");
   const double waitS = (double)envL("MF_STAGE_WAIT_S", 120);
   g_t0 = nowUs();
-  kvf("mode=bar1 tag=%s pd2=%d windows_mib=%s pid=%d\n", tag, pd2 ? 1 : 0, spec.c_str(), (int)getpid());
+  kvf("mode=bar1 tag=%s pd2=%d windows_mib=%s host_mib=%ld pid=%d\n", tag, pd2 ? 1 : 0,
+      getenv("MF_BAR1_MIB") && *getenv("MF_BAR1_MIB") ? getenv("MF_BAR1_MIB") : "6,24", hostMib, (int)getpid());
   ibv_context* ctx = openDev(argv[4], false);
   ibv_pd* pds[2] = {ibv_alloc_pd(ctx), pd2 ? ibv_alloc_pd(ctx) : nullptr};
   if (pds[0] == nullptr || (pd2 && pds[1] == nullptr)) setupFail("PD");
@@ -896,20 +935,30 @@ static int runBar1(int argc, char** argv) {
   stage(tag, "ctx", 1);
   std::vector<ibv_mr*> mrs;
   int fails = 0;
-  const char* sn[2] = {"pd1", "pd2"};
-  const std::string stopF = dir + "/stop";
-  for (int k = 0; k < 2; k++) {
+  const char* sn[3] = {"pd1", "host", "pd2"};  // windows in the GIN PD; the pinned host memory; windows in a second PD
+  for (int k = 0; k < 3; k++) {
     const int w = fileWait(dir + "/go_" + sn[k], stopF, waitS);
     if (w != 1) {
       if (w == 0) kvf("stage_wait_timeout=go_%s\n", sn[k]);
-      else stage(tag, k ? "pd2_skipped" : "pd1_skipped", 1);
+      else stage(tag, (std::string(sn[k]) + "_skipped").c_str(), 1);
       break;
     }
     int ok = 1;
-    for (size_t j = 0; pds[k] != nullptr && j < win.size(); j++) {
+    if (k == 1 && hostMib > 0) {  // pool, store, D2H staging and FETCH buffer of this process (9.3, 9.4), as the pool
+      void* hb = hostAlloc((size_t)hostMib << 20);
       const double t0 = nowUs();
       errno = 0;
-      ibv_mr* mr = regDmabuf(pds[k], win[j], bytes[j], ACC_WIN);
+      ibv_mr* mr = regPool(pds[0], hb, (size_t)hostMib << 20);
+      kvf("reg_host_%ldmib_ok=%d reg_host_%ldmib_ms=%.2f reg_host_%ldmib_errno=%d vm_pin_kib=%ld\n", hostMib, mr ? 1 : 0, hostMib,
+          (nowUs() - t0) / 1e3, hostMib, mr ? 0 : errno, vmPinKib());
+      if (mr != nullptr) mrs.push_back(mr);
+      else ok = 0, fails++;
+    }
+    ibv_pd* pdk = k == 0 ? pds[0] : k == 2 ? pds[1] : nullptr;
+    for (size_t j = 0; pdk != nullptr && j < win.size(); j++) {
+      const double t0 = nowUs();
+      errno = 0;
+      ibv_mr* mr = regDmabuf(pdk, win[j], bytes[j], ACC_WIN);
       kvf("reg_%s_%zumib_ok=%d reg_%s_%zumib_ms=%.2f reg_%s_%zumib_errno=%d\n", sn[k], mib[j], mr ? 1 : 0, sn[k], mib[j],
           (nowUs() - t0) / 1e3, sn[k], mib[j], mr ? 0 : errno);
       if (mr != nullptr) mrs.push_back(mr);

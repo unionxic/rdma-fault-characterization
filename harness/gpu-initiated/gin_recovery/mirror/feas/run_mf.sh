@@ -5,9 +5,11 @@
 #   vis_<4k|256k|2m|rand>_<rain|sunny>  check 1: the named node holds the host MR (mirror_feas vis host; it listens), the
 #                                       other node writes from its GPU (vis writer); <repeat> iterations
 #   store_<rain|sunny>                  check 3: the named node holds the store MR, the READ source and the background target
-#                                       (store host; it listens), the other node is src; <repeat> repetitions (x 10)
-#   bar1_rain                           check 4: three bar1 processes on rain's GPU (p0 also in a second PD, p2, sp; the
-#                                       slots of rank 0, rank 2 and rank 2's spare); <repeat> is not used
+#                                       (store host; it listens), the other node is src (D2H, WRITE, READ); <repeat>
+#                                       repetitions (a multiple of 10)
+#   bar1_rain                           check 4: three bar1 processes on rain's GPU (p0 also in a second PD, p2, sp: the
+#                                       slots of rank 0, rank 2 and rank 2's spare), each also pinning its host memory
+#                                       (MF_BAR1_HOST_MIB_<P0|P2|SP>); <repeat> is not used
 #   cm_<lat4k|lat256k|lat2m|bw256k|bw2m>_<one|man-self|man-peer>_<rain|sunny>
 #                                       check 2: gin_ts2 with the manual-mirror arm of cost_man.md (built and deployed by the
 #                                       test work package); the named node receives (rank 1), the other sends (rank 0,
@@ -21,16 +23,19 @@
 # Receipt clock (the house style of ../../restore/impl/test/run_rs.sh): every line a process prints is streamed to rain and
 # written as "<rain CLOCK_MONOTONIC at receipt, s> <line>" (sunny's through the ssh stdout).
 # files in <logdir> (stem = <cell>, or <cell>_<tag>): <stem>_<name>.kv and .log (vis: host, writer; store: host, src; bar1:
-#   p0, p2, sp; cm: r0, r1), <stem>_timing.tsv (store: src's every timed operation), <stem>_bar1.txt (bar1: rain's BAR1 at
-#   each stage), <stem>_lat_raw.csv.gz (cm lat cells: rank 0's per-iteration ns; raw data, not tracked),
+#   p0, p2, sp; cm: r0, r1), <stem>_timing.tsv (store: src's every timed operation), <stem>_bar1.txt (bar1: rain's BAR1 and
+#   MemAvailable at each stage), <stem>_lat_raw.csv.gz (cm lat cells: rank 0's per-iteration ns; raw data, not tracked),
 #   <stem>_gpu_<node>_<before|after>.txt, <stem>_meta.txt (left: this run's processes still there after it ended)
-# env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), MFBIN ($HOME/rs-bundle/mf/mirror_feas), MF_SIGNAL (msn |
-#   flag, vis), MF_QUERY_BUDGET (30000, vis host), MF_BAR1_MIN_FREE_MIB (64: bar1 skips the second-PD stage when rain's BAR1
-#   Free after the first stage is below it), CMBIN ($HOME/rs-bundle/mfcm/gin_ts2), CMLIB ($HOME/rs-bundle/i5/lib/rsp: the
+# env: SUNNY_SSH (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), MFBIN ($HOME/rs-bundle/mf/mirror_feas), MF_QUERY_BUDGET
+#   (30000, vis host), MF_READ_SIZES_MIB (4,8,16,32,64,128,150, store), MF_BAR1_HOST_MIB_P0, _P2, _SP (812, 812, 1082: pool
+#   3 x 3 x 80 + store 2 x 31 + D2H staging 30, and the spare's FETCH buffer 270, 9.3, 9.4), MF_BAR1_MIN_FREE_MIB (64: bar1
+#   skips the second-PD stage when rain's BAR1 Free after the window stage is below it), CMBIN ($HOME/rs-bundle/mfcm/gin_ts2), CMLIB ($HOME/rs-bundle/i5/lib/rsp: the
 #   gin-restore production library of the deployment set i5, read only), CM_LOG_MEASURE_MS (50)
 set -u
 CELL=${1:?cell}; REP=${2:?repeat}; LOGDIR=${3:?logdir}; RTAG=${4:-}
-SIG=${MF_SIGNAL:-msn}; QB=${MF_QUERY_BUDGET:-30000}; MINFREE=${MF_BAR1_MIN_FREE_MIB:-64}; LMS=${CM_LOG_MEASURE_MS:-50}
+QB=${MF_QUERY_BUDGET:-30000}; MINFREE=${MF_BAR1_MIN_FREE_MIB:-64}; LMS=${CM_LOG_MEASURE_MS:-50}
+RSZ=${MF_READ_SIZES_MIB:-4,8,16,32,64,128,150}
+HP0=${MF_BAR1_HOST_MIB_P0:-812}; HP2=${MF_BAR1_HOST_MIB_P2:-812}; HSP=${MF_BAR1_HOST_MIB_SP:-1082}
 for v in $(env | sed -n 's/^\(\(NCCL\|GIN\|MF\)_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 SUNNY_HOST=${SUNNY_SSH#*@}
@@ -39,8 +44,8 @@ BIN=${MFBIN:-$HOME/rs-bundle/mf/mirror_feas}
 CMBIN=${CMBIN:-$HOME/rs-bundle/mfcm/gin_ts2}; CMLIB=${CMLIB:-$HOME/rs-bundle/i5/lib/rsp}
 STEM=$CELL${RTAG:+_$RTAG}
 bad() { echo "bad cell $CELL" >&2; exit 2; }
-case "$SIG" in msn|flag) ;; *) echo "MF_SIGNAL must be msn or flag" >&2; exit 2 ;; esac
-case "$QB$MINFREE$LMS$REP" in *[!0-9]*) echo "MF_QUERY_BUDGET, MF_BAR1_MIN_FREE_MIB, CM_LOG_MEASURE_MS, repeat: numbers" >&2; exit 2 ;; esac
+case "$QB$MINFREE$LMS$REP$HP0$HP2$HSP" in *[!0-9]*) echo "MF_QUERY_BUDGET, MF_BAR1_*, CM_LOG_MEASURE_MS, repeat: numbers" >&2; exit 2 ;; esac
+case "$RSZ" in *[!0-9,]*|"") echo "MF_READ_SIZES_MIB: comma-separated MiB" >&2; exit 2 ;; esac
 [ "$QB" -ge 1000 ] || { echo "MF_QUERY_BUDGET must be >= 1000 (mirror_feas stops hard at the budget + 400)" >&2; exit 2; }
 IFS=_ read -r KIND A1 A2 A3 <<< "$CELL"
 case "$KIND" in
@@ -104,11 +109,12 @@ snapgpu() {  # snapgpu <tag>
   nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader > "$WORK/gpu_rain_$1.txt" 2>&1
   ssh -n "$SUNNY_SSH" "nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader" > "$WORK/gpu_sunny_$1.txt" 2>&1
 }
-bar1read() {  # bar1read <stage>: rain's BAR1 Total, Used, Free (MiB; nvidia-smi, read only; the first GPU listed)
-  local tm; tm=$(python3 -c 'import time; print("%.3f" % time.clock_gettime(time.CLOCK_MONOTONIC))')
-  nvidia-smi -q -d MEMORY 2>/dev/null | sed -n '/BAR1/,/Free/p' | awk -v s="$1" -v tm="$tm" '
+bar1read() {  # bar1read <stage>: rain's BAR1 Total, Used, Free (MiB; nvidia-smi, read only; the first GPU listed), MemAvailable
+  local tm ma; tm=$(python3 -c 'import time; print("%.3f" % time.clock_gettime(time.CLOCK_MONOTONIC))')
+  ma=$(awk '$1 == "MemAvailable:" {print int($2 / 1024)}' /proc/meminfo)
+  nvidia-smi -q -d MEMORY 2>/dev/null | sed -n '/BAR1/,/Free/p' | awk -v s="$1" -v tm="$tm" -v ma="$ma" '
     /Total/ && t == "" {t = $3} /Used/ && u == "" {u = $3} /Free/ && f == "" {f = $3}
-    END {printf "stage=%s total_mib=%s used_mib=%s free_mib=%s t_mono=%s\n", s, t, u, f, tm}'
+    END {printf "stage=%s total_mib=%s used_mib=%s free_mib=%s mem_avail_mib=%s t_mono=%s\n", s, t, u, f, ma, tm}'
 }
 WAITPY='import re,sys,time
 st,n,tmo,files=sys.argv[1],int(sys.argv[2]),float(sys.argv[3]),sys.argv[4:]
@@ -135,7 +141,7 @@ T0=$(date +%s.%N)
 case "$KIND" in
   vis)
     WRN=$(other "$HOSTN"); WD=$(( REP / 200 + 120 )); TMO=$(( WD + 30 ))
-    E="MF_RDV_NONCE=$NONCE MF_WATCHDOG_S=$WD MF_SIGNAL=$SIG"
+    E="MF_RDV_NONCE=$NONCE MF_WATCHDOG_S=$WD"
     start "$HOSTN" host "$E MF_QUERY_BUDGET=$QB MF_RUN_S=$(( REP / 200 + 60 ))" "$BIN" "$(npath "$HOSTN" host.kv)" vis host \
       "$(hca "$HOSTN")" "$(gidx "$HOSTN")" "$SIZE" "$REP" "listen:$PORT"
     sleep 1
@@ -143,7 +149,7 @@ case "$KIND" in
       "connect:$(addr "$HOSTN"):$PORT" ;;
   store)
     SRCN=$(other "$HOSTN"); WD=$(( REP / 2 + 240 )); TMO=$(( WD + 30 ))
-    E="MF_RDV_NONCE=$NONCE MF_WATCHDOG_S=$WD"
+    E="MF_RDV_NONCE=$NONCE MF_WATCHDOG_S=$WD MF_READ_SIZES_MIB=$RSZ"
     start "$HOSTN" host "$E" "$BIN" "$(npath "$HOSTN" host.kv)" store host "$(hca "$HOSTN")" "$(gidx "$HOSTN")" "$REP" "listen:$PORT"
     sleep 1
     start "$SRCN" src "$E MF_TIMING_FILE=$(npath "$SRCN" timing.tsv)" "$BIN" "$(npath "$SRCN" src.kv)" store src "$(hca "$SRCN")" \
@@ -151,14 +157,16 @@ case "$KIND" in
   bar1)
     WD=300; TMO=330; CD=$WORK/ctl; mkdir -p "$CD"
     bar1read before > "$WORK/bar1.txt"
-    E="MF_WATCHDOG_S=$WD MF_STAGE_WAIT_S=60"
-    start rain p0 "$E" "$BIN" "$WORK/p0.kv" bar1 p0 "$HCA_RAIN" "$CD" 1
-    start rain p2 "$E" "$BIN" "$WORK/p2.kv" bar1 p2 "$HCA_RAIN" "$CD" 0
-    start rain sp "$E" "$BIN" "$WORK/sp.kv" bar1 sp "$HCA_RAIN" "$CD" 0
+    E="MF_WATCHDOG_S=$WD MF_STAGE_WAIT_S=90"
+    start rain p0 "$E MF_BAR1_HOST_MIB=$HP0" "$BIN" "$WORK/p0.kv" bar1 p0 "$HCA_RAIN" "$CD" 1
+    start rain p2 "$E MF_BAR1_HOST_MIB=$HP2" "$BIN" "$WORK/p2.kv" bar1 p2 "$HCA_RAIN" "$CD" 0
+    start rain sp "$E MF_BAR1_HOST_MIB=$HSP" "$BIN" "$WORK/sp.kv" bar1 sp "$HCA_RAIN" "$CD" 0
     if waitstage ctx 90; then bar1read ctx >> "$WORK/bar1.txt"; else NOTE="$NOTE ctx_timeout"; fi
     touch "$CD/go_pd1"
     if waitstage pd1 60; then bar1read pd1 >> "$WORK/bar1.txt"; else NOTE="$NOTE pd1_timeout"; fi
     FREE=$(tail -1 "$WORK/bar1.txt" | sed -n 's/.* free_mib=\([0-9]*\) .*/\1/p')
+    touch "$CD/go_host"
+    if waitstage host 80; then bar1read host >> "$WORK/bar1.txt"; else NOTE="$NOTE host_timeout"; fi
     if [ -n "$FREE" ] && [ "$FREE" -ge "$MINFREE" ]; then
       touch "$CD/go_pd2"
       if waitstage pd2 60; then bar1read pd2 >> "$WORK/bar1.txt"; else NOTE="$NOTE pd2_timeout"; fi
@@ -218,9 +226,9 @@ rc() { tr -d '\n' < "$WORK/$1.rc" 2>/dev/null || echo none; }
 RCS=$(for n in $(printf '%s\n' "${!NODE[@]}" | sort); do printf 'rc_%s=%s ' "$n" "$(rc "$n")"; done)
 B1=$(md5sum < "$( [ "$KIND" = cm ] && echo "$CMBIN" || echo "$BIN" )" | cut -c1-32)
 B2=$(ssh -n "$SUNNY_SSH" "md5sum < $( [ "$KIND" = cm ] && echo "$CMBIN" || echo "$BIN" ) | cut -c1-32" 2>/dev/null)
-echo "cell=$STEM kind=$KIND host_node=${HOSTN:-rain} repeat=$REP signal=$SIG query_budget=$QB hca_rain=$HCA_RAIN \
+echo "cell=$STEM kind=$KIND host_node=${HOSTN:-rain} repeat=$REP query_budget=$QB read_sizes_mib=$RSZ hca_rain=$HCA_RAIN \
 hca_sunny=$HCA_SUNNY gid_rain=$GID_R gid_sunny=$GID_S ${RCS}left=$LEFT port=$PORT port_tries=$PORT_TRIES rdv_nonce_set=1 \
-timeout_s=$TMO gpu_apps_before=$GPU_APPS memlock_kib=$MEMLOCK wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') \
+timeout_s=$TMO gpu_apps_before=$GPU_APPS memlock_kib=$MEMLOCK bar1_host_mib=$HP0,$HP2,$HSP wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') \
 bin_md5_rain=$B1 bin_md5_sunny=${B2:-unread}${NOTE:+ note=$(echo $NOTE | tr ' ' ',')}" > "$LOGDIR/${STEM}_meta.txt"
 echo "[$STEM] $RCS:: $(grep -ho 'result=[A-Z_]*\|setup_error=[^ ]*\|nic_error=[^ ]*\|exit=[0-9]*' "$WORK"/*.kv 2>/dev/null | tr '\n' ' ')" >&2
 exit 0

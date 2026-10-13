@@ -2,14 +2,17 @@
 # hold_mf.sh - one hold of gin-mirror's feasibility checks (EXPERIMENT.md 9.8; DRAFT stage, never scored). The main session
 # runs it inside ../../../common/cluster_run.sh (tag mf-<hold>, -w 10800) under timeout -s KILL 880.
 # usage: hold_mf.sh <resultsdir> <hold>
-#   VIS      check 1: vis_<4k|256k|2m>_<sunny|rain> (both directions; the named node holds the host MR), VIS_ITERS
-#            (MF_VIS_ITERS, 10 000) iterations each, into vis/ (a repeat: vis_run<k>/)
+#   VIS      check 1: vis_<4k|256k|2m|rand>_<sunny|rain> (both directions; the named node holds the host MR; rand: 4 KiB -
+#            2 MiB as EXPERIMENT.md 9.8 writes it), VIS_ITERS (MF_VIS_ITERS, 10 000) iterations each, into vis/ (a repeat:
+#            vis_run<k>/)
 #   VISone-<cell>[-<tag>]  one vis cell (vis_<size>_<node>, size 4k|256k|2m|rand), into vis_one<k>/
-#   STORE    check 3: store_rain (sunny's GPU writes to and reads from rain's host MRs: the layout of a rank 3 kill, whose
-#            buddy rank 2 is on rain) and store_sunny (the other direction), STORE_REPS (MF_STORE_REPS, 100) each, into
-#            store/ (a repeat: store_run<k>/)
+#   STORE    check 3: store_rain (sunny uploads to and reads from rain's host MRs: the layout of a rank 3 kill, whose buddy
+#            rank 2 is on rain) and store_sunny (the other direction), STORE_REPS (MF_STORE_REPS, 100) each, into store/ (a
+#            repeat: store_run<k>/)
 #   BAR1     check 4: bar1_rain into bar1/ (a repeat: bar1_run<k>/); not started unless rain's BAR1 Free >= MF_BAR1_START_MIB
-#            (192 = three processes x 30 MiB + one second-PD registration of 30 MiB + the 64 MiB of the pass rule)
+#            (192 = three processes x 30 MiB + one second-PD registration of 30 MiB + the 64 MiB of the pass rule) and rain's
+#            MemAvailable >= the three processes' pinned host memory (MF_BAR1_HOST_MIB_P0 + _P2 + _SP, 812 + 812 + 1082 MiB,
+#            passed on to run_mf.sh) + 1024 MiB (EXPERIMENT.md 8: the free host memory gate)
 #   COSTMAN-<rain|sunny>-<metric>[-<tag>]  check 2: the manual mirror cost (cost_man.md; needs the test work package's
 #            gin_ts2 in ~/rs-bundle/mfcm), metric lat4k|lat256k|lat2m|bw256k|bw2m, the named node receiving: for k = 1-6 the
 #            arms one, man-self, man-peer back to back, the order reversed when k is even (gin-restore 9.15.6's interleave),
@@ -37,6 +40,8 @@ FW=$D/../../scripts/ts1/fwcmd_snapshot.sh
 [ -f "$FW" ] || { echo "missing $FW" >&2; exit 2; }
 VIS_ITERS=${MF_VIS_ITERS:-10000}; STORE_REPS=${MF_STORE_REPS:-100}; QCAP=${MF_QCAP:-40000}
 BAR1_START=${MF_BAR1_START_MIB:-192}; MINMEM=${MF_MIN_MEM_MIB:-2048}
+export MF_BAR1_HOST_MIB_P0=${MF_BAR1_HOST_MIB_P0:-812} MF_BAR1_HOST_MIB_P2=${MF_BAR1_HOST_MIB_P2:-812} MF_BAR1_HOST_MIB_SP=${MF_BAR1_HOST_MIB_SP:-1082}
+MINMEM_R=$MINMEM; [ "$H" = BAR1 ] && MINMEM_R=$(( MF_BAR1_HOST_MIB_P0 + MF_BAR1_HOST_MIB_P2 + MF_BAR1_HOST_MIB_SP + 1024 ))
 CMDERR='grep -i mlx5 | grep -iE "cmd|command" | grep -icE "failed|timeout|leak"'
 mkdir -p "$R"
 HT=$H   # this run's tag for its snapshot files: the hold's name, or <hold>-r<k> when an earlier run left its files here
@@ -57,8 +62,8 @@ refuse() { echo "$(date '+%F %T') hold $H: $1: not started" | tee -a "$R/refused
 b1=$(bar1free); need=128; [ "$H" = BAR1 ] && need=$BAR1_START
 { [ -n "$b1" ] && [ "$b1" -ge "$need" ]; } || refuse "rain BAR1 Free ${b1:-unread} MiB < $need MiB"
 mr=$(memavail); ms=$(ssh -n "$SUNNY_SSH" "awk '\$1 == \"MemAvailable:\" {print int(\$2 / 1024)}' /proc/meminfo" 2>/dev/null)
-{ [ -n "$mr" ] && [ -n "$ms" ] && [ "$mr" -ge "$MINMEM" ] && [ "$ms" -ge "$MINMEM" ]; } ||
-  refuse "MemAvailable rain ${mr:-unread} / sunny ${ms:-unread} MiB < $MINMEM MiB"
+{ [ -n "$mr" ] && [ -n "$ms" ] && [ "$mr" -ge "$MINMEM_R" ] && [ "$ms" -ge "$MINMEM" ]; } ||
+  refuse "MemAvailable rain ${mr:-unread} MiB (needs $MINMEM_R) / sunny ${ms:-unread} MiB (needs $MINMEM)"
 snap() {  # snap <tag>
   echo "== $1 $(date '+%F %T')"
   nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null | sed 's/^/rain gpu: /'
@@ -128,7 +133,7 @@ mfrun() {  # mfrun <cell> <repeat> <dir> <bound_s> [tag]: one run if it fits, th
 VISB=$(( VIS_ITERS / 200 + 150 + 30 ))   # bounds: the runner's timeout (watchdog + 30) and its own waits
 STOREB=$(( STORE_REPS / 2 + 270 + 30 ))
 case "$H" in
-  VIS) d=$(newdir vis); for s in 4k 256k 2m; do for n in sunny rain; do mfrun "vis_${s}_$n" "$VIS_ITERS" "$d" "$VISB"; done; done ;;
+  VIS) d=$(newdir vis); for s in 4k 256k 2m rand; do for n in sunny rain; do mfrun "vis_${s}_$n" "$VIS_ITERS" "$d" "$VISB"; done; done ;;
   VISone-*)
     cell=${H#VISone-}; cell=${cell%%-*}
     case "$cell" in vis_4k_*|vis_256k_*|vis_2m_*|vis_rand_*) ;; *) echo "VISone-vis_<size>_<node>[-<tag>]" >&2; exit 2 ;; esac

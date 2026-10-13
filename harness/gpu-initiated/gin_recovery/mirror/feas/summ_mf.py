@@ -7,15 +7,18 @@ Pass criteria (draft, 9.8, written before the runs):
     node rain, host node sunny), over every valid run; each direction needs a valid run of each fixed size (4k, 256k, 2m),
     else it is open. a1 (the CPU at once) is reported: it says whether the run could have seen a late write at all. A run
     with an error key, a missing or inconsistent kv has no verdict and is listed.
-  check 3 (store): WRITE p99 <= 10 ms in both arms (no other traffic; background bursts), READ p99 <= 100 ms, per direction,
-    on the latest valid run; theta (READ bytes / READ p50) printed for EXPERIMENT.md 3 (train_restore_parts). p50, p99 and
-    max are recomputed from the timing file with the rank rule of mirror_feas.cu and compared with the kv.
-  check 4 (bar1): rain's BAR1 Free after all three processes registered (stage pd1, and pd2 when it ran) >= 64 MiB; whether
-    the second PD's registration used BAR1 (Used at pd2 - Used at pd1, against the window bytes of one process).
+  check 3 (store): per direction, on the latest valid run: D2H p99 <= 4 ms (the image into the pinned staging buffer, inside
+    the input pause in the design), WRITE p99 <= 10 ms in both arms (no other traffic; background bursts), READ p99 <= 100 ms
+    at every size; the intercept a and theta of the fit a + bytes / theta over the per-size READ p50 are printed for
+    EXPERIMENT.md 3 (seg_restore_slope, train_restore_parts). p50, p99, max and the fit are recomputed from the timing file
+    with the rank rule of mirror_feas.cu and compared with the kv.
+  check 4 (bar1): rain's BAR1 Free after the three processes registered their windows (stage pd1, and pd2 when it ran) >= 64
+    MiB; whether the second PD's registration used BAR1 (Used at pd2 - Used at pd1, against one process's window bytes); and,
+    recorded, whether every process could pin its host memory (pool, store, D2H staging, FETCH buffer) under its memlock
+    limit, with the BAR1 and MemAvailable change of that stage.
   check 2 (COSTMAN): per node and metric the median of each arm (one, man-self, man-peer) over its valid runs (a reading
-    needs >= 5 of 6), the difference against one, and the draft thresholds of EXPERIMENT.md 3 as a reading only (4 KiB
-    +2.5 us; bandwidth ratio of man-peer 0.40-0.60); no verdict (9.8: the thresholds are set again before the
-    pre-registration if they disagree).
+    needs >= 5 of 6) and the difference or ratio against one. No verdict: only the bandwidth ratio of man-peer is read against
+    the draft 0.40-0.60; the 4 KiB latency threshold is measured by the pilot on the real device path (EXPERIMENT.md 9.8).
 """
 import glob
 import os
@@ -154,6 +157,18 @@ def vis(R):
 
 
 # ---------------------------------------------------------------- check 3
+def fit(points):
+    """least squares t = a + b x over (x bytes, t ms); returns (a ms, theta GB/s) or (None, None)"""
+    n = len(points)
+    sx, sy = sum(x for x, _ in points), sum(y for _, y in points)
+    sxx, sxy = sum(x * x for x, _ in points), sum(x * y for x, y in points)
+    den = n * sxx - sx * sx
+    if n < 2 or den <= 0:
+        return None, None
+    b = (n * sxy - sx * sy) / den
+    return (sy - b * sx) / n, (1e-6 / b if b > 0 else None)
+
+
 def store(R):
     out = {}
     for d in runs(R, "store"):
@@ -164,60 +179,77 @@ def store(R):
                 out.setdefault(m.group(1), []).append((d, cell, kv(f), kv(os.path.join(d, cell + "_host.kv"))))
     if not out:
         return None
-    say("== check 3 (store): 30 MiB WRITE GPU -> host MR, 150 MiB READ of a host MR (latest valid run per direction)")
-    say("direction | folder | WRITE none p50/p99/max ms | WRITE bg p50/p99/max ms (bg GiB/s) | READ p50/p99/max ms | theta "
-        "GB/s (GiB/s) | data checks | timing file | verdict")
-    res = {}
+    say("== check 3 (store): D2H 30 MiB, WRITE 30 MiB host -> host MR, READ of a host MR at several sizes (latest valid run "
+        "per direction)")
+    res, theta_kill = {}, None
+    MiB = 1 << 20
     for node in ("rain", "sunny"):
-        label = "%s GPU -> %s host%s" % ("sunny" if node == "rain" else "rain", node,
-                                         " (rank 3 kill layout: buddy rank 2 on rain, spare on sunny)" if node == "rain" else "")
-        cand = out.get(node, [])
-        valid, notes = [], []
-        for d, cell, s, h in cand:
-            e = errlabel(s) or (errlabel(h) and "host " + errlabel(h))
-            if e or s.get("result") != "DONE" or h.get("result") != "HOST_DONE":
-                notes.append("%s: no verdict (%s)" % (os.path.basename(d), e or "result %s/%s" % (s.get("result"), h.get("result"))))
+        label = "%s uploads and reads %s%s" % ("sunny" if node == "rain" else "rain", node,
+                                              " (rank 3 kill layout: buddy rank 2 on rain, spare on sunny)" if node == "rain" else "")
+        valid = []
+        for d, cell, sk, hk in out.get(node, []):
+            e = errlabel(sk) or (errlabel(hk) and "host " + errlabel(hk))
+            if e or sk.get("result") != "DONE" or hk.get("result") != "HOST_DONE":
+                say("%s | %s: no verdict (%s)" % (label, os.path.basename(d), e or "result %s/%s" % (sk.get("result"), hk.get("result"))))
             else:
-                valid.append((d, cell, s, h))
-        for x in notes:
-            say("%s | %s" % (label, x))
+                valid.append((d, cell, sk, hk))
         if not valid:
             res[node] = "open"
             say("%s | no valid run | open" % label)
             continue
-        d, cell, s, h = valid[-1]
-        vals, tnote = {"write_none": [], "write_bg": [], "read_none": []}, "missing"
-        tf = os.path.join(d, cell + "_timing.tsv")
+        d, cell, sk, hk = valid[-1]
+        sizes = [int(x) for x in sk.get("read_sizes_mib", "").split(",") if x.isdigit()]
+        ser = {"d2h": [], "write_none": [], "write_bg": []}
+        rd = {z: [] for z in sizes}
+        notes, tf = [], os.path.join(d, cell + "_timing.tsv")
         if os.path.exists(tf):
             for line in list(open(tf))[1:]:
                 p = line.split()
-                if len(p) == 4:
-                    vals.setdefault("%s_%s" % (p[0], p[1]), []).append(float(p[3]))
-            diffs = []
-            for key, kk in (("write_none", "write_none"), ("write_bg", "write_bg"), ("read_none", "read")):
+                if len(p) != 5:
+                    continue
+                if p[0] == "d2h":
+                    ser["d2h"].append(float(p[4]))
+                elif p[0] == "write":
+                    ser["write_" + p[1]].append(float(p[4]))
+                elif p[0] == "read" and int(p[2]) in rd:
+                    rd[int(p[2])].append(float(p[4]))
+            checks = [(k, ser[k]) for k in ("d2h", "write_none", "write_bg")] + [("read_%dm" % z, rd[z]) for z in sizes]
+            for k, v in checks:
                 for q, name in ((0.5, "p50"), (0.99, "p99"), (1.0, "max")):
-                    a, b = rank(vals[key], q), num(s, "%s_%s_ms" % (kk, name))
-                    if a is None or abs(a - b) > 0.0015:
-                        diffs.append("%s_%s tsv %s kv %s" % (kk, name, a, b))
-            tnote = "recomputed, same as kv" if not diffs else "DIFFERS: " + "; ".join(diffs)
-        w99 = max(num(s, "write_none_p99_ms"), num(s, "write_bg_p99_ms"))
-        r99 = num(s, "read_p99_ms")
-        ok = 0 <= w99 <= 10.0 and 0 <= r99 <= 100.0
-        data = "read %s, store %s bad words" % (s.get("read_bad_words", "?"), h.get("store_check_bad_words", "?"))
-        if s.get("read_bad_words") != "0" or h.get("store_check_bad_words") != "0":
-            data += " (NOT 0: report)"
+                    a_, b_ = rank(v, q), num(sk, "%s_%s_ms" % (k, name))
+                    if a_ is None or abs(a_ - b_) > 0.0015:
+                        notes.append("%s_%s tsv %s kv %s" % (k, name, a_, b_))
+            a_ms, th = fit([(z * MiB, rank(rd[z], 0.5)) for z in sizes if rd[z]])
+            if a_ms is None or abs(a_ms - num(sk, "read_fit_a_ms")) > 0.002 or th is None or \
+                    abs(th - num(sk, "read_fit_theta_gbps")) > 0.006 * max(1.0, th):
+                notes.append("fit tsv a %s theta %s, kv a %s theta %s" % (a_ms, th, sk.get("read_fit_a_ms"), sk.get("read_fit_theta_gbps")))
+            tnote = "recomputed, same as kv" if not notes else "DIFFERS: " + "; ".join(notes)
+        else:
+            a_ms, th, tnote = num(sk, "read_fit_a_ms"), num(sk, "read_fit_theta_gbps"), "timing file missing (kv values)"
+        d99, w99, r99 = num(sk, "d2h_p99_ms"), max(num(sk, "write_none_p99_ms"), num(sk, "write_bg_p99_ms")), num(sk, "read_p99_worst_ms")
+        ok = 0 <= d99 <= 4.0 and 0 <= w99 <= 10.0 and 0 <= r99 <= 100.0
         res[node] = "PASS" if ok else "FAIL"
-        say("%s | %s | %s/%s/%s | %s/%s/%s (%s) | %s/%s/%s | %s (%s) | %s | %s | %s (rule: WRITE p99 %.3f <= 10 ms, READ p99 %.3f <= 100 ms)" % (
-            label, os.path.basename(d), s.get("write_none_p50_ms"), s.get("write_none_p99_ms"), s.get("write_none_max_ms"),
-            s.get("write_bg_p50_ms"), s.get("write_bg_p99_ms"), s.get("write_bg_max_ms"), s.get("bg_gibps"),
-            s.get("read_p50_ms"), s.get("read_p99_ms"), s.get("read_max_ms"), s.get("theta_gbps"), s.get("theta_gibps"), data,
-            tnote, res[node], w99, r99))
-        say("  n: WRITE none %s, bg %s, READ %s; earlier valid runs of this direction: %d" % (
-            s.get("write_none_n"), s.get("write_bg_n"), s.get("read_n"), len(valid) - 1))
+        bad = [k for k in ("d2h_bad_words", "read_bad_words") if sk.get(k) != "0"] + \
+              (["store_check_bad_words"] if hk.get("store_check_bad_words") != "0" else [])
+        say("%s | folder %s | %s (rule: D2H p99 %.3f <= 4 ms, WRITE p99 %.3f <= 10 ms, READ p99 worst %.3f <= 100 ms)" % (
+            label, os.path.basename(d), res[node], d99, w99, r99))
+        say("  D2H p50/p99/max %s/%s/%s ms (%s GB/s at p50); WRITE none %s/%s/%s ms, with bursts %s/%s/%s ms (bursts %s GiB/s)" % (
+            sk.get("d2h_p50_ms"), sk.get("d2h_p99_ms"), sk.get("d2h_max_ms"), sk.get("d2h_gbps_at_p50"), sk.get("write_none_p50_ms"),
+            sk.get("write_none_p99_ms"), sk.get("write_none_max_ms"), sk.get("write_bg_p50_ms"), sk.get("write_bg_p99_ms"),
+            sk.get("write_bg_max_ms"), sk.get("bg_gibps")))
+        say("  READ p50/p99 ms by size: %s" % ", ".join("%d MiB %s/%s" % (z, sk.get("read_%dm_p50_ms" % z), sk.get("read_%dm_p99_ms" % z))
+                                                        for z in sizes))
+        say("  fit over the per-size p50: a %.3f ms, theta %.2f GB/s; n D2H %s, WRITE %s + %s, READ per size %s; timing file: %s; "
+            "data checks: %s; earlier valid runs: %d" % (a_ms if a_ms is not None else -1, th if th is not None else -1,
+                                                         sk.get("d2h_n"), sk.get("write_none_n"), sk.get("write_bg_n"),
+                                                         sk.get("read_%dm_n" % sizes[-1]) if sizes else "?", tnote,
+                                                         "all 0" if not bad else "NOT 0: " + ", ".join(bad), len(valid) - 1))
+        if node == "rain":
+            theta_kill = (a_ms, th)
     vs = list(res.values())
     concl = "PASS (both directions)" if all(v == "PASS" for v in vs) and len(vs) == 2 else "FAIL" if "FAIL" in vs else "open"
-    say("check 3 conclusion: %s; theta for train_restore_parts: the rank 3 kill layout's READ (host rain), %s GB/s" % (
-        concl, next((s.get("theta_gbps") for d, c, s, h in out.get("rain", [])[::-1] if s.get("result") == "DONE"), "none")))
+    say("check 3 conclusion: %s; for seg_restore_slope and train_restore_parts (the rank 3 kill layout, host rain): %s" % (
+        concl, "a %.3f ms, theta %.2f GB/s" % theta_kill if theta_kill and None not in theta_kill else "none"))
     say()
     return concl
 
@@ -241,12 +273,12 @@ def bar1(R):
                ["%s kv missing" % p for p, k in ks.items() if not k]
         regs = {p: {k: v for k, v in x.items() if k.startswith("reg_")} for p, x in ks.items()}
         failed = ["%s %s errno %s" % (p, k[:-3], r.get(k[:-3] + "_errno")) for p, r in regs.items() for k, v in r.items()
-                  if k.endswith("_ok") and v != "1"]
+                  if k.endswith("_ok") and v != "1" and not k.startswith("reg_host_")]
         win = sum(int(x) for x in ks["p0"].get("windows_mib", "6,24").split(","))
         f = lambda s, k: int(st[s][k]) if s in st and st[s].get(k, "").isdigit() else None
         say("folder %s: stages %s; note %s; gpu apps before (rain/sunny) %s" % (
             os.path.basename(d), " ".join("%s used %s free %s" % (s, st[s].get("used_mib"), st[s].get("free_mib"))
-                                          for s in ("before", "ctx", "pd1", "pd2", "after") if s in st),
+                                          for s in ("before", "ctx", "pd1", "host", "pd2", "after") if s in st),
             meta.get("note", "-"), meta.get("gpu_apps_before", "?")))
         if errs:
             say("  no verdict: %s" % "; ".join(errs))
@@ -264,6 +296,14 @@ def bar1(R):
         if uc is not None and u0 is not None and u1 is not None:
             say("  BAR1 Used: three CUDA contexts and allocations +%d MiB, three processes' registrations +%d MiB (windows %d MiB "
                 "each)" % (uc - u0, u1 - uc, win))
+        uh, mh, m1 = f("host", "used_mib"), f("host", "mem_avail_mib"), f("pd1", "mem_avail_mib")
+        hosts = {p: (k.get("host_mib"), k.get("reg_host_%smib_ok" % k.get("host_mib")), k.get("vm_pin_kib"), k.get("memlock_kib"))
+                 for p, k in ks.items()}
+        pinned = all(h[1] == "1" for h in hosts.values() if h[0] not in (None, "0"))
+        say("  pinned host memory (pool, store, D2H staging, FETCH buffer): %s; %s; BAR1 Used change %s MiB, MemAvailable change "
+            "%s MiB" % ("fits" if pinned and "host" in st else "does NOT fit" if "host" in st else "not measured",
+                        ", ".join("%s %s MiB ok=%s VmPin %s KiB memlock %s KiB" % ((p,) + hosts[p]) for p in ("p0", "p2", "sp")),
+                        "?" if uh is None or u1 is None else uh - u1, "?" if mh is None or m1 is None else mh - m1))
         if u2 is None:
             say("  second PD: not measured (%s)" % meta.get("note", "no pd2 stage"))
         else:
@@ -272,7 +312,7 @@ def bar1(R):
             say("  second PD registration of p0's %d MiB used %d MiB of BAR1: %s (other GPU users can move BAR1 between "
                 "readings; see the gpu snapshots)" % (win, dlt, ans))
         concl = "PASS" if ok else "FAIL"
-    say("check 4 conclusion (the latest folder): %s" % concl)
+    say("check 4 conclusion (the latest folder; BAR1 rule only, the pinned host memory is a recorded reading): %s" % concl)
     say()
     return concl
 
@@ -339,10 +379,9 @@ def costman(R):
             for a in ("man-self", "man-peer"):
                 if med[a] is None:
                     say("  %s: incomplete (fewer than 5 valid runs)" % a)
-                elif k is None:
+                elif k is None:  # 9.8: the 4 KiB threshold is the pilot's (real device path); latency is reported only
                     dl = med[a] - med["one"]
-                    draft = "; draft +2.5 us: %s" % ("within" if dl <= 2.5 else "OUTSIDE") if met == "lat4k" else ""
-                    say("  %s - one: %+.3f us (%+.1f%%)%s" % (a, dl, 100.0 * dl / med["one"], draft))
+                    say("  %s - one: %+.3f us (%+.1f%%)" % (a, dl, 100.0 * dl / med["one"]))
                 else:
                     ratio = med[a] / med["one"]
                     draft = "; draft 0.40-0.60: %s" % ("within" if 0.40 <= ratio <= 0.60 else "OUTSIDE") if a == "man-peer" else ""
@@ -387,24 +426,42 @@ def selftest(S):
         w(os.path.join(d, cell + "_meta.txt"), "cell=%s kind=vis left=0\n" % cell)
 
     def storerun(d, node, wmax):
-        cell = "store_" + node
-        wn = [rnd.uniform(3.0, 5.0) for _ in range(100)]
-        wb = [rnd.uniform(4.0, wmax) for _ in range(100)]
-        rd = [rnd.uniform(14.0, 20.0) for _ in range(100)]
-        rows = ["phase\tarm\trep\tms"] + ["write\tnone\t%d\t%.4f" % (i, x) for i, x in enumerate(wn)] + \
-               ["write\tbg\t%d\t%.4f" % (i, x) for i, x in enumerate(wb)] + ["read\tnone\t%d\t%.4f" % (i, x) for i, x in enumerate(rd)]
-        w(os.path.join(d, cell + "_timing.tsv"), "\n".join(rows) + "\n")
+        cell, sizes, MiB = "store_" + node, (4, 8, 16, 32, 64, 128, 150), 1 << 20
         r4 = lambda v: [float("%.4f" % x) for x in v]
-        wn, wb, rd = r4(wn), r4(wb), r4(rd)
-        p = lambda v, q: rank(v, q)
-        w(os.path.join(d, cell + "_src.kv"), "mode=store role=src\n"
-          "write_none_n=100 write_none_p50_ms=%.3f write_none_p99_ms=%.3f write_none_max_ms=%.3f\n"
-          "write_bg_n=100 write_bg_p50_ms=%.3f write_bg_p99_ms=%.3f write_bg_max_ms=%.3f\nbg_rounds=900 bg_gibps=9.1\n"
-          "read_n=100 read_p50_ms=%.3f read_p99_ms=%.3f read_max_ms=%.3f theta_gibps=8.5 theta_gbps=9.1 read_bad_words=0\n"
-          "run_s=9.0 result=DONE exit=0\n" % (p(wn, .5), p(wn, .99), p(wn, 1), p(wb, .5), p(wb, .99), p(wb, 1), p(rd, .5),
-                                               p(rd, .99), p(rd, 1)))
+        dd = r4([rnd.uniform(2.6, 3.2) for _ in range(100)])
+        wn = r4([rnd.uniform(3.0, 5.0) for _ in range(100)])
+        wb = r4([rnd.uniform(4.0, wmax) for _ in range(100)])
+        rd = {z: r4([0.05 + z * MiB / 10e9 * 1e3 * rnd.uniform(0.99, 1.04) for _ in range(100)]) for z in sizes}  # 10 GB/s
+        rows = ["phase\tarm\tmib\trep\tms"] + ["d2h\tnone\t30\t%d\t%.4f" % (i, x) for i, x in enumerate(dd)] + \
+               ["write\tnone\t30\t%d\t%.4f" % (i, x) for i, x in enumerate(wn)] + \
+               ["write\tbg\t30\t%d\t%.4f" % (i, x) for i, x in enumerate(wb)] + \
+               ["read\tnone\t%d\t%d\t%.4f" % (z, i, x) for z in sizes for i, x in enumerate(rd[z])]
+        w(os.path.join(d, cell + "_timing.tsv"), "\n".join(rows) + "\n")
+        p3 = lambda v: "%.3f/%.3f/%.3f" % (rank(v, .5), rank(v, .99), rank(v, 1))
+        line = lambda k, v: "%s_n=%d %s_p50_ms=%s %s_p99_ms=%s %s_max_ms=%s" % ((k, len(v)) + sum(
+            ((k, x) for x in p3(v).split("/")), ()))
+        a_ms, th = fit([(z * MiB, rank(rd[z], .5)) for z in sizes])
+        w(os.path.join(d, cell + "_src.kv"), "mode=store role=src reps=100 read_sizes_mib=%s\n%s d2h_gbps_at_p50=11.0 d2h_bad_words=0\n%s\n%s\n"
+          "bg_rounds=900 bg_gibps=9.1\n%s\nread_fit_points=7 read_fit_a_ms=%.3f read_fit_theta_gbps=%.2f read_p99_worst_ms=%.3f "
+          "read_bad_words=0\nrun_s=9.0 result=DONE exit=0\n" % (
+              ",".join(map(str, sizes)), line("d2h", dd), line("write_none", wn), line("write_bg", wb),
+              "\n".join(line("read_%dm" % z, rd[z]) for z in sizes), a_ms, th, max(rank(rd[z], .99) for z in sizes)))
         w(os.path.join(d, cell + "_host.kv"), "store_check_bad_words=0\nrun_s=9.0 result=HOST_DONE exit=0\n")
         w(os.path.join(d, cell + "_meta.txt"), "cell=%s kind=store left=0\n" % cell)
+
+    def bar1run(d, used, host_fail=None, pd2=True):
+        stages = ["before", "ctx", "pd1", "host"] + (["pd2"] if pd2 else []) + ["after"]
+        w(os.path.join(d, "bar1_rain_bar1.txt"), "".join("stage=%s total_mib=256 used_mib=%d free_mib=%d mem_avail_mib=%d t_mono=%d\n" % (
+            s_, used[s_], 256 - used[s_], 60000 - (2706 if s_ in ("host", "pd2") else 0), i) for i, s_ in enumerate(stages)))
+        for p_, mib in (("p0", 812), ("p2", 812), ("sp", 1082)):
+            ok = 0 if p_ == host_fail else 1
+            w(os.path.join(d, "bar1_rain_%s.kv" % p_), "memlock_kib=unlimited hard_bound_s=300\nmode=bar1 tag=%s pd2=%d windows_mib=6,24 "
+              "host_mib=%d\nreg_pd1_6mib_ok=1 reg_pd1_6mib_errno=0\nreg_pd1_24mib_ok=1 reg_pd1_24mib_errno=0\nreg_host_%dmib_ok=%d "
+              "reg_host_%dmib_errno=%d vm_pin_kib=%d\nregistrations_failed=%d result=%s exit=%d\n" % (
+                  p_, p_ == "p0", mib, mib, ok, mib, 0 if ok else 12, mib * 1024 if ok else 0, 1 - ok, "DONE" if ok else "REG_FAIL",
+                  0 if ok else 8))
+        w(os.path.join(d, "bar1_rain_meta.txt"), "cell=bar1_rain kind=bar1 left=0 gpu_apps_before=0/0%s\n" % (
+            "" if pd2 else " note=pd2_skipped_free=60"))
 
     os.makedirs(S, exist_ok=True)
     if glob.glob(os.path.join(S, "*")):
@@ -417,14 +474,7 @@ def selftest(S):
     visrun(os.path.join(A, "vis_run2"), "2m", "rain", err="QUERY_QP cap of the run reached")
     storerun(os.path.join(A, "store"), "rain", 8.0)
     storerun(os.path.join(A, "store"), "sunny", 9.0)
-    b = os.path.join(A, "bar1")
-    w(os.path.join(b, "bar1_rain_bar1.txt"), "stage=before total_mib=256 used_mib=5 free_mib=251 t_mono=1.0\n"
-      "stage=ctx total_mib=256 used_mib=11 free_mib=245 t_mono=2.0\nstage=pd1 total_mib=256 used_mib=101 free_mib=155 t_mono=3.0\n"
-      "stage=pd2 total_mib=256 used_mib=131 free_mib=125 t_mono=4.0\nstage=after total_mib=256 used_mib=5 free_mib=251 t_mono=5.0\n")
-    for p in ("p0", "p2", "sp"):
-        w(os.path.join(b, "bar1_rain_%s.kv" % p), "mode=bar1 tag=%s pd2=%d windows_mib=6,24\nreg_pd1_6mib_ok=1 reg_pd1_6mib_errno=0\n"
-          "reg_pd1_24mib_ok=1 reg_pd1_24mib_errno=0\nregistrations_failed=0 result=DONE exit=0\n" % (p, p == "p0"))
-    w(os.path.join(b, "bar1_rain_meta.txt"), "cell=bar1_rain kind=bar1 left=0 gpu_apps_before=0/0\n")
+    bar1run(os.path.join(A, "bar1"), {"before": 5, "ctx": 11, "pd1": 101, "host": 101, "pd2": 131, "after": 5})
     c = os.path.join(A, "costman_rain_lat4k")
     for k in range(1, 7):
         for a, base in (("one", 11.3), ("man-self", 12.6), ("man-peer", 13.1)):
@@ -441,21 +491,16 @@ def selftest(S):
     assert "no verdict: nic_error=QUERY_QP cap of the run reached" in text, "error run not listed"
     assert "recomputed, same as kv" in text, "timing recomputation"
     assert "used 30 MiB of BAR1: yes" in text, "second-PD reading"
-    assert re.search(r"man-peer - one: \+1\.\d+ us .*draft \+2\.5 us: within", text), "costman reading"
+    assert re.search(r"man-peer - one: \+1\.\d+ us \(\+1\d\.\d%\)", text), "costman reading"
+    assert re.search(r"a 0\.0\d\d ms, theta (9\.[5-9]|10\.[0-4])\d GB/s", text), "READ fit"
+    assert "pinned host memory (pool, store, D2H staging, FETCH buffer): fits" in text, "pinned host memory"
     # scenario B: a wrong word in a2, a WRITE p99 over 10 ms, BAR1 below 64 MiB, one sizeless direction
     B = os.path.join(S, "B")
     for size in FIXED:
         visrun(os.path.join(B, "vis"), size, "rain", a2bad=1 if size == "256k" else 0)
     visrun(os.path.join(B, "vis"), "4k", "sunny")
     storerun(os.path.join(B, "store"), "rain", 14.0)
-    b = os.path.join(B, "bar1")
-    w(os.path.join(b, "bar1_rain_bar1.txt"), "stage=before total_mib=256 used_mib=100 free_mib=156 t_mono=1.0\n"
-      "stage=ctx total_mib=256 used_mib=106 free_mib=150 t_mono=2.0\nstage=pd1 total_mib=256 used_mib=196 free_mib=60 t_mono=3.0\n"
-      "stage=after total_mib=256 used_mib=100 free_mib=156 t_mono=5.0\n")
-    for p in ("p0", "p2", "sp"):
-        w(os.path.join(b, "bar1_rain_%s.kv" % p), "mode=bar1 tag=%s windows_mib=6,24\nreg_pd1_6mib_ok=1\nreg_pd1_24mib_ok=1\n"
-          "result=DONE exit=0\n" % p)
-    w(os.path.join(b, "bar1_rain_meta.txt"), "cell=bar1_rain kind=bar1 left=0 note=pd2_skipped_free=60\n")
+    bar1run(os.path.join(B, "bar1"), {"before": 100, "ctx": 106, "pd1": 196, "host": 196, "after": 100}, host_fail="sp", pd2=False)
     got = summarize(B)
     assert got["check1"] == "FAIL", got
     assert got["check3"] == "FAIL", got
@@ -463,6 +508,7 @@ def selftest(S):
     text = "\n".join(OUT)
     assert "host node sunny (written from rain): open (no valid run of 256k, 2m)" in text, "open direction"
     assert "second PD: not measured (pd2_skipped_free=60)" in text, "skipped second PD"
+    assert "does NOT fit" in text and "sp 1082 MiB ok=0" in text, "a failed host pinning"
     print("selftest: ok (scenario A passes, scenario B fails as built; files under %s)" % S)
 
 
