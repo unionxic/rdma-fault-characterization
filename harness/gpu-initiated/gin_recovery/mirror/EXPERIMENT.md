@@ -11,7 +11,7 @@
 | 작성일 | 2026-10-13 |
 | 기준 브랜치와 커밋 | `exp/gin-mirror` @ `7b21eb58` (master) |
 | 사전 등록 태그 | 없음 |
-| 마지막 갱신 | 2026-10-13, 사용자 결정 반영: 재검토가 연 충돌 → (가) 되살린 rank로 가는 사용자 QP 게이트를 INJECTED(기록 38)까지 홀수, PUBLISHED의 끝과 시한이 바뀜(9.4절); 올리기 꼴 확인(멈춤 안 D2H, 멈춤 밖 WRITE). 열린 충돌 없음. 그 전(같은 날): 재검토의 고칠 것 여섯과 메모; RDMA 저장소, 단계 맞춤 가져오기, 첫 검토, 결정 여덟; 학습 모양; 초안. 구현과 빌드 없음 |
+| 마지막 갱신 | 2026-10-13, 공유 인터페이스(impl/의 헤더 여섯, [impl/PARALLEL.md](impl/PARALLEL.md), build_mi.sh 뼈대)와 실행 가능성 확인 1, 3, 4의 결과(9.8절, `[측정]`; 9.3, 9.4, 9.5절의 수치). 그 전(같은 날): 재검토가 연 충돌 → (가) INJECTED(9.4절), 올리기 꼴 확인; 재검토의 고칠 것 여섯; RDMA 저장소, 단계 맞춤 가져오기, 첫 검토, 결정 여덟; 학습 모양; 초안. 라이브러리 구현과 빌드 없음 |
 
 표시: `[측정]` 원자료나 시행별 표에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함. gin-restore 문서의 수치를 옮길 때는 원자료에서 다시
 셌는지 함께 적는다.
@@ -110,7 +110,7 @@ DRAFT다. 문턱과 n은 pilot 뒤 고정한다. 판정은 유효한 시행만�
 | 복원 시간이 한도 안 | `mi4_kill3_ow` | 첫 죽음 판정 줄 → 마지막 생존 rank의 복원 완료 줄 ≤ 2 000 ms | ≥ 9/10 | gin-restore의 2 000 ms 문턱 | `ow_restore_time` |
 | 대조: mirror 없이 덮어쓰면 데이터가 틀림 | `mi4_kill3_ow_nomirror` | 복원은 끝나고(대기 붙잡힘) 되살린 rank의 받은 칸이나 상태가 기준과 다름 | ≥ 4/5 | 1절 문제 `[추론]` | `nomirror_corrupt` |
 | 대조: checksum 표본이면 찾아서 fallback | `mi4_kill3_ow_sampled` | 내보내기 꼬리에 "source buffer changed", fallback 줄, 대기가 fallback + 2 000–2 500 ms에 오류로 풀림 | ≥ 4/5 | gin-restore 9.5절 | `nomirror_detect` |
-| FETCH 시간이 segment 바이트와 함께 늚 | `mi4_seg_4k`, `mi4_seg_32k`, `mi4_seg_128k` | 셀마다 FETCH 시간(줄), 가져온 바이트, drain 시간, 전체 복원 시간 | FETCH 시간(첫 READ를 낸 때부터 마지막 완료까지)의 중앙값이 바이트 순서대로 늘고 각 시행이 a + 바이트 / θ의 ±30% 안(절편 a와 θ는 9.8절 확인 3; 작은 F에서는 READ 지연이 a에 들어감); 전체 복원은 모두 ≤ 2 000 ms(RDMA에서 FETCH는 수 ms라 전체 시간의 기울기는 잡음에 묻힘 `[추론]`) | 9.4절 시간 어림 | `seg_restore_slope` |
+| FETCH 시간이 segment 바이트와 함께 늚 | `mi4_seg_4k`, `mi4_seg_32k`, `mi4_seg_128k` | 셀마다 FETCH 시간(줄), 가져온 바이트, drain 시간, 전체 복원 시간 | FETCH 시간(첫 READ를 낸 때부터 마지막 완료까지)의 중앙값이 바이트 순서대로 늘고 각 시행이 a + 바이트 / θ의 ±30% 안(절편 a와 θ는 9.8절 확인 3: rank 3 kill 배치에서 a 0.005 ms, θ 11.88 GB/s `[측정]`; 작은 F에서는 READ 지연이 a에 들어감); 전체 복원은 모두 ≤ 2 000 ms(RDMA에서 FETCH는 수 ms라 전체 시간의 기울기는 잡음에 묻힘 `[추론]`) | 9.4절 시간 어림 | `seg_restore_slope` |
 | pool 메모리는 간격에 비례 | `mi4_int_10`, `_20`, `_40` | lane마다 segment 최대 채움 | 간격이 두 배일 때 채움의 비 2 ± 25%; pool 바이트는 보고 | 9.3절 | `pool_vs_interval` |
 | 당기기가 넘침을 막음 | `mi4_pull` | 20단계마다 당기기 ≥ 1, DISARM 0; kill 시행은 위 대기와 데이터 조건 | 장애 없음 3/3, kill ≥ 4/5 | 9.3절 | `pull_no_disarm` |
 | 넘치면 DISARM하고 fail-fast | `mi4_overflow` | lane 깨짐 줄과 DISARM 줄, hold 시작 줄 없음, 대기가 죽음 판정 + 2 000–2 500 ms에 오류로 풀림 | ≥ 4/5 | 9.3절 끝 수단 | `overflow_failfast` |
@@ -134,10 +134,10 @@ DRAFT다. 문턱과 n은 pilot 뒤 고정한다. 판정은 유효한 시행만�
 |---|---|---|---|---|---|
 | 덮어쓰는 학습 모양 전송에서 최종 데이터가 기준과 같음 | `mi4_train_kill3` | 모든 rank의 상태 이력 x(0..2 000)와 마지막 받은 칸, 신호 값이 호스트 기준과 비트 단위로 같음; 생존 rank의 대기 붙잡힘, 재실행 없음, 억제 정확 | ≥ 9/10 | 9.4절 | `train_data_equal` |
 | 단계 맞춤 가져오기가 단계마다 한 번 | `mi4_train_kill3` | 예비 프로세스가 단계 K+1부터 마지막 표시 단계까지 각 단계의 입력을 그 커널 전에 한 번씩 넣었고(라이브러리 줄), 끝에 남은 입력 0, INJECTED가 마지막 넣은 단계 뒤 한 번이고 생존 rank의 쉬던 put은 그 뒤에 나감(생존 rank 줄) | ≥ 9/10 | 9.4절 | `train_paced_import` |
-| 복원 시간의 부분 | `mi4_train_kill3` | FETCH 시간(첫 READ를 낸 때부터 마지막 완료까지)이 a + F / θ의 ±30% 안(F = 이미지 + K 뒤 segment 바이트, a와 θ는 실행 가능성 확인 3), 전체 T ≤ 1 000 ms(gin-restore 중앙값 375.6 ms + drain + FETCH) | ≥ 9/10 | 9.4절 어림 | `train_restore_parts` |
+| 복원 시간의 부분 | `mi4_train_kill3` | FETCH 시간(첫 READ를 낸 때부터 마지막 완료까지)이 a + F / θ의 ±30% 안(F = 이미지 + K 뒤 segment 바이트, a와 θ는 실행 가능성 확인 3: 0.005 ms, 11.88 GB/s `[측정]`), 전체 T ≤ 1 000 ms(gin-restore 중앙값 375.6 ms + drain + FETCH) | ≥ 9/10 | 9.4절 어림 | `train_restore_parts` |
 | segment 자리 | `mi4_train_none`, `mi4_train_kill3` | 넷째 자리가 필요해 다시 시작한 멈춤(9.3절 (나)) 수, 셋째 자리를 쓴 멈춤 수, 짝마다 살아 있는 바이트의 최고 | 다시 시작 0; 셋째 자리와 최고 바이트는 보고 | 9.3, 9.8절 | `train_segments` |
 | 당기기와 DISARM | `mi4_train_none`, `mi4_train_kill3` | lane 깨짐, DISARM, 당기기 수 | 깨짐 0, DISARM 0; 당기기는 보고(L이 간격 둘이라 0에 가까움 `[추론]`) | 9.3절 | `train_pull_count` |
-| 장애 없는 학습 모양 | `mi4_train_none` | 데이터 같음, 복원 0, 입력 멈춤 ≤ 15 ms(멈춤 약 5 ms + 멈춤 안 D2H 약 2.7 ms + 여유) | 5/5 | 9.4, 9.8절 | `train_none_clean` |
+| 장애 없는 학습 모양 | `mi4_train_none` | 데이터 같음, 복원 0, 입력 멈춤 ≤ 15 ms(멈춤 약 5 ms + 멈춤 안 D2H 2.4 ms `[측정: 확인 3]` + 여유) | 5/5 | 9.4, 9.8절 | `train_none_clean` |
 | 체크포인트는 RDMA로 | 학습 셀 모두와 mirror 켠 4 KiB 셀 | helper 소켓으로 보낸 이미지와 segment 바이트 0; 체크포인트마다 올리기 시간은 보고 | 모든 시행 | 9.4절 | `store_rdma` |
 | 학습 모양에서 둘째 죽음 | `mi4_train_kill2_kill3` | `reimage_after_restore`와 `second_death_restored`의 조건을 학습 모양에서 | ≥ 4/5 | 9.4, 9.6절 | `train_second_death` |
 
@@ -164,9 +164,9 @@ workload, 7절의 셀.
 | 항목 | 값 | 확인 방법과 날짜 |
 |---|---|---|
 | 노드, NIC, GPU, CUDA | gin-restore와 같다: rain(Quadro RTX 5000), sunny(RTX A4000), ConnectX-6, CUDA 12.8 | gin-restore 5절(이 문서에서 다시 확인하지 않음) |
-| 랭크 배치 | 랭크 4개, GPU마다 둘(rain에 0과 2, sunny에 1과 3). 짝은 p xor 1(`gdakiHoldBuddyOf` 4308)이라 rank 3의 짝은 rank 2. rank 3의 예비 프로세스는 sunny GPU의 셋째 프로세스. 둘째 죽음 셀은 rank 2의 예비 프로세스도 rain GPU의 셋째 프로세스로 띄움(rain BAR1에 세 프로세스가 드는지 `[미확인]`, pilot이 BAR1 Free를 봄) | 계획 |
+| 랭크 배치 | 랭크 4개, GPU마다 둘(rain에 0과 2, sunny에 1과 3). 짝은 p xor 1(`gdakiHoldBuddyOf` 4308)이라 rank 3의 짝은 rank 2. rank 3의 예비 프로세스는 sunny GPU의 셋째 프로세스. 둘째 죽음 셀은 rank 2의 예비 프로세스도 rain GPU의 셋째 프로세스로 띄움(rain BAR1에 세 프로세스의 window 등록이 듦: 9.8절 확인 4에서 Free 155 MiB `[측정]`; 실제 바이너리로는 pilot이 BAR1 Free를 다시 봄) | 계획 |
 | 라이브러리 | gin-restore `rs` + 9절의 mirror 계층(`mi`). 이 라이브러리와 쓰는 모든 프로그램은 이 계층의 헤더로 빌드 | 구현 전 |
-| helper 소켓과 데이터망 | helper 소켓은 관리망 1 GbE의 TCP(사용자가 전함). mirror를 켜면 그 소켓에는 제어 기록과 STATE(항목, rkey 목록)만 싣고, 체크포인트 이미지와 segment는 데이터망(ConnectX-6)의 RDMA로 옮김(9.4절). 데이터망 속도(100 Gb/s로 어림)와 RDMA 처리량은 `[미확인]`(실행 가능성 확인 3) | 사용자, 계획 |
+| helper 소켓과 데이터망 | helper 소켓은 관리망 1 GbE의 TCP(사용자가 전함). mirror를 켜면 그 소켓에는 제어 기록과 STATE(항목, rkey 목록)만 싣고, 체크포인트 이미지와 segment는 데이터망(ConnectX-6)의 RDMA로 옮김(9.4절). 호스트끼리 RDMA READ θ 11.9–12.0 GB/s, 30 MiB WRITE 무부하 2.6 ms, 다른 QP의 묶음과 함께 19–24 ms `[측정: 9.8절 확인 3]` | 사용자, 계획 |
 
 이 배치의 짝 규칙에서는 노드를 건너는 put의 mirror가 보내는 rank와 같은 노드의 짝으로 가고(NIC 루프백, 선 위의 바이트는 그대로), 같은 노드 안의 put의
 mirror가 선을 건넌다 `[추론: 짝 규칙과 배치]`. 그래서 비용 셀은 재기만 하는 모드의 두 팔(9.7절 재기만 하는 모드 행)로 두 경우를 따로 잰다.
@@ -347,7 +347,8 @@ QP 게이트 홀수, 개수 0) d 칸의 번호, lane 시작, 커서를 NIC으로
   넷째 자리가 필요하면 BUSY로 답하지 않고 d를 모두에게 DISARM하고, d의 살아 있는 segment를 모두 버리고, 이 멈춤부터 다시 시작한다. d는 그다음 확정 체크포인트에서
   다시 무장된다: 이 DISARM이 이 멈춤의 PAUSED 뒤에 오므로 `gdakiHoldArm`은 이 멈춤의 확정으로는 무장하지 않는다(4586, 8155; 재검토 반영).
 
-**버리기와 살아 있는 segment.** WRITE가 멈춤 뒤 수 ms에 끝나 확정이 곧 오므로 멈춤 사이에는 보통 하나, 멈춤 중 둘이고, 셋은 확정이 늦거나 버려진 뒤다. 버린 자리를
+**버리기와 살아 있는 segment.** 멈춤 밖 WRITE가 부하에서도 멈춤 뒤 약 20–25 ms에 끝나 확정이 곧 오므로(`[측정]` 9.8절 확인 3) 멈춤 사이에는 보통 하나,
+멈춤부터 확정까지 둘이고, 셋은 확정이 늦거나 버려진 뒤다. 버린 자리를
 다시 쓸 때 옛 segment의 늦은 WRITE가 새 내용을 덮지 않는다: (s, b) 사이 mirror QP는 하나이고 RC는 차례대로 실행하며, 투명 복구 라운드의 다시 보내기도 새 보내기보다
 먼저다 `[추론]`.
 
@@ -371,7 +372,7 @@ helper의 걸음이 d를 DISARM한다(그 깨짐 뒤 멈춤의 확정 체크포�
    기다린다(펌웨어 가드 밖, `NCCL_GIN_RESTORE_DRAIN_MS`와 QUERY_QP 수 한도). 그 QP의 셈이 무효(`gdakiRsExecInvalidate` 10352)면 drain은 거절한다. 자기 lane은 rec
    밖의 자기 루프 응답 QP라 감시가 접지 않으므로 helper가 10 ms 걸음마다 그 rmsn을 읽어 24비트 감기로 누적하고(걸음 사이 메시지는 2^23보다 훨씬 적음; 되살린
    rank는 새 QP라 기준 0부터) drain 때 한 번 더 읽는다. 자기 루프 QP의 오류는 그 lane을 실행이 끝날 때까지 깨짐으로 둔다(라운드가 없음). 그다음 GIN PD의 루프백 쌍으로 pool의 낱말 하나를 READ해
-   앞의 posted 쓰기가 닿았음을 확인한다(`[미확인]`, 9.8절 확인 1) `[소스: 10502–10581]`. 깨짐이나 한도 초과면 지금의 fallback. 그다음 ACTIVATE와 활성화
+   앞의 posted 쓰기가 닿았음을 확인한다(9.8절 확인 1: 어긋남 0, 울타리 없는 읽기도 0이라 울타리의 필요는 보이지 못함 `[측정]`) `[소스: 10502–10581]`. 깨짐이나 한도 초과면 지금의 fallback. 그다음 ACTIVATE와 활성화
    덩어리(아래).
 3. **FETCH**: mirror 켬이면 예비 프로세스가 RDMA READ로 짝의 저장소에서 확정 이미지를, pool에서 K 뒤 segment를 자기 호스트 버퍼로 읽는다(아래 RDMA 저장소). mirror
    끔이면 지금의 TCP FETCH(9027–9153) 그대로. 어느 쪽이든 어느 생존 rank의 STATE보다 먼저다.
@@ -404,8 +405,9 @@ M, 복원 라운드 7375). `gdakiRsExecRead`는 묶음의 한 QP라도 셈이 �
 **활성화 덩어리와 끝점 갱신**(2026-10-13 사용자 결정): 짝은 ACTIVATE 기록(판 2) 뒤 같은 연결에 (1) 생존 rank마다 (rank, 화신, listen 주소), (2) 확정 이미지의
 저장소 자리와 배치, pool의 K 뒤 (segment, lane)마다 자리와 채움, 저장소와 pool의 rkey, (3) 짝이 만든 FETCH QP의 끝점을 보낸다. 예비 프로세스는 답(ACCEPTED) 뒤 자기
 FETCH QP의 끝점을 돌려준다. 덩어리가 없거나 깨졌으면 REFUSED(끝 답).
-- 주소: 예비 프로세스는 활성화하면 모든 생존 rank의 `pe.addr`를 표로 덮는다. REJOIN(6388–6395), mirror 끔 길의 TCP FETCH(지금은 기록 주소로 검, 9042), 뒤의 다시
-  걸기가 모두 지금 주소를 쓴다(검토 반영).
+- 주소: 예비 프로세스는 활성화하면 모든 생존 rank의 `pe.addr`를 표로 덮는다. REJOIN(6388–6395)과 뒤의 다시 걸기가 모두 지금 주소를 쓴다(검토 반영). 표는
+  활성화 덩어리에만 있으므로 mirror 켬에서만 쓴다. mirror 끔 길(TCP FETCH 9042, REJOIN)은 gin-restore처럼 기록 주소를 쓰고, mirror 끈 작업의 둘째 복원은 범위
+  밖이다(공유 인터페이스에서 정함, 12절).
 - QPN: 화신이 0보다 큰 생존 rank는 TOKEN의 QPN으로 잇고(지금은 기록과 견줌, 6441), 생존 rank의 REJOIN 검사(3817–3840)는 자기 화신이 0일 때만 QPN을 견준다.
   mirror QP의 QPN은 늘 TOKEN에서 오고 두 비교에서 빠진다.
 - rkey: STATE의 rkey 목록을 가져오기 때 그 rank의 칸(window rkey 표, 신호와 카운터 표의 rkey 표, 장치와 호스트 사본, 측 표 mirror 칸의 pool rkey)에 쓴다. 그
@@ -453,28 +455,32 @@ FETCH QP의 끝점을 돌려준다. 덩어리가 없거나 깨졌으면 REFUSED(
 - QP: mirror QP는 GPU가 내는 DOCA QP라 호스트가 그 SQ에 내면 장치와 다툰다. 그래서 맡긴 rank → 짝의 호스트 RC QP 하나(GIN PD). rec QP가 아니라 감시, 라운드,
   억제, 누적 실행 수 밖이다.
 - 올리기(2026-10-13 사용자 확인: 멈춤 안 D2H, 멈춤 밖 WRITE). 입력 멈춤 안에서(drain과 울타리 뒤, 자기 커널 없음) application 스레드가 window, 신호와 카운터
-  표, `ncclGinRestoreRegister` 버퍼를 고정 호스트 버퍼(rank마다 이미지 크기, 학습 모양 30 MiB; GIN PD에 등록)로 D2H 복사하고(약 11–12 GB/s, 30 MiB 약 2.7 ms)
+  표, `ncclGinRestoreRegister` 버퍼를 고정 호스트 버퍼(rank마다 이미지 크기, 학습 모양 30 MiB; GIN PD에 등록)로 D2H 복사하고(30 MiB p50 2.39 ms, 13.1 GB/s `[측정: 확인 3]`)
   덩어리를 붙인 뒤 CKPT_RESUME으로 멈춤을 끝낸다. 그다음 멈춤 밖에서 같은 스레드가 Step 훅의 복사 단계 안에서 그 호스트 버퍼로부터 저장소의 받는 중 자리로 WRITE를
-  내고 CQ를 걷는다(helper를 막지 않음; 재검토 반영). Step은 WRITE가 끝난 뒤 돌아오므로 그 rank의 단계가 WRITE 시간만큼 길다. NIC이 GPU 메모리를 읽지 않으므로 BAR1과
+  내고 CQ를 걷는다(helper를 막지 않음; 재검토 반영). Step은 WRITE가 끝난 뒤 돌아오므로 그 rank의 단계가 WRITE 시간만큼 길다(30 MiB WRITE p50 무부하
+  2.61–2.64 ms, 다른 QP의 2 MiB × 8 묶음과 함께 19.1–19.4 ms, p99 20.1–24.1 ms; 그동안 올리기는 약 1.4–1.5 GiB/s를 얻음 `[측정: 확인 3]`). NIC이 GPU 메모리를 읽지 않으므로 BAR1과
   GPU 읽기 대역에 닿지 않는다. 장치 사본과 블록 해시는 없다(늘 전체). D2H가 실패하거나 한도를 넘으면 pad 1(생존 rank가 segment 바꾸기를 되돌림, 9.3절). WRITE의
   실패와 한도(초안 500 ms)는 게시 뒤라 그 체크포인트를 버리고 9.3절의 다시 시작 규칙이 받는다. QP 속성 초안: timeout 12(약 17 ms), retry_cnt 7(약 120 ms에 ERR).
   ERR이면 다음 체크포인트 전에 STORE_REQ를 다시 해 새 QP를 잇는다(그 사이 체크포인트는 void).
-- 확정: 모든 WRITE의 local 완료 뒤(멈춤 뒤 수 ms) CKPT_STABLE을 짝에게 먼저 그다음 모두에게(지금 차례). CKPT_STABLE에 (자리, 이미지 바이트, 배치 해시, 덩어리
+- 확정: 모든 WRITE의 local 완료 뒤(멈춤 뒤, 부하에서 약 20–25 ms `[측정: 확인 3]`) CKPT_STABLE을 짝에게 먼저 그다음 모두에게(지금 차례). CKPT_STABLE에 (자리, 이미지 바이트, 배치 해시, 덩어리
   바이트)를 실어 짝은 저장소를 CPU로 읽지 않고 확정 자리를 바꾼다. WRITE with immediate는 쓰지 않는다(짝의 RQ와 CQ 걸음이 생기고 얻는 것이 없음).
-- 증분을 없앤다. 30 MiB의 D2H 약 2.7 ms와 호스트에서의 WRITE(100 Gb/s 선 속도로 약 2.5 ms) `[추론]`. 해시가 더 비싸고 받는 고리는 어차피 다 바뀐다. 늘 전체이므로
+- 증분을 없앤다. 30 MiB의 D2H 2.39 ms와 호스트에서의 WRITE 무부하 2.6 ms다(`[측정]` 확인 3; 부하에서 WRITE는 19–24 ms로 선을 application과 나눔). 해시가 더 비싸고 받는 고리는 어차피 다 바뀐다. 늘 전체이므로
   복원 뒤 "기반이 확정 이미지가 아님"(9.6절)이 이 길에는 없다.
 - FETCH: 짝이 활성화 때 FETCH용 호스트 QP를 만들어 끝점을 덩어리에 싣고, 예비 프로세스가 자기 QP를 그 끝점으로 RTR/RTS로 이은 뒤 자기 끝점을 돌려주고, 짝이
   자기 QP를 RTR/RTS로 이은 뒤 같은 연결로 READY를 보낸다. 예비 프로세스는 READY를 받은 뒤에만 READ를 낸다(한도 handshake 3 000 ms; 없으면 짝의 QP가 RTR 전이라
   READ가 버려져 ACK 시간 초과까지 감; 재검토 반영). 받을 호스트 버퍼(약 270 MiB: 이미지 30 MiB + segment 둘 × lane 셋 × 40 MiB, GIN PD)는 초기화 재생 때 등록한다
-  (활성화 뒤 등록은 고정에 수십–수백 ms가 걸려 복원 시간에 든다). 끝나면 두 쪽이 QP를 없앤다. 짝이 쓰는 길보다 READ를 고른 까닭은 생존 rank의 일을 줄이는 것이다(gin-restore 9.1절 원칙).
+  (활성화 뒤 등록은 고정에 시간이 걸려 복원 시간에 든다: 1 082 MiB 호스트 등록 30 ms `[측정: 확인 4]`). 끝나면 두 쪽이 QP를 없앤다. 짝이 쓰는 길보다 READ를 고른 까닭은 생존 rank의 일을 줄이는 것이다(gin-restore 9.1절 원칙).
 - 실행 수가 움직이지 않는 까닭: 이 READ는 FETCH QP의 응답 쪽 MSN만 올린다. 억제 예산과 Baseline이 쓰는 누적 실행 수는 rec QP(사용자 문맥과 mirror 문맥)의
   QUERY_QP에서만 접히고(10340–10398, 감시 hook 5481–5490) FETCH QP는 rec 목록에도 측 표에도 없다. gin-restore 18절이 걱정한 것은 예비 프로세스가 생존 rank와 이은
   사용자 QP로 READ하는 길이었다.
-- READ와 앞선 WRITE: 짝 NIC의 READ 요청은 같은 NIC이 앞서 낸 posted 쓰기를 앞지르지 않는다(PCIe 차례; 저장소와 pool은 RO 없음) `[추론; 9.8절 확인 1]`.
+- READ와 앞선 WRITE: 짝 NIC의 READ 요청은 같은 NIC이 앞서 낸 posted 쓰기를 앞지르지 않는다(PCIe 차례; 저장소와 pool은 RO 없음) `[추론]`. 9.8절 확인 1에서
+  울타리 뒤 읽기와 셋째 QP의 READ 모두 어긋남이 0이었다 `[측정]`. 다만 울타리 없이 곧바로 읽은 값도 0이라 울타리가 필요한지는 보이지 못했다. 울타리는
+  설계대로 둔다.
 
-**시간 어림** `[추론]`. 멈춤은 D2H 약 2.7 ms만큼 늘어 약 8 ms, 그 rank의 Step은 멈춤 밖 WRITE 2.5–5 ms만큼 더 길다. FETCH = 이미지 30 MiB + segment(살아 있는 segment는 보통 하나: ≤ 3 lane × 2 MiB ×
-20단계 = 120 MiB) ≈ 150 MiB를 호스트끼리 약 12 GB/s면 약 13 ms, 5–6 GB/s면 25–30 ms. 복원 시간 T = 375.6 ms(gin-restore 중앙값; 277.7–397.2 ms) + drain + FETCH +
-이미지 H2D(약 3 ms): 4 KiB 셀은 T0와 거의 같고 학습 모양은 +20–50 ms.
+**시간 어림** `[추론]`, 확인 3의 `[측정]` 값으로. 멈춤은 D2H 2.4 ms만큼 늘어 약 8 ms이고, 체크포인트를 찍는 rank의 Step은 멈춤 밖 WRITE만큼 더 길다(무부하
+약 2.6 ms, 부하 19–24 ms). FETCH = 이미지 30 MiB + segment(살아 있는 segment는 보통 하나: ≤ 3 lane × 2 MiB × 20단계 = 120 MiB) ≈ 150 MiB를 READ θ
+11.9–12.0 GB/s로 13.1–13.3 ms(확인 3의 150 MiB p50). 복원 시간 T = 375.6 ms(gin-restore 중앙값; 277.7–397.2 ms) + drain + FETCH + 이미지 H2D(약 3 ms): 4 KiB
+셀은 T0와 거의 같고 학습 모양은 +20–30 ms.
 
 ### 9.5 기존 부분이 어떻게 바뀌나
 
@@ -497,8 +503,8 @@ FETCH QP의 끝점을 돌려준다. 덩어리가 없거나 깨졌으면 REFUSED(
   DEV_FAILED, sticky를 세우지 않고, 훑기는 mirror QP에서 거절 대신 이 흡수를 한다(10079–10085).
 - **rain의 BAR1과 레지스터.** pool과 저장소는 호스트 메모리라 BAR1을 쓰지 않는다. 새 GPU 쪽 상태는 mirror 문맥 QP n + 1개의 고리와 측 표 칸으로 KiB 단위다 `[추론;
   QP 깊이 rs 트리 gin_host_gdaki.cc 90]`. mirror를 켠 프로세스는 원본 window를 NIC 복사 경로에 두 번째로 등록하지 않는다(내보내기가 원본을 읽지 않음, 검토 반영).
-  그 등록이 BAR1을 두 배로 쓰는지는 `[미확인]`이고(쓴다면 학습 모양 rain 60 → 120 MiB, 둘째 죽음 셀 90 → 180 MiB로 시작 검사 128 MiB Free와 부딪침) 9.8절 확인 4가
-  잰다. mirror 부분은 인라인하지 않는 따로 된 함수로 두고 `cuobjdump -res-usage`를 `rs`와 견준다.
+  그 등록은 BAR1을 더 쓴다(9.8절 확인 4: 30 MiB를 둘째 PD에 다시 등록하자 BAR1 Free 155 → 125 MiB `[측정]`). 건너뛰므로 rain에서 프로세스마다 약 30 MiB를
+  아끼고, 둘째 죽음 셀의 세 프로세스가 들어간다(세 프로세스의 등록 뒤 Free 155 MiB). 시작 검사 128 MiB Free는 그대로 둔다. mirror 부분은 인라인하지 않는 따로 된 함수로 두고 `cuobjdump -res-usage`를 `rs`와 견준다.
 - **fail-fast 빌드와 회귀.** mirror 쓰기, flush와 wait 끝의 mirror 기다림은 `NCCL_GIN_RESTORE_DEVICE`로 빌드한 프로그램의 hold 길에만 있다. 매크로 없는 프로그램과
   NCCL 자신의 커널은 바이트까지 같아야 한다. 매크로 빌드의 flush와 wait는 측 표 읽기 하나와 분기 하나가 더해진다(비용 가족의 `ffb-rs-macro` 꼴로 잼). 호스트는
   `NCCL_GIN_RESTORE_MIRROR`가 없으면 mirror 문맥, pool, 저장소, 새 기록을 만들지 않고 가져오기와 체크포인트는 gin-restore의 길 그대로다.
@@ -531,10 +537,10 @@ e의 첫 성공한 멈춤이다. 그 멈춤에서 보내는 rank들이 e의 칸�
 | 저장소 rkey와 QP 끝점 | 기록 밖의 교환 | helper 기록 50, 51(설정 뒤), 예비 프로세스는 활성화 덩어리. 초기화 재생과 무관 | 닫힘 | 9.4절 |
 | 올리기 QP와 mirror QP | 호스트가 GPU QP의 SQ에 내면 장치와 다툼; 사용자 QP 장부; 누가 내고 걷나 | 따로 된 호스트 RC QP(GIN PD), rec 밖. 멈춤 밖 WRITE를 고정 호스트 버퍼로부터 application 스레드가 Step 훅의 복사 단계에서 내고 걷음(helper를 막지 않음; 사용자 확인), timeout 12, retry_cnt 7, ERR이면 그 체크포인트를 버리고 다시 STORE_REQ | 닫힘 | 9.4절 |
 | FETCH QP와 실행 수 기준, 잇는 차례 | 예비 프로세스의 READ가 짝의 실행 수를 움직임; 짝이 RTR 전이면 READ가 버려짐 | READ는 rec 밖 FETCH QP의 MSN만 올림. 짝이 RTR/RTS 뒤 READY를 보내고 예비 프로세스는 그 뒤에만 READ(한도 3 000 ms). 받는 버퍼는 초기화 재생 때 등록(재검토) | 닫힘 | 10340–10398, 5481–5490 |
-| drain 울타리와 저장소 | 짝 CPU나 예비 프로세스가 아직 닿지 않은 쓰기를 읽음 | 짝 CPU는 저장소를 읽지 않음(배치는 CKPT_STABLE에). READ는 같은 NIC의 앞선 posted 쓰기를 앞지르지 않음, RO 없음 | 닫힘 `[추론; 확인 1]` | 9.4절 |
+| drain 울타리와 저장소 | 짝 CPU나 예비 프로세스가 아직 닿지 않은 쓰기를 읽음 | 짝 CPU는 저장소를 읽지 않음(배치는 CKPT_STABLE에). READ는 같은 NIC의 앞선 posted 쓰기를 앞지르지 않음, RO 없음 | 닫힘 `[측정: 확인 1, 어긋남 0; 울타리 없는 읽기도 0이라 필요는 보이지 못함, 울타리는 둠]` | 9.4절 |
 | 올리기 중 죽음 | 받는 중 자리가 반쯤 쓰임; 짝이 죽어 WRITE가 멈춤 | 맡긴 rank의 죽음: 확정 자리 그대로, hold가 멈춤을 넘겨받음(WRITE 중이면 받는 중 자리만 반쯤). 짝의 죽음: 멈춤 밖 WRITE가 한도에서 실패해 그 체크포인트를 버림(게시 뒤라 다시 시작 규칙), RESTORED 뒤 다시 청함. 다른 rank의 죽음: hold 시작이 멈춤을 끝냄(gin-restore) | 닫힘 | 9.3, 9.4절 |
-| 입력 멈춤이 길어짐 | 멈춤 안 D2H 약 2.7 ms(학습 모양)가 생존 rank의 입력 멈춤에 더해짐; WRITE는 멈춤 밖이라 그 rank의 단계에만 더해짐 | 멈춤 한도(4 × `NCCL_GIN_RESTORE_PAUSE_MS`)와 장치 hold 한도보다 훨씬 짧음. 비용은 `train_none_clean`이 잼 | 닫힘 | gin-restore 9.4절 메모 |
-| rain BAR1과 고정 메모리 | 저장소, pool, FETCH 버퍼 | 모두 호스트라 BAR1 밖. 고정 메모리는 프로세스마다 pool + 저장소 + D2H 버퍼(학습 모양 약 0.8 GiB), 둘째 죽음 셀의 rain 약 2.7 GiB(예비 프로세스의 FETCH 버퍼 포함; memlock과 RAM `[미확인]`, 8절 시작 검사와 9.8절 확인 4) | 닫힘 | 9.8절 |
+| 입력 멈춤이 길어짐 | 멈춤 안 D2H 2.4 ms(학습 모양, `[측정: 확인 3]`)가 생존 rank의 입력 멈춤에 더해짐; WRITE(부하 19–24 ms `[측정]`)는 멈춤 밖이라 그 rank의 단계에만 더해짐 | 멈춤 한도(4 × `NCCL_GIN_RESTORE_PAUSE_MS`)와 장치 hold 한도보다 훨씬 짧음. 비용은 `train_none_clean`이 잼 | 닫힘 | gin-restore 9.4절 메모 |
+| rain BAR1과 고정 메모리 | 저장소, pool, FETCH 버퍼 | 모두 호스트라 BAR1 밖. 고정 메모리는 프로세스마다 pool + 저장소 + D2H 버퍼(학습 모양 약 0.8 GiB), 둘째 죽음 셀의 rain 약 2.7 GiB(예비 프로세스의 FETCH 버퍼 포함). 확인 4에서 812, 812, 1 082 MiB가 모두 등록됨, rain memlock 무제한 `[측정]`; RAM은 8절 시작 검사 | 닫힘 | 9.8절 |
 | strict window 강제와 window 보고 | pool과 저장소 MR이 RO로 등록되거나 window로 세어짐 | `RegMrSym`을 거치지 않고 RO 없이 등록, window 보고(16/16) 밖. 올리기 원본은 고정 호스트 버퍼(window MR을 NIC이 읽지 않음) | 닫힘 | 2190–2200, 2621, 11513–11549, 4118– |
 | 입력 멈춤, drain 확인, PAUSED의 무장 가능 | mirror QP를 멈춤에 넣으면 짝의 체크포인트마다 막힘 | mirror 문맥을 멈춤, M과 P, drain에서 뺌(9.4절 표). segment 번호 열과 바꾸기, 무장 가능에 "칸 유효, 깨짐 없음, 짝의 pool, 저장소 준비" | 닫힘 | 7932–7997, 8109–8174, 8325–8371, 10065–10115 |
 | 버려진 멈춤과 체크포인트가 segment 자리를 채움(검토) | pad 1(4887)과 버림(8537)이 자리를 먹어 셋이 차면 영영 막힘 | 결정 (가)+(나): 게시 전 되돌리기, 넷째가 필요하면 DISARM하고 다 버리고 다시 시작, 다시 무장은 그다음 확정 체크포인트(재검토; 9.3절). BUSY(segment 참) 없음 | 닫힘(결정) | 4887, 8537, 4586, 8155 |
@@ -556,9 +562,9 @@ e의 첫 성공한 멈춤이다. 그 멈춤에서 보내는 rank들이 e의 칸�
 | 설정 all-gather와 대칭 전제, 설정 때 MSN 기준 | allToAll 수가 rank마다 다르면 멈춤; mirror QP는 그때 RESET | mirror QP는 만들기만, 합의 뒤 helper 소켓으로 잇고 이은 뒤 기준. 합의가 끄면 쓰지 않음 | 닫힘 | 9495–9677, 9518–9530, rs 트리 16682–16693 |
 | GIN PD의 루프백 QP 쌍 | 가져오기와 짝 drain 울타리가 함께 씀 | 잠금 하나로 나눔(단계 맞춤 가져오기는 helper 뒤에도 돎) | 닫힘 | 10502–10703 |
 | 단계 맞춤 가져오기의 때 | 지금은 helper와 RESTORED 전에 모두 넣음 | 결정: Resume 몫(검사, 예산, rkey, 단계 K+1) 뒤 RESTORED와 helper, 나머지는 Step마다. 넣을 입력이 남은 동안 BUSY와 체크포인트 없음 | 닫힘(결정) | 10844–, 11119– |
-| 받는 쪽 단일 대입과 학습 모양의 받는 고리 | 한꺼번에 넣으면 뒤 단계가 앞 단계를 덮음(R = 4) | 결정: 단계 맞춤으로 R ≥ 3. 요구 14 "단계 t 커널은 단계 t의 put만 읽음"(검사 안 함). 살아 있는 put은 kd+2부터라 겹치지 않음 | 닫힘(결정) | gin-restore 9.7절 3번 |
+| 받는 쪽 단일 대입과 학습 모양의 받는 고리 | 한꺼번에 넣으면 뒤 단계가 앞 단계를 덮음(R = 4) | 결정: 단계 맞춤으로 R ≥ 3. 요구 14 "단계 t 커널은 단계 t의 put만 읽음"(검사 안 함). 게이트에서 쉰 생존 rank의 put은 INJECTED 뒤에 나가 겹치지 않음(아래 행; 처음 적은 "살아 있는 put은 kd+2부터"는 틀린 추론이라 고침) | 닫힘(결정) | gin-restore 9.7절 3번 |
 | 단계 표의 출처 | 항목에 단계가 없음 | 보내는 쪽 Step의 (단계, 머리) 쌍에서 내보낼 때 붙임, 장치 바뀜 없음 | 닫힘 | gin-restore 9.4절 확정 단계 |
-| NIC 복사 경로(원본 window의 두 번째 등록) | 원본 읽기, BAR1 두 배일 수 있음 | mirror 켠 프로세스는 그 등록을 건너뜀(내보내기가 원본을 읽지 않음). 끈 셀은 그대로 | 닫힘 `[미확인: BAR1, 확인 4]` | 10760–10843 |
+| NIC 복사 경로(원본 window의 두 번째 등록) | 원본 읽기, BAR1 두 배일 수 있음 | mirror 켠 프로세스는 그 등록을 건너뜀(내보내기가 원본을 읽지 않음). 끈 셀은 그대로 | 닫힘 `[측정: 확인 4, 둘째 PD 등록이 BAR1 +30 MiB; 건너뛰어 아낌]` | 10760–10843 |
 | 예비 프로세스의 초기화 재생과 기록 | 기록에 없는 mirror QPN, pool rkey, 앞서 되살린 rank의 끝점 | 결정: 활성화 덩어리의 주소 표로 모든 `pe.addr`를 덮음(REJOIN, TCP FETCH 9042, 다시 걸기), 화신 > 0은 TOKEN QPN, pool rkey는 늘 STATE 목록. 화신 0의 새 비교는 WARN만 | 닫힘(결정) | 9537–9568, 6372, 6388–6395, 6441, 3817–3840, 9042 |
 | gpu-detect의 QP 감시와 rain QUERY_QP 상한 | mirror QP가 감시를 늘림; 긴 학습 시행 | rec QP라 감시. 결정: 학습 셀만 50 ms(무장 조건은 "> 0", Resume 조건 19; 감기 한도 2^23은 QP마다 50 ms에 10개 안팎이라 멂), 시행마다 약 16 000번 | 닫힘(결정) | 2812, 5481–5490, gin-restore 9.10.4절 |
 | 자기 루프 lane | 자기 루프 QP는 rec 밖이라 감시, 라운드, 누적 셈이 없음 | helper가 멈춤마다 그 응답 QP의 rmsn을 읽어 누적, drain 때 다시 읽음. 오류는 그 lane을 실행 끝까지 깨짐 | 닫힘 `[추론]` | rs 트리 16697–16756 |
@@ -596,7 +602,8 @@ segment FETCH는 TCP가 아니라 RDMA READ가 됐다.
 
 ### 9.8 구현 계획과 실행 방법 (구현 전)
 
-열린 충돌은 없다(9.7절 끝). 아래 실행 가능성 확인 넷(라이브러리 바꿈 없음)을 먼저 돌리고, 공유 인터페이스를 쓴 뒤 작업 묶음을 병렬로 구현한다.
+열린 충돌은 없다(9.7절 끝). 실행 가능성 확인 1, 3, 4는 끝났고(2026-10-13, 표 아래의 결과) 확인 2는 test 묶음의 gin_ts2 팔을 기다린다. 공유 인터페이스는
+[impl/](impl/)의 헤더 여섯이고, 갈래 분담과 규칙은 [impl/PARALLEL.md](impl/PARALLEL.md)다(2026-10-13, 12절). 그다음 작업 묶음을 병렬로 구현한다.
 
 **실행 가능성 확인 넷**(채점 안 함; 메인 세션이 `cluster_run.sh` 안에서; 라이브러리 바꿈 없이 돌 수 있는 작은 프로그램):
 
@@ -604,48 +611,64 @@ segment FETCH는 TCP가 아니라 RDMA READ가 됐다.
 |---|---|---|---|
 | 1. 호스트 MR에 쓴 것이 보이는가 | GPU 메모리(dmabuf MR)에서 다른 노드의 호스트 MR(RO 없음)로 RC WRITE를 4 KiB–2 MiB 무작위 크기, 단계 번호 무늬로 10 000번. 응답 쪽 MSN이 닿은 뒤 (a) 바로 CPU가 읽은 값, (b) 루프백 READ 울타리 뒤 CPU가 읽은 값, (c) 셋째 QP의 RDMA READ로 읽은 값 | (b)와 (c)에서 어긋남 0(두 방향). (a)는 보고 | CUDA + ibverbs 도구 하나(NCCL 없음), 노드마다 하나 |
 | 2. 손으로 하는 mirror의 비용 | 9.15.6의 비용 틀(gin_ts2)에서 application이 put(d) 뒤 다른 사용자 문맥으로 같은 원본을 셋째 rank의 window에 한 번 더 put하고 둘을 flush. 4 KiB, 256 KiB, 2 MiB 지연과 256 KiB × 8, 2 MiB × 8 대역을 한 번 put과 견줌 | 판정 없음. 장치 쪽 비용(측 표 읽기, 커서, 쉬지 않는 게이트)은 재지 않으므로 대역 문턱(0.40–0.60)만 받치고, 4 KiB 지연 문턱은 pilot이 실제 장치 길로 잰다 | gin_ts2에 팔 하나(둘째 put), `rsp` 운영 빌드 |
-| 3. RDMA 저장소의 시간 | 두 노드 모두에서: window 크기 30 MiB의 D2H(고정 호스트 버퍼)를 100번, 그 호스트 버퍼에서 다른 노드의 호스트 MR로 WRITE 30 MiB를 100번(같은 NIC에서 다른 rank가 2 MiB × 8을 보내는 동안과 아닐 때), 호스트 MR에서 RDMA READ를 크기 4–150 MiB로 100번씩(첫 READ를 낸 때부터 마지막 완료까지) | D2H p99 ≤ 4 ms(학습 모양 멈춤 ≤ 15 ms가 되게), WRITE p99 ≤ 10 ms, READ p99 ≤ 100 ms. 절편 a와 θ를 3절 `seg_restore_slope`와 `train_restore_parts`에 넘김 | 1의 도구의 두 모드 |
+| 3. RDMA 저장소의 시간 | 두 노드 모두에서: window 크기 30 MiB의 D2H(고정 호스트 버퍼)를 100번, 그 호스트 버퍼에서 다른 노드의 호스트 MR로 WRITE 30 MiB를 100번(같은 NIC에서 다른 rank가 2 MiB × 8을 보내는 동안과 아닐 때), 호스트 MR에서 RDMA READ를 크기 4–150 MiB로 100번씩(첫 READ를 낸 때부터 마지막 완료까지) | D2H p99 ≤ 4 ms(학습 모양 멈춤 ≤ 15 ms가 되게), 부하에서 WRITE ≤ 간격 / 4(학습 모양 간격 20단계를 단계 사이 5 ms로만 세어 100 ms; 2026-10-13 고침: 처음 기준 "WRITE p99 ≤ 10 ms"는 WRITE가 멈춤 밖으로 간 뒤 맞지 않음), READ p99 ≤ 100 ms. 절편 a와 θ를 3절 `seg_restore_slope`와 `train_restore_parts`에 넘김 | 1의 도구의 두 모드 |
 | 4. rain BAR1 예산 | rain GPU에 프로세스 셋(rank 0, rank 2, rank 2의 예비 프로세스 자리)이 각각 window 6 MiB + 24 MiB를 GIN PD에 dmabuf로 등록하고, 한 프로세스는 같은 window를 둘째 PD(NIC 복사 경로 자리)에도 등록. 단계마다 `nvidia-smi` BAR1 Used/Free를 읽기만 | 세 프로세스 등록 뒤 BAR1 Free ≥ 64 MiB. 둘째 PD 등록이 BAR1을 더 쓰는지 기록(9.5절의 `[미확인]`). 같이 `ulimit -l`과 고정 호스트 메모리 합(pool, 저장소, FETCH 버퍼; GIN PD의 호스트 등록은 BAR1에 들지 않음)이 들어가는지 봄. 등록 버퍼와 mirror QP 고리는 빠지므로 pilot이 실제 바이너리로 BAR1을 다시 봄 | 1의 도구의 모드 하나 |
 
-**작업 묶음과 갈래**(gin-restore의 [PARALLEL.md](../restore/impl/PARALLEL.md)처럼 공유 인터페이스를 먼저 고정하고 갈래마다 worktree 하나; 크기는 바뀌는 줄의 어림
+**확인 결과**(2026-10-13 15:04–15:08, 메인 세션이 `cluster_run.sh` 안에서, 채점 안 함; 도구 [feas/](feas/), 원자료 `results/20261013_feas/`(release 전),
+요약 `results/20261013_feas/SUMMARY.txt`. 확인 3의 백분위는 이 문서를 고치며 timing 파일 둘에서 다시 셌고 요약과 같다):
+- **확인 1, 통과(두 방향).** 크기 4 KiB, 256 KiB, 2 MiB, 무작위를 각 10 000번. 울타리 뒤 읽기 방향마다 13 332번 중 어긋남 0, 셋째 QP의 READ 13 336번 중 0,
+  울타리 없이 곧바로 읽기도 13 332번 중 0 `[측정]`. 곧바로 읽기도 0이라 울타리가 필요한지는 보이지 못했다. 울타리는 설계대로 둔다.
+- **확인 3, 고친 기준으로 통과.** 두 방향(rank 3 kill 배치: sunny가 rain에 올리고 읽음, 그 반대). D2H 30 MiB p50/p99 2.393/2.397 ms와 2.393/2.395 ms(13.1 GB/s).
+  WRITE 30 MiB p50 무부하 2.613, 2.637 ms; 다른 QP의 2 MiB × 8 묶음과 함께 p50 19.08, 19.41 ms, p99 20.11, 24.13 ms(그동안 올리기는 1.43–1.52 GiB/s). READ p50
+  4 MiB 0.354–0.358 ms, 150 MiB 13.09–13.25 ms, 맞춤 a 0.005–0.007 ms, θ 11.88–12.02 GB/s. 데이터 검사 모두 0. n은 방향마다 D2H 100, WRITE 100 + 100, READ 크기마다
+  100 `[측정]`. 처음 기준 "WRITE p99 ≤ 10 ms"로는 부하에서 실패지만 올리기는 멈춤 밖이라 볼 것은 확정이 간격 안에 오는가다. 20–24 ms는 간격 100 ms의 약 1/4이라
+  기준을 "부하에서 ≤ 간격 / 4"로 고쳐 통과로 닫는다(메인 세션 판단). 따라오는 것: 부하에서 CKPT_STABLE은 멈춤 뒤 약 25 ms에 옴(segment 수명과 당기기, 9.3절),
+  올리기는 보내는 rank의 선을 application의 묶음과 나눔(mirror 쓰기처럼), 복원 시간 식의 θ ≈ 12 GB/s(150 MiB FETCH ≈ 13 ms, 9.4절), 학습 모양 시행 시간(아래).
+- **확인 4, 통과.** rain BAR1 Free 251 MiB → CUDA 문맥 셋 245 → 세 프로세스의 6 + 24 MiB window 등록 155(+90 MiB) → p0이 30 MiB를 둘째 PD에 다시 등록 125
+  (+30 MiB) → 끝난 뒤 251 `[측정]`. 기준 ≥ 64 MiB. 고정 호스트 메모리 812, 812, 1 082 MiB가 모두 등록됨(VmPin 일치, rain memlock 무제한), 1 082 MiB 등록 30 ms.
+  둘째 PD 등록이 BAR1을 쓰므로 mirror 켠 프로세스가 NIC 복사 경로 등록을 건너뛰는 설계가 rain에서 프로세스마다 약 30 MiB를 아낀다(9.5절). 시작 검사 128 MiB는
+  그대로.
+- 모든 hold: 새 mlx5 커널 줄 0, 펌웨어 명령 실패 수 그대로(전후 failed 16, mailbox status 15), STOP 없음 `[측정]`.
+
+**작업 묶음과 갈래**(갈래, 소유, 붙이기와 기록 규칙은 [impl/PARALLEL.md](impl/PARALLEL.md); 공유 인터페이스를 먼저 고정하고 갈래마다 worktree 하나; 크기는 바뀌는 줄의 어림
 `[추론]`, 합 약 4 700–5 800줄). 공유 인터페이스에서 먼저 고정할 것(재검토와 결정 (9)): QP 묶음 둘(사용자만, mirror 포함), CKPT_STABLE 칸과 무장 가능 판정, BUSY 판정(가져오기와
 segment 묶음이 모두 8125–8175를 만짐), hook 차례(mirror 흡수 → `gdakiHoldRoute` → 훑기), 측 표 magic과 mirror 칸 배치, 기록 번호 38과 48–51, 활성화 덩어리 판 2(주소 표,
 저장소와 pool 자리, FETCH 끝점, READY), 내보내기 판 2(단계 표, MIRROR 항목, pool을 포함한 rkey 목록), PUBLISHED와 INJECTED의 상태 규칙. 저장소와 segment 묶음은 모두 8486–8560을 만지므로
-함수 경계를 미리 나눈다:
+함수 경계를 미리 나눈다(2026-10-13: [impl/rs_store_api.h](impl/rs_store_api.h)의 경계 목록과 BUSY 판정 한 곳, [impl/rs_mirror_api.h](impl/rs_mirror_api.h)의 넣고 빼는 자리 표):
 
 | 작업 묶음 | 갈래 | 파일 | 인터페이스(내는 것 / 받는 것) | 크기 |
 |---|---|---|---|---|
-| 공유 인터페이스 | 메인 세션 | 새 `impl/rs_mirror_api.h`(측 표 mirror 칸, MIRROR 표시, 기록 48–49, 9.4절의 넣고 빼는 자리 표, QP 묶음 둘), 새 `impl/rs_store_api.h`(기록 50–51, CKPT_STABLE 칸, 저장소 배치, 활성화 덩어리 판 2), `impl/rs_hold_api.h` 판 2(기록 38 INJECTED, PUBLISHED의 끝과 시한), `impl/rs_log_api.h` 판 2(내보내기 MIRROR 항목, 단계, rkey 목록), 장치와 호스트 공용 헤더의 구조체 | 모든 갈래가 받음 | S, 300–400 |
+| 공유 인터페이스(2026-10-13 작성) | 메인 세션 | 새 [impl/rs_mirror_api.h](impl/rs_mirror_api.h)(측 표 v4와 mirror 칸, MIRROR 표시, 기록 48–49, HOLDING 칸, 9.4절의 넣고 빼는 자리 표, QP 묶음 둘, hook 차례, segment 규칙), 새 [impl/rs_store_api.h](impl/rs_store_api.h)(기록 50–51, 저장소 자리, CKPT_STABLE 칸, 활성화 덩어리 판 2, 체크포인트 기계의 함수 경계와 BUSY 판정 한 곳), [impl/rs_hold_api.h](impl/rs_hold_api.h) 판 2(기록 38 INJECTED, PUBLISHED의 끝과 시한), [impl/rs_log_api.h](impl/rs_log_api.h) 판 2(내보내기 판 2, 단계, rkey 목록, 가져오기), rs_ckpt_api.h와 rs_spare_api.h 판 2(머리 주석), [impl/build_mi.sh](impl/build_mi.sh) 뼈대 | 모든 갈래가 받음 | S(새 헤더 둘 약 820줄과 넷의 v2) |
 | 장치 mirror | dev | `gin_gdaki.h`의 hold 영역(`rsPutHold`의 mirror 함수, flush와 wait 끝의 mirror 기다림), `gin_gdaki_device_host_common.h` | 측 표 mirror 칸을 읽음 / 깨짐 수를 냄 | M, 400–600 |
 | mirror 설정, pool, 장애 기록 | host | `gin_host_gdaki.cc`: 문맥 만들기(mirror QP만), 설정 끝 MIRROR_SETUP과 잇기와 기준, pool 등록, policyPad 비트, Resume 조건 34–40, 기록 hook의 mirror 흡수, 정리 | pool rkey와 칸 배치를 냄 | M, 500–700 |
 | segment와 당기기 | host | 체크포인트 기계 영역: segment 번호 열, 바꾸기, 되돌리기, 다시 시작, 확정 때 버리기, CKPT_PULL, 깨짐 → DISARM | segment 기록을 복원 길에 냄 | M, 400–500 |
-| RDMA 저장소 | store(새 갈래) | 새 영역: 저장소 MR, STORE_REQ/ACK, 올리기 QP, 멈춤 안 D2H와 고정 호스트 버퍼, 멈춤 밖 WRITE(application 스레드, 복사 단계), CKPT_STABLE 칸, 한도와 버림, 정리. mirror 끔 TCP 길은 손대지 않음 | 저장소 자리를 활성화 덩어리에 냄 | L, 700–900 |
+| RDMA 저장소 | store(새 갈래) | 새 영역: 저장소 MR, STORE_REQ/ACK, 올리기 QP, 멈춤 안 D2H와 고정 호스트 버퍼, 멈춤 밖 WRITE(application 스레드, 복사 단계), CKPT_STABLE 칸, 한도와 버림, 정리. mirror 끔 TCP 길은 9.6절의 기반 지우기만(공유 인터페이스에서 이 갈래로 정함) | 저장소 자리를 활성화 덩어리에 냄 | L, 700–900 |
 | 복원 길 | spare | hold 시작 HOLDING 칸, 짝 drain(자기 루프 셈, 무효 셈 거절)과 울타리, 활성화 덩어리 판 2, FETCH QP와 READ, 내보내기 판 2(단계 표, rkey 목록) | 저장소와 segment 기록을 받음 | L, 800–1 000 |
 | 단계 맞춤 가져오기 | dev | 가져오기 영역: Resume 몫과 Step 몫, 쌍 잠금, 넣을 입력이 남은 동안 BUSY, 마지막 단계 뒤 INJECTED 깃발 | 내보내기 판 2를 받음 / INJECTED를 냄 | M, 400–500 |
 | PUBLISHED와 INJECTED | host | 붙잡기 기계: mirror 켬이면 게시 때 사용자 QP 게이트 홀수 유지, INJECTED를 받으면 짝수 에폭, PUBLISHED의 끝(INJECTED)과 시한 min(지금, D) | INJECTED를 받음 | S–M, 200–300 |
 | 끝점 갱신 | spare | 예비 프로세스 driver: `pe.addr` 덮기, TOKEN QPN으로 잇기, 화신 0 검사와 WARN, rkey 목록 쓰기, RESTORED 뒤 STORE_REQ | 활성화 덩어리를 받음 | S–M, 300 |
 | 시험과 비용 | test | `impl/test/gin_rs.cu`(`RS_OVERWRITE`, `RS_TRAIN` 받는 고리 R = 4), 비용 driver(`lat2m`, `bw2m`, mirror 팔), 셀 파일, 실행기(예비 프로세스 둘, seed 무작위 kill, hold 나눔, 학습 셀 QP 감시 50 ms, 예비 프로세스 기다림 ≥ 120 s), 채점기 열 | 라이브러리 줄 형식을 받음 | M, 600–800 |
-| 통합과 검사 | 메인 세션 | 갈래 합치기, CPU 단위 시험(`rs_unit_*` 넓힘), 기계어 비교, 독립 코드 검토, 확인 넷의 도구 | 모두 | M |
+| 통합과 검사 | 메인 세션 | 갈래 합치기, CPU 단위 시험(`impl/mi_unit_<이름>.cc`), 기계어 비교, 독립 코드 검토, 확인 넷의 도구 | 모두 | M |
 
 **학습 모양 모드(`RS_TRAIN=1`; 셀은 7절).**
 - 전송: 단계마다 rank마다 상대 셋에 2 MiB put과 신호 1(단계 짝에 따른 신호 둘), rank마다 단계당 6 MiB, 2 000단계, 단계 사이 5 000 µs. 상대별 flush가 돌아온 바로 뒤
   보내는 칸을 단계에 따른 독 값으로 덮고 다음 단계가 진짜 값을 쓴다(결정 1의 규칙). 원본을 다시 읽는 재실행이면 독 값이 들어가 비교에서 틀린다.
 - window와 rain BAR1(256 MiB, window 하나 24 MiB 이하, gin-restore 9.15.6): 보내는 window 6 MiB(상대마다 칸 하나), 받는 고리 R = 4로 24 MiB, rank마다 30 MiB. rain은
   두 rank 60 MiB, 둘째 죽음 셀은 rank 2의 예비 프로세스가 더해 90 MiB(NIC 복사 경로 등록을 건너뛸 때) `[추론: 계산]`. 단계 맞춤 가져오기는 R ≥ 3이면 되므로 맞는다.
-- pool: 식은 짝마다 잡는 크기 = S × (n − 1) × L, 살아 있는 내용 ≤ (1–2) × (n − 1) × B × I(WRITE가 멈춤 뒤 수 ms에 끝나 확정이 곧 옴). B = 2 MiB, I = 20, L = 2 × B × I =
+- pool: 식은 짝마다 잡는 크기 = S × (n − 1) × L, 살아 있는 내용 ≤ (1–2) × (n − 1) × B × I(WRITE가 부하에서도 멈춤 뒤 약 20–25 ms에 끝나 확정이 곧 옴 `[측정: 확인 3]`). B = 2 MiB, I = 20, L = 2 × B × I =
   80 MiB, S = 3이면 잡는 크기 720 MiB, 살아 있는 내용은 많아야 2 × 3 × 40 MiB = 240 MiB이고, 당기기 문턱 50%(40 MiB)는 간격 하나와 같아 확정이 늦을 때만 당긴다.
   저장소 약 2 × 31 MiB, D2H 버퍼 30 MiB. 둘째 죽음 셀의 rain은 프로세스 셋(pool + 저장소 + D2H 버퍼 약 0.8 GiB씩)과 예비 프로세스의 FETCH 버퍼 약 270 MiB로 고정
-  호스트 메모리 약 2.7 GiB(memlock과 RAM `[미확인]`, 확인 4) `[추론: 계산]`.
-- 체크포인트: 멈춤 안 D2H 약 2.7 ms로 멈춤 약 8 ms, 멈춤 밖 WRITE 2.5–5 ms는 그 rank의 Step에만 더해짐. 20단계(약 200 ms)마다라 생존 rank 입력의 약 4%가 멈춤 `[추론]`.
-- 복원: T ≈ 375.6 ms + drain + FETCH(약 150 MiB를 13–30 ms) + 이미지 H2D 약 3 ms ≈ 0.4 s `[추론]`.
-- 시행 시간: 단계 사이 5 ms만 세면 2 000 × 5 ms = 10 s + 체크포인트 100번 × (멈춤 약 8 ms + WRITE 2.5–5 ms) ≈ 1–1.3 s + 시작과 초기화 재생 3–5 s = 14–16 s. 복원 때
+  호스트 메모리 약 2.7 GiB `[추론: 계산]`. 확인 4에서 812, 812, 1 082 MiB가 모두 등록되고 rain memlock은 무제한이었다 `[측정]`; RAM은 8절 시작 검사가 본다.
+- 체크포인트: 멈춤 안 D2H 2.4 ms `[측정: 확인 3]`로 멈춤 약 8 ms, 멈춤 밖 WRITE(부하 19–24 ms `[측정]`)는 그 rank의 Step에만 더해짐. 20단계(약 200 ms)마다라 생존 rank 입력의 약 4%가 멈춤 `[추론]`.
+- 복원: T ≈ 375.6 ms + drain + FETCH(약 150 MiB를 약 13 ms, 확인 3의 θ) + 이미지 H2D 약 3 ms ≈ 0.4 s `[추론]`.
+- 시행 시간: 단계 사이 5 ms만 세면 2 000 × 5 ms = 10 s + 체크포인트 100번 × (멈춤 약 8 ms + WRITE 19–24 ms) ≈ 2.7–3.2 s + 시작과 초기화 재생 3–5 s = 16–18 s. 복원 때
   생존 rank는 INJECTED까지 재실행 길이(약 0.2–0.4 s)만큼 더 쉰다. 전송까지 세면 노드의 NIC이 단계마다 두
-  rank의 12 MiB와 그 mirror 12 MiB, 곧 24 MiB를 보내 약 4 ms가 더해져 단계 약 10 ms, 시행 24–27 s, 둘째 죽음 셀 25–28 s `[추론]`. QP 감시 50 ms면 rain의 30 QP가
+  rank의 12 MiB와 그 mirror 12 MiB, 곧 24 MiB를 보내 약 4 ms가 더해져 단계 약 10 ms, 시행 26–29 s, 둘째 죽음 셀 27–30 s `[추론]`(확인 3의 부하 WRITE로 고침). QP 감시 50 ms면 rain의 30 QP가
   초당 600번이라 시행마다 약 16 000번이다.
-- hold: 실행기 몫을 시행마다 약 5 s로 보면 20시행이 580–660 s라 840 s 안이지만 여유가 작아 나눈다: `mi4_train_none` + `mi4_train_kill3`(15시행, 435–495 s) 하나,
-  `mi4_train_kill2_kill3`(5시행, 150–165 s) 하나. pilot이 잰 시행 시간으로 다시 정한다.
+- hold: 실행기 몫을 시행마다 약 5 s로 보면 20시행이 625–685 s라 840 s 안이지만 여유가 작아 나눈다: `mi4_train_none` + `mi4_train_kill3`(15시행, 465–510 s) 하나,
+  `mi4_train_kill2_kill3`(5시행, 160–175 s) 하나. pilot이 잰 시행 시간으로 다시 정한다.
 
-- **배포/빌드:** 정하지 않음(gin-restore의 `impl/build_rs.sh` 꼴로 새 디렉터리 하나).
+- **배포/빌드:** [impl/build_mi.sh](impl/build_mi.sh)(뼈대, 아직 돌리지 않음; 갈래마다 세션 스크래치의 `agent_mi_<이름>/`, i5 위의 diff). 배포 꼴은 pilot 전에 정한다.
 - **실행:** `harness/gpu-initiated/common/cluster_run.sh` 안에서 메인 세션이 한다.
 - **채점:** 3절 예측의 표 파일과 채점기(사전 등록 때 만듦).
 - **출력:** `results/<날짜>_<이름>/`, 원자료는 Release.
@@ -672,9 +695,10 @@ segment 묶음이 모두 8125–8175를 만짐), hook 차례(mirror 흡수 → `
 - [x] 학습 모양이 연 충돌 셋과 독립 검토의 충돌 둘의 사용자 결정(2026-10-13, 12절)
 - [x] 이번 반영분(RDMA 저장소, 단계 맞춤 가져오기, 검토 고침)의 독립 검토(재검토, 2026-10-13, 12절)
 - [x] 재검토가 연 충돌(단계 맞춤 가져오기 대 게이트에서 쉰 put)의 사용자 결정, 올리기 꼴(멈춤 안 D2H) 사용자 확인(2026-10-13, 12절)
-- [ ] 공유 인터페이스 헤더(메인 세션)
+- [x] 공유 인터페이스 헤더 여섯, 갈래 분담(impl/PARALLEL.md), build_mi.sh 뼈대(2026-10-13, 메인 세션, 12절)
 - [x] 충돌 표의 독립 검토(2026-10-13, 다른 Opus 에이전트, 12절)
-- [ ] 실행 가능성 확인 넷(9.8절, 채점 안 함)
+- [x] 실행 가능성 확인 1, 3, 4(2026-10-13, 채점 안 함; 9.8절의 결과, 12절)
+- [ ] 실행 가능성 확인 2(손으로 하는 mirror 비용; test 묶음의 gin_ts2 팔 뒤)
 - [ ] 계층 구현, 빌드, CPU 단위 시험, 기계어 비교, 독립 코드 검토
 - [ ] 시험 workload의 덮어쓰기 모드와 비용 팔, 셀 파일, 채점기
 - [ ] smoke와 pilot(채점 제외), 문턱과 n 고정
@@ -697,6 +721,8 @@ segment 묶음이 모두 8125–8175를 만짐), hook 차례(mirror 흡수 → `
 | 2026-10-13 | 사용자 결정(메인 세션이 전함), 검토의 충돌 둘: (1) segment 자리 → (가)와 (나) 함께: 버려진 멈춤과 게시 전에 아는 버림은 짝수 에폭 게시 전에 segment 바꾸기를 되돌리고(그 사이 장치 쓰기 없음), 그래도 넷째 자리가 필요하면 BUSY 없이 그 받는 rank를 DISARM하고 살아 있는 segment를 모두 버리고 그 멈춤부터 다시 시작, 확정되면 다시 무장(9.3절). (2) mirror QP 장애 기록 → (가): 기록 hook이 mirror 문맥 기록을 분류와 상관없이 흡수해 lane 깨짐 + DISARM + 그 QP를 쓰지 않음, 짝은 거절하지 않음(9.5절). 불변식: mirror는 보조 길이고 그 실패는 그 받는 rank의 복원만 끈다(9.3절). 9.7절 닫음, 열린 충돌 없음. 상태 DRAFT, 구현과 빌드 없음 | 이 파일 |
 | 2026-10-13 | 재검토(다른 Opus 에이전트, 읽기만, 대상 커밋 `2886ef79`). 열린 충돌 하나: 단계 맞춤 가져오기 대 hold 동안 게이트에서 쉰 생존 rank의 put(9.7절 끝, 고를 길 (가) 게시 뒤에도 그 게이트를 홀수로, (나) R ≥ 간격 + 3은 2 MiB에서 안 됨). 고칠 것 여섯 반영: mirror 흡수를 `gdakiHoldRoute` 앞에, `handled`를 올려 훑기의 거절을 막음(9.5절); 올리기 QP를 application 스레드가 Step의 복사 단계에서 내고 걷음, QP 속성과 ERR 뒤 다시 STORE_REQ; FETCH QP의 잇는 차례와 READY, 받는 버퍼는 초기화 재생 때 등록; QP 묶음 둘(사용자만, mirror 포함); 다시 시작 뒤 다시 무장은 그다음 확정 체크포인트; pool 등록은 문맥을 만들 때(예비 프로세스는 초기화 재생 때). 메모 반영: 자기 루프 lane의 기준과 10 ms 걸음, 단계 표와 요구 7, FETCH 시간의 정의와 절편, memlock 확인, 확인 3은 두 노드, 확인 4의 빠진 것은 pilot이, 확인 2는 대역 문턱만, 공유 헤더에서 먼저 고정할 것과 함수 경계. 사용자 확인 대기(메인 세션 권함): 멈춤 안 D2H와 멈춤 밖 WRITE(9.4절에 글만 준비) | 재검토 결과는 메인 세션이 전함 |
 | 2026-10-13 | 사용자 결정(메인 세션이 전함): 재검토가 연 충돌 → (가). mirror 켬이면 생존 rank의 복원 라운드가 게시한 뒤에도 되살린 rank로 가는 사용자 QP 게이트를 홀수로 두고, 예비 프로세스가 마지막 표시 단계의 입력을 넣은 뒤 INJECTED(새 helper 기록 38)를 보내면 짝수로 함. 바뀌는 규칙: PUBLISHED의 끝이 RESTORED에서 INJECTED로, INJECTED 전 PUBLISHED 시한은 min(지금, D), 감시 스레드는 상태만; 오지 않으면 지금의 시한과 fallback. 쉼은 HOLD_MS 30 s가 묶음. mirror 끈 셀과 gin-restore 회귀는 그대로, mirror 켠 4 KiB 셀은 데이터 영향 없음. 올리기 꼴 확인: 멈춤 안 D2H(고정 호스트 버퍼 30 MiB, 약 2.7 ms), 멈춤 밖 WRITE를 application 스레드가 복사 단계에서; 멈춤 약 8 ms, 고정 메모리 rain 약 2.7 GiB, 확인 3을 D2H와 호스트에서의 WRITE로. 9.7절 닫음, 열린 충돌 없음. 상태 DRAFT, 구현과 빌드 없음 | 이 파일 |
+| 2026-10-13 15:04–15:08 | 실행 가능성 확인 1, 3, 4(메인 세션이 `cluster_run.sh` 안에서 돌림, 채점 안 함; 결과는 메인 세션이 전함, 확인 3의 백분위는 이 문서를 고치며 timing 파일 둘에서 다시 셈, 같음). 확인 1 통과(어긋남 0; 울타리 없는 읽기도 0이라 울타리의 필요는 보이지 못함, 울타리는 둠). 확인 3: D2H 30 MiB 2.39 ms, WRITE 무부하 2.6 ms와 다른 QP의 묶음과 함께 19–24 ms, READ θ 11.9–12.0 GB/s; 처음 기준 "WRITE p99 ≤ 10 ms"를 "부하에서 WRITE ≤ 간격 / 4"로 고쳐 통과(메인 세션 판단). 확인 4: 세 프로세스 등록 뒤 BAR1 Free 155 MiB, 둘째 PD 등록이 +30 MiB, 고정 메모리 모두 등록, memlock 무제한. 이 결과로 9.3, 9.4, 9.5, 9.7, 9.8절, 3절의 a와 θ, 18절의 수치를 고침(학습 모양 시행 26–29 s, hold 465–510 s와 160–175 s). 확인 2는 test 묶음의 gin_ts2 팔 뒤 | `results/20261013_feas/`(원자료, release 전: SUMMARY.txt, store/store_*_timing.tsv, bar1/bar1_rain_bar1.txt), 도구 [feas/](feas/) |
+| 2026-10-13 | 공유 인터페이스(메인 세션): [impl/](impl/)의 헤더 여섯(새 rs_mirror_api.h, rs_store_api.h; gin-restore의 넷을 그대로 복사한 뒤 판 2로 넓힘), [impl/PARALLEL.md](impl/PARALLEL.md)(갈래 다섯, 소유한 줄, 붙이기 표, 기록과 리뷰 규칙), [impl/build_mi.sh](impl/build_mi.sh) 뼈대(돌리지 않음). 설계가 열어 둔 것을 인터페이스에서 정함: mirror QP는 GIN 문맥 차례의 마지막(사용자 묶음은 그 앞부분; mirror QP의 셈은 따로 읽고 무효면 그 lane만 깨짐); 측 표 판 4의 배치(32 짝 시험 낱말, 40–63 mirror 칸, QP 항목 48 miUse, cell 64 B: 유효, pool rkey, segment, lane 시작, L, 커서, 누적 깨짐); lane 차례와 pool 오프셋 식, S는 2–4; segment 번호는 1부터, 되돌리기는 자기 게시 전에 끝나는 멈춤(gdakiCkptEndPause)에서만 하고 라운드나 hold가 끝낸 멈춤은 바꾸기를 남김(게시 뒤 void로 셈; 설계의 "VOIDED면 되돌림"은 그때 이미 라운드가 게시해 할 수 없음); 다시 시작한 멈춤의 PAUSED는 무장 가능 아님(다음 확정에서 다시 무장하게 하는 장치); INJECTED 때 생존 rank가 되살린 rank의 닫힌 segment를 버림(다시 시작이 잘못 세지지 않게); HOLDING, MIRROR_SETUP, CKPT_PULL, STORE_REQ/ACK, CKPT_STABLE 칸의 배치; 저장소 자리 = gdakiCkptHdr(64 KiB 자리) + 이미지 + 덩어리, 끝 해시 없음(크기와 배치 해시로 확인), 저장소 준비 전에는 체크포인트 없음; 활성화 덩어리 판 2의 차례(ACCEPTED 뒤 끝점, READY, DONE)와 예비 프로세스의 FETCH는 첫 REJOIN 전, FETCH 버퍼 크기 변수(모자라면 REFUSED); 주소 표는 mirror 켬에만; 내보내기 판 2(항목 80 B, 원본 바이트 없음, 생존 rank의 rkey 목록에 pool 종류 4); 가져오기의 단계 실패는 no-BYE 끝; BUSY는 억제 BUSY를 넓힘(새 이유 없음); 갈래 상태는 gdakiRecHost 멤버 하나; 새 변수(`NCCL_GIN_RESTORE_MIRROR_POOL_MAX_MB`, `_FETCH_MB`, `NCCL_GIN_RESTORE_STORE_WRITE_MS`), Resume 이유 글자, test가 읽는 줄 키; mirror 끔 TCP 기반 지우기는 store 갈래. 같이 고친 글: 9.4절 주소 항목(표는 mirror 켬에만), 9.8절 store 행(TCP 기반 지우기), 9.7절 받는 고리 행의 틀린 추론("kd+2"). 확인: 헤더 여섯을 함께 g++ -fsyntax-only(선언 있고 없이), pool과 segment 순수 도우미를 CPU에서 돌림, paste를 i5 두 파일의 사본에 해 보고 host 파일을 g++ -fsyntax-only(경고 0; host 갈래 변형은 판 2 선언 셋의 예상 경고). 라이브러리 구현, 빌드, 클러스터 실행 없음 | 커밋 `6cde95d6`(복사), `656855d1`, `9ca9118e`, `e10dbf05` |
 
 ## 13. 사전 등록 이후 변경
 
@@ -728,15 +754,16 @@ segment 묶음이 모두 8125–8175를 만짐), hook 차례(mirror 흡수 → `
   않았다. 같은 rank의 두 번째 복원도 재지 않는다.
 - 체크포인트가 게시 뒤 연달아 버려지면 넷째 자리에서 그 받는 rank를 DISARM하고 다시 시작하므로 그 확정까지 보호가 없다(9.3절).
 - 단계 맞춤 가져오기의 요구 14(단계 t 커널은 단계 t의 put만 읽음)는 검사하지 않는다. 어기면 재실행이 조용히 틀릴 수 있다.
-- 체크포인트 올리기가 입력 멈춤 안에 들어가 생존 rank의 입력 멈춤이 올리기 시간만큼 길다(학습 모양 8–11 ms).
+- 멈춤 안 D2H만큼 생존 rank의 입력 멈춤이 길고(학습 모양 2.4 ms, 멈춤 약 8 ms), 멈춤 밖 WRITE만큼 체크포인트를 찍는 rank의 Step이 길다(부하에서 19–24 ms,
+  9.8절 확인 3). 올리기는 그 rank의 선을 application과 나눈다.
 - 자기 루프 lane의 오류와 mirror QP의 장애 기록은 그 받는 rank의 보호를 (짝이 되살아날 때까지) 끈다.
 - 이 testbed의 짝 규칙에서는 노드를 건너는 put의 mirror가 선을 건너지 않는다(5절). 셋 이상 노드의 비용은 재기만 하는 모드의 peer 팔로 대신 잰다.
-- 호스트 메모리의 drain 울타리와 RDMA READ의 차례는 아직 재지 않았다 `[미확인]`(9.8절 확인 1).
+- 호스트 메모리의 drain 울타리: 확인 1에서 울타리 없이 곧바로 읽어도 어긋남이 없어(9.8절) 울타리가 필요한지는 보이지 못했다. 울타리는 설계대로 둔다.
 - 학습 모양은 전송 모양과 덮어쓰기 차례만 흉내 낸다. 실제 학습(PyTorch, collective, 계산)은 재지 않는다(4절).
 
 ## 19. 다음 작업
 
-- 9.8절의 실행 가능성 확인 넷과 공유 인터페이스 헤더(메인 세션), 그 뒤 작업 묶음의 병렬 구현.
+- 갈래 다섯의 setup과 인터페이스 커밋(impl/PARALLEL.md), 그 뒤 작업 묶음의 병렬 구현과 묶음마다의 독립 리뷰. 실행 가능성 확인 2는 test 묶음의 gin_ts2 팔 뒤.
 
 ## 20. 참고자료
 
