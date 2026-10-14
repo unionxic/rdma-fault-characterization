@@ -321,10 +321,14 @@ static void testRkeys() {
   CHECK(warns == 0 && w.size() == 5 && pool == 0xd0);
   // no pool in the list (the survivor keeps no ward): nothing for the pool, poolBe 0
   CHECK(gdakiMiRkeyMerge(list, 4, 2, rep, 4, &w, &warns, &pool, why, sizeof(why)) == 0 && pool == 0 && w.size() == 4);
-  // coverage: a replayed window missing from the list, a list window with no slot here
-  CHECK(gdakiMiRkeyMerge(list + 1, 4, 0, rep, 4, &w, &warns, &pool, why, sizeof(why)) == -1 && has(why, "missing"));
+  // coverage (the integration's one rule, as the dev branch's import): a replayed window missing from the list, a list
+  // window with no slot here: a survivor restored before is refused, one of incarnation 0 is a WARN (replayed values kept)
+  CHECK(gdakiMiRkeyMerge(list + 1, 4, 1, rep, 4, &w, &warns, &pool, why, sizeof(why)) == -1 && has(why, "missing"));
+  CHECK(gdakiMiRkeyMerge(list + 1, 4, 0, rep, 4, &w, &warns, &pool, why, sizeof(why)) == 0 && warns == 2 &&
+        w.size() == 1 && w[0].kind == GDAKI_MI_RKEY_POOL);
   const struct gdakiRsRkeyEntry extra[2] = {{GDAKI_RS_RKEY_WINDOW, 1, 0xa1, 0}, {GDAKI_RS_RKEY_WINDOW, 9, 0xa9, 0}};
-  CHECK(gdakiMiRkeyMerge(extra, 2, 0, rep, 1, &w, &warns, &pool, why, sizeof(why)) == -1 && has(why, "no slot"));
+  CHECK(gdakiMiRkeyMerge(extra, 2, 1, rep, 1, &w, &warns, &pool, why, sizeof(why)) == -1 && has(why, "no slot"));
+  CHECK(gdakiMiRkeyMerge(extra, 2, 0, rep, 1, &w, &warns, &pool, why, sizeof(why)) == 0 && warns == 1 && w.empty());
   // an unknown kind is skipped
   const struct gdakiRsRkeyEntry odd[3] = {{GDAKI_RS_RKEY_WINDOW, 1, 0xa1, 0}, {GDAKI_RS_RKEY_WINDOW, 2, 0xa2, 0},
                                           {9, 0, 0xee, 0}};

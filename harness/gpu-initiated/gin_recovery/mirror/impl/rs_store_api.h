@@ -329,7 +329,10 @@ static ncclResult_t gdakiMiHostQpXfer(struct gdakiMiHostQp* q, bool read, void* 
                                       uint32_t rkey, uint64_t bytes, int timeoutMs, char* why, size_t whyLen);
 static void gdakiMiHostQpDestroy(struct gdakiMiHostQp* q);
 // [spare] the buddy's helper: the activation v2 (record, blob; the answer; after ACCEPTED the FETCH endpoint, the
-// connect, READY, then the connection handed to the data thread). Returns the answer kind, or -1.
+// connect, READY, then the connection handed to the data thread). Returns the answer kind, or -1. (As built: the
+// connection and the buddy's FETCH QP go to the spare branch's FETCH waiter thread, which holds them until DONE, a FIN
+// or the hold's deadline; GDAKI_MI_ACT_FETCH_FAILED (-2) when the FETCH handshake after ACCEPTED failed: the caller
+// falls back at once. impl/notes_spare.md, recorded at the integration.)
 struct gdakiMiActBlob {
   struct gdakiMiActHdr hdr;
   std::vector<struct gdakiMiActAddr> addr;
@@ -341,6 +344,9 @@ static int gdakiMiSendActivate(struct gdakiRecHost* r, int peer, const void* spa
 // gdakiCkptSpareData's header and blob; before its first REJOIN.
 static ncclResult_t gdakiMiSpareFetch(struct gdakiRecHost* r, int fd, const struct gdakiMiActBlob& blob,
                                       struct gdakiMiFetched* out, char* why, size_t whyLen);
+// [spare] any thread after the spare's driver (the integration, 2026-10-15: the accessor the dev branch's import reads in
+// gdakiRsSpareDataFdImport): the FETCH's result, or null before a FETCH that succeeded.
+static const struct gdakiMiFetched* gdakiMiSpareFetched(struct gdakiRecHost* r);
 #endif  // GDAKI_MI_API_NO_ENTRY_DECLS
 
 #endif  // GIN_MIRROR_RS_STORE_API_H_

@@ -258,8 +258,11 @@ struct gdakiMiState {
 // NCCL_GIN_RESTORE_MIRROR_LANE        L in bytes, default 1 MiB: a positive multiple of 64 (condition 37)
 // NCCL_GIN_RESTORE_MIRROR_PULL        percent of L that sends CKPT_PULL, default 50, 0 = never
 // NCCL_GIN_RESTORE_MIRROR_POOL_MAX_MB this process's pool at most, default 2048 (condition 37)
-// NCCL_GIN_RESTORE_MIRROR_FETCH_MB    the spare's FETCH buffer (registered at its init replay), default 512
-// NCCL_GIN_RESTORE_LOG_MEASURE_MIRROR 0 (default) | self | peer: the measurement mode's mirror arm (EXPERIMENT.md 7)
+// NCCL_GIN_RESTORE_MIRROR_FETCH_MB    the spare's FETCH buffer (registered at its driver's start, before the
+//                                     activation socket; the integration), default 512
+// NCCL_GIN_RESTORE_LOG_MEASURE_MIRROR 0 (default) | self | peer: the measurement mode's mirror arm (EXPERIMENT.md 7);
+//                                     only with NCCL_GIN_RESTORE_MIRROR=1 (the mirror context and its agreement); the
+//                                     cells' cursors go back to 0 past L/2 at every helper step, a put above L breaks
 // The store's parameters are in impl/rs_store_api.h.
 
 // ---- Resume conditions 34-40 (gdakiRsLocalCheck, 2780-2838; the reason strings, which every rank prints alike) ----
@@ -269,7 +272,7 @@ struct gdakiMiState {
 #define GDAKI_MI_R37 "NCCL_GIN_RESTORE_MIRROR_LANE is not a positive multiple of 64, or the pool is above its limit"
 #define GDAKI_MI_R38 "a buddy's pool information did not arrive, or a mirror QP could not be connected"
 #define GDAKI_MI_R39 "NCCL_GIN_RESTORE_MIRROR_SLOTS or NCCL_GIN_RESTORE_MIRROR_LANE differs between ranks"
-#define GDAKI_MI_R40 "the mirror needs one GIN context more than the user's, and the user's are 64"
+#define GDAKI_MI_R40 "the mirror context was not created (one GIN context more than the user's, at most 31 user contexts)"
 // 38 is not checked on a spare process (no MIRROR_SETUP there, 9.3). 39 is decided on the Resume exchange (every rank's
 // S and L), as gin-restore's gathered conditions; the exchange also carries the mirror bit (a rank whose bit differs:
 // 34).
@@ -320,8 +323,9 @@ struct gdakiMiState {
 // ---- segments (EXPERIMENT.md 9.3) ----
 // Sender s keeps, per destination d, a sequence of segment numbers (from 1; 0 = none) and the live segments: the open
 // one and the closed ones not yet dropped. A switch happens in d's input pause, after gdakiRsLogPauseRead (gates odd,
-// count 0) and before PAUSED: read the cell (seg, laneBase, cursor, broken), write {seg + 1, the next slot's laneBase,
-// cursor 0, valid 1}, read it back; record (closed seg, the pause's ring head = its cut, fill = min(cursor, L), broken
+// count 0) and before PAUSED: read the cell (seg, laneBase, cursor, broken), write {valid 1, the pool rkey of buddy(d)
+// (this rank's own pool's when it is buddy(d): its self loop), seg + 1, the next slot's laneBase, L, cursor 0}, read
+// it back; record (closed seg, the pause's ring head = its cut, fill = min(cursor, L), broken
 // at close, the checkpoint k). Rollback: a pause that ends WITHOUT a publish of its own end (gdakiCkptEndPause: r gave
 // it up with pad 1, the pause's bound, a failed send; and the confirmation that finds the gates not intact) writes the
 // old values back before its empty round and forgets the record. A pause that a round or a hold start ended keeps its
@@ -414,8 +418,9 @@ static inline int gdakiMiHoldingVerdict(const struct gdakiMiHolding& h, uint64_t
 //   - "import done": steps= pool_bytes= left=
 //   - "INJECTED sent" (the restored rank): step= survivors=
 //   - "INJECTED from rank %d" (a survivor): step= state= gate_odd_ms=
-//   - "mirror summary" (at the context's teardown): switches= rollbacks= restarts= third_slot= max_live_bytes=
-//     pulls_sent= pulls_taken= broken= absorbed=
+//   - "mirror summary" (at the context's teardown; WARN in both builds): switches= rollbacks= restarts= third_slot=
+//     max_live_bytes= pulls_sent= pulls_taken= broken= absorbed= (in the measurement mode broken= counts the device's
+//     breaks too)
 // ---- gin-mirror: host API (end) ----
 
 // ---- entry points (restated declarations, not in a block; owner in brackets; helper = the helper thread only) ----
@@ -448,10 +453,16 @@ static bool gdakiMiSegSwitch(struct gdakiRecHost* r, int d, uint64_t ckpt, uint6
 // publish of a confirmed cut (gdakiCkptEndPause; call it before that function's gdakiCkptEmptyRound); false: the cut
 // stays.
 static void gdakiMiSegPauseEnd(struct gdakiRecHost* r, int d, uint64_t ckpt, bool rollback);
-// [host, segment package] helper: CKPT_STABLE(ckpt) of d (from gdakiCkptOnStable, after the log's trim).
+// [host, segment package] helper: CKPT_STABLE(ckpt) of d (from gdakiCkptOnStable; as built it runs just before the
+// log's trim, gdakiRsLogStable: the order does not matter, the integration's review).
 static void gdakiMiSegStable(struct gdakiRecHost* r, int d, uint64_t ckpt);
 // [host, segment package] helper: d's segment records for the export (v2) and HOLDING: closed segments (cut, seg, fill,
 // closedAt, broken), the open one, and the floor (the cut the oldest live segment opened at). False: none kept for d.
+// The counts (the integration, 2026-10-15; the host branch's code and the spare branch's reading): broken[i] = the
+// breaks while closed segment i was open (the device's increments of the cell's cumulative counter between its opening
+// and its close, plus the host's breaks); openBroken = the cell's CUMULATIVE broken counter when the open segment opened
+// (a base: the open segment's breaks are the cell's broken now minus openBroken; the host's breaks show as cellValid
+// false); openCursor = the open segment's cursor at the last poll or switch.
 struct gdakiMiSegView {
   std::vector<uint64_t> cuts, segs, fills, closedAt, broken;
   uint64_t openSeg = 0, openCursor = 0, openBroken = 0, floor = 0;
@@ -474,6 +485,12 @@ static bool gdakiMiHoldStartRead(struct gdakiRecHost* r, int d, struct gdakiMiHo
 // [spare] helper, in gdakiHoldCommitRound after the user set's X check (7372-7383): the mirror QP's X again; a change
 // breaks the lanes it serves (no fallback).
 static void gdakiMiCommitCheck(struct gdakiRecHost* r, int d);
+// The integration (2026-10-15) closed two gaps (impl/notes_spare.md 3, 9) with the host branch's state:
+// [host] any thread after the setup: this rank's pool (rkey in host order, L, S); false: the mirror off or no pool.
+static bool gdakiMiPoolInfoOf(struct gdakiRecHost* r, uint32_t* rkey, uint64_t* laneBytes, uint32_t* slots);
+// [host] any thread after the setup: the self loop's responder MSN read right after its connect (the drain's base);
+// false: not known.
+static bool gdakiMiSelfBase(struct gdakiRecHost* r, uint32_t* base);
 #endif  // GDAKI_MI_API_NO_ENTRY_DECLS
 
 #endif  // GIN_MIRROR_RS_MIRROR_API_H_

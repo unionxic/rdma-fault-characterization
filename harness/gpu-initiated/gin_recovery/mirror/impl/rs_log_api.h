@@ -330,10 +330,11 @@ static ncclResult_t gdakiRsSpareImport(struct gdakiRecHost* r, const struct gdak
 #define GDAKI_RS_STEP_UNKNOWN (~0ULL)
 struct gdakiRsLogXHdr2 {
   uint32_t flags;          // GDAKI_RS_LOGX_F_MIRROR
-  uint32_t mirValid;       // 1: mirX and mirM hold (the survivor's mirror QP to the restored rank was in use, its count
-                           // valid at the hold start); 0: the spare leaves its mirror QP to this survivor unused
+  uint32_t mirValid;       // 1: mirX holds (the survivor's mirror QP to the restored rank was in use, its count valid at
+                           // the hold start); 0: the spare leaves its mirror QP to this survivor unused
   uint64_t mirX;           // the mirror QP's X: the survivor's executed count of the restored rank's mirror WRITEs
-  uint64_t mirM;           // the mirror QP's M: mirror WRITEs the survivor posted to the restored rank (its msgs)
+  uint64_t mirM;           // the mirror QP's M: mirror WRITEs the survivor posted to the restored rank (its msgs), sent
+                           // whatever mirValid (the integration): the spare's responder base for that QP
   uint64_t lastStep;       // the survivor's last ncclGinRestoreStep before the hold (entries after it: lastStep + 1)
   uint64_t nMirror;        // MIRROR entries
   uint64_t mirrorBytes;    // their data bytes
@@ -361,7 +362,9 @@ static inline uint64_t gdakiRsStepOfPos(const uint64_t* steps, const uint64_t* h
 #ifndef GDAKI_MI_API_NO_ENTRY_DECLS
 struct gdakiMiFetched;  // impl/rs_store_api.h
 // [host] application thread or helper: a copy of the (step, head) pairs of the checkpoint's step log (ck->steps, under
-// ck->mu) whose head is above `from`, increasing, and the last step recorded (the export v2's step tags).
+// ck->mu) whose head is above `from`, increasing, and the last step recorded (the export v2's step tags). The
+// integration (2026-10-15) defined it in the host branch's region: lastStep is the newest pair's step; with every pair
+// settled the stable step; GDAKI_RS_STEP_UNKNOWN when no step was ever recorded.
 static void gdakiCkptStepPairs(struct gdakiRecHost* r, uint64_t from, std::vector<uint64_t>* steps,
                                std::vector<uint64_t>* heads, uint64_t* lastStep);
 // [spare] helper (survivor): the export v2. As gdakiRsLogExport (x, m: the user QPs at the hold start) plus the mirror
@@ -385,10 +388,13 @@ static ncclResult_t gdakiMiImportPrepare(struct gdakiRecHost* r, const struct gd
                                          uint32_t incarnation, const struct gdakiMiFetched& fetched, char* why,
                                          size_t whyLen);
 // [dev] application thread, the spare's ncclGinRestoreStep(t) (first thing after its blob check, 9370, before the early
-// return at 9372): injects step t + 1's inputs and waits for them; after the last queued step it calls
-// gdakiMiInjectedReady(r, t + 1) (impl/rs_hold_api.h v2; also from gdakiMiImportPrepare when step ckpt + 1 is the only
-// one). Nothing when nothing is queued. A failure ends the spare as gin-restore's no-BYE exit (its helper sockets
-// closed with a FIN; ncclGinRestoreStep returns ncclSystemError): the survivors, still PUBLISHED, fall back.
+// return at 9372): injects the queued inputs of the steps up to t + 1 and waits for them; after the last queued step it
+// calls gdakiMiInjectedReady(r, the last step it injected) (impl/rs_hold_api.h v2; also from gdakiMiImportPrepare when
+// step ckpt + 1 is the only one; the integration's wording, the code's and the test branch's). Nothing when nothing is
+// queued. A failure ends the spare as gin-restore's no-BYE exit: the application thread asks, the helper's next step
+// runs it (gdakiMiImportHelperStep, called from gdakiHoldStep: FALLBACK about itself, every helper socket closed with a
+// FIN; ncclGinRestoreStep returns ncclSystemError): the survivors, still PUBLISHED, fall back. The line "import step"
+// is written for each step that had inputs (a step without inputs writes none); "import done" once.
 static ncclResult_t gdakiMiImportStep(struct gdakiRecHost* r, uint64_t step, char* why, size_t whyLen);
 // [dev] any thread: inputs are still queued. gdakiCkptSuppressLeft (8096-8107) ORs it: BUSY_SUPPRESS to every pause and
 // no own checkpoint until the last step is injected.
