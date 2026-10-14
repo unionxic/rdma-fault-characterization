@@ -16,7 +16,7 @@
 //   base), the export v2's entry tags and its stream.
 // The "mirror off = v1" cases below exercise the pure helpers only; the library's call sites branch on gdakiMiOn before
 // they reach them (gdakiRsRejoinAccept, gdakiRsSpareRun), so they do not show that the call sites are v1's (the review
-// read those, impl/notes_spare.md).
+// read those; the spare branch's notes are in EXPERIMENT.md section 12 since the integration).
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>

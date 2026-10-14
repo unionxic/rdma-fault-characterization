@@ -485,7 +485,7 @@ static bool gdakiMiHoldStartRead(struct gdakiRecHost* r, int d, struct gdakiMiHo
 // [spare] helper, in gdakiHoldCommitRound after the user set's X check (7372-7383): the mirror QP's X again; a change
 // breaks the lanes it serves (no fallback).
 static void gdakiMiCommitCheck(struct gdakiRecHost* r, int d);
-// The integration (2026-10-15) closed two gaps (impl/notes_spare.md 3, 9) with the host branch's state:
+// The integration (2026-10-15) closed two gaps (the spare branch's gaps 3 and 9, EXPERIMENT.md section 12) with the host branch's state:
 // [host] any thread after the setup: this rank's pool (rkey in host order, L, S); false: the mirror off or no pool.
 static bool gdakiMiPoolInfoOf(struct gdakiRecHost* r, uint32_t* rkey, uint64_t* laneBytes, uint32_t* slots);
 // [host] any thread after the setup: the self loop's responder MSN read right after its connect (the drain's base);
