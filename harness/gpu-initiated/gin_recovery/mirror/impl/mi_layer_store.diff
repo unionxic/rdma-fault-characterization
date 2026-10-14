@@ -191,7 +191,7 @@ index fec5dc0..4cc6715 100644
  struct ncclGinGdakiGPUContext {
    struct doca_gpu_dev_verbs_qp* gdqp;
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 6864b92..abe5468 100644
+index 6864b92..ae02dc0 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -438,6 +438,9 @@ static void gdakiRsMeasureStep(struct gdakiRecHost* r);                // gin-re
@@ -710,3 +710,1938 @@ index 6864b92..abe5468 100644
  
  // ---- gin-restore ckpt: pure functions (begin; impl/rs_unit_host.cc compiles this region on the CPU) ----
  // The checkpoint's decisions and bookkeeping (EXPERIMENT.md 9.4, 9.11.9 C1, M3), as functions of plain values.
+@@ -6326,6 +6806,42 @@ struct gdakiRsActivate;
+ static int gdakiHoldTransferStep(struct gdakiRecHost* r, int p, char* why, size_t whyLen);
+ static bool gdakiHoldSpareOf(struct gdakiRecHost* r, int peer, struct gdakiRsActivate* a, void* addr, size_t addrLen);
+ static bool gdakiHoldRespareRegistered(struct gdakiRecHost* r, int peer);
++// ---- gin-mirror (store): declarations (begin; impl/rs_store_api.h's entry points of the store branch) ----
++// Defined in the region "gin-mirror (store)" after the checkpoint machine; declared here for the calls of the checkpoint
++// and hold machines (impl/rs_store_api.h's boundary list). gdakiMiOn is the host branch's (a placeholder in the store
++// region until the integration).
++static bool gdakiMiOn(struct gdakiRecHost* r);
++static bool gdakiStoreOn(struct gdakiRecHost* r);
++static bool gdakiStoreReady(struct gdakiRecHost* r);
++static void gdakiStoreArm(struct gdakiRecHost* r, uint64_t ckpt);
++static void gdakiStoreWriteState(struct gdakiRecHost* r, uint64_t ckpt, bool* done, bool* ok);
++static void gdakiStoreFillStable(struct gdakiRecHost* r, struct gdakiTsMsg* m);
++static bool gdakiStoreOnStable(struct gdakiRecHost* r, int from, const struct gdakiTsMsg& m);
++struct gdakiStoreActInfo {
++  uint32_t rkey = 0, slot = 0, blobBytes = 0;
++  uint64_t off = 0, usedBytes = 0, imageBytes = 0, layoutHash = 0, ckpt = 0;
++};
++static bool gdakiStoreActInfoOf(struct gdakiRecHost* r, int d, struct gdakiStoreActInfo* out);
++static void gdakiStoreStep(struct gdakiRecHost* r);
++static void gdakiStoreOnBuddyRestored(struct gdakiRecHost* r, int buddy);
++struct gdakiMiHostQp;
++static ncclResult_t gdakiMiHostQpCreate(struct gdakiRecHost* r, int maxRdAtomic, struct gdakiMiHostQp** out,
++                                        struct gdakiMiQpEndpoint* local, char* why, size_t whyLen);
++static ncclResult_t gdakiMiHostQpConnect(struct gdakiMiHostQp* q, const struct gdakiMiQpEndpoint& remote, char* why,
++                                         size_t whyLen);
++static ncclResult_t gdakiMiHostQpXfer(struct gdakiMiHostQp* q, bool read, void* local, uint32_t lkey, uint64_t remote,
++                                      uint32_t rkey, uint64_t bytes, int timeoutMs, char* why, size_t whyLen);
++static void gdakiMiHostQpDestroy(struct gdakiMiHostQp* q);
++// The store branch's own (outside the interface; impl/notes_store.md): the application thread's store path of
++// gdakiCkptTake, the uploader's view of the buddy's stable slot after CKPT_STABLE went to the buddy, the TCP path's base
++// rule at the end of an upload (9.6), the buddy's spare registration of a ward on the store path (gdakiHoldSpareOf), the
++// teardown (gdakiCkptFree).
++static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* blob, size_t bytes);
++static void gdakiStoreStableSent(struct gdakiRecHost* r, uint64_t ckpt);
++static void gdakiStoreTcpUploadEnded(struct gdakiRecHost* r, bool ok);
++static bool gdakiStoreSpareOf(struct gdakiRecHost* r, int peer, struct gdakiRsActivate* a, void* addr, size_t addrLen);
++static void gdakiStoreFree(struct gdakiRecHost* r);
++// ---- gin-mirror (store): declarations (end) ----
+ // ==== gin-restore (rs, work package 5): checkpoint state (end) ====
+ 
+ // ---- gpu-detect (hk): the fault-policy hooks (gin-restore's DESIGN_POLICY.md 4.10, G1-G9) ----
+@@ -10929,6 +11445,7 @@ static void gdakiHoldApplyRestored(struct gdakiRecHost* r, int peer, const struc
+   hp.phase = GDAKI_HOLD_P_REJOIN;
+   gdakiHoldXferClose(hp);
+   gdakiCkptPeerReset(r, peer);  // work package 5
++  gdakiStoreOnBuddyRestored(r, peer);  // gin-mirror (store), 9.6: this rank's buddy restored: store again / whole image
+   h->nRestored.fetch_add(1, std::memory_order_relaxed);
+   GIN_TS_NOTE("GIN/RS: rank %d: rank %d restored as incarnation %u (%s; %.1f ms after the hold start, %.1f ms after the "
+               "publish); state %s mono_ms=%.3f", h->rank, peer, inc + 1u,
+@@ -12090,7 +12607,9 @@ static void gdakiCkptOnStable(struct gdakiRecHost* r, int from, const struct gda
+   const int s = from;
+   if (gdakiHoldBuddyOf(s, h->nranks) == h->rank) {
+     bool marked;
+-    {
++    if (gdakiStoreOn(r)) {  // gin-mirror (store): the stable slot moves by the payload; the slot is never read here
++      marked = gdakiStoreOnStable(r, s, m);
++    } else {
+       std::lock_guard<std::mutex> lk(ck->storeMu);
+       marked = ck->store[s].markStable(m.round);
+     }
+@@ -12297,6 +12816,7 @@ static void gdakiCkptInitStep(struct gdakiRecHost* r) {
+                        : gdakiCkptSuppressLeft(r)                        ? "replayed messages are still held back"
+                        : !gdakiLbOn(r)                                   ? "the NIC copy path is off"
+                        : gdakiHoldBuddyOf(me, n) < 0                     ? "no buddy"
++                       : gdakiStoreOn(r) && !gdakiStoreReady(r)          ? "the checkpoint store is not ready"  // gin-mirror
+                        : upBusy                                          ? "the previous upload still runs"
+                                                                          : nullptr;
+       gdakiCkptPhase(ck, GDAKI_CKPT_I_PAUSING);
+@@ -12366,7 +12886,9 @@ static void gdakiCkptInitStep(struct gdakiRecHost* r) {
+         m.pad = valid ? 0u : 1u;
+         (void)gdakiHoldSend(r, q, &m);
+       }
+-      if (valid) gdakiCkptStartUpload(r);  // before the application may ask for the next one (it reads this one's data)
++      // before the application may ask for the next one (it reads this one's data); gin-mirror (store): the store path's
++      // WRITEs are the application thread's, after this arm (impl/rs_store_api.h)
++      if (valid) gdakiStoreOn(r) ? gdakiStoreArm(r, ck->ckpt) : gdakiCkptStartUpload(r);
+       {
+         std::lock_guard<std::mutex> lk(ck->mu);
+         ck->req = GDAKI_CKPT_REQ_NONE;
+@@ -12378,7 +12900,9 @@ static void gdakiCkptInitStep(struct gdakiRecHost* r) {
+     }
+     case GDAKI_CKPT_I_CONFIRMING: {
+       bool done, ok;
+-      {
++      if (gdakiStoreOn(r)) {  // gin-mirror (store): the WRITEs of the application thread
++        gdakiStoreWriteState(r, ck->ckpt, &done, &ok);
++      } else {
+         std::lock_guard<std::mutex> lk(ck->mu);
+         done = ck->up.done;
+         ok = ck->up.ok;
+@@ -12401,8 +12925,12 @@ static void gdakiCkptInitStep(struct gdakiRecHost* r) {
+       gdakiHoldMsgInit(&m, GDAKI_TS_CKPT_STABLE, me, 0);
+       m.round = ck->ckpt;
+       m.pad = armable ? GDAKI_CKPT_STABLE_ARMABLE : 0u;
++      const bool store = gdakiStoreOn(r);         // gin-mirror (store): the slot's payload with every CKPT_STABLE
++      if (store) gdakiStoreFillStable(r, &m);
+       if (gdakiHoldSend(r, b, &m) != 0) return gdakiCkptVoid(r, "CKPT_STABLE could not be sent to the buddy");
+-      {  // this image is the next upload's base (the buddy marked it stable with the CKPT_STABLE above)
++      if (store) {  // gin-mirror (store): that slot is the buddy's stable one now (no base: every image is whole)
++        gdakiStoreStableSent(r, ck->ckpt);
++      } else {  // this image is the next upload's base (the buddy marked it stable with the CKPT_STABLE above)
+         std::lock_guard<std::mutex> lk(ck->mu);
+         ck->haveBase = true;
+         ck->baseCkpt = ck->ckpt;
+@@ -12413,6 +12941,7 @@ static void gdakiCkptInitStep(struct gdakiRecHost* r) {
+         gdakiHoldMsgInit(&m, GDAKI_TS_CKPT_STABLE, me, 0);
+         m.round = ck->ckpt;
+         m.pad = armable ? GDAKI_CKPT_STABLE_ARMABLE : 0u;
++        if (store) gdakiStoreFillStable(r, &m);
+         (void)gdakiHoldSend(r, q, &m);
+       }
+       gdakiCkptPhase(ck, GDAKI_CKPT_I_IDLE);
+@@ -12474,6 +13003,7 @@ static void gdakiCkptOnMsg(struct gdakiRecHost* r, int from, const struct gdakiT
+ static void gdakiCkptStep(struct gdakiRecHost* r) {
+   if (gdakiCkptOf(r) == nullptr) return;
+   gdakiCkptPeerStep(r);
++  gdakiStoreStep(r);  // gin-mirror (store): STORE_REQ/STORE_ACK, both sides (hook outside the boundary list: notes_store.md)
+   gdakiCkptInitStep(r);
+ }
+ 
+@@ -12527,6 +13057,11 @@ static void gdakiCkptUploadOne(struct gdakiRecHost* r, struct gdakiCkptUpload& u
+   struct gdakiCkpt* ck = gdakiCkptOf(r);
+   const int toMs = r->ts->handshakeMs;
+   *ok = false;
++  struct gdakiStoreTcpEnd {  // gin-mirror (store), 9.6: every end without the buddy's OK ack clears the base
++    struct gdakiRecHost* r;
++    const bool* ok;
++    ~gdakiStoreTcpEnd() { gdakiStoreTcpUploadEnded(r, *ok); }
++  } tcpEnd{r, ok};
+   // the GPU copy to host memory (this thread's own stream; bounded)
+   const uint64_t bytes = u.hdr.imageBytes;
+   if (bytes > ck->hostCopyBytes || ck->hostCopy == nullptr ||
+@@ -13061,6 +13596,8 @@ static void gdakiCkptSpareDataDone(struct gdakiCkptSpareData* d) {
+ }
+ // The buddy's registration of `peer`'s spare: its newest stable image's spare address, PID and start time.
+ static bool gdakiHoldSpareOf(struct gdakiRecHost* r, int peer, struct gdakiRsActivate* a, void* addr, size_t addrLen) {
++  // gin-mirror (store): on the store path from the ward's STORE_REQ (hook outside the boundary list: notes_store.md)
++  if (gdakiStoreOn(r)) return gdakiStoreSpareOf(r, peer, a, addr, addrLen);
+   struct gdakiCkpt* ck = gdakiCkptOf(r);
+   if (ck == nullptr || peer < 0 || peer >= (int)ck->store.size()) return false;
+   std::lock_guard<std::mutex> lk(ck->storeMu);
+@@ -13112,6 +13649,7 @@ static bool gdakiCkptRegions(struct gdakiRecHost* r, std::vector<struct gdakiCkp
+ }
+ // One checkpoint (application thread): the regions and the copy buffers, the ask to the helper, the copy once drained.
+ static void gdakiCkptTake(struct gdakiRecHost* r, uint64_t step, const void* blob, size_t bytes) {
++  if (gdakiStoreOn(r)) return gdakiStoreTake(r, step, blob, bytes);  // gin-mirror (store): D2H in the pause, then WRITEs
+   struct gdakiCkpt* ck = gdakiCkptOf(r);
+   {
+     std::lock_guard<std::mutex> lk(ck->mu);
+@@ -13291,6 +13829,7 @@ static void gdakiCkptFree(struct gdakiRecHost* r) {
+   struct gdakiCkpt* ck = gdakiCkptOf(r);
+   if (ck == nullptr) return;
+   gdakiCkptStop(r);
++  gdakiStoreFree(r);  // gin-mirror (store): its thread, QPs, MRs, memory (hook outside the boundary list: notes_store.md)
+   if (ck->devCopy) (void)cudaFree(ck->devCopy);
+   if (ck->hostCopy) (void)cudaFreeHost(ck->hostCopy);
+   if (ck->copyStream) (void)cudaStreamDestroy(ck->copyStream);
+@@ -13309,6 +13848,1775 @@ static void gdakiCkptTeardownLine(struct gdakiRecHost* r) {
+ }
+ // ==== gin-restore (rs, work package 5): checkpoint machine (end) ====
+ 
++// ---- gin-mirror (store): pure (begin; impl/mi_unit_store.cc compiles this region on the CPU) ----
++// The RDMA checkpoint store's decisions (EXPERIMENT.md 9.4 "RDMA 체크포인트 저장소", 9.6, 9.7; impl/rs_store_api.h) as
++// functions and structs of plain values: the slots' arithmetic, the checks of STORE_REQ and STORE_ACK, the uploader's
++// request machine, the buddy's record of one ward (its MRs, generation and stable slot), the activation's store part and
++// the TCP path's base rule (mirror off, 9.6). No NCCL, no ibverbs, no CUDA; C++14 (the library's standard).
++#define GDAKI_STORE_WRITE_CHUNK (1ull << 30)  // one WRITE of the upload at most (impl/rs_store_api.h: each <= 1 GiB)
++#define GDAKI_STORE_READ_CHUNK (32ull << 20)  // one READ of gdakiMiHostQpXfer at most (the FETCH keeps several in flight)
++#define GDAKI_STORE_MAX_IMAGE (1ull << 40)    // a larger image is refused (gdakiCkptLayout's bound)
++#define GDAKI_STORE_REQ_RETRY_MS 5000.0       // a STORE_REQ unanswered this long: a new one (with a new upload QP)
++#define GDAKI_STORE_BACKOFF_MS 1000.0         // after a refused request, a failed send or a failed connect
++#define GDAKI_MI_HOSTQP_DEPTH 64              // send WRs of a host RC QP (its CQ: twice that)
++
++// STORE_REQ's payload after struct gdakiStoreReq (outside the interface, impl/notes_store.md): the ward's spare
++// registration (NCCL_GIN_RESTORE_SPARE_ADDR, PID, start time). The buddy's activation needs it, and on the store path the
++// buddy's CPU never reads the slot that holds the image's header (9.4, 9.7 "drain 울타리와 저장소").
++#define GDAKI_STORE_SPARE_MAGIC 0x50535247u  // "GRSP"
++struct gdakiStoreReqSpare {
++  uint32_t magic;         // GDAKI_STORE_SPARE_MAGIC
++  uint32_t haveSpare;     // 1: spareAddr is the ward's spare
++  uint8_t spareAddr[32];  // a union ncclSocketAddress
++  int64_t pid;            // the ward's process
++  uint64_t pidStart;      // its start time, /proc/<pid>/stat field 22
++};
++#define GDAKI_STORE_SPARE_OFF ((sizeof(struct gdakiStoreReq) + 7u) & ~(size_t)7u)
++static_assert(GDAKI_STORE_SPARE_OFF + sizeof(struct gdakiStoreReqSpare) <= 256,
++              "STORE_REQ's request and the spare registration fit gdakiTsMsg::executed");
++// STORE_ACK's payload after struct gdakiStoreAck (outside the interface, impl/notes_store.md): the ward's stable slot as
++// the buddy holds it. The uploader takes its view of the stable slot from every accepted answer, so a CKPT_STABLE that
++// was buffered on a helper socket lost before the buddy read it (the buddy's slot never moved; impl/notes_store.md
++// "독립 리뷰" 2) is corrected by the request that follows the socket's reinstall. Zero (no magic) in an answer that
++// refuses, and in an answer of a buddy without this trailer: the uploader keeps its own view then.
++#define GDAKI_STORE_ACKS_MAGIC 0x53535247u  // "GRSS"
++struct gdakiStoreAckStable {
++  uint32_t magic;        // GDAKI_STORE_ACKS_MAGIC
++  uint32_t haveStable;   // 1: the buddy holds a stable slot of the ward
++  uint32_t stableSlot;   // its slot (0, 1)
++  uint32_t pad;
++  uint64_t stableGen;    // the generation its WRITEs used
++  uint64_t stableCkpt;   // its checkpoint
++};
++#define GDAKI_STORE_ACKS_OFF ((sizeof(struct gdakiStoreAck) + 7u) & ~(size_t)7u)
++static_assert(GDAKI_STORE_ACKS_OFF + sizeof(struct gdakiStoreAckStable) <= 256,
++              "STORE_ACK's answer and the stable view fit gdakiTsMsg::executed");
++
++// ---- slots and transfers ----
++// The store MR of one ward: two slots of slotBytes (gdakiStoreSlotBytes: a multiple of 4 KiB), slot i at i x slotBytes,
++// zero based.
++static inline uint64_t gdakiStoreMrBytes(uint64_t slotBytes) { return 2u * slotBytes; }
++static inline uint64_t gdakiStoreSlotOff(uint64_t slotBytes, uint32_t slot) { return (uint64_t)slot * slotBytes; }
++// The slot the uploader writes: never the buddy's stable one (stableSlot -1, none yet: slot 0).
++static inline uint32_t gdakiStoreRecvSlot(int stableSlot) { return stableSlot == 0 ? 1u : 0u; }
++// A transfer of `bytes` in pieces of at most `chunk`: their number, and piece i's length.
++static inline uint64_t gdakiStoreNChunks(uint64_t bytes, uint64_t chunk) {
++  return chunk == 0 ? 0 : bytes / chunk + (bytes % chunk != 0 ? 1u : 0u);
++}
++static inline uint64_t gdakiStoreChunkLen(uint64_t i, uint64_t bytes, uint64_t chunk) {
++  if (chunk == 0 || i >= gdakiStoreNChunks(bytes, chunk)) return 0;
++  const uint64_t o = i * chunk;
++  return bytes - o < chunk ? bytes - o : chunk;
++}
++// Two slots of slotBytes at these offsets do not overlap and end inside 64-bit offsets.
++static inline bool gdakiStoreSlotsSane(const uint64_t* slotOff, uint64_t slotBytes) {
++  if (slotBytes == 0) return false;
++  const uint64_t lo = slotOff[0] < slotOff[1] ? slotOff[0] : slotOff[1];
++  const uint64_t hi = slotOff[0] < slotOff[1] ? slotOff[1] : slotOff[0];
++  return hi - lo >= slotBytes && hi <= ~0ull - slotBytes;
++}
++// An endpoint's QP number (24 bits, not 0) and MTU (enum ibv_mtu: 256 .. 4096 are 1 .. 5).
++static inline bool gdakiStoreEndpointOk(const struct gdakiMiQpEndpoint& e) {
++  return e.qpn != 0 && e.qpn <= 0xffffffu && e.mtu >= 1 && e.mtu <= 5;
++}
++
++// ---- STORE_REQ at the buddy ----
++enum {
++  GDAKI_STORE_Q_OK = 0,
++  GDAKI_STORE_Q_NOT_WARD = 1,  // the sender is not a ward of this rank (or names another rank)
++  GDAKI_STORE_Q_VERSION = 2,   // another wire version, seq 0, or seq is not the record's round
++  GDAKI_STORE_Q_SIZE = 3,      // no image, a larger one than GDAKI_STORE_MAX_IMAGE, or slotBytes not its slot size
++  GDAKI_STORE_Q_OLD_INC = 4,   // an older incarnation than this rank knows or served
++  GDAKI_STORE_Q_STALE = 5,     // not newer than the request served last (same incarnation)
++  GDAKI_STORE_Q_ENDPOINT = 6,  // the upload QP's endpoint is not one
++};
++static inline int gdakiStoreReqVerdict(const struct gdakiStoreReq& q, uint64_t round, bool isWard, uint32_t knownInc,
++                                       bool served, uint32_t servedInc, uint64_t servedSeq) {
++  if (!isWard) return GDAKI_STORE_Q_NOT_WARD;
++  if (q.version != GDAKI_MI_WIRE_VERSION || q.seq == 0 || q.seq != round) return GDAKI_STORE_Q_VERSION;
++  if (q.imageBytes == 0 || q.imageBytes > GDAKI_STORE_MAX_IMAGE || q.slotBytes != gdakiStoreSlotBytes(q.imageBytes))
++    return GDAKI_STORE_Q_SIZE;
++  if (q.incarnation < knownInc || (served && q.incarnation < servedInc)) return GDAKI_STORE_Q_OLD_INC;
++  if (served && q.incarnation == servedInc && q.seq <= servedSeq) return GDAKI_STORE_Q_STALE;
++  if (!gdakiStoreEndpointOk(q.up)) return GDAKI_STORE_Q_ENDPOINT;
++  return GDAKI_STORE_Q_OK;
++}
++static inline const char* gdakiStoreReqWhy(int v) {
++  switch (v) {
++    case GDAKI_STORE_Q_OK: return "ok";
++    case GDAKI_STORE_Q_NOT_WARD: return "not a ward of this rank";
++    case GDAKI_STORE_Q_VERSION: return "another wire version or sequence";
++    case GDAKI_STORE_Q_SIZE: return "the image or slot size is not valid";
++    case GDAKI_STORE_Q_OLD_INC: return "an older incarnation";
++    case GDAKI_STORE_Q_STALE: return "not newer than the request served";
++    case GDAKI_STORE_Q_ENDPOINT: return "the upload QP's endpoint is not valid";
++    default: return "?";
++  }
++}
++
++// ---- STORE_ACK at the ward ----
++enum {
++  GDAKI_STORE_A_OK = 0,
++  GDAKI_STORE_A_STALE = 1,     // not the answer to the request outstanding (dropped, nothing changes)
++  GDAKI_STORE_A_VERSION = 2,
++  GDAKI_STORE_A_REFUSED = 3,   // ok 0: the buddy's why
++  GDAKI_STORE_A_SIZE = 4,      // no generation, smaller slots than asked, or overlapping slots
++  GDAKI_STORE_A_ENDPOINT = 5,  // the buddy's endpoint is not one
++};
++static inline int gdakiStoreAckVerdict(const struct gdakiStoreAck& a, uint64_t round, bool reqOut, uint64_t seq,
++                                       uint64_t reqSlotBytes) {
++  if (!reqOut || a.seq != seq || round != seq) return GDAKI_STORE_A_STALE;
++  if (a.version != GDAKI_MI_WIRE_VERSION) return GDAKI_STORE_A_VERSION;
++  if (a.ok != 1) return GDAKI_STORE_A_REFUSED;
++  if (a.gen == 0 || a.slotBytes < reqSlotBytes || !gdakiStoreSlotsSane(a.slotOff, a.slotBytes)) return GDAKI_STORE_A_SIZE;
++  if (!gdakiStoreEndpointOk(a.up)) return GDAKI_STORE_A_ENDPOINT;
++  return GDAKI_STORE_A_OK;
++}
++static inline const char* gdakiStoreAckWhy(int v) {
++  switch (v) {
++    case GDAKI_STORE_A_OK: return "ok";
++    case GDAKI_STORE_A_STALE: return "stale";
++    case GDAKI_STORE_A_VERSION: return "another wire version";
++    case GDAKI_STORE_A_REFUSED: return "refused";
++    case GDAKI_STORE_A_SIZE: return "the slots do not fit the request";
++    case GDAKI_STORE_A_ENDPOINT: return "the buddy's QP endpoint is not valid";
++    default: return "?";
++  }
++}
++
++// ---- the uploader's request machine (this rank -> its buddy; the caller holds the store's lock) ----
++// A new STORE_REQ (with a new upload QP) goes when one is needed and nothing of this rank's checkpoint is in flight:
++// the first after Resume (also of a restored rank), the image's layout changed, the upload QP failed (a WRITE's error or
++// bound, or its connect), the buddy has another incarnation or was restored, the last request is unanswered after
++// GDAKI_STORE_REQ_RETRY_MS, the buddy refused it (after GDAKI_STORE_BACKOFF_MS), or the helper socket to the buddy was
++// reinstalled since the store got ready (records buffered on the lost socket, a CKPT_STABLE among them, may never have
++// been read: the answer brings the buddy's stable slot). The store is ready from the STORE_ACK and the connected QP until
++// any of these. The application thread's WRITEs run only on a ready store of the very layout they carry; while they run
++// the helper replaces nothing.
++enum {
++  GDAKI_STORE_N_NONE = 0,
++  GDAKI_STORE_N_FIRST = 1,
++  GDAKI_STORE_N_LAYOUT = 2,
++  GDAKI_STORE_N_QP = 3,
++  GDAKI_STORE_N_BUDDY = 4,
++  GDAKI_STORE_N_RETRY = 5,
++  GDAKI_STORE_N_REFUSED = 6,
++  GDAKI_STORE_N_SOCKET = 7,
++};
++static inline const char* gdakiStoreNeedName(int n) {
++  switch (n) {
++    case GDAKI_STORE_N_NONE: return "none";
++    case GDAKI_STORE_N_FIRST: return "first";
++    case GDAKI_STORE_N_LAYOUT: return "layout";
++    case GDAKI_STORE_N_QP: return "qp";
++    case GDAKI_STORE_N_BUDDY: return "buddy";
++    case GDAKI_STORE_N_RETRY: return "retry";
++    case GDAKI_STORE_N_REFUSED: return "refused";
++    case GDAKI_STORE_N_SOCKET: return "socket";
++    default: return "?";
++  }
++}
++struct gdakiStoreUp {
++  // the request
++  uint64_t seq = 0;          // the last STORE_REQ sent (0: none)
++  bool reqOut = false;       // it is not answered yet
++  double reqMs = 0;          // when it went out
++  double retryAtMs = 0;      // no request before this
++  uint64_t reqImage = 0, reqLayout = 0, reqSlotBytes = 0;
++  uint32_t reqBuddyInc = 0;  // the buddy's incarnation it went to
++  int need = GDAKI_STORE_N_FIRST;  // a new request is needed (why), or NONE
++  // the store (from the accepted STORE_ACK)
++  bool ready = false;        // ACK accepted and the QP connected, no failure since
++  uint64_t gen = 0;
++  uint32_t rkey = 0;
++  uint64_t slotOff[2] = {0, 0};
++  uint64_t slotBytes = 0;
++  uint64_t ackImage = 0, ackLayout = 0;
++  uint32_t buddyInc = 0;     // the buddy's incarnation the store belongs to
++  int stableSlot = -1;       // the buddy's stable slot: from the last accepted STORE_ACK's trailer (gdakiStoreAckStable),
++                             // then as far as this rank sent CKPT_STABLE (-1: none in this store)
++  uint32_t sockGen = 0;      // the helper socket's generation to the buddy when the store got ready (the helper's)
++  // the layout the application's checkpoints have (published with every checkpoint)
++  bool wantValid = false;
++  uint64_t wantImage = 0, wantLayout = 0;
++  bool writing = false;      // the application thread's WRITEs run
++
++  // The reason for a new request now, or NONE. idle: no checkpoint of this rank in flight (the helper's phase IDLE);
++  // sockMoved: the helper socket to the buddy was reinstalled since the store got ready.
++  int nextReq(double now, bool idle, uint32_t buddyIncNow, bool sockMoved = false) const {
++    if (writing || !idle || now < retryAtMs) return GDAKI_STORE_N_NONE;
++    if (reqOut) return now - reqMs > GDAKI_STORE_REQ_RETRY_MS ? GDAKI_STORE_N_RETRY : GDAKI_STORE_N_NONE;
++    if (need != GDAKI_STORE_N_NONE) return need;
++    if (buddyIncNow != buddyInc) return GDAKI_STORE_N_BUDDY;
++    if (sockMoved) return GDAKI_STORE_N_SOCKET;
++    if (wantValid && (wantImage != ackImage || wantLayout != ackLayout)) return GDAKI_STORE_N_LAYOUT;
++    return GDAKI_STORE_N_NONE;
++  }
++  // The accepted STORE_ACK carried the buddy's view of the stable slot (its trailer): it replaces this rank's.
++  void ackStable(bool have, uint32_t slot) { stableSlot = have && slot < 2u ? (int)slot : -1; }
++  // The helper decided a request (nextReq != NONE, same lock): the store is not used from here (its QP is replaced).
++  void begin() { ready = false; }
++  // The request with sequence s went out (sent) or not (a failed QP or send: tried again after the back-off).
++  void sent(bool ok, uint64_t s, double now, uint64_t image, uint64_t layout, uint64_t slotBytes_, uint32_t buddyIncNow) {
++    ready = false;
++    if (!ok) {
++      reqOut = false;
++      if (need == GDAKI_STORE_N_NONE) need = GDAKI_STORE_N_RETRY;
++      retryAtMs = now + GDAKI_STORE_BACKOFF_MS;
++      return;
++    }
++    seq = s;
++    reqOut = true;
++    reqMs = now;
++    need = GDAKI_STORE_N_NONE;
++    reqImage = image;
++    reqLayout = layout;
++    reqSlotBytes = slotBytes_;
++    if (buddyIncNow != buddyInc) stableSlot = -1;  // another buddy process holds nothing of this rank
++    reqBuddyInc = buddyIncNow;
++  }
++  // A STORE_ACK (round: its record's). GDAKI_STORE_A_OK: accepted (the caller connects the QP, then connected());
++  // STALE: dropped; else refused (a new request after the back-off).
++  int onAck(const struct gdakiStoreAck& a, uint64_t round, double now) {
++    const int v = gdakiStoreAckVerdict(a, round, reqOut, seq, reqSlotBytes);
++    if (v == GDAKI_STORE_A_STALE) return v;
++    reqOut = false;
++    if (v != GDAKI_STORE_A_OK) {
++      need = GDAKI_STORE_N_REFUSED;
++      retryAtMs = now + GDAKI_STORE_BACKOFF_MS;
++      return v;
++    }
++    gen = a.gen;
++    rkey = a.rkey;
++    slotOff[0] = a.slotOff[0];
++    slotOff[1] = a.slotOff[1];
++    slotBytes = a.slotBytes;
++    ackImage = reqImage;
++    ackLayout = reqLayout;
++    if (reqBuddyInc != buddyInc) stableSlot = -1;
++    buddyInc = reqBuddyInc;
++    return v;
++  }
++  void connected(bool ok, double now) {
++    if (ok) {
++      ready = true;
++      need = GDAKI_STORE_N_NONE;
++    } else {
++      ready = false;
++      need = GDAKI_STORE_N_QP;
++      retryAtMs = now + GDAKI_STORE_BACKOFF_MS;
++    }
++  }
++  // The IDLE refusal of the checkpoint machine: the store is ready for the layout the application wants.
++  bool readyNow() const {
++    return ready && !reqOut && need == GDAKI_STORE_N_NONE && !writing &&
++           (!wantValid || (wantImage == ackImage && wantLayout == ackLayout));
++  }
++  // The application thread's WRITEs of an image of (image, layout): false = not on this store.
++  bool beginWrite(uint64_t image, uint64_t layout) {
++    if (!ready || reqOut || need != GDAKI_STORE_N_NONE || writing || image != ackImage || layout != ackLayout) return false;
++    writing = true;
++    return true;
++  }
++  // Their end: a failure (an error completion, a failed post, the bound) leaves the QP in ERR: a new request.
++  void endWrite(bool ok) {
++    writing = false;
++    if (!ok) {
++      ready = false;
++      need = GDAKI_STORE_N_QP;
++    }
++  }
++  uint32_t recvSlot() const { return gdakiStoreRecvSlot(stableSlot); }
++  // CKPT_STABLE with (slot, g) went to the buddy: it is the buddy's stable slot (the buddy refuses another generation's).
++  void stableSent(uint32_t slot, uint64_t g) {
++    if (g == gen && slot < 2u) stableSlot = (int)slot;
++  }
++  // RESTORED of the buddy: its new process keeps nothing of this rank; the request goes again, the image whole.
++  void buddyRestored() {
++    ready = false;
++    reqOut = false;
++    need = GDAKI_STORE_N_BUDDY;
++    stableSlot = -1;
++    retryAtMs = 0;
++  }
++};
++
++// ---- the buddy's record of one ward ----
++// The current MR (two slots) and, after a request that needed larger slots while the current MR held the stable slot,
++// the replaced MR, kept until the next stable slot lands in the current one (a restore meanwhile reads the old one).
++// Invariant: haveOld implies stableInOld. Generations: new with every served request (a new QP, maybe a new MR); a
++// CKPT_STABLE of another generation is refused (DISARM; impl/rs_store_api.h gdakiStoreStableVerdict).
++struct gdakiStoreWardRec {
++  bool served = false;         // a request of this ward was served (inc, seq valid)
++  uint32_t inc = 0;
++  uint64_t seq = 0;
++  uint64_t gen = 0;            // 0: none
++  bool haveMr = false;         // the current MR
++  uint32_t rkey = 0;
++  uint64_t slotBytes = 0;
++  bool haveOld = false;        // the replaced MR (it holds the stable slot)
++  uint32_t oldRkey = 0;
++  bool haveStable = false;     // the stable slot
++  bool stableInOld = false;
++  uint32_t stableSlot = 0;
++  uint32_t blobBytes = 0;
++  uint64_t stableCkpt = 0, stableOff = 0, usedBytes = 0, imageBytes = 0, layoutHash = 0, stableGen = 0;
++};
++// A request needs a new MR: none yet, or its slots are smaller than asked.
++static inline bool gdakiStoreNeedMr(const struct gdakiStoreWardRec& w, uint64_t slotBytes) {
++  return !w.haveMr || w.slotBytes < slotBytes;
++}
++// What a served request's commit lets go (the caller frees it outside the lock) or keeps.
++struct gdakiStoreCommit {
++  bool freeCur = false;   // the current MR is replaced and holds no stable slot
++  bool curToOld = false;  // the current MR is replaced and holds the stable slot: it becomes the old one
++  bool freeOld = false;   // the old MR goes (a new incarnation of the ward)
++};
++// The commit of a served request (inc, seq) with generation gen; newMr: a new MR (rkey, slotBytes) replaces the current.
++// A new incarnation of the ward drops its stable slot: a restored rank is armed again only at its own next stable
++// checkpoint (gin-restore P5), so nothing of the old one is needed.
++static inline struct gdakiStoreCommit gdakiStoreWardServe(struct gdakiStoreWardRec* w, uint32_t inc, uint64_t seq,
++                                                          uint64_t gen, bool newMr, uint32_t newRkey,
++                                                          uint64_t newSlotBytes) {
++  struct gdakiStoreCommit c;
++  if (!w->served || inc != w->inc) {
++    if (w->haveOld) c.freeOld = true;
++    w->haveOld = false;
++    w->haveStable = false;
++    w->stableInOld = false;
++  }
++  if (newMr) {
++    if (w->haveMr) {
++      if (w->haveStable && !w->stableInOld) {
++        c.curToOld = true;
++        w->haveOld = true;
++        w->oldRkey = w->rkey;
++        w->stableInOld = true;
++      } else {
++        c.freeCur = true;
++      }
++    }
++    w->haveMr = true;
++    w->rkey = newRkey;
++    w->slotBytes = newSlotBytes;
++  }
++  w->served = true;
++  w->inc = inc;
++  w->seq = seq;
++  w->gen = gen;
++  return c;
++}
++// CKPT_STABLE's store payload s of checkpoint ckpt from the ward: 0 = its slot is the stable one now (*freeOld: the old
++// MR goes); else why not (impl/rs_store_api.h's verdict 1..5; 6: no store here). Nothing is read from the slot.
++static inline int gdakiStoreWardStable(struct gdakiStoreWardRec* w, const struct gdakiStoreStable& s, uint64_t ckpt,
++                                       bool* freeOld) {
++  *freeOld = false;
++  if (!w->served || !w->haveMr || w->gen == 0) return 6;
++  const int v = gdakiStoreStableVerdict(s, w->gen, w->slotBytes);
++  if (v != 0) return v;
++  if (w->haveOld) *freeOld = true;
++  w->haveOld = false;
++  w->haveStable = true;
++  w->stableInOld = false;
++  w->stableSlot = s.slot;
++  w->stableCkpt = ckpt;
++  w->stableOff = gdakiStoreSlotOff(w->slotBytes, s.slot);
++  w->usedBytes = s.usedBytes;
++  w->imageBytes = s.imageBytes;
++  w->layoutHash = s.layoutHash;
++  w->blobBytes = s.blobBytes;
++  w->stableGen = s.gen;
++  return 0;
++}
++// The rkey of the MR that holds the stable slot (the activation's storeRkey).
++static inline uint32_t gdakiStoreWardStableRkey(const struct gdakiStoreWardRec& w) {
++  return w.stableInOld ? w.oldRkey : w.rkey;
++}
++static inline const char* gdakiStoreStableWhy(int v) {
++  switch (v) {
++    case 0: return "ok";
++    case 1: return "another wire version";
++    case 2: return "another store generation";
++    case 3: return "no such slot";
++    case 4: return "its size does not fit the slot";
++    case 5: return "the blob is too large";
++    case 6: return "no store of that rank here";
++    default: return "?";
++  }
++}
++// The CKPT_STABLE payload of WRITEs into `slot` of generation gen.
++static inline struct gdakiStoreStable gdakiStoreStableOf(uint32_t slot, uint64_t gen, uint64_t imageBytes,
++                                                         uint64_t layoutHash, uint32_t blobBytes) {
++  struct gdakiStoreStable s;
++  memset(&s, 0, sizeof(s));
++  s.version = GDAKI_MI_WIRE_VERSION;
++  s.slot = slot;
++  s.gen = gen;
++  s.usedBytes = gdakiStoreUsedBytes(imageBytes, blobBytes);
++  s.imageBytes = imageBytes;
++  s.layoutHash = layoutHash;
++  s.blobBytes = blobBytes;
++  return s;
++}
++
++// ---- the buddy's limits (outside the interface, impl/notes_store.md) ----
++// A ward's MR of memBytes (its two slots) within NCCL_GIN_RESTORE_STORE_MAX_MB (0: no bound). A larger request is
++// refused, not allocated: on an overcommitted host the zero fill of a large allocation could wake the OOM killer on this
++// surviving rank instead of failing.
++static inline bool gdakiStoreMrFits(uint64_t memBytes, int64_t maxMb) {
++  if (maxMb <= 0 || maxMb >= ((int64_t)1 << 43)) return true;
++  return memBytes <= ((uint64_t)maxMb << 20);
++}
++// A STORE_REQ taken while its ward is declined (terminal) or held is not served: a declined ward's never; a held ward's
++// unless it comes from a newer incarnation than the one known here (the restored process's, before its RESTORED is
++// applied). Its old process's leftover requests would otherwise make new MRs and QPs during the hold.
++static inline bool gdakiStoreDropReq(bool declined, bool held, uint32_t reqInc, uint32_t knownInc) {
++  return declined || (held && reqInc <= knownInc);
++}
++
++// ---- the TCP path's base (mirror off; 9.6) ----
++// The upload's base after an upload ended: kept only when the buddy acknowledged it OK (an upload without that ack, any
++// way it ended, clears it: the next one carries every block). RESTORED of the buddy clears it too (the caller).
++static inline bool gdakiStoreTcpBaseAfterUpload(bool haveBase, bool ackOk) { return haveBase && ackOk; }
++// ---- gin-mirror (store): pure (end) ----
++
++// ==== gin-mirror (store): the RDMA checkpoint store (begin; impl/rs_store_api.h, EXPERIMENT.md 9.4, 9.6, 9.7) ====
++// With the mirror on (gdakiMiOn) this rank's checkpoint goes into its buddy's host memory over RDMA, not over the data
++// socket: after Resume the helper sends STORE_REQ (its image's slot size and layout, its new upload QP in INIT) and the
++// buddy answers STORE_ACK (the store MR's rkey and slots, its side of the QP, a generation); the uploader connects its QP
++// and is store-ready. A checkpoint's input pause copies the image D2H into a pinned staging buffer laid out as a slot
++// (header, image, blob); after CKPT_RESUME the same application thread WRITEs it into the buddy's receiving slot over the
++// upload QP, bounded by NCCL_GIN_RESTORE_STORE_WRITE_MS; CONFIRMING sends CKPT_STABLE with the slot and generation and the
++// buddy moves its stable slot without reading the memory. A failed or late WRITE voids the checkpoint and the store is
++// requested again. Every checkpoint is the whole image (no base, no block hashes).
++// Threads:
++//   - application thread: gdakiStoreTake (the layout, the staging buffer, the D2H in the pause, the WRITEs after the
++//     helper's arm).
++//   - helper: gdakiStoreStep (STORE_REQ and STORE_ACK, both sides; the uploader's requests and its QP's connect),
++//     gdakiStoreArm, gdakiStoreWriteState, gdakiStoreFillStable, gdakiStoreStableSent (the checkpoint machine's
++//     COPYING and CONFIRMING), gdakiStoreOnStable and gdakiStoreActInfoOf (as the buddy).
++//   - the store thread, one per context with the mirror (outside the interface, impl/notes_store.md: the registration
++//     does not run on gin-restore's serve thread; the helper is not blocked either way): a ward's MR and its side of
++//     the upload QP, and the release of a replaced MR (parked while its ward is held) or of a declined ward's store.
++// Locks: st->mu guards the uploader's request machine, the wards' records, the job lists and the upload QP pointer;
++// ck->mu (the checkpoint's own) guards the arm and the WRITEs' result with the application-helper handshake. No path holds
++// both. A mirror-off process never creates any of it (gdakiStoreOf returns null).
++NCCL_PARAM(GinRestoreStoreWriteMs, "GIN_RESTORE_STORE_WRITE_MS", 500);  // the WRITEs of one checkpoint at most (9.4)
++// a ward's store MR (two slots) at most on the buddy, 0: no bound (outside the interface, impl/notes_store.md)
++NCCL_PARAM(GinRestoreStoreMaxMb, "GIN_RESTORE_STORE_MAX_MB", 4096);
++extern int64_t ncclParamIbTc();
++extern int64_t ncclParamGinIbTc();
++
++// placeholder (integration replaces): the host branch's gdakiMiOn (impl/rs_mirror_api.h)
++static bool gdakiMiOn(struct gdakiRecHost* r) { return r != nullptr && r->mi.on; }  // placeholder (integration replaces)
++
++// ---- host RC QPs of the GIN PD (the upload QP; the spare branch's FETCH QPs) ----
++// On the GIN context's HCA and port, in the GIN protection domain, with a CQ of their own; not rec QPs (no watch, no
++// round, no suppress budget, no executed count; 9.4). Addressing as the GIN QPs: the current GIN GID index on RoCE (its
++// traffic class: NCCL_GIN_IB_TC, else NCCL_IB_TC, as GIN's), the LID and NCCL_IB_SL on IB. RTS: timeout 12, retry_cnt 7,
++// rnr_retry 7; max_rd_atomic and max_dest_rd_atomic as created (upload 1, FETCH 16).
++// The QP and its CQ are created on the ibv_context that net_ib's async-event thread polls (gin.cc: cComm->ib.context =
++// ncclIbDevs[dev].context). That thread handles an affiliated QP or CQ event (IBV_EVENT_QP_FATAL, QP_REQ_ERR,
++// QP_ACCESS_ERR, CQ_ERR) by counting it in the struct ncclIbStats that qp_context / cq_context points to
++// (ncclIbQpFatalError, ncclIbCqFatalError in net_ib/common.h): a null context there is a null dereference on the async
++// thread. So every host QP and its CQ carry their own ncclIbStats, and a transfer treats a count above 0 as an error.
++struct gdakiMiHostQp {
++  struct ncclIbStats stats;  // qp_context and cq_context of this QP and its CQ (the async-event thread's counter)
++  struct ibv_cq* cq = nullptr;
++  struct ibv_qp* qp = nullptr;
++  int maxRdAtomic = 1;
++  uint8_t port = 1;
++  int gidIndex = 0;
++  bool roce = false;
++  int tc = 0, sl = 0;
++  enum ibv_mtu mtu = IBV_MTU_1024;
++  uint32_t psn = 0;
++  int outstanding = 0;  // signaled requests posted and not completed
++  uint64_t nextId = 1;
++  bool err = false;     // an error completion, a failed post or a missed bound: the QP is in ERR (destroy it)
++};
++static uint32_t gdakiMiHostQpPsn() {
++  static std::mutex mu;
++  static std::mt19937 rng((uint32_t)std::random_device{}() ^ (uint32_t)clockNano());
++  std::lock_guard<std::mutex> lk(mu);
++  return (uint32_t)rng() & 0xffffffu;
++}
++// A QP or CQ that cannot be destroyed lives on with its context pointing at q->stats: q stays allocated then (a leak
++// with a WARN, not a use after free on the async-event thread).
++static void gdakiMiHostQpDestroy(struct gdakiMiHostQp* q) {
++  if (q == nullptr) return;
++  if (q->qp != nullptr && wrap_ibv_destroy_qp(q->qp) != ncclSuccess) {
++    WARN("GIN/MI: a host QP could not be destroyed; its state is kept mono_ms=%.3f", gdakiQ4MonoMs());
++    return;
++  }
++  q->qp = nullptr;
++  if (q->cq != nullptr && wrap_ibv_destroy_cq(q->cq) != ncclSuccess) {
++    WARN("GIN/MI: a host QP's CQ could not be destroyed; its state is kept mono_ms=%.3f", gdakiQ4MonoMs());
++    return;
++  }
++  delete q;
++}
++static ncclResult_t gdakiMiHostQpCreate(struct gdakiRecHost* r, int maxRdAtomic, struct gdakiMiHostQp** out,
++                                        struct gdakiMiQpEndpoint* local, char* why, size_t whyLen) {
++  *out = nullptr;
++  memset(local, 0, sizeof(*local));
++  struct gdaki_context* g = r != nullptr ? r->ctx : nullptr;
++  struct ibv_context* ictx = (g != nullptr && g->collComm != nullptr) ? g->collComm->ib.context : nullptr;
++  struct ibv_pd* pd = (g != nullptr && g->collComm != nullptr) ? g->collComm->ib.pd : nullptr;
++  if (ictx == nullptr || pd == nullptr) {
++    snprintf(why, whyLen, "no GIN protection domain");
++    return ncclInternalError;
++  }
++  if (maxRdAtomic < 1 || maxRdAtomic > 16) {
++    snprintf(why, whyLen, "max_rd_atomic %d is outside 1..16", maxRdAtomic);
++    return ncclInvalidUsage;
++  }
++  struct gdakiMiHostQp* q = new gdakiMiHostQp();
++  (void)ncclIbStatsInit(&q->stats);
++  q->maxRdAtomic = maxRdAtomic;
++  q->port = g->port_num;
++  q->gidIndex = g->gid_index;
++  q->roce = g->port_attr.link_layer == IBV_LINK_LAYER_ETHERNET;
++  q->mtu = g->port_attr.active_mtu;
++  q->tc = (int)(ncclParamGinIbTc() != -1 ? ncclParamGinIbTc() : ncclParamIbTc() != -1 ? ncclParamIbTc() : NCCL_IB_TC_DEFAULT);
++  q->sl = (int)(ncclParamIbSl() != -1 ? ncclParamIbSl() : NCCL_IB_SL_DEFAULT);
++  auto fail = [&](const char* what) -> ncclResult_t {
++    snprintf(why, whyLen, "%s", what);
++    gdakiMiHostQpDestroy(q);
++    return ncclSystemError;
++  };
++  union ibv_gid gid;
++  memset(&gid, 0, sizeof(gid));
++  if (q->roce && wrap_ibv_query_gid(ictx, q->port, q->gidIndex, &gid) != ncclSuccess) return fail("cannot read the GIN GID");
++  // cq_context and qp_context: this QP's ncclIbStats (the async-event thread dereferences them; see the struct)
++  if (wrap_ibv_create_cq(&q->cq, ictx, 2 * GDAKI_MI_HOSTQP_DEPTH, &q->stats, nullptr, 0) != ncclSuccess) {
++    q->cq = nullptr;
++    return fail("cannot create a host QP's CQ");
++  }
++  struct ibv_qp_init_attr ia;
++  memset(&ia, 0, sizeof(ia));
++  ia.qp_context = &q->stats;
++  ia.send_cq = q->cq;
++  ia.recv_cq = q->cq;
++  ia.qp_type = IBV_QPT_RC;
++  ia.cap.max_send_wr = GDAKI_MI_HOSTQP_DEPTH;
++  ia.cap.max_recv_wr = 1;
++  ia.cap.max_send_sge = 1;
++  ia.cap.max_recv_sge = 1;
++  if (wrap_ibv_create_qp(&q->qp, pd, &ia) != ncclSuccess) {
++    q->qp = nullptr;
++    return fail("cannot create a host QP in the GIN protection domain");
++  }
++  struct ibv_qp_attr a;
++  memset(&a, 0, sizeof(a));
++  a.qp_state = IBV_QPS_INIT;
++  a.pkey_index = (uint16_t)g->pkey_index;
++  a.port_num = q->port;
++  a.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
++  if (wrap_ibv_modify_qp(q->qp, &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) != ncclSuccess)
++    return fail("cannot move a host QP to INIT");
++  q->psn = gdakiMiHostQpPsn();
++  local->qpn = q->qp->qp_num;
++  local->psn = q->psn;
++  local->lid = g->port_attr.lid;
++  local->mtu = (int32_t)q->mtu;
++  memcpy(local->gid, gid.raw, sizeof(local->gid));
++  local->gidIndex = q->gidIndex;
++  *out = q;
++  return ncclSuccess;
++}
++static ncclResult_t gdakiMiHostQpConnect(struct gdakiMiHostQp* q, const struct gdakiMiQpEndpoint& remote, char* why,
++                                         size_t whyLen) {
++  if (q == nullptr || q->qp == nullptr) {
++    snprintf(why, whyLen, "no host QP");
++    return ncclInternalError;
++  }
++  if (!gdakiStoreEndpointOk(remote) || !gdakiIsValidActiveMtu((enum ibv_mtu)remote.mtu)) {
++    snprintf(why, whyLen, "the remote endpoint is not valid (qpn %#x, mtu %d)", remote.qpn, remote.mtu);
++    return ncclInvalidUsage;
++  }
++  struct ibv_qp_attr a;
++  memset(&a, 0, sizeof(a));
++  a.qp_state = IBV_QPS_RTR;
++  a.path_mtu = (enum ibv_mtu)std::min((int)q->mtu, (int)remote.mtu);
++  a.dest_qp_num = remote.qpn;
++  a.rq_psn = remote.psn & 0xffffffu;
++  a.max_dest_rd_atomic = (uint8_t)q->maxRdAtomic;
++  a.min_rnr_timer = 12;
++  a.ah_attr.port_num = q->port;
++  if (q->roce) {
++    a.ah_attr.is_global = 1;
++    memcpy(a.ah_attr.grh.dgid.raw, remote.gid, sizeof(remote.gid));
++    a.ah_attr.grh.sgid_index = (uint8_t)q->gidIndex;
++    a.ah_attr.grh.hop_limit = DEFAULT_HOP_LIMIT;
++    a.ah_attr.grh.traffic_class = (uint8_t)q->tc;
++  } else {
++    a.ah_attr.dlid = (uint16_t)remote.lid;
++    a.ah_attr.sl = (uint8_t)q->sl;
++  }
++  if (wrap_ibv_modify_qp(q->qp, &a, IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
++                                        IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER) != ncclSuccess) {
++    snprintf(why, whyLen, "cannot move a host QP to RTR");
++    return ncclSystemError;
++  }
++  memset(&a, 0, sizeof(a));
++  a.qp_state = IBV_QPS_RTS;
++  a.timeout = 12;  // about 17 ms per try; retry_cnt 7: an unreachable peer puts the QP in ERR after about 130 ms (9.4)
++  a.retry_cnt = 7;
++  a.rnr_retry = 7;
++  a.sq_psn = q->psn;
++  a.max_rd_atomic = (uint8_t)q->maxRdAtomic;
++  if (wrap_ibv_modify_qp(q->qp, &a, IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN |
++                                        IBV_QP_MAX_QP_RD_ATOMIC) != ncclSuccess) {
++    snprintf(why, whyLen, "cannot move a host QP to RTS");
++    return ncclSystemError;
++  }
++  return ncclSuccess;
++}
++// One transfer: `bytes` between local (lkey) and the remote zero-based offset (rkey), in pieces (WRITE at most 1 GiB,
++// READ at most GDAKI_STORE_READ_CHUNK; READs up to max_rd_atomic in flight), every piece signaled; returns when all
++// completed. An error completion or a failed post leaves the QP in ERR; a missed bound puts it there (nothing more is read
++// or written after that: the flushed requests are collected for at most 200 ms). Either way q->err: the caller replaces
++// the QP. One thread at a time.
++static ncclResult_t gdakiMiHostQpXfer(struct gdakiMiHostQp* q, bool read, void* local, uint32_t lkey, uint64_t remote,
++                                      uint32_t rkey, uint64_t bytes, int timeoutMs, char* why, size_t whyLen) {
++  if (q == nullptr || q->qp == nullptr) {
++    snprintf(why, whyLen, "no host QP");
++    return ncclInternalError;
++  }
++  if (q->err || q->outstanding != 0) {
++    snprintf(why, whyLen, "the host QP is in error");
++    return ncclSystemError;
++  }
++  const char* what = read ? "READ" : "WRITE";
++  bool bad = false;
++  // an affiliated async event the net_ib async thread counted on this QP or its CQ (see struct gdakiMiHostQp): an error
++  auto asyncFatal = [&]() -> bool {
++    if (__atomic_load_n(&q->stats.fatalErrorCount, __ATOMIC_RELAXED) == 0) return false;
++    if (!bad) snprintf(why, whyLen, "an async fatal event was reported on the host QP or its CQ");
++    bad = true;
++    return true;
++  };
++  if (asyncFatal()) {
++    q->err = true;
++    return ncclSystemError;
++  }
++  auto poll = [&](uint64_t* done) -> bool {  // false: the CQ could not be polled
++    struct ibv_wc wc[16];
++    int n = 0;
++    if (wrap_ibv_poll_cq(q->cq, 16, wc, &n) != ncclSuccess || n < 0) {
++      if (!bad) snprintf(why, whyLen, "polling a host QP's CQ failed");
++      return false;
++    }
++    for (int k = 0; k < n; k++) {
++      q->outstanding--;
++      if (wc[k].status != IBV_WC_SUCCESS) {
++        if (!bad)
++          snprintf(why, whyLen, "a %s completed with status %d (vendor_err %#x)", what, (int)wc[k].status, wc[k].vendor_err);
++        bad = true;
++        continue;
++      }
++      (*done)++;
++    }
++    return true;
++  };
++  auto stop = [&]() -> ncclResult_t {  // into ERR; the flushed requests collected (bounded)
++    q->err = true;
++    struct ibv_qp_attr a;
++    memset(&a, 0, sizeof(a));
++    a.qp_state = IBV_QPS_ERR;
++    // a failed move leaves requests running on the QP: the caller still destroys it before reuse, and the staging
++    // buffer is freed only after its MR is deregistered (the NIC cannot reach it then; gdakiStoreStage, gdakiStoreFree)
++    if (wrap_ibv_modify_qp(q->qp, &a, IBV_QP_STATE) != ncclSuccess)
++      WARN("GIN/MI: a host QP could not be moved to ERR after a failed %s mono_ms=%.3f", what, gdakiQ4MonoMs());
++    const double s0 = gdakiQ4MonoMs();
++    uint64_t ignored = 0;
++    while (q->outstanding > 0 && gdakiQ4MonoMs() - s0 < 200.0) {
++      if (!poll(&ignored)) break;
++      if (q->outstanding > 0) std::this_thread::sleep_for(std::chrono::microseconds(50));
++    }
++    return ncclSystemError;
++  };
++  const uint64_t chunk = read ? GDAKI_STORE_READ_CHUNK : GDAKI_STORE_WRITE_CHUNK;
++  const uint64_t n = gdakiStoreNChunks(bytes, chunk);
++  const uint64_t window = read ? (uint64_t)std::max(1, q->maxRdAtomic) : 8u;
++  uint64_t posted = 0, done = 0;
++  const double t0 = gdakiQ4MonoMs();
++  while (done < n) {
++    while (posted < n && posted - done < window) {
++      struct ibv_sge sg;
++      struct ibv_send_wr wr, *badWr = nullptr;
++      memset(&wr, 0, sizeof(wr));
++      sg.addr = (uint64_t)(uintptr_t)local + posted * chunk;
++      sg.length = (uint32_t)gdakiStoreChunkLen(posted, bytes, chunk);
++      sg.lkey = lkey;
++      wr.wr_id = q->nextId++;
++      wr.sg_list = &sg;
++      wr.num_sge = 1;
++      wr.opcode = read ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
++      wr.send_flags = IBV_SEND_SIGNALED;
++      wr.wr.rdma.remote_addr = remote + posted * chunk;
++      wr.wr.rdma.rkey = rkey;
++      if (wrap_ibv_post_send(q->qp, &wr, &badWr) != ncclSuccess) {
++        snprintf(why, whyLen, "posting a %s failed", what);
++        return stop();
++      }
++      q->outstanding++;
++      posted++;
++    }
++    if (!poll(&done) || bad || asyncFatal()) return stop();
++    if (done >= n) break;
++    const double el = gdakiQ4MonoMs() - t0;
++    if (el > (double)timeoutMs) {
++      snprintf(why, whyLen, "the %s of %lu bytes did not complete in %d ms", what, (unsigned long)bytes, timeoutMs);
++      return stop();
++    }
++    if (el < 2.0) std::this_thread::yield();
++    else std::this_thread::sleep_for(std::chrono::microseconds(20));
++  }
++  return ncclSuccess;
++}
++
++// ---- the state (struct gdakiMiState::store; created at first use with the mirror on, freed in gdakiStoreFree) ----
++enum { GDAKI_STORE_JOB_SERVE = 1, GDAKI_STORE_JOB_FREE = 2 };
++struct gdakiStoreJob {
++  int kind = 0;
++  int d = -1;                   // SERVE: the ward
++  struct gdakiTsMsg m;          // SERVE: its STORE_REQ record (request and spare registration in its payload)
++  struct gdakiStoreAck ack;     // SERVE: the answer the helper sends
++  struct gdakiStoreAckStable ackStable;  // SERVE: its trailer (the ward's stable slot here; zero when refused)
++  bool newMr = false;           // SERVE: a new MR was registered
++  double us = 0;                // SERVE: its time
++  struct ibv_mr* mr = nullptr;  // FREE: an MR to deregister and its memory
++  void* mem = nullptr;
++  bool dropQp = false;          // FREE: also this rank's side of ward d's upload QP (a declined ward)
++};
++struct gdakiStoreWard {  // as the buddy: one ward
++  struct gdakiStoreWardRec rec;        // mu
++  void* mem = nullptr;                 // the current MR and its memory (the store thread swaps them under mu)
++  struct ibv_mr* mr = nullptr;
++  void* oldMem = nullptr;              // the replaced MR holding the stable slot
++  struct ibv_mr* oldMr = nullptr;
++  struct gdakiMiHostQp* qp = nullptr;  // this rank's side of the ward's upload QP (the store thread only)
++  bool haveSpare = false;              // mu: the spare registration of the ward's last served request
++  struct gdakiStoreReqSpare spare;
++  bool inFlight = false;               // helper: a SERVE job of this ward is with the store thread
++  bool havePending = false;            // helper: a newer STORE_REQ that came meanwhile (served next)
++  struct gdakiTsMsg pending;
++  // mu: replaced MRs superseded while the ward was held. An activation may have handed the spare the old MR's rkey (a
++  // CKPT_STABLE read after the hold opened), so they go only once the ward is no longer held (gdakiStoreServeStep).
++  std::vector<std::pair<struct ibv_mr*, void*>> parked;
++  bool released = false;               // helper: the store of this declined ward was let go
++};
++struct gdakiStoreState {
++  std::mutex mu;
++  std::condition_variable cv;          // the store thread's wake-up (mu)
++  std::thread th;
++  bool stop = false;
++  std::vector<struct gdakiStoreJob> jobs, done;
++  int me = -1, n = 0, buddy = -1;
++  std::vector<struct gdakiStoreWard> wards;  // index: rank (wards of this rank only)
++  uint64_t genNext = 1;
++  struct gdakiStoreUp up;              // the uploader's request machine
++  struct gdakiMiHostQp* upQp = nullptr;  // this rank's upload QP (the helper replaces it only while !up.writing)
++  int sendFails = 0;                   // helper: requests in a row that could not go out (their line: 1st, then every 30th)
++  int refusals = 0;                    // helper: answers in a row that were not accepted (the same)
++  bool restoredSeen = false;           // helper: gdakiStoreOnBuddyRestored ran for the buddy's incarnation restoredInc
++  uint32_t restoredInc = 0;            //   (a second call for the same RESTORED, e.g. from two hooks, changes nothing)
++  // the staging buffer (application thread only): one slot's layout, pinned, registered in the GIN PD
++  uint8_t* stage = nullptr;
++  uint64_t stageBytes = 0;
++  struct ibv_mr* stageMr = nullptr;
++  // ck->mu: the checkpoint in flight. The application thread waits for the arm of takeCkpt; the WRITEs' result (w*)
++  bool takeWaiting = false;
++  uint64_t takeCkpt = 0;
++  bool armed = false;
++  uint64_t armCkpt = 0;
++  uint64_t wCkpt = ~0ull;
++  bool wDone = false, wOk = false;
++  struct gdakiStoreStable wStable;
++  // counters (the summary line)
++  std::atomic<long long> nWrites{0}, nFailed{0}, nRequests{0}, nServed{0};
++};
++static std::mutex gdakiStoreLifeMu;  // r->mi.store's creation (helper or application thread, first use) and teardown
++static void gdakiStoreThreadMain(struct gdakiRecHost* r, struct gdakiStoreState* st);
++
++static bool gdakiStoreOn(struct gdakiRecHost* r) {
++  return r != nullptr && r->hold != nullptr && r->hold->ckpt != nullptr && r->ctx != nullptr && gdakiMiOn(r);
++}
++static struct gdakiStoreState* gdakiStoreOf(struct gdakiRecHost* r) {
++  if (!gdakiStoreOn(r)) return nullptr;
++  std::lock_guard<std::mutex> lk(gdakiStoreLifeMu);
++  if (r->mi.store == nullptr) {
++    // never after the checkpoint machine's stop (gdakiCkptStop before gdakiStoreFree): a late caller would otherwise
++    // recreate the state and a store thread that outlives the context
++    if (r->hold->ckpt->stop.load(std::memory_order_acquire)) return nullptr;
++    struct gdakiStoreState* st = new gdakiStoreState();
++    st->me = r->ctx->rank;
++    st->n = r->nranks;
++    st->buddy = gdakiHoldBuddyOf(st->me, st->n);
++    st->wards.resize((size_t)std::max(0, st->n));
++    memset(&st->wStable, 0, sizeof(st->wStable));
++    st->th = std::thread(gdakiStoreThreadMain, r, st);
++    r->mi.store = st;
++  }
++  return r->mi.store;
++}
++
++// ---- the store thread (as the buddy): a ward's registration and its side of the upload QP ----
++// The memory goes only after its MR is deregistered (a failed deregistration keeps it: a leak with a WARN, never memory
++// the NIC may still reach).
++static void gdakiStoreFreeMr(struct ibv_mr* mr, void* mem) {
++  if (mr != nullptr && wrap_ibv_dereg_mr(mr) != ncclSuccess) {
++    WARN("GIN/MI: a store MR could not be deregistered; its memory is kept mono_ms=%.3f", gdakiQ4MonoMs());
++    return;
++  }
++  free(mem);
++}
++static void gdakiStoreServe(struct gdakiRecHost* r, struct gdakiStoreState* st, struct gdakiStoreJob* j) {
++  const double t0 = gdakiQ4MonoMs();
++  struct gdakiStoreWard& w = st->wards[(size_t)j->d];
++  struct gdakiStoreReq q;
++  memcpy(&q, j->m.executed, sizeof(q));
++  struct gdakiStoreReqSpare sp;
++  memcpy(&sp, (const uint8_t*)j->m.executed + GDAKI_STORE_SPARE_OFF, sizeof(sp));
++  struct gdakiStoreAck& a = j->ack;
++  memset(&a, 0, sizeof(a));
++  a.version = GDAKI_MI_WIRE_VERSION;
++  a.seq = q.seq;
++  memset(&j->ackStable, 0, sizeof(j->ackStable));
++  char why[96] = {0};
++  // (1) the ward's earlier upload QP first: a late packet of an earlier upload lands nowhere from now on
++  gdakiMiHostQpDestroy(w.qp);
++  w.qp = nullptr;
++  // (2) the MR: kept while its slots are large enough, else a new one (zero based, no relaxed ordering, the GIN PD; not
++  //     through gdakiRegMr and not a window: 9.7 "strict window")
++  bool needMr;
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    needMr = gdakiStoreNeedMr(w.rec, q.slotBytes);
++  }
++  void* mem = nullptr;
++  struct ibv_mr* mr = nullptr;
++  const uint64_t memBytes = gdakiStoreMrBytes(q.slotBytes);
++  if (needMr) {
++    struct ibv_pd* pd = r->ctx->collComm ? r->ctx->collComm->ib.pd : nullptr;
++    if (pd == nullptr) {
++      snprintf(why, sizeof(why), "no GIN protection domain");
++    } else if (!gdakiStoreMrFits(memBytes, ncclParamGinRestoreStoreMaxMb())) {
++      snprintf(why, sizeof(why), "the store needs %lu MiB > NCCL_GIN_RESTORE_STORE_MAX_MB %ld",
++               (unsigned long)((memBytes + (1u << 20) - 1) >> 20), (long)ncclParamGinRestoreStoreMaxMb());
++    } else if (posix_memalign(&mem, 4096, (size_t)memBytes) != 0 || mem == nullptr) {
++      mem = nullptr;
++      snprintf(why, sizeof(why), "no host memory for the store (%lu bytes)", (unsigned long)memBytes);
++    } else {
++      memset(mem, 0, (size_t)memBytes);
++      if (wrap_ibv_reg_mr_iova2(&mr, pd, mem, (size_t)memBytes, 0,
++                                IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ) != ncclSuccess ||
++          mr == nullptr) {
++        mr = nullptr;
++        snprintf(why, sizeof(why), "the store (%lu bytes) could not be registered (memlock?)", (unsigned long)memBytes);
++      }
++    }
++  }
++  // (3) this rank's side of the upload QP, RTS toward the ward's endpoint
++  struct gdakiMiHostQp* qp = nullptr;
++  struct gdakiMiQpEndpoint local;
++  memset(&local, 0, sizeof(local));
++  if (why[0] == '\0' && gdakiMiHostQpCreate(r, 1, &qp, &local, why, sizeof(why)) == ncclSuccess &&
++      gdakiMiHostQpConnect(qp, q.up, why, sizeof(why)) != ncclSuccess) {
++    gdakiMiHostQpDestroy(qp);
++    qp = nullptr;
++  }
++  if (why[0] != '\0') {  // refused: the record keeps what it had (its stable slot too); a new MR goes again
++    gdakiStoreFreeMr(mr, mem);
++    a.ok = 0;
++    snprintf(a.why, sizeof(a.why), "%.63s", why);
++    j->us = (gdakiQ4MonoMs() - t0) * 1000.0;
++    return;
++  }
++  // (4) the commit
++  struct ibv_mr* goMr[2] = {nullptr, nullptr};
++  void* goMem[2] = {nullptr, nullptr};
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    const uint64_t gen = st->genNext++;
++    const struct gdakiStoreCommit c =
++      gdakiStoreWardServe(&w.rec, q.incarnation, q.seq, gen, needMr, needMr ? mr->rkey : 0u, q.slotBytes);
++    if (c.freeOld) {
++      goMr[0] = w.oldMr;
++      goMem[0] = w.oldMem;
++      w.oldMr = nullptr;
++      w.oldMem = nullptr;
++    }
++    if (c.curToOld) {
++      w.oldMr = w.mr;
++      w.oldMem = w.mem;
++    } else if (c.freeCur) {
++      goMr[1] = w.mr;
++      goMem[1] = w.mem;
++    }
++    if (needMr) {
++      w.mr = mr;
++      w.mem = mem;
++    }
++    w.haveSpare = sp.magic == GDAKI_STORE_SPARE_MAGIC;
++    w.spare = sp;
++    a.ok = 1;
++    a.gen = gen;
++    a.rkey = w.rec.rkey;
++    a.slotBytes = w.rec.slotBytes;
++    a.slotOff[0] = gdakiStoreSlotOff(w.rec.slotBytes, 0);
++    a.slotOff[1] = gdakiStoreSlotOff(w.rec.slotBytes, 1);
++    a.up = local;
++    j->ackStable.magic = GDAKI_STORE_ACKS_MAGIC;  // the ward's stable slot here, as the commit left it
++    j->ackStable.haveStable = w.rec.haveStable ? 1u : 0u;
++    j->ackStable.stableSlot = w.rec.stableSlot;
++    j->ackStable.stableGen = w.rec.stableGen;
++    j->ackStable.stableCkpt = w.rec.stableCkpt;
++  }
++  w.qp = qp;
++  for (int k = 0; k < 2; k++) gdakiStoreFreeMr(goMr[k], goMem[k]);
++  j->newMr = needMr;
++  j->us = (gdakiQ4MonoMs() - t0) * 1000.0;
++}
++static void gdakiStoreThreadMain(struct gdakiRecHost* r, struct gdakiStoreState* st) {
++  for (;;) {
++    struct gdakiStoreJob j;
++    {
++      std::unique_lock<std::mutex> lk(st->mu);
++      st->cv.wait(lk, [&] { return st->stop || !st->jobs.empty(); });
++      if (st->stop) return;
++      j = st->jobs.front();
++      st->jobs.erase(st->jobs.begin());
++    }
++    if (j.kind == GDAKI_STORE_JOB_FREE) {
++      if (j.dropQp && j.d >= 0) {  // the QP before the MR (9.7 "정리와 해제"); w.qp is this thread's
++        gdakiMiHostQpDestroy(st->wards[(size_t)j.d].qp);
++        st->wards[(size_t)j.d].qp = nullptr;
++      }
++      gdakiStoreFreeMr(j.mr, j.mem);
++      continue;
++    }
++    gdakiStoreServe(r, st, &j);
++    std::lock_guard<std::mutex> lk(st->mu);
++    st->done.push_back(j);
++  }
++}
++
++// ---- the helper, as the buddy: STORE_REQ in, STORE_ACK out ----
++struct gdakiStoreAnswer {  // one STORE_ACK to send: the ward, the answer, its trailer
++  int d = -1;
++  struct gdakiStoreAck a;
++  struct gdakiStoreAckStable s;
++};
++static void gdakiStoreSendAck(struct gdakiRecHost* r, const struct gdakiStoreAnswer& o) {
++  struct gdakiTsMsg m;
++  gdakiHoldMsgInit(&m, GDAKI_TS_STORE_ACK, o.d, 0);  // arg = the ward
++  m.round = o.a.seq;
++  memcpy(m.executed, &o.a, sizeof(o.a));
++  memcpy((uint8_t*)m.executed + GDAKI_STORE_ACKS_OFF, &o.s, sizeof(o.s));
++  (void)gdakiHoldSend(r, o.d, &m);
++}
++// A request's verdict (mu held) and, when it is served, its job queued. False: refused (*ack filled).
++static bool gdakiStoreDispatchLocked(struct gdakiRecHost* r, struct gdakiStoreState* st, int p, const struct gdakiTsMsg& m,
++                                     uint32_t knownInc, struct gdakiStoreAck* ack) {
++  struct gdakiStoreReq q;
++  memcpy(&q, m.executed, sizeof(q));
++  struct gdakiStoreWard& w = st->wards[(size_t)p];
++  const bool isWard = m.arg == p && gdakiHoldBuddyOf(p, st->n) == st->me;
++  const int v = gdakiStoreReqVerdict(q, m.round, isWard, knownInc, w.rec.served, w.rec.inc, w.rec.seq);
++  if (v != GDAKI_STORE_Q_OK) {
++    memset(ack, 0, sizeof(*ack));
++    ack->version = GDAKI_MI_WIRE_VERSION;
++    ack->seq = q.seq;
++    snprintf(ack->why, sizeof(ack->why), "%s", gdakiStoreReqWhy(v));
++    return false;
++  }
++  struct gdakiStoreJob j;
++  j.kind = GDAKI_STORE_JOB_SERVE;
++  j.d = p;
++  j.m = m;
++  st->jobs.push_back(j);
++  w.inFlight = true;
++  return true;
++}
++// The ward is declined (terminal) / held, as the helper sees it now.
++static bool gdakiStoreWardDeclined(struct gdakiRecHost* r, int p) {
++  return r->ts != nullptr && r->ts->peers[(size_t)p].declined;
++}
++static bool gdakiStoreWardHeld(struct gdakiRecHost* r, int p) {
++  return gdakiHoldIsHeldState(gdakiHoldPeerState(r, p, nullptr));
++}
++// A request of a declined or held ward that is not served (gdakiStoreDropReq; no answer: nobody waits for it).
++static bool gdakiStoreDropNow(struct gdakiRecHost* r, struct gdakiStoreState* st, int p, const struct gdakiTsMsg& m,
++                              uint32_t knownInc) {
++  struct gdakiStoreReq q;
++  memcpy(&q, m.executed, sizeof(q));
++  const bool declined = gdakiStoreWardDeclined(r, p);
++  if (!gdakiStoreDropReq(declined, gdakiStoreWardHeld(r, p), q.incarnation, knownInc)) return false;
++  INFO(NCCL_NET, "GIN/MI: rank %d: store request %lu of rank %d (incarnation %u) dropped: the rank is %s mono_ms=%.3f",
++       st->me, (unsigned long)q.seq, p, q.incarnation, declined ? "declined" : "held", gdakiQ4MonoMs());
++  return true;
++}
++// Lets go (mu held; the store thread frees): the parked MRs of wards no longer held, and once the whole store of a
++// declined ward that is not held (its QP, then its MRs and memory). True: jobs were queued.
++static bool gdakiStoreReleaseLocked(struct gdakiRecHost* r, struct gdakiStoreState* st) {
++  bool queued = false;
++  for (int p = 0; p < st->n; p++) {
++    if (p == st->me) continue;
++    struct gdakiStoreWard& w = st->wards[(size_t)p];
++    const bool parked = !w.parked.empty(), declined = !w.released && gdakiStoreWardDeclined(r, p);
++    if ((!parked && !declined) || gdakiStoreWardHeld(r, p)) continue;
++    for (auto& x : w.parked) {
++      struct gdakiStoreJob j;
++      j.kind = GDAKI_STORE_JOB_FREE;
++      j.mr = x.first;
++      j.mem = x.second;
++      st->jobs.push_back(j);
++    }
++    w.parked.clear();
++    queued = queued || parked;
++    if (!declined || w.inFlight) continue;
++    w.released = true;
++    w.havePending = false;
++    if (!w.rec.served && w.mr == nullptr && w.oldMr == nullptr) continue;  // never served here: nothing to let go
++    struct gdakiStoreJob j;
++    j.kind = GDAKI_STORE_JOB_FREE;
++    j.d = p;
++    j.dropQp = true;
++    j.mr = w.mr;
++    j.mem = w.mem;
++    st->jobs.push_back(j);
++    j.dropQp = false;
++    j.mr = w.oldMr;
++    j.mem = w.oldMem;
++    st->jobs.push_back(j);
++    w.mr = w.oldMr = nullptr;
++    w.mem = w.oldMem = nullptr;
++    w.rec = gdakiStoreWardRec();
++    w.haveSpare = false;
++    queued = true;
++    INFO(NCCL_NET, "GIN/MI: rank %d: the store of declined rank %d is let go mono_ms=%.3f", st->me, p, gdakiQ4MonoMs());
++  }
++  return queued;
++}
++static void gdakiStoreServeStep(struct gdakiRecHost* r, struct gdakiStoreState* st) {
++  std::vector<struct gdakiStoreAnswer> out;  // answers, sent after the lock
++  std::vector<struct gdakiStoreJob> fin;
++  bool queued = false;
++  for (int p = 0; p < st->n; p++) {
++    if (p == st->me) continue;
++    struct gdakiTsMsg m;
++    while (gdakiHoldTakeMsg(r, p, GDAKI_TS_STORE_REQ, &m)) {
++      const uint32_t knownInc = gdakiRsPeerInc(r, p);
++      if (gdakiStoreDropNow(r, st, p, m, knownInc)) continue;
++      struct gdakiStoreAnswer o;
++      o.d = p;
++      memset(&o.s, 0, sizeof(o.s));
++      std::lock_guard<std::mutex> lk(st->mu);
++      struct gdakiStoreWard& w = st->wards[(size_t)p];
++      if (w.inFlight) {  // a newer request supersedes the one waiting (its verdict at its turn)
++        w.havePending = true;
++        w.pending = m;
++        continue;
++      }
++      if (gdakiStoreDispatchLocked(r, st, p, m, knownInc, &o.a)) queued = true;
++      else out.push_back(o);
++    }
++  }
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    fin.swap(st->done);
++  }
++  for (auto& j : fin) {
++    const uint32_t knownInc = gdakiRsPeerInc(r, j.d);
++    std::lock_guard<std::mutex> lk(st->mu);
++    struct gdakiStoreWard& w = st->wards[(size_t)j.d];
++    w.inFlight = false;
++    struct gdakiStoreAnswer o;
++    o.d = j.d;
++    if (w.havePending) {  // its answer is stale for the ward: the newer request is served instead
++      w.havePending = false;
++      j.kind = 0;
++      memset(&o.s, 0, sizeof(o.s));
++      if (gdakiStoreDropNow(r, st, j.d, w.pending, knownInc)) continue;
++      if (gdakiStoreDispatchLocked(r, st, j.d, w.pending, knownInc, &o.a)) queued = true;
++      else out.push_back(o);
++      continue;
++    }
++    o.a = j.ack;
++    o.s = j.ackStable;
++    out.push_back(o);
++    if (j.ack.ok) st->nServed.fetch_add(1, std::memory_order_relaxed);
++  }
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    if (gdakiStoreReleaseLocked(r, st)) queued = true;
++  }
++  if (queued) st->cv.notify_all();
++  for (auto& o : out) {
++    gdakiStoreSendAck(r, o);
++    if (o.a.ok)
++      GIN_TS_NOTE("GIN/MI: rank %d: store for rank %d ready (request %lu) gen=%lu slot_bytes=%lu stable_slot=%d "
++                  "mono_ms=%.3f", st->me, o.d, (unsigned long)o.a.seq, (unsigned long)o.a.gen, (unsigned long)o.a.slotBytes,
++                  o.s.haveStable ? (int)o.s.stableSlot : -1, gdakiQ4MonoMs());
++    else
++      GIN_TS_NOTE("GIN/MI: rank %d: store request %lu of rank %d refused (%.63s) mono_ms=%.3f", st->me,
++                  (unsigned long)o.a.seq, o.d, o.a.why, gdakiQ4MonoMs());
++  }
++  for (auto& j : fin)
++    if (j.kind == GDAKI_STORE_JOB_SERVE)
++      INFO(NCCL_NET, "GIN/MI: rank %d: store request %lu of rank %d served in %.0f us (new MR: %d) mono_ms=%.3f", st->me,
++           (unsigned long)j.ack.seq, j.d, j.us, (int)j.newMr, gdakiQ4MonoMs());
++}
++
++// ---- the helper, as the uploader ----
++// The region table's layout key of the image (gdakiStoreLayoutHash over (kind, id, offset, bytes), seeded with its size).
++static uint64_t gdakiStoreLayoutKey(const std::vector<struct gdakiCkptRegionSrc>& regs, const uint64_t* off,
++                                    uint64_t total) {
++  struct gdakiCkptRegion t[GDAKI_CKPT_MAX_REGIONS];
++  memset(t, 0, sizeof(t));
++  const uint32_t n = (uint32_t)std::min<size_t>(regs.size(), GDAKI_CKPT_MAX_REGIONS);
++  for (uint32_t i = 0; i < n; i++) {
++    t[i].kind = regs[i].kind;
++    t[i].id = regs[i].id;
++    t[i].offset = off[i];
++    t[i].bytes = regs[i].bytes;
++  }
++  return gdakiStoreLayoutHash(t, n, total);
++}
++// The image's layout now (the helper's first request, before the application published one). False: no image yet.
++static bool gdakiStoreLayoutNow(struct gdakiRecHost* r, uint64_t* image, uint64_t* layout) {
++  std::vector<struct gdakiCkptRegionSrc> regs;
++  uint64_t off[GDAKI_CKPT_MAX_REGIONS] = {}, sizes[GDAKI_CKPT_MAX_REGIONS] = {}, total = 0;
++  if (!gdakiCkptRegions(r, &regs)) return false;
++  for (size_t i = 0; i < regs.size(); i++) sizes[i] = regs[i].bytes;
++  if (!gdakiCkptLayout(sizes, (int)regs.size(), off, &total) || total == 0) return false;
++  *image = total;
++  *layout = gdakiStoreLayoutKey(regs, off, total);
++  return true;
++}
++static void gdakiStoreUpStep(struct gdakiRecHost* r, struct gdakiStoreState* st) {
++  struct gdakiCkpt* ck = gdakiCkptOf(r);
++  const int me = st->me, b = st->buddy;
++  const double now = gdakiQ4MonoMs();
++  // (1) STORE_ACK: the buddy's to this rank; anything else is dropped
++  for (int p = 0; p < st->n; p++) {
++    if (p == me) continue;
++    struct gdakiTsMsg m;
++    while (gdakiHoldTakeMsg(r, p, GDAKI_TS_STORE_ACK, &m)) {
++      struct gdakiStoreAck a;
++      memcpy(&a, m.executed, sizeof(a));
++      struct gdakiStoreAckStable as;  // the trailer: the buddy's view of this rank's stable slot (zero: none)
++      memcpy(&as, (const uint8_t*)m.executed + GDAKI_STORE_ACKS_OFF, sizeof(as));
++      if (p != b || m.arg != me) {
++        INFO(NCCL_NET, "GIN/MI: rank %d: a STORE_ACK from rank %d about rank %d dropped mono_ms=%.3f", me, p, m.arg,
++             gdakiQ4MonoMs());
++        continue;
++      }
++      int v;
++      struct gdakiMiHostQp* qp;
++      {
++        std::lock_guard<std::mutex> lk(st->mu);
++        v = st->up.onAck(a, m.round, now);
++        if (v == GDAKI_STORE_A_OK && as.magic == GDAKI_STORE_ACKS_MAGIC) st->up.ackStable(as.haveStable == 1u, as.stableSlot);
++        qp = st->upQp;
++      }
++      if (v == GDAKI_STORE_A_STALE) {
++        INFO(NCCL_NET, "GIN/MI: rank %d: a stale STORE_ACK (request %lu) from buddy rank %d dropped mono_ms=%.3f", me,
++             (unsigned long)a.seq, b, gdakiQ4MonoMs());
++        continue;
++      }
++      if (v != GDAKI_STORE_A_OK) {
++        if (st->refusals++ % 30 == 0)
++          GIN_TS_NOTE("GIN/MI: rank %d: store request %lu not accepted from buddy rank %d (%s: %.63s; %d in a row) "
++                      "mono_ms=%.3f", me, (unsigned long)a.seq, b, gdakiStoreAckWhy(v),
++                      v == GDAKI_STORE_A_REFUSED ? a.why : "", st->refusals, gdakiQ4MonoMs());
++        continue;
++      }
++      st->refusals = 0;
++      char why[96] = {0};
++      const bool ok = gdakiMiHostQpConnect(qp, a.up, why, sizeof(why)) == ncclSuccess;
++      int stableView;
++      {
++        std::lock_guard<std::mutex> lk(st->mu);
++        st->up.connected(ok, gdakiQ4MonoMs());
++        if (ok && r->ts != nullptr) st->up.sockGen = r->ts->peers[(size_t)b].gen;  // a reinstall after this: a request
++        stableView = st->up.stableSlot;
++      }
++      if (ok)
++        GIN_TS_NOTE("GIN/MI: rank %d: store ready at buddy rank %d gen=%lu stable_slot=%d mono_ms=%.3f", me, b,
++                    (unsigned long)a.gen, stableView, gdakiQ4MonoMs());
++      else
++        GIN_TS_NOTE("GIN/MI: rank %d: the upload QP to buddy rank %d could not be connected (%s) mono_ms=%.3f", me, b, why,
++                    gdakiQ4MonoMs());
++    }
++  }
++  // (2) a new request when one is needed: after Resume, no checkpoint of this rank in flight, no WRITE, the buddy's
++  //     helper socket installed and the buddy not held
++  if (b < 0 || ck == nullptr || r->hold == nullptr || !gdakiHoldCommArmedNow(r->hold) || r->ts == nullptr) return;
++  if (r->ts->peers[(size_t)b].fd < 0 || r->ts->peers[(size_t)b].gone || r->ts->peers[(size_t)b].declined ||
++      gdakiHoldIsHeldState(gdakiHoldPeerState(r, b, nullptr)))
++    return;
++  const bool idle = ck->phase == GDAKI_CKPT_I_IDLE;
++  const uint32_t bInc = gdakiRsPeerInc(r, b);
++  const uint32_t sockGen = r->ts->peers[(size_t)b].gen;
++  bool haveWant;
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    const bool sockMoved = st->up.ready && sockGen != st->up.sockGen;
++    if (st->up.nextReq(now, idle, bInc, sockMoved) == GDAKI_STORE_N_NONE) return;
++    haveWant = st->up.wantValid;
++  }
++  uint64_t image = 0, layout = 0;
++  const bool computed = !haveWant && gdakiStoreLayoutNow(r, &image, &layout);
++  if (!haveWant && !computed) {  // nothing to store yet (no window registered): looked at again a little later
++    std::lock_guard<std::mutex> lk(st->mu);
++    st->up.retryAtMs = now + 250.0;
++    return;
++  }
++  int why;
++  uint64_t seq;
++  struct gdakiMiHostQp* old;
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    if (!st->up.wantValid && computed) {
++      st->up.wantValid = true;
++      st->up.wantImage = image;
++      st->up.wantLayout = layout;
++    }
++    const bool sockMoved = st->up.ready && sockGen != st->up.sockGen;
++    why = st->up.nextReq(now, idle, bInc, sockMoved);  // again: the application thread may have begun a WRITE meanwhile
++    if (why == GDAKI_STORE_N_NONE) return;
++    st->up.begin();
++    image = st->up.wantImage;
++    layout = st->up.wantLayout;
++    seq = st->up.seq + 1;
++    old = st->upQp;
++    st->upQp = nullptr;
++  }
++  gdakiMiHostQpDestroy(old);
++  const uint64_t slotBytes = gdakiStoreSlotBytes(image);
++  char w[96] = {0};
++  struct gdakiMiHostQp* qp = nullptr;
++  struct gdakiTsMsg m;
++  gdakiHoldMsgInit(&m, GDAKI_TS_STORE_REQ, me, 0);  // arg = this rank (the ward)
++  m.round = seq;
++  struct gdakiStoreReq q;
++  memset(&q, 0, sizeof(q));
++  bool sent = gdakiMiHostQpCreate(r, 1, &qp, &q.up, w, sizeof(w)) == ncclSuccess;
++  if (sent) {
++    q.version = GDAKI_MI_WIRE_VERSION;
++    q.incarnation = gdakiRsSelfInc(r);
++    q.seq = seq;
++    q.slotBytes = slotBytes;
++    q.imageBytes = image;
++    q.layoutHash = layout;
++    struct gdakiStoreReqSpare sp;
++    memset(&sp, 0, sizeof(sp));
++    const struct gdakiCkptSelf& self = gdakiCkptSelfOf();
++    sp.magic = GDAKI_STORE_SPARE_MAGIC;
++    sp.haveSpare = self.haveSpare ? 1u : 0u;
++    if (self.haveSpare) memcpy(sp.spareAddr, &self.spare, std::min(sizeof(sp.spareAddr), sizeof(self.spare)));
++    sp.pid = self.pid;
++    sp.pidStart = self.pidStart;
++    memcpy(m.executed, &q, sizeof(q));
++    memcpy((uint8_t*)m.executed + GDAKI_STORE_SPARE_OFF, &sp, sizeof(sp));
++    sent = gdakiHoldSend(r, b, &m) == 0;
++    if (!sent) snprintf(w, sizeof(w), "the record could not be sent");
++  }
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    st->up.sent(sent, seq, gdakiQ4MonoMs(), image, layout, slotBytes, bInc);
++    if (sent) st->upQp = qp;
++  }
++  if (!sent) {
++    gdakiMiHostQpDestroy(qp);
++    if (st->sendFails++ % 30 == 0)
++      GIN_TS_NOTE("GIN/MI: rank %d: store request to buddy rank %d not sent (%s; %d in a row) reason=%s mono_ms=%.3f", me, b, w,
++                  st->sendFails, gdakiStoreNeedName(why), gdakiQ4MonoMs());
++    return;
++  }
++  st->sendFails = 0;
++  st->nRequests.fetch_add(1, std::memory_order_relaxed);
++  GIN_TS_NOTE("GIN/MI: rank %d: store request to buddy rank %d seq=%lu slot_bytes=%lu reason=%s mono_ms=%.3f", me, b,
++              (unsigned long)seq, (unsigned long)slotBytes, gdakiStoreNeedName(why), gdakiQ4MonoMs());
++}
++static void gdakiStoreStep(struct gdakiRecHost* r) {
++  struct gdakiStoreState* st = gdakiStoreOf(r);
++  if (st == nullptr) return;
++  gdakiStoreServeStep(r, st);
++  gdakiStoreUpStep(r, st);
++}
++static bool gdakiStoreReady(struct gdakiRecHost* r) {
++  struct gdakiStoreState* st = gdakiStoreOf(r);
++  if (st == nullptr) return false;
++  std::lock_guard<std::mutex> lk(st->mu);
++  return st->up.readyNow();
++}
++
++// ---- the checkpoint machine's store path (helper: COPYING, CONFIRMING) ----
++// COPYING ended valid (CKPT_RESUME went out): the application thread waiting for this checkpoint WRITEs it now; when it
++// no longer waits (it gave up its wait), nobody will: the WRITEs count as failed and CONFIRMING voids at once.
++static void gdakiStoreArm(struct gdakiRecHost* r, uint64_t ckpt) {
++  struct gdakiCkpt* ck = gdakiCkptOf(r);
++  struct gdakiStoreState* st = gdakiStoreOf(r);
++  if (ck == nullptr || st == nullptr) return;
++  {
++    std::lock_guard<std::mutex> lk(ck->mu);
++    st->wCkpt = ckpt;
++    st->wOk = false;
++    if (st->takeWaiting && st->takeCkpt == ckpt) {
++      st->armed = true;
++      st->armCkpt = ckpt;
++      st->wDone = false;
++    } else {
++      st->wDone = true;
++    }
++  }
++  ck->cv.notify_all();
++}
++static void gdakiStoreWriteState(struct gdakiRecHost* r, uint64_t ckpt, bool* done, bool* ok) {
++  *done = true;  // no state: void at once
++  *ok = false;
++  struct gdakiCkpt* ck = gdakiCkptOf(r);
++  struct gdakiStoreState* st = gdakiStoreOf(r);
++  if (ck == nullptr || st == nullptr) return;
++  std::lock_guard<std::mutex> lk(ck->mu);
++  if (st->wCkpt != ckpt) return;
++  *done = st->wDone;
++  *ok = st->wDone && st->wOk;
++}
++static void gdakiStoreFillStable(struct gdakiRecHost* r, struct gdakiTsMsg* m) {
++  struct gdakiCkpt* ck = gdakiCkptOf(r);
++  struct gdakiStoreState* st = gdakiStoreOf(r);
++  if (ck == nullptr || st == nullptr) return;
++  struct gdakiStoreStable s;
++  {
++    std::lock_guard<std::mutex> lk(ck->mu);
++    if (st->wCkpt != m->round || !st->wDone || !st->wOk) return;  // no payload: the buddy refuses it (DISARM)
++    s = st->wStable;
++  }
++  m->pad |= GDAKI_CKPT_STABLE_STORE;
++  memcpy(m->executed, &s, sizeof(s));
++}
++// CKPT_STABLE of ckpt went to the buddy: its slot is the buddy's stable one from now (the next WRITEs take the other).
++static void gdakiStoreStableSent(struct gdakiRecHost* r, uint64_t ckpt) {
++  struct gdakiCkpt* ck = gdakiCkptOf(r);
++  struct gdakiStoreState* st = gdakiStoreOf(r);
++  if (ck == nullptr || st == nullptr) return;
++  struct gdakiStoreStable s;
++  {
++    std::lock_guard<std::mutex> lk(ck->mu);
++    if (st->wCkpt != ckpt || !st->wDone || !st->wOk) return;
++    s = st->wStable;
++  }
++  std::lock_guard<std::mutex> lk(st->mu);
++  st->up.stableSent(s.slot, s.gen);
++}
++// The buddy: CKPT_STABLE of ward `from` on the store path. False: no image of it here (the caller DISARMs it).
++static bool gdakiStoreOnStable(struct gdakiRecHost* r, int from, const struct gdakiTsMsg& m) {
++  struct gdakiStoreState* st = gdakiStoreOf(r);
++  if (st == nullptr || from < 0 || from >= st->n) return false;
++  int v = 7;
++  if (m.pad & GDAKI_CKPT_STABLE_STORE) {
++    struct gdakiStoreStable s;
++    memcpy(&s, m.executed, sizeof(s));
++    // a CKPT_STABLE read after the ward's hold opened (sent right before it died): an activation may already have handed
++    // the spare the replaced MR's rkey, so that MR is parked until the ward is no longer held (gdakiStoreReleaseLocked)
++    const bool held = gdakiStoreWardHeld(r, from);
++    bool freeOld = false;
++    {
++      std::lock_guard<std::mutex> lk(st->mu);
++      struct gdakiStoreWard& w = st->wards[(size_t)from];
++      v = gdakiStoreWardStable(&w.rec, s, m.round, &freeOld);
++      if (freeOld && held) {
++        w.parked.emplace_back(w.oldMr, w.oldMem);
++      } else if (freeOld) {  // the replaced MR's stable slot is superseded: the store thread lets it go
++        struct gdakiStoreJob j;
++        j.kind = GDAKI_STORE_JOB_FREE;
++        j.mr = w.oldMr;
++        j.mem = w.oldMem;
++        st->jobs.push_back(j);
++      }
++      if (freeOld) {
++        w.oldMr = nullptr;
++        w.oldMem = nullptr;
++      }
++    }
++    if (freeOld && !held) st->cv.notify_all();
++  }
++  if (v != 0)
++    GIN_TS_NOTE("GIN/MI: rank %d: CKPT_STABLE %lu of rank %d does not fit its store here (%s) mono_ms=%.3f", st->me,
++                (unsigned long)m.round, from, v == 7 ? "no store payload" : gdakiStoreStableWhy(v), gdakiQ4MonoMs());
++  return v == 0;
++}
++static bool gdakiStoreActInfoOf(struct gdakiRecHost* r, int d, struct gdakiStoreActInfo* out) {
++  struct gdakiStoreState* st = gdakiStoreOf(r);
++  if (st == nullptr || out == nullptr || d < 0 || d >= st->n) return false;
++  std::lock_guard<std::mutex> lk(st->mu);
++  const struct gdakiStoreWardRec& w = st->wards[(size_t)d].rec;
++  if (!w.haveStable) return false;
++  out->rkey = gdakiStoreWardStableRkey(w);
++  out->slot = w.stableSlot;
++  out->blobBytes = w.blobBytes;
++  out->off = w.stableOff;
++  out->usedBytes = w.usedBytes;
++  out->imageBytes = w.imageBytes;
++  out->layoutHash = w.layoutHash;
++  out->ckpt = w.stableCkpt;
++  return true;
++}
++// gdakiHoldSpareOf on the store path: the ward's spare registration (its STORE_REQ) and its stable checkpoint.
++static bool gdakiStoreSpareOf(struct gdakiRecHost* r, int peer, struct gdakiRsActivate* a, void* addr, size_t addrLen) {
++  struct gdakiStoreState* st = gdakiStoreOf(r);
++  if (st == nullptr || peer < 0 || peer >= st->n) return false;
++  std::lock_guard<std::mutex> lk(st->mu);
++  const struct gdakiStoreWard& w = st->wards[(size_t)peer];
++  if (!w.rec.haveStable || !w.haveSpare || w.spare.haveSpare != 1) return false;
++  memcpy(addr, w.spare.spareAddr, std::min(addrLen, sizeof(w.spare.spareAddr)));
++  a->step = w.rec.stableCkpt;
++  a->pid = w.spare.pid;
++  a->pidStart = w.spare.pidStart;
++  return true;
++}
++// RESTORED of `buddy` (gdakiHoldApplyRestored, after gdakiCkptPeerReset), when it is this rank's buddy. Store path: the
++// store is requested again from the new process (the whole image, every time anyway). TCP path (mirror off, 9.6): the
++// upload's base is cleared (the next upload carries every block). Idempotent per RESTORED: a second call for the same
++// incarnation of the buddy (the integration may reach it from the v1 line and from the host branch's mirror-on path)
++// changes nothing.
++static void gdakiStoreOnBuddyRestored(struct gdakiRecHost* r, int buddy) {
++  if (r == nullptr || r->ctx == nullptr || buddy < 0 || buddy != gdakiHoldBuddyOf(r->ctx->rank, r->nranks)) return;
++  if (gdakiStoreOn(r)) {
++    struct gdakiStoreState* st = gdakiStoreOf(r);
++    if (st == nullptr) return;
++    const uint32_t inc = gdakiRsPeerInc(r, buddy);
++    {
++      std::lock_guard<std::mutex> lk(st->mu);
++      if (st->restoredSeen && st->restoredInc == inc) return;
++      st->restoredSeen = true;
++      st->restoredInc = inc;
++      st->up.buddyRestored();
++    }
++    GIN_TS_NOTE("GIN/MI: rank %d: buddy rank %d restored: the store is requested again mono_ms=%.3f", r->ctx->rank, buddy,
++                gdakiQ4MonoMs());
++    return;
++  }
++  struct gdakiCkpt* ck = gdakiCkptOf(r);
++  if (ck == nullptr) return;
++  {
++    std::lock_guard<std::mutex> lk(ck->mu);
++    ck->haveBase = false;
++  }
++  GIN_TS_NOTE("GIN/RS: rank %d: buddy rank %d restored: the next upload carries every block mono_ms=%.3f", r->ctx->rank,
++              buddy, gdakiQ4MonoMs());
++}
++// The TCP path (mirror off, 9.6): the end of one upload (gdakiCkptUploadOne, every way it ends).
++static void gdakiStoreTcpUploadEnded(struct gdakiRecHost* r, bool ok) {
++  struct gdakiCkpt* ck = gdakiCkptOf(r);
++  if (ck == nullptr) return;
++  std::lock_guard<std::mutex> lk(ck->mu);
++  ck->haveBase = gdakiStoreTcpBaseAfterUpload(ck->haveBase, ok);
++}
++
++// ---- the application thread: one checkpoint on the store path (gdakiCkptTake) ----
++// The staging buffer: pinned host memory (the copy engine's D2H target), registered in the GIN PD (the WRITEs' source,
++// local access only), laid out as a slot: [header, GDAKI_STORE_HDR_BYTES][image][blob]. The header room's padding stays 0.
++static bool gdakiStoreStage(struct gdakiRecHost* r, struct gdakiStoreState* st, uint64_t bytes) {
++  if (st->stageMr != nullptr && st->stageBytes >= bytes) return true;
++  // the old buffer goes only after its MR (a failed upload's QP may not have flushed: deregistered, the NIC cannot reach
++  // the buffer); a failed deregistration keeps it (a leak with a WARN)
++  bool keep = false;
++  if (st->stageMr != nullptr && wrap_ibv_dereg_mr(st->stageMr) != ncclSuccess) {
++    keep = true;
++    WARN("GIN/MI: rank %d: the upload staging MR could not be deregistered; its buffer is kept mono_ms=%.3f",
++         r->ctx->rank, gdakiQ4MonoMs());
++  }
++  if (st->stage != nullptr && !keep) (void)cudaFreeHost(st->stage);
++  st->stageMr = nullptr;
++  st->stage = nullptr;
++  st->stageBytes = 0;
++  struct ibv_pd* pd = (r->ctx != nullptr && r->ctx->collComm != nullptr) ? r->ctx->collComm->ib.pd : nullptr;
++  if (pd == nullptr || cudaHostAlloc((void**)&st->stage, (size_t)bytes, cudaHostAllocDefault) != cudaSuccess) {
++    st->stage = nullptr;
++    WARN("GIN/MI: rank %d: cannot allocate %lu bytes of pinned host memory for the checkpoint upload mono_ms=%.3f",
++         r->ctx->rank, (unsigned long)bytes, gdakiQ4MonoMs());
++    return false;
++  }
++  memset(st->stage, 0, (size_t)bytes);
++  st->stageMr = wrap_direct_ibv_reg_mr(pd, st->stage, (size_t)bytes, IBV_ACCESS_LOCAL_WRITE);
++  if (st->stageMr == nullptr) {
++    (void)cudaFreeHost(st->stage);
++    st->stage = nullptr;
++    WARN("GIN/MI: rank %d: cannot register %lu bytes of upload staging in the GIN protection domain (memlock?) "
++         "mono_ms=%.3f", r->ctx->rank, (unsigned long)bytes, gdakiQ4MonoMs());
++    return false;
++  }
++  st->stageBytes = bytes;
++  INFO(NCCL_NET, "GIN/MI: rank %d: upload staging buffer of %lu bytes (pinned, GIN protection domain) mono_ms=%.3f",
++       r->ctx->rank, (unsigned long)bytes, gdakiQ4MonoMs());
++  return true;
++}
++// The slot's header (impl/rs_store_api.h: version 1, baseCkpt ~0, nChanged 0, the PAUSED records' P, as gin-restore's
++// UPLOAD header).
++static void gdakiStoreFillHdr(struct gdakiRecHost* r, struct gdakiCkptHdr* h, uint64_t ckpt, uint64_t total,
++                              const std::vector<struct gdakiCkptRegionSrc>& regs, const uint64_t* off, uint32_t blobBytes,
++                              const std::vector<int>& nqp, const std::vector<uint64_t>& p) {
++  const int me = r->ctx->rank, n = r->nranks;
++  const struct gdakiCkptSelf& self = gdakiCkptSelfOf();
++  memset(h, 0, sizeof(*h));
++  h->magic = GDAKI_CKPT_MAGIC;
++  h->version = GDAKI_CKPT_VERSION;
++  h->rank = me;
++  h->incarnation = gdakiRsPeerInc(r, me);
++  h->nonce = r->ts->nonce;
++  h->ckpt = ckpt;
++  h->baseCkpt = ~0ULL;
++  h->imageBytes = total;
++  h->blockBytes = GDAKI_CKPT_BLOCK;
++  h->nRegions = (uint32_t)regs.size();
++  for (size_t i = 0; i < regs.size(); i++) {
++    h->region[i].kind = regs[i].kind;
++    h->region[i].id = regs[i].id;
++    h->region[i].offset = off[i];
++    h->region[i].bytes = regs[i].bytes;
++  }
++  h->nChanged = 0;
++  h->blobBytes = blobBytes;
++  for (int q = 0; q < n && h->nPeers < GDAKI_CKPT_MAX_PEERS; q++) {
++    if (q == me || (size_t)q >= nqp.size()) continue;
++    struct gdakiCkptPeerP& pp = h->peerP[h->nPeers++];
++    pp.rank = q;
++    pp.nqp = (uint32_t)std::max(0, std::min(nqp[(size_t)q], (int)GDAKI_CKPT_QPS));
++    for (uint32_t i = 0; i < pp.nqp && (size_t)q * NCCL_GIN_RECOVERY_MAX_QPS + i < p.size(); i++)
++      pp.p[i] = p[(size_t)q * NCCL_GIN_RECOVERY_MAX_QPS + i];
++  }
++  if (self.haveSpare) memcpy(h->spareAddr, &self.spare, std::min(sizeof(h->spareAddr), sizeof(self.spare)));
++  h->pid = self.pid;
++  h->pidStart = self.pidStart;
++}
++// One checkpoint (application thread): the regions and the staging buffer, the ask to the helper; once drained, inside
++// the pause, the D2H into the staging buffer with the header and the blob; COPIED; then, outside the pause once the
++// helper armed it (CKPT_RESUME sent), the WRITEs into the buddy's receiving slot, bounded; their result for CONFIRMING.
++static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* blob, size_t bytes) {
++  struct gdakiCkpt* ck = gdakiCkptOf(r);
++  struct gdakiStoreState* st = gdakiStoreOf(r);
++  if (ck == nullptr || st == nullptr) return;
++  {
++    std::lock_guard<std::mutex> lk(ck->mu);
++    // the previous one still runs (the helper not idle): no wait on the application thread, tried again later
++    if (ck->req != GDAKI_CKPT_REQ_NONE || ck->phasePub != GDAKI_CKPT_I_IDLE) return;
++  }
++  auto backOff = [&]() {  // as gin-restore: tried again a quarter interval later
++    std::lock_guard<std::mutex> lk(ck->mu);
++    ck->haveRetry = true;
++    ck->retryAtStep = step + (uint64_t)std::max<int64_t>(1, ncclParamGinRestoreCkptSteps() / 4);
++  };
++  std::vector<struct gdakiCkptRegionSrc> regs;
++  uint64_t off[GDAKI_CKPT_MAX_REGIONS] = {}, sizes[GDAKI_CKPT_MAX_REGIONS] = {}, total = 0;
++  if (!gdakiCkptRegions(r, &regs)) {
++    WARN("GIN/MI: rank %d: more than %d checkpoint regions; no checkpoint mono_ms=%.3f", r->ctx->rank,
++         GDAKI_CKPT_MAX_REGIONS, gdakiQ4MonoMs());
++    return backOff();
++  }
++  for (size_t i = 0; i < regs.size(); i++) sizes[i] = regs[i].bytes;
++  if (!gdakiCkptLayout(sizes, (int)regs.size(), off, &total) || total == 0 || total > GDAKI_STORE_MAX_IMAGE) return backOff();
++  const uint64_t layout = gdakiStoreLayoutKey(regs, off, total);
++  const uint64_t slotBytes = gdakiStoreSlotBytes(total);
++  const uint64_t used = gdakiStoreUsedBytes(total, (uint32_t)bytes);
++  {  // the layout of this checkpoint: a store of another layout is not ready (the helper refuses and requests again)
++    std::lock_guard<std::mutex> lk(st->mu);
++    st->up.wantValid = true;
++    st->up.wantImage = total;
++    st->up.wantLayout = layout;
++  }
++  if (ck->copyStream == nullptr && cudaStreamCreateWithFlags(&ck->copyStream, cudaStreamNonBlocking) != cudaSuccess) {
++    ck->copyStream = nullptr;
++    return backOff();
++  }
++  if (!gdakiStoreStage(r, st, slotBytes)) return backOff();
++  {
++    std::lock_guard<std::mutex> lk(ck->mu);
++    ck->regions = regs;
++    for (size_t i = 0; i < regs.size(); i++) ck->regionOff[i] = off[i];
++    ck->imageBytes = total;
++    ck->req = GDAKI_CKPT_REQ_ASKED;
++    ck->reqCkpt = step;
++    ck->reqOk = false;
++    ck->reqWhy[0] = '\0';
++  }
++  ck->cv.notify_all();
++  const auto bound = std::chrono::milliseconds(gdakiCkptPauseMs() + ncclParamGinRestoreDrainMs() + 1000);
++  int got;
++  std::vector<int> nqp;
++  std::vector<uint64_t> p;
++  {
++    std::unique_lock<std::mutex> lk(ck->mu);
++    ck->cv.wait_for(lk, bound,
++                    [&] { return ck->req == GDAKI_CKPT_REQ_DRAINED || ck->req == GDAKI_CKPT_REQ_SKIPPED; });
++    got = ck->req;
++    if (got != GDAKI_CKPT_REQ_DRAINED) {  // skipped, or the helper did not answer in time: tried again a quarter later
++      ck->req = GDAKI_CKPT_REQ_NONE;
++      ck->haveRetry = true;
++      ck->retryAtStep = step + (uint64_t)std::max<int64_t>(1, ncclParamGinRestoreCkptSteps() / 4);
++    } else {
++      ck->haveRetry = false;
++      nqp = ck->nqp;  // the PAUSED records' P (the helper filled them before DRAINED)
++      p = ck->p;
++    }
++  }
++  if (got != GDAKI_CKPT_REQ_DRAINED) return;
++  // inside the pause (drained, fenced): the D2H into the staging buffer, the header and the blob around it
++  const double c0 = gdakiQ4MonoMs();
++  bool ok = true;
++  for (size_t i = 0; i < regs.size() && ok; i++)
++    ok = cudaMemcpyAsync(st->stage + GDAKI_STORE_HDR_BYTES + off[i], regs[i].src, (size_t)regs[i].bytes, cudaMemcpyDefault,
++                         ck->copyStream) == cudaSuccess;
++  gdakiStoreFillHdr(r, (struct gdakiCkptHdr*)st->stage, step, total, regs, off, (uint32_t)bytes, nqp, p);
++  if (bytes != 0) memcpy(st->stage + gdakiStoreBlobOff(total), blob, bytes);
++  const bool synced = cudaStreamSynchronize(ck->copyStream) == cudaSuccess;  // also after a failed enqueue: nothing late
++  ok = ok && synced;
++  const double d2hUs = (gdakiQ4MonoMs() - c0) * 1000.0;
++  bool copied;
++  {
++    std::lock_guard<std::mutex> lk(ck->mu);
++    // the helper may have given this checkpoint up meanwhile (its copy bound): then nothing waits for the copy
++    copied = ck->req == GDAKI_CKPT_REQ_DRAINED;
++    if (copied) {
++      ck->req = GDAKI_CKPT_REQ_COPIED;
++      ck->reqOk = ok;
++      st->takeWaiting = ok;
++      st->takeCkpt = step;
++      st->armed = false;
++    } else {
++      ck->req = GDAKI_CKPT_REQ_NONE;
++    }
++    ck->haveLast = true;
++    ck->lastCkpt = step;
++  }
++  ck->cv.notify_all();
++  ck->nTaken.fetch_add(1, std::memory_order_relaxed);
++  if (!copied || !ok) return;
++  // the helper's verdict (COPYING: the counts again, CKPT_RESUME to every peer at 200 ms each at most): armed, or not.
++  // The bound covers the helper's own COPYING bound (3 x the pause's bound from the pause's start) as well, so a helper
++  // delayed by a round still finds this thread waiting (else its arm counts as failed and the checkpoint is void).
++  bool armed = false;
++  {
++    std::unique_lock<std::mutex> lk(ck->mu);
++    const double until =
++      gdakiQ4MonoMs() +
++      std::max(3.0 * (double)gdakiCkptPauseMs(),
++               (double)ncclParamGinRestoreDrainMs() + 200.0 * (double)std::max(1, r->nranks)) +
++      1000.0;
++    for (;;) {
++      if (st->armed && st->armCkpt == step) {
++        armed = true;
++        break;
++      }
++      if (ck->req != GDAKI_CKPT_REQ_COPIED || ck->phasePub == GDAKI_CKPT_I_IDLE || gdakiQ4MonoMs() > until) break;
++      ck->cv.wait_for(lk, std::chrono::milliseconds(1));
++    }
++    st->armed = false;
++    st->takeWaiting = false;  // a later arm finds nobody waiting: its WRITEs count as failed (gdakiStoreArm)
++  }
++  if (!armed) return;
++  // outside the pause: the WRITEs from the staging buffer into the buddy's receiving slot
++  const int64_t writeMs = std::max<int64_t>(1, ncclParamGinRestoreStoreWriteMs());
++  const double w0 = gdakiQ4MonoMs();
++  char why[160] = {0};
++  struct gdakiMiHostQp* qp = nullptr;
++  uint32_t slot = 0, rkey = 0;
++  uint64_t remote = 0, gen = 0;
++  bool began;
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    began = st->up.beginWrite(total, layout);
++    if (began) {
++      slot = st->up.recvSlot();
++      rkey = st->up.rkey;
++      remote = st->up.slotOff[slot];
++      gen = st->up.gen;
++      qp = st->upQp;
++    }
++  }
++  bool wok = false;
++  if (!began || qp == nullptr) snprintf(why, sizeof(why), "the store is not ready for this layout");
++  else
++    wok = gdakiMiHostQpXfer(qp, false, st->stage, st->stageMr->lkey, remote, rkey, used, (int)writeMs, why, sizeof(why)) ==
++          ncclSuccess;
++  if (began) {
++    std::lock_guard<std::mutex> lk(st->mu);
++    st->up.endWrite(wok);
++  }
++  const double writeUs = (gdakiQ4MonoMs() - w0) * 1000.0;
++  {
++    std::lock_guard<std::mutex> lk(ck->mu);
++    st->wCkpt = step;
++    st->wDone = true;
++    st->wOk = wok;
++    st->wStable = gdakiStoreStableOf(slot, gen, total, layout, (uint32_t)bytes);
++  }
++  if (wok) {
++    st->nWrites.fetch_add(1, std::memory_order_relaxed);
++    GIN_TS_NOTE("GIN/MI: rank %d: checkpoint %lu stored at buddy rank %d slot=%u bytes=%lu d2h_us=%.0f write_us=%.0f "
++                "mono_ms=%.3f", r->ctx->rank, (unsigned long)step, st->buddy, slot, (unsigned long)used, d2hUs, writeUs,
++                gdakiQ4MonoMs());
++  } else {
++    st->nFailed.fetch_add(1, std::memory_order_relaxed);
++    GIN_TS_NOTE("GIN/MI: rank %d: the store WRITE of checkpoint %lu to buddy rank %d failed (%s); the checkpoint is void "
++                "and the store is requested again write_us=%.0f mono_ms=%.3f", r->ctx->rank, (unsigned long)step,
++                st->buddy, why, writeUs, gdakiQ4MonoMs());
++  }
++}
++
++// ---- teardown (gdakiCkptFree, after the helper and the data threads stopped) ----
++// The summary line, the store thread stopped, then the QPs, then every MR before its memory (9.7 "정리와 해제").
++static void gdakiStoreFree(struct gdakiRecHost* r) {
++  struct gdakiStoreState* st;
++  {
++    std::lock_guard<std::mutex> lk(gdakiStoreLifeMu);
++    st = r != nullptr ? r->mi.store : nullptr;
++    if (st == nullptr) return;
++    r->mi.store = nullptr;
++  }
++  struct gdakiCkpt* ck = gdakiCkptOf(r);
++  // tcp_image_bytes: this rank's UPLOAD bytes over the data socket; tcp_segment_bytes: no store path sends segment bytes
++  // over a socket (0 by construction, impl/notes_store.md). WARN in both builds: prediction store_rdma reads it.
++  WARN("GIN/MI: rank %d: store summary writes=%lld failed=%lld requests=%lld tcp_image_bytes=%lld "
++              "tcp_segment_bytes=0 served=%lld mono_ms=%.3f", st->me, st->nWrites.load(), st->nFailed.load(),
++              st->nRequests.load(), ck != nullptr ? ck->nUploadBytes.load() : 0LL, st->nServed.load(), gdakiQ4MonoMs());
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    st->stop = true;
++  }
++  st->cv.notify_all();
++  if (st->th.joinable()) st->th.join();
++  gdakiMiHostQpDestroy(st->upQp);
++  st->upQp = nullptr;
++  for (auto& w : st->wards) {
++    gdakiMiHostQpDestroy(w.qp);
++    w.qp = nullptr;
++  }
++  // every MR before its memory (gdakiStoreFreeMr keeps the memory of an MR that could not be deregistered)
++  for (auto& j : st->jobs)
++    if (j.kind == GDAKI_STORE_JOB_FREE) gdakiStoreFreeMr(j.mr, j.mem);
++  for (auto& w : st->wards) {
++    gdakiStoreFreeMr(w.mr, w.mem);
++    gdakiStoreFreeMr(w.oldMr, w.oldMem);
++    for (auto& x : w.parked) gdakiStoreFreeMr(x.first, x.second);
++    w.parked.clear();
++  }
++  if (st->stageMr == nullptr || wrap_ibv_dereg_mr(st->stageMr) == ncclSuccess) {
++    if (st->stage != nullptr) (void)cudaFreeHost(st->stage);
++  } else {
++    WARN("GIN/MI: rank %d: the upload staging MR could not be deregistered; its buffer is kept mono_ms=%.3f", st->me,
++         gdakiQ4MonoMs());
++  }
++  delete st;
++}
++// ==== gin-mirror (store): the RDMA checkpoint store (end) ====
++
+ static void gdakiTsMain(struct gdakiRecHost* r) {
+   gdakiTsInHelper = true;
+   gdakiTsOwner = r;
