@@ -439,8 +439,8 @@ def _mi(d, cell, k, *, kill=None, kill2=None, spare=False, spare2=False, mirror=
         for t, txt in (lib_lines or {}).get(r, []) + (mi_lines or {}).get(r, []):
             lines.append("%.6f %s" % (t0 + t, txt))
         if not killed and mirror == "1" and refuse is None:
-            lines.append("%.6f GIN/MI: rank %d: store summary: writes=5 failed=0 requests=1 tcp_image_bytes=%d "
-                         "tcp_segment_bytes=%d mono_ms=1.0" % (t0 + 9.5, r, 100 if store_tcp else 0, 50 if store_tcp else 0))
+            lines.append("%.6f GIN/MI: rank %d: store summary writes=5 failed=0 requests=1 tcp_image_bytes=%d "
+                         "tcp_segment_bytes=%d served=1 mono_ms=1.0" % (t0 + 9.5, r, 100 if store_tcp else 0, 50 if store_tcp else 0))
         if killed:
             lines.append("%.6f GINRS step rank=%d step=100 released=0" % (t0 + 2.0, r))
             if hook is not None and r == kill:
@@ -493,14 +493,14 @@ def _cost(d, metric, arm, node, k, value, summary_broken=0, summary=True):
         _w(stem + "_r0.kv", _kvline(lat_p50_us=value, win_flags="0x3", tx_done=iters, exit=0))
     _w(stem + "_r1.kv", _kvline(win_flags="0x3", exit=0))
     if arm.startswith("mirror-") and summary:
-        _w(stem + "_r0.log", "host NCCL WARN GIN/MI: rank 0: mirror summary: switches=0 rollbacks=0 restarts=0 "
+        _w(stem + "_r0.log", "host NCCL WARN GIN/MI: rank 0: mirror summary switches=0 rollbacks=0 restarts=0 "
            "third_slot=0 max_live_bytes=1048576 pulls_sent=0 pulls_taken=0 broken=%d absorbed=0 mono_ms=1.0\n" % summary_broken)
 
 
 def _mi_dead(r, subject):
     return [(3.0, "host NCCL WARN GIN/TS: rank %d: rank %d judged dead (cause=FIN) mono_ms=1.0" % (r, subject)),
             (3.4, "host NCCL WARN GIN/RS: rank %d: restore round with rank %d published (4 QP(s)) mono_ms=1.0" % (r, subject)),
-            (0.5, "host NCCL WARN GIN/RS: rank %d: checkpoint 100 stable at buddy rank %d (ok) mono_ms=1.0" % (subject, subject ^ 1)),
+            (0.5, "host NCCL WARN GIN/RS: rank %d: checkpoint 100 stable at buddy rank %d (armable) mono_ms=1.0" % (subject, subject ^ 1)),
             (0.6, "host NCCL WARN GIN/RS: rank %d: suppress peer=%d qp=%d budget=2 suppressed=2 left=0" % (r, subject, r)),
             (3.9, "host NCCL WARN GIN/RS: rank %d: rank %d restored as incarnation 1 (on time); state armed mono_ms=1.0" % (r, subject))]
 
@@ -509,23 +509,28 @@ def _mi_good(r, subject):
     """a survivor's mirror lines for a clean overwrite restore of `subject` (key=value order shuffled on purpose: the
     parser reads them in any order)"""
     return [(3.5, "GIN/MI: rank %d: export to rank %d: mirror_bytes=163840 entries=50 mirror_entries=40 source_bytes=0 first_step=81 last_step=100 mono_ms=1.0" % (r, subject)),
-            (3.6, "GIN/MI: rank %d: drain for rank %d senders=3 queries=5 drain_us=120.0 mono_ms=1.0" % (r, subject)),
-            (9.0, "GIN/MI: rank %d: mirror summary: switches=5 rollbacks=1 restarts=0 third_slot=0 max_live_bytes=9437184 pulls_sent=0 pulls_taken=0 broken=0 absorbed=0 mono_ms=1.0" % r),
-            (1.0, "GIN/MI: rank %d: checkpoint 100 stored at buddy rank %d: slot=0 bytes=31457280 d2h_us=2390.0 write_us=2610.0 mono_ms=1.0" % (r, r ^ 1))]
+            (3.6, "GIN/MI: rank %d: drain for rank %d: senders=3 queries=5 drain_us=120.0 mono_ms=1.0" % (r, subject)),
+            (9.0, "GIN/MI: rank %d: mirror summary switches=5 rollbacks=1 restarts=0 third_slot=0 max_live_bytes=9437184 pulls_sent=0 pulls_taken=0 broken=0 absorbed=0 mono_ms=1.0" % r),
+            (1.0, "GIN/MI: rank %d: checkpoint 100 stored at buddy rank %d slot=0 bytes=31457280 d2h_us=2390.0 write_us=2610.0 mono_ms=1.0" % (r, r ^ 1))]
 
 
 def _spare_good(subject, *, fetch_us=13.1, image=31457280, seg=125829120, pool=491520):
     """a revived rank's lines: FETCH, the import of step 101 (in Resume), done, INJECTED, then step 101's kernel line.
     pool: the import's pool bytes = the survivors' export mirror_bytes summed (3 x 163840 for a single kill)"""
-    return [(0.1, "GIN/MI: rank %d: fetch for checkpoint 100 from buddy rank %d: image_bytes=%d segment_bytes=%d extents=3 fetch_us=%.1f mono_ms=1.0" % (subject, subject ^ 1, image, seg, fetch_us)),
-            (0.2, "GIN/MI: rank %d: import step 101: entries=40 pool_bytes=%d signals=3 import_us=50.0 mono_ms=1.0" % (subject, pool)),
-            (0.3, "GIN/MI: rank %d: import done: steps=1 pool_bytes=%d left=0 mono_ms=1.0" % (subject, pool)),
-            (0.4, "GIN/MI: rank %d: INJECTED sent: step=101 survivors=3 mono_ms=1.0" % subject),
-            (4.5, "GINRS step rank=%d step=101 released=0 tx_err=0 hook_rc=0 stable=-1 mono_ms=1.0" % subject)]
+    return [(0.1, "GIN/MI: rank %d: fetch for checkpoint 100 from buddy rank %d: image_bytes=%d segment_bytes=%d extents=3 fetch_us=%.1f h2d_us=900 mono_ms=1.0" % (subject, subject ^ 1, image, seg, fetch_us)),
+            # the library's real lines (the integration): an "import step" line only for a step with inputs (101 and 103
+            # here: step 102 had none), "import done" names the last step, INJECTED carries it
+            (0.2, "GIN/MI: rank %d: import step 101: entries=30 pool_bytes=%d value_bytes=0 signals=3 signal_targets=1 import_us=50 mono_ms=1.0" % (subject, pool - pool // 4)),
+            (4.55, "GIN/MI: rank %d: import step 103: entries=10 pool_bytes=%d value_bytes=0 signals=0 signal_targets=0 import_us=20 mono_ms=1.0" % (subject, pool // 4)),
+            (4.56, "GIN/MI: rank %d: import done: steps=2 pool_bytes=%d left=0 last_step=103 failed=0 mono_ms=1.0" % (subject, pool)),
+            (4.57, "GIN/MI: rank %d: INJECTED sent step=103 survivors=3 unsent=0 mono_ms=1.0" % subject),
+            (4.5, "GINRS step rank=%d step=101 released=0 tx_err=0 hook_rc=0 stable=-1 mono_ms=1.0" % subject),
+            (4.52, "GINRS step rank=%d step=102 released=0 tx_err=0 hook_rc=0 stable=-1 mono_ms=1.0" % subject),
+            (4.6, "GINRS step rank=%d step=103 released=0 tx_err=0 hook_rc=0 stable=-1 mono_ms=1.0" % subject)]
 
 
 def _inj_from(r, subject):
-    return [(4.1, "GIN/MI: rank %d: INJECTED from rank %d: step=101 state=armed gate_odd_ms=250.0 mono_ms=1.0" % (r, subject))]
+    return [(4.1, "GIN/MI: rank %d: INJECTED from rank %d step=103 state=armed gate_odd_ms=250.0 mono_ms=1.0" % (r, subject))]
 
 
 def _ow_kill3(d, cell, nmax, **kw):
@@ -540,7 +545,7 @@ def _kill2(d, cell, k, *, train=0, rearm=True, **kw):
     (3.5, one void at 3.2 before it), every survivor of the second death re-arms rank 3 (3.6), rank 3 dies at 5.0 and is
     restored from the revived rank 2"""
     L = {0: [], 1: [], 2: [], 3: []}
-    L[2] += [(1.0, "GIN/RS: rank 2: checkpoint 200 stable at buddy rank 3 (ok) mono_ms=1.0"),
+    L[2] += [(1.0, "GIN/RS: rank 2: checkpoint 200 stable at buddy rank 3 (armable) mono_ms=1.0"),
              (2.0, "GINRS die rank=2 step=205 where=kernel delay_us=10 mono_ms=1.0")]
     for r in (0, 1, 3):
         L[r] += [(2.1, "GIN/TS: rank %d: rank 2 judged dead (cause=FIN) mono_ms=1.0" % r),
@@ -548,7 +553,7 @@ def _kill2(d, cell, k, *, train=0, rearm=True, **kw):
                  (2.9, "GIN/RS: rank %d: rank 2 restored as incarnation 1 (on time); state armed mono_ms=1.0" % r),
                  (0.6, "GIN/RS: rank %d: suppress peer=2 qp=%d budget=2 suppressed=2 left=0" % (r, r))]
     L[3] += [(3.2, "GIN/RS: rank 3: checkpoint 220 is void (no confirmation) mono_ms=1.0"),
-             (3.5, "GIN/MI: rank 3: checkpoint 240 stored at buddy rank 2: slot=0 bytes=31457280 d2h_us=2390.0 write_us=2610.0 mono_ms=1.0")]
+             (3.5, "GIN/MI: rank 3: checkpoint 240 stored at buddy rank 2 slot=0 bytes=31457280 d2h_us=2390.0 write_us=2610.0 mono_ms=1.0")]
     second = [(5.1, "GIN/TS: rank %d: rank 3 judged dead (cause=FIN) mono_ms=1.0"),
               (5.4, "GIN/RS: rank %d: restore round with rank 3 published (4 QP(s)) mono_ms=1.0"),
               (5.9, "GIN/RS: rank %d: rank 3 restored as incarnation 1 (on time); state armed mono_ms=1.0")]
@@ -619,7 +624,7 @@ def _build_A(d, *, bad_data=False, reg_bad=False, peer_bw2m=0.5):
     for k in range(1, 6):
         _mi(raw, "mi4_none_ow", k,
             mi_lines={r: [(1.0, "GIN/RS: rank %d: input pause for rank 0's checkpoint 20 ended (ok) pause_us=2300 mono_ms=1.0" % r),
-                          (9.0, "GIN/MI: rank %d: mirror summary: switches=30 rollbacks=0 restarts=0 third_slot=0 max_live_bytes=9437184 pulls_sent=0 pulls_taken=0 broken=0 absorbed=0 mono_ms=1.0" % r)] for r in range(4)})
+                          (9.0, "GIN/MI: rank %d: mirror summary switches=30 rollbacks=0 restarts=0 third_slot=0 max_live_bytes=9437184 pulls_sent=0 pulls_taken=0 broken=0 absorbed=0 mono_ms=1.0" % r)] for r in range(4)})
         _mi(raw, "mi4_kill1_ow", k, kill=1, spare=True, lib_lines={r: _mi_dead(r, 1) for r in (0, 2, 3)},
             mi_lines={r: _mi_good(r, 1) + _inj_from(r, 1) for r in (0, 2, 3)}, spare_lines={"spare": _spare_good(1)})
         ckmi = {r: _mi_dead(r, 3) + [(2.0012, "GIN/RS: rank %d: input pause for rank 3's checkpoint 120 ended (a hold of that rank took its gates) pause_us=900 mono_ms=1.0" % r),
@@ -639,7 +644,7 @@ def _build_A(d, *, bad_data=False, reg_bad=False, peer_bw2m=0.5):
                 mi_lines={r: _mi_good(r, 3) + _inj_from(r, 3) for r in (0, 1, 2)},
                 spare_lines={"spare": _spare_good(3, fetch_us=5.0 + (img + seg) / 11880.0, image=img, seg=seg)})
         ov = {r: [(3.0, "GIN/TS: rank %d: rank 3 judged dead (cause=FIN) mono_ms=1.0" % r),
-                  (3.1, "GIN/MI: rank %d: lane to rank 3 broken (full lane): DISARM mono_ms=1.0" % r),
+                  (3.1, "GIN/MI: rank %d: lane to rank 3 broken (device): DISARM mono_ms=1.0" % r),
                   (5.3, "GINRS step rank=%d step=120 released=1 got=1 want=2" % r)] for r in (0, 1, 2)}
         _mi(raw, "mi4_overflow", k, kill=3, spare=True, surv=dict(released=1, steps_done=120), lib_lines=ov)
         _mi(raw, "rs4_none_mion", k, overwrite=0)
@@ -647,22 +652,22 @@ def _build_A(d, *, bad_data=False, reg_bad=False, peer_bw2m=0.5):
             mi_lines={r: _mi_good(r, 3) for r in (0, 1, 2)}, spare_lines={"spare": _spare_good(3)})
         _mi(raw, "mi4_pull", k, kill=3, spare=True, lib_lines={r: _mi_dead(r, 3) for r in (0, 1, 2)},
             mi_lines={r: _mi_good(r, 3) + _inj_from(r, 3) +
-                      [(5.0, "GIN/MI: rank %d: CKPT_PULL to rank 3: seg=3 fill_pct=55 mono_ms=1.0" % r)] for r in (0, 1, 2)},
+                      [(5.0, "GIN/MI: rank %d: CKPT_PULL to rank 3 seg=3 fill_pct=55 mono_ms=1.0" % r)] for r in (0, 1, 2)},
             spare_lines={"spare": _spare_good(3)})
         _kill2(raw, "mi4_kill2_kill3_ow", k)
         _kill2(raw, "mi4_train_kill2_kill3", k, train=1)
     for k in range(1, 4):
         for cell, live_b in (("mi4_int_10", 4718592), ("mi4_int_20", 9437184), ("mi4_int_40", 18874368)):
-            _mi(raw, cell, k, mi_lines={r: [(9.0, "GIN/MI: rank %d: mirror summary: switches=10 rollbacks=0 restarts=0 third_slot=0 max_live_bytes=%d pulls_sent=0 pulls_taken=0 broken=0 absorbed=0 mono_ms=1.0" % (r, live_b))] for r in range(4)})
+            _mi(raw, cell, k, mi_lines={r: [(9.0, "GIN/MI: rank %d: mirror summary switches=10 rollbacks=0 restarts=0 third_slot=0 max_live_bytes=%d pulls_sent=0 pulls_taken=0 broken=0 absorbed=0 mono_ms=1.0" % (r, live_b))] for r in range(4)})
         _mi(raw, "mi4_pull_none", k,
-            mi_lines={r: [(5.0, "GIN/MI: rank %d: CKPT_PULL to rank 0: seg=3 fill_pct=55 mono_ms=1.0" % r),
-                          (9.0, "GIN/MI: rank %d: mirror summary: switches=30 rollbacks=0 restarts=0 third_slot=0 max_live_bytes=49152 pulls_sent=10 pulls_taken=10 broken=0 absorbed=0 mono_ms=1.0" % r)] for r in range(4)})
+            mi_lines={r: [(5.0, "GIN/MI: rank %d: CKPT_PULL to rank 0 seg=3 fill_pct=55 mono_ms=1.0" % r),
+                          (9.0, "GIN/MI: rank %d: mirror summary switches=30 rollbacks=0 restarts=0 third_slot=0 max_live_bytes=49152 pulls_sent=10 pulls_taken=10 broken=0 absorbed=0 mono_ms=1.0" % r)] for r in range(4)})
         for cell, why in REFUSE_WHY.items():
             _mi(raw, cell, k, live=False, mirror="1", checksum=("sampled" if cell == "mi4_refuse_csum" else "off"), refuse=why)
     for k in range(1, 6):
         _mi(raw, "mi4_train_none", k, train=1, overwrite=1, ring=4,
             mi_lines={r: [(1.0, "GIN/RS: rank %d: input pause for rank 0's checkpoint 20 ended (ok) pause_us=8000 mono_ms=1.0" % r),
-                          (9.0, "GIN/MI: rank %d: mirror summary: switches=100 rollbacks=0 restarts=0 third_slot=1 max_live_bytes=251658240 pulls_sent=1 pulls_taken=1 broken=0 absorbed=0 mono_ms=1.0" % r)] for r in range(4)})
+                          (9.0, "GIN/MI: rank %d: mirror summary switches=100 rollbacks=0 restarts=0 third_slot=1 max_live_bytes=251658240 pulls_sent=1 pulls_taken=1 broken=0 absorbed=0 mono_ms=1.0" % r)] for r in range(4)})
     for k in range(1, 11):
         img, seg = 31457280, 125829120
         _mi(raw, "mi4_train_kill3", k, train=1, overwrite=1, ring=4, kill=3, spare=True,

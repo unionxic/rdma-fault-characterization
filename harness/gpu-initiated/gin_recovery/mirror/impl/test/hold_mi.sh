@@ -9,7 +9,8 @@
 # qp_over.txt only); run_mi.sh's exit 5 (host memory short) STOP_mem. No further hold runs while a STOP file exists. Start
 # gate: rain's BAR1 Free below 128 MiB -> the hold does not start (refused.txt). Processes are never killed here: each is
 # bounded by its own timeout; the leftover check is a read-only count of this study's driver names (gin_mi, gin_mi_nomacro)
-# and of the cost runs' and trials' own /tmp paths (gin_ts2_mi and gin_mr are counted by those paths, not by name).
+# and of the cost runs' and trials' own /tmp paths (gin_ts2_mi by those paths; gin_mr by run_mr_hr.sh's /tmp/gin_mrr_* paths,
+# added at the integration's review: before it only that runner's own meta left= saw them).
 #
 # What is new against hold_rs.sh: RS_SET is required (rs_set_mi.sh); the holds are cells_mi.json's (P1-P3, G1, G3, T1, T2,
 # G2, R1-R3 and COST-mirror-<node>); the per-trial stop checks add STOP_mem (run_mi.sh exit 5); the start-check also reads each
@@ -57,8 +58,8 @@ mkdir -p "$R"
 HT=$H
 if [ -e "$R/snap_before-$HT.txt" ]; then k=2; while [ -e "$R/snap_before-$H-r$k.txt" ]; do k=$((k + 1)); done; HT=$H-r$k; fi
 echo "hold $H (files tagged $HT) rs_set=$RS_SET"
-left() { { pgrep -x gin_mi; pgrep -x gin_mi_nomacro; pgrep -f '[/]tmp/mi_cost'; pgrep -f '[/]tmp/mi_rt'
-           ssh -n "$SUNNY_SSH" "pgrep -x gin_mi; pgrep -x gin_mi_nomacro; pgrep -f '[/]tmp/mi_cost'; pgrep -f '[/]tmp/mi_rt'"; } 2>/dev/null | wc -l; }
+left() { { pgrep -x gin_mi; pgrep -x gin_mi_nomacro; pgrep -f '[/]tmp/mi_cost'; pgrep -f '[/]tmp/mi_rt'; pgrep -f '[/]tmp/gin_mrr_'
+           ssh -n "$SUNNY_SSH" "pgrep -x gin_mi; pgrep -x gin_mi_nomacro; pgrep -f '[/]tmp/mi_cost'; pgrep -f '[/]tmp/mi_rt'; pgrep -f '[/]tmp/gin_mrr_'"; } 2>/dev/null | wc -l; }
 OWNCLEAN='find /tmp -maxdepth 1 -user "$(id -un)" \( -name "mi_rt_*" -o -name "mi_rt.*" -o -name "mi_cost_*" -o -name "mi_cost.*" \) -exec rm -rf {} + 2>/dev/null; true'
 for f in STOP_mlx5 STOP_cuda STOP_left STOP_nic STOP_mem; do
   if [ -e "$R/$f" ]; then

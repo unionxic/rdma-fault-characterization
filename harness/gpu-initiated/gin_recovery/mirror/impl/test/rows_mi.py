@@ -24,8 +24,9 @@ Mirror columns (empty when the library does not emit the line yet):
   export_entries, export_mirror_entries, export_source_bytes   summed over the survivors' export lines
   import_pool_bytes  the spare's "import done" pool_bytes (else the sum of its import step lines)
   from_pool_ok       export_source_bytes = 0 and import_pool_bytes = the survivors' export mirror_bytes summed
-  paced_ok           the spare's import steps run from its start_step one by one, each once and before that step's
-                     GINRS step line, "import done" left=0, one "INJECTED sent" whose step is the last import step
+  paced_ok           the spare's import step lines (one per step that had inputs: gaps allowed) rise strictly from its
+                     start_step, each before that step's GINRS step line, "import done" left=0, one "INJECTED sent"
+                     whose step is "import done"'s last_step (else the last import step line's)
   fetch_us, fetch_image_bytes, fetch_segment_bytes, fetch_bytes, fetch_extents   the slowest FETCH line of the spares
   tcp_image_bytes, tcp_segment_bytes   the store summaries summed (mirror on: 0, store_rdma)
   store_d2h_us, store_write_us, store_slot_bytes   the last "checkpoint K stored at buddy" line
@@ -67,7 +68,7 @@ K_SEG_RESTART = re.compile(r"^segments of rank (\d+) restarted at its checkpoint
 K_PULL = re.compile(r"^CKPT_PULL to rank (\d+)\b")
 K_DRAIN = re.compile(r"^drain for rank (\d+)\b")
 K_FETCH = re.compile(r"^fetch for checkpoint (\d+) from buddy rank (\d+)\b")
-K_EXPORT = re.compile(r"^export to rank (\d+)\b")
+K_EXPORT = re.compile(r"^export to rank (\d+):")  # not the refusal line "export to rank %d refused: %s"
 K_IMPORT_STEP = re.compile(r"^import step (\d+)\b")
 K_IMPORT_DONE = re.compile(r"^import done\b")
 K_INJ_SENT = re.compile(r"^INJECTED sent\b")
@@ -236,14 +237,18 @@ def mi_overlay(stem, base, meta):
     if istep:
         st = num(sk, "start_step")
         steps = [u for _, u, _ in istep]
-        cons = st is not None and steps == list(range(int(st), int(st) + len(steps)))
+        # the library writes an "import step" line only for a step that had inputs (the integration, 2026-10-15): the
+        # steps rise strictly from start_step on, gaps allowed; "import done" names the last step, which INJECTED carries
+        cons = (st is not None and steps[0] >= int(st) and all(b > a for a, b in zip(steps, steps[1:])))
         before = True
         for t, u, _ in istep:
             ts = [tt for tt, l in slog if tt is not None for m in [GSTEP.search(l)] if m and int(m.group(1)) == u]
             if not ts or min(ts) <= t:
                 before = False
-        left0 = bool(idone) and kvnum(idone[-1], "left") == 0
-        one_inj = len(inj_sent) == 1 and kvnum(inj_sent[0], "step") == steps[-1]
+        left0 = bool(idone) and kvnum(idone[-1], "left") == 0 and (kvnum(idone[-1], "failed") or 0) == 0
+        last = kvnum(idone[-1], "last_step") if idone else None
+        last = last if last is not None else steps[-1]
+        one_inj = len(inj_sent) == 1 and kvnum(inj_sent[0], "step") == last and last >= steps[-1]
         out["paced_ok"] = int(cons and before and left0 and one_inj)
     else:
         out["paced_ok"] = ""
@@ -373,7 +378,10 @@ def cost_overlay(stem, r):
     out["mi_summary_ok"] = ""
     if arm.startswith("mirror-"):  # run_cost_mi.sh keeps the plain output (no receipt stamps): read every line
         summ = [d for _, _, txt, d in mi_lines([(0.0, l) for l in _lines(stem + "_r0.log")]) if K_SUMMARY.search(txt)]
-        out["mi_summary_ok"] = int(bool(summ) and all(kvnum(d, "broken") == 0 for d in summ))
+        # broken=0 (the library counts the device's breaks in the measurement mode) and max_live_bytes > 0 (a cell was
+        # valid and took mirror bytes: an arm whose cells never became valid mirrors nothing; the integration's review)
+        out["mi_summary_ok"] = int(bool(summ) and all(kvnum(d, "broken") == 0 and (kvnum(d, "max_live_bytes") or 0) > 0
+                                                      for d in summ))
     tx, it = r.get("tx_done"), r.get("iters")
     valid = (r.get("exit0") == 0 and r.get("exit1") == 0 and value != "" and r.get("win0") == "0x3" and
              r.get("win1") == "0x3" and tx not in ("", None) and tx == it)
