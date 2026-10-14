@@ -13,18 +13,21 @@
 #   ~/rs-bundle/<RS_SET>/mr/ff/, mr/hold/   gin_mr against the mirror layer's headers    out/mr/,  md5 WANT_MR_FF, WANT_MR_HOLD
 # An artifact is deployed only when its WANT_* is set, and then its source must exist and match (else the script refuses
 # before touching anything). Refuses if a target directory exists on either node. The libraries are the INTEGRATED mirror
-# build (main session's integration folder); the drivers are build_mi_test.sh's outputs.
+# build (MI_LIB_SRC, MIP_LIB_SRC: $SCR/agent_mi_int/out/<build>/libnccl.so.2.32.3, PILOT_MI.md names them); the drivers
+# are build_mi_test.sh's outputs ($SCR/agent_mi_int/test/out).
 # env: SUNNY_SSH (required), RS_SET (required), the WANT_* above, MI_LIB_SRC, MIP_LIB_SRC, MIOUT (default mi)
 set -euo pipefail
 OUTF=${1:?output file (the check is written to a file only; never pipe it)}
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH (user@address) from the management env file}
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
-T=$SCR/agent_mi_test/out  # the drivers built by build_mi_test.sh
+T=$SCR/agent_mi_int/test/out  # the drivers build_mi_test.sh built against the integrated headers (the integration)
 MIOUT=${MIOUT:-mi}
 RS_SET=${RS_SET:-}
 . "$(cd "$(dirname "$0")" && pwd)/rs_set_mi.sh"
 rs_set_check || exit 1
 B=rs-bundle/$RS_SET   # the set's folder, relative to $HOME
+# sunny must answer first (the integration's review: an ssh failure would read as "absent" below)
+ssh -n "$SUNNY_SSH" true || { echo "sunny does not answer over ssh: nothing deployed" >&2; exit 1; }
 md5() { md5sum < "$1" | cut -c1-32; }
 # artifact table: <WANT var>|<source>|<target dir relative to $HOME>|<file name>|<lib: 1 = add .so.2/.so links>
 ART=(

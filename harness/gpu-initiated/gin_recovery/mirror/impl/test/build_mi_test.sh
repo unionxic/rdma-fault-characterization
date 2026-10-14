@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # build_mi_test.sh - gin-mirror, test branch: compile the test programs LOCALLY on rain (nice 19, idle I/O). COMPILE ONLY:
 # no library build here, no GPU or RDMA program runs. gin-restore's build_rs_test.sh (copied and then changed). The mirror
-# layer's headers are read through a COPY of the integrated tree (set at integration; here, before integration, the i5
-# headers $SCR/agent_rs_int/build/include, which have the restore API: the mirror drivers compile the same against both,
-# since gin_mi and gin_ts2_mi use only the public restore API and GIN device API, 0 warnings). Nothing under agent_rs_int,
-# agent_gd or another branch's tree is written. The outputs go to $SCR/agent_mi_test/out/<MIOUT>/.
+# layer's headers are read through a COPY of the integrated tree's installed headers ($SCR/agent_mi_int/build/include,
+# set at the integration, 2026-10-15; before it the test branch built against the i5 headers $SCR/agent_rs_int/build/
+# include in $SCR/agent_mi_test). Nothing under agent_rs_int, agent_gd or a branch's tree is written. The outputs go to
+# $SCR/agent_mi_int/test/out/<MIOUT>/ (cost: out/cost, mr: out/mr).
 #
 #   mi      gin_mi.cu against the headers with -DNCCL_GIN_RESTORE_DEVICE (the build-time opt-in), linked to the mirror
 #           research libnccl (at integration; here the i5 research libnccl, read only) -> out/<MIOUT>/gin_mi
@@ -17,15 +17,15 @@
 #   info    the header digest and link libraries
 # usage: build_mi_test.sh <mi|nomacro|cost|mr|info>   (MIOUT: the output subfolder of mi and nomacro, default mi; nvcc
 #        output is not byte-reproducible, so a file that already exists is refused; RSINC and RSLIB override the header and
-#        library trees, default the i5 build in the session scratch)
+#        library trees, default the integrated research build in the session scratch)
 set -euo pipefail
 STAGE=${1:?stage: mi|nomacro|cost|mr|info}
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
 D=$(cd "$(dirname "$0")" && pwd)
 CUDA=/usr/local/cuda-12.8
 GENCODE="-gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_86,code=sm_86"
-RSINC=${RSINC:-$SCR/agent_rs_int/build/include}; RSLIB=${RSLIB:-$SCR/agent_rs_int/build/lib}
-W=$SCR/agent_mi_test
+RSINC=${RSINC:-$SCR/agent_mi_int/build/include}; RSLIB=${RSLIB:-$SCR/agent_mi_int/build/lib}
+W=$SCR/agent_mi_int/test
 OUT=$W/out/${MIOUT:-mi}
 md5() { md5sum < "$1" | cut -c1-32; }
 ndigest() { (cd "$1" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32); }

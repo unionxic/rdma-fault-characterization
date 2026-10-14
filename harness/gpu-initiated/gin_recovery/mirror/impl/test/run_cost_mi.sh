@@ -21,9 +21,14 @@
 # the caller is dropped first.
 #
 # usage: run_cost_mi.sh <cell> <run-tag> <logdir>     (cell = cost_<metric>_<arm>_<node>)
-# env: SUNNY_SSH (required), RS_SET (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), LOG_MEASURE_MS (50), MIRROR_LANE,
-#   MIRROR_SLOTS, POOL_MAX_MB (the mirror arms; empty: the library's default). The library is ~/rs-bundle/<RS_SET>/lib/mip,
-#   the driver ~/rs-bundle/<RS_SET>/mitest/gin_ts2_mi.
+# env: SUNNY_SSH (required), RS_SET (required), HCA_RAIN (mlx5_1), HCA_SUNNY (mlx5_0), LOG_MEASURE_MS (50), MIRROR_LANE
+#   (268435456), MIRROR_SLOTS (2), POOL_MAX_MB (empty: the library's default) of the mirror arms. The integration
+#   (2026-10-15) set the lane's default: the library breaks a put larger than L and puts the cursor back to 0 once it is
+#   past L/2 at each helper step (about 1 ms), so L must hold the largest put (2 MiB) and the mirror bytes of a few helper
+#   steps at line rate (256 MiB: L/2 holds about 10 ms of line rate); an arm counts only with "mirror summary" broken=0
+#   (the device's breaks counted in it) and max_live_bytes > 0. Pool per process: 1 ward x S x (n - 1) lanes x L =
+#   512 MiB with the defaults on two ranks. The library is ~/rs-bundle/<RS_SET>/lib/mip, the driver
+#   ~/rs-bundle/<RS_SET>/mitest/gin_ts2_mi.
 # files in <logdir>: <cell>_<tag>_r0.kv/_r1.kv/_r0.log/_r1.log, <cell>_<tag>_lat_raw.csv.gz (lat), <cell>_<tag>_meta.txt.
 set -u
 CELL=${1:?cell}; TAG=${2:?run tag}; LOGDIR=${3:?logdir}
@@ -47,6 +52,7 @@ rs_set_check || exit 2
 RSB=$HOME/rs-bundle/$RS_SET
 LIB=$RSB/lib/mip; BIN=$RSB/mitest/gin_ts2_mi
 MEAS="NCCL_GIN_FAULT_POLICY=hold NCCL_GIN_RESTORE=1 NCCL_GIN_RESTORE_LOG_MEASURE=$LOG_MEASURE_MS NCCL_GIN_RESTORE_LOG_MEASURE_LOG=1 NCCL_GIN_RESTORE_CHECKSUM=off"
+MIRROR_LANE=${MIRROR_LANE:-268435456}; MIRROR_SLOTS=${MIRROR_SLOTS:-2}
 MIR="${MIRROR_LANE:+NCCL_GIN_RESTORE_MIRROR_LANE=$MIRROR_LANE} ${MIRROR_SLOTS:+NCCL_GIN_RESTORE_MIRROR_SLOTS=$MIRROR_SLOTS} ${POOL_MAX_MB:+NCCL_GIN_RESTORE_MIRROR_POOL_MAX_MB=$POOL_MAX_MB}"
 case "$ARM" in
   off)         RSENV="NCCL_GIN_FAULT_POLICY=failfast" ;;
