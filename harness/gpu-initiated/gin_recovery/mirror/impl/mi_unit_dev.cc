@@ -25,7 +25,6 @@
 
 enum { GDAKI_POLICY_FAILFAST = 0, GDAKI_POLICY_HOLD = 1 };  // hk's line (rs_pure.inc needs it)
 #include "nccl_device/gin/gdaki/gin_gdaki_device_host_common.h"  // the working tree's: device layout v4, device helpers
-#include "rs_pure.inc"
 typedef int ncclResult_t;
 typedef struct {
   unsigned int magic, nqp, qpn[64], remoteQpn[64], sqPsn[64];
@@ -35,6 +34,12 @@ typedef struct {
 #define GDAKI_HOLD_API_NO_ENTRY_DECLS
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
+// the integration (2026-10-15): gin-restore's pure region now names the host branch's Resume reasons 34-40 (macros of
+// the mirror's host API block), so that header comes first (its types in namespace mif, as below; its macros global)
+namespace mif {
+#include "rs_mirror_api.h"
+}  // namespace mif
+#include "rs_pure.inc"
 // the log API block v2 (the tree's text byte for byte, build_mi.sh api) with its records; its functions are declared and
 // never defined here
 #include "rs_log_api.h"

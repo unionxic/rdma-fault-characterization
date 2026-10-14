@@ -27,8 +27,8 @@
 #          headers on the include path; g++ with ASan and UBSan; no NCCL, no CUDA, no network.
 #   ident  the fail-fast identity of 9.5 (dev and int): impl/exact_cmp_mi.sh and impl/ff_cmp_mi.sh, which the dev branch
 #          writes from gin-restore's exact_cmp_dev.sh and ff_cmp_dev.sh (against hk AND i5). Refused until they exist.
-#   diff   write impl/mi_layer_$BR.diff (the working tree against the i5 commit, histogram, new files as intent-to-add)
-#          and check that it applies in reverse on the working tree.
+#   diff   write impl/mi_layer_$BR.diff (int: impl/mi_layer.diff, the integrated layer; the working tree against the i5
+#          commit, histogram, new files as intent-to-add) and check that it applies in reverse on the working tree.
 #   info   agent_mi_$BR/out/build_info.txt (INFO=<file> for another name): md5 of every output and input, the base.
 # The device objects are rebuilt whenever the device header trees differ from the last build of that directory (devsync,
 # build_rs.sh's rule; the mirror layer changes the device-host common header, so the first mi build rebuilds them all).
@@ -45,6 +45,8 @@ GENCODE="-gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_86,code=sm_86
 JOBS=${JOBS:-8}
 MIOUT=${MIOUT:-mi_$BR}
 MIPOUT=${MIPOUT:-mip_$BR}
+LAYER=$D/mi_layer_$BR.diff  # the branch's diff; the integration's is impl/mi_layer.diff
+[ "$BR" != int ] || LAYER=$D/mi_layer.diff
 INFO=${INFO:-}
 I5=$SCR/agent_rs_int     # gin-restore's integrated tree, build i5 (read only)
 HK=$SCR/agent_gd/gin_hk  # gpu-detect's hk (read only; ident)
@@ -110,8 +112,8 @@ files_ok() {  # the working tree changes MI_FILES only
 tree() {  # the branch's mirror diff on the working tree of the copy
   head_ok
   if MG diff --quiet HEAD -- src; then
-    [ -f "$D/mi_layer_$BR.diff" ] || { echo "no changes in the tree and no impl/mi_layer_$BR.diff" >&2; exit 1; }
-    MG apply "$D/mi_layer_$BR.diff"
+    [ -f "$LAYER" ] || { echo "no changes in the tree and no impl/$(basename "$LAYER")" >&2; exit 1; }
+    MG apply "$LAYER"
   fi
   files_ok
 }
@@ -312,9 +314,9 @@ mkdiff() {
   head_ok; files_ok
   local n
   for n in $(MG ls-files --others --exclude-standard -- src); do MG add -N -- "$n"; done
-  MG diff --diff-algorithm=histogram HEAD -- src > "$D/mi_layer_$BR.diff"
-  MG apply --check -R "$D/mi_layer_$BR.diff"
-  echo "diff: impl/mi_layer_$BR.diff $(md5 "$D/mi_layer_$BR.diff") ($(MG diff --name-only HEAD -- src | tr '\n' ' '))"
+  MG diff --diff-algorithm=histogram HEAD -- src > "$LAYER"
+  MG apply --check -R "$LAYER"
+  echo "diff: impl/$(basename "$LAYER") $(md5 "$LAYER") $(wc -l < "$LAYER") lines ($(MG diff --name-only HEAD -- src | tr '\n' ' '))"
 }
 info() {
   {
@@ -324,7 +326,7 @@ info() {
          "(rs_layer.diff $(md5 "$RSD/rs_layer.diff"))"
     echo "working tree: $(MG diff --name-only HEAD -- src | tr '\n' ' ')"
     echo "working tree diff md5 $(MG diff --diff-algorithm=histogram HEAD -- src | md5sum | cut -c1-32) (histogram)"
-    [ -f "$D/mi_layer_$BR.diff" ] && echo "mi_layer_$BR.diff $(md5 "$D/mi_layer_$BR.diff")"
+    [ -f "$LAYER" ] && echo "$(basename "$LAYER") $(md5 "$LAYER") $(wc -l < "$LAYER") lines"
     for b in "$OUT"/*/libnccl.so.2.32.3; do [ -f "$b" ] && echo "$(basename "$(dirname "$b")") libnccl $(md5 "$b")"; done
     echo "include_digest build $(cd "$W/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
     echo "include_digest i5 $(cd "$I5/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
