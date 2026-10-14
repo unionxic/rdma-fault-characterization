@@ -332,7 +332,7 @@ static void gdakiMiHostQpDestroy(struct gdakiMiHostQp* q);
 // connect, READY, then the connection handed to the data thread). Returns the answer kind, or -1. (As built: the
 // connection and the buddy's FETCH QP go to the spare branch's FETCH waiter thread, which holds them until DONE, a FIN
 // or the hold's deadline; GDAKI_MI_ACT_FETCH_FAILED (-2) when the FETCH handshake after ACCEPTED failed: the caller
-// falls back at once. impl/notes_spare.md, recorded at the integration.)
+// falls back at once. The spare branch's notes, in EXPERIMENT.md section 12 since the integration.)
 struct gdakiMiActBlob {
   struct gdakiMiActHdr hdr;
   std::vector<struct gdakiMiActAddr> addr;

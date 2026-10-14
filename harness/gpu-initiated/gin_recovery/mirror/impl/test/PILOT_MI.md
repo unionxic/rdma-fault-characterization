@@ -139,6 +139,6 @@ WANT_MFCM=149cb36630ec7c10189299b0c58454cc bash feas/deploy_mf.sh <출력> mfcm`
 ## 아직 할 수 없는 것 (통합 뒤 pilot이 처음 봄) `[미확인]`
 
 - mirror 라이브러리 줄의 실제 꼴이 `rows_mi.py`의 정규식과 맞는지(줄 키는 impl/rs_mirror_api.h, rs_store_api.h가 정함;
-  `impl/notes_test.md`에 의존하는 줄을 적었다). pilot이 실제 줄로 다시 본다.
+  의존하는 줄은 [../../EXPERIMENT.md](../../EXPERIMENT.md) 12절의 test 갈래 행). 통합에서 소스와 대조했고(12절), pilot이 실제 줄로 다시 본다.
 - 재기만 하는 모드의 mirror 팔(`NCCL_GIN_RESTORE_LOG_MEASURE_MIRROR`)이 실제로 mirror 쓰기를 내는지.
 - 단계 맞춤 가져오기의 INJECTED와 게이트 홀수 유지가 학습 모양에서 데이터를 지키는지(9.4절).
