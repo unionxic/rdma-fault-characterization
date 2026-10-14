@@ -1,6 +1,8 @@
 # 병렬 구현 분담 (gin-mirror, 2026-10-13)
 
-**상태: 공유 인터페이스 고정, 구현 전.** 설계는 [../EXPERIMENT.md](../EXPERIMENT.md) 9절(열린 충돌 없음), 작업 묶음은 9.8절의 표다. 이 파일은
+**통합 완료(2026-10-15).** 다섯 갈래를 `exp/gin-mirror-int`에서 하나의 계층으로 합쳤다([../EXPERIMENT.md](../EXPERIMENT.md) 12절의 통합 행, [mi_layer.diff](mi_layer.diff)). 저장소 수준에서는 갈래 커밋을 차례로 그대로 옮겼고(cherry-pick, 파일이 겹치지 않음), 소스는 i5 커밋을 바탕으로 갈래 diff 넷을 3-way로 합친 뒤 자리표시를 지우고 진입 함수를 이었다. 갈래마다의 `notes_<이름>.md`는 12절로 옮기고 지웠다. 아래 표와 규칙은 그때의 나눔으로 남긴다.
+
+**상태(나눌 때): 공유 인터페이스 고정, 구현 전.** 설계는 [../EXPERIMENT.md](../EXPERIMENT.md) 9절(열린 충돌 없음), 작업 묶음은 9.8절의 표다. 이 파일은
 갈래를 나누는 규칙이고, 인터페이스의 글자는 아래 헤더 여섯이다. gin-restore의 [PARALLEL.md](../../restore/impl/PARALLEL.md)와 같은 꼴이다.
 
 ## 바탕
