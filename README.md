@@ -6,22 +6,20 @@ RDMA 통신에서 장애가 났을 때, 그 정보가 NIC에서 application까�
 
 ## 요약
 
-- **NVIDIA NVSHMEM 버그를 찾아 보고했다.** NVSHMEM 3.5.x–3.8.0의 CPU 프록시 경로는 NIC에 알리는 doorbell record 주소를 잘못
-  계산해, 통신 장애가 나도 오류가 전달되지 않고 application이 멈춘다. 공식 3.8.0에서 직접 확인해
-  [NVIDIA/nvshmem#117](https://github.com/NVIDIA/nvshmem/issues/117)로 보고했고, NVIDIA 내부 조치가 완료됐다.
-- **장애 전파를 규칙 다섯 가지로 정리했다.** 장애 정보가 NIC에서 application까지 올라가며 어디서 사라지는지 측정해 규칙으로 정리했고,
-  결과를 보기 전에 세운 예측으로 검증했다.
-- **application을 고치지 않고 라이브러리 안에서 장애를 복구했다.** NCCL GIN과 NVSHMEM에서 장애 난 연결을 다시 세워 application이 오류 없이
-  통신을 이어 가게 했다. 장애 난 연결만 다시 세우도록 바꿔, 장애를 감지한 뒤 복구에 걸리는 시간을 11.4 ms에서 3.0 ms로 줄였다. 복구할 수 없는
-  장애는 application에 오류로 알리고, 죽은 rank를 빼고 communicator를 줄여 이어 가게 했다. 랭크 4개에서 한 rank가 죽어도
-  나머지 rank끼리의 통신이 끝까지 이어지게 했다.
-- **실제 application에서 눈가림으로 시험했다.** 장애를 무작위로 골라 봉인해 넣고, 정답을 모르는 에이전트가 출력만 보고 판정했다.
-  PyTorch 학습에서는 QP 장애가 모두 결과를 바꾸지 않고 복구됐다. GPU가 직접 통신하는 두 라이브러리는 application이 신호만 기다리는
-  동안의 장애를 감지하지 못했다. 이 감지를 라이브러리 안에 더하자 GIN 예제는 QP 장애에서 복구했고, NVSHMEM 예제는 상대가 죽어도
-  멈추지 않고 오류로 끝났다.
-- **죽은 rank를 예비 프로세스에 되살려 나머지 rank의 대기를 지켰다.** NCCL GIN에서 rank 하나가 죽어도 살아남은 rank의 대기가 오류 없이
-  붙잡혔다가 원래 값으로 끝났고, 최종 데이터가 장애 없는 실행과 비트 단위로 같았다. 복원은 죽음 판정 뒤 0.3–0.4 s에 끝났고, 되살릴 수
-  없으면 앞 라이브러리와 같이 오류로 풀렸다. 그 대가는 4 KiB 전송마다 1–1.5 µs였다.
+- **NVIDIA NVSHMEM 버그를 찾아 보고했다.** NVSHMEM 3.5.x–3.8.0의 CPU 프록시 경로가 NIC에 알리는 doorbell record 주소를 잘못
+  계산해, 통신 장애가 나도 오류가 전달되지 않고 application이 멈춘다. 공식 3.8.0에서 확인해
+  [NVIDIA/nvshmem#117](https://github.com/NVIDIA/nvshmem/issues/117)로 보고했고, NVIDIA 내부 조치가 완료됐다. 같은 방법으로
+  release 빌드가 오류 완료를 버리는 문제([NVIDIA/nvshmem#120](https://github.com/NVIDIA/nvshmem/issues/120))와 NCCL GIN이
+  지원하지 않는 설정값을 받아 멈추는 문제([NVIDIA/nccl#2480](https://github.com/NVIDIA/nccl/issues/2480))도 보고했다.
+- **장애 전파를 규칙 다섯 가지로 정리했다.** 장애 정보가 NIC에서 application까지 올라가며 어디서 사라지는지 재고, 결과를 보기 전에
+  세운 예측으로 검증했다.
+- **application을 고치지 않고 라이브러리 안에서 복구했다.** NCCL GIN과 NVSHMEM에서 장애 난 연결만 다시 세워 통신을 이어 가게 했고,
+  장애를 감지한 뒤 복구에 걸리는 시간을 11.4 ms에서 3.0 ms로 줄였다. 복구할 수 없으면 application에 오류로 알리고, 죽은 rank를 뺀
+  communicator로 이어 간다.
+- **실제 application에서 blind test로 검증했다.** 장애 일정을 봉인해 두고, 정답을 모르는 에이전트가 출력만 보고 판정했다. PyTorch
+  학습은 QP 장애를 모두 결과 변화 없이 복구했다.
+- **죽은 rank를 예비 프로세스에 되살렸다.** NCCL GIN에서 rank 하나가 죽어도 살아남은 rank의 대기가 오류 없이 원래 값으로 끝났고,
+  최종 데이터가 장애 없는 실행과 같았다. 복원은 죽음 판정 뒤 0.3–0.4 s, 비용은 4 KiB 전송마다 1–1.5 µs다.
 
 ## 연구 질문
 
@@ -33,23 +31,23 @@ RDMA 통신에서 장애가 났을 때, 그 정보가 NIC에서 application까�
 
 | 주제 | 결과 | 폴더 |
 |---|---|---|
-| 정보가 사라지는 지점 | 장애 정보는 위 계층으로 갈수록 줄어든다. GIN은 NIC에서 구분되던 장애가 대기 API에서는 정상과 구분되지 않고, NVSHMEM은 실패한 쓰기를 성공처럼 반환한다. 받는 쪽은 오류를 전달받지 못한다 | `harness/gpu-initiated/propagation/` |
-| 원인 구분 | 오류 코드만으로는 장애 7가지가 5가지로만 구분된다. 상대 프로세스가 살아 있는지 확인하면 6가지로 구분된다. 죽은 상대는 커널이 자원을 지우는 순서에 따라 다른 오류 코드로 보인다 | `harness/`, `harness/teardown_order/` |
-| 살아 있는 상대 | 상대가 살아 있어도 QP가 요청을 받을 수 없으면 프로세스가 죽었을 때와 같은 오류가 온다. 탐지기는 제어 연결이 닫히거나 응답이 늦으면 살아 있는 상대를 죽었거나 복구할 수 없다고 판정한다. 오판이 시작되는 정지 시간은 소스의 마감 상수와 측정한 지연으로 미리 맞혔다. NIC의 혼잡 알림 카운터는 혼잡이 아니라 재전송을 센다 | `harness/live_peer/` |
-| 완료 계약 | 오류 상태의 NIC는 doorbell record 값까지만 완료를 만든다. 이 규칙으로 NVSHMEM 버그와 여러 스택의 동작을 설명했다 | `harness/gpu-initiated/completion_contract/` |
-| 감지 시간 | 재전송이 끝나 오류가 보이기까지 IB 타임아웃 14에서 3.5–3.8 s, 기본값 20에서 58.5–58.8 s 걸린다. 이 시간을 미리 계산하는 모델을 만들었다 | `harness/ack_timeout/` |
-| 복구(CPU, NCCL) | CPU verbs는 장애 난 QP만 다시 세워 약 0.8 ms에 복구한다. NCCL은 송신 QP와 수신 QP에 낸 장애를 복구했고 기본 설정에서 중앙값 2.26 ms가 걸렸다. 상대 프로세스가 죽으면 오류로 알렸고, 상대의 수신 QP가 조용히 오류가 되면 대부분 멈췄다. 같은 장애에서 NCCL 2.32.3의 내장 복원력(port failover, port recovery)은 포트가 하나인 이 환경에서 한 번도 동작하지 않았다. NCCL 2.23.4는 복구를 끄면 수신 QP 장애를 틀린 결과로 바꿨다 | `harness/`, `harness/nccl-integration/` |
-| 복구(GPU) | GPU에서 원인을 분류해 로컬 QP 오류를 호스트가 아는 시간을 9.4 s에서 약 15 ms로 줄였다. 원본은 실패한 쓰기를 성공으로 보고했다. GIN과 NVSHMEM에서 application 수정 없이 장애를 복구했고, 장애 난 연결만 다시 세워 감지 뒤 복구 시간을 11.4 ms에서 3.0 ms로 줄였다. 관리망이 끊기거나 한쪽 방향으로만 끊겨도 살아 있는 상대를 죽었다고 보지 않는다. 복구를 거절하면 application의 대기가 오류로 끝나고, 죽은 rank를 뺀 communicator 줄이기가 약 17 ms에 된다. 랭크 4개에서도 쌍마다 복구했고, 중단 신호를 상대마다 두어 한 랭크가 죽어도 나머지끼리의 통신이 끝까지 이어진다. 거절의 원인이 자기 쪽이면 communicator 줄이기는 원래 오류를 돌려준다. 세 rank가 서로 복구를 요청하는 순환을 1 s 안에 풀고, 복구 상태 복사를 NIC 루프백으로 옮겨 application의 CUDA 호출에 막히지 않게 했다. NVSHMEM 복구는 공식 3.8.0에서도 같게 동작했다 | `harness/gpu-initiated/` |
-| 실제 application | PyTorch 학습(NCCL 다중 요청 복구)은 QP 장애를 모두 결과 변화 없이 복구했고 조용한 오류가 없었다. NCCL GIN 공식 예제는 QP 장애 대부분에서 멈췄고, NVSHMEM 공식 예제는 상대가 죽어도 오류 없이 멈췄다. 두 라이브러리 모두 application이 완료를 확인하는 호출 안에서만 장애를 보기 때문이다 | `harness/blind/` |
-| 호출 밖 감지 | 두 라이브러리에 application 호출 밖의 감지를 더하고 같은 공식 예제로 쟀다. GIN은 복구 스레드가 주기마다 QP 상태를 읽어, 멈추던 QP 장애를 모두 복구했다(10 ms 주기에서 감지 중앙값 18.6 ms). 원인을 알려 주는 완료 기록이 없으면 50 ms를 기다려서 주기를 1 ms로 줄여도 감지가 그만큼 빨라지지 않았고, 장애 없는 지연은 그대로였다. NVSHMEM은 작별 메시지 없이 닫힌 연결로 상대의 죽음을 판정해, 멈추던 kill과 원격 접근 회수를 0.11 s 안의 오류 종료로 바꿨다. 프로세스를 끝내지 않고 대기만 푸는 정책은 결과가 대부분 틀렸다. 멈춘 프로세스와 장애 없는 실행에서 거짓 판정은 없었다 | `harness/gpu-detect/` |
-| 복원(죽은 rank 되살리기) | GIN에서 죽은 rank만 예비 프로세스에 체크포인트와 송신 쪽 로그로 되살렸다. 생존 rank의 상대를 모르는 대기가 풀리지도 멈추지도 않고 원래 값으로 끝났고, 모든 rank의 최종 데이터가 장애 없는 실행과 같았다. 복원은 죽음 판정 뒤 278–401 ms. 비용은 hold 보내기 길의 put마다 1.0–1.5 µs(4 KiB 9–15%, 256 KiB와 대역 3–6%)로, 제안한 10% 한도는 4 KiB에서 틀렸다 | `harness/gpu-initiated/gin_recovery/restore/` |
+| 정보가 사라지는 지점 | 장애 정보는 위 계층으로 갈수록 줄어든다. GIN은 대기 API에서 장애가 정상과 구분되지 않고, NVSHMEM은 실패한 쓰기를 성공처럼 반환한다 | `harness/gpu-initiated/propagation/` |
+| 원인 구분 | 오류 코드만으로는 장애 7가지가 5가지로 구분된다. 상대 프로세스가 살아 있는지 확인하면 6가지로 구분된다 | `harness/`, `harness/teardown_order/` |
+| 살아 있는 상대 | 상대가 살아 있어도 QP가 요청을 받을 수 없으면 죽었을 때와 같은 오류가 온다. 탐지기가 살아 있는 상대를 죽었다고 오판하기 시작하는 정지 시간을 미리 맞혔다 | `harness/live_peer/` |
+| 완료 계약 | 오류 상태의 NIC는 doorbell record 값까지만 완료를 만든다. 이 규칙이 NVSHMEM 버그와 여러 스택의 동작을 설명한다 | `harness/gpu-initiated/completion_contract/` |
+| 감지 시간 | 재전송이 끝나 오류가 보이기까지 IB 타임아웃 14에서 3.5–3.8 s, 기본값 20에서 약 58 s 걸린다. 이 시간을 미리 계산하는 모델을 만들었다 | `harness/ack_timeout/` |
+| 복구(CPU, NCCL) | CPU verbs는 장애 난 QP만 다시 세워 약 0.8 ms에, NCCL은 중앙값 2.26 ms에 복구한다. NCCL 2.32.3의 내장 복원력은 포트가 하나인 이 환경에서 동작하지 않았다 | `harness/`, `harness/nccl-integration/` |
+| 복구(GPU) | GIN과 NVSHMEM에서 application 수정 없이 복구했고, 장애 난 연결만 다시 세워 감지 뒤 복구 시간을 11.4 ms에서 3.0 ms로 줄였다. 복구할 수 없으면 오류로 알리고 죽은 rank를 뺀 communicator 줄이기가 약 17 ms에 된다. rank 4개에서 한 rank가 죽어도 나머지끼리의 통신이 끝까지 이어진다 | `harness/gpu-initiated/` |
+| 실제 application | PyTorch 학습은 QP 장애를 모두 결과 변화 없이 복구했다. GIN과 NVSHMEM의 공식 예제는 application이 완료를 확인하는 호출 밖의 장애를 보지 못해 멈췄다 | `harness/blind/` |
+| 호출 밖 감지 | 두 라이브러리에 호출 밖 감지를 더하자 GIN 예제는 멈추던 QP 장애를 모두 복구했고(감지 중앙값 18.6 ms), NVSHMEM 예제는 상대가 죽어도 0.11 s 안에 오류로 끝났다. 거짓 판정은 없었다 | `harness/gpu-detect/` |
+| 복원(죽은 rank 되살리기) | 죽은 rank만 예비 프로세스에 되살려, 생존 rank의 대기가 원래 값으로 끝나고 최종 데이터가 장애 없는 실행과 같았다. 복원은 죽음 판정 뒤 278–401 ms, 비용은 4 KiB 전송마다 1.0–1.5 µs | `harness/gpu-initiated/gin_recovery/restore/` |
 
 ## 작업 방식
 
 - **사전 등록:** 2026-10-06부터 실험마다 가설, 예측, 판정 기준, 반복 수를 측정 전에 고정하고 Git 태그(`prereg/...`)와 해시로 남겼다.
   사전 등록 뒤 바뀐 것은 실험 폴더의 `DEVIATIONS.md`에 날짜와 이유를 적었다. 사전 등록 실험은 22건이고 모두 끝났다. 그 전(2026년 9월)의
   결과는 사전 등록 없이 쟀고, 일부는 이후 사전 등록 실험에서 다시 쟀다.
-- **눈가림 시험:** 실제 application 시험에서는 장애 일정을 다른 에이전트가 무작위로 정해 봉인했고, 정답을 모르는 에이전트가
+- **Blind test:** 실제 application 시험에서는 장애 일정을 다른 에이전트가 무작위로 정해 봉인했고, 정답을 모르는 에이전트가
   판정을 먼저 커밋한 뒤 봉인을 열었다.
 - **검증:** 채점은 고정한 판정식을 그대로 적용하는 스크립트로 했고, 채점 코드를 보지 않는 독립 재집계와 코드 리뷰를 따로 거쳤다.
   예측이 틀린 경우도 그대로 보고했다.
@@ -93,7 +91,7 @@ RDMA 통신에서 장애가 났을 때, 그 정보가 NIC에서 application까�
 | `harness/nccl-integration/` | NCCL 장애 복구 |
 | `harness/gpu-initiated/` | GPU-initiated 스택(GIN, NVSHMEM). 종합은 `RESULTS.md` |
 | `harness/ack_timeout/`, `harness/teardown_order/` | 감지 시간과 오류 코드 차이 분석 |
-| `harness/blind/` | 실제 application 눈가림 시험 |
+| `harness/blind/` | 실제 application blind test |
 | `harness/gpu-detect/` | GPU가 직접 통신하는 라이브러리의 호출 밖 장애 감지 |
 | [`DATA.md`](DATA.md) | 원시 데이터 Release 목록과 체크섬 |
 | `experiments/`, `docs/` | 초기 연구 |
