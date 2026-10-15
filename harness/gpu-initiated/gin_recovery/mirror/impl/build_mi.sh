@@ -4,7 +4,10 @@
 # shared interface (2026-10-13) and not run yet; its first run is a branch's `setup`. No GPU or RDMA program runs here;
 # nothing outside agent_mi_$BR/ is written but impl/mi_layer_$BR.diff (stage diff) in this worktree. agent_rs_int/ (i5)
 # and agent_gd/gin_hk (hk) are read only.
-# usage: BR=<dev|host|store|spare|test|int> build_mi.sh <setup|paste|api|mi|mip|unit|ident|diff|info>
+# usage: BR=<dev|host|store|spare|test|int|fix> build_mi.sh <setup|paste|api|mi|mip|unit|ident|diff|info>
+#   fix (2026-10-15, the fixes of pilot 1): agent_mi_fix/ is a copy of agent_mi_int/ (nccl-src, build, build-mip; the
+#          absolute paths in the dependency files and device manifests rewritten, mtimes kept; done by hand, `setup`
+#          refuses for fix); it works as int: impl/mi_layer.diff, the hold v2 text, every unit test, ident.
 #   setup  once: check that agent_rs_int is gin-restore's i5 (head commit "gpu-detect hk (libnccl 2913c777)", working tree
 #          diff md5 f005bb67 = ../../restore/impl/rs_layer.diff, build/lib libnccl 4811f28f, build-rsp/lib be91b270), copy
 #          its nccl-src, build and build-rsp to agent_mi_$BR/{nccl-src,build,build-mip}, rewrite the absolute paths in the
@@ -35,8 +38,8 @@
 # All compiles run at nice 19 and idle I/O priority (other studies use this node).
 set -euo pipefail
 STAGE=${1:?stage}
-BR=${BR:?BR=<dev|host|store|spare|test|int>}
-case "$BR" in dev | host | store | spare | test | int) ;; *) echo "unknown branch $BR" >&2; exit 2 ;; esac
+BR=${BR:?BR=<dev|host|store|spare|test|int|fix>}
+case "$BR" in dev | host | store | spare | test | int | fix) ;; *) echo "unknown branch $BR" >&2; exit 2 ;; esac
 SCR=${SCR:-/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad}
 D=$(cd "$(dirname "$0")" && pwd)          # this worktree's mirror/impl
 RSD=$(cd "$D/../../restore/impl" && pwd)  # gin-restore's impl (read only)
@@ -46,7 +49,7 @@ JOBS=${JOBS:-8}
 MIOUT=${MIOUT:-mi_$BR}
 MIPOUT=${MIPOUT:-mip_$BR}
 LAYER=$D/mi_layer_$BR.diff  # the branch's diff; the integration's is impl/mi_layer.diff
-[ "$BR" != int ] || LAYER=$D/mi_layer.diff
+case "$BR" in int | fix) LAYER=$D/mi_layer.diff ;; esac
 INFO=${INFO:-}
 I5=$SCR/agent_rs_int     # gin-restore's integrated tree, build i5 (read only)
 HK=$SCR/agent_gd/gin_hk  # gpu-detect's hk (read only; ident)
@@ -79,6 +82,7 @@ rewrite() {  # rewrite <from prefix> <to prefix> <dir>: absolute paths in *.d an
 
 setup() {
   [ -d "$W/nccl-src" ] && { echo "agent_mi_$BR already set up" >&2; return 0; }
+  [ "$BR" != fix ] || { echo "the fix tree is a copy of agent_mi_int (see the usage); setup does not make it" >&2; exit 1; }
   [ "$(md5 "$RSD/rs_layer.diff")" = $I5_DIFF ] || { echo "restore/impl/rs_layer.diff is not f005bb67" >&2; exit 1; }
   case "$(IG log -1 --format=%s)" in "gpu-detect hk (libnccl 2913c777)") ;; *) echo "agent_rs_int head is not hk" >&2; exit 1 ;; esac
   [ "$(IG diff --diff-algorithm=histogram HEAD -- src | md5sum | cut -c1-32)" = $I5_DIFF ] ||
@@ -122,7 +126,7 @@ tree() {  # the branch's mirror diff on the working tree of the copy
 paste() {
   head_ok
   local holdv2=0
-  case "$BR" in host | int) holdv2=1 ;; esac
+  case "$BR" in host | int | fix) holdv2=1 ;; esac
   python3 - "$W/nccl-src" "$D" "$holdv2" "$MEMBER" <<'PY'
 import sys
 root, impl, holdv2, member = sys.argv[1], sys.argv[2], sys.argv[3] == '1', sys.argv[4]
@@ -212,11 +216,11 @@ api() {
   awk -v N=1 "$fence" "$RSD/rs_hold_api.h" > "$o/hold_v1.txt"
   awk -v N=1 "$fence" "$D/rs_ckpt_api.h" > "$o/ckpt_v2.txt"
   case "$BR" in
-    host | int) cmp -s "$o/hold_src.txt" "$o/hold_v2.txt" || { echo "api: the hold shared text is not v2" >&2; exit 1; } ;;
+    host | int | fix) cmp -s "$o/hold_src.txt" "$o/hold_v2.txt" || { echo "api: the hold shared text is not v2" >&2; exit 1; } ;;
     *) cmp -s "$o/hold_src.txt" "$o/hold_v1.txt" || { echo "api: the hold shared text is not v1 (only host pastes v2)" >&2; exit 1; } ;;
   esac
   cmp -s "$o/ckpt_src.txt" "$o/ckpt_v2.txt" || { echo "api: the checkpoint's shared text is not rs_ckpt_api.h's" >&2; exit 1; }
-  echo "api: hold shared text $( [ "$BR" = host ] || [ "$BR" = int ] && echo v2 || echo v1 ), checkpoint shared text v1 (= v2's)"
+  echo "api: hold shared text $( [ "$BR" = host ] || [ "$BR" = int ] || [ "$BR" = fix ] && echo v2 || echo v1 ), checkpoint shared text v1 (= v2's)"
   cat > "$o/headers.cc" <<'CC'
 #include <stddef.h>
 #include <stdint.h>
@@ -301,10 +305,10 @@ unit1() {  # unit1 <branch>: impl/mi_unit_<branch>.cc against the working tree's
 }
 unit() {
   head_ok
-  if [ "$BR" = int ]; then local b; for b in dev host store spare; do unit1 "$b"; done; else unit1 "$BR"; fi
+  case "$BR" in int | fix) local b; for b in dev host store spare; do unit1 "$b"; done ;; *) unit1 "$BR" ;; esac
 }
 ident() {
-  case "$BR" in dev | int) ;; *) echo "ident is the dev branch's and the integration's" >&2; exit 1 ;; esac
+  case "$BR" in dev | int | fix) ;; *) echo "ident is the dev branch's and the integration's" >&2; exit 1 ;; esac
   [ -x "$D/exact_cmp_mi.sh" ] && [ -x "$D/ff_cmp_mi.sh" ] ||
     { echo "impl/exact_cmp_mi.sh and impl/ff_cmp_mi.sh are not written yet (the dev branch's, PARALLEL.md)" >&2; exit 1; }
   W="$W" HK="$HK" I5="$I5" LIB="$MIOUT" "$D/ff_cmp_mi.sh" "$MIOUT"
