@@ -21,7 +21,14 @@
 //      sent, a CKPT_STABLE buffered on a helper socket that is then lost and reinstalled), many seeds: whenever the ward
 //      is armed, the buddy's stable slot holds that checkpoint completely, in a live MR; the record's invariants; and the
 //      store gets ready again after the failures stop. The same model without the socket rule (no request after a
-//      reinstall, no stable view from the answer) must break the invariant, else the test proves nothing about the rule;
+//      reinstall, no stable view from the answer) must break the invariant, else the test proves nothing about the rule.
+//      The model's buddy holds the ward's hold cell (gdakiHoldPack) and drops STORE_REQs as gdakiStoreDropNow does: a
+//      ward's death is HELD of the dead incarnation i, its restore PUBLISHED(i) until INJECTED while the accepted REJOIN
+//      already made i + 1 the known incarnation (mirror on); the dead process's requests (any seq, also late ones read
+//      during PUBLISHED) are dropped, the restored process's are served there. A fixed sequence checks the caller's case
+//      of pilot 1's defect A: STORE_REQ(i + 1, seq 1) during PUBLISHED(i) is served and the store gets ready before
+//      INJECTED, STORE_REQ(i, any seq) is dropped; the pre-fix caller (the known incarnation as the hold's) must drop the
+//      restored process's request there, else the sequence proves nothing about the caller;
 //   7. the TCP path's base (mirror off, 9.6) as a model on gin-restore's own buddy store (gdakiCkptStore v1): with v1's
 //      rule an upload that ended without an ack, or a restored buddy, keeps a base the buddy no longer holds and the
 //      checkpoints are refused in a row; with this branch's rule never, and the next upload after any failure is whole;
@@ -541,6 +548,7 @@ struct Buddy {
   uint64_t genNext = 1;
   uint64_t qpGen = 0;              // the generation its side of the upload QP belongs to (0: none)
   uint32_t knownWardInc = 0;       // the ward's incarnation this buddy knows
+  uint64_t holdCell = 0;           // its hold cell of the ward: gdakiHoldPack(state, the incarnation it concerns)
 };
 struct Msg {
   int kind;                        // 1 STORE_REQ, 2 CKPT_STABLE
@@ -551,7 +559,8 @@ struct Msg {
 };
 struct Stats {
   long requests = 0, acks = 0, refused = 0, writes = 0, writeFails = 0, stables = 0, stableRefused = 0, buddyDeaths = 0,
-       wardDeaths = 0, layoutChanges = 0, readyAgain = 0, checks = 0, stableLost = 0, socketRequests = 0;
+       wardDeaths = 0, layoutChanges = 0, readyAgain = 0, checks = 0, stableLost = 0, socketRequests = 0, dropped = 0,
+       servedHeld = 0, injected = 0;
 };
 struct Ans {                       // one STORE_ACK: the answer, its trailer, the ward process it is for
   struct gdakiStoreAck a;
@@ -579,6 +588,8 @@ struct World {
   int wMr = -1;
   Stats st;
   bool failures = true;            // inject failures (off for the tail: the store must get ready again)
+  bool preFixCaller = false;       // the drop's hold incarnation is the known one (before the fix of defect A)
+  bool injectedPending = false;    // the ward was restored and its INJECTED has not reached the buddy yet
   explicit World(uint64_t seed) : rng(seed) {}
   bool p(double x) { return std::uniform_real_distribution<double>(0, 1)(rng) < x; }
   int newMr(uint64_t slotBytes) {
@@ -667,6 +678,17 @@ struct World {
     const Msg m = u2b.front();
     u2b.pop_front();
     if (m.kind == 1) {
+      // the caller's drop (gdakiStoreDropNow): the ward's hold cell read once; the hold's incarnation is the cell's (the
+      // fix of pilot 1's defect A), the pre-fix caller passed the known incarnation (preFixCaller)
+      const uint32_t hs = gdakiHoldStateOf(b.holdCell), hInc = gdakiHoldIncOf(b.holdCell);
+      const bool held = gdakiHoldIsHeldState(hs);
+      if (gdakiStoreDropReq(false, held, m.q.incarnation, preFixCaller ? b.knownWardInc : hInc)) {
+        st.dropped++;
+        CHECK(preFixCaller || m.fromInc < wardInc);  // only a dead process's request is dropped (no answer)
+        return;
+      }
+      CHECK(!held || m.q.incarnation > hInc);  // a held ward's request that is served is the restored process's
+      if (held) st.servedHeld++;
       const int v = gdakiStoreReqVerdict(m.q, m.q.seq, true, b.knownWardInc, b.rec.served, b.rec.inc, b.rec.seq);
       Ans ans;
       memset(&ans, 0, sizeof(ans));
@@ -817,23 +839,58 @@ struct World {
     b = Buddy();
     b.procInc = inc;
     b.knownWardInc = wardInc;
+    b.holdCell = gdakiHoldPack(GDAKI_HOLD_OFF, wardInc);  // a new buddy process holds nothing of the ward
+    injectedPending = false;
     armed = -1;  // the ward took part in the restore: DISARMed until its next stable checkpoint
     u.buddyRestored();
   }
-  void wardDiesAndIsRestored() {
+  // a STORE_REQ of the ward process of incarnation inc (its upload endpoint aside, as wardRequest makes them)
+  Msg request(uint32_t inc, uint64_t seq) const {
+    Msg m;
+    memset(&m, 0, sizeof(m));
+    m.kind = 1;
+    m.q = req(inc, seq, image);
+    m.q.layoutHash = layout;
+    m.fromInc = inc;
+    return m;
+  }
+  // The ward dies and is restored (mirror on): every survivor holds it, the buddy's cell HELD of the dead incarnation;
+  // what the dead process sent before it died is still read there (its STORE_REQs dropped); then PUBLISHED of the dead
+  // incarnation until INJECTED, while the accepted REJOIN already makes the restored process's the known one. late: the
+  // dead process's requests read only during PUBLISHED (parked; any seq); -1: a random number of them.
+  void wardDiesAndIsRestored(int late = -1) {
     st.wardDeaths++;
+    const uint32_t dead = wardInc;
+    b.holdCell = gdakiHoldPack(GDAKI_HOLD_HELD, dead);
+    wardInc++;  // from here on the dead process is not the ward's
     while (!u2b.empty() && b.up) buddyStep();  // what it sent before it died is still read
     u2b.clear();
     b2u.clear();
     armed = -1;  // the restored rank is armed again only at its own next stable checkpoint (P5)
-    wardInc++;
+    b.holdCell = gdakiHoldPack(GDAKI_HOLD_PUBLISHED, dead);
     b.knownWardInc = wardInc;  // the buddy accepted its REJOIN
+    injectedPending = true;
+    const int n = late >= 0 ? late : (int)(rng() % 3);
+    for (int k = 0; k < n; k++) u2b.push_back(request(dead, 1 + rng() % 6));
     u = gdakiStoreUp();
     upGen = 0;
     phase = 0;
   }
+  // INJECTED of the restored incarnation reaches the buddy: PUBLISHED(i) -> OFF(i + 1) (gdakiHoldInjectedAction)
+  void injected() {
+    if (!injectedPending) return;
+    injectedPending = false;
+    st.injected++;
+    if (gdakiHoldStateOf(b.holdCell) == GDAKI_HOLD_PUBLISHED && gdakiHoldIncOf(b.holdCell) + 1u == wardInc)
+      b.holdCell = gdakiHoldPack(GDAKI_HOLD_OFF, wardInc);
+  }
   void step() {
     now += std::uniform_real_distribution<double>(0, 400)(rng);
+    if (injectedPending && rng() % 6 == 0) {
+      injected();
+      check();
+      return;
+    }
     const int e = (int)(rng() % 100);
     if (e < 20) wardRequest();
     else if (e < 42) buddyStep();
@@ -886,15 +943,67 @@ static void testModel() {
     total.checks += w.st.checks;
     total.stableLost += w.st.stableLost;
     total.socketRequests += w.st.socketRequests;
+    total.dropped += w.st.dropped;
+    total.servedHeld += w.st.servedHeld;
+    total.injected += w.st.injected;
   }
   printf("model: %ld runs; requests %ld (after a socket reinstall %ld), answers %ld (refused %ld), WRITEs %ld ok / %ld "
          "failed, stable %ld (refused %ld, lost on the socket %ld), buddy deaths %ld, ward deaths %ld, layout changes %ld, "
-         "ready (again) %ld, invariant checks %ld, runs without a stable checkpoint after the failures stopped %ld\n",
+         "ready (again) %ld, invariant checks %ld, runs without a stable checkpoint after the failures stopped %ld; "
+         "requests of a held ward dropped %ld, served while held %ld, INJECTED %ld\n",
          runs, total.requests, total.socketRequests, total.acks, total.refused, total.writes, total.writeFails,
          total.stables, total.stableRefused, total.stableLost, total.buddyDeaths, total.wardDeaths, total.layoutChanges,
-         total.readyAgain, total.checks, notReadyAtEnd);
+         total.readyAgain, total.checks, notReadyAtEnd, total.dropped, total.servedHeld, total.injected);
   CHECK(total.stables > 0 && total.writeFails > 0 && total.stableRefused >= 0 && total.buddyDeaths > 0 &&
         total.refused > 0 && total.layoutChanges > 0 && total.stableLost > 0 && total.socketRequests > 0);
+  CHECK(total.dropped > 0 && total.servedHeld > 0 && total.injected > 0);
+}
+// The caller's case of pilot 1's defect A (2026-10-15), as a fixed sequence on the model: the ward of incarnation i is
+// ready, a request of it is still on the socket when it dies (HELD(i): dropped), the restore leaves the cell PUBLISHED(i)
+// with i + 1 known, two late requests of the dead process (seq 1 and a later one) and the restored process's first
+// request STORE_REQ(i + 1, seq 1) arrive before INJECTED: the late ones are dropped, the restored one is served and its
+// store is ready while the cell is still PUBLISHED(i). The pre-fix caller must drop the restored one too (no answer, not
+// ready before INJECTED): else this sequence would not see the defect.
+static void testDropWindow() {
+  int preFixMissed = 0;
+  for (uint32_t i = 0; i < 4; i++) {
+    for (int preFix = 0; preFix < 2; preFix++) {
+      model::World w(0x5eedull + i);
+      w.failures = false;
+      w.preFixCaller = preFix == 1;
+      w.wardInc = i;
+      w.b.knownWardInc = i;
+      w.b.holdCell = gdakiHoldPack(GDAKI_HOLD_ARMED, i);
+      w.wardRequest();
+      w.buddyStep();
+      w.wardAck();
+      CHECK(w.u.readyNow() && w.b.rec.served && w.b.rec.inc == i && w.b.rec.seq == 1);
+      w.u2b.push_back(w.request(i, 2));  // the dead process's request still on the socket
+      w.wardDiesAndIsRestored(0);
+      CHECK(w.st.dropped == 1 && w.b.rec.inc == i && w.b.rec.seq == 1 && w.b2u.empty());
+      CHECK(gdakiHoldStateOf(w.b.holdCell) == GDAKI_HOLD_PUBLISHED && gdakiHoldIncOf(w.b.holdCell) == i &&
+            w.b.knownWardInc == i + 1 && w.wardInc == i + 1);
+      w.u2b.push_back(w.request(i, 1));
+      w.u2b.push_back(w.request(i, 5));
+      w.wardRequest();  // the restored process's first request, right after its Resume
+      CHECK(w.u2b.size() == 3 && w.u2b.back().q.incarnation == i + 1 && w.u2b.back().q.seq == 1);
+      for (int k = 0; k < 3; k++) w.buddyStep();
+      w.wardAck();
+      const bool stillPublished = gdakiHoldStateOf(w.b.holdCell) == GDAKI_HOLD_PUBLISHED;
+      if (!w.preFixCaller) {
+        CHECK(w.st.dropped == 3 && w.st.servedHeld == 1);
+        CHECK(stillPublished && w.u.readyNow() && w.b.rec.inc == i + 1 && w.b.rec.seq == 1);
+        w.injected();
+        CHECK(gdakiHoldStateOf(w.b.holdCell) == GDAKI_HOLD_OFF && gdakiHoldIncOf(w.b.holdCell) == i + 1);
+        CHECK(w.u.readyNow());
+      } else if (stillPublished && !w.u.readyNow() && w.st.dropped == 4 && w.b.rec.inc == i) {
+        preFixMissed++;  // the defect: the restored process's request dropped without an answer during PUBLISHED
+      }
+    }
+  }
+  printf("drop window: the pre-fix caller dropped the restored process's first request in %d of 4 sequences\n",
+         preFixMissed);
+  CHECK(preFixMissed == 4);
 }
 // The same divergence without the two rules (no request after a socket reinstall, no view from the answer): the model's
 // invariant must catch it, else the test above proves nothing about them.
@@ -1145,6 +1254,7 @@ int main() {
   testWard();
   testModel();
   testModelWithoutSocketRule();
+  testDropWindow();
   testTcpBase();
   testV1Store();
   printf("mi_unit_store: %ld checks, %ld failed\n", gChecks, gFailed);
