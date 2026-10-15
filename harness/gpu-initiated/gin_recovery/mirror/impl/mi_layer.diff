@@ -1,5 +1,5 @@
 diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki.h b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
-index 39d027b..13125b7 100644
+index 39d027b..3093412 100644
 --- a/src/include/nccl_device/gin/gdaki/gin_gdaki.h
 +++ b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
 @@ -551,17 +551,21 @@ struct rsCsumDevLoad {
@@ -26,7 +26,7 @@ index 39d027b..13125b7 100644
      const uint32_t scheme = loadConst(&rs->csum);
      if (scheme != NCCL_GIN_RS_CSUM_OFF) {
        const uint8_t* base = reinterpret_cast<const uint8_t*>(loadConst(&srcMh->rsBase));
-@@ -599,6 +603,140 @@ __device__ __noinline__ static void rsLogPut(struct ncclGinRsSide* rs, struct nc
+@@ -599,6 +603,143 @@ __device__ __noinline__ static void rsLogPut(struct ncclGinRsSide* rs, struct nc
    w[7] = sigVal;
  }
  
@@ -56,12 +56,15 @@ index 39d027b..13125b7 100644
 +  if (off == 0 || d < 0 || (uint32_t)d >= loadConst(&rs->miNCells)) return nullptr;
 +  return reinterpret_cast<struct ncclGinMiCell*>(reinterpret_cast<char*>(rs) + off) + d;
 +}
-+// One break on cell c: the count, then the reason and the mirror QP's rank (plain stores, the last break wins; the
-+// host's line of the first break it sees; fix of pilot 1's defect D, 2026-10-15).
++// One break on cell c: the reason and the mirror QP's rank first (plain stores, the last break wins), a system fence,
++// then the count: a host that reads the count moved reads that break's reason or a later one, not the zero of a cell
++// without a break yet (the host's line of the first break it sees; fix of pilot 1's defect D, 2026-10-15; the order
++// from the review of that fix).
 +NCCL_DEVICE_INLINE static void rsMiNoteBreak(struct ncclGinMiCell* c, uint32_t why, int b) {
-+  atomicAdd(reinterpret_cast<unsigned long long*>(&c->broken), 1ull);
 +  *reinterpret_cast<volatile uint32_t*>(&c->brkWhy) = why;
 +  *reinterpret_cast<volatile uint32_t*>(&c->brkPeer) = (uint32_t)b;
++  __threadfence_system();
++  atomicAdd(reinterpret_cast<unsigned long long*>(&c->broken), 1ull);
 +}
 +// One break more on this rank's lanes whose mirror goes to b (never this rank's own cell): the restore's rule, the
 +// cells of b's wards; the measurement mode's arms (miMode not 0), every cell whose target (ncclGinMiTargetOf) is b.
@@ -167,7 +170,7 @@ index 39d027b..13125b7 100644
  // The hold path of put (and of a signal alone: HasWins false). Specialized by HasWins and HasSignal, as hk's inlined body
  // is by constant propagation, so a kernel's call graph holds only the variant it uses. sigVal: the value the signal adds
  // (Inc already resolved by the caller); sysFence: the system-scope release hk adds (required system, given wider).
-@@ -664,6 +802,11 @@ __device__ __noinline__ static void rsPutHold(ncclGinCtx ctx, int peer, ncclGinW
+@@ -664,6 +805,11 @@ __device__ __noinline__ static void rsPutHold(ncclGinCtx ctx, int peer, ncclGinW
    // DOCA guarantees SCOPE_GPU. Only add another release if SCOPE_SYSTEM is required.
    if (sysFence) doca_gpu_dev_verbs_fence_release<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS>();
    if (q != nullptr && mPost != 0) atomicAdd(reinterpret_cast<unsigned long long*>(&q->msgs), (unsigned long long)mPost);
@@ -179,7 +182,7 @@ index 39d027b..13125b7 100644
  
    if (HasWins && postData) {
      if (HasSignal) {
-@@ -683,9 +826,10 @@ __device__ __noinline__ static void rsPutHold(ncclGinCtx ctx, int peer, ncclGinW
+@@ -683,9 +829,10 @@ __device__ __noinline__ static void rsPutHold(ncclGinCtx ctx, int peer, ncclGinW
        const bool data = HasWins && postData;
        rsLogPut(rs, q,
                 ncclGinRsQpKf(qpIdx, data ? NCCL_GIN_RS_LOG_PUT : NCCL_GIN_RS_LOG_SIGNAL,
@@ -192,7 +195,7 @@ index 39d027b..13125b7 100644
      }
      if (HasWins && postData && bytes == 0) tsMarkNonMsg(qp, NCCL_GIN_TS_NONMSG_NOP);  // DOCA posts a NOP for 0 bytes
      tsPostLeave(ctx, q4, qp, peer);
-@@ -785,7 +929,7 @@ __device__ __noinline__ static void rsPutValueHold(ncclGinCtx ctx, int peer, ncc
+@@ -785,7 +932,7 @@ __device__ __noinline__ static void rsPutValueHold(ncclGinCtx ctx, int peer, ncc
                 ncclGinRsQpKf(qpIdx, postValue ? NCCL_GIN_RS_LOG_PUTVALUE : NCCL_GIN_RS_LOG_SIGNAL,
                               (HasSignal ? NCCL_GIN_RS_LOGF_SIGNAL : 0u) | (postValue ? 0u : NCCL_GIN_RS_LOGF_SPLIT)),
                 dstWin, nullptr, postValue ? dstOff : 0, postValue ? sizeof(T) : 0, v, HasSignal ? signalWin : 0u,
@@ -201,7 +204,7 @@ index 39d027b..13125b7 100644
      }
      tsPostLeave(ctx, q4, qp, peer);
    }
-@@ -1597,6 +1741,112 @@ __device__ __noinline__ static ncclResult_t tsPoll(ncclGinCtx ctx, struct ncclGi
+@@ -1597,6 +1744,112 @@ __device__ __noinline__ static ncclResult_t tsPoll(ncclGinCtx ctx, struct ncclGi
    }
  }
  
@@ -314,7 +317,7 @@ index 39d027b..13125b7 100644
  template <bool HasTimeout, enum doca_gpu_dev_verbs_resource_sharing_mode doca_sharing_mode>
  NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinRequest_t& request, cuda::memory_order ord,
                                                      uint32_t* abortFlag, uint64_t timeoutCycles) {
-@@ -1692,13 +1942,29 @@ NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinReque
+@@ -1692,13 +1945,29 @@ NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinReque
  template <enum doca_gpu_dev_verbs_resource_sharing_mode doca_sharing_mode>
  NCCL_DEVICE_INLINE static void waitImpl(ncclGinCtx ctx, ncclGinRequest_t& request, cuda::memory_order ord,
                                          uint32_t* abortFlag) {
@@ -344,7 +347,7 @@ index 39d027b..13125b7 100644
  }
  
  template <bool HasTimeout, enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode, typename Coop>
-@@ -1792,13 +2058,28 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+@@ -1792,13 +2061,28 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
  
  template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode, typename Coop>
  NCCL_DEVICE_INLINE static void flushImplMode(ncclGinCtx ctx, Coop coop, cuda::memory_order ord, uint32_t* abortFlag) {
@@ -598,7 +601,7 @@ index fec5dc0..79bf88b 100644
  struct ncclGinGdakiGPUContext {
    struct doca_gpu_dev_verbs_qp* gdqp;
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 6864b92..51305e7 100644
+index 6864b92..618c13c 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -438,6 +438,9 @@ static void gdakiRsMeasureStep(struct gdakiRecHost* r);                // gin-re
@@ -7052,7 +7055,7 @@ index 6864b92..51305e7 100644
  static void gdakiTsStart(struct gdakiRecHost* r) {
    if (r == nullptr || r->ts == nullptr) return;
    struct gdakiTs* ts = r->ts;
-@@ -15973,6 +21594,1046 @@ ncclResult_t ncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* st
+@@ -15973,6 +21594,1052 @@ ncclResult_t ncclGinGetRecoveryStats(ncclComm_t comm, ncclGinRecoveryStats_t* st
    return ncclSuccess;
  }
  
@@ -7083,7 +7086,8 @@ index 6864b92..51305e7 100644
 +  struct gdakiMiPollMem poll;
 +  bool lastPath = false, lastPool = false;  // the last switch's facts (PAUSED's armable)
 +  uint64_t measBroken = 0;  // the measurement mode: the cell's broken counter at the last check (integration)
-+  bool brkLined = false;    // the first device break of this lane was written (gdakiMiFirstBreakLine; fix, defect D)
++  bool brkLined = false;    // the first device break of this lane's segment was written (gdakiMiFirstBreakLine; fix,
++                            // defect D); a segment switch that writes the cell valid clears it (the lane works again)
 +};
 +struct gdakiMiHost {
 +  // the context's creation (application thread; fixed after)
@@ -7507,10 +7511,13 @@ index 6864b92..51305e7 100644
 +  return gdakiLbOn(r) && gdakiRecH2D(r, gdakiMiQpUseDev(r, qpIdx), &v, sizeof(v)) == ncclSuccess &&
 +         gdakiMiUseGet(r, qpIdx, &back) && back == v;
 +}
-+// The first device break the helper sees on this rank's lane toward d (once per destination and process; WARN in both
-+// builds; fix of pilot 1's defect D, 2026-10-15): the device's reason and the rank of the mirror QP it concerned (the
-+// cell's brkWhy and brkPeer), that QP's number, state and miUse now, the cell's rkey and lane, and the side table's
-+// miMode. `where`: "measurement" or "restore".
++// The first device break the helper sees on this rank's lane toward d (WARN in both builds; fix of pilot 1's defect D,
++// 2026-10-15): the device's reason and the rank of the mirror QP it concerned (the cell's brkWhy and brkPeer), that QP's
++// number, state and miUse now, the cell's segment, rkey and lane, and the side table's miMode. `where`: "measurement" or
++// "restore". Once per destination until a segment switch writes d's cell valid again (gdakiMiSegSwitch clears brkLined;
++// the review of the fix: a designed break during a hold must not take the line of a later, unexpected one), so in the
++// restore mode once per destination and valid segment; the measurement mode has no switch: once per destination and
++// process.
 +static void gdakiMiFirstBreakLine(struct gdakiRecHost* r, int d, const struct ncclGinMiCell& c, const char* where) {
 +  struct gdakiMiHost* m = r->mi.host;
 +  if (d < 0 || d >= (int)m->dest.size() || m->dest[(size_t)d].brkLined) return;
@@ -7528,10 +7535,11 @@ index 6864b92..51305e7 100644
 +    if (!gdakiMiUseGet(r, qi, &use)) use = ~0u;
 +  }
 +  WARN("GIN/MI: rank %d: first mirror break toward rank %d (%s): why=%s mirror_qp_peer=%d qpn=%#x qp_state=%d mi_use=%d "
-+       "rkey=%#x cell_valid=%u lane_base=%lu lane_bytes=%lu cursor=%lu broken=%lu mode=%u mono_ms=%.3f", r->ctx->rank, d,
-+       where, gdakiMiBrkName(c.brkWhy), b, qpn, st == ~0u ? -1 : (int)st, use == ~0u ? -1 : (int)use, be32toh(c.rkeyBe),
-+       c.valid, (unsigned long)c.laneBase, (unsigned long)c.laneBytes, (unsigned long)c.cursor, (unsigned long)c.broken,
-+       r->rsMeasureMs > 0 ? gdakiMiMeasureModeOf(r) : NCCL_GIN_MI_MODE_BUDDY, gdakiQ4MonoMs());
++       "rkey=%#x cell_valid=%u seg=%lu lane_base=%lu lane_bytes=%lu cursor=%lu broken=%lu mode=%u mono_ms=%.3f",
++       r->ctx->rank, d, where, gdakiMiBrkName(c.brkWhy), b, qpn, st == ~0u ? -1 : (int)st, use == ~0u ? -1 : (int)use,
++       be32toh(c.rkeyBe), c.valid, (unsigned long)c.seg, (unsigned long)c.laneBase, (unsigned long)c.laneBytes,
++       (unsigned long)c.cursor, (unsigned long)c.broken, r->rsMeasureMs > 0 ? gdakiMiMeasureModeOf(r) : NCCL_GIN_MI_MODE_BUDDY,
++       gdakiQ4MonoMs());
 +}
 +// A host-side break of d's lane (gdakiMiLedgerHostBreak: counted, and a pending rollback writes the cell back invalid),
 +// its cell's `valid` written 0 (4 bytes) whatever the host wrote before.
@@ -7610,6 +7618,7 @@ index 6864b92..51305e7 100644
 +  const bool written = gdakiMiCellPut(r, d, w, offsetof(struct ncclGinMiCell, broken));
 +  gdakiMiLedgerSwitchWritten(x.led, w, written);
 +  x.cursor = 0;
++  if (written && w.valid != 0) x.brkLined = false;  // the lane works again: its next device break gets its own line
 +  if (!written) {
 +    // the cell is not known now: invalid if it can be written (a rollback of this pause writes the old values back,
 +    // invalid), the lane broken
@@ -8099,7 +8108,7 @@ index 6864b92..51305e7 100644
  // ---- gin-restore (rs, work package 2): ncclGinRestoreResume's judgment and decision (nccl.h; the entry is in
  // gin/gin_host.cc, which passes the communicator's facts, the bootstrap all-gather and the abort-flag setter) ----
  // Every rank of the communicator calls it (user decision 2026-10-12, EXPERIMENT.md 9.10.8). This rank's judgment reads the
-@@ -16035,8 +22696,14 @@ static int gdakiRsSpareDataFdImport(void* arg, int peer) {
+@@ -16035,8 +22702,14 @@ static int gdakiRsSpareDataFdImport(void* arg, int peer) {
    if (peer != a->lastPeer || a->imported) return fd;
    char why[384];  // the import's refusal: its own prefix and a reason of up to 255 bytes
    const struct gdakiCkptHdr& h = a->d.hdr[0];  // gdakiCkptSpareDataFd returns a socket only after a fetch that succeeded
@@ -8116,7 +8125,7 @@ index 6864b92..51305e7 100644
      WARN("GIN/RS: spare rank %d: %s", r->ctx->rank, why);
      return -1;
    }
-@@ -16194,6 +22861,7 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+@@ -16194,6 +22867,7 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
    char told[160];
    char sideWhy[128] = {0}, rsLbWhy[128] = {0}, resWhy[128] = {0};
    char atomicWhy[160] = "not set up";  // gin-restore (dev, A1): the loopback atomic pair's verdict
@@ -8124,7 +8133,7 @@ index 6864b92..51305e7 100644
    uint64_t ctxSeq = 0;
    void* ctxColl = nullptr;
    {
-@@ -16225,6 +22893,10 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+@@ -16225,6 +22899,10 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
      if (rFound != nullptr && rFound->ctx != nullptr && rFound->ctx->q4 != nullptr &&
          rFound->ctx->q4->asyncResult != nullptr)
        asyncSet = __atomic_load_n(rFound->ctx->q4->asyncResult, __ATOMIC_ACQUIRE) != ncclSuccess;
@@ -8135,7 +8144,7 @@ index 6864b92..51305e7 100644
    }
    in.sideWhy = sideWhy;
    in.rsLbWhy = rsLbWhy;
-@@ -16402,10 +23074,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -16402,10 +23080,15 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
    const int connectedNRanks = nranks / rankStride;
  
    const int ncontexts = nContexts;
@@ -8153,7 +8162,7 @@ index 6864b92..51305e7 100644
    const int ncompanion_qps = needCompanion ? nqps_for_comm * 2 : 0;  // Number of companion QPs for communication
                                                                        // Double because we connect to self.
    const int nqps = nqps_per_rank * (nranks + 1);  // +1 for the local rank.
-@@ -16453,7 +23130,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -16453,7 +23136,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
  
    NCCLCHECK(cComm->getProperties(cComm->dev, &props));
  
@@ -8162,7 +8171,7 @@ index 6864b92..51305e7 100644
    NCCLCHECKGOTO(counters_table->allocate(num_counters * ncontexts, nranks), status, out);
    NCCLCHECKGOTO(signals_table->allocate(num_signals * ncontexts, nranks), status, out);
  
-@@ -16463,7 +23140,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -16463,7 +23146,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
    gdaki_ctx->rank = rank;
  
    gdaki_ctx->gin_gdaki_gpu_ctx_host_staging =
@@ -8171,7 +8180,7 @@ index 6864b92..51305e7 100644
    EQCHECKGOTO(gdaki_ctx->gin_gdaki_gpu_ctx_host_staging, nullptr, status, out);
  
    devHandle = (ncclNetDeviceHandle_t*)calloc(1, sizeof(*devHandle));
-@@ -16743,7 +23420,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -16743,7 +23426,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
           exch_info.qpn);
    }
  
@@ -8180,7 +8189,7 @@ index 6864b92..51305e7 100644
      int peer_qp_idx = nqps_for_comm + qp_idx;
      int local_qp_idx = qp_idx * nranks + rank;
      if (gdaki_ctx->gqps[local_qp_idx] == nullptr) continue;
-@@ -16754,6 +23431,8 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -16754,6 +23437,8 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
      INFO(NCCL_NET, "[%d] Connected self-loop peer QP: qp_idx=%d, qpn=%#x, main_qpn=%#x", rank, peer_qp_idx, qpn,
           exch_info.qpn);
    }
@@ -8189,7 +8198,7 @@ index 6864b92..51305e7 100644
  
    if (needCompanion) {
      for (int qp_idx = rankOff; qp_idx < nqps_for_comm; qp_idx += rankStride) {
-@@ -16784,8 +23463,8 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -16784,8 +23469,8 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
                               IBV_ACCESS_REMOTE_ATOMIC),
                  status, out);
  
@@ -8200,7 +8209,7 @@ index 6864b92..51305e7 100644
  
    gverbs_qps = (struct doca_gpu_verbs_qp**)calloc(nranks, sizeof(struct doca_gpu_verbs_qp*));
    EQCHECKGOTO(gverbs_qps, nullptr, status, out);
-@@ -16799,7 +23478,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -16799,7 +23484,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
      WARN("GIN/Q4: device code uses GDAKI GPU context v%d, classification needs v%d; left off", backendVersion,
           NCCL_GIN_GDAKI_GPU_CONTEXT_VERSION);
  
@@ -8209,7 +8218,7 @@ index 6864b92..51305e7 100644
      struct ncclGinGdakiGPUContext* gin_gdaki_gpu_ctx = &gdaki_ctx->gin_gdaki_gpu_ctx_host_staging[ctx_idx];
  
      unsigned int buffer_start;
-@@ -16830,14 +23509,14 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -16830,14 +23515,14 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
        gin_gdaki_gpu_ctx->companion_gdqp = nullptr;
      }
  
@@ -8226,7 +8235,7 @@ index 6864b92..51305e7 100644
        NCCLCHECKGOTO(signals_table->allocate_elements(num_signals, &buffer_start), status, out);
        gin_gdaki_gpu_ctx->signals_table.buffer = signals_table->gpu_ptr + buffer_start;
        gin_gdaki_gpu_ctx->signals_table.rkeys = signals_table->get_rkeys_d();
-@@ -16879,7 +23558,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -16879,7 +23564,7 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
    gdaki_ctx->sink_buffer.mhandle = sink_buffer_mhandle;
    gdaki_ctx->collComm = cComm;
    gdaki_ctx->devHandle = devHandle;
@@ -8235,7 +8244,7 @@ index 6864b92..51305e7 100644
    gdaki_ctx->rankStride = rankStride;
    // GIN transparent recovery S1: helper sockets (collective when the flags are set on every rank).
    NCCLCHECKGOTO(gdakiTsSetup(gdaki_ctx, cComm), status, out);
-@@ -16895,6 +23574,7 @@ out:
+@@ -16895,6 +23580,7 @@ out:
    if (status != ncclSuccess) {
      if (gdaki_ctx) {
        gdakiQ4Stop(gdaki_ctx->q4);  // GIN Q4: the watcher first (it reads gdaki_ctx->rec)
@@ -8243,7 +8252,7 @@ index 6864b92..51305e7 100644
        gdakiRecFree(gdaki_ctx->rec);  // GIN recovery
        gdaki_ctx->rec = nullptr;
        gdakiQ4Free(gdaki_ctx->q4);  // GIN Q4
-@@ -16905,7 +23585,7 @@ out:
+@@ -16905,7 +23591,7 @@ out:
        }
        // Clean up any allocated GPU memory
        if (gdaki_ctx->gin_gdaki_gpu_ctx_host_staging) {
@@ -8252,7 +8261,7 @@ index 6864b92..51305e7 100644
            struct ncclGinGdakiGPUContext* gin_gdaki_gpu_ctx = &gdaki_ctx->gin_gdaki_gpu_ctx_host_staging[ctx_idx];
            if (gin_gdaki_gpu_ctx->gdqp) {
              for (int qp_idx = 0; qp_idx < nranks; qp_idx++) {
-@@ -16943,6 +23623,7 @@ out:
+@@ -16943,6 +23629,7 @@ out:
          doca_gpu_verbs_destroy_qp_list_hl(gdaki_ctx->self_companion_gqp_list);
          gdaki_ctx->self_companion_gqp_list = nullptr;
        }
@@ -8260,7 +8269,7 @@ index 6864b92..51305e7 100644
  
        if (gdaki_ctx->gqp_groups) free(gdaki_ctx->gqp_groups);
        if (gdaki_ctx->gqps) free(gdaki_ctx->gqps);
-@@ -16992,6 +23673,8 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+@@ -16992,6 +23679,8 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
    const int rankOff = gdaki_ctx->rank % rankStride;
  
    gdakiQ4Stop(gdaki_ctx->q4);   // GIN Q4: stop the watcher first (it reads gdaki_ctx->rec)
@@ -8269,7 +8278,7 @@ index 6864b92..51305e7 100644
    if (gdakiRecFree(gdaki_ctx->rec)) {  // GIN recovery: unregister, join the test hook, before the QPs go away
      // gin-harden: a detached recovery helper is still inside a firmware command on these QPs, or a late device-state
      // copy still targets this context's device state: keep the whole context
-@@ -17058,6 +23741,7 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+@@ -17058,6 +23747,7 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
      DOCACHECK(doca_gpu_verbs_destroy_qp_list_hl(gdaki_ctx->self_companion_gqp_list));
      gdaki_ctx->self_companion_gqp_list = nullptr;
    }

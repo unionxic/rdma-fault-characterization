@@ -14,7 +14,8 @@
 #
 # What is new against hold_rs.sh: RS_SET is required (rs_set_mi.sh); the holds are cells_mi.json's (P1-P3, G1, G3, T1, T2,
 # G2, R1-R3 and COST-mirror-<node>); the per-trial stop checks add STOP_mem (run_mi.sh exit 5); the start-check also reads each
-# node's MemAvailable (run_mi.sh does the per-trial check; here only the hold's own leftover and BAR1 gates).
+# node's MemAvailable (run_mi.sh does the per-trial check; here only the hold's own leftover and BAR1 gates). The training
+# holds (P2, T1, T2) also get rain's BAR1 at each trial's start gate, every process up (run_mi.sh BAR1_AT_GATE; read only).
 #
 # usage: hold_mi.sh <resultsdir> <hold>
 #   P1, P2, P3             the pilot holds (never scored; a results folder of their own): the 4 KiB cells and refusals,
@@ -198,6 +199,9 @@ cost_family() {  # cost_family <family> <node> <dir> <rounds> [metric]
     done
   done
 }
+# the training holds: run_mi.sh reads rain's BAR1 at each trial's start gate (every process up; the second-death cell has
+# three on rain), read only (the review of the pilot 1 fixes, item 4: pilot 2's snapshots had BAR1 only before and after)
+case "$H" in P2|T1|T2) export BAR1_AT_GATE=1 ;; esac
 case "$H" in
   P1|P2|P3|G1|G3|T1|T2|G2|R1|R2|R3) do_json_hold "$H" ;;
   COSTPILOT-*)
