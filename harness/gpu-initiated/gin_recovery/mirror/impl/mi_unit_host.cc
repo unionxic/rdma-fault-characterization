@@ -1016,6 +1016,36 @@ static void testArmableAndMeasure() {
   int t = 0;
   uint64_t lb = 0;
   CHECK(!gdakiMiMeasureLane(0, 0, 1, 4, 3, kL, &t, &lb) && t == -1);
+  // fix of pilot 1's defect D (2026-10-15): the device's mirror target (ncclGinMiTargetOf by the side table's miMode) is
+  // the measurement lane's pool owner for both arms (before the fix the device took d's buddy: in two ranks the sender
+  // itself, so the peer arm's cells named d's pool while the device used the self loop), and the buddy in the restore
+  CHECK(NCCL_GIN_MI_MODE_SELF == 1u && NCCL_GIN_MI_MODE_PEER == 2u && NCCL_GIN_MI_MODE_BUDDY == 0u);
+  for (int n = 2; n <= 9; n++)
+    for (int me = 0; me < n; me++)
+      for (int d = -1; d <= n; d++) {
+        const bool in = d >= 0 && d < n && d != me;
+        CHECK(ncclGinMiTargetOf(NCCL_GIN_MI_MODE_BUDDY, d, me, n) == (in ? ncclGinMiBuddyOf(d, n) : -1));
+        for (int arm : {1, 2}) {
+          int target = -1;
+          uint64_t lb2 = 0;
+          const bool ok = in && gdakiMiMeasureLane(arm, me, d, n, 3, kL, &target, &lb2);
+          CHECK(ncclGinMiTargetOf((uint32_t)arm, d, me, n) == (in ? (arm == 1 ? me : d) : -1));
+          if (ok) CHECK(ncclGinMiTargetOf((uint32_t)arm, d, me, n) == target);
+        }
+      }
+  // the two-rank cost job: buddy(1) is 0, so the restore's rule and the self arm take the self loop, the peer arm rank 1
+  CHECK(ncclGinMiTargetOf(NCCL_GIN_MI_MODE_BUDDY, 1, 0, 2) == 0 && ncclGinMiTargetOf(NCCL_GIN_MI_MODE_SELF, 1, 0, 2) == 0 &&
+        ncclGinMiTargetOf(NCCL_GIN_MI_MODE_PEER, 1, 0, 2) == 1);
+  // the first-break line's reason names: one each, distinct, "?" outside
+  const char* names[NCCL_GIN_MI_BRK_WAIT + 1u];
+  for (uint32_t w = 0; w <= NCCL_GIN_MI_BRK_WAIT; w++) {
+    names[w] = gdakiMiBrkName(w);
+    CHECK(names[w] != nullptr && strcmp(names[w], "?") != 0);
+    for (uint32_t v = 0; v < w; v++) CHECK(strcmp(names[v], names[w]) != 0);
+  }
+  CHECK(strcmp(gdakiMiBrkName(NCCL_GIN_MI_BRK_WAIT + 1u), "?") == 0 && strcmp(gdakiMiBrkName(~0u), "?") == 0);
+  CHECK(sizeof(struct ncclGinMiCell) == 64 && offsetof(struct ncclGinMiCell, brkWhy) == 48 &&
+        offsetof(struct ncclGinMiCell, brkPeer) == 52 && offsetof(struct ncclGinRsSide, miMode) == 60);
 }
 
 int main() {
