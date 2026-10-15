@@ -248,12 +248,31 @@ gin-restore 8절의 규칙을 그대로 쓰고 아래를 더한다(DRAFT).
 - **제외(채점에서 빼고 채움).** gin-restore의 제외 전부. 더해서: kill이 모든 lane을 유효하게 만든 첫 확정 체크포인트 전(그때까지는 무장되지 않음); 셀이 정한
   workload 모드(`RS_OVERWRITE`)나 mirror 설정과 다르게 돈 시행; 둘째 죽음 셀에서 첫 kill이 위 제외에 걸린 시행(그 시행 전체). 둘째 kill이 다시 무장보다
   먼저 난 시행은 빼지 않고 조건 불충족으로 센다(3절). smoke와 pilot은 늘 제외.
-- **중단(그 hold의 남은 시행을 멈추고 올림).** gin-restore의 STOP 규칙 전부(CUDA 메모리 오류, 새 mlx5 명령 오류, 남은 프로세스, NIC 오류, rain BAR1 Free
-  128 MiB 미만이면 시작 안 함). 더해서: 어느 노드에서든 pool 등록이 실패함(모든 rank의 Resume 거절로 보임; 거절 셀 밖); 시행 시작 때 노드의 남은 호스트
-  메모리가 (rank 수 × pool 바이트 + 1 GiB)보다 작음. rain QUERY_QP 증가 상한은 mirror 문맥 몫(9.7절 rain 행)을 더해 초안 50 000(복원 시행과 비용 실행)으로
-  두고 pilot이 고정한다. 이름으로 끄지 않고 실행기가 기록한 PID만 끈다.
-- **학습 모양 셀(초안).** 시행 하나의 시간 한도는 60 s 대신 120 s(9.8절의 어림 24–28 s). hold를 둘로 나눈다(9.8절). QP 감시 50 ms라 rain QUERY_QP는 시행마다 약
-  16 000번으로 상한 50 000 안이다 `[추론]`. 시작 검사의 남은 호스트 메모리는 (pool + 저장소를 가진 프로세스 수) × 약 0.8 GiB + 1 GiB로 본다.
+- **중단(그 hold의 남은 시행을 멈추고 올림).** gin-restore의 STOP 규칙 전부(CUDA 메모리 오류, 새 mlx5 명령 오류나 rain 펌웨어 명령 실패의 증가, 시행 뒤
+  남은 프로세스, kv의 설정 오류나 NIC 오류, 아래 QUERY_QP 상한). 더해서: 어느 노드에서든 pool 등록이 실패함(모든 rank의 Resume 거절로 보임; 거절 셀 밖);
+  시행 시작 때 노드의 남은 호스트 메모리가 (rank 수 × pool 바이트 + 1 GiB)보다 작음(`run_mi.sh` exit 5, STOP_mem). 이름으로 끄지 않고 실행기가 기록한
+  PID만 끈다.
+- **rain BAR1 시작 검사(어디서 읽나; 2026-10-15 DRAFT 중 고침).** rain BAR1 Free가 128 MiB보다 작으면 그 hold를 시작하지 않는다(`refused.txt`). 읽는 곳은
+  hold 시작 문이다: `hold_mi.sh`가 hold의 첫 시행 전에 읽고, 그때 이 실험의 시험 프로세스는 없다(바로 뒤의 남은 프로세스 검사가 0을 확인하고, 있으면
+  STOP_left). pilot 2–5의 hold 15개 앞뒤 스냅숏 30개가 모두 Free 251 MiB였다 `[측정: snap_before-*, snap_after-*]`. 학습 hold(T1, T2)가 시행마다 시작 문에서
+  읽는 값(`BAR1_AT_GATE`, 시행 meta의 `bar1_gate_used_mib`, `bar1_gate_free_mib`)은 그 시행의 프로세스 둘이나 셋이 이미 살아 있을 때의 값이라 보고만 하고
+  이 검사에 쓰지 않는다. pilot 3–5에서 그 값은 프로세스 둘이면 Free 133 MiB(학습)와 173 MiB(4 KiB), 셋(둘째 죽음 셀, 예비 프로세스 포함)이면 74 MiB(학습)와
+  134 MiB(4 KiB)였고, Free 74 MiB였던 학습 둘째 죽음 시행 둘(pilot 3, 4)도 정상으로 끝났다 `[측정: 시행 meta]`.
+- **rain QUERY_QP 상한(단위와 값; 2026-10-15 DRAFT 중 고침).** 단위는 시행 하나다: `hold_mi.sh`의 `after_trial`이 시행(비용 hold에서는 비용 실행 하나)이
+  끝날 때마다 rain의 펌웨어 명령 셈 QUERY_QP를 읽어 앞 읽기와의 차(그 시행과 앞 시행 뒤의 틈)를 상한과 견준다. 상한은 복원 시행과 비용 실행 50 000,
+  gin-remaining 실행기의 회귀 시행 150 000(gin-restore 그대로)이고, 넘으면 STOP_mlx5다(pilot hold는 `qp_over.txt`에 적기만). hold 앞뒤 값은 스냅숏에 남고
+  hold 하나의 합은 보고만 한다. 근거 `[측정: 스냅숏 앞뒤의 차, qp_over.txt 없음]`: pilot 2–5의 pilot hold 15개(복원 hold의 시행 80, 비용 실행 120)에
+  `qp_over.txt`가 없어 상한을 넘은 시행이 없었다. 시행마다의 값은 상한 밑이면 남지 않아 `[미확인]`이고, hold의 차를 시행 수로 나눈 평균은 P1(4 KiB와 거절
+  셀 15시행) 18 155, 18 253, P2(학습 셀 3시행) 27 135, 27 341, P4(4 KiB 14시행과 학습 1) 27 430, P6(`mi4_pull` 5, `mi4_kill3_ow` 1, `mi4_train_kill3` 1;
+  hold 합 232 181) 33 169였다. 회귀 시행이 든 P3은 293 864, 297 170(7시행, 그 가운데 회귀 2), P5는 218 341(8시행, 회귀 1). 비용 hold는 20 실행에 370(실행마다
+  약 19; 비용 실행에는 QP 감시가 없음). 가장 큰 평균(P6)도 상한의 약 0.66배라 50 000을 그대로 둔다(gin-restore는 pilot의 시행마다 값 22 092–23 608에
+  40 000, 약 1.7배를 두었다). 처음 초안의 "학습 셀은 시행마다 약 16 000번 `[추론]`"은 작았다(위 P2).
+- **시행 시간 한도(2026-10-15 DRAFT 중 고침).** `run_mi.sh`로 도는 학습 모양 밖의 셀 60 s(`RS_TRIAL_BOUND_S`; pilot 3–5에서 그 시행의 wall 2.0–17.8 s, 가장
+  긴 것은 예비 프로세스 기다림 15 000 ms의 `mi4_overflow`), gin-remaining 실행기의 회귀 시행 150 s(`fits 150`; pilot 17.5–17.6 s), 학습 모양 셀 150 s
+  (`RS_TRAIN_BOUND_S`; 처음 초안 120 s에, fallback한 학습 시행은 예비 프로세스가 120 s를 기다려 약 125–130 s가 됨을 더함 `[추론]`). pilot 2–5의 학습 시행
+  wall은 장애 없음 30.2 s(n 2), rank 3 kill 34.2 s(n 3), 두 죽음 34.6 s(n 3)였다 `[측정: hold 출력의 wall, rows_mi.py로 다시 셈]`(9.8절의 어림 26–29 s와
+  처음 이 절의 24–28 s는 짧았다). 학습 셀의 hold는 둘로 나눈다(9.8절: T1 = `mi4_train_none` + `mi4_train_kill3`, T2 = `mi4_train_kill2_kill3`). 시작 검사의
+  남은 호스트 메모리는 (pool + 저장소를 가진 프로세스 수) × 약 0.8 GiB + 1 GiB로 본다.
 
 ## 9. 설계와 실행 방법
 
@@ -1106,6 +1125,7 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 | 2026-10-15 | 사전 등록 전 일관성 고침 1(DRAFT라 고칠 수 있음; 2절 가설, 메인 세션 지시): pilot과 맞지 않거나 3절과 어긋난 가설 다섯 행. (1) 복원 시간: 더하기 꼴(gin-restore의 복원 + drain + 바이트 / θ)을 버리고 셀 가족마다의 상한(학습 모양 밖 2 000 ms, 학습 모양 1 000 ms; 초안)과 FETCH 모형(a + 바이트 / θ)으로 씀. mirror 켬 길은 RDMA FETCH와 단계 맞춤 가져오기라 TCP 길보다 짧다(pilot 2–5: 학습 모양 밖 mirror 켬 죽음 38건 72.2–206.4 ms, mirror 끈 gin-restore 회귀 7건 365.5–380.7 ms). (2) 비용: 차례 없는 따로 된 QP의 WQE 하나라 4 KiB는 많아야 put 하나의 지연, 2 MiB 약 2배, 묶음 대역 약 절반(pilot 2–4 mirror-peer 대 on +8.19–8.90 µs, 1.855–1.872배, 0.552–0.635); 판정의 수는 3절이 정하고 사용자 결정 대기(19절). (3) 당기기: 반증은 설계한 짝 보호 공백 밖의 깨짐과 DISARM만(3절, 채점 셈 고침 행과 같음). (4) pool: 3절과 채점기의 열(`pool_max_bytes`, 다시 시작)에 맞춤. (5) 버려진 체크포인트 "둘 넘게" → "둘 이상"(3절의 ≤ 1과 같게). 수치는 pilot 2–5의 원자료에서 `rows_mi.py`로 다시 셈(세션 스크래치 `prereg_recount/p{2,3,4,5}.csv`) `[측정]` | 이 행의 커밋 |
 | 2026-10-15 | 사전 등록 전 일관성 고침 2(DRAFT; 3절 `train_pull_count`의 근거 칸과 9.8절 학습 모양의 pool 문장): "당기기는 L이 간격 둘이라 0에 가까움 `[추론]`"과 "확정이 늦을 때만 당긴다"는 pilot과 반대였다. L이 간격 하나 바이트의 두 배라 문턱 50%가 간격 하나와 같아 간격마다 문턱에 닿는다 `[추론]`. 장애 없는 학습 시행의 네 rank 합 `pulls_sent` 847, 834(pilot 2, 3), kill 시행 655–698(n 6) `[측정: rows_mi.py로 다시 셈]`. 당기기는 그대로 보고만 하는 열이고 판정식(predictions_mi.csv 30줄)은 바뀌지 않음 | 이 행의 커밋 |
 | 2026-10-15 | 사전 등록 전 일관성 고침 3(DRAFT; 3절과 7절의 찾는 키와 셀 이름을 고정할 파일 [impl/test/predictions_mi.csv](impl/test/predictions_mi.csv), [impl/test/cells_mi.json](impl/test/cells_mi.json)의 이름에 맞춤; 파일은 바뀌지 않음). 3절: `ow_data_equal`의 셀 셋을 파일대로 셋으로 나눔(`ow_data_equal` `mi4_kill3_ow`, `kill_other_ow` `mi4_kill1_ow`, `ckpt_kill_ow` `mi4_kill3_ckpt_ow`); `pull_no_disarm` → `pull_no_disarm_none`(`mi4_pull_none`)과 `pull_no_disarm_kill`(`mi4_pull`); `refuse_mirror` → `refuse_csum`, `refuse_mirror1`, `refuse_sl`(빠졌던 `mi4_refuse_sl` 셀과 그 예측을 더함); `regression_restore_off`(mirror 끔) → gin-restore 셀의 `rg_*` 열다섯과 gin-remaining 실행기의 `regression_restore_off`, `regression_kill3_off`; `regression_restore_on` → `regression_none_on`(`rs4_none_mion`), `regression_kill3_on`(`rs4_kill3_mion`); `pool_vs_interval`과 `store_rdma`의 열과 셀을 파일대로. `ff_identical`은 파일에 없었다: 시행의 원자료가 아닌 빌드 검사라 예측 표에서 빼고 7절 빌드 검사와 10절 QA로 둠(ln3에서 8/8 확인, 12절 ln3 행). 7절: `mi4_pull` 한 행 → `mi4_pull_none` 3과 `mi4_pull` 5, `mi4_refuse_sl` 3을 더함, mirror 켠 회귀 `rs4_none_mion`, `rs4_kill3_mion`, mirror 끈 회귀의 셀 이름과 n을 파일대로 적음. 판정식과 n은 바뀌지 않음(모두 파일에 이미 있던 값) | 이 행의 커밋 |
+| 2026-10-15 | 사전 등록 전 일관성 고침 4(DRAFT; 8절). (1) rain BAR1 128 MiB 검사를 읽는 곳을 적음: hold 시작 문(첫 시행 전, 시험 프로세스 없음; pilot 2–5 hold 15개 앞뒤 30번 모두 Free 251 MiB). 학습 hold의 시행 시작 문 값은 프로세스 둘이나 셋이 살아 있을 때라(pilot 3–5: 둘 133, 173 MiB, 셋 74, 134 MiB) 보고만. (2) QUERY_QP 상한의 단위를 시행 하나로 적음(`hold_mi.sh`의 `after_trial`이 시행마다 앞 읽기와의 차를 견줌; 실행기는 hold 단위로 견주지 않으므로 그대로) 그리고 값 50 000을 pilot으로 정함: 15 hold에 `qp_over.txt` 없음, hold 평균 18 155–33 169(가장 큰 P6이 상한의 약 0.66배), 시행마다의 최대는 기록되지 않아 `[미확인]`. (3) 시행 시간 한도: 학습 모양 150 s(`hold_mi.sh` 기본값과 같게; 처음 120 s), 잰 학습 시행 30.2–34.6 s(n 8)로 어림 24–28 s를 고침; 회귀 실행기 150 s, 그 밖 60 s. 수치는 pilot 2–5의 스냅숏, 시행 meta, hold 출력에서 다시 셈 `[측정]` | 이 행의 커밋 |
 
 ## 13. 사전 등록 이후 변경
 
