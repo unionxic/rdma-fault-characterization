@@ -329,11 +329,19 @@ static void testRecords() {
   memcpy(&as2, (const uint8_t*)executed + GDAKI_STORE_ACKS_OFF, sizeof(as2));
   CHECK(as2.magic == 0 && as2.magic != GDAKI_STORE_ACKS_MAGIC);
   // a request taken while its ward is declined or held is not served: a declined ward's never, a held ward's unless it
-  // comes from a newer incarnation than the one known (the restored process's, before its RESTORED is applied)
+  // comes from a newer incarnation than the one the hold is about (the hold cell's: the restored process's request)
   CHECK(gdakiStoreDropReq(true, false, 5, 1) && gdakiStoreDropReq(true, true, 5, 1) && gdakiStoreDropReq(true, false, 1, 1));
   CHECK(gdakiStoreDropReq(false, true, 1, 1) && gdakiStoreDropReq(false, true, 0, 1));
   CHECK(!gdakiStoreDropReq(false, true, 2, 1));
   CHECK(!gdakiStoreDropReq(false, false, 0, 1) && !gdakiStoreDropReq(false, false, 1, 1) && !gdakiStoreDropReq(false, false, 2, 1));
+  // fix of pilot 1's defect A (2026-10-15): with the mirror on the ward stays PUBLISHED (held) of incarnation i until its
+  // INJECTED while the REJOIN already made i + 1 the known incarnation; the caller passes the hold's i, so the restored
+  // process's first request (i + 1) is served there and a leftover of the dead process (i or older) is dropped
+  for (uint32_t i = 0; i < 4; i++) {
+    CHECK(!gdakiStoreDropReq(false, true, i + 1u, i));
+    CHECK(gdakiStoreDropReq(false, true, i, i));
+    if (i > 0) CHECK(gdakiStoreDropReq(false, true, i - 1u, i));
+  }
 }
 
 // ---- 4. the uploader's request machine ----
