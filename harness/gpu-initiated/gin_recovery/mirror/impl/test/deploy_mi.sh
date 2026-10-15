@@ -20,7 +20,9 @@
 # the device does not read the side table's magic.
 # env: SUNNY_SSH (required), RS_SET (required), the WANT_* above, MI_LIB_SRC, MIP_LIB_SRC, MIOUT (default mi), MITREE
 #      (default agent_mi_int; agent_mi_fix for the drivers of the fixes of pilot 1), COSTOUT (default cost) and MROUT
-#      (default mr): build_mi_test.sh's output subfolders of the cost driver and gin_mr (build i4: cost_i4, mr_i4)
+#      (default mr): build_mi_test.sh's output subfolders of the cost driver and gin_mr (build i4: cost_i4, mr_i4; the
+#      lineage's builds, EXPERIMENT.md 9.9: MIOUT=mi_ln<k>, COSTOUT=cost_ln<k>, MROUT=mr_ln<k>, libraries out/mi_ln<k> and
+#      out/mip_ln<k> of the same tree agent_mi_fix)
 set -euo pipefail
 OUTF=${1:?output file (the check is written to a file only; never pipe it)}
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH (user@address) from the management env file}
