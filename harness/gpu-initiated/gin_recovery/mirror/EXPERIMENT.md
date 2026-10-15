@@ -11,7 +11,7 @@
 | 작성일 | 2026-10-13 |
 | 기준 브랜치와 커밋 | `exp/gin-mirror` @ `7b21eb58` (master) |
 | 사전 등록 태그 | 없음 |
-| 마지막 갱신 | 2026-10-15, pilot 2(set `mi2`, 빌드 i3)가 결함 A, C, D의 고침을 확인했고 고침 묶음의 독립 리뷰는 막는 문제 없음; 리뷰의 사전 등록 전 항목을 반영: 채점 셈이 설계한 짝 보호 공백을 따로 셈(사용자 결정 대기), `store_rdma`가 체크포인트 닫기 줄을 읽음, A의 호출자 단위 시험, 첫 깨짐 진단, 죽은 프로세스의 늦은 STORE_REQ에 답 없음, magic "RSS5", 학습 hold의 BAR1 읽기, 빌드 i4(연구 `c89ce744`, 운영 `12a0edec`), CPU 단위 시험 넷 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음(12절). 사용자 결정 넷과 사전 등록 숫자는 19절. 그 전: 2026-10-15, pilot 1(set `mi1`)의 결함 넷: 셋을 고치고(되살린 rank의 저장소 요청, mirror 켠 프로세스의 window를 NIC 복사 경로에서 뺌, 비용 peer 팔의 mirror 대상) 하나를 점검(rc 4 셀 셋은 설계 길), 갈래 `exp/gin-mirror-fix`, 빌드 i3(연구 `feefaf6d`, 운영 `2e4008e6`), CPU 단위 시험 넷 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음(12절). 다시 하는 pilot 전. 그 전: 2026-10-15, 다섯 갈래의 병렬 구현과 통합: `exp/gin-mirror-int`에서 하나의 계층([impl/mi_layer.diff](impl/mi_layer.diff), md5 `e27998db`)으로 합침, 빌드됨(연구 `1b50d11b`, 운영 `a34db6e6`), CPU 단위 시험함(넷, 0 failed), 매크로 없는 장치 코드가 hk와 i5에 SASS와 자원까지 같음, 시험 드라이버를 통합 헤더로 다시 빌드, 독립 리뷰 둘 반영(12절). pilot 전([impl/test/PILOT_MI.md](impl/test/PILOT_MI.md)). 그 전: 2026-10-13, 공유 인터페이스(impl/의 헤더 여섯, [impl/PARALLEL.md](impl/PARALLEL.md), build_mi.sh 뼈대)와 실행 가능성 확인 1, 3, 4의 결과(9.8절, `[측정]`; 9.3, 9.4, 9.5절의 수치). 그 전(같은 날): 재검토가 연 충돌 → (가) INJECTED(9.4절), 올리기 꼴 확인; 재검토의 고칠 것 여섯; RDMA 저장소, 단계 맞춤 가져오기, 첫 검토, 결정 여덟; 학습 모양; 초안. 라이브러리 구현과 빌드 없음 |
+| 마지막 갱신 | 2026-10-15, 계보(lineage): 화신 판정을 한 곳으로 모으는 설계 v3, 독립 검토와 재검토, 열린 충돌 셋의 사용자 결정(9.9절, 9.7절의 계보 행, 12절), 구현 시작. 그 전: 2026-10-15, pilot 2(set `mi2`, 빌드 i3)가 결함 A, C, D의 고침을 확인했고 고침 묶음의 독립 리뷰는 막는 문제 없음; 리뷰의 사전 등록 전 항목을 반영: 채점 셈이 설계한 짝 보호 공백을 따로 셈(사용자 결정 대기), `store_rdma`가 체크포인트 닫기 줄을 읽음, A의 호출자 단위 시험, 첫 깨짐 진단, 죽은 프로세스의 늦은 STORE_REQ에 답 없음, magic "RSS5", 학습 hold의 BAR1 읽기, 빌드 i4(연구 `c89ce744`, 운영 `12a0edec`), CPU 단위 시험 넷 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음(12절). 사용자 결정 넷과 사전 등록 숫자는 19절. 그 전: 2026-10-15, pilot 1(set `mi1`)의 결함 넷: 셋을 고치고(되살린 rank의 저장소 요청, mirror 켠 프로세스의 window를 NIC 복사 경로에서 뺌, 비용 peer 팔의 mirror 대상) 하나를 점검(rc 4 셀 셋은 설계 길), 갈래 `exp/gin-mirror-fix`, 빌드 i3(연구 `feefaf6d`, 운영 `2e4008e6`), CPU 단위 시험 넷 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음(12절). 다시 하는 pilot 전. 그 전: 2026-10-15, 다섯 갈래의 병렬 구현과 통합: `exp/gin-mirror-int`에서 하나의 계층([impl/mi_layer.diff](impl/mi_layer.diff), md5 `e27998db`)으로 합침, 빌드됨(연구 `1b50d11b`, 운영 `a34db6e6`), CPU 단위 시험함(넷, 0 failed), 매크로 없는 장치 코드가 hk와 i5에 SASS와 자원까지 같음, 시험 드라이버를 통합 헤더로 다시 빌드, 독립 리뷰 둘 반영(12절). pilot 전([impl/test/PILOT_MI.md](impl/test/PILOT_MI.md)). 그 전: 2026-10-13, 공유 인터페이스(impl/의 헤더 여섯, [impl/PARALLEL.md](impl/PARALLEL.md), build_mi.sh 뼈대)와 실행 가능성 확인 1, 3, 4의 결과(9.8절, `[측정]`; 9.3, 9.4, 9.5절의 수치). 그 전(같은 날): 재검토가 연 충돌 → (가) INJECTED(9.4절), 올리기 꼴 확인; 재검토의 고칠 것 여섯; RDMA 저장소, 단계 맞춤 가져오기, 첫 검토, 결정 여덟; 학습 모양; 초안. 라이브러리 구현과 빌드 없음 |
 
 표시: `[측정]` 원자료나 시행별 표에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함. gin-restore 문서의 수치를 옮길 때는 원자료에서 다시
 셌는지 함께 적는다.
@@ -577,12 +577,31 @@ e의 첫 성공한 멈춤이다. 그 멈춤에서 보내는 rank들이 e의 칸�
 | 정리와 해제 | 늦은 mirror 쓰기, 저장소 WRITE | mirror, 올리기, FETCH QP를 없앤 뒤 MR 해제, 그 뒤 메모리 해제 | 닫힘 | 2551–2557, 7744– |
 | mirror 문맥 하나를 모든 사용자 문맥이 나눔 | EXCLUSIVE, CTA 공유 모드로는 못 냄 | GPU 범위 공유 모드 | 닫힘(가정 유지) | rs 트리 gin_gdaki.h 1804–1815 |
 | 복원 뒤 짝 보호 공백, RESTORED 적용 | 되살린 짝에 이미지와 pool이 없음 | 결정: 저장소 길은 늘 전체 이미지와 STORE_REQ, TCP 길은 기반 지우기(두 까닭), 다시 무장은 지금 규칙(9.6절) | 닫힘(결정) | 5183–5195, 8552, 8697–8742, 7039–7083 |
+| 계보: 상태 조건(HELD만, 거절된 rank에 FAIL, PUBLISHED류, 무장 조건) | 국면이 HELD와 TIMED_OUT_HELD, COMMITTING과 PUBLISHED를 지워 TIMED_OUT_HELD에서 ACTIVATE나 REJOIN 받아들임이 생김(검토가 찾음) | 계보는 화신 비교만 바꾸고 상태 조건은 그대로(9.9절 규칙 표의 열) | 닫힘 | H:9213–9218, 13264, 13411, 12578–12581(9.9절의 `H:`) |
+| 계보: 저장소 요청 버림 | 입력 셋(거절 여부, 칸 화신, known)을 따로 읽어 출처를 잘못 고를 수 있음(결함 A) | CURRENT만 serve; FUTURE와 CANCELLED만 지금과 다름(둘 다 닿지 않음) | 닫힘 | H:15952–15959, 16535–16549 |
+| 계보: serve 끝의 답, STORE_ACK | 죽을 때 serve 중이던 요청의 답이 새 프로세스의 소켓으로; 받는 쪽은 seq만 봄 | 보내기 직전에 요청 화신을 다시 가르고 CURRENT만 보냄, wire 그대로 | 닫힘(결정 2026-10-15 (나)) | H:16620–16647, 15640 |
+| 계보: REJOIN 받아들임 | HELD, known + 1, 거절된 rank에 FAIL, 단계 REJOIN, 받아들인 뒤 H:13421 | 상태 조건 그대로 + FUTURE이고 x = dead + 1 + 받아들임 순간의 park 검사 | 닫힘 | H:4600, 9213–9227, 13411–13421 |
+| 계보: hold 칸의 수명 | 승격까지 죽은 화신, known은 REJOIN에서 | 두 출처 그대로, 국면으로 읽음; H:13421은 BAD 판정(fallback) | 닫힘 | H:5571–5960 |
+| 계보: 예비 프로세스의 생존 rank 칸 | OFF(0)으로 남아 known과 어긋남(BAD); 다시 무장된 rank의 둘째 hold에서 짝의 세기가 차지 않음 | REJOIN_ACK에서 CAS OFF(0) → OFF(그 rank의 화신), classify와 한 커밋 | 닫힘 | H:5579, 9845–9850, 12853, 6058–6073 |
+| 계보: 활성화와 'later' | 죽은 화신마다 차례, 20 ms 다시 묻기, 답은 magic만 봄 | 차례 그대로; 답의 되울림(rank, 화신 = dead + 1)과 등록 화신 = dead 검사를 더함 | 닫힘 | H:13260–13345, 9599, 9680–9740 |
+| 계보: 체크포인트 무장, 되살린 rank는 무장 안 됨 | 예비 주소가 없으면 무장 표시 없음; 승격 뒤 OFF | 같음; 다시 무장은 설계만(9.9절) | 닫힘(결정 2026-10-15 (가)) | H:14581, 15278 |
+| 계보: segment와 세대 | INJECTED에서 닫힌 segment를 버리고 hold 끝에서 절단점 표를 비움 | 같음 | 닫힘 | H:7233–7247, 14641–14645 |
+| 계보: 저장소 세대와 소켓 세대 | 짝 화신과 짝지어 씀 | 같음 | 닫힘 | H:16300, 16424, 16733 |
+| 계보: FETCH, mirror 켬 | 활성화 차례마다 QP, ACCEPTED 뒤에만, READY 뒤 기다림 스레드 | 같음 | 닫힘 | H:20313–20326, 20643–20652 |
+| 계보: FETCH와 UPLOAD, mirror 끔(TCP) | 체크포인트 번호만 봄; fallback 뒤 예비 프로세스에 이미지를 줄 수 있음 | 그대로(그 예비 프로세스의 REJOIN에 거절된 생존 rank가 FAIL); 틈은 18절 | 닫힘(결정 2026-10-15 (가)) | H:14832–14945, 9213–9216 |
+| 계보: mirror lane의 맡은 rank 뜻(9.6절) | 짝 b가 붙잡히면 b가 맡은 rank 쪽 lane이 깨지고 DISARM | 같음("그 lane은 b의 화신이 CURRENT일 때만 유효"로 설명), 코드와 줄 그대로 | 닫힘 | H:22233–22250 |
+| 계보: 둘째 복원의 끝점 표 | 표 화신 = 짝의 known | 표 화신 = view.cur(같은 값) | 닫힘 | H:20530–20541, 8682, 8700 |
+| 계보: 재연결 펜싱 | known = 0이거나 pad = known | view.cur와 견줌(같은 결과; ENDED도 cur와 견줌) | 닫힘 | H:9110–9114 |
+| 계보: 시험 스위치 | 확정 무장 체크포인트 누적 수 | 그대로; 둘째 죽음 셀에서 쓰지 않음 | 닫힘 | H:13917–13919 |
+| 계보: 채점기 열 | 줄 글자로 셈 | 그대로; 새 열 `lineage_warn`(`GIN/LN` 줄 수, 0이어야) | 닫힘 | impl/test/rows_mi.py |
 
 **결정으로 닫은 충돌**(모두 2026-10-13, 메인 세션이 전함): (1) 원격 완료 → local 완료 규칙(9.5절); (2) 복원 뒤 짝 보호 공백 → 범위 안(9.6절); (3) 앞서 되살린 rank의
 낡은 끝점 → 활성화 덩어리, TOKEN QPN, STATE rkey(9.4절); (4) 받는 쪽 단일 대입과 rain BAR1 → 단계 맞춤 가져오기, 2 MiB 그대로(9.4절); (5) rain QUERY_QP 상한 → 학습
 셀만 QP 감시 50 ms(무장 조건은 켜져 있음뿐이라 바꿀 것 없음; gin-restore 6절의 "10 ms"는 그 실험의 설정 값); (6) TCP 처리량 → RDMA 저장소와 READ(9.4절); (7) 버려진
 멈춤과 체크포인트 → 되돌리기와 다시 시작(9.3절); (8) mirror QP 장애 기록 → 흡수, 짝을 거절하지 않음(9.5절); (9) 단계 맞춤 가져오기 대 게이트에서 쉰 생존 rank의
-put → 게이트를 INJECTED까지 홀수, PUBLISHED의 끝과 시한이 바뀜(9.4절).
+put → 게이트를 INJECTED까지 홀수, PUBLISHED의 끝과 시한이 바뀜(9.4절). 계보(9.9절)의 열린 충돌 셋(2026-10-15 사용자 결정, 메인 세션이 전함): (10) serve 중이던
+낡은 요청의 답 → (나) 보내기 직전 다시 가름, wire 그대로(STORE_ACK의 `wardInc`는 다시 무장 작업으로 미룸); (11) mirror 끈 TCP 데이터 길 → (가) 그대로(18절);
+(12) 다시 무장의 범위 → (가) 계보만, 다시 무장은 설계로만(19절).
 
 **가정(사용자가 그대로 둠).** mirror 문맥 하나를 GPU 범위 공유 모드로, mirror와 checksum 함께 켜면 Resume 거절, 재기만 하는 모드의 self와 peer 팔, 초안 값. 결정 (6)으로
 segment FETCH는 TCP가 아니라 RDMA READ가 됐다.
@@ -598,7 +617,7 @@ segment FETCH는 TCP가 아니라 RDMA READ가 됐다.
 | CKPT_STABLE에 배치를 실음(WRITE with immediate 아님) | 이 문서의 선택 |
 | 학습 셀 L 80 MiB(S 3이면 pool 720 MiB, S 2면 480 MiB) | 이 문서의 선택 |
 
-**열린 충돌 없음**(2026-10-13, 아홉째 결정 뒤). 다음은 9.8절의 실행 가능성 확인 넷과 공유 인터페이스 작성, 그 뒤 작업 묶음의 병렬 구현이다.
+**열린 충돌 없음**(2026-10-13, 아홉째 결정 뒤; 2026-10-15 계보의 셋도 결정으로 닫힘). 다음은 9.8절의 실행 가능성 확인 넷과 공유 인터페이스 작성, 그 뒤 작업 묶음의 병렬 구현이다.
 
 ### 9.8 구현 계획과 실행 방법 (구현 전)
 
@@ -649,6 +668,7 @@ segment 묶음이 모두 8125–8175를 만짐), hook 차례(mirror 흡수 → `
 | 끝점 갱신 | spare | 예비 프로세스 driver: `pe.addr` 덮기, TOKEN QPN으로 잇기, 화신 0 검사와 WARN, rkey 목록 쓰기, RESTORED 뒤 STORE_REQ | 활성화 덩어리를 받음 | S–M, 300 |
 | 시험과 비용 | test | `impl/test/gin_rs.cu`(`RS_OVERWRITE`, `RS_TRAIN` 받는 고리 R = 4), 비용 driver(`lat2m`, `bw2m`, mirror 팔), 셀 파일, 실행기(예비 프로세스 둘, seed 무작위 kill, hold 나눔, 학습 셀 QP 감시 50 ms, 예비 프로세스 기다림 ≥ 120 s), 채점기 열 | 라이브러리 줄 형식을 받음 | M, 600–800 |
 | 통합과 검사 | 메인 세션 | 갈래 합치기, CPU 단위 시험(`impl/mi_unit_<이름>.cc`), 기계어 비교, 독립 코드 검토, 확인 넷의 도구 | 모두 | M |
+| 계보(lineage, 2026-10-15; 9.9절) | 갈래 없이 `exp/gin-mirror-fix`(빌드 트리 `agent_mi_fix/`, 이름 `ln1`) | 새 [impl/rs_lineage_api.h](impl/rs_lineage_api.h)(국면, 보기, classify, 줄 머리), `gin_host_gdaki.cc`의 화신 비교 자리와 새 영역 "gin-mirror (lineage): pure", REJOIN_ACK 칸 쓰기, park 검사, serve 끝 다시 가름; 새 `impl/mi_unit_lineage.cc`, `impl/mi_unit_store.cc` 모형, `impl/test/rows_mi.py` 열 `lineage_warn`, `build_mi.sh` `BR=ln` | 보기를 냄 / 칸과 known을 받음 | L, 1 700–2 200 |
 
 **학습 모양 모드(`RS_TRAIN=1`; 셀은 7절).**
 - 전송: 단계마다 rank마다 상대 셋에 2 MiB put과 신호 1(단계 짝에 따른 신호 둘), rank마다 단계당 6 MiB, 2 000단계, 단계 사이 5 000 µs. 상대별 flush가 돌아온 바로 뒤
@@ -672,6 +692,156 @@ segment 묶음이 모두 8125–8175를 만짐), hook 차례(mirror 흡수 → `
 - **실행:** `harness/gpu-initiated/common/cluster_run.sh` 안에서 메인 세션이 한다.
 - **채점:** 3절 예측의 표 파일과 채점기(사전 등록 때 만듦).
 - **출력:** `results/<날짜>_<이름>/`, 원자료는 Release.
+
+### 9.9 계보(lineage): 화신 판정을 한 곳으로 (2026-10-15 사용자 결정, 사전 등록 전)
+
+설계 원문은 세션 스크래치 `lineage/DESIGN.md`(v3, 490줄; 1절이 화신을 적는 곳과 견주는 자리 약 50곳의 목록), 독립 검토는
+`lineage/REVIEW.md`(375줄: v1 검토와 v2 재검토)다. 이 절의 `H:N`은 `lineage/snap_host.cc`(md5 `cc4eea3d`, 24 020줄 = 빌드 i4의
+`gin_host_gdaki.cc`)의 줄이다. 이 절은 측정을 새로 하지 않았다(`[소스]`, `[추론]`).
+
+**왜.** 복원 계층은 rank d의 화신(d를 맡은 프로세스의 번호; 처음 0, 죽음 i의 복원이 i + 1을 만듦, H:5485–5487)을 두 곳에 적는다:
+생존 rank가 상대마다 두는 hold 칸의 화신(승격에서만 + 1, H:5954)과 REJOIN 받아들임이 올리는 아는 화신 `knownInc`(H:9251). 두 출처는
+REJOIN 받아들임부터 승격(mirror 끔 RESTORED, mirror 켬 INJECTED)까지 일부러 한 칸 다르다. pilot 1의 결함 A(12절)는 저장소 요청의 버림
+판정이 잘못된 출처를 고른 것이었다. 계보는 두 출처를 한 번에 읽어 국면과 보기를 만들고, 메시지에 실린 화신 x를 넷으로 가르는 함수
+`gdakiLnClassify` 하나로 화신 비교를 모은다. **화신 비교만 바꾸고 상태 조건(HELD만, 거절된 rank에 FAIL, PUBLISHED류, 무장 조건)은 그대로
+둔다.** wire, 장치 코드, 측 표, 채점기와 손 검사가 읽는 줄은 바꾸지 않는다. 새 공유 헤더 `impl/rs_lineage_api.h`는 호스트 파일에만 붙는다.
+
+**국면과 보기**(`gdakiLnViewOf(칸 상태, 칸 화신, known, 거절 여부)`). 국면은 화신 축만 나타내고 HELD와 TIMED_OUT_HELD, COMMITTING과
+PUBLISHED의 구별은 상태 조건으로 따로 읽는다.
+
+| 국면 | 조건 | cur | dead |
+|---|---|---|---|
+| LIVE | 칸 OFF/ARMED, known = 칸 화신 | 칸 화신 | 없음 |
+| HOLD_WAIT | 칸이 붙잡은 상태, known = 칸 화신 | 칸 화신 | 칸 화신 |
+| HOLD_SUCC | 칸이 붙잡은 상태, known = 칸 화신 + 1 | known | 칸 화신 |
+| ENDED | 칸 FALLBACK/CANCELLED, 또는 그 rank가 거절됨 | known | 칸 화신 |
+| BAD | 그 밖(불변식 1을 어김) | known | 칸 화신 |
+
+- 자기 자신과 hold 상태가 없는 프로세스(fail-fast, 재기만 하는 모드)의 보기는 `{LIVE, 자기 known}`이다. 보기를 읽는 `gdakiLnOf`는 helper
+  스레드 것이고(예비 프로세스의 driver는 helper가 뜨기 전 같은 스레드), 다른 스레드는 자기 known만 읽는다(H:17060, 15218, 22721).
+- 불변식: (1) 칸 화신 ≤ known ≤ 칸 화신 + 1이고, known = 칸 화신 + 1은 붙잡은 상태나 그 hold가 끝난 FALLBACK, CANCELLED에서만; (2) 칸
+  화신은 승격에서만, known은 REJOIN 받아들임에서만(예비 프로세스는 ACTIVATE와 REJOIN_ACK에서 정해짐) 오른다; (3) 짝에서 d의 후계가
+  CURRENT이면 그 후계의 FETCH는 끝났다(H:9748–9766); (4) REJOIN 받아들임 순간 d의 park에는 화신을 싣지 않는 기록(11–15, 48–51)이 없다.
+
+**classify**(`gdakiLnClassify(보기, x)`):
+
+| 국면 | x < 하한 | x = dead | x = cur(≠ dead) | x > cur |
+|---|---|---|---|---|
+| LIVE | STALE(x < cur) | – | CURRENT | FUTURE |
+| HOLD_WAIT | STALE(x < dead) | HELD_OLD | (cur = dead) | FUTURE |
+| HOLD_SUCC | STALE(x < dead) | HELD_OLD | CURRENT | FUTURE |
+| ENDED | STALE | STALE | STALE | STALE |
+| BAD | LIVE처럼 cur = known으로 가름, 그 rank에 한 번 `GIN/LN` WARN; 칸이 붙잡은 상태면 지금처럼 fallback(H:13421 자리) | | | |
+
+**호출자 규칙.** "상태 조건" 열은 지금 코드 그대로이고 호출자는 그 조건을 먼저 본 뒤 classify한다. 마지막 열은 지금 코드와 견준 것이다.
+
+| 결정(H:줄) | x | 상태 조건(그대로) | CURRENT | HELD_OLD | STALE | FUTURE | 지금과 |
+|---|---|---|---|---|---|---|---|
+| HOLDING 세기(13077–13079, 6056–6063, 20289) | round | 이 rank가 d의 짝 | 셈 | 셈 | 버림 | 새 화신으로 다시 셈 + `GIN/LN` | 같음(뒤의 활성화가 같음) |
+| 짝 자신의 세기(12853) | view.dead | hold 시작 6단계, 칸 HELD | – | 셈 | – | – | 같음 |
+| hold 시작(12770–12860) | view.cur | `gdakiHoldDeclineAction` 전부 | HELD(x), HOLDING(d, x) | – | – | – | 같음 |
+| 활성화(13260–13345) | `holders.inc` | 칸 HELD만(TIMED_OUT_HELD 아님), 모두 HOLDING, 아직 활성화 안 됨 | – | ACTIVATE(dead + 1), 차례 열쇠 dead | – | – | 같음 |
+| 활성화 답(9599, 20581–) | 답의 화신 | 같은 연결 | 답의 rank = d, 화신 = dead + 1이면 받음; 어긋나면 "답 없음"으로 세어 두 번 규칙(H:13337–13343) | | | | 다름(새, 셀에서 늘 통과) |
+| 활성화의 예비 등록(15262–15276, 16960–16968) | 등록 화신(TCP 확정 이미지 머리 H:14689, 저장소 `rec.inc` H:15876) | 짝만 | – | 씀 | "등록 없음" fallback | "등록 없음" fallback | 다름(새, 셀에서 늘 같음) |
+| REJOIN 받기(4600, 9213–9227) | pad | 거절된 rank면 FAIL(먼저); HELD만; 구동은 HELD와 단계 REJOIN에서만(H:13411–13416), 받아들인 뒤 보기가 HOLD_SUCC가 아니면 BAD로 fallback(H:13421) | 거절 | 거절 | 거절 | x = dead + 1이면 park 검사 뒤 받음, 아니면 거절 | 같음 |
+| 예비 프로세스의 되울림(9838, 9861, 9922) | pad | 임시 소켓 | 받음(자기 보기) | – | 지금처럼(REJOIN_ACK는 다시 걺, TOKEN과 DONE_RS는 끝) | 같은 처리 + `GIN/LN` | 같음 |
+| READY(9297), rkey 목록(9447) | pad, 화신 | READY: 받아들인 REJOIN이 있음 | 받음 | 거절 | 거절 | 거절 | 같음 |
+| RESTORED(5731, 9517, 13008, 22445–22448) | pad | PUBLISHED, TIMED_OUT_PUBLISHED; mirror 켬은 `restoredPad`만 적음 | 적용 | 무시 | 무시 | 무시 | 같음 |
+| INJECTED(7351–7359) | pad | 형식 검사, PUBLISHED류, `restoredPad` = x | 적용(LIVE면 되풀이라 무시) | 무시 | 무시 | 무시 | 같음 |
+| FALLBACK(d, x)(5745–5752) | round | 칸 상태, `revivedFrom` | LIVE: ARMED면 OFF; HOLD_SUCC: 무시 | 이 hold의 fallback | x = `revivedFrom`이고 칸 화신 = x + 1(칸 화신: 붙잡은 중이면 view.dead, 아니면 view.cur): 붙잡지 않았고 칸 OFF/ARMED면 cur 거절(gin-restore 9.10.7절 P2), 붙잡은 중이면 그 hold의 fallback; 그 밖 무시 | 무시 | 같음 |
+| NOHOLD(d, x)(5739–5742) | round | 칸 상태 | LIVE: ARMED면 OFF | fallback | 무시 | 무시 | 같음 |
+| DISARM(5736–5738, 12952) | 안 봄 | ARMED → OFF, 붙잡음 → `disarmDuringHold` | 모든 갈래 적용 | | | | 같음 |
+| 무장(12926–12943, 14303–14309) | view.cur | `gdakiHoldArmOk`의 조건, CKPT_STABLE의 ARMABLE | ARMED(cur) | – | – | – | 같음 |
+| 화신 없는 체크포인트 기록 11–15(13611–13616) | 없음 | HELD에서 붙잡은 rank의 기록 처리 | 받아들임 뒤는 새 프로세스 것 | HELD에서 처리 | – | – | 같음(받아들임 때 park 검사가 둘을 가름) |
+| 자기에 대한 FALLBACK(13530–13538) | round + 1 | 되살린 프로세스, 아직 자기 끝 아님 | 자기 끝 | – | 버림 | 버림 | 같음 |
+| STORE_REQ(16535–16549, 16600) | 요청 화신 | serve 판정(seq, 크기, H:15611–15612)은 그대로 뒤에 | serve | 버림 | 버림 | 버림 + `GIN/LN` | 같음; FUTURE와 CANCELLED만 다름(지금은 serve; 닿지 않음) |
+| serve 끝의 답(16620–16647) | 요청 화신 | helper 스레드, 보내기 직전 | 보냄 | 버림 | 버림 | 버림 | 다름(새, 열린 충돌 1의 답) |
+| 올리는 쪽(15722, 16747–16751) | 짝의 cur | 짝 소켓 있음, 거절 안 됨, 붙잡히지 않음 | 청함 | – | – | – | 같음 |
+| 짝 복원 뒤 저장소(16977–16992) | 짝의 cur | 짝일 때, RESTORED 적용 때 | 화신마다 한 번 | | | | 같음 |
+| 주소 표, QPN, rkey, TOKEN QPN(8682, 8700–8775, 9227, 9867–9892, 20530–20541) | q의 cur | – | "앞서 되살아남" = cur > 0 | | | | 같음 |
+| 재연결 펜싱(9110–9114) | pad | `gdakiRsRequested`일 때만; 거절된 rank에는 hk가 먼저 FAIL | x = cur면 받음 | HOLD_WAIT 받음(cur = dead), HOLD_SUCC 거절 | 거절(ENDED는 x = cur면 받음) | 거절 | 같음(cur = 0이면 모두 받음) |
+
+**보내는 쪽.** 싣는 값은 지금과 같고 보기의 칸으로 읽는다: HOLDING과 FALLBACK의 round는 view.dead(HELD로 CAS한 뒤의 보기), NOHOLD는 ARMED의
+cur, ACTIVATE 화신과 활성화 차례 열쇠는 view.dead + 1과 view.dead, TOKEN과 DONE_RS의 pad와 STATE와 내보내기 머리의 화신은 view(p).cur,
+주소 표의 생존 rank 화신은 view(q).cur, 자기 known을 싣는 것(INJECTED, RESTORED, STORE_REQ, 체크포인트 머리, REJOIN_ACK의 자기 화신,
+HELLO와 PROBE)은 자기 cur. 화신 없이 상태만 읽는 자리(`gdakiMiKeepGatesOdd`, `gdakiStoreWardHeld`, armable의 FALLBACK/CANCELLED, CONFIRMING의
+"declined or held", 올리기의 "buddy not held", `gdakiRsHoldIsHeld`, PAUSED와 BUSY)는 그대로다.
+
+**찾은 숨은 문제 둘** `[소스, 추론]`:
+- 예비 프로세스의 생존 rank 칸이 OFF(0)으로 남는다(H:5579; REJOIN_ACK 처리 H:9845–9850에 칸 쓰기가 없음). `mi4_kill2_kill3_ow`,
+  `mi4_train_kill2_kill3`에서 되살린 rank 3은 rank 2를 칸 OFF(0), known 1로 둔다(BAD). rank 2가 다시 무장되고 죽으면 rank 3(rank 2의 짝)은
+  자기를 칸 화신 0으로 세고(H:12853) 다른 rank의 HOLDING(2, 1)과 어긋나 세기가 차지 않는다(H:6058–6073): 활성화 없이 시한 fallback이고 줄은
+  "the restore deadline passed"뿐이다. 지금 셀에서는 rank 2가 다시 무장되지 않아 닿지 않는다. 계보는 REJOIN_ACK에서 칸을 CAS로 OFF(0) →
+  OFF(s)로 쓰고(OFF(0)이 아니면 `GIN/LN` WARN) 이 쓰기를 classify 사용과 한 커밋에 넣는다. 그 쓰기 없이 BAD를 STALE로 다루면 둘째 복원 뒤
+  rank 2의 STORE_REQ("reason=buddy")가 버려져 결함 A 꼴이 다시 나므로, BAD는 known을 cur로 쓴다.
+- 죽을 때 serve 중이던 STORE_REQ의 답이 REJOIN 받아들임 뒤 새 프로세스의 소켓으로 나갈 수 있다(H:16620–16647; 받는 쪽은 seq만 봄,
+  H:15640). 무장된 프로세스의 serve 중 요청은 seq ≥ 2라 새 프로세스(seq 1부터)에 사실상 받아지지 않는다. 답을 보내기 직전에 다시 가른다(아래
+  열린 충돌 1).
+
+**받아들임 순간의 park 검사.** REJOIN 받아들임이 소켓을 설치하기(H:9269) 직전에 d의 park에 11–15, 48–51형 기록이 남아 있으면 `GIN/LN` WARN을
+쓰고 그 기록을 버린다(있는 `takeIf`). 같은 helper 걸음에서 이 기록들은 받아들임보다 먼저 꺼내지고(H:13611–13616, 13649, 13658) 죽은
+프로세스의 소켓은 닫혀 있으므로 정상 실행에서는 줄이 없다 `[추론]`. `impl/rs_hold_api.h`와 park의 서명은 그대로다.
+
+**줄.** 새 줄은 머리 `GIN/LN:` 하나이고 BAD, 예상 밖의 FUTURE(HOLDING, STORE_REQ, 되울림), REJOIN_ACK 칸 쓰기의 어긋남, park 검사의 위반만
+쓴다. 받아들인 REJOIN과 'later' 동안의 FUTURE는 정상이라 쓰지 않는다. `GIN/LN` 줄에는 `why=`를 쓰지 않는다(gin-restore 채점기의 거절 줄
+정규식이 줄 어디서든 `why=(declined|peer-dead|degraded)`를 찾음). 채점기 열 `lineage_warn`(rows_mi.py)은 시행의 `GIN/LN` 줄 수이고 0이어야
+한다. 채점기와 손 검사가 읽는 줄("restored as incarnation", "is given up", "armed at its stable checkpoint", "disarmed", "lane to rank ...
+broken", "hold of rank ... started", "store request ... dropped", "store ready at buddy")의 글자는 그대로다.
+
+**지금 코드와 다른 것**(다름 목록; 다른 행은 모두 같아야 함): 활성화 답의 되울림, 예비 등록 화신 = dead, STORE_REQ의 FUTURE와 CANCELLED,
+serve 끝의 답의 다시 가름. 지금 셀에서는 넷 다 지금과 같은 결과다 `[추론]`.
+
+**열린 충돌 셋과 답**(2026-10-15 사용자 결정, 메인 세션이 전함; 9.7절):
+1. serve 중이던 낡은 요청의 답 → (나): 짝이 답을 보내기 직전에 요청 화신을 다시 가르고 CURRENT만 보낸다. wire와 공유 인터페이스 그대로.
+   STORE_ACK의 늘 0인 `pad`를 `wardInc`로 쓰는 (가)는 다시 무장 작업(화신이 여럿 이어지는 때)으로 미룬다.
+2. mirror 끈 TCP 데이터 길(FETCH와 UPLOAD가 체크포인트 번호만 봄) → (가) 그대로. 틈은 18절.
+3. 다시 무장의 범위 → (가) 계보만. 다시 무장은 아래 설계로만 두고 19절 다음 작업.
+
+**다시 무장(설계만, 구현하지 않음).**
+- 등록: 화신 c(≥ 1)의 예비 등록은 c의 프로세스가 직접 한다. `NCCL_GIN_RESTORE_SPARE_ADDR`를 읽는 곳은 `gdakiCkptSelfOf` 하나이고(H:13859–13884)
+  `gdakiCkptCreate`가 원래 프로세스와 예비 프로세스 모두에서 부른다(H:15481). 그래서 예비 프로세스에 그 변수를 주면 코드 바뀜 없이 등록된다
+  `[소스]`. 실행기가 환경을 넘기는지, 둘째 예비 프로세스의 초기화 재생이 첫 예비 프로세스가 도는 동안 같은 기록으로 되는지는 `[미확인]`.
+- 짝은 등록 화신 = dead를 본다(계보가 더함). 잘못 간 ACTIVATE는 포트 분리, 생존 rank의 REJOIN 검사(HELD만, known + 1), 짝의 등록 화신 검사가
+  막는다. 남는 것은 생존성: 원래 PID를 실은 ACTIVATE가 잘못으로 둘째 예비 프로세스에 닿으면 그것이 소모된다. 다시 무장 전에 예비 프로세스가
+  ACTIVATE 화신을 기대 값과 견주게 하기를 권한다.
+- 시험 스위치 `NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT`의 상속(누적 수, H:13917–13919), 실행기의 몫(같은 노드와 GPU의 예비 프로세스 둘, 둘째의 포트,
+  늦은 띄우기), rain BAR1(넷째 등록이면 약 125 MiB로 8절의 시작 검사 128 MiB 아래 `[추론]`), hk 라운드의 QPN이 바뀌는지 `[미확인]`.
+- 범위 밖: 동시 다중 죽음, 복원 중의 죽음, 다른 노드의 예비 프로세스, mirror 끈 길의 둘째 복원, 넷째 화신부터.
+
+**시험.** 새 `impl/mi_unit_lineage.cc`(ASan, UBSan):
+1. 보기 표(칸 상태 9 × 칸 화신 0–3 × known 범위 × 거절 여부)와 classify 표(국면 5 × x 창);
+2. oracle: 행마다 지금 호출자의 판단 전체를 사본 줄에서 옮긴 `old_<행>`(공유와 순수 영역의 옛 함수 여섯 `gdakiHoldInjectedAction`,
+   `gdakiHoldMsgAction`, `gdakiHoldArmOk`, `gdakiMiInjectedCheck`, `gdakiStoreDropReq`, `gdakiStoreDropOldInc`는 바이트 그대로 남아 그대로
+   부름)과 계보 구현 `new_<행>`을 정당한 보기 전부 × x 창에서 견주고, 다른 (행, 국면, 갈래) 칸의 집합이 다름 목록과 정확히 같아야 한다.
+   정의역의 도달 가능 조건: COMMITTING, PUBLISHED, TIMED_OUT_PUBLISHED이면 known = 칸 + 1; HELD, TIMED_OUT_HELD에서 단계 REJOIN이면 known
+   = 칸이고 그 역도; `restoredPad`는 0이거나 ≤ known; `revivedFromValid`이면 `revivedFrom` < 칸 화신; 거절된 rank의 칸은 OFF, FALLBACK,
+   CANCELLED; LIVE의 x 창 아래 끝은 cur 기준. BAD 정의역은 따로;
+3. 호출자 변이: 결함 A 꼴(칸 화신을 cur로, 또는 dead 대신 known)로 보기를 만든 호출자는 시험이 틀려야 한다;
+4. 장면: 첫 죽음(mirror 끔, 켬), 결함 A, 짝과 짝 아닌 rank의 세기, 늦은 CKPT_STABLE, 짝 복원 뒤 둘째 죽음(REJOIN_ACK 칸 쓰기), REJOIN 뒤
+   fallback, 활성화 답 없음, 죽은 프로세스의 park된 STORE_REQ, 낡은 STORE_ACK(seq ≥ 2 합성), park 검사, 셋째 화신, TIMED_OUT_HELD,
+   TIMED_OUT_PUBLISHED, CANCELLED, NOHOLD, hold 중 DISARM, 국면이 다른 생존 rank, 되살린 프로세스의 자기 끝, HOLD_SUCC의 재연결 펜싱.
+`impl/mi_unit_store.cc`의 모형은 hold 칸과 known 대신 계보 보기를 쓰고 새 짝 프로세스의 칸을 REJOIN_ACK 칸 쓰기로 만든다(전에는 OFF(wardInc)를
+가정해 숨은 문제를 잡지 못함). 다른 단위 시험은 고치지 않고 그대로 통과해야 한다.
+
+**pilot 4**(set `mi4`, 채점 제외; 메인 세션이 `cluster_run.sh` 안에서; 계보 빌드 `ln1`). 모든 셀에서 pilot 2와 같은 판정, `lineage_warn` 0,
+"store request ... dropped"는 죽은 프로세스 것만, mirror 끈 회귀의 줄 수와 판정이 pilot 2와 같음을 본다.
+
+| 셀 | n | 지나는 전이 |
+|---|---|---|
+| `mi4_kill3_ow` | 2 | LIVE → HOLD_WAIT('later') → HOLD_SUCC → PUBLISHED 중 STORE_REQ(1) CURRENT → INJECTED 승격 |
+| `mi4_kill3_ckpt_ow` | 2 | 멈춤 중 죽음: HELD에서 죽은 화신의 체크포인트 기록 처리 |
+| `mi4_kill2_kill3_ow` | 2 | 짝 승격 뒤 저장소 다시 청함, 예비 프로세스의 칸 OFF(1), 주소 표 TAKE, 둘째 복원 |
+| `mi4_train_kill2_kill3` | 1 | 가장 긴 HOLD_SUCC(단계 맞춤 가져오기), INJECTED 되풀이 |
+| `rs4_kill3`, `rs4_kill3_ckpt` | 2, 1 | mirror 끔: RESTORED 승격, TCP 길 그대로 |
+| `rs4_kill3_mion` | 1 | mirror 켠 gin-restore 회귀: 저장소와 INJECTED 길 |
+| `rs4_kill3_spareabsent` | 1 | HOLD_WAIT → ENDED(활성화 답 없음), FALLBACK 방송 |
+| `mi4_kill3_ow_sampled` | 1 | REJOIN 뒤 fallback(내보내기 거절): HOLD_SUCC → ENDED, 예비 프로세스의 자기 끝, 거절된 rank의 REJOIN에 FAIL |
+| `rs4_kill3_nospare`, `mi4_overflow` | 1, 1 | 무장 안 된 죽음: fail-fast ENDED |
+| `mi4_none_ow`, `rs4_none` | 1, 1 | LIVE만 |
+| `reg_rm4_kill3_untimed_hold` | 1 | gpu-detect 회귀 그대로 |
+
+단위 시험으로만 보는 전이: RESTORED 뒤의 FALLBACK, CANCELLED, TIMED_OUT_HELD와 TIMED_OUT_PUBLISHED, NOHOLD, hold 중 DISARM, 국면이 다른
+생존 rank, HOLD_SUCC의 재연결 펜싱, 셋째 화신, serve 중 죽음의 낡은 답, park 검사 위반.
 
 ## 10. 완료 조건과 QA 기준
 
@@ -705,6 +875,9 @@ segment 묶음이 모두 8125–8175를 만짐), hook 차례(mirror 흡수 → `
 - [x] pilot 1(set `mi1`)의 결함 넷: 셋 고침, 하나 점검, 빌드 i3, CPU 단위 시험, 기계어 비교, 드라이버 다시 빌드(2026-10-15, 12절; 클러스터 실행 없음)
 - [x] pilot 1(set `mi1`)과 pilot 2(set `mi2`) 실행(2026-10-15, 채점 제외, 12절): pilot 2가 결함 A, C, D의 고침을 확인
 - [x] 고침 묶음 리뷰의 사전 등록 전 항목: 채점 셈 둘, 단위 시험, 진단 고침, 작은 고침, 빌드 i4, CPU 단위 시험, 기계어 비교, 드라이버 다시 빌드(2026-10-15, 12절; 클러스터 실행 없음)
+- [x] 계보(lineage) 설계 v1, 독립 검토(막는 문제 2), v2, 재검토(막는 문제 없음, 조건 셋), v3, 열린 충돌 셋의 사용자 결정(2026-10-15, 9.9절, 12절)
+- [ ] 계보 구현, 빌드(`ln1`), CPU 단위 시험(새 `mi_unit_lineage.cc` 포함), 기계어 비교, 드라이버 다시 빌드
+- [ ] pilot 4(set `mi4`, 채점 제외): 계보 빌드로 9.9절의 셀 14개, `lineage_warn` 0
 - [ ] smoke와 pilot(채점 제외), 문턱과 n 고정
 - [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/gin-mirror-v1` 태그
 - [ ] 본 실행 (`RUNNING`)
@@ -797,6 +970,10 @@ segment 묶음이 모두 8125–8175를 만짐), hook 차례(mirror 흡수 → `
 | 2026-10-15 | 채점 셈 고침 둘째(이 작업에서 찾음, 리뷰 목록 밖; 사전 등록 전 DRAFT): `store_rdma`가 읽는 `tcp_image_bytes`, `tcp_segment_bytes`가 pilot 1, 2의 모든 시행에서 비어 있었다 `[측정]`: "store summary" 줄이 pilot 2 로그 109개 어디에도 없음(pilot 1도 0줄). 그 줄은 `gdakiStoreFree`가 문맥을 풀 때(`gdakiRecFree` → `gdakiHoldFree` → `gdakiCkptFree`) 찍는데 로그는 그 앞의 "checkpoints at close" 줄(`gdakiCkptTeardownLine`)에서 끝남 `[소스, 측정]`(그 뒤가 왜 로그에 없는지는 `[미확인]`). 이대로면 `store_rdma`가 본 실행에서 늘 자료 부족(라이브러리 열이 모든 시행에서 빔). 고침([impl/test/rows_mi.py](impl/test/rows_mi.py)): summary 줄이 없으면 모든 프로세스의 "GIN/RS: rank R checkpoints at close: ... upload_bytes=N"(summary와 같은 셈 `ck->nUploadBytes`)를 더해 `tcp_image_bytes`로, `tcp_segment_bytes`는 0(summary도 상수 0을 찍음: segment를 소켓으로 보내는 저장소 길이 없음 `[소스]`), 둘 다 없으면 빈 값. 판정식과 라이브러리는 그대로(줄을 앞으로 옮기는 라이브러리 고침은 하지 않음). 검증 `[측정]`(원자료에서 `rows_mi.py`로): pilot 2의 mirror 켠 셀 모두 0/0, mirror 끈 셀은 TCP 올리기 바이트(rs4_kill3 210 230 792, rs4_none 197 384 968, nomirror 130 351 840, sampled 53 645 368), pilot 1도 같은 꼴. 합성 시험 D에 셋(올림 없음 0/0, 올림 10 000/0, 줄 없음 빈 값), `selftest_mi.py` 통과 | 이 행과 같은 커밋 |
 | 2026-10-15 | 고친 계층(i4) 빌드됨(rain, nice 19, sm_75, sm_86, GPU와 RDMA 실행 없음; 위 진단 고침과 작은 고침의 마지막 상태): [impl/mi_layer.diff](impl/mi_layer.diff) md5 `4dd2927ab86be878eb3f6b534340b359`, 8 303줄; `mi_i4` libnccl `c89ce744312b1af057c85f6eac975baf`, `mip_i4` `12a0edeca10b491458a86471e9903e53`(공통 헤더가 바뀌어 장치 객체까지 다시 컴파일, 각 8 분; 경고는 바뀌지 않은 `symmetric_sched.cc:327` 하나씩). `BR=fix build_mi.sh api` 통과. CPU 단위 시험(ASan, UBSan): `mi_unit_dev` 568 999, `mi_unit_host` 1 563 414(16 함수), `mi_unit_store` 6 521 768(호출자 경우 4/4), `mi_unit_spare` 187 checks, 모두 0 failed `[측정]`. 기계어 비교(`BR=fix MIOUT=mi_i4 build_mi.sh ident`, 19 분 50 초): 매크로 없는 프로그램 넷 × sm_75, sm_86 = 8/8이 hk와도 i5와도 SASS 전체와 자원까지 같음; 라이브러리 장치 객체가 i5와 205 그대로 + 2(컴파일 해시만), 다른 것 0(연구, 운영); hk와 183 + 2, 22 다름(hk의 낡은 symmetric 객체); libnccl `-res-usage`(해시 가림) i5, hk와 같음; 매크로 변형 컴파일 경고 0. 요약 줄이 i3과 모두 같음. 매크로 변형의 자원은 i3과 ff, gin_ts2, gin_mr이 같고 ring 예제의 커널 하나만 레지스터 162 → 164(`rsMiNoteBreak`의 울타리; 매크로 빌드만) `[측정]`. 시험 드라이버(`MITREE=agent_mi_fix MIOUT=mi_i4 COSTOUT=cost_i4 MROUT=mr_i4 build_mi_test.sh mi nomacro cost mr`, 설치 헤더 digest `65fdf19b`, 경고 0; i3 드라이버는 그대로 둠): `gin_mi` `5887dfeacdde2ed96de0de9105e6eb88`, `gin_mi_nomacro` `5cd7246b79c7da5913e001dd1e88e4af`, `gin_ts2_mi` `05093a694d01979b638121555dbdf637`, `mr_i4/ff/gin_mr` `2b18db83fb5c7e46333868a85523ddde`, `mr_i4/hold/gin_mr` `6debbb6db79ead05d040afc22726493a`. `selftest_mi.py` 통과. 다음 배포 묶음 set `mi3`의 명령은 [impl/test/PILOT_MI.md](impl/test/PILOT_MI.md). 클러스터 실행 없음 | `agent_mi_fix/out/build_info_i4.txt`, `build_mi_i4.log`, `build_mip_i4.log`, `unit_i4.log`, `ident_i4.log`, `selftest_i4.log`, `test/build_test_i4.log`(세션 스크래치); 이 행과 같은 커밋 |
 | 2026-10-15 | `mi4_overflow`(고침 보고의 사용자 결정 2를 제안대로 구현, 따로 된 커밋; 사용자 결정 대기, 거절이면 이 커밋을 뺌). (1) 예비 프로세스의 활성화 기다림 `SPARE_WAIT_MS` 30 000 → 15 000 ms([impl/test/cells_mi.json](impl/test/cells_mi.json)의 P1과 G3 두 곳; `cells_mi.sh`에는 그 값이 없음): 활성화되지 않는 셀이라 시행 wall이 약 33 s에서 약 18 s로 줄어 G3에서 약 75 s를 아낌 `[추론: pilot 2의 32.7 s, 생존 rank는 시작 뒤 약 6 s에 끝남]`. (2) 예측 `overflow_failfast`를 넓힘(사전 등록 전 DRAFT라 고칠 수 있음): hold 시작 줄 없이 degraded 해제, 또는 hold가 시작되면 fallback으로 끝나 fallback + 2 000–2 500 ms에 해제(rank 3이 kill 순간 잠깐 무장돼 있으면 hold가 시작되고 내보내기가 깨진 lane으로 거절해 fallback; pilot 1에서 rank 3이 체크포인트 60에 한 번 무장됨 `[측정]`). 새 열 `fallback_release`([impl/test/rows_mi.py](impl/test/rows_mi.py): 첫 "is given up" 줄 뒤 2 000–2 500 ms에 모든 생존 rank가 풀림, 까닭을 가리지 않음; `nomirror_detect`는 이 열과 "source buffer changed"). 판정식 `count(lane_broken >= 1 and ((hold_started == 0 and degraded_release == 1) or (hold_started >= 1 and fallback_release == 1))) >= 4`. 원자료에서 다시 셈 `[측정]`: pilot 1, 2의 overflow 시행은 둘 다 hold 없이 degraded 해제(옛 식과 새 식 모두 참). 합성 시험: A의 시행 하나가 hold 길, D에 두 길의 열과 식 검사; `selftest_mi.py` 통과 | 이 행과 같은 커밋 |
+| 2026-10-15 | 사용자 결정(메인 세션이 전함): 사전 등록 전에 복원 계층의 화신 판정을 계보(lineage) 하나로 모은다. 설계 v1(세션 스크래치 `lineage/DESIGN.md`): 화신을 적는 곳과 견주는 자리 약 50곳의 목록(빌드 i4의 호스트 파일 사본 `lineage/snap_host.cc`, md5 `cc4eea3d`, 24 020줄의 줄), 국면과 보기, classify, 호출자 규칙 표, 보내는 쪽, 숨은 문제 둘(예비 프로세스의 생존 rank 칸이 OFF(0)으로 남음; serve 중 죽음의 낡은 답), 열린 충돌 셋, 다시 무장 설계. 구현, 빌드, 클러스터 실행 없음 | 설계 원문(세션 스크래치) |
+| 2026-10-15 | 독립 검토(다른 Opus 에이전트, 읽기만, `lineage/REVIEW.md` 1–3절): 막는 문제 둘(국면만 쓴 규칙 표가 지금 코드의 상태 조건을 잃음: TIMED_OUT_HELD의 ACTIVATE와 REJOIN, 거절된 rank의 REJOIN에 FAIL 대신 닫기; "옛 판정과 같음" 시험이 순수 함수끼리만 견주어 결함 A 꼴의 호출자 차이를 못 잡음), 고칠 것 11(숨은 문제 둘의 원인과 닿음, 받는 쪽 도장 대신 받아들임 순간의 park 검사, BAD의 기본 행동은 known을 cur로, `lineage_warn`은 예상 밖의 FUTURE와 BAD만, pilot 셀에 `rs4_kill3_mion` 등), nit 9. 열린 충돌 1에 (나)를 권함. 설계 v2가 모두 반영 | `lineage/REVIEW.md`(세션 스크래치) |
+| 2026-10-15 | 재검토(같은 검토자, 읽기만, `lineage/REVIEW.md` 4절): 막는 문제 없음, 구현 go. 조건: oracle 정의역의 도달 가능 조건과 REJOIN의 구동 단계 조건(V1), FALLBACK 행의 화신 출처(V2), 공유와 순수 영역의 옛 함수를 고치지 않는 규칙(V3), 그리고 질문 1의 사용자 재확인 | `lineage/REVIEW.md` 4절 |
+| 2026-10-15 | 사용자 결정(최종, 메인 세션이 전함): 열린 충돌 1 → (나) 짝이 serve 끝의 답을 보내기 직전에 다시 가름, wire 그대로, STORE_ACK의 `wardInc`는 다시 무장 작업으로 미룸; 2와 3 → (가) mirror 끈 TCP 길 그대로(18절), 다시 무장은 설계로만(19절). 설계 v3: V1–V3, nit 둘, 사용자 결정, 구현 자리(메인 세션 지시: 갈래 `exp/gin-mirror-fix`, 빌드 트리 `agent_mi_fix/`, 새 이름 `ln1`; i4 출력은 그대로), 구현 전에 정한 것 둘(재연결 펜싱은 모든 국면에서 view.cur와 견줌, HOLDING 세기의 oracle은 뒤의 활성화를 견줌). 이 문서에 9.9절, 9.7절의 계보 행 17개와 결정 (10)–(12), 9.8절의 작업 묶음 행, 11절, 18절, 19절. 구현 시작(중간 커밋은 빌드하거나 배포하지 않음) | `lineage/DESIGN.md` v3(490줄); 이 행과 같은 커밋 |
 
 ## 13. 사전 등록 이후 변경
 
@@ -846,16 +1023,29 @@ segment 묶음이 모두 8125–8175를 만짐), hook 차례(mirror 흡수 → `
 pilot 뒤 알려진 것(2026-10-15, pilot 1, 2; 12절):
 - 되살린 rank는 자기 예비 프로세스가 없어 다시 무장되지 않는다(gin-restore 규칙 `gdakiCkptSelfOf().haveSpare`; 복원 뒤 그 rank의 체크포인트는 "not armable" `[측정: pilot 2 raw/mi4_kill3_ow_mi_n1_spare.log, 23줄 모두]`). 그 rank가 다시 죽으면 되살리지 못하고 fallback한다. 그 rank가 맡은 rank의 보호는 되찾는다(9.6절, 둘째 죽음 셀). 되살린 rank까지 보호하려면 예비 프로세스를 다시 등록하는 장치가 필요하고, 이 실험의 범위 밖으로 둔다(2026-10-15 제안, 사용자 결정 대기, 19절).
 
+계보 설계 뒤 알려진 것(2026-10-15, 9.9절; `[소스]`, `[추론]`):
+- mirror 끈 TCP 길의 FETCH와 UPLOAD는 화신을 보지 않고 체크포인트 번호만 본다. 짝의 확정 이미지는 승격에서 지우지 않아 셋째 화신이 이 길에 있으면 옛
+  화신의 같은 번호 이미지를 줄 수 있다. fallback 뒤 예비 프로세스가 이미지를 받아도 그 REJOIN에 거절된 생존 rank가 FAIL로 답해 끝난다. 사용자
+  결정(2026-10-15)으로 이 길은 그대로 둔다.
+- 되살린 rank는 다시 무장되지 않는다(위 항목). 사용자 결정(2026-10-15)으로 범위 밖이고 설계만 9.9절에 둔다. 같은 rank의 두 번째 복원(셋째 화신)은
+  단위 시험으로만 본다.
+- 빌드 i4까지는 예비 프로세스의 생존 rank 칸이 OFF(0)으로 남아, 되살린 rank가 다시 무장된다면 그 rank의 둘째 hold가 진단 줄 없이 시한 fallback으로
+  끝났을 것이다(지금 셀에서는 닿지 않음). 계보 빌드는 REJOIN_ACK에서 칸을 쓴다.
+- 계보의 BAD(불변식 어김)는 known을 그 rank의 지금 화신으로 쓰고 `GIN/LN` 줄 하나를 남긴다. 원인은 그 줄만으로는 알 수 없다.
+
 ## 19. 다음 작업
 
 - 사용자 결정 넷(2026-10-15, 메인 세션이 물음; 답을 받으면 메인 세션이 이 항목과 12절을 고침):
   1. 채점 셈: `pull_no_disarm_kill`과 `train_pull_count`에서 설계한 짝 보호 공백(9.6절)의 lane 깨짐과 DISARM을 빼고 셈. 제안대로 구현함(12절의 셈 고침 행), 결정 대기.
   2. `mi4_overflow`: 예비 프로세스의 활성화 기다림 30 000 → 15 000 ms, 판정식에 "hold가 시작되면 fallback으로 끝남"도 받음. 따로 된 커밋으로 구현(12절의 그 행; 거절이면 그 커밋을 뺌), 결정 대기.
   3. 결함 D 고침(공유 인터페이스를 바꿈)의 독립 리뷰: 했음(`mi_fix_review.md`, 세션 스크래치; 막는 문제 없음). 사전 등록 전 항목은 12절의 그 뒤 행들.
-  4. 되살린 rank의 다시 무장(예비 프로세스 다시 등록): 범위 밖으로 두는 제안(18절 한계), 결정 대기.
+  4. 되살린 rank의 다시 무장(예비 프로세스 다시 등록): 범위 밖으로 두는 제안(18절 한계). 닫힘(2026-10-15, 계보의 열린 충돌 3의 답 (가): 계보만, 다시 무장은 설계로만).
 - 진단 고침과 nit을 넣은 빌드 i4로 배포 묶음 `RS_SET=mi3`([impl/test/PILOT_MI.md](impl/test/PILOT_MI.md)의 명령; 12절의 i4 행). P2 hold에서 rain 세 프로세스가 살아 있을 때의 BAR1 Used를 처음 읽는다. 결과를 보고 사전 등록 전에 pilot을 한 번 더 할지는 메인 세션이 정함.
 - 사전 등록: pilot 2의 값에서 문턱(복원 시간, 입력 멈춤, 비용), seed, n, 제외와 중단 규칙을 정함(초안 `prereg_mi_draft.md`, 세션 스크래치). 비용 예측의 꼴은 사용자 결정: peer 팔은 따로 된 mirror QP의 두 번째 쓰기라 2 MiB에서 on의 약 1.9배이고 4 KiB에서 +8–9 µs여서(pilot 2, k1) 3절 초안의 한도(+2.5 µs, 0.40–0.60)와 맞지 않음. 그 뒤 `prereg/gin-mirror-v1`.
 - 실행 가능성 확인 2(손으로 하는 mirror 비용)는 같은 `gin_ts2_mi`로(남음).
+- 계보(9.9절): 구현, 빌드 `ln1`, CPU 단위 시험, 기계어 비교, 드라이버, 그다음 pilot 4(set `mi4`, 9.9절의 셀 14개). 사전 등록은 그 뒤.
+- 이 실험 뒤의 작업: 되살린 rank의 다시 무장(9.9절의 설계; 예비 프로세스가 ACTIVATE 화신을 기대 값과 견주는 검사를 먼저). STORE_ACK의 `wardInc`(계보의 열린
+  충돌 1의 (가))도 그때.
 
 ## 20. 참고자료
 
