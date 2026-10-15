@@ -1166,8 +1166,8 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 
 ## 13. 사전 등록 이후 변경
 
-없음. 사전 등록 태그 뒤 바뀐 추적 파일은 이 문서의 진행 기록(머리 표, 10–19절)과 결과 폴더의 문서 셋(`SCORE.md`, `trials_scored.csv`,
-`qa_recount.md`)뿐이다. 고정 파일 둘의 sha256은 `PREREG.txt`와 같고, `git diff prereg/gin-mirror-v1 -- impl/`는 빈 출력이며, 2, 3, 7, 8절은 태그와
+없음. 사전 등록 태그 뒤 바뀐 추적 파일은 이 문서의 진행 기록(머리 표, 10–19절), 폴더의 `README.md`와 `NOTES.md`, 결과 폴더의 문서 셋(`SCORE.md`,
+`trials_scored.csv`, `qa_recount.md`)뿐이다. 고정 파일 둘의 sha256은 `PREREG.txt`와 같고, `git diff prereg/gin-mirror-v1 -- impl/`는 빈 출력이며, 2, 3, 7, 8절은 태그와
 같다 `[측정: 2026-10-15 마무리 때 다시 확인]`. 판정식, 문턱, n, 제외와 중단 규칙은 바꾸지 않았다. 틀린 예측(체크포인트 멈춤 중 kill)도 다른 판정식으로 다시
 채점하지 않는다(16, 17절).
 
