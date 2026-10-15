@@ -19,7 +19,9 @@
 #        output is not byte-reproducible, so a file that already exists is refused; RSINC and RSLIB override the header and
 #        library trees, default the integrated research build in the session scratch; MITREE names that tree's folder in
 #        the session scratch, default agent_mi_int: agent_mi_fix for the fixes of pilot 1, 2026-10-15, whose headers and
-#        outputs are then $SCR/agent_mi_fix/build/include and $SCR/agent_mi_fix/test/out)
+#        outputs are then $SCR/agent_mi_fix/build/include and $SCR/agent_mi_fix/test/out; COSTOUT and MROUT name the
+#        output subfolders of cost and mr, default cost and mr, so a new build of the same tree keeps the old drivers,
+#        2026-10-15 build i4: cost_i4, mr_i4)
 set -euo pipefail
 STAGE=${1:?stage: mi|nomacro|cost|mr|info}
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
@@ -31,6 +33,10 @@ case "$MITREE" in agent_mi_int | agent_mi_fix) ;; *) echo "MITREE is agent_mi_in
 RSINC=${RSINC:-$SCR/$MITREE/build/include}; RSLIB=${RSLIB:-$SCR/$MITREE/build/lib}
 W=$SCR/$MITREE/test
 OUT=$W/out/${MIOUT:-mi}
+COSTOUT=${COSTOUT:-cost}; MROUT=${MROUT:-mr}
+for v in "${MIOUT:-mi}" "$COSTOUT" "$MROUT"; do
+  case "$v" in "" | *[!A-Za-z0-9_.-]* | .*) echo "an output subfolder name is one plain word: '$v'" >&2; exit 2 ;; esac
+done
 md5() { md5sum < "$1" | cut -c1-32; }
 ndigest() { (cd "$1" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32); }
 copyinc() { rm -rf "$2"; mkdir -p "$2"; cp -a "$1/." "$2/"; }
@@ -54,7 +60,7 @@ case "$STAGE" in
     echo "gin_mi_nomacro $(md5 "$OUT/gin_mi_nomacro") src $(md5 "$D/gin_mi.cu") include $(ndigest "$W/include_mi") macro=0 lib $(md5 "$RSLIB/libnccl.so.2.32.3")" \
       | tee "$OUT/gin_mi_nomacro.build.txt" ;;
   cost)
-    src=$D/../../../gin_ts2.cu; o=$W/out/cost; w=$W/cost_src
+    src=$D/../../../gin_ts2.cu; o=$W/out/$COSTOUT; w=$W/cost_src
     [ "$(md5 "$src")" = 1779db9d62eaa5dba5758b14a5ba6e17 ] || { echo "gin_ts2.cu is not the 9.15.6 driver's source" >&2; exit 1; }
     fresh "$o/gin_ts2_mi"
     copyinc "$RSINC" "$W/include_mi"; mkdir -p "$o"; rm -rf "$w"; mkdir -p "$w"
@@ -67,14 +73,14 @@ case "$STAGE" in
     echo "gin_ts2_mi $(md5 "$o/gin_ts2_mi") gin_ts2.cu $(md5 "$src") + winflags $(md5 "$D/../../../restore/feas/gin_ts2_winflags.diff") + mi $(md5 "$D/gin_ts2_mi.diff") macro=1" \
       | tee "$o/build.txt" ;;
   mr)
-    src=$D/../../../remaining/gin_mr.cu; o=$W/out/mr
+    src=$D/../../../remaining/gin_mr.cu; o=$W/out/$MROUT
     fresh "$o/ff/gin_mr"; fresh "$o/hold/gin_mr"
     copyinc "$RSINC" "$W/include_mi"; mkdir -p "$o/ff" "$o/hold"
     for v in ff hold; do
       def=""; [ "$v" = hold ] && def=-DNCCL_GIN_RESTORE_DEVICE
       NV -std=c++17 -O2 --expt-relaxed-constexpr $GENCODE $def -isystem "$W/include_mi" \
         -Xcompiler "-Wall,-Wextra,-Werror,-Wno-missing-field-initializers" "$src" -o "$o/$v/gin_mr" -L "$RSLIB" -lnccl -lcudart
-      echo "mr/$v/gin_mr $(md5 "$o/$v/gin_mr") gin_mr.cu $(md5 "$src") macro=$([ "$v" = hold ] && echo 1 || echo 0)"
+      echo "$MROUT/$v/gin_mr $(md5 "$o/$v/gin_mr") gin_mr.cu $(md5 "$src") macro=$([ "$v" = hold ] && echo 1 || echo 0)"
     done | tee "$o/build.txt" ;;
   info)
     echo "mi headers $RSINC digest $(ndigest "$RSINC") lib $(md5 "$RSLIB/libnccl.so.2.32.3" 2>/dev/null || echo missing)" ;;
