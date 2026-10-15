@@ -47,7 +47,10 @@
 // miCtx = the number of user contexts), so nqp = (user contexts + 1) x nranks and the mirror QP to peer b is QP miCtx x
 // nranks + b: in GIN-context order the mirror QP is the LAST QP to every peer. Without the mirror nothing of the layout
 // moves but the magic: miOn 0, miCellsOff 0, no cells.
-#define NCCL_GIN_RS_SIDE_MAGIC 0x34535352u  // "RSS4" (gin-mirror: the mirror fields at 40..63 and the cell array)
+#define NCCL_GIN_RS_SIDE_MAGIC 0x35535352u  // "RSS5" (gin-mirror: the mirror fields at 40..63 and the cell array;
+                                            // "RSS4" before miMode at 60 and the cells' brkWhy, brkPeer, 2026-10-15.
+                                            // Only the library writes and reads it: a program built with older
+                                            // headers is caught by the deploy's md5 check, not by this word)
 // Overwrite detection of a put's source (NCCL_GIN_RESTORE_CHECKSUM): the scheme the sending thread uses.
 #define NCCL_GIN_RS_CSUM_OFF 0u
 #define NCCL_GIN_RS_CSUM_SAMPLED 1u  // the first 64 bytes of every 4 KiB of the data and its last 64 bytes
@@ -78,7 +81,7 @@ struct ncclGinRsSide {
   uint64_t miCellsOff;   // 48: byte offset of the cell array from the side table's start (0: none)
   uint32_t miNCells;     // 56: cells (= nranks when miOn, else 0)
   uint32_t miMode;       // 60: NCCL_GIN_MI_MODE_* (0 but in the measurement mode's mirror arms)
-  uint64_t head;        // positions reserved so far (gin-restore: a CAS only when the entry fits; overflow: none)
+  uint64_t head;         // positions reserved so far (gin-restore: a CAS only when the entry fits; overflow: none)
   uint64_t tail;         // first position kept (host: the stable cuts of the peers; the measurement mode's helper)
   uint64_t ovfCount;     // operations of every QP not logged because the ring was full (device, overflow only)
   uint64_t reserved1[5];

@@ -12,9 +12,11 @@
 #                                                                                        WANT_COST_MI
 #   ~/rs-bundle/<RS_SET>/mr/ff/, mr/hold/   gin_mr against the mirror layer's headers    out/mr/,  md5 WANT_MR_FF, WANT_MR_HOLD
 # An artifact is deployed only when its WANT_* is set, and then its source must exist and match (else the script refuses
-# before touching anything). Refuses if a target directory exists on either node. The libraries are the INTEGRATED mirror
-# build (MI_LIB_SRC, MIP_LIB_SRC: $SCR/agent_mi_int/out/<build>/libnccl.so.2.32.3, PILOT_MI.md names them); the drivers
-# are build_mi_test.sh's outputs ($SCR/agent_mi_int/test/out).
+# before touching anything). Refuses if a target directory exists on either node. The libraries are MI_LIB_SRC and
+# MIP_LIB_SRC ($SCR/<MITREE>/out/<build>/libnccl.so.2.32.3: the integrated tree agent_mi_int, or since the fixes of pilot 1
+# the fix tree agent_mi_fix; PILOT_MI.md names them); the drivers are build_mi_test.sh's outputs of the same tree
+# ($SCR/<MITREE>/test/out). The md5 checks (WANT_*) are what keeps a driver built with other headers away from a library:
+# the device does not read the side table's magic.
 # env: SUNNY_SSH (required), RS_SET (required), the WANT_* above, MI_LIB_SRC, MIP_LIB_SRC, MIOUT (default mi), MITREE
 #      (default agent_mi_int; agent_mi_fix for the drivers of the fixes of pilot 1)
 set -euo pipefail
