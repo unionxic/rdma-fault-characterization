@@ -426,9 +426,11 @@ d의 칸이 무효인 동안은 커서가 움직이지 않아 당기기도 없�
   남기는 것은 처음 시도 뒤 간격의 절반 번 더까지다: 간격 20이면 시도는 s, s + 1, …, s + 10의 열한 번이고 열한째도 거절되면 쓴다(빌드 ln3, 2026-10-15에
   넓힘, 아래 "pilot 4에서 본 길". ln2는 처음 뒤 4분의 1 번 더, 시도 여섯 번이었고, 이 글은 처음에 그것을 "간격의 4분의 1만큼의 Step까지"라고 적었다). 그
   뒤에는 당기기를 쓰고 지금의 back-off로 돌아간다(오래가는 거절, 예를 들어 application에 이미 알려진 장애나 끝내 준비되지 않는 저장소에서 Step마다 다시 묻지
-  않게). 같은 당기기를 다시 꺼낸 것은 요약의 `pulls_taken`에 다시 세지 않고, 남긴 동안 새 CKPT_PULL이 와 같은 꺼냄에 합쳐지면 그 새 당기기는 센다(ln3:
+  않게). 멈춤 시한 거절("no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS")은 예외다: 당기기를 남기지 않고 그 시도에 쓴다(2026-10-15
+  사용자 결정, 빌드 ln4; 아래 "멈춤 시한 거절의 비용과 결정"). 같은 당기기를 다시 꺼낸 것은 요약의 `pulls_taken`에 다시 세지 않고, 남긴 동안 새 CKPT_PULL이 와 같은 꺼냄에 합쳐지면 그 새 당기기는 센다(ln3:
   대기 당기기를 "새로 옴"과 "남김" 비트 둘로 둠; ln2는 합쳐진 새 당기기를 세지 않아 하나 덜 셌다. `pulls_taken`은 보고만 하는 열). 줄은 처음 남길 때 하나("a
-  pulled checkpoint at step N did not drain: the pull is kept for the next Step"), 남긴 채 다 쓸 때 하나("... the pull is spent").
+  pulled checkpoint at step N did not drain: the pull is kept for the next Step"), 남긴 채 다 쓸 때 하나("... the pull is spent"), 멈춤 시한
+  거절로 쓸 때 하나("a pulled checkpoint at step N was refused at the pause's bound (attempt k): the pull is spent", ln4).
   `pulls_taken`의 단위는 받은 당기기가 아니라 새 당기기가 하나 이상 든 꺼냄이다: 여러 보내는 rank의 당기기가 한 꺼냄 앞에 오면 하나로 합쳐진다(라이브러리
   주석의 "pulls_taken counts the CKPT_PULLs taken"도 이 뜻; ln3 독립 리뷰 nit 1; `rows_mi.py` 머리 설명에도 적음). `mi4_train_none` 네 rank의 합이 pilot 2에서 보냄 847 대 꺼냄 460, pilot
   3에서 834 대 458이다 `[측정: results/20261015_pilot{2,3}/raw/mi4_train_none_mi_n1_r{0..3}.log의 "mirror summary" 줄에서 다시 셈]`.
@@ -467,12 +469,19 @@ d의 칸이 무효인 동안은 커서가 움직이지 않아 당기기도 없�
 - 넓힌 상한의 비용 `[소스, 추론]`: 오래가는 거절에서 시도가 여섯에서 열하나로 는다. 앞의 거절 까닭 다섯(hold, 이미 알린 장애, 재실행 억제가 남음, 저장소
   준비 전, 앞 올리기 진행 중)은 CKPT_PAUSE를 보내기 전에 거절하므로 시도마다 helper 걸음 하나와 "not taken" 줄 하나뿐이고, 멈춤을 보낸 뒤의 BUSY만 시도마다
   다른 rank에 빈 멈춤 라운드 하나를 시킨다(9.7절의 결함 E 행).
-- 멈춤 시한 거절의 비용(2026-10-15, ln3 독립 리뷰의 고칠 것 1; 위 글이 빠뜨림) `[소스: ln3 호스트 파일 gin_host_gdaki.cc(md5 35357895) 7416–7419, 14157,
-  14163–14164, 14895, 17562–17569]`: 멈춤을 보낸 뒤의 다른 거절 "no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS"는 helper가 멈춤 시한(기본
-  2 000 ms; drain 상한 500 ms보다 작게 주면 500 ms)까지 기다린 뒤에 SKIPPED를 준다. 그동안 application thread는 `gdakiStoreTake`의 `wait_for`(상한 시한 + drain +
-  1 000 ms)에 묶인다. 남긴 당기기는 이 거절도 다음 Step에 다시 시도하므로("the pause's bound"), 시한 거절이 이어지면 application이 최대 열한 번(ln2는 여섯 번)
-  연달아 약 2 s씩, 모두 약 22 s(ln2 약 12 s) 선다 `[추론]`. 지금 셀에서는 닿지 않는다 `[추론]`: kill은 FIN으로 곧 판정되고, hold 중이거나 억제 중인 상대는
-  BUSY로 곧 답한다. 시한 거절에서는 당기기를 남기지 않게 좁힐지는 사용자 결정이다(19절). 한계는 18절.
+- 멈춤 시한 거절의 비용과 결정(2026-10-15, ln3 독립 리뷰의 고칠 것 1이 찾음; 사용자 결정 2026-10-15 22시 무렵, 빌드 ln4) `[소스: ln3 호스트 파일
+  gin_host_gdaki.cc(md5 35357895) 7416–7419, 14157, 14163–14164, 14895, 17562–17569]`: 멈춤을 보낸 뒤의 다른 거절 "no PAUSED from every peer within
+  NCCL_GIN_RESTORE_PAUSE_MS"는 helper가 멈춤 시한(기본 2 000 ms; drain 상한 500 ms보다 작게 주면 500 ms)까지 기다린 뒤에 SKIPPED를 준다. 그동안
+  application thread는 `gdakiStoreTake`의 `wait_for`(상한 시한 + drain + 1 000 ms)에 묶인다. ln3까지는 남긴 당기기가 이 거절도 다음 Step에 다시
+  시도했으므로("the pause's bound"), 시한 거절이 이어지면 application이 최대 열한 번(ln2는 여섯 번) 연달아 약 2 s씩, 모두 약 22 s(ln2 약 12 s) 설 수
+  있었다 `[추론]`. 지금 셀에서는 닿지 않는다 `[추론]`: kill은 FIN으로 곧 판정되고, hold 중이거나 억제 중인 상대는 BUSY로 곧 답한다.
+  사용자 결정으로 ln4부터 이 거절은 당기기를 남기지 않는다: 그 시도에서 당기기를 쓰고, 거절이 남긴 4분의 1 back-off(간격 20이면 5단계)와 보내는 rank의
+  segment마다 한 번 당기기가 그대로 걸린다. 다른 거절(위 다섯과 BUSY)은 ln3처럼 남긴다. 판정은 순수 함수 `gdakiMiPullSpentByRefusal` 하나다: 이 Step의
+  요청이 helper에 갔고(`reqCkpt == step`) 그 `reqWhy`가 시한 거절 글과 같으면 참(글은 helper의 abort와 같은 매크로 `GDAKI_CKPT_WHY_PAUSE_BOUND`).
+  `ncclGinRestoreStep`이 그 값을 `gdakiMiPullAfterStep`에 넘긴다 `[소스: ln4 호스트 파일(md5 0ab4e636) 7446–7449, 14906, 15860, 23050, 23057–23062]`.
+  그래서 당기기 하나가 application을 시한만큼 세우는 것은 한 번이다(1b의 되돌린 segment 둘째 당기기가 오면 back-off 뒤 한 번 더) `[소스, 추론]`. 대가:
+  L이 간격 하나의 바이트보다 작은 셀(`mi4_pull`)에서 당겨진 체크포인트가 시한 거절이면 다음 체크포인트가 간격으로 밀려 lane이 넘치고 그 rank가
+  DISARM된다(결함 E 고침 전의 자취와 같음; `mi_unit_host.cc` 장면 11) `[추론]`. 한계는 18절.
 
 **끝 수단(DISARM).** 장치가 적은 깨짐(lane 넘침, 닫힌 mirror 게이트, 확인하지 못한 flush)과 helper가 적은 깨짐(mirror QP 장애 기록, 자기 루프 오류, 셈 무효)은
 helper의 걸음이 d를 DISARM한다(그 깨짐 뒤 멈춤의 확정 체크포인트까지; `gdakiHoldDisarm` 6991–7010). 내보내기는 hold 시작에서 깨짐 수를 다시 읽어 절단점 뒤 깨짐이
@@ -709,8 +718,8 @@ e의 첫 성공한 멈춤이다. 그 멈춤에서 보내는 rank들이 e의 칸�
 | 계보: 재연결 펜싱 | known = 0이거나 pad = known | view.cur와 견줌(같은 결과; ENDED도 cur와 견줌) | 닫힘 | H:9110–9114 |
 | 계보: 시험 스위치 | 확정 무장 체크포인트 누적 수 | 그대로; 둘째 죽음 셀에서 쓰지 않음 | 닫힘 | H:13917–13919 |
 | 계보: 채점기 열 | 줄 글자로 셈 | 그대로; 새 열 `lineage_warn`(`GIN/LN` 줄 수, 0이어야) | 닫힘 | impl/test/rows_mi.py |
-| 결함 E 고침: 남긴 당기기 대 체크포인트 back-off(간격의 4분의 1, gin-restore) | 남긴 동안 back-off를 1단계로 덮어 거절이 이어지면 Step마다 체크포인트를 물음 | 남긴 동안만 `retryAtStep = step + 1`, 쓴 뒤(DRAINED이거나 상한)에는 `gdakiCkptTake`, `gdakiStoreTake`의 4분의 1 back-off가 그대로 남음. 상한은 처음 시도 뒤 간격의 절반 번(빌드 ln3; ln2는 4분의 1, 9.3절) | 닫힘(2026-10-15) | `ncclGinRestoreStep`, `gdakiMiPullAfterStep`, `gdakiMiPullKeepOk`(9.3절) |
-| 결함 E 고침: 남긴 당기기 대 체크포인트 거절 까닭(hold의 "a restore runs", 이미 알린 장애, 재실행 억제가 남음, 저장소 준비 전, 앞 올리기 진행 중; 멈춤을 보낸 뒤의 BUSY와 멈춤 시한 "no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS") | 다시 묻는 시도마다 다른 rank에 비용이 듦; 멈춤 시한 거절은 시도마다 application thread를 시한만큼 세움 | 앞의 다섯은 helper가 CKPT_PAUSE를 보내기 전에 거절하므로 다른 rank의 멈춤 비용이 없음(시도마다 helper 걸음 하나와 "not taken" 줄 하나). BUSY만 시도마다 다른 rank에 빈 멈춤 라운드 하나. hold 동안 생존 rank의 Step은 멈추므로 "a restore runs"는 INJECTED 뒤 첫 Step에서 풀림(pilot 4 `mi4_pull` n2). 멈춤 시한 거절(2026-10-15 이 행에 더함, ln3 독립 리뷰의 고칠 것 1): helper가 시한(기본 2 000 ms; drain 상한 500 ms보다 작게 주면 500 ms)까지 기다린 뒤 SKIPPED를 주고, 그동안 application thread는 `gdakiStoreTake`의 기다림(시한 + drain + 1 000 ms)에 묶임. 남긴 당기기는 이 거절도 다음 Step에 다시 물으므로 이어지면 최대 열한 번(ln2는 여섯 번) 약 2 s씩, 모두 약 22 s 섬 `[추론]`. 지금 셀에서는 닿지 않음 `[추론]`: kill은 FIN으로 곧 판정되고 hold 중이거나 억제 중인 상대는 BUSY로 곧 답함(9.3절) | 다섯과 BUSY는 닫힘(2026-10-15). 멈춤 시한 거절은 사용자 결정 대기(19절): 시한 거절에서는 당기기를 남기지 않게 좁히면 라이브러리 변경이라 충돌 표 행과 독립 리뷰가 먼저(사전 등록 태그 전), 그대로 두면 18절의 한계로 닫음 | `gdakiCkptInitStep` IDLE의 거절 차례 `[소스]`; 멈춤 시한은 ln3 호스트 파일 `gin_host_gdaki.cc`(md5 `35357895`) 7416–7419, 14157, 14163–14164, 14895, 17562–17569 `[소스]`; pilot 4 `[측정]` |
+| 결함 E 고침: 남긴 당기기 대 체크포인트 back-off(간격의 4분의 1, gin-restore) | 남긴 동안 back-off를 1단계로 덮어 거절이 이어지면 Step마다 체크포인트를 물음 | 남긴 동안만 `retryAtStep = step + 1`, 쓴 뒤(DRAINED이거나 상한, ln4부터 멈춤 시한 거절도)에는 `gdakiCkptTake`, `gdakiStoreTake`의 4분의 1 back-off가 그대로 남음. 상한은 처음 시도 뒤 간격의 절반 번(빌드 ln3; ln2는 4분의 1, 9.3절) | 닫힘(2026-10-15) | `ncclGinRestoreStep`, `gdakiMiPullAfterStep`, `gdakiMiPullKeepOk`(9.3절) |
+| 결함 E 고침: 남긴 당기기 대 체크포인트 거절 까닭(hold의 "a restore runs", 이미 알린 장애, 재실행 억제가 남음, 저장소 준비 전, 앞 올리기 진행 중; 멈춤을 보낸 뒤의 BUSY와 멈춤 시한 "no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS") | 다시 묻는 시도마다 다른 rank에 비용이 듦; 멈춤 시한 거절은 시도마다 application thread를 시한만큼 세움 | 앞의 다섯은 helper가 CKPT_PAUSE를 보내기 전에 거절하므로 다른 rank의 멈춤 비용이 없음(시도마다 helper 걸음 하나와 "not taken" 줄 하나). BUSY만 시도마다 다른 rank에 빈 멈춤 라운드 하나. hold 동안 생존 rank의 Step은 멈추므로 "a restore runs"는 INJECTED 뒤 첫 Step에서 풀림(pilot 4 `mi4_pull` n2). 멈춤 시한 거절(2026-10-15 이 행에 더함, ln3 독립 리뷰의 고칠 것 1): helper가 시한(기본 2 000 ms; drain 상한 500 ms보다 작게 주면 500 ms)까지 기다린 뒤 SKIPPED를 주고, 그동안 application thread는 `gdakiStoreTake`의 기다림(시한 + drain + 1 000 ms)에 묶임. ln3의 남긴 당기기는 이 거절도 다음 Step에 다시 물어 이어지면 최대 열한 번(ln2는 여섯 번) 약 2 s씩, 모두 약 22 s 설 수 있었음 `[추론]`(지금 셀에서는 닿지 않음 `[추론]`: kill은 FIN으로 곧 판정되고 hold 중이거나 억제 중인 상대는 BUSY로 곧 답함). ln4(사용자 결정): 이 거절은 당기기를 그 시도에 쓰고(`gdakiMiPullSpentByRefusal`) 4분의 1 back-off와 segment마다 한 번 당기기로 돌아감, 다른 거절은 그대로 남김. 당기기 하나가 시한만큼 세우는 것은 한 번(1b의 둘째 당기기가 오면 back-off 뒤 한 번 더). 대가는 L이 간격 하나의 바이트보다 작은 셀에서 lane 넘침과 DISARM(설계한 마지막 수단, 9.3절, 18절) | 다섯과 BUSY는 닫힘(2026-10-15). 멈춤 시한 거절도 닫힘(사용자 결정 2026-10-15 22시 무렵: 남기지 않음; 빌드 ln4, 12절). ln4의 독립 리뷰와 pilot(set `mi6`)은 사전 등록 태그 전(19절) | `gdakiCkptInitStep` IDLE의 거절 차례 `[소스]`; 멈춤 시한은 ln3 호스트 파일 `gin_host_gdaki.cc`(md5 `35357895`) 7416–7419, 14157, 14163–14164, 14895, 17562–17569 `[소스]`; ln4의 판정은 호스트 파일 md5 `0ab4e636` 7446–7449, 15860, 23057–23062 `[소스]`와 `mi_unit_host.cc` 장면 11; pilot 4 `[측정]` |
 | 결함 E 고침: 남긴 당기기 대 짝이 되살아난 뒤의 저장소 다시 청함 | 죽은 rank의 짝이 맡은 rank e는 INJECTED 뒤에야 STORE_REQ를 보내고(PUBLISHED는 INJECTED까지 붙잡힌 상태라 올리는 쪽이 청하지 않음) 새 프로세스가 저장소를 처음 만들어 답할 때까지 "the checkpoint store is not ready"로 거절됨(pilot 2–4에서 요청 → 준비 13.2–47.5 ms, 40건). 상한이 그보다 짧으면 당기기를 씀 | 상한을 간격의 절반으로(ln3; 4 KiB 셀의 걸음에서 요청 뒤 약 86 ms까지 덮음, 9.3절). 그 사이 e 쪽 lane은 짝의 hold부터 e의 다음 입력 멈춤까지 무효라(9.4절 7번) 넘치지 않음: 당기기를 써도 설계한 짝 보호 공백(9.6절)이 e의 간격 체크포인트까지 길어질 뿐 | 닫힘(2026-10-15) | `gdakiStoreUpStep`의 "buddy not held", `gdakiStoreServe`의 첫 MR `[소스]`; pilot 4 `mi4_pull` n3(당기기 없이 INJECTED 뒤 16 Step, 깨짐 0) `[측정]` |
 | 결함 E 고침: 폴링 흡수 대 새 segment의 진짜 넘침 | 바꾸기 뒤 앞 burst의 꼬리를 흡수하다 새 segment의 넘침을 숨김 | 흡수는 바꾸기가 읽은 열림 값(`brokenOpen`)까지만, 그 뒤 깨짐은 DISARM. ln3부터 열린 segment가 burst segment 바로 다음일 때만 흡수: 두 폴링 사이 바꾸기가 둘 이상이면 가운데 segment의 깨짐을 꼬리와 가를 수 없어 흡수하지 않고 DISARM(ln2는 흡수해 가운데 segment의 넘침을 놓칠 수 있었음, 리뷰 nit) | 닫힘(2026-10-15) | `gdakiMiPollStep`, 단위 장면 10 |
 | 결함 E 고침: 폴링 흡수 대 DISARM과 다시 무장 | 같은 넘침을 두 번 세면 DISARM이 두 번이고 다시 무장이 체크포인트 하나 밀림 | 바꾸기 한 번이면 흡수가 막음. 바꾸기 둘 이상이면 DISARM 한 번 더(보수적, 18절) | 닫힘(2026-10-15) | 같음 |
@@ -725,7 +734,8 @@ put → 게이트를 INJECTED까지 홀수, PUBLISHED의 끝과 시한이 바뀜
 낡은 요청의 답 → (나) 보내기 직전 다시 가름, wire 그대로(STORE_ACK의 `wardInc`는 다시 무장 작업으로 미룸); (11) mirror 끈 TCP 데이터 길 → (가) 그대로(18절);
 (12) 다시 무장의 범위 → (가) 계보만, 다시 무장은 설계로만(19절). 결함 E 고침의 행 일곱(2026-10-15)은 사용자 결정 없이 설계로
 닫았다: 고침 뒤 독립 리뷰(세션 스크래치 `lineage/IMPL_REVIEW.md` 질문 4, 고칠 것 F1)가 표가 없음을 찾아 이 행들을 더했고, 상한과 폴링 흡수의 조건은 그 리뷰와
-pilot 4로 고쳤다(빌드 ln3, 12절). 다만 거절 까닭 행의 멈춤 시한 거절(ln3 독립 리뷰가 찾음, 2026-10-15 그 행에 더함)은 사용자 결정 대기다(19절).
+pilot 4로 고쳤다(빌드 ln3, 12절). 거절 까닭 행의 멈춤 시한 거절(ln3 독립 리뷰가 찾음, 2026-10-15 그 행에 더함)은 사용자 결정(2026-10-15 22시 무렵:
+당기기를 남기지 않음)으로 닫고 빌드 ln4로 구현했다(12절).
 
 **가정(사용자가 그대로 둠).** mirror 문맥 하나를 GPU 범위 공유 모드로, mirror와 checksum 함께 켜면 Resume 거절, 재기만 하는 모드의 self와 peer 팔, 초안 값. 결정 (6)으로
 segment FETCH는 TCP가 아니라 RDMA READ가 됐다.
@@ -741,8 +751,8 @@ segment FETCH는 TCP가 아니라 RDMA READ가 됐다.
 | CKPT_STABLE에 배치를 실음(WRITE with immediate 아님) | 이 문서의 선택 |
 | 학습 셀 L 80 MiB(S 3이면 pool 720 MiB, S 2면 480 MiB) | 이 문서의 선택 |
 
-**열린 충돌 없음**(2026-10-13, 아홉째 결정 뒤; 2026-10-15 계보의 셋도 결정으로 닫힘). 결정 대기 하나(2026-10-15): 결함 E 거절 까닭 행의 멈춤 시한
-거절(19절; 지금 셀에서는 닿지 않고, 그대로 두면 18절의 한계로 닫음). 다음은 9.8절의 실행 가능성 확인 넷과 공유 인터페이스 작성, 그 뒤 작업 묶음의 병렬 구현이다.
+**열린 충돌 없음**(2026-10-13, 아홉째 결정 뒤; 2026-10-15 계보의 셋도 결정으로 닫힘). 결함 E 거절 까닭 행의 멈춤 시한
+거절도 사용자 결정(2026-10-15 22시 무렵, 당기기를 남기지 않음; 빌드 ln4)으로 닫혔다. 다음은 9.8절의 실행 가능성 확인 넷과 공유 인터페이스 작성, 그 뒤 작업 묶음의 병렬 구현이다.
 
 ### 9.8 구현 계획과 실행 방법 (구현 전)
 
@@ -1030,6 +1040,9 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 - [x] ln3 독립 리뷰(막는 문제 없음, 고칠 것 2, nit 4)와 반영: 멈춤 시한 거절의 비용과 사용자 결정, 변이 시험의 로그, nit(2026-10-15, 9.3, 12, 18, 19절,
   시험 파일의 주석과 머리 설명; 클러스터 실행 없음)
 - [x] 사전 등록 전 일관성 고침 여섯(2, 3, 7, 8, 9.7절; 2026-10-15, 12절; 수치는 pilot 2–5의 원자료에서 다시 셈, 클러스터 실행 없음)
+- [x] 멈춤 시한 거절의 사용자 결정(당기기를 남기지 않음)과 빌드 `ln4`: CPU 단위 장면 11과 변이 시험, 기계어 비교, 드라이버, 배포 묶음 set `mi6`
+  (2026-10-15, 9.3, 9.7, 18, 19절, 12절; 클러스터 실행 없음)
+- [ ] ln4의 독립 리뷰와 pilot(set `mi6`, pilot hold P6, 채점 제외)
 - [ ] smoke와 pilot(채점 제외), 문턱과 n 고정
 - [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/gin-mirror-v1` 태그
 - [ ] 본 실행 (`RUNNING`)
@@ -1141,6 +1154,7 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 | 2026-10-15 | 사전 등록 전 일관성 고침 5(DRAFT; 9.7절 결함 E의 거절 까닭 행): ln3 독립 리뷰의 고칠 것 1이 9.3절과 18절에만 더한 멈춤 시한 거절("no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS")이 충돌 표 행에 없었다. 행에 그 거절과 비용(application thread가 시도마다 시한만큼, 이어지면 열한 번 약 22 s `[추론]`), 근거 줄(ln3 호스트 파일 `35357895`)을 더하고, 상태를 9.3, 18, 19절과 같게 "다섯과 BUSY는 닫힘, 멈춤 시한 거절은 사용자 결정 대기(그대로 두면 18절 한계로 닫음)"로 적음. 9.7절 끝의 두 문단(결함 E 행을 설계로 닫은 글, "열린 충돌 없음")에 그 결정 대기를 적음. 라이브러리와 빌드는 바뀌지 않음 | 이 행의 커밋 |
 | 2026-10-15 | 사전 등록 전 일관성 고침 6(DRAFT; 7절 seed와 n): `mi4_train_kill3` 행의 "seed는 사전 등록 때 고정"을 규칙으로 적음(표 아래 문단): draw(sha256, seed, 셀, 시행, first/second)와 셀마다의 범위, pilot 1–5가 자리값 `mi-v1`로 돌아 시행 번호가 같으면 kill이 같았다는 것(`mi4_train_kill3` n1은 pilot 2, 3, 5 모두 단계 1 689의 6 085 µs) `[측정: 시행 meta]`, 그래서 사전 등록 커밋에서 본 실행 hold(G1, T1, T2)의 `DIE_SEED`를 새 문자열로 바꿈(문자열은 사전 등록 때 정함). `mi4_kill2_kill3_ow`의 kill 범위(180–220, 380–420)를 적음. n은 초안 그대로(cells_mi.json과 같음, "초안" 표시 유지). 같은 커밋: 머리의 마지막 갱신 줄, 11절 체크리스트 | 이 행의 커밋 |
 | 2026-10-15 | 일관성 고침 4의 보탬(DRAFT; 8절 BAR1 문단): 시행 시작 문에서 프로세스 둘일 때의 값에 mirror 끈 `mi4_kill3_ow_sampled`(pilot 4)의 Free 151 MiB를 더함(고침 4의 글과 행은 133, 173 MiB만 적었음; 시행 meta를 다시 보다 찾음 `[측정]`). 범위(74–173 MiB)와 규칙은 그대로 | 이 행의 커밋 |
+| 2026-10-15 밤 | 사용자 결정(2026-10-15 22시 무렵, 메인 세션이 전함; 19절의 멈춤 시한 항목, ln3 독립 리뷰의 고칠 것 1): 당겨진 체크포인트가 멈춤 시한 거절("no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS")이면 당기기를 남기지 않고 그 시도에 쓴다. 그 뒤는 보통 규칙(거절이 남긴 4분의 1 back-off, 간격 20이면 5단계; 보내는 rank는 segment마다 한 번 당김). 다른 거절(복원이 도는 중, 저장소 준비 전, 그 밖의 멈춤 전 거절, BUSY)은 ln3처럼 다음 Step에 다시 시도. 반영(DRAFT): 9.3절 규칙과 비용 글, 9.7절 결함 E 거절 까닭 행(닫힘)과 끝의 두 문단, 18절(약 22 s는 ln3까지의 것으로, ln4의 대가와 이 판정 밖의 늦은 거절), 19절(닫힘; ln4의 독립 리뷰와 pilot이 남음), 11절. 구현과 빌드는 다음 행(ln4) | 커밋 `5fa97a96`(구현)과 이 행의 커밋 |
 
 ## 13. 사전 등록 이후 변경
 
@@ -1207,14 +1221,19 @@ pilot 뒤 알려진 것(2026-10-15, pilot 1–4; 12절):
 - 계보의 BAD(불변식 어김)는 known을 그 rank의 지금 화신으로 쓰고 `GIN/LN` 줄 하나를 남긴다. 원인은 그 줄만으로는 알 수 없다.
 
 결함 E 고침 뒤 알려진 것(2026-10-15, 9.3절과 9.7절의 결함 E 행; 빌드 ln3; `[소스]`, `[추론]`):
-- 남긴 당기기는 처음 시도 뒤 간격의 절반 번까지만 다시 묻는다(간격 20에서 시도 열한 번, 4 KiB 셀의 걸음으로 요청 뒤 약 86 ms). 그보다 오래가는 거절에서는
+- 남긴 당기기는 처음 시도 뒤 간격의 절반 번까지만 다시 묻는다(간격 20에서 시도 열한 번, 4 KiB 셀의 걸음으로 요청 뒤 약 86 ms; 멈춤 시한 거절은 ln4부터
+  다시 묻지 않음, 아래). 그보다 오래가는 거절에서는
   당기기를 쓰고 다음 체크포인트가 간격과 4분의 1 back-off로 밀린다. 짝이 되살아난 뒤 맡은 rank의 "저장소 준비 전" 거절에서는 그 rank 쪽 lane이 무효라
   넘치지 않고 설계한 짝 보호 공백이 길어질 뿐이지만, lane이 유효한 채 거절이 오래가면(예: 올리기 QP의 ERR 뒤 다시 청한 저장소가 늦음, 이어지는 BUSY) L이 간격
   하나의 바이트보다 작은 셀(`mi4_pull`)에서는 lane이 넘쳐 그 rank가 DISARM된다(설계한 마지막 수단). 이 경우는 셀이 지나지 않는다.
-- 멈춤 시한 거절("no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS")도 남긴 당기기가 다음 Step에 다시 묻는다. 이 거절은 helper가 시한(기본
-  2 000 ms)까지 기다린 뒤에 오고 그동안 application thread가 `gdakiStoreTake`의 기다림에 묶이므로, 시한 거절이 이어지면 application이 최대 열한 번(ln2는
-  여섯 번) 연달아 약 2 s씩 선다(9.3절, ln3 독립 리뷰의 고칠 것 1) `[소스, 추론]`. 지금 셀에서는 닿지 않는다 `[추론]`. 시한 거절을 남기지 않게 좁힐지는 사용자
-  결정이다(19절).
+- 멈춤 시한 거절("no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS")은 ln4부터 남긴 당기기를 다시 묻지 않고 그 시도에 쓴다(사용자 결정
+  2026-10-15; ln3까지는 이어지면 application이 최대 열한 번(ln2는 여섯 번) 약 2 s씩, 약 22 s 설 수 있었다, 9.3절) `[소스]`. 그래서 당기기 하나 때문에
+  application이 시한만큼 서는 것은 한 번이다(1b의 둘째 당기기가 오면 4분의 1 back-off 뒤 한 번 더). 그 뒤의 체크포인트 시도는 gin-restore 규칙(간격과
+  4분의 1 back-off)대로이고, 시도마다 시한만큼 설 수 있는 것은 gin-restore와 같다. 대가: L이 간격 하나의 바이트보다 작은 셀(`mi4_pull`)에서 당겨진
+  체크포인트가 시한 거절이면 다음 체크포인트가 간격으로 밀려 lane이 넘치고 그 rank가 DISARM된다(설계한 마지막 수단; 결함 E 고침 전의 자취,
+  `mi_unit_host.cc` 장면 11) `[추론]`. 지금 셀에서는 닿지 않는다 `[추론]`. 이 판정에 들지 않아 ln3처럼 당기기를 남기는 것 `[소스]`: 멈춤 뒤의 다른 늦은
+  거절(drain 실패, 멈춤 뒤 drain 상한까지)과, helper의 답 없이 application의 기다림 상한(시한 + drain + 1 000 ms)이 끝난 경우(helper가 시한에서 먼저
+  거절하므로 helper가 걸음을 멈췄을 때만 `[추론]`).
 - 폴링 흡수는 두 폴링(10 ms) 사이에 바꾸기가 한 번이라고 본다. 둘 이상이면 흡수하지 않으므로 앞 burst의 꼬리가 DISARM을 한 번 더 내고 그 rank의 다시 무장이
   체크포인트 하나 밀린다(보수적). 확정 체크포인트 둘이 10 ms 안에 오려면 새 segment가 그 사이 문턱을 넘어야 해 지금 셀에서는 닿지 않는다.
 - 남긴 당기기와 1b(되돌린 segment의 둘째 당기기)가 겹친 이어지는 BUSY에서는 시도 빈도가 상한에 묶이지 않는다: 시도마다의 되돌리기가 새 당기기를 걸어, 상한을
@@ -1238,13 +1257,13 @@ pilot 뒤 알려진 것(2026-10-15, pilot 1–4; 12절):
 - 사용자 결정(2026-10-15 제안): 예비 프로세스의 활성화 관문을 "모든 thread가 끝남"으로 좁힐지(18절). 좁히면 빠른 모드가 없어지고 4 KiB 복원은 약 175–200 ms
   한 모드가 될 것이다 `[추론]`. 그대로 두면 사전 등록에 두 모드를 예상으로 적고 3절 끝의 보고 규칙을 쓴다. 고친다면 사전 등록 태그 전에, 충돌 표 행과 독립
   리뷰 뒤에 한다.
-- 사용자 결정(2026-10-15, ln3 독립 리뷰의 고칠 것 1에서): 멈춤 시한 거절("no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS")에서는 남긴
-  당기기를 다시 묻지 않고 쓰게 좁힐지(9.3절, 18절). 좁히면 그 거절 뒤에는 지금의 4분의 1 back-off로 돌아가, 남긴 당기기 때문에 application이 약 2 s씩 더
-  서는 일이 없어진다 `[추론]`. 라이브러리 변경이라 충돌 표 행과 독립 리뷰가 먼저이고, 고친다면 사전 등록 태그 전에 한다. 그대로 두면 18절의 한계로 둔다.
+- 닫힘(사용자 결정 2026-10-15 22시 무렵, ln3 독립 리뷰의 고칠 것 1에서): 멈춤 시한 거절("no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS")에서는
+  남긴 당기기를 다시 묻지 않고 쓴다(9.3절, 18절). 빌드 ln4로 구현했다(호스트만; 9.7절 결함 E 거절 까닭 행, 12절). 남은 것: ln4의 독립 리뷰와 set
+  `mi6`의 pilot(pilot hold P6, [impl/test/PILOT_MI.md](impl/test/PILOT_MI.md)), 둘 다 사전 등록 태그 전.
 - 계보(9.9절)와 결함 E 고침: 빌드 `ln2`와 pilot 4까지 끝남, 그 뒤 리뷰와 pilot 4의 고침이 빌드 `ln3`(12절). 닫힘(2026-10-15): set `mi5`로 pilot 5(pilot
   hold P6)를 돌렸고(12절; 남긴 당기기 둘이 셋째 시도에 찍힘, 공백 밖 깨짐 0), ln3의 네 고침(상한 상수, 흡수 조건, thread_local 검사, 당기기 셈)은 독립 리뷰를
-  거쳤다(막는 문제 없음; 고칠 것 둘과 nit 넷은 문서와 시험 주석으로 반영, 12절의 리뷰 행). 남은 것은 위 멈춤 시한의 사용자 결정. 사전 등록은 그
-  뒤(본 실행 빌드의 계획은 ln3, pilot 5가 확인하지 못하면 ln2였다).
+  거쳤다(막는 문제 없음; 고칠 것 둘과 nit 넷은 문서와 시험 주석으로 반영, 12절의 리뷰 행). 멈춤 시한의 사용자 결정도 닫혔고(위 항목) 본 실행
+  빌드의 계획은 ln4(set `mi6`)다(그 전 계획은 ln3, pilot 5가 확인하지 못하면 ln2였다). 사전 등록은 ln4의 리뷰와 pilot 뒤.
 - 이 실험 뒤의 작업: 되살린 rank의 다시 무장(9.9절의 설계; 예비 프로세스가 ACTIVATE 화신을 기대 값과 견주는 검사를 먼저). STORE_ACK의 `wardInc`(계보의 열린
   충돌 1의 (가))도 그때.
 
