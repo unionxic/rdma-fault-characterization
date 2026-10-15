@@ -6,9 +6,20 @@ DRAFT다. 실행은 메인 세션이 `../../../../common/cluster_run.sh` 안에�
 
 표시: `[측정]` 원자료에서 확인, `[미확인]` 아직 확인하지 않음, `[추론]` 해석.
 
-## 상태 (2026-10-15, pilot 2 뒤; set `mi4` 준비)
+## 상태 (2026-10-15, pilot 4 뒤; set `mi5` 준비)
 
-- 다음 묶음 set `mi4`(빌드 ln2, 2026-10-15): 계보(lineage, [../../EXPERIMENT.md](../../EXPERIMENT.md) 9.9절)와 pilot 3의 결함 E 고침(9.3절 "당겨진
+- 다음 묶음 set `mi5`(빌드 ln3, 2026-10-15 저녁): ln2에 구현 독립 리뷰(세션 스크래치 `lineage/IMPL_REVIEW.md`)와 pilot 4의 고침을 더함. 남긴 당기기의
+  상한이 간격의 4분의 1에서 절반으로(pilot 4에서 죽은 rank의 짝이 맡은 rank가 "the checkpoint store is not ready"로 3–4번 거절되어 상한과의 여유가 한 번인
+  시행이 둘; [../../EXPERIMENT.md](../../EXPERIMENT.md) 9.3절), 폴링 흡수는 바로 다음 segment에서만, 계보의 helper 밖 읽기 검사를 thread_local로,
+  `pulls_taken`이 남긴 당기기에 합쳐진 새 당기기를 셈. 호스트만 바뀜: 계층 diff md5 `3e559c866f7a480ed2ac7ce017f8b3f8`(9 085줄; 장치 파일 둘의 diff는
+  i4와 같음), 연구 `F/out/mi_ln3/libnccl.so.2.32.3` md5 `e927457a4986a8314ce911259beff51c`, 운영 `F/out/mip_ln3/libnccl.so.2.32.3` md5
+  `58d7ff3f47d89205661a65b90a419298`; 드라이버(설치 헤더 digest `65fdf19b`; `MITREE=agent_mi_fix MIOUT=mi_ln3 COSTOUT=cost_ln3 MROUT=mr_ln3
+  build_mi_test.sh mi nomacro cost mr`) `mi_ln3/gin_mi` `0d0dd90b4ad740905ce49a9f76043080`, `mi_ln3/gin_mi_nomacro` `9fcc9ab4ddab6367c259cc62ef2e5d11`,
+  `cost_ln3/gin_ts2_mi` `7e3a2ef6ca4a771e29b39acc7d58d4a1`, `mr_ln3/ff/gin_mr` `00adb957eb65e38b183918817b435fd8`, `mr_ln3/hold/gin_mr`
+  `d914df6def6cce8590e69a953a49d222`. pilot 5는 새 pilot hold P6(`mi4_pull` n 5, `mi4_kill3_ow` n 1, `mi4_train_kill3` n 1; `cells_mi.json`)다.
+- pilot 4(set `mi4`, 빌드 ln2, 17:52–18:05)를 돌렸다: 모든 시행 `lineage_warn` 0, `mi4_pull` n 5의 `lane_broken_other` 0([../../EXPERIMENT.md](../../EXPERIMENT.md)
+  12절). pilot 3(set `mi3`, 빌드 i4, 16:00–16:14)은 결함 E를 찾았다(같은 곳).
+- set `mi4`(빌드 ln2, 2026-10-15): 계보(lineage, [../../EXPERIMENT.md](../../EXPERIMENT.md) 9.9절)와 pilot 3의 결함 E 고침(9.3절 "당겨진
   체크포인트가 찍히지 않을 때"). 호스트만 바뀜: 계층 diff md5 `23e5407b427fde5fb5b0d2f1d3c74e2d`(9 071줄; 장치 파일 둘의 diff는 i4와 같음), 연구
   `F/out/mi_ln2/libnccl.so.2.32.3` md5 `dac86bed7dc86afc5386d06f56f3d9e1`, 운영 `F/out/mip_ln2/libnccl.so.2.32.3` md5 `2bb1a973de4c0210093f85c7fb3106b3`;
   드라이버(설치 헤더 digest `65fdf19b`, i4와 같음; `MITREE=agent_mi_fix MIOUT=mi_ln2 COSTOUT=cost_ln2 MROUT=mr_ln2 build_mi_test.sh mi nomacro cost mr`)
@@ -106,6 +117,26 @@ python3 $T/rows_mi.py $R/<날짜>_pilot4 --out <다른 곳>/trials.csv   # linea
 pilot 4가 볼 것(9.9절): 모든 시행 `lineage_warn` 0; 셀마다 pilot 2와 같은 판정; "store request ... dropped" 줄은 죽은 프로세스 것만; mirror 끈 회귀(P5)의 줄 수와
 판정이 pilot 2와 같음; `mi4_pull` kill 시행은 `lane_broken_other` 0, `disarm_other` 0, kill이 당기기 창에 떨어진 시행에서는 "a pulled checkpoint at step N did
 not drain: the pull is kept for the next Step" 줄 뒤 INJECTED 뒤 1–2 Step 안에 그 rank의 체크포인트가 찍힘.
+
+다음 묶음 set `mi5`(빌드 ln3)의 배포와 pilot 5(같은 꼴; 2026-10-15 저녁):
+
+```
+SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad; F=$SCR/agent_mi_fix
+RS_SET=mi5 MITREE=agent_mi_fix MIOUT=mi_ln3 COSTOUT=cost_ln3 MROUT=mr_ln3 \
+  MI_LIB_SRC=$F/out/mi_ln3/libnccl.so.2.32.3 MIP_LIB_SRC=$F/out/mip_ln3/libnccl.so.2.32.3 \
+  WANT_MI=e927457a4986a8314ce911259beff51c WANT_MIP=58d7ff3f47d89205661a65b90a419298 \
+  WANT_GINMI=0d0dd90b4ad740905ce49a9f76043080 WANT_GINMI_NOMACRO=9fcc9ab4ddab6367c259cc62ef2e5d11 \
+  WANT_COST_MI=7e3a2ef6ca4a771e29b39acc7d58d4a1 WANT_MR_FF=00adb957eb65e38b183918817b435fd8 \
+  WANT_MR_HOLD=d914df6def6cce8590e69a953a49d222 bash $T/deploy_mi.sh $F/deploy_check_mi5.txt
+grep -E "MISMATCH|CHANGED|not found" $F/deploy_check_mi5.txt     # 아무 줄도 없어야 함
+RS_SET=mi5 bash $T/chain_mi.sh $R/<날짜>_pilot5 P6   # cluster_run.sh 안에서
+python3 $T/rows_mi.py $R/<날짜>_pilot5 --out <다른 곳>/trials.csv   # 열을 읽기만(판정 아님)
+```
+
+pilot 5가 볼 것([../../EXPERIMENT.md](../../EXPERIMENT.md) 9.3, 9.9절): 모든 시행 `lineage_warn` 0; `mi4_pull` kill 시행 `lane_broken_other` 0, `disarm_other` 0;
+"the pull is kept" 줄이 난 시행에서는 "the pull is spent" 없이 같은 rank가 그 체크포인트를 찍음(hold의 "a restore runs" 뒤면 INJECTED 뒤 첫 Step, "the checkpoint
+store is not ready" 뒤면 "store ready at buddy" 뒤 첫 Step); `mi4_kill3_ow`, `mi4_train_kill3`는 pilot 2–4와 같은 판정(`ow_data_equal` 1, `wait_held` 1, 공백 밖
+깨짐 0). 복원 시간은 두 모드를 따로 읽는다(`later_n`, `post_activate_ms`).
 
 다음 묶음 set `mi3`(빌드 i4)의 배포(같은 꼴; 드라이버의 cost와 gin_mr은 새 하위 폴더 `cost_i4`, `mr_i4`라 `COSTOUT`, `MROUT`을 준다):
 
