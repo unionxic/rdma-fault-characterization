@@ -29,6 +29,10 @@ def parser_command():
     with open(stem + "_spare.log", "a") as f:
         f.write("4.1 GIN/LN: spare rank 3: its hold cell of rank 1 is armed of incarnation 2 at its REJOIN_ACK "
                 "(incarnation 0), not off of incarnation 0: left as it is mono_ms=1.0\n")
+    # the buddy's activation line (post_activate_ms, 2026-10-15): 100 ms after the death judgement, the publish 300 ms later
+    with open(stem + "_r2.log", "a") as f:
+        f.write("103.1 host NCCL WARN GIN/RS: rank 2: every survivor holds rank 3: its spare activated (incarnation 1, "
+                "0.1 ms after this rank's hold start), 0 'later' answers over 0.0 ms mono_ms=1.0\n")
     score._mi(raw, "mi4_none_ow", 1)
     score._cost(os.path.join(d, "cost_x"), "bw2m", "mirror-peer", "rain", 1, 3.3)
     subprocess.run([sys.executable, os.path.join(HERE, "rows_mi.py"), d], check=True, stdout=subprocess.DEVNULL)
@@ -39,7 +43,7 @@ def parser_command():
             "nomirror_detect", "applied2", "reimage_ok", "second_ok", "paced_ok", "restore_time_ms_1",
             "restore_time_ms_2", "resume_refused", "spare2_start_fail", "restarts", "pulls_sent", "value", "mi_summary_ok",
             "lane_broken_designed", "lane_broken_other", "disarm_designed", "disarm_other", "broken_other",
-            "lineage_warn"]
+            "lineage_warn", "post_activate_ms", "post_activate_ms_1", "post_activate_ms_2"]
     miss = [c for c in need if c not in rows[0]]
     out = []
     if miss:
@@ -63,6 +67,16 @@ def parser_command():
     if ln.get("lineage_warn") != "2" or ln.get("wait_held") != k3.get("wait_held"):
         out.append("parser: two GIN/LN lines read lineage_warn %s (want 2) and wait_held %s (want %s: no decline line)"
                    % (ln.get("lineage_warn"), ln.get("wait_held"), k3.get("wait_held")))
+    if (ln.get("restore_time_ms"), ln.get("post_activate_ms"), k3.get("post_activate_ms")) != ("400.0", "300.0", ""):
+        out.append("parser: post_activate_ms reads %s (restore %s) with the activation line and %s without, want 300.0 "
+                   "(400.0) and empty" % (ln.get("post_activate_ms"), ln.get("restore_time_ms"), k3.get("post_activate_ms")))
+    # a gin-remaining runner's trial (reg/): lineage_warn over its logs (review nit N3)
+    rs = os.path.join(d, "reg_x_n1")
+    for r, txt in ((0, "1.0 x\n"), (1, "1.0 x\n1.1 GIN/LN: rank 1: the lineage of rank 3 is read off the helper thread\n")):
+        with open("%s_r%d.log" % (rs, r), "w") as f:
+            f.write(txt)
+    if rows_mi.reg_lineage_warn(rs) != 1 or rows_mi.reg_lineage_warn(os.path.join(d, "none")) != 0:
+        out.append("parser: reg_lineage_warn does not count one GIN/LN line over a reg trial's logs")
     if byid.get("cost_bw2m_mirror-peer_rain_k1", {}).get("key") != "cost_bw2m_mirror-peer@mip":
         out.append("parser: a cost run's key is not cost_<metric>_<arm>@<lib>")
     return out

@@ -32,6 +32,15 @@
 //       PUBLISHED; every other state: REJOIN);
 //   (c) restoredPad is 0 or <= known, and = known only after RESTORED was taken: in the published states (known = cell +
 //       1), after the promotion (LIVE, known >= 1) or in a lineage that ended (FALLBACK, CANCELLED);
+//   Two of these exclusions are narrower than the code (the implementation review, 2026-10-15, nit N2), and neither hides
+//   a difference:
+//   - (c): restoredPad is reset only at the setup and written only at RESTORED, so a rank held again after its promotion
+//     (the third incarnation) is HELD with restoredPad = known. The only row that reads restoredPad is INJECTED, and the
+//     lineage's rule differs from the old one only where it applies (the published states), so no excluded point could
+//     differ.
+//   - (b)'s "every other state: REJOIN": gdakiHoldCancel does not reset the drive's phase, so CANCELLED (and the other
+//     ended states) can carry READY or PUBLISHED. The rows that read the phase (REJOIN, READY) look at it only in HELD,
+//     so no excluded point could differ either.
 //   (d) revivedFromValid implies revivedFrom < cell;
 //   (e) a declined rank's cell is OFF, FALLBACK or CANCELLED;
 //   (f) LIVE's x window starts at cur - 2 (no dead one);
