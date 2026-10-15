@@ -21,6 +21,9 @@ Mirror columns (empty when the library does not emit the line yet):
   nomirror_corrupt   mirror off: the restore finished (wait_held = 1) and the data differ or a poison was replayed
   nomirror_detect    the checksum arm: a survivor's line says "source buffer changed" (the FALLBACK reason) and every
                      survivor released 2000-2500 ms after the first FALLBACK ("is given up") line (section 3)
+  fallback_release   every survivor released 2000-2500 ms after the first FALLBACK ("is given up") line, whatever its
+                     reason; empty without such a line (mi4_overflow when the killed rank was armed at the kill: the hold
+                     starts and falls back; 2026-10-15, the user's decision pending)
   export_entries, export_mirror_entries, export_source_bytes   summed over the survivors' export lines
   import_pool_bytes  the spare's "import done" pool_bytes (else the sum of its import step lines)
   from_pool_ok       export_source_bytes = 0 and import_pool_bytes = the survivors' export mirror_bytes summed
@@ -120,7 +123,8 @@ KILLED = re.compile(r"GINRS (?:killed|die) rank=(\d+)")
 GSTEP = re.compile(r"GINRS step rank=\d+ step=(\d+) ")
 
 MI_COLS = ["workload", "overwrite", "train", "ring", "mirror_env", "checksum_env", "resume_why0", "resume_refused",
-           "recv_poison", "dev_poison", "ow_data_equal", "nomirror_corrupt", "nomirror_detect", "export_entries",
+           "recv_poison", "dev_poison", "ow_data_equal", "nomirror_corrupt", "nomirror_detect", "fallback_release",
+           "export_entries",
            "export_mirror_entries", "export_source_bytes", "import_pool_bytes", "from_pool_ok", "paced_ok", "fetch_us",
            "fetch_image_bytes", "fetch_segment_bytes", "fetch_bytes", "fetch_extents", "tcp_image_bytes",
            "tcp_segment_bytes", "store_d2h_us", "store_write_us", "store_slot_bytes", "switches", "rollbacks", "restarts",
@@ -270,10 +274,12 @@ def mi_overlay(stem, base, meta):
             if ts:
                 rel[r] = min(ts)
         src = any(SRC_CHANGED.search(l) for r in surv_ranks for _, l in logs[r])
-        out["nomirror_detect"] = int(src and len(rel) == len(surv_ranks) and bool(surv_ranks) and
-                                     all(2000.0 <= (rel[r] - fb0) * 1000.0 <= 2500.0 for r in surv_ranks))
+        fb_rel = (len(rel) == len(surv_ranks) and bool(surv_ranks) and
+                  all(2000.0 <= (rel[r] - fb0) * 1000.0 <= 2500.0 for r in surv_ranks))
+        out["nomirror_detect"] = int(src and fb_rel)
+        out["fallback_release"] = int(fb_rel)
     else:
-        out["nomirror_detect"] = ""
+        out["nomirror_detect"] = out["fallback_release"] = ""
     exp = [d for _, _, txt, d in ml if K_EXPORT.search(txt)]
     if exp:
         out["export_entries"] = sum(kvnum(d, "entries") or 0 for d in exp)

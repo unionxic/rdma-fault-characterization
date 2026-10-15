@@ -570,6 +570,21 @@ def _ow_kill3(d, cell, nmax, **kw):
             spare_lines={"spare": _spare_good(3)}, **kw)
 
 
+def _ovf(hold):
+    """mi4_overflow's survivor lines: the lanes break, rank 3 was not armed (no hold, released 2.3 s after the death) or,
+    hold=True, was armed at the kill (the hold starts, the export refuses the broken lane: FALLBACK, released 2.2 s after
+    it; the widened overflow_failfast, 2026-10-15)"""
+    if not hold:
+        return {r: [(3.0, "GIN/TS: rank %d: rank 3 judged dead (cause=FIN) mono_ms=1.0" % r),
+                    (3.1, "GIN/MI: rank %d: lane to rank 3 broken (device): DISARM mono_ms=1.0" % r),
+                    (5.3, "GINRS step rank=%d step=120 released=1 got=1 want=2" % r)] for r in (0, 1, 2)}
+    return {r: [(3.0, "GIN/TS: rank %d: rank 3 judged dead (cause=FIN) mono_ms=1.0" % r), _hold_line(r, 3, 2, 3.01),
+                (3.1, "GIN/MI: rank %d: lane to rank 3 broken (device): DISARM mono_ms=1.0" % r),
+                (3.4, "GIN/RS: rank %d: the restore of rank 3 (incarnation 0) is given up (the log export failed: a mirror "
+                      "lane broke) in state HELD mono_ms=1.0" % r),
+                (5.6, "GINRS step rank=%d step=120 released=1 got=1 want=2" % r)] for r in (0, 1, 2)}
+
+
 def _kill2(d, cell, k, *, train=0, rearm=True, gap=False, **kw):
     """a second-death trial: rank 2 dies at 2.0 and is restored (2.9), rank 3 stores a full image at the revived rank 2
     (3.5, one void at 3.2 before it), every survivor of the second death re-arms rank 3 (3.6), rank 3 dies at 5.0 and is
@@ -684,10 +699,7 @@ def _build_A(d, *, bad_data=False, reg_bad=False, peer_bw2m=0.5, other_break=Fal
             _mi(raw, cell, k, kill=3, spare=True, lib_lines={r: _mi_dead(r, 3) for r in (0, 1, 2)},
                 mi_lines={r: _mi_good(r, 3) + _inj_from(r, 3) for r in (0, 1, 2)},
                 spare_lines={"spare": _spare_good(3, fetch_us=5.0 + (img + seg) / 11880.0, image=img, seg=seg)})
-        ov = {r: [(3.0, "GIN/TS: rank %d: rank 3 judged dead (cause=FIN) mono_ms=1.0" % r),
-                  (3.1, "GIN/MI: rank %d: lane to rank 3 broken (device): DISARM mono_ms=1.0" % r),
-                  (5.3, "GINRS step rank=%d step=120 released=1 got=1 want=2" % r)] for r in (0, 1, 2)}
-        _mi(raw, "mi4_overflow", k, kill=3, spare=True, surv=dict(released=1, steps_done=120), lib_lines=ov)
+        _mi(raw, "mi4_overflow", k, kill=3, spare=True, surv=dict(released=1, steps_done=120), lib_lines=_ovf(k == 5))
         _mi(raw, "rs4_none_mion", k, overwrite=0)
         _mi(raw, "rs4_kill3_mion", k, kill=3, spare=True, overwrite=0, lib_lines={r: _mi_dead(r, 3) for r in (0, 1, 2)},
             mi_lines={r: _mi_good(r, 3) for r in (0, 1, 2)}, spare_lines={"spare": _spare_good(3)})
@@ -819,6 +831,8 @@ def selftest():
             mi_lines={r: _mi_good(r, 3, broken=(0 if r == 2 else 1)) + _inj_from(r, 3) + nohold[r] for r in (0, 1, 2)},
             spare_lines={"spare": _spare_good(3)})
         _kill2(raw, "mi4_kill2_kill3_ow", 4, gap=True)
+        _mi(raw, "mi4_overflow", 1, kill=3, spare=True, surv=dict(released=1, steps_done=120), lib_lines=_ovf(True))
+        _mi(raw, "mi4_overflow", 2, kill=3, spare=True, surv=dict(released=1, steps_done=120), lib_lines=_ovf(False))
         # no store summary (the pilots): tcp_image_bytes from the "checkpoints at close" lines' upload_bytes, every process
         close = lambda r, b: (9.4, "GIN/RS: rank %d checkpoints at close: taken=30 stable=30 skipped=0 void=0 "
                                    "paused_for_peers=90 busy_sent=0 uploads=%d upload_bytes=%d served=0 pause_ms_mean=4.91 "
@@ -852,6 +866,13 @@ def selftest():
         expect("D/nomirror corrupt", rows["mi4_kill3_ow_nomirror_mi_n1"]["nomirror_corrupt"], 1)
         gcols = ("lane_broken", "lane_broken_designed", "lane_broken_other", "disarm_n", "disarm_designed", "disarm_other",
                  "broken_total", "broken_other")
+        ovp = [p for p in csv.DictReader(open(PREDS)) if p["id"] == "overflow_failfast"][0]["acceptance"]
+        ovin = s2.split_counts(ovp)[0][2]
+        for k, want in ((1, (3, 1, 0)), (2, (0, "", 1))):
+            o = rows["mi4_overflow_mi_n%d" % k]
+            expect("D/overflow n%d: hold, fallback release, degraded" % k,
+                   (o["hold_started"], o["fallback_release"], o["degraded_release"]), want)
+            expect("D/overflow n%d: the widened formula holds" % k, s2.cond_true(ovin, o), True)
         expect("D/tcp bytes from the close lines (none uploaded)",
                (rows["mi4_none_ow_mi_n7"]["tcp_image_bytes"], rows["mi4_none_ow_mi_n7"]["tcp_segment_bytes"]), (0, 0))
         expect("D/tcp bytes from the close lines (uploads)",
