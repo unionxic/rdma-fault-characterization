@@ -1003,7 +1003,7 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
   중앙값.
 - [x] 다른 에이전트가 채점기를 보지 않고 원자료에서 kill 셀, 대조 셀, 둘째 죽음 셀의 판정을 다시 셌다(둘째 죽음 셀은 전체 올리기, 다시 무장, 둘째 kill의
   차례를 줄의 시각으로 확인).
-- [ ] 매크로 없는 프로그램의 기계어가 `rs`와 같음을 다시 확인했다. (빌드 ln4에서 8/8 확인함, 12절의 ln4 행; 본 실행 뒤 재확인은 2026-10-16에 다시 돌림, 12절)
+- [x] 매크로 없는 프로그램의 기계어가 `rs`와 같음을 다시 확인했다. (빌드 ln4에서 8/8 확인함, 12절의 ln4 행; 본 실행 뒤 2026-10-16 00:24–00:44에 다시 돌려 8/8 같음, 12절 행)
 - [x] mirror 켠 셀에서 helper 소켓으로 보낸 이미지와 segment 바이트가 0임을 원자료에서 확인했다(`store_rdma`). (시행 50, 재계산 3절)
 - [x] gin-restore 회귀 예측을 그 실험의 판정식 그대로 다시 채점했다. (예측 15개, `SCORE.md`, 재계산 3절)
 - [x] smoke, pilot, 제외 시행이 결과에 섞이지 않았다. 여러 실행의 범위와 대표 실행의 범위를 섞지 않았다. (본 실행 폴더에 pilot 없음, 제외 0; 15절의 범위는 셀의 모든 시행)
@@ -1165,6 +1165,7 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 | 2026-10-15 밤 | 마무리 문서(다른 Opus 에이전트, 메인 세션이 맡김; 클러스터, ssh, kill 없음). 채점 출력 `SCORE.md`, `trials_scored.csv`를 `score.py`가 쓴 그대로 추적. 13–19절(결과 요약, QA, 결론, 한계, 다음 작업), 10, 11절의 체크, 폴더 [README.md](README.md)와 [NOTES.md](NOTES.md). 수치는 SCORE.md의 글을 옮기지 않고 원자료(비용 실행의 kv)와 두 시행별 표(채점기, 재계산)에서 다시 셈(세션 스크래치 `mi_close/`). 틀린 예측의 분석(세션 스크래치 `mi_fail_ckpt_kill_ow.md`; 읽기만 한 분석)을 17절에 요약: 복원 쪽 다섯 항은 5/5, 틀린 항은 장애 위치 조건이고 원인은 시험 스위치의 300 µs 창과 동시 체크포인트 workload의 배치(라이브러리 결함의 흔적 없음); pilot이 이미 2/4를 보였는데 기록하지 않은 것은 16절 충돌 1. 마무리 때 찾은 것: ECONNRESET 4번 가운데 죽음 판정이 늦은 것은 3번이다(재계산 8절 요약의 "넷"과 다름, 원자료를 따름; 16절 충돌 3). 원자료 release 계획은 세션 스크래치 `mi_release_plan.md`(올리기와 `DATA.md`는 메인 세션). 상태는 `QA` 그대로 | 커밋 `0774fc15`(채점 출력)와 이 행의 커밋 |
 | 2026-10-15 밤 | Release `data-20261015` 게시(자산 8개 + SHA256SUMS: feasibility 1, pilot 1–6, 본 실행; 6 126 파일, 15.39 MB 압축; `tools/pack_release.py --whole`, 누출 검사 통과). `DATA.md`에 절과 표 추가(같은 커밋) [측정: release 자산 목록] |
 | 2026-10-16 | 합침과 합친 뒤 확인. 사용자가 PR #69를 "Rebase and merge"로 합침(99커밋, 2026-10-16 00:21): master에서 이 연구의 첫 커밋 `7c948da7`, 끝 커밋 `440cc77c`, 사전 등록 내용의 master 커밋 `89965c99`(태그 `prereg/gin-mirror-v1`의 원 커밋은 `ad9183cf`). 합친 뒤 확인: `git diff prereg/gin-mirror-v1 origin/master`가 고정 파일 `impl/test/predictions_mi.csv`, `impl/test/cells_mi.json`, `PREREG.txt`에서 비어 있고(`sha256sum -c PREREG.txt` 둘 다 OK), `EXPERIMENT.md` 2, 3, 7, 8절이 태그와 같음(절마다 md5 같음) `[측정]`. 같은 가지의 PR #70(`exp/gin-mirror-fix`)은 PR #69와 겹쳐 합치지 않고 닫음. 원자료 release `data-20261015`는 `DATA.md`에 있음. 14절의 release 사실을 고침. 매크로 없는 프로그램의 기계어 재확인(10절)은 빌드 ln4에서 본 실행 전에 했고(12절의 ln4 행), 본 실행 뒤 재확인은 2026-10-16에 다시 돌림(결과는 다음 행). 상태 `COMPLETE`, 루트 `README.md`(요약 한 줄, 주요 결과 한 행, 사전 등록 23건) | master `440cc77c`, 태그 `prereg/gin-mirror-v1`, 이 커밋 |
+| 2026-10-16 00:24–00:44 | 본 실행 뒤 빌드 ln4의 기계어 동일성 재확인(다른 Opus 에이전트, 메인 세션이 맡김; 로컬 nvcc와 cuobjdump만, 클러스터·ssh·kill 없음). 실행 전 md5 확인: `mi_ln4` libnccl `c74e6ffb60b9ab8e959a7cfc89b7f55c`, `mip_ln4` `21b0be95b04f4ebeeafd0e6e92eecba0`, `gin_mi` `4f7ba8bfb5596912f055480763412f59`, `gin_mi_nomacro` `89878018aaf2c5c3e3cd792881b4f757`, 기준 i5·hk 라이브러리 그대로. `build_mi.sh ident`는 출력 폴더가 이미 있어 거절하므로 ident가 부르는 두 스크립트를 같은 환경으로 새 태그에 돌림(`ff_cmp_mi.sh mi_ln4_rerun; exact_cmp_mi.sh mi_ln4_rerun`). 결과 rc 0, 19분 48초: 요약 줄이 첫 실행 로그와 시간 줄 말고 모두 같음 — 매크로 없는 프로그램 넷 × sm_75, sm_86 = 8/8이 hk, i5와 SASS 전체와 자원까지 같음; 장치 객체 i5와 205 같음 + 해시만 다른 2, 다른 것 0; hk와 183 + 2, 다름 22(알려진 hk의 오래된 대칭 GIN 객체); `-res-usage` 같음; 경고 0. SASS 덤프는 두 실행 사이 바이트까지 같고, 다른 파일 10개는 출력 폴더 이름 길이(헤더 경로 문자열) 때문뿐 `[측정]`. 로그: 세션 스크래치 `agent_mi_fix/ident_ln4_rerun_20261016.log` |
 
 ## 13. 사전 등록 이후 변경
 
