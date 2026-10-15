@@ -28,7 +28,12 @@ Mirror columns (empty when the library does not emit the line yet):
                      start_step, each before that step's GINRS step line, "import done" left=0, one "INJECTED sent"
                      whose step is "import done"'s last_step (else the last import step line's)
   fetch_us, fetch_image_bytes, fetch_segment_bytes, fetch_bytes, fetch_extents   the slowest FETCH line of the spares
-  tcp_image_bytes, tcp_segment_bytes   the store summaries summed (mirror on: 0, store_rdma)
+  tcp_image_bytes, tcp_segment_bytes   the store summaries summed (mirror on: 0, store_rdma). No process logs its
+                     "store summary" in pilots 1 and 2 (0 lines of 109 logs: gdakiStoreFree prints it from the context's
+                     free, after the last line the logs hold; 2026-10-15): then tcp_image_bytes is the sum of
+                     "GIN/RS: rank R checkpoints at close: ... upload_bytes=N" over every process (gdakiCkptTeardownLine;
+                     the same counter ck->nUploadBytes the summary prints) and tcp_segment_bytes 0 (no store path sends
+                     segment bytes over a socket: the summary prints a constant 0 too), empty when neither line exists
   store_d2h_us, store_write_us, store_slot_bytes   the last "checkpoint K stored at buddy" line
   switches, rollbacks, restarts, third_slot, pool_max_bytes (max of max_live_bytes), pulls_sent, pulls_taken,
   broken_total, absorbed   the mirror summaries
@@ -98,6 +103,7 @@ K_INJ_FROM = re.compile(r"^INJECTED from rank (\d+)\b")
 K_SUMMARY = re.compile(r"^mirror summary\b")
 K_STORED = re.compile(r"^checkpoint (\d+) stored at buddy rank (\d+)\b")
 K_STORE_SUMMARY = re.compile(r"^store summary\b")
+CKPT_CLOSE = re.compile(r"GIN/RS: rank \d+ checkpoints at close: .*\bupload_bytes=(\d+)")
 # gin-restore's lines (rs_layer.diff; rows_rs reads the rest)
 DEAD_SUBJ = re.compile(r"GIN/TS: rank \d+: (?:rank|peer) (\d+) judged dead")
 PUB_SUBJ = re.compile(r"GIN/RS: rank \d+: restore round with rank (\d+) published")
@@ -325,6 +331,12 @@ def mi_overlay(stem, base, meta):
     ss = [d for _, _, txt, d in every_ml if K_STORE_SUMMARY.search(txt)]
     out["tcp_image_bytes"] = sum(kvnum(d, "tcp_image_bytes") or 0 for d in ss) if ss else ""
     out["tcp_segment_bytes"] = sum(kvnum(d, "tcp_segment_bytes") or 0 for d in ss) if ss else ""
+    if not ss:  # the store summary never reached the logs (head comment): the checkpoint machine's close lines
+        up = [int(m.group(1)) for _, l in [x for r in ranks for x in logs[r]] + slog + slog2
+              for m in [CKPT_CLOSE.search(l)] if m]
+        if up:
+            out["tcp_image_bytes"] = sum(up)
+            out["tcp_segment_bytes"] = 0
     stored = [d for _, _, txt, d in every_ml if K_STORED.search(txt)]
     for c, k in (("store_d2h_us", "d2h_us"), ("store_write_us", "write_us"), ("store_slot_bytes", "bytes")):
         v = kvnum(stored[-1], k) if stored else None

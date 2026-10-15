@@ -401,10 +401,11 @@ GOOD = dict(init_rc=0, reg_rc=0, devcomm_rc=0, resume_rc=0, resume_why="none", s
 def _mi(d, cell, k, *, kill=None, kill2=None, spare=False, spare2=False, mirror="1", checksum="off", overwrite=1,
         train=0, ring=0, live=True, surv=None, sp=None, refuse=None, ff_rank=None, lib_lines=None, mi_lines=None,
         spare_lines=None, t0=100.0, spare_fail=False, spare2_fail=False, hook=None, gpu="0/0", poison=False,
-        store_tcp=False, die2_t=2.5, killed_line=True):
+        store_tcp=False, die2_t=2.5, killed_line=True, store_line=True):
     """one synthetic gin-mirror restore trial (stamped logs, kv, meta). lib_lines[r] / mi_lines[r]: extra lines of rank r
     (offsets from t0); spare_lines["spare" | "spare_2nd"]: extra lines of a spare. With the mirror on (and no refusal) every
-    live rank logs a store summary at teardown (tcp bytes 0, or not with store_tcp)."""
+    live rank logs a store summary at teardown (tcp bytes 0, or not with store_tcp; store_line=False: none, as in the
+    pilots, where the scorer reads the checkpoint machine's close lines instead)."""
     build = "mi"
     os.makedirs(d, exist_ok=True)
     stem = os.path.join(d, "%s_%s_n%d" % (cell, build, k))
@@ -439,7 +440,7 @@ def _mi(d, cell, k, *, kill=None, kill2=None, spare=False, spare2=False, mirror=
         lines = ["%.6f GINRS start rank=%d mode=live" % (t0, r)]
         for t, txt in (lib_lines or {}).get(r, []) + (mi_lines or {}).get(r, []):
             lines.append("%.6f %s" % (t0 + t, txt))
-        if not killed and mirror == "1" and refuse is None:
+        if not killed and mirror == "1" and refuse is None and store_line:
             lines.append("%.6f GIN/MI: rank %d: store summary writes=5 failed=0 requests=1 tcp_image_bytes=%d "
                          "tcp_segment_bytes=%d served=1 mono_ms=1.0" % (t0 + 9.5, r, 100 if store_tcp else 0, 50 if store_tcp else 0))
         if killed:
@@ -818,6 +819,13 @@ def selftest():
             mi_lines={r: _mi_good(r, 3, broken=(0 if r == 2 else 1)) + _inj_from(r, 3) + nohold[r] for r in (0, 1, 2)},
             spare_lines={"spare": _spare_good(3)})
         _kill2(raw, "mi4_kill2_kill3_ow", 4, gap=True)
+        # no store summary (the pilots): tcp_image_bytes from the "checkpoints at close" lines' upload_bytes, every process
+        close = lambda r, b: (9.4, "GIN/RS: rank %d checkpoints at close: taken=30 stable=30 skipped=0 void=0 "
+                                   "paused_for_peers=90 busy_sent=0 uploads=%d upload_bytes=%d served=0 pause_ms_mean=4.91 "
+                                   "pause_ms_max=8.46" % (r, 1 if b else 0, b))
+        _mi(raw, "mi4_none_ow", 7, store_line=False, lib_lines={r: [close(r, 0)] for r in range(4)})
+        _mi(raw, "mi4_none_ow", 8, store_line=False, lib_lines={r: [close(r, 1000 * (r + 1))] for r in range(4)})
+        _mi(raw, "mi4_none_ow", 9, store_line=False)
         cdir = os.path.join(dD, "cost_x")
         _cost(cdir, "bw2m", "on", "rain", 1, 6.0)
         _cost(cdir, "bw2m", "mirror-peer", "rain", 2, 3.0, summary=False)
@@ -844,6 +852,12 @@ def selftest():
         expect("D/nomirror corrupt", rows["mi4_kill3_ow_nomirror_mi_n1"]["nomirror_corrupt"], 1)
         gcols = ("lane_broken", "lane_broken_designed", "lane_broken_other", "disarm_n", "disarm_designed", "disarm_other",
                  "broken_total", "broken_other")
+        expect("D/tcp bytes from the close lines (none uploaded)",
+               (rows["mi4_none_ow_mi_n7"]["tcp_image_bytes"], rows["mi4_none_ow_mi_n7"]["tcp_segment_bytes"]), (0, 0))
+        expect("D/tcp bytes from the close lines (uploads)",
+               (rows["mi4_none_ow_mi_n8"]["tcp_image_bytes"], rows["mi4_none_ow_mi_n8"]["tcp_segment_bytes"]), (10000, 0))
+        expect("D/no store summary and no close line: empty",
+               (rows["mi4_none_ow_mi_n9"]["tcp_image_bytes"], rows["mi4_none_ow_mi_n9"]["tcp_segment_bytes"]), ("", ""))
         expect("D/gap: designed kill3_ow", tuple(k3[c] for c in gcols), (2, 2, 0, 4, 4, 0, 2, 0))
         expect("D/gap: designed and other", tuple(rows["mi4_pull_mi_n5"][c] for c in gcols), (4, 2, 2, 8, 4, 4, 4, 2))
         expect("D/gap: no hold line, nothing designed", tuple(rows["mi4_pull_mi_n6"][c] for c in gcols),
