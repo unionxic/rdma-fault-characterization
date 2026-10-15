@@ -22,14 +22,19 @@
 //      is armed, the buddy's stable slot holds that checkpoint completely, in a live MR; the record's invariants; and the
 //      store gets ready again after the failures stop. The same model without the socket rule (no request after a
 //      reinstall, no stable view from the answer) must break the invariant, else the test proves nothing about the rule.
-//      The model's buddy holds the ward's hold cell (gdakiHoldPack) and drops STORE_REQs as gdakiStoreDropNow does: a
-//      ward's death is HELD of the dead incarnation i, its restore PUBLISHED(i) until INJECTED while the accepted REJOIN
+//      The model's buddy holds the ward's hold cell (gdakiHoldPack) and its known incarnation, and drops STORE_REQs as
+//      gdakiStoreDropNow does since the lineage (EXPERIMENT.md 9.9, impl/rs_lineage_api.h): only the ward's current
+//      incarnation is served (gdakiLnStoreServes on gdakiLnViewOf(cell, known)). A ward's death is HELD of the dead
+//      incarnation i (the lineage's current one), its restore PUBLISHED(i) until INJECTED while the accepted REJOIN
 //      already made i + 1 the known incarnation (mirror on); the dead process's requests (any seq, also late ones read
-//      during PUBLISHED) are dropped, the restored process's are served there. A fixed sequence checks the caller's case
+//      during PUBLISHED) are dropped, the restored process's are served there. A new buddy process (the buddy's
+//      restore) starts with its cell of the ward OFF(0) and takes the ward's incarnation from its REJOIN_ACK, known and
+//      the cell write OFF(0) -> OFF(it) (the real code since the lineage; the model assumed OFF(it) before, so it could
+//      not see a cell left OFF(0)); its lineage of the ward is LIVE then. A fixed sequence checks the caller's case
 //      of pilot 1's defect A: STORE_REQ(i + 1, seq 1) during PUBLISHED(i) is served and the store gets ready before
 //      INJECTED, STORE_REQ(i, any seq) is dropped; the pre-fix caller (the known incarnation as the hold's) must drop the
 //      restored process's request there, else the sequence proves nothing about the caller. A request of an older
-//      incarnation than the known one is dropped too (gdakiStoreDropOldInc), also after INJECTED;
+//      incarnation than the known one is dropped too (STALE), also after INJECTED;
 //   7. the TCP path's base (mirror off, 9.6) as a model on gin-restore's own buddy store (gdakiCkptStore v1): with v1's
 //      rule an upload that ended without an ack, or a restored buddy, keeps a base the buddy no longer holds and the
 //      checkpoints are refused in a row; with this branch's rule never, and the next upload after any failure is whole;
@@ -48,6 +53,7 @@
 #include "rs_ckpt_api.h"
 #include "rs_mirror_api.h"
 #include "rs_store_api.h"
+#include "rs_lineage_api.h"
 #include "rs_ckpt_pure.inc"
 #include "mi_pure_store.inc"
 
@@ -685,12 +691,16 @@ struct World {
     const Msg m = u2b.front();
     u2b.pop_front();
     if (m.kind == 1) {
-      // the caller's drop (gdakiStoreDropNow): the ward's hold cell read once; the hold's incarnation is the cell's (the
-      // fix of pilot 1's defect A), the pre-fix caller passed the known incarnation (preFixCaller)
+      // the caller's drop (gdakiStoreDropNow): the ward's lineage (its hold cell and known incarnation read together) and
+      // only the current incarnation served; the pre-fix caller passed the known incarnation as the hold's (preFixCaller)
       const uint32_t hs = gdakiHoldStateOf(b.holdCell), hInc = gdakiHoldIncOf(b.holdCell);
       const bool held = gdakiHoldIsHeldState(hs);
-      if (gdakiStoreDropReq(false, held, m.q.incarnation, preFixCaller ? b.knownWardInc : hInc) ||
-          gdakiStoreDropOldInc(m.q.incarnation, b.knownWardInc)) {
+      const struct gdakiLnView lv = gdakiLnViewOf(hs, hInc, b.knownWardInc, false);
+      CHECK(lv.phase != GDAKI_LN_BAD);
+      const bool drop = preFixCaller ? (gdakiStoreDropReq(false, held, m.q.incarnation, b.knownWardInc) ||
+                                        gdakiStoreDropOldInc(m.q.incarnation, b.knownWardInc))
+                                     : !gdakiLnStoreServes(lv, m.q.incarnation);
+      if (drop) {
         st.dropped++;
         CHECK(preFixCaller || m.fromInc < wardInc);  // only a dead process's request is dropped (no answer)
         return;
@@ -846,8 +856,15 @@ struct World {
     const uint32_t inc = b.procInc + 1;
     b = Buddy();
     b.procInc = inc;
+    // a new buddy process holds nothing of the ward: its cell OFF(0); the ward's REJOIN_ACK gives its incarnation, known
+    // and the cell write OFF(0) -> OFF(it) (gin-mirror's lineage; the model assumed OFF(wardInc) at once before)
+    b.holdCell = gdakiHoldPack(GDAKI_HOLD_OFF, 0);
     b.knownWardInc = wardInc;
-    b.holdCell = gdakiHoldPack(GDAKI_HOLD_OFF, wardInc);  // a new buddy process holds nothing of the ward
+    if (b.holdCell == gdakiHoldPack(GDAKI_HOLD_OFF, 0)) b.holdCell = gdakiHoldPack(GDAKI_HOLD_OFF, wardInc);
+    {
+      const struct gdakiLnView lv = gdakiLnViewOf(GDAKI_HOLD_OFF, gdakiHoldIncOf(b.holdCell), b.knownWardInc, false);
+      CHECK(lv.phase == GDAKI_LN_LIVE && lv.cur == wardInc);
+    }
     injectedPending = false;
     armed = -1;  // the ward took part in the restore: DISARMed until its next stable checkpoint
     u.buddyRestored();
@@ -869,6 +886,13 @@ struct World {
   void wardDiesAndIsRestored(int late = -1) {
     st.wardDeaths++;
     const uint32_t dead = wardInc;
+    {  // a hold starts at the lineage's current incarnation (gdakiHoldStart), which must be the dying process's (the
+       // model also lets the ward die again before its INJECTED, a hold the real code does not start: not checked there)
+      const struct gdakiLnView lv = gdakiLnViewOf(gdakiHoldStateOf(b.holdCell), gdakiHoldIncOf(b.holdCell), b.knownWardInc,
+                                                  false);
+      CHECK(lv.phase != GDAKI_LN_BAD);
+      if (lv.phase == GDAKI_LN_LIVE) CHECK(lv.cur == dead);
+    }
     b.holdCell = gdakiHoldPack(GDAKI_HOLD_HELD, dead);
     wardInc++;  // from here on the dead process is not the ward's
     while (!u2b.empty() && b.up) buddyStep();  // what it sent before it died is still read
@@ -1019,7 +1043,8 @@ static void testDropWindow() {
   CHECK(preFixMissed == 4);
 }
 // The same divergence without the two rules (no request after a socket reinstall, no view from the answer): the model's
-// invariant must catch it, else the test above proves nothing about them.
+// invariant must catch it, else the test above proves nothing about them. (The buddy's step drops by the lineage's rule
+// as in the model above; this run has no death, so every request is the current incarnation's.)
 static void testModelWithoutSocketRule() {
   long violations = 0;
   for (uint64_t seed = 1; seed <= 40; seed++) {
