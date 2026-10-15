@@ -4,10 +4,14 @@
 # shared interface (2026-10-13) and not run yet; its first run is a branch's `setup`. No GPU or RDMA program runs here;
 # nothing outside agent_mi_$BR/ is written but impl/mi_layer_$BR.diff (stage diff) in this worktree. agent_rs_int/ (i5)
 # and agent_gd/gin_hk (hk) are read only.
-# usage: BR=<dev|host|store|spare|test|int|fix> build_mi.sh <setup|paste|api|mi|mip|unit|ident|diff|info>
+# usage: BR=<dev|host|store|spare|test|int|fix|ln> build_mi.sh <setup|paste|api|mi|mip|unit|ident|diff|info>
 #   fix (2026-10-15, the fixes of pilot 1): agent_mi_fix/ is a copy of agent_mi_int/ (nccl-src, build, build-mip; the
 #          absolute paths in the dependency files and device manifests rewritten, mtimes kept; done by hand, `setup`
 #          refuses for fix); it works as int: impl/mi_layer.diff, the hold v2 text, every unit test, ident.
+#   ln     (2026-10-15, the lineage, EXPERIMENT.md 9.9): the same tree agent_mi_fix/ (no copy; its i3 and i4 outputs stay,
+#          the lineage's builds take new names: MIOUT=mi_ln1, MIPOUT=mip_ln1); it works as fix, and `paste` pastes the
+#          lineage API block of impl/rs_lineage_api.h once (after the checkpoint state region), `api` checks it too, and
+#          `unit` adds impl/mi_unit_lineage.cc (with the host, store and lineage pure regions).
 #   setup  once: check that agent_rs_int is gin-restore's i5 (head commit "gpu-detect hk (libnccl 2913c777)", working tree
 #          diff md5 f005bb67 = ../../restore/impl/rs_layer.diff, build/lib libnccl 4811f28f, build-rsp/lib be91b270), copy
 #          its nccl-src, build and build-rsp to agent_mi_$BR/{nccl-src,build,build-mip}, rewrite the absolute paths in the
@@ -38,8 +42,8 @@
 # All compiles run at nice 19 and idle I/O priority (other studies use this node).
 set -euo pipefail
 STAGE=${1:?stage}
-BR=${BR:?BR=<dev|host|store|spare|test|int|fix>}
-case "$BR" in dev | host | store | spare | test | int | fix) ;; *) echo "unknown branch $BR" >&2; exit 2 ;; esac
+BR=${BR:?BR=<dev|host|store|spare|test|int|fix|ln>}
+case "$BR" in dev | host | store | spare | test | int | fix | ln) ;; *) echo "unknown branch $BR" >&2; exit 2 ;; esac
 SCR=${SCR:-/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad}
 D=$(cd "$(dirname "$0")" && pwd)          # this worktree's mirror/impl
 RSD=$(cd "$D/../../restore/impl" && pwd)  # gin-restore's impl (read only)
@@ -49,11 +53,12 @@ JOBS=${JOBS:-8}
 MIOUT=${MIOUT:-mi_$BR}
 MIPOUT=${MIPOUT:-mip_$BR}
 LAYER=$D/mi_layer_$BR.diff  # the branch's diff; the integration's is impl/mi_layer.diff
-case "$BR" in int | fix) LAYER=$D/mi_layer.diff ;; esac
+case "$BR" in int | fix | ln) LAYER=$D/mi_layer.diff ;; esac
 INFO=${INFO:-}
 I5=$SCR/agent_rs_int     # gin-restore's integrated tree, build i5 (read only)
 HK=$SCR/agent_gd/gin_hk  # gpu-detect's hk (read only; ident)
 W=$SCR/agent_mi_$BR
+[ "$BR" != ln ] || W=$SCR/agent_mi_fix  # the lineage builds in the fix tree (see the usage)
 OUT=$W/out
 HOSTF=src/transport/net_ib/gdaki/gin_host_gdaki.cc
 COMMON=src/include/nccl_device/gin/gdaki/gin_gdaki_device_host_common.h
@@ -82,7 +87,7 @@ rewrite() {  # rewrite <from prefix> <to prefix> <dir>: absolute paths in *.d an
 
 setup() {
   [ -d "$W/nccl-src" ] && { echo "agent_mi_$BR already set up" >&2; return 0; }
-  [ "$BR" != fix ] || { echo "the fix tree is a copy of agent_mi_int (see the usage); setup does not make it" >&2; exit 1; }
+  case "$BR" in fix | ln) echo "the fix tree is a copy of agent_mi_int (see the usage); setup does not make it" >&2; exit 1 ;; esac
   [ "$(md5 "$RSD/rs_layer.diff")" = $I5_DIFF ] || { echo "restore/impl/rs_layer.diff is not f005bb67" >&2; exit 1; }
   case "$(IG log -1 --format=%s)" in "gpu-detect hk (libnccl 2913c777)") ;; *) echo "agent_rs_int head is not hk" >&2; exit 1 ;; esac
   [ "$(IG diff --diff-algorithm=histogram HEAD -- src | md5sum | cut -c1-32)" = $I5_DIFF ] ||
@@ -123,10 +128,32 @@ tree() {  # the branch's mirror diff on the working tree of the copy
 }
 
 # ---- paste: the interface commit (PARALLEL.md's table), one python program, refused on a tree that has any block ----
+paste_ln() {  # BR=ln: the lineage API block, once, right after the checkpoint state region's end
+  head_ok
+  python3 - "$W/nccl-src" "$D" <<'PY'
+import sys
+root, impl = sys.argv[1], sys.argv[2]
+HOSTF = root + '/src/transport/net_ib/gdaki/gin_host_gdaki.cc'
+L = open(impl + '/rs_lineage_api.h', encoding='utf-8').read().split('\n')
+a = [i for i, l in enumerate(L) if l.startswith('// ---- gin-mirror: lineage API (begin')]
+b = [i for i, l in enumerate(L) if l.startswith('// ---- gin-mirror: lineage API (end')]
+if len(a) != 1 or len(b) != 1: sys.exit('no lineage API block in rs_lineage_api.h')
+LA = L[a[0]:b[0] + 1]
+H = open(HOSTF, encoding='utf-8').read().split('\n')
+if any(l.startswith('// ---- gin-mirror: lineage API (begin') for l in H): sys.exit('the tree already has the lineage API block')
+e = [i for i, l in enumerate(H) if l == '// ==== gin-restore (rs, work package 5): checkpoint state (end) ====']
+if len(e) != 1: sys.exit('the checkpoint state region end: %d matches, want 1' % len(e))
+H[e[0] + 1:e[0] + 1] = [''] + LA
+open(HOSTF, 'w', encoding='utf-8').write('\n'.join(H))
+print('paste: lineage API %d lines after the checkpoint state region' % len(LA))
+PY
+  files_ok
+}
 paste() {
+  [ "$BR" != ln ] || { paste_ln; return; }
   head_ok
   local holdv2=0
-  case "$BR" in host | int | fix) holdv2=1 ;; esac
+  case "$BR" in host | int | fix | ln) holdv2=1 ;; esac
   python3 - "$W/nccl-src" "$D" "$holdv2" "$MEMBER" <<'PY'
 import sys
 root, impl, holdv2, member = sys.argv[1], sys.argv[2], sys.argv[3] == '1', sys.argv[4]
@@ -207,6 +234,8 @@ api() {
   same "host API" '^// ---- gin-mirror: host API [(]begin' '^// ---- gin-mirror: host API [(]end' "$HOSTF" "$D/rs_mirror_api.h"
   same "store API" '^// ---- gin-mirror: store API [(]begin' '^// ---- gin-mirror: store API [(]end' "$HOSTF" "$D/rs_store_api.h"
   same "log API v2" '^// ---- gin-restore [(]dev[)]: log API [(]begin' '^// ---- gin-restore [(]dev[)]: log API [(]end' "$HOSTF" "$D/rs_log_api.h"
+  [ "$BR" != ln ] ||
+    same "lineage API" '^// ---- gin-mirror: lineage API [(]begin' '^// ---- gin-mirror: lineage API [(]end' "$HOSTF" "$D/rs_lineage_api.h"
   [ "$(grep -cxF "$MEMBER" "$W/nccl-src/$HOSTF")" = 1 ] || { echo "api: the gdakiRecHost member line is not there once" >&2; exit 1; }
   local fence='/^\/\/ ---- shared text \(begin\) ----$/{on=1; k++} on && k==N{print} /^\/\/ ---- shared text \(end\) ----$/{on=0}'
   local o=$OUT/api; mkdir -p "$o"
@@ -216,11 +245,11 @@ api() {
   awk -v N=1 "$fence" "$RSD/rs_hold_api.h" > "$o/hold_v1.txt"
   awk -v N=1 "$fence" "$D/rs_ckpt_api.h" > "$o/ckpt_v2.txt"
   case "$BR" in
-    host | int | fix) cmp -s "$o/hold_src.txt" "$o/hold_v2.txt" || { echo "api: the hold shared text is not v2" >&2; exit 1; } ;;
+    host | int | fix | ln) cmp -s "$o/hold_src.txt" "$o/hold_v2.txt" || { echo "api: the hold shared text is not v2" >&2; exit 1; } ;;
     *) cmp -s "$o/hold_src.txt" "$o/hold_v1.txt" || { echo "api: the hold shared text is not v1 (only host pastes v2)" >&2; exit 1; } ;;
   esac
   cmp -s "$o/ckpt_src.txt" "$o/ckpt_v2.txt" || { echo "api: the checkpoint's shared text is not rs_ckpt_api.h's" >&2; exit 1; }
-  echo "api: hold shared text $( [ "$BR" = host ] || [ "$BR" = int ] || [ "$BR" = fix ] && echo v2 || echo v1 ), checkpoint shared text v1 (= v2's)"
+  echo "api: hold shared text $( [ "$BR" = host ] || [ "$BR" = int ] || [ "$BR" = fix ] || [ "$BR" = ln ] && echo v2 || echo v1 ), checkpoint shared text v1 (= v2's)"
   cat > "$o/headers.cc" <<'CC'
 #include <stddef.h>
 #include <stdint.h>
@@ -235,12 +264,13 @@ typedef struct {
 #include "rs_ckpt_api.h"
 #include "rs_store_api.h"
 #include "rs_spare_api.h"
+#include "rs_lineage_api.h"
 int main() { return 0; }
 CC
   g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-function -fsyntax-only -I"$D" "$o/headers.cc"
   g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-function -DGDAKI_MI_API_NO_ENTRY_DECLS -DGDAKI_HOLD_API_NO_ENTRY_DECLS \
     -fsyntax-only -I"$D" "$o/headers.cc"
-  echo "api: the six headers compile together (g++ -fsyntax-only, with and without the entry-point declarations)"
+  echo "api: the seven headers compile together (g++ -fsyntax-only, with and without the entry-point declarations)"
 }
 
 NDEV=src/include/nccl_device
@@ -300,15 +330,25 @@ unit1() {  # unit1 <branch>: impl/mi_unit_<branch>.cc against the working tree's
   if [ "$b" != test ]; then
     cut1 "$o/mi_pure_$b.inc" "^// ---- gin-mirror [(]$b[)]: pure [(]begin" "^// ---- gin-mirror [(]$b[)]: pure [(]end"
   fi
+  if [ "$b" = lineage ]; then  # the lineage's oracle calls the host and store branches' unchanged pure functions
+    local x
+    for x in host store spare; do
+      cut1 "$o/mi_pure_$x.inc" "^// ---- gin-mirror [(]$x[)]: pure [(]begin" "^// ---- gin-mirror [(]$x[)]: pure [(]end"
+    done
+  fi
   GXX -I"$o" -I"$D" -I"$W/nccl-src/src/include" "$D/mi_unit_$b.cc" -o "$o/mi_unit_$b"
   "$o/mi_unit_$b"
 }
 unit() {
   head_ok
-  case "$BR" in int | fix) local b; for b in dev host store spare; do unit1 "$b"; done ;; *) unit1 "$BR" ;; esac
+  case "$BR" in
+    int | fix) local b; for b in dev host store spare; do unit1 "$b"; done ;;
+    ln) local b; for b in dev host store spare lineage; do unit1 "$b"; done ;;
+    *) unit1 "$BR" ;;
+  esac
 }
 ident() {
-  case "$BR" in dev | int | fix) ;; *) echo "ident is the dev branch's and the integration's" >&2; exit 1 ;; esac
+  case "$BR" in dev | int | fix | ln) ;; *) echo "ident is the dev branch's and the integration's" >&2; exit 1 ;; esac
   [ -x "$D/exact_cmp_mi.sh" ] && [ -x "$D/ff_cmp_mi.sh" ] ||
     { echo "impl/exact_cmp_mi.sh and impl/ff_cmp_mi.sh are not written yet (the dev branch's, PARALLEL.md)" >&2; exit 1; }
   W="$W" HK="$HK" I5="$I5" LIB="$MIOUT" "$D/ff_cmp_mi.sh" "$MIOUT"
@@ -334,8 +374,8 @@ info() {
     for b in "$OUT"/*/libnccl.so.2.32.3; do [ -f "$b" ] && echo "$(basename "$(dirname "$b")") libnccl $(md5 "$b")"; done
     echo "include_digest build $(cd "$W/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
     echo "include_digest i5 $(cd "$I5/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
-    for f in rs_mirror_api.h rs_store_api.h rs_log_api.h rs_hold_api.h rs_ckpt_api.h rs_spare_api.h PARALLEL.md \
-             build_mi.sh mi_unit_dev.cc mi_unit_host.cc mi_unit_store.cc mi_unit_spare.cc; do
+    for f in rs_mirror_api.h rs_store_api.h rs_log_api.h rs_hold_api.h rs_ckpt_api.h rs_spare_api.h rs_lineage_api.h \
+             PARALLEL.md build_mi.sh mi_unit_dev.cc mi_unit_host.cc mi_unit_store.cc mi_unit_spare.cc mi_unit_lineage.cc; do
       [ -f "$D/$f" ] && echo "$f $(md5 "$D/$f")"
     done
   } > "${INFO:-$OUT/build_info.txt}"
