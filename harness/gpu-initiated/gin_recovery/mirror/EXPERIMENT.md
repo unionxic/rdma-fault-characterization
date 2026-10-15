@@ -6,7 +6,7 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `PREREGISTERED` |
+| 상태 | `QA` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-13 |
 | 기준 브랜치와 커밋 | `exp/gin-mirror` @ `7b21eb58` (master) |
@@ -1160,6 +1160,7 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 | 2026-10-15 밤 | pilot 6(set `mi6` = 빌드 ln4, hold P6, 21:15–21:18, 시행 7: `mi4_pull` n=5, `mi4_kill3_ow` n=1, `mi4_train_kill3` n=1; 채점 제외). 모두 복원되고 데이터 같음(`restore_live` 1, `data_equal` 1), `GIN/LN` 0줄, 남긴 당기기 2건·소진 0·멈춤 시한 거절 0, `lane_broken_other` 0, `disarm_other` 0, 복원 175.8–198.2 ms(학습 모양 259.4), 활성화 뒤 68.4–69.6 ms(학습 모양 85.4), `later_n` 5–8. 시행 meta의 lib/driver md5가 ln4와 일치(`c74e6ffb`, `4f7ba8bf`). pilot 5와 같은 판정. 원자료 `results/20261015_pilot6/`(raw, hold_P6.out). 행 표 `rows_mi.py` [측정] |
 | 2026-10-15 밤 | ln4 독립 리뷰(다른 에이전트, 읽기만; 보고는 세션 스크래치 `lineage/LN4_REVIEW.md`): 막는 문제 없음, 고칠 것 없음, nit 4(같은 프로세스에서 Step 번호가 되풀이되면 앞 요청의 거절이 이번 당기기를 쓸 수 있음 — 지금 셀에서는 닿지 않음 [추론]; 모형의 `askedThisStep` 전달 방식; 순수 함수 주석; "attempt k"의 뜻). 변경 범위(호스트만, 장치 부분 바이트 동일, `impl/rs_*.h` 변경 없음)와 md5, 변이 로그, 9.3·9.7·18·19·12절의 서술이 코드와 맞음을 확인. → 사전 등록 전 조건(리뷰, pilot) 충족 |
 | 2026-10-15 | 사전 등록(메인 세션, 측정 전: 본 실행의 결과 폴더 없음). 사용자 결정(2026-10-15, 메인 세션이 전함): (1) 복원 시간 2 000 / 1 000 ms(학습 모양 밖 / 학습 모양), (2) 입력 멈춤 16 / 20 ms, (3) FETCH 띠 ±15%, (4) 비용 꼴 `cost_mirror_lat4k` within_us:12, `cost_mirror_lat2m` ratio:1.5-2.2(새 행), `cost_mirror_lat` 256 KiB 보고만, `cost_mirror_bw` ratio:0.45-0.70(mirror-peer), (5) seed `gin-mirror-v1`(pilot의 `mi-v1` 대신; 본 실행 hold G1, T1, T2), (6) 앞 결정 넷: 채점 셈 확인, `mi4_overflow` 기다림 15 000 ms와 넓힌 판정식 확인, 결함 D 리뷰 끝남, 되살린 rank의 다시 무장은 범위 밖, (7) 예비 프로세스의 활성화 관문 그대로(3절 끝의 두 모드 보고), (8) 멈춤 시한 거절은 당기기를 남기지 않음(2026-10-15 사용자 결정, 빌드 ln4). 고정한 것: 2절 가설(복원 시간의 셀 가족마다의 상한과 FETCH 모형, 비용은 따로 된 QP의 쓰기 하나), 3절 예측(위 값; `second_death_restored`와 `train_second_death`의 판정식이 두 복원 시간을 직접 읽고 `ow_none_clean`이 `ckpt_pause_ms`를 직접 읽게 해 문턱이 고정 파일 안에 있음; 새 행 `cost_mirror_lat2m`), 7절 셀과 반복 수(표 그대로, hold 목록, 빌드 ln4의 md5, seed), 8절 제외와 중단(BAR1 검사의 자리, QUERY_QP 상한 50 000과 150 000의 단위, 시행 한도 60 s와 150 s; 일관성 고침 4 그대로). 고정 파일 [impl/test/predictions_mi.csv](impl/test/predictions_mi.csv)(sha256 `2db0c694…`)와 [impl/test/cells_mi.json](impl/test/cells_mi.json)(`697e8b6c…`)은 [PREREG.txt](PREREG.txt)에, 라이브러리와 driver의 md5도 거기에. `score.py`의 머리 문구를 사전 등록 문구로(판정 논리는 그대로). 자체 시험 `selftest_mi.py` 통과 `[측정]`. 상태를 `PREREGISTERED`로. 이 변경 전부가 커밋 하나이고 그 커밋에 annotated 태그 `prereg/gin-mirror-v1` | 이 행의 커밋, `PREREG.txt`, 태그 `prereg/gin-mirror-v1` |
+| 2026-10-15 밤 | 본 실행(set `mi6` = 빌드 ln4, 21:22–22:54, `results/20261015_main/`): hold G1 G3 T1 T2 G2 R1 R2 R3, 비용 hold 10(COST-mirror-{rain,sunny}-{lat4k,lat256k,bw256k,lat2m,bw2m}), 빠진 시행 잇기 8(모두 "already done"); 시행 428, 제외 0, STOP·skip·refuse 없음, `qp_over.txt` 없음. `score.py`(SCORE.md, trials_scored.csv): 예측 53 중 맞음 51, 틀림 1(`ckpt_kill_ow`: `mi4_kill3_ckpt_ow` 5회 중 1회만 식 충족, 원인 분석 중), 보고만 1(`cost_mirror_lat`). 상태 `RUNNING` → `QA`. 독립 재계산과 틀린 예측 분석은 별도 에이전트가 진행 [측정: SCORE.md 6행, 114–115행] |
 
 ## 13. 사전 등록 이후 변경
 
