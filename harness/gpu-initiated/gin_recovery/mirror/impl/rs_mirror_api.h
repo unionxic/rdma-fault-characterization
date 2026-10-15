@@ -53,9 +53,17 @@
 #define NCCL_GIN_RS_CSUM_SAMPLED 1u  // the first 64 bytes of every 4 KiB of the data and its last 64 bytes
 #define NCCL_GIN_RS_CSUM_FULL 2u     // every byte
 // The header. Written by the host before the side table is published (plain device loads): magic, nqp, csum, nEntries,
-// entries, miOn, miCtx, miCellsOff, miNCells (none changes after the publish, 9.7's publish row). The ring's control
-// words as gin-restore: head (device CAS inside the gate), tail (host, over the NIC), ovfCount (device, on overflow
-// only).
+// entries, miOn, miCtx, miCellsOff, miNCells, miMode (none changes after the publish, 9.7's publish row). The ring's
+// control words as gin-restore: head (device CAS inside the gate), tail (host, over the NIC), ovfCount (device, on
+// overflow only).
+// miMode (fix of pilot 1's defect D, 2026-10-15): whose pool holds this rank's lane for destination d and whose mirror QP
+// the WRITE takes (ncclGinMiTargetOf): the restore's rule, d's buddy (0); the measurement mode's arms (no Resume, the side
+// table published at creation): self, this rank's own pool over its self loop (1), peer, d's own pool over the mirror QP
+// to d, across the wire (2). Before the fix the device always took d's buddy, which in a two-rank job is the sender itself:
+// the peer arm's cells named d's pool while the device looked at the self loop (miUse 0) and broke every put.
+#define NCCL_GIN_MI_MODE_BUDDY 0u
+#define NCCL_GIN_MI_MODE_SELF 1u
+#define NCCL_GIN_MI_MODE_PEER 2u
 struct ncclGinRsSide {
   uint32_t magic;
   uint32_t nqp;          // QP entries that follow (the device skips the side table for an index at or above it)
@@ -69,8 +77,8 @@ struct ncclGinRsSide {
   uint32_t miCtx;        // 44: the mirror context's index (= user GIN contexts); valid when miOn
   uint64_t miCellsOff;   // 48: byte offset of the cell array from the side table's start (0: none)
   uint32_t miNCells;     // 56: cells (= nranks when miOn, else 0)
-  uint32_t miRsv;        // 60: 0
-  uint64_t head;         // positions reserved so far (gin-restore: a CAS only when the entry fits; overflow: none)
+  uint32_t miMode;       // 60: NCCL_GIN_MI_MODE_* (0 but in the measurement mode's mirror arms)
+  uint64_t head;        // positions reserved so far (gin-restore: a CAS only when the entry fits; overflow: none)
   uint64_t tail;         // first position kept (host: the stable cuts of the peers; the measurement mode's helper)
   uint64_t ovfCount;     // operations of every QP not logged because the ring was full (device, overflow only)
   uint64_t reserved1[5];
@@ -97,7 +105,8 @@ static_assert(offsetof(struct ncclGinRsSide, fence) == 8 && offsetof(struct nccl
                 offsetof(struct ncclGinRsSide, nEntries) == 20 && offsetof(struct ncclGinRsSide, entries) == 24 &&
                 offsetof(struct ncclGinRsSide, pairTest) == 32 && offsetof(struct ncclGinRsSide, miOn) == 40 &&
                 offsetof(struct ncclGinRsSide, miCtx) == 44 && offsetof(struct ncclGinRsSide, miCellsOff) == 48 &&
-                offsetof(struct ncclGinRsSide, miNCells) == 56 && offsetof(struct ncclGinRsSide, head) == 64 &&
+                offsetof(struct ncclGinRsSide, miNCells) == 56 && offsetof(struct ncclGinRsSide, miMode) == 60 &&
+                offsetof(struct ncclGinRsSide, head) == 64 &&
                 offsetof(struct ncclGinRsSide, tail) == 72 && offsetof(struct ncclGinRsSide, ovfCount) == 80,
               "the side table header layout (the host reads it over the NIC by these offsets)");
 static_assert(sizeof(struct ncclGinRsQp) == 128, "a side table QP entry is 128 bytes");
@@ -107,7 +116,8 @@ static_assert(offsetof(struct ncclGinRsQp, msgs) == 0 && offsetof(struct ncclGin
                 offsetof(struct ncclGinRsQp, gets) == 40 && offsetof(struct ncclGinRsQp, miUse) == 48,
               "the side table QP entry layout (the host reads it over the NIC by these offsets)");
 // One cell per destination rank d (cell d; the own rank's cell is never valid): this rank's lane for d in the pool of
-// d's buddy b = ncclGinMiBuddyOf(d, nranks). Who writes what:
+// d's buddy b = ncclGinMiBuddyOf(d, nranks) (in the measurement mode's arms the pool of ncclGinMiTargetOf). Who writes
+// what:
 //   - valid, rkeyBe, seg, laneBase, laneBytes, cursor: the host, over the NIC, only while every user QP to d has its
 //     gate odd with count 0 (d's input pause, a hold of d), and in b's restore round (gdakiMiPoolRekey, valid 0, before
 //     the mirror QP to b is published); read back after the write. One more exception: a fault record's absorption
@@ -116,8 +126,18 @@ static_assert(offsetof(struct ncclGinRsQp, msgs) == 0 && offsetof(struct ncclGin
 //   - cursor: also the device, atomic add of the put's bytes rounded up to 64 (ncclGinMiRound64), inside d's gate.
 //   - broken: the device only (atomic add): a full lane, a closed mirror gate, a failed or timed-out mirror wait.
 //     Cumulative: the host never writes it and compares it with the value it read at the segment's switch.
+//   - brkWhy, brkPeer: the device only (plain stores, the last break wins; diagnostic): why the last break of this lane
+//     happened (NCCL_GIN_MI_BRK_*) and the rank whose mirror QP it concerned. The host only reads them (the line of the
+//     first break it sees on a lane; fix of pilot 1's defect D, 2026-10-15). Never written by a switch (bytes 0..39).
 // The device reads valid and rkeyBe with system-scope relaxed loads (written over the NIC), the rest with plain loads
 // after valid (they change only while d's gates are odd).
+#define NCCL_GIN_MI_BRK_NONE 0u
+#define NCCL_GIN_MI_BRK_NO_QP 1u  // no mirror QP to the target, or it is not in use (miUse 0)
+#define NCCL_GIN_MI_BRK_FULL 2u   // the put does not fit the lane (the lane is full, or the put is larger than L)
+#define NCCL_GIN_MI_BRK_GATE 3u   // the mirror QP's gate was closed (a round, a hold of the target, a failed QP)
+#define NCCL_GIN_MI_BRK_SELF 4u   // the self loop: an error completion, or the post would pass its CQ's window
+#define NCCL_GIN_MI_BRK_RKEY 5u   // the cell's pool rkey is 0 (unknown)
+#define NCCL_GIN_MI_BRK_WAIT 6u   // a flush's or a wait's mirror wait did not complete (gate, epoch, error, bound, abort)
 struct ncclGinMiCell {
   uint32_t valid;        //  0: 1 = mirror the puts with data to d
   uint32_t rkeyBe;       //  4: the pool rkey of buddy(d), big-endian as the WQE takes it
@@ -126,12 +146,15 @@ struct ncclGinMiCell {
   uint64_t laneBytes;    // 24: L (NCCL_GIN_RESTORE_MIRROR_LANE)
   uint64_t cursor;       // 32: bytes of the lane taken; may pass laneBytes (that put is a break, no mirror)
   uint64_t broken;       // 40: breaks of this lane, cumulative
-  uint64_t reserved[2];  // 48
+  uint32_t brkWhy;       // 48: NCCL_GIN_MI_BRK_* of the last break (device; diagnostic)
+  uint32_t brkPeer;      // 52: the rank whose mirror QP that break concerned (device; diagnostic)
+  uint64_t reserved;     // 56
 };
 static_assert(sizeof(struct ncclGinMiCell) == 64, "a mirror cell is 64 bytes");
 static_assert(offsetof(struct ncclGinMiCell, rkeyBe) == 4 && offsetof(struct ncclGinMiCell, seg) == 8 &&
                 offsetof(struct ncclGinMiCell, laneBase) == 16 && offsetof(struct ncclGinMiCell, laneBytes) == 24 &&
-                offsetof(struct ncclGinMiCell, cursor) == 32 && offsetof(struct ncclGinMiCell, broken) == 40,
+                offsetof(struct ncclGinMiCell, cursor) == 32 && offsetof(struct ncclGinMiCell, broken) == 40 &&
+                offsetof(struct ncclGinMiCell, brkWhy) == 48 && offsetof(struct ncclGinMiCell, brkPeer) == 52,
               "the mirror cell layout (the host reads and writes it over the NIC by these offsets)");
 // The log entry's sixth flag bit (flags are bits 26..31 of qpKf; gin-restore uses 0x01, 0x02, 0x04 and bits 3..4 for
 // the checksum scheme, 1222-1226): the put's data was mirrored. Then word 8..11 (`csum`) holds the data's offset in
@@ -192,6 +215,15 @@ NCCL_GIN_RS_HD bool ncclGinMiFits(uint64_t off, uint64_t bytes, uint64_t laneByt
 }
 // The side table's QP index of the mirror QP to `peer`.
 NCCL_GIN_RS_HD uint32_t ncclGinMiQpIdx(uint32_t miCtx, uint32_t nranks, uint32_t peer) { return miCtx * nranks + peer; }
+// The rank whose pool holds sender `me`'s lane for destination d and whose mirror QP the WRITE takes (and a flush or a
+// wait on d waits for), by the side table's miMode: d's buddy (the restore), `me` (the measurement mode's self arm: the
+// self loop), d itself (its peer arm). -1: none (d is `me` or outside the ranks). Fix of pilot 1's defect D (2026-10-15).
+NCCL_GIN_RS_HD int ncclGinMiTargetOf(uint32_t miMode, int d, int me, int n) {
+  if (d < 0 || d >= n || d == me) return -1;
+  if (miMode == NCCL_GIN_MI_MODE_SELF) return me;
+  if (miMode == NCCL_GIN_MI_MODE_PEER) return d;
+  return ncclGinMiBuddyOf(d, n);
+}
 // ---- gin-mirror: device helpers (end) ----
 
 // The host file's types the host API block names (the host file has them; a standalone check needs a declaration).
