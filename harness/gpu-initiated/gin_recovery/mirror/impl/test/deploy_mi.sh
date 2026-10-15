@@ -7,10 +7,11 @@
 # network only; no GPU program, no RDMA traffic. RS_SET is required (gin-mirror never uses the first set's paths).
 #   ~/rs-bundle/<RS_SET>/lib/mi/     the mirror research libnccl (+ .so.2, .so links)   source MI_LIB_SRC,  md5 WANT_MI
 #   ~/rs-bundle/<RS_SET>/lib/mip/    the mirror production libnccl (+ links)             source MIP_LIB_SRC, md5 WANT_MIP
-#   ~/rs-bundle/<RS_SET>/mitest/     gin_mi (macro), gin_mi_nomacro, gin_ts2_mi (cost)   out/<MIOUT>/ and out/cost/,
+#   ~/rs-bundle/<RS_SET>/mitest/     gin_mi (macro), gin_mi_nomacro, gin_ts2_mi (cost)   out/<MIOUT>/ and out/<COSTOUT>/,
 #                                                                                        md5 WANT_GINMI, WANT_GINMI_NOMACRO,
 #                                                                                        WANT_COST_MI
-#   ~/rs-bundle/<RS_SET>/mr/ff/, mr/hold/   gin_mr against the mirror layer's headers    out/mr/,  md5 WANT_MR_FF, WANT_MR_HOLD
+#   ~/rs-bundle/<RS_SET>/mr/ff/, mr/hold/   gin_mr against the mirror layer's headers    out/<MROUT>/, md5 WANT_MR_FF,
+#                                                                                        WANT_MR_HOLD
 # An artifact is deployed only when its WANT_* is set, and then its source must exist and match (else the script refuses
 # before touching anything). Refuses if a target directory exists on either node. The libraries are MI_LIB_SRC and
 # MIP_LIB_SRC ($SCR/<MITREE>/out/<build>/libnccl.so.2.32.3: the integrated tree agent_mi_int, or since the fixes of pilot 1
@@ -18,7 +19,8 @@
 # ($SCR/<MITREE>/test/out). The md5 checks (WANT_*) are what keeps a driver built with other headers away from a library:
 # the device does not read the side table's magic.
 # env: SUNNY_SSH (required), RS_SET (required), the WANT_* above, MI_LIB_SRC, MIP_LIB_SRC, MIOUT (default mi), MITREE
-#      (default agent_mi_int; agent_mi_fix for the drivers of the fixes of pilot 1)
+#      (default agent_mi_int; agent_mi_fix for the drivers of the fixes of pilot 1), COSTOUT (default cost) and MROUT
+#      (default mr): build_mi_test.sh's output subfolders of the cost driver and gin_mr (build i4: cost_i4, mr_i4)
 set -euo pipefail
 OUTF=${1:?output file (the check is written to a file only; never pipe it)}
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH (user@address) from the management env file}
@@ -27,6 +29,10 @@ MITREE=${MITREE:-agent_mi_int}  # agent_mi_fix: the drivers built against the fi
 case "$MITREE" in agent_mi_int | agent_mi_fix) ;; *) echo "MITREE is agent_mi_int or agent_mi_fix" >&2; exit 2 ;; esac
 T=$SCR/$MITREE/test/out  # the drivers build_mi_test.sh built against that tree's headers (MITREE as there)
 MIOUT=${MIOUT:-mi}
+COSTOUT=${COSTOUT:-cost}; MROUT=${MROUT:-mr}
+for v in "$MIOUT" "$COSTOUT" "$MROUT"; do
+  case "$v" in "" | *[!A-Za-z0-9_.-]* | .*) echo "an output subfolder name is one plain word: '$v'" >&2; exit 2 ;; esac
+done
 RS_SET=${RS_SET:-}
 . "$(cd "$(dirname "$0")" && pwd)/rs_set_mi.sh"
 rs_set_check || exit 1
@@ -40,9 +46,9 @@ ART=(
   "WANT_MIP|${MIP_LIB_SRC:-}|$B/lib/mip|libnccl.so.2.32.3|1"
   "WANT_GINMI|$T/$MIOUT/gin_mi|$B/mitest|gin_mi|0"
   "WANT_GINMI_NOMACRO|$T/$MIOUT/gin_mi_nomacro|$B/mitest|gin_mi_nomacro|0"
-  "WANT_COST_MI|$T/cost/gin_ts2_mi|$B/mitest|gin_ts2_mi|0"
-  "WANT_MR_FF|$T/mr/ff/gin_mr|$B/mr/ff|gin_mr|0"
-  "WANT_MR_HOLD|$T/mr/hold/gin_mr|$B/mr/hold|gin_mr|0"
+  "WANT_COST_MI|$T/$COSTOUT/gin_ts2_mi|$B/mitest|gin_ts2_mi|0"
+  "WANT_MR_FF|$T/$MROUT/ff/gin_mr|$B/mr/ff|gin_mr|0"
+  "WANT_MR_HOLD|$T/$MROUT/hold/gin_mr|$B/mr/hold|gin_mr|0"
 )
 SEL=(); DIRS=()
 for a in "${ART[@]}"; do
