@@ -1,6 +1,6 @@
 {
  "study": "gin-mirror",
- "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n are the draft counts of section 7, frozen only after the pilot, PILOT_MI.md). Input of hold_mi.sh (what to run) and score.py (planned scored trials per cell@build). kind: rs -> run_mi.sh (the 4-rank workload gin_mi), reg -> ../../../remaining/run_mr_hr.sh (gin-remaining's 4-rank runner). build: mi (mirror research, ~/rs-bundle/<RS_SET>/lib/mi), mip (mirror production, the cost cells). env: the cell's runner variables (each value one argument). G1 holds the 4 KiB restore and control cells, G3 the segment, interval, pull and overflow cells, G2 the refusals. Pilot holds (P*) are never scored: P1 the 4 KiB cells and the refusals, P2 the training cells, P3 the regression; P4 and P5 the pilot 4 of the lineage and the fix of defect E (2026-10-15, EXPERIMENT.md 9.9: P4 the mirror cells, mi4_pull with n 5 for defect E's pull window; P5 the mirror-off, mirror-on and gpu-detect regression), their entries copied from G1, G3, T2, R1, R2, R3 with the pilot's n. P6 the pilot 5 of build ln3 (2026-10-15, EXPERIMENT.md 9.3 and 9.9: the kept pull's bound of half an interval; mi4_pull n 5 and mi4_kill3_ow n 1 as in P4, mi4_train_kill3 n 1 as in T1). The training cells carry QPWATCH=50 and SPARE_WAIT_MS=120000 (sections 6, 8); the 4 KiB cells and the regression keep 10 ms. The second-death and the training kills are the driver's step kill (GIN_RS_DIE_AT) drawn from DIE_SEED (a placeholder until the pre-registration fixes it); the 4 KiB kill cells use the recorded-PID traffic kill as gin-restore does. The training hold split of section 8: T1 = mi4_train_none + mi4_train_kill3, T2 = mi4_train_kill2_kill3. The gin-restore regression with the mirror off (section 7) keeps gin-restore's cell names and env (restore/impl/test/cells_rs.json) at @mi with MIRROR=0 (R2, R3, R1 for gin-remaining's runner); the regression with the mirror on uses the suffix _mion (rs4_none_mion, rs4_kill3_mion; R3). The cost family 'mirror' runs through hold_mi.sh's interleave (run_cost_mi.sh). Cell names keep the search keys of sections 3 and 7.",
+ "about": "The cells of ../../EXPERIMENT.md 7 (n fixed by the pre-registration prereg/gin-mirror-v1, 2026-10-15: section 7). Input of hold_mi.sh (what to run) and score.py (planned scored trials per cell@build). kind: rs -> run_mi.sh (the 4-rank workload gin_mi), reg -> ../../../remaining/run_mr_hr.sh (gin-remaining's 4-rank runner). build: mi (mirror research, ~/rs-bundle/<RS_SET>/lib/mi), mip (mirror production, the cost cells). env: the cell's runner variables (each value one argument). G1 holds the 4 KiB restore and control cells, G3 the segment, interval, pull and overflow cells, G2 the refusals. Pilot holds (P*) are never scored: P1 the 4 KiB cells and the refusals, P2 the training cells, P3 the regression; P4 and P5 the pilot 4 of the lineage and the fix of defect E (2026-10-15, EXPERIMENT.md 9.9: P4 the mirror cells, mi4_pull with n 5 for defect E's pull window; P5 the mirror-off, mirror-on and gpu-detect regression), their entries copied from G1, G3, T2, R1, R2, R3 with the pilot's n. P6 the pilot 5 of build ln3 (2026-10-15, EXPERIMENT.md 9.3 and 9.9: the kept pull's bound of half an interval; mi4_pull n 5 and mi4_kill3_ow n 1 as in P4, mi4_train_kill3 n 1 as in T1). The training cells carry QPWATCH=50 and SPARE_WAIT_MS=120000 (sections 6, 8); the 4 KiB cells and the regression keep 10 ms. The second-death and the training kills are the driver's step kill (GIN_RS_DIE_AT) drawn from DIE_SEED (gin-mirror-v1 in the main-run holds G1, T1, T2, fixed by the pre-registration; the pilot holds P1-P6 keep the placeholder mi-v1 they ran with); the 4 KiB kill cells use the recorded-PID traffic kill as gin-restore does. The training hold split of section 8: T1 = mi4_train_none + mi4_train_kill3, T2 = mi4_train_kill2_kill3. The gin-restore regression with the mirror off (section 7) keeps gin-restore's cell names and env (restore/impl/test/cells_rs.json) at @mi with MIRROR=0 (R2, R3, R1 for gin-remaining's runner); the regression with the mirror on uses the suffix _mion (rs4_none_mion, rs4_kill3_mion; R3). The cost family 'mirror' runs through hold_mi.sh's interleave (run_cost_mi.sh). Cell names keep the search keys of sections 3 and 7.",
  "holds": {
   "P1": [
    {
@@ -732,7 +732,7 @@
      "STEPS": "600",
      "KILL_RANK": "2",
      "SPARE": "1",
-     "DIE_SEED": "mi-v1",
+     "DIE_SEED": "gin-mirror-v1",
      "DIE_LO": "180",
      "DIE_HI": "220",
      "KILL2_RANK": "3",
@@ -940,7 +940,7 @@
      "SPARE_WAIT_MS": "120000",
      "KILL_RANK": "3",
      "SPARE": "1",
-     "DIE_SEED": "mi-v1",
+     "DIE_SEED": "gin-mirror-v1",
      "DIE_LO": "300",
      "DIE_HI": "1700",
      "DIE_US_MAX": "8000"
@@ -963,7 +963,7 @@
      "SPARE_WAIT_MS": "120000",
      "KILL_RANK": "2",
      "SPARE": "1",
-     "DIE_SEED": "mi-v1",
+     "DIE_SEED": "gin-mirror-v1",
      "DIE_LO": "300",
      "DIE_HI": "900",
      "KILL2_RANK": "3",

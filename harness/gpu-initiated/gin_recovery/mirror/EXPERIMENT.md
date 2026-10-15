@@ -6,12 +6,12 @@
 
 | 항목 | 값 |
 |---|---|
-| 상태 | `DRAFT` |
+| 상태 | `PREREGISTERED` |
 | 담당자 | @unionxic |
 | 작성일 | 2026-10-13 |
 | 기준 브랜치와 커밋 | `exp/gin-mirror` @ `7b21eb58` (master) |
-| 사전 등록 태그 | 없음 |
-| 마지막 갱신 | 2026-10-15 밤, 멈춤 시한 거절의 사용자 결정(당겨진 체크포인트가 그 거절이면 당기기를 그 시도에 씀)과 빌드 ln4(호스트만; CPU 단위 시험 다섯 0 failed, 새 장면 11과 변이 셋, 매크로 없는 장치 코드가 hk, i5와 같음), 배포 묶음 set `mi6`(9.3, 9.7, 11, 12, 18, 19절; 클러스터 실행 없음). 그 전: 2026-10-15 밤, 사전 등록 전 일관성 고침 여섯(12절): 2절 가설을 pilot에 맞춤(복원 시간은 셀 가족마다의 상한과 FETCH 모형, 비용은 차례 없는 따로 된 QP의 쓰기 하나, 당기기의 반증은 짝 보호 공백 밖만, pool과 버려진 체크포인트는 3절과 같게), 3절 `train_pull_count`의 근거를 잰 당기기 수로, 3절과 7절의 찾는 키와 셀 이름을 고정할 파일대로(`refuse_sl` 더함, `ff_identical`은 빌드 검사로), 8절의 BAR1 검사 자리, QUERY_QP 상한의 단위와 값, 학습 시행 한도 150 s, 9.7절 결함 E 행의 멈춤 시한 거절(사용자 결정 대기), 7절 seed 규칙. 사전 등록 전이고 클러스터 실행 없음. 그 전: 2026-10-15 저녁, pilot 5(set `mi5`, 빌드 ln3, pilot hold P6)의 실행 기록(12절; 7 시행 모두 복원하고 데이터 같음, `lineage_warn` 0, `lane_broken_other` 0, 남긴 당기기 둘이 셋째 시도에 찍힘), ln3 독립 리뷰의 고칠 것 둘(멈춤 시한 거절의 비용과 사용자 결정: 9.3, 18, 19절; 변이 시험의 로그: 12절)과 nit 넷. 그 전: 2026-10-15 저녁, pilot 3(set `mi3`)과 pilot 4(set `mi4`, 빌드 ln2)의 실행 기록(12절; 모든 시행 `lineage_warn` 0, `mi4_pull`의 공백 밖 깨짐 0), 구현 독립 리뷰의 고칠 것 넷(9.7절 결함 E 행, 낡은 글, 9.3절 남긴 당기기의 상한과 pilot 4에서 본 길, 18절 한계)과 nit, 남긴 당기기의 상한을 간격의 절반으로 넓힌 빌드 `ln3`(CPU 단위 시험 다섯 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음; set `mi5`, pilot hold P6), 복원 시간의 두 모드(활성화 관문)와 보고 규칙(3절 끝, 18, 19절). 그 전: 2026-10-15, pilot 3의 결함 E(`mi4_pull`에서 hold가 거절한 체크포인트에 당기기가 쓰여 없어지고 생존 rank 사이 lane이 넘침) 고침과 빌드 `ln2`(계보 + 고침; CPU 단위 시험 다섯 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음), 배포 묶음 set `mi4`와 pilot hold P4, P5(12절, impl/test/PILOT_MI.md). 그 전: 2026-10-15, 계보 구현과 빌드 `ln1`(호스트만; CPU 단위 시험 다섯 0 failed, 새 oracle의 차이는 설계의 다름 목록과 같음, 매크로 없는 장치 코드가 hk, i5와 같음; 12절). 그 전: 2026-10-15, 계보(lineage): 화신 판정을 한 곳으로 모으는 설계 v3, 독립 검토와 재검토, 열린 충돌 셋의 사용자 결정(9.9절, 9.7절의 계보 행, 12절), 구현 시작. 그 전: 2026-10-15, pilot 2(set `mi2`, 빌드 i3)가 결함 A, C, D의 고침을 확인했고 고침 묶음의 독립 리뷰는 막는 문제 없음; 리뷰의 사전 등록 전 항목을 반영: 채점 셈이 설계한 짝 보호 공백을 따로 셈(사용자 결정 대기), `store_rdma`가 체크포인트 닫기 줄을 읽음, A의 호출자 단위 시험, 첫 깨짐 진단, 죽은 프로세스의 늦은 STORE_REQ에 답 없음, magic "RSS5", 학습 hold의 BAR1 읽기, 빌드 i4(연구 `c89ce744`, 운영 `12a0edec`), CPU 단위 시험 넷 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음(12절). 사용자 결정 넷과 사전 등록 숫자는 19절. 그 전: 2026-10-15, pilot 1(set `mi1`)의 결함 넷: 셋을 고치고(되살린 rank의 저장소 요청, mirror 켠 프로세스의 window를 NIC 복사 경로에서 뺌, 비용 peer 팔의 mirror 대상) 하나를 점검(rc 4 셀 셋은 설계 길), 갈래 `exp/gin-mirror-fix`, 빌드 i3(연구 `feefaf6d`, 운영 `2e4008e6`), CPU 단위 시험 넷 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음(12절). 다시 하는 pilot 전. 그 전: 2026-10-15, 다섯 갈래의 병렬 구현과 통합: `exp/gin-mirror-int`에서 하나의 계층([impl/mi_layer.diff](impl/mi_layer.diff), md5 `e27998db`)으로 합침, 빌드됨(연구 `1b50d11b`, 운영 `a34db6e6`), CPU 단위 시험함(넷, 0 failed), 매크로 없는 장치 코드가 hk와 i5에 SASS와 자원까지 같음, 시험 드라이버를 통합 헤더로 다시 빌드, 독립 리뷰 둘 반영(12절). pilot 전([impl/test/PILOT_MI.md](impl/test/PILOT_MI.md)). 그 전: 2026-10-13, 공유 인터페이스(impl/의 헤더 여섯, [impl/PARALLEL.md](impl/PARALLEL.md), build_mi.sh 뼈대)와 실행 가능성 확인 1, 3, 4의 결과(9.8절, `[측정]`; 9.3, 9.4, 9.5절의 수치). 그 전(같은 날): 재검토가 연 충돌 → (가) INJECTED(9.4절), 올리기 꼴 확인; 재검토의 고칠 것 여섯; RDMA 저장소, 단계 맞춤 가져오기, 첫 검토, 결정 여덟; 학습 모양; 초안. 라이브러리 구현과 빌드 없음 |
+| 사전 등록 태그 | `prereg/gin-mirror-v1` (2026-10-15; 고정 파일의 sha256은 `PREREG.txt`) |
+| 마지막 갱신 | 2026-10-15, 사전 등록(사용자 결정 여덟, 2, 3, 7, 8절 고정, 상태 `PREREGISTERED`, `PREREG.txt`, 태그 `prereg/gin-mirror-v1`; 12절). 그 전: 2026-10-15 밤, 멈춤 시한 거절의 사용자 결정(당겨진 체크포인트가 그 거절이면 당기기를 그 시도에 씀)과 빌드 ln4(호스트만; CPU 단위 시험 다섯 0 failed, 새 장면 11과 변이 셋, 매크로 없는 장치 코드가 hk, i5와 같음), 배포 묶음 set `mi6`(9.3, 9.7, 11, 12, 18, 19절; 클러스터 실행 없음). 그 전: 2026-10-15 밤, 사전 등록 전 일관성 고침 여섯(12절): 2절 가설을 pilot에 맞춤(복원 시간은 셀 가족마다의 상한과 FETCH 모형, 비용은 차례 없는 따로 된 QP의 쓰기 하나, 당기기의 반증은 짝 보호 공백 밖만, pool과 버려진 체크포인트는 3절과 같게), 3절 `train_pull_count`의 근거를 잰 당기기 수로, 3절과 7절의 찾는 키와 셀 이름을 고정할 파일대로(`refuse_sl` 더함, `ff_identical`은 빌드 검사로), 8절의 BAR1 검사 자리, QUERY_QP 상한의 단위와 값, 학습 시행 한도 150 s, 9.7절 결함 E 행의 멈춤 시한 거절(사용자 결정 대기), 7절 seed 규칙. 사전 등록 전이고 클러스터 실행 없음. 그 전: 2026-10-15 저녁, pilot 5(set `mi5`, 빌드 ln3, pilot hold P6)의 실행 기록(12절; 7 시행 모두 복원하고 데이터 같음, `lineage_warn` 0, `lane_broken_other` 0, 남긴 당기기 둘이 셋째 시도에 찍힘), ln3 독립 리뷰의 고칠 것 둘(멈춤 시한 거절의 비용과 사용자 결정: 9.3, 18, 19절; 변이 시험의 로그: 12절)과 nit 넷. 그 전: 2026-10-15 저녁, pilot 3(set `mi3`)과 pilot 4(set `mi4`, 빌드 ln2)의 실행 기록(12절; 모든 시행 `lineage_warn` 0, `mi4_pull`의 공백 밖 깨짐 0), 구현 독립 리뷰의 고칠 것 넷(9.7절 결함 E 행, 낡은 글, 9.3절 남긴 당기기의 상한과 pilot 4에서 본 길, 18절 한계)과 nit, 남긴 당기기의 상한을 간격의 절반으로 넓힌 빌드 `ln3`(CPU 단위 시험 다섯 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음; set `mi5`, pilot hold P6), 복원 시간의 두 모드(활성화 관문)와 보고 규칙(3절 끝, 18, 19절). 그 전: 2026-10-15, pilot 3의 결함 E(`mi4_pull`에서 hold가 거절한 체크포인트에 당기기가 쓰여 없어지고 생존 rank 사이 lane이 넘침) 고침과 빌드 `ln2`(계보 + 고침; CPU 단위 시험 다섯 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음), 배포 묶음 set `mi4`와 pilot hold P4, P5(12절, impl/test/PILOT_MI.md). 그 전: 2026-10-15, 계보 구현과 빌드 `ln1`(호스트만; CPU 단위 시험 다섯 0 failed, 새 oracle의 차이는 설계의 다름 목록과 같음, 매크로 없는 장치 코드가 hk, i5와 같음; 12절). 그 전: 2026-10-15, 계보(lineage): 화신 판정을 한 곳으로 모으는 설계 v3, 독립 검토와 재검토, 열린 충돌 셋의 사용자 결정(9.9절, 9.7절의 계보 행, 12절), 구현 시작. 그 전: 2026-10-15, pilot 2(set `mi2`, 빌드 i3)가 결함 A, C, D의 고침을 확인했고 고침 묶음의 독립 리뷰는 막는 문제 없음; 리뷰의 사전 등록 전 항목을 반영: 채점 셈이 설계한 짝 보호 공백을 따로 셈(사용자 결정 대기), `store_rdma`가 체크포인트 닫기 줄을 읽음, A의 호출자 단위 시험, 첫 깨짐 진단, 죽은 프로세스의 늦은 STORE_REQ에 답 없음, magic "RSS5", 학습 hold의 BAR1 읽기, 빌드 i4(연구 `c89ce744`, 운영 `12a0edec`), CPU 단위 시험 넷 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음(12절). 사용자 결정 넷과 사전 등록 숫자는 19절. 그 전: 2026-10-15, pilot 1(set `mi1`)의 결함 넷: 셋을 고치고(되살린 rank의 저장소 요청, mirror 켠 프로세스의 window를 NIC 복사 경로에서 뺌, 비용 peer 팔의 mirror 대상) 하나를 점검(rc 4 셀 셋은 설계 길), 갈래 `exp/gin-mirror-fix`, 빌드 i3(연구 `feefaf6d`, 운영 `2e4008e6`), CPU 단위 시험 넷 0 failed, 매크로 없는 장치 코드가 hk, i5와 같음(12절). 다시 하는 pilot 전. 그 전: 2026-10-15, 다섯 갈래의 병렬 구현과 통합: `exp/gin-mirror-int`에서 하나의 계층([impl/mi_layer.diff](impl/mi_layer.diff), md5 `e27998db`)으로 합침, 빌드됨(연구 `1b50d11b`, 운영 `a34db6e6`), CPU 단위 시험함(넷, 0 failed), 매크로 없는 장치 코드가 hk와 i5에 SASS와 자원까지 같음, 시험 드라이버를 통합 헤더로 다시 빌드, 독립 리뷰 둘 반영(12절). pilot 전([impl/test/PILOT_MI.md](impl/test/PILOT_MI.md)). 그 전: 2026-10-13, 공유 인터페이스(impl/의 헤더 여섯, [impl/PARALLEL.md](impl/PARALLEL.md), build_mi.sh 뼈대)와 실행 가능성 확인 1, 3, 4의 결과(9.8절, `[측정]`; 9.3, 9.4, 9.5절의 수치). 그 전(같은 날): 재검토가 연 충돌 → (가) INJECTED(9.4절), 올리기 꼴 확인; 재검토의 고칠 것 여섯; RDMA 저장소, 단계 맞춤 가져오기, 첫 검토, 결정 여덟; 학습 모양; 초안. 라이브러리 구현과 빌드 없음 |
 
 표시: `[측정]` 원자료나 시행별 표에서 확인, `[소스]` 코드에서 읽음, `[추론]` 해석, `[미확인]` 확인 안 함. gin-restore 문서의 수치를 옮길 때는 원자료에서 다시
 셌는지 함께 적는다.
@@ -83,14 +83,14 @@ gdakiRsLogExport]`. 그래서 application은 받는 rank의 다음 확정 체크
 
 ## 2. 가설
 
-DRAFT다. 사전 등록 때 고정한다.
+2026-10-15 사전 등록으로 고정했다(태그 `prereg/gin-mirror-v1`; pilot 2–5 뒤, 본 실행 전). 3절 표의 "찾는 키"는 예측 표 파일과 채점기가 원자료를 찾는 이름일 뿐이다.
 
 | 가설 | 다음이 관측되면 틀린 것이다 |
 |---|---|
 | 덮어써도 정확한 복원: 재실행에 들어가는 모든 put 내용이 pool에서 오면, 보낸 버퍼를 local 완료 직후 다시 쓰는 workload의 최종 데이터가 장애 없는 실행과 비트 단위로 같다 | mirror 켠 kill 셀에서 어느 rank의 최종 상태나 받은 칸이 기준과 다른 시행이 있다, 또는 내보내기가 원본 바이트를 실은 시행이 있다 |
 | 대조: 같은 workload를 mirror 없이 되살리면 틀린다(checksum 끔) 또는 거절된다(checksum 켬) | mirror 끈 덮어쓰기 kill 셀에서 데이터가 같거나 fallback 없이 끝난다 |
-| 복원 시간은 셀 가족마다의 상한 안이고, 가져오기(FETCH)는 RDMA READ의 모형을 따른다. FETCH 시간(첫 READ를 낸 때부터 마지막 완료까지)은 a + 가져온 바이트 / θ(실행 가능성 확인 3의 a 5 µs, θ 11.88 GB/s)이고 segment 바이트와 함께 는다. 복원 시간(첫 죽음 판정 줄 → 마지막 생존 rank의 게시 줄)은 학습 모양 밖의 복원 셀에서 2 000 ms, 학습 모양 셀에서 1 000 ms 안이다(초안 값; 3절이 고정). 2026-10-15 고침: 처음 가설의 더하기 꼴(gin-restore의 복원 시간 + 짝의 drain + 바이트 / θ)은 pilot과 맞지 않아 버렸다. mirror 켬 길은 TCP FETCH와 한꺼번에 가져오기 대신 RDMA FETCH와 단계 맞춤 가져오기(재실행은 게시 뒤)를 지나므로 gin-restore의 TCP 복원보다 짧다. pilot 2–5에서 학습 모양 밖의 mirror 켬 셀(4 KiB 덮어쓰기, segment, 당기기, mirror 켬 회귀)의 죽음 38건은 72.2–206.4 ms, 학습 모양의 죽음 9건은 97.1–294.9 ms, 같은 계층에서 mirror를 끈 gin-restore 회귀(TCP 길, `rs4_kill3`, `rs4_kill3_ckpt`) 7건은 365.5–380.7 ms였다. 활성화 뒤 부분(`post_activate_ms`)은 mirror 켬 학습 모양 밖 48.1–80.4 ms 대 끔 260.8–273.7 ms였다 `[측정: results/20261015_pilot{2,3,4,5}/에서 rows_mi.py로 다시 셈; 네 pilot을 합친 범위, 셀마다 시행 n 1–5]`. 두 모드(활성화 관문)는 3절 끝 | segment가 클수록 FETCH 시간의 중앙값이 줄거나, 어느 시행의 FETCH 시간이 a + 바이트 / θ와 ±30%(초안) 넘게 다르거나, 학습 모양 밖의 복원 셀에서 복원이 2 000 ms, 학습 모양 셀에서 1 000 ms를 넘는다(3절 `ow_restore_time`, `seg_restore_slope`, `second_death_restored`, `train_restore_parts`) |
-| 정상 경로 비용은 mirror 쓰기 하나다. mirror 쓰기는 사용자 put과 같은 QP의 둘째 WQE가 아니라 mirror 문맥의 따로 된 QP에 내는 WQE 하나이고, 두 QP 사이 차례는 없으며, flush와 wait 끝에서 mirror QP의 완료를 따로 기다린다(9.2절). 보내는 rank의 NIC은 같은 원본을 GPU 메모리에서 두 번 읽는다. 그래서 로그 켬 팔(on)에 견주어 4 KiB put 지연은 많아야 put 하나의 지연만큼 늘고(두 완료가 겹치지 않는 최악), 2 MiB put 지연은 약 2배(데이터 몫을 두 번 읽음), 묶음 대역은 약 절반이다 `[소스, 추론]`. 2026-10-15 고침: 처음 가설("4 KiB 지연은 수백 ns 늘고 문턱 0.5 µs, 대역은 많아야 절반")은 둘째 완료를 기다리는 몫을 빠뜨렸다. 비용 pilot(pilot 2–4, 받는 노드마다 팔마다 실행 한 번씩, 세 번)에서 mirror-peer 대 on은 4 KiB +8.19 µs(rain), +8.80–8.90 µs(sunny), 2 MiB 1.855–1.872배, 묶음 대역 비 bw256k 0.630–0.635, bw2m 0.552–0.558였고, mirror-self도 같은 크기였다(4 KiB +7.17–8.64 µs, 2 MiB 1.915–1.927배). off 팔의 4 KiB put 지연은 11.26–12.29 µs였다 `[측정: 비용 pilot의 원자료에서 rows_mi.py로 다시 셈; 세 pilot을 합친 범위]` | 4 KiB 지연 증가가 put 하나의 지연을 넘거나, 2 MiB 지연이 두 배를 뚜렷이 넘거나 데이터 몫을 두 번 읽지 않은 만큼 작거나, 묶음 대역이 절반보다 뚜렷이 작다. 판정의 수는 3절의 비용 예측(`cost_mirror_lat4k`, `cost_mirror_lat`, `cost_mirror_bw`)이 정한다. 3절의 초안 수(+2.5 µs, 0.40–0.60)는 위 pilot과 맞지 않아 사전 등록 때 사용자 결정으로 고정한다(19절) |
+| 복원 시간은 셀 가족마다의 상한 안이고, 가져오기(FETCH)는 RDMA READ의 모형을 따른다. FETCH 시간(첫 READ를 낸 때부터 마지막 완료까지)은 a + 가져온 바이트 / θ(실행 가능성 확인 3의 a 5 µs, θ 11.88 GB/s)이고 segment 바이트와 함께 는다. 복원 시간(첫 죽음 판정 줄 → 마지막 생존 rank의 게시 줄)은 학습 모양 밖의 복원 셀에서 2 000 ms, 학습 모양 셀에서 1 000 ms 안이다(초안과 같은 값; 2026-10-15 사전 등록으로 고정, 3절). 2026-10-15 고침: 처음 가설의 더하기 꼴(gin-restore의 복원 시간 + 짝의 drain + 바이트 / θ)은 pilot과 맞지 않아 버렸다. mirror 켬 길은 TCP FETCH와 한꺼번에 가져오기 대신 RDMA FETCH와 단계 맞춤 가져오기(재실행은 게시 뒤)를 지나므로 gin-restore의 TCP 복원보다 짧다. pilot 2–5에서 학습 모양 밖의 mirror 켬 셀(4 KiB 덮어쓰기, segment, 당기기, mirror 켬 회귀)의 죽음 38건은 72.2–206.4 ms, 학습 모양의 죽음 9건은 97.1–294.9 ms, 같은 계층에서 mirror를 끈 gin-restore 회귀(TCP 길, `rs4_kill3`, `rs4_kill3_ckpt`) 7건은 365.5–380.7 ms였다. 활성화 뒤 부분(`post_activate_ms`)은 mirror 켬 학습 모양 밖 48.1–80.4 ms 대 끔 260.8–273.7 ms였다 `[측정: results/20261015_pilot{2,3,4,5}/에서 rows_mi.py로 다시 셈; 네 pilot을 합친 범위, 셀마다 시행 n 1–5]`. 두 모드(활성화 관문)는 3절 끝 | segment가 클수록 FETCH 시간의 중앙값이 줄거나, 어느 시행의 FETCH 시간이 a + 바이트 / θ와 ±15%(초안 ±30%) 넘게 다르거나, 학습 모양 밖의 복원 셀에서 복원이 2 000 ms, 학습 모양 셀에서 1 000 ms를 넘는다(3절 `ow_restore_time`, `seg_restore_slope`, `second_death_restored`, `train_restore_parts`, `train_second_death`) |
+| 정상 경로 비용은 mirror 쓰기 하나다. mirror 쓰기는 사용자 put과 같은 QP의 둘째 WQE가 아니라 mirror 문맥의 따로 된 QP에 내는 WQE 하나이고, 두 QP 사이 차례는 없으며, flush와 wait 끝에서 mirror QP의 완료를 따로 기다린다(9.2절). 보내는 rank의 NIC은 같은 원본을 GPU 메모리에서 두 번 읽는다. 그래서 로그 켬 팔(on)에 견주어 4 KiB put 지연은 많아야 put 하나의 지연만큼 늘고(두 완료가 겹치지 않는 최악), 2 MiB put 지연은 약 2배(데이터 몫을 두 번 읽음), 묶음 대역은 약 절반이다 `[소스, 추론]`. 2026-10-15 고침: 처음 가설("4 KiB 지연은 수백 ns 늘고 문턱 0.5 µs, 대역은 많아야 절반")은 둘째 완료를 기다리는 몫을 빠뜨렸다. 비용 pilot(pilot 2–4, 받는 노드마다 팔마다 실행 한 번씩, 세 번)에서 mirror-peer 대 on은 4 KiB +8.19 µs(rain), +8.80–8.90 µs(sunny), 2 MiB 1.855–1.872배, 묶음 대역 비 bw256k 0.630–0.635, bw2m 0.552–0.558였고, mirror-self도 같은 크기였다(4 KiB +7.17–8.64 µs, 2 MiB 1.915–1.927배). off 팔의 4 KiB put 지연은 11.26–12.29 µs였다 `[측정: 비용 pilot의 원자료에서 rows_mi.py로 다시 셈; 세 pilot을 합친 범위]` | 4 KiB 지연 증가가 put 하나의 지연을 넘거나, 2 MiB 지연이 두 배를 뚜렷이 넘거나 데이터 몫을 두 번 읽지 않은 만큼 작거나, 묶음 대역이 절반보다 뚜렷이 작다. 판정의 수는 3절의 비용 예측이 정한다: `cost_mirror_lat4k` +12 µs 안, `cost_mirror_lat2m` on의 1.5–2.2배, `cost_mirror_bw` 0.45–0.70, `cost_mirror_lat`(256 KiB) 보고만. 3절의 초안 수(+2.5 µs, 0.40–0.60)는 위 pilot과 맞지 않아 2026-10-15 사용자 결정으로 고쳐 고정했다(12절) |
 | pool 메모리는 체크포인트 간격 × 단계당 바이트에 비례하고 살아 있는 segment는 둘(늦은 확정이면 셋)이다 | 간격을 두 배로 했을 때 최고 살아 있는 바이트(`pool_max_bytes`)의 중앙값 비가 2와 ±25% 넘게 다르다, 또는 넷째 자리가 필요해 다시 시작한 멈춤이 있다(3절 `pool_vs_interval`, `train_segments`. 2026-10-15 고침: 처음 글의 "lane 최대 채움"과 "넷째 segment가 쓰인다"를 3절과 채점기의 열에 맞춤) |
 | 당기기가 넘침을 막는다: 단계 하나가 lane에 들어가면 DISARM 없이 지나간다. kill 시행에는 설계한 짝 보호 공백(9.6절: 죽은 rank가 맡던 rank 쪽 lane의 깨짐과 그 rank의 DISARM, kill부터 그 rank의 복원 뒤 첫 확정 체크포인트까지)만 남는다. pilot 4, 5(빌드 ln2, ln3)의 `mi4_pull` kill 시행 10건에서 공백 밖 lane 깨짐과 DISARM은 0, 공백의 lane 깨짐은 시행마다 0–2줄이었다(빌드 i4의 pilot 3 시행 1건은 결함 E로 공백 밖 깨짐 6, 9.3절) `[측정: rows_mi.py로 다시 셈]` | 당기기 셀의 장애 없는 시행에서 lane 깨짐이나 DISARM 줄이 나오거나, kill 시행에서 설계한 짝 보호 공백 밖의 lane 깨짐이나 DISARM 줄이 나오거나(3절 `pull_no_disarm_none`, `pull_no_disarm_kill`, 학습 모양은 `train_pull_count`), kill 시행이 fallback한다. 2026-10-15 고침: 처음 글은 공백의 줄까지 셌다(3절, 12절의 채점 셈 고침 행) |
 | 회귀 없음: mirror를 끄면 gin-restore의 비용 밖 예측이 원래 기준대로 맞고, 켜도(덮어쓰지 않는 workload) 같다 | 그 예측 가운데 원래 판정식을 어기는 것이 있다 |
@@ -98,7 +98,7 @@ DRAFT다. 사전 등록 때 고정한다.
 
 ## 3. 사전 예측 (측정 전에 작성)
 
-DRAFT다. 문턱과 n은 pilot 뒤 고정한다. 판정은 유효한 시행만으로 센다(8절). "≥ k/n"은 유효 시행 n개 가운데 조건이 참인 것이 k개 이상이라는 뜻이다.
+2026-10-15 사전 등록으로 고정했다(문턱과 n은 pilot 2–5에서 정함; 고정은 예측 표 파일 [impl/test/predictions_mi.csv](impl/test/predictions_mi.csv), 셀 파일 [impl/test/cells_mi.json](impl/test/cells_mi.json), `PREREG.txt`의 sha256, 태그 `prereg/gin-mirror-v1`). 아래 표의 "(초안 …; 고정 …)"는 pilot 전의 값과 고정한 값이고, 판정식의 원문은 예측 표 파일이다. 판정은 유효한 시행만으로 센다(8절). "≥ k/n"은 유효 시행 n개 가운데 조건이 참인 것이 k개 이상이라는 뜻이다.
 
 | 무엇을 예측했나 | 셀 | 시행마다의 조건 | 판정식(초안) | 근거 | 찾는 키 |
 |---|---|---|---|---|---|
@@ -109,27 +109,28 @@ DRAFT다. 문턱과 n은 pilot 뒤 고정한다. 판정은 유효한 시행만�
 | 생존 rank는 다시 실행하지 않음, 되살린 rank가 끝까지 감 | `mi4_kill3_ow` | 생존 rank 단계 실행 수 모두 1, 되살린 rank exit 0 | 10/10, ≥ 9/10 | gin-restore 9.6절 | `ow_no_reexec`, `ow_revived_done` |
 | 다시 보내기 억제가 정확함 | `mi4_kill3_ow` | 사용자 문맥 통로마다 억제 수 = 누적 실행 수 − 체크포인트 때 실행 수, mirror 통로의 예산 0 | ≥ 9/10 | 9.2절 완료 세기 | `ow_suppress_exact` |
 | 재실행의 내용은 모두 pool에서 옴 | `mi4_kill3_ow` | 내보내기가 실은 원본 바이트 0, 절단점 뒤의 내용 있는 put 항목이 모두 MIRROR 표시, 가져오기가 pool에서 쓴 바이트 = 그 항목들의 바이트 합 | ≥ 9/10 | 9.4절 | `ow_from_pool` |
-| 복원 시간이 한도 안 | `mi4_kill3_ow` | 첫 죽음 판정 줄 → 마지막 생존 rank의 복원 완료 줄 ≤ 2 000 ms | ≥ 9/10 | gin-restore의 2 000 ms 문턱 | `ow_restore_time` |
+| 복원 시간이 한도 안 | `mi4_kill3_ow` | 첫 죽음 판정 줄 → 마지막 생존 rank의 게시 줄 ≤ T(초안 T = 2 000 ms; 고정 T = 2 000 ms: pilot 2–5에서 학습 모양 밖 mirror 켬 죽음 38건의 최대 206.4 ms의 9.7배이고 gin-restore의 고정값과 같아 `rg_restore_time`과 견줄 수 있음) | ≥ 9/10 | gin-restore의 2 000 ms 문턱, pilot `[측정]` | `ow_restore_time` |
 | 대조: mirror 없이 덮어쓰면 데이터가 틀림 | `mi4_kill3_ow_nomirror` | 복원은 끝나고(대기 붙잡힘) 되살린 rank의 받은 칸이나 상태가 기준과 다름 | ≥ 4/5 | 1절 문제 `[추론]` | `nomirror_corrupt` |
 | 대조: checksum 표본이면 찾아서 fallback | `mi4_kill3_ow_sampled` | 내보내기 꼬리에 "source buffer changed", fallback 줄, 대기가 fallback + 2 000–2 500 ms에 오류로 풀림 | ≥ 4/5 | gin-restore 9.5절 | `nomirror_detect` |
-| FETCH 시간이 segment 바이트와 함께 늚 | `mi4_seg_4k`, `mi4_seg_32k`, `mi4_seg_128k` | 셀마다 FETCH 시간(줄), 가져온 바이트, drain 시간, 전체 복원 시간 | FETCH 시간(첫 READ를 낸 때부터 마지막 완료까지)의 중앙값이 바이트 순서대로 늘고 각 시행이 a + 바이트 / θ의 ±30% 안(절편 a와 θ는 9.8절 확인 3: rank 3 kill 배치에서 a 0.005 ms, θ 11.88 GB/s `[측정]`; 작은 F에서는 READ 지연이 a에 들어감); 전체 복원은 모두 ≤ 2 000 ms(RDMA에서 FETCH는 수 ms라 전체 시간의 기울기는 잡음에 묻힘 `[추론]`) | 9.4절 시간 어림 | `seg_restore_slope` |
+| FETCH 시간이 segment 바이트와 함께 늚 | `mi4_seg_4k`, `mi4_seg_32k`, `mi4_seg_128k` | 셀마다 FETCH 시간(줄), 가져온 바이트, drain 시간, 전체 복원 시간 | FETCH 시간(첫 READ를 낸 때부터 마지막 완료까지)의 중앙값이 바이트 순서대로 늘고 각 시행이 a + 바이트 / θ의 ±15% 안(초안 ±30%; 고정 ±15%: pilot 2–5에서 FETCH 40건이 모형보다 0.33–3.55% 느렸고 모두 위쪽이라 ±15%는 그 최대의 약 4배; 절편 a와 θ는 9.8절 확인 3: rank 3 kill 배치에서 a 0.005 ms, θ 11.88 GB/s `[측정]`; 작은 F에서는 READ 지연이 a에 들어감); 전체 복원은 모두 ≤ T(위 `ow_restore_time`과 같은 2 000 ms; RDMA에서 FETCH는 수 ms라 전체 시간의 기울기는 잡음에 묻힘 `[추론]`) | 9.4절 시간 어림 | `seg_restore_slope` |
 | pool 메모리는 간격에 비례 | `mi4_int_10`, `mi4_int_20`, `mi4_int_40` | 최고 살아 있는 바이트(`pool_max_bytes`: 모든 프로세스의 "mirror summary" max_live_bytes 가운데 최대), segment 다시 시작 수 | 셀마다 모든 시행에서 다시 시작 0이고 최고 바이트 > 0, 간격이 두 배일 때 최고 바이트 중앙값의 비 2 ± 25%(20/10과 40/20) | 9.3절 | `pool_vs_interval` |
 | 당기기가 넘침을 막음(장애 없음) | `mi4_pull_none` | 20단계마다 당기기 ≥ 1(`pulls_sent` ≥ 단계 수 / 20), lane 깨짐 0, DISARM 0 | 3/3 | 9.3절 | `pull_no_disarm_none` |
 | 당기기 셀의 kill도 DISARM 없이 붙잡고 되살림 | `mi4_pull` | 위 대기와 데이터 조건, 그리고 설계한 짝 보호 공백 밖의 lane 깨짐과 DISARM 0(공백: 죽은 rank가 맡던 rank 쪽 lane의 깨짐과 그 rank의 DISARM, kill부터 그 rank의 복원 뒤 첫 확정 체크포인트까지, 9.6절. 2026-10-15 DRAFT 중 고침: pilot 1, 2에서 이 공백이 kill 시행마다 깨짐 2줄로 나와 옛 셈으로는 늘 틀림, 12절) | ≥ 4/5 | 9.3절 | `pull_no_disarm_kill` |
-| 넘치면 DISARM하고 fail-fast | `mi4_overflow` | lane 깨짐 줄과 DISARM 줄, 그리고 hold 시작 줄 없이 대기가 죽음 판정 + 2 000–2 500 ms에 오류로 풀림, 또는 rank 3이 kill 순간 잠깐 무장돼 있어 hold가 시작되면 fallback으로 끝나고 대기가 fallback + 2 000–2 500 ms에 오류로 풀림(2026-10-15 DRAFT 중 넓힘: pilot 1에서 rank 3이 체크포인트 60에 한 번 무장됨, 12절; 사용자 결정 대기) | ≥ 4/5 | 9.3절 끝 수단 | `overflow_failfast` |
-| 장애 없음: 데이터 같음, 복원 0, 멈춤이 짧음 | `mi4_none_ow` | 데이터 같음, 복원 0, 입력 멈춤 ≤ 10 ms(멈춤 안 D2H 포함), segment 다시 시작 0 | 5/5 | gin-restore `none_clean` | `ow_none_clean` |
+| 넘치면 DISARM하고 fail-fast | `mi4_overflow` | lane 깨짐 줄과 DISARM 줄, 그리고 hold 시작 줄 없이 대기가 죽음 판정 + 2 000–2 500 ms에 오류로 풀림, 또는 rank 3이 kill 순간 잠깐 무장돼 있어 hold가 시작되면 fallback으로 끝나고 대기가 fallback + 2 000–2 500 ms에 오류로 풀림(2026-10-15 DRAFT 중 넓힘: pilot 1에서 rank 3이 체크포인트 60에 한 번 무장됨, 12절; 2026-10-15 사용자 확인, 예비 프로세스 기다림 15 000 ms) | ≥ 4/5 | 9.3절 끝 수단 | `overflow_failfast` |
+| 장애 없음: 데이터 같음, 복원 0, 멈춤이 짧음 | `mi4_none_ow` | 데이터 같음, 복원 0, 입력 멈춤 ≤ 16 ms(멈춤 안 D2H 포함; 초안 10 ms; 고정 16 ms: pilot 2–4 장애 없는 4 KiB 시행 5건(`mi4_none_ow` 3, `mi4_int_20` 2)의 최대 8.011 ms의 2배, gin-restore가 멈춤 문턱을 정한 규칙(pilot 최대의 약 2배). 판정식은 채점기 안의 10 ms를 쓰는 열 `ow_none_clean` 대신 `ckpt_pause_ms`를 직접 읽음), segment 다시 시작 0 | 5/5 | gin-restore `none_clean`, pilot `[측정]` | `ow_none_clean` |
 | 켤 수 없는 mirror 설정은 모든 rank가 같은 이유의 오류: mirror와 checksum 표본을 함께 켬 | `mi4_refuse_csum` | 모든 rank의 Resume 오류, 이유 문자열이 rank 사이에서 같고 조건 36(checksum과 함께)의 글자, 오류 없이 fail-fast로 넘어간 rank 없음 | 3/3 | 9.7절 Resume 조건 | `refuse_csum` |
 | 같음: rank 하나만 mirror 끔 | `mi4_refuse_mirror1` | 같은 꼴, 조건 34(합의가 mirror를 끔)의 글자 | 3/3 | 같음 | `refuse_mirror1` |
 | 같음: S나 L이 rank 사이에서 다름 | `mi4_refuse_sl` | 같은 꼴, 조건 39(rank 사이에서 다름)의 글자 | 3/3 | 같음 | `refuse_sl` |
 | 짝이 되살아난 뒤 맡은 rank가 보호를 되찾음 | `mi4_kill2_kill3_ow` | rank 2의 복원이 `mi4_kill3_ow`의 대기와 억제 조건을 채우고, RESTORED(2) 뒤 rank 3이 처음 멈춤에 성공한 체크포인트의 올리기가 전체 이미지(RDMA 저장소는 늘 전체; mirror 끔 길은 `baseCkpt = ~0`)이며 되살린 rank 2에서 확정됨, 그 사이 확정되지 못하고 버려진 rank 3의 체크포인트 ≤ 1, 둘째 kill 전에 모든 생존 rank에서 rank 3이 다시 무장되고 보내는 rank마다 rank 3의 lane이 다시 켜짐 | ≥ 4/5 | 9.6절 | `reimage_after_restore` |
-| 그다음 맡은 rank의 죽음도 되살림(둘째 죽음) | `mi4_kill2_kill3_ow` | 두 죽음 모두 생존 rank의 대기 붙잡힘과 비동기 오류 0, 생존 rank의 단계 실행 수 모두 1, 복원마다 ≤ 2 000 ms, 끝에 모든 rank의 데이터가 기준과 같음, 둘째 복원의 이미지와 segment가 되살린 rank 2에서 옴. 다시 무장되기 전에 둘째 kill이 나면 조건 불충족으로 셈(제외 아님) | ≥ 4/5 | 9.4절(끝점 갱신), 9.6절 | `second_death_restored` |
+| 그다음 맡은 rank의 죽음도 되살림(둘째 죽음) | `mi4_kill2_kill3_ow` | 두 죽음 모두 생존 rank의 대기 붙잡힘과 비동기 오류 0, 생존 rank의 단계 실행 수 모두 1, 복원마다 ≤ T(`ow_restore_time`과 같은 2 000 ms; 판정식이 두 복원 시간을 직접 읽음), 끝에 모든 rank의 데이터가 기준과 같음, 둘째 복원의 이미지와 segment가 되살린 rank 2에서 옴. 다시 무장되기 전에 둘째 kill이 나면 조건 불충족으로 셈(제외 아님) | ≥ 4/5 | 9.4절(끝점 갱신), 9.6절 | `second_death_restored` |
 | 회귀(mirror 끔): gin-restore의 복원과 거절 셀 | gin-restore 7절의 셀을 이름과 env 그대로 `@mi`: `rs4_kill3`, `rs4_kill3_ckpt`, `rs4_kill1`, `rs4_kill3_nospare`, `rs4_kill3_spareabsent`, `rs4_none`, `rs4_none_off`, `rs4_refuse_symgin`, `rs4_refuse_gintype`, `rs4_refuse_restoreoff1`, `rs4_refuse_nomacro` | gin-restore의 원래 판정식 그대로 | 원래 기준(그 실험의 k/n) | 9.7절 회귀 행 | `rg_wait_held`, `rg_data_equal`, `rg_no_reexec`, `rg_revived_done`, `rg_suppress_exact`, `rg_restore_time`, `rg_ckpt_kill`, `rg_kill_other`, `rg_nospare_failfast`, `rg_spare_absent_fallback`, `rg_none_clean`, `rg_strict_forced`, `rg_strict_notforced`, `rg_refuse_reason`, `rg_refuse_nomacro_clean` |
 | 회귀(mirror 끔): gin-remaining 실행기의 회귀 셀 | `reg_mr4_none`, `reg_mr4_none_hold`(장애 없음), `reg_rm4_kill3_untimed`, `reg_rm4_kill3_untimed_hold`(rank 3 kill) `@mi` | 그 실험의 원래 판정식(장애 없음은 투명, kill은 degraded 해제 2 000–3 000 ms와 생존 rank 셋의 전송) | 셀마다 5/5 | 같음 | `regression_restore_off`, `regression_kill3_off` |
 | 회귀(mirror 켬, 덮어쓰지 않는 workload): 장애 없음 | `rs4_none_mion` `@mi` | 데이터 같음, 복원 0 | 5/5 | 같음 | `regression_none_on` |
 | 회귀(mirror 켬, 덮어쓰지 않는 workload): rank 3 kill | `rs4_kill3_mion` `@mi` | 대기 붙잡힘, 데이터 같음, 재실행 없음, 되살린 rank가 끝까지 감 | ≥ 4/5 | 같음 | `regression_kill3_on` |
-| mirror의 4 KiB 지연 | 비용 가족 mirror, 지표 `lat4k`, 노드 둘 | 팔 `mirror-self`, `mirror-peer` 대 `on`(로그 켬)의 중앙값 차이 | 노드마다 +2.5 µs 안. 어림: hold 길은 서로 기다리는 L2 왕복 3–4번에 1.0–1.5 µs였고(gin-restore 15, 18절) mirror가 4–5번(칸 읽기, 커서, 게이트, rkey, SQ 자리)을 더해 +1.2–2.0 µs `[추론]`. 사용자의 첫 예상(수백 ns)과 앞 초안 +0.5 µs는 이 어림과 어긋나 고침(검토) | 9.2절 | `cost_mirror_lat4k` |
-| mirror의 256 KiB, 2 MiB 지연 | 같은 가족 `lat256k`, `lat2m` | 같은 차이 | 보고만. 어림: peer 팔은 put 하나의 직렬 시간까지 늚(2 MiB에서 off 팔 대역 5.5–6.4로 0.33–0.38 ms `[추론]`) | 9.2, 9.8절 | `cost_mirror_lat` |
-| mirror의 묶음 대역 | 같은 가족 `bw256k`, `bw2m` | peer 팔의 `mirror-peer` / `on` | 노드마다 0.40–0.60(보내는 쪽이 GPU 읽기와 선을 모두 두 번 씀). self 팔의 비는 보고(GPU 읽기만 두 번) | 9.2절 | `cost_mirror_bw` |
+| mirror의 4 KiB 지연 | 비용 가족 mirror, 지표 `lat4k`, 노드 둘 | 팔 `mirror-self`, `mirror-peer` 대 `on`(로그 켬)의 중앙값 차이 | 노드마다 +12 µs 안(초안 +2.5 µs; 고정 +12 µs: 따로 된 QP의 쓰기라 많아야 put 하나의 지연(off 팔의 4 KiB 지연 11.26–12.29 µs)이 는다는 2절 가설; 비용 pilot의 mirror-peer +8.19–8.90 µs, mirror-self +7.17–8.64 µs에 여유 1.35–1.67배. 초안의 어림 L2 왕복 4–5번 +1.2–2.0 µs는 둘째 완료의 기다림을 빠뜨림) | 9.2절, 비용 pilot `[측정]` | `cost_mirror_lat4k` |
+| mirror의 256 KiB 지연 | 같은 가족 `lat256k` | 같은 팔의 `mirror-*` / `on` | 보고만(고정 몫과 데이터 몫이 섞여 구조로 한 줄을 정하기 어려움; 비용 pilot 1.619–1.820배) | 9.2절 | `cost_mirror_lat` |
+| mirror의 2 MiB 지연 | 같은 가족 `lat2m` | 같은 팔의 `mirror-*` / `on` | 노드마다 1.5–2.2배(초안 보고만; 고정 1.5–2.2배: 데이터 몫을 두 번 읽어 약 2배, 아래 1.5는 둘째 읽기가 실제로 남음, 위 2.2는 2배 + 10%; 비용 pilot mirror-peer 1.855–1.872배, mirror-self 1.915–1.927배) | 9.2절, 비용 pilot `[측정]` | `cost_mirror_lat2m` |
+| mirror의 묶음 대역 | 같은 가족 `bw256k`, `bw2m` | `mirror-peer` / `on` | 노드마다 0.45–0.70(초안 0.40–0.60; 고정 0.45–0.70: 같은 원본을 두 번 읽어 약 절반, 아래는 절반에 10% 여유, 위 0.70은 둘째 읽기가 값을 냄; 비용 pilot bw256k 0.630–0.635, bw2m 0.552–0.558). self 팔은 판정하지 않음(시행표에만; 비용 pilot 0.551–0.635) | 9.2절, 비용 pilot `[측정]` | `cost_mirror_bw` |
 
 **표에서 뺀 행**(2026-10-15, DRAFT 중): "매크로 없는 프로그램은 그대로"(fail-fast 기계어: 매크로 없는 프로그램 넷의 SASS 전체와 자원, 라이브러리 장치 객체가
 `rs`와 같음; 찾는 키 `ff_identical`)는 시행의 원자료가 아니라 빌드 검사라 예측 표 파일([impl/test/predictions_mi.csv](impl/test/predictions_mi.csv))에도
@@ -145,12 +146,12 @@ DRAFT다. 문턱과 n은 pilot 뒤 고정한다. 판정은 유효한 시행만�
 |---|---|---|---|---|---|
 | 덮어쓰는 학습 모양 전송에서 최종 데이터가 기준과 같음 | `mi4_train_kill3` | 모든 rank의 상태 이력 x(0..2 000)와 마지막 받은 칸, 신호 값이 호스트 기준과 비트 단위로 같음; 생존 rank의 대기 붙잡힘, 재실행 없음, 억제 정확 | ≥ 9/10 | 9.4절 | `train_data_equal` |
 | 단계 맞춤 가져오기가 단계마다 한 번 | `mi4_train_kill3` | 예비 프로세스가 단계 K+1부터 마지막 표시 단계까지 각 단계의 입력을 그 커널 전에 한 번씩 넣었고(라이브러리 줄), 끝에 남은 입력 0, INJECTED가 마지막 넣은 단계 뒤 한 번이고 생존 rank의 쉬던 put은 그 뒤에 나감(생존 rank 줄) | ≥ 9/10 | 9.4절 | `train_paced_import` |
-| 복원 시간의 부분 | `mi4_train_kill3` | FETCH 시간(첫 READ를 낸 때부터 마지막 완료까지)이 a + F / θ의 ±30% 안(F = 이미지 + K 뒤 segment 바이트, a와 θ는 실행 가능성 확인 3: 0.005 ms, 11.88 GB/s `[측정]`), 전체 T ≤ 1 000 ms(gin-restore 중앙값 375.6 ms + drain + FETCH) | ≥ 9/10 | 9.4절 어림 | `train_restore_parts` |
+| 복원 시간의 부분 | `mi4_train_kill3` | FETCH 시간(첫 READ를 낸 때부터 마지막 완료까지)이 a + F / θ의 ±15% 안(`seg_restore_slope`와 같은 띠; F = 이미지 + K 뒤 segment 바이트, a와 θ는 실행 가능성 확인 3: 0.005 ms, 11.88 GB/s `[측정]`), 전체 T ≤ 1 000 ms(초안 1 000 ms: gin-restore 중앙값 375.6 ms + drain + FETCH의 어림, 2절에서 버린 더하기 꼴; 고정 1 000 ms: pilot 2–5 학습 모양 죽음 9건의 최대 294.9 ms의 3.4배) | ≥ 9/10 | 9.4절, pilot `[측정]` | `train_restore_parts` |
 | segment 자리 | `mi4_train_none`, `mi4_train_kill3` | 넷째 자리가 필요해 다시 시작한 멈춤(9.3절 (나)) 수, 셋째 자리를 쓴 멈춤 수, 짝마다 살아 있는 바이트의 최고 | 다시 시작 0; 셋째 자리와 최고 바이트는 보고 | 9.3, 9.8절 | `train_segments` |
 | 당기기와 DISARM | `mi4_train_none`, `mi4_train_kill3` | lane 깨짐, DISARM, 당기기 수 | 설계한 짝 보호 공백(9.6절, 위 `pull_no_disarm_kill` 행) 밖의 깨짐 0, DISARM 0(2026-10-15 DRAFT 중 고침, 12절: kill 시행의 공백 깨짐은 빼고 셈); 당기기(`pulls_sent`, `pulls_taken`)는 보고만 하고 판정식에 없음. 2026-10-15 고침: 처음 글 "L이 간격 둘이라 0에 가까움 `[추론]`"은 틀렸다. L(80 MiB)이 보내는 rank 하나가 간격 하나에 보내는 바이트(2 MiB × 20 = 40 MiB)의 두 배라 당기기 문턱 50%가 간격 하나의 바이트와 같고, 커서는 segment를 바꾸는 입력 멈춤 무렵 문턱에 닿는다 `[추론]`. 네 rank 합 `pulls_sent`는 장애 없는 시행 847, 834(pilot 2, 3; 보내는 rank와 받는 rank의 쌍 12 × 간격 100 = 1 200의 약 70%), kill 시행 655–698(pilot 2–5, n 6)이었다 `[측정: rows_mi.py로 다시 셈]` | 9.3절 | `train_pull_count` |
-| 장애 없는 학습 모양 | `mi4_train_none` | 데이터 같음, 복원 0, 입력 멈춤 ≤ 15 ms(멈춤 약 5 ms + 멈춤 안 D2H 2.4 ms `[측정: 확인 3]` + 여유) | 5/5 | 9.4, 9.8절 | `train_none_clean` |
+| 장애 없는 학습 모양 | `mi4_train_none` | 데이터 같음, 복원 0, 입력 멈춤 ≤ 20 ms(초안 15 ms: 멈춤 약 5 ms + 멈춤 안 D2H 2.4 ms `[측정: 확인 3]` + 여유; 고정 20 ms: pilot 2, 3 장애 없는 학습 시행 2건의 최대 9.499 ms의 약 2배) | 5/5 | 9.4, 9.8절, pilot `[측정]` | `train_none_clean` |
 | 체크포인트는 RDMA로 | 학습 셀 셋과 mirror 켠 4 KiB 덮어쓰기 셀 다섯(`mi4_none_ow`, `mi4_kill3_ow`, `mi4_kill1_ow`, `mi4_kill3_ckpt_ow`, `mi4_kill2_kill3_ow`) | helper 소켓으로 보낸 이미지와 segment 바이트 0; 체크포인트마다 올리기 시간은 보고 | 모든 시행 | 9.4절 | `store_rdma` |
-| 학습 모양에서 둘째 죽음 | `mi4_train_kill2_kill3` | `reimage_after_restore`와 `second_death_restored`의 조건을 학습 모양에서 | ≥ 4/5 | 9.4, 9.6절 | `train_second_death` |
+| 학습 모양에서 둘째 죽음 | `mi4_train_kill2_kill3` | `reimage_after_restore`와 `second_death_restored`의 조건을 학습 모양에서, 다만 복원마다 ≤ 1 000 ms(학습 모양의 T, `train_restore_parts`와 같음; 초안은 `second_death_restored`의 2 000 ms를 따랐고 2026-10-15 사전 등록에서 학습 모양의 상한으로 맞춤) | ≥ 4/5 | 9.4, 9.6절 | `train_second_death` |
 
 **복원 시간의 두 모드와 보고 규칙**(2026-10-15, DRAFT 중 더함; 분석은 세션 스크래치 `mi_restore_time_modes.md`, 죽음마다의 표
 `mi_rt_modes.csv`). pilot 2–4의 죽음 52건(복원 시간이 있는 것 49건)에서 복원 시간이 두 덩어리로 갈렸다 `[측정]`. 빠른 6건(72.2–99.8 ms, 모두 첫 죽음)은
@@ -158,9 +159,9 @@ DRAFT다. 문턱과 n은 pilot 뒤 고정한다. 판정은 유효한 시행만�
 20 ms마다 'later'를 5–10번 답한 뒤 "/proc absent"로 활성화했다. 감지는 52건 모두 FIN, 같은 셀의 빠른 시행과 느린 시행은 같은 체크포인트에서 같은 바이트를
 가져왔고, 활성화 뒤 마지막 게시까지는 두 모드가 같았다: 차이는 활성화 관문의 기다림뿐이고 측정 착시가 아니다. 활성화 뒤 부분을 짝의 활성화 줄에서 다시
 재면(`post_activate_ms`, 이 작업에서 더한 열) 4 KiB mirror 켬 첫 죽음 24건이 빠른 3건 65.3–70.2 ms, 느린 21건 48.1–70.5 ms다 `[측정: pilot 2–4 원자료에서
-rows_mi.py로 다시 셈]`. 관문의 뜻은 18절. 보고 규칙(판정식은 바꾸지 않음):
+rows_mi.py로 다시 셈]`. 관문의 뜻은 18절이고 관문은 그대로 둔다(2026-10-15 사용자 결정, 19절). 보고 규칙(판정식은 바꾸지 않음):
 - 정의는 그대로 둔다: 첫 죽음 판정 줄 → 마지막 생존 rank의 게시 줄.
-- 판정은 위 상한으로만 한다(4 KiB ≤ 2 000 ms, 학습 ≤ 1 000 ms). pilot 2–4의 최대는 mirror 켬 294.9 ms, 끔 380.7 ms라 두 모드 모두 통과와 실패를 바꾸지
+- 판정은 위 상한으로만 한다(학습 모양 밖 ≤ 2 000 ms, 학습 ≤ 1 000 ms; 2026-10-15 사전 등록으로 고정). pilot 2–5의 최대는 mirror 켬 294.9 ms, 끔 380.7 ms라 두 모드 모두 통과와 실패를 바꾸지
   않는다.
 - 셀마다 n, 최소, 중앙값, 최대와, 'later' 0번(첫 검사 zombie)과 1번 이상의 수, 모드마다의 범위를 따로 보고한다. 평균이나 한 모드의 값 하나를 "복원
   시간"으로 쓰지 않는다.
@@ -212,10 +213,10 @@ mirror가 선을 건넌다 `[추론: 짝 규칙과 배치]`. 그래서 비용 �
 
 ## 7. 실험 셀, 반복 수, 대조군
 
-DRAFT다(반복 수는 초안, pilot 뒤 고정). 배치와 빌드는 5절, 단계 사이 5 000 µs, 복원 시한 20 000 ms는 gin-restore와 같다. 덮어쓰기 workload(`RS_OVERWRITE=1`,
+2026-10-15 사전 등록으로 고정했다(반복 수는 아래 표 그대로; pilot 3–5에서 시행 하나의 wall이 학습 모양 밖 2.0–17.8 s(가장 긴 것은 예비 프로세스 기다림 15 000 ms의 `mi4_overflow`), 학습 모양 30.2–34.6 s, gin-remaining 실행기의 회귀 17.5–17.6 s라 hold마다 840 s 한도 안에 들고, 넘치면 같은 hold를 다시 돌려 빠진 시행만 잇는다). 본 실행의 빌드는 배포 묶음 `mi6`(빌드 ln4: 연구 라이브러리 `mi_ln4` md5 `c74e6ffb60b9ab8e959a7cfc89b7f55c`, 운영 `mip_ln4` `21b0be95b04f4ebeeafd0e6e92eecba0`, driver `gin_mi` `4f7ba8bf`, `gin_mi_nomacro` `89878018`, `gin_ts2_mi` `f402e72a`, `mr/ff` `9fcd8239`, `mr/hold` `c5575a76`; 계층 diff [impl/mi_layer.diff](impl/mi_layer.diff) `dcd30859`; 전체 md5는 `PREREG.txt`), seed `gin-mirror-v1`. hold는 G1(40시행), G3(37), T1(15), T2(5), G2(9), R1(20), R2(40), R3(22), COST-mirror-<노드>-<지표> 열(팔 넷 × 6라운드 = 24회씩). 배치와 빌드는 5절, 단계 사이 5 000 µs, 복원 시한 20 000 ms는 gin-restore와 같다. 덮어쓰기 workload(`RS_OVERWRITE=1`,
 9.8절)는 받는 rank마다 보내는 칸 하나를 단계마다 다시 쓰고 flush가 돌아온 바로 뒤 그 칸을 단계에 따라 다른 독 값으로 덮는다.
 
-| 셀 | 조건 | 빌드와 반복 수(초안) | 종류 |
+| 셀 | 조건 | 빌드와 반복 수 | 종류 |
 |---|---|---|---|
 | `mi4_none_ow` | 장애 없음, 덮어쓰기, mirror 켬 | `@mi` 5 | 대조, pool 사용량 |
 | `mi4_kill3_ow` | rank 3 SIGKILL(단계 중간), 덮어쓰기, mirror 켬, 예비 프로세스 있음 | `@mi` 10 | 새 셀 |
@@ -231,22 +232,22 @@ DRAFT다(반복 수는 초안, pilot 뒤 고정). 배치와 빌드는 5절, 단�
 | `mi4_int_10`, `mi4_int_20`, `mi4_int_40` | 장애 없음, 간격 10, 20, 40단계 | `@mi` 각 3 | pool 대 간격 |
 | `mi4_pull_none` | lane 48 KiB(간격 하나에 rank마다 80 KiB를 보냄), 당기기 50%, 장애 없음 | `@mi` 3 | 당기기 |
 | `mi4_pull` | 같고 rank 3 kill | `@mi` 5 | 당기기 |
-| `mi4_overflow` | lane 2 KiB(put 4 KiB보다 작음), rank 3 kill | `@mi` 5 | DISARM 끝 수단 |
+| `mi4_overflow` | lane 2 KiB(put 4 KiB보다 작음), rank 3 kill, 예비 프로세스 기다림 15 000 ms(활성화되지 않는 셀; 2026-10-15 30 000 ms에서 줄임, 2026-10-15 사용자 확인) | `@mi` 5 | DISARM 끝 수단 |
 | `mi4_refuse_csum`, `mi4_refuse_mirror1`, `mi4_refuse_sl` | mirror와 checksum 표본을 함께 켬; rank 3만 mirror 끔; rank 3만 segment 자리 수가 다름(`NCCL_GIN_RESTORE_MIRROR_SLOTS` 2, 다른 rank 3) | `@mi` 각 3 | 명시적 오류 |
 | gin-restore 회귀(mirror 끔) | gin-restore 7절의 복원과 거절 셀을 이름과 env 그대로: `rs4_none`, `rs4_none_off`, `rs4_kill3`, `rs4_kill3_ckpt`, `rs4_kill1`, `rs4_kill3_nospare`, `rs4_kill3_spareabsent`, `rs4_refuse_symgin`, `rs4_refuse_gintype`, `rs4_refuse_restoreoff1`, `rs4_refuse_nomacro`; gin-remaining 실행기의 회귀 셀 `reg_mr4_none`, `reg_mr4_none_hold`, `reg_rm4_kill3_untimed`, `reg_rm4_kill3_untimed_hold`(gin-restore의 `rs4_kill3@hk` 대조와 비용 셀은 되풀이하지 않음) | `@mi` 그 실험의 n(`rs4_kill3` 10, 거절 셀 각 3, 나머지 각 5) | 회귀 |
 | gin-restore 회귀(mirror 켬) | `rs4_none_mion`, `rs4_kill3_mion`(gin-restore의 `rs4_none`, `rs4_kill3`에 mirror 켬, 덮어쓰지 않는 workload) | `@mi` 5 + 5 | 회귀 |
 | 비용 가족 mirror | 지표 `lat4k`, `lat256k`, `bw256k`, `lat2m`(2 MiB put), `bw2m`(2 MiB × 8 묶음, window 16 MiB), 노드 둘; 팔 `off`(fail-fast), `on`(로그 켬), `mirror-self`, `mirror-peer`(재기만 하는 모드, 9.7절); gin-restore 9.15.6의 섞기 틀 | `@mip` 팔마다 6 | 비용 |
 | fail-fast 기계어 | 매크로 없는 프로그램 넷과 라이브러리 장치 객체를 `rs`와 비교 | 빌드 검사(예측 표 밖, 3절의 뺀 행과 10절 QA; ln3에서 확인함, 12절) | 회귀 |
 
-**seed와 n**(2026-10-15, DRAFT). 무작위 kill은 `run_mi.sh`의 draw가 sha256("gin-mirror|seed|셀|시행|first 또는 second")에서 단계와 단계 안 지연을
+**seed와 n**(2026-10-15에 규칙을 적고 2026-10-15 사전 등록으로 고정). 무작위 kill은 `run_mi.sh`의 draw가 sha256("gin-mirror|seed|셀|시행|first 또는 second")에서 단계와 단계 안 지연을
 뽑는다: `mi4_train_kill3` 단계 300–1 700과 0–8 000 µs, `mi4_train_kill2_kill3` 첫 kill 300–900과 둘째 1 100–1 700(각 0–8 000 µs), `mi4_kill2_kill3_ow`
 180–220과 380–420(각 0–4 000 µs). 같은 seed, 셀, 시행이면 같은 kill이다(`selftest_mi.py`가 확인). pilot 1–5는 자리값 `DIE_SEED=mi-v1`로 돌았고 시행
 번호가 같으면 kill도 같았다(`mi4_train_kill3` n1은 pilot 2, 3, 5 모두 단계 1 689의 6 085 µs, `mi4_train_kill2_kill3` n1은 pilot 2, 3, 4 모두 496의
 5 875 µs와 1 245의 2 999 µs) `[측정: 시행 meta의 die_at, die2_at]`. 그래서 사전 등록 커밋에서 [impl/test/cells_mi.json](impl/test/cells_mi.json)의 본 실행
-hold(G1, T1, T2)에 있는 `DIE_SEED`를 pilot에서 쓰지 않은 새 문자열(사전 등록 때 정함; pilot hold P1–P6의 값은 그대로)로 바꿔, 본 실행이 pilot의 kill 지점을
+hold(G1, T1, T2)에 있는 `DIE_SEED`를 pilot에서 쓰지 않은 새 문자열 `gin-mirror-v1`(태그 이름에서 정함, 후보 문자열의 kill 지점을 미리 견주지 않음; pilot hold P1–P6의 값은 그대로)로 바꿔, 본 실행이 pilot의 kill 지점을
 다시 쓰지 않게 한다. 새 문자열은 고정된 cells_mi.json에 있고 그 sha256이 `PREREG.txt`에 있다. 다른 kill 셀은 seed를 쓰지 않는다(gin-restore처럼 실행기가
-기록한 PID로 트래픽 중 kill, 확정 체크포인트 뒤 15단계째 kill, 라이브러리의 시험 스위치). n은 위 표의 초안 값이고 cells_mi.json의 G1, G3, T1, T2, G2,
-R1, R2, R3과 같다(사전 등록에서 고정).
+기록한 PID로 트래픽 중 kill, 확정 체크포인트 뒤 15단계째 kill, 라이브러리의 시험 스위치). n은 위 표의 값이고 cells_mi.json의 G1, G3, T1, T2, G2,
+R1, R2, R3과 같다(2026-10-15 사전 등록으로 고정).
 
 4 KiB 셀(`mi4_*_ow`, 대조, 회귀)은 gin-restore와 같은 크기의 회귀로 그대로 둔다. mirror를 켠 셀은 단계 맞춤 가져오기와 RDMA 저장소를 지나고, mirror를 끈 셀과
 gin-restore 회귀는 지금의 한꺼번에 가져오기와 TCP 저장소를 지난다(9.4절). 둘째 죽음 셀의 둘째 kill은 driver의 단계 kill(`GIN_RS_DIE_AT`)로 하고 체크포인트 멈춤
@@ -254,7 +255,7 @@ gin-restore 회귀는 지금의 한꺼번에 가져오기와 TCP 저장소를 �
 
 ## 8. 제외 기준과 중단 기준
 
-gin-restore 8절의 규칙을 그대로 쓰고 아래를 더한다(DRAFT).
+2026-10-15 사전 등록으로 고정했다. gin-restore 8절의 규칙을 그대로 쓰고 아래를 더한다.
 - **제외(채점에서 빼고 채움).** gin-restore의 제외 전부. 더해서: kill이 모든 lane을 유효하게 만든 첫 확정 체크포인트 전(그때까지는 무장되지 않음); 셀이 정한
   workload 모드(`RS_OVERWRITE`)나 mirror 설정과 다르게 돈 시행; 둘째 죽음 셀에서 첫 kill이 위 제외에 걸린 시행(그 시행 전체). 둘째 kill이 다시 무장보다
   먼저 난 시행은 빼지 않고 조건 불충족으로 센다(3절). smoke와 pilot은 늘 제외.
@@ -1043,8 +1044,8 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 - [x] 멈춤 시한 거절의 사용자 결정(당기기를 남기지 않음)과 빌드 `ln4`: CPU 단위 장면 11과 변이 시험, 기계어 비교, 드라이버, 배포 묶음 set `mi6`
   (2026-10-15, 9.3, 9.7, 18, 19절, 12절; 클러스터 실행 없음)
 - [x] ln4의 독립 리뷰와 pilot(set `mi6`, pilot hold P6, 채점 제외): 2026-10-15 밤, 둘 다 통과(12절)
-- [ ] smoke와 pilot(채점 제외), 문턱과 n 고정
-- [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/gin-mirror-v1` 태그
+- [x] smoke와 pilot(채점 제외; pilot 1–5), 문턱과 n 고정(2026-10-15 사전 등록)
+- [x] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/gin-mirror-v1` 태그(2026-10-15, 12절)
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 채점과 재계산 (`QA`)
 - [ ] 결과 정리, 원자료 release, PR
@@ -1158,6 +1159,7 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 | 2026-10-15 밤 | 빌드 `ln4`(ln3 + 멈춤 시한 거절의 결정; 빌드됨, 시험함: CPU만, 클러스터 실행 없음). 호스트만 바뀜(장치 파일 둘의 diff는 ln3과, 그래서 i4와 바이트까지 같음; `impl/rs_*.h` 일곱은 git diff 0, `BR=ln build_mi.sh api` 통과): 순수 영역에 `gdakiMiPullSpentByRefusal`과 거절 글의 매크로 `GDAKI_CKPT_WHY_PAUSE_BOUND`(helper의 abort가 같은 매크로를 씀, 줄 글자 그대로), `ncclGinRestoreStep`이 이 Step의 `reqCkpt`와 `reqWhy`로 판정해 `gdakiMiPullAfterStep`에 넘기고, 참이면 당기기를 그 시도에 씀(새 줄 "a pulled checkpoint at step N was refused at the pause's bound (attempt k): the pull is spent"; 채점기는 이 줄을 읽지 않음). [impl/mi_layer.diff](impl/mi_layer.diff) md5 `dcd30859ac6db214e37475c527c37e2f`, 9 114줄, 호스트 파일 md5 `0ab4e636fb19ec5c5a6759edf3ea2d40`(24 507줄). `mi_ln4` libnccl `c74e6ffb60b9ab8e959a7cfc89b7f55c`, `mip_ln4` `21b0be95b04f4ebeeafd0e6e92eecba0`(호스트 파일 하나만 컴파일, 경고 0; ln3의 출력은 그대로). CPU 단위 시험(ASan, UBSan, `BR=ln build_mi.sh unit`): `mi_unit_dev` 568 999, `mi_unit_host` 1 563 481(18 함수; 새 장면 11: 규칙 표(이 Step의 시한 거절만 참, 앞 Step의 남은 `reqWhy`, 다른 거절 글 열둘, 빈 글, 앞이나 뒤가 다른 글 둘, nullptr는 거짓), 결함 E 모형에서 Step(130)이 시한 거절이면 당기기를 쓰고 다음 시도가 간격의 143이라 lane이 136에 넘침(결함 E 고침 전과 같은 자취), "a restore runs"면 131에 찍힘, BUSY 둘과 저장소 준비 전 넷은 ln3처럼 132, 134, 남긴 뒤 시한 거절이면 그 시도에 씀, 시한 거절이 이어지면 시도가 130, 143, 148뿐(ln3 규칙은 열셋)), `mi_unit_store` 6 543 999, `mi_unit_spare` 187, `mi_unit_lineage` 3 365 checks, 모두 0 failed `[측정]`. 변이 시험(ln3과 같은 방법: 빌드 트리는 읽기만, 잘라 낸 순수 영역 사본의 식 하나만 바꿔 `mi_unit_host`만, `build_mi.sh` unit 단계와 같은 컴파일 줄): 변이 없음 1 563 481 checks 0 failed; ln3 규칙(늘 거짓) 8 failed; 거절 글을 보지 않음 27 failed; 이 Step의 요청인지를 보지 않음 1 failed(규칙 표의 한 줄만 잡음: 모형은 당기기를 쓴 Step이 늘 요청함) `[측정]`. 기계어 비교(`BR=ln MIOUT=mi_ln4 build_mi.sh ident`, 19 분 57 초, rc 0): 요약 줄이 ln3과 모두 같음(매크로 없는 프로그램 넷 × sm_75, sm_86 = 8/8이 hk, i5와 SASS 전체와 자원까지 같음; 장치 객체 i5와 205 + 2, 다른 것 0(연구, 운영); hk와 183 + 2, 22 다름; libnccl `-res-usage` i5, hk와 같음; 매크로 변형 경고 0) `[측정]`. 시험 드라이버(`MITREE=agent_mi_fix MIOUT=mi_ln4 COSTOUT=cost_ln4 MROUT=mr_ln4 build_mi_test.sh`의 mi, nomacro, cost, mr, 설치 헤더 digest `65fdf19b`, 경고 0): `gin_mi` `4f7ba8bfb5596912f055480763412f59`, `gin_mi_nomacro` `89878018aaf2c5c3e3cd792881b4f757`, `gin_ts2_mi` `f402e72a4534a5ce8dab8ddb5ba8d507`, `mr_ln4/ff/gin_mr` `9fcd8239982ebb5a6adfdfbd613232ad`, `mr_ln4/hold/gin_mr` `c5575a76b48d4a953c83bc6c6c0e54d7`. `selftest_mi.py` 통과. 배포 묶음 set `mi6`과 pilot 6(pilot hold P6)의 명령은 [impl/test/PILOT_MI.md](impl/test/PILOT_MI.md). ln4는 독립 리뷰를 아직 거치지 않았다. 클러스터 실행 없음 | `agent_mi_fix/out/build_info_ln4.txt`, `build_mi_ln4.log`, `build_mip_ln4.log`, `diff_ln4.log`, `api_ln4.log`, `unit_ln4.log`, `ident_ln4.log`, `selftest_ln4.log`, `test/build_test_ln4.log`, `unit_ln4_mutation_{none,ln3,anywhy,asked}.log`, 스크립트 `unit_ln4_mutation.sh`(세션 스크래치); 커밋 `5fa97a96`와 이 행의 커밋 |
 | 2026-10-15 밤 | pilot 6(set `mi6` = 빌드 ln4, hold P6, 21:15–21:18, 시행 7: `mi4_pull` n=5, `mi4_kill3_ow` n=1, `mi4_train_kill3` n=1; 채점 제외). 모두 복원되고 데이터 같음(`restore_live` 1, `data_equal` 1), `GIN/LN` 0줄, 남긴 당기기 2건·소진 0·멈춤 시한 거절 0, `lane_broken_other` 0, `disarm_other` 0, 복원 175.8–198.2 ms(학습 모양 259.4), 활성화 뒤 68.4–69.6 ms(학습 모양 85.4), `later_n` 5–8. 시행 meta의 lib/driver md5가 ln4와 일치(`c74e6ffb`, `4f7ba8bf`). pilot 5와 같은 판정. 원자료 `results/20261015_pilot6/`(raw, hold_P6.out). 행 표 `rows_mi.py` [측정] |
 | 2026-10-15 밤 | ln4 독립 리뷰(다른 에이전트, 읽기만; 보고는 세션 스크래치 `lineage/LN4_REVIEW.md`): 막는 문제 없음, 고칠 것 없음, nit 4(같은 프로세스에서 Step 번호가 되풀이되면 앞 요청의 거절이 이번 당기기를 쓸 수 있음 — 지금 셀에서는 닿지 않음 [추론]; 모형의 `askedThisStep` 전달 방식; 순수 함수 주석; "attempt k"의 뜻). 변경 범위(호스트만, 장치 부분 바이트 동일, `impl/rs_*.h` 변경 없음)와 md5, 변이 로그, 9.3·9.7·18·19·12절의 서술이 코드와 맞음을 확인. → 사전 등록 전 조건(리뷰, pilot) 충족 |
+| 2026-10-15 | 사전 등록(메인 세션, 측정 전: 본 실행의 결과 폴더 없음). 사용자 결정(2026-10-15, 메인 세션이 전함): (1) 복원 시간 2 000 / 1 000 ms(학습 모양 밖 / 학습 모양), (2) 입력 멈춤 16 / 20 ms, (3) FETCH 띠 ±15%, (4) 비용 꼴 `cost_mirror_lat4k` within_us:12, `cost_mirror_lat2m` ratio:1.5-2.2(새 행), `cost_mirror_lat` 256 KiB 보고만, `cost_mirror_bw` ratio:0.45-0.70(mirror-peer), (5) seed `gin-mirror-v1`(pilot의 `mi-v1` 대신; 본 실행 hold G1, T1, T2), (6) 앞 결정 넷: 채점 셈 확인, `mi4_overflow` 기다림 15 000 ms와 넓힌 판정식 확인, 결함 D 리뷰 끝남, 되살린 rank의 다시 무장은 범위 밖, (7) 예비 프로세스의 활성화 관문 그대로(3절 끝의 두 모드 보고), (8) 멈춤 시한 거절은 당기기를 남기지 않음(2026-10-15 사용자 결정, 빌드 ln4). 고정한 것: 2절 가설(복원 시간의 셀 가족마다의 상한과 FETCH 모형, 비용은 따로 된 QP의 쓰기 하나), 3절 예측(위 값; `second_death_restored`와 `train_second_death`의 판정식이 두 복원 시간을 직접 읽고 `ow_none_clean`이 `ckpt_pause_ms`를 직접 읽게 해 문턱이 고정 파일 안에 있음; 새 행 `cost_mirror_lat2m`), 7절 셀과 반복 수(표 그대로, hold 목록, 빌드 ln4의 md5, seed), 8절 제외와 중단(BAR1 검사의 자리, QUERY_QP 상한 50 000과 150 000의 단위, 시행 한도 60 s와 150 s; 일관성 고침 4 그대로). 고정 파일 [impl/test/predictions_mi.csv](impl/test/predictions_mi.csv)(sha256 `2db0c694…`)와 [impl/test/cells_mi.json](impl/test/cells_mi.json)(`697e8b6c…`)은 [PREREG.txt](PREREG.txt)에, 라이브러리와 driver의 md5도 거기에. `score.py`의 머리 문구를 사전 등록 문구로(판정 논리는 그대로). 자체 시험 `selftest_mi.py` 통과 `[측정]`. 상태를 `PREREGISTERED`로. 이 변경 전부가 커밋 하나이고 그 커밋에 annotated 태그 `prereg/gin-mirror-v1` | 이 행의 커밋, `PREREG.txt`, 태그 `prereg/gin-mirror-v1` |
 
 ## 13. 사전 등록 이후 변경
 
@@ -1205,13 +1207,13 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 - 자기 루프 lane의 CQ 폴링과 창 검사, `rsMiWait`의 20 ms 정지 판정은 DOCA의 자리 기다림 의미에 기댄다. 실제 HCA에서는 pilot이 처음 본다.
 
 pilot 뒤 알려진 것(2026-10-15, pilot 1–4; 12절):
-- 되살린 rank는 자기 예비 프로세스가 없어 다시 무장되지 않는다(gin-restore 규칙 `gdakiCkptSelfOf().haveSpare`; 복원 뒤 그 rank의 체크포인트는 "not armable" `[측정: pilot 2 raw/mi4_kill3_ow_mi_n1_spare.log, 23줄 모두]`). 그 rank가 다시 죽으면 되살리지 못하고 fallback한다. 그 rank가 맡은 rank의 보호는 되찾는다(9.6절, 둘째 죽음 셀). 되살린 rank까지 보호하려면 예비 프로세스를 다시 등록하는 장치가 필요하고, 이 실험의 범위 밖으로 둔다(2026-10-15 제안, 사용자 결정 대기, 19절).
+- 되살린 rank는 자기 예비 프로세스가 없어 다시 무장되지 않는다(gin-restore 규칙 `gdakiCkptSelfOf().haveSpare`; 복원 뒤 그 rank의 체크포인트는 "not armable" `[측정: pilot 2 raw/mi4_kill3_ow_mi_n1_spare.log, 23줄 모두]`). 그 rank가 다시 죽으면 되살리지 못하고 fallback한다. 그 rank가 맡은 rank의 보호는 되찾는다(9.6절, 둘째 죽음 셀). 되살린 rank까지 보호하려면 예비 프로세스를 다시 등록하는 장치가 필요하고, 이 실험의 범위 밖으로 둔다(2026-10-15 사용자 결정: 계보의 열린 충돌 3의 (가), 19절).
 - 예비 프로세스의 활성화 관문(gin-restore의 `gdakiRsActExamine`)은 원래 프로세스의 `/proc/<pid>/stat` 상태가 Z(zombie)면 "끝남"으로 친다 `[소스]`.
   다중 thread 프로세스에서 main thread가 먼저 끝나면 다른 thread가 정리(CUDA context와 RDMA 자원 해제)를 하는 동안에도 Z로 보이므로, 예비 프로세스는 원래
   프로세스가 다 끝나기 전에 활성화될 수 있다 `[추론]`. pilot 2–4의 52건 가운데 6건이 그랬고 데이터 문제는 없었다(6건 모두 데이터 열 1; hold 시작이 죽은
   rank 쪽 QP를 ERR로 옮겨 옛 프로세스가 생존 rank에 쓸 길이 없음 `[추론]`) `[측정]`. 실제로 언제 다 끝났는지 보여 주는 줄은 원자료에 없다 `[미확인]`.
-  관문을 좁히는 것(`/proc/<pid>/status`의 `Threads:`가 1인 Z만, 또는 pidfd로 그룹이 빌 때)은 라이브러리 변경이라 충돌 표 행과 독립 리뷰가 먼저이고, 사용자
-  결정으로 남긴다(19절).
+  관문을 좁히는 것(`/proc/<pid>/status`의 `Threads:`가 1인 Z만, 또는 pidfd로 그룹이 빌 때)은 라이브러리 변경이라 충돌 표 행과 독립 리뷰가 먼저이고, 2026-10-15 사용자
+  결정으로 관문은 그대로 둔다(19절; 3절 끝의 두 모드 보고 규칙).
 
 계보 설계 뒤 알려진 것(2026-10-15, 9.9절; `[소스]`, `[추론]`):
 - mirror 끈 TCP 길의 FETCH와 UPLOAD는 화신을 보지 않고 체크포인트 번호만 본다. 짝의 확정 이미지는 승격에서 지우지 않아 셋째 화신이 이 길에 있으면 옛
@@ -1248,16 +1250,16 @@ pilot 뒤 알려진 것(2026-10-15, pilot 1–4; 12절):
 
 ## 19. 다음 작업
 
-- 사용자 결정 넷(2026-10-15, 메인 세션이 물음; 답을 받으면 메인 세션이 이 항목과 12절을 고침):
-  1. 채점 셈: `pull_no_disarm_kill`과 `train_pull_count`에서 설계한 짝 보호 공백(9.6절)의 lane 깨짐과 DISARM을 빼고 셈. 제안대로 구현함(12절의 셈 고침 행), 결정 대기.
-  2. `mi4_overflow`: 예비 프로세스의 활성화 기다림 30 000 → 15 000 ms, 판정식에 "hold가 시작되면 fallback으로 끝남"도 받음. 따로 된 커밋으로 구현(12절의 그 행; 거절이면 그 커밋을 뺌), 결정 대기.
+- 사용자 결정 넷(2026-10-15, 메인 세션이 물음). 닫힘(2026-10-15, 사용자 답; 12절의 사전 등록 행):
+  1. 채점 셈: `pull_no_disarm_kill`과 `train_pull_count`에서 설계한 짝 보호 공백(9.6절)의 lane 깨짐과 DISARM을 빼고 셈. 제안대로 구현함(12절의 셈 고침 행), 확인(2026-10-15).
+  2. `mi4_overflow`: 예비 프로세스의 활성화 기다림 30 000 → 15 000 ms, 판정식에 "hold가 시작되면 fallback으로 끝남"도 받음. 따로 된 커밋으로 구현(12절의 그 행), 확인(2026-10-15).
   3. 결함 D 고침(공유 인터페이스를 바꿈)의 독립 리뷰: 했음(`mi_fix_review.md`, 세션 스크래치; 막는 문제 없음). 사전 등록 전 항목은 12절의 그 뒤 행들.
   4. 되살린 rank의 다시 무장(예비 프로세스 다시 등록): 범위 밖으로 두는 제안(18절 한계). 닫힘(2026-10-15, 계보의 열린 충돌 3의 답 (가): 계보만, 다시 무장은 설계로만).
 - 닫힘(2026-10-15): 빌드 i4의 set `mi3`로 pilot 3을 돌렸다(12절). rain BAR1은 세 프로세스가 살아 있을 때 Used 182 MiB, Free 74 MiB였다. pilot 3이
   찾은 결함 E는 고쳤고(빌드 ln2) pilot 4에서 `mi4_pull`의 공백 밖 깨짐이 0이었다.
-- 사전 등록: pilot 2의 값에서 문턱(복원 시간, 입력 멈춤, 비용), seed, n, 제외와 중단 규칙을 정함(초안 `prereg_mi_draft.md`, 세션 스크래치). 비용 예측의 꼴은 사용자 결정: peer 팔은 따로 된 mirror QP의 두 번째 쓰기라 2 MiB에서 on의 약 1.9배이고 4 KiB에서 +8–9 µs여서(pilot 2, k1) 3절 초안의 한도(+2.5 µs, 0.40–0.60)와 맞지 않음. 그 뒤 `prereg/gin-mirror-v1`.
+- 닫힘(2026-10-15): 사전 등록(12절의 사전 등록 행, 태그 `prereg/gin-mirror-v1`). 아래는 그 전의 글이다. 사전 등록: pilot 2의 값에서 문턱(복원 시간, 입력 멈춤, 비용), seed, n, 제외와 중단 규칙을 정함(초안 `prereg_mi_draft.md`, 세션 스크래치). 비용 예측의 꼴은 사용자 결정: peer 팔은 따로 된 mirror QP의 두 번째 쓰기라 2 MiB에서 on의 약 1.9배이고 4 KiB에서 +8–9 µs여서(pilot 2, k1) 3절 초안의 한도(+2.5 µs, 0.40–0.60)와 맞지 않음. 그 뒤 `prereg/gin-mirror-v1`.
 - 실행 가능성 확인 2(손으로 하는 mirror 비용)는 같은 `gin_ts2_mi`로(남음).
-- 사용자 결정(2026-10-15 제안): 예비 프로세스의 활성화 관문을 "모든 thread가 끝남"으로 좁힐지(18절). 좁히면 빠른 모드가 없어지고 4 KiB 복원은 약 175–200 ms
+- 닫힘(2026-10-15, 사용자 결정: 그대로 둠): 예비 프로세스의 활성화 관문을 "모든 thread가 끝남"으로 좁힐지(18절). 좁히면 빠른 모드가 없어지고 4 KiB 복원은 약 175–200 ms
   한 모드가 될 것이다 `[추론]`. 그대로 두면 사전 등록에 두 모드를 예상으로 적고 3절 끝의 보고 규칙을 쓴다. 고친다면 사전 등록 태그 전에, 충돌 표 행과 독립
   리뷰 뒤에 한다.
 - 닫힘(사용자 결정 2026-10-15 22시 무렵, ln3 독립 리뷰의 고칠 것 1에서): 멈춤 시한 거절("no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS")에서는

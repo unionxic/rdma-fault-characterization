@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gin-mirror test-branch scorer (DRAFT until the pre-registration): applies predictions_mi.csv to a results folder and
+"""gin-mirror test-branch scorer (pre-registered, tag prereg/gin-mirror-v1): applies predictions_mi.csv to a results folder and
 writes <resultsdir>/SCORE.md and trials_scored.csv. gin-restore's score.py (../../../restore/impl/test/score.py), with the
 mirror cells, the mirror exclusions and a cost_eval that judges some metrics of a family with five rules.
 
@@ -23,7 +23,7 @@ Steps (../../EXPERIMENT.md 3, 8), as gin-restore does:
        not_separated      맞음 iff no judged arm separates from the base (every run of one worse than every run of the other)
        within:<pct>       the judged arm's median within pct% of the base's in the worse direction
        within_us:<x>      the judged arm's median at most x (the metric's unit, µs for latency) worse than the base's
-       ratio:<lo>-<hi>    median(arm) / median(base) within [lo, hi] (bandwidth: section 3's 0.40-0.60)
+       ratio:<lo>-<hi>    median(arm) / median(base) within [lo, hi] (section 3: bandwidth 0.45-0.70, 2 MiB latency 1.5-2.2)
      Fewer than 5 valid runs of a shown arm in a judged metric on a node: 자료 부족.
 """
 import csv, hashlib, importlib.util, json, math, os, re, statistics, sys
@@ -346,7 +346,7 @@ def score(R):
         for r in sorted(rows, key=lambda x: (x["sub"], x["key"], x.get("tnum") or 0)):
             w.writerow(r)
     L = ["# gin-mirror 채점 결과 (test 갈래)", "",
-         "`score.py`가 원자료에서 만들었다. 손으로 고친 값은 없다. 문턱과 반복 수는 사전 등록으로 고정한다(DRAFT; ../../EXPERIMENT.md 3, 7, 8절).", "",
+         "`score.py`가 원자료에서 만들었다. 손으로 고친 값은 없다. 문턱과 반복 수는 사전 등록(태그 `prereg/gin-mirror-v1`)으로 고정했다(../../EXPERIMENT.md 3, 7, 8절).", "",
          "- 예측 파일 sha256: `%s`. `PREREG.txt`의 값과 %s." % (sha, "같다" if sha in frozen else "다르다(사전 등록한 파일이 아님)"),
          "- 시행 수: %d. 판정한 시행: %d." % (len(rows), sum(len(v) for v in scored.values())),
          "- 판정식 원문은 `predictions_mi.csv`, 문법은 `../../../s2_close/EXPERIMENT.md` 3.2.", "",
