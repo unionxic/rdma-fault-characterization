@@ -15,12 +15,15 @@
 # before touching anything). Refuses if a target directory exists on either node. The libraries are the INTEGRATED mirror
 # build (MI_LIB_SRC, MIP_LIB_SRC: $SCR/agent_mi_int/out/<build>/libnccl.so.2.32.3, PILOT_MI.md names them); the drivers
 # are build_mi_test.sh's outputs ($SCR/agent_mi_int/test/out).
-# env: SUNNY_SSH (required), RS_SET (required), the WANT_* above, MI_LIB_SRC, MIP_LIB_SRC, MIOUT (default mi)
+# env: SUNNY_SSH (required), RS_SET (required), the WANT_* above, MI_LIB_SRC, MIP_LIB_SRC, MIOUT (default mi), MITREE
+#      (default agent_mi_int; agent_mi_fix for the drivers of the fixes of pilot 1)
 set -euo pipefail
 OUTF=${1:?output file (the check is written to a file only; never pipe it)}
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH (user@address) from the management env file}
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
-T=$SCR/agent_mi_int/test/out  # the drivers build_mi_test.sh built against the integrated headers (the integration)
+MITREE=${MITREE:-agent_mi_int}  # agent_mi_fix: the drivers built against the fixes of pilot 1 (2026-10-15)
+case "$MITREE" in agent_mi_int | agent_mi_fix) ;; *) echo "MITREE is agent_mi_int or agent_mi_fix" >&2; exit 2 ;; esac
+T=$SCR/$MITREE/test/out  # the drivers build_mi_test.sh built against that tree's headers (MITREE as there)
 MIOUT=${MIOUT:-mi}
 RS_SET=${RS_SET:-}
 . "$(cd "$(dirname "$0")" && pwd)/rs_set_mi.sh"

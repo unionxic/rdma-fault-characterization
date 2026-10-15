@@ -17,15 +17,19 @@
 #   info    the header digest and link libraries
 # usage: build_mi_test.sh <mi|nomacro|cost|mr|info>   (MIOUT: the output subfolder of mi and nomacro, default mi; nvcc
 #        output is not byte-reproducible, so a file that already exists is refused; RSINC and RSLIB override the header and
-#        library trees, default the integrated research build in the session scratch)
+#        library trees, default the integrated research build in the session scratch; MITREE names that tree's folder in
+#        the session scratch, default agent_mi_int: agent_mi_fix for the fixes of pilot 1, 2026-10-15, whose headers and
+#        outputs are then $SCR/agent_mi_fix/build/include and $SCR/agent_mi_fix/test/out)
 set -euo pipefail
 STAGE=${1:?stage: mi|nomacro|cost|mr|info}
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad
 D=$(cd "$(dirname "$0")" && pwd)
 CUDA=/usr/local/cuda-12.8
 GENCODE="-gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_86,code=sm_86"
-RSINC=${RSINC:-$SCR/agent_mi_int/build/include}; RSLIB=${RSLIB:-$SCR/agent_mi_int/build/lib}
-W=$SCR/agent_mi_int/test
+MITREE=${MITREE:-agent_mi_int}
+case "$MITREE" in agent_mi_int | agent_mi_fix) ;; *) echo "MITREE is agent_mi_int or agent_mi_fix" >&2; exit 2 ;; esac
+RSINC=${RSINC:-$SCR/$MITREE/build/include}; RSLIB=${RSLIB:-$SCR/$MITREE/build/lib}
+W=$SCR/$MITREE/test
 OUT=$W/out/${MIOUT:-mi}
 md5() { md5sum < "$1" | cut -c1-32; }
 ndigest() { (cd "$1" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32); }
