@@ -1,0 +1,9 @@
+# gin-mirror 사전 등록 (2026-10-15, 태그 prereg/gin-mirror-v1)
+# 고정 파일의 sha256. EXPERIMENT.md는 진행 기록이 바뀌므로 태그로 고정한다(2, 3, 7, 8절은 태그 뒤 바뀌지 않아야 함).
+2db0c6941ef5e9a9829e2336585ece171775185eb60d35520ca19da995ccabbd  harness/gpu-initiated/gin_recovery/mirror/impl/test/predictions_mi.csv
+697e8b6c2bb0c48dcb8caf8a53263345242416f52f58f0cc210dfb12dee100ab  harness/gpu-initiated/gin_recovery/mirror/impl/test/cells_mi.json
+# 본 실행에 쓰는 빌드(배포 묶음 mi6 = 빌드 ln4; 라이브러리 계층 impl/mi_layer.diff md5 dcd30859ac6db214e37475c527c37e2f)
+# libnccl.so.2.32.3 md5: mi_ln4 c74e6ffb60b9ab8e959a7cfc89b7f55c, mip_ln4 21b0be95b04f4ebeeafd0e6e92eecba0
+# driver md5: gin_mi 4f7ba8bfb5596912f055480763412f59, gin_mi_nomacro 89878018aaf2c5c3e3cd792881b4f757, gin_ts2_mi f402e72a4534a5ce8dab8ddb5ba8d507,
+#   mr/ff gin_mr 9fcd8239982ebb5a6adfdfbd613232ad, mr/hold gin_mr c5575a76b48d4a953c83bc6c6c0e54d7
+# seed: DIE_SEED=gin-mirror-v1 (cells_mi.json G1, T1, T2; pilot holds keep mi-v1)
