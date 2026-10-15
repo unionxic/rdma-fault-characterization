@@ -382,12 +382,47 @@ d의 칸이 무효인 동안은 커서가 움직이지 않아 당기기도 없�
 143(간격)이었으며 복원 뒤 단계 136부터 생존 rank 사이 lane 넷(0 → 1, 1 → 0, 2 → 0, 2 → 1)이 넘쳤다 `[측정: results/20261015_pilot3/raw/mi4_pull_mi_n1_*;
 분석은 세션 스크래치 mi_defect_e.md, 읽기만]`. 정한 규칙:
 - 당기기는 그 Step에서 DRAINED가 된 체크포인트에만 쓰인다. 아니면 당기기가 남고 다음 Step에 다시 시도한다(back-off는 간격의 4분의 1이 아니라 1단계).
-  남기는 것은 간격의 4분의 1만큼의 Step까지다. 그 뒤에는 당기기를 쓰고 지금의 back-off로 돌아간다(오래가는 거절, 예를 들어 application에 이미 알려진 장애나
-  끝내 준비되지 않는 저장소에서 Step마다 다시 묻지 않게). 같은 당기기를 다시 쓴 것은 요약의 `pulls_taken`에 다시 세지 않는다. 줄은 처음 남길 때 하나("a
+  남기는 것은 처음 시도 뒤 간격의 절반 번 더까지다: 간격 20이면 시도는 s, s + 1, …, s + 10의 열한 번이고 열한째도 거절되면 쓴다(빌드 ln3, 2026-10-15에
+  넓힘, 아래 "pilot 4에서 본 길". ln2는 처음 뒤 4분의 1 번 더, 시도 여섯 번이었고, 이 글은 처음에 그것을 "간격의 4분의 1만큼의 Step까지"라고 적었다). 그
+  뒤에는 당기기를 쓰고 지금의 back-off로 돌아간다(오래가는 거절, 예를 들어 application에 이미 알려진 장애나 끝내 준비되지 않는 저장소에서 Step마다 다시 묻지
+  않게). 같은 당기기를 다시 꺼낸 것은 요약의 `pulls_taken`에 다시 세지 않고, 남긴 동안 새 CKPT_PULL이 와 같은 꺼냄에 합쳐지면 그 새 당기기는 센다(ln3:
+  대기 당기기를 "새로 옴"과 "남김" 비트 둘로 둠; ln2는 합쳐진 새 당기기를 세지 않아 하나 덜 셌다. `pulls_taken`은 보고만 하는 열). 줄은 처음 남길 때 하나("a
   pulled checkpoint at step N did not drain: the pull is kept for the next Step"), 남긴 채 다 쓸 때 하나("... the pull is spent").
 - 되돌리기가 당긴 segment를 되살리면 그 segment에서 한 번 더, 둘째 문턱((문턱 + 100)/2, 기본 75%)에서 당길 수 있다(받는 쪽도 당기기를 남기므로 보조).
-- 폴링: 앞 segment의 burst가 이미 DISARM한 뒤 segment가 바뀌었으면, 바꾸기가 읽은 열림 값(`brokenOpen`)까지의 깨짐은 그 burst의 꼬리로 흡수한다(같은 넘침을
-  두 번 세지 않고 다시 무장이 한 체크포인트 밀리지 않음). 폴링이 보지 못한 깨짐은 지금처럼 DISARM한다.
+  이어지는 BUSY에서 남긴 당기기와 겹치면 시도 빈도는 상한에 묶이지 않는다(18절).
+- 폴링: 바로 앞 segment의 burst가 이미 DISARM했고 그 뒤 바꾸기가 한 번 있었으면(열린 segment = burst segment + 1; ln3), 바꾸기가 읽은 열림 값(`brokenOpen`)까지의
+  깨짐은 그 burst의 꼬리로 흡수한다(같은 넘침을 두 번 세지 않고 다시 무장이 한 체크포인트 밀리지 않음). 폴링이 보지 못한 깨짐은 지금처럼 DISARM한다. 두 폴링
+  사이에 바꾸기가 둘 이상이었으면 가운데 segment의 깨짐을 꼬리와 가를 수 없으므로 흡수하지 않고 DISARM한다(ln2는 이때도 흡수해 가운데 segment의 넘침에
+  DISARM이 없을 수 있었다; 닫힌 segment의 깨짐 수는 남아 내보내기 검사가 보므로 복원 데이터는 그때도 지켜졌다 `[소스]`; 독립 리뷰의 nit).
+
+**pilot 4에서 본 길과 상한을 넓힌 까닭**(2026-10-15, 독립 리뷰 고칠 것 F3; 원자료 `results/20261015_pilot4/raw/mi4_pull_mi_n{1..5}_{r0,r1,r2,spare}.log`,
+`mi4_train_kill2_kill3_mi_n1_spare.log`에서 다시 셈; 줄 시각은 rain 수신 시각) `[측정]`:
+- 당기기가 남은 시행 다섯(`mi4_pull` n1, n2, n4, n5와 `mi4_train_kill2_kill3` n1)에서 남긴 rank는 모두 rank 2, 곧 죽은 rank 3의 짝이 맡은 rank였다(학습
+  셀은 앞서 되살린 rank 2). 생존 rank 0, 1에서 남은 당기기는 없었다.
+- 당기기의 출처: kill 앞뒤 약 10 ms 안(−9.4 – +8.7 ms)에 rank 0, 1, 또는 죽기 직전의 rank 3이 rank 2로 보낸 CKPT_PULL이다. rank 2는 hold 동안 Step이 없어 그
+  당기기를 hold로 거절되는 Step(n2)이나 INJECTED 뒤 첫 Step(n1, n4, n5)에 처음 쓴다.
+- n2(길 가): Step(130)이 kill 2.9 ms 뒤 hold로 "a restore runs" 거절 → 남김 → INJECTED 뒤 첫 Step(131)에 찍힘(둘째 시도; 그때는 저장소가 이미 준비됨).
+- n1, n4, n5(길 나): rank 2는 INJECTED 뒤 2.7–2.8 ms에 되살린 rank 3에 STORE_REQ(reason=buddy)를 보냈고 "store ready at buddy rank 3"까지 31.0, 30.8, 35.9 ms가
+  걸렸다. 그동안 Step이 "the checkpoint store is not ready"로 3, 3, 4번 거절되고 132, 133, 135에 찍혔다(넷째, 넷째, 다섯째 시도).
+- 학습 셀: Step(1245) "a restore runs"로 남김, INJECTED 뒤 1246–1248이 저장소 준비 전(요청 → 준비 35.5 ms, slot 36.8 MB), 1249에 찍힘(다섯째 시도).
+- 4분의 1 상한(시도 여섯)과의 여유가 n5와 학습 셀에서 한 번이었다. "the pull is spent"는 0줄.
+- 왜 준비 전인가 `[소스, 측정]`: 올리는 쪽은 붙잡힌 짝에게 저장소를 청하지 않고(`gdakiStoreUpStep`의 "the buddy not held"; mirror 켬에서 PUBLISHED는
+  INJECTED까지 붙잡힌 상태), 그래서 STORE_REQ는 INJECTED 뒤 2.5–3.0 ms에 나간다(pilot 2–4의 다시 청함 40건 가운데 39건; 나머지 하나는 INJECTED가 없는
+  pilot 2 `mi4_kill3_ckpt_ow`). 되살린 짝은 새 프로세스라 그 rank의 저장소를 이 첫 요청에서 만든다(`gdakiStoreServe`: 메모리 할당과 0 채우기, MR 등록, 올리기
+  QP). 같은 요청이 오래된 짝으로 가면(되살린 rank 3의 첫 요청을 rank 2가 받음) 그 짝이 MR을 가지고 있어 2.6–3.6 ms다(pilot 4 `mi4_pull` n 5).
+- 이 다시 청함(STORE_REQ reason=buddy → store ready)은 pilot 2–4의 40건에서 13.2–47.5 ms였다(세 pilot을 합친 범위; slot 15.8–36.8 MB, 가장 긴 47.5 ms는
+  pilot 2 `mi4_seg_128k`, slot 32.6 MB; `mi4_pull`의 slot 15.8 MB에서는 7건 15.3–35.9 ms).
+- 4 KiB 셀의 Step 간격은 INJECTED 뒤 첫 간격이 11–12 ms, 그 뒤 약 7.3 ms였다(n1, n4, n5). 그러면 4분의 1 상한의 마지막 시도 s + 5는 요청 뒤 약 49 ms이고,
+  절반 상한의 s + 10은 약 86 ms다 `[추론: 위 간격으로 셈]`. 47.5 ms가 앞의 것에 거의 닿으므로 상한을 간격의 절반으로 넓혔다(빌드 ln3, `gdakiMiPullKeepOk`의
+  상수 하나, 호스트만). 학습 셀(Step 약 11.6 ms)에서는 처음 시도 s 뒤 각각 약 58 ms와 116 ms다.
+- 상한을 다 써도 넘침은 아니다: 그때 rank 2 쪽 lane은 쓰이지 않는다. rank 3의 hold 시작이 rank 3으로 가는 mirror QP를 멈추고 ERR로 옮기므로 그동안의
+  mirror는 깨짐이 되고(n1, n2, n4, n5의 설계한 깨짐 2줄; n3은 0줄), 복원 라운드는 그 칸을 rank 2의 다음 입력 멈춤까지 무효로 쓴다(9.4절 7번). 그래서 당기기를 쓰면 rank 2의 다음 체크포인트가 간격으로 밀려 설계한 짝 보호 공백(9.6절)이 그만큼
+  길어질 뿐이다. 당기기가 없던 n3이 그 경우다: rank 2는 INJECTED(단계 131) 뒤 16 Step 동안(마지막 확정 127의 간격인 147까지) 체크포인트가 없었고, 그
+  사이 rank 0, 1에서 rank 2로 가는 CKPT_PULL도 lane 깨짐도 없었다. 다섯 시행 모두 `lane_broken_other` 0, `disarm_other` 0이다. 이 셀의 rank 2는 자기 예비
+  프로세스가 없어 처음부터 무장되지 않는다("not armable"), 그래서 공백이 길어져도 잃는 보호가 없다.
+- 넓힌 상한의 비용 `[소스, 추론]`: 오래가는 거절에서 시도가 여섯에서 열하나로 는다. 앞의 거절 까닭 다섯(hold, 이미 알린 장애, 재실행 억제가 남음, 저장소
+  준비 전, 앞 올리기 진행 중)은 CKPT_PAUSE를 보내기 전에 거절하므로 시도마다 helper 걸음 하나와 "not taken" 줄 하나뿐이고, 멈춤을 보낸 뒤의 BUSY만 시도마다
+  다른 rank에 빈 멈춤 라운드 하나를 시킨다(9.7절의 결함 E 행).
 
 **끝 수단(DISARM).** 장치가 적은 깨짐(lane 넘침, 닫힌 mirror 게이트, 확인하지 못한 flush)과 helper가 적은 깨짐(mirror QP 장애 기록, 자기 루프 오류, 셈 무효)은
 helper의 걸음이 d를 DISARM한다(그 깨짐 뒤 멈춤의 확정 체크포인트까지; `gdakiHoldDisarm` 6991–7010). 내보내기는 hold 시작에서 깨짐 수를 다시 읽어 절단점 뒤 깨짐이
@@ -880,11 +915,20 @@ serve 끝의 답의 다시 가름. 지금 셀에서는 넷 다 지금과 같은 
 | `rs4_kill3_nospare`, `mi4_overflow` | 1, 1 | 무장 안 된 죽음: fail-fast ENDED |
 | `mi4_none_ow`, `rs4_none` | 1, 1 | LIVE만 |
 | `reg_rm4_kill3_untimed_hold` | 1 | gpu-detect 회귀 그대로 |
-| `mi4_pull` | 5 | 결함 E의 고침(9.3절 "당겨진 체크포인트가 찍히지 않을 때"): kill이 당기기 창(시간의 약 30%)에 떨어지면 당기기가 남아 INJECTED 뒤 1–2 Step 안에 당겨진 체크포인트가 찍힘 |
+| `mi4_pull` | 5 | 결함 E의 고침(9.3절 "당겨진 체크포인트가 찍히지 않을 때"): kill이 당기기 창(시간의 약 30%)에 떨어지면 당기기가 남아 INJECTED 뒤 1–2 Step 안에 당겨진 체크포인트가 찍힘(pilot 4 전에 적은 예상; pilot 4의 주된 길은 아래 문단의 길 (나)) |
 
 이 셀들은 `impl/test/cells_mi.json`의 pilot hold P4(mirror 셀과 `mi4_pull`)와 P5(회귀)다(2026-10-15). `mi4_pull`의 kill 시행은 `lane_broken_other` 0,
 `disarm_other` 0이어야 하고, kill이 당기기 창에 떨어진 시행에서는 "a pulled checkpoint at step N did not drain" 줄 뒤 같은 rank가 INJECTED 뒤 1–2 Step 안에 그
 체크포인트를 찍어야 한다(간격까지 기다리지 않음). n 5에서 창에 하나라도 들 확률은 약 0.83이다 `[추론: 창 비율 0.27–0.33]`.
+
+pilot 4 결과와 그 뒤의 예상(2026-10-15, F3; 12절의 pilot 4 행, 9.3절의 "pilot 4에서 본 길") `[측정]`: 모든 시행 `lineage_warn` 0, `mi4_pull` 다섯 모두
+`lane_broken_other` 0과 `disarm_other` 0. 위 예상은 당기기가 남는 길을 하나만 적었고 pilot 4에서는 둘이 보였다. (가) 생존 rank의 hold 창: Step이 hold로
+"a restore runs" 거절, INJECTED 뒤 첫 Step에 찍힘(n2). (나) 짝 rank의 저장소 준비: 죽은 rank 3의 짝이 맡은 rank 2가 kill 앞뒤에 받은 당기기를 INJECTED
+뒤에 쓰려 하나, 되살린 rank 3의 새 프로세스가 저장소를 만들 때까지(요청 → 준비 30.8–35.9 ms) "the checkpoint store is not ready"로 3–4번 거절되고 "store
+ready at buddy" 뒤 첫 Step에 찍힘(n1, n4, n5와 학습 둘째 죽음 셀; pilot 4의 주된 길). 길 (나)에서는 "INJECTED 뒤 1–2 Step"이 맞지 않는다. 그 뒤의 pilot(빌드
+ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 INJECTED 뒤 첫 Step, 길 (나)에서 "store ready at buddy" 뒤 첫 Step에 찍히고 "the pull is spent"는
+없다(넓힌 상한은 4 KiB 셀에서 요청 뒤 약 86 ms까지 덮음 `[추론]`). 상한을 다 쓰는 시행이 나와도 길 (나)에서는 넘침이 아니라 설계한 짝 보호 공백이 길어진
+것이므로 `lane_broken_other`와 `disarm_other`는 여전히 0이어야 한다.
 
 단위 시험으로만 보는 전이: RESTORED 뒤의 FALLBACK, CANCELLED, TIMED_OUT_HELD와 TIMED_OUT_PUBLISHED, NOHOLD, hold 중 DISARM, 국면이 다른
 생존 rank, HOLD_SUCC의 재연결 펜싱, 셋째 화신, serve 중 죽음의 낡은 답, park 검사 위반.
@@ -1093,6 +1137,18 @@ pilot 뒤 알려진 것(2026-10-15, pilot 1–4; 12절):
 - 빌드 i4까지는 예비 프로세스의 생존 rank 칸이 OFF(0)으로 남아, 되살린 rank가 다시 무장된다면 그 rank의 둘째 hold가 진단 줄 없이 시한 fallback으로
   끝났을 것이다(지금 셀에서는 닿지 않음). 계보 빌드는 REJOIN_ACK에서 칸을 쓴다.
 - 계보의 BAD(불변식 어김)는 known을 그 rank의 지금 화신으로 쓰고 `GIN/LN` 줄 하나를 남긴다. 원인은 그 줄만으로는 알 수 없다.
+
+결함 E 고침 뒤 알려진 것(2026-10-15, 9.3절과 9.7절의 결함 E 행; 빌드 ln3; `[소스]`, `[추론]`):
+- 남긴 당기기는 처음 시도 뒤 간격의 절반 번까지만 다시 묻는다(간격 20에서 시도 열한 번, 4 KiB 셀의 걸음으로 요청 뒤 약 86 ms). 그보다 오래가는 거절에서는
+  당기기를 쓰고 다음 체크포인트가 간격과 4분의 1 back-off로 밀린다. 짝이 되살아난 뒤 맡은 rank의 "저장소 준비 전" 거절에서는 그 rank 쪽 lane이 무효라
+  넘치지 않고 설계한 짝 보호 공백이 길어질 뿐이지만, lane이 유효한 채 거절이 오래가면(예: 올리기 QP의 ERR 뒤 다시 청한 저장소가 늦음, 이어지는 BUSY) L이 간격
+  하나의 바이트보다 작은 셀(`mi4_pull`)에서는 lane이 넘쳐 그 rank가 DISARM된다(설계한 마지막 수단). 이 경우는 셀이 지나지 않는다.
+- 폴링 흡수는 두 폴링(10 ms) 사이에 바꾸기가 한 번이라고 본다. 둘 이상이면 흡수하지 않으므로 앞 burst의 꼬리가 DISARM을 한 번 더 내고 그 rank의 다시 무장이
+  체크포인트 하나 밀린다(보수적). 확정 체크포인트 둘이 10 ms 안에 오려면 새 segment가 그 사이 문턱을 넘어야 해 지금 셀에서는 닿지 않는다.
+- 남긴 당기기와 1b(되돌린 segment의 둘째 당기기)가 겹친 이어지는 BUSY에서는 시도 빈도가 상한에 묶이지 않는다: 시도마다의 되돌리기가 새 당기기를 걸어, 상한을
+  다 쓴 뒤 4분의 1 back-off가 끝나면 다시 시작한다. 간격 20에서 약 15 Step마다 11번(ln2는 10 Step마다 6번)이고, 시도마다 다른 rank가 빈 멈춤 라운드를 한 번
+  한다. BUSY가 끝나면 멎는다.
+- 남긴 당기기의 시도 횟수와 거절 까닭은 처음 남길 때와 다 쓸 때의 줄 둘과 "not taken" 줄로만 보인다. 요약의 `pulls_taken`은 남긴 당기기를 다시 세지 않는다.
 
 ## 19. 다음 작업
 
