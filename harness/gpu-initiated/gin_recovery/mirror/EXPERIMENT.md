@@ -608,6 +608,13 @@ e의 첫 성공한 멈춤이다. 그 멈춤에서 보내는 rank들이 e의 칸�
 | 계보: 재연결 펜싱 | known = 0이거나 pad = known | view.cur와 견줌(같은 결과; ENDED도 cur와 견줌) | 닫힘 | H:9110–9114 |
 | 계보: 시험 스위치 | 확정 무장 체크포인트 누적 수 | 그대로; 둘째 죽음 셀에서 쓰지 않음 | 닫힘 | H:13917–13919 |
 | 계보: 채점기 열 | 줄 글자로 셈 | 그대로; 새 열 `lineage_warn`(`GIN/LN` 줄 수, 0이어야) | 닫힘 | impl/test/rows_mi.py |
+| 결함 E 고침: 남긴 당기기 대 체크포인트 back-off(간격의 4분의 1, gin-restore) | 남긴 동안 back-off를 1단계로 덮어 거절이 이어지면 Step마다 체크포인트를 물음 | 남긴 동안만 `retryAtStep = step + 1`, 쓴 뒤(DRAINED이거나 상한)에는 `gdakiCkptTake`, `gdakiStoreTake`의 4분의 1 back-off가 그대로 남음. 상한은 처음 시도 뒤 간격의 절반 번(빌드 ln3; ln2는 4분의 1, 9.3절) | 닫힘(2026-10-15) | `ncclGinRestoreStep`, `gdakiMiPullAfterStep`, `gdakiMiPullKeepOk`(9.3절) |
+| 결함 E 고침: 남긴 당기기 대 체크포인트 거절 까닭(hold의 "a restore runs", 이미 알린 장애, 재실행 억제가 남음, 저장소 준비 전, 앞 올리기 진행 중; 멈춤을 보낸 뒤의 BUSY) | 다시 묻는 시도마다 다른 rank에 비용이 듦 | 앞의 다섯은 helper가 CKPT_PAUSE를 보내기 전에 거절하므로 다른 rank의 멈춤 비용이 없음(시도마다 helper 걸음 하나와 "not taken" 줄 하나). BUSY만 시도마다 다른 rank에 빈 멈춤 라운드 하나. hold 동안 생존 rank의 Step은 멈추므로 "a restore runs"는 INJECTED 뒤 첫 Step에서 풀림(pilot 4 `mi4_pull` n2) | 닫힘(2026-10-15) | `gdakiCkptInitStep` IDLE의 거절 차례 `[소스]`; pilot 4 `[측정]` |
+| 결함 E 고침: 남긴 당기기 대 짝이 되살아난 뒤의 저장소 다시 청함 | 죽은 rank의 짝이 맡은 rank e는 INJECTED 뒤에야 STORE_REQ를 보내고(PUBLISHED는 INJECTED까지 붙잡힌 상태라 올리는 쪽이 청하지 않음) 새 프로세스가 저장소를 처음 만들어 답할 때까지 "the checkpoint store is not ready"로 거절됨(pilot 2–4에서 요청 → 준비 13.2–47.5 ms, 40건). 상한이 그보다 짧으면 당기기를 씀 | 상한을 간격의 절반으로(ln3; 4 KiB 셀의 걸음에서 요청 뒤 약 86 ms까지 덮음, 9.3절). 그 사이 e 쪽 lane은 짝의 hold부터 e의 다음 입력 멈춤까지 무효라(9.4절 7번) 넘치지 않음: 당기기를 써도 설계한 짝 보호 공백(9.6절)이 e의 간격 체크포인트까지 길어질 뿐 | 닫힘(2026-10-15) | `gdakiStoreUpStep`의 "buddy not held", `gdakiStoreServe`의 첫 MR `[소스]`; pilot 4 `mi4_pull` n3(당기기 없이 INJECTED 뒤 16 Step, 깨짐 0) `[측정]` |
+| 결함 E 고침: 폴링 흡수 대 새 segment의 진짜 넘침 | 바꾸기 뒤 앞 burst의 꼬리를 흡수하다 새 segment의 넘침을 숨김 | 흡수는 바꾸기가 읽은 열림 값(`brokenOpen`)까지만, 그 뒤 깨짐은 DISARM. ln3부터 열린 segment가 burst segment 바로 다음일 때만 흡수: 두 폴링 사이 바꾸기가 둘 이상이면 가운데 segment의 깨짐을 꼬리와 가를 수 없어 흡수하지 않고 DISARM(ln2는 흡수해 가운데 segment의 넘침을 놓칠 수 있었음, 리뷰 nit) | 닫힘(2026-10-15) | `gdakiMiPollStep`, 단위 장면 10 |
+| 결함 E 고침: 폴링 흡수 대 DISARM과 다시 무장 | 같은 넘침을 두 번 세면 DISARM이 두 번이고 다시 무장이 체크포인트 하나 밀림 | 바꾸기 한 번이면 흡수가 막음. 바꾸기 둘 이상이면 DISARM 한 번 더(보수적, 18절) | 닫힘(2026-10-15) | 같음 |
+| 결함 E 고침 1b(되돌린 segment에서 75%에 한 번 더) 대 segment마다 한 번 당기기, 되돌리기, 3자리 제한 | 되돌리기마다 당기기가 늘거나 자리를 더 씀 | 되돌린 segment를 이미 당겼을 때만 둘째 문턱에서 한 번. 되돌리기는 segment 목록을 바꾸기 전 사본으로 되돌리므로 자리를 쓰지 않고, 더한 당기기는 버려진 체크포인트를 대신할 뿐. 남긴 당기기와 겹친 이어지는 BUSY에서는 시도 빈도가 상한에 묶이지 않음(18절) | 닫힘(한계는 18절) | `gdakiMiPollRolledBack`, `gdakiMiLedgerRolledBack` |
+| 결함 E 고침: 요약의 `pulls_taken` 대 채점기 열 | 다시 꺼낸 당기기를 다시 세면 열이 부풂; 남긴 당기기에 새 CKPT_PULL이 합쳐지면 하나 덜 셈(ln2) | 남긴 당기기는 처음 꺼낼 때만, 새 CKPT_PULL이 든 꺼냄은 셈(ln3: 대기 당기기를 비트 둘로). 예측은 `pulls_sent`만 읽고 `pulls_taken`은 보고만 | 닫힘(2026-10-15) | `gdakiMiPullTake`, `gdakiMiPullTakeCounts`; predictions_mi.csv |
 
 **결정으로 닫은 충돌**(모두 2026-10-13, 메인 세션이 전함): (1) 원격 완료 → local 완료 규칙(9.5절); (2) 복원 뒤 짝 보호 공백 → 범위 안(9.6절); (3) 앞서 되살린 rank의
 낡은 끝점 → 활성화 덩어리, TOKEN QPN, STATE rkey(9.4절); (4) 받는 쪽 단일 대입과 rain BAR1 → 단계 맞춤 가져오기, 2 MiB 그대로(9.4절); (5) rain QUERY_QP 상한 → 학습
@@ -615,7 +622,9 @@ e의 첫 성공한 멈춤이다. 그 멈춤에서 보내는 rank들이 e의 칸�
 멈춤과 체크포인트 → 되돌리기와 다시 시작(9.3절); (8) mirror QP 장애 기록 → 흡수, 짝을 거절하지 않음(9.5절); (9) 단계 맞춤 가져오기 대 게이트에서 쉰 생존 rank의
 put → 게이트를 INJECTED까지 홀수, PUBLISHED의 끝과 시한이 바뀜(9.4절). 계보(9.9절)의 열린 충돌 셋(2026-10-15 사용자 결정, 메인 세션이 전함): (10) serve 중이던
 낡은 요청의 답 → (나) 보내기 직전 다시 가름, wire 그대로(STORE_ACK의 `wardInc`는 다시 무장 작업으로 미룸); (11) mirror 끈 TCP 데이터 길 → (가) 그대로(18절);
-(12) 다시 무장의 범위 → (가) 계보만, 다시 무장은 설계로만(19절).
+(12) 다시 무장의 범위 → (가) 계보만, 다시 무장은 설계로만(19절). 결함 E 고침의 행 일곱(2026-10-15)은 사용자 결정 없이 설계로
+닫았다: 고침 뒤 독립 리뷰(세션 스크래치 `lineage/IMPL_REVIEW.md` 질문 4, 고칠 것 F1)가 표가 없음을 찾아 이 행들을 더했고, 상한과 폴링 흡수의 조건은 그 리뷰와
+pilot 4로 고쳤다(빌드 ln3, 12절).
 
 **가정(사용자가 그대로 둠).** mirror 문맥 하나를 GPU 범위 공유 모드로, mirror와 checksum 함께 켜면 Resume 거절, 재기만 하는 모드의 self와 peer 팔, 초안 값. 결정 (6)으로
 segment FETCH는 TCP가 아니라 RDMA READ가 됐다.
