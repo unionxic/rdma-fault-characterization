@@ -20,6 +20,15 @@ def parser_command():
     d = tempfile.mkdtemp(prefix="mi_parser_")
     raw = os.path.join(d, "raw")
     score._ow_kill3(raw, "mi4_kill3_ow", 1)
+    score._ow_kill3(raw, "mi4_kill3_ckpt_ow", 1)
+    # the lineage's lines (lineage_warn): two GIN/LN lines in that trial, one in a rank's log and one in the spare's
+    stem = os.path.join(raw, "mi4_kill3_ckpt_ow_mi_n1")
+    with open(stem + "_r0.log", "a") as f:
+        f.write("4.0 GIN/LN: rank 0: HOLDING from rank 1 about rank 3 names incarnation 2, ahead of its lineage "
+                "(hold-wait, current 0, dead 0): counted as a new incarnation's hold mono_ms=1.0\n")
+    with open(stem + "_spare.log", "a") as f:
+        f.write("4.1 GIN/LN: spare rank 3: its hold cell of rank 1 is armed of incarnation 2 at its REJOIN_ACK "
+                "(incarnation 0), not off of incarnation 0: left as it is mono_ms=1.0\n")
     score._mi(raw, "mi4_none_ow", 1)
     score._cost(os.path.join(d, "cost_x"), "bw2m", "mirror-peer", "rain", 1, 3.3)
     subprocess.run([sys.executable, os.path.join(HERE, "rows_mi.py"), d], check=True, stdout=subprocess.DEVNULL)
@@ -29,7 +38,8 @@ def parser_command():
             "inj_from_n", "tcp_image_bytes", "tcp_segment_bytes", "recv_poison", "dev_poison", "nomirror_corrupt",
             "nomirror_detect", "applied2", "reimage_ok", "second_ok", "paced_ok", "restore_time_ms_1",
             "restore_time_ms_2", "resume_refused", "spare2_start_fail", "restarts", "pulls_sent", "value", "mi_summary_ok",
-            "lane_broken_designed", "lane_broken_other", "disarm_designed", "disarm_other", "broken_other"]
+            "lane_broken_designed", "lane_broken_other", "disarm_designed", "disarm_other", "broken_other",
+            "lineage_warn"]
     miss = [c for c in need if c not in rows[0]]
     out = []
     if miss:
@@ -47,6 +57,12 @@ def parser_command():
                                     "broken_other"))
     if gap != ("2", "2", "0", "0", "0"):
         out.append("parser: the designed buddy gap of a clean kill reads %s, want (2, 2, 0, 0, 0)" % (gap,))
+    if k3.get("lineage_warn") != "0":
+        out.append("parser: a clean kill trial reads lineage_warn %s, want 0" % k3.get("lineage_warn"))
+    ln = byid.get("mi4_kill3_ckpt_ow_mi_n1", {})
+    if ln.get("lineage_warn") != "2" or ln.get("wait_held") != k3.get("wait_held"):
+        out.append("parser: two GIN/LN lines read lineage_warn %s (want 2) and wait_held %s (want %s: no decline line)"
+                   % (ln.get("lineage_warn"), ln.get("wait_held"), k3.get("wait_held")))
     if byid.get("cost_bw2m_mirror-peer_rain_k1", {}).get("key") != "cost_bw2m_mirror-peer@mip":
         out.append("parser: a cost run's key is not cost_<metric>_<arm>@<lib>")
     return out

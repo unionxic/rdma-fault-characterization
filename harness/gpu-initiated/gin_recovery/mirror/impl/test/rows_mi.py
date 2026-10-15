@@ -65,6 +65,11 @@ Mirror columns (empty when the library does not emit the line yet):
                        gdakiMiLaneBroken's host breaks), summed over every process; a missing summary makes it negative
   inj_sent_step, inj_survivors, inj_from_n, gate_odd_ms_max   INJECTED
   ow_none_clean      data equal, no restore, input pause <= 10 ms, no segment restart (the no-fault cells)
+  lineage_warn       the lineage's lines (../../EXPERIMENT.md 9.9, impl/rs_lineage_api.h; 2026-10-15): how many lines of
+                     any log of the trial (every rank's, both spares') carry "GIN/LN: " (a BAD lineage, an unexpected
+                     FUTURE incarnation, the REJOIN_ACK cell write finding another value, a record without an incarnation
+                     left at a REJOIN, an activation answer or a spare registration of another incarnation). 0 in a correct
+                     run; empty never (a library without the lineage writes none: 0)
 Second death (meta kill2_rank; mi4_kill2_kill3_ow, mi4_train_kill2_kill3; K1 = kill_rank, K2 = kill2_rank):
   applied2           both kills recorded (rc 137 or a kill/die line)
   restore_time_ms_1, restore_time_ms_2   per death: its first "judged dead" line naming the rank -> the last of that
@@ -93,6 +98,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "restore", "impl", "test
 import rows_rs  # noqa: E402
 
 MI_HEAD = re.compile(r"GIN/MI: rank (\d+): (.*)$")
+LN_HEAD = re.compile(r"GIN/LN: ")  # the lineage's lines (impl/rs_lineage_api.h GDAKI_LN_HEAD)
 K_LANE_BROKEN = re.compile(r"^lane to rank (\d+) broken\b")
 K_SEG_RESTART = re.compile(r"^segments of rank (\d+) restarted at its checkpoint (\d+)")
 K_PULL = re.compile(r"^CKPT_PULL to rank (\d+)\b")
@@ -132,7 +138,8 @@ MI_COLS = ["workload", "overwrite", "train", "ring", "mirror_env", "checksum_env
            "disarm_n", "lane_broken_designed", "lane_broken_other", "disarm_designed", "disarm_other", "broken_other",
            "seg_restart_n", "inj_sent_step", "inj_survivors", "inj_from_n", "gate_odd_ms_max",
            "ow_none_clean", "applied2", "restore_time_ms_1", "restore_time_ms_2", "restored_subjects", "stored_after",
-           "void_between", "rearm_ok", "fetch2_from_buddy", "reimage_ok", "second_ok", "spare2_start_fail"]
+           "void_between", "rearm_ok", "fetch2_from_buddy", "reimage_ok", "second_ok", "spare2_start_fail",
+           "lineage_warn"]
 
 
 def num(d, k, default=None):
@@ -438,6 +445,8 @@ def mi_overlay(stem, base, meta):
         out["wait_held"] = int(bool(sv) and s_rel == 0 and s_async == 0 and decl == 0 and s_unf == 0)
         out["no_reexec"] = int(bool(sv) and all((num(d, "reexec_any", 1) or 0) == 0 for d in sv))
         out["data_equal"] = out["ow_data_equal"]
+    # the lineage's lines in every log of the trial (the head comment)
+    out["lineage_warn"] = sum(1 for lg in [logs[r] for r in ranks] + [slog, slog2] for _, l in lg if LN_HEAD.search(l))
     # gin-restore's ff_fallthrough keys on rs4_refuse; the mirror refusal cells too
     if str(base.get("cell", "")).startswith("mi4_refuse"):
         out["ff_fallthrough"] = int(any(num(kv[r], "resume_rc") == 0 for r in ranks if kv[r]))
