@@ -6,48 +6,62 @@ DRAFT다. 실행은 메인 세션이 `../../../../common/cluster_run.sh` 안에�
 
 표시: `[측정]` 원자료에서 확인, `[미확인]` 아직 확인하지 않음, `[추론]` 해석.
 
-## 상태 (2026-10-15, 통합 뒤, pilot 전)
+## 상태 (2026-10-15, pilot 2 뒤)
 
-- 라이브러리: 다섯 갈래를 합친 계층 [../mi_layer.diff](../mi_layer.diff)(md5 `e27998db`, 8 119줄). 통합 트리는 세션 스크래치의
-  `agent_mi_int/`(아래 `I`). 빌드됨(sm_75, sm_86, 이 계층 파일 경고 0): 연구 `I/out/mi_i2/libnccl.so.2.32.3` md5
-  `1b50d11b28ca0d827dde07fc2a3d6411`, 운영 `I/out/mip_i2/libnccl.so.2.32.3` md5 `a34db6e65ac75187618cee236010dae9`.
-  `mi_i1`, `mip_i1`(`a5cd1f87`, `1e6c77dc`)은 리뷰 반영 전이라 쓰지 않는다.
-- 드라이버: 통합 헤더(설치 헤더 digest `6f79fb99`)로 다시 빌드됨(경고 0), `I/test/out/`: `mi1/gin_mi` `a1b84951026e377170c2da9471571882`,
-  `mi1/gin_mi_nomacro` `03fea825857861e7703bd09f704e03bb`, `cost/gin_ts2_mi` `149cb36630ec7c10189299b0c58454cc`,
-  `mr/ff/gin_mr` `878cc130e3f6cfe4b2b0a553c75c9510`, `mr/hold/gin_mr` `b8b50797eb0f90422e39e43b770ae6cc`. 링크는 동적이라
-  i2 라이브러리로 그대로 쓴다(헤더가 i1 빌드 때와 같음 `[측정]`).
+- pilot 1(set `mi1`, 통합 빌드 i2, 08:59–09:15)과 pilot 2(set `mi2`, 고친 빌드 i3, 14:28–14:42)를 돌렸다. 결과와 결함 넷(A–D),
+  고침, pilot 2의 확인은 [../../EXPERIMENT.md](../../EXPERIMENT.md) 12절이다. pilot 2가 결함 A, C, D의 고침을 확인했다 `[측정]`.
+- 라이브러리(set `mi2`): 고친 계층 [../mi_layer.diff](../mi_layer.diff)(md5 `dfaddae8`, 8 279줄). 트리는 세션 스크래치의
+  `agent_mi_fix/`(아래 `F`; `agent_mi_int/`의 복사, 갈래 `exp/gin-mirror-fix`). 빌드됨(sm_75, sm_86): 연구
+  `F/out/mi_i3/libnccl.so.2.32.3` md5 `feefaf6d2623b9047903017850283695`, 운영 `F/out/mip_i3/libnccl.so.2.32.3` md5
+  `2e4008e6d433832dd68bccf5e42735f0`.
+- 드라이버(set `mi2`): 고친 헤더(설치 헤더 digest `f6b39af0`)로 `MITREE=agent_mi_fix MIOUT=mi_i3 build_mi_test.sh mi nomacro cost mr`,
+  `F/test/out/`: `mi_i3/gin_mi` `7e522afd84f9546baa60091981616715`, `mi_i3/gin_mi_nomacro` `e84d9168eb736491c708b735a9e96578`,
+  `cost/gin_ts2_mi` `ad0908442a8b687c242ba806a6f54069`, `mr/ff/gin_mr` `0b26cf49f4be1c57b220d88786613b45`, `mr/hold/gin_mr`
+  `0bfac5da7ce90cd652320ef3dea5876e`. 링크는 동적이고 드라이버는 같은 트리의 라이브러리와만 짝을 이룬다(결함 D의 고침이 side table의
+  머리 낱말과 칸을 바꿨다).
+- set `mi1`(pilot 1)의 i2 라이브러리와 드라이버(`agent_mi_int/`: `1b50d11b`, `a34db6e6`, `gin_mi` `a1b84951`, `gin_ts2_mi`
+  `149cb366`)는 결함 A, C, D가 있어 다시 쓰지 않는다.
 - 셀마다의 빌드: 복원, 거절, 회귀 셀(P1, P2, P3, G1–G3, T1, T2, R1–R3)은 모두 연구 빌드 `lib/mi`(`cells_mi.json`의
   `build: mi`)다. 그래서 `GIN_TS_NOTE` 줄("checkpoint stored", "lane ... broken", "CKPT_PULL", "INJECTED ...")이 WARN으로
-  보인다. 비용 셀(COSTPILOT, COST-mirror)은 운영 빌드 `lib/mip`이고, 채점이 읽는 "mirror summary"(통합에서 두 빌드 모두
-  WARN)와 측정 팔 줄만 쓴다.
+  보인다. 비용 셀(COSTPILOT, COST-mirror)은 운영 빌드 `lib/mip`이고, 채점이 읽는 "mirror summary"(두 빌드 모두 WARN)와 측정 팔
+  줄만 쓴다.
 - 비용 팔: `NCCL_GIN_RESTORE_MIRROR=1`이 필요하다(mirror 문맥과 설정 합의가 그것으로 켜짐; 실행기가 준다). lane은 실행기
   기본 256 MiB, S 2(pool 512 MiB/프로세스): 라이브러리가 helper 걸음(약 1 ms)마다 L/2를 넘은 커서를 0으로 되돌리고 L보다 큰
   put은 깨짐으로 센다. 팔은 rank 0의 "mirror summary"가 broken=0이고 max_live_bytes > 0일 때만 유효하다.
-- 자체 시험: `selftest_mi.py` 통과(통합 뒤, 2026-10-15) `[측정]`.
+- 자체 시험: `selftest_mi.py` 통과(2026-10-15, 채점 셈 고침 뒤) `[측정]`.
 
 ## 메인 세션 명령 (배포, 자체 시험, pilot, 본 실행)
 
 변수: `T`는 이 폴더(`mirror/impl/test`)의 절대 경로, `R`은 결과 폴더, `SUNNY_SSH`는 관리망 설정 파일에서(저장소에 적지
-않음), `I`는 통합 트리(세션 스크래치의 `agent_mi_int`), `RS_SET`은 새 배포 묶음 이름(제안: `mi1`; gin-mirror는 빈 값,
+않음), `F`는 고친 트리(세션 스크래치의 `agent_mi_fix`), `RS_SET`은 새 배포 묶음 이름(`mi1`, `mi2`는 썼음; gin-mirror는 빈 값,
 gin-restore 묶음, 있는 이름을 거절한다).
 
+배포(`deploy_mi.sh`, 메인 세션만)가 하는 일: 고른 산출물마다(그 `WANT_*`를 준 것만) 원본이 있고 md5가 `WANT_*`와 같은지 먼저
+보고, 하나라도 다르면 아무것도 쓰지 않고 거절한다. 대상 디렉터리(`~/rs-bundle/<RS_SET>/lib/mi`, `lib/mip`, `mitest`, `mr/ff`,
+`mr/hold`)가 어느 노드에든 있거나 그 묶음이 gin-restore 묶음이면 거절한다. rain에 복사하고(라이브러리는 `.so.2`, `.so` 링크)
+sunny로 rsync한 뒤, 검사 파일에 두 노드의 새 파일 md5, 원본 = 배포본, ldd, 기존 묶음 파일의 앞뒤 md5(새 디렉터리 빼고)를 적는다.
+`MITREE`가 드라이버를 가져올 트리(`$SCR/$MITREE/test/out`), `MIOUT`이 `gin_mi`, `gin_mi_nomacro`의 하위 폴더다. 반드시 이 갈래
+(`exp/gin-mirror-fix`)의 스크립트로 한다(`MITREE`는 이 갈래에만 있음).
+
 ```
-# 0. 드라이버는 빌드됨(위 md5; build_mi_test.sh의 기본이 통합 트리; 다시 빌드할 일은 없음)
-# 1. 배포 (새 디렉터리 ~/rs-bundle/mi1/... 만; 대상이 있으면 거절)
-RS_SET=mi1 MIOUT=mi1 MI_LIB_SRC=$I/out/mi_i2/libnccl.so.2.32.3 MIP_LIB_SRC=$I/out/mip_i2/libnccl.so.2.32.3 \
-  WANT_MI=1b50d11b28ca0d827dde07fc2a3d6411 WANT_MIP=a34db6e65ac75187618cee236010dae9 \
-  WANT_GINMI=a1b84951026e377170c2da9471571882 WANT_GINMI_NOMACRO=03fea825857861e7703bd09f704e03bb \
-  WANT_COST_MI=149cb36630ec7c10189299b0c58454cc WANT_MR_FF=878cc130e3f6cfe4b2b0a553c75c9510 \
-  WANT_MR_HOLD=b8b50797eb0f90422e39e43b770ae6cc bash $T/deploy_mi.sh $I/deploy_check_mi1.txt
-grep -E "MISMATCH|CHANGED|not found" $I/deploy_check_mi1.txt     # 아무 줄도 없어야 함
+# 0. 드라이버는 빌드됨(위 md5; 다시 빌드할 일은 없음)
+# 1. 배포 (set mi2로 한 명령; 새 묶음은 RS_SET만 새 이름으로)
+SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad; F=$SCR/agent_mi_fix
+RS_SET=mi2 MITREE=agent_mi_fix MIOUT=mi_i3 \
+  MI_LIB_SRC=$F/out/mi_i3/libnccl.so.2.32.3 MIP_LIB_SRC=$F/out/mip_i3/libnccl.so.2.32.3 \
+  WANT_MI=feefaf6d2623b9047903017850283695 WANT_MIP=2e4008e6d433832dd68bccf5e42735f0 \
+  WANT_GINMI=7e522afd84f9546baa60091981616715 WANT_GINMI_NOMACRO=e84d9168eb736491c708b735a9e96578 \
+  WANT_COST_MI=ad0908442a8b687c242ba806a6f54069 WANT_MR_FF=0b26cf49f4be1c57b220d88786613b45 \
+  WANT_MR_HOLD=0bfac5da7ce90cd652320ef3dea5876e bash $T/deploy_mi.sh $F/deploy_check_mi2.txt
+grep -E "MISMATCH|CHANGED|not found" $F/deploy_check_mi2.txt     # 아무 줄도 없어야 함
 # 2. 자체 시험 (CPU, 클러스터 없음)
 python3 $T/selftest_mi.py
 # 3. pilot (cluster_run.sh 안에서, 새 결과 폴더; pilot은 채점하지 않음)
-RS_SET=mi1 bash $T/chain_mi.sh $R/<날짜>_pilot P1 P2 P3 COSTPILOT-rain COSTPILOT-sunny
-python3 $T/rows_mi.py $R/<날짜>_pilot        # 열을 읽기만(판정 아님)
+RS_SET=mi2 bash $T/chain_mi.sh $R/<날짜>_pilot2 P1 P2 P3 COSTPILOT-rain COSTPILOT-sunny
+python3 $T/rows_mi.py $R/<날짜>_pilot2 --out <다른 곳>/trials.csv   # 열을 읽기만(판정 아님)
 # 4. pilot 뒤 7절 n, 3절 문턱, cells_mi.json, predictions_mi.csv 고정 -> 사전 등록(커밋 하나, 태그 prereg/gin-mirror-v1)
-# 5. 본 실행 (hold를 나눠; 8절)
-RS_SET=mi1 bash $T/chain_mi.sh $R/<날짜> G1 G3 T1 T2 G2 R1 R2 R3 \
+# 5. 본 실행 (hold를 나눠; 8절; RS_SET은 사전 등록 때 정한 묶음)
+RS_SET=<묶음> bash $T/chain_mi.sh $R/<날짜> G1 G3 T1 T2 G2 R1 R2 R3 \
   COST-mirror-rain-lat4k COST-mirror-rain-lat256k COST-mirror-rain-bw256k COST-mirror-rain-lat2m COST-mirror-rain-bw2m \
   COST-mirror-sunny-lat4k COST-mirror-sunny-lat256k COST-mirror-sunny-bw256k COST-mirror-sunny-lat2m COST-mirror-sunny-bw2m \
   G1 G3 T1 T2 G2 R1 R2 R3
@@ -56,11 +70,13 @@ RS_SET=mi1 bash $T/chain_mi.sh $R/<날짜> G1 G3 T1 T2 G2 R1 R2 R3 \
 python3 $T/score.py $R/<날짜>
 ```
 
-실행 가능성 확인 2(손으로 하는 mirror 비용, `feas/cost_man.md`)의 드라이버는 `gin_ts2_mi`다. feas 폴더가
-`run_mf.sh`의 `cm_*` 셀과 `COSTMAN-*` hold로 돌리고 `summ_mf.py`가 읽는다. 배포는 `CM_SRC=$I/test/out/cost/gin_ts2_mi
-WANT_MFCM=149cb36630ec7c10189299b0c58454cc bash feas/deploy_mf.sh <출력> mfcm`.
+pilot 1(set `mi1`)의 배포는 같은 명령에서 `MITREE`를 빼고(기본 `agent_mi_int`) `MIOUT=mi1`, i2의 원본과 md5를 준 것이었다.
 
-## pilot이 먼저 볼 것 (통합에서 남은 위험; `[미확인]`, 실행한 적 없음)
+실행 가능성 확인 2(손으로 하는 mirror 비용, `feas/cost_man.md`)의 드라이버는 `gin_ts2_mi`다. feas 폴더가
+`run_mf.sh`의 `cm_*` 셀과 `COSTMAN-*` hold로 돌리고 `summ_mf.py`가 읽는다. 배포는 `CM_SRC=$F/test/out/cost/gin_ts2_mi
+WANT_MFCM=ad0908442a8b687c242ba806a6f54069 bash feas/deploy_mf.sh <출력> mfcm`.
+
+## pilot이 먼저 볼 것 (pilot 1 전에 적음; pilot 1, 2가 본 것은 EXPERIMENT.md 12절)
 
 1. 재기만 하는 모드의 mirror 팔: rank 0 "measurement mode mirror arm ...: N cell(s) valid"의 N ≥ 1, "mirror summary"의
    broken=0과 max_live_bytes > 0. 깨지면 lane(`MIRROR_LANE`)이나 helper 걸음의 늦음이 원인이다.
@@ -97,7 +113,8 @@ WANT_MFCM=149cb36630ec7c10189299b0c58454cc bash feas/deploy_mf.sh <출력> mfcm`
 - `mi4_int_10/_20/_40` (@mi, 장애 없음): 최고 살아 있는 바이트(`pool_max_bytes`, mirror summary의 max_live_bytes)의 비가 간격 두
   배마다 2 ± 25%, 다시 시작 0. 예측(predictions_mi.csv)의 말대로 max_live_bytes로 잰다(통합 판단: `max_fill=` 키는 더하지 않음; 3절 글과의 맞춤은 사전 등록에서).
 - `mi4_pull_none` (장애 없음 3), `mi4_pull` (kill 5): lane 48 KiB, 당기기 50%. 당기기 ≥ 1, DISARM 0(`pulls_sent`,
-  `disarm_n`). kill은 붙잡고 되살림.
+  `disarm_n`). kill은 붙잡고 되살리고, 설계한 짝 보호 공백(9.6절: 죽은 rank가 맡던 rank 쪽 lane이 hold부터 그 rank의 다음 확정
+  체크포인트까지 깨짐) 밖의 깨짐과 DISARM 0(`lane_broken_other`, `disarm_other`; pilot 2에서 kill 시행마다 공백 깨짐 2줄).
 - `mi4_overflow` (@mi): lane 2 KiB(put보다 작음). lane 깨짐과 DISARM, hold 시작 없음, degraded 해제(`lane_broken`,
   `hold_started`, `degraded_release`).
 - `mi4_kill2_kill3_ow` (@mi): rank 2(단계 180–220)를 kill하고 되살린 뒤 rank 3(단계 380–420)을 kill. 예비 프로세스 둘.
@@ -108,7 +125,7 @@ WANT_MFCM=149cb36630ec7c10189299b0c58454cc bash feas/deploy_mf.sh <출력> mfcm`
   2 MiB × 상대 셋, 2 000단계, local 완료 직후 덮어씀, 받는 고리 R = 4. kill은 seed 무작위 단계와 단계 안 지연 0–8 ms(`DIE_SEED`로 고정).
   `train_data_equal`, `train_paced_import`(가져오기가 start_step부터 단계마다 한 번 그 커널 전, 남은 입력 0, INJECTED는 마지막 단계에
   한 번이고 생존 셋이 받음), `train_restore_parts`,
-  `train_segments`(다시 시작 0), `train_pull_count`(깨짐 0, DISARM 0), `train_none_clean`(멈춤 ≤ 15 ms), `store_rdma`.
+  `train_segments`(다시 시작 0), `train_pull_count`(설계한 짝 보호 공백 밖의 깨짐 0, DISARM 0), `train_none_clean`(멈춤 ≤ 15 ms), `store_rdma`.
   QP 감시 50 ms, lane 80 MiB, 예비 프로세스 기다림 ≥ 120 s(6, 8절).
 - `mi4_refuse_csum`(mirror+checksum 함께, 조건 36), `mi4_refuse_mirror1`(한 rank만 mirror 끔, 조건 34), `mi4_refuse_sl`(S가 다름,
   조건 39) (@mi): 모든 rank Resume 오류, 이유 같음, 그 조건의 이유 글자, fail-fast로 넘어간 rank 없음.
@@ -120,6 +137,8 @@ WANT_MFCM=149cb36630ec7c10189299b0c58454cc bash feas/deploy_mf.sh <출력> mfcm`
   summary`(broken=0)가 있어야 유효한 실행이다(라이브러리가 mirror 쓰기를 냈다는 근거).
 
 ## pilot이 고정하는 문턱과 n
+
+pilot 2의 값에서 낸 사전 등록 초안은 세션 스크래치 `prereg_mi_draft.md`다(사용자 결정 전, 숫자는 아직 고정 아님).
 
 - 반복 수(n): 7절의 초안(복원 셀 5–10, 명시적 오류 셀마다 3, 회귀 5, 비용 팔마다 노드마다 6). 한 hold가 840 s 안에 드는지
   보고(`fits`), 넘으면 hold를 나눈다(8절: `mi4_train_none` + `mi4_train_kill3`가 T1, `mi4_train_kill2_kill3`가 T2; 4 KiB는 G1과 G3).
