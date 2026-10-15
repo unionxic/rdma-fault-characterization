@@ -28,7 +28,14 @@
 //      the pause, CKPT_STABLE during the pause, the drops) against a model of the device's cell; MIRROR_SETUP's symmetry
 //      over every combination of the two sides' facts (with the second record on = 0); the publish word (user QPs odd,
 //      the mirror QP even); a stale fault record of the mirror context; the pull consumed by any idle Step; INJECTED's
-//      resends.
+//      resends;
+//  10. pilot 3's defect E (2026-10-15): a model of mi4_pull's lane (L = 12 puts, one per step, the interval 20 from
+//      checkpoint 123, the sender's pull at 50%): d's Step(130) takes the pull and its checkpoint does not drain (a restore
+//      runs), Step(131) neither (BUSY); with the fix (gdakiMiPullKept, gdakiMiPullRetryAt) the pull stays and Step(132)
+//      drains, the lane never passes 8 puts; the old rule (the pull spent, the quarter back-off) overflows at step 136
+//      (the pilot's trace), so the model sees the defect; the poll across a switch (an earlier burst's tail up to the
+//      opening value is absorbed, a burst no read saw still DISARMs, a break after the opening DISARMs); the rollback's
+//      second pull (gdakiMiPollRolledBack: once, at (pullPct + 100) / 2).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -1048,6 +1055,148 @@ static void testArmableAndMeasure() {
         offsetof(struct ncclGinMiCell, brkPeer) == 52 && offsetof(struct ncclGinRsSide, miMode) == 60);
 }
 
+// ---- 10. pilot 3's defect E ----
+// d's lane from one sender over steps 124..150: returns the first step whose put overflowed (0: none); *maxFill: the most
+// puts the lane held. refused: the steps whose checkpoint does not drain. fixed: the kept pull (else the old rule).
+static uint64_t pullModel(bool fixed, const std::vector<uint64_t>& refused, uint64_t* maxFill, uint64_t* drainedAt,
+                          int* attempts = nullptr) {
+  const uint64_t L = 12, put = 4096, interval = 20;
+  int kept = 0, tries = 0;
+  bool haveLast = true, haveRetry = false, pullFlag = false;
+  uint64_t lastCkpt = 123, retryAt = 0, fill = 0, seg = 21, overflowAt = 0;
+  struct gdakiMiPollMem mem;
+  bool dis = false, pull = false;
+  uint32_t pct = 0;
+  gdakiMiPollStep(mem, seg, 0, 0, L * put, 50, &dis, &pull, &pct);  // the switch at checkpoint 123's pause: baseline
+  *maxFill = 0;
+  *drainedAt = 0;
+  for (uint64_t s = 124; s <= 150; s++) {
+    // d's ncclGinRestoreStep(s)
+    bool due = gdakiCkptDue(s, haveLast, lastCkpt, interval) && (!haveRetry || s >= retryAt);
+    const bool retryOk = !haveRetry || s >= retryAt;
+    bool pulled = false;
+    if (gdakiMiPullConsumes(true, true, retryOk) && pullFlag) {
+      pullFlag = false;
+      pulled = true;
+    }
+    due = due || pulled;
+    if (due) {
+      tries++;
+      if (std::find(refused.begin(), refused.end(), s) != refused.end()) {
+        haveRetry = true;
+        retryAt = s + interval / 4;
+      } else {  // drained: the segment switches (fill 0), the pull of the old one is spent
+        haveLast = true;
+        lastCkpt = s;
+        haveRetry = false;
+        if (*drainedAt == 0) *drainedAt = s;
+        seg++;
+        fill = 0;
+      }
+    }
+    if (fixed && pulled) {  // ncclGinRestoreStep and gdakiMiPullAfterStep
+      if (!gdakiMiPullKept(true, haveLast, lastCkpt, s)) {
+        kept = 0;
+      } else if (!gdakiMiPullKeepOk(kept, (int64_t)interval)) {
+        kept = 0;  // spent after a quarter interval of Steps (the quarter back-off stays)
+      } else {
+        kept++;
+        pullFlag = true;
+        haveRetry = true;
+        retryAt = gdakiMiPullRetryAt(s);
+      }
+    }
+    // the step's kernel: one put into the lane
+    fill++;
+    if (fill > L && overflowAt == 0) overflowAt = s;
+    *maxFill = std::max(*maxFill, fill);
+    // the sender's poll
+    gdakiMiPollStep(mem, seg, std::min(fill, L) * put, 0, L * put, 50, &dis, &pull, &pct);
+    if (pull) pullFlag = true;
+  }
+  if (attempts) *attempts = tries;
+  return overflowAt;
+}
+static void testDefectE() {
+  // the rule
+  CHECK(!gdakiMiPullKept(false, false, 0, 130));
+  CHECK(gdakiMiPullKept(true, true, 123, 130) && gdakiMiPullKept(true, false, 0, 130));
+  CHECK(!gdakiMiPullKept(true, true, 130, 130));
+  CHECK(gdakiMiPullRetryAt(130) == 131);
+  // the pilot's case: the pulled Step(130) refused (a restore runs), Step(131) refused (BUSY)
+  uint64_t maxFill = 0, drained = 0;
+  const std::vector<uint64_t> refused = {130, 131};
+  CHECK(pullModel(true, refused, &maxFill, &drained) == 0);
+  CHECK(drained == 132 && maxFill == 8);
+  const uint64_t oldOverflow = pullModel(false, refused, &maxFill, &drained);
+  CHECK(oldOverflow == 136 && drained == 143);  // the old rule: the interval's checkpoint at 143, the overflow at 136
+  // no refusal: the pull drains at once (the same with and without the fix)
+  CHECK(pullModel(true, {}, &maxFill, &drained) == 0 && drained == 130);
+  CHECK(pullModel(false, {}, &maxFill, &drained) == 0 && drained == 130);
+  // refused for longer (BUSY over four Steps): the kept pull still drains before L
+  CHECK(pullModel(true, {130, 131, 132, 133}, &maxFill, &drained) == 0 && drained == 134 && maxFill <= 12);
+  CHECK(gdakiMiPullKeepOk(0, 20) && gdakiMiPullKeepOk(4, 20) && !gdakiMiPullKeepOk(5, 20));
+  CHECK(gdakiMiPullKeepOk(0, 2) && !gdakiMiPullKeepOk(1, 2));  // at least one retry
+  // a refusal that lasts (every Step from 130): the kept pull is tried at 130-135 (a quarter interval) and spent; then the
+  // interval's attempts with the quarter back-off (143, 148), not every Step
+  int tries = 0;
+  std::vector<uint64_t> always;
+  for (uint64_t s = 130; s <= 150; s++) always.push_back(s);
+  (void)pullModel(true, always, &maxFill, &drained, &tries);
+  CHECK(tries == 8 && drained == 0);
+  // the poll across a switch (part 2)
+  {
+    struct gdakiMiPollMem m;
+    bool dis = false, pull = false;
+    uint32_t pct = 0;
+    const uint64_t L = 1 << 20;
+    gdakiMiPollStep(m, 20, 0, 0, L, 50, &dis, &pull, &pct);
+    gdakiMiPollStep(m, 20, L, 1, L, 50, &dis, &pull, &pct);
+    CHECK(dis);  // the burst: DISARM
+    gdakiMiPollStep(m, 20, L, 3, L, 50, &dis, &pull, &pct);
+    CHECK(!dis);
+    struct gdakiMiPollMem old = m;
+    gdakiMiPollStep(m, 21, 0, 8, L, 50, &dis, &pull, &pct, 8);  // the switch read 8: the burst's tail
+    CHECK(!dis);
+    gdakiMiPollStep(old, 21, 0, 8, L, 50, &dis, &pull, &pct);  // the old poll: counted again
+    CHECK(dis);
+    gdakiMiPollStep(m, 21, 4096, 9, L, 50, &dis, &pull, &pct, 8);  // a break after the opening: a new burst
+    CHECK(dis);
+    struct gdakiMiPollMem q;
+    gdakiMiPollStep(q, 20, 0, 0, L, 50, &dis, &pull, &pct);
+    gdakiMiPollStep(q, 20, L / 4, 0, L, 50, &dis, &pull, &pct);
+    gdakiMiPollStep(q, 21, 0, 5, L, 50, &dis, &pull, &pct, 5);  // breaks no read saw before the switch: DISARM
+    CHECK(dis);
+    struct gdakiMiPollMem z;
+    gdakiMiPollStep(z, 20, 0, 0, L, 50, &dis, &pull, &pct);
+    gdakiMiPollStep(z, 20, L, 2, L, 50, &dis, &pull, &pct);
+    CHECK(dis);
+    gdakiMiPollStep(z, 21, 0, 10, L, 50, &dis, &pull, &pct, 8);  // breaks after the opening too: DISARM
+    CHECK(dis);
+  }
+  // the rollback's second pull (1b)
+  {
+    struct gdakiMiPollMem m;
+    bool dis = false, pull = false;
+    uint32_t pct = 0;
+    const uint64_t L = 1 << 20;
+    gdakiMiPollStep(m, 5, L / 2, 0, L, 50, &dis, &pull, &pct);
+    CHECK(pull && m.pulledSeg == 5);
+    gdakiMiPollRolledBack(m, 6);  // another segment: nothing
+    CHECK(m.pulledSeg == 5 && m.repullSeg == 0);
+    gdakiMiPollRolledBack(m, 5);
+    CHECK(m.pulledSeg == 0 && m.repullSeg == 5);
+    gdakiMiPollStep(m, 5, L * 6 / 10, 0, L, 50, &dis, &pull, &pct);
+    CHECK(!pull);  // below the second threshold (75%)
+    gdakiMiPollStep(m, 5, L * 3 / 4, 0, L, 50, &dis, &pull, &pct);
+    CHECK(pull && m.pulledSeg == 5 && m.repullSeg == 0);
+    gdakiMiPollStep(m, 5, L * 9 / 10, 0, L, 50, &dis, &pull, &pct);
+    CHECK(!pull);  // once
+    gdakiMiPollStep(m, 6, L / 2, 0, L, 50, &dis, &pull, &pct);
+    CHECK(pull);  // the next segment pulls at the first threshold again
+  }
+}
+
 int main() {
   testLocalMirrorOff();
   testLocalMirrorOn();
@@ -1065,6 +1214,7 @@ int main() {
   testLedgerModel();
   testSetupSymmetry();
   testSmallRules();
-  printf("mi_unit_host: %ld checks, %ld failed (16 test functions)\n", gChecks, gFailed);
+  testDefectE();
+  printf("mi_unit_host: %ld checks, %ld failed (17 test functions)\n", gChecks, gFailed);
   return gFailed == 0 ? 0 : 1;
 }
