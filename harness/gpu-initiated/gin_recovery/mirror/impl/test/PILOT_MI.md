@@ -6,7 +6,16 @@ DRAFT다. 실행은 메인 세션이 `../../../../common/cluster_run.sh` 안에�
 
 표시: `[측정]` 원자료에서 확인, `[미확인]` 아직 확인하지 않음, `[추론]` 해석.
 
-## 상태 (2026-10-15, pilot 2 뒤)
+## 상태 (2026-10-15, pilot 2 뒤; set `mi4` 준비)
+
+- 다음 묶음 set `mi4`(빌드 ln2, 2026-10-15): 계보(lineage, [../../EXPERIMENT.md](../../EXPERIMENT.md) 9.9절)와 pilot 3의 결함 E 고침(9.3절 "당겨진
+  체크포인트가 찍히지 않을 때"). 호스트만 바뀜: 계층 diff md5 `23e5407b427fde5fb5b0d2f1d3c74e2d`(9 071줄; 장치 파일 둘의 diff는 i4와 같음), 연구
+  `F/out/mi_ln2/libnccl.so.2.32.3` md5 `dac86bed7dc86afc5386d06f56f3d9e1`, 운영 `F/out/mip_ln2/libnccl.so.2.32.3` md5 `2bb1a973de4c0210093f85c7fb3106b3`;
+  드라이버(설치 헤더 digest `65fdf19b`, i4와 같음; `MITREE=agent_mi_fix MIOUT=mi_ln2 COSTOUT=cost_ln2 MROUT=mr_ln2 build_mi_test.sh mi nomacro cost mr`)
+  `mi_ln2/gin_mi` `0603ac4dc0c8d67a6470726dd2e85489`, `mi_ln2/gin_mi_nomacro` `dfa85845ce22fb14dec63fe33b22f4d7`, `cost_ln2/gin_ts2_mi`
+  `faaac703c02f88acbb9152f2783e2524`, `mr_ln2/ff/gin_mr` `e4b4fc3f24486c9c372f3044acc982d2`, `mr_ln2/hold/gin_mr` `70ab3f3a771c6895862834b84a18c4eb`.
+  계보만의 빌드 ln1(`e9c2c0e9`, `d8e7152c`)은 배포하지 않는다. pilot 4는 새 pilot hold P4(mirror 셀, `mi4_pull` n 5)와 P5(회귀)다(`cells_mi.json`).
+  모든 시행에서 `rows_mi.py`의 새 열 `lineage_warn`(`GIN/LN` 줄 수)이 0이어야 한다.
 
 - pilot 1(set `mi1`, 통합 빌드 i2, 08:59–09:15)과 pilot 2(set `mi2`, 고친 빌드 i3, 14:28–14:42)를 돌렸다. 결과와 결함 넷(A–D),
   고침, pilot 2의 확인은 [../../EXPERIMENT.md](../../EXPERIMENT.md) 12절이다. pilot 2가 결함 A, C, D의 고침을 확인했다 `[측정]`.
@@ -78,6 +87,25 @@ python3 $T/score.py $R/<날짜>
 ```
 
 pilot 1(set `mi1`)의 배포는 같은 명령에서 `MITREE`를 빼고(기본 `agent_mi_int`) `MIOUT=mi1`, i2의 원본과 md5를 준 것이었다.
+
+다음 묶음 set `mi4`(빌드 ln2: 계보와 결함 E 고침)의 배포와 pilot 4(같은 꼴; 2026-10-15):
+
+```
+SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad; F=$SCR/agent_mi_fix
+RS_SET=mi4 MITREE=agent_mi_fix MIOUT=mi_ln2 COSTOUT=cost_ln2 MROUT=mr_ln2 \
+  MI_LIB_SRC=$F/out/mi_ln2/libnccl.so.2.32.3 MIP_LIB_SRC=$F/out/mip_ln2/libnccl.so.2.32.3 \
+  WANT_MI=dac86bed7dc86afc5386d06f56f3d9e1 WANT_MIP=2bb1a973de4c0210093f85c7fb3106b3 \
+  WANT_GINMI=0603ac4dc0c8d67a6470726dd2e85489 WANT_GINMI_NOMACRO=dfa85845ce22fb14dec63fe33b22f4d7 \
+  WANT_COST_MI=faaac703c02f88acbb9152f2783e2524 WANT_MR_FF=e4b4fc3f24486c9c372f3044acc982d2 \
+  WANT_MR_HOLD=70ab3f3a771c6895862834b84a18c4eb bash $T/deploy_mi.sh $F/deploy_check_mi4.txt
+grep -E "MISMATCH|CHANGED|not found" $F/deploy_check_mi4.txt     # 아무 줄도 없어야 함
+RS_SET=mi4 bash $T/chain_mi.sh $R/<날짜>_pilot4 P4 P5   # cluster_run.sh 안에서; 비용 pilot은 필요하면 COSTPILOT-rain COSTPILOT-sunny를 더함
+python3 $T/rows_mi.py $R/<날짜>_pilot4 --out <다른 곳>/trials.csv   # lineage_warn 열을 읽기만(판정 아님)
+```
+
+pilot 4가 볼 것(9.9절): 모든 시행 `lineage_warn` 0; 셀마다 pilot 2와 같은 판정; "store request ... dropped" 줄은 죽은 프로세스 것만; mirror 끈 회귀(P5)의 줄 수와
+판정이 pilot 2와 같음; `mi4_pull` kill 시행은 `lane_broken_other` 0, `disarm_other` 0, kill이 당기기 창에 떨어진 시행에서는 "a pulled checkpoint at step N did
+not drain: the pull is kept for the next Step" 줄 뒤 INJECTED 뒤 1–2 Step 안에 그 rank의 체크포인트가 찍힘.
 
 다음 묶음 set `mi3`(빌드 i4)의 배포(같은 꼴; 드라이버의 cost와 gin_mr은 새 하위 폴더 `cost_i4`, `mr_i4`라 `COSTOUT`, `MROUT`을 준다):
 
