@@ -152,3 +152,23 @@ documentation placeholder addresses stated above (the runner masks the real ones
 | `harness/gpu-initiated/gin_recovery/restore/results/20261013_pilot_i4` | `harness__gpu-initiated__gin_recovery__restore__results__20261013_pilot_i4.tar.xz` | 495 | 0.83 | `9c35192c4a9d` | pilot on set i4, not scored |
 | `harness/gpu-initiated/gin_recovery/restore/results/20261013_pilot_i5` | `harness__gpu-initiated__gin_recovery__restore__results__20261013_pilot_i5.tar.xz` | 137 | 0.49 | `8ac225fade0a` | pilot on set i5, not scored |
 | `harness/gpu-initiated/gin_recovery/restore/results/20261013_main` | `harness__gpu-initiated__gin_recovery__restore__results__20261013_main.tar.xz` | 2384 | 3.90 | `0eb3b1d7fcdc` | pre-registered main run, 329 trials (the tracked `SCORE.md`, `trials_scored.csv`, `qa_recount.md`, `qa/` are included) |
+
+## Release `data-20261015`
+
+8 raw-data archives of the gin-mirror study (`harness/gpu-initiated/gin_recovery/mirror`), 6126 files, 15.39 MB
+compressed. Packed with `tools/pack_release.py --whole` (one `.tar.xz` per result folder, unpacking to the folder's repository
+path). The result folders were packed from three worktrees: the feasibility checks from `exp/gin-mirror`, pilot 1 from
+`exp/gin-mirror-int`, pilots 2–6 and the main run from `exp/gin-mirror-fix`. The full checksums are in the `SHA256SUMS` asset
+of that release. The `hold_*.out` files carry the documentation placeholder addresses stated above (the runner masks the
+real ones).
+
+| folder | asset | files | MB | sha256 (first 12) | note |
+|---|---|--:|--:|---|---|
+| `harness/gpu-initiated/gin_recovery/mirror/results/20261013_feas` | `harness__gpu-initiated__gin_recovery__mirror__results__20261013_feas.tar.xz` | 137 | 0.02 | `cbd768a6f105` | feasibility checks 1, 3 and 4 (EXPERIMENT.md 9.8), not scored |
+| `harness/gpu-initiated/gin_recovery/mirror/results/20261015_pilot` | `harness__gpu-initiated__gin_recovery__mirror__results__20261015_pilot.tar.xz` | 547 | 1.24 | `396852f6ba6b` | pilot 1 on set mi1 (build i2), not scored |
+| `harness/gpu-initiated/gin_recovery/mirror/results/20261015_pilot2` | `harness__gpu-initiated__gin_recovery__mirror__results__20261015_pilot2.tar.xz` | 546 | 1.24 | `4dfc509ccc41` | pilot 2 on set mi2 (build i3), not scored |
+| `harness/gpu-initiated/gin_recovery/mirror/results/20261015_pilot3` | `harness__gpu-initiated__gin_recovery__mirror__results__20261015_pilot3.tar.xz` | 546 | 1.25 | `218868cd469e` | pilot 3 on set mi3 (build i4), not scored |
+| `harness/gpu-initiated/gin_recovery/mirror/results/20261015_pilot4` | `harness__gpu-initiated__gin_recovery__mirror__results__20261015_pilot4.tar.xz` | 533 | 1.45 | `d89a3594e447` | pilot 4 on set mi4 (build ln2), not scored |
+| `harness/gpu-initiated/gin_recovery/mirror/results/20261015_pilot5` | `harness__gpu-initiated__gin_recovery__mirror__results__20261015_pilot5.tar.xz` | 95 | 0.50 | `aa36a864f817` | pilot 5 on set mi5 (build ln3), not scored |
+| `harness/gpu-initiated/gin_recovery/mirror/results/20261015_pilot6` | `harness__gpu-initiated__gin_recovery__mirror__results__20261015_pilot6.tar.xz` | 95 | 0.51 | `db8c9c3f1791` | pilot 6 on set mi6 (build ln4), not scored |
+| `harness/gpu-initiated/gin_recovery/mirror/results/20261015_main` | `harness__gpu-initiated__gin_recovery__mirror__results__20261015_main.tar.xz` | 3627 | 9.19 | `4b6777e21056` | pre-registered main run, 428 trials (the tracked `SCORE.md`, `trials_scored.csv` and `qa_recount.md` ride along) |
