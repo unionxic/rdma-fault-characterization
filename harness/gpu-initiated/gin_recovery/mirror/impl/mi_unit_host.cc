@@ -1058,6 +1058,10 @@ static void testArmableAndMeasure() {
 // ---- 10. pilot 3's defect E ----
 // d's lane from one sender over steps 124..150: returns the first step whose put overflowed (0: none); *maxFill: the most
 // puts the lane held. refused: the steps whose checkpoint does not drain. fixed: the kept pull (else the old rule).
+// A model: the loop below writes again how ncclGinRestoreStep wires gdakiCkptDue, the retry step, gdakiMiPullConsumes and
+// gdakiMiPullAfterStep (the pure rules are the library's); a mistake in that wiring itself is not caught here (pilot 4
+// showed the wiring at work: the kept pull, "a restore runs" and "the checkpoint store is not ready"; review nit N7).
+// The BUSY refusal's rollback and its second pull (1b) are not in this model (1b has its own case at the end).
 static uint64_t pullModel(bool fixed, const std::vector<uint64_t>& refused, uint64_t* maxFill, uint64_t* drainedAt,
                           int* attempts = nullptr) {
   const uint64_t L = 12, put = 4096, interval = 20;
@@ -1098,7 +1102,7 @@ static uint64_t pullModel(bool fixed, const std::vector<uint64_t>& refused, uint
       if (!gdakiMiPullKept(true, haveLast, lastCkpt, s)) {
         kept = 0;
       } else if (!gdakiMiPullKeepOk(kept, (int64_t)interval)) {
-        kept = 0;  // spent after a quarter interval of Steps (the quarter back-off stays)
+        kept = 0;  // spent after half an interval of Steps more (ln3; the quarter back-off stays)
       } else {
         kept++;
         pullFlag = true;
@@ -1133,17 +1137,26 @@ static void testDefectE() {
   // no refusal: the pull drains at once (the same with and without the fix)
   CHECK(pullModel(true, {}, &maxFill, &drained) == 0 && drained == 130);
   CHECK(pullModel(false, {}, &maxFill, &drained) == 0 && drained == 130);
-  // refused for longer (BUSY over four Steps): the kept pull still drains before L
+  // refused for longer (four Steps; pilot 4's longest, mi4_pull n5: the ward of the revived buddy refused "the checkpoint
+  // store is not ready" four times, taken at the fifth attempt): the kept pull still drains before L
   CHECK(pullModel(true, {130, 131, 132, 133}, &maxFill, &drained) == 0 && drained == 134 && maxFill <= 12);
-  CHECK(gdakiMiPullKeepOk(0, 20) && gdakiMiPullKeepOk(4, 20) && !gdakiMiPullKeepOk(5, 20));
+  // six refusals: the quarter bound (ln2, attempts 130-135) spent it at 135 and the interval's 143 came after the lane
+  // overflowed at 136; half an interval (ln3, attempts 130-140) takes it at 136 with the lane at L, not above
+  CHECK(pullModel(true, {130, 131, 132, 133, 134, 135}, &maxFill, &drained) == 0 && drained == 136 && maxFill == 12);
+  CHECK(gdakiMiPullKeepOk(0, 20) && gdakiMiPullKeepOk(9, 20) && !gdakiMiPullKeepOk(10, 20));  // half an interval (ln3)
+  CHECK(gdakiMiPullKeepOk(4, 10) && !gdakiMiPullKeepOk(5, 10) && gdakiMiPullKeepOk(19, 40) && !gdakiMiPullKeepOk(20, 40));
   CHECK(gdakiMiPullKeepOk(0, 2) && !gdakiMiPullKeepOk(1, 2));  // at least one retry
-  // a refusal that lasts (every Step from 130): the kept pull is tried at 130-135 (a quarter interval) and spent; then the
-  // interval's attempts with the quarter back-off (143, 148), not every Step
+  CHECK(gdakiMiPullKeepOk(0, 1) && !gdakiMiPullKeepOk(1, 1) && gdakiMiPullKeepOk(0, 0) && !gdakiMiPullKeepOk(1, 0));
+  // a refusal that lasts (every Step from 130): the kept pull is tried at 130-140 (half an interval more) and spent; then
+  // the interval's attempts with the quarter back-off (145, 150), not every Step
   int tries = 0;
   std::vector<uint64_t> always;
   for (uint64_t s = 130; s <= 150; s++) always.push_back(s);
   (void)pullModel(true, always, &maxFill, &drained, &tries);
-  CHECK(tries == 8 && drained == 0);
+  CHECK(tries == 13 && drained == 0);
+  // the pending pull's count (review nit N4, ln3): a take counts only a new CKPT_PULL in it
+  CHECK(!gdakiMiPullTakeCounts(0u) && gdakiMiPullTakeCounts(GDAKI_MI_PULL_NEW) &&
+        !gdakiMiPullTakeCounts(GDAKI_MI_PULL_KEPT) && gdakiMiPullTakeCounts(GDAKI_MI_PULL_NEW | GDAKI_MI_PULL_KEPT));
   // the poll across a switch (part 2)
   {
     struct gdakiMiPollMem m;
@@ -1173,6 +1186,19 @@ static void testDefectE() {
     CHECK(dis);
     gdakiMiPollStep(z, 21, 0, 10, L, 50, &dis, &pull, &pct, 8);  // breaks after the opening too: DISARM
     CHECK(dis);
+    // two switches between two reads (ln3, review nit N5): the burst of 20 seen, then segment 22 opened at 8; the breaks up
+    // to 8 may be 21's own burst, not 20's tail: not absorbed, DISARM
+    struct gdakiMiPollMem w;
+    gdakiMiPollStep(w, 20, 0, 0, L, 50, &dis, &pull, &pct);
+    gdakiMiPollStep(w, 20, L, 1, L, 50, &dis, &pull, &pct);
+    CHECK(dis);
+    gdakiMiPollStep(w, 20, L, 3, L, 50, &dis, &pull, &pct);
+    CHECK(!dis);
+    struct gdakiMiPollMem w1 = w;
+    gdakiMiPollStep(w, 22, 0, 8, L, 50, &dis, &pull, &pct, 8);
+    CHECK(dis);
+    gdakiMiPollStep(w1, 21, 0, 8, L, 50, &dis, &pull, &pct, 8);  // the same reads one switch apart: the tail, absorbed
+    CHECK(!dis);
   }
   // the rollback's second pull (1b)
   {
