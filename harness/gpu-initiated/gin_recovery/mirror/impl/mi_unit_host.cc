@@ -1154,7 +1154,9 @@ static void testDefectE() {
   for (uint64_t s = 130; s <= 150; s++) always.push_back(s);
   (void)pullModel(true, always, &maxFill, &drained, &tries);
   CHECK(tries == 13 && drained == 0);
-  // the pending pull's count (review nit N4, ln3): a take counts only a new CKPT_PULL in it
+  // the pending pull's count (review nit N4, ln3): a take counts only a new CKPT_PULL in it. The pure rule only: the
+  // wiring (the helper's fetch_or of NEW, gdakiMiPullTake's exchange, gdakiMiPullAfterStep's fetch_or of KEPT) is not
+  // tested here; e.g. an AfterStep that ORs NEW instead of KEPT would pass (ln3 review nit 3: read in the source only)
   CHECK(!gdakiMiPullTakeCounts(0u) && gdakiMiPullTakeCounts(GDAKI_MI_PULL_NEW) &&
         !gdakiMiPullTakeCounts(GDAKI_MI_PULL_KEPT) && gdakiMiPullTakeCounts(GDAKI_MI_PULL_NEW | GDAKI_MI_PULL_KEPT));
   // the poll across a switch (part 2)
