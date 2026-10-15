@@ -28,7 +28,8 @@
 //      during PUBLISHED) are dropped, the restored process's are served there. A fixed sequence checks the caller's case
 //      of pilot 1's defect A: STORE_REQ(i + 1, seq 1) during PUBLISHED(i) is served and the store gets ready before
 //      INJECTED, STORE_REQ(i, any seq) is dropped; the pre-fix caller (the known incarnation as the hold's) must drop the
-//      restored process's request there, else the sequence proves nothing about the caller;
+//      restored process's request there, else the sequence proves nothing about the caller. A request of an older
+//      incarnation than the known one is dropped too (gdakiStoreDropOldInc), also after INJECTED;
 //   7. the TCP path's base (mirror off, 9.6) as a model on gin-restore's own buddy store (gdakiCkptStore v1): with v1's
 //      rule an upload that ended without an ack, or a restored buddy, keeps a base the buddy no longer holds and the
 //      checkpoints are refused in a row; with this branch's rule never, and the next upload after any failure is whole;
@@ -348,6 +349,12 @@ static void testRecords() {
     CHECK(!gdakiStoreDropReq(false, true, i + 1u, i));
     CHECK(gdakiStoreDropReq(false, true, i, i));
     if (i > 0) CHECK(gdakiStoreDropReq(false, true, i - 1u, i));
+  }
+  // a request of an older incarnation than the known one (a dead process's, read after its hold ended) is dropped too,
+  // without an answer (STORE_ACK has no incarnation: a refusal could be read as the restored process's answer)
+  for (uint32_t k = 0; k < 4; k++) {
+    CHECK(!gdakiStoreDropOldInc(k, k) && !gdakiStoreDropOldInc(k + 1u, k));
+    if (k > 0) CHECK(gdakiStoreDropOldInc(k - 1u, k) && gdakiStoreDropOldInc(0, k));
   }
 }
 
@@ -682,7 +689,8 @@ struct World {
       // fix of pilot 1's defect A), the pre-fix caller passed the known incarnation (preFixCaller)
       const uint32_t hs = gdakiHoldStateOf(b.holdCell), hInc = gdakiHoldIncOf(b.holdCell);
       const bool held = gdakiHoldIsHeldState(hs);
-      if (gdakiStoreDropReq(false, held, m.q.incarnation, preFixCaller ? b.knownWardInc : hInc)) {
+      if (gdakiStoreDropReq(false, held, m.q.incarnation, preFixCaller ? b.knownWardInc : hInc) ||
+          gdakiStoreDropOldInc(m.q.incarnation, b.knownWardInc)) {
         st.dropped++;
         CHECK(preFixCaller || m.fromInc < wardInc);  // only a dead process's request is dropped (no answer)
         return;
@@ -950,7 +958,7 @@ static void testModel() {
   printf("model: %ld runs; requests %ld (after a socket reinstall %ld), answers %ld (refused %ld), WRITEs %ld ok / %ld "
          "failed, stable %ld (refused %ld, lost on the socket %ld), buddy deaths %ld, ward deaths %ld, layout changes %ld, "
          "ready (again) %ld, invariant checks %ld, runs without a stable checkpoint after the failures stopped %ld; "
-         "requests of a held ward dropped %ld, served while held %ld, INJECTED %ld\n",
+         "requests of a dead process dropped %ld, served while the ward was held %ld, INJECTED %ld\n",
          runs, total.requests, total.socketRequests, total.acks, total.refused, total.writes, total.writeFails,
          total.stables, total.stableRefused, total.stableLost, total.buddyDeaths, total.wardDeaths, total.layoutChanges,
          total.readyAgain, total.checks, notReadyAtEnd, total.dropped, total.servedHeld, total.injected);
@@ -996,6 +1004,11 @@ static void testDropWindow() {
         w.injected();
         CHECK(gdakiHoldStateOf(w.b.holdCell) == GDAKI_HOLD_OFF && gdakiHoldIncOf(w.b.holdCell) == i + 1);
         CHECK(w.u.readyNow());
+        // a late one after INJECTED: not held any more, older than the known incarnation: no answer (gdakiStoreDropOldInc)
+        const long d0 = w.st.dropped;
+        w.u2b.push_back(w.request(i, 3));
+        w.buddyStep();
+        CHECK(w.st.dropped == d0 + 1 && w.b2u.empty() && w.u.readyNow());
       } else if (stillPublished && !w.u.readyNow() && w.st.dropped == 4 && w.b.rec.inc == i) {
         preFixMissed++;  // the defect: the restored process's request dropped without an answer during PUBLISHED
       }

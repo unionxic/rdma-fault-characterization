@@ -1,6 +1,6 @@
 // rs_log_api.h v2 - gin-mirror (impl/PARALLEL.md; EXPERIMENT.md 9.4, 9.5): gin-restore's rs_log_api.h (copied unchanged
 // in commit 6cde95d6, md5 bd2d0233) with the mirror's changes. What v2 changes, in short:
-//   - the side table's layout is impl/rs_mirror_api.h's (magic "RSS4", the mirror fields at 40..63, miUse in the QP
+//   - the side table's layout is impl/rs_mirror_api.h's (magic "RSS5", "RSS4" before 2026-10-15; the mirror fields at 40..63, miUse in the QP
 //     entry, the cell array between the QP entries and the ring; the MIRROR flag 0x20); the layout notes below follow
 //     it;
 //   - every per-peer function of the block works on the "user only" QP set (gdakiRsQpsOfPeer narrowed; the mirror QP is
@@ -33,7 +33,7 @@
 // ncclGinRestoreResume succeeds and then holds the side table's address (one synchronous write; in the log measurement
 // mode, a test mode, at the context's creation). The side table, its MRs and the strict window MRs are set up at creation.
 //   struct ncclGinRsSide (128 B, offset 0)
-//      0 magic u32 "RSS4" (v1: "RSS3") | 4 nqp u32 | 8 fence u64 (the drain check's READ target) | 16 csum u32
+//      0 magic u32 "RSS5" (v1: "RSS3"; "RSS4" before 2026-10-15) | 4 nqp u32 | 8 fence u64 (the drain check's READ target) | 16 csum u32
 //     (checksum scheme) | 20 nEntries u32 (ring entries, a power of two; 0: no ring) | 24 entries ptr (the ring) |
 //     32 pairTest u64 (the loopback pair's self-test word) | 40 miOn u32 | 44 miCtx u32 | 48 miCellsOff u64 |
 //     56 miNCells u32 | 60 reserved (v1: 32..63 reserved; impl/rs_mirror_api.h)

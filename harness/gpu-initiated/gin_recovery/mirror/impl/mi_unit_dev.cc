@@ -191,7 +191,7 @@ static void testCursor() {
   CHECK(sizeof(struct ncclGinMiCell) == 64 && offsetof(struct ncclGinMiCell, cursor) == 32 &&
         offsetof(struct ncclGinMiCell, broken) == 40);
   CHECK(offsetof(struct ncclGinRsSide, miOn) == 40 && offsetof(struct ncclGinRsQp, miUse) == 48);
-  CHECK(NCCL_GIN_RS_SIDE_MAGIC == 0x34535352u);
+  CHECK(NCCL_GIN_RS_SIDE_MAGIC == 0x35535352u);  // "RSS5" (2026-10-15; "RSS4" before)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
