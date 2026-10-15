@@ -1007,7 +1007,7 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 - [x] mirror 켠 셀에서 helper 소켓으로 보낸 이미지와 segment 바이트가 0임을 원자료에서 확인했다(`store_rdma`). (시행 50, 재계산 3절)
 - [x] gin-restore 회귀 예측을 그 실험의 판정식 그대로 다시 채점했다. (예측 15개, `SCORE.md`, 재계산 3절)
 - [x] smoke, pilot, 제외 시행이 결과에 섞이지 않았다. 여러 실행의 범위와 대표 실행의 범위를 섞지 않았다. (본 실행 폴더에 pilot 없음, 제외 0; 15절의 범위는 셀의 모든 시행)
-- [ ] 원자료를 Release에 올리고 DATA.md에 적었다.
+- [x] 원자료를 Release에 올리고 DATA.md에 적었다.
 
 ## 11. 작업 체크리스트
 
@@ -1049,7 +1049,7 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 - [x] 본 실행(2026-10-15 21:22–22:54, set `mi6`, 시행 428, 제외 0, STOP 없음; 12절)
 - [x] 채점과 독립 재계산(예측 53개의 판정이 모두 같음; 2026-10-15, 16절)
 - [x] 결과 정리: 13–19절, 폴더 README, NOTES.md, 채점 출력 추적(2026-10-15 밤, 12절)
-- [ ] 원자료 release `data-20261015`와 `DATA.md`(계획은 세션 스크래치 `mi_release_plan.md`), PR
+- [x] 원자료 release `data-20261015`와 `DATA.md`(계획은 세션 스크래치 `mi_release_plan.md`), PR
 - [ ] 결론 확정 (`COMPLETE`)
 
 ## 12. 실행 기록 (시간순)
@@ -1163,6 +1163,7 @@ ln3, hold P6)과 본 실행에서 볼 것: 남긴 당기기는 길 (가)에서 I
 | 2026-10-15 | 사전 등록(메인 세션, 측정 전: 본 실행의 결과 폴더 없음). 사용자 결정(2026-10-15, 메인 세션이 전함): (1) 복원 시간 2 000 / 1 000 ms(학습 모양 밖 / 학습 모양), (2) 입력 멈춤 16 / 20 ms, (3) FETCH 띠 ±15%, (4) 비용 꼴 `cost_mirror_lat4k` within_us:12, `cost_mirror_lat2m` ratio:1.5-2.2(새 행), `cost_mirror_lat` 256 KiB 보고만, `cost_mirror_bw` ratio:0.45-0.70(mirror-peer), (5) seed `gin-mirror-v1`(pilot의 `mi-v1` 대신; 본 실행 hold G1, T1, T2), (6) 앞 결정 넷: 채점 셈 확인, `mi4_overflow` 기다림 15 000 ms와 넓힌 판정식 확인, 결함 D 리뷰 끝남, 되살린 rank의 다시 무장은 범위 밖, (7) 예비 프로세스의 활성화 관문 그대로(3절 끝의 두 모드 보고), (8) 멈춤 시한 거절은 당기기를 남기지 않음(2026-10-15 사용자 결정, 빌드 ln4). 고정한 것: 2절 가설(복원 시간의 셀 가족마다의 상한과 FETCH 모형, 비용은 따로 된 QP의 쓰기 하나), 3절 예측(위 값; `second_death_restored`와 `train_second_death`의 판정식이 두 복원 시간을 직접 읽고 `ow_none_clean`이 `ckpt_pause_ms`를 직접 읽게 해 문턱이 고정 파일 안에 있음; 새 행 `cost_mirror_lat2m`), 7절 셀과 반복 수(표 그대로, hold 목록, 빌드 ln4의 md5, seed), 8절 제외와 중단(BAR1 검사의 자리, QUERY_QP 상한 50 000과 150 000의 단위, 시행 한도 60 s와 150 s; 일관성 고침 4 그대로). 고정 파일 [impl/test/predictions_mi.csv](impl/test/predictions_mi.csv)(sha256 `2db0c694…`)와 [impl/test/cells_mi.json](impl/test/cells_mi.json)(`697e8b6c…`)은 [PREREG.txt](PREREG.txt)에, 라이브러리와 driver의 md5도 거기에. `score.py`의 머리 문구를 사전 등록 문구로(판정 논리는 그대로). 자체 시험 `selftest_mi.py` 통과 `[측정]`. 상태를 `PREREGISTERED`로. 이 변경 전부가 커밋 하나이고 그 커밋에 annotated 태그 `prereg/gin-mirror-v1` | 이 행의 커밋, `PREREG.txt`, 태그 `prereg/gin-mirror-v1` |
 | 2026-10-15 밤 | 본 실행(set `mi6` = 빌드 ln4, 21:22–22:54, `results/20261015_main/`): hold G1 G3 T1 T2 G2 R1 R2 R3, 비용 hold 10(COST-mirror-{rain,sunny}-{lat4k,lat256k,bw256k,lat2m,bw2m}), 빠진 시행 잇기 8(모두 "already done"); 시행 428, 제외 0, STOP·skip·refuse 없음, `qp_over.txt` 없음. `score.py`(SCORE.md, trials_scored.csv): 예측 53 중 맞음 51, 틀림 1(`ckpt_kill_ow`: `mi4_kill3_ckpt_ow` 5회 중 1회만 식 충족, 원인 분석 중), 보고만 1(`cost_mirror_lat`). 상태 `RUNNING` → `QA`. 독립 재계산과 틀린 예측 분석은 별도 에이전트가 진행 [측정: SCORE.md 6행, 114–115행] |
 | 2026-10-15 밤 | 마무리 문서(다른 Opus 에이전트, 메인 세션이 맡김; 클러스터, ssh, kill 없음). 채점 출력 `SCORE.md`, `trials_scored.csv`를 `score.py`가 쓴 그대로 추적. 13–19절(결과 요약, QA, 결론, 한계, 다음 작업), 10, 11절의 체크, 폴더 [README.md](README.md)와 [NOTES.md](NOTES.md). 수치는 SCORE.md의 글을 옮기지 않고 원자료(비용 실행의 kv)와 두 시행별 표(채점기, 재계산)에서 다시 셈(세션 스크래치 `mi_close/`). 틀린 예측의 분석(세션 스크래치 `mi_fail_ckpt_kill_ow.md`; 읽기만 한 분석)을 17절에 요약: 복원 쪽 다섯 항은 5/5, 틀린 항은 장애 위치 조건이고 원인은 시험 스위치의 300 µs 창과 동시 체크포인트 workload의 배치(라이브러리 결함의 흔적 없음); pilot이 이미 2/4를 보였는데 기록하지 않은 것은 16절 충돌 1. 마무리 때 찾은 것: ECONNRESET 4번 가운데 죽음 판정이 늦은 것은 3번이다(재계산 8절 요약의 "넷"과 다름, 원자료를 따름; 16절 충돌 3). 원자료 release 계획은 세션 스크래치 `mi_release_plan.md`(올리기와 `DATA.md`는 메인 세션). 상태는 `QA` 그대로 | 커밋 `0774fc15`(채점 출력)와 이 행의 커밋 |
+| 2026-10-15 밤 | Release `data-20261015` 게시(자산 8개 + SHA256SUMS: feasibility 1, pilot 1–6, 본 실행; 6 126 파일, 15.39 MB 압축; `tools/pack_release.py --whole`, 누출 검사 통과). `DATA.md`에 절과 표 추가(같은 커밋) [측정: release 자산 목록] |
 
 ## 13. 사전 등록 이후 변경
 
