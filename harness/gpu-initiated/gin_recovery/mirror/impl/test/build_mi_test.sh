@@ -21,7 +21,8 @@
 #        the session scratch, default agent_mi_int: agent_mi_fix for the fixes of pilot 1, 2026-10-15, whose headers and
 #        outputs are then $SCR/agent_mi_fix/build/include and $SCR/agent_mi_fix/test/out; COSTOUT and MROUT name the
 #        output subfolders of cost and mr, default cost and mr, so a new build of the same tree keeps the old drivers,
-#        2026-10-15 build i4: cost_i4, mr_i4)
+#        2026-10-15 build i4: cost_i4, mr_i4; the lineage's builds in the same tree (EXPERIMENT.md 9.9): MIOUT=mi_ln<k>,
+#        COSTOUT=cost_ln<k>, MROUT=mr_ln<k>)
 set -euo pipefail
 STAGE=${1:?stage: mi|nomacro|cost|mr|info}
 SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad

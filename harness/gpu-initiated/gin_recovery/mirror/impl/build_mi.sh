@@ -365,7 +365,7 @@ mkdiff() {
 info() {
   {
     echo "built=$(date '+%F %T') host=$(hostname -s) nvcc=$("$CUDA/bin/nvcc" --version | tail -1) g++=$(g++ -dumpfullversion)"
-    echo "branch $BR; base: agent_mi_$BR head $(MG rev-parse --short HEAD) ($(MG log -1 --format=%s));" \
+    echo "branch $BR; base: $(basename "$W") head $(MG rev-parse --short HEAD) ($(MG log -1 --format=%s));" \
          "i5 commit diff md5 $(MG diff --diff-algorithm=histogram HEAD~1 HEAD -- src | md5sum | cut -c1-32)" \
          "(rs_layer.diff $(md5 "$RSD/rs_layer.diff"))"
     echo "working tree: $(MG diff --name-only HEAD -- src | tr '\n' ' ')"
