@@ -28,7 +28,8 @@ def parser_command():
             "fetch_us", "fetch_bytes", "import_pool_bytes", "pool_max_bytes", "lane_broken", "disarm_n", "seg_restart_n",
             "inj_from_n", "tcp_image_bytes", "tcp_segment_bytes", "recv_poison", "dev_poison", "nomirror_corrupt",
             "nomirror_detect", "applied2", "reimage_ok", "second_ok", "paced_ok", "restore_time_ms_1",
-            "restore_time_ms_2", "resume_refused", "spare2_start_fail", "restarts", "pulls_sent", "value", "mi_summary_ok"]
+            "restore_time_ms_2", "resume_refused", "spare2_start_fail", "restarts", "pulls_sent", "value", "mi_summary_ok",
+            "lane_broken_designed", "lane_broken_other", "disarm_designed", "disarm_other", "broken_other"]
     miss = [c for c in need if c not in rows[0]]
     out = []
     if miss:
@@ -41,6 +42,11 @@ def parser_command():
         out.append("parser: from_pool_ok not 1 on a clean mirror restore")
     if k3.get("tcp_image_bytes") != "0":
         out.append("parser: tcp_image_bytes not 0 (store_rdma)")
+    # the designed buddy gap (9.6): the hold's two lane breaks toward rank 2 are designed, nothing else breaks
+    gap = tuple(k3.get(c) for c in ("lane_broken", "lane_broken_designed", "lane_broken_other", "disarm_other",
+                                    "broken_other"))
+    if gap != ("2", "2", "0", "0", "0"):
+        out.append("parser: the designed buddy gap of a clean kill reads %s, want (2, 2, 0, 0, 0)" % (gap,))
     if byid.get("cost_bw2m_mirror-peer_rain_k1", {}).get("key") != "cost_bw2m_mirror-peer@mip":
         out.append("parser: a cost run's key is not cost_<metric>_<arm>@<lib>")
     return out

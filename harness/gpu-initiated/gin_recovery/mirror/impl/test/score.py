@@ -49,7 +49,8 @@ NEEDS_LIVE = {"mi4_kill3_ow", "mi4_kill1_ow", "mi4_kill3_ckpt_ow", "mi4_kill2_ki
 REFUSAL = ("mi4_refuse", "rs4_refuse")
 # the library-only columns a formula may read (empty in every scored trial -> 자료 부족, the layer does not emit them yet)
 LIB_COLS = set(rows_rs.LIBCOLS) | {"from_pool_ok", "export_source_bytes", "import_pool_bytes", "fetch_us", "fetch_bytes",
-                                   "pool_max_bytes", "restarts", "pulls_sent", "broken_total", "inj_sent_step",
+                                   "pool_max_bytes", "restarts", "pulls_sent", "broken_total", "broken_other",
+                                   "inj_sent_step",
                                    "inj_from_n", "paced_ok", "tcp_image_bytes", "tcp_segment_bytes", "nomirror_detect",
                                    "restore_time_ms_1", "restore_time_ms_2"}
 EXCL = {"void": "시작 실패(생존 rank가 교환 전에 끝남)", "not_applied": "장애 미적용(kill 기록 없음)",
@@ -505,13 +506,38 @@ def _mi_dead(r, subject):
             (3.9, "host NCCL WARN GIN/RS: rank %d: rank %d restored as incarnation 1 (on time); state armed mono_ms=1.0" % (r, subject))]
 
 
-def _mi_good(r, subject):
+def _mi_good(r, subject, broken=0):
     """a survivor's mirror lines for a clean overwrite restore of `subject` (key=value order shuffled on purpose: the
-    parser reads them in any order)"""
+    parser reads them in any order); broken: the summary's count of this process's lane breaks"""
     return [(3.5, "GIN/MI: rank %d: export to rank %d: mirror_bytes=163840 entries=50 mirror_entries=40 source_bytes=0 first_step=81 last_step=100 mono_ms=1.0" % (r, subject)),
             (3.6, "GIN/MI: rank %d: drain for rank %d: senders=3 queries=5 drain_us=120.0 mono_ms=1.0" % (r, subject)),
-            (9.0, "GIN/MI: rank %d: mirror summary switches=5 rollbacks=1 restarts=0 third_slot=0 max_live_bytes=9437184 pulls_sent=0 pulls_taken=0 broken=0 absorbed=0 mono_ms=1.0" % r),
+            (9.0, "GIN/MI: rank %d: mirror summary switches=5 rollbacks=1 restarts=0 third_slot=0 max_live_bytes=9437184 pulls_sent=0 pulls_taken=0 broken=%d absorbed=0 mono_ms=1.0" % (r, broken)),
             (1.0, "GIN/MI: rank %d: checkpoint 100 stored at buddy rank %d slot=0 bytes=31457280 d2h_us=2390.0 write_us=2610.0 mono_ms=1.0" % (r, r ^ 1))]
+
+
+def _hold_line(r, subject, ward, t=3.01):
+    return (t, "GIN/RS: rank %d: hold of rank %d started: gates odd since -0.0 ms before the start, 0 WQE(s) rung, deadline "
+               "in 19997 ms, HOLDING to buddy rank %d, 4 QP(s) (executed/sent at the hold: 0/0) mono_ms=1.0" % (r, subject, ward))
+
+
+def _brk(r, dest, t):
+    """a survivor's lane break toward dest at t and its DISARM line (the library's two lines, gdakiMiPoll, gdakiHoldDisarm)"""
+    return [(t, "GIN/MI: rank %d: lane to rank %d broken (device): DISARM mono_ms=1.0" % (r, dest)),
+            (t + 0.0001, "GIN/RS: rank %d: rank %d disarmed (its mirror lane on this rank broke; was off; DISARM sent to 2 "
+                         "rank(s)) mono_ms=1.0" % (r, dest))]
+
+
+def _gap(subject, survivors, t_stable=4.8):
+    """the designed buddy gap of 9.6 (pilot 2's shape): every survivor logs the hold of `subject` naming its buddy e,
+    the survivors but e break their lane toward e (3.05), e logs its next stable checkpoint after the restore (3.9 in
+    _mi_dead) at t_stable. {rank: lines}; the survivors but e count one break in their summaries."""
+    e = subject ^ 1
+    out = {r: [_hold_line(r, subject, e)] for r in survivors}
+    for r in survivors:
+        if r != e:
+            out[r] += _brk(r, e, 3.05)
+    out[e].append((t_stable, "GIN/RS: rank %d: checkpoint 140 stable at buddy rank %d (not armable) mono_ms=1.0" % (e, subject)))
+    return out
 
 
 def _spare_good(subject, *, fetch_us=13.1, image=31457280, seg=125829120, pool=491520):
@@ -534,16 +560,21 @@ def _inj_from(r, subject):
 
 
 def _ow_kill3(d, cell, nmax, **kw):
+    """clean overwrite kills of rank 3, each with the designed buddy gap (_gap: ranks 0 and 1 break their lane toward
+    rank 2 during the hold)"""
     for k in range(1, nmax + 1):
-        mi = {r: _mi_good(r, 3) + _inj_from(r, 3) for r in (0, 1, 2)}
+        g = _gap(3, (0, 1, 2))
+        mi = {r: _mi_good(r, 3, broken=(1 if r != 2 else 0)) + _inj_from(r, 3) + g[r] for r in (0, 1, 2)}
         _mi(d, cell, k, kill=3, spare=True, lib_lines={r: _mi_dead(r, 3) for r in (0, 1, 2)}, mi_lines=mi,
             spare_lines={"spare": _spare_good(3)}, **kw)
 
 
-def _kill2(d, cell, k, *, train=0, rearm=True, **kw):
+def _kill2(d, cell, k, *, train=0, rearm=True, gap=False, **kw):
     """a second-death trial: rank 2 dies at 2.0 and is restored (2.9), rank 3 stores a full image at the revived rank 2
     (3.5, one void at 3.2 before it), every survivor of the second death re-arms rank 3 (3.6), rank 3 dies at 5.0 and is
-    restored from the revived rank 2"""
+    restored from the revived rank 2. gap: the designed buddy gaps of both deaths and one break outside them (the D
+    checks): ranks 0 and 1 break toward rank 3 at 2.05 (designed: rank 3's next stable is 3.55) and at 3.7 (other), toward
+    rank 2 at 5.05 (designed: the revived rank 2's next stable after RESTORED(3) is 6.2)"""
     L = {0: [], 1: [], 2: [], 3: []}
     L[2] += [(1.0, "GIN/RS: rank 2: checkpoint 200 stable at buddy rank 3 (armable) mono_ms=1.0"),
              (2.0, "GINRS die rank=2 step=205 where=kernel delay_us=10 mono_ms=1.0")]
@@ -562,6 +593,15 @@ def _kill2(d, cell, k, *, train=0, rearm=True, **kw):
         L[r] += [(t, x % r) for t, x in arm + second]
     sp1 = [(t, x % 2) for t, x in arm + second] + _spare_good(2)
     sp2 = _spare_good(3)
+    if gap:
+        for r in (0, 1, 3):
+            L[r].append(_hold_line(r, 2, 3, 2.02))
+        for r in (0, 1):
+            L[r].append(_hold_line(r, 3, 2, 5.02))
+            L[r] += _brk(r, 3, 2.05) + _brk(r, 3, 3.7) + _brk(r, 2, 5.05)
+        sp1.append(_hold_line(2, 3, 2, 5.02))
+        L[3].append((3.55, "GIN/RS: rank 3: checkpoint 240 stable at buddy rank 2 (armable) mono_ms=1.0"))
+        sp1.append((6.2, "GIN/RS: rank 2: checkpoint 400 stable at buddy rank 3 (not armable) mono_ms=1.0"))
     _mi(d, cell, k, kill=2, kill2=3, spare=True, spare2=True, train=train, overwrite=1, ring=(4 if train else 0),
         lib_lines=L, spare_lines={"spare": sp1, "spare_2nd": sp2}, die2_t=5.0, **kw)
 
@@ -618,7 +658,7 @@ REFUSE_WHY = {"mi4_refuse_csum": "NCCL_GIN_RESTORE_MIRROR_and_NCCL_GIN_RESTORE_C
               "mi4_refuse_sl": "NCCL_GIN_RESTORE_MIRROR_SLOTS_or_NCCL_GIN_RESTORE_MIRROR_LANE_differs_between_ranks"}
 
 
-def _build_A(d, *, bad_data=False, reg_bad=False, peer_bw2m=0.5):
+def _build_A(d, *, bad_data=False, reg_bad=False, peer_bw2m=0.5, other_break=False):
     raw, reg, cost = os.path.join(d, "raw"), os.path.join(d, "reg"), os.path.join(d, "cost")
     _ow_kill3(raw, "mi4_kill3_ow", 10, surv=(dict(recv_bad=1) if bad_data else None))
     for k in range(1, 6):
@@ -650,9 +690,14 @@ def _build_A(d, *, bad_data=False, reg_bad=False, peer_bw2m=0.5):
         _mi(raw, "rs4_none_mion", k, overwrite=0)
         _mi(raw, "rs4_kill3_mion", k, kill=3, spare=True, overwrite=0, lib_lines={r: _mi_dead(r, 3) for r in (0, 1, 2)},
             mi_lines={r: _mi_good(r, 3) for r in (0, 1, 2)}, spare_lines={"spare": _spare_good(3)})
+        # the designed buddy gap in every kill trial; with other_break (C) trials 1 and 2 also break rank 0's lane toward
+        # the revived rank 3 after INJECTED (pilot 1's defect A): pull_no_disarm_kill must read 틀림 (3/5 < 4)
+        g = _gap(3, (0, 1, 2))
+        ob = other_break and k <= 2
         _mi(raw, "mi4_pull", k, kill=3, spare=True, lib_lines={r: _mi_dead(r, 3) for r in (0, 1, 2)},
-            mi_lines={r: _mi_good(r, 3) + _inj_from(r, 3) +
-                      [(5.0, "GIN/MI: rank %d: CKPT_PULL to rank 3 seg=3 fill_pct=55 mono_ms=1.0" % r)] for r in (0, 1, 2)},
+            mi_lines={r: _mi_good(r, 3, broken=(0 if r == 2 else 1) + (1 if ob and r == 0 else 0)) + _inj_from(r, 3) +
+                      [(5.0, "GIN/MI: rank %d: CKPT_PULL to rank 3 seg=3 fill_pct=55 mono_ms=1.0" % r)] + g[r] +
+                      (_brk(0, 3, 5.5) if ob and r == 0 else []) for r in (0, 1, 2)},
             spare_lines={"spare": _spare_good(3)})
         _kill2(raw, "mi4_kill2_kill3_ow", k)
         _kill2(raw, "mi4_train_kill2_kill3", k, train=1)
@@ -670,8 +715,14 @@ def _build_A(d, *, bad_data=False, reg_bad=False, peer_bw2m=0.5):
                           (9.0, "GIN/MI: rank %d: mirror summary switches=100 rollbacks=0 restarts=0 third_slot=1 max_live_bytes=251658240 pulls_sent=1 pulls_taken=1 broken=0 absorbed=0 mono_ms=1.0" % r)] for r in range(4)})
     for k in range(1, 11):
         img, seg = 31457280, 125829120
+        # the designed buddy gap; with other_break (C) trial 1 also breaks rank 0's lane toward rank 2 after rank 2's next
+        # stable checkpoint (4.8): outside the gap, train_pull_count must read 틀림
+        g = _gap(3, (0, 1, 2))
+        ob = other_break and k == 1
         _mi(raw, "mi4_train_kill3", k, train=1, overwrite=1, ring=4, kill=3, spare=True,
-            lib_lines={r: _mi_dead(r, 3) for r in (0, 1, 2)}, mi_lines={r: _mi_good(r, 3) + _inj_from(r, 3) for r in (0, 1, 2)},
+            lib_lines={r: _mi_dead(r, 3) for r in (0, 1, 2)},
+            mi_lines={r: _mi_good(r, 3, broken=(0 if r == 2 else 1) + (1 if ob and r == 0 else 0)) + _inj_from(r, 3) + g[r] +
+                      (_brk(0, 2, 6.0) if ob and r == 0 else []) for r in (0, 1, 2)},
             spare_lines={"spare": _spare_good(3, fetch_us=5.0 + (img + seg) / 11880.0, image=img, seg=seg)})
     _rg_build(raw)
     for k in range(1, 6):
@@ -730,12 +781,15 @@ def selftest():
             expect("B/" + pid, vB.get(pid), "맞음")
         # C: failures are 틀림
         dC = tempfile.mkdtemp(prefix="mi_self_C_")
-        _build_A(dC, bad_data=True, reg_bad=True, peer_bw2m=0.3)
+        _build_A(dC, bad_data=True, reg_bad=True, peer_bw2m=0.3, other_break=True)
         vC = score(dC)
         expect("C/ow_data_equal", vC.get("ow_data_equal"), "틀림")
         expect("C/regression_kill3_off", vC.get("regression_kill3_off"), "틀림")
         expect("C/cost_mirror_bw", vC.get("cost_mirror_bw"), "틀림")
         expect("C/cost_mirror_lat4k (unchanged)", vC.get("cost_mirror_lat4k"), "맞음")
+        expect("C/pull_no_disarm_kill (a break toward the revived rank)", vC.get("pull_no_disarm_kill"), "틀림")
+        expect("C/train_pull_count (a break after the ward's next stable checkpoint)", vC.get("train_pull_count"), "틀림")
+        expect("C/pull_no_disarm_none (unchanged)", vC.get("pull_no_disarm_none"), "맞음")
         # D: the parser's and the status rules
         dD = tempfile.mkdtemp(prefix="mi_self_D_")
         raw = os.path.join(dD, "raw")
@@ -751,6 +805,19 @@ def selftest():
         _kill2(raw, "mi4_kill2_kill3_ow", 3, rearm=False)
         _mi(raw, "mi4_kill3_ow_nomirror", 1, kill=3, spare=True, mirror="0",
             lib_lines={r: _mi_dead(r, 3) for r in (0, 1, 2)}, surv=dict(recv_bad=1), poison=True)
+        # the designed buddy gap apart from the other breaks (rows_mi.py gap_windows): rank 0 breaks toward the ward 2 in
+        # the gap (designed) and after its next stable checkpoint 4.8 (other), rank 1 in the gap, the ward 2 toward the
+        # revived rank 3 (other); no hold line in trial 6 -> nothing is designed
+        g = _gap(3, (0, 1, 2))
+        extra = {0: _brk(0, 2, 6.5), 1: [], 2: _brk(2, 3, 6.0)}
+        _mi(raw, "mi4_pull", 5, kill=3, spare=True, lib_lines={r: _mi_dead(r, 3) for r in (0, 1, 2)},
+            mi_lines={r: _mi_good(r, 3, broken={0: 2, 1: 1, 2: 1}[r]) + _inj_from(r, 3) + g[r] + extra[r] for r in (0, 1, 2)},
+            spare_lines={"spare": _spare_good(3)})
+        nohold = {r: [x for x in g[r] if "hold of rank" not in x[1]] for r in (0, 1, 2)}
+        _mi(raw, "mi4_pull", 6, kill=3, spare=True, lib_lines={r: _mi_dead(r, 3) for r in (0, 1, 2)},
+            mi_lines={r: _mi_good(r, 3, broken=(0 if r == 2 else 1)) + _inj_from(r, 3) + nohold[r] for r in (0, 1, 2)},
+            spare_lines={"spare": _spare_good(3)})
+        _kill2(raw, "mi4_kill2_kill3_ow", 4, gap=True)
         cdir = os.path.join(dD, "cost_x")
         _cost(cdir, "bw2m", "on", "rain", 1, 6.0)
         _cost(cdir, "bw2m", "mirror-peer", "rain", 2, 3.0, summary=False)
@@ -775,6 +842,14 @@ def selftest():
         expect("D/second spare start failure excluded", status_rs(rows["mi4_kill2_kill3_ow_mi_n2"], cells), "spare_start_fail")
         expect("D/no re-arm before the second kill", rows["mi4_kill2_kill3_ow_mi_n3"]["reimage_ok"], 0)
         expect("D/nomirror corrupt", rows["mi4_kill3_ow_nomirror_mi_n1"]["nomirror_corrupt"], 1)
+        gcols = ("lane_broken", "lane_broken_designed", "lane_broken_other", "disarm_n", "disarm_designed", "disarm_other",
+                 "broken_total", "broken_other")
+        expect("D/gap: designed kill3_ow", tuple(k3[c] for c in gcols), (2, 2, 0, 4, 4, 0, 2, 0))
+        expect("D/gap: designed and other", tuple(rows["mi4_pull_mi_n5"][c] for c in gcols), (4, 2, 2, 8, 4, 4, 4, 2))
+        expect("D/gap: no hold line, nothing designed", tuple(rows["mi4_pull_mi_n6"][c] for c in gcols),
+               (2, 0, 2, 4, 0, 4, 2, 2))
+        expect("D/gap: both deaths of a second-death trial (the revived rank's log ends the second)",
+               tuple(rows["mi4_kill2_kill3_ow_mi_n4"][c] for c in gcols), (6, 4, 2, 12, 8, 4, "", ""))
         expect("D/bw2m value in GB/s", round(float(rows["cost_bw2m_on_rain_k1"]["value"]), 3), 6.0)
         expect("D/mirror arm without a summary is invalid", rows["cost_bw2m_mirror-peer_rain_k2"]["cost_valid"], 0)
         expect("D/mirror arm with breaks is invalid", rows["cost_bw2m_mirror-peer_rain_k3"]["cost_valid"], 0)
