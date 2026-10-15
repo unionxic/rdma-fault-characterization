@@ -12,7 +12,7 @@
 # and of the cost runs' and trials' own /tmp paths (gin_ts2_mi by those paths; gin_mr by run_mr_hr.sh's /tmp/gin_mrr_* paths,
 # added at the integration's review: before it only that runner's own meta left= saw them).
 #
-# What is new against hold_rs.sh: RS_SET is required (rs_set_mi.sh); the holds are cells_mi.json's (P1-P3, G1, G3, T1, T2,
+# What is new against hold_rs.sh: RS_SET is required (rs_set_mi.sh); the holds are cells_mi.json's (P1-P5, G1, G3, T1, T2,
 # G2, R1-R3 and COST-mirror-<node>); the per-trial stop checks add STOP_mem (run_mi.sh exit 5); the start-check also reads each
 # node's MemAvailable (run_mi.sh does the per-trial check; here only the hold's own leftover and BAR1 gates). The training
 # holds (P2, T1, T2) also get rain's BAR1 at each trial's start gate, every process up (run_mi.sh BAR1_AT_GATE; read only).
@@ -20,6 +20,8 @@
 # usage: hold_mi.sh <resultsdir> <hold>
 #   P1, P2, P3             the pilot holds (never scored; a results folder of their own): the 4 KiB cells and refusals,
 #                          the training cells, the regression
+#   P4, P5                 pilot 4 (2026-10-15, the lineage and the fix of defect E; never scored): the mirror cells (mi4_pull
+#                          n 5 for defect E's pull window, the second-death training cell), the regression cells
 #   G1                     the 4 KiB overwrite restore cells and their mirror-off controls
 #   G3                     the segment, interval, pull and overflow cells
 #   T1                     mi4_train_none + mi4_train_kill3 (the training split, section 8: 465-510 s)
@@ -201,9 +203,9 @@ cost_family() {  # cost_family <family> <node> <dir> <rounds> [metric]
 }
 # the training holds: run_mi.sh reads rain's BAR1 at each trial's start gate (every process up; the second-death cell has
 # three on rain), read only (the review of the pilot 1 fixes, item 4: pilot 2's snapshots had BAR1 only before and after)
-case "$H" in P2|T1|T2) export BAR1_AT_GATE=1 ;; esac
+case "$H" in P2|P4|T1|T2) export BAR1_AT_GATE=1 ;; esac
 case "$H" in
-  P1|P2|P3|G1|G3|T1|T2|G2|R1|R2|R3) do_json_hold "$H" ;;
+  P1|P2|P3|P4|P5|G1|G3|T1|T2|G2|R1|R2|R3) do_json_hold "$H" ;;
   COSTPILOT-*)
     node=${H#COSTPILOT-}; node=${node%%-*}
     case "$node" in rain|sunny) ;; *) echo "COSTPILOT-<rain|sunny>" >&2; exit 2 ;; esac
