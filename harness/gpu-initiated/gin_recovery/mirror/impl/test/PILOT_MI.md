@@ -19,6 +19,13 @@ DRAFT다. 실행은 메인 세션이 `../../../../common/cluster_run.sh` 안에�
   `cost/gin_ts2_mi` `ad0908442a8b687c242ba806a6f54069`, `mr/ff/gin_mr` `0b26cf49f4be1c57b220d88786613b45`, `mr/hold/gin_mr`
   `0bfac5da7ce90cd652320ef3dea5876e`. 링크는 동적이고 드라이버는 같은 트리의 라이브러리와만 짝을 이룬다(결함 D의 고침이 side table의
   머리 낱말과 칸을 바꿨다).
+- 다음 묶음 set `mi3`(빌드 i4, 2026-10-15; 고침 묶음 리뷰의 사전 등록 전 항목: 첫 깨짐 진단, 죽은 프로세스의 늦은 STORE_REQ에 답 없음, side table magic
+  "RSS5"; EXPERIMENT.md 12절의 i4 행): 계층 diff md5 `4dd2927a`(8 303줄), 연구 `F/out/mi_i4/libnccl.so.2.32.3` md5
+  `c89ce744312b1af057c85f6eac975baf`, 운영 `F/out/mip_i4/libnccl.so.2.32.3` md5 `12a0edeca10b491458a86471e9903e53`; 드라이버(설치 헤더 digest
+  `65fdf19b`, `MITREE=agent_mi_fix MIOUT=mi_i4 COSTOUT=cost_i4 MROUT=mr_i4 build_mi_test.sh mi nomacro cost mr`) `mi_i4/gin_mi`
+  `5887dfeacdde2ed96de0de9105e6eb88`, `mi_i4/gin_mi_nomacro` `5cd7246b79c7da5913e001dd1e88e4af`, `cost_i4/gin_ts2_mi`
+  `05093a694d01979b638121555dbdf637`, `mr_i4/ff/gin_mr` `2b18db83fb5c7e46333868a85523ddde`, `mr_i4/hold/gin_mr` `6debbb6db79ead05d040afc22726493a`.
+  i3 드라이버와 섞지 않는다(헤더가 다름; 배포의 md5 검사가 막음). 학습 hold(P2, T1, T2)는 시행마다 시작 문에서 rain BAR1을 읽는다(읽기만).
 - set `mi1`(pilot 1)의 i2 라이브러리와 드라이버(`agent_mi_int/`: `1b50d11b`, `a34db6e6`, `gin_mi` `a1b84951`, `gin_ts2_mi`
   `149cb366`)는 결함 A, C, D가 있어 다시 쓰지 않는다.
 - 셀마다의 빌드: 복원, 거절, 회귀 셀(P1, P2, P3, G1–G3, T1, T2, R1–R3)은 모두 연구 빌드 `lib/mi`(`cells_mi.json`의
@@ -72,9 +79,24 @@ python3 $T/score.py $R/<날짜>
 
 pilot 1(set `mi1`)의 배포는 같은 명령에서 `MITREE`를 빼고(기본 `agent_mi_int`) `MIOUT=mi1`, i2의 원본과 md5를 준 것이었다.
 
+다음 묶음 set `mi3`(빌드 i4)의 배포(같은 꼴; 드라이버의 cost와 gin_mr은 새 하위 폴더 `cost_i4`, `mr_i4`라 `COSTOUT`, `MROUT`을 준다):
+
+```
+SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad; F=$SCR/agent_mi_fix
+RS_SET=mi3 MITREE=agent_mi_fix MIOUT=mi_i4 COSTOUT=cost_i4 MROUT=mr_i4 \
+  MI_LIB_SRC=$F/out/mi_i4/libnccl.so.2.32.3 MIP_LIB_SRC=$F/out/mip_i4/libnccl.so.2.32.3 \
+  WANT_MI=c89ce744312b1af057c85f6eac975baf WANT_MIP=12a0edeca10b491458a86471e9903e53 \
+  WANT_GINMI=5887dfeacdde2ed96de0de9105e6eb88 WANT_GINMI_NOMACRO=5cd7246b79c7da5913e001dd1e88e4af \
+  WANT_COST_MI=05093a694d01979b638121555dbdf637 WANT_MR_FF=2b18db83fb5c7e46333868a85523ddde \
+  WANT_MR_HOLD=6debbb6db79ead05d040afc22726493a bash $T/deploy_mi.sh $F/deploy_check_mi3.txt
+grep -E "MISMATCH|CHANGED|not found" $F/deploy_check_mi3.txt     # 아무 줄도 없어야 함
+RS_SET=mi3 bash $T/chain_mi.sh $R/<날짜>_pilot3 P1 P2 P3 COSTPILOT-rain COSTPILOT-sunny   # pilot을 한 번 더 할 때(메인 세션이 정함)
+```
+
 실행 가능성 확인 2(손으로 하는 mirror 비용, `feas/cost_man.md`)의 드라이버는 `gin_ts2_mi`다. feas 폴더가
 `run_mf.sh`의 `cm_*` 셀과 `COSTMAN-*` hold로 돌리고 `summ_mf.py`가 읽는다. 배포는 `CM_SRC=$F/test/out/cost/gin_ts2_mi
-WANT_MFCM=ad0908442a8b687c242ba806a6f54069 bash feas/deploy_mf.sh <출력> mfcm`.
+WANT_MFCM=ad0908442a8b687c242ba806a6f54069 bash feas/deploy_mf.sh <출력> mfcm`(i4: `$F/test/out/cost_i4/gin_ts2_mi`,
+`05093a694d01979b638121555dbdf637`).
 
 ## pilot이 먼저 볼 것 (pilot 1 전에 적음; pilot 1, 2가 본 것은 EXPERIMENT.md 12절)
 
