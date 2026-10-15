@@ -33,6 +33,28 @@ Mirror columns (empty when the library does not emit the line yet):
   switches, rollbacks, restarts, third_slot, pool_max_bytes (max of max_live_bytes), pulls_sent, pulls_taken,
   broken_total, absorbed   the mirror summaries
   lane_broken, disarm_n, seg_restart_n   survivor "lane ... broken", DISARM ("rank P disarmed" or lane broken), restarts
+  lane_broken_designed, lane_broken_other, disarm_designed, disarm_other, broken_other   the designed buddy gap split
+                     out (../../EXPERIMENT.md 9.6; 2026-10-15, before the pre-registration, the review of the pilot 1
+                     fixes): when rank b dies, the rank e whose checkpoint and pool lanes live on b (b's buddy, the rank the
+                     hold lines name) is unprotected from b's death until e's next stable checkpoint after b's restore; the
+                     survivors' lanes toward e break and DISARM e in that window by design. A window per dead rank b (each
+                     death of a second-death cell):
+                       ward e     the buddy named by the hold lines
+                                  "GIN/RS: rank R: hold of rank b started: ... HOLDING to buddy rank e, ..." (gdakiHoldStart);
+                                  no such line (no hold, e.g. a rank not armed at the kill): no window for b
+                       start      the earliest of b's kill record ("GINRS killed rank=b" in _kill.out, "GINRS die rank=b"
+                                  in _kill.out or b's log) and those hold lines' receipt times
+                       end        e's own first "GIN/RS: rank e: checkpoint K stable at buddy rank b (...)" line after e's own
+                                  "GIN/RS: rank e: rank b restored as incarnation ..." line; e's log is rank e's, or the
+                                  revived spare's when e was the first death of the cell; no such line: the trial's end
+                     A survivor line "GIN/MI: rank R: lane to rank e broken (...): DISARM" (K_LANE_BROKEN) or "GIN/RS: rank R:
+                     rank e disarmed (...)" (DISARMED) with its receipt time in [start, end] of a window whose ward is e is
+                     designed; every other such line (toward another rank, or outside the window) is other.
+                       lane_broken_designed / lane_broken_other = lane_broken split; disarm_designed = lane_broken_designed
+                       + the designed "disarmed" lines, disarm_other = disarm_n - disarm_designed
+                       broken_other = broken_total - lane_broken_designed (empty when broken_total is): in the restore mode
+                       a summary's broken= is that process's count of "lane ... broken" lines (gdakiMiPoll's device breaks,
+                       gdakiMiLaneBroken's host breaks), summed over every process; a missing summary makes it negative
   inj_sent_step, inj_survivors, inj_from_n, gate_odd_ms_max   INJECTED
   ow_none_clean      data equal, no restore, input pause <= 10 ms, no segment restart (the no-fault cells)
 Second death (meta kill2_rank; mi4_kill2_kill3_ow, mi4_train_kill2_kill3; K1 = kill_rank, K2 = kill2_rank):
@@ -84,6 +106,9 @@ ARMED_SUBJ = re.compile(r"GIN/RS: rank \d+: rank (\d+) armed at its stable check
 VOID_OWN = re.compile(r"GIN/RS: rank (\d+): checkpoint (\d+) is void")
 GIVEN_UP = re.compile(r"GIN/RS: rank \d+: the restore of rank \d+ \(incarnation \d+\) is given up")
 DISARMED = re.compile(r"GIN/RS: rank \d+: rank (\d+) disarmed")
+# the hold start names the buddy that holds the dead rank's ward (gdakiHoldStart; "HOLDING to buddy rank e")
+HOLD_WARD = re.compile(r"GIN/RS: rank \d+: hold of rank (\d+) started: .*\bHOLDING to buddy rank (\d+)")
+STABLE_OWN = re.compile(r"GIN/RS: rank (\d+): checkpoint \d+ stable\b")
 SRC_CHANGED = re.compile(r"source buffer changed")
 KILLED = re.compile(r"GINRS (?:killed|die) rank=(\d+)")
 GSTEP = re.compile(r"GINRS step rank=\d+ step=(\d+) ")
@@ -94,7 +119,8 @@ MI_COLS = ["workload", "overwrite", "train", "ring", "mirror_env", "checksum_env
            "fetch_image_bytes", "fetch_segment_bytes", "fetch_bytes", "fetch_extents", "tcp_image_bytes",
            "tcp_segment_bytes", "store_d2h_us", "store_write_us", "store_slot_bytes", "switches", "rollbacks", "restarts",
            "third_slot", "pool_max_bytes", "pulls_sent", "pulls_taken", "broken_total", "absorbed", "lane_broken",
-           "disarm_n", "seg_restart_n", "inj_sent_step", "inj_survivors", "inj_from_n", "gate_odd_ms_max",
+           "disarm_n", "lane_broken_designed", "lane_broken_other", "disarm_designed", "disarm_other", "broken_other",
+           "seg_restart_n", "inj_sent_step", "inj_survivors", "inj_from_n", "gate_odd_ms_max",
            "ow_none_clean", "applied2", "restore_time_ms_1", "restore_time_ms_2", "restored_subjects", "stored_after",
            "void_between", "rearm_ok", "fetch2_from_buddy", "reimage_ok", "second_ok", "spare2_start_fail"]
 
@@ -146,6 +172,38 @@ def restore_time(subject, survlogs, t_from=0.0):
             return ""
         firsts.append(t)
     return round((max(firsts) - t_dead) * 1000.0, 1)
+
+
+def gap_windows(kr, kr2, logs, slog, slog2, kout):
+    """the designed buddy-gap windows (the head comment): [(ward e, start, end)] over the deaths kr and kr2; end is
+    float('inf') when e logged no stable checkpoint after b's restore"""
+    every = [x for r in sorted(logs) for x in logs[r]] + slog + slog2
+    out = []
+    for b in (kr, kr2):
+        if b < 0:
+            continue
+        holds = [(t, int(m.group(2))) for t, l in every if t is not None for m in [HOLD_WARD.search(l)]
+                 if m and int(m.group(1)) == b]
+        if not holds:
+            continue
+        kts = [t for t, l in kout + logs.get(b, []) if t is not None for m in [KILLED.search(l)]
+               if m and int(m.group(1)) == b]
+        start = min([t for t, _ in holds] + kts)
+        for e in sorted({w for _, w in holds}):
+            elog = slog if (e == kr and b == kr2) else logs.get(e, [])
+            t_rest = first_after(elog, RESTORED_SUBJ, b, start)
+            end = float("inf")
+            if t_rest is not None:
+                ts = [t for t, l in elog if t is not None and t > t_rest for m in [STABLE_OWN.search(l)]
+                      if m and int(m.group(1)) == e]
+                if ts:
+                    end = min(ts)
+            out.append((e, start, end))
+    return out
+
+
+def in_gap(wins, dest, t):
+    return t is not None and any(e == dest and s <= t <= z for e, s, z in wins)
 
 
 def mi_overlay(stem, base, meta):
@@ -281,6 +339,16 @@ def mi_overlay(stem, base, meta):
     out["lane_broken"] = sum(1 for _, _, txt, _ in ml if K_LANE_BROKEN.search(txt))
     out["seg_restart_n"] = sum(1 for _, _, txt, _ in ml if K_SEG_RESTART.search(txt))
     out["disarm_n"] = out["lane_broken"] + sum(1 for _, l in sl_all if DISARMED.search(l))
+    # the designed buddy gap (9.6; the head comment) apart from the other breaks and DISARMs
+    wins = gap_windows(kr, kr2, logs, slog, slog2, kout)
+    out["lane_broken_designed"] = sum(1 for t, _, txt, _ in ml for m in [K_LANE_BROKEN.search(txt)]
+                                      if m and in_gap(wins, int(m.group(1)), t))
+    dis_designed = sum(1 for t, l in sl_all for m in [DISARMED.search(l)] if m and in_gap(wins, int(m.group(1)), t))
+    out["lane_broken_other"] = out["lane_broken"] - out["lane_broken_designed"]
+    out["disarm_designed"] = out["lane_broken_designed"] + dis_designed
+    out["disarm_other"] = out["disarm_n"] - out["disarm_designed"]
+    bt = out.get("broken_total", "")
+    out["broken_other"] = bt - out["lane_broken_designed"] if bt != "" else ""
     v = kvnum(inj_sent[-1], "step") if inj_sent else None
     out["inj_sent_step"] = v if v is not None else ""
     v = kvnum(inj_sent[-1], "survivors") if inj_sent else None
