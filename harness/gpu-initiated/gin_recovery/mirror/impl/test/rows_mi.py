@@ -39,7 +39,11 @@ Mirror columns (empty when the library does not emit the line yet):
                      segment bytes over a socket: the summary prints a constant 0 too), empty when neither line exists
   store_d2h_us, store_write_us, store_slot_bytes   the last "checkpoint K stored at buddy" line
   switches, rollbacks, restarts, third_slot, pool_max_bytes (max of max_live_bytes), pulls_sent, pulls_taken,
-  broken_total, absorbed   the mirror summaries
+  broken_total, absorbed   the mirror summaries. pulls_sent: the CKPT_PULLs a process sent. pulls_taken: the process's
+                     takes that carried a new pull (the library's "counts the CKPT_PULLs taken"): the pulls of several
+                     senders that arrive before one take merge into it and a kept pull taken again is not counted again,
+                     so the sum is not the pulls received (mi4_train_none, four ranks summed: sent 847 vs taken 460 in
+                     pilot 2, 834 vs 458 in pilot 3; ln3 review nit 1). Reported only: no prediction reads it
   lane_broken, disarm_n, seg_restart_n   survivor "lane ... broken", DISARM ("rank P disarmed" or lane broken), restarts
   lane_broken_designed, lane_broken_other, disarm_designed, disarm_other, broken_other   the designed buddy gap split
                      out (../../EXPERIMENT.md 9.6; 2026-10-15, before the pre-registration, the review of the pilot 1
