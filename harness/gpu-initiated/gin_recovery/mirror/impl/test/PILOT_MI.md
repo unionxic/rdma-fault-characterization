@@ -6,8 +6,17 @@ DRAFT다. 실행은 메인 세션이 `../../../../common/cluster_run.sh` 안에�
 
 표시: `[측정]` 원자료에서 확인, `[미확인]` 아직 확인하지 않음, `[추론]` 해석.
 
-## 상태 (2026-10-15, pilot 4 뒤; set `mi5` 준비)
+## 상태 (2026-10-15 밤, pilot 5 뒤; set `mi6` 준비)
 
+- 다음 묶음 set `mi6`(빌드 ln4, 2026-10-15 밤): ln3에 멈춤 시한 거절의 사용자 결정(2026-10-15 22시 무렵)을 더함. 당겨진 체크포인트가 "no PAUSED from every
+  peer within NCCL_GIN_RESTORE_PAUSE_MS"로 거절되면 남긴 당기기를 다시 묻지 않고 그 시도에 쓴다(다른 거절은 ln3처럼 남김; [../../EXPERIMENT.md](../../EXPERIMENT.md)
+  9.3절, 18절). 호스트만 바뀜: 계층 diff md5 `dcd30859ac6db214e37475c527c37e2f`(9 114줄; 장치 파일 둘의 diff와 공유 헤더 일곱은 ln3과 같음), 연구
+  `F/out/mi_ln4/libnccl.so.2.32.3` md5 `c74e6ffb60b9ab8e959a7cfc89b7f55c`, 운영 `F/out/mip_ln4/libnccl.so.2.32.3` md5 `21b0be95b04f4ebeeafd0e6e92eecba0`;
+  드라이버(설치 헤더 digest `65fdf19b`; `MITREE=agent_mi_fix MIOUT=mi_ln4 COSTOUT=cost_ln4 MROUT=mr_ln4 build_mi_test.sh`의 mi, nomacro, cost, mr)
+  `mi_ln4/gin_mi` `4f7ba8bfb5596912f055480763412f59`, `mi_ln4/gin_mi_nomacro` `89878018aaf2c5c3e3cd792881b4f757`, `cost_ln4/gin_ts2_mi`
+  `f402e72a4534a5ce8dab8ddb5ba8d507`, `mr_ln4/ff/gin_mr` `9fcd8239982ebb5a6adfdfbd613232ad`, `mr_ln4/hold/gin_mr` `c5575a76b48d4a953c83bc6c6c0e54d7`.
+  pilot 6은 pilot 5와 같은 pilot hold P6(`mi4_pull` n 5, `mi4_kill3_ow` n 1, `mi4_train_kill3` n 1)이다. 지금 셀은 멈춤 시한 거절에 닿지 않으므로 `[추론]`
+  pilot 6은 바뀐 길이 아니라 ln3과 같은 판정(회귀 없음)을 본다.
 - 다음 묶음 set `mi5`(빌드 ln3, 2026-10-15 저녁): ln2에 구현 독립 리뷰(세션 스크래치 `lineage/IMPL_REVIEW.md`)와 pilot 4의 고침을 더함. 남긴 당기기의
   상한이 간격의 4분의 1에서 절반으로(pilot 4에서 죽은 rank의 짝이 맡은 rank가 "the checkpoint store is not ready"로 3–4번 거절되어 상한과의 여유가 한 번인
   시행이 둘; [../../EXPERIMENT.md](../../EXPERIMENT.md) 9.3절), 폴링 흡수는 바로 다음 segment에서만, 계보의 helper 밖 읽기 검사를 thread_local로,
@@ -117,6 +126,26 @@ python3 $T/rows_mi.py $R/<날짜>_pilot4 --out <다른 곳>/trials.csv   # linea
 pilot 4가 볼 것(9.9절): 모든 시행 `lineage_warn` 0; 셀마다 pilot 2와 같은 판정; "store request ... dropped" 줄은 죽은 프로세스 것만; mirror 끈 회귀(P5)의 줄 수와
 판정이 pilot 2와 같음; `mi4_pull` kill 시행은 `lane_broken_other` 0, `disarm_other` 0, kill이 당기기 창에 떨어진 시행에서는 "a pulled checkpoint at step N did
 not drain: the pull is kept for the next Step" 줄 뒤 INJECTED 뒤 1–2 Step 안에 그 rank의 체크포인트가 찍힘.
+
+다음 묶음 set `mi6`(빌드 ln4)의 배포와 pilot 6(같은 꼴; 2026-10-15 밤):
+
+```
+SCR=/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad; F=$SCR/agent_mi_fix
+RS_SET=mi6 MITREE=agent_mi_fix MIOUT=mi_ln4 COSTOUT=cost_ln4 MROUT=mr_ln4 \
+  MI_LIB_SRC=$F/out/mi_ln4/libnccl.so.2.32.3 MIP_LIB_SRC=$F/out/mip_ln4/libnccl.so.2.32.3 \
+  WANT_MI=c74e6ffb60b9ab8e959a7cfc89b7f55c WANT_MIP=21b0be95b04f4ebeeafd0e6e92eecba0 \
+  WANT_GINMI=4f7ba8bfb5596912f055480763412f59 WANT_GINMI_NOMACRO=89878018aaf2c5c3e3cd792881b4f757 \
+  WANT_COST_MI=f402e72a4534a5ce8dab8ddb5ba8d507 WANT_MR_FF=9fcd8239982ebb5a6adfdfbd613232ad \
+  WANT_MR_HOLD=c5575a76b48d4a953c83bc6c6c0e54d7 bash $T/deploy_mi.sh $F/deploy_check_mi6.txt
+grep -E "MISMATCH|CHANGED|not found" $F/deploy_check_mi6.txt     # 아무 줄도 없어야 함
+RS_SET=mi6 bash $T/chain_mi.sh $R/<날짜>_pilot6 P6   # cluster_run.sh 안에서
+python3 $T/rows_mi.py $R/<날짜>_pilot6 --out <다른 곳>/trials.csv   # 열을 읽기만(판정 아님)
+```
+
+pilot 6이 볼 것([../../EXPERIMENT.md](../../EXPERIMENT.md) 9.3절): pilot 5와 같은 판정(모든 시행 `lineage_warn` 0; `mi4_pull` kill 시행 `lane_broken_other` 0,
+`disarm_other` 0; "the pull is kept" 줄이 난 시행에서는 "the pull is spent" 없이 같은 rank가 그 체크포인트를 찍음; `mi4_kill3_ow`, `mi4_train_kill3`는
+`ow_data_equal` 1, `wait_held` 1, 공백 밖 깨짐 0). 새 줄 "was refused at the pause's bound"와 거절 글 "no PAUSED from every peer within
+NCCL_GIN_RESTORE_PAUSE_MS"는 0줄일 것이다 `[추론]`(나면 그 시행의 lane과 DISARM을 따로 본다). 시행 meta의 `lib_md5`는 `c74e6ffb`, `driver_md5`는 `4f7ba8bf`.
 
 다음 묶음 set `mi5`(빌드 ln3)의 배포와 pilot 5(같은 꼴; 2026-10-15 저녁):
 
