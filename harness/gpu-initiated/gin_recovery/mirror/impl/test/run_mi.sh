@@ -291,6 +291,16 @@ fi
 if [ "$SPARE2_ON" = 1 ]; then
   read -r T_READY2 _ <<< "$(wait_line "$WORK/spare_2nd.log" "GINRS spare_ready rank=$KILL2_RANK " 0 0 60)"; T_READY2=${T_READY2:-0}
 fi
+# BAR1_AT_GATE=1 (hold_mi.sh sets it for the training holds; the review of the pilot 1 fixes, item 4): rain's BAR1 and its
+# GPU's process count with every process of this trial up (the wanted spares ready or their waits over), before the start
+# gate opens; read only (nvidia-smi queries), on the stderr line and in the meta
+B1T=-; B1U=-; B1F=-; B1P=-
+if [ "${BAR1_AT_GATE:-0}" = 1 ]; then
+  read -r B1T B1U B1F _ <<< "$(nvidia-smi -q -d MEMORY 2>/dev/null | sed -n '/BAR1/,/Free/p' | \
+    sed -n 's/.*\(Total\|Used\|Free\) *: *\([0-9]*\) *MiB.*/\2/p' | tr '\n' ' ')"
+  B1P=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -c .)
+  echo "[$tag] rain BAR1 at the start gate: total=${B1T:--} used=${B1U:--} free=${B1F:--} MiB, rain GPU processes=${B1P:--} (spare ready ${T_READY}, second ${T_READY2})" >&2
+fi
 [ -n "$GATE" ] && touch "$GATE"   # open the start gate: every wanted spare is ready, or its waits ran out
 T_GATE=$(awk -v a="$T_READY" -v b="$T_READY2" 'BEGIN{printf "%.6f", (a > b ? a : b)}')
 ARM_WAIT=-; T_ARMED=0
@@ -378,6 +388,7 @@ die_switch=$([ "$KILL_KIND" = hook ] && echo NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT |
 spare_wait_ms=$SPARE_WAIT_MS spare=$SPARE_ON spare_wanted=$SPARE spare_kill_first=${SPARE_KILL_FIRST:-0} \
 spare_ready=$([ "$T_READY" != 0 ] && echo 1 || echo 0) spare2=$SPARE2_ON spare2_wanted=$SPARE2 \
 spare2_ready=$([ "$T_READY2" != 0 ] && echo 1 || echo 0) gate_rt=$T_GATE gpu_apps_before=$GPU_APPS end_grace_ms=$END_GRACE_MS \
+bar1_gate_total_mib=${B1T:--} bar1_gate_used_mib=${B1U:--} bar1_gate_free_mib=${B1F:--} gpu_procs_gate_rain=${B1P:--} \
 spare_addr_set=$([ -n "$SADDR_ENV" ] && echo 1 || echo 0) spare2_addr_set=$([ -n "$SADDR2_ENV" ] && echo 1 || echo 0) \
 mem_avail_rain=$AVAIL_RAIN mem_avail_sunny=$AVAIL_SUNNY mem_need_rain=$NEED_RAIN mem_need_sunny=$NEED_SUNNY \
 pin_mb_per_proc=$PIN_PER trial=$TRIAL extra=$(echo ${EXTRA_ENV:-} | tr ' ' '+') \
