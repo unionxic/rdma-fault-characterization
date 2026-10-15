@@ -69,9 +69,18 @@ Mirror columns (empty when the library does not emit the line yet):
                      any log of the trial (every rank's, both spares') carry "GIN/LN: " (a BAD lineage, an unexpected
                      FUTURE incarnation, the REJOIN_ACK cell write finding another value, a record without an incarnation
                      left at a REJOIN, an activation answer or a spare registration of another incarnation). 0 in a correct
-                     run; empty never (a library without the lineage writes none: 0)
+                     run; empty never (a library without the lineage writes none: 0). The gin-remaining runner's rows
+                     (reg/, rows_rs.reg_row) get the same count over the trial's logs <stem>_*.log (2026-10-15, review
+                     nit N3: before, their column was empty)
+  post_activate_ms   reported only (2026-10-15, the restore time's two modes, ../../EXPERIMENT.md 3 and 12): the buddy's
+                     "every survivor holds rank P: its spare activated" line naming the dead rank (the first at or after
+                     its first "judged dead" line) -> the last survivor's first "restore round with rank P published"
+                     line (restore_time_ms's end); one death: the dead rank and every other rank; empty without either line.
+                     restore_time_ms = (judged dead -> that activation line: detection, hold, drain and the activation
+                     gate's wait, gdakiRsActExamine's 'later' answers: activate_ms, later_n, later_ms) + post_activate_ms
 Second death (meta kill2_rank; mi4_kill2_kill3_ow, mi4_train_kill2_kill3; K1 = kill_rank, K2 = kill2_rank):
   applied2           both kills recorded (rc 137 or a kill/die line)
+  post_activate_ms_1, post_activate_ms_2   per death: post_activate_ms with that death's survivors (reported only)
   restore_time_ms_1, restore_time_ms_2   per death: its first "judged dead" line naming the rank -> the last of that
                      death's survivors' "restore round with rank R published" lines after it (death 2's survivors include
                      the revived K1)
@@ -139,7 +148,7 @@ MI_COLS = ["workload", "overwrite", "train", "ring", "mirror_env", "checksum_env
            "seg_restart_n", "inj_sent_step", "inj_survivors", "inj_from_n", "gate_odd_ms_max",
            "ow_none_clean", "applied2", "restore_time_ms_1", "restore_time_ms_2", "restored_subjects", "stored_after",
            "void_between", "rearm_ok", "fetch2_from_buddy", "reimage_ok", "second_ok", "spare2_start_fail",
-           "lineage_warn"]
+           "lineage_warn", "post_activate_ms", "post_activate_ms_1", "post_activate_ms_2"]
 
 
 def num(d, k, default=None):
@@ -174,21 +183,48 @@ def first_after(lines, rx, subj, t0):
     return min(ts) if ts else None
 
 
-def restore_time(subject, survlogs, t_from=0.0):
-    """ms from the first "judged dead" line naming subject (at or after t_from) to the last survivor's first "restore round
-    with rank subject published" line after it; '' when a survivor has none"""
+def restore_span(subject, survlogs, t_from=0.0):
+    """(t_dead, t_end): the first "judged dead" line naming subject (at or after t_from) and the last survivor's first
+    "restore round with rank subject published" line after it; None when either is missing"""
     td = [t for lg in survlogs for t, l in lg if t is not None and t >= t_from for m in [DEAD_SUBJ.search(l)]
           if m and int(m.group(1)) == subject]
     if not td or not survlogs:
-        return ""
+        return None
     t_dead = min(td)
     firsts = []
     for lg in survlogs:
         t = first_after(lg, PUB_SUBJ, subject, t_dead)
         if t is None:
-            return ""
+            return None
         firsts.append(t)
-    return round((max(firsts) - t_dead) * 1000.0, 1)
+    return t_dead, max(firsts)
+
+
+def restore_time(subject, survlogs, t_from=0.0):
+    """ms from the first "judged dead" line naming subject (at or after t_from) to the last survivor's first "restore round
+    with rank subject published" line after it; '' when a survivor has none"""
+    sp = restore_span(subject, survlogs, t_from)
+    return "" if sp is None else round((sp[1] - sp[0]) * 1000.0, 1)
+
+
+def post_activate(subject, survlogs, t_from=0.0):
+    """ms from the buddy's activation line for subject (rows_rs.ACTIVATED, the first at or after subject's first "judged
+    dead" line) to restore_span's end (the head comment, post_activate_ms); '' when either is missing"""
+    sp = restore_span(subject, survlogs, t_from)
+    if sp is None:
+        return ""
+    ta = [t for lg in survlogs for t, l in lg if t is not None and t >= sp[0] for m in [rows_rs.ACTIVATED.search(l)]
+          if m and int(m.group(1)) == subject]
+    return round((sp[1] - min(ta)) * 1000.0, 1) if ta else ""
+
+
+def reg_lineage_warn(stem):
+    """the "GIN/LN: " lines in every log of a gin-remaining runner's trial (<stem>_*.log; lineage_warn of a reg row)"""
+    n = 0
+    for p in sorted(glob.glob(stem + "_*.log")):
+        with open(p, encoding="utf-8", errors="replace") as f:
+            n += sum(1 for l in f if LN_HEAD.search(l))
+    return n
 
 
 def gap_windows(kr, kr2, logs, slog, slog2, kout):
@@ -394,6 +430,8 @@ def mi_overlay(stem, base, meta):
     init_bad2 = any((num(sk2, k, 0) or 0) != 0 for k in ("init_rc", "reg_rc", "devcomm_rc"))
     out["spare2_start_fail"] = int(meta.get("spare2") != "1" or meta.get("spare2_ready") != "1" or init_bad2) \
         if wanted2 else 0
+    if kr >= 0 and kr2 < 0:  # one death: restore_time_ms's survivors (every rank but the dead one)
+        out["post_activate_ms"] = post_activate(kr, [logs[r] for r in ranks if r != kr])
     if kr >= 0 and kr2 >= 0:
         died = set()
         for r in (kr, kr2):
@@ -407,6 +445,8 @@ def mi_overlay(stem, base, meta):
         surv2 = [logs[r] for r in live] + ([slog] if slog else [])  # death 2: the live ranks and the revived K1
         out["restore_time_ms_1"] = restore_time(kr, surv1)
         out["restore_time_ms_2"] = restore_time(kr2, surv2)
+        out["post_activate_ms_1"] = post_activate(kr, surv1)
+        out["post_activate_ms_2"] = post_activate(kr2, surv2)
         subs = {int(m.group(1)) for _, l in [x for r in ranks for x in logs[r]] + slog + slog2
                 for m in [RESTORED_SUBJ.search(l)] if m}
         out["restored_subjects"] = len(subs & {kr, kr2})
@@ -504,6 +544,7 @@ def all_rows(R):
             elif runner == "mrr" or sub.startswith("reg"):
                 r = rows_rs.reg_row(stem, sub)
                 r["key"] = "%s@%s" % (r["cell"], r["build"])
+                r["lineage_warn"] = reg_lineage_warn(stem)
             else:
                 r = rows_rs.rs_row(stem, sub)
                 r.update(mi_overlay(stem, r, m))
