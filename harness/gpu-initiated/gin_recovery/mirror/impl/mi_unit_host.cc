@@ -36,6 +36,9 @@
 //      (the pilot's trace), so the model sees the defect; the poll across a switch (an earlier burst's tail up to the
 //      opening value is absorbed, a burst no read saw still DISARMs, a break after the opening DISARMs); the rollback's
 //      second pull (gdakiMiPollRolledBack: once, at (pullPct + 100) / 2).
+//  11. the pause's bound (user decision 2026-10-15, build ln4): a pulled checkpoint refused "no PAUSED from every peer
+//      within NCCL_GIN_RESTORE_PAUSE_MS" spends the pull at that attempt (gdakiMiPullSpentByRefusal), the quarter back-off
+//      and the sender's once per segment as before; every other refusal keeps it (the same model as 10).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -1058,12 +1061,15 @@ static void testArmableAndMeasure() {
 // ---- 10. pilot 3's defect E ----
 // d's lane from one sender over steps 124..150: returns the first step whose put overflowed (0: none); *maxFill: the most
 // puts the lane held. refused: the steps whose checkpoint does not drain. fixed: the kept pull (else the old rule).
+// atBound (scene 11, ln4): steps refused at the pause's bound (refused as well; the other refused steps carry "a restore
+// runs" or `otherWhy`); *triedAt: the steps that asked for a checkpoint.
 // A model: the loop below writes again how ncclGinRestoreStep wires gdakiCkptDue, the retry step, gdakiMiPullConsumes and
 // gdakiMiPullAfterStep (the pure rules are the library's); a mistake in that wiring itself is not caught here (pilot 4
 // showed the wiring at work: the kept pull, "a restore runs" and "the checkpoint store is not ready"; review nit N7).
 // The BUSY refusal's rollback and its second pull (1b) are not in this model (1b has its own case at the end).
 static uint64_t pullModel(bool fixed, const std::vector<uint64_t>& refused, uint64_t* maxFill, uint64_t* drainedAt,
-                          int* attempts = nullptr) {
+                          int* attempts = nullptr, const std::vector<uint64_t>* atBound = nullptr,
+                          std::vector<uint64_t>* triedAt = nullptr, const char* otherWhy = "a restore runs") {
   const uint64_t L = 12, put = 4096, interval = 20;
   int kept = 0, tries = 0;
   bool haveLast = true, haveRetry = false, pullFlag = false;
@@ -1074,7 +1080,10 @@ static uint64_t pullModel(bool fixed, const std::vector<uint64_t>& refused, uint
   gdakiMiPollStep(mem, seg, 0, 0, L * put, 50, &dis, &pull, &pct);  // the switch at checkpoint 123's pause: baseline
   *maxFill = 0;
   *drainedAt = 0;
+  if (triedAt) triedAt->clear();
   for (uint64_t s = 124; s <= 150; s++) {
+    const bool bound = atBound && std::find(atBound->begin(), atBound->end(), s) != atBound->end();
+    const char* why = nullptr;  // the helper's reqWhy of this Step's take (nullptr: not asked or drained)
     // d's ncclGinRestoreStep(s)
     bool due = gdakiCkptDue(s, haveLast, lastCkpt, interval) && (!haveRetry || s >= retryAt);
     const bool retryOk = !haveRetry || s >= retryAt;
@@ -1086,7 +1095,9 @@ static uint64_t pullModel(bool fixed, const std::vector<uint64_t>& refused, uint
     due = due || pulled;
     if (due) {
       tries++;
-      if (std::find(refused.begin(), refused.end(), s) != refused.end()) {
+      if (triedAt) triedAt->push_back(s);
+      if (bound || std::find(refused.begin(), refused.end(), s) != refused.end()) {
+        why = bound ? GDAKI_CKPT_WHY_PAUSE_BOUND : otherWhy;
         haveRetry = true;
         retryAt = s + interval / 4;
       } else {  // drained: the segment switches (fill 0), the pull of the old one is spent
@@ -1101,6 +1112,8 @@ static uint64_t pullModel(bool fixed, const std::vector<uint64_t>& refused, uint
     if (fixed && pulled) {  // ncclGinRestoreStep and gdakiMiPullAfterStep
       if (!gdakiMiPullKept(true, haveLast, lastCkpt, s)) {
         kept = 0;
+      } else if (gdakiMiPullSpentByRefusal(due, why)) {
+        kept = 0;  // refused at the pause's bound: spent at this attempt (ln4; the quarter back-off stays)
       } else if (!gdakiMiPullKeepOk(kept, (int64_t)interval)) {
         kept = 0;  // spent after half an interval of Steps more (ln3; the quarter back-off stays)
       } else {
@@ -1225,6 +1238,59 @@ static void testDefectE() {
   }
 }
 
+// ---- 11. the pause's bound spends the pull (user decision 2026-10-15, build ln4) ----
+static void testPauseBound() {
+  const char* W = GDAKI_CKPT_WHY_PAUSE_BOUND;
+  // the text is the helper's abort text as before ln4 (the macro only names it)
+  CHECK(strcmp(W, "no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS") == 0);
+  // the rule: only this Step's own take refused at the pause's bound
+  CHECK(gdakiMiPullSpentByRefusal(true, W));
+  CHECK(!gdakiMiPullSpentByRefusal(false, W));  // a reqWhy left from an earlier Step's take (this Step did not ask)
+  const char* keep[] = {"a restore runs", "a fault already reached the application", "replayed messages are still held back",
+                        "the NIC copy path is off", "no buddy", "the checkpoint store is not ready",
+                        "the previous upload still runs", "CKPT_PAUSE could not be sent to rank 2",
+                        "the application stopped waiting", "a peer answered BUSY", "a peer's pause ended early",
+                        "the application's copy did not end in time", "", "no PAUSED from every peer",
+                        "no PAUSED from every peer within NCCL_GIN_RESTORE_PAUSE_MS ", nullptr};
+  for (const char* k : keep) CHECK(!gdakiMiPullSpentByRefusal(true, k));
+  uint64_t maxFill = 0, drained = 0;
+  int tries = 0;
+  std::vector<uint64_t> at;
+  // (the model runs to step 150: after a drained checkpoint the next segment's pulls are attempts too)
+  // the pilot's Step(130) refused at the pause's bound instead of "a restore runs": the pull is spent there; no pull is
+  // left for the back-off's 135 (the sender pulls once per segment), so the next attempt is the interval's 143 and the
+  // lane overflows at 136 (the designed last resort: d is DISARMed), the trace of the rule before defect E's fix; the
+  // same Step refused "a restore runs" keeps the pull and drains at 131
+  const std::vector<uint64_t> b130 = {130};
+  CHECK(pullModel(true, {}, &maxFill, &drained, &tries, &b130, &at) == 136);
+  CHECK(drained == 143 && at == std::vector<uint64_t>({130, 143, 149}));
+  std::vector<uint64_t> atOld;
+  CHECK(pullModel(false, {130}, &maxFill, &drained, &tries, nullptr, &atOld) == 136 && drained == 143 && atOld == at);
+  CHECK(pullModel(true, {130}, &maxFill, &drained, &tries, nullptr, &at) == 0);
+  CHECK(drained == 131 && maxFill == 7 && at == std::vector<uint64_t>({130, 131, 137, 143, 149}));
+  // the other refusals keep it as in ln3: BUSY twice, the store not ready four times
+  CHECK(pullModel(true, {130, 131}, &maxFill, &drained, &tries, nullptr, &at, "a peer answered BUSY") == 0 &&
+        drained == 132 && maxFill == 8);
+  CHECK(pullModel(true, {130, 131, 132, 133}, &maxFill, &drained, &tries, nullptr, &at,
+                  "the checkpoint store is not ready") == 0 && drained == 134 && maxFill == 10);
+  // kept first, then the pause's bound: kept at 130 (the store not ready), spent at 131, the next attempt at 143
+  const std::vector<uint64_t> b131 = {131};
+  CHECK(pullModel(true, {130}, &maxFill, &drained, &tries, &b131, &at, "the checkpoint store is not ready") == 136);
+  CHECK(drained == 143 && at == std::vector<uint64_t>({130, 131, 143, 149}));
+  // kept four times, the fifth attempt refused at the bound: spent there (attempt 5, not the half-interval bound)
+  const std::vector<uint64_t> b134 = {134};
+  (void)pullModel(true, {130, 131, 132, 133}, &maxFill, &drained, &tries, &b134, &at, "the checkpoint store is not ready");
+  CHECK(drained == 143 && at == std::vector<uint64_t>({130, 131, 132, 133, 134, 143, 149}));
+  // the pause's bound at every Step from 130: attempts 130 (the pull spent), then the interval's 143 and the quarter
+  // back-off's 148 only; ln3 kept the pull and asked at 130-140, 145 and 150 (13 attempts of up to the bound each)
+  std::vector<uint64_t> always;
+  for (uint64_t s = 130; s <= 150; s++) always.push_back(s);
+  (void)pullModel(true, {}, &maxFill, &drained, &tries, &always, &at);
+  CHECK(drained == 0 && tries == 3 && at == std::vector<uint64_t>({130, 143, 148}));
+  (void)pullModel(true, always, &maxFill, &drained, &tries, nullptr, &at);  // the same refusal, "a restore runs": kept
+  CHECK(drained == 0 && tries == 13);
+}
+
 int main() {
   testLocalMirrorOff();
   testLocalMirrorOn();
@@ -1243,6 +1309,7 @@ int main() {
   testSetupSymmetry();
   testSmallRules();
   testDefectE();
-  printf("mi_unit_host: %ld checks, %ld failed (17 test functions)\n", gChecks, gFailed);
+  testPauseBound();
+  printf("mi_unit_host: %ld checks, %ld failed (18 test functions)\n", gChecks, gFailed);
   return gFailed == 0 ? 0 : 1;
 }
