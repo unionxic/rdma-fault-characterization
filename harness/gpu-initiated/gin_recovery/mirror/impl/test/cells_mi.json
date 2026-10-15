@@ -186,7 +186,7 @@
      "MIRROR_LANE": "2048",
      "KILL_RANK": "3",
      "SPARE": "1",
-     "SPARE_WAIT_MS": "30000"
+     "SPARE_WAIT_MS": "15000"
     }
    },
    {
@@ -620,7 +620,7 @@
      "MIRROR_LANE": "2048",
      "KILL_RANK": "3",
      "SPARE": "1",
-     "SPARE_WAIT_MS": "30000"
+     "SPARE_WAIT_MS": "15000"
     }
    }
   ],
