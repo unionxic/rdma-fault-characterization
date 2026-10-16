@@ -1,6 +1,6 @@
 --- a/rs_ctrl_api.h
 +++ b/rs_ctrl_api.h
-@@ -941,6 +941,40 @@
+@@ -941,6 +941,59 @@
  static_assert(sizeof(struct gdakiCtrlXferHdr) == 64, "an outbox transfer's head is 64 bytes");
  // ---- [2] ring (end) ----
  // ---- [3] launcher: the rank side of the launcher (begin) ----
@@ -26,6 +26,10 @@
 +  uint32_t rsv;
 +};
 +static_assert(sizeof(struct gdakiCtrlLaSpareReg) == 32, "the launcher-path registration fits gdakiStoreReqSpare::spareAddr");
++// The rdma build's outer magic of that tail (REVIEW_P3 고칠 것 10): ln4's GDAKI_STORE_SPARE_MAGIC ("GRSP") stays the tcp
++// build's, so a tcp buddy reads this tail as "no registration" and an rdma buddy takes only this one. EXPERIMENT.md 9.8
++// asks for a versioned copy of rs_store_api.h; this build keeps STORE_REQ's layout and changes the magic instead.
++#define GDAKI_CTRL_LA_STORE_SPARE_MAGIC 0x4c505247u  // "GRPL"
 +// The buddy's check of a ward's registration: launcher path, the ward and the dead incarnation, the path flag.
 +static inline bool gdakiCtrlLaSpareRegOk(const struct gdakiCtrlLaSpareReg& g, int rank, uint32_t dead) {
 +  return g.magic == GDAKI_CTRL_LA_SPAREREG_MAGIC && g.version == GDAKI_CTRL_LA_SPAREREG_VERSION &&
@@ -38,10 +42,25 @@
 +static inline bool gdakiCtrlLaActFencedOk(uint64_t reserved, uint32_t newInc) {
 +  return newInc != 0 && gdakiCtrlFencedIs(reserved, newInc - 1u);
 +}
++// The all-gather's launcher field of one rank (design v3 5.1's "launcher UD 끝점과 Q_Key"; REVIEW_P3 막는 문제 2): what the
++// node's launcher answered to a nonce-free INFO on its Unix socket before the all-gather (its node, UD endpoint, Q_Key,
++// page; these are the launcher's, static for its life). REGISTER carries the context's nonce, which exists only after the
++// all-gather: it stays after it (gdakiTsStart). magic 0: this rank has no launcher path (no answer, or no restore asked).
++#define GDAKI_CTRL_LA_AG_MAGIC 0x41414c47u  // "GLAA"
++struct gdakiCtrlLaAgInfo {
++  uint32_t magic;                // GDAKI_CTRL_LA_AG_MAGIC, or 0
++  uint32_t node;                 // the launcher's node number
++  uint32_t qkey;                 // its UD QP's Q_Key
++  uint32_t rsv;
++  struct gdakiCtrlEndpoint ud;   // its UD QP (launcher_msg.h's glEp, 40 B)
++  uint64_t pageAddr;             // its state page (glRegion: addr, rkey, len)
++  uint32_t pageRkey, pageLen;
++};
++static_assert(sizeof(struct gdakiCtrlLaAgInfo) == 72, "the all-gather's launcher field is 72 bytes");
  // ---- [3] launcher (end) ----
  #endif  // !NCCL_GIN_CTRL_TCP
  // ---- gin-control: ctrl API (end) ----
-@@ -1060,6 +1094,35 @@
+@@ -1060,6 +1113,58 @@
  // ---- [2] ring: entry points (begin) ----
  // ---- [2] ring (end) ----
  // ---- [3] launcher: entry points (begin) ----
@@ -49,29 +68,52 @@
 +// region "gin-control (launcher)".
 +struct gdakiRsActivate;  // the host file
 +struct gdakiMiActBlob;   // the host file
-+// gdakiTsStart (setup thread): REGISTER (a rank) or SPARE_HELLO (a spare) on the node's launcher socket.
++// gdakiTsSetup before its all-gather (the context's thread): the nonce-free INFO on the node's launcher socket (its node,
++// UD endpoint, Q_Key, page; REVIEW_P3 막는 문제 2). Only a process that asks for the restore. Bounded (200 ms).
++static void gdakiCtrlLauncherQuery(struct gdakiRecHost* r);
++// [2a-2 calls it] this rank's all-gather field (gdakiTsAddr), from that INFO's answer (magic 0: none).
++static void gdakiCtrlLauncherAgInfo(struct gdakiRecHost* r, struct gdakiCtrlLaAgInfo* out);
++// [2a-2 calls it] after the all-gather: every rank's field (byRank[0..nranks)): the communicator's launchers (in node
++// order), each rank's node launcher, their count (the arming's "every launcher paired").
++static void gdakiCtrlLauncherAgTake(struct gdakiRecHost* r, const struct gdakiCtrlLaAgInfo* byRank, int nranks);
++// The judgement's hook (the hold start, before gdakiTsQuiesce and gdakiCtrlPeerToErr move any QP toward `peer`): the
++// window line's snapshot (16 cells of 64 B per window, signal and counter table; REVIEW_P3 막는 문제 1).
++static void gdakiCtrlOnJudgement(struct gdakiRecHost* r, int peer, uint32_t inc);
++// The judgement table's L inputs of (peer, inc) for the watch thread (no lock; REVIEW_P3 고칠 것 1): LEFT, the end
++// (EXITED or FENCED) and the registration word ALIVE / LEFT of that incarnation, as the launcher link took them.
++static void gdakiCtrlLaLInputs(struct gdakiRecHost* r, int peer, uint32_t inc, bool* left, bool* ended, bool* regAlive,
++                               bool* regLeft);
++// The PAUSED armable bit's launcher part (REVIEW_P3 고칠 것 2): this rank, the ward's buddy, is paired with the ward's
++// node launcher (a revived buddy: again, as its new incarnation); true when this rank is not the ward's buddy.
++static bool gdakiCtrlLaWardArmOk(struct gdakiRecHost* r, int ward);
++// gdakiTsStart (setup thread, after the all-gather: the nonce): REGISTER (a rank) or SPARE_HELLO (a spare).
 +static void gdakiCtrlLauncherSetup(struct gdakiRecHost* r);
 +// Before the witness's BYE (the communicator ends): LEAVING on the registering connection.
 +static void gdakiCtrlLauncherLeaving(struct gdakiRecHost* r);
 +// [2a-2 calls it] one envelope that came from a launcher (from = GDAKI_CTRL_FROM_LAUNCHER | node): a PAIR or PAIR_ACK on
 +// the UD QP (ud), a launcher message on that launcher's record QP (else); `body` is the 256 B glMsg.
 +static void gdakiCtrlLauncherOnEnvelope(struct gdakiRecHost* r, const struct gdakiCtrlEnv* e, const void* body, bool ud);
-+// The rdma build's haveSpare (the arming's second half): launcher_msg.h's gl_path_exists for this incarnation.
-+static bool gdakiCtrlLaHaveSpare(struct gdakiRecHost* r);
-+// STORE_REQ's spare registration (the 32 B of gdakiStoreReqSpare::spareAddr): struct gdakiCtrlLaSpareReg.
-+static void gdakiCtrlLaSpareRegFill(struct gdakiRecHost* r, void* out32);
++struct gdakiStoreReqSpare;  // the host file (impl/rs_store_api.h)
++// STORE_REQ's tail (REVIEW_P3 고칠 것 3, 10): the outer magic GDAKI_CTRL_LA_STORE_SPARE_MAGIC, the registration
++// (struct gdakiCtrlLaSpareReg in spareAddr) and haveSpare from one gl_path_exists; that value is kept for CKPT_STABLE.
++static void gdakiCtrlLaStoreReqTail(struct gdakiRecHost* r, struct gdakiStoreReqSpare* sp);
++// CKPT_STABLE's armable bit (the rdma build's `allArmable && haveSpare`): the path now and the registration the buddy
++// holds (the last STORE_REQ's flag for this incarnation); a path the buddy's registration lacks asks a new STORE_REQ.
++static bool gdakiCtrlLaStableArmable(struct gdakiRecHost* r, bool allArmable);
 +// The buddy's decision: the ward's registration is the launcher path's for (peer, dead); false with why.
 +static bool gdakiCtrlLaSpareRegCheck(struct gdakiRecHost* r, const void* reg32, int peer, uint32_t dead, char* why,
 +                                     size_t whyLen);
-+// The buddy's fence (design v3 4.4 3): FENCE to the dead rank's launcher once all HOLDINGs are in; 1 fenced, 0 not yet,
-+// -1 fall back (FENCE_NAK, no launcher path, the launcher lost). *word: the fence word of `peer`.
-+static int gdakiCtrlLaFenceStep(struct gdakiRecHost* r, int peer, uint32_t dead, uint64_t* word);
++// The buddy's fence (design v3 4.4 3): FENCE to the dead rank's launcher once all HOLDINGs are in; 1 fenced (GO), 0 not
++// yet, -1 fall back with why (FENCE_NAK, no launcher path, the launcher lost). *word: the fence word of `peer`.
++static int gdakiCtrlLaFenceStep(struct gdakiRecHost* r, int peer, uint32_t dead, uint64_t* word, char* why, size_t whyLen);
 +// The buddy's activation through the launcher (one helper step; gdakiHoldActivateSend's rdma body).
 +static void gdakiCtrlLaActivateSend(struct gdakiRecHost* r, int peer, const struct gdakiRsActivate& a, uint32_t dead,
 +                                    double now);
 +// The spare: READY, then the ACTIVATE bytes from its launcher; *actFd the FETCH talk's end (mirror or store on), or -1.
 +static ncclResult_t gdakiCtrlLaSpareWait(struct gdakiRecHost* r, int waitMs, bool mi, struct gdakiRsActivate* act,
 +                                         int* actFd, struct gdakiMiActBlob* blob);
++// The spare's replay or its Resume failed (ncclGinRestoreResume, gdakiRsSpareResume): REPLAY_FAILED with why, once.
++static void gdakiCtrlLaSpareFailed(struct gdakiRecHost* r, const char* why);
 +// The spare after its FETCH (ok) or a failure: the relay ends; ok: REGISTER of the new incarnation (the revived rank).
 +static void gdakiCtrlLaSpareDone(struct gdakiRecHost* r, bool ok);
  // ---- [3] launcher (end) ----

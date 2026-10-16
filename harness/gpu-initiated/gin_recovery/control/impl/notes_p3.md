@@ -158,3 +158,108 @@ fallback 까닭(`gdakiHoldFallback`의 글): `the peer's spare is not READY 1000
 
 - 11절: `- [ ] 3단계(rank 쪽 launcher: 등록과 LEAVING, 무장 = gl_path_exists, STORE_REQ 꼬리의 launcher 길, 펜스(FENCE, FENCED, 펜스 낱말, 줄 셋), FENCED만 요구하는 관문, launcher 중계 활성화(LATER 한 번, 한도 셋, ABORT), 예비 프로세스의 READY와 FETCH 중계, 되살린 rank의 다시 등록과 다시 무장): 빌드와 CPU 시험까지 — 2026-10-17, impl/gc_layer_p3.diff cca4bb18(int+fix12+2b 커밋 위). launcher와의 RNIC 길(짝 맺기 전송, launcher 봉투 받기, outbox, 페이지 끌어 읽기)은 TODO(2a-2); 되살린 짝의 STORE_ACK 비트는 남음`
 - 12절: `| 2026-10-17 | 3단계 rank 쪽 구현(실행 없음, CPU와 빌드만). int+fix12+2b 커밋 위의 impl/gc_layer_p3.diff(cca4bb18, 2 407줄, 호스트 파일만, 장치 코드 0줄): launcher 헤더를 바이트 그대로 붙이고, Unix 소켓 등록(자기 pidfd, CLOEXEC, fork 때 닫음), LEAVING, 무장 = gl_path_exists, STORE_REQ 꼬리의 launcher 길 등록, 펜스 낱말을 launcher link가 쥐고 rdma 관문은 /proc 없이 FENCED만, 짝의 FENCE와 줄 셋, launcher 중계 활성화(LATER 한 번, LATER 뒤 1 000 ms, 첫 답 1 000 ms, 박동 1 000 ms, ABORT와 fallback), 예비 프로세스의 READY와 기록 검사(FENCED를 싣는 기록)와 FETCH 중계, 되살린 rank의 다시 등록. 헤더 요청은 impl/rs_ctrl_api_p3.diff. gc, gcp, gct, gctp 빌드됨(경고 0). tcp 전처리는 gct, gctp가 ln4와 hunk 0, gctc는 RST 간격 2 hunk만 [측정]. 단위 시험 두 빌드 통과, gc_unit_p3 11 장면 3 255 검사 실패 0(launcher 상태 기계와 실제 자식 프로세스) [측정, n 1]. 장치 동일성: 프로그램 16/16, 장치 객체는 다시 빌드되지 않은 사본(gcp, gctp의 device_glue.o 하나는 병렬 비교 출력이 달랐으나 바이트 같고 다시 뽑은 SASS 같음) [측정]. launcher와의 RNIC 길은 TODO(2a-2)라 이 빌드는 아직 무장되지 않음. 클러스터 실행 없음 | impl/notes_p3.md, 스크래치 agent_gc_p3/logs_p3/ |`
+
+## 고침 (REVIEW_P3, 2026-10-17)
+
+단계 목록:
+
+1. 등록 차례(막는 문제 2): all-gather 앞 nonce 없는 INFO, 뒤 REGISTER, all-gather 칸 API
+2. 창 줄(막는 문제 1): 판정 때(시작 정지 앞) window 칸 스냅숏, 펜스 뒤나 hold 끝에 견줌, 움직이는 칸 장면
+3. 판정 표 L 입력(고칠 것 1)
+4. 되살린 짝의 무장 비트(고칠 것 2)
+5. `haveSpare` 한 번(고칠 것 3), STORE_REQ 꼬리 바깥 표지(고칠 것 10)
+6. 중계 경쟁과 끝맺음(고칠 것 4, 5), REPLAY_FAILED(고칠 것 9)
+7. 호스트 몫을 link로 옮겨 장면으로 시험(고칠 것 6), nit
+8. 시험 쪽 답(고칠 것 8), 확인 전부(빌드 넷, `pre`, `sites`, `unit`, `ident` 다시, `diff`, `info`)
+
+끝낸 단계(한 단계 한 줄):
+
+- 0: 작업 트리를 "gin-control p3 (gc_layer_p3.diff cca4bb18)"(284c03d)로 커밋, `build_gc_p3.sh` 머리 커밋 이름과 `diff` 바탕(e3faf02), `sum1`의 `cuobjdump` 실패 줄; `syn` 통과(`logs_p3/fx0_syn.log`)
+- 1: INFO(rank 쪽, TODO(launcher)), `gdakiCtrlLaAgInfo` 72 B, `gdakiCtrlLauncherQuery`(all-gather 앞), `AgInfo`/`AgTake`(2a-2가 부름), REGISTER는 `gdakiTsStart` 그대로; `repaste`, `syn` 통과, `unitp3` 12 장면 실패 0(`fx1_*.log`)
+- 2: 칸 = window(그 collComm), signal 표, counter 표의 64 B 칸 영역마다 16개(FNV-1a); 스냅숏은 `gdakiCtrlOnJudgement`(hold 시작의 "is held" 줄 뒤, 문 읽기와 `gdakiTsQuiesce` 앞, rdma만 한 줄), 견줌은 낱말이 설 때(FENCED "fence", EXITED "judgement") 또는 낱말 없이 FALLBACK/CANCELLED로 끝날 때("judgement"); 꼬리표 `against=snapshot_at_judgement`가 이제 맞음; 시험: 멈춘 자식의 늦은 쓰기가 펜스로 죽어 0, 펜스 없이 CONT 뒤 16, 못 읽는 영역 16; `syn` 통과, `unitp3` 13 장면 실패 0(`fx2_*.log`)
+- 3: link가 LEFT(계보가 받을 때만, `leftPlus1`)를 쥐고 helper가 rank마다 낱말 셋(LEFT, 펜스 낱말, REG_NOTE 등록 낱말)을 atomic으로 내며, `gdakiProbeJudge`가 `gdakiCtrlLaLInputs`로 `gdakiCtrlLOf(paired, left, ended, pullOk=false, regAlive, regLeft)`를 부름(`pullOk`는 TODO(2a-2) 5, 주인 3단계 → 2a-2); `syn` 통과, `unitp3` 실패 0(`fx3_*.log`)
+- 4: PAUSED 무장 비트(H:15851 식 뒤 rdma만 한 줄) `ps.armable &&= gdakiCtrlLaWardArmOk(r, s)`: 이 rank가 s의 짝이면 s 노드 launcher와의 기록 QP CONNECTED, LEAVING 안 함, 짝 맺기 켬(되살린 짝은 새 화신으로 다시 짝 맺은 뒤); 짝이 아니면 참. STORE_ACK 꼬리 대신 이 자리(리뷰의 고침대로); `syn` 통과, `unitp3` 실패 0(`fx4_*.log`)
+- 5: STORE_REQ 꼬리는 `gdakiCtrlLaStoreReqTail` 한 번의 `gl_path_exists`로 등록 깃발과 `haveSpare`를 함께 쓰고 그 값을 link에 남김; CKPT_STABLE은 `gdakiCtrlLaStableArmable` = allArmable AND 지금 길 AND 짝이 쥔 등록(마지막 꼬리, 같은 화신)의 깃발, 길이 생겼는데 등록이 모르면 무장 안 함과 STORE_REQ 다시(`st->up.need = RETRY`, 화신마다 줄 하나). 꼬리 바깥 표지 `GDAKI_CTRL_LA_STORE_SPARE_MAGIC`("GRPL"), 받는 쪽 rdma 갈래는 이것만(`#if NCCL_GIN_CTRL_TCP` ln4 글 그대로); 9.8 "판 올린 사본" 대신 표지만 바꿈(조율 세션이 9.7/12절에 적을 것); `syn` 통과, `unitp3` 실패 0(`fx5_*.log`). 작업 중 python 붙임 한 번이 파일을 겹쳐 썼고(선언 자리를 정의로 잡음) 같은 단계에서 되살림, 이후 단계마다 `logs_p3/wip_step*.diff`
+- 6: 중계는 `stop`보다 먼저 non-blocking `recv`, 성공 길의 `RelayEnd(1000)`은 스레드가 스스로(DONE 넘김 또는 호출 쪽 EOF) 끝나기를 기다린 뒤 `stop`(고칠 것 4); READY 단계 poll에 호출 쪽 끝(닫힘이면 끝, 가), FETCH 실패와 REJOIN 거절 길에 `gdakiCtrlLaSpareDone(r, false)`(rdma만 한 줄씩, 나), 중계를 ANSWER 앞에 세우고 못 세우면 REFUSED(다); REPLAY_FAILED는 `gdakiCtrlLaSpareFailed`로 `gdakiRsSpareResume`의 거절과 예비 프로세스의 Resume 거절(또는 복원 꺼짐)에서 한 번(고칠 것 9); 시험: DONE 직후 끝, READY 전 닫힘, 곧바로 멈춤, 포크한 예비의 REPLAY_FAILED → launcher FAILED → ACTIVATE REFUSED 곧바로(LATER 0) → 예비가 pidfd로 끝남; 첫 판은 이 프로세스를 예비로 등록해 launcher가 시험 프로세스를 SIGKILL(시험 고침); `syn` 통과, `unitp3` 14 장면 실패 0(`fx6_*.log`)
+- 7: 호스트 몸을 link의 표 받는 함수로 옮김(`gdakiCtrlLaBuddyStep` 짝 활성화 한 걸음, `gdakiCtrlLaFetchFwdStep` FETCH_DONE 넘김, `gdakiCtrlLaSpareTake` 예비의 READY와 받기, `gdakiCtrlLaSpareRevive` 다시 REGISTER, `gdakiCtrlLaGate` 관문, `gdakiCtrlLaRegisterWait`/`InfoWait`); 호스트는 mirror와 hold 몫(drain, blob, FETCH QP, waiter, `gdakiMiActRecv`, 줄)만 표로 줌. 새 장면 둘: 전 길(drain 한 걸음 미룸, 기록 꾸밈, LATER 줄 한 번, 바이트 검사, 중계, FETCH QP와 waiter, DONE 넘김, promote)과 fallback 열(drain 거절, blob 없음, outbox 없음, 다른 ACTIVATE의 답, 다른 rank의 ACCEPTED, 둘째 LATER, REFUSED, 1 000 ms 안 끝점 없음, connect 실패, waiter 없음 → ABORT, FENCE_NAK 줄, FENCE 뒤 잃음 STOP_launcher, FENCE 전 길 없음 줄); `scenePure`의 999 반복은 고른 값 넷으로; nit 2, 3(`reqSeq` 맞춤), 4, 6, 7, 8, 9, 12 고침; `syn` 통과, `unitp3` 16 장면 466 검사 실패 0(`fx7_*.log`)
+- 8: 시험 쪽 답 고침(아래), 확인 전부(아래 표)
+
+### 이 문서의 선택: 등록 차례(조율 세션이 9.7절 표에 옮길 글)
+
+launcher의 UD 끝점, Q_Key, 페이지 자리, 노드 번호는 launcher마다 고정이다. 그래서 rank는 all-gather 앞에 같은 노드 launcher의 Unix 소켓에 nonce 없는 INFO를 보내 이것을 받고(`gdakiCtrlLauncherQuery`, `gdakiTsSetup`의 all-gather 바로 앞, 200 ms 한도), 그 답을 all-gather 칸 `gdakiCtrlLaAgInfo`(72 B)로 싣는다. context nonce가 필요한 REGISTER와 SPARE_HELLO는 all-gather 뒤 `gdakiTsStart`에 남는다(같은 연결). all-gather 뒤 모든 rank의 칸으로 launcher를 노드 차례로 더하고, rank마다 노드 launcher와 launcher 수를 정한다(`gdakiCtrlLauncherAgTake`). 그래서 TODO(2a-2) 3은 만들 수 있다: 2a-2가 `gdakiTsAddr`에 칸 하나를 더해 `mine`에 `gdakiCtrlLauncherAgInfo`를 채우고, all-gather 뒤 `gdakiCtrlLauncherAgTake(r, 칸들, nranks)`를 부른다(재생 비교에서는 "달라도 됨" 칸). 지금 launcher(897641f3)는 INFO를 모르는 종류로 버리므로 칸은 "길 없음"이고 무장은 2a-2 전과 같이 서지 않는다 `[측정: 단위 시험; 추론]`.
+
+### launcher에 내는 요청 (TODO(launcher); 이 작업은 launcher를 바꾸지 않음)
+
+- `GL_U_INFO` = 8: rank → launcher, 머리만(본문 0 B, fd 없음, nonce 0, rank는 보내는 rank, 화신 0). launcher는 uid 검사만 하고(다르면 status REFUSED, reason `GL_R_UID`) 표, 페이지 칸, 셈(`nRegRefused`)을 건드리지 않는다.
+- `GL_U_INFO_ACK` = 9: launcher → rank, 같은 연결. 머리는 INFO의 rank, 화신, nonce를 되풀이, `sub` = 8, `reason`; 본문 `glUHelloAck` 136 B(status `GL_UA_OK`, node, qkey, pageSlot 0xffffffff, ud, page, why "ok").
+- `GL_U_KIND_MAX` 7 → 9, `gl_unix_check`가 둘을 받음. 실험 문서 9.5 표(Unix 말 일곱 → 아홉)와 설계 5.2 표를 함께 고친다.
+- rank 쪽은 kind 9를 `gl_unix_check` 앞에서 따로 읽는다(magic, 판, 크기, payload 0).
+
+### 시험 쪽 질문의 답 고침 (`test/notes_test.md` TODO 4로 넘김)
+
+- 답 3(고침): `NCCL_GIN_RESTORE_SPARE_PORT`는 rdma 빌드에서도 `gdakiRsSpareResume`의 필수 검사(포트 숫자)를 받는다. 계속 줘야 하고, 없으면 예비 프로세스가 Resume에서 멈추며 이제 REPLAY_FAILED를 낸다. `NCCL_GIN_RESTORE_SPARE_ADDR`는 rdma 갈래가 쓰지 않는다 `[소스]`.
+- 답 4(기한): 지금 비용 셀은 launcher 짝 맺기를 요구하지 않는다. Resume 조건 41(2a-2)이 들어오면 `NCCL_GIN_RESTORE=1` 비용 셀은 launcher 없이 fail-fast가 된다. 측정 모드 예외를 둘지 2a-2와 정한다 `[추론]`.
+
+### 리뷰 항목별 (한 줄씩)
+
+| 항목 | 고침 |
+|---|---|
+| 막는 1 | 칸 = window, signal, counter 표의 64 B 칸(영역마다 16), 스냅숏은 판정 때 시작 정지 앞, 견줌은 낱말이 설 때 또는 낱말 없는 FALLBACK/CANCELLED 끝, 꼬리표 사실과 맞음, 바뀌는 장면 있음(16, 못 읽음 16) |
+| 막는 2 | INFO(앞)와 REGISTER(뒤)로 나눔, all-gather 칸 API, TODO(launcher) 요청 |
+| 고칠 1 | LEFT, 끝남, 등록 낱말을 `gdakiCtrlLOf`에; `pullOk`만 TODO(2a-2) 5 |
+| 고칠 2 | PAUSED 무장 비트에 짝의 ward launcher 짝 맺음 |
+| 고칠 3 | STORE_REQ 꼬리 값 한 번, CKPT_STABLE은 그 값 AND 지금, 모자라면 STORE_REQ 다시 |
+| 고칠 4 | `recv`가 `stop`보다 먼저, 성공 끝은 1 000 ms 안 스스로 끝남 |
+| 고칠 5 | READY 단계 호출 쪽 끝, FETCH 실패와 REJOIN 거절의 `SpareDone(false)`, 중계를 ANSWER 앞에(실패면 REFUSED) |
+| 고칠 6 | 호스트 몸을 link의 표 받는 함수로, 새 장면 다섯(INFO와 all-gather, 늦은 쓰기, 중계 끝과 REPLAY_FAILED, 전 길, fallback 열); 반복 검사 없음 |
+| 고칠 7 | `sum1`이 덤프 실패를 줄로(두 번 시도), `ident` 다시(스크립트 md5 실행 앞뒤 같음) |
+| 고칠 8 | 답 3, 4 고침(위) |
+| 고칠 9 | REPLAY_FAILED 두 자리 |
+| 고칠 10 | 바깥 표지 "GRPL", rdma 받는 쪽은 그것만; 9.8절과 다른 점은 조율 세션이 적음 |
+| nit | 1(버퍼 한 번; Unix fd를 helper poll 집합에 넣는 것은 하지 않음), 2(주석), 3(`reqSeq`), 4(글), 6(주석), 7(줄과 여기), 8(waiter 없으면 ABORT와 fallback), 9(줄), 12(주석) 고침. 5(창 줄 꼴의 `unreadable=`: 9.8 행 9와 `rows_gc.py`는 시험 쪽), 10(REJOIN 방어 검사: 2a-2), 11(LEAVING은 `gdakiTsStop` 한 자리; 스스로 끝내는 길은 EXITED로 끝남, 떠남이 아님), 13(실패 줄의 `%s`에 공백: 시험 쪽 표의 공백 없는 낱말 규칙 밖)은 넘김 |
+
+### 2a-2와 합칠 때 볼 것 (바뀐 것만)
+
+- `gdakiTsSetup`: all-gather 앞 `#if !NCCL_GIN_CTRL_TCP` 블록에 `gdakiCtrlLauncherQuery(r)` 한 줄(준비 단계 블록 안). 2a-2의 `mine` 칸과 `AgTake` 호출은 위 글대로.
+- hold 시작: "is held" 줄 뒤 rdma만 한 줄 `gdakiCtrlOnJudgement`(문 읽기와 `gdakiTsQuiesce` 앞).
+- PAUSED(H 15873 부근), STORE_REQ 받는 쪽(`w.haveSpare`), `gdakiRsSpareActivateWait`의 실패 길 둘, `gdakiRsSpareResume`, `ncclGinRestoreResume`에 rdma만 줄. `#if NCCL_GIN_CTRL_TCP` 갈래 43 → 44(받는 쪽 표지).
+- 1단계 `gdakiProbeJudge`의 L 한 줄이 여러 줄로(`gdakiCtrlLaLInputs`), `gdakiCtrlActFenceOk`의 fallback 까닭이 link의 글.
+
+### 수 (고침 뒤)
+
+- `gc_layer_p3.diff` e3faf02 대비 3 204줄, 호스트 파일 하나, 더하기 2 975줄, 빼기 25줄, 장치 코드 0줄(`__device__`, `__global__` 더한 줄 0) `[측정]`. 호스트 파일 32 929줄.
+- `rs_ctrl_api_p3.diff` 121줄(2b 적용 헤더 `6c01c6ff` 대비; 결과 헤더 `0eed95b6`, 1 206줄).
+- `gc_unit_p3.cc` 1 680줄, rdma 16 장면 466 검사 실패 0, 반복 한 식 검사 없음(고른 값 넷의 12 검사 포함), tcp 0 검사 `[측정, n 1]`. 장면: 순수, 등록, LEAVING과 L, kill과 L, 멈춤 펜스와 칸, 늦은 쓰기, FENCE_NAK, LATER와 ACCEPTED와 되살린 rank, 중계 끝과 REPLAY_FAILED, LATER 한도, launcher 멈춤, 무장과 꼬리, 소켓 잃음, INFO와 all-gather, 전 길, fallback 열.
+
+### 확인 표 (고침 뒤; 로그 `agent_gc_p3/logs_p3/`)
+
+| 단계 | 결과 | 로그 |
+|---|---|---|
+| `repaste`, `api` | 붙인 블록 둘 = 고정 헤더 `0eed95b6`, launcher 헤더 붙임 = 897641f3, 헤더 단독 컴파일(rdma, tcp, 진입점 있음/없음): 통과 | `fx7_repaste.log`, `fx8_api.log` |
+| `syn` | 세 빌드 통과(단계마다) | `fx0`–`fx7_syn.log` |
+| `gc`, `gcp`, `gct`, `gctp` | 넷 빌드됨, 경고 0, 다시 컴파일 둘(호스트 파일, git_version), libnccl gc `9c0de86c`, gcp `ca746ee6`, gct `43ccd05a`, gctp `2605b1e8` | `build_*_p3f.log`, `out/*_p3f/` |
+| `pre` | gct, gctp 0 hunk; gctc 2 hunk 3줄(RST 간격); gc 89 hunk(기록용) | `fx8_pre.log` |
+| `sites` | 표 149행 그대로, `#if NCCL_GIN_CTRL_TCP` 갈래 44개 모두 ln4 글, page 1 108, ring 1 828 코드 줄: 통과 | `fx8_sites.log` |
+| `unit` rdma | 옛 시험 모두 앞 판과 같은 수로 실패 0, gc_unit_p3 16 장면 466 검사 실패 0: 통과 `[n 1]` | `fx8_unit.log` |
+| `unit` tcp | 옛 일곱, prep 174, p1, p2, p2b, p3 0 검사: 통과 | `fx8_unit.log` |
+| `ident` (IDTAG p3f) | 끝까지 돎, 스크립트 md5 실행 앞뒤 같음(`5132eca8`); 설치 헤더 ln4와 같음; 프로그램 16/16 같음; 장치 객체 넷 모두 207/207 SASS 같음(바이트 같음 207); 라이브러리 넷 자원 같음. `cuobjdump` 실패 줄은 장치 코드 없는 호스트 객체 둘(`host_table.cc.o`, `sym_kernels_host.cc.o`)뿐, 양쪽 같음 | `ident_p3f.log`, `out/ident_p3f/` |
+| `diff`, `info` | `gc_layer_p3.diff` `c755b1df` 3 204줄, e3faf02 대비, 거꾸로 적용 확인 | `fx8_diff.log`, `info_p3f.txt` |
+
+클러스터, ssh, verbs 장치, GPU 실행 없음. launcher 프로그램은 단위 시험의 프로세스 안 시험 전송으로만 돌았다. 저장소에 `git add`, commit, push 없음.
+
+### 파일 md5 (고침 뒤)
+
+| 파일 | md5 | 줄 |
+|---|---|---|
+| `gc_layer_p3.diff` | `c755b1dfc53565cfe12a031dd7d32987` | 3 204 |
+| `gc_unit_p3.cc` | `e01665cd8f62137a1a9c3400f96d8fb2` | 1 680 |
+| `rs_ctrl_api_p3.diff` | `cc16403503f188b7d1a08ae030ed98fe` | 121 |
+| 스크래치 `pin/rs_ctrl_api.h` | `0eed95b6e5293fd39d368d1b5a504505` | 1 206 |
+| 스크래치 호스트 파일 | `f647084bf4cf4deb2f50b7d046b9510d` | 32 929 |
+| 스크래치 `build_gc_p3.sh` | `5132eca85cf521a2b146254da0c4bf36` | 871 |
+
+### 미확인 (고침이 더한 것)
+
+- 칸 읽기(`gdakiRecD2H` 64 B × 칸 수)가 hold 시작을 얼마나 늦추는지, NIC 복사 길에서 window 범위가 덮이는지 `[미확인]`. 스냅숏이 시작 정지 앞이므로 판정과 시작 정지 사이에 옛 화신이 쓴 칸도 "바뀐 칸"에 든다 `[추론]`.
+- 낱말 없이 복원이 끝난 생존 rank(짝이 아닌 rank가 그 launcher와 짝을 맺지 못한 경우)는 창 줄을 내지 않는다(새 화신이 쓰기 전의 견줄 점이 없음).
+- 지금 launcher는 INFO를 버리며 launcher 로그에 "malformed Unix message (unknown kind)" 줄을 rank마다 한 번 남긴다 `[측정: 단위 시험의 nBadMsg]`. 시험 쪽 셈에 걸리는지 `[미확인]`.

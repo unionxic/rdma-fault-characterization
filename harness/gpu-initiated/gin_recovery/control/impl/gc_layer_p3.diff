@@ -1,8 +1,8 @@
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index f0ec50d..f8085d3 100644
+index f0ec50d..a7e097c 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-@@ -7347,6 +7347,40 @@ struct gdakiCtrlXferHdr {
+@@ -7347,6 +7347,59 @@ struct gdakiCtrlXferHdr {
  static_assert(sizeof(struct gdakiCtrlXferHdr) == 64, "an outbox transfer's head is 64 bytes");
  // ---- [2] ring (end) ----
  // ---- [3] launcher: the rank side of the launcher (begin) ----
@@ -28,6 +28,10 @@ index f0ec50d..f8085d3 100644
 +  uint32_t rsv;
 +};
 +static_assert(sizeof(struct gdakiCtrlLaSpareReg) == 32, "the launcher-path registration fits gdakiStoreReqSpare::spareAddr");
++// The rdma build's outer magic of that tail (REVIEW_P3 고칠 것 10): ln4's GDAKI_STORE_SPARE_MAGIC ("GRSP") stays the tcp
++// build's, so a tcp buddy reads this tail as "no registration" and an rdma buddy takes only this one. EXPERIMENT.md 9.8
++// asks for a versioned copy of rs_store_api.h; this build keeps STORE_REQ's layout and changes the magic instead.
++#define GDAKI_CTRL_LA_STORE_SPARE_MAGIC 0x4c505247u  // "GRPL"
 +// The buddy's check of a ward's registration: launcher path, the ward and the dead incarnation, the path flag.
 +static inline bool gdakiCtrlLaSpareRegOk(const struct gdakiCtrlLaSpareReg& g, int rank, uint32_t dead) {
 +  return g.magic == GDAKI_CTRL_LA_SPAREREG_MAGIC && g.version == GDAKI_CTRL_LA_SPAREREG_VERSION &&
@@ -40,10 +44,25 @@ index f0ec50d..f8085d3 100644
 +static inline bool gdakiCtrlLaActFencedOk(uint64_t reserved, uint32_t newInc) {
 +  return newInc != 0 && gdakiCtrlFencedIs(reserved, newInc - 1u);
 +}
++// The all-gather's launcher field of one rank (design v3 5.1's "launcher UD 끝점과 Q_Key"; REVIEW_P3 막는 문제 2): what the
++// node's launcher answered to a nonce-free INFO on its Unix socket before the all-gather (its node, UD endpoint, Q_Key,
++// page; these are the launcher's, static for its life). REGISTER carries the context's nonce, which exists only after the
++// all-gather: it stays after it (gdakiTsStart). magic 0: this rank has no launcher path (no answer, or no restore asked).
++#define GDAKI_CTRL_LA_AG_MAGIC 0x41414c47u  // "GLAA"
++struct gdakiCtrlLaAgInfo {
++  uint32_t magic;                // GDAKI_CTRL_LA_AG_MAGIC, or 0
++  uint32_t node;                 // the launcher's node number
++  uint32_t qkey;                 // its UD QP's Q_Key
++  uint32_t rsv;
++  struct gdakiCtrlEndpoint ud;   // its UD QP (launcher_msg.h's glEp, 40 B)
++  uint64_t pageAddr;             // its state page (glRegion: addr, rkey, len)
++  uint32_t pageRkey, pageLen;
++};
++static_assert(sizeof(struct gdakiCtrlLaAgInfo) == 72, "the all-gather's launcher field is 72 bytes");
  // ---- [3] launcher (end) ----
  #endif  // !NCCL_GIN_CTRL_TCP
  // ---- gin-control: ctrl API (end) ----
-@@ -7466,6 +7500,35 @@ static void gdakiCtrlLauncherFree(struct gdakiRecHost* r);
+@@ -7466,6 +7519,58 @@ static void gdakiCtrlLauncherFree(struct gdakiRecHost* r);
  // ---- [2] ring: entry points (begin) ----
  // ---- [2] ring (end) ----
  // ---- [3] launcher: entry points (begin) ----
@@ -51,35 +70,58 @@ index f0ec50d..f8085d3 100644
 +// region "gin-control (launcher)".
 +struct gdakiRsActivate;  // the host file
 +struct gdakiMiActBlob;   // the host file
-+// gdakiTsStart (setup thread): REGISTER (a rank) or SPARE_HELLO (a spare) on the node's launcher socket.
++// gdakiTsSetup before its all-gather (the context's thread): the nonce-free INFO on the node's launcher socket (its node,
++// UD endpoint, Q_Key, page; REVIEW_P3 막는 문제 2). Only a process that asks for the restore. Bounded (200 ms).
++static void gdakiCtrlLauncherQuery(struct gdakiRecHost* r);
++// [2a-2 calls it] this rank's all-gather field (gdakiTsAddr), from that INFO's answer (magic 0: none).
++static void gdakiCtrlLauncherAgInfo(struct gdakiRecHost* r, struct gdakiCtrlLaAgInfo* out);
++// [2a-2 calls it] after the all-gather: every rank's field (byRank[0..nranks)): the communicator's launchers (in node
++// order), each rank's node launcher, their count (the arming's "every launcher paired").
++static void gdakiCtrlLauncherAgTake(struct gdakiRecHost* r, const struct gdakiCtrlLaAgInfo* byRank, int nranks);
++// The judgement's hook (the hold start, before gdakiTsQuiesce and gdakiCtrlPeerToErr move any QP toward `peer`): the
++// window line's snapshot (16 cells of 64 B per window, signal and counter table; REVIEW_P3 막는 문제 1).
++static void gdakiCtrlOnJudgement(struct gdakiRecHost* r, int peer, uint32_t inc);
++// The judgement table's L inputs of (peer, inc) for the watch thread (no lock; REVIEW_P3 고칠 것 1): LEFT, the end
++// (EXITED or FENCED) and the registration word ALIVE / LEFT of that incarnation, as the launcher link took them.
++static void gdakiCtrlLaLInputs(struct gdakiRecHost* r, int peer, uint32_t inc, bool* left, bool* ended, bool* regAlive,
++                               bool* regLeft);
++// The PAUSED armable bit's launcher part (REVIEW_P3 고칠 것 2): this rank, the ward's buddy, is paired with the ward's
++// node launcher (a revived buddy: again, as its new incarnation); true when this rank is not the ward's buddy.
++static bool gdakiCtrlLaWardArmOk(struct gdakiRecHost* r, int ward);
++// gdakiTsStart (setup thread, after the all-gather: the nonce): REGISTER (a rank) or SPARE_HELLO (a spare).
 +static void gdakiCtrlLauncherSetup(struct gdakiRecHost* r);
 +// Before the witness's BYE (the communicator ends): LEAVING on the registering connection.
 +static void gdakiCtrlLauncherLeaving(struct gdakiRecHost* r);
 +// [2a-2 calls it] one envelope that came from a launcher (from = GDAKI_CTRL_FROM_LAUNCHER | node): a PAIR or PAIR_ACK on
 +// the UD QP (ud), a launcher message on that launcher's record QP (else); `body` is the 256 B glMsg.
 +static void gdakiCtrlLauncherOnEnvelope(struct gdakiRecHost* r, const struct gdakiCtrlEnv* e, const void* body, bool ud);
-+// The rdma build's haveSpare (the arming's second half): launcher_msg.h's gl_path_exists for this incarnation.
-+static bool gdakiCtrlLaHaveSpare(struct gdakiRecHost* r);
-+// STORE_REQ's spare registration (the 32 B of gdakiStoreReqSpare::spareAddr): struct gdakiCtrlLaSpareReg.
-+static void gdakiCtrlLaSpareRegFill(struct gdakiRecHost* r, void* out32);
++struct gdakiStoreReqSpare;  // the host file (impl/rs_store_api.h)
++// STORE_REQ's tail (REVIEW_P3 고칠 것 3, 10): the outer magic GDAKI_CTRL_LA_STORE_SPARE_MAGIC, the registration
++// (struct gdakiCtrlLaSpareReg in spareAddr) and haveSpare from one gl_path_exists; that value is kept for CKPT_STABLE.
++static void gdakiCtrlLaStoreReqTail(struct gdakiRecHost* r, struct gdakiStoreReqSpare* sp);
++// CKPT_STABLE's armable bit (the rdma build's `allArmable && haveSpare`): the path now and the registration the buddy
++// holds (the last STORE_REQ's flag for this incarnation); a path the buddy's registration lacks asks a new STORE_REQ.
++static bool gdakiCtrlLaStableArmable(struct gdakiRecHost* r, bool allArmable);
 +// The buddy's decision: the ward's registration is the launcher path's for (peer, dead); false with why.
 +static bool gdakiCtrlLaSpareRegCheck(struct gdakiRecHost* r, const void* reg32, int peer, uint32_t dead, char* why,
 +                                     size_t whyLen);
-+// The buddy's fence (design v3 4.4 3): FENCE to the dead rank's launcher once all HOLDINGs are in; 1 fenced, 0 not yet,
-+// -1 fall back (FENCE_NAK, no launcher path, the launcher lost). *word: the fence word of `peer`.
-+static int gdakiCtrlLaFenceStep(struct gdakiRecHost* r, int peer, uint32_t dead, uint64_t* word);
++// The buddy's fence (design v3 4.4 3): FENCE to the dead rank's launcher once all HOLDINGs are in; 1 fenced (GO), 0 not
++// yet, -1 fall back with why (FENCE_NAK, no launcher path, the launcher lost). *word: the fence word of `peer`.
++static int gdakiCtrlLaFenceStep(struct gdakiRecHost* r, int peer, uint32_t dead, uint64_t* word, char* why, size_t whyLen);
 +// The buddy's activation through the launcher (one helper step; gdakiHoldActivateSend's rdma body).
 +static void gdakiCtrlLaActivateSend(struct gdakiRecHost* r, int peer, const struct gdakiRsActivate& a, uint32_t dead,
 +                                    double now);
 +// The spare: READY, then the ACTIVATE bytes from its launcher; *actFd the FETCH talk's end (mirror or store on), or -1.
 +static ncclResult_t gdakiCtrlLaSpareWait(struct gdakiRecHost* r, int waitMs, bool mi, struct gdakiRsActivate* act,
 +                                         int* actFd, struct gdakiMiActBlob* blob);
++// The spare's replay or its Resume failed (ncclGinRestoreResume, gdakiRsSpareResume): REPLAY_FAILED with why, once.
++static void gdakiCtrlLaSpareFailed(struct gdakiRecHost* r, const char* why);
 +// The spare after its FETCH (ok) or a failure: the relay ends; ok: REGISTER of the new incarnation (the revived rank).
 +static void gdakiCtrlLaSpareDone(struct gdakiRecHost* r, bool ok);
  // ---- [3] launcher (end) ----
  #endif  // GDAKI_CTRL_API_NO_ENTRY_DECLS
  #endif  // NCCL_GIN_CTRL_TCP
-@@ -11035,6 +11098,7 @@ static ncclResult_t gdakiRsSpareActivateWait(struct gdakiRecHost* r, int activat
+@@ -11035,6 +11140,7 @@ static ncclResult_t gdakiRsSpareActivateWait(struct gdakiRecHost* r, int activat
    const bool mi = gdakiStoreActV2(r);  // gin-control (store) [2], decision 7: the FETCH over the store mirror off too
  #endif
    if (mi) gdakiMiFetchBufSetup(r);
@@ -87,7 +129,7 @@ index f0ec50d..f8085d3 100644
    // (1) the activation socket and the gate
    union ncclSocketAddress aAddr;
    char ifName[MAX_IF_NAME_SIZE + 1];
-@@ -11124,6 +11188,21 @@ static ncclResult_t gdakiRsSpareActivateWait(struct gdakiRecHost* r, int activat
+@@ -11124,6 +11230,21 @@ static ncclResult_t gdakiRsSpareActivateWait(struct gdakiRecHost* r, int activat
      gdakiRsSpareGiveUp(r, -1);
      return ncclSystemError;
    }
@@ -109,7 +151,25 @@ index f0ec50d..f8085d3 100644
    const uint32_t incarnation = act.incarnation;
    if (stepOut) *stepOut = act.step;
    gdakiRsSetSelfInc(r, incarnation);  // carried in this spare's reconnect HELLO/PROBE pad (fencing)
-@@ -11158,6 +11237,7 @@ static ncclResult_t gdakiRsSpareActivateWait(struct gdakiRecHost* r, int activat
+@@ -11146,6 +11267,9 @@ static ncclResult_t gdakiRsSpareActivateWait(struct gdakiRecHost* r, int activat
+     actFd = -1;
+     if (fr != ncclSuccess) {
+       WARN("GIN/MI: rank %d: the spare's FETCH of checkpoint %llu failed: %s", rank, (unsigned long long)act.step, fw);
++#if !NCCL_GIN_CTRL_TCP
++      gdakiCtrlLaSpareDone(r, false);  // gin-control (launcher) [3]: the relay ends now (REVIEW_P3 고칠 것 5 (나))
++#endif
+       gdakiRsSpareGiveUp(r, -1);
+       return ncclSystemError;
+     }
+@@ -11153,11 +11277,15 @@ static ncclResult_t gdakiRsSpareActivateWait(struct gdakiRecHost* r, int activat
+   }
+   if (!gdakiMiRejoinAllowed(mi, actState)) {
+     WARN("GIN/MI: rank %d: the spare's activation did not reach its FETCH's end (state %d): no REJOIN", rank, actState);
++#if !NCCL_GIN_CTRL_TCP
++    gdakiCtrlLaSpareDone(r, false);  // gin-control (launcher) [3]: the relay ends now
++#endif
+     gdakiRsSpareGiveUp(r, -1);
+     return ncclSystemError;
    }
  #if !NCCL_GIN_CTRL_TCP
    (void)echoFuture;  // the second part's
@@ -117,7 +177,17 @@ index f0ec50d..f8085d3 100644
    *actOut = act;
    return ncclSuccess;
  }
-@@ -14818,10 +14898,17 @@ static void gdakiHoldActivateDecide(struct gdakiRecHost* r, int peer, struct gda
+@@ -14282,6 +14410,9 @@ static void gdakiHoldStart(struct gdakiRecHost* r, int p, const char* why, uint6
+   h->nHolds.fetch_add(1, std::memory_order_relaxed);
+   GIN_TS_NOTE("GIN/RS: rank %d: rank %d (incarnation %u) is held for a restore instead of a decline (%s; cause=%s) "
+               "mono_ms=%.3f", h->rank, p, inc, why, pe.lostCause, t0);
++#if !NCCL_GIN_CTRL_TCP
++  gdakiCtrlOnJudgement(r, p, inc);  // gin-control (launcher) [3]: the window line's snapshot, before any QP toward p moves
++#endif
+   gdakiTsScope = GDAKI_TS_SCOPE_ALL;  // 1, as the decline does
+   bool wasOdd = false, readOk = true;
+   gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
+@@ -14818,10 +14949,17 @@ static void gdakiHoldActivateDecide(struct gdakiRecHost* r, int peer, struct gda
           "mono_ms=%.3f", h->rank, peer, regInc, dead, gdakiQ4MonoMs());
      return gdakiHoldFallback(r, peer, "no spare process is registered for the peer's dead incarnation at its buddy");
    }
@@ -135,7 +205,7 @@ index f0ec50d..f8085d3 100644
    a.magic = GDAKI_RS_ACT_MAGIC;
    a.version = 1;
    a.kind = GDAKI_RS_ACT_ACTIVATE;
-@@ -14846,12 +14933,9 @@ static void gdakiHoldActivateSend(struct gdakiRecHost* r, int peer, const struct
+@@ -14846,12 +14984,9 @@ static void gdakiHoldActivateSend(struct gdakiRecHost* r, int peer, const struct
    const uint32_t dead = d.dead;
    const double now = d.now;
  #endif
@@ -149,7 +219,7 @@ index f0ec50d..f8085d3 100644
    if (mi) {
      // gin-mirror (spare): the drain of the mirror lanes and the fence first (helper steps; EXPERIMENT.md 9.4 step 2), then
      // the activation v2: the record, the blob, and after ACCEPTED the FETCH handshake (impl/rs_store_api.h). Busy: the
-@@ -14903,6 +14987,11 @@ static void gdakiHoldActivateSend(struct gdakiRecHost* r, int peer, const struct
+@@ -14903,6 +15038,11 @@ static void gdakiHoldActivateSend(struct gdakiRecHost* r, int peer, const struct
      if (mi) gdakiMiActEnd(r, peer);  // gin-mirror (spare)
      gdakiHoldFallback(r, peer, "the peer's spare does not answer the activation");
    }
@@ -161,20 +231,43 @@ index f0ec50d..f8085d3 100644
  }
  #if !NCCL_GIN_CTRL_TCP
  static void gdakiHoldActivate(struct gdakiRecHost* r, int peer) {
-@@ -16160,7 +16249,12 @@ static void gdakiCkptInitStep(struct gdakiRecHost* r) {
+@@ -15762,6 +15902,9 @@ static void gdakiCkptOnPause(struct gdakiRecHost* r, int from, const struct gdak
+                                       ps.pause.logComplete && !pe.declined && st != GDAKI_HOLD_FALLBACK &&
+                                       st != GDAKI_HOLD_CANCELLED,
+                                     gdakiMiOn(r), miSwitched, miPath, miPool, miRestarted);
++#if !NCCL_GIN_CTRL_TCP
++  ps.armable = ps.armable && gdakiCtrlLaWardArmOk(r, s);  // gin-control (launcher) [3]: the buddy's path to s's launcher
++#endif
+   struct gdakiTsMsg a;
+   gdakiHoldMsgInit(&a, GDAKI_TS_PAUSED, s, 0);
+   a.round = k;
+@@ -16160,7 +16303,13 @@ static void gdakiCkptInitStep(struct gdakiRecHost* r) {
        if (!ok) return gdakiCkptVoid(r, "the upload failed");
        // stable: the buddy first (a peer that saw CKPT_STABLE implies the buddy has it before any later FIN), then the
        // rest; no buddy, no stable checkpoint
 +#if NCCL_GIN_CTRL_TCP
        const bool armable = ck->rep.allArmable() && gdakiCkptSelfOf().haveSpare;
 +#else
-+      // gin-control (launcher) [3]: haveSpare is launcher_msg.h's gl_path_exists (EXPERIMENT.md 9.5 "등록과 무장")
-+      const bool armable = ck->rep.allArmable() && gdakiCtrlLaHaveSpare(r);
++      // gin-control (launcher) [3]: haveSpare is launcher_msg.h's gl_path_exists (EXPERIMENT.md 9.5 "등록과 무장"), once
++      // here and AND the buddy's registration (the last STORE_REQ's flag; REVIEW_P3 고칠 것 3)
++      const bool armable = gdakiCtrlLaStableArmable(r, ck->rep.allArmable());
 +#endif
        const int b = gdakiHoldBuddyOf(me, n);
        struct gdakiTsMsg m;
        gdakiHoldMsgInit(&m, GDAKI_TS_CKPT_STABLE, me, 0);
-@@ -18530,12 +18624,21 @@ static void gdakiStoreUpStep(struct gdakiRecHost* r, struct gdakiStoreState* st)
+@@ -18141,7 +18290,11 @@ static void gdakiStoreServe(struct gdakiRecHost* r, struct gdakiStoreState* st,
+       w.mr = mr;
+       w.mem = mem;
+     }
++#if NCCL_GIN_CTRL_TCP
+     w.haveSpare = sp.magic == GDAKI_STORE_SPARE_MAGIC;
++#else
++    w.haveSpare = sp.magic == GDAKI_CTRL_LA_STORE_SPARE_MAGIC;  // gin-control (launcher) [3]: the rdma tail only
++#endif
+     w.spare = sp;
+     a.ok = 1;
+     a.gen = gen;
+@@ -18530,12 +18683,20 @@ static void gdakiStoreUpStep(struct gdakiRecHost* r, struct gdakiStoreState* st)
      q.layoutHash = layout;
      struct gdakiStoreReqSpare sp;
      memset(&sp, 0, sizeof(sp));
@@ -187,16 +280,47 @@ index f0ec50d..f8085d3 100644
      sp.pidStart = self.pidStart;
 +#else
 +    // gin-control (launcher) [3]: (path launcher, node, rank, incarnation) in the address's 32 B (design v3 5.4 1,
-+    // decision 10); haveSpare as the arming's path; no PID, no start time (the launcher holds the pidfd)
++    // decision 10), the rdma build's outer magic; haveSpare and the tail's flag from one path (REVIEW_P3 고칠 것 3, 10);
++    // no PID, no start time (the launcher holds the pidfd)
 +    static_assert(sizeof(sp.spareAddr) == sizeof(struct gdakiCtrlLaSpareReg), "the launcher-path registration's room");
-+    sp.magic = GDAKI_STORE_SPARE_MAGIC;
-+    gdakiCtrlLaSpareRegFill(r, sp.spareAddr);
-+    sp.haveSpare = gdakiCtrlLaHaveSpare(r) ? 1u : 0u;
++    gdakiCtrlLaStoreReqTail(r, &sp);
 +#endif
      memcpy(m.executed, &q, sizeof(q));
      memcpy((uint8_t*)m.executed + GDAKI_STORE_SPARE_OFF, &sp, sizeof(sp));
      sent = gdakiHoldSend(r, b, &m) == 0;
-@@ -20435,10 +20538,17 @@ static void gdakiCtrlPageHelperStep(struct gdakiRecHost* r) {
+@@ -19586,8 +19747,9 @@ static inline uint32_t gdakiCtrlRDerive(const struct gdakiCtrlRFacts& f) {
+   return gdakiCtrlRofStale(false, hs, f.suspectMs, f.stallMs, f.guardOk, f.vetoClear, true);
+ }
+ // L (design v3 4.2): the launcher's words and messages. Phase 1 has no launcher: "no pairing with the launcher" is
+-// 무응답 by definition, so every R (11) is row 10 here; until phase 3 derives L, rows 10-12 carry no reaction (report
+-// only; REVIEW_P12 고칠 것 2).
++// 무응답 by definition, so every R (11) is row 10 here; rows 10-12 carry no reaction (report only; REVIEW_P12 고칠 것 2).
++// Phase 3 gives LEFT, the end and the registration word (gdakiCtrlLaLInputs, REVIEW_P3 고칠 것 1); pullOk waits for
++// the launcher page's READ (TODO(2a-2) 5).
+ static inline uint32_t gdakiCtrlLOf(bool launcherPaired, bool leftSeen, bool endedSeen, bool pullOk, bool regAlive,
+                                     bool regLeft) {
+   if (leftSeen || (pullOk && regLeft)) return GDAKI_CTRL_L_LEFT;
+@@ -20116,11 +20278,17 @@ static void gdakiProbeJudge(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, in
+   const int64_t mv = pp.rmsnMoveUs.load(std::memory_order_acquire);
+   f.vetoClear = mv == 0 || nowMs - (double)mv / 1000.0 > (double)pg->vetoMs;
+   const uint32_t R = gdakiCtrlRDerive(f);
+-  const uint32_t L = gdakiCtrlLOf(pg->launcherPaired.load(std::memory_order_acquire), false, false, false, false, false);
++  const uint32_t inc = gdakiCtrlIncOf(pp.incExp);
++  // gin-control (launcher) [3] (REVIEW_P3 고칠 것 1): LEFT, the end (EXITED or FENCED) and the registration word of p's
++  // incarnation, as the launcher link took them (CURRENT or HELD_OLD); pullOk stays false until the launcher page is read
++  // (TODO(2a-2) 5), so L is 무응답 unless LEFT or an end of that incarnation came
++  bool lLeft, lEnded, lRegAlive, lRegLeft;
++  gdakiCtrlLaLInputs(r, p, inc, &lLeft, &lEnded, &lRegAlive, &lRegLeft);
++  const uint32_t L = gdakiCtrlLOf(pg->launcherPaired.load(std::memory_order_acquire), lLeft, lEnded, false, lRegAlive,
++                                  lRegLeft);
+   const uint32_t B = pp.byeSeen ? GDAKI_CTRL_B_SEEN : GDAKI_CTRL_B_NONE;
+   const uint32_t W = gdakiCtrlWOf(pg->witnessOn, pp.win.state == GDAKI_CTRL_WS_OPEN, wEnds, cw, pp.witnessUnknown);
+   pp.last = gdakiCtrlJudge(L, B, W, R);
+-  const uint32_t inc = gdakiCtrlIncOf(pp.incExp);
+   if (pp.last.row == 18 && !pp.suspectLogged) {
+     pp.suspectLogged = true;
+     const bool helper = R == GDAKI_CTRL_R_HELPER_SUSPECT || R == GDAKI_CTRL_R_HELPER_GUARDED;
+@@ -20435,10 +20603,18 @@ static void gdakiCtrlPageHelperStep(struct gdakiRecHost* r) {
  // the decision's own check before it: GO here). Waiting, the fence's report name once per (peer, dead) (gdakiLnFenceOf).
  static bool gdakiCtrlActFenceOk(struct gdakiRecHost* r, int peer, uint32_t dead) {
    struct gdakiCtrlPage* pg = gdakiPageOf(r);
@@ -207,18 +331,19 @@ index f0ec50d..f8085d3 100644
 +  // gin-control (launcher) [3] (REVIEW_P12 고칠 것 5): every HOLDING is in when this is asked, so FENCE goes now (unless
 +  // the word says FENCED); the word is the launcher link's (EXITED, FENCED), the page keeps a copy for the report. The
 +  // /proc branch is gone in this build: the gate is FENCED alone (gdakiCtrlActGate with the launcher-paired mode).
++  // This predicate falls back itself when the fence cannot complete (REVIEW_P3 nit 2): its one caller,
++  // gdakiHoldActivateDecide, returns on false and the hold has ended then.
 +  uint64_t word = GDAKI_CTRL_FENCE_NONE;
-+  const int fence = gdakiCtrlLaFenceStep(r, peer, dead, &word);
-+  if (fence < 0) {
-+    gdakiHoldFallback(r, peer, "the fence of the peer's dead incarnation cannot complete (FENCE_NAK, no launcher path, or "
-+                               "the launcher is lost)");
++  char fw[192] = {0};
++  if (gdakiCtrlLaFenceStep(r, peer, dead, &word, fw, sizeof(fw)) < 0) {
++    gdakiHoldFallback(r, peer, fw);
 +    return false;
 +  }
 +  const int v = gdakiCtrlActGate(true, gdakiCtrlFencedIs(word, dead), GDAKI_RS_ACT_WAIT);
    if (v != GDAKI_RS_ACT_GO && pg != nullptr) {
      static thread_local uint64_t lastSaid = ~0ull;
      const uint64_t key = ((uint64_t)(uint32_t)peer << 32) | dead;
-@@ -23040,22 +23150,1918 @@ static void gdakiCtrlStoreMemLine(struct gdakiRecHost* r, struct gdakiStoreState
+@@ -23040,22 +23216,2567 @@ static void gdakiCtrlStoreMemLine(struct gdakiRecHost* r, struct gdakiStoreState
  // ---- [2] ring (end) ----
  
  // ---- [3] launcher: placeholders phase 3 replaces (begin) ----
@@ -829,13 +954,15 @@ index f0ec50d..f8085d3 100644
 +    if (v > 0) (void)close(v - 1);
 +  }
 +}
-+static void gdakiCtrlLaForkWatch(int fd) {
++// False: no free slot (REVIEW_P3 nit 9: the caller says so in a line).
++static bool gdakiCtrlLaForkWatch(int fd) {
 +  static std::once_flag once;
 +  std::call_once(once, [] { (void)pthread_atfork(nullptr, nullptr, gdakiCtrlLaAtforkChild); });
 +  for (int i = 0; i < GDAKI_CTRL_LA_FORK_SLOTS; i++) {
 +    int z = 0;
-+    if (gdakiCtrlLaForkFd[i].compare_exchange_strong(z, fd + 1)) return;
++    if (gdakiCtrlLaForkFd[i].compare_exchange_strong(z, fd + 1)) return true;
 +  }
++  return false;
 +}
 +static void gdakiCtrlLaForkUnwatch(int fd) {
 +  for (int i = 0; i < GDAKI_CTRL_LA_FORK_SLOTS; i++) {
@@ -874,7 +1001,20 @@ index f0ec50d..f8085d3 100644
 +  std::vector<uint8_t> blob;
 +  std::deque<struct glUnixMsg> talk;  // GL_U_ACT_TALK from the launcher (FETCH_READY, ABORT), oldest first
 +  uint64_t sent = 0, received = 0;
++  bool infoSent = false, infoAcked = false;  // the nonce-free INFO (before the all-gather) and its answer
++  struct glUHelloAck info;
++  bool failedSent = false;     // a spare's REPLAY_FAILED went out
++  bool forkUnwatched = false;  // the fork watch had no free slot: the connection stays open in a forked child
++  std::vector<uint8_t> rbuf;   // the receive buffer (one message and the largest payload), made once
 +};
++// TODO(launcher): the nonce-free INFO (impl/notes_p3.md "고침", the request to the launcher): kind 8 rank -> launcher (no
++// fd, no nonce, body empty), kind 9 the answer (body glUHelloAck: status, node, qkey, pageSlot 0xffffffff, ud, page; the
++// head echoes the INFO's rank, incarnation and nonce, sub = 8). launcher_msg.h has seven kinds (GL_U_KIND_MAX 7) and its
++// gl_unix_check refuses these two: the launcher of 897641f3 drops INFO ("malformed Unix message (unknown kind)"), so the
++// rank sees no answer within its bound and its all-gather field says "no launcher path".
++#define GDAKI_CTRL_LA_U_INFO 8u
++#define GDAKI_CTRL_LA_U_INFO_ACK 9u
++#define GDAKI_CTRL_LA_INFO_MS 200  // the answer's bound (the node's own launcher; a REGISTER's is 1 000 ms)
 +// The socket path: NCCL_GIN_CTRL_LAUNCHER_SOCK, else the launcher's default ($XDG_RUNTIME_DIR/gin-launcher/launcher.sock,
 +// else /tmp/gin-launcher-<uid>/launcher.sock; gl_default_sock_path). False: no room.
 +static bool gdakiCtrlLaSockPath(char* out, size_t len) {
@@ -941,10 +1081,12 @@ index f0ec50d..f8085d3 100644
 +  }
 +  u->fd = fd;
 +  u->closed = false;
-+  gdakiCtrlLaForkWatch(fd);
++  u->forkUnwatched = !gdakiCtrlLaForkWatch(fd);
 +  return true;
 +}
-+// One message (and an fd with SCM_RIGHTS, or -1). False: not sent (the connection is then closed).
++// One message (and an fd with SCM_RIGHTS, or -1). False: not sent (the connection is then closed). A full socket blocks
++// up to 200 ms (REVIEW_P3 nit 12): no helper step sends here (LEAVING is gdakiTsStop's, the rest the setup thread's and
++// a spare's driver's).
 +static bool gdakiCtrlLaUnixSend(struct gdakiCtrlLaUnix* u, const struct glUnixMsg* m, int passFd) {
 +  if (u->fd < 0 || u->closed) return false;
 +  struct iovec iov;
@@ -1012,6 +1154,14 @@ index f0ec50d..f8085d3 100644
 +  u->acked = false;
 +  return true;
 +}
++// INFO (TODO(launcher), above): no fd, no nonce. False: not sent.
++static bool gdakiCtrlLaUnixInfo(struct gdakiCtrlLaUnix* u, int32_t rank) {
++  struct glUnixMsg m;
++  gdakiCtrlLaUnixMsgInit(&m, (uint16_t)GDAKI_CTRL_LA_U_INFO, rank, 0, 0);
++  u->infoSent = gdakiCtrlLaUnixSend(u, &m, -1);
++  u->infoAcked = false;
++  return u->infoSent;
++}
 +static bool gdakiCtrlLaUnixLeaving(struct gdakiCtrlLaUnix* u) {
 +  if (u->leavingSent || u->role != GDAKI_CTRL_LA_ROLE_RANK) return u->leavingSent;
 +  struct glUnixMsg m;
@@ -1047,7 +1197,8 @@ index f0ec50d..f8085d3 100644
 +static int gdakiCtrlLaUnixPoll(struct gdakiCtrlLaUnix* u, const struct gdakiCtrlLaLog& log, int me) {
 +  if (u->fd < 0 || u->closed) return 0;
 +  int taken = 0;
-+  std::vector<uint8_t> buf(sizeof(struct glUnixMsg) + GL_U_MAX_PAYLOAD);
++  std::vector<uint8_t>& buf = u->rbuf;  // made once (REVIEW_P3 nit 1: not 65 792 B zeroed per call)
++  if (buf.size() != sizeof(struct glUnixMsg) + GL_U_MAX_PAYLOAD) buf.resize(sizeof(struct glUnixMsg) + GL_U_MAX_PAYLOAD);
 +  for (;;) {
 +    union {
 +      char b[CMSG_SPACE(sizeof(int) * 4)];
@@ -1077,6 +1228,15 @@ index f0ec50d..f8085d3 100644
 +      return taken;
 +    }
 +    const struct glUnixMsg* m = (const struct glUnixMsg*)buf.data();
++    if ((size_t)n == sizeof(struct glUnixMsg) && m->h.magic == GL_U_MAGIC && m->h.version == GL_WIRE_VERSION &&
++        m->h.kind == GDAKI_CTRL_LA_U_INFO_ACK && m->h.payloadBytes == 0 && m->h.bodyBytes >= sizeof(struct glUHelloAck) &&
++        m->h.bodyBytes <= GL_U_BODY_BYTES) {  // TODO(launcher): INFO's answer (gl_unix_check knows seven kinds)
++      memcpy(&u->info, m->body, sizeof(u->info));
++      u->infoAcked = u->infoSent;
++      u->received++;
++      taken++;
++      continue;
++    }
 +    if (gl_unix_check(m, (size_t)n) != GL_R_NONE) continue;
 +    u->received++;
 +    taken++;
@@ -1116,7 +1276,9 @@ index f0ec50d..f8085d3 100644
 +}
 +
 +// ---- the launchers' RNIC side: a transport table and one record QP pairing per launcher ----
-+// li: the launcher's index (the communicator's launchers in node order). The host's table is the ring's (TODO(2a-2)); the
++// li: the launcher's index: node order when the all-gather's fields add them (gdakiCtrlLaAgTake); one added before or
++// otherwise (the own one at REGISTER without the fields, a ward's registration) goes at the end. Within a rank li is
++// fixed (creditOff = creditOff0 + 8 li). The host's table is the ring's (TODO(2a-2)); the
 +// unit test's bridges to the launcher core's in-process transport. Every call returns 0 on success.
 +struct gdakiCtrlLaTx {
 +  void* arg = nullptr;
@@ -1145,9 +1307,77 @@ index f0ec50d..f8085d3 100644
 +struct gdakiCtrlLaFence {
 +  bool armed = false;               // a hold of (peer, dead) started here
 +  uint32_t dead = 0;
-+  bool sent = false, nak = false, reported = false, windowSaid = false;
++  bool sent = false, nak = false, reported = false, windowSaid = false, noPathSaid = false;
 +  double sentMs = 0;
 +};
++// ---- the window line's cells (REVIEW_P3 막는 문제 1; design v3 4.4, EXPERIMENT.md 6 "펜스 뒤 생존 window에 바뀐 칸") ----
++// A cell is 64 bytes of this rank's memory that a dead peer's RDMA could still write: its windows on the context's
++// collComm, its signal and counter tables (the host's regions). Up to 16 cells per region, spread evenly, the first at
++// its start and the last ending at its end. A cell's value is its bytes' FNV-1a hash. The snapshot is taken at the
++// judgement, before the hold start's quiesce moves any QP (gdakiCtrlOnJudgement); the comparison comes when the fence
++// word stands (FENCED: "after the fence"; EXITED: "after the judgement") or, without it, at the hold's end.
++#define GDAKI_CTRL_LA_CELL_BYTES 64u
++#define GDAKI_CTRL_LA_CELLS_PER_REGION 16u
++struct gdakiCtrlLaRegion {
++  const void* p;
++  uint64_t bytes;
++};
++struct gdakiCtrlLaCellsIo {
++  void* arg = nullptr;
++  void (*regions)(void* arg, std::vector<struct gdakiCtrlLaRegion>* out) = nullptr;
++  bool (*read)(void* arg, const void* src, void* dst, size_t n) = nullptr;  // false: the cell is unreadable
++};
++struct gdakiCtrlLaSnap {
++  bool have = false;
++  uint32_t dead = 0;
++  std::vector<uint64_t> v;
++  std::vector<uint8_t> ok;
++};
++static void gdakiCtrlLaCellPlan(uint64_t bytes, std::vector<uint64_t>* off) {
++  off->clear();
++  if (bytes == 0) return;
++  const uint64_t cb = GDAKI_CTRL_LA_CELL_BYTES;
++  const uint64_t room = bytes > cb ? bytes - cb : 0;  // the last cell's start
++  const uint64_t n = std::min<uint64_t>(GDAKI_CTRL_LA_CELLS_PER_REGION, bytes / cb > 0 ? bytes / cb : 1);
++  for (uint64_t i = 0; i < n; i++) off->push_back(n > 1 ? room * i / (n - 1) : 0);
++  off->erase(std::unique(off->begin(), off->end()), off->end());
++}
++static uint64_t gdakiCtrlLaCellHash(const uint8_t* p, size_t n) {
++  uint64_t h = 0xcbf29ce484222325ull;
++  for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 0x100000001b3ull;
++  return h;
++}
++static void gdakiCtrlLaCellsTake(const struct gdakiCtrlLaCellsIo& io, std::vector<uint64_t>* v, std::vector<uint8_t>* ok) {
++  v->clear();
++  ok->clear();
++  if (io.regions == nullptr || io.read == nullptr) return;
++  std::vector<struct gdakiCtrlLaRegion> regs;
++  io.regions(io.arg, &regs);
++  std::vector<uint64_t> off;
++  uint8_t b[GDAKI_CTRL_LA_CELL_BYTES];
++  for (const auto& g : regs) {
++    gdakiCtrlLaCellPlan(g.bytes, &off);
++    for (uint64_t o : off) {
++      const size_t n = (size_t)std::min<uint64_t>(GDAKI_CTRL_LA_CELL_BYTES, g.bytes - o);
++      const bool good = io.read(io.arg, (const uint8_t*)g.p + o, b, n);
++      v->push_back(good ? gdakiCtrlLaCellHash(b, n) : 0);
++      ok->push_back(good ? 1 : 0);
++    }
++  }
++}
++// The cells that changed against the snapshot; *unreadable: those not read either time (or no snapshot of this hold).
++static uint32_t gdakiCtrlLaCellsDiff(const struct gdakiCtrlLaSnap& s, uint32_t dead, const std::vector<uint64_t>& v,
++                                     const std::vector<uint8_t>& ok, uint32_t* unreadable) {
++  uint32_t changed = 0, bad = 0;
++  const bool have = s.have && s.dead == dead && s.v.size() == v.size();
++  for (size_t i = 0; i < v.size(); i++) {
++    if (!have || !s.ok[i] || !ok[i]) bad++;
++    else if (s.v[i] != v[i]) changed++;
++  }
++  if (!have && v.empty() && s.have) bad = (uint32_t)s.v.size();
++  *unreadable = bad;
++  return changed;
++}
 +// The buddy's activation of one peer through its launcher.
 +enum : uint32_t {
 +  GDAKI_CTRL_LA_ACT_NONE = 0, GDAKI_CTRL_LA_ACT_SENT = 1, GDAKI_CTRL_LA_ACT_LATER = 2, GDAKI_CTRL_LA_ACT_ACCEPTED = 3,
@@ -1163,6 +1393,7 @@ index f0ec50d..f8085d3 100644
 +  uint32_t spareState = 0, spareAgeMs = 0, reason = 0;
 +  struct glRsActivate ans;
 +  bool haveEp = false, haveDone = false;
++  bool laterSaid = false;           // the LATER line of the host was given
 +  uint8_t ep[GL_FETCH_EP_BYTES];
 +  uint8_t done[GL_FETCH_DONE_BYTES];
 +  char why[96] = {0};
@@ -1181,8 +1412,11 @@ index f0ec50d..f8085d3 100644
 +  std::vector<int> laOf;            // rank -> its node's launcher index (-1: not known)
 +  struct gdakiCtrlLaUnix unix;
 +  std::vector<uint64_t> fencedPlus1;  // by rank: the fence word (0 none, i + 1 incarnation i ended)
++  std::vector<uint64_t> leftPlus1;    // by rank: i + 1 of the latest LEFT the lineage took (0 none)
 +  std::vector<uint32_t> endKind, endNode;  // by rank: what raised the word last (GL_K_FENCED, GL_K_EXITED), from which node
 +  std::vector<struct gdakiCtrlLaFence> fence;
++  std::vector<struct gdakiCtrlLaSnap> snap;  // by peer: the window cells at its judgement (gdakiCtrlLaOnJudgement)
++  struct gdakiCtrlLaCellsIo cells;
 +  std::vector<struct gdakiCtrlLaAct> act;
 +  struct gdakiCtrlLaTx tx;
 +  struct gdakiCtrlLaLog log;
@@ -1193,8 +1427,17 @@ index f0ec50d..f8085d3 100644
 +  double answerMs = GDAKI_CTRL_LA_ANSWER_MS, pairBoundMs = GL_REPAIR_MS;
 +  uint32_t seq = 0;
 +  bool leaving = false, latched = false;
++  struct {
++    bool valid = false;
++    uint32_t flags = 0, inc = 0;
++  } regSent;                        // the last STORE_REQ tail's registration (gdakiCtrlLaTailFill)
 +  bool pairOk = true;               // the clock pairs (false: a spare before its activation; it must not take the rank's
 +                                    // pairing at a launcher while the original lives, gl_on_pair drops older QPs)
++  int fwdSock = -1, fwdPeer = -1;    // the buddy: where FETCH_DONE's 80 B go (the FETCH waiter reads the other end)
++  // a blocking wait for the Unix socket (REGISTER's answer, INFO's, a spare's ACT_BYTES): null polls the socket (the
++  // host); the unit test steps its launchers here
++  void (*waitHook)(void* arg, int ms) = nullptr;
++  void* waitArg = nullptr;
 +};
 +static void gdakiCtrlLaInit(struct gdakiCtrlLaLink* k, int me, int nranks, uint32_t inc, uint64_t nonce, int nLaunchers) {
 +  k->me = me;
@@ -1208,9 +1451,11 @@ index f0ec50d..f8085d3 100644
 +  k->la.clear();
 +  k->laOf.assign((size_t)nranks, -1);
 +  k->fencedPlus1.assign((size_t)nranks, GDAKI_CTRL_FENCE_NONE);
++  k->leftPlus1.assign((size_t)nranks, 0u);
 +  k->endKind.assign((size_t)nranks, 0u);
 +  k->endNode.assign((size_t)nranks, 0u);
 +  k->fence.assign((size_t)nranks, gdakiCtrlLaFence());
++  k->snap.assign((size_t)nranks, gdakiCtrlLaSnap());
 +  k->act.assign((size_t)nranks, gdakiCtrlLaAct());
 +}
 +static int gdakiCtrlLaIndexOfNode(const struct gdakiCtrlLaLink* k, uint32_t node);
@@ -1241,6 +1486,47 @@ index f0ec50d..f8085d3 100644
 +static void gdakiCtrlLaSetRankNode(struct gdakiCtrlLaLink* k, int rank, uint32_t node) {
 +  const int li = gdakiCtrlLaIndexOfNode(k, node);
 +  if (rank >= 0 && rank < k->nranks && li >= 0) k->laOf[(size_t)rank] = li;
++}
++// The context's nonce (after the all-gather; the link is made before it for INFO): REGISTER, SPARE_HELLO, the messages.
++static void gdakiCtrlLaSetNonce(struct gdakiCtrlLaLink* k, uint64_t nonce) {
++  k->nonce = nonce;
++  k->qkey = gdakiCtrlQkeyOf(nonce);
++}
++// This rank's all-gather field from the INFO answer (REVIEW_P3 막는 문제 2): magic 0 without an OK answer.
++static void gdakiCtrlLaAgOf(const struct gdakiCtrlLaUnix& u, struct gdakiCtrlLaAgInfo* out) {
++  memset(out, 0, sizeof(*out));
++  if (!u.infoAcked || u.info.status != GL_UA_OK) return;
++  static_assert(sizeof(out->ud) == sizeof(u.info.ud), "the field's endpoint is launcher_msg.h's glEp");
++  out->magic = GDAKI_CTRL_LA_AG_MAGIC;
++  out->node = u.info.node;
++  out->qkey = u.info.qkey;
++  memcpy(&out->ud, &u.info.ud, sizeof(out->ud));
++  out->pageAddr = u.info.page.addr;
++  out->pageRkey = u.info.page.rkey;
++  out->pageLen = u.info.page.len;
++}
++// Every rank's field after the all-gather: the launchers they name, added in node order (an earlier one stays where it
++// is), each rank's node launcher, the launcher count (gdakiCtrlLaAllPaired). Returns the count.
++static int gdakiCtrlLaAgTake(struct gdakiCtrlLaLink* k, const struct gdakiCtrlLaAgInfo* by, int n) {
++  std::vector<uint32_t> nodes;
++  for (int r = 0; r < n; r++)
++    if (by[r].magic == GDAKI_CTRL_LA_AG_MAGIC) nodes.push_back(by[r].node);
++  std::sort(nodes.begin(), nodes.end());
++  nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
++  for (uint32_t node : nodes)
++    for (int r = 0; r < n; r++)
++      if (by[r].magic == GDAKI_CTRL_LA_AG_MAGIC && by[r].node == node) {
++        struct glEp ud;
++        memcpy(&ud, &by[r].ud, sizeof(ud));
++        const struct glRegion page = {by[r].pageAddr, by[r].pageRkey, by[r].pageLen};
++        (void)gdakiCtrlLaAddLauncher(k, node, ud, by[r].qkey, page);
++        break;
++      }
++  for (int r = 0; r < n && r < k->nranks; r++)
++    if (by[r].magic == GDAKI_CTRL_LA_AG_MAGIC) gdakiCtrlLaSetRankNode(k, r, by[r].node);
++  k->nLaunchers = (int)nodes.size();
++  if (k->me >= 0 && k->me < k->nranks && k->laOf[(size_t)k->me] >= 0) k->own = k->laOf[(size_t)k->me];
++  return k->nLaunchers;
 +}
 +static int gdakiCtrlLaIndexOfNode(const struct gdakiCtrlLaLink* k, uint32_t node) {
 +  for (size_t i = 0; i < k->la.size(); i++)
@@ -1354,6 +1640,51 @@ index f0ec50d..f8085d3 100644
 +  const struct glArmView v = gdakiCtrlLaArmViewOf(k);
 +  return gl_path_exists(&v) != 0;
 +}
++// ---- the Unix socket's blocking waits (the setup thread; a spare's driver) ----
++static void gdakiCtrlLaWaitSock(struct gdakiCtrlLaLink* k, int ms) {
++  if (k->waitHook != nullptr) k->waitHook(k->waitArg, ms);
++  else gdakiCtrlLaUnixWait(&k->unix, ms);
++  (void)gdakiCtrlLaUnixPoll(&k->unix, k->log, k->me);
++}
++static bool gdakiCtrlLaOpenSock(struct gdakiCtrlLaLink* k, char* why, size_t whyLen) {
++  if (k->unix.fd >= 0) return !k->unix.closed;
++  char path[sizeof(((struct sockaddr_un*)nullptr)->sun_path)];
++  if (!gdakiCtrlLaSockPath(path, sizeof(path))) {
++    snprintf(why, whyLen, "the socket path is too long");
++    return false;
++  }
++  return gdakiCtrlLaUnixOpen(&k->unix, path, why, whyLen);
++}
++// INFO and its answer within waitMs (before the all-gather: no nonce). True: answered OK (k->unix.info).
++static bool gdakiCtrlLaInfoWait(struct gdakiCtrlLaLink* k, int waitMs) {
++  char why[160] = {0};
++  if (!gdakiCtrlLaOpenSock(k, why, sizeof(why)) || !gdakiCtrlLaUnixInfo(&k->unix, k->me)) return false;
++  const double end = gdakiQ4MonoMs() + waitMs;
++  while (!k->unix.infoAcked && !k->unix.closed && gdakiQ4MonoMs() < end) gdakiCtrlLaWaitSock(k, 5);
++  return k->unix.infoAcked && k->unix.info.status == GL_UA_OK;
++}
++// REGISTER (a rank) or SPARE_HELLO (a spare) and its answer within waitMs; NCCL_GIN_CTRL_LAUNCHER_NODE, when set, must be
++// the answer's node. True: registered; the own launcher known (added at the end unless the all-gather added it) and this
++// rank's node launcher set. False with why.
++static bool gdakiCtrlLaRegisterWait(struct gdakiCtrlLaLink* k, int role, uint32_t inc, int waitMs, char* why, size_t whyLen) {
++  why[0] = '\0';
++  if (gdakiCtrlLaOpenSock(k, why, whyLen) && gdakiCtrlLaUnixHello(&k->unix, role, k->me, inc, k->nonce, why, whyLen)) {
++    const double end = gdakiQ4MonoMs() + waitMs;
++    while (!k->unix.acked && !k->unix.closed && gdakiQ4MonoMs() < end) gdakiCtrlLaWaitSock(k, 5);
++    if (!k->unix.acked) snprintf(why, whyLen, "no answer from the launcher in %d ms", waitMs);
++    else if (k->unix.ackStatus != GL_UA_OK) snprintf(why, whyLen, "refused: %s", gl_reason_text(k->unix.ackReason));
++  } else if (why[0] == '\0') {
++    snprintf(why, whyLen, "the socket is closed");
++  }
++  const long envNode = gdakiCtrlLaNodeEnv();
++  if (why[0] == '\0' && envNode >= 0 && (uint32_t)envNode != k->unix.ack.node)
++    snprintf(why, whyLen, "%s=%ld but the launcher on the socket is node %u", GL_NODE_ENV, envNode, k->unix.ack.node);
++  if (why[0] != '\0') return false;
++  k->inc = inc;
++  k->own = gdakiCtrlLaAddLauncher(k, k->unix.ack.node, k->unix.ack.ud, k->unix.ack.qkey, k->unix.ack.page);
++  gdakiCtrlLaSetRankNode(k, k->me, k->unix.ack.node);
++  return k->own >= 0;
++}
 +// The latch's condition (REVIEW_P12 고칠 것 5): the record QP to the own launcher is connected and the launcher holds
 +// this incarnation's pidfd (its HELLO_ACK and its note ALIVE for inc).
 +static bool gdakiCtrlLaPairedOwn(const struct gdakiCtrlLaLink* k) {
@@ -1361,11 +1692,70 @@ index f0ec50d..f8085d3 100644
 +  return v.regAcked && v.regAckInc == v.inc && v.ownPaired && v.notedReg == GL_RS_ALIVE && v.notedInc == v.inc;
 +}
 +
++// The buddy's part of a ward's arming (design v3 5.4 7, 재검토 S14; REVIEW_P3 고칠 것 2): the buddy fences and activates
++// the ward through the ward's node launcher only, so its PAUSED of the ward's checkpoint is armable only while its
++// record QP to that launcher is CONNECTED (a revived buddy: after it paired again as its new incarnation) and it has not
++// left. The ward's CKPT_STABLE needs every PAUSED armable (allArmable), so the ward re-arms only after that pairing.
++static bool gdakiCtrlLaWardPathOk(const struct gdakiCtrlLaLink* k, int ward) {
++  const int li = ward >= 0 && ward < k->nranks ? k->laOf[(size_t)ward] : -1;
++  if (li < 0 || li >= (int)k->la.size() || k->leaving || k->unix.leavingSent || !k->pairOk) return false;
++  const struct gdakiCtrlLaPeer& p = k->la[(size_t)li];
++  return p.known && p.connected && !p.qpErr;
++}
++
++// ---- STORE_REQ's registration and CKPT_STABLE's arming (REVIEW_P3 고칠 것 3) ----
++// The tail's path is computed once and kept: CKPT_STABLE arms only when the buddy's registration (that tail) says the
++// path for this incarnation and the path exists now.
++static bool gdakiCtrlLaTailFill(struct gdakiCtrlLaLink* k, struct gdakiCtrlLaSpareReg* g) {
++  const bool path = gdakiCtrlLaPathExists(k);
++  memset(g, 0, sizeof(*g));
++  g->magic = GDAKI_CTRL_LA_SPAREREG_MAGIC;
++  g->version = GDAKI_CTRL_LA_SPAREREG_VERSION;
++  g->path = GDAKI_CTRL_LA_PATH_LAUNCHER;
++  g->node = k->own >= 0 && k->own < (int)k->la.size() ? k->la[(size_t)k->own].node : 0u;
++  g->rank = k->me;
++  g->inc = k->inc;
++  g->flags = path ? GDAKI_CTRL_LA_REG_F_PATH : 0u;
++  k->regSent.valid = true;
++  k->regSent.flags = g->flags;
++  k->regSent.inc = k->inc;
++  return path;
++}
++// *resend: the path exists but the registration the buddy holds does not say so (a new STORE_REQ carries it).
++static bool gdakiCtrlLaStableArm(struct gdakiCtrlLaLink* k, bool allArmable, bool* resend) {
++  const bool now = gdakiCtrlLaPathExists(k);
++  const bool held = k->regSent.valid && k->regSent.inc == k->inc && (k->regSent.flags & GDAKI_CTRL_LA_REG_F_PATH) != 0;
++  *resend = now && !held;
++  return allArmable && now && held;
++}
++
 +// ---- the fence word and its lines ----
 +// An ended (rank, inc) from launcher li (EXITED, FENCED): the word goes to max(word, inc + 1) when the lineage takes it.
 +// The buddy's FENCED line and every survivor's window line come once per armed hold (gdakiCtrlLaFenceReport).
-+static void gdakiCtrlLaFenceReport(struct gdakiCtrlLaLink* k, int peer, bool buddy, uint32_t (*cells)(void*, int, uint32_t*),
-+                                   void* cellsArg) {
++// The judgement of (peer, dead) here, before the hold start's quiesce: the window cells' snapshot, once per (peer, dead).
++static void gdakiCtrlLaOnJudgement(struct gdakiCtrlLaLink* k, int peer, uint32_t dead) {
++  if (peer < 0 || peer >= k->nranks) return;
++  struct gdakiCtrlLaSnap& s = k->snap[(size_t)peer];
++  if (s.have && s.dead == dead) return;
++  gdakiCtrlLaCellsTake(k->cells, &s.v, &s.ok);
++  s.have = true;
++  s.dead = dead;
++}
++// The window line, once per armed hold: `after` is "fence" (the word stood by FENCED) or "judgement" (by EXITED, or the
++// hold ended without the word).
++static void gdakiCtrlLaWindowLine(struct gdakiCtrlLaLink* k, int peer, const char* after) {
++  struct gdakiCtrlLaFence& f = k->fence[(size_t)peer];
++  if (f.windowSaid) return;
++  f.windowSaid = true;
++  std::vector<uint64_t> v;
++  std::vector<uint8_t> ok;
++  gdakiCtrlLaCellsTake(k->cells, &v, &ok);
++  uint32_t unreadable = 0;
++  const uint32_t changed = gdakiCtrlLaCellsDiff(k->snap[(size_t)peer], f.dead, v, ok, &unreadable);
++  gdakiCtrlLaSay(k->log, "GIN/RC: rank %d: window check after the %s of rank %d: changed=%u cells "
++                 "against=snapshot_at_judgement unreadable=%u", k->me, after, peer, changed, unreadable);
++}
++static void gdakiCtrlLaFenceReport(struct gdakiCtrlLaLink* k, int peer, bool buddy) {
 +  struct gdakiCtrlLaFence& f = k->fence[(size_t)peer];
 +  if (!f.armed || !gdakiCtrlFencedIs(k->fencedPlus1[(size_t)peer], f.dead)) return;
 +  if (buddy && !f.reported) {
@@ -1373,24 +1763,25 @@ index f0ec50d..f8085d3 100644
 +    gdakiCtrlLaSay(k->log, "GIN/RC: rank %d: rank %d (incarnation %u) fence FENCED (by %s from node %u)", k->me, peer, f.dead,
 +                   k->endKind[(size_t)peer] == GL_K_EXITED ? "EXITED" : "FENCED", k->endNode[(size_t)peer]);
 +  }
-+  if (!f.windowSaid && cells != nullptr) {
-+    f.windowSaid = true;
-+    uint32_t unreadable = 0;
-+    const uint32_t changed = cells(cellsArg, peer, &unreadable);
-+    gdakiCtrlLaSay(k->log, "GIN/RC: rank %d: window check after the %s of rank %d: changed=%u cells "
-+                   "against=snapshot_at_judgement unreadable=%u", k->me, k->endKind[(size_t)peer] == GL_K_EXITED ? "judgement" : "fence",
-+                   peer,
-+                   changed, unreadable);
-+  }
++  gdakiCtrlLaWindowLine(k, peer, k->endKind[(size_t)peer] == GL_K_EXITED ? "judgement" : "fence");
++}
++// The hold of (peer, f.dead) ended here without the fence word (a fallback, a cancel): the window line now.
++static void gdakiCtrlLaOnHoldEnd(struct gdakiCtrlLaLink* k, int peer) {
++  if (peer < 0 || peer >= k->nranks || !k->fence[(size_t)peer].armed) return;
++  gdakiCtrlLaWindowLine(k, peer, "judgement");
 +}
 +static void gdakiCtrlLaOnEnded(struct gdakiCtrlLaLink* k, int li, const struct glMsg& m) {
 +  const int p = m.h.rank;
-+  if (p < 0 || p >= k->nranks || m.h.kind == GL_K_LEFT) return;  // LEFT is a leave, never a fence
++  if (p < 0 || p >= k->nranks) return;
 +  const uint32_t inc = m.h.incarnation;
 +  if (k->lnOk != nullptr && !k->lnOk(k->lnArg, p, inc)) {
 +    gdakiCtrlLaSay(k->log, "GIN/LN: rank %d: %s of rank %d incarnation %u from node %u is not this lineage's (FUTURE or "
-+                   "STALE): the fence word stays", k->me, m.h.kind == GL_K_EXITED ? "EXITED" : "FENCED", p, inc,
-+                   k->la[(size_t)li].node);
++                   "STALE): the %s", k->me, m.h.kind == GL_K_EXITED ? "EXITED" : m.h.kind == GL_K_LEFT ? "LEFT" : "FENCED",
++                   p, inc, k->la[(size_t)li].node, m.h.kind == GL_K_LEFT ? "leave is not taken" : "fence word stays");
++    return;
++  }
++  if (m.h.kind == GL_K_LEFT) {  // a leave, never a fence: the judgement table's L input (REVIEW_P3 고칠 것 1)
++    k->leftPlus1[(size_t)p] = std::max<uint64_t>(k->leftPlus1[(size_t)p], (uint64_t)inc + 1u);
 +    return;
 +  }
 +  const uint64_t w = gdakiCtrlFenceWord(inc);
@@ -1398,6 +1789,31 @@ index f0ec50d..f8085d3 100644
 +  k->fencedPlus1[(size_t)p] = w;
 +  k->endKind[(size_t)p] = m.h.kind;
 +  k->endNode[(size_t)p] = k->la[(size_t)li].node;
++}
++
++// ---- the judgement table's L inputs (design v3 4.2 L; REVIEW_P3 고칠 것 1) ----
++// Per rank, three words the helper publishes and the watch thread reads (no lock): LEFT's i + 1, the fence word (EXITED
++// or FENCED: "ended"), the registration word of the rank's node launcher's latest REG_NOTE (regInc << 32 | have << 8 |
++// regState). pullOk (the launcher page's READ, TODO(2a-2) 5) is not among them: until it exists L is 무응답 unless LEFT or
++// an end of that incarnation came.
++struct gdakiCtrlLaLIn {
++  bool left = false, ended = false, regAlive = false, regLeft = false;
++};
++static uint64_t gdakiCtrlLaRegWord(const struct gdakiCtrlLaLink* k, int p) {
++  const int li = p >= 0 && p < k->nranks ? k->laOf[(size_t)p] : -1;
++  if (li < 0 || li >= (int)k->la.size() || !k->la[(size_t)li].haveNote[(size_t)p]) return 0;
++  const struct glRegNoteBody& n = k->la[(size_t)li].note[(size_t)p];
++  return ((uint64_t)n.regInc << 32) | (1ull << 8) | (uint64_t)(n.regState & 0xffu);
++}
++static struct gdakiCtrlLaLIn gdakiCtrlLaLInOf(uint64_t leftPlus1, uint64_t fencedPlus1, uint64_t reg, uint32_t inc) {
++  struct gdakiCtrlLaLIn x;
++  x.left = leftPlus1 == (uint64_t)inc + 1u;
++  x.ended = gdakiCtrlFencedIs(fencedPlus1, inc);
++  const bool have = ((reg >> 8) & 1u) != 0;
++  const uint32_t st = (uint32_t)(reg & 0xffu), ri = (uint32_t)(reg >> 32);
++  x.regAlive = have && st == GL_RS_ALIVE && ri == inc;
++  x.regLeft = have && st == GL_RS_LEFT && ri == inc;
++  return x;
 +}
 +
 +// ---- messages from a launcher ----
@@ -1512,7 +1928,8 @@ index f0ec50d..f8085d3 100644
 +    case GL_K_FETCH_DONE: {
 +      if (r < 0 || r >= k->nranks) return;
 +      struct gdakiCtrlLaAct& a = k->act[(size_t)r];
-+      if (a.li != li || a.inc != m.h.incarnation || a.state == GDAKI_CTRL_LA_ACT_NONE) return;  // not this activation
++      // not this activation: another launcher, incarnation or ACTIVATE (the launcher echoes its seq, REVIEW_P3 nit 3)
++      if (a.li != li || a.inc != m.h.incarnation || a.state == GDAKI_CTRL_LA_ACT_NONE || m.h.reqSeq != a.reqSeq) return;
 +      if (m.h.kind == GL_K_FETCH_EP) {
 +        memcpy(a.ep, m.body, sizeof(a.ep));
 +        a.haveEp = true;
@@ -1593,7 +2010,17 @@ index f0ec50d..f8085d3 100644
 +  const int li = k->laOf[(size_t)peer];
 +  const char* lw = nullptr;
 +  if (li < 0 || gdakiCtrlLaLost(k, li, now, &lw)) {
-+    if (!f.sent || li < 0) return -1;
++    if (!f.sent || li < 0) {  // FENCE never went (REVIEW_P3 nit 7): a line of its own, once
++      if (buddy && !f.noPathSaid) {
++        f.noPathSaid = true;
++        char node[16];
++        if (li >= 0) snprintf(node, sizeof(node), "%u", k->la[(size_t)li].node);
++        else snprintf(node, sizeof(node), "unknown");
++        gdakiCtrlLaSay(k->log, "GIN/RC: rank %d: rank %d (incarnation %u) fence: no path to the launcher of node %s (%s): "
++                       "FENCE not sent", k->me, peer, dead, node, li < 0 ? "not_known" : lw);
++      }
++      return -1;
++    }
 +    gdakiCtrlLaSay(k->log, "GIN/RC: rank %d: rank %d (incarnation %u) fence: the launcher of node %u is lost (%s) "
 +                   "(STOP_launcher)", k->me, peer, dead, k->la[(size_t)li].node, lw);
 +    return -1;
@@ -1608,6 +2035,29 @@ index f0ec50d..f8085d3 100644
 +    gdakiCtrlLaSay(k->log, "GIN/RC: rank %d: rank %d (incarnation %u) fence FENCING: FENCE sent to the launcher of node %u",
 +                   k->me, peer, dead, k->la[(size_t)li].node);
 +  return 0;
++}
++
++// The activation gate's launcher part (gdakiCtrlActFenceOk's body, the buddy, once every HOLDING is in): the fence step,
++// its FENCED report or its FENCE_NAK line. GO (the word says FENCED), WAIT, or FALLBACK with why (the caller falls back).
++enum : int { GDAKI_CTRL_LA_GATE_WAIT = 0, GDAKI_CTRL_LA_GATE_GO = 1, GDAKI_CTRL_LA_GATE_FALLBACK = -1 };
++static int gdakiCtrlLaGate(struct gdakiCtrlLaLink* k, int peer, uint32_t dead, double now, char* why, size_t whyLen) {
++  if (peer < 0 || peer >= k->nranks) {
++    snprintf(why, whyLen, "no such peer");
++    return GDAKI_CTRL_LA_GATE_FALLBACK;
++  }
++  const int f = gdakiCtrlLaFence(k, peer, dead, now, true);
++  if (f > 0) gdakiCtrlLaFenceReport(k, peer, true);
++  if (f < 0) {
++    if (k->fence[(size_t)peer].nak) {
++      const int li = k->laOf[(size_t)peer];
++      gdakiCtrlLaSay(k->log, "GIN/RC: rank %d: rank %d (incarnation %u) fence FENCE_NAK from node %u: nothing held, "
++                     "falling back", k->me, peer, dead, li >= 0 ? k->la[(size_t)li].node : 0u);
++    }
++    snprintf(why, whyLen, "the fence of the peer's dead incarnation cannot complete (FENCE_NAK, no launcher path, or the "
++                          "launcher is lost)");
++    return GDAKI_CTRL_LA_GATE_FALLBACK;
++  }
++  return gdakiCtrlFencedIs(k->fencedPlus1[(size_t)peer], dead) ? GDAKI_CTRL_LA_GATE_GO : GDAKI_CTRL_LA_GATE_WAIT;
 +}
 +
 +// ---- the buddy: the activation through the launcher (design v3 5.4 4) ----
@@ -1729,45 +2179,49 @@ index f0ec50d..f8085d3 100644
 +}
 +// The FETCH talk's relay (the spare's side; the bytes of today's activation connection after ACCEPTED): the caller's end
 +// of a socketpair takes them as before (gdakiMiSpareActivateFetch: out 112 B FETCH_EP, in 72 B READY, out 80 B DONE); the
-+// relay thread moves them to and from the launcher's ACT_TALK. ABORT from the launcher, the launcher socket's loss or the
-+// caller's close end it (the caller's read then fails: its FETCH gives up).
++// relay thread moves them to and from the launcher's ACT_TALK. ABORT from the launcher, the launcher socket's loss, the
++// caller's close (EOF, in any phase) or stop end it (the caller's read then fails: its FETCH gives up). The bytes the
++// caller wrote are read before stop is looked at (REVIEW_P3 고칠 것 4: DONE is relayed even when the end follows it).
 +struct gdakiCtrlLaRelay {
 +  int fd = -1;                 // the relay's end
 +  std::thread th;
 +  std::atomic<bool> stop{false};
++  std::atomic<bool> done{false};  // the thread ended (its last piece relayed or given up)
 +  bool aborted = false;
++  bool callerGone = false;     // the caller's end closed before the talk's end
 +  int moved = 0;               // pieces moved (EP, READY, DONE)
 +};
-+static bool gdakiCtrlLaRelayRead(int fd, void* p, size_t n, std::atomic<bool>* stop, struct gdakiCtrlLaUnix* u,
-+                                 const struct gdakiCtrlLaLog& log, int me, bool* aborted) {
++// 1 read, 0 the caller closed, -1 stopped, aborted or the launcher socket lost.
++static int gdakiCtrlLaRelayRead(int fd, void* p, size_t n, std::atomic<bool>* stop, struct gdakiCtrlLaUnix* u,
++                                const struct gdakiCtrlLaLog& log, int me, bool* aborted) {
 +  size_t have = 0;
 +  while (have < n) {
-+    if (stop->load(std::memory_order_acquire)) return false;
-+    (void)gdakiCtrlLaUnixPoll(u, log, me);
-+    for (const auto& t : u->talk)
-+      if (t.h.sub == GL_UT_ABORT) *aborted = true;
-+    if (*aborted || u->closed) return false;
 +    const ssize_t k = recv(fd, (char*)p + have, n - have, MSG_DONTWAIT);
 +    if (k > 0) {
 +      have += (size_t)k;
 +      continue;
 +    }
-+    if (k == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) return false;
++    if (k == 0) return 0;
++    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return 0;
++    if (stop->load(std::memory_order_acquire)) return -1;
++    (void)gdakiCtrlLaUnixPoll(u, log, me);
++    for (const auto& t : u->talk)
++      if (t.h.sub == GL_UT_ABORT) *aborted = true;
++    if (*aborted || u->closed) return -1;
 +    struct pollfd pf[2] = {{fd, POLLIN, 0}, {u->fd, POLLIN, 0}};
 +    (void)poll(pf, 2, 5);
 +  }
-+  return true;
++  return 1;
 +}
-+static void gdakiCtrlLaRelayMain(struct gdakiCtrlLaRelay* x, struct gdakiCtrlLaUnix* u, struct gdakiCtrlLaLog log, int me) {
++static void gdakiCtrlLaRelayBody(struct gdakiCtrlLaRelay* x, struct gdakiCtrlLaUnix* u, const struct gdakiCtrlLaLog& log,
++                                 int me) {
 +  uint8_t ep[GL_FETCH_EP_BYTES], done[GL_FETCH_DONE_BYTES];
-+  if (!gdakiCtrlLaRelayRead(x->fd, ep, sizeof(ep), &x->stop, u, log, me, &x->aborted) ||
-+      !gdakiCtrlLaUnixTalk(u, GL_UT_FETCH_EP, ep, sizeof(ep))) {
-+    shutdown(x->fd, SHUT_RDWR);
-+    return;
-+  }
++  int rd = gdakiCtrlLaRelayRead(x->fd, ep, sizeof(ep), &x->stop, u, log, me, &x->aborted);
++  if (rd == 0) x->callerGone = true;
++  if (rd != 1 || !gdakiCtrlLaUnixTalk(u, GL_UT_FETCH_EP, ep, sizeof(ep))) return;
 +  x->moved++;
 +  bool got = false;  // the buddy's READY (or FAIL), relayed by the launcher
-+  while (!got && !x->stop.load(std::memory_order_acquire) && !x->aborted && !u->closed) {
++  while (!got && !x->stop.load(std::memory_order_acquire) && !x->aborted && !u->closed && !x->callerGone) {
 +    (void)gdakiCtrlLaUnixPoll(u, log, me);
 +    while (!u->talk.empty()) {
 +      const struct glUnixMsg t = u->talk.front();
@@ -1781,23 +2235,28 @@ index f0ec50d..f8085d3 100644
 +          off += (size_t)k;
 +        }
 +        got = off == GL_FETCH_READY_BYTES;
-+        if (!got) x->aborted = true;
++        if (!got) x->callerGone = true;
 +      }
 +    }
-+    if (!got && !x->aborted) {
-+      struct pollfd pf = {u->fd, POLLIN, 0};
-+      (void)poll(&pf, 1, 5);
++    if (!got && !x->aborted) {  // the launcher's socket and the caller's end (REVIEW_P3 고칠 것 5 (가): its close)
++      struct pollfd pf[2] = {{u->fd, POLLIN, 0}, {x->fd, POLLIN, 0}};
++      if (poll(pf, 2, 5) > 0 && (pf[1].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
++        char c;
++        const ssize_t k = recv(x->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
++        if (k == 0 || (k < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) x->callerGone = true;
++      }
 +    }
 +  }
-+  if (!got) {
-+    shutdown(x->fd, SHUT_RDWR);
-+    return;
-+  }
++  if (!got) return;
 +  x->moved++;
-+  if (gdakiCtrlLaRelayRead(x->fd, done, sizeof(done), &x->stop, u, log, me, &x->aborted) &&
-+      gdakiCtrlLaUnixTalk(u, GL_UT_FETCH_DONE, done, sizeof(done)))
-+    x->moved++;
++  rd = gdakiCtrlLaRelayRead(x->fd, done, sizeof(done), &x->stop, u, log, me, &x->aborted);
++  if (rd == 0) x->callerGone = true;
++  if (rd == 1 && gdakiCtrlLaUnixTalk(u, GL_UT_FETCH_DONE, done, sizeof(done))) x->moved++;
++}
++static void gdakiCtrlLaRelayMain(struct gdakiCtrlLaRelay* x, struct gdakiCtrlLaUnix* u, struct gdakiCtrlLaLog log, int me) {
++  gdakiCtrlLaRelayBody(x, u, log, me);
 +  shutdown(x->fd, SHUT_RDWR);
++  x->done.store(true, std::memory_order_release);
 +}
 +// Start the relay: *callerFd is the caller's end. False: no socketpair.
 +static bool gdakiCtrlLaRelayStart(struct gdakiCtrlLaRelay* x, struct gdakiCtrlLaUnix* u, const struct gdakiCtrlLaLog& log,
@@ -1806,17 +2265,32 @@ index f0ec50d..f8085d3 100644
 +  if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0) return false;
 +  x->fd = sv[1];
 +  x->stop.store(false, std::memory_order_release);
++  x->done.store(false, std::memory_order_release);
 +  x->aborted = false;
++  x->callerGone = false;
 +  x->moved = 0;
 +  *callerFd = sv[0];
 +  x->th = std::thread(gdakiCtrlLaRelayMain, x, u, log, me);
 +  return true;
 +}
-+static void gdakiCtrlLaRelayEnd(struct gdakiCtrlLaRelay* x) {
++// End the relay: graceMs > 0 (after the FETCH): the thread ends by itself (DONE relayed, or the caller's EOF) within
++// graceMs before stop is set (REVIEW_P3 고칠 것 4); 0 (a failure): stop now.
++static void gdakiCtrlLaRelayEnd(struct gdakiCtrlLaRelay* x, int graceMs) {
++  if (x->th.joinable() && graceMs > 0) {
++    const double end = gdakiQ4MonoMs() + graceMs;
++    while (!x->done.load(std::memory_order_acquire) && gdakiQ4MonoMs() < end) usleep(500);
++  }
 +  x->stop.store(true, std::memory_order_release);
 +  if (x->th.joinable()) x->th.join();
 +  if (x->fd >= 0) close(x->fd);
 +  x->fd = -1;
++}
++// A spare's REPLAY_FAILED (REVIEW_P3 고칠 것 9): its replay or its Resume refused before an activation was accepted
++// (the launcher answers the buddy REFUSED, design v3 5.2), once.
++static bool gdakiCtrlLaSpareFail(struct gdakiCtrlLaUnix* u, const char* why) {
++  if (u->role != GDAKI_CTRL_LA_ROLE_SPARE || u->failedSent || u->fd < 0 || u->closed) return false;
++  u->failedSent = gdakiCtrlLaUnixStatus(u, false, why);
++  return u->failedSent;
 +}
 +// The blob of ACT_BYTES on a socketpair's read end, for the reader of today's activation connection (gdakiMiActRecv).
 +// -1: none.
@@ -1839,6 +2313,241 @@ index f0ec50d..f8085d3 100644
 +  }
 +  return sv[0];
 +}
++// ---- the host's glue, here for the unit test (REVIEW_P3 고칠 것 6): the buddy's activation step, the FETCH_DONE hand-off,
++// the spare's wait and its revival; the host gives the mirror's and the hold's parts as tables ----
++// FETCH_DONE through the launcher to the FETCH waiter (its socketpair's other end), then that end closed.
++static void gdakiCtrlLaFetchFwdStep(struct gdakiCtrlLaLink* k) {
++  if (k->fwdSock < 0 || k->fwdPeer < 0 || k->fwdPeer >= k->nranks) return;
++  struct gdakiCtrlLaAct& a = k->act[(size_t)k->fwdPeer];
++  if (!a.haveDone) return;
++  (void)send(k->fwdSock, a.done, sizeof(a.done), MSG_NOSIGNAL | MSG_DONTWAIT);
++  a.haveDone = false;
++  close(k->fwdSock);
++  k->fwdSock = -1;
++  k->fwdPeer = -1;
++}
++struct gdakiCtrlLaBuddyOps {
++  void* arg = nullptr;
++  void (*unlock)(void* arg) = nullptr;  // around the drain and the blob (the helper's time; the link's mutex is free)
++  void (*lock)(void* arg) = nullptr;
++  // mirror or store on: the drain step: 0 drained, > 0 not yet (the next step), < 0 fall back with why
++  int (*drain)(void* arg, int peer, uint32_t dead, uint64_t step, char* why, size_t whyLen) = nullptr;
++  // the blob's bytes for the record; false with why
++  bool (*blob)(void* arg, int peer, uint32_t dead, const struct glRsActivate& rec, std::vector<uint8_t>* bytes, char* why,
++               size_t whyLen) = nullptr;
++  // the blob into this rank's outbox: its region and transfer id; false: no outbox (TODO(2a-2))
++  bool (*outboxPut)(void* arg, const std::vector<uint8_t>& bytes, struct glRegion* out, uint64_t* xferId) = nullptr;
++  // after ACCEPTED: this rank's FETCH QP to the spare's endpoint (gdakiMiActAnswer::fetch); false with why
++  bool (*fetchConnect)(void* arg, int peer, uint32_t dead, const struct gdakiMiActAnswer& an, char* why, size_t whyLen) =
++    nullptr;
++  // the FETCH waiter on fd (it reads the spare's DONE, 80 B, and owns fd); false: none (fd is closed here)
++  bool (*waiter)(void* arg, int peer, uint32_t dead, int fd) = nullptr;
++};
++struct gdakiCtrlLaBuddyOut {
++  bool started = false;     // ACTIVATE went out in this step
++  bool laterNew = false;    // the first LATER is new in this step (the host's LATER line)
++  bool fetchReady = false;  // READY went to the spare (its FETCH runs)
++  bool endAct = false;      // the caller ends the mirror's activation (gdakiMiActEnd) with the fallback
++  char why[256] = {0};      // the fallback's reason
++  char fetchWhy[160] = {0}; // the FETCH handshake's failure (the host's GIN/MI line)
++};
++enum : int { GDAKI_CTRL_LA_BS_WAIT = 0, GDAKI_CTRL_LA_BS_ACTIVATED = 1, GDAKI_CTRL_LA_BS_FALLBACK = -1 };
++// One step of the buddy's activation of (peer, dead + 1) (gdakiHoldActivateSend's rdma body). The first step decorates
++// the record (pid and pidStart 0, reserved = FENCED, version MI with the blob) and sends ACTIVATE; the next ones read the
++// answer (gdakiCtrlLaActStep) and, mirror or store on, after ACCEPTED: the spare's FETCH endpoint within 1000 ms, this
++// rank's FETCH QP, READY through the launcher, the waiter on a socketpair the FETCH_DONE hand-off fills.
++static int gdakiCtrlLaBuddyStep(struct gdakiCtrlLaLink* k, int peer, const struct glRsActivate& rec0, uint32_t dead, bool mi,
++                                double now, const struct gdakiCtrlLaBuddyOps& ops, struct gdakiCtrlLaBuddyOut* out) {
++  struct gdakiCtrlLaAct& st = k->act[(size_t)peer];
++  if (st.state == GDAKI_CTRL_LA_ACT_NONE || st.inc != dead + 1u) {  // this activation's first step: ACTIVATE
++    struct glRsActivate rec = rec0;
++    rec.pid = 0;  // the launcher holds the pidfd; the record carries FENCED instead
++    rec.pidStart = 0;
++    rec.reserved = gdakiCtrlLaActFencedMark(rec.incarnation);
++    std::vector<uint8_t> bytes;
++    if (mi) {
++      if (ops.unlock != nullptr) ops.unlock(ops.arg);
++      const int dr = ops.drain != nullptr ? ops.drain(ops.arg, peer, dead, rec.step, out->why, sizeof(out->why)) : 0;
++      bool ok = dr == 0;
++      if (ok && (ops.blob == nullptr || !ops.blob(ops.arg, peer, dead, rec, &bytes, out->why, sizeof(out->why)))) {
++        ok = false;
++        out->endAct = true;
++        if (out->why[0] == '\0') snprintf(out->why, sizeof(out->why), "the activation blob could not be encoded");
++      }
++      if (ops.lock != nullptr) ops.lock(ops.arg);
++      if (dr > 0) return GDAKI_CTRL_LA_BS_WAIT;  // not drained yet: the next helper step
++      if (!ok) return GDAKI_CTRL_LA_BS_FALLBACK;
++      rec.version = GDAKI_RS_ACT_VERSION_MI;
++    }
++    struct glRegion at;
++    memset(&at, 0, sizeof(at));
++    uint64_t xferId = 0;
++    if (ops.outboxPut == nullptr || !ops.outboxPut(ops.arg, bytes, &at, &xferId) ||
++        !gdakiCtrlLaActStart(k, peer, rec, at, xferId, now)) {
++      out->endAct = mi;
++      snprintf(out->why, sizeof(out->why), "no launcher path for the peer's activation (TODO(2a-2): the ring and its outbox)");
++      return GDAKI_CTRL_LA_BS_FALLBACK;
++    }
++    out->started = true;
++    return GDAKI_CTRL_LA_BS_WAIT;  // the answer comes in a later step (event based: no asking again, design v3 5.4 4)
++  }
++  const int s = gdakiCtrlLaActStep(k, peer, now, out->why, sizeof(out->why));
++  if (st.nLater > 0 && !st.laterSaid) {
++    st.laterSaid = true;
++    out->laterNew = true;
++  }
++  if (s == GDAKI_CTRL_LA_AS_WAIT) return GDAKI_CTRL_LA_BS_WAIT;
++  if (s == GDAKI_CTRL_LA_AS_FALLBACK) {
++    out->endAct = mi;
++    return GDAKI_CTRL_LA_BS_FALLBACK;
++  }
++  if (!mi || st.state != GDAKI_CTRL_LA_ACT_ACCEPTED) return GDAKI_CTRL_LA_BS_ACTIVATED;
++  // the FETCH handshake: the spare's endpoint, this rank's READY
++  char w[160] = {0};
++  if (!st.haveEp) {
++    if (now - st.acceptedMs < 1000.0) return GDAKI_CTRL_LA_BS_WAIT;  // within 1000 ms (as the TCP path)
++    snprintf(w, sizeof(w), "no FETCH endpoint from the spare");
++  }
++  struct gdakiMiActAnswer an;
++  memset(&an, 0, sizeof(an));
++  static_assert(sizeof(an) == GL_FETCH_EP_BYTES, "the spare's FETCH endpoint is the relayed 112 B");
++  if (st.haveEp) memcpy(&an, st.ep, sizeof(an));
++  struct gdakiMiActReady rd;
++  memset(&rd, 0, sizeof(rd));
++  static_assert(sizeof(rd) == GL_FETCH_READY_BYTES, "READY is the relayed 72 B");
++  rd.magic = GDAKI_MI_ACTB_MAGIC;
++  if (w[0] != '\0') {
++  } else if (an.magic != GDAKI_MI_ACTB_MAGIC || an.ok != 1) {
++    an.why[sizeof(an.why) - 1] = '\0';
++    snprintf(w, sizeof(w), "no FETCH endpoint from the spare%s%.100s", an.magic == GDAKI_MI_ACTB_MAGIC ? ": " : "",
++             an.magic == GDAKI_MI_ACTB_MAGIC ? an.why : "");
++  } else if (ops.fetchConnect != nullptr && ops.fetchConnect(ops.arg, peer, dead, an, w, sizeof(w))) {
++    rd.kind = GDAKI_MI_ACT_READY;
++  } else if (w[0] == '\0') {
++    snprintf(w, sizeof(w), "no FETCH QP of this rank for the peer");
++  }
++  out->endAct = true;
++  if (rd.kind != GDAKI_MI_ACT_READY) {
++    rd.kind = GDAKI_MI_ACT_FAIL;
++    snprintf(rd.why, sizeof(rd.why), "%.63s", w);
++    (void)gdakiCtrlLaFetchReady(k, peer, &rd);
++    snprintf(out->fetchWhy, sizeof(out->fetchWhy), "%s", w);
++    snprintf(out->why, sizeof(out->why), "the peer's spare accepted its activation but the FETCH handshake failed");
++    return GDAKI_CTRL_LA_BS_FALLBACK;
++  }
++  int sv[2];
++  if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0) {
++    sv[0] = sv[1] = -1;
++  } else if (ops.waiter == nullptr || !ops.waiter(ops.arg, peer, dead, sv[0])) {  // REVIEW_P3 nit 8: no waiter, no activation
++    close(sv[0]);
++    close(sv[1]);
++    sv[0] = sv[1] = -1;
++  }
++  if (sv[1] < 0) {
++    rd.kind = GDAKI_MI_ACT_FAIL;
++    snprintf(rd.why, sizeof(rd.why), "the buddy's FETCH waiter could not start");
++    (void)gdakiCtrlLaFetchReady(k, peer, &rd);
++    gdakiCtrlLaAbort(k, peer);  // after ACCEPTED only ABORT ends the launcher's activation (EXPERIMENT.md 9.5 (8))
++    snprintf(out->fetchWhy, sizeof(out->fetchWhy), "the buddy's FETCH waiter could not start");
++    snprintf(out->why, sizeof(out->why), "the peer's spare accepted its activation but the FETCH handshake failed");
++    return GDAKI_CTRL_LA_BS_FALLBACK;
++  }
++  if (!gdakiCtrlLaFetchReady(k, peer, &rd)) {
++    close(sv[1]);  // the waiter sees EOF
++    snprintf(out->why, sizeof(out->why), "READY could not be sent to the peer's spare through its launcher");
++    return GDAKI_CTRL_LA_BS_FALLBACK;
++  }
++  if (k->fwdSock >= 0) close(k->fwdSock);
++  k->fwdSock = sv[1];
++  k->fwdPeer = peer;
++  out->endAct = false;
++  out->fetchReady = true;
++  return GDAKI_CTRL_LA_BS_ACTIVATED;
++}
++// The spare: READY to its launcher, then its ACTIVATE (the launcher hands it over only after READY) within waitMs,
++// checked: the record (this communicator, this rank, the HELLO's incarnation, FENCED carried) and, mirror or store on,
++// the blob as today's reader takes it (blobRecv on a socketpair holding it); the FETCH relay before ACCEPTED (one that
++// cannot start is REFUSED); the answer as ACT_TALK ANSWER. 0: ACCEPTED (*actFd the FETCH talk's end with mi, else -1);
++// else what failed (GDAKI_CTRL_LA_ST_*) with why.
++struct gdakiCtrlLaSpareOps {
++  void* arg = nullptr;
++  void (*unlock)(void* arg) = nullptr;  // around the wait for the bytes
++  void (*lock)(void* arg) = nullptr;
++  // mirror or store on: today's reader of the blob on fd (gdakiMiActRecv): 0 usable, else REFUSED with why
++  int (*blobRecv)(void* arg, int fd, const struct glRsActivate& rec, char* why, size_t whyLen) = nullptr;
++};
++enum : int {
++  GDAKI_CTRL_LA_ST_OK = 0, GDAKI_CTRL_LA_ST_NO_HELLO = 1, GDAKI_CTRL_LA_ST_NO_READY = 2, GDAKI_CTRL_LA_ST_NO_ACT = 3,
++  GDAKI_CTRL_LA_ST_REFUSED = 4
++};
++static int gdakiCtrlLaSpareTake(struct gdakiCtrlLaLink* k, struct gdakiCtrlLaRelay* relay, int waitMs, bool mi,
++                                const struct gdakiCtrlLaSpareOps& ops, struct glRsActivate* act, int* actFd, char* why,
++                                size_t whyLen) {
++  *actFd = -1;
++  why[0] = '\0';
++  struct gdakiCtrlLaUnix& u = k->unix;
++  if (u.role != GDAKI_CTRL_LA_ROLE_SPARE || !u.acked || u.ackStatus != GL_UA_OK) return GDAKI_CTRL_LA_ST_NO_HELLO;
++  if (!gdakiCtrlLaUnixStatus(&u, true, nullptr)) return GDAKI_CTRL_LA_ST_NO_READY;
++  gdakiCtrlLaSay(k->log, "GIN/RS: spare rank %d: READY (incarnation %u) to the launcher of node %u; waiting for the "
++                 "activation", k->me, u.inc, u.ack.node);
++  const double deadline = gdakiQ4MonoMs() + waitMs;
++  while (!u.haveAct && !u.closed && gdakiQ4MonoMs() < deadline) {
++    if (ops.unlock != nullptr) ops.unlock(ops.arg);
++    if (k->waitHook != nullptr) k->waitHook(k->waitArg, 100);
++    else gdakiCtrlLaUnixWait(&u, 100);
++    if (ops.lock != nullptr) ops.lock(ops.arg);
++    (void)gdakiCtrlLaUnixPoll(&u, k->log, k->me);
++  }
++  if (!u.haveAct) {
++    snprintf(why, whyLen, "%s", u.closed ? " (its socket closed)" : "");
++    return GDAKI_CTRL_LA_ST_NO_ACT;
++  }
++  u.haveAct = false;
++  *act = u.act;
++  int code = gdakiCtrlLaSpareCheck(u.act, k->me, k->nonce, u.inc);
++  if (code != 0) snprintf(why, whyLen, "%s", gdakiCtrlLaSpareCheckText(code));
++  if (code == 0 && (mi || act->version == GDAKI_RS_ACT_VERSION_MI)) {
++    const int bfd = gdakiCtrlLaBlobFd(u.blob);
++    if (bfd < 0 || ops.blobRecv == nullptr) {
++      code = 3;
++      snprintf(why, whyLen, "the activation blob could not be read");
++    } else {
++      code = ops.blobRecv(ops.arg, bfd, *act, why, whyLen);
++    }
++    if (bfd >= 0) close(bfd);
++  }
++  // the FETCH relay before ACCEPTED (REVIEW_P3 고칠 것 5 (다)): one that cannot start is REFUSED (a final answer)
++  if (code == 0 && mi && !gdakiCtrlLaRelayStart(relay, &u, k->log, k->me, actFd)) {
++    code = 5;
++    snprintf(why, whyLen, "the FETCH relay could not start");
++  }
++  struct glRsActivate ans = *act;
++  ans.kind = code == 0 ? (uint32_t)GL_RS_ACT_ACCEPTED : (uint32_t)GL_RS_ACT_REFUSED;
++  const bool sent = gdakiCtrlLaUnixTalk(&u, GL_UT_ANSWER, &ans, sizeof(ans));
++  if (code != 0 || !sent) {
++    if (code == 0) snprintf(why, whyLen, "the answer could not be sent");
++    if (*actFd >= 0) {
++      close(*actFd);  // the relay sees EOF and ends
++      *actFd = -1;
++    }
++    gdakiCtrlLaRelayEnd(relay, 0);
++    return GDAKI_CTRL_LA_ST_REFUSED;
++  }
++  return GDAKI_CTRL_LA_ST_OK;
++}
++// The spare after its FETCH, the relay ended: this process registers as the new incarnation (the launcher swaps the
++// rank's pidfd: design v3 5.4 7) and pairs again with every launcher (its re-arming waits for that). False with why.
++static bool gdakiCtrlLaSpareRevive(struct gdakiCtrlLaLink* k, char* why, size_t whyLen) {
++  const uint32_t inc = k->unix.act.incarnation;
++  k->inc = inc;
++  for (auto& p : k->la) {
++    gdakiCtrlPairInit(&p.pair, GDAKI_CTRL_PAIR_QP_RECORD, k->me, (int32_t)(GL_FROM_LAUNCHER | p.node));
++    p.connected = false;
++  }
++  k->latched = false;
++  k->pairOk = true;
++  return gdakiCtrlLaRegisterWait(k, GDAKI_CTRL_LA_ROLE_RANK, inc, 1000, why, whyLen);
++}
 +// ---- gin-control (launcher): link (end) ----
 +// ---- gin-control (launcher): host ----
 +NCCL_PARAM(GinCtrlLaterMs, GDAKI_CTRL_P_LATER_MS, GDAKI_CTRL_LATER_MS_DEFAULT);                 // 1000 (결정 4)
@@ -1853,10 +2562,10 @@ index f0ec50d..f8085d3 100644
 +  std::mutex mu;
 +  struct gdakiRecHost* r = nullptr;
 +  bool registered = false;          // HELLO_ACK OK for the current role and incarnation
-+  std::vector<std::vector<uint32_t>> snap;   // by peer: the responder counts of its QPs at this rank's hold start
-+  std::vector<std::vector<uint8_t>> snapOk;
-+  int fetchDoneSock = -1;           // buddy: where FETCH_DONE's 80 B go (the FETCH waiter reads the other end)
-+  int fetchDonePeer = -1;
++  bool spare = false;               // a spare process (NCCL_GIN_RESTORE_SPARE) before its activation
++  uint32_t resendSaidInc = 0;       // inc + 1 of the last "STORE_REQ goes again" line
++  // the judgement table's L inputs by rank (gdakiCtrlLaLInputs; the watch thread reads them without the mutex)
++  std::unique_ptr<std::atomic<uint64_t>[]> pubLeft, pubFenced, pubReg;
 +};
 +static struct gdakiCtrlLauncher* gdakiCtrlLaOf(struct gdakiRecHost* r) {
 +  return (r != nullptr && r->ctrl != nullptr) ? r->ctrl->launcher : nullptr;
@@ -1897,34 +2606,25 @@ index f0ec50d..f8085d3 100644
 +  (void)arg, (void)li, (void)m;
 +  return -1;  // TODO(2a-2)
 +}
-+// The responder counts of the QPs toward `peer` (one QUERY per QP: the hold start's firmware phase), the window line's
-+// cells. *ok: per QP, readable.
-+static void gdakiCtrlLaCells(struct gdakiRecHost* r, int peer, std::vector<uint32_t>* v, std::vector<uint8_t>* ok) {
-+  v->clear();
-+  ok->clear();
-+  gdakiRecForPeer(r, peer, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
-+    uint32_t s = 0;
-+    const bool good = doca_verbs_qp_query_seq(q->qp, &s, nullptr, nullptr, nullptr) == DOCA_SUCCESS;
-+    v->push_back(s);
-+    ok->push_back(good ? 1 : 0);
-+  });
-+}
-+// The window line's count (gdakiCtrlLaFenceReport): the QPs toward `peer` whose responder count moved since this rank's
-+// hold start (the snapshot at the judgement), and the ones that could not be read either time.
-+static uint32_t gdakiCtrlLaCellsChanged(void* arg, int peer, uint32_t* unreadable) {
-+  struct gdakiCtrlLauncher* L = (struct gdakiCtrlLauncher*)arg;
-+  std::vector<uint32_t> now;
-+  std::vector<uint8_t> ok;
-+  gdakiCtrlLaCells(L->r, peer, &now, &ok);
-+  uint32_t changed = 0, bad = 0;
-+  const std::vector<uint32_t>& s = L->snap[(size_t)peer];
-+  const std::vector<uint8_t>& sOk = L->snapOk[(size_t)peer];
-+  for (size_t i = 0; i < now.size(); i++) {
-+    if (i >= s.size() || !sOk[i] || !ok[i]) bad++;
-+    else if (now[i] != s[i]) changed++;
++// The window line's regions (gdakiCtrlLaCellsIo): this rank's windows on the context's collComm (registration order),
++// its signal and counter tables: what a peer's RDMA WRITE or atomic can reach (gdakiCkptRegions without the
++// ncclGinRestoreRegister buffers, which no peer writes). The helper reads a cell over the copy path (gdakiRecD2H).
++static void gdakiCtrlLaCellRegions(void* arg, std::vector<struct gdakiCtrlLaRegion>* out) {
++  struct gdakiRecHost* r = (struct gdakiRecHost*)arg;
++  out->clear();
++  {
++    std::lock_guard<std::mutex> lk(gdakiRsWinMu);
++    for (const auto& w : gdakiRsWins)
++      if (w.coll == (void*)r->ctx->collComm && !w.gone && w.hi > w.lo) out->push_back({(const void*)w.lo, (uint64_t)(w.hi - w.lo)});
 +  }
-+  *unreadable = bad;
-+  return changed;
++  struct gdaki_context* g = r->ctx;
++  if (g->signals_table && g->signals_table->buffer_bytes())
++    out->push_back({g->signals_table->gpu_ptr, (uint64_t)g->signals_table->buffer_bytes()});
++  if (g->counters_table && g->counters_table->buffer_bytes())
++    out->push_back({g->counters_table->gpu_ptr, (uint64_t)g->counters_table->buffer_bytes()});
++}
++static bool gdakiCtrlLaCellRead(void* arg, const void* src, void* dst, size_t n) {
++  return gdakiRecD2H((struct gdakiRecHost*)arg, dst, src, n) == ncclSuccess;
 +}
 +// The latch (phase 1's gdakiCtrlLauncherPairedLatch): once the own launcher is paired and holds this incarnation.
 +static void gdakiCtrlLaLatchStep(struct gdakiCtrlLauncher* L) {
@@ -1934,54 +2634,40 @@ index f0ec50d..f8085d3 100644
 +  gdakiCtrlLaSay(L->k.log, "GIN/RC: rank %d: paired with the launcher of node %u, which holds incarnation %u: the "
 +                 "activation gate requires FENCED", L->k.me, L->k.la[(size_t)L->k.own].node, L->k.inc);
 +}
-+// REGISTER (a rank) or SPARE_HELLO (a spare) and its answer within 1000 ms (the setup thread; the launcher is the
-+// node's, always up during a hold). The own launcher becomes launcher 0.
++// REGISTER (a rank) or SPARE_HELLO (a spare) and its answer within 1000 ms (the setup thread, after the all-gather: the
++// nonce; the launcher is the node's, always up during a hold). The line or the WARN.
 +static void gdakiCtrlLaRegister(struct gdakiCtrlLauncher* L, int role, uint32_t inc) {
 +  struct gdakiCtrlLaLink& k = L->k;
 +  char why[160] = {0};
-+  if (k.unix.fd < 0) {
-+    char path[sizeof(((struct sockaddr_un*)nullptr)->sun_path)];
-+    if (!gdakiCtrlLaSockPath(path, sizeof(path))) snprintf(why, sizeof(why), "the socket path is too long");
-+    else (void)gdakiCtrlLaUnixOpen(&k.unix, path, why, sizeof(why));
-+  }
-+  if (k.unix.fd >= 0 && gdakiCtrlLaUnixHello(&k.unix, role, k.me, inc, k.nonce, why, sizeof(why))) {
-+    const double end = gdakiQ4MonoMs() + 1000.0;
-+    while (!k.unix.acked && !k.unix.closed && gdakiQ4MonoMs() < end) {
-+      gdakiCtrlLaUnixWait(&k.unix, 10);
-+      (void)gdakiCtrlLaUnixPoll(&k.unix, k.log, k.me);
-+    }
-+    if (!k.unix.acked) snprintf(why, sizeof(why), "no answer from the launcher in 1000 ms");
-+    else if (k.unix.ackStatus != GL_UA_OK) snprintf(why, sizeof(why), "refused: %s", gl_reason_text(k.unix.ackReason));
-+  }
-+  const long envNode = gdakiCtrlLaNodeEnv();
-+  if (why[0] == '\0' && envNode >= 0 && (uint32_t)envNode != k.unix.ack.node)
-+    snprintf(why, sizeof(why), "%s=%ld but the launcher on the socket is node %u", GL_NODE_ENV, envNode, k.unix.ack.node);
-+  if (why[0] != '\0') {
-+    L->registered = false;
++  L->registered = gdakiCtrlLaRegisterWait(&k, role, inc, 1000, why, sizeof(why));
++  if (!L->registered) {
 +    WARN("GIN/RC: rank %d: %s of incarnation %u at the node's launcher failed (%s): no launcher path, this rank is not armed "
 +         "mono_ms=%.3f", k.me, role == GDAKI_CTRL_LA_ROLE_SPARE ? "spare HELLO" : "REGISTER", inc, why, gdakiQ4MonoMs());
 +    return;
 +  }
-+  L->registered = true;
-+  k.own = gdakiCtrlLaAddLauncher(&k, k.unix.ack.node, k.unix.ack.ud, k.unix.ack.qkey, k.unix.ack.page);
-+  gdakiCtrlLaSetRankNode(&k, k.me, k.unix.ack.node);
++  if (k.unix.forkUnwatched)
++    GIN_TS_NOTE("GIN/RC: rank %d: the launcher connection has no fork-watch slot (%d in use): a forked child keeps it "
++                "open mono_ms=%.3f", k.me, GDAKI_CTRL_LA_FORK_SLOTS, gdakiQ4MonoMs());
 +  gdakiCtrlLaSay(k.log, "GIN/RC: rank %d: %s incarnation %u at the launcher of node %u (page slot %u)", k.me,
 +                 role == GDAKI_CTRL_LA_ROLE_SPARE ? "spare said HELLO as" : "registered", inc, k.unix.ack.node,
 +                 k.unix.ack.pageSlot);
 +}
-+static void gdakiCtrlLauncherSetup(struct gdakiRecHost* r) {
-+  if (r == nullptr || r->ctrl == nullptr || r->ts == nullptr || r->ctx == nullptr || r->ctrl->launcher != nullptr) return;
++// The link of this context, made at the first of gdakiCtrlLauncherQuery and gdakiCtrlLauncherSetup (no nonce yet: set at
++// the setup). Only a process that asks for the restore. Null: none.
++static struct gdakiCtrlLauncher* gdakiCtrlLaMake(struct gdakiRecHost* r) {
++  if (r == nullptr || r->ctrl == nullptr || r->ctx == nullptr) return nullptr;
++  if (r->ctrl->launcher != nullptr) return r->ctrl->launcher;
 +  const struct gdakiRsCfg& c = gdakiRsProc();
-+  if (!c.requested) return;  // no restore asked: no launcher
++  if (!c.requested) return nullptr;  // no restore asked: no launcher
 +  struct gdakiCtrlLauncher* L = new gdakiCtrlLauncher();
 +  L->r = r;
 +  struct gdakiCtrlLaLink& k = L->k;
 +  const bool spare = c.spare >= 0;
++  L->spare = spare;
 +  const uint32_t inc = spare ? gdakiCtrlLaSpareIncEnv() : gdakiRsSelfInc(r);
-+  // TODO(2a-2): the all-gather's launcher count and every rank's launcher node (gdakiCtrlLaSetRankNode), the other
-+  // launchers' UD endpoints (gdakiCtrlLaAddLauncher); this rank's UD endpoint, page and creditOff (k.ud, k.page,
-+  // k.creditOff0) from the ring. Until then only the own launcher is known and nLaunchers stays 0 (never all paired).
-+  gdakiCtrlLaInit(&k, r->ctx->rank, r->nranks, inc, r->ts->nonce, 0);
++  // TODO(2a-2): this rank's UD endpoint, page and creditOff (k.ud, k.page, k.creditOff0) from the ring; the launcher
++  // count and the other launchers come from the all-gather's fields (gdakiCtrlLauncherAgTake: 2a-2 carries them)
++  gdakiCtrlLaInit(&k, r->ctx->rank, r->nranks, inc, 0, 0);
 +  k.log.fn = gdakiCtrlLaNote;
 +  k.lnOk = gdakiCtrlLaLnOk;
 +  k.lnArg = r;
@@ -1993,15 +2679,51 @@ index f0ec50d..f8085d3 100644
 +  k.pairOk = !spare;  // a spare pairs as the new incarnation after its activation (gdakiCtrlLaSpareDone)
 +  k.laterMs = (double)ncclParamGinCtrlLaterMs();
 +  k.stallMs = (double)ncclParamGinCtrlLauncherStallMs();
-+  L->snap.assign((size_t)r->nranks, std::vector<uint32_t>());
-+  L->snapOk.assign((size_t)r->nranks, std::vector<uint8_t>());
-+  if (spare && inc == 0) {
++  L->pubLeft.reset(new std::atomic<uint64_t>[(size_t)r->nranks]());
++  L->pubFenced.reset(new std::atomic<uint64_t>[(size_t)r->nranks]());
++  L->pubReg.reset(new std::atomic<uint64_t>[(size_t)r->nranks]());
++  k.cells.arg = r;  // the window line's cells (REVIEW_P3 막는 문제 1)
++  k.cells.regions = gdakiCtrlLaCellRegions;
++  k.cells.read = gdakiCtrlLaCellRead;
++  r->ctrl->launcher = L;
++  return L;
++}
++static void gdakiCtrlLauncherQuery(struct gdakiRecHost* r) {
++  struct gdakiCtrlLauncher* L = gdakiCtrlLaMake(r);
++  if (L == nullptr) return;
++  std::lock_guard<std::mutex> lk(L->mu);
++  if (!gdakiCtrlLaInfoWait(&L->k, GDAKI_CTRL_LA_INFO_MS))
++    GIN_TS_NOTE("GIN/RC: rank %d: the node's launcher gave no INFO answer within %d ms (%s): this rank's all-gather field "
++                "says no launcher path mono_ms=%.3f", L->k.me, GDAKI_CTRL_LA_INFO_MS,
++                L->k.unix.fd < 0 ? "no socket" : L->k.unix.closed ? "its socket closed" : "TODO(launcher): INFO",
++                gdakiQ4MonoMs());
++}
++static void gdakiCtrlLauncherAgInfo(struct gdakiRecHost* r, struct gdakiCtrlLaAgInfo* out) {
++  memset(out, 0, sizeof(*out));
++  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
++  if (L == nullptr) return;
++  std::lock_guard<std::mutex> lk(L->mu);
++  gdakiCtrlLaAgOf(L->k.unix, out);
++}
++static void gdakiCtrlLauncherAgTake(struct gdakiRecHost* r, const struct gdakiCtrlLaAgInfo* byRank, int nranks) {
++  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
++  if (L == nullptr || byRank == nullptr) return;
++  std::lock_guard<std::mutex> lk(L->mu);
++  (void)gdakiCtrlLaAgTake(&L->k, byRank, nranks);
++}
++static void gdakiCtrlLauncherSetup(struct gdakiRecHost* r) {
++  if (r == nullptr || r->ts == nullptr) return;
++  struct gdakiCtrlLauncher* L = gdakiCtrlLaMake(r);
++  if (L == nullptr) return;
++  std::lock_guard<std::mutex> lk(L->mu);
++  struct gdakiCtrlLaLink& k = L->k;
++  gdakiCtrlLaSetNonce(&k, r->ts->nonce);
++  if (L->spare && k.inc == 0) {
 +    WARN("GIN/RC: rank %d: %s is not an incarnation above 0: the spare says no HELLO mono_ms=%.3f", k.me,
 +         GDAKI_CTRL_LA_SPARE_INC_ENV, gdakiQ4MonoMs());
-+  } else {
-+    gdakiCtrlLaRegister(L, spare ? GDAKI_CTRL_LA_ROLE_SPARE : GDAKI_CTRL_LA_ROLE_RANK, inc);
++    return;
 +  }
-+  r->ctrl->launcher = L;
++  gdakiCtrlLaRegister(L, L->spare ? GDAKI_CTRL_LA_ROLE_SPARE : GDAKI_CTRL_LA_ROLE_RANK, k.inc);
 +}
 +// The helper's step (gdakiTsMain): the socket (its loss: the line), the pairings' clock, the latch, the buddy's FETCH QP.
 +static void gdakiCtrlLauncherStep(struct gdakiRecHost* r) {
@@ -2012,16 +2734,37 @@ index f0ec50d..f8085d3 100644
 +  (void)gdakiCtrlLaUnixPoll(&L->k.unix, L->k.log, L->k.me);
 +  gdakiCtrlLaPairTick(&L->k, now);
 +  gdakiCtrlLaLatchStep(L);
-+  if (L->fetchDoneSock >= 0 && L->fetchDonePeer >= 0) {  // FETCH_DONE through the launcher: to the FETCH waiter
-+    struct gdakiCtrlLaAct& a = L->k.act[(size_t)L->fetchDonePeer];
-+    if (a.haveDone) {
-+      (void)send(L->fetchDoneSock, a.done, sizeof(a.done), MSG_NOSIGNAL | MSG_DONTWAIT);
-+      a.haveDone = false;
-+      close(L->fetchDoneSock);
-+      L->fetchDoneSock = -1;
-+      L->fetchDonePeer = -1;
-+    }
++  for (int p = 0; p < L->k.nranks; p++) {  // a hold that fell back without the fence word: its window line (막는 문제 1)
++    struct gdakiCtrlLaFence& f = L->k.fence[(size_t)p];
++    if (!f.armed || f.windowSaid) continue;
++    const uint32_t st = gdakiHoldPeerState(r, p, nullptr);
++    if (st == GDAKI_HOLD_FALLBACK || st == GDAKI_HOLD_CANCELLED) gdakiCtrlLaOnHoldEnd(&L->k, p);
++    else if (!gdakiHoldIsHeldState(st)) f.windowSaid = true;  // restored without the word here: no point before the new
++                                                              // incarnation writes (no line)
 +  }
++  gdakiCtrlLaFetchFwdStep(&L->k);  // FETCH_DONE through the launcher: to the FETCH waiter
++
++}
++// The L inputs' words after a launcher message (the helper, L->mu held).
++static void gdakiCtrlLaPublish(struct gdakiCtrlLauncher* L) {
++  for (int p = 0; p < L->k.nranks; p++) {
++    L->pubLeft[(size_t)p].store(L->k.leftPlus1[(size_t)p], std::memory_order_release);
++    L->pubFenced[(size_t)p].store(L->k.fencedPlus1[(size_t)p], std::memory_order_release);
++    L->pubReg[(size_t)p].store(gdakiCtrlLaRegWord(&L->k, p), std::memory_order_release);
++  }
++}
++static void gdakiCtrlLaLInputs(struct gdakiRecHost* r, int peer, uint32_t inc, bool* left, bool* ended, bool* regAlive,
++                               bool* regLeft) {
++  *left = *ended = *regAlive = *regLeft = false;
++  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
++  if (L == nullptr || peer < 0 || peer >= L->k.nranks) return;
++  const struct gdakiCtrlLaLIn x = gdakiCtrlLaLInOf(L->pubLeft[(size_t)peer].load(std::memory_order_acquire),
++                                                   L->pubFenced[(size_t)peer].load(std::memory_order_acquire),
++                                                   L->pubReg[(size_t)peer].load(std::memory_order_acquire), inc);
++  *left = x.left;
++  *ended = x.ended;
++  *regAlive = x.regAlive;
++  *regLeft = x.regLeft;
 +}
 +// [2a-2 calls it] an envelope from a launcher.
 +static void gdakiCtrlLauncherOnEnvelope(struct gdakiRecHost* r, const struct gdakiCtrlEnv* e, const void* body, bool ud) {
@@ -2039,8 +2782,9 @@ index f0ec50d..f8085d3 100644
 +    if (li >= 0 && (m.h.kind == GL_K_EXITED || m.h.kind == GL_K_FENCED) && m.h.rank >= 0 && m.h.rank < L->k.nranks) {
 +      const int p = m.h.rank;
 +      gdakiLnFenced(r, p, m.h.incarnation);  // phase 1's page copy of the word (the report)
-+      gdakiCtrlLaFenceReport(&L->k, p, gdakiHoldBuddyOf(p, L->k.nranks) == L->k.me, gdakiCtrlLaCellsChanged, L);
++      gdakiCtrlLaFenceReport(&L->k, p, gdakiHoldBuddyOf(p, L->k.nranks) == L->k.me);
 +    }
++    gdakiCtrlLaPublish(L);
 +  }
 +  gdakiCtrlLaLatchStep(L);
 +}
@@ -2053,28 +2797,52 @@ index f0ec50d..f8085d3 100644
 +    GIN_TS_NOTE("GIN/RC: rank %d: LEAVING (incarnation %u) to the launcher of node %u mono_ms=%.3f", L->k.me, L->k.inc,
 +                L->k.own >= 0 ? L->k.la[(size_t)L->k.own].node : 0u, gdakiQ4MonoMs());
 +}
-+static bool gdakiCtrlLaHaveSpare(struct gdakiRecHost* r) {
++static bool gdakiCtrlLaWardArmOk(struct gdakiRecHost* r, int ward) {
 +  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
 +  if (L == nullptr) return false;
++  if (gdakiHoldBuddyOf(ward, L->k.nranks) != L->k.me) return true;  // only the ward's buddy talks to its launcher
 +  std::lock_guard<std::mutex> lk(L->mu);
-+  gdakiCtrlLaLatchStep(L);
-+  return gdakiCtrlLaPathExists(&L->k);
++  return gdakiCtrlLaWardPathOk(&L->k, ward);
 +}
-+static void gdakiCtrlLaSpareRegFill(struct gdakiRecHost* r, void* out32) {
++static void gdakiCtrlLaStoreReqTail(struct gdakiRecHost* r, struct gdakiStoreReqSpare* sp) {
++  sp->magic = GDAKI_CTRL_LA_STORE_SPARE_MAGIC;
++  sp->haveSpare = 0;
++  sp->pid = 0;
++  sp->pidStart = 0;
 +  struct gdakiCtrlLaSpareReg g;
 +  memset(&g, 0, sizeof(g));
 +  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
 +  if (L != nullptr) {
 +    std::lock_guard<std::mutex> lk(L->mu);
-+    g.magic = GDAKI_CTRL_LA_SPAREREG_MAGIC;
-+    g.version = GDAKI_CTRL_LA_SPAREREG_VERSION;
-+    g.path = GDAKI_CTRL_LA_PATH_LAUNCHER;
-+    g.node = L->k.own >= 0 ? L->k.la[(size_t)L->k.own].node : 0u;
-+    g.rank = L->k.me;
-+    g.inc = L->k.inc;
-+    g.flags = gdakiCtrlLaPathExists(&L->k) ? GDAKI_CTRL_LA_REG_F_PATH : 0u;
++    gdakiCtrlLaLatchStep(L);
++    sp->haveSpare = gdakiCtrlLaTailFill(&L->k, &g) ? 1u : 0u;
 +  }
-+  memcpy(out32, &g, sizeof(g));
++  memcpy(sp->spareAddr, &g, sizeof(g));
++}
++static bool gdakiCtrlLaStableArmable(struct gdakiRecHost* r, bool allArmable) {
++  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
++  if (L == nullptr) return false;
++  bool resend = false, say = false, arm;
++  uint32_t inc;
++  {
++    std::lock_guard<std::mutex> lk(L->mu);
++    gdakiCtrlLaLatchStep(L);
++    arm = gdakiCtrlLaStableArm(&L->k, allArmable, &resend);
++    inc = L->k.inc;
++    say = resend && L->resendSaidInc != inc + 1u;
++    if (say) L->resendSaidInc = inc + 1u;
++  }
++  if (resend) {  // the buddy's registration lacks the path: the store's next request carries it (the helper's next step)
++    struct gdakiStoreState* st = gdakiStoreOf(r);
++    if (st != nullptr) {
++      std::lock_guard<std::mutex> lk(st->mu);
++      if (st->up.need == GDAKI_STORE_N_NONE) st->up.need = GDAKI_STORE_N_RETRY;
++    }
++    if (say)
++      GIN_TS_NOTE("GIN/RC: rank %d: a spare path of incarnation %u exists but the buddy's registration says none: this "
++                  "checkpoint is not armed, STORE_REQ goes again mono_ms=%.3f", L->k.me, inc, gdakiQ4MonoMs());
++  }
++  return arm;
 +}
 +static bool gdakiCtrlLaSpareRegCheck(struct gdakiRecHost* r, const void* reg32, int peer, uint32_t dead, char* why,
 +                                     size_t whyLen) {
@@ -2092,24 +2860,32 @@ index f0ec50d..f8085d3 100644
 +  }
 +  std::lock_guard<std::mutex> lk(L->mu);
 +  if (gdakiCtrlLaIndexOfNode(&L->k, g.node) < 0) {
-+    snprintf(why, whyLen, "this rank is not paired with the launcher of node %u", g.node);
++    snprintf(why, whyLen, "this rank does not know the launcher of node %u", g.node);  // REVIEW_P3 nit 4
 +    return false;
 +  }
 +  gdakiCtrlLaSetRankNode(&L->k, peer, g.node);
 +  return true;
 +}
-+// [3] the hold start's hook (every survivor, after gdakiCtrlPeerToErr): the fence of (peer, inc) armed, the snapshot of
-+// the window line's cells, and at the buddy SPAWN (decision 12; its REFUSED is a line only). A word that already says
-+// FENCED (EXITED before the hold start) gives the buddy's FENCED line now.
++// [3] the judgement's hook (every survivor's hold start, before gdakiTsQuiesce and gdakiCtrlPeerToErr move any QP toward
++// the peer): the window line's snapshot (REVIEW_P3 막는 문제 1). Reads its cells over the copy path (16 cells of 64 B per
++// region; the helper, a few ms).
++static void gdakiCtrlOnJudgement(struct gdakiRecHost* r, int peer, uint32_t inc) {
++  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
++  if (L == nullptr || peer < 0 || peer >= L->k.nranks) return;
++  std::lock_guard<std::mutex> lk(L->mu);
++  gdakiCtrlLaOnJudgement(&L->k, peer, inc);
++}
++// [3] the hold start's hook (every survivor, after gdakiCtrlPeerToErr): the fence of (peer, inc) armed and at the buddy
++// SPAWN (decision 12; its REFUSED is a line only). A word that already says FENCED (EXITED before the hold start) gives
++// the buddy's FENCED line and the window line now.
 +static void gdakiCtrlOnHoldStart(struct gdakiRecHost* r, int peer, uint32_t inc) {
 +  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
 +  if (L == nullptr || peer < 0 || peer >= L->k.nranks) return;
 +  std::lock_guard<std::mutex> lk(L->mu);
-+  gdakiCtrlLaCells(r, peer, &L->snap[(size_t)peer], &L->snapOk[(size_t)peer]);
 +  gdakiCtrlLaFenceArm(&L->k, peer, inc);
 +  const bool buddy = gdakiHoldBuddyOf(peer, L->k.nranks) == L->k.me;
 +  if (buddy) gdakiCtrlLaSpawn(&L->k, peer, inc + 1u);
-+  gdakiCtrlLaFenceReport(&L->k, peer, buddy, gdakiCtrlLaCellsChanged, L);
++  gdakiCtrlLaFenceReport(&L->k, peer, buddy);
 +}
 +static int gdakiCtrlLauncherSend(struct gdakiRecHost* r, int node, const void* msg, size_t bytes) {
 +  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
@@ -2120,29 +2896,27 @@ index f0ec50d..f8085d3 100644
 +  return gdakiCtrlLaSendTo(&L->k, gdakiCtrlLaIndexOfNode(&L->k, (uint32_t)node), &m);
 +}
 +// The buddy's fence step (gdakiCtrlActFenceOk, once every HOLDING is in).
-+static int gdakiCtrlLaFenceStep(struct gdakiRecHost* r, int peer, uint32_t dead, uint64_t* word) {
++static int gdakiCtrlLaFenceStep(struct gdakiRecHost* r, int peer, uint32_t dead, uint64_t* word, char* why, size_t whyLen) {
 +  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
 +  *word = GDAKI_CTRL_FENCE_NONE;
-+  if (L == nullptr || peer < 0 || peer >= L->k.nranks) return -1;
++  if (L == nullptr || peer < 0 || peer >= L->k.nranks) {
++    snprintf(why, whyLen, "this rank has no launcher link");
++    return GDAKI_CTRL_LA_GATE_FALLBACK;
++  }
 +  std::lock_guard<std::mutex> lk(L->mu);
-+  const int f = gdakiCtrlLaFence(&L->k, peer, dead, gdakiQ4MonoMs(), true);
++  const int g = gdakiCtrlLaGate(&L->k, peer, dead, gdakiQ4MonoMs(), why, whyLen);
 +  *word = L->k.fencedPlus1[(size_t)peer];
 +  struct gdakiCtrlPage* pg = gdakiPageOf(r);  // phase 1's report of the fence (gdakiLnFenceOf's fenceSent)
 +  if (pg != nullptr && peer < (int)pg->peers.size()) pg->peers[(size_t)peer].fenceSent = L->k.fence[(size_t)peer].sent;
-+  if (f > 0) gdakiCtrlLaFenceReport(&L->k, peer, true, gdakiCtrlLaCellsChanged, L);
-+  if (f < 0 && L->k.fence[(size_t)peer].nak)
-+    gdakiCtrlLaSay(L->k.log, "GIN/RC: rank %d: rank %d (incarnation %u) fence FENCE_NAK from node %u: nothing held, "
-+                   "falling back", L->k.me, peer, dead,
-+                   L->k.laOf[(size_t)peer] >= 0 ? L->k.la[(size_t)L->k.laOf[(size_t)peer]].node : 0u);
-+  return f;
++  return g;
 +}
 +// r->ctrl->launcher (gdakiCtrlFree, after the helper and the watch thread stopped).
 +static void gdakiCtrlLauncherFree(struct gdakiRecHost* r) {
 +  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
 +  if (L == nullptr) return;
-+  gdakiCtrlLaRelayEnd(&L->relay);
++  gdakiCtrlLaRelayEnd(&L->relay, 0);
 +  gdakiCtrlLaUnixClose(&L->k.unix);
-+  if (L->fetchDoneSock >= 0) close(L->fetchDoneSock);
++  if (L->k.fwdSock >= 0) close(L->k.fwdSock);
 +  delete L;
 +  r->ctrl->launcher = nullptr;
 +}
@@ -2150,7 +2924,7 @@ index f0ec50d..f8085d3 100644
  // ---- [3] launcher (end) ----
  
  // ---- the per-context state: made by gdakiTsSetup (rdma) before its connect part; freed here ----
-@@ -23202,6 +25208,7 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+@@ -23202,6 +25923,7 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
      }
  #if !NCCL_GIN_CTRL_TCP
      gdakiCtrlPageHelperStep(r);  // gin-control (page): the verdict mailboxes and the liveness READ QPs' pairing
@@ -2158,7 +2932,18 @@ index f0ec50d..f8085d3 100644
  #endif
      gdakiHoldStep(r);  // gin-restore (rs, work package 7, RL4): the hold's records, deadline, buddy and restore (no state:
                         // nothing)
-@@ -27032,6 +29039,228 @@ static ncclResult_t gdakiMiLogExport(struct gdakiRecHost* r, int peer, uint64_t
+@@ -23402,6 +26124,10 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+   // rank's UD endpoint and regions into `mine`, so r->ctrl (and its ring) exist before the exchange; freed by gdakiCtrlFree
+   // (gdakiRecFree) on every path
+   if (r != nullptr && r->ctrl == nullptr) r->ctrl = new gdakiCtrlState();
++  // gin-control (launcher) [3] (REVIEW_P3 막는 문제 2): the launcher's static facts by a nonce-free INFO before the
++  // exchange; REGISTER (the nonce) stays after it, in gdakiTsStart. TODO(2a-2): `mine` carries gdakiCtrlLauncherAgInfo's
++  // field and every rank's goes to gdakiCtrlLauncherAgTake after the exchange (impl/notes_p3.md "고침")
++  if (why == nullptr) gdakiCtrlLauncherQuery(r);
+ #endif
+   ncclResult_t ret = cComm->allGather(cComm, &mine, all.data(), sizeof(mine));
+   if (ret != ncclSuccess) {
+@@ -27032,6 +29758,219 @@ static ncclResult_t gdakiMiLogExport(struct gdakiRecHost* r, int peer, uint64_t
    return ncclSuccess;
  }
  // ==== gin-mirror (spare): restore path (end) ====
@@ -2172,12 +2957,64 @@ index f0ec50d..f8085d3 100644
 +// The blob's place in this rank's outbox (the launcher READs it from there). TODO(2a-2): the ring's outbox half
 +// (gdakiCtrlRdmaOutboxRegion, REMOTE_READ; the half is this activation's until its answer); without the ring there is no
 +// outbox and the activation through the launcher cannot go.
-+static bool gdakiCtrlLaOutboxPut(struct gdakiRecHost* r, const std::vector<uint8_t>& bytes, struct glRegion* out,
-+                                 uint64_t* xferId) {
-+  (void)r;
++static bool gdakiCtrlLaOutboxPut(void* arg, const std::vector<uint8_t>& bytes, struct glRegion* out, uint64_t* xferId) {
++  (void)arg;
 +  memset(out, 0, sizeof(*out));
 +  *xferId = 0;
 +  return bytes.empty();  // TODO(2a-2): copy into the outbox half, out = (addr, rkey, bytes)
++}
++// The buddy's tables for gdakiCtrlLaBuddyStep (the link's glue): the mirror's drain and blob, the FETCH QP and its waiter.
++struct gdakiCtrlLaBuddyCtx {
++  struct gdakiRecHost* r;
++  std::unique_lock<std::mutex>* lk;
++};
++static void gdakiCtrlLaCtxUnlock(void* arg) { ((struct gdakiCtrlLaBuddyCtx*)arg)->lk->unlock(); }
++static void gdakiCtrlLaCtxLock(void* arg) { ((struct gdakiCtrlLaBuddyCtx*)arg)->lk->lock(); }
++static int gdakiCtrlLaHostDrain(void* arg, int peer, uint32_t dead, uint64_t step, char* why, size_t whyLen) {
++  struct gdakiRecHost* r = ((struct gdakiCtrlLaBuddyCtx*)arg)->r;
++  gdakiTsBusy busy(r->ts);
++  return gdakiMiDrainStep(r, peer, dead, step, why, whyLen);
++}
++static bool gdakiCtrlLaHostBlob(void* arg, int peer, uint32_t dead, const struct glRsActivate& rec, std::vector<uint8_t>* bytes,
++                                char* why, size_t whyLen) {
++  struct gdakiRecHost* r = ((struct gdakiCtrlLaBuddyCtx*)arg)->r;
++  struct gdakiRsActivate a;
++  static_assert(sizeof(a) == sizeof(rec), "the activation record is launcher_msg.h's");
++  memcpy(&a, &rec, sizeof(a));
++  const struct gdakiMiActBlob* blob = gdakiMiActBlobFor(r, peer, dead, a, why, whyLen);
++  if (blob == nullptr) return false;
++  if (!gdakiMiActBlobEncode(blob->hdr, blob->addr, blob->ext, bytes)) {
++    snprintf(why, whyLen, "the activation blob could not be encoded");
++    return false;
++  }
++  return true;
++}
++static bool gdakiCtrlLaHostFetchConnect(void* arg, int peer, uint32_t dead, const struct gdakiMiActAnswer& an, char* why,
++                                        size_t whyLen) {
++  struct gdakiRecHost* r = ((struct gdakiCtrlLaBuddyCtx*)arg)->r;
++  struct gdakiMiSparePeer* sp = gdakiMiActSeq(r, peer, dead);
++  if (sp == nullptr || sp->fetchQp == nullptr) {
++    snprintf(why, whyLen, "no FETCH QP of this rank for the peer");
++    return false;
++  }
++  return gdakiMiHostQpConnect(sp->fetchQp, an.fetch, why, whyLen) == ncclSuccess;
++}
++// gin-mirror's FETCH waiter (unchanged) with this rank's FETCH QP: it reads the spare's DONE on fd.
++static bool gdakiCtrlLaHostWaiter(void* arg, int peer, uint32_t dead, int fd) {
++  struct gdakiRecHost* r = ((struct gdakiCtrlLaBuddyCtx*)arg)->r;
++  struct gdakiMiSpareState* ms = gdakiMiSpareOf(r);
++  struct gdakiMiSparePeer* sp = gdakiMiActSeq(r, peer, dead);
++  if (ms == nullptr || sp == nullptr || sp->fetchQp == nullptr) return false;
++  if (ms->waiter.joinable()) {
++    ms->waiterStop.store(true, std::memory_order_release);
++    ms->waiter.join();
++  }
++  ms->waiterStop.store(false, std::memory_order_release);
++  struct gdakiMiHostQp* qp = sp->fetchQp;
++  sp->fetchQp = nullptr;
++  const double wDeadline = gdakiQ4MonoMs() + (double)std::max(1000, gdakiHoldLeftMs(r, peer));
++  ms->waiter = std::thread(gdakiMiFetchWait, ms, r->ctx->rank, peer, fd, qp, wDeadline);
++  return true;
 +}
 +static void gdakiCtrlLaActivateSend(struct gdakiRecHost* r, int peer, const struct gdakiRsActivate& a0, uint32_t dead,
 +                                    double now) {
@@ -2187,115 +3024,44 @@ index f0ec50d..f8085d3 100644
 +  if (L == nullptr) return gdakiHoldFallback(r, peer, "this rank has no launcher link");
 +  const bool mi = gdakiStoreActV2(r);  // gin-control (store) [2], decision 7: activation v2 (store blob, FETCH)
 +  std::unique_lock<std::mutex> lk(L->mu);
-+  struct gdakiCtrlLaAct& st = L->k.act[(size_t)peer];
-+  char w[256] = {0};
-+  if (st.state == GDAKI_CTRL_LA_ACT_NONE || st.inc != dead + 1u) {  // this activation's first step: ACTIVATE
-+    struct gdakiRsActivate a = a0;
-+    a.pid = 0;  // the launcher holds the pidfd; the record carries FENCED instead
-+    a.pidStart = 0;
-+    a.reserved = gdakiCtrlLaActFencedMark(a.incarnation);
-+    std::vector<uint8_t> bytes;
-+    if (mi) {
-+      lk.unlock();
-+      gdakiTsBusy busy(r->ts);
-+      const int dr = gdakiMiDrainStep(r, peer, dead, a.step, w, sizeof(w));
-+      if (dr < 0) return gdakiHoldFallback(r, peer, w);
-+      if (dr > 0) return;  // not drained yet: the next helper step
-+      const struct gdakiMiActBlob* blob = gdakiMiActBlobFor(r, peer, dead, a, w, sizeof(w));
-+      if (blob == nullptr || !gdakiMiActBlobEncode(blob->hdr, blob->addr, blob->ext, &bytes)) {
-+        gdakiMiActEnd(r, peer);
-+        return gdakiHoldFallback(r, peer, blob == nullptr ? w : "the activation blob could not be encoded");
-+      }
-+      a.version = GDAKI_RS_ACT_VERSION_MI;
-+      lk.lock();
-+    }
-+    struct glRegion blobAt;
-+    uint64_t xferId = 0;
-+    struct glRsActivate rec;
-+    static_assert(sizeof(rec) == sizeof(a), "the activation record is launcher_msg.h's");
-+    memcpy(&rec, &a, sizeof(rec));
-+    if (!gdakiCtrlLaOutboxPut(r, bytes, &blobAt, &xferId) || !gdakiCtrlLaActStart(&L->k, peer, rec, blobAt, xferId, now)) {
-+      lk.unlock();
-+      if (mi) gdakiMiActEnd(r, peer);
-+      return gdakiHoldFallback(r, peer, "no launcher path for the peer's activation (TODO(2a-2): the ring and its outbox)");
-+    }
++  struct gdakiCtrlLaBuddyCtx ctx = {r, &lk};
++  struct gdakiCtrlLaBuddyOps ops;
++  ops.arg = &ctx;
++  ops.unlock = gdakiCtrlLaCtxUnlock;
++  ops.lock = gdakiCtrlLaCtxLock;
++  ops.drain = gdakiCtrlLaHostDrain;
++  ops.blob = gdakiCtrlLaHostBlob;
++  ops.outboxPut = gdakiCtrlLaOutboxPut;
++  ops.fetchConnect = gdakiCtrlLaHostFetchConnect;
++  ops.waiter = gdakiCtrlLaHostWaiter;
++  struct glRsActivate rec;
++  static_assert(sizeof(rec) == sizeof(a0), "the activation record is launcher_msg.h's");
++  memcpy(&rec, &a0, sizeof(rec));
++  struct gdakiCtrlLaBuddyOut out;
++  const int s = gdakiCtrlLaBuddyStep(&L->k, peer, rec, dead, mi, now, ops, &out);
++  const struct gdakiCtrlLaAct& st = L->k.act[(size_t)peer];
++  if (out.started) {
 +    hp.activateLater = 0;
 +    hp.firstLaterMs = 0;
-+    return;  // the answer comes in a later step (event based: no asking again, design v3 5.4 4)
++  } else {
++    hp.activateLater = st.nLater > 0 ? 1 : 0;
++    if (st.nLater > 0) hp.firstLaterMs = st.laterMs;
 +  }
-+  const int nLaterBefore = hp.activateLater;
-+  const int s = gdakiCtrlLaActStep(&L->k, peer, now, w, sizeof(w));
-+  hp.activateLater = st.nLater > 0 ? 1 : 0;
-+  if (st.nLater > 0) hp.firstLaterMs = st.laterMs;
-+  if (s == GDAKI_CTRL_LA_AS_WAIT) {
-+    if (hp.activateLater > nLaterBefore)
-+      WARN("GIN/RS: rank %d: rank %d's spare answered 'later' through the launcher of node %u (replaying for %u ms); "
-+           "waiting at most %.0f ms for its READY mono_ms=%.3f", h->rank, peer, L->k.la[(size_t)st.li].node, st.spareAgeMs,
-+           L->k.laterMs, now);
-+    return;
-+  }
-+  if (s == GDAKI_CTRL_LA_AS_FALLBACK) {
-+    lk.unlock();
-+    if (mi) gdakiMiActEnd(r, peer);
-+    return gdakiHoldFallback(r, peer, w);
-+  }
-+  if (mi && st.state == GDAKI_CTRL_LA_ACT_ACCEPTED) {  // the FETCH handshake: the spare's endpoint, this rank's READY
-+    if (!st.haveEp) {
-+      if (now - st.acceptedMs < 1000.0) return;  // the spare's FETCH endpoint within 1000 ms (as the TCP path)
-+      snprintf(w, sizeof(w), "no FETCH endpoint from the spare");
-+    }
-+    struct gdakiMiSparePeer* sp = gdakiMiActSeq(r, peer, dead);
-+    struct gdakiMiActAnswer an;
-+    memset(&an, 0, sizeof(an));
-+    if (st.haveEp) memcpy(&an, st.ep, sizeof(an));
-+    struct gdakiMiActReady rd;
-+    memset(&rd, 0, sizeof(rd));
-+    rd.magic = GDAKI_MI_ACTB_MAGIC;
-+    if (w[0] != '\0') {
-+    } else if (an.magic != GDAKI_MI_ACTB_MAGIC || an.ok != 1) {
-+      an.why[sizeof(an.why) - 1] = '\0';
-+      snprintf(w, sizeof(w), "no FETCH endpoint from the spare%s%.100s", an.magic == GDAKI_MI_ACTB_MAGIC ? ": " : "",
-+               an.magic == GDAKI_MI_ACTB_MAGIC ? an.why : "");
-+    } else if (sp == nullptr || sp->fetchQp == nullptr) {
-+      snprintf(w, sizeof(w), "no FETCH QP of this rank for the peer");
-+    } else if (gdakiMiHostQpConnect(sp->fetchQp, an.fetch, w, sizeof(w)) == ncclSuccess) {
-+      rd.kind = GDAKI_MI_ACT_READY;
-+    }
-+    if (rd.kind != GDAKI_MI_ACT_READY) {
-+      rd.kind = GDAKI_MI_ACT_FAIL;
-+      snprintf(rd.why, sizeof(rd.why), "%.63s", w);
-+      (void)gdakiCtrlLaFetchReady(&L->k, peer, &rd);
-+      lk.unlock();
-+      WARN("GIN/MI: rank %d: rank %d's spare accepted its activation but the FETCH handshake failed (%s) mono_ms=%.3f",
-+           h->rank, peer, w, gdakiQ4MonoMs());
-+      gdakiMiActEnd(r, peer);
-+      return gdakiHoldFallback(r, peer, "the peer's spare accepted its activation but the FETCH handshake failed");
-+    }
-+    if (!gdakiCtrlLaFetchReady(&L->k, peer, &rd)) {
-+      lk.unlock();
-+      gdakiMiActEnd(r, peer);
-+      return gdakiHoldFallback(r, peer, "READY could not be sent to the peer's spare through its launcher");
-+    }
-+    // the FETCH QP to the waiter (gin-mirror's, unchanged): it reads the spare's DONE on a socketpair whose other end
-+    // this rank's launcher step fills from FETCH_DONE
-+    struct gdakiMiSpareState* ms = gdakiMiSpareOf(r);
-+    int sv[2];
-+    if (ms != nullptr && socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) == 0) {
-+      if (ms->waiter.joinable()) {
-+        ms->waiterStop.store(true, std::memory_order_release);
-+        ms->waiter.join();
-+      }
-+      ms->waiterStop.store(false, std::memory_order_release);
-+      struct gdakiMiHostQp* qp = sp->fetchQp;
-+      sp->fetchQp = nullptr;
-+      if (L->fetchDoneSock >= 0) close(L->fetchDoneSock);
-+      L->fetchDoneSock = sv[1];
-+      L->fetchDonePeer = peer;
-+      const double wDeadline = gdakiQ4MonoMs() + (double)std::max(1000, gdakiHoldLeftMs(r, peer));
-+      ms->waiter = std::thread(gdakiMiFetchWait, ms, h->rank, peer, sv[0], qp, wDeadline);
-+    }
++  if (out.laterNew)
++    WARN("GIN/RS: rank %d: rank %d's spare answered 'later' through the launcher of node %u (replaying for %u ms); "
++         "waiting at most %.0f ms for its READY mono_ms=%.3f", h->rank, peer, L->k.la[(size_t)st.li].node, st.spareAgeMs,
++         L->k.laterMs, now);
++  if (out.fetchReady)
 +    GIN_TS_NOTE("GIN/MI: rank %d: rank %d's spare is READY to FETCH checkpoint %lu through the launcher of node %u "
 +                "mono_ms=%.3f", h->rank, peer, (unsigned long)a0.step, L->k.la[(size_t)st.li].node, gdakiQ4MonoMs());
++  if (s == GDAKI_CTRL_LA_BS_WAIT) return;
++  lk.unlock();
++  if (s == GDAKI_CTRL_LA_BS_FALLBACK) {
++    if (out.fetchWhy[0] != '\0')
++      WARN("GIN/MI: rank %d: rank %d's spare accepted its activation but the FETCH handshake failed (%s) mono_ms=%.3f",
++           h->rank, peer, out.fetchWhy, gdakiQ4MonoMs());
++    if (mi && out.endAct) gdakiMiActEnd(r, peer);
++    return gdakiHoldFallback(r, peer, out.why);
 +  }
 +  hp.holders.activated = true;
 +  WARN("GIN/RS: rank %d: every survivor holds rank %d: its spare activated (incarnation %u, %.1f ms after this rank's "
@@ -2304,10 +3070,23 @@ index f0ec50d..f8085d3 100644
 +}
 +
 +// ---- the spare ----
-+// READY to its launcher, then its ACTIVATE (the launcher hands it over only after READY), checked: the record (this
-+// communicator, this rank, the HELLO's incarnation, FENCED carried) and, mirror or store on, the blob as today's reader
-+// takes it (gdakiMiActRecv on a socketpair holding the blob). ACCEPTED or REFUSED back as ACT_TALK ANSWER; after ACCEPTED
-+// *actFd is the FETCH talk's end (the relay moves it through the launcher). activated: 0; else the spare gives up.
++static_assert((int)GL_RS_ACT_ACCEPTED == (int)GDAKI_RS_ACT_ACCEPTED && (int)GL_RS_ACT_REFUSED == (int)GDAKI_RS_ACT_REFUSED &&
++                  (int)GL_RS_ACT_ACTIVATE == (int)GDAKI_RS_ACT_ACTIVATE,
++              "the launcher's record kinds are gin-restore's");
++struct gdakiCtrlLaSpareCtx {
++  struct gdakiRecHost* r;
++  std::unique_lock<std::mutex>* lk;
++  struct gdakiMiActBlob* blob;
++};
++static void gdakiCtrlLaSpareUnlock(void* arg) { ((struct gdakiCtrlLaSpareCtx*)arg)->lk->unlock(); }
++static void gdakiCtrlLaSpareLock(void* arg) { ((struct gdakiCtrlLaSpareCtx*)arg)->lk->lock(); }
++static int gdakiCtrlLaSpareBlobRecv(void* arg, int fd, const struct glRsActivate& rec, char* why, size_t whyLen) {
++  struct gdakiCtrlLaSpareCtx* c = (struct gdakiCtrlLaSpareCtx*)arg;
++  struct gdakiRsActivate a;
++  memcpy(&a, &rec, sizeof(a));
++  return gdakiMiActRecv(c->r, fd, a, gdakiQ4MonoMs() + 500.0, c->blob, why, whyLen);
++}
++// gdakiRsSpareActivateWait's rdma body: gdakiCtrlLaSpareTake (the link's glue) with gin-mirror's blob reader; the lines.
 +static ncclResult_t gdakiCtrlLaSpareWait(struct gdakiRecHost* r, int waitMs, bool mi, struct gdakiRsActivate* act,
 +                                         int* actFd, struct gdakiMiActBlob* blob) {
 +  *actFd = -1;
@@ -2318,76 +3097,73 @@ index f0ec50d..f8085d3 100644
 +    return ncclSystemError;
 +  }
 +  std::unique_lock<std::mutex> lk(L->mu);
-+  struct gdakiCtrlLaUnix& u = L->k.unix;
-+  if (!gdakiCtrlLaUnixStatus(&u, true, nullptr)) {
-+    WARN("GIN/RS: spare rank %d: READY could not be sent to the launcher mono_ms=%.3f", rank, gdakiQ4MonoMs());
-+    return ncclSystemError;
-+  }
-+  GIN_TS_NOTE("GIN/RS: spare rank %d: READY (incarnation %u) to the launcher of node %u; waiting for the activation "
-+              "mono_ms=%.3f", rank, u.inc, u.ack.node, gdakiQ4MonoMs());
-+  const double deadline = gdakiQ4MonoMs() + waitMs;
-+  while (!u.haveAct && !u.closed && gdakiQ4MonoMs() < deadline) {
-+    lk.unlock();
-+    gdakiCtrlLaUnixWait(&u, 100);
-+    lk.lock();
-+    (void)gdakiCtrlLaUnixPoll(&u, L->k.log, rank);
-+  }
-+  if (!u.haveAct) {
-+    WARN("GIN/RS: spare rank %d: no ACTIVATE from the launcher within %d ms%s mono_ms=%.3f", rank, waitMs,
-+         u.closed ? " (its socket closed)" : "", gdakiQ4MonoMs());
-+    return ncclSystemError;
-+  }
-+  u.haveAct = false;
-+  memcpy(act, &u.act, sizeof(*act));
++  struct gdakiCtrlLaSpareCtx ctx = {r, &lk, blob};
++  struct gdakiCtrlLaSpareOps ops;
++  ops.arg = &ctx;
++  ops.unlock = gdakiCtrlLaSpareUnlock;
++  ops.lock = gdakiCtrlLaSpareLock;
++  ops.blobRecv = gdakiCtrlLaSpareBlobRecv;
++  struct glRsActivate rec;
++  memset(&rec, 0, sizeof(rec));
 +  char why[192] = {0};
-+  int code = gdakiCtrlLaSpareCheck(u.act, rank, r->ts->nonce, u.inc);
-+  if (code != 0) snprintf(why, sizeof(why), "%s", gdakiCtrlLaSpareCheckText(code));
-+  if (code == 0 && (mi || act->version == GDAKI_RS_ACT_VERSION_MI)) {
-+    const int bfd = gdakiCtrlLaBlobFd(u.blob);
-+    code = bfd < 0 ? 3 : gdakiMiActRecv(r, bfd, *act, gdakiQ4MonoMs() + 500.0, blob, why, sizeof(why));
-+    if (bfd < 0) snprintf(why, sizeof(why), "the activation blob could not be read");
-+    else close(bfd);
++  const int st = gdakiCtrlLaSpareTake(&L->k, &L->relay, waitMs, mi, ops, &rec, actFd, why, sizeof(why));
++  memcpy(act, &rec, sizeof(*act));
++  switch (st) {
++    case GDAKI_CTRL_LA_ST_OK:
++      WARN("GIN/RS: spare rank %d: activating incarnation %u from step %llu (through the launcher of node %u: FENCED "
++           "carried) mono_ms=%.3f", rank, act->incarnation, (unsigned long long)act->step, L->k.unix.ack.node,
++           gdakiQ4MonoMs());
++      return ncclSuccess;
++    case GDAKI_CTRL_LA_ST_NO_READY:
++      WARN("GIN/RS: spare rank %d: READY could not be sent to the launcher mono_ms=%.3f", rank, gdakiQ4MonoMs());
++      break;
++    case GDAKI_CTRL_LA_ST_NO_ACT:
++      WARN("GIN/RS: spare rank %d: no ACTIVATE from the launcher within %d ms%s mono_ms=%.3f", rank, waitMs, why,
++           gdakiQ4MonoMs());
++      break;
++    case GDAKI_CTRL_LA_ST_REFUSED:
++      WARN("GIN/RS: spare rank %d: activation refused (%s) mono_ms=%.3f", rank, why, gdakiQ4MonoMs());
++      break;
++    default:
++      WARN("GIN/RS: spare rank %d: no HELLO at the node's launcher: no activation can come mono_ms=%.3f", rank,
++           gdakiQ4MonoMs());
++      break;
 +  }
-+  struct gdakiRsActivate ans = *act;
-+  ans.kind = code == 0 ? (uint32_t)GDAKI_RS_ACT_ACCEPTED : (uint32_t)GDAKI_RS_ACT_REFUSED;
-+  const bool sent = gdakiCtrlLaUnixTalk(&u, GL_UT_ANSWER, &ans, sizeof(ans));
-+  if (code != 0 || !sent) {
-+    WARN("GIN/RS: spare rank %d: activation refused (%s) mono_ms=%.3f", rank, code != 0 ? why : "the answer could not be sent",
-+         gdakiQ4MonoMs());
-+    return ncclSystemError;
-+  }
-+  WARN("GIN/RS: spare rank %d: activating incarnation %u from step %llu (through the launcher of node %u: FENCED carried) "
-+       "mono_ms=%.3f", rank, act->incarnation, (unsigned long long)act->step, u.ack.node, gdakiQ4MonoMs());
-+  if (mi && !gdakiCtrlLaRelayStart(&L->relay, &u, L->k.log, rank, actFd)) {
-+    WARN("GIN/RS: spare rank %d: the FETCH relay could not start mono_ms=%.3f", rank, gdakiQ4MonoMs());
-+    return ncclSystemError;
-+  }
-+  return ncclSuccess;
++  return ncclSystemError;
++}
++// A spare's replay or Resume failed before READY or an activation (REVIEW_P3 고칠 것 9): REPLAY_FAILED with why, once.
++static void gdakiCtrlLaSpareFailed(struct gdakiRecHost* r, const char* why) {
++  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
++  if (L == nullptr || !L->registered) return;
++  std::lock_guard<std::mutex> lk(L->mu);
++  if (gdakiCtrlLaSpareFail(&L->k.unix, why))
++    GIN_TS_NOTE("GIN/RS: spare rank %d: REPLAY_FAILED (%s) to the launcher of node %u mono_ms=%.3f", L->k.me, why,
++                L->k.unix.ack.node, gdakiQ4MonoMs());
 +}
 +// After the FETCH (or its failure): the relay ends; on success this process registers as the new incarnation (the
 +// launcher swaps the rank's pidfd: design v3 5.4 7) and its re-arming waits for that and for both launchers' pairings.
 +static void gdakiCtrlLaSpareDone(struct gdakiRecHost* r, bool ok) {
 +  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
 +  if (L == nullptr) return;
-+  gdakiCtrlLaRelayEnd(&L->relay);
++  gdakiCtrlLaRelayEnd(&L->relay, ok ? 1000 : 0);  // REVIEW_P3 고칠 것 4: DONE relayed before the end (its grace)
 +  if (!ok) return;
 +  std::lock_guard<std::mutex> lk(L->mu);
-+  const uint32_t inc = L->k.unix.act.incarnation;
-+  L->k.inc = inc;
-+  for (auto& p : L->k.la) {  // this process pairs again as the new incarnation (TODO(2a-2): the transport)
-+    gdakiCtrlPairInit(&p.pair, GDAKI_CTRL_PAIR_QP_RECORD, L->k.me, (int32_t)(GL_FROM_LAUNCHER | p.node));
-+    p.connected = false;
-+  }
-+  L->k.latched = false;
-+  L->k.pairOk = true;
-+  gdakiCtrlLaRegister(L, GDAKI_CTRL_LA_ROLE_RANK, inc);
++  char why[160] = {0};
++  L->spare = false;
++  L->registered = gdakiCtrlLaSpareRevive(&L->k, why, sizeof(why));  // TODO(2a-2): the pairings' transport
++  if (!L->registered)
++    WARN("GIN/RC: rank %d: REGISTER of incarnation %u at the node's launcher failed (%s): no launcher path, this rank is not "
++         "armed mono_ms=%.3f", L->k.me, L->k.inc, why, gdakiQ4MonoMs());
++  else
++    gdakiCtrlLaSay(L->k.log, "GIN/RC: rank %d: registered incarnation %u at the launcher of node %u (page slot %u)", L->k.me,
++                   L->k.inc, L->k.unix.ack.node, L->k.unix.ack.pageSlot);
 +}
 +// ==== gin-control (launcher): the buddy's activation and the spare's wait through the launcher (end) ====
 +#endif  // !NCCL_GIN_CTRL_TCP
  
  static void gdakiTsStart(struct gdakiRecHost* r) {
    if (r == nullptr || r->ts == nullptr) return;
-@@ -27039,6 +29268,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
+@@ -27039,6 +29978,7 @@ static void gdakiTsStart(struct gdakiRecHost* r) {
    struct gdaki_context* g = r->ctx;
  #if !NCCL_GIN_CTRL_TCP
    gdakiPageSetup(r);  // gin-control (page): the status page and the probe QPs, on the setup thread (REVIEW_PREP note 6)
@@ -2395,7 +3171,7 @@ index f0ec50d..f8085d3 100644
  #endif
    bool ok = true;
    int nq = 0;
-@@ -27443,6 +29673,9 @@ static void gdakiTsStop(struct gdakiRecHost* r) {
+@@ -27443,6 +30383,9 @@ static void gdakiTsStop(struct gdakiRecHost* r) {
  #ifndef NCCL_GIN_TS_PRODUCTION
    if (ts->test)
      WARN("GIN/TS: TEST split rank=%d nsplit=%u no_ack=%u", r->ctx->rank, ts->test->nsplit, ts->test->nsplitNoAck);
@@ -2405,3 +3181,24 @@ index f0ec50d..f8085d3 100644
  #endif
    if (!orphan) gdakiTsCloseAll(ts, r->ctx->rank);
    ts->stopped = true;
+@@ -28699,6 +31642,9 @@ static ncclResult_t gdakiRsSpareResume(const struct ncclGinRestoreCommFacts* f,
+                         : nullptr;
+   if (bad != nullptr) {  // nothing was answered: the buddy's ACTIVATE finds no port and the survivors fall back
+     WARN("GIN/RS: spare rank %d: ncclGinRestoreResume cannot run the restore: %s", f->rank, bad);
++#if !NCCL_GIN_CTRL_TCP
++    gdakiCtrlLaSpareFailed(r, bad);  // gin-control (launcher) [3]: REPLAY_FAILED to the launcher (REVIEW_P3 고칠 것 9)
++#endif
+     return ncclInvalidUsage;
+   }
+   struct gdakiRsSpareResumeArg a;
+@@ -28971,6 +31917,10 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+     e.verdict = verdict;
+     snprintf(e.why, sizeof(e.why), "%s", why);
+   }
++#if !NCCL_GIN_CTRL_TCP
++  if (c.spare >= 0 && rsReplaying() && (rc != ncclSuccess || verdict != GDAKI_RS_ENABLE))  // gin-control (launcher) [3]:
++    gdakiCtrlLaSpareFailed(rFound, rc != ncclSuccess ? why : "the restore is not enabled");  // REPLAY_FAILED (고칠 것 9)
++#endif
+   if (rc != ncclSuccess) {  // the reason, the same on every rank: ncclGetLastError(comm) returns this line's text
+     WARN("GIN/RS: ncclGinRestoreResume: the restore cannot be enabled on this communicator: %s", why);
+     return rc;
