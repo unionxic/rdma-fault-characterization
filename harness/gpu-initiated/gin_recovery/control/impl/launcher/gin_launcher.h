@@ -46,7 +46,10 @@ struct glStats {
   unsigned nPairAck;
   unsigned nRepairStarted, nRepaired; /* record-QP re-pairings the launcher started, and finished */
   unsigned nBadMsg;
-  unsigned nPidfdClosed;   /* pidfds the launcher closed (exit seen, swap, refusal) */
+  unsigned nPidfdClosed;   /* pidfds the launcher closed (exit seen, swap, refusal, an fd sent with INFO) */
+  unsigned nInfo;          /* INFO taken and answered GL_UA_OK (no entry, no page slot, no registration count; the
+                              answer may find the asker gone: a log line only) */
+  unsigned nInfoRefused;   /* INFO answered GL_UA_REFUSED (uid, an fd with it, a body or nonce, malformed) */
 };
 
 struct glCore;

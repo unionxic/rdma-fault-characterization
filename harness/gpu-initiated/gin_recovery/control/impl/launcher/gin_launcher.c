@@ -4,6 +4,8 @@
  *   - accepts registrations of the node's recovery-layer processes on a Unix socket (SOCK_SEQPACKET, mode 0700
  *     directory), each carrying the process's own pidfd by SCM_RIGHTS, only from its own uid (SO_PEERCRED), and only
  *     when the pidfd's pid is the connecting process and that pid's start time is the one seen at connect (always on);
+ *   - answers the nonce-free INFO (before the all-gather) on any connection with its node, Q_Key, UD endpoint and page
+ *     region, and nothing else: no entry, no page slot, no registration count;
  *   - keeps one entry per registered process (rank, incarnation, nonce, pidfd, state) and watches the pidfds (readable =
  *     the thread group ended); reports one message per exit to every paired rank of that communicator: FENCED when a
  *     FENCE had come, else LEFT after a LEAVING notice, else EXITED (the test switch NO_EXIT_REPORT drops EXITED only);
@@ -586,9 +588,13 @@ static void gl_unix_init(struct glUnixMsg* u, uint16_t kind, int32_t rank, uint3
   u->h.pid = (int64_t)getpid();
   u->h.monoNs = gl_mono_ns();
 }
-static void gl_hello_ack(struct glCore* c, int ci, const struct glUnixMsg* req, uint32_t status, uint32_t reason) {
+/* The answer to REGISTER and SPARE_HELLO (ackKind GL_U_HELLO_ACK) or to INFO (GL_U_INFO_ACK): the head echoes the
+ * request's rank, incarnation and nonce with sub = the request's kind; the body is glUHelloAck. Only an accepted
+ * HELLO_ACK binds and names a page slot; an INFO_ACK never does (pageSlot 0xffffffff). */
+static int gl_unix_ack(struct glCore* c, int ci, const struct glUnixMsg* req, uint16_t ackKind, uint32_t status,
+                       uint32_t reason) {
   struct glUnixMsg u;
-  gl_unix_init(&u, GL_U_HELLO_ACK, req->h.rank, req->h.incarnation, req->h.nonce);
+  gl_unix_init(&u, ackKind, req->h.rank, req->h.incarnation, req->h.nonce);
   u.h.sub = req->h.kind;
   u.h.reason = reason;
   struct glUHelloAck a;
@@ -597,7 +603,7 @@ static void gl_hello_ack(struct glCore* c, int ci, const struct glUnixMsg* req, 
   a.node = c->cfg.node;
   a.qkey = c->cfg.qkey;
   a.pageSlot = 0xffffffffu;
-  if (status == GL_UA_OK) {
+  if (status == GL_UA_OK && ackKind == GL_U_HELLO_ACK) {
     const int slot = gl_page_slot(c, req->h.nonce, req->h.rank);
     if (slot >= 0) a.pageSlot = (uint32_t)slot;
   }
@@ -606,9 +612,13 @@ static void gl_hello_ack(struct glCore* c, int ci, const struct glUnixMsg* req, 
   snprintf(a.why, sizeof(a.why), "%s", status == GL_UA_OK ? "ok" : gl_reason_text(reason));
   memcpy(u.body, &a, sizeof(a));
   u.h.bodyBytes = (uint16_t)sizeof(a);
-  if (gl_unix_send(c, ci, &u, NULL, 0) != 0)
-    gl_log(c, "answer to %s of rank %d could not be sent", req->h.kind == GL_U_REGISTER ? "REGISTER" : "HELLO",
-           req->h.rank);
+  if (gl_unix_send(c, ci, &u, NULL, 0) == 0) return 0;
+  gl_log(c, "answer to %s of rank %d could not be sent",
+         req->h.kind == GL_U_REGISTER ? "REGISTER" : req->h.kind == GL_U_INFO ? "INFO" : "HELLO", req->h.rank);
+  return -1;
+}
+static void gl_hello_ack(struct glCore* c, int ci, const struct glUnixMsg* req, uint32_t status, uint32_t reason) {
+  (void)gl_unix_ack(c, ci, req, GL_U_HELLO_ACK, status, reason);
 }
 static void gl_to_spare(struct glCore* c, struct glEntry* s, uint32_t sub, const void* body, size_t bodyLen) {
   struct glUnixMsg u;
@@ -1389,7 +1399,35 @@ static struct glEntry* gl_spare_of_conn(struct glCore* c, int ci, const struct g
   return s;
 }
 
+/* INFO (impl/notes_p3.md "고침"): the nonce-free query a rank sends before the all-gather, on any connection, before,
+ * without or after a REGISTER. The answer carries what HELLO_ACK carries (node, Q_Key, UD endpoint, page region); it
+ * creates no entry, binds no page slot, touches no registration count and sends nothing to the RNIC side, so the
+ * asker may close the connection at once. Refused (GL_UA_REFUSED): another uid (GL_R_UID), an fd with it (closed;
+ * GL_R_BAD_FD), a body or a nonce (GL_R_BAD_MSG). Not rate-limited: it costs one sendmsg. */
+static void gl_info(struct glCore* c, int ci, const struct glUnixMsg* u, int fd) {
+  uint32_t why = GL_R_NONE;
+  if (c->conn[ci].uid != c->cfg.uid) why = GL_R_UID;
+  else if (fd >= 0) why = GL_R_BAD_FD;
+  else if (u->h.bodyBytes != 0 || u->h.nonce != 0) why = GL_R_BAD_MSG;
+  if (fd >= 0) {
+    close(fd);  // never held: an fd only travels with REGISTER and HELLO
+    c->st.nPidfdClosed++;
+  }
+  if (why == GL_R_NONE) {
+    c->st.nInfo++;
+    if (gl_unix_ack(c, ci, u, GL_U_INFO_ACK, GL_UA_OK, GL_R_NONE) == 0) gl_log(c, "INFO of rank %d answered", u->h.rank);
+  } else {
+    c->st.nInfoRefused++;
+    gl_log(c, "INFO of rank %d refused: %s", u->h.rank, gl_reason_text(why));
+    (void)gl_unix_ack(c, ci, u, GL_U_INFO_ACK, GL_UA_REFUSED, why);
+  }
+}
+
 static void gl_on_unix(struct glCore* c, int ci, const struct glUnixMsg* u, int fd) {
+  if (u->h.kind == GL_U_INFO) {  // its own uid and fd checks; no registration count
+    gl_info(c, ci, u, fd);
+    return;
+  }
   if (c->conn[ci].uid != c->cfg.uid) {  // nothing from another uid: refuse
     if (u->h.kind == GL_U_REGISTER || u->h.kind == GL_U_SPARE_HELLO) gl_hello_ack(c, ci, u, GL_UA_REFUSED, GL_R_UID);
     if (fd >= 0) close(fd);
@@ -1541,6 +1579,9 @@ static void gl_conn_drain(struct glCore* c, int ci) {
           (u->h.kind == GL_U_REGISTER || u->h.kind == GL_U_SPARE_HELLO)) {
         c->st.nRegRefused++;
         gl_hello_ack(c, ci, u, GL_UA_REFUSED, bad);
+      } else if ((size_t)n >= sizeof(struct glUnixHdr) && u->h.magic == GL_U_MAGIC && u->h.kind == GL_U_INFO) {
+        c->st.nInfoRefused++;  // a malformed INFO (two fds, a payload, a short body) still gets its answer at once
+        (void)gl_unix_ack(c, ci, u, GL_U_INFO_ACK, GL_UA_REFUSED, bad);
       }
       gl_log(c, "malformed Unix message (%s): dropped", gl_reason_text(bad));
       continue;

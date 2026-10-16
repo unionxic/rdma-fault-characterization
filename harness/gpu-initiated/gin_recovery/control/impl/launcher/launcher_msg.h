@@ -5,7 +5,8 @@
  *
  * Two wires:
  *   1. the node-local Unix socket (SOCK_SEQPACKET, one message per datagram, SCM_RIGHTS for the pidfd): struct
- *      glUnixMsg, 256 B, kinds GL_U_* (exactly the seven rows of EXPERIMENT.md 9.5's table); only GL_U_ACT_BYTES carries
+ *      glUnixMsg, 256 B, kinds GL_U_* (the seven rows of EXPERIMENT.md 9.5's table and the nonce-free INFO and its
+ *      answer, impl/notes_p3.md "고침"); only GL_U_ACT_BYTES carries
  *      a payload after its 256 B (the activation blob, at most GL_U_MAX_PAYLOAD bytes);
  *   2. the RNIC side (the launcher's UD QP for pairing, one RC QP per rank for everything else): struct glMsg, 256 B
  *      (design v2 2.3: "the launcher's message is a fixed 256 B structure"), kinds GL_K_*. On the wire every UD
@@ -166,7 +167,7 @@ static inline const char* gl_reason_text(uint32_t r) {
 }
 
 /* ---------------------------------------------------------------------------------------------------------------
- * 1. The node-local Unix socket (EXPERIMENT.md 9.5's table, seven rows = seven kinds)
+ * 1. The node-local Unix socket (EXPERIMENT.md 9.5's table: seven rows, plus INFO and INFO_ACK = nine kinds)
  * ------------------------------------------------------------------------------------------------------------- */
 
 #define GL_U_MAGIC 0x554c5247u /* "GRLU" */
@@ -184,9 +185,18 @@ enum glUnixKind {
   GL_U_SPARE_STATUS = 5, /* spare -> launcher: sub GL_US_READY (replay, FETCH buffer join, Resume entry done) or
                             GL_US_REPLAY_FAILED (body: why) */
   GL_U_ACT_BYTES = 6,    /* launcher -> spare: body = the 64 B activation record, payload = the activation blob */
-  GL_U_ACT_TALK = 7      /* spare <-> launcher: sub GL_UT_* (answer, FETCH QP endpoint, READY, DONE, ABORT) */
+  GL_U_ACT_TALK = 7,     /* spare <-> launcher: sub GL_UT_* (answer, FETCH QP endpoint, READY, DONE, ABORT) */
+  GL_U_INFO = 8,         /* rank -> launcher, before the all-gather (impl/notes_p3.md "고침"): head only (bodyBytes 0, no
+                            payload, no fd), nonce 0, incarnation 0, rank = the sender. Nonce-free: no registration entry,
+                            no page slot, no count of REGISTER's; any connection, before, without or after a REGISTER */
+  GL_U_INFO_ACK = 9      /* launcher -> rank, the same connection: head echoes INFO's rank, incarnation and nonce, sub =
+                            GL_U_INFO, reason; body glUHelloAck (GL_UA_OK: node, qkey, pageSlot 0xffffffff, ud, page,
+                            why "ok"; GL_UA_REFUSED: reason GL_R_UID, GL_R_BAD_FD (an fd came with it) or GL_R_BAD_MSG) */
 };
-#define GL_U_KIND_MAX 7
+/* Layout note: kinds 8 and 9 were added after 897641f3 (GL_U_KIND_MAX 7 -> 9). No size, field or GL_WIRE_VERSION
+ * change: every Unix message stays 256 B and glUHelloAck 136 B; a launcher of 897641f3 drops INFO as an unknown kind. */
+#define GL_U_KIND_MAX 9
+GL_STATIC_ASSERT(GL_U_KIND_MAX == GL_U_INFO_ACK, "GL_U_KIND_MAX is the last Unix kind");
 
 enum { GL_US_READY = 1, GL_US_REPLAY_FAILED = 2 };
 enum {
@@ -223,8 +233,8 @@ struct glUnixMsg {
 };
 GL_STATIC_ASSERT(sizeof(struct glUnixMsg) == 256, "a Unix-socket message is 256 bytes");
 
-/* GL_U_HELLO_ACK's body: the launcher's node number, UD endpoint and Q_Key (EXPERIMENT.md 9.5 row 2), its state page,
- * and which page registration slot is (rank)'s. */
+/* GL_U_HELLO_ACK's and GL_U_INFO_ACK's body: the launcher's node number, UD endpoint and Q_Key (EXPERIMENT.md 9.5 row
+ * 2), its state page, and which page registration slot is (rank)'s (INFO_ACK: always 0xffffffff, no slot is bound). */
 struct glUHelloAck {
   uint32_t status;       /* GL_UA_* (reason in the head) */
   uint32_t node;
