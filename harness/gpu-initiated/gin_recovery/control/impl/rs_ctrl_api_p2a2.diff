@@ -1,0 +1,99 @@
+--- rs_ctrl_api.p2b.h
++++ rs_ctrl_api.h
+@@ -939,6 +939,96 @@
+   uint8_t rsv[8];
+ };
+ static_assert(sizeof(struct gdakiCtrlXferHdr) == 64, "an outbox transfer's head is 64 bytes");
++// The setup all-gather's control fields (phase 2a-2; EXPERIMENT.md 9.6, design v3 5.1): one per rank behind gdakiTsAddr
++// (rdma build only). `path` and the thresholds must be equal on every rank, `launcherNode` equal to the transcript's (a
++// spare); the rest may differ. The UD endpoint carries its Q_Key in psn (this rank's own: the context's nonce exists only
++// after the exchange, the receiver of a datagram is named by its endpoint). page: 0 until the status page is up (the
++// PAIR carries it); launcherUd and launcherQkey: phase 3 fills them from the node launcher's Unix-socket answer (0: none).
++#define GDAKI_CTRL_PATH_RDMA 2u               // the records go on the ring (the rdma build, the ring made)
++#define GDAKI_CTRL_PATH_RDMA_OFF 3u           // the rdma build without the ring (NCCL_GIN_CTRL_PAGE=0, or it failed)
++#define GDAKI_CTRL_LAUNCHER_NODE_NONE 0xffffffffu
++#define GDAKI_CTRL_MTU_MIN 4u                 // enum ibv_mtu IBV_MTU_2048: a datagram of 1936 B fits (decision 9)
++#define GDAKI_CTRL_FORK_UNNEEDED 2u           // enum ibv_fork_status IBV_FORK_UNNEEDED (ibv_is_fork_initialized)
++struct gdakiCtrlSetupAddr {
++  struct gdakiCtrlRegion page, outbox;         // this rank's status page (0 at the exchange) and outbox
++  struct gdakiCtrlEndpoint ud;                 // this rank's UD QP (psn: its Q_Key)
++  struct gdakiCtrlEndpoint launcherUd;         // its node launcher's UD QP (phase 3; 0: none)
++  uint32_t launcherQkey;
++  uint32_t path;                               // GDAKI_CTRL_PATH_* (strict)
++  uint32_t launcherNode;                       // GDAKI_CTRL_LAUNCHER_NODE_NONE until phase 3 (strict against a transcript)
++  uint32_t activeMtu;                          // enum ibv_mtu of the GIN port (ibv_query_port's active_mtu)
++  uint32_t fork;                               // ibv_is_fork_initialized(); 0xff: the symbol is missing
++  int32_t probeMs, probeTimeoutMs, confirmMs, suspectMs, stallMs;  // the liveness thresholds (strict; 고칠 것 4)
++  uint32_t rsv[4];
++};
++static_assert(sizeof(struct gdakiCtrlSetupAddr) == 168 && offsetof(struct gdakiCtrlSetupAddr, ud) == 32 &&
++                  offsetof(struct gdakiCtrlSetupAddr, path) == 116,
++              "the setup all-gather's control fields are 168 bytes");
++// The agreement over every rank's fields (the same verdict on every rank: the same records). 0: agreed; else the
++// Resume condition it is (42 an MTU below 2048, 44 the control path differs) or GDAKI_CTRL_SA_THRESH; *minMtu the lowest.
++enum : uint32_t { GDAKI_CTRL_SA_OK = 0, GDAKI_CTRL_SA_MTU = 42, GDAKI_CTRL_SA_PATH = 44, GDAKI_CTRL_SA_THRESH = 1000 };
++static inline uint32_t gdakiCtrlSetupAgree(const struct gdakiCtrlSetupAddr* const* all, int n, uint32_t* minMtu,
++                                           int* who, char* why, size_t whyLen) {
++  *minMtu = 0xffu;
++  *who = -1;
++  for (int p = 0; p < n; p++)
++    if (all[p] != nullptr && all[p]->activeMtu < *minMtu) *minMtu = all[p]->activeMtu;
++  const struct gdakiCtrlSetupAddr* a0 = nullptr;
++  for (int p = 0; p < n && a0 == nullptr; p++) a0 = all[p];
++  if (a0 == nullptr) return GDAKI_CTRL_SA_OK;
++  for (int p = 0; p < n; p++) {
++    const struct gdakiCtrlSetupAddr* a = all[p];
++    if (a == nullptr) continue;
++    if (a->path != a0->path) {
++      *who = p;
++      if (why != nullptr) snprintf(why, whyLen, "the control path differs between ranks (rank %d: %u, another: %u)", p, a->path, a0->path);
++      return GDAKI_CTRL_SA_PATH;
++    }
++  }
++  if (a0->path != GDAKI_CTRL_PATH_RDMA) return GDAKI_CTRL_SA_OK;  // no ring anywhere: nothing more to agree on
++  for (int p = 0; p < n; p++) {
++    const struct gdakiCtrlSetupAddr* a = all[p];
++    if (a == nullptr) continue;
++    if (a->activeMtu < GDAKI_CTRL_MTU_MIN) {
++      *who = p;
++      if (why != nullptr) snprintf(why, whyLen, "rank %d's active MTU (enum %u) is below 2048", p, a->activeMtu);
++      return GDAKI_CTRL_SA_MTU;
++    }
++    if (a->probeMs != a0->probeMs || a->probeTimeoutMs != a0->probeTimeoutMs || a->confirmMs != a0->confirmMs ||
++        a->suspectMs != a0->suspectMs || a->stallMs != a0->stallMs) {
++      *who = p;
++      if (why != nullptr) snprintf(why, whyLen, "the liveness thresholds differ between ranks (rank %d)", p);
++      return GDAKI_CTRL_SA_THRESH;
++    }
++  }
++  return GDAKI_CTRL_SA_OK;
++}
++// Resume's conditions 41-44 (EXPERIMENT.md 9.6 "준비 검사"; after gin-mirror's 34-40). 42 and 44 turn transparent recovery
++// off at the setup already (the agreement above); 41 needs the launcher (phase 3: asked only once a launcher socket is
++// named), 43 is ibv_is_fork_initialized().
++#define GDAKI_CTRL_R41 "the restore was asked but this rank is not paired with its node's launcher"
++#define GDAKI_CTRL_R42 "a rank's active MTU is below 2048 (a control datagram does not fit)"
++#define GDAKI_CTRL_R43 "ibv_is_fork_initialized() is not IBV_FORK_UNNEEDED on this rank"
++#define GDAKI_CTRL_R44 "the control path or the launcher node differs between ranks or from the replayed record"
++#define GDAKI_CTRL_R44T "the liveness thresholds differ between ranks"  // 44's text for GDAKI_CTRL_SA_THRESH (phase 2a-2-A)
++// The survivor's answers to a REJOIN over UD that it does not take (FAIL's arg; TCP told WAIT and REFUSE with a FIN):
++// FAIL (2, ln4's "declined": the spare stops at once), WAIT (not HELD yet) and REFUSE (not dead + 1, or its view does not
++// validate): the spare sends the REJOIN again after 200 ms, as after TCP's FIN.
++#define GDAKI_CTRL_RJA_FAIL 2
++#define GDAKI_CTRL_RJA_WAIT 20
++#define GDAKI_CTRL_RJA_REFUSE 21
++// The test switches of phase 2 (research builds only; EXPERIMENT.md 9.9): the record QP to <peer> into ERR <ms> after the
++// first armed checkpoint (or the helper start without the restore), the first <n> REJOIN datagrams dropped by the spare,
++// no RECV re-posted from <start> ms for <len> ms. On the witness socket (rdma build only; the tcp control cells' copies
++// are behind NCCL_GIN_CTRL_TCP_CELLS): DIE_RST=<ms>, RST_GAP=<start>:<len>, FD_HOLDER=sock|uverbs.
++#define GDAKI_CTRL_T_QP_ERR "NCCL_GIN_CTRL_TEST_QP_ERR"              // <ms>:<peer>
++#define GDAKI_CTRL_T_DROP_UD "NCCL_GIN_CTRL_TEST_DROP_UD"            // rejoin:<n>
++#define GDAKI_CTRL_T_CREDIT_STALL "NCCL_GIN_CTRL_TEST_CREDIT_STALL"  // <start ms>:<length ms>
++#define GDAKI_CTRL_T_DIE_RST "NCCL_GIN_TS_TEST_DIE_RST"              // <ms>
++#define GDAKI_CTRL_T_RST_GAP "NCCL_GIN_TS_TEST_RST_GAP"              // <start ms>:<length ms>
++#define GDAKI_CTRL_T_FD_HOLDER "NCCL_GIN_TS_TEST_FD_HOLDER"          // sock | uverbs
++#define GDAKI_CTRL_P_PAGE "GIN_CTRL_PAGE"  // [1] [2] the status page and the ring (rdma build: default 1 since phase 2a-2)
++#define GDAKI_CTRL_PAGE_DEFAULT 1
+ // ---- [2] ring (end) ----
+ // ---- [3] launcher: the rank side of the launcher (begin) ----
+ // ---- [3] launcher (end) ----

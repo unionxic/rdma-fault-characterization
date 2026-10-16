@@ -164,6 +164,7 @@ state	12230	gdakiTsInitiate	record	kept	pe.gone after the ACK wait failed
 # count of its uses in that region's code lines, what they are. build_gc.sh sites counts them in the tree as well.
 # (fix of REVIEW_P12: record 55's send moved from the page region into the ring region's liveness READ QP pairing link,
 # which carries the model's pairing bodies over the scaffold; the page region has no seam use any more)
-#use	ring	gdakiCtrlChanUp	1	gdakiCtrlProbePairingStep: record 55 PROBE_SETUP goes only on an up record channel (the two-argument seam)
-#use	ring	gdakiHoldSend	1	gdakiCtrlProbeScaffoldSend: record 55 PROBE_SETUP (the scaffold; it rides the record path, gdakiHoldSend's swapped send)
+# (phase 2a-2-A, impl/notes_p2a2.md: record 55's scaffold is gone with its two uses, gdakiCtrlChanUp in
+# gdakiCtrlProbePairingStep and gdakiHoldSend in gdakiCtrlProbeScaffoldSend; the UD pairing carries the liveness READ QP's
+# endpoint, an incoming 55 is dropped with one line; the ring region's setup glue and first pairing use no seam)
 #use	ring	.fd	2	gdakiCtrlRdmaChannelFd and gdakiCtrlRdmaCreate (O_NONBLOCK): the helper CQ's completion channel fd (not a peer socket; the seam gdakiCtrlPollFd of 2a-2)
