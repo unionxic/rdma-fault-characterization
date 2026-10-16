@@ -37,6 +37,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -280,6 +281,28 @@ static int nLines(const Rank& x, const char* sub) {
   return n;
 }
 
+// The window line's cells (REVIEW_P3 막는 문제 1): a MAP_SHARED window a forked child can still write (its late write after
+// SIGCONT), and a region whose reads fail when gBadOn is set.
+static uint8_t* gWin = nullptr;
+static const size_t gWinBytes = 65536;
+static uint8_t gBad[4096];
+static bool gBadOn = false;
+static void cellRegions(void*, std::vector<gdakiCtrlLaRegion>* out) {
+  out->clear();
+  out->push_back({gWin, gWinBytes});
+  if (gBadOn) out->push_back({gBad, sizeof(gBad)});
+}
+static bool cellRead(void*, const void* src, void* dst, size_t n) {
+  if (src >= (const void*)gBad && src < (const void*)(gBad + sizeof(gBad))) return false;
+  memcpy(dst, src, n);
+  return true;
+}
+static void setCells(Rank* x) {
+  x->k.cells.arg = nullptr;
+  x->k.cells.regions = cellRegions;
+  x->k.cells.read = cellRead;
+}
+
 static Core* mkCore(uint32_t node, const char* dir) {
   Core* c = new Core();
   c->node = node;
@@ -431,6 +454,13 @@ static Kid spawnKid(const char* sock, int role, int32_t rank, uint32_t inc, uint
         waitpid(g, &st, 0);
         const char s = WIFEXITED(st) && WEXITSTATUS(st) == 0 ? 'C' : 'O';
         if (write(r[1], &s, 1) != 1) _exit(2);
+      } else if (op == 'F') {  // REPLAY_FAILED (once; a second is not sent)
+        const char s = gdakiCtrlLaSpareFail(&u, "the replay diverged") && !gdakiCtrlLaSpareFail(&u, "again") ? 'F' : '?';
+        if (write(r[1], &s, 1) != 1) _exit(2);
+      } else if (op == 'w') {  // the late write: every byte of the shared window
+        for (size_t i = 0; i < gWinBytes; i++) gWin[i] ^= 0x5a;
+        const char s = 'W';
+        if (write(r[1], &s, 1) != 1) _exit(2);
       } else if (op == 'x') {
         _exit(0);
       }
@@ -492,10 +522,6 @@ static glRsActivate actRecord(int32_t rank, uint32_t newInc, uint64_t step) {
   a.reserved = gdakiCtrlLaActFencedMark(newInc);
   return a;
 }
-static uint32_t noCells(void*, int, uint32_t* unreadable) {
-  *unreadable = 0;
-  return 0;
-}
 
 // ------------------------------------------------------------------------------------------------ scenes
 // Two launchers (node 0 rain, node 1 sunny), four ranks: 0, 1 on node 0, 2, 3 on node 1 (the testbed's layout); rank 2
@@ -513,6 +539,7 @@ static World mkWorld() {
   w.cores.push_back(mkCore(0, "gls0"));
   w.cores.push_back(mkCore(1, "gls1"));
   w.b = mkRank(0, 2, 4, 0, NONCE, &w.cores, 2);
+  setCells(w.b);
   for (int r = 0; r < 4; r++) gdakiCtrlLaSetRankNode(&w.b->k, r, r < 2 ? 0u : 1u);
   return w;
 }
@@ -562,6 +589,14 @@ static void sceneLeavingLeft() {
   CHECK(kidRes(w.cores, k) == '1' && kidRes(w.cores, k) == 'c');
   kidCmd(k, 'a');
   CHECK(kidRes(w.cores, k) == 'K');
+  CHECK(pumpUntil(w.cores, [&] { return w.b->k.la[1].haveNote[3] && w.b->k.la[1].note[3].regState == GL_RS_ALIVE; }));
+  {  // the L inputs while it lives (REVIEW_P3 고칠 것 1): its registration word ALIVE for incarnation 0 only
+    const gdakiCtrlLaLIn a = gdakiCtrlLaLInOf(w.b->k.leftPlus1[3], w.b->k.fencedPlus1[3], gdakiCtrlLaRegWord(&w.b->k, 3), 0);
+    CHECK(a.regAlive && !a.regLeft && !a.left && !a.ended);
+    const gdakiCtrlLaLIn b = gdakiCtrlLaLInOf(w.b->k.leftPlus1[3], w.b->k.fencedPlus1[3], gdakiCtrlLaRegWord(&w.b->k, 3), 1);
+    CHECK(!b.regAlive && !b.regLeft);
+    CHECK(gdakiCtrlLaRegWord(&w.b->k, 0) == 0);  // no note of rank 0: no word
+  }
   kidCmd(k, 'l');
   CHECK(kidRes(w.cores, k) == 'L');
   pump(w.cores, 20);  // the launcher reads LEAVING
@@ -574,6 +609,18 @@ static void sceneLeavingLeft() {
   pump(w.cores, 20);
   CHECK(w.b->k.fencedPlus1[3] == GDAKI_CTRL_FENCE_NONE);  // LEFT is a leave, never a fence
   CHECK(w.b->k.la[1].note[3].regState == GL_RS_LEFT);
+  {  // L: LEFT of incarnation 0 and its word LEFT; no end
+    const gdakiCtrlLaLIn a = gdakiCtrlLaLInOf(w.b->k.leftPlus1[3], w.b->k.fencedPlus1[3], gdakiCtrlLaRegWord(&w.b->k, 3), 0);
+    CHECK(a.left && a.regLeft && !a.regAlive && !a.ended);
+    CHECK(!gdakiCtrlLaLInOf(w.b->k.leftPlus1[3], 0, 0, 1).left);
+  }
+  gLnOk = false;  // a LEFT the lineage does not take is not a leave
+  glMsg m;
+  gdakiCtrlLaMsgInit(&w.b->k, &m, GL_K_LEFT, 1, 4, 0);
+  gdakiCtrlLaOnRc(&w.b->k, 0, m, nowMs());
+  CHECK(w.b->k.leftPlus1[1] == 0 && nLines(*w.b, "LEFT of rank 1 incarnation 4 from node 0 is not this lineage's (FUTURE or "
+                                                 "STALE): the leave is not taken") == 1);
+  gLnOk = true;
   reap(k);
   rmWorld(w);
   nScenes++;
@@ -591,13 +638,20 @@ static void sceneKillExited() {
   waitpid(k.pid, nullptr, 0);
   k.pid = -1;
   CHECK(pumpUntil(w.cores, [&] { return w.b->k.fencedPlus1[3] == gdakiCtrlFenceWord(0); }));
+  {  // L: the end of incarnation 0 (EXITED), not of 1; no leave
+    const gdakiCtrlLaLIn a = gdakiCtrlLaLInOf(w.b->k.leftPlus1[3], w.b->k.fencedPlus1[3], gdakiCtrlLaRegWord(&w.b->k, 3), 0);
+    CHECK(a.ended && !a.left);
+    CHECK(!gdakiCtrlLaLInOf(w.b->k.leftPlus1[3], w.b->k.fencedPlus1[3], 0, 1).ended);
+  }
   // the hold start: armed, the word already says FENCED: the FENCED line "by EXITED" now, no FENCE
+  gdakiCtrlLaOnJudgement(&w.b->k, 3, 0);
   gdakiCtrlLaFenceArm(&w.b->k, 3, 0);
-  gdakiCtrlLaFenceReport(&w.b->k, 3, true, noCells, nullptr);
+  gdakiCtrlLaFenceReport(&w.b->k, 3, true);
   CHECK(gdakiCtrlLaFence(&w.b->k, 3, 0, nowMs(), true) == 1);
   CHECK(!w.b->k.fence[3].sent);
   CHECK(nLines(*w.b, "rank 2: rank 3 (incarnation 0) fence FENCED (by EXITED from node 1)") == 1);
-  CHECK(nLines(*w.b, "window check after the judgement of rank 3: changed=0 cells against=snapshot_at_judgement") == 1);
+  CHECK(nLines(*w.b, "window check after the judgement of rank 3: changed=0 cells against=snapshot_at_judgement "
+                     "unreadable=0") == 1);
   // an older incarnation's end never fences a newer one: FENCED of 0 does not say 1 is fenced
   CHECK(!gdakiCtrlFencedIs(w.b->k.fencedPlus1[3], 1));
   // a FUTURE or STALE end (the lineage says no) leaves the word
@@ -621,6 +675,10 @@ static void sceneFenceStopped() {
   kidCmd(k, 'a');
   CHECK(kidRes(w.cores, k) == 'K');
   kill(k.pid, SIGSTOP);  // the stalled peer (our own child)
+  msleep(20);
+  kidCmd(k, 'w');  // its late write, queued while it is stopped
+  gdakiCtrlLaOnJudgement(&w.b->k, 3, 0);  // the judgement: the snapshot before any QP moves
+  CHECK(w.b->k.snap[3].have && w.b->k.snap[3].v.size() == GDAKI_CTRL_LA_CELLS_PER_REGION);
   gdakiCtrlLaFenceArm(&w.b->k, 3, 0);
   CHECK(gdakiCtrlLaFence(&w.b->k, 3, 0, nowMs(), true) == 0);  // FENCE sent: not yet fenced
   CHECK(w.b->k.fence[3].sent);
@@ -628,14 +686,58 @@ static void sceneFenceStopped() {
   CHECK(gdakiCtrlLaFence(&w.b->k, 3, 0, nowMs(), true) == 0);  // asked again: no second FENCE
   CHECK(pumpUntil(w.cores, [&] { return gdakiCtrlFencedIs(w.b->k.fencedPlus1[3], 0); }));
   CHECK(w.cores[1]->signals == 1);  // the launcher's SIGKILL through the pidfd, once
-  gdakiCtrlLaFenceReport(&w.b->k, 3, true, noCells, nullptr);
+  gdakiCtrlLaFenceReport(&w.b->k, 3, true);
   CHECK(gdakiCtrlLaFence(&w.b->k, 3, 0, nowMs(), true) == 1);
   CHECK(nLines(*w.b, "rank 2: rank 3 (incarnation 0) fence FENCED (by FENCED from node 1)") == 1);
-  CHECK(nLines(*w.b, "window check after the fence of rank 3: changed=0 cells against=snapshot_at_judgement") == 1);
+  CHECK(nLines(*w.b, "window check after the fence of rank 3: changed=0 cells against=snapshot_at_judgement "
+                     "unreadable=0") == 1);
   int st = 0;
   waitpid(k.pid, &st, 0);
   CHECK(WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL);
+  CHECK(kill(k.pid, SIGCONT) == -1 && errno == ESRCH);  // CONT finds no PID: the late write never came
   k.pid = -1;
+  reap(k);
+  rmWorld(w);
+  nScenes++;
+}
+
+// No fence (the hold falls back without the word): the stopped child continues and writes late; the window line at the
+// hold's end counts its cells (changed > 0), and the cells of a region that cannot be read apart (unreadable).
+static void sceneLateWrite() {
+  World w = mkWorld();
+  buddyUp(w);
+  Kid k = spawnKid(w.cores[0]->sock.c_str(), GDAKI_CTRL_LA_ROLE_RANK, 1, 0, NONCE);
+  CHECK(kidRes(w.cores, k) == '1' && kidRes(w.cores, k) == 'c');
+  kidCmd(k, 'a');
+  CHECK(kidRes(w.cores, k) == 'K');
+  kill(k.pid, SIGSTOP);  // our own child
+  msleep(20);
+  kidCmd(k, 'w');
+  gBadOn = true;
+  gdakiCtrlLaOnJudgement(&w.b->k, 1, 0);
+  gdakiCtrlLaOnJudgement(&w.b->k, 1, 0);  // once per (peer, dead)
+  CHECK(w.b->k.snap[1].v.size() == 2 * GDAKI_CTRL_LA_CELLS_PER_REGION);
+  gdakiCtrlLaFenceArm(&w.b->k, 1, 0);
+  kill(k.pid, SIGCONT);
+  CHECK(kidRes(w.cores, k) == 'W');  // the late write landed
+  gdakiCtrlLaOnHoldEnd(&w.b->k, 1);
+  CHECK(nLines(*w.b, "window check after the judgement of rank 1: changed=16 cells against=snapshot_at_judgement "
+                     "unreadable=16") == 1);
+  gdakiCtrlLaOnHoldEnd(&w.b->k, 1);
+  CHECK(nLines(*w.b, "window check after") == 1);  // once per hold
+  gdakiCtrlLaOnHoldEnd(&w.b->k, 0);  // no hold of rank 0 armed: nothing
+  CHECK(nLines(*w.b, "window check after") == 1);
+  gBadOn = false;
+  // the plan: 16 cells over a large region, fewer over a small one, one over a region below 64 B
+  std::vector<uint64_t> off;
+  gdakiCtrlLaCellPlan(65536, &off);
+  CHECK(off.size() == 16 && off.front() == 0 && off.back() == 65536 - 64);
+  gdakiCtrlLaCellPlan(256, &off);
+  CHECK(off.size() == 4 && off.back() == 192);
+  gdakiCtrlLaCellPlan(10, &off);
+  CHECK(off.size() == 1 && off[0] == 0);
+  gdakiCtrlLaCellPlan(0, &off);
+  CHECK(off.empty());
   reap(k);
   rmWorld(w);
   nScenes++;
@@ -743,12 +845,22 @@ static void sceneActivationLaterAccepted() {
     if (n > 0) have += (size_t)n;
   }
   CHECK(have == sizeof(got) && memcmp(got, rd, sizeof(rd)) == 0);
+  // DONE, then at once the caller's close and the relay's end (REVIEW_P3 고칠 것 4: the end used to set stop before the
+  // thread read DONE); the launchers step on another thread meanwhile (the end waits up to its grace)
   CHECK(write(fetchFd, dn, sizeof(dn)) == (ssize_t)sizeof(dn));
+  close(fetchFd);
+  {
+    std::atomic<bool> endDone{false};
+    std::thread ender([&] {
+      gdakiCtrlLaRelayEnd(&s->relayForTest, 1000);
+      endDone.store(true);
+    });
+    while (!endDone.load()) pump(w.cores);
+    ender.join();
+  }
+  CHECK(s->relayForTest.moved == 3 && !s->relayForTest.aborted);
   CHECK(pumpUntil(w.cores, [&] { return w.b->k.act[3].haveDone; }));
   CHECK(memcmp(w.b->k.act[3].done, dn, sizeof(dn)) == 0);
-  close(fetchFd);
-  gdakiCtrlLaRelayEnd(&s->relayForTest);
-  CHECK(s->relayForTest.moved == 3 && !s->relayForTest.aborted);
   CHECK(gl_core_stats(w.cores[1]->c)->nLater == 1 && gl_core_stats(w.cores[1]->c)->nActAccepted == 1);
   // the revived rank: REGISTER as incarnation 1 (the launcher swaps the pidfd), then both pairings, then a spare of 2
   s->k.inc = 1;
@@ -756,6 +868,10 @@ static void sceneActivationLaterAccepted() {
   CHECK(selfHello(w.cores, s, 1, GDAKI_CTRL_LA_ROLE_RANK, 1));
   CHECK(gl_core_stats(w.cores[1]->c)->nPromoted == 1);
   CHECK(!gdakiCtrlLaPathExists(&s->k));  // not paired yet
+  // the revived rank is its ward's buddy (REVIEW_P3 고칠 것 2): the ward placed on node 0 here (a cross-node pair), so
+  // its PAUSED is armable only once this rank paired with node 0's launcher as incarnation 1
+  gdakiCtrlLaSetRankNode(&s->k, 2, 0u);
+  CHECK(!gdakiCtrlLaWardPathOk(&s->k, 2));
   gdakiCtrlLaPairStart(&s->k, 1, nowMs());  // the own launcher first
   CHECK(pumpUntil(w.cores, [&] { return s->k.la[1].connected; }));
   CHECK(pumpUntil(w.cores, [&] { return s->k.la[1].haveNote[3] && s->k.la[1].note[3].regInc == 1; }));
@@ -767,12 +883,91 @@ static void sceneActivationLaterAccepted() {
   CHECK(kidRes(w.cores, sp2) == 'K');
   CHECK(pumpUntil(w.cores, [&] { return s->k.la[1].note[3].spareState == GL_SP_REPLAYING; }));
   CHECK(!gdakiCtrlLaPathExists(&s->k));  // still: node 0 not paired
+  CHECK(!gdakiCtrlLaWardPathOk(&s->k, 2));  // the ward's launcher not paired yet: its PAUSED not armable
+  s->k.pairOk = true;  // as gdakiCtrlLaSpareDone after the FETCH (the steps above paired by hand, one launcher first)
   gdakiCtrlLaPairStart(&s->k, 0, nowMs());
   CHECK(pumpUntil(w.cores, [&] { return s->k.la[0].connected; }));
+  CHECK(gdakiCtrlLaWardPathOk(&s->k, 2));
+  s->k.laOf[1] = -1;
+  CHECK(!gdakiCtrlLaWardPathOk(&s->k, 1));  // a ward whose launcher is not known: no path
   CHECK(gdakiCtrlLaAllPaired(&s->k) && gdakiCtrlLaPathExists(&s->k));  // re-armed only now
   reap(sp2);
   CHECK(pumpUntil(w.cores, [&] { return s->k.la[1].note[3].spareState == GL_SP_FAILED; }));
   CHECK(!gdakiCtrlLaPathExists(&s->k));  // the spare of 2 ended: no path
+  reap(k);
+  rmWorld(w);
+  nScenes++;
+}
+
+// The relay's other ends (REVIEW_P3 고칠 것 5): the caller closes before READY (the spare gave its FETCH up): the thread ends
+// by itself; stop at once on a failure; ABORT from the launcher ends it. And REPLAY_FAILED (고칠 것 9): the spare tells
+// the launcher before READY, the buddy's ACTIVATE is REFUSED at once (no LATER, no 1000 ms).
+static void sceneRelayEndsReplayFailed() {
+  World w = mkWorld();
+  buddyUp(w);
+  Rank* s = mkRank(1, 3, 4, 1, NONCE, &w.cores, 2);
+  s->k.pairOk = false;
+  char ow[160];
+  CHECK(gdakiCtrlLaUnixOpen(&s->k.unix, w.cores[1]->sock.c_str(), ow, sizeof(ow)));  // a connection (no HELLO: this
+                                                                                   // process is never a spare here)
+  {  // the caller's close before READY
+    int fd = -1;
+    CHECK(gdakiCtrlLaRelayStart(&s->relayForTest, &s->k.unix, s->k.log, 3, &fd));
+    uint8_t ep[GL_FETCH_EP_BYTES];
+    memset(ep, 0x11, sizeof(ep));
+    CHECK(write(fd, ep, sizeof(ep)) == (ssize_t)sizeof(ep));
+    msleep(20);
+    close(fd);
+    const double t0 = nowMs();
+    while (!s->relayForTest.done.load() && nowMs() - t0 < 2000) msleep(1);
+    CHECK(s->relayForTest.done.load() && s->relayForTest.callerGone && s->relayForTest.moved == 1);
+    gdakiCtrlLaRelayEnd(&s->relayForTest, 0);
+  }
+  {  // a failure: stop at once (no grace), the thread waiting for the caller's EP
+    int fd = -1;
+    CHECK(gdakiCtrlLaRelayStart(&s->relayForTest, &s->k.unix, s->k.log, 3, &fd));
+    const double t0 = nowMs();
+    gdakiCtrlLaRelayEnd(&s->relayForTest, 0);
+    CHECK(nowMs() - t0 < 200 && s->relayForTest.moved == 0);
+    close(fd);
+  }
+  // REPLAY_FAILED before READY (a forked spare): the launcher's spare slot FAILED (and the spare ended through its
+  // pidfd after the grace), the buddy's ACTIVATE REFUSED at once
+  Kid sp = spawnKid(w.cores[1]->sock.c_str(), GDAKI_CTRL_LA_ROLE_SPARE, 3, 1, NONCE);
+  CHECK(kidRes(w.cores, sp) == '1' && kidRes(w.cores, sp) == 'c');
+  kidCmd(sp, 'a');
+  CHECK(kidRes(w.cores, sp) == 'K');
+  kidCmd(sp, 'F');
+  CHECK(kidRes(w.cores, sp) == 'F');
+  glEntryView v;
+  CHECK(pumpUntil(w.cores, [&] { return gl_core_entry(w.cores[1]->c, NONCE, 3, 2, 1, &v) == 1 && v.sp == GL_SP_FAILED; }));
+  Kid k = spawnKid(w.cores[1]->sock.c_str(), GDAKI_CTRL_LA_ROLE_RANK, 3, 0, NONCE);
+  CHECK(kidRes(w.cores, k) == '1' && kidRes(w.cores, k) == 'c');
+  kidCmd(k, 'a');
+  CHECK(kidRes(w.cores, k) == 'K');
+  kill(k.pid, SIGKILL);
+  waitpid(k.pid, nullptr, 0);
+  k.pid = -1;
+  CHECK(pumpUntil(w.cores, [&] { return gdakiCtrlFencedIs(w.b->k.fencedPlus1[3], 0); }));
+  const glRegion none = {0, 0, 0};
+  CHECK(gdakiCtrlLaActStart(&w.b->k, 3, actRecord(3, 1, 140), none, 1, nowMs()));
+  CHECK(pumpUntil(w.cores, [&] { return w.b->k.act[3].state == GDAKI_CTRL_LA_ACT_REFUSED; }));
+  char why[192] = {0};
+  CHECK(gdakiCtrlLaActStep(&w.b->k, 3, nowMs(), why, sizeof(why)) == GDAKI_CTRL_LA_AS_FALLBACK);
+  CHECK(strstr(why, "the peer's spare refused the activation") != nullptr && w.b->k.act[3].nLater == 0);
+  CHECK(gl_core_stats(w.cores[1]->c)->nActRefused == 1);
+  {
+    int st = 0;
+    pid_t got = 0;
+    const double end = nowMs() + 2000;
+    while (got == 0 && nowMs() < end) {
+      pump(w.cores);
+      got = waitpid(sp.pid, &st, WNOHANG);
+    }
+    CHECK(got == sp.pid && WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL);  // the failed spare ended by its pidfd
+    sp.pid = -1;
+  }
+  reap(sp);
   reap(k);
   rmWorld(w);
   nScenes++;
@@ -895,6 +1090,12 @@ static void sceneArming() {
   CHECK(pumpUntil(w.cores, [&] { return w.b->k.la[1].haveNote[2] && w.b->k.la[1].note[2].regState == GL_RS_ALIVE; }));
   CHECK(gdakiCtrlLaPairedOwn(&w.b->k));
   CHECK(!gdakiCtrlLaPathExists(&w.b->k));  // no spare noted
+  bool resend = true;
+  {  // STORE_REQ's tail now (REVIEW_P3 고칠 것 3): no path, its flag 0; CKPT_STABLE not armable, nothing to send again
+    gdakiCtrlLaSpareReg g0;
+    CHECK(!gdakiCtrlLaTailFill(&w.b->k, &g0) && g0.flags == 0 && g0.node == 1 && g0.rank == 2);
+    CHECK(!gdakiCtrlLaStableArm(&w.b->k, true, &resend) && !resend);
+  }
   {
     const glArmView v = gdakiCtrlLaArmViewOf(&w.b->k);
     CHECK(v.regAcked && v.ownPaired && v.allPaired && v.notedReg == GL_RS_ALIVE && v.notedSpare == GL_SP_NONE);
@@ -905,6 +1106,18 @@ static void sceneArming() {
   kidCmd(sp, 'a');
   CHECK(kidRes(w.cores, sp) == 'K');
   CHECK(pumpUntil(w.cores, [&] { return gdakiCtrlLaPathExists(&w.b->k); }));
+  // the spare's HELLO came after the tail: the path exists but the buddy's registration says none: not armable, sent again
+  CHECK(!gdakiCtrlLaStableArm(&w.b->k, true, &resend) && resend);
+  {
+    gdakiCtrlLaSpareReg g1;
+    CHECK(gdakiCtrlLaTailFill(&w.b->k, &g1) && (g1.flags & GDAKI_CTRL_LA_REG_F_PATH) && gdakiCtrlLaSpareRegOk(g1, 2, 0));
+    CHECK(gdakiCtrlLaStableArm(&w.b->k, true, &resend) && !resend);
+    CHECK(!gdakiCtrlLaStableArm(&w.b->k, false, &resend) && !resend);  // a PAUSED not armable
+    w.b->k.inc = 1;  // another incarnation than the tail's: the buddy's registration is not this one's
+    CHECK(!gdakiCtrlLaStableArm(&w.b->k, true, &resend));
+    w.b->k.inc = 0;
+    CHECK(GDAKI_CTRL_LA_STORE_SPARE_MAGIC != 0x50535247u);  // ln4 GDAKI_STORE_SPARE_MAGIC: a tcp buddy reads no registration
+  }
   {
     const glArmView v = gdakiCtrlLaArmViewOf(&w.b->k);
     CHECK(gl_armable(1, &v) == 1 && gl_armable(0, &v) == 0);
@@ -953,6 +1166,457 @@ static void sceneSocketLoss() {
   nScenes++;
 }
 
+// The registration order (REVIEW_P3 막는 문제 2): the nonce-free INFO before the all-gather, the fields of every rank
+// after it, REGISTER (the nonce) last. The launcher of 897641f3 drops INFO (an unknown kind): no answer within the bound,
+// the field says no path. An answering launcher (a socketpair standing in for its TODO(launcher) INFO_ACK) fills it;
+// the fields of four ranks give the launchers in node order, each rank's node launcher and the count.
+static std::vector<Core*>* gWaitCores = nullptr;
+static void waitPump(void*, int ms) { pump(*gWaitCores, ms); }
+static void sceneInfoAllGather() {
+  World w = mkWorld();
+  gWaitCores = &w.cores;
+  Rank* x = new Rank();  // a fresh link (the ones of mkRank know both launchers already)
+  x->idx = 7;
+  x->cores = &w.cores;
+  gdakiCtrlLaInit(&x->k, 1, 4, 0, 0, 0);
+  x->k.log.fn = noteLine;
+  x->k.log.arg = x;
+  x->k.waitHook = waitPump;
+  gRanks.push_back(x);
+  setenv(GL_SOCK_ENV, w.cores[0]->sock.c_str(), 1);
+  const unsigned bad0 = gl_core_stats(w.cores[0]->c)->nBadMsg;
+  const double t0 = nowMs();
+  CHECK(!gdakiCtrlLaInfoWait(&x->k, GDAKI_CTRL_LA_INFO_MS));  // the launcher drops kind 8: no answer
+  CHECK(nowMs() - t0 >= GDAKI_CTRL_LA_INFO_MS && nowMs() - t0 < GDAKI_CTRL_LA_INFO_MS + 300);
+  CHECK(gl_core_stats(w.cores[0]->c)->nBadMsg == bad0 + 1 && gl_core_stats(w.cores[0]->c)->nRegRefused == 0);
+  gdakiCtrlLaAgInfo none;
+  gdakiCtrlLaAgOf(x->k.unix, &none);
+  CHECK(none.magic == 0);
+  // REGISTER on the same connection after the "all-gather" (the nonce now): accepted, the own launcher known
+  gdakiCtrlLaSetNonce(&x->k, NONCE);
+  char why[160] = {0};
+  CHECK(gdakiCtrlLaRegisterWait(&x->k, GDAKI_CTRL_LA_ROLE_RANK, 0, 1000, why, sizeof(why)));
+  CHECK(x->k.own == 0 && x->k.la.size() == 1 && x->k.la[0].node == 0 && x->k.laOf[1] == 0);
+  CHECK(x->k.nLaunchers == 0 && !gdakiCtrlLaAllPaired(&x->k));  // without the fields nothing is "every launcher"
+  gdakiCtrlLaUnixClose(&x->k.unix);
+  unsetenv(GL_SOCK_ENV);
+  // an answering launcher: INFO_ACK queued on a SEQPACKET pair (the link sends INFO, then reads it)
+  int sp[2];
+  CHECK(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sp) == 0);
+  gdakiCtrlLaUnix fresh;
+  x->k.unix = fresh;
+  x->k.unix.fd = sp[0];
+  CHECK(fcntl(sp[0], F_SETFL, fcntl(sp[0], F_GETFL, 0) | O_NONBLOCK) == 0);
+  glUnixMsg ia;
+  memset(&ia, 0, sizeof(ia));
+  ia.h.magic = GL_U_MAGIC;
+  ia.h.version = GL_WIRE_VERSION;
+  ia.h.kind = (uint16_t)GDAKI_CTRL_LA_U_INFO_ACK;
+  ia.h.sub = GDAKI_CTRL_LA_U_INFO;
+  glUHelloAck b;
+  memset(&b, 0, sizeof(b));
+  b.status = GL_UA_OK;
+  b.node = 1;
+  b.qkey = 0x1234567;
+  b.pageSlot = 0xffffffffu;
+  tLocalUd(&w.cores[1]->tp, &b.ud);
+  b.page = {(uint64_t)(uintptr_t)gl_core_page(w.cores[1]->c), 0x9a9e, 4096};
+  memcpy(ia.body, &b, sizeof(b));
+  ia.h.bodyBytes = (uint16_t)sizeof(b);
+  CHECK(send(sp[1], &ia, sizeof(ia), 0) == (ssize_t)sizeof(ia));
+  CHECK(gdakiCtrlLaInfoWait(&x->k, GDAKI_CTRL_LA_INFO_MS));
+  glUnixMsg got;
+  struct msghdr mh;
+  memset(&mh, 0, sizeof(mh));
+  struct iovec iov = {&got, sizeof(got)};
+  mh.msg_iov = &iov;
+  mh.msg_iovlen = 1;
+  char cbuf[CMSG_SPACE(sizeof(int))];
+  mh.msg_control = cbuf;
+  mh.msg_controllen = sizeof(cbuf);
+  CHECK(recvmsg(sp[1], &mh, 0) == (ssize_t)sizeof(got));
+  CHECK(got.h.kind == GDAKI_CTRL_LA_U_INFO && got.h.nonce == 0 && got.h.rank == 1 && mh.msg_controllen == 0);  // no fd
+  gdakiCtrlLaAgInfo mine;
+  gdakiCtrlLaAgOf(x->k.unix, &mine);
+  CHECK(mine.magic == GDAKI_CTRL_LA_AG_MAGIC && mine.node == 1 && mine.qkey == 0x1234567 && mine.ud.qpn == 4001);
+  close(sp[1]);
+  gdakiCtrlLaUnixClose(&x->k.unix);
+  // the all-gather: ranks 0, 1 on node 0 (rank 1's field missing: no answer there), 2, 3 on node 1; node order
+  gdakiCtrlLaAgInfo by[4];
+  memset(by, 0, sizeof(by));
+  by[2] = mine;
+  by[3] = mine;
+  by[0] = mine;
+  by[0].node = 0;
+  by[0].ud.qpn = 4000;
+  gdakiCtrlLaInit(&x->k, 3, 4, 0, NONCE, 0);
+  CHECK(gdakiCtrlLaAgTake(&x->k, by, 4) == 2);
+  CHECK(x->k.la.size() == 2 && x->k.la[0].node == 0 && x->k.la[1].node == 1 && x->k.la[0].ud.qpn == 4000);
+  CHECK(x->k.laOf[0] == 0 && x->k.laOf[1] == -1 && x->k.laOf[2] == 1 && x->k.laOf[3] == 1 && x->k.own == 1);
+  CHECK(x->k.nLaunchers == 2);
+  gWaitCores = nullptr;
+  rmWorld(w);
+  nScenes++;
+}
+
+// ------------------------------------------------------------------------------------------------ the host's glue
+// (REVIEW_P3 고칠 것 6) gdakiCtrlLaBuddyStep, gdakiCtrlLaFetchFwdStep, gdakiCtrlLaSpareTake, gdakiCtrlLaSpareRevive and
+// gdakiCtrlLaGate are the host's steps (gdakiCtrlLaActivateSend, gdakiCtrlLauncherStep, gdakiCtrlLaSpareWait,
+// gdakiCtrlLaSpareDone, gdakiCtrlActFenceOk call them with the mirror's and the hold's tables); here with fake tables.
+struct FakeBuddy {
+  Rank* b = nullptr;
+  int drainLeft = 0, drainRc = 0, drainCalls = 0;
+  bool blobOk = true;
+  std::vector<uint8_t> blob;
+  glRsActivate blobRec;
+  bool connOk = true, connCalled = false;
+  gdakiMiActAnswer connAn;
+  bool waiterOk = true;
+  int waiterFd = -1;
+  int locks = 0, unlocks = 0;
+  bool putOk = true;
+};
+static void fbUnlock(void* a) { ((FakeBuddy*)a)->unlocks++; }
+static void fbLock(void* a) { ((FakeBuddy*)a)->locks++; }
+static int fbDrain(void* a, int, uint32_t, uint64_t, char* why, size_t whyLen) {
+  FakeBuddy* f = (FakeBuddy*)a;
+  f->drainCalls++;
+  if (f->drainRc < 0) {
+    snprintf(why, whyLen, "the drain was refused");
+    return -1;
+  }
+  return f->drainLeft-- > 0 ? 1 : 0;
+}
+static bool fbBlob(void* a, int, uint32_t, const glRsActivate& rec, std::vector<uint8_t>* bytes, char* why, size_t whyLen) {
+  FakeBuddy* f = (FakeBuddy*)a;
+  f->blobRec = rec;
+  if (!f->blobOk) {
+    snprintf(why, whyLen, "no blob for the peer");
+    return false;
+  }
+  *bytes = f->blob;
+  return true;
+}
+static bool fbPut(void* a, const std::vector<uint8_t>& bytes, glRegion* out, uint64_t* xferId) {
+  FakeBuddy* f = (FakeBuddy*)a;
+  if (!f->putOk || bytes.size() > f->b->outbox.size()) return false;
+  if (!bytes.empty()) memcpy(f->b->outbox.data(), bytes.data(), bytes.size());
+  *out = {(uint64_t)(uintptr_t)f->b->outbox.data(), f->b->outRkey, (uint32_t)bytes.size()};
+  *xferId = 7;
+  return true;
+}
+static bool fbConnect(void* a, int, uint32_t, const gdakiMiActAnswer& an, char* why, size_t whyLen) {
+  FakeBuddy* f = (FakeBuddy*)a;
+  f->connCalled = true;
+  f->connAn = an;
+  if (!f->connOk) snprintf(why, whyLen, "the FETCH QP did not connect");
+  return f->connOk;
+}
+static bool fbWaiter(void* a, int, uint32_t, int fd) {
+  FakeBuddy* f = (FakeBuddy*)a;
+  if (!f->waiterOk) return false;
+  f->waiterFd = fd;
+  return true;
+}
+static gdakiCtrlLaBuddyOps fbOps(FakeBuddy* f) {
+  gdakiCtrlLaBuddyOps o;
+  o.arg = f;
+  o.unlock = fbUnlock;
+  o.lock = fbLock;
+  o.drain = fbDrain;
+  o.blob = fbBlob;
+  o.outboxPut = fbPut;
+  o.fetchConnect = fbConnect;
+  o.waiter = fbWaiter;
+  return o;
+}
+static const std::vector<uint8_t>* gSpareBlobWant = nullptr;
+static int fsBlobRecv(void*, int fd, const glRsActivate&, char* why, size_t whyLen) {  // today's reader: the blob, EOF
+  std::vector<uint8_t> got(gSpareBlobWant->size() + 64);
+  size_t have = 0;
+  for (;;) {
+    const ssize_t n = read(fd, got.data() + have, got.size() - have);
+    if (n <= 0) break;
+    have += (size_t)n;
+  }
+  if (have != gSpareBlobWant->size() || memcmp(got.data(), gSpareBlobWant->data(), have) != 0) {
+    snprintf(why, whyLen, "the blob differs");
+    return 3;
+  }
+  return 0;
+}
+static void sendAnswer(Rank* b, int li, int rank, uint32_t inc, uint32_t sub, int32_t recRank) {
+  glMsg m;
+  gdakiCtrlLaMsgInit(&b->k, &m, GL_K_ACT_ANSWER, rank, inc, b->k.la[(size_t)li].node);
+  m.h.sub = sub;
+  m.h.reqSeq = b->k.act[(size_t)rank].reqSeq;  // the launcher echoes the ACTIVATE's seq
+  glActAnswerBody body;
+  memset(&body, 0, sizeof(body));
+  body.record = actRecord(recRank, inc, 140);
+  body.spareState = GL_SP_REPLAYING;
+  memcpy(m.body, &body, sizeof(body));
+  m.h.bodyBytes = (uint16_t)sizeof(body);
+  gdakiCtrlLaOnRc(&b->k, li, m, nowMs());
+}
+
+// The whole buddy and spare path through the glue: the drain step, the blob into the outbox, the record decorated
+// (pid 0, FENCED, version MI), LATER once (one line), the spare's READY and its check of the bytes, the relay before
+// ACCEPTED, the FETCH endpoint to this rank's QP, READY to the spare, the waiter, DONE relayed and handed to the waiter,
+// the revived rank's REGISTER (the launcher's promote). The gate says GO with the word.
+static void sceneGlueActivation() {
+  World w = mkWorld();
+  buddyUp(w);
+  gWaitCores = &w.cores;
+  Rank* s = mkRank(1, 3, 4, 1, NONCE, &w.cores, 2);
+  s->k.pairOk = false;
+  s->k.waitHook = waitPump;
+  CHECK(selfHello(w.cores, s, 1, GDAKI_CTRL_LA_ROLE_SPARE, 1));
+  Kid k = spawnKid(w.cores[1]->sock.c_str(), GDAKI_CTRL_LA_ROLE_RANK, 3, 0, NONCE);
+  CHECK(kidRes(w.cores, k) == '1' && kidRes(w.cores, k) == 'c');
+  kidCmd(k, 'a');
+  CHECK(kidRes(w.cores, k) == 'K');
+  kill(k.pid, SIGKILL);
+  waitpid(k.pid, nullptr, 0);
+  k.pid = -1;
+  CHECK(pumpUntil(w.cores, [&] { return gdakiCtrlFencedIs(w.b->k.fencedPlus1[3], 0); }));
+  gdakiCtrlLaOnJudgement(&w.b->k, 3, 0);
+  gdakiCtrlLaFenceArm(&w.b->k, 3, 0);
+  char why[256] = {0};
+  CHECK(gdakiCtrlLaGate(&w.b->k, 3, 0, nowMs(), why, sizeof(why)) == GDAKI_CTRL_LA_GATE_GO);  // the word: GO, no FENCE
+  CHECK(!w.b->k.fence[3].sent && nLines(*w.b, "fence FENCED (by EXITED from node 1)") == 1);
+  FakeBuddy f;
+  f.b = w.b;
+  f.drainLeft = 1;
+  for (size_t i = 0; i < 2000; i++) f.blob.push_back((uint8_t)(i * 11 + 3));
+  const gdakiCtrlLaBuddyOps ops = fbOps(&f);
+  glRsActivate rec = actRecord(3, 1, 140);
+  rec.version = 1;
+  rec.pid = 4242;  // the hold's record: the step's PID and start time (TCP's); the glue clears them
+  rec.pidStart = 99;
+  rec.reserved = 0;
+  gdakiCtrlLaBuddyOut o1;
+  CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 3, rec, 0, true, nowMs(), ops, &o1) == GDAKI_CTRL_LA_BS_WAIT);
+  CHECK(!o1.started && f.drainCalls == 1 && f.unlocks == 1 && f.locks == 1);  // not drained: the next step
+  gdakiCtrlLaBuddyOut o2;
+  CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 3, rec, 0, true, nowMs(), ops, &o2) == GDAKI_CTRL_LA_BS_WAIT);
+  CHECK(o2.started && w.b->k.act[3].state == GDAKI_CTRL_LA_ACT_SENT && f.unlocks == 2 && f.locks == 2);
+  CHECK(f.blobRec.pid == 0 && f.blobRec.pidStart == 0 && gdakiCtrlLaActFencedOk(f.blobRec.reserved, 1));
+  CHECK(pumpUntil(w.cores, [&] { return w.b->k.act[3].state == GDAKI_CTRL_LA_ACT_LATER; }));
+  gdakiCtrlLaBuddyOut o3, o4;
+  CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 3, rec, 0, true, nowMs(), ops, &o3) == GDAKI_CTRL_LA_BS_WAIT && o3.laterNew);
+  CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 3, rec, 0, true, nowMs(), ops, &o4) == GDAKI_CTRL_LA_BS_WAIT && !o4.laterNew);
+  // the spare: READY, the bytes (its wait steps the launchers), its checks, the relay, ACCEPTED
+  gSpareBlobWant = &f.blob;
+  gdakiCtrlLaSpareOps sops;
+  sops.blobRecv = fsBlobRecv;
+  glRsActivate got;
+  int actFd = -1;
+  char swhy[192] = {0};
+  CHECK(gdakiCtrlLaSpareTake(&s->k, &s->relayForTest, 3000, true, sops, &got, &actFd, swhy, sizeof(swhy)) ==
+        GDAKI_CTRL_LA_ST_OK);
+  CHECK(actFd >= 0 && got.version == GDAKI_RS_ACT_VERSION_MI && got.pid == 0 && got.incarnation == 1);
+  CHECK(nLines(*s, "spare rank 3: READY (incarnation 1) to the launcher of node 1; waiting for the activation") == 1);
+  CHECK(pumpUntil(w.cores, [&] { return w.b->k.act[3].state == GDAKI_CTRL_LA_ACT_ACCEPTED; }));
+  gdakiCtrlLaBuddyOut o5;
+  CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 3, rec, 0, true, nowMs(), ops, &o5) == GDAKI_CTRL_LA_BS_WAIT);  // no endpoint yet
+  gdakiMiActAnswer an;
+  memset(&an, 0, sizeof(an));
+  an.magic = GDAKI_MI_ACTB_MAGIC;
+  an.ok = 1;
+  an.fetch.qpn = 777;
+  CHECK(write(actFd, &an, sizeof(an)) == (ssize_t)sizeof(an));
+  CHECK(pumpUntil(w.cores, [&] { return w.b->k.act[3].haveEp; }));
+  gdakiCtrlLaBuddyOut o6;
+  CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 3, rec, 0, true, nowMs(), ops, &o6) == GDAKI_CTRL_LA_BS_ACTIVATED);
+  CHECK(o6.fetchReady && !o6.endAct && f.connCalled && f.connAn.fetch.qpn == 777 && f.waiterFd >= 0);
+  CHECK(w.b->k.fwdSock >= 0 && w.b->k.fwdPeer == 3 && w.b->k.act[3].state == GDAKI_CTRL_LA_ACT_READY);
+  gdakiMiActReady rd;
+  size_t have = 0;
+  const double end = nowMs() + 3000;
+  while (have < sizeof(rd) && nowMs() < end) {
+    pump(w.cores);
+    const ssize_t n = recv(actFd, (char*)&rd + have, sizeof(rd) - have, MSG_DONTWAIT);
+    if (n > 0) have += (size_t)n;
+  }
+  CHECK(have == sizeof(rd) && rd.magic == GDAKI_MI_ACTB_MAGIC && rd.kind == GDAKI_MI_ACT_READY);
+  gdakiMiActDone dn;
+  memset(&dn, 0, sizeof(dn));
+  dn.magic = GDAKI_MI_ACTB_MAGIC;
+  dn.ok = 1;
+  dn.bytes = 123456;
+  CHECK(write(actFd, &dn, sizeof(dn)) == (ssize_t)sizeof(dn));
+  close(actFd);
+  {
+    std::atomic<bool> endDone{false};
+    std::thread ender([&] {
+      gdakiCtrlLaRelayEnd(&s->relayForTest, 1000);
+      endDone.store(true);
+    });
+    while (!endDone.load()) pump(w.cores);
+    ender.join();
+  }
+  CHECK(s->relayForTest.moved == 3);
+  CHECK(pumpUntil(w.cores, [&] { return w.b->k.act[3].haveDone; }));
+  gdakiCtrlLaFetchFwdStep(&w.b->k);  // the helper's step: DONE to the waiter, its socketpair end closed
+  CHECK(w.b->k.fwdSock < 0 && !w.b->k.act[3].haveDone);
+  gdakiMiActDone wd;
+  CHECK(read(f.waiterFd, &wd, sizeof(wd)) == (ssize_t)sizeof(wd) && wd.bytes == 123456 && wd.ok == 1);
+  char eof;
+  CHECK(read(f.waiterFd, &eof, 1) == 0);
+  close(f.waiterFd);
+  // the revival: REGISTER as incarnation 1 (the launcher promotes the spare), pairing open again
+  CHECK(gdakiCtrlLaSpareRevive(&s->k, swhy, sizeof(swhy)));
+  CHECK(s->k.inc == 1 && s->k.pairOk && !s->k.latched && gl_core_stats(w.cores[1]->c)->nPromoted == 1);
+  CHECK(pumpUntil(w.cores, [&] { return gdakiCtrlLaAllPaired(&s->k); }));  // the clock pairs both as incarnation 1
+  gSpareBlobWant = nullptr;
+  gWaitCores = nullptr;
+  reap(k);
+  rmWorld(w);
+  nScenes++;
+}
+
+// The glue's fallbacks, each a fresh activation of rank 1 (node 0): the drain refused, no blob, no outbox, ACCEPTED for
+// another rank, REFUSED, no FETCH endpoint in 1000 ms (FAIL to the spare), the FETCH QP's connect, no waiter (ABORT);
+// a second LATER is a line only; the fence's other ends: FENCE_NAK (line, why), the launcher lost after FENCE
+// (STOP_launcher), no path before FENCE (its line).
+static void sceneGlueFallbacks() {
+  World w = mkWorld();
+  buddyUp(w);
+  FakeBuddy f;
+  f.b = w.b;
+  f.blob.assign(64, 0x5a);
+  const gdakiCtrlLaBuddyOps ops = fbOps(&f);
+  const glRsActivate rec = actRecord(1, 1, 140);
+  auto fresh = [&] { w.b->k.act[1] = gdakiCtrlLaAct(); };
+  {
+    fresh();
+    f.drainRc = -1;
+    gdakiCtrlLaBuddyOut o;
+    CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 1, rec, 0, true, nowMs(), ops, &o) == GDAKI_CTRL_LA_BS_FALLBACK);
+    CHECK(!o.endAct && strcmp(o.why, "the drain was refused") == 0);
+    f.drainRc = 0;
+  }
+  {
+    fresh();
+    f.blobOk = false;
+    gdakiCtrlLaBuddyOut o;
+    CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 1, rec, 0, true, nowMs(), ops, &o) == GDAKI_CTRL_LA_BS_FALLBACK);
+    CHECK(o.endAct && strcmp(o.why, "no blob for the peer") == 0 && f.locks == f.unlocks);
+    f.blobOk = true;
+  }
+  {
+    fresh();
+    f.putOk = false;
+    gdakiCtrlLaBuddyOut o;
+    CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 1, rec, 0, false, nowMs(), ops, &o) == GDAKI_CTRL_LA_BS_FALLBACK);
+    CHECK(!o.endAct && strstr(o.why, "no launcher path for the peer's activation") != nullptr);
+    f.putOk = true;
+  }
+  auto started = [&](bool mi) {
+    fresh();
+    gdakiCtrlLaBuddyOut o;
+    CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 1, rec, 0, mi, nowMs(), ops, &o) == GDAKI_CTRL_LA_BS_WAIT && o.started);
+  };
+  {  // an answer to another ACTIVATE (its seq) is not this activation's
+    started(false);
+    glMsg m;
+    gdakiCtrlLaMsgInit(&w.b->k, &m, GL_K_ACT_ANSWER, 1, 1, 0);
+    m.h.sub = GL_RS_ACT_REFUSED;
+    m.h.reqSeq = w.b->k.act[1].reqSeq + 1000u;
+    gdakiCtrlLaOnRc(&w.b->k, 0, m, nowMs());
+    CHECK(w.b->k.act[1].state == GDAKI_CTRL_LA_ACT_SENT);
+  }
+  {  // ACCEPTED for another rank
+    started(false);
+    sendAnswer(w.b, 0, 1, 1, GL_RS_ACT_ACCEPTED, 0);
+    gdakiCtrlLaBuddyOut o;
+    CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 1, rec, 0, false, nowMs(), ops, &o) == GDAKI_CTRL_LA_BS_FALLBACK);
+    CHECK(strstr(o.why, "the launcher's ACCEPTED names rank 0 incarnation 1, not 1") != nullptr);
+  }
+  {  // a second LATER: a line, still waiting; then REFUSED: the fallback, the mirror's activation ended
+    started(true);
+    sendAnswer(w.b, 0, 1, 1, GL_RS_ACT_LATER, 1);
+    sendAnswer(w.b, 0, 1, 1, GL_RS_ACT_LATER, 1);
+    CHECK(nLines(*w.b, "a second LATER for rank 1 (incarnation 1) from node 0: ignored") == 1 && w.b->k.act[1].nLater == 2);
+    gdakiCtrlLaBuddyOut o;
+    CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 1, rec, 0, true, nowMs(), ops, &o) == GDAKI_CTRL_LA_BS_WAIT && o.laterNew);
+    sendAnswer(w.b, 0, 1, 1, GL_RS_ACT_REFUSED, 1);
+    gdakiCtrlLaBuddyOut o2;
+    CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 1, rec, 0, true, nowMs(), ops, &o2) == GDAKI_CTRL_LA_BS_FALLBACK && o2.endAct);
+    CHECK(strstr(o2.why, "the peer's spare refused the activation") != nullptr);
+  }
+  {  // ACCEPTED, no endpoint within 1000 ms: FAIL to the spare, the fallback
+    started(true);
+    sendAnswer(w.b, 0, 1, 1, GL_RS_ACT_ACCEPTED, 1);
+    gdakiCtrlLaBuddyOut o;
+    CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 1, rec, 0, true, nowMs() + 1001.0, ops, &o) == GDAKI_CTRL_LA_BS_FALLBACK);
+    CHECK(o.endAct && strcmp(o.fetchWhy, "no FETCH endpoint from the spare") == 0 &&
+          w.b->k.act[1].state == GDAKI_CTRL_LA_ACT_READY);  // the FAIL went as the READY piece
+  }
+  auto withEp = [&] {
+    started(true);
+    sendAnswer(w.b, 0, 1, 1, GL_RS_ACT_ACCEPTED, 1);
+    glMsg m;
+    gdakiCtrlLaMsgInit(&w.b->k, &m, GL_K_FETCH_EP, 1, 1, 0);
+    m.h.reqSeq = w.b->k.act[1].reqSeq;
+    gdakiMiActAnswer an;
+    memset(&an, 0, sizeof(an));
+    an.magic = GDAKI_MI_ACTB_MAGIC;
+    an.ok = 1;
+    memcpy(m.body, &an, sizeof(an));
+    m.h.bodyBytes = (uint16_t)sizeof(an);
+    gdakiCtrlLaOnRc(&w.b->k, 0, m, nowMs());
+    CHECK(w.b->k.act[1].haveEp);
+  };
+  {  // the FETCH QP does not connect
+    withEp();
+    f.connOk = false;
+    gdakiCtrlLaBuddyOut o;
+    CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 1, rec, 0, true, nowMs(), ops, &o) == GDAKI_CTRL_LA_BS_FALLBACK);
+    CHECK(strcmp(o.fetchWhy, "the FETCH QP did not connect") == 0);
+    f.connOk = true;
+  }
+  {  // no waiter (REVIEW_P3 nit 8): FAIL, ABORT, the fallback; not an activation
+    withEp();
+    f.waiterOk = false;
+    gdakiCtrlLaBuddyOut o;
+    CHECK(gdakiCtrlLaBuddyStep(&w.b->k, 1, rec, 0, true, nowMs(), ops, &o) == GDAKI_CTRL_LA_BS_FALLBACK);
+    CHECK(strcmp(o.fetchWhy, "the buddy's FETCH waiter could not start") == 0 &&
+          w.b->k.act[1].state == GDAKI_CTRL_LA_ACT_ABORTED && w.b->k.fwdSock < 0);
+    f.waiterOk = true;
+  }
+  {  // the fence: FENCE_NAK (rank 0 never registered at node 0): the line and the gate's why
+    gdakiCtrlLaFenceArm(&w.b->k, 0, 0);
+    char why[256] = {0};
+    CHECK(gdakiCtrlLaGate(&w.b->k, 0, 0, nowMs(), why, sizeof(why)) == GDAKI_CTRL_LA_GATE_WAIT);  // FENCE sent
+    CHECK(pumpUntil(w.cores, [&] { return w.b->k.fence[0].nak; }));
+    CHECK(gdakiCtrlLaGate(&w.b->k, 0, 0, nowMs(), why, sizeof(why)) == GDAKI_CTRL_LA_GATE_FALLBACK);
+    CHECK(nLines(*w.b, "rank 2: rank 0 (incarnation 0) fence FENCE_NAK from node 0: nothing held, falling back") == 1);
+    CHECK(strstr(why, "the fence of the peer's dead incarnation cannot complete") != nullptr);
+  }
+  {  // FENCE sent, then the launcher lost (its record QP's error): STOP_launcher
+    gdakiCtrlLaFenceArm(&w.b->k, 1, 0);
+    char why[256] = {0};
+    CHECK(gdakiCtrlLaGate(&w.b->k, 1, 0, nowMs(), why, sizeof(why)) == GDAKI_CTRL_LA_GATE_WAIT && w.b->k.fence[1].sent);
+    w.b->k.la[0].qpErr = true;
+    CHECK(gdakiCtrlLaGate(&w.b->k, 1, 0, nowMs(), why, sizeof(why)) == GDAKI_CTRL_LA_GATE_FALLBACK);
+    CHECK(nLines(*w.b, "rank 2: rank 1 (incarnation 0) fence: the launcher of node 0 is lost (record_QP_error) "
+                       "(STOP_launcher)") == 1);
+    // no path before FENCE (the launcher already lost): FENCE never sent, its own line once
+    gdakiCtrlLaFenceArm(&w.b->k, 1, 1);
+    CHECK(gdakiCtrlLaGate(&w.b->k, 1, 1, nowMs(), why, sizeof(why)) == GDAKI_CTRL_LA_GATE_FALLBACK);
+    CHECK(gdakiCtrlLaGate(&w.b->k, 1, 1, nowMs(), why, sizeof(why)) == GDAKI_CTRL_LA_GATE_FALLBACK);
+    CHECK(nLines(*w.b, "rank 2: rank 1 (incarnation 1) fence: no path to the launcher of node 0 (record_QP_error): FENCE "
+                       "not sent") == 1);
+    w.b->k.laOf[1] = -1;
+    gdakiCtrlLaFenceArm(&w.b->k, 1, 2);
+    CHECK(gdakiCtrlLaGate(&w.b->k, 1, 2, nowMs(), why, sizeof(why)) == GDAKI_CTRL_LA_GATE_FALLBACK);
+    CHECK(nLines(*w.b, "fence: no path to the launcher of node unknown (not_known): FENCE not sent") == 1);
+  }
+  rmWorld(w);
+  nScenes++;
+}
+
 // Pure pieces: the env values, the FENCED mark, the registration layout.
 static void scenePure() {
   setenv(GDAKI_CTRL_LA_SPARE_INC_ENV, "2", 1);
@@ -973,7 +1637,7 @@ static void scenePure() {
   unsetenv(GL_SOCK_ENV);
   char d[108];
   CHECK(gdakiCtrlLaSockPath(p, sizeof(p)) && gl_default_sock_path(d, sizeof(d)) == 0 && strcmp(p, d) == 0);
-  for (uint32_t inc = 1; inc < 1000; inc++) {
+  for (uint32_t inc : {1u, 2u, 999u, 0xfffffffeu}) {  // chosen incarnations (no loop of one formula, REVIEW_P3 고칠 것 6)
     CHECK(gdakiCtrlLaActFencedOk(gdakiCtrlLaActFencedMark(inc), inc));
     CHECK(!gdakiCtrlLaActFencedOk(gdakiCtrlLaActFencedMark(inc), inc + 1));
     CHECK(!gdakiCtrlLaActFencedOk(0, inc));
@@ -986,18 +1650,27 @@ static void scenePure() {
 int main(int argc, char** argv) {
 #if !NCCL_GIN_CTRL_TCP
   if (argc > 1 && chdir(argv[1]) != 0) return 2;  // sun_path is 108 bytes: a short working directory
+  setvbuf(stdout, nullptr, _IOLBF, 0);
   signal(SIGPIPE, SIG_IGN);
+  gWin = (uint8_t*)mmap(nullptr, gWinBytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (gWin == MAP_FAILED) return 2;
+  for (size_t i = 0; i < gWinBytes; i++) gWin[i] = (uint8_t)(i * 13 + 5);
   scenePure();
   sceneRegistration();
   sceneLeavingLeft();
   sceneKillExited();
   sceneFenceStopped();
+  sceneLateWrite();
   sceneFenceNak();
   sceneActivationLaterAccepted();
+  sceneRelayEndsReplayFailed();
   sceneLaterTimeout();
   sceneLauncherStall();
   sceneArming();
   sceneSocketLoss();
+  sceneInfoAllGather();
+  sceneGlueActivation();
+  sceneGlueFallbacks();
   printf("gc_unit_p3 (rdma): %d scenes, %d checks, %d failed\n", nScenes, nChecks, nFail);
 #else
   (void)argc, (void)argv;
