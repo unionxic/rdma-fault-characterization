@@ -7,19 +7,25 @@ usage: score_gc.py <resultsdir>
 Steps (../../EXPERIMENT.md 3, 7, 8):
   1. rows_gc.all_rows(): one row per trial (raw/: the gc cells and gin-mirror's cells at @gct and @gc; reg/: gin-remaining's
      runner; cost*/: the probe cost family; local/: the CPU program gate_fenced).
-  2. a status per trial. Smoke and pilot trials (a subfolder whose name starts with smoke or pilot, or a trial of a hold P*)
-     are counted apart and never scored. The gc cells' exclusions of section 8 (gin-mirror's and these): void,
-     config_driver, workload, config (the trial ran another build, witness, fence, policy or restore setting than its cell, or
-     its Resume was refused where the cell expects the restore), launcher_not_ready (the start check), launcher_changed (a
-     launcher ended or changed during the trial, or a launcher QP loss outside the test-switch cells), not_applied (the
-     injection's record is missing), inject_late (the runner's injection more than 1 s from its plan, or a stop's length more
-     than 1 s off), spare_start_fail, foreign_gpu, restore_not_live, kill_before_ckpt, second_before_rearm (the second kill
-     before the survivors' re-arm lines), spareabsent_disarmed (a stable checkpoint between the spare's kill and the rank's),
-     surplus. gin-mirror's regression rows take gin-mirror's own statuses (its score.py) plus the launcher and second-kill
-     exclusions here.
-  3. per key cell@build the first PLANNED candidates by trial number are scored; "자료 부족" when a key has fewer scored
-     trials than ceil(0.75 x planned) or a library column its formula reads (LIB_COLS: from TODO lines) is empty in every
-     scored trial.
+  2. a status per trial. Smoke trials (a subfolder smoke*, or a trial of hold P0) and pilot trials (a subfolder pilot* or
+     costpilot*, or a trial of another hold P*) are counted apart and never scored. The gc cells' exclusions of section 8
+     (gin-mirror's and these): void, config_driver, workload, config (the trial ran another build, witness, fence, policy or
+     restore setting than its cell, another launcher env than the cell's launcher_env, a W or READ period other than
+     cells_gc.json "prereg", or its Resume was refused where the cell expects the restore), launcher_not_ready (the start
+     check), launcher_changed (a launcher ended or changed during the trial, or a launcher QP loss outside the test-switch
+     cells), not_applied (the injection's record is missing), inject_late (the runner's injection more than 1 s from its
+     plan, a stop's length more than 1 s off, or the spare-absent cell's two kills more than 5 ms apart), spare_start_fail,
+     foreign_gpu, restore_not_live, kill_before_ckpt (the kill, DIE_RST, STOP or FREEZE_PAGE before the subject's first
+     stable checkpoint, in every cell with a spare), spareabsent_disarmed (a stable checkpoint between the spare's kill and
+     the rank's), surplus. A second death is never excluded: a second kill before the re-arm, a first restore that failed or
+     a re-arm that never came counts as a failed condition (gin-mirror's section 8, pre-registered; the coordinator's
+     decision of 2026-10-17 for @gct and @gc). gin-mirror's regression rows take gin-mirror's own statuses (its score.py)
+     plus the launcher exclusions here.
+  3. per key cell@build the first PLANNED candidates by trial number are scored; "자료 부족" when a key of this study (its
+     own cells and the regression cells its own formulas read) has fewer scored trials than planned (section 8 refills the
+     exclusions; REVIEW_TEST fix 11), when a pooled key "build:<b>" has a cell with trials below its plan, or when a library
+     column its formula reads (LIB_COLS: from TODO lines and the runner's new readings) is empty in every scored trial.
+     gin-mirror's own predictions ("mirror:") keep that study's rule (its score.py).
   4. the acceptance grammar is gin-mirror's (s2_close 3.2: count(<expr>), N_SCORED, median) with these forms:
        <expr>                          on the first key of the cells column
        per cell: <expr>                on every key
@@ -30,8 +36,8 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
        cost: rule=within:<pct>         the cost family per receiving node (cells "cost:<family>:<arms>:<metrics>")
      keys "build:<b>" pool every scored gin-control-runner trial of build b (no_tcp_control, long_hold_lane), "local:<x>" the
      local rows.
-  5. STOP: the results folder's STOP_* files (their line counts) and every trial's "(STOP_launcher)" lines (section 8's
-     scoring rule: a FENCE_NAK's refusal counts) are listed in SCORE.md.
+  5. STOP: the results folder's STOP_* files (their line counts) and every trial's "(STOP_launcher)" and
+     "(STOP_launcher: ...)" lines (section 8's scoring rule: a FENCE_NAK's refusal counts) are listed in SCORE.md.
 """
 import csv, hashlib, importlib.util, json, math, os, re, statistics, sys
 
@@ -55,16 +61,19 @@ LIB_COLS = {"confirm_w_ms", "fin_judge_dev_min_ms", "fin_judge_dev_max_ms", "rea
             "suspect_stale_ms_min", "suspect_stale_ms_max", "qperr_pair_sent_by_target", "qperr_rec_gen_delta",
             "qperr_probe_gen_delta", "qperr_pair_read_fail", "qperr_records_after", "rejoin_resent", "rejoin_dropped",
             "ckpt_stable_in_mute", "la_fence_sigkill_n", "la_fenced_n", "la_act_refused_why", "stop_judge_ms_min",
-            "stop_judge_ms_max", "rst_judge_dev_min_ms", "rst_judge_dev_max_ms"}
+            "stop_judge_ms_max", "rst_judge_dev_min_ms", "rst_judge_dev_max_ms", "probe_timeout_n", "witness_expected",
+            "probe_ms_page",
+            # the runner's new readings (not run on the cluster yet) and the library gate program's real-pid mode
+            "ss_tcp_conn_n", "ss_tx_delta_bytes", "ss_rx_delta_bytes", "old_go_ms", "fenced_go_ms",
+            "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms"}
 EXCL = {"void": "시작 실패(생존 rank가 교환 전에 끝남)", "config_driver": "셀이 정한 빌드가 아닌 프로그램으로 돎",
         "workload": "workload나 mirror 설정이 셀과 다름",
         "config": "셀이 정한 제어 빌드, 증인, 펜스, 정책, 복원 설정과 다르게 돎(또는 복원 셀에서 Resume 거절)",
         "launcher_not_ready": "시행 시작 때 launcher가 두 노드 모두에서 준비되지 않음",
         "launcher_changed": "시행 중 launcher가 끝났거나 바뀜, 또는 시험 스위치 셀 밖의 launcher QP 잃음",
-        "not_applied": "주입 기록 없음", "inject_late": "주입이 정한 시각보다 1 s 넘게 어긋남",
+        "not_applied": "주입 기록 없음", "inject_late": "주입이 정한 시각보다 1 s 넘게 어긋남(또는 짝 kill 간격 > 5 ms)",
         "spare_start_fail": "예비 프로세스가 활성화 전에 시작에 실패함", "foreign_gpu": "시행 시작 때 GPU에 다른 프로세스",
-        "restore_not_live": "복원 계층 미통합", "kill_before_ckpt": "kill이 첫 확정 체크포인트 전",
-        "second_before_rearm": "둘째 kill이 그 rank의 다시 무장 줄 전",
+        "restore_not_live": "복원 계층 미통합", "kill_before_ckpt": "주입(kill, DIE_RST, STOP, FREEZE_PAGE)이 대상의 첫 확정 체크포인트 전",
         "spareabsent_disarmed": "예비 프로세스를 끝낸 뒤 rank kill 전에 체크포인트가 확정되어 무장이 풀림",
         "cost_invalid": "비용 실행 무효", "surplus": "계획 수를 넘은 시행", "smoke": "smoke(채점 안 함)",
         "pilot": "pilot(채점 안 함)"}
@@ -113,8 +122,13 @@ def ival(v, default=None):
         return default
 
 
-def status_gc(r, cell):
+def launcher_env_of(cell):
+    return "+".join("%s=%s" % kv for kv in sorted(cell.get("launcher_env", {}).items()))
+
+
+def status_gc(r, cell, prereg=None):
     env = cell.get("env", {})
+    prereg = prereg or {}
     if ival(r.get("void"), 0):
         return "void"
     if cell.get("driver") and str(r.get("driver", "")) != cell["driver"]:
@@ -133,6 +147,19 @@ def status_gc(r, cell):
             return "config"
     if env.get("RESTORE", "1") == "1" and env.get("FAULT_POLICY", "hold") == "hold" and str(r.get("resume_refused")) == "1":
         return "config"
+    # REVIEW_TEST fix 12: the launcher env of the hold, W and the READ period
+    if r.get("ctrl") == "rdma":
+        want = launcher_env_of(cell)
+        for nd in ("rain", "sunny"):
+            got = str(meta.get("launcher_env_" + nd, "") or "")
+            if (got if got != "-" else "") != want and str(r.get("launcher_ready")) == "1":
+                return "config"
+    if prereg.get("confirm_ms") is not None and r.get("confirm_w_ms") not in ("", None) and \
+            float(r["confirm_w_ms"]) != float(prereg["confirm_ms"]):
+        return "config"
+    if prereg.get("probe_ms") is not None and r.get("probe_ms_page") not in ("", None) and \
+            float(r["probe_ms_page"]) != float(prereg["probe_ms"]):
+        return "config"
     if r.get("ctrl") == "rdma":
         if str(r.get("launcher_ready")) != "1":
             return "launcher_not_ready"
@@ -145,6 +172,8 @@ def status_gc(r, cell):
             return "not_applied"
         if (ival(r.get("inject_off_ms"), 0) or 0) > 1000 or (ival(r.get("inject_dur_off_ms"), 0) or 0) > 1000:
             return "inject_late"
+        if r.get("pair_gap_ms") not in ("", None) and float(r["pair_gap_ms"]) > float(env.get("SPARE_GAP_MS", "5")):
+            return "inject_late"
     if str(r.get("spare_start_fail")) == "1" or str(r.get("spare2_start_fail")) == "1":
         return "spare_start_fail"
     if str(r.get("foreign_gpu")) == "1":
@@ -154,8 +183,9 @@ def status_gc(r, cell):
             return "restore_not_live"
         if str(r.get("ckpt_stable_before_kill")) == "0":
             return "kill_before_ckpt"
-    if str(r.get("kill2_after_armed")) == "0":
-        return "second_before_rearm"
+    # REVIEW_TEST fix 13: the stop, freeze and self-kill RST cells too (every injected cell with a spare)
+    if env.get("SPARE") == "1" and inj != "none" and str(r.get("ckpt_stable_before_inj")) == "0":
+        return "kill_before_ckpt"
     if str(r.get("stable_between_pair_kills")) == "1":
         return "spareabsent_disarmed"
     return "candidate"
@@ -170,19 +200,16 @@ def status_regression(r, entry, mcells_b):
             return "launcher_not_ready"
         if str(r.get("launcher_same")) == "0" or ival(r.get("la_qp_err_n"), 0) > 0:
             return "launcher_changed"
-    # section 8 (and 9.5): the second-death cell's second kill must come after that rank's re-arm lines
-    if str(r.get("kill2_rank", "")) not in ("", "-") and str(r.get("rearm_ok")) == "0":
-        return "second_before_rearm"
-    if str(r.get("kill2_after_armed")) == "0":
-        return "second_before_rearm"
+    # no second-death exclusion (REVIEW_TEST B3; gin-mirror section 8: a second kill before the re-arm, a failed first
+    # restore or a re-arm that never came is a failed condition of its prediction, never an exclusion)
     return "candidate"
 
 
 def smoke_of(r):
-    sub = str(r.get("sub", ""))
-    if sub.startswith("smoke"):
+    sub, hold = str(r.get("sub", "")), str(r.get("hold", ""))
+    if sub.startswith("smoke") or re.match(r"P0(-r\d+)?$", hold):
         return "smoke"
-    if sub.startswith("pilot") or str(r.get("hold", "")).startswith("P"):
+    if sub.startswith(("pilot", "costpilot")) or hold.startswith(("P", "COSTPILOT")):
         return "pilot"
     return None
 
@@ -192,7 +219,8 @@ def val_empty(v):
 
 
 def eval_part(acc, keys, scored, PLANNED, pooled):
-    """one acceptance part on keys; returns (evals, short keys, nodata)"""
+    """one acceptance part on keys; returns (evals, short keys, nodata). A cell key is short below its planned n; a pooled
+    key when any cell key in it is short (pooled: {key: [its cell keys]})"""
     per_cell = acc.startswith("per cell:")
     a = acc[len("per cell:"):].strip() if per_cell else acc
     sub = None
@@ -208,9 +236,9 @@ def eval_part(acc, keys, scored, PLANNED, pooled):
             if not rows:
                 nodata = True
         elif k in pooled:
-            if not rows:
+            if not rows or any(len(scored.get(x, [])) < PLANNED.get(x, 0) for x in pooled[k]):
                 short.append(k)
-        elif PLANNED.get(k, 0) == 0 or len(rows) < math.ceil(0.75 * PLANNED.get(k, 0)):
+        elif PLANNED.get(k, 0) == 0 or len(rows) < PLANNED.get(k, 0):
             short.append(k)
         refs = sorted(c for c in LIB_COLS if re.search(r"\b" + c + r"\b", a))
         if rows and any(all(val_empty(r.get(c)) for r in rows) for c in refs):
@@ -299,7 +327,7 @@ def score(R, planned_override=None):
             r.update(msc.reg_columns(r["stem"], r))
             r["status"] = msc.status_reg(r, orig.get(r["cell"]))
         elif r["key"] in c["cells"]:
-            r["status"] = status_gc(r, c["cells"][r["key"]])
+            r["status"] = status_gc(r, c["cells"][r["key"]], c.get("prereg"))
         elif r["key"] in reg:
             r["status"] = status_regression(r, reg[r["key"]], mcells_b)
         else:
@@ -320,11 +348,13 @@ def score(R, planned_override=None):
             for i, r in enumerate(cand):
                 r["status"] = "scored" if i < PLANNED.get(k, 0) else "surplus"
         scored[k] = [r for r in rs if r["status"] == "scored"]
-    pooled = set()
+    pooled = {}
     for b in c["builds"]:
-        pooled.add("build:" + b)
-        scored["build:" + b] = [r for k, rs in scored.items() if "@" in k and not k.startswith("cost_")
-                                for r in rs if r.get("build") == b and r.get("runner") == "gcr"]
+        ks = sorted(k for k, rs in by_key.items() if "@" in k and not k.startswith("cost_")
+                    and any(r.get("build") == b and r.get("runner") == "gcr" and r["status"] in ("scored", "surplus")
+                            for r in rs))
+        pooled["build:" + b] = ks
+        scored["build:" + b] = [r for k in ks for r in scored.get(k, [])]
     preds = list(csv.DictReader(open(PREDS, encoding="utf-8")))
     mpreds = list(csv.DictReader(open(MPREDS, encoding="utf-8")))
     sha = hashlib.sha256(open(PREDS, "rb").read()).hexdigest()
@@ -387,7 +417,7 @@ def score(R, planned_override=None):
              len(rows), sum(len(v) for k, v in scored.items() if not k.startswith("build:")),
              sum(1 for r in rows if r["status"] == "smoke"), sum(1 for r in rows if r["status"] == "pilot")),
          "- STOP 파일: %s." % (", ".join("`%s`(%d줄)" % (x, sum(1 for _ in open(os.path.join(R, x)))) for x in stops) or "없음"),
-         "- launcher의 `(STOP_launcher)` 줄(8절 채점 규칙, FENCE_NAK 포함): %d줄, 시행 %s." % (
+         "- launcher의 `(STOP_launcher)`와 `(STOP_launcher: …)` 줄(8절 채점 규칙, FENCE_NAK 포함): %d줄, 시행 %s." % (
              sum(n for _, n in la_stop), ", ".join("%s(%d)" % x for x in la_stop) or "없음"), "",
          "## 판정 요약", "", "| 예측 | 셀 | n | 판정 |", "|---|---|--:|---|"]
     for p, keys, v, det in results:
@@ -399,7 +429,7 @@ def score(R, planned_override=None):
         if p.get("todo"):
             L.append("- 표시: %s" % p["todo"])
         if det["short"]:
-            L.append("- 자료 부족(계획의 75%% 미만, 라이브러리 열이 비어 있음, 또는 gin-mirror 예측의 자료 부족): %s" % ", ".join(det["short"]))
+            L.append("- 자료 부족(판정한 시행이 계획 n 미만, 묶음 키 안의 셀이 계획 미만, 라이브러리 열이 비어 있음, 또는 gin-mirror 예측의 자료 부족): %s" % ", ".join(det["short"]))
         for k, ok, dd, expr in det["evals"]:
             L.append("- `%s`: 판정한 시행 %d회, 대입한 식 `%s` → %s" % (k, len(scored.get(k, [])), expr, "참" if ok else "거짓"))
             for inner, cnt, n, fs, ts, tail in dd:

@@ -8,36 +8,47 @@
 #
 # What is new against hold_mi.sh (section 8's additions):
 #   - the launchers: a hold that runs an rdma build (gc, gcp) starts one launcher per node before its first trial
-#     (launcher_gc.sh start, with the hold's one launcher_env from cells_gc.json; EXPERIMENT 5) and stops them after its
-#     last trial (the ranks of every trial ended before: the launcher last). run_gc.sh reads their records
-#     (LAUNCHER_REC_RAIN, LAUNCHER_REC_SUNNY). Either launcher not ready: the hold does not start (STOP_launcher);
-#   - per trial: STOP_launcher for a launcher line "(STOP_launcher)" in the trial's launcher logs (a refused signal, a
-#     FENCE_NAK, a pid-check failure, the RNIC transport failing), a launcher gone or changed (pid or start time) between
-#     the trial's start and end, or the trial's start check failing (run_gc.sh exit 6, cells_gc.sh); STOP_rnr for a growth
-#     of the RNR port counter outside gc4_credit_stall; STOP_left for a stopped (state T) process or a gin_fdhold child left
-#     after the trial (run_gc.sh's meta left_stopped, left_fdhold); STOP_async for an asynchronous event of a record or
-#     liveness-READ QP (the library's control summary, TODO(phase2)) outside the test-switch cells;
+#     (launcher_gc.sh start, with the hold's one launcher_env from cells_gc.json; EXPERIMENT 5: one per node per hold, the
+#     coordinator's decision of 2026-10-17) and stops them after its last trial (the ranks of every trial ended before: the
+#     launcher last). run_gc.sh reads their records (LAUNCHER_REC_RAIN, LAUNCHER_REC_SUNNY), checks at every trial's start
+#     that the registration table is empty (exit 7 otherwise) and writes trial_start / trial_end markers into both launcher
+#     logs. Either launcher not ready: both are stopped and the hold does not start (STOP_launcher);
+#   - per trial: STOP_launcher for a launcher line "(STOP_launcher)" or "(STOP_launcher: ...)" in the trial's launcher slices
+#     (a refused signal, a FENCE_NAK, the RNIC transport failing; the pid-check failure; both forms through
+#     rows_gc.py --stops, the scorer's rule), a launcher QP loss outside the test-switch cells (the same rule as rows_gc.py's
+#     la_qp_err_n: after the trial's start marker, before the first "is leaving", of a rank other than the subject), a
+#     launcher gone or changed (pid or start time) between the trial's start and end, or the trial's start check failing
+#     (run_gc.sh exit 6: not ready, exit 7: the table not empty; cells_gc.sh); STOP_rnr for a growth of the RNR port counter
+#     outside gc4_credit_stall; STOP_left for a stopped (state T) process or a gin_fdhold child left after the trial
+#     (run_gc.sh's meta left_stopped, left_fdhold); STOP_async for an asynchronous event of a record or liveness-READ QP (the
+#     library's control summary, TODO(phase2)) outside the test-switch cells; STOP_mtu when a port's active_mtu after the
+#     trial differs from before; after the last trial, a STOP line in a launcher log after its last trial_end marker;
 #   - the start check of section 8: both GIN ports' active_mtu must be at least 2048 and equal, else the hold does not start
 #     (STOP_mtu);
-#   - leftovers: this study's driver names (gin_mi, gin_mi_nomacro), this uid's gin_fdhold and gin_launcher, and this study's
-#     /tmp paths (gc_rt, gc_cost), read only. Processes are never killed here by name.
+#   - leftovers: this study's driver names (gin_mi, gin_mi_nomacro), this uid's gin_fdhold and gin_launcher, this study's
+#     /tmp paths (gc_rt, gc_cost) and gin-remaining's runner's (gin_mrr_), read only. Processes are never killed here by name;
+#   - pilot and smoke holds (P*, COSTPILOT-*) run only in a results folder whose name starts with pilot or smoke, and the
+#     main-run holds (C*, RG-*, COST-*) never in such a folder (REVIEW_TEST fix 16: no shared file names);
+#   - the hold runs only under chain_gc.sh (GC_CHAIN=1, which chain_gc.sh sets inside cluster_run.sh).
 #
 # usage: hold_gc.sh <resultsdir> <hold>
 #   C1-C11                 the main-run holds of cells_gc.json (section 7 rows 1-22)
-#   P0-P4                  the pilot holds (never scored; a results folder of their own): P0 the smoke, P1 one trial of every
-#                          rdma cell, P2 of every tcp cell, P3 the noreport cell (its launcher with NO_EXIT_REPORT), P4 9.9's
-#                          unscored 12 000 ms stop
+#   P0-P4                  the pilot holds (never scored; a results folder pilot* or smoke* of their own): P0 the smoke, P1
+#                          one trial of every rdma cell, P2 of every tcp cell, P3 the noreport cell (its launcher with
+#                          NO_EXIT_REPORT), P4 9.9's unscored 12 000 ms stop (its own cell gc4_stop12000_pilot)
 #   RG-<gct|gc>-<G1|G3|T1|T2|G2|R1|R2|R3>   gin-mirror's hold of that name (../../../mirror/impl/test/cells_mi.json), every
 #                          cell with its name, env and n, at the named build (section 7 rows 23, 24)
 #   COST-probe-<rain|sunny>[-<metric>]       the probe cost family on the receiving node (3 arms x 3 metrics x 6 rounds)
 #   COSTPILOT-<rain|sunny> one round of the probe cost family
 # env: SUNNY_SSH (required), RS_SET (required), RS_QUERY_CAP (50000), RS_QUERY_CAP_REG (150000), RS_TRIAL_BOUND_S (60: the
-#   4 KiB trials; a cell's bound_s overrides), RS_TRAIN_BOUND_S (150), LAUNCHER_SCOPE (hold; trial: each run_gc.sh starts its
-#   own launchers instead).
+#   4 KiB trials; a cell's bound_s overrides), RS_TRAIN_BOUND_S (150), GC_CHAIN (1, set by chain_gc.sh).
 # Resumable as hold_mi.sh: a cell trial whose <stem>_meta.txt exists is skipped.
 set -u
 R=${1:?resultsdir}; H=${2:?hold}
 D=$(cd "$(dirname "$0")" && pwd)
+[ "${GC_CHAIN:-0}" = 1 ] || { echo "hold_gc.sh runs only under chain_gc.sh (inside cluster_run.sh)" >&2; exit 2; }
+# shellcheck source=remote_gc.sh
+. "$D/remote_gc.sh"
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 export SUNNY_SSH
 RS_SET=${RS_SET:-}
@@ -53,22 +64,26 @@ QCAP=${RS_QUERY_CAP:-50000}
 QCAP_REG=${RS_QUERY_CAP_REG:-150000}
 TRIAL_BOUND=${RS_TRIAL_BOUND_S:-60}
 TRAIN_BOUND=${RS_TRAIN_BOUND_S:-150}
-LAUNCHER_SCOPE=${LAUNCHER_SCOPE:-hold}
 case "$H" in P*|COSTPILOT-*) PILOT=1 ;; *) PILOT=0 ;; esac
+case "$(basename "$R")" in
+  pilot*|smoke*) [ "$PILOT" = 1 ] || { echo "hold $H is a main-run hold: not in the pilot/smoke folder $(basename "$R")" >&2; exit 2; } ;;
+  *) [ "$PILOT" = 0 ] || { echo "hold $H is a pilot or smoke hold: its results folder's name starts with pilot or smoke" >&2; exit 2; } ;;
+esac
 CMDERR='grep -i mlx5 | grep -iE "cmd|command" | grep -icE "failed|timeout|leak"'
 mkdir -p "$R"
 HT=$H
 if [ -e "$R/snap_before-$HT.txt" ]; then k=2; while [ -e "$R/snap_before-$H-r$k.txt" ]; do k=$((k + 1)); done; HT=$H-r$k; fi
 export HOLD_TAG=$HT
+case "$H" in RG-*-T1|RG-*-T2) export BAR1_AT_GATE=1 ;; esac  # gin-mirror's training holds: rain's BAR1 at each gate (run_gc.sh)
 echo "hold $H (files tagged $HT) rs_set=$RS_SET"
-left() { { pgrep -x gin_mi; pgrep -x gin_mi_nomacro; pgrep -x -u "$(id -u)" gin_fdhold; pgrep -x -u "$(id -u)" gin_launcher
-           pgrep -f '[/]tmp/gc_rt'; pgrep -f '[/]tmp/gc_cost'
-           ssh -n "$SUNNY_SSH" 'pgrep -x gin_mi; pgrep -x gin_mi_nomacro; pgrep -x -u "$(id -u)" gin_fdhold; pgrep -x -u "$(id -u)" gin_launcher; pgrep -f "[/]tmp/gc_rt"; pgrep -f "[/]tmp/gc_cost"'; } 2>/dev/null | wc -l; }
+LEFTQ='pgrep -x gin_mi; pgrep -x gin_mi_nomacro; pgrep -x -u "$(id -u)" gin_fdhold; pgrep -x -u "$(id -u)" gin_launcher
+pgrep -f "[/]tmp/gc_rt"; pgrep -f "[/]tmp/gc_cost"; pgrep -f "[/]tmp/gin_mrr_"; true'
+left() { { bash -c "$LEFTQ"; sunny_sh "$LEFTQ"; } 2>/dev/null | wc -l; }
 OWNCLEAN='find /tmp -maxdepth 1 -user "$(id -un)" \( -name "gc_rt_*" -o -name "gc_rt.*" -o -name "gc_cost_*" -o -name "gc_cost.*" -o -name "gc_la.*" -o -name "gc_lp.*" \) -exec rm -rf {} + 2>/dev/null; true'
 for f in STOP_mlx5 STOP_cuda STOP_left STOP_nic STOP_mem STOP_launcher STOP_rnr STOP_mtu STOP_async; do
   if [ -e "$R/$f" ]; then
     echo "$R/$f present: no hold runs" >&2
-    [ "$(left)" -eq 0 ] && { bash -c "$OWNCLEAN"; ssh -n "$SUNNY_SSH" "$OWNCLEAN"; }
+    [ "$(left)" -eq 0 ] && { bash -c "$OWNCLEAN"; sunny_sh "$OWNCLEAN"; }
     exit 3
   fi
 done
@@ -78,8 +93,8 @@ if [ -z "$bar1free" ] || [ "$bar1free" -lt 128 ]; then
   exit 3
 fi
 # section 8: the UD path MTU (both GIN ports' active_mtu, read only) at least 2048 and the same, else no hold
-MTU_Q='ibv_devinfo -d $1 -i 1 2>/dev/null | awk '"'"'/active_mtu/{print $2; exit}'"'"''
-m0=$(bash -c "$MTU_Q" _ mlx5_1); m1=$(ssh -n "$SUNNY_SSH" bash -c "'$MTU_Q'" _ mlx5_0)
+m0=$(bash -c "$MTU_Q" _ mlx5_1); m1=$(sunny_sh "$MTU_Q" mlx5_0 2>/dev/null)
+case "$m0$m1" in *[!0-9]*) m0=""; m1="" ;; esac
 if [ -z "$m0" ] || [ -z "$m1" ] || [ "$m0" -lt 2048 ] || [ "$m0" != "$m1" ]; then
   echo "$(date '+%F %T') hold $H: active_mtu rain=${m0:-unread} sunny=${m1:-unread}: below 2048 or different, not started" | tee -a "$R/STOP_mtu"
   exit 3
@@ -94,10 +109,10 @@ snap() {
   ssh -n "$SUNNY_SSH" "nvidia-smi -q -d MEMORY | sed -n '/BAR1/,/Free/p'" 2>/dev/null | tr -s ' ' | tr '\n' ' ' | sed 's/^/sunny bar1: /'; echo
   echo "rain MemAvailable MiB: $(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)"
   echo "sunny MemAvailable MiB: $(ssh -n "$SUNNY_SSH" "awk '/^MemAvailable:/{print int(\$2/1024)}' /proc/meminfo" 2>/dev/null)"
-  echo "rain active_mtu: $(bash -c "$MTU_Q" _ mlx5_1), sunny active_mtu: $(ssh -n "$SUNNY_SSH" bash -c "'$MTU_Q'" _ mlx5_0)"
+  echo "rain active_mtu: $(bash -c "$MTU_Q" _ mlx5_1), sunny active_mtu: $(sunny_sh "$MTU_Q" mlx5_0 2>/dev/null)"
   echo "rain nvrm mapping-failure lines: $(sudo -n dmesg 2>/dev/null | grep -ciE 'NVRM.*(dmaAllocMapping|alloc VA)')"
   sudo -n dmesg 2>/dev/null | grep -i mlx5 > "$R/mlx5_$1_rain.txt"
-  ssh -n "$SUNNY_SSH" "sudo -n dmesg 2>/dev/null | grep -i mlx5" > "$R/mlx5_$1_sunny.txt"
+  ssh -n "$SUNNY_SSH" "sudo -n dmesg 2>/dev/null | grep -i mlx5" > "$R/mlx5_$1_sunny.txt" 2>/dev/null
   echo "rain mlx5 dmesg lines: $(wc -l < "$R/mlx5_$1_rain.txt")"
   echo "sunny mlx5 dmesg lines: $(wc -l < "$R/mlx5_$1_sunny.txt")"
   echo "rain mlx5 cmd_err lines: $(eval "cat $R/mlx5_$1_rain.txt | $CMDERR")"
@@ -112,7 +127,7 @@ fwread() {
 }
 n0=$(left)
 [ "$n0" -eq 0 ] || { echo "$(date '+%F %T') hold $H: $n0 test process(es) present before the hold" | tee -a "$R/STOP_left"; exit 3; }
-bash -c "$OWNCLEAN"; ssh -n "$SUNNY_SSH" "$OWNCLEAN"
+bash -c "$OWNCLEAN"; sunny_sh "$OWNCLEAN"
 SECONDS=0
 snap "before-$HT" | tee "$R/snap_before-$HT.txt"
 read -r FW0 QQ < <(fwread "start-$HT")
@@ -123,20 +138,30 @@ fits() {
 stopped() { ls "$R"/STOP_* > /dev/null 2>&1; }
 mval() { sed -n "s/.*\b$2=\([^ ]*\).*/\1/p" "$1" 2>/dev/null | head -1; }
 gc_after_trial() {  # gc_after_trial <what> <meta> <cell>: section 8's gin-control stops for one restore trial
-  local what=$1 m=$2 cell=$3 stem b a nd st f
+  local what=$1 m=$2 cell=$3 stem b a nd st f envs sw=0 chk lstop lqp
   [ -f "$m" ] || return 0
   stem=${m%_meta.txt}
+  envs="$(mval "$m" r0_env)$(mval "$m" r1_env)$(mval "$m" r2_env)$(mval "$m" r3_env)$(mval "$m" spare_env)"
+  case "$envs" in *TEST_QP_ERR*|*TEST_DROP_UD*|*TEST_CREDIT_STALL*) sw=1 ;; esac
   if [ "$(mval "$m" ctrl)" = rdma ] && [ "$(mval "$m" launcher_ready)" = 1 ]; then
     for nd in rain sunny; do
       b=$(mval "$m" "launcher_before_$nd"); a=$(mval "$m" "launcher_after_$nd")
       if [ "${b%%,alive*}" != "${a%%,alive*}" ] || ! echo "$a" | grep -q 'alive=1'; then
         echo "$(date '+%F %T') hold $H: $what: the $nd launcher ended or changed during the trial (before ${b%%,ready*}, after ${a%%,ready*})" | tee -a "$R/STOP_launcher"
       fi
-      f="${stem}_launcher_$nd.log"
-      if [ -f "$f" ] && grep -q '(STOP_launcher)' "$f"; then
-        echo "$(date '+%F %T') hold $H: $what: $nd launcher: $(grep -c '(STOP_launcher)' "$f") line(s) (STOP_launcher)" | tee -a "$R/STOP_launcher"
-      fi
     done
+    # both STOP_launcher forms and the launcher QP loss: the scorer's own rule (rows_gc.py --stops; REVIEW_TEST B4)
+    chk=$(python3 "$D/rows_gc.py" --stops "$stem" 2>/dev/null)
+    lstop=$(echo "$chk" | sed -n 's/.*\bla_stop_n=\([0-9]*\).*/\1/p'); lqp=$(echo "$chk" | sed -n 's/.*\bla_qp_err_n=\([0-9]*\).*/\1/p')
+    if [ -z "$chk" ]; then
+      echo "$(date '+%F %T') hold $H: $what: the launcher slices could not be read (rows_gc.py --stops)" | tee -a "$R/STOP_launcher"
+    fi
+    if [ "${lstop:-0}" -gt 0 ]; then
+      echo "$(date '+%F %T') hold $H: $what: $lstop launcher line(s) (STOP_launcher) or (STOP_launcher: ...)" | tee -a "$R/STOP_launcher"
+    fi
+    if [ "$sw" = 0 ] && [ "${lqp:-0}" -gt 0 ]; then
+      echo "$(date '+%F %T') hold $H: $what: $lqp launcher QP loss line(s) outside the test-switch cells (section 8)" | tee -a "$R/STOP_launcher"
+    fi
   fi
   st=$(mval "$m" left_stopped); f=$(mval "$m" left_fdhold)
   if [ "${st:-0}" != 0 ] || [ "${f:-0}" != 0 ]; then
@@ -146,16 +171,17 @@ gc_after_trial() {  # gc_after_trial <what> <meta> <cell>: section 8's gin-contr
     for nd in rain sunny; do
       b=$(mval "$m" "rnr_before_$nd"); a=$(mval "$m" "rnr_after_$nd")
       case "$b$a" in *[!0-9]*|"") continue ;; esac
-      [ "$a" -gt "$b" ] && echo "$(date '+%F %T') hold $H: $what: $nd rnr_nak_retry_err grew ($b -> $a) outside the credit cell" | tee -a "$R/STOP_rnr"
+      [ "$a" -gt "$b" ] && echo "$(date '+%F %T') hold $H: $what: $nd rnr_nak_retry_err grew by $((a - b)) ($b -> $a; a port counter, other users of the port count too) outside the credit cell, trial wall $(mval "$m" wall_s) s" | tee -a "$R/STOP_rnr"
     done
   fi
+  for nd in rain sunny; do  # REVIEW_TEST nit 20: the port's active_mtu after the trial must be the one before
+    b=$(mval "$m" "active_mtu_$nd"); a=$(mval "$m" "active_mtu_after_$nd")
+    [ "$b" != "$a" ] && echo "$(date '+%F %T') hold $H: $what: $nd active_mtu ${b:-unread} before, ${a:-unread} after the trial" | tee -a "$R/STOP_mtu"
+  done
   # TODO(phase2): the library's control summary carries async=<n> (record and liveness-READ QPs); the test-switch cells apart
-  case "$(mval "$m" r0_env)$(mval "$m" r1_env)$(mval "$m" r2_env)$(mval "$m" r3_env)$(mval "$m" spare_env)" in
-    *TEST_QP_ERR*|*TEST_DROP_UD*|*TEST_CREDIT_STALL*) ;;
-    *) if cat "${stem}"_*.log 2>/dev/null | grep -qE 'GIN/RC: rank [0-9]+: control summary .*\basync=[1-9]'; then
-         echo "$(date '+%F %T') hold $H: $what: an asynchronous event of a control QP outside the test-switch cells" | tee -a "$R/STOP_async"
-       fi ;;
-  esac
+  if [ "$sw" = 0 ] && cat "${stem}"_*.log 2>/dev/null | grep -qE 'GIN/RC: rank [0-9]+: control summary .*\basync=[1-9]'; then
+    echo "$(date '+%F %T') hold $H: $what: an asynchronous event of a control QP outside the test-switch cells" | tee -a "$R/STOP_async"
+  fi
   return 0
 }
 after_trial() {  # hold_mi.sh's per-trial stops: kv error keys, a refused Resume where the restore is expected, firmware, QUERY_QP
@@ -196,7 +222,7 @@ if h.startswith("RG-"):
         out.append((e["cell"], b, e["kind"], e["n"], e.get("driver", ""), bound, {}, e.get("env", {})))
 elif h in c["holds"]:
     for x in c["holds"][h]:
-        e = c["cells"][x["key"]]
+        e = c["cells"].get(x["key"]) or c["pilot_cells"][x["key"]]
         env = dict(e.get("env", {})); env.update(x.get("env", {}))
         out.append((e["cell"], e["build"], e["kind"], x.get("n", e["n"]), e.get("driver", ""), e.get("bound_s", 60),
                     e.get("launcher_env", {}), env))
@@ -217,18 +243,26 @@ la_start() {  # la_start <launcher_env, +-joined or ->: one launcher per node fo
   [ "$le" != - ] && IFS=+ read -r -a args <<< "$le"
   for nd in rain sunny; do
     if ! bash "$D/launcher_gc.sh" start "$nd" "$R/launcher" "$HT" "${args[@]}"; then
-      echo "$(date '+%F %T') hold $H: the $nd launcher did not get ready; the hold does not start" | tee -a "$R/STOP_launcher"
+      echo "$(date '+%F %T') hold $H: the $nd launcher did not get ready; both are stopped and the hold does not start" | tee -a "$R/STOP_launcher"
+      for nd in rain sunny; do bash "$D/launcher_gc.sh" stop "$nd" "$R/launcher" "$HT"; done  # REVIEW_TEST fix 5
       return 1
     fi
   done
-  export LAUNCHER_REC_RAIN=$R/launcher/la_${HT}_rain.rec LAUNCHER_REC_SUNNY=$R/launcher/la_${HT}_sunny.rec LAUNCHER_SCOPE=hold
+  export LAUNCHER_REC_RAIN=$R/launcher/la_${HT}_rain.rec LAUNCHER_REC_SUNNY=$R/launcher/la_${HT}_sunny.rec
   LA_STARTED=1
 }
 la_stop() {
   [ "$LA_STARTED" = 1 ] || return 0
-  local nd
+  local nd lg n
   for nd in rain sunny; do bash "$D/launcher_gc.sh" stop "$nd" "$R/launcher" "$HT"; done
   LA_STARTED=0
+  for nd in rain sunny; do  # the lines after the last trial's end marker belong to no trial slice: their STOP lines here
+    lg=$R/launcher/la_${HT}_$nd.log
+    [ -f "$lg" ] || continue
+    n=$(tac "$lg" | sed '/GINLA mark trial_end /q' | grep -c '(STOP_launcher')
+    [ "$n" -gt 0 ] && echo "$(date '+%F %T') hold $H: $nd launcher: $n line(s) (STOP_launcher) after the last trial" | tee -a "$R/STOP_launcher"
+  done
+  return 0
 }
 do_json_hold() {
   local line cell build kind n bound le ldir rok first=1 lines
@@ -239,9 +273,7 @@ do_json_hold() {
     cell=${f[0]}; build=${f[1]}; kind=${f[2]}; n=${f[3]}; bound=${f[4]}; le=${f[5]}; envs=("${f[@]:6}")
     if [ "$first" = 1 ]; then
       first=0
-      if [ "$LAUNCHER_SCOPE" = hold ] && printf '%s\n' "$lines" | cut -f2 | grep -qxE 'gc|gcp'; then la_start "$le" || return 1
-      elif [ "$LAUNCHER_SCOPE" = trial ]; then export LAUNCHER_SCOPE=trial LAUNCHER_ENV="${le//+/ }"; [ "$le" = - ] && export LAUNCHER_ENV=""
-      fi
+      if printf '%s\n' "$lines" | cut -f2 | grep -qxE 'gc|gcp'; then la_start "$le" || return 1; fi
     fi
     case "$kind" in reg) ldir=$R/reg ;; *) ldir=$R/raw ;; esac
     mkdir -p "$ldir"
@@ -271,6 +303,10 @@ cost_run() {  # cost_run <cell> <tag> <logdir>
   stopped && { echo "skipped ${cell}_$tag: STOP" >> "$R/skipped.txt"; return 0; }
   fits 90 "${cell}_$tag" || return 0
   bash "$D/run_cost_gc.sh" "$cell" "$tag" "$dir"
+  if [ "$?" = 6 ]; then  # REVIEW_TEST nit 13: the cost run's launchers not ready is a launcher stop, not a NIC one
+    echo "$(date '+%F %T') hold $H: ${cell}_$tag: the launchers were not ready; no further run" | tee -a "$R/STOP_launcher"
+    after_trial "${cell}_$tag" ""; return 0
+  fi
   for f in "$dir/${cell}_${tag}_r0.kv" "$dir/${cell}_${tag}_r1.kv"; do
     [ -f "$f" ] || { bad="missing $(basename "$f")"; break; }
     if grep -qE 'nccl_error=|cuda_error=|watchdog|man_error=' "$f" || ! grep -q '^exit=0$' "$f"; then
@@ -328,6 +364,6 @@ cudafail=$(find "$R" \( -name '*.kv' -o -name '*.log' \) -newer "$R/snap_before-
 [ -n "$cudafail" ] && echo "$(date '+%F %T') hold $H: CUDA fault in: $(echo "$cudafail" | tr '\n' ' ')" | tee -a "$R/STOP_cuda"
 n1=$(left)
 [ "$n1" -eq 0 ] || echo "$(date '+%F %T') hold $H: $n1 test process(es) left after the hold" | tee -a "$R/STOP_left"
-[ "$n1" -eq 0 ] && { bash -c "$OWNCLEAN"; ssh -n "$SUNNY_SSH" "$OWNCLEAN"; }
+[ "$n1" -eq 0 ] && { bash -c "$OWNCLEAN"; sunny_sh "$OWNCLEAN"; }
 echo "hold $H elapsed ${SECONDS}s"
 exit 0

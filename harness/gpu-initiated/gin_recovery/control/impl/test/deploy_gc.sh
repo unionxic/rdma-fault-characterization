@@ -30,7 +30,7 @@ RS_SET=${RS_SET:-}
 rs_set_check || exit 1
 DRV_DIR=${DRV_DIR:-}
 B=rs-bundle/$RS_SET   # the set's folder, relative to $HOME
-ssh -n "$SUNNY_SSH" true || { echo "sunny does not answer over ssh: nothing deployed" >&2; exit 1; }
+ssh -n -o LogLevel=ERROR "$SUNNY_SSH" true 2>/dev/null || { echo "sunny does not answer over ssh: nothing deployed" >&2; exit 1; }
 md5() { md5sum < "$1" | cut -c1-32; }
 # artifact table: <WANT var>|<source>|<target dir relative to $HOME>|<file name>|<lib: 1 = add .so.2/.so links>
 ART=(

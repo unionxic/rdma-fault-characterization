@@ -12,7 +12,11 @@ Checks (each failure is one line "FAIL ..."; exit 1 when any):
               family or a local item); every cell of the json feeds at least one key that section 3 names; every gc*/gct*
               cell name in a key's own row feeds that key in the json
   rows        a row without a key must say why (qa_only)
-  predictions predictions_gc.csv's ids are exactly section 3's keys, each row's cells column names json cells only
+  predictions predictions_gc.csv's ids are exactly section 3's keys, each row's cells column names json cells only; and the
+              two lists agree (REVIEW_TEST fix 19): the gc cells a row's cells column names are exactly the json cells whose
+              preds name that row (a row on "build:<b>" takes any cell of build b); a regression cell a row names has the row
+              in regression.builds[b].preds, and every row of regression.builds[b].preds names a cell, a "mirror:" or a
+              "build:" key at that build
 """
 import argparse, csv, json, os, re, sys
 
@@ -172,6 +176,37 @@ def main():
                     c, _, b = k.rpartition("@")
                     if not (c in mnames and b in reg["builds"]):
                         fail("prediction %s names cell %s, neither in cells_gc.json nor a regression cell" % (p["id"], k))
+        # the two lists agree (REVIEW_TEST fix 19)
+        for p in pr:
+            ks = [x.strip() for x in p["cells"].split(";") if x.strip()]
+            named = {k for k in ks if k in cj["cells"]}
+            builds = {k.split(":", 1)[1] for k in ks if k.startswith("build:")}
+            json_feed = {k for k, c in cj["cells"].items() if p["id"] in c["preds"]}
+            if builds:
+                for k in sorted(json_feed - named):
+                    if cj["cells"][k]["build"] not in builds:
+                        fail("prediction %s: cell %s feeds it in cells_gc.json but is not of build %s" % (p["id"], k, sorted(builds)))
+            else:
+                for k in sorted(json_feed - named):
+                    fail("prediction %s: cells_gc.json cell %s feeds it, its cells column does not name it" % (p["id"], k))
+            for k in sorted(named - json_feed):
+                fail("prediction %s names cell %s, whose preds in cells_gc.json do not name the prediction" % (p["id"], k))
+            for k in ks:
+                c, _, b = k.rpartition("@")
+                if k not in cj["cells"] and "@" in k and not k.startswith("mirror:") and b in reg["builds"]:
+                    if p["id"] not in reg["builds"][b]["preds"]:
+                        fail("prediction %s names regression cell %s, but regression.builds.%s.preds lacks it" % (p["id"], k, b))
+        rows_by_id = {p["id"]: p for p in pr}
+        for b, spec in reg["builds"].items():
+            for pid in spec["preds"]:
+                p = rows_by_id.get(pid)
+                if p is None:
+                    continue
+                ks = [x.strip() for x in p["cells"].split(";") if x.strip()]
+                ok = any((k.endswith("@" + b) and k.split("@")[0] in mnames) or (k.startswith("mirror:") and k.endswith("@" + b))
+                         or k == "build:" + b for k in ks)
+                if not ok:
+                    fail("regression.builds.%s.preds names %s, whose cells column names no %s regression cell" % (b, pid, b))
     else:
         print("note: %s not found (predictions not checked)" % a.preds)
     qa = [r["row"] for r in rows if r.get("qa_only")]

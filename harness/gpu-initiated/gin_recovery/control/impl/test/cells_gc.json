@@ -1,6 +1,6 @@
 {
  "study": "gin-control",
- "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n and the switch values are fixed at the pre-registration prereg/gin-control-v1). Input of hold_gc.sh (what to run), check_cells_gc.py (the cross-check with section 3) and score_gc.py (the planned scored trials per cell@build). 'rows' are section 7's 27 table rows; 'cells' the cell@build runs (kind rs -> run_gc.sh through cells_gc.sh); 'holds' the main-run holds C1-C11 and the pilot holds P0-P4 (never scored); 'regression' gin-mirror's non-cost cells by name and env at @gct and @gc; 'cost' the probe cost family (run_cost_gc.sh); 'local' the CPU-only items (no cluster). env values are run_gc.sh's variables (R<r>_ENV, SPARE_ENV: the library's test switches of that process). A hold's launchers run with the hold's one launcher_env (EXPERIMENT 5: one launcher per node per hold). Every TODO names the phase or the pilot that fixes it.",
+ "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n and the switch values are fixed at the pre-registration prereg/gin-control-v1). Input of hold_gc.sh (what to run), check_cells_gc.py (the cross-check with section 3) and score_gc.py (the planned scored trials per cell@build). 'rows' are section 7's 27 table rows; 'cells' the cell@build runs (kind rs -> run_gc.sh through cells_gc.sh); 'holds' the main-run holds C1-C11 and the pilot holds P0-P4 (never scored; P4 runs the pilot-only cell of 'pilot_cells'); 'regression' gin-mirror's non-cost cells by name and env at @gct and @gc; 'cost' the probe cost family (run_cost_gc.sh); 'local' the CPU-only items (no cluster). env values are run_gc.sh's variables (R<r>_ENV, SPARE_ENV: the library's test switches of that process). A hold's launchers run with the hold's one launcher_env (EXPERIMENT 5: one launcher per node per hold). Every TODO names the phase or the pilot that fixes it.",
  "builds": {
   "gc": {
    "lib": "gc",
@@ -440,7 +440,6 @@
    },
    "preds": [
     "kill_judge_rdma",
-    "restore_time_rdma",
     "no_tcp_control",
     "long_hold_lane"
    ],
@@ -547,7 +546,8 @@
     "CKPT_STEPS": "20",
     "R1_ENV": "NCCL_GIN_TS_TEST_RST_GAP=3000:300",
     "FAULT_POLICY": "failfast",
-    "RESTORE": "0"
+    "RESTORE": "0",
+    "SUBJECT_RANK": "1"
    },
    "injection": {
     "kind": "rst_gap",
@@ -562,7 +562,8 @@
    "control": "gct4_rstgap_live300@gctc",
    "bound_s": 60,
    "row": 6,
-   "todo": "TODO(phase1): RST_GAP start 3000 ms is a placeholder; the switch's origin is the library's"
+   "todo": "TODO(phase1): RST_GAP start 3000 ms is a placeholder; the switch's origin is the library's",
+   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gct4_rstgap_live50@gctc": {
    "cell": "gct4_rstgap_live50",
@@ -577,7 +578,8 @@
     "RST_GAP_MS": "100",
     "R1_ENV": "NCCL_GIN_TS_TEST_RST_GAP=3000:50",
     "FAULT_POLICY": "failfast",
-    "RESTORE": "0"
+    "RESTORE": "0",
+    "SUBJECT_RANK": "1"
    },
    "injection": {
     "kind": "rst_gap",
@@ -591,7 +593,8 @@
    "control": "gc4_rstgap_live300@gc",
    "bound_s": 60,
    "row": 7,
-   "todo": "TODO(phase1): RST_GAP start as above"
+   "todo": "TODO(phase1): RST_GAP start as above",
+   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gct4_rstgap_live300@gctc": {
    "cell": "gct4_rstgap_live300",
@@ -606,7 +609,8 @@
     "RST_GAP_MS": "100",
     "R1_ENV": "NCCL_GIN_TS_TEST_RST_GAP=3000:300",
     "FAULT_POLICY": "failfast",
-    "RESTORE": "0"
+    "RESTORE": "0",
+    "SUBJECT_RANK": "1"
    },
    "injection": {
     "kind": "rst_gap",
@@ -620,7 +624,8 @@
    "control": "gc4_rstgap_live300@gc",
    "bound_s": 60,
    "row": 7,
-   "todo": "TODO(phase1): RST_GAP start as above"
+   "todo": "TODO(phase1): RST_GAP start as above",
+   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_fdhold_sock_kill3@gc": {
    "cell": "gc4_fdhold_sock_kill3",
@@ -732,7 +737,7 @@
     "kind": "fd_holder_kill",
     "target": 3,
     "timing": "rank 3 forks gin_fdhold (test switch, SCM_RIGHTS of the witness socket and the uverbs fds); the runner waits for the fork line, then SIGKILLs rank 3 by its recorded PID at the traffic-kill step; the child is SIGKILLed by the PID of the fork line at the trial's end",
-    "switch": "R3_ENV NCCL_GIN_TS_TEST_FD_HOLDER=sock"
+    "switch": "R3_ENV NCCL_GIN_TS_TEST_FD_HOLDER=uverbs"
    },
    "preds": [
     "fdhold_uverbs_refuse",
@@ -932,7 +937,8 @@
     "SPARE": "1",
     "FENCE": "lineage",
     "SPARE_RANK": "3",
-    "R3_ENV": "NCCL_GIN_TS_TEST_FREEZE_PAGE=12000"
+    "R3_ENV": "NCCL_GIN_TS_TEST_FREEZE_PAGE=12000",
+    "SUBJECT_RANK": "3"
    },
    "injection": {
     "kind": "freeze",
@@ -948,7 +954,8 @@
    "control": "gc4_stop12000_fence@gc",
    "bound_s": 60,
    "row": 16,
-   "todo": "TODO(phase1): the freeze's start (after the first armed stable checkpoint) is the library's; its line is the injection record"
+   "todo": "TODO(phase1): the freeze's start (after the first armed stable checkpoint) is the library's; its line is the injection record",
+   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_helper_freeze12000@gc": {
    "cell": "gc4_helper_freeze12000",
@@ -963,7 +970,8 @@
     "SPARE": "1",
     "FENCE": "lineage",
     "SPARE_RANK": "3",
-    "R3_ENV": "NCCL_GIN_TS_TEST_FREEZE_PAGE=12000:helper"
+    "R3_ENV": "NCCL_GIN_TS_TEST_FREEZE_PAGE=12000:helper",
+    "SUBJECT_RANK": "3"
    },
    "injection": {
     "kind": "freeze",
@@ -979,7 +987,8 @@
    "control": "gc4_freeze12000_fence@gc",
    "bound_s": 60,
    "row": 17,
-   "todo": "TODO(phase1): as above"
+   "todo": "TODO(phase1): as above",
+   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_mgmt_mute8@gc": {
    "cell": "gc4_mgmt_mute8",
@@ -992,7 +1001,8 @@
     "MIRROR": "1",
     "CKPT_STEPS": "20",
     "STEPS": "2400",
-    "R1_ENV": "NCCL_GIN_TS_TEST_SOCK_MUTE=500:8000"
+    "R1_ENV": "NCCL_GIN_TS_TEST_SOCK_MUTE=500:8000",
+    "SUBJECT_RANK": "1"
    },
    "injection": {
     "kind": "sock_mute",
@@ -1007,7 +1017,8 @@
    "control": "gct4_mgmt_mute8@gct",
    "bound_s": 60,
    "row": 18,
-   "todo": "TODO(pilot): STEPS 2400 (about 12 s) keeps the checkpoints going through the 8 s mute"
+   "todo": "TODO(pilot): STEPS 2400 (about 12 s) keeps the checkpoints going through the 8 s mute",
+   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gct4_mgmt_mute8@gct": {
    "cell": "gct4_mgmt_mute8",
@@ -1020,7 +1031,8 @@
     "MIRROR": "1",
     "CKPT_STEPS": "20",
     "STEPS": "2400",
-    "R1_ENV": "NCCL_GIN_TS_TEST_SOCK_MUTE=500:8000"
+    "R1_ENV": "NCCL_GIN_TS_TEST_SOCK_MUTE=500:8000",
+    "SUBJECT_RANK": "1"
    },
    "injection": {
     "kind": "sock_mute",
@@ -1033,7 +1045,8 @@
    ],
    "control": "gc4_mgmt_mute8@gc",
    "bound_s": 60,
-   "row": 18
+   "row": 18,
+   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_qperr_record@gc": {
    "cell": "gc4_qperr_record",
@@ -1045,7 +1058,8 @@
     "OVERWRITE": "1",
     "MIRROR": "1",
     "CKPT_STEPS": "20",
-    "R1_ENV": "NCCL_GIN_CTRL_TEST_QP_ERR=3000:0"
+    "R1_ENV": "NCCL_GIN_CTRL_TEST_QP_ERR=3000:0",
+    "SUBJECT_RANK": "1"
    },
    "injection": {
     "kind": "qp_err",
@@ -1060,7 +1074,8 @@
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
    "row": 19,
-   "todo": "TODO(phase2): the switch's value format <ms>:<peer> is this file's proposal"
+   "todo": "TODO(phase2): the switch's value format <ms>:<peer> is this file's proposal",
+   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_ud_drop_rejoin@gc": {
    "cell": "gc4_ud_drop_rejoin",
@@ -1101,7 +1116,8 @@
     "OVERWRITE": "1",
     "MIRROR": "1",
     "CKPT_STEPS": "20",
-    "R2_ENV": "NCCL_GIN_CTRL_TEST_CREDIT_STALL=3000:500"
+    "R2_ENV": "NCCL_GIN_CTRL_TEST_CREDIT_STALL=3000:500",
+    "SUBJECT_RANK": "2"
    },
    "injection": {
     "kind": "credit_stall",
@@ -1116,7 +1132,8 @@
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
    "row": 21,
-   "todo": "TODO(phase2): the switch's value format <start>:<len> is this file's proposal"
+   "todo": "TODO(phase2): the switch's value format <start>:<len> is this file's proposal",
+   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_kill3_ow_spareabsent@gc": {
    "cell": "gc4_kill3_ow_spareabsent",
@@ -1145,6 +1162,34 @@
    "control": "gc4_kill3_ow@gc",
    "bound_s": 60,
    "row": 22
+  }
+ },
+ "pilot_cells": {
+  "gc4_stop12000_pilot@gc": {
+   "cell": "gc4_stop12000_pilot",
+   "build": "gc",
+   "kind": "rs",
+   "n": 1,
+   "driver": "gin_mi",
+   "env": {
+    "OVERWRITE": "1",
+    "MIRROR": "1",
+    "CKPT_STEPS": "20",
+    "SPARE": "1",
+    "STOP_RANK": "3",
+    "STOP_MS": "12000",
+    "FENCE": "none",
+    "SPARE_RANK": "3"
+   },
+   "injection": {
+    "kind": "sigstop",
+    "target": 3,
+    "timing": "the runner's SIGSTOP of rank 3's recorded PID at the traffic-kill step, SIGCONT 12000 ms later (one python process on rank 3's node; its own clock); at the end SIGCONT then SIGKILL of that PID if it is still there"
+   },
+   "preds": [],
+   "control": "-",
+   "bound_s": 60,
+   "pilot_note": "9.9 끝의 채점하지 않는 pilot 셀: 판정 전 생존 rank의 장치 대기와 hold 한도(rank 3 SIGSTOP 12 000 ms, 펜스 끔). 본 실행 셀과 이름이 달라 파일 이름이 겹치지 않음"
   }
  },
  "holds": {
@@ -1377,12 +1422,8 @@
   ],
   "P4": [
    {
-    "key": "gc4_stop12000_fence@gc",
-    "n": 1,
-    "env": {
-     "FENCE": "none"
-    },
-    "pilot_note": "9.9 끝의 채점하지 않는 pilot 셀: 판정 전 생존 rank의 장치 대기와 hold 한도"
+    "key": "gc4_stop12000_pilot@gc",
+    "n": 1
    }
   ]
  },
@@ -1479,5 +1520,11 @@
    "log": "local/gate_fenced_n<k>.log",
    "about": "section 7 row 27: ../gate_fenced.cc run on the CPU (no cluster); its log lines are read by rows_gc.py"
   }
+ },
+ "prereg": {
+  "about": "values the scorer's config exclusion compares with (score_gc.py status_gc; REVIEW_TEST fix 12). null: not fixed yet (the pilot fixes it; then no trial is excluded for it)",
+  "confirm_ms": null,
+  "probe_ms": 100,
+  "todo": "TODO(pilot): W (NCCL_GIN_CTRL_CONFIRM_MS, section 6: 20-50 ms) from the pilot's no-fault cells"
  }
 }

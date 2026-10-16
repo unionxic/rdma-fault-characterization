@@ -4,14 +4,22 @@ section 3's search keys). gin-mirror's rows_mi.py (imported, UNCHANGED) gives gi
 adds the control-path columns. Standard library only.
 
     rows_gc.py <results dir> [--out trials.csv]     one row per trial (raw/, reg/, cost*/, local/)
+    rows_gc.py --stops <stem>                       one line "la_stop_n=.. la_qp_err_n=.. la_refused_signal_n=..
+                                                    la_pid_mismatch_n=..": the trial's launcher counts by the scorer's rule
+                                                    (hold_gc.sh's per-trial STOP_launcher check; REVIEW_TEST B4)
 
 Inputs: run_gc.sh's trials (raw/: <stem>_r<r>.kv/.log, _spare*.kv/.log, _kill.out, _spare_kill.out, _inject.out,
 _fdhold.out, _cleanup.out, _launcher_<node>.log, _meta.txt; stem <cell>_<build>_n<k>); gin-remaining's runner (reg/);
 run_cost_gc.sh (cost*/); the CPU program gate_fenced (local/gate_fenced*.log, one row per "gate_fenced trial" line). Every log
 line is "<rain CLOCK_MONOTONIC at receipt, s> <line>" (the receipt clock). A library or runner line also carries its own
 "mono_ms=" (the process's CLOCK_MONOTONIC). Intervals inside one process use mono_ms; intervals between two processes of one
-node use their mono_ms (section 3: "같은 노드 시계"); between nodes the receipt clock (lines from sunny arrive over ssh, so a
-rain - sunny interval carries that delay; the *_clock columns say which was used).
+node use their mono_ms (section 3: "같은 노드 시계"); between nodes the two mono_ms in rain's clock, sunny's less the offset
+run_gc.sh measured over one ssh session (meta mono_off_sunny_ms / mono_off_after_ms; the one with the smaller round trip;
+REVIEW_TEST fix 2: no ssh delay in a kill -> judgement interval); the receipt clock only when a line has no mono_ms or the
+trial has no offset (the *_clock columns say which: mono, mono_xnode, receipt).
+The launcher slices (<stem>_launcher_<node>.log) run from the previous trial's trial_end marker to this trial's: the STOP,
+"refused to signal" and pid-check counts read the whole slice (no gap between trials), every other launcher column only the
+lines after this trial's trial_start marker (the earlier trial's late lines are not this trial's).
 
 The library's lines this file reads. "exists" = in the tree now (gc_layer*.diff, ln4); "TODO(pN)" = the format this file
 defines for phase N to emit exactly (notes_test.md lists them):
@@ -25,14 +33,15 @@ defines for phase N to emit exactly (notes_test.md lists them):
   SUSPECT   GIN/RC: rank R: rank P suspected (kind=watch|helper stale_ms=X) mono_ms=M                TODO(p1)
   TIMEOUT   GIN/RC: rank R: probe of rank P timed out (no CQE in T ms) mono_ms=M                     TODO(p1)
   PROBESUM  GIN/RC: rank R: probe summary peer=P reads=N ok=K remacc=A noresp=B timeout=C gen=G lat_med_us=X lat_max_us=Y
-            beat_gap_max_ms=Z torn=T mono_ms=M   (at teardown, one per peer)                          TODO(p1)
+            beat_gap_max_ms=Z torn=T after_end_reads=E after_end_ok=F mono_ms=M   (at teardown, one per peer; the
+            after_end_* READs came after the peer's BYE, LEFT or judgement and are left out of read_n and read_ok_n)  TODO(p1)
   WITLOST   GIN/RC: rank R: witness of rank P lost; liveness alive mono_ms=M (table row 8)           TODO(p1)
   FENCING   GIN/RC: rank R: rank P (incarnation I) fence FENCING: FENCE sent to the launcher of node N mono_ms=M   TODO(p3)
   FENCED    GIN/RC: rank R: rank P (incarnation I) fence FENCED (by FENCED|EXITED from node N) mono_ms=M        TODO(p3)
   WINCHG    GIN/RC: rank R: window check after the fence|judgement of rank P: changed=N cells mono_ms=M        TODO(p3)
   CTRLSUM   GIN/RC: rank R: control summary tcp_record_bytes=.. tcp_data_bytes=.. tcp_conns=.. witness_conns=..
             records_lost=.. records_dup=.. repairs=.. sendq_deferred=.. sendq_max=.. rnr=.. async=.. active_mtu=.. mono_ms=M
-            (at teardown, every process)                                                            TODO(p2)
+            (at teardown and at every confirmed checkpoint, every process; the last one of a process counts)  TODO(p2)
   RINGSUM   GIN/RC: rank R: ring summary peer=P gen=G sent=S received=V lost=L dup=D mono_ms=M      TODO(p2)
   PAIRSENT  GIN/RC: rank R: PAIR(record, gen G) to rank P (local ERR) mono_ms=M                      TODO(p2)
   REPAIRED  GIN/RC: rank R: record QP|liveness READ QP to rank P re-paired (gen G) mono_ms=M         TODO(p2)
@@ -50,12 +59,15 @@ defines for phase N to emit exactly (notes_test.md lists them):
   The launcher's lines (GIN/LA: node N: ..., ../launcher/gin_launcher.c, exist): EXITED, "exited; EXITED not sent", FENCE ...
   SIGKILL sent, FENCED (after SIGKILL X ms / ended before), "(STOP_launcher)", "refused to signal", activation ... LATER |
   ACCEPTED | REFUSED (why), "record QP of rank R ... lost", "liveness-READ QP of rank R failed", "is leaving".
-  The runner's lines (run_gc.sh): GINRS killed rank=R node=N pid=P which=W mono_ms=M; GINRS stop / cont (present=, stopped_ms=);
-  GINRS duty start / end; GINRS fdhold_killed; GINRS cleanup_stopped.
+  The runner's lines (run_gc.sh): GINRS killed rank=R node=N pid=P which=W [gap_ms=G] mono_ms=M; GINRS stop / cont (present=,
+  stopped_ms=); GINRS duty start / end; GINRS fdhold_killed; GINRS cleanup_stopped; GINRS ss s1|s2 pid=P present= n= acked=
+  received= (_ss.out); the launcher logs' markers "GINLA mark trial_start|trial_end <stem>".
 
 Columns (empty when the lines are missing; counts are 0 when the lines exist but none matched):
-  subject, n_surv            the rank under test (meta subject_rank) and the ranks judging it (every other rank)
-  confirm_w_ms               W of the trial (the PAGEUP lines' W, else meta confirm_ms)
+  subject, n_surv            the rank under test (meta subject_rank: KILL_RANK, STOP_RANK, DUTY_RANK, or the cell's
+                             SUBJECT_RANK for a library test switch) and the ranks judging it (every other rank)
+  confirm_w_ms, probe_ms_page  W and the READ period of the trial (the PAGEUP lines, else meta confirm_ms)
+  mono_off_used_ms, mono_off_rtt_ms, mono_off_drift_ms   the node clock offset used, its round trip, after - before
   n_judge, n_judge_confirm, n_judge_exited, n_judge_noresp, n_judge_stall, n_judge_stall_helper, n_judge_linkdown
                              survivors with a judgement of the subject (their first DEAD or STALLED line), by cause
   weak_cause_n               rdma builds: DEAD lines (any subject) whose cause is not one of the seven or LINKDOWN
@@ -72,6 +84,9 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   judge_to_publish_ms, kill_to_publish_ms   the first judgement / the kill -> the last survivor's first "published" line
   hold_ms_max, hold_other_n, kill_hold_ms_min   the survivors' hold durations (hold start -> restored, given up or the log's
                              end), hold starts naming another rank than the subject, kill -> first hold start
+  hold_after_restore_n       hold starts (any rank, any subject, the spares' logs too) after the subject's first restored line
+                             (a false hold at the revived rank's own end is counted here; REVIEW_TEST fix 9)
+  probe_timeout_n            READ time-out lines naming the subject before that survivor's judgement
   suspect_n, suspect_stale_ms_min/max   SUSPECT lines naming the subject
   read_n, read_ok_n, read_success_pct, read_lat_med_us_max, read_lat_max_us, beat_gap_max_ms, page_torn_n   PROBESUM, summed
   witness_lost_n, confirm_alive_n   WITLOST lines; CONFIRM closed alive lines
@@ -89,9 +104,12 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              "is leaving" line (TODO(p3): the teardown rule); launcher_same = both launchers' pid and start equal
                              before and after the trial and alive after
   tcp_ctrl_bytes, tcp_data_bytes, tcp_ctrl_conn_n, witness_pairs, rec_lost_n, rec_dup_n, rec_repair_n, sendq_deferred,
-  sendq_max, rnr_n, async_n, active_mtu_kv_min   CTRLSUM summed (rnr_n adds the meta's RNR port-counter growth);
-                             witness_pairs = the summed witness_conns with the witness on, 0 with it off (so
-                             tcp_ctrl_conn_n == witness_pairs says every TCP connection of the layer is a witness)
+  sendq_max, rnr_n, async_n, active_mtu_kv_min   CTRLSUM (each process's last) summed (rnr_n adds the meta's RNR
+                             port-counter growth); witness_pairs = the summed witness_conns with the witness on, 0 with it off
+  witness_expected           (N - 1) x the processes with a CTRLSUM line with the witness on, 0 off: from the configuration,
+                             not from the library (REVIEW_TEST fix 10)
+  ss_tcp_conn_n, ss_pids_both, ss_tx_delta_bytes, ss_rx_delta_bytes   the runner's two ss snapshots of the rank PIDs: the
+                             established TCP sockets at the first, the bytes acked / received between the two (pids in both)
   active_mtu_rain, active_mtu_sunny   the runner's ibv_devinfo reading (meta)
   ckpt_stable_in_mute, ckpt_void_in_mute, helper_reconnect_n   stable / void checkpoint lines inside the socket mute's on -> off
                              window (receipt), and helper reconnect lines
@@ -102,9 +120,18 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   rejoin_dropped, rejoin_resent, rejoin_accept_n, rejoin_accept_dup_n, fail_to_spare_n
   inject_ok, inject_off_ms, inject_dur_off_ms   the injection's record exists (runner line or library switch line); the
                              runner's injection receipt - its plan (meta inj_plan_rt); a stop's measured length - STOP_MS
+  pair_gap_ms                the spare-absent cell: the runner's spare kill -> rank kill on that node's clock
+  subject_fenced             1 when the runner killed nobody and the subject ended by SIGKILL (the fence): gin-restore's and
+                             gin-mirror's columns then read it as the killed rank (fenced_subject)
+  ckpt_stable_before_inj     a stable (or armed) checkpoint of the subject before its injection (the kill, DIE_RST, the STOP or
+                             FREEZE_PAGE line); section 8's "before the first armed checkpoint" for every injected cell
   kill2_after_armed          KILL2_KIND=pid_after_armed: the second kill's receipt >= the survivors' last armed line (meta)
   stable_between_pair_kills  the spare-absent cell: a stable checkpoint of the subject between the spare kill and its kill
-  gate rows (local/): old_go_ms, fenced_go_ms, gate_diff_ms, second_thread_ms
+                             (the subject's mono_ms against the runner's on the same node)
+  gate rows (local/): gate_real, old_go_ms, fenced_go_ms, gate_diff_ms, second_thread_ms, pidfd_ms, z_ms,
+                             fenced_after_second_ms, fenced_vs_pidfd_abs_ms. gate_proc_gc.py's lines (a real child process: its
+                             main thread ends first, a second thread 500 ms later; the harness's own pidfd and /proc readings)
+                             give gate_real 1; gate_fenced.cc's simulated lines give gate_real 0 (REVIEW_TEST fix 1)
 """
 import argparse, csv, glob, os, re, sys
 
@@ -117,7 +144,11 @@ MONO = re.compile(r"\bmono_ms=([0-9.]+)")
 DEAD = re.compile(r"GIN/TS: rank (\d+): rank (\d+) judged dead \(cause=([^)]*)\)")
 STALLED = re.compile(r"GIN/RC: rank (\d+): rank (\d+) \(incarnation \d+\) judged stalled \(.*?\b(STALL_HELPER|STALL)\b")
 CLOSED = re.compile(r"GIN/TS: rank (\d+): socket to rank (\d+) closed cause=(\S+)")
-PAGEUP = re.compile(r"GIN/RC: rank (\d+): status page up \(\d+ B in use, probe_ms=\d+ stall_ms=\d+ W=(\d+)\)")
+PAGEUP = re.compile(r"GIN/RC: rank (\d+): status page up \(\d+ B in use, probe_ms=(\d+) stall_ms=\d+ W=(\d+)\)")
+TIMEOUTL = re.compile(r"GIN/RC: rank (\d+): probe of rank (\d+) timed out")
+SSL = re.compile(r"GINRS ss (s1|s2) pid=(\d+) present=([01]) n=(\d+) acked=(\d+) received=(\d+)")
+GAPL = re.compile(r"GINRS killed rank=(\d+) node=\w+ pid=\d+ which=after_spare gap_ms=([0-9.]+)")
+LA_MARK_START = re.compile(r"GINLA mark trial_start ")
 CONF_OPEN = re.compile(r"GIN/RC: rank (\d+): confirm window for rank (\d+) opened by (FIN|RST) W=(\d+)")
 CONF_CLOSE = re.compile(r"GIN/RC: rank (\d+): confirm window for rank (\d+) closed: (alive|STALE|NORESP|REMACC|unconfirmed)")
 SUSPECT = re.compile(r"GIN/RC: rank (\d+): rank (\d+) suspected \(kind=(\w+) stale_ms=([0-9.]+)\)")
@@ -165,32 +196,37 @@ LA_PIDMIS = re.compile(r"the pidfd is not the peer's process")
 LA_QPLOST = re.compile(r"GIN/LA: node \d+: (?:record QP of rank (\d+)\b.*\blost|liveness-READ QP of rank (\d+) failed)")
 LA_LEAVING = re.compile(r"GIN/LA: node \d+: rank \d+ incarnation \d+ is leaving")
 GATE = re.compile(r"gate_fenced trial (\d+): old GO at ([0-9.]+) ms, FENCED GO at ([0-9.]+) ms \(diff ([0-9.-]+) ms, second thread ([0-9.]+) ms\)")
+GATEP = re.compile(r"gate_proc trial (\d+): (.*)$")
 KVTOK = rows_rs.KVTOK
 
 STRONG_CONFIRM = ("FIN+STALE", "FIN+NORESP", "REMACC+FIN")
 STRONG = set(STRONG_CONFIRM) | {"EXITED", "NORESP", "STALL", "STALL_HELPER", "LINKDOWN"}
 
-GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_ms", "n_judge", "n_judge_confirm",
+GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_ms", "probe_ms_page", "mono_off_used_ms",
+           "mono_off_rtt_ms", "mono_off_drift_ms", "n_judge", "n_judge_confirm",
            "n_judge_exited", "n_judge_noresp", "n_judge_stall", "n_judge_stall_helper", "n_judge_linkdown", "judge_causes",
            "weak_cause_n", "timeout_judge_n", "judge_any_n", "fin_judge_dev_min_ms", "fin_judge_dev_max_ms", "n_rst_surv",
            "n_rst_confirm", "n_rst_exited", "rst_judge_dev_min_ms", "rst_judge_dev_max_ms", "rst_exited_kill_judge_min_ms",
            "rst_exited_kill_judge_max_ms", "rst_judge_ms_min", "rst_judge_ms_max", "kill_judge_ms_min", "kill_judge_ms_max",
            "kill_judge_exited_min_ms", "kill_judge_exited_max_ms", "kill_judge_clock", "stop_judge_ms_min",
-           "stop_judge_ms_max", "judge_spread_ms", "judge_to_publish_ms", "kill_to_publish_ms", "hold_ms_max",
-           "hold_other_n", "kill_hold_ms_min", "end_after_kill_ms", "suspect_n", "suspect_stale_ms_min",
+           "stop_judge_ms_max", "judge_spread_ms", "judge_spread_clock", "judge_to_publish_ms", "kill_to_publish_ms",
+           "publish_clock", "hold_ms_max", "hold_other_n", "kill_hold_ms_min", "hold_after_restore_n", "probe_timeout_n",
+           "end_after_kill_ms", "suspect_n", "suspect_stale_ms_min",
            "suspect_stale_ms_max", "read_n", "read_ok_n", "read_success_pct", "read_lat_med_us_max", "read_lat_max_us",
            "beat_gap_max_ms", "page_torn_n", "witness_lost_n", "confirm_alive_n", "fence_sent", "fenced", "fence_order_ok",
            "fence_names_ok", "fence_sent_to_fenced_ms", "fenced_to_fallback_ms", "cont_target_present",
            "win_changed_after", "la_exited_n", "la_exit_silent_n", "la_fence_sigkill_n", "la_fenced_n",
            "la_fenced_after_sigkill_ms", "la_later_n", "la_act_refused_why", "la_stop_n", "la_refused_signal_n",
            "la_pid_mismatch_n", "la_qp_err_n", "launcher_same", "launcher_ready", "tcp_ctrl_bytes", "tcp_data_bytes",
-           "tcp_ctrl_conn_n", "witness_pairs", "rec_lost_n", "rec_dup_n", "rec_repair_n", "sendq_deferred", "sendq_max",
+           "tcp_ctrl_conn_n", "witness_pairs", "witness_expected", "ss_tcp_conn_n", "ss_pids_both", "ss_tx_delta_bytes",
+           "ss_rx_delta_bytes", "rec_lost_n", "rec_dup_n", "rec_repair_n", "sendq_deferred", "sendq_max",
            "rnr_n", "async_n", "active_mtu_kv_min", "active_mtu_rain", "active_mtu_sunny", "ckpt_stable_in_mute",
            "ckpt_void_in_mute", "helper_reconnect_n", "qperr_pair_sent_by_target", "qperr_rec_gen_delta",
            "qperr_probe_gen_delta", "qperr_pair_read_fail", "qperr_records_after", "rejoin_dropped", "rejoin_resent",
            "rejoin_accept_n", "rejoin_accept_dup_n", "fail_to_spare_n", "inject", "inject_ok", "inject_off_ms",
-           "inject_dur_off_ms", "kill2_after_armed", "stable_between_pair_kills", "old_go_ms", "fenced_go_ms",
-           "gate_diff_ms", "second_thread_ms"]
+           "inject_dur_off_ms", "pair_gap_ms", "ckpt_stable_before_inj", "kill2_after_armed", "stable_between_pair_kills",
+           "subject_fenced", "gate_real", "old_go_ms", "fenced_go_ms", "gate_diff_ms", "second_thread_ms", "pidfd_ms", "z_ms",
+           "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms"]
 
 
 def mono(l):
@@ -234,13 +270,66 @@ def evs(lines, node):
     return [Ev(t, mono(l), node, l) for t, l in lines if t is not None]
 
 
-def xdiff(a, b):
-    """ms from event a to event b: mono when both are on one node and carry mono_ms, else the receipt clock"""
+def to_rain(e, off):
+    """the event's time on rain's CLOCK_MONOTONIC (ms): its mono_ms, less the measured offset on sunny; None without"""
+    if e is None or e.m is None:
+        return None
+    if e.node == "rain":
+        return e.m
+    if e.node == "sunny" and off is not None:
+        return e.m - off
+    return None
+
+
+def xdiff(a, b, off=None):
+    """ms from event a to event b: mono when both are on one node and carry mono_ms, both mono_ms in rain's clock across the
+    nodes when the trial has the offset, else the receipt clock"""
     if a is None or b is None:
         return None, ""
     if a.node == b.node and a.m is not None and b.m is not None:
         return b.m - a.m, "mono"
+    ra, rb = to_rain(a, off), to_rain(b, off)
+    if ra is not None and rb is not None:
+        return rb - ra, "mono_xnode"
     return (b.t - a.t) * 1000.0, "receipt"
+
+
+def mono_offset(meta):
+    """(offset ms, its round trip ms, after - before ms) of sunny's clock against rain's: the smaller round trip of the two"""
+    c = []
+    for o, r in (("mono_off_sunny_ms", "mono_off_rtt_ms"), ("mono_off_after_ms", "mono_off_after_rtt_ms")):
+        ov, rv = fnum(meta.get(o)), fnum(meta.get(r))
+        c.append((rv, ov) if ov is not None and rv is not None else None)
+    have = [x for x in c if x is not None]
+    if not have:
+        return None, None, None
+    rtt, off = min(have)
+    drift = (c[1][1] - c[0][1]) if (c[0] is not None and c[1] is not None) else None
+    return off, rtt, drift
+
+
+def la_logs(stem):
+    return {nd: evs(rows_rs.stamped("%s_launcher_%s.log" % (stem, nd)), nd) for nd in ("rain", "sunny")}
+
+
+def la_after_start(evl):
+    """the slice's lines after this trial's trial_start marker (the whole slice when it has none)"""
+    st = [i for i, e in enumerate(evl) if LA_MARK_START.search(e.text)]
+    return evl[st[-1] + 1:] if st else evl
+
+
+def la_counts(lalog, s):
+    """the launcher counts every trial gets: STOP lines (both forms), refused signals and pid-check failures over the whole
+    slices; the QP-loss lines of ranks other than the subject after the trial_start marker and before the first is-leaving"""
+    whole = lalog["rain"] + lalog["sunny"]
+    after = la_after_start(lalog["rain"]) + la_after_start(lalog["sunny"])
+    out = {"la_stop_n": sum(1 for e in whole if LA_STOP.search(e.text)),
+           "la_refused_signal_n": sum(1 for e in whole if LA_REFSIG.search(e.text)),
+           "la_pid_mismatch_n": sum(1 for e in whole if LA_PIDMIS.search(e.text))}
+    t_leave = min((e.t for e in after if LA_LEAVING.search(e.text)), default=float("inf"))
+    out["la_qp_err_n"] = sum(1 for e in after for m in [LA_QPLOST.search(e.text)] if m and e.t < t_leave
+                             and int(m.group(1) or m.group(2)) != s)
+    return out
 
 
 def first(evl, rx, pred=None):
@@ -263,24 +352,34 @@ def gc_overlay(stem, base, meta):
     out["ctrl"] = ctrl
     out["witness_cfg"] = meta.get("witness", "")
     out["fence_cfg"] = meta.get("fence", "")
+    OFF, rtt, drift = mono_offset(meta)
+    out["mono_off_used_ms"], out["mono_off_rtt_ms"], out["mono_off_drift_ms"] = r1(OFF), r1(rtt), r1(drift)
+    xd = lambda a, b: xdiff(a, b, OFF)
     kr = int(meta["kill_rank"]) if str(meta.get("kill_rank", "")).isdigit() else -1
     kr2 = int(meta["kill2_rank"]) if str(meta.get("kill2_rank", "")).isdigit() else -1
     logs = {r: evs(rows_rs.stamped("%s_r%d.log" % (stem, r)), node_of(r)) for r in ranks}
     sp_node = node_of(int(meta["spare_rank"])) if str(meta.get("spare_rank", "")).isdigit() else node_of(max(kr, 0))
     slog = evs(rows_rs.stamped(stem + "_spare.log"), sp_node)
     slog2 = evs(rows_rs.stamped(stem + "_spare_2nd.log"), node_of(kr2) if kr2 >= 0 else "rain")
-    kout = evs(rows_rs.stamped(stem + "_kill.out"), "?")
-    for e in kout:
-        m = re.search(r"node=(\w+)", e.text)
-        e.node = m.group(1) if m else "?"
+
+    def node_ev(path):
+        el = evs(rows_rs.stamped(path), "?")
+        for e in el:
+            m = re.search(r"node=(\w+)", e.text)
+            e.node = m.group(1) if m else (node_of(s) if s >= 0 else "?")
+        return el
+    kout = node_ev(stem + "_kill.out")
+    skout = node_ev(stem + "_spare_kill.out")
     inj = evs(rows_rs.stamped(stem + "_inject.out"), node_of(s) if s >= 0 else "?")
-    lalog = {nd: evs(rows_rs.stamped("%s_launcher_%s.log" % (stem, nd)), nd) for nd in ("rain", "sunny")}
+    lalog = la_logs(stem)
     every = [e for r in ranks for e in logs[r]] + slog + slog2
     surv = [r for r in ranks if r != s] if s >= 0 else []
     out["n_surv"] = len(surv) if s >= 0 else ""
-    # W
-    ws = [int(m.group(2)) for e in every for m in [PAGEUP.search(e.text)] if m]
+    # W and the READ period
+    pg = [m for e in every for m in [PAGEUP.search(e.text)] if m]
+    ws = [int(m.group(3)) for m in pg]
     out["confirm_w_ms"] = max(ws) if ws else (fnum(meta.get("confirm_ms")) if meta.get("confirm_ms") else "")
+    out["probe_ms_page"] = max(int(m.group(2)) for m in pg) if pg else ""
     W = out["confirm_w_ms"] if out["confirm_w_ms"] != "" else None
     # the kill: the runner's line for the subject (first), the library's DIE_RST line, the driver's die line
     t_kill_ev = None
@@ -316,6 +415,8 @@ def gc_overlay(stem, base, meta):
         out["n_judge_linkdown"] = len(cause("LINKDOWN"))
         out["judge_causes"] = "+".join("%s:%d" % (c, sum(1 for _, (_, k) in js.items() if k == c))
                                        for c in sorted({k for _, (_, k) in js.items()}))
+        out["probe_timeout_n"] = sum(1 for r, (je, _) in js.items() for e in logs[r] for m in [TIMEOUTL.search(e.text)]
+                                     if m and int(m.group(2)) == s and e.t <= je.t)
 
         def opener(r, je):
             lg = logs[r]
@@ -329,7 +430,7 @@ def gc_overlay(stem, base, meta):
         for r, (je, k) in js.items():
             if k in STRONG_CONFIRM:
                 o = opener(r, je)
-                d, _ = xdiff(o, je)
+                d, _ = xd(o, je)
                 devs.append(None if (d is None or W is None) else d - W)
         out["fin_judge_dev_min_ms"], out["fin_judge_dev_max_ms"] = mm(devs) if devs else ("", "")
         # RST survivors
@@ -347,21 +448,21 @@ def gc_overlay(stem, base, meta):
                 rj.append(None)
                 continue
             je, k = js[r]
-            d, _ = xdiff(re_ev, je)
+            d, _ = xd(re_ev, je)
             rj.append(d)
             if k in STRONG_CONFIRM:
                 nrc += 1
                 rc_dev.append(None if (d is None or W is None) else d - W)
             elif k == "EXITED":
                 nre += 1
-                re_k.append(xdiff(t_kill_ev, je)[0])
+                re_k.append(xd(t_kill_ev, je)[0])
         out["n_rst_confirm"], out["n_rst_exited"] = nrc, nre
         out["rst_judge_dev_min_ms"], out["rst_judge_dev_max_ms"] = mm(rc_dev) if rc_dev else ("", "")
         out["rst_exited_kill_judge_min_ms"], out["rst_exited_kill_judge_max_ms"] = mm(re_k) if re_k else ("", "")
         out["rst_judge_ms_min"], out["rst_judge_ms_max"] = mm(rj) if rj else ("", "")
         # kill -> judgement
         if t_kill_ev is not None and js:
-            ds = {r: xdiff(t_kill_ev, je) for r, (je, _) in js.items()}
+            ds = {r: xd(t_kill_ev, je) for r, (je, _) in js.items()}
             out["kill_judge_ms_min"], out["kill_judge_ms_max"] = mm([d for d, _ in ds.values()])
             ex = [ds[r][0] for r, (_, k) in js.items() if k == "EXITED"]
             out["kill_judge_exited_min_ms"], out["kill_judge_exited_max_ms"] = mm(ex) if ex else ("", "")
@@ -371,21 +472,30 @@ def gc_overlay(stem, base, meta):
         if st_ev is None:
             st_ev, _ = first(logs[s], SW_FREEZE)
         if st_ev is not None:
-            sj = [xdiff(st_ev, je)[0] for r, (je, k) in js.items() if k in ("STALL", "STALL_HELPER")]
+            sj = [xd(st_ev, je)[0] for r, (je, k) in js.items() if k in ("STALL", "STALL_HELPER")]
             out["stop_judge_ms_min"], out["stop_judge_ms_max"] = mm(sj) if sj else ("", "")
         if js:
-            ts = [je.t for je, _ in js.values()]
-            out["judge_spread_ms"] = r1((max(ts) - min(ts)) * 1000.0)
-            t_j0 = min(ts)
+            jl = [je for je, _ in js.values()]
+            j0 = min(jl, key=lambda x: x.t)
+            rt = [to_rain(je, OFF) for je in jl]
+            if all(x is not None for x in rt):
+                out["judge_spread_ms"], out["judge_spread_clock"] = r1(max(rt) - min(rt)), "mono"
+            else:
+                out["judge_spread_ms"], out["judge_spread_clock"] = r1((max(e.t for e in jl) - j0.t) * 1000.0), "receipt"
             pubs = []
             for r in surv:
                 lg = logs[r] if not (r == kr and kr2 >= 0) else slog
-                p = [e.t for e in lg for m in [PUB_OF.search(e.text)] if m and int(m.group(1)) == s and e.t >= t_j0]
-                pubs.append(min(p) if p else None)
+                p = [e for e in lg for m in [PUB_OF.search(e.text)] if m and int(m.group(1)) == s and e.t >= j0.t]
+                pubs.append(min(p, key=lambda x: x.t) if p else None)
             if pubs and all(p is not None for p in pubs):
-                out["judge_to_publish_ms"] = r1((max(pubs) - t_j0) * 1000.0)
+                d1 = [xd(j0, p) for p in pubs]
+                out["judge_to_publish_ms"] = r1(max(d for d, _ in d1))
+                clocks = {c for _, c in d1}
                 if t_kill_ev is not None:
-                    out["kill_to_publish_ms"] = r1((max(pubs) - t_kill_ev.t) * 1000.0)
+                    d2 = [xd(t_kill_ev, p) for p in pubs]
+                    out["kill_to_publish_ms"] = r1(max(d for d, _ in d2))
+                    clocks |= {c for _, c in d2}
+                out["publish_clock"] = "+".join(sorted(clocks))
         # holds
         hms, hother, hk = [], 0, []
         for r in ranks:
@@ -399,14 +509,18 @@ def gc_overlay(stem, base, meta):
                     hother += 1
                     continue
                 if t_kill_ev is not None:
-                    hk.append((e.t - t_kill_ev.t) * 1000.0)
-                ends = [x.t for x in lg for mm2 in [RESTORED_OF.search(x.text) or GIVEN_UP_OF.search(x.text)]
+                    hk.append(xd(t_kill_ev, e)[0])
+                ends = [x for x in lg for mm2 in [RESTORED_OF.search(x.text) or GIVEN_UP_OF.search(x.text)]
                         if mm2 and int(mm2.group(1)) == p and x.t >= e.t]
-                end = min(ends) if ends else (max(x.t for x in lg) if lg else e.t)
-                hms.append((end - e.t) * 1000.0)
+                end = min(ends, key=lambda x: x.t) if ends else (max(lg, key=lambda x: x.t) if lg else e)
+                hms.append(xd(e, end)[0])
         out["hold_ms_max"] = r1(max(hms)) if hms else 0
         out["hold_other_n"] = hother
-        out["kill_hold_ms_min"] = r1(min(hk)) if hk else ""
+        out["kill_hold_ms_min"] = r1(min(x for x in hk if x is not None)) if [x for x in hk if x is not None] else ""
+        rest = [e.t for r in surv for e in logs[r] for m in [RESTORED_OF.search(e.text)] if m and int(m.group(1)) == s]
+        if rest:
+            t_r = min(rest)
+            out["hold_after_restore_n"] = sum(1 for e in every if HOLD_OF.search(e.text) and e.t > t_r)
         if t_kill_ev is not None:
             last = max((e.t for r in surv for e in logs[r]), default=None)
             out["end_after_kill_ms"] = r1((last - t_kill_ev.t) * 1000.0) if last is not None else ""
@@ -421,15 +535,15 @@ def gc_overlay(stem, base, meta):
         out["fence_sent"], out["fenced"] = int(fe is not None), int(fd is not None)
         out["fence_order_ok"] = int(fd is not None and ac is not None and (fe is None or fe.t <= fd.t) and fd.t <= ac.t)
         out["fence_names_ok"] = int(fe is not None and fd is not None)
-        out["fence_sent_to_fenced_ms"] = r1(xdiff(fe, fd)[0]) if (fe is not None and fd is not None) else ""
-        out["fenced_to_fallback_ms"] = r1(xdiff(fd, gu)[0]) if (fd is not None and gu is not None) else ""
+        out["fence_sent_to_fenced_ms"] = r1(xd(fe, fd)[0]) if (fe is not None and fd is not None) else ""
+        out["fenced_to_fallback_ms"] = r1(xd(fd, gu)[0]) if (fd is not None and gu is not None) else ""
         if not any_fence:  # no fence line in the trial at all: the library does not emit them yet (TODO(p3))
             for c in ("fence_sent", "fenced", "fence_order_ok", "fence_names_ok"):
                 out[c] = ""
         ce, cm = first(inj, CONTL, lambda m: int(m.group(1)) == s)
         out["cont_target_present"] = int(cm.group(2)) if cm else ""
-        # the launcher
-        la = lalog["rain"] + lalog["sunny"]
+        # the launcher: the subject's lines after this trial's trial_start marker
+        la = la_after_start(lalog["rain"]) + la_after_start(lalog["sunny"])
         if la:
             out["la_exited_n"] = sum(1 for e in la for m in [LA_EXITED.search(e.text)] if m and int(m.group(1)) == s)
             out["la_exit_silent_n"] = sum(1 for e in la for m in [LA_SILENT.search(e.text)] if m and int(m.group(1)) == s)
@@ -441,15 +555,9 @@ def gc_overlay(stem, base, meta):
             acts = [m for e in la for m in [LA_ACT.search(e.text)] if m and int(m.group(1)) == s]
             out["la_later_n"] = sum(1 for m in acts if m.group(2) == "LATER")
             out["la_act_refused_why"] = "; ".join(m.group(3) for m in acts if m.group(2) == "REFUSED")
-    # every trial: the launcher's STOP lines, checks, QP loss
-    la = lalog["rain"] + lalog["sunny"]
-    if la or ctrl == "rdma":
-        out["la_stop_n"] = sum(1 for e in la if LA_STOP.search(e.text))
-        out["la_refused_signal_n"] = sum(1 for e in la if LA_REFSIG.search(e.text))
-        out["la_pid_mismatch_n"] = sum(1 for e in la if LA_PIDMIS.search(e.text))
-        t_leave = min((e.t for e in la if LA_LEAVING.search(e.text)), default=float("inf"))
-        out["la_qp_err_n"] = sum(1 for e in la for m in [LA_QPLOST.search(e.text)] if m and e.t < t_leave
-                                 and int(m.group(1) or m.group(2)) != s)
+    # every trial: the launcher's STOP lines (both forms, the whole slice), checks, QP loss
+    if lalog["rain"] or lalog["sunny"] or ctrl == "rdma":
+        out.update(la_counts(lalog, s))
     if ctrl == "rdma":
         same = True
         for nd in ("rain", "sunny"):
@@ -458,11 +566,13 @@ def gc_overlay(stem, base, meta):
             same = same and bool(bf) and key(bf) == key(af) and "alive=1" in af
         out["launcher_same"] = int(same)
         out["launcher_ready"] = int(meta.get("launcher_ready") == "1")
-    # the READ probe and the control summaries (every process)
-    ps = [(int(m.group(1)), int(m.group(2)), kvd(m.group(3))) for e in every for m in [PROBESUM.search(e.text)] if m]
+    # the READ probe (every process; the READs after the peer's end apart: REVIEW_TEST fix 18)
+    ps = [kvd(m.group(3)) for e in every for m in [PROBESUM.search(e.text)] if m]
     if ps:
-        g = lambda k: [fnum(d.get(k)) for _, _, d in ps if fnum(d.get(k)) is not None]
-        out["read_n"], out["read_ok_n"] = int(sum(g("reads"))), int(sum(g("ok")))
+        g = lambda k: [fnum(d.get(k)) for d in ps if fnum(d.get(k)) is not None]
+        reads = sum((fnum(d.get("reads")) or 0) - (fnum(d.get("after_end_reads")) or 0) for d in ps)
+        oks = sum((fnum(d.get("ok")) or 0) - (fnum(d.get("after_end_ok")) or 0) for d in ps)
+        out["read_n"], out["read_ok_n"] = int(reads), int(oks)
         out["read_success_pct"] = r1(100.0 * out["read_ok_n"] / out["read_n"]) if out["read_n"] else ""
         out["read_lat_med_us_max"] = max(g("lat_med_us")) if g("lat_med_us") else ""
         out["read_lat_max_us"] = max(g("lat_max_us")) if g("lat_max_us") else ""
@@ -477,14 +587,21 @@ def gc_overlay(stem, base, meta):
         out["confirm_alive_n"] = sum(1 for e in every for m in [CONF_CLOSE.search(e.text)] if m and m.group(3) == "alive")
     wc = [int(m.group(3)) for e in every for m in [WINCHG.search(e.text)] if m]
     out["win_changed_after"] = sum(wc) if wc else ""
-    cs = [kvd(m.group(2)) for e in every for m in [CTRLSUM.search(e.text)] if m]
+    # the control summaries: each process's last one
+    cs = []
+    for lg in [logs[r] for r in ranks] + [slog, slog2]:
+        l = [m for e in lg for m in [CTRLSUM.search(e.text)] if m]
+        if l:
+            cs.append(kvd(l[-1].group(2)))
     if cs:
         sm = lambda k: int(sum(fnum(d.get(k)) or 0 for d in cs))
+        wit_on = meta.get("witness", "1") != "0"
         out["tcp_record_bytes_sum"] = sm("tcp_record_bytes")
         out["tcp_data_bytes"] = sm("tcp_data_bytes")
         out["tcp_ctrl_bytes"] = sm("tcp_record_bytes") + sm("tcp_data_bytes")
         out["tcp_ctrl_conn_n"] = sm("tcp_conns")
-        out["witness_pairs"] = sm("witness_conns") if meta.get("witness", "1") != "0" else 0
+        out["witness_pairs"] = sm("witness_conns") if wit_on else 0
+        out["witness_expected"] = (n - 1) * len(cs) if wit_on else 0
         for c, k in (("rec_lost_n", "records_lost"), ("rec_dup_n", "records_dup"), ("rec_repair_n", "repairs"),
                      ("sendq_deferred", "sendq_deferred"), ("async_n", "async")):
             out[c] = sm(k)
@@ -504,6 +621,17 @@ def gc_overlay(stem, base, meta):
     for nd in ("rain", "sunny"):
         v = fnum(meta.get("active_mtu_" + nd))
         out["active_mtu_" + nd] = int(v) if v is not None else ""
+    # the runner's ss snapshots (counts only)
+    ssl = [m for t, l in rows_rs.stamped(stem + "_ss.out") if t is not None for m in [SSL.search(l)] if m]
+    if ssl:
+        s1 = {m.group(2): m for m in ssl if m.group(1) == "s1" and m.group(3) == "1"}
+        s2_ = {m.group(2): m for m in ssl if m.group(1) == "s2" and m.group(3) == "1"}
+        out["ss_tcp_conn_n"] = sum(int(m.group(4)) for m in s1.values())
+        both = [p for p in s1 if p in s2_]
+        out["ss_pids_both"] = len(both)
+        if both:
+            out["ss_tx_delta_bytes"] = sum(int(s2_[p].group(5)) - int(s1[p].group(5)) for p in both)
+            out["ss_rx_delta_bytes"] = sum(int(s2_[p].group(6)) - int(s1[p].group(6)) for p in both)
     # the socket mute window (gin-harden's lines)
     mon = [e for e in every if MUTE_ON.search(e.text)]
     if mon:
@@ -544,25 +672,28 @@ def gc_overlay(stem, base, meta):
     out["inject"] = kind
     plan = fnum(meta.get("inj_plan_rt"))
     rk = None
+    inj_ev = t_kill_ev  # the injection event of section 8's "before the first armed checkpoint" (REVIEW_TEST fix 13)
     if kind in ("kill_traffic", "fd_holder_kill", "kill_spare_then_rank") and s >= 0:
         ev, _ = first(kout, KILLED, lambda m: int(m.group(1)) == s and (m.group(3) or "first") in ("first", "after_spare"))
         ok = ev is not None
         if kind == "fd_holder_kill":
             ok = ok and first(logs[s], SW_FDHOLD)[0] is not None
         if kind == "kill_spare_then_rank":
-            ok = ok and bool([e for e in rows_rs.stamped(stem + "_spare_kill.out") if e[0] is not None and "GINRS killed" in e[1]])
+            ok = ok and bool([e for e in skout if "GINRS killed" in e.text])
         out["inject_ok"] = int(ok)
         rk = ev
     elif kind == "sigstop" and s >= 0:
         ev, _ = first(inj, STOPL, lambda m: int(m.group(1)) == s)
         out["inject_ok"] = int(ev is not None and first(inj, CONTL)[0] is not None)
         rk = ev
+        inj_ev = ev
         _, cm = first(inj, CONTL, lambda m: int(m.group(1)) == s)
         if cm and fnum(meta.get("stop_ms")) is not None:
             out["inject_dur_off_ms"] = r1(abs(float(cm.group(3)) - float(meta["stop_ms"])))
     elif kind == "duty" and s >= 0:
         rk, _ = first(inj, DUTYL, lambda m: int(m.group(1)) == s)
         out["inject_ok"] = int(rk is not None)
+        inj_ev = rk
     elif kind == "kill_self" and s >= 0:
         out["inject_ok"] = int(first(logs[s], SW_DIE_RST)[0] is not None)
     else:
@@ -572,24 +703,52 @@ def gc_overlay(stem, base, meta):
                 if sw in envs]
         if need:
             out["inject_ok"] = int(all(any(rx.search(e.text) for e in every) for _, rx in need))
+        if s >= 0 and "TEST_FREEZE_PAGE" in envs:
+            inj_ev = first(logs[s], SW_FREEZE)[0]
     if rk is not None and plan is not None:
         out["inject_off_ms"] = r1(abs(rk.t - plan) * 1000.0)
-    # the second kill by recorded PID after armed
+    if s >= 0 and inj_ev is not None:
+        stab = [e for r in ranks for e in logs[r] for m in [rows_rs.STABLE.search(e.text) or rows_rs.ARMED.search(e.text)]
+                if m and int(m.group(1)) == s]
+        out["ckpt_stable_before_inj"] = int(any(e.t < inj_ev.t for e in stab))
+    # the second kill by recorded PID after armed (reported; gin-mirror's rule: never an exclusion)
     if meta.get("kill2_kind") == "pid_after_armed" and kr2 >= 0:
         e2, _ = first(kout, KILLED, lambda m: int(m.group(1)) == kr2 and m.group(3) == "second")
         a2 = fnum(meta.get("armed2_rt"))
         out["kill2_after_armed"] = int(e2 is not None and a2 is not None and e2.t >= a2)
-    # the spare-absent cell: a stable checkpoint of the subject between the spare kill and its kill
+    # the spare-absent cell: the gap between its two kills, and a stable checkpoint of the subject between them (one node)
     if kind == "kill_spare_then_rank" and s >= 0:
-        sk = [t for t, l in rows_rs.stamped(stem + "_spare_kill.out") if t is not None and "GINRS killed" in l]
+        gm = [m for e in kout for m in [GAPL.search(e.text)] if m and int(m.group(1)) == s]
+        out["pair_gap_ms"] = r1(float(gm[0].group(2))) if gm else ""
+        sk = [e for e in skout if "GINRS killed" in e.text]
         ev, _ = first(kout, KILLED, lambda m: int(m.group(1)) == s)
         if sk and ev is not None:
-            out["stable_between_pair_kills"] = int(any(e.t > min(sk) and e.t < ev.t for e in every
-                                                       for m in [STABLE_ANY.search(e.text)] if m and int(m.group(1)) == s))
+            sk0 = min(sk, key=lambda x: x.t)
+            stab = [e for e in every for m in [STABLE_ANY.search(e.text)] if m and int(m.group(1)) == s]
+            out["stable_between_pair_kills"] = int(any((xd(sk0, e)[0] or 0) > 0 and (xd(e, ev)[0] or 0) > 0 for e in stab))
     return out
 
 
+def fenced_subject(stem, meta):
+    """the subject when the runner killed nobody and the subject ended by SIGKILL (its rc 137, or the launcher's FENCE SIGKILL
+    line names it): the stop, freeze and helper-freeze cells, where the launcher's fence ends the rank. gin-restore's and
+    gin-mirror's columns (rows_rs.rs_row, rows_mi.mi_overlay) take a rank without KILL_RANK as live, so its partial kv would
+    fail every data-equal column; for these trials they read the subject as the killed rank (rows_rs and rows_mi unchanged)"""
+    subj = meta.get("subject_rank", "")
+    if str(meta.get("kill_rank", "")).isdigit() or not str(subj).isdigit():
+        return None
+    s = int(subj)
+    if meta.get("r%drc" % s) == "137":
+        return s
+    la = la_logs(stem)
+    if any(m and int(m.group(1)) == s for e in la_after_start(la["rain"]) + la_after_start(la["sunny"])
+           for m in [LA_SIGKILL.search(e.text)]):
+        return s
+    return None
+
+
 def gate_rows(R):
+    """local/: gate_fenced.cc's simulated lines (gate_real 0) and gate_proc_gc.py's real-process lines (gate_real 1)"""
     rows = []
     for p in sorted(glob.glob(os.path.join(R, "local", "gate_fenced*.log"))):
         for line in open(p, errors="replace"):
@@ -599,8 +758,28 @@ def gate_rows(R):
             o, f, d, l2 = float(m.group(2)), float(m.group(3)), float(m.group(4)), float(m.group(5))
             rid = "%s_t%s" % (os.path.basename(p)[:-4], m.group(1))
             r = {"id": rid, "stem": os.path.join(os.path.dirname(p), rid), "sub": "local", "cell": "gate_fenced",
-                 "build": "cpu", "runner": "local", "key": "local:gate_fenced", "old_go_ms": o, "fenced_go_ms": f,
-                 "gate_diff_ms": d, "second_thread_ms": l2, "tnum": int(m.group(1)) + 1}
+                 "build": "cpu", "runner": "local", "key": "local:gate_fenced", "gate_real": 0, "old_go_ms": o,
+                 "fenced_go_ms": f, "gate_diff_ms": d, "second_thread_ms": l2, "tnum": int(m.group(1)) + 1}
+            rows.append(r)
+    for p in sorted(glob.glob(os.path.join(R, "local", "gate_proc*.log"))):
+        for line in open(p, errors="replace"):
+            m = GATEP.search(line)
+            if not m:
+                continue
+            d = kvd(m.group(2))
+            v = {k: fnum(d.get(k)) for k in ("second_thread_ms", "pidfd_ms", "z_ms", "old_go_ms", "fenced_go_ms")}
+            rid = "%s_t%s" % (os.path.basename(p)[:-4], m.group(1))
+            r = {"id": rid, "stem": os.path.join(os.path.dirname(p), rid), "sub": "local", "cell": "gate_fenced",
+                 "build": "cpu", "runner": "local", "key": "local:gate_fenced", "gate_real": int(d.get("real") == "1"),
+                 "tnum": int(m.group(1)) + 1}
+            for k, x in v.items():
+                r[k] = r1(x)
+            if v["fenced_go_ms"] is not None and v["old_go_ms"] is not None:
+                r["gate_diff_ms"] = r1(v["fenced_go_ms"] - v["old_go_ms"])
+            if v["fenced_go_ms"] is not None and v["second_thread_ms"] is not None:
+                r["fenced_after_second_ms"] = r1(v["fenced_go_ms"] - v["second_thread_ms"])
+            if v["fenced_go_ms"] is not None and v["pidfd_ms"] is not None:
+                r["fenced_vs_pidfd_abs_ms"] = r1(abs(v["fenced_go_ms"] - v["pidfd_ms"]))
             rows.append(r)
     return rows
 
@@ -625,9 +804,21 @@ def all_rows(R):
                 r["key"] = "%s@%s" % (r["cell"], r["build"])
                 r["lineage_warn"] = rows_mi.reg_lineage_warn(stem)
             else:
-                r = rows_rs.rs_row(stem, sub)
-                r.update(rows_mi.mi_overlay(stem, r, m))
+                fs = fenced_subject(stem, m)
+                if fs is None:
+                    r = rows_rs.rs_row(stem, sub)
+                    r.update(rows_mi.mi_overlay(stem, r, m))
+                else:  # the subject ended by the fence: gin-restore's and gin-mirror's columns see it as the killed rank
+                    m2 = dict(m, kill_rank=str(fs))
+                    orig = rows_rs.read_meta
+                    rows_rs.read_meta = lambda st, _o=orig, _s=stem, _m=m2: dict(_m) if st == _s else _o(st)
+                    try:
+                        r = rows_rs.rs_row(stem, sub)
+                        r.update(rows_mi.mi_overlay(stem, r, m2))
+                    finally:
+                        rows_rs.read_meta = orig
                 r.update(gc_overlay(stem, r, m))
+                r["subject_fenced"] = int(fs is not None)
                 r["runner"] = "gcr"
                 r["key"] = "%s@%s" % (r["cell"], r["build"])
                 r["hold"] = m.get("hold", "")
@@ -648,11 +839,25 @@ def columns(rows):
     return cols
 
 
+def stops_line(stem):
+    """hold_gc.sh's per-trial launcher check: the scorer's counts for one trial stem"""
+    meta = rows_rs.read_meta(stem)
+    subj = meta.get("subject_rank", "")
+    c = la_counts(la_logs(stem), int(subj) if str(subj).isdigit() else -1)
+    return " ".join("%s=%d" % (k, c[k]) for k in ("la_stop_n", "la_qp_err_n", "la_refused_signal_n", "la_pid_mismatch_n"))
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("results")
+    ap.add_argument("results", nargs="?")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--stops", default=None, metavar="STEM")
     a = ap.parse_args()
+    if a.stops:
+        print(stops_line(a.stops))
+        return
+    if not a.results:
+        ap.error("a results dir or --stops <stem>")
     rows = all_rows(os.path.abspath(a.results))
     out = a.out or os.path.join(os.path.abspath(a.results), "trials.csv")
     with open(out, "w", newline="") as f:

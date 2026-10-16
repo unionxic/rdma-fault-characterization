@@ -4,21 +4,35 @@
 # and memory check, and these additions:
 #   - builds gc | gct | gctc | gcp | gctp (~/rs-bundle/<RS_SET>/lib/<build>), driver ~/rs-bundle/<RS_SET>/gctest/<DRIVER>
 #     (gin_mi built against the gc tree's headers; deploy_gc.sh);
-#   - launchers (rdma builds gc, gcp only): LAUNCHER_SCOPE=hold reads hold_gc.sh's records (LAUNCHER_REC_RAIN,
-#     LAUNCHER_REC_SUNNY; EXPERIMENT 5: one launcher per node per hold), LAUNCHER_SCOPE=trial starts one per node for this
-#     trial (launcher_gc.sh, per-trial socket path) and stops it last. Either way every rank and spare gets
-#     NCCL_GIN_CTRL_LAUNCHER_SOCK and NCCL_GIN_CTRL_LAUNCHER_NODE of its node, the runner checks before the ranks start that
-#     both launchers are alive and printed their "listening" line (section 8's start check), records each launcher's pid and
-#     start time before and after the trial, and copies the launcher log lines of the trial window into the trial folder;
+#   - launchers (rdma builds gc, gcp only): one per node per hold (EXPERIMENT 5; the coordinator's decision of 2026-10-17),
+#     started by hold_gc.sh; this runner reads their records (LAUNCHER_REC_RAIN, LAUNCHER_REC_SUNNY). Every rank and spare gets
+#     NCCL_GIN_CTRL_LAUNCHER_SOCK and NCCL_GIN_CTRL_LAUNCHER_NODE of its node. Before the ranks start: both launchers alive
+#     with their "listening" line (section 8's start check; else exit 6), and both registration tables empty (every
+#     (rank, incarnation) of the earlier trials ended, no spare entry left; launcher_gc.sh table, up to LA_TABLE_WAIT_S; else
+#     exit 7 and cells_gc.sh writes STOP_launcher). Then a "trial_start <stem>" marker goes into both launcher logs and, after
+#     the trial, a "trial_end <stem>" marker; the trial's slice <stem>_launcher_<node>.log runs from the line after the
+#     previous trial_end marker to this trial's trial_end marker (no gap between trials: REVIEW_TEST fix 6). Each launcher's pid
+#     and start time are recorded before and after the trial;
+#   - node clocks: before and after the ranks, the offset of sunny's CLOCK_MONOTONIC against rain's from round trips of one ssh
+#     session (read only; the round trip of the smallest sample is kept with it), so that a kill on one node and a judgement on
+#     the other compare in one clock without the ssh delay (meta mono_off_sunny_ms, mono_off_rtt_ms; REVIEW_TEST fix 2);
+#   - the TCP sockets of the rank processes, read only: two `ss -tnpi` snapshots during the traffic (rank 0's step lines >=
+#     SS_STEP1 and >= SS_STEP2), per recorded rank PID the number of established TCP sockets and the bytes acked and received
+#     (counts only: no address is kept; <stem>_ss.out; REVIEW_TEST fix 10);
 #   - the injections of section 9.9 (every one by a PID this runner recorded, on the process's own node, by one python
-#     process that verifies comm, parent and start before it signals, and prints its own CLOCK_MONOTONIC as mono_ms):
+#     process that verifies comm and parent (and, for the fd holder, comm, uid and a start not before the rank's) before it
+#     signals, and prints its own CLOCK_MONOTONIC as mono_ms):
 #       KILL_KIND traffic        SIGKILL of KILL_RANK at its step line >= KILL_AT_STEP (+ KILL_DELAY_US)  (run_mi.sh's)
 #       KILL_KIND self           no runner kill: the library's test switch (NCCL_GIN_TS_TEST_DIE_RST) kills the rank
 #       KILL_KIND spare_then_rank once every survivor logged "rank KILL_RANK armed at its stable checkpoint K" after the spare
-#                                was ready, SIGKILL of the spare, SPARE_GAP_MS (5) later SIGKILL of KILL_RANK
+#                                was ready, SIGKILL of the spare, SPARE_GAP_MS (5) later SIGKILL of KILL_RANK (the gap: a sleep
+#                                0.2 ms short of it, then a spin on the node's clock; its line carries gap_ms)
 #       FDHOLD=1                 before the traffic kill, wait for KILL_RANK's fork line of NCCL_GIN_TS_TEST_FD_HOLDER (the
-#                                child gin_fdhold's pid); at the end SIGKILL of that child by that pid (comm gin_fdhold,
-#                                this uid, started after the trial's start)
+#                                child gin_fdhold's pid); after the kill, SIGKILL of that child by that pid (comm gin_fdhold,
+#                                this uid, started not before the rank: both from that node's /proc) FDHOLD_AFTER_MS (1000)
+#                                after the buddy's first judgement line of KILL_RANK, or FDHOLD_KILL_S (25: past the tcp
+#                                baseline's 20 s window) after the kill when no judgement comes; the child holds the rank's
+#                                output pipe otherwise (REVIEW_TEST fix 3); again at the end if it is still there
 #       STOP_RANK, STOP_MS       SIGSTOP of STOP_RANK at its step line >= KILL_AT_STEP, SIGCONT STOP_MS later (the line
 #                                says whether the PID was still there and the stopped time on the node's clock)
 #       DUTY_RANK, DUTY_ON_MS, DUTY_OFF_MS, DUTY_S   SIGSTOP/SIGCONT cycles from the same trigger for DUTY_S seconds
@@ -29,8 +43,10 @@
 #   - per trial: active_mtu of both GIN ports (ibv_devinfo, read only), the RNR port counter rnr_nak_retry_err before and
 #     after (sysfs, read only), the launchers' --tc, and the trial's control variables (WITNESS, FENCE, RST_GAP_MS,
 #     CONFIRM_MS, PROBE_MS) in meta;
+#   - SUBJECT_RANK (cells_gc.json): the rank under test of a cell injected by a library test switch (FREEZE_PAGE, RST_GAP,
+#     QP_ERR, CREDIT_STALL, SOCK_MUTE), which has no KILL_RANK, STOP_RANK or DUTY_RANK (REVIEW_TEST B2);
 #   - shutdown order: the ranks and spares end by themselves (the library's BYE at the communicator's destroy, then exit),
-#     the runner waits for every one of them, and only then (LAUNCHER_SCOPE=trial) stops the launchers.
+#     the runner waits for every one of them; the launchers stay for the hold (hold_gc.sh stops them last).
 # Nothing is killed by name. sunny's management address comes from SUNNY_SSH only and rain's is looked up at run time; neither
 # is written to a file (copied logs are IPv4-masked). Every NCCL_ and GIN_ variable of the caller is dropped first. No link,
 # address, driver or firewall is touched. Run only by the main session, inside ../../../../common/cluster_run.sh through
@@ -40,11 +56,13 @@
 # env (beyond run_mi.sh's, which keep their meaning and defaults): LIB (gc), DRIVER (gin_mi), WITNESS (empty: library
 #   default 1), FENCE (empty: library default lineage), RST_GAP_MS (gctc only), CONFIRM_MS, PROBE_MS, SPARE_RANK (default
 #   KILL_RANK: the rank whose spare runs), SPARE_ENV (the spare's test switches), KILL_KIND, SPARE_GAP_MS (5), FDHOLD,
-#   STOP_RANK, STOP_MS, DUTY_RANK, DUTY_ON_MS (50), DUTY_OFF_MS (50), DUTY_S (20), KILL2_KIND, LAUNCHER_SCOPE (hold when
-#   LAUNCHER_REC_RAIN is set, else trial), LA_TC (0), HOLD_TAG (hold_gc.sh). RS_DRY_CONFIG=1 prints the configuration line
-#   and exits before any file, address, ssh or process is touched (CPU self-test).
-# files in <logdir>: run_mi.sh's, plus <stem>_inject.out, <stem>_launcher_<node>.log, <stem>_fdhold.out (stem =
-#   <cell>_<lib>_<tag>).
+#   FDHOLD_AFTER_MS (1000), FDHOLD_KILL_S (25), STOP_RANK, STOP_MS, DUTY_RANK, DUTY_ON_MS (50), DUTY_OFF_MS (50), DUTY_S (20),
+#   KILL2_KIND, SUBJECT_RANK, LAUNCHER_REC_RAIN, LAUNCHER_REC_SUNNY (hold_gc.sh), LA_TABLE_WAIT_S (3), SS_STEP1 (30),
+#   SS_STEP2 (80), BAR1_AT_GATE (hold_gc.sh, gin-mirror's training holds), HOLD_TAG (hold_gc.sh). RS_DRY_CONFIG=1 prints the
+#   configuration line and exits before any file, address, ssh or process is touched (CPU self-test).
+# files in <logdir>: run_mi.sh's, plus <stem>_inject.out, <stem>_launcher_<node>.log, <stem>_fdhold.out, <stem>_ss.out
+#   (stem = <cell>_<lib>_<tag>).
+# exit: 0 trial ran, 5 host memory short, 6 the launchers not ready, 7 a launcher's registration table not empty.
 set -u
 TRIAL=${1:?trial tag}; LOGDIR=${2:?logdir}
 for v in $(env | sed -n 's/^\(\(NCCL\|GIN\)_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
@@ -53,6 +71,8 @@ N=${N:-4}
 LIB=${LIB:-gc}
 RS_SET=${RS_SET:-}
 D=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=remote_gc.sh
+. "$D/remote_gc.sh"
 # shellcheck source=../../../mirror/impl/test/rs_set_mi.sh
 . "$D/../../../mirror/impl/test/rs_set_mi.sh"
 rs_set_check || exit 1
@@ -81,8 +101,7 @@ DUTY_RANK=${DUTY_RANK:-}; DUTY_ON_MS=${DUTY_ON_MS:-50}; DUTY_OFF_MS=${DUTY_OFF_M
 FDHOLD=${FDHOLD:-0}; SPARE_GAP_MS=${SPARE_GAP_MS:-5}
 WITNESS=${WITNESS:-}; FENCE=${FENCE:-}; RST_GAP_MS=${RST_GAP_MS:-}; CONFIRM_MS=${CONFIRM_MS:-}; PROBE_MS=${PROBE_MS:-}
 [ -n "$RST_GAP_MS" ] && [ "$LIB" != gctc ] && { echo "RST_GAP_MS is the tcp control build's parameter (LIB gctc)" >&2; exit 1; }
-if [ "$CTRL" = rdma ]; then LAUNCHER_SCOPE=${LAUNCHER_SCOPE:-$([ -n "${LAUNCHER_REC_RAIN:-}" ] && echo hold || echo trial)}; else LAUNCHER_SCOPE=none; fi
-case "$LAUNCHER_SCOPE" in hold|trial|none) ;; *) echo "LAUNCHER_SCOPE is hold or trial" >&2; exit 1 ;; esac
+if [ "$CTRL" = rdma ]; then LAUNCHER_SCOPE=hold; else LAUNCHER_SCOPE=none; fi
 # the second death: run_mi.sh's driver step kill (DIE2_LO..DIE2_HI from DIE_SEED), or the recorded-PID kill after armed
 DRAWPY='import hashlib,sys
 seed,cell,trial,which,lo,hi,umax=sys.argv[1:8]; lo,hi,umax=int(lo),int(hi),int(umax)
@@ -111,7 +130,7 @@ else KILL_KIND=-; fi
 case "$KILL_KIND" in driver|traffic|hook|after_stable|self|spare_then_rank|-) ;; *) echo "unknown KILL_KIND $KILL_KIND" >&2; exit 1 ;; esac
 [ "$KILL_KIND" = spare_then_rank ] && [ "$SPARE" != 1 ] && { echo "spare_then_rank needs SPARE=1" >&2; exit 1; }
 [ "$FDHOLD" = 1 ] && [ "$KILL_KIND" != traffic ] && { echo "FDHOLD=1 goes with the traffic kill" >&2; exit 1; }
-SUBJECT=${KILL_RANK:-${STOP_RANK:-${DUTY_RANK:-}}}
+SUBJECT=${SUBJECT_RANK:-${KILL_RANK:-${STOP_RANK:-${DUTY_RANK:-}}}}
 INJECT=none
 [ -n "$KILL_RANK" ] && INJECT=kill_$KILL_KIND
 [ "$FDHOLD" = 1 ] && INJECT=fd_holder_kill
@@ -164,62 +183,67 @@ WORK=$(mktemp -d /tmp/gc_rt.XXXXXX)
 RT=/tmp/gc_rt_$$_$RANDOM      # sunny-side file prefix of this trial
 # shellcheck source=../../../remaining/portpick.sh
 . "$D/../../../remaining/portpick.sh"
-LA_TAG=t$$_$RANDOM
-cleanup() {
-  if [ "$LAUNCHER_SCOPE" = trial ]; then
-    for nd in rain sunny; do bash "$D/launcher_gc.sh" stop "$nd" "$WORK/la" "$LA_TAG" > /dev/null 2>&1; done
-  fi
-  ssh -n "$SUNNY_SSH" "rm -f $RT.*" 2>/dev/null || true; rm -rf "$WORK"
-}
+cleanup() { ssh -n -o LogLevel=ERROR "$SUNNY_SSH" "rm -f $RT.*" 2>/dev/null || true; rm -rf "$WORK"; }
 trap cleanup EXIT
-GID_PROBE='d=/sys/class/infiniband/$1/ports/1
-for g in $(ls "$d/gids" | sort -n); do
-  [ "$(cat "$d/gid_attrs/types/$g" 2>/dev/null)" = "RoCE v2" ] || continue
-  case "$(cat "$d/gids/$g")" in 0000:0000:0000:0000:0000:ffff:1e00:00*) echo "$g"; exit 0;; esac
-done; exit 1'
 GID0=$(bash -c "$GID_PROBE" _ mlx5_1) || { echo "no GID on rain" >&2; exit 1; }
-GID1=$(ssh -n "$SUNNY_SSH" bash -c "'$GID_PROBE'" _ mlx5_0) || { echo "no GID on sunny" >&2; exit 1; }
+GID1=$(sunny_sh "$GID_PROBE" mlx5_0) || { echo "no GID on sunny" >&2; exit 1; }
 # read only: the GIN ports' active MTU (ibv_devinfo queries the port; no QP, no traffic) and the RNR port counter
-MTU_Q='ibv_devinfo -d $1 -i 1 2>/dev/null | awk '"'"'/active_mtu/{print $2; exit}'"'"''
-RNR_Q='cat /sys/class/infiniband/$1/ports/1/hw_counters/rnr_nak_retry_err 2>/dev/null || echo -'
-MTU_RAIN=$(bash -c "$MTU_Q" _ mlx5_1); MTU_SUNNY=$(ssh -n "$SUNNY_SSH" bash -c "'$MTU_Q'" _ mlx5_0)
-RNR0_RAIN=$(bash -c "$RNR_Q" _ mlx5_1); RNR0_SUNNY=$(ssh -n "$SUNNY_SSH" bash -c "'$RNR_Q'" _ mlx5_0)
+MTU_RAIN=$(bash -c "$MTU_Q" _ mlx5_1); MTU_SUNNY=$(sunny_sh "$MTU_Q" mlx5_0 2>/dev/null)
+RNR0_RAIN=$(bash -c "$RNR_Q" _ mlx5_1); RNR0_SUNNY=$(sunny_sh "$RNR_Q" mlx5_0 2>/dev/null)
 STAMP='import sys,time
 for l in sys.stdin.buffer:
     sys.stdout.write("%.6f %s\n" % (time.clock_gettime(time.CLOCK_MONOTONIC), l.decode("utf-8","replace").rstrip("\n")))
     sys.stdout.flush()'
-# ---- the launchers (rdma builds): hold scope reads hold_gc.sh's records, trial scope starts its own
-LA_OK=1; LA_TC=${LA_TC:-0}
-declare -A LAREC LASOCK LANODE LAOFF
+# ---- the launchers (rdma builds): hold_gc.sh's records (one launcher per node per hold)
+LA_OK=1; LA_TC=${LA_TC:-0}; LA_TABLE=-
+declare -A LAREC LASOCK LANODE
 LANODE[rain]=0; LANODE[sunny]=1
-if [ "$LAUNCHER_SCOPE" = trial ]; then
-  for nd in rain sunny; do
-    LA_TC=$LA_TC bash "$D/launcher_gc.sh" start "$nd" "$WORK/la" "$LA_TAG" ${LAUNCHER_ENV:-} >&2 || LA_OK=0
-    LAREC[$nd]=$WORK/la/la_${LA_TAG}_$nd.rec
-  done
-elif [ "$LAUNCHER_SCOPE" = hold ]; then
+STEM0="${CELL:-gc}_${LIB}_${TRIAL}"
+if [ "$LAUNCHER_SCOPE" = hold ]; then
   LAREC[rain]=${LAUNCHER_REC_RAIN:-}; LAREC[sunny]=${LAUNCHER_REC_SUNNY:-}
 fi
 la_val() { sed -n "s/.*\b$2=\([^ ]*\).*/\1/p" "${LAREC[$1]}" 2>/dev/null | head -1; }
-la_info() { local rec=${LAREC[$1]} dir tag; dir=$(dirname "$rec"); tag=$(basename "$rec" .rec); tag=${tag#la_}; tag=${tag%_$1}
-  bash "$D/launcher_gc.sh" info "$1" "$dir" "$tag"; }
+la_op() {  # la_op <op> <node> [args]: launcher_gc.sh on that node's recorded launcher
+  local op=$1 nd=$2 rec dir tag; shift 2
+  rec=${LAREC[$nd]}; dir=$(dirname "$rec"); tag=$(basename "$rec" .rec); tag=${tag#la_}; tag=${tag%_$nd}
+  bash "$D/launcher_gc.sh" "$op" "$nd" "$dir" "$tag" "$@"
+}
 LAB_RAIN=-; LAB_SUNNY=-; LAA_RAIN=-; LAA_SUNNY=-
+early_meta() {  # early_meta <k=v ...>: the meta of a trial that did not start (score_gc.py reads launcher_ready and the table)
+  mkdir -p "$LOGDIR"
+  echo "cell=${CELL:-} lib=$LIB ctrl=$CTRL driver=$DRIVER trial=$TRIAL hold=${HOLD_TAG:-} subject_rank=$SUBJECT inject=$INJECT $* launcher_before_rain=$(echo "$LAB_RAIN" | tr ' ' ',') launcher_before_sunny=$(echo "$LAB_SUNNY" | tr ' ' ',') runner=gcr" \
+    > "$LOGDIR/${STEM0}_meta.txt"
+}
 if [ "$LAUNCHER_SCOPE" != none ]; then
   for nd in rain sunny; do
     [ -f "${LAREC[$nd]:-}" ] || { LA_OK=0; continue; }
     LASOCK[$nd]=$(la_val "$nd" sock)
-    info=$(la_info "$nd")
+    info=$(la_op info "$nd")
     [ "$nd" = rain ] && LAB_RAIN=$info || LAB_SUNNY=$info
     case "$info" in *"alive=1 ready=1"*) ;; *) LA_OK=0 ;; esac
-    LAOFF[$nd]=$(echo "$info" | sed -n 's/.*log_bytes=\([0-9]*\).*/\1/p')
   done
   if [ "$LA_OK" != 1 ]; then  # section 8: the launcher not ready on both nodes at the trial's start -> nothing runs
-    mkdir -p "$LOGDIR"
-    echo "cell=${CELL:-} lib=$LIB trial=$TRIAL launcher_ready=0 launcher_before_rain=$(echo "$LAB_RAIN" | tr ' ' ',') launcher_before_sunny=$(echo "$LAB_SUNNY" | tr ' ' ',') runner=gcr" \
-      > "$LOGDIR/${CELL:-gc}_${LIB}_${TRIAL}_meta.txt"
+    early_meta launcher_ready=0
     echo "[${CELL:-gc}#$TRIAL] the launchers are not ready on both nodes: no rank started" >&2
     exit 6
   fi
+  # the registration tables must be empty at the trial's start (the earlier trials' entries all ended)
+  tend=$(( $(date +%s) + ${LA_TABLE_WAIT_S:-3} ))
+  while :; do
+    LA_TABLE=""
+    for nd in rain sunny; do
+      t=$(la_op table "$nd"); case "$t" in "table open=0") ;; *) LA_TABLE="$LA_TABLE $nd:${t#table }" ;; esac
+    done
+    [ -z "$LA_TABLE" ] && { LA_TABLE=empty; break; }
+    [ "$(date +%s)" -ge "$tend" ] && break
+    sleep 0.2
+  done
+  if [ "$LA_TABLE" != empty ]; then
+    early_meta launcher_ready=1 "launcher_table=$(echo "$LA_TABLE" | sed 's/^ //' | tr ' ' ',')"
+    echo "[${CELL:-gc}#$TRIAL] a launcher's registration table is not empty at the trial's start:$LA_TABLE" >&2
+    exit 7
+  fi
+  for nd in rain sunny; do la_op mark "$nd" trial_start "$STEM0"; done
 fi
 la_env() {  # the rank's or spare's launcher variables (its node's socket and node number)
   [ "$LAUNCHER_SCOPE" = none ] && return
@@ -289,6 +313,30 @@ while time.time()<end:
     time.sleep(0.002)'
 wait_line() { python3 -c "$WAITPY" "$@"; }
 GPU_APPS="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -c .)/$(ssh -n "$SUNNY_SSH" "nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -c ." 2>/dev/null)"
+# the node clocks (REVIEW_TEST fix 2): sunny's CLOCK_MONOTONIC minus rain's, from the smallest of ten round trips over one ssh
+# session (read only: the far side prints its clock for each line it reads); "<offset ms> <round trip ms>"
+OFFPY='import subprocess,sys,time
+def mono(): return time.clock_gettime(time.CLOCK_MONOTONIC)*1000.0
+best=None
+try:
+    p=subprocess.Popen(sys.argv[1:],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+    for i in range(12):
+        t0=mono(); p.stdin.write(b"x\n"); p.stdin.flush(); l=p.stdout.readline(); t1=mono()
+        if not l: break
+        off=float(l.split()[0])-(t0+t1)/2.0; rtt=t1-t0
+        if i>=2 and (best is None or rtt<best[1]): best=(off,rtt)
+    p.stdin.close(); p.wait(timeout=10)
+except Exception:
+    pass
+print("%.3f %.3f"%best if best else "- -")'
+REMPY='import sys,time
+for l in sys.stdin:
+    sys.stdout.write("%.6f\n"%(time.clock_gettime(time.CLOCK_MONOTONIC)*1000.0)); sys.stdout.flush()'
+mono_off() { python3 -c "$OFFPY" ssh -o LogLevel=ERROR "$SUNNY_SSH" "$(pcmd "$REMPY")"; }
+read -r MONO_OFF MONO_RTT <<< "$(mono_off)"
+# BAR1_AT_GATE=1 (hold_gc.sh sets it for gin-mirror's training holds, as hold_mi.sh): rain's BAR1 and its GPU's process count
+# with every process of this trial up, before the start gate opens; read only (run_mi.sh's lines)
+B1T=-; B1U=-; B1F=-; B1P=-
 declare -A PID
 T0=$(date +%s.%N)
 launch() {
@@ -311,9 +359,11 @@ for ((r = N - 1; r >= 0; r--)); do
   launch "r$r" "$r" "$(node_of "$r")" "$(renv "$r") $(rec_env "$r") $(sa_env "$r") $(die_env "$r") $(gate_env "$r")"
 done
 # PIDREC <subshell pid file> <out file> <comm>: "<process pid> <its parent (timeout) pid>" of the launched program
+# (and the process's start ticks, /proc/<pid>/stat field 22: the fd holder's start is checked against it on the same node)
 PIDREC='for i in $(seq 1 200); do p=$(cat "$1" 2>/dev/null); [ -n "$p" ] || { sleep 0.1; continue; }
 for a in $(pgrep -P "$p"); do for c in $(pgrep -P "$a"); do
-[ "$(cat /proc/$c/comm 2>/dev/null)" = "$3" ] && { echo "$c $a" > "$2"; exit 0; }; done; done; sleep 0.1; done; exit 1'
+if [ "$(cat /proc/$c/comm 2>/dev/null)" = "$3" ]; then st=$(sed "s/.*) //" /proc/$c/stat 2>/dev/null | cut -d" " -f20)
+echo "$c $a ${st:--}" > "$2"; echo "$c $a ${st:--}"; exit 0; fi; done; done; sleep 0.1; done; exit 1'
 # INJPY <op> ...: the one place the runner signals; every target is a (pid, parent) it recorded, checked by comm and parent
 INJPY='import os,sys,time,signal
 def mono(): return time.clock_gettime(time.CLOCK_MONOTONIC)*1000.0
@@ -321,8 +371,8 @@ def stat(p):
     try: s=open("/proc/%d/stat"%p).read()
     except OSError: return None
     return s[s.index("(")+1:s.rindex(")")], s.rsplit(")",1)[1].split()
-def mine(p,pp,n):
-    st=stat(p); return st is not None and st[0]==n[:15] and (pp=="-" or st[1][1]==pp)
+def mine(p,pp,n):  # recorded (pid, parent) with that comm, and not a zombie (REVIEW_TEST nit 6)
+    st=stat(p); return st is not None and st[0]==n[:15] and (pp=="-" or st[1][1]==pp) and st[1][0] not in ("Z","X")
 op=sys.argv[1]; a=sys.argv[2:]
 if op=="kill":
     p,pp,n,rk,nd,which=int(a[0]),a[1],a[2],a[3],a[4],a[5]
@@ -332,7 +382,9 @@ elif op=="pair":
     sp,spp,rp,rpp,n,rk,nd,gap=int(a[0]),a[1],int(a[2]),a[3],a[4],a[5],a[6],float(a[7])
     if not mine(sp,spp,n) or not mine(rp,rpp,n): print("GINRS no_process rank=%s which=pair mono_ms=%.3f"%(rk,mono())); sys.exit(0)
     os.kill(sp,signal.SIGKILL); t1=mono(); print("GINRS spare_killed rank=%s node=%s pid=%d mono_ms=%.3f"%(rk,nd,sp,t1)); sys.stdout.flush()
-    time.sleep(gap/1000.0)
+    tgt=t1+gap
+    if gap>0.2: time.sleep((gap-0.2)/1000.0)
+    while mono()<tgt: pass
     os.kill(rp,signal.SIGKILL); t2=mono(); print("GINRS killed rank=%s node=%s pid=%d which=after_spare gap_ms=%.3f mono_ms=%.3f"%(rk,nd,rp,t2-t1,t2))
 elif op=="stop":
     p,pp,n,rk,ms=int(a[0]),a[1],a[2],a[3],float(a[4])
@@ -357,27 +409,42 @@ elif op=="cleanup":
     st=stat(p)
     if st is not None and st[0]==n[:15] and (pp=="-" or st[1][1]==pp) and st[1][0] in ("T","t"):
         os.kill(p,signal.SIGCONT); os.kill(p,signal.SIGKILL); print("GINRS cleanup_stopped pid=%d mono_ms=%.3f"%(p,mono()))
-elif op=="fdkill":
-    p,t0=int(a[0]),float(a[1])
+elif op=="fdkill":  # the child gin_fdhold of the fork line: comm, this uid, and started not before the rank (same node)
+    p,pst,why=int(a[0]),a[1],a[2]
     st=stat(p)
-    if st is None: print("GINRS fdhold_gone pid=%d mono_ms=%.3f"%(p,mono())); sys.exit(0)
-    bt=[float(l.split()[1]) for l in open("/proc/stat") if l.startswith("btime ")][0]
-    started=bt+float(st[1][19])/os.sysconf("SC_CLK_TCK")
-    if st[0]!="gin_fdhold" or os.stat("/proc/%d"%p).st_uid!=os.getuid() or started<t0:
-        print("GINRS fdhold_not_ours pid=%d mono_ms=%.3f"%(p,mono())); sys.exit(0)
-    os.kill(p,signal.SIGKILL); print("GINRS fdhold_killed pid=%d mono_ms=%.3f"%(p,mono()))'
+    if st is None or st[1][0] in ("Z","X"): print("GINRS fdhold_gone pid=%d why=%s mono_ms=%.3f"%(p,why,mono())); sys.exit(0)
+    if st[0]!="gin_fdhold" or os.stat("/proc/%d"%p).st_uid!=os.getuid() or not pst.isdigit() or int(st[1][19])<int(pst):
+        print("GINRS fdhold_not_ours pid=%d why=%s mono_ms=%.3f"%(p,why,mono())); sys.exit(0)
+    os.kill(p,signal.SIGKILL); print("GINRS fdhold_killed pid=%d why=%s mono_ms=%.3f"%(p,why,mono()))
+elif op=="ss":  # the established TCP sockets of these pids: counts and bytes only (no address leaves this process)
+    import re,subprocess
+    want={x for x in a[1:] if x.isdigit()}; tag=a[0]; n={}; ack={}; rcv={}
+    try: out=subprocess.run(["ss","-tnpi","state","established"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=10).stdout.decode("utf-8","replace").splitlines()
+    except Exception: out=[]
+    cur=set()
+    for l in out:
+        if "users:(" in l:
+            cur={x for x in re.findall(r"pid=(\d+)",l) if x in want}
+            for x in cur: n[x]=n.get(x,0)+1
+        elif l[:1] in (" ","\t") and cur:
+            ma=re.search(r"bytes_acked:(\d+)",l); mr=re.search(r"bytes_received:(\d+)",l)
+            for x in cur:
+                ack[x]=ack.get(x,0)+(int(ma.group(1)) if ma else 0); rcv[x]=rcv.get(x,0)+(int(mr.group(1)) if mr else 0)
+            cur=set()
+    for x in sorted(want):
+        here=os.path.exists("/proc/%s"%x)
+        print("GINRS ss %s pid=%s present=%d n=%d acked=%d received=%d mono_ms=%.3f"%(tag,x,int(here),n.get(x,0),ack.get(x,0),rcv.get(x,0),mono()))'
 # on_node <node> <python op args...>: run INJPY on that node, output stamped at receipt into <out file> (appended)
 inj() {
   local node=$1 out=$2; shift 2
-  if [ "$node" = sunny ]; then ssh -n "$SUNNY_SSH" "python3 -u -c '$INJPY' $*"
-  else python3 -u -c "$INJPY" "$@"; fi 2>&1 | python3 -u -c "$STAMP" >> "$out"
+  node_py "$node" "$INJPY" "$@" 2>&1 | python3 -u -c "$STAMP" >> "$out"
 }
 # rec_pid <name> <node>: start PIDREC for a launched process (in the background); its "<pid> <parent>" lands in $WORK/<name>.cpid
 rec_pid() {
   if [ "$2" = sunny ]; then
-    ( ssh -n "$SUNNY_SSH" "bash -c '$PIDREC' _ $RT.$1.pid $RT.$1.cpid $BINNAME; cat $RT.$1.cpid 2>/dev/null" > "$WORK/$1.cpid" ) &
+    ( sunny_sh "$PIDREC" "$RT.$1.pid" "$RT.$1.cpid" "$BINNAME" > "$WORK/$1.cpid.tmp" 2>/dev/null; mv "$WORK/$1.cpid.tmp" "$WORK/$1.cpid" ) &
   else
-    bash -c "$PIDREC" _ "$WORK/$1.pid" "$WORK/$1.cpid" "$BINNAME" &
+    bash -c "$PIDREC" _ "$WORK/$1.pid" "$WORK/$1.cpid" "$BINNAME" > /dev/null &
   fi
 }
 cpid_of() { for _ in $(seq 1 100); do [ -s "$WORK/$1.cpid" ] && break; sleep 0.1; done; cat "$WORK/$1.cpid" 2>/dev/null; }
@@ -409,10 +476,31 @@ if [ "$SPARE2_ON" = 1 ]; then
 fi
 # SPARE_KILL_FIRST=1 (gin-restore's spare-absent regression cell): the spare SIGKILLed by its recorded PID once ready
 if [ "$SPARE_ON" = 1 ] && [ "${SPARE_KILL_FIRST:-0}" = 1 ] && [ "$T_READY" != 0 ]; then
-  read -r c p < <(cpid_of spare)
+  read -r c p _ < <(cpid_of spare)
   inj "$(node_of "$SPARE_RANK")" "$WORK/spare_kill.out" kill "${c:-0}" "${p:--}" "$BINNAME" "$SPARE_RANK" "$(node_of "$SPARE_RANK")" spare
 fi
+if [ "${BAR1_AT_GATE:-0}" = 1 ]; then
+  read -r B1T B1U B1F _ <<< "$(nvidia-smi -q -d MEMORY 2>/dev/null | sed -n '/BAR1/,/Free/p' | \
+    sed -n 's/.*\(Total\|Used\|Free\) *: *\([0-9]*\) *MiB.*/\2/p' | tr '\n' ' ')"
+  B1P=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -c .)
+  echo "[$tag] rain BAR1 at the start gate: total=${B1T:--} used=${B1U:--} free=${B1F:--} MiB, rain GPU processes=${B1P:--}" >&2
+fi
 [ -n "$GATE" ] && touch "$GATE"
+# the two ss snapshots of the rank processes (REVIEW_TEST fix 10), each node's own reading, in the background
+ss_snap() {  # ss_snap <tag>: both nodes, the recorded rank PIDs of each
+  local nd r c pids
+  for nd in rain sunny; do
+    pids=()
+    for ((r = 0; r < N; r++)); do [ "$(node_of "$r")" = "$nd" ] || continue; read -r c _ < <(cat "$WORK/r$r.cpid" 2>/dev/null); [ -n "${c:-}" ] && pids+=("$c"); done
+    [ "${#pids[@]}" -gt 0 ] && inj "$nd" "$WORK/ss.out" ss "$1" "${pids[@]}" &
+  done
+  wait
+}
+( read -r t1 _ <<< "$(wait_line "$WORK/r0.log" "GINRS step rank=0 step=([0-9]+) released=0" 0 "${SS_STEP1:-30}" 30)"
+  [ -n "${t1:-}" ] && ss_snap s1
+  read -r t2 _ <<< "$(wait_line "$WORK/r0.log" "GINRS step rank=0 step=([0-9]+) released=0" 0 "${SS_STEP2:-80}" 15)"
+  [ -n "${t2:-}" ] && ss_snap s2 ) &
+SSPID=$!
 T_GATE=$(awk -v a="$T_READY" -v b="$T_READY2" 'BEGIN{printf "%.6f", (a > b ? a : b)}')
 secs() { awk -v d="$1" 'BEGIN{printf "%.3f", d / 1000}'; }
 # wait_armed <subject> <after receipt time> <excluded rank> [extra log]: the latest receipt time of the survivors' "rank S armed
@@ -447,7 +535,7 @@ if [ "$KILL_KIND" = traffic ] || [ "$KILL_KIND" = after_stable ] || [ "$KILL_KIN
       a=$(wait_armed "$TR" 0 -1)
       echo "$a" > "$WORK/armed_rt"
       [ "$a" = timeout ] && { echo "GINRS no_process rank=$TR which=armed_timeout" | python3 -u -c "$STAMP" >> "$WORK/kill.out"; exit 0; }
-      read -r sc sp < <(cpid_of spare); read -r rc rp < <(cpid_of "r$TR")
+      read -r sc sp _ < <(cpid_of spare); read -r rc rp _ < <(cpid_of "r$TR")
       inj "$tnode" "$WORK/kill_pair.out" pair "${sc:-0}" "${sp:--}" "${rc:-0}" "${rp:--}" "$BINNAME" "$TR" "$tnode" "$SPARE_GAP_MS"
       exit 0
     fi
@@ -463,10 +551,18 @@ if [ "$KILL_KIND" = traffic ] || [ "$KILL_KIND" = after_stable ] || [ "$KILL_KIN
     read -r tl _ <<< "$(wait_line "$WORK/r$TR.log" "GINRS step rank=$TR step=([0-9]+) released=0" "$T_READY" "$at" "$(secs "$KILL_DELAY_MS")")"
     sleep "$(awk -v u="$KILL_DELAY_US" 'BEGIN{printf "%.6f", u / 1e6}')"
     awk -v t="${tl:-0}" -v u="$KILL_DELAY_US" 'BEGIN{printf "%.6f\n", t + u / 1e6}' > "$WORK/inj_plan_rt"
-    read -r c p < <(cpid_of "r$TR")
+    read -r c p cst < <(cpid_of "r$TR")
     if [ -n "$STOP_RANK" ]; then inj "$tnode" "$WORK/inject.out" stop "${c:-0}" "${p:--}" "$BINNAME" "$TR" "$STOP_MS"
     elif [ -n "$DUTY_RANK" ]; then inj "$tnode" "$WORK/inject.out" duty "${c:-0}" "${p:--}" "$BINNAME" "$TR" "$DUTY_ON_MS" "$DUTY_OFF_MS" "$DUTY_S"
-    else inj "$tnode" "$WORK/kill.out" kill "${c:-0}" "${p:--}" "$BINNAME" "$TR" "$tnode" first; fi ) &
+    else inj "$tnode" "$WORK/kill.out" kill "${c:-0}" "${p:--}" "$BINNAME" "$TR" "$tnode" first
+      if [ "$FDHOLD" = 1 ] && [ -s "$WORK/fdhold.pid" ]; then  # the child holds the rank's output pipe: end it once judged
+        echo "${cst:--}" > "$WORK/fdhold.pst"
+        b=$(( TR ^ 1 ))
+        read -r tj _ <<< "$(wait_line "$WORK/r$b.log" "GIN/(TS|RC): rank [0-9]+: rank $TR (\(incarnation [0-9]+\) )?judged" 0 0 "${FDHOLD_KILL_S:-25}")"
+        if [ -n "${tj:-}" ]; then sleep "$(secs "${FDHOLD_AFTER_MS:-1000}")"; why=judged; else why=bound; fi
+        inj "$tnode" "$WORK/fdhold.out" fdkill "$(cat "$WORK/fdhold.pid")" "${cst:--}" "$why"
+      fi
+    fi ) &
   INJECTOR=$!
 fi
 # the second kill by recorded PID after armed (KILL2_KIND=pid_after_armed)
@@ -479,7 +575,7 @@ if [ "$KILL2_KIND" = pid_after_armed ]; then
     else a=$(wait_armed "$K2" "$trs" "$KILL_RANK" "$WORK/spare.log"); target=r$K2; fi
     echo "$a" > "$WORK/armed2_rt"
     [ "$a" = timeout ] && { echo "GINRS no_process rank=$K2 which=second_armed_timeout" | python3 -u -c "$STAMP" >> "$WORK/kill.out"; exit 0; }
-    read -r c p < <(cpid_of "$target")
+    read -r c p _ < <(cpid_of "$target")
     inj "$k2node" "$WORK/kill.out" kill "${c:-0}" "${p:--}" "$BINNAME" "$K2" "$k2node" second ) &
   KILLER2=$!
 fi
@@ -489,18 +585,19 @@ for ((r = 0; r < N; r++)); do wait "${PID[r$r]}" 2>/dev/null; done
 T1=$(date +%s.%N)
 [ -n "$INJECTOR" ] && wait "$INJECTOR" 2>/dev/null
 [ -n "$KILLER2" ] && wait "$KILLER2" 2>/dev/null
+kill "$SSPID" 2>/dev/null  # this runner's own snapshot subshell: a snapshot not taken by now is left out
 wait 2>/dev/null
 # the end: a recorded rank or spare PID still stopped gets SIGCONT then SIGKILL; the fd holder by the pid of its fork line
 names="r0 r1 r2 r3"; [ "$SPARE_ON" = 1 ] && names="$names spare"; [ "$SPARE2_ON" = 1 ] && names="$names spare_2nd"
 node_of_name() { case "$1" in spare) node_of "$SPARE_RANK" ;; spare_2nd) node_of "$KILL2_RANK" ;; *) node_of "${1#r}" ;; esac; }
 for name in $names; do
-  read -r c p < <(cat "$WORK/$name.cpid" 2>/dev/null)
+  read -r c p _ < <(cat "$WORK/$name.cpid" 2>/dev/null)
   [ -n "${c:-}" ] && inj "$(node_of_name "$name")" "$WORK/cleanup.out" cleanup "$c" "${p:--}" "$BINNAME"
 done
 LEFT_STOPPED=$(grep -c 'GINRS cleanup_stopped' "$WORK/cleanup.out" 2>/dev/null); LEFT_STOPPED=${LEFT_STOPPED:-0}
-if [ -s "$WORK/fdhold.pid" ]; then
+if [ -s "$WORK/fdhold.pid" ]; then  # again at the end, if the child is still there (fdhold_gone otherwise)
   FDHOLD_PID=$(cat "$WORK/fdhold.pid"); FDHOLD_LINE=1
-  inj "$(node_of "$KILL_RANK")" "$WORK/fdhold.out" fdkill "$FDHOLD_PID" "$(awk -v t="$T0" 'BEGIN{printf "%.3f", t - 5}')"
+  inj "$(node_of "$KILL_RANK")" "$WORK/fdhold.out" fdkill "$FDHOLD_PID" "$(cat "$WORK/fdhold.pst" 2>/dev/null || echo -)" end
 fi
 [ -s "$WORK/inj_plan_rt" ] && INJ_PLAN_RT=$(cat "$WORK/inj_plan_rt")
 [ -s "$WORK/armed_rt" ] && ARMED_RT=$(cat "$WORK/armed_rt")
@@ -510,12 +607,16 @@ if [ -s "$WORK/kill_pair.out" ]; then  # the pair kill: the spare's line apart (
   grep 'GINRS spare_killed' "$WORK/kill_pair.out" | sed 's/GINRS spare_killed/GINRS killed/' >> "$WORK/spare_kill.out"
   grep -v 'GINRS spare_killed' "$WORK/kill_pair.out" >> "$WORK/kill.out"
 fi
-# the launchers after the trial (pid and start again; their log lines of the trial window)
+# the launchers after the trial (pid and start again; the trial_end marker closes this trial's slice)
 if [ "$LAUNCHER_SCOPE" != none ]; then
-  LAA_RAIN=$(la_info rain); LAA_SUNNY=$(la_info sunny)
+  LAA_RAIN=$(la_op info rain); LAA_SUNNY=$(la_op info sunny)
+  for nd in rain sunny; do la_op mark "$nd" trial_end "$STEM0"; done
 fi
-MTU1_RAIN=$(bash -c "$MTU_Q" _ mlx5_1); MTU1_SUNNY=$(ssh -n "$SUNNY_SSH" bash -c "'$MTU_Q'" _ mlx5_0)
-RNR1_RAIN=$(bash -c "$RNR_Q" _ mlx5_1); RNR1_SUNNY=$(ssh -n "$SUNNY_SSH" bash -c "'$RNR_Q'" _ mlx5_0)
+read -r MONO_OFF2 MONO_RTT2 <<< "$(mono_off)"
+MTU1_RAIN=$(bash -c "$MTU_Q" _ mlx5_1); MTU1_SUNNY=$(sunny_sh "$MTU_Q" mlx5_0 2>/dev/null)
+RNR1_RAIN=$(bash -c "$RNR_Q" _ mlx5_1); RNR1_SUNNY=$(sunny_sh "$RNR_Q" mlx5_0 2>/dev/null)
+LENV_RAIN=-; LENV_SUNNY=-
+if [ "$LAUNCHER_SCOPE" != none ]; then LENV_RAIN=$(la_val rain env); LENV_SUNNY=$(la_val sunny env); fi
 LIB_MD5=$(md5sum < "$LIBDIR/libnccl.so.2" 2>/dev/null | cut -c1-32); LIB_MD5=${LIB_MD5:-none}
 DRIVER_MD5=$(md5sum < "$RSBIN" 2>/dev/null | cut -c1-32); DRIVER_MD5=${DRIVER_MD5:-none}
 for name in $names; do
@@ -528,19 +629,28 @@ LEFT=$( { pgrep -x "$BINNAME"; ssh -n "$SUNNY_SSH" "pgrep -x $BINNAME"; } 2>/dev
 LEFT_FD=$( { pgrep -x -u "$(id -u)" gin_fdhold; ssh -n "$SUNNY_SSH" 'pgrep -x -u "$(id -u)" gin_fdhold'; } 2>/dev/null | wc -l)
 mkdir -p "$LOGDIR"
 stem="${CELL:-gc}_${LIB}_${TRIAL}"
-MASK='s/[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/<ip>/g'
 rm -f "$LOGDIR/${stem}"_*
 for name in $names; do
   [ -f "$WORK/$name.kv" ] && sed "$MASK" "$WORK/$name.kv" > "$LOGDIR/${stem}_$name.kv"
   [ -f "$WORK/$name.log" ] && sed "$MASK" "$WORK/$name.log" > "$LOGDIR/${stem}_$name.log"
 done
-for f in kill spare_kill inject fdhold cleanup; do
+for f in kill spare_kill inject fdhold cleanup ss; do
   [ -f "$WORK/$f.out" ] && sed "$MASK" "$WORK/$f.out" > "$LOGDIR/${stem}_$f.out"
 done
-if [ "$LAUNCHER_SCOPE" != none ]; then  # the launcher lines of this trial: from the byte offset read before the ranks started
+# the launcher lines of this trial: from the line after the previous trial's trial_end marker (the log's start when there
+# is none) to this trial's trial_end marker, the markers kept (rows_gc.py reads the subject's lines after trial_start only)
+SLICEPY='import sys
+lines=open(sys.argv[1],errors="replace").read().splitlines(True); stem=sys.argv[2]
+st=[i for i,l in enumerate(lines) if l.rstrip("\n").endswith(" GINLA mark trial_start "+stem)]
+en=[i for i,l in enumerate(lines) if l.rstrip("\n").endswith(" GINLA mark trial_end "+stem)]
+s0=st[-1] if st else 0
+prev=[i for i,l in enumerate(lines[:s0]) if " GINLA mark trial_end " in l]
+a=prev[-1]+1 if prev else 0; b=en[-1]+1 if en and en[-1]>=s0 else len(lines)
+sys.stdout.write("".join(lines[a:b]))'
+if [ "$LAUNCHER_SCOPE" != none ]; then
   for nd in rain sunny; do
     lg=$(dirname "${LAREC[$nd]}")/$(basename "${LAREC[$nd]}" .rec).log
-    [ -f "$lg" ] && tail -c +"$(( ${LAOFF[$nd]:-0} + 1 ))" "$lg" | sed "$MASK" > "$LOGDIR/${stem}_launcher_$nd.log"
+    [ -f "$lg" ] && python3 -c "$SLICEPY" "$lg" "$STEM0" | sed "$MASK" > "$LOGDIR/${stem}_launcher_$nd.log"
   done
 fi
 rcs=""; for name in $names; do rcs="$rcs ${name}rc=$(tr -d '\n' < "$WORK/$name.rc" 2>/dev/null || echo none)"; done
@@ -560,7 +670,10 @@ die_seed=${DIE_SEED:-} die_at=${DIE_AT:--} kill2_rank=$KILL2_RANK kill2_kind=${K
 die_us_max=$DIE_US_MAX spare_wait_ms=$SPARE_WAIT_MS spare=$SPARE_ON spare_wanted=$SPARE spare_rank=$SPARE_RANK \
 spare_ready=$([ "$T_READY" != 0 ] && echo 1 || echo 0) spare2=$SPARE2_ON spare2_wanted=$SPARE2 \
 spare2_ready=$([ "$T_READY2" != 0 ] && echo 1 || echo 0) gate_rt=$T_GATE gpu_apps_before=$GPU_APPS end_grace_ms=$END_GRACE_MS \
-launcher_scope=$LAUNCHER_SCOPE launcher_ready=$LA_OK launcher_tc=$LA_TC launcher_env=$(echo ${LAUNCHER_ENV:-} | tr ' ' '+') \
+launcher_scope=$LAUNCHER_SCOPE launcher_ready=$LA_OK launcher_tc=$LA_TC launcher_table=$LA_TABLE \
+launcher_env_rain=${LENV_RAIN:--} launcher_env_sunny=${LENV_SUNNY:--} \
+mono_off_sunny_ms=${MONO_OFF:--} mono_off_rtt_ms=${MONO_RTT:--} mono_off_after_ms=${MONO_OFF2:--} mono_off_after_rtt_ms=${MONO_RTT2:--} \
+bar1_gate_total_mib=${B1T:--} bar1_gate_used_mib=${B1U:--} bar1_gate_free_mib=${B1F:--} gpu_procs_gate_rain=${B1P:--} \
 launcher_before_rain=$(sp "$LAB_RAIN") launcher_before_sunny=$(sp "$LAB_SUNNY") launcher_after_rain=$(sp "$LAA_RAIN") \
 launcher_after_sunny=$(sp "$LAA_SUNNY") active_mtu_rain=${MTU_RAIN:--} active_mtu_sunny=${MTU_SUNNY:--} \
 active_mtu_after_rain=${MTU1_RAIN:--} active_mtu_after_sunny=${MTU1_SUNNY:--} rnr_before_rain=$RNR0_RAIN rnr_before_sunny=$RNR0_SUNNY \
