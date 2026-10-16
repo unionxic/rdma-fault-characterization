@@ -1,0 +1,839 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 87ba9fb..18fac53 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -19309,27 +19309,37 @@ static inline bool gdakiCtrlStallGuard(const double* otherStaleMs, int nOthers,
+ // survivor can be read: this rank, alone in seeing everyone stale, suspects itself and does not judge. With no other
+ // survivor at all (two ranks) there is no third view: PASS, the stall rests on this rank's view alone (a line for the
+ // design, notes_fix12.md).
++// A view below 0 is "k never saw p" (gdakiCtrlStaleOfWord): not a view, never FRESH (REVIEW_FIX12_P2B 고칠 것 2).
+ enum : uint32_t { GDAKI_CTRL_PG_PASS = 0, GDAKI_CTRL_PG_FRESH = 1, GDAKI_CTRL_PG_SELF = 2 };
+ static inline uint32_t gdakiCtrlPartitionGuard(const double* otherStaleOfP, const bool* valid, int nOthers, double stallMs,
+                                                double probeMs) {
+   if (nOthers <= 0) return GDAKI_CTRL_PG_PASS;
+   int nValid = 0;
+   for (int k = 0; k < nOthers; k++) {
+-    if (!valid[k]) continue;
++    if (!valid[k] || otherStaleOfP[k] < 0) continue;
+     nValid++;
+     if (!gdakiCtrlStallGuard(&otherStaleOfP[k], 1, stallMs, probeMs)) return GDAKI_CTRL_PG_FRESH;
+   }
+   return nValid == 0 ? GDAKI_CTRL_PG_SELF : GDAKI_CTRL_PG_PASS;
+ }
++// The page word staleMs[q]: this rank's view of q in ms, or GDAKI_CTRL_STALE_UNSEEN when it has no successful READ of q
++// in the QP's pairing (0 is "fresh", never "unknown").
++#define GDAKI_CTRL_STALE_UNSEEN 0xffffffffffffffffull
++static inline uint64_t gdakiCtrlStaleWord(bool seen, double ms) {
++  if (!seen) return GDAKI_CTRL_STALE_UNSEEN;
++  return ms <= 0 ? 0 : ms >= 1e18 ? GDAKI_CTRL_STALE_UNSEEN - 1u : (uint64_t)ms;
++}
++static inline double gdakiCtrlStaleOfWord(uint64_t w) { return w == GDAKI_CTRL_STALE_UNSEEN ? -1.0 : (double)w; }
+ // The R value of one beat from a reader's facts (vetoClear = no data-path progress of the peer within STALL_RMSN_MS;
+ // guardOk = the partition guard passed; helper = this is the helperBeat, not the watchBeat). A rising beat is (1); a
+-// helper beat below SUSPECT_MS is (1) too.
++// helper beat below SUSPECT_MS is (1) too. The veto is the watch beat's only (design v3 4.2 R (4), (5)): R (8), (9) are
++// the guard alone, so a helper-only stall reaches row 15 while the GPU still sends (REVIEW_FIX12_P2B 막는 문제 3).
+ static inline uint32_t gdakiCtrlRofStale(bool rose, double staleMs, double suspectMs, double stallMs, bool guardOk,
+                                          bool vetoClear, bool helper) {
+   if (rose) return GDAKI_CTRL_R_ROSE;
+   if (staleMs < suspectMs) return helper ? GDAKI_CTRL_R_ROSE : GDAKI_CTRL_R_STALE_LT_SUSPECT;
+   if (staleMs < stallMs) return helper ? GDAKI_CTRL_R_HELPER_SUSPECT : GDAKI_CTRL_R_STALE_SUSPECT;
+-  if (!guardOk || !vetoClear) return helper ? GDAKI_CTRL_R_HELPER_GUARDED : GDAKI_CTRL_R_STALE_GUARDED;
++  if (!guardOk || (!helper && !vetoClear)) return helper ? GDAKI_CTRL_R_HELPER_GUARDED : GDAKI_CTRL_R_STALE_GUARDED;
+   return helper ? GDAKI_CTRL_R_HELPER_STALL : GDAKI_CTRL_R_STALL;
+ }
+ 
+@@ -19437,7 +19447,12 @@ static inline void gdakiCtrlProbeIoReset(struct gdakiCtrlProbeIo* io) {
+ // READ2 at t_F + W/2, the verdict at t_F + W (gdakiCtrlConfirmVerdict), whatever the completion times; a completion after
+ // the verdict is dropped by the window's number. A window opened while the QP had no success in its generation, or
+ // without two free slots, cannot confirm: its verdict comes at once. A new FIN of the same peer while one is open is
+-// ignored.
++// ignored. REVIEW_FIX12_P2B 막는 문제 1, 2: a remote access error of either READ decides the window (design 4.2's verdict
++// order puts REMACC first): the QP is in ERR after it, so READ2 is not asked for, and losing the QP afterwards (the
++// re-pairing it starts, the flush of READ2) does not undo it; the verdict still comes at t_F + W. One action per call and
++// one call per watch step (POST1, POST2, JUDGE in separate passes); a reader that first steps after t_F + W/2 cannot
++// confirm (never NORESP); the verdict waits until READ2 was out W/2 (max(t_F + W, READ2's post + W/2)), so NORESP is
++// always a READ out W/2 or more without its completion.
+ enum : uint32_t { GDAKI_CTRL_WS_IDLE = 0, GDAKI_CTRL_WS_OPEN = 1 };
+ enum : uint32_t { GDAKI_CTRL_WSRC_NONE = 0, GDAKI_CTRL_WSRC_FIN = 1, GDAKI_CTRL_WSRC_RST = 2, GDAKI_CTRL_WSRC_ENDED = 3 };
+ static inline const char* gdakiCtrlWsrcName(uint32_t s) {
+@@ -19452,6 +19467,9 @@ struct gdakiCtrlWindow {
+   bool r1Posted = false, r2Posted = false, r1Done = false, r2Done = false, remacc = false;
+   uint64_t beat1 = 0, beat2 = 0, inc1 = 0, inc2 = 0;
+   double r1Ms = -1, r2Ms = -1;  // the completion times (reports)
++  double r2PostMs = -1;         // READ2's post (the verdict waits until it was out W/2)
++  bool lateReader = false;      // the reader's first step came after t_F + W/2 (cannot confirm)
++  double lastStepMs = -1, stepGapMaxMs = 0;  // the reader's largest step gap within the window (a report)
+   uint32_t verdict = GDAKI_CTRL_CW_UNCONFIRMED;  // the last window's
+   uint64_t opened = 0, ignored = 0, late = 0;
+ };
+@@ -19474,20 +19492,39 @@ static inline bool gdakiCtrlWindowOpen(struct gdakiCtrlWindow* w, uint32_t src,
+   return true;
+ }
+ enum : uint32_t { GDAKI_CTRL_WA_NONE = 0, GDAKI_CTRL_WA_POST1 = 1, GDAKI_CTRL_WA_POST2 = 2, GDAKI_CTRL_WA_JUDGE = 3 };
+-// One action per call, in order: READ1 at once, READ2 from t_F + W/2, the verdict from t_F + W (at once when it cannot
+-// confirm).
+-static inline uint32_t gdakiCtrlWindowStep(const struct gdakiCtrlWindow* w, double nowMs, double wMs) {
+-  if (w->state != GDAKI_CTRL_WS_OPEN) return GDAKI_CTRL_WA_NONE;
+-  if (!w->countable) return GDAKI_CTRL_WA_JUDGE;
+-  if (!w->r1Posted) return GDAKI_CTRL_WA_POST1;
+-  if (!w->r2Posted && nowMs >= w->tF + wMs / 2.0) return GDAKI_CTRL_WA_POST2;
+-  if (nowMs >= w->tF + wMs) return GDAKI_CTRL_WA_JUDGE;
+-  return GDAKI_CTRL_WA_NONE;
++// The verdict's time: t_F + W, or later when READ2 went late (it is out W/2 then).
++static inline double gdakiCtrlWindowJudgeAt(const struct gdakiCtrlWindow* w, double wMs) {
++  const double t = w->tF + wMs;
++  return w->r2Posted && w->r2PostMs + wMs / 2.0 > t ? w->r2PostMs + wMs / 2.0 : t;
+ }
+-static inline void gdakiCtrlWindowPosted(struct gdakiCtrlWindow* w, uint32_t which, bool ok) {
++// The window's QP is lost to it (this rank's own re-pairing, the hold start's ERR, a broken completion, a refused post):
++// it cannot confirm, unless a remote access error decided it already.
++static inline void gdakiCtrlWindowQpLost(struct gdakiCtrlWindow* w) {
++  if (w->state == GDAKI_CTRL_WS_OPEN && !w->remacc) w->countable = false;
++}
++// One action per call, in order: READ1 at once (a reader past t_F + W/2 cannot confirm), READ2 from t_F + W/2 unless
++// REMACC decided the window, the verdict at gdakiCtrlWindowJudgeAt (at once when it cannot confirm).
++static inline uint32_t gdakiCtrlWindowStep(struct gdakiCtrlWindow* w, double nowMs, double wMs) {
++  if (w->state != GDAKI_CTRL_WS_OPEN) return GDAKI_CTRL_WA_NONE;
++  if (w->lastStepMs >= 0 && nowMs - w->lastStepMs > w->stepGapMaxMs) w->stepGapMaxMs = nowMs - w->lastStepMs;
++  w->lastStepMs = nowMs;
++  if (!w->countable) return GDAKI_CTRL_WA_JUDGE;
++  if (!w->r1Posted) {
++    if (nowMs <= w->tF + wMs / 2.0) return GDAKI_CTRL_WA_POST1;
++    w->lateReader = true;  // READ1 would have less than W/2: the window cannot confirm (never NORESP)
++    w->countable = false;
++    return GDAKI_CTRL_WA_JUDGE;
++  }
++  if (!w->r2Posted && !w->remacc) return nowMs >= w->tF + wMs / 2.0 ? GDAKI_CTRL_WA_POST2 : GDAKI_CTRL_WA_NONE;
++  return nowMs >= gdakiCtrlWindowJudgeAt(w, wMs) ? GDAKI_CTRL_WA_JUDGE : GDAKI_CTRL_WA_NONE;
++}
++static inline void gdakiCtrlWindowPosted(struct gdakiCtrlWindow* w, uint32_t which, bool ok, double nowMs) {
+   if (which == 1) w->r1Posted = true;
+-  else w->r2Posted = true;
+-  if (!ok) w->countable = false;  // a READ that could not be posted on the RTS QP: the window cannot confirm
++  else {
++    w->r2Posted = true;
++    w->r2PostMs = nowMs;
++  }
++  if (!ok) gdakiCtrlWindowQpLost(w);  // a READ that could not be posted on the RTS QP: the window cannot confirm
+ }
+ // A completion of window `no`'s READ `which` (1, 2) of class `cls`; false: not the open window's (dropped).
+ static inline bool gdakiCtrlWindowOnCqe(struct gdakiCtrlWindow* w, uint32_t no, uint32_t which, uint32_t cls,
+@@ -19511,7 +19548,7 @@ static inline bool gdakiCtrlWindowOnCqe(struct gdakiCtrlWindow* w, uint32_t no,
+   } else if (cls == GDAKI_CTRL_CQ_REMACC) {
+     w->remacc = true;
+   } else if (cls == GDAKI_CTRL_CQ_BROKEN) {
+-    w->countable = false;  // this rank's QP broke: the window cannot confirm (never NORESP)
++    gdakiCtrlWindowQpLost(w);  // this rank's QP broke (or READ2's flush after REMACC): cannot confirm, never NORESP
+   }  // NORESP: the READ stays not done (NORESP at t_F + W)
+   return true;
+ }
+@@ -19523,6 +19560,109 @@ static inline uint32_t gdakiCtrlWindowJudge(struct gdakiCtrlWindow* w, uint64_t
+   return w->verdict;
+ }
+ 
++// ---- the handoff of a peer's liveness READ QP between the watch thread and the helper (REVIEW_FIX12_P2B 막는 문제 2,
++// 고칠 것 1, 4, 9) ----
++// The watch thread owns the QP's software state, its posts and its CQ; the helper runs every firmware command
++// (modify_qp, QP create and destroy). A request of the helper's pairing (PREPARE, CONNECT) goes NEW -> (the watch thread
++// plans it: REUSE a QP prepared for this generation and untouched since; RESET one with nothing in flight; DRAIN one
++// with READs in flight) -> ERR (DRAIN: the helper moves it to ERR) -> DRAIN (the watch thread collects the flushes, one
++// poll per step, bounded GDAKI_CTRL_PROBE_DRAIN_MS: then a new QP) -> FW (the helper's firmware; the watch thread does not
++// touch the QP) -> BACK (the watch thread applies the result) -> IDLE. The hold start's ERR cancels a request in progress:
++// it is answered "hold started" and the QP stays in ERR; a CONNECT whose incarnation the lineage no longer calls current
++// is refused too (design 4.4: no RTS toward an old incarnation).
++#define GDAKI_CTRL_PROBE_DRAIN_MS 100.0
++enum : uint32_t {
++  GDAKI_CTRL_PO_NONE = 0,
++  GDAKI_CTRL_PO_PREPARE = 1,  // to INIT for generation `gen` with a fresh PSN (the PAIR's side): ERR, flushes, RESET
++  GDAKI_CTRL_PO_CONNECT = 2,  // RTR, RTS toward `remote` for `gen` (a QP connected before, or prepared for another
++                              // generation, is reset first with a fresh PSN); the peer's page and incNonce with it
++  GDAKI_CTRL_PO_TOERR = 3,    // unused since the hold start's ERR is the helper's own (gdakiProbeToErr)
++};
++enum : uint32_t {
++  GDAKI_CTRL_PH_IDLE = 0, GDAKI_CTRL_PH_NEW = 1, GDAKI_CTRL_PH_ERR = 2, GDAKI_CTRL_PH_DRAIN = 3, GDAKI_CTRL_PH_FW = 4,
++  GDAKI_CTRL_PH_BACK = 5,
++};
++enum : uint32_t { GDAKI_CTRL_PP_REUSE = 0, GDAKI_CTRL_PP_RESET = 1, GDAKI_CTRL_PP_DRAIN = 2 };
++enum : uint32_t {  // the helper's firmware steps (bits), gdakiCtrlProbeFwPlan
++  GDAKI_CTRL_FW_REFUSE_HOLD = 1u, GDAKI_CTRL_FW_REFUSE_LINEAGE = 2u, GDAKI_CTRL_FW_NEWQP = 4u, GDAKI_CTRL_FW_RESET = 8u,
++  GDAKI_CTRL_FW_CONNECT = 16u,
++};
++struct gdakiCtrlProbeHand {
++  uint32_t phase = GDAKI_CTRL_PH_IDLE;
++  uint32_t seq = 0, done = 0;  // the request in progress, the last one answered
++  uint32_t op = 0, gen = 0;    // GDAKI_CTRL_PO_PREPARE or _CONNECT, for generation gen
++  uint32_t plan = GDAKI_CTRL_PP_REUSE;
++  bool cancel = false;         // the hold start's ERR came while it was in progress
++  bool drainOk = true;         // DRAIN: the flushes came within the bound (else a new QP)
++  double drainFromMs = -1;
++  uint64_t drainGiveUps = 0, refusedHold = 0, refusedLineage = 0;
++};
++static inline uint32_t gdakiCtrlProbePlan(uint32_t op, uint32_t gen, bool haveQp, bool connected, bool err,
++                                          uint32_t preparedGen, uint32_t outstanding) {
++  if (haveQp && op == GDAKI_CTRL_PO_CONNECT && !connected && !err && preparedGen != 0 && preparedGen == gen && outstanding == 0)
++    return GDAKI_CTRL_PP_REUSE;
++  return haveQp && outstanding > 0 ? GDAKI_CTRL_PP_DRAIN : GDAKI_CTRL_PP_RESET;
++}
++// The helper's request (0: one is in progress; the caller asks again later).
++static inline uint32_t gdakiCtrlHandAsk(struct gdakiCtrlProbeHand* h, uint32_t op, uint32_t gen) {
++  if (h->phase != GDAKI_CTRL_PH_IDLE) return 0;
++  h->seq = h->done + 1u == 0 ? 1u : h->done + 1u;
++  h->op = op;
++  h->gen = gen;
++  h->cancel = false;
++  h->drainOk = true;
++  h->drainFromMs = -1;
++  h->phase = GDAKI_CTRL_PH_NEW;
++  return h->seq;
++}
++// The watch thread takes a NEW request: true when the QP leaves use (the watch thread marks it not RTS, the open
++// window cannot confirm); the plan says what follows.
++static inline bool gdakiCtrlHandTake(struct gdakiCtrlProbeHand* h, bool haveQp, bool connected, bool err,
++                                     uint32_t preparedGen, uint32_t outstanding) {
++  if (h->phase != GDAKI_CTRL_PH_NEW) return false;
++  h->plan = gdakiCtrlProbePlan(h->op, h->gen, haveQp, connected, err, preparedGen, outstanding);
++  h->phase = h->plan == GDAKI_CTRL_PP_DRAIN ? GDAKI_CTRL_PH_ERR : GDAKI_CTRL_PH_FW;
++  return h->plan != GDAKI_CTRL_PP_REUSE;
++}
++static inline void gdakiCtrlHandErrDone(struct gdakiCtrlProbeHand* h, double nowMs) {  // the helper's ERR is done
++  if (h->phase != GDAKI_CTRL_PH_ERR) return;
++  h->phase = GDAKI_CTRL_PH_DRAIN;
++  h->drainFromMs = nowMs;
++}
++// The watch thread after its poll in DRAIN: 1 the QP passes to the helper (drained, or the bound passed: a new QP then,
++// nothing of the old one completes), 0 not yet.
++static inline int gdakiCtrlHandDrain(struct gdakiCtrlProbeHand* h, uint32_t outstanding, double nowMs) {
++  if (h->phase != GDAKI_CTRL_PH_DRAIN) return 0;
++  if (outstanding > 0 && nowMs - h->drainFromMs <= GDAKI_CTRL_PROBE_DRAIN_MS) return 0;
++  h->drainOk = outstanding == 0;
++  if (!h->drainOk) h->drainGiveUps++;
++  h->phase = GDAKI_CTRL_PH_FW;
++  return 1;
++}
++// A refusal keeps the QP out of RTS (ERR); one whose drain gave up is replaced still (its lost flushes never complete).
++static inline uint32_t gdakiCtrlProbeFwPlan(const struct gdakiCtrlProbeHand* h, bool haveQp, bool lnCurrent) {
++  const uint32_t newQp = !h->drainOk ? GDAKI_CTRL_FW_NEWQP : 0u;
++  if (h->cancel) return GDAKI_CTRL_FW_REFUSE_HOLD | newQp;
++  if (h->op == GDAKI_CTRL_PO_CONNECT && !lnCurrent) return GDAKI_CTRL_FW_REFUSE_LINEAGE | newQp;
++  uint32_t s = newQp;
++  if (!haveQp) s |= GDAKI_CTRL_FW_NEWQP;
++  if (h->plan != GDAKI_CTRL_PP_REUSE || (s & GDAKI_CTRL_FW_NEWQP)) s |= GDAKI_CTRL_FW_RESET;
++  if (h->op == GDAKI_CTRL_PO_CONNECT) s |= GDAKI_CTRL_FW_CONNECT;
++  return s;
++}
++static inline void gdakiCtrlHandFwDone(struct gdakiCtrlProbeHand* h) {
++  if (h->phase == GDAKI_CTRL_PH_FW) h->phase = GDAKI_CTRL_PH_BACK;
++}
++static inline void gdakiCtrlHandBack(struct gdakiCtrlProbeHand* h) {
++  if (h->phase != GDAKI_CTRL_PH_BACK) return;
++  h->done = h->seq;
++  h->phase = GDAKI_CTRL_PH_IDLE;
++}
++static inline bool gdakiCtrlHandWatchOwns(const struct gdakiCtrlProbeHand* h) { return h->phase != GDAKI_CTRL_PH_FW; }
++static inline void gdakiCtrlHandCancel(struct gdakiCtrlProbeHand* h) {  // the hold start's ERR
++  if (h->phase != GDAKI_CTRL_PH_IDLE && h->phase != GDAKI_CTRL_PH_BACK) h->cancel = true;
++}
++
+ // ---- the helper's busy word as this reader sees it (design v3 3.1: the bound on the reader's own clock) ----
+ struct gdakiCtrlBusySeen {
+   uint32_t no = 0;        // the busy number last seen (0: not busy)
+@@ -19673,15 +19813,8 @@ static void gdakiCtrlProbePairingStep(struct gdakiRecHost* r);
+ static void gdakiCtrlProbeSetupRecv(struct gdakiRecHost* r, int from, const struct gdakiTsMsg& m);
+ static void gdakiCtrlProbePairingFree(struct gdakiCtrlProbePairing* p);
+ 
+-// The operations the helper asks of the watch thread on one peer's liveness READ QP (REVIEW_P12 고칠 것 12): the watch
+-// thread owns the QP and its CQ; the helper's pairing only asks and reads the result.
+-enum : uint32_t {
+-  GDAKI_CTRL_PO_NONE = 0,
+-  GDAKI_CTRL_PO_PREPARE = 1,  // to INIT for generation `gen` with a fresh PSN (the PAIR's side): ERR, flushes, RESET
+-  GDAKI_CTRL_PO_CONNECT = 2,  // RTR, RTS toward `remote` for `gen` (a QP connected before, or prepared for another
+-                              // generation, is reset first with a fresh PSN); the peer's page and incNonce with it
+-  GDAKI_CTRL_PO_TOERR = 3,    // ERR (the hold start's fence step 1)
+-};
++// The operations the helper's pairing asks for on one peer's liveness READ QP (REVIEW_P12 고칠 것 12): GDAKI_CTRL_PO_*
++// and the handoff (struct gdakiCtrlProbeHand) are in the pure region above.
+ struct gdakiCtrlProbeReq {
+   uint32_t seq = 0;  // the helper's request number (the watch thread answers each once)
+   uint32_t op = GDAKI_CTRL_PO_NONE;
+@@ -19710,14 +19843,18 @@ struct gdakiCtrlPeerProbe {
+   bool haveRemote = false;
+   uint64_t incExp = 0;                  // the peer's expected incNonce (from the pairing)
+   uint32_t preparedGen = 0;             // the QP is at INIT for this generation (a PREPARE; 0: not)
+-  // the handoff (under the page mutex): helper -> watch
++  // the handoff (under the page mutex; struct gdakiCtrlProbeHand: who may touch the QP): helper -> watch
++  struct gdakiCtrlProbeHand hand;
+   struct gdakiCtrlProbeReq req;
+-  bool toErrReq = false;                // gdakiProbeToErr (the hold start)
++  bool toErrReq = false;                // gdakiProbeToErr (the hold start; the helper moved the QP to ERR)
+   uint32_t winReqSeq = 0, winReqSrc = 0;
+   double winReqMs = 0;                  // t_F: the helper's clock when it saw the FIN or RST
+   // watch -> helper (under the page mutex)
+   struct gdakiCtrlProbeRes res;
+-  uint32_t reqDone = 0, winSeen = 0;    // watch: the last request and window request taken
++  uint32_t winSeen = 0;                 // watch: the last window request taken
++  bool watchOwns = true;                // watch: this step may touch the QP (hand's phase is not FW)
++  std::atomic<bool> holdErr{false};     // helper -> watch: the hold start's ERR is the cause of error completions now
++  uint64_t helperFw = 0;                // helper: firmware commands it ran for this QP (the probe summary)
+   // watch -> helper, atomic: the verdict mailboxes and the "this QP broke in generation g" word (g + 1; 0 none)
+   std::atomic<uint64_t> stallMail{0}, winMail{0};
+   std::atomic<uint32_t> errGenPlus1{0};
+@@ -19752,6 +19889,8 @@ struct gdakiCtrlPage {
+   std::mutex mu;                                 // the handoff (requests, results, window requests)
+   uint64_t beat = 0;
+   double lastBeatMs = 0, gapMaxMs = 0;           // the watch beat's largest gap (W's basis, 결정 5), the frozen time out
++  uint32_t selfInc = 0;                          // this process's incarnation, read every 10 ms (REVIEW_FIX12_P2B nit 1)
++  double selfIncAtMs = -1;
+   uint32_t nLaunchers = 0;                       // the communicator's node launchers (launcher_msg.h): the page layout's
+                                                  // nL, the same as the ring's (gdakiCtrlRdmaCreate); phase 3 sets it
+   struct gdakiCtrlBusyTrack busy;                // helperBusy's serial (impl/rs_ctrl_api.h, the watch thread's)
+@@ -19800,6 +19939,11 @@ static void gdakiPageSetup(struct gdakiRecHost* r) {
+   if (st == nullptr || gdakiPageOf(r) != nullptr || r->ts == nullptr) return;
+   if (ncclParamGinCtrlPage() == 0) return;  // the scaffold is off by default
+   struct gdaki_context* g = r->ctx;
++  if (g == nullptr || g->q4 == nullptr) {  // no watch thread to write and read it (REVIEW_FIX12_P2B 고칠 것 6)
++    WARN("GIN/RC: rank %d: NCCL_GIN_CTRL_PAGE=1 needs NCCL_GIN_FAULT_CLASSIFY=1 (the watch thread): the status page stays "
++         "off mono_ms=%.3f", g != nullptr ? g->rank : -1, gdakiQ4MonoMs());
++    return;
++  }
+   struct gdakiCtrlThresholds t;
+   t.probeMs = ncclParamGinTsProbeMs();
+   t.probeTimeoutMs = ncclParamGinCtrlProbeTimeoutMs();
+@@ -19863,7 +20007,7 @@ static void gdakiPageSetup(struct gdakiRecHost* r) {
+   }
+   for (int p = 0; p < nranks; p++) {
+     struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)p];
+-    pp.theirStale.assign((size_t)nranks, 0.0);
++    pp.theirStale.assign((size_t)nranks, -1.0);  // unseen until a READ of the peer's page
+     if (p == g->rank || !r->ts->peers[p].gated) continue;
+     if (gdakiProbeQpCreate(r, p, &pp.qp, why, sizeof(why)) != ncclSuccess)
+       WARN("GIN/RC: rank %d: the liveness READ QP to rank %d could not be created (%s) mono_ms=%.3f", g->rank, p, why,
+@@ -19892,11 +20036,14 @@ static void gdakiCtrlProbeSummary(struct gdakiRecHost* r, struct gdakiCtrlPage*
+     }
+     GIN_TS_NOTE("GIN/RC: rank %d: probe summary peer=%d reads=%lu ok=%lu remacc=%lu noresp=%lu timeout=%lu gen=%u "
+                 "lat_med_us=%.1f lat_max_us=%.1f beat_gap_max_ms=%.3f torn=%lu after_end_reads=0 after_end_ok=0 "
+-                "broken=%lu other_page=%lu sq_max=%u W=%d W_rule=%d mono_ms=%.3f", pg->me, p, (unsigned long)pp.reads,
++                "broken=%lu other_page=%lu sq_max=%u W=%d W_rule=%d helper_fw=%lu watch_fw=0 drain_giveup=%lu "
++                "refused_hold=%lu refused_lineage=%lu mono_ms=%.3f", pg->me, p, (unsigned long)pp.reads,
+                 (unsigned long)pp.ok, (unsigned long)pp.remacc, (unsigned long)pp.noresp, (unsigned long)pp.timeouts,
+                 pp.qp.gen, (double)med, (double)mx, pg->gapMaxMs, (unsigned long)pp.torn, (unsigned long)pp.broken,
+                 (unsigned long)pp.otherInc, pp.io.maxOutstanding, pg->wMs,
+-                gdakiCtrlConfirmW(GDAKI_CTRL_CONFIRM_FACTOR, pg->gapMaxMs), gdakiQ4MonoMs());
++                gdakiCtrlConfirmW(GDAKI_CTRL_CONFIRM_FACTOR, pg->gapMaxMs), (unsigned long)pp.helperFw,
++                (unsigned long)pp.hand.drainGiveUps, (unsigned long)pp.hand.refusedHold,
++                (unsigned long)pp.hand.refusedLineage, gdakiQ4MonoMs());
+   }
+   (void)r;
+ }
+@@ -19943,19 +20090,20 @@ static void gdakiPageBeatStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg,
+   const int64_t bz = r->ts->busySinceUs.load(std::memory_order_acquire);
+   const int64_t fw = r->fwSinceUs.load(std::memory_order_acquire);
+   gdakiCtrlWordStore(&pg->head->helperBusy, gdakiCtrlBusyOf(&pg->busy, bz, r->ts->roundMs, fw, r->ts->fwMs));
+-  gdakiCtrlWordStore(&pg->head->incNonce, gdakiCtrlIncNonce(gdakiRsSelfInc(r), r->ts->nonce));
++  if (pg->selfIncAtMs < 0 || nowMs - pg->selfIncAtMs >= 10.0) {  // the global lineage mutex at most every 10 ms (nit 1)
++    pg->selfInc = gdakiRsSelfInc(r);
++    pg->selfIncAtMs = nowMs;
++  }
++  gdakiCtrlWordStore(&pg->head->incNonce, gdakiCtrlIncNonce(pg->selfInc, r->ts->nonce));
+   gdakiCtrlWordStore(&pg->head->flags, gdakiCtrlPageFlags(false, true, gdakiMiOn(r)));
+   // staleMs[q]: this rank's view of q (the larger of its two beats' stalls), for the other ranks' partition guard (one
+   // writer: this thread; design 3.4, REVIEW_P12 막는 문제 3)
+   uint64_t* sw = (uint64_t*)((uint8_t*)pg->page + pg->layout.staleMsOff);
+   for (int q = 0; q < (int)pg->peers.size(); q++) {
+     const struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)q];
+-    double s = 0;
+-    if (q != pg->me && pp.watchStale.have) {
+-      s = std::max(nowMs - pp.watchStale.firstMs, pp.helperStale.have ? nowMs - pp.helperStale.firstMs : 0.0);
+-      if (s < 0) s = 0;
+-    }
+-    gdakiCtrlWordStore(&sw[q], (uint64_t)s);
++    const bool seen = q != pg->me && pp.watchStale.have;  // "never seen" is its own value (REVIEW_FIX12_P2B 고칠 것 2)
++    const double s = seen ? std::max(nowMs - pp.watchStale.firstMs, pp.helperStale.have ? nowMs - pp.helperStale.firstMs : 0.0) : 0;
++    gdakiCtrlWordStore(&sw[q], gdakiCtrlStaleWord(seen, s));
+   }
+ }
+ 
+@@ -19989,98 +20137,132 @@ static void gdakiProbeBroke(struct gdakiCtrlPeerProbe& pp) {
+   gdakiProbeQpOnError(&pp.qp);
+   pp.errGenPlus1.store(gen + 1u, std::memory_order_release);
+ }
+-// Collect the QP's flushes before a RESET (bounded 100 ms): true when nothing is in flight any more.
+-static bool gdakiProbeDrain(struct gdakiCtrlPeerProbe& pp) {
+-  const double t0 = gdakiQ4MonoMs();
+-  while (pp.io.outstanding > 0 && pp.qp.q != nullptr && pp.qp.q->cq != nullptr && gdakiQ4MonoMs() - t0 < 100.0) {
+-    struct ibv_wc wc[8];
+-    int n = 0;
+-    if (wrap_ibv_poll_cq(pp.qp.q->cq, 8, wc, &n) != ncclSuccess) break;
+-    for (int k = 0; k < n; k++) {
+-      (void)gdakiCtrlProbeOnCqe(&pp.io, gdakiCtrlProbeWrKind(wc[k].wr_id), gdakiCtrlProbeWrSeq(wc[k].wr_id));
+-      if (pp.qp.q->outstanding > 0) pp.qp.q->outstanding--;
++// The handoff, the watch thread's part (struct gdakiCtrlProbeHand; REVIEW_FIX12_P2B 막는 문제 2, 고칠 것 1, 4, 9), under the
++// page mutex, with no firmware command: apply a result, take the hold start's ERR, plan a new request.
++static void gdakiProbeHandWatch(struct gdakiCtrlPeerProbe& pp) {
++  struct gdakiCtrlProbeHand& h = pp.hand;
++  if (h.phase == GDAKI_CTRL_PH_BACK) {  // the helper's firmware is done: the software state follows it
++    const struct gdakiCtrlProbeReq& q = pp.req;
++    if (h.plan != GDAKI_CTRL_PP_REUSE) gdakiCtrlProbeIoReset(&pp.io);  // drained, or a new QP: nothing old completes
++    if (pp.res.ok && q.op == GDAKI_CTRL_PO_PREPARE) pp.preparedGen = q.gen;
++    if (pp.res.ok && q.op == GDAKI_CTRL_PO_CONNECT) {
++      pp.remotePage = q.page;
++      pp.haveRemote = q.page.addr != 0 && q.page.rkey != 0 && q.page.len >= sizeof(struct gdakiCtrlPageHead);
++      pp.incExp = q.incNonce;
++      pp.watchStale = gdakiCtrlStale();
++      pp.helperStale = gdakiCtrlStale();
++      pp.busy = gdakiCtrlBusySeen();
++      pp.lastCls = GDAKI_CTRL_CQ_OK;
++      pp.pageOk = true;
++      pp.witnessUnknown = false;
++      pp.nextReadMs = gdakiQ4MonoMs();
++      pp.holdErr.store(false, std::memory_order_release);  // a new connection of a current incarnation
+     }
+-    if (n == 0) std::this_thread::sleep_for(std::chrono::microseconds(20));
++    gdakiCtrlHandBack(&h);
+   }
+-  return pp.io.outstanding == 0;
+-}
+-// A request of the helper's pairing on the peer's liveness READ QP (the watch thread is its only owner).
+-static void gdakiProbeDoReq(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, int p, const struct gdakiCtrlProbeReq& q,
+-                            struct gdakiCtrlProbeRes* res) {
+-  struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)p];
+-  res->seq = q.seq;
+-  res->ok = false;
+-  res->gen = q.gen;
+-  res->why[0] = 0;
+-  if (pp.qp.q == nullptr || pp.qp.q->qp == nullptr) {
+-    snprintf(res->why, sizeof(res->why), "no liveness READ QP");
+-    return;
+-  }
+-  char why[128] = {0};
+-  if (q.op == GDAKI_CTRL_PO_TOERR) {
+-    struct ibv_qp_attr a;
+-    memset(&a, 0, sizeof(a));
+-    a.qp_state = IBV_QPS_ERR;
+-    (void)wrap_ibv_modify_qp(pp.qp.q->qp, &a, IBV_QP_STATE);
+-    gdakiProbeQpOnError(&pp.qp);  // no re-pairing word: the hold start's own ERR
++  if (pp.toErrReq) {  // the hold start's ERR (the helper moved the QP): no re-pairing word, the window cannot confirm
++    pp.toErrReq = false;
+     pp.haveRemote = false;
+-    if (pp.win.state == GDAKI_CTRL_WS_OPEN) pp.win.countable = false;
+-    res->ok = true;
++    pp.preparedGen = 0;  // a later CONNECT resets with a fresh PSN anyway (REVIEW_FIX12_P2B nit 9)
++    gdakiCtrlWindowQpLost(&pp.win);
++    if (gdakiCtrlHandWatchOwns(&h)) gdakiProbeQpOnError(&pp.qp);
++  }
++  if (h.phase == GDAKI_CTRL_PH_NEW) {
++    const bool haveQp = pp.qp.q != nullptr && pp.qp.q->qp != nullptr;
++    if (gdakiCtrlHandTake(&h, haveQp, pp.qp.connected, haveQp && pp.qp.q->err, pp.preparedGen, pp.io.outstanding)) {
++      gdakiCtrlWindowQpLost(&pp.win);  // this rank's own re-pairing: the window cannot confirm (never NORESP)
++      gdakiProbeQpOnError(&pp.qp);     // no post from now; not a break (no re-pairing word)
++    }
++    pp.preparedGen = 0;
++  }
++  pp.watchOwns = gdakiCtrlHandWatchOwns(&h);
++}
++// The handoff, the helper's part: the ERR of a DRAIN plan, and the firmware of a request in FW (the page mutex is not
++// held while a command runs). Called from the helper's step and while it waits for an answer.
++static void gdakiProbeHandHelper(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, int p) {
++  struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)p];
++  struct gdakiCtrlProbeHand h;
++  struct gdakiCtrlProbeReq q;
++  {
++    std::lock_guard<std::mutex> lk(pg->mu);
++    if (pp.hand.phase != GDAKI_CTRL_PH_ERR && pp.hand.phase != GDAKI_CTRL_PH_FW) return;
++    h = pp.hand;
++    q = pp.req;
++  }
++  struct ibv_qp_attr a;
++  memset(&a, 0, sizeof(a));
++  a.qp_state = IBV_QPS_ERR;
++  if (h.phase == GDAKI_CTRL_PH_ERR) {  // the watch thread collects the flushes next (the QP stays its own meanwhile)
++    if (pp.qp.q != nullptr && pp.qp.q->qp != nullptr) (void)wrap_ibv_modify_qp(pp.qp.q->qp, &a, IBV_QP_STATE);
++    pp.helperFw++;
++    std::lock_guard<std::mutex> lk(pg->mu);
++    gdakiCtrlHandErrDone(&pp.hand, gdakiQ4MonoMs());
+     return;
+   }
+-  // a QP that ever connected, or one prepared for another generation, is reset (ERR, its flushes collected, RESET, INIT,
+-  // a fresh PSN); one prepared for this generation is answered as it is (the model's "reuse")
+-  const bool reuse = q.op == GDAKI_CTRL_PO_CONNECT && !pp.qp.connected && !pp.qp.q->err && pp.preparedGen != 0 &&
+-                     pp.preparedGen == q.gen && pp.io.outstanding == 0;
+-  pp.preparedGen = 0;
+-  if (!reuse) {
+-    // an open window's READs are flushed and collected here, not answered: it cannot confirm (never NORESP from this
+-    // rank's own re-pairing)
+-    if (pp.win.state == GDAKI_CTRL_WS_OPEN) pp.win.countable = false;
+-    if (pp.qp.connected || pp.qp.q->err || pp.io.outstanding > 0) {
+-      struct ibv_qp_attr a;
+-      memset(&a, 0, sizeof(a));
+-      a.qp_state = IBV_QPS_ERR;
++  // FW: the QP is the helper's until BACK
++  struct gdakiCtrlProbeRes res;
++  res.seq = q.seq;
++  res.gen = q.gen;
++  const uint32_t inc = gdakiCtrlIncOf(q.incNonce);
++  const bool lnCur = q.op != GDAKI_CTRL_PO_CONNECT || gdakiLnClassify(gdakiLnOf(r, p), inc) == GDAKI_LN_CURRENT;
++  const bool haveQp = pp.qp.q != nullptr && pp.qp.q->qp != nullptr;
++  const uint32_t fw = gdakiCtrlProbeFwPlan(&h, haveQp, lnCur);
++  char why[128] = {0};
++  if (fw & (GDAKI_CTRL_FW_REFUSE_HOLD | GDAKI_CTRL_FW_REFUSE_LINEAGE)) {
++    // never RTS toward an old incarnation (design 4.4's invariant; REVIEW_FIX12_P2B 고칠 것 1): the QP stays in ERR, or a
++    // new one (not RTS) replaces one whose drain gave up
++    if (fw & GDAKI_CTRL_FW_NEWQP) {
++      gdakiProbeQpDestroy(&pp.qp);
++      if (gdakiProbeQpCreate(r, p, &pp.qp, why, sizeof(why)) != ncclSuccess)
++        WARN("GIN/RC: rank %d: a new liveness READ QP to rank %d could not be created (%s) mono_ms=%.3f", pg->me, p, why,
++             gdakiQ4MonoMs());
++      pp.helperFw += 2;
++    } else if (haveQp) {
+       (void)wrap_ibv_modify_qp(pp.qp.q->qp, &a, IBV_QP_STATE);
+-      gdakiProbeQpOnError(&pp.qp);
+-      if (!gdakiProbeDrain(pp)) {  // its flushes did not come: a new QP (nothing of the old one completes then)
+-        gdakiProbeQpDestroy(&pp.qp);
+-        if (gdakiProbeQpCreate(r, p, &pp.qp, why, sizeof(why)) != ncclSuccess) {
+-          snprintf(res->why, sizeof(res->why), "a new liveness READ QP could not be created (%s)", why);
+-          return;
+-        }
++      pp.helperFw++;
++    }
++    gdakiProbeQpOnError(&pp.qp);
++    if (fw & GDAKI_CTRL_FW_REFUSE_HOLD) snprintf(res.why, sizeof(res.why), "the hold started: the request is dropped");
++    else snprintf(res.why, sizeof(res.why), "incarnation %u is not the lineage's current one: no CONNECT", inc);
++  } else {
++    bool ok = true;
++    if (fw & GDAKI_CTRL_FW_NEWQP) {  // its flushes did not come (or no QP): a new QP, nothing of the old one completes
++      gdakiProbeQpDestroy(&pp.qp);
++      pp.helperFw += 2;
++      if (gdakiProbeQpCreate(r, p, &pp.qp, why, sizeof(why)) != ncclSuccess) {
++        snprintf(res.why, sizeof(res.why), "a new liveness READ QP could not be created (%s)", why);
++        ok = false;
+       }
+     }
+-    gdakiCtrlProbeIoReset(&pp.io);
+-    if (gdakiProbeQpReconnect(&pp.qp, nullptr, q.gen, why, sizeof(why)) != ncclSuccess) {
+-      snprintf(res->why, sizeof(res->why), "%s", why);
+-      return;
++    if (ok && (fw & GDAKI_CTRL_FW_RESET)) {
++      pp.helperFw += 2;
++      if (gdakiProbeQpReconnect(&pp.qp, nullptr, q.gen, why, sizeof(why)) != ncclSuccess) {
++        snprintf(res.why, sizeof(res.why), "%s", why);
++        ok = false;
++      }
++      while (ok && q.haveAvoid && pp.qp.local.psn == (q.avoidPsn & 0xffffffu)) {  // a fresh PSN (REVIEW_P12 nit 9)
++        pp.qp.q->psn = gdakiMiHostQpPsn();
++        pp.qp.local.psn = pp.qp.q->psn;
++      }
+     }
+-    while (q.haveAvoid && pp.qp.local.psn == (q.avoidPsn & 0xffffffu)) {  // a fresh PSN (REVIEW_P12 nit 9)
+-      pp.qp.q->psn = gdakiMiHostQpPsn();
+-      pp.qp.local.psn = pp.qp.q->psn;
++    if (ok) pp.qp.gen = q.gen;
++    if (ok && (fw & GDAKI_CTRL_FW_CONNECT)) {
++      pp.helperFw += 2;
++      if (gdakiProbeQpConnect(&pp.qp, &q.remote, q.gen, why, sizeof(why)) != ncclSuccess) {
++        snprintf(res.why, sizeof(res.why), "%s", why);
++        ok = false;
++      }
++    }
++    if (ok) {
++      res.local = pp.qp.local;
++      res.ok = true;
+     }
+   }
+-  pp.qp.gen = q.gen;
+-  if (q.op == GDAKI_CTRL_PO_PREPARE) pp.preparedGen = q.gen;
+-  if (q.op == GDAKI_CTRL_PO_CONNECT) {
+-    if (gdakiProbeQpConnect(&pp.qp, &q.remote, q.gen, why, sizeof(why)) != ncclSuccess) {
+-      snprintf(res->why, sizeof(res->why), "%s", why);
+-      return;
+-    }
+-    pp.remotePage = q.page;
+-    pp.haveRemote = q.page.addr != 0 && q.page.rkey != 0 && q.page.len >= sizeof(struct gdakiCtrlPageHead);
+-    pp.incExp = q.incNonce;
+-    pp.watchStale = gdakiCtrlStale();
+-    pp.helperStale = gdakiCtrlStale();
+-    pp.busy = gdakiCtrlBusySeen();
+-    pp.lastCls = GDAKI_CTRL_CQ_OK;
+-    pp.pageOk = true;
+-    pp.witnessUnknown = false;
+-    pp.nextReadMs = gdakiQ4MonoMs();
+-  }
+-  res->local = pp.qp.local;
+-  res->ok = true;
++  std::lock_guard<std::mutex> lk(pg->mu);
++  if (fw & GDAKI_CTRL_FW_REFUSE_HOLD) pp.hand.refusedHold++;
++  if (fw & GDAKI_CTRL_FW_REFUSE_LINEAGE) pp.hand.refusedLineage++;
++  pp.res = res;
++  gdakiCtrlHandFwDone(&pp.hand);
+ }
+ 
+ // One judgement of peer p from what this reader knows now (the watch thread); `wEnds` with the window verdict `cw` at
+@@ -20091,7 +20273,7 @@ static void gdakiProbeJudge(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, in
+   f.probeOff = pg->probeMs == 0;
+   f.lastCls = pp.lastCls;
+   f.timedOut = pp.io.periodicOut && pp.io.timeoutSeen;
+-  f.okInGen = gdakiProbeQpOkInGen(&pp.qp);
++  f.okInGen = pp.watchOwns && gdakiProbeQpOkInGen(&pp.qp);
+   f.pageOk = pp.pageOk;
+   f.watchRose = pp.watchRose;
+   f.watchStaleMs = pp.watchStale.have ? pp.watchStale.lastMs - pp.watchStale.firstMs : 0;
+@@ -20104,9 +20286,9 @@ static void gdakiProbeJudge(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, in
+   bool valid[GDAKI_CTRL_PAGE_MAX_RANKS];
+   int no = 0;
+   for (int k = 0; k < (int)pg->peers.size() && no < (int)GDAKI_CTRL_PAGE_MAX_RANKS; k++) {
+-    if (k == pg->me || k == p || pg->peers[(size_t)k].qp.q == nullptr) continue;
++    if (k == pg->me || k == p || !pg->peers[(size_t)k].hasQp) continue;  // hasQp: k's QP may be the helper's now
+     const struct gdakiCtrlPeerProbe& pk = pg->peers[(size_t)k];
+-    others[no] = pk.theirStale.size() > (size_t)p ? pk.theirStale[(size_t)p] : 0;
++    others[no] = pk.theirStale.size() > (size_t)p ? pk.theirStale[(size_t)p] : -1.0;
+     const double kStale = pk.watchStale.have ? pk.watchStale.lastMs - pk.watchStale.firstMs : 1e18;
+     valid[no] = nowMs - pk.lastOkMs <= 3.0 * pg->probeMs && kStale < (double)pg->suspectMs && pk.pageOk;
+     no++;
+@@ -20128,7 +20310,7 @@ static void gdakiProbeJudge(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, in
+                 helper ? "helper" : "watch", helper ? f.helperStaleMs : f.watchStaleMs,
+                 guard == GDAKI_CTRL_PG_FRESH  ? " (partition guard: another survivor sees it fresh)"
+                 : guard == GDAKI_CTRL_PG_SELF ? " (partition guard: no other survivor readable; this rank suspects itself)"
+-                : !f.vetoClear                ? " (the data path's veto: its responder count moved)"
++                : !f.vetoClear && !helper     ? " (the data path's veto: its responder count moved)"
+                                               : "",
+                 nowMs);
+   } else if (pp.last.row == 20) {
+@@ -20146,9 +20328,11 @@ static void gdakiProbeWindowEnd(struct gdakiRecHost* r, struct gdakiCtrlPage* pg
+   const uint32_t cw = gdakiCtrlWindowJudge(&pp.win, pp.incExp, nowMs);
+   static const char* kName[] = {"alive", "STALE", "NORESP", "REMACC", "unconfirmed"};
+   GIN_TS_NOTE("GIN/RC: rank %d: confirm window for rank %d closed: %s (opened by %s at %.3f, READ1 %s%.3f, READ2 %s%.3f, "
+-              "W=%d) mono_ms=%.3f", pg->me, p, kName[cw <= 4 ? cw : 4], gdakiCtrlWsrcName(pp.win.src), pp.win.tF,
+-              pp.win.r1Done ? "+" : "not done ", pp.win.r1Done ? pp.win.r1Ms - pp.win.tF : 0.0,
+-              pp.win.r2Done ? "+" : "not done ", pp.win.r2Done ? pp.win.r2Ms - pp.win.tF : 0.0, pg->wMs, nowMs);
++              "W=%d, step_gap_max_ms=%.3f%s) mono_ms=%.3f", pg->me, p, kName[cw <= 4 ? cw : 4],
++              gdakiCtrlWsrcName(pp.win.src), pp.win.tF, pp.win.r1Done ? "+" : "not done ",
++              pp.win.r1Done ? pp.win.r1Ms - pp.win.tF : 0.0, pp.win.r2Done ? "+" : "not done ",
++              pp.win.r2Done ? pp.win.r2Ms - pp.win.tF : 0.0, pg->wMs, pp.win.stepGapMaxMs,
++              pp.win.lateReader ? ", late reader" : "", nowMs);
+   gdakiProbeJudge(r, pg, p, nowMs, true, cw);
+   if (pp.win.src != GDAKI_CTRL_WSRC_ENDED)
+     pp.winMail.store(gdakiCtrlMailPack(pp.last.row, pp.last.verdict, pp.last.cause, gdakiCtrlIncOf(pp.incExp)),
+@@ -20160,45 +20344,22 @@ static void gdakiProbeWindowEnd(struct gdakiRecHost* r, struct gdakiCtrlPage* pg
+ // a time), its timeout, the window, the judgement.
+ static void gdakiProbePeerStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, int p, double nowMs) {
+   struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)p];
+-  bool doReq = false, toErr = false;
+-  struct gdakiCtrlProbeReq q;
+   uint32_t wsrc = 0;
+   double wtf = 0;
+   {
+     std::lock_guard<std::mutex> lk(pg->mu);
+-    if (pp.req.seq != pp.reqDone) {
+-      q = pp.req;
+-      doReq = true;
+-    }
+-    if (pp.toErrReq) {
+-      toErr = true;
+-      pp.toErrReq = false;
+-    }
++    gdakiProbeHandWatch(pp);  // the handoff: no firmware command here (REVIEW_FIX12_P2B 고칠 것 4)
+     if (pp.winReqSeq != pp.winSeen) {
+       pp.winSeen = pp.winReqSeq;
+       wsrc = pp.winReqSrc;
+       wtf = pp.winReqMs;
+     }
+   }
+-  if (toErr) {  // the hold start's fence step 1 (design 4.4)
+-    struct gdakiCtrlProbeReq e;
+-    e.op = GDAKI_CTRL_PO_TOERR;
+-    struct gdakiCtrlProbeRes dummy;
+-    gdakiProbeDoReq(r, pg, p, e, &dummy);
+-  }
+-  if (doReq) {
+-    struct gdakiCtrlProbeRes res;
+-    gdakiProbeDoReq(r, pg, p, q, &res);
+-    std::lock_guard<std::mutex> lk(pg->mu);
+-    pp.res = res;
+-    pp.res.gen = q.gen;
+-    pp.reqDone = q.seq;
+-  }
+-  if (pp.qp.q == nullptr || pp.qp.q->cq == nullptr) return;
+-  // the completions, each matched by its wr_id (REVIEW_P12 막는 문제 4, 5)
++  // the completions, each matched by its wr_id (REVIEW_P12 막는 문제 4, 5); a QP in the helper's hands is not touched
+   struct ibv_wc wc[8];
+   int n = 0;
+-  if (pp.io.outstanding > 0 && wrap_ibv_poll_cq(pp.qp.q->cq, 8, wc, &n) == ncclSuccess) {
++  if (pp.watchOwns && pp.qp.q != nullptr && pp.qp.q->cq != nullptr && pp.io.outstanding > 0 &&
++      wrap_ibv_poll_cq(pp.qp.q->cq, 8, wc, &n) == ncclSuccess) {
+     for (int k = 0; k < n; k++) {
+       const uint64_t id = wc[k].wr_id;
+       const uint32_t kind = gdakiCtrlProbeWrKind(id), seq = gdakiCtrlProbeWrSeq(id);
+@@ -20206,7 +20367,8 @@ static void gdakiProbePeerStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg,
+       if (pp.qp.q->outstanding > 0) pp.qp.q->outstanding--;
+       const bool periodic = gdakiCtrlProbeOnCqe(&pp.io, kind, seq);
+       const bool thisGen = gdakiCtrlProbeWrGenIs(id, pp.qp.gen) && pp.qp.connected;
+-      if (cls != GDAKI_CTRL_CQ_OK && thisGen) gdakiProbeBroke(pp);  // the first error of this generation
++      // the first error of this generation is a break (the pairing re-pairs), not the hold start's own ERR
++      if (cls != GDAKI_CTRL_CQ_OK && thisGen && !pp.holdErr.load(std::memory_order_acquire)) gdakiProbeBroke(pp);
+       if (!gdakiCtrlProbeWrGenIs(id, pp.qp.gen)) continue;           // an older generation's: its slot only
+       if (kind == GDAKI_CTRL_PW_PERIODIC && periodic) {
+         pp.reads++;
+@@ -20233,7 +20395,7 @@ static void gdakiProbePeerStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg,
+             const size_t nw = std::min(pp.theirStale.size(), (size_t)GDAKI_CTRL_PAGE_MAX_RANKS);
+             if (pg->layout.staleMsOff + 8u * nw <= pg->layout.bytes) {
+               memcpy(w, b + pg->layout.staleMsOff, 8u * nw);
+-              for (size_t i = 0; i < nw; i++) pp.theirStale[i] = (double)w[i];
++              for (size_t i = 0; i < nw; i++) pp.theirStale[i] = gdakiCtrlStaleOfWord(w[i]);
+             }
+           }
+         } else {
+@@ -20252,11 +20414,17 @@ static void gdakiProbePeerStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg,
+         if (cls == GDAKI_CTRL_CQ_OK) {
+           memcpy(&h, gdakiPageRd(pg, p) + gdakiPageWinOff(pg, which), sizeof(h));
+           gdakiProbeQpOnSuccess(&pp.qp, pp.qp.gen);
++          pp.okGen.store(pp.qp.gen, std::memory_order_release);  // a success of this generation (REVIEW_FIX12_P2B nit 8)
+         }
+         (void)gdakiCtrlWindowOnCqe(&pp.win, seq, which, cls, h.watchBeat, h.incNonce, nowMs);
+       }
+     }
+   }
++  {  // a drain: one poll per step, bounded (REVIEW_FIX12_P2B 고칠 것 4); then the QP is the helper's
++    std::lock_guard<std::mutex> lk(pg->mu);
++    if (gdakiCtrlHandDrain(&pp.hand, pp.io.outstanding, nowMs) == 1 && !pp.hand.drainOk) gdakiCtrlProbeIoReset(&pp.io);
++    pp.watchOwns = gdakiCtrlHandWatchOwns(&pp.hand);
++  }
+   // the periodic READ's timeout: a report (R (12)), the READ stays in flight
+   if (gdakiCtrlProbeTimedOut(&pp.io, nowMs, (double)pg->probeTimeoutMs)) {
+     pp.timeouts++;
+@@ -20266,29 +20434,29 @@ static void gdakiProbePeerStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg,
+   }
+   // the window
+   if (wsrc != 0) {
+-    const bool countable = gdakiProbeQpOkInGen(&pp.qp) && pp.haveRemote && gdakiCtrlProbeCanPost(&pp.io, 2);
++    const bool countable = pp.watchOwns && gdakiProbeQpOkInGen(&pp.qp) && pp.haveRemote && gdakiCtrlProbeCanPost(&pp.io, 2);
+     if (gdakiCtrlWindowOpen(&pp.win, wsrc, wtf, countable))
+       GIN_TS_NOTE("GIN/RC: rank %d: confirm window for rank %d opened by %s W=%d%s mono_ms=%.3f", pg->me, p,
+                   gdakiCtrlWsrcName(wsrc), pg->wMs, countable ? "" : " (cannot confirm: no READ of this generation)", nowMs);
+   }
+-  for (int guard = 0; guard < 3; guard++) {
+-    const uint32_t a = gdakiCtrlWindowStep(&pp.win, nowMs, (double)pg->wMs);
+-    if (a == GDAKI_CTRL_WA_NONE) break;
+-    if (a == GDAKI_CTRL_WA_JUDGE) {
+-      gdakiProbeWindowEnd(r, pg, p, nowMs);
+-      break;
++  // one window action per pass (REVIEW_FIX12_P2B 막는 문제 2: POST1, POST2 and the verdict never in one step)
++  const uint32_t wa = gdakiCtrlWindowStep(&pp.win, nowMs, (double)pg->wMs);
++  if (wa == GDAKI_CTRL_WA_JUDGE) {
++    gdakiProbeWindowEnd(r, pg, p, nowMs);
++  } else if (wa == GDAKI_CTRL_WA_POST1 || wa == GDAKI_CTRL_WA_POST2) {
++    const uint32_t which = wa == GDAKI_CTRL_WA_POST1 ? 1u : 2u;
++    bool ok = false;
++    if (pp.watchOwns && gdakiProbeQpIsRts(&pp.qp)) {  // pp.qp is read only while the watch thread owns it
++      const uint64_t id = gdakiCtrlProbeWrId(which == 1 ? GDAKI_CTRL_PW_WIN1 : GDAKI_CTRL_PW_WIN2, (uint32_t)p, pp.qp.gen,
++                                             pp.win.no);
++      ok = gdakiProbePost(pg, pp, gdakiPageRd(pg, p) + gdakiPageWinOff(pg, which),
++                          (uint32_t)sizeof(struct gdakiCtrlPageHead), id) == 0;
+     }
+-    const uint32_t which = a == GDAKI_CTRL_WA_POST1 ? 1u : 2u;
+-    const uint64_t id = gdakiCtrlProbeWrId(which == 1 ? GDAKI_CTRL_PW_WIN1 : GDAKI_CTRL_PW_WIN2, (uint32_t)p, pp.qp.gen,
+-                                           pp.win.no);
+-    const bool ok = gdakiProbeQpIsRts(&pp.qp) &&
+-                    gdakiProbePost(pg, pp, gdakiPageRd(pg, p) + gdakiPageWinOff(pg, which),
+-                                   (uint32_t)sizeof(struct gdakiCtrlPageHead), id) == 0;
+     if (ok) gdakiCtrlProbeOnPosted(&pp.io, which == 1 ? GDAKI_CTRL_PW_WIN1 : GDAKI_CTRL_PW_WIN2, pp.win.no, nowMs);
+-    gdakiCtrlWindowPosted(&pp.win, which, ok);
++    gdakiCtrlWindowPosted(&pp.win, which, ok, nowMs);
+   }
+   // the periodic READ: one at a time (REVIEW_P12 막는 문제 4), never into the open window's reserved slots
+-  if (pg->probeMs == 0 || !pp.haveRemote || !gdakiProbeQpIsRts(&pp.qp)) return;
++  if (pg->probeMs == 0 || !pp.haveRemote || !pp.watchOwns || !gdakiProbeQpIsRts(&pp.qp)) return;
+   const uint32_t reserve =
+       pp.win.state == GDAKI_CTRL_WS_OPEN ? (uint32_t)!pp.win.r1Posted + (uint32_t)!pp.win.r2Posted : 0u;
+   const uint32_t seq = gdakiCtrlProbePeriodicDue(&pp.io, nowMs, pp.nextReadMs, reserve);
+@@ -20356,18 +20524,20 @@ static uint32_t gdakiCtrlProbeAsk(struct gdakiRecHost* r, int peer, const struct
+   if (!gdakiPageUp(pg) || peer < 0 || peer >= (int)pg->peers.size()) return 0;
+   struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)peer];
+   std::lock_guard<std::mutex> lk(pg->mu);
+-  if (pp.req.seq != pp.reqDone) return 0;
++  const uint32_t seq = gdakiCtrlHandAsk(&pp.hand, q.op, q.gen);  // 0: one in progress
++  if (seq == 0) return 0;
+   pp.req = q;
+-  pp.req.seq = pp.reqDone + 1u == 0 ? 1u : pp.reqDone + 1u;
+-  return pp.req.seq;
++  pp.req.seq = seq;
++  return seq;
+ }
+ // The result of request `seq`: true once it is there (*out a copy).
+ static bool gdakiCtrlProbeAnswer(struct gdakiRecHost* r, int peer, uint32_t seq, struct gdakiCtrlProbeRes* out) {
+   struct gdakiCtrlPage* pg = gdakiPageOf(r);
+   if (!gdakiPageUp(pg) || peer < 0 || peer >= (int)pg->peers.size() || seq == 0) return false;
++  if (pg->peers[(size_t)peer].hasQp) gdakiProbeHandHelper(r, pg, peer);  // the firmware it waits for
+   struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)peer];
+   std::lock_guard<std::mutex> lk(pg->mu);
+-  if (pp.reqDone != seq || pp.res.seq != seq) return false;
++  if (pp.hand.done != seq || pp.res.seq != seq) return false;
+   *out = pp.res;
+   return true;
+ }
+@@ -20407,6 +20577,7 @@ static void gdakiCtrlPageHelperStep(struct gdakiRecHost* r) {
+       else if (!pe.declined)
+         gdakiCtrlStallDecline(r, p, inc, gdakiCtrlCauseName(gdakiCtrlMailCause(sm)));
+     }
++    if (pp.hasQp) gdakiProbeHandHelper(r, pg, p);  // the handoff's firmware (every loop: no request waits on the link)
+     const uint64_t wm = pp.winMail.exchange(0, std::memory_order_acq_rel);
+     if (wm != 0) {
+       const uint32_t row = gdakiCtrlMailRow(wm);
+@@ -20461,13 +20632,27 @@ static void gdakiLnFenced(struct gdakiRecHost* r, int peer, uint32_t inc) {
+   if (pg == nullptr || peer < 0 || peer >= (int)pg->fencedPlus1.size()) return;
+   pg->fencedPlus1[(size_t)peer] = gdakiLnFencedStep(pg->fencedPlus1[(size_t)peer], gdakiLnClassify(gdakiLnOf(r, peer), inc), inc);
+ }
+-// The liveness READ QP toward `peer` into ERR, through the watch thread's request word (design v2 2.1's handoff): the
+-// helper sets the request, the watch thread (which owns the QP) moves it. Called by gdakiCtrlPeerToErr at the hold start.
++// The liveness READ QP toward `peer` into ERR at the hold start (gdakiCtrlPeerToErr, helper): the helper runs the command
++// and tells the watch thread (which owns the QP's software state) through the request word; a pairing request in
++// progress is cancelled (struct gdakiCtrlProbeHand).
+ static void gdakiProbeToErr(struct gdakiRecHost* r, int peer) {
+   struct gdakiCtrlPage* pg = gdakiPageOf(r);
+   if (pg == nullptr || peer < 0 || peer >= (int)pg->peers.size()) return;
+-  std::lock_guard<std::mutex> lk(pg->mu);
+-  pg->peers[(size_t)peer].toErrReq = true;
++  struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)peer];
++  pp.holdErr.store(true, std::memory_order_release);  // before the ERR: its flushes are not a break
++  {
++    std::lock_guard<std::mutex> lk(pg->mu);
++    pp.toErrReq = true;
++    gdakiCtrlHandCancel(&pp.hand);  // a request in progress is answered "hold started" (REVIEW_FIX12_P2B 고칠 것 1)
++  }
++  // the ERR itself on the helper (a firmware command; REVIEW_FIX12_P2B 고칠 것 4). pp.qp.q changes only on the helper.
++  if (pp.hasQp && pp.qp.q != nullptr && pp.qp.q->qp != nullptr) {
++    struct ibv_qp_attr a;
++    memset(&a, 0, sizeof(a));
++    a.qp_state = IBV_QPS_ERR;
++    (void)wrap_ibv_modify_qp(pp.qp.q->qp, &a, IBV_QP_STATE);
++    pp.helperFw++;
++  }
+ }
+ 
+ // Records 52-55 handled in the hold drain (a survivor and a held peer's buddy take them in arrival order). 53 DISPUTE is
+@@ -20839,6 +21024,8 @@ static inline uint64_t gdakiCtrlRingNewGen(struct gdakiCtrlRingPair* p, uint32_t
+     memset(&end.env, 0, sizeof(end.env));
+     end.env.gen = p->gen;
+     end.env.seq = p->lastSeq;
++    // -1 once per connection (REVIEW_FIX12_P2B 고칠 것 3): a generation never connected that dropped nothing ends silently
++    end.env.ackSeq = p->connected || dropped > 0 ? 1u : 0u;
+   }
+   p->deferred.clear();  // their RECVs were taken: the slots are free (slotGen 0)
+   p->gen = gen;
+@@ -21005,14 +21192,18 @@ static inline int gdakiCtrlRingPop(struct gdakiCtrlRingPair* p, const struct gda
+                                    struct gdakiCtrlInEnt* out) {
+   if (p->inbox.empty()) {
+     if (!p->lost || p->lossToldGen == p->gen) return 0;
++    if (!p->connected && p->q.empty()) return 0;  // never connected, nothing queued: no -1 (REVIEW_FIX12_P2B 고칠 것 3)
+     p->lossToldGen = p->gen;
+     return -1;
+   }
+   if (gdakiCtrlInIsEnd(p->inbox.front())) {
+     const uint32_t g = p->inbox.front().env.gen;
+     if (gdakiCtrlRingRecvsOf(p, g) != 0) return 0;  // that generation's RECVs may still bring ACKed records
++    // connected, dropped queued messages, or a record of it came after the change (seq 1 is CONNECTED)
++    const bool told = p->inbox.front().env.ackSeq != 0 || p->inbox.front().env.seq >= 2;
+     p->inbox.pop_front();
+     p->lossToldGen = g;
++    if (!told) return gdakiCtrlRingPop(p, ops, out);  // never connected: no -1 (one per connection)
+     return -1;
+   }
+   *out = p->inbox.front();

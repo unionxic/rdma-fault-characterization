@@ -94,6 +94,7 @@ struct NicSide {
   uint64_t rnr = 0, maxInbox = 0, maxDeferred = 0;
   bool err = false;                          // this side's QP is in ERR (REVIEW_P12 고칠 것 17: one side alone)
   std::vector<uint64_t> landed;              // records of each generation that landed here (RC ACKed them)
+  std::vector<uint8_t> toldOf;               // per generation it left: connected, or queued messages dropped (-1 due)
 };
 // A post to a QP in ERR succeeds and completes at once with a flush (verbs' rule), behind what is in the CQ.
 static int nicPostSend(void* ctx, int, uint32_t gen, uint32_t sslot, const uint8_t* frame, uint32_t bytes) {
@@ -219,6 +220,10 @@ struct Nic {
         while (!s[i].cq.empty()) collect(i, 1 + (int)(rng() % 4));
         CHECK(gdakiCtrlRingOutstanding(&s[i].p) == 0);
       }
+      if (s[i].p.gen != 0) {  // -1 once per connection (REVIEW_FIX12_P2B 고칠 것 3)
+        if (s[i].toldOf.size() <= s[i].p.gen) s[i].toldOf.resize(s[i].p.gen + 1, 0);
+        s[i].toldOf[s[i].p.gen] = s[i].p.connected || !s[i].p.q.empty();
+      }
       gdakiCtrlRingNewGen(&s[i].p, g, i == ini);
       s[i].err = false;  // RESET -> INIT: posts go to the QP again
       int guard = 0;
@@ -238,6 +243,7 @@ struct Nic {
 // of the change only from the re-pairing the ERR side starts: the peer-initiated case).
 static void testCredit(std::mt19937_64& rng) {
   uint64_t taken = 0, takenOld = 0, oldCqes = 0, reads = 0, genChanges = 0, oneSided = 0, dropped = 0, losses = 0;
+  uint64_t silentGens = 0;
   for (int run = 0; run < 60; run++) {
     Nic nic(0x1234567800000000ull + (uint64_t)run);
     uint32_t g = 1;
@@ -352,7 +358,15 @@ static void testCredit(std::mt19937_64& rng) {
         CHECK(gotG[i][x] == land);
       }
       CHECK(gotG[i][g] == sentG[1 - i][g].size());  // the last generation: everything
-      CHECK(lossN[i] == g - 1);                     // -1 exactly once per change, either side's start
+      // -1 exactly once per change of a generation that connected here, dropped queued messages or delivered records
+      // after the change (either side's start); a generation never connected ends silently (REVIEW_FIX12_P2B 고칠 것 3)
+      uint64_t due = 0;
+      for (uint32_t x = 1; x < g; x++) {
+        const bool told = (x < a.toldOf.size() && a.toldOf[x]) || gotG[i][x] > 0;
+        due += told;
+        silentGens += !told;
+      }
+      CHECK(lossN[i] == due);
       CHECK(a.rnr == 0 && !a.p.lost);
       CHECK(a.p.sent - a.p.peerConsumed <= GDAKI_CTRL_RING_SLOTS);
       oldCqes += a.p.oldRecvCqes + a.p.oldSendCqes;
@@ -363,11 +377,47 @@ static void testCredit(std::mt19937_64& rng) {
   }
   CHECK(genChanges > 0 && oneSided > 0 && oldCqes > 0 && reads > 0 && takenOld > 0);
   printf("credit: %llu records taken (%llu of them of an older generation after the change), %llu generation changes "
-         "(%llu with one side in ERR), %llu loss events (one per change and side), %llu old-generation completions, "
+         "(%llu with one side in ERR), %llu loss events (one per change and side of a generation that connected there; "
+         "%llu side-generations never connected ended silently), %llu old-generation completions, "
          "%llu queued records dropped at a change (not ACKed), %llu consumed-word READs; every ACKed record taken; RNR 0\n",
          (unsigned long long)taken, (unsigned long long)takenOld, (unsigned long long)genChanges,
-         (unsigned long long)oneSided, (unsigned long long)losses, (unsigned long long)oldCqes,
-         (unsigned long long)dropped, (unsigned long long)reads);
+         (unsigned long long)oneSided, (unsigned long long)losses, (unsigned long long)silentGens,
+         (unsigned long long)oldCqes, (unsigned long long)dropped, (unsigned long long)reads);
+}
+
+// ---- a pairing given up and started again (REVIEW_FIX12_P2B 고칠 것 3): -1 once per connection ----
+// Generation 1 connects; generations 2 and 3 are started and abandoned before any CONNECTED (the initiator's bound, then
+// the other side's skipped generation); 4 connects. Each side's pump says -1 once (the end of 1), never for 2 or 3.
+static void testRestart(std::mt19937_64& rng) {
+  Nic nic(0x5ee5ull);
+  int64_t loss[2] = {0, 0};
+  auto drive = [&](bool kick) {
+    for (int round = 0; round < 1000; round++) {
+      for (int i = 0; i < 2; i++) {
+        if (kick) gdakiCtrlRingKick(&nic.s[i].p, nic.s[i].ops, 1.0 + round);
+        while (nic.deliver(i)) {}
+        nic.collect(i, 1 << 20);
+        struct gdakiCtrlInEnt e;
+        int r;
+        while ((r = gdakiCtrlRingPop(&nic.s[i].p, nic.s[i].ops, &e)) != 0) loss[i] += r < 0;
+      }
+    }
+  };
+  nic.pairing(1, 0, rng);
+  drive(true);
+  CHECK(nic.s[0].p.connected && nic.s[1].p.connected);
+  for (uint32_t g = 2; g <= 3; g++) {  // started, never connected (nothing kicked, nothing queued)
+    nic.toErr();
+    nic.pairing(g, (int)(g % 2), rng);
+    drive(false);
+    CHECK(!nic.s[0].p.connected && !nic.s[1].p.connected);
+  }
+  nic.toErr();
+  nic.pairing(4, 0, rng);
+  drive(true);
+  CHECK(nic.s[0].p.connected && nic.s[1].p.connected && loss[0] == 1 && loss[1] == 1);
+  printf("restart: generation 1 connected, 2 and 3 given up before CONNECTED, 4 connected: -1 %lld and %lld times (once "
+         "per connection)\n", (long long)loss[0], (long long)loss[1]);
 }
 
 // ---- the inbox bound: a reader that stops; the sender stops behind it, nothing is lost ----
@@ -456,7 +506,9 @@ static void testOldEnvelope(std::mt19937_64& rng) {
                                  k) == GDAKI_CTRL_RX_LOST);
     CHECK(r.p.lost && strcmp(r.p.lostCause, c.cause) == 0);
     struct gdakiCtrlInEnt e;
-    CHECK(gdakiCtrlRingPop(&r.p, r.ops, &e) == -1);
+    // never connected (no CONNECTED came) and nothing queued (a lost one takes nothing): no -1 (REVIEW_FIX12_P2B 고칠 것 3)
+    CHECK(gdakiCtrlRingPop(&r.p, r.ops, &e) == 0 && !r.p.connected);
+    CHECK(gdakiCtrlRingEnqueue(&r.p, GDAKI_CTRL_K_RECORD, &m, sizeof(m)) != 0 && gdakiCtrlRingPop(&r.p, r.ops, &e) == 0);
   }
 }
 
@@ -1005,6 +1057,7 @@ int main() {
 #if !NCCL_GIN_CTRL_TCP
   testWrId(rng);
   testCredit(rng);
+  testRestart(rng);
   testInbox(rng);
   testOldEnvelope(rng);
   testFraming(rng);
