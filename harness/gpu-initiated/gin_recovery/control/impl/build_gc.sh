@@ -4,7 +4,8 @@
 # (the same stage semantics). No GPU or RDMA program runs here: the libraries are compiled and linked, the CPU unit tests
 # run on the CPU with ASan and UBSan (no NCCL, no CUDA, no verbs at run time), the identity checks compile and compare.
 # Nothing outside agent_gc_$BR/ is written but impl/gc_layer*.diff in this worktree. agent_mi_fix/ (ln4) is read only.
-# usage: BR=<prep|page|ring|launcher|int> build_gc.sh <setup|paste|api|gc|gcp|gct|gctp|unit|pre|sites|ident|diff|info>
+# usage: SCR=<the session scratch dir> BR=<prep|page|ring|launcher|int> build_gc.sh
+#          <setup|paste|repaste|api|gc|gcp|gct|gctp|unit|pre|sites|ident|diff|info>
 #   prep, the preparation stage (9.8 "준비"); page, ring, launcher: phases 1, 2, 3 (they start from ln4 + the preparation
 #   stage's diff); int: their integration (phase 4 binds the rest of the TCP code behind the switch).
 #   setup  once: check that agent_mi_fix is gin-mirror's ln4 (head commit "gin-restore i5 (rs_layer.diff f005bb67)",
@@ -18,6 +19,8 @@
 #   paste  once, BR=prep's first change: paste impl/rs_ctrl_api.h's two blocks ("gin-control: ctrl API", "gin-control:
 #          ctrl seams") right after the end of the block "gin-mirror: store API" of the host file. Refused when the tree
 #          already has a gin-control block.
+#   repaste replace the tree's two pasted blocks by the header's (after the header changed), byte for byte; any BR (a
+#          phase edits only its own "[n]" sub-blocks of the header, then repastes; api checks the result).
 #   api    the pasted blocks are the header's, byte for byte; the header compiles standalone (g++ -fsyntax-only) with and
 #          without NCCL_GIN_CTRL_TCP=1, with and without its entry-point declarations, with gin-mirror's seven headers.
 #   gc     the default build (rdma, research) into agent_gc_$BR/build -> out/$GCOUT (default gc_$BR);
@@ -33,8 +36,10 @@
 #   pre    the preprocessed host file (g++ -E -P with the build's own flags) of gct, gctp and gctc (gct's flags with
 #          NCCL_GIN_CTRL_TCP_CELLS=1) against ln4's (gctp: its production flags), as is and with the tree's path in the
 #          __FILE__ strings and the host file's __LINE__ numbers normalized; gc's for the record; out/pre/.
-#   sites  the swap points: call sites of gdakiTsSend, gdakiTsPump, gdakiHoldSend, gdakiCtrlSend, gdakiCtrlPump in ln4 and
-#          in the working tree, and impl/gc_sites.tsv (every site's class and action) against both.
+#   sites  the swap points: impl/gc_sites.tsv (every site's class and action) against ln4's lines and the working tree's
+#          rdma side (the code outside the pasted blocks and the preparation region, without the #if NCCL_GIN_CTRL_TCP
+#          branches): the counts of every swap point, seam and kept call, the .fd uses left; and every
+#          #if NCCL_GIN_CTRL_TCP branch outside the blocks is a run of ln4's lines verbatim.
 #   ident  the device identity against ln4 (EXPERIMENT.md 9.8 "동일성 확인"): the four macro-free programs (gin-restore's
 #          ff_ops.cu, gin_ts2.cu, gin_mr.cu, NCCL's ring example) compiled against each build's installed headers, without
 #          and with NCCL_GIN_RESTORE_DEVICE, against ln4's objects (agent_mi_fix/sass_mi_ln4): whole SASS and -res-usage;
@@ -48,7 +53,7 @@ set -euo pipefail
 STAGE=${1:?stage}
 BR=${BR:?BR=<prep|page|ring|launcher|int>}
 case "$BR" in prep | page | ring | launcher | int) ;; *) echo "unknown work package $BR" >&2; exit 2 ;; esac
-SCR=${SCR:-/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad}
+SCR=${SCR:?SCR=<the session scratch dir that holds agent_mi_fix and agent_gc_*>}
 D=$(cd "$(dirname "$0")" && pwd)          # this worktree's control/impl
 MID=$(cd "$D/../../mirror/impl" && pwd)   # gin-mirror's impl (read only)
 RSD=$(cd "$D/../../restore/impl" && pwd)  # gin-restore's impl (read only)
@@ -179,6 +184,32 @@ PY
   files_ok
 }
 
+repaste() {  # the header's two blocks over the tree's (each phase changes only its own sub-blocks in them)
+  head_ok
+  python3 - "$W/nccl-src" "$D" <<'PY'
+import sys
+root, impl = sys.argv[1], sys.argv[2]
+HOSTF = root + '/src/transport/net_ib/gdaki/gin_host_gdaki.cc'
+def block(L, begin, end, what):
+    a = [i for i, l in enumerate(L) if l.startswith(begin)]
+    b = [i for i, l in enumerate(L) if l.startswith(end)]
+    if len(a) != 1 or len(b) != 1 or b[0] < a[0]: sys.exit('no block %r in %s' % (begin, what))
+    return a[0], b[0]
+L = open(impl + '/rs_ctrl_api.h', encoding='utf-8').read().split('\n')
+H = open(HOSTF, encoding='utf-8').read().split('\n')
+n = []
+for begin, end in (('// ---- gin-control: ctrl seams (begin', '// ---- gin-control: ctrl seams (end'),
+                   ('// ---- gin-control: ctrl API (begin', '// ---- gin-control: ctrl API (end')):
+    a, b = block(L, begin, end, 'rs_ctrl_api.h')
+    x, y = block(H, begin, end, 'the host file')
+    H[x:y + 1] = L[a:b + 1]
+    n.append(b + 1 - a)
+open(HOSTF, 'w', encoding='utf-8').write('\n'.join(H))
+print('repaste: ctrl seams %d lines, ctrl API %d lines' % (n[0], n[1]))
+PY
+  files_ok
+}
+
 region() {  # region <begin regex> <end regex> <file>
   awk -v b="$1" -v e="$2" '$0 ~ b {on=1} on {print} $0 ~ e {on=0}' "$3"
 }
@@ -214,6 +245,10 @@ api() {
     g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-function $f -DGDAKI_MI_API_NO_ENTRY_DECLS -DGDAKI_HOLD_API_NO_ENTRY_DECLS \
       -DGDAKI_CTRL_API_NO_ENTRY_DECLS -fsyntax-only -I"$D" -I"$MID" "$o/headers.cc"
   done
+  if g++ -std=c++17 -DNCCL_GIN_CTRL_TCP_CELLS=1 -fsyntax-only -I"$D" -I"$MID" "$o/headers.cc" 2> "$o/cells_alone.err"; then
+    echo "api: NCCL_GIN_CTRL_TCP_CELLS=1 without NCCL_GIN_CTRL_TCP compiled; it must not" >&2; exit 1
+  fi
+  echo "api: NCCL_GIN_CTRL_TCP_CELLS=1 without NCCL_GIN_CTRL_TCP is refused ($(grep -c '#error' "$o/cells_alone.err") #error line)"
   echo "api: rs_ctrl_api.h compiles with gin-mirror's seven headers (g++ -fsyntax-only; rdma and tcp; with and without the" \
        "entry-point declarations); launcher/launcher_msg.h $( [ -f "$D/launcher/launcher_msg.h" ] && echo "present: its envelope checked" || echo absent)"
 }
@@ -295,12 +330,14 @@ unit() {
     for b in ln4 tree; do
       x2=$W/nccl-src/$HOSTF; [ "$b" = ln4 ] && x2=$LN4/nccl-src/$HOSTF
       cutdefs "$x2" "$o/gc_${b}_sock.inc" '#define GDAKI_TS_MAGIC ' 'struct gdakiTsMsg {' 'struct gdakiTsPeer {' \
-        'static const char* gdakiTsErrName(' 'static int gdakiTsSend(' 'static int gdakiTsPumpRaw(' 'static int gdakiTsPump('
+        'static const char* gdakiTsErrName(' 'static int gdakiTsSend(' 'static int gdakiTsPumpRaw(' 'static int gdakiTsPump(' \
+        'static int gdakiTsRecv(' 'static int gdakiRsRecvOn('
     done
     cut1 "$o/gc_seams.inc" '^// ---- gin-control: ctrl seams [(]begin' '^// ---- gin-control: ctrl seams [(]end'
-    cutdefs "$W/nccl-src/$HOSTF" "$o/gc_prep_fn.inc" 'static int gdakiCtrlSend(' 'static int gdakiCtrlPump('
+    cutdefs "$W/nccl-src/$HOSTF" "$o/gc_prep_fn.inc" 'static int gdakiCtrlSend(' 'static int gdakiCtrlPump(' \
+      'static int gdakiCtrlRecv(' 'static int gdakiCtrlRecvOn('
     if cmp -s <(sed 1d "$o/gc_ln4_sock.inc") <(sed 1d "$o/gc_tree_sock.inc"); then
-      echo "unit ($c): the tree's TCP back end (gdakiTsMsg, gdakiTsPeer, gdakiTsErrName, gdakiTsSend, gdakiTsPumpRaw, gdakiTsPump) is ln4's text"
+      echo "unit ($c): the tree's TCP back end (gdakiTsMsg, gdakiTsPeer, gdakiTsErrName, gdakiTsSend, gdakiTsPumpRaw, gdakiTsPump, gdakiTsRecv, gdakiRsRecvOn) is ln4's text"
     else
       echo "unit ($c): the tree's TCP back end differs from ln4's" >&2; exit 1
     fi
@@ -339,8 +376,9 @@ precmd() {  # precmd <build dir> <CXXFLAGS>: that build's compile command of the
      CUDA_HOME=$CUDA NVCC_GENCODE="$GENCODE" 2>/dev/null) |
     grep -E '^g\+\+ ' | grep -F -- ' -c transport/net_ib/gdaki/gin_host_gdaki.cc ' | head -1
 }
-norm() {  # norm <in> <out>: the tree's path in __FILE__ strings, the host file's __LINE__ after its __FILE__ (and __func__),
-          # and blank lines normalized away; nothing else
+norm() {  # norm <in> <out>: the tree's path in __FILE__ strings and the host file's __LINE__ after its __FILE__ (and
+          # __func__) normalized, and blank lines dropped (REVIEW_PREP nit 7: -E -P keeps blank lines where the #if
+          # branches were; the raw line counts are printed beside); nothing else
   sed -E 's#'"$SCR"'/agent_[A-Za-z0-9_]+/nccl-src/#TREE/#g; s#("TREE/src/transport/net_ib/gdaki/gin_host_gdaki\.cc"\)?, (__func__, )?\(?)[0-9]+#\1L#g' "$1" |
     grep -v '^[[:space:]]*$' > "$2"
 }
@@ -377,7 +415,8 @@ pre() {
 sites() {
   head_ok
   local f=$W/nccl-src/$HOSTF l=$LN4/nccl-src/$HOSTF s
-  for s in gdakiTsSend gdakiTsPump gdakiHoldSend gdakiCtrlSend gdakiCtrlPump gdakiCtrlFd; do
+  for s in gdakiTsSend gdakiTsPump gdakiTsRecv gdakiRsRecvOn gdakiTsAnswerFail gdakiHoldSend gdakiCtrlSend gdakiCtrlPump \
+           gdakiCtrlRecv gdakiCtrlRecvOn gdakiCtrlRejoinFail gdakiCtrlChanUp gdakiCtrlChanGen gdakiCtrlPollFd gdakiCtrlChanInstall; do
     echo "sites: $s( lines: ln4 $(grep -cE "\\b$s\\(" "$l" || true), tree $(grep -cE "\\b$s\\(" "$f" || true)"
   done
   echo "sites: pe.fd lines: ln4 $(grep -cE '\bpe\.fd\b' "$l"), tree $(grep -cE '\bpe\.fd\b' "$f")"
@@ -389,30 +428,81 @@ rows = [l.rstrip('\n').split('\t') for l in open(tsv, encoding='utf-8') if l.str
 L = open(ln4, encoding='utf-8').read().split('\n')
 T = open(tree, encoding='utf-8').read().split('\n')
 bad = 0
-def code(lines):  # the code lines of the tree outside the pasted blocks and the preparation stage's own region
-    out, skip = [], False
+def isCode(l): return not l.lstrip().startswith('//') and not l.lstrip().startswith('#define')
+def views(lines):
+    # the rdma side: code lines outside the pasted blocks and the preparation region (nested markers counted), without
+    # the #if NCCL_GIN_CTRL_TCP branches; and those branches (outside the blocks), each a list of lines
+    out, branches, depth, stack, cur = [], [], 0, [], None
     for l in lines:
-        if re.match(r'^// (----|====) gin-control(:| \(prep\))', l): skip = '(begin' in l
-        elif not skip and not l.lstrip().startswith('//') and not l.lstrip().startswith('#define'): out.append(l)
-    return out
-C = code(T)
+        m = re.match(r'^// (----|====) gin-control(:| \(prep\))', l)
+        if m:
+            depth += 1 if '(begin' in l else (-1 if '(end' in l else 0)
+            continue
+        if depth > 0: continue
+        d = l.strip()
+        if d.startswith('#if'):
+            k = 'tcp' if d == '#if NCCL_GIN_CTRL_TCP' else 'rdma' if d == '#if !NCCL_GIN_CTRL_TCP' else 'other'
+            stack.append(k)
+            if k == 'tcp': cur = []
+            continue
+        if d.startswith('#else') and stack and stack[-1] in ('tcp', 'rdma'):
+            if stack[-1] == 'tcp': branches.append(cur); cur = None
+            else: cur = []
+            stack[-1] = 'rdma' if stack[-1] == 'tcp' else 'tcp'
+            continue
+        if d.startswith('#endif') and stack:
+            if stack[-1] == 'tcp': branches.append(cur); cur = None
+            stack.pop()
+            continue
+        if 'tcp' in stack:
+            if stack[-1] == 'tcp' and cur is not None: cur.append(l)
+            continue
+        if isCode(l) and not d.startswith('#'): out.append(l)
+    return out, branches
+C, B = views(T)
+LC = [l for l in L if isCode(l)]
 def n(pat, lines): return sum(len(re.findall(pat, l)) for l in lines)
 cnt = Counter((r[0], r[4]) for r in rows)
 pe = [i + 1 for i, l in enumerate(L) if re.search(r'\bpe\.fd\b', l)]
 if sorted(int(r[1]) for r in rows if r[0] == 'fd') != pe: bad += 1; print('tsv: the fd rows are not ln4\'s pe.fd lines')
+FD = r'(\.|->)fd\b'
+for r in rows:  # every row names a line of ln4 that has what its kind says
+    t = L[int(r[1]) - 1]
+    want = {'send': r'\bgdakiTsSend\(', 'pump': r'\bgdakiTsPump\(', 'recv': r'\bgdakiTsRecv\(|\bgdakiRsRecvOn\(',
+            'answer': r'\bgdakiTsAnswerFail\(', 'holdsend': r'\bgdakiHoldSend\(', 'fd': r'\bpe\.fd\b', 'fd-other': FD,
+            'accept': r'\bgdakiTsRecv\(', 'state': r'\bpe\.(gone|gen|have|unknown)\b|deferredGen'}[r[0]]
+    if not re.search(want, t): bad += 1; print('tsv: row %s %s: ln4\'s line has no %s' % (r[0], r[1], want))
+conv = sum(v for (k, a), v in cnt.items() if k in ('fd', 'fd-other') and a in ('chanup', 'pollfd', 'install'))
 checks = [
   ('gdakiCtrlSend( calls', cnt[('send', 'swapped')], n(r'\bgdakiCtrlSend\(', C)),
   ('gdakiCtrlPump( calls', cnt[('pump', 'swapped')], n(r'\bgdakiCtrlPump\(', C)),
+  ('gdakiCtrlRecv(, gdakiCtrlRecvOn( calls', cnt[('recv', 'swapped')], n(r'\bgdakiCtrlRecv(On)?\(', C)),
+  ('gdakiCtrlRejoinFail( calls', cnt[('answer', 'swapped')], n(r'\bgdakiCtrlRejoinFail\(', C)),
   ('gdakiTsSend( calls and definition', cnt[('send', 'kept')], n(r'\bgdakiTsSend\(', C)),
   ('gdakiTsPump( calls and definition', cnt[('pump', 'kept')], n(r'\bgdakiTsPump\(', C)),
+  ('gdakiTsRecv(, gdakiRsRecvOn( kept', cnt[('recv', 'kept')], n(r'\bgdakiTsRecv\(|\bgdakiRsRecvOn\(', C)),
+  ('gdakiTsAnswerFail( kept', cnt[('answer', 'kept')], n(r'\bgdakiTsAnswerFail\(', C)),
   ('gdakiHoldSend( lines', sum(v for (k, a), v in cnt.items() if k == 'holdsend'), n(r'\bgdakiHoldSend\(', C)),
-  ('gdakiCtrlFd( uses', cnt[('fd', 'marked')] + cnt[('fd-other', 'marked')], n(r'\bgdakiCtrlFd\(', C)),
-  ('pe.fd uses left', sum(len(re.findall(r'\bpe\.fd\b', L[int(r[1]) - 1])) for r in rows if r[0] == 'fd' and r[4] == 'kept'),
-   n(r'\bpe\.fd\b', C)),
+  ('gdakiCtrlChanUp( uses', cnt[('fd', 'chanup')] + cnt[('fd-other', 'chanup')], n(r'\bgdakiCtrlChanUp\(', C)),
+  ('gdakiCtrlPollFd( uses', cnt[('fd', 'pollfd')] + cnt[('fd-other', 'pollfd')], n(r'\bgdakiCtrlPollFd\(', C)),
+  ('gdakiCtrlChanInstall( uses', cnt[('fd', 'install')] + cnt[('fd-other', 'install')], n(r'\bgdakiCtrlChanInstall\(', C)),
+  ('gdakiCtrlChanGen( uses', cnt[('state', 'changen')], n(r'\bgdakiCtrlChanGen\(', C)),
+  ('.fd uses left (ln4 minus the seams)', n(FD, LC) - conv, n(FD, C)),
+  ('pe.fd uses left', sum(len(re.findall(r'\bpe\.fd\b', L[int(r[1]) - 1])) for r in rows
+                          if r[0] == 'fd' and r[4] in ('kept', 'arg')), n(r'\bpe\.fd\b', C)),
 ]
 for what, want, got in checks:
-    print('tsv: %-36s table %3d, tree %3d%s' % (what, want, got, '' if want == got else '  MISMATCH'))
+    print('tsv: %-40s table %3d, tree %3d%s' % (what, want, got, '' if want == got else '  MISMATCH'))
     if want != got: bad += 1
+# every tcp branch is ln4's text: a run of consecutive ln4 lines
+J = '\n'.join(L)
+nb = 0
+for b in B:
+    if b and ('\n' + '\n'.join(b) + '\n') not in ('\n' + J + '\n'):
+        bad += 1; print('tsv: an #if NCCL_GIN_CTRL_TCP branch is not ln4\'s text: %r' % b[0][:100])
+    nb += 1
+print('tsv: %d #if NCCL_GIN_CTRL_TCP branches outside the blocks, each a run of ln4\'s lines verbatim' % nb if not bad else
+      'tsv: %d #if NCCL_GIN_CTRL_TCP branches checked' % nb)
 print('tsv: %d rows; %s' % (len(rows), ', '.join('%s %s %d' % (k, a, v) for (k, a), v in sorted(cnt.items()))))
 sys.exit(1 if bad else 0)
 PY2
@@ -538,7 +628,8 @@ info() {
     done
     echo "include_digest build $(cd "$W/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
     echo "include_digest ln4 $(cd "$LN4/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
-    for f in rs_ctrl_api.h gc_sites.tsv build_gc.sh gc_unit_prep.cc launcher/launcher_msg.h; do
+    for f in rs_ctrl_api.h gc_sites.tsv build_gc.sh gc_unit_prep.cc launcher/launcher_msg.h launcher/gin_launcher.c \
+             launcher/launcher_transport_verbs.c launcher/launcher_unit.cc; do
       [ -f "$D/$f" ] && echo "$f $(md5 "$D/$f") $(wc -l < "$D/$f") lines"
     done
   } > "${INFO:-$OUT/build_info.txt}"
@@ -547,6 +638,7 @@ info() {
 case "$STAGE" in
   setup) setup ;;
   paste) paste ;;
+  repaste) repaste ;;
   api) api ;;
   gc) lib build "$GCOUT" "" ;;
   gcp) lib build-gcp "$GCPOUT" "-DNCCL_GIN_TS_PRODUCTION" ;;

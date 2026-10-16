@@ -23,7 +23,7 @@
 !*.md
 # derived tables, experiment specs and small text records
 !*.csv
-!*.tsv
+!harness/gpu-initiated/gin_recovery/control/impl/gc_sites.tsv
 !*.txt
 !*.json
 !*.spec

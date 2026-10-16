@@ -13,10 +13,17 @@
   "refused to signal … (STOP_launcher)" 줄이며 아무 신호도 보내지 않는다. pid로 신호를 보내는 길은 없다.
 - **활성화 중계.** 짝의 ACTIVATE를 등록 표로 먼저 본다(nonce, rank, 화신 = 끝난 화신 + 1). 예비 프로세스가 HELLO 전이면 곧바로 REFUSED, HELLO 뒤 READY 전이면
   LATER를 한 번만 보내고, READY가 오면 짝의 outbox에서 덩어리를 READ해 기록과 함께 넘긴다. 예비 프로세스의 답, FETCH 끝점, READY, DONE을 중계한다.
+  - READ가 나가 있는 동안 ABORT, 예비 프로세스의 끝남, 짝 QP의 잃음이 와도 덩어리 버퍼는 그 READ가 끝나거나 그 QP를 닫은 뒤에만 푼다(독립 리뷰 REVIEW_PREP 고칠 것 10).
+  - ACCEPTED 뒤에는 짝의 launcher QP가 잠깐 끊기거나 다시 짝 맺어져도 그 활성화를 그만두지 않고 SIGKILL도 보내지 않는다. 중계할 FETCH 말은 대기열에서 기다렸다가
+    다시 맺은 QP로 간다. ACCEPTED 뒤의 활성화를 끝내는 것은 짝의 ABORT나 FENCE뿐이다(고칠 것 12). ACCEPTED 전(기다림, READ, 넘김)에는 지금처럼 그만둔다.
 - **SPAWN**은 REFUSED "spawn not built"(따로 된 종류 `GL_K_REFUSED`; 활성화 답이 아니므로 짝은 이것으로 fallback하지 않는다).
 - **짝 맺기.** 기록 QP와 생존 READ QP를 따로 짝 맺는다. 어느 쪽이든 시작할 수 있고 QP마다 새 PSN이다. 기록 QP가 깨지면 launcher가 PAIR(gen + 1)을 500 ms마다,
-  10 000 ms까지 보낸다. 둘이 같이 시작하면 rank의 것이 이긴다.
-- **상태 페이지(4 KiB, REMOTE_READ).** 박동, 등록마다 등록 낱말과 예비 자리 낱말과 그 상태의 나이, rank마다 소비 수(credit). 모두 정렬된 8 B 낱말 하나씩이다.
+  10 000 ms까지 보낸다. 둘이 같이 시작하면 rank의 것이 이긴다. 지금 세대보다 낮은 PAIR는 QP가 있든 없든 버리고, 이미 잃은 QP의 세대와 같은 PAIR도 버린다(nit 13).
+- **전송(verbs).** QP 손잡이는 (일련번호 << 8) | 칸이라, 닫은 QP의 번호는 다른 QP가 받지 않는다. 닫은 QP의 완료와 대기열의 사건은 새 QP에 닿지 않는다(고칠 것 11).
+  UD 주소 핸들은 목적지(GID, LID)마다 한 번 만들어 두고, RC와 UD 길 모두 GIN QP와 같은 traffic class를 쓴다(`--tc`, 기본 `NCCL_IB_TC`; 고칠 것 13). 공유 CQ(1 024)에
+  다 들지 않는 QP는 만들지 않는다. QP를 없앤 뒤 그 MR과 버퍼를 푼다. CQ 오류는 launcher를 멈추고(STOP_launcher), UD QP 오류는 UD QP를 다시 세운다(nit 12).
+- **상태 페이지(4 KiB, REMOTE_READ).** 박동, 등록마다 등록 낱말과 예비 자리 낱말과 그 상태의 나이, rank마다 소비 수(credit). 모두 정렬된 8 B 낱말 하나씩이고,
+  낱말마다 release 저장 하나로 쓴다. 칸의 열쇠(nonce)는 다른 낱말 뒤에 쓴다(nit 11).
 
 ## 메시지
 
@@ -59,8 +66,11 @@ OUT=<출력 디렉터리> ./build_launcher.sh unit     # launcher_unit 실행, �
 - `/usr/include/infiniband/verbs.h`가 있으면 verbs 전송까지 빌드하고(실행하지 않음), 없으면 `-DGL_NO_VERBS`로 빌드한다(그 프로그램은 시작을 거절한다).
 - 스크립트는 `gin_launcher`를 실행하지 않고, verbs 장치나 GPU를 열지 않는다. 단위 시험은 프로세스 안 시험 전송과, 스스로 fork한 자식(실제 pidfd, 실제 SIGSTOP과
   SIGKILL)만 쓴다. ASan과 UBSan으로 빌드한다.
-- 장면: pidfd 사실, 등록과 거절, EXITED, LEFT와 BYE, FENCE와 EXITED의 엇갈림, 남의 pidfd에 신호 없음, SPAWN 거절, LATER 뒤 넘기기, 예비 프로세스가 활성화 전에
-  끝남, 이른 답의 한도, 잃는 ACCEPTED, 같은 화신 둘째 접속, pidfd 바꿈, 짝 맺기와 다시 짝 맺기, credit 낱말, 등록 oracle, 소켓 디렉터리, 잘못된 말.
+- 장면(20개): pidfd 사실, 등록과 거절, EXITED, LEFT와 BYE, FENCE와 EXITED의 엇갈림, 남의 pidfd에 신호 없음, SPAWN 거절, LATER 뒤 넘기기, 예비 프로세스가 활성화 전에
+  끝남, 이른 답의 한도, 잃는 ACCEPTED와 ACCEPTED 뒤 QP 끊김, READ 중 ABORT와 끝남과 QP 잃음, 손잡이 칸의 다시 씀(음성 대조 포함), 같은 화신 둘째 접속, pidfd 바꿈,
+  짝 맺기와 다시 짝 맺기, credit 낱말, 등록 oracle(장면 14개, 장면마다 검사 하나), 소켓 디렉터리, 잘못된 말.
+- 시험 전송은 손잡이를 verbs 전송과 같은 꼴로 줄 수 있고(칸 다시 씀 + 일련번호), READ를 붙잡아 두었다가 늦게 끝낼 수 있으며, `rc_close` 뒤에는 그 QP의 READ와
+  사건을 버린다(전송 계약).
 
 ## 만들지 않은 것
 

@@ -26,10 +26,13 @@ enum glTpEventType {
   GL_TP_UD_RECV = 1,    /* a launcher message arrived on the UD QP (msg) */
   GL_TP_RC_RECV = 2,    /* a launcher message arrived on peer's RC QP (peer, msg) */
   GL_TP_READ_DONE = 3,  /* an RDMA READ finished (peer, cookie, status: 0 ok) */
-  GL_TP_RC_ERROR = 4    /* peer's RC QP failed (a send or READ completion with an error, an async event, or a gap
+  GL_TP_RC_ERROR = 4,   /* peer's RC QP failed (a send or READ completion with an error, an async event, or a gap
                            in the sequence numbers) */
+  GL_TP_FATAL = 5       /* the transport itself failed (its CQ: every QP is gone): the launcher stops (status) */
 };
 
+/* A handle names one QP for its life: a closed QP's handle is never given to another QP (REVIEW_PREP fix 11), so an event
+ * of a closed QP that was already queued can never be taken for a newer QP's. rc_close also drops its queued events. */
 struct glTpEvent {
   int type;
   int peer;             /* RC handle (GL_TP_RC_*, GL_TP_READ_DONE), else -1 */
@@ -48,7 +51,8 @@ struct glTransportOps {
   int (*local_ud)(struct glTransport* tp, struct glEp* ud);
   /* Register the state page (REMOTE_READ); fills its region (addr, rkey, len). */
   int (*page_register)(struct glTransport* tp, void* page, size_t len, struct glRegion* out);
-  /* Send one launcher message on the UD QP to `to` (the rank's UD QP) with the rank's Q_Key. 0 ok. */
+  /* Send one launcher message on the UD QP to `to` (the rank's UD QP) with the rank's Q_Key. 0 ok. The verbs transport
+   * keeps one address handle per destination (GID, LID) with the GIN QPs' traffic class (REVIEW_PREP fix 13). */
   int (*ud_send)(struct glTransport* tp, const struct glEp* to, uint32_t qkey, const struct glMsg* m);
   /* Create an RC QP for one rank: kind GL_PAIR_RECORD (SEND/RECV of launcher messages; RECVs posted before it leaves
    * INIT) or GL_PAIR_PROBE (passive: the rank READs the launcher page on it; REMOTE_READ only, no RQ). A new QP every
@@ -65,7 +69,7 @@ struct glTransportOps {
   /* Set where the rank keeps its consumed count of this launcher's messages (its page + creditOff, from the PAIR):
    * the transport may READ that word when its send window is shut (design v2 2.2 path 3). */
   void (*rc_credit_at)(struct glTransport* tp, int peer, const struct glRegion* page, uint32_t creditOff);
-  /* Destroy peer's RC QP (no event follows). */
+  /* Destroy peer's RC QP: no event of it follows (queued ones are dropped), no DMA into a READ's buffer after it. */
   void (*rc_close)(struct glTransport* tp, int peer);
   /* Destroy the transport. */
   void (*close)(struct glTransport* tp);
@@ -77,9 +81,11 @@ struct glTransport {
 };
 
 /* The verbs transport (launcher_transport_verbs.c). dev: an IB device name (e.g. mlx5_1), port: 1-based, gidIndex: the
- * GID index of the GIN QPs, qkey: the launcher's own Q_Key, node: for the envelope's `from`. Returns NULL on failure
+ * GID index of the GIN QPs, trafficClass: theirs (NCCL_IB_TC; design v3 2.5), qkey: the launcher's own Q_Key, node: for
+ * the envelope's `from`. Returns NULL on failure
  * (the reason on stderr). Not built when GL_NO_VERBS is defined. */
-struct glTransport* gl_transport_verbs_open(const char* dev, int port, int gidIndex, uint32_t qkey, uint32_t node);
+struct glTransport* gl_transport_verbs_open(const char* dev, int port, int gidIndex, int trafficClass, uint32_t qkey,
+                                            uint32_t node);
 
 #ifdef __cplusplus
 }
