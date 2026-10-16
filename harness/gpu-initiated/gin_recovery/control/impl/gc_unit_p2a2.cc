@@ -20,7 +20,18 @@
 //      before the ring's consumed words are the page's (a late page: the lower rank resends, the pair still forms), the
 //      page's rxConsumed[] words are the ring's, a one-way burst of records needs the consumed word's READ of the peer's
 //      page and arrives whole and in order, gdakiCtrlChanUp's ring answer stays off until `live`;
-//   4. record 55 PROBE_SETUP: an incoming one is dropped with one line per sender, nothing else changes.
+//   4. record 55 PROBE_SETUP: an incoming one is dropped with one line per sender, nothing else changes;
+// phase 2a-2-B (the regions "live seams" (gc_live.inc), the swap points' bodies (gc_seam_bodies.inc), gdakiTsCauseLiveness
+// and gdakiTsMakeUnknown (gc_ts_live.inc), the TCP counters (gc_tcpcount.inc), cut as they are):
+//   5. 2 and 4 ranks: the TCP branch before live (bytes counted), live on every rank once both pairings of every peer are
+//      up (one line each), the channel answers off the witness's socket state; records both ways on every pair through
+//      gdakiCtrlSend and gdakiCtrlPump, byte for byte the stream ln4's gdakiTsSend/gdakiTsPump deliver; gdakiCtrlRecv's
+//      timeout, stop and record, gdakiCtrlRecvOn (_RECORD on the ring, _REJOIN on TCP), DATA on TCP counted; a generation
+//      change inside a round (the responder's record QP to ERR after it took the REQ): one -1 on each side with a QP
+//      cause, the round cancelled as gdakiTsCancelRound does with the witness untouched (MakeUnknown, CauseLiveness:
+//      unknown), the re-pairing the peer started, the retry and its ACK, the other pairs unaffected; the witness's BYE,
+//      a late record and FIN with the ring live; the control and ring summary lines;
+//   6. the switches QP_ERR, CREDIT_STALL, DROP_UD, and malformed values.
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -141,12 +152,17 @@ struct gdakiTs {
   std::vector<struct gdakiTsPeer> peers;
   uint64_t nonce = 0;
 };
+#include "gc_tcpcount.inc"  // 2a-2-B: the TCP branch's counters (the host file's, before its struct gdakiRecHost)
 struct gdakiRecHost {
   struct gdaki_context* ctx = nullptr;
   struct gdakiCtrlState* ctrl = nullptr;
   struct gdakiTs* ts = nullptr;
   int nranks = 0;
+  struct gdakiCtrlTcpCount ctrlTcp;
 };
+// the host file's record types and liveness classes this text reads (ln4's values)
+enum { GDAKI_TS_REQ = 2, GDAKI_TS_ACK = 3, GDAKI_TS_DONE = 5, GDAKI_TS_BYE = 10 };
+enum { GDAKI_TS_LV_NOEVIDENCE = 0, GDAKI_TS_LV_UNKNOWN = 1, GDAKI_TS_LV_DEAD = 2, GDAKI_TS_LV_LEFT = 3 };
 #include "gc_p2a2_host.inc"
 
 // ---- the parameters (the defaults; the threshold of one rank may be moved: gThreshRank, gThreshBump) ----
@@ -541,6 +557,11 @@ struct gdakiRsLocalIn {
 #include "gc_setup_pure.inc"
 #include "gc_ring_link.inc"
 #include "gc_ring_backend.inc"
+#include "gc_live.inc"         // 2a-2-B: the live seams (the hooks, the witness pump, the live step, the summary)
+#include "gc_seam_bodies.inc"  // 2a-2-B: the swap points' bodies of the "[2] ring" placeholders
+#include "gc_ts_live.inc"      // 2a-2-B: gdakiTsCauseLiveness and gdakiTsMakeUnknown with their record-QP lines
+static bool gArmed = true;     // the communicator is armed (or has no restore): the switches' origin
+static bool gdakiCtrlArmedNow(struct gdakiRecHost*) { return gArmed; }
 
 // ---- in-process ranks ----
 static uint64_t mix64(uint64_t x) {  // the host file's gdakiTsMix64
@@ -909,7 +930,7 @@ static void testFirstPairing(int n, int lateRank, double lateMs) {
   for (int i = 0; i < n; i++) {
     struct gdakiCtrlRing* g = R[(size_t)i].st.ring;
     struct gdakiCtrlPage* pg = R[(size_t)i].st.page;
-    CHECK(g->bound && g->pairingStarted && !g->live);
+    CHECK(g->bound && g->pairingStarted);  // 2a-2-B: live comes with the last pair up (testLive checks when)
     CHECK(g->rxConsumed == (uint64_t*)((uint8_t*)pg->page + pg->layout.rxConsumedOff));
     for (int p = 0; p < n; p++) {
       if (p == i) continue;
@@ -925,10 +946,12 @@ static void testFirstPairing(int n, int lateRank, double lateMs) {
       CHECK(__atomic_load_n(&g->rxConsumed[p], __ATOMIC_ACQUIRE) == gdakiCtrlRingConsumedWord(&pr.ring));
       CHECK(gdakiCtrlGenOf(g->rxConsumed[p]) == 1);
       bool up = true;
+      const bool wasLive = g->live;
+      g->live = false;
       CHECK(!gdakiCtrlRdmaLiveUp(&R[(size_t)i].r, p, &up) && up);  // not live: the socket's answer stands
       g->live = true;
       CHECK(gdakiCtrlRdmaLiveUp(&R[(size_t)i].r, p, &up) && up);  // 2a-2-B's answer: the pair's ring is up
-      g->live = false;
+      g->live = wasLive;
     }
     CHECK(R[(size_t)i].watchConnects == (uint64_t)(n - 1));  // one CONNECT per peer (the liveness READ QP)
   }
@@ -1006,6 +1029,463 @@ static void test55() {
   teardown(R);
   printf("record 55: 4 dropped from 2 senders, 2 lines, no datagram, no post, no request\n");
 }
+
+// ---- 5. 2a-2-B: the live seams over the fake verbs ----
+#include "gc_prep_gen.inc"  // gc_unit_prep.cc's kTypes and fillRandom (the same record generator)
+static void sockPair(int sv[2]) {
+  CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+  for (int i = 0; i < 2; i++) fcntl(sv[i], F_SETFL, fcntl(sv[i], F_GETFL, 0) | O_NONBLOCK);
+}
+static void stepAll(std::vector<Rank>& R) {
+  for (auto& k : R) {
+    gdakiCtrlRingHelperStep(&k.r);
+    watchStep(k);
+  }
+}
+static bool allLive(std::vector<Rank>& R) {
+  for (auto& k : R)
+    if (k.st.ring == nullptr || !k.st.ring->live) return false;
+  return true;
+}
+// n ranks paired and live (the helper's step sets live once both pairings of every peer are up). False: they did not.
+static bool bringUp(std::vector<Rank>& R, int n) {
+  gBoundOf.assign((size_t)n, nullptr);
+  for (int i = 0; i < n; i++) rankInit(R[(size_t)i], i, n, 5);
+  std::vector<const char*> offs;
+  allGatherAgree(R, &offs);
+  for (int i = 0; i < n; i++) {
+    R[(size_t)i].ts.peers.resize((size_t)n);
+    for (int p = 0; p < n; p++) R[(size_t)i].ts.peers[(size_t)p].gated = p != i;
+    R[(size_t)i].r.ts = &R[(size_t)i].ts;
+    pageUp(R[(size_t)i], n);
+  }
+  const double t0 = gdakiQ4MonoMs();
+  while (!allLive(R) && gdakiQ4MonoMs() - t0 < 5000.0) {
+    stepAll(R);
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+  }
+  return allLive(R);
+}
+// Every rank's inbox of every peer read through the seam: records appended to got[i][p], -1 counted in neg[i][p].
+struct Rx {
+  std::vector<std::vector<std::vector<struct gdakiTsMsg>>> got;
+  std::vector<std::vector<int>> neg;
+  std::vector<std::vector<std::string>> cause;
+};
+static void rxInit(Rx& x, int n) {
+  x.got.assign((size_t)n, std::vector<std::vector<struct gdakiTsMsg>>((size_t)n));
+  x.neg.assign((size_t)n, std::vector<int>((size_t)n, 0));
+  x.cause.assign((size_t)n, std::vector<std::string>((size_t)n));
+}
+static void drainAll(std::vector<Rank>& R, Rx& x) {
+  const int n = (int)R.size();
+  for (int i = 0; i < n; i++)
+    for (int p = 0; p < n; p++) {
+      if (p == i) continue;
+      struct gdakiTsPeer& pe = R[(size_t)i].ts.peers[(size_t)p];
+      struct gdakiTsMsg m;
+      int k;
+      while ((k = gdakiCtrlPump(&R[(size_t)i].r, p, pe, &m)) != 0) {
+        if (k == 1) x.got[(size_t)i][(size_t)p].push_back(m);
+        else {
+          x.neg[(size_t)i][(size_t)p]++;
+          x.cause[(size_t)i][(size_t)p] = pe.closeCause;
+        }
+      }
+    }
+}
+static struct gdakiTsMsg recOf(uint32_t type, int from, uint64_t round) {
+  struct gdakiTsMsg m;
+  memset(&m, 0, sizeof(m));
+  m.type = type;
+  m.from = from;
+  m.round = round;
+  return m;
+}
+static size_t countSendDeferredTotal(std::vector<Rank>& R) {
+  size_t d = 0;
+  for (auto& k : R)
+    for (const auto& pr : k.st.ring->peers) d += pr.deferred;
+  return d;
+}
+
+static void testLive(int n) {
+  std::vector<Rank> R((size_t)n);
+  const size_t live0 = logCount("the records go on the ring from now (live)");
+  // before live: the swap points take the TCP back end and count its bytes
+  gBoundOf.assign((size_t)n, nullptr);
+  for (int i = 0; i < n; i++) rankInit(R[(size_t)i], i, n, 5);
+  {
+    std::vector<const char*> offs;
+    allGatherAgree(R, &offs);
+    for (int i = 0; i < n; i++) {
+      R[(size_t)i].ts.peers.resize((size_t)n);
+      for (int p = 0; p < n; p++) R[(size_t)i].ts.peers[(size_t)p].gated = p != i;
+      R[(size_t)i].r.ts = &R[(size_t)i].ts;
+    }
+    int sv[2];
+    sockPair(sv);
+    struct gdakiTsPeer& pe10 = R[1].ts.peers[0];
+    struct gdakiTsPeer& pe01 = R[0].ts.peers[1];
+    pe01.fd = sv[0];
+    pe10.fd = sv[1];
+    struct gdakiTsMsg m = recOf(GDAKI_TS_REQ, 0, 1), in;
+    CHECK(gdakiCtrlPollFd(&R[0].r, 1, pe01) == sv[0] && gdakiCtrlChanUp(&R[0].r, 1, pe01));  // the socket's answers
+    CHECK(gdakiCtrlSend(&R[0].r, 1, GDAKI_CTRL_CH_RECORD, pe01.fd, &m, 100) == 0);
+    CHECK(gdakiCtrlRecv(&R[1].r, 0, pe10, &in, 200, nullptr) == 1 && in.type == GDAKI_TS_REQ && in.magic == GDAKI_TS_MAGIC);
+    CHECK(R[0].r.ctrlTcp.recordBytes.load() == sizeof(m) && R[1].r.ctrlTcp.rxPeer[0].load() == sizeof(m));
+    close(sv[0]);
+    close(sv[1]);
+    pe01.fd = pe10.fd = -1;
+    for (int i = 0; i < n; i++) pageUp(R[(size_t)i], n);
+    const double t0 = gdakiQ4MonoMs();
+    while (!allLive(R) && gdakiQ4MonoMs() - t0 < 5000.0) {
+      stepAll(R);
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+  }
+  CHECK(allLive(R));
+  CHECK(logCount("the records go on the ring from now (live)") == live0 + (size_t)n);  // one line per rank
+  for (int i = 0; i < n; i++) {
+    gBoundOf[(size_t)i] = nullptr;
+    for (int p = 0; p < n; p++) {
+      if (p == i) continue;
+      struct gdakiTsPeer& pe = R[(size_t)i].ts.peers[(size_t)p];
+      pe.fd = 77;  // a witness socket's number: the record channel's answers no longer look at it
+      CHECK(gdakiCtrlPollFd(&R[(size_t)i].r, p, pe) == -1 && gdakiCtrlChanUp(&R[(size_t)i].r, p, pe));
+      CHECK(gdakiCtrlChanGen(&R[(size_t)i].r, p, pe) == 1);
+      pe.fd = -1;
+      pe.gone = true;  // the witness's state does not move the record channel
+      CHECK(gdakiCtrlChanUp(&R[(size_t)i].r, p, pe));
+      pe.gone = false;
+    }
+  }
+  // records both ways on every pair through the seams (fd -1: a TCP fall-back would fail), and the same records over a
+  // socket through ln4's gdakiTsSend and gdakiTsPump: the delivered streams are equal byte for byte
+  Rx x;
+  rxInit(x, n);
+  const int K = 150;
+  std::vector<std::vector<std::vector<struct gdakiTsMsg>>> sent((size_t)n, std::vector<std::vector<struct gdakiTsMsg>>((size_t)n));
+  std::mt19937_64 rng(0x2a2bull + (uint64_t)n);
+  const uint64_t rnr0 = gRnr, tcpRec0 = R[0].r.ctrlTcp.recordBytes.load();
+  for (int k = 0; k < K; k++)
+    for (int i = 0; i < n; i++)
+      for (int j = 0; j < n; j++) {
+        if (i == j) continue;
+        struct gdakiTsMsg m;
+        fillRandom(&m, rng, kTypes[rng() % (sizeof(kTypes) / sizeof(kTypes[0]))]);
+        CHECK(gdakiCtrlSend(&R[(size_t)i].r, j, GDAKI_CTRL_CH_RECORD, -1, &m, 1000) == 0);
+        sent[(size_t)i][(size_t)j].push_back(m);  // as stamped by the seam (gdakiTsSend's contract)
+      }
+  {
+    const double t0 = gdakiQ4MonoMs();
+    bool done = false;
+    while (!done && gdakiQ4MonoMs() - t0 < 5000.0) {
+      drainAll(R, x);
+      done = true;
+      for (int i = 0; i < n; i++)
+        for (int j = 0; j < n; j++)
+          if (i != j && x.got[(size_t)j][(size_t)i].size() < (size_t)K) done = false;
+    }
+    CHECK(done);
+  }
+  bool same = true, magic = true;
+  int sv[2];
+  sockPair(sv);
+  struct gdakiTsPeer rd;
+  rd.fd = sv[1];
+  for (int i = 0; i < n; i++)
+    for (int j = 0; j < n; j++) {
+      if (i == j) continue;
+      const auto& g = x.got[(size_t)j][(size_t)i];
+      CHECK(g.size() == (size_t)K && x.neg[(size_t)j][(size_t)i] == 0);
+      for (size_t k = 0; k < g.size() && k < (size_t)K; k++) {
+        struct gdakiTsMsg t = sent[(size_t)i][(size_t)j][k], o;
+        t.magic = 0;  // gdakiTsSend stamps it as the seam did
+        same = same && gdakiTsSend(sv[0], &t, 1000) == 0;
+        int r = 0;
+        for (int w = 0; w < 1000 && (r = gdakiTsPump(rd, &o)) == 0; w++) std::this_thread::sleep_for(std::chrono::microseconds(10));
+        same = same && r == 1 && memcmp(&o, &g[k], sizeof(o)) == 0 && memcmp(&o, &sent[(size_t)i][(size_t)j][k], sizeof(o)) == 0;
+        magic = magic && g[k].magic == GDAKI_TS_MAGIC;
+      }
+      const struct gdakiCtrlRdmaPeer& pr = R[(size_t)i].st.ring->peers[(size_t)j];
+      CHECK(pr.txRecords == (uint64_t)K && R[(size_t)j].st.ring->peers[(size_t)i].rxRecords == (uint64_t)K);
+    }
+  close(sv[0]);
+  close(sv[1]);
+  CHECK(same && magic);
+  CHECK(gRnr == rnr0 && R[0].r.ctrlTcp.recordBytes.load() == tcpRec0);  // no RNR, no TCP byte while live
+  // gdakiCtrlRecv: gdakiTsRecv's timeout semantics on the ring
+  {
+    struct gdakiTsPeer& pe = R[0].ts.peers[1];
+    struct gdakiTsMsg m;
+    double t0 = gdakiQ4MonoMs();
+    CHECK(gdakiCtrlRecv(&R[0].r, 1, pe, &m, 30, nullptr) == 0);
+    const double el = gdakiQ4MonoMs() - t0;
+    CHECK(el >= 29.0 && el < 200.0);
+    std::atomic<bool> stop(true);
+    t0 = gdakiQ4MonoMs();
+    CHECK(gdakiCtrlRecv(&R[0].r, 1, pe, &m, 1000, &stop) == 0 && gdakiQ4MonoMs() - t0 < 50.0);
+    struct gdakiTsMsg s = recOf(GDAKI_TS_DONE, 1, 9);
+    CHECK(gdakiCtrlSend(&R[1].r, 0, GDAKI_CTRL_CH_RECORD, -1, &s, 100) == 0);
+    CHECK(gdakiCtrlRecv(&R[0].r, 1, pe, &m, 1000, nullptr) == 1 && m.type == GDAKI_TS_DONE && m.round == 9);
+    s = recOf(GDAKI_TS_DONE, 1, 10);
+    CHECK(gdakiCtrlSend(&R[1].r, 0, GDAKI_CTRL_CH_RECORD, -1, &s, 100) == 0);
+    CHECK(gdakiCtrlRecvOn(&R[0].r, 1, GDAKI_CTRL_CH_RECORD, -1, &m, 1000, nullptr) == 1 && m.round == 10);
+    CHECK(gdakiCtrlRecvOn(&R[0].r, 1, GDAKI_CTRL_CH_REJOIN, -1, &m, 10, nullptr) == -1);  // REJOIN: TCP until 2a-2-C
+    int dv[2];
+    sockPair(dv);
+    const uint64_t d0 = R[0].r.ctrlTcp.dataBytes.load();
+    CHECK(gdakiCtrlSend(&R[0].r, 1, GDAKI_CTRL_CH_DATA, dv[0], &s, 100) == 0 && R[0].r.ctrlTcp.dataBytes.load() == d0 + sizeof(s));
+    close(dv[0]);
+    close(dv[1]);
+  }
+  // a generation change inside a round: rank 0 (the initiator) sent its REQ, the responder q took it, then q's record QP
+  // to 0 goes to ERR (as the hold start's RecordToErr, or QP_ERR): q re-pairs (PAIR(record, gen 2) from q), rank 0's ACK
+  // wait ends with -1 exactly once (QP:NEWGEN: a pairing the peer started), q's pump with -1 once (QP:TOERR); the
+  // round is cancelled as gdakiTsCancelRound does (the witness reset nothing), retried after the re-pairing and ends
+  const int q = n - 1;
+  {
+    rxInit(x, n);
+    const size_t pair0 = logCount("PAIR(record, gen 2) to rank 0 (local ERR)"), rep0 = logCount("re-paired (gen 2)");
+    struct gdakiTsMsg req = recOf(GDAKI_TS_REQ, 0, 77), m;
+    CHECK(gdakiCtrlSend(&R[0].r, q, GDAKI_CTRL_CH_RECORD, -1, &req, 100) == 0);
+    struct gdakiTsPeer& peq = R[(size_t)q].ts.peers[0];
+    CHECK(gdakiCtrlRecv(&R[(size_t)q].r, 0, peq, &m, 1000, nullptr) == 1 && m.type == GDAKI_TS_REQ && m.round == 77);
+    gdakiCtrlRdmaRecordToErrAsk(&R[(size_t)q].r, 0);
+    int wsv[2];
+    sockPair(wsv);
+    struct gdakiTsPeer& pe0 = R[0].ts.peers[(size_t)q];
+    pe0.fd = wsv[0];  // the witness socket of the pair: its state must survive the cancel
+    int neg0 = 0, negq = 0, acks = 0, reqs = 0, other = 0;
+    bool cancelled = false, retried = false;
+    std::string c0, cq;
+    const double t0 = gdakiQ4MonoMs();
+    while (gdakiQ4MonoMs() - t0 < 4000.0 && acks == 0) {
+      stepAll(R);
+      // traffic on the other pairs meanwhile (n = 4: 1 <-> 2)
+      if (n == 4) {
+        struct gdakiTsMsg o = recOf(48, 1, 1);
+        (void)gdakiCtrlSend(&R[1].r, 2, GDAKI_CTRL_CH_RECORD, -1, &o, 10);
+        while (gdakiCtrlPump(&R[2].r, 1, R[2].ts.peers[1], &o) == 1) other++;
+        CHECK(gdakiCtrlPump(&R[2].r, 1, R[2].ts.peers[1], &o) >= 0);
+      }
+      int k = gdakiCtrlRecv(&R[0].r, q, pe0, &m, 2, nullptr);
+      if (k < 0) {
+        neg0++;
+        c0 = pe0.closeCause;
+        // gdakiTsCancelRound's witness steps: the cause, MakeUnknown, its liveness class
+        snprintf(pe0.lostCause, sizeof(pe0.lostCause), "%s", pe0.closeCause);
+        gdakiTsMakeUnknown(pe0);
+        CHECK(pe0.fd == wsv[0] && !pe0.unknown && fcntl(wsv[0], F_GETFD) >= 0);  // the witness untouched
+        CHECK(gdakiTsCauseLiveness(pe0.closeCause) == GDAKI_TS_LV_UNKNOWN);    // never an exit
+        cancelled = true;
+      } else if (k == 1) {
+        if (m.type == GDAKI_TS_ACK && m.round == 77 && retried) acks++;
+      }
+      if (cancelled && !retried && gdakiCtrlChanUp(&R[0].r, q, pe0)) {  // the retry after the re-pairing
+        req = recOf(GDAKI_TS_REQ, 0, 77);
+        CHECK(gdakiCtrlSend(&R[0].r, q, GDAKI_CTRL_CH_RECORD, -1, &req, 100) == 0);
+        retried = true;
+      }
+      while ((k = gdakiCtrlPump(&R[(size_t)q].r, 0, peq, &m)) != 0) {
+        if (k < 0) {
+          negq++;
+          cq = peq.closeCause;
+        } else if (m.type == GDAKI_TS_REQ && m.round == 77) {
+          reqs++;
+          struct gdakiTsMsg a = recOf(GDAKI_TS_ACK, q, 77);
+          CHECK(gdakiCtrlSend(&R[(size_t)q].r, 0, GDAKI_CTRL_CH_RECORD, -1, &a, 100) == 0);
+        }
+      }
+    }
+    CHECK(cancelled && retried && acks == 1 && reqs == 1);  // the first REQ was taken once, in gen 1; the retry once
+    // q's own -1 names its loss (QP:TOERR) when its pump runs before its re-pairing, else the new generation (QP:NEWGEN):
+    // once either way, and a record QP's cause
+    CHECK(neg0 == 1 && negq == 1 && c0 == "QP:NEWGEN" && (cq == "QP:TOERR" || cq == "QP:NEWGEN"));
+    CHECK(R[0].st.ring->peers[(size_t)q].ring.gen == 2 && R[(size_t)q].st.ring->peers[0].ring.gen == 2);
+    CHECK(logCount("PAIR(record, gen 2) to rank 0 (local ERR)") == pair0 + 1);  // q started it
+    CHECK(logCount("re-paired (gen 2)") >= rep0 + 2);  // both ends of (0, q)
+    CHECK(R[0].st.ring->peers[(size_t)q].repairs == 1 && R[(size_t)q].st.ring->peers[0].repairs == 1);
+    if (n == 4) CHECK(other > 0 && R[2].st.ring->peers[1].lossEvents == 0 && R[2].st.ring->peers[1].ring.gen == 1);
+    // the negative control: a socket cause resets the witness as ln4 does
+    snprintf(pe0.lostCause, sizeof(pe0.lostCause), "ECONNRESET");
+    gdakiTsMakeUnknown(pe0);
+    CHECK(pe0.fd == -1 && pe0.unknown && gdakiTsCauseLiveness("FIN") == GDAKI_TS_LV_DEAD &&
+          gdakiTsCauseLiveness("ECONNRESET") == GDAKI_TS_LV_UNKNOWN && gdakiTsCauseLiveness("QP:SENDERR") == GDAKI_TS_LV_UNKNOWN);
+    pe0.unknown = false;
+    close(wsv[1]);
+  }
+  // the witness's socket while the ring is live: BYE, a late record, FIN; the pump reads the ring only
+  {
+    int wsv[2];
+    sockPair(wsv);
+    struct gdakiTsPeer& pe = R[1].ts.peers[0];
+    pe.fd = wsv[0];
+    const size_t bye0 = logCount("rank 0 left the communicator (BYE)");
+    struct gdakiTsMsg b = recOf(GDAKI_TS_BYE, 0, 0), m;
+    CHECK(gdakiTsSend(wsv[1], &b, 100) == 0);
+    struct gdakiTsMsg late = recOf(GDAKI_TS_REQ, 0, 5);
+    CHECK(gdakiTsSend(wsv[1], &late, 100) == 0);
+    CHECK(gdakiCtrlPump(&R[1].r, 0, pe, &m) == 0 && pe.have == 0);  // the ring's inbox, not the socket
+    const uint64_t late0 = R[1].r.ctrlTcp.lateRecords.load();
+    CHECK(gdakiCtrlWitnessPump(&R[1].r, 0, pe, &m) == 1 && pe.left && m.type == GDAKI_TS_REQ && m.round == 5);
+    CHECK(logCount("rank 0 left the communicator (BYE)") == bye0 + 1 && R[1].r.ctrlTcp.lateRecords.load() == late0 + 1);
+    CHECK(gdakiCtrlWitnessPump(&R[1].r, 0, pe, &m) == 0);
+    close(wsv[1]);
+    CHECK(gdakiCtrlWitnessPump(&R[1].r, 0, pe, &m) == -1 && strcmp(pe.closeCause, "FIN") == 0);
+    struct gdakiTsMsg s = recOf(48, 0, 3);
+    CHECK(gdakiCtrlSend(&R[0].r, 1, GDAKI_CTRL_CH_RECORD, -1, &s, 100) == 0);  // the ring still carries the records
+    CHECK(gdakiCtrlRecv(&R[1].r, 0, pe, &m, 1000, nullptr) == 1 && m.round == 3);
+    close(wsv[0]);
+    pe.fd = -1;
+    pe.left = false;
+  }
+  // the teardown's lines
+  {
+    const size_t cs0 = logCount("control summary tcp_record_bytes="), rs0 = logCount(": ring summary peer=");
+    for (int i = 0; i < n; i++) gdakiCtrlRingSummary(&R[(size_t)i].r);
+    CHECK(logCount("control summary tcp_record_bytes=") == cs0 + (size_t)n);
+    CHECK(logCount(": ring summary peer=") == rs0 + (size_t)(n * (n - 1)));
+    char want[160];
+    snprintf(want, sizeof(want), "GIN/RC: rank %d: control summary tcp_record_bytes=%u tcp_data_bytes=%u tcp_conns=0 "
+             "witness_conns=0 records_lost=", 0, (unsigned)sizeof(struct gdakiTsMsg), (unsigned)sizeof(struct gdakiTsMsg));
+    CHECK(logCount(want) >= 1);
+    const char* keys[] = {" records_dup=", " repairs=", " sendq_deferred=", " sendq_max=", " rnr=0 ", " async=0 ",
+                          " active_mtu=5 tcp_rx_bytes_peer", " async_rec=0 async_read=0 async_la=0 ", " live=1 mono_ms="};
+    std::string last;
+    for (const auto& l : gLog)
+      if (l.find("GIN/RC: rank 0: control summary ") != std::string::npos) last = l;
+    size_t at = 0;
+    for (const char* k : keys) {
+      const size_t f = last.find(k, at);
+      CHECK(f != std::string::npos);
+      if (f != std::string::npos) at = f;
+    }
+    char rsw[128];
+    // to q: the K records, the REQ and its retry (and with 2 ranks the witness scene's record)
+    snprintf(rsw, sizeof(rsw), "GIN/RC: rank 0: ring summary peer=%d gen=2 sent=%d received=", q, K + 2 + (q == 1 ? 1 : 0));
+    CHECK(logCount(rsw) == 1);
+  }
+  printf("live (%d ranks): live on every rank after the pairings (one line each), the TCP branch counted before; %d records "
+         "each way on %d pairs through the seams, byte for byte ln4's TCP stream; gdakiCtrlRecv's timeout, stop and "
+         "record; a generation change in a round: one -1 each side (QP:NEWGEN, QP:TOERR), the witness untouched, cancel "
+         "and retry; the witness's BYE, late record and FIN; the summary lines\n", n, K, n * (n - 1) / 2);
+  teardown(R);
+}
+
+// ---- 6. the three test switches ----
+static void testSwitches() {
+  // QP_ERR=<ms>:<peer>: rank 0's record QP to rank 1 into ERR 40 ms after the origin (live, armed); rank 1 refuses the
+  // same value (its own rank) with one WARN
+  {
+    setenv(GDAKI_CTRL_T_QP_ERR, "40:1", 1);
+    std::vector<Rank> R(2);
+    const size_t sw0 = logCount("test switch QP_ERR: record QP to rank 1 moved to ERR"),
+                 off0 = logCount("test switch QP_ERR=40:1 is not <ms>:<peer>"),
+                 pair0 = logCount("rank 0: PAIR(record, gen 2) to rank 1 (local ERR)");
+    CHECK(bringUp(R, 2));
+    const double t0 = gdakiQ4MonoMs();
+    Rx x;
+    rxInit(x, 2);
+    while (gdakiQ4MonoMs() - t0 < 3000.0 &&
+           !(R[0].st.ring->peers[1].ring.gen == 2 && gdakiCtrlRingUp(&R[0].st.ring->peers[1].ring) &&
+             gdakiCtrlRingUp(&R[1].st.ring->peers[0].ring) && x.neg[0][1] == 1 && x.neg[1][0] == 1)) {
+      stepAll(R);
+      drainAll(R, x);
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    const double el = gdakiQ4MonoMs() - t0;
+    CHECK(logCount("test switch QP_ERR: record QP to rank 1 moved to ERR") == sw0 + 1 && el >= 40.0);
+    CHECK(logCount("test switch QP_ERR=40:1 is not <ms>:<peer>") == off0 + 1);
+    CHECK(logCount("rank 0: PAIR(record, gen 2) to rank 1 (local ERR)") == pair0 + 1);
+    CHECK(x.neg[0][1] == 1 && x.cause[0][1] == "QP:TOERR" && x.neg[1][0] == 1 && x.cause[1][0] == "QP:NEWGEN");
+    for (int k = 0; k < 50; k++) {
+      stepAll(R);
+      drainAll(R, x);
+    }
+    CHECK(x.neg[0][1] == 1 && x.neg[1][0] == 1);  // still once
+    struct gdakiTsMsg m = recOf(48, 0, 1);
+    CHECK(gdakiCtrlSend(&R[0].r, 1, GDAKI_CTRL_CH_RECORD, -1, &m, 100) == 0);
+    CHECK(gdakiCtrlRecv(&R[1].r, 0, R[1].ts.peers[0], &m, 1000, nullptr) == 1 && m.round == 1);
+    unsetenv(GDAKI_CTRL_T_QP_ERR);
+    teardown(R);
+  }
+  // CREDIT_STALL=<start>:<len>: no RECV posted again for 300 ms from the origin: rank 0's window shuts, its queue holds
+  // the rest (deferred sends), no RNR; after the stall every record arrives in order
+  {
+    setenv(GDAKI_CTRL_T_CREDIT_STALL, "0:300", 1);
+    std::vector<Rank> R(2);
+    const size_t sw0 = logCount("test switch CREDIT_STALL: no RECV re-posted for 300 ms");
+    CHECK(bringUp(R, 2));
+    stepAll(R);  // the origin and the stall's first line
+    const uint64_t rnr0 = gRnr;
+    const int N = 200;
+    const double t0 = gdakiQ4MonoMs();
+    for (int s = 0; s < N; s++) {
+      struct gdakiTsMsg m = recOf(48, 0, (uint64_t)s);
+      CHECK(gdakiCtrlSend(&R[0].r, 1, GDAKI_CTRL_CH_RECORD, -1, &m, 100) == 0);
+    }
+    Rx x;
+    rxInit(x, 2);
+    size_t during = 0;
+    while (gdakiQ4MonoMs() - t0 < 3000.0 && x.got[1][0].size() < (size_t)N) {
+      stepAll(R);
+      drainAll(R, x);
+      if (gdakiQ4MonoMs() - t0 < 250.0) during = x.got[1][0].size();
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    bool order = x.got[1][0].size() == (size_t)N;
+    for (size_t k = 0; order && k < x.got[1][0].size(); k++) order = x.got[1][0][k].round == k;
+    CHECK(order && during == 0 && gRnr == rnr0);
+    CHECK(logCount("test switch CREDIT_STALL: no RECV re-posted for 300 ms") == sw0 + 2);  // each rank's own RECVs
+    CHECK(R[0].st.ring->peers[1].deferred > 0 && R[0].st.ring->sendqMax >= (size_t)(N - (int)GDAKI_CTRL_RING_SLOTS));
+    CHECK(countSendDeferredTotal(R) == R[0].st.ring->peers[1].deferred && R[1].st.ring->held.empty());
+    unsetenv(GDAKI_CTRL_T_CREDIT_STALL);
+    teardown(R);
+  }
+  // DROP_UD=rejoin:<n>: the first two REJOIN datagrams are dropped (one line each), the third goes, a REJOIN_ACK goes
+  {
+    setenv(GDAKI_CTRL_T_DROP_UD, "rejoin:2", 1);
+    std::vector<Rank> R(2);
+    const size_t sw0 = logCount("test switch DROP_UD: the REJOIN datagram to rank 1 dropped");
+    CHECK(bringUp(R, 2));
+    struct gdakiCtrlRing* g0 = R[0].st.ring;
+    struct gdakiTsMsg j = recOf(GDAKI_TS_RS_REJOIN, 0, 1);
+    j.magic = GDAKI_TS_MAGIC;
+    const uint64_t ud0 = gUdSent;
+    const size_t in0 = R[1].st.ring->udIn.size();
+    for (int k = 0; k < 3; k++) CHECK(gdakiCtrlRdmaUdSend(g0, 1, GDAKI_CTRL_K_RECORD, 0, &j, (uint32_t)sizeof(j)) == 0);
+    CHECK(gUdSent == ud0 + 1 && logCount("test switch DROP_UD: the REJOIN datagram to rank 1 dropped") == sw0 + 2);
+    struct gdakiTsMsg a = recOf(GDAKI_TS_RS_REJOIN_ACK, 0, 1);
+    CHECK(gdakiCtrlRdmaUdSend(g0, 1, GDAKI_CTRL_K_RECORD, 0, &a, (uint32_t)sizeof(a)) == 0 && gUdSent == ud0 + 2);
+    for (int k = 0; k < 5; k++) stepAll(R);
+    CHECK(R[1].st.ring->udIn.size() == in0 + 2);
+    unsetenv(GDAKI_CTRL_T_DROP_UD);
+    teardown(R);
+  }
+  // malformed values: one WARN each, the switch off
+  {
+    setenv(GDAKI_CTRL_T_QP_ERR, "soon", 1);
+    setenv(GDAKI_CTRL_T_CREDIT_STALL, "5", 1);
+    setenv(GDAKI_CTRL_T_DROP_UD, "all", 1);
+    std::vector<Rank> R(2);
+    const size_t w0 = logCount("test switch QP_ERR=soon is not"), w1 = logCount("test switch CREDIT_STALL=5 is not"),
+                 w2 = logCount("test switch DROP_UD=all is not");
+    CHECK(bringUp(R, 2));
+    stepAll(R);
+    CHECK(logCount("test switch QP_ERR=soon is not") == w0 + 2 && logCount("test switch CREDIT_STALL=5 is not") == w1 + 2 &&
+          logCount("test switch DROP_UD=all is not") == w2 + 2);
+    CHECK(R[0].st.ring->sw.qpErrAtMs < 0 && R[0].st.ring->sw.stallFromMs < 0 && R[0].st.ring->sw.dropUdLeft == 0);
+    unsetenv(GDAKI_CTRL_T_QP_ERR);
+    unsetenv(GDAKI_CTRL_T_CREDIT_STALL);
+    unsetenv(GDAKI_CTRL_T_DROP_UD);
+    teardown(R);
+  }
+  printf("switches: QP_ERR (one line, the re-pairing from the switched side, one -1 each side), CREDIT_STALL (no record "
+         "in the stall, the window shut and the queue deferred, no RNR, all in order after it), DROP_UD (two REJOIN "
+         "datagrams dropped, the third and a REJOIN_ACK sent), malformed values off with a WARN\n");
+}
 #endif  // !NCCL_GIN_CTRL_TCP
 
 int main() {
@@ -1016,6 +1496,9 @@ int main() {
   testFirstPairing(4, -1, 0);
   testFirstPairing(4, 3, 700.0);
   test55();
+  testLive(2);
+  testLive(4);
+  testSwitches();
   CHECK(gQps.empty() && gCqs.empty() && gAhs.empty() && gChanFds.empty() && gMrs.empty());  // all destroyed
   printf("fake NIC: %llu UD datagrams (%llu dropped), %llu RC RECVs posted, %llu READs\n", (unsigned long long)gUdSent,
          (unsigned long long)gUdDropped, (unsigned long long)gRcRecvPosts, (unsigned long long)gReads);

@@ -100,3 +100,76 @@
 | `ident` | 프로그램 16/16 같음, 장치 객체 207 × 4 같음, 라이브러리 자원 넷 같음 | `logs_p2a2/ident_a13.log` |
 
 실제 verbs나 장치에서는 한 번도 돌지 않았다 `[미확인]`. 41/44 해석(launcher 노드 어긋남 → 44, 설계 5.1)은 조율 세션이 받아들임.
+
+## 2a-2-B: seam 본문, helper 루프의 증인 몫 읽기, `live`, 로그 줄, 시험 스위치
+
+### 단계 목록 (12줄)
+
+1. 트리: 작업 트리를 "gin-control 2a-2-A (gc_layer_p2a2.diff 1eb219f2)"로 커밋, 스크립트 head 이름; `unit`이 `gc_unit_prep`에 링 hook의 "링 없음" 답을 줌
+2. seam 본문(`ring.live`일 때만): Send(대기열), Pump(−1 세대 바뀜마다 한 번, `QP:NEWGEN`), Recv/RecvOn(같은 시한 뜻), ChanUp, ChanGen, PollFd(음수), ChanInstall, RecordToErr(ERR + 다시 짝 맺기 요청)
+3. 새 영역 "gin-control (ring): live seams": hook 넷, 증인 펌프, 셈(TCP 바이트, 대기열, 지연 보냄), `QP:` 원인 판별
+4. 부르는 자리 다섯: DONE 기다림, MSG_PEEK, pollfd 둘(채널 fd와 깨우기), `gdakiMiSetupEnd`의 받기, 대입; `gc_sites.tsv`, `sites`
+5. helper poll 묶음: 링이 live면 증인 소켓 + 채널 fd, 증인 펌프(BYE/FIN), 링 펌프; CancelRound/MakeUnknown/SocketLost의 `QP:` 갈래, CauseLiveness `QP:*` → unknown
+6. `live = 1`(모든 gated 상대의 두 짝 맺기가 CONNECTED), 로컬 ERR 뒤 다시 짝 맺기 방아쇠와 PAIR 줄, re-paired 줄
+7. 시험 스위치 `QP_ERR`, `CREDIT_STALL`, `DROP_UD`(rdma 연구 빌드만)
+8. 끝낼 때 제어 요약 줄과 링 요약 줄(시험 쪽 표의 글 그대로)
+9. `gc_unit_p2a2.cc`: 2와 4 rank, seam으로 양방향 기록, TCP 길과 바이트 같음, 라운드 중 세대 바뀜(−1 한 번, 취소), 상대가 시작한 다시 짝 맺기, 증인 BYE/FIN, 스위치 셋
+10. 검사: `syn`, `api`, 빌드 넷(경고 0), `pre`, `sites`, `unit` 두 빌드, `ident`
+11. 산출물을 작업 공간으로(`gc_layer_p2a2.diff` 2efebe3 대비 A + B, 시험, 표)
+12. 이 절 마무리: 검사 표, md5, 2a-2-C에 남은 것
+
+### 끝낸 단계 (한 단계 한 줄)
+
+- 1 끝: 커밋 61454d9 "gin-control 2a-2-A (gc_layer_p2a2.diff 1eb219f2)"(968b4ba 위), 스크립트 `P2A2_SUBJECT`를 그 커밋으로; `unit`은 `gc_unit_prep`의 seam 넷 앞에 링 hook 넷의 "링 없음" 답(false, 셈 없음)을 붙임(그 시험은 r = nullptr로 부름); `p2a2regions`가 live 영역, seam 본문, TCP 셈 구조, CauseLiveness/MakeUnknown을 자름 `[측정: logs_p2a2/syn_b1.log, unit_b1.log]`
+- 2 끝: "[2] ring" 자리 표시의 seam 본문: Send/Pump/Recv/RecvOn은 hook을 먼저 묻고 아니면 TCP(바이트를 셈, errno 보존), ChanUp은 live면 링, ChanGen은 그대로(링 세대), PollFd는 live면 -1, ChanInstall은 소켓 대입만(링 몫 없음), RecordToErr는 QP를 ERR로(다시 짝 맺기는 helper 걸음), RingFree는 A 그대로; `syn` 세 빌드 통과 `[측정: logs_p2a2/syn_b1.log]`
+- 3 끝: 새 영역 "gin-control (ring): live seams"(hook 넷, `QP:` 판별, 증인 펌프, live 걸음, 요약 줄)와 "the helper's live loop"; 뒤끝에 CREDIT_STALL의 RECV 완료 붙잡기(`gdakiCtrlRdmaOnRecvWc`로 뺌)와 DROP_UD(UD 보내기), 스위치 읽기; `gdakiRecHost`에 TCP 셈(rdma만); 옛 `gc_unit_p2a2` 통과(1 429 검사), `unit` 두 빌드 통과 `[측정: logs_p2a2/unitp2a2_b1.log, unit_b1.log]`
+- 4 끝: 다섯 자리는 준비 단계 고침에서 이미 seam을 부른다(DONE 기다림 `gdakiCtrlRecv`, peek와 pollfd 둘 `gdakiCtrlPollFd`, `gdakiMiSetupEnd` `gdakiCtrlRecv`, 대입 `gdakiCtrlChanInstall`); rdma 갈래로 더한 것은 `gdakiTsRecvServing`의 채널 fd와 깨우기(두 줄); 표의 행 여섯에 2a-2-B 뜻, `#use` ring `.fd` 2 → 7, `gdakiCtrlChanUp` 1, `gdakiCtrlPump` 1, `gdakiTsPump` 1; `sites` 통과(tcp 갈래 39개 ln4 글 그대로) `[측정: logs_p2a2/sites_b1.log(MISMATCH 4), sites_b2.log]`
+- 5 끝: helper poll 묶음의 rdma 갈래(`gdakiCtrlHelperLiveStep`: 링이 live면 증인 소켓 + 채널 fd 한 poll, 증인 펌프, 상대마다 링 펌프와 idle 처리; 아니면 ln4 묶음 그대로); `gdakiTsCauseLiveness`는 `QP:*`를 unknown, `gdakiTsMakeUnknown`은 `QP:` 원인이면 증인을 건드리지 않음, `gdakiTsCancelRound`는 그때 "record connection ... lost in a round" 줄, `gdakiTsSocketLost`는 `QP:` 원인이면 줄 하나와 unknown만(창 없음, 죽음 없음); `syn` 통과 `[측정: logs_p2a2/syn_b1.log 뒤 판은 아래 10]`
+- 6 끝: `gdakiCtrlRingLiveStep`(링 helper 걸음 끝 한 줄): 모든 gated 상대의 기록 QP와 생존 READ QP가 UP이면 `live = 1`(줄 하나, 예비 프로세스는 2a-2-C까지 아님), 로컬 잃음(`ring.lost`, 계보 LIVE, 거절/떠남/죽음 아님)에 `gdakiCtrlRdmaPairOnErr`와 "PAIR(record, gen %u) to rank %d (local ERR)", 세대 > 1로 다시 서면 "record QP|liveness READ QP to rank %d re-paired (gen %u)"
+- 7 끝: 스위치 `QP_ERR=<ms>:<peer>`, `CREDIT_STALL=<start>:<len>`(그동안 RECV 완료를 붙잡아 다시 내지 않음: credit 안 돌아감), `DROP_UD=rejoin:<n>`(UD 보내기에서 REJOIN 기록만), 기점은 첫 무장(복원 없으면 live), `#ifndef NCCL_GIN_TS_PRODUCTION`, 줄은 시험 쪽 표 글 그대로
+- 8 끝: helper 끝에서 `gdakiCtrlRingSummary`: "control summary tcp_record_bytes=… active_mtu=%u" 뒤에 `tcp_rx_bytes_peer<p>=`, `async_rec=`, `async_read=`, `async_la=0`, `tcp_late_records=`, `live=`, `mono_ms=`; 상대마다 "ring summary peer=%d gen=%u sent=%llu received=%llu lost=%u dup=%u"
+- 9 끝: `gc_unit_p2a2.cc` 장면 5(2와 4 rank), 6(스위치 넷); 처음 돌림 3 실패(내 기대 둘: q의 -1 원인은 펌프와 다시 짝 맺기 중 먼저 온 쪽에 따라 TOERR나 NEWGEN, 2 rank의 보낸 수에 증인 장면 기록 하나) → 기대 고침, rdma 3 983 검사 실패 0, 다섯 번 더 실패 0 `[측정: logs_p2a2/unitp2a2_b2.log, unitp2a2_b4.log]`
+- 10 끝: 첫 빌드에서 `gc` 경고 1(`-O3` 인라인 뒤 2a-1의 `gdakiCtrlRdmaRecv`가 내 24 B 버퍼에 "QP:%s"를 씀: format-truncation) → 받는 버퍼 48 B, `closeCause`에는 잘라 복사; 다시 돌린 검사 모두 통과(아래 표) `[측정: logs_p2a2/build_gc_b10.log(경고 1), chain_b12.log]`
+- 11 끝: `gc_layer_p2a2.diff`(2efebe3 대비 A + B, 1 444줄, md5 414a8790), `gc_unit_p2a2.cc`, `gc_sites.tsv`를 작업 공간에; 헤더는 바꾸지 않아 `rs_ctrl_api_p2a2.diff`는 그대로(acbf33c6) `[측정: logs_p2a2/diff_b12.log]`
+- 12 끝: 이 절
+
+### 검사 표 (2a-2-B, 이 작업에서 실행한 것만)
+
+| 검사 | 결과 | 근거 |
+|---|---|---|
+| `syn` (build, build-gcp, build-gct) | 통과 | `logs_p2a2/syn_b12.log` |
+| `api` | 통과(헤더 블록 바뀜 없음) | `logs_p2a2/api_b12.log` |
+| `gc` / `gcp` / `gct` / `gctp` | 빌드됨, 경고 0; libnccl d7222a24 / c9f5f101 / 851d6c7b / c9fe0ba5 | `logs_p2a2/build_{gc,gcp,gct,gctp}_b12.log`, `out/*_p2a2b/` |
+| `pre` | gct 0 hunk, gctp 0 hunk, gctc 2 hunk 3줄(RST 간격만) | `logs_p2a2/pre_b12.log` |
+| `sites` | 통과(149행, `#use` 넷 맞음, tcp 갈래 39개 ln4 글 그대로) | `logs_p2a2/sites_b12.log` |
+| `unit` rdma | 통과(옛 시험 모두 실패 0, `gc_unit_prep` 116 장면 366 검사, `gc_unit_p2a2` 3 976 검사; 검사 수는 기다림 고리 때문에 실행마다 몇 개 다름) | `logs_p2a2/unit_b12.log` |
+| `unit` tcp | 통과(`gc_unit_prep` 48 장면 174 검사, `gc_unit_p2a2` 0 검사) | `logs_p2a2/unit_b12.log` |
+| `ident` | 프로그램 16/16 같음, 장치 객체 207 × 4 같음(바이트도), 라이브러리 자원 넷 같음 | `logs_p2a2/ident_b12.log` |
+
+실제 verbs, GPU, 클러스터에서는 돌지 않았다 `[미확인]`. 시험은 가짜 NIC 위의 in-process rank다(n 1 실행 + `gc_unit_p2a2` 단독 5번).
+
+### 정한 것과 발견 `[추론]`
+
+- 셈의 뜻: `records_lost` = 세대 바뀜에 버린 대기열 + 옛 세대의 받지 못한 성공 RECV, `records_dup` = 새 세대 RECV에 온 옛 세대 봉투(버림), `tcp_conns`는 live가 아니면 열린 helper 소켓 수(기록도 실음), live면 0; `witness_conns`는 열린 helper 소켓 수. 제어 요약은 끝낼 때만 낸다(확정 체크포인트마다 내는 몫은 남음).
+- live 전환은 rank마다 따로다: 상대가 먼저 live가 되어 링으로 보낸 기록은 이쪽 inbox에서 이쪽이 live가 될 때까지 기다리고, 이쪽이 아직 TCP로 보낸 기록은 상대의 증인 펌프가 기록으로 넘긴다(`tcp_late_records`). 바뀌는 순간 TCP에 남은 기록과 링의 뒤 기록의 차례는 보장하지 않는다(쌍마다 전환 표지가 필요; 라운드는 helper 루프 사이에서만 돌아 창은 짧다). 2a-2-C나 리뷰가 정할 것.
+- 로컬 잃음 뒤 -1의 원인은 펌프와 다시 짝 맺기 중 먼저 온 쪽에 따라 `QP:<원인>`이나 `QP:NEWGEN`이다(한 번인 것은 같음; 모형의 세대 끝 표시가 원인을 싣지 않음).
+- `gdakiTsSocketLost`에도 `QP:` 갈래를 두었다(부르는 자리가 펌프 -1 뒤에 그것을 부르므로: 줄 하나, unknown, 창 없음, 증인 그대로).
+- 작업 공간의 `launcher/*` 바뀜은 이 작업의 것이 아니다(다른 에이전트).
+
+### 2a-2-C에 남은 것
+
+- REJOIN을 UD로(`nrp`, 예비 프로세스의 짝 맺기, `gdakiCtrlRdmaOnRejoinAccepted`, FAIL/WAIT/REFUSE 답, `gdakiCtrlRejoinFail`의 UD 몸통, REJOIN 다시 보냄 줄; DROP_UD는 그 보내기를 이미 막음)
+- STATE와 rkey를 2b의 outbox 전송으로(`gdakiCtrlStateRingOf`), DATA 채널
+- 되살린 상대의 증인: unknown으로 두고 다시 걸기(`gdakiTsPeerLiveness`의 `pe.fd < 0` = DEAD)
+- 판정 효력: 링이 live면 증인 FIN은 창만 열고 창 판정이 반응(지금은 ln4처럼 FIN = 죽음)
+- Resume 41(3단계와 함께), 확정 체크포인트마다의 제어 요약, live 전환 표지
+
+### 파일 md5 (2a-2-B 끝)
+
+| 파일 | md5 |
+|---|---|
+| `gc_layer_p2a2.diff` (1 444줄, 2efebe3 대비) | `414a87908f98db1e143d28657d794914` |
+| `gc_unit_p2a2.cc` (1 510줄) | `7a9cd690` |
+| `gc_sites.tsv` (176줄, 149행) | `450fe8bd` |
+| `rs_ctrl_api_p2a2.diff` (바뀜 없음) | `acbf33c6` |
+| `agent_gc_p2a2/build_gc_p2a2.sh` | `e32322a9`(2a-2-A 판 대비: head 이름, `gc_unit_prep`의 hook 넷 "링 없음" 답, `p2a2regions`의 자르기 넷) |
