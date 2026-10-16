@@ -1,0 +1,1577 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index f065d35..67f04b5 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -23,6 +23,9 @@
+ #include <atomic>
+ #include <vector>
+ #include <algorithm>
++#if !NCCL_GIN_CTRL_TCP
++#include <deque>  // gin-control (ring): the ring model's queue and inbox (impl/notes_p2.md)
++#endif
+ #include <cstring>
+ #include <cstddef>
+ #include <cerrno>
+@@ -7165,6 +7168,705 @@ static void gdakiLnFenced(struct gdakiRecHost* r, int peer, uint32_t inc);
+ #endif  // NCCL_GIN_CTRL_TCP
+ // ---- gin-control: ctrl seams (end) ----
+ 
++// ==== gin-control (ring): model (begin; phase 2a-1, impl/gc_unit_p2.cc compiles this region on the CPU) ====
++// The record ring of one pair, its credit and generations, the sender's queue and the receiver's inbox (EXPERIMENT.md
++// 9.1 "링과 흐름 제어"; design v3 2.2-2.4), and the UD pairing (9.1 "짝 맺기"; design v3 2.5), as plain structs and
++// functions: no verbs, no socket, no clock (the caller passes nowMs). What the NIC does is the caller's: the region
++// "gin-control (ring): verbs back end" posts what these ask through a struct gdakiCtrlRingOps and feeds the completions
++// back. Needs the block "gin-control: ctrl API" and <deque>, <vector>, <cstring>.
++#if !NCCL_GIN_CTRL_TCP
++// ---- wr_id: (what, peer, generation, slot) ----
++// The completion of an older generation is recognized by its wr_id alone (design v3 2.2 "세대와 자리").
++enum : uint32_t {
++  GDAKI_CTRL_WR_RECV = 1,         // a ring slot's RECV on a record QP
++  GDAKI_CTRL_WR_SEND = 2,         // a SEND from a send slot
++  GDAKI_CTRL_WR_READ_CREDIT = 3,  // the window is shut: the READ of the peer's consumed word
++  GDAKI_CTRL_WR_READ_XFER = 4,    // the READ of a half of the peer's outbox
++  GDAKI_CTRL_WR_UD_RECV = 5,      // the UD QP's RECV (slot = its buffer)
++  GDAKI_CTRL_WR_UD_SEND = 6,      // a datagram (slot = its buffer)
++};
++#define GDAKI_CTRL_WR_MAX_PEERS 4096u  // peer indexes: ranks, then the launchers (nranks + i)
++static inline uint64_t gdakiCtrlWrId(uint32_t what, uint32_t peer, uint32_t gen, uint32_t slot) {
++  return ((uint64_t)(what & 0xfu) << 60) | ((uint64_t)(peer & 0xfffu) << 48) | ((uint64_t)gen << 16) | (slot & 0xffffu);
++}
++static inline uint32_t gdakiCtrlWrWhat(uint64_t id) { return (uint32_t)(id >> 60); }
++static inline uint32_t gdakiCtrlWrPeer(uint64_t id) { return (uint32_t)(id >> 48) & 0xfffu; }
++static inline uint32_t gdakiCtrlWrGen(uint64_t id) { return (uint32_t)(id >> 16); }
++static inline uint32_t gdakiCtrlWrSlot(uint64_t id) { return (uint32_t)id & 0xffffu; }
++
++// ---- the ring of one pair: constants ----
++// CONNECTED (the record QP's first SEND of a generation, from the side that started the pairing) and PAIR_DONE (the
++// liveness READ QP's last datagram) are a PAIR body with this step (impl/rs_ctrl_api_p2.patch asks the header for it).
++#define GDAKI_CTRL_PAIR_STEP_DONE 3u
++#define GDAKI_CTRL_QUEUE_MAX 4096u      // the sender's queue per pair, in messages (about 7.6 MiB at most; grows as needed)
++#define GDAKI_CTRL_INBOX_MAX 4096u      // the receiver's inbox per pair: at it, no RECV is posted again (no credit back)
++#define GDAKI_CTRL_CREDIT_READ_MS 1.0   // the window is shut: the consumed word's READ at most this often
++#define GDAKI_CTRL_SEND_SLOTS 64u       // send buffers per pair (a SEND's buffer is free at its completion, not its credit)
++#define GDAKI_CTRL_FRAME_MAX (64u + GDAKI_CTRL_RECORD_BYTES)
++static_assert(GDAKI_CTRL_RING_SLOTS == 64u && GDAKI_CTRL_SEND_SLOTS == 64u, "one 64-bit mask per slot set");
++static_assert(GDAKI_CTRL_SEND_SLOTS + 16u + 16u == GDAKI_CTRL_RECORD_SQ, "SQ 96 = SENDs 64 + READs 16 + 16 (9.1)");
++// A message waiting in the sender's queue (its envelope is made at the post: seq and ackSeq are the post's).
++struct gdakiCtrlQEnt {
++  uint16_t kind = 0;
++  uint16_t rsv = 0;
++  uint32_t bytes = 0;
++  uint8_t body[GDAKI_CTRL_RECORD_BYTES];
++};
++// A message taken from the ring, in arrival order (the inbox).
++struct gdakiCtrlInEnt {
++  struct gdakiCtrlEnv env;
++  uint8_t body[GDAKI_CTRL_RECORD_BYTES];
++};
++// What the model asks of the NIC (the verbs back end, or a test's model of it). Each returns 0 when posted.
++struct gdakiCtrlRingOps {
++  void* ctx = nullptr;
++  // one SEND of `bytes` of `frame` (envelope and body) from send slot `sslot`, signaled, wr_id (SEND, peer, gen, sslot)
++  int (*postSend)(void* ctx, int peer, uint32_t gen, uint32_t sslot, const uint8_t* frame, uint32_t bytes) = nullptr;
++  // ring slot `slot`'s RECV, wr_id (RECV, peer, gen, slot)
++  int (*postRecv)(void* ctx, int peer, uint32_t gen, uint32_t slot) = nullptr;
++  // the window is shut: one READ of the peer's consumed word for this rank, wr_id (READ_CREDIT, peer, gen, 0); its value
++  // comes back through gdakiCtrlRingOnCreditWord
++  int (*readCredit)(void* ctx, int peer, uint32_t gen) = nullptr;
++};
++// One pair's ring, both directions (the record QP's SQ and RQ). gen 0: never paired.
++struct gdakiCtrlRingPair {
++  int peer = -1;
++  int32_t me = -1;
++  uint64_t nonce = 0;
++  uint32_t inc = 0;
++  uint32_t recMagic = 0;      // the record's magic, stamped at the post (GDAKI_TS_MAGIC: gdakiTsSend's contract)
++  uint32_t gen = 0;           // the record QP pairing's generation
++  bool initiator = false;     // this side started gen's pairing: it sends CONNECTED first
++  bool rts = false;           // the record QP is RTS in gen (the back end says so)
++  bool connected = false;     // CONNECTED sent (initiator) or taken (the other side): from then on SENDs go
++  bool lost = false;          // gen's connection is lost (a bad completion, a gap, a bad envelope): until a new gen
++  char lostCause[24] = {0};
++  // the send direction
++  uint64_t sent = 0;          // S: SENDs posted in gen (= the seq of the last one)
++  uint64_t peerConsumed = 0;  // C: what this side knows the peer consumed of them in gen (S - C < K before a post)
++  uint64_t sendBusy = 0;      // a bit per send slot: posted, its completion not seen (any generation)
++  bool creditReadOut = false;
++  double creditReadMs = -1e18;
++  uint64_t creditReads = 0;   // READs of the consumed word (the window was shut)
++  std::deque<struct gdakiCtrlQEnt> q;
++  uint64_t queuedDropped = 0; // messages dropped from the queue by a generation change (all generations)
++  uint64_t oldSendCqes = 0;   // send completions of an older generation (collected, nothing else)
++  // the receive direction
++  uint32_t slotGen[GDAKI_CTRL_RING_SLOTS] = {0};  // the generation of the RECV posted in the slot; 0: none (collected)
++  uint64_t lastSeq = 0;       // the seq last taken in gen
++  uint64_t consumed = 0;      // RECVs posted again in gen after a message was taken (the credit given back)
++  std::deque<uint32_t> deferred;  // slots whose RECV waits for the inbox to drop below its bound (arrival order)
++  std::deque<struct gdakiCtrlInEnt> inbox;
++  uint64_t oldRecvCqes = 0;   // receive completions of an older generation dropped
++  uint64_t oldEnvelopes = 0;  // envelopes of an older generation in a current RECV (dropped, not counted as consumed)
++  uint64_t inboxDropped = 0;  // messages left in the inbox at a generation change (the old connection's unread bytes)
++  uint64_t rnrErrors = 0;     // IBV_WC_RNR_RETRY_EXC_ERR in gen (the back end counts it; 0 when the credit is right)
++};
++static inline void gdakiCtrlRingInit(struct gdakiCtrlRingPair* p, int peer, int32_t me, uint64_t nonce, uint32_t inc,
++                                     uint32_t recMagic) {
++  *p = gdakiCtrlRingPair();
++  p->peer = peer;
++  p->me = me;
++  p->nonce = nonce;
++  p->inc = inc;
++  p->recMagic = recMagic;
++}
++static inline void gdakiCtrlRingLose(struct gdakiCtrlRingPair* p, const char* cause) {
++  if (p->lost) return;
++  p->lost = true;
++  snprintf(p->lostCause, sizeof(p->lostCause), "%s", cause);
++}
++// The pair's record channel is up (the seam gdakiCtrlChanUp of phase 2a-2): paired in gen, RTS, CONNECTED, not lost. A
++// channel not up still takes messages into its queue (held until CONNECTED); the pump reads what the inbox has.
++static inline bool gdakiCtrlRingUp(const struct gdakiCtrlRingPair* p) {
++  return p->gen != 0 && p->rts && p->connected && !p->lost;
++}
++// The consumed word this side publishes for the peer (its status page's rxConsumed[peer]; the peer READs it when shut).
++static inline uint64_t gdakiCtrlRingConsumedWord(const struct gdakiCtrlRingPair* p) {
++  return gdakiCtrlGenCount(p->gen, (uint32_t)p->consumed);
++}
++static inline uint32_t gdakiCtrlRingFreeSendSlot(const struct gdakiCtrlRingPair* p) {
++  for (uint32_t s = 0; s < GDAKI_CTRL_SEND_SLOTS; s++)
++    if ((p->sendBusy & (1ull << s)) == 0) return s;
++  return GDAKI_CTRL_SEND_SLOTS;
++}
++// Envelope and body into one frame; the record's magic stamped as gdakiTsSend stamps it (in the frame and, through
++// stampInto, in the caller's record). Returns the frame's bytes.
++static inline uint32_t gdakiCtrlFrame(uint8_t* frame, uint16_t kind, int32_t from, uint32_t gen, uint64_t seq,
++                                      uint64_t ackSeq, uint64_t nonce, uint32_t inc, const void* body, uint32_t bytes,
++                                      uint32_t recMagic) {
++  struct gdakiCtrlEnv e;
++  gdakiCtrlEnvPack(&e, kind, from, gen, seq, ackSeq, nonce, inc, bytes);
++  memcpy(frame, &e, sizeof(e));
++  if (bytes > 0) memcpy(frame + sizeof(e), body, bytes);
++  if (kind == GDAKI_CTRL_K_RECORD && bytes >= 4) memcpy(frame + sizeof(e), &recMagic, 4);
++  return (uint32_t)sizeof(e) + bytes;
++}
++// One post of `kind`/`body` now (credit, a send slot and a connection checked by the caller): seq = ++sent.
++static inline int gdakiCtrlRingPostOne(struct gdakiCtrlRingPair* p, const struct gdakiCtrlRingOps& ops, uint16_t kind,
++                                       const void* body, uint32_t bytes) {
++  const uint32_t s = gdakiCtrlRingFreeSendSlot(p);
++  if (s >= GDAKI_CTRL_SEND_SLOTS) return 1;
++  uint8_t frame[GDAKI_CTRL_FRAME_MAX];
++  const uint32_t n =
++      gdakiCtrlFrame(frame, kind, p->me, p->gen, p->sent + 1, p->consumed, p->nonce, p->inc, body, bytes, p->recMagic);
++  if (ops.postSend(ops.ctx, p->peer, p->gen, s, frame, n) != 0) {
++    gdakiCtrlRingLose(p, "POSTSEND");
++    return -1;
++  }
++  p->sent++;
++  p->sendBusy |= 1ull << s;
++  return 0;
++}
++// Queue one message (held until CONNECTED, sent when the credit allows): 0 queued, 1 the queue is full (the caller drives
++// the ring and tries again until its bound: then gdakiTsSend's "send failed"), -1 the connection of gen is lost.
++static inline int gdakiCtrlRingEnqueue(struct gdakiCtrlRingPair* p, uint16_t kind, const void* body, uint32_t bytes) {
++  if (p->lost) return -1;
++  if (bytes > GDAKI_CTRL_RECORD_BYTES) return -1;
++  if (p->q.size() >= GDAKI_CTRL_QUEUE_MAX) return 1;
++  p->q.emplace_back();
++  struct gdakiCtrlQEnt& e = p->q.back();
++  e.kind = kind;
++  e.bytes = bytes;
++  if (bytes > 0) memcpy(e.body, body, bytes);
++  return 0;
++}
++// Post what the window and the send slots allow (CONNECTED first, from the side that started the pairing); with the
++// window shut and something queued, READ the peer's consumed word (one at a time, at most every 1 ms). Returns the posts.
++static inline int gdakiCtrlRingKick(struct gdakiCtrlRingPair* p, const struct gdakiCtrlRingOps& ops, double nowMs) {
++  if (p->lost || p->gen == 0 || !p->rts) return 0;
++  int n = 0;
++  if (!p->connected) {
++    if (!p->initiator) return 0;  // the other side: nothing goes before its CONNECTED came
++    struct gdakiCtrlPairBody b;
++    memset(&b, 0, sizeof(b));
++    b.qpKind = GDAKI_CTRL_PAIR_QP_RECORD;
++    b.step = GDAKI_CTRL_PAIR_STEP_DONE;
++    b.gen = p->gen;
++    b.incarnation = p->inc;
++    b.from = p->me;
++    b.to = p->peer;
++    b.nonce = p->nonce;
++    if (gdakiCtrlRingPostOne(p, ops, GDAKI_CTRL_K_PAIR, &b, (uint32_t)sizeof(b)) != 0) return 0;
++    p->connected = true;
++    n++;
++  }
++  while (!p->q.empty() && gdakiCtrlCanSend(p->gen, p->sent, gdakiCtrlGenCount(p->gen, (uint32_t)p->peerConsumed))) {
++    const struct gdakiCtrlQEnt& e = p->q.front();
++    const int r = gdakiCtrlRingPostOne(p, ops, e.kind, e.body, e.bytes);
++    if (r != 0) break;
++    p->q.pop_front();
++    n++;
++  }
++  if (!p->q.empty() && !p->lost && !p->creditReadOut && nowMs - p->creditReadMs >= GDAKI_CTRL_CREDIT_READ_MS &&
++      !gdakiCtrlCanSend(p->gen, p->sent, gdakiCtrlGenCount(p->gen, (uint32_t)p->peerConsumed))) {
++    p->creditReadMs = nowMs;
++    if (ops.readCredit(ops.ctx, p->peer, p->gen) == 0) {
++      p->creditReadOut = true;
++      p->creditReads++;
++    }
++  }
++  return n;
++}
++// The consumed count c32 (32 bits) as a count of gen's SENDs: the peer consumed no more than was sent.
++static inline void gdakiCtrlRingLearnConsumed(struct gdakiCtrlRingPair* p, uint32_t c32) {
++  const uint32_t behind = (uint32_t)p->sent - c32;
++  if ((uint64_t)behind > p->sent) return;  // not a count of this generation's SENDs
++  const uint64_t c = p->sent - behind;
++  if (c > p->peerConsumed) p->peerConsumed = c;
++}
++// The READ of the peer's consumed word completed (ok false: it failed; the record QP's completion says the rest).
++static inline void gdakiCtrlRingOnCreditWord(struct gdakiCtrlRingPair* p, uint32_t readGen, bool ok, uint64_t word) {
++  if (readGen != p->gen) return;  // an older generation's READ
++  p->creditReadOut = false;
++  if (ok && gdakiCtrlGenOf(word) == p->gen) gdakiCtrlRingLearnConsumed(p, gdakiCtrlCountOf(word));
++}
++// A SEND's completion: its slot is free (whatever its generation); a bad one of gen loses the connection.
++static inline void gdakiCtrlRingOnSendCqe(struct gdakiCtrlRingPair* p, uint64_t wrId, bool ok, bool rnr) {
++  const uint32_t s = gdakiCtrlWrSlot(wrId);
++  if (s < GDAKI_CTRL_SEND_SLOTS) p->sendBusy &= ~(1ull << s);
++  if (gdakiCtrlWrGen(wrId) != p->gen) {
++    p->oldSendCqes++;
++    return;
++  }
++  if (rnr) p->rnrErrors++;
++  if (!ok) gdakiCtrlRingLose(p, rnr ? "RNR" : "SENDERR");
++}
++
++// ---- the receive direction ----
++// Post slot `s`'s RECV in gen; a RECV given back after a take is the credit (consumed + 1), the first K are not.
++static inline int gdakiCtrlRingRepost(struct gdakiCtrlRingPair* p, const struct gdakiCtrlRingOps& ops, uint32_t s,
++                                      bool credit) {
++  if (ops.postRecv(ops.ctx, p->peer, p->gen, s) != 0) {
++    gdakiCtrlRingLose(p, "POSTRECV");
++    return -1;
++  }
++  p->slotGen[s] = p->gen;
++  if (credit) p->consumed++;
++  return 0;
++}
++// The slots still holding an older generation's RECV (their completion, a flush or a success, not collected yet).
++static inline uint32_t gdakiCtrlRingOldRecvs(const struct gdakiCtrlRingPair* p) {
++  uint32_t n = 0;
++  for (uint32_t s = 0; s < GDAKI_CTRL_RING_SLOTS; s++) n += p->slotGen[s] != 0 && p->slotGen[s] != p->gen;
++  return n;
++}
++// A new generation of the pair (a pairing taken or started): the queue's messages are dropped (the caller hears "send
++// failed" through the lost connection, as TCP's lost send buffer), the inbox's unread ones too (the old socket's), the
++// counts start from 0. The RECVs and SENDs of the old generation stay outstanding until their completions are collected
++// (or the QP is destroyed: gdakiCtrlRingForgetOld). Returns the queued messages dropped.
++static inline uint64_t gdakiCtrlRingNewGen(struct gdakiCtrlRingPair* p, uint32_t gen, bool initiator) {
++  const uint64_t dropped = p->q.size();
++  p->queuedDropped += dropped;
++  p->q.clear();
++  p->inboxDropped += p->inbox.size();
++  p->inbox.clear();
++  p->deferred.clear();  // their RECVs were taken: the slots are free (slotGen 0)
++  p->gen = gen;
++  p->initiator = initiator;
++  p->rts = false;
++  p->connected = false;
++  p->lost = false;
++  p->lostCause[0] = 0;
++  p->sent = p->peerConsumed = 0;
++  p->creditReadOut = false;
++  p->creditReadMs = -1e18;
++  p->lastSeq = p->consumed = 0;
++  p->rnrErrors = 0;
++  return dropped;
++}
++// The QP was destroyed (not reset): nothing of the old generation can complete any more.
++static inline void gdakiCtrlRingForgetOld(struct gdakiCtrlRingPair* p) {
++  for (uint32_t s = 0; s < GDAKI_CTRL_RING_SLOTS; s++)
++    if (p->slotGen[s] != p->gen) p->slotGen[s] = 0;
++  p->sendBusy = 0;
++}
++// Before RTR (design v3 2.2): all K RECVs of gen. -1 when an older generation's RECV is still outstanding (collect its
++// completion first) or a post failed; else the RECVs posted.
++static inline int gdakiCtrlRingPostInitial(struct gdakiCtrlRingPair* p, const struct gdakiCtrlRingOps& ops) {
++  if (p->gen == 0 || gdakiCtrlRingOldRecvs(p) != 0) return -1;
++  int n = 0;
++  for (uint32_t s = 0; s < GDAKI_CTRL_RING_SLOTS; s++) {
++    if (p->slotGen[s] == p->gen) continue;
++    if (gdakiCtrlRingRepost(p, ops, s, false) != 0) return -1;
++    n++;
++  }
++  return n;
++}
++// After the pop of one inbox message: the deferred RECVs go again while the inbox is below its bound.
++static inline void gdakiCtrlRingUndefer(struct gdakiCtrlRingPair* p, const struct gdakiCtrlRingOps& ops) {
++  while (!p->deferred.empty() && p->inbox.size() < GDAKI_CTRL_INBOX_MAX && !p->lost) {
++    const uint32_t s = p->deferred.front();
++    p->deferred.pop_front();
++    if (gdakiCtrlRingRepost(p, ops, s, true) != 0) return;
++  }
++}
++enum : int {
++  GDAKI_CTRL_RX_TAKEN = 0,      // a message of gen in the inbox (or CONNECTED taken)
++  GDAKI_CTRL_RX_OLD = 1,        // an older generation's completion or envelope: dropped
++  GDAKI_CTRL_RX_LOST = 2,       // gen's connection is lost (lostCause)
++  GDAKI_CTRL_RX_IGNORED = 3,    // nothing for the ring (a completion of a slot it does not know)
++};
++// A RECV's completion with the slot's bytes (`frame`, `len` bytes landed; ok false: an error or a flush).
++static inline int gdakiCtrlRingOnRecvCqe(struct gdakiCtrlRingPair* p, const struct gdakiCtrlRingOps& ops, uint64_t wrId,
++                                         bool ok, const uint8_t* frame, uint32_t len) {
++  const uint32_t s = gdakiCtrlWrSlot(wrId), g = gdakiCtrlWrGen(wrId);
++  if (s >= GDAKI_CTRL_RING_SLOTS) return GDAKI_CTRL_RX_IGNORED;
++  if (g != p->gen) {
++    if (p->slotGen[s] == g) p->slotGen[s] = 0;  // collected: the slot may take gen's RECV
++    p->oldRecvCqes++;
++    return GDAKI_CTRL_RX_OLD;
++  }
++  if (p->slotGen[s] != g) return GDAKI_CTRL_RX_IGNORED;
++  p->slotGen[s] = 0;
++  if (!ok) {
++    gdakiCtrlRingLose(p, "RECVERR");
++    return GDAKI_CTRL_RX_LOST;
++  }
++  if (p->lost) return GDAKI_CTRL_RX_LOST;
++  struct gdakiCtrlEnv e;
++  if (len < sizeof(e)) {
++    gdakiCtrlRingLose(p, "SHORT");
++    return GDAKI_CTRL_RX_LOST;
++  }
++  memcpy(&e, frame, sizeof(e));
++  if (gdakiCtrlEnvCheck(&e, p->nonce, len) != GDAKI_CTRL_ENV_OK || e.from != p->peer) {
++    gdakiCtrlRingLose(p, "BADENV");
++    return GDAKI_CTRL_RX_LOST;
++  }
++  const uint32_t ord = gdakiCtrlOrder(p->gen, p->lastSeq, &e);
++  if (ord == GDAKI_CTRL_ORDER_DROP_OLD) {  // an older generation's packet in a RECV of gen: given back, not counted
++    p->oldEnvelopes++;
++    gdakiCtrlRingRepost(p, ops, s, false);
++    return GDAKI_CTRL_RX_OLD;
++  }
++  if (ord != GDAKI_CTRL_ORDER_TAKE) {
++    gdakiCtrlRingLose(p, "SEQ");
++    return GDAKI_CTRL_RX_LOST;
++  }
++  p->lastSeq++;
++  gdakiCtrlRingLearnConsumed(p, (uint32_t)e.ackSeq);
++  const uint8_t* body = frame + sizeof(e);
++  if (e.kind == GDAKI_CTRL_K_PAIR) {  // CONNECTED: the only PAIR on the record QP, the first message of gen
++    struct gdakiCtrlPairBody b;
++    if (e.bodyBytes != sizeof(b)) {
++      gdakiCtrlRingLose(p, "BADPAIR");
++      return GDAKI_CTRL_RX_LOST;
++    }
++    memcpy(&b, body, sizeof(b));
++    if (b.step != GDAKI_CTRL_PAIR_STEP_DONE || b.qpKind != GDAKI_CTRL_PAIR_QP_RECORD || b.gen != p->gen ||
++        p->initiator || p->connected || e.seq != 1) {
++      gdakiCtrlRingLose(p, "BADPAIR");
++      return GDAKI_CTRL_RX_LOST;
++    }
++    p->connected = true;
++    gdakiCtrlRingRepost(p, ops, s, true);  // the inbox is empty at a generation's first message
++    return GDAKI_CTRL_RX_TAKEN;
++  }
++  if (e.kind == GDAKI_CTRL_K_RECORD) {
++    uint32_t m;
++    memcpy(&m, body, 4);
++    if (m != p->recMagic) {
++      gdakiCtrlRingLose(p, "BADMAGIC");
++      return GDAKI_CTRL_RX_LOST;
++    }
++  }
++  if (!p->connected) {  // a message before CONNECTED (the other side's rule broken)
++    gdakiCtrlRingLose(p, "EARLY");
++    return GDAKI_CTRL_RX_LOST;
++  }
++  p->inbox.emplace_back();
++  struct gdakiCtrlInEnt& in = p->inbox.back();
++  in.env = e;
++  memcpy(in.body, body, e.bodyBytes);
++  if (p->deferred.empty() && p->inbox.size() <= GDAKI_CTRL_INBOX_MAX) gdakiCtrlRingRepost(p, ops, s, true);
++  else p->deferred.push_back(s);
++  return GDAKI_CTRL_RX_TAKEN;
++}
++// The oldest inbox message: 1 taken (and the deferred RECVs given back while below the bound), 0 none yet, -1 none and
++// the connection of gen is lost (lostCause; the pump's FIN).
++static inline int gdakiCtrlRingPop(struct gdakiCtrlRingPair* p, const struct gdakiCtrlRingOps& ops,
++                                   struct gdakiCtrlInEnt* out) {
++  if (p->inbox.empty()) return p->lost ? -1 : 0;
++  *out = p->inbox.front();
++  p->inbox.pop_front();
++  gdakiCtrlRingUndefer(p, ops);
++  return 1;
++}
++
++// ---- the UD pairing of one (pair, QP kind) (design v3 2.5; EXPERIMENT.md 9.1 "짝 맺기") ----
++// The record QP (GDAKI_CTRL_PAIR_QP_RECORD) and the liveness READ QP (_PROBE) of a pair pair separately, each with its
++// generation. Either side starts (the setup: the lower rank; after an ERR: the side that saw it) with PAIR(kind, cur + 1);
++// crossing PAIRs of one generation: the lower `from` wins (a rank against a launcher, 0x40000000 | node, always), the
++// other answers it. Every pairing draws a fresh PSN. PAIRs of another incarnation than the peer's known one are dropped
++// (a new incarnation comes in through the REJOIN, which sets it). What each step asks of the caller is an action.
++#define GDAKI_CTRL_PAIR_RESEND_MS 500.0       // a PAIR without an answer is sent again (as HELLO)
++#define GDAKI_CTRL_PAIR_DONE_WAIT_MS 500.0    // the answering side of a liveness READ QP starts its READs at the latest
++enum : uint32_t {
++  GDAKI_CTRL_PS_IDLE = 0,      // nothing in progress (cur 0: never paired)
++  GDAKI_CTRL_PS_STARTED = 1,   // this side's PAIR(mine) is out: its QP is INIT (record: K RECVs posted), fresh PSN
++  GDAKI_CTRL_PS_ANSWERED = 2,  // this side took the peer's PAIR(cur): RTS, PAIR_ACK sent; waiting for CONNECTED (record)
++                               // or PAIR_DONE (probe; at the latest after 500 ms the READs start)
++  GDAKI_CTRL_PS_UP = 3,        // cur is connected
++  GDAKI_CTRL_PS_GAVE_UP = 4,   // the bound passed: the pair's channel of this kind is "unknown" (the judgement decides)
++};
++enum : uint32_t {
++  GDAKI_CTRL_PA_NONE = 0,
++  GDAKI_CTRL_PA_DROP = 1,         // the datagram is dropped (stale, a crossing this side wins, another incarnation)
++  GDAKI_CTRL_PA_SEND_PAIR = 2,    // prepare the QP for gen `mine` (ERR -> collect -> RESET -> INIT, or a new QP; a fresh
++                                  // PSN; record: the ring's new generation as initiator and its K RECVs) and send PAIR
++  GDAKI_CTRL_PA_RESEND_PAIR = 3,  // the same PAIR again (no answer for 500 ms)
++  GDAKI_CTRL_PA_TAKE = 4,         // answer: the QP for gen `cur` toward the PAIR's endpoint (reuse: this side's own QP
++                                  // prepared for that gen; else ERR -> collect -> RESET, a fresh PSN; record: the ring's
++                                  // new generation as the other side and its K RECVs, before RTR), RTR, RTS, PAIR_ACK
++  GDAKI_CTRL_PA_RESEND_ACK = 5,   // the stored PAIR_ACK again (the same PAIR came again), the QP untouched
++  GDAKI_CTRL_PA_CONNECT = 6,      // the answer came: RTR, RTS toward its endpoint; record: CONNECTED goes first on the
++                                  // ring (gdakiCtrlRingKick), probe: PAIR_DONE over UD and the READs start
++  GDAKI_CTRL_PA_RESEND_DONE = 7,  // probe: the PAIR_ACK came again (the PAIR_DONE was lost): PAIR_DONE again
++  GDAKI_CTRL_PA_UP = 8,           // the answering side: CONNECTED or PAIR_DONE came, or 500 ms passed (probe)
++  GDAKI_CTRL_PA_GIVE_UP = 9,      // the bound passed (setup NCCL_GIN_TS_CONNECT_MS, re-pairing _RECONNECT_MS)
++};
++struct gdakiCtrlPairSt {
++  uint32_t qpKind = GDAKI_CTRL_PAIR_QP_RECORD;
++  int32_t me = -1, peer = -1;
++  uint32_t state = GDAKI_CTRL_PS_IDLE;
++  uint32_t cur = 0;            // the generation in use (taken or connected); 0: never paired
++  uint32_t mine = 0;           // this side's PAIR outstanding (0: none)
++  bool answeredCur = false;    // cur came from the peer's PAIR (this side answered: its repeat gets the stored answer)
++  bool reusedMine = false;     // the last TAKE used this side's own QP prepared for the same generation
++  bool peerIncKnown = false;
++  uint32_t peerInc = 0;
++  bool havePsn = false;
++  uint32_t lastPsn = 0;        // the PSN of the last pairing (gdakiCtrlPairPsnFresh)
++  double startMs = 0, nextMs = 0, boundMs = 0, answeredMs = 0;
++  uint64_t pairsSent = 0, acksSent = 0, dropped = 0, droppedInc = 0, gaveUp = 0;
++  struct gdakiCtrlPairBody ack;  // the stored PAIR_ACK of cur (answeredCur)
++};
++static inline void gdakiCtrlPairInit(struct gdakiCtrlPairSt* s, uint32_t qpKind, int32_t me, int32_t peer) {
++  *s = gdakiCtrlPairSt();
++  s->qpKind = qpKind;
++  s->me = me;
++  s->peer = peer;
++  memset(&s->ack, 0, sizeof(s->ack));
++}
++// The peer's incarnation, from the setup's all-gather or an accepted REJOIN.
++static inline void gdakiCtrlPairSetPeerInc(struct gdakiCtrlPairSt* s, uint32_t inc) {
++  s->peerIncKnown = true;
++  s->peerInc = inc;
++}
++// A PSN for a new pairing must differ from the last one's (a fresh draw, design v3 2.5): true takes it.
++static inline bool gdakiCtrlPairPsnFresh(struct gdakiCtrlPairSt* s, uint32_t psn) {
++  psn &= 0xffffffu;
++  if (s->havePsn && psn == s->lastPsn) return false;
++  s->havePsn = true;
++  s->lastPsn = psn;
++  return true;
++}
++// This side starts (the setup's lower rank, or it saw its QP of this kind in ERR): PAIR(cur + 1), resent every 500 ms
++// until boundMs. Starting again while started is nothing (the same attempt).
++static inline uint32_t gdakiCtrlPairStart(struct gdakiCtrlPairSt* s, double nowMs, double boundMs) {
++  if (s->state == GDAKI_CTRL_PS_STARTED) return GDAKI_CTRL_PA_NONE;
++  s->mine = s->cur + 1u;
++  s->state = GDAKI_CTRL_PS_STARTED;
++  s->startMs = nowMs;
++  s->nextMs = nowMs + GDAKI_CTRL_PAIR_RESEND_MS;
++  s->boundMs = boundMs;
++  s->pairsSent++;
++  return GDAKI_CTRL_PA_SEND_PAIR;
++}
++// This side's QP of this kind went to ERR in generation `gen` (a bad completion of gen, an async event, the test switch):
++// a re-pairing starts unless it is an older generation's (its flushes after a re-pairing) or one is in progress.
++static inline uint32_t gdakiCtrlPairOnQpErr(struct gdakiCtrlPairSt* s, uint32_t gen, double nowMs, double boundMs) {
++  if (gen != s->cur || s->cur == 0) return GDAKI_CTRL_PA_NONE;
++  return gdakiCtrlPairStart(s, nowMs, boundMs);
++}
++static inline bool gdakiCtrlPairIncOk(struct gdakiCtrlPairSt* s, uint32_t inc) {
++  if (!s->peerIncKnown || inc == s->peerInc) return true;
++  s->droppedInc++;
++  s->dropped++;
++  return false;
++}
++// A PAIR(kind, theirGen) from the peer. TAKE: the caller answers (and stores the answer with gdakiCtrlPairStoreAck).
++static inline uint32_t gdakiCtrlPairOnPair(struct gdakiCtrlPairSt* s, uint32_t theirGen, uint32_t theirInc, double nowMs) {
++  if (!gdakiCtrlPairIncOk(s, theirInc)) return GDAKI_CTRL_PA_DROP;
++  const uint32_t mineGen = s->state == GDAKI_CTRL_PS_STARTED ? s->mine : 0u;
++  switch (gdakiCtrlPairResolve(s->me, s->peer, s->cur, mineGen, theirGen, s->answeredCur)) {
++    case GDAKI_CTRL_PAIR_REPEAT:
++      s->acksSent++;
++      return GDAKI_CTRL_PA_RESEND_ACK;
++    case GDAKI_CTRL_PAIR_TAKE:
++      s->reusedMine = mineGen == theirGen;
++      s->cur = theirGen;
++      s->mine = 0;
++      s->answeredCur = true;
++      s->state = GDAKI_CTRL_PS_ANSWERED;
++      s->answeredMs = nowMs;
++      s->acksSent++;
++      return GDAKI_CTRL_PA_TAKE;
++    default:  // STALE, KEEP_MINE
++      s->dropped++;
++      return GDAKI_CTRL_PA_DROP;
++  }
++}
++static inline void gdakiCtrlPairStoreAck(struct gdakiCtrlPairSt* s, const struct gdakiCtrlPairBody& ack) { s->ack = ack; }
++// A PAIR_ACK(kind, gen) from the peer.
++static inline uint32_t gdakiCtrlPairOnAck(struct gdakiCtrlPairSt* s, uint32_t gen, uint32_t theirInc) {
++  if (!gdakiCtrlPairIncOk(s, theirInc)) return GDAKI_CTRL_PA_DROP;
++  if (s->state == GDAKI_CTRL_PS_STARTED && gen == s->mine) {
++    s->cur = s->mine;
++    s->mine = 0;
++    s->answeredCur = false;
++    s->state = GDAKI_CTRL_PS_UP;
++    return GDAKI_CTRL_PA_CONNECT;
++  }
++  if (gen == s->cur && !s->answeredCur && s->state == GDAKI_CTRL_PS_UP)
++    return s->qpKind == GDAKI_CTRL_PAIR_QP_PROBE ? GDAKI_CTRL_PA_RESEND_DONE : GDAKI_CTRL_PA_NONE;
++  s->dropped++;
++  return GDAKI_CTRL_PA_DROP;
++}
++// CONNECTED (record: the ring took it, gdakiCtrlRingOnRecvCqe) or PAIR_DONE (probe, over UD) of gen.
++static inline uint32_t gdakiCtrlPairOnDone(struct gdakiCtrlPairSt* s, uint32_t gen) {
++  if (s->state == GDAKI_CTRL_PS_ANSWERED && gen == s->cur) {
++    s->state = GDAKI_CTRL_PS_UP;
++    return GDAKI_CTRL_PA_UP;
++  }
++  if (gen != s->cur) s->dropped++;
++  return gen == s->cur ? GDAKI_CTRL_PA_NONE : GDAKI_CTRL_PA_DROP;
++}
++// The clock: resend, the probe's 500 ms start, the bound.
++static inline uint32_t gdakiCtrlPairTick(struct gdakiCtrlPairSt* s, double nowMs) {
++  if (s->state == GDAKI_CTRL_PS_STARTED) {
++    if (nowMs - s->startMs >= s->boundMs) {
++      s->state = GDAKI_CTRL_PS_GAVE_UP;
++      s->mine = 0;
++      s->gaveUp++;
++      return GDAKI_CTRL_PA_GIVE_UP;
++    }
++    if (nowMs >= s->nextMs) {
++      s->nextMs = nowMs + GDAKI_CTRL_PAIR_RESEND_MS;
++      s->pairsSent++;
++      return GDAKI_CTRL_PA_RESEND_PAIR;
++    }
++    return GDAKI_CTRL_PA_NONE;
++  }
++  if (s->state == GDAKI_CTRL_PS_ANSWERED && s->qpKind == GDAKI_CTRL_PAIR_QP_PROBE &&
++      nowMs - s->answeredMs >= GDAKI_CTRL_PAIR_DONE_WAIT_MS) {
++    s->state = GDAKI_CTRL_PS_UP;
++    return GDAKI_CTRL_PA_UP;
++  }
++  return GDAKI_CTRL_PA_NONE;
++}
++// The pairing body of this side (PAIR or PAIR_ACK) for (kind, gen) with its QP's and UD QP's endpoints and regions.
++static inline struct gdakiCtrlPairBody gdakiCtrlPairBodyOf(const struct gdakiCtrlPairSt* s, uint32_t step, uint32_t gen,
++                                                           uint32_t inc, uint64_t nonce, const struct gdakiCtrlEndpoint& qp,
++                                                           const struct gdakiCtrlEndpoint& ud,
++                                                           const struct gdakiCtrlRegion& page,
++                                                           const struct gdakiCtrlRegion& outbox) {
++  struct gdakiCtrlPairBody b;
++  memset(&b, 0, sizeof(b));
++  b.qpKind = s->qpKind;
++  b.step = step;
++  b.gen = gen;
++  b.incarnation = inc;
++  b.from = s->me;
++  b.to = s->peer;
++  b.nonce = nonce;
++  b.qp = qp;
++  b.ud = ud;
++  b.page = page;
++  b.outbox = outbox;
++  return b;
++}
++// A received pairing datagram's body is well formed for (me, nonce): its kind and step, addressed to me, its endpoints.
++static inline bool gdakiCtrlPairBodyOk(const struct gdakiCtrlPairBody& b, int32_t me, uint64_t nonce) {
++  if (b.qpKind != GDAKI_CTRL_PAIR_QP_RECORD && b.qpKind != GDAKI_CTRL_PAIR_QP_PROBE) return false;
++  if (b.step != GDAKI_CTRL_PAIR_STEP_PAIR && b.step != GDAKI_CTRL_PAIR_STEP_ACK && b.step != GDAKI_CTRL_PAIR_STEP_DONE)
++    return false;
++  if (b.to != me || b.nonce != nonce || b.gen == 0) return false;
++  if (b.step == GDAKI_CTRL_PAIR_STEP_DONE) return true;  // PAIR_DONE carries no endpoint
++  return gdakiCtrlEndpointOk(b.qp) && b.qp.qpType == GDAKI_CTRL_QPT_RC && gdakiCtrlEndpointOk(b.ud) &&
++         b.ud.qpType == GDAKI_CTRL_QPT_UD;
++}
++
++// ---- the REJOIN over UD: the nrp block and the survivor's idempotency table (EXPERIMENT.md 9.5 (5); design v3 5.4) ----
++// The REJOIN and REJOIN_ACK carry struct gdakiCtrlRejoinNrp in the record's unused nrp[] (256 B), put and got with
++// memcpy (nrp[] is uint32_t[64]: no aliasing through a cast). gen: the generation both QP kinds of the pair start with
++// (the header has one gen; the survivor takes max(record cur, probe cur) + 1 for both, impl/notes_p2.md).
++static inline void gdakiCtrlNrpPut(void* nrp, size_t nrpBytes, const struct gdakiCtrlRejoinNrp& n) {
++  memset(nrp, 0, nrpBytes);
++  memcpy(nrp, &n, sizeof(n) <= nrpBytes ? sizeof(n) : nrpBytes);
++}
++// false: no RDMA block (version 0: a tcp-path REJOIN) or a malformed one
++static inline bool gdakiCtrlNrpGet(const void* nrp, size_t nrpBytes, struct gdakiCtrlRejoinNrp* out, bool isAck) {
++  if (nrpBytes < sizeof(*out)) return false;
++  memcpy(out, nrp, sizeof(*out));
++  if (out->version != GDAKI_CTRL_NRP_VERSION || out->gen == 0) return false;
++  if (!gdakiCtrlEndpointOk(out->rec) || out->rec.qpType != GDAKI_CTRL_QPT_RC) return false;
++  if (!gdakiCtrlEndpointOk(out->probe) || out->probe.qpType != GDAKI_CTRL_QPT_RC) return false;
++  if (!isAck && (!gdakiCtrlEndpointOk(out->ud) || out->ud.qpType != GDAKI_CTRL_QPT_UD)) return false;
++  return out->rec.qpn != out->probe.qpn;
++}
++// The survivor's table for one held rank (only while that rank is HELD: gdakiCtrlRejoinHold at the hold start,
++// gdakiCtrlRejoinEnd at its end). The acceptance itself is the existing rule's (HELD, known + 1, nonce, the park check,
++// FAIL to a refused rank; the buddy's fence word): the table only answers what comes after an acceptance.
++enum : uint32_t {
++  GDAKI_CTRL_RJ_RULES = 0,     // no acceptance in the table for this (from, incarnation): the existing rule decides
++  GDAKI_CTRL_RJ_REPEAT = 1,    // accepted already with this QPN: send the stored REJOIN_ACK again, the QPs untouched
++  GDAKI_CTRL_RJ_DROP_QPN = 2,  // accepted already with another QPN: dropped (never FAIL: a stray datagram must not end
++                               // the spare); `log` says whether this is the first such drop for that QPN (one GIN/LN line)
++  GDAKI_CTRL_RJ_DROP_OLD = 3,  // an older incarnation than the accepted one: dropped
++  GDAKI_CTRL_RJ_NOT_HELD = 4,  // the rank is not HELD: no table (the existing rule refuses, as today)
++};
++struct gdakiCtrlRejoinSt {
++  bool held = false;
++  bool accepted = false;
++  int32_t from = -1;
++  uint32_t inc = 0, qpn = 0;   // the accepted REJOIN's incarnation and the spare's record QPN
++  uint32_t loggedQpn = 0;      // the last other QPN a GIN/LN line was written for
++  uint64_t repeats = 0, droppedQpn = 0, droppedOld = 0;
++  uint8_t ack[GDAKI_CTRL_RECORD_BYTES];  // the stored REJOIN_ACK record, byte for byte
++};
++static inline void gdakiCtrlRejoinHold(struct gdakiCtrlRejoinSt* t, int32_t from) {
++  t->held = true;
++  t->accepted = false;
++  t->from = from;
++  t->inc = t->qpn = t->loggedQpn = 0;
++}
++static inline void gdakiCtrlRejoinEnd(struct gdakiCtrlRejoinSt* t) {
++  t->held = false;
++  t->accepted = false;
++}
++static inline uint32_t gdakiCtrlRejoinOn(struct gdakiCtrlRejoinSt* t, int32_t from, uint32_t inc, uint32_t qpn, bool* log) {
++  *log = false;
++  if (!t->held || from != t->from) return GDAKI_CTRL_RJ_NOT_HELD;
++  if (!t->accepted || inc > t->inc) return GDAKI_CTRL_RJ_RULES;
++  if (inc < t->inc) {
++    t->droppedOld++;
++    return GDAKI_CTRL_RJ_DROP_OLD;
++  }
++  if (qpn == t->qpn) {
++    t->repeats++;
++    return GDAKI_CTRL_RJ_REPEAT;
++  }
++  t->droppedQpn++;
++  if (t->loggedQpn != qpn) {
++    t->loggedQpn = qpn;
++    *log = true;
++  }
++  return GDAKI_CTRL_RJ_DROP_QPN;
++}
++// The existing rule accepted (from, inc) with the spare's record QPN; the answer is stored for a repeat.
++static inline void gdakiCtrlRejoinAccepted(struct gdakiCtrlRejoinSt* t, uint32_t inc, uint32_t qpn, const void* ack,
++                                           size_t ackBytes) {
++  t->accepted = true;
++  t->inc = inc;
++  t->qpn = qpn;
++  memset(t->ack, 0, sizeof(t->ack));
++  memcpy(t->ack, ack, ackBytes <= sizeof(t->ack) ? ackBytes : sizeof(t->ack));
++}
++
++// ---- the outbox (EXPERIMENT.md 9.1 "큰 자료"): two halves, XFER and XFER_DONE ----
++// The giver fills a free half and sends XFER(id, bytes, half, rkey, END on the last piece); the half is free again at
++// its XFER_DONE. The receiver takes an XFER of the next id only, READs it, answers XFER_DONE with the same body.
++struct gdakiCtrlOutboxSt {
++  bool busy[2] = {false, false};
++  uint64_t busyId[2] = {0, 0};
++  uint64_t nextId = 1;        // the giver's next piece
++  uint64_t expectId = 1;      // the receiver's next piece
++};
++// The giver: a free half for the next piece (-1: both wait for their XFER_DONE).
++static inline int gdakiCtrlOutboxTake(struct gdakiCtrlOutboxSt* o, uint64_t bytes, uint32_t rkey, bool end,
++                                      struct gdakiCtrlXfer* x) {
++  if (bytes > GDAKI_CTRL_OUTBOX_HALF_BYTES) return -1;
++  for (int h = 0; h < 2; h++) {
++    if (o->busy[h]) continue;
++    o->busy[h] = true;
++    o->busyId[h] = o->nextId;
++    memset(x, 0, sizeof(*x));
++    x->xferId = o->nextId++;
++    x->bytes = bytes;
++    x->half = (uint32_t)h;
++    x->rkey = rkey;
++    x->flags = end ? GDAKI_CTRL_XFER_F_END : 0u;
++    return h;
++  }
++  return -1;
++}
++// The giver: an XFER_DONE; false: not one of its pieces in flight (dropped)
++static inline bool gdakiCtrlOutboxDone(struct gdakiCtrlOutboxSt* o, const struct gdakiCtrlXfer& x) {
++  if (x.half > 1 || !o->busy[x.half] || o->busyId[x.half] != x.xferId) return false;
++  o->busy[x.half] = false;
++  return true;
++}
++// The receiver: an XFER it may READ (the next id, a half, its size, the rkey of the giver's outbox from the pairing)
++static inline bool gdakiCtrlOutboxAccept(struct gdakiCtrlOutboxSt* o, const struct gdakiCtrlXfer& x, uint32_t rkey) {
++  if (x.xferId != o->expectId || x.half > 1 || x.bytes > GDAKI_CTRL_OUTBOX_HALF_BYTES || x.rkey != rkey) return false;
++  o->expectId++;
++  return true;
++}
++#endif  // !NCCL_GIN_CTRL_TCP
++// ==== gin-control (ring): model (end) ====
++
+ // ---- gin-restore ckpt: pure functions (begin; impl/rs_unit_host.cc compiles this region on the CPU) ----
+ // The checkpoint's decisions and bookkeeping (EXPERIMENT.md 9.4, 9.11.9 C1, M3), as functions of plain values.
+ 
+@@ -18793,6 +19495,856 @@ static void gdakiCtrlFree(struct gdakiRecHost* r) {
+ #endif  // !NCCL_GIN_CTRL_TCP
+ // ==== gin-control (prep): the swap points, the liveness READ QP, the hooks (end) ====
+ 
++// ==== gin-control (ring): verbs back end (begin; phase 2a-1, impl/notes_p2.md) ====
++// The rdma branch's record path (EXPERIMENT.md 9.1; design v3 2.1-2.5): per context one struct gdakiCtrlRing
++// (r->ctrl->ring) with the helper's CQ (GDAKI_CTRL_HELPER_CQ, a completion channel), the UD QP, the receive and send
++// slots, the outbox (2 x 1 MiB, REMOTE_READ) and per peer rank its record QP (SQ 96, RQ 64, REMOTE_READ only, rnr_retry
++// 3, on the helper's CQ), the ring model, the pairing models and the REJOIN table. Every decision is the model's (region
++// "gin-control (ring): model"); this region posts what the model asks and feeds it the completions. Phase 2a-1: built in
++// gc and gcp, called from nowhere yet (phase 2a-2 binds the swap points, the setup and the helper loop to it; until then
++// r->ctrl->ring stays null and nothing here runs). One thread at a time (the helper; the setup thread before it starts).
++#if !NCCL_GIN_CTRL_TCP
++#include <dlfcn.h>
++// ibv_create_ah, ibv_destroy_ah, ibv_get_cq_event and ibv_ack_cq_events have no wrapper in ibvwrap.h (and this layer
++// changes the host file only): looked up in the libibverbs NCCL already loaded (RTLD_NOLOAD), once.
++struct gdakiCtrlVerbs {
++  bool tried = false, ok = false;
++  struct ibv_ah* (*createAh)(struct ibv_pd*, struct ibv_ah_attr*) = nullptr;
++  int (*destroyAh)(struct ibv_ah*) = nullptr;
++  int (*getCqEvent)(struct ibv_comp_channel*, struct ibv_cq**, void**) = nullptr;
++  void (*ackCqEvents)(struct ibv_cq*, unsigned int) = nullptr;
++};
++static const struct gdakiCtrlVerbs* gdakiCtrlVerbsOf() {
++  static std::mutex mu;
++  static struct gdakiCtrlVerbs v;
++  std::lock_guard<std::mutex> lk(mu);
++  if (v.tried) return &v;
++  v.tried = true;
++  const char* names[] = {ncclGetEnv("NCCL_IBVERBS_LIB"), "libibverbs.so", "libibverbs.so.1"};
++  for (const char* n : names) {
++    if (n == nullptr) continue;
++    void* h = dlopen(n, RTLD_NOW | RTLD_NOLOAD);
++    if (h == nullptr) continue;
++    v.createAh = (struct ibv_ah * (*)(struct ibv_pd*, struct ibv_ah_attr*)) dlsym(h, "ibv_create_ah");
++    v.destroyAh = (int (*)(struct ibv_ah*))dlsym(h, "ibv_destroy_ah");
++    v.getCqEvent = (int (*)(struct ibv_comp_channel*, struct ibv_cq**, void**))dlsym(h, "ibv_get_cq_event");
++    v.ackCqEvents = (void (*)(struct ibv_cq*, unsigned int))dlsym(h, "ibv_ack_cq_events");
++    v.ok = v.createAh != nullptr && v.destroyAh != nullptr && v.getCqEvent != nullptr && v.ackCqEvents != nullptr;
++    if (v.ok) break;
++  }
++  return &v;
++}
++#define GDAKI_CTRL_UD_SLOT_BYTES (GDAKI_CTRL_UD_GRH_BYTES + GDAKI_CTRL_SLOT_BYTES)  // a UD RECV: GRH 40 B + 2 KiB
++// One peer rank of this context.
++struct gdakiCtrlRdmaPeer {
++  struct gdakiMiHostQp* q = nullptr;   // the record QP (the helper's CQ)
++  struct gdakiCtrlRingPair ring;
++  struct gdakiCtrlPairSt pairRec, pairPrb;  // the two QP kinds' pairings (the probe QP itself: phase 1's gdakiProbeQp)
++  struct gdakiProbeQp* probe = nullptr;      // phase 1's liveness READ QP of this pair (set when bound; its moves go
++                                             // through the watch thread's handoff, phase 2a-2)
++  struct gdakiCtrlEndpoint local, remote;    // the record QP's endpoints in ring.gen
++  struct gdakiCtrlEndpoint remoteUd;         // the peer's UD QP (psn: its Q_Key)
++  bool haveUd = false;
++  struct ibv_ah* ah = nullptr;               // to remoteUd
++  struct gdakiCtrlRegion remotePage, remoteOutbox;
++  struct gdakiCtrlOutboxSt outbox;           // giver: this side's halves; receiver: the peer's next piece
++  std::deque<struct gdakiCtrlXfer> xferIn;   // XFERs of the peer to READ (at most 2: its two halves)
++  bool xferReadOut = false, xferReadOk = false;
++  struct gdakiCtrlRejoinSt rejoin;           // the survivor's REJOIN table for this rank while it is HELD
++  uint64_t rnr = 0;                          // RNR retry exceeded on this pair (all generations)
++};
++// A datagram that is not a pairing's (a REJOIN or REJOIN_ACK record over UD): kept for its reader (phase 2a-2).
++struct gdakiCtrlUdIn {
++  int32_t from = -1;
++  struct gdakiCtrlEnv env;
++  uint8_t body[GDAKI_CTRL_RECORD_BYTES];
++};
++struct gdakiCtrlRing {
++  struct gdakiRecHost* r = nullptr;
++  int me = -1, nranks = 0, nLaunchers = 0;
++  uint64_t nonce = 0;
++  uint32_t inc = 0;
++  struct gdakiCtrlPageLayout layout;          // where the peer's consumed word for this rank is (its page)
++  struct gdakiCtrlCq* cq = nullptr;           // the helper's CQ and completion channel
++  struct gdakiMiHostQp* ud = nullptr;         // the context's UD QP (the helper's CQ)
++  struct gdakiCtrlEndpoint udLocal;
++  uint8_t *rxMem = nullptr, *txMem = nullptr, *udRx = nullptr, *udTx = nullptr, *outbox = nullptr, *inStage = nullptr;
++  uint64_t* creditRd = nullptr;               // per peer: the READ target of its consumed word
++  uint64_t* rxConsumedOwn = nullptr;          // per peer: this side's consumed words until phase 1's page is bound
++  uint64_t* rxConsumed = nullptr;             // where they are published (the page's rxConsumed[N], or rxConsumedOwn)
++  struct ibv_mr *rxMr = nullptr, *txMr = nullptr, *udRxMr = nullptr, *udTxMr = nullptr, *outboxMr = nullptr,
++                *inStageMr = nullptr, *creditRdMr = nullptr;
++  uint64_t udTxBusy = 0;                      // a bit per UD send buffer (64)
++  std::vector<struct gdakiCtrlRdmaPeer> peers;  // by rank (peers[me] unused)
++  std::deque<struct gdakiCtrlUdIn> udIn;
++  struct gdakiCtrlRingOps ops;
++  uint64_t cqEvents = 0, cqEventsUnacked = 0, badDgrams = 0;
++};
++static size_t gdakiCtrlRingSlotOff(int peer, uint32_t slot) {
++  return ((size_t)peer * GDAKI_CTRL_RING_SLOTS + slot) * GDAKI_CTRL_SLOT_BYTES;
++}
++// ---- the model's posts ----
++static int gdakiCtrlRdmaPostSend(void* ctx, int peer, uint32_t gen, uint32_t sslot, const uint8_t* frame, uint32_t bytes) {
++  struct gdakiCtrlRing* g = (struct gdakiCtrlRing*)ctx;
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  if (pr.q == nullptr || pr.q->qp == nullptr || bytes > GDAKI_CTRL_SLOT_BYTES) return -1;
++  uint8_t* buf = g->txMem + gdakiCtrlRingSlotOff(peer, sslot);
++  memcpy(buf, frame, bytes);
++  struct ibv_sge sg;
++  sg.addr = (uint64_t)(uintptr_t)buf;
++  sg.length = bytes;
++  sg.lkey = g->txMr->lkey;
++  struct ibv_send_wr wr, *bad = nullptr;
++  memset(&wr, 0, sizeof(wr));
++  wr.wr_id = gdakiCtrlWrId(GDAKI_CTRL_WR_SEND, (uint32_t)peer, gen, sslot);
++  wr.sg_list = &sg;
++  wr.num_sge = 1;
++  wr.opcode = IBV_WR_SEND;
++  wr.send_flags = IBV_SEND_SIGNALED;
++  return wrap_ibv_post_send(pr.q->qp, &wr, &bad) == ncclSuccess ? 0 : -1;
++}
++static int gdakiCtrlRdmaPostRecv(void* ctx, int peer, uint32_t gen, uint32_t slot) {
++  struct gdakiCtrlRing* g = (struct gdakiCtrlRing*)ctx;
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  if (pr.q == nullptr || pr.q->qp == nullptr) return -1;
++  struct ibv_sge sg;
++  sg.addr = (uint64_t)(uintptr_t)(g->rxMem + gdakiCtrlRingSlotOff(peer, slot));
++  sg.length = GDAKI_CTRL_SLOT_BYTES;
++  sg.lkey = g->rxMr->lkey;
++  struct ibv_recv_wr wr, *bad = nullptr;
++  memset(&wr, 0, sizeof(wr));
++  wr.wr_id = gdakiCtrlWrId(GDAKI_CTRL_WR_RECV, (uint32_t)peer, gen, slot);
++  wr.sg_list = &sg;
++  wr.num_sge = 1;
++  return wrap_ibv_post_recv(pr.q->qp, &wr, &bad) == ncclSuccess ? 0 : -1;
++}
++// The window is shut: READ the peer's consumed word for this rank (its page's rxConsumed[me], 8 B) over the record QP.
++static int gdakiCtrlRdmaReadCredit(void* ctx, int peer, uint32_t gen) {
++  struct gdakiCtrlRing* g = (struct gdakiCtrlRing*)ctx;
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  if (pr.q == nullptr || pr.q->qp == nullptr || pr.remotePage.rkey == 0 || pr.remotePage.addr == 0) return -1;
++  const uint32_t off = g->layout.rxConsumedOff + 8u * (uint32_t)g->me;
++  if (off + 8u > pr.remotePage.len) return -1;
++  struct ibv_sge sg;
++  sg.addr = (uint64_t)(uintptr_t)&g->creditRd[peer];
++  sg.length = 8;
++  sg.lkey = g->creditRdMr->lkey;
++  struct ibv_send_wr wr, *bad = nullptr;
++  memset(&wr, 0, sizeof(wr));
++  wr.wr_id = gdakiCtrlWrId(GDAKI_CTRL_WR_READ_CREDIT, (uint32_t)peer, gen, 0);
++  wr.sg_list = &sg;
++  wr.num_sge = 1;
++  wr.opcode = IBV_WR_RDMA_READ;
++  wr.send_flags = IBV_SEND_SIGNALED;
++  wr.wr.rdma.remote_addr = pr.remotePage.addr + off;
++  wr.wr.rdma.rkey = pr.remotePage.rkey;
++  return wrap_ibv_post_send(pr.q->qp, &wr, &bad) == ncclSuccess ? 0 : -1;
++}
++static int gdakiCtrlRdmaPostUdRecv(struct gdakiCtrlRing* g, uint32_t slot) {
++  struct ibv_sge sg;
++  sg.addr = (uint64_t)(uintptr_t)(g->udRx + (size_t)slot * GDAKI_CTRL_UD_SLOT_BYTES);
++  sg.length = GDAKI_CTRL_UD_SLOT_BYTES;
++  sg.lkey = g->udRxMr->lkey;
++  struct ibv_recv_wr wr, *bad = nullptr;
++  memset(&wr, 0, sizeof(wr));
++  wr.wr_id = gdakiCtrlWrId(GDAKI_CTRL_WR_UD_RECV, 0, 0, slot);
++  wr.sg_list = &sg;
++  wr.num_sge = 1;
++  return wrap_ibv_post_recv(g->ud->qp, &wr, &bad) == ncclSuccess ? 0 : -1;
++}
++
++// ---- create and destroy (the lifetime rule of impl/rs_ctrl_api.h: QPs, then the CQ with its channel, then stats) ----
++static void* gdakiCtrlRdmaAlloc(size_t bytes) {
++  void* p = nullptr;
++  if (posix_memalign(&p, 4096, bytes) != 0) return nullptr;
++  memset(p, 0, bytes);
++  return p;
++}
++static void gdakiCtrlRdmaDestroy(struct gdakiCtrlRing* g) {
++  if (g == nullptr) return;
++  const struct gdakiCtrlVerbs* v = gdakiCtrlVerbsOf();
++  bool kept = false;  // the CQ could not be destroyed: the memory stays registered and allocated (a leak with a WARN)
++  for (struct gdakiCtrlRdmaPeer& pr : g->peers) {
++    if (pr.ah != nullptr && v->ok) (void)v->destroyAh(pr.ah);  // the address handles before the UD QP
++    pr.ah = nullptr;
++    gdakiMiHostQpDestroy(pr.q);  // a QP kept by it (a WARN) keeps the CQ busy: its destroy below fails, all is kept
++    pr.q = nullptr;
++  }
++  gdakiMiHostQpDestroy(g->ud);
++  g->ud = nullptr;
++  if (g->cq != nullptr && g->cqEventsUnacked > 0 && v->ok) v->ackCqEvents(g->cq->cq, (unsigned)g->cqEventsUnacked);
++  if (gdakiCtrlCqDestroy(g->cq)) g->cq = nullptr;
++  else kept = true;
++  if (!kept) {
++    struct ibv_mr* mrs[] = {g->rxMr, g->txMr, g->udRxMr, g->udTxMr, g->outboxMr, g->inStageMr, g->creditRdMr};
++    for (struct ibv_mr* m : mrs)
++      if (m != nullptr) (void)wrap_ibv_dereg_mr(m);
++    free(g->rxMem);
++    free(g->txMem);
++    free(g->udRx);
++    free(g->udTx);
++    free(g->outbox);
++    free(g->inStage);
++    free(g->creditRd);
++    free(g->rxConsumedOwn);
++    delete g;
++  } else {
++    WARN("GIN/RC: the control ring's CQ could not be destroyed; its memory is kept mono_ms=%.3f", gdakiQ4MonoMs());
++  }
++}
++// The context's ring: the helper's CQ (fits: gdakiCtrlCqFits), the regions and their MRs, the UD QP (RTS, its 64 RECVs
++// posted), a ring model and two pairing models per peer rank. No record QP yet (gdakiCtrlRdmaPrepare makes them).
++static ncclResult_t gdakiCtrlRdmaCreate(struct gdakiRecHost* r, int me, int nranks, int nLaunchers, uint64_t nonce,
++                                        uint32_t inc, struct gdakiCtrlRing** out, char* why, size_t whyLen) {
++  *out = nullptr;
++  struct gdaki_context* gc = r != nullptr ? r->ctx : nullptr;
++  struct ibv_pd* pd = (gc != nullptr && gc->collComm != nullptr) ? gc->collComm->ib.pd : nullptr;
++  if (pd == nullptr || me < 0 || me >= nranks || nranks > (int)GDAKI_CTRL_PAGE_MAX_RANKS) {
++    snprintf(why, whyLen, "no GIN protection domain or ranks out of range (%d of %d)", me, nranks);
++    return ncclInvalidUsage;
++  }
++  if (!gdakiCtrlCqFits((uint32_t)(nranks - 1), (uint32_t)nLaunchers)) {
++    snprintf(why, whyLen, "%d peers and %d launchers overrun the helper's CQ of %u", nranks - 1, nLaunchers,
++             GDAKI_CTRL_HELPER_CQ);
++    return ncclInvalidUsage;
++  }
++  if (!gdakiCtrlVerbsOf()->ok) {
++    snprintf(why, whyLen, "libibverbs' ibv_create_ah, ibv_get_cq_event or ibv_ack_cq_events not found");
++    return ncclSystemError;
++  }
++  struct gdakiCtrlRing* g = new gdakiCtrlRing();
++  g->r = r;
++  g->me = me;
++  g->nranks = nranks;
++  g->nLaunchers = nLaunchers;
++  g->nonce = nonce;
++  g->inc = inc;
++  auto fail = [&](const char* what, ncclResult_t res) -> ncclResult_t {
++    if (why[0] == 0 || what != nullptr) snprintf(why, whyLen, "%s", what != nullptr ? what : "control ring");
++    gdakiCtrlRdmaDestroy(g);
++    return res;
++  };
++  why[0] = 0;
++  if (!gdakiCtrlPageLayoutOf((uint32_t)nranks, (uint32_t)nLaunchers, &g->layout)) return fail("no page layout", ncclInvalidUsage);
++  if (gdakiCtrlCqCreate(r, (int)GDAKI_CTRL_HELPER_CQ, true, &g->cq, why, whyLen) != ncclSuccess) return fail(nullptr, ncclSystemError);
++  const size_t ringBytes = (size_t)nranks * GDAKI_CTRL_RING_SLOTS * GDAKI_CTRL_SLOT_BYTES;
++  g->rxMem = (uint8_t*)gdakiCtrlRdmaAlloc(ringBytes);
++  g->txMem = (uint8_t*)gdakiCtrlRdmaAlloc(ringBytes);
++  g->udRx = (uint8_t*)gdakiCtrlRdmaAlloc((size_t)GDAKI_CTRL_UD_RQ * GDAKI_CTRL_UD_SLOT_BYTES);
++  g->udTx = (uint8_t*)gdakiCtrlRdmaAlloc((size_t)GDAKI_CTRL_UD_SQ * GDAKI_CTRL_SLOT_BYTES);
++  g->outbox = (uint8_t*)gdakiCtrlRdmaAlloc(GDAKI_CTRL_OUTBOX_BYTES);
++  g->inStage = (uint8_t*)gdakiCtrlRdmaAlloc(GDAKI_CTRL_OUTBOX_HALF_BYTES);
++  g->creditRd = (uint64_t*)gdakiCtrlRdmaAlloc(4096);
++  g->rxConsumedOwn = (uint64_t*)gdakiCtrlRdmaAlloc(4096);
++  if (!g->rxMem || !g->txMem || !g->udRx || !g->udTx || !g->outbox || !g->inStage || !g->creditRd || !g->rxConsumedOwn)
++    return fail("cannot allocate the control ring's memory", ncclSystemError);
++  g->rxConsumed = g->rxConsumedOwn;
++  // receive slots, send slots, UD buffers and READ targets: LOCAL_WRITE only (no peer writes this memory); the outbox:
++  // REMOTE_READ (the peer, or the launcher, READs a half)
++  g->rxMr = wrap_direct_ibv_reg_mr(pd, g->rxMem, ringBytes, IBV_ACCESS_LOCAL_WRITE);
++  g->txMr = wrap_direct_ibv_reg_mr(pd, g->txMem, ringBytes, IBV_ACCESS_LOCAL_WRITE);
++  g->udRxMr = wrap_direct_ibv_reg_mr(pd, g->udRx, (size_t)GDAKI_CTRL_UD_RQ * GDAKI_CTRL_UD_SLOT_BYTES, IBV_ACCESS_LOCAL_WRITE);
++  g->udTxMr = wrap_direct_ibv_reg_mr(pd, g->udTx, (size_t)GDAKI_CTRL_UD_SQ * GDAKI_CTRL_SLOT_BYTES, IBV_ACCESS_LOCAL_WRITE);
++  g->outboxMr = wrap_direct_ibv_reg_mr(pd, g->outbox, GDAKI_CTRL_OUTBOX_BYTES, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ);
++  g->inStageMr = wrap_direct_ibv_reg_mr(pd, g->inStage, GDAKI_CTRL_OUTBOX_HALF_BYTES, IBV_ACCESS_LOCAL_WRITE);
++  g->creditRdMr = wrap_direct_ibv_reg_mr(pd, g->creditRd, 4096, IBV_ACCESS_LOCAL_WRITE);
++  if (!g->rxMr || !g->txMr || !g->udRxMr || !g->udTxMr || !g->outboxMr || !g->inStageMr || !g->creditRdMr)
++    return fail("cannot register the control ring's memory", ncclSystemError);
++  struct gdakiMiQpEndpoint v1;
++  const struct gdakiCtrlQpAttr ua = gdakiCtrlQpAttrUd(gdakiCtrlQkeyOf(nonce), g->cq->cq);
++  if (gdakiMiHostQpCreate(r, 1, &g->ud, &v1, why, whyLen, ua) != ncclSuccess) return fail(nullptr, ncclSystemError);
++  g->udLocal = gdakiCtrlEndpointOf(v1, GDAKI_CTRL_QPT_UD);
++  g->udLocal.psn = ua.qkey;  // a UD endpoint's psn holds its Q_Key
++  if (gdakiMiHostQpConnect(g->ud, v1, why, whyLen) != ncclSuccess) return fail(nullptr, ncclSystemError);
++  for (uint32_t s = 0; s < GDAKI_CTRL_UD_RQ; s++)
++    if (gdakiCtrlRdmaPostUdRecv(g, s) != 0) return fail("cannot post the UD QP's RECVs", ncclSystemError);
++  g->ops.ctx = g;
++  g->ops.postSend = gdakiCtrlRdmaPostSend;
++  g->ops.postRecv = gdakiCtrlRdmaPostRecv;
++  g->ops.readCredit = gdakiCtrlRdmaReadCredit;
++  g->peers.resize((size_t)nranks);
++  for (int p = 0; p < nranks; p++) {
++    struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)p];
++    gdakiCtrlRingInit(&pr.ring, p, me, nonce, inc, GDAKI_TS_MAGIC);
++    gdakiCtrlPairInit(&pr.pairRec, GDAKI_CTRL_PAIR_QP_RECORD, me, p);
++    gdakiCtrlPairInit(&pr.pairPrb, GDAKI_CTRL_PAIR_QP_PROBE, me, p);
++  }
++  if (g->cq->cq->context->ops.req_notify_cq(g->cq->cq, 0) != 0) return fail("cannot arm the helper's CQ", ncclSystemError);
++  *out = g;
++  return ncclSuccess;
++}
++// The fd the helper's poll() waits on with its witness sockets (the seam gdakiCtrlPollFd of phase 2a-2); -1: none.
++static int gdakiCtrlRdmaChannelFd(const struct gdakiCtrlRing* g) {
++  return (g != nullptr && g->cq != nullptr && g->cq->channel != nullptr) ? g->cq->channel->fd : -1;
++}
++// The seam gdakiCtrlChanUp of phase 2a-2: the pair's record channel is up.
++static bool gdakiCtrlRdmaUp(const struct gdakiCtrlRing* g, int peer) {
++  return g != nullptr && peer >= 0 && peer < g->nranks && peer != g->me && gdakiCtrlRingUp(&g->peers[(size_t)peer].ring);
++}
++
++// ---- the record QP of one pair: prepare (INIT, a fresh PSN, the ring's generation, its K RECVs), connect, to ERR ----
++static void gdakiCtrlRdmaPoll(struct gdakiCtrlRing* g, double nowMs);
++// ERR, then the completions of the old generation collected (bounded 200 ms: else the QP is destroyed and a new one
++// made, nothing of the old generation can complete then), RESET -> INIT; or a new QP. A PSN unlike the last pairing's.
++static ncclResult_t gdakiCtrlRdmaPrepare(struct gdakiCtrlRing* g, int peer, uint32_t gen, bool initiator, char* why,
++                                         size_t whyLen) {
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  struct ibv_qp_attr a;
++  if (pr.q != nullptr && pr.q->qp != nullptr) {
++    memset(&a, 0, sizeof(a));
++    a.qp_state = IBV_QPS_ERR;
++    (void)wrap_ibv_modify_qp(pr.q->qp, &a, IBV_QP_STATE);
++    gdakiCtrlRingNewGen(&pr.ring, gen, initiator);  // from here every completion of the old generation is "old"
++    const double t0 = gdakiQ4MonoMs();
++    while ((gdakiCtrlRingOldRecvs(&pr.ring) != 0 || pr.ring.sendBusy != 0) && gdakiQ4MonoMs() - t0 < 200.0) {
++      gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++      std::this_thread::sleep_for(std::chrono::microseconds(50));
++    }
++    bool reuse = gdakiCtrlRingOldRecvs(&pr.ring) == 0 && pr.ring.sendBusy == 0;
++    if (reuse) {
++      memset(&a, 0, sizeof(a));
++      a.qp_state = IBV_QPS_RESET;
++      reuse = wrap_ibv_modify_qp(pr.q->qp, &a, IBV_QP_STATE) == ncclSuccess;
++    }
++    if (reuse) {
++      memset(&a, 0, sizeof(a));
++      a.qp_state = IBV_QPS_INIT;
++      a.pkey_index = pr.q->pkeyIndex;
++      a.port_num = pr.q->port;
++      a.qp_access_flags = (int)pr.q->attr.access;
++      reuse = wrap_ibv_modify_qp(pr.q->qp, &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) ==
++              ncclSuccess;
++    }
++    if (reuse) {
++      do pr.q->psn = gdakiMiHostQpPsn(); while (!gdakiCtrlPairPsnFresh(&pr.pairRec, pr.q->psn));
++      pr.q->err = false;
++      pr.q->outstanding = 0;
++      pr.local.psn = pr.q->psn;
++    } else {
++      gdakiMiHostQpDestroy(pr.q);
++      pr.q = nullptr;
++      gdakiCtrlRingForgetOld(&pr.ring);
++    }
++  } else {
++    gdakiCtrlRingNewGen(&pr.ring, gen, initiator);
++    gdakiCtrlRingForgetOld(&pr.ring);
++  }
++  if (pr.q == nullptr) {
++    struct gdakiMiQpEndpoint v1;
++    const struct gdakiCtrlQpAttr attr = gdakiCtrlQpAttrRecord((uint8_t)ncclParamIbTimeout(), g->cq->cq);
++    if (gdakiMiHostQpCreate(g->r, 16, &pr.q, &v1, why, whyLen, attr) != ncclSuccess) return ncclSystemError;
++    while (!gdakiCtrlPairPsnFresh(&pr.pairRec, pr.q->psn)) pr.q->psn = gdakiMiHostQpPsn();
++    v1.psn = pr.q->psn;
++    pr.local = gdakiCtrlEndpointOf(v1, GDAKI_CTRL_QPT_RC);
++  }
++  // before RTR, at both ends: the K RECVs of gen (design v3 2.2)
++  if (gdakiCtrlRingPostInitial(&pr.ring, g->ops) != (int)GDAKI_CTRL_RING_SLOTS) {
++    snprintf(why, whyLen, "cannot post the record QP's %u RECVs to rank %d", GDAKI_CTRL_RING_SLOTS, peer);
++    return ncclSystemError;
++  }
++  gdakiCtrlWordStore(&g->rxConsumed[peer], gdakiCtrlRingConsumedWord(&pr.ring));
++  return ncclSuccess;
++}
++// RTR, RTS toward the peer's record QP of gen; the initiator's CONNECTED goes first (gdakiCtrlRingKick).
++static ncclResult_t gdakiCtrlRdmaConnect(struct gdakiCtrlRing* g, int peer, const struct gdakiCtrlEndpoint& remote,
++                                         char* why, size_t whyLen) {
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  if (pr.q == nullptr || !gdakiCtrlEndpointOk(remote) || remote.qpType != GDAKI_CTRL_QPT_RC) {
++    snprintf(why, whyLen, "no record QP to rank %d or not a well-formed RC endpoint", peer);
++    return ncclInvalidUsage;
++  }
++  if (gdakiMiHostQpConnect(pr.q, gdakiCtrlEndpointV1(remote), why, whyLen) != ncclSuccess) return ncclSystemError;
++  pr.remote = remote;
++  pr.ring.rts = true;
++  (void)gdakiCtrlRingKick(&pr.ring, g->ops, gdakiQ4MonoMs());
++  return ncclSuccess;
++}
++// The record QP toward `peer` into ERR (the hold start's step 1, the test switch QP_ERR): the ring's connection of this
++// generation is lost; the flushes come back as gen's errors (the pairing's re-pairing is the caller's: gdakiCtrlPairOnQpErr).
++static void gdakiCtrlRdmaRecordToErr(struct gdakiCtrlRing* g, int peer) {
++  if (g == nullptr || peer < 0 || peer >= g->nranks) return;
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  if (pr.q == nullptr || pr.q->qp == nullptr) return;
++  struct ibv_qp_attr a;
++  memset(&a, 0, sizeof(a));
++  a.qp_state = IBV_QPS_ERR;
++  if (wrap_ibv_modify_qp(pr.q->qp, &a, IBV_QP_STATE) != ncclSuccess)
++    WARN("GIN/RC: the record QP to rank %d could not be moved to ERR mono_ms=%.3f", peer, gdakiQ4MonoMs());
++  gdakiCtrlRingLose(&pr.ring, "TOERR");
++}
++
++// ---- UD: the address handle and the datagrams ----
++static ncclResult_t gdakiCtrlRdmaUdAh(struct gdakiCtrlRing* g, struct gdakiCtrlRdmaPeer& pr, char* why, size_t whyLen) {
++  if (pr.ah != nullptr) return ncclSuccess;
++  if (!pr.haveUd) {
++    snprintf(why, whyLen, "no UD endpoint of the peer");
++    return ncclInvalidUsage;
++  }
++  struct ibv_ah_attr aa;
++  memset(&aa, 0, sizeof(aa));
++  aa.port_num = g->ud->port;
++  if (g->ud->roce) {
++    aa.is_global = 1;
++    memcpy(aa.grh.dgid.raw, pr.remoteUd.gid, sizeof(pr.remoteUd.gid));
++    aa.grh.sgid_index = (uint8_t)g->ud->gidIndex;  // the GIN QPs' GID index and traffic class (design v3 2.5)
++    aa.grh.hop_limit = DEFAULT_HOP_LIMIT;
++    aa.grh.traffic_class = (uint8_t)g->ud->tc;
++  } else {
++    aa.dlid = (uint16_t)pr.remoteUd.lid;
++    aa.sl = (uint8_t)g->ud->sl;
++  }
++  struct gdaki_context* gc = g->r->ctx;
++  pr.ah = gdakiCtrlVerbsOf()->createAh(gc->collComm->ib.pd, &aa);
++  if (pr.ah == nullptr) {
++    snprintf(why, whyLen, "cannot create the address handle of the peer's UD QP");
++    return ncclSystemError;
++  }
++  return ncclSuccess;
++}
++// The peer's UD endpoint (the setup's all-gather, its PAIR, or the REJOIN's nrp): a changed one gets a new handle.
++static void gdakiCtrlRdmaSetUd(struct gdakiCtrlRing* g, int peer, const struct gdakiCtrlEndpoint& ud) {
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  if (pr.haveUd && memcmp(&pr.remoteUd, &ud, sizeof(ud)) == 0) return;
++  if (pr.ah != nullptr) (void)gdakiCtrlVerbsOf()->destroyAh(pr.ah);
++  pr.ah = nullptr;
++  pr.remoteUd = ud;
++  pr.haveUd = true;
++}
++// One datagram: the envelope (kind, gen, no seq) and a body to `peer`'s UD QP; 0 posted.
++static int gdakiCtrlRdmaUdSend(struct gdakiCtrlRing* g, int peer, uint16_t kind, uint32_t gen, const void* body,
++                               uint32_t bytes) {
++  char why[128] = {0};
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  if (bytes > GDAKI_CTRL_RECORD_BYTES || gdakiCtrlRdmaUdAh(g, pr, why, sizeof(why)) != ncclSuccess) return -1;
++  uint32_t s = 0;
++  while (s < GDAKI_CTRL_UD_SQ && (g->udTxBusy & (1ull << s)) != 0) s++;
++  if (s >= GDAKI_CTRL_UD_SQ) return -1;  // 64 datagrams in flight: the caller's resend covers it
++  uint8_t* buf = g->udTx + (size_t)s * GDAKI_CTRL_SLOT_BYTES;
++  const uint32_t n = gdakiCtrlFrame(buf, kind, g->me, gen, 0, 0, g->nonce, g->inc, body, bytes, GDAKI_TS_MAGIC);
++  struct ibv_sge sg;
++  sg.addr = (uint64_t)(uintptr_t)buf;
++  sg.length = n;
++  sg.lkey = g->udTxMr->lkey;
++  struct ibv_send_wr wr, *bad = nullptr;
++  memset(&wr, 0, sizeof(wr));
++  wr.wr_id = gdakiCtrlWrId(GDAKI_CTRL_WR_UD_SEND, (uint32_t)peer, gen, s);
++  wr.sg_list = &sg;
++  wr.num_sge = 1;
++  wr.opcode = IBV_WR_SEND;
++  wr.send_flags = IBV_SEND_SIGNALED;
++  wr.wr.ud.ah = pr.ah;
++  wr.wr.ud.remote_qpn = pr.remoteUd.qpn;
++  wr.wr.ud.remote_qkey = pr.remoteUd.psn;
++  if (wrap_ibv_post_send(g->ud->qp, &wr, &bad) != ncclSuccess) return -1;
++  g->udTxBusy |= 1ull << s;
++  return 0;
++}
++
++// ---- the pairing's actions (the model's GDAKI_CTRL_PA_*) ----
++// This side's page (phase 1's status page; until it is bound: none, and the window's READ path is off) and outbox.
++static struct gdakiCtrlRegion gdakiCtrlRdmaOutboxRegion(const struct gdakiCtrlRing* g) {
++  struct gdakiCtrlRegion o;
++  o.addr = (uint64_t)(uintptr_t)g->outbox;
++  o.rkey = g->outboxMr->rkey;
++  o.len = GDAKI_CTRL_OUTBOX_BYTES;
++  return o;
++}
++static struct gdakiCtrlRegion gdakiCtrlRdmaPageRegion(const struct gdakiCtrlRing* g) {
++  struct gdakiCtrlRegion p;
++  memset(&p, 0, sizeof(p));
++  (void)g;  // phase 2a-2: the status page's (address, rkey, layout bytes) once phase 1's page is bound
++  return p;
++}
++static void gdakiCtrlRdmaPairAct(struct gdakiCtrlRing* g, int peer, uint32_t qpKind, uint32_t act,
++                                 const struct gdakiCtrlPairBody* in) {
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  struct gdakiCtrlPairSt& st = qpKind == GDAKI_CTRL_PAIR_QP_PROBE ? pr.pairPrb : pr.pairRec;
++  const bool rec = qpKind == GDAKI_CTRL_PAIR_QP_RECORD;
++  char why[160] = {0};
++  auto body = [&](uint32_t step, uint32_t gen) {
++    const struct gdakiCtrlEndpoint& qp = rec ? pr.local : (pr.probe != nullptr ? pr.probe->local : pr.local);
++    return gdakiCtrlPairBodyOf(&st, step, gen, g->inc, g->nonce, qp, g->udLocal, gdakiCtrlRdmaPageRegion(g),
++                               gdakiCtrlRdmaOutboxRegion(g));
++  };
++  auto learn = [&](const struct gdakiCtrlPairBody& b) {  // the peer's UD endpoint and regions (a stale rkey mended)
++    gdakiCtrlRdmaSetUd(g, peer, b.ud);
++    pr.remotePage = b.page;
++    pr.remoteOutbox = b.outbox;
++  };
++  ncclResult_t res = ncclSuccess;
++  switch (act) {
++    case GDAKI_CTRL_PA_SEND_PAIR:
++      if (rec) res = gdakiCtrlRdmaPrepare(g, peer, st.mine, true, why, sizeof(why));
++      else if (pr.probe != nullptr) res = gdakiProbeQpReconnect(pr.probe, nullptr, st.mine, why, sizeof(why));
++      else res = ncclInvalidUsage;
++      if (res == ncclSuccess) {
++        const struct gdakiCtrlPairBody b = body(GDAKI_CTRL_PAIR_STEP_PAIR, st.mine);
++        (void)gdakiCtrlRdmaUdSend(g, peer, GDAKI_CTRL_K_PAIR, st.mine, &b, (uint32_t)sizeof(b));
++      }
++      break;
++    case GDAKI_CTRL_PA_RESEND_PAIR: {
++      const struct gdakiCtrlPairBody b = body(GDAKI_CTRL_PAIR_STEP_PAIR, st.mine);
++      (void)gdakiCtrlRdmaUdSend(g, peer, GDAKI_CTRL_K_PAIR, st.mine, &b, (uint32_t)sizeof(b));
++      break;
++    }
++    case GDAKI_CTRL_PA_TAKE:
++      if (in == nullptr) break;
++      learn(*in);
++      if (rec) {
++        if (st.reusedMine) pr.ring.initiator = false;  // this side's QP of that generation, its RECVs posted: it answers
++        else res = gdakiCtrlRdmaPrepare(g, peer, st.cur, false, why, sizeof(why));
++        if (res == ncclSuccess) res = gdakiCtrlRdmaConnect(g, peer, in->qp, why, sizeof(why));
++      } else if (pr.probe != nullptr) {
++        res = st.reusedMine ? gdakiProbeQpConnect(pr.probe, &in->qp, st.cur, why, sizeof(why))
++                            : gdakiProbeQpReconnect(pr.probe, &in->qp, st.cur, why, sizeof(why));
++      } else {
++        res = ncclInvalidUsage;
++      }
++      if (res == ncclSuccess) {
++        gdakiCtrlPairStoreAck(&st, body(GDAKI_CTRL_PAIR_STEP_ACK, st.cur));
++        (void)gdakiCtrlRdmaUdSend(g, peer, GDAKI_CTRL_K_PAIR, st.cur, &st.ack, (uint32_t)sizeof(st.ack));
++      }
++      break;
++    case GDAKI_CTRL_PA_RESEND_ACK:
++      (void)gdakiCtrlRdmaUdSend(g, peer, GDAKI_CTRL_K_PAIR, st.cur, &st.ack, (uint32_t)sizeof(st.ack));
++      break;
++    case GDAKI_CTRL_PA_CONNECT:
++      if (in == nullptr) break;
++      learn(*in);
++      if (rec) {
++        res = gdakiCtrlRdmaConnect(g, peer, in->qp, why, sizeof(why));  // CONNECTED goes first
++      } else if (pr.probe != nullptr) {
++        res = gdakiProbeQpConnect(pr.probe, &in->qp, st.cur, why, sizeof(why));
++        if (res == ncclSuccess) {
++          const struct gdakiCtrlPairBody b = body(GDAKI_CTRL_PAIR_STEP_DONE, st.cur);
++          (void)gdakiCtrlRdmaUdSend(g, peer, GDAKI_CTRL_K_PAIR, st.cur, &b, (uint32_t)sizeof(b));
++        }
++      }
++      break;
++    case GDAKI_CTRL_PA_RESEND_DONE: {
++      const struct gdakiCtrlPairBody b = body(GDAKI_CTRL_PAIR_STEP_DONE, st.cur);
++      (void)gdakiCtrlRdmaUdSend(g, peer, GDAKI_CTRL_K_PAIR, st.cur, &b, (uint32_t)sizeof(b));
++      break;
++    }
++    case GDAKI_CTRL_PA_GIVE_UP:
++      INFO(NCCL_NET, "GIN/RC: the %s pairing with rank %d gave up at its bound (gen %u) mono_ms=%.3f",
++           rec ? "record QP" : "liveness READ QP", peer, st.cur + 1u, gdakiQ4MonoMs());
++      break;
++    default: break;
++  }
++  if (res != ncclSuccess)
++    WARN("GIN/RC: the %s pairing with rank %d: %s mono_ms=%.3f", rec ? "record QP" : "liveness READ QP", peer, why,
++         gdakiQ4MonoMs());
++}
++// The pairing entry points (phase 2a-2 and phase 3 call these): start (the setup's lower rank; an ERR of gen seen)
++static void gdakiCtrlRdmaPairStart(struct gdakiCtrlRing* g, int peer, uint32_t qpKind, double boundMs) {
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  struct gdakiCtrlPairSt& st = qpKind == GDAKI_CTRL_PAIR_QP_PROBE ? pr.pairPrb : pr.pairRec;
++  gdakiCtrlRdmaPairAct(g, peer, qpKind, gdakiCtrlPairStart(&st, gdakiQ4MonoMs(), boundMs), nullptr);
++}
++static void gdakiCtrlRdmaPairOnErr(struct gdakiCtrlRing* g, int peer, uint32_t qpKind, uint32_t gen, double boundMs) {
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  struct gdakiCtrlPairSt& st = qpKind == GDAKI_CTRL_PAIR_QP_PROBE ? pr.pairPrb : pr.pairRec;
++  gdakiCtrlRdmaPairAct(g, peer, qpKind, gdakiCtrlPairOnQpErr(&st, gen, gdakiQ4MonoMs(), boundMs), nullptr);
++}
++
++// ---- the helper's CQ ----
++static void gdakiCtrlRdmaUdIn(struct gdakiCtrlRing* g, uint32_t slot, uint32_t len) {
++  const uint8_t* d = g->udRx + (size_t)slot * GDAKI_CTRL_UD_SLOT_BYTES + GDAKI_CTRL_UD_GRH_BYTES;
++  struct gdakiCtrlEnv e;
++  if (len < GDAKI_CTRL_UD_GRH_BYTES + sizeof(e)) {
++    g->badDgrams++;
++    return;
++  }
++  len -= GDAKI_CTRL_UD_GRH_BYTES;
++  memcpy(&e, d, sizeof(e));
++  if (gdakiCtrlEnvCheck(&e, g->nonce, len) != GDAKI_CTRL_ENV_OK || e.from < 0 || e.from >= g->nranks || e.from == g->me) {
++    g->badDgrams++;  // another communicator's nonce, a launcher's (phase 3), or malformed
++    return;
++  }
++  if (e.kind == GDAKI_CTRL_K_PAIR) {
++    struct gdakiCtrlPairBody b;
++    if (e.bodyBytes != sizeof(b)) {
++      g->badDgrams++;
++      return;
++    }
++    memcpy(&b, d + sizeof(e), sizeof(b));
++    if (!gdakiCtrlPairBodyOk(b, g->me, g->nonce) || b.from != e.from) {
++      g->badDgrams++;
++      return;
++    }
++    struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)e.from];
++    struct gdakiCtrlPairSt& st = b.qpKind == GDAKI_CTRL_PAIR_QP_PROBE ? pr.pairPrb : pr.pairRec;
++    uint32_t a = GDAKI_CTRL_PA_NONE;
++    if (b.step == GDAKI_CTRL_PAIR_STEP_PAIR) a = gdakiCtrlPairOnPair(&st, b.gen, b.incarnation, gdakiQ4MonoMs());
++    else if (b.step == GDAKI_CTRL_PAIR_STEP_ACK) a = gdakiCtrlPairOnAck(&st, b.gen, b.incarnation);
++    else if (b.qpKind == GDAKI_CTRL_PAIR_QP_PROBE) a = gdakiCtrlPairOnDone(&st, b.gen);  // PAIR_DONE (CONNECTED is RC)
++    gdakiCtrlRdmaPairAct(g, e.from, b.qpKind, a, &b);
++    return;
++  }
++  if (e.kind == GDAKI_CTRL_K_RECORD) {  // REJOIN, REJOIN_ACK: their reader (phase 2a-2) takes them
++    g->udIn.emplace_back();
++    struct gdakiCtrlUdIn& u = g->udIn.back();
++    u.from = e.from;
++    u.env = e;
++    memcpy(u.body, d + sizeof(e), e.bodyBytes);
++    return;
++  }
++  g->badDgrams++;
++}
++static void gdakiCtrlRdmaPoll(struct gdakiCtrlRing* g, double nowMs) {
++  if (g == nullptr || g->cq == nullptr) return;
++  for (int round = 0; round < 64; round++) {
++    struct ibv_wc wc[32];
++    int n = 0;
++    if (wrap_ibv_poll_cq(g->cq->cq, 32, wc, &n) != ncclSuccess || n <= 0) break;
++    for (int k = 0; k < n; k++) {
++      const uint64_t id = wc[k].wr_id;
++      const bool ok = wc[k].status == IBV_WC_SUCCESS;
++      const uint32_t peer = gdakiCtrlWrPeer(id);
++      const uint32_t what = gdakiCtrlWrWhat(id);
++      if (what == GDAKI_CTRL_WR_UD_RECV) {
++        if (ok) {
++          gdakiCtrlRdmaUdIn(g, gdakiCtrlWrSlot(id), wc[k].byte_len);
++          (void)gdakiCtrlRdmaPostUdRecv(g, gdakiCtrlWrSlot(id));
++        }
++        continue;
++      }
++      if (what == GDAKI_CTRL_WR_UD_SEND) {
++        if (gdakiCtrlWrSlot(id) < 64u) g->udTxBusy &= ~(1ull << gdakiCtrlWrSlot(id));
++        continue;
++      }
++      if (peer >= (uint32_t)g->nranks) continue;
++      struct gdakiCtrlRdmaPeer& pr = g->peers[peer];
++      switch (what) {
++        case GDAKI_CTRL_WR_RECV: {
++          const uint8_t* slot = g->rxMem + gdakiCtrlRingSlotOff((int)peer, gdakiCtrlWrSlot(id) % GDAKI_CTRL_RING_SLOTS);
++          const bool wasConnected = pr.ring.connected;
++          (void)gdakiCtrlRingOnRecvCqe(&pr.ring, g->ops, id, ok, slot, ok ? wc[k].byte_len : 0);
++          gdakiCtrlWordStore(&g->rxConsumed[peer], gdakiCtrlRingConsumedWord(&pr.ring));
++          if (!wasConnected && pr.ring.connected) (void)gdakiCtrlPairOnDone(&pr.pairRec, pr.ring.gen);  // CONNECTED
++          break;
++        }
++        case GDAKI_CTRL_WR_SEND: {
++          const bool rnr = wc[k].status == IBV_WC_RNR_RETRY_EXC_ERR;
++          pr.rnr += rnr;
++          gdakiCtrlRingOnSendCqe(&pr.ring, id, ok, rnr);
++          break;
++        }
++        case GDAKI_CTRL_WR_READ_CREDIT:
++          gdakiCtrlRingOnCreditWord(&pr.ring, gdakiCtrlWrGen(id), ok, __atomic_load_n(&g->creditRd[peer], __ATOMIC_ACQUIRE));
++          if (!ok && gdakiCtrlWrGen(id) == pr.ring.gen) gdakiCtrlRingLose(&pr.ring, "READERR");
++          break;
++        case GDAKI_CTRL_WR_READ_XFER:
++          if (gdakiCtrlWrGen(id) == pr.ring.gen) {
++            pr.xferReadOut = false;
++            pr.xferReadOk = ok;
++          }
++          if (!ok && gdakiCtrlWrGen(id) == pr.ring.gen) gdakiCtrlRingLose(&pr.ring, "READERR");
++          break;
++        default: break;
++      }
++    }
++  }
++  for (int p = 0; p < g->nranks; p++) {
++    if (p == g->me) continue;
++    struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)p];
++    gdakiCtrlRdmaPairAct(g, p, GDAKI_CTRL_PAIR_QP_RECORD, gdakiCtrlPairTick(&pr.pairRec, nowMs), nullptr);
++    gdakiCtrlRdmaPairAct(g, p, GDAKI_CTRL_PAIR_QP_PROBE, gdakiCtrlPairTick(&pr.pairPrb, nowMs), nullptr);
++    (void)gdakiCtrlRingKick(&pr.ring, g->ops, nowMs);
++  }
++}
++// The completion channel's fd was readable (the helper's poll): take the event, collect, re-arm, collect once more.
++static void gdakiCtrlRdmaOnWake(struct gdakiCtrlRing* g) {
++  if (g == nullptr || g->cq == nullptr || g->cq->channel == nullptr) return;
++  const struct gdakiCtrlVerbs* v = gdakiCtrlVerbsOf();
++  struct ibv_cq* cq = nullptr;
++  void* ctx = nullptr;
++  if (v->getCqEvent(g->cq->channel, &cq, &ctx) == 0) {
++    g->cqEvents++;
++    if (++g->cqEventsUnacked >= 64) {
++      v->ackCqEvents(g->cq->cq, (unsigned)g->cqEventsUnacked);
++      g->cqEventsUnacked = 0;
++    }
++  }
++  gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++  (void)g->cq->cq->context->ops.req_notify_cq(g->cq->cq, 0);
++  gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++}
++
++// ---- the swap points' rdma bodies (phase 2a-2 binds gdakiCtrlSend, gdakiCtrlRecv and gdakiCtrlPump to them) ----
++// One record to `peer` (gdakiTsSend's contract: the magic stamped, bounded by timeoutMs): 0 queued or sent, -1 not (the
++// queue stayed full until the bound, or the pair's connection of this generation is lost).
++static int gdakiCtrlRdmaSend(struct gdakiCtrlRing* g, int peer, struct gdakiTsMsg* m, int timeoutMs) {
++  if (g == nullptr || peer < 0 || peer >= g->nranks || peer == g->me) return -1;
++  m->magic = GDAKI_TS_MAGIC;
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  const double deadline = gdakiQ4MonoMs() + timeoutMs;
++  while (true) {
++    const int r = gdakiCtrlRingEnqueue(&pr.ring, GDAKI_CTRL_K_RECORD, m, (uint32_t)sizeof(*m));
++    if (r == 0) {
++      (void)gdakiCtrlRingKick(&pr.ring, g->ops, gdakiQ4MonoMs());
++      return 0;
++    }
++    if (r < 0 || gdakiQ4MonoMs() >= deadline) return -1;
++    gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++    std::this_thread::sleep_for(std::chrono::microseconds(50));
++  }
++}
++// XFER and XFER_DONE out of the inbox (records stay, in order): at most two of each are in flight per pair.
++static void gdakiCtrlRdmaTakeXfers(struct gdakiCtrlRing* g, int peer) {
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  bool took = false;
++  for (auto it = pr.ring.inbox.begin(); it != pr.ring.inbox.end();) {
++    if (it->env.kind == GDAKI_CTRL_K_XFER || it->env.kind == GDAKI_CTRL_K_XFER_DONE) {
++      struct gdakiCtrlXfer x;
++      memcpy(&x, it->body, sizeof(x));
++      if (it->env.kind == GDAKI_CTRL_K_XFER) pr.xferIn.push_back(x);
++      else if (!gdakiCtrlOutboxDone(&pr.outbox, x)) gdakiCtrlRingLose(&pr.ring, "BADXFER");
++      it = pr.ring.inbox.erase(it);
++      took = true;
++    } else {
++      ++it;
++    }
++  }
++  if (took) gdakiCtrlRingUndefer(&pr.ring, g->ops);
++}
++// The next record of `peer` (gdakiTsPump's contract): 1 a record in *out, 0 none yet, -1 the connection of this
++// generation is lost and nothing is left (cause: "QP:<the ring's cause>").
++static int gdakiCtrlRdmaRecv(struct gdakiCtrlRing* g, int peer, struct gdakiTsMsg* out, char* cause, size_t clen) {
++  if (g == nullptr || peer < 0 || peer >= g->nranks || peer == g->me) return -1;
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++  gdakiCtrlRdmaTakeXfers(g, peer);
++  struct gdakiCtrlInEnt e;
++  const int r = gdakiCtrlRingPop(&pr.ring, g->ops, &e);
++  if (r == 1) {
++    gdakiCtrlWordStore(&g->rxConsumed[peer], gdakiCtrlRingConsumedWord(&pr.ring));
++    if (e.env.kind != GDAKI_CTRL_K_RECORD) return 0;  // nothing else is a record's (TakeXfers took the XFERs)
++    memcpy(out, e.body, sizeof(*out));
++    return 1;
++  }
++  if (r < 0) snprintf(cause, clen, "QP:%s", pr.ring.lostCause);
++  return r;
++}
++
++// ---- the outbox (STATE, the rkey list, the activation blob): XFER, the receiver's READ, XFER_DONE ----
++static ncclResult_t gdakiCtrlRdmaXferSend(struct gdakiCtrlRing* g, int peer, const void* data, uint64_t bytes,
++                                          int timeoutMs, char* why, size_t whyLen) {
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  const double deadline = gdakiQ4MonoMs() + timeoutMs;
++  uint64_t off = 0;
++  bool first = true;
++  while (first || off < bytes) {
++    first = false;
++    const uint64_t piece = std::min<uint64_t>(GDAKI_CTRL_OUTBOX_HALF_BYTES, bytes - off);
++    struct gdakiCtrlXfer x;
++    int h;
++    while ((h = gdakiCtrlOutboxTake(&pr.outbox, piece, g->outboxMr->rkey, off + piece >= bytes, &x)) < 0) {
++      if (pr.ring.lost || gdakiQ4MonoMs() >= deadline) {
++        snprintf(why, whyLen, "no free outbox half toward rank %d (%s)", peer, pr.ring.lost ? pr.ring.lostCause : "bound");
++        return ncclSystemError;
++      }
++      gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++      gdakiCtrlRdmaTakeXfers(g, peer);
++      std::this_thread::sleep_for(std::chrono::microseconds(50));
++    }
++    if (piece > 0) memcpy(g->outbox + (size_t)h * GDAKI_CTRL_OUTBOX_HALF_BYTES, (const uint8_t*)data + off, piece);
++    while (true) {
++      const int r = gdakiCtrlRingEnqueue(&pr.ring, GDAKI_CTRL_K_XFER, &x, (uint32_t)sizeof(x));
++      if (r == 0) break;
++      if (r < 0 || gdakiQ4MonoMs() >= deadline) {
++        snprintf(why, whyLen, "the XFER to rank %d could not be queued", peer);
++        return ncclSystemError;
++      }
++      gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++    }
++    (void)gdakiCtrlRingKick(&pr.ring, g->ops, gdakiQ4MonoMs());
++    off += piece;
++  }
++  while (pr.outbox.busy[0] || pr.outbox.busy[1]) {  // the last pieces' XFER_DONE
++    if (pr.ring.lost || gdakiQ4MonoMs() >= deadline) {
++      snprintf(why, whyLen, "no XFER_DONE from rank %d (%s)", peer, pr.ring.lost ? pr.ring.lostCause : "bound");
++      return ncclSystemError;
++    }
++    gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++    gdakiCtrlRdmaTakeXfers(g, peer);
++    std::this_thread::sleep_for(std::chrono::microseconds(50));
++  }
++  return ncclSuccess;
++}
++static ncclResult_t gdakiCtrlRdmaXferRecv(struct gdakiCtrlRing* g, int peer, std::vector<uint8_t>* out, uint64_t maxBytes,
++                                          int timeoutMs, char* why, size_t whyLen) {
++  struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  const double deadline = gdakiQ4MonoMs() + timeoutMs;
++  out->clear();
++  while (true) {
++    gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++    gdakiCtrlRdmaTakeXfers(g, peer);
++    if (pr.ring.lost || gdakiQ4MonoMs() >= deadline) {
++      snprintf(why, whyLen, "the transfer from rank %d stopped (%s)", peer, pr.ring.lost ? pr.ring.lostCause : "bound");
++      return ncclSystemError;
++    }
++    if (pr.xferIn.empty()) {
++      std::this_thread::sleep_for(std::chrono::microseconds(50));
++      continue;
++    }
++    const struct gdakiCtrlXfer x = pr.xferIn.front();
++    pr.xferIn.pop_front();
++    if (!gdakiCtrlOutboxAccept(&pr.outbox, x, pr.remoteOutbox.rkey) || out->size() + x.bytes > maxBytes ||
++        (uint64_t)(x.half + 1u) * GDAKI_CTRL_OUTBOX_HALF_BYTES > pr.remoteOutbox.len) {
++      snprintf(why, whyLen, "a malformed XFER from rank %d (id %llu, %llu bytes)", peer, (unsigned long long)x.xferId,
++               (unsigned long long)x.bytes);
++      return ncclInvalidUsage;
++    }
++    if (x.bytes > 0) {
++      struct ibv_sge sg;
++      sg.addr = (uint64_t)(uintptr_t)g->inStage;
++      sg.length = (uint32_t)x.bytes;
++      sg.lkey = g->inStageMr->lkey;
++      struct ibv_send_wr wr, *bad = nullptr;
++      memset(&wr, 0, sizeof(wr));
++      wr.wr_id = gdakiCtrlWrId(GDAKI_CTRL_WR_READ_XFER, (uint32_t)peer, pr.ring.gen, x.half);
++      wr.sg_list = &sg;
++      wr.num_sge = 1;
++      wr.opcode = IBV_WR_RDMA_READ;
++      wr.send_flags = IBV_SEND_SIGNALED;
++      wr.wr.rdma.remote_addr = pr.remoteOutbox.addr + (uint64_t)x.half * GDAKI_CTRL_OUTBOX_HALF_BYTES;
++      wr.wr.rdma.rkey = x.rkey;
++      pr.xferReadOut = true;
++      pr.xferReadOk = false;
++      if (pr.q == nullptr || wrap_ibv_post_send(pr.q->qp, &wr, &bad) != ncclSuccess) {
++        snprintf(why, whyLen, "cannot post the outbox READ from rank %d", peer);
++        return ncclSystemError;
++      }
++      while (pr.xferReadOut && !pr.ring.lost && gdakiQ4MonoMs() < deadline) {
++        gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++        std::this_thread::sleep_for(std::chrono::microseconds(20));
++      }
++      if (pr.xferReadOut || !pr.xferReadOk) {
++        snprintf(why, whyLen, "the outbox READ from rank %d did not complete", peer);
++        return ncclSystemError;
++      }
++      out->insert(out->end(), g->inStage, g->inStage + x.bytes);
++    }
++    while (gdakiCtrlRingEnqueue(&pr.ring, GDAKI_CTRL_K_XFER_DONE, &x, (uint32_t)sizeof(x)) == 1) {
++      if (gdakiQ4MonoMs() >= deadline) break;
++      gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++    }
++    (void)gdakiCtrlRingKick(&pr.ring, g->ops, gdakiQ4MonoMs());
++    if (x.flags & GDAKI_CTRL_XFER_F_END) return ncclSuccess;
++  }
++}
++// The RNR count of every pair (9.1: 0 when the credit is right; the port counter rnr_nak_retry_err is the runner's).
++static uint64_t gdakiCtrlRdmaRnr(const struct gdakiCtrlRing* g) {
++  uint64_t n = 0;
++  if (g != nullptr)
++    for (const struct gdakiCtrlRdmaPeer& pr : g->peers) n += pr.rnr;
++  return n;
++}
++#endif  // !NCCL_GIN_CTRL_TCP
++// ==== gin-control (ring): verbs back end (end) ====
++
+ static void gdakiTsMain(struct gdakiRecHost* r) {
+   gdakiTsInHelper = true;
+   gdakiTsOwner = r;
