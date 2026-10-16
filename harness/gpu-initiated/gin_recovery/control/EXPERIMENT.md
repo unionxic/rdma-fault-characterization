@@ -11,7 +11,7 @@ RNIC 위 RDMA로 옮기고, 그때 죽음 판정 시간, FIN 없는 죽음, 멈�
 | 작성일 | 2026-10-16 |
 | 기준 브랜치와 커밋 | `exp/gin-control` @ `bb1b7bde` (origin/master, gin-mirror `COMPLETE` 뒤) |
 | 사전 등록 태그 | 없음 |
-| 마지막 갱신 | 2026-10-17, 1단계와 2a-1 코드 리뷰: 막는 문제 8(1단계 확인 창은 부르는 곳 0 등). 통합 뒤 고침. 빌드됨, 클러스터 실행 없음 |
+| 마지막 갱신 | 2026-10-17, 시험 쪽 리뷰와 고침(자체 시험 62/62), 1단계와 2a-1의 통합(`gc_layer_int.diff` `a7600a46`)을 3, 7–9, 11, 12절에 반영. 1단계와 2a-1 코드 리뷰의 막는 문제 8은 고치는 중. 빌드됨, 클러스터 실행 없음 |
 
 표시: `[측정]` 원자료에서 이 문서가 다시 셈, `[측정: 문서]` QA를 거친 다른 실험 문서의 값을 옮김(이 문서에서 다시 세지 않음), `[소스]` 코드에서 읽음,
 `[문헌]` 논문이나 공개 문서, `[추론]` 해석, `[미확인]` 확인 안 함.
@@ -123,7 +123,7 @@ mirror 쓰기, 준비 all-gather(GIN collComm, net_ib의 isend/irecv)뿐이고, 
 | RST는 더 이상 판정을 1 s 늦추지 않는다. rdma 빌드에서는 RST도 확인 창을 부를 뿐이라 RST → 판정이 RST + W다 `[설계 v3 4.2절]`. tcp 대조 빌드(`gctc`)에서 RST 뒤 거절 간격을 100 ms로 두면(RST 셀만; 기본 1 000, 2026-10-16 밤 사용자 결정) RST → 죽음이 100.5–106 ms다 `[추론: 감지 설계의 어림]` | RST 셀에서 rdma 빌드의 RST → 판정이 W–W + 1 ms 밖이거나, 간격 100 ms를 둔 `gctc` 시행에서 106 ms를 넘는다 |
 | FIN 없는 죽음은 launcher의 종료 보고로 원래 프로세스의 정리 시간(4 KiB 102.0–143.1 ms `[설계 v2 4.1절, 측정: 문서 동적 예비 프로세스 리뷰]`; 이 문서가 다시 센 관문 기다림 105.3–146.6 ms `[측정]`)에 판정되고, launcher가 끝남을 감추고 증인도 없으면 상태 페이지 READ의 하드웨어 재시도 초과(3.51–3.76 s `[측정: 문서 teardown_order]`)로 kill 뒤 약 3.6–4.0 s, 여유를 두어 3.5–4.5 s에 판정되고(판정 표 11행, 원인 NORESP) 펜스가 그것을 확인한 뒤 복원된다 `[설계 v3 4.2, 4.6절; 추론]`. 옛 TCP 길은 20 s 안에 판정하지 못한다 `[추론]` | 보고 있는 셀에서 kill → 판정이 100–150 ms 밖이거나, 보고 없는 셀에서 3.5–4.5 s 밖이다(READ 재시도 초과가 아닌 길로 판정) |
 | 멈춘 상대는 박동 정체 10 000 ms 전에는 판정되지 않고, 넘으면 모든 생존 rank가 2 × 100 ms 안에 멈춤을 판정하며, 펜스 뒤 되살아나고, 펜스 뒤 옛 화신의 쓰기는 0이다 | 8 000 ms 이하 멈춤에서 판정이 있거나, 12 000 ms 멈춤에서 판정이 10 000–10 300 ms 밖이거나, 펜스 뒤 생존 window에 바뀐 칸이 있거나, 데이터가 기준과 다르다 |
-| `watchBeat`는 오르고 helper만 멈춘 rank도 helper 박동 정체 10 000 ms 전에는 판정되지 않고, 넘으면 펜스 뒤 되살아난다 `[설계 v3 4.2절 15행]`. 펜스로 둘지는 사용자 결정 대기다(9.7절 끝 v3 목록 1) | 12 000 ms helper 멈춤에서 판정이 10 000–10 300 ms 밖이거나, 펜스 뒤 바뀐 칸이 있거나, 데이터가 기준과 다르다 |
+| `watchBeat`는 오르고 helper만 멈춘 rank도 helper 박동 정체 10 000 ms 전에는 판정되지 않고, 넘으면 펜스 뒤 되살아난다 `[설계 v3 4.2절 15행]`. 펜스로 둔다(2026-10-17 사용자 결정 1)(9.7절 끝 v3 목록 1) | 12 000 ms helper 멈춤에서 판정이 10 000–10 300 ms 밖이거나, 펜스 뒤 바뀐 칸이 있거나, 데이터가 기준과 다르다 |
 | 관리망 8 s 끊김(증인만 막음)에서 판정 0, 기록 길 다시 짝 맺기 0, 그 사이에도 체크포인트가 확정된다 | 판정이나 기록 길 잃음이 있거나, 끊김 동안 확정된 체크포인트가 0이다 |
 | 상태 페이지 READ는 따로 된 QP의 256 B READ라 4 KiB put 지연 중앙값을 2 % 넘게 바꾸지 않는다 `[추론]`. 2 %는 실행 사이 퍼짐보다 작아 pilot이 문턱을 다시 정한다(9.9절 끝) `[초안]` | 노드마다 READ 켬 대 끔의 4 KiB 지연 중앙값 차가 문턱(초안 2 %)을 넘는다 |
 | 회귀 없음: tcp 빌드는 gin-mirror의 비용 밖 예측을 원래 기준대로 맞힌다. rdma 빌드는 제어 경로와 무관한 예측을 원래 기준대로 맞힌다 | 그 예측 가운데 원래 판정식을 어기는 것이 있다 |
@@ -131,18 +131,23 @@ mirror 쓰기, 준비 all-gather(GIN collComm, net_ib의 isend/irecv)뿐이고, 
 
 ## 3. 사전 예측 (측정 전에 작성)
 
-초안이다. 문턱과 n은 pilot 뒤 사전 등록에서 고정한다. 판정은 유효한 시행만으로 센다(8절). "≥ k/n"은 유효 시행 n개 가운데 조건이 참인 것이 k개 이상이다.
-시각은 생존 rank 자기 프로세스의 `mono_ms`이고, kill 시각은 실행기의 kill 줄을 같은 노드 시계로 잰다.
+초안이다. 문턱과 n은 pilot 뒤 사전 등록에서 고정한다. 예측 표 파일 [impl/test/predictions_gc.csv](impl/test/predictions_gc.csv)가 이 표를 기계가 읽는 꼴로 옮겼고,
+이 표에 수치나 목록이 없던 여섯은 시험 쪽 리뷰의 권고 값으로 채워 `[초안: 사전 등록 전 확정]`으로 적었다(아래 행). 판정은 유효한 시행만으로 센다(8절). "≥ k/n"은 유효 시행 n개 가운데 조건이 참인 것이 k개 이상이다.
+이 실험의 셀 키는 유효 시행이 계획 n보다 적으면 "자료 부족"이다(제외는 채움, 8절). 여러 셀을 묶는 키(`build:gc`처럼 빌드의 모든 시행을 보는 것)는 들어간 셀이 모두 계획 n을 채울 때만
+판정한다. gin-mirror의 찾는 키(회귀 행)는 그 실험의 규칙 그대로다 `[초안: 사전 등록 전 확정]`.
+시각은 생존 rank 자기 프로세스의 `mono_ms`이고, kill 시각은 실행기의 kill 줄을 같은 노드 시계로 잰다. 같은 노드의 두 프로세스는 두 `mono_ms`를 견준다. 노드 사이 간격(sunny의 kill 줄과
+rain 생존 rank의 판정 줄 같은 것)은 실행기가 시행 앞뒤로 잰 두 노드의 시계 차로 두 `mono_ms`를 한 노드 시계에 옮겨 견준다. 시계 차는 한 ssh 세션 안의 왕복 열 번 가운데 가장 짧은 것이고 왕복
+시간도 함께 남긴다. 시계 차나 줄의 `mono_ms`가 없을 때만 수신 시계를 쓰고, 열 `kill_judge_clock`, `judge_spread_clock`, `publish_clock`이 어느 쪽인지 적는다 `[초안: 사전 등록 전 확정]`.
 
 | 무엇을 예측했나 | 셀 | 시행마다의 조건 | 판정식(초안) | 근거 | 찾는 키 |
 |---|---|---|---|---|---|
-| kill의 죽음 판정이 FIN 하나에 기대지 않고 1 s 안 | `gc4_kill3_ow`(그리고 rdma 빌드의 gin-mirror kill 셀) | 생존 rank마다 확인 창으로 판정(원인 FIN+STALE, FIN+NORESP, REMACC+FIN)이면 증인 FIN → 판정 W–W + 1 ms(kill → 판정 약 20–51 ms; 판정은 원인과 상관없이 t_F + W) `[설계 v3 4.2, 4.6절]`, 창이 "확인 못함"이라 원인 EXITED면 kill → 판정 102–206 ms `[설계 v2 4.1절]`(원인마다 수는 보고, FIN+NORESP가 많을 것 `[추론]`); 판정 원인이 FIN 하나, 원격 접근 오류 하나, 시한 하나인 줄 0. W 값은 pilot이 정함 `[초안]` | ≥ 9/10 | 9.3절 판정 표, 사용자 결정 5 | `kill_judge_rdma` |
+| kill의 죽음 판정이 FIN 하나에 기대지 않고 1 s 안 | `gc4_kill3_ow`, 그리고 rdma 빌드의 gin-mirror kill 셀 여덟(`mi4_kill3_ow`, `mi4_kill1_ow`, `mi4_kill3_ckpt_ow`, `mi4_seg_4k`, `mi4_seg_32k`, `mi4_seg_128k`, `mi4_pull`, `rs4_kill3_mion`, 모두 `@gc`) | 생존 rank마다 확인 창으로 판정(원인 FIN+STALE, FIN+NORESP, REMACC+FIN)이면 증인 FIN → 판정 W–W + 1 ms(kill → 판정 약 20–51 ms; 판정은 원인과 상관없이 t_F + W) `[설계 v3 4.2, 4.6절]`, 창이 "확인 못함"이라 원인 EXITED면 kill → 판정 102–206 ms `[설계 v2 4.1절]`(원인마다 수는 보고, FIN+NORESP가 많을 것 `[추론]`); 판정 원인이 FIN 하나, 원격 접근 오류 하나, 시한 하나인 줄 0. W 값은 pilot이 정함 `[초안]` | 셀마다 따로: `gc4_kill3_ow` ≥ 9/10; gin-mirror kill 셀은 k = n − 1(n 10인 `mi4_kill3_ow`는 ≥ 9/10, n 5인 나머지 일곱은 ≥ 4/5) `[초안: 사전 등록 전 확정]` | 9.3절 판정 표, 사용자 결정 5 | `kill_judge_rdma` |
 | RST로 죽어도 1 s 늦지 않음(rdma) | `gc4_rst_kill3@gc` | RST 줄이 있는 생존 rank마다 RST → 판정 W–W + 1 ms(원인 FIN+STALE, FIN+NORESP, REMACC+FIN; 창이 "확인 못함"이면 EXITED로 kill + 102–206 ms) `[설계 v3 4.2절]`, 복원 성공 | ≥ 9/10 | 9.3절 | `rst_judge_rdma` |
 | RST 뒤 거절 간격 100 ms(tcp 대조) | `gc4_rst_kill3@gctc` | RST → 죽음 판정 100.5–106 ms(옛 1 002.9–1 003.2 ms `[측정]`), 복원 성공. 값은 감지 설계의 어림. 간격 매개변수는 tcp 대조 빌드에만 있고 기본 1 000, 이 셀만 100(2026-10-16 밤 사용자 결정; 9.3절) | ≥ 9/10 | 감지 설계, 사용자 결정(저녁, 밤) | `rst_judge_tcp` |
 | 살아 있는 상대의 RST와 포트 닫힘은 rdma에서 판정 없음 | `gc4_rstgap_live300@gc` | 판정 0, 거절 0(확인 창이 살아 있음으로 끝남, 판정 표 8행) | 5/5 | 사용자 결정 5 | `rstgap_live_rdma` |
 | 같은 주입이 tcp에서 50 ms면 판정 없음, 300 ms면 거짓 죽음 | `gct4_rstgap_live50`, `gct4_rstgap_live300` `@gctc`(간격 100) | 50 ms: 판정 0; 300 ms: 판정이 RST 뒤 100.5–106 ms(100 ms 간격의 대가; 감지 설계의 어림) | ≥ 9/10, ≥ 4/5 | 감지 설계 | `rstgap_live_tcp` |
 | FIN 없는 죽음, launcher 보고 | `gc4_fdhold_sock_kill3` | kill → 판정 100–150 ms(원래 프로세스의 정리 시간 102.0–143.1 ms `[설계 v2 4.1, 4.6절]`과 이 문서의 관문 기다림 105.3–146.6 ms `[측정]`을 덮음), 원인 EXITED, 복원 성공, 데이터 같음 | ≥ 9/10 | 9.3, 9.5절 | `finless_exit_report` |
-| FIN 없는 죽음, READ 실패 | `gc4_fdhold_sock_kill3_noreport`(증인 끔, 시험 스위치 `NO_EXIT_REPORT`: launcher가 EXITED 말만 끔; FENCED, LEFT, REG_NOTE, 페이지 낱말은 그대로이고 판정은 끝남을 말로만 읽어 launcher 열이 "정보 없음") | kill → 판정 3.5–4.5 s(READ 하드웨어 재시도 초과 3.51–3.76 s `[측정: 문서 ../../../teardown_order/README.md]` + 정리 약 0.15 s + READ 주기 ≤ 0.1 s; `[설계 v3 4.6절에서 어림]`), 원인 NORESP(판정 표 11행: 증인 꺼짐 + launcher 정보 없음 + 하드웨어 응답 없음), 그 앞의 시한 줄(약 0.5 s)은 판정 없음, 판정 뒤 FENCE → 곧바로 FENCED → 활성화, 복원 성공, 데이터 같음 | ≥ 4/5 | 9.3절 판정 표; 11행을 둘지는 9.7절 끝 v3 목록 2 | `finless_read_fail` |
+| FIN 없는 죽음, READ 실패 | `gc4_fdhold_sock_kill3_noreport`(증인 끔, 시험 스위치 `NO_EXIT_REPORT`: launcher가 EXITED 말만 끔; FENCED, LEFT, REG_NOTE, 페이지 낱말은 그대로이고 판정은 끝남을 말로만 읽어 launcher 열이 "정보 없음") | kill → 판정 3.5–4.5 s(READ 하드웨어 재시도 초과 3.51–3.76 s `[측정: 문서 ../../../teardown_order/README.md]` + 정리 약 0.15 s + READ 주기 ≤ 0.1 s; `[설계 v3 4.6절에서 어림]`), 원인 NORESP(판정 표 11행: 증인 꺼짐 + launcher 정보 없음 + 하드웨어 응답 없음), 판정 앞에 READ 시한 줄(약 0.5 s)이 하나 이상 있어야 하고 그 줄은 판정이 아님, 판정 뒤 FENCE → 곧바로 FENCED → 활성화, 복원 성공, 데이터 같음 | ≥ 4/5 | 9.3절 판정 표; 11행은 2026-10-17 사용자 결정 2로 둠(9.7절 끝 v3 목록 2) | `finless_read_fail` |
 | 옛 TCP 길의 FIN 없는 죽음 | `gct4_fdhold_sock_kill3@gctc` | kill 뒤 20 s 안 판정 0, hold 0; 끝 시각(모름 거절이나 시행 한도)은 보고 | ≥ 4/5 | 1절 빈틈 3 | `finless_tcp_baseline` |
 | 자식이 uverbs fd까지 쥐면 거절만 | `gc4_fdhold_uverbs_kill3`(셀 설정으로 복원 끔: 예비 프로세스 없음) | 죽음 판정(원인 EXITED 또는 박동 정체; 시각은 보고), 복원하지 않고 거절, 생존 rank는 fail-fast로 끝남, 판정 뒤 생존 window에 바뀐 칸은 보고 | ≥ 4/5 | 사용자 결정 13; 리뷰: 종료 보고가 곧 FENCED를 만들어 펜스가 이 셀을 막지 못하므로 거절은 셀 설정으로만 | `fdhold_uverbs_refuse` |
 | 짧은 멈춤은 투명 | `gc4_stop1500`, `gc4_stop4000`, `gc4_stop8000` | 판정 0, 데이터 같음; 4 000과 8 000은 의심 줄(박동 정체 2 000–2 200 ms)이 있음 | 셀마다 ≥ 9/10 | 9.3절 문턱, gpu-detect 투명 | `stop_transparent` |
@@ -150,23 +155,33 @@ mirror 쓰기, 준비 all-gather(GIN collComm, net_ib의 isend/irecv)뿐이고, 
 | 긴 멈춤은 펜스 뒤 복원 | `gc4_stop12000_fence` | 생존 rank마다 멈춤 판정이 STOP 뒤 10 000–10 300 ms(분할 막이 문턱 `STALL_MS` − 2 × `PROBE_MS` `[설계 v3 3.4절]`), 판정 시각의 퍼짐 ≤ 200 ms, FENCE 보냄 → FENCED → 활성화 차례(보고 이름 FENCING, FENCED), 판정 → 마지막 게시 ≤ 1 500 ms, CONT 때 대상 PID 없음, 펜스 뒤 생존 window에 바뀐 칸 0, 데이터 같음 | ≥ 9/10 | 9.4절 | `stall_fence_restore` |
 | 긴 멈춤, 펜스 끔 | `gc4_stop12000_none` | 멈춤 판정 뒤 거절, fallback 뒤 대기가 오류로 풀림, 판정 뒤 생존 window에 바뀐 칸 0 | ≥ 4/5 | 9.4절 끝 | `stall_none_refuse` |
 | 살아서 도는 프로세스의 펜스 | `gc4_freeze12000_fence`(박동 쓰기만 멈춤) | 멈춤 판정 10 000–10 300 ms, launcher가 종료하고 pidfd로 끝남을 봄, 펜스 뒤 바뀐 칸 0, 데이터 같음 | ≥ 4/5 | 9.4절 | `freeze_fence_restore` |
-| helper만 멈춘 rank의 펜스 | `gc4_helper_freeze12000`(시험 스위치 `FREEZE_PAGE=12000:helper`: `helperBeat` 쓰기만 멈춤, `watchBeat`와 프로세스는 돎) | helper 멈춤 판정(원인 STALL_HELPER)이 멈춤 시작 뒤 10 000–10 300 ms, launcher가 종료하고 pidfd로 끝남을 봄, 펜스 뒤 바뀐 칸 0, 복원 성공, 데이터 같음 `[설계 v3 4.2절 15행]` | ≥ 4/5 | 9.3절; 펜스로 둘지는 9.7절 끝 v3 목록 1 | `helper_stall_fence` |
-| 관리망 끊김의 투명 | `gc4_mgmt_mute8`(증인만 8 s 막음) | 판정 0, 기록 QP 잃음 0, 끊김 동안 확정된 체크포인트 ≥ 1, 데이터 같음 | 5/5 | 사용자 결정 8 | `mgmt_mute_transparent` |
+| helper만 멈춘 rank의 펜스 | `gc4_helper_freeze12000`(시험 스위치 `FREEZE_PAGE=12000:helper`: `helperBeat` 쓰기만 멈춤, `watchBeat`와 프로세스는 돎) | helper 멈춤 판정(원인 STALL_HELPER)이 멈춤 시작 뒤 10 000–10 300 ms, launcher가 종료하고 pidfd로 끝남을 봄, 펜스 뒤 바뀐 칸 0, 복원 성공, 데이터 같음 `[설계 v3 4.2절 15행]` | ≥ 4/5 | 9.3절; 펜스는 2026-10-17 사용자 결정 1(9.7절 끝 v3 목록 1) | `helper_stall_fence` |
+| 관리망 끊김의 투명 | `gc4_mgmt_mute8`(증인만 8 s 막음) | 판정 0, 기록 QP 잃음 0(기록 QP 다시 짝 맺기 0이고 잃은 기록 0), 끊김 동안 확정된 체크포인트 ≥ 1, 데이터 같음 | 5/5 | 사용자 결정 8 | `mgmt_mute_transparent` |
 | 같은 끊김의 옛 길 | `gct4_mgmt_mute8@gct` | 판정 0, 데이터 같음; helper 다시 걸기 줄과 끊김 동안 버린 체크포인트 수는 보고 | 5/5 | gin-reconnect의 8 s 끊김 셀 | `mgmt_mute_tcp` |
 | 기록 QP 오류의 다시 짝 맺기 | `gc4_qperr_record`(높은 rank 1 쪽 QP만 오류) | 판정 0, ERR를 본 rank 1이 PAIR(기록, 세대 + 1)를 보내 기록 QP 세대 + 1, 생존 READ QP의 세대는 그대로이고 그 쌍의 READ 실패 0, 그 쌍의 기록이 이어짐, 데이터 같음 `[설계 v3 2.5절]` | ≥ 4/5 | 9.1절, 사용자 결정 6 | `qp_err_repair` |
 | 잃은 REJOIN datagram | `gc4_ud_drop_rejoin`(rank 3 kill, 첫 REJOIN datagram 버림) | 다시 보낸 REJOIN으로 복원 성공, 받아들임 1번(멱등), 예비 프로세스에 보낸 FAIL 0 | ≥ 4/5 | 9.5절 | `ud_drop_rejoin` |
 | credit 멈춤에도 기록 잃음 없음 | `gc4_credit_stall`(받는 쪽이 500 ms RECV를 다시 내지 않음) | RNR 0, 보내는 쪽 대기열로 미룸, 기록 잃음과 겹침 0, 데이터 같음 | 5/5 | 9.1절 credit | `credit_stall_no_loss` |
 | 무장됐으나 활성화 때 예비 프로세스가 없음의 곧바른 fallback | `gc4_kill3_ow_spareabsent`(실행기가 무장된 예비 프로세스를 자기 PID로 끝낸 뒤 5 ms 안에 rank 3 kill) | launcher가 ACTIVATE에 곧바로 REFUSED(까닭 "예비 프로세스 끝남"), FENCED → fallback ≤ 100 ms(옛 1 000 ms 규칙 대신), 대기가 오류로 풀림 `[설계 v3 4.6, 5.4절]` | ≥ 4/5 | 9.5절, 사용자 결정 2, 11 | `spare_absent_refused` |
-| 증인 없는 kill | `gc4_kill3_ow_nowitness` | 판정 원인 EXITED(원격 접근 오류 하나로는 판정하지 않음), kill → 판정 100–150 ms(4 KiB 정리 시간 102.0–143.1 ms `[설계 v2 4.6절]`), 첫 판정 → 마지막 생존 rank 게시 68.4–74.4 ms(판정과 FENCED가 같은 사건이라 활성화 뒤 부분 67.2–71.4 ms와 FETCH 1.2–3.0 ms만 남음; 4 KiB 셀의 값 `[설계 v3 4.6절]`), 복원 성공, 떠남과 죽음이 갈림(정상 종료 시행 끝의 hold 0) | ≥ 4/5 | 9.3절 | `kill_no_witness` |
-| 복원 시간과 관문 | rdma 빌드의 gin-mirror 한 죽음 복원 셀(증인 켬) | 첫 죽음 판정 → 마지막 생존 rank 게시: 4 KiB 약 120–197 ms, 학습 모양 약 195–286 ms(지금보다 약 W 짧음) `[설계 v2 4.6절]`; kill → 마지막 게시: 지금 ± 20 ms, 곧 4 KiB 154.5–240.5 ms, 학습 229.6–318.0 ms(지금 174.5–220.5 ms, 249.6–298.0 ms `[측정]`, 1절; 지금은 판정이 kill 뒤 0.07–0.31 ms라 판정 기준 값을 kill 기준으로 씀); 상한 ≤ 2 000 ms(학습 ≤ 1 000 ms)는 그대로; 'later' 0번의 빠른 활성화 0(관문이 FENCED), LATER는 활성화마다 많아야 한 번. 아래 메모 | ≥ 9/10(셀마다) | 9.4, 9.5절 | `restore_time_rdma` |
-| 장애 없음: 생존 확인이 조용함 | `gc4_none_probe`(60 s), `gc4_none_ow` | READ 성공률 100 %, 박동이 는 간격의 최대 < 300 ms, 의심 0, 판정 0, 찢긴 줄 읽기 수는 보고, 입력 멈춤 ≤ 16 ms(학습 모양 ≤ 20 ms; gin-mirror 고정값) | 10/10, 5/5 | 9.2절 | `none_probe_clean` |
-| 제어가 관리망에 없음 | rdma 빌드의 모든 시행 | 이 계층이 TCP로 보낸 기록과 자료 바이트 0(증인 BYE 빼고), 이 계층의 TCP 연결 수 = 증인 쌍 수(증인 끄면 0), 시행 kv에 두 GIN 포트의 `active_mtu`가 남고 4 096 | 모든 시행 | 9.6절 | `no_tcp_control` |
-| 상태 페이지 READ의 비용 | 비용 가족 probe, `lat4k`, `lat256k`, `bw256k`, 노드 둘; 팔 `probe-off`, `probe-on`(`@gcp`), `tcp`(`@gctp`) | `probe-on` 대 `probe-off`의 4 KiB 지연 중앙값 차 | 노드마다 ≤ 2 % `[초안]`(pilot의 같은 팔 사이 퍼짐을 보고 사전 등록에서 다시 정함, 9.9절 끝); 256 KiB 지연과 대역은 보고 | 9.2절 비용 | `cost_probe_lat4k` |
+| 증인 없는 kill | `gc4_kill3_ow_nowitness` | 판정 원인 EXITED(원격 접근 오류 하나로는 판정하지 않음), kill → 판정 100–150 ms(4 KiB 정리 시간 102.0–143.1 ms `[설계 v2 4.6절]`), 첫 판정 → 마지막 생존 rank 게시 68.4–74.4 ms(판정과 FENCED가 같은 사건이라 활성화 뒤 부분 67.2–71.4 ms와 FETCH 1.2–3.0 ms만 남음; 4 KiB 셀의 값 `[설계 v3 4.6절]`), 복원 성공, 떠남과 죽음이 갈림(정상 종료 시행 끝의 hold 0: 대상의 첫 복원 뒤 시작된 hold가 어느 rank에도 없음) | ≥ 4/5 | 9.3절 | `kill_no_witness` |
+| 복원 시간과 관문 | rdma 빌드의 gin-mirror 한 죽음 복원 셀(증인 켬): `mi4_kill3_ow`, `mi4_kill1_ow`, `mi4_kill3_ckpt_ow`, `mi4_seg_4k`, `mi4_seg_32k`, `mi4_seg_128k`, `mi4_pull`, `rs4_kill3_mion`, `mi4_train_kill3`, 모두 `@gc` | 첫 죽음 판정 → 마지막 생존 rank 게시: 4 KiB 약 120–197 ms, 학습 모양 약 195–286 ms(지금보다 약 W 짧음) `[설계 v2 4.6절]`; kill → 마지막 게시: 지금 ± 20 ms, 곧 4 KiB 154.5–240.5 ms, 학습 229.6–318.0 ms(지금 174.5–220.5 ms, 249.6–298.0 ms `[측정]`, 1절; 지금은 판정이 kill 뒤 0.07–0.31 ms라 판정 기준 값을 kill 기준으로 씀); 상한 ≤ 2 000 ms(학습 ≤ 1 000 ms)는 그대로; 'later' 0번의 빠른 활성화 0(관문이 FENCED), LATER는 활성화마다 많아야 한 번(rdma 빌드에서는 launcher가 대신 답하므로 launcher 줄의 LATER 수로 셈). 3절의 "약" 범위를 그대로 문턱으로 씀 `[초안: 사전 등록 전 확정]`. 아래 메모 | 셀마다: n 10 셀(`mi4_kill3_ow`, `mi4_train_kill3`) ≥ 9/10, n 5 셀(나머지 일곱) ≥ 4/5 `[초안: 사전 등록 전 확정]` | 9.4, 9.5절 | `restore_time_rdma` |
+| 장애 없음: 생존 확인이 조용함 | `gc4_none_probe`(60 s), `gc4_none_ow` | READ 성공률 100 %(상대의 끝, 곧 그 상대의 BYE, LEFT, 판정 뒤에 낸 READ는 뺌), 박동이 는 간격의 최대 < 300 ms(첫 성공 READ부터 상대의 끝 전까지에서 잼), 의심 0, 판정 0, 찢긴 줄 읽기 수는 보고, 입력 멈춤 ≤ 16 ms(학습 모양 ≤ 20 ms; gin-mirror 고정값) | 10/10, 5/5 | 9.2절 | `none_probe_clean` |
+| 제어가 관리망에 없음 | rdma 빌드의 모든 시행 | 이 계층이 TCP로 보낸 기록과 자료 바이트 0(증인 BYE 빼고; 라이브러리의 제어 요약 줄), 실행기가 트래픽 중 두 번 읽은 rank 프로세스의 TCP 보낸 바이트 증가 0(`ss`, 커널의 셈; NCCL 자신의 소켓도 그 창에서 조용하다는 `[추론]`이라 pilot에서 확인), 이 계층의 TCP 연결 수와 증인 연결 수가 설정에서 센 증인 수((N − 1) × 요약을 낸 프로세스 수; 증인 끄면 0)와 같음(라이브러리의 두 셈끼리가 아니라 설정과 견줌), 실행기가 읽은 두 GIN 포트의 `active_mtu`와 시행 kv `active_mtu`가 4 096; `ss`로 읽은 연결 수는 보고(NCCL bootstrap 소켓 수를 pilot이 재면 사전 등록 때 조건에 더함) `[초안: 사전 등록 전 확정]` | 모든 시행 | 9.6절 | `no_tcp_control` |
+| 상태 페이지 READ의 비용 | 비용 가족 probe, `lat4k`, `lat256k`, `bw256k`, 노드 둘; 팔 `probe-off`, `probe-on`(`@gcp`), `tcp`(`@gctp`) | `probe-on` 대 `probe-off`의 4 KiB 지연 중앙값 차 | 노드마다 차 ≤ 문턱, 문턱 = max(2 %, pilot에서 잰 `probe-off` 두 묶음 사이 4 KiB 지연 중앙값 차의 두 배), 한쪽 판정(느려짐만 셈) `[초안: 사전 등록 전 확정]`(9.9절 끝); 256 KiB 지연과 대역은 보고 | 9.2절 비용 | `cost_probe_lat4k` |
 | 긴 hold의 lane(사용자 결정 14: 문서화한 한계) | 위 셀 가운데 hold가 1 s를 넘는 시행(멈춤 펜스, launcher의 LATER 한도) | 생존 rank 사이 lane 깨짐과 DISARM 수 | 넘치면 그 받는 rank의 DISARM이 예측이고 실패로 세지 않음; DISARM이 있어도 데이터는 같아야 함. 대상 시행이 0이면 "자료 없음"이고 실패가 아님. 생존 rank끼리만 계속 주고받는 driver 셀은 gin-dynamic | 사용자 결정 14, 동적 예비 프로세스 리뷰 | `long_hold_lane` |
-| FENCED 관문은 마지막 thread를 기다림 | CPU 시험 `gate_fenced`(main thread가 먼저 끝나고 다른 thread가 500 ms 더 사는 프로그램) | 옛 관문(`/proc`, Z = GO)은 main thread가 끝나면 GO; FENCED 관문(pidfd)은 마지막 thread가 끝난 뒤에만 GO, 그 차이가 약 500 ms | 10/10 | 9.4절, 사용자 결정(저녁) | `gate_fenced` |
-| 회귀(tcp 빌드) | gin-mirror 7절의 비용 밖 셀을 이름과 env 그대로 `@gct` | gin-mirror 예측 표의 원래 판정식 그대로 | 원래 기준 | 사용자 결정 1 | `regression_tcp`(gin-mirror의 찾는 키들) |
-| 회귀(rdma 빌드, 제어와 무관한 예측) | 같은 셀 `@gc` | gin-mirror의 데이터 같음, 재실행 없음, 되살린 rank가 끝까지, 억제 정확, 내용이 pool에서 옴, 다시 이미지와 둘째 죽음 | 원래 기준 | 9.7절 회귀 행 | `regression_rdma` |
-| 회귀(rdma 빌드, mirror 끈 길이 RDMA 저장소로) | gin-restore 셀(`rs4_*`) `@gc` | 데이터 같음, 재실행 없음, helper 소켓과 자료 소켓으로 보낸 이미지 바이트 0 | 원래 기준(k/n) | 사용자 결정 7 | `regression_rdma_mirror_off` |
+| FENCED 관문은 마지막 thread를 기다림 | CPU 시험 `gate_fenced`: 실제 자식 프로세스(main thread가 먼저 끝나고 둘째 thread가 500 ms 더 삶; [impl/test/gate_proc_gc.py](impl/test/gate_proc_gc.py)), 시행 열 번은 프로세스 열 개 | 옛 관문(`/proc`, Z = GO)은 둘째 thread가 끝나기 전에 GO; FENCED 관문(pidfd)은 둘째 thread가 끝난 뒤 0–5 ms 안에 GO이고, 시험 장치가 따로 잰 pidfd 읽힘 시각과 5 ms 안; 두 관문의 차이(약 500 ms)는 보고 `[초안: 사전 등록 전 확정]`. 관문 시각은 `impl/gate_fenced.cc`의 실제 pid 모드가 내야 하고 그 전에는 자료 부족이다(지금 그 파일은 시간표 모형이라 이 예측의 시험이 아님, 12절) | 10/10 | 9.4절, 사용자 결정(저녁) | `gate_fenced` |
+| 회귀(tcp 빌드) | gin-mirror 7절의 비용 밖 셀을 이름과 env 그대로 `@gct` | gin-mirror 예측 표의 원래 판정식 그대로. 둘째 죽음 셀에서 둘째 kill이 다시 무장보다 먼저 났거나, 첫 복원이 실패했거나, 다시 무장이 오지 않은 시행은 빼지 않고 조건 불충족으로 셈(gin-mirror 8절 그대로) | 원래 기준 | 사용자 결정 1 | `regression_tcp`(gin-mirror의 찾는 키들) |
+| 회귀(rdma 빌드, 제어와 무관한 예측) | 같은 셀 `@gc` | gin-mirror 예측 열둘을 원래 판정식으로: `ow_wait_held`(대기 붙잡힘), `ow_data_equal`, `ow_no_reexec`, `ow_revived_done`, `ow_suppress_exact`, `ow_from_pool`, `ckpt_kill_ow`, `kill_other_ow`, `reimage_after_restore`, `second_death_restored`, `train_data_equal`, `train_second_death`. 둘째 죽음 둘의 시간 몫(≤ 2 000 ms, 학습 ≤ 1 000 ms)은 gin-mirror 원래 기준. 둘째 kill과 첫 복원 실패는 위 행과 같이 조건 불충족으로 셈. `store_rdma`와 `train_paced_import`를 넣을지는 열림. 어느 예측도 보지 않는 gin-mirror 셀(거절, mirror 끔 대조, 당기기, 넘침, 간격)은 `@gc`로 돌고 보고만 `[초안: 사전 등록 전 확정]` | 원래 기준 | 9.7절 회귀 행 | `regression_rdma` |
+| 회귀(rdma 빌드, mirror 끈 길이 RDMA 저장소로) | gin-restore 셀 `rs4_kill3`, `rs4_kill3_ckpt`, `rs4_kill1`, `rs4_none`, 모두 `@gc` | 데이터 같음과 재실행 없음(`rs4_kill3`은 gin-mirror의 `rg_data_equal`, `rg_no_reexec`; `rs4_kill3_ckpt`, `rs4_kill1`은 같은 두 조건; `rs4_none`은 데이터 같음), helper 소켓과 자료 소켓으로 보낸 이미지 바이트 0 | gin-mirror의 원래 k(`rs4_kill3`은 원래 기준, n 5인 `rs4_kill3_ckpt`, `rs4_kill1`은 ≥ 4/5, `rs4_none`은 모든 유효 시행); 이미지 바이트 0은 구조적 성질이라 셀마다 모든 유효 시행 `[초안: 사전 등록 전 확정]` | 사용자 결정 7 | `regression_rdma_mirror_off` |
+
+**예측 표 파일이 더하거나 이렇게 읽은 조건**(시험 쪽 리뷰가 대조해 찾은 것; 위 표의 글에는 없거나 뜻이 둘이라 사전 등록 전에 이 꼴로 고정한다) `[초안: 사전 등록 전 확정]`.
+- RST 두 행(`rst_judge_rdma`, `rst_judge_tcp`): RST 줄을 본 생존 rank가 하나 이상이어야 한다(하나도 없으면 그 시행은 주입이 시험되지 않은 것). 생존 rank 셋 모두가 RST를 봐야 하는지는 열림.
+- RST tcp의 "복원 성공"은 대기 붙잡힘, 데이터 같음, 되살린 rank가 끝까지의 셋으로 읽는다.
+- uverbs 셀의 "fail-fast로 끝남"은 모든 생존 rank의 대기가 풀림으로 읽는다.
+- 짧은 멈춤의 "데이터 같음"은 gin-mirror의 두 열(`data_equal`, `ow_data_equal`)로 읽는다. 4 000, 8 000의 "의심 줄이 있음"은 지금 시행에 의심 줄이 하나 이상으로 읽고, 생존 rank마다여야 하는지는 열림.
+- 장애 없음의 학습 모양 ≤ 20 ms는 두 셀이 학습 모양이 아니라 쓰지 않는다.
+- FIN 없는 죽음 READ 실패의 "곧바로 FENCED"는 수치가 없어 FENCE에서 FENCED까지의 시각을 보고만 한다.
+- 회귀(rdma)에서 어느 예측도 보지 않는 gin-mirror 셀은 보고만이다(위 행).
+- 셀 값의 자리 표시(`DIE_RST` 3 000 ms의 기준점, `RST_GAP` 시작, `FREEZE_PAGE` 시작, `QP_ERR`, `CREDIT_STALL`, `DROP_UD`의 값 꼴, `gc4_none_probe`와 멈춤, 끊김 셀의 `STEPS`)와 W는 셀 파일의 `todo`에 있고 pilot 뒤 정한다.
 
 **복원 시간 예측에 대한 메모** `[추론]`. 제어 경로 리뷰는 "관문의 'later' 기다림이 없어져 판정 줄에서 잰 복원이 짧아진다"고 보았지만, 설계 v2 4.6절 끝은 다르게 셈했고
 이 문서는 그 셈을 따른다. 지금의 'later' 기다림(102.0–143.1 ms `[설계 v2, 측정: 문서 동적 예비 프로세스 리뷰]`; 이 문서가 다시 센 `activate_ms`는 105.3–146.6 ms
@@ -235,7 +250,7 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
   간격(tcp 대조 빌드의 매개변수, 기본 1 000, RST 셀만 100; 9.3절), 링 자리 64, outbox 2 × 1 MiB, 기록 QP의 timeout은 `NCCL_IB_TIMEOUT`(14)과 같음, 모든 rank가 같은 값(준비 합의).
   감시 스레드의 QP 감시 `NCCL_GIN_Q4_QPWATCH_MS=0`과 helper 쪽 `NCCL_GIN_TS_QPWATCH_MS=10`(학습 셀 50)은 gin-mirror 실행기 그대로 둔다(`../mirror/impl/test/run_mi.sh` 39, 71, 177,
   181행 `[소스]`): 감시 스레드가 QUERY_QP를 내면 `watchBeat` 간격이 늘어 W를 정하는 셀이 흐려진다 `[설계 v3 4.3절]`. LATER 뒤 launcher 박동 한도 `NCCL_GIN_CTRL_LAUNCHER_STALL_MS`
-  (초안 1 000)와 `NCCL_GIN_RESTORE_SPARE_START_MS`(5 000, ACTIVATE부터) `[설계 v3 4.3절]`.
+  (1 000, 2026-10-17 사용자 결정 4)와 `NCCL_GIN_RESTORE_SPARE_START_MS`(5 000, ACTIVATE부터) `[설계 v3 4.3절]`.
 
 ## 7. 실험 셀, 반복 수, 대조군
 
@@ -249,8 +264,8 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
 | `gc4_kill3_ow` | rank 3 SIGKILL(실행기, 대부분 FIN) | `@gc` 10 | 판정 시간 |
 | `gc4_kill3_ow_nowitness` | 같고 증인 끔 | `@gc` 5 | 증인 없는 판정 |
 | `gc4_rst_kill3` | rank 3이 연결된 소켓에 linger 0을 두고 스스로 SIGKILL(생존 rank 모두 RST) | `@gc` 10, `@gctc` 10(간격 100) | RST |
-| `gc4_rstgap_live300` | 살아 있는 rank 1이 연결 소켓을 linger 0으로 닫고 수신 대기를 300 ms 닫음(fail-fast) | `@gc` 5 | RST(살아 있음) |
-| `gct4_rstgap_live50`, `gct4_rstgap_live300` | 같고 50 ms, 300 ms | `@gctc` 10, 5(간격 100) | 100 ms 간격의 대가 |
+| `gc4_rstgap_live300` | 살아 있는 rank 1이 연결 소켓을 linger 0으로 닫고 수신 대기를 300 ms 닫음(fail-fast; 대상 `SUBJECT_RANK=1`) | `@gc` 5 | RST(살아 있음) |
+| `gct4_rstgap_live50`, `gct4_rstgap_live300` | 같고 50 ms, 300 ms(대상 `SUBJECT_RANK=1`) | `@gctc` 10, 5(간격 100) | 100 ms 간격의 대가 |
 | `gc4_fdhold_sock_kill3` | rank 3이 자식을 fork해 증인 소켓을 넘긴 뒤 부모 SIGKILL | `@gc` 10 | FIN 없는 죽음 |
 | `gc4_fdhold_sock_kill3_noreport` | 같고 증인 끔, 시험 스위치 `NO_EXIT_REPORT`(launcher가 EXITED 말만 보내지 않음; FENCED, LEFT, REG_NOTE, 페이지 낱말은 그대로). 증인이 꺼져 자식이 넘겨받는 소켓은 없고, 이 셀이 보는 것은 launcher가 끝남을 모를 때의 READ 판정 길이다 | `@gc` 5 | FIN 없는 죽음(READ) |
 | `gct4_fdhold_sock_kill3` | 같은 주입, 옛 TCP 길(helper 소켓을 넘김) | `@gctc` 5 | 대조 |
@@ -259,12 +274,12 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
 | `gc4_stop12000_fence` | 12 000 ms, `FENCE=lineage` | `@gc` 10 | 펜스와 복원 |
 | `gc4_stop12000_none` | 12 000 ms, `FENCE=none` | `@gc` 5 | 거절 |
 | `gc4_slow_duty` | rank 3에 SIGSTOP과 SIGCONT를 50 ms씩 20 s | `@gc` 5 | 느린 상대 |
-| `gc4_freeze12000_fence` | rank 3의 박동 쓰기만 12 000 ms 멈춤(프로세스는 돎), `FENCE=lineage` | `@gc` 5 | 도는 프로세스의 펜스 |
-| `gc4_helper_freeze12000` | rank 3의 `helperBeat` 쓰기만 12 000 ms 멈춤(`FREEZE_PAGE=12000:helper`; `watchBeat`와 프로세스는 돎), `FENCE=lineage` | `@gc` 5 | helper만 멈춘 rank의 펜스(판정 표 15행) |
-| `gc4_mgmt_mute8`, `gct4_mgmt_mute8` | rank 1의 증인(tcp는 helper 소켓) 8 s 막음 | `@gc` 5, `@gct` 5 | 관리망 끊김 |
-| `gc4_qperr_record` | rank 0과 rank 1 사이 기록 QP 가운데 높은 rank 1 쪽 하나만 로컬에서 오류 상태로(시험 스위치; 낮은 rank 쪽은 RTS 그대로) | `@gc` 5 | 다시 짝 맺기(어느 쪽이든 시작) |
+| `gc4_freeze12000_fence` | rank 3의 박동 쓰기만 12 000 ms 멈춤(프로세스는 돎), `FENCE=lineage`(대상 `SUBJECT_RANK=3`) | `@gc` 5 | 도는 프로세스의 펜스 |
+| `gc4_helper_freeze12000` | rank 3의 `helperBeat` 쓰기만 12 000 ms 멈춤(`FREEZE_PAGE=12000:helper`; `watchBeat`와 프로세스는 돎), `FENCE=lineage`(대상 `SUBJECT_RANK=3`) | `@gc` 5 | helper만 멈춘 rank의 펜스(판정 표 15행) |
+| `gc4_mgmt_mute8`, `gct4_mgmt_mute8` | rank 1의 증인(tcp는 helper 소켓) 8 s 막음(대상 `SUBJECT_RANK=1`) | `@gc` 5, `@gct` 5 | 관리망 끊김 |
+| `gc4_qperr_record` | rank 0과 rank 1 사이 기록 QP 가운데 높은 rank 1 쪽 하나만 로컬에서 오류 상태로(시험 스위치; 낮은 rank 쪽은 RTS 그대로; 대상 `SUBJECT_RANK=1`) | `@gc` 5 | 다시 짝 맺기(어느 쪽이든 시작) |
 | `gc4_ud_drop_rejoin` | rank 3 kill, 예비 프로세스의 첫 REJOIN datagram을 버림 | `@gc` 5 | UD 잃음 |
-| `gc4_credit_stall` | rank 2가 500 ms 동안 RECV를 다시 내지 않음 | `@gc` 5 | credit |
+| `gc4_credit_stall` | rank 2가 500 ms 동안 RECV를 다시 내지 않음(대상 `SUBJECT_RANK=2`) | `@gc` 5 | credit |
 | `gc4_kill3_ow_spareabsent` | 예비 프로세스가 HELLO를 보내 rank 3이 무장된 뒤, 실행기가 그 예비 프로세스를 자기 PID로 끝내고 5 ms 안에 rank 3 kill(처음부터 예비 프로세스가 없으면 무장되지 않아 fail-fast라 이렇게 바꿈, 9.5절) | `@gc` 5 | 곧바른 fallback |
 | gin-mirror 회귀(tcp) | gin-mirror 7절의 비용 밖 셀 전부를 이름과 env 그대로 | `@gct` 그 실험의 n | 회귀 |
 | gin-mirror 회귀(rdma) | 같은 셀 | `@gc` 그 실험의 n | 회귀와 다시 예측 |
@@ -272,6 +287,8 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
 | 빌드 검사 | 매크로 없는 프로그램 넷과 라이브러리 장치 객체를 `mi`와 비교(다섯 빌드 `gc`, `gct`, `gctc`, `gcp`, `gctp` 모두); `gct`의 호스트 파일 전처리 결과를 ln4와 비교 | 빌드 검사 | 회귀 |
 | CPU 시험 `gate_fenced` | main thread가 먼저 끝나고 다른 thread가 500 ms 더 사는 프로그램에서 옛 관문과 FENCED 관문(예측 `gate_fenced`) | 10 | 관문 |
 
+- 시험 스위치로 넣는 셀 아홉(위의 `SUBJECT_RANK` 표시)은 kill이나 멈춤을 받는 rank가 없어 실행기가 대상 rank를 셀 파일의 `SUBJECT_RANK`로 받는다. 채점기의
+  판정, 펜스, launcher 열은 대상 rank를 기준으로 센다(시험 쪽 리뷰 막는 문제 2).
 - kill 셀은 gin-mirror처럼 실행기가 기록한 PID로 트래픽 중 kill한다. 멈춤 셀의 SIGSTOP과 SIGCONT도 실행기가 자기가 띄운 rank의 정확한 PID에만 보내고, 끝에
   CONT 뒤 그 PID에 SIGKILL로 정리한다.
 - 비용 셀은 READ가 켜진 rdma 빌드와 끈 rdma 빌드를 같은 바이너리에서 `NCCL_GIN_TS_PROBE_MS=0`으로 가른다. tcp 팔은 회귀 대조다.
@@ -280,23 +297,45 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
 
 ## 8. 제외 기준과 중단 기준
 
-초안이다. gin-mirror 8절(그리고 그 실험이 물려받은 gin-restore 8절)의 규칙을 그대로 쓰고 아래를 더한다.
-- **제외(채점에서 빼고 채움).** gin-mirror의 제외 전부(kill이 첫 확정 무장 체크포인트 전, 셀이 정한 workload나 mirror 설정과 다르게 돈 시행 등). 더해서: launcher가
-  시행 시작 때 두 노드 모두에서 준비되지 않은 시행(시작 문의 검사); 셀이 정한 제어 빌드, 펜스, 증인 설정과 다르게 돈 시행; 실행기의 SIGSTOP, SIGCONT, fork 자식
-  주입 줄이 없거나 정한 시각보다 1 s 넘게 어긋난 시행; 시행 중 launcher가 끝났거나(실행기가 시행 앞뒤로 남긴 launcher의 pid나 시작 시각이 다름) 시험 스위치 셀 밖에서 launcher QP가
-  ERR가 된 시행(그 노드 rank의 복원이 막힘; 아래 STOP_launcher와 함께) `[설계 v3 5.2절]`; 둘째 죽음 셀에서 둘째 kill이 그 rank의 다시 무장 줄 전인 시행(gin-mirror의 "첫 확정 무장
-  체크포인트 전의 kill"과 같은 꼴, 9.5절); `gc4_kill3_ow_spareabsent`에서 예비 프로세스를 끝낸 뒤 rank 3 kill 전에 체크포인트가 확정되어 무장이 풀린 시행. smoke와 pilot은 늘 제외.
+초안이다. gin-mirror 8절(그리고 그 실험이 물려받은 gin-restore 8절)의 규칙을 그대로 쓰고 아래를 더한다. 채점기([impl/test/score_gc.py](impl/test/score_gc.py))와 hold
+([impl/test/hold_gc.sh](impl/test/hold_gc.sh))는 아래 규칙을 같은 줄 꼴과 같은 규칙으로 센다(2026-10-17 시험 쪽 리뷰와 고침, 12절).
+- **제외(채점에서 빼고 채움).** gin-mirror의 제외 전부(kill이 첫 확정 무장 체크포인트 전, 셀이 정한 workload나 mirror 설정과 다르게 돈 시행 등). 더해서:
+  - 주입이 첫 확정 무장 체크포인트 전인 시행. 예비 프로세스가 있는 주입 셀 모두에 건다(kill에 더해 SIGSTOP, `FREEZE_PAGE`, 스스로 죽는 `DIE_RST`의 주입 줄 시각으로 셈).
+  - launcher가 시행 시작 때 두 노드 모두에서 준비되지 않은 시행(시작 문의 검사).
+  - 셀이 정한 제어 빌드, 펜스, 증인 설정, launcher env(`NO_EXIT_REPORT` 등), W(`NCCL_GIN_CTRL_CONFIRM_MS`, 사전 등록 값), READ 주기(`NCCL_GIN_TS_PROBE_MS`)와 다르게 돈 시행.
+  - 실행기의 SIGSTOP, SIGCONT, fork 자식 주입 줄이 없거나 정한 시각보다 1 s 넘게 어긋난 시행. `gc4_kill3_ow_spareabsent`에서 예비 프로세스 kill과 rank 3 kill의 간격이
+    5 ms를 넘은 시행(`inject_late`; 간격은 같은 노드의 `mono_ms`로 잼).
+  - 시행 중 launcher가 끝났거나(실행기가 시행 앞뒤로 남긴 launcher의 pid나 시작 시각이 다름) 시험 스위치 셀 밖에서 launcher QP가 ERR가 된 시행(그 노드 rank의 복원이 막힘;
+    셈하는 규칙은 아래 STOP_launcher) `[설계 v3 5.2절]`.
+  - `gc4_kill3_ow_spareabsent`에서 예비 프로세스를 끝낸 뒤 rank 3 kill 전에 체크포인트가 확정되어 무장이 풀린 시행.
+  - smoke와 pilot은 늘 제외하고 본 실행과 따로 센다. pilot과 smoke hold(P0–P4, 비용 pilot `costpilot*`)는 이름이 `pilot`이나 `smoke`로 시작하는 결과 폴더에서만 돌고, 본 실행
+    hold(C*, RG-*, COST-*)는 그런 폴더에서 거절된다. P0은 smoke로 센다. 9.9절 끝의 채점하지 않는 멈춤 pilot 셀은 따로 된 이름 `gc4_stop12000_pilot`(hold P4)을 쓴다.
+- **둘째 죽음은 빼지 않는다**(2026-10-17 조율 세션 결정, 시험 쪽 리뷰 막는 문제 3). `@gct`와 `@gc` 모두 gin-mirror 8절의 사전 등록 규칙 그대로다: 둘째 kill이 다시 무장보다
+  먼저 난 시행, 첫 복원이 실패한 시행, 다시 무장이 오지 않은 시행은 빼지 않고 그 예측의 조건 불충족으로 센다. 이 문서의 앞 초안에 있던 "둘째 kill이 그 rank의 다시 무장
+  줄 전인 시행은 제외"는 tcp 회귀의 원래 기준을 바꾸고 첫 복원 실패를 "자료 부족"으로 숨겨 없앴다. 다시 무장 전의 kill이 몇 번이었는지는 SCORE.md에 셀마다 보고한다.
 - **중단(그 hold의 남은 시행을 멈추고 올림).** gin-mirror의 STOP 규칙 전부(CUDA 메모리 오류, 새 mlx5 명령 오류나 rain 펌웨어 명령 실패의 증가, 시행 뒤 남은
   프로세스, kv의 설정 오류나 NIC 오류, rain QUERY_QP 상한, pool 등록 실패, 남은 호스트 메모리, rain BAR1 시작 검사). 더해서:
+  - launcher는 hold마다 노드마다 하나다(5절). 시행 시작 때 두 launcher의 등록 표가 비어 있지 않으면(앞 시행의 (rank, 화신)이 EXITED, LEFT, FENCED로 끝나지 않았거나 예비 자리가
+    남음) 그 시행을 돌리지 않고 STOP_launcher. 한 hold의 셀은 launcher env가 하나여야 한다(`NO_EXIT_REPORT` 셀은 hold C6에 혼자).
   - launcher가 등록받거나 띄운 pidfd가 아닌 프로세스에 신호를 보내려 한 줄(launcher가 거절하고 적음; 하나라도 있으면 STOP_launcher).
   - 시행 중 launcher가 끝나거나 그 Unix 소켓이 끊김, 시험 스위치 셀 밖의 launcher QP ERR(그 시행은 위의 제외로 치고 hold를 멈춤; STOP_launcher).
   - 등록의 pid 검사 실패 줄(pidfd의 pid가 접속한 쪽 pid와 다르거나 시작 시각이 다름; launcher가 거절하고 적음; STOP_launcher) `[설계 v3 5.2절]`.
+  - **STOP_launcher 줄의 꼴.** launcher 줄 가운데 `(STOP_launcher)`로 끝나는 것(등록받지 않은 프로세스에 신호, FENCE_NAK, RNIC 전송 실패)과 `(STOP_launcher: …)` 꼴(pid 검사
+    실패: `… (STOP_launcher: a pidfd that is not the peer's own)`) 둘 다 센다 `[소스: impl/launcher/gin_launcher.c]`. hold는 시행마다 그 시행 조각을, hold 끝에는 launcher 로그
+    꼬리를 한 번 더 본다.
+  - **시험 스위치 셀 밖의 launcher QP ERR를 세는 규칙.** 시험 스위치 셀(`QP_ERR`, `DROP_UD`, `CREDIT_STALL`) 밖에서, 그 시행의 시작 표지(`trial_start`) 뒤이고 launcher 줄의 첫
+    "is leaving" 전이며 시행의 대상 rank가 아닌 rank에서 난 QP 잃음 줄만 센다. 끝날 때(떠남 뒤)의 QP 잃음과 대상 rank의 것은 세지 않는다.
   - **채점 규칙**(이 문서가 정함, DRAFT): launcher의 줄 "refused to signal … (STOP_launcher)"는 등록받지 않은 프로세스에 신호를 보내려 한 경우뿐 아니라, launcher가 쥐지 않은 pidfd의
-    (rank, 화신)에 대한 FENCE에서 나온 경우(FENCE_NAK)에도 STOP_launcher로 센다. 짝은 FENCE_NAK에 곧바로 fallback한다 `[설계 v3 4.4절]`.
-  - 시행 앞뒤 RNR 카운터(`rnr_nak_retry_err` 같은 port counter)의 증가가 credit 멈춤 셀 밖에서 나옴(credit 셈이 맞으면 0 `[설계 v2 2.2절]`).
-  - 시행 뒤 멈춘(state T) 프로세스나 `gin_fdhold` 자식이 남음(실행기가 자기 PID에 CONT 뒤 SIGKILL, `pkill -x gin_fdhold`로 정리하고 STOP_left).
-  - UD 경로 MTU가 2 048보다 작거나 rank 사이에서 다름(라이브러리가 rdma 길을 거절; 거절이면 그 hold를 시작하지 않음).
+    (rank, 화신)에 대한 FENCE에서 나온 경우(FENCE_NAK)에도 STOP_launcher로 센다. 짝은 FENCE_NAK에 곧바로 fallback한다 `[설계 v3 4.4절]`. FENCE_NAK이 난 그 시행을 제외로 칠지
+    실패로 셀지는 열림(9.7절 끝 열린 것 3; 지금 채점기는 셈).
+  - 시행 앞뒤 RNR 카운터(`rnr_nak_retry_err` 같은 port counter)의 증가가 credit 멈춤 셀 밖에서 나옴(credit 셈이 맞으면 0 `[설계 v2 2.2절]`). 포트 전체의 수라 같은 포트의
+    다른 사용자 트래픽도 셀 수 있어, STOP 줄에 증가량과 시행 wall을 함께 적는다.
+  - 시행 뒤 멈춘(state T) 프로세스나 `gin_fdhold` 자식이 남음(STOP_left). 실행기는 자기가 기록한 rank PID에만 CONT 뒤 SIGKILL을 보낸다. fd를 쥔 자식은 이름으로 끄지 않고, fork
+    줄의 PID를 uid, 이름, 같은 노드의 부모 시작 tick과 견준 뒤에만 그 PID로 끈다(짝의 판정 줄 + 1 s 뒤, 판정이 없으면 kill + 25 s 뒤).
+  - UD 경로 MTU가 2 048보다 작거나 rank 사이에서 다름(라이브러리가 rdma 길을 거절; 거절이면 그 hold를 시작하지 않음). 실행기가 시행 뒤 읽은 `active_mtu`가 시행 앞과 다름도
+    STOP_mtu다.
   - 기록 QP나 상태 페이지 READ QP의 비동기 이벤트(`ncclIbStats` 셈 > 0)가 시험 스위치 셀 밖에서 나옴.
+- 멈춤 길이의 허용(정한 길이보다 1 s 넘게 어긋나면 제외)을 좁힐지(시험 쪽 리뷰 권고 50 ms)는 열림(9.7절 끝 열린 것 4).
 - 다른 사용자 작업(gds-kv, NVMe-oF, gdsio, mooncake, `prio-` 태그 작업)이 보이면 hold를 시작하지 않는다(`cluster_run.sh`의 시작 문). 이름으로 끄지 않고 실행기가
   기록한 PID만 끈다.
 
@@ -337,7 +376,8 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
   helper가 기록 QP로 같은 낱말을 READ해서 온다. credit만 나르는 SEND와 원자 연산은 없다 `[설계 v2 2.2절]`. 소비 수는 세대마다 0부터이고, 옛 세대의 도착은 새 세대의 수에
   넣지 않는다(그래야 S − C가 음수가 되지 않음) `[설계 v3 2.2절]`.
 - launcher 고리의 credit: launcher는 EXITED, LEFT, FENCED처럼 한 방향으로만 말할 때가 있어 봉투만으로는 credit이 돌아오지 않는다. 그래서 rank 페이지에 launcher 몫
-  `rxConsumedL[nLaunchers]`, launcher 페이지에 rank마다 `rxConsumed[N]`을 두고 같은 세 길을 쓴다 `[설계 v3 2.2, 3.6절]`.
+  `rxConsumedL[nLaunchers]`, launcher 페이지에 rank마다 credit 칸(launcher 헤더의 `glPageCredit.consumed`; 설계 v3와 이 문서의 앞 판은 `rxConsumed[N]`으로 적음)을 두고 같은 세 길을 쓴다
+  `[설계 v3 2.2, 3.6절; 소스: launcher_msg.h]`.
 - 세대와 자리 `[설계 v2 2.2절]`: 두 끝 모두 RTR로 가기 전에 RECV 64개를 낸다. `wr_id`에 (쌍, 세대, 자리)를 싣고, QP를 RESET에서 다시 쓸 때 옛 세대의 CQE(flush와 아직 안
   걷은 성공)를 다 걷기 전에는 그 자리에 새 RECV를 내지 않으며 옛 세대 CQE의 기록은 버린다. 세대가 바뀌면 보내는 쪽 대기열의 아직 안 낸 기록도 버리고 부른 쪽에는
   지금의 "보내기 실패"로 알린다(사용자 결정 6).
@@ -353,7 +393,8 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
 쓴다: 52 STALLED(멈춤 판정 방송), 53 DISPUTE(판정이 엇갈림), 54 FENCED(launcher가 보낸 것을 helper가 hold 기계에 넣음), 55 PROBE_SETUP(1단계의 이름 붙인 개발 발판에서만:
 생존 READ QP 끝점을 helper TCP 소켓으로 나눔, 2단계가 합쳐지면 55번과 함께 사라짐; 9.8절). 모두 복원 기록 범위(11–63) 안이라 지금의 park 규칙을 따른다 `[소스: 5494]`. launcher와의 말은 기록이 아니라 고정
 256 B 구조(머리 64 B + 본문 192 B, 봉투와 합쳐 320 B, 종류 열일곱)이고, 그 안의 ACTIVATE는 지금 `gdakiRsActivate` 64 B를 바이트 그대로 싣는다. 이 배치는 2026-10-17에 빌드된 launcher의
-헤더 `impl/launcher/launcher_msg.h`(md5 `30a05c7f`)가 고정하고 설계 v3와 이 문서는 그것을 따른다 `[측정: 헤더의 static_assert를 읽음]`.
+헤더 `impl/launcher/launcher_msg.h`가 고정하고 설계 v3와 이 문서는 그것을 따른다(md5는 처음 빌드 때 `30a05c7f`, 준비 단계 리뷰 고침 뒤 `897641f3`: CONNECTED 종류 6을 rank 사이 전용으로
+적음) `[측정: 헤더의 static_assert를 읽음; md5는 2026-10-17 다시 봄]`.
 
 **큰 자료(outbox).** rank마다 2 × 1 MiB 호스트 영역(반 둘, REMOTE_READ만). 주는 쪽이 반 하나를 채우고 XFER(자리, 길이, rkey, 전송 번호, 끝 표시)를 보내면 받는 쪽이
 기록 QP로 READ하고 XFER_DONE을 돌려준다. 쓰는 곳은 셋뿐이다: STATE(로그 내보내기, 한도 1 GiB, 시험 셀에서는 KiB 단위), rkey 목록(≤ 64 KiB), 활성화 덩어리 `[설계 v2 2.3절]`.
@@ -404,13 +445,14 @@ uint64_t lastStableCkpt; // 마지막 확정 체크포인트(보고와 짝의 �
 uint64_t rsv;
 // 줄 1..: 상대마다 8 B 낱말
 uint64_t rxConsumed[N];  // (gen << 32) | 그 상대의 몫 고리에서 다 쓴 수(credit, 9.1절)
-uint64_t staleMs[N];     // 이 rank가 본 그 상대의 박동 정체 길이(분할 막이)
 uint64_t rxConsumedL[NL];// (gen << 32) | 그 launcher에서 받아 다 쓴 수(launcher 고리의 credit; 설계 v3)
+uint64_t staleMs[N];     // 이 rank가 본 그 상대의 박동 정체 길이(분할 막이)
 // 그 뒤 줄들: 여러 낱말이 한 뜻인 보고(줄마다 { uint64_t ver; 7 x uint64_t }, 줄 안 seqlock)
 //   계보 보기(논리 rank마다 국면, cur, dead, hold 상태), hold 요약(상대마다 상태, 화신, fencedPlus1, FENCE 보냄)
 ```
 
-rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 둘이라 주기 READ 하나가 320 B다 `[설계 v3 3.1절; 추론]`(설계 v2는 256 B).
+rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 둘이라 주기 READ 하나가 320 B다 `[설계 v3 3.1절; 추론]`(설계 v2는 256 B). 줄 1의 차례(`rxConsumed`, `rxConsumedL`,
+`staleMs`)는 준비 단계 헤더의 `gdakiCtrlPageLayoutOf`가 기준이고 설계 v3의 차례(`staleMs`가 둘째)와 다르다. 자리는 늘 그 함수에서 얻는다(준비 단계 리뷰 nit 15) `[소스: impl/rs_ctrl_api.h]`.
 
 - 박동을 둘로 나눈다: `watchBeat`는 "프로세스가 돈다", `helperBeat`는 "helper가 돈다"다. `watchBeat`가 오르고 `helperBeat`만 멈췄고 바쁨 번호가 있으며 한도 안이면
   "helper 바쁨"이다. 읽는 쪽은 새 바쁨 번호를 처음 본 때부터 자기 시계로 한도를 잰다(쓰는 쪽의 시각을 견주지 않음). 단계 번호와 체크포인트는 보고에만 쓴다(라이브러리는
@@ -440,7 +482,8 @@ rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 �
 - **계보 입력이 아니다.** 페이지는 판정과 보고의 입력이고, 계보 classify의 입력은 지금처럼 기록의 칸뿐이다(gin-mirror 9.9절의 oracle 시험이 그대로 선다).
 - **비용** `[추론]`. READ 하나는 rank 4면 320 B, 상대마다 100 ms에 하나라 rank마다 초당 30번, 약 9.6 KB/s다 `[설계 v3 3.5절]`. 데이터 QP가 아니라 put의 WQE 차례와 겹치지 않지만
   같은 포트와 PCIe를 나누므로 비용 셀이 잰다. 제어 몫의 고정 메모리는 페이지 4 KiB, 링 640 KiB, UD RQ와 SQ, outbox 2 × 1 MiB로 rank마다 약 2.9 MiB이고, 보내는 쪽
-  대기열과 inbox는 평소 0, 필요할 때 상대마다 많아야 약 7.6 MiB와 7.3 MiB다 `[설계 v2 3.5절]`. 모두 호스트라 BAR1을 쓰지 않는다. mirror 끈 rank의 저장소 몫은 9.1절 큰 자료.
+  대기열과 inbox는 평소 0, 필요할 때 상대마다 많아야 약 7.6 MiB와 7.3 MiB다 `[설계 v2 3.5절]`. 2a-1 코드의 실제 몫은 이보다 많다고 1단계와 2a-1 코드 리뷰가 셈했다(보내기 영역 rank 4면
+  512 KiB, `inStage` 1 MiB, MR 일곱과 1단계 페이지의 둘; 리뷰 nit 10) `[미확인: 이 문서에서 다시 세지 않음]`. 고친 코드로 다시 센 뒤 이 값을 고친다. 모두 호스트라 BAR1을 쓰지 않는다. mirror 끈 rank의 저장소 몫은 9.1절 큰 자료.
   gin-mirror의 4 KiB put 지연(off 팔) 11.26–12.29 µs `[측정: 문서 gin-mirror 2절]`에서 2 %는 0.23–0.25 µs이고, 이것은 그 실험의 pilot 사이 퍼짐(약 9 %)보다 작다.
   그래서 판정식의 2 %가 실행 사이 잡음 아래일 수 있다 `[추론]`. pilot에서 같은 팔 사이 퍼짐을 보고 사전 등록에서 정한다(9.9절 끝).
 - **등록 차례.** 죽는 프로세스에서 MR이 QP보다 먼저 사라지면 READ는 원격 접근 오류(마지막 ACK 뒤 0.38–3.51 ms), QP가 먼저면 응답 없음(3.51–3.76 s)을 받는다
@@ -502,11 +545,17 @@ rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 �
 | 18 | | | | (3), (4), (7), (8) | 의심 | 줄 하나. 정체는 바쁨이 없을 때, 또는 한도가 끝난 때부터 셈 | – |
 | 19 | | | | helper 바쁨 | helper 바쁨 | 없음 | – |
 | 20 | | | | 늚, 정체 < `SUSPECT_MS` | 살아 있음 | 없음. 증인이 모름이면 증인만 다시 건다(8 s 관리망 끊김이 여기) | – |
-| 21 | | | | | 판정 없음 | 줄 하나. CPU 모형은 이 행에 닿는 입력이 없음을 단언 | – |
+| 21 | | | | | 판정 없음 | 닿지 않음(1단계 격자 1 170점에서 0점; 리뷰가 적은 행마다의 점 수: 1행 234, 2행 468, 3행 117, 4–9행 39씩, 10행 3, 11행 1, 12행 5, 13–17행 9씩, 18행 36, 19행 9, 20행 18). 표를 빠짐없이 적으려고 남김. 코드는 이 자리에 "닿지 않음" 주석을 둠 | – |
 
 - **빠짐과 겹침이 없음** `[설계 v3 4.2절; 추론]`. 1–9행을 지나면 L은 살아 있음, 정보 없음, 무응답, B는 없음, W는 정상, 모름, 꺼짐이다. 하드웨어 응답 없음은 10–12행이 L과 W의 모든 경우를
   덮고(무응답 → 10, 정보 없음 + 꺼짐 → 11, 나머지 → 12), R의 다른 열두 값은 13–20행이 하나씩 받아 21행에는 닿는 입력이 없다. 1단계 CPU 모형이 입력 격자 1 170점(5 × 2 × 9 × 13)에서
   21행에 닿는 점 0, 1–20행이 모두 한 점 이상, floor 성질(거절이나 hold를 내는 점은 모두 launcher 끝남, 창 확인됨, 하드웨어 응답 없음, 멈춤 가운데 하나를 가짐)을 단언한다(9.8절).
+  통합 트리의 단위 시험(`gc_unit_p1`, 판정 함수는 헤더의 `gdakiCtrlJudge`)이 그 셋을 통과했다 `[측정: 통합 에이전트의 보고 impl/notes_int.md, unit_int.log; 이 문서에서 다시 돌리지 않음]`.
+  다만 1단계와 2a-1 코드 리뷰는 그 시험의 "독립 참조"가 같은 if 사슬의 사본이라 독립이 아니라고 보았고, 21행 칸에 적은 행마다의 점 수를 단언하라고 권했다(고칠 것 6). 그 점 수는
+  이 문서가 값 목록(L 5, B 2, W 9, R 13)에서 다시 셌고 리뷰의 수와 같다(합 1 170) `[측정: 셈]`. 그 단언을 넣는 것은 고침 몫이다.
+- **R 값을 고르는 차례** `[미확인]`. R은 값 열셋 가운데 하나지만 실제 입력은 박동 둘(`watchBeat`, `helperBeat`)과 마지막 READ의 결과다. 둘 다 정체이거나 READ 오류와 앞선 정체가
+  겹칠 때 어느 R을 고르는지 설계 v3 4.2절에 없다(1단계와 2a-1 코드 리뷰 고칠 것 1). 고침이 차례(마지막 READ가 오류면 (10)–(12), `watchBeat`가 정체면 (2)–(5), 늚이면 helper 쪽
+  (6)–(9) 같은 꼴)를 정해 순수 함수로 시험하고 이 절에 적는다. 오류 CQE 가운데 (11)이 되는 것은 재시도 초과뿐이다(같은 리뷰 막는 문제 5; floor 규칙).
 - **확인 창**(둘째 재검토의 막는 문제 3) `[설계 v3 4.2절]`. 여는 것은 B가 없을 때의 증인 FIN이나 RST뿐이다(기록 QP 오류, 시한, 원격 접근 오류는 열지 않음; 설계 v2는 기록 QP 오류로도
   열었고 그 "확인됨"을 받는 행이 없었으며 판정에 쓰면 floor 규칙을 어겼다). t_F에 생존 READ QP가 이 세대에 RTS로 성공한 READ가 없으면 곧바로 "확인 못함"이고, 아니면 READ1(줄 0)을 낸다.
   t_F + W/2에 READ2, t_F + W에 판정한다: 원격 접근 오류가 하나라도 있으면 REMACC; 아니면 어느 하나라도 끝나지 않았으면 NORESP; 아니면 `incNonce`가 기대와 다르면 확인 못함; 아니면
@@ -535,7 +584,7 @@ rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 �
   되살리는 것은 ln4(gin-mirror 본 실행 빌드)의 동작이고, gin-restore의 결과는 그 실험의 i5 빌드와 release `data-20261013`만이 재현한다. RST 뒤 거절 간격(감지 설계의
   100 ms 제안)은 rdma 빌드에서 필요 없고(RST가 확인 창을 부름) tcp 쪽에만 매개변수로 닿는다. 그 매개변수와 tcp 대조 셀이 쓰는 시험 스위치(`DIE_RST`, `RST_GAP`, `FD_HOLDER`의 helper
   소켓 갈래)는 ln4에 없으므로(호스트 파일에서 0건 `[소스: grep]`) 둘째 매크로 `NCCL_GIN_CTRL_TCP_CELLS=1` 뒤에 둔다. 그래서 `gct`(첫 매크로만)는 ln4와 전처리가 같아야 하는 회귀 팔로
-  남고, 두 매크로를 다 켠 `gctc`는 tcp 대조 셀만 돈다 `[설계 v3 2.0절]`. 간격의 기본은 1 000(옛 동작)이고 RST 셀만 100이다(2026-10-16 밤 사용자 결정).
+  남고, 두 매크로를 다 켠 `gctc`는 tcp 대조 셀만 돈다 `[설계 v3 2.0절]`. 그래서 `gctc`의 전처리 결과는 ln4와 그 매개변수만큼 다른 것이 뜻한 바다(통합 트리에서 2 hunk 3줄, 9.8절). 간격의 기본은 1 000(옛 동작)이고 RST 셀만 100이다(2026-10-16 밤 사용자 결정).
 
 **문턱.**
 
@@ -550,8 +599,8 @@ rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 �
 | `NCCL_GIN_TS_STALL_RMSN_MS` | 1 000 | 데이터 경로 거부권의 창(GPU가 아직 보내는 상대는 판정하지 않음) | 무관 |
 | `NCCL_GIN_TS_PROBE_FAIL_N` | 3 | 증인 정상 + READ 응답 없음의 다시 짝 맺기 횟수 | 무관 |
 | `NCCL_GIN_TS_RST_REFUSAL_GAP_MS` | 1 000(2026-10-16 밤 사용자 결정; RST 셀만 100) | tcp 대조 빌드(`gctc`)에만: RST 뒤 1 000 ms 안의 거절 간격(1 000이면 옛 동작) | 무관 |
-| LATER 뒤 짝의 한도(이름 초안 `NCCL_GIN_CTRL_LATER_MS`) | 사용자 결정 대기(9.7절 끝 v3 목록 4) | 짝이 LATER를 받은 뒤 스스로 셈. 넘으면 ABORT를 보내고 fallback(이 실험의 launcher는 LATER 뒤 자기 한도가 없음) `[설계 v3 4.3, 5.4절]` | 무관 |
-| `NCCL_GIN_CTRL_LAUNCHER_STALL_MS` | 1 000 `[초안]` | launcher 페이지 박동(적어도 10 ms마다 오름)의 정체 한도. 넘거나 launcher QP 오류면 launcher 잃음 `[설계 v3 4.3절]` | 무관 |
+| LATER 뒤 짝의 한도 `NCCL_GIN_CTRL_LATER_MS` | 1 000(2026-10-17 사용자 결정 4; 준비 단계 헤더의 초안 5 000은 통합 때 1 000으로 고침) | 짝이 LATER를 받은 뒤 스스로 셈. 넘으면 ABORT를 보내고 fallback(이 실험의 launcher는 LATER 뒤 자기 한도가 없음) `[설계 v3 4.3, 5.4절]` | 무관 |
+| `NCCL_GIN_CTRL_LAUNCHER_STALL_MS` | 1 000(2026-10-17 사용자 결정 4) | launcher 페이지 박동(적어도 10 ms마다 오름)의 정체 한도. 넘거나 launcher QP 오류면 launcher 잃음 `[설계 v3 4.3절]` | 무관 |
 | `NCCL_GIN_RESTORE_FENCE` | `lineage` | `lineage`: 멈춤 판정 뒤 펜스와 복원. `none`: 거절만 | 무관 |
 
 범위 검사(준비 합의, 모든 rank가 같은 값): `10 × PROBE_MS ≤ SUSPECT_MS < STALL_MS`, `STALL_MS + 1 000 ≤ NCCL_GIN_RESTORE_MS`, `PROBE_TIMEOUT_MS ≥ 5 × PROBE_MS`,
@@ -592,7 +641,8 @@ rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 �
    끝남) FENCED(p, i, nonce)를 모든 rank의 launcher QP로 보낸다. 이미 끝나 있었으면 곧바로 FENCED다. 끝나지 않으면(D 상태) 보내지 않고 hold 시한의 fallback이 받는다. launcher가 그
    (p, i)의 pidfd를 쥐지 않았으면 신호를 보내지 않고 FENCE_NAK과 "refused to signal … (STOP_launcher)" 줄을 내며, 짝은 곧바로 fallback한다(8절의 채점 규칙). 한 사건 한 말: FENCE가
    왔으면 FENCED가 EXITED와 LEFT를 대신한다(launcher 그대로) `[측정: launcher 소스를 읽음]`.
-4. **펜스 낱말 `fencedPlus1`**(둘째 재검토의 막는 문제 1) `[설계 v3 4.4절]`. 논리 rank마다 hold 칸 옆의 32비트 낱말 하나: 0 = 펜스 없음, i + 1 = 화신 i가 끝났음을 launcher가 확인함.
+4. **펜스 낱말 `fencedPlus1`**(둘째 재검토의 막는 문제 1) `[설계 v3 4.4절]`. 논리 rank마다 hold 칸 옆의 64비트 낱말 하나: 0 = 펜스 없음, i + 1 = 화신 i가 끝났음을 launcher가 확인함. 설계 v3는 32비트 낱말과 그 `static_assert`를 적었으나,
+   준비 단계 헤더는 i + 1의 넘침을 없애려 64비트로 두고 그 까닭과 크기를 단언한다. 준비 단계 리뷰(nit 4)가 64비트가 맞다고 보아 문서 쪽을 고쳤다 `[소스: impl/rs_ctrl_api.h]`.
    선 위의 EXITED와 FENCED는 화신 i를 그대로 싣고 메모리 낱말만 + 1이다. 설계 v2의 `fencedInc`(= i)는 준비 직후의 0이 "화신 0이 펜스됨"과 같아, 첫 죽음(거의 늘 화신 0)의 hold가
    시작되는 순간 활성화 조건이 이미 참이었다(멈춘 상대의 펜스 셀에서 옛 화신이 살아 있는 채 복원될 수 있었음). 0xFFFFFFFF를 "없음"으로 두는 안 대신 이것을 고른 까닭: 0으로 채운 상태
    (memset, 구조체 초기화, 예비 프로세스의 재생)가 곧 "없음"이라 초기화를 하나 빠뜨려도 "펜스됨"으로 읽히지 않는다. helper는 끝남 말(EXITED, FENCED)을 받으면 계보 분류가 CURRENT나
@@ -624,6 +674,8 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
   EXITED(0) 뒤 모든 HOLDING이 모이면 활성화, 옛 화신의 FENCED(i − 1)는 화신 i의 hold를 풀지 않음, FUTURE와 STALE의 EXITED는 낱말을 바꾸지 않음 `[설계 v3 4.4, 7.3절]`.
 - 활성화 관문(`gdakiRsActExamine`, 4550)의 "Z = GO"를 없애고 활성화 기록이 FENCED를 실었을 때만 ACCEPTED한다. 예비 프로세스는 `/proc`을 스스로 보지 않는다.
   gin-mirror의 빠른 모드(Z를 끝남으로 봄, 8/95)는 사라진다. 이행 중(9.8절 1단계)에는 이 관문을 launcher와 짝을 맺은 문맥에서만 켜고, 없으면 `/proc` 관문을 쓴다.
+  통합 트리에서는 그 조건(`launcherPaired`)이 3단계 전이라 상수 거짓이어서 FENCED 관문이 늘 꺼져 있다 `[측정: 문서 impl/notes_int.md]`. 1단계와 2a-1 코드 리뷰(고칠 것 5)대로
+  3단계가 합쳐지면 rdma 빌드에서 `/proc` 갈래를 없애고 FENCED 하나만 요구하며, 그 전의 이행 기간에는 문맥마다 한 번 선 "launcher와 짝 맺음"을 내려가지 않는 걸쇠로 둔다.
 - `NCCL_GIN_RESTORE_FENCE=none`이면 멈춤 판정은 거절만 하고 생존 QP는 오류로 남는다(옛 쓰기는 버려짐). fail-fast이거나 예비 프로세스가 없어도 같다.
 - **불변식.** 논리 rank p로 가는 생존 rank의 QP(사용자, mirror, 기록, 생존 READ, 저장소 응답 쪽)는 p의 옛 화신 스레드가 하나라도 남은 동안 RTS가 아니다. 남는 입구는
   UD이고, UD의 모든 종류는 화신을 보고 HELD인 rank의 옛 화신을 버린다. 예외는 fd를 물려받은 자식이다: helper와 증인 소켓은 fork 때 닫지만(`pthread_atfork`), uverbs fd는
@@ -638,7 +690,7 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
   결정 3: fd 전달 때문; SOCK_SEQPACKET, 경로의 디렉터리는 자기 uid의 0700). 단일 스레드, poll 하나다 `[설계 v3 5.2절; 측정: launcher README와 헤더를 읽음]`.
 - **말의 배치.** Unix 소켓 말 일곱 종류(`GL_U_*`, 256 B = 머리 64 B + 본문 192 B; 활성화 바이트만 뒤에 덩어리, 한도 64 KiB)와 RNIC 쪽 launcher 말 열일곱 종류(`GL_K_*`: PAIR, PAIR_ACK,
   CONNECTED, REG_NOTE, EXITED, LEFT, FENCE, FENCED, FENCE_NAK, ACTIVATE, ACT_ANSWER, FETCH_EP, FETCH_READY, FETCH_DONE, ABORT, SPAWN, REFUSED; 봉투 64 B + 말 256 B = 320 B), 끝점 40 B는
-  `impl/launcher/launcher_msg.h`(md5 `30a05c7f`)가 `static_assert`로 고정하고, 설계 v3와 rank 쪽 공유 헤더는 그것을 따른다 `[측정: 헤더를 읽음]`.
+  `impl/launcher/launcher_msg.h`(지금 md5 `897641f3`; 처음 빌드 판 `30a05c7f`)가 `static_assert`로 고정하고, 설계 v3와 rank 쪽 공유 헤더는 그것을 따른다 `[측정: 헤더를 읽음]`.
 - **하는 일.** (1) 같은 노드 rank의 pidfd를 쥐고, 끝나면 한 사건 한 말로 모든 rank에 알림: FENCE가 왔으면 FENCED, 아니면 LEAVING 뒤면 LEFT, 아니면 EXITED. 말은 (rank, 화신, nonce)를
   싣고, 받는 rank는 계보 분류가 CURRENT나 HELD_OLD일 때만 쓰며 FUTURE와 STALE은 버리고 `GIN/LN` 줄 하나를 남긴다. rank가 되지 않은 예비 프로세스의 끝남은 EXITED가 아니고 활성화 답과
   예비 자리 낱말로만 알린다 `[설계 v3 5.2절]`. (2) FENCE를 받으면 등록받은 pidfd에만 신호를 보내 원래 프로세스를 종료하고 스레드 그룹이 끝났음을 확인한 뒤 FENCED; 쥔 것이 없으면
@@ -646,7 +698,9 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
   곧바로 REFUSED(까닭 "예비 프로세스 없음"), HELLO 뒤 READY 전이면 LATER를 한 번 보내고 READY가 오면 넘김(사용자 결정 4; 짝은 20 ms마다 다시 묻지 않음), 예비 프로세스가 끝났으면
   REFUSED(까닭 "예비 프로세스 끝남"), 원래 프로세스의 pidfd가 아직 안 읽혔으면 REFUSED. (5) SPAWN은 따로 된 종류 REFUSED(sub = SPAWN, "spawn not built"; 4절의 경계, 실행은
   gin-dynamic)로 답하고, 짝은 이 종류로는 결코 fallback하지 않는다(활성화 답이 아님; 둘째 재검토의 고칠 것 1). (6) 쓰이지 않은 예비 프로세스는 그 pidfd로 종료함. (7) 그 rank와의 기록
-  QP가 깨지면 스스로 PAIR(기록, 세대 + 1)를 500 ms마다 10 000 ms까지 보냄(9.1절).
+  QP가 깨지면 스스로 PAIR(기록, 세대 + 1)를 500 ms마다 10 000 ms까지 보냄(9.1절). (8) 예비 프로세스가 ACCEPTED를 낸 뒤에는 짝과의 launcher QP가 끊기거나 다시 짝 맺어도
+  활성화를 그만두지 않고(줄 하나만 남김) FETCH 말은 다시 맺은 QP로 보낸다. ACCEPTED 뒤의 활성화를 끝내는 것은 짝의 명시 ABORT와 FENCE뿐이다. 준비 단계 리뷰(고칠 것 12)는
+  "FETCH_DONE 뒤만 빼기"를 권했고, 고침은 조율 세션의 지시대로 ACCEPTED 전부를 뺐다(FETCH 전후 같음) `[측정: 문서 impl/notes_prepfix.md; launcher 단위 시험 장면 lost_accepted]`.
 - **노드 안 Unix 소켓에 실리는 말**(사용자 결정 3의 설계 해석: 활성화 바이트와 "떠남"도 싣고, PID와 시작 시각 대신 pidfd를 넘김; 설계는 "사용자가 반대하지 않으면" 이 해석을 쓴다고
   적음; 종류 이름은 launcher 헤더) `[설계 v2 5.2절; 측정: launcher 헤더를 읽음]`.
 
@@ -684,8 +738,9 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
 - **LATER 뒤의 한도**(둘째 재검토의 고칠 것 13) `[설계 v3 5.4절; 측정: launcher 헤더와 README를 읽음]`. 이 실험의 launcher는 LATER 뒤 자기 한도가 없다: READY, 재생 실패, 예비
   프로세스의 끝남, 짝의 ABORT만 기다림을 끝낸다. 대신 LATER에 예비 프로세스의 상태와 그 나이(HELLO부터)를 싣고, 페이지의 예비 자리 낱말과 `spareSinceMs`, 박동이 그 뒤에도 움직인다.
   그래서 한도는 짝이 센다: 넘으면 ABORT를 보내고 fallback한다(ABORT 뒤의 ACCEPTED는 launcher가 버림). 짝은 LATER 뒤 그 launcher 페이지를 100 ms마다 끌어 읽고 박동이
-  `LAUNCHER_STALL_MS`(초안 1 000) 넘게 서거나 launcher QP가 오류면 launcher 잃음으로 친다. 그래서 READY를 보내지 않는 예비 프로세스나 LATER 뒤 죽은 launcher가 생존 rank를 hold 시한(20 s)까지
-  붙잡지 않는다. 한도의 값은 9.7절 끝 v3 목록 4(사용자 결정 대기)다.
+  `LAUNCHER_STALL_MS`(1 000) 넘게 서거나 launcher QP가 오류면 launcher 잃음으로 친다. 그래서 READY를 보내지 않는 예비 프로세스나 LATER 뒤 죽은 launcher가 생존 rank를 hold 시한(20 s)까지
+  붙잡지 않는다. 한도의 값은 짝이 LATER를 받은 때부터 1 000 ms(`NCCL_GIN_CTRL_LATER_MS`)이고 `LAUNCHER_STALL_MS`도 1 000이다(2026-10-17 사용자 결정 4, 9.7절 끝 v3 목록 4). 헤더 기본값도
+  1 000이다(준비 단계 헤더의 초안 5 000을 통합 때 고침) `[소스: impl/rs_ctrl_api.h]`.
 - **등록과 무장.** 원래 rank는 체크포인트마다 STORE_REQ 꼬리에 예비 등록을 싣는다(사용자 결정 7로 mirror 끔도 저장소 길; 17236–17247). 지금은 관리망 주소 32 B, PID, 시작 시각이다.
   rdma 빌드에서는 (경로 종류 = launcher, launcher 노드 번호, rank, 화신)으로 바꾸고 판 번호를 올린다(사용자 결정 10; 판을 올린 `rs_store_api.h`의 사본은 `impl/`에 둠, 9.8절). PID와
   시작 시각은 싣지 않는다: launcher가 (rank, 화신)의 pidfd를 쥐기 때문이다. **무장**(둘째 재검토의 고칠 것 8): 체크포인트의 무장 비트는 지금 `ck->rep.allArmable() &&
@@ -765,6 +820,11 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
 **준비 차례.** (1) UD QP, 링, 페이지, outbox를 만들고 같은 노드 launcher의 Unix 소켓에 붙어 등록(자기 pidfd를 SCM_RIGHTS로)하고 launcher의 노드 번호, UD 끝점, Q_Key를 받음, (2) all-gather,
 (3) 모든 gated 쌍의 짝 맺기, (4) 모든 launcher와 짝 맺기, (5) MIRROR_SETUP 같은 helper 시작 전 기록을 링으로, (6) 증인 소켓(켰을 때, 지금 코드 그대로).
 
+**`r->ctrl`과 UD 끝점을 만드는 자리**(이 문서의 선택, 2026-10-17 통합; 9.7절 끝 선택 표). 설계 v3는 제어 계층 상태 `r->ctrl`을 연결 부분 `gdakiTsSetupConnect` 안에서 만든다고 적었고,
+고친 준비 단계도 all-gather 뒤, 연결 부분 앞에서 만들었다. 위 차례 (1)대로 UD 끝점, 페이지와 outbox의 자리를 all-gather 칸에 실으려면 그것들이 all-gather 전에 있어야 한다.
+그래서 통합 트리는 `r->ctrl`을 `gdakiTsSetup`의 all-gather 바로 앞에서 만든다(`#if !NCCL_GIN_CTRL_TCP` 안이라 tcp 전처리는 그대로) `[측정: 문서 impl/notes_int.md]`. 링과 UD QP를
+그 자리에서 만들고 끝점을 칸에 싣는 것은 2a-2이고, 지금 `r->ctrl->ring`은 늘 비어 있다.
+
 **관리망에 남는 것.**
 
 | 무엇 | 왜 | 범위 |
@@ -809,15 +869,15 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
 | 한쪽만 오류인 기록 QP(둘째 재검토의 막는 문제 4) | 낮은 rank만 시작하면 높은 rank 쪽 오류가 돌아오지 않음; 기록 다시 맺기가 생존 READ를 끊음; RESET으로 다시 쓴 QP의 PSN이 그대로 | 어느 쪽이든 PAIR(종류, 세대 + 1)를 보내고 그것이 상대에게 주는 알림, 엇갈리면 낮은 rank(launcher와는 rank)가 이김; 기록 QP와 생존 READ QP를 따로 짝 맺음; 매번 새 PSN, 옛 세대 도착은 새 세대 소비 수에 안 듦 | 닫힘(설계 v3, 2026-10-17) | 9.1절; 16436–16440, 16516 |
 | 무장 조건과 예비 프로세스(둘째 재검토의 고칠 것 8) | 설계 v2의 조건이 launcher만 있으면 참이라 예비 프로세스 없는 셀이 무장됨 | `haveSpare` = launcher 헤더의 `gl_path_exists`(자기 launcher와 CONNECTED, 등록 낱말 ALIVE, 예비 자리 HELLO 이상, 모든 launcher와 짝 맺음). `rg_nospare_failfast`는 fail-fast, `rg_spare_absent_fallback`은 rdma 빌드에서 fail-fast로 다시 예측; 무장 뒤 예비 프로세스가 사라지는 셀은 `gc4_kill3_ow_spareabsent` | 닫힘(설계 v3, 2026-10-17); 셀의 뜻은 v3 목록 6 | 9.5절, 14981 |
 | 되살린 짝과 둘째 죽음(둘째 재검토의 고칠 것 14) | 되살린 rank를 짝으로 둔 rank가 짝의 launcher 짝 맺기 전에 무장됨 | 짝의 STORE_ACK 꼬리에 "w 노드 launcher와 짝 맺음" 비트, w는 그 뒤에만 무장. 둘째 kill이 다시 무장 줄 전이면 제외(8절) | 닫힘(설계 v3, 2026-10-17) | 9.5절 |
-| launcher 고리의 credit, 봉투 크기, 말의 배치(둘째 재검토의 고칠 것 6, 7; launcher 프로그램) | launcher가 한 방향으로만 말할 때 credit이 돌아오지 않음; 봉투 칸 합 56 B | rank 페이지의 `rxConsumedL`과 launcher 페이지의 credit 칸, 자리는 PAIR의 `creditOff`; 봉투 64 B(`rsv[16]`). 배치는 빌드된 launcher 헤더(`launcher_msg.h` md5 `30a05c7f`)를 기준으로 함 | 닫힘(설계 v3, 2026-10-17) | 9.1, 9.2절 |
+| launcher 고리의 credit, 봉투 크기, 말의 배치(둘째 재검토의 고칠 것 6, 7; launcher 프로그램) | launcher가 한 방향으로만 말할 때 credit이 돌아오지 않음; 봉투 칸 합 56 B | rank 페이지의 `rxConsumedL`과 launcher 페이지의 credit 칸, 자리는 PAIR의 `creditOff`; 봉투 64 B(`rsv[16]`). 배치는 빌드된 launcher 헤더(`launcher_msg.h`, 처음 빌드 판 md5 `30a05c7f`, 지금 `897641f3`)를 기준으로 함 | 닫힘(설계 v3, 2026-10-17) | 9.1, 9.2절 |
 | 말의 화신과 pid 검사(둘째 재검토의 고칠 것 11, 12) | 같은 uid 다른 프로세스의 pidfd; 옛 화신이나 예비 등록의 끝남을 EXITED로 읽음 | pid 검사는 필수이고 끌 수 없음(launcher 그대로). EXITED, LEFT, FENCED는 (rank, 화신, nonce), CURRENT나 HELD_OLD만 씀. 예비 등록의 끝남은 활성화 답과 낱말로만 | 닫힘(설계 v3, 2026-10-17) | 9.5절 |
-| helper만 멈춘 rank의 펜스(둘째 재검토의 고칠 것 15) | 살아 있는 프로세스를 helper 정체 하나로 펜스함; 셀과 예측이 없었음 | 9.3절 15행은 펜스 길(설계 기본), 셀 `gc4_helper_freeze12000`과 예측 `helper_stall_fence`를 둠. `helperBusy`를 세우는 자리 목록은 준비 단계 헤더 | 열림(사용자 결정 대기, 아래 v3 목록 1) | 9.3절, 3절 |
+| helper만 멈춘 rank의 펜스(둘째 재검토의 고칠 것 15) | 살아 있는 프로세스를 helper 정체 하나로 펜스함; 셀과 예측이 없었음 | 9.3절 15행은 펜스 길(설계 기본), 셀 `gc4_helper_freeze12000`과 예측 `helper_stall_fence`를 둠. `helperBusy`를 세우는 자리 목록은 준비 단계 헤더 | 닫힘(2026-10-17 사용자 결정 1: 펜스 뒤 복원; 아래 v3 목록 1) | 9.3절, 3절 |
 | 다른 실험의 고정 파일과 이 실험의 파일 자리(둘째 재검토의 고칠 것 2) | `mirror/impl/rs_*_api.h`를 고치면 gin-mirror의 `PREREG.txt` 5행(`mi_layer.diff` md5 `dcd30859`)과 api 검사가 깨짐 | 새 파일과 바뀐 헤더 사본(`rs_ctrl_api.h`, 판을 올린 `rs_store_api.h`)은 `impl/`에만, 계층 diff는 ln4 위의 따로 된 파일. 계보 헤더는 바꾸지 않음 | 닫힘(설계 v3, 2026-10-17) | 9.8절, `../mirror/PREREG.txt` |
 | 감지 설계와 제어 경로 설계의 주인 다툼 | 제어 QP와 상태 페이지를 누가 만드나 | QP와 MR의 생성, 짝 맺기, 페이지 배치의 판은 제어 경로 몫. 페이지 칸의 뜻, READ 주기, 판정은 감지 몫. 준비 all-gather는 하나 | 닫힘(설계) | 9.1, 9.2절 |
 | TCP 제어 길을 남길까 | 회귀와 옛 결과의 재현 | 컴파일 때의 빌드 스위치 `NCCL_GIN_CTRL_TCP=1`(`gct`)로 회귀용으로만, 아무것도 지우지 않음(4단계는 TCP 코드를 스위치 뒤로 묶기만). tcp 빌드는 옛 스택 전체(TCP 기록, TCP 활성화와 자료 소켓, FIN = 죽음, 거절 1 000 ms, `/proc` 관문, launcher 없음)를 회귀 팔로 되살리고, 전처리 결과가 ln4와 같은 것을 목표로 함(안 되는 자리는 목록). 두 빌드의 이름, md5, 장치 기계어 비교를 적음. tcp 대조 셀의 더함(RST 간격, `DIE_RST`, `RST_GAP`, `FD_HOLDER`의 helper 소켓 갈래)은 둘째 매크로 뒤의 `gctc`로(설계 v3 2.0절). 처음 설계 초안은 실행 시 env와 마지막 단계의 지움을 적어 결정과 어긋났음(리뷰) | 닫힘(결정 1, 2026-10-16; 설계 v2 2.0절; 둘째 매크로는 설계 v3, 2026-10-17) | 9.3, 9.8절 |
 | 복원에 launcher가 반드시 있어야 하나 | 길이 둘이 됨 | 반드시 있음. 미리 띄운 예비 프로세스도 launcher를 거침 | 닫힘(결정 2, 2026-10-16) | 9.5절 |
 | 노드 안의 말(rank, 예비 프로세스와 launcher) | TCP가 아닌 Unix 소켓을 쓸까 | Unix 소켓(fd 전달). 설계 v2의 해석: 등록은 pidfd를 SCM_RIGHTS로, `SO_PEERCRED`로 확인; 활성화 바이트와 "떠남"도 실음(9.5절의 말 목록) | 닫힘(결정 3, 2026-10-16); 해석은 설계 v2가 "사용자가 반대하지 않으면"으로 적음 | 9.5절 |
-| 재생 전 활성화(동적 예비 프로세스의 앞 결정) | TCP listener의 LATER thread를 옮길 수 없음; LATER 뒤 한도의 기준점(둘째 재검토의 고칠 것 13) | launcher가 대신 LATER를 한 번. 이 실험의 launcher는 LATER 뒤 자기 한도가 없어 짝이 세고 넘으면 ABORT, launcher 박동 정체 `LAUNCHER_STALL_MS`면 launcher 잃음(9.5절). 한도의 값은 사용자 결정 대기 | 닫힘(결정 4, 2026-10-16; 틀은 설계 v3). 값은 열림(아래 v3 목록 4) | 9.5절 |
+| 재생 전 활성화(동적 예비 프로세스의 앞 결정) | TCP listener의 LATER thread를 옮길 수 없음; LATER 뒤 한도의 기준점(둘째 재검토의 고칠 것 13) | launcher가 대신 LATER를 한 번. 이 실험의 launcher는 LATER 뒤 자기 한도가 없어 짝이 세고 넘으면 ABORT, launcher 박동 정체 `LAUNCHER_STALL_MS`면 launcher 잃음(9.5절). 한도는 1 000 ms, `LAUNCHER_STALL_MS`도 1 000 | 닫힘(결정 4, 2026-10-16; 틀은 설계 v3; 값은 2026-10-17 사용자 결정 4, 아래 v3 목록 4) | 9.5절 |
 | mirror 끈 길의 TCP 자료 소켓(UPLOAD 증분, TCP FETCH; 2026-10-15 결정은 "그대로") | "모두 옮긴다"와 맞지 않음 | rdma 빌드에서 mirror 끔도 있는 RDMA 저장소 길 하나(늘 전체 이미지 WRITE와 FETCH QP의 READ; outbox로 보내지 않음). outbox는 STATE, rkey 목록, 활성화 덩어리만(2 × 1 MiB). 맡는 단계는 링과 기록 단계(9.8절). mirror 끈 회귀는 tcp 빌드로. 바뀌는 예측(`none_clean`, `rg_*`)은 3절, 메모리는 열린 것의 결정 대기 2 | 닫힘(결정 7, 2026-10-16; 설계 v2 2.3, 2.8절) | 15335–15420, gin-mirror 9.7절 |
 | 소켓 시험 스위치(`SOCK_MUTE`, `LISTEN_GAP`, `SOCK_UTO_MS`) | rdma 빌드에서 무엇을 막나 | 증인만 막음. 8 s 끊김 셀은 "증인만 끊김"의 투명. RDMA 길의 끊김은 새 스위치(기록 QP 오류, UD 버림, credit 멈춤, 페이지 쓰기 멈춤; 연구 빌드만) | 닫힘(결정 8, 2026-10-16) | 17757, 12095 |
 | UD datagram 크기 | 경로 MTU | MTU ≥ 2 048을 rdma 길의 조건으로(Resume 조건 42). 리뷰가 두 GIN 포트 `active_mtu` 4 096을 확인. 준비 때 rank마다 `ibv_query_port`로 검사, 준비 합의에 값, 시행 kv `active_mtu`에 기록 | 닫힘(결정 9, 2026-10-16; 설계 v2 2.5절) | 9.6절 |
@@ -848,7 +908,7 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
 하나(READ 응답 없음의 시간)는 설계 권고대로 적었으나 결정 목록에 따로 없어 사용자 확인을 기다린다(아래 결정 대기 1). 결정 13은 감지 설계의 fork fd 한계, 결정 14는 동적 예비
 프로세스 리뷰의 lane 넘침이다.
 
-**열린 것**(구현 전 닫아야 함; "충돌 먼저" 규칙). 설계 v2를 접은 뒤(2026-10-16) 남은 것이다. 처음 초안의 열린 것 가운데 판정 표의 빈칸(READ 응답 없음 + 증인
+**열린 것**(구현 전 닫아야 할 것은 2026-10-17까지 모두 닫혔고, 아래 3과 4는 사전 등록 전에 닫을 것; "충돌 먼저" 규칙). 설계 v2를 접은 뒤(2026-10-16) 남은 것이다. 처음 초안의 열린 것 가운데 판정 표의 빈칸(READ 응답 없음 + 증인
 정상 + launcher 보고 없음)은 9.3절 표의 행으로 닫았고, 판정 전 장치 대기는 (2)로 옮겼다. 사용자 결정 14(긴 hold의 lane 넘침은 문서화한 한계, DISARM 예측)는 닫혀 있다.
 
 1. **설계 v2의 독립 재검토**(설계 v2 7.5절 1번). 끝남(2026-10-17): 막는 문제 넷, 고칠 것 열여덟, nit 열. 첫 리뷰의 막는 문제 다섯 가운데 넷은 닫혔고 다섯째(kill 판정 시각과 W)는
@@ -902,7 +962,10 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
 
 **사용자 결정(2026-10-17 새벽, "추천대로"; 조율 세션이 위 여덟을 권고와 함께 올림).** 1 펜스 뒤 복원(기본대로). 2 11행을 둠. 3 페이지와 REG_NOTE의 EXITED 낱말은 끝남이 아님(끝남은 EXITED, FENCED 말로만). 4 (다) LATER 뒤 한도 1 000 ms(`NCCL_GIN_CTRL_LATER_MS`), `LAUNCHER_STALL_MS`도 1 000. 5 W ≥ 10 × 장애 없는 `watchBeat` 간격 최대(20–50 ms 안에서; READ1과 READ2 사이 여유 5배). 6 기본대로(`rs4_kill3_spareabsent`는 fail-fast로 다시 예측, 활성화 때 없음은 `gc4_kill3_ow_spareabsent`). 7 EXITED가 이김. 8 보고 이름으로 읽음. 1단계 구현은 이 값을 기본으로 둔다(각 항목이 표 한 행이나 매개변수 하나).
 
-남은 열린 것은 (2) 판정 전 장치 대기의 pilot 셀이다.
+남은 열린 것은 (2) 판정 전 장치 대기의 pilot 셀과, 2026-10-17 시험 쪽 리뷰가 사전 등록 전 결정으로 남긴 아래 둘이다.
+
+3. **FENCE_NAK이 난 시행을 제외로 칠지 실패로 셀지**(8절 채점 규칙). 그 줄은 STOP_launcher로 hold를 멈추게 하지만, 그 시행 자체의 판정은 정하지 않았다. 지금 채점기는 그 시행을 센다.
+4. **멈춤 길이 허용 1 s를 좁힐지**(8절 제외; 시험 쪽 리뷰 nit 7). 1 500 ms 멈춤에 1 s 허용은 넓다. 리뷰 권고는 50 ms다.
 
 **이 문서의 선택**(독립 리뷰가 볼 것).
 
@@ -913,6 +976,7 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
 | `gc4_fdhold_sock_kill3_noreport`는 증인도 꺼서 9.3절 11행(증인 꺼짐 + launcher 정보 없음 + 하드웨어 응답 없음 → 펜스가 확인하는 hold)을 탐(증인을 켜면 12행이라 hold 없음) | 설계 v3 4.2절; 11행을 둘지는 위 v3 목록 2 |
 | 동적 예비 프로세스의 셀은 이 실험에서 돌리지 않음. launcher는 노드 안 인사, 준비됨, 재생 실패 알림의 규약까지 만들고 SPAWN은 "spawn not built"로 REFUSED | 동적 예비 프로세스 설계 v2 5.2절 1번의 권고를 이 문서의 선택으로 씀(4절) |
 | 비용 셀의 READ 켬과 끔을 같은 rdma 바이너리의 `NCCL_GIN_TS_PROBE_MS=0`으로 가름(tcp와 rdma는 빌드로만 가름) | 이 문서의 선택 |
+| `r->ctrl`(제어 계층 상태)을 `gdakiTsSetup`의 all-gather 바로 앞에서 만들고, 링과 UD 끝점도 그 자리에서 만듦(설계 v3는 연결 부분 `gdakiTsSetupConnect` 안). UD 끝점과 페이지, outbox 자리를 all-gather 칸에 실으려면 그것들이 all-gather 전에 있어야 하기 때문(9.6절) | 이 문서의 선택(2026-10-17 통합 때). `r->ctrl`은 통합 트리에서 그 자리에 있고, 링과 UD QP를 거기서 만드는 것은 2a-2 |
 
 ### 9.8 이행 단계와 병렬 나눔 (구현 전)
 
@@ -922,11 +986,30 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
 
 | 단계 | 혼자 고치는 함수와 파일 | 부르기만 하는 것 | 크기 `[설계 v2, 추론]` |
 |---|---|---|---|
-| 준비(갈아 끼우는 자리) | 공유 헤더 `impl/rs_ctrl_api.h`(봉투 64 B와 `rsv[16]`(칸마다의 위치를 launcher 헤더와 `static_assert`로 같게), 페이지 낱말과 `rxConsumedL`, 끝점 판 2(40 B), PAIR 종류(기록, 생존 READ)와 본문(launcher 헤더의 `glPairBody` 112 B, `creditOff` 포함), 기록 52–55, launcher 말(launcher 헤더 `launcher_msg.h`를 포함: 열일곱 종류, 256 B; EXITED, LEFT, FENCED는 (rank, 화신, nonce); SPAWN 거절과 활성화 답은 다른 종류), Unix 소켓 말 일곱 종류, 매개변수 이름, `fencedPlus1` 상수와 `gdakiLnFenceOf`, 판정 입력 값과 판정 함수의 서명, 확인 창의 결과 값 다섯, REJOIN과 REJOIN_ACK의 `nrp` 배치(비어 있음 확인), `helperBusy`를 세우는 자리 목록, 바깥 CQ의 수명 규칙; `static_assert`로 봉투 64 B, 끝점 40 B, launcher 말 256 B, 판정 낱말과 launcher 페이지 낱말의 8 B 정렬, `nrp` 배치 ≤ 256 B) `[설계 v3 7.1절]`; `NCCL_GIN_CTRL_TCP`와 둘째 매크로 `NCCL_GIN_CTRL_TCP_CELLS` 뼈대; `gdakiTsSend`, `gdakiTsPump`, `gdakiHoldSend` 호출 26 + 7 + 17곳을 자리마다 (증인, 기록, 자료, REJOIN, 활성화)로 가른 표와 함께 `gdakiCtrlSend`, `gdakiCtrlPump`로(`gdakiTsSend` 26곳 = 정의 1, 증인 7(8173, 8498, 8609, 8711, 8798, 8843, 18130; rdma 빌드에서도 증인 소켓), 자료 2(14251, 15643), REJOIN 3(9571, 10192, 10295), 기록 13 `[소스: grep]`; tcp 빌드에서는 모두 지금 호출로 펴짐); `pe.fd` 56곳을 증인으로 남을 자리와 기록 길로 갈 자리로 가른 목록과 바꿈; `gdakiMiHostQpCreate` 인자 넓힘(SQ와 RQ 깊이, 접근 비트, QP 종류, timeout, rnr_retry, 바깥 CQ, completion channel, UD Q_Key; 기본 인자는 지금 값); `gdakiTsSetup`을 all-gather와 연결(`gdakiTsSetupConnect`)로; `gdakiRsSpareRun`을 활성화 기다림(`gdakiRsSpareActivateWait`)과 REJOIN(`gdakiRsSpareRejoinAll`)으로; `gdakiHoldActivate`를 결정과 보내기로; 생존 READ QP의 API(만들기, 끝점 내기, 기록과 따로 된 잇기와 다시 잇기, 오류 상태로, "이 세대에서 성공함" 조회); 빈 hook `gdakiCtrlOnHoldStart`, `gdakiCtrlLauncherSend`, `gdakiCtrlPeerToErr`, `gdakiLnFenced` | – | C++ 약 600–800, 헤더 약 250 |
+| 준비(갈아 끼우는 자리) | 공유 헤더 `impl/rs_ctrl_api.h`(봉투 64 B와 `rsv[16]`(칸마다의 위치를 launcher 헤더와 `static_assert`로 같게), 페이지 낱말과 `rxConsumedL`, 끝점 판 2(40 B), PAIR 종류(기록, 생존 READ)와 본문(launcher 헤더의 `glPairBody` 112 B, `creditOff` 포함), 기록 52–55, launcher 말(launcher 헤더 `launcher_msg.h`를 포함: 열일곱 종류, 256 B; EXITED, LEFT, FENCED는 (rank, 화신, nonce); SPAWN 거절과 활성화 답은 다른 종류), Unix 소켓 말 일곱 종류, 매개변수 이름, `fencedPlus1` 상수와 `gdakiLnFenceOf`, 판정 입력 값과 판정 함수의 서명, 확인 창의 결과 값 다섯, REJOIN과 REJOIN_ACK의 `nrp` 배치(비어 있음 확인), `helperBusy`를 세우는 자리 목록, 바깥 CQ의 수명 규칙; `static_assert`로 봉투 64 B, 끝점 40 B, launcher 말 256 B, 판정 낱말과 launcher 페이지 낱말의 8 B 정렬, `nrp` 배치 ≤ 256 B) `[설계 v3 7.1절]`; `NCCL_GIN_CTRL_TCP`와 둘째 매크로 `NCCL_GIN_CTRL_TCP_CELLS` 뼈대; `gdakiTsSend`, `gdakiTsPump`, `gdakiHoldSend` 호출 26 + 7 + 17곳을 자리마다 (증인, 기록, 자료, REJOIN, 활성화)로 가른 표와 함께 `gdakiCtrlSend`, `gdakiCtrlPump`로(`gdakiTsSend` 26곳 = 정의 1, 증인 7(8173, 8498, 8609, 8711, 8798, 8843, 18130; rdma 빌드에서도 증인 소켓), 자료 2(14251, 15643), REJOIN 2(9571, 10192), 기록 14(10295의 READY는 기록; 설계 v3 7.1절의 REJOIN 3, 기록 13을 자리 표 `impl/gc_sites.tsv`대로 고침, 준비 단계 리뷰 nit 16) `[소스: grep]`; tcp 빌드에서는 모두 지금 호출로 펴짐); `pe.fd` 56곳을 증인으로 남을 자리와 기록 길로 갈 자리로 가른 목록과 바꿈; `gdakiMiHostQpCreate` 인자 넓힘(SQ와 RQ 깊이, 접근 비트, QP 종류, timeout, rnr_retry, 바깥 CQ, completion channel, UD Q_Key; 기본 인자는 지금 값); `gdakiTsSetup`을 all-gather와 연결(`gdakiTsSetupConnect`)로; `gdakiRsSpareRun`을 활성화 기다림(`gdakiRsSpareActivateWait`)과 REJOIN(`gdakiRsSpareRejoinAll`)으로; `gdakiHoldActivate`를 결정과 보내기로; 생존 READ QP의 API(만들기, 끝점 내기, 기록과 따로 된 잇기와 다시 잇기, 오류 상태로, "이 세대에서 성공함" 조회); 빈 hook `gdakiCtrlOnHoldStart`, `gdakiCtrlLauncherSend`, `gdakiCtrlPeerToErr`, `gdakiLnFenced` | – | C++ 약 600–800, 헤더 약 250 |
 | 1 상태 페이지, READ 감지, 펜스 | 새 `gdakiPage*`, `gdakiProbe*`(감시 스레드의 READ, 걷기, 상태 바꿈, 넘기기); 감시 스레드 hook 한 줄; 판정 표(21행)와 확인 창(t_F, t_F + W/2, t_F + W); `gdakiHoldStart`의 펜스 갈래(1단계는 멈춤 판정을 거절만); 52–54 처리; 펜스 낱말 `fencedPlus1`과 `gdakiLnFenced`(계보 헤더는 그대로); 관문 `gdakiRsActExamine`(launcher와 짝을 맺은 문맥에서만 FENCED, 없으면 `/proc`); 55번 PROBE_SETUP(이름 붙인 개발 발판: 생존 READ QP 끝점을 helper TCP 소켓으로 나눔, 2단계가 합쳐지면 55번과 함께 사라짐); `gdakiProbeToErr`; launcher 페이지 끌어 읽기(감시 스레드, 그 launcher와의 생존 READ QP); 시험 스위치 `DIE_RST`, `RST_GAP`, `FD_HOLDER`, `FREEZE_PAGE`(`<ms>:helper` 갈래 포함)와 tcp 대조의 RST 간격(둘째 매크로 뒤) | `gdakiCtrlSend`, `gdakiCtrlLauncherSend`(3단계 전에는 빈 것) | C++ 약 1 000–1 200 |
 | 2 링과 기록, mirror 끔 저장소 | rdma 뒤끝 `gdakiCtrlRdma*`(QP, 링, credit과 세대, inbox 한도, completion channel, outbox); `gdakiTsSetupConnect`의 짝 맺기와 MTU, fork 검사; `gdakiTsReconnectStep`의 기록 길(어느 쪽이든 시작하는 PAIR(종류, 세대 + 1), 기록과 생존 READ를 따로, 매번 새 PSN, launcher가 시작한 PAIR 받기); `gdakiRsSpareRejoinAll`(UD REJOIN, `nrp`의 새 끝점과 rkey, REJOIN 멱등 표와 다른 QPN 버림, CONNECTED 전 보내기 없음); `gdakiRsLogExport`의 받는 곳(outbox)과 예비 프로세스의 STATE 받기; `gdakiTsCloseAll`의 BYE 차례; `gdakiCtrlRecordToErr`; 시험 스위치 `QP_ERR`, `DROP_UD`, `CREDIT_STALL`; 결정 7(`gdakiStoreOn`을 mirror 끔으로 넓힘, mirror 끈 올리기와 FETCH를 저장소로, 덩어리의 저장소 칸, `gdakiStoreWardToErr`) | 페이지의 `rxConsumed` 낱말(배치는 준비 단계가 고정) | C++ 약 1 500–1 900 |
 | 3 launcher, 등록, 활성화 | launcher 프로그램(`impl/launcher/`, 2026-10-17 빌드됨: C, Unix 소켓, 끌 수 없는 pid 검사, pidfd, verbs, launcher 페이지, EXITED, LEFT, FENCE, FENCED, FENCE_NAK, 한 사건 한 말, launcher가 시작하는 다시 짝 맺기, 중계, ABORT, SPAWN은 따로 된 REFUSED, 시험 스위치 `NO_EXIT_REPORT`); rank 쪽이 지킬 것(SPARE_HELLO의 0 아닌 nonce, 등록 연결은 CLOEXEC이고 fork 때 닫으며 LEAVING은 그 연결로만, launcher 기록 QP의 `max_dest_rd_atomic` ≥ 1과 outbox REMOTE_READ, REFUSED 종류로 fallback하지 않음); rank 쪽 `gdakiCtrlLauncher*`(떠남 알림 포함); `gdakiCkptSelfOf`의 경로; STORE_REQ 꼬리(17236–17247); `gdakiHoldActivateSend`; `gdakiRsSpareActivateWait`; 무장 조건(`haveSpare` = launcher 헤더의 `gl_path_exists`); 되살린 rank의 launcher 짝 맺기와 다시 무장, 되살린 짝의 STORE_ACK 비트; LATER 뒤 짝의 한도와 ABORT, launcher 박동 감시; FENCE_NAK에 fallback; 실행기(launcher pid와 시작 시각을 시행 앞뒤로)와 채점기 | `gdakiCtrlSend`, 2단계의 UD 짝 맺기 API, 1단계의 `gdakiLnFenced` | 라이브러리 약 500–700, launcher 약 700–900, 실행기와 채점 약 300 |
 | 4 TCP를 스위치 뒤로(합친 뒤) | 남은 TCP 전용 코드(TCP 자료 소켓, 활성화 소켓, FIN = 죽음, 거절 1 000 ms, `/proc` 관문)를 지우지 않고 `NCCL_GIN_CTRL_TCP` 뒤로 묶음(결정 1). rdma 빌드에는 증인 코드만 남음. 두 빌드의 회귀 | – | 묶는 바꿈 약 300–500, 지움 없음 |
+
+**단계마다 지금 상태**(2026-10-17 끝; 근거는 12절의 행과 각 노트, 이 문서는 빌드와 시험을 다시 돌리지 않았다). 단계 2는 2a-1(링과 짝 맺기 모형, verbs 뒤끝을 빌드만), 2a-2(호출 자리 연결),
+2b(mirror 끈 저장소와 2단계 시험 스위치)로 나눴다(12절).
+
+| 단계 | 상태 | 근거 |
+|---|---|---|
+| 준비 | 리뷰(막는 문제 2, 고칠 것 15, nit 16)를 고침. `impl/gc_layer.diff` `0df79ae2` | `impl/notes_prepfix.md`, 커밋 `fd4ae2d6` |
+| 1 | 고친 준비 단계 위에 통합됨. 코드 리뷰의 막는 문제 여섯(확인 창과 PROBE_SETUP 보내기의 부르는 곳 0, 생존 READ 버퍼 공유, 분할 막이의 뜻 거꾸로, 시한 뒤 READ 재발행, 오류 CQE 분류, 감시 스레드의 helper 전용 호출)은 열려 있고 고치는 중. 1단계 몫 시험 스위치(`DIE_RST`, `RST_GAP`, `FD_HOLDER`, `FREEZE_PAGE`)는 아직 0건 | `impl/notes_int.md`, `REVIEW_P12.md`(저장소 밖) |
+| 2a-1 | 통합됨. 막는 문제 둘(짝 맺기 모형에 HELD와 계보 입력 없음, 세대 바뀜이 ACK된 기록을 버리고 라운드 취소가 없음)은 열려 있고 고치는 중. 모형과 뒤끝은 살아 있는 길에서 부르는 곳 0 | 같음 |
+| 2b | 진행 중 | 조율 세션 |
+| 2a-2, 3(rank 쪽) | 다음. 2a-2는 2a-1의 막는 문제 둘을 먼저 닫은 뒤 묶음 | `impl/notes_int.md` 끝 |
+| 3(launcher 프로그램) | 빌드됨, 리뷰를 고침, 단위 시험 20 장면 414 검사(verbs 전송은 빌드만) | `impl/launcher/README_launcher.md`, `impl/notes_prepfix.md` |
+| 4 | 시작 전 | – |
+
+- **트리 키**(`impl/build_gc.sh`의 `BR=`; 빌드 키 `gc`, `gct` 같은 것과 다름). `prep`는 고친 준비 단계 트리. `p1`, `p2`는 1단계와 2a-1을 옛 준비 단계(`f5061a31`) 위에서 처음 빌드한 그대로의
+  기록이고(입력은 고정 사본, 시험 소스는 커밋 `73be8802`, `494cd666`의 것), 통합 때 키만 넣고 돌리지 않았다 `[미확인]`. `int`는 고친 준비 단계 위에 1단계와 2a-1을 합친 통합 트리이고
+  그 diff가 `impl/gc_layer_int.diff`(`a7600a46`, ln4 대비 4 312줄, 호스트 파일 하나)다. 고침과 다음 단계는 `int` 트리 위에서 한다.
+- **`gctc`의 전처리 결과.** 통합 트리에서 `gct`, `gctp`는 ln4와 0 hunk이고, `gctc`는 1단계의 RST 거절 간격 매개변수만큼(2 hunk 3줄: 매개변수 정의 한 줄, `>= 1000.0`이 그 매개변수가 된 한 줄)
+  다르다. 둘째 매크로가 그 코드만 켜도록 정한 대로다(9.3절) `[측정: 통합 에이전트의 보고 impl/notes_int.md, pre_int.log; 이 문서에서 다시 돌리지 않음]`.
 
 - 처음 제어 경로 설계는 마지막 단계에서 tcp 갈래를 지우는 안을 두었으나 결정 1로 지우지 않고 빌드 스위치 뒤에 둔다. tcp 빌드(`gct`)의 동일성은 매 단계 확인한다.
 - **파일 자리**(둘째 재검토의 고칠 것 2) `[설계 v3 7.1절]`. 새 파일과 바뀐 헤더 사본(`rs_ctrl_api.h`, 판을 올린 `rs_store_api.h`)은 모두 이 폴더의 `impl/`에 두고, 이 실험의 계층
@@ -943,7 +1026,7 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
   `mi_unit_lineage.cc`, `mi_unit_store.cc`, `mi_unit_host.cc`)이 두 빌드에서 고침 없이 통과. 상태 페이지와 펜스: 판정 낱말 모형(정렬된 8 B만 읽음), 보고 줄의 줄 안
   seqlock 모형(쓰는 thread와 무작위로 끼어드는 읽기, 짝수 `ver` 줄의 찢김 0), 정체 정의 모형(읽는 쪽이 멈춘 경우 포함, 분할 막이 문턱), 판정 함수를 입력 격자 1 170점 전부로
   (21행에 닿는 점 0, 모든 행 한 점 이상, floor 성질), 확인 창 모형(READ 완료 시각을 무작위로; 판정이 늘 t_F + W, "확인 못함"의 조건), 펜스 낱말 모형(9.4절의 장면; 이 실험의 단위
-  시험, 계보 oracle의 다름 목록이 관문 칸만), `gate_fenced` CPU 프로그램(3절 예측). 링: credit 모형(무작위 묶음과 다시 내기, 세대 바뀜: 낸 RECV ≥ 날아가는
+  시험, 계보 oracle의 다름 목록이 관문 칸만), `gate_fenced` CPU 프로그램(3절 예측; 그 시험은 실제 자식 프로세스의 `impl/test/gate_proc_gc.py`이고, 지금 `impl/gate_fenced.cc`는 넣은 값을 되읽는 시간표 모형이라 예측의 시험이 아님). 링: credit 모형(무작위 묶음과 다시 내기, 세대 바뀜: 낸 RECV ≥ 날아가는
   SEND, 옛 세대 CQE 버림, 세대 안 잃음과 겹침 0), inbox 한도 모형, UD 짝 맺기 모형(잃음, 겹침, 차례 바뀜, 옛 화신; 높은 rank만 오류, 한쪽만 오류인 쉬는 쌍, 두 쪽이 엇갈려 PAIR(g + 1), 기록 다시 맺기 동안 생존 READ QP는 그대로, 매번
   새 PSN, 옛 세대 도착이 새 세대 소비 수에 안 듦; REJOIN: 받아들인 뒤 같은 QPN은 저장한 답만, 다른 QPN은 버림, CONNECTED 전 보내기 없음), 같은 사건 열에서 넘겨진 기록 열이
   TCP 모형과 같음, park 동일, mirror 끔 저장소 모형(`mi_unit_store.cc` 넓힘). launcher: 상태 기계 모형(LATER, 예비 프로세스 끝남, FENCE와 EXITED의 엇갈림, LEFT와 BYE의
@@ -952,7 +1035,9 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
   스스로 fork한 자식만; verbs 전송은 빌드만 하고 돌리지 않음) `[측정: 조율 세션의 보고와 impl/launcher/README_launcher.md; 이 문서에서 다시 돌리지 않음]`.
 - **동일성 확인(매 단계).** 장치 기계어 비교(매크로 없는 프로그램 넷과 라이브러리 장치 객체가 `mi`와 같음, gin-mirror의 방법), tcp 빌드의 pilot 회귀 묶음
   (`mi4_kill3_ow`, `mi4_kill2_kill3_ow`, `rs4_kill3`, `rs4_kill3_spareabsent`, `mi4_none_ow`)의 판정과 줄 수가 ln4 본 실행과 같은 범위, rdma 빌드에서 이 계층의
-  TCP 보내기 바이트 0(증인 BYE 빼고).
+  TCP 보내기 바이트 0(증인 BYE 빼고). 지금까지의 장치 객체 비교는 장치 헤더 digest가 같아 장치 객체를 다시 빌드하지 않은 사본을 견준 것이라 구성상 같다. 그래서 결과 문장은
+  "장치 객체 207개가 ln4와 같음"이 아니라 "장치 헤더 digest가 같아 장치 객체를 다시 빌드하지 않음"으로 쓴다(준비 단계 리뷰 nit 8)
+  `[측정: 문서 impl/notes_prepfix.md, impl/notes_int.md의 ident 로그 요약]`.
 - **실행 가능성 확인(구현 전이나 준비 단계와 함께, 채점 안 함).** (1) NIC이 CPU가 고쳐 쓰는 64 B 줄 하나를 한 순간의 모습으로 읽는가(망치 시험, 짝수 `ver` 줄의
   찢김 수; 판정은 이것에 기대지 않고 보고 줄만 기댐); (2) 여러 스레드인 CUDA 프로세스의 pidfd가 읽기 가능해질 때 uverbs fd와 GPU fd가 이미 닫혔는가, 그리고 sunny(6.8)의 pidfd가
   rain(5.15)과 같이 동작하는가(fdinfo `Pid:`, 스레드 그룹의 끝에 읽힘; CUDA 없는 자식으로 rain에서 잰 사실은 9.5절); (3) rank마다 GIN
@@ -966,10 +1051,43 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
   펜스와 launcher를 올린 빌드로 회귀 묶음 전부와 펜스 셀. 그 뒤 pilot, 사전 등록.
 - 모든 클러스터 실행은 `harness/gpu-initiated/common/cluster_run.sh` 안이다.
 
-**실행 방법(초안).** 빌드는 gin-mirror의 `build_mi.sh` 꼴을 따르는 이 폴더의 빌드 스크립트(구현 때)로 `gc`, `gct`, `gcp`, `gctp`를 만들고, 배포 묶음은 두 노드의 새
-디렉터리에 둔다. 실행은 gin-mirror의 hold 틀(`hold_mi.sh`, `run_mi.sh`) 위에 launcher 띄우기, SIGSTOP과 SIGCONT, fork 자식 주입을 더한 실행기로 하고, 채점은
-`rows_mi.py`에 9.3절의 열(판정 종류와 시각, 퍼짐, READ 성공률, 박동 간격, 찢긴 읽기, 증인 상태, 국면 차례, launcher 시각, 펜스 뒤 바뀐 칸, TCP 바이트)을 더한
-채점기로 한다. 결과 폴더는 `results/<날짜>_<이름>/`, 원자료는 Release `data-YYYYMMDD`로 올린다. 명령은 구현 뒤 이 절과 [NOTES.md](NOTES.md)에 적는다.
+**실행 방법(초안).** 시험 쪽 파일은 [impl/test/](impl/test/)에 있고 설명과 TODO는 [impl/test/notes_test.md](impl/test/notes_test.md)다. 지금까지 돌린 것은 로컬 Python 자체
+시험, `bash -n`, `check_cells_gc.py`뿐이고 클러스터에서는 아무것도 돌지 않았다(12절). 차례는 빌드(`impl/build_gc.sh`) → 배포(`deploy_gc.sh`, 두 노드의 새 묶음) →
+hold 사슬(`RS_SET=<set> chain_gc.sh <결과 폴더> <hold> …`; hold마다 `harness/gpu-initiated/common/cluster_run.sh` 안) → 채점(`score_gc.py <결과 폴더>`)이다. 결과 폴더는
+`results/<날짜>_<이름>/`, pilot과 smoke는 이름이 `pilot`이나 `smoke`로 시작하는 폴더(8절), 원자료는 Release `data-YYYYMMDD`로 올린다. 명령의 전문은 실행 뒤 [NOTES.md](NOTES.md)에 적는다.
+
+| 파일 | 하는 일 |
+|---|---|
+| `impl/build_gc.sh` | 트리 키(`BR=`)마다 새 스크래치 트리에서 빌드 키 넷(`gc`, `gcp`, `gct`, `gctp`)을 빌드하고 unit, pre(`gctc` 포함 전처리 비교), sites, ident, diff를 돌림. `gctc` 라이브러리 단계는 아직 없음(전처리 검사만) |
+| `impl/test/deploy_gc.sh` | 두 노드의 새 디렉터리 `~/rs-bundle/<RS_SET>/`에 라이브러리, driver, launcher를 둠(있으면 거절, 앞뒤 md5) |
+| `impl/test/chain_gc.sh` | hold 사슬. hold마다 `cluster_run.sh`로 락과 한가한 링크를 기다린 뒤 `hold_gc.sh`를 부르고, hold 출력 전체를 IPv4 가림으로 보냄 |
+| `impl/test/hold_gc.sh` | hold 하나: 노드마다 launcher 하나 띄우고 끄기, 셀의 n번(`cells_gc.sh`), 8절의 STOP 검사(두 STOP_launcher 꼴, launcher QP ERR 규칙, MTU 앞뒤, RNR, 남은 프로세스) |
+| `impl/test/launcher_gc.sh` | launcher 하나(start, info, mark, table, stop). 0700 소켓 디렉터리, 준비 실패 때 스스로 끔, 기록한 PID와 시작 시각에만 신호 |
+| `impl/test/run_gc.sh` | 시행 하나: 9.9절 주입(기록한 PID에만, 이름과 부모 확인), `SUBJECT_RANK`, 시행 시작 때 등록 표 검사, 시행 표지, 노드 시계 차, `ss` 스냅숏 둘, `active_mtu`, RNR 카운터, fd 자식 끄기 |
+| `impl/test/remote_gc.sh` | 원격 셸에 넘기는 명령을 한 번만 따옴표로 쌈(`rcmd`, `pcmd`, `sunny_sh`), 공용 읽기 질의(`MTU_Q`, `RNR_Q`, `GID_PROBE`), IPv4 가림 식 |
+| `impl/test/run_cost_gc.sh` | 비용 가족 probe의 실행 하나(팔 `probe-off`, `probe-on`은 `gcp`, `tcp`는 `gctp`) |
+| `impl/test/gate_proc_gc.py` | `gate_fenced`의 실제 프로세스 시험(CPU만): main thread가 먼저 끝나는 자식, 따로 잰 Z와 pidfd 시각. 관문 시각은 `impl/gate_fenced.cc`의 `--pid` 모드가 내야 함(아직 없음) |
+| `impl/test/rows_gc.py`, `impl/test/score_gc.py` | 시행별 열과 채점. gin-mirror의 `rows_mi.py`, `score.py`를 고치지 않고 불러 씀. 제외, STOP 줄, 자료 부족 규칙, smoke와 pilot을 따로 셈 |
+| `impl/test/check_cells_gc.py`, `impl/test/test_rows_gc.py` | 셀 파일과 예측 표를 3, 7절에 맞춰 봄; 합성 로그 자체 시험 |
+
+**라이브러리가 낼 줄**(시험 쪽 리뷰가 요구한 꼴 열둘; `rows_gc.py`가 읽음). 모든 줄 끝에 ` mono_ms=%.3f`(그 프로세스의 CLOCK_MONOTONIC, ms)가 붙고 `%s`는 공백 없는 낱말이다.
+줄 꼴의 전체 표(의심, READ 시한, 증인 잃음, 링 요약, 짝 맺기 셋, 2단계 시험 스위치 셋의 줄 포함)는 `notes_test.md`의 "라이브러리 쪽이 낼 줄"이고, 아래는 그 가운데 리뷰가 요구한 것이다.
+트리에 이미 있는 것은 죽음 판정 줄의 꼴(ln4 그대로; rdma 원인 이름은 아직), 1단계의 멈춤 판정 줄과 상태 페이지 줄뿐이고 나머지는 1–3단계가 낸다(`notes_test.md` 표의 "있음"과 `TODO(pN)`).
+
+| # | 줄 | 꼴 | 낼 단계 |
+|---|---|---|---|
+| 1 | 죽음 판정 | `GIN/TS: rank %d: rank %d judged dead (cause=%s)`. rdma 빌드의 원인은 낱말 하나(`EXITED`, `FIN+STALE`, `FIN+NORESP`, `REMACC+FIN`, `NORESP`, `LINKDOWN`). 멈춤(14, 15행)은 `judged stalled` 줄 하나만 내고 이 줄을 함께 내지 않음 | 1 |
+| 2 | 확인 창 | 열림 `GIN/RC: rank %d: confirm window for rank %d opened by FIN\|RST W=%d`(시각은 t_F), 닫힘 `GIN/RC: rank %d: confirm window for rank %d closed: alive\|STALE\|NORESP\|REMACC\|unconfirmed` | 1 |
+| 3 | READ 요약 | `GIN/RC: rank %d: probe summary peer=%d reads=%u ok=%u remacc=%u noresp=%u timeout=%u gen=%u lat_med_us=%.1f lat_max_us=%.1f beat_gap_max_ms=%.1f torn=%u after_end_reads=%u after_end_ok=%u`(끝낼 때 상대마다). `after_end_*`는 상대의 BYE, LEFT, 판정 뒤 READ(`reads`, `ok`에 든 채 따로 셈), `beat_gap_max_ms`는 첫 성공 READ부터 상대의 끝 전까지, `torn`은 짝수 `ver` 줄의 찢김 수. 처음 세대 `gen`은 상태 페이지 줄이나 첫 짝 맺기 줄에 실음 | 1 |
+| 4 | 제어 요약 | `GIN/RC: rank %d: control summary tcp_record_bytes=%llu tcp_data_bytes=%llu tcp_conns=%u witness_conns=%u records_lost=%u records_dup=%u repairs=%u sendq_deferred=%u sendq_max=%u rnr=%u async=%u active_mtu=%u`(끝낼 때와 확정 체크포인트마다, 모든 프로세스). TCP 바이트는 `gdakiCtrlSend`의 TCP 갈래에서 실제 보낸 것, `tcp_conns`는 증인 등록과 따로 셈, 받는 쪽 상대별 `tcp_rx_bytes_peer<p>=`, `async`는 `async_rec=`, `async_read=`, `async_la=`로 나눔, kv에 `active_mtu=` | 2 |
+| 5 | launcher 소켓 끊김 | `GIN/RC: rank %d: launcher Unix socket closed (%s)`(rank나 예비 프로세스가 launcher 연결을 잃을 때; 8절 STOP_launcher) | 3 |
+| 6 | fd를 쥔 자식 | `GIN/TS: rank %d: test switch FD_HOLDER=sock\|uverbs: child gin_fdhold pid=%d holds %d fd(s)`(증인을 끈 셀은 `holds 0`). 자식은 넘겨받은 fd 밖을 모두 닫고 0–2를 `/dev/null`로 돌림 | 1 |
+| 7 | 시험 스위치 시작과 끝 | `GIN/TS: rank %d: test switch DIE_RST: linger 0 on %d socket(s); SIGKILL now`(SIGKILL 직전); `GIN/RC: rank %d: test switch FREEZE_PAGE=%d[:helper]: %s frozen`과 `GIN/RC: rank %d: test switch FREEZE_PAGE: beats resumed`; `GIN/TS: rank %d: test switch RST_GAP: %d socket(s) reset, listener closed for %d ms`과 `GIN/TS: rank %d: test switch RST_GAP: listener reopened`. 줄마다 `after_ckpt_ms=%d`(첫 무장 확정 체크포인트 뒤) | 1 |
+| 8 | 활성화와 무장 | rdma 빌드에서도 지금 글 그대로: `GINRS step rank=R step=S released=0`, `rank P armed at its stable checkpoint K`, `every survivor holds rank P: its spare activated (…), N 'later' answers`, `restore round with rank P published`, `rank P restored as incarnation I`, `hold of rank P started`, `is given up`. 'later' 수는 launcher가 대신 답한 LATER 수 | 3 |
+| 9 | 펜스와 바뀐 칸 | `GIN/RC: rank %d: rank %d (incarnation %u) fence FENCING: FENCE sent to the launcher of node %u`(짝), `GIN/RC: rank %d: rank %d (incarnation %u) fence FENCED (by FENCED\|EXITED from node %u)`(짝, 펜스 낱말이 선 때), `GIN/RC: rank %d: window check after the fence\|judgement of rank %d: changed=%u cells against=snapshot_at_judgement`(생존 rank마다) | 3(바뀐 칸은 driver도 가능) |
+| 10 | launcher 표 | `GIN/LA: node %u: table: %d registered, %d spares`(등록 표가 바뀔 때마다). 그 전까지는 `launcher_gc.sh table`이 launcher의 지금 줄로 표를 읽음 | launcher |
+| 11 | 복원 끔과 fail-fast의 생존 확인 | `NCCL_GIN_RESTORE=0`, `FAULT_POLICY=failfast`인 살아 있는 RST 셀에서도 상태 페이지, READ, 확인 창이 돌고 상태 페이지 줄(`GIN/RC: rank %d: status page up (…)`)을 냄. 돌지 않으면 그 셀은 아무것도 재지 않음 `[미확인]` | 1 |
+| 12 | 시계 | 모든 `mono_ms=`가 CLOCK_MONOTONIC. launcher는 그렇고 rank 쪽 `gdakiQ4MonoMs`의 몸체는 diff 밖이라 `[미확인]` | 1(확인) |
 
 ### 9.9 이 testbed에서 넣을 수 있는 장애와 그 현실성
 
@@ -981,7 +1099,7 @@ CURRENT가 되어 죽은 화신의 기록이 받아들여진다. 그래서 gin-m
 - **박동 쓰기만 멈춤.** `NCCL_GIN_TS_TEST_FREEZE_PAGE=<ms>`: 감시 스레드가 그 길이만큼 박동만 쓰지 않음(프로세스는 돎). `<ms>:helper`는 `helperBeat`만 멈춤(`watchBeat`는 오름;
   `gc4_helper_freeze12000`) `[설계 v3 7.1절]`.
 - **fd를 쥔 자식 + 부모 SIGKILL.** `NCCL_GIN_TS_TEST_FD_HOLDER=sock|uverbs`: rank가 자식(`gin_fdhold`, `prctl(PR_SET_NAME)`)을 fork해 socketpair의 SCM_RIGHTS로 증인
-  (tcp 빌드는 helper) 소켓만, 또는 uverbs fd까지 넘김. 자식은 60 s 뒤 끝나고 실행기가 `pkill -x gin_fdhold`로 정리. PDEATHSIG는 쓰지 않음.
+  (tcp 빌드는 helper) 소켓만, 또는 uverbs fd까지 넘김. 자식은 60 s 뒤 끝나고, 실행기는 이름으로 끄지 않고 fork 줄의 PID를 uid, 이름, 같은 노드의 부모 시작 tick과 견준 뒤에만 그 PID로 정리(8절). PDEATHSIG는 쓰지 않음.
 - **launcher 종료 보고 끄기.** `NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=1`(launcher 쪽, 연구 빌드만): EXITED 말만 끈다. FENCED, LEFT, REG_NOTE, 페이지 낱말은 그대로다(빌드된 launcher 그대로)
   `[측정: launcher 소스를 읽음]`. 판정은 끝남을 말로만 읽으므로 그 셀의 launcher 열은 "정보 없음"이다(9.3절).
 - **RDMA 제어 길의 끊김.** 기록 QP를 오류 상태로(`NCCL_GIN_CTRL_TEST_QP_ERR`), UD datagram 버리기(`NCCL_GIN_CTRL_TEST_DROP_UD`), RECV 다시 내기 멈춤
@@ -1038,21 +1156,25 @@ link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려
 - [x] 설계 v2의 독립 재검토(9.7절 끝 열린 것 1) — 2026-10-17: 막는 문제 넷, 고칠 것 열여덟, nit 열
 - [x] 설계 v3 반영(2026-10-17: 막는 문제 넷을 닫고 고칠 것과 nit을 모두 접음, 판정 표 21행을 두 문서에 같게, 빌드된 launcher의 헤더에 맞춤; 12절 넷째 행)
 - [x] launcher 프로그램(`impl/launcher/`): 빌드됨, CPU 단위 시험 장면 18, 검사 418, 4/4 실행 통과, verbs 전송은 빌드만(실행 안 함) — 2026-10-17, 조율 세션의 보고(12절 다섯째 행)
-- [ ] 설계 v3의 사용자 결정 여덟(9.7절 끝 v3 목록)
+- [x] 설계 v3의 사용자 결정 여덟(9.7절 끝 v3 목록) — 2026-10-17 새벽 모두 권고대로
 - [x] 사용자 결정 대기 넷(floor 규칙과 W, 메모리 한도의 뜻, 당기기 시도 수 결정을 거둘지, 계속 주고받는 셀)과 어긋남 1(9.7절 끝) — 2026-10-16 밤 모두 결정
 - [ ] 판정 전 장치 대기의 pilot 셀(9.9절 끝)
 - [ ] 실행 가능성 확인 열(9.8절, 채점 안 함)
 - [x] 준비 단계: 공유 헤더, 갈아 끼우는 자리, 빌드 스위치, CPU 단위 시험, tcp 동일성 (2026-10-17; 독립 리뷰는 남음)
 - [x] 준비 단계의 독립 리뷰(저장소 밖 `REVIEW_PREP.md`: 막는 문제 둘, 고칠 것 15, nit 16)와 고침(2026-10-17; 받기 seam, 채널 seam 넷, 헤더 고침, launcher 넷; `impl/notes_prepfix.md`)
-- [ ] 1단계(상태 페이지, READ 감지, 판정 표 21행, 확인 창, 펜스 낱말과 보고 이름, 기록 52–55, 관문 순수 함수) — 코드 리뷰(2026-10-17)가 막는 문제 여섯을 찾음(확인 창과 PROBE_SETUP 보내기는 부르는 곳 0, 생존 READ 버퍼 공유, 분할 막이 뜻 거꾸로, 500 ms 뒤 READ 재발행으로 SQ 넘침, 오류 CQE 분류, 감시 스레드의 helper 전용 호출); 고침 전까지 미완. 처음 보고: `impl/gc_layer_p1.diff` 빌드됨(gc, gct, gcp, gctp), CPU 단위 시험 통과(gc_unit_p1 83 467, gate_fenced 10/10), 장치 207×4 동일, tcp 전처리 0 hunk — 2026-10-17(`impl/notes_p1.md`; 고친 준비 단계 위로 옮기기와 독립 리뷰 남음)
-- [ ] 2a-1(링과 credit 모형, UD 짝 맺기와 REJOIN 모형, verbs back end 빌드만) — 코드 리뷰가 막는 문제 둘을 찾음(짝 맺기 모형에 HELD와 계보 입력 없음, 세대 바뀜이 ACK된 기록을 버리고 라운드 취소 없음); 고침 전까지 미완. 처음 보고: `impl/gc_layer_p2.diff`, gc_unit_p2 rdma 2 781 801 검사 통과 — 2026-10-17(`impl/notes_p2.md`; 옮기기와 리뷰 남음)
-- [ ] 2a-2 호출 자리 연결(링 만들기, seam 본문, 페이지 소비 낱말 묶기, 짝 맺기 wiring), 2b mirror 끔 저장소(결정 7), 3단계 rank 쪽 launcher 짝 맺기와 활성화
+- [ ] 1단계(상태 페이지, READ 감지, 판정 표 21행, 확인 창, 펜스 낱말과 보고 이름, 기록 52–55, 관문 순수 함수) — 코드 리뷰(2026-10-17)가 막는 문제 여섯을 찾음(확인 창과 PROBE_SETUP 보내기는 부르는 곳 0, 생존 READ 버퍼 공유, 분할 막이 뜻 거꾸로, 500 ms 뒤 READ 재발행으로 SQ 넘침, 오류 CQE 분류, 감시 스레드의 helper 전용 호출); 고침 전까지 미완. 처음 보고: `impl/gc_layer_p1.diff` 빌드됨(gc, gct, gcp, gctp), CPU 단위 시험 통과(gc_unit_p1 83 467, gate_fenced 10/10은 시간표 모형이라 3절 `gate_fenced`의 시험이 아님), 장치 207×4 동일(다시 빌드하지 않은 사본), tcp 전처리 0 hunk — 2026-10-17(`impl/notes_p1.md`). 고친 준비 단계 위로 통합됨(아래), 막는 문제 여섯은 고치는 중
+- [ ] 2a-1(링과 credit 모형, UD 짝 맺기와 REJOIN 모형, verbs back end 빌드만) — 코드 리뷰가 막는 문제 둘을 찾음(짝 맺기 모형에 HELD와 계보 입력 없음, 세대 바뀜이 ACK된 기록을 버리고 라운드 취소 없음); 고침 전까지 미완. 처음 보고: `impl/gc_layer_p2.diff`, gc_unit_p2 rdma 2 781 801 검사 통과 — 2026-10-17(`impl/notes_p2.md`). 고친 준비 단계 위로 통합됨(아래), 막는 문제 둘은 고치는 중
+- [x] 1단계와 2a-1을 고친 준비 단계(`gc_layer.diff` `0df79ae2`) 위로 통합: `impl/gc_layer_int.diff` `a7600a46`(ln4 대비 4 312줄, 호스트 파일만, 장치 0줄), 충돌 넷, 중복은 헤더 판으로, LATER 기본 1 000, `r->ctrl`은 all-gather 앞; 네 빌드 경고 0, 단위 두 빌드 통과 — 2026-10-17, 커밋 `9dbcabe3`(`impl/notes_int.md`). 통합만 끝났고 1단계와 2a-1은 끝나지 않음
+- [ ] 고침 단계: 1단계와 2a-1 코드 리뷰(`REVIEW_P12.md`)의 막는 문제 8, 고칠 것, nit을 통합 트리 위에서 고침, 부르는 곳 0인 코드 잇기(확인 창, 범위 검사, 생존 READ QP 짝 맺기), 1단계 시험 스위치 넷
+- [ ] 2b mirror 끔 저장소(결정 7)와 2단계 시험 스위치 셋 — 진행 중
+- [ ] 2a-2 호출 자리 연결(링 만들기, seam 본문, 페이지 소비 낱말 묶기, 짝 맺기 wiring; 2a-1 막는 문제 둘을 먼저 닫음)
+- [ ] 3단계 rank 쪽(launcher 짝 맺기, 등록과 무장, 활성화 중계, FENCED 관문의 `launcherPaired`, L의 유도)
+- [ ] 고친 단계마다와 합친 뒤의 독립 재리뷰
+- [ ] 4단계(남은 TCP 코드를 스위치 뒤로), 다시 빌드, 회귀 묶음
 - [x] 실행기, 채점기, 셀 파일, 예측 표 초안(`impl/test/`: cells_gc.json 27셀, predictions_gc.csv 31행, run_gc.sh, hold_gc.sh, launcher_gc.sh, rows_gc.py, score_gc.py, deploy_gc.sh) — 2026-10-17, 합성 로그 자체 시험 39/39, 셸은 bash -n만(`impl/test/notes_test.md`)
-- [ ] 라이브러리 쪽 줄 꼴(notes_test.md의 TODO(p1)–(p3))과 셀 값 TODO 여섯을 3절과 함께 확정한 뒤 시험 쪽 독립 리뷰
-- [ ] 상태 페이지와 펜스, 링과 기록, launcher 단계의 병렬 구현, 빌드, CPU 단위 시험, 기계어 비교, 단계마다 독립 리뷰
-- [ ] 합치기와 증인 단계, 다시 빌드, 회귀 묶음, 독립 리뷰
-- [ ] 실행기, 채점기, 셀 파일, 예측 표 파일
-- [ ] smoke와 pilot(채점 제외), 문턱과 n 고정
+- [x] 시험 쪽 독립 리뷰(저장소 밖 `REVIEW_TEST.md`: 막는 문제 4, 고칠 것 19, nit 21)와 고침: 원격 명령 따옴표, 시험 스위치 셀의 대상 rank, 둘째 죽음 제외 없앰, 두 STOP_launcher 꼴과 launcher QP ERR 규칙, 실제 프로세스 관문 시험, 리뷰가 놓친 결함 하나; 자체 시험 62/62 — 2026-10-17, 커밋 `4eadfe49`. 3절의 `todo` 여섯은 권고 값을 `[초안: 사전 등록 전 확정]`으로 적음, 8절 규칙 반영
+- [ ] 라이브러리가 9.8절의 줄 꼴 열둘을 냄(1–3단계), `gctc` 라이브러리 빌드 단계, `impl/gate_fenced.cc`의 실제 pid 모드
+- [ ] smoke와 pilot(채점 제외), W와 셀 값의 자리 표시, 문턱과 n 고정, 8절 열린 것 둘(9.7절 끝 3, 4)
 - [ ] 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/gin-control-v1` 태그
 - [ ] 본 실행 (`RUNNING`)
 - [ ] 채점과 독립 재계산 (`QA`)
@@ -1070,12 +1192,14 @@ link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려
 | 2026-10-17 | launcher 프로그램(`impl/launcher/`)이 빌드됐다고 조율 세션이 알림: CPU 단위 시험 장면 18, 검사 418, 4/4 실행 통과(ASan, UBSan), verbs 전송은 빌드만 하고 돌리지 않음. `launcher_msg.h` md5 `30a05c7f`(이 문서가 md5를 다시 확인: 같음). 둘째 재검토 5절 launcher 행의 바꿀 것 가운데 여섯(끌 수 없는 pid 검사, 등록마다 상태 낱말과 예비 자리 낱말, rank마다 소비 수, 한 사건 한 말, `NO_EXIT_REPORT`가 FENCED를 끄지 않음, 다른 노드 rank의 Q_Key를 PAIR 본문에)을 적용했고, LATER 뒤 한도는 사용자 결정으로 남김(9.7절 끝 v3 목록 4). 설계 v3와 이 문서는 선 위 배치(봉투 64 B, launcher 말 256 B, 종류 열일곱과 일곱, launcher 페이지 4 KiB, 끝점 40 B)를 그 헤더에 맞췄다. 단위 시험이 잰 pidfd 사실(rain 5.15, n 4)을 9.5절에 옮겼고 로그는 다시 세지 않았다. 이 문서는 시험을 돌리지 않았다 | `impl/launcher/README_launcher.md`, `impl/launcher/launcher_msg.h` |
 | 2026-10-17 | 준비 단계 구현. ln4(`mi_layer.diff` dcd30859) 위의 `impl/gc_layer.diff`(f5061a31, 1 706줄, 호스트 파일만, 장치 코드 0줄). 공유 헤더 `impl/rs_ctrl_api.h`(봉투 64 B, 페이지 낱말, 끝점 판 2, PAIR, REJOIN nrp, 펜스 낱말, 기록 52–55, 매개변수 이름, swap 지점과 주인). `gdakiTsSend` 25곳 가운데 18곳을 `gdakiCtrlSend`로, 증인 7곳은 그대로. `gdakiTsPump` 6곳 가운데 5곳을 `gdakiCtrlPump`로. `gdakiHoldSend` 15곳은 본문 swap으로. `pe.fd` 56곳은 기록 26, 증인 28, back end 2로 나눠 `impl/gc_sites.tsv`에 적음 [측정: 소스]. 재검토의 준비 단계 항목과 launcher 페이지 결정(launcher_msg.h의 glPage 배치를 따름)을 반영. 시험 스위치는 둘째 매크로 `NCCL_GIN_CTRL_TCP_CELLS` 뒤 | `impl/build_gc.sh`, 스크래치 `agent_gc_prep/*_prep.log` |
 | 2026-10-17 | gc, gct, gcp, gctp 빌드됨(경고 0). tcp 빌드의 전처리 결과는 ln4와 줄 수가 같고, 트리 경로와 `__LINE__`을 정규화하면 같다(gct, gctp, gctc 모두 hunk 0) [측정]. 매크로 없는 프로그램 넷의 16 조합과 장치 객체 207개×4가 ln4와 같다. 장치 객체는 다시 빌드되지 않은 사본이다 [측정]. CPU 단위 시험(mi_unit 다섯, rs_unit_host, rs_spare_unit, gc_unit_prep 1 026 745 checks rdma, 7 842 tcp)이 두 빌드에서 실패 0 [측정]. rs_spare_unit은 ln4 때부터 gin-mirror 사유 문자열 7개를 `-include`로 넘겨야 컴파일된다 [측정]. launcher 프로그램 커밋 3323f8f1, 설계 v3 커밋 a0404682. 클러스터 실행 없음 | `pre_prep.log`, `ident_prep.log`, `unit_prep.log` |
-| 2026-10-17 | 사용자 결정(새벽, "추천대로"): 설계 v3가 올린 여덟을 모두 권고대로 닫음(9.7절 끝). 준비 단계와 launcher 코드의 독립 리뷰(저장소 밖 `REVIEW_PREP.md`: 막는 문제 둘(받는 쪽 seam 빠짐: 응답 DONE 기다림, serveWait=0 ACK, MIRROR_SETUP 기다림, 예비 프로세스의 REJOIN_ACK·TOKEN·DONE_RS, 수신 소켓의 REJOIN·DATA, REJOIN FAIL 답; `gdakiCtrlFd` 한 이름이 채널 검사 19곳, poll fd 3곳, 대입 1곳을 묶음), 고칠 것 15, nit 16; tcp 전처리 동일성은 리뷰어가 다시 세어 맞음; 단위 시험 수 부풀림(credit 불변식 백만 회, 등록 oracle 항등 44개) 지적). 고침 에이전트 시작(받기 seam `gdakiCtrlRecv`/`gdakiCtrlRecvOn`과 REJOIN 답 seam, `gdakiCtrlChanUp(r, peer)`/`gdakiCtrlPollFd`/대입으로 가름, launcher의 READ 중 ABORT 버퍼 해제·핸들 재사용·ACCEPTED 뒤 연결 끊김 SIGKILL·AH 캐시). 둘째 매크로 이름을 코드대로 `NCCL_GIN_CTRL_TCP_CELLS`/`gctc`로 통일(문서는 `_EXT`/`gctx`였음). 2단계는 두 번 코드 전에 멈춰(출력 안전 검사) 2a-1(링·credit·짝 맺기 모형과 back end)로 좁혀 다시 시작; 호출 자리 연결은 2a-2, mirror 끔 저장소는 2b. 클러스터 실행 없음 | 이 파일 |
-| 2026-10-17 | 1단계 구현(`impl/gc_layer_p1.diff` 2fc1ad01, 778줄, 호스트만, 장치 0줄; 준비 단계 f5061a31 위). 판정 표 21행 순수 함수를 입력 격자 1 170점에서 독립 참조와 전수 비교: 모두 정확히 한 행, 21행에 닿는 점 0(죽은 행; 통합 때 표에서 "닿지 않음"으로 표시), hold와 거절 행은 모두 floor 규칙의 증거(launcher 끝남, 확인 창 확정, 하드웨어 응답 없음, 멈춤) 중 하나 [측정: 단위 시험]. 확인 창 t_F, t_F + W/2, t_F + W(incNonce, 감싸는 박동 비교), 펜스 낱말 fencedPlus1과 보고 이름(계보 헤더 그대로), 기록 52–55와 PROBE_SETUP 발판, 1단계는 멈춤 거절만, 관문은 순수 함수(launcher 없으면 /proc). 결정 여덟은 한 행이나 매개변수 하나씩. 네 빌드 경고 0, 단위 두 빌드 통과, 장치 207×4와 프로그램 16/16 ln4 동일, gct·gctp 전처리 0 hunk. 커밋 73be8802 | `impl/notes_p1.md`, `impl/gc_unit_p1.cc`, `impl/gate_fenced.cc` |
+| 2026-10-17 | 사용자 결정(새벽, "추천대로"): 설계 v3가 올린 여덟을 모두 권고대로 닫음(9.7절 끝). 준비 단계와 launcher 코드의 독립 리뷰(저장소 밖 `REVIEW_PREP.md`: 막는 문제 둘(받는 쪽 seam 빠짐: 응답 DONE 기다림, serveWait=0 ACK, MIRROR_SETUP 기다림, 예비 프로세스의 REJOIN_ACK, TOKEN, DONE_RS, 수신 소켓의 REJOIN, DATA, REJOIN FAIL 답; `gdakiCtrlFd` 한 이름이 채널 검사 19곳, poll fd 3곳, 대입 1곳을 묶음), 고칠 것 15, nit 16; tcp 전처리 동일성은 리뷰어가 다시 세어 맞음; 단위 시험 수 부풀림(credit 불변식 백만 회, 등록 oracle 항등 44개) 지적). 고침 에이전트 시작(받기 seam `gdakiCtrlRecv`/`gdakiCtrlRecvOn`과 REJOIN 답 seam, `gdakiCtrlChanUp(r, peer)`/`gdakiCtrlPollFd`/대입으로 가름, launcher의 READ 중 ABORT 버퍼 해제, 핸들 재사용, ACCEPTED 뒤 연결 끊김 SIGKILL, AH 캐시). 둘째 매크로 이름을 코드대로 `NCCL_GIN_CTRL_TCP_CELLS`/`gctc`로 통일(문서는 `_EXT`/`gctx`였음). 2단계는 두 번 코드 전에 멈춰(출력 안전 검사) 2a-1(링, credit, 짝 맺기 모형과 back end)로 좁혀 다시 시작; 호출 자리 연결은 2a-2, mirror 끔 저장소는 2b. 클러스터 실행 없음 | 이 파일 |
+| 2026-10-17 | 1단계 구현(`impl/gc_layer_p1.diff` 2fc1ad01, 778줄, 호스트만, 장치 0줄; 준비 단계 f5061a31 위). 판정 표 21행 순수 함수를 입력 격자 1 170점에서 독립 참조와 전수 비교: 모두 정확히 한 행, 21행에 닿는 점 0(죽은 행; 통합 때 표에서 "닿지 않음"으로 표시), hold와 거절 행은 모두 floor 규칙의 증거(launcher 끝남, 확인 창 확정, 하드웨어 응답 없음, 멈춤) 중 하나 [측정: 단위 시험]. 확인 창 t_F, t_F + W/2, t_F + W(incNonce, 감싸는 박동 비교), 펜스 낱말 fencedPlus1과 보고 이름(계보 헤더 그대로), 기록 52–55와 PROBE_SETUP 발판, 1단계는 멈춤 거절만, 관문은 순수 함수(launcher 없으면 /proc). 결정 여덟은 한 행이나 매개변수 하나씩. 네 빌드 경고 0, 단위 두 빌드 통과, 장치 207×4와 프로그램 16/16 ln4 동일, gct, gctp 전처리 0 hunk. 커밋 73be8802 | `impl/notes_p1.md`, `impl/gc_unit_p1.cc`, `impl/gate_fenced.cc` |
 | 2026-10-17 | 2단계는 에이전트가 두 번 코드 전에 멈춰(출력 안전 검사) 2a-1로 좁힘. 2a-1 구현(`impl/gc_layer_p2.diff` d571b977, 1 552줄 추가, 호스트만, 장치 0줄; 준비 단계 f5061a31 pin 위): 링 모형(64칸, 세대 꼬리표 credit, 큐와 inbox 4 096, 세대 바뀜, CONNECTED 전 송신 보류, framing), 짝 맺기 모형(두 종류, 어느 쪽이든 시작, 낮은 rank 우선, launcher에는 rank 우선, 새 PSN, REJOIN 멱등은 HELD만, 다른 QPN은 버림 + GIN/LN 한 줄), verbs back end 29함수(빌드만, 아무 데서도 안 부름; UD AH와 CQ 이벤트 wrapper 넷은 적재된 libibverbs에서 dlsym). gc_unit_p2 rdma 2 781 801 검사 0 실패(세대 바뀜 104회의 credit, inbox 한도, 기록 10 872개가 TCP 길과 바이트 같고 park 같음, 다시 짝 맺기 12 000회) [측정]. 네 빌드 경고 0, 전처리 0 hunk, 장치 동일. 2a-2 필수 순서: 기록 길 켜기 전 페이지의 소비 낱말을 묶어야 함(아니면 한 방향 64개 뒤 멈춤). 커밋 494cd666 | `impl/notes_p2.md`(2a-2 발견 여덟과 리뷰 항목), `impl/gc_unit_p2.cc`, `impl/rs_ctrl_api_p2.diff` |
 | 2026-10-17 | 시험 쪽 초안(`impl/test/`): 셀 파일(7절 27행 ↔ 27 셀, 본 실행 hold C1–C11, pilot hold P0–P4는 채점 안 함, gin-mirror 회귀 hold 여덟을 @gct와 @gc로, 비용 가족), 예측 표(3절 31행; 3절에 수치가 없는 여섯은 todo 열: restore_time_rdma n 5 셀의 k 4, gate_fenced 490–510 ms, regression_rdma의 gin-mirror ID 11개, regression_rdma_mirror_off 셀과 k, kill_judge_rdma 범위, 2 % 문턱), 대조 스크립트(3절 키 31 ↔ 7절 27행), 실행기(노드마다 launcher 먼저, 기록한 PID에만 신호(이름과 부모 확인), SIGSTOP/SIGCONT 지속 측정, fork 자식, 둘째 kill은 모든 생존자 "armed" 뒤, spare를 5 ms 먼저, active_mtu와 RNR 카운터, rank BYE 뒤 launcher 마지막), hold(STOP_launcher, STOP_rnr, STOP_mtu, STOP_async, STOP_left), 행 추출과 채점기(gin-mirror의 rows_mi.py와 score.py를 고치지 않고 적재, smoke와 pilot 분리), 배포 스크립트. launcher 범위는 5절대로 hold마다(시행마다도 선택 가능). 라이브러리가 아직 안 내는 줄 꼴은 notes_test.md 표가 정함. 합성 로그 자체 시험 39/39 통과(로컬 Python) [측정], 셸은 bash -n만. 커밋 afc164ff | `impl/test/notes_test.md`, `impl/test/cells_gc.json`, `impl/test/predictions_gc.csv` |
-| 2026-10-17 | 준비 단계와 launcher 고침(코드 리뷰 반영; `impl/notes_prepfix.md`). 받기 seam `gdakiCtrlRecv`(11896, 12024, 22372)와 `gdakiCtrlRecvOn`(10192, 10235, 10297), REJOIN 답 seam `gdakiCtrlRejoinFail`(8777, 9536); `gdakiCtrlFd` 없애고 `gdakiCtrlChanUp` 19, `gdakiCtrlPollFd` 3, `gdakiCtrlChanInstall` 1, `gdakiCtrlChanGen` 2; 자리 표 149행, tcp 갈래 32개가 ln4 글 그대로임을 `sites`가 검사. 헤더: 확인 창 서명(incarnation 입력, 감싸는 비교), CQ 셈에 launcher 생존 QP, nrp 168 B와 memcpy put/get, CONNECTED 종류 6과 PAIR_STEP_DONE, `gdakiLnFenceOf`, 판정 enum, 문턱 struct와 v3 범위 검사, 생존 QP 소프트웨어 상태(QUERY_QP는 설정과 진단만), 단계마다 하위 블록과 free hook 셋, `gdakiCtrlActFenceOk`. launcher: READ 중 버퍼는 완료 때만 해제, 핸들 일련번호, ACCEPTED 뒤 QP 끊김에 abort 없음, AH를 (GID, LID)로 캐시, `--tc`. 시험 수를 장면마다 한 번으로(준비 rdma 116/366, tcp 48/174; launcher 20 장면 414 검사 3/3) 0 실패; 고침 전 launcher로 돌린 음성 대조는 heap-use-after-free와 lost_accepted 실패 [측정]. 네 빌드 경고 0, gct·gctp·gctc 전처리 0 hunk, 장치 동일. .gitignore의 tsv 허용을 gc_sites.tsv 하나로 좁힘. 1단계와 2a-1은 이 고침 전 준비 단계 위라 옮겨야 함. 커밋 fd4ae2d6 | `impl/notes_prepfix.md`, 스크래치 `agent_gc_prep/*_prepfix2.log`, `launcher_build2/` |
+| 2026-10-17 | 준비 단계와 launcher 고침(코드 리뷰 반영; `impl/notes_prepfix.md`). 받기 seam `gdakiCtrlRecv`(11896, 12024, 22372)와 `gdakiCtrlRecvOn`(10192, 10235, 10297), REJOIN 답 seam `gdakiCtrlRejoinFail`(8777, 9536); `gdakiCtrlFd` 없애고 `gdakiCtrlChanUp` 19, `gdakiCtrlPollFd` 3, `gdakiCtrlChanInstall` 1, `gdakiCtrlChanGen` 2; 자리 표 149행, tcp 갈래 32개가 ln4 글 그대로임을 `sites`가 검사. 헤더: 확인 창 서명(incarnation 입력, 감싸는 비교), CQ 셈에 launcher 생존 QP, nrp 168 B와 memcpy put/get, CONNECTED 종류 6과 PAIR_STEP_DONE, `gdakiLnFenceOf`, 판정 enum, 문턱 struct와 v3 범위 검사, 생존 QP 소프트웨어 상태(QUERY_QP는 설정과 진단만), 단계마다 하위 블록과 free hook 셋, `gdakiCtrlActFenceOk`. launcher: READ 중 버퍼는 완료 때만 해제, 핸들 일련번호, ACCEPTED 뒤 QP 끊김에 abort 없음, AH를 (GID, LID)로 캐시, `--tc`. 시험 수를 장면마다 한 번으로(준비 rdma 116/366, tcp 48/174; launcher 20 장면 414 검사 3/3) 0 실패; 고침 전 launcher로 돌린 음성 대조는 heap-use-after-free와 lost_accepted 실패 [측정]. 네 빌드 경고 0, gct, gctp, gctc 전처리 0 hunk, 장치 동일. .gitignore의 tsv 허용을 gc_sites.tsv 하나로 좁힘. 1단계와 2a-1은 이 고침 전 준비 단계 위라 옮겨야 함. 커밋 fd4ae2d6 | `impl/notes_prepfix.md`, 스크래치 `agent_gc_prep/*_prepfix2.log`, `launcher_build2/` |
 | 2026-10-17 | 1단계와 2a-1 코드의 독립 리뷰(저장소 밖 `REVIEW_P12.md`): 막는 문제 8, 고칠 것 18, nit 16. 1단계: 확인 창(READ1, READ2, t_F + W 판정)과 PROBE_SETUP 보내기를 부르는 곳이 0이라 notes_p1과 앞 12절 행의 "구현"은 틀림(코드는 있으나 살아 있지 않음; 이 행이 정정); 모든 상대의 생존 READ가 scratch 버퍼 하나로 떨어져 박동이 섞임; 분할 막이가 "다른 rank들이 본 p의 정체"가 아니라 "이 rank가 본 다른 상대의 정체"를 견줌(4 rank에서 멈춤 판정 안 나고 고립 때 거짓 멈춤); 500 ms 시한 뒤 READ 재발행으로 SQ 4 넘침과 err 고정(10–12행에 못 닿아 `finless_read_fail` 불가); 원격 접근 오류 아닌 모든 오류 CQE를 하드웨어 응답 없음으로 침(floor 규칙 위반 가능); 감시 스레드가 helper 전용 함수와 펌웨어 명령을 부르고 걸쇠 없음. 2a-1: 짝 맺기 모형에 HELD와 계보 입력이 없어 옛 화신의 PAIR를 받아 RTS로 이음(펜스 불변식 깨짐); 세대 바뀜이 RC가 ACK한 기록과 inbox를 버리고 상대가 시작한 다시 짝 맺기는 라운드 취소를 안 냄(결정 6과 어긋남). 격자 시험의 "독립 참조"는 같은 if 사슬 복사라 독립 아님(리뷰가 행마다 기대 점 수를 적음: 1행 234, 2행 468, 3행 117, 4–9행 39씩, 10행 3, 11행 1, 12행 5, 13–17행 9씩, 18행 36, 19행 9, 20행 18, 21행 0). `gate_fenced.cc`는 넣은 값을 되읽는 모형이라 예측의 시험이 아님. 헤더 LATER 기본값 5 000 대 결정 1 000 충돌. 규칙 준수는 확인됨(장치 0줄, 전처리 0 hunk, 고정 파일 그대로). 통합 뒤 고침 에이전트가 여덟을 닫은 뒤에야 1단계와 2a-1을 끝난 것으로 적는다 | `REVIEW_P12.md`(저장소 밖), 11절 |
+| 2026-10-17 | 1단계와 2a-1의 통합(CPU와 빌드만). 고친 준비 단계(`gc_layer.diff` `0df79ae2`) 위에 1단계와 2a-1을 3-way로 합쳤다. 충돌 넷(1단계 셋: 준비 영역의 "[1] page" 하위 영역, "[3] launcher" 하위 영역 끝, `gdakiCtrlFree`; 2a-1 하나: 준비 영역 끝 뒤의 같은 자리)은 모두 고친 준비 단계 쪽으로 풀거나 둘 다 두었다. 중복은 헤더와 고친 준비 단계 쪽을 남기고 지웠다: 1단계의 판정 enum과 행 함수(표는 헤더 "[1] page" 하위 블록의 `gdakiCtrlJudge`로 옮기고 21행에 "닿지 않음" 주석), `gdakiCtrlConfirmP1`, 1단계의 `gdakiLnFenceOf`, LATER와 launcher 정체 매개변수의 재정의, 두 인자 `gdakiCtrlChanUp` 자리 표시, `gdakiCtrlStateOf`; 2a-1의 `PAIR_STEP_DONE` 정의, 자체 nrp put/get, PAIR 본문으로 실은 CONNECTED(헤더의 봉투 종류 6으로 바꿈). 헤더 `rs_ctrl_api.h`는 `998b493b` → `948b3ecf`(판정 표 몸, LATER 기본 5 000 → 1 000). 코드 리뷰의 통합 항목 가운데 `r->ctrl`을 all-gather 앞으로(9.6절, 이 문서의 선택으로 적음), 단계 영역을 하위 영역 안으로, 생존 READ `wr_id`에 세대, 페이지 배치의 `nLaunchers` 칸을 반영했다. 확인: 네 빌드(gc, gcp, gct, gctp) 빌드됨, 경고 0; `pre`는 gct, gctp가 ln4와 0 hunk, gctc는 RST 간격 매개변수만큼 2 hunk 3줄(뜻한 대로); `api`, `syn`, `sites`(149행, tcp 갈래 33개가 ln4 글 그대로) 통과; 단위 시험 두 빌드 통과(`gc_unit_prep` rdma 366, tcp 174 검사; `gc_unit_p1` 84 672 검사, 격자 1 170점에서 21행 0점; `gate_fenced` 10/10은 시간표 모형; `gc_unit_p2` 2 781 807 검사; gin-mirror와 gin-restore의 일곱 실패 0; n 1); `ident`는 매크로 없는 프로그램 16/16과 장치 객체 207개 × 4가 같음(다시 빌드하지 않은 사본) `[측정: 통합 에이전트의 보고 impl/notes_int.md와 logs_int/*; 이 문서에서 다시 돌리지 않음]`. 부르는 곳이 0인 코드: 1단계의 확인 창(`gdakiCtrlWofConfirm`, `gdakiCtrlConfirmW`), `gdakiCtrlActGate`, `gdakiCtrlProbeSetupSend`, 헤더의 `gdakiCtrlConfirmVerdict`와 `gdakiCtrlThresholdsOk`, 2a-1의 모형과 뒤끝 전부(`r->ctrl->ring`은 늘 비어 있음); `gdakiCtrlActFenceOk`는 `launcherPaired = false`라 늘 참. 코드 리뷰의 막는 문제 8은 통합 몫이 아니라 고치지 않았고, 그래서 1단계와 2a-1은 끝나지 않았다. 산출물 `impl/gc_layer_int.diff` `a7600a46`(ln4 커밋 대비 4 312줄, 호스트 파일 하나, 장치 0줄). 이 문서는 9.3절 21행을 "닿지 않음"으로, 9.4–9.6, 9.8절을 이 상태에 맞췄다. 클러스터 실행 없음. 커밋 `9dbcabe3` | `impl/notes_int.md`, `impl/gc_layer_int.diff` |
+| 2026-10-17 | 시험 쪽 독립 리뷰(저장소 밖 `REVIEW_TEST.md`: 막는 문제 4, 고칠 것 19, nit 21)와 고침. 막는 문제: sunny `active_mtu` 조회의 원격 따옴표(새 `remote_gc.sh`), 시험 스위치 셀 아홉의 대상 rank(`SUBJECT_RANK`, 7절), 둘째 죽음 제외(조율 세션 결정으로 `@gct`, `@gc` 모두 gin-mirror 8절 규칙: 빼지 않고 조건 불충족으로 셈), hold 쪽 STOP_launcher 두 꼴과 시험 스위치 밖 launcher QP ERR 규칙. 고칠 것: 실제 프로세스 관문 시험(`gate_proc_gc.py`), 노드 사이 시계 차, fd 자식을 PID로 끄기, launcher 시작 실패 때 정리, 시행 표지로 자른 launcher 조각, 자료 부족 규칙, 설정 다름(launcher env, W, READ 주기), 첫 체크포인트 전 제외 넓힘, 짝 kill 5 ms(`inject_late`), `ss` 스냅숏, pilot 폴더 규칙 등. 반영하지 않은 것: nit 3, 18(문서 몫; 이 문서의 8, 9.1, 9.5, 9.9절에서 고침), nit 7(사전 등록 결정, 9.7절 끝 열린 것 4), nit 21(`gctc` 라이브러리 단계, `build_gc.sh` 몫). 3절에 수치나 목록이 없던 여섯은 리뷰 권고 값(D3–D8)을 예측 표 파일에 넣었고 이 문서 3절에 `[초안: 사전 등록 전 확정]`으로 적었다. D1(launcher는 hold마다, 시행 시작 때 등록 표 검사)과 D2(둘째 죽음은 빼지 않음)는 조율 세션 결정이다. 리뷰가 놓친 결함 하나를 자체 시험이 찾았다: 펜스로 끝난 대상(실행기 kill 없음)을 gin-mirror 열이 살아 있는 rank로 쳐서 펜스 셀 셋의 데이터 같음 열이 늘 0이었고, 펜스로 끝난 대상을 kill된 rank로 세도록 고쳤다(`rows_gc.py`). 자체 시험 39 → 62 검사, 실패 0(로컬 Python), `check_cells_gc.py` ok, 셸 여덟은 `bash -n`만(shellcheck 없음) `[측정: notes_test.md의 고침 기록; 이 문서는 시험을 다시 돌리지 않음]`. `gate_proc_gc.py`를 로컬(커널 5.15)에서 3회 돌린 smoke: Z 0.39–0.40 ms, 둘째 thread 끝 500.04–500.52 ms, pidfd 읽힘 500.69–501.17 ms(n 3, smoke라 본 실험에 들지 않음; 관문 시각은 `gate_fenced.cc`의 pid 모드가 없어 아직 없음) `[측정: 같은 기록]`. 이 문서는 3, 7, 8절을 고친 뒤 `check_cells_gc.py`를 돌려 ok를 보았다 `[측정]`. 클러스터 실행 없음. 커밋 `4eadfe49` | `impl/test/notes_test.md`(고침), `impl/test/predictions_gc.csv`, `impl/test/cells_gc.json`, `REVIEW_TEST.md`(저장소 밖) |
 
 ## 13. 사전 등록 이후 변경
 
