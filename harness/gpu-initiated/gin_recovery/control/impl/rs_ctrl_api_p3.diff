@@ -1,0 +1,79 @@
+--- a/rs_ctrl_api.h
++++ b/rs_ctrl_api.h
+@@ -941,6 +941,40 @@
+ static_assert(sizeof(struct gdakiCtrlXferHdr) == 64, "an outbox transfer's head is 64 bytes");
+ // ---- [2] ring (end) ----
+ // ---- [3] launcher: the rank side of the launcher (begin) ----
++// Phase 3 (impl/notes_p3.md). The launcher's wire is launcher/launcher_msg.h; the host file pastes it byte for byte at the
++// head of its region "gin-control (launcher)" (build_gc_p3.sh `api` compares the two). What the rank side adds:
++#define GDAKI_CTRL_LA_SPARE_INC_ENV "NCCL_GIN_RESTORE_SPARE_INC"  // a spare's incarnation for its HELLO (default 1)
++#define GDAKI_CTRL_LA_ANSWER_MS 1000  // the launcher QP's first answer to an ACTIVATE, software (design v3 5.2: 1 000 ms)
++// The launcher-path spare registration in STORE_REQ's tail (design v3 5.4 1, decision 10): the 32 bytes of
++// gdakiStoreReqSpare::spareAddr carry it; its pid and pidStart are 0 (the launcher holds the pidfd of (rank, inc)).
++// Version 1 of the registration was ln4's (a socket address, the PID, the start time).
++#define GDAKI_CTRL_LA_SPAREREG_MAGIC 0x4c535247u  // "GRSL" in memory order
++#define GDAKI_CTRL_LA_SPAREREG_VERSION 2u
++#define GDAKI_CTRL_LA_PATH_LAUNCHER 1u
++#define GDAKI_CTRL_LA_REG_F_PATH 0x1u  // the arming view's path existed (gl_path_exists) when the tail was written
++struct gdakiCtrlLaSpareReg {
++  uint32_t magic;    // GDAKI_CTRL_LA_SPAREREG_MAGIC
++  uint32_t version;  // GDAKI_CTRL_LA_SPAREREG_VERSION
++  uint32_t path;     // GDAKI_CTRL_LA_PATH_LAUNCHER
++  uint32_t node;     // the registering rank's node launcher
++  int32_t rank;
++  uint32_t inc;      // the registered incarnation (the spare's is inc + 1)
++  uint32_t flags;    // GDAKI_CTRL_LA_REG_F_*
++  uint32_t rsv;
++};
++static_assert(sizeof(struct gdakiCtrlLaSpareReg) == 32, "the launcher-path registration fits gdakiStoreReqSpare::spareAddr");
++// The buddy's check of a ward's registration: launcher path, the ward and the dead incarnation, the path flag.
++static inline bool gdakiCtrlLaSpareRegOk(const struct gdakiCtrlLaSpareReg& g, int rank, uint32_t dead) {
++  return g.magic == GDAKI_CTRL_LA_SPAREREG_MAGIC && g.version == GDAKI_CTRL_LA_SPAREREG_VERSION &&
++         g.path == GDAKI_CTRL_LA_PATH_LAUNCHER && g.rank == rank && g.inc == dead && (g.flags & GDAKI_CTRL_LA_REG_F_PATH) != 0 &&
++         g.rsv == 0;
++}
++// The activation record through a launcher carries FENCED (EXPERIMENT.md 9.4: the spare does not look at /proc): its
++// `reserved` is the fence word of the dead incarnation, dead + 1 = the new incarnation; pid and pidStart are 0.
++static inline uint64_t gdakiCtrlLaActFencedMark(uint32_t newInc) { return gdakiCtrlFenceWord(newInc - 1u); }
++static inline bool gdakiCtrlLaActFencedOk(uint64_t reserved, uint32_t newInc) {
++  return newInc != 0 && gdakiCtrlFencedIs(reserved, newInc - 1u);
++}
+ // ---- [3] launcher (end) ----
+ #endif  // !NCCL_GIN_CTRL_TCP
+ // ---- gin-control: ctrl API (end) ----
+@@ -1060,6 +1094,35 @@
+ // ---- [2] ring: entry points (begin) ----
+ // ---- [2] ring (end) ----
+ // ---- [3] launcher: entry points (begin) ----
++// Phase 3 (impl/notes_p3.md): what the host file's ln4 lines and the other phases' regions call; the bodies are in the
++// region "gin-control (launcher)".
++struct gdakiRsActivate;  // the host file
++struct gdakiMiActBlob;   // the host file
++// gdakiTsStart (setup thread): REGISTER (a rank) or SPARE_HELLO (a spare) on the node's launcher socket.
++static void gdakiCtrlLauncherSetup(struct gdakiRecHost* r);
++// Before the witness's BYE (the communicator ends): LEAVING on the registering connection.
++static void gdakiCtrlLauncherLeaving(struct gdakiRecHost* r);
++// [2a-2 calls it] one envelope that came from a launcher (from = GDAKI_CTRL_FROM_LAUNCHER | node): a PAIR or PAIR_ACK on
++// the UD QP (ud), a launcher message on that launcher's record QP (else); `body` is the 256 B glMsg.
++static void gdakiCtrlLauncherOnEnvelope(struct gdakiRecHost* r, const struct gdakiCtrlEnv* e, const void* body, bool ud);
++// The rdma build's haveSpare (the arming's second half): launcher_msg.h's gl_path_exists for this incarnation.
++static bool gdakiCtrlLaHaveSpare(struct gdakiRecHost* r);
++// STORE_REQ's spare registration (the 32 B of gdakiStoreReqSpare::spareAddr): struct gdakiCtrlLaSpareReg.
++static void gdakiCtrlLaSpareRegFill(struct gdakiRecHost* r, void* out32);
++// The buddy's decision: the ward's registration is the launcher path's for (peer, dead); false with why.
++static bool gdakiCtrlLaSpareRegCheck(struct gdakiRecHost* r, const void* reg32, int peer, uint32_t dead, char* why,
++                                     size_t whyLen);
++// The buddy's fence (design v3 4.4 3): FENCE to the dead rank's launcher once all HOLDINGs are in; 1 fenced, 0 not yet,
++// -1 fall back (FENCE_NAK, no launcher path, the launcher lost). *word: the fence word of `peer`.
++static int gdakiCtrlLaFenceStep(struct gdakiRecHost* r, int peer, uint32_t dead, uint64_t* word);
++// The buddy's activation through the launcher (one helper step; gdakiHoldActivateSend's rdma body).
++static void gdakiCtrlLaActivateSend(struct gdakiRecHost* r, int peer, const struct gdakiRsActivate& a, uint32_t dead,
++                                    double now);
++// The spare: READY, then the ACTIVATE bytes from its launcher; *actFd the FETCH talk's end (mirror or store on), or -1.
++static ncclResult_t gdakiCtrlLaSpareWait(struct gdakiRecHost* r, int waitMs, bool mi, struct gdakiRsActivate* act,
++                                         int* actFd, struct gdakiMiActBlob* blob);
++// The spare after its FETCH (ok) or a failure: the relay ends; ok: REGISTER of the new incarnation (the revived rank).
++static void gdakiCtrlLaSpareDone(struct gdakiRecHost* r, bool ok);
+ // ---- [3] launcher (end) ----
+ #endif  // GDAKI_CTRL_API_NO_ENTRY_DECLS
+ #endif  // NCCL_GIN_CTRL_TCP
