@@ -52,6 +52,7 @@ static double gdakiQ4MonoMs() {
 #include "rs_ckpt_api.h"
 #include "rs_store_api.h"
 #include "rs_spare_api.h"
+#include "rs_lineage_api.h"  // the lineage's verdict the pairing takes (REVIEW_P12 막는 문제 7)
 
 namespace ln4 {
 #include "gc_ln4_sock.inc"
@@ -91,19 +92,26 @@ struct NicSide {
   std::deque<Cqe> cq;
   std::vector<std::vector<uint8_t>> slots;  // the ring slots' memory
   uint64_t rnr = 0, maxInbox = 0, maxDeferred = 0;
+  bool err = false;                          // this side's QP is in ERR (REVIEW_P12 고칠 것 17: one side alone)
+  std::vector<uint64_t> landed;              // records of each generation that landed here (RC ACKed them)
 };
+// A post to a QP in ERR succeeds and completes at once with a flush (verbs' rule), behind what is in the CQ.
 static int nicPostSend(void* ctx, int, uint32_t gen, uint32_t sslot, const uint8_t* frame, uint32_t bytes) {
   NicSide* s = (NicSide*)ctx;
-  s->sq.push_back({gen, sslot, std::vector<uint8_t>(frame, frame + bytes)});
+  if (s->err) s->cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_SEND, 0, gen, sslot), false, 0, 0});
+  else s->sq.push_back({gen, sslot, std::vector<uint8_t>(frame, frame + bytes)});
   return 0;
 }
 static int nicPostRecv(void* ctx, int, uint32_t gen, uint32_t slot) {
   NicSide* s = (NicSide*)ctx;
-  s->rq.push_back({gen, slot});
+  if (s->err) s->cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_RECV, 0, gen, slot), false, 0, 0});
+  else s->rq.push_back({gen, slot});
   return 0;
 }
 static int nicReadCredit(void* ctx, int, uint32_t gen) {
-  ((NicSide*)ctx)->reads.push_back(gen);
+  NicSide* s = (NicSide*)ctx;
+  if (s->err) s->cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_READ_CREDIT, 0, gen, 0), false, 0, 0});
+  else s->reads.push_back(gen);
   return 0;
 }
 struct Nic {
@@ -127,11 +135,18 @@ struct Nic {
     for (const auto& x : b.rq) recvs += x.gen == b.p.gen;
     if (a.p.gen == b.p.gen) CHECK(recvs >= sends);
   }
-  // one SEND of side `from` lands (false: nothing in flight)
+  // one SEND of side `from` lands (false: nothing in flight); toward a QP in ERR it ends in error at the sender (the
+  // retry exceeded of a dead peer, much later in time)
   bool deliver(int from) {
     NicSide& a = s[from];
     NicSide& b = s[1 - from];
     if (a.sq.empty()) return false;
+    if (b.err) {
+      const NicSide::Sq x = a.sq.front();
+      a.sq.pop_front();
+      a.cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_SEND, 0, x.gen, x.sslot), false, 0, 0});
+      return true;
+    }
     checkCover(from);
     if (b.rq.empty()) {  // RNR: the sender would retry rnr_retry (3) times and go to ERR
       a.rnr++;
@@ -143,6 +158,12 @@ struct Nic {
     b.rq.pop_front();
     CHECK(x.gen == y.gen);  // one QP generation at both ends
     memcpy(b.slots[y.slot].data(), x.frame.data(), x.frame.size());
+    struct gdakiCtrlEnv e;
+    memcpy(&e, x.frame.data(), sizeof(e));
+    if (e.kind == GDAKI_CTRL_K_RECORD) {
+      if (b.landed.size() <= y.gen) b.landed.resize(y.gen + 1, 0);
+      b.landed[y.gen]++;
+    }
     b.cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_RECV, 0, y.gen, y.slot), true, (uint32_t)x.frame.size(), 0});
     a.cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_SEND, 0, x.gen, x.sslot), true, 0, 0});
     return true;
@@ -172,23 +193,34 @@ struct Nic {
       a.maxDeferred = std::max<uint64_t>(a.maxDeferred, a.p.deferred.size());
     }
   }
-  // ERR: everything posted completes with a flush (behind what is already in the CQ)
-  void toErr() {
-    for (int i = 0; i < 2; i++) {
-      NicSide& a = s[i];
-      for (const auto& y : a.rq) a.cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_RECV, 0, y.gen, y.slot), false, 0, 0});
-      for (const auto& x : a.sq) a.cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_SEND, 0, x.gen, x.sslot), false, 0, 0});
-      for (uint32_t g : a.reads) a.cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_READ_CREDIT, 0, g, 0), false, 0, 0});
-      a.rq.clear();
-      a.sq.clear();
-      a.reads.clear();
-    }
+  // ERR of one side: everything it posted completes with a flush (behind what is already in its CQ)
+  void toErrSide(int i) {
+    NicSide& a = s[i];
+    for (const auto& y : a.rq) a.cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_RECV, 0, y.gen, y.slot), false, 0, 0});
+    for (const auto& x : a.sq) a.cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_SEND, 0, x.gen, x.sslot), false, 0, 0});
+    for (uint32_t g : a.reads) a.cq.push_back({gdakiCtrlWrId(GDAKI_CTRL_WR_READ_CREDIT, 0, g, 0), false, 0, 0});
+    a.rq.clear();
+    a.sq.clear();
+    a.reads.clear();
+    a.err = true;
   }
-  // the pairing of generation g (initiator `ini`): each side starts g, collects its old completions until its K RECVs can
-  // go (the ring refuses before), posts them, goes RTS; the initiator's CONNECTED goes first
+  void toErr() {
+    toErrSide(0);
+    toErrSide(1);
+  }
+  // the pairing of generation g (initiator `ini`): each side's Prepare moves its QP to ERR (if it is not yet), then
+  // either collects its completions while they are still the current generation's (the back end's order) or starts
+  // g first and collects them as the old generation's (both orders must deliver what RC ACKed), posts its K RECVs and
+  // goes RTS; the initiator's CONNECTED goes first
   void pairing(uint32_t g, int ini, std::mt19937_64& rng) {
     for (int i = 0; i < 2; i++) {
+      if (!s[i].err) toErrSide(i);
+      if (rng() % 2) {
+        while (!s[i].cq.empty()) collect(i, 1 + (int)(rng() % 4));
+        CHECK(gdakiCtrlRingOutstanding(&s[i].p) == 0);
+      }
       gdakiCtrlRingNewGen(&s[i].p, g, i == ini);
+      s[i].err = false;  // RESET -> INIT: posts go to the QP again
       int guard = 0;
       while (gdakiCtrlRingPostInitial(&s[i].p, s[i].ops) < 0 && guard++ < 100000) collect(i, 1 + (int)(rng() % 4));
       CHECK(gdakiCtrlRingOldRecvs(&s[i].p) == 0 && s[i].rq.size() == GDAKI_CTRL_RING_SLOTS);
@@ -197,20 +229,47 @@ struct Nic {
   }
 };
 
-// ---- the credit model: random batches, re-posting, generation changes ----
-// Both directions carry numbered records (the number in `round`); per generation each side's taken records are a prefix
-// of what the other side posted in it, in order, each once, with its bytes; at the end of a run (no change) everything
-// enqueued in the last generation arrived. Older generations' completions are dropped, never taken.
+// ---- the credit model: random batches, re-posting, generation changes (REVIEW_P12 막는 문제 8, 고칠 것 17) ----
+// Both directions carry numbered records; the expectations are never cleared at a generation change. Per generation each
+// side's taken records are a prefix of what the other side posted in it, in order, each once, with its bytes; every
+// record that landed (RC ACKed it) is taken, in an older generation too; the pump says -1 exactly once per generation
+// change at each side, after that generation's records; at the end (no change) everything of the last generation
+// arrived. A change is an ERR of both sides or of one side alone (the other's QP stays RTS, its SENDs fail, and it learns
+// of the change only from the re-pairing the ERR side starts: the peer-initiated case).
 static void testCredit(std::mt19937_64& rng) {
-  uint64_t taken = 0, oldCqes = 0, oldTaken = 0, reads = 0, genChanges = 0, dropped = 0;
+  uint64_t taken = 0, takenOld = 0, oldCqes = 0, reads = 0, genChanges = 0, oneSided = 0, dropped = 0, losses = 0;
   for (int run = 0; run < 60; run++) {
     Nic nic(0x1234567800000000ull + (uint64_t)run);
     uint32_t g = 1;
     nic.pairing(g, (int)(rng() % 2), rng);
-    // per side: what it enqueued in the current generation (bytes as they must arrive) and what it took
-    std::vector<std::vector<uint8_t>> sentG[2];
-    size_t gotG[2] = {0, 0};
+    std::vector<std::vector<std::vector<uint8_t>>> sentG[2];  // [side][gen]: what it enqueued in that generation
+    std::vector<size_t> gotG[2];                               // [side][gen]: how many of the other's it took
+    uint64_t lossN[2] = {0, 0};
+    for (int i = 0; i < 2; i++) {
+      sentG[i].resize(2);
+      gotG[i].assign(2, 0);
+    }
     uint64_t nextId = 1;
+    auto popAll = [&](int i, int maxN) {
+      NicSide& a = nic.s[i];
+      struct gdakiCtrlInEnt e;
+      int r = 0;
+      for (int k = maxN; k > 0 && (r = gdakiCtrlRingPop(&a.p, a.ops, &e)) != 0; k--) {
+        if (r < 0) {
+          lossN[i]++;
+          continue;
+        }
+        const uint32_t eg = e.env.gen;
+        CHECK(e.env.kind == GDAKI_CTRL_K_RECORD && eg >= 1 && eg <= g);
+        CHECK(eg > lossN[i]);  // the k-th -1 ends generation k: nothing of it after (TCP's FIN)
+        if (eg < 1 || eg > g) continue;
+        const std::vector<std::vector<uint8_t>>& want = sentG[1 - i][eg];
+        CHECK(gotG[i][eg] < want.size() && memcmp(e.body, want[gotG[i][eg]].data(), sizeof(ln4::gdakiTsMsg)) == 0);
+        gotG[i][eg]++;
+        taken++;
+        takenOld += eg != a.p.gen;
+      }
+    };
     const int steps = 4000 + (int)(rng() % 4000);
     for (int step = 0; step < steps; step++) {
       const int i = (int)(rng() % 2);
@@ -226,34 +285,44 @@ static void testCredit(std::mt19937_64& rng) {
             if (gdakiCtrlRingEnqueue(&a.p, GDAKI_CTRL_K_RECORD, &m, sizeof(m)) != 0) break;
             m.magic = GDAKI_TS_MAGIC;
             const uint8_t* b = (const uint8_t*)&m;
-            sentG[i].emplace_back(b, b + sizeof(m));
+            sentG[i][g].emplace_back(b, b + sizeof(m));
           }
           break;
         }
         case 2: gdakiCtrlRingKick(&a.p, a.ops, (double)step); break;
         case 3: for (int k = (int)(rng() % 30); k > 0 && nic.deliver(i); k--) {} break;
         case 4: nic.collect(i, 1 + (int)(rng() % 50)); break;
-        case 5: {  // the application reads a batch of the inbox
-          struct gdakiCtrlInEnt e;
-          for (int k = (int)(rng() % 50); k > 0 && gdakiCtrlRingPop(&a.p, a.ops, &e) == 1; k--) {
-            CHECK(e.env.gen == a.p.gen && e.env.kind == GDAKI_CTRL_K_RECORD);
-            if (e.env.gen != a.p.gen) oldTaken++;
-            const std::vector<std::vector<uint8_t>>& want = sentG[1 - i];
-            CHECK(gotG[i] < want.size() && memcmp(e.body, want[gotG[i]].data(), sizeof(ln4::gdakiTsMsg)) == 0);
-            gotG[i]++;
-            taken++;
-          }
-          break;
-        }
+        case 5: popAll(i, (int)(rng() % 50)); break;
         case 6: nic.readDone(i); break;
         default:
-          if (rng() % 400 == 0) {  // ERR and a new pairing (either side starts)
-            nic.toErr();
+          if (rng() % 400 == 0) {  // ERR of both or of one side, then a new pairing (the ERR side starts it)
+            const int who = (int)(rng() % 3);
+            if (who == 2) {
+              nic.toErr();
+            } else {
+              nic.toErrSide(who);
+              oneSided++;
+              for (int k = (int)(rng() % 200); k > 0; k--) {  // the other side goes on in the old generation a while
+                const int j = 1 - who;
+                ln4::gdakiTsMsg m;
+                fillRandom(&m, rng, 2);
+                m.round = nextId++;
+                if (rng() % 3 == 0 && gdakiCtrlRingEnqueue(&nic.s[j].p, GDAKI_CTRL_K_RECORD, &m, sizeof(m)) == 0) {
+                  m.magic = GDAKI_TS_MAGIC;
+                  const uint8_t* b = (const uint8_t*)&m;
+                  sentG[j][g].emplace_back(b, b + sizeof(m));
+                }
+                gdakiCtrlRingKick(&nic.s[j].p, nic.s[j].ops, (double)step);
+                nic.deliver(j);
+                nic.collect(j, 1 + (int)(rng() % 8));
+                popAll(j, 4);
+              }
+            }
             dropped += nic.s[0].p.q.size() + nic.s[1].p.q.size();
-            nic.pairing(++g, (int)(rng() % 2), rng);
+            nic.pairing(++g, who == 2 ? (int)(rng() % 2) : who, rng);
             for (int k = 0; k < 2; k++) {
-              sentG[k].clear();
-              gotG[k] = 0;
+              sentG[k].resize(g + 1);
+              gotG[k].resize(g + 1, 0);
             }
             genChanges++;
           }
@@ -270,29 +339,34 @@ static void testCredit(std::mt19937_64& rng) {
         while (nic.readDone(i)) any = true;
         if (!a.cq.empty()) any = true;
         nic.collect(i, 1 << 20);
-        struct gdakiCtrlInEnt e;
-        while (gdakiCtrlRingPop(&a.p, a.ops, &e) == 1) {
-          const std::vector<std::vector<uint8_t>>& want = sentG[1 - i];
-          CHECK(gotG[i] < want.size() && memcmp(e.body, want[gotG[i]].data(), sizeof(ln4::gdakiTsMsg)) == 0);
-          gotG[i]++;
-          taken++;
-          any = true;
-        }
+        const uint64_t before = taken + lossN[i];
+        popAll(i, 1 << 30);
+        any |= taken + lossN[i] != before;
       }
       if (!any && nic.s[0].p.q.empty() && nic.s[1].p.q.empty()) break;
     }
     for (int i = 0; i < 2; i++) {
-      CHECK(gotG[i] == sentG[1 - i].size());  // nothing lost, nothing twice in the last generation
-      CHECK(nic.s[i].rnr == 0 && !nic.s[i].p.lost);
-      CHECK(nic.s[i].p.sent - nic.s[i].p.peerConsumed <= GDAKI_CTRL_RING_SLOTS);
-      oldCqes += nic.s[i].p.oldRecvCqes + nic.s[i].p.oldSendCqes;
-      reads += nic.s[i].p.creditReads;
+      NicSide& a = nic.s[i];
+      for (uint32_t x = 1; x < g; x++) {  // an older generation: every record RC ACKed is taken, nothing more
+        const uint64_t land = x < a.landed.size() ? a.landed[x] : 0;
+        CHECK(gotG[i][x] == land);
+      }
+      CHECK(gotG[i][g] == sentG[1 - i][g].size());  // the last generation: everything
+      CHECK(lossN[i] == g - 1);                     // -1 exactly once per change, either side's start
+      CHECK(a.rnr == 0 && !a.p.lost);
+      CHECK(a.p.sent - a.p.peerConsumed <= GDAKI_CTRL_RING_SLOTS);
+      oldCqes += a.p.oldRecvCqes + a.p.oldSendCqes;
+      reads += a.p.creditReads;
+      losses += lossN[i];
+      CHECK(a.p.oldDropped == 0);
     }
   }
-  CHECK(oldTaken == 0 && genChanges > 0 && oldCqes > 0 && reads > 0);
-  printf("credit: %llu records taken, %llu generation changes, %llu old-generation completions dropped, %llu queued "
-         "dropped at a change, %llu consumed-word READs (window shut); RNR 0\n",
-         (unsigned long long)taken, (unsigned long long)genChanges, (unsigned long long)oldCqes,
+  CHECK(genChanges > 0 && oneSided > 0 && oldCqes > 0 && reads > 0 && takenOld > 0);
+  printf("credit: %llu records taken (%llu of them of an older generation after the change), %llu generation changes "
+         "(%llu with one side in ERR), %llu loss events (one per change and side), %llu old-generation completions, "
+         "%llu queued records dropped at a change (not ACKed), %llu consumed-word READs; every ACKed record taken; RNR 0\n",
+         (unsigned long long)taken, (unsigned long long)takenOld, (unsigned long long)genChanges,
+         (unsigned long long)oneSided, (unsigned long long)losses, (unsigned long long)oldCqes,
          (unsigned long long)dropped, (unsigned long long)reads);
 }
 
@@ -584,7 +658,7 @@ struct PairNet {
     CHECK(gdakiCtrlPairBodyOk(d.b, s.id, 0x5eedull));
     if (d.b.step == GDAKI_CTRL_PAIR_STEP_PAIR) {
       const bool prepared = s.st.state == GDAKI_CTRL_PS_STARTED && s.st.mine == d.b.gen;
-      const uint32_t a = gdakiCtrlPairOnPair(&s.st, d.b.gen, d.b.incarnation, now);
+      const uint32_t a = gdakiCtrlPairOnPair(&s.st, d.b.gen, d.b.incarnation, true, &d.b.qp, now);
       if (a == GDAKI_CTRL_PA_TAKE) {
         CHECK(s.st.reusedMine == prepared);
         if (s.st.reusedMine) s.reuses++;
@@ -598,7 +672,7 @@ struct PairNet {
         act(i, a, now);
       }
     } else if (d.b.step == GDAKI_CTRL_PAIR_STEP_ACK) {
-      const uint32_t a = gdakiCtrlPairOnAck(&s.st, d.b.gen, d.b.incarnation);
+      const uint32_t a = gdakiCtrlPairOnAck(&s.st, d.b.gen, d.b.incarnation, true);
       if (a == GDAKI_CTRL_PA_CONNECT) {
         CHECK(s.qpGen == s.st.cur);
         s.remoteQpn = d.b.qp.qpn;
@@ -610,7 +684,7 @@ struct PairNet {
         act(i, a, now);
       }
     } else {
-      (void)gdakiCtrlPairOnDone(&s.st, d.b.gen);
+      (void)gdakiCtrlPairOnDone(&s.st, d.b.gen, d.b.incarnation, true);
     }
   }
   // run until both are UP and the network is quiet (or the bound)
@@ -692,7 +766,7 @@ static void testPairing(std::mt19937_64& rng) {
       pn.net.clear();
       CHECK(pn.agreed() && pn.side[0].st.cur == cur && pn.side[1].st.cur == cur);
       // another incarnation's PAIR(cur + 1): dropped
-      CHECK(gdakiCtrlPairOnPair(&pn.side[0].st, cur + 1, pn.side[1].inc - 1, now) == GDAKI_CTRL_PA_DROP);
+      CHECK(gdakiCtrlPairOnPair(&pn.side[0].st, cur + 1, pn.side[1].inc - 1, true, nullptr, now) == GDAKI_CTRL_PA_DROP);
       CHECK(pn.side[0].st.cur == cur && pn.side[0].st.droppedInc > 0 && pn.agreed());
     }
     for (int i = 0; i < 2; i++) {
@@ -702,7 +776,9 @@ static void testPairing(std::mt19937_64& rng) {
     lostN += pn.lost;
     sentN += pn.sent;
   }
-  CHECK(crossings > 0 && reuses > 0 && ok * 10 > runs * 9);
+  // every re-pairing agreed unless the network lost 30 % or more (checked per run above; REVIEW_P12 고칠 것 17: no 90 %
+  // pass line)
+  CHECK(crossings > 0 && reuses > 0 && ok + gaveUp >= runs && ok > 0);
   // the rules one by one: the crossing, the rank against a launcher, the resend and the bound
   struct gdakiCtrlPairSt lo, hi, ln;
   gdakiCtrlPairInit(&lo, GDAKI_CTRL_PAIR_QP_RECORD, 1, 2);
@@ -710,13 +786,80 @@ static void testPairing(std::mt19937_64& rng) {
   gdakiCtrlPairInit(&ln, GDAKI_CTRL_PAIR_QP_RECORD, 2, (int32_t)(GDAKI_CTRL_FROM_LAUNCHER | 0));
   CHECK(gdakiCtrlPairStart(&lo, 0, 1000) == GDAKI_CTRL_PA_SEND_PAIR && gdakiCtrlPairStart(&hi, 0, 1000) == GDAKI_CTRL_PA_SEND_PAIR);
   CHECK(gdakiCtrlPairStart(&lo, 1, 1000) == GDAKI_CTRL_PA_NONE);  // started already: the same attempt
-  CHECK(gdakiCtrlPairOnPair(&lo, 1, 0, 1) == GDAKI_CTRL_PA_DROP);  // the lower keeps its own
-  CHECK(gdakiCtrlPairOnPair(&hi, 1, 0, 1) == GDAKI_CTRL_PA_TAKE && hi.reusedMine);
+  CHECK(gdakiCtrlPairOnPair(&lo, 1, 0, true, nullptr, 1) == GDAKI_CTRL_PA_DROP);  // the lower keeps its own
+  CHECK(gdakiCtrlPairOnPair(&hi, 1, 0, true, nullptr, 1) == GDAKI_CTRL_PA_TAKE && hi.reusedMine);
   CHECK(gdakiCtrlPairStart(&ln, 0, 1000) == GDAKI_CTRL_PA_SEND_PAIR);
-  CHECK(gdakiCtrlPairOnPair(&ln, 1, 0, 1) == GDAKI_CTRL_PA_DROP);  // the rank's PAIR wins against the launcher's
+  CHECK(gdakiCtrlPairOnPair(&ln, 1, 0, true, nullptr, 1) == GDAKI_CTRL_PA_DROP);  // the rank's PAIR wins
   CHECK(gdakiCtrlPairTick(&lo, 499) == GDAKI_CTRL_PA_NONE && gdakiCtrlPairTick(&lo, 500) == GDAKI_CTRL_PA_RESEND_PAIR);
   CHECK(gdakiCtrlPairTick(&lo, 1000) == GDAKI_CTRL_PA_GIVE_UP && lo.state == GDAKI_CTRL_PS_GAVE_UP);
-  CHECK(gdakiCtrlPairOnAck(&lo, 1, 0) == GDAKI_CTRL_PA_DROP);  // an answer after the bound: dropped
+  CHECK(gdakiCtrlPairOnAck(&lo, 1, 0, true) == GDAKI_CTRL_PA_DROP);  // an answer after the bound: dropped
+  // the lineage (REVIEW_P12 막는 문제 7): rank 1 held (its incarnation 4 dead, HOLD_WAIT): the old process's PAIR(g + 1)
+  // is HELD_OLD, dropped with one GIN/LN line, the QP untouched (no action); after the acceptance (known 5, HOLD_SUCC)
+  // and gdakiCtrlPairSetPeerInc(5) the new incarnation's PAIR is taken, the old one's still dropped
+  uint64_t lnDrops = 0, lnLines = 0;
+  {
+    struct gdakiCtrlPairSt sv;
+    gdakiCtrlPairInit(&sv, GDAKI_CTRL_PAIR_QP_RECORD, 0, 1);
+    gdakiCtrlPairSetPeerInc(&sv, 4);
+    CHECK(gdakiCtrlPairStart(&sv, 0, 1000) == GDAKI_CTRL_PA_SEND_PAIR);
+    struct gdakiCtrlEndpoint ep;
+    memset(&ep, 0, sizeof(ep));
+    ep.qpn = 0x300;
+    ep.psn = 0x111;
+    CHECK(gdakiCtrlPairOnAck(&sv, 1, 4, true) == GDAKI_CTRL_PA_CONNECT && sv.cur == 1);
+    const struct gdakiLnView held = gdakiLnViewOf(GDAKI_HOLD_HELD, 4, 4, false);
+    CHECK(held.phase == GDAKI_LN_HOLD_WAIT && gdakiLnClassify(held, 4) == GDAKI_LN_HELD_OLD);
+    for (int k = 0; k < 5; k++) {  // the woken old process repeats its PAIR(2)
+      const bool lnOk = gdakiLnClassify(held, 4) == GDAKI_LN_CURRENT;
+      CHECK(gdakiCtrlPairOnPair(&sv, 2, 4, lnOk, &ep, 1 + k) == GDAKI_CTRL_PA_DROP);
+      lnDrops++;
+      lnLines += sv.lnLog;
+      CHECK(sv.cur == 1 && sv.state == GDAKI_CTRL_PS_UP);  // nothing moved toward the old incarnation
+    }
+    CHECK(lnLines == 1 && sv.droppedLn == 5);
+    // its PAIR_ACK and PAIR_DONE are dropped the same way
+    CHECK(gdakiCtrlPairOnAck(&sv, 2, 4, gdakiLnClassify(held, 4) == GDAKI_LN_CURRENT) == GDAKI_CTRL_PA_DROP);
+    CHECK(gdakiCtrlPairOnDone(&sv, 2, 4, gdakiLnClassify(held, 4) == GDAKI_LN_CURRENT) == GDAKI_CTRL_PA_DROP);
+    // a FUTURE incarnation's PAIR before the acceptance (the successor's, early) is dropped too
+    CHECK(gdakiLnClassify(held, 5) == GDAKI_LN_FUTURE);
+    CHECK(gdakiCtrlPairOnPair(&sv, 2, 5, gdakiLnClassify(held, 5) == GDAKI_LN_CURRENT, &ep, 10) == GDAKI_CTRL_PA_DROP);
+    // the acceptance: known 5
+    const struct gdakiLnView succ = gdakiLnViewOf(GDAKI_HOLD_HELD, 4, 5, false);
+    CHECK(succ.phase == GDAKI_LN_HOLD_SUCC && gdakiLnClassify(succ, 5) == GDAKI_LN_CURRENT);
+    gdakiCtrlPairSetPeerInc(&sv, 5);
+    ep.qpn = 0x400;
+    CHECK(gdakiCtrlPairOnPair(&sv, 2, 5, gdakiLnClassify(succ, 5) == GDAKI_LN_CURRENT, &ep, 20) == GDAKI_CTRL_PA_TAKE);
+    CHECK(gdakiCtrlPairOnPair(&sv, 3, 4, gdakiLnClassify(succ, 4) == GDAKI_LN_CURRENT, &ep, 21) == GDAKI_CTRL_PA_DROP);
+  }
+  // a give-up, then a new start (REVIEW_P12 고칠 것 10): A took PAIR(2) of B and its answer was lost; B gave up at its
+  // bound and starts again with a new QP: its generation goes above the given-up one, and A takes it (not the stored
+  // answer); the same generation from another endpoint is taken again too
+  uint64_t restartScenes = 0;
+  {
+    struct gdakiCtrlPairSt A, B;
+    gdakiCtrlPairInit(&A, GDAKI_CTRL_PAIR_QP_RECORD, 0, 1);
+    gdakiCtrlPairInit(&B, GDAKI_CTRL_PAIR_QP_RECORD, 1, 0);
+    struct gdakiCtrlEndpoint e1, e2;
+    memset(&e1, 0, sizeof(e1));
+    e1.qpn = 0x501;
+    e1.psn = 0x10;
+    e2 = e1;
+    e2.qpn = 0x502;
+    e2.psn = 0x20;
+    CHECK(gdakiCtrlPairStart(&B, 0, 10000) == GDAKI_CTRL_PA_SEND_PAIR && B.mine == 1);
+    CHECK(gdakiCtrlPairOnPair(&A, 1, 0, true, &e1, 1) == GDAKI_CTRL_PA_TAKE && A.cur == 1);
+    CHECK(gdakiCtrlPairTick(&B, 10000) == GDAKI_CTRL_PA_GIVE_UP && B.cur == 0);  // the answer was lost
+    CHECK(gdakiCtrlPairStart(&B, 20000, 10000) == GDAKI_CTRL_PA_SEND_PAIR && B.mine == 2);  // above the given-up 1
+    CHECK(gdakiCtrlPairOnPair(&A, 2, 0, true, &e2, 20001) == GDAKI_CTRL_PA_TAKE && A.cur == 2);
+    CHECK(gdakiCtrlPairOnPair(&A, 2, 0, true, &e2, 20002) == GDAKI_CTRL_PA_RESEND_ACK);  // the same endpoint: repeat
+    e2.psn = 0x21;  // the same generation again from another endpoint (a new PSN): taken again, not repeated
+    CHECK(gdakiCtrlPairOnPair(&A, 2, 0, true, &e2, 20003) == GDAKI_CTRL_PA_TAKE && A.retaken == 1);
+    restartScenes = 3;
+  }
+  printf("pairing scenes: a held rank's old incarnation: %llu PAIRs dropped with %llu GIN/LN line, the QP untouched; "
+         "after the acceptance the new incarnation's PAIR taken; a give-up and restart: %llu scenes (the generation goes "
+         "above the given-up one; another endpoint is taken again)\n",
+         (unsigned long long)lnDrops, (unsigned long long)lnLines, (unsigned long long)restartScenes);
   printf("pairing: %llu re-pairings after the setup's pairing (%llu with crossing PAIRs; a launcher as one side in %llu "
          "of 2000 runs), %llu agreed on one generation and each other's endpoint; %llu gave up at the bound on a lossy "
          "network; %llu fresh PSNs, %llu answers on the own prepared QP; %llu datagrams, %llu lost; replays of old "
@@ -788,47 +931,51 @@ static void testRejoin(std::mt19937_64& rng) {
     gdakiCtrlRejoinHold(&t, 3);
     const uint32_t known = 4;
     uint32_t acceptedHere = 0;
-    std::vector<std::pair<uint32_t, uint32_t>> dg;  // (incarnation, QPN)
-    for (int k = 0; k < 6; k++) dg.push_back({5, 0x200});
-    for (int k = (int)(rng() % 4); k > 0; k--) dg.push_back({5, 0x1f0 + (uint32_t)(rng() % 3)});
-    for (int k = (int)(rng() % 3); k > 0; k--) dg.push_back({4, 0x100});  // the dead incarnation's
-    // the existing rule accepts the first REJOIN that reaches it (here the spare's current one); the table answers
-    // everything after it, in any order
-    std::shuffle(dg.begin() + 1, dg.end(), rng);
+    // the spare keeps its two QPs over the whole restore (design v3 5.4): every REJOIN of incarnation 5 carries (0x200,
+    // 0x201); the dead incarnation's (4) carry anything; all of them in any order (REVIEW_P12 고칠 것 11: the first that
+    // reaches the rule is the right one because it is the only one)
+    struct Dg { uint32_t inc, qpn, probeQpn; };
+    std::vector<Dg> dg;
+    for (int k = 0; k < 6; k++) dg.push_back({5, 0x200, 0x201});
+    for (int k = (int)(rng() % 3) + 1; k > 0; k--) dg.push_back({4, 0x100 + (uint32_t)(rng() % 3), 0x180});
+    std::shuffle(dg.begin(), dg.end(), rng);
+    // after the acceptance, a datagram that breaks the rule (another record or liveness READ QPN of incarnation 5, the
+    // two alternating): dropped, one GIN/LN line per pair (REVIEW_P12 nit 7)
+    for (int k = (int)(rng() % 4) + 2; k > 0; k--) dg.push_back(k % 2 ? Dg{5, 0x200, 0x2ff} : Dg{5, 0x1f0, 0x201});
     for (const auto& x : dg) {
       bool log = false;
-      const uint32_t r = gdakiCtrlRejoinOn(&t, 3, x.first, x.second, &log);
+      const uint32_t r = gdakiCtrlRejoinOn(&t, 3, x.inc, x.qpn, x.probeQpn, &log);
       if (r == GDAKI_CTRL_RJ_RULES) {
-        if (x.first == known + 1) {  // the existing rule: HELD, known + 1, nonce, park check
+        if (x.inc == known + 1) {  // the existing rule: HELD, known + 1, nonce, park check
           ln4::gdakiTsMsg ack;
           fillRandom(&ack, rng, 33);
-          gdakiCtrlRejoinAccepted(&t, x.first, x.second, &ack, sizeof(ack));
+          gdakiCtrlRejoinAccepted(&t, x.inc, x.qpn, x.probeQpn, &ack, sizeof(ack));
           CHECK(memcmp(t.ack, &ack, sizeof(ack)) == 0);
           acceptedHere++;
         }
       } else if (r == GDAKI_CTRL_RJ_REPEAT) {
-        CHECK(x.second == t.qpn);
+        CHECK(x.qpn == t.qpn && x.probeQpn == t.probeQpn);
         repeats++;
       } else if (r == GDAKI_CTRL_RJ_DROP_QPN) {
-        CHECK(x.second != t.qpn);
+        CHECK(x.qpn != t.qpn || x.probeQpn != t.probeQpn);
         dropsQpn++;
         lines += log;
       } else if (r == GDAKI_CTRL_RJ_DROP_OLD) {
-        CHECK(x.first < t.inc);
+        CHECK(x.inc < t.inc);
         old++;
       } else {
         CHECK(false);
       }
     }
-    CHECK(acceptedHere == 1 && t.qpn == 0x200 && t.inc == 5);
+    CHECK(acceptedHere == 1 && t.qpn == 0x200 && t.probeQpn == 0x201 && t.inc == 5 && t.nLogged == 2);
     accepted += acceptedHere;
     // the hold ends (restored): the same REJOIN again is not the table's any more
     gdakiCtrlRejoinEnd(&t);
     bool log = false;
-    CHECK(gdakiCtrlRejoinOn(&t, 3, 5, 0x200, &log) == GDAKI_CTRL_RJ_NOT_HELD && !log);
+    CHECK(gdakiCtrlRejoinOn(&t, 3, 5, 0x200, 0x201, &log) == GDAKI_CTRL_RJ_NOT_HELD && !log);
     notHeld++;
   }
-  CHECK(lines > 0 && lines <= dropsQpn && repeats > 0 && old > 0);
+  CHECK(lines == 2 * 2000 && lines <= dropsQpn && repeats > 0 && old > 0);
 
   // after the acceptance the survivor answers the spare's record QP and holds every record until the spare's CONNECTED
   Nic nic(0x42ull);
