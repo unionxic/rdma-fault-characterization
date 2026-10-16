@@ -10,7 +10,8 @@
 # trial a second line with rs_set, lib_md5 and driver_md5 is appended to its meta file (as cells_mi.sh does).
 # A trial whose <stem>_meta.txt exists is skipped ("already done"). run_gc.sh's exit 5 (host memory short) writes
 # <results>/STOP_mem; its exit 6 (the launchers not ready at the trial's start: section 8's start check; the trial's meta
-# says launcher_ready=0 and score_gc.py excludes it) writes <results>/STOP_launcher. Both end the cell.
+# says launcher_ready=0 and score_gc.py excludes it) and its exit 7 (a launcher's registration table not empty at the trial's
+# start: the coordinator's check of 2026-10-17; meta launcher_table) write <results>/STOP_launcher. Each ends the cell.
 #
 # usage: cells_gc.sh <logdir> <cell> <build> <kind> <n> <start> [k=v ...]   (each k=v is one argument: spaces are kept)
 set -u
@@ -59,7 +60,8 @@ for ((k = START; k < START + NRUN; k++)); do
   case "$KIND" in
     rs)  run_rs "$t" "$L"; rc=$?
          if [ "$rc" = 5 ]; then echo "$(date '+%F %T') ${CELL}_n$k: host memory short at the trial's start (section 8)" | tee -a "$RES/STOP_mem"; break; fi
-         if [ "$rc" = 6 ]; then echo "$(date '+%F %T') ${CELL}_n$k: the launchers were not ready on both nodes at the trial's start (section 8)" | tee -a "$RES/STOP_launcher"; break; fi ;;
+         if [ "$rc" = 6 ]; then echo "$(date '+%F %T') ${CELL}_n$k: the launchers were not ready on both nodes at the trial's start (section 8)" | tee -a "$RES/STOP_launcher"; break; fi
+         if [ "$rc" = 7 ]; then echo "$(date '+%F %T') ${CELL}_n$k: a launcher's registration table was not empty at the trial's start" | tee -a "$RES/STOP_launcher"; break; fi ;;
     reg) run_reg "$t" "$L" ;;
     *) echo "unknown kind $KIND for cell $CELL (cost cells run through hold_gc.sh)" >&2; exit 1 ;;
   esac

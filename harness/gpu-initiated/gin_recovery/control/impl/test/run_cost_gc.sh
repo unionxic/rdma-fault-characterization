@@ -8,8 +8,8 @@
 #   probe-off    gcp (rdma control, production) with NCCL_GIN_TS_PROBE_MS=0: no liveness READ (the base arm)
 #   probe-on     gcp with NCCL_GIN_TS_PROBE_MS=100 (the judged arm)
 #   tcp          gctp (the tcp control build, production): reported only (the regression control)
-# The rdma arms run with one launcher per node started for this run (launcher_gc.sh, trial scope) and stopped after both
-# ranks ended; the ranks get NCCL_GIN_CTRL_LAUNCHER_SOCK and _NODE. TODO(phase3): whether the measurement mode asks for the
+# The rdma arms run with one launcher per node started for this run (launcher_gc.sh; a launcher that does not get ready stops
+# itself, and the EXIT trap stops both) and stopped after both ranks ended; the ranks get NCCL_GIN_CTRL_LAUNCHER_SOCK and _NODE. TODO(phase3): whether the measurement mode asks for the
 # launcher pairing (Resume condition 41); if it does not, the launchers are harmless here.
 # Metrics: lat4k | lat256k (3 000 iterations of one put + signal + flush) | bw256k (burst, one thread, 12 iterations of
 # 8 x 256 KiB + signal + flush; bandwidth = burst_K x bytes / p50).
@@ -56,19 +56,16 @@ WORK=$(mktemp -d /tmp/gc_cost.XXXXXX)
 RT=/tmp/gc_cost_$$_$RANDOM
 LA_TAG=c$$_$RANDOM
 D0=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=remote_gc.sh
+. "$D0/remote_gc.sh"
 la_stop() { [ "$LIBK" = gcp ] || return 0; local nd; for nd in rain sunny; do bash "$D0/launcher_gc.sh" stop "$nd" "$WORK/la" "$LA_TAG" > /dev/null 2>&1; done; }
 cleanup() { la_stop; ssh -n "$SUNNY_SSH" "rm -rf $RT.*" 2>/dev/null || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 D=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../../../remaining/portpick.sh
 . "$D/../../../remaining/portpick.sh"
-GID_PROBE='d=/sys/class/infiniband/$1/ports/1
-for g in $(ls "$d/gids" | sort -n); do
-  [ "$(cat "$d/gid_attrs/types/$g" 2>/dev/null)" = "RoCE v2" ] || continue
-  case "$(cat "$d/gids/$g")" in 0000:0000:0000:0000:0000:ffff:1e00:00*) echo "$g"; exit 0;; esac
-done; exit 1'
 GID_R=$(bash -c "$GID_PROBE" _ "$HCA_RAIN") || { echo "no GID on rain" >&2; exit 1; }
-GID_S=$(ssh -n "$SUNNY_SSH" bash -c "'$GID_PROBE'" _ "$HCA_SUNNY") || { echo "no GID on sunny" >&2; exit 1; }
+GID_S=$(sunny_sh "$GID_PROBE" "$HCA_SUNNY") || { echo "no GID on sunny" >&2; exit 1; }
 RAIN_MGMT=$(ip -4 route get "$SUNNY_HOST" 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
 [ -n "$RAIN_MGMT" ] || { echo "cannot find rain's management address" >&2; exit 1; }
 if [ "$TX" = rain ]; then R0_ADDR=$RAIN_MGMT; else R0_ADDR=$SUNNY_HOST; fi
@@ -125,7 +122,6 @@ for r in 0 1; do
 done
 mkdir -p "$LOGDIR"
 stem="${CELL}_${TAG}"
-MASK='s/[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/<ip>/g'
 rm -f "$LOGDIR/${stem}"_*
 for r in 0 1; do
   [ -f "$WORK/r$r.kv" ] && sed "$MASK" "$WORK/r$r.kv" > "$LOGDIR/${stem}_r$r.kv"
