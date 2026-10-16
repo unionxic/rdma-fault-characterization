@@ -1,18 +1,23 @@
 // gc_unit_prep.cc - CPU unit test of gin-control's preparation stage (EXPERIMENT.md 9.8 "CPU 단위 모형", 준비). build_gc.sh
 // `unit` cuts out of gin-mirror ln4's host file and out of the working tree's host file the TCP back end (struct
-// gdakiTsMsg, struct gdakiTsPeer, gdakiTsErrName, gdakiTsSend, gdakiTsPumpRaw, gdakiTsPump: gc_ln4_sock.inc,
-// gc_tree_sock.inc), the tree's two pasted blocks (gc_api.inc, gc_seams.inc) and the swap points' default-build bodies
-// (gc_prep_fn.inc), and compiles them here twice: without the switch (rdma: gdakiCtrlSend and gdakiCtrlPump are the
-// preparation stage's functions) and with -DNCCL_GIN_CTRL_TCP=1 (tcp: they are the macros that expand to today's calls).
+// gdakiTsMsg, struct gdakiTsPeer, gdakiTsErrName, gdakiTsSend, gdakiTsPumpRaw, gdakiTsPump, gdakiTsRecv, gdakiRsRecvOn:
+// gc_ln4_sock.inc, gc_tree_sock.inc), the tree's two pasted blocks (gc_api.inc, gc_seams.inc) and the swap points'
+// default-build bodies (gc_prep_fn.inc: gdakiCtrlSend, gdakiCtrlPump, gdakiCtrlRecv, gdakiCtrlRecvOn), and compiles them
+// here twice: without the switch (rdma: the swap points are the preparation stage's functions) and with
+// -DNCCL_GIN_CTRL_TCP=1 (tcp: they are the macros that expand to today's calls).
 // No NCCL, no CUDA, no verbs, no network: the sockets are AF_UNIX stream pairs in this process.
 //   1. the same record sequence (every record type of ln4 and 52-55, random bodies, every channel) sent through ln4's
 //      gdakiTsSend and through the tree's swap point gives the same bytes at the other end, byte for byte, also with a
 //      reader that drains slowly (partial sends, EAGAIN); the sender's record after the send is the same too;
 //   2. the same byte stream (records in random pieces, then a record with a bad magic, then a FIN) read through ln4's
-//      gdakiTsPump and through the tree's gdakiCtrlPump gives the same results, records and close causes;
+//      gdakiTsPump and through the tree's gdakiCtrlPump gives the same results, records and close causes; and the same
+//      for the waiting reads: ln4's gdakiTsRecv and gdakiRsRecvOn against the tree's gdakiCtrlRecv and gdakiCtrlRecvOn
+//      (records, a timeout on an empty socket, a stop flag, a FIN);
 //   3. (rdma) the header's pure functions: the envelope, the order rule, the credit, the page layout and its words, the
-//      seqlock line under a concurrent writer, the fence word, the endpoint versions, the pairing rule, the REJOIN nrp,
-//      the confirmation window, the busy word, the thresholds, the QP attributes and the CQ sizes, the launcher's words;
+//      seqlock line under a concurrent writer, the fence word and its report name, the endpoint versions, the pairing
+//      rule, the REJOIN nrp (copied in and out), the confirmation window (incNonce, a beat that went back or wrapped), the
+//      busy word's serial, the thresholds, the QP attributes and the CQ sizes, the judgement's input grid, the launcher's
+//      words;
 //      and, when launcher/launcher_msg.h is present, that its envelope bytes are this one's and its relayed sizes are
 //      gin-mirror's structs'.
 #include <atomic>
@@ -61,6 +66,7 @@ static double gdakiQ4MonoMs() {  // host file 1313
 #include "rs_ckpt_api.h"
 #include "rs_store_api.h"
 #include "rs_spare_api.h"
+#include "rs_lineage_api.h"  // GDAKI_LN_HOLD_WAIT, GDAKI_LN_LIVE (gdakiLnFenceOf's phase)
 #include "rs_ctrl_api.h"  // the header itself (the pure tests; the launcher cross-checks)
 
 namespace ln4 {
@@ -75,7 +81,10 @@ namespace tree {
 #endif
 }  // namespace tree
 
-static int nChecks = 0, nFail = 0;
+// nChecks counts CHECK calls; nScenes the scenarios (one per independent case: a test function's named case, a model
+// run), so a loop of one invariant counts once per scenario and not per step (REVIEW_PREP nit 9).
+static int nChecks = 0, nFail = 0, nScenes = 0;
+#define SCENE() (nScenes++)
 #define CHECK(c) do { nChecks++; if (!(c)) { nFail++; fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
 
 static void pairOf(int fd[2]) {
@@ -115,11 +124,12 @@ static int treeSend(uint32_t ch, int peer, int fd, tree::gdakiTsMsg* m, int tmo)
 
 // ---- 1. sends: the same bytes ----
 static void testSend(std::mt19937_64& rng) {
+  SCENE();
   static_assert(sizeof(ln4::gdakiTsMsg) == 1872 && sizeof(tree::gdakiTsMsg) == 1872, "a record is 1872 B");
   int a[2], b[2];
   pairOf(a);
   pairOf(b);
-  int nRec = 0;
+  int nRec = 0, bad1 = 0;
   for (int round = 0; round < 40; round++) {
     for (uint32_t t : kTypes) {
       ln4::gdakiTsMsg m1;
@@ -129,18 +139,20 @@ static void testSend(std::mt19937_64& rng) {
       const uint32_t ch = 1u + (uint32_t)(rng() % 3);
       const int r1 = ln4::gdakiTsSend(a[0], &m1, 1000);
       const int r2 = treeSend(ch, (int)(rng() % 4), b[0], &m2, 1000);
-      CHECK(r1 == 0 && r2 == 0);
-      CHECK(memcmp(&m1, &m2, sizeof(m1)) == 0);  // the sender's record after the send (the magic written)
+      bad1 += !(r1 == 0 && r2 == 0);
+      bad1 += memcmp(&m1, &m2, sizeof(m1)) != 0;  // the sender's record after the send (the magic written)
       std::vector<uint8_t> x, y;
       readAll(a[1], x, sizeof(m1));
       readAll(b[1], y, sizeof(m2));
-      CHECK(x.size() == sizeof(m1) && y.size() == sizeof(m2) && x == y);
-      CHECK(memcmp(x.data(), &m1, sizeof(m1)) == 0);
+      bad1 += !(x.size() == sizeof(m1) && y.size() == sizeof(m2) && x == y);
+      bad1 += x.size() != sizeof(m1) || memcmp(x.data(), &m1, sizeof(m1)) != 0;
       nRec++;
     }
   }
+  CHECK(bad1 == 0);  // 1400 records one by one: one check
   // a burst bigger than the socket buffer with a reader that drains slowly: partial sends and EAGAIN on both paths
   for (int burst = 0; burst < 4; burst++) {
+    SCENE();
     const int n = 600;
     std::vector<ln4::gdakiTsMsg> seq(n);
     for (int i = 0; i < n; i++) fillRandom(&seq[i], rng, kTypes[rng() % (sizeof(kTypes) / sizeof(kTypes[0]))]);
@@ -194,6 +206,7 @@ static void testSend(std::mt19937_64& rng) {
 static void testPump(std::mt19937_64& rng) {
   int nRec = 0, nEnd = 0;
   for (int round = 0; round < 30; round++) {
+    SCENE();
     int a[2], b[2];
     pairOf(a);
     pairOf(b);
@@ -222,11 +235,12 @@ static void testPump(std::mt19937_64& rng) {
     std::vector<std::vector<uint8_t>> ma, mb;
     size_t off = 0;
     bool closed = false;
+    int sendBad = 0, stepBad = 0;
     for (int step = 0; step < 100000; step++) {
       if (off < stream.size()) {  // the writer: a random piece to both
         const size_t k = std::min(stream.size() - off, (size_t)(1 + rng() % 3000));
-        CHECK(send(a[0], stream.data() + off, k, MSG_NOSIGNAL) == (ssize_t)k);
-        CHECK(send(b[0], stream.data() + off, k, MSG_NOSIGNAL) == (ssize_t)k);
+        sendBad += send(a[0], stream.data() + off, k, MSG_NOSIGNAL) != (ssize_t)k;
+        sendBad += send(b[0], stream.data() + off, k, MSG_NOSIGNAL) != (ssize_t)k;
         off += k;
       } else if (!closed) {
         close(a[0]);
@@ -237,7 +251,7 @@ static void testPump(std::mt19937_64& rng) {
       tree::gdakiTsMsg ob;
       const int ga = ln4::gdakiTsPump(pa, &oa);
       const int gb = tree::gdakiCtrlPump(nullptr, 1, pb, &ob);
-      CHECK(ga == gb);
+      stepBad += ga != gb;
       if (ga != 0) {
         ra.push_back(ga);
         rb.push_back(gb);
@@ -252,7 +266,7 @@ static void testPump(std::mt19937_64& rng) {
         break;
       }
     }
-    CHECK(ra == rb && ma == mb);
+    CHECK(sendBad == 0 && stepBad == 0 && ra == rb && ma == mb);
     CHECK((int)std::count(ra.begin(), ra.end(), 1) == n);
     close(a[1]);
     close(b[1]);
@@ -261,9 +275,106 @@ static void testPump(std::mt19937_64& rng) {
          nRec, nEnd);
 }
 
+// ---- 2b. waiting reads: the same results (gdakiTsRecv / gdakiCtrlRecv, gdakiRsRecvOn / gdakiCtrlRecvOn) ----
+static void testRecv(std::mt19937_64& rng) {
+  int nRec = 0, nEnd = 0;
+  for (int round = 0; round < 12; round++) {
+    SCENE();
+    const bool on = round % 2 == 1;  // the bare-fd form (the spare's dial)
+    int a[2], b[2];
+    pairOf(a);
+    pairOf(b);
+    const int n = 1 + (int)(rng() % 20);
+    std::vector<uint8_t> stream;
+    for (int i = 0; i < n; i++) {
+      ln4::gdakiTsMsg m;
+      fillRandom(&m, rng, kTypes[rng() % (sizeof(kTypes) / sizeof(kTypes[0]))]);
+      m.magic = GDAKI_TS_MAGIC;
+      stream.insert(stream.end(), (const uint8_t*)&m, (const uint8_t*)&m + sizeof(m));
+    }
+    // a writer thread: random pieces with pauses to both sockets, then (every third round) a FIN
+    const bool fin = round % 3 != 2;
+    std::thread wr([&] {
+      size_t off = 0;
+      std::mt19937_64 r2(round);
+      while (off < stream.size()) {
+        const size_t k = std::min(stream.size() - off, (size_t)(1 + r2() % 2500));
+        if (send(a[0], stream.data() + off, k, MSG_NOSIGNAL) != (ssize_t)k) break;
+        if (send(b[0], stream.data() + off, k, MSG_NOSIGNAL) != (ssize_t)k) break;
+        off += k;
+        std::this_thread::sleep_for(std::chrono::microseconds(200 + r2() % 800));
+      }
+      if (fin) {
+        close(a[0]);
+        close(b[0]);
+      }
+    });
+    ln4::gdakiTsPeer pa;
+    tree::gdakiTsPeer pb;
+    pa.fd = a[1];
+    pb.fd = b[1];
+    std::vector<int> ra, rb;
+    std::vector<std::vector<uint8_t>> ma, mb;
+    while (true) {
+      ln4::gdakiTsMsg oa;
+      tree::gdakiTsMsg ob;
+      int ga, gb;
+      if (on) {
+        ga = ln4::gdakiRsRecvOn(a[1], &oa, 300, nullptr);
+        gb = tree::gdakiCtrlRecvOn(nullptr, 1, GDAKI_CTRL_CH_RECORD, b[1], &ob, 300, nullptr);
+      } else {
+        ga = ln4::gdakiTsRecv(pa, &oa, 300, nullptr);
+        gb = tree::gdakiCtrlRecv(nullptr, 1, pb, &ob, 300, nullptr);
+      }
+      ra.push_back(ga);
+      rb.push_back(gb);
+      if (ga == 1) ma.emplace_back((const uint8_t*)&oa, (const uint8_t*)&oa + sizeof(oa));
+      if (gb == 1) mb.emplace_back((const uint8_t*)&ob, (const uint8_t*)&ob + sizeof(ob));
+      if (ga == 1) nRec++;
+      if (ga != 1 || gb != 1) break;
+    }
+    wr.join();
+    CHECK(ra == rb && ma == mb);
+    CHECK((int)ma.size() == n);
+    CHECK(ra.back() == (fin ? -1 : 0));  // the end: a FIN, or the 300 ms timeout on a socket that stays open
+    if (!on) CHECK(strcmp(pa.closeCause, pb.closeCause) == 0);
+    nEnd++;
+    if (!fin) {
+      close(a[0]);
+      close(b[0]);
+    }
+    close(a[1]);
+    close(b[1]);
+  }
+  // a stop flag ends both at once with 0 (no record waiting)
+  SCENE();
+  int a[2], b[2];
+  pairOf(a);
+  pairOf(b);
+  std::atomic<bool> stop{true};
+  ln4::gdakiTsPeer pa;
+  tree::gdakiTsPeer pb;
+  pa.fd = a[1];
+  pb.fd = b[1];
+  ln4::gdakiTsMsg oa;
+  tree::gdakiTsMsg ob;
+  const double t0 = gdakiQ4MonoMs();
+  CHECK(ln4::gdakiTsRecv(pa, &oa, 2000, &stop) == 0 && tree::gdakiCtrlRecv(nullptr, 1, pb, &ob, 2000, &stop) == 0 &&
+        ln4::gdakiRsRecvOn(a[1], &oa, 2000, &stop) == 0 &&
+        tree::gdakiCtrlRecvOn(nullptr, 1, GDAKI_CTRL_CH_REJOIN, b[1], &ob, 2000, &stop) == 0);
+  CHECK(gdakiQ4MonoMs() - t0 < 1000.0);
+  for (int i = 0; i < 2; i++) {
+    close(a[i]);
+    close(b[i]);
+  }
+  printf("recv: %d records and %d ends (FIN, timeout) through ln4's gdakiTsRecv and gdakiRsRecvOn and the tree's "
+         "gdakiCtrlRecv and gdakiCtrlRecvOn: the same; a stop flag ends both\n", nRec, nEnd);
+}
+
 #if !NCCL_GIN_CTRL_TCP
 // ---- 3. the header's pure functions ----
 static void testEnvelope(std::mt19937_64& rng) {
+  SCENE();
   struct gdakiCtrlEnv e;
   gdakiCtrlEnvPack(&e, GDAKI_CTRL_K_RECORD, 3, 7, 11, 5, 0x1234abcdull, 2, GDAKI_CTRL_RECORD_BYTES);
   CHECK(e.magic == GDAKI_CTRL_ENV_MAGIC && memcmp(&e, "GRCE", 4) == 0);
@@ -287,6 +398,19 @@ static void testEnvelope(std::mt19937_64& rng) {
   CHECK(gdakiCtrlEnvCheck(&f, 0x1234abcdull, 64 + sizeof(struct gdakiCtrlPairBody)) == GDAKI_CTRL_ENV_OK);
   f.bodyBytes = 0;
   CHECK(gdakiCtrlEnvCheck(&f, 0x1234abcdull, 2048) == GDAKI_CTRL_ENV_BAD_BYTES);
+  f.bodyBytes = 256;  // a launcher's PAIR (glMsg)
+  CHECK(gdakiCtrlEnvCheck(&f, 0x1234abcdull, 320) == GDAKI_CTRL_ENV_OK);
+  f.bodyBytes = 200;  // nit 3: nothing but 144 or 256
+  CHECK(gdakiCtrlEnvCheck(&f, 0x1234abcdull, 2048) == GDAKI_CTRL_ENV_BAD_BYTES);
+  f.bodyBytes = GDAKI_CTRL_RECORD_BYTES;
+  CHECK(gdakiCtrlEnvCheck(&f, 0x1234abcdull, 2048) == GDAKI_CTRL_ENV_BAD_BYTES);
+  // CONNECTED: no body
+  gdakiCtrlEnvPack(&f, GDAKI_CTRL_K_CONNECTED, 2, 4, 1, 0, 0x1234abcdull, 0, 0);
+  CHECK(gdakiCtrlEnvCheck(&f, 0x1234abcdull, 64) == GDAKI_CTRL_ENV_OK);
+  f.bodyBytes = 1;
+  CHECK(gdakiCtrlEnvCheck(&f, 0x1234abcdull, 65) == GDAKI_CTRL_ENV_BAD_BYTES);
+  f.kind = GDAKI_CTRL_K_MAX + 1;
+  CHECK(gdakiCtrlEnvCheck(&f, 0x1234abcdull, 2048) == GDAKI_CTRL_ENV_BAD_KIND);
   // the order rule: take seq = last + 1 of gen; drop an older gen; anything else is a loss
   CHECK(gdakiCtrlOrder(7, 10, &e) == GDAKI_CTRL_ORDER_TAKE);
   CHECK(gdakiCtrlOrder(7, 11, &e) == GDAKI_CTRL_ORDER_LOST);
@@ -294,30 +418,36 @@ static void testEnvelope(std::mt19937_64& rng) {
   CHECK(gdakiCtrlOrder(8, 10, &e) == GDAKI_CTRL_ORDER_DROP_OLD);
   CHECK(gdakiCtrlOrder(6, 10, &e) == GDAKI_CTRL_ORDER_LOST);
   // a random in-order stream with old-generation leftovers interleaved: every record of gen taken once, in order
-  uint64_t last = 0, taken = 0;
+  SCENE();
+  uint64_t last = 0, taken = 0, wrong = 0;
   for (int i = 0; i < 10000; i++) {
     struct gdakiCtrlEnv x;
     const bool old = rng() % 4 == 0;
     gdakiCtrlEnvPack(&x, GDAKI_CTRL_K_RECORD, 1, old ? 6 : 7, old ? rng() % 100 : last + 1, 0, 1, 0, GDAKI_CTRL_RECORD_BYTES);
     const uint32_t v = gdakiCtrlOrder(7, last, &x);
-    if (old) CHECK(v == GDAKI_CTRL_ORDER_DROP_OLD);
-    else { CHECK(v == GDAKI_CTRL_ORDER_TAKE); last++; taken++; }
+    if (old) wrong += v != GDAKI_CTRL_ORDER_DROP_OLD;
+    else if (v == GDAKI_CTRL_ORDER_TAKE) { last++; taken++; }
+    else wrong++;
   }
-  CHECK(taken == last);
+  CHECK(wrong == 0 && taken == last && taken > 5000);
 }
 static void testCredit(std::mt19937_64& rng) {
   // a ring model: the sender posts while gdakiCtrlCanSend says so; the receiver consumes in random batches and publishes
   // its consumed word now and then; never more than K SENDs ahead of the receiver's consumption (no RNR)
   for (int run = 0; run < 50; run++) {
+    SCENE();
     uint32_t gen = 1 + (uint32_t)run;
     uint64_t sent = 0, consumed = 0, word = gdakiCtrlGenCount(gen - 1, 12345);  // a stale word of the old gen
+    uint64_t worst = 0;
     for (int step = 0; step < 20000; step++) {
       if (rng() % 2 && gdakiCtrlCanSend(gen, sent, word)) sent++;
-      CHECK(sent - consumed <= GDAKI_CTRL_RING_SLOTS);
+      worst = std::max<uint64_t>(worst, sent - consumed);
       if (rng() % 3 == 0 && consumed < sent) consumed += 1 + rng() % (sent - consumed);
       if (rng() % 5 == 0) word = gdakiCtrlGenCount(gen, (uint32_t)consumed);
     }
+    CHECK(worst <= GDAKI_CTRL_RING_SLOTS && sent > 1000);  // one check per run: never more than K in flight
   }
+  SCENE();
   CHECK(gdakiCtrlCanSend(3, 63, gdakiCtrlGenCount(2, 0)));
   CHECK(!gdakiCtrlCanSend(3, 64, gdakiCtrlGenCount(2, 0)));
   // the 32-bit count wraps: sent 2^32 + 62 against consumed 2^32 - 1 is 63 in flight (may send), + 63 is 64 (may not)
@@ -325,6 +455,7 @@ static void testCredit(std::mt19937_64& rng) {
   CHECK(!gdakiCtrlCanSend(3, 0xffffffffull + 64, gdakiCtrlGenCount(3, 0xffffffffu)));
 }
 static void testPage() {
+  SCENE();
   struct gdakiCtrlPageLayout l;
   CHECK(gdakiCtrlPageLayoutOf(4, 2, &l));
   CHECK(l.rxConsumedOff == 64 && l.rxConsumedLOff == 96 && l.staleMsOff == 112 && l.lineageOff == 192 && l.holdOff == 256);
@@ -333,21 +464,38 @@ static void testPage() {
   CHECK(gdakiCtrlPageLayoutOf(GDAKI_CTRL_PAGE_MAX_RANKS, GDAKI_CTRL_PAGE_MAX_LAUNCHERS, &l) && l.bytes <= GDAKI_CTRL_PAGE_BYTES);
   CHECK(!gdakiCtrlPageLayoutOf(GDAKI_CTRL_PAGE_MAX_RANKS + 1, 0, &l));
   CHECK(!gdakiCtrlPageLayoutOf(0, 0, &l));
+  SCENE();
+  int layoutBad = 0;
   for (uint32_t n = 1; n <= GDAKI_CTRL_PAGE_MAX_RANKS; n++)
     for (uint32_t nl = 0; nl <= GDAKI_CTRL_PAGE_MAX_LAUNCHERS; nl++) {
-      CHECK(gdakiCtrlPageLayoutOf(n, nl, &l));
-      CHECK(l.rxConsumedOff % 8 == 0 && l.rxConsumedLOff % 8 == 0 && l.staleMsOff % 8 == 0 && l.lineageOff % 64 == 0 &&
-            l.holdOff % 64 == 0 && l.lineageOff >= l.staleMsOff + 8 * n && l.nLineageLines * 7 >= n);
+      const bool ok = gdakiCtrlPageLayoutOf(n, nl, &l) && l.rxConsumedOff % 8 == 0 && l.rxConsumedLOff % 8 == 0 &&
+                      l.staleMsOff % 8 == 0 && l.lineageOff % 64 == 0 && l.holdOff % 64 == 0 &&
+                      l.lineageOff >= l.staleMsOff + 8 * n && l.nLineageLines * 7 >= n;
+      layoutBad += !ok;
     }
+  CHECK(layoutBad == 0);  // every (N, nL) of the grid: one check
   CHECK(gdakiCtrlIncOf(gdakiCtrlIncNonce(5, 0xdeadbeefcafef00dull)) == 5 &&
         gdakiCtrlNonce32Of(gdakiCtrlIncNonce(5, 0xdeadbeefcafef00dull)) == 0xcafef00du);
   CHECK(gdakiCtrlBusyWord(0, 3000) == 0 && gdakiCtrlBusyNoOf(gdakiCtrlBusyWord(9, 3000)) == 9 &&
         gdakiCtrlBusyBoundOf(gdakiCtrlBusyWord(9, 3000)) == 3000);
-  CHECK(gdakiCtrlBusyOf(0, 25000, 0, 3000) == 0);
-  const uint64_t b1 = gdakiCtrlBusyOf(1000000, 25000, 0, 3000), b2 = gdakiCtrlBusyOf(0, 25000, 2000000, 3000);
-  CHECK(b1 != 0 && gdakiCtrlBusyBoundOf(b1) == 25000 && b2 != 0 && gdakiCtrlBusyBoundOf(b2) == 3000);
-  CHECK(gdakiCtrlBusyNoOf(b1) != gdakiCtrlBusyNoOf(b2) && (gdakiCtrlBusyNoOf(b1) & 1u));
-  CHECK(gdakiCtrlBusyBoundOf(gdakiCtrlBusyOf(1000000, 25000, 2000000, 3000)) == 25000);
+  // the busy number is a serial (nit 2): two starts 1 us apart differ, the same start keeps its number, a start after a
+  // step seen not busy is a new number even with the same microseconds, and the number is never 0 (also at the wrap)
+  SCENE();
+  struct gdakiCtrlBusyTrack bt;
+  CHECK(gdakiCtrlBusyOf(&bt, 0, 25000, 0, 3000) == 0);
+  const uint64_t b1 = gdakiCtrlBusyOf(&bt, 1000000, 25000, 0, 3000);
+  CHECK(b1 != 0 && gdakiCtrlBusyBoundOf(b1) == 25000 && gdakiCtrlBusyOf(&bt, 1000000, 25000, 0, 3000) == b1);
+  const uint64_t b2 = gdakiCtrlBusyOf(&bt, 1000001, 25000, 0, 3000);  // 1 us later: another round
+  CHECK(gdakiCtrlBusyNoOf(b2) != gdakiCtrlBusyNoOf(b1));
+  CHECK(gdakiCtrlBusyOf(&bt, 0, 25000, 0, 3000) == 0);
+  const uint64_t b3 = gdakiCtrlBusyOf(&bt, 1000001, 25000, 0, 3000);  // the same microseconds after an idle step
+  CHECK(gdakiCtrlBusyNoOf(b3) != gdakiCtrlBusyNoOf(b2));
+  const uint64_t b4 = gdakiCtrlBusyOf(&bt, 0, 25000, 2000000, 3000);
+  CHECK(gdakiCtrlBusyBoundOf(b4) == 3000 && gdakiCtrlBusyNoOf(b4) != gdakiCtrlBusyNoOf(b3));
+  CHECK(gdakiCtrlBusyBoundOf(gdakiCtrlBusyOf(&bt, 1000000, 25000, 2000000, 3000)) == 25000);
+  bt.no = 0xffffffffu;
+  bt.start = 0;
+  CHECK(gdakiCtrlBusyNoOf(gdakiCtrlBusyOf(&bt, 7, 1, 0, 0)) == 1u);
   CHECK((gdakiCtrlPageFlags(true, false, true) >> GDAKI_CTRL_PF_VERSION_SHIFT) == GDAKI_CTRL_PAGE_VERSION &&
         (gdakiCtrlPageFlags(true, false, true) & 7u) == (GDAKI_CTRL_PF_LEAVING | GDAKI_CTRL_PF_MIRROR));
   // this rank's consumed words for the launchers (glPairBody.creditOff): 8 B aligned, inside the launchers' run
@@ -358,6 +506,7 @@ static void testPage() {
 // The seqlock line: a writer that writes lines of one value (every word equal to the line's sequence) and readers that
 // check every consistent copy is one moment's line (no torn even read).
 static void testSeqlock() {
+  SCENE();
   struct gdakiCtrlReportLine line;
   memset(&line, 0, sizeof(line));
   std::atomic<bool> stop{false};
@@ -397,6 +546,7 @@ static void testSeqlock() {
          (unsigned long long)retry.load(), (unsigned long long)torn.load());
 }
 static void testFence() {
+  SCENE();
   // REVIEW2 막는 문제 1: right after the setup every word is 0 = no fence, so a hold of incarnation 0 is not fenced
   uint64_t word = 0;
   CHECK(!gdakiCtrlFencedIs(word, 0));
@@ -406,8 +556,19 @@ static void testFence() {
   word = gdakiCtrlFenceWord(1);
   CHECK(gdakiCtrlFencedIs(word, 1) && !gdakiCtrlFencedIs(word, 0) && !gdakiCtrlFencedIs(word, 2));
   CHECK(gdakiCtrlFenceWord(0xffffffffu) == 0x100000000ull && gdakiCtrlFencedIs(0x100000000ull, 0xffffffffu));
+  // the report name (design v3 4.4 4): HOLD_WAIT only; NONE, FENCING after this rank's FENCE, FENCED with dead + 1
+  SCENE();
+  CHECK(GDAKI_CTRL_LN_HOLD_WAIT == GDAKI_LN_HOLD_WAIT);
+  CHECK(gdakiLnFenceOf(GDAKI_LN_HOLD_WAIT, 0, 0, false) == GDAKI_LN_FENCE_NONE);
+  CHECK(gdakiLnFenceOf(GDAKI_LN_HOLD_WAIT, 0, 0, true) == GDAKI_LN_FENCE_FENCING);
+  CHECK(gdakiLnFenceOf(GDAKI_LN_HOLD_WAIT, 0, gdakiCtrlFenceWord(0), true) == GDAKI_LN_FENCE_FENCED);
+  CHECK(gdakiLnFenceOf(GDAKI_LN_HOLD_WAIT, 1, gdakiCtrlFenceWord(0), true) == GDAKI_LN_FENCE_FENCING);  // an old FENCED
+  CHECK(gdakiLnFenceOf(GDAKI_LN_LIVE, 0, gdakiCtrlFenceWord(0), true) == GDAKI_LN_FENCE_NONE);
+  CHECK(strcmp(gdakiLnFenceName(GDAKI_LN_FENCE_FENCED), "FENCED") == 0 && strcmp(gdakiLnFenceName(9), "?") == 0);
 }
 static void testEndpoint(std::mt19937_64& rng) {
+  SCENE();
+  int bad = 0;
   for (int i = 0; i < 1000; i++) {
     struct gdakiMiQpEndpoint v1;
     uint8_t* p = (uint8_t*)&v1;
@@ -417,21 +578,23 @@ static void testEndpoint(std::mt19937_64& rng) {
     v1.psn = (uint32_t)(rng() & 0xffffff);
     v1.mtu = 1 + (int32_t)(rng() % 5);
     const struct gdakiCtrlEndpoint e = gdakiCtrlEndpointOf(v1, GDAKI_CTRL_QPT_RC);
-    CHECK(memcmp(&e, &v1, offsetof(struct gdakiMiQpEndpoint, pad)) == 0 && e.version == GDAKI_CTRL_EP_VERSION);
-    CHECK(gdakiCtrlEndpointOk(e));
+    bad += !(memcmp(&e, &v1, offsetof(struct gdakiMiQpEndpoint, pad)) == 0 && e.version == GDAKI_CTRL_EP_VERSION);
+    bad += !gdakiCtrlEndpointOk(e);
     const struct gdakiMiQpEndpoint back = gdakiCtrlEndpointV1(e);
-    CHECK(memcmp(&back, &v1, sizeof(v1)) == 0);
+    bad += memcmp(&back, &v1, sizeof(v1)) != 0;
     struct gdakiCtrlEndpoint u = gdakiCtrlEndpointOf(v1, GDAKI_CTRL_QPT_UD);
-    CHECK(gdakiCtrlEndpointOk(u) == (v1.mtu >= 4));
+    bad += gdakiCtrlEndpointOk(u) != (v1.mtu >= 4);
     u.version = 1;
-    CHECK(!gdakiCtrlEndpointOk(u));
+    bad += gdakiCtrlEndpointOk(u);
   }
+  CHECK(bad == 0);  // 1000 random endpoints: one check
   struct gdakiMiQpEndpoint z;
   memset(&z, 0, sizeof(z));
   z.mtu = 5;
   CHECK(!gdakiCtrlEndpointOk(gdakiCtrlEndpointOf(z, GDAKI_CTRL_QPT_RC)));  // QPN 0
 }
 static void testPair() {
+  SCENE();
   // either side starts; crossing PAIRs of one generation: the lower rank's wins
   CHECK(gdakiCtrlPairResolve(0, 1, 3, 4, 4, false) == GDAKI_CTRL_PAIR_KEEP_MINE);  // rank 0 keeps its PAIR(4)
   CHECK(gdakiCtrlPairResolve(1, 0, 3, 4, 4, false) == GDAKI_CTRL_PAIR_TAKE);       // rank 1 takes rank 0's
@@ -449,29 +612,90 @@ static void testPair() {
     const int taken = (a0 == GDAKI_CTRL_PAIR_TAKE) + (a1 == GDAKI_CTRL_PAIR_TAKE);
     CHECK(taken == 1);
   }
-  CHECK(sizeof(struct gdakiCtrlPairBody) == 144 && sizeof(struct gdakiCtrlRejoinNrp) == 160);
+  CHECK(sizeof(struct gdakiCtrlPairBody) == 144 && sizeof(struct gdakiCtrlRejoinNrp) == 168);
+  CHECK(GDAKI_CTRL_PAIR_STEP_DONE == 3 && GDAKI_CTRL_PAIR_STEP_DONE != GDAKI_CTRL_PAIR_STEP_ACK);
+}
+// The REJOIN nrp in and out of a record's nrp[] by bytes (REVIEW_PREP 고칠 것 4), both generations kept.
+static void testNrp(std::mt19937_64& rng) {
+  SCENE();
+  tree::gdakiTsMsg m;
+  memset(&m, 0xab, sizeof(m));
+  struct gdakiCtrlRejoinNrp n;
+  memset(&n, 0, sizeof(n));
+  n.version = GDAKI_CTRL_NRP_VERSION;
+  n.gen = 7;
+  n.probeGen = 3;
+  n.rec.qpn = 0x1234;
+  n.probe.qpn = 0x5678;
+  n.ud.psn = gdakiCtrlQkeyOf(rng());
+  n.page.addr = 0x1122334455667788ull;
+  n.page.rkey = 99;
+  n.outbox.len = GDAKI_CTRL_OUTBOX_BYTES;
+  CHECK(offsetof(tree::gdakiTsMsg, nrp) % 8 == 0);
+  CHECK(gdakiCtrlNrpPut(m.nrp, sizeof(m.nrp), n));
+  struct gdakiCtrlRejoinNrp o;
+  CHECK(gdakiCtrlNrpGet(m.nrp, sizeof(m.nrp), &o) && memcmp(&o, &n, sizeof(n)) == 0 && o.gen == 7 && o.probeGen == 3);
+  CHECK(((const uint8_t*)m.nrp)[sizeof(n)] == 0 && ((const uint8_t*)m.nrp)[sizeof(m.nrp) - 1] == 0);  // the rest zero
+  memset(m.nrp, 0, sizeof(m.nrp));  // the tcp path's REJOIN: nrp unused
+  CHECK(!gdakiCtrlNrpGet(m.nrp, sizeof(m.nrp), &o));
+  CHECK(!gdakiCtrlNrpPut(m.nrp, sizeof(n) - 1, n));
 }
 static void testConfirm() {
-  CHECK(gdakiCtrlConfirmVerdict(false, false, true, true, 1, 2) == GDAKI_CTRL_CW_UNCONFIRMED);
-  CHECK(gdakiCtrlConfirmVerdict(true, true, true, true, 1, 2) == GDAKI_CTRL_CW_REMACC);
-  CHECK(gdakiCtrlConfirmVerdict(true, false, true, false, 1, 1) == GDAKI_CTRL_CW_NORESP);
-  CHECK(gdakiCtrlConfirmVerdict(true, false, false, true, 1, 1) == GDAKI_CTRL_CW_NORESP);
-  CHECK(gdakiCtrlConfirmVerdict(true, false, true, true, 7, 7) == GDAKI_CTRL_CW_STALE);
-  CHECK(gdakiCtrlConfirmVerdict(true, false, true, true, 7, 9) == GDAKI_CTRL_CW_ALIVE);
+  SCENE();
+  const uint64_t inc = gdakiCtrlIncNonce(2, 0xfeedull), other = gdakiCtrlIncNonce(3, 0xfeedull);
+  CHECK(gdakiCtrlConfirmVerdict(false, false, true, true, inc, inc, inc, 1, 2) == GDAKI_CTRL_CW_UNCONFIRMED);
+  CHECK(gdakiCtrlConfirmVerdict(true, true, true, true, inc, inc, inc, 1, 2) == GDAKI_CTRL_CW_REMACC);
+  CHECK(gdakiCtrlConfirmVerdict(true, true, false, true, inc, other, inc, 1, 2) == GDAKI_CTRL_CW_REMACC);  // REMACC first
+  CHECK(gdakiCtrlConfirmVerdict(true, false, true, false, inc, inc, inc, 1, 1) == GDAKI_CTRL_CW_NORESP);
+  CHECK(gdakiCtrlConfirmVerdict(true, false, false, true, inc, inc, inc, 1, 1) == GDAKI_CTRL_CW_NORESP);
+  CHECK(gdakiCtrlConfirmVerdict(true, false, false, true, inc, other, inc, 1, 9) == GDAKI_CTRL_CW_NORESP);  // then NORESP
+  CHECK(gdakiCtrlConfirmVerdict(true, false, true, true, inc, inc, inc, 7, 7) == GDAKI_CTRL_CW_STALE);
+  CHECK(gdakiCtrlConfirmVerdict(true, false, true, true, inc, inc, inc, 7, 9) == GDAKI_CTRL_CW_ALIVE);
+  // 고칠 것 1: a page of another process (either READ's incNonce) cannot confirm, even with a rising beat
+  CHECK(gdakiCtrlConfirmVerdict(true, false, true, true, inc, other, inc, 7, 9) == GDAKI_CTRL_CW_UNCONFIRMED);
+  CHECK(gdakiCtrlConfirmVerdict(true, false, true, true, inc, inc, other, 7, 9) == GDAKI_CTRL_CW_UNCONFIRMED);
+  // a beat that went back is not alive; one that wrapped past 2^64 - 1 is
+  CHECK(gdakiCtrlConfirmVerdict(true, false, true, true, inc, inc, inc, 9, 7) == GDAKI_CTRL_CW_STALE);
+  CHECK(gdakiCtrlConfirmVerdict(true, false, true, true, inc, inc, inc, 0xffffffffffffffffull, 3) == GDAKI_CTRL_CW_ALIVE);
+  CHECK(!gdakiCtrlBeatAdvanced(5, 5) && gdakiCtrlBeatAdvanced(5, 6) && !gdakiCtrlBeatAdvanced(6, 5));
+}
+// The judgement's inputs (design v3 4.2): the grid is 5 x 2 x 9 x 13 = 1 170 points; the frame answers row 21 until
+// phase 1 writes the table (its CPU model asserts that no point reaches row 21).
+static void testJudgeFrame() {
+  SCENE();
+  CHECK(GDAKI_CTRL_L_N * GDAKI_CTRL_B_N * GDAKI_CTRL_W_N * GDAKI_CTRL_R_N == 1170);
+  CHECK(GDAKI_CTRL_W_END_ALIVE + GDAKI_CTRL_CW_UNCONFIRMED == GDAKI_CTRL_W_END_UNCONFIRMED);
+  const struct gdakiCtrlJudgement j = gdakiCtrlJudge(GDAKI_CTRL_L_ALIVE, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_OK, GDAKI_CTRL_R_ROSE);
+  CHECK(j.row >= 1 && j.row <= 21);
 }
 static void testThresholds() {
+  SCENE();
   char why[96];
-  CHECK(gdakiCtrlThresholdsOk(100, 500, 20, 2000, 10000, 20000, 5000, why, sizeof(why)));  // the defaults, RESTORE_MS 20 s
-  CHECK(gdakiCtrlThresholdsOk(0, 500, 20, 2000, 10000, 20000, 5000, why, sizeof(why)));    // PROBE_MS 0: no READ
-  CHECK(!gdakiCtrlThresholdsOk(100, 500, 19, 2000, 10000, 20000, 5000, why, sizeof(why)) && strstr(why, "CONFIRM"));
-  CHECK(!gdakiCtrlThresholdsOk(100, 500, 500, 2000, 10000, 20000, 5000, why, sizeof(why)) && strstr(why, "CONFIRM"));
-  CHECK(!gdakiCtrlThresholdsOk(300, 2000, 20, 2000, 10000, 20000, 5000, why, sizeof(why)) && strstr(why, "SUSPECT"));
-  CHECK(!gdakiCtrlThresholdsOk(100, 500, 20, 10000, 10000, 20000, 5000, why, sizeof(why)) && strstr(why, "STALL"));
-  CHECK(!gdakiCtrlThresholdsOk(100, 500, 20, 2000, 19500, 20000, 5000, why, sizeof(why)) && strstr(why, "RESTORE"));
-  CHECK(!gdakiCtrlThresholdsOk(100, 499, 20, 2000, 10000, 20000, 5000, why, sizeof(why)) && strstr(why, "TIMEOUT"));
-  CHECK(!gdakiCtrlThresholdsOk(100, 500, 20, 2000, 10000, 20000, 19500, why, sizeof(why)) && strstr(why, "SPARE"));
+  struct gdakiCtrlThresholds d;  // the defaults with RESTORE_MS 20 s
+  d.restoreMs = 20000;
+  CHECK(gdakiCtrlThresholdsOk(d, why, sizeof(why)));
+  auto with = [&](void (*f)(struct gdakiCtrlThresholds&)) { struct gdakiCtrlThresholds t = d; f(t); return t; };
+  CHECK(!gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.restoreMs = 0; }), why, sizeof(why)) && strstr(why, "RESTORE"));
+  // PROBE_MS 0 (the cost cells): no READ, no window: the W checks are skipped (design v3 4.3)
+  CHECK(gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.probeMs = 0; t.confirmMs = 0; }), why, sizeof(why)));
+  CHECK(gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.probeMs = 0; t.confirmMs = 900; }), why, sizeof(why)));
+  CHECK(!gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.confirmMs = 19; }), why, sizeof(why)) && strstr(why, "CONFIRM"));
+  CHECK(!gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.confirmMs = 500; }), why, sizeof(why)) && strstr(why, "CONFIRM"));
+  CHECK(!gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.probeMs = 300; t.probeTimeoutMs = 2000; }), why,
+                               sizeof(why)) && strstr(why, "SUSPECT"));
+  CHECK(!gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.suspectMs = 10000; }), why, sizeof(why)) && strstr(why, "STALL"));
+  CHECK(!gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.stallMs = 19500; }), why, sizeof(why)) && strstr(why, "RESTORE"));
+  CHECK(!gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.probeTimeoutMs = 499; }), why, sizeof(why)) && strstr(why, "TIMEOUT"));
+  CHECK(!gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.spareStartMs = 19500; }), why, sizeof(why)) && strstr(why, "SPARE"));
+  // the two v3 checks: PROBE_MS <= LAUNCHER_STALL_MS, LATER_MS + 1000 <= NCCL_GIN_RESTORE_MS (at the bound: ok)
+  CHECK(gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.launcherStallMs = 100; }), why, sizeof(why)));
+  CHECK(!gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.launcherStallMs = 99; }), why, sizeof(why)) &&
+        strstr(why, "LAUNCHER_STALL"));
+  CHECK(gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.laterMs = 19000; }), why, sizeof(why)));
+  CHECK(!gdakiCtrlThresholdsOk(with([](gdakiCtrlThresholds& t) { t.laterMs = 19001; }), why, sizeof(why)) && strstr(why, "LATER"));
 }
 static void testQpAttr() {
+  SCENE();
   const struct gdakiCtrlQpAttr d;
   CHECK(gdakiCtrlQpAttrIsLn4(d) && d.sqDepth == 64 && d.rqDepth == 1 && d.cqDepth == 128 && d.timeout == 12 &&
         d.retryCnt == 7 && d.rnrRetry == 7 && d.minRnrTimer == 12 && d.access == 7 && d.qpType == GDAKI_CTRL_QPT_RC);
@@ -483,24 +707,34 @@ static void testQpAttr() {
   CHECK(pr.sqDepth == 4 && pr.rqDepth == 0 && pr.access == GDAKI_CTRL_ACC_REMOTE_READ && pr.cq == nullptr &&
         pr.cqDepth >= pr.sqDepth);
   CHECK(ud.qpType == GDAKI_CTRL_QPT_UD && ud.qkey == 0x7fffffffu && ud.access == 0 && ud.sqDepth == 64 && ud.rqDepth == 64);
-  CHECK(gdakiCtrlCqFits(3, 2));    // rank 4, two launchers: 5 x 160 + 128 = 928 <= 1024; 3 x 4 <= 64
+  CHECK(gdakiCtrlCqFits(3, 2));    // rank 4, two launchers: 5 x 160 + 128 = 928 <= 1024; (3 + 2) x 4 = 20 <= 64
+  CHECK(gdakiCtrlHelperCqNeed(3, 2) == 928 && gdakiCtrlWatchCqNeed(3, 2) == 20);
   CHECK(!gdakiCtrlCqFits(6, 0));   // 6 x 160 + 128 = 1088 > 1024
   CHECK(!gdakiCtrlCqFits(17, 0));
+  // 고칠 것 3: the watch CQ counts the launchers' liveness READ QPs: 14 + 2 is 64 (fits), 15 + 2 is 68, 16 + 2 is 72
+  CHECK(gdakiCtrlWatchCqNeed(14, 2) == 64 && gdakiCtrlWatchCqNeed(14, 2) <= GDAKI_CTRL_WATCH_CQ);
+  CHECK(gdakiCtrlWatchCqNeed(15, 2) == 68 && gdakiCtrlWatchCqNeed(16, 2) == 72 && gdakiCtrlWatchCqNeed(16, 2) > GDAKI_CTRL_WATCH_CQ);
+  CHECK(gdakiCtrlWatchCqNeed(16, 0) == 64);
   CHECK(sizeof(tree::gdakiTsMsg::nrp) == GDAKI_CTRL_NRP_BYTES);
 }
 static void testRecords() {
+  SCENE();
   for (uint32_t t = 52; t <= 55; t++) CHECK(gdakiCtrlIsRecord(t) && gdakiHoldIsRestoreRecord(t) && gdakiCtrlRecordName(t)[0] != '?');
   CHECK(!gdakiCtrlIsRecord(51) && !gdakiCtrlIsRecord(56));
   CHECK(strcmp(gdakiCtrlChName(GDAKI_CTRL_CH_RECORD), "record") == 0 && strcmp(gdakiCtrlChName(9), "?") == 0);
 }
 #if defined(GDAKI_CTRL_HAVE_LAUNCHER_MSG)
 static void testLauncher() {
+  SCENE();
   struct glCtrlEnv g;
   struct gdakiCtrlEnv e;
   gl_env_pack(&g, GL_ENV_KIND_LAUNCHER, GL_FROM_LAUNCHER | 1, 3, 9, 4, 0x55aaull, 2);
   gdakiCtrlEnvPack(&e, GDAKI_CTRL_K_LAUNCHER, GDAKI_CTRL_FROM_LAUNCHER | 1, 3, 9, 4, 0x55aaull, 2, GDAKI_CTRL_LAUNCHER_BYTES);
   CHECK(memcmp(&g, &e, sizeof(e)) == 0);  // the same 64 bytes
-  CHECK(gdakiCtrlEnvCheck((const struct gdakiCtrlEnv*)&g, 0x55aaull, 320) == GDAKI_CTRL_ENV_OK);
+  struct gdakiCtrlEnv ge;  // nit 9: by bytes, not a cast of glCtrlEnv (strict aliasing)
+  memcpy(&ge, &g, sizeof(ge));
+  CHECK(gdakiCtrlEnvCheck(&ge, 0x55aaull, 320) == GDAKI_CTRL_ENV_OK);
+  CHECK((int)GL_ENV_KIND_CONNECTED == (int)GDAKI_CTRL_K_CONNECTED && gl_env_check(&g, GL_ENV_KIND_CONNECTED) != GL_R_NONE);
   // the relayed activation talk: launcher_msg.h's sizes are gin-mirror's structs'
   CHECK(GL_ACT_RECORD_BYTES == sizeof(struct gdakiRsActivate));
   CHECK(GL_FETCH_EP_BYTES == sizeof(struct gdakiMiActAnswer));
@@ -522,6 +756,7 @@ int main() {
   std::mt19937_64 rng(0x6763707265707031ull);  // "gcprepp1"
   testSend(rng);
   testPump(rng);
+  testRecv(rng);
 #if !NCCL_GIN_CTRL_TCP
   testEnvelope(rng);
   testCredit(rng);
@@ -530,7 +765,9 @@ int main() {
   testFence();
   testEndpoint(rng);
   testPair();
+  testNrp(rng);
   testConfirm();
+  testJudgeFrame();
   testThresholds();
   testQpAttr();
   testRecords();
@@ -540,6 +777,7 @@ int main() {
   printf("launcher_msg.h: absent (its checks skipped)\n");
 #endif
 #endif
-  printf("gc_unit_prep (%s): %d checks, %d failed\n", NCCL_GIN_CTRL_TCP ? "tcp" : "rdma", nChecks, nFail);
+  printf("gc_unit_prep (%s): %d scenarios, %d checks, %d failed\n", NCCL_GIN_CTRL_TCP ? "tcp" : "rdma", nScenes, nChecks,
+         nFail);
   return nFail == 0 ? 0 : 1;
 }

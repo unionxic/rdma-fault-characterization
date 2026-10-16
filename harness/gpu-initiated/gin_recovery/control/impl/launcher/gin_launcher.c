@@ -89,10 +89,21 @@ struct glEntry {
   int actPeer;          /* index into peer[] */
   uint32_t actReqSeq;
   uint32_t serial;      /* READ cookie check */
+  int readBusy;         /* a READ into blobBuf is in flight on readHandle (REVIEW_PREP fix 10: the buffer is never freed
+                           before its completion or the close of that QP) */
+  int readHandle;
   struct glRsActivate rec;
   struct glRegion blob;
   uint8_t* blobBuf;
   double killAtMs;      /* > 0: SIGKILL through the pidfd at this time (aborted or failed spare) */
+};
+
+#define GL_MAX_ORPHANS 64
+struct glOrphan {
+  int used;
+  int handle;           /* the QP the READ is on */
+  uint64_t cookie;
+  uint8_t* buf;
 };
 
 struct glTomb {
@@ -143,6 +154,8 @@ struct glCore {
   struct glTomb tomb[GL_MAX_TOMBS];
   int nTomb;
   struct glPeer peer[GL_MAX_PEERS];
+  struct glOrphan orphan[GL_MAX_ORPHANS];  /* READ buffers whose entry let go while the READ was in flight */
+  int fatal;            /* the transport reported a failure of its own (GL_TP_FATAL): the loop stops */
   struct glPage* page;
   struct glRegion pageReg;
   struct glEp ud;
@@ -282,13 +295,46 @@ static void gl_tomb_add(struct glCore* c, const struct glEntry* e, uint32_t how)
   t->nonce = e->nonce;
   t->how = how;
 }
+/* The entry lets go of its blob buffer. A READ still in flight into it keeps it alive: it moves to the orphan list and is
+ * freed at that READ's completion or when its QP closes (REVIEW_PREP fix 10; the verbs transport's NIC would otherwise
+ * DMA into freed heap). */
+static void gl_blob_release(struct glCore* c, struct glEntry* e) {
+  if (e->readBusy && e->blobBuf) {
+    int k = -1;
+    for (int i = 0; i < GL_MAX_ORPHANS && k < 0; i++)
+      if (!c->orphan[i].used) k = i;
+    if (k >= 0) {
+      c->orphan[k].used = 1;
+      c->orphan[k].handle = e->readHandle;
+      c->orphan[k].cookie = ((uint64_t)(e - c->ent) << 32) | e->serial;
+      c->orphan[k].buf = e->blobBuf;
+    } else {  // never expected (64 READs in flight): keep the memory rather than free it under a DMA
+      gl_log(c, "orphan table full: a READ buffer of %u bytes is leaked, not freed under its READ", e->blob.len);
+    }
+  } else {
+    free(e->blobBuf);
+  }
+  e->blobBuf = NULL;
+  e->readBusy = 0;
+  e->readHandle = -1;
+}
+/* A READ's QP closed (rc_close: no completion follows) or its READ completed: its orphaned buffers go. */
+static void gl_orphans_free(struct glCore* c, int handle, int byCookie, uint64_t cookie) {
+  for (int i = 0; i < GL_MAX_ORPHANS; i++) {
+    struct glOrphan* o = &c->orphan[i];
+    if (!o->used || o->handle != handle || (byCookie && o->cookie != cookie)) continue;
+    free(o->buf);
+    memset(o, 0, sizeof(*o));
+  }
+}
 static void gl_entry_reset(struct glCore* c, struct glEntry* e) {
-  free(e->blobBuf);
+  gl_blob_release(c, e);
   memset(e, 0, sizeof(*e));
   e->used = 1;
   e->pidfd = -1;
   e->conn = -1;
   e->actPeer = -1;
+  e->readHandle = -1;
   e->id = ++c->nextId;
   e->spSinceMs = gl_mono_ms();
 }
@@ -308,11 +354,12 @@ static struct glEntry* gl_entry_new(struct glCore* c) {
 }
 static void gl_entry_free(struct glCore* c, struct glEntry* e) {
   gl_close_pidfd(c, &e->pidfd);
-  free(e->blobBuf);
+  gl_blob_release(c, e);
   memset(e, 0, sizeof(*e));
   e->pidfd = -1;
   e->conn = -1;
   e->actPeer = -1;
+  e->readHandle = -1;
 }
 static void gl_sp_set(struct glEntry* s, int sp) {
   if (s->sp != sp) s->spSinceMs = gl_mono_ms();
@@ -336,6 +383,10 @@ static struct glPeer* gl_peer_find(struct glCore* c, uint64_t nonce, int32_t ran
 
 /* ------------------------------------------------------------------------------------------------- page */
 
+/* Every page word is written with one 8 B release store (REVIEW_PREP nit 11): a reader's READ sees each word whole, and a
+ * slot's key (its nonce) is stored after its other words, so the compiler cannot move it ahead of them. */
+static void gl_pw(uint64_t* w, uint64_t v) { __atomic_store_n(w, v, __ATOMIC_RELEASE); }
+
 /* The registration slot of (nonce, rank): bound at first use, never rebound. -1 when the page is full. */
 static int gl_page_slot(struct glCore* c, uint64_t nonce, int32_t rank) {
   for (int i = 0; i < GL_PAGE_REGS; i++)
@@ -343,11 +394,11 @@ static int gl_page_slot(struct glCore* c, uint64_t nonce, int32_t rank) {
       return i;
   for (int i = 0; i < GL_PAGE_REGS; i++)
     if (c->page->reg[i].nonce == 0) {
-      c->page->reg[i].reg = gl_page_word(GL_RS_NONE, rank, 0);
-      c->page->reg[i].spare = gl_page_word(GL_SP_NONE, rank, 0);
-      c->page->reg[i].spareSinceMs = 0;
-      c->page->reg[i].nonce = nonce;  // the key last: a reader never matches a half-bound slot
-      c->page->nRegs++;
+      gl_pw(&c->page->reg[i].reg, gl_page_word(GL_RS_NONE, rank, 0));
+      gl_pw(&c->page->reg[i].spare, gl_page_word(GL_SP_NONE, rank, 0));
+      gl_pw(&c->page->reg[i].spareSinceMs, 0);
+      gl_pw(&c->page->reg[i].nonce, nonce);  // the key last (a release store): a reader never matches a half-bound slot
+      gl_pw(&c->page->nRegs, c->page->nRegs + 1);
       return i;
     }
   return -1;
@@ -390,15 +441,15 @@ static void gl_page_update(struct glCore* c, uint64_t nonce, int32_t rank) {
     if (e->used && e->kind == GL_E_SPARE && e->nonce == nonce && e->rank == rank && (!best || e->inc >= best->inc))
       best = e;
   }
-  c->page->reg[i].spareSinceMs = best ? (uint64_t)best->spSinceMs : 0;
-  c->page->reg[i].spare = gl_page_word(b.spareState, rank, b.spareInc);
-  c->page->reg[i].reg = gl_page_word(b.regState, rank, b.regInc);
+  gl_pw(&c->page->reg[i].spareSinceMs, best ? (uint64_t)best->spSinceMs : 0);
+  gl_pw(&c->page->reg[i].spare, gl_page_word(b.spareState, rank, b.spareInc));
+  gl_pw(&c->page->reg[i].reg, gl_page_word(b.regState, rank, b.regInc));
 }
 static void gl_page_credit(struct glCore* c, const struct glPeer* p) {
   struct glPageCredit* k = &c->page->credit[p - c->peer];
-  k->peer = ((uint64_t)((uint32_t)p->rank & 0xffffffu) << 32) | p->inc;
-  k->consumed = ((uint64_t)p->rec.gen << 32) | (uint32_t)p->consumed;
-  k->nonce = p->nonce;
+  gl_pw(&k->peer, ((uint64_t)((uint32_t)p->rank & 0xffffffu) << 32) | p->inc);
+  gl_pw(&k->consumed, ((uint64_t)p->rec.gen << 32) | (uint32_t)p->consumed);
+  gl_pw(&k->nonce, p->nonce);
 }
 
 /* ------------------------------------------------------------------------------------------------- RNIC side out */
@@ -643,8 +694,7 @@ static void gl_handover(struct glCore* c, struct glEntry* s) {
     gl_spare_fail(c, s, GL_R_SEND_FAILED, 1);
     return;
   }
-  free(s->blobBuf);
-  s->blobBuf = NULL;
+  gl_blob_release(c, s);  // the READ completed: no READ in flight
   s->act = GL_ACT_GIVEN;
   gl_sp_set(s, GL_SP_OFFERED);
   gl_log(c, "activation of rank %d incarnation %u handed to its spare (%u blob bytes)", s->rank, s->inc, s->blob.len);
@@ -656,7 +706,7 @@ static void gl_offer(struct glCore* c, struct glEntry* s) {
     gl_handover(c, s);
     return;
   }
-  free(s->blobBuf);
+  gl_blob_release(c, s);
   s->blobBuf = (uint8_t*)malloc(s->blob.len);
   if (!s->blobBuf || !p || p->rec.handle < 0) {
     gl_spare_fail(c, s, GL_R_BLOB_READ_FAILED, 1);
@@ -665,14 +715,25 @@ static void gl_offer(struct glCore* c, struct glEntry* s) {
   s->act = GL_ACT_READ;
   s->serial = ++c->serial;
   const uint64_t cookie = ((uint64_t)(s - c->ent) << 32) | s->serial;
-  if (c->tp->ops->rc_read(c->tp, p->rec.handle, s->blob.addr, s->blob.rkey, s->blob.len, s->blobBuf, cookie) != 0)
+  if (c->tp->ops->rc_read(c->tp, p->rec.handle, s->blob.addr, s->blob.rkey, s->blob.len, s->blobBuf, cookie) != 0) {
     gl_spare_fail(c, s, GL_R_BLOB_READ_FAILED, 1);
+    return;
+  }
+  s->readBusy = 1;
+  s->readHandle = p->rec.handle;
 }
-static void gl_read_done(struct glCore* c, uint64_t cookie, int status) {
+static void gl_read_done(struct glCore* c, int handle, uint64_t cookie, int status) {
+  gl_orphans_free(c, handle, 1, cookie);  // an orphaned buffer's READ ended: now it may go
   const uint64_t idx = cookie >> 32;
   if (idx >= GL_MAX_ENTRIES) return;
   struct glEntry* s = &c->ent[idx];
-  if (!s->used || s->kind != GL_E_SPARE || s->act != GL_ACT_READ || s->serial != (uint32_t)cookie) return;
+  if (!s->used || s->kind != GL_E_SPARE || s->serial != (uint32_t)cookie || !s->readBusy) return;
+  s->readBusy = 0;
+  s->readHandle = -1;
+  if (s->act != GL_ACT_READ) {  // aborted or failed while the READ was in flight: the buffer goes now
+    gl_blob_release(c, s);
+    return;
+  }
   if (status != 0) {
     gl_spare_fail(c, s, GL_R_BLOB_READ_FAILED, 1);
     return;
@@ -736,18 +797,25 @@ static void gl_abort(struct glCore* c, struct glEntry* s, const char* why) {
   gl_sp_set(s, GL_SP_ABORTED);
   s->spReason = GL_R_ABORTED;
   s->act = GL_ACT_NONE;
-  free(s->blobBuf);
-  s->blobBuf = NULL;
+  if (!s->readBusy) gl_blob_release(c, s);  // a READ in flight keeps the buffer until it completes (gl_read_done)
   s->killAtMs = gl_mono_ms() + c->cfg.graceMs;
   gl_reg_note(c, s->nonce, s->rank);
 }
+/* The buddy's launcher QP failed, was re-paired or the buddy was replaced: an activation still in flight (WAIT, READ,
+ * OFFERED) is aborted. An ACCEPTED one is not (REVIEW_PREP fix 12): the spare is becoming the rank, and a connectivity
+ * blip of the buddy's QP must not SIGKILL it; only the buddy's explicit ABORT or a FENCE of (rank, inc) ends it. The
+ * relayed FETCH talk waits in the peer's queue until the QP is re-paired. */
 static void gl_abort_of_peer(struct glCore* c, struct glPeer* p, const char* why) {
   const int pi = (int)(p - c->peer);
   for (int i = 0; i < GL_MAX_ENTRIES; i++) {
     struct glEntry* s = &c->ent[i];
-    if (s->used && s->kind == GL_E_SPARE && s->actPeer == pi &&
-        (s->act != GL_ACT_NONE || s->sp == GL_SP_OFFERED || s->sp == GL_SP_ACCEPTED))
-      gl_abort(c, s, why);
+    if (!s->used || s->kind != GL_E_SPARE || s->actPeer != pi) continue;
+    if (s->sp == GL_SP_ACCEPTED) {
+      gl_log(c, "activation of rank %d incarnation %u is ACCEPTED: kept although %s (an ABORT or a FENCE ends it)", s->rank,
+             s->inc, why);
+      continue;
+    }
+    if (s->act != GL_ACT_NONE || s->sp == GL_SP_OFFERED) gl_abort(c, s, why);
   }
 }
 
@@ -803,13 +871,29 @@ static void gl_fence(struct glCore* c, struct glPeer* p, const struct glMsg* m) 
 
 /* ------------------------------------------------------------------------------------------------- pairing */
 
+static void gl_abort(struct glCore* c, struct glEntry* s, const char* why);
+/* rc_close: no completion of that QP follows, and no DMA: the READ buffers on it can go. An entry still reading on it is
+ * aborted (every caller aborted it first; this is the guard, and it sends nothing on the closing QP). */
+static void gl_rc_close(struct glCore* c, int handle) {
+  if (handle < 0) return;
+  c->tp->ops->rc_close(c->tp, handle);
+  for (int i = 0; i < GL_MAX_ENTRIES; i++) {
+    struct glEntry* s = &c->ent[i];
+    if (!s->used || !s->readBusy || s->readHandle != handle) continue;
+    s->readBusy = 0;
+    s->readHandle = -1;
+    if (s->act == GL_ACT_READ) gl_abort(c, s, "the QP of its blob READ closed");
+    gl_blob_release(c, s);
+  }
+  gl_orphans_free(c, handle, 0, 0);
+}
 static void gl_qp_close(struct glCore* c, struct glQp* q) {
-  if (q->handle >= 0) c->tp->ops->rc_close(c->tp, q->handle);
+  gl_rc_close(c, q->handle);
   q->handle = -1;
   q->haveAck = 0;
 }
 static void gl_repair_stop(struct glCore* c, struct glPeer* p) {
-  if (p->repair && p->repairHandle >= 0) c->tp->ops->rc_close(c->tp, p->repairHandle);
+  if (p->repair && p->repairHandle >= 0) gl_rc_close(c, p->repairHandle);
   p->repair = 0;
   p->repairHandle = -1;
 }
@@ -922,9 +1006,11 @@ static void gl_on_pair(struct glCore* c, const struct glMsg* m) {
   }
   ab.creditOff = GL_PAGE_CREDIT_OFF(p - c->peer);
   struct glQp* q = kind == GL_PAIR_RECORD ? &p->rec : &p->probe;
-  if (q->handle >= 0 && b.gen < q->gen) {
-    gl_log(c, "PAIR (%s) of rank %d generation %u older than %u: dropped", kind == GL_PAIR_RECORD ? "record" : "probe",
-           m->h.rank, b.gen, q->gen);
+  // REVIEW_PREP nit 13: an older generation is dropped whether or not its QP is still there, and so is the generation of
+  // a QP already lost (a late copy of its PAIR; a new pairing is gen + 1)
+  if (b.gen < q->gen || (q->handle < 0 && q->gen != 0 && b.gen == q->gen)) {
+    gl_log(c, "PAIR (%s) of rank %d generation %u, the paired one %u%s: dropped",
+           kind == GL_PAIR_RECORD ? "record" : "probe", m->h.rank, b.gen, q->gen, q->handle < 0 ? " (lost)" : "");
     return;
   }
   if (q->handle >= 0 && b.gen == q->gen && b.qp.qpn == q->remote.qpn && q->haveAck) {
@@ -948,7 +1034,7 @@ static void gl_on_pair(struct glCore* c, const struct glMsg* m) {
   memset(&local, 0, sizeof(local));
   int h = c->tp->ops->rc_create(c->tp, kind, b.gen, m->h.nonce, &local);
   if (h >= 0 && c->tp->ops->rc_connect(c->tp, h, &b.qp) != 0) {
-    c->tp->ops->rc_close(c->tp, h);
+    gl_rc_close(c, h);
     h = -1;
   }
   if (h < 0) {
@@ -1156,8 +1242,12 @@ static void gl_transport_events(struct glCore* c) {
           else c->st.nBadMsg++;
           break;
         case GL_TP_RC_RECV: gl_on_rc(c, ev[i].peer, &ev[i].msg); break;
-        case GL_TP_READ_DONE: gl_read_done(c, ev[i].cookie, ev[i].status); break;
+        case GL_TP_READ_DONE: gl_read_done(c, ev[i].peer, ev[i].cookie, ev[i].status); break;
         case GL_TP_RC_ERROR: gl_on_rc_error(c, ev[i].peer); break;
+        case GL_TP_FATAL:
+          if (!c->fatal) gl_log(c, "the RNIC transport failed (status %d): the launcher stops (STOP_launcher)", ev[i].status);
+          c->fatal = 1;
+          break;
         default: break;
       }
     }
@@ -1502,6 +1592,7 @@ struct glCore* gl_core_new(const struct glConfig* cfg, struct glTransport* tp) {
     c->ent[i].pidfd = -1;
     c->ent[i].conn = -1;
     c->ent[i].actPeer = -1;
+    c->ent[i].readHandle = -1;
   }
   for (int i = 0; i < GL_MAX_PEERS; i++) c->peer[i].rec.handle = c->peer[i].probe.handle = c->peer[i].repairHandle = -1;
   if (posix_memalign((void**)&c->page, 4096, sizeof(struct glPage)) != 0) {
@@ -1622,8 +1713,8 @@ int gl_core_step(struct glCore* c, int timeoutMs) {
   for (int i = 0; i < n; i++) pf[i].revents = 0;
   const int r = poll(pf, (nfds_t)n, to);
   if (r < 0 && errno != EINTR) return -1;
-  c->page->beat++;
-  c->page->monoMs = (uint64_t)gl_mono_ms();
+  gl_pw(&c->page->beat, c->page->beat + 1);
+  gl_pw(&c->page->monoMs, (uint64_t)gl_mono_ms());
   gl_transport_events(c);
   for (int i = 0; i < n; i++) {
     if (!pf[i].revents) continue;
@@ -1659,7 +1750,7 @@ int gl_core_step(struct glCore* c, int timeoutMs) {
     }
   }
   gl_transport_events(c);
-  return 0;
+  return c->fatal ? -1 : 0;
 }
 
 void gl_core_shutdown(struct glCore* c) {
@@ -1688,6 +1779,10 @@ void gl_core_free(struct glCore* c) {
   if (!c) return;
   for (int i = 0; i < GL_MAX_ENTRIES; i++)
     if (c->ent[i].used) gl_entry_free(c, &c->ent[i]);
+  for (int i = 0; i < GL_MAX_PEERS; i++)  // every QP closed before the READ buffers go (gl_core_shutdown did it already)
+    if (c->peer[i].used) gl_peer_clear(c, &c->peer[i]);
+  for (int i = 0; i < GL_MAX_ORPHANS; i++)
+    if (c->orphan[i].used) free(c->orphan[i].buf);
   for (int i = 0; i < GL_MAX_CONNS; i++)
     if (c->conn[i].used) gl_conn_close(c, i);
   if (c->listenFd >= 0) close(c->listenFd);
@@ -1761,7 +1856,8 @@ static void gl_on_term(int s) {
 
 static void gl_usage(const char* a0) {
   fprintf(stderr,
-          "usage: %s --node N --dev IBDEV [--port P] [--gid-index G] [--sock PATH] [--qkey Q]\n"
+          "usage: %s --node N --dev IBDEV [--port P] [--gid-index G] [--tc TC] [--sock PATH] [--qkey Q]\n"
+          "  --tc: the traffic class of its UD datagrams and QPs, the GIN QPs' own (default $NCCL_IB_TC, else 0).\n"
           "  --sock defaults to $%s, else $XDG_RUNTIME_DIR/gin-launcher/launcher.sock, else\n"
           "  /tmp/gin-launcher-<uid>/launcher.sock (directory mode 0700). --node defaults to $%s.\n"
           "  Test switch (research build): NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=1 sends no EXITED (FENCED and LEFT stay).\n",
@@ -1774,6 +1870,8 @@ int main(int argc, char** argv) {
   const char* dev = NULL;
   long node = nodeEnv ? strtol(nodeEnv, NULL, 0) : -1;
   int port = 1, gidIndex = 3;
+  const char* tcEnv = getenv("NCCL_IB_TC");
+  int tc = tcEnv ? atoi(tcEnv) : 0;  // design v3 2.5: the GIN QPs' GID index and traffic class
   uint32_t qkey = 0;
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
@@ -1782,6 +1880,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--dev") && v) dev = argv[++i];
     else if (!strcmp(a, "--port") && v) port = atoi(argv[++i]);
     else if (!strcmp(a, "--gid-index") && v) gidIndex = atoi(argv[++i]);
+    else if (!strcmp(a, "--tc") && v) tc = atoi(argv[++i]);
     else if (!strcmp(a, "--sock") && v) sock = argv[++i];
     else if (!strcmp(a, "--qkey") && v) qkey = (uint32_t)strtoul(argv[++i], NULL, 0);
     else {
@@ -1789,7 +1888,7 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
-  if (node < 0 || node > 0xffff || !dev) {
+  if (node < 0 || node > 0xffff || !dev || tc < 0 || tc > 255) {
     gl_usage(argv[0]);
     return 2;
   }
@@ -1812,10 +1911,11 @@ int main(int argc, char** argv) {
 #ifdef GL_NO_VERBS
   (void)port;
   (void)gidIndex;
+  (void)tc;
   fprintf(stderr, "GIN/LA: built without libibverbs headers (GL_NO_VERBS): this program cannot run\n");
   return 3;
 #else
-  struct glTransport* tp = gl_transport_verbs_open(dev, port, gidIndex, qkey, (uint32_t)node);
+  struct glTransport* tp = gl_transport_verbs_open(dev, port, gidIndex, tc, qkey, (uint32_t)node);
   if (!tp) return 3;
   struct glConfig cfg;
   memset(&cfg, 0, sizeof(cfg));

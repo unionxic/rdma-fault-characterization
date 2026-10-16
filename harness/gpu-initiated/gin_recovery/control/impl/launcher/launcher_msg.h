@@ -14,8 +14,8 @@
  *
  * Choices this header makes where the design leaves a size or value open (the rank side must match them):
  *   - glMsg = 64 B head + 192 B body; glUnixMsg = 64 B head + 192 B body.
- *   - envelope kinds: GL_ENV_KIND_LAUNCHER 4 (RC), GL_ENV_KIND_PAIR 5 (UD); RECORD 1, XFER 2, XFER_DONE 3 are the
- *     proposal for the record path (owned by rs_ctrl_api.h; if it picks other numbers this header follows it).
+ *   - envelope kinds: GL_ENV_KIND_LAUNCHER 4 (RC), GL_ENV_KIND_PAIR 5 (UD); RECORD 1, XFER 2, XFER_DONE 3 and the
+ *     rank-rank CONNECTED 6 are the record path's (owned by rs_ctrl_api.h; this header follows its numbers).
  *   - envelope `from` of a launcher: GL_FROM_LAUNCHER | node (design v2 2.3).
  *   - the launcher's Q_Key: its own 31-bit value (design v2 2.5 last line), handed out in GL_U_HELLO_ACK.
  *   - GL_U_MAX_PAYLOAD 65536: the activation blob (gdakiMiActHdr + 40 B x nranks + 40 B x nExt <= 256) fits up to
@@ -245,8 +245,10 @@ GL_STATIC_ASSERT(GL_ACT_RECORD_BYTES <= GL_U_BODY_BYTES && GL_FETCH_EP_BYTES <= 
  * ------------------------------------------------------------------------------------------------------------- */
 
 #define GL_ENV_MAGIC 0x45435247u /* "GRCE" (design v2 2.3) */
+/* GL_ENV_KIND_CONNECTED 6: rs_ctrl_api.h's bodiless first RC SEND of a rank-rank record QP (design v3 2.5 step 3); never
+ * to or from a launcher (gl_env_check refuses it: a launcher's CONNECTED is GL_K_CONNECTED inside a LAUNCHER message). */
 enum { GL_ENV_KIND_RECORD = 1, GL_ENV_KIND_XFER = 2, GL_ENV_KIND_XFER_DONE = 3, GL_ENV_KIND_LAUNCHER = 4,
-       GL_ENV_KIND_PAIR = 5 };
+       GL_ENV_KIND_PAIR = 5, GL_ENV_KIND_CONNECTED = 6 };
 #define GL_FROM_LAUNCHER 0x40000000 /* envelope `from` of a launcher: GL_FROM_LAUNCHER | node */
 
 /* The 64 B control envelope, the same field order as design v2 2.3's gdakiCtrlEnv (rs_ctrl_api.h should static_assert

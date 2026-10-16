@@ -9,6 +9,15 @@
  * while seq - ackSeq < GL_V_RQ, where ackSeq is the count the rank put into its last envelope. Past that it queues
  * (bounded) and logs. It sends no credit-only message.
  *
+ * Handles (REVIEW_PREP fix 11): an RC handle is (serial << 8) | slot; a slot is reused, its handle never, so a closed
+ * QP's completions (still in the CQ) and queued events can never be taken for a newer QP's: every completion and event
+ * is matched against the slot's current handle, and rc_close drops the queued events of the handle it closes.
+ *
+ * Address handles (REVIEW_PREP fix 13): one per destination (GID, LID), made once and kept (no ibv_create_ah per
+ * datagram), with the GIN QPs' traffic class (NCCL_IB_TC, the --tc argument; design v3 2.5); the RC QPs' path takes the
+ * same class. The CQ is shared: a QP is refused when its SQ + RQ would not fit what is left of it (REVIEW_PREP nit 12).
+ * A CQ error is fatal (GL_TP_FATAL: the launcher stops); a UD QP error resets the UD QP.
+ *
  * Built only when <infiniband/verbs.h> exists; never executed by this folder's build script (no device is opened
  * there). The unit test uses the in-process transport of launcher_unit.cc instead.
  */
@@ -26,7 +35,8 @@
 
 #include "launcher_transport.h"
 
-#define GL_V_PEERS 256
+#define GL_V_PEERS 256       /* slots; a handle is (serial << 8) | slot */
+#define GL_V_AH 256
 #define GL_V_RQ 64          /* RC RECVs per QP (= the rank's credit window toward the launcher) */
 #define GL_V_SQ 96          /* RC send slots per QP */
 #define GL_V_READS 4        /* concurrent READs per QP */
@@ -56,6 +66,8 @@ struct glVRead {
 
 struct glVPeer {
   int used, broken;
+  int handle;           /* (serial << 8) | slot, while used */
+  int cqNeed;           /* CQ entries this QP may hold (SQ + RQ) */
   int kind;             /* GL_PAIR_RECORD or GL_PAIR_PROBE */
   int connected;
   struct ibv_qp* qp;
@@ -92,14 +104,29 @@ struct glVerbs {
   uint32_t qkey, node, udPsn;
   uint8_t *udRbuf, *udSbuf;
   struct ibv_mr *udRmr, *udSmr;
-  struct ibv_ah* udAh[GL_V_UD_SQ];
+  int udBusy[GL_V_UD_SQ];   /* a send slot until its completion */
   int udNext;
+  int tc;                   /* the traffic class (GRH) of every path of this launcher */
+  struct glVAh {
+    int used;
+    uint8_t gid[16];
+    uint32_t lid;
+    struct ibv_ah* ah;
+  } ah[GL_V_AH];
+  int cqUsed;               /* CQ entries the open QPs may hold */
+  uint32_t serial;
   struct ibv_mr* pageMr;
   struct glVPeer peer[GL_V_PEERS];
   struct glTpEvent ev[GL_V_EVQ];
   int evHead, evCount;
 };
 
+/* The slot of a live handle, or NULL (a closed QP's handle, or none). */
+static struct glVPeer* gl_v_peer(struct glVerbs* v, int handle) {
+  if (handle < 0) return NULL;
+  struct glVPeer* p = &v->peer[handle & (GL_V_PEERS - 1)];
+  return p->used && p->handle == handle ? p : NULL;
+}
 static void gl_v_push(struct glVerbs* v, const struct glTpEvent* e) {
   if (v->evCount == GL_V_EVQ) {
     fprintf(stderr, "GIN/LA: verbs transport: event queue full, one event dropped\n");
@@ -108,13 +135,22 @@ static void gl_v_push(struct glVerbs* v, const struct glTpEvent* e) {
   v->ev[(v->evHead + v->evCount) % GL_V_EVQ] = *e;
   v->evCount++;
 }
-static void gl_v_error(struct glVerbs* v, int peer, int status) {
-  if (peer < 0 || peer >= GL_V_PEERS || !v->peer[peer].used || v->peer[peer].broken) return;
-  v->peer[peer].broken = 1;
+static void gl_v_error(struct glVerbs* v, int handle, int status) {
+  struct glVPeer* p = gl_v_peer(v, handle);
+  if (!p || p->broken) return;
+  p->broken = 1;
   struct glTpEvent e;
   memset(&e, 0, sizeof(e));
   e.type = GL_TP_RC_ERROR;
-  e.peer = peer;
+  e.peer = handle;
+  e.status = status;
+  gl_v_push(v, &e);
+}
+static void gl_v_fatal(struct glVerbs* v, int status) {
+  struct glTpEvent e;
+  memset(&e, 0, sizeof(e));
+  e.type = GL_TP_FATAL;
+  e.peer = -1;
   e.status = status;
   gl_v_push(v, &e);
 }
@@ -131,15 +167,16 @@ static int gl_v_post_ud_recv(struct glVerbs* v, int slot) {
   wr.num_sge = 1;
   return ibv_post_recv(v->ud, &wr, &bad);
 }
-static int gl_v_post_rc_recv(struct glVerbs* v, int peer, int slot) {
-  struct glVPeer* p = &v->peer[peer];
+static int gl_v_post_rc_recv(struct glVerbs* v, int handle, int slot) {
+  struct glVPeer* p = gl_v_peer(v, handle);
+  if (!p) return -1;
   struct ibv_sge sg;
   sg.addr = (uintptr_t)(p->rbuf + (size_t)slot * GL_WIRE_BYTES);
   sg.length = GL_WIRE_BYTES;
   sg.lkey = p->rmr->lkey;
   struct ibv_recv_wr wr, *bad = NULL;
   memset(&wr, 0, sizeof(wr));
-  wr.wr_id = wr_id(WR_RC_RECV, peer, slot);
+  wr.wr_id = wr_id(WR_RC_RECV, handle, slot);
   wr.sg_list = &sg;
   wr.num_sge = 1;
   return ibv_post_recv(p->qp, &wr, &bad);
@@ -151,8 +188,30 @@ static void gl_v_ah_attr(struct glVerbs* v, const struct glEp* to, struct ibv_ah
   memcpy(ah->grh.dgid.raw, to->gid, 16);
   ah->grh.sgid_index = (uint8_t)v->gidIndex;
   ah->grh.hop_limit = 64;
+  ah->grh.traffic_class = (uint8_t)v->tc;  // the GIN QPs' class (design v3 2.5)
   ah->dlid = (uint16_t)to->lid;
   ah->port_num = (uint8_t)v->port;
+}
+/* The address handle of a destination: made once, kept until the transport closes. */
+static struct ibv_ah* gl_v_ah_of(struct glVerbs* v, const struct glEp* to) {
+  int freeSlot = -1;
+  for (int i = 0; i < GL_V_AH; i++) {
+    if (v->ah[i].used && v->ah[i].lid == to->lid && memcmp(v->ah[i].gid, to->gid, 16) == 0) return v->ah[i].ah;
+    if (!v->ah[i].used && freeSlot < 0) freeSlot = i;
+  }
+  if (freeSlot < 0) {
+    fprintf(stderr, "GIN/LA: node %u: verbs transport: %d address handles in use: a datagram is not sent\n", v->node, GL_V_AH);
+    return NULL;
+  }
+  struct ibv_ah_attr aa;
+  gl_v_ah_attr(v, to, &aa);
+  struct ibv_ah* ah = ibv_create_ah(v->pd, &aa);
+  if (!ah) return NULL;
+  v->ah[freeSlot].used = 1;
+  memcpy(v->ah[freeSlot].gid, to->gid, 16);
+  v->ah[freeSlot].lid = to->lid;
+  v->ah[freeSlot].ah = ah;
+  return ah;
 }
 
 /* ------------------------------------------------------------------------------------------------- ops */
@@ -165,8 +224,9 @@ static int gl_v_fds(struct glTransport* tp, int* fds, int max) {
   return n;
 }
 
-static int gl_v_post_send(struct glVerbs* v, int peer, const struct glMsg* m) {
-  struct glVPeer* p = &v->peer[peer];
+static int gl_v_post_send(struct glVerbs* v, int handle, const struct glMsg* m) {
+  struct glVPeer* p = gl_v_peer(v, handle);
+  if (!p) return -1;
   const int slot = p->sNext;
   p->sNext = (p->sNext + 1) % GL_V_SQ;
   uint8_t* buf = p->sbuf + (size_t)slot * GL_WIRE_BYTES;
@@ -181,7 +241,7 @@ static int gl_v_post_send(struct glVerbs* v, int peer, const struct glMsg* m) {
   sg.lkey = p->smr->lkey;
   struct ibv_send_wr wr, *bad = NULL;
   memset(&wr, 0, sizeof(wr));
-  wr.wr_id = wr_id(WR_RC_SEND, peer, slot);
+  wr.wr_id = wr_id(WR_RC_SEND, handle, slot);
   wr.sg_list = &sg;
   wr.num_sge = 1;
   wr.opcode = IBV_WR_SEND;
@@ -192,16 +252,16 @@ static int gl_v_post_send(struct glVerbs* v, int peer, const struct glMsg* m) {
   return 0;
 }
 /* The send window is shut: READ the rank's consumed-count word once (design v2 2.2 path 3), no credit-only SEND. */
-static void gl_v_credit_read(struct glVerbs* v, int peer) {
-  struct glVPeer* p = &v->peer[peer];
-  if (p->creditReading || !p->creditMr || p->creditPage.rkey == 0 || p->sInflight >= GL_V_SQ) return;
+static void gl_v_credit_read(struct glVerbs* v, int handle) {
+  struct glVPeer* p = gl_v_peer(v, handle);
+  if (!p || p->creditReading || !p->creditMr || p->creditPage.rkey == 0 || p->sInflight >= GL_V_SQ) return;
   struct ibv_sge sg;
   sg.addr = (uintptr_t)p->creditWord;
   sg.length = 8;
   sg.lkey = p->creditMr->lkey;
   struct ibv_send_wr wr, *bad = NULL;
   memset(&wr, 0, sizeof(wr));
-  wr.wr_id = wr_id(WR_RC_CREDIT, peer, 0);
+  wr.wr_id = wr_id(WR_RC_CREDIT, handle, 0);
   wr.sg_list = &sg;
   wr.num_sge = 1;
   wr.opcode = IBV_WR_RDMA_READ;
@@ -213,11 +273,12 @@ static void gl_v_credit_read(struct glVerbs* v, int peer) {
     p->sInflight++;
   }
 }
-static void gl_v_flush(struct glVerbs* v, int peer) {
-  struct glVPeer* p = &v->peer[peer];
+static void gl_v_flush(struct glVerbs* v, int handle) {
+  struct glVPeer* p = gl_v_peer(v, handle);
+  if (!p) return;
   while (p->pCount > 0 && !p->broken && p->seqOut - p->ackIn < GL_V_RQ && p->sInflight < GL_V_SQ - GL_V_READS) {
-    if (gl_v_post_send(v, peer, &p->pend[p->pHead]) != 0) {
-      gl_v_error(v, peer, -1);
+    if (gl_v_post_send(v, handle, &p->pend[p->pHead]) != 0) {
+      gl_v_error(v, handle, -1);
       return;
     }
     p->pHead = (p->pHead + 1) % GL_V_PENDQ;
@@ -242,18 +303,18 @@ static void gl_v_on_wc(struct glVerbs* v, const struct ibv_wc* wc) {
           gl_v_push(v, &e);
         }
       }
-      if (wc->status != IBV_WC_WR_FLUSH_ERR) gl_v_post_ud_recv(v, slot);
+      if (wc->status != IBV_WC_WR_FLUSH_ERR && gl_v_post_ud_recv(v, slot) != 0)
+        fprintf(stderr, "GIN/LA: node %u: verbs transport: a UD RECV could not be posted again\n", v->node);
       return;
     }
     case WR_UD_SEND:
-      if (v->udAh[slot]) {
-        ibv_destroy_ah(v->udAh[slot]);
-        v->udAh[slot] = NULL;
-      }
+      if (slot < GL_V_UD_SQ) v->udBusy[slot] = 0;
+      if (wc->status != IBV_WC_SUCCESS && wc->status != IBV_WC_WR_FLUSH_ERR)
+        fprintf(stderr, "GIN/LA: node %u: verbs transport: a datagram failed (%s)\n", v->node, ibv_wc_status_str(wc->status));
       return;
     case WR_RC_RECV: {
-      if (peer < 0 || peer >= GL_V_PEERS || !v->peer[peer].used) return;
-      struct glVPeer* p = &v->peer[peer];
+      struct glVPeer* p = gl_v_peer(v, peer);  // a closed QP's completion: its handle is not live (fix 11)
+      if (!p) return;
       if (wc->status != IBV_WC_SUCCESS) {
         if (wc->status != IBV_WC_WR_FLUSH_ERR) gl_v_error(v, peer, (int)wc->status);
         return;
@@ -279,15 +340,16 @@ static void gl_v_on_wc(struct glVerbs* v, const struct ibv_wc* wc) {
       return;
     }
     case WR_RC_SEND: {
-      if (peer < 0 || peer >= GL_V_PEERS || !v->peer[peer].used) return;
-      v->peer[peer].sInflight--;
+      struct glVPeer* p = gl_v_peer(v, peer);
+      if (!p) return;
+      p->sInflight--;
       if (wc->status != IBV_WC_SUCCESS && wc->status != IBV_WC_WR_FLUSH_ERR) gl_v_error(v, peer, (int)wc->status);
       else gl_v_flush(v, peer);
       return;
     }
     case WR_RC_CREDIT: {  // the rank's consumed count of our messages: ((gen << 32) | count)
-      if (peer < 0 || peer >= GL_V_PEERS || !v->peer[peer].used) return;
-      struct glVPeer* p = &v->peer[peer];
+      struct glVPeer* p = gl_v_peer(v, peer);
+      if (!p) return;
       p->creditReading = 0;
       p->sInflight--;
       if (wc->status != IBV_WC_SUCCESS) {
@@ -301,8 +363,8 @@ static void gl_v_on_wc(struct glVerbs* v, const struct ibv_wc* wc) {
       return;
     }
     case WR_RC_READ: {
-      if (peer < 0 || peer >= GL_V_PEERS || !v->peer[peer].used || slot >= GL_V_READS) return;
-      struct glVPeer* p = &v->peer[peer];
+      struct glVPeer* p = gl_v_peer(v, peer);
+      if (!p || slot >= GL_V_READS) return;
       struct glVRead* r = &p->rd[slot];
       if (!r->used) return;
       p->sInflight--;
@@ -320,6 +382,7 @@ static void gl_v_on_wc(struct glVerbs* v, const struct ibv_wc* wc) {
   }
 }
 
+static int gl_v_ud_setup(struct glVerbs* v);
 static int gl_v_poll(struct glTransport* tp, struct glTpEvent* out, int max) {
   struct glVerbs* v = (struct glVerbs*)tp->impl;
   struct ibv_cq* cq;
@@ -335,14 +398,23 @@ static int gl_v_poll(struct glTransport* tp, struct glTpEvent* out, int max) {
     for (int i = 0; i < n; i++) gl_v_on_wc(v, &wc[i]);
   }
   struct ibv_async_event ae;
+  int udBroken = 0;
   while (ibv_get_async_event(v->ctx, &ae) == 0) {  // the async fd is non-blocking
     if (ae.event_type == IBV_EVENT_QP_FATAL || ae.event_type == IBV_EVENT_QP_REQ_ERR ||
         ae.event_type == IBV_EVENT_QP_ACCESS_ERR) {
+      if (ae.element.qp == v->ud) udBroken = 1;
       for (int i = 0; i < GL_V_PEERS; i++)
-        if (v->peer[i].used && v->peer[i].qp == ae.element.qp) gl_v_error(v, i, -(int)ae.event_type);
+        if (v->peer[i].used && v->peer[i].qp == ae.element.qp) gl_v_error(v, v->peer[i].handle, -(int)ae.event_type);
+    } else if (ae.event_type == IBV_EVENT_CQ_ERR) {  // every QP of the launcher is on this CQ: nothing works any more
+      fprintf(stderr, "GIN/LA: node %u: verbs transport: CQ error: every QP is lost\n", v->node);
+      gl_v_fatal(v, -(int)ae.event_type);
+    } else if (ae.event_type == IBV_EVENT_PORT_ERR || ae.event_type == IBV_EVENT_DEVICE_FATAL) {
+      fprintf(stderr, "GIN/LA: node %u: verbs transport: async event %s\n", v->node, ibv_event_type_str(ae.event_type));
+      if (ae.event_type == IBV_EVENT_DEVICE_FATAL) gl_v_fatal(v, -(int)ae.event_type);
     }
     ibv_ack_async_event(&ae);
   }
+  if (udBroken && gl_v_ud_setup(v) != 0) gl_v_fatal(v, -1);
   int k = 0;
   while (k < max && v->evCount > 0) {
     out[k++] = v->ev[v->evHead];
@@ -380,12 +452,10 @@ static int gl_v_page_register(struct glTransport* tp, void* page, size_t len, st
 static int gl_v_ud_send(struct glTransport* tp, const struct glEp* to, uint32_t qkey, const struct glMsg* m) {
   struct glVerbs* v = (struct glVerbs*)tp->impl;
   const int slot = v->udNext;
+  if (v->udBusy[slot]) return -1;  // the ring wrapped onto an unfinished send
+  struct ibv_ah* ah = gl_v_ah_of(v, to);
+  if (!ah) return -1;
   v->udNext = (v->udNext + 1) % GL_V_UD_SQ;
-  if (v->udAh[slot]) return -1;  // the ring wrapped onto an unfinished send
-  struct ibv_ah_attr aa;
-  gl_v_ah_attr(v, to, &aa);
-  v->udAh[slot] = ibv_create_ah(v->pd, &aa);
-  if (!v->udAh[slot]) return -1;
   uint8_t* buf = v->udSbuf + (size_t)slot * GL_WIRE_BYTES;
   struct glCtrlEnv e;
   gl_env_pack(&e, GL_ENV_KIND_PAIR, (int32_t)(GL_FROM_LAUNCHER | (int32_t)v->node), 0, 0, 0, m->h.nonce, 0);
@@ -402,30 +472,41 @@ static int gl_v_ud_send(struct glTransport* tp, const struct glEp* to, uint32_t 
   wr.num_sge = 1;
   wr.opcode = IBV_WR_SEND;
   wr.send_flags = IBV_SEND_SIGNALED;
-  wr.wr.ud.ah = v->udAh[slot];
+  wr.wr.ud.ah = ah;
   wr.wr.ud.remote_qpn = to->qpn;
   wr.wr.ud.remote_qkey = qkey;
-  if (ibv_post_send(v->ud, &wr, &bad) != 0) {
-    ibv_destroy_ah(v->udAh[slot]);
-    v->udAh[slot] = NULL;
-    return -1;
-  }
+  if (ibv_post_send(v->ud, &wr, &bad) != 0) return -1;
+  v->udBusy[slot] = 1;
   return 0;
 }
 
+/* The QP first (REVIEW_PREP nit 12): after ibv_destroy_qp no WR of it touches the memory below; then its MRs and
+ * buffers; then its queued events go (fix 11). */
 static void gl_v_peer_free(struct glVerbs* v, struct glVPeer* p) {
+  if (p->qp) ibv_destroy_qp(p->qp);
+  p->qp = NULL;
   for (int i = 0; i < GL_V_READS; i++)
     if (p->rd[i].used) ibv_dereg_mr(p->rd[i].mr);
   if (p->creditMr) ibv_dereg_mr(p->creditMr);
   free(p->creditWord);
-  if (p->qp) ibv_destroy_qp(p->qp);
   if (p->smr) ibv_dereg_mr(p->smr);
   if (p->rmr) ibv_dereg_mr(p->rmr);
   free(p->sbuf);
   free(p->rbuf);
   free(p->pend);
+  if (p->used && p->handle >= 0) {  // drop the queued events of this handle: none follows a close
+    const int h = p->handle;
+    int k = 0;
+    for (int i = 0; i < v->evCount; i++) {
+      const struct glTpEvent e = v->ev[(v->evHead + i) % GL_V_EVQ];
+      if (e.peer == h && e.type != GL_TP_UD_RECV && e.type != GL_TP_FATAL) continue;
+      v->ev[(v->evHead + k) % GL_V_EVQ] = e;
+      k++;
+    }
+    v->evCount = k;
+  }
+  v->cqUsed -= p->cqNeed;
   memset(p, 0, sizeof(*p));
-  (void)v;
 }
 
 static int gl_v_rc_create(struct glTransport* tp, int kind, uint32_t gen, uint64_t nonce, struct glEp* local) {
@@ -434,13 +515,24 @@ static int gl_v_rc_create(struct glTransport* tp, int kind, uint32_t gen, uint64
   for (int i = 0; i < GL_V_PEERS && pi < 0; i++)
     if (!v->peer[i].used) pi = i;
   if (pi < 0) return -1;
+  const int rec = kind == GL_PAIR_RECORD;
+  const int need = rec ? GL_V_SQ + GL_V_RQ : 2;
+  if (v->cqUsed + need > GL_V_CQ) {  // nit 12: the shared CQ must hold every open QP's SQ and RQ
+    fprintf(stderr, "GIN/LA: node %u: verbs transport: the CQ (%d) cannot take another QP (%d in use): refused\n", v->node,
+            GL_V_CQ, v->cqUsed);
+    return -1;
+  }
   struct glVPeer* p = &v->peer[pi];
   memset(p, 0, sizeof(*p));
   p->used = 1;
+  v->serial = (v->serial + 1) & 0x3fffffu;  // 22 bits: a handle stays a positive int
+  if (v->serial == 0) v->serial = 1;
+  p->handle = (int)((v->serial << 8) | (uint32_t)pi);
+  p->cqNeed = need;
+  v->cqUsed += need;
   p->kind = kind;
   p->gen = gen;
   p->nonce = nonce;
-  const int rec = kind == GL_PAIR_RECORD;
   if (rec) {
     p->sbuf = (uint8_t*)calloc(GL_V_SQ, GL_WIRE_BYTES);
     p->rbuf = (uint8_t*)calloc(GL_V_RQ, GL_WIRE_BYTES);
@@ -472,7 +564,7 @@ static int gl_v_rc_create(struct glTransport* tp, int kind, uint32_t gen, uint64
   if (ibv_modify_qp(p->qp, &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS)) goto fail;
   if (rec)
     for (int s = 0; s < GL_V_RQ; s++)  // RECVs before RTR (design v2 2.2)
-      if (gl_v_post_rc_recv(v, pi, s) != 0) goto fail;
+      if (gl_v_post_rc_recv(v, p->handle, s) != 0) goto fail;
   {  // a fresh random PSN for every QP (REVIEW2 block 4: never a RESET QP's old PSN)
     uint32_t psn = 0;
     const int f = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
@@ -491,7 +583,7 @@ static int gl_v_rc_create(struct glTransport* tp, int kind, uint32_t gen, uint64
   local->gidIndex = v->gidIndex;
   local->version = GL_EP_VERSION;
   local->qpType = GL_QPT_RC;
-  return pi;
+  return p->handle;
 fail:
   fprintf(stderr, "GIN/LA: verbs transport: an RC QP for a rank could not be set up: %s\n", strerror(errno));
   gl_v_peer_free(v, p);
@@ -500,8 +592,8 @@ fail:
 
 static int gl_v_rc_connect(struct glTransport* tp, int handle, const struct glEp* remote) {
   struct glVerbs* v = (struct glVerbs*)tp->impl;
-  if (handle < 0 || handle >= GL_V_PEERS || !v->peer[handle].used || v->peer[handle].connected) return -1;
-  struct glVPeer* p = &v->peer[handle];
+  struct glVPeer* p = gl_v_peer(v, handle);
+  if (!p || p->connected) return -1;
   struct ibv_qp_attr a;
   memset(&a, 0, sizeof(a));
   a.qp_state = IBV_QPS_RTR;
@@ -530,35 +622,36 @@ static int gl_v_rc_connect(struct glTransport* tp, int handle, const struct glEp
   return 0;
 }
 
-static void gl_v_rc_credit_at(struct glTransport* tp, int peer, const struct glRegion* page, uint32_t creditOff) {
+static void gl_v_rc_credit_at(struct glTransport* tp, int handle, const struct glRegion* page, uint32_t creditOff) {
   struct glVerbs* v = (struct glVerbs*)tp->impl;
-  if (peer < 0 || peer >= GL_V_PEERS || !v->peer[peer].used) return;
-  v->peer[peer].creditPage = *page;
-  v->peer[peer].creditOff = creditOff;
+  struct glVPeer* p = gl_v_peer(v, handle);
+  if (!p) return;
+  p->creditPage = *page;
+  p->creditOff = creditOff;
 }
 
-static int gl_v_rc_send(struct glTransport* tp, int peer, const struct glMsg* m) {
+static int gl_v_rc_send(struct glTransport* tp, int handle, const struct glMsg* m) {
   struct glVerbs* v = (struct glVerbs*)tp->impl;
-  if (peer < 0 || peer >= GL_V_PEERS || !v->peer[peer].used || v->peer[peer].broken) return -1;
-  struct glVPeer* p = &v->peer[peer];
+  struct glVPeer* p = gl_v_peer(v, handle);
+  if (!p || p->broken) return -1;
   if (p->kind != GL_PAIR_RECORD || !p->connected) return -1;
   if (p->pCount == 0 && p->seqOut - p->ackIn < GL_V_RQ && p->sInflight < GL_V_SQ - GL_V_READS)
-    return gl_v_post_send(v, peer, m);
+    return gl_v_post_send(v, handle, m);
   if (p->pCount == GL_V_PENDQ) return -1;
   if (p->pCount == 0)
     fprintf(stderr, "GIN/LA: node %u: send window to a rank exhausted (seq %llu, its ack %llu): queued\n", v->node,
             (unsigned long long)p->seqOut, (unsigned long long)p->ackIn);
-  gl_v_credit_read(v, peer);
+  gl_v_credit_read(v, handle);
   p->pend[(p->pHead + p->pCount) % GL_V_PENDQ] = *m;
   p->pCount++;
   return 0;
 }
 
-static int gl_v_rc_read(struct glTransport* tp, int peer, uint64_t addr, uint32_t rkey, uint32_t len, void* dst,
+static int gl_v_rc_read(struct glTransport* tp, int handle, uint64_t addr, uint32_t rkey, uint32_t len, void* dst,
                         uint64_t cookie) {
   struct glVerbs* v = (struct glVerbs*)tp->impl;
-  if (peer < 0 || peer >= GL_V_PEERS || !v->peer[peer].used || v->peer[peer].broken) return -1;
-  struct glVPeer* p = &v->peer[peer];
+  struct glVPeer* p = gl_v_peer(v, handle);
+  if (!p || p->broken) return -1;
   int slot = -1;
   for (int i = 0; i < GL_V_READS && slot < 0; i++)
     if (!p->rd[i].used) slot = i;
@@ -571,7 +664,7 @@ static int gl_v_rc_read(struct glTransport* tp, int peer, uint64_t addr, uint32_
   sg.lkey = mr->lkey;
   struct ibv_send_wr wr, *bad = NULL;
   memset(&wr, 0, sizeof(wr));
-  wr.wr_id = wr_id(WR_RC_READ, peer, slot);
+  wr.wr_id = wr_id(WR_RC_READ, handle, slot);
   wr.sg_list = &sg;
   wr.num_sge = 1;
   wr.opcode = IBV_WR_RDMA_READ;
@@ -589,10 +682,11 @@ static int gl_v_rc_read(struct glTransport* tp, int peer, uint64_t addr, uint32_
   return 0;
 }
 
-static void gl_v_rc_close(struct glTransport* tp, int peer) {
+static void gl_v_rc_close(struct glTransport* tp, int handle) {
   struct glVerbs* v = (struct glVerbs*)tp->impl;
-  if (peer < 0 || peer >= GL_V_PEERS || !v->peer[peer].used) return;
-  gl_v_peer_free(v, &v->peer[peer]);
+  struct glVPeer* p = gl_v_peer(v, handle);
+  if (!p) return;
+  gl_v_peer_free(v, p);
 }
 
 static void gl_v_close(struct glTransport* tp) {
@@ -600,8 +694,8 @@ static void gl_v_close(struct glTransport* tp) {
   for (int i = 0; i < GL_V_PEERS; i++)
     if (v->peer[i].used) gl_v_peer_free(v, &v->peer[i]);
   if (v->ud) ibv_destroy_qp(v->ud);
-  for (int i = 0; i < GL_V_UD_SQ; i++)
-    if (v->udAh[i]) ibv_destroy_ah(v->udAh[i]);
+  for (int i = 0; i < GL_V_AH; i++)  // after the UD QP: no datagram of it refers to them any more
+    if (v->ah[i].used) ibv_destroy_ah(v->ah[i].ah);
   if (v->udRmr) ibv_dereg_mr(v->udRmr);
   if (v->udSmr) ibv_dereg_mr(v->udSmr);
   if (v->pageMr) ibv_dereg_mr(v->pageMr);
@@ -624,7 +718,48 @@ static int gl_v_nonblock(int fd) {
   return fl < 0 ? -1 : fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
-struct glTransport* gl_transport_verbs_open(const char* dev, int port, int gidIndex, uint32_t qkey, uint32_t node) {
+/* The UD QP to RTS with its RECVs posted: at the open, and again after an error of it (RESET first). 0 ok. */
+static int gl_v_ud_setup(struct glVerbs* v) {
+  struct ibv_qp_attr a;
+  if (v->ud) {
+    memset(&a, 0, sizeof(a));
+    a.qp_state = IBV_QPS_RESET;
+    if (ibv_modify_qp(v->ud, &a, IBV_QP_STATE)) return -1;
+    for (int s = 0; s < GL_V_UD_SQ; s++) v->udBusy[s] = 0;  // a RESET QP completes nothing more
+    fprintf(stderr, "GIN/LA: node %u: verbs transport: the UD QP was in error: reset and set up again\n", v->node);
+  } else {
+    struct ibv_qp_init_attr ia;
+    memset(&ia, 0, sizeof(ia));
+    ia.send_cq = v->cq;
+    ia.recv_cq = v->cq;
+    ia.qp_type = IBV_QPT_UD;
+    ia.cap.max_send_wr = GL_V_UD_SQ;
+    ia.cap.max_recv_wr = GL_V_UD_RQ;
+    ia.cap.max_send_sge = 1;
+    ia.cap.max_recv_sge = 1;
+    v->ud = ibv_create_qp(v->pd, &ia);
+    if (!v->ud) return -1;
+  }
+  memset(&a, 0, sizeof(a));
+  a.qp_state = IBV_QPS_INIT;
+  a.pkey_index = 0;
+  a.port_num = (uint8_t)v->port;
+  a.qkey = v->qkey;  // the launcher's own Q_Key (design v2 2.5)
+  if (ibv_modify_qp(v->ud, &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_QKEY)) return -1;
+  for (int s = 0; s < GL_V_UD_RQ; s++)
+    if (gl_v_post_ud_recv(v, s)) return -1;
+  memset(&a, 0, sizeof(a));
+  a.qp_state = IBV_QPS_RTR;
+  if (ibv_modify_qp(v->ud, &a, IBV_QP_STATE)) return -1;
+  memset(&a, 0, sizeof(a));
+  a.qp_state = IBV_QPS_RTS;
+  a.sq_psn = 0;
+  v->udPsn = 0;
+  return ibv_modify_qp(v->ud, &a, IBV_QP_STATE | IBV_QP_SQ_PSN) ? -1 : 0;
+}
+
+struct glTransport* gl_transport_verbs_open(const char* dev, int port, int gidIndex, int trafficClass, uint32_t qkey,
+                                            uint32_t node) {
   struct glTransport* tp = (struct glTransport*)calloc(1, sizeof(*tp));
   struct glVerbs* v = (struct glVerbs*)calloc(1, sizeof(*v));
   if (!tp || !v) {
@@ -636,6 +771,7 @@ struct glTransport* gl_transport_verbs_open(const char* dev, int port, int gidIn
   tp->impl = v;
   v->port = port;
   v->gidIndex = gidIndex;
+  v->tc = trafficClass;
   v->qkey = qkey & 0x7fffffffu;
   v->node = node;
   int nd = 0;
@@ -664,36 +800,8 @@ struct glTransport* gl_transport_verbs_open(const char* dev, int port, int gidIn
   v->udSmr = ibv_reg_mr(v->pd, v->udSbuf, (size_t)GL_V_UD_SQ * GL_WIRE_BYTES, 0);
   if (!v->udRmr || !v->udSmr) goto fail;
   step = "the UD QP";
-  {
-    struct ibv_qp_init_attr ia;
-    memset(&ia, 0, sizeof(ia));
-    ia.send_cq = v->cq;
-    ia.recv_cq = v->cq;
-    ia.qp_type = IBV_QPT_UD;
-    ia.cap.max_send_wr = GL_V_UD_SQ;
-    ia.cap.max_recv_wr = GL_V_UD_RQ;
-    ia.cap.max_send_sge = 1;
-    ia.cap.max_recv_sge = 1;
-    v->ud = ibv_create_qp(v->pd, &ia);
-    if (!v->ud) goto fail;
-    struct ibv_qp_attr a;
-    memset(&a, 0, sizeof(a));
-    a.qp_state = IBV_QPS_INIT;
-    a.pkey_index = 0;
-    a.port_num = (uint8_t)port;
-    a.qkey = v->qkey;  // the launcher's own Q_Key (design v2 2.5)
-    if (ibv_modify_qp(v->ud, &a, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_QKEY)) goto fail;
-    for (int s = 0; s < GL_V_UD_RQ; s++)
-      if (gl_v_post_ud_recv(v, s)) goto fail;
-    memset(&a, 0, sizeof(a));
-    a.qp_state = IBV_QPS_RTR;
-    if (ibv_modify_qp(v->ud, &a, IBV_QP_STATE)) goto fail;
-    memset(&a, 0, sizeof(a));
-    a.qp_state = IBV_QPS_RTS;
-    a.sq_psn = 0;
-    v->udPsn = 0;
-    if (ibv_modify_qp(v->ud, &a, IBV_QP_STATE | IBV_QP_SQ_PSN)) goto fail;
-  }
+  v->cqUsed = GL_V_UD_SQ + GL_V_UD_RQ;
+  if (gl_v_ud_setup(v) != 0) goto fail;
   return tp;
 fail:
   fprintf(stderr, "GIN/LA: verbs transport on %s port %d: could not %s (%s)\n", dev, port, step, strerror(errno));

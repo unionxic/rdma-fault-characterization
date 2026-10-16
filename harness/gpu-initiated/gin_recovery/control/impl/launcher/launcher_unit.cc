@@ -12,7 +12,10 @@
 // SPAWN -> REFUSED "spawn not built"; LATER then hand-over (the hand-over gap); spare exits before activation; the
 // early-answer bound (no answer but LATER until READY, failure, exit or ABORT); the lost ACCEPTED; second connection
 // with the same incarnation; re-registration swaps the pidfd and closes the old one; pairing; the registration oracle
-// (when the path exists the arming decision equals today's); the socket directory; malformed messages; the page.
+// (the path's every condition against the launcher's own words); the socket directory; malformed messages; the page;
+// (REVIEW_PREP) an ABORT, an exit or a QP loss while the blob READ is in flight (the buffer outlives the READ: ASan sees a
+// write into freed heap otherwise); a closed QP's queued events never reach a newer QP that took its slot; after
+// ACCEPTED a blip of the buddy's QP does not SIGKILL the revived process.
 #include <cerrno>
 #include <cinttypes>
 #include <cstdio>
@@ -99,13 +102,18 @@ struct TT {
   };
   std::vector<Read> reads;
   bool failRead = false;
+  bool holdReads = false;   // READs stay in flight until release_reads (the verbs transport's real timing)
   int nRcOpen = 0;
+  // handle numbering: by default every QP a new number (nextHandle++). slotMode: as the verbs transport, a slot is reused
+  // and the handle is (serial << 8) | slot; noSerial (the negative control): the handle is the slot alone, reused.
+  bool slotMode = false, noSerial = false;
+  uint32_t serial = 0;
+  int nReadsDropped = 0;
 };
 static TT* tt_of(glTransport* tp) { return (TT*)tp->impl; }
 static int tt_fds(glTransport*, int*, int) { return 0; }
-static int tt_poll(glTransport* tp, glTpEvent* ev, int max) {
-  TT* t = tt_of(tp);
-  for (const TT::Read& r : t->reads) {  // complete READs on the next poll
+static void tt_complete_reads(TT* t) {
+  for (const TT::Read& r : t->reads) {
     glTpEvent e;
     memset(&e, 0, sizeof(e));
     e.type = GL_TP_READ_DONE;
@@ -119,6 +127,10 @@ static int tt_poll(glTransport* tp, glTpEvent* ev, int max) {
     t->in.push_back(e);
   }
   t->reads.clear();
+}
+static int tt_poll(glTransport* tp, glTpEvent* ev, int max) {
+  TT* t = tt_of(tp);
+  if (!t->holdReads) tt_complete_reads(t);  // complete READs on the next poll
   int k = 0;
   while (k < max && !t->in.empty()) {
     ev[k++] = t->in.front();
@@ -148,7 +160,20 @@ static int tt_ud_send(glTransport* tp, const glEp* to, uint32_t qkey, const glMs
 }
 static int tt_rc_create(glTransport* tp, int kind, uint32_t, uint64_t, glEp* local) {
   TT* t = tt_of(tp);
-  const int h = t->nextHandle++;
+  int h = t->nextHandle++;
+  if (t->slotMode) {  // the lowest slot not open, as the verbs transport picks its slot
+    int slot = 0;
+    for (;; slot++) {
+      bool busy = false;
+      for (const auto& o : t->open)
+        if (o.second && (o.first & 0xff) == slot) busy = true;
+      if (!busy) break;
+    }
+    t->serial = (t->serial + 1) & 0x3fffffu;
+    h = t->noSerial ? slot : (int)((t->serial << 8) | (uint32_t)slot);
+    t->connected[h] = false;
+    t->remote.erase(h);
+  }
   t->open[h] = true;
   t->kind[h] = kind;
   t->nRcOpen++;
@@ -178,7 +203,19 @@ static int tt_rc_read(glTransport* tp, int peer, uint64_t addr, uint32_t rkey, u
   tt_of(tp)->reads.push_back({peer, addr, rkey, len, dst, cookie});
   return 0;
 }
-static void tt_rc_close(glTransport* tp, int peer) { tt_of(tp)->open[peer] = false; }
+// The contract (launcher_transport.h): after rc_close no event of that QP comes and no READ writes into its buffer.
+static void tt_rc_close(glTransport* tp, int peer) {
+  TT* t = tt_of(tp);
+  t->open[peer] = false;
+  for (size_t i = t->reads.size(); i-- > 0;)
+    if (t->reads[i].peer == peer) {
+      t->reads.erase(t->reads.begin() + (long)i);
+      t->nReadsDropped++;
+    }
+  if (!t->noSerial)  // the negative control keeps the old behaviour: the queued events stay
+    for (size_t i = t->in.size(); i-- > 0;)
+      if (t->in[i].peer == peer && t->in[i].type != GL_TP_UD_RECV) t->in.erase(t->in.begin() + (long)i);
+}
 static void tt_close(glTransport*) {}
 static const glTransportOps tt_ops = {tt_fds,        tt_poll,    tt_local_ud,  tt_page,     tt_ud_send, tt_rc_create,
                                       tt_rc_connect, tt_rc_send, tt_rc_read, tt_credit_at, tt_rc_close, tt_close};
@@ -1426,6 +1463,9 @@ static void test_lost_accepted() {
     CHECK(as_u(got) && as_u(got)->h.sub == GL_UT_ABORT);
     act_done(a);
   }
+  // REVIEW_PREP fix 12: after ACCEPTED the buddy's launcher QP fails (a blip): the revived process is not aborted or
+  // SIGKILLed; its FETCH endpoint waits in the queue and goes out on the re-paired QP after CONNECTED. Only the buddy's
+  // explicit ABORT (or a FENCE) ends an ACCEPTED activation.
   {
     Act a = act_setup();
     spare_ready(a);
@@ -1434,20 +1474,144 @@ static void test_lost_accepted() {
     kid_res(a.l, a.s);
     kid_cmd(a.s, 'a');
     CHECK(pump_until(a.l, [&] { return count_kind(a.l, a.hb, GL_K_ACT_ANSWER) == 1; }));
+    const size_t s0 = gSignals.size();
     glTpEvent e;
     memset(&e, 0, sizeof(e));
     e.type = GL_TP_RC_ERROR;
     e.peer = a.hb;
     a.l.t->in.push_back(e);  // the buddy's launcher QP fails after ACCEPTED
+    pump(a.l, 5);
+    CHECK(!a.l.t->open[a.hb]);
+    kid_cmd(a.s, 'E');  // its FETCH endpoint: queued, not lost
+    pump(a.l, 300);     // longer than the grace (200 ms): nothing is signalled
+    CHECK(entry(a.l, N1, 3, 2, 1, &v) && v.sp == GL_SP_ACCEPTED && !v.dead);
+    CHECK(gSignals.size() == s0 && proc_state(a.s.pid) != 'Z' && proc_state(a.s.pid) != '-');
+    glPeerView pv;
+    CHECK(gl_core_peer(a.l.c, N1, 2, &pv) && pv.repair == 1 && pv.queued >= 1);
+    // the buddy re-pairs (its PAIR of the next generation) and says CONNECTED: the queued FETCH_EP goes out
+    const int h2 = pair_rank(a.l, 2, 0, N1, 2, true);
+    CHECK(pump_until(a.l, [&] { return count_kind(a.l, h2, GL_K_FETCH_EP) == 1; }));
+    // a second blip, then the buddy's explicit ABORT: that one ends it (the spare is told; SIGKILL after the grace)
+    memset(&e, 0, sizeof(e));
+    e.type = GL_TP_RC_ERROR;
+    e.peer = h2;
+    a.l.t->in.push_back(e);
+    pump(a.l, 5);
+    CHECK(entry(a.l, N1, 3, 2, 1, &v) && v.sp == GL_SP_ACCEPTED);
+    const int h3 = pair_rank(a.l, 2, 0, N1, 3, true);
+    rc_in(a.l, h3, mk(GL_K_ABORT, 3, 1, N1, 2));
     kid_cmd(a.s, 'h');
     std::vector<uint8_t> got = kid_res(a.l, a.s);
     CHECK(as_u(got) && as_u(got)->h.sub == GL_UT_ABORT);
-    CHECK(entry(a.l, N1, 3, 2, 1, &v) && v.sp == GL_SP_ABORTED);
-    kid_cmd(a.s, 'E');  // its FETCH endpoint now goes nowhere
-    pump(a.l, 20);
-    CHECK(count_kind(a.l, a.hb, GL_K_FETCH_EP) == 0);
-    CHECK(!a.l.t->open[a.hb]);
+    CHECK(pump_until(a.l, [&] { return gSignals.size() == s0 + 1; }, 1500) && gSignals.back().pid == a.s.pid);
     act_done(a);
+  }
+}
+
+// REVIEW_PREP fix 10: the blob READ is in flight (the verbs transport's NIC writes into the buffer when it completes).
+// An ABORT, the spare's exit or the QP's loss in that window must not free the buffer before the completion (or before
+// the QP is closed, after which no write comes). ASan reports a heap-use-after-free on the late write otherwise, and
+// LeakSanitizer a buffer never freed.
+static void test_abort_during_read() {
+  glEntryView v;
+  // (1) ABORT while the READ is in flight, then the READ completes into the buffer: no hand-over, no answer
+  {
+    Act a = act_setup();
+    a.l.t->holdReads = true;
+    spare_ready(a);
+    rc_in(a.l, a.hb, mk_activate(3, 1, N1, 3000));
+    pump(a.l, 5);
+    CHECK(entry(a.l, N1, 3, 2, 1, &v) && v.act == 2 && a.l.t->reads.size() == 1);  // reading
+    rc_in(a.l, a.hb, mk(GL_K_ABORT, 3, 1, N1, 2));
+    pump(a.l, 5);
+    CHECK(entry(a.l, N1, 3, 2, 1, &v) && v.sp == GL_SP_ABORTED && a.l.t->reads.size() == 1);
+    tt_complete_reads(a.l.t);  // the late write: into a buffer that must still be the launcher's
+    a.l.t->holdReads = false;
+    pump(a.l, 5);
+    kid_cmd(a.s, 'h');
+    std::vector<uint8_t> got = kid_res(a.l, a.s);
+    CHECK(as_u(got) && as_u(got)->h.kind == GL_U_ACT_TALK && as_u(got)->h.sub == GL_UT_ABORT);  // no ACT_BYTES first
+    CHECK(count_kind(a.l, a.hb, GL_K_ACT_ANSWER) == 0);
+    act_done(a);
+  }
+  // (2) the spare exits while the READ is in flight: REFUSED (spare exited); the late completion frees the buffer;
+  //     then a new HELLO of the same (rank, incarnation) reuses the dead spare's slot
+  {
+    Act a = act_setup();
+    a.l.t->holdReads = true;
+    spare_ready(a);
+    rc_in(a.l, a.hb, mk_activate(3, 1, N1, 2000));
+    pump(a.l, 5);
+    kid_cmd(a.s, 'x');
+    CHECK(pump_until(a.l, [&] { return count_kind(a.l, a.hb, GL_K_ACT_ANSWER) == 1; }));
+    CHECK(answer_kind(last_kind(a.l, a.hb, GL_K_ACT_ANSWER)) == GL_RS_ACT_REFUSED && a.l.t->reads.size() == 1);
+    reap(a.s);
+    Kid s2 = kid_registered(a.l, K_SPARE, 3, 1, N1);  // the dead spare's slot is reset while its READ is in flight
+    CHECK(entry(a.l, N1, 3, 2, 1, &v) && v.sp == GL_SP_REPLAYING && !v.dead);
+    tt_complete_reads(a.l.t);
+    a.l.t->holdReads = false;
+    pump(a.l, 5);
+    CHECK(entry(a.l, N1, 3, 2, 1, &v) && v.sp == GL_SP_REPLAYING && v.act == 0);  // the old READ's end changes nothing
+    reap(s2);
+    act_done(a);
+  }
+  // (3) the buddy's QP is lost while the READ is in flight: the activation aborts, the QP closes (the transport drops
+  //     the READ: no completion, no write) and the buffer goes with the close
+  {
+    Act a = act_setup();
+    a.l.t->holdReads = true;
+    spare_ready(a);
+    rc_in(a.l, a.hb, mk_activate(3, 1, N1, 1000));
+    pump(a.l, 5);
+    const int dropped0 = a.l.t->nReadsDropped;
+    glTpEvent e;
+    memset(&e, 0, sizeof(e));
+    e.type = GL_TP_RC_ERROR;
+    e.peer = a.hb;
+    a.l.t->in.push_back(e);
+    pump(a.l, 5);
+    CHECK(a.l.t->nReadsDropped == dropped0 + 1 && a.l.t->reads.empty() && !a.l.t->open[a.hb]);
+    CHECK(entry(a.l, N1, 3, 2, 1, &v) && v.sp == GL_SP_ABORTED);
+    a.l.t->holdReads = false;
+    act_done(a);
+  }
+}
+
+// REVIEW_PREP fix 11: a closed QP's handle is never another QP's. The test transport numbers handles as the verbs
+// transport does (a reused slot, a new serial). Events of the old record QP that were queued when the rank re-paired it
+// (an RC_RECV and an RC_ERROR) must not reach the new QP in the same slot. The negative control (noSerial: the slot
+// number alone, the queued events kept) shows the scene would catch it: there the old error re-pairs the new QP.
+static void test_handle_reuse() {
+  for (int control = 0; control <= 1; control++) {
+    L l = mk_launcher(12, getuid());
+    l.t->slotMode = true;
+    l.t->noSerial = control == 1;
+    glPeerView pv;
+    pair_rank(l, 1, 0, N1, 1, false);
+    CHECK(gl_core_peer(l.c, N1, 1, &pv));
+    const int h1 = pv.recHandle;
+    rc_in(l, h1, mk(GL_K_CONNECTED, 1, 0, N1, 1));
+    gl_core_step(l.c, 0);
+    // one batch of events: the rank's PAIR of generation 2 (it replaces the QP), then the old QP's leftovers (an error
+    // and a message, as a CQ drained after the new QP was made would give them)
+    glTpEvent e;
+    memset(&e, 0, sizeof(e));
+    e.type = GL_TP_RC_ERROR;
+    e.peer = h1;
+    ud_in(l, mk_pair(1, 0, N1, 2, GL_PAIR_RECORD, 222));
+    l.t->in.push_back(e);
+    rc_in(l, h1, mk(GL_K_SPAWN, 3, 1, N1, 1));
+    const unsigned rs0 = gl_core_stats(l.c)->nRepairStarted, sp0 = gl_core_stats(l.c)->nSpawnRefused;
+    gl_core_step(l.c, 0);
+    CHECK(gl_core_peer(l.c, N1, 1, &pv));
+    if (control == 0) {  // a new handle in the old slot: the leftovers reach nothing
+      const int h2 = pv.recHandle;
+      CHECK(h2 >= 0 && (h2 & 0xff) == (h1 & 0xff) && h2 != h1 && l.t->open[h2] && pv.recGen == 2 && pv.repair == 0 &&
+            gl_core_stats(l.c)->nRepairStarted == rs0 && gl_core_stats(l.c)->nSpawnRefused == sp0 && pv.consumed == 0);
+    } else {  // the same number: the old QP's error is taken for the new QP's, which is torn down and re-paired
+      CHECK(gl_core_stats(l.c)->nRepairStarted == rs0 + 1 && pv.recHandle == -1 && pv.repair == 1);
+    }
+    rm_launcher(l);
   }
 }
 
@@ -1572,12 +1736,29 @@ static void test_pairing() {
   ud_in(l, mk_pair(1, 0, N1, 2, GL_PAIR_PROBE, 778));
   gl_core_step(l.c, 0);
   CHECK(l.t->open[hp2] && l.t->kind[hp2] == GL_PAIR_PROBE && l.t->open[h]);
+  // REVIEW_PREP nit 13: the probe QP of generation 2 is lost; a late copy of its generation-2 PAIR is dropped (no new
+  // QP), generation 3 pairs
+  {
+    memset(&e, 0, sizeof(e));
+    e.type = GL_TP_RC_ERROR;
+    e.peer = hp2;
+    l.t->in.push_back(e);
+    gl_core_step(l.c, 0);
+    const int nOpen = l.t->nRcOpen;
+    ud_in(l, mk_pair(1, 0, N1, 2, GL_PAIR_PROBE, 778));
+    gl_core_step(l.c, 0);
+    CHECK(l.t->nRcOpen == nOpen && gl_core_peer(l.c, N1, 1, &pv) && pv.probeHandle == -1 && pv.probeGen == 2);
+  }
+  const int hp3 = l.t->nextHandle;
+  ud_in(l, mk_pair(1, 0, N1, 3, GL_PAIR_PROBE, 779));
+  gl_core_step(l.c, 0);
+  CHECK(l.t->open[hp3] && gl_core_peer(l.c, N1, 1, &pv) && pv.probeHandle == hp3 && pv.probeGen == 3);
   // an older record generation: dropped; a newer one: the old record QP is closed, a new one opened
   const size_t ud1 = l.t->ud.size();
   pair_rank(l, 1, 0, N1, 0, false);
   CHECK(l.t->ud.size() == ud1 && l.t->open[h]);
   const int h2 = pair_rank(l, 1, 0, N1, 2, true);
-  CHECK(!l.t->open[h] && l.t->open[h2] && l.t->open[hp2]);
+  CHECK(!l.t->open[h] && l.t->open[h2] && l.t->open[hp3]);
   CHECK(gl_core_peer(l.c, N1, 1, &pv) && pv.recGen == 2 && pv.consumed == 1);  // a new generation counts from 0
   CHECK(pg->credit[pv.slot].consumed == ((2ull << 32) | 1u));
   // the launcher starts the re-pairing when its record QP fails (REVIEW2 block 4: either side starts)
@@ -1634,7 +1815,7 @@ static void test_pairing() {
   CHECK(!l.t->open[own] && l.t->open[h4] && gl_core_peer(l.c, N1, 1, &pv) && pv.repair == 0 && pv.recGen == 4);
   // the revived incarnation pairs again (incarnation 1): new QPs; the old incarnation's PAIR is then stale
   const int h5 = pair_rank(l, 1, 1, N1, 1, true);
-  CHECK(!l.t->open[h4] && !l.t->open[hp2] && l.t->open[h5]);
+  CHECK(!l.t->open[h4] && !l.t->open[hp3] && l.t->open[h5]);
   const size_t ud2 = l.t->ud.size();
   pair_rank(l, 1, 0, N1, 9, false);
   CHECK(l.t->ud.size() == ud2);
@@ -1672,16 +1853,17 @@ static void view_from(L& l, int h, const std::vector<uint8_t>& helloAck, uint32_
   v->allPaired = v->ownPaired && otherPaired;
   v->leaving = leaving;
 }
+// One check per scene (REVIEW_PREP nit 10: the former four of five per call compared gl_armable with the same expression):
+// the scene's ground truth (written by hand from what the scene did) against the launcher's words through the path test,
+// and the arming bit against today's decision with that ground truth for both values of allArmable.
+static int gOracleScenes = 0;
 static void oracle_check(const glArmView& v, int expectPath, const char* scene) {
+  gOracleScenes++;
   const int path = gl_path_exists(&v);
-  CHECK(path == expectPath);
-  for (int all = 0; all <= 1; all++) {
-    const int now = gl_armable(all, &v);
-    CHECK(now == today_armable(all, path));     // the path plays today's "spare registered"
-    if (path) CHECK(now == today_armable(all, 1));  // when the path exists: today's decision
-    else CHECK(now == 0);
-  }
-  if (path != expectPath) fprintf(stderr, "oracle scene %s: path %d, expected %d\n", scene, path, expectPath);
+  const bool ok = path == expectPath && gl_armable(1, &v) == today_armable(1, expectPath) &&
+                  gl_armable(0, &v) == today_armable(0, expectPath);
+  CHECK(ok);
+  if (!ok) fprintf(stderr, "oracle scene %s: path %d, expected %d\n", scene, path, expectPath);
 }
 static void test_registration_oracle() {
   L l = mk_launcher(9, getuid());
@@ -1708,6 +1890,26 @@ static void test_registration_oracle() {
     const glPageReg& r = pg->reg[ha.pageSlot < (uint32_t)GL_PAGE_REGS ? ha.pageSlot : 0];
     CHECK(r.nonce == N1 && r.reg == gl_page_word(GL_RS_ALIVE, 3, 0) && r.spare == gl_page_word(GL_SP_REPLAYING, 3, 1));
   }
+  // S1b: a HELLO for incarnation 2 while 0 is registered: refused by the launcher (not the next incarnation); the noted
+  //      spare stays incarnation 1's: path
+  {
+    uint32_t st2 = 9;
+    Kid bad = kid_registered(l, K_SPARE, 3, 2, N1, &st2);
+    pump(l, 5);
+    CHECK(st2 == GL_UA_REFUSED);
+    view_from(l, h, ack, 0, true, false, &v);
+    oracle_check(v, 1, "a HELLO two incarnations ahead is refused");
+    reap(bad);
+  }
+  // S1c: the view of incarnation 1 against the launcher's words for 0 (a stale REGISTER answer): no path
+  view_from(l, h, ack, 1, true, false, &v);
+  oracle_check(v, 0, "registered incarnation is not the view's");
+  // S1d: the spare is READY: still a usable spare: path
+  kid_cmd(sp, 'R');
+  pump_until(l, [&] { glEntryView w; return entry(l, N1, 3, 2, 1, &w) && w.sp == GL_SP_READY; });
+  pump(l, 5);
+  view_from(l, h, ack, 0, true, false, &v);
+  oracle_check(v, 1, "spare READY");
   // S2: the other launcher not paired yet: no path
   view_from(l, h, ack, 0, false, false, &v);
   oracle_check(v, 0, "other launcher unpaired");
@@ -1908,6 +2110,8 @@ int main(int argc, char** argv) {
                {"spare_exits_and_refusals", test_spare_exits_and_refusals},
                {"early_answer_bound", test_early_answer_bound},
                {"lost_accepted", test_lost_accepted},
+               {"abort_during_read", test_abort_during_read},
+               {"handle_reuse", test_handle_reuse},
                {"duplicates_and_swaps", test_duplicates_and_swaps},
                {"pairing", test_pairing},
                {"registration_oracle", test_registration_oracle},
@@ -1922,6 +2126,7 @@ int main(int argc, char** argv) {
     nt++;
   }
   for (pid_t p : gKids) waitpid(p, nullptr, WNOHANG);
-  printf("launcher_unit: %d tests, %d checks, %d failed\n", nt, nChecks, nFail);
+  printf("launcher_unit: %d tests, %d checks, %d failed (the registration oracle: %d scenes, one check each)\n", nt,
+         nChecks, nFail, gOracleScenes);
   return nFail ? 1 : 0;
 }
