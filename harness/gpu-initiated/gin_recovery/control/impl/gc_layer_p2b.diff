@@ -1,0 +1,639 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 21b3036..68d7ab8 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -7446,6 +7446,26 @@ static void gdakiCtrlLauncherFree(struct gdakiRecHost* r);
+ #endif  // GDAKI_CTRL_API_NO_ENTRY_DECLS
+ #endif  // NCCL_GIN_CTRL_TCP
+ // ---- gin-control: ctrl seams (end) ----
++#if !NCCL_GIN_CTRL_TCP
++// ---- gin-control (store): declarations (begin; phase 2b: defined in the region "gin-control (store)" of the "[2] ring"
++// sub-region; impl/notes_p2b.md) ----
++struct gdakiRsRkeys;
++struct gdakiCkptSpareData;
++struct gdakiStoreState;
++#define GDAKI_CTRL_XFER_NOFD 0x7fffffff     // gdakiCkptSpareDataFd's answer when the outbox carried STATE (no socket)
++#define GDAKI_CTRL_STORE_JOB_WARD_ERR 3     // a store thread job (gin-mirror's are 1 and 2): ward d's upload QP to ERR
++static bool gdakiStoreActV2(struct gdakiRecHost* r);
++static int gdakiCtrlStateSurvivorStep(struct gdakiRecHost* r, int p, char* why, size_t whyLen);
++static int gdakiCtrlStateSpareTake(struct gdakiCkptSpareData* d, int peer);
++static ncclResult_t gdakiCtrlRkeysHandOver(struct gdakiRecHost* r, int peer, int dfd, const struct gdakiRsRkeys& keys,
++                                           int timeoutMs);
++static void gdakiCtrlStoreWardToErrAsk(struct gdakiRecHost* r, int peer);
++static void gdakiCtrlStoreWardErrRun(struct gdakiRecHost* r, struct gdakiStoreState* st, int d);
++static void gdakiCtrlStoreMemLine(struct gdakiRecHost* r, struct gdakiStoreState* st, uint64_t image, uint64_t slotBytes);
++struct gdakiMiActHdr;
++static inline bool gdakiCtrlStoreBlobModeOk(const struct gdakiMiActHdr& h, bool mirrorOn);
++// ---- gin-control (store): declarations (end) ----
++#endif
+ 
+ // ---- gin-restore ckpt: pure functions (begin; impl/rs_unit_host.cc compiles this region on the CPU) ----
+ // The checkpoint's decisions and bookkeeping (EXPERIMENT.md 9.4, 9.11.9 C1, M3), as functions of plain values.
+@@ -10982,7 +11002,11 @@ static ncclResult_t gdakiRsSpareActivateWait(struct gdakiRecHost* r, int activat
+   struct gdaki_context* g = r->ctx;
+   const int rank = g->rank;
+   // gin-mirror (spare): the FETCH buffer before any activation can be answered (impl/rs_store_api.h)
++#if NCCL_GIN_CTRL_TCP
+   const bool mi = gdakiMiOn(r);
++#else
++  const bool mi = gdakiStoreActV2(r);  // gin-control (store) [2], decision 7: the FETCH over the store mirror off too
++#endif
+   if (mi) gdakiMiFetchBufSetup(r);
+   // (1) the activation socket and the gate
+   union ncclSocketAddress aAddr;
+@@ -11223,7 +11247,12 @@ static ncclResult_t gdakiRsSpareRejoinAll(struct gdakiRecHost* r, const struct g
+     }
+     // the rkey list on the data socket (work package 5's; the caller gives it), before this spare waits for DONE_RS
+     const int dfd = dataFd != nullptr ? dataFd(dataArg, p) : -1;
++#if NCCL_GIN_CTRL_TCP
+     if (dfd < 0 || gdakiRsRkeysSend(dfd, keys, rem()) != ncclSuccess) {
++#else
++    // gin-control (store) [2]: back through the outbox when STATE came that way (dfd GDAKI_CTRL_XFER_NOFD)
++    if (dfd < 0 || gdakiCtrlRkeysHandOver(r, p, dfd, keys, rem()) != ncclSuccess) {
++#endif
+       WARN("GIN/RS: spare rank %d: cannot hand its rkey list to rank %d (%s)", rank, p,
+            dfd < 0 ? "no data socket: the data path failed" : "send failed");
+       gdakiRsSpareGiveUp(r, -1);
+@@ -14788,7 +14817,11 @@ static void gdakiHoldActivateSend(struct gdakiRecHost* r, int peer, const struct
+   const double now = d.now;
+ #endif
+   int ans = -1;
++#if NCCL_GIN_CTRL_TCP
+   const bool mi = gdakiMiOn(r);
++#else
++  const bool mi = gdakiStoreActV2(r);  // gin-control (store) [2], decision 7: activation v2 (store blob, FETCH), mirror off too
++#endif
+   if (mi) {
+     // gin-mirror (spare): the drain of the mirror lanes and the fence first (helper steps; EXPERIMENT.md 9.4 step 2), then
+     // the activation v2: the record, the blob, and after ACCEPTED the FETCH handshake (impl/rs_store_api.h). Busy: the
+@@ -16515,6 +16548,12 @@ static int gdakiHoldTransferStep(struct gdakiRecHost* r, int p, char* why, size_
+     return -1;
+   }
+   const uint32_t inc = gdakiLnOf(r, p).cur;  // gin-mirror (lineage): the successor's (HOLD_SUCC), as known before
++#if !NCCL_GIN_CTRL_TCP
++  {  // gin-control (store) [2]: STATE and the rkey list through the pair's outbox once its ring is up (TODO(2a-2))
++    const int rr = gdakiCtrlStateSurvivorStep(r, p, why, whyLen);
++    if (rr != 2) return rr;
++  }
++#endif
+   if (hp.xferFd < 0) {
+     gdakiTsBusy busy(r->ts);  // the dial and the first record are bounded by a handshake each
+     const int fd = gdakiCkptDial(r->ts->peers[p].addr, std::min(left, r->ts->handshakeMs));
+@@ -16598,7 +16637,11 @@ static bool gdakiCkptSpareFetch(struct gdakiCkptSpareData* d) {
+   if (d->fetched) return d->fetchOk;
+   // gin-mirror (spare): with the mirror the driver's RDMA FETCH read the slot and wrote the image before its first REJOIN
+   // (impl/rs_store_api.h); its header and blob are taken here, no TCP FETCH
++#if NCCL_GIN_CTRL_TCP
+   if (gdakiMiOn(d->r)) return gdakiMiSpareFetchTake(d);
++#else
++  if (gdakiStoreActV2(d->r)) return gdakiMiSpareFetchTake(d);  // gin-control (store) [2], decision 7: the store's FETCH
++#endif
+   d->fetched = true;
+   struct gdakiRecHost* r = d->r;
+   struct gdakiTs* ts = r->ts;
+@@ -16734,6 +16777,12 @@ static int gdakiCkptSpareDataFd(void* arg, int peer) {
+     return -1;
+   }
+   if (d->exports.size() != (size_t)r->nranks) d->exports.assign((size_t)r->nranks, std::vector<uint8_t>());
++#if !NCCL_GIN_CTRL_TCP
++  {  // gin-control (store) [2]: this survivor's STATE through the pair's outbox once its ring is up (TODO(2a-2))
++    const int rf = gdakiCtrlStateSpareTake(d, peer);
++    if (rf != -2) return rf;
++  }
++#endif
+   const uint32_t inc = gdakiRsPeerInc(r, r->ctx->rank);
+   const double deadline = gdakiQ4MonoMs() + d->timeoutMs;
+   while (gdakiQ4MonoMs() < deadline) {
+@@ -17930,12 +17979,21 @@ struct gdakiStoreState {
+   struct gdakiStoreStable wStable;
+   // counters (the summary line)
+   std::atomic<long long> nWrites{0}, nFailed{0}, nRequests{0}, nServed{0};
++#if !NCCL_GIN_CTRL_TCP
++  uint64_t ctrlMemImage = 0;           // helper: gin-control (store), the image size of the last memory line
++#endif
+ };
+ static std::mutex gdakiStoreLifeMu;  // r->mi.store's creation (helper or application thread, first use) and teardown
+ static void gdakiStoreThreadMain(struct gdakiRecHost* r, struct gdakiStoreState* st);
+ 
+ static bool gdakiStoreOn(struct gdakiRecHost* r) {
++#if NCCL_GIN_CTRL_TCP
+   return r != nullptr && r->hold != nullptr && r->hold->ckpt != nullptr && r->ctx != nullptr && gdakiMiOn(r);
++#else
++  // gin-control (store) [2], decision 7: every restoring process takes the store path, the mirror on or off (the TCP
++  // UPLOAD and FETCH stay the tcp build's; design v3 2.8, EXPERIMENT.md 9.7)
++  return r != nullptr && r->hold != nullptr && r->hold->ckpt != nullptr && r->ctx != nullptr;
++#endif
+ }
+ static struct gdakiStoreState* gdakiStoreOf(struct gdakiRecHost* r) {
+   if (!gdakiStoreOn(r)) return nullptr;
+@@ -18083,6 +18141,12 @@ static void gdakiStoreThreadMain(struct gdakiRecHost* r, struct gdakiStoreState*
+       j = st->jobs.front();
+       st->jobs.erase(st->jobs.begin());
+     }
++#if !NCCL_GIN_CTRL_TCP
++    if (j.kind == GDAKI_CTRL_STORE_JOB_WARD_ERR) {  // gin-control (store) [2]: gdakiStoreWardToErr's (the QP's owner)
++      gdakiCtrlStoreWardErrRun(r, st, j.d);
++      continue;
++    }
++#endif
+     if (j.kind == GDAKI_STORE_JOB_FREE) {
+       if (j.dropQp && j.d >= 0) {  // the QP before the MR (9.7 "정리와 해제"); w.qp is this thread's
+         gdakiMiHostQpDestroy(st->wards[(size_t)j.d].qp);
+@@ -18463,6 +18527,9 @@ static void gdakiStoreUpStep(struct gdakiRecHost* r, struct gdakiStoreState* st)
+   st->nRequests.fetch_add(1, std::memory_order_relaxed);
+   GIN_TS_NOTE("GIN/MI: rank %d: store request to buddy rank %d seq=%lu slot_bytes=%lu reason=%s mono_ms=%.3f", me, b,
+               (unsigned long)seq, (unsigned long)slotBytes, gdakiStoreNeedName(why), gdakiQ4MonoMs());
++#if !NCCL_GIN_CTRL_TCP
++  gdakiCtrlStoreMemLine(r, st, image, slotBytes);  // gin-control (store) [2]: the host memory this path adds (reported)
++#endif
+ }
+ static void gdakiStoreStep(struct gdakiRecHost* r) {
+   struct gdakiStoreState* st = gdakiStoreOf(r);
+@@ -19678,11 +19745,9 @@ static void gdakiCtrlRecordToErr(struct gdakiRecHost* r, int peer) {
+   (void)r;
+   (void)peer;
+ }
+-// the store's responder QP of ward `peer` into ERR (whether ln4's hold start does it is [미확인], EXPERIMENT.md 9.4 step 1)
+-static void gdakiStoreWardToErr(struct gdakiRecHost* r, int peer) {
+-  (void)r;
+-  (void)peer;
+-}
++// the store's responder QP of ward `peer` into ERR (ln4's hold start does not: its quiesce moves the user and mirror QPs
++// only; EXPERIMENT.md 9.4 step 1). Phase 2b: a job for the store thread (region "gin-control (store)")
++static void gdakiStoreWardToErr(struct gdakiRecHost* r, int peer) { gdakiCtrlStoreWardToErrAsk(r, peer); }
+ // r->ctrl->ring (nothing yet)
+ static void gdakiCtrlRingFree(struct gdakiRecHost* r) { (void)r; }
+ // Phase 2a-1 (integration): the ring model and the verbs back end below are built but not wired; the bodies above
+@@ -21220,6 +21285,434 @@ static uint64_t gdakiCtrlRdmaRnr(const struct gdakiCtrlRing* g) {
+ }
+ #endif  // !NCCL_GIN_CTRL_TCP
+ // ==== gin-control (ring): verbs back end (end) ====
++// ==== gin-control (store): decision 7 and the outbox transfers (begin; phase 2b, impl/notes_p2b.md) ====
++// Phase 2b (EXPERIMENT.md 9.1 "큰 자료", 9.7 decision 7, 9.8 phase 2; design v3 2.3, 2.8, 3.5). In the rdma build:
++//   - the checkpoint store is every restoring process's (gdakiStoreOn without gdakiMiOn): the mirror-off checkpoint goes
++//     as the whole image over the upload QP into the buddy's store (gin-mirror's store path, unchanged), the spare FETCHes
++//     it over a FETCH QP after its activation v2, whose blob has the store part only (GDAKI_MI_ACTB_F_STORE, no pool);
++//   - gdakiStoreWardToErr: at the hold start of a ward (the dead rank was the ward's owner) the buddy's side of that
++//     ward's upload QP goes to ERR through the store thread (the QP's owner); the stable slot stays for the FETCH;
++//   - STATE and the rkey list: through the pair's outbox once its ring is up (three transfers below); until phase 2a-2
++//     creates the ring (r->ctrl->ring stays null, TODO(2a-2)) the data socket carries them as in ln4;
++//   - the host memory this adds per rank is reported in one line at the store's request (no bound: decision 2026-10-17).
++// The tcp build has none of this (its preprocessed host file stays ln4's).
++#if !NCCL_GIN_CTRL_TCP
++// ---- gin-control (store): pure (begin; impl/gc_unit_p2b.cc compiles this region on the CPU) ----
++// Needs the blocks "gin-control: ctrl API", "gin-mirror: store API", gin-restore's checkpoint text (gdakiCkptHash),
++// struct gdakiTsMsg, the rkey list (struct gdakiRsRkeys), gin-mirror's spare pure region (the activation blob) and
++// <vector>. No verbs, no socket, no clock.
++//
++// One outbox transfer (gdakiCtrlRdmaXferSend/Recv of phase 2a-1: one or more halves, END on the last) carries a 64 B head
++// and its payload. The STATE sequence of one survivor s and the restored rank d's spare, on the pair's ring after the
++// REJOIN (decision of this phase: the spare starts each turn, since it takes the survivors one at a time; nothing of it
++// is a record, so the record layer and the hold machine never see it):
++//   1. d -> s  STATE_REQ  payload: the DATA record of ln4's answer (type DATA, from d, arg d, round K, pad 0), head inc =
++//                         d's incarnation, ckpt K
++//   2. s -> d  STATE      payload: ln4's data-socket bytes (uint64 n, then the n bytes of the export: v1 or, with the
++//                         mirror, v2), head inc = d's incarnation as s knows it (the lineage's current), ckpt K
++//   3. d -> s  RKEYS      payload: ln4's rkey list bytes (struct gdakiRsRkeysHdr, count x struct gdakiRsRkeyEntry),
++//                         head inc = d's incarnation
++// Each side checks the head (kind, from, to, nonce, incarnation, size, hash) and the payload as ln4's data socket did.
++// Kind 4 (ACTB, the activation blob through a launcher) is reserved for phase 3.
++#define GDAKI_CTRL_XFERH_MAGIC 0x48585247u  // "GRXH" in memory order
++#define GDAKI_CTRL_XFERH_VERSION 1u
++enum : uint16_t { GDAKI_CTRL_XK_STATE_REQ = 1, GDAKI_CTRL_XK_STATE = 2, GDAKI_CTRL_XK_RKEYS = 3, GDAKI_CTRL_XK_ACTB = 4 };
++struct gdakiCtrlXferHdr {
++  uint32_t magic;        // GDAKI_CTRL_XFERH_MAGIC
++  uint16_t version;      // GDAKI_CTRL_XFERH_VERSION
++  uint16_t kind;         // GDAKI_CTRL_XK_*
++  int32_t from, to;      // ranks
++  uint32_t incarnation;  // the restored rank's incarnation the transfer is for
++  uint32_t rsv0;
++  uint64_t nonce;        // the context's
++  uint64_t ckpt;         // STATE_REQ, STATE: the checkpoint K; else 0
++  uint64_t bytes;        // the payload's
++  uint64_t hash;         // gdakiCkptHash(payload, bytes, GDAKI_CKPT_HASH_SEED)
++  uint8_t rsv[8];
++};
++static_assert(sizeof(struct gdakiCtrlXferHdr) == 64, "an outbox transfer's head is 64 bytes");
++#define GDAKI_CTRL_RKEYS_HDR_BYTES 32u
++#define GDAKI_CTRL_RKEYS_ENTRY_BYTES 16u
++static_assert(sizeof(struct gdakiRsRkeysHdr) == GDAKI_CTRL_RKEYS_HDR_BYTES &&
++                  sizeof(struct gdakiRsRkeyEntry) == GDAKI_CTRL_RKEYS_ENTRY_BYTES,
++              "the rkey list's bytes as ln4's data socket carries them");
++// A kind's largest payload (0: not a kind).
++static inline uint64_t gdakiCtrlXferMax(uint16_t kind) {
++  switch (kind) {
++    case GDAKI_CTRL_XK_STATE_REQ: return sizeof(struct gdakiTsMsg);
++    case GDAKI_CTRL_XK_STATE: return sizeof(uint64_t) + GDAKI_CKPT_STATE_MAX;
++    case GDAKI_CTRL_XK_RKEYS: return GDAKI_CTRL_RKEYS_HDR_BYTES + (uint64_t)GDAKI_RS_RKEYS_MAX * GDAKI_CTRL_RKEYS_ENTRY_BYTES;
++    case GDAKI_CTRL_XK_ACTB:
++      return sizeof(struct gdakiMiActHdr) + (uint64_t)GDAKI_MI_ACT_MAX_ADDR * sizeof(struct gdakiMiActAddr) +
++             (uint64_t)GDAKI_MI_ACT_MAX_EXT * sizeof(struct gdakiMiActExt);
++    default: return 0;
++  }
++}
++static inline void gdakiCtrlXferPack(std::vector<uint8_t>* out, uint16_t kind, int from, int to, uint32_t inc,
++                                     uint64_t nonce, uint64_t ckpt, const void* p, uint64_t n) {
++  struct gdakiCtrlXferHdr h;
++  memset(&h, 0, sizeof(h));
++  h.magic = GDAKI_CTRL_XFERH_MAGIC;
++  h.version = (uint16_t)GDAKI_CTRL_XFERH_VERSION;
++  h.kind = kind;
++  h.from = from;
++  h.to = to;
++  h.incarnation = inc;
++  h.nonce = nonce;
++  h.ckpt = ckpt;
++  h.bytes = n;
++  h.hash = gdakiCkptHash(p, (size_t)n, GDAKI_CKPT_HASH_SEED);
++  out->resize(sizeof(h) + (size_t)n);
++  memcpy(out->data(), &h, sizeof(h));
++  if (n) memcpy(out->data() + sizeof(h), p, (size_t)n);
++}
++enum : uint32_t {
++  GDAKI_CTRL_XC_OK = 0, GDAKI_CTRL_XC_SHORT = 1, GDAKI_CTRL_XC_MAGIC = 2, GDAKI_CTRL_XC_KIND = 3, GDAKI_CTRL_XC_PEER = 4,
++  GDAKI_CTRL_XC_NONCE = 5, GDAKI_CTRL_XC_INC = 6, GDAKI_CTRL_XC_BYTES = 7, GDAKI_CTRL_XC_HASH = 8, GDAKI_CTRL_XC_CKPT = 9,
++  GDAKI_CTRL_XC_RECORD = 10, GDAKI_CTRL_XC_REFUSED = 11, GDAKI_CTRL_XC_PAYLOAD = 12
++};
++static inline const char* gdakiCtrlXferWhy(uint32_t c) {
++  switch (c) {
++    case GDAKI_CTRL_XC_OK: return "ok";
++    case GDAKI_CTRL_XC_SHORT: return "shorter than its head";
++    case GDAKI_CTRL_XC_MAGIC: return "not a transfer head (magic or version)";
++    case GDAKI_CTRL_XC_KIND: return "another kind than the turn's";
++    case GDAKI_CTRL_XC_PEER: return "another pair's";
++    case GDAKI_CTRL_XC_NONCE: return "another context's (nonce)";
++    case GDAKI_CTRL_XC_INC: return "another incarnation's";
++    case GDAKI_CTRL_XC_BYTES: return "its size is not its head's or above the kind's bound";
++    case GDAKI_CTRL_XC_HASH: return "its payload's hash does not match";
++    case GDAKI_CTRL_XC_CKPT: return "another checkpoint's";
++    case GDAKI_CTRL_XC_RECORD: return "its record is not the spare's own";
++    case GDAKI_CTRL_XC_REFUSED: return "the spare refused the state transfer";
++    case GDAKI_CTRL_XC_PAYLOAD: return "its payload is malformed";
++    default: return "?";
++  }
++}
++// The head of a transfer that arrived whole (b, n): GDAKI_CTRL_XC_OK and *h, *payload; else what is wrong.
++static inline uint32_t gdakiCtrlXferCheck(const uint8_t* b, size_t n, uint16_t kind, int from, int to, uint64_t nonce,
++                                          uint32_t inc, struct gdakiCtrlXferHdr* h, const uint8_t** payload) {
++  if (n < sizeof(*h)) return GDAKI_CTRL_XC_SHORT;
++  memcpy(h, b, sizeof(*h));
++  if (h->magic != GDAKI_CTRL_XFERH_MAGIC || h->version != GDAKI_CTRL_XFERH_VERSION) return GDAKI_CTRL_XC_MAGIC;
++  if (h->kind != kind) return GDAKI_CTRL_XC_KIND;
++  if (h->from != from || h->to != to) return GDAKI_CTRL_XC_PEER;
++  if (h->nonce != nonce) return GDAKI_CTRL_XC_NONCE;
++  if (h->incarnation != inc) return GDAKI_CTRL_XC_INC;
++  if (h->bytes != (uint64_t)(n - sizeof(*h)) || h->bytes > gdakiCtrlXferMax(kind)) return GDAKI_CTRL_XC_BYTES;
++  if (h->hash != gdakiCkptHash(b + sizeof(*h), (size_t)h->bytes, GDAKI_CKPT_HASH_SEED)) return GDAKI_CTRL_XC_HASH;
++  *payload = b + sizeof(*h);
++  return GDAKI_CTRL_XC_OK;
++}
++// 1. the spare's STATE_REQ: ln4's answer record (gdakiCkptSpareDataFd), the magic stamped as gdakiTsSend does
++static inline void gdakiCtrlStateReqFill(struct gdakiTsMsg* a, int me, uint64_t nonce, uint64_t step) {
++  memset(a, 0, sizeof(*a));
++  a->magic = GDAKI_TS_MAGIC;
++  a->type = GDAKI_TS_DATA;
++  a->from = me;
++  a->nonce = nonce;
++  a->arg = me;
++  a->round = step;
++}
++// The survivor's take of a STATE_REQ from spare p (incKnown: p's incarnation as the lineage knows it): ln4's checks of
++// the answer (gdakiHoldTransferStep) on the record, the head's on the rest. *a: the record (its round is K).
++static inline uint32_t gdakiCtrlStateReqTake(const uint8_t* b, size_t n, int p, int me, uint64_t nonce, uint32_t incKnown,
++                                             struct gdakiTsMsg* a) {
++  struct gdakiCtrlXferHdr h;
++  const uint8_t* pl = nullptr;
++  const uint32_t c = gdakiCtrlXferCheck(b, n, GDAKI_CTRL_XK_STATE_REQ, p, me, nonce, incKnown, &h, &pl);
++  if (c != GDAKI_CTRL_XC_OK) return c;
++  if (h.bytes != sizeof(*a)) return GDAKI_CTRL_XC_BYTES;
++  memcpy(a, pl, sizeof(*a));
++  if (a->magic != GDAKI_TS_MAGIC || a->type != GDAKI_TS_DATA || a->from != p || a->nonce != nonce)
++    return GDAKI_CTRL_XC_RECORD;
++  if (a->round != h.ckpt) return GDAKI_CTRL_XC_CKPT;
++  if (a->pad != 0) return GDAKI_CTRL_XC_REFUSED;
++  return GDAKI_CTRL_XC_OK;
++}
++// 2. the survivor's STATE: ln4's bytes (n, then the export)
++static inline void gdakiCtrlStatePack(std::vector<uint8_t>* out, int me, int p, uint32_t inc, uint64_t nonce, uint64_t ckpt,
++                                      const std::vector<uint8_t>& x) {
++  std::vector<uint8_t> pl(sizeof(uint64_t) + x.size());
++  const uint64_t n = x.size();
++  memcpy(pl.data(), &n, sizeof(n));
++  if (n) memcpy(pl.data() + sizeof(n), x.data(), x.size());
++  gdakiCtrlXferPack(out, GDAKI_CTRL_XK_STATE, me, p, inc, nonce, ckpt, pl.data(), pl.size());
++}
++// The spare's take of survivor s's STATE for its checkpoint `step`: *x the export (ln4's n bytes).
++static inline uint32_t gdakiCtrlStateTake(const uint8_t* b, size_t n, int s, int me, uint64_t nonce, uint32_t inc,
++                                          uint64_t step, std::vector<uint8_t>* x) {
++  struct gdakiCtrlXferHdr h;
++  const uint8_t* pl = nullptr;
++  const uint32_t c = gdakiCtrlXferCheck(b, n, GDAKI_CTRL_XK_STATE, s, me, nonce, inc, &h, &pl);
++  if (c != GDAKI_CTRL_XC_OK) return c;
++  if (h.ckpt != step) return GDAKI_CTRL_XC_CKPT;
++  uint64_t k = 0;
++  if (h.bytes < sizeof(k)) return GDAKI_CTRL_XC_PAYLOAD;
++  memcpy(&k, pl, sizeof(k));
++  if (k > GDAKI_CKPT_STATE_MAX || k != h.bytes - sizeof(k)) return GDAKI_CTRL_XC_PAYLOAD;
++  x->assign(pl + sizeof(k), pl + sizeof(k) + k);
++  return GDAKI_CTRL_XC_OK;
++}
++// 3. the spare's rkey list: ln4's bytes (gdakiRsRkeysSend's header and entries)
++static inline void gdakiCtrlRkeysBytes(const struct gdakiRsRkeys& list, std::vector<uint8_t>* out) {
++  struct gdakiRsRkeysHdr h;
++  memset(&h, 0, sizeof(h));
++  h.magic = GDAKI_RS_RKEYS_MAGIC;
++  h.version = 1u;
++  h.rank = list.rank;
++  h.incarnation = list.incarnation;
++  h.nonce = list.nonce;
++  h.count = (uint32_t)list.e.size();
++  out->resize(sizeof(h) + list.e.size() * sizeof(struct gdakiRsRkeyEntry));
++  memcpy(out->data(), &h, sizeof(h));
++  if (!list.e.empty()) memcpy(out->data() + sizeof(h), list.e.data(), list.e.size() * sizeof(struct gdakiRsRkeyEntry));
++}
++// The survivor's take of spare p's RKEYS: ln4's checks (gdakiRsRkeysRecv) and the whole length.
++static inline uint32_t gdakiCtrlRkeysTake(const uint8_t* b, size_t n, int p, int me, uint64_t nonce, uint32_t inc,
++                                          struct gdakiRsRkeys* out) {
++  struct gdakiCtrlXferHdr h;
++  const uint8_t* pl = nullptr;
++  const uint32_t c = gdakiCtrlXferCheck(b, n, GDAKI_CTRL_XK_RKEYS, p, me, nonce, inc, &h, &pl);
++  if (c != GDAKI_CTRL_XC_OK) return c;
++  struct gdakiRsRkeysHdr k;
++  if (h.bytes < sizeof(k)) return GDAKI_CTRL_XC_PAYLOAD;
++  memcpy(&k, pl, sizeof(k));
++  if (k.magic != GDAKI_RS_RKEYS_MAGIC || k.version != 1u || k.count > GDAKI_RS_RKEYS_MAX ||
++      h.bytes != sizeof(k) + (uint64_t)k.count * sizeof(struct gdakiRsRkeyEntry))
++    return GDAKI_CTRL_XC_PAYLOAD;
++  out->rank = k.rank;
++  out->incarnation = k.incarnation;
++  out->nonce = k.nonce;
++  out->e.resize(k.count);
++  if (k.count) memcpy(out->e.data(), pl + sizeof(k), (size_t)k.count * sizeof(struct gdakiRsRkeyEntry));
++  return GDAKI_CTRL_XC_OK;
++}
++
++// ---- decision 7: who takes the store path, the store-only blob, the ward's QP at its owner's hold start ----
++// The activation v2 (the blob, the FETCH over the store) with the mirror on (gin-mirror) and, in the rdma build, with the
++// store on (every restoring process): mirrorOn || storeOn.
++static inline bool gdakiCtrlStoreActV2Of(bool mirrorOn, bool storeOn) { return mirrorOn || storeOn; }
++// A spare without the mirror takes a blob of the store part only (design v3 2.8: "저장소 칸만 유효, pool 표시 없음").
++static inline bool gdakiCtrlStoreBlobModeOk(const struct gdakiMiActHdr& h, bool mirrorOn) {
++  if (mirrorOn) return true;  // gin-mirror's own checks (gdakiMiActCheck)
++  return (h.flags & GDAKI_MI_ACTB_F_STORE) != 0 && (h.flags & GDAKI_MI_ACTB_F_POOL) == 0 && h.nExt == 0 && h.poolRkey == 0;
++}
++// The hold start of `dead` (gdakiCtrlPeerToErr): this rank's side of the store's upload QP of ward `dead` goes to ERR when
++// this rank is dead's buddy (the dead rank owned that ward: a late WRITE of the dead process lands nowhere from then on;
++// its stable slot stays for the FETCH QP). buddyOfDead: gdakiHoldBuddyOf(dead, n).
++static inline bool gdakiCtrlStoreWardErrDue(int me, int n, int dead, int buddyOfDead) {
++  return n >= 2 && dead >= 0 && dead < n && dead != me && buddyOfDead == me;
++}
++// ---- the host memory this path adds per rank (design v3 3.5; reported, not bounded: the 2026-10-17 decision) ----
++// staging: the upload's pinned buffer (one slot of this rank's image); wards: per ward, the store MR's two slots (this
++// rank's image size when the ward's is not known: the test cells' p xor 1 pairs are alike); control: phase 2a-1's ring
++// (receive and send slots per rank, UD buffers, the outbox, its READ stage, two words' pages) and phase 1's page.
++struct gdakiCtrlStoreMem {
++  uint64_t staging = 0, wards = 0, control = 0, total = 0;
++};
++static inline struct gdakiCtrlStoreMem gdakiCtrlStoreMemOf(int nranks, uint64_t ownImage, uint64_t wardImage, int nWards,
++                                                           bool ring) {
++  struct gdakiCtrlStoreMem m;
++  m.staging = ownImage ? gdakiStoreSlotBytes(ownImage) : 0;
++  m.wards = wardImage ? (uint64_t)std::max(0, nWards) * 2u * gdakiStoreSlotBytes(wardImage) : 0;
++  if (ring)
++    m.control = 2u * (uint64_t)std::max(0, nranks) * GDAKI_CTRL_RING_SLOTS * GDAKI_CTRL_SLOT_BYTES +
++                (uint64_t)GDAKI_CTRL_UD_RQ * (GDAKI_CTRL_UD_GRH_BYTES + GDAKI_CTRL_SLOT_BYTES) +
++                (uint64_t)GDAKI_CTRL_UD_SQ * GDAKI_CTRL_SLOT_BYTES + GDAKI_CTRL_OUTBOX_BYTES + GDAKI_CTRL_OUTBOX_HALF_BYTES +
++                2u * 4096u + GDAKI_CTRL_PAGE_BYTES;
++  m.total = m.staging + m.wards + m.control;
++  return m;
++}
++// ---- gin-control (store): pure (end) ----
++
++// ---- gin-control (store): host ----
++static bool gdakiStoreActV2(struct gdakiRecHost* r) { return gdakiCtrlStoreActV2Of(gdakiMiOn(r), gdakiStoreOn(r)); }
++// The pair's ring when the outbox carries STATE and the rkey list; null: the data socket (ln4's way).
++// TODO(2a-2): r->ctrl->ring is created by phase 2a-2 (gdakiCtrlRdmaCreate before the all-gather); until then it is null
++// and every STATE goes over the data socket.
++static struct gdakiCtrlRing* gdakiCtrlStateRingOf(struct gdakiRecHost* r, int peer) {
++  struct gdakiCtrlRing* g = (r != nullptr && r->ctrl != nullptr) ? r->ctrl->ring : nullptr;
++  if (g == nullptr || peer < 0 || peer >= g->nranks || peer == g->me || !gdakiCtrlRdmaUp(g, peer)) return nullptr;
++  return g;
++}
++// A transfer of `peer` waits to be read (or the pair's connection is lost: the read then says why); never blocks.
++static bool gdakiCtrlXferPending(struct gdakiCtrlRing* g, int peer) {
++  gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++  gdakiCtrlRdmaTakeXfers(g, peer);
++  const struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)peer];
++  return !pr.xferIn.empty() || pr.ring.lost;
++}
++// The survivor's turn (gdakiHoldTransferStep): 2 no ring (the caller's data socket), 1 the spare's STATE_REQ is not there
++// yet (the hold's deadline bounds the wait, as ln4's), 0 done (hp.rkeys set), -1 failed (why).
++static int gdakiCtrlStateSurvivorStep(struct gdakiRecHost* r, int p, char* why, size_t whyLen) {
++  struct gdakiCtrlRing* g = gdakiCtrlStateRingOf(r, p);
++  if (g == nullptr) return 2;
++  struct gdakiHold* h = r->hold;
++  struct gdakiCkpt* ck = gdakiCkptOf(r);
++  struct gdakiHoldPeer& hp = h->peers[p];
++  const int me = r->ctx->rank;
++  const uint64_t nonce = r->ts->nonce;
++  const uint32_t inc = gdakiLnOf(r, p).cur;  // the successor's (HOLD_SUCC), as ln4's ask names it
++  if (!gdakiCtrlXferPending(g, p)) return 1;
++  gdakiTsBusy busy(r->ts);
++  char w[256] = {0};
++  std::vector<uint8_t> in;
++  if (gdakiCtrlRdmaXferRecv(g, p, &in, sizeof(struct gdakiCtrlXferHdr) + gdakiCtrlXferMax(GDAKI_CTRL_XK_STATE_REQ),
++                            std::max(1, std::min(gdakiHoldLeftMs(r, p), r->ts->handshakeMs)), w, sizeof(w)) != ncclSuccess) {
++    snprintf(why, whyLen, "the spare's state request did not arrive over the outbox: %.150s", w);
++    return -1;
++  }
++  struct gdakiTsMsg a;
++  uint32_t c = gdakiCtrlStateReqTake(in.data(), in.size(), p, me, nonce, inc, &a);
++  if (c == GDAKI_CTRL_XC_REFUSED) {
++    snprintf(why, whyLen, "the spare refused the state transfer (%u)", a.pad);
++    return -1;
++  }
++  if (c != GDAKI_CTRL_XC_OK) {
++    snprintf(why, whyLen, "the spare's state request over the outbox is %s", gdakiCtrlXferWhy(c));
++    return -1;
++  }
++  const struct gdakiCkptCut<struct gdakiCkptCutRec>* cut = ck != nullptr ? ck->peers[p].cuts.find(a.round) : nullptr;
++  if (cut == nullptr) {
++    snprintf(why, whyLen, "no confirmed cut toward the peer for checkpoint %lu here", (unsigned long)a.round);
++    return -1;
++  }
++  std::vector<uint8_t> x;
++  const bool exported = (gdakiMiOn(r) ? gdakiMiLogExport : gdakiRsLogExport)(
++                          r, p, a.round, cut->rec.pause.head, hp.headAtHold, inc, hp.xAtHold, hp.mAtHold, hp.nqp,
++                          gdakiCkptPutVec, &x, w, sizeof(w)) == ncclSuccess;
++  if (!exported) {
++    snprintf(why, whyLen, "the log export failed: %.120s", w);
++    return -1;
++  }
++  std::vector<uint8_t> out;
++  gdakiCtrlStatePack(&out, me, p, inc, nonce, a.round, x);
++  if (gdakiCtrlRdmaXferSend(g, p, out.data(), out.size(), std::max(1, gdakiHoldLeftMs(r, p)), w, sizeof(w)) != ncclSuccess) {
++    snprintf(why, whyLen, "the log export (%lu bytes) could not be sent over the outbox: %.100s", (unsigned long)x.size(), w);
++    return -1;
++  }
++  if (gdakiCtrlRdmaXferRecv(g, p, &in, sizeof(struct gdakiCtrlXferHdr) + gdakiCtrlXferMax(GDAKI_CTRL_XK_RKEYS),
++                            std::max(1, gdakiHoldLeftMs(r, p)), w, sizeof(w)) != ncclSuccess) {
++    snprintf(why, whyLen, "the spare's rkey list did not arrive over the outbox: %.110s", w);
++    return -1;
++  }
++  struct gdakiRsRkeys* keys = new gdakiRsRkeys();
++  c = gdakiCtrlRkeysTake(in.data(), in.size(), p, me, nonce, inc, keys);
++  if (c != GDAKI_CTRL_XC_OK) {
++    delete keys;
++    snprintf(why, whyLen, "the spare's rkey list over the outbox is %s", gdakiCtrlXferWhy(c));
++    return -1;
++  }
++  delete hp.rkeys;
++  hp.rkeys = keys;
++  GIN_TS_NOTE("GIN/CTRL: rank %d: state of checkpoint %lu sent to rank %d's spare over the outbox (%lu bytes of log, %zu "
++              "rkeys back) mono_ms=%.3f", h->rank, (unsigned long)a.round, p, (unsigned long)x.size(), keys->e.size(),
++              gdakiQ4MonoMs());
++  return 0;
++}
++// The spare's turn with survivor `peer` (gdakiCkptSpareDataFd, after the FETCH): -2 no ring (the data socket), else as
++// ln4's: GDAKI_CTRL_XFER_NOFD (the export kept in d->exports[peer]; the rkey list goes back through the outbox,
++// gdakiCtrlRkeysHandOver) or -1.
++static int gdakiCtrlStateSpareTake(struct gdakiCkptSpareData* d, int peer) {
++  struct gdakiRecHost* r = d->r;
++  struct gdakiCtrlRing* g = gdakiCtrlStateRingOf(r, peer);
++  if (g == nullptr) return -2;
++  const int me = r->ctx->rank;
++  const uint64_t nonce = r->ts->nonce, step = d->step != nullptr ? *d->step : 0;
++  const uint32_t inc = gdakiRsPeerInc(r, me);
++  const int toMs = std::max(1, d->timeoutMs);
++  char w[256] = {0};
++  struct gdakiTsMsg a;
++  gdakiCtrlStateReqFill(&a, me, nonce, step);
++  std::vector<uint8_t> out, in;
++  gdakiCtrlXferPack(&out, GDAKI_CTRL_XK_STATE_REQ, me, peer, inc, nonce, step, &a, sizeof(a));
++  if (gdakiCtrlRdmaXferSend(g, peer, out.data(), out.size(), toMs, w, sizeof(w)) != ncclSuccess ||
++      gdakiCtrlRdmaXferRecv(g, peer, &in, sizeof(struct gdakiCtrlXferHdr) + gdakiCtrlXferMax(GDAKI_CTRL_XK_STATE), toMs, w,
++                            sizeof(w)) != ncclSuccess) {
++    WARN("GIN/CTRL: spare rank %d: the state transfer with rank %d over the outbox failed: %s", me, peer, w);
++    return -1;
++  }
++  std::vector<uint8_t>& x = d->exports[(size_t)peer];
++  const uint32_t c = gdakiCtrlStateTake(in.data(), in.size(), peer, me, nonce, inc, step, &x);
++  if (c != GDAKI_CTRL_XC_OK) {
++    x.clear();
++    WARN("GIN/CTRL: spare rank %d: rank %d's state over the outbox is %s", me, peer, gdakiCtrlXferWhy(c));
++    return -1;
++  }
++  return GDAKI_CTRL_XFER_NOFD;
++}
++// The spare's rkey list to survivor `peer`: the outbox when its STATE came that way (dfd GDAKI_CTRL_XFER_NOFD), else
++// ln4's data socket.
++static ncclResult_t gdakiCtrlRkeysHandOver(struct gdakiRecHost* r, int peer, int dfd, const struct gdakiRsRkeys& keys,
++                                           int timeoutMs) {
++  if (dfd != GDAKI_CTRL_XFER_NOFD) return gdakiRsRkeysSend(dfd, keys, timeoutMs);
++  struct gdakiCtrlRing* g = gdakiCtrlStateRingOf(r, peer);
++  if (g == nullptr) return ncclSystemError;  // the pair's ring went away after STATE
++  std::vector<uint8_t> pl, out;
++  gdakiCtrlRkeysBytes(keys, &pl);
++  gdakiCtrlXferPack(&out, GDAKI_CTRL_XK_RKEYS, r->ctx->rank, peer, keys.incarnation, r->ts->nonce, 0, pl.data(), pl.size());
++  char w[160] = {0};
++  if (gdakiCtrlRdmaXferSend(g, peer, out.data(), out.size(), std::max(1, timeoutMs), w, sizeof(w)) != ncclSuccess) {
++    WARN("GIN/CTRL: spare rank %d: its rkey list to rank %d over the outbox failed: %s", r->ctx->rank, peer, w);
++    return ncclSystemError;
++  }
++  return ncclSuccess;
++}
++// gdakiStoreWardToErr's work (the hold start's hook, the helper): a job for the store thread, which owns the ward's QP.
++// Never creates the store state (a process that has none has no ward QP); idempotent (the thread skips a QP in ERR).
++static void gdakiCtrlStoreWardToErrAsk(struct gdakiRecHost* r, int peer) {
++  if (r == nullptr || r->ctx == nullptr || !gdakiStoreOn(r)) return;
++  struct gdakiStoreState* st;
++  {
++    std::lock_guard<std::mutex> lk(gdakiStoreLifeMu);
++    st = r->mi.store;
++  }
++  if (st == nullptr || !gdakiCtrlStoreWardErrDue(st->me, st->n, peer, gdakiHoldBuddyOf(peer, st->n))) return;
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    if (st->stop) return;
++    struct gdakiStoreJob j;
++    j.kind = GDAKI_CTRL_STORE_JOB_WARD_ERR;
++    j.d = peer;
++    st->jobs.push_back(j);
++  }
++  st->cv.notify_all();
++}
++// The store thread: ward d's upload QP (this rank's side) to ERR. The record, the MRs and the stable slot stay; the next
++// STORE_REQ of d's successor replaces the QP (gdakiStoreServe destroys the old one first).
++static void gdakiCtrlStoreWardErrRun(struct gdakiRecHost* r, struct gdakiStoreState* st, int d) {
++  if (d < 0 || d >= st->n) return;
++  struct gdakiMiHostQp* q = st->wards[(size_t)d].qp;
++  if (q == nullptr || q->qp == nullptr || q->err) return;
++  struct ibv_qp_attr a;
++  memset(&a, 0, sizeof(a));
++  a.qp_state = IBV_QPS_ERR;
++  const bool moved = wrap_ibv_modify_qp(q->qp, &a, IBV_QP_STATE) == ncclSuccess;
++  q->err = true;  // either way never used again: the next request of the ward destroys it
++  GIN_TS_NOTE("GIN/CTRL: rank %d: the store's upload QP of ward rank %d (qpn %#x) %s at its hold start mono_ms=%.3f", st->me,
++              d, q->qp->qp_num, moved ? "moved to ERR" : "could not be moved to ERR (it is not used again)",
++              gdakiQ4MonoMs());
++  (void)r;
++}
++// The host memory line (gdakiStoreUpStep, after a request with a new image size went out; once per size).
++static void gdakiCtrlStoreMemLine(struct gdakiRecHost* r, struct gdakiStoreState* st, uint64_t image, uint64_t slotBytes) {
++  if (st == nullptr || image == 0 || st->ctrlMemImage == image) return;
++  st->ctrlMemImage = image;
++  int nWards = 0;
++  for (int p = 0; p < st->n; p++)
++    if (p != st->me && gdakiHoldBuddyOf(p, st->n) == st->me) nWards++;
++  const bool ring = r->ctrl != nullptr && r->ctrl->ring != nullptr;  // TODO(2a-2): null until phase 2a-2
++  const struct gdakiCtrlStoreMem m = gdakiCtrlStoreMemOf(st->n, image, image, nWards, true);
++  const double MiB = 1048576.0;
++  GIN_TS_NOTE("GIN/CTRL: rank %d: host memory added (decision 7, mirror %s): staging %.1f MiB (pinned, slot %lu bytes), "
++              "ward stores %d x 2 slots %.1f MiB, control %.1f MiB (%s), total %.1f MiB = 3 x image + %.1f MiB, image %.1f MiB "
++              "(reported, no bound) mono_ms=%.3f", st->me, gdakiMiOn(r) ? "on" : "off", m.staging / MiB,
++              (unsigned long)slotBytes, nWards, m.wards / MiB, m.control / MiB, ring ? "ring up" : "ring not made yet",
++              m.total / MiB, (m.total - 3.0 * (double)image) / MiB, image / MiB, gdakiQ4MonoMs());
++}
++#endif  // !NCCL_GIN_CTRL_TCP
++// ==== gin-control (store): decision 7 and the outbox transfers (end) ====
+ // ---- [2] ring (end) ----
+ 
+ // ---- [3] launcher: placeholders phase 3 replaces (begin) ----
+@@ -24423,6 +24916,12 @@ static int gdakiMiDrainStep(struct gdakiRecHost* r, int d, uint32_t inc, uint64_
+     return -1;
+   }
+   if (sp->drained) return 0;
++#if !NCCL_GIN_CTRL_TCP
++  if (!gdakiMiOn(r)) {  // gin-control (store) [2], decision 7: the mirror off has no lane to drain (the blob's store part)
++    sp->drained = true;
++    return 0;
++  }
++#endif
+   auto refuse = [&]() {
+     sp->drainFailed = true;
+     snprintf(sp->drainWhy, sizeof(sp->drainWhy), "%.190s", why);
+@@ -24775,7 +25274,11 @@ static int gdakiMiActRecv(struct gdakiRecHost* r, int fd, const struct gdakiRsAc
+                           struct gdakiMiActBlob* blob, char* why, size_t whyLen) {
+   struct gdakiTs* ts = r->ts;
+   const int me = r->ctx->rank, n = r->nranks;
++#if NCCL_GIN_CTRL_TCP
+   if (!gdakiMiOn(r)) {
++#else
++  if (!gdakiStoreActV2(r)) {  // gin-control (store) [2], decision 7: the store's activation v2 with the mirror off too
++#endif
+     snprintf(why, whyLen, "an activation with a blob (version %u) at a spare without the mirror", act.version);
+     return 8;
+   }
+@@ -24816,6 +25319,12 @@ static int gdakiMiActRecv(struct gdakiRecHost* r, int fd, const struct gdakiRsAc
+              (unsigned long)s->fetchCap);
+     return code;
+   }
++#if !NCCL_GIN_CTRL_TCP
++  if (!gdakiCtrlStoreBlobModeOk(blob->hdr, gdakiMiOn(r))) {  // gin-control (store) [2]: no pool part without the mirror
++    snprintf(why, whyLen, "an activation blob with a pool part at a spare without the mirror");
++    return 12;
++  }
++#endif
+   if (!gdakiMiAddrSelfOk(blob->addr[(size_t)me])) {
+     snprintf(why, whyLen, "the address table's entry of the restored rank is not empty");
+     return 11;
