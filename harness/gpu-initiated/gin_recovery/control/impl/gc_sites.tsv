@@ -81,16 +81,16 @@ fd	8439	gdakiTsInstall	witness	kept	a socket installed: the witness's re-dial, a
 fd	8440	gdakiTsInstall	witness	kept	
 fd	9971	gdakiRsSpareGiveUp	witness	kept	the spare gives up: a plain close (FIN) of every socket
 fd	9972	gdakiRsSpareGiveUp	witness	kept	
-fd	10208	gdakiRsSpareRun	record	install	the spare installs the accepted REJOIN connection as the record channel (gdakiCtrlChanInstall; the socket itself is the witness's as 8439, nit 14)
+fd	10208	gdakiRsSpareRun	record	install	the spare installs the accepted REJOIN connection as the record channel (gdakiCtrlChanInstall; the socket itself is the witness's as 8439, nit 14) (2a-2-B: nothing for the ring, the socket assigned as before; the spare pairs through its REJOIN, 2a-2-C)
 fd	11525	gdakiTsDecline	record	chanup	the decline's FAIL needs the record channel
 fd	11533	gdakiTsDecline	record	arg	FAIL
 fd	11779	gdakiTsDeclineAfterCommit	witness	kept	after-commit loss: the socket's close cause judges death
 fd	11818	gdakiTsRespondPrepared	record	arg	NACK
 fd	11880	gdakiTsRespondPrepared	record	arg	ACK
 fd	11947	gdakiTsServeLower	record	chanup	a higher rank's REQ to serve
-fd	11950	gdakiTsServeLower	record	pollfd	something arrived on the record channel
+fd	11950	gdakiTsServeLower	record	pollfd	something arrived on the record channel (2a-2-B: live, gdakiCtrlPollFd is -1: the peek fails with EBADF and the pump reads the inbox)
 fd	11957	gdakiTsServeLower	record	chanup	the record read failed
-fd	12035	gdakiTsRecvServing	record	pollfd	waiting for the peer's record
+fd	12035	gdakiTsRecvServing	record	pollfd	waiting for the peer's record (2a-2-B: live, -1 (poll ignores it); the completion channel fd joins the set, gdakiCtrlWakeFdAdd/Take)
 fd	12204	gdakiTsInitiate	record	arg	REQ
 fd	12267	gdakiTsInitiate	record	arg	NACK 1
 fd	12307	gdakiTsInitiate	record	arg	NACK 12
@@ -121,7 +121,7 @@ fd-other	9858	gdakiRsSendDone	record	arg	DONE_RS
 fd-other	10306	gdakiRsSpareRun	record	chanup	RESTORED to an installed survivor (ln4: fd only; the spare runs no round before its helper starts, so gone is false with a socket: equal)
 fd-other	10315	gdakiRsSpareRun	record	arg	RESTORED
 fd-other	12039	gdakiTsRecvServing	record	chanup	another peer's REQ while waiting
-fd-other	12041	gdakiTsRecvServing	record	pollfd	
+fd-other	12041	gdakiTsRecvServing	record	pollfd	(2a-2-B: as 12035: -1 for every live peer, the completion channel fd once)
 fd-other	13270	gdakiHoldOnDecline	record	chanup	the buddy reachable for HOLDING
 fd-other	17181	gdakiStoreUpStep	record	chanup	the buddy reachable for STORE_REQ
 fd-other	18131	gdakiTsSetup	witness	kept	the setup installs a connected socket
@@ -137,10 +137,10 @@ recv	9961	gdakiRsRecvOn	backend	kept	gdakiRsRecvOn's body
 recv	10192	gdakiRsSpareRun	rejoin	swapped	the spare waits for REJOIN_ACK, FAIL or BYE on its dial (gdakiCtrlRecvOn, _REJOIN; rdma: UD)
 recv	10235	gdakiRsSpareRun	record	swapped	the spare waits for TOKEN (gdakiCtrlRecvOn, _RECORD)
 recv	10297	gdakiRsSpareRun	record	swapped	the spare waits for DONE_RS (gdakiCtrlRecvOn, _RECORD)
-recv	11896	gdakiTsRespondPrepared	record	swapped	the responder's DONE wait: every transparent round (gdakiCtrlRecv)
+recv	11896	gdakiTsRespondPrepared	record	swapped	the responder's DONE wait: every transparent round (gdakiCtrlRecv) (2a-2-B: live, the pair's ring with gdakiTsRecv's timeout semantics, waiting on the completion channel)
 recv	12024	gdakiTsRecvServing	record	swapped	NCCL_GIN_TS_SERVE_WAIT=0: the initiator's ACK wait (gdakiCtrlRecv)
 recv	18148	gdakiTsSetup	witness	kept	the setup's accept: the HELLO of a new helper socket
-recv	22372	gdakiMiSetupEnd	record	swapped	the MIRROR_SETUP wait (gdakiCtrlRecv; its channel check is the chanup row 22372)
+recv	22372	gdakiMiSetupEnd	record	swapped	the MIRROR_SETUP wait (gdakiCtrlRecv; its channel check is the chanup row 22372) (2a-2-B: before the helper starts the ring is never live: the TCP branch)
 answer	8489	gdakiTsAnswerFail	witness	kept	the definition (FAIL, then close)
 answer	8777	gdakiTsReconnectStep	rejoin	swapped	FAIL to a declined rank's REJOIN on the listen socket (gdakiCtrlRejoinFail; rdma: UD)
 answer	8785	gdakiTsReconnectStep	witness	kept	FAIL to a declined rank's PROBE
@@ -167,4 +167,10 @@ state	12230	gdakiTsInitiate	record	kept	pe.gone after the ACK wait failed
 # (phase 2a-2-A, impl/notes_p2a2.md: record 55's scaffold is gone with its two uses, gdakiCtrlChanUp in
 # gdakiCtrlProbePairingStep and gdakiHoldSend in gdakiCtrlProbeScaffoldSend; the UD pairing carries the liveness READ QP's
 # endpoint, an incoming 55 is dropped with one line; the ring region's setup glue and first pairing use no seam)
-#use	ring	.fd	2	gdakiCtrlRdmaChannelFd and gdakiCtrlRdmaCreate (O_NONBLOCK): the helper CQ's completion channel fd (not a peer socket; the seam gdakiCtrlPollFd of 2a-2)
+#use	ring	.fd	7	gdakiCtrlRdmaChannelFd and gdakiCtrlRdmaCreate (O_NONBLOCK): the helper CQ's completion channel fd (not a peer socket); 2a-2-B: gdakiCtrlRingRecvOf's two (the same channel fd), gdakiCtrlWitnessPump (the witness socket), gdakiCtrlRingSummary (the open witness sockets), gdakiCtrlHelperLiveStep (the witness's verdict)
+# (phase 2a-2-B, impl/notes_p2a2.md: the region "gin-control (ring): the helper's live loop" reads every live peer's inbox
+# through the pump and checks the channel as the idle loop does; the live seams' witness pump reads the witness socket
+# with ln4's gdakiTsPump; the swap points' bodies sit in the preparation region's "[2] ring" placeholders, outside the counts)
+#use	ring	gdakiCtrlChanUp	1	gdakiCtrlHelperLiveStep: the record loop ends when the pair's ring is no longer up
+#use	ring	gdakiCtrlPump	1	gdakiCtrlHelperLiveStep: every gated peer's inbox while the ring is live
+#use	ring	gdakiTsPump	1	gdakiCtrlWitnessPump: the witness socket alone (BYE, FIN, a late record of a peer not live yet)
