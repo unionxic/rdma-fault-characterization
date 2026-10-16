@@ -155,7 +155,7 @@
 #define GDAKI_CTRL_P_LAUNCHER_STALL_MS "GIN_CTRL_LAUNCHER_STALL_MS"  // [3] the launcher page's beat stale this long (or
 #define GDAKI_CTRL_LAUNCHER_STALL_MS_DEFAULT 1000                    //     its QP in ERR): the launcher is lost (v3 4.3)
 #define GDAKI_CTRL_P_LATER_MS "GIN_CTRL_LATER_MS"            // [3] the buddy's bound after LATER: ABORT and the fallback
-#define GDAKI_CTRL_LATER_MS_DEFAULT 5000                     //     draft; the value is the user decision list's (v3 6.3)
+#define GDAKI_CTRL_LATER_MS_DEFAULT 1000                     //     1000 (결정 대기 4, the coordinator at the integration)
 // The tcp control cells only [1] (behind NCCL_GIN_CTRL_TCP && NCCL_GIN_CTRL_TCP_CELLS): the refusal gap after an RST
 // (ln4: the second refusal 1000 ms after the first; the user decision of 2026-10-16 night: default 1000, the RST cell 100).
 #define GDAKI_CTRL_P_RST_REFUSAL_GAP_MS "GIN_TS_RST_REFUSAL_GAP_MS"
@@ -850,13 +850,71 @@ struct gdakiProbeQp {
 };
 
 // ---- [1] page: the status page, the liveness READ, the judgement, the fence (begin) ----
-// gdakiCtrlJudge: a frame until phase 1 writes the table (design v3 4.2's 21 rows, first match wins).
+// The judgement table (design v3 4.2 = EXPERIMENT.md 9.3, 21 rows, the first match wins; phase 1's, moved here at the
+// integration). A row's verdict and cause name (the seven hold causes and LINKDOWN, design v3 4.5) by its number:
+static inline struct gdakiCtrlJudgement gdakiCtrlJudgementOfRow(uint32_t row) {
+  struct gdakiCtrlJudgement j;
+  j.row = row;
+  switch (row) {
+    case 1: case 2: j.verdict = GDAKI_CTRL_V_LEFT; break;
+    case 3: j.verdict = GDAKI_CTRL_V_ENDED; j.cause = GDAKI_CTRL_C_EXITED; break;
+    case 4: j.verdict = GDAKI_CTRL_V_ENDED; j.cause = GDAKI_CTRL_C_FIN_STALE; break;
+    case 5: j.verdict = GDAKI_CTRL_V_ENDED; j.cause = GDAKI_CTRL_C_FIN_NORESP; break;
+    case 6: j.verdict = GDAKI_CTRL_V_ENDED; j.cause = GDAKI_CTRL_C_REMACC_FIN; break;
+    case 7: j.verdict = GDAKI_CTRL_V_WAIT; break;
+    case 8: j.verdict = GDAKI_CTRL_V_ALIVE_WITNESS_LOST; break;
+    case 10: j.verdict = GDAKI_CTRL_V_UNREACHABLE; j.cause = GDAKI_CTRL_C_LINKDOWN; break;
+    case 11: j.verdict = GDAKI_CTRL_V_ENDED; j.cause = GDAKI_CTRL_C_NORESP; break;  // 결정 대기 2: hold, the fence confirms
+    case 12: j.verdict = GDAKI_CTRL_V_RDMA_PATH; break;
+    case 14: j.verdict = GDAKI_CTRL_V_STALL; j.cause = GDAKI_CTRL_C_STALL; break;
+    case 15: j.verdict = GDAKI_CTRL_V_STALL_HELPER; j.cause = GDAKI_CTRL_C_STALL_HELPER; break;  // 결정 대기 1: as row 14
+    case 18: j.verdict = GDAKI_CTRL_V_SUSPECT; break;
+    case 19: j.verdict = GDAKI_CTRL_V_HELPER_BUSY; break;
+    case 20: j.verdict = GDAKI_CTRL_V_ALIVE; break;
+    default: break;  // 9, 13, 16, 17, 21: no verdict (a line only)
+  }
+  return j;
+}
 static inline struct gdakiCtrlJudgement gdakiCtrlJudge(uint32_t L, uint32_t B, uint32_t W, uint32_t R) {
-  (void)L;
-  (void)B;
-  (void)W;
-  (void)R;
-  return gdakiCtrlJudgement();
+  uint32_t row = 21;
+  if (L == GDAKI_CTRL_L_LEFT) row = 1;
+  else if (B == GDAKI_CTRL_B_SEEN) row = 2;
+  else if (L == GDAKI_CTRL_L_ENDED) row = 3;  // 결정 대기 7: EXITED wins over a rising beat
+  else if (W == GDAKI_CTRL_W_END_STALE) row = 4;
+  else if (W == GDAKI_CTRL_W_END_NORESP) row = 5;
+  else if (W == GDAKI_CTRL_W_END_REMACC) row = 6;
+  else if (W == GDAKI_CTRL_W_OPEN) row = 7;
+  else if (W == GDAKI_CTRL_W_END_ALIVE) row = 8;
+  else if (W == GDAKI_CTRL_W_END_UNCONFIRMED) row = 9;
+  else if (L == GDAKI_CTRL_L_NORESP && R == GDAKI_CTRL_R_HW_NORESP) row = 10;
+  else if (L == GDAKI_CTRL_L_NOINFO && W == GDAKI_CTRL_W_OFF && R == GDAKI_CTRL_R_HW_NORESP) row = 11;
+  else if (R == GDAKI_CTRL_R_HW_NORESP) row = 12;
+  else if (R == GDAKI_CTRL_R_UNCONFIRMED) row = 13;
+  else if (R == GDAKI_CTRL_R_STALL) row = 14;
+  else if (R == GDAKI_CTRL_R_HELPER_STALL) row = 15;
+  else if (R == GDAKI_CTRL_R_REMACC) row = 16;
+  else if (R == GDAKI_CTRL_R_TIMEOUT_ONLY) row = 17;
+  else if (R == GDAKI_CTRL_R_STALE_SUSPECT || R == GDAKI_CTRL_R_STALE_GUARDED || R == GDAKI_CTRL_R_HELPER_SUSPECT ||
+           R == GDAKI_CTRL_R_HELPER_GUARDED)
+    row = 18;
+  else if (R == GDAKI_CTRL_R_HELPER_BUSY) row = 19;
+  else if (R == GDAKI_CTRL_R_ROSE || R == GDAKI_CTRL_R_STALE_LT_SUSPECT) row = 20;
+  // else row 21: 닿지 않음 (phase 1's CPU model: no point of the 1 170-point grid gets here; rows 10-12 cover every
+  // HW_NORESP and rows 13-20 the other twelve R values once rows 1-9 are past)
+  return gdakiCtrlJudgementOfRow(row);
+}
+static inline const char* gdakiCtrlCauseName(uint32_t cause) {
+  switch (cause) {
+    case GDAKI_CTRL_C_EXITED: return "EXITED";
+    case GDAKI_CTRL_C_FIN_STALE: return "FIN+STALE";
+    case GDAKI_CTRL_C_FIN_NORESP: return "FIN+NORESP";
+    case GDAKI_CTRL_C_REMACC_FIN: return "REMACC+FIN";
+    case GDAKI_CTRL_C_LINKDOWN: return "LINKDOWN";
+    case GDAKI_CTRL_C_NORESP: return "NORESP";
+    case GDAKI_CTRL_C_STALL: return "STALL";
+    case GDAKI_CTRL_C_STALL_HELPER: return "STALL_HELPER";
+    default: return "";
+  }
 }
 // ---- [1] page (end) ----
 // ---- [2] ring: the record QPs, the rings, the UD pairing, the outbox (begin) ----
