@@ -27,7 +27,7 @@
 
 ## 메시지
 
-노드 안 Unix 소켓(9.5절 표의 일곱 행, 모두 256 B; 활성화 바이트만 뒤에 덩어리가 붙음, 한도 64 KiB).
+노드 안 Unix 소켓(9.5절 표의 일곱 행과 nonce 없는 INFO 둘, 모두 256 B; 활성화 바이트만 뒤에 덩어리가 붙음, 한도 64 KiB).
 
 | 종류 | 방향 | 내용 |
 |---|---|---|
@@ -38,6 +38,8 @@
 | `GL_U_SPARE_STATUS` 5 | 예비 → launcher | 준비됨(READY) 또는 재생 실패 |
 | `GL_U_ACT_BYTES` 6 | launcher → 예비 | `gdakiRsActivate` 64 B + 활성화 덩어리 |
 | `GL_U_ACT_TALK` 7 | 예비 ↔ launcher | 답(64 B 기록), FETCH 끝점 112 B, READY 72 B, DONE 80 B, ABORT |
+| `GL_U_INFO` 8 | rank → launcher | 머리만(본문 0 B, fd 없음, nonce 0, 화신 0). all-gather 앞, 어느 연결에서든. 항목과 페이지 칸을 만들지 않음 |
+| `GL_U_INFO_ACK` 9 | launcher → rank | 머리 되풀이, `sub` 8. 본문 `glUHelloAck`: HELLO_ACK와 같은 노드 번호, UD 끝점, Q_Key, 페이지, 칸 0xffffffff. 거절은 다른 uid, fd, 본문이나 nonce |
 
 RNIC 쪽(봉투 64 B + 말 256 B = 320 B; 봉투는 설계 v2 칸 순서 그대로, 칸 합이 56 B라 `rsv[16]`으로 64 B).
 
@@ -66,9 +68,9 @@ OUT=<출력 디렉터리> ./build_launcher.sh unit     # launcher_unit 실행, �
 - `/usr/include/infiniband/verbs.h`가 있으면 verbs 전송까지 빌드하고(실행하지 않음), 없으면 `-DGL_NO_VERBS`로 빌드한다(그 프로그램은 시작을 거절한다).
 - 스크립트는 `gin_launcher`를 실행하지 않고, verbs 장치나 GPU를 열지 않는다. 단위 시험은 프로세스 안 시험 전송과, 스스로 fork한 자식(실제 pidfd, 실제 SIGSTOP과
   SIGKILL)만 쓴다. ASan과 UBSan으로 빌드한다.
-- 장면(20개): pidfd 사실, 등록과 거절, EXITED, LEFT와 BYE, FENCE와 EXITED의 엇갈림, 남의 pidfd에 신호 없음, SPAWN 거절, LATER 뒤 넘기기, 예비 프로세스가 활성화 전에
+- 장면(21개): pidfd 사실, 등록과 거절, EXITED, LEFT와 BYE, FENCE와 EXITED의 엇갈림, 남의 pidfd에 신호 없음, SPAWN 거절, LATER 뒤 넘기기, 예비 프로세스가 활성화 전에
   끝남, 이른 답의 한도, 잃는 ACCEPTED와 ACCEPTED 뒤 QP 끊김, READ 중 ABORT와 끝남과 QP 잃음, 손잡이 칸의 다시 씀(음성 대조 포함), 같은 화신 둘째 접속, pidfd 바꿈,
-  짝 맺기와 다시 짝 맺기, credit 낱말, 등록 oracle(장면 14개, 장면마다 검사 하나), 소켓 디렉터리, 잘못된 말.
+  짝 맺기와 다시 짝 맺기, credit 낱말, 등록 oracle(장면 14개, 장면마다 검사 하나), 소켓 디렉터리, 잘못된 말, nonce 없는 INFO.
 - 시험 전송은 손잡이를 verbs 전송과 같은 꼴로 줄 수 있고(칸 다시 씀 + 일련번호), READ를 붙잡아 두었다가 늦게 끝낼 수 있으며, `rc_close` 뒤에는 그 QP의 READ와
   사건을 버린다(전송 계약).
 
@@ -91,6 +93,16 @@ rain(5.15.0-97-generic)에서 `launcher_unit`의 pidfd 장면으로 쟀다(fork�
 - [측정] LEAVING을 보내고 곧바로 끝난 프로세스는 실행마다 20/20 LEFT, 0/20 EXITED였다(합 80/80).
 - [측정] SCM_RIGHTS로 받은 pidfd의 fdinfo `Pid:`가 보낸 프로세스의 pid다(등록 장면).
 - [미확인] 여러 thread인 CUDA 프로세스에서 pidfd가 읽힐 때 uverbs fd와 GPU 문맥이 이미 닫혔는지(9.8절 실행 가능성 확인 2). sunny(6.8)에서 같은지.
+
+## 바뀐 것
+
+2026-10-17, nonce 없는 INFO(요청: [../notes_p3.md](../notes_p3.md) "고침"). 한 단계씩, 단계마다 `build_launcher.sh all`(스크래치 출력, 이 폴더 밖).
+
+- 1: `launcher_msg.h`에 `GL_U_INFO` 8, `GL_U_INFO_ACK` 9, `GL_U_KIND_MAX` 7 → 9(같다는 `static_assert`), 크기와 판 번호는 그대로(256 B). 빌드됨, 단위 시험 통과
+- 2: `gin_launcher.c`가 어느 연결에서든(REGISTER 앞, 없이, 뒤) INFO에 INFO_ACK(머리 되풀이, `sub` 8, HELLO_ACK와 같은 노드, Q_Key, UD 끝점, 페이지, 칸 0xffffffff)로 답한다. 항목, 페이지 칸, `nRegRefused`를 건드리지 않는다. 다른 uid, 함께 온 fd(닫음), 본문이나 nonce, 깨진 INFO는 REFUSED. 셈 `nInfo`, `nInfoRefused`. 빌드됨, 옛 시험 통과
+- 3: `launcher_unit.cc` 장면 `info`(fork한 프로세스의 REGISTER 앞 INFO, 같은 연결의 REGISTER와 그 뒤 INFO, fd 셋 경우의 거절과 fdinfo 수, 본문과 nonce 거절, 종류 10과 9 버림, 곧바로 닫는 묻는 쪽, 다른 uid)와 `header`의 `gl_unix_check` 검사. 21 장면 472 검사 실패 0 `[측정, n 1]`
+- 4: 마지막 빌드(verbs 전송은 빌드만, 실행 없음)와 ASan, UBSan 단위 시험 세 번: 세 번 모두 21 장면 472 검사 실패 0, sanitizer 보고 0 `[측정, n 3]`. `launcher_unit` md5 `162e5b17`, `gin_launcher` `3f3ed6d0`. `rs_ctrl_api.h`는 C++17 단독 컴파일 통과(rdma, tcp)
+- 5: 이 README의 메시지 표에 두 종류, 장면 수, 이 목록
 
 ## 열린 질문
 

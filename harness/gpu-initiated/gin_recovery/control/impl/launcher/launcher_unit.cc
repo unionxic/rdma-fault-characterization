@@ -15,7 +15,9 @@
 // (the path's every condition against the launcher's own words); the socket directory; malformed messages; the page;
 // (REVIEW_PREP) an ABORT, an exit or a QP loss while the blob READ is in flight (the buffer outlives the READ: ASan sees a
 // write into freed heap otherwise); a closed QP's queued events never reach a newer QP that took its slot; after
-// ACCEPTED a blip of the buddy's QP does not SIGKILL the revived process.
+// ACCEPTED a blip of the buddy's QP does not SIGKILL the revived process; the nonce-free INFO (same launcher fields as
+// HELLO_ACK, no entry or page slot, a stray fd refused and closed, REGISTER after it on the same connection, kind 10
+// still unknown).
 #include <cerrno>
 #include <cinttypes>
 #include <cstdio>
@@ -27,6 +29,7 @@
 #include <string>
 #include <vector>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
@@ -519,6 +522,12 @@ static void kid_main(int cmd, int res, int mode, int32_t rank, uint32_t inc, uin
         pthread_exit(nullptr);
       }
       case 'C': close(s); s = -1; kid_forward(res, "c", 1); break;
+      case 'I': {  // the nonce-free INFO on this connection (no fd, nonce 0, incarnation 0), forward its answer
+        kid_send(s, GL_U_INFO, 0, rank, 0, 0, nullptr, 0, -1);
+        const ssize_t n = recv(s, buf, sizeof(buf), 0);
+        kid_forward(res, buf, n > 0 ? (uint32_t)n : 0);
+        break;
+      }
       default: break;
     }
   }
@@ -2055,6 +2064,152 @@ static void test_malformed() {
   rm_launcher(l);  // shutdown never signals a registered original (only unused spares)
 }
 
+// ------------------------------------------------------------------------------------------------ INFO (nonce-free)
+
+static int fd_count() {  // entries of /proc/self/fdinfo (the directory's own fd is counted every time alike)
+  DIR* d = opendir("/proc/self/fdinfo");
+  if (!d) return -1;
+  int n = 0;
+  while (struct dirent* e = readdir(d))
+    if (e->d_name[0] != '.') n++;
+  closedir(d);
+  return n;
+}
+// The next message on the test process's own connection s while the launcher runs; empty on timeout.
+static std::vector<uint8_t> self_recv(L& l, int s, int ms = 1000) {
+  std::vector<uint8_t> b(sizeof(glUnixMsg) + 64);
+  const double end = now_ms() + ms;
+  while (now_ms() < end) {
+    gl_core_step(l.c, 1);
+    const ssize_t n = recv(s, b.data(), b.size(), MSG_DONTWAIT);
+    if (n > 0) {
+      b.resize((size_t)n);
+      return b;
+    }
+  }
+  return {};
+}
+static bool is_info_ack(const std::vector<uint8_t>& v, int32_t rank, uint32_t status, uint32_t reason,
+                        glUHelloAck* out = nullptr) {
+  const glUnixMsg* u = as_u(v);
+  if (!u || v.size() != sizeof(glUnixMsg)) return false;
+  glUHelloAck a;
+  memcpy(&a, u->body, sizeof(a));
+  if (out) *out = a;
+  return u->h.magic == GL_U_MAGIC && u->h.version == GL_WIRE_VERSION && u->h.kind == GL_U_INFO_ACK &&
+         u->h.sub == GL_U_INFO && u->h.rank == rank && u->h.incarnation == 0 && u->h.nonce == 0 &&
+         u->h.reason == reason && u->h.payloadBytes == 0 && u->h.bodyBytes == sizeof(glUHelloAck) &&
+         gl_unix_check(u, v.size()) == GL_R_NONE && a.status == status && a.pageSlot == 0xffffffffu &&
+         strcmp(a.why, status == GL_UA_OK ? "ok" : gl_reason_text(reason)) == 0;
+}
+// No page slot is bound to nonce 0 and nRegs counts only the registered (nonce, rank)s.
+static bool page_has_no_info(L& l, uint64_t nRegs) {
+  const glPage* pg = gl_core_page(l.c);
+  int bound = 0;
+  for (int i = 0; i < GL_PAGE_REGS; i++)
+    if (pg->reg[i].nonce != 0) bound++;
+  return pg->nRegs == nRegs && bound == (int)nRegs;
+}
+
+static void test_info() {
+  L l = mk_launcher(12, getuid());
+  const glStats* st = gl_core_stats(l.c);
+  glEntryView v;
+  // (1) INFO before any REGISTER, from a forked process on a connection that has said nothing else
+  Kid k = spawn_kid(K_NONE, 5, 0, N1);
+  gKids.push_back(k.pid);
+  const size_t rc0 = l.t->rc.size(), ud0 = l.t->ud.size();
+  kid_cmd(k, 'I');
+  std::vector<uint8_t> a1 = kid_res(l, k);
+  glUHelloAck ia;
+  CHECK(is_info_ack(a1, 5, GL_UA_OK, GL_R_NONE, &ia));
+  CHECK(st->nInfo == 1 && st->nInfoRefused == 0 && st->nRegistered == 0 && st->nRegRefused == 0 && st->nBadMsg == 0);
+  CHECK(!entry(l, 0, 5, 1, 0xffffffffu, &v) && !entry(l, 0, 5, 2, 0xffffffffu, &v) && !entry(l, N1, 5, 1, 0xffffffffu, &v));
+  CHECK(page_has_no_info(l, 0));
+  CHECK(l.t->rc.size() == rc0 && l.t->ud.size() == ud0);  // nothing to the RNIC side
+  // (2) the same connection then REGISTERs: accepted; its HELLO_ACK has the same launcher fields as the INFO_ACK
+  kid_cmd(k, 'G');
+  std::vector<uint8_t> h1 = kid_res(l, k);
+  const glUHelloAck ha = ack_of(h1);
+  CHECK(ha.status == GL_UA_OK && ha.pageSlot < (uint32_t)GL_PAGE_REGS);
+  CHECK(entry(l, N1, 5, 1, 0, &v) && v.pid == k.pid);
+  CHECK(ia.node == ha.node && ia.node == 12 && ia.qkey == ha.qkey && ia.qkey == 0x1234567);
+  CHECK(memcmp(&ia.ud, &ha.ud, sizeof(ia.ud)) == 0 && ia.ud.qpn == 4242 && ia.ud.qpType == GL_QPT_UD);
+  CHECK(memcmp(&ia.page, &ha.page, sizeof(ia.page)) == 0 && ia.page.len == 4096);
+  // (3) INFO after the REGISTER on that connection: answered, the entry and the page as they were
+  const int pidfd0 = v.pidfd;
+  kid_cmd(k, 'I');
+  std::vector<uint8_t> a2 = kid_res(l, k);
+  CHECK(is_info_ack(a2, 5, GL_UA_OK, GL_R_NONE));
+  CHECK(entry(l, N1, 5, 1, 0, &v) && v.pidfd == pidfd0 && v.conn >= 0 && st->nRegistered == 1 && st->nInfo == 2);
+  CHECK(page_has_no_info(l, 1));
+  // (4) INFO with a stray fd (a pipe end, then the sender's own pidfd): refused GL_R_BAD_FD, the received fd closed
+  const int s = kid_connect();
+  CHECK(s >= 0);
+  pump(l, 5);
+  int pp[2];
+  if (pipe(pp) != 0) abort();
+  const int pf = sys_pidfd_open(getpid());
+  const unsigned closed0 = st->nPidfdClosed;
+  const int fds0 = fd_count();
+  CHECK(kid_send(s, GL_U_INFO, 0, 7, 0, 0, nullptr, 0, pp[0]) == 0);
+  CHECK(is_info_ack(self_recv(l, s), 7, GL_UA_REFUSED, GL_R_BAD_FD));
+  CHECK(fd_count() == fds0 && st->nPidfdClosed == closed0 + 1);
+  CHECK(kid_send(s, GL_U_INFO, 0, 7, 0, 0, nullptr, 0, pf) == 0);
+  CHECK(is_info_ack(self_recv(l, s), 7, GL_UA_REFUSED, GL_R_BAD_FD));
+  CHECK(fd_count() == fds0 && st->nPidfdClosed == closed0 + 2);
+  CHECK(kid_send(s, GL_U_INFO, 0, 7, 0, 0, nullptr, 0, pp[0], pf) == 0);  // two fds: malformed, still answered
+  CHECK(is_info_ack(self_recv(l, s), 7, GL_UA_REFUSED, GL_R_BAD_FD));
+  CHECK(fd_count() == fds0);
+  CHECK(st->nInfoRefused == 3 && st->nInfo == 2 && st->nRegRefused == 0 && !entry(l, 0, 7, 1, 0xffffffffu, &v) &&
+        !entry(l, 0, 7, 2, 0xffffffffu, &v));
+  close(pp[0]);
+  close(pp[1]);
+  close(pf);
+  // (5) a body or a nonce: refused GL_R_BAD_MSG (INFO is head only and nonce-free); the same connection still answers
+  const char junk[] = "x";
+  CHECK(kid_send(s, GL_U_INFO, 0, 7, 0, 0, junk, sizeof(junk), -1) == 0);
+  CHECK(is_info_ack(self_recv(l, s), 7, GL_UA_REFUSED, GL_R_BAD_MSG));
+  CHECK(kid_send(s, GL_U_INFO, 0, 7, 0, N1, nullptr, 0, -1) == 0);
+  {
+    std::vector<uint8_t> r = self_recv(l, s);
+    const glUnixMsg* u = as_u(r);
+    CHECK(u && u->h.kind == GL_U_INFO_ACK && u->h.nonce == N1 && u->h.reason == GL_R_BAD_MSG);  // the head is echoed
+  }
+  CHECK(kid_send(s, GL_U_INFO, 0, 7, 0, 0, nullptr, 0, -1) == 0);
+  CHECK(is_info_ack(self_recv(l, s), 7, GL_UA_OK, GL_R_NONE));
+  // (6) an unknown kind 10, and kind 9 sent to the launcher, are dropped as before: no answer
+  const unsigned bad0 = st->nBadMsg;
+  CHECK(kid_send(s, 10, 0, 7, 0, 0, nullptr, 0, -1) == 0);
+  CHECK(kid_send(s, GL_U_INFO_ACK, 0, 7, 0, 0, nullptr, 0, -1) == 0);
+  CHECK(self_recv(l, s, 50).empty());
+  CHECK(st->nBadMsg == bad0 + 2);
+  // (7) the asker closes at once without reading: nothing held, the launcher goes on
+  for (int i = 0; i < 5; i++) {
+    const int q = kid_connect();
+    CHECK(q >= 0 && kid_send(q, GL_U_INFO, 0, 8 + i, 0, 0, nullptr, 0, -1) == 0);
+    close(q);
+  }
+  pump(l, 20);
+  CHECK(st->nInfo == 3 + 5);  // the INFO is read before the EOF; its answer finds the peer gone (a log line only)
+  CHECK(kid_send(s, GL_U_INFO, 0, 7, 0, 0, nullptr, 0, -1) == 0);
+  CHECK(is_info_ack(self_recv(l, s), 7, GL_UA_OK, GL_R_NONE));
+  for (int i = 0; i < 5; i++) CHECK(!entry(l, 0, 8 + i, 1, 0xffffffffu, &v) && !entry(l, 0, 8 + i, 2, 0xffffffffu, &v));
+  CHECK(page_has_no_info(l, 1) && st->nRegistered == 1 && st->nRegRefused == 0);
+  close(s);
+  reap(k);
+  pump(l, 5);
+  rm_launcher(l);
+  // (8) another uid: INFO refused GL_R_UID, not counted as a refused registration
+  L u = mk_launcher(12, getuid() + 1);
+  const int s2 = kid_connect();
+  CHECK(s2 >= 0 && kid_send(s2, GL_U_INFO, 0, 3, 0, 0, nullptr, 0, -1) == 0);
+  CHECK(is_info_ack(self_recv(u, s2), 3, GL_UA_REFUSED, GL_R_UID));
+  CHECK(gl_core_stats(u.c)->nInfoRefused == 1 && gl_core_stats(u.c)->nRegRefused == 0 && page_has_no_info(u, 0));
+  close(s2);
+  rm_launcher(u);
+}
+
 static void test_shutdown_kills_unused_spare() {
   L l = mk_launcher(11, getuid());
   Kid o = kid_registered(l, K_REGISTER, 3, 0, N1);
@@ -2084,6 +2239,19 @@ static void test_header() {
   CHECK(gl_msg_check(&m) == GL_R_NONE);
   m.h.kind = 99;
   CHECK(gl_msg_check(&m) == GL_R_UNKNOWN_KIND);
+  glUnixMsg u;
+  memset(&u, 0, sizeof(u));
+  u.h.magic = GL_U_MAGIC;
+  u.h.version = GL_WIRE_VERSION;
+  u.h.kind = GL_U_INFO;
+  CHECK(GL_U_INFO == 8 && GL_U_INFO_ACK == 9 && GL_U_KIND_MAX == 9);
+  CHECK(gl_unix_check(&u, sizeof(u)) == GL_R_NONE);
+  u.h.kind = GL_U_INFO_ACK;
+  CHECK(gl_unix_check(&u, sizeof(u)) == GL_R_NONE);
+  u.h.kind = 10;
+  CHECK(gl_unix_check(&u, sizeof(u)) == GL_R_UNKNOWN_KIND);
+  u.h.kind = 0;
+  CHECK(gl_unix_check(&u, sizeof(u)) == GL_R_UNKNOWN_KIND);
   for (uint32_t r = 0; r < GL_R_COUNT; r++) CHECK(strcmp(gl_reason_text(r), "?") != 0);
   CHECK(strcmp(gl_reason_text(GL_R_SPAWN_NOT_BUILT), "spawn not built") == 0);
 }
@@ -2117,6 +2285,7 @@ int main(int argc, char** argv) {
                {"registration_oracle", test_registration_oracle},
                {"socket_dir", test_socket_dir},
                {"malformed", test_malformed},
+               {"info", test_info},
                {"shutdown_kills_unused_spare", test_shutdown_kills_unused_spare}};
   int nt = 0;
   for (auto& t : tests) {
