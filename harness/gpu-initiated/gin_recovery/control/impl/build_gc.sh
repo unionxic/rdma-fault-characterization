@@ -4,10 +4,16 @@
 # (the same stage semantics). No GPU or RDMA program runs here: the libraries are compiled and linked, the CPU unit tests
 # run on the CPU with ASan and UBSan (no NCCL, no CUDA, no verbs at run time), the identity checks compile and compare.
 # Nothing outside agent_gc_$BR/ is written but impl/gc_layer*.diff in this worktree. agent_mi_fix/ (ln4) is read only.
-# usage: SCR=<the session scratch dir> BR=<prep|page|ring|launcher|int> build_gc.sh
-#          <setup|paste|repaste|api|gc|gcp|gct|gctp|unit|pre|sites|ident|diff|info>
+# usage: SCR=<the session scratch dir> BR=<prep|page|ring|launcher|int|p1|p2> build_gc.sh
+#          <setup|paste|repaste|api|gc|gcp|gct|gctp|unit|unitp1|unitp2|syn|pre|sites|ident|diff|info>
 #   prep, the preparation stage (9.8 "준비"); page, ring, launcher: phases 1, 2, 3 (they start from ln4 + the preparation
-#   stage's diff); int: their integration (phase 4 binds the rest of the TCP code behind the switch).
+#   stage's diff); int: their integration (phase 4 binds the rest of the TCP code behind the switch). int's tree holds
+#   the fixed preparation stage (impl/gc_layer.diff 0df79ae2, head commit "gin-control prep-fix (gc_layer.diff 0df79ae2)")
+#   with phase 1 (impl/gc_layer_p1.diff) and phase 2a-1 (impl/gc_layer_p2.diff) merged onto it: impl/gc_layer_int.diff.
+#   p1, p2: the record of phase 1 and phase 2a-1 as they were built (their trees agent_gc_p1, agent_gc_p2 on the old
+#   preparation stage f5061a31; inputs pinned in GCPIN, default impl_base/ and agent_gc_p2/pin/; test sources GCTEST,
+#   default this folder: the tests here follow the fixed header since the integration, so the phase-time sources are
+#   `git show 73be8802:` (p1) and `494cd666:` (p2) of the worktree).
 #   setup  once: check that agent_mi_fix is gin-mirror's ln4 (head commit "gin-restore i5 (rs_layer.diff f005bb67)",
 #          working tree diff md5 dcd30859 = ../../mirror/impl/mi_layer.diff, build/lib libnccl c74e6ffb, build-mip/lib
 #          21b0be95), copy its nccl-src to agent_gc_$BR/nccl-src, its build to build (key gc) and build-gct (key gct), its
@@ -31,30 +37,45 @@
 #          trees differ from that directory's last build (devsync, build_mi.sh's rule).
 #   unit   CFG=<rdma|tcp|both> (default both): gin-mirror's CPU unit tests (../../mirror/impl/mi_unit_{dev,host,store,
 #          spare,lineage}.cc) and gin-restore's (../../restore/impl/rs_unit_host.cc, rs_spare_unit.cc) unchanged, against
-#          the working tree's pure regions, then impl/gc_unit_prep.cc; g++ with ASan and UBSan, with -DNCCL_GIN_CTRL_TCP=1
+#          the working tree's pure regions, then impl/gc_unit_prep.cc; BR p1 and int: then impl/gc_unit_p1.cc (both builds;
+#          tcp: no phase 1, 0 checks) and impl/gate_fenced.cc (rdma only: the tcp build has no FENCED gate); BR p2 and
+#          int: then impl/gc_unit_p2.cc (both builds; tcp: 0 checks); g++ with ASan and UBSan, with -DNCCL_GIN_CTRL_TCP=1
 #          for tcp. No NCCL, no CUDA, no network.
+#   unitp1, unitp2  the development loop: phase 1's tests alone (BR p1, int), phase 2a-1's alone (BR p2, int).
+#   syn    the host file's compile command of build, build-gcp and build-gct with -fsyntax-only (the development loop).
 #   pre    the preprocessed host file (g++ -E -P with the build's own flags) of gct, gctp and gctc (gct's flags with
 #          NCCL_GIN_CTRL_TCP_CELLS=1) against ln4's (gctp: its production flags), as is and with the tree's path in the
 #          __FILE__ strings and the host file's __LINE__ numbers normalized; gc's for the record; out/pre/.
 #   sites  the swap points: impl/gc_sites.tsv (every site's class and action) against ln4's lines and the working tree's
 #          rdma side (the code outside the pasted blocks and the preparation region, without the #if NCCL_GIN_CTRL_TCP
 #          branches): the counts of every swap point, seam and kept call, the .fd uses left; and every
-#          #if NCCL_GIN_CTRL_TCP branch outside the blocks is a run of ln4's lines verbatim.
+#          #if NCCL_GIN_CTRL_TCP branch outside the blocks is a run of ln4's lines verbatim. The phases' own regions
+#          ("gin-control (page)", "(ring)": new code, no ln4 site) are outside that count; their uses of the same calls
+#          are the table's "#use" lines (region, call, count), checked against the tree too.
 #   ident  the device identity against ln4 (EXPERIMENT.md 9.8 "동일성 확인"): the four macro-free programs (gin-restore's
 #          ff_ops.cu, gin_ts2.cu, gin_mr.cu, NCCL's ring example) compiled against each build's installed headers, without
 #          and with NCCL_GIN_RESTORE_DEVICE, against ln4's objects (agent_mi_fix/sass_mi_ln4): whole SASS and -res-usage;
 #          every device object of the four build directories against ln4's build (gc, gct) and build-mip (gcp, gctp); the
 #          libraries' -res-usage against ln4's. Output out/ident_$IDTAG/.
-#   diff   write impl/gc_layer.diff (BR=prep; others impl/gc_layer_$BR.diff): the working tree against the head commit
+#   diff   write impl/gc_layer.diff (BR=prep; others impl/gc_layer_$BR.diff): the working tree against the head commit;
+#          int: impl/gc_layer_int.diff, the whole layer against the ln4 commit (prep-fix + phase 1 + phase 2a-1)
 #          (histogram, new files as intent-to-add), and check that it applies in reverse.
 #   info   out/build_info.txt (INFO=<file> for another name): md5 of every output and input, the base.
 # All compiles run at nice 19 and idle I/O priority (other studies use this node).
 set -euo pipefail
 STAGE=${1:?stage}
-BR=${BR:?BR=<prep|page|ring|launcher|int>}
-case "$BR" in prep | page | ring | launcher | int) ;; *) echo "unknown work package $BR" >&2; exit 2 ;; esac
+BR=${BR:?BR=<prep|page|ring|launcher|int|p1|p2>}
+case "$BR" in prep | page | ring | launcher | int | p1 | p2) ;; *) echo "unknown work package $BR" >&2; exit 2 ;; esac
 SCR=${SCR:?SCR=<the session scratch dir that holds agent_mi_fix and agent_gc_*>}
 D=$(cd "$(dirname "$0")" && pwd)          # this worktree's control/impl
+# DI: the header, the site table and gc_unit_prep.cc the stages read (this folder; p1, p2: the inputs they were built
+# with, pinned); TI: the phases' test sources (this folder unless GCTEST says otherwise)
+case "$BR" in
+  p1) DI=${GCPIN:-$SCR/impl_base} ;;
+  p2) DI=${GCPIN:-$SCR/agent_gc_p2/pin} ;;
+  *) DI=$D ;;
+esac
+TI=${GCTEST:-$D}
 MID=$(cd "$D/../../mirror/impl" && pwd)   # gin-mirror's impl (read only)
 RSD=$(cd "$D/../../restore/impl" && pwd)  # gin-restore's impl (read only)
 CUDA=/usr/local/cuda-12.8
@@ -79,7 +100,13 @@ LN4_DIFF=dcd30859ac6db214e37475c527c37e2f
 LN4_HOST=0ab4e636fb19ec5c5a6759edf3ea2d40
 LN4_LIB=c74e6ffb60b9ab8e959a7cfc89b7f55c
 LN4_LIBP=21b0be95b04f4ebeeafd0e6e92eecba0
-PREP_MD5=${PREP_MD5:-}  # impl/gc_layer.diff's md5 the phases start from (the main session pins it with the prep commit)
+case "$BR" in  # impl/gc_layer.diff's md5 the phases start from (the main session pins it with the prep commit)
+  int) PREP_MD5=${PREP_MD5:-0df79ae2c8b3a285383a48adbbf5ebad} ;;  # the fixed preparation stage (fd4ae2d6)
+  p1 | p2) PREP_MD5=${PREP_MD5:-f5061a31bf8760ad4cbb3b607fa5d19a} ;;  # the preparation stage phases 1 and 2a-1 began on
+  *) PREP_MD5=${PREP_MD5:-} ;;
+esac
+PREP_SUBJECT() { [ "$BR" = int ] && echo "gin-control prep-fix (gc_layer.diff ${PREP_MD5:0:8})" ||
+                   echo "gin-control prep (gc_layer.diff ${PREP_MD5:0:8})"; }
 LG() { git -C "$LN4/nccl-src" "$@"; }
 MG() { git -C "$W/nccl-src" -c user.name=build -c user.email=build@localhost "$@"; }
 md5() { md5sum < "$1" | cut -c1-32; }
@@ -106,8 +133,8 @@ setup() {
   [ "$(md5 "$LN4/build/lib/libnccl.so.2.32.3")" = $LN4_LIB ] || { echo "agent_mi_fix/build is not ln4" >&2; exit 1; }
   [ "$(md5 "$LN4/build-mip/lib/libnccl.so.2.32.3")" = $LN4_LIBP ] || { echo "agent_mi_fix/build-mip is not ln4" >&2; exit 1; }
   if [ "$BR" != prep ]; then
-    [ -n "$PREP_MD5" ] && [ -f "$D/gc_layer.diff" ] && [ "$(md5 "$D/gc_layer.diff")" = "$PREP_MD5" ] ||
-      { echo "impl/gc_layer.diff is not the pinned preparation stage (PREP_MD5)" >&2; exit 1; }
+    [ -n "$PREP_MD5" ] && [ -f "$DI/gc_layer.diff" ] && [ "$(md5 "$DI/gc_layer.diff")" = "$PREP_MD5" ] ||
+      { echo "gc_layer.diff ($DI) is not the pinned preparation stage (PREP_MD5)" >&2; exit 1; }
   fi
   mkdir -p "$W"
   cp -a "$LN4/nccl-src" "$W/"
@@ -132,13 +159,13 @@ setup() {
     [ "$(md5 "$W/$b/lib/libnccl.so.2.32.3")" = $LN4_LIBP ] || { echo "the copied $b is not ln4's production" >&2; exit 1; }
   done
   if [ "$BR" != prep ]; then
-    MG apply "$D/gc_layer.diff"
+    MG apply "$DI/gc_layer.diff"
     MG add -A src
-    MG commit -qm "gin-control prep (gc_layer.diff ${PREP_MD5:0:8})"
+    MG commit -qm "$(PREP_SUBJECT)"
   fi
   echo "setup: agent_gc_$BR at $(MG rev-parse --short HEAD) ($(MG log -1 --format=%s)); base libnccl ln4 ${LN4_LIB:0:8} / ${LN4_LIBP:0:8}"
 }
-BASE_SUBJECT() { [ "$BR" = prep ] && echo "$LN4_SUBJECT" || echo "gin-control prep (gc_layer.diff ${PREP_MD5:0:8})"; }
+BASE_SUBJECT() { [ "$BR" = prep ] && echo "$LN4_SUBJECT" || PREP_SUBJECT; }
 head_ok() {
   [ "$(MG log -1 --format=%s)" = "$(BASE_SUBJECT)" ] || { echo "unexpected head commit in agent_gc_$BR" >&2; exit 1; }
 }
@@ -152,6 +179,7 @@ tree() {  # the work package's diff on the working tree of the copy
   head_ok
   if MG diff --quiet HEAD -- src; then
     [ -f "$LAYER" ] || { echo "no changes in the tree and no impl/$(basename "$LAYER")" >&2; exit 1; }
+    [ "$BR" = int ] && MG apply -R "$DI/gc_layer.diff"  # int's layer is on ln4: the head commit's prep-fix out first
     MG apply "$LAYER"
   fi
   files_ok
@@ -186,7 +214,7 @@ PY
 
 repaste() {  # the header's two blocks over the tree's (each phase changes only its own sub-blocks in them)
   head_ok
-  python3 - "$W/nccl-src" "$D" <<'PY'
+  python3 - "$W/nccl-src" "$DI" <<'PY'
 import sys
 root, impl = sys.argv[1], sys.argv[2]
 HOSTF = root + '/src/transport/net_ib/gdaki/gin_host_gdaki.cc'
@@ -230,8 +258,8 @@ typedef struct {
 } ncclGinRecoverToken_t;'
 api() {
   head_ok
-  same "ctrl API" '^// ---- gin-control: ctrl API [(]begin' '^// ---- gin-control: ctrl API [(]end' "$HOSTF" "$D/rs_ctrl_api.h"
-  same "ctrl seams" '^// ---- gin-control: ctrl seams [(]begin' '^// ---- gin-control: ctrl seams [(]end' "$HOSTF" "$D/rs_ctrl_api.h"
+  same "ctrl API" '^// ---- gin-control: ctrl API [(]begin' '^// ---- gin-control: ctrl API [(]end' "$HOSTF" "$DI/rs_ctrl_api.h"
+  same "ctrl seams" '^// ---- gin-control: ctrl seams [(]begin' '^// ---- gin-control: ctrl seams [(]end' "$HOSTF" "$DI/rs_ctrl_api.h"
   local o=$OUT/api; mkdir -p "$o"
   { echo "$PRELUDE"
     for h in rs_hold_api.h rs_mirror_api.h rs_log_api.h rs_ckpt_api.h rs_store_api.h rs_spare_api.h rs_lineage_api.h; do
@@ -241,16 +269,16 @@ api() {
     echo 'int main() { return 0; }'; } > "$o/headers.cc"
   local f
   for f in "" "-DNCCL_GIN_CTRL_TCP=1"; do
-    g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-function $f -fsyntax-only -I"$D" -I"$MID" "$o/headers.cc"
+    g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-function $f -fsyntax-only -I"$DI" -I"$MID" "$o/headers.cc"
     g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-function $f -DGDAKI_MI_API_NO_ENTRY_DECLS -DGDAKI_HOLD_API_NO_ENTRY_DECLS \
-      -DGDAKI_CTRL_API_NO_ENTRY_DECLS -fsyntax-only -I"$D" -I"$MID" "$o/headers.cc"
+      -DGDAKI_CTRL_API_NO_ENTRY_DECLS -fsyntax-only -I"$DI" -I"$MID" "$o/headers.cc"
   done
-  if g++ -std=c++17 -DNCCL_GIN_CTRL_TCP_CELLS=1 -fsyntax-only -I"$D" -I"$MID" "$o/headers.cc" 2> "$o/cells_alone.err"; then
+  if g++ -std=c++17 -DNCCL_GIN_CTRL_TCP_CELLS=1 -fsyntax-only -I"$DI" -I"$MID" "$o/headers.cc" 2> "$o/cells_alone.err"; then
     echo "api: NCCL_GIN_CTRL_TCP_CELLS=1 without NCCL_GIN_CTRL_TCP compiled; it must not" >&2; exit 1
   fi
   echo "api: NCCL_GIN_CTRL_TCP_CELLS=1 without NCCL_GIN_CTRL_TCP is refused ($(grep -c '#error' "$o/cells_alone.err") #error line)"
   echo "api: rs_ctrl_api.h compiles with gin-mirror's seven headers (g++ -fsyntax-only; rdma and tcp; with and without the" \
-       "entry-point declarations); launcher/launcher_msg.h $( [ -f "$D/launcher/launcher_msg.h" ] && echo "present: its envelope checked" || echo absent)"
+       "entry-point declarations); launcher/launcher_msg.h $( [ -f "$DI/launcher/launcher_msg.h" ] && echo "present: its envelope checked" || echo absent)"
 }
 
 NDEV=src/include/nccl_device
@@ -298,13 +326,56 @@ regions() {  # regions <dir>: every pure region the unit tests read
     cut1 "$o/mi_pure_$x.inc" "^// ---- gin-mirror [(]$x[)]: pure [(]begin" "^// ---- gin-mirror [(]$x[)]: pure [(]end"
   done
   cut1 "$o/gc_api.inc" '^// ---- gin-control: ctrl API [(]begin' '^// ---- gin-control: ctrl API [(]end'
+  case "$BR" in p1 | int)  # phase 1's region (impl/gc_unit_p1.cc, impl/gate_fenced.cc)
+    cut1 "$o/gc_page_pure.inc" '^// ---- gin-control [(]page[)]: pure functions [(]begin' \
+         '^// ---- gin-control [(]page[)]: pure functions [(]end' ;;
+  esac
+  case "$BR" in p2 | int)  # phase 2a-1's model (impl/gc_unit_p2.cc) and gc_unit_prep.cc's record generator
+    cut1 "$o/gc_ring_model.inc" '^// ==== gin-control [(]ring[)]: model [(]begin' '^// ==== gin-control [(]ring[)]: model [(]end'
+    region '^static const uint32_t kTypes' '^}$' "$DI/gc_unit_prep.cc" > "$o/gc_prep_gen.inc"
+    [ "$(grep -c '^static void fillRandom(' "$o/gc_prep_gen.inc")" = 1 ] ||
+      { echo "unit: gc_unit_prep.cc's generator not found" >&2; exit 1; } ;;
+  esac
 }
 unit1() {  # unit1 <cfg rdma|tcp> <label> <source> [extra g++ args]: one CPU unit test against the cut regions
   local c=$1 n=$2 src=$3; shift 3
   local o=$OUT/unit_$c f=""
   [ "$c" = tcp ] && f="-DNCCL_GIN_CTRL_TCP=1"
-  GXX $f "$@" -I"$o" -I"$D" -I"$MID" -I"$W/nccl-src/src/include" "$src" -o "$o/$n"
+  GXX $f "$@" -I"$o" -I"$DI" -I"$MID" -I"$W/nccl-src/src/include" "$src" -o "$o/$n"
   "$o/$n"
+}
+unitp1one() {  # unitp1one <cfg>: gc_unit_p1.cc, then gate_fenced.cc (rdma only), as run_p1_unit.sh compiled them
+  local c=$1 o=$OUT/unit_$1
+  grep -E '^#define GDAKI_MI_R(3[4-9]|40) ' "$MID/rs_mirror_api.h" > "$o/mi_reasons.h"
+  unit1 "$c" gc_unit_p1 "$TI/gc_unit_p1.cc" -I"$RSD" -include "$o/mi_reasons.h"
+  if [ "$c" = rdma ]; then
+    unit1 "$c" gate_fenced "$TI/gate_fenced.cc" -I"$RSD" -include "$o/mi_reasons.h"
+  else
+    echo "unit ($c): gate_fenced is rdma only (the tcp build keeps ln4's /proc gate, no FENCED gate)"
+  fi
+}
+unitp2one() {  # unitp2one <cfg>: gc_unit_p2.cc against the tree's ring model, gc_unit_prep.cc's generator and ln4's
+               # TCP back end (gc_ln4_sock.inc of `unit`, or of its own cut for unitp2)
+  unit1 "$1" gc_unit_p2 "$TI/gc_unit_p2.cc" -DGDAKI_CTRL_API_NO_ENTRY_DECLS
+}
+unitp() {  # unitp <1|2>: one phase's tests alone (the development loop)
+  head_ok
+  case "$1:$BR" in 1:p1 | 1:int | 2:p2 | 2:int) ;; *) echo "unitp$1 is not BR=$BR's" >&2; exit 2 ;; esac
+  local cfgs="${CFG:-both}" c
+  [ "$cfgs" = both ] && cfgs="rdma tcp"
+  for c in $cfgs; do
+    local o=$OUT/unit_$c; mkdir -p "$o"
+    regions "$o"
+    echo "== unitp$1 ($c build)"
+    if [ "$1" = 2 ]; then
+      cutdefs "$LN4/nccl-src/$HOSTF" "$o/gc_ln4_sock.inc" '#define GDAKI_TS_MAGIC ' 'struct gdakiTsMsg {' 'struct gdakiTsPeer {' \
+        'static const char* gdakiTsErrName(' 'static int gdakiTsSend(' 'static int gdakiTsPumpRaw(' 'static int gdakiTsPump(' \
+        'static int gdakiTsRecv(' 'static int gdakiRsRecvOn('
+      unitp2one "$c"
+    else
+      unitp1one "$c"
+    fi
+  done
 }
 unit() {
   head_ok
@@ -341,7 +412,9 @@ unit() {
     else
       echo "unit ($c): the tree's TCP back end differs from ln4's" >&2; exit 1
     fi
-    unit1 "$c" gc_unit_prep "$D/gc_unit_prep.cc" -DGDAKI_CTRL_API_NO_ENTRY_DECLS
+    unit1 "$c" gc_unit_prep "$DI/gc_unit_prep.cc" -DGDAKI_CTRL_API_NO_ENTRY_DECLS
+    case "$BR" in p1 | int) unitp1one "$c" ;; esac
+    case "$BR" in p2 | int) unitp2one "$c" ;; esac
   done
 }
 cutdefs() {  # cutdefs <host file> <out> <start>...: for each start (a line prefix): a #define line as it is, a struct up to
@@ -402,6 +475,12 @@ pre1() {  # pre1 <label> <build dir> <CXXFLAGS of that build>
        "raw diff $(grep -c '^[<>]' "$o/${lab}.raw.diff") lines; normalized: ln4 $(md5 "$o/${lab}_ln4.n.i"), ours $(md5 "$o/${lab}.n.i")," \
        "$(grep -c '^@@' "$o/${lab}.norm.diff" || true) hunks, $(grep -c '^[-+][^-+]' "$o/${lab}.norm.diff" || true) changed lines"
 }
+syn1() {  # syn1 <build dir> <CXXFLAGS>: the host file's compile command of that build with -fsyntax-only
+  local cmd; cmd=$(precmd "$W/$1" "$2")
+  [ -n "$cmd" ] || { echo "syn: no compile command for $1" >&2; exit 1; }
+  cmd=$(echo "$cmd" | sed -E 's# -c transport/net_ib/gdaki/gin_host_gdaki\.cc# -fsyntax-only transport/net_ib/gdaki/gin_host_gdaki.cc#; s# -o [^ ]+\.o##')
+  (cd "$W/nccl-src/src" && eval "nice -n 19 $cmd") && echo "syn $1: the host file compiles (-fsyntax-only)"
+}
 pre() {
   head_ok
   pre1 gct build-gct "-DNCCL_GIN_CTRL_TCP=1"
@@ -420,23 +499,27 @@ sites() {
     echo "sites: $s( lines: ln4 $(grep -cE "\\b$s\\(" "$l" || true), tree $(grep -cE "\\b$s\\(" "$f" || true)"
   done
   echo "sites: pe.fd lines: ln4 $(grep -cE '\bpe\.fd\b' "$l"), tree $(grep -cE '\bpe\.fd\b' "$f")"
-  python3 - "$D/gc_sites.tsv" "$l" "$f" <<'PY2'
+  python3 - "$DI/gc_sites.tsv" "$l" "$f" <<'PY2'
 import re, sys
 from collections import Counter
 tsv, ln4, tree = sys.argv[1:4]
 rows = [l.rstrip('\n').split('\t') for l in open(tsv, encoding='utf-8') if l.strip() and not l.startswith('#')][1:]
+uses = [l.rstrip('\n').split('\t')[1:] for l in open(tsv, encoding='utf-8') if l.startswith('#use\t')]
 L = open(ln4, encoding='utf-8').read().split('\n')
 T = open(tree, encoding='utf-8').read().split('\n')
 bad = 0
 def isCode(l): return not l.lstrip().startswith('//') and not l.lstrip().startswith('#define')
+REG = r'^// (----|====) gin-control(:| \((prep|page|ring)\))'
 def views(lines):
-    # the rdma side: code lines outside the pasted blocks and the preparation region (nested markers counted), without
-    # the #if NCCL_GIN_CTRL_TCP branches; and those branches (outside the blocks), each a list of lines
+    # the rdma side: code lines outside the pasted blocks, the preparation region and the phases' own regions (page,
+    # ring: new code; nested markers counted), without the #if NCCL_GIN_CTRL_TCP branches; and those branches (outside
+    # the blocks), each a list of lines
     out, branches, depth, stack, cur = [], [], 0, [], None
     for l in lines:
-        m = re.match(r'^// (----|====) gin-control(:| \(prep\))', l)
+        m = re.match(REG, l)
         if m:
             depth += 1 if '(begin' in l else (-1 if '(end' in l else 0)
+            if depth < 0: sys.exit('sites: a region ends that did not begin: %r' % l[:100])
             continue
         if depth > 0: continue
         d = l.strip()
@@ -494,6 +577,32 @@ checks = [
 for what, want, got in checks:
     print('tsv: %-40s table %3d, tree %3d%s' % (what, want, got, '' if want == got else '  MISMATCH'))
     if want != got: bad += 1
+# the phases' own regions: the code lines of each top-level "gin-control (page|ring)" region (its sub-regions inside),
+# and every call the table's "#use" lines name, counted there
+def regionCode(lines):
+    res, cur, depth = {}, None, 0
+    for l in lines:
+        m = re.match(r'^// (----|====) gin-control \((page|ring)\)', l)
+        if m and depth == 0 and '(begin' in l: cur, depth = m.group(2), 1; res.setdefault(cur, []); continue
+        if m and cur == m.group(2) and depth > 0:
+            depth += 1 if '(begin' in l else (-1 if '(end' in l else 0)
+            if depth == 0: cur = None
+            continue
+        if cur and isCode(l) and not l.strip().startswith('#'): res[cur].append(l)
+    return res
+RC = regionCode(T)
+CALLS = ['gdakiTsSend', 'gdakiTsPump', 'gdakiTsRecv', 'gdakiRsRecvOn', 'gdakiTsAnswerFail', 'gdakiHoldSend', 'gdakiCtrlSend',
+         'gdakiCtrlPump', 'gdakiCtrlRecv', 'gdakiCtrlRecvOn', 'gdakiCtrlRejoinFail', 'gdakiCtrlChanUp', 'gdakiCtrlChanGen',
+         'gdakiCtrlPollFd', 'gdakiCtrlChanInstall']
+got = {(rg, c): n(r'\b%s\(' % c, RC.get(rg, [])) for rg in ('page', 'ring') for c in CALLS}
+got.update({(rg, '.fd'): n(FD, RC.get(rg, [])) for rg in ('page', 'ring')})
+want = {(u[0], u[1]): int(u[2]) for u in uses}
+for k in sorted(set(got) | set(want)):
+    g, w = got.get(k, 0), want.get(k, 0)
+    if g == 0 and w == 0: continue
+    print('tsv: %-40s table %3d, tree %3d%s' % ('%s region: %s' % k, w, g, '' if w == g else '  MISMATCH'))
+    if w != g: bad += 1
+print('tsv: the phases\' regions: %s' % ', '.join('%s %d code lines' % (k, len(v)) for k, v in sorted(RC.items())))
 # every tcp branch is ln4's text: a run of consecutive ln4 lines
 J = '\n'.join(L)
 nb = 0
@@ -607,9 +716,16 @@ mkdiff() {
   head_ok; files_ok
   local n
   for n in $(MG ls-files --others --exclude-standard -- src); do MG add -N -- "$n"; done
-  MG diff --diff-algorithm=histogram HEAD -- src > "$LAYER"
+  # int: the whole layer on ln4 (the prep-fix commit and the working tree: prep-fix + phase 1 + phase 2a-1); else the
+  # working tree against the head commit
+  local base=HEAD
+  [ "$BR" = int ] && base=$(MG rev-list --max-count=1 --grep="^$LN4_SUBJECT\$" HEAD)
+  MG diff --diff-algorithm=histogram "$base" -- src > "$LAYER"
   MG apply --check -R "$LAYER"
-  echo "diff: impl/$(basename "$LAYER") $(md5 "$LAYER") $(wc -l < "$LAYER") lines ($(MG diff --name-only HEAD -- src | tr '\n' ' '))"
+  echo "diff: impl/$(basename "$LAYER") $(md5 "$LAYER") $(wc -l < "$LAYER") lines ($(MG diff --name-only "$base" -- src | tr '\n' ' ')) against $(MG log -1 --format='%h %s' "$base")"
+  if [ "$BR" = int ]; then  # the phases' part alone (against the prep-fix commit), for the record
+    echo "diff: of it the phases' part (working tree against HEAD, $(MG log -1 --format=%s)): $(MG diff --diff-algorithm=histogram HEAD -- src | md5sum | cut -c1-32), $(MG diff --diff-algorithm=histogram HEAD -- src | wc -l) lines"
+  fi
 }
 info() {
   {
@@ -628,10 +744,17 @@ info() {
     done
     echo "include_digest build $(cd "$W/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
     echo "include_digest ln4 $(cd "$LN4/build/include" && find . -type f | LC_ALL=C sort | xargs md5sum | md5sum | cut -c1-32)"
-    for f in rs_ctrl_api.h gc_sites.tsv build_gc.sh gc_unit_prep.cc launcher/launcher_msg.h launcher/gin_launcher.c \
-             launcher/launcher_transport_verbs.c launcher/launcher_unit.cc; do
+    for f in rs_ctrl_api.h gc_sites.tsv gc_unit_prep.cc launcher/launcher_msg.h; do
+      [ -f "$DI/$f" ] && echo "$f $(md5 "$DI/$f") $(wc -l < "$DI/$f") lines$([ "$DI" = "$D" ] || echo " (pinned, $DI)")"
+    done
+    for f in build_gc.sh launcher/gin_launcher.c launcher/launcher_transport_verbs.c launcher/launcher_unit.cc; do
       [ -f "$D/$f" ] && echo "$f $(md5 "$D/$f") $(wc -l < "$D/$f") lines"
     done
+    case "$BR" in p1 | p2 | int)
+      for f in gc_unit_p1.cc gate_fenced.cc gc_unit_p2.cc gc_layer.diff gc_layer_p1.diff gc_layer_p2.diff; do
+        [ -f "$TI/$f" ] && echo "$f $(md5 "$TI/$f") $(wc -l < "$TI/$f") lines"
+      done ;;
+    esac
   } > "${INFO:-$OUT/build_info.txt}"
   cat "${INFO:-$OUT/build_info.txt}"
 }
@@ -645,6 +768,9 @@ case "$STAGE" in
   gct) lib build-gct "$GCTOUT" "-DNCCL_GIN_CTRL_TCP=1" ;;
   gctp) lib build-gctp "$GCTPOUT" "-DNCCL_GIN_TS_PRODUCTION -DNCCL_GIN_CTRL_TCP=1" ;;
   unit) unit ;;
+  unitp1) unitp 1 ;;
+  unitp2) unitp 2 ;;
+  syn) head_ok; syn1 build "" && syn1 build-gcp "-DNCCL_GIN_TS_PRODUCTION" && syn1 build-gct "-DNCCL_GIN_CTRL_TCP=1" ;;
   pre) pre ;;
   sites) sites ;;
   ident) ident ;;

@@ -1,9 +1,12 @@
 // gc_unit_p1.cc - CPU unit test of gin-control phase 1 (EXPERIMENT.md 9.8 "CPU 단위 모형", the status page and the fence
 // models). No NCCL, no CUDA, no verbs, no network. Compiled in a build_gc.sh `unit` style: g++ -std=c++17 with ASan and
 // UBSan, with gin-mirror's and gin-restore's headers and the working tree's cut pure regions:
-//   - gc_page_pure.inc: the region "gin-control (page): pure functions" of the host file (the judgement table, the fence
-//     report names, the activation gate, the stall definition and the confirmation window's width);
-//   - rs_ctrl_api.h: the status page words, the seqlock report line, the confirm-window verdict, the fence word.
+//   - gc_page_pure.inc: the region "gin-control (page): pure functions" of the host file (the window end's W value, the
+//     activation gate, the stall definition and the confirmation window's width);
+//   - rs_ctrl_api.h: the status page words, the seqlock report line, the confirm-window verdict, the fence word, the fence
+//     report names and the judgement table gdakiCtrlJudge with its inputs, verdicts and causes (integration: phase 1's
+//     table moved into the header's "[1] page" sub-block; phase 1's own enums, gdakiCtrlConfirmP1 and gdakiLnFenceOf are
+//     gone, the header's are tested here).
 // What it checks (the models EXPERIMENT.md 9.8 lists for the status page and the fence):
 //   1. the judgement words model: only aligned 8 B reads give one moment's value (the head's offsets and stores);
 //   2. the report-line seqlock model: a writer thread and randomly interleaved readers, 0 torn even-ver lines;
@@ -44,7 +47,6 @@ enum { GDAKI_RS_ACT_GO = 0, GDAKI_RS_ACT_WAIT = 1 };
 #include "rs_spare_api.h"
 #include "rs_ctrl_api.h"
 #include "rs_lineage_api.h"
-#include "gc_page_pure.inc"  // the host file's "gin-control (page): pure functions" region
 
 static long gChecks = 0, gFailed = 0;
 #define CHECK(c)                                                                      \
@@ -55,6 +57,11 @@ static long gChecks = 0, gFailed = 0;
       if (gFailed <= 60) fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
     }                                                                                 \
   } while (0)
+
+#if !NCCL_GIN_CTRL_TCP  // the tcp build has none of phase 1 (the header's API and the region are rdma only)
+#include "gc_page_pure.inc"  // the host file's "gin-control (page): pure functions" region
+// the first matching row of the header's table (gdakiCtrlJudge; integration: phase 1's gdakiCtrlJudgeRow moved there)
+static uint32_t judgeRow(uint32_t L, uint32_t B, uint32_t W, uint32_t R) { return gdakiCtrlJudge(L, B, W, R).row; }
 
 // ---- 1. the judgement words model (design 3.2): an aligned 8 B store/load is one moment's value ----
 static void testWords() {
@@ -161,13 +168,13 @@ static void testStall() {
   CHECK(gdakiCtrlStallGuard(others, 3, stall, probe));
   others[1] = stall - 2 * probe - 1.0;
   CHECK(!gdakiCtrlStallGuard(others, 3, stall, probe));
-  CHECK(gdakiCtrlRofStale(true, 50000, suspect, stall, true, true, false) == GDAKI_CTRL_R_RISING);
-  CHECK(gdakiCtrlRofStale(false, 500, suspect, stall, true, true, false) == GDAKI_CTRL_R_STALE_BELOW);
+  CHECK(gdakiCtrlRofStale(true, 50000, suspect, stall, true, true, false) == GDAKI_CTRL_R_ROSE);
+  CHECK(gdakiCtrlRofStale(false, 500, suspect, stall, true, true, false) == GDAKI_CTRL_R_STALE_LT_SUSPECT);
   CHECK(gdakiCtrlRofStale(false, 5000, suspect, stall, true, true, false) == GDAKI_CTRL_R_STALE_SUSPECT);
-  CHECK(gdakiCtrlRofStale(false, 11000, suspect, stall, false, true, false) == GDAKI_CTRL_R_STALE_GUARD);
-  CHECK(gdakiCtrlRofStale(false, 11000, suspect, stall, true, false, false) == GDAKI_CTRL_R_STALE_GUARD);
+  CHECK(gdakiCtrlRofStale(false, 11000, suspect, stall, false, true, false) == GDAKI_CTRL_R_STALE_GUARDED);
+  CHECK(gdakiCtrlRofStale(false, 11000, suspect, stall, true, false, false) == GDAKI_CTRL_R_STALE_GUARDED);
   CHECK(gdakiCtrlRofStale(false, 11000, suspect, stall, true, true, false) == GDAKI_CTRL_R_STALL);
-  CHECK(gdakiCtrlRofStale(false, 500, suspect, stall, true, true, true) == GDAKI_CTRL_R_RISING);  // helper < SUSPECT is (1)
+  CHECK(gdakiCtrlRofStale(false, 500, suspect, stall, true, true, true) == GDAKI_CTRL_R_ROSE);  // helper < SUSPECT is (1)
   CHECK(gdakiCtrlRofStale(false, 5000, suspect, stall, true, true, true) == GDAKI_CTRL_R_HELPER_SUSPECT);
   CHECK(gdakiCtrlRofStale(false, 11000, suspect, stall, true, true, true) == GDAKI_CTRL_R_HELPER_STALL);
   // W's width (결정 대기 5: factor 10, clamped 20..50)
@@ -182,88 +189,103 @@ static void testStall() {
 // An independent reference matcher, written plainly from EXPERIMENT.md 9.3's 21 rows (not calling gdakiCtrlJudgeRow).
 static uint32_t refRow(uint32_t L, uint32_t B, uint32_t W, uint32_t R) {
   const bool left = (L == GDAKI_CTRL_L_LEFT);
-  const bool bye = (B == GDAKI_CTRL_B_BYE);
+  const bool bye = (B == GDAKI_CTRL_B_SEEN);
   const bool ended = (L == GDAKI_CTRL_L_ENDED);
-  const bool hwNoResp = (R == GDAKI_CTRL_R_HWNORESP);
+  const bool hwNoResp = (R == GDAKI_CTRL_R_HW_NORESP);
   if (left) return 1;
   if (bye) return 2;
   if (ended) return 3;
-  if (W == GDAKI_CTRL_W_CW_STALE) return 4;
-  if (W == GDAKI_CTRL_W_CW_NORESP) return 5;
-  if (W == GDAKI_CTRL_W_CW_REMACC) return 6;
-  if (W == GDAKI_CTRL_W_WINDOW) return 7;
-  if (W == GDAKI_CTRL_W_CW_ALIVE) return 8;
-  if (W == GDAKI_CTRL_W_CW_UNCONFIRMED) return 9;
+  if (W == GDAKI_CTRL_W_END_STALE) return 4;
+  if (W == GDAKI_CTRL_W_END_NORESP) return 5;
+  if (W == GDAKI_CTRL_W_END_REMACC) return 6;
+  if (W == GDAKI_CTRL_W_OPEN) return 7;
+  if (W == GDAKI_CTRL_W_END_ALIVE) return 8;
+  if (W == GDAKI_CTRL_W_END_UNCONFIRMED) return 9;
   if (L == GDAKI_CTRL_L_NORESP && hwNoResp) return 10;
   if (L == GDAKI_CTRL_L_NOINFO && W == GDAKI_CTRL_W_OFF && hwNoResp) return 11;
   if (hwNoResp) return 12;
-  if (R == GDAKI_CTRL_R_CANNOT_CONFIRM) return 13;
+  if (R == GDAKI_CTRL_R_UNCONFIRMED) return 13;
   if (R == GDAKI_CTRL_R_STALL) return 14;
   if (R == GDAKI_CTRL_R_HELPER_STALL) return 15;
   if (R == GDAKI_CTRL_R_REMACC) return 16;
-  if (R == GDAKI_CTRL_R_TIMEOUT) return 17;
-  if (R == GDAKI_CTRL_R_STALE_SUSPECT || R == GDAKI_CTRL_R_STALE_GUARD || R == GDAKI_CTRL_R_HELPER_SUSPECT ||
-      R == GDAKI_CTRL_R_HELPER_GUARD)
+  if (R == GDAKI_CTRL_R_TIMEOUT_ONLY) return 17;
+  if (R == GDAKI_CTRL_R_STALE_SUSPECT || R == GDAKI_CTRL_R_STALE_GUARDED || R == GDAKI_CTRL_R_HELPER_SUSPECT ||
+      R == GDAKI_CTRL_R_HELPER_GUARDED)
     return 18;
   if (R == GDAKI_CTRL_R_HELPER_BUSY) return 19;
-  if (R == GDAKI_CTRL_R_RISING || R == GDAKI_CTRL_R_STALE_BELOW) return 20;
+  if (R == GDAKI_CTRL_R_ROSE || R == GDAKI_CTRL_R_STALE_LT_SUSPECT) return 20;
   return 21;
 }
 static void testJudge() {
   long points = 0, reach[22] = {};
-  for (uint32_t L = 0; L < GDAKI_CTRL_L_MAX; L++)
-    for (uint32_t B = 0; B < GDAKI_CTRL_B_MAX; B++)
-      for (uint32_t W = 0; W < GDAKI_CTRL_W_MAX; W++)
-        for (uint32_t R = 0; R < GDAKI_CTRL_R_MAX; R++) {
-          const uint32_t row = gdakiCtrlJudgeRow(L, B, W, R);
+  for (uint32_t L = 0; L < GDAKI_CTRL_L_N; L++)
+    for (uint32_t B = 0; B < GDAKI_CTRL_B_N; B++)
+      for (uint32_t W = 0; W < GDAKI_CTRL_W_N; W++)
+        for (uint32_t R = 0; R < GDAKI_CTRL_R_N; R++) {
+          const uint32_t row = judgeRow(L, B, W, R);
           CHECK(row >= 1 && row <= 21);
           CHECK(row == refRow(L, B, W, R));  // exactly one row (the reference and the code agree)
           reach[row]++;
           points++;
+          // the verdict and the cause are the row's (gdakiCtrlJudgementOfRow)
+          const struct gdakiCtrlJudgement j = gdakiCtrlJudge(L, B, W, R);
+          CHECK(j.verdict == gdakiCtrlJudgementOfRow(row).verdict && j.cause == gdakiCtrlJudgementOfRow(row).cause);
           // the floor property: a row that holds or refuses rests on ended / a confirmed window / no response / a stall
-          const uint32_t v = gdakiCtrlRowVerdict(row);
-          if (v == GDAKI_CTRL_V_ENDED || v == GDAKI_CTRL_V_REFUSE || v == GDAKI_CTRL_V_STALL) {
+          const uint32_t v = j.verdict;
+          if (v == GDAKI_CTRL_V_ENDED || v == GDAKI_CTRL_V_UNREACHABLE || v == GDAKI_CTRL_V_STALL ||
+              v == GDAKI_CTRL_V_STALL_HELPER) {
             const bool floor =
-                (L == GDAKI_CTRL_L_ENDED) || (W == GDAKI_CTRL_W_CW_STALE) || (W == GDAKI_CTRL_W_CW_NORESP) ||
-                (W == GDAKI_CTRL_W_CW_REMACC) || (R == GDAKI_CTRL_R_HWNORESP) || (R == GDAKI_CTRL_R_STALL) ||
+                (L == GDAKI_CTRL_L_ENDED) || (W == GDAKI_CTRL_W_END_STALE) || (W == GDAKI_CTRL_W_END_NORESP) ||
+                (W == GDAKI_CTRL_W_END_REMACC) || (R == GDAKI_CTRL_R_HW_NORESP) || (R == GDAKI_CTRL_R_STALL) ||
                 (R == GDAKI_CTRL_R_HELPER_STALL);
             CHECK(floor);
           }
           // a lone timeout or remote-access error never holds or refuses
-          if ((R == GDAKI_CTRL_R_TIMEOUT || R == GDAKI_CTRL_R_REMACC) && row >= 12)
-            CHECK(gdakiCtrlRowVerdict(row) == GDAKI_CTRL_V_NONE);
+          if ((R == GDAKI_CTRL_R_TIMEOUT_ONLY || R == GDAKI_CTRL_R_REMACC) && row >= 12)
+            CHECK(v == GDAKI_CTRL_V_NONE);
         }
   CHECK(points == 1170);
   CHECK(reach[21] == 0);  // no input reaches the catch-all row
   for (int r = 1; r <= 20; r++) CHECK(reach[r] >= 1);
   // the cells' scenarios (EXPERIMENT.md 9.3, 3절)
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_CW_NORESP, GDAKI_CTRL_R_RISING) == 5);  // kill FIN+NORESP
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_CW_STALE, GDAKI_CTRL_R_RISING) == 4);   // FIN+STALE
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_CW_REMACC, GDAKI_CTRL_R_RISING) == 6);  // REMACC+FIN
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_ENDED, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_NORMAL, GDAKI_CTRL_R_RISING) == 3);      // launcher EXITED, kill witness-off
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_OFF, GDAKI_CTRL_R_HWNORESP) == 11);     // FIN-less read fail (NORESP)
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_NORESP, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_UNKNOWN, GDAKI_CTRL_R_HWNORESP) == 10); // LINKDOWN
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_NORESP, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_NORMAL, GDAKI_CTRL_R_STALL) == 14);     // stop12000 STALL
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_NORESP, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_NORMAL, GDAKI_CTRL_R_HELPER_STALL) == 15); // helper_freeze STALL_HELPER
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_ALIVE, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_CW_ALIVE, GDAKI_CTRL_R_RISING) == 8);    // live RST: the window ends alive
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_ALIVE, GDAKI_CTRL_B_BYE, GDAKI_CTRL_W_CW_STALE, GDAKI_CTRL_R_RISING) == 2);     // BYE wins over a stale window
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_LEFT, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_CW_STALE, GDAKI_CTRL_R_STALL) == 1);      // LEFT wins over all
+  CHECK(judgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_END_NORESP, GDAKI_CTRL_R_ROSE) == 5);  // kill FIN+NORESP
+  CHECK(judgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_END_STALE, GDAKI_CTRL_R_ROSE) == 4);   // FIN+STALE
+  CHECK(judgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_END_REMACC, GDAKI_CTRL_R_ROSE) == 6);  // REMACC+FIN
+  CHECK(judgeRow(GDAKI_CTRL_L_ENDED, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_OK, GDAKI_CTRL_R_ROSE) == 3);      // launcher EXITED, kill witness-off
+  CHECK(judgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_OFF, GDAKI_CTRL_R_HW_NORESP) == 11);     // FIN-less read fail (NORESP)
+  CHECK(judgeRow(GDAKI_CTRL_L_NORESP, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_UNKNOWN, GDAKI_CTRL_R_HW_NORESP) == 10); // LINKDOWN
+  CHECK(judgeRow(GDAKI_CTRL_L_NORESP, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_OK, GDAKI_CTRL_R_STALL) == 14);     // stop12000 STALL
+  CHECK(judgeRow(GDAKI_CTRL_L_NORESP, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_OK, GDAKI_CTRL_R_HELPER_STALL) == 15); // helper_freeze STALL_HELPER
+  CHECK(judgeRow(GDAKI_CTRL_L_ALIVE, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_END_ALIVE, GDAKI_CTRL_R_ROSE) == 8);    // live RST: the window ends alive
+  CHECK(judgeRow(GDAKI_CTRL_L_ALIVE, GDAKI_CTRL_B_SEEN, GDAKI_CTRL_W_END_STALE, GDAKI_CTRL_R_ROSE) == 2);     // BYE wins over a stale window
+  CHECK(judgeRow(GDAKI_CTRL_L_LEFT, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_END_STALE, GDAKI_CTRL_R_STALL) == 1);      // LEFT wins over all
   // 결정 대기 7: EXITED wins over a rising beat
-  CHECK(gdakiCtrlJudgeRow(GDAKI_CTRL_L_ENDED, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_NORMAL, GDAKI_CTRL_R_RISING) == 3);
-  // the strong-evidence cause names (design 4.5): seven of them
+  CHECK(judgeRow(GDAKI_CTRL_L_ENDED, GDAKI_CTRL_B_NONE, GDAKI_CTRL_W_OK, GDAKI_CTRL_R_ROSE) == 3);
+  // every row's verdict, written plainly from EXPERIMENT.md 9.3's 판정 column (row 21 has none: 닿지 않음)
+  static const uint32_t kVerdict[22] = {0, GDAKI_CTRL_V_LEFT, GDAKI_CTRL_V_LEFT, GDAKI_CTRL_V_ENDED, GDAKI_CTRL_V_ENDED,
+      GDAKI_CTRL_V_ENDED, GDAKI_CTRL_V_ENDED, GDAKI_CTRL_V_WAIT, GDAKI_CTRL_V_ALIVE_WITNESS_LOST, GDAKI_CTRL_V_NONE,
+      GDAKI_CTRL_V_UNREACHABLE, GDAKI_CTRL_V_ENDED, GDAKI_CTRL_V_RDMA_PATH, GDAKI_CTRL_V_NONE, GDAKI_CTRL_V_STALL,
+      GDAKI_CTRL_V_STALL_HELPER, GDAKI_CTRL_V_NONE, GDAKI_CTRL_V_NONE, GDAKI_CTRL_V_SUSPECT, GDAKI_CTRL_V_HELPER_BUSY,
+      GDAKI_CTRL_V_ALIVE, GDAKI_CTRL_V_NONE};
+  for (uint32_t r = 1; r <= 21; r++) CHECK(gdakiCtrlJudgementOfRow(r).verdict == kVerdict[r] && gdakiCtrlJudgementOfRow(r).row == r);
+  // the strong-evidence cause names (design 4.5): seven hold causes, and LINKDOWN of the refusal (row 10)
   std::set<std::string> holdCauses;
-  for (int r = 1; r <= 21; r++) {
-    const uint32_t v = gdakiCtrlRowVerdict(r);
-    if (v == GDAKI_CTRL_V_ENDED || v == GDAKI_CTRL_V_STALL) holdCauses.insert(gdakiCtrlCauseName(r));
+  for (uint32_t r = 1; r <= 21; r++) {
+    const struct gdakiCtrlJudgement j = gdakiCtrlJudgementOfRow(r);
+    if (j.verdict == GDAKI_CTRL_V_ENDED || j.verdict == GDAKI_CTRL_V_STALL || j.verdict == GDAKI_CTRL_V_STALL_HELPER)
+      holdCauses.insert(gdakiCtrlCauseName(j.cause));
+    else if (r == 10) CHECK(std::string(gdakiCtrlCauseName(j.cause)) == "LINKDOWN");
+    else CHECK(j.cause == GDAKI_CTRL_C_NONE && gdakiCtrlCauseName(j.cause)[0] == 0);
   }
   CHECK(holdCauses == std::set<std::string>({"EXITED", "FIN+STALE", "FIN+NORESP", "REMACC+FIN", "NORESP", "STALL", "STALL_HELPER"}));
   printf("judge: %ld points, row21 %ld, rows reached 1..20 all >=1\n", points, reach[21]);
 }
 
 // ---- 5. the confirmation-window timing model (design 4.2): the verdict is always decided at t_F + W ----
-// Phase 1 uses gdakiCtrlConfirmP1 (REVIEW_PREP note 4: the incNonce check and a wrapping beat compare); the header's
-// gdakiCtrlConfirmVerdict lacks both and is a header-change request. READ1 is posted at t_F, READ2 at t_F + W/2, and the
-// verdict is decided at t_F + W whatever the completion times.
+// The header's gdakiCtrlConfirmVerdict (prep-fix 고칠 것 1: the incarnation inputs and the wrapping beat compare;
+// integration: phase 1's gdakiCtrlConfirmP1 with its incOk flag is gone, the flag becomes READ1's or READ2's incNonce
+// unlike the expected one). READ1 is posted at t_F, READ2 at t_F + W/2, and the verdict is decided at t_F + W whatever
+// the completion times.
 static void testConfirm() {
   std::mt19937_64 rng(0x636f6e6669726dull);
   for (int i = 0; i < 40000; i++) {
@@ -277,7 +299,11 @@ static void testConfirm() {
     const uint64_t beat1 = rng(), beat2 = (rng() % 2) ? beat1 + (1 + rng() % 5) : beat1;  // some advance, some do not
     const double judgeMs = tF + W;               // the model: the verdict is decided here, always
     const bool r1Done = r1 <= judgeMs, r2Done = r2 <= judgeMs;
-    const uint32_t v = gdakiCtrlConfirmP1(countable, incOk, remacc, r1Done, r2Done, beat1, beat2);
+    const uint64_t incExp = gdakiCtrlIncNonce((uint32_t)(rng() % 8), rng());
+    const uint64_t other = incExp ^ (1ull << (rng() % 64));      // another process at the peer's page slot
+    const int which = (int)(rng() % 3);                           // READ1's, READ2's or both incNonce differ
+    const uint64_t inc1 = (!incOk && which != 1) ? other : incExp, inc2 = (!incOk && which != 0) ? other : incExp;
+    const uint32_t v = gdakiCtrlConfirmVerdict(countable, remacc, r1Done, r2Done, incExp, inc1, inc2, beat1, beat2);
     // an independent expectation (the design 4.2 order: REMACC, NORESP, incNonce, then the wrapping beat compare)
     uint32_t want;
     if (!countable) want = GDAKI_CTRL_CW_UNCONFIRMED;
@@ -288,7 +314,7 @@ static void testConfirm() {
     CHECK(v == want);
     // the W mapping into the judgement table
     const uint32_t Wv = gdakiCtrlWofConfirm(v);
-    const uint32_t row = gdakiCtrlJudgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, Wv, GDAKI_CTRL_R_RISING);
+    const uint32_t row = judgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, Wv, GDAKI_CTRL_R_ROSE);
     if (v == GDAKI_CTRL_CW_ALIVE) CHECK(row == 8);
     else if (v == GDAKI_CTRL_CW_STALE) CHECK(row == 4);
     else if (v == GDAKI_CTRL_CW_NORESP) CHECK(row == 5);
@@ -296,9 +322,9 @@ static void testConfirm() {
     else CHECK(row == 9);  // UNCONFIRMED
   }
   // "cannot confirm": the QP is not RTS or had no success in its generation -> countable false
-  CHECK(gdakiCtrlConfirmP1(false, true, false, true, true, 1, 2) == GDAKI_CTRL_CW_UNCONFIRMED);
+  CHECK(gdakiCtrlConfirmVerdict(false, false, true, true, 7, 7, 7, 1, 2) == GDAKI_CTRL_CW_UNCONFIRMED);
   // a changed incNonce across the window (another process at the peer's page slot): cannot confirm, not STALE
-  CHECK(gdakiCtrlConfirmP1(true, false, false, true, true, 5, 5) == GDAKI_CTRL_CW_UNCONFIRMED);
+  CHECK(gdakiCtrlConfirmVerdict(true, false, true, true, 7, 8, 7, 5, 5) == GDAKI_CTRL_CW_UNCONFIRMED);
   // the wrapping beat compare: a near-wrap beat still counts as advanced
   CHECK(gdakiCtrlBeatAdvanced(0xffffffffffffffffull, 0) && !gdakiCtrlBeatAdvanced(0, 0xffffffffffffffffull));
   printf("confirm: ok (verdict at t_F + W, incNonce and wrapping beat)\n");
@@ -332,11 +358,11 @@ static void testFence() {
               const bool fenced = gdakiCtrlFencedIs(word, v.dead);
               points++;
               // the report name: FENCING/FENCED only in HOLD_WAIT, an independent expectation
-              const uint32_t fn = gdakiLnFenceOf(v, word, fs != 0);
-              uint32_t wantFn = GDAKI_CTRL_FN_NONE;
-              if (v.phase == GDAKI_LN_HOLD_WAIT) wantFn = fenced ? GDAKI_CTRL_FN_FENCED : (fs ? GDAKI_CTRL_FN_FENCING : GDAKI_CTRL_FN_NONE);
+              const uint32_t fn = gdakiLnFenceOf(v.phase, v.dead, word, fs != 0);
+              uint32_t wantFn = GDAKI_LN_FENCE_NONE;
+              if (v.phase == GDAKI_LN_HOLD_WAIT) wantFn = fenced ? GDAKI_LN_FENCE_FENCED : (fs ? GDAKI_LN_FENCE_FENCING : GDAKI_LN_FENCE_NONE);
               CHECK(fn == wantFn);
-              if (fn != GDAKI_CTRL_FN_NONE) nameDiff++;
+              if (fn != GDAKI_LN_FENCE_NONE) nameDiff++;
               // the activation gate is consulted only where the buddy attempts an activation: the peer is held with all
               // HOLDING gathered, i.e. HOLD_WAIT with the dead incarnation. There the old gate (HOLDING complete -> GO)
               // vs the new gate (and fenced) differ exactly when not yet fenced. Outside HOLD_WAIT no activation is
@@ -360,13 +386,17 @@ static void testFence() {
   printf("fence: %ld points, %ld gate differences (HOLD_WAIT only), %ld non-NONE report names\n", points, gateDiff, nameDiff);
 }
 
+#endif  // !NCCL_GIN_CTRL_TCP
+
 int main() {
+#if !NCCL_GIN_CTRL_TCP
   testWords();
   testSeqlock();
   testStall();
   testJudge();
   testConfirm();
   testFence();
-  printf("gc_unit_p1: %ld checks, %ld failed\n", gChecks, gFailed);
+#endif
+  printf("gc_unit_p1 (%s): %ld checks, %ld failed\n", NCCL_GIN_CTRL_TCP ? "tcp" : "rdma", gChecks, gFailed);
   return gFailed == 0 ? 0 : 1;
 }

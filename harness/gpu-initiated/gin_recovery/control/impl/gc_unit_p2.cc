@@ -727,6 +727,11 @@ static void testPairing(std::mt19937_64& rng) {
 }
 
 // ---- the REJOIN over UD: the nrp block, the idempotency table while HELD, nothing sent before CONNECTED ----
+// The header's gdakiCtrlNrpGet (version 1, the rest zero) and the model's gdakiCtrlRejoinNrpOk (integration: phase
+// 2a-1's own get with the isAck argument is the two together).
+static bool nrpGet(const ln4::gdakiTsMsg& m, struct gdakiCtrlRejoinNrp* out, bool isAck) {
+  return gdakiCtrlNrpGet(m.nrp, sizeof(m.nrp), out) && gdakiCtrlRejoinNrpOk(*out, isAck);
+}
 static void testRejoin(std::mt19937_64& rng) {
   // the nrp block: put and get through the record's nrp[] with memcpy, every field back; malformed ones refused
   ln4::gdakiTsMsg m;
@@ -735,6 +740,7 @@ static void testRejoin(std::mt19937_64& rng) {
   memset(&n, 0, sizeof(n));
   n.version = GDAKI_CTRL_NRP_VERSION;
   n.gen = 9;
+  n.probeGen = 4;  // the liveness READ QP's own counter (the header's probeGen; integration)
   struct gdakiCtrlEndpoint e;
   memset(&e, 0, sizeof(e));
   e.qpn = 0x111;
@@ -750,25 +756,29 @@ static void testRejoin(std::mt19937_64& rng) {
   n.ud = e;
   n.page = {0x7f0000001000ull, 0x55, 4096};
   n.outbox = {0x7f0000100000ull, 0x66, GDAKI_CTRL_OUTBOX_BYTES};
-  gdakiCtrlNrpPut(m.nrp, sizeof(m.nrp), n);
+  CHECK(gdakiCtrlNrpPut(m.nrp, sizeof(m.nrp), n));
   struct gdakiCtrlRejoinNrp back;
-  CHECK(gdakiCtrlNrpGet(m.nrp, sizeof(m.nrp), &back, false) && memcmp(&back, &n, sizeof(n)) == 0);
+  CHECK(nrpGet(m, &back, false) && memcmp(&back, &n, sizeof(n)) == 0);
   const uint8_t* tail = (const uint8_t*)m.nrp + sizeof(n);
   bool zero = true;
   for (size_t k = 0; k < sizeof(m.nrp) - sizeof(n); k++) zero = zero && tail[k] == 0;
   CHECK(zero);
   struct gdakiCtrlRejoinNrp bad = n;
   bad.version = 0;  // a tcp-path REJOIN: no block
-  gdakiCtrlNrpPut(m.nrp, sizeof(m.nrp), bad);
-  CHECK(!gdakiCtrlNrpGet(m.nrp, sizeof(m.nrp), &back, false));
+  CHECK(gdakiCtrlNrpPut(m.nrp, sizeof(m.nrp), bad));
+  CHECK(!nrpGet(m, &back, false));
   bad = n;
   bad.probe.qpn = bad.rec.qpn;  // one QP for both kinds
-  gdakiCtrlNrpPut(m.nrp, sizeof(m.nrp), bad);
-  CHECK(!gdakiCtrlNrpGet(m.nrp, sizeof(m.nrp), &back, false));
+  CHECK(gdakiCtrlNrpPut(m.nrp, sizeof(m.nrp), bad));
+  CHECK(!nrpGet(m, &back, false));
+  bad = n;
+  bad.probeGen = 0;  // no liveness READ QP generation
+  CHECK(gdakiCtrlNrpPut(m.nrp, sizeof(m.nrp), bad));
+  CHECK(!nrpGet(m, &back, false) && !nrpGet(m, &back, true));
   bad = n;
   bad.ud.qpType = GDAKI_CTRL_QPT_RC;
-  gdakiCtrlNrpPut(m.nrp, sizeof(m.nrp), bad);
-  CHECK(!gdakiCtrlNrpGet(m.nrp, sizeof(m.nrp), &back, false) && gdakiCtrlNrpGet(m.nrp, sizeof(m.nrp), &back, true));
+  CHECK(gdakiCtrlNrpPut(m.nrp, sizeof(m.nrp), bad));
+  CHECK(!nrpGet(m, &back, false) && nrpGet(m, &back, true));
 
   // the table: a spare of rank 3 (incarnation 5, record QPN 0x200) sends REJOIN datagrams that are lost, repeated and
   // reordered, and a stray one with another QPN (an earlier attempt's); the existing rule accepts once (known + 1)
