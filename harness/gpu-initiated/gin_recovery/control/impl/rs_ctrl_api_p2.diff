@@ -1,0 +1,26 @@
+--- a/rs_ctrl_api.h	2026-10-17 02:13:59.239576638 +0900
++++ b/rs_ctrl_api.h	2026-10-17 02:13:59.251576257 +0900
+@@ -492,7 +492,10 @@
+ // also carries the sender's page and outbox (a stale rkey is mended by the pairing, REVIEW2 nit 8) and its UD Q_Key
+ // (where the answer goes, nit 9).
+ enum : uint32_t { GDAKI_CTRL_PAIR_QP_RECORD = 1, GDAKI_CTRL_PAIR_QP_PROBE = 2 };
+-enum : uint32_t { GDAKI_CTRL_PAIR_STEP_PAIR = 1, GDAKI_CTRL_PAIR_STEP_ACK = 2 };
++// DONE (phase 2a-1): the last step of a pairing from the side that started it: on the record QP the first RC SEND of the
++// generation (envelope kind PAIR, this body, seq 1: CONNECTED; the other side sends nothing on that QP before it), for
++// the liveness READ QP a datagram (PAIR_DONE). It carries no endpoint.
++enum : uint32_t { GDAKI_CTRL_PAIR_STEP_PAIR = 1, GDAKI_CTRL_PAIR_STEP_ACK = 2, GDAKI_CTRL_PAIR_STEP_DONE = 3 };
+ struct gdakiCtrlPairBody {
+   uint32_t qpKind;       // GDAKI_CTRL_PAIR_QP_*
+   uint32_t step;         // GDAKI_CTRL_PAIR_STEP_*
+@@ -529,8 +532,10 @@
+   uint32_t gen;      // the record QP pairing's generation the REJOIN starts (the survivor's next)
+   struct gdakiCtrlEndpoint rec, probe, ud;
+   struct gdakiCtrlRegion page, outbox;
++  uint32_t genPrb;   // phase 2a-1: the liveness READ QP pairing's generation the REJOIN starts (its own, design v3 2.5)
++  uint32_t rsv;
+ };
+-static_assert(sizeof(struct gdakiCtrlRejoinNrp) == 160, "the REJOIN nrp layout is 160 bytes");
++static_assert(sizeof(struct gdakiCtrlRejoinNrp) == 168, "the REJOIN nrp layout is 168 bytes");
+ #define GDAKI_CTRL_NRP_BYTES 256u  // gdakiTsMsg::nrp: NCCL_GIN_RECOVERY_MAX_QPS x 4 B (the host file asserts it)
+ static_assert(sizeof(struct gdakiCtrlRejoinNrp) <= GDAKI_CTRL_NRP_BYTES, "it fits gdakiTsMsg::nrp");
+ 
