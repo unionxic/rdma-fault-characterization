@@ -1,0 +1,780 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 87ba9fb..6072385 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -3543,6 +3543,14 @@ struct gdakiRsLocalIn {
+   bool miPeersOk = true;           // every peer's MIRROR_SETUP arrived and every mirror QP to a peer connected (38)
+   const char* miPeersWhy = nullptr;
+   bool miSelfOk = true;            // the mirror context's self loop pair connected (38)
++#if !NCCL_GIN_CTRL_TCP
++  // gin-control (phase 2a-2-A; impl/rs_ctrl_api.h GDAKI_CTRL_R41-R44, EXPERIMENT.md 9.6 "준비 검사"): null, or the text
++  // of the condition that holds on this rank (gdakiCtrlResumeConds)
++  const char* gc41 = nullptr;      // the restore was asked but this rank is not paired with its node's launcher
++  const char* gc42 = nullptr;      // a rank's active MTU is below 2048 (the setup agreement)
++  const char* gc43 = nullptr;      // ibv_is_fork_initialized() is not IBV_FORK_UNNEEDED
++  const char* gc44 = nullptr;      // the control path, the thresholds or the launcher node differ
++#endif
+ };
+ enum { GDAKI_RS_L_OK = 0 };
+ // The first local condition that keeps the restore off on this rank, in a fixed order (0: none). The conditions are the
+@@ -3614,6 +3622,14 @@ static int gdakiRsLocalCheck(const struct gdakiRsLocalIn& in, char* why, size_t
+              !in.miSelfOk ? "the self loop pair of the mirror context" : in.miPeersWhy ? in.miPeersWhy : "unknown");
+   code++;  // 39: gathered on the Resume exchange
+   GDAKI_RS_L(in.miAsked && !in.miCtxOk, "%s (%s)", GDAKI_MI_R40, in.miCtxWhy ? in.miCtxWhy : "unknown");
++#if !NCCL_GIN_CTRL_TCP
++  // gin-control (phase 2a-2-A): 41-44 after gin-mirror's 40 (42 and 44 turned transparent recovery off at the setup
++  // already, so the condition above on it comes first there and carries their text in offWhy)
++  GDAKI_RS_L(in.gc41 != nullptr, "%s", in.gc41);
++  GDAKI_RS_L(in.gc42 != nullptr, "%s", in.gc42);
++  GDAKI_RS_L(in.gc43 != nullptr, "%s", in.gc43);
++  GDAKI_RS_L(in.gc44 != nullptr, "%s", in.gc44);
++#endif
+ #undef GDAKI_RS_L
+   snprintf(why, whyLen, "this rank can enable the restore");
+   return GDAKI_RS_L_OK;
+@@ -7345,6 +7361,96 @@ struct gdakiCtrlXferHdr {
+   uint8_t rsv[8];
+ };
+ static_assert(sizeof(struct gdakiCtrlXferHdr) == 64, "an outbox transfer's head is 64 bytes");
++// The setup all-gather's control fields (phase 2a-2; EXPERIMENT.md 9.6, design v3 5.1): one per rank behind gdakiTsAddr
++// (rdma build only). `path` and the thresholds must be equal on every rank, `launcherNode` equal to the transcript's (a
++// spare); the rest may differ. The UD endpoint carries its Q_Key in psn (this rank's own: the context's nonce exists only
++// after the exchange, the receiver of a datagram is named by its endpoint). page: 0 until the status page is up (the
++// PAIR carries it); launcherUd and launcherQkey: phase 3 fills them from the node launcher's Unix-socket answer (0: none).
++#define GDAKI_CTRL_PATH_RDMA 2u               // the records go on the ring (the rdma build, the ring made)
++#define GDAKI_CTRL_PATH_RDMA_OFF 3u           // the rdma build without the ring (NCCL_GIN_CTRL_PAGE=0, or it failed)
++#define GDAKI_CTRL_LAUNCHER_NODE_NONE 0xffffffffu
++#define GDAKI_CTRL_MTU_MIN 4u                 // enum ibv_mtu IBV_MTU_2048: a datagram of 1936 B fits (decision 9)
++#define GDAKI_CTRL_FORK_UNNEEDED 2u           // enum ibv_fork_status IBV_FORK_UNNEEDED (ibv_is_fork_initialized)
++struct gdakiCtrlSetupAddr {
++  struct gdakiCtrlRegion page, outbox;         // this rank's status page (0 at the exchange) and outbox
++  struct gdakiCtrlEndpoint ud;                 // this rank's UD QP (psn: its Q_Key)
++  struct gdakiCtrlEndpoint launcherUd;         // its node launcher's UD QP (phase 3; 0: none)
++  uint32_t launcherQkey;
++  uint32_t path;                               // GDAKI_CTRL_PATH_* (strict)
++  uint32_t launcherNode;                       // GDAKI_CTRL_LAUNCHER_NODE_NONE until phase 3 (strict against a transcript)
++  uint32_t activeMtu;                          // enum ibv_mtu of the GIN port (ibv_query_port's active_mtu)
++  uint32_t fork;                               // ibv_is_fork_initialized(); 0xff: the symbol is missing
++  int32_t probeMs, probeTimeoutMs, confirmMs, suspectMs, stallMs;  // the liveness thresholds (strict; 고칠 것 4)
++  uint32_t rsv[4];
++};
++static_assert(sizeof(struct gdakiCtrlSetupAddr) == 168 && offsetof(struct gdakiCtrlSetupAddr, ud) == 32 &&
++                  offsetof(struct gdakiCtrlSetupAddr, path) == 116,
++              "the setup all-gather's control fields are 168 bytes");
++// The agreement over every rank's fields (the same verdict on every rank: the same records). 0: agreed; else the
++// Resume condition it is (42 an MTU below 2048, 44 the control path differs) or GDAKI_CTRL_SA_THRESH; *minMtu the lowest.
++enum : uint32_t { GDAKI_CTRL_SA_OK = 0, GDAKI_CTRL_SA_MTU = 42, GDAKI_CTRL_SA_PATH = 44, GDAKI_CTRL_SA_THRESH = 1000 };
++static inline uint32_t gdakiCtrlSetupAgree(const struct gdakiCtrlSetupAddr* const* all, int n, uint32_t* minMtu,
++                                           int* who, char* why, size_t whyLen) {
++  *minMtu = 0xffu;
++  *who = -1;
++  for (int p = 0; p < n; p++)
++    if (all[p] != nullptr && all[p]->activeMtu < *minMtu) *minMtu = all[p]->activeMtu;
++  const struct gdakiCtrlSetupAddr* a0 = nullptr;
++  for (int p = 0; p < n && a0 == nullptr; p++) a0 = all[p];
++  if (a0 == nullptr) return GDAKI_CTRL_SA_OK;
++  for (int p = 0; p < n; p++) {
++    const struct gdakiCtrlSetupAddr* a = all[p];
++    if (a == nullptr) continue;
++    if (a->path != a0->path) {
++      *who = p;
++      if (why != nullptr) snprintf(why, whyLen, "the control path differs between ranks (rank %d: %u, another: %u)", p, a->path, a0->path);
++      return GDAKI_CTRL_SA_PATH;
++    }
++  }
++  if (a0->path != GDAKI_CTRL_PATH_RDMA) return GDAKI_CTRL_SA_OK;  // no ring anywhere: nothing more to agree on
++  for (int p = 0; p < n; p++) {
++    const struct gdakiCtrlSetupAddr* a = all[p];
++    if (a == nullptr) continue;
++    if (a->activeMtu < GDAKI_CTRL_MTU_MIN) {
++      *who = p;
++      if (why != nullptr) snprintf(why, whyLen, "rank %d's active MTU (enum %u) is below 2048", p, a->activeMtu);
++      return GDAKI_CTRL_SA_MTU;
++    }
++    if (a->probeMs != a0->probeMs || a->probeTimeoutMs != a0->probeTimeoutMs || a->confirmMs != a0->confirmMs ||
++        a->suspectMs != a0->suspectMs || a->stallMs != a0->stallMs) {
++      *who = p;
++      if (why != nullptr) snprintf(why, whyLen, "the liveness thresholds differ between ranks (rank %d)", p);
++      return GDAKI_CTRL_SA_THRESH;
++    }
++  }
++  return GDAKI_CTRL_SA_OK;
++}
++// Resume's conditions 41-44 (EXPERIMENT.md 9.6 "준비 검사"; after gin-mirror's 34-40). 42 and 44 turn transparent recovery
++// off at the setup already (the agreement above); 41 needs the launcher (phase 3: asked only once a launcher socket is
++// named), 43 is ibv_is_fork_initialized().
++#define GDAKI_CTRL_R41 "the restore was asked but this rank is not paired with its node's launcher"
++#define GDAKI_CTRL_R42 "a rank's active MTU is below 2048 (a control datagram does not fit)"
++#define GDAKI_CTRL_R43 "ibv_is_fork_initialized() is not IBV_FORK_UNNEEDED on this rank"
++#define GDAKI_CTRL_R44 "the control path or the launcher node differs between ranks or from the replayed record"
++#define GDAKI_CTRL_R44T "the liveness thresholds differ between ranks"  // 44's text for GDAKI_CTRL_SA_THRESH (phase 2a-2-A)
++// The survivor's answers to a REJOIN over UD that it does not take (FAIL's arg; TCP told WAIT and REFUSE with a FIN):
++// FAIL (2, ln4's "declined": the spare stops at once), WAIT (not HELD yet) and REFUSE (not dead + 1, or its view does not
++// validate): the spare sends the REJOIN again after 200 ms, as after TCP's FIN.
++#define GDAKI_CTRL_RJA_FAIL 2
++#define GDAKI_CTRL_RJA_WAIT 20
++#define GDAKI_CTRL_RJA_REFUSE 21
++// The test switches of phase 2 (research builds only; EXPERIMENT.md 9.9): the record QP to <peer> into ERR <ms> after the
++// first armed checkpoint (or the helper start without the restore), the first <n> REJOIN datagrams dropped by the spare,
++// no RECV re-posted from <start> ms for <len> ms. On the witness socket (rdma build only; the tcp control cells' copies
++// are behind NCCL_GIN_CTRL_TCP_CELLS): DIE_RST=<ms>, RST_GAP=<start>:<len>, FD_HOLDER=sock|uverbs.
++#define GDAKI_CTRL_T_QP_ERR "NCCL_GIN_CTRL_TEST_QP_ERR"              // <ms>:<peer>
++#define GDAKI_CTRL_T_DROP_UD "NCCL_GIN_CTRL_TEST_DROP_UD"            // rejoin:<n>
++#define GDAKI_CTRL_T_CREDIT_STALL "NCCL_GIN_CTRL_TEST_CREDIT_STALL"  // <start ms>:<length ms>
++#define GDAKI_CTRL_T_DIE_RST "NCCL_GIN_TS_TEST_DIE_RST"              // <ms>
++#define GDAKI_CTRL_T_RST_GAP "NCCL_GIN_TS_TEST_RST_GAP"              // <start ms>:<length ms>
++#define GDAKI_CTRL_T_FD_HOLDER "NCCL_GIN_TS_TEST_FD_HOLDER"          // sock | uverbs
++#define GDAKI_CTRL_P_PAGE "GIN_CTRL_PAGE"  // [1] [2] the status page and the ring (rdma build: default 1 since phase 2a-2)
++#define GDAKI_CTRL_PAGE_DEFAULT 1
+ // ---- [2] ring (end) ----
+ // ---- [3] launcher: the rank side of the launcher (begin) ----
+ // ---- [3] launcher (end) ----
+@@ -19065,6 +19171,10 @@ struct gdakiCtrlCq {
+   struct ibv_cq* cq = nullptr;
+   struct ibv_comp_channel* channel = nullptr;
+ };
++// ibv_create_comp_channel and ibv_destroy_comp_channel: ibvwrap.h declares wrappers that misc/ibvwrap.cc does not define
++// (phase 2a-2-A made this path reachable: the link failed); looked up with the other libibverbs symbols (the ring region)
++static ncclResult_t gdakiCtrlChannelCreate(struct ibv_comp_channel** out, struct ibv_context* ictx);
++static void gdakiCtrlChannelDestroy(struct ibv_comp_channel* ch);
+ [[maybe_unused]] static ncclResult_t gdakiCtrlCqCreate(struct gdakiRecHost* r, int depth, bool withChannel,
+                                                       struct gdakiCtrlCq** out, char* why, size_t whyLen) {
+   *out = nullptr;
+@@ -19076,13 +19186,13 @@ struct gdakiCtrlCq {
+   }
+   struct gdakiCtrlCq* c = new gdakiCtrlCq();
+   (void)ncclIbStatsInit(&c->stats);
+-  if (withChannel && wrap_ibv_create_comp_channel(&c->channel, ictx) != ncclSuccess) {
++  if (withChannel && gdakiCtrlChannelCreate(&c->channel, ictx) != ncclSuccess) {
+     delete c;
+     snprintf(why, whyLen, "cannot create a completion channel");
+     return ncclSystemError;
+   }
+   if (wrap_ibv_create_cq(&c->cq, ictx, depth, &c->stats, c->channel, 0) != ncclSuccess) {
+-    if (c->channel != nullptr) (void)wrap_ibv_destroy_comp_channel(c->channel);
++    if (c->channel != nullptr) gdakiCtrlChannelDestroy(c->channel);
+     delete c;
+     snprintf(why, whyLen, "cannot create a CQ of %d entries", depth);
+     return ncclSystemError;
+@@ -19098,7 +19208,7 @@ struct gdakiCtrlCq {
+     return false;
+   }
+   c->cq = nullptr;
+-  if (c->channel != nullptr) (void)wrap_ibv_destroy_comp_channel(c->channel);
++  if (c->channel != nullptr) gdakiCtrlChannelDestroy(c->channel);
+   delete c;
+   return true;
+ }
+@@ -19244,9 +19354,9 @@ NCCL_PARAM(GinCtrlWitness, GDAKI_CTRL_P_WITNESS, GDAKI_CTRL_WITNESS_DEFAULT);
+ #define GDAKI_CTRL_CONFIRM_FACTOR 10
+ // The LATER bound and the launcher-beat stall bound are phase 3's (impl/rs_ctrl_api.h: GDAKI_CTRL_P_LATER_MS 1000,
+ // GDAKI_CTRL_P_LAUNCHER_STALL_MS 1000).
+-// NCCL_GIN_CTRL_PAGE=1: bring the status page and the probe up in this dev build (off by default; the scaffold).
+-#define GDAKI_CTRL_P_PAGE "GIN_CTRL_PAGE"
+-NCCL_PARAM(GinCtrlPage, GDAKI_CTRL_P_PAGE, 0);
++// NCCL_GIN_CTRL_PAGE (impl/rs_ctrl_api.h [2]): the status page, the probe and the ring. Phase 2a-2: default 1 in the
++// rdma build (the records leave the helper socket; 0 turns the page and the ring off: the preparation stage's TCP path).
++NCCL_PARAM(GinCtrlPage, GDAKI_CTRL_P_PAGE, GDAKI_CTRL_PAGE_DEFAULT);
+ 
+ // ---- gin-control (page): pure functions (begin; impl/gc_unit_p1.cc compiles this region on the CPU) ----
+ // The pieces of phase 1's judgement that are not the table: the window end's W value, the activation gate, the
+@@ -19668,10 +19778,8 @@ static_assert(GDAKI_CTRL_WC_SUCCESS == (int)IBV_WC_SUCCESS && GDAKI_CTRL_WC_LOC_
+               "the liveness READ's completion classes use enum ibv_wc_status's values");
+ // The scaffold's pairing of the liveness READ QPs over record 55 (phase 2a-1's model; region "gin-control (ring)":
+ // below, because the model is there): the helper's state, its step and record 55's receiver.
+-struct gdakiCtrlProbePairing;
+-static void gdakiCtrlProbePairingStep(struct gdakiRecHost* r);
++static void gdakiCtrlRingHelperStep(struct gdakiRecHost* r);
+ static void gdakiCtrlProbeSetupRecv(struct gdakiRecHost* r, int from, const struct gdakiTsMsg& m);
+-static void gdakiCtrlProbePairingFree(struct gdakiCtrlProbePairing* p);
+ 
+ // The operations the helper asks of the watch thread on one peer's liveness READ QP (REVIEW_P12 고칠 것 12): the watch
+ // thread owns the QP and its CQ; the helper's pairing only asks and reads the result.
+@@ -19765,7 +19873,6 @@ struct gdakiCtrlPage {
+   struct gdakiCtrlFreezeSpec freeze;             // the test switch (research builds)
+   double freezeFromMs = -1, freezeToMs = -1;
+   bool freezeLogged = false;
+-  struct gdakiCtrlProbePairing* pairing = nullptr;  // helper: the scaffold's pairing state (region "gin-control (ring)")
+   int me = -1;
+ };
+ 
+@@ -19788,7 +19895,6 @@ static void gdakiCtrlPageDelete(struct gdakiCtrlPage* pg) {  // a page never pub
+   if (pg->rdMr != nullptr) (void)wrap_ibv_dereg_mr(pg->rdMr);
+   free(pg->page);
+   free(pg->rd);
+-  gdakiCtrlProbePairingFree(pg->pairing);
+   delete pg;
+ }
+ // Bring the page up once (NCCL_GIN_CTRL_PAGE=1), on the setup thread (gdakiTsStart): the thresholds' range check
+@@ -20420,7 +20526,7 @@ static void gdakiCtrlPageHelperStep(struct gdakiRecHost* r) {
+                     gdakiCtrlCauseName(gdakiCtrlMailCause(wm)), gdakiQ4MonoMs());
+     }
+   }
+-  gdakiCtrlProbePairingStep(r);
++  gdakiCtrlRingHelperStep(r);  // phase 2a-2-A: the ring's first pairing over UD (record 55's scaffold is gone)
+ }
+ 
+ // ---- the hooks (phase 1's real bodies; they replace the preparation stage's placeholders) ----
+@@ -20526,9 +20632,10 @@ static int gdakiCtrlRecvOn(struct gdakiRecHost* r, int peer, uint32_t ch, int fd
+ static void gdakiCtrlRejoinFail(struct gdakiRecHost* r, int fd, int peer, uint64_t round, const char* what) {
+   gdakiTsAnswerFail(r, fd, peer, round, what);  // phase 2: the UD answer to the REJOIN's sender
+ }
++static bool gdakiCtrlRdmaLiveUp(struct gdakiRecHost* r, int peer, bool* up);  // the ring's (below)
+ static bool gdakiCtrlChanUp(struct gdakiRecHost* r, int peer, const struct gdakiTsPeer& pe) {
+-  (void)r;
+-  (void)peer;  // phase 2: the pair's record QP CONNECTED and not lost
++  bool up = false;  // phase 2a-2-A: the ring answers only once it carries the records (live, 2a-2-B)
++  if (gdakiCtrlRdmaLiveUp(r, peer, &up)) return up;
+   return pe.fd >= 0 && !pe.gone;
+ }
+ [[maybe_unused]] static bool gdakiCtrlChanUp(struct gdakiRecHost* r, int peer) {
+@@ -20559,8 +20666,13 @@ static void gdakiCtrlRecordToErr(struct gdakiRecHost* r, int peer) {
+ // the store's responder QP of ward `peer` into ERR (ln4's hold start does not: its quiesce moves the user and mirror QPs
+ // only; EXPERIMENT.md 9.4 step 1). Phase 2b: a job for the store thread (region "gin-control (store)")
+ static void gdakiStoreWardToErr(struct gdakiRecHost* r, int peer) { gdakiCtrlStoreWardToErrAsk(r, peer); }
+-// r->ctrl->ring (nothing yet)
+-static void gdakiCtrlRingFree(struct gdakiRecHost* r) { (void)r; }
++// r->ctrl->ring (phase 2a-2-A: made at the setup; the QPs, then the CQ with its channel, then the memory)
++static void gdakiCtrlRdmaDestroy(struct gdakiCtrlRing* g);  // the ring's (below)
++static void gdakiCtrlRingFree(struct gdakiRecHost* r) {
++  if (r == nullptr || r->ctrl == nullptr || r->ctrl->ring == nullptr) return;
++  gdakiCtrlRdmaDestroy(r->ctrl->ring);
++  r->ctrl->ring = nullptr;
++}
+ // Phase 2a-1 (integration): the ring model and the verbs back end below are built but not wired; the bodies above
+ // stay the preparation stage's until phase 2a-2 binds them.
+ // ==== gin-control (ring): model (begin; phase 2a-1, impl/gc_unit_p2.cc compiles this region on the CPU) ====
+@@ -21378,11 +21490,113 @@ static inline bool gdakiCtrlOutboxAccept(struct gdakiCtrlOutboxSt* o, const stru
+ #endif  // !NCCL_GIN_CTRL_TCP
+ // ==== gin-control (ring): model (end) ====
+ 
++// ==== gin-control (ring): setup, pure (begin; phase 2a-2-A, impl/gc_unit_p2a2.cc compiles this region on the CPU) ====
++// The setup all-gather's control fields (EXPERIMENT.md 9.6, design v3 5.1; impl/rs_ctrl_api.h [2] gdakiCtrlSetupAddr and
++// gdakiCtrlSetupAgree): what this rank puts into `mine`, the verdict every rank reaches from the same records, the
++// spare's strict fields against its transcript, and Resume's conditions 41-44 (gdakiRsLocalCheck, after 40).
++#if !NCCL_GIN_CTRL_TCP
++struct gdakiCtrlSetupOut {
++  bool agreed = false;          // the agreement ran
++  uint32_t verdict = 0;         // 0, 42 (an MTU below 2048) or 44 (the path differs; a threshold drift is told as 44)
++  uint32_t sa = 0;              // gdakiCtrlSetupAgree's own answer (GDAKI_CTRL_SA_*)
++  int who = -1;                 // the first rank that differs (-1: none)
++  uint32_t minMtu = 0xffu;      // the lowest active MTU over the ranks (enum ibv_mtu)
++  uint32_t activeMtu = 0;       // this rank's (the GIN port's active_mtu)
++  uint32_t fork = 0xffu;        // this rank's ibv_is_fork_initialized() (0xff: the symbol is missing)
++  bool spareDiffers = false;    // a spare's path or launcher node is not its transcript's (44)
++  bool spare = false;           // a spare's setup (replayed): its pairings are its REJOIN's (phase 2a-2-C)
++  char why[192] = {0};          // the detail of a verdict other than 0
++};
++// This rank's fields: with the ring (path RDMA) its UD endpoint and outbox; without it (RDMA_OFF: the page parameter is 0
++// or the ring could not be made) none. The page region stays 0 (the PAIR carries it once the page is up).
++static inline void gdakiCtrlSetupMine(struct gdakiCtrlSetupAddr* a, bool ring, const struct gdakiCtrlEndpoint& ud,
++                                      const struct gdakiCtrlRegion& outbox, uint32_t activeMtu, uint32_t fork,
++                                      const struct gdakiCtrlThresholds& t) {
++  memset(a, 0, sizeof(*a));
++  a->path = ring ? GDAKI_CTRL_PATH_RDMA : GDAKI_CTRL_PATH_RDMA_OFF;
++  a->launcherNode = GDAKI_CTRL_LAUNCHER_NODE_NONE;
++  if (ring) {
++    a->ud = ud;
++    a->outbox = outbox;
++  }
++  a->activeMtu = activeMtu;
++  a->fork = fork;
++  a->probeMs = (int32_t)t.probeMs;
++  a->probeTimeoutMs = (int32_t)t.probeTimeoutMs;
++  a->confirmMs = (int32_t)t.confirmMs;
++  a->suspectMs = (int32_t)t.suspectMs;
++  a->stallMs = (int32_t)t.stallMs;
++}
++// The verdict over every rank's fields (all[p] null: a rank without transparent recovery, not counted): 0, or the Resume
++// condition that turns transparent recovery off at the setup (42, 44) with its text in *offWhy (a literal: the setup's
++// `why`) and the detail in o->why.
++static inline uint32_t gdakiCtrlSetupVerdict(const struct gdakiCtrlSetupAddr* const* all, int n, struct gdakiCtrlSetupOut* o,
++                                             const char** offWhy) {
++  *offWhy = nullptr;
++  o->agreed = true;
++  o->sa = gdakiCtrlSetupAgree(all, n, &o->minMtu, &o->who, o->why, sizeof(o->why));
++  switch (o->sa) {
++    case GDAKI_CTRL_SA_OK: o->verdict = 0; o->why[0] = 0; break;
++    case GDAKI_CTRL_SA_MTU: o->verdict = 42; *offWhy = GDAKI_CTRL_R42; break;
++    case GDAKI_CTRL_SA_PATH: o->verdict = 44; *offWhy = GDAKI_CTRL_R44; break;
++    default: o->verdict = 44; *offWhy = GDAKI_CTRL_R44T; break;  // GDAKI_CTRL_SA_THRESH
++  }
++  return o->verdict;
++}
++// The spare's strict fields against its transcript's own slot (design v3 5.1: the path and the launcher node; the rest may
++// differ). False: they differ (44), `why` says which.
++static inline bool gdakiCtrlSpareCtlMatch(const struct gdakiCtrlSetupAddr& rec, const struct gdakiCtrlSetupAddr& now,
++                                          char* why, size_t whyLen) {
++  if (rec.path != now.path) {
++    snprintf(why, whyLen, "the control path %u is not the transcript's %u", now.path, rec.path);
++    return false;
++  }
++  if (rec.launcherNode != now.launcherNode) {
++    snprintf(why, whyLen, "the launcher node %u is not the transcript's %u", now.launcherNode, rec.launcherNode);
++    return false;
++  }
++  return true;
++}
++#define GDAKI_CTRL_RESUME_WHY 320  // a condition's text: GDAKI_CTRL_R4x and its detail
++// Resume's conditions 41-44 of this rank (gdakiRsLocalIn's gc41-gc44: null, or the text): `o` null when the context has
++// no ring (no condition then: the records stay on the TCP path). launcherNamed: phase 3 named the node's launcher (41 is
++// asked only then); launcherPaired: the latch.
++static inline void gdakiCtrlResumeConds(const struct gdakiCtrlSetupOut* o, bool launcherNamed, bool launcherPaired,
++                                        char (*buf)[GDAKI_CTRL_RESUME_WHY], const char** c41, const char** c42, const char** c43,
++                                        const char** c44) {
++  *c41 = *c42 = *c43 = *c44 = nullptr;
++  if (o == nullptr) return;
++  if (launcherNamed && !launcherPaired) {
++    snprintf(buf[0], sizeof(buf[0]), "%s", GDAKI_CTRL_R41);
++    *c41 = buf[0];
++  }
++  if (o->agreed && o->verdict == 42) {
++    snprintf(buf[1], sizeof(buf[1]), "%s (%s)", GDAKI_CTRL_R42, o->why);
++    *c42 = buf[1];
++  }
++  if (o->fork != GDAKI_CTRL_FORK_UNNEEDED) {
++    snprintf(buf[2], sizeof(buf[2]), "%s (%s)", GDAKI_CTRL_R43,
++             o->fork == 0xffu ? "the symbol is missing" : o->fork == 0 ? "IBV_FORK_DISABLED" : "IBV_FORK_ENABLED");
++    *c43 = buf[2];
++  }
++  if ((o->agreed && o->verdict == 44) || o->spareDiffers) {
++    snprintf(buf[3], sizeof(buf[3]), "%s (%s)", o->sa == GDAKI_CTRL_SA_THRESH ? GDAKI_CTRL_R44T : GDAKI_CTRL_R44, o->why);
++    *c44 = buf[3];
++  }
++}
++// The page's rxConsumed[N] (`pageWords`, the page's words at layout.rxConsumedOff) takes over from the ring's own words:
++// every peer's word is copied first, then the ring publishes there (before any record goes on the ring: notes_fix12 6).
++static inline uint64_t* gdakiCtrlBindWords(uint64_t* own, uint64_t* pageWords, int nranks) {
++  for (int p = 0; p < nranks; p++) __atomic_store_n(&pageWords[p], __atomic_load_n(&own[p], __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
++  return pageWords;
++}
++#endif  // !NCCL_GIN_CTRL_TCP
++// ==== gin-control (ring): setup, pure (end) ====
++
+ // ==== gin-control (ring): the liveness READ QP's pairing link (begin; REVIEW_P12 막는 문제 1, 4, 7, 고칠 것 12) ====
+ // One pair's liveness READ QP pairing (the model's struct gdakiCtrlPairSt of kind PROBE) on the helper thread, over a
+-// transport that carries struct gdakiCtrlPairBody: phase 1's scaffold sends it in record 55 PROBE_SETUP over the helper
+-// socket (gdakiCtrlProbePairing* below; it goes when phase 2a-2 binds the UD path), the verbs back end as a UD datagram
+-// (gdakiCtrlRdma*). The QP itself is the watch thread's: each model action that moves it is a request
++// transport that carries struct gdakiCtrlPairBody: the verbs back end's UD datagram (gdakiCtrlRdma*; phase 2a-2-A: phase
++// 1's scaffold over record 55 PROBE_SETUP is gone, an incoming 55 is dropped with one line). The QP itself is the watch thread's: each model action that moves it is a request
+ // (gdakiCtrlProbeAsk: PREPARE or CONNECT), and the datagram it needs goes when the watch thread's answer is there
+ // (gdakiCtrlProbeLinkPoll), with the endpoint (and fresh PSN) the answer carries.
+ #if !NCCL_GIN_CTRL_TCP
+@@ -21545,81 +21759,18 @@ static void gdakiCtrlProbeLinkTick(struct gdakiRecHost* r, int peer, struct gdak
+   gdakiCtrlProbeLinkAct(r, peer, k, c, gdakiCtrlPairTick(&k.st, gdakiQ4MonoMs()), nullptr);
+ }
+ 
+-// ---- phase 1's scaffold transport: record 55 PROBE_SETUP over the helper socket (goes with phase 2a-2) ----
+-struct gdakiCtrlProbePairing {
+-  std::vector<struct gdakiCtrlProbeLink> links;  // by rank
+-};
+-static void gdakiCtrlProbePairingFree(struct gdakiCtrlProbePairing* p) { delete p; }
+-static int gdakiCtrlProbeScaffoldSend(void* ctx, int peer, const struct gdakiCtrlPairBody& b) {
+-  struct gdakiRecHost* r = (struct gdakiRecHost*)ctx;
+-  struct gdakiTsMsg m;
+-  memset(&m, 0, sizeof(m));
+-  m.type = GDAKI_TS_CTRL_PROBE_SETUP;
+-  m.arg = peer;
+-  m.round = b.incarnation;
+-  static_assert(sizeof(struct gdakiCtrlPairBody) <= sizeof(m.nrp), "a pairing body fits gdakiTsMsg::nrp");
+-  memcpy(m.nrp, &b, sizeof(b));
+-  return gdakiHoldSend(r, peer, &m);
+-}
+-static struct gdakiCtrlProbeLinkCtx gdakiCtrlProbeScaffoldCtx(struct gdakiRecHost* r, const struct gdakiCtrlPage* pg) {
+-  struct gdakiCtrlProbeLinkCtx c;
+-  c.ctx = r;
+-  c.send = gdakiCtrlProbeScaffoldSend;
+-  memset(&c.ud, 0, sizeof(c.ud));
+-  memset(&c.outbox, 0, sizeof(c.outbox));
+-  c.page.addr = (uint64_t)(uintptr_t)pg->page;
+-  c.page.rkey = pg->pageMr->rkey;
+-  c.page.len = pg->layout.bytes;
+-  c.nonce = r->ts->nonce;
+-  c.inc = gdakiRsSelfInc(r);
+-  c.via = "scaffold record 55";
+-  return c;
+-}
+-// The helper's step: a link per gated peer whose record channel is up; the lower rank starts at the setup (and every
+-// new incarnation of the peer starts again: its process has a new QP).
+-static void gdakiCtrlProbePairingStep(struct gdakiRecHost* r) {
+-  struct gdakiCtrlPage* pg = gdakiPageOf(r);
+-  if (!gdakiPageUp(pg) || r->ts == nullptr) return;
+-  if (r->ctrl->ring != nullptr) return;  // phase 2a-2: the ring's UD pairing has the links
+-  if (pg->pairing == nullptr) {
+-    pg->pairing = new gdakiCtrlProbePairing();
+-    pg->pairing->links.resize(pg->peers.size());
+-    for (int p = 0; p < (int)pg->peers.size(); p++)
+-      gdakiCtrlPairInit(&pg->pairing->links[(size_t)p].st, GDAKI_CTRL_PAIR_QP_PROBE, pg->me, p);
+-  }
+-  const struct gdakiCtrlProbeLinkCtx c = gdakiCtrlProbeScaffoldCtx(r, pg);
+-  for (int p = 0; p < (int)pg->peers.size(); p++) {
+-    if (p == pg->me || !pg->peers[(size_t)p].hasQp || !gdakiCtrlChanUp(r, p)) continue;
+-    struct gdakiCtrlProbeLink& k = pg->pairing->links[(size_t)p];
+-    const uint32_t cur = gdakiLnOf(r, p).cur;
+-    if (k.started && k.peerInc != cur && gdakiLnClassify(gdakiLnOf(r, p), cur) == GDAKI_LN_CURRENT &&
+-        r->ts->peers[(size_t)p].gated) {  // a new incarnation took the rank (the REJOIN set it): pair it anew
+-      k = gdakiCtrlProbeLink();
+-      gdakiCtrlPairInit(&k.st, GDAKI_CTRL_PAIR_QP_PROBE, pg->me, p);
+-    }
+-    if (!k.started) {
+-      k.started = true;
+-      k.peerInc = cur;
+-      gdakiCtrlPairSetPeerInc(&k.st, cur);
+-      if (pg->me < p)
+-        gdakiCtrlProbeLinkAct(r, p, k, c, gdakiCtrlPairStart(&k.st, gdakiQ4MonoMs(), (double)ncclParamGinTsConnectMs()),
+-                              nullptr);
+-    }
+-    gdakiCtrlProbeLinkTick(r, p, k, c, pg->probeFailN);
+-  }
+-}
+-// Record 55 from `from` (the hold drain, helper): its body, checked, into the link.
++// ---- record 55 PROBE_SETUP (phase 1's scaffold; phase 2a-2-A: the UD pairing carries the endpoint) ----
++// An incoming 55 (a peer of an older build, or a stale one in flight): taken and dropped, one line per sender.
+ static void gdakiCtrlProbeSetupRecv(struct gdakiRecHost* r, int from, const struct gdakiTsMsg& m) {
+-  struct gdakiCtrlPage* pg = gdakiPageOf(r);
+-  if (!gdakiPageUp(pg) || from < 0 || from >= (int)pg->peers.size() || from == pg->me || pg->pairing == nullptr) return;
+-  struct gdakiCtrlPairBody b;
+-  memcpy(&b, m.nrp, sizeof(b));
+-  if (!gdakiCtrlPairBodyOk(b, pg->me, r->ts->nonce, false) || b.qpKind != GDAKI_CTRL_PAIR_QP_PROBE || b.from != from ||
+-      b.incarnation != (uint32_t)m.round) {
+-    INFO(NCCL_NET, "GIN/RC: rank %d: a malformed PROBE_SETUP from rank %d is dropped", pg->me, from);
+-    return;
+-  }
+-  gdakiCtrlProbeLinkOnBody(r, from, pg->pairing->links[(size_t)from], gdakiCtrlProbeScaffoldCtx(r, pg), b);
++  (void)m;
++  static std::mutex mu;
++  static std::vector<std::pair<const void*, int>> said;
++  std::lock_guard<std::mutex> lk(mu);
++  for (const auto& e : said)
++    if (e.first == (const void*)r && e.second == from) return;
++  said.emplace_back((const void*)r, from);
++  INFO(NCCL_NET, "GIN/RC: rank %d: record 55 PROBE_SETUP from rank %d dropped (the liveness READ QP pairs over UD)",
++       (r != nullptr && r->ctx != nullptr) ? r->ctx->rank : -1, from);
+ }
+ #endif  // !NCCL_GIN_CTRL_TCP
+ // ==== gin-control (ring): the liveness READ QP's pairing link (end) ====
+@@ -21634,14 +21785,19 @@ static void gdakiCtrlProbeSetupRecv(struct gdakiRecHost* r, int from, const stru
+ // r->ctrl->ring stays null and nothing here runs). One thread at a time (the helper; the setup thread before it starts).
+ #if !NCCL_GIN_CTRL_TCP
+ #include <dlfcn.h>
++// ---- gin-control (ring): libibverbs lookups (begin; impl/gc_unit_p2a2.cc puts its fake verbs in place of this) ----
+ // ibv_create_ah, ibv_destroy_ah, ibv_get_cq_event and ibv_ack_cq_events have no wrapper in ibvwrap.h (and this layer
+-// changes the host file only): looked up in the libibverbs NCCL already loaded (RTLD_NOLOAD), once.
++// changes the host file only): looked up in the libibverbs NCCL already loaded (RTLD_NOLOAD), once. Phase 2a-2:
++// ibv_is_fork_initialized too (optional: missing, the setup's fork field is 0xff and Resume's condition 43 holds).
+ struct gdakiCtrlVerbs {
+   bool tried = false, ok = false;
+   struct ibv_ah* (*createAh)(struct ibv_pd*, struct ibv_ah_attr*) = nullptr;
+   int (*destroyAh)(struct ibv_ah*) = nullptr;
+   int (*getCqEvent)(struct ibv_comp_channel*, struct ibv_cq**, void**) = nullptr;
+   void (*ackCqEvents)(struct ibv_cq*, unsigned int) = nullptr;
++  int (*isForkInit)(void) = nullptr;  // enum ibv_fork_status ibv_is_fork_initialized(void)
++  struct ibv_comp_channel* (*createChannel)(struct ibv_context*) = nullptr;
++  int (*destroyChannel)(struct ibv_comp_channel*) = nullptr;
+ };
+ static const struct gdakiCtrlVerbs* gdakiCtrlVerbsOf() {
+   static std::mutex mu;
+@@ -21658,11 +21814,25 @@ static const struct gdakiCtrlVerbs* gdakiCtrlVerbsOf() {
+     v.destroyAh = (int (*)(struct ibv_ah*))dlsym(h, "ibv_destroy_ah");
+     v.getCqEvent = (int (*)(struct ibv_comp_channel*, struct ibv_cq**, void**))dlsym(h, "ibv_get_cq_event");
+     v.ackCqEvents = (void (*)(struct ibv_cq*, unsigned int))dlsym(h, "ibv_ack_cq_events");
+-    v.ok = v.createAh != nullptr && v.destroyAh != nullptr && v.getCqEvent != nullptr && v.ackCqEvents != nullptr;
++    v.isForkInit = (int (*)(void))dlsym(h, "ibv_is_fork_initialized");
++    v.createChannel = (struct ibv_comp_channel * (*)(struct ibv_context*)) dlsym(h, "ibv_create_comp_channel");
++    v.destroyChannel = (int (*)(struct ibv_comp_channel*))dlsym(h, "ibv_destroy_comp_channel");
++    v.ok = v.createAh != nullptr && v.destroyAh != nullptr && v.getCqEvent != nullptr && v.ackCqEvents != nullptr &&
++           v.createChannel != nullptr && v.destroyChannel != nullptr;
+     if (v.ok) break;
+   }
+   return &v;
+ }
++static ncclResult_t gdakiCtrlChannelCreate(struct ibv_comp_channel** out, struct ibv_context* ictx) {
++  const struct gdakiCtrlVerbs* v = gdakiCtrlVerbsOf();
++  *out = v->createChannel != nullptr ? v->createChannel(ictx) : nullptr;
++  return *out != nullptr ? ncclSuccess : ncclSystemError;
++}
++static void gdakiCtrlChannelDestroy(struct ibv_comp_channel* ch) {
++  const struct gdakiCtrlVerbs* v = gdakiCtrlVerbsOf();
++  if (ch != nullptr && v->destroyChannel != nullptr) (void)v->destroyChannel(ch);
++}
++// ---- gin-control (ring): libibverbs lookups (end) ----
+ #define GDAKI_CTRL_UD_SLOT_BYTES (GDAKI_CTRL_UD_GRH_BYTES + GDAKI_CTRL_SLOT_BYTES)  // a UD RECV: GRH 40 B + 2 KiB
+ // One peer rank of this context.
+ struct gdakiCtrlRdmaPeer {
+@@ -21721,6 +21891,14 @@ struct gdakiCtrlRing {
+   uint64_t cqEvents = 0, cqEventsUnacked = 0, badDgrams = 0, udRecvErrs = 0, udRemade = 0, udInDropped = 0;
+   bool udBroken = false;                        // a UD RECV ended in error: the UD QP is made again after the batch
+   bool inPoll = false;                          // the full poll runs (a nested call only collects)
++  // phase 2a-2 (the setup and the first pairing; impl/notes_p2a2.md)
++  uint32_t qkey = 0;                            // this side's UD Q_Key: its own, chosen before the exchange (the
++                                                // context's nonce comes after it); a remade UD QP keeps it
++  struct gdakiCtrlSetupOut setup;               // the setup agreement's outcome (Resume's 42-44)
++  bool bound = false;                           // rxConsumed[] is the status page's rxConsumed[N] (before any post)
++  bool pairingStarted = false;                  // the setup's first pairings were started (the helper's step)
++  bool live = false;                            // the swap points use the ring (phase 2a-2-B sets it; until then the
++                                                // records stay on the helper socket and the ring only pairs)
+   // One writer per word (REVIEW_P12 nit 12): the helper writes rxConsumed[] here, the watch thread every other word of
+   // the status page.
+ };
+@@ -21865,6 +22043,7 @@ static ncclResult_t gdakiCtrlRdmaCreate(struct gdakiRecHost* r, int me, int nran
+   g->nLaunchers = nLaunchers;
+   g->nonce = nonce;
+   g->inc = inc;
++  g->qkey = gdakiCtrlQkeyOf(nonce);
+   auto fail = [&](const char* what, ncclResult_t res) -> ncclResult_t {
+     if (why[0] == 0 || what != nullptr) snprintf(why, whyLen, "%s", what != nullptr ? what : "control ring");
+     gdakiCtrlRdmaDestroy(g);
+@@ -21902,7 +22081,7 @@ static ncclResult_t gdakiCtrlRdmaCreate(struct gdakiRecHost* r, int me, int nran
+   if (!g->rxMr || !g->txMr || !g->udRxMr || !g->udTxMr || !g->outboxMr || !g->inStageMr || !g->creditRdMr)
+     return fail("cannot register the control ring's memory", ncclSystemError);
+   struct gdakiMiQpEndpoint v1;
+-  const struct gdakiCtrlQpAttr ua = gdakiCtrlQpAttrUd(gdakiCtrlQkeyOf(nonce), g->cq->cq);
++  const struct gdakiCtrlQpAttr ua = gdakiCtrlQpAttrUd(g->qkey, g->cq->cq);
+   if (gdakiMiHostQpCreate(r, 1, &g->ud, &v1, why, whyLen, ua) != ncclSuccess) return fail(nullptr, ncclSystemError);
+   g->udLocal = gdakiCtrlEndpointOf(v1, GDAKI_CTRL_QPT_UD);
+   g->udLocal.psn = ua.qkey;  // a UD endpoint's psn holds its Q_Key
+@@ -22296,7 +22475,7 @@ static void gdakiCtrlRdmaUdRemake(struct gdakiCtrlRing* g) {
+   g->ud = nullptr;
+   g->udTxBusy = 0;  // the old QP's sends are gone with it
+   struct gdakiMiQpEndpoint v1;
+-  const struct gdakiCtrlQpAttr ua = gdakiCtrlQpAttrUd(gdakiCtrlQkeyOf(g->nonce), g->cq->cq);
++  const struct gdakiCtrlQpAttr ua = gdakiCtrlQpAttrUd(g->qkey, g->cq->cq);
+   bool ok = gdakiMiHostQpCreate(g->r, 1, &g->ud, &v1, why, sizeof(why), ua) == ncclSuccess &&
+             gdakiMiHostQpConnect(g->ud, v1, why, sizeof(why)) == ncclSuccess;
+   for (uint32_t s = 0; ok && s < GDAKI_CTRL_UD_RQ; s++) ok = gdakiCtrlRdmaPostUdRecv(g, s) == 0;
+@@ -22622,6 +22801,172 @@ static uint64_t gdakiCtrlRdmaRnr(const struct gdakiCtrlRing* g) {
+     for (const struct gdakiCtrlRdmaPeer& pr : g->peers) n += pr.rnr;
+   return n;
+ }
++
++// ---- phase 2a-2-A: the setup (gdakiTsSetup) and the first pairing (the helper's step; impl/notes_p2a2.md) ----
++// The liveness thresholds as the page reads them (gdakiPageSetup): every rank the same (the setup agreement).
++static struct gdakiCtrlThresholds gdakiCtrlThresholdsNow() {
++  struct gdakiCtrlThresholds t;
++  t.probeMs = ncclParamGinTsProbeMs();
++  t.probeTimeoutMs = ncclParamGinCtrlProbeTimeoutMs();
++  t.confirmMs = ncclParamGinCtrlConfirmMs();
++  t.suspectMs = ncclParamGinTsSuspectMs();
++  t.stallMs = ncclParamGinTsStallMs();
++  t.restoreMs = ncclParamGinRestoreMs();
++  return t;
++}
++static uint32_t gdakiCtrlForkStatus() {
++  const struct gdakiCtrlVerbs* v = gdakiCtrlVerbsOf();
++  return v->isForkInit != nullptr ? (uint32_t)v->isForkInit() : 0xffu;
++}
++// Before the all-gather (the setup thread): the ring (helper CQ with its channel, the regions, the UD QP) unless the page
++// parameter is 0 or this rank's transparent recovery is off already, and this rank's control fields in *mine. `seed`:
++// this rank's salt (the recorded one for a spare): its UD Q_Key, since the context's nonce comes after the exchange.
++static void gdakiCtrlRingSetup(struct gdakiRecHost* r, bool on, int me, int nranks, uint64_t seed,
++                               struct gdakiCtrlSetupAddr* mine) {
++  struct gdakiCtrlRing* g = nullptr;
++  char why[192] = {0};
++  if (on && r != nullptr && r->ctrl != nullptr && r->ctrl->ring == nullptr && ncclParamGinCtrlPage() != 0) {
++    if (gdakiCtrlRdmaCreate(r, me, nranks, 0, seed, gdakiRsSelfInc(r), &g, why, sizeof(why)) != ncclSuccess) {
++      WARN("GIN/RC: rank %d: the control ring could not be made (%s): control path rdma-off mono_ms=%.3f", me, why,
++           gdakiQ4MonoMs());
++      g = nullptr;
++    } else {
++      r->ctrl->ring = g;
++    }
++  }
++  const uint32_t fork = gdakiCtrlForkStatus();
++  uint32_t mtu = 0;
++  if (g != nullptr) mtu = (uint32_t)g->udLocal.mtu;  // the GIN port's active_mtu (the host QP template's)
++  else if (r != nullptr && r->ctx != nullptr) mtu = (uint32_t)r->ctx->port_attr.active_mtu;
++  struct gdakiCtrlEndpoint ud;
++  struct gdakiCtrlRegion ob;
++  memset(&ud, 0, sizeof(ud));
++  memset(&ob, 0, sizeof(ob));
++  if (g != nullptr) {
++    ud = g->udLocal;
++    ob = gdakiCtrlRdmaOutboxRegion(g);
++    g->setup.activeMtu = mtu;
++    g->setup.fork = fork;
++  }
++  gdakiCtrlSetupMine(mine, g != nullptr, ud, ob, mtu, fork, gdakiCtrlThresholdsNow());
++  GIN_TS_NOTE("GIN/RC: rank %d: control setup path=%s active_mtu=%u (%d B) fork=%u ud_qpn=%u qkey=0x%x mono_ms=%.3f", me,
++              g != nullptr ? "rdma" : "rdma-off", mtu, mtu >= 1 && mtu <= 5 ? 128 << mtu : 0, fork, ud.qpn, ud.psn,
++              gdakiQ4MonoMs());
++}
++// The ring's models take the context's nonce and this process's incarnation (the setup thread, after the exchange,
++// before anything posts or pairs).
++static void gdakiCtrlRdmaSetNonce(struct gdakiCtrlRing* g, uint64_t nonce, uint32_t inc) {
++  g->nonce = nonce;
++  g->inc = inc;
++  for (int p = 0; p < g->nranks; p++) {
++    struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)p];
++    gdakiCtrlRingInit(&pr.ring, p, g->me, nonce, inc, GDAKI_TS_MAGIC);
++    gdakiCtrlPairInit(&pr.pairRec, GDAKI_CTRL_PAIR_QP_RECORD, g->me, p);
++    pr.prb = gdakiCtrlProbeLink();
++    gdakiCtrlPairInit(&pr.prb.st, GDAKI_CTRL_PAIR_QP_PROBE, g->me, p);
++  }
++}
++// After the all-gather (the setup thread): the agreement over the ranks' control fields (all[p] null: a rank without
++// transparent recovery; the same verdict on every rank: the same records), a spare's strict fields against its
++// transcript slot (`rec`, null: not a spare), the context's nonce into the ring and every peer's UD endpoint. One line;
++// a WARN when the verdict turns transparent recovery off. Returns that verdict's literal (the setup's `why`), or null.
++static const char* gdakiCtrlRingAgree(struct gdakiRecHost* r, int me, int nranks, uint64_t nonce,
++                                      const struct gdakiCtrlSetupAddr* const* all, const struct gdakiCtrlSetupAddr* rec) {
++  struct gdakiCtrlRing* g = (r != nullptr && r->ctrl != nullptr) ? r->ctrl->ring : nullptr;
++  struct gdakiCtrlSetupOut o;
++  if (g != nullptr) o = g->setup;  // this rank's active_mtu and fork
++  const char* off = nullptr;
++  (void)gdakiCtrlSetupVerdict(all, nranks, &o, &off);
++  o.spare = rec != nullptr;
++  if (rec != nullptr && all[me] != nullptr) {
++    char w[128] = {0};
++    if (!gdakiCtrlSpareCtlMatch(*rec, *all[me], w, sizeof(w))) {
++      o.spareDiffers = true;
++      if (off == nullptr) {
++        snprintf(o.why, sizeof(o.why), "spare: %s", w);
++        off = GDAKI_CTRL_R44;
++      }
++    }
++  }
++  if (g != nullptr) {
++    g->setup = o;
++    gdakiCtrlRdmaSetNonce(g, nonce, gdakiRsSelfInc(r));
++    for (int p = 0; p < nranks; p++)
++      if (p != me && all[p] != nullptr && all[p]->path == GDAKI_CTRL_PATH_RDMA) gdakiCtrlRdmaSetUd(g, p, all[p]->ud);
++  }
++  if (off != nullptr)
++    WARN("GIN/RC: rank %d: setup agreement: %s (%s): transparent recovery off at the setup (Resume condition %u) "
++         "min_active_mtu=%u mono_ms=%.3f", me, off, o.why, o.spareDiffers && o.verdict == 0 ? 44u : o.verdict, o.minMtu,
++         gdakiQ4MonoMs());
++  else
++    GIN_TS_NOTE("GIN/RC: rank %d: setup agreement: control path %s on every rank, min_active_mtu=%u, thresholds equal "
++                "mono_ms=%.3f", me, g != nullptr ? "rdma" : "rdma-off", o.minMtu, gdakiQ4MonoMs());
++  return off;
++}
++// Resume's facts 41-44 (ncclGinRestoreResume, under gdakiRecRegMu; the ring's setup outcome is fixed before the helper
++// started): `buf` holds the texts. No ring: none (the records stay on the TCP path). 41: phase 3 names the launcher.
++static void gdakiCtrlResumeFacts(struct gdakiRecHost* r, struct gdakiRsLocalIn* in, char (*buf)[GDAKI_CTRL_RESUME_WHY]) {
++  const struct gdakiCtrlRing* g = (r != nullptr && r->ctrl != nullptr) ? r->ctrl->ring : nullptr;
++  const struct gdakiCtrlPage* pg = r != nullptr ? gdakiPageOf(r) : nullptr;
++  const bool paired = pg != nullptr && pg->launcherPaired.load(std::memory_order_acquire);
++  gdakiCtrlResumeConds(g != nullptr ? &g->setup : nullptr, false, paired, buf, &in->gc41, &in->gc42, &in->gc43, &in->gc44);
++}
++// The helper's step (gdakiCtrlPageHelperStep, every loop of gdakiTsMain), after the setup agreed: once the status page
++// is up its rxConsumed[N] takes the ring's consumed words (before anything posts: notes_fix12 6), then the lower rank of
++// every gated pair starts both pairings over UD (the record QP and the liveness READ QP, NCCL_GIN_TS_CONNECT_MS; the
++// model's PAIR with a fresh PSN; the record QP's CONNECTED, kind 6, goes first on it), and the ring's poll runs (the
++// datagrams, the resends, the kicks). The higher rank answers from its poll. The records stay on the helper socket until
++// phase 2a-2-B sets `live`. A spare pairs through its REJOIN (phase 2a-2-C).
++static void gdakiCtrlRingHelperStep(struct gdakiRecHost* r) {
++  struct gdakiCtrlRing* g = (r != nullptr && r->ctrl != nullptr) ? r->ctrl->ring : nullptr;
++  if (g == nullptr || r->ts == nullptr || !g->setup.agreed || g->setup.verdict != 0 || g->setup.spareDiffers) return;
++  struct gdakiCtrlPage* pg = gdakiPageOf(r);
++  if (!g->bound) {
++    if (!gdakiPageUp(pg)) return;  // nothing polls before the binding: a peer's PAIR waits in the UD RQ (it resends)
++    if (pg->layout.rxConsumedOff != g->layout.rxConsumedOff || pg->layout.bytes != g->layout.bytes) {
++      WARN("GIN/RC: rank %d: the status page's layout is not the ring's (rxConsumed at %u, %u B; the ring's %u, %u B): "
++           "no pairing mono_ms=%.3f", g->me, pg->layout.rxConsumedOff, pg->layout.bytes, g->layout.rxConsumedOff,
++           g->layout.bytes, gdakiQ4MonoMs());
++      g->setup.verdict = 44;  // never again this context (Resume's 44 names it)
++      snprintf(g->setup.why, sizeof(g->setup.why), "the status page's layout is not the ring's");
++      return;
++    }
++    g->rxConsumed = gdakiCtrlBindWords(g->rxConsumedOwn, (uint64_t*)((uint8_t*)pg->page + pg->layout.rxConsumedOff),
++                                       g->nranks);
++    g->bound = true;
++  }
++  if (!g->pairingStarted) {
++    g->pairingStarted = true;
++    int started = 0, gated = 0;
++    const double bound = (double)ncclParamGinTsConnectMs();
++    for (int p = 0; !g->setup.spare && p < g->nranks && p < (int)r->ts->peers.size(); p++) {
++      if (p == g->me || !r->ts->peers[(size_t)p].gated) continue;
++      struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)p];
++      const uint32_t inc = gdakiLnOf(r, p).cur;
++      gdakiCtrlPairSetPeerInc(&pr.pairRec, inc);
++      gdakiCtrlPairSetPeerInc(&pr.prb.st, inc);
++      pr.prb.started = true;
++      pr.prb.peerInc = inc;
++      gated++;
++      if (g->me > p) continue;  // the lower rank starts (17946-18158's order)
++      gdakiCtrlRdmaPairStart(g, p, GDAKI_CTRL_PAIR_QP_RECORD, bound);
++      if ((size_t)p < pg->peers.size() && pg->peers[(size_t)p].hasQp) gdakiCtrlRdmaPairStart(g, p, GDAKI_CTRL_PAIR_QP_PROBE, bound);
++      started++;
++    }
++    GIN_TS_NOTE("GIN/RC: rank %d: the ring's consumed words are the status page's rxConsumed[%d]; first pairing over UD "
++                "started with %d of %d gated rank(s) (record and liveness READ QPs; the records stay on the helper socket "
++                "until phase 2a-2-B) mono_ms=%.3f", g->me, g->nranks, started, gated, gdakiQ4MonoMs());
++  }
++  gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
++}
++// The seam gdakiCtrlChanUp's ring answer: true when the ring carries the records (`live`, phase 2a-2-B) and *up is the
++// pair's; false: the socket's answer stands.
++static bool gdakiCtrlRdmaLiveUp(struct gdakiRecHost* r, int peer, bool* up) {
++  const struct gdakiCtrlRing* g = (r != nullptr && r->ctrl != nullptr) ? r->ctrl->ring : nullptr;
++  if (g == nullptr || !g->live) return false;
++  *up = gdakiCtrlRdmaUp(g, peer);
++  return true;
++}
+ #endif  // !NCCL_GIN_CTRL_TCP
+ // ==== gin-control (ring): verbs back end (end) ====
+ // ==== gin-control (store): decision 7 and the outbox transfers (begin; phase 2b, impl/notes_p2b.md) ====
+@@ -23260,7 +23605,13 @@ struct gdakiTsAddr {
+   uint64_t salt;  // gin-harden
+   uint32_t policy;     // gpu-detect (hk, G1): NCCL_GIN_FAULT_POLICY of this rank (GDAKI_POLICY_*). The record grows:
+   uint32_t policyPad;  //   every rank of a job must run the same library (this all-gather always assumed it)
++  struct gdakiCtrlSetupAddr ctl;  // gin-control (phase 2a-2): this rank's control fields (EXPERIMENT.md 9.6)
+ };
++// The spare's transcript slot is this record (rsPeekGinOwn checks its length): 168 B more than the tcp build's 56, so a
++// transcript of another build or of an earlier phase does not replay here (the next entry is not the helper all-gather).
++static_assert(sizeof(struct gdakiTsAddr) == 56 + sizeof(struct gdakiCtrlSetupAddr) &&
++                  offsetof(struct gdakiTsAddr, ctl) == 56,
++              "the rdma setup record is the tcp build's 56 B and the control fields");
+ struct gdakiTsSetupState {
+   struct gdaki_context* g = nullptr;
+   struct gdakiRecHost* r = nullptr;
+@@ -23402,6 +23753,9 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+   // rank's UD endpoint and regions into `mine`, so r->ctrl (and its ring) exist before the exchange; freed by gdakiCtrlFree
+   // (gdakiRecFree) on every path
+   if (r != nullptr && r->ctrl == nullptr) r->ctrl = new gdakiCtrlState();
++  // gin-control (phase 2a-2-A): the ring and this rank's control fields (UD endpoint, outbox, path, active_mtu, fork,
++  // thresholds; notes_p2 finding 6: in `mine` before the exchange)
++  gdakiCtrlRingSetup(r, why == nullptr, rank, nranks, mine.salt, &mine.ctl);
+ #endif
+   ncclResult_t ret = cComm->allGather(cComm, &mine, all.data(), sizeof(mine));
+   if (ret != ncclSuccess) {
+@@ -23427,6 +23781,17 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+   uint64_t nonce = 0x6e6f6e6365ull;  // gin-harden: every rank's salt, in rank order: the same on every rank
+   for (int p = 0; p < nranks; p++) nonce = gdakiTsMix64(nonce ^ all[p].salt);
+   if (nonce == 0) nonce = 1;
++#if !NCCL_GIN_CTRL_TCP
++  // gin-control (phase 2a-2-A; EXPERIMENT.md 9.6 "준비 검사"): the agreement over the control fields of the ranks that
++  // have transparent recovery on; 42 and 44 turn it off on every rank here (notes_p2 finding 8)
++  {
++    std::vector<const struct gdakiCtrlSetupAddr*> ctl((size_t)nranks, nullptr);
++    for (int p = 0; p < nranks; p++)
++      if (all[p].magic == GDAKI_TS_MAGIC) ctl[(size_t)p] = &all[p].ctl;
++    const char* gcOff = gdakiCtrlRingAgree(r, rank, nranks, nonce, ctl.data(), rsRepSetup ? &rsRec.ctl : nullptr);
++    if (gcOff != nullptr && why == nullptr) why = gcOff;
++  }
++#endif
+   // gin-restore (rs, 9.10.8, K15): whether the restore can be enabled, decided by every rank from the same records, before
+   // any helper socket connects. Only "a rank that asks does not register strict" ends here (ncclInternalError: this GDAKI
+   // context is not created on any rank; NCCL may try another GIN backend); every other refusal leaves a fail-fast context.
+@@ -28839,6 +29204,9 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+   char sideWhy[128] = {0}, rsLbWhy[128] = {0}, resWhy[128] = {0};
+   char atomicWhy[160] = "not set up";  // gin-restore (dev, A1): the loopback atomic pair's verdict
+   char miCtxWhy[160] = {0}, miPoolWhy[160] = {0}, miConfWhy[160] = {0}, miPeersWhy[160] = {0};  // gin-mirror (host)
++#if !NCCL_GIN_CTRL_TCP
++  char gcWhy[4][GDAKI_CTRL_RESUME_WHY] = {};  // gin-control (phase 2a-2-A): 41-44
++#endif
+   uint64_t ctxSeq = 0;
+   void* ctxColl = nullptr;
+   {
+@@ -28874,6 +29242,9 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+     // exchange's mirror part (the bit, S, L)
+     gdakiMiResumeFacts(rFound != nullptr && rFound->ts != nullptr ? rFound : nullptr, c.spare >= 0 && rsReplaying(), &in,
+                        &mine, miCtxWhy, miPoolWhy, miConfWhy, miPeersWhy, sizeof(miCtxWhy));
++#if !NCCL_GIN_CTRL_TCP
++    gdakiCtrlResumeFacts(rFound, &in, gcWhy);  // gin-control (phase 2a-2-A): 41-44
++#endif
+   }
+   in.sideWhy = sideWhy;
+   in.rsLbWhy = rsLbWhy;
