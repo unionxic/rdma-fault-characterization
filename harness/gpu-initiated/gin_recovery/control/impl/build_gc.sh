@@ -165,7 +165,9 @@ setup() {
   fi
   echo "setup: agent_gc_$BR at $(MG rev-parse --short HEAD) ($(MG log -1 --format=%s)); base libnccl ln4 ${LN4_LIB:0:8} / ${LN4_LIBP:0:8}"
 }
-BASE_SUBJECT() { [ "$BR" = prep ] && echo "$LN4_SUBJECT" || PREP_SUBJECT; }
+# INT_BASE (BR=int only): the head commit's subject when a fix pass committed the integration first (the fix of
+# REVIEW_P12: "gin-control int (gc_layer_int.diff a7600a46)"); default the prep-fix commit
+BASE_SUBJECT() { [ "$BR" = prep ] && echo "$LN4_SUBJECT" || { [ "$BR" = int ] && [ -n "${INT_BASE:-}" ] && echo "$INT_BASE"; } || PREP_SUBJECT; }
 head_ok() {
   [ "$(MG log -1 --format=%s)" = "$(BASE_SUBJECT)" ] || { echo "unexpected head commit in agent_gc_$BR" >&2; exit 1; }
 }
@@ -179,6 +181,7 @@ tree() {  # the work package's diff on the working tree of the copy
   head_ok
   if MG diff --quiet HEAD -- src; then
     [ -f "$LAYER" ] || { echo "no changes in the tree and no impl/$(basename "$LAYER")" >&2; exit 1; }
+    [ "$BR" = int ] && [ -n "${INT_BASE:-}" ] && { echo "tree: INT_BASE is set and the tree is clean: nothing to apply" >&2; exit 1; }
     [ "$BR" = int ] && MG apply -R "$DI/gc_layer.diff"  # int's layer is on ln4: the head commit's prep-fix out first
     MG apply "$LAYER"
   fi

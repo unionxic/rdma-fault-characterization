@@ -64,7 +64,8 @@ EARLY, BADMAGIC, BADENV), framing(gc_unit_prep.cc 생성기의 기록 10 872개:
 ## 설계의 자유 안에서 정한 것
 
 1. `wr_id` = 종류 4비트 | 상대 12비트(rank, 뒤에 launcher) | 세대 32비트 | 자리 16비트. 옛 세대 완료는 `wr_id`만으로 가린다.
-2. CONNECTED와 PAIR_DONE의 운반: 봉투 kind PAIR + `gdakiCtrlPairBody`의 step DONE(3). 기록 QP에서는 그 세대의 첫 RC SEND(seq 1, credit
+2. (고침 2026-10-17, REVIEW_P12 nit 13: 통합 뒤 기록 QP의 CONNECTED는 헤더의 봉투 kind 6 `GDAKI_CTRL_K_CONNECTED`, 본문 0 B다. 아래는
+   단계 때의 결정이다.) CONNECTED와 PAIR_DONE의 운반: 봉투 kind PAIR + `gdakiCtrlPairBody`의 step DONE(3). 기록 QP에서는 그 세대의 첫 RC SEND(seq 1, credit
    하나를 씀), 생존 READ QP에서는 UD datagram. 헤더에 step이 없어 모형 영역에 `#define GDAKI_CTRL_PAIR_STEP_DONE 3u`를 두었다(헤더 요청 1이
    들어가면 이 줄을 지운다).
 3. credit: 받는 쪽 소비 수 = 기록을 받아 RECV를 다시 낸 수(처음 K개는 세지 않음). 봉투 `ackSeq`가 그 수를 싣는다. 32비트 수는 "보낸 수보다
@@ -184,7 +185,7 @@ EARLY, BADMAGIC, BADENV), framing(gc_unit_prep.cc 생성기의 기록 10 872개:
 -case "$BR" in prep | page | ring | launcher | int) ;; *) echo "unknown work package $BR" >&2; exit 2 ;; esac
 +BR=${BR:?BR=<prep|page|ring|launcher|int|p2>}
 +case "$BR" in prep | page | ring | launcher | int | p2) ;; *) echo "unknown work package $BR" >&2; exit 2 ;; esac
- SCR=${SCR:-/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad}
+ SCR=${SCR:-<세션 스크래치>}
 -D=$(cd "$(dirname "$0")" && pwd)          # this worktree's control/impl
 +# p2 (scratch copy of the worktree's build_gc.sh, phase 2a-1): the worktree's control/impl, fixed (this copy lives in
 +# agent_gc_p2/, not there)
@@ -193,7 +194,7 @@ EARLY, BADMAGIC, BADENV), framing(gc_unit_prep.cc 생성기의 기록 10 872개:
 +# gc_unit_prep.cc 1a468b99, gc_layer.diff f5061a31, launcher/launcher_msg.h 30a05c7f), copied by `git show HEAD:` into
 +# agent_gc_p2/pin/ (the worktree's working copies change under a parallel agent); only gc_unit_p2.cc and the outputs
 +# (gc_layer_p2.diff) are the worktree's
-+DI=${GCPIN:-/tmp/claude-1009/-home-unionxic-rdma-error/17110666-879d-434a-a9a9-301ede25b7df/scratchpad/agent_gc_p2/pin}
++DI=${GCPIN:-<세션 스크래치>/agent_gc_p2/pin}
  MID=$(cd "$D/../../mirror/impl" && pwd)   # gin-mirror's impl (read only)
  RSD=$(cd "$D/../../restore/impl" && pwd)  # gin-restore's impl (read only)
  CUDA=/usr/local/cuda-12.8

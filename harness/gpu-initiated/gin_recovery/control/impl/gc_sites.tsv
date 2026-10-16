@@ -162,6 +162,8 @@ state	12230	gdakiTsInitiate	record	kept	pe.gone after the ACK wait failed
 # ---- the phases' own regions (the integration, impl/gc_layer_int.diff): new code, no ln4 site, outside the counts above ----
 # "#use" lines: region (page = "gin-control (page)", phase 1; ring = "gin-control (ring)", phase 2a-1), call (or .fd), the
 # count of its uses in that region's code lines, what they are. build_gc.sh sites counts them in the tree as well.
-#use	page	gdakiCtrlChanUp	1	gdakiCtrlProbeSetupSend: record 55 PROBE_SETUP goes only on an up record channel (the two-argument seam; phase 1's placeholder is gone)
-#use	page	gdakiHoldSend	1	gdakiCtrlProbeSetupSend: record 55 PROBE_SETUP (the scaffold; it rides the record path, gdakiHoldSend's swapped send)
-#use	ring	.fd	1	gdakiCtrlRdmaChannelFd: the helper CQ's completion channel fd (not a peer socket; the seam gdakiCtrlPollFd of 2a-2)
+# (fix of REVIEW_P12: record 55's send moved from the page region into the ring region's liveness READ QP pairing link,
+# which carries the model's pairing bodies over the scaffold; the page region has no seam use any more)
+#use	ring	gdakiCtrlChanUp	1	gdakiCtrlProbePairingStep: record 55 PROBE_SETUP goes only on an up record channel (the two-argument seam)
+#use	ring	gdakiHoldSend	1	gdakiCtrlProbeScaffoldSend: record 55 PROBE_SETUP (the scaffold; it rides the record path, gdakiHoldSend's swapped send)
+#use	ring	.fd	2	gdakiCtrlRdmaChannelFd and gdakiCtrlRdmaCreate (O_NONBLOCK): the helper CQ's completion channel fd (not a peer socket; the seam gdakiCtrlPollFd of 2a-2)
