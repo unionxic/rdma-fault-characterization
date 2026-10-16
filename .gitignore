@@ -23,6 +23,7 @@
 !*.md
 # derived tables, experiment specs and small text records
 !*.csv
+!*.tsv
 !*.txt
 !*.json
 !*.spec

@@ -1,0 +1,127 @@
+# gc_sites.tsv - gin-control, the preparation stage: every call of gdakiTsSend, gdakiTsPump, gdakiHoldSend and every use
+# of a peer's helper socket fd in gin-mirror ln4's host file (md5 0ab4e636; line numbers are ln4's), with its class and
+# what the preparation stage did (impl/rs_ctrl_api.h). class: record (the rdma build carries it on the ring), rejoin (UD),
+# data (outbox, store), witness (stays TCP in both builds), backend (the TCP back end itself). action: swapped (gdakiCtrlSend
+# or gdakiCtrlPump), marked (gdakiCtrlFd), via-12987 (through gdakiHoldSend's swapped send), kept (ln4's text).
+# build_gc.sh sites checks the pe.fd rows against ln4 and the marked rows against the tree's gdakiCtrlFd uses.
+kind	ln4_line	function	class	action	note
+send	8141	gdakiTsSend	backend	kept	the definition (the TCP back end)
+send	8173	gdakiTsByeClose	witness	kept	BYE before a helper socket closes (rdma: the witness; phase 2 adds the ring BYE in gdakiTsCloseAll)
+send	8498	gdakiTsAnswerFail	witness	kept	FAIL to a declined peer's re-dial, probe or TCP REJOIN on an accepted socket
+send	8609	gdakiTsReconnectStep	witness	kept	the re-dial HELLO
+send	8711	gdakiTsReconnectStep	witness	kept	PROBE
+send	8798	gdakiTsReconnectStep	witness	kept	PROBE_ACK
+send	8843	gdakiTsReconnectStep	witness	kept	HELLO_ACK
+send	9571	gdakiRsRejoinAccept	rejoin	swapped	REJOIN_ACK on the parked REJOIN socket (rdma: UD)
+send	9632	gdakiRsSendToken	record	swapped	TOKEN
+send	9858	gdakiRsSendDone	record	swapped	DONE_RS
+send	10192	gdakiRsSpareRun	rejoin	swapped	the spare's REJOIN on its dial (rdma: UD)
+send	10295	gdakiRsSpareRun	record	swapped	READY on the accepted REJOIN connection (REVIEW2 lists it with the REJOIN path; design v2 5.4 puts READY on the ring)
+send	10315	gdakiRsSpareRun	record	swapped	RESTORED
+send	11533	gdakiTsDecline	record	swapped	FAIL to the declined peer
+send	11818	gdakiTsRespondPrepared	record	swapped	the responder's NACK
+send	11880	gdakiTsRespondPrepared	record	swapped	ACK
+send	12204	gdakiTsInitiate	record	swapped	REQ
+send	12267	gdakiTsInitiate	record	swapped	NACK 1 (collision, tie-break off)
+send	12307	gdakiTsInitiate	record	swapped	NACK 12 (scope refused)
+send	12362	gdakiTsInitiate	record	swapped	DONE
+send	12398	gdakiTsRespond	record	swapped	the responder's NACK (gdakiTsRespond)
+send	12987	gdakiHoldSend	record	swapped	gdakiHoldSend's one send: every hold, checkpoint, store and mirror record of its 15 callers
+send	14251	gdakiCkptSendFirst	data	swapped	DATA, a data connection's first record
+send	15643	gdakiCkptSpareDataFd	data	swapped	the spare's STATE answer on the survivor's data connection
+send	18130	gdakiTsSetup	witness	kept	the setup's HELLO on a new helper socket (rdma: the witness's setup; phase 2 pairs the record path over UD)
+send	22359	gdakiMiSetupEnd	record	swapped	MIRROR_SETUP
+pump	8259	gdakiTsPump	backend	kept	the definition (the TCP back end)
+pump	8267	gdakiTsRecv	backend	kept	gdakiTsRecv: the bare-socket helper (accept, REJOIN and setup sockets); gdakiMiSetupEnd's record wait through it is marked at 22372
+pump	11954	gdakiTsServeLower	record	swapped	a higher rank's REQ while waiting for an ACK (gdakiTsServeLower)
+pump	12029	gdakiTsRecvServing	record	swapped	the awaited peer's record (gdakiTsRecvServing)
+pump	13883	gdakiHoldReadSpare	record	swapped	the spare's records after its REJOIN (gdakiHoldReadSpare)
+pump	17775	gdakiTsMain	record	swapped	what follows a kept REQ (the helper loop)
+pump	17817	gdakiTsMain	record	swapped	the idle read (the helper loop)
+holdsend	5625	gdakiHoldBuddyOf	record	kept	the declaration in rs_hold_api.h v2's shared text (frozen gin-mirror text)
+holdsend	12980	gdakiHoldSend	record	kept	the definition: its send (12987) is swapped
+holdsend	13002	gdakiHoldBroadcast	record	via-12987	a record to `to` on its installed helper socket
+holdsend	13241	gdakiHoldStart	record	via-12987	a record to `to` on its installed helper socket
+holdsend	13534	gdakiHoldOnReq	record	via-12987	a record to `to` on its installed helper socket
+holdsend	14475	gdakiCkptReply	record	via-12987	a record to `to` on its installed helper socket
+holdsend	14592	gdakiCkptOnPause	record	via-12987	a record to `to` on its installed helper socket
+holdsend	14730	gdakiCkptOnReply	record	via-12987	a record to `to` on its installed helper socket
+holdsend	14820	gdakiCkptAbort	record	via-12987	a record to `to` on its installed helper socket
+holdsend	14890	gdakiCkptInitStep	record	via-12987	a record to `to` on its installed helper socket
+holdsend	14946	gdakiCkptInitStep	record	via-12987	a record to `to` on its installed helper socket
+holdsend	14989	gdakiCkptInitStep	record	via-12987	a record to `to` on its installed helper socket
+holdsend	15004	gdakiCkptInitStep	record	via-12987	a record to `to` on its installed helper socket
+holdsend	16917	gdakiStoreSendAck	record	via-12987	a record to `to` on its installed helper socket
+holdsend	17248	gdakiStoreUpStep	record	via-12987	a record to `to` on its installed helper socket
+holdsend	22881	gdakiMiInjectedStep	record	via-12987	a record to `to` on its installed helper socket
+holdsend	23027	gdakiMiPoll	record	via-12987	a record to `to` on its installed helper socket
+fd	8192	gdakiTsCloseAll	witness	kept	gdakiTsCloseAll: BYE and close of every helper socket
+fd	8193	gdakiTsCloseAll	witness	kept	
+fd	8194	gdakiTsCloseAll	witness	kept	
+fd	8195	gdakiTsCloseAll	witness	kept	
+fd	8260	gdakiTsPump	backend	kept	gdakiTsPump itself
+fd	8271	gdakiTsRecv	backend	kept	gdakiTsRecv's poll (bare sockets too)
+fd	8303	gdakiTsMakeUnknown	witness	kept	the reset close of an unknown peer's socket
+fd	8307	gdakiTsMakeUnknown	witness	kept	
+fd	8308	gdakiTsMakeUnknown	witness	kept	
+fd	8310	gdakiTsMakeUnknown	witness	kept	
+fd	8334	gdakiTsSocketLost	witness	kept	the close after a loss (death or left)
+fd	8335	gdakiTsSocketLost	witness	kept	
+fd	8336	gdakiTsSocketLost	witness	kept	
+fd	8396	gdakiTsPeerLiveness	witness	kept	the socket's liveness peek
+fd	8399	gdakiTsPeerLiveness	witness	kept	
+fd	8417	gdakiTsRoundPeekLost	witness	kept	the in-round FIN/reset peek (the judgement table takes the round cancel in rdma)
+fd	8423	gdakiTsRoundPeekLost	witness	kept	
+fd	8439	gdakiTsInstall	witness	kept	a re-dialled socket installed (the witness's reconnect)
+fd	8440	gdakiTsInstall	witness	kept	
+fd	9971	gdakiRsSpareGiveUp	witness	kept	the spare gives up: a plain close (FIN) of every socket
+fd	9972	gdakiRsSpareGiveUp	witness	kept	
+fd	10208	gdakiRsSpareRun	record	marked	the accepted REJOIN connection becomes the peer's record channel
+fd	11525	gdakiTsDecline	record	marked	the decline's FAIL needs the record channel
+fd	11533	gdakiTsDecline	record	marked	FAIL
+fd	11779	gdakiTsDeclineAfterCommit	witness	kept	after-commit loss: the socket's close cause judges death
+fd	11818	gdakiTsRespondPrepared	record	marked	NACK
+fd	11880	gdakiTsRespondPrepared	record	marked	ACK
+fd	11947	gdakiTsServeLower	record	marked	a higher rank's REQ to serve
+fd	11950	gdakiTsServeLower	record	marked	something arrived on the record channel
+fd	11957	gdakiTsServeLower	record	marked	the record read failed
+fd	12035	gdakiTsRecvServing	record	marked	waiting for the peer's record
+fd	12204	gdakiTsInitiate	record	marked	REQ
+fd	12267	gdakiTsInitiate	record	marked	NACK 1
+fd	12307	gdakiTsInitiate	record	marked	NACK 12
+fd	12362	gdakiTsInitiate	record	marked	DONE
+fd	12398	gdakiTsRespond	record	marked	NACK
+fd	12842	gdakiTsTestMute	witness	kept	the socket mute test switch (decision 8: it mutes the witness only)
+fd	12843	gdakiTsTestMute	witness	kept	
+fd	12864	gdakiTsTestMute	witness	kept	
+fd	12865	gdakiTsTestMute	witness	kept	
+fd	12984	gdakiHoldSend	record	marked	gdakiHoldSend: the record channel installed
+fd	12987	gdakiHoldSend	record	marked	gdakiHoldSend's send
+fd	13089	gdakiHoldFallback	record	marked	whether FALLBACK reached the spare
+fd	13366	gdakiHoldDeclineRevived	record	marked	the decline's FAIL to a revived rank
+fd	13883	gdakiHoldReadSpare	record	marked	the spare's records
+fd	13890	gdakiHoldReadSpare	record	marked	the record read failed
+fd	14330	gdakiCkptTestDie	witness	kept	a test switch: FIN first, then SIGKILL
+fd	17768	gdakiTsMain	record	marked	a kept REQ's connection is gone
+fd	17778	gdakiTsMain	record	marked	the record read failed
+fd	17804	gdakiTsMain	witness	kept	the helper's poll set (rdma: the witness for FIN and BYE; phase 2 adds the completion channel)
+fd	17805	gdakiTsMain	witness	kept	
+fd	17814	gdakiTsMain	record	marked	the idle record read
+fd	17827	gdakiTsMain	record	marked	
+fd	17829	gdakiTsMain	record	marked	the record read failed
+fd	18177	gdakiTsSetup	witness	kept	the setup's failure: BYE and close
+fd	22372	gdakiMiSetupEnd	record	marked	the MIRROR_SETUP wait (through gdakiTsRecv)
+fd-other	9632	gdakiRsSendToken	record	marked	TOKEN
+fd-other	9858	gdakiRsSendDone	record	marked	DONE_RS
+fd-other	10306	gdakiRsSpareRun	record	marked	RESTORED to an installed survivor
+fd-other	10315	gdakiRsSpareRun	record	marked	RESTORED
+fd-other	12039	gdakiTsRecvServing	record	marked	another peer's REQ while waiting
+fd-other	12041	gdakiTsRecvServing	record	marked	
+fd-other	13270	gdakiHoldOnDecline	record	marked	the buddy reachable for HOLDING
+fd-other	17181	gdakiStoreUpStep	record	marked	the buddy reachable for STORE_REQ
+fd-other	18131	gdakiTsSetup	witness	kept	the setup installs a connected socket
+fd-other	18149	gdakiTsSetup	witness	kept	the setup's accept
+fd-other	18153	gdakiTsSetup	witness	kept	
+fd-other	21697	gdakiTsStart	witness	kept	BYE at a failed start
+fd-other	22339	gdakiMiSetupEnd	record	marked	MIRROR_SETUP
+fd-other	22359	gdakiMiSetupEnd	record	marked	MIRROR_SETUP
