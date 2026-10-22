@@ -5,7 +5,7 @@ sections 3 and 7. CPU only, standard library only; reads files, writes nothing.
     check_cells_gc.py [--doc ../../EXPERIMENT.md]
 
 Checks (each failure is one line "FAIL ..."; exit 1 when any):
-  section 7   the table rows = cells_gc.json "rows" (in order; 25 since the 2026-10-22 trim, the count is not hard-coded); every row's gc*/gct* cell names and their builds and n (column
+  section 7   27 table rows = cells_gc.json "rows" (in order); every row's gc*/gct* cell names and their builds and n (column
               "빌드와 반복 수", parentheses dropped; forms "`@b` n", "`@b` 각 n", "`@b1` n1, `@b2` n2", "`@b` n1, n2" with two
               names) equal the cells of cells_gc.json; no cell in the json outside section 7
   section 3   every search key of the table's last column has at least one cell (a cell@build, the regression, the cost
@@ -16,10 +16,7 @@ Checks (each failure is one line "FAIL ..."; exit 1 when any):
               two lists agree (REVIEW_TEST fix 19): the gc cells a row's cells column names are exactly the json cells whose
               preds name that row (a row on "build:<b>" takes any cell of build b); a regression cell a row names has the row
               in regression.builds[b].preds, and every row of regression.builds[b].preds names a cell, a "mirror:" or a
-              "build:" key at that build; a regression build that lists "cells" (the 2026-10-22 trim: @gct runs only
-              mi4_kill3_ow) names gin-mirror regression cells only, and a row's regression cell at that build is one of them
-  build keys  every build key a cell, a pilot cell, the regression, the cost family, "builds" or a prediction's "build:"
-              names is in the document's build-key table (the header table "빌드 키"; a stray gctc fails)
+              "build:" key at that build
 """
 import argparse, csv, json, os, re, sys
 
@@ -42,24 +39,6 @@ def table_rows(sec):
 
 
 CELLNAME = re.compile(r"`(gct?4_[a-z0-9_]+)`")
-
-
-def build_key_table(text):
-    """the build keys of the first table whose header's first column is 빌드 키"""
-    keys, inside = set(), False
-    for line in text.splitlines():
-        if not line.startswith("|"):
-            if inside:
-                break
-            continue
-        cols = [c.strip() for c in line.strip().strip("|").split("|")]
-        if not inside:
-            inside = cols[0] == "빌드 키"
-            continue
-        m = re.fullmatch(r"`(\w+)`", cols[0])
-        if m:
-            keys.add(m.group(1))
-    return keys
 
 
 def sec7_cells(cols):
@@ -176,10 +155,6 @@ def main():
         src = os.path.join(HERE, reg["source"])
         mcells = json.load(open(src, encoding="utf-8"))
         mnames = {e["cell"] for h in reg["holds"] for e in mcells["holds"].get(h, [])}
-        bcells = {b: set(spec["cells"]) for b, spec in reg["builds"].items() if "cells" in spec}
-        for b, cs in sorted(bcells.items()):
-            for n in sorted(cs - mnames):
-                fail("regression.builds.%s.cells names %s, not a cell of the regression holds" % (b, n))
         mpreds = os.path.join(os.path.dirname(src), "predictions_mi.csv")
         mids = {r["id"] for r in csv.DictReader(open(mpreds, encoding="utf-8"))}
         for p in pr:
@@ -201,8 +176,6 @@ def main():
                     c, _, b = k.rpartition("@")
                     if not (c in mnames and b in reg["builds"]):
                         fail("prediction %s names cell %s, neither in cells_gc.json nor a regression cell" % (p["id"], k))
-                    elif b in bcells and c not in bcells[b]:
-                        fail("prediction %s names cell %s, but regression.builds.%s.cells leaves %s out" % (p["id"], k, b, c))
         # the two lists agree (REVIEW_TEST fix 19)
         for p in pr:
             ks = [x.strip() for x in p["cells"].split(";") if x.strip()]
@@ -230,41 +203,15 @@ def main():
                 if p is None:
                     continue
                 ks = [x.strip() for x in p["cells"].split(";") if x.strip()]
-                ok = any((k.endswith("@" + b) and k.split("@")[0] in bcells.get(b, mnames)) or (k.startswith("mirror:") and k.endswith("@" + b))
+                ok = any((k.endswith("@" + b) and k.split("@")[0] in mnames) or (k.startswith("mirror:") and k.endswith("@" + b))
                          or k == "build:" + b for k in ks)
                 if not ok:
                     fail("regression.builds.%s.preds names %s, whose cells column names no %s regression cell" % (b, pid, b))
     else:
         print("note: %s not found (predictions not checked)" % a.preds)
-    # ---- build keys (the document's build-key table)
-    bkeys = build_key_table(text)
-    if not bkeys:
-        fail("the document has no build-key table (header 빌드 키)")
-    used = {}
-    for k, c in list(cj["cells"].items()) + list(cj.get("pilot_cells", {}).items()):
-        used.setdefault(c["build"], set()).add(k)
-        if "@" in k:
-            used.setdefault(k.rpartition("@")[2], set()).add(k)
-    for b in cj["regression"]["builds"]:
-        used.setdefault(b, set()).add("regression.builds")
-    for f, spec in cj["cost"]["families"].items():
-        for arm, b in spec["lib"].items():
-            used.setdefault(b, set()).add("cost.%s.%s" % (f, arm))
-    for b, spec in cj["builds"].items():
-        used.setdefault(b, set()).add("builds")
-        used.setdefault(spec.get("lib", b), set()).add("builds.%s.lib" % b)
-    if os.path.exists(a.preds):
-        for p in csv.DictReader(open(a.preds, encoding="utf-8")):
-            for k in [x.strip() for x in p["cells"].split(";") if x.strip()]:
-                if k.startswith("build:"):
-                    used.setdefault(k[len("build:"):], set()).add("prediction " + p["id"])
-                elif "@" in k and not k.startswith(("mirror:", "cost:", "local:")):
-                    used.setdefault(k.rpartition("@")[2], set()).add("prediction " + p["id"])
-    for b in sorted(set(used) - bkeys):
-        fail("build key %s (used by %s) is not in the document's build-key table %s" % (b, ", ".join(sorted(used[b])[:4]), sorted(bkeys)))
     qa = [r["row"] for r in rows if r.get("qa_only")]
-    print("section 7 rows %d, cells %d, section 3 keys %d, build keys %d used of %d in the table, rows without a key (qa_only) %s: %s" %
-          (len(r7), len(cj["cells"]), len(keys), len(used), len(bkeys), qa or "none", "FAIL" if fails else "ok"))
+    print("section 7 rows %d, cells %d, section 3 keys %d, rows without a key (qa_only) %s: %s" %
+          (len(r7), len(cj["cells"]), len(keys), qa or "none", "FAIL" if fails else "ok"))
     sys.exit(1 if fails else 0)
 
 

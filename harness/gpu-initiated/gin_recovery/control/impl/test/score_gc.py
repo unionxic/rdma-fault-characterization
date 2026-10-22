@@ -91,14 +91,11 @@ def mirror_cells():
 
 
 def regression_entries(c, mc):
-    """{cell@build: mirror entry} of the regression holds at the regression builds (only builds.<b>.cells when listed)"""
+    """{cell@build: mirror entry} of the regression holds at the regression builds"""
     out = {}
-    for b, spec in c["regression"]["builds"].items():
-        keep = spec.get("cells")  # the 2026-10-22 trim: @gct plans only these cells
+    for b in c["regression"]["builds"]:
         for h in c["regression"]["holds"]:
             for e in mc["holds"].get(h, []):
-                if keep is not None and e["cell"] not in keep:
-                    continue
                 out["%s@%s" % (e["cell"], b)] = dict(e, build=b)
     return out
 

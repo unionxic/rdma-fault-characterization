@@ -37,9 +37,7 @@
 #                          one trial of every rdma cell, P2 of every tcp cell, P3 the noreport cell (its launcher with
 #                          NO_EXIT_REPORT), P4 9.9's unscored 12 000 ms stop (its own cell gc4_stop12000_pilot)
 #   RG-<gct|gc>-<G1|G3|T1|T2|G2|R1|R2|R3>   gin-mirror's hold of that name (../../../mirror/impl/test/cells_mi.json), every
-#                          cell with its name, env and n, at the named build (section 7 rows 23, 24); a build with
-#                          regression.builds.<b>.cells runs only those cells (2026-10-22: @gct only mi4_kill3_ow, i.e.
-#                          RG-gct-G1; any other RG-gct-* hold has no cell and stops)
+#                          cell with its name, env and n, at the named build (section 7 rows 23, 24)
 #   COST-probe-<rain|sunny>[-<metric>]       the probe cost family on the receiving node (3 arms x 3 metrics x 6 rounds)
 #   COSTPILOT-<rain|sunny> one round of the probe cost family
 # env: SUNNY_SSH (required), RS_SET (required), RS_QUERY_CAP (50000), RS_QUERY_CAP_REG (150000), RS_TRIAL_BOUND_S (60: the
@@ -219,14 +217,9 @@ if h.startswith("RG-"):
     _, b, mh = h.split("-", 2)
     if b not in c["regression"]["builds"] or mh not in c["regression"]["holds"]:
         sys.exit("unknown regression hold %s" % h)
-    keep = c["regression"]["builds"][b].get("cells")  # the 2026-10-22 trim: @gct runs only these cells
     for e in m["holds"][mh]:
-        if keep is not None and e["cell"] not in keep:
-            continue
         bound = 150 if e["cell"].startswith("mi4_train_") else 60
         out.append((e["cell"], b, e["kind"], e["n"], e.get("driver", ""), bound, {}, e.get("env", {})))
-    if not out:
-        sys.exit("regression hold %s: no cell of regression.builds.%s.cells in gin-mirror hold %s" % (h, b, mh))
 elif h in c["holds"]:
     for x in c["holds"][h]:
         e = c["cells"].get(x["key"]) or c["pilot_cells"][x["key"]]

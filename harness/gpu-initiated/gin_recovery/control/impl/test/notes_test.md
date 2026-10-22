@@ -23,15 +23,15 @@
 
 | 파일 | 하는 일 |
 |---|---|
-| `cells_gc.json` | 7절 25행(`rows`), cell@build 23개(`cells`: env, 주입, n, 대조 팔, 찾는 키, 시행 한도), 본 실행 hold C1–C3, C5–C11과 pilot hold P0–P4, 회귀(gin-mirror `cells_mi.json`의 비용 밖 hold 여덟을 `@gc`로, `@gct`는 `regression.builds.gct.cells`의 `mi4_kill3_ow` 하나), 비용 가족 probe의 한 쌍, 로컬 항목. 2026-10-22 셀 줄임 전에는 27행, 27개, C1–C11(아래 "셀 줄임" 절) |
-| `check_cells_gc.py` | 셀 파일과 예측 표를 EXPERIMENT.md 3, 7절에 맞춰 봄(행 수, 셀 이름, 빌드, n, 찾는 키마다 셀 하나 이상, 셀마다 예측 하나 이상, 회귀 빌드의 `cells` 목록) |
-| `predictions_gc.csv` | 3절의 28행(2026-10-22 셀 줄임 전 31행). 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
+| `cells_gc.json` | 7절 27행(`rows`), cell@build 27개(`cells`: env, 주입, n, 대조 팔, 찾는 키, 시행 한도), 본 실행 hold C1–C11과 pilot hold P0–P4, 회귀(gin-mirror `cells_mi.json`의 비용 밖 hold 여덟을 `@gct`, `@gc`로), 비용 가족 probe, 로컬 항목 |
+| `check_cells_gc.py` | 셀 파일과 예측 표를 EXPERIMENT.md 3, 7절에 맞춰 봄(행 수, 셀 이름, 빌드, n, 찾는 키마다 셀 하나 이상, 셀마다 예측 하나 이상) |
+| `predictions_gc.csv` | 3절의 31행. 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
 | `remote_gc.sh` | 원격 셸에 넘기는 명령을 한 번만 따옴표로 쌈(`rcmd`, `pcmd`, `sunny_sh`), 공용 읽기 질의(`MTU_Q`, `RNR_Q`, `GID_PROBE`)와 IPv4 가림 식 |
 | `launcher_gc.sh` | launcher 하나(start, info, mark, table, stop). 0700 소켓 디렉터리, `--tc`, 기록한 PID와 시작 시각에만 신호, 준비 실패 때 스스로 끔 |
 | `run_gc.sh` | 시행 하나. 9.9절 주입, launcher 확인과 등록 표 검사, 시행 표지, 노드 시계 차, ss 스냅숏, `active_mtu`, RNR 카운터, 끄는 차례 |
 | `gate_proc_gc.py` | `gate_fenced` 예측의 실제 프로세스 시험(CPU만): main thread가 먼저 끝나는 자식, 따로 잰 Z와 pidfd 시각 |
 | `cells_gc.sh`, `hold_gc.sh`, `chain_gc.sh` | 셀의 n번, hold 하나(8절의 STOP), hold 사슬(`cluster_run.sh` 안) |
-| `run_cost_gc.sh` | 비용 가족 probe의 실행 하나(팔 `probe-off`, `probe-on`은 `gcp`, `tcp`는 `gctp`; 2026-10-22부터 셀 파일은 `probe-off`, `probe-on`의 `lat4k`만 부름) |
+| `run_cost_gc.sh` | 비용 가족 probe의 실행 하나(팔 `probe-off`, `probe-on`은 `gcp`, `tcp`는 `gctp`) |
 | `rows_gc.py`, `score_gc.py` | 시행별 열, 채점. gin-mirror의 `rows_mi.py`와 `score.py`를 고치지 않고 불러 씀 |
 | `test_rows_gc.py` | 합성 로그 자체 시험 |
 | `deploy_gc.sh` | 두 노드의 새 묶음 `~/rs-bundle/<RS_SET>/`에 라이브러리 다섯, driver, launcher |
@@ -299,28 +299,3 @@ smoke와 pilot은 따로 셈), 배포 스크립트. launcher 범위는 5절대�
 하나(펜스로 끝난 대상의 데이터 같음 열) 고침. 자체 시험 62/62 통과(로컬 Python), check_cells_gc.py ok, 셸은 bash -n만. 클러스터 실행 없음 |
 impl/test/notes_test.md(고침) |
 ```
-
-## 셀 줄임 (2026-10-22, 사용자 결정 "실험을 위한 실험을 줄임")
-
-사전 등록 전이라 EXPERIMENT.md 3, 7, 8절과 이 폴더의 셀 파일, 예측 표를 그 자리에서 고쳤다(EXPERIMENT.md 12절 2026-10-22 셀 줄임 행). 코드(`hold_gc.sh`, `score_gc.py`,
-`run_cost_gc.sh`, `test_rows_gc.py` 등)는 고치지 않았다.
-
-| 무엇 | 줄임 전 | 줄임 뒤 |
-|---|---|---|
-| 7절 행(`rows`) | 27 | 25(옛 7행 `gct4_rstgap_live*`, 옛 10행 `gct4_fdhold_sock_kill3`을 빼고 번호를 다시 매김) |
-| cell@build(`cells`) | 27, 185 시행 | 23, 155 시행 |
-| 예측(`predictions_gc.csv`) | 31 | 28(`rst_judge_tcp`, `rstgap_live_tcp`, `finless_tcp_baseline`을 뺌) |
-| 빌드 키(`builds`) | `gc`, `gct`, `gctc`, `gcp`, `gctp` | `gc`, `gct`, `gcp`(`gctc`, `gctp`는 `builds_unused`에 까닭만) |
-| hold | C1–C11 | C4 없앰(tcp 대조 셀만 있었음), C5는 `gc4_fdhold_uverbs_kill3@gc`만, P2는 `gct4_mgmt_mute8@gct`만 |
-| tcp 회귀 | gin-mirror hold 여덟 전부 `@gct`(188 시행) | `regression.builds.gct.cells` = `mi4_kill3_ow`(10 시행); `regression_tcp`는 그 셀만 보는 gin-mirror 예측 일곱 |
-| 비용 | 팔 셋 × 지표 셋 × 6 × 노드 둘 = 108 실행 | `probe-off`, `probe-on` × `lat4k` × 6 × 노드 둘 = 24 실행; `cost_probe_lat4k`의 셀 열은 `cost:probe:probe-on:lat4k` |
-
-- 대조 팔을 바꾼 것: `gc4_rst_kill3@gc`와 `rst_judge_rdma`는 `gc4_kill3_ow@gc`, `gc4_rstgap_live300@gc`와 `rstgap_live_rdma`는 `gc4_none_ow@gc`, `gc4_fdhold_sock_kill3@gc`와
-  `finless_exit_report`는 `gc4_kill3_ow@gc`(앞의 대조 팔이 빠진 셀이었음; 대조 팔 열은 채점에 쓰이지 않음 `[소스: score_gc.py]`).
-- `check_cells_gc.py`: 행 수를 박아 둔 곳은 없었고(독스트링만 27), 회귀 빌드의 `cells` 목록 검사를 더함. 실행 결과 `section 7 rows 25, cells 23, section 3 keys 28 ... ok`.
-- `TODO(code)`: `hold_gc.sh`의 `json_hold`(`RG-` hold)와 `score_gc.py`의 `regression_entries`가 `regression.builds.<b>.cells`를 아직 읽지 않는다. 고치기 전에는 `RG-gct-G1`이 G1 일곱 셀을
-  모두 돌고 채점기가 `@gct`에 hold 여덟을 계획하므로 `RG-gct-*` hold를 돌리지 않는다. `hold_gc.sh`의 비용 hold 설명(팔 셋 × 지표 셋)은 주석만 옛것이고 실제 팔과 지표는 셀 파일에서 읽는다.
-- `test_rows_gc.py`(고치지 않음)는 줄임 뒤 62검사 가운데 1 실패다: 빠진 예측 `rstgap_live_tcp`의 판정을 "맞음"으로 기대하는 검사(예측 표에 그 행이 없어 판정 None).
-  나머지 61은 통과. 그 기대 하나를 지우거나 빠진 예측을 기대 목록에서 빼는 것이 남은 코드 몫이다(`TODO(code)`). 합성 시행의 `gctc` 셀 이름은 합성 자료라 그대로 둬도 된다 `[추론]`.
-- 고침(2026-10-22 뒤따름, 위 `TODO(code)` 둘을 닫음): `json_hold`와 `regression_entries`가 `regression.builds.<b>.cells`를 읽어 `RG-gct-G1`은 `mi4_kill3_ow`만 돌고 다른 `RG-gct-*`는 셀 없음으로 멈추며, 채점기는 `@gct`에 그 셀만 계획한다(`@gc`는 그대로).
-  `test_rows_gc.py`는 `rstgap_live_tcp` 기대를 지우고 이 계획 검사 하나를 더해 62검사 0 실패, `check_cells_gc.py`는 셀이 쓰는 빌드 키가 EXPERIMENT.md 빌드 키 표에 있는지 검사(잘못 넣은 `gctc`로 FAIL 확인) `[측정: 로컬 실행]`.
