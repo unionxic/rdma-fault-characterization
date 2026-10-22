@@ -23,6 +23,11 @@ trials carry run_gc.sh's measured offset unless they say otherwise.
   B3 mi4_kill2_kill3_ow@gc: the second kill before the re-arm: counted (scored), its re-image condition false
   B4 "(STOP_launcher: ...)" in the gap before trial_start (n16) and a launcher QP loss (n17): rows_gc.py --stops, the hold's
      tail check on a whole launcher log, and the launcher table read
+  I  the launcher daemon's warm spare (2026-10-22, one launcher per trial): gc4_kill3_ow@gc n18 (rank 3 killed twice, the
+     second restore by the daemon's next spare, incarnation 2), n19 (the same without that spare: spare_start_fail), n20 (a
+     stale launcher socket at the trial's start: nothing ran, launcher_stale and --stops la_stale_n); gc4_kill3_ow_spareabsent
+     n1 (the one expected respawn-cap line is not a STOP; the same line in a normal cell is); launcher_gc.sh stale on a
+     scratch root with a left socket
 """
 import argparse, os, shlex, shutil, subprocess, sys, tempfile
 
@@ -87,7 +92,7 @@ def trial(d, cell, k, *, build="gc", kill=3, subject=3, dead=None, witness="1", 
                 witness=witness, fence=fence, kill_rank="" if kill is None else kill,
                 subject_rank="" if subject is None else subject, inject=inject, inj_plan_rt="2.000000",
                 spare=int(spare), spare_wanted=int(spare), spare_ready=int(spare), spare_rank=spare_rank,
-                launcher_ready=1 if rdma else "", launcher_table="empty" if rdma else "-",
+                launcher_ready=1 if rdma else "", launcher_scope="trial" if rdma else "none",
                 launcher_before_rain="pid=10,start=100,alive=1,ready=1,log_bytes=0",
                 launcher_after_rain="pid=10,start=100,alive=1,ready=1,log_bytes=900",
                 launcher_before_sunny="pid=20,start=200,alive=1,ready=1,log_bytes=0",
@@ -191,6 +196,11 @@ def probe_ok(torn=0):
 
 
 EXITED3 = "rank 3 incarnation 0 EXITED (its pidfd is readable: the thread group ended)"
+# the launcher's warm-spare lines (../launcher/README_launcher.md, exact; the prefix "GIN/LA: node N: " is added by trial())
+SPAWN = "spare spawned (spawn %d, incarnation %d, pid %d, why %s, log /tmp/gc_rt_1_2.spare/spare_n%d_s%d_i%d_p77.log)"
+HELLO = "spawned spare said HELLO (spawn %d, incarnation %d, pid %d, hello pid %d, rank %d incarnation %d, after 310.5 ms)"
+CAP0 = ("spawned spare exited unused (spawn %d, incarnation %d, pid %d, after HELLO, signal 9): respawn cap 0 within 60000 ms "
+        "reached; no more spares (STOP_launcher)")
 
 
 def build(R):
@@ -301,7 +311,37 @@ def build(R):
           ln("sunny", 2.0, "GINRS killed rank=3 node=sunny pid=999 which=first")]
     trial(raw, "mi4_kill2_kill3_ow", 1, kill=2, subject=2, dead=[2, 3], lines=L, probe=probe_ok(), spare_rank=2, kout=ko,
           meta_extra={"kill2_rank": 3, "die_at": "200:10", "die2_at": "400:10", "spare2": 1, "spare2_wanted": 1,
-                      "spare2_ready": 1, "hold": "RG-gc-G1"})
+                      "spare2_ready": 1, "hold": "RG-gc-G1"},
+          la_pre={"rain": [(0.01, SPAWN % (1, 1, 1200, "start", 0, 1, 1)), (0.02, HELLO % (1, 1, 1200, 1200, 2, 1))],
+                  "sunny": [(0.01, SPAWN % (1, 1, 1201, "start", 1, 1, 1)), (0.02, HELLO % (1, 1, 1201, 1201, 3, 1))]})
+    # I: the launcher daemon's warm spare. n18: rank 3 killed twice by recorded PID; the second restore by the daemon's next
+    # spare (spawned after the first activation, incarnation 2); n19: the same, no incarnation 2 spawned
+    for k, second in ((18, True), (19, False)):
+        L = restore_lines(3, 2.0306, "FIN+NORESP")
+        for r in (0, 1, 2):
+            L[r].append((2.6, "GIN/RS: rank %d: rank 3 armed at its stable checkpoint 140" % r))
+        ko = [ln("sunny", 2.0, "GINRS killed rank=3 node=sunny pid=999 which=first"),
+              ln("sunny", 3.0, "GINRS killed rank=3 node=sunny pid=1301 which=second")]
+        la = [(2.2, "spawned spare activated (spawn 1, incarnation 1, pid 1301, by DONE): next spare incarnation 2")]
+        if second:
+            la += [(2.2, SPAWN % (2, 2, 1302, "activated", 1, 2, 2)), (2.5, HELLO % (2, 2, 1302, 1302, 3, 2))]
+        trial(raw, "gc4_kill3_ow", k, lines=L, probe=probe_ok(), kout=ko, la={"sunny": la},
+              la_pre={"sunny": [(0.01, SPAWN % (1, 1, 1301, "start", 1, 1, 1)), (0.02, HELLO % (1, 1, 1301, 1301, 3, 1))]},
+              meta_extra={"kill2_rank": 3, "kill2_kind": "pid_after_armed", "armed2_rt": "2.600000", "spare2": int(second),
+                          "spare2_wanted": 1, "spare2_ready": int(second), "launcher_spare_sunny": 3})
+    # n20: a stale launcher socket on sunny at the trial's start (run_gc.sh exit 7: only the early meta)
+    os.makedirs(raw, exist_ok=True)
+    with open(os.path.join(raw, "gc4_kill3_ow_gc_n20_meta.txt"), "w") as f:
+        f.write(kvline(dict(cell="gc4_kill3_ow", lib="gc", ctrl="rdma", driver="gin_mi", trial="n20", hold="C1", subject_rank=3,
+                            inject="kill_traffic", launcher_scope="trial", launcher_ready=0, launcher_stale="sunny:1+0",
+                            launcher_before_rain="-", launcher_before_sunny="-", runner="gcr")))
+    # the spare-absent cell: the runner killed the armed spare, the launcher (--spare-respawn-max 0) did not replace it
+    L = restore_lines(3, 2.0306, "FIN+NORESP")
+    trial(raw, "gc4_kill3_ow_spareabsent", 1, inject="kill_spare_then_rank", lines=L, probe=probe_ok(),
+          kout=[ln("sunny", 2.005, "GINRS killed rank=3 node=sunny pid=999 which=after_spare gap_ms=5.010")],
+          la={"sunny": [(2.001, CAP0 % (1, 1, 1301))]},
+          la_pre={"sunny": [(0.01, SPAWN % (1, 1, 1301, "start", 1, 1, 1)), (0.02, HELLO % (1, 1, 1301, 1301, 3, 1))]},
+          meta_extra={"kill_kind": "spare_then_rank", "launcher_respawn_max": 0, "spare_gap_ms": 5})
     # H: the CPU programs: the simulated gate_fenced.cc lines and real-process lines without a gate program
     os.makedirs(os.path.join(R, "local"), exist_ok=True)
     with open(os.path.join(R, "local", "gate_fenced.log"), "w") as f:
@@ -355,6 +395,29 @@ def shell_checks(R):
     t2 = subprocess.run(["bash", os.path.join(HERE, "launcher_gc.sh"), "table", "sunny", ld, "h1"], stdout=subprocess.PIPE,
                         env=lenv).stdout.decode().strip()
     check(t1 == "table open=1 spare3.1" and t2 == "table open=0", "B4: the launcher table read (%r, %r)" % (t1, t2))
+    # I: launcher_gc.sh stale on a scratch root (rain = this machine, no ssh; never the real /tmp): a left socket counts
+    import socket
+    root = os.path.join(R, "stale_root")
+    os.makedirs(os.path.join(root, "gc_la.abc123"))
+    e0 = subprocess.run(["bash", os.path.join(HERE, "launcher_gc.sh"), "stale", "rain", ld, "h2"], stdout=subprocess.PIPE,
+                        env=dict(lenv, LA_STALE_ROOT=root)).stdout.decode().strip()
+    so = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    so.bind(os.path.join(root, "gc_la.abc123", "launcher.sock"))
+    e1 = subprocess.run(["bash", os.path.join(HERE, "launcher_gc.sh"), "stale", "rain", ld, "h2"], stdout=subprocess.PIPE,
+                        env=dict(lenv, LA_STALE_ROOT=root)).stdout.decode().strip()
+    # start: a refused --spare-env ends before anything (exit 2); a stale socket: nothing started, exit 3 and its line
+    st1 = subprocess.run(["bash", os.path.join(HERE, "launcher_gc.sh"), "start", "rain", ld, "h3", "--spare-cmd", "bash x",
+                          "--spare-env", "NCCL_GIN_RESTORE_RECORD=/x"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         env=dict(lenv, LA_STALE_ROOT=root))
+    st2 = subprocess.run(["bash", os.path.join(HERE, "launcher_gc.sh"), "start", "rain", ld, "h4", "--spare-cmd", "bash x",
+                          "--spare-env", "RS_STEPS=600", "--spare-log", root], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         env=dict(lenv, LA_STALE_ROOT=root))
+    so.close()
+    check(e0.startswith("stale sock=0 ") and e1.startswith("stale sock=1 "), "I: the stale socket check (%r, %r)" % (e0, e1))
+    check(st1.returncode == 2 and st2.returncode == 3 and st2.stdout.decode().startswith("stale sock=1 ")
+          and not os.path.exists(os.path.join(ld, "la_h4_rain.rec")),
+          "I: start refuses a record variable (rc %d) and starts nothing on a stale socket (rc %d, %r)" % (
+              st1.returncode, st2.returncode, st2.stdout.decode().strip()))
 
 
 def main():
@@ -428,6 +491,32 @@ def main():
     check("la_stop_n=1 " in sD + " ", "B4: '(STOP_launcher)' counted (%s)" % sD)
     check("la_qp_err_n=1" in s17 and "la_stop_n=0" in s17, "B4: the launcher QP loss of rank 1 before 'is leaving' counted (%s)" % s17)
     check("la_stop_n=0 la_qp_err_n=0" in sA, "B4: a clean trial (%s)" % sA)
+    # I: the daemon's warm spare, the expected cap line, the stale socket
+    I18, I19 = rows["gc4_kill3_ow_gc_n18"], rows["gc4_kill3_ow_gc_n19"]
+    check(I18["spare2_inc_want"] == 2 and I18["spare2_inc_got"] == 2 and I18["spare2_daemon_ok"] == 1 and
+          I18["la_spare_spawn_n"] == 2 and I18["spare_hello_after_ms"] == 310.5 and I18["la_stop_n"] == 0,
+          "I: the same rank's second restore by the daemon's next spare, incarnation 2 (%r %r %r %r)" % (
+              I18["spare2_inc_want"], I18["spare2_inc_got"], I18["spare2_daemon_ok"], I18["la_spare_spawn_n"]))
+    check(I19["spare2_daemon_ok"] == 0 and I19["spare2_inc_got"] == 1, "I: no incarnation 2 spawned: not ok (%r %r)" % (
+        I19["spare2_daemon_ok"], I19["spare2_inc_got"]))
+    M0 = rows["mi4_kill2_kill3_ow_gc_n1"]
+    check(M0["spare2_inc_want"] == 1 and M0["spare2_daemon_ok"] == 1, "I: another rank's second spare is its node's own warm spare (%r %r)" % (
+        M0["spare2_inc_want"], M0["spare2_daemon_ok"]))
+    SA = rows["gc4_kill3_ow_spareabsent_gc_n1"]
+    sSA, s20 = stops("gc4_kill3_ow_spareabsent_gc_n1"), stops("gc4_kill3_ow_gc_n20")
+    check(SA["la_stop_n"] == 0 and SA["la_spare_cap_expected_n"] == 1 and "la_stop_n=0 " in sSA,
+          "I: the spare-absent cell's one cap line is expected, not a STOP (%r, %s)" % (SA["la_stop_n"], sSA))
+    check("la_not_up=1 la_stale_n=1" in s20 and rows["gc4_kill3_ow_gc_n20"]["launcher_stale"] == "sunny:1+0",
+          "I: the stale socket trial's --stops (%s)" % s20)
+    neg = tempfile.mkdtemp(prefix="gc_selftest_neg_")
+    try:  # the same cap line in a cell that does not expect it is a STOP
+        trial(neg, "gc4_kill3_ow", 21, lines=restore_lines(3, 2.0306, "FIN+NORESP"), probe=probe_ok(),
+              la={"sunny": [(2.001, CAP0 % (1, 1, 1301))]})
+        sN = subprocess.run([sys.executable, os.path.join(HERE, "rows_gc.py"), "--stops", os.path.join(neg, "gc4_kill3_ow_gc_n21")],
+                            stdout=subprocess.PIPE).stdout.decode().strip()
+        check("la_stop_n=1 " in sN + " ", "I: the cap line outside the spare-absent cells is a STOP (%s)" % sN)
+    finally:
+        shutil.rmtree(neg, ignore_errors=True)
     # H: the gate rows
     gate = [r for r in rows.values() if r["key"] == "local:gate_fenced"]
     sim = [r for r in gate if r["gate_real"] == 0]
@@ -443,6 +532,10 @@ def main():
     check(st["gc4_kill3_ow_gc_n11"] == "launcher_not_ready", "E: launcher not ready excluded (%s)" % st["gc4_kill3_ow_gc_n11"])
     check(st["gc4_kill3_ow_gc_n12"] == "kill_before_ckpt", "E: the kill before a stable checkpoint excluded (%s)" % st["gc4_kill3_ow_gc_n12"])
     check(st["gc4_kill3_ow_gc_n17"] == "launcher_changed", "B4: the QP loss outside the test-switch cells excluded (%s)" % st["gc4_kill3_ow_gc_n17"])
+    check(st["gc4_kill3_ow_gc_n20"] == "launcher_stale" and st["gc4_kill3_ow_gc_n19"] == "spare_start_fail"
+          and st["gc4_kill3_ow_gc_n18"] == "surplus",
+          "I: stale socket excluded, a second death without the daemon's spare excluded, with it counted (%s, %s, %s)" % (
+              st["gc4_kill3_ow_gc_n20"], st["gc4_kill3_ow_gc_n19"], st["gc4_kill3_ow_gc_n18"]))
     smoke = [r for r in srows if r["sub"].startswith("smoke")]
     check(len(smoke) == 1 and smoke[0]["status"] == "smoke", "E: the smoke trial apart")
     check(st["gc4_kill3_ow_gc_n14"] == "surplus" and st["gc4_kill3_ow_gc_n13"] == "surplus",
@@ -455,15 +548,21 @@ def main():
     for pid, want in (("kill_judge_rdma", "자료 부족"), ("finless_exit_report", "맞음"), ("finless_read_fail", "맞음"),
                       ("none_probe_clean", "맞음"), ("gate_fenced", "자료 부족"), ("no_tcp_control", "맞음"),
                       ("long_hold_lane", "맞음"), ("stall_fence_restore", "자료 부족"), ("restore_time_rdma", "자료 부족"),
-                      ("regression_tcp", "자료 부족"), ("cost_probe_lat4k", "자료 부족"), ("freeze_fence_restore", "맞음"),
-                      ("rstgap_live_tcp", "맞음")):
+                      ("regression_tcp", "자료 부족"), ("cost_probe_lat4k", "자료 부족"), ("freeze_fence_restore", "맞음")):
         check(verd.get(pid) == want, "verdict %s: %s (want %s)" % (pid, verd.get(pid), want))
+    # the 2026-10-22 trim: regression.builds.gct.cells limits the tcp regression plan; @gc keeps every hold's cells
+    reg = score_gc.regression_entries(score_gc.load_cells(), score_gc.mirror_cells())
+    rg_gct = sorted(k for k in reg if k.endswith("@gct"))
+    check(rg_gct == ["mi4_kill3_ow@gct"] and len([k for k in reg if k.endswith("@gc")]) > 1,
+          "trim: the tcp regression plans only mi4_kill3_ow@gct (%s)" % rg_gct)
     # fix 11: a key below its plan is short, never "틀림": nine good trials of gc4_kill3_ow@gc (one dropped)
     verd2, _ = score_gc.score(R, planned_override=dict(PO, **{"gc4_fdhold_sock_kill3@gc": 11}))
     check(verd2.get("finless_exit_report") == "자료 부족", "fix 11: 10 of 11 planned is short (%s)" % verd2.get("finless_exit_report"))
     md = open(os.path.join(R, "SCORE.md"), encoding="utf-8").read()
     check("`STOP_launcher`(1줄)" in md and "FENCE_NAK 포함): 2줄" in md, "SCORE.md lists the STOP file and both STOP_launcher lines")
     check("smoke: 1" in md, "SCORE.md counts the smoke trial apart")
+    check("한도 줄(실행기가 끝낸 예비 프로세스를 launcher가 다시 띄우지 않음; STOP으로 세지 않음): 1줄" in md and
+          "gc4_kill3_ow_gc_n20(낡은 소켓이나 프로세스 sunny:1+0)" in md, "SCORE.md lists the expected cap line and the stale trial")
     check(os.path.exists(os.path.join(R, "trials_scored.csv")), "trials_scored.csv written")
     shell_checks(R)
     print("self-test: %d checks, %d failed%s" % (CHECKS[0], CHECKS[1], "" if a.keep else " (folder %s removed)" % R))

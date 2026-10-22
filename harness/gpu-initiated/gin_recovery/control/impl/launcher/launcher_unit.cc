@@ -18,6 +18,15 @@
 // ACCEPTED a blip of the buddy's QP does not SIGKILL the revived process; the nonce-free INFO (same launcher fields as
 // HELLO_ACK, no entry or page slot, a stray fd refused and closed, REGISTER after it on the same connection, kind 10
 // still unknown).
+//
+// The warm spare (user decision 2026-10-17): the launcher itself forks and execs the spare. The spare is this binary run
+// as "launcher_unit --fake-spare [--fork]": it reports what it inherited (session, fds, stdio, environment) over a
+// control socket of the test (glctl.sock), takes one plan byte (h: HELLO, then the kid commands above; n: no HELLO;
+// e: HELLO then exit; q: exit at once) and then obeys the same single-byte commands as a forked kid. Scenes: spawn at
+// start and HELLO within the bound (also through a wrapper that forks, as `timeout` does); activation -> the next spare
+// with the incarnation + 1 (by DONE, and by the re-registration), the page's spare word through the cycle; an unused
+// spare's exit -> respawn, the cap, an exec failure; HELLO timeout -> one line, one retry, then no more; no signal to a
+// process the launcher did not spawn or register; the options.
 #include <cerrno>
 #include <cinttypes>
 #include <cstdio>
@@ -2227,6 +2236,720 @@ static void test_shutdown_kills_unused_spare() {
   reap(s);
 }
 
+// ------------------------------------------------------------------------------------------------ the warm spare
+
+// What a spawned fake spare saw at its start (sent over the test's control socket).
+struct FakeRep {
+  int32_t pid, sid, ppid;
+  int32_t nfds;  // open fds at its start (the /proc/self/fd directory's own fd not counted)
+  int32_t stdinNull, stdoutFile, stderrSame, sigpipeDfl, leak, passed;
+  uint32_t inc;
+  int32_t rank;
+  char sock[108];
+  char node[16];
+  char out[256];  // fd 1's path
+};
+static const char* kCtl = "glctl.sock";
+static const char* kSpareLogs = "sparelogs";
+
+static int fake_spare_main(int argc, char** argv) {
+  FakeRep r;
+  memset(&r, 0, sizeof(r));
+  DIR* d = opendir("/proc/self/fd");
+  int n = 0;
+  for (struct dirent* e; d && (e = readdir(d));)
+    if (e->d_name[0] != '.') n++;
+  if (d) closedir(d);
+  r.nfds = n - 1;
+  if (argc > 2 && strcmp(argv[2], "--fork") == 0) {  // a wrapper that forks and waits, as `timeout` does
+    const pid_t p = fork();
+    if (p > 0) {
+      int st = 0;
+      while (waitpid(p, &st, 0) < 0 && errno == EINTR) {
+      }
+      _exit(WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st));
+    }
+  }
+  r.pid = getpid();
+  r.sid = getsid(0);
+  r.ppid = getppid();
+  char b[256];
+  ssize_t k = readlink("/proc/self/fd/0", b, sizeof(b) - 1);
+  r.stdinNull = k > 0 && (b[k] = 0, strcmp(b, "/dev/null") == 0);
+  k = readlink("/proc/self/fd/1", r.out, sizeof(r.out) - 1);
+  if (k > 0) r.out[k] = 0;
+  struct stat s1, s2;
+  r.stdoutFile = fstat(1, &s1) == 0 && S_ISREG(s1.st_mode);
+  r.stderrSame = fstat(2, &s2) == 0 && r.stdoutFile && s1.st_ino == s2.st_ino && s1.st_dev == s2.st_dev;
+  struct sigaction old;
+  r.sigpipeDfl = sigaction(SIGPIPE, nullptr, &old) == 0 && old.sa_handler == SIG_DFL;
+  r.leak = getenv("NCCL_GIN_UNIT_LEAK") != nullptr || getenv("GIN_UNIT_LEAK") != nullptr;
+  r.passed = getenv("NCCL_GIN_UNIT_PASSED") && strcmp(getenv("NCCL_GIN_UNIT_PASSED"), "yes") == 0;
+  const char* v = getenv("NCCL_GIN_RESTORE_SPARE_INC");
+  r.inc = v ? (uint32_t)strtoul(v, nullptr, 10) : 0;
+  v = getenv("NCCL_GIN_RESTORE_SPARE");
+  r.rank = v ? atoi(v) : -1;
+  v = getenv(GL_SOCK_ENV);
+  snprintf(r.sock, sizeof(r.sock), "%s", v ? v : "");
+  v = getenv(GL_NODE_ENV);
+  snprintf(r.node, sizeof(r.node), "%s", v ? v : "");
+  v = getenv("GLU_NONCE");
+  const uint64_t nonce = v ? strtoull(v, nullptr, 16) : 0;
+  dprintf(1, "fake spare pid %d incarnation %u: started\n", (int)r.pid, r.inc);
+  const int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  struct sockaddr_un a;
+  memset(&a, 0, sizeof(a));
+  a.sun_family = AF_UNIX;
+  snprintf(a.sun_path, sizeof(a.sun_path), "%s", getenv("GLU_CTL") ? getenv("GLU_CTL") : kCtl);
+  if (s < 0 || connect(s, (struct sockaddr*)&a, sizeof(a)) != 0) _exit(20);
+  if (write(s, &r, sizeof(r)) != (ssize_t)sizeof(r)) _exit(21);
+  char plan = 0;
+  if (read(s, &plan, 1) != 1) _exit(22);
+  switch (plan) {
+    case 'h': kid_main(s, s, K_SPARE, r.rank, r.inc, nonce); break;
+    case 'n': kid_main(s, s, K_NONE, r.rank, r.inc, nonce); break;
+    case 'e': {
+      const int u = kid_hello(K_SPARE, r.rank, r.inc, nonce);
+      alignas(64) static uint8_t buf[sizeof(glUnixMsg)];
+      const ssize_t m = recv(u, buf, sizeof(buf), 0);
+      kid_forward(s, buf, m > 0 ? (uint32_t)m : 0);
+      _exit(0);
+    }
+    default: _exit(0);
+  }
+  _exit(0);
+}
+
+struct SpareHold {  // the spare's argv and env for one launcher (the core keeps the pointers)
+  std::vector<std::string> a, e;
+  std::vector<char*> av, ev;
+};
+static std::string gSelf;
+static std::vector<pid_t> gSpawned;  // every process the launchers of these scenes spawned
+static void spare_hold(SpareHold& h, std::vector<std::string> args, std::vector<std::string> env = {}) {
+  h.a = args;
+  char nb[64];
+  snprintf(nb, sizeof(nb), "GLU_NONCE=%" PRIx64, N1);
+  h.e = {"NCCL_GIN_RESTORE_SPARE=3", nb, std::string("GLU_CTL=") + kCtl, "NCCL_GIN_UNIT_PASSED=yes"};
+  for (auto& x : env) h.e.push_back(x);
+  h.av.clear();
+  h.ev.clear();
+  for (auto& x : h.a) h.av.push_back((char*)x.c_str());
+  h.av.push_back(nullptr);
+  for (auto& x : h.e) h.ev.push_back((char*)x.c_str());
+  h.ev.push_back(nullptr);
+}
+static int gCtl = -1;
+static void ctl_open() {
+  unlink(kCtl);
+  gCtl = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+  struct sockaddr_un a;
+  memset(&a, 0, sizeof(a));
+  a.sun_family = AF_UNIX;
+  snprintf(a.sun_path, sizeof(a.sun_path), "%s", kCtl);
+  CHECK(gCtl >= 0 && bind(gCtl, (struct sockaddr*)&a, sizeof(a)) == 0 && listen(gCtl, 16) == 0);
+}
+static void ctl_close() {
+  close(gCtl);
+  gCtl = -1;
+  unlink(kCtl);
+}
+static L mk_launcher_spare(uint32_t node, SpareHold& h, int helloMs, int respawnMax, FILE* log) {
+  L l;
+  l.t = new TT();
+  l.t->tp.ops = &tt_ops;
+  l.t->tp.impl = l.t;
+  glConfig cfg;
+  memset(&cfg, 0, sizeof(cfg));
+  cfg.node = node;
+  cfg.qkey = 0x1234567;
+  cfg.uid = getuid();
+  cfg.graceMs = 200;
+  cfg.log = log;
+  cfg.onSignal = on_signal;
+  cfg.spareArgv = h.av.data();
+  cfg.spareEnv = h.ev.data();
+  cfg.spareLogDir = kSpareLogs;
+  cfg.spareHelloMs = helloMs;
+  cfg.spareRespawnMax = respawnMax;
+  l.c = gl_core_new(&cfg, &l.t->tp);
+  char why[256] = {0};
+  const int rc = gl_core_listen(l.c, kSock, why, sizeof(why));
+  if (rc != 0) fprintf(stderr, "listen: %s\n", why);
+  CHECK(rc == 0);
+  return l;
+}
+struct Spawned {
+  Kid k;
+  FakeRep r;
+  bool ok = false;
+};
+// The next spawned fake spare: its report, then its plan byte. The launcher runs meanwhile.
+static Spawned next_spawn(L& l, char plan, int ms = 5000) {
+  Spawned s;
+  memset(&s.r, 0, sizeof(s.r));
+  const double end = now_ms() + ms;
+  int fd = -1;
+  while (now_ms() < end && fd < 0) {
+    gl_core_step(l.c, 1);
+    fd = accept4(gCtl, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
+  }
+  if (fd < 0) return s;
+  size_t got = 0;
+  while (now_ms() < end && got < sizeof(s.r)) {
+    gl_core_step(l.c, 1);
+    const ssize_t r = read(fd, (char*)&s.r + got, sizeof(s.r) - got);
+    if (r > 0) got += (size_t)r;
+    else if (r == 0) break;
+  }
+  if (got != sizeof(s.r) || write(fd, &plan, 1) != 1) {
+    close(fd);
+    return s;
+  }
+  s.k.pid = s.r.pid;
+  s.k.cmd = s.k.res = fd;
+  s.ok = true;
+  gSpawned.push_back(s.r.pid);
+  return s;
+}
+static void spawned_close(Spawned& s) {
+  if (s.k.cmd >= 0) close(s.k.cmd);
+  s.k.cmd = s.k.res = -1;
+}
+static bool no_spawn_within(L& l, int ms) {  // no fake spare connects within ms
+  const double end = now_ms() + ms;
+  while (now_ms() < end) {
+    gl_core_step(l.c, 1);
+    const int fd = accept4(gCtl, nullptr, nullptr, SOCK_CLOEXEC);
+    if (fd >= 0) {
+      close(fd);
+      return false;
+    }
+  }
+  return true;
+}
+static bool kidv(L& l, unsigned seq, glKidView* v) {
+  glKidView a[16];
+  const int n = gl_core_kids(l.c, a, 16);
+  for (int i = 0; i < n && i < 16; i++)
+    if (a[i].seq == seq) return *v = a[i], true;
+  return false;
+}
+static std::string slurp(const char* f) {
+  std::string s;
+  FILE* x = fopen(f, "r");
+  if (!x) return s;
+  char b[4096];
+  size_t n;
+  while ((n = fread(b, 1, sizeof(b), x)) > 0) s.append(b, n);
+  fclose(x);
+  return s;
+}
+static int count_str(const std::string& s, const std::string& sub) {
+  int n = 0;
+  for (size_t p = s.find(sub); p != std::string::npos; p = s.find(sub, p + 1)) n++;
+  return n;
+}
+static int page_slot_of(L& l, uint64_t nonce, int32_t rank) {
+  const glPage* p = gl_core_page(l.c);
+  for (int i = 0; i < GL_PAGE_REGS; i++)
+    if (p->reg[i].nonce == nonce && gl_page_word_rank(p->reg[i].reg) == rank) return i;
+  return -1;
+}
+static uint64_t spare_word(L& l) {
+  const int i = page_slot_of(l, N1, 3);
+  return i < 0 ? 0 : gl_core_page(l.c)->reg[i].spare;
+}
+static uint64_t reg_word(L& l) {
+  const int i = page_slot_of(l, N1, 3);
+  return i < 0 ? 0 : gl_core_page(l.c)->reg[i].reg;
+}
+// gl_path_exists (unchanged) from rank 3's page words, as its rank side would see them with the rest in place.
+static int path_from_page(L& l, uint32_t inc) {
+  glArmView v;
+  memset(&v, 0, sizeof(v));
+  v.inc = inc;
+  v.regAcked = 1;
+  v.regAckInc = inc;
+  v.ownPaired = 1;
+  v.notedReg = gl_page_word_state(reg_word(l));
+  v.notedInc = gl_page_word_inc(reg_word(l));
+  v.notedSpare = gl_page_word_state(spare_word(l));
+  v.notedSpareInc = gl_page_word_inc(spare_word(l));
+  v.allPaired = 1;
+  return gl_path_exists(&v);
+}
+static bool signals_allowed() {  // every signal any launcher of this binary sent: a forked kid or a spawned process
+  for (const SigRec& r : gSignals) {
+    bool ours = false;
+    for (pid_t p : gKids) ours |= p == r.pid;
+    for (pid_t p : gSpawned) ours |= p == r.pid;
+    if (!ours) return false;
+  }
+  return true;
+}
+static std::string log_name(const char* dir, pid_t p, unsigned seq, uint32_t inc, uint32_t node, int sfx = 0) {
+  char b[256], x[8] = "";
+  if (sfx) snprintf(x, sizeof(x), "_%d", sfx);
+  snprintf(b, sizeof(b), "%s/spare_n%u_s%u_i%u_p%d%s.log", dir, node, seq, inc, (int)p, x);
+  return b;
+}
+
+static void test_spare_start() {
+  for (int wrap = 0; wrap < 2; wrap++) {
+    SpareHold h;
+    if (wrap) spare_hold(h, {gSelf, "--fake-spare", "--fork"});
+    else spare_hold(h, {gSelf, "--fake-spare"});
+    ctl_open();
+    const char* lname = wrap ? "spare_start_wrap.log" : "spare_start.log";
+    FILE* lf = fopen(lname, "w");
+    const double t0 = now_ms();
+    L l = mk_launcher_spare(20, h, 3000, 3, lf);
+    glKidView kv;
+    // spawned at the start (the listen), before any rank or spare came
+    CHECK(gl_core_kids(l.c, &kv, 1) == 1 && kv.seq == 1 && kv.state == GL_KID_WAIT && kv.inc == 1 && kv.held);
+    CHECK(gl_core_stats(l.c)->nSpareSpawned == 1);
+    const pid_t P = kv.pid;
+    Spawned s = next_spawn(l, 'h');
+    CHECK(s.ok);
+    if (!s.ok) {
+      rm_launcher(l);
+      fclose(lf);
+      ctl_close();
+      continue;
+    }
+    // what it inherited: a new session, stdin /dev/null, stdout and stderr its own log file, no other fd, SIGPIPE default,
+    // none of the launcher's own NCCL_ and GIN_ variables, the --spare-env ones, the launcher's socket, node, incarnation
+    if (!wrap) CHECK(s.r.pid == P && s.r.sid == P);
+    else CHECK(s.r.pid != P && s.r.sid == P && s.r.ppid == P);
+    CHECK(s.r.nfds == 3);
+    CHECK(s.r.stdinNull && s.r.stdoutFile && s.r.stderrSame && s.r.sigpipeDfl);
+    CHECK(!s.r.leak && s.r.passed && s.r.inc == 1 && s.r.rank == 3);
+    CHECK(strcmp(s.r.sock, kSock) == 0 && strcmp(s.r.node, "20") == 0);
+    const std::string want = log_name(kSpareLogs, getpid(), 1, 1, 20, wrap);  // the second launcher: the name exists
+    CHECK(strstr(s.r.out, want.c_str()) != nullptr);
+    std::vector<uint8_t> ack = kid_res(l, s.k);
+    CHECK(ack_of(ack).status == GL_UA_OK);
+    CHECK(pump_until(l, [&] { return kidv(l, 1, &kv) && kv.state == GL_KID_WARM; }));
+    CHECK(kv.helloPid == s.r.pid && gl_core_stats(l.c)->nSpawnedHello == 1);
+    CHECK(now_ms() - t0 < 3000);  // HELLO within the bound
+    const std::string lg = slurp(lname);
+    char line[256];
+    snprintf(line, sizeof(line), "spare spawned (spawn 1, incarnation 1, pid %d, why start, log %s)", (int)P,
+             want.c_str());
+    CHECK(count_str(lg, line) == 1);
+    snprintf(line, sizeof(line), "spawned spare said HELLO (spawn 1, incarnation 1, pid %d, hello pid %d, rank 3 "
+                                 "incarnation 1, after ", (int)P, (int)s.r.pid);
+    CHECK(count_str(lg, line) == 1);
+    CHECK(count_str(lg, "warm spare on (command ") == 1);
+    char fl[64];
+    snprintf(fl, sizeof(fl), "fake spare pid %d incarnation 1: started", (int)s.r.pid);
+    CHECK(count_str(slurp(want.c_str()), fl) == 1);  // its own output is in its own log file
+    // the page: the spare word is (REPLAYING, 3, 1) from its HELLO on
+    CHECK(spare_word(l) == gl_page_word(GL_SP_REPLAYING, 3, 1));
+    // SPAWN from a buddy: still REFUSED "spawn not built", nothing spawned
+    const int hb = pair_rank(l, 2, 0, N1);
+    rc_in(l, hb, mk(GL_K_SPAWN, 3, 2, N1, 2));
+    pump(l, 20);
+    const glMsg* r = last_kind(l, hb, GL_K_REFUSED);
+    CHECK(r && r->h.sub == GL_K_SPAWN && r->h.reason == GL_R_SPAWN_NOT_BUILT);
+    CHECK(gl_core_stats(l.c)->nSpareSpawned == 1 && gl_core_kids(l.c, &kv, 1) == 1);
+    // shutdown: the unused warm spare is SIGKILLed through its HELLO's pidfd and reaped
+    const size_t s0 = gSignals.size();
+    gl_core_shutdown(l.c);
+    CHECK(gSignals.size() == s0 + 1 && gSignals.back().pid == s.r.pid && gSignals.back().sig == SIGKILL);
+    CHECK(gl_core_kids(l.c, &kv, 1) == 0 && proc_state(P) == '-');
+    snprintf(line, sizeof(line), "shutdown: spawned process (spawn 1, incarnation 1, pid %d) %s", (int)P,
+             wrap ? "exit 137" : "signal 9");
+    CHECK(count_str(slurp(lname), line) == 1);
+    gl_core_free(l.c);
+    delete l.t;
+    spawned_close(s);
+    fclose(lf);
+    ctl_close();
+  }
+}
+
+static void test_spare_activation_cycle() {
+  SpareHold h;
+  spare_hold(h, {gSelf, "--fake-spare"});
+  ctl_open();
+  FILE* lf = fopen("spare_activation.log", "w");
+  for (unsigned i = 0; i < sizeof(gBlob); i++) gBlob[i] = (uint8_t)(i * 5 + 1);
+  L l = mk_launcher_spare(21, h, 3000, 3, lf);
+  l.t->mem[77] = {gBlob, (uint32_t)sizeof(gBlob)};
+  const size_t sig0 = gSignals.size();
+  glKidView kv;
+  CHECK(spare_word(l) == 0);  // before the HELLO: no slot, no spare word
+  Spawned s1 = next_spawn(l, 'h');
+  CHECK(s1.ok && s1.r.inc == 1);
+  CHECK(ack_of(kid_res(l, s1.k)).status == GL_UA_OK);
+  CHECK(pump_until(l, [&] { return kidv(l, 1, &kv) && kv.state == GL_KID_WARM; }));
+  CHECK(spare_word(l) == gl_page_word(GL_SP_REPLAYING, 3, 1));
+  // the original rank registers after its spare (the launcher started first)
+  const int hb = pair_rank(l, 2, 0, N1);
+  Kid o = kid_registered(l, K_REGISTER, 3, 0, N1);
+  CHECK(reg_word(l) == gl_page_word(GL_RS_ALIVE, 3, 0) && path_from_page(l, 0) == 1);
+  kid_cmd(o, 'x');
+  uint32_t how;
+  CHECK(pump_until(l, [&] { return gl_core_tomb(l.c, N1, 3, 0, &how); }));
+  kid_cmd(s1.k, 'R');
+  CHECK(pump_until(l, [&] { return spare_word(l) == gl_page_word(GL_SP_READY, 3, 1); }));
+  rc_in(l, hb, mk_activate(3, 1, N1, 64));
+  kid_cmd(s1.k, 'h');
+  std::vector<uint8_t> got = kid_res(l, s1.k);
+  CHECK(as_u(got) && as_u(got)->h.kind == GL_U_ACT_BYTES);
+  CHECK(spare_word(l) == gl_page_word(GL_SP_OFFERED, 3, 1));
+  kid_cmd(s1.k, 'a');
+  CHECK(pump_until(l, [&] { return count_kind(l, hb, GL_K_ACT_ANSWER) == 1; }));
+  CHECK(answer_kind(last_kind(l, hb, GL_K_ACT_ANSWER)) == GL_RS_ACT_ACCEPTED);
+  CHECK(spare_word(l) == gl_page_word(GL_SP_ACCEPTED, 3, 1));
+  pump(l, 20);
+  CHECK(kidv(l, 1, &kv) && kv.accepted && kv.state == GL_KID_WARM && gl_core_stats(l.c)->nSpareSpawned == 1);  // not yet
+  kid_cmd(s1.k, 'E');
+  CHECK(pump_until(l, [&] { return count_kind(l, hb, GL_K_FETCH_EP) == 1; }));
+  CHECK(gl_core_stats(l.c)->nSpareSpawned == 1);
+  // the activation's DONE: the next spare, incarnation 2
+  kid_cmd(s1.k, 'D');
+  Spawned s2 = next_spawn(l, 'h');
+  CHECK(count_kind(l, hb, GL_K_FETCH_DONE) == 1);
+  CHECK(s2.ok && s2.r.inc == 2 && s2.r.pid != s1.r.pid && s2.r.sid == s2.r.pid);
+  CHECK(kidv(l, 1, &kv) && kv.state == GL_KID_USED);
+  CHECK(gl_core_stats(l.c)->nSpareActivated == 1);
+  std::string lg = slurp("spare_activation.log");
+  char line[256];
+  snprintf(line, sizeof(line), "spawned spare activated (spawn 1, incarnation 1, pid %d, by DONE): next spare "
+                               "incarnation 2", (int)s1.r.pid);
+  CHECK(count_str(lg, line) == 1);
+  snprintf(line, sizeof(line), "spare spawned (spawn 2, incarnation 2, pid %d, why activated, log ", (int)s2.r.pid);
+  CHECK(count_str(lg, line) == 1);
+  CHECK(ack_of(kid_res(l, s2.k)).status == GL_UA_OK);
+  CHECK(pump_until(l, [&] { return kidv(l, 2, &kv) && kv.state == GL_KID_WARM; }));
+  CHECK(spare_word(l) == gl_page_word(GL_SP_REPLAYING, 3, 2));  // the newest spare's word
+  // the revived process re-registers: incarnation 1 is the rank, the spare word is incarnation 2 -> the path exists
+  kid_cmd(s1.k, 'G');
+  CHECK(ack_of(kid_res(l, s1.k)).status == GL_UA_OK);
+  CHECK(reg_word(l) == gl_page_word(GL_RS_ALIVE, 3, 1) && spare_word(l) == gl_page_word(GL_SP_REPLAYING, 3, 2));
+  CHECK(path_from_page(l, 1) == 1 && path_from_page(l, 0) == 0);
+  CHECK(gl_core_stats(l.c)->nSpareSpawned == 2);  // the re-registration after DONE spawns nothing more
+  // the second death on the same node: the revived rank (a spawned process) ends -> EXITED of incarnation 1, reaped, no
+  // respawn; its spare (incarnation 2) is there
+  kid_cmd(s1.k, 'x');
+  CHECK(pump_until(l, [&] { return gl_core_tomb(l.c, N1, 3, 1, &how); }));
+  const glMsg* e = last_kind(l, hb, GL_K_EXITED);
+  CHECK(how == GL_K_EXITED && e && e->h.incarnation == 1);
+  CHECK(pump_until(l, [&] { return !kidv(l, 1, &kv); }));
+  snprintf(line, sizeof(line), "spawned process ended (spawn 1, incarnation 1, pid %d, exit 0)", (int)s1.r.pid);
+  CHECK(count_str(slurp("spare_activation.log"), line) == 1);
+  CHECK(gl_core_stats(l.c)->nSpareSpawned == 2 && proc_state(s1.r.pid) == '-');
+  // the second activation, ended by the re-registration (no DONE relayed): the next spare, incarnation 3
+  kid_cmd(s2.k, 'R');
+  CHECK(pump_until(l, [&] { return spare_word(l) == gl_page_word(GL_SP_READY, 3, 2); }));
+  rc_in(l, hb, mk_activate(3, 2, N1, 64));
+  kid_cmd(s2.k, 'h');
+  got = kid_res(l, s2.k);
+  CHECK(as_u(got) && as_u(got)->h.kind == GL_U_ACT_BYTES);
+  kid_cmd(s2.k, 'a');
+  CHECK(pump_until(l, [&] { return count_kind(l, hb, GL_K_ACT_ANSWER) == 2; }));
+  kid_cmd(s2.k, 'G');
+  CHECK(ack_of(kid_res(l, s2.k)).status == GL_UA_OK);
+  Spawned s3 = next_spawn(l, 'h');
+  CHECK(s3.ok && s3.r.inc == 3);
+  snprintf(line, sizeof(line), "spawned spare activated (spawn 2, incarnation 2, pid %d, by re-registration): next "
+                               "spare incarnation 3", (int)s2.r.pid);
+  CHECK(count_str(slurp("spare_activation.log"), line) == 1);
+  CHECK(ack_of(kid_res(l, s3.k)).status == GL_UA_OK);
+  CHECK(pump_until(l, [&] { return spare_word(l) == gl_page_word(GL_SP_REPLAYING, 3, 3); }));
+  CHECK(reg_word(l) == gl_page_word(GL_RS_ALIVE, 3, 2) && path_from_page(l, 2) == 1);
+  CHECK(gSignals.size() == sig0);  // the whole cycle: no signal
+  kid_cmd(s2.k, 'x');
+  CHECK(pump_until(l, [&] { return gl_core_tomb(l.c, N1, 3, 2, &how) && !kidv(l, 2, &kv); }));
+  rm_launcher(l);  // shutdown: s3, unused, SIGKILLed through its pidfd and reaped
+  CHECK(gSignals.size() == sig0 + 1 && gSignals.back().pid == s3.r.pid && proc_state(s3.r.pid) == '-');
+  CHECK(signals_allowed());
+  reap(o);
+  spawned_close(s1);
+  spawned_close(s2);
+  spawned_close(s3);
+  fclose(lf);
+  ctl_close();
+}
+
+static void test_spare_respawn() {
+  // (1) a spare that says HELLO and exits unused: respawned with the same incarnation, at most 3 times in 60 s
+  {
+    SpareHold h;
+    spare_hold(h, {gSelf, "--fake-spare"});
+    ctl_open();
+    FILE* lf = fopen("spare_respawn.log", "w");
+    const size_t sig0 = gSignals.size();
+    L l = mk_launcher_spare(22, h, 3000, 3, lf);
+    std::vector<pid_t> ps;
+    for (int i = 0; i < 4; i++) {
+      Spawned s = next_spawn(l, 'e');
+      CHECK(s.ok && s.r.inc == 1);
+      CHECK(ack_of(kid_res(l, s.k)).status == GL_UA_OK);
+      ps.push_back(s.r.pid);
+      spawned_close(s);
+    }
+    CHECK(pump_until(l, [&] { return gl_core_stats(l.c)->spareGaveUp == 1; }));
+    CHECK(no_spawn_within(l, 300));
+    const glStats* st = gl_core_stats(l.c);
+    CHECK(st->nSpareSpawned == 4 && st->nSpareRespawned == 3 && st->nSpareReaped == 4);
+    const std::string lg = slurp("spare_respawn.log");
+    char line[320];
+    for (int i = 0; i < 3; i++) {
+      snprintf(line, sizeof(line), "spawned spare exited unused (spawn %d, incarnation 1, pid %d, after HELLO, exit 0): "
+                                   "respawn %d of 3 within 60000 ms", i + 1, (int)ps[i], i + 1);
+      CHECK(count_str(lg, line) == 1);
+    }
+    snprintf(line, sizeof(line), "spawned spare exited unused (spawn 4, incarnation 1, pid %d, after HELLO, exit 0): "
+                                 "respawn cap 3 within 60000 ms reached; no more spares (STOP_launcher)", (int)ps[3]);
+    CHECK(count_str(lg, line) == 1);
+    CHECK(count_str(lg, "why respawn") == 3);
+    CHECK(spare_word(l) == gl_page_word(GL_SP_FAILED, 3, 1) && path_from_page(l, 0) == 0);
+    CHECK(gSignals.size() == sig0);  // they ended by themselves
+    for (pid_t p : ps) CHECK(proc_state(p) == '-');
+    rm_launcher(l);
+    fclose(lf);
+    ctl_close();
+  }
+  // (2) a spawn that ends before its HELLO (q), then an exec failure: both are respawns; cap 1
+  {
+    SpareHold h;
+    spare_hold(h, {gSelf, "--fake-spare"});
+    ctl_open();
+    FILE* lf = fopen("spare_respawn_q.log", "w");
+    L l = mk_launcher_spare(23, h, 3000, 1, lf);
+    Spawned s = next_spawn(l, 'q');
+    CHECK(s.ok);
+    spawned_close(s);
+    Spawned t = next_spawn(l, 'q');
+    CHECK(t.ok);
+    spawned_close(t);
+    CHECK(pump_until(l, [&] { return gl_core_stats(l.c)->spareGaveUp == 1; }));
+    const std::string lg = slurp("spare_respawn_q.log");
+    char line[320];
+    snprintf(line, sizeof(line), "(spawn 1, incarnation 1, pid %d, before HELLO, exit 0): respawn 1 of 1", (int)s.r.pid);
+    CHECK(count_str(lg, line) == 1);
+    snprintf(line, sizeof(line), "(spawn 2, incarnation 1, pid %d, before HELLO, exit 0): respawn cap 1", (int)t.r.pid);
+    CHECK(count_str(lg, line) == 1);
+    rm_launcher(l);
+    fclose(lf);
+    ctl_close();
+    SpareHold x;
+    spare_hold(x, {"./no-such-spare-binary"});
+    FILE* lx = fopen("spare_exec_fail.log", "w");
+    L m = mk_launcher_spare(24, x, 3000, 1, lx);
+    CHECK(pump_until(m, [&] { return gl_core_stats(m.c)->spareGaveUp == 1; }));
+    const glStats* st = gl_core_stats(m.c);
+    CHECK(st->nSpareSpawned == 2 && st->nSpareExecFailed == 2 && st->nSpareReaped == 2);
+    const std::string lgx = slurp("spare_exec_fail.log");
+    CHECK(count_str(lgx, "spare exec failed (spawn 1, incarnation 1, pid ") == 1 &&
+          count_str(lgx, "No such file or directory") == 2);
+    CHECK(count_str(lgx, "before HELLO, exit 127): respawn 1 of 1") == 1 &&
+          count_str(lgx, "before HELLO, exit 127): respawn cap 1") == 1);
+    rm_launcher(m);
+    fclose(lx);
+  }
+  // (3) the spare ends after ACCEPTED, before DONE and its re-registration: it was the rank (EXITED of its incarnation),
+  // so it is no unused spare; the next one is its incarnation + 1 (a respawn of the same incarnation would be stale)
+  {
+    SpareHold h;
+    spare_hold(h, {gSelf, "--fake-spare"});
+    ctl_open();
+    FILE* lf = fopen("spare_accepted_exit.log", "w");
+    L l = mk_launcher_spare(29, h, 3000, 3, lf);
+    l.t->mem[77] = {gBlob, (uint32_t)sizeof(gBlob)};
+    Spawned s = next_spawn(l, 'h');
+    CHECK(s.ok && ack_of(kid_res(l, s.k)).status == GL_UA_OK);
+    const int hb = pair_rank(l, 2, 0, N1);
+    Kid o = kid_registered(l, K_REGISTER, 3, 0, N1);
+    kid_cmd(o, 'x');
+    uint32_t how;
+    CHECK(pump_until(l, [&] { return gl_core_tomb(l.c, N1, 3, 0, &how); }));
+    kid_cmd(s.k, 'R');
+    CHECK(pump_until(l, [&] { return spare_word(l) == gl_page_word(GL_SP_READY, 3, 1); }));
+    rc_in(l, hb, mk_activate(3, 1, N1, 64));
+    kid_cmd(s.k, 'h');
+    std::vector<uint8_t> got = kid_res(l, s.k);
+    CHECK(as_u(got) && as_u(got)->h.kind == GL_U_ACT_BYTES);
+    kid_cmd(s.k, 'a');
+    CHECK(pump_until(l, [&] { return count_kind(l, hb, GL_K_ACT_ANSWER) == 1; }));
+    kid_cmd(s.k, 'x');
+    Spawned t = next_spawn(l, 'h');
+    CHECK(t.ok && t.r.inc == 2);
+    CHECK(gl_core_tomb(l.c, N1, 3, 1, &how) && how == GL_K_EXITED);
+    const std::string lg = slurp("spare_accepted_exit.log");
+    char line[320];
+    snprintf(line, sizeof(line), "spawned spare ended after ACCEPTED (spawn 1, incarnation 1, pid %d, exit 0)",
+             (int)s.r.pid);
+    CHECK(count_str(lg, line) == 1);
+    snprintf(line, sizeof(line), "spawned spare activated (spawn 1, incarnation 1, pid %d, by exit after ACCEPTED): "
+                                 "next spare incarnation 2", (int)s.r.pid);
+    CHECK(count_str(lg, line) == 1);
+    CHECK(gl_core_stats(l.c)->nSpareRespawned == 0 && gl_core_stats(l.c)->nSpareActivated == 1);
+    CHECK(ack_of(kid_res(l, t.k)).status == GL_UA_OK);  // incarnation 2 is not stale after the tomb of 1
+    rm_launcher(l);
+    reap(o);
+    spawned_close(s);
+    spawned_close(t);
+    fclose(lf);
+    ctl_close();
+  }
+}
+
+static void test_spare_hello_timeout() {
+  // (1) no HELLO within the bound: SIGKILL through the spawn's pidfd, one STOP line, one retry that says HELLO
+  {
+    SpareHold h;
+    spare_hold(h, {gSelf, "--fake-spare"});
+    ctl_open();
+    FILE* lf = fopen("spare_hello_timeout.log", "w");
+    const size_t sig0 = gSignals.size();
+    const double t0 = now_ms();
+    L l = mk_launcher_spare(25, h, 500, 3, lf);
+    Spawned s = next_spawn(l, 'n');
+    CHECK(s.ok);
+    Spawned t = next_spawn(l, 'h');
+    const double t1 = now_ms();
+    CHECK(t.ok && t.r.inc == 1 && t.r.pid != s.r.pid);
+    CHECK(t1 - t0 >= 500 && t1 - t0 < 3000);
+    CHECK(gSignals.size() == sig0 + 1 && gSignals[sig0].pid == s.r.pid && gSignals[sig0].sig == SIGKILL &&
+          gSignals[sig0].rc == 0);
+    CHECK(ack_of(kid_res(l, t.k)).status == GL_UA_OK);
+    glKidView kv;
+    CHECK(pump_until(l, [&] { return kidv(l, 2, &kv) && kv.state == GL_KID_WARM; }));
+    CHECK(kv.retry == 1 && kv.helloPid == t.r.pid);
+    CHECK(pump_until(l, [&] { return !kidv(l, 1, &kv); }));
+    const std::string lg = slurp("spare_hello_timeout.log");
+    char line[320];
+    snprintf(line, sizeof(line), "spawned spare said no HELLO within 500 ms (spawn 1, incarnation 1, pid %d): SIGKILL "
+                                 "through its pidfd; one retry (STOP_launcher)", (int)s.r.pid);
+    CHECK(count_str(lg, line) == 1 && count_str(lg, "STOP_launcher") == 1);
+    snprintf(line, sizeof(line), "spare spawned (spawn 2, incarnation 1, pid %d, why hello_retry, log ", (int)t.r.pid);
+    CHECK(count_str(lg, line) == 1);
+    snprintf(line, sizeof(line), "spawned process ended (spawn 1, incarnation 1, pid %d, signal 9)", (int)s.r.pid);
+    CHECK(count_str(slurp("spare_hello_timeout.log"), line) == 1);
+    CHECK(gl_core_stats(l.c)->nSpareHelloTimeout == 1 && gl_core_stats(l.c)->spareGaveUp == 0);
+    rm_launcher(l);
+    spawned_close(s);
+    spawned_close(t);
+    fclose(lf);
+    ctl_close();
+  }
+  // (2) the retry says no HELLO either: a second line, no more spares
+  {
+    SpareHold h;
+    spare_hold(h, {gSelf, "--fake-spare"});
+    ctl_open();
+    FILE* lf = fopen("spare_hello_timeout2.log", "w");
+    L l = mk_launcher_spare(26, h, 500, 3, lf);
+    Spawned s = next_spawn(l, 'n');
+    Spawned t = next_spawn(l, 'n');
+    CHECK(s.ok && t.ok);
+    CHECK(pump_until(l, [&] { return gl_core_stats(l.c)->spareGaveUp == 1; }));
+    CHECK(no_spawn_within(l, 700));
+    CHECK(gl_core_stats(l.c)->nSpareSpawned == 2 && gl_core_stats(l.c)->nSpareHelloTimeout == 2);
+    const std::string lg = slurp("spare_hello_timeout2.log");
+    char line[320];
+    snprintf(line, sizeof(line), "spawned spare said no HELLO within 500 ms (spawn 2, incarnation 1, pid %d, the retry): "
+                                 "SIGKILL through its pidfd; no more spares (STOP_launcher)", (int)t.r.pid);
+    CHECK(count_str(lg, line) == 1 && count_str(lg, "STOP_launcher") == 2);
+    CHECK(spare_word(l) == 0);  // no HELLO ever: no slot
+    rm_launcher(l);
+    spawned_close(s);
+    spawned_close(t);
+    fclose(lf);
+    ctl_close();
+  }
+}
+
+static void test_spare_no_foreign_signal() {
+  SpareHold h;
+  spare_hold(h, {gSelf, "--fake-spare"});
+  ctl_open();
+  FILE* lf = fopen("spare_foreign.log", "w");
+  L l = mk_launcher_spare(27, h, 500, 3, lf);
+  const size_t sig0 = gSignals.size();
+  const int hb = pair_rank(l, 2, 0, N1);
+  // a process that only connects, and a spare started by someone else for the same (rank, incarnation) as the spawn
+  Kid stranger = spawn_kid(K_NONE, 5, 0, N1);
+  gKids.push_back(stranger.pid);
+  Kid foreign = kid_registered(l, K_SPARE, 3, 1, N1);
+  glKidView kv;
+  CHECK(kidv(l, 1, &kv) && kv.state == GL_KID_WAIT);  // the foreign HELLO is not taken as the spawned one's
+  Spawned s = next_spawn(l, 'n');
+  Spawned t = next_spawn(l, 'n');
+  CHECK(s.ok && t.ok);
+  CHECK(pump_until(l, [&] { return gl_core_stats(l.c)->spareGaveUp == 1; }));
+  CHECK(gSignals.size() == sig0 + 2 && gSignals[sig0].pid == s.r.pid && gSignals[sig0 + 1].pid == t.r.pid);
+  CHECK(proc_state(stranger.pid) != 'Z' && proc_state(stranger.pid) != '-');
+  CHECK(proc_state(foreign.pid) != 'Z' && proc_state(foreign.pid) != '-');
+  // FENCE of the spare incarnation (not accepted) and of a rank nobody registered: FENCE_NAK, nothing signalled
+  rc_in(l, hb, mk(GL_K_FENCE, 3, 1, N1, 2));
+  rc_in(l, hb, mk(GL_K_FENCE, 5, 0, N1, 2));
+  pump(l, 20);
+  CHECK(count_kind(l, hb, GL_K_FENCE_NAK) == 2 && gSignals.size() == sig0 + 2);
+  CHECK(signals_allowed());
+  // shutdown: the foreign spare is an unused registered spare (SIGKILL through the pidfd it gave); the stranger is not
+  rm_launcher(l);
+  CHECK(gSignals.size() == sig0 + 3 && gSignals.back().pid == foreign.pid);
+  CHECK(proc_state(stranger.pid) != 'Z' && proc_state(stranger.pid) != '-');
+  CHECK(signals_allowed());
+  reap(stranger);
+  reap(foreign);
+  spawned_close(s);
+  spawned_close(t);
+  fclose(lf);
+  ctl_close();
+}
+
+static void test_spare_opts() {
+  glSpareOpts o;
+  gl_spare_opts_init(&o);
+  char why[256];
+  glConfig cfg;
+  memset(&cfg, 0, sizeof(cfg));
+  CHECK(gl_spare_opt(&o, "--node", "1", why, sizeof(why)) == 0);
+  CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == 0 && cfg.spareArgv == nullptr);  // nothing given: off
+  CHECK(gl_spare_opt(&o, "--spare-cmd", "  stdbuf -oL   -eL /bin/x 3 a\tb ", why, sizeof(why)) == 1);
+  CHECK(o.argc == 7 && strcmp(o.argv[0], "stdbuf") == 0 && strcmp(o.argv[3], "/bin/x") == 0 &&
+        strcmp(o.argv[6], "b") == 0 && o.argv[7] == nullptr);
+  CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == -1 && strstr(why, "--spare-log"));  // no log dir
+  CHECK(gl_spare_opt(&o, "--spare-log", "no-such-dir", why, sizeof(why)) == 1);
+  CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == -1);
+  CHECK(gl_spare_opt(&o, "--spare-log", kSpareLogs, why, sizeof(why)) == 1);
+  CHECK(gl_spare_opt(&o, "--spare-env", "NCCL_GIN_RESTORE_SPARE_INC=2", why, sizeof(why)) == 1 && o.firstInc == 2);
+  CHECK(gl_spare_opt(&o, "--spare-env", "NCCL_GIN_RESTORE_SPARE_INC=0", why, sizeof(why)) == -1);
+  CHECK(gl_spare_opt(&o, "--spare-env", "K=1", why, sizeof(why)) == 1);
+  CHECK(gl_spare_opt(&o, "--spare-env", "K=2", why, sizeof(why)) == 1 && o.nenv == 2);
+  bool k2 = false;
+  for (int i = 0; i < o.nenv; i++) k2 |= strcmp(o.env[i], "K=2") == 0;
+  CHECK(k2 && o.env[o.nenv] == nullptr);
+  for (const char* bad : {"NCCL_GIN_RESTORE_RECORD=/x", "NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT=a:1", "GIN_RS_DIE_AT=5",
+                          "GIN_RS_DIE_IN_STEP=1", "NCCL_GIN_CTRL_LAUNCHER_SOCK=/x", "NCCL_GIN_CTRL_LAUNCHER_NODE=1", "=x",
+                          "A B=1", "9A=1", "NOEQUALS"})
+    CHECK(gl_spare_opt(&o, "--spare-env", bad, why, sizeof(why)) == -1);
+  CHECK(gl_spare_opt(&o, "--spare", "2", why, sizeof(why)) == -1);
+  CHECK(gl_spare_opt(&o, "--spare-hello-ms", "0", why, sizeof(why)) == -1);
+  CHECK(gl_spare_opt(&o, "--spare-hello-ms", "12x", why, sizeof(why)) == -1);
+  CHECK(gl_spare_opt(&o, "--spare-respawn-max", "-1", why, sizeof(why)) == -1);
+  CHECK(gl_spare_opt(&o, "--spare-cmd", nullptr, why, sizeof(why)) == -1);
+  CHECK(gl_spare_opt(&o, "--spare-hello-ms", "250", why, sizeof(why)) == 1);
+  CHECK(gl_spare_opt(&o, "--spare-respawn-max", "0", why, sizeof(why)) == 1);
+  CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == 0);
+  CHECK(cfg.spareArgv == o.argv && cfg.spareEnv == o.env && cfg.spareHelloMs == 250 && cfg.spareRespawnMax == 0 &&
+        cfg.spareFirstInc == 2 && strcmp(cfg.spareLogDir, kSpareLogs) == 0);
+  CHECK(gl_spare_opt(&o, "--spare", "0", why, sizeof(why)) == 1);
+  CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == 0 && cfg.spareArgv == nullptr);  // --spare 0: off
+  CHECK(gl_spare_opt(&o, "--spare-cmd", " \t ", why, sizeof(why)) == -1);
+  gl_spare_opts_free(&o);
+  CHECK(gl_spare_opt(&o, "--spare", "1", why, sizeof(why)) == 1);
+  CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == -1);  // --spare 1 without --spare-cmd
+  gl_spare_opts_free(&o);
+}
+
 static void test_header() {
   CHECK(sizeof(glMsg) == 256 && sizeof(glUnixMsg) == 256 && sizeof(glCtrlEnv) == 64 && sizeof(glPage) == 4096);
   glCtrlEnv e;
@@ -2257,10 +2980,19 @@ static void test_header() {
 }
 
 int main(int argc, char** argv) {
+  if (argc > 1 && strcmp(argv[1], "--fake-spare") == 0) return fake_spare_main(argc, argv);  // exec'd by a launcher
   if (argc > 1 && chdir(argv[1]) != 0) {
     perror("chdir");
     return 2;
   }
+  char self[512];
+  const ssize_t sl = readlink("/proc/self/exe", self, sizeof(self) - 1);
+  if (sl <= 0) return 2;
+  self[sl] = 0;
+  gSelf = self;
+  mkdir(kSpareLogs, 0700);
+  setenv("NCCL_GIN_UNIT_LEAK", "1", 1);  // the launcher's own NCCL_ and GIN_ variables never reach a spawned spare
+  setenv("GIN_UNIT_LEAK", "1", 1);
   signal(SIGPIPE, SIG_IGN);
   setvbuf(stdout, nullptr, _IOLBF, 0);
   struct {
@@ -2286,7 +3018,13 @@ int main(int argc, char** argv) {
                {"socket_dir", test_socket_dir},
                {"malformed", test_malformed},
                {"info", test_info},
-               {"shutdown_kills_unused_spare", test_shutdown_kills_unused_spare}};
+               {"shutdown_kills_unused_spare", test_shutdown_kills_unused_spare},
+               {"spare_opts", test_spare_opts},
+               {"spare_start", test_spare_start},
+               {"spare_activation_cycle", test_spare_activation_cycle},
+               {"spare_respawn", test_spare_respawn},
+               {"spare_hello_timeout", test_spare_hello_timeout},
+               {"spare_no_foreign_signal", test_spare_no_foreign_signal}};
   int nt = 0;
   for (auto& t : tests) {
     const int f0 = nFail, c0 = nChecks;

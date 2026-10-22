@@ -5,8 +5,9 @@ adds the control-path columns. Standard library only.
 
     rows_gc.py <results dir> [--out trials.csv]     one row per trial (raw/, reg/, cost*/, local/)
     rows_gc.py --stops <stem>                       one line "la_stop_n=.. la_qp_err_n=.. la_refused_signal_n=..
-                                                    la_pid_mismatch_n=..": the trial's launcher counts by the scorer's rule
-                                                    (hold_gc.sh's per-trial STOP_launcher check; REVIEW_TEST B4)
+                                                    la_pid_mismatch_n=.. la_not_up=.. la_stale_n=..": the trial's launcher
+                                                    counts by the scorer's rule (hold_gc.sh's per-trial STOP_launcher check;
+                                                    REVIEW_TEST B4; la_not_up and la_stale_n from the meta)
 
 Inputs: run_gc.sh's trials (raw/: <stem>_r<r>.kv/.log, _spare*.kv/.log, _kill.out, _spare_kill.out, _inject.out,
 _fdhold.out, _cleanup.out, _launcher_<node>.log, _meta.txt; stem <cell>_<build>_n<k>); gin-remaining's runner (reg/);
@@ -17,9 +18,15 @@ node use their mono_ms (section 3: "같은 노드 시계"); between nodes the tw
 run_gc.sh measured over one ssh session (meta mono_off_sunny_ms / mono_off_after_ms; the one with the smaller round trip;
 REVIEW_TEST fix 2: no ssh delay in a kill -> judgement interval); the receipt clock only when a line has no mono_ms or the
 trial has no offset (the *_clock columns say which: mono, mono_xnode, receipt).
-The launcher slices (<stem>_launcher_<node>.log) run from the previous trial's trial_end marker to this trial's: the STOP,
-"refused to signal" and pid-check counts read the whole slice (no gap between trials), every other launcher column only the
-lines after this trial's trial_start marker (the earlier trial's late lines are not this trial's).
+The launcher logs (<stem>_launcher_<node>.log): since 2026-10-22 each is the whole log of the trial's own launcher (EXPERIMENT 5:
+one launcher per node per trial, meta launcher_scope=trial), its start, the warm spare's spawn lines, the trial_start and
+trial_end markers and its shutdown; a hold-scope slice (launcher_scope=hold, earlier runs) ran from the previous trial's
+trial_end marker to this trial's. The STOP, "refused to signal" and pid-check counts read the whole log, every other
+launcher column of the subject only the lines after this trial's trial_start marker. The spare-absent cells (meta
+launcher_respawn_max=0 with spare_kill_first=1 or kill_kind=spare_then_rank) expect one "respawn cap 0 ... reached; no more
+spares (STOP_launcher)" line (the runner killed the spare and the launcher must not replace it): that one line is counted in
+la_spare_cap_expected_n, not in la_stop_n. A trial whose launcher did not come up or found a stale launcher socket or process
+(meta launcher_ready=0, launcher_stale=<node>:<sockets>+<processes>) has its meta only.
 
 The library's lines this file reads. "exists" = in the tree now (gc_layer*.diff, ln4); "TODO(pN)" = the format this file
 defines for phase N to emit exactly (notes_test.md lists them):
@@ -58,7 +65,10 @@ defines for phase N to emit exactly (notes_test.md lists them):
             GIN/TS: TEST socket mute on|off rank=R peers=N mono_ms=M                                exists (gin-harden)
   The launcher's lines (GIN/LA: node N: ..., ../launcher/gin_launcher.c, exist): EXITED, "exited; EXITED not sent", FENCE ...
   SIGKILL sent, FENCED (after SIGKILL X ms / ended before), "(STOP_launcher)", "refused to signal", activation ... LATER |
-  ACCEPTED | REFUSED (why), "record QP of rank R ... lost", "liveness-READ QP of rank R failed", "is leaving".
+  ACCEPTED | REFUSED (why), "record QP of rank R ... lost", "liveness-READ QP of rank R failed", "is leaving"; the warm spare's
+  "spare spawned (spawn S, incarnation I, pid P, why W, log PATH)", "spawned spare said HELLO (spawn S, incarnation I, pid P,
+  hello pid Q, rank R incarnation J, after X ms)", "spawned spare exited unused (...): respawn cap M ... (STOP_launcher)"
+  (../launcher/README_launcher.md "따뜻한 예비 프로세스").
   The runner's lines (run_gc.sh): GINRS killed rank=R node=N pid=P which=W [gap_ms=G] mono_ms=M; GINRS stop / cont (present=,
   stopped_ms=); GINRS duty start / end; GINRS fdhold_killed; GINRS cleanup_stopped; GINRS ss s1|s2 pid=P present= n= acked=
   received= (_ss.out); the launcher logs' markers "GINLA mark trial_start|trial_end <stem>".
@@ -103,6 +113,15 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              line; la_qp_err_n the launcher's QP-loss lines for ranks other than the subject before the first
                              "is leaving" line (TODO(p3): the teardown rule); launcher_same = both launchers' pid and start equal
                              before and after the trial and alive after
+  launcher_scope, launcher_stale   meta: trial (one launcher per trial) or hold (earlier runs); the stale socket or process found
+  la_spare_spawn_n, la_spare_respawn_n, la_spare_cap_expected_n, spare_hello_after_ms
+                             the warm spares the launchers spawned (all, the respawns and HELLO retries), the expected cap line
+                             of the spare-absent cells, spawn -> HELLO of the subject's spare (incarnation 1; the launcher's ms)
+  spare2_inc_want, spare2_inc_got, spare2_daemon_ok   a second death (meta kill2_rank) in an rdma build: the spare the second
+                             restore needs is the launcher's, incarnation 2 for the same rank (the daemon's next spare after the
+                             first activation: original incarnation + 2) or 1 for another rank (that node's own warm spare);
+                             got = the incarnation of the HELLO line for that rank on its node; ok = that HELLO's spawn was the
+                             launcher's (why activated for 2, start for 1)
   tcp_ctrl_bytes, tcp_data_bytes, tcp_ctrl_conn_n, witness_pairs, rec_lost_n, rec_dup_n, rec_repair_n, sendq_deferred,
   sendq_max, rnr_n, async_n, active_mtu_kv_min   CTRLSUM (each process's last) summed (rnr_n adds the meta's RNR
                              port-counter growth); witness_pairs = the summed witness_conns with the witness on, 0 with it off
@@ -195,6 +214,11 @@ LA_REFSIG = re.compile(r"refused to signal")
 LA_PIDMIS = re.compile(r"the pidfd is not the peer's process")
 LA_QPLOST = re.compile(r"GIN/LA: node \d+: (?:record QP of rank (\d+)\b.*\blost|liveness-READ QP of rank (\d+) failed)")
 LA_LEAVING = re.compile(r"GIN/LA: node \d+: rank \d+ incarnation \d+ is leaving")
+LA_SPAWNED = re.compile(r"GIN/LA: node \d+: spare spawned \(spawn (\d+), incarnation (\d+), pid -?\d+, why (\w+), log (\S+)\)")
+LA_SPHELLO = re.compile(r"GIN/LA: node \d+: spawned spare said HELLO \(spawn (\d+), incarnation (\d+), pid -?\d+, hello pid (-?\d+), "
+                        r"rank (\d+) incarnation (\d+), after ([0-9.]+) ms\)")
+LA_CAP0 = re.compile(r"GIN/LA: node \d+: spawned spare exited unused \(.*\): respawn cap 0 within \d+ ms reached; no more spares "
+                     r"\(STOP_launcher\)")
 GATE = re.compile(r"gate_fenced trial (\d+): old GO at ([0-9.]+) ms, FENCED GO at ([0-9.]+) ms \(diff ([0-9.-]+) ms, second thread ([0-9.]+) ms\)")
 GATEP = re.compile(r"gate_proc trial (\d+): (.*)$")
 KVTOK = rows_rs.KVTOK
@@ -217,7 +241,9 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "fence_names_ok", "fence_sent_to_fenced_ms", "fenced_to_fallback_ms", "cont_target_present",
            "win_changed_after", "la_exited_n", "la_exit_silent_n", "la_fence_sigkill_n", "la_fenced_n",
            "la_fenced_after_sigkill_ms", "la_later_n", "la_act_refused_why", "la_stop_n", "la_refused_signal_n",
-           "la_pid_mismatch_n", "la_qp_err_n", "launcher_same", "launcher_ready", "tcp_ctrl_bytes", "tcp_data_bytes",
+           "la_pid_mismatch_n", "la_qp_err_n", "launcher_same", "launcher_ready", "launcher_scope", "launcher_stale",
+           "la_spare_spawn_n", "la_spare_respawn_n", "la_spare_cap_expected_n", "spare_hello_after_ms", "spare2_inc_want",
+           "spare2_inc_got", "spare2_daemon_ok", "tcp_ctrl_bytes", "tcp_data_bytes",
            "tcp_ctrl_conn_n", "witness_pairs", "witness_expected", "ss_tcp_conn_n", "ss_pids_both", "ss_tx_delta_bytes",
            "ss_rx_delta_bytes", "rec_lost_n", "rec_dup_n", "rec_repair_n", "sendq_deferred", "sendq_max",
            "rnr_n", "async_n", "active_mtu_kv_min", "active_mtu_rain", "active_mtu_sunny", "ckpt_stable_in_mute",
@@ -318,12 +344,22 @@ def la_after_start(evl):
     return evl[st[-1] + 1:] if st else evl
 
 
-def la_counts(lalog, s):
-    """the launcher counts every trial gets: STOP lines (both forms), refused signals and pid-check failures over the whole
-    slices; the QP-loss lines of ranks other than the subject after the trial_start marker and before the first is-leaving"""
+def cap_expected(meta):
+    """the spare-absent cells: the runner killed the spare and the launcher ran with --spare-respawn-max 0 (run_gc.sh)"""
+    meta = meta or {}
+    return meta.get("launcher_respawn_max") == "0" and (meta.get("spare_kill_first") == "1" or
+                                                        meta.get("kill_kind") == "spare_then_rank")
+
+
+def la_counts(lalog, s, meta=None):
+    """the launcher counts every trial gets: STOP lines (both forms; the spare-absent cells' one expected cap line apart),
+    refused signals and pid-check failures over the whole logs; the QP-loss lines of ranks other than the subject after the
+    trial_start marker and before the first is-leaving"""
     whole = lalog["rain"] + lalog["sunny"]
     after = la_after_start(lalog["rain"]) + la_after_start(lalog["sunny"])
-    out = {"la_stop_n": sum(1 for e in whole if LA_STOP.search(e.text)),
+    stops = [e for e in sorted(whole, key=lambda x: x.t) if LA_STOP.search(e.text)]
+    capx = [e for e in stops if LA_CAP0.search(e.text)][:1] if cap_expected(meta) else []
+    out = {"la_stop_n": len(stops) - len(capx), "la_spare_cap_expected_n": len(capx),
            "la_refused_signal_n": sum(1 for e in whole if LA_REFSIG.search(e.text)),
            "la_pid_mismatch_n": sum(1 for e in whole if LA_PIDMIS.search(e.text))}
     t_leave = min((e.t for e in after if LA_LEAVING.search(e.text)), default=float("inf"))
@@ -557,7 +593,27 @@ def gc_overlay(stem, base, meta):
             out["la_act_refused_why"] = "; ".join(m.group(3) for m in acts if m.group(2) == "REFUSED")
     # every trial: the launcher's STOP lines (both forms, the whole slice), checks, QP loss
     if lalog["rain"] or lalog["sunny"] or ctrl == "rdma":
-        out.update(la_counts(lalog, s))
+        out.update(la_counts(lalog, s, meta))
+    # the warm spares of the trial's launchers (EXPERIMENT 9.5; the runner starts none on the launcher path)
+    out["launcher_scope"] = meta.get("launcher_scope", "")
+    out["launcher_stale"] = "" if meta.get("launcher_stale", "-") in ("", "-") else meta["launcher_stale"]
+    if lalog["rain"] or lalog["sunny"]:
+        sp = {nd: [m for e in lalog[nd] for m in [LA_SPAWNED.search(e.text)] if m] for nd in ("rain", "sunny")}
+        he = {nd: [m for e in lalog[nd] for m in [LA_SPHELLO.search(e.text)] if m] for nd in ("rain", "sunny")}
+        out["la_spare_spawn_n"] = sum(len(v) for v in sp.values())
+        out["la_spare_respawn_n"] = sum(1 for v in sp.values() for m in v if m.group(3) in ("respawn", "hello_retry"))
+        sr = int(meta["spare_rank"]) if str(meta.get("spare_rank", "")).isdigit() else -1
+        h1 = [m for m in he[node_of(sr)] if int(m.group(4)) == sr and m.group(5) == "1"] if sr >= 0 else []
+        out["spare_hello_after_ms"] = r1(float(h1[0].group(6))) if h1 else ""
+        if kr2 >= 0 and ctrl == "rdma":
+            want = 2 if kr2 == kr else 1
+            n2 = node_of(kr2)
+            why = {m.group(1): m.group(3) for m in sp[n2]}
+            got = [m for m in he[n2] if int(m.group(4)) == kr2 and int(m.group(5)) == want]
+            seen = [int(m.group(5)) for m in he[n2] if int(m.group(4)) == kr2]
+            out["spare2_inc_want"] = want
+            out["spare2_inc_got"] = want if got else (max(seen) if seen else "")
+            out["spare2_daemon_ok"] = int(any(why.get(m.group(1)) == ("activated" if want == 2 else "start") for m in got))
     if ctrl == "rdma":
         same = True
         for nd in ("rain", "sunny"):
@@ -843,8 +899,12 @@ def stops_line(stem):
     """hold_gc.sh's per-trial launcher check: the scorer's counts for one trial stem"""
     meta = rows_rs.read_meta(stem)
     subj = meta.get("subject_rank", "")
-    c = la_counts(la_logs(stem), int(subj) if str(subj).isdigit() else -1)
-    return " ".join("%s=%d" % (k, c[k]) for k in ("la_stop_n", "la_qp_err_n", "la_refused_signal_n", "la_pid_mismatch_n"))
+    c = la_counts(la_logs(stem), int(subj) if str(subj).isdigit() else -1, meta)
+    c["la_not_up"] = int(meta.get("ctrl") == "rdma" and meta.get("launcher_ready") == "0")
+    st = meta.get("launcher_stale", "-")
+    c["la_stale_n"] = 0 if st in ("", "-") else len([x for x in st.split(",") if x])
+    return " ".join("%s=%d" % (k, c[k]) for k in ("la_stop_n", "la_qp_err_n", "la_refused_signal_n", "la_pid_mismatch_n",
+                                                    "la_not_up", "la_stale_n"))
 
 
 def main():

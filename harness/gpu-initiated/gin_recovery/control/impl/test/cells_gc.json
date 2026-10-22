@@ -1,6 +1,6 @@
 {
  "study": "gin-control",
- "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n and the switch values are fixed at the pre-registration prereg/gin-control-v1). Input of hold_gc.sh (what to run), check_cells_gc.py (the cross-check with section 3) and score_gc.py (the planned scored trials per cell@build). 'rows' are section 7's 27 table rows; 'cells' the cell@build runs (kind rs -> run_gc.sh through cells_gc.sh); 'holds' the main-run holds C1-C11 and the pilot holds P0-P4 (never scored; P4 runs the pilot-only cell of 'pilot_cells'); 'regression' gin-mirror's non-cost cells by name and env at @gct and @gc; 'cost' the probe cost family (run_cost_gc.sh); 'local' the CPU-only items (no cluster). env values are run_gc.sh's variables (R<r>_ENV, SPARE_ENV: the library's test switches of that process). A hold's launchers run with the hold's one launcher_env (EXPERIMENT 5: one launcher per node per hold). Every TODO names the phase or the pilot that fixes it.",
+ "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n and the switch values are fixed at the pre-registration prereg/gin-control-v1). Input of hold_gc.sh (what to run), check_cells_gc.py (the cross-check with section 3) and score_gc.py (the planned scored trials per cell@build). 'rows' are section 7's 25 table rows (27 before the 2026-10-22 trim); 'cells' the cell@build runs (kind rs -> run_gc.sh through cells_gc.sh); 'holds' the main-run holds C1-C3, C5-C11 (C4 held only the removed tcp contrast cells) and the pilot holds P0-P4 (never scored; P4 runs the pilot-only cell of 'pilot_cells'); 'regression' gin-mirror's non-cost cells by name and env at @gc, and at @gct only the one control cell of regression.builds.gct.cells; 'cost' the probe cost family (run_cost_gc.sh); 'local' the CPU-only items (no cluster). env values are run_gc.sh's variables (R<r>_ENV, SPARE_ENV: the library's test switches of that process). Each trial's launchers run with its cell's launcher_env (EXPERIMENT 5: one launcher per node per trial since 2026-10-22, started by run_gc.sh). Every TODO names the phase or the pilot that fixes it.",
  "builds": {
   "gc": {
    "lib": "gc",
@@ -14,23 +14,11 @@
    "launcher": false,
    "about": "NCCL_GIN_CTRL_TCP=1 (ln4's preprocessed host file)"
   },
-  "gctc": {
-   "lib": "gctc",
-   "ctrl": "tcp",
-   "launcher": false,
-   "about": "NCCL_GIN_CTRL_TCP=1 + NCCL_GIN_CTRL_TCP_CELLS=1 (the tcp control cells only)"
-  },
   "gcp": {
    "lib": "gcp",
    "ctrl": "rdma",
    "launcher": true,
    "about": "gc + NCCL_GIN_TS_PRODUCTION (cost)"
-  },
-  "gctp": {
-   "lib": "gctp",
-   "ctrl": "tcp",
-   "launcher": false,
-   "about": "gct + NCCL_GIN_TS_PRODUCTION (cost)"
   }
  },
  "rows": [
@@ -88,14 +76,12 @@
    "row": 5,
    "name": "gc4_rst_kill3",
    "keys": [
-    "gc4_rst_kill3@gc",
-    "gc4_rst_kill3@gctc"
+    "gc4_rst_kill3@gc"
    ],
    "kind": "RST",
    "preds": [
     "rst_judge_rdma",
-    "no_tcp_control",
-    "rst_judge_tcp"
+    "no_tcp_control"
    ]
   },
   {
@@ -112,18 +98,6 @@
   },
   {
    "row": 7,
-   "name": "gct4_rstgap_live50, gct4_rstgap_live300",
-   "keys": [
-    "gct4_rstgap_live50@gctc",
-    "gct4_rstgap_live300@gctc"
-   ],
-   "kind": "100 ms 간격의 대가",
-   "preds": [
-    "rstgap_live_tcp"
-   ]
-  },
-  {
-   "row": 8,
    "name": "gc4_fdhold_sock_kill3",
    "keys": [
     "gc4_fdhold_sock_kill3@gc"
@@ -135,7 +109,7 @@
    ]
   },
   {
-   "row": 9,
+   "row": 8,
    "name": "gc4_fdhold_sock_kill3_noreport",
    "keys": [
     "gc4_fdhold_sock_kill3_noreport@gc"
@@ -147,18 +121,7 @@
    ]
   },
   {
-   "row": 10,
-   "name": "gct4_fdhold_sock_kill3",
-   "keys": [
-    "gct4_fdhold_sock_kill3@gctc"
-   ],
-   "kind": "대조",
-   "preds": [
-    "finless_tcp_baseline"
-   ]
-  },
-  {
-   "row": 11,
+   "row": 9,
    "name": "gc4_fdhold_uverbs_kill3",
    "keys": [
     "gc4_fdhold_uverbs_kill3@gc"
@@ -170,7 +133,7 @@
    ]
   },
   {
-   "row": 12,
+   "row": 10,
    "name": "gc4_stop1500, gc4_stop4000, gc4_stop8000",
    "keys": [
     "gc4_stop1500@gc",
@@ -184,7 +147,7 @@
    ]
   },
   {
-   "row": 13,
+   "row": 11,
    "name": "gc4_stop12000_fence",
    "keys": [
     "gc4_stop12000_fence@gc"
@@ -197,7 +160,7 @@
    ]
   },
   {
-   "row": 14,
+   "row": 12,
    "name": "gc4_stop12000_none",
    "keys": [
     "gc4_stop12000_none@gc"
@@ -209,7 +172,7 @@
    ]
   },
   {
-   "row": 15,
+   "row": 13,
    "name": "gc4_slow_duty",
    "keys": [
     "gc4_slow_duty@gc"
@@ -221,7 +184,7 @@
    ]
   },
   {
-   "row": 16,
+   "row": 14,
    "name": "gc4_freeze12000_fence",
    "keys": [
     "gc4_freeze12000_fence@gc"
@@ -234,7 +197,7 @@
    ]
   },
   {
-   "row": 17,
+   "row": 15,
    "name": "gc4_helper_freeze12000",
    "keys": [
     "gc4_helper_freeze12000@gc"
@@ -247,7 +210,7 @@
    ]
   },
   {
-   "row": 18,
+   "row": 16,
    "name": "gc4_mgmt_mute8, gct4_mgmt_mute8",
    "keys": [
     "gc4_mgmt_mute8@gc",
@@ -261,7 +224,7 @@
    ]
   },
   {
-   "row": 19,
+   "row": 17,
    "name": "gc4_qperr_record",
    "keys": [
     "gc4_qperr_record@gc"
@@ -273,7 +236,7 @@
    ]
   },
   {
-   "row": 20,
+   "row": 18,
    "name": "gc4_ud_drop_rejoin",
    "keys": [
     "gc4_ud_drop_rejoin@gc"
@@ -285,7 +248,7 @@
    ]
   },
   {
-   "row": 21,
+   "row": 19,
    "name": "gc4_credit_stall",
    "keys": [
     "gc4_credit_stall@gc"
@@ -297,7 +260,7 @@
    ]
   },
   {
-   "row": 22,
+   "row": 20,
    "name": "gc4_kill3_ow_spareabsent",
    "keys": [
     "gc4_kill3_ow_spareabsent@gc"
@@ -309,7 +272,7 @@
    ]
   },
   {
-   "row": 23,
+   "row": 21,
    "name": "gin-mirror 회귀(tcp)",
    "keys": [
     "regression:gct"
@@ -320,7 +283,7 @@
    ]
   },
   {
-   "row": 24,
+   "row": 22,
    "name": "gin-mirror 회귀(rdma)",
    "keys": [
     "regression:gc"
@@ -336,7 +299,7 @@
    ]
   },
   {
-   "row": 25,
+   "row": 23,
    "name": "비용 가족 probe",
    "keys": [
     "cost:probe"
@@ -347,7 +310,7 @@
    ]
   },
   {
-   "row": 26,
+   "row": 24,
    "name": "빌드 검사",
    "keys": [
     "local:build_check"
@@ -357,7 +320,7 @@
    "qa_only": "10절 QA 항목(기계어와 tcp 전처리 동일성); 3절의 찾는 키가 없음"
   },
   {
-   "row": 27,
+   "row": 25,
    "name": "CPU 시험 gate_fenced",
    "keys": [
     "local:gate_fenced"
@@ -499,40 +462,10 @@
     "rst_judge_rdma",
     "no_tcp_control"
    ],
-   "control": "gc4_rst_kill3@gctc",
+   "control": "gc4_kill3_ow@gc",
    "bound_s": 60,
    "row": 5,
    "todo": "TODO(phase1): DIE_RST's <ms> origin (3000 here: after the first armed stable checkpoint at CKPT_STEPS 20) is the library's"
-  },
-  "gc4_rst_kill3@gctc": {
-   "cell": "gc4_rst_kill3",
-   "build": "gctc",
-   "kind": "rs",
-   "n": 10,
-   "driver": "gin_mi",
-   "env": {
-    "OVERWRITE": "1",
-    "MIRROR": "1",
-    "CKPT_STEPS": "20",
-    "KILL_RANK": "3",
-    "KILL_KIND": "self",
-    "SPARE": "1",
-    "RST_GAP_MS": "100",
-    "R3_ENV": "NCCL_GIN_TS_TEST_DIE_RST=3000"
-   },
-   "injection": {
-    "kind": "self_kill_rst",
-    "target": 3,
-    "timing": "the library's test switch on rank 3: SO_LINGER {1, 0} on its connected sockets, then its own SIGKILL at the switch's time",
-    "switch": "R3_ENV NCCL_GIN_TS_TEST_DIE_RST=<ms>"
-   },
-   "preds": [
-    "rst_judge_tcp"
-   ],
-   "control": "gc4_rst_kill3@gc",
-   "bound_s": 60,
-   "row": 5,
-   "todo": "TODO(phase1): as gc4_rst_kill3@gc; the helper-socket branch is behind NCCL_GIN_CTRL_TCP_CELLS"
   },
   "gc4_rstgap_live300@gc": {
    "cell": "gc4_rstgap_live300",
@@ -559,72 +492,10 @@
     "rstgap_live_rdma",
     "no_tcp_control"
    ],
-   "control": "gct4_rstgap_live300@gctc",
+   "control": "gc4_none_ow@gc",
    "bound_s": 60,
    "row": 6,
    "todo": "TODO(phase1): RST_GAP start 3000 ms is a placeholder; the switch's origin is the library's",
-   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
-  },
-  "gct4_rstgap_live50@gctc": {
-   "cell": "gct4_rstgap_live50",
-   "build": "gctc",
-   "kind": "rs",
-   "n": 10,
-   "driver": "gin_mi",
-   "env": {
-    "OVERWRITE": "1",
-    "MIRROR": "1",
-    "CKPT_STEPS": "20",
-    "RST_GAP_MS": "100",
-    "R1_ENV": "NCCL_GIN_TS_TEST_RST_GAP=3000:50",
-    "FAULT_POLICY": "failfast",
-    "RESTORE": "0",
-    "SUBJECT_RANK": "1"
-   },
-   "injection": {
-    "kind": "rst_gap",
-    "target": 1,
-    "timing": "the library's test switch on rank 1 (alive): its connected socket closed with linger 0 and its listener closed for 50 ms",
-    "switch": "R1_ENV NCCL_GIN_TS_TEST_RST_GAP=<start>:<len>"
-   },
-   "preds": [
-    "rstgap_live_tcp"
-   ],
-   "control": "gc4_rstgap_live300@gc",
-   "bound_s": 60,
-   "row": 7,
-   "todo": "TODO(phase1): RST_GAP start as above",
-   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
-  },
-  "gct4_rstgap_live300@gctc": {
-   "cell": "gct4_rstgap_live300",
-   "build": "gctc",
-   "kind": "rs",
-   "n": 5,
-   "driver": "gin_mi",
-   "env": {
-    "OVERWRITE": "1",
-    "MIRROR": "1",
-    "CKPT_STEPS": "20",
-    "RST_GAP_MS": "100",
-    "R1_ENV": "NCCL_GIN_TS_TEST_RST_GAP=3000:300",
-    "FAULT_POLICY": "failfast",
-    "RESTORE": "0",
-    "SUBJECT_RANK": "1"
-   },
-   "injection": {
-    "kind": "rst_gap",
-    "target": 1,
-    "timing": "the library's test switch on rank 1 (alive): its connected socket closed with linger 0 and its listener closed for 300 ms",
-    "switch": "R1_ENV NCCL_GIN_TS_TEST_RST_GAP=<start>:<len>"
-   },
-   "preds": [
-    "rstgap_live_tcp"
-   ],
-   "control": "gc4_rstgap_live300@gc",
-   "bound_s": 60,
-   "row": 7,
-   "todo": "TODO(phase1): RST_GAP start as above",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_fdhold_sock_kill3@gc": {
@@ -652,9 +523,9 @@
     "finless_exit_report",
     "no_tcp_control"
    ],
-   "control": "gct4_fdhold_sock_kill3@gctc",
+   "control": "gc4_kill3_ow@gc",
    "bound_s": 60,
-   "row": 8
+   "row": 7
   },
   "gc4_fdhold_sock_kill3_noreport@gc": {
    "cell": "gc4_fdhold_sock_kill3_noreport",
@@ -684,39 +555,11 @@
    ],
    "control": "gc4_fdhold_sock_kill3@gc",
    "bound_s": 60,
-   "row": 9,
+   "row": 8,
    "launcher_env": {
     "NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT": "1"
    },
    "todo": "TODO(phase1): with the witness off FD_HOLDER=sock forks a child that holds no socket (section 7: the cell sees the READ path); the library's fork line must say so (fds=0)"
-  },
-  "gct4_fdhold_sock_kill3@gctc": {
-   "cell": "gct4_fdhold_sock_kill3",
-   "build": "gctc",
-   "kind": "rs",
-   "n": 5,
-   "driver": "gin_mi",
-   "env": {
-    "OVERWRITE": "1",
-    "MIRROR": "1",
-    "CKPT_STEPS": "20",
-    "KILL_RANK": "3",
-    "SPARE": "1",
-    "FDHOLD": "1",
-    "R3_ENV": "NCCL_GIN_TS_TEST_FD_HOLDER=sock"
-   },
-   "injection": {
-    "kind": "fd_holder_kill",
-    "target": 3,
-    "timing": "rank 3 forks gin_fdhold (test switch, SCM_RIGHTS of the helper socket); the runner waits for the fork line, then SIGKILLs rank 3 by its recorded PID at the traffic-kill step; the child is SIGKILLed by the PID of the fork line at the trial's end",
-    "switch": "R3_ENV NCCL_GIN_TS_TEST_FD_HOLDER=sock"
-   },
-   "preds": [
-    "finless_tcp_baseline"
-   ],
-   "control": "gc4_fdhold_sock_kill3@gc",
-   "bound_s": 60,
-   "row": 10
   },
   "gc4_fdhold_uverbs_kill3@gc": {
    "cell": "gc4_fdhold_uverbs_kill3",
@@ -745,7 +588,7 @@
    ],
    "control": "gc4_fdhold_sock_kill3@gc",
    "bound_s": 60,
-   "row": 11
+   "row": 9
   },
   "gc4_stop1500@gc": {
    "cell": "gc4_stop1500",
@@ -773,7 +616,7 @@
    ],
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
-   "row": 12
+   "row": 10
   },
   "gc4_stop4000@gc": {
    "cell": "gc4_stop4000",
@@ -801,7 +644,7 @@
    ],
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
-   "row": 12
+   "row": 10
   },
   "gc4_stop8000@gc": {
    "cell": "gc4_stop8000",
@@ -829,7 +672,7 @@
    ],
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
-   "row": 12
+   "row": 10
   },
   "gc4_stop12000_fence@gc": {
    "cell": "gc4_stop12000_fence",
@@ -859,7 +702,7 @@
    ],
    "control": "gc4_stop12000_none@gc",
    "bound_s": 60,
-   "row": 13,
+   "row": 11,
    "todo": "TODO(pilot): 9.9's unscored pilot cell (the survivors' device wait over 10 300 ms) decides whether this cell is pre-registered"
   },
   "gc4_stop12000_none@gc": {
@@ -889,7 +732,7 @@
    ],
    "control": "gc4_stop12000_fence@gc",
    "bound_s": 60,
-   "row": 14
+   "row": 12
   },
   "gc4_slow_duty@gc": {
    "cell": "gc4_slow_duty",
@@ -921,7 +764,7 @@
    ],
    "control": "gc4_none_ow@gc",
    "bound_s": 120,
-   "row": 15,
+   "row": 13,
    "todo": "TODO(pilot): STEPS 6000 keeps rank 3 sending through the 20 s duty"
   },
   "gc4_freeze12000_fence@gc": {
@@ -953,7 +796,7 @@
    ],
    "control": "gc4_stop12000_fence@gc",
    "bound_s": 60,
-   "row": 16,
+   "row": 14,
    "todo": "TODO(phase1): the freeze's start (after the first armed stable checkpoint) is the library's; its line is the injection record",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
@@ -986,7 +829,7 @@
    ],
    "control": "gc4_freeze12000_fence@gc",
    "bound_s": 60,
-   "row": 17,
+   "row": 15,
    "todo": "TODO(phase1): as above",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
@@ -1016,7 +859,7 @@
    ],
    "control": "gct4_mgmt_mute8@gct",
    "bound_s": 60,
-   "row": 18,
+   "row": 16,
    "todo": "TODO(pilot): STEPS 2400 (about 12 s) keeps the checkpoints going through the 8 s mute",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
@@ -1045,7 +888,7 @@
    ],
    "control": "gc4_mgmt_mute8@gc",
    "bound_s": 60,
-   "row": 18,
+   "row": 16,
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_qperr_record@gc": {
@@ -1073,7 +916,7 @@
    ],
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
-   "row": 19,
+   "row": 17,
    "todo": "TODO(phase2): the switch's value format <ms>:<peer> is this file's proposal",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
@@ -1103,7 +946,7 @@
    ],
    "control": "gc4_kill3_ow@gc",
    "bound_s": 60,
-   "row": 20,
+   "row": 18,
    "todo": "TODO(phase2): the switch's value format rejoin:<count> is this file's proposal"
   },
   "gc4_credit_stall@gc": {
@@ -1131,7 +974,7 @@
    ],
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
-   "row": 21,
+   "row": 19,
    "todo": "TODO(phase2): the switch's value format <start>:<len> is this file's proposal",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
@@ -1161,7 +1004,7 @@
    ],
    "control": "gc4_kill3_ow@gc",
    "bound_s": 60,
-   "row": 22
+   "row": 20
   }
  },
  "pilot_cells": {
@@ -1223,21 +1066,7 @@
     "key": "gc4_fdhold_sock_kill3@gc"
    }
   ],
-  "C4": [
-   {
-    "key": "gc4_rst_kill3@gctc"
-   },
-   {
-    "key": "gct4_rstgap_live50@gctc"
-   },
-   {
-    "key": "gct4_rstgap_live300@gctc"
-   }
-  ],
   "C5": [
-   {
-    "key": "gct4_fdhold_sock_kill3@gctc"
-   },
    {
     "key": "gc4_fdhold_uverbs_kill3@gc"
    }
@@ -1394,22 +1223,6 @@
   ],
   "P2": [
    {
-    "key": "gc4_rst_kill3@gctc",
-    "n": 1
-   },
-   {
-    "key": "gct4_rstgap_live50@gctc",
-    "n": 1
-   },
-   {
-    "key": "gct4_rstgap_live300@gctc",
-    "n": 1
-   },
-   {
-    "key": "gct4_fdhold_sock_kill3@gctc",
-    "n": 1
-   },
-   {
     "key": "gct4_mgmt_mute8@gct",
     "n": 1
    }
@@ -1443,7 +1256,12 @@
    "gct": {
     "preds": [
      "regression_tcp"
-    ]
+    ],
+    "cells": [
+     "mi4_kill3_ow"
+    ],
+    "about": "2026-10-22 trim (EXPERIMENT 12, the user's decision): of gin-mirror's regression holds only mi4_kill3_ow (hold G1, n 10) runs at @gct, kept as the control; every hold runs at @gc",
+    "code": "hold_gc.sh (json_hold RG-) and score_gc.py (regression_entries) read this list (2026-10-22 follow-up): RG-gct-G1 runs only mi4_kill3_ow, any other RG-gct-* hold has no cell and stops, the scorer plans only mi4_kill3_ow@gct"
    },
    "gc": {
     "preds": [
@@ -1456,7 +1274,7 @@
     ]
    }
   },
-  "about": "Section 7 rows 23-24: every non-cost cell of gin-mirror section 7 with its name, env and n, the build replaced by gct (tcp regression) or gc (rdma). hold RG-<build>-<mirror hold>. The kill cells of these @gc rows also feed kill_judge_rdma and restore_time_rdma (section 3's cell column). The mirror cells' drivers (gin_mi, gin_mi_nomacro, mr/ff, mr/hold) are rebuilt against the gc tree's headers (deploy_gc.sh).",
+  "about": "Section 7 rows 21-22: every non-cost cell of gin-mirror section 7 with its name, env and n at gc (rdma); at gct (tcp) only builds.gct.cells (2026-10-22 trim). hold RG-<build>-<mirror hold>. The kill cells of these @gc rows also feed kill_judge_rdma and restore_time_rdma (section 3's cell column). The mirror cells' drivers (gin_mi, gin_mi_nomacro, mr/ff, mr/hold) are rebuilt against the gc tree's headers (deploy_gc.sh).",
   "kill_cells": [
    "mi4_kill3_ow",
    "mi4_kill1_ow",
@@ -1469,7 +1287,7 @@
   ]
  },
  "cost": {
-  "about": "cost_<metric>_<arm>_<node> (run_cost_gc.sh), section 7 row 25. Arms probe-off (gcp, NCCL_GIN_TS_PROBE_MS=0), probe-on (gcp, PROBE_MS 100) and tcp (gctp, the regression control). base probe-off, judged probe-on, tcp reported. gin-restore 9.15.6's interleave (k = 1-6, the arm order reversed on even k).",
+  "about": "cost_<metric>_<arm>_<node> (run_cost_gc.sh), section 7 row 23. One pair since the 2026-10-22 trim: arms probe-off (gcp, NCCL_GIN_TS_PROBE_MS=0) and probe-on (gcp, PROBE_MS 100), metric lat4k, both nodes; base probe-off, judged probe-on (the tcp arm and lat256k, bw256k were dropped; run_cost_gc.sh still knows them). gin-restore 9.15.6's interleave (k = 1-6, the arm order reversed on even k).",
   "n_per_arm": 6,
   "nodes": [
    "rain",
@@ -1478,19 +1296,15 @@
   "families": {
    "probe": {
     "metrics": [
-     "lat4k",
-     "lat256k",
-     "bw256k"
+     "lat4k"
     ],
     "arms": [
      "probe-off",
-     "probe-on",
-     "tcp"
+     "probe-on"
     ],
     "lib": {
      "probe-off": "gcp",
-     "probe-on": "gcp",
-     "tcp": "gctp"
+     "probe-on": "gcp"
     },
     "base": "probe-off",
     "judged": [
@@ -1499,26 +1313,25 @@
     "search_key": "cost_probe_lat4k",
     "drivers": {
      "probe-off": "gin_ts2_mi",
-     "probe-on": "gin_ts2_mi",
-     "tcp": "gin_ts2_mi"
+     "probe-on": "gin_ts2_mi"
     }
    }
   }
  },
  "local": {
   "build_check": {
-   "row": 26,
+   "row": 24,
    "preds": [],
-   "about": "section 7 row 26: the macro-free programs' machine code and the library device objects of gc, gct, gctc, gcp, gctp against mi, gct's preprocessed host file against ln4 (build_gc.sh ident, pre); a QA item of section 10, no section 3 key"
+   "about": "section 7 row 24: the macro-free programs' machine code and the library device objects of the three builds the cells run (gc, gct, gcp) against mi, gct's preprocessed host file against ln4 (build_gc.sh ident, pre); a QA item of section 10, no section 3 key"
   },
   "gate_fenced": {
-   "row": 27,
+   "row": 25,
    "n": 10,
    "preds": [
     "gate_fenced"
    ],
    "log": "local/gate_fenced_n<k>.log",
-   "about": "section 7 row 27: ../gate_fenced.cc run on the CPU (no cluster); its log lines are read by rows_gc.py"
+   "about": "section 7 row 25: ../gate_fenced.cc run on the CPU (no cluster); its log lines are read by rows_gc.py"
   }
  },
  "prereg": {
@@ -1526,5 +1339,9 @@
   "confirm_ms": null,
   "probe_ms": 100,
   "todo": "TODO(pilot): W (NCCL_GIN_CTRL_CONFIRM_MS, section 6: 20-50 ms) from the pilot's no-fault cells"
+ },
+ "builds_unused": {
+  "gctc": "2026-10-22 trim (EXPERIMENT 12, the user's decision): no cell runs it; NCCL_GIN_CTRL_TCP_CELLS stays in the code as an unused switch (build_gc.sh still compares its preprocessed file)",
+  "gctp": "2026-10-22 trim (EXPERIMENT 12, the user's decision): no cell runs it (the cost family's tcp arm was dropped); build_gc.sh still builds it"
  }
 }

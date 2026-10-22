@@ -9,9 +9,10 @@
 # ~/gi-bundle), so LIB=../../rs-bundle/<RS_SET>/lib/<build> and MRKEY=../../../rs-bundle/<RS_SET>/mr/<ff|hold>. After its
 # trial a second line with rs_set, lib_md5 and driver_md5 is appended to its meta file (as cells_mi.sh does).
 # A trial whose <stem>_meta.txt exists is skipped ("already done"). run_gc.sh's exit 5 (host memory short) writes
-# <results>/STOP_mem; its exit 6 (the launchers not ready at the trial's start: section 8's start check; the trial's meta
-# says launcher_ready=0 and score_gc.py excludes it) and its exit 7 (a launcher's registration table not empty at the trial's
-# start: the coordinator's check of 2026-10-17; meta launcher_table) write <results>/STOP_launcher. Each ends the cell.
+# <results>/STOP_mem; its exit 6 (a launcher of the trial did not come up: section 8's start check; the trial's meta says
+# launcher_ready=0 and score_gc.py excludes it) and its exit 7 (a stale launcher socket or process of this uid on a node at
+# the trial's start: section 8's per-trial launcher rule of 2026-10-22; meta launcher_stale) write <results>/STOP_launcher.
+# Each ends the cell. LAUNCHER_ENV (hold_gc.sh: the cell's launcher_env) passes through to run_gc.sh.
 #
 # usage: cells_gc.sh <logdir> <cell> <build> <kind> <n> <start> [k=v ...]   (each k=v is one argument: spaces are kept)
 set -u
@@ -60,8 +61,8 @@ for ((k = START; k < START + NRUN; k++)); do
   case "$KIND" in
     rs)  run_rs "$t" "$L"; rc=$?
          if [ "$rc" = 5 ]; then echo "$(date '+%F %T') ${CELL}_n$k: host memory short at the trial's start (section 8)" | tee -a "$RES/STOP_mem"; break; fi
-         if [ "$rc" = 6 ]; then echo "$(date '+%F %T') ${CELL}_n$k: the launchers were not ready on both nodes at the trial's start (section 8)" | tee -a "$RES/STOP_launcher"; break; fi
-         if [ "$rc" = 7 ]; then echo "$(date '+%F %T') ${CELL}_n$k: a launcher's registration table was not empty at the trial's start" | tee -a "$RES/STOP_launcher"; break; fi ;;
+         if [ "$rc" = 6 ]; then echo "$(date '+%F %T') ${CELL}_n$k: a launcher of the trial did not come up on both nodes (section 8)" | tee -a "$RES/STOP_launcher"; break; fi
+         if [ "$rc" = 7 ]; then echo "$(date '+%F %T') ${CELL}_n$k: a stale launcher socket or process was on a node at the trial's start (section 8)" | tee -a "$RES/STOP_launcher"; break; fi ;;
     reg) run_reg "$t" "$L" ;;
     *) echo "unknown kind $KIND for cell $CELL (cost cells run through hold_gc.sh)" >&2; exit 1 ;;
   esac

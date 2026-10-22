@@ -16,7 +16,12 @@
  *     answers LATER exactly once and hands over at READY. It sets no limit of its own on that wait (the HELLO and READY
  *     limits are gin-dynamic's); it ends at READY, a replay failure, the spare's exit or the buddy's ABORT, and the rank
  *     side bounds it from what the LATER and the page say (the spare's state and age, the beat);
- *   - answers SPAWN with REFUSED "spawn not built";
+ *   - answers SPAWN with REFUSED "spawn not built" (spawning at hold start is a later switch);
+ *   - keeps one warm spare (user decision 2026-10-17; --spare-cmd): it forks and execs the spare when it starts
+ *     listening, bounds its HELLO (one retry), spawns the next one (incarnation + 1) as soon as the current one is
+ *     activated (ACCEPTED and DONE, or its re-registration), and respawns a spare that ended unused (capped). It holds
+ *     the pidfd of what it spawned and reaps it; it signals only that pidfd (a spawn without HELLO in time) or a pidfd
+ *     it was given;
  *   - pairs over UD: record QP and liveness-READ QP apart, either side may start, fresh PSNs; it starts the re-pairing
  *     of a rank's record QP itself when that QP fails;
  *   - keeps its state page: beat, per-registration state word and spare word, per-rank consumed count (credit).
@@ -40,6 +45,7 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -47,6 +53,12 @@
 
 #ifndef SYS_pidfd_send_signal
 #define SYS_pidfd_send_signal 424
+#endif
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434
+#endif
+#ifndef SYS_close_range
+#define SYS_close_range 436
 #endif
 
 #define GL_MAX_CONNS 128
@@ -108,6 +120,23 @@ struct glOrphan {
   uint8_t* buf;
 };
 
+#define GL_MAX_KIDS 16
+#define GL_MAX_RESPAWN_TIMES 64
+struct glKid {           /* a process the launcher spawned (the warm spare), until reaped */
+  int used;
+  unsigned seq;         /* spawn number, from 1 */
+  int state;            /* GL_KID_* */
+  pid_t pid;
+  int pidfd;            /* pidfd_open(pid) right after fork (its own child: the pid cannot be reused before the reap) */
+  pid_t helloPid;       /* the HELLO's process: pid, or a process of its session (a wrapper that forks) */
+  int32_t rank;
+  uint64_t nonce;
+  uint32_t inc;
+  int retry;            /* the one HELLO retry of a spawn that said no HELLO in time */
+  int accepted;         /* its activation was ACCEPTED */
+  double spawnMs;
+};
+
 struct glTomb {
   int32_t rank;
   uint32_t inc;
@@ -164,6 +193,12 @@ struct glCore {
   uint32_t seq, serial;
   uint64_t nextId;
   struct glStats st;
+  struct glKid kid[GL_MAX_KIDS];
+  unsigned kidSeq;
+  double respawnAt[GL_MAX_RESPAWN_TIMES];  /* when the recent respawns happened (the cap's window) */
+  int nRespawnAt;
+  int spareStarted;     /* the first spawn was made (at the first successful listen) */
+  int stopping;         /* gl_core_shutdown began: no spawn */
   uint8_t rbuf[sizeof(struct glUnixMsg) + GL_U_MAX_PAYLOAD] __attribute__((aligned(64)));  /* read as glUnixMsg */
 };
 
@@ -689,6 +724,302 @@ static void gl_exit_seen(struct glCore* c, struct glEntry* e) {
   const int32_t rank = e->rank;
   gl_entry_free(c, e);
   gl_reg_note(c, nonce, rank);
+}
+
+/* ------------------------------------------------------------------------------------------------- the warm spare */
+
+/* Variables the launcher sets itself in the spare's environment (a --spare-env of the same key is refused). */
+#define GL_SPARE_INC_ENV "NCCL_GIN_RESTORE_SPARE_INC"
+/* Never passed to a spare (design v2 2.1: the record would be overwritten, or a test kill would hit the spare). */
+static const char* const gl_spare_forbidden[] = {"NCCL_GIN_RESTORE_RECORD", "NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT",
+                                                 "GIN_RS_DIE_IN_STEP", "GIN_RS_DIE_AT", GL_SOCK_ENV, GL_NODE_ENV, NULL};
+
+static int gl_env_key_is(const char* kv, const char* key) {
+  const size_t n = strlen(key);
+  return strncmp(kv, key, n) == 0 && kv[n] == '=';
+}
+static int gl_spare_active(const struct glCore* c) {
+  return c->cfg.spareArgv && c->cfg.spareArgv[0] && !c->st.spareGaveUp && !c->stopping;
+}
+static const char* gl_kid_status(int st, int reaped, char* b, size_t n) {
+  if (!reaped) snprintf(b, n, "status unknown");
+  else if (WIFEXITED(st)) snprintf(b, n, "exit %d", WEXITSTATUS(st));
+  else if (WIFSIGNALED(st)) snprintf(b, n, "signal %d", WTERMSIG(st));
+  else snprintf(b, n, "status 0x%x", st);
+  return b;
+}
+/* The only signal path to a spawned process: the pidfd taken at its spawn. */
+static int gl_signal_kid(struct glCore* c, struct glKid* k, int sig) {
+  if (k->pidfd < 0) return -1;
+  const int rc = (int)syscall(SYS_pidfd_send_signal, k->pidfd, sig, NULL, 0);
+  const int err = errno;
+  c->st.nSignals++;
+  if (c->cfg.onSignal) c->cfg.onSignal(c->cfg.onSignalArg, k->pid, sig, rc);
+  errno = err;
+  return rc;
+}
+static void gl_spare_give_up(struct glCore* c) { c->st.spareGaveUp = 1; }
+/* fd moved to >= 3 (so the child's dup2 onto 0, 1, 2 never closes another of these), CLOEXEC. */
+static int gl_fd_high(int fd) {
+  if (fd < 0 || fd > 2) return fd;
+  const int h = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+  close(fd);
+  return h;
+}
+/* The spare's environment: the launcher's own minus every NCCL_* and GIN_* variable, then --spare-env, then the
+ * socket, the node and the incarnation (the launcher's own values). Allocated in the parent before the fork. */
+static char** gl_spare_envp(struct glCore* c, uint32_t inc, char* own, size_t ownLen) {
+  size_t n = 0, m = 0;
+  for (char** e = environ; e && *e; e++) n++;
+  if (c->cfg.spareEnv)
+    for (char* const* e = c->cfg.spareEnv; *e; e++) m++;
+  char** out = (char**)calloc(n + m + 4, sizeof(char*));
+  if (!out) return NULL;
+  size_t k = 0;
+  for (char** e = environ; e && *e; e++) {
+    if (strncmp(*e, "NCCL_", 5) == 0 || strncmp(*e, "GIN_", 4) == 0) continue;
+    int over = 0;  // a --spare-env of the same key replaces it
+    for (size_t j = 0; j < m && !over; j++) {
+      const char* q = strchr(c->cfg.spareEnv[j], '=');
+      const size_t kl = q ? (size_t)(q - c->cfg.spareEnv[j]) : 0;
+      over = kl && strncmp(*e, c->cfg.spareEnv[j], kl) == 0 && (*e)[kl] == '=';
+    }
+    if (!over) out[k++] = *e;
+  }
+  for (size_t j = 0; j < m; j++)
+    if (!gl_env_key_is(c->cfg.spareEnv[j], GL_SPARE_INC_ENV)) out[k++] = c->cfg.spareEnv[j];
+  const size_t third = ownLen / 3;
+  snprintf(own, third, "%s=%s", GL_SOCK_ENV, c->sockPath);
+  snprintf(own + third, third, "%s=%u", GL_NODE_ENV, c->cfg.node);
+  snprintf(own + 2 * third, third, "%s=%u", GL_SPARE_INC_ENV, inc);
+  out[k++] = own;
+  out[k++] = own + third;
+  out[k++] = own + 2 * third;
+  out[k] = NULL;
+  return out;
+}
+
+/* fork + exec the spare of incarnation inc. why: start, activated, respawn, hello_retry. The child gets a new session,
+ * stdin /dev/null, stdout and stderr to its own log file, default signal dispositions, an empty mask, and no other fd
+ * (close_range from 3). An exec failure reaches the parent through a CLOEXEC pipe; the child then exits 127 and its
+ * pidfd ends it as a spawn without HELLO. 0: a child exists. */
+static int gl_spare_spawn(struct glCore* c, uint32_t inc, const char* why, int retry) {
+  if (!gl_spare_active(c)) return -1;
+  struct glKid* k = NULL;
+  for (int i = 0; i < GL_MAX_KIDS && !k; i++)
+    if (!c->kid[i].used) k = &c->kid[i];
+  const unsigned seq = c->kidSeq + 1;
+  char path[512] = "", err[640] = "";
+  int logFd = -1, nullFd = -1, ep[2] = {-1, -1};
+  char own[3 * 160];
+  char** envp = NULL;
+  if (!k) snprintf(err, sizeof(err), "%d spawned processes not reaped yet", GL_MAX_KIDS);
+  else if (!c->cfg.spareLogDir || !*c->cfg.spareLogDir) snprintf(err, sizeof(err), "no --spare-log directory");
+  for (int t = 0; !*err && logFd < 0 && t < 10; t++) {  // a new file; an existing name gets _1 .. _9
+    char sfx[4] = "";
+    if (t) sfx[0] = '_', sfx[1] = (char)('0' + t), sfx[2] = '\0';
+    const int n = snprintf(path, sizeof(path), "%s/spare_n%u_s%u_i%u_p%d%s.log", c->cfg.spareLogDir, c->cfg.node, seq,
+                           inc, (int)getpid(), sfx);
+    if (n <= 0 || (size_t)n >= sizeof(path)) snprintf(err, sizeof(err), "log path too long");
+    else if ((logFd = gl_fd_high(open(path, O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_CLOEXEC, 0600))) < 0 &&
+             (errno != EEXIST || t == 9))
+      snprintf(err, sizeof(err), "log %s: %s", path, strerror(errno));
+  }
+  if (!*err && (nullFd = gl_fd_high(open("/dev/null", O_RDONLY | O_CLOEXEC))) < 0)
+    snprintf(err, sizeof(err), "/dev/null: %s", strerror(errno));
+  if (!*err && pipe2(ep, O_CLOEXEC) != 0) snprintf(err, sizeof(err), "pipe: %s", strerror(errno));
+  if (!*err) {
+    ep[0] = gl_fd_high(ep[0]);
+    ep[1] = gl_fd_high(ep[1]);
+    if (ep[0] < 0 || ep[1] < 0) snprintf(err, sizeof(err), "pipe: %s", strerror(errno));
+  }
+  if (!*err && !(envp = gl_spare_envp(c, inc, own, sizeof(own)))) snprintf(err, sizeof(err), "no memory");
+  pid_t pid = -1;
+  if (!*err) {
+    fflush(c->log);
+    pid = fork();
+    if (pid < 0) snprintf(err, sizeof(err), "fork: %s", strerror(errno));
+  }
+  if (pid == 0) {  // the child: async-signal-safe calls only until exec
+    setsid();
+    dup2(nullFd, 0);
+    dup2(logFd, 1);
+    dup2(logFd, 2);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_DFL;
+    for (int s = 1; s < NSIG; s++)
+      if (s != SIGKILL && s != SIGSTOP) sigaction(s, &sa, NULL);
+    sigset_t none;
+    sigemptyset(&none);
+    sigprocmask(SIG_SETMASK, &none, NULL);
+    const int w = ep[1];
+    int ok = (w <= 3 || syscall(SYS_close_range, 3u, (unsigned)w - 1u, 0u) == 0) &&
+             syscall(SYS_close_range, (unsigned)w + 1u, ~0u, 0u) == 0;
+    if (!ok)  // no close_range: close what can be open
+      for (int f = 3; f < 65536; f++)
+        if (f != w) close(f);
+    execvpe(c->cfg.spareArgv[0], c->cfg.spareArgv, envp);
+    int e = errno;
+    if (write(w, &e, sizeof(e)) < 0) e = 0;
+    _exit(127);
+  }
+  free(envp);
+  if (logFd >= 0) close(logFd);
+  if (nullFd >= 0) close(nullFd);
+  if (ep[1] >= 0) close(ep[1]);
+  if (*err) {
+    if (ep[0] >= 0) close(ep[0]);
+    gl_log(c, "spare spawn failed (incarnation %u, why %s): %s; no more spares (STOP_launcher)", inc, why, err);
+    gl_spare_give_up(c);
+    return -1;
+  }
+  int execErr = 0;
+  ssize_t r;
+  do r = read(ep[0], &execErr, sizeof(execErr));
+  while (r < 0 && errno == EINTR);
+  close(ep[0]);
+  if (r != (ssize_t)sizeof(execErr)) execErr = 0;
+  c->kidSeq = seq;
+  memset(k, 0, sizeof(*k));
+  k->used = 1;
+  k->seq = seq;
+  k->state = GL_KID_WAIT;
+  k->pid = pid;
+  k->pidfd = (int)syscall(SYS_pidfd_open, pid, 0);  // CLOEXEC by itself
+  k->inc = inc;
+  k->retry = retry;
+  k->spawnMs = gl_mono_ms();
+  c->st.nSpareSpawned++;
+  gl_log(c, "spare spawned (spawn %u, incarnation %u, pid %d, why %s, log %s)", seq, inc, (int)pid, why, path);
+  if (k->pidfd < 0)
+    gl_log(c, "spare spawn %u (pid %d): pidfd_open failed (%s): it is reaped by its pid only and never signalled "
+              "(STOP_launcher)", seq, (int)pid, strerror(errno));
+  if (execErr) {
+    c->st.nSpareExecFailed++;
+    gl_log(c, "spare exec failed (spawn %u, incarnation %u, pid %d): %s", seq, inc, (int)pid, strerror(execErr));
+  }
+  return 0;
+}
+
+static struct glKid* gl_kid_current(struct glCore* c, int state) {
+  for (int i = 0; i < GL_MAX_KIDS; i++)
+    if (c->kid[i].used && c->kid[i].state == state) return &c->kid[i];
+  return NULL;
+}
+/* A spare ended unused (or a spawn ended before its HELLO): respawn the same incarnation, at most spareRespawnMax times
+ * within GL_SPARE_RESPAWN_WINDOW_MS. */
+static void gl_spare_respawn(struct glCore* c, uint32_t inc, unsigned seq, pid_t pid, const char* when,
+                             const char* status) {
+  const double now = gl_mono_ms();
+  int k = 0;
+  for (int i = 0; i < c->nRespawnAt; i++)
+    if (now - c->respawnAt[i] < GL_SPARE_RESPAWN_WINDOW_MS) c->respawnAt[k++] = c->respawnAt[i];
+  c->nRespawnAt = k;
+  const int max = c->cfg.spareRespawnMax;
+  if (!gl_spare_active(c)) {
+    gl_log(c, "spawned spare exited unused (spawn %u, incarnation %u, pid %d, %s, %s): no respawn (no more spares)", seq,
+           inc, (int)pid, when, status);
+    return;
+  }
+  if (k >= max || k >= GL_MAX_RESPAWN_TIMES) {
+    gl_log(c, "spawned spare exited unused (spawn %u, incarnation %u, pid %d, %s, %s): respawn cap %d within %d ms "
+              "reached; no more spares (STOP_launcher)",
+           seq, inc, (int)pid, when, status, max, GL_SPARE_RESPAWN_WINDOW_MS);
+    gl_spare_give_up(c);
+    return;
+  }
+  c->respawnAt[c->nRespawnAt++] = now;
+  c->st.nSpareRespawned++;
+  gl_log(c, "spawned spare exited unused (spawn %u, incarnation %u, pid %d, %s, %s): respawn %d of %d within %d ms", seq,
+         inc, (int)pid, when, status, k + 1, max, GL_SPARE_RESPAWN_WINDOW_MS);
+  gl_spare_spawn(c, inc, "respawn", 0);
+}
+/* The warm spare was activated: it is (or is becoming) the rank; the next spare is its incarnation + 1. */
+static void gl_spare_activated(struct glCore* c, struct glKid* k, unsigned seq, pid_t pid, uint32_t inc,
+                               const char* by) {
+  if (k) k->state = GL_KID_USED;
+  c->st.nSpareActivated++;
+  gl_log(c, "spawned spare activated (spawn %u, incarnation %u, pid %d, by %s): next spare incarnation %u", seq, inc,
+         (int)pid, by, inc + 1u);
+  gl_spare_spawn(c, inc + 1u, "activated", 0);
+}
+/* Hooks from the registration and activation paths (s: the spare's entry). */
+static struct glKid* gl_kid_of_entry(struct glCore* c, const struct glEntry* s) {
+  struct glKid* k = gl_kid_current(c, GL_KID_WARM);
+  return k && k->helloPid == s->pid && k->nonce == s->nonce && k->rank == s->rank ? k : NULL;
+}
+static void gl_spare_on_hello(struct glCore* c, const struct glEntry* s) {
+  struct glKid* k = gl_kid_current(c, GL_KID_WAIT);
+  if (!k || !(k->pid == s->pid || getsid(s->pid) == k->pid)) return;  // not the spawned one (or a late HELLO of a killed one)
+  k->state = GL_KID_WARM;
+  k->helloPid = s->pid;
+  k->rank = s->rank;
+  k->nonce = s->nonce;
+  c->st.nSpawnedHello++;
+  gl_log(c, "spawned spare said HELLO (spawn %u, incarnation %u, pid %d, hello pid %d, rank %d incarnation %u, after "
+            "%.3f ms)",
+         k->seq, k->inc, (int)k->pid, (int)s->pid, s->rank, s->inc, gl_mono_ms() - k->spawnMs);
+  k->inc = s->inc;  // the next spare follows the incarnation the spare took
+}
+static void gl_spare_on_accepted(struct glCore* c, const struct glEntry* s) {
+  struct glKid* k = gl_kid_of_entry(c, s);
+  if (k) k->accepted = 1;
+}
+static void gl_spare_on_activated(struct glCore* c, const struct glEntry* s, const char* by) {
+  struct glKid* k = gl_kid_of_entry(c, s);
+  if (k && k->inc == s->inc) gl_spare_activated(c, k, k->seq, k->pid, s->inc, by);
+}
+/* A spawned process's pidfd is readable: reap it, then respawn or not by what it was. */
+static void gl_kid_ended(struct glCore* c, struct glKid* k) {
+  int st = 0;
+  pid_t r;
+  do r = waitpid(k->pid, &st, WNOHANG);
+  while (r < 0 && errno == EINTR);
+  if (r == 0) return;  // not yet a zombie (a pidfd is readable only once it is); next pass
+  if (r == k->pid) c->st.nSpareReaped++;
+  char sb[48];
+  gl_kid_status(st, r == k->pid, sb, sizeof(sb));
+  if (k->pidfd >= 0) close(k->pidfd);
+  const struct glKid d = *k;
+  memset(k, 0, sizeof(*k));
+  k->pidfd = -1;
+  if (d.state == GL_KID_WAIT) {
+    gl_spare_respawn(c, d.inc, d.seq, d.pid, "before HELLO", sb);
+  } else if (d.state == GL_KID_WARM && d.accepted) {  // ACCEPTED, then gone before DONE or its re-registration
+    gl_log(c, "spawned spare ended after ACCEPTED (spawn %u, incarnation %u, pid %d, %s)", d.seq, d.inc, (int)d.pid, sb);
+    gl_spare_activated(c, NULL, d.seq, d.pid, d.inc, "exit after ACCEPTED");
+  } else if (d.state == GL_KID_WARM) {
+    gl_spare_respawn(c, d.inc, d.seq, d.pid, "after HELLO", sb);
+  } else {
+    gl_log(c, "spawned process ended (spawn %u, incarnation %u, pid %d, %s)", d.seq, d.inc, (int)d.pid, sb);
+  }
+}
+/* HELLO bounds: SIGKILL through the spawn's pidfd, one retry; the retry's timeout ends the spares. */
+static void gl_kid_deadlines(struct glCore* c, double now) {
+  for (int i = 0; i < GL_MAX_KIDS; i++) {
+    struct glKid* k = &c->kid[i];
+    if (!k->used || k->state != GL_KID_WAIT || now - k->spawnMs < c->cfg.spareHelloMs) continue;
+    k->state = GL_KID_KILLED;
+    c->st.nSpareHelloTimeout++;
+    gl_signal_kid(c, k, SIGKILL);
+    if (!k->retry) {
+      gl_log(c, "spawned spare said no HELLO within %d ms (spawn %u, incarnation %u, pid %d): SIGKILL through its pidfd; "
+                "one retry (STOP_launcher)",
+             c->cfg.spareHelloMs, k->seq, k->inc, (int)k->pid);
+      gl_spare_spawn(c, k->inc, "hello_retry", 1);
+    } else {
+      gl_log(c, "spawned spare said no HELLO within %d ms (spawn %u, incarnation %u, pid %d, the retry): SIGKILL through "
+                "its pidfd; no more spares (STOP_launcher)",
+             c->cfg.spareHelloMs, k->seq, k->inc, (int)k->pid);
+      gl_spare_give_up(c);
+    }
+  }
+}
+/* Kids whose pidfd could not be opened: reaped by pid (never signalled). */
+static void gl_kids_unheld(struct glCore* c) {
+  for (int i = 0; i < GL_MAX_KIDS; i++)
+    if (c->kid[i].used && c->kid[i].pidfd < 0) gl_kid_ended(c, &c->kid[i]);
 }
 
 /* ------------------------------------------------------------------------------------------------- activation */
@@ -1323,6 +1654,7 @@ static void gl_register(struct glCore* c, int ci, const struct glUnixMsg* u, int
       gl_log(c, "rank %d incarnation %u re-registered (the revived process, pid %d): its pidfd swapped", d, inc, (int)pid);
       gl_hello_ack(c, ci, u, GL_UA_OK, GL_R_NONE);
       gl_reg_note(c, n, d);
+      gl_spare_on_activated(c, s, "re-registration");  // the warm spare it was: the next one (no-op after its DONE)
       return;
     }
   } else if (why == GL_R_NONE && o) {
@@ -1386,6 +1718,7 @@ static void gl_spare_hello(struct glCore* c, int ci, const struct glUnixMsg* u, 
   gl_log(c, "spare of rank %d incarnation %u said HELLO (pid %d): replaying", d, inc, (int)pid);
   gl_hello_ack(c, ci, u, GL_UA_OK, GL_R_NONE);
   gl_reg_note(c, n, d);
+  gl_spare_on_hello(c, s);  // the spawned warm spare's HELLO (a spare started by someone else is not matched)
 }
 
 static struct glEntry* gl_spare_of_conn(struct glCore* c, int ci, const struct glUnixMsg* u) {
@@ -1491,6 +1824,7 @@ static void gl_on_unix(struct glCore* c, int ci, const struct glUnixMsg* u, int 
           gl_sp_set(s, GL_SP_ACCEPTED);
           gl_act_answer(c, p, s->actReqSeq, GL_RS_ACT_ACCEPTED, GL_R_NONE, &rec, s, "accepted by the spare");
           gl_reg_note(c, s->nonce, s->rank);
+          gl_spare_on_accepted(c, s);
         } else if (rec.kind == GL_RS_ACT_LATER) {
           if (!s->laterSent) {
             s->laterSent = 1;
@@ -1515,6 +1849,7 @@ static void gl_on_unix(struct glCore* c, int ci, const struct glUnixMsg* u, int 
         memcpy(m.body, u->body, len);
         m.h.bodyBytes = (uint16_t)len;
         gl_peer_send(c, p, &m);
+        if (!ep) gl_spare_on_activated(c, s, "DONE");  // ACCEPTED and the activation's DONE: the next warm spare
       }
       return;
     }
@@ -1626,6 +1961,10 @@ struct glCore* gl_core_new(const struct glConfig* cfg, struct glTransport* tp) {
   if (!c) return NULL;
   c->cfg = *cfg;
   if (c->cfg.graceMs <= 0) c->cfg.graceMs = 1000;
+  if (c->cfg.spareHelloMs <= 0) c->cfg.spareHelloMs = 5000;
+  if (c->cfg.spareRespawnMax < 0) c->cfg.spareRespawnMax = 0;
+  if (c->cfg.spareFirstInc == 0) c->cfg.spareFirstInc = 1;
+  for (int i = 0; i < GL_MAX_KIDS; i++) c->kid[i].pidfd = -1;
   c->tp = tp;
   c->log = cfg->log ? cfg->log : stderr;
   c->listenFd = -1;
@@ -1705,11 +2044,18 @@ int gl_core_listen(struct glCore* c, const char* path, char* why, size_t whyLen)
   c->listenFd = fd;
   snprintf(c->sockPath, sizeof(c->sockPath), "%s", path);
   gl_log(c, "listening on its Unix socket (Q_Key 0x%08x)", c->cfg.qkey);
+  if (gl_spare_active(c) && !c->spareStarted) {  // the daemon's start: the first warm spare
+    c->spareStarted = 1;
+    gl_log(c, "warm spare on (command %s, HELLO bound %d ms, respawn cap %d within %d ms, first incarnation %u, logs %s)",
+           c->cfg.spareArgv[0], c->cfg.spareHelloMs, c->cfg.spareRespawnMax, GL_SPARE_RESPAWN_WINDOW_MS,
+           c->cfg.spareFirstInc, c->cfg.spareLogDir ? c->cfg.spareLogDir : "-");
+    gl_spare_spawn(c, c->cfg.spareFirstInc, "start", 0);
+  }
   return 0;
 }
 
 int gl_core_step(struct glCore* c, int timeoutMs) {
-  enum { NPF = 1 + GL_MAX_CONNS + GL_MAX_ENTRIES + GL_MAX_TP_FDS };
+  enum { NPF = 1 + GL_MAX_CONNS + GL_MAX_ENTRIES + GL_MAX_TP_FDS + GL_MAX_KIDS };
   struct pollfd pf[NPF];
   int kind[NPF], idx[NPF];
   uint64_t eid[NPF];
@@ -1743,11 +2089,24 @@ int gl_core_step(struct glCore* c, int timeoutMs) {
     kind[n] = 3;
     idx[n++] = i;
   }
+  for (int i = 0; i < GL_MAX_KIDS; i++)
+    if (c->kid[i].used && c->kid[i].pidfd >= 0) {
+      pf[n].fd = c->kid[i].pidfd;
+      pf[n].events = POLLIN;
+      kind[n] = 4;
+      eid[n] = c->kid[i].seq;
+      idx[n++] = i;
+    }
   double now = gl_mono_ms();
   int to = timeoutMs < GL_BEAT_MS ? timeoutMs : GL_BEAT_MS;
   for (int i = 0; i < GL_MAX_ENTRIES; i++)
     if (c->ent[i].used && c->ent[i].killAtMs > 0) {
       const double left = c->ent[i].killAtMs - now;
+      if (left < to) to = left < 0 ? 0 : (int)left + 1;
+    }
+  for (int i = 0; i < GL_MAX_KIDS; i++)
+    if (c->kid[i].used && c->kid[i].state == GL_KID_WAIT) {
+      const double left = c->kid[i].spawnMs + c->cfg.spareHelloMs - now;
       if (left < to) to = left < 0 ? 0 : (int)left + 1;
     }
   if (to < 0) to = 0;
@@ -1767,7 +2126,14 @@ int gl_core_step(struct glCore* c, int timeoutMs) {
     struct glEntry* e = &c->ent[idx[i]];
     if (e->used && e->id == eid[i] && e->pidfd == pf[i].fd) gl_exit_seen(c, e);
   }
+  for (int i = 0; i < n; i++) {  // spawned processes after the entries: an entry's own exit report comes first
+    if (!pf[i].revents || kind[i] != 4) continue;
+    struct glKid* k = &c->kid[idx[i]];
+    if (k->used && k->seq == eid[i] && k->pidfd == pf[i].fd) gl_kid_ended(c, k);
+  }
+  gl_kids_unheld(c);
   now = gl_mono_ms();
+  gl_kid_deadlines(c, now);
   for (int i = 0; i < GL_MAX_ENTRIES; i++) {
     struct glEntry* e = &c->ent[i];
     if (e->used && e->killAtMs > 0 && now >= e->killAtMs) {
@@ -1803,6 +2169,36 @@ void gl_core_shutdown(struct glCore* c) {
       gl_signal(c, e, SIGKILL);
     }
   }
+  // spawned processes: one without HELLO is SIGKILLed through its spawn pidfd; the unused warm spare got its SIGKILL
+  // above (through its HELLO's pidfd); an activated one is a rank and stays. Then up to 1 s to reap the ending ones.
+  c->stopping = 1;
+  for (int i = 0; i < GL_MAX_KIDS; i++) {
+    struct glKid* k = &c->kid[i];
+    if (k->used && k->state == GL_KID_WAIT && k->pidfd >= 0 && !gl_readable(k->pidfd)) {
+      gl_log(c, "shutdown: the spawned spare (spawn %u, incarnation %u, pid %d) said no HELLO: SIGKILL through its pidfd",
+             k->seq, k->inc, (int)k->pid);
+      gl_signal_kid(c, k, SIGKILL);
+    }
+  }
+  const double until = gl_mono_ms() + 1000;
+  for (int i = 0; i < GL_MAX_KIDS; i++) {
+    struct glKid* k = &c->kid[i];
+    if (!k->used) continue;
+    if (k->state != GL_KID_USED && k->pidfd >= 0) {
+      struct pollfd p = {k->pidfd, POLLIN, 0};
+      const double left = until - gl_mono_ms();
+      if (left > 0) (void)poll(&p, 1, (int)left + 1);
+    }
+    int st = 0;
+    const pid_t r = waitpid(k->pid, &st, WNOHANG);
+    char sb[48];
+    if (r == k->pid) c->st.nSpareReaped++;
+    gl_log(c, "shutdown: spawned process (spawn %u, incarnation %u, pid %d) %s", k->seq, k->inc, (int)k->pid,
+           r == k->pid ? gl_kid_status(st, 1, sb, sizeof(sb)) : "left running (not reaped)");
+    if (k->pidfd >= 0) close(k->pidfd);
+    memset(k, 0, sizeof(*k));
+    k->pidfd = -1;
+  }
   for (int i = 0; i < GL_MAX_ENTRIES; i++)
     if (c->ent[i].used) gl_entry_free(c, &c->ent[i]);
   for (int i = 0; i < GL_MAX_CONNS; i++)
@@ -1826,6 +2222,8 @@ void gl_core_free(struct glCore* c) {
     if (c->orphan[i].used) free(c->orphan[i].buf);
   for (int i = 0; i < GL_MAX_CONNS; i++)
     if (c->conn[i].used) gl_conn_close(c, i);
+  for (int i = 0; i < GL_MAX_KIDS; i++)
+    if (c->kid[i].used && c->kid[i].pidfd >= 0) close(c->kid[i].pidfd);
   if (c->listenFd >= 0) close(c->listenFd);
   free(c->page);
   free(c);
@@ -1883,6 +2281,130 @@ int gl_core_peer(const struct glCore* c, uint64_t nonce, int32_t rank, struct gl
 }
 const struct glStats* gl_core_stats(const struct glCore* c) { return &c->st; }
 const struct glPage* gl_core_page(const struct glCore* c) { return c->page; }
+int gl_core_kids(const struct glCore* c, struct glKidView* out, int max) {
+  int n = 0;
+  for (int i = 0; i < GL_MAX_KIDS; i++) {
+    const struct glKid* k = &c->kid[i];
+    if (!k->used) continue;
+    if (n < max) {
+      out[n].pid = k->pid;
+      out[n].helloPid = k->helloPid;
+      out[n].inc = k->inc;
+      out[n].state = k->state;
+      out[n].seq = k->seq;
+      out[n].retry = k->retry;
+      out[n].accepted = k->accepted;
+      out[n].held = k->pidfd >= 0;
+    }
+    n++;
+  }
+  return n;
+}
+
+/* ------------------------------------------------------------------------------------------------- spare options */
+
+void gl_spare_opts_init(struct glSpareOpts* o) {
+  memset(o, 0, sizeof(*o));
+  o->want = -1;
+  o->helloMs = 5000;
+  o->respawnMax = 3;
+  o->firstInc = 1;
+}
+static int gl_opt_int(const char* v, long lo, long hi, long* out) {
+  char* end = NULL;
+  errno = 0;
+  const long x = strtol(v, &end, 10);
+  if (errno || !end || end == v || *end || x < lo || x > hi) return -1;
+  *out = x;
+  return 0;
+}
+int gl_spare_opt(struct glSpareOpts* o, const char* opt, const char* val, char* why, size_t whyLen) {
+  const int known = !strcmp(opt, "--spare-cmd") || !strcmp(opt, "--spare-env") || !strcmp(opt, "--spare-log") ||
+                    !strcmp(opt, "--spare") || !strcmp(opt, "--spare-hello-ms") || !strcmp(opt, "--spare-respawn-max");
+  if (!known) return 0;
+  if (!val) {
+    snprintf(why, whyLen, "%s needs a value", opt);
+    return -1;
+  }
+  long x;
+  if (!strcmp(opt, "--spare-cmd")) {
+    free(o->cmdBuf);
+    o->cmdBuf = strdup(val);
+    o->argc = 0;
+    if (!o->cmdBuf) return snprintf(why, whyLen, "no memory"), -1;
+    for (char* p = o->cmdBuf; *p;) {  // split at spaces and tabs; no shell, no quotes
+      while (*p == ' ' || *p == '\t') *p++ = '\0';
+      if (!*p) break;
+      if (o->argc >= GL_SPARE_MAX_ARGS) return snprintf(why, whyLen, "--spare-cmd: more than %d words", GL_SPARE_MAX_ARGS), -1;
+      o->argv[o->argc++] = p;
+      while (*p && *p != ' ' && *p != '\t') p++;
+    }
+    o->argv[o->argc] = NULL;
+    if (o->argc == 0) return snprintf(why, whyLen, "--spare-cmd is empty"), -1;
+  } else if (!strcmp(opt, "--spare-env")) {
+    const char* eq = strchr(val, '=');
+    size_t kl = eq ? (size_t)(eq - val) : 0;
+    for (size_t i = 0; i < kl; i++)
+      if (!(val[i] == '_' || (val[i] >= 'A' && val[i] <= 'Z') || (val[i] >= 'a' && val[i] <= 'z') ||
+            (i > 0 && val[i] >= '0' && val[i] <= '9')))
+        kl = 0;
+    if (!kl) return snprintf(why, whyLen, "--spare-env %s: not KEY=VAL", val), -1;
+    for (int i = 0; gl_spare_forbidden[i]; i++)
+      if (gl_env_key_is(val, gl_spare_forbidden[i]))
+        return snprintf(why, whyLen, "--spare-env %s: %s is never passed to a spare", val, gl_spare_forbidden[i]), -1;
+    if (gl_env_key_is(val, GL_SPARE_INC_ENV)) {
+      if (gl_opt_int(eq + 1, 1, 0x7fffffff, &x) != 0)
+        return snprintf(why, whyLen, "--spare-env %s: the incarnation is a number >= 1", val), -1;
+      o->firstInc = (uint32_t)x;
+    }
+    if (o->nenv >= GL_SPARE_MAX_ENV) return snprintf(why, whyLen, "more than %d --spare-env", GL_SPARE_MAX_ENV), -1;
+    for (int i = 0; i < o->nenv; i++)  // the same key again replaces it
+      if (strncmp(o->env[i], val, kl + 1) == 0) {
+        free(o->env[i]);
+        o->env[i] = o->env[--o->nenv];
+        break;
+      }
+    if (!(o->env[o->nenv] = strdup(val))) return snprintf(why, whyLen, "no memory"), -1;
+    o->env[++o->nenv] = NULL;
+  } else if (!strcmp(opt, "--spare-log")) {
+    o->logDir = val;
+  } else if (!strcmp(opt, "--spare")) {
+    if (strcmp(val, "0") && strcmp(val, "1")) return snprintf(why, whyLen, "--spare is 0 or 1"), -1;
+    o->want = val[0] - '0';
+  } else if (!strcmp(opt, "--spare-hello-ms")) {
+    if (gl_opt_int(val, 1, 3600000, &x) != 0) return snprintf(why, whyLen, "--spare-hello-ms is 1-3600000"), -1;
+    o->helloMs = (int)x;
+  } else {
+    if (gl_opt_int(val, 0, GL_MAX_RESPAWN_TIMES, &x) != 0)
+      return snprintf(why, whyLen, "--spare-respawn-max is 0-%d", GL_MAX_RESPAWN_TIMES), -1;
+    o->respawnMax = (int)x;
+  }
+  return 1;
+}
+int gl_spare_opts_apply(struct glSpareOpts* o, struct glConfig* cfg, char* why, size_t whyLen) {
+  const int want = o->want < 0 ? o->argc > 0 : o->want;
+  cfg->spareArgv = NULL;
+  cfg->spareEnv = NULL;
+  cfg->spareLogDir = NULL;
+  if (!want) return 0;
+  if (o->argc == 0) return snprintf(why, whyLen, "--spare 1 needs --spare-cmd"), -1;
+  struct stat st;
+  if (!o->logDir || !*o->logDir) return snprintf(why, whyLen, "--spare-cmd needs --spare-log <dir>"), -1;
+  if (stat(o->logDir, &st) != 0 || !S_ISDIR(st.st_mode))
+    return snprintf(why, whyLen, "--spare-log %s is not a directory", o->logDir), -1;
+  cfg->spareArgv = o->argv;
+  cfg->spareEnv = o->env;
+  cfg->spareLogDir = o->logDir;
+  cfg->spareHelloMs = o->helloMs;
+  cfg->spareRespawnMax = o->respawnMax;
+  cfg->spareFirstInc = o->firstInc;
+  return 0;
+}
+void gl_spare_opts_free(struct glSpareOpts* o) {
+  free(o->cmdBuf);
+  for (int i = 0; i < o->nenv; i++) free(o->env[i]);
+  gl_spare_opts_init(o);
+}
 
 /* ------------------------------------------------------------------------------------------------- main */
 #ifndef GL_NO_MAIN
@@ -1901,8 +2423,11 @@ static void gl_usage(const char* a0) {
           "  --tc: the traffic class of its UD datagrams and QPs, the GIN QPs' own (default $NCCL_IB_TC, else 0).\n"
           "  --sock defaults to $%s, else $XDG_RUNTIME_DIR/gin-launcher/launcher.sock, else\n"
           "  /tmp/gin-launcher-<uid>/launcher.sock (directory mode 0700). --node defaults to $%s.\n"
-          "  Test switch (research build): NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=1 sends no EXITED (FENCED and LEFT stay).\n",
-          a0, GL_SOCK_ENV, GL_NODE_ENV);
+          "  Test switch (research build): NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=1 sends no EXITED (FENCED and LEFT stay).\n"
+          "  Warm spare: --spare-cmd \"ARGV...\" (split at spaces, no shell) --spare-log DIR [--spare-env K=V]...\n"
+          "  [--spare 0|1 (1 with --spare-cmd)] [--spare-hello-ms 5000] [--spare-respawn-max 3 (within 60 s)].\n"
+          "  The launcher sets %s, %s and NCCL_GIN_RESTORE_SPARE_INC in the spare's environment.\n",
+          a0, GL_SOCK_ENV, GL_NODE_ENV, GL_SOCK_ENV, GL_NODE_ENV);
 }
 
 int main(int argc, char** argv) {
@@ -1914,9 +2439,22 @@ int main(int argc, char** argv) {
   const char* tcEnv = getenv("NCCL_IB_TC");
   int tc = tcEnv ? atoi(tcEnv) : 0;  // design v3 2.5: the GIN QPs' GID index and traffic class
   uint32_t qkey = 0;
+  struct glSpareOpts so;
+  gl_spare_opts_init(&so);
+  char swhy[256];
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
     const char* v = i + 1 < argc ? argv[i + 1] : NULL;
+    const int so1 = gl_spare_opt(&so, a, v, swhy, sizeof(swhy));
+    if (so1 < 0) {
+      fprintf(stderr, "GIN/LA: %s\n", swhy);
+      gl_spare_opts_free(&so);
+      return 2;
+    }
+    if (so1 == 1) {
+      i++;
+      continue;
+    }
     if (!strcmp(a, "--node") && v) node = strtol(argv[++i], NULL, 0);
     else if (!strcmp(a, "--dev") && v) dev = argv[++i];
     else if (!strcmp(a, "--port") && v) port = atoi(argv[++i]);
@@ -1931,8 +2469,17 @@ int main(int argc, char** argv) {
   }
   if (node < 0 || node > 0xffff || !dev || tc < 0 || tc > 255) {
     gl_usage(argv[0]);
+    gl_spare_opts_free(&so);
     return 2;
   }
+  struct glConfig scfg;  // the spare fields only; copied into cfg below
+  memset(&scfg, 0, sizeof(scfg));
+  if (gl_spare_opts_apply(&so, &scfg, swhy, sizeof(swhy)) != 0) {
+    fprintf(stderr, "GIN/LA: %s\n", swhy);
+    gl_spare_opts_free(&so);
+    return 2;
+  }
+  if (so.argc > 0 && !scfg.spareArgv) fprintf(stderr, "GIN/LA: node %ld: warm spare off (--spare 0)\n", node);
   char path[sizeof(((struct sockaddr_un*)0)->sun_path)];
   if (sock && *sock) snprintf(path, sizeof(path), "%s", sock);
   else if (gl_default_sock_path(path, sizeof(path)) != 0) {
@@ -1954,16 +2501,26 @@ int main(int argc, char** argv) {
   (void)gidIndex;
   (void)tc;
   fprintf(stderr, "GIN/LA: built without libibverbs headers (GL_NO_VERBS): this program cannot run\n");
+  gl_spare_opts_free(&so);
   return 3;
 #else
   struct glTransport* tp = gl_transport_verbs_open(dev, port, gidIndex, tc, qkey, (uint32_t)node);
-  if (!tp) return 3;
+  if (!tp) {
+    gl_spare_opts_free(&so);
+    return 3;
+  }
   struct glConfig cfg;
   memset(&cfg, 0, sizeof(cfg));
   cfg.node = (uint32_t)node;
   cfg.qkey = qkey;
   cfg.uid = getuid();
   cfg.graceMs = 1000;
+  cfg.spareArgv = scfg.spareArgv;
+  cfg.spareEnv = scfg.spareEnv;
+  cfg.spareLogDir = scfg.spareLogDir;
+  cfg.spareHelloMs = scfg.spareHelloMs;
+  cfg.spareRespawnMax = scfg.spareRespawnMax;
+  cfg.spareFirstInc = scfg.spareFirstInc;
 #ifndef GL_PRODUCTION
   const char* nr = getenv("NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT");
   cfg.noExitReport = nr && atoi(nr) == 1;
@@ -1972,6 +2529,7 @@ int main(int argc, char** argv) {
   if (!c) {
     fprintf(stderr, "GIN/LA: the state page could not be registered\n");
     tp->ops->close(tp);
+    gl_spare_opts_free(&so);
     return 3;
   }
   char why[256];
@@ -1979,6 +2537,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "GIN/LA: %s\n", why);
     gl_core_free(c);
     tp->ops->close(tp);
+    gl_spare_opts_free(&so);
     return 3;
   }
   struct sigaction sa;
@@ -1993,6 +2552,7 @@ int main(int argc, char** argv) {
   gl_core_shutdown(c);
   gl_core_free(c);
   tp->ops->close(tp);
+  gl_spare_opts_free(&so);
   return 0;
 #endif
 }

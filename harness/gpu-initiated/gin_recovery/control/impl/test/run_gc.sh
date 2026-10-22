@@ -4,15 +4,30 @@
 # and memory check, and these additions:
 #   - builds gc | gct | gctc | gcp | gctp (~/rs-bundle/<RS_SET>/lib/<build>), driver ~/rs-bundle/<RS_SET>/gctest/<DRIVER>
 #     (gin_mi built against the gc tree's headers; deploy_gc.sh);
-#   - launchers (rdma builds gc, gcp only): one per node per hold (EXPERIMENT 5; the coordinator's decision of 2026-10-17),
-#     started by hold_gc.sh; this runner reads their records (LAUNCHER_REC_RAIN, LAUNCHER_REC_SUNNY). Every rank and spare gets
-#     NCCL_GIN_CTRL_LAUNCHER_SOCK and NCCL_GIN_CTRL_LAUNCHER_NODE of its node. Before the ranks start: both launchers alive
-#     with their "listening" line (section 8's start check; else exit 6), and both registration tables empty (every
-#     (rank, incarnation) of the earlier trials ended, no spare entry left; launcher_gc.sh table, up to LA_TABLE_WAIT_S; else
-#     exit 7 and cells_gc.sh writes STOP_launcher). Then a "trial_start <stem>" marker goes into both launcher logs and, after
-#     the trial, a "trial_end <stem>" marker; the trial's slice <stem>_launcher_<node>.log runs from the line after the
-#     previous trial_end marker to this trial's trial_end marker (no gap between trials: REVIEW_TEST fix 6). Each launcher's pid
-#     and start time are recorded before and after the trial;
+#   - launchers (rdma builds gc, gcp only): one per node per trial (EXPERIMENT 5; the coordinator's decision of 2026-10-22,
+#     replacing one per hold: the warm spare's command carries this trial's RS_RDV_NONCE, port, replay and kv paths), started
+#     by this runner before the ranks (launcher_gc.sh start, with the cell's LAUNCHER_ENV from hold_gc.sh and the warm spare's
+#     options) and stopped after the ranks (and the revived ranks) ended. Each start makes a new 0700 socket directory, so the
+#     registration table starts empty by construction. A stale launcher socket or process of this uid on a node (an earlier
+#     launcher not stopped): nothing more starts, exit 7; a launcher that does not come up with its "listening" line: exit 6;
+#     both are section 8's STOP_launcher (cells_gc.sh). Every rank gets NCCL_GIN_CTRL_LAUNCHER_SOCK and
+#     NCCL_GIN_CTRL_LAUNCHER_NODE of its node. A "trial_start <stem>" marker goes into both launcher logs before the ranks and a
+#     "trial_end <stem>" marker after them; <stem>_launcher_<node>.log is the launcher's whole log (its shutdown lines too).
+#     Each launcher's pid and start time are recorded before and after the trial;
+#   - the warm spare (launcher path; ../launcher/README_launcher.md "따뜻한 예비 프로세스"): the node's launcher starts it
+#     (--spare-cmd, --spare-env, --spare-log <trial dir>/spare/, --spare 1) and starts the next incarnation after each
+#     activation; this runner starts no spare there. The command is "bash <trial dir>/spare_exec.sh <driver> <rank> <args>
+#     <trial dir>/spare" (an exec chain, no fork, no timeout: the daemon owns the spare's lifetime; its kv is
+#     spare_i<incarnation>.kv). The spare's environment is the old runner's spare environment less what the launcher refuses
+#     or sets itself (spare_env_dropped in meta). One follower per node copies the per-spawn logs of that directory (the
+#     files the launcher's "spare spawned (... log <PATH>)" lines name; spare_logs_match in meta) into stamped local logs
+#     (the receipt clock of the follower: a line written before the follower read it is stamped late); readiness is
+#     "GINRS spare_ready" there. Kill targets of a spare (SPARE_KILL_FIRST, spare_then_rank, KILL2 of the same rank: the revived
+#     spare) are the "hello pid" of the launcher's "spawned spare said HELLO" line, checked by comm and the launcher's pid as
+#     parent. The spare-absent cells (SPARE_KILL_FIRST, spare_then_rank) run the launcher with --spare-respawn-max 0, so the
+#     killed spare is not replaced (its one cap line is expected, rows_gc.py). A second death of the same rank uses the
+#     daemon's next spare (incarnation 2); of another rank, that node's own warm spare. A revived rank still running
+#     WATCHDOG_S + 20 s after the start is SIGKILLed by its hello pid (which=bound; the old timeout -s KILL bound);
 #   - node clocks: before and after the ranks, the offset of sunny's CLOCK_MONOTONIC against rain's from round trips of one ssh
 #     session (read only; the round trip of the smallest sample is kept with it), so that a kill on one node and a judgement on
 #     the other compare in one clock without the ssh delay (meta mono_off_sunny_ms, mono_off_rtt_ms; REVIEW_TEST fix 2);
@@ -46,7 +61,8 @@
 #   - SUBJECT_RANK (cells_gc.json): the rank under test of a cell injected by a library test switch (FREEZE_PAGE, RST_GAP,
 #     QP_ERR, CREDIT_STALL, SOCK_MUTE), which has no KILL_RANK, STOP_RANK or DUTY_RANK (REVIEW_TEST B2);
 #   - shutdown order: the ranks and spares end by themselves (the library's BYE at the communicator's destroy, then exit),
-#     the runner waits for every one of them; the launchers stay for the hold (hold_gc.sh stops them last).
+#     the runner waits for every one of them (a revived spare: its launcher's end line); then it stops both launchers (the
+#     unused warm spares are SIGKILLed by the launcher's own shutdown).
 # Nothing is killed by name. sunny's management address comes from SUNNY_SSH only and rain's is looked up at run time; neither
 # is written to a file (copied logs are IPv4-masked). Every NCCL_ and GIN_ variable of the caller is dropped first. No link,
 # address, driver or firewall is touched. Run only by the main session, inside ../../../../common/cluster_run.sh through
@@ -57,12 +73,13 @@
 #   default 1), FENCE (empty: library default lineage), RST_GAP_MS (gctc only), CONFIRM_MS, PROBE_MS, SPARE_RANK (default
 #   KILL_RANK: the rank whose spare runs), SPARE_ENV (the spare's test switches), KILL_KIND, SPARE_GAP_MS (5), FDHOLD,
 #   FDHOLD_AFTER_MS (1000), FDHOLD_KILL_S (25), STOP_RANK, STOP_MS, DUTY_RANK, DUTY_ON_MS (50), DUTY_OFF_MS (50), DUTY_S (20),
-#   KILL2_KIND, SUBJECT_RANK, LAUNCHER_REC_RAIN, LAUNCHER_REC_SUNNY (hold_gc.sh), LA_TABLE_WAIT_S (3), SS_STEP1 (30),
-#   SS_STEP2 (80), BAR1_AT_GATE (hold_gc.sh, gin-mirror's training holds), HOLD_TAG (hold_gc.sh). RS_DRY_CONFIG=1 prints the
-#   configuration line and exits before any file, address, ssh or process is touched (CPU self-test).
+#   KILL2_KIND, SUBJECT_RANK, LAUNCHER_ENV (hold_gc.sh: the cell's launcher_env, +-joined, or -), LA_BOUND_S (the launcher's
+#   timeout -s KILL: WATCHDOG_S + 120), SS_STEP1 (30), SS_STEP2 (80), BAR1_AT_GATE (hold_gc.sh, gin-mirror's training holds),
+#   HOLD_TAG (hold_gc.sh). RS_DRY_CONFIG=1 prints the configuration line and exits before any file, address, ssh or process is
+#   touched (CPU self-test).
 # files in <logdir>: run_mi.sh's, plus <stem>_inject.out, <stem>_launcher_<node>.log, <stem>_fdhold.out, <stem>_ss.out
 #   (stem = <cell>_<lib>_<tag>).
-# exit: 0 trial ran, 5 host memory short, 6 the launchers not ready, 7 a launcher's registration table not empty.
+# exit: 0 trial ran, 5 host memory short, 6 a launcher did not come up, 7 a stale launcher socket or process on a node.
 set -u
 TRIAL=${1:?trial tag}; LOGDIR=${2:?logdir}
 for v in $(env | sed -n 's/^\(\(NCCL\|GIN\)_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
@@ -101,7 +118,7 @@ DUTY_RANK=${DUTY_RANK:-}; DUTY_ON_MS=${DUTY_ON_MS:-50}; DUTY_OFF_MS=${DUTY_OFF_M
 FDHOLD=${FDHOLD:-0}; SPARE_GAP_MS=${SPARE_GAP_MS:-5}
 WITNESS=${WITNESS:-}; FENCE=${FENCE:-}; RST_GAP_MS=${RST_GAP_MS:-}; CONFIRM_MS=${CONFIRM_MS:-}; PROBE_MS=${PROBE_MS:-}
 [ -n "$RST_GAP_MS" ] && [ "$LIB" != gctc ] && { echo "RST_GAP_MS is the tcp control build's parameter (LIB gctc)" >&2; exit 1; }
-if [ "$CTRL" = rdma ]; then LAUNCHER_SCOPE=hold; else LAUNCHER_SCOPE=none; fi
+if [ "$CTRL" = rdma ]; then LAUNCHER_SCOPE=trial; else LAUNCHER_SCOPE=none; fi
 # the second death: run_mi.sh's driver step kill (DIE2_LO..DIE2_HI from DIE_SEED), or the recorded-PID kill after armed
 DRAWPY='import hashlib,sys
 seed,cell,trial,which,lo,hi,umax=sys.argv[1:8]; lo,hi,umax=int(lo),int(hi),int(umax)
@@ -158,6 +175,22 @@ need_mb() {
   echo $(( (n + sp) * PIN_PER + sp * FETCH_PIN + 1024 ))
 }
 NEED_RAIN=$(need_mb rain); NEED_SUNNY=$(need_mb sunny)
+# the warm spare of each node's launcher (launcher path): the spare's rank per node (one per node), and which incarnation of
+# it is the run_mi.sh name "spare" / "spare_2nd" (SNAME[<node>:<incarnation>])
+declare -A SPN SNAME
+LA_RESPAWN_MAX=-
+if [ "$LAUNCHER_SCOPE" != none ]; then
+  if [ "$SPARE" = 1 ] && [ -n "$SPARE_RANK" ]; then SPN[$(node_of "$SPARE_RANK")]=$SPARE_RANK; SNAME[$(node_of "$SPARE_RANK"):1]=spare; fi
+  if [ "$SPARE2" = 1 ] && [ -n "$KILL2_RANK" ]; then
+    n2=$(node_of "$KILL2_RANK")
+    if [ "$KILL2_RANK" = "$SPARE_RANK" ] && [ "$SPARE" = 1 ]; then SNAME[$n2:2]=spare_2nd  # the daemon's next spare
+    elif [ -n "${SPN[$n2]:-}" ] && [ "${SPN[$n2]}" != "$KILL2_RANK" ]; then
+      echo "one warm spare per node: rank $KILL2_RANK's second spare and rank ${SPN[$n2]}'s are both on $n2" >&2; exit 1
+    else SPN[$n2]=$KILL2_RANK; SNAME[$n2:1]=spare_2nd; fi
+  fi
+  # the spare-absent cells: the killed spare must stay away (no respawn; the launcher's one cap line is expected)
+  { [ "${SPARE_KILL_FIRST:-0}" = 1 ] || [ "$KILL_KIND" = spare_then_rank ]; } && LA_RESPAWN_MAX=0
+fi
 CFGLINE="cell=${CELL:-} lib=$LIB ctrl=$CTRL driver=$DRIVER policy=$FAULT_POLICY restore=$RESTORE witness=${WITNESS:-default} \
 fence=${FENCE:-default} rst_gap_ms=${RST_GAP_MS:-} confirm_ms=${CONFIRM_MS:-} probe_ms=${PROBE_MS:-} launcher_scope=$LAUNCHER_SCOPE \
 kill_rank=$KILL_RANK kill_kind=$KILL_KIND spare_wanted=$SPARE spare_rank=$SPARE_RANK spare_gap_ms=$SPARE_GAP_MS fdhold=$FDHOLD \
@@ -165,7 +198,9 @@ stop_rank=$STOP_RANK stop_ms=$STOP_MS duty_rank=$DUTY_RANK duty_on_ms=$DUTY_ON_M
 kill2_rank=$KILL2_RANK kill2_kind=${KILL2_KIND:--} die_at=${DIE_AT:--} die2_at=${DIE2_AT:--} subject_rank=$SUBJECT inject=$INJECT \
 r0_env=$(echo ${R0_ENV:-} | tr ' ' '+') r1_env=$(echo ${R1_ENV:-} | tr ' ' '+') r2_env=$(echo ${R2_ENV:-} | tr ' ' '+') \
 r3_env=$(echo ${R3_ENV:-} | tr ' ' '+') spare_env=$(echo ${SPARE_ENV:-} | tr ' ' '+') overwrite=$OVERWRITE train=$TRAIN \
-steps=$STEPS bytes=$BYTES mirror=$MIRROR need_mb_rain=$NEED_RAIN need_mb_sunny=$NEED_SUNNY rs_set=$RS_SET"
+steps=$STEPS bytes=$BYTES mirror=$MIRROR need_mb_rain=$NEED_RAIN need_mb_sunny=$NEED_SUNNY rs_set=$RS_SET \
+launcher_spare_rain=${SPN[rain]:--} launcher_spare_sunny=${SPN[sunny]:--} launcher_respawn_max=$LA_RESPAWN_MAX \
+launcher_env=${LAUNCHER_ENV:--}"
 if [ "${RS_DRY_CONFIG:-0}" = 1 ]; then echo "$CFGLINE"; exit 0; fi
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 SUNNY_HOST=${SUNNY_SSH#*@}
@@ -183,7 +218,10 @@ WORK=$(mktemp -d /tmp/gc_rt.XXXXXX)
 RT=/tmp/gc_rt_$$_$RANDOM      # sunny-side file prefix of this trial
 # shellcheck source=../../../remaining/portpick.sh
 . "$D/../../../remaining/portpick.sh"
-cleanup() { ssh -n -o LogLevel=ERROR "$SUNNY_SSH" "rm -f $RT.*" 2>/dev/null || true; rm -rf "$WORK"; }
+LA_UP=0
+# the end of every exit: this trial's launchers (if still recorded as up), then the trial's node-side files (the sunny side's
+# spare directory too: rm -rf of this trial's own prefix)
+cleanup() { [ "$LA_UP" = 1 ] && la_stop_all; ssh -n -o LogLevel=ERROR "$SUNNY_SSH" "rm -rf $RT.*" 2>/dev/null || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 GID0=$(bash -c "$GID_PROBE" _ mlx5_1) || { echo "no GID on rain" >&2; exit 1; }
 GID1=$(sunny_sh "$GID_PROBE" mlx5_0) || { echo "no GID on sunny" >&2; exit 1; }
@@ -194,57 +232,136 @@ STAMP='import sys,time
 for l in sys.stdin.buffer:
     sys.stdout.write("%.6f %s\n" % (time.clock_gettime(time.CLOCK_MONOTONIC), l.decode("utf-8","replace").rstrip("\n")))
     sys.stdout.flush()'
-# ---- the launchers (rdma builds): hold_gc.sh's records (one launcher per node per hold)
-LA_OK=1; LA_TC=${LA_TC:-0}; LA_TABLE=-
-declare -A LAREC LASOCK LANODE
+# ---- the launchers (rdma builds): one per node for this trial (EXPERIMENT 5), started below once the spare's command is known
+LA_OK=1; LA_TC=${LA_TC:-0}; LA_STALE=-
+declare -A LAREC LASOCK LANODE FOLLOW
 LANODE[rain]=0; LANODE[sunny]=1
 STEM0="${CELL:-gc}_${LIB}_${TRIAL}"
-if [ "$LAUNCHER_SCOPE" = hold ]; then
-  LAREC[rain]=${LAUNCHER_REC_RAIN:-}; LAREC[sunny]=${LAUNCHER_REC_SUNNY:-}
-fi
+LAD=$WORK/la
+for nd in rain sunny; do LAREC[$nd]=$LAD/la_${STEM0}_$nd.rec; done
 la_val() { sed -n "s/.*\b$2=\([^ ]*\).*/\1/p" "${LAREC[$1]}" 2>/dev/null | head -1; }
-la_op() {  # la_op <op> <node> [args]: launcher_gc.sh on that node's recorded launcher
-  local op=$1 nd=$2 rec dir tag; shift 2
-  rec=${LAREC[$nd]}; dir=$(dirname "$rec"); tag=$(basename "$rec" .rec); tag=${tag#la_}; tag=${tag%_$nd}
-  bash "$D/launcher_gc.sh" "$op" "$nd" "$dir" "$tag" "$@"
+la_log() { echo "$LAD/la_${STEM0}_$1.log"; }
+la_op() {  # la_op <op> <node> [args]: launcher_gc.sh on this trial's launcher of that node
+  local op=$1 nd=$2; shift 2
+  bash "$D/launcher_gc.sh" "$op" "$nd" "$LAD" "$STEM0" "$@"
+}
+la_stop_all() {  # both launchers of this trial (launcher_gc.sh stop: a node without a record is skipped)
+  local nd
+  for nd in rain sunny; do LA_TC=$LA_TC bash "$D/launcher_gc.sh" stop "$nd" "$LAD" "$STEM0" > /dev/null 2>&1; done
+  LA_UP=0
 }
 LAB_RAIN=-; LAB_SUNNY=-; LAA_RAIN=-; LAA_SUNNY=-
-early_meta() {  # early_meta <k=v ...>: the meta of a trial that did not start (score_gc.py reads launcher_ready and the table)
+early_meta() {  # early_meta <k=v ...>: the meta of a trial that did not start (score_gc.py reads launcher_ready, launcher_stale)
   mkdir -p "$LOGDIR"
-  echo "cell=${CELL:-} lib=$LIB ctrl=$CTRL driver=$DRIVER trial=$TRIAL hold=${HOLD_TAG:-} subject_rank=$SUBJECT inject=$INJECT $* launcher_before_rain=$(echo "$LAB_RAIN" | tr ' ' ',') launcher_before_sunny=$(echo "$LAB_SUNNY" | tr ' ' ',') runner=gcr" \
+  echo "cell=${CELL:-} lib=$LIB ctrl=$CTRL driver=$DRIVER trial=$TRIAL hold=${HOLD_TAG:-} subject_rank=$SUBJECT inject=$INJECT launcher_scope=$LAUNCHER_SCOPE $* launcher_before_rain=$(echo "$LAB_RAIN" | tr ' ' ',') launcher_before_sunny=$(echo "$LAB_SUNNY" | tr ' ' ',') runner=gcr" \
     > "$LOGDIR/${STEM0}_meta.txt"
 }
-if [ "$LAUNCHER_SCOPE" != none ]; then
-  for nd in rain sunny; do
-    [ -f "${LAREC[$nd]:-}" ] || { LA_OK=0; continue; }
-    LASOCK[$nd]=$(la_val "$nd" sock)
-    info=$(la_op info "$nd")
-    [ "$nd" = rain ] && LAB_RAIN=$info || LAB_SUNNY=$info
-    case "$info" in *"alive=1 ready=1"*) ;; *) LA_OK=0 ;; esac
-  done
-  if [ "$LA_OK" != 1 ]; then  # section 8: the launcher not ready on both nodes at the trial's start -> nothing runs
-    early_meta launcher_ready=0
-    echo "[${CELL:-gc}#$TRIAL] the launchers are not ready on both nodes: no rank started" >&2
-    exit 6
-  fi
-  # the registration tables must be empty at the trial's start (the earlier trials' entries all ended)
-  tend=$(( $(date +%s) + ${LA_TABLE_WAIT_S:-3} ))
-  while :; do
-    LA_TABLE=""
-    for nd in rain sunny; do
-      t=$(la_op table "$nd"); case "$t" in "table open=0") ;; *) LA_TABLE="$LA_TABLE $nd:${t#table }" ;; esac
-    done
-    [ -z "$LA_TABLE" ] && { LA_TABLE=empty; break; }
-    [ "$(date +%s)" -ge "$tend" ] && break
-    sleep 0.2
-  done
-  if [ "$LA_TABLE" != empty ]; then
-    early_meta launcher_ready=1 "launcher_table=$(echo "$LA_TABLE" | sed 's/^ //' | tr ' ' ',')"
-    echo "[${CELL:-gc}#$TRIAL] a launcher's registration table is not empty at the trial's start:$LA_TABLE" >&2
-    exit 7
-  fi
-  for nd in rain sunny; do la_op mark "$nd" trial_start "$STEM0"; done
-fi
+# LAPY <op> <launcher log> ...: the warm spare's lines of one launcher log (stamped; ../launcher/README_launcher.md's exact lines)
+#   spawned <log> <inc> <wait s>      "<spawn> <pid> <why> <log path>" of the first "spare spawned" line of that incarnation
+#   hello <log> <rank> <inc> <wait s> "<hello pid> <spawn>" of the last "spawned spare said HELLO" line for (rank, inc) once one is there
+#   hellos <log>                      one line "<spawn> <inc> <hello pid>" per HELLO line
+#   open <log> <deadline epoch s>     waits until every activated spawn has its end line; prints "<spawn>:<hello pid>" of those without
+#   rc <log> <inc>                    the exit code of the last HELLO'd spawn of that incarnation (signal n -> 128 + n; none)
+#   files <log>                       the basenames of the per-spawn logs the "spare spawned" lines name
+LAPY='import os,re,sys,time
+SP=re.compile(r"GIN/LA: node \d+: spare spawned \(spawn (\d+), incarnation (\d+), pid (-?\d+), why (\w+), log (\S+)\)")
+HE=re.compile(r"GIN/LA: node \d+: spawned spare said HELLO \(spawn (\d+), incarnation (\d+), pid -?\d+, hello pid (-?\d+), rank (\d+) incarnation (\d+),")
+AC=re.compile(r"GIN/LA: node \d+: spawned spare activated \(spawn (\d+),")
+EN=re.compile(r"GIN/LA: node \d+: (?:spawned process ended|spawned spare ended after ACCEPTED|spawned spare exited unused|shutdown: spawned process) \(spawn (\d+), incarnation \d+, pid -?\d+(?:, before HELLO|, after HELLO)?(?:, |\) )(exit (\d+)|signal (\d+)|status unknown|left running)")
+def lines(f):
+    try: return open(f,errors="replace").read().splitlines()
+    except OSError: return []
+op,f=sys.argv[1],sys.argv[2]; a=sys.argv[3:]
+if op in ("spawned","hello"):
+    end=time.time()+float(a[-1])
+    while True:
+        L=lines(f)
+        if op=="spawned":
+            m=[x for l in L for x in [SP.search(l)] if x and x.group(2)==a[0]]
+            if m: print(m[0].group(1),m[0].group(3),m[0].group(4),m[0].group(5)); sys.exit(0)
+        else:
+            m=[x for l in L for x in [HE.search(l)] if x and x.group(4)==a[0] and x.group(5)==a[1]]
+            if m: print(m[-1].group(3),m[-1].group(1)); sys.exit(0)
+        if time.time()>=end: sys.exit(1)
+        time.sleep(0.005)
+elif op=="hellos":
+    for l in lines(f):
+        m=HE.search(l)
+        if m: print(m.group(1),m.group(2),m.group(3))
+elif op=="open":
+    dl=float(a[0])
+    while True:
+        L=lines(f)
+        act={x.group(1) for l in L for x in [AC.search(l)] if x}
+        ended={x.group(1) for l in L for x in [EN.search(l)] if x and x.group(2)!="left running"}
+        op_=sorted(act-ended,key=int)
+        if not op_ or time.time()>=dl: break
+        time.sleep(0.05)
+    hp={x.group(1):x.group(3) for l in L for x in [HE.search(l)] if x}
+    print(" ".join("%s:%s"%(s,hp.get(s,"-")) for s in op_))
+elif op=="rc":
+    L=lines(f)
+    sp=[x.group(1) for l in L for x in [HE.search(l)] if x and x.group(2)==a[0]]
+    rc="none"
+    if sp:
+        for l in L:
+            x=EN.search(l)
+            if x and x.group(1)==sp[-1]:
+                rc=x.group(3) if x.group(3) else (str(128+int(x.group(4))) if x.group(4) else "none")
+    print(rc)
+elif op=="files":
+    for l in lines(f):
+        m=SP.search(l)
+        if m: print(os.path.basename(m.group(5)))'
+# FOLLOWPY <dir> <bound s> (on the spare's node, read only): every per-spawn log the launcher writes into <dir>
+# (spare_n<node>_s<spawn>_i<inc>_p<pid>[_k].log), in spawn order, as "<inc> <line>" lines; "<inc> #file <name>" first for
+# each file; ends one pass after <dir>/.end appears (run_gc.sh touches it after the launcher stopped) or at the bound
+FOLLOWPY='import os,re,sys,time
+d,bound=sys.argv[1],float(sys.argv[2])
+rx=re.compile(r"^spare_n\d+_s(\d+)_i(\d+)_p\d+(?:_\d)?\.log$")
+off={}; buf={}; inc={}
+def scan():
+    try: names=os.listdir(d)
+    except OSError: return
+    for s,n,i in sorted((int(m.group(1)),n,m.group(2)) for n in names for m in [rx.match(n)] if m):
+        if n not in off:
+            off[n]=0; buf[n]=b""; inc[n]=i; sys.stdout.write("%s #file %s\n"%(i,n))
+        try:
+            with open(os.path.join(d,n),"rb") as fh:
+                fh.seek(off[n]); b=fh.read()
+        except OSError:
+            continue
+        off[n]+=len(b); parts=(buf[n]+b).split(b"\n"); buf[n]=parts.pop()
+        for l in parts: sys.stdout.write("%s %s\n"%(i,l.decode("utf-8","replace")))
+    sys.stdout.flush()
+end=time.time()+bound
+while time.time()<end:
+    fin=os.path.exists(os.path.join(d,".end"))
+    scan()
+    if fin: break
+    time.sleep(0.005)
+for n,b in buf.items():
+    if b: sys.stdout.write("%s %s\n"%(inc[n],b.decode("utf-8","replace")))
+sys.stdout.flush()'
+# SPLITPY <work> <node> <inc=name,...>: FOLLOWPY's lines stamped at receipt (rain's CLOCK_MONOTONIC) into <work>/<name>.log
+# (spare, spare_2nd; another incarnation: spare_<node>_i<inc>); the file names into <work>/spare_files_<node>
+SPLITPY='import os,sys,time
+work,node,mp=sys.argv[1],sys.argv[2],sys.argv[3]
+m=dict(x.split("=",1) for x in mp.split(",") if "=" in x)
+fh={}; files=open(os.path.join(work,"spare_files_"+node),"a")
+for l in sys.stdin.buffer:
+    t=time.clock_gettime(time.CLOCK_MONOTONIC)
+    i,_,rest=l.decode("utf-8","replace").rstrip("\n").partition(" ")
+    if rest.startswith("#file "):
+        files.write(rest[6:]+"\n"); files.flush(); continue
+    name=m.get(i,"spare_%s_i%s"%(node,i))
+    if name not in fh: fh[name]=open(os.path.join(work,name+".log"),"a")
+    fh[name].write("%.6f %s\n"%(t,rest)); fh[name].flush()'
+# the warm spare's command (bash <this file> <driver> <rank> <N> <rain address> <port> <spare dir>): an exec chain (bash ->
+# stdbuf -> driver, one pid; no timeout: the launcher owns the spare's lifetime), the kv per incarnation. No address in the file.
+# shellcheck disable=SC2016
+SPAREEXEC='# run_gc.sh: the warm spare of this trial (written per trial; the arguments come from the --spare-cmd words)
+exec stdbuf -oL -eL "$1" "$2" "$3" "$4" "$5" "$6/spare_i${NCCL_GIN_RESTORE_SPARE_INC:-1}.kv"'
 la_env() {  # the rank's or spare's launcher variables (its node's socket and node number)
   [ "$LAUNCHER_SCOPE" = none ] && return
   echo "NCCL_GIN_CTRL_LAUNCHER_SOCK=${LASOCK[$1]} NCCL_GIN_CTRL_LAUNCHER_NODE=${LANODE[$1]}"
@@ -312,6 +429,78 @@ while time.time()<end:
         pass
     time.sleep(0.002)'
 wait_line() { python3 -c "$WAITPY" "$@"; }
+# ---- this trial's launchers (rdma builds; EXPERIMENT 5: one per node per trial), each with its node's warm spare
+LA_BOUND_S=${LA_BOUND_S:-$((WATCHDOG_S + 120))}
+SPARE_ENV_DROPPED=""; SPARE_BOUND_KILL=0; SPARE_SPAWN_N=-; SPARE_LOGS_MATCH=-
+declare -A SPP
+[ -n "$SPORT" ] && SPP[$(node_of "$SPARE_RANK")]=$SPORT
+[ -n "$SPORT2" ] && [ "$KILL2_RANK" != "$SPARE_RANK" ] && SPP[$(node_of "$KILL2_RANK")]=$SPORT2
+spare_opts() {  # spare_opts <node>: SOPTS = that node's warm-spare options for launcher_gc.sh start (none without a spare there)
+  local nd=$1 r w
+  SOPTS=()
+  r=${SPN[$nd]:-}; [ -n "$r" ] || return 0
+  SOPTS=(--spare-cmd "bash $(npath "$nd" spare_exec.sh) $RSBIN $r $ARGS $(npath "$nd" spare)" --spare-log "$(npath "$nd" spare)" --spare 1)
+  [ "$LA_RESPAWN_MAX" != - ] && SOPTS+=(--spare-respawn-max "$LA_RESPAWN_MAX")
+  # the old runner's spare environment (NENV, hca, RS_ENV, the nonce, the spare variables, SPARE_ENV) less what the launcher
+  # refuses or sets itself (its socket and node, the incarnation: the daemon's first is 1, the next ones its own)
+  for w in $NENV $(hca "$nd") $RS_ENV RS_RDV_NONCE=$NONCE NCCL_GIN_RESTORE_SPARE=$r NCCL_GIN_RESTORE_SPARE_PORT=${SPP[$nd]:-} \
+           NCCL_GIN_RESTORE_SPARE_WAIT_MS=$SPARE_WAIT_MS NCCL_GIN_RESTORE_REPLAY=$(npath "$nd" "r$r.rec") ${SPARE_ENV:-}; do
+    case "$w" in *=*) ;; *) continue ;; esac
+    case "${w%%=*}" in
+      NCCL_GIN_RESTORE_RECORD|NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT|GIN_RS_DIE_IN_STEP|GIN_RS_DIE_AT|NCCL_GIN_CTRL_LAUNCHER_SOCK|NCCL_GIN_CTRL_LAUNCHER_NODE|NCCL_GIN_RESTORE_SPARE_INC)
+        SPARE_ENV_DROPPED="$SPARE_ENV_DROPPED${SPARE_ENV_DROPPED:+,}${w%%=*}" ;;
+      *) SOPTS+=(--spare-env "$w") ;;
+    esac
+  done
+}
+la_hello() {  # la_hello <name> <node> <rank> <inc> <wait s>: the spare's "hello pid" and its launcher's pid -> $WORK/<name>.cpid
+  local q
+  read -r q _ <<< "$(python3 -c "$LAPY" hello "$(la_log "$2")" "$3" "$4" "$5")"
+  [ -n "${q:-}" ] && echo "$q $(la_val "$2" pid) -" > "$WORK/$1.cpid"
+}
+if [ "$LAUNCHER_SCOPE" != none ]; then
+  mkdir -p "$LAD"
+  LA_UP=1; la_rc=0
+  for nd in rain sunny; do
+    largs=()
+    [ -n "${LAUNCHER_ENV:-}" ] && [ "$LAUNCHER_ENV" != - ] && IFS=+ read -r -a largs <<< "$LAUNCHER_ENV"
+    spare_opts "$nd"
+    if [ "${#SOPTS[@]}" -gt 0 ]; then  # the spare's directory (its per-spawn logs and kv) and its exec script, on its node
+      # shellcheck disable=SC2016
+      node_sh "$nd" 'umask 077; mkdir -p "$1" && printf "%s\n" "$3" > "$2"' "$(npath "$nd" spare)" "$(npath "$nd" spare_exec.sh)" "$SPAREEXEC" \
+        || { la_rc=6; break; }
+    fi
+    out=$(LA_TC=$LA_TC LA_BOUND_S=$LA_BOUND_S bash "$D/launcher_gc.sh" start "$nd" "$LAD" "$STEM0" "${largs[@]}" "${SOPTS[@]}"); rc=$?
+    case "$rc" in
+      0) ;;
+      3) LA_STALE="$nd:$(echo "$out" | sed -n 's/^stale sock=\([^ ]*\) proc=\([^ ]*\).*/\1+\2/p')"; la_rc=7; break ;;
+      *) la_rc=6; break ;;
+    esac
+  done
+  if [ "$la_rc" = 0 ]; then
+    for nd in rain sunny; do
+      LASOCK[$nd]=$(la_val "$nd" sock)
+      info=$(la_op info "$nd")
+      [ "$nd" = rain ] && LAB_RAIN=$info || LAB_SUNNY=$info
+      case "$info" in *"alive=1 ready=1"*) ;; *) la_rc=6 ;; esac
+    done
+  fi
+  if [ "$la_rc" != 0 ]; then  # section 8: a launcher not up (6) or a stale launcher socket or process (7) -> nothing runs
+    la_stop_all
+    LA_OK=0
+    early_meta launcher_ready=0 "launcher_stale=$LA_STALE"
+    echo "[${CELL:-gc}#$TRIAL] the launchers are not up on both nodes ($([ "$la_rc" = 7 ] && echo "stale: $LA_STALE" || echo "not ready")): no rank started" >&2
+    exit "$la_rc"
+  fi
+  for nd in rain sunny; do la_op mark "$nd" trial_start "$STEM0"; done
+  for nd in rain sunny; do  # one follower per node with a spare: its per-spawn logs -> $WORK/<name>.log (stamped at receipt)
+    [ -n "${SPN[$nd]:-}" ] || continue
+    map=""
+    for k in "${!SNAME[@]}"; do [ "${k%%:*}" = "$nd" ] && map="$map${map:+,}${k#*:}=${SNAME[$k]}"; done
+    ( node_py "$nd" "$FOLLOWPY" "$(npath "$nd" spare)" "$((LA_BOUND_S + 30))" 2>/dev/null | python3 -u -c "$SPLITPY" "$WORK" "$nd" "$map" ) &
+    FOLLOW[$nd]=$!
+  done
+fi
 GPU_APPS="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -c .)/$(ssh -n "$SUNNY_SSH" "nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -c ." 2>/dev/null)"
 # the node clocks (REVIEW_TEST fix 2): sunny's CLOCK_MONOTONIC minus rain's, from the smallest of ten round trips over one ssh
 # session (read only: the far side prints its clock for each line it reads); "<offset ms> <round trip ms>"
@@ -459,22 +648,33 @@ start_spare() {  # start_spare <name> <rank> <port> [extra env]
   fi
 }
 SPARE_ON=0; SPARE2_ON=0; T_READY=0; T_READY2=0
-[ -n "$SPORT" ] && start_spare spare "$SPARE_RANK" "$SPORT"
-# the second spare: for another rank as run_mi.sh; for the same rank its incarnation is 2 (TODO(phase3): the variable)
-if [ -n "$SPORT2" ]; then start_spare spare_2nd "$KILL2_RANK" "$SPORT2"
-elif [ "$SPARE2" = 1 ] && [ "$KILL2_RANK" = "$SPARE_RANK" ]; then
-  save=$PORT; nextport "$SPORT"; SPORT2=$PORT; PORT=$save
-  start_spare spare_2nd "$KILL2_RANK" "$SPORT2" "NCCL_GIN_RESTORE_SPARE_INC=2"
+if [ "$LAUNCHER_SCOPE" = none ]; then  # tcp builds: no launcher, this runner starts the spares (run_mi.sh's way)
+  [ -n "$SPORT" ] && start_spare spare "$SPARE_RANK" "$SPORT"
+  # the second spare: for another rank as run_mi.sh; for the same rank its incarnation is 2
+  if [ -n "$SPORT2" ]; then start_spare spare_2nd "$KILL2_RANK" "$SPORT2"
+  elif [ "$SPARE2" = 1 ] && [ "$KILL2_RANK" = "$SPARE_RANK" ]; then
+    save=$PORT; nextport "$SPORT"; SPORT2=$PORT; PORT=$save
+    start_spare spare_2nd "$KILL2_RANK" "$SPORT2" "NCCL_GIN_RESTORE_SPARE_INC=2"
+  fi
+  grep -qx spare "$WORK/spares_started" 2>/dev/null && SPARE_ON=1
+  grep -qx spare_2nd "$WORK/spares_started" 2>/dev/null && SPARE2_ON=1
+else  # the launchers' warm spares (spawned at their start): incarnation 1 of each node's spare rank
+  for k in "${!SNAME[@]}"; do
+    [ "${k#*:}" = 1 ] || continue
+    python3 -c "$LAPY" spawned "$(la_log "${k%%:*}")" 1 10 > /dev/null || continue
+    if [ "${SNAME[$k]}" = spare ]; then SPARE_ON=1; else SPARE2_ON=1; fi
+  done
 fi
-grep -qx spare "$WORK/spares_started" 2>/dev/null && SPARE_ON=1
-grep -qx spare_2nd "$WORK/spares_started" 2>/dev/null && SPARE2_ON=1
 if [ "$SPARE_ON" = 1 ]; then
   read -r T_READY _ <<< "$(wait_line "$WORK/spare.log" "GINRS spare_ready rank=$SPARE_RANK " 0 0 60)"; T_READY=${T_READY:-0}
+  [ "$LAUNCHER_SCOPE" != none ] && la_hello spare "$(node_of "$SPARE_RANK")" "$SPARE_RANK" 1 10
 fi
 if [ "$SPARE2_ON" = 1 ]; then
   read -r T_READY2 _ <<< "$(wait_line "$WORK/spare_2nd.log" "GINRS spare_ready rank=$KILL2_RANK " 0 0 60)"; T_READY2=${T_READY2:-0}
+  [ "$LAUNCHER_SCOPE" != none ] && la_hello spare_2nd "$(node_of "$KILL2_RANK")" "$KILL2_RANK" 1 10
 fi
-# SPARE_KILL_FIRST=1 (gin-restore's spare-absent regression cell): the spare SIGKILLed by its recorded PID once ready
+# SPARE_KILL_FIRST=1 (gin-restore's spare-absent regression cell): the spare SIGKILLed by its recorded PID once ready (the
+# launcher path: its HELLO pid, parent the launcher; the launcher runs with --spare-respawn-max 0, so no spare replaces it)
 if [ "$SPARE_ON" = 1 ] && [ "${SPARE_KILL_FIRST:-0}" = 1 ] && [ "$T_READY" != 0 ]; then
   read -r c p _ < <(cpid_of spare)
   inj "$(node_of "$SPARE_RANK")" "$WORK/spare_kill.out" kill "${c:-0}" "${p:--}" "$BINNAME" "$SPARE_RANK" "$(node_of "$SPARE_RANK")" spare
@@ -580,13 +780,38 @@ if [ "$KILL2_KIND" = pid_after_armed ]; then
   KILLER2=$!
 fi
 for ((r = 0; r < N; r++)); do wait "${PID[r$r]}" 2>/dev/null; done
-[ "$SPARE_ON" = 1 ] && wait "${PID[spare]}" 2>/dev/null
-[ "$SPARE2_ON" = 1 ] && wait "${PID[spare_2nd]}" 2>/dev/null
+if [ "$LAUNCHER_SCOPE" = none ]; then
+  [ "$SPARE_ON" = 1 ] && wait "${PID[spare]}" 2>/dev/null
+  [ "$SPARE2_ON" = 1 ] && wait "${PID[spare_2nd]}" 2>/dev/null
+else
+  # a revived spare is a rank now and a child of its launcher: wait for the launcher's end line of every activated spawn, up
+  # to the old bound (T0 + WATCHDOG_S + 20 s); one still running then is SIGKILLed by its hello pid (parent: the launcher)
+  dl=$(awk -v a="$T0" -v w="$WATCHDOG_S" 'BEGIN{printf "%.3f", a + w + 20}')
+  for nd in rain sunny; do
+    [ -n "${SPN[$nd]:-}" ] || continue
+    for x in $(python3 -c "$LAPY" open "$(la_log "$nd")" "$dl"); do
+      [ "${x#*:}" = - ] && continue
+      inj "$nd" "$WORK/cleanup.out" kill "${x#*:}" "$(la_val "$nd" pid)" "$BINNAME" "${SPN[$nd]}" "$nd" bound
+      SPARE_BOUND_KILL=$((SPARE_BOUND_KILL + 1))
+    done
+  done
+  # the same rank's second spare is the daemon's next one (incarnation 2, spawned after the first activation)
+  if [ "$SPARE2" = 1 ] && [ "$SPARE" = 1 ] && [ -n "$KILL2_RANK" ] && [ "$KILL2_RANK" = "$SPARE_RANK" ]; then
+    n2=$(node_of "$KILL2_RANK")
+    if python3 -c "$LAPY" spawned "$(la_log "$n2")" 2 0 > /dev/null; then
+      SPARE2_ON=1
+      la_hello spare_2nd "$n2" "$KILL2_RANK" 2 0
+      read -r T_READY2 _ <<< "$(wait_line "$WORK/spare_2nd.log" "GINRS spare_ready rank=$KILL2_RANK " 0 0 1)"; T_READY2=${T_READY2:-0}
+    fi
+  fi
+fi
 T1=$(date +%s.%N)
 [ -n "$INJECTOR" ] && wait "$INJECTOR" 2>/dev/null
 [ -n "$KILLER2" ] && wait "$KILLER2" 2>/dev/null
 kill "$SSPID" 2>/dev/null  # this runner's own snapshot subshell: a snapshot not taken by now is left out
-wait 2>/dev/null
+for j in $(jobs -p); do  # every background job of this runner but the spare followers (they end after the launchers' stop)
+  case " ${FOLLOW[*]:-} " in *" $j "*) ;; *) wait "$j" 2>/dev/null ;; esac
+done
 # the end: a recorded rank or spare PID still stopped gets SIGCONT then SIGKILL; the fd holder by the pid of its fork line
 names="r0 r1 r2 r3"; [ "$SPARE_ON" = 1 ] && names="$names spare"; [ "$SPARE2_ON" = 1 ] && names="$names spare_2nd"
 node_of_name() { case "$1" in spare) node_of "$SPARE_RANK" ;; spare_2nd) node_of "$KILL2_RANK" ;; *) node_of "${1#r}" ;; esac; }
@@ -607,10 +832,31 @@ if [ -s "$WORK/kill_pair.out" ]; then  # the pair kill: the spare's line apart (
   grep 'GINRS spare_killed' "$WORK/kill_pair.out" | sed 's/GINRS spare_killed/GINRS killed/' >> "$WORK/spare_kill.out"
   grep -v 'GINRS spare_killed' "$WORK/kill_pair.out" >> "$WORK/kill.out"
 fi
-# the launchers after the trial (pid and start again; the trial_end marker closes this trial's slice)
+# the launchers after the trial (pid and start again, the trial_end marker), then their stop (the unused spares end through
+# the launcher's shutdown), then the spare followers' end (one more pass after .end) and the spares' kv and exit codes
 if [ "$LAUNCHER_SCOPE" != none ]; then
   LAA_RAIN=$(la_op info rain); LAA_SUNNY=$(la_op info sunny)
   for nd in rain sunny; do la_op mark "$nd" trial_end "$STEM0"; done
+  la_stop_all
+  SPARE_SPAWN_N=0
+  for nd in rain sunny; do
+    [ -n "${SPN[$nd]:-}" ] || continue
+    # shellcheck disable=SC2016
+    node_sh "$nd" 'touch "$1/.end"' "$(npath "$nd" spare)"
+    wait "${FOLLOW[$nd]}" 2>/dev/null
+    python3 -c "$LAPY" files "$(la_log "$nd")" | sort > "$WORK/spare_named_$nd"
+    SPARE_SPAWN_N=$((SPARE_SPAWN_N + $(wc -l < "$WORK/spare_named_$nd")))
+    if sort "$WORK/spare_files_$nd" 2>/dev/null | cmp -s - "$WORK/spare_named_$nd"; then
+      [ "$SPARE_LOGS_MATCH" = 0 ] || SPARE_LOGS_MATCH=1
+    else SPARE_LOGS_MATCH=0; fi
+  done
+  for k in "${!SNAME[@]}"; do
+    nd=${k%%:*}; i=${k#*:}; name=${SNAME[$k]}
+    case " $names " in *" $name "*) ;; *) continue ;; esac
+    if [ "$nd" = sunny ]; then scp -q "$SUNNY_SSH:$RT.spare/spare_i$i.kv" "$WORK/$name.kv" 2>/dev/null || true
+    else cp "$WORK/spare/spare_i$i.kv" "$WORK/$name.kv" 2>/dev/null || true; fi
+    python3 -c "$LAPY" rc "$(la_log "$nd")" "$i" > "$WORK/$name.rc"
+  done
 fi
 read -r MONO_OFF2 MONO_RTT2 <<< "$(mono_off)"
 MTU1_RAIN=$(bash -c "$MTU_Q" _ mlx5_1); MTU1_SUNNY=$(sunny_sh "$MTU_Q" mlx5_0 2>/dev/null)
@@ -624,7 +870,7 @@ for name in $names; do
   scp -q "$SUNNY_SSH:$RT.$name.kv" "$WORK/$name.kv" 2>/dev/null || true
   scp -q "$SUNNY_SSH:$RT.$name.rc" "$WORK/$name.rc" 2>/dev/null || true
 done
-ssh -n "$SUNNY_SSH" "rm -f $RT.*" 2>/dev/null || true
+ssh -n "$SUNNY_SSH" "rm -rf $RT.*" 2>/dev/null || true
 LEFT=$( { pgrep -x "$BINNAME"; ssh -n "$SUNNY_SSH" "pgrep -x $BINNAME"; } 2>/dev/null | wc -l)
 LEFT_FD=$( { pgrep -x -u "$(id -u)" gin_fdhold; ssh -n "$SUNNY_SSH" 'pgrep -x -u "$(id -u)" gin_fdhold'; } 2>/dev/null | wc -l)
 mkdir -p "$LOGDIR"
@@ -637,20 +883,14 @@ done
 for f in kill spare_kill inject fdhold cleanup ss; do
   [ -f "$WORK/$f.out" ] && sed "$MASK" "$WORK/$f.out" > "$LOGDIR/${stem}_$f.out"
 done
-# the launcher lines of this trial: from the line after the previous trial's trial_end marker (the log's start when there
-# is none) to this trial's trial_end marker, the markers kept (rows_gc.py reads the subject's lines after trial_start only)
-SLICEPY='import sys
-lines=open(sys.argv[1],errors="replace").read().splitlines(True); stem=sys.argv[2]
-st=[i for i,l in enumerate(lines) if l.rstrip("\n").endswith(" GINLA mark trial_start "+stem)]
-en=[i for i,l in enumerate(lines) if l.rstrip("\n").endswith(" GINLA mark trial_end "+stem)]
-s0=st[-1] if st else 0
-prev=[i for i,l in enumerate(lines[:s0]) if " GINLA mark trial_end " in l]
-a=prev[-1]+1 if prev else 0; b=en[-1]+1 if en and en[-1]>=s0 else len(lines)
-sys.stdout.write("".join(lines[a:b]))'
+for f in "$WORK"/spare_rain_i*.log "$WORK"/spare_sunny_i*.log; do  # the launchers' other spares (unused, respawned), stamped
+  [ -f "$f" ] && sed "$MASK" "$f" > "$LOGDIR/${stem}_$(basename "$f")"
+done
+# the launcher logs of this trial: each launcher's whole log (its start, the markers, its shutdown), IPv4-masked
 if [ "$LAUNCHER_SCOPE" != none ]; then
   for nd in rain sunny; do
-    lg=$(dirname "${LAREC[$nd]}")/$(basename "${LAREC[$nd]}" .rec).log
-    [ -f "$lg" ] && python3 -c "$SLICEPY" "$lg" "$STEM0" | sed "$MASK" > "$LOGDIR/${stem}_launcher_$nd.log"
+    lg=$(la_log "$nd")
+    [ -f "$lg" ] && sed "$MASK" "$lg" > "$LOGDIR/${stem}_launcher_$nd.log"
   done
 fi
 rcs=""; for name in $names; do rcs="$rcs ${name}rc=$(tr -d '\n' < "$WORK/$name.rc" 2>/dev/null || echo none)"; done
@@ -670,7 +910,10 @@ die_seed=${DIE_SEED:-} die_at=${DIE_AT:--} kill2_rank=$KILL2_RANK kill2_kind=${K
 die_us_max=$DIE_US_MAX spare_wait_ms=$SPARE_WAIT_MS spare=$SPARE_ON spare_wanted=$SPARE spare_rank=$SPARE_RANK \
 spare_ready=$([ "$T_READY" != 0 ] && echo 1 || echo 0) spare2=$SPARE2_ON spare2_wanted=$SPARE2 \
 spare2_ready=$([ "$T_READY2" != 0 ] && echo 1 || echo 0) gate_rt=$T_GATE gpu_apps_before=$GPU_APPS end_grace_ms=$END_GRACE_MS \
-launcher_scope=$LAUNCHER_SCOPE launcher_ready=$LA_OK launcher_tc=$LA_TC launcher_table=$LA_TABLE \
+launcher_scope=$LAUNCHER_SCOPE launcher_ready=$LA_OK launcher_tc=$LA_TC launcher_stale=$LA_STALE launcher_bound_s=$LA_BOUND_S \
+launcher_spare_rain=${SPN[rain]:--} launcher_spare_sunny=${SPN[sunny]:--} launcher_respawn_max=$LA_RESPAWN_MAX \
+spare_by=$([ "$LAUNCHER_SCOPE" = none ] && echo runner || echo launcher) spare_env_dropped=${SPARE_ENV_DROPPED:--} \
+spare_bound_kill=$SPARE_BOUND_KILL spare_spawn_n=$SPARE_SPAWN_N spare_logs_match=$SPARE_LOGS_MATCH \
 launcher_env_rain=${LENV_RAIN:--} launcher_env_sunny=${LENV_SUNNY:--} \
 mono_off_sunny_ms=${MONO_OFF:--} mono_off_rtt_ms=${MONO_RTT:--} mono_off_after_ms=${MONO_OFF2:--} mono_off_after_rtt_ms=${MONO_RTT2:--} \
 bar1_gate_total_mib=${B1T:--} bar1_gate_used_mib=${B1U:--} bar1_gate_free_mib=${B1F:--} gpu_procs_gate_rain=${B1P:--} \

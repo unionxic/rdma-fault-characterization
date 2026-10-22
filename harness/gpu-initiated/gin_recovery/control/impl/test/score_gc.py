@@ -11,11 +11,13 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
      costpilot*, or a trial of another hold P*) are counted apart and never scored. The gc cells' exclusions of section 8
      (gin-mirror's and these): void, config_driver, workload, config (the trial ran another build, witness, fence, policy or
      restore setting than its cell, another launcher env than the cell's launcher_env, a W or READ period other than
-     cells_gc.json "prereg", or its Resume was refused where the cell expects the restore), launcher_not_ready (the start
-     check), launcher_changed (a launcher ended or changed during the trial, or a launcher QP loss outside the test-switch
-     cells), not_applied (the injection's record is missing), inject_late (the runner's injection more than 1 s from its
+     cells_gc.json "prereg", or its Resume was refused where the cell expects the restore), launcher_stale (a stale
+     launcher socket or process on a node at the trial's start: nothing ran; section 8's per-trial launcher rule of
+     2026-10-22), launcher_not_ready (the start check: a launcher of the trial did not come up), launcher_changed (a launcher
+     ended or changed during the trial, or a launcher QP loss outside the test-switch cells), not_applied (the injection's record is missing), inject_late (the runner's injection more than 1 s from its
      plan, a stop's length more than 1 s off, or the spare-absent cell's two kills more than 5 ms apart), spare_start_fail,
-     foreign_gpu, restore_not_live, kill_before_ckpt (the kill, DIE_RST, STOP or FREEZE_PAGE before the subject's first
+     (also: a second death's spare that is not the launcher's, rows_gc.py spare2_daemon_ok 0: the same rank's second restore
+     needs the daemon's next spare, incarnation 2; another rank's, that node's own warm spare), foreign_gpu, restore_not_live, kill_before_ckpt (the kill, DIE_RST, STOP or FREEZE_PAGE before the subject's first
      stable checkpoint, in every cell with a spare), spareabsent_disarmed (a stable checkpoint between the spare's kill and
      the rank's), surplus. A second death is never excluded: a second kill before the re-arm, a first restore that failed or
      a re-arm that never came counts as a failed condition (gin-mirror's section 8, pre-registered; the coordinator's
@@ -36,8 +38,10 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
        cost: rule=within:<pct>         the cost family per receiving node (cells "cost:<family>:<arms>:<metrics>")
      keys "build:<b>" pool every scored gin-control-runner trial of build b (no_tcp_control, long_hold_lane), "local:<x>" the
      local rows.
-  5. STOP: the results folder's STOP_* files (their line counts) and every trial's "(STOP_launcher)" and
-     "(STOP_launcher: ...)" lines (section 8's scoring rule: a FENCE_NAK's refusal counts) are listed in SCORE.md.
+  5. STOP: the results folder's STOP_* files (their line counts), every trial's "(STOP_launcher)" and
+     "(STOP_launcher: ...)" lines (section 8's scoring rule: a FENCE_NAK's refusal counts; the spare-absent cells' one
+     expected respawn-cap line apart, rows_gc.py) and the trials whose launcher did not come up or found a stale launcher
+     socket or process (section 8's per-trial launcher rule) are listed in SCORE.md.
 """
 import csv, hashlib, importlib.util, json, math, os, re, statistics, sys
 
@@ -70,6 +74,7 @@ EXCL = {"void": "시작 실패(생존 rank가 교환 전에 끝남)", "config_dr
         "workload": "workload나 mirror 설정이 셀과 다름",
         "config": "셀이 정한 제어 빌드, 증인, 펜스, 정책, 복원 설정과 다르게 돎(또는 복원 셀에서 Resume 거절)",
         "launcher_not_ready": "시행 시작 때 launcher가 두 노드 모두에서 준비되지 않음",
+        "launcher_stale": "시행 시작 때 앞 launcher의 소켓이나 프로세스가 노드에 남아 있음(아무것도 돌지 않음)",
         "launcher_changed": "시행 중 launcher가 끝났거나 바뀜, 또는 시험 스위치 셀 밖의 launcher QP 잃음",
         "not_applied": "주입 기록 없음", "inject_late": "주입이 정한 시각보다 1 s 넘게 어긋남(또는 짝 kill 간격 > 5 ms)",
         "spare_start_fail": "예비 프로세스가 활성화 전에 시작에 실패함", "foreign_gpu": "시행 시작 때 GPU에 다른 프로세스",
@@ -91,11 +96,14 @@ def mirror_cells():
 
 
 def regression_entries(c, mc):
-    """{cell@build: mirror entry} of the regression holds at the regression builds"""
+    """{cell@build: mirror entry} of the regression holds at the regression builds (only builds.<b>.cells when listed)"""
     out = {}
-    for b in c["regression"]["builds"]:
+    for b, spec in c["regression"]["builds"].items():
+        keep = spec.get("cells")  # the 2026-10-22 trim: @gct plans only these cells
         for h in c["regression"]["holds"]:
             for e in mc["holds"].get(h, []):
+                if keep is not None and e["cell"] not in keep:
+                    continue
                 out["%s@%s" % (e["cell"], b)] = dict(e, build=b)
     return out
 
@@ -161,6 +169,8 @@ def status_gc(r, cell, prereg=None):
             float(r["probe_ms_page"]) != float(prereg["probe_ms"]):
         return "config"
     if r.get("ctrl") == "rdma":
+        if r.get("launcher_stale") not in ("", None, "-"):
+            return "launcher_stale"
         if str(r.get("launcher_ready")) != "1":
             return "launcher_not_ready"
         sw = any(s in " ".join(env.values()) for s in TEST_SWITCH_ENV)
@@ -174,7 +184,7 @@ def status_gc(r, cell, prereg=None):
             return "inject_late"
         if r.get("pair_gap_ms") not in ("", None) and float(r["pair_gap_ms"]) > float(env.get("SPARE_GAP_MS", "5")):
             return "inject_late"
-    if str(r.get("spare_start_fail")) == "1" or str(r.get("spare2_start_fail")) == "1":
+    if str(r.get("spare_start_fail")) == "1" or str(r.get("spare2_start_fail")) == "1" or spare2_not_daemon(r):
         return "spare_start_fail"
     if str(r.get("foreign_gpu")) == "1":
         return "foreign_gpu"
@@ -191,10 +201,19 @@ def status_gc(r, cell, prereg=None):
     return "candidate"
 
 
+def spare2_not_daemon(r):
+    """a second death with a second spare wanted, in an rdma build: its spare is not the launcher's (rows_gc.py)"""
+    return r.get("ctrl") == "rdma" and r.get("_meta", {}).get("spare2_wanted") == "1" and str(r.get("spare2_daemon_ok")) == "0"
+
+
 def status_regression(r, entry, mcells_b):
+    if r.get("ctrl") == "rdma" and r.get("launcher_stale") not in ("", None, "-"):
+        return "launcher_stale"
     s = msc.status_rs(r, mcells_b)
     if s != "candidate":
         return s
+    if spare2_not_daemon(r):
+        return "spare_start_fail"
     if r.get("ctrl") == "rdma":
         if str(r.get("launcher_ready")) != "1":
             return "launcher_not_ready"
@@ -410,6 +429,10 @@ def score(R, planned_override=None):
     # SCORE.md
     stops = sorted(x for x in os.listdir(R) if x.startswith("STOP_"))
     la_stop = [(r["id"], ival(r.get("la_stop_n"), 0)) for r in rows if ival(r.get("la_stop_n"), 0) > 0]
+    la_cap = sum(ival(r.get("la_spare_cap_expected_n"), 0) for r in rows)
+    la_down = [(r["id"], "낡은 소켓이나 프로세스 %s" % r["launcher_stale"] if r.get("launcher_stale") else "뜨지 않음")
+               for r in rows if r.get("ctrl") == "rdma" and r.get("runner") == "gcr" and
+               (r.get("launcher_stale") or str(r.get("launcher_ready")) == "0")]
     L = ["# gin-control 채점 결과 (시험 쪽)", "",
          "`score_gc.py`가 원자료에서 만들었다. 손으로 고친 값은 없다. 판정식 원문은 `predictions_gc.csv`, 문법은 gin-mirror의 `score.py`(s2_close 3.2)와 이 파일 머리의 꼴이다.", "",
          "- 예측 파일 sha256: `%s`. `PREREG.txt`의 값과 %s." % (sha, "같다" if sha in frozen else "다르다(사전 등록한 파일이 아니거나 아직 사전 등록 전)"),
@@ -418,7 +441,10 @@ def score(R, planned_override=None):
              sum(1 for r in rows if r["status"] == "smoke"), sum(1 for r in rows if r["status"] == "pilot")),
          "- STOP 파일: %s." % (", ".join("`%s`(%d줄)" % (x, sum(1 for _ in open(os.path.join(R, x)))) for x in stops) or "없음"),
          "- launcher의 `(STOP_launcher)`와 `(STOP_launcher: …)` 줄(8절 채점 규칙, FENCE_NAK 포함): %d줄, 시행 %s." % (
-             sum(n for _, n in la_stop), ", ".join("%s(%d)" % x for x in la_stop) or "없음"), "",
+             sum(n for _, n in la_stop), ", ".join("%s(%d)" % x for x in la_stop) or "없음"),
+         "- 예비 프로세스 없음 셀의 예상된 다시 띄우기 한도 줄(실행기가 끝낸 예비 프로세스를 launcher가 다시 띄우지 않음; STOP으로 세지 않음): %d줄." % la_cap,
+         "- launcher가 뜨지 않았거나 낡은 launcher 소켓이나 프로세스가 남아 돌지 않은 시행(8절, STOP_launcher): %s." % (
+             ", ".join("%s(%s)" % x for x in la_down) or "없음"), "",
          "## 판정 요약", "", "| 예측 | 셀 | n | 판정 |", "|---|---|--:|---|"]
     for p, keys, v, det in results:
         ns = " / ".join(str(len(scored.get(k, []))) for k in keys if not k.startswith(("mirror:", "cost:")))

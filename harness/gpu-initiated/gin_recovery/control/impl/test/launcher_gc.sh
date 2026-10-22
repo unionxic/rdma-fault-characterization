@@ -1,36 +1,50 @@
 #!/usr/bin/env bash
 # launcher_gc.sh - gin-control, test side: one node's launcher (../launcher/gin_launcher, ../../EXPERIMENT.md 5 and 9.5) for
-# hold_gc.sh (one launcher per node per hold, EXPERIMENT 5) and run_cost_gc.sh (one per node per cost run). Run only by the main
-# session, inside ../../../../common/cluster_run.sh through chain_gc.sh / hold_gc.sh.
+# run_gc.sh (one launcher per node per trial, EXPERIMENT 5 since 2026-10-22: the warm spare's command carries per-trial values)
+# and run_cost_gc.sh (one per node per cost run). Run only by the main session, inside ../../../../common/cluster_run.sh
+# through chain_gc.sh / hold_gc.sh.
 #
-#   launcher_gc.sh start <rain|sunny> <dir> <tag> [K=V ...]   start it, wait for its "listening" line, write <dir>/la_<tag>_<node>.rec;
-#                                                             not ready: it stops what it started (the stop below) and exits 1
+#   launcher_gc.sh start <rain|sunny> <dir> <tag> [K=V ...] [spare options]
+#                                                             start it, wait for its "listening" line, write <dir>/la_<tag>_<node>.rec;
+#                                                             not ready: it stops what it started (the stop below) and exits 1;
+#                                                             a stale launcher socket or process of this uid on the node (the
+#                                                             stale op below): nothing is started, one line "stale sock=N proc=L"
+#                                                             on stdout, exit 3
+#   launcher_gc.sh stale <rain|sunny> <dir> <tag>             one line "stale sock=N proc=L" (read only): this uid's sockets
+#                                                             <LA_STALE_ROOT>/gc_la.??????/launcher.sock left by an earlier
+#                                                             launcher, and this uid's gin_launcher processes on the node
 #   launcher_gc.sh info  <rain|sunny> <dir> <tag>             one line: pid= start= alive= ready= log_bytes= (read only)
 #   launcher_gc.sh mark  <rain|sunny> <dir> <tag> <word ...>  append "<receipt time> GINLA mark <words>" to the launcher log
 #                                                             (run_gc.sh's trial_start / trial_end markers; the log is O_APPEND)
 #   launcher_gc.sh table <rain|sunny> <dir> <tag>             one line "table open=N [entries]": the registration table read from
-#                                                             the launcher's own lines (read only; see TABLEPY)
+#                                                             the launcher's own lines (read only; see TABLEPY; reported only
+#                                                             since the launcher is per trial)
 #   launcher_gc.sh stop  <rain|sunny> <dir> <tag>             SIGTERM to the recorded PID (its own shutdown: unused spares
 #                                                             SIGKILLed through their pidfds, the socket unlinked), SIGKILL to
 #                                                             the same PID after 3 s if it is still there; with no launcher PID
 #                                                             recorded, SIGTERM to the recorded timeout PID (it passes it on)
 # The K=V arguments go into the launcher's environment (the test switch NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=1 of
 # gc4_fdhold_sock_kill3_noreport, cells_gc.json launcher_env). Every NCCL_ and GIN_ variable of the caller is dropped first.
+# The spare options go to the launcher as given (../launcher/README_launcher.md "따뜻한 예비 프로세스"): --spare-cmd "<argv>",
+# --spare-env K=V (repeated), --spare-log <node-side directory>, --spare 0|1, --spare-hello-ms N, --spare-respawn-max N. A
+# --spare-env the launcher refuses (the record and test-kill variables, and the three it sets itself) is refused here too
+# (exit 2). The command and the environment are never written to a file (the command carries rain's management address).
 #
 # What it does: the socket goes to a new directory of this uid with mode 0700 (/tmp/gc_la.XXXXXX/launcher.sock, made by
-# mktemp -d; the launcher refuses any other directory); the launcher runs as
+# mktemp -d per start, so each trial has its own socket path; the launcher refuses any other directory); the launcher runs as
 #   timeout -s KILL <LA_BOUND_S> gin_launcher --node <0 rain | 1 sunny> --dev <mlx5_1 | mlx5_0> --port 1 --gid-index <the
-#   RoCE v2 GID of run_mi.sh's probe> --tc <LA_TC> --sock <path>
+#   RoCE v2 GID of run_mi.sh's probe> --tc <LA_TC> --sock <path> [spare options]
 # and its stderr is stamped with rain's CLOCK_MONOTONIC at receipt (run_mi.sh's receipt clock) into <dir>/la_<tag>_<node>.log
 # (opened O_APPEND, so the markers of `mark` land between whole lines). The launcher's own PID (the child of that timeout whose
 # comm is gin_launcher) and its start time (/proc/<pid>/stat field 22), and the timeout's PID and start, are recorded; info and
 # stop act only on a process whose comm and start time are the recorded ones. Nothing is killed by name. sunny's management
 # address comes from SUNNY_SSH only and is never written to a file; the log is IPv4-masked after the stop.
-# env: SUNNY_SSH (required), RS_SET (required), LA_BOUND_S (860: below hold_gc.sh's timeout -s KILL 880), LA_TC (the launcher's
-#   --tc; default $NCCL_IB_TC of the ranks, which run_gc.sh does not set: 0), LA_READY_S (15), LA_BIN (relative to $HOME:
-#   rs-bundle/<RS_SET>/gctest/gin_launcher)
+# env: SUNNY_SSH (required), RS_SET (required), LA_BOUND_S (860: below hold_gc.sh's timeout -s KILL 880; run_gc.sh passes the
+#   trial's bound), LA_TC (the launcher's --tc; default $NCCL_IB_TC of the ranks, which run_gc.sh does not set: 0), LA_READY_S
+#   (15), LA_BIN (relative to $HOME: rs-bundle/<RS_SET>/gctest/gin_launcher), LA_STALE_ROOT (/tmp; the CPU self-test points it
+#   at a scratch folder)
 set -u
-OP=${1:?start|info|mark|table|stop}; NODE=${2:?rain|sunny}; DIR=${3:?dir}; TAG=${4:?tag}
+OP=${1:?start|stale|info|mark|table|stop}; NODE=${2:?rain|sunny}; DIR=${3:?dir}; TAG=${4:?tag}
 shift 4
 case "$NODE" in rain) NODEN=0; DEV=mlx5_1 ;; sunny) NODEN=1; DEV=mlx5_0 ;; *) echo "node is rain or sunny" >&2; exit 2 ;; esac
 case "$TAG" in "" | *[!A-Za-z0-9_.-]*) echo "tag is one plain word" >&2; exit 2 ;; esac
@@ -43,7 +57,7 @@ RS_SET=${RS_SET:-}
 rs_set_check || exit 2
 SUNNY_SSH=${SUNNY_SSH:?set SUNNY_SSH}
 LA_BIN=${LA_BIN:-rs-bundle/$RS_SET/gctest/gin_launcher}
-LA_BOUND_S=${LA_BOUND_S:-860}; LA_TC=${LA_TC:-0}; LA_READY_S=${LA_READY_S:-15}
+LA_BOUND_S=${LA_BOUND_S:-860}; LA_TC=${LA_TC:-0}; LA_READY_S=${LA_READY_S:-15}; LA_STALE_ROOT=${LA_STALE_ROOT:-/tmp}
 mkdir -p "$DIR"
 REC=$DIR/la_${TAG}_$NODE.rec; LOG=$DIR/la_${TAG}_$NODE.log; CTL=$DIR/la_${TAG}_$NODE.ctl
 STAMP='import sys,time
@@ -104,6 +118,12 @@ for l in lines:
         if act=="open": op[k]=1
         else: op.pop(k,None)
 print("table open=%d%s" % (len(op), "".join(" "+k for k in sorted(op))))'
+# on the node: "<sockets> <processes>": this uid's launcher sockets under <root>/gc_la.??????/ (an earlier launcher's, left
+# because it was not stopped) and this uid's gin_launcher processes (read only)
+# shellcheck disable=SC2016
+STALE_Q='n=0
+for s in "$1"/gc_la.??????/launcher.sock; do [ -S "$s" ] && [ -O "$s" ] && n=$((n + 1)); done
+echo "$n $(pgrep -x -u "$(id -u)" gin_launcher 2>/dev/null | wc -l)"'
 recval() { sed -n "s/.*\b$1=\([^ ]*\).*/\1/p" "$REC" 2>/dev/null | head -1; }
 do_stop() {  # the recorded launcher (or, with none recorded, the recorded timeout), then the node-side directories
   local p s tp ts sd pd pipe gone
@@ -135,10 +155,33 @@ do_stop() {  # the recorded launcher (or, with none recorded, the recorded timeo
 case "$OP" in
   start)
     [ -e "$REC" ] && { echo "$REC exists: one launcher per tag and node" >&2; exit 2; }
-    envs=()
-    for kv in "$@"; do
-      case "$kv" in NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=[01]) envs+=("$kv") ;; *) echo "launcher env $kv is not one this runner passes" >&2; exit 2 ;; esac
+    envs=(); sargs=(); sp=0; slog=-; srmax=-; senv_n=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=[01]) envs+=("$1"); shift ;;
+        --spare-cmd|--spare-log|--spare|--spare-hello-ms|--spare-respawn-max)
+          [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
+          case "$1" in --spare-cmd) sp=1 ;; --spare-log) slog=$2 ;; --spare-respawn-max) srmax=$2 ;; --spare) [ "$2" = 0 ] && sp=0 ;; esac
+          sargs+=("$1" "$2"); shift 2 ;;
+        --spare-env)
+          [ "$#" -ge 2 ] || { echo "--spare-env needs KEY=VAL" >&2; exit 2; }
+          case "${2%%=*}" in
+            NCCL_GIN_RESTORE_RECORD|NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT|GIN_RS_DIE_IN_STEP|GIN_RS_DIE_AT|NCCL_GIN_CTRL_LAUNCHER_SOCK|NCCL_GIN_CTRL_LAUNCHER_NODE)
+              echo "--spare-env ${2%%=*}: the launcher never passes it to a spare" >&2; exit 2 ;;
+          esac
+          case "$2" in *=*) ;; *) echo "--spare-env $2: not KEY=VAL" >&2; exit 2 ;; esac
+          sargs+=("$1" "$2"); senv_n=$((senv_n + 1)); shift 2 ;;
+        *) echo "launcher argument $1 is not one this runner passes" >&2; exit 2 ;;
+      esac
     done
+    # a stale launcher socket or process of this uid on the node: nothing is started (EXPERIMENT 8, STOP_launcher)
+    read -r SN SL <<< "$(node_sh "$NODE" "$STALE_Q" "$LA_STALE_ROOT")"
+    if [ "${SN:-0}" != 0 ] || [ "${SL:-0}" != 0 ]; then
+      echo "stale sock=${SN:-?} proc=${SL:-?}"
+      echo "$(date '+%F %T') start $NODE tag=$TAG: stale launcher socket(s) ${SN:-?}, launcher process(es) ${SL:-?} of this uid; not started" >> "$CTL"
+      echo "launcher on $NODE not started: ${SN:-?} stale launcher socket(s) and ${SL:-?} launcher process(es) of this uid" >&2
+      exit 3
+    fi
     GID=$(node_sh "$NODE" "$GID_PROBE" "$DEV")
     [ -n "$GID" ] || { echo "no RoCE v2 GID on $NODE" >&2; exit 1; }
     # the node-side files: a 0700 directory for the socket and one for the pid files (both this uid's, removed at stop)
@@ -149,15 +192,16 @@ case "$OP" in
     # shellcheck disable=SC2016
     RUN='cd "$HOME" || exit 1; umask 077
 for v in $(env | sed -n "s/^\(\(NCCL\|GIN\)_[A-Za-z0-9_]*\)=.*/\1/p"); do unset "$v"; done
-pd=$1; bin=$HOME/$2; bound=$3; node=$4; dev=$5; gid=$6; tc=$7; sock=$8; shift 8
+pd=$1; bin=$HOME/$2; bound=$3; node=$4; dev=$5; gid=$6; tc=$7; sock=$8; ne=$9; shift 9
+le=("${@:1:$ne}"); shift "$ne"
 echo $$ > "$pd/timeout.pid"
-exec env "$@" timeout -s KILL "$bound" "$bin" --node "$node" --dev "$dev" --port 1 --gid-index "$gid" --tc "$tc" --sock "$sock" 2>&1'
+exec env "${le[@]}" timeout -s KILL "$bound" "$bin" --node "$node" --dev "$dev" --port 1 --gid-index "$gid" --tc "$tc" --sock "$sock" "$@" 2>&1'
     : > "$LOG"
     if [ "$NODE" = sunny ]; then
-      ssh -n -o LogLevel=ERROR "$SUNNY_SSH" "$(rcmd "$RUN" "$PDIR" "$LA_BIN" "$LA_BOUND_S" "$NODEN" "$DEV" "$GID" "$LA_TC" "$SOCK" "${envs[@]}")" \
+      ssh -n -o LogLevel=ERROR "$SUNNY_SSH" "$(rcmd "$RUN" "$PDIR" "$LA_BIN" "$LA_BOUND_S" "$NODEN" "$DEV" "$GID" "$LA_TC" "$SOCK" "${#envs[@]}" "${envs[@]}" "${sargs[@]}")" \
         2>&1 | python3 -u -c "$STAMP" >> "$LOG" 2>&1 &
     else
-      bash -c "$RUN" _ "$PDIR" "$LA_BIN" "$LA_BOUND_S" "$NODEN" "$DEV" "$GID" "$LA_TC" "$SOCK" "${envs[@]}" \
+      bash -c "$RUN" _ "$PDIR" "$LA_BIN" "$LA_BOUND_S" "$NODEN" "$DEV" "$GID" "$LA_TC" "$SOCK" "${#envs[@]}" "${envs[@]}" "${sargs[@]}" \
         2>&1 | python3 -u -c "$STAMP" >> "$LOG" 2>&1 &
     fi
     PIPE=$!
@@ -173,13 +217,16 @@ exec env "$@" timeout -s KILL "$bound" "$bin" --node "$node" --dev "$dev" --port
       sleep 0.1
     done
     [ -n "${LPID:-}" ] && [ "$LPID" != - ] || ready=0
-    echo "node=$NODE noden=$NODEN dev=$DEV gid=$GID tc=$LA_TC pid=${LPID:--} start=${LSTART:--} tpid=${TPID:--} tstart=${TSTART:--} sock=$SOCK sockdir=$SDIR piddir=$PDIR ready=$ready bound_s=$LA_BOUND_S bin_md5=${BINMD5:-none} env=$(IFS=+; echo "${envs[*]:-}") pipe=$PIPE" > "$REC"
+    echo "node=$NODE noden=$NODEN dev=$DEV gid=$GID tc=$LA_TC pid=${LPID:--} start=${LSTART:--} tpid=${TPID:--} tstart=${TSTART:--} sock=$SOCK sockdir=$SDIR piddir=$PDIR ready=$ready bound_s=$LA_BOUND_S bin_md5=${BINMD5:-none} env=$(IFS=+; echo "${envs[*]:-}") spare=$sp spare_log=$slog spare_env_n=$senv_n spare_respawn_max=$srmax pipe=$PIPE" > "$REC"
     echo "$(date '+%F %T') start $NODE tag=$TAG pid=${LPID:--} ready=$ready" >> "$CTL"
     if [ "$ready" != 1 ]; then
       echo "launcher on $NODE not ready (see $(basename "$LOG")); stopping what was started" >&2
       do_stop
       exit 1
     fi ;;
+  stale)
+    read -r SN SL <<< "$(node_sh "$NODE" "$STALE_Q" "$LA_STALE_ROOT")"
+    echo "stale sock=${SN:-?} proc=${SL:-?}" ;;
   info)
     [ -f "$REC" ] || { echo "pid= start= alive=0 ready=0 log_bytes=0"; exit 0; }
     p=$(recval pid); s=$(recval start)
@@ -194,6 +241,6 @@ open(sys.argv[1],"a").write("%.6f GINLA mark %s\n" % (time.clock_gettime(time.CL
   stop)
     [ -f "$REC" ] || { echo "no launcher record for $NODE tag $TAG" >&2; exit 0; }
     do_stop ;;
-  *) echo "start|info|mark|table|stop" >&2; exit 2 ;;
+  *) echo "start|stale|info|mark|table|stop" >&2; exit 2 ;;
 esac
 exit 0

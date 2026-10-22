@@ -23,26 +23,25 @@
 
 | 파일 | 하는 일 |
 |---|---|
-| `cells_gc.json` | 7절 27행(`rows`), cell@build 27개(`cells`: env, 주입, n, 대조 팔, 찾는 키, 시행 한도), 본 실행 hold C1–C11과 pilot hold P0–P4, 회귀(gin-mirror `cells_mi.json`의 비용 밖 hold 여덟을 `@gct`, `@gc`로), 비용 가족 probe, 로컬 항목 |
-| `check_cells_gc.py` | 셀 파일과 예측 표를 EXPERIMENT.md 3, 7절에 맞춰 봄(행 수, 셀 이름, 빌드, n, 찾는 키마다 셀 하나 이상, 셀마다 예측 하나 이상) |
-| `predictions_gc.csv` | 3절의 31행. 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
+| `cells_gc.json` | 7절 25행(`rows`), cell@build 23개(`cells`: env, 주입, n, 대조 팔, 찾는 키, 시행 한도), 본 실행 hold C1–C3, C5–C11과 pilot hold P0–P4, 회귀(gin-mirror `cells_mi.json`의 비용 밖 hold 여덟을 `@gc`로, `@gct`는 `regression.builds.gct.cells`의 `mi4_kill3_ow` 하나), 비용 가족 probe의 한 쌍, 로컬 항목. 2026-10-22 셀 줄임 전에는 27행, 27개, C1–C11(아래 "셀 줄임" 절) |
+| `check_cells_gc.py` | 셀 파일과 예측 표를 EXPERIMENT.md 3, 7절에 맞춰 봄(행 수, 셀 이름, 빌드, n, 찾는 키마다 셀 하나 이상, 셀마다 예측 하나 이상, 회귀 빌드의 `cells` 목록) |
+| `predictions_gc.csv` | 3절의 28행(2026-10-22 셀 줄임 전 31행). 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
 | `remote_gc.sh` | 원격 셸에 넘기는 명령을 한 번만 따옴표로 쌈(`rcmd`, `pcmd`, `sunny_sh`), 공용 읽기 질의(`MTU_Q`, `RNR_Q`, `GID_PROBE`)와 IPv4 가림 식 |
-| `launcher_gc.sh` | launcher 하나(start, info, mark, table, stop). 0700 소켓 디렉터리, `--tc`, 기록한 PID와 시작 시각에만 신호, 준비 실패 때 스스로 끔 |
-| `run_gc.sh` | 시행 하나. 9.9절 주입, launcher 확인과 등록 표 검사, 시행 표지, 노드 시계 차, ss 스냅숏, `active_mtu`, RNR 카운터, 끄는 차례 |
+| `launcher_gc.sh` | launcher 하나(start, stale, info, mark, table, stop). 0700 소켓 디렉터리(시작마다 새 경로), `--tc`, 예비 프로세스 옵션을 그대로 넘김, 낡은 소켓이나 프로세스면 띄우지 않음(exit 3), 기록한 PID와 시작 시각에만 신호, 준비 실패 때 스스로 끔 |
+| `run_gc.sh` | 시행 하나. 9.9절 주입, 시행마다 launcher 띄우기와 끄기(예비 프로세스 명령과 환경 포함), 예비 프로세스 로그 따라 읽기, 시행 표지, 노드 시계 차, ss 스냅숏, `active_mtu`, RNR 카운터, 끄는 차례 |
 | `gate_proc_gc.py` | `gate_fenced` 예측의 실제 프로세스 시험(CPU만): main thread가 먼저 끝나는 자식, 따로 잰 Z와 pidfd 시각 |
 | `cells_gc.sh`, `hold_gc.sh`, `chain_gc.sh` | 셀의 n번, hold 하나(8절의 STOP), hold 사슬(`cluster_run.sh` 안) |
-| `run_cost_gc.sh` | 비용 가족 probe의 실행 하나(팔 `probe-off`, `probe-on`은 `gcp`, `tcp`는 `gctp`) |
+| `run_cost_gc.sh` | 비용 가족 probe의 실행 하나(팔 `probe-off`, `probe-on`은 `gcp`, `tcp`는 `gctp`; 2026-10-22부터 셀 파일은 `probe-off`, `probe-on`의 `lat4k`만 부름) |
 | `rows_gc.py`, `score_gc.py` | 시행별 열, 채점. gin-mirror의 `rows_mi.py`와 `score.py`를 고치지 않고 불러 씀 |
 | `test_rows_gc.py` | 합성 로그 자체 시험 |
 | `deploy_gc.sh` | 두 노드의 새 묶음 `~/rs-bundle/<RS_SET>/`에 라이브러리 다섯, driver, launcher |
 
 ## 설계에서 정한 것과 어긋남
 
-- **launcher의 범위.** EXPERIMENT.md 5절과 9.5절대로 hold마다 노드마다 하나다(2026-10-17 메인 세션 결정; 처음 초안의 `LAUNCHER_SCOPE=trial`
-  갈래는 뺐다). 시행마다 앞뒤 pid와 시작 시각, 시행 시작 때 등록 표가 비었는지(아니면 exit 7, STOP_launcher), 시행 표지 사이의 launcher 줄을
-  시행 폴더 `<stem>_launcher_<node>.log`로 자른다. 비용 실행(`run_cost_gc.sh`)만 실행마다 띄운다.
-- **hold의 launcher env는 하나.** `NO_EXIT_REPORT` 셀(`gc4_fdhold_sock_kill3_noreport`)은 hold C6에 혼자 둔다. hold가 launcher env를 섞으면
-  `hold_gc.sh`가 거절한다.
+- **launcher의 범위.** 2026-10-22부터 시행마다 노드마다 하나다(조율 세션 결정; EXPERIMENT.md 5, 8, 9.5절; 아래 "launcher 데몬의 예비 프로세스" 절).
+  그 전(2026-10-17 결정)에는 hold마다 하나였고 시행 시작 때 등록 표가 비었는지 보았다(exit 7). 비용 실행(`run_cost_gc.sh`)은 처음부터 실행마다였다.
+- **launcher env는 셀마다.** 시행의 launcher가 셀의 `launcher_env`로 뜬다(`hold_gc.sh`가 `LAUNCHER_ENV`로 넘김). hold의 env 섞음 거절은 없앴다.
+  `NO_EXIT_REPORT` 셀(`gc4_fdhold_sock_kill3_noreport`)은 hold C6에 혼자 그대로다.
 - **회귀 셀은 gin-mirror의 이름, env, n 그대로.** `run_gc.sh`가 `run_mi.sh`의 kill 갈래(트래픽, 체크포인트 멈춤 hook, after_stable, seed의
   단계 kill, `SPARE_KILL_FIRST`)를 그대로 지닌다. seed 뽑기의 머리 글자도 `gin-mirror|`로 두어 같은 seed가 같은 kill 단계를 낸다.
 - **둘째 죽음은 빼지 않는다.** 2026-10-17 메인 세션 결정(REVIEW_TEST B3)으로 `@gct`, `@gc` 모두 gin-mirror 8절의 사전 등록 규칙을 쓴다: 둘째 kill이
@@ -98,7 +97,7 @@ N단계가 이 꼴 그대로 내야 하는 줄이다. `%s`는 공백 없는 낱�
 | 리뷰 7. 시험 스위치 시작과 끝 | `DIE_RST`는 SIGKILL 직전 줄; `FREEZE_PAGE`는 시작 줄(위 꼴)과 끝 줄 `GIN/RC: rank %d: test switch FREEZE_PAGE: beats resumed`; `RST_GAP`은 닫음 줄(위 꼴)과 다시 엶 줄 `GIN/TS: rank %d: test switch RST_GAP: listener reopened`; 줄마다 시작 기준(첫 무장 확정 체크포인트 뒤 `after_ckpt_ms=%d`) | `TODO(p1)` |
 | 리뷰 8. 활성화와 무장 줄 | rdma 빌드에서도 지금 글 그대로: `GINRS step rank=R step=S released=0`, `rank P armed at its stable checkpoint K`, `every survivor holds rank P: its spare activated (…), N 'later' answers`, `restore round with rank P published`, `rank P restored as incarnation I`, `hold of rank P started`, `is given up`; 활성화 줄의 'later' 수는 launcher가 대신 답한 LATER 수 | `TODO(p3)` |
 | 리뷰 9. 펜스와 바뀐 칸 | 위 FENCING, FENCED 행; 바뀐 칸 줄은 무엇과 견준 수인지 싣는다(`against=snapshot_at_judgement`) | `TODO(p3)` |
-| 리뷰 10. launcher 표 | `GIN/LA: node %u: table: %d registered, %d spares` (등록 표가 바뀔 때마다). 그 전까지 `launcher_gc.sh table`이 등록, EXITED, FENCED, left, HELLO, ended 줄로 표를 읽음 | launcher 쪽 TODO |
+| 리뷰 10. launcher 표 | `GIN/LA: node %u: table: %d registered, %d spares` (등록 표가 바뀔 때마다). 그 전까지 `launcher_gc.sh table`이 등록, EXITED, FENCED, left, HELLO, ended 줄로 표를 읽음. 2026-10-22부터 launcher가 시행마다라 시작 검사에는 쓰지 않음(보고만) | launcher 쪽 TODO |
 | 리뷰 11. 복원 끔과 fail-fast의 생존 확인 | `NCCL_GIN_RESTORE=0`, `FAULT_POLICY=failfast`인 살아 있는 RST 셀에서도 상태 페이지, READ, 확인 창이 돌고 PAGEUP 줄을 냄(돌지 않으면 그 셀은 아무것도 재지 않음) `[미확인]` | `TODO(p1)` |
 | 리뷰 12. 시계 | 모든 `mono_ms=`가 CLOCK_MONOTONIC(launcher는 그렇다; rank 쪽 `gdakiQ4MonoMs`의 몸체는 diff 밖 `[미확인]`) | `TODO(p1)` 확인 |
 | 관문 프로그램 | `../gate_fenced.cc`에 `--pid <pid>` 모드: 실제 pid에 `gdakiRsActExamine`(옛 관문)과 `gdakiCtrlActGate`(FENCED)를 걸고 `old GO mono_ms=%.3f`, `FENCED GO mono_ms=%.3f`를 냄(`gate_proc_gc.py --gate-bin`) | 그 파일 주인의 TODO |
@@ -299,3 +298,47 @@ smoke와 pilot은 따로 셈), 배포 스크립트. launcher 범위는 5절대�
 하나(펜스로 끝난 대상의 데이터 같음 열) 고침. 자체 시험 62/62 통과(로컬 Python), check_cells_gc.py ok, 셸은 bash -n만. 클러스터 실행 없음 |
 impl/test/notes_test.md(고침) |
 ```
+
+## 셀 줄임 (2026-10-22, 사용자 결정 "실험을 위한 실험을 줄임")
+
+사전 등록 전이라 EXPERIMENT.md 3, 7, 8절과 이 폴더의 셀 파일, 예측 표를 그 자리에서 고쳤다(EXPERIMENT.md 12절 2026-10-22 셀 줄임 행). 코드(`hold_gc.sh`, `score_gc.py`,
+`run_cost_gc.sh`, `test_rows_gc.py` 등)는 고치지 않았다.
+
+| 무엇 | 줄임 전 | 줄임 뒤 |
+|---|---|---|
+| 7절 행(`rows`) | 27 | 25(옛 7행 `gct4_rstgap_live*`, 옛 10행 `gct4_fdhold_sock_kill3`을 빼고 번호를 다시 매김) |
+| cell@build(`cells`) | 27, 185 시행 | 23, 155 시행 |
+| 예측(`predictions_gc.csv`) | 31 | 28(`rst_judge_tcp`, `rstgap_live_tcp`, `finless_tcp_baseline`을 뺌) |
+| 빌드 키(`builds`) | `gc`, `gct`, `gctc`, `gcp`, `gctp` | `gc`, `gct`, `gcp`(`gctc`, `gctp`는 `builds_unused`에 까닭만) |
+| hold | C1–C11 | C4 없앰(tcp 대조 셀만 있었음), C5는 `gc4_fdhold_uverbs_kill3@gc`만, P2는 `gct4_mgmt_mute8@gct`만 |
+| tcp 회귀 | gin-mirror hold 여덟 전부 `@gct`(188 시행) | `regression.builds.gct.cells` = `mi4_kill3_ow`(10 시행); `regression_tcp`는 그 셀만 보는 gin-mirror 예측 일곱 |
+| 비용 | 팔 셋 × 지표 셋 × 6 × 노드 둘 = 108 실행 | `probe-off`, `probe-on` × `lat4k` × 6 × 노드 둘 = 24 실행; `cost_probe_lat4k`의 셀 열은 `cost:probe:probe-on:lat4k` |
+
+- 대조 팔을 바꾼 것: `gc4_rst_kill3@gc`와 `rst_judge_rdma`는 `gc4_kill3_ow@gc`, `gc4_rstgap_live300@gc`와 `rstgap_live_rdma`는 `gc4_none_ow@gc`, `gc4_fdhold_sock_kill3@gc`와
+  `finless_exit_report`는 `gc4_kill3_ow@gc`(앞의 대조 팔이 빠진 셀이었음; 대조 팔 열은 채점에 쓰이지 않음 `[소스: score_gc.py]`).
+- `check_cells_gc.py`: 행 수를 박아 둔 곳은 없었고(독스트링만 27), 회귀 빌드의 `cells` 목록 검사를 더함. 실행 결과 `section 7 rows 25, cells 23, section 3 keys 28 ... ok`.
+- `TODO(code)`: `hold_gc.sh`의 `json_hold`(`RG-` hold)와 `score_gc.py`의 `regression_entries`가 `regression.builds.<b>.cells`를 아직 읽지 않는다. 고치기 전에는 `RG-gct-G1`이 G1 일곱 셀을
+  모두 돌고 채점기가 `@gct`에 hold 여덟을 계획하므로 `RG-gct-*` hold를 돌리지 않는다. `hold_gc.sh`의 비용 hold 설명(팔 셋 × 지표 셋)은 주석만 옛것이고 실제 팔과 지표는 셀 파일에서 읽는다.
+- `test_rows_gc.py`(고치지 않음)는 줄임 뒤 62검사 가운데 1 실패다: 빠진 예측 `rstgap_live_tcp`의 판정을 "맞음"으로 기대하는 검사(예측 표에 그 행이 없어 판정 None).
+  나머지 61은 통과. 그 기대 하나를 지우거나 빠진 예측을 기대 목록에서 빼는 것이 남은 코드 몫이다(`TODO(code)`). 합성 시행의 `gctc` 셀 이름은 합성 자료라 그대로 둬도 된다 `[추론]`.
+- 고침(2026-10-22 뒤따름, 위 `TODO(code)` 둘을 닫음): `json_hold`와 `regression_entries`가 `regression.builds.<b>.cells`를 읽어 `RG-gct-G1`은 `mi4_kill3_ow`만 돌고 다른 `RG-gct-*`는 셀 없음으로 멈추며, 채점기는 `@gct`에 그 셀만 계획한다(`@gc`는 그대로).
+  `test_rows_gc.py`는 `rstgap_live_tcp` 기대를 지우고 이 계획 검사 하나를 더해 62검사 0 실패, `check_cells_gc.py`는 셀이 쓰는 빌드 키가 EXPERIMENT.md 빌드 키 표에 있는지 검사(잘못 넣은 `gctc`로 FAIL 확인) `[측정: 로컬 실행]`.
+
+## launcher 데몬의 예비 프로세스 (2026-10-22, 조율 세션 지시)
+
+launcher가 노드마다 예비 프로세스 하나를 스스로 띄우고 활성화 뒤 다음 화신을 띄운다([../launcher/README_launcher.md](../launcher/README_launcher.md) "따뜻한 예비 프로세스",
+커밋 10bc65af). 그 README의 "실행기 쪽에 필요한 바꿈" 여덟을 이 폴더에 적용했다. 조율 세션의 결정: launcher는 **시행마다**(예비 프로세스 명령에 시행마다의 값이 있음; 그 README 6의 (가)).
+
+| 무엇 | 바꾼 것 |
+|---|---|
+| `launcher_gc.sh start` | `--spare-cmd`, `--spare-env`(되풀이), `--spare-log`, `--spare`, `--spare-hello-ms`, `--spare-respawn-max`를 그대로 넘김. launcher가 받지 않는 `--spare-env`(기록, 시험 kill, 소켓, 노드 변수)는 여기서 먼저 거절(exit 2). 띄우기 전에 노드의 낡은 소켓(`/tmp/gc_la.??????/launcher.sock`, 이 uid)과 이 uid의 `gin_launcher` 프로세스를 셈: 하나라도 있으면 띄우지 않고 `stale sock=N proc=L`, exit 3. 새 읽기 전용 op `stale`. 명령과 환경은 파일에 쓰지 않음(rec에는 `spare`, `spare_log`, `spare_env_n`, `spare_respawn_max`만) |
+| `run_gc.sh` | rdma 길(`LAUNCHER_SCOPE=trial`): 시행 폴더에 `spare/`와 `spare_exec.sh`(bash → stdbuf → driver의 exec 사슬, kv는 `spare_i<화신>.kv`)를 만들고 rank보다 먼저 두 launcher를 띄움. 낡음은 exit 7, 안 뜸은 exit 6(둘 다 meta만, STOP_launcher). 실행기의 `start_spare`는 tcp 길에서만. 노드마다 따라 읽기 하나가 `spare/`의 띄울 때마다의 로그를 받는 때 시각을 붙여 `spare.log`, `spare_2nd.log`(그 밖의 화신은 `spare_<node>_i<화신>.log`)로; 준비됨은 거기의 `GINRS spare_ready`; kill 대상(`SPARE_KILL_FIRST`, `spare_then_rank`, 같은 rank의 둘째 kill)은 HELLO 줄의 hello pid(부모는 launcher pid로 검사). 예비 프로세스 없음 셀 둘은 `--spare-respawn-max 0`. 끝: 활성화된 띄움마다 launcher의 끝 줄을 기다리고(T0 + WATCHDOG_S + 20 s까지, 넘으면 그 hello pid로 kill, `which=bound`), 멈춘 프로세스 정리, 표지, launcher 끄기, 따라 읽기 끝, kv와 종료 코드(launcher 끝 줄: signal n → 128 + n), launcher 로그 전체 복사. 같은 노드의 다른 두 rank에 예비 프로세스가 필요한 셀은 거절(exit 1) |
+| `hold_gc.sh`, `cells_gc.sh` | hold는 launcher를 띄우지 않음(셀의 `launcher_env`를 `LAUNCHER_ENV`로 넘김), 마지막 시행 뒤 꼬리 검사는 없앰(시행 로그 전체가 시행의 것). exit 6, 7의 글 |
+| `rows_gc.py` | 시행 launcher 로그 전체; 새 열 `launcher_scope`, `launcher_stale`, `la_spare_spawn_n`, `la_spare_respawn_n`, `la_spare_cap_expected_n`, `spare_hello_after_ms`, `spare2_inc_want`, `spare2_inc_got`, `spare2_daemon_ok`; 예비 프로세스 없음 셀의 한도 줄 하나는 `la_stop_n` 밖; `--stops`에 `la_not_up`, `la_stale_n` |
+| `score_gc.py` | 제외 `launcher_stale`; 둘째 예비 프로세스가 launcher의 것이 아니면(`spare2_daemon_ok` 0) `spare_start_fail`; SCORE.md에 예상된 한도 줄 수와 launcher가 안 뜨거나 낡은 시행 |
+| `test_rows_gc.py` | 장면 I: 같은 rank 둘째 죽음의 데몬 화신 2(있음, 없음), 낡은 소켓 시행, 예비 프로세스 없음 셀의 한도 줄(다른 셀에서는 STOP), `launcher_gc.sh stale`와 `start`의 거절(스크래치 뿌리, 진짜 `/tmp`는 건드리지 않음) |
+
+- 확인: `python3 test_rows_gc.py` 72 checks, 0 failed, `python3 check_cells_gc.py` ok, 셸 여덟 `bash -n` 통과 `[측정: 로컬 실행]`. `run_gc.sh`의 launcher 줄 읽기(LAPY), 따라 읽기 둘(FOLLOWPY, SPLITPY), `spare_exec.sh`는 가짜 로그와 가짜 driver로 로컬에서 한 번 돌려 봄(화신 2의 kv 경로, exec 뒤 같은 pid) `[측정: 로컬 smoke, n 1]`. 클러스터, ssh, 실제 launcher 실행 없음.
+- 한도 줄을 세지 않는 예외는 이 폴더의 선택이다: 다시 띄우기를 두면 실행기가 끝낸 예비 프로세스가 곧바로 다시 떠 `rs4_kill3_spareabsent`(kill이 수 초 뒤)는 복원이 되어 버리고, `gc4_kill3_ow_spareabsent`는 다시 띄운 것의 HELLO와 ACTIVATE의 경주가 된다 `[추론: gin_launcher.c 1112–1114행(HELLO 없는 자리는 REFUSED), 912–937행(다시 띄우기)]`. EXPERIMENT.md 8절에 적었다.
+- `[미확인]`: 기록 파일이 아직 없을 때 띄운 예비 프로세스가 기다리는지(그 README 7), rdma 빌드의 예비 프로세스가 아직 `NCCL_GIN_RESTORE_SPARE_PORT`를 쓰는지(쓰면 같은 rank의 화신 2가 같은 포트). 따라 읽기의 받는 때 시각은 읽은 때라, 따라 읽기가 읽기 전에 쓰인 줄은 늦게 찍힌다(`mono_ms`가 있는 줄은 그것을 씀).
+- 남은 것: EXPERIMENT.md 9.8절 파일 표의 `hold_gc.sh` 행 글("노드마다 launcher 하나 띄우고 끄기")은 이번 범위(5, 8, 9.5절) 밖이라 그대로다.
