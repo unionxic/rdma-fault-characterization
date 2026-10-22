@@ -1,0 +1,42 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index b939929..e001896 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -27270,7 +27270,8 @@ struct gdakiCtrlLauncher {
+   std::mutex mu;
+   struct gdakiRecHost* r = nullptr;
+   bool registered = false;          // HELLO_ACK OK for the current role and incarnation
+-  bool spare = false;               // a spare process (NCCL_GIN_RESTORE_SPARE) before its activation
++  std::atomic<bool> spare{false};   // a spare process (NCCL_GIN_RESTORE_SPARE) before its activation (sparefix: atomic,
++                                    // Resume reads it without L->mu)
+   uint32_t resendSaidInc = 0;       // inc + 1 of the last "STORE_REQ goes again" line
+   // the judgement table's L inputs by rank (gdakiCtrlLaLInputs; the watch thread reads them without the mutex)
+   std::unique_ptr<std::atomic<uint64_t>[]> pubLeft, pubFenced, pubReg;
+@@ -33775,7 +33776,9 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+           if (key != nullptr && r->commKey == comm && r->ctx != nullptr && r->ctx->devHandle != nullptr &&
+               r->ctx->devHandle->handle == key && r->ctrl != nullptr && r->ctrl->launcher != nullptr) {
+             const struct gdakiCtrlPage* pg = gdakiPageOf(r);
+-            wait = pg == nullptr || !pg->launcherPaired.load(std::memory_order_acquire);
++            // sparefix: a spare before its activation pairs with no launcher by design (no wait, no 41: below)
++            wait = !r->ctrl->launcher->spare.load(std::memory_order_acquire) &&
++                   (pg == nullptr || !pg->launcherPaired.load(std::memory_order_acquire));
+           }
+       }
+       if (!wait || gdakiQ4MonoMs() >= until) break;
+@@ -33818,6 +33821,16 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+                        &mine, miCtxWhy, miPoolWhy, miConfWhy, miPeersWhy, sizeof(miCtxWhy));
+ #if !NCCL_GIN_CTRL_TCP
+     gdakiCtrlResumeFacts(rFound, &in, gcWhy);  // gin-control (phase 2a-2-A): 41-44
++    // gin-control sparefix (2026-10-22, the first hardware smoke a6): a process in the spare role before its activation
++    // (gdakiCtrlLauncher::spare, cleared by gdakiCtrlLaSpareDone after the activation and its re-registration) pairs with
++    // no launcher by design (the helper starts after the REJOIN; design 9.6 order (4)): 41 is not asked of it. After the
++    // activation and the re-registration it is, as of any rank.
++    if (in.gc41 != nullptr && gdakiCtrlLaOf(rFound) != nullptr &&
++        gdakiCtrlLaOf(rFound)->spare.load(std::memory_order_acquire)) {
++      in.gc41 = nullptr;
++      INFO(NCCL_NET, "GIN/RC: rank %d: Resume condition 41 not asked: a spare before its activation pairs with no launcher "
++           "mono_ms=%.3f", f->rank, gdakiQ4MonoMs());
++    }
+ #endif
+   }
+   in.sideWhy = sideWhy;

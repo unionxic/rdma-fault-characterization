@@ -218,7 +218,8 @@ struct gdakiCtrlEnv {
   uint64_t nonce;        // the context's nonce (the body's nonce too)
   uint32_t incarnation;  // the sending process's incarnation
   uint32_t bodyBytes;    // RECORD 1872, LAUNCHER 256, XFER and XFER_DONE 32, CONNECTED 0, PAIR 144 (a launcher's 256)
-  uint8_t rsv[16];
+  uint8_t pathMark[16];  // RECORD: the pair's path marker (struct gdakiCtrlPathMark below; phase 2a-2-C), else 0;
+                         // gdakiCtrlEnvCheck does not read it
 };
 static_assert(sizeof(struct gdakiCtrlEnv) == 64, "the control envelope is 64 bytes");
 static_assert(offsetof(struct gdakiCtrlEnv, from) == 8 && offsetof(struct gdakiCtrlEnv, gen) == 12 &&
@@ -313,7 +314,23 @@ static_assert(sizeof(struct gdakiCtrlXfer) == GDAKI_CTRL_XFER_BYTES, "an XFER bo
 #define GDAKI_TS_CTRL_PROBE_SETUP 55u  // [1] phase 1's named scaffold only: the liveness READ QP's endpoint (struct
                                        //     gdakiCtrlEndpoint in nrp[], unused by every record: REVIEW2 1절 B3) over the
                                        //     helper TCP socket until phase 2's pairing is merged; it goes with phase 2
-static_assert(GDAKI_TS_CTRL_STALLED >= 52u && GDAKI_TS_CTRL_PROBE_SETUP <= 63u, "the new records are in 52..63");
+#define GDAKI_TS_CTRL_PATH 56u         // [2] the socket's path marker record (phase 2a-2-C): the first record of a socket
+                                       //     path generation after a switch, struct gdakiCtrlPathMark in executed[0..3];
+                                       //     the receiver takes it (never handed to a caller)
+static_assert(GDAKI_TS_CTRL_STALLED >= 52u && GDAKI_TS_CTRL_PATH <= 63u, "the new records are in 52..63");
+// The pair's path marker (phase 2a-2-C): which path a record went on, the path generation it belongs to, and how many
+// records the sender handed to the previous path (recordsSentBeforeSwitch). On the ring: every RECORD envelope's
+// pathMark; on the socket: the marker record GDAKI_TS_CTRL_PATH. Generation 0 is the setup's socket (no marker).
+#define GDAKI_CTRL_PM_SOCKET 1u
+#define GDAKI_CTRL_PM_RING 2u
+#define GDAKI_CTRL_PM_WAIT_MS 1000.0  // the receiver waits at most this long for the old path's counted records
+struct gdakiCtrlPathMark {
+  uint8_t path;     // GDAKI_CTRL_PM_*; 0: no marker
+  uint8_t rsv[3];
+  uint32_t gen;     // the path generation the record belongs to
+  uint64_t before;  // recordsSentBeforeSwitch
+};
+static_assert(sizeof(struct gdakiCtrlPathMark) == 16, "the marker is the envelope's 16 reserved bytes");
 static inline bool gdakiCtrlIsRecord(uint32_t t) { return t >= GDAKI_TS_CTRL_STALLED && t <= GDAKI_TS_CTRL_PROBE_SETUP; }
 static inline const char* gdakiCtrlRecordName(uint32_t t) {
   switch (t) {
@@ -362,7 +379,10 @@ static inline const char* gdakiLnFenceName(uint32_t f) {
 
 // ---- the judgement's inputs and result (design v3 4.2; the values here, the table is phase 1's gdakiCtrlJudge) ----
 // L, the launcher (5 values); B, a BYE (2); W, the witness and the confirmation window (9); R, the liveness READ (13):
-// 5 x 2 x 9 x 13 = 1 170 points, each of which phase 1's CPU model walks.
+// 5 x 2 x 9 x 13 = 1 170 points, each of which phase 1's CPU model walks. R's two progress inputs (live, user decision
+// 2026-10-22): R (2)-(5) read the peer's device progress line (the GPU's own posts and polls, struct gdakiCtrlPageHead's
+// devLine names it), R (6)-(9) the host page's two beats (the watch thread and the helper), R (10)-(13) the READs
+// themselves; a peer without a device line keeps the watch beat in R (2)-(5) (the page region's gdakiCtrlRDerive).
 enum : uint32_t { GDAKI_CTRL_L_LEFT = 0, GDAKI_CTRL_L_ENDED = 1, GDAKI_CTRL_L_ALIVE = 2, GDAKI_CTRL_L_NOINFO = 3,
                   GDAKI_CTRL_L_NORESP = 4, GDAKI_CTRL_L_N = 5 };
 enum : uint32_t { GDAKI_CTRL_B_NONE = 0, GDAKI_CTRL_B_SEEN = 1, GDAKI_CTRL_B_N = 2 };
@@ -405,14 +425,25 @@ struct alignas(64) gdakiCtrlPageHead {
   uint64_t flags;           // GDAKI_CTRL_PF_*, the page version in the top byte
   uint64_t appStep;         // the last ncclGinRestoreStep's step (report only)
   uint64_t lastStableCkpt;  // this rank's last stable checkpoint (report and the buddy's check)
-  uint64_t rsv;
+  uint64_t devLine;         // live: this rank's device progress line, gdakiCtrlDevLineWord(rkey, bytes) (0: none); set
+                            // before the page is up, constant after (the MR's iova is 0: the line is at remote address 0)
 };
 static_assert(sizeof(struct gdakiCtrlPageHead) == 64 && alignof(struct gdakiCtrlPageHead) == 64, "line 0 is 64 B");
 static_assert(offsetof(struct gdakiCtrlPageHead, watchBeat) == 0 && offsetof(struct gdakiCtrlPageHead, helperBeat) == 8 &&
                   offsetof(struct gdakiCtrlPageHead, helperBusy) == 16 && offsetof(struct gdakiCtrlPageHead, incNonce) == 24 &&
                   offsetof(struct gdakiCtrlPageHead, flags) == 32 && offsetof(struct gdakiCtrlPageHead, appStep) == 40 &&
-                  offsetof(struct gdakiCtrlPageHead, lastStableCkpt) == 48,
+                  offsetof(struct gdakiCtrlPageHead, lastStableCkpt) == 48 &&
+                  offsetof(struct gdakiCtrlPageHead, devLine) == 56,
               "the judgement words are 8 B aligned at fixed offsets");
+// The device progress line (live): the GIN context 0's device QP array (DOCA's struct doca_gpu_dev_verbs_qp, one per
+// peer, in GPU memory; the GPU advances sq_rsvd_index at every post and cq_sq.cqe_ci at every poll), registered in the
+// GIN PD for REMOTE_READ at iova 0. One 8 B word in line 0 names it (rkey, bytes) so that every incarnation's page names
+// its own; the setup all-gather carries the same region (gdakiCtrlSetupAddr::dev). 0: no line (not registered).
+static inline uint64_t gdakiCtrlDevLineWord(uint32_t rkey, uint32_t bytes) {
+  return rkey == 0 || bytes == 0 ? 0 : ((uint64_t)rkey << 32) | bytes;
+}
+static inline uint32_t gdakiCtrlDevLineRkey(uint64_t w) { return (uint32_t)(w >> 32); }
+static inline uint32_t gdakiCtrlDevLineBytes(uint64_t w) { return (uint32_t)w; }
 #define GDAKI_CTRL_PF_LEAVING 0x1ull  // BYE sent: the rank is leaving
 #define GDAKI_CTRL_PF_RESTORE 0x2ull  // the restore is on
 #define GDAKI_CTRL_PF_MIRROR 0x4ull   // the mirror is on
@@ -640,18 +671,21 @@ static inline uint32_t gdakiCtrlPairResolve(int myRank, int peerRank, uint32_t c
 // ---- the REJOIN's and REJOIN_ACK's nrp (design v2 5.4; REVIEW2 1절 B3: both leave gdakiTsMsg::nrp unused, 10146-10166,
 // 9563-9570) ----
 // REJOIN (spare -> survivor): its record QP and liveness READ QP (INIT, RECVs posted, fresh PSNs), its UD QP, its page
-// and outbox. REJOIN_ACK (survivor -> spare): the survivor's two QPs (RTR toward those, fresh PSNs), its page and outbox
-// (its UD QP is known from the activation blob).
+// and outbox. REJOIN_ACK (survivor -> spare): the survivor's two QPs (RTR toward those, fresh PSNs), its page and outbox,
+// and its UD QP (phase 2a-2-C: the spare also knows it from the setup's all-gather in its transcript). Both go over the UD
+// context QP (envelope kind RECORD, gen 0); a survivor's answer that does not take the REJOIN is a FAIL record over UD
+// with arg GDAKI_CTRL_RJA_FAIL, _WAIT or _REFUSE ([2]). Every resend of one REJOIN carries the same endpoints.
 // Both QP kinds pair with a generation of their own (design v3 2.5, 5.4 5: "two generations, 8 B"); the UD endpoint's
 // psn is the sender's Q_Key. gdakiTsMsg::nrp is uint32_t[64]: never read this struct through a cast of it (aliasing and
 // alignment); gdakiCtrlNrpPut and gdakiCtrlNrpGet copy the bytes (REVIEW_PREP 고칠 것 4).
 #define GDAKI_CTRL_NRP_VERSION 1u
 struct gdakiCtrlRejoinNrp {
   uint32_t version;   // GDAKI_CTRL_NRP_VERSION; 0: nothing here (a tcp-path REJOIN)
-  uint32_t gen;       // the record QP pairing's generation the REJOIN starts (the survivor's next)
+  uint32_t gen;       // the record QP pairing's generation the REJOIN starts: (incarnation << 20) + 1 (phase 2a-2-C;
+                      // above every generation of the pair's older incarnations), taken by the survivor if above its own
   struct gdakiCtrlEndpoint rec, probe, ud;
   struct gdakiCtrlRegion page, outbox;
-  uint32_t probeGen;  // the liveness READ QP pairing's generation the REJOIN starts (its own counter)
+  uint32_t probeGen;  // the liveness READ QP pairing's generation the REJOIN starts (its own counter; the same rule)
   uint32_t rsv;
 };
 static_assert(sizeof(struct gdakiCtrlRejoinNrp) == 168, "the REJOIN nrp layout is 168 bytes");
@@ -748,7 +782,8 @@ static inline struct gdakiCtrlQpAttr gdakiCtrlQpAttrLauncher(uint8_t ibTimeout, 
   return gdakiCtrlQpAttrRecord(ibTimeout, helperCq);
 }
 // The liveness READ QP: SQ 4, RQ 0, REMOTE_READ only, the record QP's timeout, retry_cnt 7, the watch thread's CQ
-// (max_rd_atomic 1).
+// (max_rd_atomic 1: the READs in the SQ go one after another). Live: SQ 4 = the periodic pair (the page, the device
+// progress line) + the confirmation window's two READs (the device line); the page region's model asserts it.
 #define GDAKI_CTRL_PROBE_SQ 4u
 static inline struct gdakiCtrlQpAttr gdakiCtrlQpAttrProbe(uint8_t ibTimeout, void* watchCq) {
   struct gdakiCtrlQpAttr a;
@@ -800,6 +835,7 @@ enum : uint32_t {
   GDAKI_CTRL_CH_RECORD = 1,  // a record on the peer's installed helper socket; rdma: the pair's ring [2]
   GDAKI_CTRL_CH_REJOIN = 2,  // the spare's REJOIN dial and the survivor's REJOIN_ACK on it; rdma: UD [2]
   GDAKI_CTRL_CH_DATA = 3,    // a data connection's first record and the spare's STATE answer; rdma: outbox, store [2]
+                             // (phase 2a-2-C: the outbox when the spare's REJOIN went over UD, else the data socket)
 };
 static inline const char* gdakiCtrlChName(uint32_t ch) {
   switch (ch) {
@@ -828,10 +864,12 @@ static_assert(GDAKI_CTRL_W_END_ALIVE + GDAKI_CTRL_CW_ALIVE == GDAKI_CTRL_W_END_A
 struct gdakiCtrlPage;      // [1] this rank's status page, the probe state per peer, the judgement
 struct gdakiCtrlRing;      // [2] the record QPs, the rings, the credit, the inboxes, the UD QP, the outbox
 struct gdakiCtrlLauncher;  // [3] the node's launcher link (the Unix socket, the launcher QPs)
+struct gdakiCtrlDev;       // [1] live: this rank's device progress line (its MR) and every rank's all-gather region
 struct gdakiCtrlState {
   struct gdakiCtrlPage* page = nullptr;
   struct gdakiCtrlRing* ring = nullptr;
   struct gdakiCtrlLauncher* launcher = nullptr;
+  struct gdakiCtrlDev* dev = nullptr;  // [1] made before the all-gather, freed by [1]'s free hook (gdakiCtrlPageFree)
 };
 // The liveness READ QP of one pair (the API below). Its state is software, written by its owner thread alone (the watch
 // thread once phase 1 hands it over; REVIEW_PREP 고칠 것 7, design v3 2.1): `connected` from the connect until an error
@@ -922,6 +960,11 @@ static inline const char* gdakiCtrlCauseName(uint32_t cause) {
 // (END on the last). STATE of one survivor and a spare: STATE_REQ (spare -> survivor: ln4's DATA answer record), STATE
 // (survivor -> spare: ln4's data-socket bytes, n then the export), RKEYS (spare -> survivor: ln4's rkey list bytes).
 // ACTB: the activation blob through a launcher (phase 3).
+// Phase 2a-2-C: the pair's STATE turn takes the way its REJOIN took, on both sides: over UD (the nrp's generations) the
+// three transfers go on the pair's ring, each side answering "not yet" until its record QP is up in that generation or a
+// later one of the same incarnation (never the socket while it waits); the data socket (ln4's bytes as they are) only
+// when the pair has no ring (none in the context, or the REJOIN went over TCP; the tcp build has none). The steps never
+// block (the survivor's helper, the spare's REJOIN loop bounded by its timeout).
 #define GDAKI_CTRL_XFERH_MAGIC 0x48585247u  // "GRXH" in memory order
 #define GDAKI_CTRL_XFERH_VERSION 1u
 enum : uint16_t { GDAKI_CTRL_XK_STATE_REQ = 1, GDAKI_CTRL_XK_STATE = 2, GDAKI_CTRL_XK_RKEYS = 3, GDAKI_CTRL_XK_ACTB = 4 };
@@ -959,10 +1002,11 @@ struct gdakiCtrlSetupAddr {
   uint32_t activeMtu;                          // enum ibv_mtu of the GIN port (ibv_query_port's active_mtu)
   uint32_t fork;                               // ibv_is_fork_initialized(); 0xff: the symbol is missing
   int32_t probeMs, probeTimeoutMs, confirmMs, suspectMs, stallMs;  // the liveness thresholds (strict; 고칠 것 4)
-  uint32_t rsv[4];
+  struct gdakiCtrlRegion dev;                  // [1] live: this rank's device progress line (addr = its iova 0, rkey, len;
+                                               //     rkey 0: none); not strict (a spare's is its own)
 };
 static_assert(sizeof(struct gdakiCtrlSetupAddr) == 168 && offsetof(struct gdakiCtrlSetupAddr, ud) == 32 &&
-                  offsetof(struct gdakiCtrlSetupAddr, path) == 116,
+                  offsetof(struct gdakiCtrlSetupAddr, path) == 116 && offsetof(struct gdakiCtrlSetupAddr, dev) == 152,
               "the setup all-gather's control fields are 168 bytes");
 // The agreement over every rank's fields (the same verdict on every rank: the same records). 0: agreed; else the
 // Resume condition it is (42 an MTU below 2048, 44 the control path differs) or GDAKI_CTRL_SA_THRESH; *minMtu the lowest.
@@ -1133,7 +1177,9 @@ static int gdakiCtrlPump(struct gdakiRecHost* r, int peer, struct gdakiTsPeer& p
 static int gdakiCtrlRecv(struct gdakiRecHost* r, int peer, struct gdakiTsPeer& pe, struct gdakiTsMsg* out, int timeoutMs,
                          std::atomic<bool>* stop);
 // The spare's wait for one record of `peer` on `fd` (the dial it holds), as `ch` says (_REJOIN: the REJOIN's answer,
-// _RECORD: TOKEN and DONE_RS); gdakiRsRecvOn's contract. The preparation stage: gdakiRsRecvOn.
+// _RECORD: TOKEN and DONE_RS); gdakiRsRecvOn's contract. The preparation stage: gdakiRsRecvOn. Phase 2a-2-C: fd -1 (the
+// REJOIN went over UD): _REJOIN waits for the UD answer up to the resend interval (0: WAIT, REFUSE or nothing; send
+// again), _RECORD reads the pair's ring.
 static int gdakiCtrlRecvOn(struct gdakiRecHost* r, int peer, uint32_t ch, int fd, struct gdakiTsMsg* out, int timeoutMs,
                            std::atomic<bool>* stop);
 // The FAIL answer to a REJOIN of declined rank `peer` that came on `fd` (closes fd). The preparation stage:
@@ -1150,6 +1196,8 @@ static uint32_t gdakiCtrlChanGen(struct gdakiRecHost* r, int peer, const struct 
 // helper CQ's completion channel fd, or -1: poll ignores it and the peek fails, so the pump reads).
 static int gdakiCtrlPollFd(struct gdakiRecHost* r, int peer, const struct gdakiTsPeer& pe);
 // The spare installs the accepted REJOIN socket `fd` as `peer`'s record channel (the preparation stage: pe.fd = fd).
+// Phase 2a-2-C: fd -1 (the REJOIN went over UD): the ring installs the pair from the REJOIN_ACK (both pairings, the
+// records on the ring); the witness has no socket yet (unknown, re-dialled).
 static void gdakiCtrlChanInstall(struct gdakiRecHost* r, int peer, struct gdakiTsPeer& pe, int fd);
 // ---- the liveness READ QP [prep] ----
 // The QP of (this rank, peer) on the widened template (gdakiCtrlQpAttrProbe: NCCL_IB_TIMEOUT; a CQ of its own until

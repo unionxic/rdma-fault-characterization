@@ -439,7 +439,9 @@ spare_opts() {  # spare_opts <node>: SOPTS = that node's warm-spare options for 
   local nd=$1 r w
   SOPTS=()
   r=${SPN[$nd]:-}; [ -n "$r" ] || return 0
-  SOPTS=(--spare-cmd "bash $(npath "$nd" spare_exec.sh) $RSBIN $r $ARGS $(npath "$nd" spare)" --spare-log "$(npath "$nd" spare)" --spare 1)
+  SOPTS=(--spare-cmd "bash $(npath "$nd" spare_exec.sh) $RSBIN $r $ARGS $(npath "$nd" spare)" --spare-log "$(npath "$nd" spare)" --spare 1 \
+         --spare-wait-for "$(npath "$nd" spare)/.go" --spare-hello-ms 30000)
+  # (sparefix, ../notes_sparefix.md 1: each spawn waits for the go file below, at most the 30 s HELLO bound, then spawns anyway)
   [ "$LA_RESPAWN_MAX" != - ] && SOPTS+=(--spare-respawn-max "$LA_RESPAWN_MAX")
   # the old runner's spare environment (NENV, hca, RS_ENV, the nonce, the spare variables, SPARE_ENV) less what the launcher
   # refuses or sets itself (its socket and node, the incarnation: the daemon's first is 1, the next ones its own)
@@ -547,6 +549,15 @@ gate_env() { [ -n "$GATE" ] && [ "$1" = 0 ] && echo "RS_START_GATE=$GATE"; }
 for ((r = N - 1; r >= 0; r--)); do
   launch "r$r" "$r" "$(node_of "$r")" "$(renv "$r") $(rec_env "$r") $(sa_env "$r") $(die_env "$r") $(gate_env "$r")"
 done
+# the warm spare's go file (sparefix, smoke a6): touched on its node once its rank's transcript is complete (the rank's GINRS
+# resume line, at most 60 s); the launcher's --spare-wait-for waits for it before each spawn; removed at the trial's end
+if [ "$LAUNCHER_SCOPE" != none ]; then
+  for nd in rain sunny; do
+    [ -n "${SPN[$nd]:-}" ] || continue
+    # shellcheck disable=SC2016
+    ( [ -n "$(wait_line "$WORK/r${SPN[$nd]}.log" "GINRS resume rank=${SPN[$nd]} " 0 0 60)" ] && node_sh "$nd" 'touch "$1/.go"' "$(npath "$nd" spare)" ) &
+  done
+fi
 # PIDREC <subshell pid file> <out file> <comm>: "<process pid> <its parent (timeout) pid>" of the launched program
 # (and the process's start ticks, /proc/<pid>/stat field 22: the fd holder's start is checked against it on the same node)
 PIDREC='for i in $(seq 1 200); do p=$(cat "$1" 2>/dev/null); [ -n "$p" ] || { sleep 0.1; continue; }
@@ -842,7 +853,7 @@ if [ "$LAUNCHER_SCOPE" != none ]; then
   for nd in rain sunny; do
     [ -n "${SPN[$nd]:-}" ] || continue
     # shellcheck disable=SC2016
-    node_sh "$nd" 'touch "$1/.end"' "$(npath "$nd" spare)"
+    node_sh "$nd" 'rm -f "$1/.go"; touch "$1/.end"' "$(npath "$nd" spare)"
     wait "${FOLLOW[$nd]}" 2>/dev/null
     python3 -c "$LAPY" files "$(la_log "$nd")" | sort > "$WORK/spare_named_$nd"
     SPARE_SPAWN_N=$((SPARE_SPAWN_N + $(wc -l < "$WORK/spare_named_$nd")))

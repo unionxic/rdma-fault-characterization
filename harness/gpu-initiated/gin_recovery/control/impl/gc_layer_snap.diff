@@ -1,0 +1,257 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 8db3f8f..b51ce85 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -18245,6 +18245,72 @@ static ncclResult_t gdakiMiHostQpXfer(struct gdakiMiHostQp* q, bool read, void*
+   return ncclSuccess;
+ }
+ 
++// ---- gin-control (snap): pure (begin; impl/gc_unit_snap.cc compiles this region on the CPU) ----
++#if !NCCL_GIN_CTRL_TCP
++// The mirror-off checkpoint pause as a GPU-side snapshot (the user's choice of 2026-10-22; impl/notes_snap.md). Inside the
++// input pause only one device-to-device copy per image region into a device staging buffer laid out as the image (region
++// i at off[i]), on the checkpoint's copy stream; after the pause (the helper armed the WRITE: CKPT_RESUME went out) one
++// copy per region from the device staging into the pinned slot (where 2b's D2H put it), the header and the blob, then
++// 2b's WRITE. CKPT_STABLE still follows the WRITE's end (the helper's CONFIRMING). The mirror on keeps 2b's pause (D2H).
++enum : uint32_t { GDAKI_SNAP_D2D = 1, GDAKI_SNAP_D2H = 2 };
++struct gdakiSnapCopy {
++  uint32_t kind;    // GDAKI_SNAP_D2D: region -> device staging; GDAKI_SNAP_D2H: device staging -> pinned slot
++  uint32_t region;  // the region whose bytes move
++  uint64_t dstOff;  // D2D: in the device staging; D2H: in the pinned slot (its header first)
++  uint64_t srcOff;  // D2D: 0 (the region's start); D2H: in the device staging
++  uint64_t bytes;
++};
++// The pause's copies (n regions at off[], bytes[]): one D2D per region, nothing else. out: GDAKI_CKPT_MAX_REGIONS entries.
++static inline int gdakiSnapPausePlan(const uint64_t* off, const uint64_t* bytes, int n, struct gdakiSnapCopy* out) {
++  int k = 0;
++  for (int i = 0; i < n && i < GDAKI_CKPT_MAX_REGIONS; i++) out[k++] = {GDAKI_SNAP_D2D, (uint32_t)i, off[i], 0, bytes[i]};
++  return k;
++}
++// The copies after the pause: one D2H per region into the slot at 2b's offsets (header room first), from the snapshot.
++static inline int gdakiSnapAfterPlan(const uint64_t* off, const uint64_t* bytes, int n, struct gdakiSnapCopy* out) {
++  int k = 0;
++  for (int i = 0; i < n && i < GDAKI_CKPT_MAX_REGIONS; i++)
++    out[k++] = {GDAKI_SNAP_D2H, (uint32_t)i, GDAKI_STORE_HDR_BYTES + off[i], off[i], bytes[i]};
++  return k;
++}
++// A plan's bytes by kind (the pause model: host-side bytes are the D2H ones).
++struct gdakiSnapBytes {
++  uint64_t d2d = 0, d2h = 0;
++};
++static inline struct gdakiSnapBytes gdakiSnapBytesOf(const struct gdakiSnapCopy* c, int n) {
++  struct gdakiSnapBytes b;
++  for (int i = 0; i < n; i++) (c[i].kind == GDAKI_SNAP_D2D ? b.d2d : b.d2h) += c[i].bytes;
++  return b;
++}
++// The device staging buffer (struct gdakiStoreState::snap; the application thread only). busy: from the pause's first
++// D2D of checkpoint busyCkpt until the copy stream is known idle again (its synchronize returned cudaSuccess after the
++// D2H, or after the pause's copies when no D2H follows); a failed synchronize leaves it busy, and the next pause does not
++// start before the stream ended (gdakiSnapStageWait).
++struct gdakiSnapStage {
++  void* dev = nullptr;  // cudaMalloc'd, `bytes` long (the image's layout size)
++  uint64_t bytes = 0;
++  bool busy = false;
++  uint64_t busyCkpt = 0;
++  long long nBusyWaits = 0;
++};
++static inline bool gdakiSnapStageFits(const struct gdakiSnapStage& s, uint64_t image) {
++  return s.dev != nullptr && s.bytes >= image;
++}
++// the pause's D2D copies are queued: the staging holds (or gets) checkpoint ckpt's snapshot, busy until the copy stream
++// is known idle after its D2H (or after the pause's copies when no D2H follows)
++static inline void gdakiSnapTaken(struct gdakiSnapStage* s, uint64_t ckpt) {
++  s->busy = true;
++  s->busyCkpt = ckpt;
++}
++// no copy reads the staging any more: its D2H ended (synced == true), or the checkpoint ended before a D2H was queued
++static inline void gdakiSnapReleased(struct gdakiSnapStage* s, bool synced) {
++  if (synced) s->busy = false;
++}
++// the device staging the mirror off adds per rank (the memory line): the image's layout size; 0 with the mirror on
++static inline uint64_t gdakiSnapDevBytes(bool miOn, uint64_t image) { return miOn ? 0 : image; }
++#endif  // !NCCL_GIN_CTRL_TCP
++// ---- gin-control (snap): pure (end) ----
++
+ // ---- the state (struct gdakiMiState::store; created at first use with the mirror on, freed in gdakiStoreFree) ----
+ enum { GDAKI_STORE_JOB_SERVE = 1, GDAKI_STORE_JOB_FREE = 2 };
+ struct gdakiStoreJob {
+@@ -18307,6 +18373,7 @@ struct gdakiStoreState {
+   std::atomic<long long> nWrites{0}, nFailed{0}, nRequests{0}, nServed{0};
+ #if !NCCL_GIN_CTRL_TCP
+   uint64_t ctrlMemImage = 0;           // helper: gin-control (store), the image size of the last memory line
++  struct gdakiSnapStage snap;          // application thread: gin-control (snap), the mirror off's device staging
+ #endif
+ };
+ static std::mutex gdakiStoreLifeMu;  // r->mi.store's creation (helper or application thread, first use) and teardown
+@@ -19125,6 +19192,59 @@ static void gdakiStoreFillHdr(struct gdakiRecHost* r, struct gdakiCkptHdr* h, ui
+   h->pid = self.pid;
+   h->pidStart = self.pidStart;
+ }
++#if !NCCL_GIN_CTRL_TCP
++// ---- gin-control (snap): host (the application thread; gdakiStoreTake with the mirror off) ----
++// The device staging: allocated at the first checkpoint of an image size (and again only when the image grows), freed
++// in gdakiStoreFree. Never while a copy may still read it (gdakiSnapStageWait first).
++static bool gdakiSnapStageAlloc(struct gdakiRecHost* r, struct gdakiStoreState* st, uint64_t image) {
++  struct gdakiSnapStage& s = st->snap;
++  if (gdakiSnapStageFits(s, image)) return true;
++  if (s.dev != nullptr) (void)cudaFree(s.dev);
++  s.dev = nullptr;
++  s.bytes = 0;
++  if (cudaMalloc(&s.dev, (size_t)image) != cudaSuccess) {
++    s.dev = nullptr;
++    WARN("GIN/CTRL: rank %d: cannot allocate %lu bytes of GPU memory for the checkpoint snapshot (mirror off) "
++         "mono_ms=%.3f", r->ctx->rank, (unsigned long)image, gdakiQ4MonoMs());
++    return false;
++  }
++  s.bytes = image;
++  INFO(NCCL_NET, "GIN/CTRL: rank %d: device staging of %lu bytes for the checkpoint snapshot (mirror off) mono_ms=%.3f",
++       r->ctx->rank, (unsigned long)image, gdakiQ4MonoMs());
++  return true;
++}
++// "staging busy": the previous snapshot's copy to the pinned slot did not end (its synchronize failed): wait for the
++// copy stream before this checkpoint's pause starts (the D2D would overwrite what the copy may still read). A line when
++// it waits; false (no checkpoint now, backed off) when the stream does not end cleanly.
++static bool gdakiSnapStageWait(struct gdakiRecHost* r, struct gdakiCkpt* ck, struct gdakiStoreState* st, uint64_t step) {
++  struct gdakiSnapStage& s = st->snap;
++  if (!s.busy) return true;
++  s.nBusyWaits++;
++  const double t0 = gdakiQ4MonoMs();
++  const bool synced = ck->copyStream != nullptr && cudaStreamSynchronize(ck->copyStream) == cudaSuccess;
++  gdakiSnapReleased(&s, synced);
++  GIN_TS_NOTE("GIN/CTRL: rank %d: staging busy: the device staging still held checkpoint %lu's snapshot before checkpoint "
++              "%lu's pause; waited %.0f us for the copy stream (%s) waits=%lld mono_ms=%.3f", r->ctx->rank,
++              (unsigned long)s.busyCkpt, (unsigned long)step, (gdakiQ4MonoMs() - t0) * 1000.0,
++              synced ? "free now" : "it failed: no checkpoint now", s.nBusyWaits, gdakiQ4MonoMs());
++  return synced;
++}
++// A plan's copies on the copy stream (queued only; the caller synchronizes): D2D from the regions (cudaMemcpyDefault:
++// a region outside GPU memory is copied too), D2H from the device staging into the pinned slot.
++static bool gdakiSnapRun(struct gdakiStoreState* st, const std::vector<struct gdakiCkptRegionSrc>& regs,
++                         const struct gdakiSnapCopy* c, int n, cudaStream_t stream) {
++  uint8_t* dev = (uint8_t*)st->snap.dev;
++  for (int i = 0; i < n; i++) {
++    const bool d2d = c[i].kind == GDAKI_SNAP_D2D;
++    if (c[i].region >= regs.size()) return false;
++    if (cudaMemcpyAsync(d2d ? (void*)(dev + c[i].dstOff) : (void*)(st->stage + c[i].dstOff),
++                        d2d ? regs[c[i].region].src : (const void*)(dev + c[i].srcOff), (size_t)c[i].bytes,
++                        d2d ? cudaMemcpyDefault : cudaMemcpyDeviceToHost, stream) != cudaSuccess)
++      return false;
++  }
++  return true;
++}
++#endif  // !NCCL_GIN_CTRL_TCP
+ // One checkpoint (application thread): the regions and the staging buffer, the ask to the helper; once drained, inside
+ // the pause, the D2H into the staging buffer with the header and the blob; COPIED; then, outside the pause once the
+ // helper armed it (CKPT_RESUME sent), the WRITEs into the buddy's receiving slot, bounded; their result for CONFIRMING.
+@@ -19164,7 +19284,18 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
+     ck->copyStream = nullptr;
+     return backOff();
+   }
++#if !NCCL_GIN_CTRL_TCP
++  // gin-control (snap): the mirror off takes the image into the device staging in the pause (2b: D2H in the pause). The
++  // previous snapshot's copies ended before either staging buffer is replaced or this pause starts (gdakiSnapStageWait)
++  const bool snap = !gdakiMiOn(r);
++  if (snap && !gdakiSnapStageWait(r, ck, st, step)) return backOff();
++#endif
+   if (!gdakiStoreStage(r, st, slotBytes)) return backOff();
++#if !NCCL_GIN_CTRL_TCP
++  if (snap && !gdakiSnapStageAlloc(r, st, total)) return backOff();  // the device staging fits the image
++  struct gdakiSnapCopy snapPlan[GDAKI_CKPT_MAX_REGIONS];
++  int snapN = 0;
++#endif
+   {
+     std::lock_guard<std::mutex> lk(ck->mu);
+     ck->regions = regs;
+@@ -19199,11 +19330,21 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
+   // inside the pause (drained, fenced): the D2H into the staging buffer, the header and the blob around it
+   const double c0 = gdakiQ4MonoMs();
+   bool ok = true;
++#if !NCCL_GIN_CTRL_TCP
++  if (snap) {  // gin-control (snap): the pause holds the D2D copies only; the slot's bytes are written after the pause
++    snapN = gdakiSnapPausePlan(off, sizes, (int)regs.size(), snapPlan);
++    gdakiSnapTaken(&st->snap, step);
++    ok = gdakiSnapRun(st, regs, snapPlan, snapN, ck->copyStream);
++  } else {
++#endif
+   for (size_t i = 0; i < regs.size() && ok; i++)
+     ok = cudaMemcpyAsync(st->stage + GDAKI_STORE_HDR_BYTES + off[i], regs[i].src, (size_t)regs[i].bytes, cudaMemcpyDefault,
+                          ck->copyStream) == cudaSuccess;
+   gdakiStoreFillHdr(r, (struct gdakiCkptHdr*)st->stage, step, total, regs, off, (uint32_t)bytes, nqp, p);
+   if (bytes != 0) memcpy(st->stage + gdakiStoreBlobOff(total), blob, bytes);
++#if !NCCL_GIN_CTRL_TCP
++  }
++#endif
+   const bool synced = cudaStreamSynchronize(ck->copyStream) == cudaSuccess;  // also after a failed enqueue: nothing late
+   ok = ok && synced;
+   const double d2hUs = (gdakiQ4MonoMs() - c0) * 1000.0;
+@@ -19226,6 +19367,9 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
+   }
+   ck->cv.notify_all();
+   ck->nTaken.fetch_add(1, std::memory_order_relaxed);
++#if !NCCL_GIN_CTRL_TCP
++  if (snap && (!copied || !ok)) gdakiSnapReleased(&st->snap, synced);  // no D2H follows: the snapshot is dropped
++#endif
+   if (!copied || !ok) return;
+   // the helper's verdict (COPYING: the counts again, CKPT_RESUME to every peer at 200 ms each at most): armed, or not.
+   // The bound covers the helper's own COPYING bound (3 x the pause's bound from the pause's start) as well, so a helper
+@@ -19249,7 +19393,36 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
+     st->armed = false;
+     st->takeWaiting = false;  // a later arm finds nobody waiting: its WRITEs count as failed (gdakiStoreArm)
+   }
++#if !NCCL_GIN_CTRL_TCP
++  if (snap && !armed) gdakiSnapReleased(&st->snap, synced);  // no D2H follows: idle since the pause's synchronize
++#endif
+   if (!armed) return;
++#if !NCCL_GIN_CTRL_TCP
++  if (snap) {  // gin-control (snap): after the pause: the snapshot into the pinned slot, the header and the blob (2b's bytes)
++    const double h0 = gdakiQ4MonoMs();
++    struct gdakiSnapCopy after[GDAKI_CKPT_MAX_REGIONS];
++    const int na = gdakiSnapAfterPlan(off, sizes, (int)regs.size(), after);
++    bool hok = gdakiSnapRun(st, regs, after, na, ck->copyStream);
++    gdakiStoreFillHdr(r, (struct gdakiCkptHdr*)st->stage, step, total, regs, off, (uint32_t)bytes, nqp, p);
++    if (bytes != 0) memcpy(st->stage + gdakiStoreBlobOff(total), blob, bytes);
++    const bool hsynced = cudaStreamSynchronize(ck->copyStream) == cudaSuccess;
++    gdakiSnapReleased(&st->snap, hsynced);
++    hok = hok && hsynced;
++    const struct gdakiSnapBytes pb = gdakiSnapBytesOf(snapPlan, snapN), ab = gdakiSnapBytesOf(after, na);
++    GIN_TS_NOTE("GIN/CTRL: rank %d: checkpoint %lu snapshot (mirror off): pause d2d_bytes=%lu d2d_us=%.0f host_bytes=%lu; "
++                "after the pause d2h_bytes=%lu d2h_us=%.0f%s mono_ms=%.3f", r->ctx->rank, (unsigned long)step,
++                (unsigned long)pb.d2d, d2hUs, (unsigned long)pb.d2h, (unsigned long)ab.d2h,
++                (gdakiQ4MonoMs() - h0) * 1000.0, hok ? "" : " FAILED: the checkpoint is void", gdakiQ4MonoMs());
++    if (!hok) {  // no WRITE of a partial slot: CONFIRMING sees the WRITE done and failed (void), the store stays ready
++      std::lock_guard<std::mutex> lk(ck->mu);
++      st->wCkpt = step;
++      st->wDone = true;
++      st->wOk = false;
++      st->nFailed.fetch_add(1, std::memory_order_relaxed);
++      return;
++    }
++  }
++#endif
+   // outside the pause: the WRITEs from the staging buffer into the buddy's receiving slot
+   const int64_t writeMs = std::max<int64_t>(1, ncclParamGinRestoreStoreWriteMs());
+   const double w0 = gdakiQ4MonoMs();
+@@ -19342,6 +19515,9 @@ static void gdakiStoreFree(struct gdakiRecHost* r) {
+     WARN("GIN/MI: rank %d: the upload staging MR could not be deregistered; its buffer is kept mono_ms=%.3f", st->me,
+          gdakiQ4MonoMs());
+   }
++#if !NCCL_GIN_CTRL_TCP
++  if (st->snap.dev != nullptr) (void)cudaFree(st->snap.dev);  // gin-control (snap): cudaFree waits for the device
++#endif
+   delete st;
+ }
+ // ==== gin-mirror (store): the RDMA checkpoint store (end) ====
+@@ -24331,9 +24507,11 @@ static void gdakiCtrlStoreMemLine(struct gdakiRecHost* r, struct gdakiStoreState
+   const double MiB = 1048576.0;
+   GIN_TS_NOTE("GIN/CTRL: rank %d: host memory added (decision 7, mirror %s): staging %.1f MiB (pinned, slot %lu bytes), "
+               "ward stores %d x 2 slots %.1f MiB, control %.1f MiB (%s), total %.1f MiB = 3 x image + %.1f MiB, image %.1f MiB "
+-              "(reported, no bound) mono_ms=%.3f", st->me, gdakiMiOn(r) ? "on" : "off", m.staging / MiB,
++              "(reported, no bound); device staging %.1f MiB (GPU memory, the pause's snapshot; 0 with the mirror on) "
++              "mono_ms=%.3f", st->me, gdakiMiOn(r) ? "on" : "off", m.staging / MiB,
+               (unsigned long)slotBytes, nWards, m.wards / MiB, m.control / MiB, ring ? "ring up" : "ring not made yet",
+-              m.total / MiB, (m.total - 3.0 * (double)image) / MiB, image / MiB, gdakiQ4MonoMs());
++              m.total / MiB, (m.total - 3.0 * (double)image) / MiB, image / MiB,
++              gdakiSnapDevBytes(gdakiMiOn(r), image) / MiB, gdakiQ4MonoMs());
+ }
+ #endif  // !NCCL_GIN_CTRL_TCP
+ // ==== gin-control (store): decision 7 and the outbox transfers (end) ====

@@ -40,12 +40,20 @@ struct glConfig {
   int spareHelloMs;        /* the bound from spawn to its HELLO (<= 0: 5000) */
   int spareRespawnMax;     /* respawns of spares that ended unused, within GL_SPARE_RESPAWN_WINDOW_MS (0: none) */
   uint32_t spareFirstInc;  /* the first spare's incarnation (0: 1) */
+  /* sparefix (smoke a4): a glob(3) pattern; each spawn waits until it matches a path (polled every
+   * GL_SPARE_WAIT_POLL_MS, bounded by spareHelloMs, then spawns anyway). NULL: no wait. The caller's pointer. */
+  const char* spareWaitFor;
 };
 
 #define GL_SPARE_RESPAWN_WINDOW_MS 60000
+#define GL_SPARE_WAIT_POLL_MS 100
+/* The spare's own line when its transcript is not there (misc/rs_spike.cc rsBeginComm): such an exit before HELLO of a
+ * spawn made after its wait ran out is not counted against the respawn cap. */
+#define GL_SPARE_NO_TRANSCRIPT_TEXT "GIN/RS: replay: cannot open the transcript"
 #define GL_SPARE_MAX_ARGS 64
 #define GL_SPARE_MAX_ENV 64
-/* The program's spare options (--spare-cmd, --spare-env, --spare-log, --spare, --spare-hello-ms, --spare-respawn-max),
+/* The program's spare options (--spare-cmd, --spare-env, --spare-log, --spare, --spare-hello-ms, --spare-respawn-max,
+ * --spare-wait-for),
  * parsed apart from main so the unit test can run them. */
 struct glSpareOpts {
   int want;                /* --spare: -1 not given, 0, 1 */
@@ -57,6 +65,7 @@ struct glSpareOpts {
   const char* logDir;
   int helloMs, respawnMax;
   uint32_t firstInc;       /* NCCL_GIN_RESTORE_SPARE_INC of --spare-env, else 1 */
+  const char* waitFor;     /* --spare-wait-for (NULL: not given, then NCCL_GIN_RESTORE_REPLAY of --spare-env; "-": none) */
 };
 void gl_spare_opts_init(struct glSpareOpts* o);
 /* 1: opt was a spare option and took val; 0: not a spare option; -1: refused (why). */
@@ -91,6 +100,11 @@ struct glStats {
   unsigned nSpareActivated;/* activations that spawned the next spare */
   unsigned nSpareReaped;   /* spawned children reaped (waitpid) */
   unsigned spareGaveUp;    /* 1: no more spares (spawn failure, HELLO retry timed out, respawn cap) */
+  /* sparefix: the wait-for */
+  unsigned nSpareWaits;    /* spawns that had to wait (the pattern matched nothing when asked) */
+  unsigned nSpareWaitTimeouts; /* waits that ran out (spareHelloMs) and spawned anyway */
+  unsigned nSpareNoTranscript; /* exits "cannot open the transcript" not counted against the respawn cap */
+  unsigned spareWaiting;   /* 1 while a spawn waits */
 };
 
 struct glCore;
@@ -153,6 +167,7 @@ struct glKidView {
   int state;               /* GL_KID_* */
   unsigned seq;            /* spawn number, from 1 */
   int retry, accepted, held; /* held: its pidfd is open */
+  int waitUnmet;           /* sparefix: spawned after its wait ran out (the pattern matched nothing) */
 };
 int gl_core_kids(const struct glCore* c, struct glKidView* out, int max); /* returns how many are in use */
 const struct glStats* gl_core_stats(const struct glCore* c);

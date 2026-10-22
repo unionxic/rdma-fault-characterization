@@ -167,10 +167,12 @@ state	12230	gdakiTsInitiate	record	kept	pe.gone after the ACK wait failed
 # (phase 2a-2-A, impl/notes_p2a2.md: record 55's scaffold is gone with its two uses, gdakiCtrlChanUp in
 # gdakiCtrlProbePairingStep and gdakiHoldSend in gdakiCtrlProbeScaffoldSend; the UD pairing carries the liveness READ QP's
 # endpoint, an incoming 55 is dropped with one line; the ring region's setup glue and first pairing use no seam)
-#use	ring	.fd	7	gdakiCtrlRdmaChannelFd and gdakiCtrlRdmaCreate (O_NONBLOCK): the helper CQ's completion channel fd (not a peer socket); 2a-2-B: gdakiCtrlRingRecvOf's two (the same channel fd), gdakiCtrlWitnessPump (the witness socket), gdakiCtrlRingSummary (the open witness sockets), gdakiCtrlHelperLiveStep (the witness's verdict)
+#use	ring	.fd	11	gdakiCtrlRdmaChannelFd and gdakiCtrlRdmaCreate (O_NONBLOCK): the helper CQ's completion channel fd (not a peer socket); 2a-2-B: gdakiCtrlRingRecvOf's two (the same channel fd), gdakiCtrlWitnessPump (the witness socket), gdakiCtrlRingSummary (the open witness sockets), gdakiCtrlHelperLiveStep (the witness's verdict); 2a-2-C: gdakiCtrlPathRxClosed (no socket: the old path closed), gdakiCtrlPathSockRead (the pair's socket), gdakiCtrlRingRecvOf (the socket in the wait set while it is the receive path); 2a-2-C step 3: gdakiCtrlRjWitnessRedial (no witness socket after a REJOIN over UD)
 # (phase 2a-2-B, impl/notes_p2a2.md: the region "gin-control (ring): the helper's live loop" reads every live peer's inbox
 # through the pump and checks the channel as the idle loop does; the live seams' witness pump reads the witness socket
 # with ln4's gdakiTsPump; the swap points' bodies sit in the preparation region's "[2] ring" placeholders, outside the counts)
 #use	ring	gdakiCtrlChanUp	1	gdakiCtrlHelperLiveStep: the record loop ends when the pair's ring is no longer up
 #use	ring	gdakiCtrlPump	1	gdakiCtrlHelperLiveStep: every gated peer's inbox while the ring is live
-#use	ring	gdakiTsPump	1	gdakiCtrlWitnessPump: the witness socket alone (BYE, FIN, a late record of a peer not live yet)
+#use	ring	gdakiTsPump	2	gdakiCtrlPathSockRead: the pair's socket for the path rule (the witness pump and the pump read it; 2a-2-C); gdakiCtrlRingPumpOf: ln4's answer on no socket while this side's records go on the socket
+#use	ring	gdakiTsSend	2	gdakiCtrlRingSendOf (2a-2-C): a socket path generation's marker record (GDAKI_TS_CTRL_PATH), then the record on the socket path
+#use	ring	gdakiCtrlRejoinFail	1	gdakiCtrlRjIntake (2a-2-C step 3): a declined rank's REJOIN over UD answered FAIL through the seam (no socket: its UD body)

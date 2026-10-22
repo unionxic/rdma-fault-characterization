@@ -1,0 +1,52 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 66f236a..cbf9003 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -20571,6 +20571,8 @@ struct gdakiCtrlPeerProbe {
+   bool haveRemote = false;
+   uint64_t incExp = 0;                  // the peer's expected incNonce (from the pairing)
+   uint32_t preparedGen = 0;             // the QP is at INIT for this generation (a PREPARE; 0: not)
++  uint32_t rjAccInc = 0;                // smoke2 fix: the incarnation whose UD REJOIN the helper is accepting (its CONNECT
++                                        // comes before ln4 raises the known incarnation; under the page mutex)
+   // the handoff (under the page mutex; struct gdakiCtrlProbeHand: who may touch the QP): helper -> watch
+   struct gdakiCtrlProbeHand hand;
+   struct gdakiCtrlProbeReq req;
+@@ -21023,11 +21025,13 @@ static void gdakiProbeHandHelper(struct gdakiRecHost* r, struct gdakiCtrlPage* p
+   struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)p];
+   struct gdakiCtrlProbeHand h;
+   struct gdakiCtrlProbeReq q;
++  uint32_t rjAccInc = 0;
+   {
+     std::lock_guard<std::mutex> lk(pg->mu);
+     if (pp.hand.phase != GDAKI_CTRL_PH_ERR && pp.hand.phase != GDAKI_CTRL_PH_FW) return;
+     h = pp.hand;
+     q = pp.req;
++    rjAccInc = pp.rjAccInc;
+   }
+   struct ibv_qp_attr a;
+   memset(&a, 0, sizeof(a));
+@@ -21044,7 +21048,12 @@ static void gdakiProbeHandHelper(struct gdakiRecHost* r, struct gdakiCtrlPage* p
+   res.seq = q.seq;
+   res.gen = q.gen;
+   const uint32_t inc = gdakiCtrlIncOf(q.incNonce);
+-  const bool lnCur = q.op != GDAKI_CTRL_PO_CONNECT || gdakiLnClassify(gdakiLnOf(r, p), inc) == GDAKI_LN_CURRENT;
++  // smoke2 fix: the UD REJOIN's CONNECT (gdakiCtrlRjAcceptStep) comes while the hold still knows the dead incarnation
++  // (HOLD_WAIT; ln4 raises the known one after the REJOIN_ACK): its successor dead + 1 under acceptance is taken as current
++  const struct gdakiLnView lv = gdakiLnOf(r, p);
++  const uint32_t lcls = gdakiLnClassify(lv, inc);
++  const bool lnCur = q.op != GDAKI_CTRL_PO_CONNECT || lcls == GDAKI_LN_CURRENT ||
++                     (lcls == GDAKI_LN_FUTURE && lv.phase == GDAKI_LN_HOLD_WAIT && inc == lv.dead + 1u && inc == rjAccInc);
+   const bool haveQp = pp.qp.q != nullptr && pp.qp.q->qp != nullptr;
+   const uint32_t fw = gdakiCtrlProbeFwPlan(&h, haveQp, lnCur);
+   char why[128] = {0};
+@@ -25557,6 +25566,10 @@ static int gdakiCtrlRjAcceptStep(struct gdakiRecHost* r, int peer, const struct
+       snprintf(why, whyLen, "the liveness READ QP's pairing did not take the REJOIN's (gen %u)", n.probeGen);
+       return -1;
+     }
++    if (struct gdakiCtrlPage* pgA = gdakiPageOf(r)) {  // smoke2 fix: the helper's firmware takes this incarnation's CONNECT
++      std::lock_guard<std::mutex> lk(pgA->mu);
++      if (peer < (int)pgA->peers.size()) pgA->peers[(size_t)peer].rjAccInc = m.pad;
++    }
+     gdakiCtrlProbeLinkAct(r, peer, pr.prb, pc, ap, &bp);  // CONNECT asked of the watch thread; its PAIR_ACK after
+     if (pr.prb.pendSeq == 0) {
+       snprintf(why, whyLen, "the watch thread did not take the liveness READ QP's CONNECT (gen %u)", n.probeGen);

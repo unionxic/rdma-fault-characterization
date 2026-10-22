@@ -26,7 +26,7 @@
 # The K=V arguments go into the launcher's environment (the test switch NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=1 of
 # gc4_fdhold_sock_kill3_noreport, cells_gc.json launcher_env). Every NCCL_ and GIN_ variable of the caller is dropped first.
 # The spare options go to the launcher as given (../launcher/README_launcher.md "따뜻한 예비 프로세스"): --spare-cmd "<argv>",
-# --spare-env K=V (repeated), --spare-log <node-side directory>, --spare 0|1, --spare-hello-ms N, --spare-respawn-max N. A
+# --spare-env K=V (repeated), --spare-log <node-side directory>, --spare 0|1, --spare-hello-ms N, --spare-wait-for GLOB, --spare-respawn-max N. A
 # --spare-env the launcher refuses (the record and test-kill variables, and the three it sets itself) is refused here too
 # (exit 2). The command and the environment are never written to a file (the command carries rain's management address).
 #
@@ -159,7 +159,7 @@ case "$OP" in
     while [ "$#" -gt 0 ]; do
       case "$1" in
         NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=[01]) envs+=("$1"); shift ;;
-        --spare-cmd|--spare-log|--spare|--spare-hello-ms|--spare-respawn-max)
+        --spare-cmd|--spare-log|--spare|--spare-hello-ms|--spare-wait-for|--spare-respawn-max)
           [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
           case "$1" in --spare-cmd) sp=1 ;; --spare-log) slog=$2 ;; --spare-respawn-max) srmax=$2 ;; --spare) [ "$2" = 0 ] && sp=0 ;; esac
           sargs+=("$1" "$2"); shift 2 ;;

@@ -1,0 +1,117 @@
+rs_ctrl_api_p2a2c.diff - phase 2a-2-C's header request (impl/notes_p2a2.md "2a-2-C", step 2: the pair's path marker).
+The envelope's reserved 16 bytes get their name (pathMark: the RECORD's struct gdakiCtrlPathMark; gdakiCtrlEnvCheck
+still does not read them), and the socket path's marker record GDAKI_TS_CTRL_PATH (56) with the marker struct and its
+constants. Until it is merged the host file keeps the header blocks byte for byte (`api`) and has the same definitions
+in its region "gin-control (ring): model" (the marker), writing the envelope's bytes at offsetof(struct gdakiCtrlEnv,
+rsv); the merge drops the host's copies and renames rsv to pathMark there (one line).
+Step 3 (impl/notes_p2a2.md "2a-2-C", the REJOIN over UD), appended: comments only. The nrp's generation rule
+((incarnation << 20) + 1 for both kinds), the REJOIN_ACK's UD endpoint and the answers over UD (GDAKI_CTRL_RJA_*), and
+what fd -1 means for the seams gdakiCtrlRecvOn and gdakiCtrlChanInstall (the REJOIN went over UD). The host file keeps
+the header blocks byte for byte (`api`); the merge takes these comment lines into both.
+Step 5 (impl/notes_p2a2.md "2a-2-C", STATE and the rkey list over the outbox; work step 3), appended: comments only.
+The way of a pair's STATE turn (the REJOIN's, both sides; "not yet" until the pair is up in the REJOIN's generation; the data
+socket only without a ring for the pair) beside the transfer head, and GDAKI_CTRL_CH_DATA's rdma meaning. The host
+file keeps the header blocks byte for byte (`api`); the merge takes these comment lines into both.
+--- a/rs_ctrl_api.h
++++ b/rs_ctrl_api.h
+@@ -218,7 +218,8 @@
+   uint64_t nonce;        // the context's nonce (the body's nonce too)
+   uint32_t incarnation;  // the sending process's incarnation
+   uint32_t bodyBytes;    // RECORD 1872, LAUNCHER 256, XFER and XFER_DONE 32, CONNECTED 0, PAIR 144 (a launcher's 256)
+-  uint8_t rsv[16];
++  uint8_t pathMark[16];  // RECORD: the pair's path marker (struct gdakiCtrlPathMark below; phase 2a-2-C), else 0;
++                         // gdakiCtrlEnvCheck does not read it
+ };
+ static_assert(sizeof(struct gdakiCtrlEnv) == 64, "the control envelope is 64 bytes");
+ static_assert(offsetof(struct gdakiCtrlEnv, from) == 8 && offsetof(struct gdakiCtrlEnv, gen) == 12 &&
+@@ -313,7 +314,23 @@
+ #define GDAKI_TS_CTRL_PROBE_SETUP 55u  // [1] phase 1's named scaffold only: the liveness READ QP's endpoint (struct
+                                        //     gdakiCtrlEndpoint in nrp[], unused by every record: REVIEW2 1절 B3) over the
+                                        //     helper TCP socket until phase 2's pairing is merged; it goes with phase 2
+-static_assert(GDAKI_TS_CTRL_STALLED >= 52u && GDAKI_TS_CTRL_PROBE_SETUP <= 63u, "the new records are in 52..63");
++#define GDAKI_TS_CTRL_PATH 56u         // [2] the socket's path marker record (phase 2a-2-C): the first record of a socket
++                                       //     path generation after a switch, struct gdakiCtrlPathMark in executed[0..3];
++                                       //     the receiver takes it (never handed to a caller)
++static_assert(GDAKI_TS_CTRL_STALLED >= 52u && GDAKI_TS_CTRL_PATH <= 63u, "the new records are in 52..63");
++// The pair's path marker (phase 2a-2-C): which path a record went on, the path generation it belongs to, and how many
++// records the sender handed to the previous path (recordsSentBeforeSwitch). On the ring: every RECORD envelope's
++// pathMark; on the socket: the marker record GDAKI_TS_CTRL_PATH. Generation 0 is the setup's socket (no marker).
++#define GDAKI_CTRL_PM_SOCKET 1u
++#define GDAKI_CTRL_PM_RING 2u
++#define GDAKI_CTRL_PM_WAIT_MS 1000.0  // the receiver waits at most this long for the old path's counted records
++struct gdakiCtrlPathMark {
++  uint8_t path;     // GDAKI_CTRL_PM_*; 0: no marker
++  uint8_t rsv[3];
++  uint32_t gen;     // the path generation the record belongs to
++  uint64_t before;  // recordsSentBeforeSwitch
++};
++static_assert(sizeof(struct gdakiCtrlPathMark) == 16, "the marker is the envelope's 16 reserved bytes");
+ static inline bool gdakiCtrlIsRecord(uint32_t t) { return t >= GDAKI_TS_CTRL_STALLED && t <= GDAKI_TS_CTRL_PROBE_SETUP; }
+ static inline const char* gdakiCtrlRecordName(uint32_t t) {
+   switch (t) {
+@@ -640,18 +657,21 @@
+ // ---- the REJOIN's and REJOIN_ACK's nrp (design v2 5.4; REVIEW2 1절 B3: both leave gdakiTsMsg::nrp unused, 10146-10166,
+ // 9563-9570) ----
+ // REJOIN (spare -> survivor): its record QP and liveness READ QP (INIT, RECVs posted, fresh PSNs), its UD QP, its page
+-// and outbox. REJOIN_ACK (survivor -> spare): the survivor's two QPs (RTR toward those, fresh PSNs), its page and outbox
+-// (its UD QP is known from the activation blob).
++// and outbox. REJOIN_ACK (survivor -> spare): the survivor's two QPs (RTR toward those, fresh PSNs), its page and outbox,
++// and its UD QP (phase 2a-2-C: the spare also knows it from the setup's all-gather in its transcript). Both go over the UD
++// context QP (envelope kind RECORD, gen 0); a survivor's answer that does not take the REJOIN is a FAIL record over UD
++// with arg GDAKI_CTRL_RJA_FAIL, _WAIT or _REFUSE ([2]). Every resend of one REJOIN carries the same endpoints.
+ // Both QP kinds pair with a generation of their own (design v3 2.5, 5.4 5: "two generations, 8 B"); the UD endpoint's
+ // psn is the sender's Q_Key. gdakiTsMsg::nrp is uint32_t[64]: never read this struct through a cast of it (aliasing and
+ // alignment); gdakiCtrlNrpPut and gdakiCtrlNrpGet copy the bytes (REVIEW_PREP 고칠 것 4).
+ #define GDAKI_CTRL_NRP_VERSION 1u
+ struct gdakiCtrlRejoinNrp {
+   uint32_t version;   // GDAKI_CTRL_NRP_VERSION; 0: nothing here (a tcp-path REJOIN)
+-  uint32_t gen;       // the record QP pairing's generation the REJOIN starts (the survivor's next)
++  uint32_t gen;       // the record QP pairing's generation the REJOIN starts: (incarnation << 20) + 1 (phase 2a-2-C;
++                      // above every generation of the pair's older incarnations), taken by the survivor if above its own
+   struct gdakiCtrlEndpoint rec, probe, ud;
+   struct gdakiCtrlRegion page, outbox;
+-  uint32_t probeGen;  // the liveness READ QP pairing's generation the REJOIN starts (its own counter)
++  uint32_t probeGen;  // the liveness READ QP pairing's generation the REJOIN starts (its own counter; the same rule)
+   uint32_t rsv;
+ };
+ static_assert(sizeof(struct gdakiCtrlRejoinNrp) == 168, "the REJOIN nrp layout is 168 bytes");
+@@ -800,6 +820,7 @@
+   GDAKI_CTRL_CH_RECORD = 1,  // a record on the peer's installed helper socket; rdma: the pair's ring [2]
+   GDAKI_CTRL_CH_REJOIN = 2,  // the spare's REJOIN dial and the survivor's REJOIN_ACK on it; rdma: UD [2]
+   GDAKI_CTRL_CH_DATA = 3,    // a data connection's first record and the spare's STATE answer; rdma: outbox, store [2]
++                             // (phase 2a-2-C: the outbox when the spare's REJOIN went over UD, else the data socket)
+ };
+ static inline const char* gdakiCtrlChName(uint32_t ch) {
+   switch (ch) {
+@@ -922,6 +943,11 @@
+ // (END on the last). STATE of one survivor and a spare: STATE_REQ (spare -> survivor: ln4's DATA answer record), STATE
+ // (survivor -> spare: ln4's data-socket bytes, n then the export), RKEYS (spare -> survivor: ln4's rkey list bytes).
+ // ACTB: the activation blob through a launcher (phase 3).
++// Phase 2a-2-C: the pair's STATE turn takes the way its REJOIN took, on both sides: over UD (the nrp's generations) the
++// three transfers go on the pair's ring, each side answering "not yet" until its record QP is up in that generation or a
++// later one of the same incarnation (never the socket while it waits); the data socket (ln4's bytes as they are) only
++// when the pair has no ring (none in the context, or the REJOIN went over TCP; the tcp build has none). The steps never
++// block (the survivor's helper, the spare's REJOIN loop bounded by its timeout).
+ #define GDAKI_CTRL_XFERH_MAGIC 0x48585247u  // "GRXH" in memory order
+ #define GDAKI_CTRL_XFERH_VERSION 1u
+ enum : uint16_t { GDAKI_CTRL_XK_STATE_REQ = 1, GDAKI_CTRL_XK_STATE = 2, GDAKI_CTRL_XK_RKEYS = 3, GDAKI_CTRL_XK_ACTB = 4 };
+@@ -1133,7 +1159,9 @@
+ static int gdakiCtrlRecv(struct gdakiRecHost* r, int peer, struct gdakiTsPeer& pe, struct gdakiTsMsg* out, int timeoutMs,
+                          std::atomic<bool>* stop);
+ // The spare's wait for one record of `peer` on `fd` (the dial it holds), as `ch` says (_REJOIN: the REJOIN's answer,
+-// _RECORD: TOKEN and DONE_RS); gdakiRsRecvOn's contract. The preparation stage: gdakiRsRecvOn.
++// _RECORD: TOKEN and DONE_RS); gdakiRsRecvOn's contract. The preparation stage: gdakiRsRecvOn. Phase 2a-2-C: fd -1 (the
++// REJOIN went over UD): _REJOIN waits for the UD answer up to the resend interval (0: WAIT, REFUSE or nothing; send
++// again), _RECORD reads the pair's ring.
+ static int gdakiCtrlRecvOn(struct gdakiRecHost* r, int peer, uint32_t ch, int fd, struct gdakiTsMsg* out, int timeoutMs,
+                            std::atomic<bool>* stop);
+ // The FAIL answer to a REJOIN of declined rank `peer` that came on `fd` (closes fd). The preparation stage:
+@@ -1150,6 +1178,8 @@
+ // helper CQ's completion channel fd, or -1: poll ignores it and the peek fails, so the pump reads).
+ static int gdakiCtrlPollFd(struct gdakiRecHost* r, int peer, const struct gdakiTsPeer& pe);
+ // The spare installs the accepted REJOIN socket `fd` as `peer`'s record channel (the preparation stage: pe.fd = fd).
++// Phase 2a-2-C: fd -1 (the REJOIN went over UD): the ring installs the pair from the REJOIN_ACK (both pairings, the
++// records on the ring); the witness has no socket yet (unknown, re-dialled).
+ static void gdakiCtrlChanInstall(struct gdakiRecHost* r, int peer, struct gdakiTsPeer& pe, int fd);
+ // ---- the liveness READ QP [prep] ----
+ // The QP of (this rank, peer) on the widened template (gdakiCtrlQpAttrProbe: NCCL_IB_TIMEOUT; a CQ of its own until

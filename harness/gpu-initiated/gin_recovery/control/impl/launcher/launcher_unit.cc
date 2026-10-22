@@ -22,11 +22,14 @@
 // The warm spare (user decision 2026-10-17): the launcher itself forks and execs the spare. The spare is this binary run
 // as "launcher_unit --fake-spare [--fork]": it reports what it inherited (session, fds, stdio, environment) over a
 // control socket of the test (glctl.sock), takes one plan byte (h: HELLO, then the kid commands above; n: no HELLO;
-// e: HELLO then exit; q: exit at once) and then obeys the same single-byte commands as a forked kid. Scenes: spawn at
+// e: HELLO then exit; q: exit at once; t: as h when its NCCL_GIN_RESTORE_REPLAY file exists, else the replay's "cannot open
+// the transcript" line and exit 2, as the smoke's a4 spare) and then obeys the same single-byte commands as a forked kid. Scenes: spawn at
 // start and HELLO within the bound (also through a wrapper that forks, as `timeout` does); activation -> the next spare
 // with the incarnation + 1 (by DONE, and by the re-registration), the page's spare word through the cycle; an unused
 // spare's exit -> respawn, the cap, an exec failure; HELLO timeout -> one line, one retry, then no more; no signal to a
-// process the launcher did not spawn or register; the options.
+// process the launcher did not spawn or register; the options. The wait-for (sparefix): a spawn waits until its pattern
+// matches (then spawns within a poll), or spawns anyway after the bound; an exit "cannot open the transcript" of such a
+// spawn is not counted against the respawn cap; the same exit of a spawn whose wait was met is (the bound of the rule).
 #include <cerrno>
 #include <cinttypes>
 #include <cstdio>
@@ -2315,6 +2318,15 @@ static int fake_spare_main(int argc, char** argv) {
       kid_forward(s, buf, m > 0 ? (uint32_t)m : 0);
       _exit(0);
     }
+    case 't': {  // sparefix: the replay's first look at the transcript (misc/rs_spike.cc rsBeginComm)
+      const char* tp = getenv("NCCL_GIN_RESTORE_REPLAY");
+      if (tp && access(tp, R_OK) == 0) {
+        kid_main(s, s, K_SPARE, r.rank, r.inc, nonce);
+        break;
+      }
+      dprintf(2, "GIN/RS: replay: cannot open the transcript (errno %d)\n", errno);
+      _exit(2);
+    }
     default: _exit(0);
   }
   _exit(0);
@@ -2354,7 +2366,8 @@ static void ctl_close() {
   gCtl = -1;
   unlink(kCtl);
 }
-static L mk_launcher_spare(uint32_t node, SpareHold& h, int helloMs, int respawnMax, FILE* log) {
+static L mk_launcher_spare(uint32_t node, SpareHold& h, int helloMs, int respawnMax, FILE* log,
+                           const char* waitFor = nullptr) {
   L l;
   l.t = new TT();
   l.t->tp.ops = &tt_ops;
@@ -2372,6 +2385,7 @@ static L mk_launcher_spare(uint32_t node, SpareHold& h, int helloMs, int respawn
   cfg.spareLogDir = kSpareLogs;
   cfg.spareHelloMs = helloMs;
   cfg.spareRespawnMax = respawnMax;
+  cfg.spareWaitFor = waitFor;
   l.c = gl_core_new(&cfg, &l.t->tp);
   char why[256] = {0};
   const int rc = gl_core_listen(l.c, kSock, why, sizeof(why));
@@ -2905,6 +2919,159 @@ static void test_spare_no_foreign_signal() {
   ctl_close();
 }
 
+// sparefix (smoke a4): the spawn waits for its wait-for; a spawn made after the wait ran out that finds no transcript is
+// not counted against the respawn cap; one whose wait was met is.
+static void test_spare_wait_for() {
+  const char* rec = "wait_r3.rec";  // the transcript the fake spare replays (NCCL_GIN_RESTORE_REPLAY), in the work dir
+  char line[320];
+  // (1) the pattern matches nothing at the start: no spawn; the transcript appears: spawned within a poll; HELLO. A
+  // respawn after that does not wait (the pattern matches).
+  {
+    unlink(rec);
+    SpareHold h;
+    spare_hold(h, {gSelf, "--fake-spare"}, {std::string("NCCL_GIN_RESTORE_REPLAY=") + rec});
+    ctl_open();
+    FILE* lf = fopen("spare_wait.log", "w");
+    L l = mk_launcher_spare(30, h, 3000, 3, lf, rec);
+    glKidView kv;
+    CHECK(gl_core_kids(l.c, &kv, 1) == 0 && gl_core_stats(l.c)->spareWaiting == 1 && gl_core_stats(l.c)->nSpareWaits == 1);
+    CHECK(no_spawn_within(l, 400));
+    CHECK(gl_core_stats(l.c)->nSpareSpawned == 0);
+    FILE* t = fopen(rec, "w");
+    CHECK(t != nullptr);
+    if (t) fclose(t);
+    const double t0 = now_ms();
+    Spawned s = next_spawn(l, 'e');  // the transcript exists: HELLO, then it exits unused
+    const double dt = now_ms() - t0;
+    CHECK(s.ok && s.r.inc == 1 && dt < GL_SPARE_WAIT_POLL_MS + 200);
+    CHECK(ack_of(kid_res(l, s.k)).status == GL_UA_OK);
+    spawned_close(s);
+    Spawned u = next_spawn(l, 't');  // the respawn: no wait (the pattern matches), HELLO
+    CHECK(u.ok && u.r.inc == 1);
+    CHECK(ack_of(kid_res(l, u.k)).status == GL_UA_OK);
+    CHECK(pump_until(l, [&] { return kidv(l, 2, &kv) && kv.state == GL_KID_WARM; }));
+    CHECK(kv.waitUnmet == 0);
+    const glStats* st = gl_core_stats(l.c);
+    CHECK(st->nSpareWaits == 1 && st->nSpareWaitTimeouts == 0 && st->spareWaiting == 0 && st->nSpareRespawned == 1 &&
+          st->nSpareNoTranscript == 0);
+    const std::string lg = slurp("spare_wait.log");
+    snprintf(line, sizeof(line), "warm spare wait-for %s (each spawn waits until it matches: polled every 100 ms, bound "
+                                 "3000 ms)", rec);
+    CHECK(count_str(lg, line) == 1);
+    CHECK(count_str(lg, "spare spawn waits (incarnation 1, why start): the wait-for matches nothing yet") == 1);
+    CHECK(count_str(lg, "spare wait-for matched after ") == 1 && count_str(lg, "spawning anyway") == 0);
+    CHECK(count_str(lg, "spare spawned (spawn 1, incarnation 1, pid ") == 1 && count_str(lg, "why start, log ") == 1);
+    rm_launcher(l);
+    spawned_close(u);
+    fclose(lf);
+    ctl_close();
+  }
+  // (2) the transcript never comes within the bound: spawned anyway; "cannot open the transcript" -> not counted, the next
+  // spawn waits again; twice with a cap of 1 and no give-up; then the transcript appears and the spare says HELLO
+  {
+    unlink(rec);
+    SpareHold h;
+    spare_hold(h, {gSelf, "--fake-spare"}, {std::string("NCCL_GIN_RESTORE_REPLAY=") + rec});
+    ctl_open();
+    FILE* lf = fopen("spare_wait_timeout.log", "w");
+    const size_t sig0 = gSignals.size();
+    const double t0 = now_ms();
+    L l = mk_launcher_spare(31, h, 400, 1, lf, rec);
+    std::vector<pid_t> ps;
+    for (int i = 0; i < 2; i++) {
+      Spawned s = next_spawn(l, 't');
+      CHECK(s.ok && s.r.inc == 1);
+      ps.push_back(s.r.pid);
+      spawned_close(s);
+      CHECK(pump_until(l, [&] { return gl_core_stats(l.c)->nSpareNoTranscript == (unsigned)i + 1; }));
+    }
+    CHECK(now_ms() - t0 >= 800);  // two waits of 400 ms
+    CHECK(gl_core_stats(l.c)->spareWaiting == 1 && gl_core_stats(l.c)->spareGaveUp == 0);
+    FILE* t = fopen(rec, "w");
+    if (t) fclose(t);
+    Spawned v = next_spawn(l, 't');
+    CHECK(v.ok && v.r.inc == 1);
+    CHECK(ack_of(kid_res(l, v.k)).status == GL_UA_OK);
+    glKidView kv;
+    CHECK(pump_until(l, [&] { return kidv(l, 3, &kv) && kv.state == GL_KID_WARM; }));
+    CHECK(kv.waitUnmet == 0);
+    const glStats* st = gl_core_stats(l.c);
+    CHECK(st->nSpareSpawned == 3 && st->nSpareRespawned == 0 && st->nSpareNoTranscript == 2 && st->nSpareWaits == 3 &&
+          st->nSpareWaitTimeouts == 2 && st->spareGaveUp == 0 && st->nSpareHelloTimeout == 0);
+    const std::string lg = slurp("spare_wait_timeout.log");
+    for (int i = 0; i < 2; i++) {
+      snprintf(line, sizeof(line), "spawned spare exited unused (spawn %d, incarnation 1, pid %d, before HELLO, exit 2): "
+                                   "cannot open the transcript; not counted against the respawn cap (its spawn did not "
+                                   "wait for the match)", i + 1, (int)ps[(size_t)i]);
+      CHECK(count_str(lg, line) == 1);
+      CHECK(count_str(slurp(log_name(kSpareLogs, getpid(), (unsigned)i + 1, 1, 31).c_str()),
+                      "GIN/RS: replay: cannot open the transcript (errno 2)") == 1);
+    }
+    CHECK(count_str(lg, "spare wait-for matched nothing within 400 ms (incarnation 1): spawning anyway") == 2);
+    CHECK(count_str(lg, "spare spawn waits (incarnation 1, why no_transcript)") == 2);
+    CHECK(count_str(lg, "why start, log ") == 1 && count_str(lg, "why no_transcript, log ") == 2);  // spawns 2 and 3
+    CHECK(count_str(lg, "): respawn ") == 0 && count_str(lg, "STOP_launcher") == 0);
+    CHECK(gSignals.size() == sig0);  // they ended by themselves
+    rm_launcher(l);  // v, unused: SIGKILLed through its pidfd
+    CHECK(gSignals.size() == sig0 + 1 && gSignals.back().pid == v.r.pid);
+    for (pid_t p : ps) CHECK(proc_state(p) == '-');
+    spawned_close(v);
+    fclose(lf);
+    ctl_close();
+  }
+  // (3) the negative control: the wait-for (another file) matches at once but the transcript is not there: the same
+  // exit is counted (respawn 1 of 1, then the cap), so a pattern that is not the transcript cannot loop
+  {
+    unlink(rec);
+    const char* go = "wait_go.marker";
+    FILE* g = fopen(go, "w");
+    if (g) fclose(g);
+    SpareHold h;
+    spare_hold(h, {gSelf, "--fake-spare"}, {std::string("NCCL_GIN_RESTORE_REPLAY=") + rec});
+    ctl_open();
+    FILE* lf = fopen("spare_wait_met.log", "w");
+    L l = mk_launcher_spare(32, h, 3000, 1, lf, "wait_go.*");
+    CHECK(gl_core_stats(l.c)->spareWaiting == 0 && gl_core_stats(l.c)->nSpareSpawned == 1);  // no wait at the start
+    Spawned s = next_spawn(l, 't');
+    Spawned t = next_spawn(l, 't');
+    CHECK(s.ok && t.ok);
+    CHECK(pump_until(l, [&] { return gl_core_stats(l.c)->spareGaveUp == 1; }));
+    const glStats* st = gl_core_stats(l.c);
+    CHECK(st->nSpareNoTranscript == 0 && st->nSpareRespawned == 1 && st->nSpareWaits == 0);
+    const std::string lg = slurp("spare_wait_met.log");
+    snprintf(line, sizeof(line), "(spawn 1, incarnation 1, pid %d, before HELLO, exit 2): respawn 1 of 1", (int)s.r.pid);
+    CHECK(count_str(lg, line) == 1);
+    snprintf(line, sizeof(line), "(spawn 2, incarnation 1, pid %d, before HELLO, exit 2): respawn cap 1", (int)t.r.pid);
+    CHECK(count_str(lg, line) == 1);
+    CHECK(count_str(lg, "not counted against the respawn cap") == 0);
+    rm_launcher(l);
+    spawned_close(s);
+    spawned_close(t);
+    fclose(lf);
+    ctl_close();
+    unlink(go);
+  }
+  // (4) shutdown while a spawn waits: one line, nothing spawned, nothing signalled
+  {
+    unlink(rec);
+    SpareHold h;
+    spare_hold(h, {gSelf, "--fake-spare"}, {std::string("NCCL_GIN_RESTORE_REPLAY=") + rec});
+    ctl_open();
+    FILE* lf = fopen("spare_wait_shutdown.log", "w");
+    const size_t sig0 = gSignals.size();
+    L l = mk_launcher_spare(33, h, 3000, 3, lf, rec);
+    pump(l, 150);
+    CHECK(gl_core_stats(l.c)->spareWaiting == 1);
+    rm_launcher(l);
+    CHECK(gSignals.size() == sig0);
+    CHECK(count_str(slurp("spare_wait_shutdown.log"), "shutdown: the spare spawn waiting for its wait-for (incarnation 1) "
+                                                      "ends unspawned") == 1);
+    fclose(lf);
+    ctl_close();
+  }
+  CHECK(signals_allowed());
+}
+
 static void test_spare_opts() {
   glSpareOpts o;
   gl_spare_opts_init(&o);
@@ -2944,6 +3111,21 @@ static void test_spare_opts() {
   CHECK(gl_spare_opt(&o, "--spare", "0", why, sizeof(why)) == 1);
   CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == 0 && cfg.spareArgv == nullptr);  // --spare 0: off
   CHECK(gl_spare_opt(&o, "--spare-cmd", " \t ", why, sizeof(why)) == -1);
+  gl_spare_opts_free(&o);
+  // sparefix: --spare-wait-for; not given: the NCCL_GIN_RESTORE_REPLAY of --spare-env; "-": none; empty refused
+  CHECK(gl_spare_opt(&o, "--spare-cmd", "/bin/x", why, sizeof(why)) == 1);
+  CHECK(gl_spare_opt(&o, "--spare-log", kSpareLogs, why, sizeof(why)) == 1);
+  CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == 0 && cfg.spareWaitFor == nullptr);  // no REPLAY: no wait
+  CHECK(gl_spare_opt(&o, "--spare-env", "NCCL_GIN_RESTORE_REPLAY=/w/r3.rec", why, sizeof(why)) == 1);
+  CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == 0 && cfg.spareWaitFor && strcmp(cfg.spareWaitFor, "/w/r3.rec") == 0);
+  CHECK(gl_spare_opt(&o, "--spare-wait-for", "", why, sizeof(why)) == -1);
+  CHECK(gl_spare_opt(&o, "--spare-wait-for", nullptr, why, sizeof(why)) == -1);
+  CHECK(gl_spare_opt(&o, "--spare-wait-for", "/w/go.*", why, sizeof(why)) == 1);
+  CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == 0 && cfg.spareWaitFor && strcmp(cfg.spareWaitFor, "/w/go.*") == 0);
+  CHECK(gl_spare_opt(&o, "--spare-wait-for", "-", why, sizeof(why)) == 1);
+  CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == 0 && cfg.spareWaitFor == nullptr);
+  CHECK(gl_spare_opt(&o, "--spare", "0", why, sizeof(why)) == 1);
+  CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == 0 && cfg.spareWaitFor == nullptr && cfg.spareArgv == nullptr);
   gl_spare_opts_free(&o);
   CHECK(gl_spare_opt(&o, "--spare", "1", why, sizeof(why)) == 1);
   CHECK(gl_spare_opts_apply(&o, &cfg, why, sizeof(why)) == -1);  // --spare 1 without --spare-cmd
@@ -3024,7 +3206,8 @@ int main(int argc, char** argv) {
                {"spare_activation_cycle", test_spare_activation_cycle},
                {"spare_respawn", test_spare_respawn},
                {"spare_hello_timeout", test_spare_hello_timeout},
-               {"spare_no_foreign_signal", test_spare_no_foreign_signal}};
+               {"spare_no_foreign_signal", test_spare_no_foreign_signal},
+               {"spare_wait_for", test_spare_wait_for}};
   int nt = 0;
   for (auto& t : tests) {
     const int f0 = nFail, c0 = nChecks;

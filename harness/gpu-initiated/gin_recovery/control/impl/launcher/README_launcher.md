@@ -71,10 +71,10 @@ OUT=<출력 디렉터리> ./build_launcher.sh unit     # launcher_unit 실행, �
 - `/usr/include/infiniband/verbs.h`가 있으면 verbs 전송까지 빌드하고(실행하지 않음), 없으면 `-DGL_NO_VERBS`로 빌드한다(그 프로그램은 시작을 거절한다).
 - 스크립트는 `gin_launcher`를 실행하지 않고, verbs 장치나 GPU를 열지 않는다. 단위 시험은 프로세스 안 시험 전송과, 스스로 fork한 자식(실제 pidfd, 실제 SIGSTOP과
   SIGKILL)만 쓴다. ASan과 UBSan으로 빌드한다.
-- 장면(27개): pidfd 사실, 등록과 거절, EXITED, LEFT와 BYE, FENCE와 EXITED의 엇갈림, 남의 pidfd에 신호 없음, SPAWN 거절, LATER 뒤 넘기기, 예비 프로세스가 활성화 전에
+- 장면(28개): pidfd 사실, 등록과 거절, EXITED, LEFT와 BYE, FENCE와 EXITED의 엇갈림, 남의 pidfd에 신호 없음, SPAWN 거절, LATER 뒤 넘기기, 예비 프로세스가 활성화 전에
   끝남, 이른 답의 한도, 잃는 ACCEPTED와 ACCEPTED 뒤 QP 끊김, READ 중 ABORT와 끝남과 QP 잃음, 손잡이 칸의 다시 씀(음성 대조 포함), 같은 화신 둘째 접속, pidfd 바꿈,
-  짝 맺기와 다시 짝 맺기, credit 낱말, 등록 oracle(장면 14개, 장면마다 검사 하나), 소켓 디렉터리, 잘못된 말, nonce 없는 INFO, 그리고 따뜻한 예비 프로세스 여섯
-  (옵션, 시작 때 띄우기와 HELLO 한도, 활성화 뒤 다음 것, 쓰이지 않은 것의 다시 띄우기와 한도, HELLO 한도 넘김, 남의 프로세스에 신호 없음; 아래 절).
+  짝 맺기와 다시 짝 맺기, credit 낱말, 등록 oracle(장면 14개, 장면마다 검사 하나), 소켓 디렉터리, 잘못된 말, nonce 없는 INFO, 그리고 따뜻한 예비 프로세스 일곱
+  (옵션, 시작 때 띄우기와 HELLO 한도, 활성화 뒤 다음 것, 쓰이지 않은 것의 다시 띄우기와 한도, HELLO 한도 넘김, 남의 프로세스에 신호 없음, 기록 파일 기다림; 아래 절).
 - 시험 전송은 손잡이를 verbs 전송과 같은 꼴로 줄 수 있고(칸 다시 씀 + 일련번호), READ를 붙잡아 두었다가 늦게 끝낼 수 있으며, `rc_close` 뒤에는 그 QP의 READ와
   사건을 버린다(전송 계약).
 
@@ -94,6 +94,7 @@ OUT=<출력 디렉터리> ./build_launcher.sh unit     # launcher_unit 실행, �
 | `--spare 0\|1` | `--spare-cmd`가 있으면 1 | 0이면 띄우지 않는다(줄 `warm spare off (--spare 0)`) |
 | `--spare-hello-ms N` | 5 000 | 띄운 때부터 HELLO까지의 한도 |
 | `--spare-respawn-max N` | 3 | 쓰이지 않고 끝난 예비 프로세스를 60 000 ms 안에 다시 띄우는 최대 횟수 |
+| `--spare-wait-for GLOB` | `--spare-env`의 `NCCL_GIN_RESTORE_REPLAY` 값(없으면 기다리지 않음) | 띄울 때마다 이 glob(3)이 경로 하나와 맞을 때까지 기다린다. 100 ms마다 보고, `--spare-hello-ms`만큼 기다려도 맞지 않으면 그래도 띄운다. `-`는 기다리지 않음. 빈 값은 거절 |
 
 - 예비 프로세스의 환경: launcher 자신의 환경에서 `NCCL_*`와 `GIN_*`를 모두 뺀 것, 그 위에 `--spare-env`, 그 위에 launcher가 정하는 셋
   (`NCCL_GIN_CTRL_LAUNCHER_SOCK` = 자기 소켓 경로, `NCCL_GIN_CTRL_LAUNCHER_NODE` = 자기 노드 번호, `NCCL_GIN_RESTORE_SPARE_INC` = 이번 화신).
@@ -103,7 +104,9 @@ OUT=<출력 디렉터리> ./build_launcher.sh unit     # launcher_unit 실행, �
 
 **수명.**
 
-1. **시작.** 소켓을 listen한 직후 fork와 exec로 띄운다. 자식은 새 session(`setsid`), stdin은 `/dev/null`, stdout과 stderr는 자기 로그 파일이다. 신호
+0. **기다림(sparefix, 2026-10-22, smoke a4).** 띄우기 전마다(시작, 활성화 뒤, 다시 띄우기, HELLO 재시도) `--spare-wait-for`가 맞는지 본다. 맞으면 곧바로 띄우고,
+   아니면 100 ms마다 다시 본다. 맞으면 띄우고, `--spare-hello-ms`가 지나도 맞지 않으면 그래도 띄운다(이 띄움은 "기다림이 다 된" 띄움). HELLO 한도는 띄운 때부터 센다.
+1. **시작.** 소켓을 listen한 직후 fork와 exec로 띄운다(위 기다림을 거침). 자식은 새 session(`setsid`), stdin은 `/dev/null`, stdout과 stderr는 자기 로그 파일이다. 신호
    처리는 기본값, 신호 mask는 비운다. fd 3 이상은 `close_range`로 모두 닫는다(그래서 CLOEXEC가 없는 fd도 넘어가지 않는다; launcher가 여는 fd는 CLOEXEC다). exec 실패는 CLOEXEC 파이프로 알고, 자식은 127로
    끝난다. launcher는 fork 직후 그 pid의 pidfd를 연다(자기 자식이라 거두기 전에는 pid가 다시 쓰이지 않음).
 2. **HELLO.** 띄운 것의 HELLO는 HELLO한 프로세스의 pid가 띄운 pid와 같거나, 그 프로세스의 session이 띄운 pid일 때 짝을 맞춘다(`timeout`처럼 fork하는 감싸개 아래의
@@ -114,6 +117,9 @@ OUT=<출력 디렉터리> ./build_launcher.sh unit     # launcher_unit 실행, �
    화신 + 1을 띄운다.
 4. **쓰이지 않은 끝남.** HELLO 전이든 뒤든 쓰이지 않고 끝나면 같은 화신으로 다시 띄운다. 60 000 ms 안에 `--spare-respawn-max`번까지이고, 넘으면 STOP 줄과 함께 더는
    띄우지 않는다. 활성화가 REFUSED나 ABORT로 끝나 launcher가 grace 뒤 SIGKILL한 예비 프로세스도 여기에 든다.
+   예외(sparefix): 기다림이 다 된 띄움이 HELLO 전에 끝났고 그 로그 파일(끝 64 KiB)에 `GIN/RS: replay: cannot open the transcript`가 있으면 한도에 세지 않고
+   줄 하나를 남긴 뒤 같은 화신을 다시 기다려 띄운다(그래서 `--spare-hello-ms`마다 많아야 한 번). 기다림이 맞은 뒤에 띄운 것의 같은 끝남은 센다(패턴이 기록 파일이
+   아니면 되풀이가 한도에서 멈춤).
 5. **거둠.** 띄운 것은 모두 launcher의 자식이고 pidfd가 읽히면 `waitpid`로 거둔다. rank가 된 것도 끝나면 거둔다.
 6. **끝.** shutdown은 HELLO 전의 것을 띄운 pidfd로, HELLO 뒤 쓰이지 않은 것을 지금처럼 HELLO의 pidfd로 SIGKILL하고 1 s까지 기다려 거둔다. rank가 된 것은 그대로 둔다.
 
@@ -128,7 +134,11 @@ OUT=<출력 디렉터리> ./build_launcher.sh unit     # launcher_unit 실행, �
 
 ```
 warm spare on (command <argv0>, HELLO bound <H> ms, respawn cap <M> within 60000 ms, first incarnation <I>, logs <DIR>)
-spare spawned (spawn <S>, incarnation <I>, pid <P>, why start|activated|respawn|hello_retry, log <PATH>)
+warm spare wait-for <GLOB> (each spawn waits until it matches: polled every 100 ms, bound <H> ms)
+spare spawn waits (incarnation <I>, why <W>): the wait-for matches nothing yet
+spare wait-for matched after <X> ms (incarnation <I>): spawning
+spare wait-for matched nothing within <H> ms (incarnation <I>): spawning anyway
+spare spawned (spawn <S>, incarnation <I>, pid <P>, why start|activated|respawn|hello_retry|no_transcript, log <PATH>)
 spare exec failed (spawn <S>, incarnation <I>, pid <P>): <strerror>
 spare spawn failed (incarnation <I>, why <W>): <까닭>; no more spares (STOP_launcher)
 spare spawn <S> (pid <P>): pidfd_open failed (<strerror>): it is reaped by its pid only and never signalled (STOP_launcher)
@@ -140,9 +150,11 @@ spawned spare ended after ACCEPTED (spawn <S>, incarnation <I>, pid <P>, <상태
 spawned spare exited unused (spawn <S>, incarnation <I>, pid <P>, before HELLO|after HELLO, <상태>): respawn <k> of <M> within 60000 ms
 spawned spare exited unused (spawn <S>, incarnation <I>, pid <P>, before HELLO|after HELLO, <상태>): respawn cap <M> within 60000 ms reached; no more spares (STOP_launcher)
 spawned spare exited unused (spawn <S>, incarnation <I>, pid <P>, before HELLO|after HELLO, <상태>): no respawn (no more spares)
+spawned spare exited unused (spawn <S>, incarnation <I>, pid <P>, before HELLO, <상태>): cannot open the transcript; not counted against the respawn cap (its spawn did not wait for the match)
 spawned process ended (spawn <S>, incarnation <I>, pid <P>, <상태>)
 shutdown: the spawned spare (spawn <S>, incarnation <I>, pid <P>) said no HELLO: SIGKILL through its pidfd
 shutdown: spawned process (spawn <S>, incarnation <I>, pid <P>) <상태>|left running (not reaped)
+shutdown: the spare spawn waiting for its wait-for (incarnation <I>) ends unspawned
 ```
 
 - `warm spare off (--spare 0)`은 main이 시작 때 `GIN/LA: node <노드>: ` 앞붙임만 달고 쓴다(`mono_ms` 없음).
@@ -150,7 +162,8 @@ shutdown: spawned process (spawn <S>, incarnation <I>, pid <P>) <상태>|left ru
   `rank R incarnation I registered`도 없으므로 `test/launcher_gc.sh`의 등록 표 읽기(TABLEPY)는 바뀌지 않는다 `[추론: 정규식을 읽음]`.
 
 **단위 시험의 장면.** `launcher_unit`이 `--fake-spare [--fork]`로 자기 자신을 예비 프로세스로 exec한다. 그것은 받은 session, fd, stdio, 환경을 시험의 제어 소켓으로
-알리고, 계획 바이트 하나(h: HELLO 뒤 기존 자식 명령, n: HELLO 없음, e: HELLO 뒤 곧바로 끝남, q: 곧바로 끝남)를 받는다.
+알리고, 계획 바이트 하나(h: HELLO 뒤 기존 자식 명령, n: HELLO 없음, e: HELLO 뒤 곧바로 끝남, q: 곧바로 끝남, t: 자기 `NCCL_GIN_RESTORE_REPLAY` 파일이
+있으면 h, 없으면 a4의 예비 프로세스처럼 `GIN/RS: replay: cannot open the transcript (errno 2)`를 쓰고 2로 끝남)를 받는다.
 
 - `spare_opts`: 나누기, 빠진 로그 디렉터리, 받지 않는 env, 같은 KEY 바꾸기, `--spare 0`, `--spare 1`만, 범위 밖 수.
 - `spare_start`: listen 직후 띄움(rank보다 먼저), 새 session, fd 3개, stdin `/dev/null`, stdout과 stderr가 자기 로그 파일, SIGPIPE 기본값, launcher의 `NCCL_`과
@@ -164,6 +177,10 @@ shutdown: spawned process (spawn <S>, incarnation <I>, pid <P>) <상태>|left ru
 - `spare_hello_timeout`: 한도(500 ms) 넘김 → 띄운 pid에만 SIGKILL, STOP 줄 하나, 다시 띄운 것이 HELLO. 다시 띄운 것도 넘기면 둘째 줄, 700 ms 띄움 없음.
 - `spare_no_foreign_signal`: 접속만 한 프로세스와 남이 띄운 같은 (rank, 화신)의 예비 프로세스가 있을 때 HELLO 한도의 SIGKILL 둘은 띄운 둘에만 감. 받지 않은 화신과 등록 없는
   rank의 FENCE는 FENCE_NAK이고 신호 없음. 이 시험 바이너리의 launcher가 보낸 모든 신호는 시험이 fork한 자식이나 launcher가 띄운 프로세스에만 감.
+- `spare_wait_for`(sparefix): (1) 기록 파일이 없으면 시작 때 띄우지 않음(400 ms 띄움 없음), 파일을 만들면 한 번 보는 사이(< 300 ms)에 띄우고 HELLO, 그 뒤 다시 띄우기는
+  기다리지 않음. (2) 한도 400 ms 안에 파일이 없으면 그래도 띄움, `t`가 "cannot open the transcript"로 끝남 → 세지 않음 줄, 다시 기다림. 한도 1인데 두 번 그렇게 끝나도
+  포기하지 않고 다시 띄우기 0번, 그 뒤 파일이 생기면 셋째가 HELLO. (3) 음성 대조: 기다림 패턴이 다른 파일(이미 있음)이면 같은 끝남을 셈(respawn 1 of 1, 그다음 한도 줄).
+  (4) 기다리는 동안 shutdown: 줄 하나, 띄움과 신호 0. 옵션은 `spare_opts`에(기본값이 `--spare-env`의 `NCCL_GIN_RESTORE_REPLAY`, `-`, 패턴, 빈 값 거절).
 
 **실행기 쪽에 필요한 바꿈**(`test/`는 이 작업 범위 밖이라 고치지 않았다; 조율 세션이 적용). 지금 `test/run_gc.sh`의 `start_spare`는 시행마다 rank의 `GINRS resume`
 줄을 본 뒤 `launch`로 예비 프로세스를 띄운다. 명령은 `stdbuf -oL -eL timeout -s KILL <WATCHDOG_S + 20> $RSBIN <rank> $ARGS $WORK/<name>.kv`, 환경은 `NENV`, `hca`,
@@ -182,8 +199,8 @@ shutdown: spawned process (spawn <S>, incarnation <I>, pid <P>) <상태>|left ru
 6. 조율 세션이 정할 것: launcher는 hold마다 한 번 뜨는데(EXPERIMENT 9.5절), 예비 프로세스의 명령과 환경에는 시행마다 바뀌는 값(`RS_RDV_NONCE`, `$ARGS`의 포트,
    `NCCL_GIN_RESTORE_REPLAY`와 kv 경로)이 있다. launcher에는 명령을 바꾸는 말이 없다(새 종류가 필요해 이번 범위 밖). 그래서 (가) launcher를 시행마다 띄우거나,
    (나) 그 값들을 시행마다 같은 경로와 값으로 두어야 한다.
-7. 띄우는 때가 rank의 resume 뒤에서 launcher 시작 때(rank보다 먼저)로 바뀐다. 기록 파일이 아직 없을 때 예비 프로세스가 기다리는지 끝나는지 `[미확인]`. 끝나면 수명 4번의
-   다시 띄우기 한도(60 s에 3번)가 먼저 다 쓰일 수 있다.
+7. 띄우는 때가 rank의 resume 뒤에서 launcher 시작 때(rank보다 먼저)로 바뀐다. 기록 파일이 없으면 예비 프로세스는 `cannot open the transcript`로 2로 끝나고
+   한도에 닿았다 `[측정: smoke a4]`. 그래서 `--spare-wait-for`(수명 0번)를 더했다(sparefix, [../notes_sparefix.md](../notes_sparefix.md)). 실행기가 줄 값은 그 notes에.
 8. 시행 끝의 정리: 쓰이지 않은 예비 프로세스는 launcher의 `stop`(SIGTERM → shutdown)이 SIGKILL하고 거둔다. `stop`이 3 s 뒤 SIGKILL로 끝낸 경우에는 남으므로 실행기의 끝 정리
    목록에 넣어야 한다.
 
@@ -230,6 +247,14 @@ rain(5.15.0-97-generic)에서 `launcher_unit`의 pidfd 장면으로 쟀다(fork�
   값이라 진짜 예비 프로세스의 HELLO 시각(설계 v2의 어림 약 0.28–0.36 s)과는 다르다.
 - `GL_NO_VERBS` 빌드로 옵션 거절 넷(로그 디렉터리 없음, 디렉터리가 아님, 받지 않는 env, `--spare 1`만)이 종료 코드 2, `--spare 0`이 `warm spare off` 줄을 냄을
   봤다(장치를 열기 전에 끝남) `[측정, n 1]`.
+
+2026-10-22, sparefix(smoke a4: 기록 파일보다 먼저 뜬 예비 프로세스). 빌드 출력은 이 폴더 밖의 스크래치(`agent_gc_sparefix/launcher_out`).
+
+- `launcher_msg.h`는 바뀌지 않았다. `gin_launcher.h`에 `glConfig.spareWaitFor`(끝에 더함), `glSpareOpts.waitFor`, 셈 넷, `glKidView.waitUnmet`.
+  `gin_launcher.c`에 띄우기 앞의 기다림(glob, 100 ms, `--spare-hello-ms`까지), 기다림이 다 된 띄움의 "cannot open the transcript" 끝남을 세지 않는 규칙, 옵션, shutdown 줄.
+- `launcher_unit.cc`에 계획 `t`와 장면 `spare_wait_for`(57 검사), `spare_opts`에 검사 13(새 검사 70 = 692 → 762). ASan, UBSan 단위 시험 세 번(`all` 한 번, `unit` 두 번): 세 번 모두 28 장면 762 검사
+  실패 0, sanitizer 보고 0 `[측정, n 3]`. 파일을 만든 때부터 띄움까지는 시험이 재지 않고 "< 300 ms"만 본다. 시작부터 맞을 때까지의 줄 값은 501.2–501.3 ms(세 번, 그중 400 ms는 시험이
+  파일 없이 기다린 시간).
 
 ## 열린 질문
 

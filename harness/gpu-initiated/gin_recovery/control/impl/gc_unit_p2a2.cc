@@ -39,7 +39,41 @@
 //      window of 64 and 32 send slots (envelope kind LAUNCHER, gen, seq 1..70 in order, ackSeq), the launcher's message
 //      back (its ackSeq opens the window, the consumed word, the link's queue), the page's beat READ (at most every 50
 //      ms), datagrams both ways (Q_Key, a malformed one counted bad), the blob slot READ by the launcher (and one too
-//      big), a gap in the launcher's sequence (the loss, taken once; no send after it), a new generation.
+//      big), a gap in the launcher's sequence (the loss, taken once; no send after it), a new generation;
+// phase 2a-2-C (the model's "the pair's path" rule, the live seams' path hooks):
+//   8. the pair's path marker: the pure rule (the count, the closed old path, a generation seen before the one below it,
+//      a stale one dropped, the sender's switch), then rank 0's records to rank 1 ring (gen 1) -> socket (gen 2, its
+//      marker record first) -> ring (gen 3) over the fake verbs, the seams' per-pair answers on the way: the delivered
+//      order has no duplicate and no reorder (the socket's records held until the ring's 70 counted ones are in), the
+//      counted record that never came is waited for 1000 ms (one line), its late copy is dropped (no second line);
+// phase 2a-2-C step 3 (the region "live seams": the REJOIN over UD; the seams gdakiCtrlChanInstall and
+// gdakiCtrlRejoinFail):
+//   9. 2 ranks (the spare of rank 1) and 4 (the spare of rank 2: survivors on both sides): the survivors' hold start, a
+//      new process of the rank with its own ring and page; the REJOIN's round trip with its endpoints in nrp (record QP,
+//      liveness READ QP, UD, page, outbox, the generations (inc << 20) + 1) through gdakiCtrlSend and gdakiCtrlRecvOn
+//      _REJOIN with no socket; the survivor's UD intake parks it, the acceptance takes both pairings (the new incarnation
+//      known first), the REJOIN_ACK carries the survivor's endpoints, TOKEN waits in the queue until the spare's CONNECTED
+//      (no SEND before it), the install from the REJOIN_ACK; TOKEN, READY, DONE_RS over the ring with the per-pair path
+//      markers of a fresh path (nothing on TCP); the witness unknown and re-dialled on both sides, never judged ended for
+//      lacking its socket; the spare's ring live once its pairs are up (one line), the survivors' liveness READ QPs by
+//      the spare's PAIR_DONE, no re-paired line for the REJOIN's generations; 2 ranks also: a lost REJOIN (DROP_UD)
+//      resent once after the 200 ms interval (one line), a repeat answered with the stored REJOIN_ACK (the QPs
+//      untouched), another QPN pair dropped (one GIN/LN line for two);
+//  10. the answers over UD: WAIT (no hold yet: the intake), REFUSE (the acceptance's; a REJOIN whose generations are not
+//      above the pair's moves nothing), FAIL (a declined rank: the spare's wait returns it, its pad the decline cause;
+//      never the TCP answer), and a socket or an unprepared spare is the TCP path's;
+// phase 2a-2-C step 3 (the live seams' STATE turns over the outbox; with phase 2b's pure region gc_store_pure.inc and the
+// TCP text gc_p2b_rs.inc it is compared with, cut as gc_unit_p2b.cc reads them):
+//  11. the way rule (both sides from the REJOIN: over TCP or without a ring the data socket, over UD the ring once the pair
+//      is up in the REJOIN's generation or a later one, else not yet); 2 and 4 ranks after the REJOIN over UD: while the
+//      survivor has not taken the spare's CONNECTED (its side lags) and before the spare's install both answer "not yet",
+//      never the socket; then the three transfers in steps that never block (the survivor's helper step and the spare's
+//      step interleaved, TOKEN on the ring around them): STATE_REQ's record is ln4's answer record byte for byte
+//      (gdakiTsSend on an AF_UNIX pair, gc_unit_p2b.cc's comparison), STATE's payload is ln4's data-socket stream (n, then
+//      the export; empty, small and three halves), RKEYS is gdakiRsRkeysSend's bytes and gdakiRsRkeysRecv reads them back
+//      (the rkey round trip), the survivor's rkeys are the spare's, one line each side; a survivor whose turn has not come
+//      sees nothing pending; a new generation in the middle fails the turn (no socket);
+//  12. the fallback: no ring on both sides, or a REJOIN over TCP: both turns answer the data socket and move nothing.
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -98,6 +132,21 @@ static double gdakiQ4MonoMs() {
 #include "gc_ln4_sock.inc"  // ln4's struct gdakiTsMsg, gdakiTsPeer (the record and the peer the host file has)
 #include "gc_api.inc"
 #include "gc_ring_model.inc"
+#if !NCCL_GIN_CTRL_TCP
+// 2a-2-C step 3: phase 2b's pure region (the transfer head, STATE_REQ, STATE, RKEYS) and the TCP text it is compared with,
+// with what they need (as gc_unit_p2b.cc)
+#define NCCL_GIN_RS_LOG_PUT 1u
+#define NCCL_GIN_RS_LOG_PUTVALUE 2u
+#define NCCL_GIN_RS_LOG_SIGNAL 3u
+#define NCCL_GIN_RS_LOGF_SIGNAL 0x01u
+static inline uint32_t ncclGinRsEntryKind(uint32_t qpKf) { return (qpKf >> 24) & 3u; }
+static inline uint32_t ncclGinRsEntryFlags(uint32_t qpKf) { return qpKf >> 26; }
+#include "gc_p2b_rs.inc"     // gdakiRsIoAll, gdakiRsRkeysRecv, gdakiRsRkeysSend (the tree's text)
+#include "rs_ckpt_pure.inc"  // gdakiCkptHash
+#include "mi_pure_store.inc"
+#include "mi_pure_spare.inc"
+#include "gc_store_pure.inc"
+#endif
 
 static long gChecks = 0, gFailed = 0;
 #define CHECK(c)                                                                      \
@@ -169,7 +218,7 @@ struct gdakiRecHost {
   struct gdakiCtrlTcpCount ctrlTcp;
 };
 // the host file's record types and liveness classes this text reads (ln4's values)
-enum { GDAKI_TS_REQ = 2, GDAKI_TS_ACK = 3, GDAKI_TS_DONE = 5, GDAKI_TS_BYE = 10 };
+enum { GDAKI_TS_REQ = 2, GDAKI_TS_ACK = 3, GDAKI_TS_DONE = 5, GDAKI_TS_FAIL = 6, GDAKI_TS_BYE = 10 };
 enum { GDAKI_TS_LV_NOEVIDENCE = 0, GDAKI_TS_LV_UNKNOWN = 1, GDAKI_TS_LV_DEAD = 2, GDAKI_TS_LV_LEFT = 3 };
 // int2 (the watch-thread fix merged): gdakiCtrlProbeAnswer runs the helper's part of the handoff first; the fake watch
 // step below takes, does and returns a request in one step, so the helper's part has nothing to do here.
@@ -193,9 +242,20 @@ static int64_t ncclParamGinTsConnectMs() { return 15000; }
 static int64_t ncclParamGinTsReconnectMs() { return 10000; }
 static int64_t ncclParamIbTimeout() { return 14; }
 
-// ---- the lineage and the incarnation (every rank its first incarnation) ----
-static uint32_t gdakiRsSelfInc(struct gdakiRecHost*) { return 0; }
-static struct gdakiLnView gdakiLnOf(struct gdakiRecHost*, int) { return gdakiLnSelfView(0); }
+// ---- the lineage and the incarnation (every rank its first incarnation; 2a-2-C: a spare's and its survivors' after the
+// REJOIN in gSelfInc and gPeerInc) ----
+static uint32_t gSelfInc[8] = {0};    // by rank: this process's own incarnation
+static uint32_t gPeerInc[8][8] = {};  // by (rank, peer): the incarnation the lineage says serves the peer
+static bool gHeld[8][8] = {};         // by (rank, peer): the peer's incarnation 0 is HELD (the known one gPeerInc)
+static int rankOf(const struct gdakiRecHost* r) {
+  return (r != nullptr && r->ctx != nullptr && r->ctx->rank >= 0 && r->ctx->rank < 8) ? r->ctx->rank : -1;
+}
+static uint32_t gdakiRsSelfInc(struct gdakiRecHost* r) { return rankOf(r) >= 0 ? gSelfInc[rankOf(r)] : 0u; }
+static struct gdakiLnView gdakiLnOf(struct gdakiRecHost* r, int p) {
+  const int me = rankOf(r);
+  if (me < 0 || p < 0 || p >= 8) return gdakiLnSelfView(0);
+  return gHeld[me][p] ? gdakiLnViewOf(GDAKI_HOLD_HELD, 0u, gPeerInc[me][p], false) : gdakiLnSelfView(gPeerInc[me][p]);
+}
 
 // ---- the fake NIC ----
 enum { QS_RESET = 0, QS_INIT = 1, QS_RTR = 2, QS_RTS = 3, QS_ERR = 4 };
@@ -566,9 +626,17 @@ static const struct gdakiCtrlVerbs* gdakiCtrlVerbsOf() {
 struct gdakiRsLocalIn {
   const char *gc41 = nullptr, *gc42 = nullptr, *gc43 = nullptr, *gc44 = nullptr;
 };
+// 2a-2-C: what the REJOIN over UD reads of the host file (a process that asks for the restore; the FAIL seam's TCP side
+// is never reached here: fd -1 always takes UD)
+static bool gdakiRsRequested() { return true; }
+static uint32_t gdakiTsCausePad(gdakiCause c) { return 1u + (uint32_t)(int)c; }
+static uint64_t gTcpAnswerFail = 0;
+static void gdakiTsAnswerFail(struct gdakiRecHost*, int, int, uint64_t, const char*) { gTcpAnswerFail++; }
 #include "gc_setup_pure.inc"
 #include "gc_ring_link.inc"
 #include "gc_ring_backend.inc"
+// 2a-2-C: the FAIL seam the live seams call (its body is in gc_seam_bodies.inc; the host file declares it in its ctrl seams block)
+static void gdakiCtrlRejoinFail(struct gdakiRecHost* r, int fd, int peer, uint64_t round, const char* what);
 #include "gc_live.inc"         // 2a-2-B: the live seams (the hooks, the witness pump, the live step, the summary)
 #include "gc_seam_bodies.inc"  // 2a-2-B: the swap points' bodies of the "[2] ring" placeholders
 #include "gc_ts_live.inc"      // 2a-2-B: gdakiTsCauseLiveness and gdakiTsMakeUnknown with their record-QP lines
@@ -964,12 +1032,13 @@ static void testFirstPairing(int n, int lateRank, double lateMs) {
       CHECK(__atomic_load_n(&g->rxConsumed[p], __ATOMIC_ACQUIRE) == gdakiCtrlRingConsumedWord(&pr.ring));
       CHECK(gdakiCtrlGenOf(g->rxConsumed[p]) == 1);
       bool up = true;
-      const bool wasLive = g->live;
-      g->live = false;
-      CHECK(!gdakiCtrlRdmaLiveUp(&R[(size_t)i].r, p, &up) && up);  // not live: the socket's answer stands
-      g->live = true;
-      CHECK(gdakiCtrlRdmaLiveUp(&R[(size_t)i].r, p, &up) && up);  // 2a-2-B's answer: the pair's ring is up
-      g->live = wasLive;
+      uint32_t& txPath = g->peers[(size_t)p].path.txPath;  // 2a-2-C: the pair's path, not the context's `live`
+      const uint32_t wasPath = txPath;
+      txPath = GDAKI_CTRL_PM_SOCKET;
+      CHECK(!gdakiCtrlRdmaLiveUp(&R[(size_t)i].r, p, &up) && up);  // the socket path: the socket's answer stands
+      txPath = GDAKI_CTRL_PM_RING;
+      CHECK(gdakiCtrlRdmaLiveUp(&R[(size_t)i].r, p, &up) && up);  // the ring path: the pair's ring is up
+      txPath = wasPath;
     }
     CHECK(R[(size_t)i].watchConnects == (uint64_t)(n - 1));  // one CONNECT per peer (the liveness READ QP)
   }
@@ -1347,8 +1416,16 @@ static void testLive(int n) {
     CHECK(gdakiTsSend(wsv[1], &late, 100) == 0);
     CHECK(gdakiCtrlPump(&R[1].r, 0, pe, &m) == 0 && pe.have == 0);  // the ring's inbox, not the socket
     const uint64_t late0 = R[1].r.ctrlTcp.lateRecords.load();
-    CHECK(gdakiCtrlWitnessPump(&R[1].r, 0, pe, &m) == 1 && pe.left && m.type == GDAKI_TS_REQ && m.round == 5);
-    CHECK(logCount("rank 0 left the communicator (BYE)") == bye0 + 1 && R[1].r.ctrlTcp.lateRecords.load() == late0 + 1);
+    // 2a-2-C: the late record is not one rank 0 counted on the socket (gdakiTsSend, not the seam): an old path's record
+    // after the switch to the ring, dropped with the switch's one line
+    const struct gdakiCtrlPathSt& ps = R[1].st.ring->peers[0].path;
+    const uint64_t drop0 = ps.dropped;
+    const size_t dl0 = logCount("GIN/RC: rank 1: rank 0's records: a socket record of path gen 0 dropped after the switch "
+                                "to the ring path (gen 1; all counted: ");
+    CHECK(gdakiCtrlWitnessPump(&R[1].r, 0, pe, &m) == 0 && pe.left && ps.dropped == drop0 + 1 && dl0 + 1 ==
+          logCount("GIN/RC: rank 1: rank 0's records: a socket record of path gen 0 dropped after the switch to the ring "
+                   "path (gen 1; all counted: "));
+    CHECK(logCount("rank 0 left the communicator (BYE)") == bye0 + 1 && R[1].r.ctrlTcp.lateRecords.load() == late0);
     CHECK(gdakiCtrlWitnessPump(&R[1].r, 0, pe, &m) == 0);
     close(wsv[1]);
     CHECK(gdakiCtrlWitnessPump(&R[1].r, 0, pe, &m) == -1 && strcmp(pe.closeCause, "FIN") == 0);
@@ -1388,7 +1465,8 @@ static void testLive(int n) {
   printf("live (%d ranks): live on every rank after the pairings (one line each), the TCP branch counted before; %d records "
          "each way on %d pairs through the seams, byte for byte ln4's TCP stream; gdakiCtrlRecv's timeout, stop and "
          "record; a generation change in a round: one -1 each side (QP:NEWGEN, QP:TOERR), the witness untouched, cancel "
-         "and retry; the witness's BYE, late record and FIN; the summary lines\n", n, K, n * (n - 1) / 2);
+         "and retry; the witness's BYE, an old path's late record dropped (one line) and FIN; the summary lines\n", n, K,
+         n * (n - 1) / 2);
   teardown(R);
 }
 
@@ -1478,7 +1556,8 @@ static void testSwitches() {
     struct gdakiTsMsg a = recOf(GDAKI_TS_RS_REJOIN_ACK, 0, 1);
     CHECK(gdakiCtrlRdmaUdSend(g0, 1, GDAKI_CTRL_K_RECORD, 0, &a, (uint32_t)sizeof(a)) == 0 && gUdSent == ud0 + 2);
     for (int k = 0; k < 5; k++) stepAll(R);
-    CHECK(R[1].st.ring->udIn.size() == in0 + 2);
+    // 2a-2-C: the UD intake takes the REJOIN (dropped: not this context's nonce), the REJOIN_ACK waits for its reader
+    CHECK(R[1].st.ring->udIn.size() == in0 + 1 && R[1].st.ring->peers[0].rj.intake == 1 && R[1].st.ring->peers[0].rj.bad == 1);
     unsetenv(GDAKI_CTRL_T_DROP_UD);
     teardown(R);
   }
@@ -1733,6 +1812,739 @@ static void testLaunchers() {
   printf("launchers: 70 messages through a window of 64, one back, 2 beat READs, datagrams 2 out (1 lost) and 2 in (1 bad), "
          "a 3000 B blob READ, a gap, a second generation\n");
 }
+
+// ---- 8. 2a-2-C: the pair's path marker ----
+static void testPathMarker() {
+  // the pure rule
+  {
+    struct gdakiCtrlPathSt s;
+    struct gdakiTsMsg m = recOf(48, 0, 1);
+    uint32_t why = 9;
+    CHECK(gdakiCtrlPathIn(&s, GDAKI_CTRL_PM_SOCKET, 0, 0, &m, 0.0, &why) == GDAKI_CTRL_PM_TAKE && s.rxTaken == 1);
+    // generation 2 (socket, 3 counted) seen before generation 1 (ring, 1 counted)
+    struct gdakiCtrlPathMark k = {};
+    k.path = GDAKI_CTRL_PM_SOCKET;
+    k.gen = 2;
+    k.before = 3;
+    CHECK(gdakiCtrlPathSockMark(&s, k, 10.0) == GDAKI_CTRL_PM_W_NONE && s.sockGen == 2 && s.pend.size() == 1);
+    CHECK(gdakiCtrlPathIn(&s, GDAKI_CTRL_PM_SOCKET, 2, 0, &m, 11.0, &why) == GDAKI_CTRL_PM_HOLD);
+    CHECK(gdakiCtrlPathIn(&s, GDAKI_CTRL_PM_RING, 1, 1, &m, 12.0, &why) == GDAKI_CTRL_PM_HOLD && s.pend.size() == 2 &&
+          s.pend.front().gen == 1);
+    CHECK(gdakiCtrlPathStep(&s, false, 13.0) == GDAKI_CTRL_PM_W_ALL && s.rxPath == GDAKI_CTRL_PM_RING && s.rxGen == 1 &&
+          s.rxTaken == 1 && s.ready.size() == 1);
+    CHECK(gdakiCtrlPathStep(&s, false, 14.0) == GDAKI_CTRL_PM_W_NONE);  // 1 of 3 ring records
+    CHECK(gdakiCtrlPathStep(&s, true, 15.0) == GDAKI_CTRL_PM_W_CLOSED && s.rxGen == 2 && s.rxTaken == 1 &&
+          s.ready.size() == 2 && s.lastTaken == 1 && s.lastBefore == 3);  // the ring closed
+    CHECK(gdakiCtrlPathIn(&s, GDAKI_CTRL_PM_RING, 1, 1, &m, 16.0, &why) == GDAKI_CTRL_PM_DROP && s.dropped == 1);
+    // a generation that never showed is skipped after the wait
+    CHECK(gdakiCtrlPathIn(&s, GDAKI_CTRL_PM_RING, 4, 0, &m, 20.0, &why) == GDAKI_CTRL_PM_HOLD);
+    CHECK(gdakiCtrlPathStep(&s, true, 20.0 + GDAKI_CTRL_PM_WAIT_MS - 1.0) == GDAKI_CTRL_PM_W_NONE);
+    CHECK(gdakiCtrlPathStep(&s, false, 20.0 + GDAKI_CTRL_PM_WAIT_MS) == GDAKI_CTRL_PM_W_WAITED && s.rxGen == 4);
+    // the sender's switch
+    struct gdakiCtrlPathSt t;
+    CHECK(!gdakiCtrlPathSwitch(&t, GDAKI_CTRL_PM_SOCKET) && gdakiCtrlPathSwitch(&t, GDAKI_CTRL_PM_RING) && t.txGen == 1 &&
+          !t.txMarkDue);
+    t.txSent = 4;
+    CHECK(gdakiCtrlPathSwitch(&t, GDAKI_CTRL_PM_SOCKET) && t.txGen == 2 && t.txBefore == 4 && t.txSent == 0 && t.txMarkDue);
+  }
+  // over the fake verbs: 2 ranks, live (every pair's path the ring, generation 1, nothing counted before it)
+  std::vector<Rank> R(2);
+  CHECK(bringUp(R, 2));
+  struct gdakiCtrlPathSt& tx = R[0].st.ring->peers[1].path;
+  struct gdakiCtrlPathSt& rx = R[1].st.ring->peers[0].path;
+  CHECK(tx.txPath == GDAKI_CTRL_PM_RING && tx.txGen == 1 && tx.txBefore == 0);
+  int sv[2], dead[2];
+  sockPair(sv);
+  sockPair(dead);
+  struct gdakiTsPeer& pe01 = R[0].ts.peers[1];
+  struct gdakiTsPeer& pe10 = R[1].ts.peers[0];
+  pe01.fd = sv[0];
+  pe10.fd = sv[1];
+  std::vector<uint64_t> got;
+  bool neg = false;
+  auto drain = [&]() {  // as the helper's live loop: the witness socket, then the pump (records in the order handed out)
+    struct gdakiTsMsg m;
+    int k;
+    while ((k = gdakiCtrlWitnessPump(&R[1].r, 0, pe10, &m)) == 1) got.push_back(m.round);
+    neg = neg || k != 0;
+    while ((k = gdakiCtrlPump(&R[1].r, 0, pe10, &m)) == 1) got.push_back(m.round);
+    neg = neg || k != 0;
+  };
+  auto send = [&](uint64_t round, int fd) {
+    struct gdakiTsMsg m = recOf(48, 0, round);
+    CHECK(gdakiCtrlSend(&R[0].r, 1, GDAKI_CTRL_CH_RECORD, fd, &m, 1000) == 0);
+  };
+  auto until = [&](size_t n, double ms) {
+    const double t0 = gdakiQ4MonoMs();
+    while (got.size() < n && gdakiQ4MonoMs() - t0 < ms) {
+      stepAll(R);
+      drain();
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+  };
+  const char* lineAny = "GIN/RC: rank 1: rank 0's records: ";
+  const size_t line0 = logCount(lineAny);
+  // ring (gen 1): 70 records, more than the 64 slots (the last ones wait for the consumed word's READ); none taken yet
+  for (uint64_t i = 1; i <= 70; i++) send(i, -1);
+  // the socket (gen 2): its marker record (70 counted) and 5 records; the seams answer the socket's
+  CHECK(gdakiCtrlPathSet(&R[0].r, 1, GDAKI_CTRL_PM_SOCKET) && tx.txGen == 2 && tx.txBefore == 70 && tx.txMarkDue);
+  CHECK(gdakiCtrlChanUp(&R[0].r, 1, pe01) && gdakiCtrlPollFd(&R[0].r, 1, pe01) == sv[0] &&
+        gdakiCtrlChanGen(&R[0].r, 1, pe01) == pe01.gen);
+  const uint64_t tcp0 = R[0].r.ctrlTcp.recordBytes.load();
+  for (uint64_t i = 101; i <= 105; i++) send(i, sv[0]);
+  CHECK(R[0].r.ctrlTcp.recordBytes.load() == tcp0 + 6 * sizeof(struct gdakiTsMsg) && !tx.txMarkDue);  // marker + 5
+  send(106, dead[0]);  // counted, but into a socket the receiver never reads (it never comes)
+  // the receiver reads the socket first (the witness): the marker (generation 2, seen before the ring's 1) and 5 held
+  {
+    struct gdakiTsMsg m;
+    CHECK(gdakiCtrlWitnessPump(&R[1].r, 0, pe10, &m) == 0 && got.empty());
+    CHECK(rx.pend.size() == 1 && rx.pend.front().gen == 2 && rx.pend.front().before == 70 &&
+          rx.pend.front().held.size() == 5 && rx.sockGen == 2 && rx.rxGen == 0);
+  }
+  until(75, 5000.0);
+  CHECK(got.size() == 75 && rx.rxPath == GDAKI_CTRL_PM_SOCKET && rx.rxGen == 2 && rx.lastWhy == GDAKI_CTRL_PM_W_ALL &&
+        rx.lastTaken == 70 && rx.lastBefore == 70 && rx.rxTaken == 5 && rx.pend.empty());
+  // back to the ring (gen 3, 6 counted): the receiver has 5 of the 6, so its 3 records wait 1000 ms (one line)
+  CHECK(gdakiCtrlPathSet(&R[0].r, 1, GDAKI_CTRL_PM_RING) && tx.txGen == 3 && tx.txBefore == 6 &&
+        gdakiCtrlPollFd(&R[0].r, 1, pe01) == -1 && gdakiCtrlChanGen(&R[0].r, 1, pe01) == R[0].st.ring->peers[1].ring.gen);
+  for (uint64_t i = 201; i <= 203; i++) send(i, -1);
+  const double t1 = gdakiQ4MonoMs();
+  double tookMs = -1;
+  {
+    while (got.size() < 78 && gdakiQ4MonoMs() - t1 < 5000.0) {
+      stepAll(R);
+      drain();
+      if (got.size() > 75 && tookMs < 0) tookMs = gdakiQ4MonoMs() - t1;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+  CHECK(tookMs >= GDAKI_CTRL_PM_WAIT_MS - 5.0 && tookMs < 3000.0);
+  CHECK(rx.rxPath == GDAKI_CTRL_PM_RING && rx.rxGen == 3 && rx.lastWhy == GDAKI_CTRL_PM_W_WAITED && rx.lastTaken == 5 &&
+        rx.lastBefore == 6);
+  CHECK(logCount("GIN/RC: rank 1: rank 0's records: the ring path (gen 3) taken with 5 of 6 socket record(s) (1000 ms "
+                 "passed); the old path's later records are dropped") == 1 && logCount(lineAny) == line0 + 1);
+  // the old path's leftover: 106's late copy on the socket is dropped, without a second line; the ring goes on
+  struct gdakiTsMsg late = recOf(48, 0, 106);
+  CHECK(gdakiTsSend(sv[0], &late, 100) == 0);
+  send(204, -1);
+  until(79, 5000.0);
+  drain();
+  CHECK(rx.dropped == 1 && logCount(lineAny) == line0 + 1 && !neg);
+  std::vector<uint64_t> want;
+  for (uint64_t i = 1; i <= 70; i++) want.push_back(i);
+  for (uint64_t i = 101; i <= 105; i++) want.push_back(i);
+  for (uint64_t i = 201; i <= 204; i++) want.push_back(i);
+  CHECK(got == want);  // no duplicate, no reorder, nothing of an old path after its switch
+  CHECK(tx.txSent == 4 && rx.switches == 3 && rx.rxTaken == 4);
+  for (int fd : {sv[0], sv[1], dead[0], dead[1]}) close(fd);
+  pe01.fd = pe10.fd = -1;
+  teardown(R);
+  printf("path marker: the pure rule; ring -> socket -> ring for one pair: %zu records delivered in order (the socket's "
+         "5 held until the ring's 70), 1 counted record waited for %.0f ms (one line), its late copy dropped\n",
+         got.size(), tookMs);
+}
+#endif  // !NCCL_GIN_CTRL_TCP
+
+#if !NCCL_GIN_CTRL_TCP
+// ---- 9. 2a-2-C: the REJOIN over UD ----
+// The spare's side of gdakiRsSpareRejoinAll and the survivor's of gdakiRsRejoinAccept, call by call as the host makes
+// them (one thread: the host's waits are the loops here). Rank d's process ends after the survivors' hold start (its
+// record QPs into ERR, its REJOIN table held, its lineage HELD); its spare is a new process of rank d (its own ring, UD QP
+// and page; the survivors' setup records as its transcript gives them).
+static struct gdakiTsMsg rjRec(uint32_t type, int from, uint64_t nonce, uint32_t pad) {
+  struct gdakiTsMsg m;
+  memset(&m, 0, sizeof(m));
+  m.type = type;
+  m.from = from;
+  m.nonce = nonce;
+  m.pad = pad;
+  m.executed[0] = GDAKI_RS_WIRE_VERSION;
+  return m;
+}
+static void holdAndEnd(std::vector<Rank>& R, int d, bool holdStart) {
+  for (int s = 0; s < (int)R.size(); s++) {
+    if (s == d) continue;
+    gHeld[s][d] = true;
+    if (!holdStart) continue;
+    gdakiCtrlRdmaRecordToErr(R[(size_t)s].st.ring, d);  // gdakiCtrlPeerToErr: the record QP and the REJOIN table
+    gdakiCtrlRjOnHoldStart(&R[(size_t)s].r, d);
+  }
+  gdakiCtrlRdmaDestroy(R[(size_t)d].st.ring);  // rank d's process ends
+  R[(size_t)d].st.ring = nullptr;
+  pageDown(R[(size_t)d]);
+}
+static void spareOf(std::vector<Rank>& R, int d, Rank& S) {
+  const int n = (int)R.size();
+  rankInit(S, d, n, 5);
+  gSelfInc[d] = 1;
+  gCurRank = d;  // its thresholds are every rank's (the parameters' reader)
+  gdakiCtrlRingSetup(&S.r, true, d, n, S.salt, &S.mine);
+  gCurRank = -1;
+  std::vector<const struct gdakiCtrlSetupAddr*> ptr((size_t)n);
+  for (int i = 0; i < n; i++) ptr[(size_t)i] = i == d ? &S.mine : &R[(size_t)i].mine;
+  CHECK(gdakiCtrlRingAgree(&S.r, d, n, R[0].ts.nonce, ptr.data(), &R[(size_t)d].mine) == nullptr);
+  CHECK(S.st.ring != nullptr && S.st.ring->setup.spare && !S.st.ring->setup.spareDiffers && S.st.ring->inc == 1);
+  S.ts.nonce = R[0].ts.nonce;
+  S.ts.peers.resize((size_t)n);
+  for (int p = 0; p < n; p++) S.ts.peers[(size_t)p].gated = p != d;
+  S.r.ts = &S.ts;
+  pageUp(S, n);
+}
+static void spareDown(Rank& S, int d, int n) {
+  if (S.st.ring != nullptr) gdakiCtrlRdmaDestroy(S.st.ring);
+  S.st.ring = nullptr;
+  pageDown(S);
+  gSelfInc[d] = 0;
+  for (int s = 0; s < n; s++) gPeerInc[s][d] = gPeerInc[d][s] = 0, gHeld[s][d] = false;
+}
+// the survivors' helper steps and every watch thread (the spare's helper does not run yet: its waits poll its ring)
+static void stepRj(std::vector<Rank>& R, int d, Rank* S) {
+  for (int i = 0; i < (int)R.size(); i++) {
+    if (i == d) continue;
+    gdakiCtrlRingHelperStep(&R[(size_t)i].r);
+    watchStep(R[(size_t)i]);
+  }
+  if (S != nullptr) watchStep(*S);
+}
+static void testRejoin(int n, int d) {
+  std::vector<Rank> R((size_t)n);
+  CHECK(bringUp(R, n));
+  const uint64_t nonce = R[0].ts.nonce;
+  const size_t live0 = logCount("the records go on the ring from now (live)"), rp0 = logCount("re-paired (gen 1048577) mono_ms"),
+               tk0 = logCount("taken over UD: record QP gen 1048577"), ak0 = logCount("REJOIN_ACK of rank"),
+               cf0 = gConnectedFirst;
+  holdAndEnd(R, d, true);
+  for (int k = 0; k < 3; k++) stepRj(R, d, nullptr);
+  Rank S;
+  spareOf(R, d, S);
+  struct gdakiCtrlRing* gs = S.st.ring;
+  const uint32_t G = gdakiCtrlRjGenOf(1);
+  CHECK(G == (1u << 20) + 1u);
+  if (n == 2) {  // DROP_UD=rejoin:1: the first REJOIN is lost
+    gs->sw.parsed = true;
+    gs->sw.dropUdLeft = 1;
+  }
+  gdakiCtrlRjSpareBegin(&S.r, 1);
+  watchStep(S);  // the liveness READ QPs' PREPAREs answered
+  CHECK(gs->bound && gs->pairingStarted && gs->inc == 1 && !gs->live);
+  for (int s = 0; s < n; s++) {
+    if (s == d) continue;
+    const struct gdakiCtrlRdmaPeer& sp = gs->peers[(size_t)s];
+    CHECK(sp.rj.state == GDAKI_CTRL_RJS_READY && sp.ring.gen == G && sp.ring.initiator && sp.q != nullptr &&
+          sp.pairRec.state == GDAKI_CTRL_PS_STARTED && sp.pairRec.mine == G && sp.prb.st.state == GDAKI_CTRL_PS_STARTED &&
+          sp.prb.st.mine == G && gdakiCtrlRjSpareUd(&S.r, s));
+  }
+  const uint64_t tcpS0 = S.r.ctrlTcp.recordBytes.load();
+  for (int s = 0; s < n; s++) {
+    if (s == d) continue;
+    struct gdakiCtrlRing* g = R[(size_t)s].st.ring;
+    struct gdakiCtrlRdmaPeer& sp = gs->peers[(size_t)s];  // the spare's pair with survivor s
+    struct gdakiCtrlRdmaPeer& vp = g->peers[(size_t)d];   // survivor s's pair with the spare
+    struct gdakiTsMsg m = rjRec(GDAKI_TS_RS_REJOIN, d, nonce, 1), in, pk;
+    m.executed[1] = 1;
+    // the REJOIN with its endpoints in nrp (n == 2: lost once, nothing within the resend interval, sent again once)
+    const size_t drop0 = logCount("test switch DROP_UD: the REJOIN datagram to rank");
+    const uint64_t tcpV0 = R[(size_t)s].r.ctrlTcp.recordBytes.load();
+    CHECK(gdakiCtrlSend(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &m, 200) == 0 && sp.rj.tries == 1 && sp.rj.state == GDAKI_CTRL_RJS_SENT);
+    if (n == 2) {
+      CHECK(logCount("test switch DROP_UD: the REJOIN datagram to rank") == drop0 + 1);
+      const double t0 = gdakiQ4MonoMs();
+      CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &in, 1000, nullptr) == 0);
+      CHECK(gdakiQ4MonoMs() - t0 >= GDAKI_CTRL_RJ_RESEND_MS - 1.0 && gdakiQ4MonoMs() - t0 < 900.0 && sp.rj.timeouts == 1);
+      CHECK(logCount("REJOIN to rank 0 resent") == 0);
+      CHECK(gdakiCtrlSend(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &m, 200) == 0 && sp.rj.tries == 2);
+      CHECK(logCount("REJOIN to rank 0 resent (try 2)") == 1);
+    }
+    for (int k = 0; k < 50 && !vp.rj.parked; k++) stepRj(R, d, &S);  // the survivor's UD intake parks it
+    CHECK(vp.rj.parked && vp.rejoin.held && vp.haveUd && vp.remoteUd.qpn == gs->udLocal.qpn && vp.rj.intake == 1);
+    CHECK(gdakiCtrlRjParkedTake(&R[(size_t)s].r, d, &pk) && !vp.rj.parked);
+    struct gdakiCtrlRejoinNrp np;
+    CHECK(gdakiCtrlNrpGet(pk.nrp, sizeof(pk.nrp), &np) && gdakiCtrlRejoinNrpOk(np, false));
+    CHECK(pk.type == GDAKI_TS_RS_REJOIN && pk.from == d && pk.pad == 1 && pk.nonce == nonce && np.gen == G &&
+          np.probeGen == G && np.rec.qpn == sp.local.qpn && np.rec.psn == sp.local.psn && np.probe.qpn == sp.prb.local.qpn &&
+          np.probe.psn == sp.prb.local.psn && np.ud.qpn == gs->udLocal.qpn && np.ud.psn == gs->udLocal.psn &&
+          np.outbox.rkey == gs->outboxMr->rkey && np.page.rkey == S.st.page->pageMr->rkey);
+    // the acceptance: both pairings taken (the new incarnation's), the REJOIN_ACK once the watch thread answered
+    char why[192] = {0};
+    struct gdakiTsMsg ack = rjRec(GDAKI_TS_RS_REJOIN_ACK, s, nonce, 1);
+    ack.round = 1;
+    const uint32_t oldGen = vp.ring.gen;
+    CHECK(gdakiCtrlRjAcceptStep(&R[(size_t)s].r, d, pk, &ack, why, sizeof(why)) == 0);  // the CONNECT asked
+    CHECK(vp.pairRec.peerInc == 1 && vp.prb.st.peerInc == 1 && vp.pairRec.state == GDAKI_CTRL_PS_ANSWERED &&
+          vp.pairRec.cur == G && vp.ring.gen == G && oldGen != G && vp.ring.rts && !vp.ring.connected &&
+          vp.remote.qpn == np.rec.qpn && vp.prb.st.state == GDAKI_CTRL_PS_ANSWERED && vp.prb.st.cur == G);
+    CHECK(gdakiCtrlRjAcceptStep(&R[(size_t)s].r, d, pk, &ack, why, sizeof(why)) == 0);  // not answered yet: the same
+    watchStep(R[(size_t)s]);
+    CHECK(gdakiCtrlRjAcceptStep(&R[(size_t)s].r, d, pk, &ack, why, sizeof(why)) == 1);
+    struct gdakiCtrlRejoinNrp na;
+    CHECK(gdakiCtrlNrpGet(ack.nrp, sizeof(ack.nrp), &na) && gdakiCtrlRejoinNrpOk(na, true) && na.gen == G &&
+          na.probeGen == G && na.rec.qpn == vp.local.qpn && na.rec.psn == vp.local.psn && na.probe.qpn == vp.prb.local.qpn &&
+          na.ud.qpn == g->udLocal.qpn && na.outbox.rkey == g->outboxMr->rkey);
+    CHECK(gdakiCtrlSend(&R[(size_t)s].r, d, GDAKI_CTRL_CH_REJOIN, -1, &ack, 200) == 0);
+    gdakiCtrlRjAccepted(&R[(size_t)s].r, d, pk, ack);
+    gPeerInc[s][d] = 1;  // the lineage: HOLD_SUCC of incarnation 1
+    CHECK(vp.rejoin.accepted && vp.rejoin.inc == 1 && vp.rejoin.qpn == np.rec.qpn && vp.rejoin.probeQpn == np.probe.qpn &&
+          vp.path.txPath == GDAKI_CTRL_PM_RING && vp.path.txGen == 1 && vp.path.txBefore == 0 &&
+          vp.path.rxPath == GDAKI_CTRL_PM_SOCKET && vp.path.rxGen == 0);
+    // the witness: no socket, unknown, re-dialled now; never judged ended for lacking it
+    struct gdakiTsPeer& wv = R[(size_t)s].ts.peers[(size_t)d];
+    wv.fd = -1;
+    gdakiCtrlRjWitnessRedial(&R[(size_t)s].r, d);
+    CHECK(wv.unknown && !wv.gone && wv.fd == -1 && wv.nextDialMs <= gdakiQ4MonoMs() && wv.attempts == 0 &&
+          strcmp(wv.lostCause, "REJOIN") == 0 && gdakiCtrlNoWitnessLv(&R[(size_t)s].r, d) == GDAKI_TS_LV_UNKNOWN);
+    // TOKEN at once: it waits in the queue for the spare's CONNECTED (nothing on the QP before)
+    struct gdakiTsMsg tok = rjRec(GDAKI_TS_RS_TOKEN, s, nonce, 1);
+    tok.round = 7;
+    CHECK(gdakiCtrlSend(&R[(size_t)s].r, d, GDAKI_CTRL_CH_RECORD, -1, &tok, 100) == 0);
+    CHECK(!vp.ring.connected && vp.ring.sent == 0 && vp.ring.q.size() == 1);
+    // the spare takes the REJOIN_ACK and installs the pair (its record QP connected by the REJOIN_ACK or the PAIR_ACK)
+    CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &in, 100, nullptr) == 1);
+    CHECK(in.type == GDAKI_TS_RS_REJOIN_ACK && in.from == s && in.pad == 1 && sp.rj.state == GDAKI_CTRL_RJS_ACKED &&
+          memcmp(in.nrp, ack.nrp, sizeof(ack.nrp)) == 0);
+    struct gdakiTsPeer& ws = S.ts.peers[(size_t)s];
+    gdakiCtrlChanInstall(&S.r, s, ws, -1);
+    CHECK(ws.fd == -1 && sp.rj.state == GDAKI_CTRL_RJS_INSTALLED && sp.ring.rts && sp.ring.connected &&
+          sp.pairRec.state == GDAKI_CTRL_PS_UP && sp.pairRec.cur == G && sp.remote.qpn == na.rec.qpn &&
+          sp.path.txPath == GDAKI_CTRL_PM_RING && sp.path.txGen == 1 && sp.pairRec.peerIncKnown && sp.pairRec.peerInc == 0);
+    gdakiCtrlRjWitnessRedial(&S.r, s);
+    CHECK(ws.unknown && gdakiCtrlNoWitnessLv(&S.r, s) == GDAKI_TS_LV_UNKNOWN);
+    if (n == 2) {  // a repeat (its REJOIN_ACK lost): the stored one again, the QPs untouched; another QPN pair: dropped
+      const uint32_t psn0 = vp.local.psn, gen0 = vp.ring.gen;
+      const uint64_t rep0 = vp.rj.repeats;
+      CHECK(gdakiCtrlSend(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &m, 200) == 0 && logCount("REJOIN to rank 0 resent (try 3)") == 1);
+      for (int k = 0; k < 50 && vp.rj.repeats == rep0; k++) stepRj(R, d, &S);
+      CHECK(vp.rj.repeats == rep0 + 1 && vp.local.psn == psn0 && vp.ring.gen == gen0 && !vp.rj.parked);
+      CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &in, 100, nullptr) == 1 && in.type == GDAKI_TS_RS_REJOIN_ACK &&
+            memcmp(in.nrp, ack.nrp, sizeof(ack.nrp)) == 0);
+      sp.rj.haveAck = false;  // read here only (the host's spare does not wait for it after the install)
+      sp.rj.state = GDAKI_CTRL_RJS_INSTALLED;
+      struct gdakiTsMsg x = m;
+      struct gdakiCtrlRejoinNrp nx = np;
+      nx.rec.qpn += 7;
+      CHECK(gdakiCtrlNrpPut(x.nrp, sizeof(x.nrp), nx));
+      const size_t ln0 = logCount("is dropped: that incarnation was taken with QPNs");
+      const uint64_t dr0 = vp.rj.dropped;
+      for (int t = 0; t < 2; t++) CHECK(gdakiCtrlRjUdRec(gs, s, &x) == 0);
+      for (int k = 0; k < 50 && vp.rj.dropped < dr0 + 2; k++) stepRj(R, d, &S);
+      CHECK(vp.rj.dropped == dr0 + 2 && logCount("is dropped: that incarnation was taken with QPNs") == ln0 + 1 &&
+            vp.ring.gen == gen0 && vp.local.psn == psn0 && !vp.rj.parked);
+    }
+    // TOKEN on the ring after CONNECTED, READY back, DONE_RS: the pair's path markers of a fresh path on both sides
+    for (int k = 0; k < 5; k++) stepRj(R, d, &S);  // the survivor takes CONNECTED, its queue goes
+    CHECK(vp.ring.connected && vp.pairRec.state == GDAKI_CTRL_PS_UP && vp.ring.q.empty());
+    CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_RECORD, -1, &in, 200, nullptr) == 1 && in.type == GDAKI_TS_RS_TOKEN &&
+          in.round == 7 && in.from == s);
+    struct gdakiTsMsg rdy = rjRec(GDAKI_TS_RS_READY, d, nonce, 1);
+    CHECK(gdakiCtrlSend(&S.r, s, GDAKI_CTRL_CH_RECORD, -1, &rdy, 100) == 0);
+    struct gdakiTsMsg got;
+    int k = 0;
+    const double t1 = gdakiQ4MonoMs();
+    while ((k = gdakiCtrlPump(&R[(size_t)s].r, d, wv, &got)) == 0 && gdakiQ4MonoMs() - t1 < 500.0) stepRj(R, d, &S);
+    CHECK(k == 1 && got.type == GDAKI_TS_RS_READY && got.from == d);
+    struct gdakiTsMsg dn = rjRec(GDAKI_TS_RS_DONE, s, nonce, 1);
+    CHECK(gdakiCtrlSend(&R[(size_t)s].r, d, GDAKI_CTRL_CH_RECORD, -1, &dn, 100) == 0);
+    CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_RECORD, -1, &in, 200, nullptr) == 1 && in.type == GDAKI_TS_RS_DONE);
+    CHECK(sp.path.rxPath == GDAKI_CTRL_PM_RING && sp.path.rxGen == 1 && sp.path.rxTaken == 2 &&
+          vp.path.rxPath == GDAKI_CTRL_PM_RING && vp.path.rxGen == 1 && vp.path.rxTaken == 1 && sp.path.dropped == 0 &&
+          vp.path.dropped == 0);
+    CHECK(gdakiCtrlChanUp(&S.r, s, ws) && gdakiCtrlChanUp(&R[(size_t)s].r, d, wv) && gdakiCtrlPollFd(&S.r, s, ws) == -1);
+    CHECK(R[(size_t)s].r.ctrlTcp.recordBytes.load() == tcpV0);  // nothing of it on TCP
+  }
+  CHECK(S.r.ctrlTcp.recordBytes.load() == tcpS0 && gTcpAnswerFail == 0);
+  CHECK(logCount("taken over UD: record QP gen 1048577") == tk0 + (size_t)(n - 1) &&
+        logCount("REJOIN_ACK of rank") == ak0 + (size_t)(n - 1));
+  // the spare's ring goes live once its pairs are up; the survivors' liveness READ QPs by the spare's PAIR_DONE
+  gdakiCtrlRjSpareDone(&S.r);
+  bool prbUp = false;
+  const double t2 = gdakiQ4MonoMs();
+  while ((!gs->live || !prbUp) && gdakiQ4MonoMs() - t2 < 2000.0) {
+    stepRj(R, d, &S);
+    gdakiCtrlRingHelperStep(&S.r);
+    prbUp = true;
+    for (int s = 0; s < n; s++)
+      if (s != d) prbUp = prbUp && R[(size_t)s].st.ring->peers[(size_t)d].prb.st.state == GDAKI_CTRL_PS_UP;
+  }
+  CHECK(gs->live && prbUp && logCount("the records go on the ring from now (live)") == live0 + 1);
+  for (int s = 0; s < n; s++) {
+    if (s == d) continue;
+    CHECK(R[(size_t)s].st.ring->peers[(size_t)d].prb.st.cur == G && gs->peers[(size_t)s].prb.st.state == GDAKI_CTRL_PS_UP &&
+          gs->peers[(size_t)s].prb.st.cur == G && S.watchConnects >= 1);
+  }
+  CHECK(logCount("re-paired (gen 1048577) mono_ms") == rp0);  // the REJOIN's pairings have their own lines
+  CHECK(gConnectedFirst == cf0 + (uint64_t)(n - 1));  // every spare's record QP: CONNECTED first
+  teardown(R);
+  spareDown(S, d, n);
+}
+// The answers that do not take a REJOIN, over UD: WAIT (no hold of the rank yet: the intake), REFUSE (the acceptance's
+// refusal; a REJOIN whose generations are not above the pair's), FAIL (a declined rank: the spare stops).
+static void testRejoinAnswers() {
+  const int n = 2, d = 1, s = 0;
+  std::vector<Rank> R((size_t)n);
+  CHECK(bringUp(R, n));
+  const uint64_t nonce = R[0].ts.nonce;
+  holdAndEnd(R, d, false);
+  Rank S;
+  spareOf(R, d, S);
+  gdakiCtrlRjSpareBegin(&S.r, 1);
+  watchStep(S);
+  struct gdakiCtrlRdmaPeer& sp = S.st.ring->peers[(size_t)s];
+  struct gdakiCtrlRdmaPeer& vp = R[0].st.ring->peers[(size_t)d];
+  struct gdakiTsMsg m = rjRec(GDAKI_TS_RS_REJOIN, d, nonce, 1), in, pk;
+  m.round = 3;
+  const size_t w0 = logCount("answered a REJOIN of rank 1 with WAIT over UD"), sw0 = logCount("answered the REJOIN with WAIT"),
+               sr0 = logCount("answered the REJOIN with REFUSE"), f0 = logCount("answered a REJOIN of declined rank 1 with FAIL (over UD)");
+  // WAIT: the survivor's table is not held (no hold start yet): answered at its intake, not parked
+  CHECK(gdakiCtrlSend(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &m, 200) == 0);
+  for (int k = 0; k < 50 && vp.rj.answers == 0; k++) stepRj(R, d, &S);
+  CHECK(vp.rj.answers == 1 && !vp.rj.parked && logCount("answered a REJOIN of rank 1 with WAIT over UD") == w0 + 1);
+  CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &in, 1000, nullptr) == 0);  // WAIT: not taken, sent again
+  CHECK(sp.rj.waits == 1 && sp.rj.lastAnswer == GDAKI_CTRL_RJA_WAIT && sp.rj.timeouts == 0 &&
+        logCount("answered the REJOIN with WAIT") == sw0 + 1);
+  // REFUSE: the hold started; the acceptance refuses (gdakiRsRejoinAccept's refuse: here a REJOIN whose generations are
+  // not above the pair's, then the answer as the host's refuse sends it)
+  gdakiCtrlRdmaRecordToErr(R[0].st.ring, d);
+  gdakiCtrlRjOnHoldStart(&R[0].r, d);
+  CHECK(gdakiCtrlSend(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &m, 200) == 0);
+  for (int k = 0; k < 50 && !vp.rj.parked; k++) stepRj(R, d, &S);
+  CHECK(vp.rj.parked && gdakiCtrlRjParkedTake(&R[0].r, d, &pk));
+  struct gdakiTsMsg low = pk, ack = rjRec(GDAKI_TS_RS_REJOIN_ACK, s, nonce, 1);
+  struct gdakiCtrlRejoinNrp nl;
+  CHECK(gdakiCtrlNrpGet(low.nrp, sizeof(low.nrp), &nl));
+  nl.gen = 1;  // the pair's first pairing's generation: not above it
+  CHECK(gdakiCtrlNrpPut(low.nrp, sizeof(low.nrp), nl));
+  char why[192] = {0};
+  CHECK(gdakiCtrlRjAcceptStep(&R[0].r, d, low, &ack, why, sizeof(why)) == -1 && strstr(why, "are not above the pair's") != nullptr);
+  CHECK(!vp.rj.accStarted && vp.pairRec.peerInc == 0 && vp.ring.gen == 1);  // nothing moved
+  CHECK(gdakiCtrlRjAnswer(&R[0].r, d, pk.round, GDAKI_CTRL_RJA_REFUSE, pk.pad));
+  CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &in, 1000, nullptr) == 0);
+  CHECK(sp.rj.refusals == 1 && sp.rj.lastAnswer == GDAKI_CTRL_RJA_REFUSE && logCount("answered the REJOIN with REFUSE") == sr0 + 1);
+  // FAIL: the rank is declined here: the FAIL-on-reconnect rule over UD (never the TCP answer: no socket)
+  R[0].ts.peers[(size_t)d].declined = true;
+  R[0].ts.peers[(size_t)d].declCause = gdakiCause::PeerDead;
+  CHECK(gdakiCtrlSend(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &m, 200) == 0 && sp.rj.tries == 3);
+  for (int k = 0; k < 50 && vp.rj.answers < 3; k++) stepRj(R, d, &S);
+  CHECK(vp.rj.answers == 3 && !vp.rj.parked && gTcpAnswerFail == 0 &&
+        logCount("answered a REJOIN of declined rank 1 with FAIL (over UD)") == f0 + 1);
+  CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &in, 1000, nullptr) == 1);
+  CHECK(in.type == GDAKI_TS_FAIL && in.arg == GDAKI_CTRL_RJA_FAIL && in.from == s && in.round == 3 &&
+        in.pad == gdakiTsCausePad(gdakiCause::PeerDead) && sp.rj.state == GDAKI_CTRL_RJS_FAILED);
+  // a REJOIN over TCP is not the ring's: a socket (fd >= 0) or a spare that did not prepare is the TCP path's
+  int rc = 0;
+  CHECK(!gdakiCtrlRingSendOf(&S.r, s, GDAKI_CTRL_CH_REJOIN, 5, &m, 10, &rc));
+  sp.rj.state = GDAKI_CTRL_RJS_IDLE;
+  CHECK(!gdakiCtrlRjSpareUd(&S.r, s) && !gdakiCtrlRingSendOf(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &m, 10, &rc));
+  teardown(R);
+  spareDown(S, d, n);
+}
+// ---- 11, 12. 2a-2-C step 3: STATE and the rkey list over the outbox ----
+// ln4's bytes on the data socket (gc_unit_p2b.cc's comparison): the answer record through gdakiTsSend, the rkey list
+// through gdakiRsRkeysSend and back through gdakiRsRkeysRecv, on AF_UNIX stream pairs.
+static std::vector<uint8_t> sockReadAll(int fd, size_t n) {
+  std::vector<uint8_t> v(n);
+  size_t off = 0;
+  while (off < n) {
+    struct pollfd pf = {fd, POLLIN, 0};
+    if (poll(&pf, 1, 1000) != 1) break;
+    const ssize_t k = recv(fd, v.data() + off, n - off, 0);
+    if (k <= 0) break;
+    off += (size_t)k;
+  }
+  v.resize(off);
+  return v;
+}
+static void sockNonBlock(int fd) { (void)fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); }
+static std::vector<uint8_t> ln4AnswerBytes(int me, uint64_t nonce, uint64_t step) {
+  int sv[2];
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return {};
+  struct gdakiTsMsg a;
+  memset(&a, 0, sizeof(a));
+  a.type = GDAKI_TS_DATA;
+  a.from = me;
+  a.nonce = nonce;
+  a.arg = me;
+  a.round = step;
+  const int rc = gdakiTsSend(sv[0], &a, 1000);
+  std::vector<uint8_t> v = rc == 0 ? sockReadAll(sv[1], sizeof(a)) : std::vector<uint8_t>();
+  close(sv[0]);
+  close(sv[1]);
+  return v;
+}
+static std::vector<uint8_t> ln4RkeyBytes(const struct gdakiRsRkeys& k) {
+  int sv[2];
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return {};
+  sockNonBlock(sv[0]);
+  const size_t n = sizeof(struct gdakiRsRkeysHdr) + k.e.size() * sizeof(struct gdakiRsRkeyEntry);
+  std::vector<uint8_t> v;
+  std::thread rd([&] { v = sockReadAll(sv[1], n); });
+  const ncclResult_t rc = gdakiRsRkeysSend(sv[0], k, 2000);
+  rd.join();
+  close(sv[0]);
+  close(sv[1]);
+  if (rc != ncclSuccess) v.clear();
+  return v;
+}
+static bool ln4RkeysRecv(const std::vector<uint8_t>& bytes, struct gdakiRsRkeys* out) {
+  int sv[2];
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return false;
+  sockNonBlock(sv[1]);
+  std::thread wr([&] {
+    size_t off = 0;
+    while (off < bytes.size()) {
+      const ssize_t k = send(sv[0], bytes.data() + off, bytes.size() - off, 0);
+      if (k <= 0) break;
+      off += (size_t)k;
+    }
+  });
+  char why[128];
+  const bool ok = gdakiRsRkeysRecv(sv[1], 2000, out, why, sizeof(why)) == ncclSuccess;
+  wr.join();
+  close(sv[0]);
+  close(sv[1]);
+  return ok;
+}
+// The survivor's log export as the host's callback gives it (random bytes standing for gdakiRsLogExport's); the request
+// bytes the turn took, as they were when the export was asked.
+struct ExportStub {
+  std::vector<uint8_t> x;
+  const struct gdakiCtrlRdmaPeer* pr = nullptr;
+  std::vector<uint8_t> reqBytes;
+  uint64_t ckpt = 0;
+  int calls = 0;
+  bool fail = false;
+};
+static bool exportStub(void* arg, uint64_t ckpt, std::vector<uint8_t>* x, char* why, size_t whyLen) {
+  ExportStub* e = (ExportStub*)arg;
+  e->calls++;
+  e->ckpt = ckpt;
+  e->reqBytes = e->pr->xi.b;
+  if (e->fail) {
+    snprintf(why, whyLen, "the log export failed: stub");
+    return false;
+  }
+  *x = e->x;
+  return true;
+}
+static void testStateWayRule() {
+  const uint32_t G = gdakiCtrlRjGenOf(1);
+  CHECK(gdakiCtrlStateWayRule(false, GDAKI_CTRL_SWR_TAKEN, G, G, true) == GDAKI_CTRL_SW_SOCKET);  // no ring
+  for (int up = 0; up < 2; up++)
+    for (uint32_t pg : {0u, 1u, G - 1u, G, G + 1u}) {
+      CHECK(gdakiCtrlStateWayRule(true, GDAKI_CTRL_SWR_TCP, G, pg, up) == GDAKI_CTRL_SW_SOCKET);  // the REJOIN over TCP
+      CHECK(gdakiCtrlStateWayRule(true, GDAKI_CTRL_SWR_UD, G, pg, up) == GDAKI_CTRL_SW_WAIT);    // not taken yet
+      const int w = gdakiCtrlStateWayRule(true, GDAKI_CTRL_SWR_TAKEN, G, pg, up);
+      CHECK(w == ((up && pg >= G) ? GDAKI_CTRL_SW_UP : GDAKI_CTRL_SW_WAIT));  // a lagging generation waits, never TCP
+      CHECK(gdakiCtrlStateWayRule(true, GDAKI_CTRL_SWR_TAKEN, 0, pg, up) == GDAKI_CTRL_SW_WAIT);
+    }
+  // the two sides never take different ways: either both have the ring (each up or waiting) or both the socket
+  for (int ring = 0; ring < 2; ring++)
+    for (uint32_t ud = 0; ud < 2; ud++)
+      for (uint32_t gs : {G - 1u, G, G + 1u})
+        for (uint32_t gd : {G - 1u, G, G + 1u})
+          for (int us = 0; us < 2; us++)
+            for (int ux = 0; ux < 2; ux++) {
+              const uint32_t rj = ud ? GDAKI_CTRL_SWR_TAKEN : GDAKI_CTRL_SWR_TCP;
+              const bool a = gdakiCtrlStateWayRule(ring, rj, G, gs, us) == GDAKI_CTRL_SW_SOCKET,
+                         b = gdakiCtrlStateWayRule(ring, rj, G, gd, ux) == GDAKI_CTRL_SW_SOCKET;
+              CHECK(a == b);
+            }
+}
+// n ranks, rank d's spare: the REJOIN over UD survivor by survivor (rank order), then that pair's STATE turn and rkeys.
+static void testStateOutbox(int n, int d) {
+  std::vector<Rank> R((size_t)n);
+  CHECK(bringUp(R, n));
+  const uint64_t nonce = R[0].ts.nonce;
+  const size_t sl0 = logCount("over the outbox (") , ln0 = logCount("GIN/CTRL: spare rank");
+  holdAndEnd(R, d, true);
+  for (int k = 0; k < 3; k++) stepRj(R, d, nullptr);
+  Rank S;
+  spareOf(R, d, S);
+  struct gdakiCtrlRing* gs = S.st.ring;
+  const uint32_t G = gdakiCtrlRjGenOf(1);
+  std::mt19937_64 rng(0x57a7e0ull + (uint64_t)n);
+  for (int s = 0; s < n; s++)  // before the spare prepared anything: its REJOIN is TCP's, the socket
+    if (s != d) CHECK(gdakiCtrlStateWayOf(&S.r, s, true, 1) == GDAKI_CTRL_SW_SOCKET);
+  gdakiCtrlRjSpareBegin(&S.r, 1);
+  watchStep(S);
+  const uint64_t tcpS0 = S.r.ctrlTcp.recordBytes.load();
+  int turn = 0;
+  for (int s = 0; s < n; s++) {
+    if (s == d) continue;
+    struct gdakiCtrlRing* g = R[(size_t)s].st.ring;
+    struct gdakiCtrlRdmaPeer& sp = gs->peers[(size_t)s];
+    struct gdakiCtrlRdmaPeer& vp = g->peers[(size_t)d];
+    const uint64_t tcpV0 = R[(size_t)s].r.ctrlTcp.recordBytes.load();
+    const uint64_t K = 40 + (uint64_t)(rng() % 200);
+    ExportStub ex;
+    ex.pr = &vp;
+    const size_t sizes[] = {0, 100, 3 * GDAKI_CTRL_OUTBOX_HALF_BYTES - 77, 5000};
+    ex.x.resize(sizes[turn % 4]);
+    for (auto& b : ex.x) b = (uint8_t)rng();
+    struct gdakiRsRkeys keys;
+    keys.rank = d;
+    keys.incarnation = 1;
+    keys.nonce = nonce;
+    keys.e.resize((size_t)(rng() % 70));
+    for (auto& e : keys.e) {
+      e.kind = 1 + (uint32_t)(rng() % 3);
+      e.id = (uint32_t)(rng() % 64);
+      e.rkeyBe = (uint32_t)rng();
+      e.pad = 0;
+    }
+    char why[256] = {0}, whyS[256] = {0};
+    struct gdakiRsRkeys got;
+    std::vector<uint8_t> xs;
+    // the REJOIN over UD (as testRejoin): parked, accepted, the REJOIN_ACK out
+    struct gdakiTsMsg m = rjRec(GDAKI_TS_RS_REJOIN, d, nonce, 1), in, pk;
+    m.executed[1] = 1;
+    CHECK(gdakiCtrlSend(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &m, 200) == 0);
+    CHECK(gdakiCtrlStateWayOf(&S.r, s, true, 1) == GDAKI_CTRL_SW_WAIT);  // over UD, not installed: not yet
+    CHECK(gdakiCtrlStateSpareTurn(&S.r, s, 1, K, &xs, whyS, sizeof(whyS)) == 1 && sp.st.phase == GDAKI_CTRL_ST_IDLE);
+    for (int k = 0; k < 50 && !vp.rj.parked; k++) stepRj(R, d, &S);
+    CHECK(vp.rj.parked);
+    CHECK(gdakiCtrlStateWayOf(&R[(size_t)s].r, d, false, 1) == GDAKI_CTRL_SW_WAIT);  // parked over UD: not the socket
+    CHECK(gdakiCtrlRjParkedTake(&R[(size_t)s].r, d, &pk));
+    struct gdakiTsMsg ack = rjRec(GDAKI_TS_RS_REJOIN_ACK, s, nonce, 1);
+    ack.round = 1;
+    ack.executed[1] = 0;
+    CHECK(gdakiCtrlRjAcceptStep(&R[(size_t)s].r, d, pk, &ack, why, sizeof(why)) == 0);
+    watchStep(R[(size_t)s]);
+    CHECK(gdakiCtrlRjAcceptStep(&R[(size_t)s].r, d, pk, &ack, why, sizeof(why)) == 1);
+    CHECK(gdakiCtrlSend(&R[(size_t)s].r, d, GDAKI_CTRL_CH_REJOIN, -1, &ack, 200) == 0);
+    gdakiCtrlRjAccepted(&R[(size_t)s].r, d, pk, ack);
+    gPeerInc[s][d] = 1;
+    struct gdakiTsMsg tok = rjRec(GDAKI_TS_RS_TOKEN, s, nonce, 1);  // gdakiRsRejoinAccept's TOKEN: queued for CONNECTED
+    tok.round = 11;
+    CHECK(gdakiCtrlSend(&R[(size_t)s].r, d, GDAKI_CTRL_CH_RECORD, -1, &tok, 100) == 0);
+    // the survivor took the REJOIN in G, but its record QP is not up before the spare's CONNECTED: it lags, not yet
+    CHECK(vp.ring.gen == G && !vp.ring.connected && gdakiCtrlStateWayOf(&R[(size_t)s].r, d, false, 1) == GDAKI_CTRL_SW_WAIT);
+    CHECK(gdakiCtrlStateSurvivorTurn(&R[(size_t)s].r, d, 1, exportStub, &ex, &got, why, sizeof(why)) == 1 &&
+          vp.st.phase == GDAKI_CTRL_ST_IDLE && vp.st.waits == 1 && ex.calls == 0);
+    // the spare takes the REJOIN_ACK and installs: its side is up in G (the survivor's still lags until it polls)
+    CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &in, 100, nullptr) == 1 && in.type == GDAKI_TS_RS_REJOIN_ACK);
+    gdakiCtrlChanInstall(&S.r, s, S.ts.peers[(size_t)s], -1);
+    CHECK(sp.rj.state == GDAKI_CTRL_RJS_INSTALLED && sp.ring.gen == G && sp.ring.connected &&
+          gdakiCtrlStateWayOf(&S.r, s, true, 1) == GDAKI_CTRL_SW_UP && !vp.ring.connected &&
+          gdakiCtrlStateWayOf(&R[(size_t)s].r, d, false, 1) == GDAKI_CTRL_SW_WAIT);
+    for (int q = 0; q < n; q++)  // the other survivors' pairs with the spare: their turn has not come, nothing pending
+      if (q != d && q != s && q > s) CHECK(R[(size_t)q].st.ring->peers[(size_t)d].xferIn.empty());
+    // the turns, interleaved: the spare's step, the survivors' helper steps, the survivor's turn; none blocks
+    int ks = 1, kv = 1, kr = 1, steps = 0, maxStepMsX10 = 0;
+    const double t0 = gdakiQ4MonoMs();
+    std::vector<uint8_t> stateWire;
+    while ((ks != 0 || kv != 0 || kr != 0) && gdakiQ4MonoMs() - t0 < 3000.0) {
+      const double a0 = gdakiQ4MonoMs();
+      if (ks == 1) {
+        ks = gdakiCtrlStateSpareTurn(&S.r, s, 1, K, &xs, whyS, sizeof(whyS));
+        if (ks == 0) stateWire = sp.xi.b;
+      }
+      if (ks == 0 && kr == 1) kr = gdakiCtrlRkeysSpareTurn(&S.r, s, keys, whyS, sizeof(whyS));
+      if (kv == 1) kv = gdakiCtrlStateSurvivorTurn(&R[(size_t)s].r, d, 1, exportStub, &ex, &got, why, sizeof(why));
+      const double a1 = gdakiQ4MonoMs();
+      maxStepMsX10 = std::max(maxStepMsX10, (int)((a1 - a0) * 10.0));
+      stepRj(R, d, &S);
+      steps++;
+      if (ks < 0 || kv < 0 || kr < 0) break;
+    }
+    if (ks != 0 || kv != 0 || kr != 0)
+      fprintf(stderr, "  state turn %d<-%d: spare %d/%d (%s), survivor %d (%s)\n", d, s, ks, kr, whyS, kv, why);
+    CHECK(ks == 0 && kv == 0 && kr == 0 && sp.st.phase == GDAKI_CTRL_ST_DONE && vp.st.phase == GDAKI_CTRL_ST_DONE && steps > 2);
+    CHECK(maxStepMsX10 < 2000);  // a step returns within a few ms (no wait inside for the other side)
+    CHECK(vp.st.waits >= 1 && ex.calls == 1 && ex.ckpt == K && vp.st.ckpt == K && sp.st.ckpt == K);
+    // STATE_REQ: the 64 B head (kind, from, to, incarnation, checkpoint) and ln4's answer record byte for byte
+    CHECK(ex.reqBytes.size() == 64 + sizeof(struct gdakiTsMsg));
+    if (ex.reqBytes.size() == 64 + sizeof(struct gdakiTsMsg)) {
+      struct gdakiCtrlXferHdr h;
+      memcpy(&h, ex.reqBytes.data(), sizeof(h));
+      CHECK(h.magic == GDAKI_CTRL_XFERH_MAGIC && h.kind == GDAKI_CTRL_XK_STATE_REQ && h.from == d && h.to == s &&
+            h.incarnation == 1 && h.ckpt == K && h.nonce == nonce && h.bytes == sizeof(struct gdakiTsMsg));
+      const std::vector<uint8_t> tcp = ln4AnswerBytes(d, nonce, K);
+      CHECK(tcp.size() == sizeof(struct gdakiTsMsg) && memcmp(ex.reqBytes.data() + 64, tcp.data(), tcp.size()) == 0);
+    }
+    // STATE: ln4's data-socket stream (n, then the export), the spare keeps the export
+    CHECK(stateWire.size() == 64 + 8 + ex.x.size() && xs == ex.x);
+    if (stateWire.size() == 64 + 8 + ex.x.size()) {
+      struct gdakiCtrlXferHdr h;
+      memcpy(&h, stateWire.data(), sizeof(h));
+      uint64_t nn = 0;
+      memcpy(&nn, stateWire.data() + 64, 8);
+      CHECK(h.kind == GDAKI_CTRL_XK_STATE && h.from == s && h.to == d && h.incarnation == 1 && h.ckpt == K &&
+            nn == ex.x.size() && (ex.x.empty() || memcmp(stateWire.data() + 72, ex.x.data(), ex.x.size()) == 0));
+    }
+    // RKEYS: gdakiRsRkeysSend's bytes; the survivor's list is the spare's; ln4's receiver reads the payload back
+    const std::vector<uint8_t>& kw = vp.xi.b;
+    const std::vector<uint8_t> tcpK = ln4RkeyBytes(keys);
+    CHECK(!tcpK.empty() && kw.size() == 64 + tcpK.size() && memcmp(kw.data() + 64, tcpK.data(), tcpK.size()) == 0);
+    CHECK(got.rank == d && got.incarnation == 1 && got.nonce == nonce && got.e.size() == keys.e.size() &&
+          (keys.e.empty() || memcmp(got.e.data(), keys.e.data(), keys.e.size() * sizeof(keys.e[0])) == 0));
+    struct gdakiRsRkeys viaTcp;
+    CHECK(ln4RkeysRecv(std::vector<uint8_t>(kw.begin() + 64, kw.end()), &viaTcp) && viaTcp.e.size() == keys.e.size() &&
+          (keys.e.empty() || memcmp(viaTcp.e.data(), keys.e.data(), keys.e.size() * sizeof(keys.e[0])) == 0));
+    // the records around it: TOKEN first on the ring, nothing of the transfers is a record, nothing on TCP
+    CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_RECORD, -1, &in, 200, nullptr) == 1 && in.type == GDAKI_TS_RS_TOKEN &&
+          in.round == 11);
+    CHECK(vp.xferIn.empty() && sp.xferIn.empty() && !vp.outbox.busy[0] && !vp.outbox.busy[1] && !sp.outbox.busy[0] &&
+          !sp.outbox.busy[1] && g->inStageBy < 0 && gs->inStageBy < 0);
+    CHECK(R[(size_t)s].r.ctrlTcp.recordBytes.load() == tcpV0);
+    printf("state over the outbox (%d ranks, spare %d, survivor %d): %d steps, %lu survivor step(s) waited for the ring, "
+           "STATE %zu bytes, %zu rkeys; ln4's bytes for the request record, the stream and the rkey list\n", n, d, s, steps,
+           (unsigned long)vp.st.waits, stateWire.size(), keys.e.size());
+    turn++;
+  }
+  CHECK(S.r.ctrlTcp.recordBytes.load() == tcpS0);
+  CHECK(logCount("sent to rank ") >= (size_t)(n - 1) && logCount("over the outbox (") >= sl0 + 2u * (size_t)(n - 1) &&
+        logCount("GIN/CTRL: spare rank") == ln0 + (size_t)(n - 1));
+  // a new generation in the middle of a turn fails it (the transfer dies with its generation: never the socket)
+  if (n == 2) {
+    const int s = 0;
+    struct gdakiCtrlRdmaPeer& sp = gs->peers[(size_t)s];
+    std::vector<uint8_t> xs;
+    char w[256] = {0};
+    sp.st = gdakiCtrlStateTurn();
+    sp.st.inc = 1;
+    CHECK(gdakiCtrlStateSpareTurn(&S.r, s, 1, 77, &xs, w, sizeof(w)) == 1 && sp.st.phase == GDAKI_CTRL_ST_REQ_OUT);
+    gdakiCtrlRdmaNewGen(sp, sp.ring.gen + 1, true);
+    CHECK(gdakiCtrlStateSpareTurn(&S.r, s, 1, 77, &xs, w, sizeof(w)) == -1 && strstr(w, "ended with its connection") != nullptr &&
+          sp.st.phase == GDAKI_CTRL_ST_IDLE && !sp.xo.on);
+  }
+  teardown(R);
+  spareDown(S, d, n);
+}
+// 12. the fallback to the data socket: only when both sides agree there is no ring for the pair
+static void testStateFallback() {
+  const int n = 2, d = 1, s = 0;
+  std::vector<Rank> R((size_t)n);
+  CHECK(bringUp(R, n));
+  holdAndEnd(R, d, true);
+  Rank S;
+  spareOf(R, d, S);
+  ExportStub ex;
+  ex.pr = &R[0].st.ring->peers[(size_t)d];
+  struct gdakiRsRkeys got;
+  std::vector<uint8_t> xs;
+  char w[256] = {0};
+  // the REJOIN went over TCP (the spare prepared nothing for UD; the survivor's table took nothing over UD): both socket
+  gPeerInc[s][d] = 1;
+  CHECK(gdakiCtrlStateWayOf(&S.r, s, true, 1) == GDAKI_CTRL_SW_SOCKET &&
+        gdakiCtrlStateWayOf(&R[0].r, d, false, 1) == GDAKI_CTRL_SW_SOCKET);
+  CHECK(gdakiCtrlStateSpareTurn(&S.r, s, 1, 5, &xs, w, sizeof(w)) == 2 &&
+        gdakiCtrlStateSurvivorTurn(&R[0].r, d, 1, exportStub, &ex, &got, w, sizeof(w)) == 2);
+  CHECK(gdakiCtrlStateRingOf(&S.r, s, true, 1) == nullptr && gdakiCtrlStateRingOf(&R[0].r, d, false, 1) == nullptr);
+  CHECK(ex.calls == 0 && S.st.ring->peers[(size_t)s].ring.q.empty() && !S.st.ring->peers[(size_t)s].xo.on &&
+        R[0].st.ring->peers[(size_t)d].st.phase == GDAKI_CTRL_ST_IDLE);
+  // no ring in either context (the rdma build without one): both socket
+  struct gdakiCtrlRing* keepS = S.st.ring;
+  struct gdakiCtrlRing* keepV = R[0].st.ring;
+  S.st.ring = nullptr;
+  R[0].st.ring = nullptr;
+  CHECK(gdakiCtrlStateSpareTurn(&S.r, s, 1, 5, &xs, w, sizeof(w)) == 2 &&
+        gdakiCtrlStateSurvivorTurn(&R[0].r, d, 1, exportStub, &ex, &got, w, sizeof(w)) == 2 && ex.calls == 0);
+  CHECK(gdakiCtrlRkeysSpareTurn(&S.r, s, got, w, sizeof(w)) == -1);  // no ring: the rkeys never take the outbox
+  S.st.ring = keepS;
+  R[0].st.ring = keepV;
+  printf("state fallback: the REJOIN over TCP and no ring: both sides the data socket, nothing moved\n");
+  teardown(R);
+  spareDown(S, d, n);
+}
 #endif  // !NCCL_GIN_CTRL_TCP
 
 int main() {
@@ -1747,6 +2559,14 @@ int main() {
   testLive(4);
   testSwitches();
   testLaunchers();
+  testPathMarker();
+  testRejoin(2, 1);
+  testRejoin(4, 2);
+  testRejoinAnswers();
+  testStateWayRule();
+  testStateOutbox(2, 1);
+  testStateOutbox(4, 2);
+  testStateFallback();
   CHECK(gQps.empty() && gCqs.empty() && gAhs.empty() && gChanFds.empty() && gMrs.empty());  // all destroyed
   printf("fake NIC: %llu UD datagrams (%llu dropped), %llu RC RECVs posted, %llu READs\n", (unsigned long long)gUdSent,
          (unsigned long long)gUdDropped, (unsigned long long)gRcRecvPosts, (unsigned long long)gReads);
