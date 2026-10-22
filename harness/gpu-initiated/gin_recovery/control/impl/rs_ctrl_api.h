@@ -918,8 +918,172 @@ static inline const char* gdakiCtrlCauseName(uint32_t cause) {
 }
 // ---- [1] page (end) ----
 // ---- [2] ring: the record QPs, the rings, the UD pairing, the outbox (begin) ----
+// One outbox transfer (phase 2b; impl/notes_p2b.md): a 64 B head in front of its payload, the whole carried by XFER pieces
+// (END on the last). STATE of one survivor and a spare: STATE_REQ (spare -> survivor: ln4's DATA answer record), STATE
+// (survivor -> spare: ln4's data-socket bytes, n then the export), RKEYS (spare -> survivor: ln4's rkey list bytes).
+// ACTB: the activation blob through a launcher (phase 3).
+#define GDAKI_CTRL_XFERH_MAGIC 0x48585247u  // "GRXH" in memory order
+#define GDAKI_CTRL_XFERH_VERSION 1u
+enum : uint16_t { GDAKI_CTRL_XK_STATE_REQ = 1, GDAKI_CTRL_XK_STATE = 2, GDAKI_CTRL_XK_RKEYS = 3, GDAKI_CTRL_XK_ACTB = 4 };
+struct gdakiCtrlXferHdr {
+  uint32_t magic;        // GDAKI_CTRL_XFERH_MAGIC
+  uint16_t version;      // GDAKI_CTRL_XFERH_VERSION
+  uint16_t kind;         // GDAKI_CTRL_XK_*
+  int32_t from, to;      // ranks (a launcher: GDAKI_CTRL_FROM_LAUNCHER | node)
+  uint32_t incarnation;  // the restored rank's incarnation the transfer is for
+  uint32_t rsv0;
+  uint64_t nonce;        // the context's
+  uint64_t ckpt;         // STATE_REQ, STATE: the checkpoint K; else 0
+  uint64_t bytes;        // the payload's
+  uint64_t hash;         // gdakiCkptHash(payload, bytes, GDAKI_CKPT_HASH_SEED)
+  uint8_t rsv[8];
+};
+static_assert(sizeof(struct gdakiCtrlXferHdr) == 64, "an outbox transfer's head is 64 bytes");
+// The setup all-gather's control fields (phase 2a-2; EXPERIMENT.md 9.6, design v3 5.1): one per rank behind gdakiTsAddr
+// (rdma build only). `path` and the thresholds must be equal on every rank, `launcherNode` equal to the transcript's (a
+// spare); the rest may differ. The UD endpoint carries its Q_Key in psn (this rank's own: the context's nonce exists only
+// after the exchange, the receiver of a datagram is named by its endpoint). page: 0 until the status page is up (the
+// PAIR carries it); launcherUd and launcherQkey: phase 3 fills them from the node launcher's Unix-socket answer (0: none).
+#define GDAKI_CTRL_PATH_RDMA 2u               // the records go on the ring (the rdma build, the ring made)
+#define GDAKI_CTRL_PATH_RDMA_OFF 3u           // the rdma build without the ring (NCCL_GIN_CTRL_PAGE=0, or it failed)
+#define GDAKI_CTRL_LAUNCHER_NODE_NONE 0xffffffffu
+#define GDAKI_CTRL_MTU_MIN 4u                 // enum ibv_mtu IBV_MTU_2048: a datagram of 1936 B fits (decision 9)
+#define GDAKI_CTRL_FORK_UNNEEDED 2u           // enum ibv_fork_status IBV_FORK_UNNEEDED (ibv_is_fork_initialized)
+struct gdakiCtrlSetupAddr {
+  struct gdakiCtrlRegion page, outbox;         // this rank's status page (0 at the exchange) and outbox
+  struct gdakiCtrlEndpoint ud;                 // this rank's UD QP (psn: its Q_Key)
+  struct gdakiCtrlEndpoint launcherUd;         // its node launcher's UD QP (phase 3; 0: none)
+  uint32_t launcherQkey;
+  uint32_t path;                               // GDAKI_CTRL_PATH_* (strict)
+  uint32_t launcherNode;                       // GDAKI_CTRL_LAUNCHER_NODE_NONE until phase 3 (strict against a transcript)
+  uint32_t activeMtu;                          // enum ibv_mtu of the GIN port (ibv_query_port's active_mtu)
+  uint32_t fork;                               // ibv_is_fork_initialized(); 0xff: the symbol is missing
+  int32_t probeMs, probeTimeoutMs, confirmMs, suspectMs, stallMs;  // the liveness thresholds (strict; 고칠 것 4)
+  uint32_t rsv[4];
+};
+static_assert(sizeof(struct gdakiCtrlSetupAddr) == 168 && offsetof(struct gdakiCtrlSetupAddr, ud) == 32 &&
+                  offsetof(struct gdakiCtrlSetupAddr, path) == 116,
+              "the setup all-gather's control fields are 168 bytes");
+// The agreement over every rank's fields (the same verdict on every rank: the same records). 0: agreed; else the
+// Resume condition it is (42 an MTU below 2048, 44 the control path differs) or GDAKI_CTRL_SA_THRESH; *minMtu the lowest.
+enum : uint32_t { GDAKI_CTRL_SA_OK = 0, GDAKI_CTRL_SA_MTU = 42, GDAKI_CTRL_SA_PATH = 44, GDAKI_CTRL_SA_THRESH = 1000 };
+static inline uint32_t gdakiCtrlSetupAgree(const struct gdakiCtrlSetupAddr* const* all, int n, uint32_t* minMtu,
+                                           int* who, char* why, size_t whyLen) {
+  *minMtu = 0xffu;
+  *who = -1;
+  for (int p = 0; p < n; p++)
+    if (all[p] != nullptr && all[p]->activeMtu < *minMtu) *minMtu = all[p]->activeMtu;
+  const struct gdakiCtrlSetupAddr* a0 = nullptr;
+  for (int p = 0; p < n && a0 == nullptr; p++) a0 = all[p];
+  if (a0 == nullptr) return GDAKI_CTRL_SA_OK;
+  for (int p = 0; p < n; p++) {
+    const struct gdakiCtrlSetupAddr* a = all[p];
+    if (a == nullptr) continue;
+    if (a->path != a0->path) {
+      *who = p;
+      if (why != nullptr) snprintf(why, whyLen, "the control path differs between ranks (rank %d: %u, another: %u)", p, a->path, a0->path);
+      return GDAKI_CTRL_SA_PATH;
+    }
+  }
+  if (a0->path != GDAKI_CTRL_PATH_RDMA) return GDAKI_CTRL_SA_OK;  // no ring anywhere: nothing more to agree on
+  for (int p = 0; p < n; p++) {
+    const struct gdakiCtrlSetupAddr* a = all[p];
+    if (a == nullptr) continue;
+    if (a->activeMtu < GDAKI_CTRL_MTU_MIN) {
+      *who = p;
+      if (why != nullptr) snprintf(why, whyLen, "rank %d's active MTU (enum %u) is below 2048", p, a->activeMtu);
+      return GDAKI_CTRL_SA_MTU;
+    }
+    if (a->probeMs != a0->probeMs || a->probeTimeoutMs != a0->probeTimeoutMs || a->confirmMs != a0->confirmMs ||
+        a->suspectMs != a0->suspectMs || a->stallMs != a0->stallMs) {
+      *who = p;
+      if (why != nullptr) snprintf(why, whyLen, "the liveness thresholds differ between ranks (rank %d)", p);
+      return GDAKI_CTRL_SA_THRESH;
+    }
+  }
+  return GDAKI_CTRL_SA_OK;
+}
+// Resume's conditions 41-44 (EXPERIMENT.md 9.6 "준비 검사"; after gin-mirror's 34-40). 42 and 44 turn transparent recovery
+// off at the setup already (the agreement above); 41 needs the launcher (phase 3: asked only once a launcher socket is
+// named), 43 is ibv_is_fork_initialized().
+#define GDAKI_CTRL_R41 "the restore was asked but this rank is not paired with its node's launcher"
+#define GDAKI_CTRL_R42 "a rank's active MTU is below 2048 (a control datagram does not fit)"
+#define GDAKI_CTRL_R43 "ibv_is_fork_initialized() is not IBV_FORK_UNNEEDED on this rank"
+#define GDAKI_CTRL_R44 "the control path or the launcher node differs between ranks or from the replayed record"
+#define GDAKI_CTRL_R44T "the liveness thresholds differ between ranks"  // 44's text for GDAKI_CTRL_SA_THRESH (phase 2a-2-A)
+// The survivor's answers to a REJOIN over UD that it does not take (FAIL's arg; TCP told WAIT and REFUSE with a FIN):
+// FAIL (2, ln4's "declined": the spare stops at once), WAIT (not HELD yet) and REFUSE (not dead + 1, or its view does not
+// validate): the spare sends the REJOIN again after 200 ms, as after TCP's FIN.
+#define GDAKI_CTRL_RJA_FAIL 2
+#define GDAKI_CTRL_RJA_WAIT 20
+#define GDAKI_CTRL_RJA_REFUSE 21
+// The test switches of phase 2 (research builds only; EXPERIMENT.md 9.9): the record QP to <peer> into ERR <ms> after the
+// first armed checkpoint (or the helper start without the restore), the first <n> REJOIN datagrams dropped by the spare,
+// no RECV re-posted from <start> ms for <len> ms. On the witness socket (rdma build only; the tcp control cells' copies
+// are behind NCCL_GIN_CTRL_TCP_CELLS): DIE_RST=<ms>, RST_GAP=<start>:<len>, FD_HOLDER=sock|uverbs.
+#define GDAKI_CTRL_T_QP_ERR "NCCL_GIN_CTRL_TEST_QP_ERR"              // <ms>:<peer>
+#define GDAKI_CTRL_T_DROP_UD "NCCL_GIN_CTRL_TEST_DROP_UD"            // rejoin:<n>
+#define GDAKI_CTRL_T_CREDIT_STALL "NCCL_GIN_CTRL_TEST_CREDIT_STALL"  // <start ms>:<length ms>
+#define GDAKI_CTRL_T_DIE_RST "NCCL_GIN_TS_TEST_DIE_RST"              // <ms>
+#define GDAKI_CTRL_T_RST_GAP "NCCL_GIN_TS_TEST_RST_GAP"              // <start ms>:<length ms>
+#define GDAKI_CTRL_T_FD_HOLDER "NCCL_GIN_TS_TEST_FD_HOLDER"          // sock | uverbs
+#define GDAKI_CTRL_P_PAGE "GIN_CTRL_PAGE"  // [1] [2] the status page and the ring (rdma build: default 1 since phase 2a-2)
+#define GDAKI_CTRL_PAGE_DEFAULT 1
 // ---- [2] ring (end) ----
 // ---- [3] launcher: the rank side of the launcher (begin) ----
+// Phase 3 (impl/notes_p3.md). The launcher's wire is launcher/launcher_msg.h; the host file pastes it byte for byte at the
+// head of its region "gin-control (launcher)" (build_gc_p3.sh `api` compares the two). What the rank side adds:
+#define GDAKI_CTRL_LA_SPARE_INC_ENV "NCCL_GIN_RESTORE_SPARE_INC"  // a spare's incarnation for its HELLO (default 1)
+#define GDAKI_CTRL_LA_ANSWER_MS 1000  // the launcher QP's first answer to an ACTIVATE, software (design v3 5.2: 1 000 ms)
+// The launcher-path spare registration in STORE_REQ's tail (design v3 5.4 1, decision 10): the 32 bytes of
+// gdakiStoreReqSpare::spareAddr carry it; its pid and pidStart are 0 (the launcher holds the pidfd of (rank, inc)).
+// Version 1 of the registration was ln4's (a socket address, the PID, the start time).
+#define GDAKI_CTRL_LA_SPAREREG_MAGIC 0x4c535247u  // "GRSL" in memory order
+#define GDAKI_CTRL_LA_SPAREREG_VERSION 2u
+#define GDAKI_CTRL_LA_PATH_LAUNCHER 1u
+#define GDAKI_CTRL_LA_REG_F_PATH 0x1u  // the arming view's path existed (gl_path_exists) when the tail was written
+struct gdakiCtrlLaSpareReg {
+  uint32_t magic;    // GDAKI_CTRL_LA_SPAREREG_MAGIC
+  uint32_t version;  // GDAKI_CTRL_LA_SPAREREG_VERSION
+  uint32_t path;     // GDAKI_CTRL_LA_PATH_LAUNCHER
+  uint32_t node;     // the registering rank's node launcher
+  int32_t rank;
+  uint32_t inc;      // the registered incarnation (the spare's is inc + 1)
+  uint32_t flags;    // GDAKI_CTRL_LA_REG_F_*
+  uint32_t rsv;
+};
+static_assert(sizeof(struct gdakiCtrlLaSpareReg) == 32, "the launcher-path registration fits gdakiStoreReqSpare::spareAddr");
+// The rdma build's outer magic of that tail (REVIEW_P3 고칠 것 10): ln4's GDAKI_STORE_SPARE_MAGIC ("GRSP") stays the tcp
+// build's, so a tcp buddy reads this tail as "no registration" and an rdma buddy takes only this one. EXPERIMENT.md 9.8
+// asks for a versioned copy of rs_store_api.h; this build keeps STORE_REQ's layout and changes the magic instead.
+#define GDAKI_CTRL_LA_STORE_SPARE_MAGIC 0x4c505247u  // "GRPL"
+// The buddy's check of a ward's registration: launcher path, the ward and the dead incarnation, the path flag.
+static inline bool gdakiCtrlLaSpareRegOk(const struct gdakiCtrlLaSpareReg& g, int rank, uint32_t dead) {
+  return g.magic == GDAKI_CTRL_LA_SPAREREG_MAGIC && g.version == GDAKI_CTRL_LA_SPAREREG_VERSION &&
+         g.path == GDAKI_CTRL_LA_PATH_LAUNCHER && g.rank == rank && g.inc == dead && (g.flags & GDAKI_CTRL_LA_REG_F_PATH) != 0 &&
+         g.rsv == 0;
+}
+// The activation record through a launcher carries FENCED (EXPERIMENT.md 9.4: the spare does not look at /proc): its
+// `reserved` is the fence word of the dead incarnation, dead + 1 = the new incarnation; pid and pidStart are 0.
+static inline uint64_t gdakiCtrlLaActFencedMark(uint32_t newInc) { return gdakiCtrlFenceWord(newInc - 1u); }
+static inline bool gdakiCtrlLaActFencedOk(uint64_t reserved, uint32_t newInc) {
+  return newInc != 0 && gdakiCtrlFencedIs(reserved, newInc - 1u);
+}
+// The all-gather's launcher field of one rank (design v3 5.1's "launcher UD 끝점과 Q_Key"; REVIEW_P3 막는 문제 2): what the
+// node's launcher answered to a nonce-free INFO on its Unix socket before the all-gather (its node, UD endpoint, Q_Key,
+// page; these are the launcher's, static for its life). REGISTER carries the context's nonce, which exists only after the
+// all-gather: it stays after it (gdakiTsStart). magic 0: this rank has no launcher path (no answer, or no restore asked).
+#define GDAKI_CTRL_LA_AG_MAGIC 0x41414c47u  // "GLAA"
+struct gdakiCtrlLaAgInfo {
+  uint32_t magic;                // GDAKI_CTRL_LA_AG_MAGIC, or 0
+  uint32_t node;                 // the launcher's node number
+  uint32_t qkey;                 // its UD QP's Q_Key
+  uint32_t rsv;
+  struct gdakiCtrlEndpoint ud;   // its UD QP (launcher_msg.h's glEp, 40 B)
+  uint64_t pageAddr;             // its state page (glRegion: addr, rkey, len)
+  uint32_t pageRkey, pageLen;
+};
+static_assert(sizeof(struct gdakiCtrlLaAgInfo) == 72, "the all-gather's launcher field is 72 bytes");
 // ---- [3] launcher (end) ----
 #endif  // !NCCL_GIN_CTRL_TCP
 // ---- gin-control: ctrl API (end) ----
@@ -1039,6 +1203,58 @@ static void gdakiCtrlLauncherFree(struct gdakiRecHost* r);
 // ---- [2] ring: entry points (begin) ----
 // ---- [2] ring (end) ----
 // ---- [3] launcher: entry points (begin) ----
+// Phase 3 (impl/notes_p3.md): what the host file's ln4 lines and the other phases' regions call; the bodies are in the
+// region "gin-control (launcher)".
+struct gdakiRsActivate;  // the host file
+struct gdakiMiActBlob;   // the host file
+// gdakiTsSetup before its all-gather (the context's thread): the nonce-free INFO on the node's launcher socket (its node,
+// UD endpoint, Q_Key, page; REVIEW_P3 막는 문제 2). Only a process that asks for the restore. Bounded (200 ms).
+static void gdakiCtrlLauncherQuery(struct gdakiRecHost* r);
+// [2a-2 calls it] this rank's all-gather field (gdakiTsAddr), from that INFO's answer (magic 0: none).
+static void gdakiCtrlLauncherAgInfo(struct gdakiRecHost* r, struct gdakiCtrlLaAgInfo* out);
+// [2a-2 calls it] after the all-gather: every rank's field (byRank[0..nranks)): the communicator's launchers (in node
+// order), each rank's node launcher, their count (the arming's "every launcher paired").
+static void gdakiCtrlLauncherAgTake(struct gdakiRecHost* r, const struct gdakiCtrlLaAgInfo* byRank, int nranks);
+// The judgement's hook (the hold start, before gdakiTsQuiesce and gdakiCtrlPeerToErr move any QP toward `peer`): the
+// window line's snapshot (16 cells of 64 B per window, signal and counter table; REVIEW_P3 막는 문제 1).
+static void gdakiCtrlOnJudgement(struct gdakiRecHost* r, int peer, uint32_t inc);
+// The judgement table's L inputs of (peer, inc) for the watch thread (no lock; REVIEW_P3 고칠 것 1): LEFT, the end
+// (EXITED or FENCED) and the registration word ALIVE / LEFT of that incarnation, as the launcher link took them.
+static void gdakiCtrlLaLInputs(struct gdakiRecHost* r, int peer, uint32_t inc, bool* left, bool* ended, bool* regAlive,
+                               bool* regLeft);
+// The PAUSED armable bit's launcher part (REVIEW_P3 고칠 것 2): this rank, the ward's buddy, is paired with the ward's
+// node launcher (a revived buddy: again, as its new incarnation); true when this rank is not the ward's buddy.
+static bool gdakiCtrlLaWardArmOk(struct gdakiRecHost* r, int ward);
+// gdakiTsStart (setup thread, after the all-gather: the nonce): REGISTER (a rank) or SPARE_HELLO (a spare).
+static void gdakiCtrlLauncherSetup(struct gdakiRecHost* r);
+// Before the witness's BYE (the communicator ends): LEAVING on the registering connection.
+static void gdakiCtrlLauncherLeaving(struct gdakiRecHost* r);
+// [2a-2 calls it] one envelope that came from a launcher (from = GDAKI_CTRL_FROM_LAUNCHER | node): a PAIR or PAIR_ACK on
+// the UD QP (ud), a launcher message on that launcher's record QP (else); `body` is the 256 B glMsg.
+static void gdakiCtrlLauncherOnEnvelope(struct gdakiRecHost* r, const struct gdakiCtrlEnv* e, const void* body, bool ud);
+struct gdakiStoreReqSpare;  // the host file (impl/rs_store_api.h)
+// STORE_REQ's tail (REVIEW_P3 고칠 것 3, 10): the outer magic GDAKI_CTRL_LA_STORE_SPARE_MAGIC, the registration
+// (struct gdakiCtrlLaSpareReg in spareAddr) and haveSpare from one gl_path_exists; that value is kept for CKPT_STABLE.
+static void gdakiCtrlLaStoreReqTail(struct gdakiRecHost* r, struct gdakiStoreReqSpare* sp);
+// CKPT_STABLE's armable bit (the rdma build's `allArmable && haveSpare`): the path now and the registration the buddy
+// holds (the last STORE_REQ's flag for this incarnation); a path the buddy's registration lacks asks a new STORE_REQ.
+static bool gdakiCtrlLaStableArmable(struct gdakiRecHost* r, bool allArmable);
+// The buddy's decision: the ward's registration is the launcher path's for (peer, dead); false with why.
+static bool gdakiCtrlLaSpareRegCheck(struct gdakiRecHost* r, const void* reg32, int peer, uint32_t dead, char* why,
+                                     size_t whyLen);
+// The buddy's fence (design v3 4.4 3): FENCE to the dead rank's launcher once all HOLDINGs are in; 1 fenced (GO), 0 not
+// yet, -1 fall back with why (FENCE_NAK, no launcher path, the launcher lost). *word: the fence word of `peer`.
+static int gdakiCtrlLaFenceStep(struct gdakiRecHost* r, int peer, uint32_t dead, uint64_t* word, char* why, size_t whyLen);
+// The buddy's activation through the launcher (one helper step; gdakiHoldActivateSend's rdma body).
+static void gdakiCtrlLaActivateSend(struct gdakiRecHost* r, int peer, const struct gdakiRsActivate& a, uint32_t dead,
+                                    double now);
+// The spare: READY, then the ACTIVATE bytes from its launcher; *actFd the FETCH talk's end (mirror or store on), or -1.
+static ncclResult_t gdakiCtrlLaSpareWait(struct gdakiRecHost* r, int waitMs, bool mi, struct gdakiRsActivate* act,
+                                         int* actFd, struct gdakiMiActBlob* blob);
+// The spare's replay or its Resume failed (ncclGinRestoreResume, gdakiRsSpareResume): REPLAY_FAILED with why, once.
+static void gdakiCtrlLaSpareFailed(struct gdakiRecHost* r, const char* why);
+// The spare after its FETCH (ok) or a failure: the relay ends; ok: REGISTER of the new incarnation (the revived rank).
+static void gdakiCtrlLaSpareDone(struct gdakiRecHost* r, bool ok);
 // ---- [3] launcher (end) ----
 #endif  // GDAKI_CTRL_API_NO_ENTRY_DECLS
 #endif  // NCCL_GIN_CTRL_TCP

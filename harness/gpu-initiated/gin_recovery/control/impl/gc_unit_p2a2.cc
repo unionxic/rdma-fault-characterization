@@ -31,7 +31,15 @@
 //      cause, the round cancelled as gdakiTsCancelRound does with the witness untouched (MakeUnknown, CauseLiveness:
 //      unknown), the re-pairing the peer started, the retry and its ACK, the other pairs unaffected; the witness's BYE,
 //      a late record and FIN with the ring live; the control and ring summary lines;
-//   6. the switches QP_ERR, CREDIT_STALL, DROP_UD, and malformed values.
+//   6. the switches QP_ERR, CREDIT_STALL, DROP_UD, and malformed values;
+// the integration int2 (impl/notes_int2.md; the back end's "launchers' record QPs", the ring's side of phase 3's
+// transport table):
+//   7. the launcher count into the ring's page layout (rxConsumedL before staleMs, capped at 16), a fake launcher's record
+//      QP and UD QP: no QP before the binding, the create (64 RECVs, the consumed word gen << 32), 70 messages through a
+//      window of 64 and 32 send slots (envelope kind LAUNCHER, gen, seq 1..70 in order, ackSeq), the launcher's message
+//      back (its ackSeq opens the window, the consumed word, the link's queue), the page's beat READ (at most every 50
+//      ms), datagrams both ways (Q_Key, a malformed one counted bad), the blob slot READ by the launcher (and one too
+//      big), a gap in the launcher's sequence (the loss, taken once; no send after it), a new generation.
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -163,6 +171,10 @@ struct gdakiRecHost {
 // the host file's record types and liveness classes this text reads (ln4's values)
 enum { GDAKI_TS_REQ = 2, GDAKI_TS_ACK = 3, GDAKI_TS_DONE = 5, GDAKI_TS_BYE = 10 };
 enum { GDAKI_TS_LV_NOEVIDENCE = 0, GDAKI_TS_LV_UNKNOWN = 1, GDAKI_TS_LV_DEAD = 2, GDAKI_TS_LV_LEFT = 3 };
+// int2 (the watch-thread fix merged): gdakiCtrlProbeAnswer runs the helper's part of the handoff first; the fake watch
+// step below takes, does and returns a request in one step, so the helper's part has nothing to do here.
+struct gdakiCtrlPage;
+static void gdakiProbeHandHelper(struct gdakiRecHost*, struct gdakiCtrlPage*, int) {}
 #include "gc_p2a2_host.inc"
 
 // ---- the parameters (the defaults; the threshold of one rank may be moved: gThreshRank, gThreshBump) ----
@@ -623,14 +635,18 @@ static void pageDown(Rank& k) {
   k.st.page = nullptr;
 }
 // The watch thread's side of the link (gdakiCtrlProbeAsk's requests): PREPARE gives a fresh PSN unlike the last one,
-// CONNECT takes the peer's endpoint and page.
+// CONNECT takes the peer's endpoint and page. int2: through the handoff's pure steps (struct gdakiCtrlProbeHand: NEW ->
+// take -> FW -> done -> BACK -> IDLE, the answer's `done`); the fake QP has no READs in flight, so no DRAIN.
 static void watchStep(Rank& k) {
   struct gdakiCtrlPage* pg = gdakiPageOf(&k.r);
   if (!gdakiPageUp(pg)) return;
   for (int p = 0; p < (int)pg->peers.size(); p++) {
     struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)p];
     std::lock_guard<std::mutex> lk(pg->mu);
-    if (pp.req.seq == pp.reqDone) continue;
+    struct gdakiCtrlProbeHand& h = pp.hand;
+    if (h.phase != GDAKI_CTRL_PH_NEW) continue;
+    (void)gdakiCtrlHandTake(&h, true, false, false, 0, 0);
+    CHECK(h.phase == GDAKI_CTRL_PH_FW && h.seq == pp.req.seq);
     struct gdakiMiQpEndpoint v1;
     memset(&v1, 0, sizeof(v1));
     v1.qpn = k.watchQpn + (uint32_t)p;
@@ -647,7 +663,9 @@ static void watchStep(Rank& k) {
       pp.haveRemote = true;
       k.watchConnects++;
     }
-    pp.reqDone = pp.req.seq;
+    gdakiCtrlHandFwDone(&h);
+    gdakiCtrlHandBack(&h);
+    CHECK(h.done == pp.req.seq && h.phase == GDAKI_CTRL_PH_IDLE);
   }
 }
 static void allGatherAgree(std::vector<Rank>& R, std::vector<const char*>* offs, std::vector<bool> on = {},
@@ -1488,6 +1506,235 @@ static void testSwitches() {
 }
 #endif  // !NCCL_GIN_CTRL_TCP
 
+#if !NCCL_GIN_CTRL_TCP
+// ---- 7. int2: the launchers' record QPs ----
+static void testLaunchers() {
+  const int n = 2;
+  std::vector<Rank> R((size_t)n);
+  gBoundOf.assign((size_t)n, nullptr);
+  for (int i = 0; i < n; i++) rankInit(R[(size_t)i], i, n, 5);
+  std::vector<const char*> offs;
+  allGatherAgree(R, &offs);
+  struct gdakiCtrlRing* g = R[0].st.ring;
+  CHECK(g != nullptr && offs[0] == nullptr);
+  if (g == nullptr) return;
+  const size_t ahs0 = gAhs.size(), mrs0 = gMrs.size();
+  CHECK(g->layout.nLaunchers == 0 && gdakiCtrlRingLaunchersOf(&R[0].r) == 0);
+  CHECK(gdakiCtrlRingLaunchers(g, 1) && g->la.size() == 1 && g->layout.nLaunchers == 1 &&
+        g->layout.staleMsOff == g->layout.rxConsumedLOff + 8u && gdakiCtrlRingLaunchersOf(&R[0].r) == 1);
+  CHECK(gdakiCtrlRingLaunchers(g, 1) && g->la.size() == 1);  // again: the same
+  // 40 launchers: the layout takes 16; with them the helper's CQ would overrun: no launcher QP (a WARN), the words stay
+  const size_t ov0 = logCount("launchers overrun the helper's CQ");
+  CHECK(gdakiCtrlRingLaunchers(R[1].st.ring, 40) && R[1].st.ring->nLaunchers == 16 && R[1].st.ring->la.empty() &&
+        R[1].st.ring->layout.nLaunchers == 16 && logCount("launchers overrun the helper's CQ") == ov0 + 1);
+  CHECK(!gdakiCtrlRingLaunchers(nullptr, 1));
+  struct gdakiCtrlEndpoint local;
+  CHECK(gdakiCtrlRdmaLaCreate(g, 0, 1, &local) != 0);  // not bound yet: no launcher QP
+  // the page with the launcher's word (layout (2, 1)), bound by the helper's step
+  R[0].ts.peers.resize((size_t)n);
+  R[0].r.ts = &R[0].ts;
+  pageUp(R[0], n);
+  CHECK(gdakiCtrlPageLayoutOf((uint32_t)n, 1, &R[0].st.page->layout));
+  gdakiCtrlRingHelperStep(&R[0].r);
+  CHECK(g->bound);
+  CHECK(gdakiCtrlRdmaLaCreate(g, 1, 1, &local) != 0 && gdakiCtrlRdmaLaSend(g, -1, nullptr) != 0);  // no such launcher
+  // the fake launcher: its CQ, its record QP with 64 RECVs, its UD QP
+  Rank L;
+  rankInit(L, 9, n, 5);
+  struct gdakiCtrlCq* lcq = nullptr;
+  CHECK(gdakiCtrlCqCreate(&L.r, 1024, false, &lcq, nullptr, 0) == ncclSuccess);
+  struct gdakiMiHostQp *lq = nullptr, *lud = nullptr;
+  struct gdakiMiQpEndpoint lv1, luv1;
+  char why[128] = {0};
+  CHECK(gdakiMiHostQpCreate(&L.r, 1, &lq, &lv1, why, sizeof(why), gdakiCtrlQpAttrRecord(14, lcq->cq)) == ncclSuccess);
+  CHECK(gdakiMiHostQpCreate(&L.r, 1, &lud, &luv1, why, sizeof(why), gdakiCtrlQpAttrUd(0x1234567u, lcq->cq)) == ncclSuccess);
+  std::vector<uint8_t> lbuf(64u * 512u), lsend(512), lread(65536), lpage(4096, 0);
+  struct ibv_mr* lmr = wrap_direct_ibv_reg_mr(&L.pd, lbuf.data(), lbuf.size(), IBV_ACCESS_LOCAL_WRITE);
+  struct ibv_mr* rdmr = wrap_direct_ibv_reg_mr(&L.pd, lread.data(), lread.size(), IBV_ACCESS_LOCAL_WRITE);
+  struct ibv_mr* pgmr = wrap_direct_ibv_reg_mr(&L.pd, lpage.data(), lpage.size(), IBV_ACCESS_REMOTE_READ);
+  auto lrecv = [&](struct gdakiMiHostQp* q, uint32_t s) {
+    struct ibv_sge sg;
+    sg.addr = (uint64_t)(uintptr_t)(lbuf.data() + (size_t)s * 512u);
+    sg.length = 512;
+    sg.lkey = lmr->lkey;
+    struct ibv_recv_wr wr, *bad = nullptr;
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id = s;
+    wr.sg_list = &sg;
+    wr.num_sge = 1;
+    return wrap_ibv_post_recv(q->qp, &wr, &bad) == ncclSuccess;
+  };
+  auto lsendFrame = [&](struct gdakiMiHostQp* q, uint16_t kind, uint32_t gen, uint64_t seq, uint64_t ack, uint32_t bytes,
+                        uint32_t dqpn, uint32_t qkey) {
+    std::vector<uint8_t> body(256, 0x5a);
+    const uint32_t len = gdakiCtrlFrame(lsend.data(), kind, (int32_t)(GDAKI_CTRL_FROM_LAUNCHER | 7), gen, seq, ack, g->nonce,
+                                        0, body.data(), bytes, 0);
+    struct ibv_sge sg;
+    sg.addr = (uint64_t)(uintptr_t)lsend.data();
+    sg.length = len;
+    sg.lkey = 0;
+    struct ibv_send_wr wr, *bad = nullptr;
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id = 0xabc;
+    wr.sg_list = &sg;
+    wr.num_sge = 1;
+    wr.opcode = IBV_WR_SEND;
+    wr.wr.ud.remote_qpn = dqpn;
+    wr.wr.ud.remote_qkey = qkey;
+    return wrap_ibv_post_send(q->qp, &wr, &bad) == ncclSuccess;
+  };
+  auto lpoll = [&](std::vector<struct ibv_wc>* out) {
+    struct ibv_wc wc[64];
+    int got = 0;
+    while (wrap_ibv_poll_cq(lcq->cq, 64, wc, &got) == ncclSuccess && got > 0)
+      for (int k = 0; k < got; k++) out->push_back(wc[k]);
+  };
+  for (uint32_t s = 0; s < 64; s++) CHECK(lrecv(lq, s));
+  CHECK(gdakiCtrlRdmaLaCreate(g, 0, 1, &local) == 0 && local.qpType == GDAKI_CTRL_QPT_RC);
+  uint64_t* word = (uint64_t*)((uint8_t*)R[0].st.page->page + R[0].st.page->layout.rxConsumedLOff);
+  CHECK(*word == (1ull << 32) && gdakiCtrlRdmaLaWord(g, 0) == word);
+  CHECK(gdakiCtrlRdmaLaSend(g, 0, lsend.data()) != 0);  // not connected yet
+  CHECK(gdakiCtrlRdmaLaConnect(g, 0, gdakiCtrlEndpointOf(lv1, GDAKI_CTRL_QPT_RC)) == 0);
+  CHECK(gdakiMiHostQpConnect(lq, gdakiCtrlEndpointV1(local), why, sizeof(why)) == ncclSuccess);
+  // 70 messages: 64 in the launcher's window (32 send slots: the rest after the SEND completions), 6 queued
+  for (int i = 0; i < 70; i++) {
+    std::vector<uint8_t> m(256, (uint8_t)i);
+    CHECK(gdakiCtrlRdmaLaSend(g, 0, m.data()) == 0);
+  }
+  for (int i = 0; i < 4; i++) gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+  struct gdakiCtrlRdmaLa& la = g->la[0];
+  CHECK(la.seqOut == 64 && la.pend.size() == 6 && la.queued >= 6 && !la.err);
+  std::vector<struct ibv_wc> w;
+  lpoll(&w);
+  uint64_t seqWant = 1;
+  size_t recvs = 0;
+  for (const struct ibv_wc& c : w) {
+    if (c.opcode != IBV_WC_RECV) continue;
+    recvs++;
+    struct gdakiCtrlEnv e;
+    memcpy(&e, lbuf.data() + (size_t)c.wr_id * 512u, sizeof(e));
+    CHECK(c.status == IBV_WC_SUCCESS && c.byte_len == 320 && e.kind == GDAKI_CTRL_K_LAUNCHER && e.from == 0 && e.gen == 1 &&
+          e.seq == seqWant && e.ackSeq == 0 && e.nonce == g->nonce && e.bodyBytes == 256 &&
+          lbuf[(size_t)c.wr_id * 512u + 64u] == (uint8_t)(seqWant - 1));
+    seqWant++;
+    CHECK(lrecv(lq, (uint32_t)c.wr_id));
+  }
+  CHECK(recvs == 64);
+  // the launcher's message back: its ackSeq 64 opens the window, the consumed word counts it, the link's queue holds it
+  CHECK(lsendFrame(lq, GDAKI_CTRL_K_LAUNCHER, 1, 1, 64, 256, 0, 0));
+  for (int i = 0; i < 4; i++) gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+  CHECK(la.ackIn == 64 && la.seqIn == 1 && la.seqOut == 70 && la.pend.empty() && *word == ((1ull << 32) | 1u));
+  struct gdakiCtrlLaIn x;
+  CHECK(gdakiCtrlRdmaLaTake(g, &x) && x.li == 0 && !x.ud && x.env.seq == 1 && x.body[0] == 0x5a);
+  CHECK(!gdakiCtrlRdmaLaTake(g, &x));
+  w.clear();
+  lpoll(&w);
+  recvs = 0;
+  for (const struct ibv_wc& c : w) {
+    if (c.opcode != IBV_WC_RECV) continue;
+    recvs++;
+    struct gdakiCtrlEnv e;
+    memcpy(&e, lbuf.data() + (size_t)c.wr_id * 512u, sizeof(e));
+    CHECK(e.seq == seqWant && e.ackSeq == 1);
+    seqWant++;
+    CHECK(lrecv(lq, (uint32_t)c.wr_id));
+  }
+  CHECK(recvs == 6 && seqWant == 71);
+  // the page's beat: a READ of its first 16 B, at most every 50 ms
+  const uint64_t mv = (0x504c5247ull << 32) | (1u << 16) | 2u;  // GL_PAGE_MAGIC, GL_WIRE_VERSION, GL_PAGE_LAYOUT
+  memcpy(lpage.data(), &mv, 8);
+  uint64_t beat = 1234;
+  memcpy(lpage.data() + 8, &beat, 8);
+  const uint64_t reads0 = gReads;
+  double now = gdakiQ4MonoMs();
+  gdakiCtrlRdmaLaBeatAsk(g, 0, (uint64_t)(uintptr_t)lpage.data(), pgmr->rkey, now);
+  gdakiCtrlRdmaLaBeatAsk(g, 0, (uint64_t)(uintptr_t)lpage.data(), pgmr->rkey, now);  // in flight: no second
+  gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+  uint64_t gotMv = 0, gotBeat = 0, nDone = 0;
+  CHECK(gdakiCtrlRdmaLaBeatTake(g, 0, &gotMv, &gotBeat, &nDone) && nDone == 1 && gotMv == mv && gotBeat == 1234);
+  CHECK(!gdakiCtrlRdmaLaBeatTake(g, 0, &gotMv, &gotBeat, &nDone) && nDone == 0);
+  gdakiCtrlRdmaLaBeatAsk(g, 0, (uint64_t)(uintptr_t)lpage.data(), pgmr->rkey, now + 10.0);  // within 50 ms: none
+  CHECK(gReads == reads0 + 1);
+  gdakiCtrlRdmaLaBeatAsk(g, 0, (uint64_t)(uintptr_t)lpage.data(), pgmr->rkey, now + 60.0);
+  CHECK(gReads == reads0 + 2);
+  gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+  CHECK(gdakiCtrlRdmaLaBeatTake(g, 0, &gotMv, &gotBeat, &nDone) && nDone == 1);
+  // datagrams: to the launcher (its Q_Key; a wrong one is lost), from it (the link's queue; a malformed one is bad)
+  CHECK(gdakiMiHostQpConnect(lud, luv1, why, sizeof(why)) == ncclSuccess && lrecv(lud, 0));
+  const uint64_t drop0 = gUdDropped, bad0 = g->badDgrams;
+  std::vector<uint8_t> pm(256, 0x33);
+  const struct gdakiCtrlEndpoint lue = gdakiCtrlEndpointOf(luv1, GDAKI_CTRL_QPT_UD);
+  CHECK(gdakiCtrlRdmaLaUd(g, 0, lue, 0x1234567u, pm.data()) == 0);
+  CHECK(gdakiCtrlRdmaLaUd(g, 0, lue, 0x7654321u, pm.data()) == 0 && gUdDropped == drop0 + 1);
+  w.clear();
+  lpoll(&w);
+  recvs = 0;
+  for (const struct ibv_wc& c : w) {
+    if (c.opcode != IBV_WC_RECV || c.qp_num != luv1.qpn) continue;
+    recvs++;
+    struct gdakiCtrlEnv e;
+    memcpy(&e, lbuf.data() + GDAKI_CTRL_UD_GRH_BYTES, sizeof(e));
+    CHECK(c.byte_len == GDAKI_CTRL_UD_GRH_BYTES + 320 && e.kind == GDAKI_CTRL_K_PAIR && e.from == 0 && e.gen == 0 &&
+          e.seq == 0 && e.bodyBytes == 256 && lbuf[GDAKI_CTRL_UD_GRH_BYTES + 64] == 0x33);
+  }
+  CHECK(recvs == 1 && la.ah != nullptr && gAhs.size() == ahs0 + 1);  // one handle (a changed Q_Key made it again)
+  CHECK(lsendFrame(lud, GDAKI_CTRL_K_PAIR, 0, 0, 0, 256, g->udLocal.qpn, g->qkey));
+  CHECK(lsendFrame(lud, GDAKI_CTRL_K_PAIR, 0, 0, 0, GDAKI_CTRL_PAIR_BODY_BYTES, g->udLocal.qpn, g->qkey));
+  gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+  CHECK(gdakiCtrlRdmaLaTake(g, &x) && x.ud && x.li == -1 && (x.env.from & GDAKI_CTRL_FROM_LAUNCHER) != 0);
+  CHECK(!gdakiCtrlRdmaLaTake(g, &x) && g->badDgrams == bad0 + 1);
+  // the blob slot: the launcher READs it on its record QP; one too big does not fit
+  std::vector<uint8_t> blob(3000);
+  for (size_t i = 0; i < blob.size(); i++) blob[i] = (uint8_t)(i * 7u);
+  struct gdakiCtrlRegion at;
+  CHECK(gdakiCtrlRdmaLaBlobPut(g, blob.data(), blob.size(), &at) && at.len == 3000);
+  {
+    struct ibv_sge sg;
+    sg.addr = (uint64_t)(uintptr_t)lread.data();
+    sg.length = at.len;
+    sg.lkey = rdmr->lkey;
+    struct ibv_send_wr wr, *bad = nullptr;
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id = 0xb10b;
+    wr.sg_list = &sg;
+    wr.num_sge = 1;
+    wr.opcode = IBV_WR_RDMA_READ;
+    wr.wr.rdma.remote_addr = at.addr;
+    wr.wr.rdma.rkey = at.rkey;
+    CHECK(wrap_ibv_post_send(lq->qp, &wr, &bad) == ncclSuccess);
+    w.clear();
+    lpoll(&w);
+    bool readOk = false;
+    for (const struct ibv_wc& c : w)
+      if (c.wr_id == 0xb10b) readOk = c.status == IBV_WC_SUCCESS;
+    CHECK(readOk && memcmp(lread.data(), blob.data(), blob.size()) == 0);
+  }
+  std::vector<uint8_t> big(GDAKI_CTRL_LA_BLOB_BYTES + 1u);
+  CHECK(!gdakiCtrlRdmaLaBlobPut(g, big.data(), big.size(), &at) && !gdakiCtrlRdmaLaBlobPut(nullptr, blob.data(), 1, &at));
+  // a gap in the launcher's sequence (seq 3 after 1): the loss, taken once; nothing is sent after it
+  CHECK(!gdakiCtrlRdmaLaErrTake(g, 0));
+  CHECK(lsendFrame(lq, GDAKI_CTRL_K_LAUNCHER, 1, 3, 70, 256, 0, 0));
+  gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+  CHECK(la.err && !la.connected && la.bad == 1 && gdakiCtrlRdmaLaErrTake(g, 0) && !gdakiCtrlRdmaLaErrTake(g, 0));
+  CHECK(gdakiCtrlRdmaLaSend(g, 0, pm.data()) != 0);
+  CHECK(!gdakiCtrlRdmaLaTake(g, &x));
+  // a new generation: a new QP, its counters and word from 0
+  CHECK(gdakiCtrlRdmaLaCreate(g, 0, 2, &local) == 0 && la.gen == 2 && la.seqOut == 0 && la.seqIn == 0 && !la.err &&
+        *word == (2ull << 32));
+  // the fake launcher goes, then the ranks (the ring's destroy takes the launcher QP and its handle)
+  (void)wrap_ibv_dereg_mr(lmr);
+  (void)wrap_ibv_dereg_mr(rdmr);
+  (void)wrap_ibv_dereg_mr(pgmr);
+  gdakiMiHostQpDestroy(lq);
+  gdakiMiHostQpDestroy(lud);
+  CHECK(gdakiCtrlCqDestroy(lcq));
+  teardown(R);
+  CHECK(gAhs.size() == ahs0 && gMrs.size() <= mrs0);
+  printf("launchers: 70 messages through a window of 64, one back, 2 beat READs, datagrams 2 out (1 lost) and 2 in (1 bad), "
+         "a 3000 B blob READ, a gap, a second generation\n");
+}
+#endif  // !NCCL_GIN_CTRL_TCP
+
 int main() {
 #if !NCCL_GIN_CTRL_TCP
   testAgreePure();
@@ -1499,6 +1746,7 @@ int main() {
   testLive(2);
   testLive(4);
   testSwitches();
+  testLaunchers();
   CHECK(gQps.empty() && gCqs.empty() && gAhs.empty() && gChanFds.empty() && gMrs.empty());  // all destroyed
   printf("fake NIC: %llu UD datagrams (%llu dropped), %llu RC RECVs posted, %llu READs\n", (unsigned long long)gUdSent,
          (unsigned long long)gUdDropped, (unsigned long long)gRcRecvPosts, (unsigned long long)gReads);

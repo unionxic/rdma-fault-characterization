@@ -455,9 +455,13 @@ def main():
     for pid, want in (("kill_judge_rdma", "자료 부족"), ("finless_exit_report", "맞음"), ("finless_read_fail", "맞음"),
                       ("none_probe_clean", "맞음"), ("gate_fenced", "자료 부족"), ("no_tcp_control", "맞음"),
                       ("long_hold_lane", "맞음"), ("stall_fence_restore", "자료 부족"), ("restore_time_rdma", "자료 부족"),
-                      ("regression_tcp", "자료 부족"), ("cost_probe_lat4k", "자료 부족"), ("freeze_fence_restore", "맞음"),
-                      ("rstgap_live_tcp", "맞음")):
+                      ("regression_tcp", "자료 부족"), ("cost_probe_lat4k", "자료 부족"), ("freeze_fence_restore", "맞음")):
         check(verd.get(pid) == want, "verdict %s: %s (want %s)" % (pid, verd.get(pid), want))
+    # the 2026-10-22 trim: regression.builds.gct.cells limits the tcp regression plan; @gc keeps every hold's cells
+    reg = score_gc.regression_entries(score_gc.load_cells(), score_gc.mirror_cells())
+    rg_gct = sorted(k for k in reg if k.endswith("@gct"))
+    check(rg_gct == ["mi4_kill3_ow@gct"] and len([k for k in reg if k.endswith("@gc")]) > 1,
+          "trim: the tcp regression plans only mi4_kill3_ow@gct (%s)" % rg_gct)
     # fix 11: a key below its plan is short, never "틀림": nine good trials of gc4_kill3_ow@gc (one dropped)
     verd2, _ = score_gc.score(R, planned_override=dict(PO, **{"gc4_fdhold_sock_kill3@gc": 11}))
     check(verd2.get("finless_exit_report") == "자료 부족", "fix 11: 10 of 11 planned is short (%s)" % verd2.get("finless_exit_report"))

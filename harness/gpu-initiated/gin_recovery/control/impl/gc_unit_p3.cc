@@ -1167,9 +1167,11 @@ static void sceneSocketLoss() {
 }
 
 // The registration order (REVIEW_P3 막는 문제 2): the nonce-free INFO before the all-gather, the fields of every rank
-// after it, REGISTER (the nonce) last. The launcher of 897641f3 drops INFO (an unknown kind): no answer within the bound,
-// the field says no path. An answering launcher (a socketpair standing in for its TODO(launcher) INFO_ACK) fills it;
-// the fields of four ranks give the launchers in node order, each rank's node launcher and the count.
+// after it, REGISTER (the nonce) last. The launcher of f8e3216e answers INFO (kinds 8 and 9): the field names its node, no
+// launcher entry and no page slot come with it, nothing counts as a registration (int2). A silent launcher (one of
+// 897641f3 drops INFO as an unknown kind; here a socketpair nobody answers on): no answer within the bound, the field says
+// no path. An answering socketpair fills it with another node's facts; the fields of four ranks give the launchers in
+// node order, each rank's node launcher and the count.
 static std::vector<Core*>* gWaitCores = nullptr;
 static void waitPump(void*, int ms) { pump(*gWaitCores, ms); }
 static void sceneInfoAllGather() {
@@ -1184,14 +1186,16 @@ static void sceneInfoAllGather() {
   x->k.waitHook = waitPump;
   gRanks.push_back(x);
   setenv(GL_SOCK_ENV, w.cores[0]->sock.c_str(), 1);
-  const unsigned bad0 = gl_core_stats(w.cores[0]->c)->nBadMsg;
+  const unsigned bad0 = gl_core_stats(w.cores[0]->c)->nBadMsg, info0 = gl_core_stats(w.cores[0]->c)->nInfo;
   const double t0 = nowMs();
-  CHECK(!gdakiCtrlLaInfoWait(&x->k, GDAKI_CTRL_LA_INFO_MS));  // the launcher drops kind 8: no answer
-  CHECK(nowMs() - t0 >= GDAKI_CTRL_LA_INFO_MS && nowMs() - t0 < GDAKI_CTRL_LA_INFO_MS + 300);
-  CHECK(gl_core_stats(w.cores[0]->c)->nBadMsg == bad0 + 1 && gl_core_stats(w.cores[0]->c)->nRegRefused == 0);
-  gdakiCtrlLaAgInfo none;
-  gdakiCtrlLaAgOf(x->k.unix, &none);
-  CHECK(none.magic == 0);
+  CHECK(gdakiCtrlLaInfoWait(&x->k, GDAKI_CTRL_LA_INFO_MS));  // the launcher answers kind 8 with kind 9
+  CHECK(nowMs() - t0 < GDAKI_CTRL_LA_INFO_MS);
+  CHECK(gl_core_stats(w.cores[0]->c)->nInfo == info0 + 1 && gl_core_stats(w.cores[0]->c)->nBadMsg == bad0 &&
+        gl_core_stats(w.cores[0]->c)->nRegRefused == 0);
+  gdakiCtrlLaAgInfo own0;
+  gdakiCtrlLaAgOf(x->k.unix, &own0);
+  CHECK(own0.magic == GDAKI_CTRL_LA_AG_MAGIC && own0.node == 0 && x->k.unix.info.pageSlot == 0xffffffffu);
+  CHECK(x->k.la.empty() && !x->k.unix.acked);  // INFO adds no launcher (the fields do) and is no registration
   // REGISTER on the same connection after the "all-gather" (the nonce now): accepted, the own launcher known
   gdakiCtrlLaSetNonce(&x->k, NONCE);
   char why[160] = {0};
@@ -1200,6 +1204,22 @@ static void sceneInfoAllGather() {
   CHECK(x->k.nLaunchers == 0 && !gdakiCtrlLaAllPaired(&x->k));  // without the fields nothing is "every launcher"
   gdakiCtrlLaUnixClose(&x->k.unix);
   unsetenv(GL_SOCK_ENV);
+  {  // a silent launcher: no answer within the bound, the field says no path
+    int q[2];
+    CHECK(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, q) == 0);
+    gdakiCtrlLaUnix fresh0;
+    x->k.unix = fresh0;
+    x->k.unix.fd = q[0];
+    CHECK(fcntl(q[0], F_SETFL, fcntl(q[0], F_GETFL, 0) | O_NONBLOCK) == 0);
+    const double t1 = nowMs();
+    CHECK(!gdakiCtrlLaInfoWait(&x->k, GDAKI_CTRL_LA_INFO_MS));
+    CHECK(nowMs() - t1 >= GDAKI_CTRL_LA_INFO_MS && nowMs() - t1 < GDAKI_CTRL_LA_INFO_MS + 300);
+    gdakiCtrlLaAgInfo none;
+    gdakiCtrlLaAgOf(x->k.unix, &none);
+    CHECK(none.magic == 0);
+    close(q[1]);
+    gdakiCtrlLaUnixClose(&x->k.unix);
+  }
   // an answering launcher: INFO_ACK queued on a SEQPACKET pair (the link sends INFO, then reads it)
   int sp[2];
   CHECK(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sp) == 0);
@@ -1250,6 +1270,8 @@ static void sceneInfoAllGather() {
   by[0].node = 0;
   by[0].ud.qpn = 4000;
   gdakiCtrlLaInit(&x->k, 3, 4, 0, NONCE, 0);
+  // int2: the count every rank's page layout takes (the same fields, the same count; no fields: 0)
+  CHECK(gdakiCtrlLaAgCount(by, 4) == 2 && gdakiCtrlLaAgCount(by, 1) == 1 && gdakiCtrlLaAgCount(nullptr, 4) == 0);
   CHECK(gdakiCtrlLaAgTake(&x->k, by, 4) == 2);
   CHECK(x->k.la.size() == 2 && x->k.la[0].node == 0 && x->k.la[1].node == 1 && x->k.la[0].ud.qpn == 4000);
   CHECK(x->k.laOf[0] == 0 && x->k.laOf[1] == -1 && x->k.laOf[2] == 1 && x->k.laOf[3] == 1 && x->k.own == 1);
