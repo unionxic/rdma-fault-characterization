@@ -299,6 +299,7 @@ struct FakeQp {
   std::deque<FakeRwr> rq;
   std::deque<FakeSwr> pend;  // RC: not delivered yet (the responder is not RTR): the NIC retransmits
   bool firstSendSeen = false;
+  int maxDestRd = 0;  // REVIEW_INT3 F1: the READs it answers at once as a responder (the template's maxRdAtomic)
 };
 struct FakeMr {
   uint32_t access;
@@ -313,6 +314,11 @@ static std::set<int> gChanFds;
 // what the checks count
 static uint64_t gRcRecvBeforeBound = 0, gRcRecvPosts = 0, gConnectedFirst = 0, gNotConnectedFirst = 0,
                 gConnectedFromHigher = 0, gUdSent = 0, gUdDropped = 0, gRnr = 0, gReads = 0, gReadErr = 0;
+// REVIEW_INT3 F1: while gHoldReads, an RC READ stays in flight (its response not back) until the scene lets it go; one
+// posted while its responder already answers maxDestRd of them is an Invalid Request NAK (the IB responder-resources
+// rule): that READ's error completion and the requester's QP in ERR
+static bool gHoldReads = false;
+static uint64_t gReadNak = 0;
 static std::vector<const bool*> gBoundOf;  // by rank: the ring's `bound` (the check that nothing posts before it)
 
 static void cqPush(FakeCq* c, uint64_t id, int status, uint32_t len, uint32_t qpn, int opcode) {
@@ -411,6 +417,7 @@ static void pumpAll() {
   for (auto& kv : gQps) {
     FakeQp* q = kv.second;
     while (!q->pend.empty() && q->state == QS_RTS) {
+      if (gHoldReads && q->pend.front().op == IBV_WR_RDMA_READ) break;  // F1: its response not back yet
       if (!deliver(q, q->pend.front())) break;
       if (!q->pend.empty()) q->pend.pop_front();
     }
@@ -438,6 +445,17 @@ static ncclResult_t wrap_ibv_post_send(struct ibv_qp* qp, struct ibv_send_wr* wr
     s.qkey = wr->wr.ud.remote_qkey;
     (void)deliver(q, s);
   } else {
+    if (gHoldReads && s.op == IBV_WR_RDMA_READ) {  // F1: the responder's READ resources
+      auto it = gQps.find(q->remoteQpn);
+      int out = 0;
+      for (const FakeSwr& x : q->pend) out += x.op == IBV_WR_RDMA_READ;
+      if (it != gQps.end() && it->second->maxDestRd > 0 && out >= it->second->maxDestRd) {
+        gReadNak++;
+        cqPush(q->cq, s.id, IBV_WC_REM_INV_REQ_ERR, 0, q->qp.qp_num, IBV_WC_RDMA_READ);
+        qpToErr(q);
+        return ncclSuccess;
+      }
+    }
     q->pend.push_back(s);
     pumpAll();
   }
@@ -526,6 +544,7 @@ static ncclResult_t gdakiMiHostQpCreate(struct gdakiRecHost* r, int maxRdAtomic,
   f->access = attr.access;
   f->cq = (FakeCq*)attr.cq;
   f->state = QS_INIT;
+  f->maxDestRd = maxRdAtomic;  // the host template sets max_dest_rd_atomic and max_rd_atomic both to it
   gQps[f->qp.qp_num] = f;
   q->attr = attr;
   q->ownCq = false;
@@ -728,6 +747,7 @@ static void pageDown(Rank& k) {
 // The watch thread's side of the link (gdakiCtrlProbeAsk's requests): PREPARE gives a fresh PSN unlike the last one,
 // CONNECT takes the peer's endpoint and page. int2: through the handoff's pure steps (struct gdakiCtrlProbeHand: NEW ->
 // take -> FW -> done -> BACK -> IDLE, the answer's `done`); the fake QP has no READs in flight, so no DRAIN.
+static int gWatchFailConnects = 0;  // REVIEW_INT3 F3: the next CONNECTs the watch thread answers with a failure
 static void watchStep(Rank& k) {
   struct gdakiCtrlPage* pg = gdakiPageOf(&k.r);
   if (!gdakiPageUp(pg)) return;
@@ -749,7 +769,11 @@ static void watchStep(Rank& k) {
     pp.res.ok = true;
     pp.res.gen = pp.req.gen;
     pp.res.local = gdakiCtrlEndpointOf(v1, GDAKI_CTRL_QPT_RC);
-    if (pp.req.op == GDAKI_CTRL_PO_CONNECT) {
+    if (pp.req.op == GDAKI_CTRL_PO_CONNECT && gWatchFailConnects > 0) {
+      gWatchFailConnects--;
+      pp.res.ok = false;
+      snprintf(pp.res.why, sizeof(pp.res.why), "the fake watch thread's CONNECT failed");
+    } else if (pp.req.op == GDAKI_CTRL_PO_CONNECT) {
       pp.remotePage = pp.req.page;
       pp.haveRemote = true;
       k.watchConnects++;
@@ -1262,6 +1286,7 @@ static void testLive(int n) {
     CHECK(gdakiCtrlSend(&R[0].r, 1, GDAKI_CTRL_CH_RECORD, pe01.fd, &m, 100) == 0);
     CHECK(gdakiCtrlRecv(&R[1].r, 0, pe10, &in, 200, nullptr) == 1 && in.type == GDAKI_TS_REQ && in.magic == GDAKI_TS_MAGIC);
     CHECK(R[0].r.ctrlTcp.recordBytes.load() == sizeof(m) && R[1].r.ctrlTcp.rxPeer[0].load() == sizeof(m));
+    CHECK(!R[0].r.ctrlTcp.live.load() && R[0].r.ctrlTcp.recordBytesLive.load() == 0);  // before live: the prelive part
     close(sv[0]);
     close(sv[1]);
     pe01.fd = pe10.fd = -1;
@@ -1274,6 +1299,7 @@ static void testLive(int n) {
   }
   CHECK(allLive(R));
   CHECK(logCount("the records go on the ring from now (live)") == live0 + (size_t)n);  // one line per rank
+  for (int i = 0; i < n; i++) CHECK(R[(size_t)i].r.ctrlTcp.live.load());  // the summary's split moment, with the line
   for (int i = 0; i < n; i++) {
     gBoundOf[(size_t)i] = nullptr;
     for (int p = 0; p < n; p++) {
@@ -1365,6 +1391,7 @@ static void testLive(int n) {
     sockPair(dv);
     const uint64_t d0 = R[0].r.ctrlTcp.dataBytes.load();
     CHECK(gdakiCtrlSend(&R[0].r, 1, GDAKI_CTRL_CH_DATA, dv[0], &s, 100) == 0 && R[0].r.ctrlTcp.dataBytes.load() == d0 + sizeof(s));
+    CHECK(R[0].r.ctrlTcp.dataBytesLive.load() == sizeof(s));  // sent while live: the live part
     close(dv[0]);
     close(dv[1]);
   }
@@ -1487,8 +1514,13 @@ static void testLive(int n) {
     snprintf(want, sizeof(want), "GIN/RC: rank %d: control summary tcp_record_bytes=%u tcp_data_bytes=%u tcp_conns=0 "
              "witness_conns=0 records_lost=", 0, (unsigned)sizeof(struct gdakiTsMsg), (unsigned)sizeof(struct gdakiTsMsg));
     CHECK(logCount(want) >= 1);
+    // the split by the moment the ring went live (rows_gc.py ctrl_split): the record before live, the data after it
+    char split[200];
+    snprintf(split, sizeof(split), " tcp_record_bytes_prelive=%u tcp_record_bytes_live=0 tcp_data_bytes_prelive=0 "
+             "tcp_data_bytes_live=%u live=1 mono_ms=", (unsigned)sizeof(struct gdakiTsMsg), (unsigned)sizeof(struct gdakiTsMsg));
     const char* keys[] = {" records_dup=", " repairs=", " sendq_deferred=", " sendq_max=", " rnr=0 ", " async=0 ",
-                          " active_mtu=5 tcp_rx_bytes_peer", " async_rec=0 async_read=0 async_la=0 ", " live=1 mono_ms="};
+                          " active_mtu=5 tcp_rx_bytes_peer", " async_rec=0 async_read=0 async_la=0 ", " tcp_late_records=",
+                          split, " live=1 mono_ms="};
     std::string last;
     for (const auto& l : gLog)
       if (l.find("GIN/RC: rank 0: control summary ") != std::string::npos) last = l;
@@ -1506,7 +1538,8 @@ static void testLive(int n) {
   printf("live (%d ranks): live on every rank after the pairings (one line each), the TCP branch counted before; %d records "
          "each way on %d pairs through the seams, byte for byte ln4's TCP stream; gdakiCtrlRecv's timeout, stop and "
          "record; a generation change in a round: one -1 each side (QP:NEWGEN, QP:TOERR), the witness untouched, cancel "
-         "and retry; the witness's BYE, an old path's late record dropped (one line) and FIN; the summary lines\n", n, K,
+         "and retry; the witness's BYE, an old path's late record dropped (one line) and FIN; the summary lines (the TCP "
+         "bytes split at live)\n", n, K,
          n * (n - 1) / 2);
   teardown(R);
 }
@@ -2043,6 +2076,99 @@ static void testLaunchers() {
     }
     CHECK(recvs == 12 && seqWant == 141);  // no credit-only SEND: only the 12 messages, in order
   }
+  {
+    // REVIEW_INT3 F1: the launcher answers one READ at a time (its QP's max_dest_rd_atomic 1, launcher_transport_verbs.c
+    // gl_v_rc_connect; the fake launcher QP is made with 1). The READs stay in flight here until let go: with the window
+    // shut and messages queued, the pull READ and the credit READ are both due, and only one is ever on the QP
+    CHECK(la.q->maxRdAtomic == GDAKI_CTRL_LA_RD_ATOMIC && GDAKI_CTRL_LA_RD_ATOMIC == 1 && fqOf(lq->qp)->maxDestRd == 1);
+    CHECK(gdakiCtrlLaReadFree(false, false) && !gdakiCtrlLaReadFree(true, false) && !gdakiCtrlLaReadFree(false, true));
+    const uint32_t coff = 64u + 32u * 62u + 16u;
+    const uint64_t laddr = (uint64_t)(uintptr_t)lpage.data() + coff, paddr = (uint64_t)(uintptr_t)lpage.data();
+    for (int i = 0; i < 7; i++) {  // 4 fill the window (ackIn 80 + 64 = 144), 3 wait
+      std::vector<uint8_t> m(256, (uint8_t)(140 + i));
+      CHECK(gdakiCtrlRdmaLaSend(g, 0, m.data()) == 0);
+    }
+    for (int i = 0; i < 4; i++) gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+    CHECK(la.seqOut == 144 && la.pend.size() == 3 && !la.err);
+    w.clear();
+    lpoll(&w);
+    for (const struct ibv_wc& c : w)
+      if (c.opcode == IBV_WC_RECV) {
+        seqWant++;
+        CHECK(lrecv(lq, (uint32_t)c.wr_id));
+      }
+    CHECK(seqWant == 145);
+    const uint64_t nak0 = gReadNak, reads0f = gReads, cr0 = la.creditReads;
+    gHoldReads = true;
+    const double t = now + 300.0;
+    gdakiCtrlRdmaLaBeatAsk(g, 0, paddr, pgmr->rkey, t, GDAKI_CTRL_LAP_PULL_BYTES);  // the pull: in flight
+    gdakiCtrlRdmaLaCreditAsk(g, 0, laddr, pgmr->rkey, t + 2.0);                      // due, but waits for the pull
+    CHECK(la.beatOut && !la.creditOut && la.creditReads == cr0 && fqOf(la.q->qp)->pend.size() == 1);
+    gHoldReads = false;  // the pull's response
+    pumpAll();
+    gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+    CHECK(!la.beatOut && la.beatLen == GDAKI_CTRL_LAP_PULL_BYTES && !la.err);
+    gHoldReads = true;
+    const uint64_t c144 = (1ull << 32) | 144u;  // the launcher consumed 144
+    memcpy(lpage.data() + coff, &c144, 8);
+    gdakiCtrlRdmaLaCreditAsk(g, 0, laddr, pgmr->rkey, t + 3.0);                         // now the credit READ goes
+    gdakiCtrlRdmaLaBeatAsk(g, 0, paddr, pgmr->rkey, t + 60.0, GDAKI_CTRL_LAP_PULL_BYTES);  // its beat due: waits
+    CHECK(la.creditOut && !la.beatOut && la.creditReads == cr0 + 1 && fqOf(la.q->qp)->pend.size() == 1);
+    gHoldReads = false;
+    pumpAll();
+    for (int i = 0; i < 4; i++) gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+    CHECK(!la.creditOut && la.ackIn == 144 && la.pend.empty() && la.seqOut == 147 && !la.err);
+    gHoldReads = true;
+    gdakiCtrlRdmaLaBeatAsk(g, 0, paddr, pgmr->rkey, t + 61.0, GDAKI_CTRL_LAP_PULL_BYTES);  // the delayed beat at the next step
+    CHECK(la.beatOut);
+    gHoldReads = false;
+    pumpAll();
+    gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+    CHECK(!la.beatOut && la.beatOk && gReadNak == nak0 && gReads == reads0f + 3 && !la.err);
+    w.clear();
+    lpoll(&w);
+    for (const struct ibv_wc& c : w)
+      if (c.opcode == IBV_WC_RECV) {
+        seqWant++;
+        CHECK(lrecv(lq, (uint32_t)c.wr_id));
+      }
+    CHECK(seqWant == 148);
+    // the rule the fake keeps: two READs in flight toward the launcher are a NAK and the QP's ERR (the model of F1's
+    // failure before the fix: shown on a QP of its own toward the same launcher-side limit)
+    struct gdakiMiHostQp* x = nullptr;
+    struct gdakiMiQpEndpoint xv1;
+    CHECK(gdakiMiHostQpCreate(&R[0].r, 16, &x, &xv1, why, sizeof(why), gdakiCtrlQpAttrRecord(14, lcq->cq)) == ncclSuccess);
+    struct gdakiMiHostQp* xl = nullptr;
+    struct gdakiMiQpEndpoint xlv1;
+    CHECK(gdakiMiHostQpCreate(&L.r, 1, &xl, &xlv1, why, sizeof(why), gdakiCtrlQpAttrRecord(14, lcq->cq)) == ncclSuccess);
+    CHECK(gdakiMiHostQpConnect(x, xlv1, why, sizeof(why)) == ncclSuccess && gdakiMiHostQpConnect(xl, xv1, why, sizeof(why)) == ncclSuccess);
+    gHoldReads = true;
+    for (uint64_t k = 0; k < 2; k++) {
+      struct ibv_sge sg;
+      sg.addr = (uint64_t)(uintptr_t)lread.data();
+      sg.length = 16;
+      sg.lkey = rdmr->lkey;
+      struct ibv_send_wr wr, *bad = nullptr;
+      memset(&wr, 0, sizeof(wr));
+      wr.wr_id = 0xf100 + k;
+      wr.sg_list = &sg;
+      wr.num_sge = 1;
+      wr.opcode = IBV_WR_RDMA_READ;
+      wr.send_flags = IBV_SEND_SIGNALED;
+      wr.wr.rdma.remote_addr = paddr;
+      wr.wr.rdma.rkey = pgmr->rkey;
+      CHECK(wrap_ibv_post_send(x->qp, &wr, &bad) == ncclSuccess);
+    }
+    gHoldReads = false;
+    CHECK(gReadNak == nak0 + 1 && fqOf(x->qp)->state == QS_ERR);
+    w.clear();
+    lpoll(&w);
+    bool nak = false;
+    for (const struct ibv_wc& c : w) nak = nak || (c.wr_id == 0xf101 && c.status == IBV_WC_REM_INV_REQ_ERR);
+    CHECK(nak);
+    gdakiMiHostQpDestroy(x);
+    gdakiMiHostQpDestroy(xl);
+  }
   // datagrams: to the launcher (its Q_Key; a wrong one is lost), from it (the link's queue; a malformed one is bad)
   CHECK(gdakiMiHostQpConnect(lud, luv1, why, sizeof(why)) == ncclSuccess && lrecv(lud, 0));
   const uint64_t drop0 = gUdDropped, bad0 = g->badDgrams;
@@ -2116,8 +2242,9 @@ static void testLaunchers() {
   CHECK(gAhs.size() == ahs0 && gMrs.size() <= mrs0);
   printf("launchers: 70 messages through a window of 64, one back, 2 beat READs, 70 more with the window shut and no "
          "message back: 3 credit READs of the launcher page's consumed word (behind, another generation, 80: the 12 queued "
-         "go, no credit-only SEND), datagrams 2 out (1 lost) and 2 in (1 bad), a 3000 B blob READ, a gap, a second "
-         "generation\n");
+         "go, no credit-only SEND); F1: READs held in flight, the pull and the credit READ never both on the QP (each "
+         "waits, 3 READs, 0 NAK; two raw READs: 1 NAK and ERR), datagrams 2 out (1 lost) and 2 in (1 bad), a 3000 B blob "
+         "READ, a gap, a second generation\n");
 }
 
 // ---- 8. 2a-2-C: the pair's path marker ----
@@ -2546,6 +2673,122 @@ static void testRejoinAnswers() {
   teardown(R);
   spareDown(S, d, n);
 }
+// ---- 10b. REVIEW_INT3 F3: the acceptance's transient failures ----
+// Every liveness READ QP CONNECT fails: three tries 67 ms apart in the host's 200 ms loop, then -1 (REFUSE) with that
+// pairing back and the record QP kept for this REJOIN. The spare's next REJOIN goes on from the liveness READ QP's step
+// (not "not above the pair's"): the watch thread busy once, one failed CONNECT, then the acceptance and the records.
+static void testRejoinAcceptRetry() {
+  const int n = 2, d = 1, s = 0;
+  std::vector<Rank> R((size_t)n);
+  CHECK(bringUp(R, n));
+  const uint64_t nonce = R[0].ts.nonce;
+  holdAndEnd(R, d, true);
+  for (int k = 0; k < 3; k++) stepRj(R, d, nullptr);
+  Rank S;
+  spareOf(R, d, S);
+  struct gdakiCtrlRing* gs = S.st.ring;
+  struct gdakiCtrlRing* g = R[0].st.ring;
+  const uint32_t G = gdakiCtrlRjGenOf(1);
+  gdakiCtrlRjSpareBegin(&S.r, 1);
+  watchStep(S);
+  struct gdakiCtrlRdmaPeer& sp = gs->peers[(size_t)s];
+  struct gdakiCtrlRdmaPeer& vp = g->peers[(size_t)d];
+  struct gdakiTsMsg m = rjRec(GDAKI_TS_RS_REJOIN, d, nonce, 1), in, pk;
+  m.executed[1] = 1;
+  auto park = [&]() {
+    CHECK(gdakiCtrlSend(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &m, 200) == 0);
+    for (int k = 0; k < 50 && !vp.rj.parked; k++) stepRj(R, d, &S);
+    CHECK(vp.rj.parked && gdakiCtrlRjParkedTake(&R[0].r, d, &pk));
+  };
+  char why[256] = {0};
+  auto accept = [&](struct gdakiTsMsg* ack) {  // gdakiRsRejoinAccept's loop, the survivor's watch thread beside it
+    int k = 0;
+    const double t0 = gdakiQ4MonoMs();
+    while ((k = gdakiCtrlRjAcceptStep(&R[0].r, d, pk, ack, why, sizeof(why))) == 0 && gdakiQ4MonoMs() - t0 < 200.0) {
+      watchStep(R[0]);
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    return k;
+  };
+  const uint32_t prbCur0 = vp.prb.st.cur, prbLast0 = vp.prb.st.lastMine, recCur0 = vp.pairRec.cur;
+  const size_t again0 = logCount("): asked again in 67 ms"), tk0 = logCount("taken over UD: record QP gen 1048577");
+  // 1. every CONNECT fails: the third failure ends the acceptance
+  park();
+  gWatchFailConnects = 3;
+  struct gdakiTsMsg ack = rjRec(GDAKI_TS_RS_REJOIN_ACK, s, nonce, 1);
+  ack.round = 1;
+  const double t1 = gdakiQ4MonoMs();
+  CHECK(accept(&ack) == -1);
+  const double el1 = gdakiQ4MonoMs() - t1;
+  CHECK(el1 >= 2.0 * GDAKI_CTRL_RJ_RESEND_MS / 3.0 - 1.0 && el1 < 200.0 && gWatchFailConnects == 0);
+  CHECK(strstr(why, "the liveness READ QP's CONNECT toward the spare's failed (gen 1048577) after 3 tries: its pairing is "
+                    "back, the record QP kept for this REJOIN") != nullptr);
+  CHECK(logCount("): asked again in 67 ms") == again0 + 2 && vp.rj.accRetries == 2 && vp.rj.accGaveUp == 1 && vp.rj.accTries == 3);
+  CHECK(!vp.rj.accStarted && vp.rj.accRecOn && vp.prb.st.cur == prbCur0 && vp.prb.st.lastMine == prbLast0 && prbCur0 < G &&
+        vp.prb.st.peerInc == 0 && vp.pairRec.cur == G && recCur0 < G && vp.ring.gen == G && vp.ring.rts);
+  CHECK(!vp.rejoin.accepted && gdakiPageOf(&R[0].r)->peers[(size_t)d].rjAccInc == 0);
+  const struct gdakiMiHostQp* qRec = vp.q;
+  const uint32_t psnRec = vp.local.psn;
+  const uint64_t acksRec = vp.pairRec.acksSent;
+  CHECK(gdakiCtrlRjAnswer(&R[0].r, d, pk.round, GDAKI_CTRL_RJA_REFUSE, pk.pad));  // the host's refuse
+  CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &in, 1000, nullptr) == 0 && sp.rj.refusals == 1);
+  // 2. the spare's REJOIN again: the watch thread busy (its first ask not taken), one failed CONNECT, then the answer
+  park();
+  struct gdakiCtrlPage* pg0 = gdakiPageOf(&R[0].r);
+  {
+    std::lock_guard<std::mutex> lk(pg0->mu);
+    pg0->peers[(size_t)d].hand.phase = GDAKI_CTRL_PH_FW;  // another request of the pair in the watch thread's firmware
+  }
+  gWatchFailConnects = 1;
+  const size_t f20 = logCount("the liveness READ QP's CONNECT toward the spare's failed (gen 1048577, try 2 of 3)");
+  CHECK(f20 == 1);  // part 1's
+  const double t2 = gdakiQ4MonoMs();
+  CHECK(gdakiCtrlRjAcceptStep(&R[0].r, d, pk, &ack, why, sizeof(why)) == 0 && vp.rj.accStarted && vp.rj.accTries == 1);
+  CHECK(logCount("the watch thread did not take the liveness READ QP's CONNECT (gen 1048577, try 1 of 3): asked again in "
+                 "67 ms") == 1);
+  {
+    std::lock_guard<std::mutex> lk(pg0->mu);
+    pg0->peers[(size_t)d].hand.phase = GDAKI_CTRL_PH_IDLE;
+  }
+  CHECK(accept(&ack) == 1);
+  CHECK(gdakiQ4MonoMs() - t2 >= 2.0 * GDAKI_CTRL_RJ_RESEND_MS / 3.0 - 1.0 && vp.rj.accTries == 3 && gWatchFailConnects == 0 &&
+        logCount("the liveness READ QP's CONNECT toward the spare's failed (gen 1048577, try 2 of 3)") == f20 + 1);
+  CHECK(vp.q == qRec && vp.local.psn == psnRec && vp.pairRec.acksSent == acksRec && vp.pairRec.cur == G &&
+        vp.ring.gen == G);  // the record QP untouched since its TAKE
+  CHECK(vp.prb.st.cur == G && vp.prb.st.state == GDAKI_CTRL_PS_ANSWERED && vp.prb.haveLocal && vp.prb.peerInc == 1);
+  struct gdakiCtrlRejoinNrp na;
+  CHECK(gdakiCtrlNrpGet(ack.nrp, sizeof(ack.nrp), &na) && gdakiCtrlRejoinNrpOk(na, true) && na.gen == G && na.probeGen == G &&
+        na.rec.qpn == vp.local.qpn && na.rec.psn == vp.local.psn && na.probe.qpn == vp.prb.local.qpn);
+  CHECK(gdakiCtrlSend(&R[0].r, d, GDAKI_CTRL_CH_REJOIN, -1, &ack, 200) == 0);
+  gdakiCtrlRjAccepted(&R[0].r, d, pk, ack);
+  gPeerInc[s][d] = 1;
+  CHECK(vp.rejoin.accepted && !vp.rj.accRecOn && logCount("taken over UD: record QP gen 1048577") == tk0 + 1);
+  // the spare installs; TOKEN, READY: no loss (-1) on either side of the kept record QP
+  CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &in, 200, nullptr) == 1 && in.type == GDAKI_TS_RS_REJOIN_ACK &&
+        memcmp(in.nrp, ack.nrp, sizeof(ack.nrp)) == 0);
+  struct gdakiTsPeer& ws = S.ts.peers[(size_t)s];
+  gdakiCtrlChanInstall(&S.r, s, ws, -1);
+  CHECK(sp.rj.state == GDAKI_CTRL_RJS_INSTALLED && sp.ring.connected && sp.pairRec.cur == G && sp.remote.qpn == na.rec.qpn);
+  struct gdakiTsPeer& wv = R[0].ts.peers[(size_t)d];
+  wv.fd = -1;
+  struct gdakiTsMsg tok = rjRec(GDAKI_TS_RS_TOKEN, s, nonce, 1);
+  tok.round = 7;
+  CHECK(gdakiCtrlSend(&R[0].r, d, GDAKI_CTRL_CH_RECORD, -1, &tok, 100) == 0);
+  for (int k = 0; k < 5; k++) stepRj(R, d, &S);
+  CHECK(vp.ring.connected && vp.pairRec.state == GDAKI_CTRL_PS_UP);
+  CHECK(gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_RECORD, -1, &in, 200, nullptr) == 1 && in.type == GDAKI_TS_RS_TOKEN && in.round == 7);
+  struct gdakiTsMsg rdy = rjRec(GDAKI_TS_RS_READY, d, nonce, 1), got;
+  CHECK(gdakiCtrlSend(&S.r, s, GDAKI_CTRL_CH_RECORD, -1, &rdy, 100) == 0);
+  int k = 0;
+  const double t3 = gdakiQ4MonoMs();
+  while ((k = gdakiCtrlPump(&R[0].r, d, wv, &got)) == 0 && gdakiQ4MonoMs() - t3 < 500.0) stepRj(R, d, &S);
+  CHECK(k == 1 && got.type == GDAKI_TS_RS_READY && got.from == d);
+  teardown(R);
+  spareDown(S, d, n);
+  printf("rejoin accept retry: 3 failed liveness READ QP CONNECTs in %.1f ms: REFUSE, its pairing back, the record QP "
+         "kept; the next REJOIN: watch thread busy, 1 failed CONNECT, accepted on try 3, the record QP untouched, "
+         "TOKEN and READY through\n", el1);
+}
 // ---- 11, 12. 2a-2-C step 3: STATE and the rkey list over the outbox ----
 // ln4's bytes on the data socket (gc_unit_p2b.cc's comparison): the answer record through gdakiTsSend, the rkey list
 // through gdakiRsRkeysSend and back through gdakiRsRkeysRecv, on AF_UNIX stream pairs.
@@ -2873,6 +3116,7 @@ int main() {
   testRejoin(2, 1);
   testRejoin(4, 2);
   testRejoinAnswers();
+  testRejoinAcceptRetry();
   testStateWayRule();
   testStateOutbox(2, 1);
   testStateOutbox(4, 2);

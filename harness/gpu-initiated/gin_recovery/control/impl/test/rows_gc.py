@@ -34,8 +34,9 @@ defines for phase N to emit exactly (notes_test.md lists them):
             EXITED, FIN+STALE, FIN+NORESP, REMACC+FIN, NORESP, LINKDOWN (TODO(p1): the rdma build prints its cause names)
   STALLED   GIN/RC: rank R: rank P (incarnation I) judged stalled (... STALL | STALL_HELPER ...) ... mono_ms=M   exists (p1)
   CLOSED    GIN/TS: rank R: socket to rank P closed cause=C mono_ms=M [liveness=...]                 exists (ln4; FIN, ECONNRESET)
-  PAGEUP    GIN/RC: rank R: status page up (B B in use, probe_ms=P stall_ms=S W=W) mono_ms=M         exists (p1)
-  CONFIRM   GIN/RC: rank R: confirm window for rank P opened by FIN|RST W=W mono_ms=M                TODO(p1)
+  PAGEUP    GIN/RC: rank R: status page up (B B in use, probe_ms=P stall_ms=S W=W[, device line ...]) mono_ms=M  exists;
+            probe_ms= and W= read wherever they stand, any suffix (REVIEW_INT3 B1)
+  CONFIRM   GIN/RC: rank R: confirm window for rank P opened by FIN|RST|END W=W ... mono_ms=M        exists
             GIN/RC: rank R: confirm window for rank P closed: alive|STALE|NORESP|REMACC|unconfirmed mono_ms=M   TODO(p1)
   SUSPECT   GIN/RC: rank R: rank P suspected (kind=watch|helper stale_ms=X) mono_ms=M                TODO(p1)
   TIMEOUT   GIN/RC: rank R: probe of rank P timed out (no CQE in T ms) mono_ms=M                     TODO(p1)
@@ -52,6 +53,11 @@ defines for phase N to emit exactly (notes_test.md lists them):
   RINGSUM   GIN/RC: rank R: ring summary peer=P gen=G sent=S received=V lost=L dup=D mono_ms=M      TODO(p2)
   PAIRSENT  GIN/RC: rank R: PAIR(record, gen G) to rank P (local ERR) mono_ms=M                      TODO(p2)
   REPAIRED  GIN/RC: rank R: record QP|liveness READ QP to rank P re-paired (gen G) mono_ms=M         TODO(p2)
+  LIVE      GIN/RC: rank R: the records go on the ring from now (live): N peer(s), ...               exists (2a-2-B)
+  witness   GIN/TS: rank R: socket to rank P reconnected gen=G attempts=A; GIN/RC: rank R: rank P's witness socket after
+            its REJOIN over UD: unknown, re-dialled; GIN/RC: rank R: the REJOIN of rank P (incarnation I) taken over UD;
+            GIN/RS: spare rank R: restored as incarnation I                                         exist (2a-2-C)
+  LA_UNIX   GIN/RC: rank R: launcher Unix socket closed (EOF|<errno>) (rank side; STOP_launcher, F6)  exists
   REJOIN    GIN/RS: rank R: rank P's spare rejoined as incarnation I (...)                           exists (ln4)
             GIN/RC: rank R: REJOIN to rank P resent (try T) mono_ms=M (the spare)                  TODO(p2)
             GIN/RS: spare rank R: rank P answered the REJOIN with X: it is gone for this restore    exists (the FAIL)
@@ -122,11 +128,22 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              first activation: original incarnation + 2) or 1 for another rank (that node's own warm spare);
                              got = the incarnation of the HELLO line for that rank on its node; ok = that HELLO's spawn was the
                              launcher's (why activated for 2, start for 1)
-  tcp_ctrl_bytes, tcp_data_bytes, tcp_ctrl_conn_n, witness_pairs, rec_lost_n, rec_dup_n, rec_repair_n, sendq_deferred,
-  sendq_max, rnr_n, async_n, active_mtu_kv_min   CTRLSUM (each process's last) summed (rnr_n adds the meta's RNR
-                             port-counter growth); witness_pairs = the summed witness_conns with the witness on, 0 with it off
-  witness_expected           (N - 1) x the processes with a CTRLSUM line with the witness on, 0 off: from the configuration,
-                             not from the library (REVIEW_TEST fix 10)
+  tcp_data_bytes, rec_lost_n, rec_dup_n, rec_repair_n, sendq_deferred, sendq_max, rnr_n, async_n, active_mtu_kv_min,
+  tcp_conns_lib, witness_conns_lib   CTRLSUM (each process's last, every rank and spare process) summed (rnr_n adds the
+                             meta's RNR port-counter growth); the two _lib columns are the library's own counts (reported only)
+  tcp_ctrl_bytes, tcp_record_bytes_prelive, tcp_record_bytes_unsplit   rdma builds (REVIEW_INT3 B3 (a)): the TCP record and
+                             data bytes each process sent after its ring went live (the summary's tcp_<k>_bytes_live= or
+                             _prelive= split; a total of 0 is 0 on both sides); the bootstrap records before live apart; a
+                             summary without the split adds its record total to _unsplit and leaves tcp_ctrl_bytes empty
+  ring_live_pairs, tcp_ctrl_conn_n   rdma builds (B3 (b), (c)): the pairs of the final generation (a spare that restored and
+                             went live replaces its rank's earlier process) whose two processes went live, and those whose
+                             socket both ends opened (witness_view: the live line, reconnected, re-dialled, the REJOIN lines)
+  witness_pairs, witness_expected   tcp_ctrl_conn_n and ring_live_pairs with the witness on, 0 with it off (tcp builds: the
+                             library's witness_conns sum and (N - 1) x the summaries, REVIEW_TEST fix 10)
+  ring_live_n, ring_live_all, ring_live_ms_max   rdma builds (REVIEW_INT3 F7): the ranks whose live line came within
+                             LIVE_BOUND_MS of their first line, all of them, the slowest (ms)
+  rank_stop_n, rank_la_sock_lost_n   (F6) the rank and spare processes' "(STOP_launcher" lines and launcher Unix socket loss
+                             lines before the trial_end marker; both are in la_stop_n
   ss_tcp_conn_n, ss_pids_both, ss_tx_delta_bytes, ss_rx_delta_bytes   the runner's two ss snapshots of the rank PIDs: the
                              established TCP sockets at the first, the bytes acked / received between the two (pids in both)
   active_mtu_rain, active_mtu_sunny   the runner's ibv_devinfo reading (meta)
@@ -163,12 +180,13 @@ MONO = re.compile(r"\bmono_ms=([0-9.]+)")
 DEAD = re.compile(r"GIN/TS: rank (\d+): rank (\d+) judged dead \(cause=([^)]*)\)")
 STALLED = re.compile(r"GIN/RC: rank (\d+): rank (\d+) \(incarnation \d+\) judged stalled \(.*?\b(STALL_HELPER|STALL)\b")
 CLOSED = re.compile(r"GIN/TS: rank (\d+): socket to rank (\d+) closed cause=(\S+)")
-PAGEUP = re.compile(r"GIN/RC: rank (\d+): status page up \(\d+ B in use, probe_ms=(\d+) stall_ms=\d+ W=(\d+)\)")
+# B1 (REVIEW_INT3): the tokens wherever they stand in the parenthesis, any suffix (", device line named 1184 B)" since 2a-2-C)
+PAGEUP = re.compile(r"GIN/RC: rank (\d+): status page up \(.*?\bprobe_ms=(\d+)\b.*?\bW=(\d+)\b")
 TIMEOUTL = re.compile(r"GIN/RC: rank (\d+): probe of rank (\d+) timed out")
 SSL = re.compile(r"GINRS ss (s1|s2) pid=(\d+) present=([01]) n=(\d+) acked=(\d+) received=(\d+)")
 GAPL = re.compile(r"GINRS killed rank=(\d+) node=\w+ pid=\d+ which=after_spare gap_ms=([0-9.]+)")
 LA_MARK_START = re.compile(r"GINLA mark trial_start ")
-CONF_OPEN = re.compile(r"GIN/RC: rank (\d+): confirm window for rank (\d+) opened by (FIN|RST) W=(\d+)")
+CONF_OPEN = re.compile(r"GIN/RC: rank (\d+): confirm window for rank (\d+) opened by (FIN|RST|END) W=(\d+)")
 CONF_CLOSE = re.compile(r"GIN/RC: rank (\d+): confirm window for rank (\d+) closed: (alive|STALE|NORESP|REMACC|unconfirmed)")
 SUSPECT = re.compile(r"GIN/RC: rank (\d+): rank (\d+) suspected \(kind=(\w+) stale_ms=([0-9.]+)\)")
 PROBESUM = re.compile(r"GIN/RC: rank (\d+): probe summary peer=(\d+) (.*)$")
@@ -210,6 +228,17 @@ LA_SIGKILL = re.compile(r"GIN/LA: node \d+: FENCE of rank (\d+) incarnation \d+ 
 LA_FENCED = re.compile(r"GIN/LA: node \d+: rank (\d+) incarnation \d+ FENCED: (?:the group ended ([0-9.]+) ms after SIGKILL)?")
 LA_ACT = re.compile(r"GIN/LA: node \d+: activation of rank (\d+) incarnation -?\d+ for rank \d+: (LATER|ACCEPTED|REFUSED) \((.*)\)")
 LA_STOP = re.compile(r"\(STOP_launcher")
+# F6 (REVIEW_INT3): the rank side's launcher loss (a rank or spare lost its launcher's Unix socket): STOP_launcher too
+LA_UNIX = re.compile(r"GIN/RC: rank (\d+): launcher Unix socket closed \(")
+LA_MARK_END = re.compile(r"GINLA mark trial_end ")
+# F7 and B3 (REVIEW_INT3): the ring's live line, the witness lines per pair and incarnation
+LIVE = re.compile(r"GIN/RC: rank (\d+): the records go on the ring from now \(live\): (\d+) peer\(s\)")
+RECONN = re.compile(r"GIN/TS: rank (\d+): socket to rank (\d+) reconnected gen=\d+ attempts=\d+")
+REDIAL = re.compile(r"GIN/RC: rank (\d+): rank (\d+)'s witness socket after its REJOIN over UD: unknown")
+RJ_INC = re.compile(r"GIN/R[CS]: rank (\d+): (?:the REJOIN of rank (\d+) \(incarnation (\d+)\) taken|"
+                    r"rank (\d+)'s spare rejoined as incarnation (\d+))")
+SPARE_INC = re.compile(r"GIN/RS: spare rank (\d+): restored as incarnation (\d+)")
+LIVE_BOUND_MS = 10000.0  # F7's setup bound: process start -> live line (GL_REPAIR_MS, the pairing bound); TODO(prereg)
 LA_REFSIG = re.compile(r"refused to signal")
 LA_PIDMIS = re.compile(r"the pidfd is not the peer's process")
 LA_QPLOST = re.compile(r"GIN/LA: node \d+: (?:record QP of rank (\d+)\b.*\blost|liveness-READ QP of rank (\d+) failed)")
@@ -244,7 +273,9 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "la_pid_mismatch_n", "la_qp_err_n", "launcher_same", "launcher_ready", "launcher_scope", "launcher_stale",
            "la_spare_spawn_n", "la_spare_respawn_n", "la_spare_cap_expected_n", "spare_hello_after_ms", "spare2_inc_want",
            "spare2_inc_got", "spare2_daemon_ok", "tcp_ctrl_bytes", "tcp_data_bytes",
-           "tcp_ctrl_conn_n", "witness_pairs", "witness_expected", "ss_tcp_conn_n", "ss_pids_both", "ss_tx_delta_bytes",
+           "tcp_ctrl_conn_n", "witness_pairs", "witness_expected", "ring_live_pairs", "tcp_record_bytes_prelive",
+           "tcp_record_bytes_unsplit", "tcp_conns_lib", "witness_conns_lib", "ring_live_n", "ring_live_all",
+           "ring_live_ms_max", "rank_stop_n", "rank_la_sock_lost_n", "ss_tcp_conn_n", "ss_pids_both", "ss_tx_delta_bytes",
            "ss_rx_delta_bytes", "rec_lost_n", "rec_dup_n", "rec_repair_n", "sendq_deferred", "sendq_max",
            "rnr_n", "async_n", "active_mtu_kv_min", "active_mtu_rain", "active_mtu_sunny", "ckpt_stable_in_mute",
            "ckpt_void_in_mute", "helper_reconnect_n", "qperr_pair_sent_by_target", "qperr_rec_gen_delta",
@@ -351,15 +382,34 @@ def cap_expected(meta):
                                                         meta.get("kill_kind") == "spare_then_rank")
 
 
-def la_counts(lalog, s, meta=None):
+def proc_logs(stem):
+    """every rank and spare process log of a trial (the --stops path, which has no row): their events, node unknown"""
+    ps = sorted(glob.glob(stem + "_r[0-9]*.log")) + sorted(glob.glob(stem + "_spare*.log"))
+    return [evs(rows_rs.stamped(p), "?") for p in ps]
+
+
+def rank_stops(lalog, plogs):
+    """F6 (REVIEW_INT3): the rank side's "(STOP_launcher" lines and its launcher Unix socket loss lines, every rank and spare
+    process, before the trial's first trial_end marker (receipt clock; the whole log without the marker)"""
+    ends = [e.t for nd in ("rain", "sunny") for e in lalog[nd] if LA_MARK_END.search(e.text)]
+    t_end = min(ends) if ends else float("inf")
+    stop = sum(1 for lg in plogs for e in lg if e.t <= t_end and LA_STOP.search(e.text))
+    sock = sum(1 for lg in plogs for e in lg if e.t <= t_end and LA_UNIX.search(e.text) and not LA_STOP.search(e.text))
+    return stop, sock
+
+
+def la_counts(lalog, s, meta=None, plogs=None):
     """the launcher counts every trial gets: STOP lines (both forms; the spare-absent cells' one expected cap line apart),
     refused signals and pid-check failures over the whole logs; the QP-loss lines of ranks other than the subject after the
-    trial_start marker and before the first is-leaving"""
+    trial_start marker and before the first is-leaving. la_stop_n adds the rank side's STOP_launcher lines and its launcher
+    Unix socket loss lines (plogs: the trial's process logs; F6)"""
     whole = lalog["rain"] + lalog["sunny"]
     after = la_after_start(lalog["rain"]) + la_after_start(lalog["sunny"])
     stops = [e for e in sorted(whole, key=lambda x: x.t) if LA_STOP.search(e.text)]
     capx = [e for e in stops if LA_CAP0.search(e.text)][:1] if cap_expected(meta) else []
-    out = {"la_stop_n": len(stops) - len(capx), "la_spare_cap_expected_n": len(capx),
+    rk_stop, rk_sock = rank_stops(lalog, plogs or [])
+    out = {"la_stop_n": len(stops) - len(capx) + rk_stop + rk_sock, "la_spare_cap_expected_n": len(capx),
+           "rank_stop_n": rk_stop, "rank_la_sock_lost_n": rk_sock,
            "la_refused_signal_n": sum(1 for e in whole if LA_REFSIG.search(e.text)),
            "la_pid_mismatch_n": sum(1 for e in whole if LA_PIDMIS.search(e.text))}
     t_leave = min((e.t for e in after if LA_LEAVING.search(e.text)), default=float("inf"))
@@ -374,6 +424,90 @@ def first(evl, rx, pred=None):
         if m and (pred is None or pred(m)):
             return e, m
     return None, None
+
+
+def witness_view(evl, me, n):
+    """B3 (REVIEW_INT3): one process's view, its lines in file order: (went live, {peer: {incarnation of the peer: opened}}).
+    The live line opens the helper socket (the witness) of every peer without an earlier witness line; a REJOIN taken from a
+    peer's new incarnation starts a new pair (EXPERIMENT 8: a revived incarnation's pair is a new pair); "reconnected" opens
+    the pair's socket, "unknown, re-dialled" (the UD REJOIN: no socket yet) closes it again (the "reconnected gen=1
+    attempts=0" line just before it is the fd -1 install, REVIEW_INT3 F10). A socket's end never undoes "opened". A
+    reconnect after the socket's end and before the new incarnation's REJOIN line is that new pair's (a TCP REJOIN)"""
+    peers = [p for p in range(n) if p != me]
+    segs = {p: {0: None} for p in peers}
+    cur, lost, carry = dict.fromkeys(peers, 0), dict.fromkeys(peers, False), dict.fromkeys(peers, False)
+    live = False
+    for e in evl:
+        x = e.text
+        m = LIVE.search(x)
+        if m and int(m.group(1)) == me:
+            live = True
+            for p in peers:
+                if segs[p][cur[p]] is None:
+                    segs[p][cur[p]] = True
+            continue
+        m = RJ_INC.search(x)
+        if m and int(m.group(1)) == me:
+            p, i = (int(m.group(2)), int(m.group(3))) if m.group(2) else (int(m.group(4)), int(m.group(5)))
+            if p in segs and i not in segs[p]:
+                segs[p][i] = True if carry[p] else None
+                cur[p], lost[p], carry[p] = i, False, False
+            continue
+        m = RECONN.search(x)
+        if m and int(m.group(1)) == me and int(m.group(2)) in segs:
+            p = int(m.group(2))
+            carry[p] = carry[p] or lost[p]
+            segs[p][cur[p]] = True
+            continue
+        m = REDIAL.search(x)
+        if m and int(m.group(1)) == me and int(m.group(2)) in segs:
+            p = int(m.group(2))
+            segs[p][cur[p]], carry[p] = False, False
+            continue
+        m = CLOSED.search(x)
+        if m and int(m.group(1)) == me and int(m.group(2)) in segs and "liveness=left" not in x:
+            lost[int(m.group(2))] = True
+    return live, segs
+
+
+def final_generation(logs, spare_logs, n):
+    """{rank: (its last incarnation's log, incarnation)}: a spare that logged its restore and went live replaces the rank's
+    earlier process (the highest incarnation wins); else the rank's own log (incarnation 0)"""
+    fin = {r: (logs[r], 0) for r in range(n)}
+    for sl in spare_logs:
+        m = next((mm for e in sl for mm in [SPARE_INC.search(e.text)] if mm), None)
+        if m is None:
+            continue
+        r, i = int(m.group(1)), int(m.group(2))
+        if r in fin and i > fin[r][1] and any(LIVE.search(e.text) and int(LIVE.search(e.text).group(1)) == r for e in sl):
+            fin[r] = (sl, i)
+    return fin
+
+
+def ring_pairs(logs, spare_logs, n):
+    """(pairs of the final generation live at both ends, those with the socket opened at both ends)"""
+    fin = final_generation(logs, spare_logs, n)
+    view = {r: witness_view(fin[r][0], r, n) for r in range(n)}
+    live_n = opened_n = 0
+    for a in range(n):
+        for b in range(a + 1, n):
+            if not (view[a][0] and view[b][0]):
+                continue
+            live_n += 1
+            opened_n += int(view[a][1][b].get(fin[b][1]) is True and view[b][1][a].get(fin[a][1]) is True)
+    return live_n, opened_n
+
+
+def ctrl_split(d, k):
+    """one control summary's TCP bytes of kind k (record, data) after and before the process's ring went live: the library's
+    tcp_<k>_bytes_live= or _prelive= split when the line has one, else known only when the total is 0; (None, None) unknown"""
+    tot = fnum(d.get("tcp_%s_bytes" % k)) or 0
+    lv, pre = fnum(d.get("tcp_%s_bytes_live" % k)), fnum(d.get("tcp_%s_bytes_prelive" % k))
+    if lv is not None:
+        return lv, tot - lv
+    if pre is not None:
+        return tot - pre, pre
+    return (0.0, 0.0) if tot == 0 else (None, None)
 
 
 def gc_overlay(stem, base, meta):
@@ -592,8 +726,19 @@ def gc_overlay(stem, base, meta):
             out["la_later_n"] = sum(1 for m in acts if m.group(2) == "LATER")
             out["la_act_refused_why"] = "; ".join(m.group(3) for m in acts if m.group(2) == "REFUSED")
     # every trial: the launcher's STOP lines (both forms, the whole slice), checks, QP loss
+    spare_all = [evs(rows_rs.stamped(p), sp_node) for p in sorted(glob.glob(stem + "_spare*.log"))]
     if lalog["rain"] or lalog["sunny"] or ctrl == "rdma":
-        out.update(la_counts(lalog, s, meta))
+        out.update(la_counts(lalog, s, meta, [logs[r] for r in ranks] + spare_all))
+    # F7: every rank's ring live within the setup bound (its first line -> its live line, one process: mono or receipt)
+    if ctrl == "rdma" and any(logs[r] for r in ranks):
+        lt = []
+        for r in ranks:
+            le, _ = first(logs[r], LIVE, lambda m, _r=r: int(m.group(1)) == _r)
+            d = xd(min(logs[r], key=lambda x: x.t), le)[0] if (le is not None and logs[r]) else None
+            lt.append(d if (d is not None and d <= LIVE_BOUND_MS) else None)
+        out["ring_live_n"] = sum(1 for d in lt if d is not None)
+        out["ring_live_all"] = int(out["ring_live_n"] == n)
+        out["ring_live_ms_max"] = r1(max(d for d in lt if d is not None)) if out["ring_live_n"] else ""
     # the warm spares of the trial's launchers (EXPERIMENT 9.5; the runner starts none on the launcher path)
     out["launcher_scope"] = meta.get("launcher_scope", "")
     out["launcher_stale"] = "" if meta.get("launcher_stale", "-") in ("", "-") else meta["launcher_stale"]
@@ -645,7 +790,7 @@ def gc_overlay(stem, base, meta):
     out["win_changed_after"] = sum(wc) if wc else ""
     # the control summaries: each process's last one
     cs = []
-    for lg in [logs[r] for r in ranks] + [slog, slog2]:
+    for lg in [logs[r] for r in ranks] + spare_all:  # every process of the trial (the spares: _spare*.log)
         l = [m for e in lg for m in [CTRLSUM.search(e.text)] if m]
         if l:
             cs.append(kvd(l[-1].group(2)))
@@ -654,10 +799,22 @@ def gc_overlay(stem, base, meta):
         wit_on = meta.get("witness", "1") != "0"
         out["tcp_record_bytes_sum"] = sm("tcp_record_bytes")
         out["tcp_data_bytes"] = sm("tcp_data_bytes")
-        out["tcp_ctrl_bytes"] = sm("tcp_record_bytes") + sm("tcp_data_bytes")
-        out["tcp_ctrl_conn_n"] = sm("tcp_conns")
-        out["witness_pairs"] = sm("witness_conns") if wit_on else 0
-        out["witness_expected"] = (n - 1) * len(cs) if wit_on else 0
+        out["tcp_conns_lib"], out["witness_conns_lib"] = sm("tcp_conns"), sm("witness_conns")  # reported only
+        if ctrl == "rdma":
+            # B3 (REVIEW_INT3, the coordinator's rule): (a) the TCP bytes after each process's ring went live; the bootstrap
+            # records before it apart (tcp_record_bytes_prelive; a process whose summary cannot split them adds its total to
+            # tcp_record_bytes_unsplit and leaves tcp_ctrl_bytes empty); (b), (c) the witness sockets opened per pair of the
+            # final generation (a revived incarnation's pairs replace the old ones) against the pairs that went live
+            sp = [(ctrl_split(d, "record"), ctrl_split(d, "data"), d) for d in cs]
+            unk = [d for (rl, _), (dl, _), d in sp if rl is None or dl is None]
+            out["tcp_ctrl_bytes"] = "" if unk else int(sum(rl + dl for (rl, _), (dl, _), _ in sp))
+            out["tcp_record_bytes_prelive"] = int(sum(rp for (_, rp), _, _ in sp if rp is not None))
+            out["tcp_record_bytes_unsplit"] = int(sum(fnum(d.get("tcp_record_bytes")) or 0 for d in unk))
+        else:  # the tcp control builds: the library's sums (no ring, no live line)
+            out["tcp_ctrl_bytes"] = sm("tcp_record_bytes") + sm("tcp_data_bytes")
+            out["tcp_ctrl_conn_n"] = sm("tcp_conns")
+            out["witness_pairs"] = sm("witness_conns") if wit_on else 0
+            out["witness_expected"] = (n - 1) * len(cs) if wit_on else 0
         for c, k in (("rec_lost_n", "records_lost"), ("rec_dup_n", "records_dup"), ("rec_repair_n", "repairs"),
                      ("sendq_deferred", "sendq_deferred"), ("async_n", "async")):
             out[c] = sm(k)
@@ -671,6 +828,12 @@ def gc_overlay(stem, base, meta):
         mtus = [fnum(d.get("active_mtu")) for d in cs if fnum(d.get("active_mtu")) is not None]
     else:
         mtus = []
+    if ctrl == "rdma" and any(logs[r] for r in ranks):  # B3 (b), (c): from the lines, with or without a summary
+        wit_on = meta.get("witness", "1") != "0"
+        live_p, open_p = ring_pairs(logs, spare_all, n)
+        out["ring_live_pairs"], out["tcp_ctrl_conn_n"] = live_p, open_p
+        out["witness_pairs"] = open_p if wit_on else 0
+        out["witness_expected"] = live_p if wit_on else 0
     kvm = [fnum(rows_rs.parse_kv("%s_r%d.kv" % (stem, r)).get("active_mtu")) for r in ranks]
     kvm = [x for x in kvm if x is not None] or mtus
     out["active_mtu_kv_min"] = int(min(kvm)) if kvm else ""
@@ -899,7 +1062,7 @@ def stops_line(stem):
     """hold_gc.sh's per-trial launcher check: the scorer's counts for one trial stem"""
     meta = rows_rs.read_meta(stem)
     subj = meta.get("subject_rank", "")
-    c = la_counts(la_logs(stem), int(subj) if str(subj).isdigit() else -1, meta)
+    c = la_counts(la_logs(stem), int(subj) if str(subj).isdigit() else -1, meta, proc_logs(stem))
     c["la_not_up"] = int(meta.get("ctrl") == "rdma" and meta.get("launcher_ready") == "0")
     st = meta.get("launcher_stale", "-")
     c["la_stale_n"] = 0 if st in ("", "-") else len([x for x in st.split(",") if x])

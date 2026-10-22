@@ -14,7 +14,8 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
      cells_gc.json "prereg", or its Resume was refused where the cell expects the restore), launcher_stale (a stale
      launcher socket or process on a node at the trial's start: nothing ran; section 8's per-trial launcher rule of
      2026-10-22), launcher_not_ready (the start check: a launcher of the trial did not come up), launcher_changed (a launcher
-     ended or changed during the trial, or a launcher QP loss outside the test-switch cells), not_applied (the injection's record is missing), inject_late (the runner's injection more than 1 s from its
+     ended or changed during the trial, or a launcher QP loss outside the test-switch cells), ring_not_live (an rdma
+     trial with a rank whose ring never went live within the setup bound: no judgement table; REVIEW_INT3 F7), not_applied (the injection's record is missing), inject_late (the runner's injection more than 1 s from its
      plan, a stop's length more than 1 s off, or the spare-absent cell's two kills more than 5 ms apart), spare_start_fail,
      (also: a second death's spare that is not the launcher's, rows_gc.py spare2_daemon_ok 0: the same rank's second restore
      needs the daemon's next spare, incarnation 2; another rank's, that node's own warm spare), foreign_gpu, restore_not_live, kill_before_ckpt (the kill, DIE_RST, STOP or FREEZE_PAGE before the subject's first
@@ -39,7 +40,8 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
      keys "build:<b>" pool every scored gin-control-runner trial of build b (no_tcp_control, long_hold_lane), "local:<x>" the
      local rows.
   5. STOP: the results folder's STOP_* files (their line counts), every trial's "(STOP_launcher)" and
-     "(STOP_launcher: ...)" lines (section 8's scoring rule: a FENCE_NAK's refusal counts; the spare-absent cells' one
+     "(STOP_launcher: ...)" lines, the launchers' and the rank and spare processes' (with the rank side's "launcher Unix
+     socket closed" lines; REVIEW_INT3 F6), (section 8's scoring rule: a FENCE_NAK's refusal counts; the spare-absent cells' one
      expected respawn-cap line apart, rows_gc.py) and the trials whose launcher did not come up or found a stale launcher
      socket or process (section 8's per-trial launcher rule) are listed in SCORE.md.
 """
@@ -66,7 +68,7 @@ LIB_COLS = {"confirm_w_ms", "fin_judge_dev_min_ms", "fin_judge_dev_max_ms", "rea
             "qperr_probe_gen_delta", "qperr_pair_read_fail", "qperr_records_after", "rejoin_resent", "rejoin_dropped",
             "ckpt_stable_in_mute", "la_fence_sigkill_n", "la_fenced_n", "la_act_refused_why", "stop_judge_ms_min",
             "stop_judge_ms_max", "rst_judge_dev_min_ms", "rst_judge_dev_max_ms", "probe_timeout_n", "witness_expected",
-            "probe_ms_page",
+            "probe_ms_page", "ring_live_pairs",
             # the runner's new readings (not run on the cluster yet) and the library gate program's real-pid mode
             "ss_tcp_conn_n", "ss_tx_delta_bytes", "ss_rx_delta_bytes", "old_go_ms", "fenced_go_ms",
             "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms"}
@@ -76,6 +78,7 @@ EXCL = {"void": "시작 실패(생존 rank가 교환 전에 끝남)", "config_dr
         "launcher_not_ready": "시행 시작 때 launcher가 두 노드 모두에서 준비되지 않음",
         "launcher_stale": "시행 시작 때 앞 launcher의 소켓이나 프로세스가 노드에 남아 있음(아무것도 돌지 않음)",
         "launcher_changed": "시행 중 launcher가 끝났거나 바뀜, 또는 시험 스위치 셀 밖의 launcher QP 잃음",
+        "ring_not_live": "링이 live가 되지 않음(어느 rank에 설정 한도 안의 live 줄이 없음; 판정 표 밖이라 판정 예측에 넣지 않음)",
         "not_applied": "주입 기록 없음", "inject_late": "주입이 정한 시각보다 1 s 넘게 어긋남(또는 짝 kill 간격 > 5 ms)",
         "spare_start_fail": "예비 프로세스가 활성화 전에 시작에 실패함", "foreign_gpu": "시행 시작 때 GPU에 다른 프로세스",
         "restore_not_live": "복원 계층 미통합", "kill_before_ckpt": "주입(kill, DIE_RST, STOP, FREEZE_PAGE)이 대상의 첫 확정 체크포인트 전",
@@ -176,6 +179,8 @@ def status_gc(r, cell, prereg=None):
         sw = any(s in " ".join(env.values()) for s in TEST_SWITCH_ENV)
         if str(r.get("launcher_same")) == "0" or (not sw and ival(r.get("la_qp_err_n"), 0) > 0):
             return "launcher_changed"
+        if str(r.get("ring_live_all")) == "0":  # REVIEW_INT3 F7: no live line within the setup bound on some rank
+            return "ring_not_live"
     inj = cell.get("injection", {}).get("kind", "none")
     if inj != "none":
         if str(r.get("inject_ok")) == "0" or (env.get("KILL_RANK") and ival(r.get("applied"), 0) == 0):
@@ -219,6 +224,8 @@ def status_regression(r, entry, mcells_b):
             return "launcher_not_ready"
         if str(r.get("launcher_same")) == "0" or ival(r.get("la_qp_err_n"), 0) > 0:
             return "launcher_changed"
+        if str(r.get("ring_live_all")) == "0":  # REVIEW_INT3 F7
+            return "ring_not_live"
     # no second-death exclusion (REVIEW_TEST B3; gin-mirror section 8: a second kill before the re-arm, a failed first
     # restore or a re-arm that never came is a failed condition of its prediction, never an exclusion)
     return "candidate"
@@ -430,6 +437,7 @@ def score(R, planned_override=None):
     stops = sorted(x for x in os.listdir(R) if x.startswith("STOP_"))
     la_stop = [(r["id"], ival(r.get("la_stop_n"), 0)) for r in rows if ival(r.get("la_stop_n"), 0) > 0]
     la_cap = sum(ival(r.get("la_spare_cap_expected_n"), 0) for r in rows)
+    not_live = sorted(r["id"] for r in rows if r.get("status") == "ring_not_live")
     la_down = [(r["id"], "낡은 소켓이나 프로세스 %s" % r["launcher_stale"] if r.get("launcher_stale") else "뜨지 않음")
                for r in rows if r.get("ctrl") == "rdma" and r.get("runner") == "gcr" and
                (r.get("launcher_stale") or str(r.get("launcher_ready")) == "0")]
@@ -440,8 +448,11 @@ def score(R, planned_override=None):
              len(rows), sum(len(v) for k, v in scored.items() if not k.startswith("build:")),
              sum(1 for r in rows if r["status"] == "smoke"), sum(1 for r in rows if r["status"] == "pilot")),
          "- STOP 파일: %s." % (", ".join("`%s`(%d줄)" % (x, sum(1 for _ in open(os.path.join(R, x)))) for x in stops) or "없음"),
-         "- launcher의 `(STOP_launcher)`와 `(STOP_launcher: …)` 줄(8절 채점 규칙, FENCE_NAK 포함): %d줄, 시행 %s." % (
-             sum(n for _, n in la_stop), ", ".join("%s(%d)" % x for x in la_stop) or "없음"),
+         "- `(STOP_launcher)`와 `(STOP_launcher: …)` 줄(launcher 로그와 rank, 예비 프로세스 로그; rank 쪽의 launcher Unix 소켓 끊김 줄 %d개 포함; 8절 채점 규칙, FENCE_NAK 포함): %d줄, 시행 %s." % (
+             sum(ival(r.get("rank_la_sock_lost_n"), 0) for r in rows), sum(n for _, n in la_stop),
+             ", ".join("%s(%d)" % x for x in la_stop) or "없음"),
+         "- 링이 live가 되지 않아 제외한 시행(REVIEW_INT3 F7): %d개%s." % (
+             len(not_live), (": " + ", ".join(not_live)) if not_live else ""),
          "- 예비 프로세스 없음 셀의 예상된 다시 띄우기 한도 줄(실행기가 끝낸 예비 프로세스를 launcher가 다시 띄우지 않음; STOP으로 세지 않음): %d줄." % la_cap,
          "- launcher가 뜨지 않았거나 낡은 launcher 소켓이나 프로세스가 남아 돌지 않은 시행(8절, STOP_launcher): %s." % (
              ", ".join("%s(%s)" % x for x in la_down) or "없음"), "",

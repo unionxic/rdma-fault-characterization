@@ -20,10 +20,116 @@ Checks (each failure is one line "FAIL ..."; exit 1 when any):
               mi4_kill3_ow) names gin-mirror regression cells only, and a row's regression cell at that build is one of them
   build keys  every build key a cell, a pilot cell, the regression, the cost family, "builds" or a prediction's "build:"
               names is in the document's build-key table (the header table "빌드 키"; a stray gctc fails)
+  drift       each predictions_gc.csv row against its own section 3 row (2026-10-22: the stall rows still counted STALL and
+              the time bands were the old W + 1 ms and 102-206 ms after section 3 changed). Causes: every judgement-cause
+              column the acceptance uses (n_judge_exited, n_rst_confirm, n_judge_stall_helper, ...) names a cause that the
+              row's per-trial column names, every cause that column names has a column in the acceptance, and every cause
+              the per_trial text names is in the row. Bounds (columns with "ms" in the name only): a band "a <= x <= b" or
+              "a <= x_min and x_max <= b" is an "a-b ms" (or "a-b s") band of the row, a "_dev_" band "0 <= x and x <= d" is
+              the row's "W-W + d ms"; a lone "x <= b" or "x < b" is a number of the row, and "<" or "<=" follows the row's
+              "<" or the row's "≤" where the row writes one. The row text drops the `[...]` notes and the
+              "2026-10-22 전에는 ..." history (to the next ";" or ")") first; a number written "3.5 s" counts as 3500 ms.
+              Counts (k), equalities and columns without "ms" are not compared.
 """
 import argparse, csv, json, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# ---- drift: the CSV row against its section 3 row
+CAUSES = re.compile(r"(?<![A-Z_+])(FIN\+STALE|FIN\+NORESP|REMACC\+FIN|EXITED|NORESP|STALL_HELPER|STALL|LINKDOWN)(?![A-Z_+])")
+CONFIRM = {"FIN+STALE", "FIN+NORESP", "REMACC+FIN"}
+CAUSE_COLS = {"confirm": ("n_judge_confirm", "n_rst_confirm"), "EXITED": ("n_judge_exited", "n_rst_exited"),
+              "NORESP": ("n_judge_noresp",), "STALL_HELPER": ("n_judge_stall_helper",), "STALL": ("n_judge_stall",),
+              "LINKDOWN": ("n_judge_linkdown",)}
+NUM = r"\d{1,3}(?: \d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
+
+
+def num(s):
+    return float(s.replace(" ", ""))
+
+
+def doc_clean(s):
+    s = re.sub(r"`\[[^`]*\]`", " ", s)                  # the [측정 ...], [설계 ...] notes
+    return re.sub(r"2026-10-22 전에는[^;)]*", " ", s)     # the values before the 2026-10-22 change
+
+
+def cause_groups(text):
+    """the cause groups a text names; a cause followed by ' 0' (a count of none) is not named"""
+    out = set()
+    for m in CAUSES.finditer(text):
+        if re.match(r"\s+0(?![\d.])", text[m.end():]):
+            continue
+        out.add("confirm" if m.group(1) in CONFIRM else m.group(1))
+    return out
+
+
+def doc_bounds(text):
+    bands, wbands, nums, le, lt = set(), set(), set(), set(), set()
+    for m in re.finditer(r"(%s)\s*–\s*(%s)\s*(ms|s)(?![A-Za-z])" % (NUM, NUM), text):
+        f = 1000.0 if m.group(3) == "s" else 1.0
+        bands.add((num(m.group(1)) * f, num(m.group(2)) * f))
+    for m in re.finditer(r"W\s*–\s*W\s*\+\s*(%s)\s*ms" % NUM, text):
+        wbands.add((0.0, num(m.group(1))))
+    for m in re.finditer(r"(?<![\d.])(%s)(\s*s(?![A-Za-z]))?" % NUM, text):
+        nums.add(num(m.group(1)) * (1000.0 if m.group(2) else 1.0))
+        nums.add(num(m.group(1)))
+    for m in re.finditer(r"([≤<])\s*(%s)\s*(ms|s)?(?![A-Za-z])" % NUM, text):
+        v = num(m.group(2)) * (1000.0 if m.group(3) == "s" else 1.0)
+        (le if m.group(1) == "≤" else lt).add(v)
+    return bands, wbands, nums, le, lt
+
+
+def csv_bounds(acc):
+    """[(column, lo, hi)] bands and [(column, op, b)] lone upper bounds of columns with 'ms' in the name"""
+    bands, lone, N = [], [], r"-?\d+(?:\.\d+)?"
+    rest = acc
+    for m in re.finditer(r"(%s) <= (\w+) <= (%s)" % (N, N), acc):
+        bands.append((m.group(2), float(m.group(1)), float(m.group(3))))
+    rest = re.sub(r"(%s) <= (\w+) <= (%s)" % (N, N), " ", rest)
+    pat = re.compile(r"(%s) <= (\w+) and (\w+) <= (%s)" % (N, N))
+    for m in pat.finditer(rest):
+        if m.group(2).replace("min", "max") == m.group(3):
+            bands.append((m.group(2), float(m.group(1)), float(m.group(4))))
+    rest = pat.sub(lambda m: " " if m.group(2).replace("min", "max") == m.group(3) else m.group(0), rest)
+    for m in re.finditer(r"(\w+) (<=|<) (%s)(?![\w.])" % N, rest):
+        lone.append((m.group(1), m.group(2), float(m.group(3))))
+    keep = lambda c: "ms" in c
+    return [b for b in bands if keep(b[0])], [x for x in lone if keep(x[0])]
+
+
+def drift(p, cols):
+    """the differences between a predictions_gc.csv row p and its section 3 row cols (a list of fail lines)"""
+    out, pid = [], p["id"]
+    cond = doc_clean(cols[2])
+    text = doc_clean(" ".join(cols[2:4]))
+    acc = p["acceptance"]
+    want = cause_groups(cond)
+    used = {g for g, cs in CAUSE_COLS.items() for c in cs if re.search(r"\b%s\b" % c, acc)}
+    for g in sorted(used - want):
+        out.append("drift %s: the acceptance counts cause %s (%s), section 3's row names %s" %
+                   (pid, g, "/".join(CAUSE_COLS[g]), sorted(want) or "no cause"))
+    for g in sorted(want - used):
+        out.append("drift %s: section 3's row names cause %s, the acceptance has no %s" % (pid, g, "/".join(CAUSE_COLS[g])))
+    for g in sorted(cause_groups(p["per_trial"]) - want):
+        out.append("drift %s: the per_trial text names cause %s, section 3's row does not" % (pid, g))
+    bands, wbands, nums, le, lt = doc_bounds(text)
+    cb, cl = csv_bounds(acc)
+    for c, lo, hi in cb:
+        pool = wbands if "_dev_" in c else bands
+        if not any(abs(lo - a) < 1e-6 and abs(hi - b) < 1e-6 for a, b in pool):
+            out.append("drift %s: %s band %g-%g ms is not a band of section 3's row (%s)" %
+                       (pid, c, lo, hi, ", ".join("%g-%g" % x for x in sorted(pool)) or "none"))
+    out = list(dict.fromkeys(out))  # a row with one rule per cell says each difference once
+    for c, op, b in cl:
+        if not any(abs(b - v) < 1e-6 for v in nums):
+            out.append("drift %s: %s %s %g, section 3's row has no %g" % (pid, c, op, b, b))
+            continue
+        inle, inlt = any(abs(b - v) < 1e-6 for v in le), any(abs(b - v) < 1e-6 for v in lt)
+        if op == "<=" and inlt and not inle:
+            out.append("drift %s: %s <= %g, section 3's row writes < %g" % (pid, c, b, b))
+        if op == "<" and inle and not inlt:
+            out.append("drift %s: %s < %g, section 3's row writes ≤ %g" % (pid, c, b, b))
+    return out
 
 
 def section(text, num):
@@ -127,12 +233,13 @@ def main():
             fail("cells_gc.json cell %s is not in section 7" % k)
     # ---- section 3
     r3 = table_rows(section(text, 3))
-    keys, key_cells = [], {}
+    keys, key_cells, key_cols = [], {}, {}
     for cols in r3:
         m = re.search(r"`([a-z0-9_]+)`", cols[-1])
         if not m:
             continue
         keys.append(m.group(1))
+        key_cols[m.group(1)] = cols
         key_cells[m.group(1)] = set(CELLNAME.findall(cols[1]))
     feeds = {}
     for k, c in cj["cells"].items():
@@ -234,6 +341,14 @@ def main():
                          or k == "build:" + b for k in ks)
                 if not ok:
                     fail("regression.builds.%s.preds names %s, whose cells column names no %s regression cell" % (b, pid, b))
+        # drift: each row's causes and bounds against its section 3 row
+        ndrift = 0
+        for p in pr:
+            if p["id"] in key_cols and len(key_cols[p["id"]]) >= 4:
+                for s in drift(p, key_cols[p["id"]]):
+                    ndrift += 1
+                    fail(s)
+        print("drift: %d prediction rows against section 3, %d difference(s)" % (len([p for p in pr if p["id"] in key_cols]), ndrift))
     else:
         print("note: %s not found (predictions not checked)" % a.preds)
     # ---- build keys (the document's build-key table)
