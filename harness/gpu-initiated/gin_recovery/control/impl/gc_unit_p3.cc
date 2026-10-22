@@ -874,6 +874,12 @@ static void sceneActivationLaterAccepted() {
   CHECK(!gdakiCtrlLaWardPathOk(&s->k, 2));
   gdakiCtrlLaPairStart(&s->k, 1, nowMs());  // the own launcher first
   CHECK(pumpUntil(w.cores, [&] { return s->k.la[1].connected; }));
+  // 2a-2-C step 5: the PAIR_ACK's creditOff (the launcher page's glPageCredit.consumed of this rank) is kept for the credit
+  // READ: a credit slot's consumed word inside the 4 KiB page; an odd or out-of-page offset is never taken
+  CHECK(s->k.la[1].creditOff >= GL_PAGE_CREDIT_OFF(0) && s->k.la[1].creditOff <= GL_PAGE_CREDIT_OFF(GL_PAGE_CREDITS - 1) &&
+        (s->k.la[1].creditOff - GL_PAGE_CREDIT_OFF(0)) % 32u == 0 && gdakiCtrlLaCreditOffOk(s->k.la[1].page, s->k.la[1].creditOff));
+  CHECK(!gdakiCtrlLaCreditOffOk(s->k.la[1].page, 4092) && !gdakiCtrlLaCreditOffOk(s->k.la[1].page, 2066) &&
+        !gdakiCtrlLaCreditOffOk(s->k.la[1].page, 0));
   CHECK(pumpUntil(w.cores, [&] { return s->k.la[1].haveNote[3] && s->k.la[1].note[3].regInc == 1; }));
   CHECK(gdakiCtrlLaPairedOwn(&s->k));  // the latch's condition
   CHECK(!gdakiCtrlLaPathExists(&s->k));  // only one of the two launchers, and no spare of incarnation 2

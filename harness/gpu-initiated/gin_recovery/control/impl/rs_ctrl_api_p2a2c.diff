@@ -115,3 +115,44 @@ file keeps the header blocks byte for byte (`api`); the merge takes these commen
  static void gdakiCtrlChanInstall(struct gdakiRecHost* r, int peer, struct gdakiTsPeer& pe, int fd);
  // ---- the liveness READ QP [prep] ----
  // The QP of (this rank, peer) on the widened template (gdakiCtrlQpAttrProbe: NCCL_IB_TIMEOUT; a CQ of its own until
+Step 6 (impl/notes_p2a2.md "2a-2-C", the judgement's effect; work step 4), appended: against rs_ctrl_api.h d6b329a2
+(int3 merged the part above). Comments and one declaration: the confirmation window's verdict as the reaction on a
+pair with a live ring (ln4's witness rule elsewhere), and gdakiCtrlLaPullInputs (L's pullOk and the launcher page's
+registration word) beside gdakiCtrlLaLInputs. The host file keeps the header blocks byte for byte (`api`) and declares
+gdakiCtrlLaPullInputs itself until the merge (a second declaration is harmless).
+--- a/rs_ctrl_api.h
++++ b/rs_ctrl_api.h
+@@ -712,6 +712,11 @@
+ // 것 9); else the window cannot confirm. The order (design v3 4.2): REMACC, then NORESP, then a page of another process
+ // (incNonce of either READ not the expected one: cannot confirm), then the beat: READ2's watchBeat ahead of READ1's
+ // (wrapping compare: a beat that went back is not alive) alive, else STALE.
++// Phase 2a-2-C step 4: the verdict is the reaction on a pair whose records go on the live ring (with the page and its
++// liveness READ QP): the FIN or RST only opens the window, rows 3-6 end the peer at t_F + W (the hold when armed), row 8
++// re-dials the witness, row 9 leaves it unknown; the launcher's EXITED or FENCED of the incarnation ends it at once (row
++// 3) and opens a timing window (no verdict mailed). The tcp build and a pair without a live ring keep ln4's witness rule
++// (FIN = death at once; the window reports only).
+ enum : uint32_t {
+   GDAKI_CTRL_CW_ALIVE = 0,        // both READs done, the beat advanced
+   GDAKI_CTRL_CW_STALE = 1,        // the beat did not advance: FIN+STALE
+@@ -1270,6 +1275,11 @@
+ // (EXITED or FENCED) and the registration word ALIVE / LEFT of that incarnation, as the launcher link took them.
+ static void gdakiCtrlLaLInputs(struct gdakiRecHost* r, int peer, uint32_t inc, bool* left, bool* ended, bool* regAlive,
+                                bool* regLeft);
++// Phase 2a-2-C step 4: L's pull inputs of (peer, inc) for the watch thread (no lock): pullOk (the last pull of the peer's
++// node launcher's page succeeded within NCCL_GIN_CTRL_LAUNCHER_STALL_MS, its record QP up, its beat not stale) and the
++// page's registration word (ALIVE / LEFT, peer, inc); any other word or no slot is "no information".
++static void gdakiCtrlLaPullInputs(struct gdakiRecHost* r, int peer, uint32_t inc, bool* pullOk, bool* regAlive,
++                                  bool* regLeft);
+ // The PAUSED armable bit's launcher part (REVIEW_P3 고칠 것 2): this rank, the ward's buddy, is paired with the ward's
+ // node launcher (a revived buddy: again, as its new incarnation); true when this rank is not the ward's buddy.
+ static bool gdakiCtrlLaWardArmOk(struct gdakiRecHost* r, int ward);
+smoke3 requests (impl/notes_p2a2.md "2a-2-C", step 5 and the smoke3 items), appended: against rs_ctrl_api.h as it is.
+Comment only: the confirmation window reads line 0's watchBeat (the host's), not the device line (results/20261022_smoke3:
+the GPU progress line kept moving about 100 ms after SIGKILL); the host file keeps the header blocks byte for byte (`api`).
+--- a/rs_ctrl_api.h
++++ b/rs_ctrl_api.h
+@@ -784,3 +784,3 @@
+ // The liveness READ QP: SQ 4, RQ 0, REMOTE_READ only, the record QP's timeout, retry_cnt 7, the watch thread's CQ
+ // (max_rd_atomic 1: the READs in the SQ go one after another). Live: SQ 4 = the periodic pair (the page, the device
+-// progress line) + the confirmation window's two READs (the device line); the page region's model asserts it.
++// progress line) + the confirmation window's two READs (line 0's watchBeat, smoke3); the page region's model asserts it.

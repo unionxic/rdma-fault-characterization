@@ -31,14 +31,21 @@
 //      cause, the round cancelled as gdakiTsCancelRound does with the witness untouched (MakeUnknown, CauseLiveness:
 //      unknown), the re-pairing the peer started, the retry and its ACK, the other pairs unaffected; the witness's BYE,
 //      a late record and FIN with the ring live; the control and ring summary lines;
-//   6. the switches QP_ERR, CREDIT_STALL, DROP_UD, and malformed values;
+//   6. the switches QP_ERR, CREDIT_STALL, DROP_UD, and malformed values; 2a-2-C: the witness socket's DIE_RST (the line
+//      at <ms> after the origin, linger 0 and close: the peer reads ECONNRESET on a loopback TCP pair, then the die
+//      hook once), RST_GAP (its line only, nothing closed), FD_HOLDER=sock|uverbs (the fork line parsed by run_gc.sh's
+//      and rows_gc.py's regexes, the child named gin_fdhold holding 0-2 on /dev/null and only the passed fds: the
+//      witness socket, the context's command and async fds, none with the witness off; the peer sees no end until the
+//      child is killed);
 // the integration int2 (impl/notes_int2.md; the back end's "launchers' record QPs", the ring's side of phase 3's
 // transport table):
 //   7. the launcher count into the ring's page layout (rxConsumedL before staleMs, capped at 16), a fake launcher's record
 //      QP and UD QP: no QP before the binding, the create (64 RECVs, the consumed word gen << 32), 70 messages through a
 //      window of 64 and 32 send slots (envelope kind LAUNCHER, gen, seq 1..70 in order, ackSeq), the launcher's message
 //      back (its ackSeq opens the window, the consumed word, the link's queue), the page's beat READ (at most every 50
-//      ms), datagrams both ways (Q_Key, a malformed one counted bad), the blob slot READ by the launcher (and one too
+//      ms), 2a-2-C step 5: the window shut with no message back opened by the READ of the launcher page's consumed word
+//      (gdakiCtrlLaLearnAck, gdakiCtrlLaCreditDue: one in flight, every 1 ms at most, never back, another generation's
+//      ignored; no credit-only SEND), datagrams both ways (Q_Key, a malformed one counted bad), the blob slot READ by the launcher (and one too
 //      big), a gap in the launcher's sequence (the loss, taken once; no send after it), a new generation;
 // phase 2a-2-C (the model's "the pair's path" rule, the live seams' path hooks):
 //   8. the pair's path marker: the pure rule (the count, the closed old path, a generation seen before the one below it,
@@ -87,15 +94,19 @@
 #include <map>
 #include <mutex>
 #include <random>
+#include <regex>
 #include <set>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <signal.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -637,11 +648,23 @@ static void gdakiTsAnswerFail(struct gdakiRecHost*, int, int, uint64_t, const ch
 #include "gc_ring_backend.inc"
 // 2a-2-C: the FAIL seam the live seams call (its body is in gc_seam_bodies.inc; the host file declares it in its ctrl seams block)
 static void gdakiCtrlRejoinFail(struct gdakiRecHost* r, int fd, int peer, uint64_t round, const char* what);
+// smoke3: the witness-off rule the live seams ask (the page region's gdakiCtrlWitnessMuted on an effective pair; the host
+// file declares it at its head): the test's switch
+static bool gWitnessMuted = false;
+static bool gdakiCtrlWitnessMutedOf(struct gdakiRecHost*, int) { return gWitnessMuted; }
+// 2a-2-C: DIE_RST's end (the host file's SIGKILL of the process): counted, with the log's length when it came
+static int gDies = 0;
+static size_t gDieAtLog = 0;
+static void gdakiCtrlTestDieNow(struct gdakiRecHost*);
 #include "gc_live.inc"         // 2a-2-B: the live seams (the hooks, the witness pump, the live step, the summary)
 #include "gc_seam_bodies.inc"  // 2a-2-B: the swap points' bodies of the "[2] ring" placeholders
 #include "gc_ts_live.inc"      // 2a-2-B: gdakiTsCauseLiveness and gdakiTsMakeUnknown with their record-QP lines
 static bool gArmed = true;     // the communicator is armed (or has no restore): the switches' origin
 static bool gdakiCtrlArmedNow(struct gdakiRecHost*) { return gArmed; }
+static void gdakiCtrlTestDieNow(struct gdakiRecHost*) {
+  gDies++;
+  gDieAtLog = gLog.size();
+}
 
 // ---- in-process ranks ----
 static uint64_t mix64(uint64_t x) {  // the host file's gdakiTsMix64
@@ -1123,6 +1146,24 @@ static void sockPair(int sv[2]) {
   CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
   for (int i = 0; i < 2; i++) fcntl(sv[i], F_SETFL, fcntl(sv[i], F_GETFL, 0) | O_NONBLOCK);
 }
+// 2a-2-C: a connected TCP pair on the loopback (DIE_RST's reset needs TCP), non-blocking as the helper's. False: none.
+static bool tcpPair(int sv[2]) {
+  const int l = socket(AF_INET, SOCK_STREAM, 0);
+  struct sockaddr_in a;
+  memset(&a, 0, sizeof(a));
+  a.sin_family = AF_INET;
+  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  socklen_t al = sizeof(a);
+  bool ok = l >= 0 && bind(l, (struct sockaddr*)&a, sizeof(a)) == 0 && listen(l, 1) == 0 &&
+            getsockname(l, (struct sockaddr*)&a, &al) == 0;
+  sv[0] = ok ? socket(AF_INET, SOCK_STREAM, 0) : -1;
+  ok = ok && sv[0] >= 0 && connect(sv[0], (struct sockaddr*)&a, sizeof(a)) == 0;
+  sv[1] = ok ? accept(l, nullptr, nullptr) : -1;
+  ok = ok && sv[1] >= 0;
+  if (l >= 0) close(l);
+  for (int i = 0; ok && i < 2; i++) fcntl(sv[i], F_SETFL, fcntl(sv[i], F_GETFL, 0) | O_NONBLOCK);
+  return ok;
+}
 static void stepAll(std::vector<Rank>& R) {
   for (auto& k : R) {
     gdakiCtrlRingHelperStep(&k.r);
@@ -1561,27 +1602,222 @@ static void testSwitches() {
     unsetenv(GDAKI_CTRL_T_DROP_UD);
     teardown(R);
   }
+  // 2a-2-C: the witness socket's switches, on one rank of 2 live ones (the environment is the process's: the subject's
+  // switches parsed again from a fresh state with its origin unset, the other rank's stay off)
+  auto subjectOn = [](Rank& k, const char* name, const char* val) {
+    setenv(name, val, 1);
+    k.st.ring->sw = gdakiCtrlRingSw();
+    k.st.ring->originMs = -1;
+  };
+  // DIE_RST=<ms>: <ms> after the origin, linger 0 on the open witness socket, the line, the socket closed (the peer
+  // reads a reset: a loopback TCP pair here), then the die hook once; nothing more at later steps
+  {
+    std::vector<Rank> R(2);
+    CHECK(bringUp(R, 2));
+    int tp[2];
+    CHECK(tcpPair(tp));
+    R[0].ts.peers[1].fd = tp[0];
+    R[1].ts.peers[0].fd = tp[1];
+    const size_t l0 = logCount("GIN/TS: rank 0: test switch DIE_RST: linger 0 on 1 socket(s); SIGKILL now after_ckpt_ms=");
+    const int d0 = gDies;
+    subjectOn(R[0], GDAKI_CTRL_T_DIE_RST, "30");
+    stepAll(R);  // the origin
+    const double t0 = R[0].st.ring->originMs;
+    CHECK(t0 >= 0 && gDies == d0);
+    while (gDies == d0 && gdakiQ4MonoMs() - t0 < 3000.0) {
+      stepAll(R);
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    const double el = gdakiQ4MonoMs() - t0;
+    CHECK(gDies == d0 + 1 && el >= 30.0);
+    CHECK(logCount("GIN/TS: rank 0: test switch DIE_RST: linger 0 on 1 socket(s); SIGKILL now after_ckpt_ms=") == l0 + 1);
+    CHECK(gDieAtLog > 0 && gLog[gDieAtLog - 1].find("test switch DIE_RST: linger 0 on 1 socket(s); SIGKILL now") !=
+                               std::string::npos);  // the line is the last before the die
+    const std::regex rx("GIN/TS: rank (\\d+): test switch DIE_RST:");  // rows_gc.py SW_DIE_RST
+    std::smatch mm;
+    CHECK(std::regex_search(gLog[gDieAtLog - 1], mm, rx) && mm[1] == "0");
+    CHECK(gLog[gDieAtLog - 1].find(" mono_ms=") != std::string::npos);
+    CHECK(R[0].ts.peers[1].fd == -1 && fcntl(tp[0], F_GETFD) == -1);  // closed
+    struct gdakiTsPeer& pe = R[1].ts.peers[0];
+    struct gdakiTsMsg m;
+    int got = 0;
+    for (int k = 0; k < 200 && (got = gdakiCtrlWitnessPump(&R[1].r, 0, pe, &m)) == 0; k++)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    CHECK(got == -1 && strcmp(pe.closeCause, "ECONNRESET") == 0);  // a reset, not a FIN
+    for (int k = 0; k < 20; k++) stepAll(R);
+    CHECK(gDies == d0 + 1 && logCount("test switch DIE_RST: linger 0 on") == l0 + 1);
+    CHECK(logCount("GIN/TS: rank 1: test switch DIE_RST") == 0);
+    close(tp[1]);
+    pe.fd = -1;
+    unsetenv(GDAKI_CTRL_T_DIE_RST);
+    teardown(R);
+  }
+  // RST_GAP=<start>:<len>: its line only at <start> after the origin (the witness socket stays open, no die)
+  {
+    std::vector<Rank> R(2);
+    CHECK(bringUp(R, 2));
+    int wsv[2];
+    sockPair(wsv);
+    R[0].ts.peers[1].fd = wsv[0];
+    R[1].ts.peers[0].fd = wsv[1];
+    const char* want = "GIN/TS: rank 1: test switch RST_GAP: 0 socket(s) reset, listener closed for 0 ms (the line only "
+                       "in this build; asked 20:300) after_ckpt_ms=";
+    const size_t l0 = logCount(want);
+    const int d0 = gDies;
+    subjectOn(R[1], GDAKI_CTRL_T_RST_GAP, "20:300");
+    stepAll(R);
+    const double t0 = R[1].st.ring->originMs;
+    while (logCount(want) == l0 && gdakiQ4MonoMs() - t0 < 3000.0) {
+      stepAll(R);
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    CHECK(t0 >= 0 && logCount(want) == l0 + 1 && gdakiQ4MonoMs() - t0 >= 20.0);
+    for (int k = 0; k < 20; k++) stepAll(R);
+    CHECK(logCount(want) == l0 + 1 && gDies == d0);
+    std::string last;
+    for (const auto& l : gLog)
+      if (l.find(want) != std::string::npos) last = l;
+    const std::regex rx("GIN/TS: rank (\\d+): test switch RST_GAP:");  // rows_gc.py SW_RST_GAP
+    std::smatch mm;
+    CHECK(std::regex_search(last, mm, rx) && mm[1] == "1" && last.find(" mono_ms=") != std::string::npos);
+    CHECK(R[1].ts.peers[0].fd == wsv[1] && fcntl(wsv[1], F_GETFD) != -1 && fcntl(wsv[0], F_GETFD) != -1);
+    close(wsv[0]);
+    close(wsv[1]);
+    R[0].ts.peers[1].fd = R[1].ts.peers[0].fd = -1;
+    unsetenv(GDAKI_CTRL_T_RST_GAP);
+    teardown(R);
+  }
+  // FD_HOLDER=sock|uverbs: the fork at the origin; the line parsed by the runner's regexes, the child's name, its fds
+  // (0-2 on /dev/null and the passed ones only), the peer's end seen only once the child is killed
+  for (int mode = 0; mode < 3; mode++) {  // 0 sock, 1 uverbs, 2 sock with the witness off (holds 0)
+    std::vector<Rank> R(2);
+    CHECK(bringUp(R, 2));
+    int wsv[2], pa[2] = {-1, -1}, pb[2] = {-1, -1};
+    sockPair(wsv);
+    R[0].ts.peers[1].fd = wsv[0];
+    R[1].ts.peers[0].fd = wsv[1];
+    if (mode == 1) {
+      CHECK(pipe(pa) == 0 && pipe(pb) == 0);
+      R[0].ictx.cmd_fd = pa[1];
+      R[0].ictx.async_fd = pb[1];
+    }
+    if (mode == 2) R[0].st.page->witnessOn = false;
+    const int want = mode == 0 ? 1 : mode == 1 ? 3 : 0;
+    const char* kind = mode == 1 ? "uverbs" : "sock";
+    const size_t n0 = gLog.size();
+    subjectOn(R[0], GDAKI_CTRL_T_FD_HOLDER, kind);
+    stepAll(R);
+    std::string line;
+    for (size_t i = n0; i < gLog.size(); i++)
+      if (gLog[i].find("test switch FD_HOLDER=") != std::string::npos) line = gLog[i];
+    const std::regex runner("test switch FD_HOLDER=[a-z]+: child gin_fdhold pid=([0-9]+)");  // run_gc.sh wait_line
+    const std::regex rows("GIN/TS: rank (\\d+): test switch FD_HOLDER=(sock|uverbs): child gin_fdhold pid=(\\d+)");
+    std::smatch a, b;
+    CHECK(std::regex_search(line, a, runner) && std::regex_search(line, b, rows));
+    const int pid = a.size() > 1 ? atoi(a[1].str().c_str()) : -1;
+    CHECK(pid > 0 && pid == R[0].st.ring->sw.fdHoldPid && b.size() > 3 && b[1] == "0" && b[2] == kind &&
+          atoi(b[3].str().c_str()) == pid);
+    char hold[48];
+    snprintf(hold, sizeof(hold), " holds %d fd(s) after_ckpt_ms=", want);
+    CHECK(line.find(hold) != std::string::npos && line.find(" mono_ms=") != std::string::npos);
+    char path[64], buf[64];
+    snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+    std::string comm;
+    for (int k = 0; k < 200 && comm != "gin_fdhold\n"; k++) {
+      FILE* f = fopen(path, "r");
+      comm.clear();
+      if (f != nullptr && fgets(buf, sizeof(buf), f) != nullptr) comm = buf;
+      if (f != nullptr) fclose(f);
+      if (comm != "gin_fdhold\n") std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(comm == "gin_fdhold\n");
+    auto fdCount = [&]() {  // the child's open fds (/proc/<pid>/fd/0..1023)
+      int c = 0;
+      for (int fd = 0; fd < 1024; fd++) {
+        char p2[64];
+        snprintf(p2, sizeof(p2), "/proc/%d/fd/%d", pid, fd);
+        c += access(p2, F_OK) == 0;
+      }
+      return c;
+    };
+    int fc = -1;
+    for (int k = 0; k < 400 && (fc = fdCount()) != 3 + want; k++) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    CHECK(fc == 3 + want);
+    snprintf(path, sizeof(path), "/proc/%d/fd/0", pid);
+    ssize_t rl = readlink(path, buf, sizeof(buf) - 1);
+    CHECK(rl > 0 && std::string(buf, (size_t)(rl > 0 ? rl : 0)) == "/dev/null");
+    // the parent's copies closed: the peer sees no end while the child holds them
+    close(wsv[0]);
+    R[0].ts.peers[1].fd = -1;
+    if (mode == 1) {
+      close(pa[1]);
+      close(pb[1]);
+      R[0].ictx.cmd_fd = R[0].ictx.async_fd = 0;
+    }
+    auto ended = [&](int fd, int ms) {
+      struct pollfd q = {fd, POLLIN, 0};
+      if (poll(&q, 1, ms) <= 0) return false;
+      char c;
+      return read(fd, &c, 1) == 0;
+    };
+    CHECK(ended(wsv[1], 50) == (want == 0));  // held: no FIN (the witness off: nothing held, the FIN at once)
+    if (mode == 1) CHECK(!ended(pa[0], 20) && !ended(pb[0], 20));
+    CHECK(kill(pid, SIGKILL) == 0);
+    int stw = 0;
+    CHECK(waitpid(pid, &stw, 0) == pid && WIFSIGNALED(stw) && WTERMSIG(stw) == SIGKILL);
+    if (want != 0) CHECK(ended(wsv[1], 1000));
+    if (mode == 1) CHECK(ended(pa[0], 1000) && ended(pb[0], 1000));
+    for (int k = 0; k < 10; k++) stepAll(R);
+    size_t forks = 0;
+    for (size_t i = n0; i < gLog.size(); i++) forks += gLog[i].find("child gin_fdhold pid=") != std::string::npos;
+    CHECK(forks == 1);  // one fork, by the subject only
+    close(wsv[1]);
+    if (mode == 1) {
+      close(pa[0]);
+      close(pb[0]);
+    }
+    R[1].ts.peers[0].fd = -1;
+    unsetenv(GDAKI_CTRL_T_FD_HOLDER);
+    teardown(R);
+  }
   // malformed values: one WARN each, the switch off
   {
     setenv(GDAKI_CTRL_T_QP_ERR, "soon", 1);
     setenv(GDAKI_CTRL_T_CREDIT_STALL, "5", 1);
     setenv(GDAKI_CTRL_T_DROP_UD, "all", 1);
+    setenv(GDAKI_CTRL_T_DIE_RST, "soon", 1);
+    setenv(GDAKI_CTRL_T_RST_GAP, "5", 1);
+    setenv(GDAKI_CTRL_T_FD_HOLDER, "all", 1);
     std::vector<Rank> R(2);
     const size_t w0 = logCount("test switch QP_ERR=soon is not"), w1 = logCount("test switch CREDIT_STALL=5 is not"),
-                 w2 = logCount("test switch DROP_UD=all is not");
+                 w2 = logCount("test switch DROP_UD=all is not"), w3 = logCount("test switch DIE_RST=soon is not <ms>"),
+                 w4 = logCount("test switch RST_GAP=5 is not <start ms>:<length ms>"),
+                 w5 = logCount("test switch FD_HOLDER=all is not sock|uverbs");
+    const int d0 = gDies;
     CHECK(bringUp(R, 2));
     stepAll(R);
     CHECK(logCount("test switch QP_ERR=soon is not") == w0 + 2 && logCount("test switch CREDIT_STALL=5 is not") == w1 + 2 &&
           logCount("test switch DROP_UD=all is not") == w2 + 2);
+    CHECK(logCount("test switch DIE_RST=soon is not <ms>") == w3 + 2 &&
+          logCount("test switch RST_GAP=5 is not <start ms>:<length ms>") == w4 + 2 &&
+          logCount("test switch FD_HOLDER=all is not sock|uverbs") == w5 + 2);
     CHECK(R[0].st.ring->sw.qpErrAtMs < 0 && R[0].st.ring->sw.stallFromMs < 0 && R[0].st.ring->sw.dropUdLeft == 0);
+    CHECK(R[0].st.ring->sw.dieRstAtMs < 0 && R[0].st.ring->sw.rstGapAtMs < 0 && R[0].st.ring->sw.fdHold == 0 &&
+          R[0].st.ring->sw.fdHoldPid < 0 && gDies == d0);
     unsetenv(GDAKI_CTRL_T_QP_ERR);
     unsetenv(GDAKI_CTRL_T_CREDIT_STALL);
     unsetenv(GDAKI_CTRL_T_DROP_UD);
+    unsetenv(GDAKI_CTRL_T_DIE_RST);
+    unsetenv(GDAKI_CTRL_T_RST_GAP);
+    unsetenv(GDAKI_CTRL_T_FD_HOLDER);
     teardown(R);
   }
   printf("switches: QP_ERR (one line, the re-pairing from the switched side, one -1 each side), CREDIT_STALL (no record "
          "in the stall, the window shut and the queue deferred, no RNR, all in order after it), DROP_UD (two REJOIN "
-         "datagrams dropped, the third and a REJOIN_ACK sent), malformed values off with a WARN\n");
+         "datagrams dropped, the third and a REJOIN_ACK sent); DIE_RST (the line, linger 0, the peer's ECONNRESET, the "
+         "die hook once), RST_GAP (the line only), FD_HOLDER sock, uverbs, sock with the witness off (the fork line by "
+         "the runner's regexes, gin_fdhold with 1, 3, 0 passed fds and 0-2 on /dev/null, the peer's end only after its "
+         "kill); malformed values off with a WARN\n");
 }
 #endif  // !NCCL_GIN_CTRL_TCP
 
@@ -1738,6 +1974,75 @@ static void testLaunchers() {
   CHECK(gReads == reads0 + 2);
   gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
   CHECK(gdakiCtrlRdmaLaBeatTake(g, 0, &gotMv, &gotBeat, &nDone) && nDone == 1);
+  // 2a-2-C step 5: the launcher page's credit READ. The pure rule first: the consumed word of this generation, never
+  // above what was sent, never back; another generation's ignored; due only when shut with something queued, one at a
+  // time, at most every GDAKI_CTRL_CREDIT_READ_MS
+  CHECK(gdakiCtrlLaLearnAck(1, 70, 64, (1ull << 32) | 66u) == 66 && gdakiCtrlLaLearnAck(1, 70, 64, (1ull << 32) | 7u) == 64);
+  CHECK(gdakiCtrlLaLearnAck(1, 70, 64, (1ull << 32) | 71u) == 64 && gdakiCtrlLaLearnAck(1, 70, 64, (2ull << 32) | 70u) == 64);
+  CHECK(gdakiCtrlLaLearnAck(3, (1ull << 32) + 5u, 0, (3ull << 32) | 2u) == (1ull << 32) + 2u);  // the 32-bit count wraps
+  CHECK(gdakiCtrlLaCreditDue(true, true, false, 0.0, 1.0) && !gdakiCtrlLaCreditDue(true, true, false, 0.0, 0.5) &&
+        !gdakiCtrlLaCreditDue(false, true, false, 0.0, 5.0) && !gdakiCtrlLaCreditDue(true, false, false, 0.0, 5.0) &&
+        !gdakiCtrlLaCreditDue(true, true, true, 0.0, 5.0));
+  {
+    // 70 more: 58 fill the window (ackIn 64 + 64), 12 wait; the launcher sends nothing back (no ackSeq): only the READ of
+    // its page's consumed word (glPageCredit.consumed at GL_PAGE_CREDIT_OFF(0) = 2064) opens it
+    const uint32_t coff = 64u + 32u * 62u + 16u;
+    const uint64_t laddr = (uint64_t)(uintptr_t)lpage.data() + coff;
+    auto putWord = [&](uint64_t v) { memcpy(lpage.data() + coff, &v, 8); };
+    for (int i = 0; i < 70; i++) {
+      std::vector<uint8_t> m(256, (uint8_t)(70 + i));
+      CHECK(gdakiCtrlRdmaLaSend(g, 0, m.data()) == 0);
+    }
+    for (int i = 0; i < 4; i++) gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+    CHECK(la.seqOut == 128 && la.pend.size() == 12 && la.ackIn == 64);
+    w.clear();
+    lpoll(&w);
+    recvs = 0;
+    for (const struct ibv_wc& c : w) {
+      if (c.opcode != IBV_WC_RECV) continue;
+      recvs++;
+      struct gdakiCtrlEnv e;
+      memcpy(&e, lbuf.data() + (size_t)c.wr_id * 512u, sizeof(e));
+      CHECK(e.seq == seqWant && e.ackSeq == 1);
+      seqWant++;
+      CHECK(lrecv(lq, (uint32_t)c.wr_id));
+    }
+    CHECK(recvs == 58 && seqWant == 129);
+    const uint64_t cr0 = la.creditReads, reads1 = gReads;
+    double t0 = now + 100.0;
+    putWord((1ull << 32) | 7u);  // behind what the rank knows: no change
+    gdakiCtrlRdmaLaCreditAsk(g, 0, laddr, pgmr->rkey, t0);
+    gdakiCtrlRdmaLaCreditAsk(g, 0, laddr, pgmr->rkey, t0 + 2.0);  // in flight: no second
+    CHECK(la.creditOut && la.creditReads == cr0 + 1 && gReads == reads1 + 1);
+    gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+    CHECK(!la.creditOut && la.ackIn == 64 && la.pend.size() == 12 && la.creditLearned == 0);
+    gdakiCtrlRdmaLaCreditAsk(g, 0, laddr, pgmr->rkey, t0 + 0.5);  // within 1 ms of the last: none
+    CHECK(la.creditReads == cr0 + 1);
+    putWord((2ull << 32) | 100u);  // another generation's word: ignored
+    gdakiCtrlRdmaLaCreditAsk(g, 0, laddr, pgmr->rkey, t0 + 1.0);
+    gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+    CHECK(la.creditReads == cr0 + 2 && la.ackIn == 64 && la.pend.size() == 12);
+    putWord((1ull << 32) | 80u);  // the launcher consumed 80: the window opens, the 12 go (seq 129-140)
+    gdakiCtrlRdmaLaCreditAsk(g, 0, laddr, pgmr->rkey, t0 + 2.0);
+    for (int i = 0; i < 4; i++) gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
+    CHECK(la.creditReads == cr0 + 3 && la.ackIn == 80 && la.creditLearned == 1 && la.pend.empty() && la.seqOut == 140 &&
+          !la.err);
+    gdakiCtrlRdmaLaCreditAsk(g, 0, laddr, pgmr->rkey, t0 + 10.0);  // nothing queued, the window open: no READ
+    CHECK(la.creditReads == cr0 + 3 && gReads == reads1 + 3);
+    w.clear();
+    lpoll(&w);
+    recvs = 0;
+    for (const struct ibv_wc& c : w) {
+      if (c.opcode != IBV_WC_RECV) continue;
+      recvs++;
+      struct gdakiCtrlEnv e;
+      memcpy(&e, lbuf.data() + (size_t)c.wr_id * 512u, sizeof(e));
+      CHECK(e.seq == seqWant && e.ackSeq == 1 && e.kind == GDAKI_CTRL_K_LAUNCHER);
+      seqWant++;
+      CHECK(lrecv(lq, (uint32_t)c.wr_id));
+    }
+    CHECK(recvs == 12 && seqWant == 141);  // no credit-only SEND: only the 12 messages, in order
+  }
   // datagrams: to the launcher (its Q_Key; a wrong one is lost), from it (the link's queue; a malformed one is bad)
   CHECK(gdakiMiHostQpConnect(lud, luv1, why, sizeof(why)) == ncclSuccess && lrecv(lud, 0));
   const uint64_t drop0 = gUdDropped, bad0 = g->badDgrams;
@@ -1792,7 +2097,7 @@ static void testLaunchers() {
   CHECK(!gdakiCtrlRdmaLaBlobPut(g, big.data(), big.size(), &at) && !gdakiCtrlRdmaLaBlobPut(nullptr, blob.data(), 1, &at));
   // a gap in the launcher's sequence (seq 3 after 1): the loss, taken once; nothing is sent after it
   CHECK(!gdakiCtrlRdmaLaErrTake(g, 0));
-  CHECK(lsendFrame(lq, GDAKI_CTRL_K_LAUNCHER, 1, 3, 70, 256, 0, 0));
+  CHECK(lsendFrame(lq, GDAKI_CTRL_K_LAUNCHER, 1, 3, 140, 256, 0, 0));
   gdakiCtrlRdmaPoll(g, gdakiQ4MonoMs());
   CHECK(la.err && !la.connected && la.bad == 1 && gdakiCtrlRdmaLaErrTake(g, 0) && !gdakiCtrlRdmaLaErrTake(g, 0));
   CHECK(gdakiCtrlRdmaLaSend(g, 0, pm.data()) != 0);
@@ -1809,8 +2114,10 @@ static void testLaunchers() {
   CHECK(gdakiCtrlCqDestroy(lcq));
   teardown(R);
   CHECK(gAhs.size() == ahs0 && gMrs.size() <= mrs0);
-  printf("launchers: 70 messages through a window of 64, one back, 2 beat READs, datagrams 2 out (1 lost) and 2 in (1 bad), "
-         "a 3000 B blob READ, a gap, a second generation\n");
+  printf("launchers: 70 messages through a window of 64, one back, 2 beat READs, 70 more with the window shut and no "
+         "message back: 3 credit READs of the launcher page's consumed word (behind, another generation, 80: the 12 queued "
+         "go, no credit-only SEND), datagrams 2 out (1 lost) and 2 in (1 bad), a 3000 B blob READ, a gap, a second "
+         "generation\n");
 }
 
 // ---- 8. 2a-2-C: the pair's path marker ----
@@ -2108,6 +2415,9 @@ static void testRejoin(int n, int d) {
           sp.path.txPath == GDAKI_CTRL_PM_RING && sp.path.txGen == 1 && sp.pairRec.peerIncKnown && sp.pairRec.peerInc == 0);
     gdakiCtrlRjWitnessRedial(&S.r, s);
     CHECK(ws.unknown && gdakiCtrlNoWitnessLv(&S.r, s) == GDAKI_TS_LV_UNKNOWN);
+    gWitnessMuted = true;  // smoke3: the witness off on an effective pair: no socket is no evidence at all
+    CHECK(gdakiCtrlNoWitnessLv(&S.r, s) == GDAKI_TS_LV_NOEVIDENCE);
+    gWitnessMuted = false;
     if (n == 2) {  // a repeat (its REJOIN_ACK lost): the stored one again, the QPs untouched; another QPN pair: dropped
       const uint32_t psn0 = vp.local.psn, gen0 = vp.ring.gen;
       const uint64_t rep0 = vp.rj.repeats;

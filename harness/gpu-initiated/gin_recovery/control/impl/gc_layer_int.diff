@@ -1,5 +1,5 @@
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index fefde6f..cbf9003 100644
+index fefde6f..e90cf53 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -23,6 +23,9 @@
@@ -12,7 +12,7 @@ index fefde6f..cbf9003 100644
  #include <cstring>
  #include <cstddef>
  #include <cerrno>
-@@ -437,6 +440,19 @@ static void gdakiRsNoteOff(void* comm, void* handle, const char* offWhy);  // gi
+@@ -437,6 +440,27 @@ static void gdakiRsNoteOff(void* comm, void* handle, const char* offWhy);  // gi
  static void gdakiRsMeasureStep(struct gdakiRecHost* r);                // gin-restore (rs, work package 4): below
  static void gdakiRsTeardownLine(struct gdakiRecHost* r);               // gin-restore (rs, work package 4): below
  static void gdakiHoldFree(struct gdakiRecHost* r);                     // gin-restore (rs, work package 7): below
@@ -23,6 +23,14 @@ index fefde6f..cbf9003 100644
 +static void gdakiCtrlOnRecord(struct gdakiRecHost* r, int from, const struct gdakiTsMsg& m);  // records 52-55
 +static void gdakiCtrlPageHelperStep(struct gdakiRecHost* r);             // the helper's hook (gdakiTsMain)
 +static void gdakiCtrlOnSocketLost(struct gdakiRecHost* r, int peer, const char* cause, bool left);  // gdakiTsSocketLost
++struct gdakiTsPeer;
++// 2a-2-C step 4: an effective pair's FIN opens the confirm window only (gdakiTsSocketLost); the verdict's reaction
++// (gdakiTsPeerLiveness: a round sees it)
++static bool gdakiCtrlFinOpensWindow(struct gdakiRecHost* r, int peer, struct gdakiTsPeer& pe, const char* cause);
++static void gdakiCtrlEffPoll(struct gdakiRecHost* r, int p, bool decline);
++// smoke3: the witness off (NCCL_GIN_CTRL_WITNESS=0): an effective pair's socket end opens no window, feeds no judgement
++static bool gdakiCtrlWitnessOffLost(struct gdakiRecHost* r, int peer, struct gdakiTsPeer& pe, const char* cause);
++static bool gdakiCtrlWitnessMutedOf(struct gdakiRecHost* r, int peer);  // that rule for `peer` now (gdakiCtrlNoWitnessLv)
 +static void gdakiCtrlVetoObserve(struct gdakiRecHost* r, int peer, int qpIdx, uint32_t rmsn);  // gdakiDetWatchStep
 +// gin-control (ring, phase 2a-2-B): the live seams' (the region "gin-control (ring): live seams")
 +static bool gdakiCtrlCauseIsQp(const char* cause);                     // a record QP's cause ("QP:..."): never an exit
@@ -32,7 +40,7 @@ index fefde6f..cbf9003 100644
  // ---- gin-restore (dev): log API (begin; impl/rs_log_api.h, byte for byte) ----
  // gin-mirror (v2): every function below that takes a peer works on the QPs of the user contexts to it ("user only",
  // gdakiRsQpsOfPeer; impl/rs_mirror_api.h); the mirror QP is read on its own (gdakiMiExecReadMirror,
-@@ -1608,6 +1624,9 @@ static void gdakiQ4Watch(struct gdakiQ4Host* q) {
+@@ -1608,6 +1632,9 @@ static void gdakiQ4Watch(struct gdakiQ4Host* q) {
        gdakiQ4Handle(q, r, monoMs);
      }
      if (q->ctx->rec) gdakiTsWatchdog(q->ctx->rec);  // GIN transparent recovery: no-op unless it is on
@@ -42,7 +50,7 @@ index fefde6f..cbf9003 100644
  #ifndef NCCL_GIN_TS_PRODUCTION
      if (q->qpWatchMs > 0 && gdakiQ4MonoMs() >= nextWatch) {
        nextWatch += q->qpWatchMs;
-@@ -1781,6 +1800,15 @@ struct gdakiRecQp {
+@@ -1781,6 +1808,15 @@ struct gdakiRecQp {
  };
  
  struct gdakiLb;  // gin-remaining: the NIC copy path (below)
@@ -58,7 +66,7 @@ index fefde6f..cbf9003 100644
  struct gdakiRecHost {
    void* commKey = nullptr;
    struct gdaki_context* ctx = nullptr;
-@@ -1862,6 +1890,10 @@ struct gdakiRecHost {
+@@ -1862,6 +1898,10 @@ struct gdakiRecHost {
    uint64_t rsOccSamples = 0, rsOccSum = 0, rsOccMax = 0;
    struct gdakiRsLogHost* rsLog = nullptr;  // gin-restore (dev, work package 6): the log's host state (no measurement mode)
    struct gdakiMiState mi;  // gin-mirror (impl/rs_mirror_api.h): the mirror layer's per-context state
@@ -69,7 +77,7 @@ index fefde6f..cbf9003 100644
  };
  
  static std::mutex gdakiRecRegMu;
-@@ -1913,6 +1945,9 @@ static void gdakiMiApplyRestored(struct gdakiRecHost* r, int peer, const struct
+@@ -1913,6 +1953,9 @@ static void gdakiMiApplyRestored(struct gdakiRecHost* r, int peer, const struct
  static void gdakiMiTeardownLine(struct gdakiRecHost* r);           // the summary line (after the helper stopped)
  static void gdakiMiFree(struct gdakiRecHost* r);                   // gdakiRecFree
  // ==== gin-mirror (host): declarations (end) ====
@@ -79,7 +87,7 @@ index fefde6f..cbf9003 100644
  
  // Proxy progress guard: with recovery off (rec == nullptr) it does nothing.
  struct gdakiRecProgressGuard {
-@@ -2568,6 +2603,9 @@ static bool gdakiRecFree(struct gdakiRecHost* r) {
+@@ -2568,6 +2611,9 @@ static bool gdakiRecFree(struct gdakiRecHost* r) {
    if (r->pinned) cudaFreeHost(r->pinned);
    gdakiHoldFree(r);  // gin-restore (rs, work package 7): the helper and the watcher stopped (gdakiTsFree, gdakiQ4Stop)
    gdakiMiFree(r);    // gin-mirror (host): the mirror's host state (its pool went with the QPs, or goes here)
@@ -89,7 +97,7 @@ index fefde6f..cbf9003 100644
    gdakiRsLogFree(r);  // gin-restore (dev, work package 6): the log's host state (nothing in a fail-fast process)
    if (r->rsAlloc != nullptr) {  // gin-restore (rs): the side table and log rings, after the NIC path's MRs are gone and
      (void)cudaFree(r->rsAlloc);  // once the context is not kept
-@@ -3519,6 +3557,14 @@ struct gdakiRsLocalIn {
+@@ -3519,6 +3565,14 @@ struct gdakiRsLocalIn {
    bool miPeersOk = true;           // every peer's MIRROR_SETUP arrived and every mirror QP to a peer connected (38)
    const char* miPeersWhy = nullptr;
    bool miSelfOk = true;            // the mirror context's self loop pair connected (38)
@@ -104,7 +112,7 @@ index fefde6f..cbf9003 100644
  };
  enum { GDAKI_RS_L_OK = 0 };
  // The first local condition that keeps the restore off on this rank, in a fixed order (0: none). The conditions are the
-@@ -3590,6 +3636,14 @@ static int gdakiRsLocalCheck(const struct gdakiRsLocalIn& in, char* why, size_t
+@@ -3590,6 +3644,14 @@ static int gdakiRsLocalCheck(const struct gdakiRsLocalIn& in, char* why, size_t
               !in.miSelfOk ? "the self loop pair of the mirror context" : in.miPeersWhy ? in.miPeersWhy : "unknown");
    code++;  // 39: gathered on the Resume exchange
    GDAKI_RS_L(in.miAsked && !in.miCtxOk, "%s (%s)", GDAKI_MI_R40, in.miCtxWhy ? in.miCtxWhy : "unknown");
@@ -119,7 +127,24 @@ index fefde6f..cbf9003 100644
  #undef GDAKI_RS_L
    snprintf(why, whyLen, "this rank can enable the restore");
    return GDAKI_RS_L_OK;
-@@ -6498,6 +6552,1217 @@ static inline const uint8_t* gdakiMiFetchedAt(const struct gdakiMiFetched& f, in
+@@ -5707,6 +5769,16 @@ static int gdakiHoldDeclineAction(const struct gdakiHoldDeclineIn& in, const cha
+ // after a BYE it is "BYE") and "ECONNREFUSED" (the second refused connect 1000-5000 ms after the first; an established
+ // socket's ECONNREFUSED is an unknown liveness, never a death).
+ static bool gdakiHoldStrongCause(const char* lostCause) {
++#if !NCCL_GIN_CTRL_TCP
++  // gin-control (page, 2a-2-C step 4): the judgement table's ends on a pair whose records go on the ring (rows 3-6,
++  // gdakiCtrlEffEnd; EXPERIMENT.md 9.3: the strong-evidence names of the rdma build)
++  if (lostCause != nullptr && (strcmp(lostCause, "EXITED") == 0 || strcmp(lostCause, "FIN+STALE") == 0 ||
++                               strcmp(lostCause, "FIN+NORESP") == 0 || strcmp(lostCause, "REMACC+FIN") == 0 ||
++                               strcmp(lostCause, "STALL") == 0 || strcmp(lostCause, "STALL_HELPER") == 0 ||
++                               strcmp(lostCause, "NORESP") == 0))
++    return true;  // smoke3: rows 14, 15 too (gdakiCtrlStallDecline with NCCL_GIN_RESTORE_FENCE=lineage); row 11 (the READ
++                  // failure path, gdakiCtrlEffOnReadRow); LINKDOWN (row 10) stays a decline
++#endif
+   return lostCause != nullptr && (strcmp(lostCause, "FIN") == 0 || strcmp(lostCause, "ECONNREFUSED") == 0);
+ }
+ 
+@@ -6498,6 +6570,1217 @@ static inline const uint8_t* gdakiMiFetchedAt(const struct gdakiMiFetched& f, in
  //   - "store request to buddy rank %d": seq= slot_bytes=  /  "store ready at buddy rank %d": gen=
  //   - "store summary" (teardown): writes= failed= requests= tcp_image_bytes= tcp_segment_bytes=
  // ---- gin-mirror: store API (end) ----
@@ -1337,7 +1362,7 @@ index fefde6f..cbf9003 100644
  
  // ---- gin-restore ckpt: pure functions (begin; impl/rs_unit_host.cc compiles this region on the CPU) ----
  // The checkpoint's decisions and bookkeeping (EXPERIMENT.md 9.4, 9.11.9 C1, M3), as functions of plain values.
-@@ -6994,8 +8259,15 @@ static bool gdakiStoreActInfoOf(struct gdakiRecHost* r, int d, struct gdakiStore
+@@ -6994,8 +8277,15 @@ static bool gdakiStoreActInfoOf(struct gdakiRecHost* r, int d, struct gdakiStore
  static void gdakiStoreStep(struct gdakiRecHost* r);
  static void gdakiStoreOnBuddyRestored(struct gdakiRecHost* r, int buddy);
  struct gdakiMiHostQp;
@@ -1353,7 +1378,7 @@ index fefde6f..cbf9003 100644
  static ncclResult_t gdakiMiHostQpConnect(struct gdakiMiHostQp* q, const struct gdakiMiQpEndpoint& remote, char* why,
                                           size_t whyLen);
  static ncclResult_t gdakiMiHostQpXfer(struct gdakiMiHostQp* q, bool read, void* local, uint32_t lkey, uint64_t remote,
-@@ -8290,6 +9562,9 @@ enum { GDAKI_TS_LV_NOEVIDENCE = 0, GDAKI_TS_LV_UNKNOWN = 1, GDAKI_TS_LV_DEAD = 2
+@@ -8290,6 +9580,9 @@ enum { GDAKI_TS_LV_NOEVIDENCE = 0, GDAKI_TS_LV_UNKNOWN = 1, GDAKI_TS_LV_DEAD = 2
  static int gdakiTsCauseLiveness(const char* cause) {
    static const char* const unknown[] = {"ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN", "ENONET",
                                          "ECONNRESET", "EPIPE", "ECONNABORTED", "ECONNREFUSED"};
@@ -1363,7 +1388,7 @@ index fefde6f..cbf9003 100644
    for (const char* u : unknown)
      if (!strcmp(cause, u)) return GDAKI_TS_LV_UNKNOWN;
    return GDAKI_TS_LV_DEAD;
-@@ -8300,6 +9575,11 @@ static void gdakiTsTestMute(struct gdakiTs* ts, int rank);  // test knob, below
+@@ -8300,6 +9593,11 @@ static void gdakiTsTestMute(struct gdakiTs* ts, int rank);  // test knob, below
  
  // The peer is unknown from now: no socket, the lower rank re-dials and the higher rank probes (gin-reconnect, gin-oneway).
  static void gdakiTsMakeUnknown(struct gdakiTsPeer& pe) {
@@ -1375,7 +1400,7 @@ index fefde6f..cbf9003 100644
    if (pe.fd >= 0) {
      // gin-harden: with a reset, never a FIN: a peer that still holds this connection reads ECONNRESET (unknown), not
      // FIN (death)
-@@ -8325,6 +9605,13 @@ static int gdakiTsSocketLost(struct gdakiRecHost* r, int p, bool connectRefused
+@@ -8325,6 +9623,19 @@ static int gdakiTsSocketLost(struct gdakiRecHost* r, int p, bool connectRefused
    struct gdakiTs* ts = r->ts;
    struct gdakiTsPeer& pe = ts->peers[p];
    const char* cause = pe.closeCause[0] ? pe.closeCause : "unknown";
@@ -1385,11 +1410,17 @@ index fefde6f..cbf9003 100644
 +                "the ring re-pairs mono_ms=%.3f", r->ctx->rank, p, cause, gdakiQ4MonoMs());  // witness: no window, no death
 +    return GDAKI_TS_LV_UNKNOWN;
 +  }
++  // gin-control (page, smoke3): the witness off: the socket is the bootstrap's and BYE's only; its end on an effective
++  // pair is no evidence (no window, no death, no re-dial; the launcher's report or the READ failure path judges)
++  if (gdakiCtrlWitnessOffLost(r, p, pe, cause)) return GDAKI_TS_LV_NOEVIDENCE;
++  // gin-control (page, 2a-2-C step 4): a FIN of a pair whose records go on the ring opens the confirm window only; the
++  // table's verdict at t_F + W or the launcher's end decides (gdakiCtrlEffPoll)
++  if (!connectRefused && gdakiCtrlFinOpensWindow(r, p, pe, cause)) return GDAKI_TS_LV_UNKNOWN;
 +#endif
    int lv = connectRefused ? GDAKI_TS_LV_DEAD : gdakiTsCauseLiveness(cause);  // gin-oneway
    if (pe.left) lv = GDAKI_TS_LV_LEFT;                                        // gin-harden
    snprintf(pe.lostCause, sizeof(pe.lostCause), "%s", pe.left ? "BYE" : cause);
-@@ -8351,6 +9638,9 @@ static int gdakiTsSocketLost(struct gdakiRecHost* r, int p, bool connectRefused
+@@ -8351,6 +9662,9 @@ static int gdakiTsSocketLost(struct gdakiRecHost* r, int p, bool connectRefused
      ts->cDeaths.fetch_add(1, std::memory_order_relaxed);
      WARN("GIN/TS: rank %d: rank %d judged dead (cause=%s) mono_ms=%.3f", r->ctx->rank, p, cause, gdakiQ4MonoMs());
    }
@@ -1399,7 +1430,7 @@ index fefde6f..cbf9003 100644
    return lv == GDAKI_TS_LV_LEFT ? GDAKI_TS_LV_DEAD : lv;  // a peer that left cannot take a round either
  }
  
-@@ -8359,6 +9649,9 @@ static int gdakiTsSocketLost(struct gdakiRecHost* r, int p, bool connectRefused
+@@ -8359,6 +9673,9 @@ static int gdakiTsSocketLost(struct gdakiRecHost* r, int p, bool connectRefused
  // gin-peer: a first refusal older than GDAKI_TS_REFUSAL_FORGET_MS is forgotten (gin-harden counted it however old it
  // was): death needs two refusals 1000-5000 ms apart, with no connect that went through in between.
  #define GDAKI_TS_REFUSAL_FORGET_MS 5000.0
@@ -1409,7 +1440,7 @@ index fefde6f..cbf9003 100644
  static void gdakiTsRefused(struct gdakiRecHost* r, int p, bool probe) {
    struct gdakiTsPeer& pe = r->ts->peers[p];
    if (pe.left || pe.peerFailed) return;  // it said BYE (or declined this pair): a closed listen socket is expected
-@@ -8370,7 +9663,13 @@ static void gdakiTsRefused(struct gdakiRecHost* r, int p, bool probe) {
+@@ -8370,7 +9687,13 @@ static void gdakiTsRefused(struct gdakiRecHost* r, int p, bool probe) {
    }
    if (pe.refusals == 0) pe.firstRefusalMs = now;
    pe.refusals++;
@@ -1423,7 +1454,7 @@ index fefde6f..cbf9003 100644
    if (probe)
      GIN_TS_NOTE("GIN/TS: rank %d: probe of rank %d refused (ECONNREFUSED) mono_ms=%.3f refusal=%d", r->ctx->rank, p, now,
                  pe.refusals);
-@@ -8387,13 +9686,30 @@ static void gdakiTsRefused(struct gdakiRecHost* r, int p, bool probe) {
+@@ -8387,13 +9710,33 @@ static void gdakiTsRefused(struct gdakiRecHost* r, int p, bool probe) {
    if (pe.nextProbeMs < next) pe.nextProbeMs = next;
  }
  
@@ -1444,6 +1475,9 @@ index fefde6f..cbf9003 100644
  static int gdakiTsPeerLiveness(struct gdakiRecHost* r, int p, const char** cause) {
    struct gdakiTsPeer& pe = r->ts->peers[p];
    *cause = pe.lostCause[0] ? pe.lostCause : "no socket";
++#if !NCCL_GIN_CTRL_TCP
++  gdakiCtrlEffPoll(r, p, false);  // gin-control (page, 2a-2-C step 4): the window's verdict or the launcher's end first
++#endif
    if (pe.gone) return GDAKI_TS_LV_DEAD;
    if (pe.unknown) return GDAKI_TS_LV_UNKNOWN;
 +#if NCCL_GIN_CTRL_TCP
@@ -1454,7 +1488,7 @@ index fefde6f..cbf9003 100644
    if (pe.have > 0) return GDAKI_TS_LV_NOEVIDENCE;
    char c;
    ssize_t k = recv(pe.fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
-@@ -8774,7 +10090,7 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
+@@ -8774,7 +10117,7 @@ static void gdakiTsReconnectStep(struct gdakiRecHost* r) {
            continue;
          }
          if (ts->peers[h.from].declined) {
@@ -1463,7 +1497,7 @@ index fefde6f..cbf9003 100644
            continue;
          }
          gdakiRsRejoinPark(r, h.from, fd, h);  // keeps fd (it becomes the installed socket on acceptance)
-@@ -9304,8 +10620,14 @@ static void gdakiCkptStepPairs(struct gdakiRecHost* r, uint64_t from, std::vecto
+@@ -9304,8 +10647,14 @@ static void gdakiCkptStepPairs(struct gdakiRecHost* r, uint64_t from, std::vecto
  // struct gdakiStoreActInfo: the store branch's definition (its declarations block)
  static bool gdakiStoreActInfoOf(struct gdakiRecHost* r, int d, struct gdakiStoreActInfo* out);        // [store]
  struct gdakiMiHostQp;                                                                                 // [store]
@@ -1478,7 +1512,7 @@ index fefde6f..cbf9003 100644
  static ncclResult_t gdakiMiHostQpConnect(struct gdakiMiHostQp* q, const struct gdakiMiQpEndpoint& remote, char* why,
                                           size_t whyLen);                                             // [store]
  static ncclResult_t gdakiMiHostQpXfer(struct gdakiMiHostQp* q, bool read, void* local, uint32_t lkey, uint64_t remote,
-@@ -9509,6 +10831,15 @@ static void gdakiRsRejoinExpire(struct gdakiRecHost* r) {
+@@ -9509,6 +10858,15 @@ static void gdakiRsRejoinExpire(struct gdakiRecHost* r) {
    // gin-mirror (lineage, EXPERIMENT.md 9.9): the peer's lineage before the acceptance (its declined flag and cell state
    // are the state conditions below; the REJOIN must name dead + 1). Read before gdakiRsRejMu (gdakiLnOf takes it).
    const struct gdakiLnView lv = gdakiLnOf(r, peer);
@@ -1494,7 +1528,7 @@ index fefde6f..cbf9003 100644
    {
      std::lock_guard<std::mutex> lk(gdakiRsRejMu);
      struct gdakiRsRejoinState* e = gdakiRsRejFindLocked(r, peer);
-@@ -9526,18 +10857,30 @@ static void gdakiRsRejoinExpire(struct gdakiRecHost* r) {
+@@ -9526,18 +10884,30 @@ static void gdakiRsRejoinExpire(struct gdakiRecHost* r) {
    }
    auto refuse = [&](const char* w) -> int {
      snprintf(why, whyLen, "%s", w);
@@ -1526,7 +1560,7 @@ index fefde6f..cbf9003 100644
    if (la != GDAKI_LN_REJOIN_ACCEPT) {
      char lw[160];
      snprintf(lw, sizeof(lw), "REJOIN incarnation %u is %s for the lineage (%s, dead %u): not dead + 1", m.pad,
-@@ -9568,7 +10911,20 @@ static void gdakiRsRejoinExpire(struct gdakiRecHost* r) {
+@@ -9568,7 +10938,20 @@ static void gdakiRsRejoinExpire(struct gdakiRecHost* r) {
    ack.round = gen;
    ack.executed[0] = GDAKI_RS_WIRE_VERSION;
    ack.executed[1] = gdakiRsSelfInc(r);  // the survivor's own incarnation
@@ -1548,7 +1582,7 @@ index fefde6f..cbf9003 100644
    // Accepted: this socket is the peer's helper socket now; clear the death marks and install it, bump the known
    // incarnation, keep the endpoint and token for the swap.
    struct gdakiRsEndpoint ep;
-@@ -9613,6 +10969,9 @@ static void gdakiRsRejoinExpire(struct gdakiRecHost* r) {
+@@ -9613,6 +10996,9 @@ static void gdakiRsRejoinExpire(struct gdakiRecHost* r) {
      }
    }
    gdakiTsInstall(r, peer, fd, gen, 0);  // clears lostAfterCommit (gpu-detect hk)
@@ -1558,7 +1592,7 @@ index fefde6f..cbf9003 100644
    snprintf(why, whyLen, "REJOIN accepted from rank %d incarnation %u gen %u", peer, m.pad, gen);
    return GDAKI_RS_REJOIN_ACCEPTED;
  }
-@@ -9629,7 +10988,7 @@ static void gdakiRsRejoinExpire(struct gdakiRecHost* r) {
+@@ -9629,7 +11015,7 @@ static void gdakiRsRejoinExpire(struct gdakiRecHost* r) {
    m.nqp = local->nqp;
    m.tok = *local;
    m.executed[0] = GDAKI_RS_WIRE_VERSION;
@@ -1567,7 +1601,7 @@ index fefde6f..cbf9003 100644
  }
  
  // A READY record handed by the state machine (rs_spare_api.h gdakiRsTakeReady): the spare's QPs are RTS and its token
-@@ -9855,7 +11214,7 @@ static ncclResult_t gdakiRsWriteRkeySlot(struct gdakiRecHost* r, const __be32* r
+@@ -9855,7 +11241,7 @@ static ncclResult_t gdakiRsWriteRkeySlot(struct gdakiRecHost* r, const __be32* r
    m.nonce = ts->nonce;
    m.pad = gdakiLnOf(r, peer).cur;  // gin-mirror (lineage): the successor's (HOLD_SUCC), as known before
    m.executed[0] = GDAKI_RS_WIRE_VERSION;
@@ -1576,7 +1610,7 @@ index fefde6f..cbf9003 100644
  }
  // A RESTORED record handed by the state machine (rs_spare_api.h gdakiRsTakeRestored).
  [[maybe_unused]] static bool gdakiRsTakeRestored(struct gdakiRecHost* r, int peer, const struct gdakiTsMsg* m) {
-@@ -9998,15 +11357,27 @@ static void gdakiRsSpareGiveUp(struct gdakiRecHost* r, int extraFd) {
+@@ -9998,15 +11384,27 @@ static void gdakiRsSpareGiveUp(struct gdakiRecHost* r, int extraFd) {
  //      DONE_RS.
  //  (3) RESTORED to every survivor, then the helper starts (it then owns the installed sockets).
  // Any failure ends without BYE (gdakiRsSpareGiveUp). *stepOut: the checkpoint step to restore from.
@@ -1604,7 +1638,7 @@ index fefde6f..cbf9003 100644
    // (1) the activation socket and the gate
    union ncclSocketAddress aAddr;
    char ifName[MAX_IF_NAME_SIZE + 1];
-@@ -10096,6 +11467,21 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
+@@ -10096,6 +11494,21 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
      gdakiRsSpareGiveUp(r, -1);
      return ncclSystemError;
    }
@@ -1626,7 +1660,7 @@ index fefde6f..cbf9003 100644
    const uint32_t incarnation = act.incarnation;
    if (stepOut) *stepOut = act.step;
    gdakiRsSetSelfInc(r, incarnation);  // carried in this spare's reconnect HELLO/PROBE pad (fencing)
-@@ -10118,6 +11504,9 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
+@@ -10118,6 +11531,9 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
      actFd = -1;
      if (fr != ncclSuccess) {
        WARN("GIN/MI: rank %d: the spare's FETCH of checkpoint %llu failed: %s", rank, (unsigned long long)act.step, fw);
@@ -1636,7 +1670,7 @@ index fefde6f..cbf9003 100644
        gdakiRsSpareGiveUp(r, -1);
        return ncclSystemError;
      }
-@@ -10125,9 +11514,34 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
+@@ -10125,9 +11541,34 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
    }
    if (!gdakiMiRejoinAllowed(mi, actState)) {
      WARN("GIN/MI: rank %d: the spare's activation did not reach its FETCH's end (state %d): no REJOIN", rank, actState);
@@ -1671,7 +1705,7 @@ index fefde6f..cbf9003 100644
    // this spare's endpoint (the same for every QP of its context): its new helper listen address and its GID/LID
    struct gdaki_exch_info self;
    gdakiFillExchInfo(&self, g, g->gqps[rank]);
-@@ -10138,6 +11552,9 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
+@@ -10138,6 +11579,9 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
    // (2) every gated survivor
    const double deadline = gdakiQ4MonoMs() + handshakeMs;
    auto rem = [&]() { return std::max(1, (int)(deadline - gdakiQ4MonoMs())); };
@@ -1681,7 +1715,7 @@ index fefde6f..cbf9003 100644
    std::vector<int> xs(ts->peers.size(), GDAKI_RS_XS_HELD);  // this spare's mirror of each exchange's order
    for (int p = 0; p < (int)ts->peers.size(); p++) {
      struct gdakiTsPeer& pe = ts->peers[p];
-@@ -10167,12 +11584,16 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
+@@ -10167,12 +11611,16 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
      // dial and REJOIN until a REJOIN_ACK, a refusal (FAIL/BYE: gone) or the deadline
      int fd = -1;
      struct gdakiTsMsg in;
@@ -1698,7 +1732,7 @@ index fefde6f..cbf9003 100644
        const socklen_t alen = pe.addr.sa.sa_family == AF_INET6 ? sizeof(pe.addr.sin6) : sizeof(pe.addr.sin);
        fd = socket(pe.addr.sa.sa_family, SOCK_STREAM, 0);
        if (fd < 0) { gdakiRsSpareGiveUp(r, -1); return ncclSystemError; }
-@@ -10186,10 +11607,27 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
+@@ -10186,10 +11634,27 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
          socklen_t el = sizeof(err);
          up = poll(&pf, 1, std::min(rem(), 500)) == 1 && getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el) == 0 && err == 0;
        }
@@ -1727,7 +1761,7 @@ index fefde6f..cbf9003 100644
        if (got == 1 && (in.type == GDAKI_TS_FAIL || in.type == GDAKI_TS_BYE) && in.from == p && in.nonce == ts->nonce) {
          WARN("GIN/RS: spare rank %d: rank %d answered the REJOIN with %s: it is gone for this restore", rank, p,
               gdakiTsMsgName(in.type));
-@@ -10200,17 +11638,26 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
+@@ -10200,17 +11665,26 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
          if (gdakiLnIsCurrent(selfView, in.pad)) break;  // gin-mirror (lineage): the echo of this process's incarnation
          echoFuture("REJOIN_ACK", p, in.pad);
        }
@@ -1755,7 +1789,7 @@ index fefde6f..cbf9003 100644
      // gin-mirror (lineage, EXPERIMENT.md 9.9): this process's hold cell of survivor p moves with it, OFF(0) -> OFF(its
      // incarnation), so that its lineage is LIVE of that incarnation (before: OFF(0) with a known one above 0, a BAD
      // lineage that kept p's later hold from ever counting all its holders). The helper has not started: no other writer.
-@@ -10225,14 +11672,19 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
+@@ -10225,14 +11699,19 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
      }
      // the rkey list on the data socket (work package 5's; the caller gives it), before this spare waits for DONE_RS
      const int dfd = dataFd != nullptr ? dataFd(dataArg, p) : -1;
@@ -1776,7 +1810,7 @@ index fefde6f..cbf9003 100644
          in.from != p || !gdakiLnIsCurrent(selfView, in.pad) || in.nqp != nqp || in.tok.nqp != nqp) {
        if (in.type == GDAKI_TS_RS_TOKEN && in.from == p) echoFuture("TOKEN", p, in.pad);
        gdakiRsSpareGiveUp(r, -1);
-@@ -10292,18 +11744,39 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
+@@ -10292,18 +11771,39 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
      ready.tok = m.tok;  // this spare's QPNs and send PSNs, as announced
      ready.executed[0] = GDAKI_RS_WIRE_VERSION;
      ready.executed[1] = incarnation;
@@ -1818,7 +1852,7 @@ index fefde6f..cbf9003 100644
      struct gdakiTsMsg done;
      memset(&done, 0, sizeof(done));
      done.type = GDAKI_TS_RS_RESTORED;
-@@ -10312,7 +11785,7 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
+@@ -10312,7 +11812,7 @@ static ncclResult_t gdakiRsSpareRun(struct gdakiRecHost* r, int activatePort, in
      done.pad = incarnation;
      done.executed[0] = GDAKI_RS_WIRE_VERSION;
      done.executed[1] = incarnation;
@@ -1827,7 +1861,7 @@ index fefde6f..cbf9003 100644
    }
    ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
    ts->active.store(1, std::memory_order_release);
-@@ -11522,7 +12995,11 @@ static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bo
+@@ -11522,7 +13022,11 @@ static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bo
      }
    });
    q4->hasError.store(1, std::memory_order_release);
@@ -1839,7 +1873,7 @@ index fefde6f..cbf9003 100644
      struct gdakiTsMsg m;
      memset(&m, 0, sizeof(m));
      m.type = GDAKI_TS_FAIL;
-@@ -11530,7 +13007,7 @@ static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bo
+@@ -11530,7 +13034,7 @@ static void gdakiTsDecline(struct gdakiRecHost* r, int peer, const char* why, bo
      m.arg = cls;
      m.nonce = ts->nonce;               // gin-peer
      m.pad = gdakiTsCausePad(cause);    // gin-peer: the cause on this side
@@ -1848,7 +1882,7 @@ index fefde6f..cbf9003 100644
    }
    WARN("GIN/TS: declined rank=%d peer=%d reason=\"%s\" class=%d mono_ms=%.3f (error surfaces; QPs left in ERR)",
         r->ctx->rank, peer, why, cls, gdakiQ4MonoMs());
-@@ -11713,6 +13190,12 @@ static bool gdakiTsCancelRound(struct gdakiRecHost* r, int peer, const struct gd
+@@ -11713,6 +13217,12 @@ static bool gdakiTsCancelRound(struct gdakiRecHost* r, int peer, const struct gd
    if (pe.left) return false;
    snprintf(pe.lostCause, sizeof(pe.lostCause), "%s", cause);
    gdakiTsMakeUnknown(pe);
@@ -1861,7 +1895,7 @@ index fefde6f..cbf9003 100644
    GIN_TS_NOTE("GIN/TS: rank %d: socket to rank %d closed cause=%s mono_ms=%.3f liveness=unknown", r->ctx->rank, peer,
                cause, gdakiQ4MonoMs());
    (void)ncclGinRecoverAbort((ncclComm_t)r->commKey, peer);
-@@ -11815,7 +13298,7 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
+@@ -11815,7 +13325,7 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
      m.arg = reason;
      m.nonce = ts->nonce;                  // gin-peer
      m.pad = gdakiTsNackPad(reason, pe);   // gin-peer: the cause on this side
@@ -1870,7 +1904,7 @@ index fefde6f..cbf9003 100644
    };
    const char* why = nullptr;
    double gidWaitMs = 0;
-@@ -11877,7 +13360,7 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
+@@ -11877,7 +13387,7 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
    m.t[1] = (tP - tQ) * 1e3;
    m.t[2] = (tC - tG) * 1e3;
    m.t[3] = (tC - t0) * 1e3;
@@ -1879,7 +1913,7 @@ index fefde6f..cbf9003 100644
      // after this rank's Commit: the commit cannot be undone, so this round declines (the initiator's retry, if any,
      // is answered NACK 2)
      char w[80];
-@@ -11893,7 +13376,7 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
+@@ -11893,7 +13403,7 @@ static void gdakiTsRespondPrepared(struct gdakiRecHost* r, int peer, const struc
    // the first receive gets hk's bound unchanged); without hold state the first record decides, as hk
    const int got = gdakiHoldRecvParked(
        gdakiTsRoundLeftMs(ts, 2 * ts->handshakeMs + ts->pathWaitMs),
@@ -1888,7 +1922,7 @@ index fefde6f..cbf9003 100644
        [] { return gdakiQ4MonoMs(); });
    if (got < 0) {
      char w[96];
-@@ -11944,18 +13427,27 @@ static bool gdakiTsServeLower(struct gdakiRecHost* r, int waitPeer, uint64_t wai
+@@ -11944,18 +13454,27 @@ static bool gdakiTsServeLower(struct gdakiRecHost* r, int waitPeer, uint64_t wai
    for (int p = 0; p < (int)ts->peers.size(); p++) {
      if (p == waitPeer || p == me || (p < me && !canNest)) continue;
      struct gdakiTsPeer& pe = ts->peers[p];
@@ -1918,7 +1952,7 @@ index fefde6f..cbf9003 100644
      }
      const uint32_t savedScope = gdakiTsScope;  // a decline below walks every context; the waiting round's scope comes back
      if (m.type == GDAKI_TS_REQ && m.from == p) {
-@@ -11981,7 +13473,11 @@ static bool gdakiTsServeLower(struct gdakiRecHost* r, int waitPeer, uint64_t wai
+@@ -11981,7 +13500,11 @@ static bool gdakiTsServeLower(struct gdakiRecHost* r, int waitPeer, uint64_t wai
        } else {
          pe.deferredReq = true;
          pe.deferred = m;
@@ -1930,7 +1964,7 @@ index fefde6f..cbf9003 100644
          pe.deferredMs = gdakiQ4MonoMs();
          ts->cDeferred.fetch_add(1, std::memory_order_relaxed);
          GIN_TS_NOTE("GIN/TS: rank %d: REQ round %lu from rank %d kept until round %lu with rank %d ends (a higher rank waits) "
-@@ -12021,26 +13517,36 @@ static void gdakiTsDropKept(struct gdakiRecHost* r, int p, const char* why) {
+@@ -12021,26 +13544,36 @@ static void gdakiTsDropKept(struct gdakiRecHost* r, int p, const char* why) {
  // failure), serving the other peers meanwhile (gdakiTsServeLower). NCCL_GIN_TS_SERVE_WAIT=0: gdakiTsRecv (as before).
  static int gdakiTsRecvServing(struct gdakiRecHost* r, int peer, uint64_t round, struct gdakiTsMsg* out, int timeoutMs) {
    struct gdakiTs* ts = r->ts;
@@ -1971,7 +2005,7 @@ index fefde6f..cbf9003 100644
    }
  }
  
-@@ -12201,7 +13707,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+@@ -12201,7 +13734,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
               pe.lostCause);
      return gdakiTsDecline(r, peer, w, false, cls, (pe.left ? gdakiCause::PeerLeft : gdakiCause::Unknown));
    }
@@ -1980,7 +2014,7 @@ index fefde6f..cbf9003 100644
      char w[80];
      const char* n = gdakiTsErrName(errno);
      snprintf(w, sizeof(w), "cannot send REQ (%s)", n ? n : "send failed");
-@@ -12264,7 +13770,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+@@ -12264,7 +13797,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
          n.round = a.round;
          n.from = g->rank;
          n.arg = 1;  // collision
@@ -1989,7 +2023,7 @@ index fefde6f..cbf9003 100644
          return gdakiTsDecline(r, peer, "simultaneous recovery from both ends (tie-break off)", false, cls, gdakiCause::Unknown);
        }
        if (g->rank > peer && a.pad != reqScope) {
-@@ -12304,7 +13810,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+@@ -12304,7 +13837,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
            n.round = a.round;
            n.from = g->rank;
            n.arg = 12;
@@ -1998,7 +2032,7 @@ index fefde6f..cbf9003 100644
            return;
          }
        }
-@@ -12359,7 +13865,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
+@@ -12359,7 +13892,7 @@ static void gdakiTsInitiate(struct gdakiRecHost* r, const struct gdakiTsFault& f
    m.type = GDAKI_TS_DONE;
    m.round = round;
    m.from = g->rank;
@@ -2007,7 +2041,7 @@ index fefde6f..cbf9003 100644
      // gin-harden: the socket is lost, not the peer: unknown (the peer, waiting for DONE, declines on its own)
      const char* n = gdakiTsErrName(errno);
      snprintf(pe.closeCause, sizeof(pe.closeCause), "%s", n ? n : "send failed");
-@@ -12395,7 +13901,7 @@ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiT
+@@ -12395,7 +13928,7 @@ static void gdakiTsRespond(struct gdakiRecHost* r, int peer, const struct gdakiT
      m.arg = reason;
      m.nonce = ts->nonce;                  // gin-peer
      m.pad = gdakiTsNackPad(reason, pe);   // gin-peer: the cause on this side
@@ -2016,7 +2050,7 @@ index fefde6f..cbf9003 100644
    };
    if (gdakiHoldOnReq(r, peer, req)) return;  // gin-restore (rs, work package 7, RL20): a held peer's REQ: NACK 17
    gdakiTsDropKept(r, peer, "a newer REQ of that rank is answered");  // gin-remaining (review H1)
-@@ -12744,6 +14250,9 @@ static void gdakiDetWatchStep(struct gdakiRecHost* r) {
+@@ -12744,6 +14277,9 @@ static void gdakiDetWatchStep(struct gdakiRecHost* r) {
            return;
          }
          gdakiPolicyObserveRmsn(r, rq.qpIdx, rmsn);  // hk (G7): fail-fast does nothing with it
@@ -2026,7 +2060,7 @@ index fefde6f..cbf9003 100644
          if (st == 0x3u) {  // RTS
            ts->qs[rq.qpIdx].detErrMs = 0;
            return;
-@@ -12981,10 +14490,14 @@ static int gdakiHoldSend(struct gdakiRecHost* r, int to, struct gdakiTsMsg* m) {
+@@ -12981,10 +14517,14 @@ static int gdakiHoldSend(struct gdakiRecHost* r, int to, struct gdakiTsMsg* m) {
    struct gdakiTs* ts = r->ts;
    if (ts == nullptr || to < 0 || to >= (int)ts->peers.size() || to == r->ctx->rank) return -1;
    struct gdakiTsPeer& pe = ts->peers[to];
@@ -2042,7 +2076,7 @@ index fefde6f..cbf9003 100644
  }
  static void gdakiHoldMsgInit(struct gdakiTsMsg* m, uint32_t type, int subject, uint32_t inc) {
    memset(m, 0, sizeof(*m));
-@@ -13086,7 +14599,11 @@ static void gdakiHoldFallback(struct gdakiRecHost* r, int peer, const char* why)
+@@ -13086,7 +14626,11 @@ static void gdakiHoldFallback(struct gdakiRecHost* r, int peer, const char* why)
    gdakiCkptPeerReset(r, peer);  // work package 5
    h->nFallbacks.fetch_add(1, std::memory_order_relaxed);
    struct gdakiTsPeer& pe = r->ts->peers[peer];
@@ -2054,7 +2088,7 @@ index fefde6f..cbf9003 100644
    const int told = gdakiHoldBroadcast(r, GDAKI_TS_FALLBACK, peer, inc, -1);
    WARN("GIN/RS: rank %d: the restore of rank %d (incarnation %u) is given up (%s) in state %s; FALLBACK to %d rank(s)%s, "
         "and rank %d is declined as dead (PeerDead) mono_ms=%.3f", h->rank, peer, inc, why, gdakiHoldStateName(from), told,
-@@ -13176,6 +14693,9 @@ static void gdakiHoldStart(struct gdakiRecHost* r, int p, const char* why, uint6
+@@ -13176,6 +14720,9 @@ static void gdakiHoldStart(struct gdakiRecHost* r, int p, const char* why, uint6
    h->nHolds.fetch_add(1, std::memory_order_relaxed);
    GIN_TS_NOTE("GIN/RS: rank %d: rank %d (incarnation %u) is held for a restore instead of a decline (%s; cause=%s) "
                "mono_ms=%.3f", h->rank, p, inc, why, pe.lostCause, t0);
@@ -2064,7 +2098,7 @@ index fefde6f..cbf9003 100644
    gdakiTsScope = GDAKI_TS_SCOPE_ALL;  // 1, as the decline does
    bool wasOdd = false, readOk = true;
    gdakiRecForPeer(r, p, [&](gdakiRecQp&, struct doca_gpu_verbs_qp_hl* q) {
-@@ -13195,6 +14715,10 @@ static void gdakiHoldStart(struct gdakiRecHost* r, int p, const char* why, uint6
+@@ -13195,6 +14742,10 @@ static void gdakiHoldStart(struct gdakiRecHost* r, int p, const char* why, uint6
    ts->heartbeatUs.store(gdakiTsNowUs(), std::memory_order_release);
    pe.deadJudged = false;  // 4
    pe.failedPending = false;
@@ -2075,7 +2109,7 @@ index fefde6f..cbf9003 100644
    gdakiCkptOnHoldStart(r, p);  // work package 5: an input pause toward the peer ends here (the hold owns its gates)
    // 5: the parked device threads' clock (the oddSinceMs read before this quiesce set it, if the gates were even)
    hp.gateOddMs = gdakiHoldGateOddMs(tQ, wasOdd, gdakiHoldOldestRecordMs(r, p), oddBefore, hp.pauseStartMs);
-@@ -13266,9 +14790,14 @@ static bool gdakiHoldOnDecline(struct gdakiRecHost* r, int peer, const char* why
+@@ -13266,9 +14817,14 @@ static bool gdakiHoldOnDecline(struct gdakiRecHost* r, int peer, const char* why
    in.lostAfterCommit = pe.lostAfterCommit;
    in.otherHeld = held >= 0 && held != peer;
    const int b = gdakiHoldBuddyOf(peer, h->nranks);
@@ -2090,7 +2124,7 @@ index fefde6f..cbf9003 100644
    in.stopping = gdakiHoldStopping(r);
    const char* toldWhy = "";
    // TOLD last (it reads the peer's gates over the copy path): only when everything else would start a hold
-@@ -13363,8 +14892,13 @@ static void gdakiHoldDeclineRevived(struct gdakiRecHost* r, int peer, uint64_t v
+@@ -13363,8 +14919,13 @@ static void gdakiHoldDeclineRevived(struct gdakiRecHost* r, int peer, uint64_t v
    WARN("GIN/RS: rank %d: FALLBACK of incarnation %u of rank %d from rank %d after this rank took its RESTORED: incarnation "
         "%u is declined as dead (PeerDead) mono_ms=%.3f", h->rank, gdakiHoldIncOf(v) - 1u, peer, fromRank,
         gdakiHoldIncOf(v), gdakiQ4MonoMs());
@@ -2104,7 +2138,7 @@ index fefde6f..cbf9003 100644
  }
  // The spare's RESTORED (impl/rs_spare_api.h): PUBLISHED or TIMED_OUT_PUBLISHED (Q2: RESTORED wins over the deadline when
  // read first) -> ARMED or OFF of incarnation i + 1 (P5). Then this rank's own post-restore DISARM (9.10.7: every survivor
-@@ -13416,6 +14950,9 @@ static void gdakiHoldApplyRestored(struct gdakiRecHost* r, int peer, const struc
+@@ -13416,6 +14977,9 @@ static void gdakiHoldApplyRestored(struct gdakiRecHost* r, int peer, const struc
  // One record of the host branch's types (or the spare's RESTORED) from `from`, about its subject (arg; RESTORED: from).
  static void gdakiHoldOnMsg(struct gdakiRecHost* r, int from, const struct gdakiTsMsg& m) {
    struct gdakiHold* h = gdakiHoldOf(r);
@@ -2114,7 +2148,7 @@ index fefde6f..cbf9003 100644
    if (m.type >= GDAKI_TS_CKPT_PAUSE && m.type <= GDAKI_TS_CKPT_STABLE) return gdakiCkptOnMsg(r, from, m);  // package 5
    if (m.type == GDAKI_TS_RS_INJECTED) return gdakiHoldApplyInjected(r, from, m);  // gin-mirror (host): the revived rank's
    const bool restored = m.type == GDAKI_TS_RS_RESTORED;
-@@ -13476,11 +15013,20 @@ static void gdakiHoldDrain(struct gdakiRecHost* r, int peer) {
+@@ -13476,11 +15040,20 @@ static void gdakiHoldDrain(struct gdakiRecHost* r, int peer) {
    if (h == nullptr || peer < 0 || peer >= h->nranks) return;
    const int me = h->rank;
    const bool mi = gdakiMiOn(r);  // gin-mirror (host): with the mirror, the revived rank's INJECTED too, in arrival order
@@ -2135,7 +2169,7 @@ index fefde6f..cbf9003 100644
    struct gdakiTsMsg m;
    while (h->peers[peer].park.takeIf(mine, &m)) gdakiHoldOnMsg(r, peer, m);
  }
-@@ -13644,7 +15190,19 @@ static void gdakiHoldCommLost(struct gdakiRecHost* r, const char* why) {
+@@ -13644,7 +15217,19 @@ static void gdakiHoldCommLost(struct gdakiRecHost* r, const char* why) {
  // (the spare could only ever answer LATER, or REFUSED): the fallback at once. A spare that does not answer twice at least
  // 1000 ms apart (as gdakiTsRefused judges a death): the fallback (9.2: a failure inside the deadline takes the same way as
  // the deadline).
@@ -2155,7 +2189,7 @@ index fefde6f..cbf9003 100644
    struct gdakiHold* h = gdakiHoldOf(r);
    struct gdakiHoldPeer& hp = h->peers[peer];
    // gin-mirror (lineage, EXPERIMENT.md 9.9): the cell HELD only and the counted holders' incarnation the dead one (HELD_OLD);
-@@ -13674,16 +15232,42 @@ static void gdakiHoldActivate(struct gdakiRecHost* r, int peer) {
+@@ -13674,16 +15259,42 @@ static void gdakiHoldActivate(struct gdakiRecHost* r, int peer) {
           "mono_ms=%.3f", h->rank, peer, regInc, dead, gdakiQ4MonoMs());
      return gdakiHoldFallback(r, peer, "no spare process is registered for the peer's dead incarnation at its buddy");
    }
@@ -2198,7 +2232,7 @@ index fefde6f..cbf9003 100644
    int ans = -1;
    const bool mi = gdakiMiOn(r);
    if (mi) {
-@@ -13737,7 +15321,19 @@ static void gdakiHoldActivate(struct gdakiRecHost* r, int peer) {
+@@ -13737,7 +15348,19 @@ static void gdakiHoldActivate(struct gdakiRecHost* r, int peer) {
      if (mi) gdakiMiActEnd(r, peer);  // gin-mirror (spare)
      gdakiHoldFallback(r, peer, "the peer's spare does not answer the activation");
    }
@@ -2218,7 +2252,7 @@ index fefde6f..cbf9003 100644
  
  // ---- the restore of the held peer, driven from the helper step (9.3, 9.11.3 M4; impl/rs_spare_api.h's order) ----
  // The commit round: X again (the QPs ran nothing since the hold start's 2ERR), the endpoint swap, Commit with the spare's
-@@ -13880,15 +15476,24 @@ static void gdakiHoldReadSpare(struct gdakiRecHost* r, int p) {
+@@ -13880,15 +15503,24 @@ static void gdakiHoldReadSpare(struct gdakiRecHost* r, int p) {
    struct gdakiTsPeer& pe = r->ts->peers[p];
    struct gdakiTsMsg m;
    int got = 0;
@@ -2243,7 +2277,7 @@ index fefde6f..cbf9003 100644
  }
  static void gdakiHoldCancel(struct gdakiRecHost* r, int p, const char* why) {
    struct gdakiHold* h = gdakiHoldOf(r);
-@@ -14248,7 +15853,7 @@ static bool gdakiCkptSendFirst(struct gdakiRecHost* r, int fd, uint32_t purpose,
+@@ -14248,7 +15880,7 @@ static bool gdakiCkptSendFirst(struct gdakiRecHost* r, int fd, uint32_t purpose,
    m.arg = subject;
    m.round = round;
    m.pad = purpose;
@@ -2252,7 +2286,7 @@ index fefde6f..cbf9003 100644
  }
  // This rank's spare (NCCL_GIN_RESTORE_SPARE_ADDR=<host>:<port>), its PID and start time, read once.
  struct gdakiCkptSelf {
-@@ -14580,6 +16185,9 @@ static void gdakiCkptOnPause(struct gdakiRecHost* r, int from, const struct gdak
+@@ -14580,6 +16212,9 @@ static void gdakiCkptOnPause(struct gdakiRecHost* r, int from, const struct gdak
                                        ps.pause.logComplete && !pe.declined && st != GDAKI_HOLD_FALLBACK &&
                                        st != GDAKI_HOLD_CANCELLED,
                                      gdakiMiOn(r), miSwitched, miPath, miPool, miRestarted);
@@ -2262,7 +2296,7 @@ index fefde6f..cbf9003 100644
    struct gdakiTsMsg a;
    gdakiHoldMsgInit(&a, GDAKI_TS_PAUSED, s, 0);
    a.round = k;
-@@ -14978,7 +16586,13 @@ static void gdakiCkptInitStep(struct gdakiRecHost* r) {
+@@ -14978,7 +16613,13 @@ static void gdakiCkptInitStep(struct gdakiRecHost* r) {
        if (!ok) return gdakiCkptVoid(r, "the upload failed");
        // stable: the buddy first (a peer that saw CKPT_STABLE implies the buddy has it before any later FIN), then the
        // rest; no buddy, no stable checkpoint
@@ -2276,7 +2310,7 @@ index fefde6f..cbf9003 100644
        const int b = gdakiHoldBuddyOf(me, n);
        struct gdakiTsMsg m;
        gdakiHoldMsgInit(&m, GDAKI_TS_CKPT_STABLE, me, 0);
-@@ -15396,6 +17010,12 @@ static int gdakiHoldTransferStep(struct gdakiRecHost* r, int p, char* why, size_
+@@ -15396,6 +17037,12 @@ static int gdakiHoldTransferStep(struct gdakiRecHost* r, int p, char* why, size_
      return -1;
    }
    const uint32_t inc = gdakiLnOf(r, p).cur;  // gin-mirror (lineage): the successor's (HOLD_SUCC), as known before
@@ -2289,7 +2323,7 @@ index fefde6f..cbf9003 100644
    if (hp.xferFd < 0) {
      gdakiTsBusy busy(r->ts);  // the dial and the first record are bounded by a handshake each
      const int fd = gdakiCkptDial(r->ts->peers[p].addr, std::min(left, r->ts->handshakeMs));
-@@ -15479,7 +17099,11 @@ static bool gdakiCkptSpareFetch(struct gdakiCkptSpareData* d) {
+@@ -15479,7 +17126,11 @@ static bool gdakiCkptSpareFetch(struct gdakiCkptSpareData* d) {
    if (d->fetched) return d->fetchOk;
    // gin-mirror (spare): with the mirror the driver's RDMA FETCH read the slot and wrote the image before its first REJOIN
    // (impl/rs_store_api.h); its header and blob are taken here, no TCP FETCH
@@ -2301,7 +2335,7 @@ index fefde6f..cbf9003 100644
    d->fetched = true;
    struct gdakiRecHost* r = d->r;
    struct gdakiTs* ts = r->ts;
-@@ -15615,6 +17239,12 @@ static int gdakiCkptSpareDataFd(void* arg, int peer) {
+@@ -15615,6 +17266,12 @@ static int gdakiCkptSpareDataFd(void* arg, int peer) {
      return -1;
    }
    if (d->exports.size() != (size_t)r->nranks) d->exports.assign((size_t)r->nranks, std::vector<uint8_t>());
@@ -2314,7 +2348,7 @@ index fefde6f..cbf9003 100644
    const uint32_t inc = gdakiRsPeerInc(r, r->ctx->rank);
    const double deadline = gdakiQ4MonoMs() + d->timeoutMs;
    while (gdakiQ4MonoMs() < deadline) {
-@@ -15640,7 +17270,7 @@ static int gdakiCkptSpareDataFd(void* arg, int peer) {
+@@ -15640,7 +17297,7 @@ static int gdakiCkptSpareDataFd(void* arg, int peer) {
      a.round = d->step != nullptr ? *d->step : 0;
      uint64_t n = 0;
      std::vector<uint8_t>& x = d->exports[(size_t)peer];
@@ -2323,7 +2357,7 @@ index fefde6f..cbf9003 100644
                      n <= GDAKI_CKPT_STATE_MAX && (x.resize((size_t)n), true) &&
                      (n == 0 || gdakiCkptRecvAll(fd, x.data(), (size_t)n, std::max(1, (int)(deadline - gdakiQ4MonoMs())),
                                                  nullptr));
-@@ -16432,6 +18062,11 @@ struct gdakiMiHostQp {
+@@ -16432,6 +18089,11 @@ struct gdakiMiHostQp {
    int outstanding = 0;  // signaled requests posted and not completed
    uint64_t nextId = 1;
    bool err = false;     // an error completion, a failed post or a missed bound: the QP is in ERR (destroy it)
@@ -2335,7 +2369,7 @@ index fefde6f..cbf9003 100644
  };
  static uint32_t gdakiMiHostQpPsn() {
    static std::mutex mu;
-@@ -16448,14 +18083,24 @@ static void gdakiMiHostQpDestroy(struct gdakiMiHostQp* q) {
+@@ -16448,14 +18110,24 @@ static void gdakiMiHostQpDestroy(struct gdakiMiHostQp* q) {
      return;
    }
    q->qp = nullptr;
@@ -2360,7 +2394,7 @@ index fefde6f..cbf9003 100644
    *out = nullptr;
    memset(local, 0, sizeof(*local));
    struct gdaki_context* g = r != nullptr ? r->ctx : nullptr;
-@@ -16469,6 +18114,14 @@ static ncclResult_t gdakiMiHostQpCreate(struct gdakiRecHost* r, int maxRdAtomic,
+@@ -16469,6 +18141,14 @@ static ncclResult_t gdakiMiHostQpCreate(struct gdakiRecHost* r, int maxRdAtomic,
      snprintf(why, whyLen, "max_rd_atomic %d is outside 1..16", maxRdAtomic);
      return ncclInvalidUsage;
    }
@@ -2375,7 +2409,7 @@ index fefde6f..cbf9003 100644
    struct gdakiMiHostQp* q = new gdakiMiHostQp();
    (void)ncclIbStatsInit(&q->stats);
    q->maxRdAtomic = maxRdAtomic;
-@@ -16487,7 +18140,17 @@ static ncclResult_t gdakiMiHostQpCreate(struct gdakiRecHost* r, int maxRdAtomic,
+@@ -16487,7 +18167,17 @@ static ncclResult_t gdakiMiHostQpCreate(struct gdakiRecHost* r, int maxRdAtomic,
    memset(&gid, 0, sizeof(gid));
    if (q->roce && wrap_ibv_query_gid(ictx, q->port, q->gidIndex, &gid) != ncclSuccess) return fail("cannot read the GIN GID");
    // cq_context and qp_context: this QP's ncclIbStats (the async-event thread dereferences them; see the struct)
@@ -2393,7 +2427,7 @@ index fefde6f..cbf9003 100644
      q->cq = nullptr;
      return fail("cannot create a host QP's CQ");
    }
-@@ -16496,9 +18159,15 @@ static ncclResult_t gdakiMiHostQpCreate(struct gdakiRecHost* r, int maxRdAtomic,
+@@ -16496,9 +18186,15 @@ static ncclResult_t gdakiMiHostQpCreate(struct gdakiRecHost* r, int maxRdAtomic,
    ia.qp_context = &q->stats;
    ia.send_cq = q->cq;
    ia.recv_cq = q->cq;
@@ -2409,7 +2443,7 @@ index fefde6f..cbf9003 100644
    ia.cap.max_send_sge = 1;
    ia.cap.max_recv_sge = 1;
    if (wrap_ibv_create_qp(&q->qp, pd, &ia) != ncclSuccess) {
-@@ -16510,8 +18179,16 @@ static ncclResult_t gdakiMiHostQpCreate(struct gdakiRecHost* r, int maxRdAtomic,
+@@ -16510,8 +18206,16 @@ static ncclResult_t gdakiMiHostQpCreate(struct gdakiRecHost* r, int maxRdAtomic,
    a.qp_state = IBV_QPS_INIT;
    a.pkey_index = (uint16_t)g->pkey_index;
    a.port_num = q->port;
@@ -2426,7 +2460,7 @@ index fefde6f..cbf9003 100644
      return fail("cannot move a host QP to INIT");
    q->psn = gdakiMiHostQpPsn();
    local->qpn = q->qp->qp_num;
-@@ -16529,6 +18206,25 @@ static ncclResult_t gdakiMiHostQpConnect(struct gdakiMiHostQp* q, const struct g
+@@ -16529,6 +18233,25 @@ static ncclResult_t gdakiMiHostQpConnect(struct gdakiMiHostQp* q, const struct g
      snprintf(why, whyLen, "no host QP");
      return ncclInternalError;
    }
@@ -2452,7 +2486,7 @@ index fefde6f..cbf9003 100644
    if (!gdakiStoreEndpointOk(remote) || !gdakiIsValidActiveMtu((enum ibv_mtu)remote.mtu)) {
      snprintf(why, whyLen, "the remote endpoint is not valid (qpn %#x, mtu %d)", remote.qpn, remote.mtu);
      return ncclInvalidUsage;
-@@ -16540,7 +18236,11 @@ static ncclResult_t gdakiMiHostQpConnect(struct gdakiMiHostQp* q, const struct g
+@@ -16540,7 +18263,11 @@ static ncclResult_t gdakiMiHostQpConnect(struct gdakiMiHostQp* q, const struct g
    a.dest_qp_num = remote.qpn;
    a.rq_psn = remote.psn & 0xffffffu;
    a.max_dest_rd_atomic = (uint8_t)q->maxRdAtomic;
@@ -2464,7 +2498,7 @@ index fefde6f..cbf9003 100644
    a.ah_attr.port_num = q->port;
    if (q->roce) {
      a.ah_attr.is_global = 1;
-@@ -16559,9 +18259,15 @@ static ncclResult_t gdakiMiHostQpConnect(struct gdakiMiHostQp* q, const struct g
+@@ -16559,9 +18286,15 @@ static ncclResult_t gdakiMiHostQpConnect(struct gdakiMiHostQp* q, const struct g
    }
    memset(&a, 0, sizeof(a));
    a.qp_state = IBV_QPS_RTS;
@@ -2480,7 +2514,7 @@ index fefde6f..cbf9003 100644
    a.sq_psn = q->psn;
    a.max_rd_atomic = (uint8_t)q->maxRdAtomic;
    if (wrap_ibv_modify_qp(q->qp, &a, IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN |
-@@ -16675,6 +18381,72 @@ static ncclResult_t gdakiMiHostQpXfer(struct gdakiMiHostQp* q, bool read, void*
+@@ -16675,6 +18408,72 @@ static ncclResult_t gdakiMiHostQpXfer(struct gdakiMiHostQp* q, bool read, void*
    return ncclSuccess;
  }
  
@@ -2553,7 +2587,7 @@ index fefde6f..cbf9003 100644
  // ---- the state (struct gdakiMiState::store; created at first use with the mirror on, freed in gdakiStoreFree) ----
  enum { GDAKI_STORE_JOB_SERVE = 1, GDAKI_STORE_JOB_FREE = 2 };
  struct gdakiStoreJob {
-@@ -16735,12 +18507,22 @@ struct gdakiStoreState {
+@@ -16735,12 +18534,22 @@ struct gdakiStoreState {
    struct gdakiStoreStable wStable;
    // counters (the summary line)
    std::atomic<long long> nWrites{0}, nFailed{0}, nRequests{0}, nServed{0};
@@ -2576,7 +2610,7 @@ index fefde6f..cbf9003 100644
  }
  static struct gdakiStoreState* gdakiStoreOf(struct gdakiRecHost* r) {
    if (!gdakiStoreOn(r)) return nullptr;
-@@ -16858,7 +18640,11 @@ static void gdakiStoreServe(struct gdakiRecHost* r, struct gdakiStoreState* st,
+@@ -16858,7 +18667,11 @@ static void gdakiStoreServe(struct gdakiRecHost* r, struct gdakiStoreState* st,
        w.mr = mr;
        w.mem = mem;
      }
@@ -2588,7 +2622,7 @@ index fefde6f..cbf9003 100644
      w.spare = sp;
      a.ok = 1;
      a.gen = gen;
-@@ -16888,6 +18674,12 @@ static void gdakiStoreThreadMain(struct gdakiRecHost* r, struct gdakiStoreState*
+@@ -16888,6 +18701,12 @@ static void gdakiStoreThreadMain(struct gdakiRecHost* r, struct gdakiStoreState*
        j = st->jobs.front();
        st->jobs.erase(st->jobs.begin());
      }
@@ -2601,7 +2635,7 @@ index fefde6f..cbf9003 100644
      if (j.kind == GDAKI_STORE_JOB_FREE) {
        if (j.dropQp && j.d >= 0) {  // the QP before the MR (9.7 "정리와 해제"); w.qp is this thread's
          gdakiMiHostQpDestroy(st->wards[(size_t)j.d].qp);
-@@ -17178,7 +18970,11 @@ static void gdakiStoreUpStep(struct gdakiRecHost* r, struct gdakiStoreState* st)
+@@ -17178,7 +18997,11 @@ static void gdakiStoreUpStep(struct gdakiRecHost* r, struct gdakiStoreState* st)
    // (2) a new request when one is needed: after Resume, no checkpoint of this rank in flight, no WRITE, the buddy's
    //     helper socket installed and the buddy not held
    if (b < 0 || ck == nullptr || r->hold == nullptr || !gdakiHoldCommArmedNow(r->hold) || r->ts == nullptr) return;
@@ -2613,7 +2647,7 @@ index fefde6f..cbf9003 100644
        gdakiHoldIsHeldState(gdakiHoldPeerState(r, b, nullptr)))
      return;
    const bool idle = ck->phase == GDAKI_CKPT_I_IDLE;
-@@ -17237,12 +19033,20 @@ static void gdakiStoreUpStep(struct gdakiRecHost* r, struct gdakiStoreState* st)
+@@ -17237,12 +19060,20 @@ static void gdakiStoreUpStep(struct gdakiRecHost* r, struct gdakiStoreState* st)
      q.layoutHash = layout;
      struct gdakiStoreReqSpare sp;
      memset(&sp, 0, sizeof(sp));
@@ -2634,7 +2668,7 @@ index fefde6f..cbf9003 100644
      memcpy(m.executed, &q, sizeof(q));
      memcpy((uint8_t*)m.executed + GDAKI_STORE_SPARE_OFF, &sp, sizeof(sp));
      sent = gdakiHoldSend(r, b, &m) == 0;
-@@ -17264,6 +19068,9 @@ static void gdakiStoreUpStep(struct gdakiRecHost* r, struct gdakiStoreState* st)
+@@ -17264,6 +19095,9 @@ static void gdakiStoreUpStep(struct gdakiRecHost* r, struct gdakiStoreState* st)
    st->nRequests.fetch_add(1, std::memory_order_relaxed);
    GIN_TS_NOTE("GIN/MI: rank %d: store request to buddy rank %d seq=%lu slot_bytes=%lu reason=%s mono_ms=%.3f", me, b,
                (unsigned long)seq, (unsigned long)slotBytes, gdakiStoreNeedName(why), gdakiQ4MonoMs());
@@ -2644,7 +2678,7 @@ index fefde6f..cbf9003 100644
  }
  static void gdakiStoreStep(struct gdakiRecHost* r) {
    struct gdakiStoreState* st = gdakiStoreOf(r);
-@@ -17521,6 +19328,59 @@ static void gdakiStoreFillHdr(struct gdakiRecHost* r, struct gdakiCkptHdr* h, ui
+@@ -17521,6 +19355,59 @@ static void gdakiStoreFillHdr(struct gdakiRecHost* r, struct gdakiCkptHdr* h, ui
    h->pid = self.pid;
    h->pidStart = self.pidStart;
  }
@@ -2704,7 +2738,7 @@ index fefde6f..cbf9003 100644
  // One checkpoint (application thread): the regions and the staging buffer, the ask to the helper; once drained, inside
  // the pause, the D2H into the staging buffer with the header and the blob; COPIED; then, outside the pause once the
  // helper armed it (CKPT_RESUME sent), the WRITEs into the buddy's receiving slot, bounded; their result for CONFIRMING.
-@@ -17560,7 +19420,18 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
+@@ -17560,7 +19447,18 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
      ck->copyStream = nullptr;
      return backOff();
    }
@@ -2723,7 +2757,7 @@ index fefde6f..cbf9003 100644
    {
      std::lock_guard<std::mutex> lk(ck->mu);
      ck->regions = regs;
-@@ -17595,11 +19466,21 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
+@@ -17595,11 +19493,21 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
    // inside the pause (drained, fenced): the D2H into the staging buffer, the header and the blob around it
    const double c0 = gdakiQ4MonoMs();
    bool ok = true;
@@ -2745,7 +2779,7 @@ index fefde6f..cbf9003 100644
    const bool synced = cudaStreamSynchronize(ck->copyStream) == cudaSuccess;  // also after a failed enqueue: nothing late
    ok = ok && synced;
    const double d2hUs = (gdakiQ4MonoMs() - c0) * 1000.0;
-@@ -17622,6 +19503,9 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
+@@ -17622,6 +19530,9 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
    }
    ck->cv.notify_all();
    ck->nTaken.fetch_add(1, std::memory_order_relaxed);
@@ -2755,7 +2789,7 @@ index fefde6f..cbf9003 100644
    if (!copied || !ok) return;
    // the helper's verdict (COPYING: the counts again, CKPT_RESUME to every peer at 200 ms each at most): armed, or not.
    // The bound covers the helper's own COPYING bound (3 x the pause's bound from the pause's start) as well, so a helper
-@@ -17645,7 +19529,36 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
+@@ -17645,7 +19556,36 @@ static void gdakiStoreTake(struct gdakiRecHost* r, uint64_t step, const void* bl
      st->armed = false;
      st->takeWaiting = false;  // a later arm finds nobody waiting: its WRITEs count as failed (gdakiStoreArm)
    }
@@ -2792,7 +2826,7 @@ index fefde6f..cbf9003 100644
    // outside the pause: the WRITEs from the staging buffer into the buddy's receiving slot
    const int64_t writeMs = std::max<int64_t>(1, ncclParamGinRestoreStoreWriteMs());
    const double w0 = gdakiQ4MonoMs();
-@@ -17738,10 +19651,9423 @@ static void gdakiStoreFree(struct gdakiRecHost* r) {
+@@ -17738,10 +19678,10098 @@ static void gdakiStoreFree(struct gdakiRecHost* r) {
      WARN("GIN/MI: rank %d: the upload staging MR could not be deregistered; its buffer is kept mono_ms=%.3f", st->me,
           gdakiQ4MonoMs());
    }
@@ -2992,8 +3026,8 @@ index fefde6f..cbf9003 100644
 +// records 52-55, and the activation gate's FENCED branch. The ring and the launcher are phases 2 and 3; before they merge
 +// this is a mixed build: the record path still rides the preparation stage's TCP back end, and record 55 PROBE_SETUP
 +// carries the liveness-READ QP's pairing (the bodies of phase 2a-1's pairing model) over the helper TCP socket (design
-+// 7.1's handoff). The live bring-up is a named scaffold, off unless NCCL_GIN_CTRL_PAGE=1, so a cluster run of this dev
-+// build stays dormant by default.
++// 7.1's handoff). Since phase 2a-2 NCCL_GIN_CTRL_PAGE is 1 by default in the rdma build (0 turns the page and the ring
++// off); since 2a-2-C step 4 the judgement is the reaction on a pair whose records go on the live ring (gdakiCtrlEffOn).
 +// Threads (REVIEW_P12 막는 문제 6, 고칠 것 12): the watch thread owns the page's words, every liveness READ QP and its CQ;
 +// the helper owns the pairing, the fence word and every helper-socket write. They meet only in the per-peer handoff
 +// (struct gdakiCtrlPeerProbe: requests and results under the page mutex, the verdict mailboxes as atomic words).
@@ -3305,14 +3339,11 @@ index fefde6f..cbf9003 100644
 +  double lastStepMs = -1, stepGapMaxMs = 0;  // the reader's largest step gap within the window (a report)
 +  uint32_t verdict = GDAKI_CTRL_CW_UNCONFIRMED;  // the last window's
 +  uint64_t opened = 0, ignored = 0, late = 0;
-+  bool dev = false;             // live: READ1 and READ2 read the device line (beat = gdakiCtrlDevValue)
-+  bool quiet2 = false;          // live: READ2's line had nothing pending (a quiet GPU is not a stalled one)
 +};
-+// Live: `dev` (the peer's device line was read in this QP generation): READ1 and READ2 read the device line and the
-+// verdict compares the GPU's progress: a changed line, or a quiet one at READ2, is alive; an unchanged line with work
-+// pending is STALE. Without a device line the window reads line 0's watchBeat as before.
-+static inline bool gdakiCtrlWindowOpen(struct gdakiCtrlWindow* w, uint32_t src, double tF, bool countable,
-+                                       bool dev = false) {
++// smoke3 (2a-2-C step 5): READ1 and READ2 read line 0's watchBeat, the host's, always: a process's death stops its
++// watch thread at once, while its GPU's progress line kept moving about 100 ms after SIGKILL (results/20261022_smoke3:
++// 9/9 kill windows read "alive"). The device line stays the input of the stall rows (14, 15) only (gdakiCtrlRDerive).
++static inline bool gdakiCtrlWindowOpen(struct gdakiCtrlWindow* w, uint32_t src, double tF, bool countable) {
 +  if (w->state == GDAKI_CTRL_WS_OPEN) {
 +    w->ignored++;
 +    return false;
@@ -3328,7 +3359,6 @@ index fefde6f..cbf9003 100644
 +  w->src = src;
 +  w->tF = tF;
 +  w->countable = countable;
-+  w->dev = dev;
 +  return true;
 +}
 +enum : uint32_t { GDAKI_CTRL_WA_NONE = 0, GDAKI_CTRL_WA_POST1 = 1, GDAKI_CTRL_WA_POST2 = 2, GDAKI_CTRL_WA_JUDGE = 3 };
@@ -3368,7 +3398,7 @@ index fefde6f..cbf9003 100644
 +}
 +// A completion of window `no`'s READ `which` (1, 2) of class `cls`; false: not the open window's (dropped).
 +static inline bool gdakiCtrlWindowOnCqe(struct gdakiCtrlWindow* w, uint32_t no, uint32_t which, uint32_t cls,
-+                                        uint64_t beat, uint64_t inc, double nowMs, bool quiet = false) {
++                                        uint64_t beat, uint64_t inc, double nowMs) {
 +  if (w->state != GDAKI_CTRL_WS_OPEN || no != w->no) {
 +    w->late++;
 +    return false;
@@ -3384,7 +3414,6 @@ index fefde6f..cbf9003 100644
 +      w->beat2 = beat;
 +      w->inc2 = inc;
 +      w->r2Ms = nowMs;
-+      w->quiet2 = quiet;
 +    }
 +  } else if (cls == GDAKI_CTRL_CQ_REMACC) {
 +    w->remacc = true;
@@ -3394,10 +3423,8 @@ index fefde6f..cbf9003 100644
 +  return true;
 +}
 +static inline uint32_t gdakiCtrlWindowJudge(struct gdakiCtrlWindow* w, uint64_t incExpected, double nowMs) {
-+  uint64_t b2 = w->beat2;  // live: the device line's "advanced" is "changed, or quiet at READ2"
-+  if (w->dev && w->r1Done && w->r2Done) b2 = (w->beat2 != w->beat1 || w->quiet2) ? w->beat1 + 1u : w->beat1;
 +  w->verdict = gdakiCtrlConfirmVerdict(w->countable, w->remacc, w->r1Done, w->r2Done, incExpected, w->inc1, w->inc2,
-+                                       w->beat1, b2);
++                                       w->beat1, w->beat2);
 +  w->state = GDAKI_CTRL_WS_IDLE;
 +  w->endMs = nowMs;
 +  return w->verdict;
@@ -3599,10 +3626,10 @@ index fefde6f..cbf9003 100644
 +  if (f.busy == GDAKI_CTRL_BZ_OVER && f.busyOverMs < hs) hs = f.busyOverMs;
 +  return gdakiCtrlRofStale(false, hs, f.suspectMs, f.stallMs, f.guardOk, f.vetoClear, true);
 +}
-+// L (design v3 4.2): the launcher's words and messages. Phase 1 has no launcher: "no pairing with the launcher" is
-+// 무응답 by definition, so every R (11) is row 10 here; rows 10-12 carry no reaction (report only; REVIEW_P12 고칠 것 2).
-+// Phase 3 gives LEFT, the end and the registration word (gdakiCtrlLaLInputs, REVIEW_P3 고칠 것 1); pullOk waits for
-+// the launcher page's READ (TODO(2a-2) 5).
++// L (design v3 4.2): the launcher's words and messages. Without the launcher pairing L is 무응답 by definition, so every
++// R (11) is row 10; rows 10-12 carry no reaction (report only; REVIEW_P12 고칠 것 2). Phase 3 gives LEFT and the end
++// (gdakiCtrlLaLInputs, REVIEW_P3 고칠 것 1); 2a-2-C step 4 gives pullOk and the registration word from the launcher
++// page's pull (gdakiCtrlLaPullInputs, gdakiCtrlLaPageRegOf): a word that is not (ALIVE, p, i) is "no information".
 +static inline uint32_t gdakiCtrlLOf(bool launcherPaired, bool leftSeen, bool endedSeen, bool pullOk, bool regAlive,
 +                                    bool regLeft) {
 +  if (leftSeen || (pullOk && regLeft)) return GDAKI_CTRL_L_LEFT;
@@ -3639,6 +3666,137 @@ index fefde6f..cbf9003 100644
 +static inline uint32_t gdakiCtrlMailVerdict(uint64_t m) { return (uint32_t)(m >> 40) & 0xffu; }
 +static inline uint32_t gdakiCtrlMailCause(uint64_t m) { return (uint32_t)(m >> 32) & 0xffu; }
 +static inline uint32_t gdakiCtrlMailInc(uint64_t m) { return (uint32_t)m; }
++
++// ---- the judgement's effect on the record path (phase 2a-2-C step 4; EXPERIMENT.md 9.3, impl/notes_fix12.md "2a-2가
++// 다음에 묶을 것" 3) ----
++// An effective pair (its records go on the ring, the status page and its liveness READ QP are up): a witness FIN or RST
++// without BYE only opens the confirm window; the hold (the decline when not armed) starts on the table's verdict at
++// t_F + W (rows 3-6: EXITED, FIN+STALE, FIN+NORESP, REMACC+FIN) or at once on the launcher's EXITED or FENCED of the
++// pair's incarnation (row 3, "ended"; EXITED wins over a rising beat), never on the FIN by itself. Row 8 re-dials the
++// witness (alive); row 9, or no verdict within W + PROBE_TIMEOUT_MS, makes the witness unknown (re-dialled; the launcher's
++// report decides, ln4's refusal rule stays the last word). Any other pair (the tcp build, no ring, the ring not live yet,
++// no page) keeps ln4's witness rule: FIN = death at once. The helper's, one per peer.
++enum : uint32_t {
++  GDAKI_CTRL_EA_NONE = 0,    // nothing (no window of this incarnation pending, or its end was acted on)
++  GDAKI_CTRL_EA_OLD = 1,     // ln4's socket rule (FIN: death now; RST: unknown)
++  GDAKI_CTRL_EA_WINDOW = 2,  // the FIN or RST opened the window: no death until its verdict
++  GDAKI_CTRL_EA_END = 3,     // ended: the hold (armed) or the decline, now
++  GDAKI_CTRL_EA_REDIAL = 4,  // row 8: alive, the witness lost: re-dial it
++  GDAKI_CTRL_EA_WAIT = 5,    // row 9, or the verdict overdue: the witness unknown, the launcher's report decides
++};
++struct gdakiCtrlEff {
++  uint32_t pendInc1 = 0;  // the incarnation + 1 whose FIN or RST opened the window (0: none pending)
++  uint32_t doneInc1 = 0;  // the incarnation + 1 whose end was acted on (once per incarnation)
++  uint32_t src = 0;       // GDAKI_CTRL_WSRC_FIN or _RST of the pending one
++  double tF = 0;          // its t_F (the helper's clock)
++};
++// The rows that end a peer here (the floor rule: each carries the launcher's end or a FIN with a confirmed window).
++static inline bool gdakiCtrlEffEndRow(uint32_t row) { return row >= 3 && row <= 6; }
++static inline bool gdakiCtrlEffective(bool ringLive, bool pageUp, bool hasQp) { return ringLive && pageUp && hasQp; }
++// A FIN or RST (src) of incarnation inc at now. A second one of the same incarnation keeps the first t_F.
++static inline uint32_t gdakiCtrlEffOnFin(struct gdakiCtrlEff* e, bool effective, uint32_t src, uint32_t inc, double now) {
++  if (!effective) return GDAKI_CTRL_EA_OLD;
++  if (e->doneInc1 == inc + 1u) return GDAKI_CTRL_EA_NONE;  // ended already: the FIN is spent
++  if (e->pendInc1 != inc + 1u) {
++    e->pendInc1 = inc + 1u;
++    e->src = src;
++    e->tF = now;
++  }
++  return GDAKI_CTRL_EA_WINDOW;
++}
++// The window's verdict (its mailbox: the table's row) of incarnation inc.
++static inline uint32_t gdakiCtrlEffOnVerdict(struct gdakiCtrlEff* e, uint32_t row, uint32_t inc) {
++  if (e->pendInc1 != inc + 1u || e->doneInc1 == inc + 1u) return GDAKI_CTRL_EA_NONE;
++  e->pendInc1 = 0;
++  if (gdakiCtrlEffEndRow(row)) {
++    e->doneInc1 = inc + 1u;
++    return GDAKI_CTRL_EA_END;
++  }
++  return row == 8 ? GDAKI_CTRL_EA_REDIAL : GDAKI_CTRL_EA_WAIT;
++}
++// The launcher's EXITED or FENCED of incarnation inc (the fence word stands): the end at once, window or not.
++static inline uint32_t gdakiCtrlEffOnEnded(struct gdakiCtrlEff* e, bool effective, uint32_t inc) {
++  if (!effective || e->doneInc1 == inc + 1u) return GDAKI_CTRL_EA_NONE;
++  e->doneInc1 = inc + 1u;
++  e->pendInc1 = 0;
++  return GDAKI_CTRL_EA_END;
++}
++// A pending window without its verdict boundMs after t_F (the watch thread gone or late): WAIT once.
++static inline uint32_t gdakiCtrlEffOverdue(struct gdakiCtrlEff* e, double now, double boundMs) {
++  if (e->pendInc1 == 0 || now - e->tF <= boundMs) return GDAKI_CTRL_EA_NONE;
++  e->pendInc1 = 0;
++  return GDAKI_CTRL_EA_WAIT;
++}
++// smoke3 (NCCL_GIN_CTRL_WITNESS=0): on an effective pair the witness socket stays for the bootstrap and BYE only; its end
++// (FIN, RST, any error, a refused re-dial) opens no window and feeds no judgement (W is "off" in the table): the
++// launcher's report (row 3) or the READ failure path (rows 10, 11) judges. A pair without a live ring keeps ln4's rule
++// (its socket carries the records); an end after the peer's BYE is "left" as before.
++static inline bool gdakiCtrlWitnessMuted(bool effective, bool witnessOn, bool left) {
++  return effective && !witnessOn && !left;
++}
++// The READ failure path's end of incarnation inc (the periodic judgement's rows 10, 11: the hardware's retry exceeded,
++// the launcher unresponsive or its word not ALIVE with the witness off): once per incarnation, window or not. Row 10 is
++// LINKDOWN (a decline, no restore), row 11 NORESP (the hold when armed; the fence confirms).
++static inline bool gdakiCtrlEffReadRow(uint32_t row) { return row == 10 || row == 11; }
++static inline uint32_t gdakiCtrlEffOnReadRow(struct gdakiCtrlEff* e, bool effective, uint32_t row, uint32_t inc) {
++  if (!effective || !gdakiCtrlEffReadRow(row) || e->doneInc1 == inc + 1u) return GDAKI_CTRL_EA_NONE;
++  e->doneInc1 = inc + 1u;
++  e->pendInc1 = 0;
++  return GDAKI_CTRL_EA_END;
++}
++
++// ---- the launcher page pull (design v3 4.2 L: pullOk and the registration word; EXPERIMENT.md 9.2, 9.3) ----
++// launcher_msg.h's glPage: a 64 B head (magicVer first, beat second), then GDAKI_CTRL_LAP_REGS slots of 32 B {nonce, reg,
++// spare, spareSinceMs}, reg = (state << 56) | (rank << 32) | incarnation; a slot is bound to (nonce, rank) once and never
++// rebound. The pull is one READ of the head and the slots (the launcher host region static_asserts these numbers).
++#define GDAKI_CTRL_LAP_MAGIC 0x504c5247u  // GL_PAGE_MAGIC
++#define GDAKI_CTRL_LAP_HEAD 64u
++#define GDAKI_CTRL_LAP_SLOT 32u
++#define GDAKI_CTRL_LAP_REGS 62u
++#define GDAKI_CTRL_LAP_PULL_BYTES (GDAKI_CTRL_LAP_HEAD + GDAKI_CTRL_LAP_SLOT * GDAKI_CTRL_LAP_REGS)  // 2048
++#define GDAKI_CTRL_LAP_RS_ALIVE 1u        // GL_RS_ALIVE
++#define GDAKI_CTRL_LAP_RS_LEFT 3u         // GL_RS_LEFT
++// The registration word of (nonce, rank) in one pull (n bytes): 1 and *word when a slot is bound to them, 0 when none is
++// (the page answered), -1 when the bytes are not a whole pull of a launcher page.
++static inline int gdakiCtrlLaPageRegOf(const uint8_t* page, size_t n, uint64_t nonce, int rank, uint64_t* word) {
++  *word = 0;
++  if (page == nullptr || n < GDAKI_CTRL_LAP_PULL_BYTES) return -1;
++  uint64_t mv = 0;
++  memcpy(&mv, page, 8);
++  if ((uint32_t)(mv >> 32) != GDAKI_CTRL_LAP_MAGIC) return -1;
++  if (nonce == 0 || rank < 0) return 0;
++  for (uint32_t i = 0; i < GDAKI_CTRL_LAP_REGS; i++) {
++    uint64_t sn = 0, reg = 0;
++    memcpy(&sn, page + GDAKI_CTRL_LAP_HEAD + GDAKI_CTRL_LAP_SLOT * i, 8);
++    memcpy(&reg, page + GDAKI_CTRL_LAP_HEAD + GDAKI_CTRL_LAP_SLOT * i + 8, 8);
++    if (sn == nonce && (uint32_t)((reg >> 32) & 0xffffffu) == ((uint32_t)rank & 0xffffffu)) {
++      *word = reg;
++      return 1;
++    }
++  }
++  return 0;
++}
++// The pull's L inputs for incarnation inc: (ALIVE, rank, inc) is regAlive, (LEFT, rank, inc) regLeft; any other word or
++// no slot is "no information" (the word's EXITED and FENCED are not an end: the messages are).
++static inline void gdakiCtrlLaPageRegL(int found, uint64_t word, uint32_t inc, bool* regAlive, bool* regLeft) {
++  const uint32_t st = (uint32_t)(word >> 56), wi = (uint32_t)word;
++  *regAlive = found == 1 && st == GDAKI_CTRL_LAP_RS_ALIVE && wi == inc;
++  *regLeft = found == 1 && st == GDAKI_CTRL_LAP_RS_LEFT && wi == inc;
++}
++// pullOk: the launcher's record QP connected and not in error, its beat not stale (gdakiCtrlLaLost), and a pull succeeded
++// within the launcher stall bound (a READ that never completes leaves its last success behind: then 무응답).
++static inline bool gdakiCtrlLaPullOk(bool connected, bool qpErr, bool lost, double lastOkMs, double nowMs, double stallMs) {
++  return connected && !qpErr && !lost && lastOkMs >= 0 && nowMs - lastOkMs < stallMs;
++}
++// The published pull of one rank (helper -> watch, one word): (state << 56) | (pullOk << 33) | (found << 32) | inc.
++static inline uint64_t gdakiCtrlLaPullPack(bool pullOk, int found, uint64_t word) {
++  return (word & 0xff000000ffffffffull) | ((uint64_t)(pullOk ? 1u : 0u) << 33) | ((uint64_t)(found == 1 ? 1u : 0u) << 32);
++}
++static inline bool gdakiCtrlLaPullOkOf(uint64_t w) { return ((w >> 33) & 1u) != 0; }
++static inline void gdakiCtrlLaPullL(uint64_t w, uint32_t inc, bool* pullOk, bool* regAlive, bool* regLeft) {
++  *pullOk = gdakiCtrlLaPullOkOf(w);
++  gdakiCtrlLaPageRegL(((w >> 32) & 1u) != 0 ? 1 : 0, w & 0xff000000ffffffffull, inc, regAlive, regLeft);
++}
 +
 +// ---- the test switch FREEZE_PAGE (EXPERIMENT.md 9.9 "박동 쓰기만 멈춤") ----
 +// "<ms>": the watch thread writes neither beat for <ms>; "<ms>:helper": helperBeat only (watchBeat still rises). The
@@ -3732,6 +3890,7 @@ index fefde6f..cbf9003 100644
 +  uint64_t helperFw = 0;                // helper: firmware commands it ran for this QP (the probe summary)
 +  // watch -> helper, atomic: the verdict mailboxes and the "this QP broke in generation g" word (g + 1; 0 none)
 +  std::atomic<uint64_t> stallMail{0}, winMail{0};
++  std::atomic<uint64_t> readMail{0};    // smoke3: the READ failure path's rows 10, 11 (gdakiCtrlEffOnReadRow), once per inc
 +  std::atomic<uint32_t> errGenPlus1{0};
 +  std::atomic<uint32_t> okGen{0};       // the QP generation that had a successful READ (the link's PROBE_FAIL_N count)
 +  // helper -> watch, atomic: the data path's veto (the last time the peer's responder count moved on this rank's QPs)
@@ -3751,12 +3910,14 @@ index fefde6f..cbf9003 100644
 +  uint32_t pairCls = GDAKI_CTRL_CQ_OK;  // the periodic pair's first error class (OK: none yet)
 +  struct gdakiCtrlJudgement last = gdakiCtrlJudgementOfRow(13);  // row 13 until a READ says more (REVIEW_P12 nit 4)
 +  uint32_t latchedInc = 0;              // the incarnation (+ 1) a stall verdict was posted for (0: none)
++  uint32_t readLatchedInc = 0;          // the incarnation (+ 1) a row 10 or 11 was posted for (0: none)
 +  bool suspectLogged = false;
 +  // reports (the probe summary)
 +  uint64_t reads = 0, ok = 0, remacc = 0, noresp = 0, broken = 0, timeouts = 0, torn = 0, otherInc = 0;
 +  uint64_t devReads = 0, devOkN = 0, devQuietN = 0, devAgDiff = 0, devBad = 0;  // live: the device line READs
 +  std::vector<float> latUs;
 +  bool fenceSent = false;               // phase 3 sets it when this rank sent FENCE for the peer's dead incarnation
++  struct gdakiCtrlEff eff;              // helper: the judgement's effect (2a-2-C step 4: the FIN opens the window only)
 +};
 +struct gdakiCtrlPage {
 +  void* page = nullptr;              // the 4 KiB status page (REMOTE_READ), host memory
@@ -3764,8 +3925,8 @@ index fefde6f..cbf9003 100644
 +  struct gdakiCtrlPageHead* head = nullptr;
 +  uint8_t* rd = nullptr;             // the READ buffers: one slot per peer and per launcher (LOCAL_WRITE, one MR)
 +  size_t rdSlot = 0, rdBytes = 0;    // a slot: the page's used part rounded to 64 B, then the window's two line-0 READs
-+  size_t devOff = 0, devSlot = 0;    // live: after the slots, per peer: the device line's periodic READ, then the window's
-+                                     // two (each devBytes rounded to 64 B)
++  size_t devOff = 0, devSlot = 0;    // live: after the slots, per peer: the device line's periodic READ (devBytes rounded
++                                     // to 64 B; smoke3: the window reads line 0, not the line)
 +  uint32_t devBytes = 0, devStride = 0, devOffPosted = 0, devOffPolled = 0;  // a line of this library (nranks QPs)
 +  struct ibv_mr* rdMr = nullptr;
 +  struct gdakiCtrlPageLayout layout;
@@ -3794,6 +3955,10 @@ index fefde6f..cbf9003 100644
 +  int me = -1;
 +};
 +
++// 2a-2-C step 4: the launcher page pull's L inputs (gin-control (launcher): host; rs_ctrl_api_p2a2c.diff asks the header
++// to declare it beside gdakiCtrlLaLInputs)
++static void gdakiCtrlLaPullInputs(struct gdakiRecHost* r, int peer, uint32_t inc, bool* pullOk, bool* regAlive,
++                                  bool* regLeft);
 +// The page, once published complete (REVIEW_P12 고칠 것 3: a release store of the finished page, an acquire load here).
 +static struct gdakiCtrlPage* gdakiPageOf(struct gdakiRecHost* r) {
 +  if (r == nullptr || r->ctrl == nullptr) return nullptr;
@@ -3801,10 +3966,8 @@ index fefde6f..cbf9003 100644
 +}
 +static bool gdakiPageUp(const struct gdakiCtrlPage* pg) { return pg != nullptr && pg->up.load(std::memory_order_acquire); }
 +static uint8_t* gdakiPageRd(struct gdakiCtrlPage* pg, int peer) { return pg->rd + (size_t)peer * pg->rdSlot; }
-+// live: where peer's device line lands: which 0 the periodic READ, 1 and 2 the window's READs
-+static uint8_t* gdakiPageDevRd(struct gdakiCtrlPage* pg, int peer, uint32_t which) {
-+  return pg->rd + pg->devOff + (size_t)peer * pg->devSlot + (size_t)which * (pg->devSlot / 3u);
-+}
++// live: where peer's device line lands (the periodic READ's)
++static uint8_t* gdakiPageDevRd(struct gdakiCtrlPage* pg, int peer) { return pg->rd + pg->devOff + (size_t)peer * pg->devSlot; }
 +static size_t gdakiPageWinOff(const struct gdakiCtrlPage* pg, uint32_t which) {
 +  return pg->rdSlot - 2 * sizeof(struct gdakiCtrlPageHead) + (which - 1u) * sizeof(struct gdakiCtrlPageHead);
 +}
@@ -3879,7 +4042,7 @@ index fefde6f..cbf9003 100644
 +static void gdakiPageSetup(struct gdakiRecHost* r) {
 +  struct gdakiCtrlState* st = r != nullptr ? r->ctrl : nullptr;  // made by gdakiTsSetup before its all-gather (prep)
 +  if (st == nullptr || gdakiPageOf(r) != nullptr || r->ts == nullptr) return;
-+  if (ncclParamGinCtrlPage() == 0) return;  // the scaffold is off by default
++  if (ncclParamGinCtrlPage() == 0) return;  // NCCL_GIN_CTRL_PAGE=0: no page (the rdma build's default is 1)
 +  struct gdaki_context* g = r->ctx;
 +  if (g == nullptr || g->q4 == nullptr) {  // no watch thread to write and read it (REVIEW_FIX12_P2B 고칠 것 6)
 +    WARN("GIN/RC: rank %d: NCCL_GIN_CTRL_PAGE=1 needs NCCL_GIN_FAULT_CLASSIFY=1 (the watch thread): the status page stays "
@@ -3933,7 +4096,7 @@ index fefde6f..cbf9003 100644
 +  pg->devOffPolled = (uint32_t)(offsetof(struct doca_gpu_dev_verbs_qp, cq_sq) + offsetof(struct doca_gpu_dev_verbs_cq, cqe_ci));
 +  pg->devBytes = (uint32_t)nranks * pg->devStride;
 +  pg->devOff = pg->rdSlot * ((size_t)nranks + GDAKI_CTRL_PAGE_MAX_LAUNCHERS);
-+  pg->devSlot = 3u * ((((size_t)pg->devBytes) + 63u) & ~(size_t)63u);
++  pg->devSlot = (((size_t)pg->devBytes) + 63u) & ~(size_t)63u;
 +  pg->rdBytes = ((pg->devOff + pg->devSlot * (size_t)nranks) + 4095u) & ~(size_t)4095u;
 +  void* rd = nullptr;
 +  if (posix_memalign(&pg->page, 4096, GDAKI_CTRL_PAGE_BYTES) != 0 || pg->page == nullptr ||
@@ -4297,11 +4460,13 @@ index fefde6f..cbf9003 100644
 +  const uint32_t R = gdakiCtrlRDerive(f);
 +  const uint32_t inc = gdakiCtrlIncOf(pp.incExp);
 +  // gin-control (launcher) [3] (REVIEW_P3 고칠 것 1): LEFT, the end (EXITED or FENCED) and the registration word of p's
-+  // incarnation, as the launcher link took them (CURRENT or HELD_OLD); pullOk stays false until the launcher page is read
-+  // (TODO(2a-2) 5), so L is 무응답 unless LEFT or an end of that incarnation came
-+  bool lLeft, lEnded, lRegAlive, lRegLeft;
++  // incarnation, as the launcher link took them (CURRENT or HELD_OLD); 2a-2-C step 4: pullOk and the registration word
++  // from the pull of p's node launcher's page (gdakiCtrlLaPullInputs: the page's word, not the REG_NOTE's, says "that
++  // process is there"), so rows 10-12 part on L
++  bool lLeft, lEnded, lPullOk, lRegAlive, lRegLeft;
 +  gdakiCtrlLaLInputs(r, p, inc, &lLeft, &lEnded, &lRegAlive, &lRegLeft);
-+  const uint32_t L = gdakiCtrlLOf(pg->launcherPaired.load(std::memory_order_acquire), lLeft, lEnded, false, lRegAlive,
++  gdakiCtrlLaPullInputs(r, p, inc, &lPullOk, &lRegAlive, &lRegLeft);
++  const uint32_t L = gdakiCtrlLOf(pg->launcherPaired.load(std::memory_order_acquire), lLeft, lEnded, lPullOk, lRegAlive,
 +                                  lRegLeft);
 +  const uint32_t B = pp.byeSeen ? GDAKI_CTRL_B_SEEN : GDAKI_CTRL_B_NONE;
 +  const uint32_t W = gdakiCtrlWOf(pg->witnessOn, pp.win.state == GDAKI_CTRL_WS_OPEN, wEnds, cw, pp.witnessUnknown);
@@ -4324,6 +4489,10 @@ index fefde6f..cbf9003 100644
 +  if ((pp.last.verdict == GDAKI_CTRL_V_STALL || pp.last.verdict == GDAKI_CTRL_V_STALL_HELPER) && pp.latchedInc != inc + 1u) {
 +    pp.latchedInc = inc + 1u;  // the latch: once per incarnation
 +    pp.stallMail.store(gdakiCtrlMailPack(pp.last.row, pp.last.verdict, pp.last.cause, inc), std::memory_order_release);
++  }
++  if (gdakiCtrlEffReadRow(pp.last.row) && pp.readLatchedInc != inc + 1u) {  // smoke3: the READ failure path, once
++    pp.readLatchedInc = inc + 1u;
++    pp.readMail.store(gdakiCtrlMailPack(pp.last.row, pp.last.verdict, pp.last.cause, inc), std::memory_order_release);
 +  }
 +}
 +// A window's verdict at t_F + W (or at once when it cannot confirm): the judgement with W = the window's end, a line,
@@ -4386,7 +4555,7 @@ index fefde6f..cbf9003 100644
 +        }
 +        if (cls == GDAKI_CTRL_CQ_OK && devRead) {
 +          if (pp.pageOk && pp.devRkey != 0) {  // live: the GPU's stall clock, from the line the same pair's page named
-+            const struct gdakiCtrlDevSum d = gdakiCtrlDevSumOf(gdakiPageDevRd(pg, p, 0), pp.devLen, pg->devStride,
++            const struct gdakiCtrlDevSum d = gdakiCtrlDevSumOf(gdakiPageDevRd(pg, p), pp.devLen, pg->devStride,
 +                                                                 pg->devOffPosted, pg->devOffPolled);
 +            (void)gdakiCtrlDevOnRead(&pp.devStale, d, nowMs, (double)pg->probeMs, &pp.devRose, &pp.devQuiet);
 +            pp.devSeen = true;
@@ -4449,21 +4618,12 @@ index fefde6f..cbf9003 100644
 +        const uint32_t which = kind == GDAKI_CTRL_PW_WIN1 ? 1u : 2u;
 +        struct gdakiCtrlPageHead h;
 +        memset(&h, 0, sizeof(h));
-+        bool quiet = false;
-+        if (cls == GDAKI_CTRL_CQ_OK) {
-+          if (pp.win.dev && seq == pp.win.no) {  // live: the window reads the device line
-+            const struct gdakiCtrlDevSum d = gdakiCtrlDevSumOf(gdakiPageDevRd(pg, p, which), pp.devLen, pg->devStride,
-+                                                                 pg->devOffPosted, pg->devOffPolled);
-+            h.watchBeat = gdakiCtrlDevValue(d);
-+            h.incNonce = pp.incExp;  // the line of the process this pairing's page READ confirmed
-+            quiet = d.pending == 0;
-+          } else {
-+            memcpy(&h, gdakiPageRd(pg, p) + gdakiPageWinOff(pg, which), sizeof(h));
-+          }
++        if (cls == GDAKI_CTRL_CQ_OK) {  // smoke3: line 0's watchBeat (the host's), never the device line
++          memcpy(&h, gdakiPageRd(pg, p) + gdakiPageWinOff(pg, which), sizeof(h));
 +          gdakiProbeQpOnSuccess(&pp.qp, pp.qp.gen);
 +          pp.okGen.store(pp.qp.gen, std::memory_order_release);  // a success of this generation (REVIEW_FIX12_P2B nit 8)
 +        }
-+        (void)gdakiCtrlWindowOnCqe(&pp.win, seq, which, cls, h.watchBeat, h.incNonce, nowMs, quiet);
++        (void)gdakiCtrlWindowOnCqe(&pp.win, seq, which, cls, h.watchBeat, h.incNonce, nowMs);
 +      }
 +    }
 +  }
@@ -4481,14 +4641,12 @@ index fefde6f..cbf9003 100644
 +  }
 +  // the window
 +  if (wsrc != 0) {
-+    // live: a peer whose page names a device line confirms over that line, once it was read in this generation
-+    const bool dev = pp.devRkey != 0 && pp.devSeen;
-+    const bool countable = pp.watchOwns && gdakiProbeQpOkInGen(&pp.qp) && pp.haveRemote && gdakiCtrlProbeCanPost(&pp.io, 2) &&
-+                           (pp.devRkey == 0 || dev);
-+    if (gdakiCtrlWindowOpen(&pp.win, wsrc, wtf, countable, dev))
-+      GIN_TS_NOTE("GIN/RC: rank %d: confirm window for rank %d opened by %s W=%d over the %s%s mono_ms=%.3f", pg->me, p,
-+                  gdakiCtrlWsrcName(wsrc), pg->wMs, dev ? "device line" : "watch beat",
-+                  countable ? "" : " (cannot confirm: no READ of this generation)", nowMs);
++    // smoke3: the window confirms over the host's watch beat (line 0), whether or not the peer names a device line
++    const bool countable = pp.watchOwns && gdakiProbeQpOkInGen(&pp.qp) && pp.haveRemote && gdakiCtrlProbeCanPost(&pp.io, 2);
++    if (gdakiCtrlWindowOpen(&pp.win, wsrc, wtf, countable))
++      GIN_TS_NOTE("GIN/RC: rank %d: confirm window for rank %d opened by %s W=%d over the watch beat%s mono_ms=%.3f", pg->me,
++                  p, gdakiCtrlWsrcName(wsrc), pg->wMs, countable ? "" : " (cannot confirm: no READ of this generation)",
++                  nowMs);
 +  }
 +  // one window action per pass (REVIEW_FIX12_P2B 막는 문제 2: POST1, POST2 and the verdict never in one step)
 +  const uint32_t wa = gdakiCtrlWindowStep(&pp.win, nowMs, (double)pg->wMs);
@@ -4500,9 +4658,8 @@ index fefde6f..cbf9003 100644
 +    if (pp.watchOwns && gdakiProbeQpIsRts(&pp.qp)) {  // pp.qp is read only while the watch thread owns it
 +      const uint64_t id = gdakiCtrlProbeWrId(which == 1 ? GDAKI_CTRL_PW_WIN1 : GDAKI_CTRL_PW_WIN2, (uint32_t)p, pp.qp.gen,
 +                                             pp.win.no);
-+      ok = pp.win.dev ? gdakiProbePost(pg, pp, gdakiPageDevRd(pg, p, which), pp.devLen, id, true) == 0
-+                      : gdakiProbePost(pg, pp, gdakiPageRd(pg, p) + gdakiPageWinOff(pg, which),
-+                                       (uint32_t)sizeof(struct gdakiCtrlPageHead), id) == 0;
++      ok = gdakiProbePost(pg, pp, gdakiPageRd(pg, p) + gdakiPageWinOff(pg, which),
++                          (uint32_t)sizeof(struct gdakiCtrlPageHead), id) == 0;
 +    }
 +    if (ok) gdakiCtrlProbeOnPosted(&pp.io, which == 1 ? GDAKI_CTRL_PW_WIN1 : GDAKI_CTRL_PW_WIN2, pp.win.no, nowMs);
 +    gdakiCtrlWindowPosted(&pp.win, which, ok, nowMs);
@@ -4521,7 +4678,7 @@ index fefde6f..cbf9003 100644
 +    gdakiCtrlProbeOnPosted(&pp.io, GDAKI_CTRL_PW_PERIODIC, seq, nowMs);
 +    pp.postMs = nowMs;
 +    if (devP) {
-+      if (gdakiProbePost(pg, pp, gdakiPageDevRd(pg, p, 0), pp.devLen,
++      if (gdakiProbePost(pg, pp, gdakiPageDevRd(pg, p), pp.devLen,
 +                         gdakiCtrlProbeWrId(GDAKI_CTRL_PW_DEV, (uint32_t)p, pp.qp.gen, seq), true) == 0)
 +        gdakiCtrlProbeOnPosted(&pp.io, GDAKI_CTRL_PW_DEV, seq, nowMs);
 +      else
@@ -4563,11 +4720,172 @@ index fefde6f..cbf9003 100644
 +  pp.winReqSrc = src;
 +  pp.winReqSeq++;
 +}
-+// gdakiTsSocketLost's hook (rdma build): the cause names of ln4's pump ("FIN"; ECONNRESET is the RST).
++// ---- the judgement's effect (phase 2a-2-C step 4; struct gdakiCtrlEff, helper only) ----
++static bool gdakiCtrlRingLiveOn(struct gdakiRecHost* r, int peer);  // the ring's (below): the pair's records go on it
++// The pair judges an exit by the table (its records go on the ring, the page and its liveness READ QP are up), not by
++// ln4's witness FIN.
++static bool gdakiCtrlEffOn(struct gdakiRecHost* r, int peer) {
++  struct gdakiCtrlPage* pg = gdakiPageOf(r);
++  if (pg == nullptr || peer < 0 || peer >= (int)pg->peers.size() || peer == pg->me) return false;
++  return gdakiCtrlEffective(gdakiCtrlRingLiveOn(r, peer), gdakiPageUp(pg), pg->peers[(size_t)peer].hasQp);
++}
++// The witness socket's end without ln4's verdict (the socket closes as ln4 closes an unknown peer's, with a reset; the
++// lineage's next step re-dials only after `redial`): pe's re-dial state as gdakiTsMakeUnknown leaves it.
++static void gdakiCtrlEffWitnessOff(struct gdakiTsPeer& pe, bool redial) {
++  gdakiTsMakeUnknown(pe);
++  pe.unknown = redial;
++}
++// The end of `peer`'s incarnation inc by the table (row 3-6's cause): ln4's death of a FIN (gone, judged dead; the
++// decline, which starts the hold when armed, now or by the caller: the helper loop, a round's liveness check), with the
++// table's cause as the hold's strong evidence (gdakiHoldStrongCause's rdma names).
++static void gdakiCtrlEffEnd(struct gdakiRecHost* r, int peer, uint32_t inc, const char* cause, const char* by,
++                            bool decline) {
++  struct gdakiTs* ts = r->ts;
++  if (ts == nullptr || peer < 0 || peer >= (int)ts->peers.size()) return;
++  struct gdakiTsPeer& pe = ts->peers[(size_t)peer];
++  if (pe.declined || pe.left || pe.deadJudged || gdakiHoldIsHeldState(gdakiHoldPeerState(r, peer, nullptr))) return;
++  snprintf(pe.lostCause, sizeof(pe.lostCause), "%s", cause);
++  gdakiCtrlEffWitnessOff(pe, false);
++  pe.gone = true;
++  pe.deadJudged = true;
++  ts->cDeaths.fetch_add(1, std::memory_order_relaxed);
++  WARN("GIN/TS: rank %d: rank %d judged dead (cause=%s) mono_ms=%.3f", r->ctx->rank, peer, cause, gdakiQ4MonoMs());
++  GIN_TS_NOTE("GIN/RC: rank %d: rank %d (incarnation %u) ended by the judgement table (%s): the hold or the decline now "
++              "mono_ms=%.3f", r->ctx->rank, peer, inc, by, gdakiQ4MonoMs());
++  if (!decline) return;
++  char why[96];
++  snprintf(why, sizeof(why), "peer judged dead: the judgement table shows %s", cause);
++  gdakiTsDecline(r, peer, why, false, 0, gdakiCause::PeerDead, GDAKI_UA_PEER_DEAD);
++}
++// gdakiTsSocketLost's first step (rdma build): a FIN without BYE of an effective pair only opens the confirm window (no
++// death; the socket closes, no re-dial until the verdict). False: ln4's rule (the caller goes on).
++static bool gdakiCtrlFinOpensWindow(struct gdakiRecHost* r, int peer, struct gdakiTsPeer& pe, const char* cause) {
++  struct gdakiCtrlPage* pg = gdakiPageOf(r);
++  if (pe.left || cause == nullptr || strcmp(cause, "FIN") != 0 || !gdakiCtrlEffOn(r, peer)) return false;
++  const uint32_t inc = gdakiLnOf(r, peer).cur;
++  const double now = gdakiQ4MonoMs();
++  const uint32_t a = gdakiCtrlEffOnFin(&pg->peers[(size_t)peer].eff, true, GDAKI_CTRL_WSRC_FIN, inc, now);
++  snprintf(pe.lostCause, sizeof(pe.lostCause), "FIN");
++  gdakiCtrlEffWitnessOff(pe, false);
++  GIN_TS_NOTE("GIN/TS: rank %d: socket to rank %d closed cause=FIN mono_ms=%.3f liveness=pending (the confirm window "
++              "judges: W=%d ms%s)", r->ctx->rank, peer, now, pg->wMs,
++              a == GDAKI_CTRL_EA_NONE ? ", the incarnation ended already" : "");
++  if (a == GDAKI_CTRL_EA_WINDOW) gdakiCtrlWindowRequest(r, peer, GDAKI_CTRL_WSRC_FIN);
++  return true;
++}
++// gdakiTsSocketLost's first step after the record QP's causes (smoke3): the witness off on an effective pair. The socket
++// closes with a reset and is not re-dialled; no window, no death, no unknown (true: the caller returns "no evidence").
++static bool gdakiCtrlWitnessMutedOf(struct gdakiRecHost* r, int peer) {
++  const struct gdakiCtrlPage* pg = gdakiPageOf(r);
++  return gdakiPageUp(pg) && gdakiCtrlWitnessMuted(gdakiCtrlEffOn(r, peer), pg->witnessOn, false);
++}
++static bool gdakiCtrlWitnessOffLost(struct gdakiRecHost* r, int peer, struct gdakiTsPeer& pe, const char* cause) {
++  if (cause == nullptr || pe.left || !gdakiCtrlWitnessMutedOf(r, peer)) return false;
++  snprintf(pe.lostCause, sizeof(pe.lostCause), "%s", cause);
++  gdakiCtrlEffWitnessOff(pe, false);
++  GIN_TS_NOTE("GIN/TS: rank %d: socket to rank %d closed cause=%s mono_ms=%.3f liveness=ignored (the witness is off: no "
++              "window, no judgement; the launcher's report or the READ failure path judges)", r->ctx->rank, peer, cause,
++              gdakiQ4MonoMs());
++  return true;
++}
++// gdakiTsSocketLost's hook (rdma build): the cause names of ln4's pump ("FIN"; ECONNRESET is the RST). An RST of an
++// effective pair is ln4's unknown (re-dialled) and its window's verdict reacts as a FIN's.
 +static void gdakiCtrlOnSocketLost(struct gdakiRecHost* r, int peer, const char* cause, bool left) {
 +  if (left || cause == nullptr) return;  // a BYE came first: the FIN is "left", no window (design 4.2 B)
-+  if (strcmp(cause, "FIN") == 0) gdakiCtrlWindowRequest(r, peer, GDAKI_CTRL_WSRC_FIN);
-+  else if (strcmp(cause, "ECONNRESET") == 0) gdakiCtrlWindowRequest(r, peer, GDAKI_CTRL_WSRC_RST);
++  if (strcmp(cause, "FIN") == 0) {
++    gdakiCtrlWindowRequest(r, peer, GDAKI_CTRL_WSRC_FIN);
++  } else if (strcmp(cause, "ECONNRESET") == 0) {
++    struct gdakiCtrlPage* pg = gdakiPageOf(r);
++    if (gdakiCtrlEffOn(r, peer) &&
++        gdakiCtrlEffOnFin(&pg->peers[(size_t)peer].eff, true, GDAKI_CTRL_WSRC_RST, gdakiLnOf(r, peer).cur,
++                          gdakiQ4MonoMs()) == GDAKI_CTRL_EA_NONE)
++      return;  // ended already
++    gdakiCtrlWindowRequest(r, peer, GDAKI_CTRL_WSRC_RST);
++  }
++}
++// The reaction to the window's verdict a (gdakiCtrlEffOnVerdict or gdakiCtrlEffOverdue) of an effective pair.
++static void gdakiCtrlEffReact(struct gdakiRecHost* r, int peer, uint32_t a, uint32_t row, uint32_t cause, uint32_t inc,
++                              uint32_t src, double tF, bool decline) {
++  struct gdakiCtrlPage* pg = gdakiPageOf(r);
++  const double now = gdakiQ4MonoMs();
++  if (a == GDAKI_CTRL_EA_END) {
++    char by[64];
++    snprintf(by, sizeof(by), "table row %u, %.3f ms after the %s", row, now - tF, gdakiCtrlWsrcName(src));
++    gdakiCtrlEffEnd(r, peer, inc, gdakiCtrlCauseName(cause), by, decline);
++    return;
++  }
++  if (a != GDAKI_CTRL_EA_REDIAL && a != GDAKI_CTRL_EA_WAIT) return;
++  struct gdakiTsPeer& pe = r->ts->peers[(size_t)peer];
++  const bool redial = !pe.unknown && !pe.gone && !pe.declined;
++  if (redial) gdakiCtrlEffWitnessOff(pe, true);
++  if (a == GDAKI_CTRL_EA_REDIAL)
++    GIN_TS_NOTE("GIN/RC: rank %d: witness of rank %d lost; liveness alive mono_ms=%.3f (table row 8%s)", pg->me, peer, now,
++                redial ? "; the witness is re-dialled" : "");
++  else if (row != 0)
++    GIN_TS_NOTE("GIN/RC: rank %d: confirm window of rank %d: table row %u, no verdict (%.3f ms after the %s); the witness "
++                "is unknown%s, the launcher's report decides mono_ms=%.3f", pg->me, peer, row, now - tF,
++                gdakiCtrlWsrcName(src), redial ? " and re-dialled" : "", now);
++  else
++    GIN_TS_NOTE("GIN/RC: rank %d: confirm window of rank %d: no verdict %.3f ms after the %s (bound %d ms); the witness is "
++                "unknown%s, the launcher's report decides mono_ms=%.3f", pg->me, peer, now - tF, gdakiCtrlWsrcName(src),
++                pg->wMs + pg->probeTimeoutMs, redial ? " and re-dialled" : "", now);
++}
++// One peer's effect step (helper): the window's mailbox (an effective pair's verdict reacts; any other is reported), the
++// overdue bound of a pending window, and the launcher's end (the link's fence word of the lineage's incarnation: an
++// effective pair ends at once, row 3, window or not). decline: the hold or the decline now (the helper's step), else the
++// caller's (gdakiTsPeerLiveness: a round's liveness check sees the peer dead).
++static void gdakiCtrlEffPoll(struct gdakiRecHost* r, int p, bool decline) {
++  struct gdakiCtrlPage* pg = gdakiPageOf(r);
++  if (!gdakiPageUp(pg) || r->ts == nullptr || p < 0 || p >= (int)pg->peers.size() || p >= (int)r->ts->peers.size() ||
++      p == pg->me)
++    return;
++  struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)p];
++  struct gdakiCtrlEff& e = pp.eff;
++  const uint32_t cur = gdakiLnOf(r, p).cur;
++  const uint64_t wm = pp.winMail.exchange(0, std::memory_order_acq_rel);
++  if (wm != 0) {
++    const uint32_t row = gdakiCtrlMailRow(wm), inc = gdakiCtrlMailInc(wm), src = e.src;
++    const double tF = e.tF;
++    const bool done = e.doneInc1 == inc + 1u;
++    const uint32_t a = inc == cur ? gdakiCtrlEffOnVerdict(&e, row, inc) : GDAKI_CTRL_EA_NONE;
++    if (a != GDAKI_CTRL_EA_NONE)
++      gdakiCtrlEffReact(r, p, a, row, gdakiCtrlMailCause(wm), inc, src, tF, decline);
++    else if (row == 8 && !done)
++      GIN_TS_NOTE("GIN/RC: rank %d: witness of rank %d lost; liveness alive mono_ms=%.3f (table row 8)", pg->me, p,
++                  gdakiQ4MonoMs());
++    else
++      GIN_TS_NOTE("GIN/RC: rank %d: confirm window of rank %d: table row %u%s%s; %s mono_ms=%.3f", pg->me, p, row,
++                  gdakiCtrlMailCause(wm) != GDAKI_CTRL_C_NONE ? ", cause " : "", gdakiCtrlCauseName(gdakiCtrlMailCause(wm)),
++                  done ? "the incarnation ended already (no reaction)"
++                  : inc != cur ? "another incarnation's window (no reaction)"
++                               : "reported only (the pair keeps ln4's witness rule: its records are not on a live ring)",
++                  gdakiQ4MonoMs());
++  }
++  {
++    const uint32_t src = e.src;
++    const double tF = e.tF;
++    const uint32_t a = gdakiCtrlEffOverdue(&e, gdakiQ4MonoMs(), (double)(pg->wMs + pg->probeTimeoutMs));
++    if (a != GDAKI_CTRL_EA_NONE) gdakiCtrlEffReact(r, p, a, 0, GDAKI_CTRL_C_NONE, cur, src, tF, decline);
++  }
++  bool left, ended, alive, lft;
++  gdakiCtrlLaLInputs(r, p, cur, &left, &ended, &alive, &lft);
++  if (!ended || left || e.doneInc1 == cur + 1u) return;
++  const bool pend = e.pendInc1 == cur + 1u;
++  const double tF = e.tF;
++  if (gdakiCtrlEffOnEnded(&e, gdakiCtrlEffOn(r, p), cur) != GDAKI_CTRL_EA_END) return;
++  char by[96];
++  if (pend)
++    snprintf(by, sizeof(by), "row 3: the launcher's end %.3f ms after the %s, before the window's verdict",
++             gdakiQ4MonoMs() - tF, gdakiCtrlWsrcName(e.src));
++  else
++    snprintf(by, sizeof(by), "row 3: the launcher's end");
++  gdakiCtrlEffEnd(r, p, cur, gdakiCtrlCauseName(GDAKI_CTRL_C_EXITED), by, decline);
++}
++// Every peer's effect step after the launcher's envelopes (gdakiCtrlLauncherStep; no lock held).
++static void gdakiCtrlEffEndedStep(struct gdakiRecHost* r) {
++  struct gdakiCtrlPage* pg = gdakiPageOf(r);
++  if (!gdakiPageUp(pg)) return;
++  for (int p = 0; p < (int)pg->peers.size(); p++) gdakiCtrlEffPoll(r, p, true);
 +}
 +// The data path's veto input (the helper's QP watch, gdakiDetWatchStep): the peer's responder count on this rank's QP
 +// moved since the last sample, i.e. the peer's GPU still sends (EXPERIMENT.md 9.3: NCCL_GIN_TS_STALL_RMSN_MS). Without
@@ -4619,13 +4937,29 @@ index fefde6f..cbf9003 100644
 +// Phase 1's reaction to a software stall verdict (rows 14, 15), on the helper (REVIEW_P12 막는 문제 6): STALLED(52) to
 +// every rank, then decline the peer (no launcher and no FENCED in phase 1: the fence and the restore are phase 3's; this
 +// is the NCCL_GIN_RESTORE_FENCE=none shape). 결정 1: a helper-only stall (row 15) takes the same path as row 14.
++// smoke3: with NCCL_GIN_RESTORE_FENCE=lineage (the default) and the launcher paired, the stall is the hold's strong
++// evidence (9.3 rows 14, 15: STALL, STALL_HELPER): the decline starts the hold when armed, the activation gate then
++// sends FENCE and waits for FENCED (9.4); otherwise (none, no launcher, not armed) the decline as before.
++static bool gdakiCtrlStallFenceOn(struct gdakiRecHost* r) {
++  const char* v = getenv("NCCL_" GDAKI_CTRL_P_RESTORE_FENCE);
++  struct gdakiCtrlPage* pg = gdakiPageOf(r);
++  return (v == nullptr || v[0] == '\0' || strcmp(v, GDAKI_CTRL_RESTORE_FENCE_DEFAULT) == 0) && pg != nullptr &&
++         pg->launcherPaired.load(std::memory_order_acquire);
++}
 +static void gdakiCtrlStallDecline(struct gdakiRecHost* r, int peer, uint32_t inc, const char* cause) {
 +  struct gdakiHold* h = gdakiHoldOf(r);
 +  const int told = h != nullptr ? gdakiHoldBroadcast(r, GDAKI_TS_CTRL_STALLED, peer, inc, -1) : 0;
++  const char* c = (cause != nullptr && cause[0]) ? cause : "STALL";
 +  char why[96];
-+  snprintf(why, sizeof(why), "liveness stall judged (%s)", (cause != nullptr && cause[0]) ? cause : "STALL");
-+  WARN("GIN/RC: rank %d: rank %d (incarnation %u) judged stalled (%s); STALLED to %d rank(s); phase 1 declines (no "
-+       "launcher, no fence yet) mono_ms=%.3f", r->ctx->rank, peer, inc, why, told, gdakiQ4MonoMs());
++  snprintf(why, sizeof(why), "liveness stall judged (%s)", c);
++  const bool fence = gdakiCtrlStallFenceOn(r);
++  if (fence && r->ts != nullptr && peer >= 0 && peer < (int)r->ts->peers.size())
++    snprintf(r->ts->peers[(size_t)peer].lostCause, sizeof(r->ts->peers[(size_t)peer].lostCause), "%s", c);
++  WARN("GIN/RC: rank %d: rank %d (incarnation %u) judged stalled (%s); STALLED to %d rank(s); %s mono_ms=%.3f",
++       r->ctx->rank, peer, inc, why, told,
++       fence ? "the hold when armed, then FENCE and the restore (fence=lineage, launcher paired)"
++             : "declined (fence=none or no launcher)",
++       gdakiQ4MonoMs());
 +  gdakiTsDecline(r, peer, why, false, 0, gdakiCause::PeerDead, GDAKI_UA_PEER_DEAD);
 +}
 +// The helper's step (gdakiTsMain, every loop): the mailboxes, taken once each, and the scaffold's pairing.
@@ -4645,19 +4979,23 @@ index fefde6f..cbf9003 100644
 +      else if (!pe.declined)
 +        gdakiCtrlStallDecline(r, p, inc, gdakiCtrlCauseName(gdakiCtrlMailCause(sm)));
 +    }
-+    if (pp.hasQp) gdakiProbeHandHelper(r, pg, p);  // the handoff's firmware (every loop: no request waits on the link)
-+    const uint64_t wm = pp.winMail.exchange(0, std::memory_order_acq_rel);
-+    if (wm != 0) {
-+      const uint32_t row = gdakiCtrlMailRow(wm);
-+      if (row == 8)
-+        GIN_TS_NOTE("GIN/RC: rank %d: witness of rank %d lost; liveness alive mono_ms=%.3f (table row 8)", pg->me, p,
++    const uint64_t rm = pp.readMail.exchange(0, std::memory_order_acq_rel);
++    if (rm != 0) {  // smoke3: rows 10, 11 end an effective pair (the witness off has no window: this or row 3 judges)
++      const uint32_t inc = gdakiCtrlMailInc(rm), row = gdakiCtrlMailRow(rm), cur = gdakiLnOf(r, p).cur;
++      const bool eff = gdakiCtrlEffOn(r, p);
++      if (inc == cur && gdakiCtrlEffOnReadRow(&pp.eff, eff, row, inc) == GDAKI_CTRL_EA_END) {
++        char by[96];
++        snprintf(by, sizeof(by), "row %u: the liveness READ's retry exceeded, %s", row,
++                 row == 10 ? "the launcher unresponsive (node or line)" : "the launcher's word not ALIVE, the witness off");
++        gdakiCtrlEffEnd(r, p, inc, gdakiCtrlCauseName(gdakiCtrlMailCause(rm)), by, true);
++      } else {
++        GIN_TS_NOTE("GIN/RC: rank %d: rank %d (incarnation %u): table row %u reported only (%s) mono_ms=%.3f", pg->me, p, inc,
++                    row, inc != cur ? "another incarnation" : !eff ? "the pair keeps ln4's witness rule" : "ended already",
 +                    gdakiQ4MonoMs());
-+      else
-+        GIN_TS_NOTE("GIN/RC: rank %d: confirm window of rank %d: table row %u%s%s; phase 1 reports it (the reaction stays "
-+                    "ln4's socket rule until phase 2a-2 moves the records off the socket) mono_ms=%.3f", pg->me, p, row,
-+                    gdakiCtrlMailCause(wm) != GDAKI_CTRL_C_NONE ? ", cause " : "",
-+                    gdakiCtrlCauseName(gdakiCtrlMailCause(wm)), gdakiQ4MonoMs());
++      }
 +    }
++    if (pp.hasQp) gdakiProbeHandHelper(r, pg, p);  // the handoff's firmware (every loop: no request waits on the link)
++    gdakiCtrlEffPoll(r, p, true);  // 2a-2-C step 4: the window's verdict reacts on an effective pair, the launcher's end
 +  }
 +  gdakiCtrlRingHelperStep(r);  // phase 2a-2-A: the ring's first pairing over UD (record 55's scaffold is gone)
 +}
@@ -6290,6 +6628,13 @@ index fefde6f..cbf9003 100644
 +  uint32_t dropUdLeft = 0;
 +  double qpErrAtMs = -1, stallFromMs = -1, stallToMs = -1;  // from the origin (the first armed checkpoint, or live)
 +  bool qpErrDone = false, stallLogged = false;
++  // 2a-2-C: the witness socket's switches (EXPERIMENT.md 9.9; rdma build only): DIE_RST=<ms>, RST_GAP=<start>:<len>,
++  // FD_HOLDER=sock|uverbs (1, 2; forked at the origin)
++  double dieRstAfterMs = -1, rstGapAfterMs = -1, rstGapLenMs = 0;
++  int fdHold = 0;
++  double dieRstAtMs = -1, rstGapAtMs = -1;
++  bool dieRstDone = false, rstGapDone = false, fdHoldDone = false;
++  int fdHoldPid = -1;
 +};
 +// A RECV completion held while CREDIT_STALL lasts (its slot is not posted again until it is fed to the ring).
 +struct gdakiCtrlHeldWc {
@@ -6339,10 +6684,32 @@ index fefde6f..cbf9003 100644
 +  bool haveUd = false;
 +  struct ibv_ah* ah = nullptr;
 +  bool beatOut = false, beatOk = false;    // the beat READ in flight; its last completion succeeded
++  uint32_t beatLen = 0;                    // the bytes the last beat READ asked for (16, or the pull's 2048)
 +  uint64_t beatDone = 0;                   // READ completions (any status)
 +  double beatPostMs = -1e18;
 +  uint64_t rx = 0, tx = 0, bad = 0, queued = 0;
++  // 2a-2-C step 5: the window toward the launcher is shut: the READ of the launcher page's consumed word for this rank
++  // (glPageCredit.consumed, (gen << 32) | count), one in flight, at most every GDAKI_CTRL_CREDIT_READ_MS (no credit-only
++  // SEND, as the ring's gdakiCtrlRingKick for ranks)
++  bool creditOut = false;
++  double creditMs = -1e18;
++  uint64_t creditReads = 0, creditLearned = 0;
 +};
++// The launcher's consumed word c (its 32-bit count of gen's messages) as an ackIn: a count of this generation's SENDs
++// (never above seqOut), never back (the launcher's window as gdakiCtrlRingLearnConsumed's for a rank); another
++// generation's word is ignored.
++static inline uint64_t gdakiCtrlLaLearnAck(uint32_t gen, uint64_t seqOut, uint64_t ackIn, uint64_t word) {
++  if ((uint32_t)(word >> 32) != gen) return ackIn;
++  const uint32_t behind = (uint32_t)seqOut - (uint32_t)word;
++  if ((uint64_t)behind > seqOut) return ackIn;
++  const uint64_t c = seqOut - behind;
++  return c > ackIn ? c : ackIn;
++}
++// The credit READ is due: something waits past the shut window (seqOut - ackIn = the launcher's RQ), none in flight,
++// the last one at least GDAKI_CTRL_CREDIT_READ_MS ago.
++static inline bool gdakiCtrlLaCreditDue(bool pending, bool shut, bool out, double lastMs, double nowMs) {
++  return pending && shut && !out && nowMs - lastMs >= GDAKI_CTRL_CREDIT_READ_MS;
++}
 +struct gdakiCtrlLaIn {
 +  int li = -1;
 +  bool ud = false;
@@ -6392,15 +6759,18 @@ index fefde6f..cbf9003 100644
 +  std::vector<struct gdakiCtrlRdmaLa> la;
 +  std::deque<struct gdakiCtrlLaIn> laIn;
 +  uint8_t *laRx = nullptr, *laTx = nullptr, *laBlob = nullptr;
-+  uint64_t* laBeat = nullptr;                   // per launcher: the READ target of its page's first 16 B (magicVer, beat)
++  uint64_t* laBeat = nullptr;                   // per launcher (GDAKI_CTRL_LAP_PULL_BYTES apart): the READ target of its
++                                                // page's head and registration slots (2a-2-C step 4: the pull; 16 B
++                                                // magicVer, beat when the page is shorter)
 +  struct ibv_mr *laRxMr = nullptr, *laTxMr = nullptr, *laBlobMr = nullptr, *laBeatMr = nullptr;
 +  uint64_t laInDropped = 0;
 +  // One writer per word (REVIEW_P12 nit 12): the helper writes rxConsumed[] here, the watch thread every other word of
 +  // the status page.
 +};
 +#define GDAKI_CTRL_UDIN_PER_PEER 64u
-+// The test switches QP_ERR=<ms>:<peer>, CREDIT_STALL=<start ms>:<length ms>, DROP_UD=rejoin:<n> (rs_ctrl_api.h [2];
-+// research builds only: the production build parses nothing and every switch stays off). A malformed value: one WARN, off.
++// The test switches QP_ERR=<ms>:<peer>, CREDIT_STALL=<start ms>:<length ms>, DROP_UD=rejoin:<n> (rs_ctrl_api.h [2]),
++// 2a-2-C: DIE_RST=<ms>, RST_GAP=<start ms>:<length ms>, FD_HOLDER=sock|uverbs (the witness socket's); research builds
++// only: the production build parses nothing and every switch stays off. A malformed value: one WARN, off.
 +static struct gdakiCtrlRingSw* gdakiCtrlRingSwOf(struct gdakiCtrlRing* g) {
 +  struct gdakiCtrlRingSw* s = &g->sw;
 +  if (s->parsed) return s;
@@ -6434,6 +6804,30 @@ index fefde6f..cbf9003 100644
 +    int n = 0;
 +    if (sscanf(v, "rejoin:%u%n", &k, &n) == 1 && v[n] == 0) s->dropUdLeft = k;
 +    else WARN("GIN/RC: rank %d: test switch DROP_UD=%s is not rejoin:<n>: off", g->me, v);
++  }
++  v = getenv(GDAKI_CTRL_T_DIE_RST);
++  if (v != nullptr && *v) {
++    double ms = 0;
++    int n = 0;
++    if (sscanf(v, "%lf%n", &ms, &n) == 1 && v[n] == 0 && ms >= 0) s->dieRstAfterMs = ms;
++    else WARN("GIN/TS: rank %d: test switch DIE_RST=%s is not <ms>: off", g->me, v);
++  }
++  v = getenv(GDAKI_CTRL_T_RST_GAP);
++  if (v != nullptr && *v) {
++    double a = 0, l = 0;
++    int n = 0;
++    if (sscanf(v, "%lf:%lf%n", &a, &l, &n) == 2 && v[n] == 0 && a >= 0 && l > 0) {
++      s->rstGapAfterMs = a;
++      s->rstGapLenMs = l;
++    } else {
++      WARN("GIN/TS: rank %d: test switch RST_GAP=%s is not <start ms>:<length ms>: off", g->me, v);
++    }
++  }
++  v = getenv(GDAKI_CTRL_T_FD_HOLDER);
++  if (v != nullptr && *v) {
++    if (strcmp(v, "sock") == 0) s->fdHold = 1;
++    else if (strcmp(v, "uverbs") == 0) s->fdHold = 2;
++    else WARN("GIN/TS: rank %d: test switch FD_HOLDER=%s is not sock|uverbs: off", g->me, v);
 +  }
 +#endif
 +  return s;
@@ -6999,12 +7393,14 @@ index fefde6f..cbf9003 100644
 +  g->laRx = (uint8_t*)gdakiCtrlRdmaAlloc(rxB);
 +  g->laTx = (uint8_t*)gdakiCtrlRdmaAlloc(txB);
 +  g->laBlob = (uint8_t*)gdakiCtrlRdmaAlloc(GDAKI_CTRL_LA_BLOB_BYTES);
-+  g->laBeat = (uint64_t*)gdakiCtrlRdmaAlloc(4096);
++  // 2a-2-C step 4: the pulls; step 5: then one 8 B consumed word per launcher (the credit READ's target)
++  const size_t beatB = std::max<size_t>(4096, (size_t)nL * (GDAKI_CTRL_LAP_PULL_BYTES + 8u));
++  g->laBeat = (uint64_t*)gdakiCtrlRdmaAlloc(beatB);
 +  if (g->laRx != nullptr) g->laRxMr = wrap_direct_ibv_reg_mr(pd, g->laRx, rxB, IBV_ACCESS_LOCAL_WRITE);
 +  if (g->laTx != nullptr) g->laTxMr = wrap_direct_ibv_reg_mr(pd, g->laTx, txB, IBV_ACCESS_LOCAL_WRITE);
 +  if (g->laBlob != nullptr)
 +    g->laBlobMr = wrap_direct_ibv_reg_mr(pd, g->laBlob, GDAKI_CTRL_LA_BLOB_BYTES, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ);
-+  if (g->laBeat != nullptr) g->laBeatMr = wrap_direct_ibv_reg_mr(pd, g->laBeat, 4096, IBV_ACCESS_LOCAL_WRITE);
++  if (g->laBeat != nullptr) g->laBeatMr = wrap_direct_ibv_reg_mr(pd, g->laBeat, beatB, IBV_ACCESS_LOCAL_WRITE);
 +  if (!g->laRxMr || !g->laTxMr || !g->laBlobMr || !g->laBeatMr) {
 +    WARN("GIN/RC: rank %d: the launchers' buffers could not be made: no launcher QP mono_ms=%.3f", g->me, gdakiQ4MonoMs());
 +    return true;  // the destroy frees what was made
@@ -7113,6 +7509,8 @@ index fefde6f..cbf9003 100644
 +  la.sBusy = 0;
 +  la.pend.clear();
 +  la.beatOut = false;
++  la.creditOut = false;  // 2a-2-C step 5: the old QP's credit READ is gone with it
++  la.creditMs = -1e18;
 +  char why[160] = {0};
 +  struct gdakiMiQpEndpoint v1;
 +  const struct gdakiCtrlQpAttr attr = gdakiCtrlQpAttrLauncher((uint8_t)ncclParamIbTimeout(), g->cq->cq);
@@ -7213,16 +7611,22 @@ index fefde6f..cbf9003 100644
 +}
 +// The launcher page's beat: a READ of its first 16 B (magicVer, beat) over the record QP (the launcher's QP takes READs:
 +// REMOTE_READ, max_dest_rd_atomic 1), at most every GDAKI_CTRL_LA_BEAT_MS, one in flight. The helper's, so a stalled
-+// helper reads nothing (the link's beat rule counts the stall only across this side's own reads).
-+static void gdakiCtrlRdmaLaBeatAsk(struct gdakiCtrlRing* g, int li, uint64_t addr, uint32_t rkey, double nowMs) {
++// helper reads nothing (the link's beat rule counts the stall only across this side's own reads). 2a-2-C step 4: a page
++// of len >= GDAKI_CTRL_LAP_PULL_BYTES is read with its registration slots (the pull: pullOk and the L input's word).
++static uint8_t* gdakiCtrlRdmaLaBeatBuf(struct gdakiCtrlRing* g, int li) {
++  return (uint8_t*)g->laBeat + (size_t)li * GDAKI_CTRL_LAP_PULL_BYTES;
++}
++static void gdakiCtrlRdmaLaBeatAsk(struct gdakiCtrlRing* g, int li, uint64_t addr, uint32_t rkey, double nowMs,
++                                   uint32_t len = 16) {
 +  if (!gdakiCtrlRdmaLaOk(g, li)) return;
 +  struct gdakiCtrlRdmaLa& la = g->la[(size_t)li];
 +  if (la.q == nullptr || !la.connected || la.err || la.beatOut || addr == 0 || rkey == 0 ||
 +      nowMs - la.beatPostMs < GDAKI_CTRL_LA_BEAT_MS)
 +    return;
 +  struct ibv_sge sg;
-+  sg.addr = (uint64_t)(uintptr_t)&g->laBeat[2 * li];
-+  sg.length = 16;
++  const uint32_t n = len >= GDAKI_CTRL_LAP_PULL_BYTES ? GDAKI_CTRL_LAP_PULL_BYTES : 16u;
++  sg.addr = (uint64_t)(uintptr_t)gdakiCtrlRdmaLaBeatBuf(g, li);
++  sg.length = n;
 +  sg.lkey = g->laBeatMr->lkey;
 +  struct ibv_send_wr wr, *bad = nullptr;
 +  memset(&wr, 0, sizeof(wr));
@@ -7236,6 +7640,37 @@ index fefde6f..cbf9003 100644
 +  if (wrap_ibv_post_send(la.q->qp, &wr, &bad) != ncclSuccess) return;
 +  la.beatOut = true;
 +  la.beatPostMs = nowMs;
++  la.beatLen = n;
++}
++// 2a-2-C step 5: the launcher page's consumed word for this rank, READ when the window toward the launcher is shut
++// (gdakiCtrlLaCreditDue; `addr` = the page + the creditOff of its PAIR or PAIR_ACK) on the record QP, wr_id slot 1 (the
++// beat's is 0); its value comes back in gdakiCtrlRdmaLaWc, which opens the window and flushes the queue.
++static uint64_t* gdakiCtrlRdmaLaCreditBuf(struct gdakiCtrlRing* g, int li) {
++  return (uint64_t*)((uint8_t*)g->laBeat + g->la.size() * GDAKI_CTRL_LAP_PULL_BYTES + 8u * (size_t)li);
++}
++static void gdakiCtrlRdmaLaCreditAsk(struct gdakiCtrlRing* g, int li, uint64_t addr, uint32_t rkey, double nowMs) {
++  if (!gdakiCtrlRdmaLaOk(g, li)) return;
++  struct gdakiCtrlRdmaLa& la = g->la[(size_t)li];
++  if (la.q == nullptr || !la.connected || la.err || addr == 0 || rkey == 0 ||
++      !gdakiCtrlLaCreditDue(!la.pend.empty(), la.seqOut - la.ackIn >= GDAKI_CTRL_LA_RQ, la.creditOut, la.creditMs, nowMs))
++    return;
++  struct ibv_sge sg;
++  sg.addr = (uint64_t)(uintptr_t)gdakiCtrlRdmaLaCreditBuf(g, li);
++  sg.length = 8;
++  sg.lkey = g->laBeatMr->lkey;
++  struct ibv_send_wr wr, *bad = nullptr;
++  memset(&wr, 0, sizeof(wr));
++  wr.wr_id = gdakiCtrlWrId(GDAKI_CTRL_WR_READ_CREDIT, GDAKI_CTRL_WR_LA_PEER + (uint32_t)li, la.gen, 1);
++  wr.sg_list = &sg;
++  wr.num_sge = 1;
++  wr.opcode = IBV_WR_RDMA_READ;
++  wr.send_flags = IBV_SEND_SIGNALED;
++  wr.wr.rdma.remote_addr = addr;
++  wr.wr.rdma.rkey = rkey;
++  la.creditMs = nowMs;
++  if (wrap_ibv_post_send(la.q->qp, &wr, &bad) != ncclSuccess) return;
++  la.creditOut = true;
++  la.creditReads++;
 +}
 +// The beat READ's completions since the last call: true with the page's two words when one succeeded (*n: how many
 +// completed, any status).
@@ -7245,9 +7680,19 @@ index fefde6f..cbf9003 100644
 +  *n = la.beatDone;
 +  la.beatDone = 0;
 +  if (*n == 0 || !la.beatOk) return false;
-+  *magicVer = __atomic_load_n(&g->laBeat[2 * li], __ATOMIC_ACQUIRE);
-+  *beat = __atomic_load_n(&g->laBeat[2 * li + 1], __ATOMIC_ACQUIRE);
++  const uint64_t* w = (const uint64_t*)gdakiCtrlRdmaLaBeatBuf(g, li);
++  *magicVer = __atomic_load_n(&w[0], __ATOMIC_ACQUIRE);
++  *beat = __atomic_load_n(&w[1], __ATOMIC_ACQUIRE);
 +  return true;
++}
++// The last successful beat READ's bytes (after gdakiCtrlRdmaLaBeatTake said true, before the next ask): the pull when it
++// read the slots (GDAKI_CTRL_LAP_PULL_BYTES), else 16 (no slots). 0: none.
++static size_t gdakiCtrlRdmaLaPullCopy(struct gdakiCtrlRing* g, int li, uint8_t* out, size_t cap) {
++  if (!gdakiCtrlRdmaLaOk(g, li)) return 0;
++  const struct gdakiCtrlRdmaLa& la = g->la[(size_t)li];
++  if (!la.beatOk || la.beatOut || la.beatLen == 0 || la.beatLen > cap) return 0;
++  memcpy(out, gdakiCtrlRdmaLaBeatBuf(g, li), la.beatLen);
++  return la.beatLen;
 +}
 +// The QP of launcher li failed since the last call (an error completion, a gap in its sequence, a failed post).
 +static bool gdakiCtrlRdmaLaErrTake(struct gdakiCtrlRing* g, int li) {
@@ -7309,7 +7754,20 @@ index fefde6f..cbf9003 100644
 +      if (!ok && !flush) fail();
 +      else gdakiCtrlRdmaLaFlush(g, li);
 +      return;
-+    case GDAKI_CTRL_WR_READ_CREDIT:  // the beat READ
++    case GDAKI_CTRL_WR_READ_CREDIT:  // the beat READ (slot 0), the consumed word's (slot 1; 2a-2-C step 5)
++      if (gdakiCtrlWrSlot(id) == 1) {
++        la.creditOut = false;
++        if (!ok) {
++          if (!flush) fail();
++          return;
++        }
++        const uint64_t a0 = la.ackIn;
++        la.ackIn = gdakiCtrlLaLearnAck(la.gen, la.seqOut, la.ackIn,
++                                       __atomic_load_n(gdakiCtrlRdmaLaCreditBuf(g, li), __ATOMIC_ACQUIRE));
++        if (la.ackIn > a0) la.creditLearned++;
++        gdakiCtrlRdmaLaFlush(g, li);
++        return;
++      }
 +      la.beatOut = false;
 +      la.beatOk = ok;
 +      la.beatDone++;
@@ -8346,7 +8804,8 @@ index fefde6f..cbf9003 100644
 +// The swap points' answers by the pair's path (EXPERIMENT.md 9.1 "링과 흐름 제어", "차례와 잃음의 뜻"; design v3 2.2-2.4;
 +// phase 2a-2-C: the path marker's order rule, the model's "the pair's path"), the witness's socket while the ring carries
 +// the records, the switch to live (every gated pair's path to the ring), the re-pairing after a local ERR, the test
-+// switches QP_ERR and CREDIT_STALL (DROP_UD is the UD send's), and the teardown's summary lines.
++// switches QP_ERR and CREDIT_STALL (DROP_UD is the UD send's) and the witness socket's DIE_RST, RST_GAP, FD_HOLDER
++// (2a-2-C), and the teardown's summary lines.
 +// The helper's thread (the setup thread before it starts; the ring is never live there).
 +#if !NCCL_GIN_CTRL_TCP
 +static_assert(GDAKI_CTRL_PAGE_MAX_RANKS <= GDAKI_CTRL_TCP_COUNT_PEERS, "the TCP counters cover every rank of a page");
@@ -8948,6 +9407,7 @@ index fefde6f..cbf9003 100644
 +// gdakiTsPeerLiveness's answer for a peer without a witness socket: unknown while the pair's records go on the ring (no
 +// socket is no evidence), else ln4's DEAD.
 +static int gdakiCtrlNoWitnessLv(struct gdakiRecHost* r, int peer) {
++  if (gdakiCtrlWitnessMutedOf(r, peer)) return GDAKI_TS_LV_NOEVIDENCE;  // smoke3: the witness off: no socket is no evidence
 +  return gdakiCtrlRingLiveOn(r, peer) ? GDAKI_TS_LV_UNKNOWN : GDAKI_TS_LV_DEAD;
 +}
 +// ---- STATE and the rkey list over the outbox (phase 2a-2-C step 3; impl/notes_p2b.md "기록과 XFER 차례", design v3 2.3,
@@ -9382,6 +9842,161 @@ index fefde6f..cbf9003 100644
 +  gdakiCtrlRdmaRecordToErr(g, peer);
 +}
 +static bool gdakiCtrlArmedNow(struct gdakiRecHost* r);  // the communicator is armed, or has no restore (the host's)
++#ifndef NCCL_GIN_TS_PRODUCTION
++// ---- 2a-2-C: the witness socket's test switches (EXPERIMENT.md 9.9; notes_test.md's lines; rdma research build) ----
++#include <sys/prctl.h>
++#include <sys/resource.h>
++#include <sys/syscall.h>
++static void gdakiCtrlTestDieNow(struct gdakiRecHost* r);  // DIE_RST's end: SIGKILL of this process (the host's)
++// This rank's open witness sockets (the helper sockets toward every other rank): their fds into fds[], at most max.
++static int gdakiCtrlWitnessFds(struct gdakiRecHost* r, int* fds, int max) {
++  int n = 0;
++  for (int p = 0; r->ts != nullptr && p < (int)r->ts->peers.size() && n < max; p++)
++    if (p != r->ctx->rank && r->ts->peers[(size_t)p].fd >= 0) fds[n++] = r->ts->peers[(size_t)p].fd;
++  return n;
++}
++// FD_HOLDER's child (after fork: async-signal-safe calls only, no CUDA, no verbs, no allocation): its name gin_fdhold,
++// 0-2 on /dev/null, every other fd closed but its end of the socketpair, the fds taken over SCM_RIGHTS, then 60 s and
++// _exit. The kernel's close_range (5.9) or, without it, close up to the fd limit.
++#define GDAKI_CTRL_FDHOLD_MAX 64
++#define GDAKI_CTRL_FDHOLD_S 60
++static void gdakiCtrlFdHoldCloseFrom(int lo, int hi) {  // [lo, hi]
++  if (lo > hi) return;
++#ifndef SYS_close_range
++#define GDAKI_CTRL_SYS_CLOSE_RANGE 436  // the generic syscall number (x86_64, aarch64)
++#else
++#define GDAKI_CTRL_SYS_CLOSE_RANGE SYS_close_range
++#endif
++  if (syscall(GDAKI_CTRL_SYS_CLOSE_RANGE, (unsigned)lo, (unsigned)hi, 0u) == 0) return;
++  for (int fd = lo; fd <= hi; fd++) (void)close(fd);
++}
++[[noreturn]] static void gdakiCtrlFdHoldChild(int sock) {
++  (void)prctl(PR_SET_NAME, "gin_fdhold", 0, 0, 0);
++  const int nul = open("/dev/null", O_RDWR);
++  if (nul >= 0)
++    for (int k = 0; k < 3; k++) (void)dup2(nul, k);
++  struct rlimit rl;
++  int top = 65535;
++  if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur < (rlim_t)(1u << 20))
++    top = (int)rl.rlim_cur - 1;
++  gdakiCtrlFdHoldCloseFrom(3, sock - 1);
++  gdakiCtrlFdHoldCloseFrom(sock + 1, sock + 1 > top ? sock + 1 : top);
++  char byte = 0;
++  struct iovec io = {&byte, 1};
++  union {
++    char buf[CMSG_SPACE(sizeof(int) * GDAKI_CTRL_FDHOLD_MAX)];
++    struct cmsghdr align;
++  } u;
++  struct msghdr mh;
++  memset(&mh, 0, sizeof(mh));
++  mh.msg_iov = &io;
++  mh.msg_iovlen = 1;
++  mh.msg_control = u.buf;
++  mh.msg_controllen = sizeof(u.buf);
++  (void)recvmsg(sock, &mh, 0);  // the fds stay open in this process (nothing reads or closes them)
++  (void)close(sock);
++  struct timespec t0, t;
++  clock_gettime(CLOCK_MONOTONIC, &t0);
++  do {
++    struct timespec d = {1, 0};
++    (void)nanosleep(&d, nullptr);
++    clock_gettime(CLOCK_MONOTONIC, &t);
++  } while (t.tv_sec - t0.tv_sec < GDAKI_CTRL_FDHOLD_S);
++  _exit(0);
++}
++// FD_HOLDER=sock|uverbs: fork gin_fdhold and pass it this rank's witness sockets (none with the witness off) and, for
++// uverbs, the verbs context's command and async fds (net_ib's context, the ring's QPs'); no PDEATHSIG (the runner ends
++// it by the PID of the line). The line: notes_test.md's, the fd count the child was sent.
++static void gdakiCtrlFdHoldStart(struct gdakiRecHost* r, struct gdakiCtrlRing* g, struct gdakiCtrlRingSw* s, double now) {
++  const struct gdakiCtrlPage* pg = gdakiPageOf(r);
++  const bool witnessOn = pg == nullptr || pg->witnessOn;
++  int fds[GDAKI_CTRL_FDHOLD_MAX];
++  int n = witnessOn ? gdakiCtrlWitnessFds(r, fds, GDAKI_CTRL_FDHOLD_MAX - 2) : 0;
++  const struct ibv_context* ic =
++      (s->fdHold == 2 && r->ctx->collComm != nullptr) ? r->ctx->collComm->ib.context : nullptr;
++  if (ic != nullptr) {
++    if (ic->cmd_fd >= 0) fds[n++] = ic->cmd_fd;
++    if (ic->async_fd >= 0 && ic->async_fd != ic->cmd_fd) fds[n++] = ic->async_fd;
++  }
++  const char* kind = s->fdHold == 2 ? "uverbs" : "sock";
++  int sv[2];
++  if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0) {
++    WARN("GIN/TS: rank %d: test switch FD_HOLDER=%s: socketpair failed (%s): off", g->me, kind, strerror(errno));
++    return;
++  }
++  fflush(stdout);
++  fflush(stderr);
++  const pid_t pid = fork();
++  if (pid == 0) gdakiCtrlFdHoldChild(sv[1]);
++  (void)close(sv[1]);
++  if (pid < 0) {
++    WARN("GIN/TS: rank %d: test switch FD_HOLDER=%s: fork failed (%s): off", g->me, kind, strerror(errno));
++    (void)close(sv[0]);
++    return;
++  }
++  s->fdHoldPid = (int)pid;
++  char byte = 0;
++  struct iovec io = {&byte, 1};
++  union {
++    char buf[CMSG_SPACE(sizeof(int) * GDAKI_CTRL_FDHOLD_MAX)];
++    struct cmsghdr align;
++  } u;
++  struct msghdr mh;
++  memset(&mh, 0, sizeof(mh));
++  mh.msg_iov = &io;
++  mh.msg_iovlen = 1;
++  if (n > 0) {
++    memset(u.buf, 0, sizeof(u.buf));
++    mh.msg_control = u.buf;
++    mh.msg_controllen = CMSG_SPACE(sizeof(int) * (size_t)n);
++    struct cmsghdr* c = CMSG_FIRSTHDR(&mh);
++    c->cmsg_level = SOL_SOCKET;
++    c->cmsg_type = SCM_RIGHTS;
++    c->cmsg_len = CMSG_LEN(sizeof(int) * (size_t)n);
++    memcpy(CMSG_DATA(c), fds, sizeof(int) * (size_t)n);
++  }
++  if (sendmsg(sv[0], &mh, MSG_NOSIGNAL) != 1) {
++    WARN("GIN/TS: rank %d: test switch FD_HOLDER=%s: the fds were not passed (%s)", g->me, kind, strerror(errno));
++    n = 0;
++  }
++  (void)close(sv[0]);
++  GIN_TS_NOTE("GIN/TS: rank %d: test switch FD_HOLDER=%s: child gin_fdhold pid=%d holds %d fd(s) after_ckpt_ms=%d "
++              "mono_ms=%.3f", g->me, kind, (int)pid, n, (int)(now - g->originMs), gdakiQ4MonoMs());
++}
++// The witness switches at the helper's step after the origin. DIE_RST: linger 0 on every open witness socket, the line,
++// then each closed (a reset to the peer) and this process's SIGKILL. RST_GAP: the switch line only (this build resets no
++// socket and closes no listener: notes_p2a2.md). FD_HOLDER: the fork at the origin.
++static void gdakiCtrlWitnessSwitches(struct gdakiRecHost* r, struct gdakiCtrlRing* g, struct gdakiCtrlRingSw* s,
++                                     double now) {
++  if (s->fdHold != 0 && !s->fdHoldDone) {
++    s->fdHoldDone = true;
++    gdakiCtrlFdHoldStart(r, g, s, now);
++  }
++  if (s->rstGapAtMs >= 0 && !s->rstGapDone && now >= s->rstGapAtMs) {
++    s->rstGapDone = true;
++    GIN_TS_NOTE("GIN/TS: rank %d: test switch RST_GAP: 0 socket(s) reset, listener closed for 0 ms (the line only in "
++                "this build; asked %.0f:%.0f) after_ckpt_ms=%d mono_ms=%.3f", g->me, s->rstGapAfterMs, s->rstGapLenMs,
++                (int)(now - g->originMs), gdakiQ4MonoMs());
++  }
++  if (s->dieRstAtMs >= 0 && !s->dieRstDone && now >= s->dieRstAtMs) {
++    s->dieRstDone = true;
++    int fds[GDAKI_CTRL_FDHOLD_MAX];
++    const int n = gdakiCtrlWitnessFds(r, fds, GDAKI_CTRL_FDHOLD_MAX);
++    const struct linger lg = {1, 0};
++    int lingered = 0;
++    for (int k = 0; k < n; k++) lingered += setsockopt(fds[k], SOL_SOCKET, SO_LINGER, &lg, sizeof(lg)) == 0;
++    GIN_TS_NOTE("GIN/TS: rank %d: test switch DIE_RST: linger 0 on %d socket(s); SIGKILL now after_ckpt_ms=%d "
++                "mono_ms=%.3f", g->me, lingered, (int)(now - g->originMs), gdakiQ4MonoMs());
++    for (int p = 0; r->ts != nullptr && p < (int)r->ts->peers.size(); p++) {
++      struct gdakiTsPeer& pe = r->ts->peers[(size_t)p];
++      if (p == r->ctx->rank || pe.fd < 0) continue;
++      (void)close(pe.fd);
++      pe.fd = -1;
++    }
++    gdakiCtrlTestDieNow(r);
++  }
++}
++#endif  // !NCCL_GIN_TS_PRODUCTION
 +// The helper's step once the setup's first pairings started (gdakiCtrlRingHelperStep's last call): the switch to live,
 +// the re-pairing of a pair whose record QP this side saw lost (PAIR(record, gen + 1), NCCL_GIN_TS_RECONNECT_MS), the
 +// re-paired lines, the test switches.
@@ -9428,6 +10043,11 @@ index fefde6f..cbf9003 100644
 +      if (p != g->me && r->ts->peers[(size_t)p].gated) (void)gdakiCtrlPathSet(r, p, GDAKI_CTRL_PM_RING);
 +    GIN_TS_NOTE("GIN/RC: rank %d: the records go on the ring from now (live): %d peer(s), record and liveness READ QPs "
 +                "paired; the helper sockets are the witness's mono_ms=%.3f", g->me, gated, gdakiQ4MonoMs());
++    if (gdakiPageUp(pg))  // 2a-2-C step 4: the judgement is the reaction from now (gdakiCtrlEffOn, gdakiCtrlEffPoll)
++      GIN_TS_NOTE("GIN/RC: rank %d: the judgement table decides an exit from now: a witness FIN or RST opens the confirm "
++                  "window (W=%d ms) and the hold starts on its verdict (rows 3-6) or on the launcher's EXITED or FENCED, "
++                  "never on the FIN alone; L reads the launcher pages (pullOk); a pair without a live ring keeps ln4's "
++                  "witness rule mono_ms=%.3f", g->me, pg->wMs, gdakiQ4MonoMs());
 +  }
 +  if (!g->live) return;
 +  struct gdakiCtrlRingSw* s = gdakiCtrlRingSwOf(g);
@@ -9438,6 +10058,8 @@ index fefde6f..cbf9003 100644
 +      s->stallFromMs = now + s->stallAfterMs;
 +      s->stallToMs = s->stallFromMs + s->stallLenMs;
 +    }
++    if (s->dieRstAfterMs >= 0) s->dieRstAtMs = now + s->dieRstAfterMs;
++    if (s->rstGapAfterMs >= 0) s->rstGapAtMs = now + s->rstGapAfterMs;
 +  }
 +  if (s->qpErrAtMs >= 0 && !s->qpErrDone && now >= s->qpErrAtMs) {
 +    s->qpErrDone = true;
@@ -9450,6 +10072,9 @@ index fefde6f..cbf9003 100644
 +    GIN_TS_NOTE("GIN/RC: rank %d: test switch CREDIT_STALL: no RECV re-posted for %d ms mono_ms=%.3f", g->me,
 +                (int)s->stallLenMs, gdakiQ4MonoMs());
 +  }
++#ifndef NCCL_GIN_TS_PRODUCTION
++  if (g->originMs >= 0) gdakiCtrlWitnessSwitches(r, g, s, now);
++#endif
 +}
 +// The teardown's lines (the helper's end; rows_gc.py CTRLSUM, RINGSUM): the control summary (every process of the rdma
 +// build, with or without a ring) and one ring summary per paired peer.
@@ -9515,6 +10140,13 @@ index fefde6f..cbf9003 100644
 +static bool gdakiCtrlArmedNow(struct gdakiRecHost* r) {
 +  return r->hold == nullptr || r->hold->commArmed.load(std::memory_order_acquire) != 0;
 +}
++#ifndef NCCL_GIN_TS_PRODUCTION
++static void gdakiCtrlTestDieNow(struct gdakiRecHost*) {  // DIE_RST (the live seams' gdakiCtrlWitnessSwitches)
++  fflush(stdout);
++  fflush(stderr);
++  kill(getpid(), SIGKILL);
++}
++#endif
 +static void gdakiCtrlIdleRecord(struct gdakiRecHost* r, int p, struct gdakiTsPeer& pe, const struct gdakiTsMsg& msg) {
 +  struct gdakiTsMsg m = msg;
 +  if (m.type == GDAKI_TS_REQ && m.from == p) gdakiTsRespond(r, p, m);
@@ -10500,6 +11132,8 @@ index fefde6f..cbf9003 100644
 +  struct glEp ud;
 +  uint32_t qkey = 0;
 +  struct glRegion page;
++  uint32_t creditOff = 0;           // 2a-2-C step 5: its page's consumed word for this rank (glPageCredit.consumed; the
++                                    // launcher's PAIR or PAIR_ACK); 0: none named (no credit READ)
 +  struct gdakiCtrlPairSt pair;      // the record QP's pairing (gin-control (ring)'s model; the launcher's `from`)
 +  struct glEp local, remote;
 +  bool connected = false, qpErr = false;
@@ -11035,6 +11669,10 @@ index fefde6f..cbf9003 100644
 +  return x;
 +}
 +
++// 2a-2-C step 5: a launcher's creditOff (its PAIR's or PAIR_ACK's) names an aligned 8 B word inside its page past the head.
++static inline bool gdakiCtrlLaCreditOffOk(const struct glRegion& page, uint32_t off) {
++  return off >= 64u && off % 8u == 0 && (uint64_t)off + 8u <= (uint64_t)page.len;
++}
 +// ---- messages from a launcher ----
 +// UD: PAIR_ACK of this rank's PAIR, or the launcher's own PAIR (its re-pairing). RC: the rest. now: ms.
 +static void gdakiCtrlLaOnUd(struct gdakiCtrlLaLink* k, const struct glMsg& m, double now) {
@@ -11057,6 +11695,7 @@ index fefde6f..cbf9003 100644
 +    }
 +    p.remote = b.qp;
 +    p.page = b.page;
++    p.creditOff = gdakiCtrlLaCreditOffOk(b.page, b.creditOff) ? b.creditOff : 0u;  // 2a-2-C step 5
 +    p.connected = true;  // this side started: its CONNECTED goes first
 +    struct glMsg c;
 +    gdakiCtrlLaMsgInit(k, &c, GL_K_CONNECTED, k->me, k->inc, p.node);
@@ -11090,6 +11729,7 @@ index fefde6f..cbf9003 100644
 +      } else {
 +        p.remote = b.qp;
 +        p.page = b.page;
++        p.creditOff = gdakiCtrlLaCreditOffOk(b.page, b.creditOff) ? b.creditOff : 0u;  // 2a-2-C step 5
 +      }
 +      ab.qp = p.local;
 +    } else if (a == GDAKI_CTRL_PA_RESEND_ACK) {
@@ -11786,8 +12426,20 @@ index fefde6f..cbf9003 100644
 +  uint32_t resendSaidInc = 0;       // inc + 1 of the last "STORE_REQ goes again" line
 +  // the judgement table's L inputs by rank (gdakiCtrlLaLInputs; the watch thread reads them without the mutex)
 +  std::unique_ptr<std::atomic<uint64_t>[]> pubLeft, pubFenced, pubReg;
++  // 2a-2-C step 4: the launcher page pulls (helper): by launcher the last good pull's time (-1 none), by rank the word
++  // of the last pull of its node launcher's page; pubPull the watch thread's (gdakiCtrlLaPullPack, no mutex)
++  std::vector<double> pullMs;
++  std::vector<uint64_t> pullWord;
++  std::vector<int8_t> pullFound;
++  std::unique_ptr<std::atomic<uint64_t>[]> pubPull;
 +  double stepMs = -1;               // int2: the helper's clock at the last gdakiCtrlLauncherStep
 +};
++static_assert(GDAKI_CTRL_LAP_MAGIC == GL_PAGE_MAGIC && GDAKI_CTRL_LAP_HEAD == offsetof(struct glPage, reg) &&
++                  GDAKI_CTRL_LAP_SLOT == sizeof(struct glPageReg) && GDAKI_CTRL_LAP_REGS == GL_PAGE_REGS &&
++                  offsetof(struct glPageReg, nonce) == 0 && offsetof(struct glPageReg, reg) == 8 &&
++                  GDAKI_CTRL_LAP_RS_ALIVE == GL_RS_ALIVE && GDAKI_CTRL_LAP_RS_LEFT == GL_RS_LEFT &&
++                  GDAKI_CTRL_LAP_PULL_BYTES <= sizeof(struct glPage),
++              "the page region's pull layout is launcher_msg.h's glPage");
 +static struct gdakiCtrlLauncher* gdakiCtrlLaOf(struct gdakiRecHost* r) {
 +  return (r != nullptr && r->ctrl != nullptr) ? r->ctrl->launcher : nullptr;
 +}
@@ -11915,6 +12567,9 @@ index fefde6f..cbf9003 100644
 +  L->pubLeft.reset(new std::atomic<uint64_t>[(size_t)r->nranks]());
 +  L->pubFenced.reset(new std::atomic<uint64_t>[(size_t)r->nranks]());
 +  L->pubReg.reset(new std::atomic<uint64_t>[(size_t)r->nranks]());
++  L->pubPull.reset(new std::atomic<uint64_t>[(size_t)r->nranks]());
++  L->pullWord.assign((size_t)r->nranks, 0u);
++  L->pullFound.assign((size_t)r->nranks, 0);
 +  k.cells.arg = r;  // the window line's cells (REVIEW_P3 막는 문제 1)
 +  k.cells.regions = gdakiCtrlLaCellRegions;
 +  k.cells.read = gdakiCtrlLaCellRead;
@@ -11977,6 +12632,47 @@ index fefde6f..cbf9003 100644
 +  }
 +  gdakiCtrlLaRegister(L, L->spare ? GDAKI_CTRL_LA_ROLE_SPARE : GDAKI_CTRL_LA_ROLE_RANK, k.inc);
 +}
++// ---- the launcher page pull (2a-2-C step 4; the L input's pullOk and registration word, design v3 4.2 L) ----
++// One successful beat READ of launcher li that read the slots (L->mu held): its time and, for every rank of that node,
++// the word of its slot (gdakiCtrlLaPageRegOf; none: "no information"). A READ of 16 B (a shorter page) is no pull.
++static void gdakiCtrlLaOnPull(struct gdakiCtrlLauncher* L, struct gdakiCtrlRing* g, int li, double now) {
++  static thread_local std::vector<uint8_t> buf(GDAKI_CTRL_LAP_PULL_BYTES);
++  const size_t n = gdakiCtrlRdmaLaPullCopy(g, li, buf.data(), buf.size());
++  if (n < GDAKI_CTRL_LAP_PULL_BYTES) return;
++  for (int q = 0; q < L->k.nranks && q < (int)L->k.laOf.size(); q++) {
++    if (L->k.laOf[(size_t)q] != li) continue;
++    uint64_t w = 0;
++    const int f = gdakiCtrlLaPageRegOf(buf.data(), n, L->k.nonce, q, &w);
++    if (f < 0) return;  // not a launcher page: no pull
++    L->pullWord[(size_t)q] = w;
++    L->pullFound[(size_t)q] = (int8_t)f;
++  }
++  L->pullMs[(size_t)li] = now;
++}
++// Every rank's pull word for the watch thread: pullOk of its node launcher (gdakiCtrlLaPullOk) and its slot's word.
++static void gdakiCtrlLaPublishPull(struct gdakiCtrlLauncher* L, double now) {
++  if (!L->pubPull) return;
++  for (int q = 0; q < L->k.nranks && q < (int)L->k.laOf.size(); q++) {
++    const int li = L->k.laOf[(size_t)q];
++    bool ok = false;
++    if (li >= 0 && li < (int)L->k.la.size() && (size_t)li < L->pullMs.size()) {
++      const struct gdakiCtrlLaPeer& p = L->k.la[(size_t)li];
++      const char* why = nullptr;
++      ok = gdakiCtrlLaPullOk(p.connected, p.qpErr, gdakiCtrlLaLost(&L->k, li, now, &why), L->pullMs[(size_t)li], now,
++                             L->k.stallMs);
++    }
++    L->pubPull[(size_t)q].store(gdakiCtrlLaPullPack(ok, L->pullFound[(size_t)q], L->pullWord[(size_t)q]),
++                                std::memory_order_release);
++  }
++}
++// The pull's L inputs of (peer, inc) for the watch thread (no lock): pullOk and the page's (ALIVE | LEFT, peer, inc).
++static void gdakiCtrlLaPullInputs(struct gdakiRecHost* r, int peer, uint32_t inc, bool* pullOk, bool* regAlive,
++                                  bool* regLeft) {
++  *pullOk = *regAlive = *regLeft = false;
++  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
++  if (L == nullptr || !L->pubPull || peer < 0 || peer >= L->k.nranks) return;
++  gdakiCtrlLaPullL(L->pubPull[(size_t)peer].load(std::memory_order_acquire), inc, pullOk, regAlive, regLeft);
++}
 +// The helper's step (gdakiTsMain): the socket (its loss: the line), the pairings' clock, the latch, the buddy's FETCH QP.
 +static void gdakiCtrlLauncherStep(struct gdakiRecHost* r) {
 +  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
@@ -11987,6 +12683,7 @@ index fefde6f..cbf9003 100644
 +    struct gdakiCtrlLaIn x;
 +    while (gdakiCtrlRdmaLaTake(g, &x)) gdakiCtrlLauncherOnEnvelope(r, &x.env, x.body, x.ud);
 +  }
++  gdakiCtrlEffEndedStep(r);  // 2a-2-C step 4: a launcher's EXITED or FENCED ends an effective pair at once (no lock)
 +  std::lock_guard<std::mutex> lk(L->mu);
 +  const double now = gdakiQ4MonoMs();
 +  (void)gdakiCtrlLaUnixPoll(&L->k.unix, L->k.log, L->k.me);
@@ -12002,11 +12699,19 @@ index fefde6f..cbf9003 100644
 +      p.connected = false;
 +    }
 +    if (gap) p.beatMs = -1;
++    if (L->pullMs.size() <= li) L->pullMs.resize(li + 1, -1.0);
++    if (gap && L->pullMs[li] >= 0) L->pullMs[li] = now;  // the pull's bound restarts as the beat's (a slow helper)
 +    uint64_t mv = 0, beat = 0, n = 0;
-+    if (gdakiCtrlRdmaLaBeatTake(g, (int)li, &mv, &beat, &n) && (mv >> 32) == GL_PAGE_MAGIC)
++    if (gdakiCtrlRdmaLaBeatTake(g, (int)li, &mv, &beat, &n) && (mv >> 32) == GL_PAGE_MAGIC) {
 +      gdakiCtrlLaOnBeat(&L->k, (int)li, beat, now);
-+    if (p.connected && !p.qpErr) gdakiCtrlRdmaLaBeatAsk(g, (int)li, p.page.addr, p.page.rkey, now);
++      gdakiCtrlLaOnPull(L, g, (int)li, now);  // 2a-2-C step 4: the registration slots of the same READ
++    }
++    if (p.connected && !p.qpErr) gdakiCtrlRdmaLaBeatAsk(g, (int)li, p.page.addr, p.page.rkey, now, p.page.len);
++    // 2a-2-C step 5: the window toward the launcher shut: READ its page's consumed word for this rank (no credit SEND)
++    if (p.connected && !p.qpErr && p.creditOff != 0)
++      gdakiCtrlRdmaLaCreditAsk(g, (int)li, p.page.addr + p.creditOff, p.page.rkey, now);
 +  }
++  gdakiCtrlLaPublishPull(L, now);
 +  // the pairings once the ring can make their QPs (bound to the page: the launcher's consumed words are there); never a
 +  // PAIR without a QP
 +  if (g != nullptr && g->bound && !g->la.empty()) gdakiCtrlLaPairTick(&L->k, now);
@@ -12060,6 +12765,10 @@ index fefde6f..cbf9003 100644
 +      const int p = m.h.rank;
 +      gdakiLnFenced(r, p, m.h.incarnation);  // phase 1's page copy of the word (the report)
 +      gdakiCtrlLaFenceReport(&L->k, p, gdakiHoldBuddyOf(p, L->k.nranks) == L->k.me);
++      // 2a-2-C step 4: the end of the incarnation the lineage took opens a timing window (an open FIN window stays; the
++      // reaction is gdakiCtrlEffEndedStep's, after the envelopes)
++      if (gdakiCtrlFencedIs(L->k.fencedPlus1[(size_t)p], m.h.incarnation))
++        gdakiCtrlWindowRequest(r, p, GDAKI_CTRL_WSRC_ENDED);
 +    }
 +    gdakiCtrlLaPublish(L);
 +  }
@@ -12216,7 +12925,7 @@ index fefde6f..cbf9003 100644
  static void gdakiTsMain(struct gdakiRecHost* r) {
    gdakiTsInHelper = true;
    gdakiTsOwner = r;
-@@ -17765,17 +29091,25 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+@@ -17765,17 +29793,25 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
      for (int p = 0; p < (int)ts->peers.size(); p++) {
        struct gdakiTsPeer& pe = ts->peers[p];
        if (!pe.deferredReq) continue;
@@ -12243,7 +12952,7 @@ index fefde6f..cbf9003 100644
          } else if (q.type == GDAKI_TS_REQ && q.from == p) {
            gdakiTsDropKept(r, p, "a newer REQ of that rank follows it");
            gdakiTsRespond(r, p, q);  // as the idle loop answers it
-@@ -17805,16 +29139,26 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+@@ -17805,16 +29841,26 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
        pfds.push_back({pe.fd, POLLIN, 0});
        who.push_back(p);
      }
@@ -12271,7 +12980,7 @@ index fefde6f..cbf9003 100644
          if (msg.type == GDAKI_TS_REQ && msg.from == p) gdakiTsRespond(r, p, msg);
          else if (msg.type == GDAKI_TS_FAIL) {
            if (!pe.declined) gdakiTsDecline(r, p, "the peer declined", false, msg.arg, gdakiTsRemoteCause(msg));
-@@ -17824,15 +29168,26 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+@@ -17824,15 +29870,26 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
          } else if (gdakiHoldDefer(r, p, &msg)) {  // gin-restore (rs, work package 7): parked; gdakiHoldStep takes it
          } else
            INFO(NCCL_NET, "GIN/TS: ignoring %s from rank %d while idle", gdakiTsMsgName(msg.type), p);
@@ -12298,7 +13007,7 @@ index fefde6f..cbf9003 100644
      // gin-harden: a peer judged dead surfaces at once: decline (async error, QPs to ERR, gates failed) and the user
      // devComm's own word (every user wait, waitSignal included, returns an error). A receive-only rank no longer
      // waits for a fault of its own that never comes.
-@@ -17850,6 +29205,10 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+@@ -17850,6 +29907,10 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
        if (!pe.failedPending || pe.declined) continue;
        gdakiTsDecline(r, p, "the peer declined this pair (FAIL on reconnect)", false, 0, pe.failCause);
      }
@@ -12309,7 +13018,7 @@ index fefde6f..cbf9003 100644
      gdakiHoldStep(r);  // gin-restore (rs, work package 7, RL4): the hold's records, deadline, buddy and restore (no state:
                         // nothing)
      std::vector<struct gdakiTsFault> fs;
-@@ -17875,6 +29234,9 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
+@@ -17875,6 +29936,9 @@ static void gdakiTsMain(struct gdakiRecHost* r) {
        nextScan = gdakiQ4MonoMs() + 100.0;
      }
    }
@@ -12319,7 +13028,7 @@ index fefde6f..cbf9003 100644
    // gin-harden: RUNNING -> EXITED, unless a bounded join gave up first (RUNNING -> ORPHAN): an orphaned helper closes its
    // own sockets (BYE first), nobody else may.
    int life = GDAKI_TS_LIFE_RUNNING;
-@@ -17897,6 +29259,50 @@ static uint64_t gdakiTsMix64(uint64_t x) {  // splitmix64 finalizer
+@@ -17897,6 +29961,50 @@ static uint64_t gdakiTsMix64(uint64_t x) {  // splitmix64 finalizer
    return x ^ (x >> 31);
  }
  
@@ -12370,7 +13079,7 @@ index fefde6f..cbf9003 100644
  static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollComm* cComm) {
    if (!(ncclParamGinFaultRecovery() && ncclParamGinFaultTransparent() && ncclGinFaultUserCtx)) return ncclSuccess;
    struct gdakiRecHost* r = g->rec;
-@@ -17917,6 +29323,7 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -17917,6 +30025,7 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
        });
      }
    }
@@ -12378,7 +13087,7 @@ index fefde6f..cbf9003 100644
    struct gdakiTsAddr {
      uint32_t magic;
      int32_t rank;
-@@ -17925,6 +29332,7 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -17925,6 +30034,7 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
      uint32_t policy;     // gpu-detect (hk, G1): NCCL_GIN_FAULT_POLICY of this rank (GDAKI_POLICY_*). The record grows:
      uint32_t policyPad;  //   every rank of a job must run the same library (this all-gather always assumed it)
    };
@@ -12386,7 +13095,7 @@ index fefde6f..cbf9003 100644
    std::vector<struct gdakiTsAddr> all(nranks);
    struct gdakiTsAddr mine;
    memset(&mine, 0, sizeof(mine));
-@@ -18008,6 +29416,22 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -18008,6 +30118,22 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
      if (pr != ncclSuccess) { if (ls >= 0) close(ls); return pr; }
      mine.salt = rsRec.salt;
    }
@@ -12409,7 +13118,7 @@ index fefde6f..cbf9003 100644
    ncclResult_t ret = cComm->allGather(cComm, &mine, all.data(), sizeof(mine));
    if (ret != ncclSuccess) {
      if (ls >= 0) close(ls);
-@@ -18032,6 +29456,27 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -18032,6 +30158,27 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
    uint64_t nonce = 0x6e6f6e6365ull;  // gin-harden: every rank's salt, in rank order: the same on every rank
    for (int p = 0; p < nranks; p++) nonce = gdakiTsMix64(nonce ^ all[p].salt);
    if (nonce == 0) nonce = 1;
@@ -12437,7 +13146,7 @@ index fefde6f..cbf9003 100644
    // gin-restore (rs, 9.10.8, K15): whether the restore can be enabled, decided by every rank from the same records, before
    // any helper socket connects. Only "a rank that asks does not register strict" ends here (ncclInternalError: this GDAKI
    // context is not created on any rank; NCCL may try another GIN backend); every other refusal leaves a fail-fast context.
-@@ -18091,6 +29536,56 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+@@ -18091,6 +30238,56 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
      ts->policyEff = (polReq == GDAKI_POLICY_HOLD && polOther < 0 && rsVerdict == GDAKI_RS_ENABLE) ? GDAKI_POLICY_HOLD
                                                                                                    : GDAKI_POLICY_FAILFAST;
    }
@@ -12494,7 +13203,7 @@ index fefde6f..cbf9003 100644
    // gin-restore (rs, work package 8): a spare neither connects nor accepts here (no survivor is listening for it at init,
    // and the spare must not speak before its REJOIN, D4). `gated` and `addr` come from the recorded setup all-gather, so
    // the gates are set up and the spare's REJOIN driver has the survivors' listen addresses. The listen socket (a fresh
-@@ -20798,6 +32293,12 @@ static int gdakiMiDrainStep(struct gdakiRecHost* r, int d, uint32_t inc, uint64_
+@@ -20798,6 +32995,12 @@ static int gdakiMiDrainStep(struct gdakiRecHost* r, int d, uint32_t inc, uint64_
      return -1;
    }
    if (sp->drained) return 0;
@@ -12507,7 +13216,7 @@ index fefde6f..cbf9003 100644
    auto refuse = [&]() {
      sp->drainFailed = true;
      snprintf(sp->drainWhy, sizeof(sp->drainWhy), "%.190s", why);
-@@ -21150,7 +32651,11 @@ static int gdakiMiActRecv(struct gdakiRecHost* r, int fd, const struct gdakiRsAc
+@@ -21150,7 +33353,11 @@ static int gdakiMiActRecv(struct gdakiRecHost* r, int fd, const struct gdakiRsAc
                            struct gdakiMiActBlob* blob, char* why, size_t whyLen) {
    struct gdakiTs* ts = r->ts;
    const int me = r->ctx->rank, n = r->nranks;
@@ -12519,7 +13228,7 @@ index fefde6f..cbf9003 100644
      snprintf(why, whyLen, "an activation with a blob (version %u) at a spare without the mirror", act.version);
      return 8;
    }
-@@ -21191,6 +32696,12 @@ static int gdakiMiActRecv(struct gdakiRecHost* r, int fd, const struct gdakiRsAc
+@@ -21191,6 +33398,12 @@ static int gdakiMiActRecv(struct gdakiRecHost* r, int fd, const struct gdakiRsAc
               (unsigned long)s->fetchCap);
      return code;
    }
@@ -12532,7 +13241,7 @@ index fefde6f..cbf9003 100644
    if (!gdakiMiAddrSelfOk(blob->addr[(size_t)me])) {
      snprintf(why, whyLen, "the address table's entry of the restored rank is not empty");
      return 11;
-@@ -21571,11 +33082,238 @@ static ncclResult_t gdakiMiLogExport(struct gdakiRecHost* r, int peer, uint64_t
+@@ -21571,11 +33784,238 @@ static ncclResult_t gdakiMiLogExport(struct gdakiRecHost* r, int peer, uint64_t
    return ncclSuccess;
  }
  // ==== gin-mirror (spare): restore path (end) ====
@@ -12771,7 +13480,7 @@ index fefde6f..cbf9003 100644
    bool ok = true;
    int nq = 0;
    ts->roundMs = (int)std::max<int64_t>(100, ncclParamGinTsRoundMs());
-@@ -21958,6 +33696,12 @@ extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
+@@ -21958,6 +34398,12 @@ extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
      // gpu-detect: the QP-state watch of this context (written by the helper only: read after the join)
      if (joined) gdakiDetTeardownLine(ts, rank);
      if (joined) gdakiHoldTeardownLine(r);  // gin-restore (rs, work package 7)
@@ -12784,7 +13493,7 @@ index fefde6f..cbf9003 100644
      if (joined) {  // gin-restore (rs, work package 5): the data threads stop here (they read the helper's state)
        gdakiCkptStop(r);
        gdakiCkptTeardownLine(r);
-@@ -21979,6 +33723,9 @@ static void gdakiTsStop(struct gdakiRecHost* r) {
+@@ -21979,6 +34425,9 @@ static void gdakiTsStop(struct gdakiRecHost* r) {
  #ifndef NCCL_GIN_TS_PRODUCTION
    if (ts->test)
      WARN("GIN/TS: TEST split rank=%d nsplit=%u no_ack=%u", r->ctx->rank, ts->test->nsplit, ts->test->nsplitNoAck);
@@ -12794,7 +13503,7 @@ index fefde6f..cbf9003 100644
  #endif
    if (!orphan) gdakiTsCloseAll(ts, r->ctx->rank);
    ts->stopped = true;
-@@ -22336,7 +34083,11 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
+@@ -22336,7 +34785,11 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
    // this rank's records first, to every peer, then every peer's (each rank sends before it reads: no wait cycle)
    const bool mineOn = m->confOk && m->poolOk;
    auto sendSetup = [&](int p, bool on) -> bool {
@@ -12806,7 +13515,7 @@ index fefde6f..cbf9003 100644
      struct gdakiMiSetup s;
      memset(&s, 0, sizeof(s));
      s.version = GDAKI_MI_WIRE_VERSION;
-@@ -22356,7 +34107,7 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
+@@ -22356,7 +34809,7 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
      x.nqp = 1;
      x.nonce = ts->nonce;
      memcpy(x.executed, &s, sizeof(s));
@@ -12815,7 +13524,7 @@ index fefde6f..cbf9003 100644
    };
    for (int p = 0; p < n; p++) {
      if (p == me || !ts->peers[p].gated) continue;
-@@ -22369,7 +34120,11 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
+@@ -22369,7 +34822,11 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
      struct gdakiTsPeer& pe = ts->peers[p];
      struct gdakiTsMsg in;
      const int rem = (int)(deadline - gdakiQ4MonoMs());
@@ -12827,7 +13536,7 @@ index fefde6f..cbf9003 100644
      char w[128] = {0};
      if (got != 1) {
        snprintf(w, sizeof(w), "rank %d: %s", p, got == 0 ? "no MIRROR_SETUP within NCCL_GIN_TS_HANDSHAKE_MS"
-@@ -23227,6 +34982,9 @@ static ncclResult_t gdakiRsSpareResume(const struct ncclGinRestoreCommFacts* f,
+@@ -23227,6 +35684,9 @@ static ncclResult_t gdakiRsSpareResume(const struct ncclGinRestoreCommFacts* f,
                          : nullptr;
    if (bad != nullptr) {  // nothing was answered: the buddy's ACTIVATE finds no port and the survivors fall back
      WARN("GIN/RS: spare rank %d: ncclGinRestoreResume cannot run the restore: %s", f->rank, bad);
@@ -12837,7 +13546,7 @@ index fefde6f..cbf9003 100644
      return ncclInvalidUsage;
    }
    struct gdakiRsSpareResumeArg a;
-@@ -23367,8 +35125,36 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+@@ -23367,8 +35827,36 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
    char sideWhy[128] = {0}, rsLbWhy[128] = {0}, resWhy[128] = {0};
    char atomicWhy[160] = "not set up";  // gin-restore (dev, A1): the loopback atomic pair's verdict
    char miCtxWhy[160] = {0}, miPoolWhy[160] = {0}, miConfWhy[160] = {0}, miPeersWhy[160] = {0};  // gin-mirror (host)
@@ -12874,7 +13583,7 @@ index fefde6f..cbf9003 100644
    {
      std::lock_guard<std::mutex> lk(gdakiRecRegMu);
      for (auto* r : gdakiRecReg)
-@@ -23402,6 +35188,19 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+@@ -23402,6 +35890,19 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
      // exchange's mirror part (the bit, S, L)
      gdakiMiResumeFacts(rFound != nullptr && rFound->ts != nullptr ? rFound : nullptr, c.spare >= 0 && rsReplaying(), &in,
                         &mine, miCtxWhy, miPoolWhy, miConfWhy, miPeersWhy, sizeof(miCtxWhy));
@@ -12894,7 +13603,7 @@ index fefde6f..cbf9003 100644
    }
    in.sideWhy = sideWhy;
    in.rsLbWhy = rsLbWhy;
-@@ -23499,6 +35298,10 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+@@ -23499,6 +36000,10 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
      e.verdict = verdict;
      snprintf(e.why, sizeof(e.why), "%s", why);
    }

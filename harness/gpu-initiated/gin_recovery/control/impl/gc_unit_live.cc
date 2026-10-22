@@ -16,9 +16,11 @@
 //   4. the two-READ probe over a model of the QP (in-order completions, random latencies, stalls past the timeout, window
 //      READs between): never more than GDAKI_CTRL_PROBE_SQ (4) in flight, never more than 2 of the periodic pair, a pair
 //      judged once and only after both completions, the next pair only after both;
-//   5. the confirmation window over the device line (READ1 at t_F, READ2 at t_F + W/2, the verdict at t_F + W): a changed
-//      line or a quiet one is alive, an unchanged line with work pending STALE, READ2 not done NORESP, a remote access
-//      error REMACC; and the watch-beat window of a peer without a line, as before;
+//   5. the confirmation window over the host's watch beat (smoke3, 2a-2-C step 5: READ1 at t_F, READ2 at t_F + W/2, the
+//      verdict at t_F + W; line 0's watchBeat whether or not the peer names a device line): an advanced beat alive, an
+//      unchanged (or older) one STALE, READ2 not done NORESP, a remote access error REMACC, another process unconfirmed;
+//      2 000 kill scenes in which the device line keeps advancing 100 ms after the FIN (smoke3's 9/9 "alive" windows)
+//      still end FIN+STALE (row 4) at t_F + W, and 2 000 live-peer scenes (beat gaps up to 1.1 ms) never STALE;
 //   6. the judgement table over the whole 1 170-point grid: the per-row counts (234, 468, 117, 39 x 6, 3, 1, 5, 9 x 5,
 //      36, 9, 18, 0) still hold (the table itself is unchanged).
 #include <algorithm>
@@ -383,7 +385,7 @@ static void testPairIo() {
           CHECK(!done);
           if (x.kind == GDAKI_CTRL_PW_WIN1 || x.kind == GDAKI_CTRL_PW_WIN2)
             (void)gdakiCtrlWindowOnCqe(&win, x.seq, x.kind == GDAKI_CTRL_PW_WIN1 ? 1u : 2u, GDAKI_CTRL_CQ_OK, (uint64_t)t,
-                                       0, t, false);
+                                       0, t);
         }
       }
       auto post = [&](uint32_t kind, uint32_t seq) {
@@ -400,7 +402,7 @@ static void testPairIo() {
       };
       if (gdakiCtrlProbeTimedOut(&io, t, 500)) timeouts++;
       // a window now and then
-      if (u(rng) < 0.002 && gdakiCtrlWindowOpen(&win, GDAKI_CTRL_WSRC_FIN, t, gdakiCtrlProbeCanPost(&io, 2), devLine))
+      if (u(rng) < 0.002 && gdakiCtrlWindowOpen(&win, GDAKI_CTRL_WSRC_FIN, t, gdakiCtrlProbeCanPost(&io, 2)))
         windows++;
       const uint32_t wa = gdakiCtrlWindowStep(&win, t, 20);
       if (wa == GDAKI_CTRL_WA_JUDGE) {
@@ -437,24 +439,21 @@ static void testPairIo() {
          windows, winJudged, timeouts, maxOut, GDAKI_CTRL_PROBE_SQ, maxLeft);
 }
 
-// ---- 5. the confirmation window over the device line ----
+// ---- 5. the confirmation window over the host's watch beat (smoke3, 2a-2-C step 5) ----
 // t_F = 0, W = 20: READ1 posted at 0 and done at 0.1, READ2 posted at 10 and done at 10.1 (unless `r2None`), the verdict at
-// 20. `v1`, `v2`: the line at READ1 and READ2.
-static uint32_t devWindow(const DevArray& v1, const DevArray& v2, bool dev, bool r2None, bool remacc1, uint64_t inc2) {
+// 20. `b1`, `b2`: line 0's watchBeat at READ1 and READ2.
+static uint32_t beatWindow(uint64_t b1, uint64_t b2, bool r2None, bool remacc1, uint64_t inc2) {
   struct gdakiCtrlWindow w;
-  CHECK(gdakiCtrlWindowOpen(&w, GDAKI_CTRL_WSRC_FIN, 0, true, dev));
+  CHECK(gdakiCtrlWindowOpen(&w, GDAKI_CTRL_WSRC_FIN, 0, true));
   CHECK(gdakiCtrlWindowStep(&w, 0, 20) == GDAKI_CTRL_WA_POST1);
   gdakiCtrlWindowPosted(&w, 1, true, 0);
-  const struct gdakiCtrlDevSum d1 = v1.sum(), d2 = v2.sum();
-  (void)gdakiCtrlWindowOnCqe(&w, w.no, 1, remacc1 ? GDAKI_CTRL_CQ_REMACC : GDAKI_CTRL_CQ_OK, gdakiCtrlDevValue(d1), 7, 0.1,
-                             d1.pending == 0);
+  (void)gdakiCtrlWindowOnCqe(&w, w.no, 1, remacc1 ? GDAKI_CTRL_CQ_REMACC : GDAKI_CTRL_CQ_OK, b1, 7, 0.1);
   CHECK(gdakiCtrlWindowStep(&w, 5, 20) == GDAKI_CTRL_WA_NONE);
   uint32_t a = gdakiCtrlWindowStep(&w, 10, 20);
   if (!remacc1) {
     CHECK(a == GDAKI_CTRL_WA_POST2);
     gdakiCtrlWindowPosted(&w, 2, true, 10);
-    if (!r2None)
-      (void)gdakiCtrlWindowOnCqe(&w, w.no, 2, GDAKI_CTRL_CQ_OK, gdakiCtrlDevValue(d2), inc2, 10.1, d2.pending == 0);
+    if (!r2None) (void)gdakiCtrlWindowOnCqe(&w, w.no, 2, GDAKI_CTRL_CQ_OK, b2, inc2, 10.1);
     a = gdakiCtrlWindowStep(&w, 19.9, 20);
     CHECK(a == GDAKI_CTRL_WA_NONE);
     a = gdakiCtrlWindowStep(&w, 20, 20);
@@ -467,26 +466,118 @@ static uint32_t devWindow(const DevArray& v1, const DevArray& v2, bool dev, bool
   CHECK(w.endMs == 20);
   return cw;
 }
-static void testDevWindow() {
-  DevArray busy1(4), busy2(4), quiet(4), changed(4);
-  busy1.set(1, 100, 98);
-  busy2 = busy1;               // unchanged, two WQEs pending: the GPU is stuck
-  quiet.set(1, 100, 100);      // unchanged, nothing pending
-  changed.set(1, 101, 99);     // progressed
-  CHECK(devWindow(busy1, changed, true, false, false, 7) == GDAKI_CTRL_CW_ALIVE);
-  CHECK(devWindow(busy1, busy2, true, false, false, 7) == GDAKI_CTRL_CW_STALE);
-  CHECK(devWindow(quiet, quiet, true, false, false, 7) == GDAKI_CTRL_CW_ALIVE);
-  CHECK(devWindow(busy1, quiet, true, false, false, 7) == GDAKI_CTRL_CW_ALIVE);  // it finished its work: changed
-  CHECK(devWindow(busy1, busy2, true, true, false, 7) == GDAKI_CTRL_CW_NORESP);
-  CHECK(devWindow(busy1, busy2, true, false, true, 7) == GDAKI_CTRL_CW_REMACC);
-  CHECK(devWindow(busy1, changed, true, false, false, 8) == GDAKI_CTRL_CW_UNCONFIRMED);
-  // without a line the window compares the watch beat (the beat values given as they are): equal is STALE
-  CHECK(devWindow(quiet, quiet, false, false, false, 7) == GDAKI_CTRL_CW_STALE);
+// One window over a model of the subject (rank 3) after its witness socket's FIN or RST at t_F: its watch thread writes
+// line 0's watchBeat every 0.9-1.1 ms until `beatStop` (the kill; never for a live peer), its GPU keeps posting on the
+// device line until t_F + 100 ms (a SIGKILLed process's kernel runs until the thread group ends, smoke3); the reader
+// steps every 0.05-1 ms; a READ reads its word halfway through its 2-300 us latency. Returns the verdict, *row the table's
+// row at the verdict (L no information: the launcher's report comes later; R from the periodic READs: the line advances),
+// *at the verdict's time, *devMoved whether the device line differed between READ1 and READ2 (the old device-line
+// window would have called it alive).
+struct BeatModel {
+  double beatStop = 1e18;
+  std::vector<double> beatAt;  // the watch beat's write times
+  explicit BeatModel(std::mt19937_64& rng, double until, double stop) : beatStop(stop) {
+    std::uniform_real_distribution<double> g(0.9, 1.1);
+    for (double t = -500; t < until && t < stop; t += g(rng)) beatAt.push_back(t);
+  }
+  uint64_t beat(double t) const {  // writes done by t (the beat's value)
+    return (uint64_t)(std::upper_bound(beatAt.begin(), beatAt.end(), t) - beatAt.begin());
+  }
+  static uint64_t dev(double t, double tF) { return (uint64_t)(std::min(t, tF + 100.0) * 4.0 + 4000.0); }  // a post / 0.25 ms
+};
+static uint32_t beatScene(std::mt19937_64& rng, bool kill, double W, uint32_t* row, double* at, bool* devMoved) {
+  std::uniform_real_distribution<double> u(0, 1);
+  const double tF = 200.0 + 100.0 * u(rng);
+  const double tKill = tF - (0.07 + 0.24 * u(rng));  // the FIN comes 0.07-0.31 ms after the kill (design v2 4.1)
+  BeatModel m(rng, tF + 3 * W + 300, kill ? tKill : 1e18);
+  struct gdakiCtrlWindow w;
+  // the periodic READs before t_F (every 100 ms): R's facts from the device line and the beats (both still rising)
+  struct gdakiCtrlStale ds, ws, hs;
+  for (double t = tF - 600; t <= tF + W; t += 100) {
+    DevArray a(4);
+    a.set(0, BeatModel::dev(t, tF) + 2, BeatModel::dev(t, tF));
+    (void)gdakiCtrlDevOnRead(&ds, a.sum(), t, 100);
+    (void)gdakiCtrlStaleOnRead(&ws, m.beat(t), t, 100);
+    (void)gdakiCtrlStaleOnRead(&hs, m.beat(t) * 3, t, 100);
+  }
+  CHECK(gdakiCtrlWindowOpen(&w, kill ? GDAKI_CTRL_WSRC_FIN : GDAKI_CTRL_WSRC_RST, tF, true));
+  double done[2] = {-1, -1}, readAt[2] = {-1, -1};
+  uint64_t dev[2] = {0, 0};
+  uint32_t v = GDAKI_CTRL_CW_UNCONFIRMED;
+  *at = -1;
+  for (double t = tF + 0.01; t <= tF + 3 * W; t += 0.05 + 0.95 * u(rng)) {
+    for (int k = 0; k < 2; k++)
+      if (done[k] >= 0 && t >= done[k]) {
+        done[k] = -1;
+        CHECK(gdakiCtrlWindowOnCqe(&w, w.no, (uint32_t)k + 1, GDAKI_CTRL_CQ_OK, m.beat(readAt[k]), 7, t));
+      }
+    const uint32_t a = gdakiCtrlWindowStep(&w, t, W);
+    if (a == GDAKI_CTRL_WA_POST1 || a == GDAKI_CTRL_WA_POST2) {
+      const int k = a == GDAKI_CTRL_WA_POST1 ? 0 : 1;
+      const double lat = 0.002 + 0.298 * u(rng);
+      readAt[k] = t + lat / 2;
+      done[k] = t + lat;
+      dev[k] = BeatModel::dev(readAt[k], tF);
+      gdakiCtrlWindowPosted(&w, (uint32_t)k + 1, true, t);
+    } else if (a == GDAKI_CTRL_WA_JUDGE) {
+      v = gdakiCtrlWindowJudge(&w, 7, t);
+      *at = t;
+      break;
+    }
+  }
+  struct gdakiCtrlRFacts f;
+  f.okInGen = true;
+  f.devMode = true;
+  f.devOk = true;
+  f.devStaleMs = ds.have ? ds.lastMs - ds.firstMs : 0;
+  f.watchRose = true;
+  f.watchStaleMs = ws.have ? ws.lastMs - ws.firstMs : 0;
+  f.helperStaleMs = hs.have ? hs.lastMs - hs.firstMs : 0;
+  f.vetoClear = false;  // the GPU still sends
+  const uint32_t R = gdakiCtrlRDerive(f);
+  *row = judgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, gdakiCtrlWofConfirm(v), R);
+  *devMoved = dev[1] != dev[0];
+  *at -= tF;
+  return v;
+}
+static void testBeatWindow() {
+  CHECK(beatWindow(100, 109, false, false, 7) == GDAKI_CTRL_CW_ALIVE);
+  CHECK(beatWindow(100, 100, false, false, 7) == GDAKI_CTRL_CW_STALE);
+  CHECK(beatWindow(100, 99, false, false, 7) == GDAKI_CTRL_CW_STALE);  // a beat that went back is not alive
+  CHECK(beatWindow(100, 100, true, false, 7) == GDAKI_CTRL_CW_NORESP);
+  CHECK(beatWindow(100, 100, false, true, 7) == GDAKI_CTRL_CW_REMACC);
+  CHECK(beatWindow(100, 109, false, false, 8) == GDAKI_CTRL_CW_UNCONFIRMED);
   // the rows the verdicts give (the table unchanged): STALE row 4, NORESP 5, REMACC 6, alive 8
   CHECK(judgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, gdakiCtrlWofConfirm(GDAKI_CTRL_CW_STALE), GDAKI_CTRL_R_ROSE) == 4);
   CHECK(judgeRow(GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE, gdakiCtrlWofConfirm(GDAKI_CTRL_CW_ALIVE), GDAKI_CTRL_R_ROSE) == 8);
-  printf("device window (W 20): changed alive, unchanged busy STALE (row 4), quiet alive (row 8), READ2 missing NORESP, "
-         "REMACC at READ1, another process unconfirmed; the watch-beat window without a line as before\n");
+  CHECK(std::string(gdakiCtrlCauseName(gdakiCtrlJudgementOfRow(4).cause)) == "FIN+STALE");
+  // smoke3's kill: the device line moves on for 100 ms after the FIN, the watch beat stopped at the kill
+  std::mt19937_64 rng(0x6b696c6c33ull);
+  long kills = 0, killStale = 0, devMovedN = 0, lives = 0, liveAlive = 0;
+  double atMin = 1e18, atMax = -1;
+  for (int i = 0; i < 2000; i++) {
+    const double W = 20 + (double)(rng() % 31);
+    uint32_t row = 0;
+    double at = 0;
+    bool moved = false;
+    const uint32_t v = beatScene(rng, true, W, &row, &at, &moved);
+    kills++;
+    if (v == GDAKI_CTRL_CW_STALE && row == 4) killStale++;
+    CHECK(v == GDAKI_CTRL_CW_STALE && row == 4);
+    CHECK(at >= W - 1e-9 && at <= W + 2.0 + 1e-9);  // at t_F + W (+ READ2's late post and one reader step)
+    atMin = std::min(atMin, at - W);
+    atMax = std::max(atMax, at - W);
+    devMovedN += moved;
+    CHECK(moved);  // the device line did move between the two READs (the old window's "alive")
+    const uint32_t v2 = beatScene(rng, false, W, &row, &at, &moved);
+    lives++;
+    liveAlive += v2 == GDAKI_CTRL_CW_ALIVE && row == 8;
+    CHECK(v2 == GDAKI_CTRL_CW_ALIVE && row == 8);  // never a false STALE for a live peer (W/2 >= 10 ms, gaps <= 1.1 ms)
+  }
+  printf("beat window (W 20): advanced alive, unchanged or older STALE (row 4), READ2 missing NORESP, REMACC at READ1, "
+         "another process unconfirmed; %ld kill scenes with the device line moving 100 ms after the FIN (%ld moved "
+         "between READ1 and READ2): %ld FIN+STALE (row 4) at t_F + W + %.3f-%.3f ms; %ld live scenes: %ld alive (row 8)\n",
+         kills, devMovedN, killStale, atMin, atMax, lives, liveAlive);
 }
 
 // ---- 6. the 1 170-point grid: the per-row counts (the table is unchanged) ----
@@ -516,7 +607,7 @@ int main() {
   testDevClock();
   testLiveScenes();
   testPairIo();
-  testDevWindow();
+  testBeatWindow();
   testGrid();
 #endif
   printf("gc_unit_live (%s): %ld checks, %ld failed\n", NCCL_GIN_CTRL_TCP ? "tcp" : "rdma", gChecks, gFailed);

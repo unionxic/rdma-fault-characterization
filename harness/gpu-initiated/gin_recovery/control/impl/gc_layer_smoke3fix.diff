@@ -1,0 +1,49 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 09a1719..482a33f 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -5770,8 +5770,9 @@ static bool gdakiHoldStrongCause(const char* lostCause) {
+   // gin-control (page, 2a-2-C step 4): the judgement table's ends on a pair whose records go on the ring (rows 3-6,
+   // gdakiCtrlEffEnd; EXPERIMENT.md 9.3: the strong-evidence names of the rdma build)
+   if (lostCause != nullptr && (strcmp(lostCause, "EXITED") == 0 || strcmp(lostCause, "FIN+STALE") == 0 ||
+-                               strcmp(lostCause, "FIN+NORESP") == 0 || strcmp(lostCause, "REMACC+FIN") == 0))
+-    return true;
++                               strcmp(lostCause, "FIN+NORESP") == 0 || strcmp(lostCause, "REMACC+FIN") == 0 ||
++                               strcmp(lostCause, "STALL") == 0 || strcmp(lostCause, "STALL_HELPER") == 0))
++    return true;  // smoke3: rows 14, 15 too (gdakiCtrlStallDecline with NCCL_GIN_RESTORE_FENCE=lineage)
+ #endif
+   return lostCause != nullptr && (strcmp(lostCause, "FIN") == 0 || strcmp(lostCause, "ECONNREFUSED") == 0);
+ }
+@@ -21759,13 +21760,29 @@ static uint32_t gdakiCtrlProbeErrTake(struct gdakiRecHost* r, int peer) {
+ // Phase 1's reaction to a software stall verdict (rows 14, 15), on the helper (REVIEW_P12 막는 문제 6): STALLED(52) to
+ // every rank, then decline the peer (no launcher and no FENCED in phase 1: the fence and the restore are phase 3's; this
+ // is the NCCL_GIN_RESTORE_FENCE=none shape). 결정 1: a helper-only stall (row 15) takes the same path as row 14.
++// smoke3: with NCCL_GIN_RESTORE_FENCE=lineage (the default) and the launcher paired, the stall is the hold's strong
++// evidence (9.3 rows 14, 15: STALL, STALL_HELPER): the decline starts the hold when armed, the activation gate then
++// sends FENCE and waits for FENCED (9.4); otherwise (none, no launcher, not armed) the decline as before.
++static bool gdakiCtrlStallFenceOn(struct gdakiRecHost* r) {
++  const char* v = getenv("NCCL_" GDAKI_CTRL_P_RESTORE_FENCE);
++  struct gdakiCtrlPage* pg = gdakiPageOf(r);
++  return (v == nullptr || v[0] == '\0' || strcmp(v, GDAKI_CTRL_RESTORE_FENCE_DEFAULT) == 0) && pg != nullptr &&
++         pg->launcherPaired.load(std::memory_order_acquire);
++}
+ static void gdakiCtrlStallDecline(struct gdakiRecHost* r, int peer, uint32_t inc, const char* cause) {
+   struct gdakiHold* h = gdakiHoldOf(r);
+   const int told = h != nullptr ? gdakiHoldBroadcast(r, GDAKI_TS_CTRL_STALLED, peer, inc, -1) : 0;
++  const char* c = (cause != nullptr && cause[0]) ? cause : "STALL";
+   char why[96];
+-  snprintf(why, sizeof(why), "liveness stall judged (%s)", (cause != nullptr && cause[0]) ? cause : "STALL");
+-  WARN("GIN/RC: rank %d: rank %d (incarnation %u) judged stalled (%s); STALLED to %d rank(s); phase 1 declines (no "
+-       "launcher, no fence yet) mono_ms=%.3f", r->ctx->rank, peer, inc, why, told, gdakiQ4MonoMs());
++  snprintf(why, sizeof(why), "liveness stall judged (%s)", c);
++  const bool fence = gdakiCtrlStallFenceOn(r);
++  if (fence && r->ts != nullptr && peer >= 0 && peer < (int)r->ts->peers.size())
++    snprintf(r->ts->peers[(size_t)peer].lostCause, sizeof(r->ts->peers[(size_t)peer].lostCause), "%s", c);
++  WARN("GIN/RC: rank %d: rank %d (incarnation %u) judged stalled (%s); STALLED to %d rank(s); %s mono_ms=%.3f",
++       r->ctx->rank, peer, inc, why, told,
++       fence ? "the hold when armed, then FENCE and the restore (fence=lineage, launcher paired)"
++             : "declined (fence=none or no launcher)",
++       gdakiQ4MonoMs());
+   gdakiTsDecline(r, peer, why, false, 0, gdakiCause::PeerDead, GDAKI_UA_PEER_DEAD);
+ }
+ // The helper's step (gdakiTsMain, every loop): the mailboxes, taken once each, and the scaffold's pairing.
