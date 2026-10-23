@@ -129,7 +129,7 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              dev_reads_ctx= and dev_ok_ctx= of that many values); probe_missing names each gap
                              ("proc:p<peer>" a summary, "proc:p<peer>:<field>" a counter). A missing summary empties every
                              count and rate, a missing counter its side's, any gap read_success_pct (never a 0 for it)
-  cost_probe_evidence, cost_probe_window   cost rows (Codex finding 2, 2026-10-23): the probe arms' READ evidence in
+  cost_probe_evidence, cost_probe_window, cost_probe_inwindow_lb, cost_probe_expected   cost rows (Codex finding 2, 2026-10-23): the probe arms' READ evidence in
                              the trial's own logs (cost_probe); "ok", else the reasons, and the row's cost_valid is then 0
   witness_lost_n, confirm_alive_n   WITLOST lines; CONFIRM closed alive lines
   fence_sent, fenced, fence_order_ok, fence_names_ok, fence_sent_to_fenced_ms, fenced_to_fallback_ms
@@ -224,7 +224,7 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              main thread ends first, a second thread 500 ms later; the harness's own pidfd and /proc readings)
                              give gate_real 1; gate_fenced.cc's simulated lines give gate_real 0 (REVIEW_TEST fix 1)
 """
-import argparse, csv, glob, os, re, sys
+import argparse, csv, glob, math, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "mirror", "impl", "test"))
@@ -368,7 +368,8 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "rejoin_accept_n", "rejoin_accept_dup_n", "fail_to_spare_n", "inject", "inject_ok", "inject_off_ms",
            "inject_dur_off_ms", "pair_gap_ms", "ckpt_stable_before_inj", "kill2_after_armed", "stable_between_pair_kills",
            "subject_fenced", "gate_real", "old_go_ms", "fenced_go_ms", "gate_diff_ms", "second_thread_ms", "pidfd_ms", "z_ms",
-           "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms", "cost_probe_evidence", "cost_probe_window"]
+           "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms", "cost_probe_evidence", "cost_probe_window",
+           "cost_probe_inwindow_lb", "cost_probe_expected"]
 
 
 def mono(l):
@@ -1452,6 +1453,7 @@ def gate_rows(R):
 
 
 COST_PROBE_ARMS = ("probe-on", "probe-off")  # run_cost_gc.sh: both gcp, NCCL_GIN_TS_PROBE_MS=100 and 0
+COST_PEERS = 1  # run_cost_gc.sh: two ranks, one peer each (one summary per rank)
 
 
 def cost_probe(stem, r):
@@ -1459,18 +1461,25 @@ def cost_probe(stem, r):
     two ranks, _r0.log and _r1.log, the plain output without receipt stamps; the library's lines carry mono_ms).
     probe-on: each rank has a probe summary for its peer with page READs (reads - after_end_reads) > 0, and when that peer
     named a device line (dev_line=1 or its page line) dev_reads > 0 and, with dev_ctx= or the peer page's contexts= above
-    1, every context's READs (dev_reads_ctx) > 0; the READs overlap the measurement window: the rank's status page line
-    (else its first library line) <= the window's end and its summary >= the window's start, the window being the
-    driver's kv launch_mono_ms to launch_mono_ms + kernel_ms (the same process's CLOCK_MONOTONIC; without kernel_ms only
-    the start is checked; without launch_mono_ms or a mono_ms the overlap is "no_time", not a failure). probe-off: no
-    summary, or reads, after_end_reads and dev_reads all 0. Any other arm (tcp): not checked (empty). Returns
-    {cost_probe_evidence: "ok" | reasons "; "-joined | "", cost_probe_window: per rank "r<k>:<covers|overlaps|no_time|
-    outside>" | ""}"""
+    1, every context's READs (dev_reads_ctx) > 0; and READs inside the measurement window W = [launch_mono_ms,
+    launch_mono_ms + kernel_ms] (the driver's kv: gin_ts2.cu tLaunch and tEnd - tLaunch, CLOCK_MONOTONIC like the library's
+    mono_ms, same process). The summary has totals only, so the in-window count is bounded (Codex re-check 2026-10-23):
+    the span S = [the rank's status page line, its summary] (mono_ms), the period P its page line's probe_ms=, per =
+    1 + contexts with the device line on (else 1) READs per period per peer, COST_PEERS peers; the READs outside W are at
+    most (floor(L/P) + 1) x COST_PEERS x per for each of the two parts of S outside W of length L > 0 (the most periodic
+    READs an interval of L ms holds; at least the ceil(|S \ W| / P) the rule names), cost_probe_inwindow_lb = total
+    (page reads - after_end_reads + dev_reads) - that, and it must reach cost_probe_expected = max(1, floor(|W| / P) x
+    COST_PEERS x per x 0.5) (half the cadence) -> covers; else reads_outside_window; S not meeting W -> no_overlap; a
+    missing launch_mono_ms, kernel_ms, page line or summary mono_ms -> no_time; every one of these is invalid.
+    probe-off: no summary, or reads, after_end_reads and dev_reads all 0. Any other arm (tcp): not checked (empty).
+    Returns {cost_probe_evidence: "ok" | reasons "r<k>:p<peer>:<why>" "; "-joined | "", cost_probe_window: per rank
+    "r<k>:<covers|reads_outside_window|no_overlap|no_time|probe_ms=0>", cost_probe_inwindow_lb, cost_probe_expected:
+    per rank "r<k>:<n>"}"""
     arm = r.get("arm", "")
-    out = {"cost_probe_evidence": "", "cost_probe_window": ""}
+    out = {"cost_probe_evidence": "", "cost_probe_window": "", "cost_probe_inwindow_lb": "", "cost_probe_expected": ""}
     if arm not in COST_PROBE_ARMS:
         return out
-    why, win = [], []
+    why, win, lbs, exp = [], [], [], []
     ln = {k: [Ev(0.0, mono(x), "?", x) for x in rows_mi._lines("%s_r%d.log" % (stem, k))] for k in (0, 1)}
     pdev = page_devs(ln[0] + ln[1])
     for k in (0, 1):
@@ -1503,21 +1512,40 @@ def cost_probe(stem, r):
                     why.append("r%d:p%d:dev_reads_ctx_missing" % (k, p))
                 else:
                     why += ["r%d:p%d:ctx%d_reads=0" % (k, p, i) for i, x in enumerate(c) if x <= 0]
+        # the READs inside the measurement window, by a bound (the summary has totals only; Codex re-check 2026-10-23)
         kv = rows_rs.parse_kv("%s_r%d.kv" % (stem, k))
         w0, km = fnum(kv.get("launch_mono_ms")), fnum(kv.get("kernel_ms"))
-        pu = next((x for x in ln[k] if PAGEUP.search(x.text) and x.m is not None), None)
-        st = pu.m if pu is not None else min((x.m for x in ln[k] if x.m is not None), default=None)
-        if w0 is None or e.m is None or st is None:
+        pu, pm = next(((x, mm) for x in ln[k] for mm in [PAGEUP.search(x.text)] if mm and x.m is not None), (None, None))
+        if w0 is None or km is None or e.m is None or pu is None:
             win.append("r%d:no_time" % k)
+            why.append("r%d:p%d:no_time" % (k, p))
             continue
-        w1 = w0 + km if km is not None else None
-        if e.m < w0 or (w1 is not None and st > w1):
-            win.append("r%d:outside" % k)
-            why.append("r%d:p%d:outside_window" % (k, p))
+        w1, s0, s1 = w0 + km, pu.m, e.m
+        P = float(pm.group(2))
+        if P <= 0:
+            win.append("r%d:probe_ms=0" % k)
+            why.append("r%d:p%d:probe_ms=0" % (k, p))
+            continue
+        if s1 < w0 or s0 > w1 or km <= 0:
+            win.append("r%d:no_overlap" % k)
+            why.append("r%d:p%d:no_overlap" % (k, p))
+            continue
+        per = 1 + ((ctx_expected(d, p, pdev) or 1) if dev_expected(d, p, pdev) else 0)  # READs per period per peer
+        side = lambda L: (math.floor(L / P) + 1) if L > 0 else 0  # periodic READs an interval of L ms can hold
+        outside = (side(w0 - s0) + side(s1 - w1)) * COST_PEERS * per
+        total = (g(d, "reads") or 0) - (g(d, "after_end_reads") or 0) + (g(d, "dev_reads") or 0)
+        lb = int(total - outside)
+        want = max(1, int(math.floor(km / P) * COST_PEERS * per * 0.5))
+        lbs.append("r%d:%d" % (k, lb))
+        exp.append("r%d:%d" % (k, want))
+        if lb >= want:
+            win.append("r%d:covers" % k)
         else:
-            win.append("r%d:%s" % (k, "covers" if (w1 is not None and st <= w0 and e.m >= w1) else "overlaps"))
+            win.append("r%d:reads_outside_window" % k)
+            why.append("r%d:p%d:reads_outside_window" % (k, p))
     out["cost_probe_evidence"] = "; ".join(why) if why else "ok"
     out["cost_probe_window"] = "+".join(win)
+    out["cost_probe_inwindow_lb"], out["cost_probe_expected"] = "+".join(lbs), "+".join(exp)
     return out
 
 

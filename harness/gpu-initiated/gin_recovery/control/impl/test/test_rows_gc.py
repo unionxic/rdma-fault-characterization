@@ -1015,10 +1015,11 @@ def probe_checks():
             shutil.rmtree(R, ignore_errors=True)
 
 
-def cost_trial(d, arm, k, *, lib="gcp", sums=None, kv_extra=None):
+def cost_trial(d, arm, k, *, lib="gcp", sums=None, kv_extra=None, page_ms=900.0):
     """one run_cost_gc.sh trial (lat4k, receiving node rain; plain logs without receipt stamps): each rank's status page
-    line (mono 900) and, unless sums says otherwise, its summary for the peer (mono 1600); the kv's measurement window
-    launch_mono_ms 1000, kernel_ms 500. sums: {rank: None (no summary) | {field: value} (changes)}"""
+    line (mono page_ms, probe_ms 100) and, unless sums says otherwise, its summary for the peer (mono 4100): 32 page
+    READs and 32 device READs (one context), the full cadence over the 3 200 ms span; the kv's measurement window
+    launch_mono_ms 1000, kernel_ms 3000. sums: {rank: None (no summary) | {field: value} (changes)}"""
     os.makedirs(d, exist_ok=True)
     cell = "cost_lat4k_%s_rain" % arm
     stem = os.path.join(d, "%s_k%d" % (cell, k))
@@ -1027,17 +1028,17 @@ def cost_trial(d, arm, k, *, lib="gcp", sums=None, kv_extra=None):
                             bytes=4096, lib=lib, launcher_ready=1, runner="costgc", bin="gin_ts2_mi")))
     on = arm == "probe-on"
     for r in (0, 1):
-        kv = dict(rank=r, exit=0, win_flags="0x3", launch_mono_ms=1000.0, kernel_ms=500.0)
+        kv = dict(rank=r, exit=0, win_flags="0x3", launch_mono_ms=1000.0, kernel_ms=3000.0)
         if r == 0:
             kv.update(lat_p50_us=10.5, tx_done=3000)
         kv.update((kv_extra or {}).get(r, {}))
         with open("%s_r%d.kv" % (stem, r), "w") as f:
             f.write(kvline({x: v for x, v in kv.items() if v is not None}))
         L = ["[t] host:1:1 [0] gin_host_gdaki.cc:1 (gdakiPageSetup) NCCL WARN GIN/RC: rank %d: status page up (320 B in use, "
-             "probe_ms=%d stall_ms=10000 W=20, device line named 1184 B, contexts=1 page_read=320 B) mono_ms=900.000" % (r, 100 if on else 0)]
-        s = dict(reads=15 if on else 0, ok=15 if on else 0, after_end_reads=0, after_end_ok=0, dev_line=1,
-                 dev_reads=14 if on else 0, dev_ok=14 if on else 0, dev_ctx=1, dev_reads_ctx=14 if on else 0,
-                 dev_ok_ctx=14 if on else 0, mono_ms="1600.000")
+             "probe_ms=%d stall_ms=10000 W=20, device line named 1184 B, contexts=1 page_read=320 B) mono_ms=%.3f" % (r, 100 if on else 0, page_ms)]
+        s = dict(reads=32 if on else 0, ok=32 if on else 0, after_end_reads=0, after_end_ok=0, dev_line=1,
+                 dev_reads=32 if on else 0, dev_ok=32 if on else 0, dev_ctx=1, dev_reads_ctx=32 if on else 0,
+                 dev_ok_ctx=32 if on else 0, mono_ms="4100.000")
         sx = (sums or {}).get(r, {})
         if sx is not None:
             s.update(sx)
@@ -1056,32 +1057,47 @@ def cost_checks():
     R = tempfile.mkdtemp(prefix="gc_selftest_cost_")
     try:
         d = os.path.join(R, "cost")
-        cases = [("on_good", "probe-on", {}, None, 1), ("on_nosum", "probe-on", {1: None}, None, 0),
-                 ("on_reads0", "probe-on", {0: {"reads": 0, "ok": 0}}, None, 0),
-                 ("on_dev0", "probe-on", {1: {"dev_reads": 0, "dev_ok": 0, "dev_reads_ctx": 0, "dev_ok_ctx": 0}}, None, 0),
-                 ("on_ctx0", "probe-on", {0: {"dev_ctx": 2, "dev_reads_ctx": "14/0", "dev_ok_ctx": "14/0"}}, None, 0),
-                 ("on_early", "probe-on", {0: {"mono_ms": "950.000"}}, None, 0),
-                 ("on_notime", "probe-on", {}, {0: {"launch_mono_ms": None}, 1: {"launch_mono_ms": None}}, 1),
-                 ("off_none", "probe-off", {0: None, 1: None}, None, 1), ("off_zero", "probe-off", {}, None, 1),
-                 ("off_reads", "probe-off", {1: {"reads": 15, "ok": 15}}, None, 0)]
-        for k, (_, arm, sm, kx, _) in enumerate(cases, 1):
-            cost_trial(d, arm, k, sums=sm, kv_extra=kx)
+        two = {"dev_ctx": 2, "dev_reads": 64, "dev_ok": 64, "dev_reads_ctx": "32/32", "dev_ok_ctx": "32/32"}
+        low = {"reads": 10, "ok": 10, "dev_ctx": 2, "dev_reads": 20, "dev_ok": 20, "dev_reads_ctx": "10/10", "dev_ok_ctx": "10/10"}
+        cases = [("on_good", "probe-on", {}, None, 900.0, 1), ("on_nosum", "probe-on", {1: None}, None, 900.0, 0),
+                 ("on_reads0", "probe-on", {0: {"reads": 0, "ok": 0}}, None, 900.0, 0),
+                 ("on_dev0", "probe-on", {1: {"dev_reads": 0, "dev_ok": 0, "dev_reads_ctx": 0, "dev_ok_ctx": 0}}, None, 900.0, 0),
+                 ("on_ctx0", "probe-on", {0: {"dev_ctx": 2, "dev_reads_ctx": "32/0", "dev_ok_ctx": "32/0"}}, None, 900.0, 0),
+                 ("on_before", "probe-on", {0: {"mono_ms": "950.000"}, 1: {"mono_ms": "950.000"}}, None, 100.0, 0),
+                 ("on_notime", "probe-on", {}, {0: {"launch_mono_ms": None}, 1: {"launch_mono_ms": None}}, 900.0, 0),
+                 ("on_nokernel", "probe-on", {}, {0: {"kernel_ms": None}}, 900.0, 0),
+                 ("on_after", "probe-on", {0: {"mono_ms": "4800.000"}, 1: {"mono_ms": "4800.000"}}, None, 4050.0, 0),
+                 ("on_ctx2_full", "probe-on", {0: two, 1: two}, None, 900.0, 1),
+                 ("on_low", "probe-on", {0: low, 1: low}, None, 900.0, 0),
+                 ("off_none", "probe-off", {0: None, 1: None}, None, 900.0, 1), ("off_zero", "probe-off", {}, None, 900.0, 1),
+                 ("off_reads", "probe-off", {1: {"reads": 15, "ok": 15}}, None, 900.0, 0)]
+        for k, (_, arm, sm, kx, pg, _) in enumerate(cases, 1):
+            cost_trial(d, arm, k, sums=sm, kv_extra=kx, page_ms=pg)
         cost_trial(d, "tcp", 99, lib="gctp", sums={0: None, 1: None})
         rows = {r["id"]: r for r in rows_gc.all_rows(R)}
         with contextlib.redirect_stdout(io.StringIO()):
             _, srows = score_gc.score(R)
         stt = {r["id"]: r["status"] for r in srows}
-        for k, (tag, arm, _, _, want) in enumerate(cases, 1):
+        for k, (tag, arm, _, _, _, want) in enumerate(cases, 1):
             rid = "cost_lat4k_%s_rain_k%d" % (arm, k)
             r = rows[rid]
             check(r["cost_valid"] == want and (r["cost_probe_evidence"] == "ok") == (want == 1)
                   and (stt[rid] == "cost_invalid") == (want == 0),
                   "cost: %s: cost_valid %r (want %d), %r, status %s" % (tag, r["cost_valid"], want, r["cost_probe_evidence"],
                                                                        stt[rid]))
-        g, nt = rows["cost_lat4k_probe-on_rain_k1"], rows["cost_lat4k_probe-on_rain_k7"]
-        check(g["cost_probe_window"] == "r0:covers+r1:covers" and nt["cost_probe_window"] == "r0:no_time+r1:no_time"
-              and "r0:p1:outside_window" in rows["cost_lat4k_probe-on_rain_k6"]["cost_probe_evidence"],
-              "cost: the window read from the kv (%r, %r)" % (g["cost_probe_window"], nt["cost_probe_window"]))
+        on = lambda i: rows["cost_lat4k_probe-on_rain_k%d" % i]
+        g, f2, lo = on(1), on(10), on(11)
+        check(g["cost_probe_window"] == "r0:covers+r1:covers" and g["cost_probe_inwindow_lb"] == "r0:56+r1:56"
+              and g["cost_probe_expected"] == "r0:30+r1:30" and f2["cost_probe_inwindow_lb"] == "r0:84+r1:84"
+              and f2["cost_probe_expected"] == "r0:45+r1:45",
+              "cost: the in-window bound, one and two contexts (%r %r; %r %r)" % (
+                  g["cost_probe_inwindow_lb"], g["cost_probe_expected"], f2["cost_probe_inwindow_lb"], f2["cost_probe_expected"]))
+        check("r0:p1:no_overlap" in on(6)["cost_probe_evidence"] and "r1:p0:no_overlap" in on(9)["cost_probe_evidence"]
+              and on(7)["cost_probe_window"] == "r0:no_time+r1:no_time" and "r0:p1:no_time" in on(8)["cost_probe_evidence"]
+              and "r1:p0:no_time" not in on(8)["cost_probe_evidence"]
+              and lo["cost_probe_window"] == "r0:reads_outside_window+r1:reads_outside_window" and lo["cost_probe_inwindow_lb"] == "r0:18+r1:18",
+              "cost: before, after, no time, no kernel_ms, below the cadence (%r %r %r)" % (
+                  on(6)["cost_probe_evidence"][:30], on(8)["cost_probe_evidence"][:30], lo["cost_probe_inwindow_lb"]))
         tc = rows["cost_lat4k_tcp_rain_k99"]
         check(tc["cost_probe_evidence"] == "" and tc["cost_valid"] == 1, "cost: the tcp arm is not checked (%r %r)" % (
             tc["cost_probe_evidence"], tc["cost_valid"]))

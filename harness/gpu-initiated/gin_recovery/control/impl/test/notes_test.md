@@ -564,3 +564,18 @@ smoke3 a3(STOP, 펜스 없는 옛 라이브러리)은 의심 2 050.1, 판정 10 
   - `[미확인]` gin_ts2_mi kv의 `kernel_ms`가 실제로 있는지 확인하지 않았다(harden의 `recount.py`가 같은 계통 kv에서 읽음). 없으면 창 시작만 본다.
   - `[추론]` 라이브러리 `mono_ms`와 driver의 `launch_mono_ms`는 같은 프로세스의 CLOCK_MONOTONIC이다.
   - `dev_reads_ctx`의 합과 `dev_reads`가 같은지는 보지 않는다.
+- **다시 확인 고침(Codex 2026-10-23, 비용 창).** 고친 첫 판에는 구멍이 둘 있었다.
+  - 시각이 없으면 `no_time`으로 적고 유효로 남겼다.
+  - 페이지 생성부터 끝 요약까지 구간이 창에 걸치기만 하면 통과했다. 그래서 READ가 모두 창 앞이나 뒤에 있어도 `covers`였다.
+- **이제 시각이 없으면 무효다.** kv `launch_mono_ms`, kv `kernel_ms`, rank의 status page 줄, 요약의 `mono_ms` 가운데 하나라도 없으면 `no_time`이다. 창 W는 `launch_mono_ms`부터 `launch_mono_ms + kernel_ms`까지다.
+  두 값은 `gin_ts2.cu`의 `tLaunch`와 `tEnd − tLaunch`이고, 둘 다 CLOCK_MONOTONIC이다. 라이브러리의 `gdakiQ4MonoMs`도 같은 시계다 `[소스: gin_ts2.cu 141–146, 1231, 1437행]`. smoke 원자료에는 비용 시행이 없어서 kv 키를 자료로는 확인하지 못했다 `[미확인]`.
+- **창 안 READ는 하한으로 증명한다.** 요약에는 합계만 있다. 구간 S는 status page 줄부터 요약까지다. 주기 P는 page 줄의 `probe_ms=`이고, 0이면 무효다. 주기당 READ 수 `per`는 장치 줄이 켜져 있으면 1 + 문맥 수, 꺼져 있으면 1이다. 상대는 하나다.
+  - 창 밖 READ의 상한: S에서 W 밖인 두 조각마다 (floor(L/P) + 1) × `per`. 길이 L인 구간에 들어갈 수 있는 주기 READ의 최대이고, 규칙의 ceil(L/P) 이상이다.
+  - `cost_probe_inwindow_lb`: 총 READ(페이지 + 장치)에서 이 상한을 뺀 값.
+  - `cost_probe_expected`: max(1, floor(|W|/P) × `per` × 0.5). 지시문 식에 `per`를 곱했다. 문맥마다 READ가 있으므로 같은 기준으로 센다.
+  - 하한이 기대값 이상이면 `covers`, 아니면 `reads_outside_window`로 무효다. S와 W가 겹치지 않으면 `no_overlap`으로 무효다.
+- **시험.** 비용 경우를 14개로 늘렸다.
+  - 무효: 시각 없음, `kernel_ms` 없음, 창 앞에서 끝난 구간, 창 뒤에서 시작한 구간, 주기의 3분의 1 READ(문맥 둘).
+  - 유효: 문맥 둘의 전 주기 READ. 하한 84, 기대 45.
+  - 변이: 하한 검사를 끄면(`COST_PEERS` 0) 셋이 실패한다.
+  - `python3 test_rows_gc.py` 167 checks, 0 failed(이전 162). `python3 check_cells_gc.py` ok, drift 0 `[측정: 로컬 실행]`.
