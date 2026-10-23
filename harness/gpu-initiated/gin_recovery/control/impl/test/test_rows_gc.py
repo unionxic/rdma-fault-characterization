@@ -19,7 +19,8 @@ trials carry run_gc.sh's measured offset unless they say otherwise.
   E  gc4_kill3_ow@gc n11 (launchers not ready), n12 (no stable checkpoint before the kill), smoke/ (a smoke trial)
   F  gc4_kill3_ow@gc n13, n14        the second kill of rank 3 by recorded PID after / before the armed lines (reported only)
   G  gc4_none_probe@gc x 10 with torn reads, gc4_none_ow@gc x 5
-  H  local/gate_fenced.log (the simulated program: gate_real 0) and local/gate_proc.log (real-process lines, no gate program)
+  H  local/gate_fenced.log (gate_fenced.cc's real-process lines: gate_real 1, scored) and local/gate_proc.log (real-process
+     lines, no gate program: no_gate, reported only; 2026-10-24 after pilot 2)
   B1 the active_mtu query handed to the remote shell: one word list (shlex) and 4096 read through a fake ibv_devinfo
   B2 gc4_freeze12000_fence@gc x 5 (judged STALL_HELPER) and gct4_rstgap_live50@gctc x 10, gct4_rstgap_live300@gctc x 5: cells injected by a library
      test switch, with SUBJECT_RANK, judged
@@ -34,8 +35,8 @@ trials carry run_gc.sh's measured offset unless they say otherwise.
   B4 "(STOP_launcher: ...)" in the gap before trial_start (n16) and a launcher QP loss (n17): rows_gc.py --stops, the hold's
      tail check on a whole launcher log, and the launcher table read
   J  section 3's 2026-10-22 revision on copies of the rows above: the stall rules count STALL_HELPER (a STALL copy fails),
-     the uverbs rule takes EXITED or either stall cause, the launcher-report band 100-150 ms (101 and 149 in, 99 and 151
-     out) in kill_judge_rdma, finless_exit_report and kill_no_witness, the confirm window W to W + 2 ms; and
+     the uverbs rule takes EXITED or either stall cause, the launcher-report band 40-200 ms (101 and 200 in, 39 and 201
+     out) in kill_no_witness, 40-200 ms in finless_exit_report and (2026-10-24 after pilot 2) kill_judge_rdma, the confirm window W to W + 2 ms; and
      check_cells_gc.py's drift check on the revised rows (none) and on the old ones (each caught)
   I  the launcher daemon's warm spare (2026-10-22, one launcher per trial): gc4_kill3_ow@gc n18 (rank 3 killed twice, the
      second restore by the daemon's next spare, incarnation 2), n19 (the same without that spare: spare_start_fail), n20 (a
@@ -452,12 +453,17 @@ def build(R):
           la={"sunny": [(2.001, CAP0 % (1, 1, 1301))]},
           la_pre={"sunny": [(0.01, SPAWN % (1, 1, 1301, "start", 1, 1, 1)), (0.02, HELLO % (1, 1, 1301, 1301, 3, 1))]},
           meta_extra={"kill_kind": "spare_then_rank", "launcher_respawn_max": 0, "spare_gap_ms": 5})
-    # H: the CPU programs: the simulated gate_fenced.cc lines and real-process lines without a gate program
+    # H: the CPU programs: gate_fenced.cc's real-process lines (its form since REVIEW_P12 고칠 것 7; pilot 2 local's numbers)
+    # and gate_proc_gc.py's real-process lines without a gate program
     os.makedirs(os.path.join(R, "local"), exist_ok=True)
     with open(os.path.join(R, "local", "gate_fenced.log"), "w") as f:
         for t in range(10):
-            sec = 500 + (t % 7) - 3
-            f.write("gate_fenced trial %d: old GO at 0 ms, FENCED GO at %d ms (diff %d ms, second thread %d ms)\n" % (t, sec, sec, sec))
+            o, fg = 0.5 + 0.1 * (t % 3), 500.8 + 0.1 * t
+            f.write("gate_fenced trial %d: main thread ended +0, old gate GO +%.1f ms (the original process %d is a zombie "
+                    "(not reaped)); last thread ended +500.1 ms, FENCED gate GO +%.1f ms; the gates differ by %.1f ms\n"
+                    % (t, o, 496951 + t, fg, fg - o))
+        f.write("gate_fenced: 10/10 trials of a real process (main thread ends, a second thread lives 500 ms): the FENCED gate "
+                "(pidfd) went 450-700 ms after the /proc gate (Z), each within 30 ms of its event; 64 checks, 0 failed\n")
 
 
 def shell_checks(R):
@@ -535,7 +541,7 @@ def rule(pid, cell=None):
     import csv as _csv
     acc = [p for p in _csv.DictReader(open(score_gc.PREDS, encoding="utf-8")) if p["id"] == pid][0]["acceptance"]
     if cell is not None:
-        acc = [x for x in acc.split(";;") if x.strip().startswith(cell + ":")][0].split(":", 1)[1]
+        acc = [x.strip() for x in acc.split(";;") if x.strip().startswith(cell + ":")][0][len(cell) + 1:]
     acc = acc.strip()
     return acc[len("count("):acc.rindex(")")]
 
@@ -567,15 +573,17 @@ def revision_checks(A, B, F):
     kj, fe = rule("kill_judge_rdma", "gc4_kill3_ow@gc"), rule("finless_exit_report")
     kw = rule("kill_no_witness")
     Bw = dict(B, judge_to_publish_ms=70.0, hold_other_n=0, hold_after_restore_n=0)
-    for ms, want in ((101.0, True), (120.0, True), (149.0, True), (99.0, False), (151.0, False), (160.0, False)):
+    # 2026-10-24: kill_no_witness takes the same 40-200 ms EXITED band as finless_exit_report (launcher pidfd report)
+    for ms, want in ((40.0, True), (101.0, True), (120.0, True), (200.0, True), (39.0, False), (201.0, False), (250.0, False)):
         e = dict(kill_judge_ms_min=ms, kill_judge_ms_max=ms, kill_judge_exited_min_ms=ms, kill_judge_exited_max_ms=ms)
-        got = (ok(kj, dict(B, **e)), ok(kw, dict(Bw, **e)))
-        check(got == (want,) * 2, "J: EXITED %g ms after the kill: kill_judge_rdma, kill_no_witness %r (want %r)" % (
-            ms, got, want))
-    # 2026-10-24 (pilot 1, smoke 4, 6: kill -> the launcher's end line 61.9-129.5 ms): finless_exit_report's band is 40-200 ms
-    for ms, want in ((40.0, True), (62.0, True), (127.0, True), (200.0, True), (39.0, False), (201.0, False)):
+        check(ok(kw, dict(Bw, **e)) == want, "J: EXITED %g ms after the kill: kill_no_witness %r (want %r)" % (
+            ms, not want, want))
+    # 2026-10-24 (pilot 1, smoke 4, 6: kill -> the launcher's end line 61.9-129.5 ms): finless_exit_report's band is 40-200 ms,
+    # and after pilot 2 (the second decision) kill_judge_rdma's EXITED branch has the same band and basis
+    for ms, want in ((40.0, True), (60.8, True), (62.0, True), (127.0, True), (200.0, True), (39.0, False), (201.0, False)):
         e = dict(kill_judge_ms_min=ms, kill_judge_ms_max=ms, kill_judge_exited_min_ms=ms, kill_judge_exited_max_ms=ms)
-        check(ok(fe, dict(B, **e)) == want, "J: EXITED %g ms after the kill: finless_exit_report %r" % (ms, not want))
+        got = (ok(fe, dict(B, **e)), ok(kj, dict(B, **e)))
+        check(got == (want,) * 2, "J: EXITED %g ms after the kill: finless_exit_report, kill_judge_rdma %r (want %r)" % (ms, got, want))
     for dev, want in ((1.5, True), (2.0, True), (2.5, False)):
         check(ok(kj, dict(A, fin_judge_dev_max_ms=dev)) == want, "J: confirm window judgement W + %g ms: %r" % (dev, not want))
     import csv as _csv
@@ -591,7 +599,7 @@ def revision_checks(A, B, F):
     check(not any(now.values()), "J: no drift against section 3 (%s)" % [x for v in now.values() for x in v][:2])
     old = {"stall_fence_restore": ("acceptance", "n_judge_stall_helper == n_judge", "n_judge_stall == n_judge"),
            "fdhold_uverbs_refuse": ("acceptance", " + n_judge_stall_helper", ""),
-           "kill_judge_rdma": ("acceptance", "kill_judge_exited_max_ms <= 150", "kill_judge_exited_max_ms <= 206"),
+           "kill_judge_rdma": ("acceptance", "kill_judge_exited_max_ms <= 200", "kill_judge_exited_max_ms <= 206"),
            "rst_judge_rdma": ("acceptance", "rst_judge_dev_max_ms <= 2", "rst_judge_dev_max_ms <= 1"),
            "none_probe_clean": ("acceptance", "beat_gap_max_ms < 300", "beat_gap_max_ms <= 300"),
            "finless_read_fail": ("per_trial", "NORESP", "STALL")}
@@ -665,8 +673,7 @@ def int3_checks():
         check(r35["witness_pairs"] == 3 and r35["witness_expected"] == 6,
               "INT3 B3: a new incarnation's witness never re-dialled (%r)" % r35["witness_pairs"])
         import csv as _csv
-        nt = [p for p in _csv.DictReader(open(score_gc.PREDS, encoding="utf-8")) if p["id"] == "no_tcp_control"][0]["acceptance"]
-        nt = nt[len("count("):nt.rindex(")")]
+        nt = rule("no_tcp_control", "build:gc")  # 2026-10-24: restore cells are judged without the ss term
         check(score_gc.s2.cond_true(nt, r33) and not any(score_gc.s2.cond_true(nt, x) for x in (r32, r34, r35)),
               "INT3 B3: no_tcp_control's per-trial rule holds on the split bootstrap bytes only")
         f6 = rows["gc4_kill3_ow_gc_n36"]
@@ -759,7 +766,7 @@ def review_checks():
         f1, f3 = rows["gc4_none_ow_gc_n1"], rows["gc4_none_ow_gc_n3"]
         check([rows_gc.mtu_bytes(x) for x in ("1", "3", "5", "4096", "0", "")] == [256, 1024, 4096, 4096, None, None],
               "review 1: the ibv_mtu enum 1..5 is 256..4096 B, a byte value stays")
-        nt = rule("no_tcp_control")
+        nt = rule("no_tcp_control", "gc4_none_ow@gc")
         check(f1["active_mtu_kv_min"] == 4096 and ok(nt, f1) and f3["active_mtu_kv_min"] == 1024 and not ok(nt, f3),
               "review 1: active_mtu=5 in the real summary is 4096 B; enum 3 fails no_tcp_control (%r %r)" % (
                   f1["active_mtu_kv_min"], f3["active_mtu_kv_min"]))
@@ -890,7 +897,7 @@ def ctrlsum_checks():
             with contextlib.redirect_stdout(io.StringIO()):
                 verd, _ = score_gc.score(R)
             res[tag] = (rows["gc4_credit_stall_gc_n1"], verd)
-        cr, nt = rule("credit_stall_no_loss"), rule("no_tcp_control")
+        cr, nt = rule("credit_stall_no_loss"), rule("no_tcp_control", "build:gc")
         g, vg = res["good"]
         check(g["ctrlsum_missing"] == "" and g["ctrlsum_fields_missing"] == "" and g["rec_lost_n"] == 0 and g["sendq_deferred"] == 16
               and ok(cr, g) and ok(nt, g) and vg.get("credit_stall_no_loss") == "맞음",
@@ -1195,6 +1202,93 @@ def cost_checks():
         shutil.rmtree(R, ignore_errors=True)
 
 
+def pilot2_checks():
+    """L (2026-10-24, the coordinator's decisions after pilot 2): the ss delta over the processes alive at both reads, a
+    live process's negative delta empty and named (pilot 2 a5 mi4_seg_4k's snapshots), a 자료 부족 trial for
+    no_tcp_control, never a 0; the second kill's rank left out of la_qp_err_n like the first's (pilot 2 a4); the
+    spare-absent rule takes both refusal reasons; the no-fault input pause bound 20 ms (pilot 2 16.526 ms)"""
+    import csv as _csv
+    P = {p["id"]: p for p in _csv.DictReader(open(score_gc.PREDS, encoding="utf-8"))}
+
+    def inner(pid, part=0):
+        a = P[pid]["acceptance"].split(";;")[part]
+        return a[a.index("count(") + 6:a.rindex(")")]
+    tmp = tempfile.mkdtemp(prefix="gc_selftest_p2_")
+    try:
+        raw = os.path.join(tmp, "raw")
+        # (1) ss. n1: pilot 2 a5 mi4_seg_4k (rank 3 killed between rain's s1 and sunny's s1; rain's survivors 8 -> 6 and
+        # 10 -> 7 sockets); n2: the dead rank absent at s2 only, the survivors quiet; n3: no second snapshot; n4: a live
+        # process sent 1 872 B and none went negative (a real fail)
+        SS = {1: [("rain", 1.0, "s1 pid=464308 present=1 n=8 acked=29211 received=31199"),
+                  ("rain", 1.0, "s1 pid=464342 present=1 n=10 acked=31494 received=27385"),
+                  ("sunny", 1.3, "s1 pid=1359183 present=0 n=0 acked=0 received=0"),
+                  ("sunny", 1.3, "s1 pid=1359188 present=1 n=7 acked=27339 received=25583"),
+                  ("rain", 1.7, "s2 pid=464308 present=1 n=6 acked=13824 received=21146"),
+                  ("rain", 1.7, "s2 pid=464342 present=1 n=7 acked=21296 received=15719"),
+                  ("sunny", 2.0, "s2 pid=1359183 present=0 n=0 acked=0 received=0"),
+                  ("sunny", 2.0, "s2 pid=1359188 present=1 n=8 acked=29212 received=27455")],
+              2: [(node(r), t, "%s pid=%d present=%d n=5 acked=4096 received=2048" % (tag, 1000 + r, int(not (r == 3 and tag == "s2"))))
+                  for tag, t in (("s1", 1.0), ("s2", 1.5)) for r in range(N)],
+              3: [(node(r), 1.0, "s1 pid=%d present=1 n=5 acked=4096 received=2048" % (1000 + r)) for r in range(N)],
+              4: [(node(r), t, "%s pid=%d present=1 n=5 acked=%d received=2048" % (tag, 1000 + r, 4096 + (1872 if (r, tag) == (1, "s2") else 0)))
+                  for tag, t in (("s1", 1.0), ("s2", 1.5)) for r in range(N)]}
+        for k, ss in SS.items():
+            st = trial(raw, "gc4_kill3_ow", k, lines=restore_lines(3, 2.0306, "FIN+NORESP"), probe=probe_ok(), ss=False)
+            write(st + "_ss.out", [ln(nd, t, "GINRS ss " + x) for nd, t, x in ss])
+        rr = {r["id"]: r for r in rows_gc.all_rows(tmp) if r["sub"] == "raw"}
+        r1_, r2_, r3_, r4_ = (rr["gc4_kill3_ow_gc_n%d" % k] for k in (1, 2, 3, 4))
+        check(r1_["ss_tx_delta_bytes"] == "" and r1_["ss_excluded"] == "1359183:absent_s1+464308:negative+464342:negative"
+              and r1_["ss_pids_both"] == 3,
+              "L: pilot 2 mi4_seg_4k's snapshots: the dead rank left out, the survivors' negative deltas empty, never 0 (%r, %r)" % (
+                  r1_["ss_tx_delta_bytes"], r1_["ss_excluded"]))
+        check(r2_["ss_tx_delta_bytes"] == 0 and r2_["ss_excluded"] == "1003:absent_s2" and r3_["ss_tx_delta_bytes"] == ""
+              and r3_["ss_excluded"] == "1000:no_s2+1001:no_s2+1002:no_s2+1003:no_s2" and r4_["ss_tx_delta_bytes"] == 1872,
+              "L: the dead rank absent at s2 left out (0 over the live three); no second snapshot named; a live send counted "
+              "(%r %r, %r %r, %r)" % (r2_["ss_tx_delta_bytes"], r2_["ss_excluded"], r3_["ss_tx_delta_bytes"], r3_["ss_excluded"],
+                                     r4_["ss_tx_delta_bytes"]))
+        nt = inner("no_tcp_control")  # the fault-free cells' part (gc4_none_ow@gc), with the ss term
+        g = score_gc.data_gaps(nt, [r1_, r2_, r3_, r4_])
+        check(sorted(g) == ["gc4_kill3_ow_gc_n1", "gc4_kill3_ow_gc_n3"] and score_gc.s2.cond_true(nt, r2_)
+              and not score_gc.s2.cond_true(nt, r4_) and "ss_excluded=" in g["gc4_kill3_ow_gc_n1"][1],
+              "L: no_tcp_control: the negative and the missing-snapshot trials are 자료 부족, the quiet one true, the send false (%r)" % sorted(g))
+        # the second decision after pilot 2: the ss term only in the fault-free cells' parts; build:gc (the restore cells)
+        # judges tcp_ctrl_bytes, the witness pairs and the MTU, the ss delta reported only
+        parts = [x.strip() for x in P["no_tcp_control"]["acceptance"].split(";;")]
+        nb = inner("no_tcp_control", 2)
+        check([x.split(":", 1)[0] for x in parts[:2]] == ["gc4_none_ow@gc", "gc4_none_probe@gc"] and parts[2].startswith("build:gc:")
+              and all("ss_tx_delta_bytes == 0" in x for x in parts[:2]) and "ss_tx_delta_bytes" not in parts[2]
+              and all(score_gc.s2.cond_true(nb, x) for x in (r1_, r2_, r3_, r4_)) and score_gc.data_gaps(nb, [r1_, r3_]) == {},
+              "L: no_tcp_control: ss only in the fault-free cells; the restore trials (negative, missing, a new socket's send) hold on build:gc")
+        # (2) la_qp_err_n: the second kill's rank (kill2_rank) is a subject too
+        qp = lambda rk: (1.5, "record QP of rank %d (incarnation 1, generation 1) lost: the CQ reported an error" % rk)
+        leave = (8.0, "rank 0 incarnation 0 is leaving")
+        for k, rks, k2 in ((11, (3, 3), 3), (12, (3, 3, 1), 3), (13, (3, 3), None)):
+            trial(raw, "gc4_kill3_ow", k, kill=2, subject=2, lines=restore_lines(2, 2.0306, "FIN+NORESP"), probe=probe_ok(),
+                  la={"sunny": [qp(rk) for rk in rks] + [leave]},
+                  meta_extra={"kill2_rank": k2, "kill2_kind": "pid_after_armed"} if k2 is not None else None)
+        sq = lambda k: subprocess.run([sys.executable, os.path.join(HERE, "rows_gc.py"), "--stops", os.path.join(raw, "gc4_kill3_ow_gc_n%d" % k)],
+                                      stdout=subprocess.PIPE).stdout.decode()
+        q11, q12, q13 = sq(11), sq(12), sq(13)
+        check("la_qp_err_n=0 " in q11 and "la_qp_err_n=1 " in q12 and "la_qp_err_n=2 " in q13,
+              "L: pilot 2 a4: the second kill's rank 3 left out (0), another rank still counted (1), rank 3 without a second "
+              "kill counted (2) (%s | %s | %s)" % (q11.strip(), q12.strip(), q13.strip()))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    # (3) the spare-absent rule: both refusal reasons of the launcher's race
+    sa = inner("spare_absent_refused")
+    base = {"fenced_to_fallback_ms": 2.399, "surv_released": 3, "n_surv": 3}
+    check(score_gc.s2.cond_true(sa, dict(base, la_act_refused_why="the spare exited"))
+          and score_gc.s2.cond_true(sa, dict(base, la_act_refused_why="could not hand over to the spare"))
+          and not score_gc.s2.cond_true(sa, dict(base, la_act_refused_why="no spare registered")),
+          "L: spare_absent_refused takes 'the spare exited' (pilot 1) and 'could not hand over' (pilot 2), nothing else")
+    # (4) the no-fault input pause: 20 ms on both cells (pilot 2 gc4_none_probe 16.526 ms with the READs on)
+    good = {"read_success_pct": 100, "beat_gap_max_ms": 1.097, "suspect_n": 0, "judge_any_n": 0}
+    check(all(score_gc.s2.cond_true(inner("none_probe_clean", i), dict(good, ckpt_pause_ms=16.526))
+              and score_gc.s2.cond_true(inner("none_probe_clean", i), dict(good, ckpt_pause_ms=20.0))
+              and not score_gc.s2.cond_true(inner("none_probe_clean", i), dict(good, ckpt_pause_ms=20.1)) for i in (0, 1)),
+          "L: none_probe_clean's pause bound 20 ms on both cells (16.526 and 20 in, 20.1 out)")
+
+
 def prereg_checks(rows):
     """K (2026-10-24, the values fixed before the pre-registration from pilot 1): W 20 in the cell file's prereg (a W-30
     trial is config, a W-20 one is not), a stop's length 50 ms off at most (was 1 s), the spare-absent gap 10 ms at most
@@ -1433,9 +1527,16 @@ def main():
         shutil.rmtree(neg, ignore_errors=True)
     # H: the gate rows
     gate = [r for r in rows.values() if r["key"] == "local:gate_fenced"]
-    sim = [r for r in gate if r["gate_real"] == 0]
-    real = [r for r in gate if r["gate_real"] == 1]
-    check(len(sim) == 10 and gp.returncode == 0 and len(real) == 10, "H: ten simulated and ten real-process gate rows (%d, %d)" % (len(sim), len(real)))
+    unit = [r for r in gate if r.get("gate_src") == "unit"]
+    real = [r for r in gate if r.get("gate_src") == "proc"]
+    check(len(unit) == 10 and gp.returncode == 0 and len(real) == 10 and all(r["gate_real"] == 1 for r in unit + real),
+          "H: ten gate_fenced.cc rows and ten harness rows, all real processes (%d, %d)" % (len(unit), len(real)))
+    check(all(r["second_thread_ms"] == 500.1 and 0.7 <= r["fenced_after_second_ms"] <= 1.7 and r["fenced_vs_pidfd_abs_ms"] == 0.0
+              and r["old_go_ms"] < 1 for r in unit),
+          "L: gate_fenced.cc's line read (GATEU): FENCED GO 0.7-1.7 ms after the last thread, the pidfd term 0 by construction")
+    check(rows_gc.GATE.search("gate_fenced trial 0: old GO at 0 ms, FENCED GO at 500 ms (diff 500 ms, second thread 500 ms)")
+          is not None and rows_gc.GATEU.search("gate_fenced trial 0: old GO at 0 ms, FENCED GO at 500 ms") is None,
+          "L: the old timeline-model line keeps its own regex (gate_real 0)")
     check(all(r["second_thread_ms"] >= 499 and abs(r["pidfd_ms"] - r["second_thread_ms"]) < 50 and r["z_ms"] < 50 for r in real),
           "fix 1: the harness's own readings: Z soon after the main thread, the pidfd readable at the second thread's end")
     check(all(r["fenced_go_ms"] == "" for r in real), "fix 1: without the gate program the gate columns stay empty")
@@ -1450,6 +1551,8 @@ def main():
           and st["gc4_kill3_ow_gc_n18"] == "surplus",
           "I: stale socket excluded, a second death without the daemon's spare excluded, with it counted (%s, %s, %s)" % (
               st["gc4_kill3_ow_gc_n20"], st["gc4_kill3_ow_gc_n19"], st["gc4_kill3_ow_gc_n18"]))
+    lst = [r["status"] for r in srows if r["key"] == "local:gate_fenced" and r.get("gate_src") == "proc"]
+    check(lst == ["no_gate"] * 10, "L: the harness rows without a gate program are reported only (no_gate) (%s)" % sorted(set(lst)))
     smoke = [r for r in srows if r["sub"].startswith("smoke")]
     check(len(smoke) == 1 and smoke[0]["status"] == "smoke", "E: the smoke trial apart")
     check(st["gc4_kill3_ow_gc_n14"] == "surplus" and st["gc4_kill3_ow_gc_n13"] == "surplus",
@@ -1461,7 +1564,7 @@ def main():
           "B3: the second death before the re-arm is scored, its re-image condition false (%s, rearm_ok %r)" % (M["status"], M.get("rearm_ok")))
     for pid, want in (("kill_judge_rdma", "자료 부족"), ("finless_exit_report", "맞음"), ("finless_read_fail", "맞음"),
                       ("fdhold_sock_helper_stall", "맞음"),
-                      ("none_probe_clean", "맞음"), ("gate_fenced", "자료 부족"), ("no_tcp_control", "맞음"),
+                      ("none_probe_clean", "맞음"), ("gate_fenced", "맞음"), ("no_tcp_control", "맞음"),
                       ("long_hold_lane", "맞음"), ("stall_fence_restore", "자료 부족"), ("restore_time_rdma", "자료 부족"),
                       ("regression_tcp", "자료 부족"), ("cost_probe_lat4k", "자료 부족"), ("freeze_fence_restore", "맞음"),
                       ("gpuhang_fence_restore", "맞음"), ("gpuhang_ctx1_fence_restore", "맞음")):
@@ -1481,6 +1584,7 @@ def main():
           "gc4_kill3_ow_gc_n20(낡은 소켓이나 프로세스 sunny:1+0)" in md, "SCORE.md lists the expected cap line and the stale trial")
     check(os.path.exists(os.path.join(R, "trials_scored.csv")), "trials_scored.csv written")
     prereg_checks(rows)
+    pilot2_checks()
     qperr_checks()
     shell_checks(R)
     int3_checks()

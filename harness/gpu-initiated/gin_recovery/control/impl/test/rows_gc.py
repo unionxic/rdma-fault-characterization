@@ -163,8 +163,8 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   la_exited_n, la_exit_silent_n, la_fence_sigkill_n, la_fenced_n, la_fenced_after_sigkill_ms, la_later_n,
   la_act_refused_why, la_stop_n, la_refused_signal_n, la_pid_mismatch_n, la_qp_err_n, launcher_same, launcher_ready
                              the trial's launcher logs (both nodes) for the subject; la_stop_n counts every "(STOP_launcher)"
-                             line; la_qp_err_n the launcher's QP-loss lines for ranks other than the subject before the first
-                             "is leaving" line (TODO(p3): the teardown rule); launcher_same = both launchers' pid and start equal
+                             line; la_qp_err_n the launcher's QP-loss lines for ranks other than the subject (and the second
+                             kill's kill2_rank, 2026-10-24) before the first "is leaving" line (TODO(p3): the teardown rule); launcher_same = both launchers' pid and start equal
                              before and after the trial and alive after
   launcher_scope, launcher_stale   meta: trial (one launcher per trial) or hold (earlier runs); the stale socket or process found
   la_spare_spawn_n, la_spare_respawn_n, la_spare_cap_expected_n, spare_hello_after_ms
@@ -199,7 +199,10 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   rank_stop_n, rank_la_sock_lost_n   (F6) the rank and spare processes' "(STOP_launcher" lines and launcher Unix socket loss
                              lines before the trial_end marker; both are in la_stop_n
   ss_tcp_conn_n, ss_pids_both, ss_tx_delta_bytes, ss_rx_delta_bytes   the runner's two ss snapshots of the rank PIDs: the
-                             established TCP sockets at the first, the bytes acked / received between the two (pids in both)
+                             established TCP sockets at the first, the bytes acked / received between the two over the pids
+                             alive at both reads; ss_excluded names each pid left out (absent_s1, absent_s2, no_s2) and each
+                             live pid with a negative delta ("negative": a socket closed between the reads; the delta is
+                             then empty, never 0; 2026-10-24 after pilot 2, ss_deltas)
   active_mtu_rain, active_mtu_sunny   the runner's ibv_devinfo reading (meta); active_mtu_kv_min and these in bytes: the
                              library's active_mtu= is the ibv_mtu enum (5 = 4096 B; item 1, mtu_bytes)
   ckpt_stable_in_mute, ckpt_void_in_mute, helper_reconnect_n   stable / void checkpoint lines inside the socket mute's on -> off
@@ -333,6 +336,10 @@ LA_SPHELLO = re.compile(r"GIN/LA: node \d+: spawned spare said HELLO \(spawn (\d
 LA_CAP0 = re.compile(r"GIN/LA: node \d+: spawned spare exited unused \(.*\): respawn cap 0 within \d+ ms reached; no more spares "
                      r"\(STOP_launcher\)")
 GATE = re.compile(r"gate_fenced trial (\d+): old GO at ([0-9.]+) ms, FENCED GO at ([0-9.]+) ms \(diff ([0-9.-]+) ms, second thread ([0-9.]+) ms\)")
+# ../gate_fenced.cc's line (REVIEW_P12 고칠 것 7: a real child process, the real gate functions on it; times from the
+# child's own main-thread end, CLOCK_MONOTONIC). The old line above (a timeline model, gate_real 0) is kept for old folders
+GATEU = re.compile(r"gate_fenced trial (\d+): main thread ended \+0, old gate GO \+([0-9.]+) ms \((.*)\); last thread ended "
+                   r"\+([0-9.]+) ms, FENCED gate GO \+([0-9.]+) ms; the gates differ by (-?[0-9.]+) ms")
 GATEP = re.compile(r"gate_proc trial (\d+): (.*)$")
 KVTOK = rows_rs.KVTOK
 
@@ -365,14 +372,14 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "tcp_ctrl_conn_n", "witness_pairs", "witness_expected", "ring_live_pairs", "tcp_record_bytes_prelive",
            "tcp_record_bytes_unsplit", "tcp_conns_lib", "witness_conns_lib", "ring_live_n", "ring_live_all",
            "ring_live_ms_max", "rank_stop_n", "rank_la_sock_lost_n", "ss_tcp_conn_n", "ss_pids_both", "ss_tx_delta_bytes",
-           "ss_rx_delta_bytes", "rec_lost_n", "rec_dup_n", "rec_repair_n", "sendq_deferred", "sendq_max",
+           "ss_rx_delta_bytes", "ss_excluded", "rec_lost_n", "rec_dup_n", "rec_repair_n", "sendq_deferred", "sendq_max",
            "rnr_n", "async_n", "active_mtu_kv_min", "active_mtu_rain", "active_mtu_sunny", "ckpt_stable_in_mute",
            "ckpt_void_in_mute", "helper_reconnect_n", "qperr_pair_sent_by_target", "qperr_rec_gen_delta",
            "qperr_probe_gen_delta", "qperr_pair_read_fail", "qperr_records_after", "rejoin_dropped", "rejoin_resent",
            "rejoin_accept_n", "rejoin_accept_dup_n", "fail_to_spare_n", "inject", "inject_ok", "inject_off_ms",
            "inject_dur_off_ms", "pair_gap_ms", "ckpt_stable_before_inj", "kill2_after_armed", "stable_between_pair_kills",
            "subject_fenced", "gate_real", "old_go_ms", "fenced_go_ms", "gate_diff_ms", "second_thread_ms", "pidfd_ms", "z_ms",
-           "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms", "cost_probe_evidence", "cost_probe_window",
+           "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms", "gate_src", "cost_probe_evidence", "cost_probe_window",
            "cost_probe_inwindow_lb", "cost_probe_expected"]
 
 
@@ -488,11 +495,40 @@ def rank_stops(lalog, plogs):
     return stop, sock
 
 
+def ss_deltas(ssl, s1, s2_, both):
+    """the ss bytes acked / received between the runner's two snapshots, over the processes alive at both reads only
+    (EXPERIMENT 8, 2026-10-24 after pilot 2). A process absent at a read is left out and named in ss_excluded:
+    "<pid>:absent_s1" (present=0 or no line at the first), "<pid>:absent_s2" (at the second), "<pid>:no_s2" (no second
+    snapshot at all). ss sums a process's sockets, so a socket that closed between the reads (the survivors' sockets to a
+    rank killed in that window: pilot 2 a5 mi4_seg_4k, 8 -> 6 and 10 -> 7 sockets, -23 712 B) takes its bytes out of the
+    second sum: a live process's negative delta is a data problem, never a 0. Then the delta is empty, ss_excluded names
+    it ("<pid>:negative"), and the scorer reads the trial as 자료 부족 for a rule on that column (score_gc.REQUIRED_COLS)"""
+    seen = sorted({m.group(2) for m in ssl}, key=int)
+    no_s2 = not any(m.group(1) == "s2" for m in ssl)
+    exc = ["%s:absent_s1" % p for p in seen if p not in s1]
+    exc += ["%s:%s" % (p, "no_s2" if no_s2 else "absent_s2") for p in sorted(s1, key=int) if p not in s2_]
+    out = {"ss_tx_delta_bytes": "", "ss_rx_delta_bytes": ""}
+    tx = {p: int(s2_[p].group(5)) - int(s1[p].group(5)) for p in both}
+    rx = {p: int(s2_[p].group(6)) - int(s1[p].group(6)) for p in both}
+    neg = sorted((p for p in both if tx[p] < 0), key=int)
+    exc += ["%s:negative" % p for p in neg]
+    if both and not neg:
+        out["ss_tx_delta_bytes"] = sum(tx.values())
+    if both and all(v >= 0 for v in rx.values()):  # reported only, the same rule
+        out["ss_rx_delta_bytes"] = sum(rx.values())
+    out["ss_excluded"] = "+".join(exc)
+    return out
+
+
 def la_counts(lalog, s, meta=None, plogs=None):
     """the launcher counts every trial gets: STOP lines (both forms; the spare-absent cells' one expected cap line apart),
     refused signals and pid-check failures over the whole logs; the QP-loss lines of ranks other than the subject after the
-    trial_start marker and before the first is-leaving. la_stop_n adds the rank side's STOP_launcher lines and its launcher
-    Unix socket loss lines (plogs: the trial's process logs; F6)"""
+    trial_start marker and before the first is-leaving. The second kill's rank (meta kill2_rank: gin-mirror's two-death
+    cells) is a subject too and left out the same way (2026-10-24 after pilot 2: a4 stopped on rank 3's two record-QP
+    loss lines in mi4_kill2_kill3_ow). la_stop_n adds the rank side's STOP_launcher lines and its launcher Unix socket
+    loss lines (plogs: the trial's process logs; F6)"""
+    k2 = str((meta or {}).get("kill2_rank", ""))
+    subjects = {s} | ({int(k2)} if k2.isdigit() else set())
     whole = lalog["rain"] + lalog["sunny"]
     after = la_after_start(lalog["rain"]) + la_after_start(lalog["sunny"])
     stops = [e for e in sorted(whole, key=lambda x: x.t) if LA_STOP.search(e.text)]
@@ -504,7 +540,7 @@ def la_counts(lalog, s, meta=None, plogs=None):
            "la_pid_mismatch_n": sum(1 for e in whole if LA_PIDMIS.search(e.text))}
     t_leave = min((e.t for e in after if LA_LEAVING.search(e.text)), default=float("inf"))
     out["la_qp_err_n"] = sum(1 for e in after for m in [LA_QPLOST.search(e.text)] if m and e.t < t_leave
-                             and int(m.group(1) or m.group(2)) != s)
+                             and int(m.group(1) or m.group(2)) not in subjects)
     return out
 
 
@@ -1232,9 +1268,7 @@ def gc_overlay(stem, base, meta):
         out["ss_tcp_conn_n"] = sum(int(m.group(4)) for m in s1.values())
         both = [p for p in s1 if p in s2_]
         out["ss_pids_both"] = len(both)
-        if both:
-            out["ss_tx_delta_bytes"] = sum(int(s2_[p].group(5)) - int(s1[p].group(5)) for p in both)
-            out["ss_rx_delta_bytes"] = sum(int(s2_[p].group(6)) - int(s1[p].group(6)) for p in both)
+        out.update(ss_deltas(ssl, s1, s2_, both))
     # the socket mute window (gin-harden's lines)
     mon = [e for e in every if MUTE_ON.search(e.text)]
     if mon:
@@ -1420,17 +1454,34 @@ def fenced_subject(stem, meta):
 
 
 def gate_rows(R):
-    """local/: gate_fenced.cc's simulated lines (gate_real 0) and gate_proc_gc.py's real-process lines (gate_real 1)"""
+    """local/: gate_fenced.cc's lines and gate_proc_gc.py's real-process lines (gate_real 1).
+    gate_fenced.cc (gate_src unit; 2026-10-24 after pilot 2): a real child process per trial, the real gate functions on it
+    (gdakiRsActExamine, gdakiCtrlActGate), times from the child's own main-thread end on one CLOCK_MONOTONIC: old_go_ms,
+    second_thread_ms (the child's own reading of its last thread's end: the independent clock of the event), fenced_go_ms,
+    gate_diff_ms; gate_real 1. The FENCED gate's input is the pidfd poll of the same 1 ms sample, so the pidfd readable
+    time is the FENCED GO's sample and fenced_vs_pidfd_abs_ms is 0 [소스: ../gate_fenced.cc runTrial]; the check against an
+    independent clock is fenced_after_second_ms. The old timeline-model line (GATE) stays gate_real 0 (gate_src model).
+    gate_proc_gc.py (gate_src proc): its own pidfd and Z readings; the gate columns only with --gate-bin"""
     rows = []
     for p in sorted(glob.glob(os.path.join(R, "local", "gate_fenced*.log"))):
         for line in open(p, errors="replace"):
+            mu = GATEU.search(line)
+            if mu:
+                o, l2, f, d = float(mu.group(2)), float(mu.group(4)), float(mu.group(5)), float(mu.group(6))
+                rid = "%s_t%s" % (os.path.basename(p)[:-4], mu.group(1))
+                rows.append({"id": rid, "stem": os.path.join(os.path.dirname(p), rid), "sub": "local", "cell": "gate_fenced",
+                             "build": "cpu", "runner": "local", "key": "local:gate_fenced", "gate_real": 1,
+                             "gate_src": "unit", "old_go_ms": o, "fenced_go_ms": f, "gate_diff_ms": d,
+                             "second_thread_ms": l2, "pidfd_ms": f, "fenced_after_second_ms": r1(f - l2),
+                             "fenced_vs_pidfd_abs_ms": 0.0, "tnum": int(mu.group(1)) + 1})
+                continue
             m = GATE.search(line)
             if not m:
                 continue
             o, f, d, l2 = float(m.group(2)), float(m.group(3)), float(m.group(4)), float(m.group(5))
             rid = "%s_t%s" % (os.path.basename(p)[:-4], m.group(1))
             r = {"id": rid, "stem": os.path.join(os.path.dirname(p), rid), "sub": "local", "cell": "gate_fenced",
-                 "build": "cpu", "runner": "local", "key": "local:gate_fenced", "gate_real": 0, "old_go_ms": o,
+                 "build": "cpu", "runner": "local", "key": "local:gate_fenced", "gate_real": 0, "gate_src": "model", "old_go_ms": o,
                  "fenced_go_ms": f, "gate_diff_ms": d, "second_thread_ms": l2, "tnum": int(m.group(1)) + 1}
             rows.append(r)
     for p in sorted(glob.glob(os.path.join(R, "local", "gate_proc*.log"))):
@@ -1443,7 +1494,7 @@ def gate_rows(R):
             rid = "%s_t%s" % (os.path.basename(p)[:-4], m.group(1))
             r = {"id": rid, "stem": os.path.join(os.path.dirname(p), rid), "sub": "local", "cell": "gate_fenced",
                  "build": "cpu", "runner": "local", "key": "local:gate_fenced", "gate_real": int(d.get("real") == "1"),
-                 "tnum": int(m.group(1)) + 1}
+                 "gate_src": "proc", "tnum": int(m.group(1)) + 1}
             for k, x in v.items():
                 r[k] = r1(x)
             if v["fenced_go_ms"] is not None and v["old_go_ms"] is not None:

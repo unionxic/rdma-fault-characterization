@@ -17,7 +17,7 @@
 #     failure, the warm spare's HELLO bound or respawn cap; both forms through rows_gc.py --stops, the scorer's rule, which
 #     leaves out the one expected cap line of the spare-absent cells), a launcher QP loss outside the test-switch cells (the
 #     same rule as rows_gc.py's la_qp_err_n: after the trial's start marker, before the first "is leaving", of a rank other
-#     than the subject), a launcher gone or changed (pid or start time) between the trial's start and end, or the trial's
+#     than the subject and the second kill's rank),a launcher gone or changed (pid or start time) between the trial's start and end, or the trial's
 #     start check failing (run_gc.sh exit 6: not up, exit 7: stale; cells_gc.sh); STOP_rnr for a growth of the RNR port
 #     counter outside gc4_credit_stall; STOP_left for a stopped (state T) process or a gin_fdhold child left after the trial
 #     (run_gc.sh's meta left_stopped, left_fdhold); STOP_async for an asynchronous event of a record or liveness-READ QP (the
@@ -170,11 +170,9 @@ gc_after_trial() {  # gc_after_trial <what> <meta> <cell>: section 8's gin-contr
     if [ "${lstop:-0}" -gt 0 ]; then
       echo "$(date '+%F %T') hold $H: $what: $lstop launcher line(s) (STOP_launcher) or (STOP_launcher: ...)" | tee -a "$R/STOP_launcher"
     fi
-    # pilot 2 (2026-10-24): in gin-mirror's two-death cells (mi4_kill2_kill3_ow, mi4_train_kill2_kill3) the second killed
-    # rank (KILL2_RANK 3) is a subject too, but rows_gc.py --stops leaves out only the first (subject_rank); its record-QP
-    # loss lines are recorded in la_qp_twokill.txt, not a stop (the scorer's la_qp_err_n keeps counting them: TODO(scorer))
-    if [ "$sw" = 0 ] && [ "${lqp:-0}" -gt 0 ]; then case "$cell" in *_kill2_kill3*)
-      echo "$(date '+%F %T') hold $H: $what: $lqp launcher QP loss line(s) in a two-death cell (the second subject's; not a stop)" >> "$R/la_qp_twokill.txt"; lqp=0 ;; esac; fi
+    # gin-mirror's two-death cells (mi4_kill2_kill3_ow, mi4_train_kill2_kill3): the second killed rank (meta kill2_rank) is
+    # a subject too; rows_gc.py --stops leaves its QP loss lines out like the first's (2026-10-24 after pilot 2, where a4
+    # stopped on them; pilot 2's stopgap la_qp_twokill.txt record is gone)
     if [ "$sw" = 0 ] && [ "${lqp:-0}" -gt 0 ]; then
       echo "$(date '+%F %T') hold $H: $what: $lqp launcher QP loss line(s) outside the test-switch cells (section 8)" | tee -a "$R/STOP_launcher"
     fi

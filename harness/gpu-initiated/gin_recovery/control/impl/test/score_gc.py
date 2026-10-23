@@ -115,6 +115,7 @@ TEST_SWITCH_ENV = ("TEST_QP_ERR", "TEST_DROP_UD", "TEST_CREDIT_STALL")
 # spare kill -> rank kill gap this long (the runner's target stays SPARE_GAP_MS 5; pilot 1 measured 5.032 ms; before: 5 ms)
 STOP_LEN_TOL_MS = 50.0
 PAIR_GAP_LIMIT_MS = 10.0
+EXCL["no_gate"] = "관문 프로그램 없이 돈 시험 장치(gate_proc_gc.py) 시행: 관문 열 없음, 보고만"
 EXCL["prep_failure"] = "준비 실패(설정이 맞는데 Resume 거절이나 링 live 실패; 따로 세고 채우지 않음)"
 KINDS = ("safety", "perf", "cost")
 # item 5 and EXPERIMENT 8 (2026-10-23): the safety terms of section 3's rules, by their rows_gc.py / gin-mirror columns:
@@ -409,6 +410,10 @@ REQUIRED_COLS = dict([(c, _CTRL_MARK) for c in (
     "rec_repair_n", "sendq_deferred", "sendq_max", "async_n", "rnr_n")] + [(c, _PROBE_MARK) for c in (
     "read_n", "read_ok_n", "dev_read_n", "dev_read_ok_n", "read_page_success_pct", "read_dev_success_pct",
     "read_success_pct", "page_torn_n", "read_lat_med_us_max", "read_lat_max_us", "beat_gap_max_ms")])
+# 2026-10-24 after pilot 2: the runner's ss delta over the processes alive at both reads; empty with ss_excluded set when
+# a live process's delta was negative (a socket closed between the reads) or the second snapshot is missing (rows_gc.py
+# ss_deltas): 자료 부족 for that trial, never a 0 and never a fail
+REQUIRED_COLS["ss_tx_delta_bytes"] = ("ss_excluded",)
 
 
 class _Unknown(s2.Nil):
@@ -600,7 +605,9 @@ def score(R, planned_override=None):
         if sm:
             r["status"] = sm
         elif r["runner"] == "local":
-            r["status"] = "candidate"
+            # gate_proc_gc.py without --gate-bin times no gate: the harness's own readings, reported only (2026-10-24)
+            r["status"] = ("no_gate" if r.get("gate_src") == "proc" and val_empty(r.get("fenced_go_ms"))
+                           else "candidate")
         elif r["runner"] == "cost":
             r["status"] = "candidate" if str(r.get("cost_valid")) == "1" else "cost_invalid"
         elif r["runner"] == "mrr":
