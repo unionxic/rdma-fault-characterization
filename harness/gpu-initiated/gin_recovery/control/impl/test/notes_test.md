@@ -579,3 +579,11 @@ smoke3 a3(STOP, 펜스 없는 옛 라이브러리)은 의심 2 050.1, 판정 10 
   - 유효: 문맥 둘의 전 주기 READ. 하한 84, 기대 45.
   - 변이: 하한 검사를 끄면(`COST_PEERS` 0) 셋이 실패한다.
   - `python3 test_rows_gc.py` 167 checks, 0 failed(이전 162). `python3 check_cells_gc.py` ok, drift 0 `[측정: 로컬 실행]`.
+
+## 여섯째 smoke에서 본 시험 쪽 사실 (2026-10-23, 실행기 고침 없음)
+
+- driver `gin_mi.cu` `6cb4ff28`를 `build_driver_gc.sh mi`(`MIOUT=mi_s6`, 머리 `gc_ca2`)로 처음 빌드했다: `gin_mi` `2c57f99f`, 경고 0 `[측정]`.
+- 반례 셀 `gc4_gpuhang12000_ctx1_fence` n 1: hang 줄 `ctx=1`(`inject_ok=1`), 생존 셋의 의심 줄 `(kind=gpu stale_ms=2000.7 ctx=1)`와 판정 줄 `STALLED to 3 rank(s); ctx=1;`을 `rows_gc.py`가 읽어
+  `stall_ctx=1`이다. 위 절의 `TODO(lib)`(줄의 `ctx=` 자리)는 실제 줄과 맞다 `[측정: ../../results/20261023_smoke6/SMOKE.md (e)]`. 모든 context가 멈추는 셀은 `stall_ctx=0+1`이었다(그 예측은 이 열을 쓰지 않음).
+- 새 열 `dev_read_n`, `dev_read_ok_n`, `read_page_success_pct`, `read_dev_success_pct`, `probe_missing`이 context 넷인 실제 요약 줄(`dev_ctx=4 dev_reads_ctx=a/b/c/d`)에서 채워졌고 `probe_missing`은 여섯 시도 모두 빈칸이다 `[측정]`.
+- 복원 뒤 4.7–5.2 s의 READ 시한 줄은 driver가 예비 프로세스에서 끝 유예를 건너뛰어(`gin_mi.cu` 1011행) 복원된 화신이 먼저 teardown하기 때문으로 본다 `[추론: 같은 SMOKE.md 절]`. 판정 뒤라 `probe_timeout_n`에 들지 않는다.
