@@ -1,6 +1,6 @@
 {
  "study": "gin-control",
- "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n and the switch values are fixed at the pre-registration prereg/gin-control-v1). Input of hold_gc.sh (what to run), check_cells_gc.py (the cross-check with section 3) and score_gc.py (the planned scored trials per cell@build). 'rows' are section 7's 27 table rows (25 after the 2026-10-22 trim, 27 before it; the GPU-hang cell and, after smoke 5, gc4_kill3_noreport_nofdhold added 2026-10-23); 'cells' the cell@build runs (kind rs -> run_gc.sh through cells_gc.sh); 'holds' the main-run holds C1-C3, C5-C11 (C4 held only the removed tcp contrast cells) and the pilot holds P0-P4 (never scored; P3 the two NO_EXIT_REPORT cells of hold C6, P4 the pilot-only cell of 'pilot_cells'); 'regression' gin-mirror's non-cost cells by name and env at @gc, and at @gct only the one control cell of regression.builds.gct.cells; 'cost' the probe cost family (run_cost_gc.sh); 'local' the CPU-only items (no cluster). env values are run_gc.sh's variables (R<r>_ENV, SPARE_ENV: the library's test switches of that process). Each trial's launchers run with its cell's launcher_env (EXPERIMENT 5: one launcher per node per trial since 2026-10-22, started by run_gc.sh). Every TODO names the phase or the pilot that fixes it.",
+ "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n and the switch values are fixed at the pre-registration prereg/gin-control-v1). Input of hold_gc.sh (what to run), check_cells_gc.py (the cross-check with section 3) and score_gc.py (the planned scored trials per cell@build). 'rows' are section 7's 28 table rows (25 after the 2026-10-22 trim, 27 before it; the GPU-hang cell and, after smoke 5, gc4_kill3_noreport_nofdhold added 2026-10-23; the GPU hang counterexample gc4_gpuhang12000_ctx1_fence 2026-10-24); 'cells' the cell@build runs (kind rs -> run_gc.sh through cells_gc.sh); 'holds' the main-run holds C1-C3, C5-C11 (C4 held only the removed tcp contrast cells) and the pilot holds P0-P4 (never scored; P3 the two NO_EXIT_REPORT cells of hold C6, P4 the pilot-only cell of 'pilot_cells'); 'regression' gin-mirror's non-cost cells by name and env at @gc, and at @gct only the one control cell of regression.builds.gct.cells; 'cost' the probe cost family (run_cost_gc.sh); 'local' the CPU-only items (no cluster). env values are run_gc.sh's variables (R<r>_ENV, SPARE_ENV: the library's test switches of that process). Each trial's launchers run with its cell's launcher_env (EXPERIMENT 5: one launcher per node per trial since 2026-10-22, started by run_gc.sh). Every TODO names the phase or the pilot that fixes it.",
  "builds": {
   "gc": {
    "lib": "gc",
@@ -236,6 +236,19 @@
   },
   {
    "row": 18,
+   "name": "gc4_gpuhang12000_ctx1_fence",
+   "keys": [
+    "gc4_gpuhang12000_ctx1_fence@gc"
+   ],
+   "kind": "멈춘 GPU의 펜스, 문맥 0 밖(반례)",
+   "preds": [
+    "gpuhang_ctx1_fence_restore",
+    "no_tcp_control",
+    "long_hold_lane"
+   ]
+  },
+  {
+   "row": 19,
    "name": "gc4_mgmt_mute8, gct4_mgmt_mute8",
    "keys": [
     "gc4_mgmt_mute8@gc",
@@ -249,7 +262,7 @@
    ]
   },
   {
-   "row": 19,
+   "row": 20,
    "name": "gc4_qperr_record",
    "keys": [
     "gc4_qperr_record@gc"
@@ -261,7 +274,7 @@
    ]
   },
   {
-   "row": 20,
+   "row": 21,
    "name": "gc4_ud_drop_rejoin",
    "keys": [
     "gc4_ud_drop_rejoin@gc"
@@ -273,7 +286,7 @@
    ]
   },
   {
-   "row": 21,
+   "row": 22,
    "name": "gc4_credit_stall",
    "keys": [
     "gc4_credit_stall@gc"
@@ -285,7 +298,7 @@
    ]
   },
   {
-   "row": 22,
+   "row": 23,
    "name": "gc4_kill3_ow_spareabsent",
    "keys": [
     "gc4_kill3_ow_spareabsent@gc"
@@ -297,7 +310,7 @@
    ]
   },
   {
-   "row": 23,
+   "row": 24,
    "name": "gin-mirror 회귀(tcp)",
    "keys": [
     "regression:gct"
@@ -308,7 +321,7 @@
    ]
   },
   {
-   "row": 24,
+   "row": 25,
    "name": "gin-mirror 회귀(rdma)",
    "keys": [
     "regression:gc"
@@ -324,7 +337,7 @@
    ]
   },
   {
-   "row": 25,
+   "row": 26,
    "name": "비용 가족 probe",
    "keys": [
     "cost:probe"
@@ -335,7 +348,7 @@
    ]
   },
   {
-   "row": 26,
+   "row": 27,
    "name": "빌드 검사",
    "keys": [
     "local:build_check"
@@ -345,7 +358,7 @@
    "qa_only": "10절 QA 항목(기계어와 tcp 전처리 동일성); 3절의 찾는 키가 없음"
   },
   {
-   "row": 27,
+   "row": 28,
    "name": "CPU 시험 gate_fenced",
    "keys": [
     "local:gate_fenced"
@@ -923,6 +936,39 @@
    "todo": "TODO(pilot): GC_GPUHANG_IT 155 is a placeholder from smoke3's step timing (about 2 s after live); the pilot's step lines fix it",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
+  "gc4_gpuhang12000_ctx1_fence@gc": {
+   "cell": "gc4_gpuhang12000_ctx1_fence",
+   "build": "gc",
+   "kind": "rs",
+   "n": 5,
+   "driver": "gin_mi",
+   "env": {
+    "OVERWRITE": "1",
+    "MIRROR": "1",
+    "CKPT_STEPS": "20",
+    "SPARE": "1",
+    "FENCE": "lineage",
+    "SPARE_RANK": "3",
+    "R3_ENV": "GC_GPUHANG_IT=155 GC_GPUHANG_CTX=1",
+    "SUBJECT_RANK": "3"
+   },
+   "injection": {
+    "kind": "gpuhang",
+    "target": 3,
+    "timing": "the GPU hang cell's switch with its context filter (impl/test/driver/gin_mi.cu, user decision (가) 2026-10-24): in step 155 only rank 3's sending CTA whose put goes on GIN context 1 (the sender to rank 1; the sender to destination d uses context d) spins after its put is posted and before the flush that polls it; the senders to ranks 0 and 2 post, flush and finish the step, so rank 3's context 0 is quiet (posted == polled) and only context 1 is pending and frozen while the host threads keep beating: the counterexample to a line that reads context 0 only (EXPERIMENT 18 (가)); the fence's SIGKILL ends the process; its GINRS gpuhang line (ctx=1) is the injection record",
+    "switch": "R3_ENV GC_GPUHANG_IT=<step> GC_GPUHANG_CTX=<k>"
+   },
+   "preds": [
+    "gpuhang_ctx1_fence_restore",
+    "no_tcp_control",
+    "long_hold_lane"
+   ],
+   "control": "gc4_gpuhang12000_fence@gc",
+   "bound_s": 60,
+   "row": 18,
+   "todo": "TODO(pilot): GC_GPUHANG_IT 155 as the GPU hang cell (a placeholder from smoke3's step timing); TODO(lib): the STALLED or SUSPECT line names the context (ctx=) after the 2026-10-24 library piece (every context's line registered); before it the cell is expected to show no STALL (the old line reads context 0 only)",
+   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
+  },
   "gc4_mgmt_mute8@gc": {
    "cell": "gc4_mgmt_mute8",
    "build": "gc",
@@ -949,7 +995,7 @@
    ],
    "control": "gct4_mgmt_mute8@gct",
    "bound_s": 60,
-   "row": 18,
+   "row": 19,
    "todo": "TODO(pilot): STEPS 2400 (about 12 s) keeps the checkpoints going through the 8 s mute",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
@@ -978,7 +1024,7 @@
    ],
    "control": "gc4_mgmt_mute8@gc",
    "bound_s": 60,
-   "row": 18,
+   "row": 19,
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_qperr_record@gc": {
@@ -1006,7 +1052,7 @@
    ],
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
-   "row": 19,
+   "row": 20,
    "todo": "TODO(phase2): the switch's value format <ms>:<peer> is this file's proposal",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
@@ -1036,7 +1082,7 @@
    ],
    "control": "gc4_kill3_ow@gc",
    "bound_s": 60,
-   "row": 20,
+   "row": 21,
    "todo": "TODO(phase2): the switch's value format rejoin:<count> is this file's proposal"
   },
   "gc4_credit_stall@gc": {
@@ -1064,7 +1110,7 @@
    ],
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
-   "row": 21,
+   "row": 22,
    "todo": "TODO(phase2): the switch's value format <start>:<len> is this file's proposal",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
@@ -1094,7 +1140,7 @@
    ],
    "control": "gc4_kill3_ow@gc",
    "bound_s": 60,
-   "row": 22
+   "row": 23
   }
  },
  "pilot_cells": {
@@ -1202,6 +1248,9 @@
    },
    {
     "key": "gc4_gpuhang12000_fence@gc"
+   },
+   {
+    "key": "gc4_gpuhang12000_ctx1_fence@gc"
    }
   ],
   "C11": [
@@ -1301,6 +1350,10 @@
     "n": 1
    },
    {
+    "key": "gc4_gpuhang12000_ctx1_fence@gc",
+    "n": 1
+   },
+   {
     "key": "gc4_mgmt_mute8@gc",
     "n": 1
    },
@@ -1378,7 +1431,7 @@
     ]
    }
   },
-  "about": "Section 7 rows 23-24: every non-cost cell of gin-mirror section 7 with its name, env and n at gc (rdma); at gct (tcp) only builds.gct.cells (2026-10-22 trim). hold RG-<build>-<mirror hold>. The kill cells of these @gc rows also feed kill_judge_rdma and restore_time_rdma (section 3's cell column). The mirror cells' drivers (gin_mi, gin_mi_nomacro, mr/ff, mr/hold) are rebuilt against the gc tree's headers (deploy_gc.sh).",
+  "about": "Section 7 rows 24-25: every non-cost cell of gin-mirror section 7 with its name, env and n at gc (rdma); at gct (tcp) only builds.gct.cells (2026-10-22 trim). hold RG-<build>-<mirror hold>. The kill cells of these @gc rows also feed kill_judge_rdma and restore_time_rdma (section 3's cell column). The mirror cells' drivers (gin_mi, gin_mi_nomacro, mr/ff, mr/hold) are rebuilt against the gc tree's headers (deploy_gc.sh).",
   "kill_cells": [
    "mi4_kill3_ow",
    "mi4_kill1_ow",
@@ -1391,7 +1444,7 @@
   ]
  },
  "cost": {
-  "about": "cost_<metric>_<arm>_<node> (run_cost_gc.sh), section 7 row 25. One pair since the 2026-10-22 trim: arms probe-off (gcp, NCCL_GIN_TS_PROBE_MS=0) and probe-on (gcp, PROBE_MS 100), metric lat4k, both nodes; base probe-off, judged probe-on (the tcp arm and lat256k, bw256k were dropped; run_cost_gc.sh still knows them). gin-restore 9.15.6's interleave (k = 1-6, the arm order reversed on even k).",
+  "about": "cost_<metric>_<arm>_<node> (run_cost_gc.sh), section 7 row 26. One pair since the 2026-10-22 trim: arms probe-off (gcp, NCCL_GIN_TS_PROBE_MS=0) and probe-on (gcp, PROBE_MS 100), metric lat4k, both nodes; base probe-off, judged probe-on (the tcp arm and lat256k, bw256k were dropped; run_cost_gc.sh still knows them). gin-restore 9.15.6's interleave (k = 1-6, the arm order reversed on even k).",
   "n_per_arm": 6,
   "nodes": [
    "rain",
@@ -1426,7 +1479,7 @@
   "build_check": {
    "row": 26,
    "preds": [],
-   "about": "section 7 row 26: the macro-free programs' machine code and the library device objects of the three builds the cells run (gc, gct, gcp) against mi, gct's preprocessed host file against ln4 (build_gc.sh ident, pre); a QA item of section 10, no section 3 key"
+   "about": "section 7 row 27: the macro-free programs' machine code and the library device objects of the three builds the cells run (gc, gct, gcp) against mi, gct's preprocessed host file against ln4 (build_gc.sh ident, pre); a QA item of section 10, no section 3 key"
   },
   "gate_fenced": {
    "row": 27,
@@ -1435,7 +1488,7 @@
     "gate_fenced"
    ],
    "log": "local/gate_fenced_n<k>.log",
-   "about": "section 7 row 27: ../gate_fenced.cc run on the CPU (no cluster); its log lines are read by rows_gc.py"
+   "about": "section 7 row 28: ../gate_fenced.cc run on the CPU (no cluster); its log lines are read by rows_gc.py"
   }
  },
  "prereg": {

@@ -1,7 +1,7 @@
 # notes_test.md — gin-control 시험 쪽(실행기, 채점기)
 
 > **읽는 법(2026-10-23 표시).** 시간순으로 덧붙인 작업 기록이다. "단계"부터 "고침 (독립 리뷰 REVIEW_TEST 반영, 2026-10-17)"까지는 2026-10-17 초안과 그 고침의 기록이고(커밋 `afc164ff`, `4eadfe49`),
-> 그 안의 "TODO 목록", "남은 `todo`", "메인 세션이 적을 것"은 그때 기준이라 지금 할 일로 읽지 않는다. 그 뒤 날짜 붙은 절이 차례로 이어지고 마지막 절이 가장 새 기록이다. "파일" 표만 2026-10-23까지 고쳐 왔다.
+> 그 안의 "TODO 목록", "남은 `todo`", "메인 세션이 적을 것"은 그때 기준이라 지금 할 일로 읽지 않는다. 그 뒤 날짜 붙은 절이 차례로 이어지고 마지막 절이 가장 새 기록이다. "파일" 표만 2026-10-24까지 고쳐 왔다.
 > 지금 상태와 할 일은 [EXPERIMENT.md](../../EXPERIMENT.md) 11절, 셀과 예측의 기준은 EXPERIMENT.md 3, 7, 8절과 `cells_gc.json`, `predictions_gc.csv`, 빌드와 실행, 채점 경로는 [NOTES.md](../../NOTES.md)에 있다.
 
 [../../EXPERIMENT.md](../../EXPERIMENT.md) 3, 7, 8, 9.3, 9.8, 9.9절의 시험 쪽이다. gin-mirror의 시험 쪽(`../../../mirror/impl/test/`)을 틀로 썼다.
@@ -27,9 +27,9 @@
 
 | 파일 | 하는 일 |
 |---|---|
-| `cells_gc.json` | 7절 27행(`rows`; 2026-10-23 GPU hang 셀과 `gc4_kill3_noreport_nofdhold`를 더하기 전 25행), cell@build 25개(전 23개; `cells`: env, 주입, n, 대조 팔, 찾는 키, 시행 한도), 본 실행 hold C1–C3, C5–C11과 pilot hold P0–P4, 회귀(gin-mirror `cells_mi.json`의 비용 밖 hold 여덟을 `@gc`로, `@gct`는 `regression.builds.gct.cells`의 `mi4_kill3_ow` 하나), 비용 가족 probe의 한 쌍, 로컬 항목. 2026-10-22 셀 줄임 전에는 27행, 27개, C1–C11(아래 "셀 줄임" 절) |
+| `cells_gc.json` | 7절 28행(`rows`; 2026-10-24 GPU hang 반례 셀 `gc4_gpuhang12000_ctx1_fence`를 더하기 전 27행, 2026-10-23 GPU hang 셀과 `gc4_kill3_noreport_nofdhold`를 더하기 전 25행), cell@build 26개(2026-10-24 전 25개, 그 전 23개; `cells`: env, 주입, n, 대조 팔, 찾는 키, 시행 한도), 본 실행 hold C1–C3, C5–C11과 pilot hold P0–P4, 회귀(gin-mirror `cells_mi.json`의 비용 밖 hold 여덟을 `@gc`로, `@gct`는 `regression.builds.gct.cells`의 `mi4_kill3_ow` 하나), 비용 가족 probe의 한 쌍, 로컬 항목. 2026-10-22 셀 줄임 전에는 27행, 27개, C1–C11(아래 "셀 줄임" 절) |
 | `check_cells_gc.py` | 셀 파일과 예측 표를 EXPERIMENT.md 3, 7절에 맞춰 봄(행 수, 셀 이름, 빌드, n, 찾는 키마다 셀 하나 이상, 셀마다 예측 하나 이상, 회귀 빌드의 `cells` 목록) |
-| `predictions_gc.csv` | 3절의 30행(2026-10-23 `gpuhang_fence_restore`, `fdhold_sock_helper_stall`을 더하기 전 28행, 2026-10-22 셀 줄임 전 31행). 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
+| `predictions_gc.csv` | 3절의 31행(2026-10-24 `gpuhang_ctx1_fence_restore`를 더하기 전 30행, 2026-10-23 `gpuhang_fence_restore`, `fdhold_sock_helper_stall`을 더하기 전 28행, 2026-10-22 셀 줄임 전 31행). 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
 | `remote_gc.sh` | 원격 셸에 넘기는 명령을 한 번만 따옴표로 쌈(`rcmd`, `pcmd`, `sunny_sh`), 공용 읽기 질의(`MTU_Q`, `RNR_Q`, `GID_PROBE`)와 IPv4 가림 식 |
 | `launcher_gc.sh` | launcher 하나(start, stale, info, mark, table, stop). 0700 소켓 디렉터리(시작마다 새 경로), `--tc`, 예비 프로세스 옵션을 그대로 넘김, 낡은 소켓이나 프로세스면 띄우지 않음(exit 3), 기록한 PID와 시작 시각에만 신호, 준비 실패 때 스스로 끔 |
 | `run_gc.sh` | 시행 하나. 9.9절 주입, 시행마다 launcher 띄우기와 끄기(예비 프로세스 명령과 환경 포함), 예비 프로세스 로그 따라 읽기, 시행 표지, 노드 시계 차, ss 스냅숏, `active_mtu`, RNR 카운터, 끄는 차례 |
@@ -501,3 +501,25 @@ smoke3 a3(STOP, 펜스 없는 옛 라이브러리)은 의심 2 050.1, 판정 10 
 - **남은 것** `[미확인]`. 쓰이지 않은 예비 프로세스의 요약에 빠진 계수는 아직 판정하지 않는다(필요 집합 밖이라 그대로 더함). 두 번째 죽음에서 첫 예비 프로세스가 죽으면, 높은 화신 하나만 요구하는 규칙은 아직 시험하지 않았다.
 - **다시 확인 고침(Codex 2026-10-23).** `ctrlsum_required`가 예비 프로세스를 있는 `.log`에서만 찾아서, 활성화된 예비의 `.log`가 통째로 없으면(kv는 `revived=1`) 필요 목록에서 빠지고 요약 열이 숫자로 남았다. 이제 `_spare*.kv`와 `_spare*.log`를 함께 보고, `.log`가 없는 필요 프로세스는 `ctrlsum_missing`에 `spare:nolog`처럼 남고 요약 열이 모두 빈다. 죽은 원래 rank는 필요 목록 밖에 두되 `.log`가 없으면 새 열 `dead_log_missing`(`r3`)에 남긴다.
   새 시험 둘(활성 예비 `.log` 지움: `spare:nolog`, 두 판정 자료 부족; 죽은 rank `.log` 지움: `dead_log_missing` r3). 고치기 전 규칙을 되살린 변이에서 첫 시험이 실패한다(빈칸, 맞음, 맞음). `test_rows_gc.py` 136 checks, 0 failed, `check_cells_gc.py` ok, drift 0; smoke1–5 사본 25시행에서 기존 열 변화 0, `dead_log_missing` 모두 빈칸 `[측정: 로컬 실행]`.
+
+## GPU hang 반례: 문맥 하나만 멈춤 (2026-10-24, 사용자 결정 가)
+
+모든 GIN 문맥의 진행 줄을 등록하는 라이브러리 조각(다른 세션)의 시험 쪽이다. 라이브러리, 빌드, 클러스터 실행은 없다.
+
+- **문맥 대응(소스에서 확인, `driver/gin_mi.cu` md5 `6cb4ff28`의 줄 번호).** 머리 주석 70–73행: rank마다 받는 문맥 하나(ctx = 받는 rank), 목적지 d로 가는 put은 문맥 d. `stepKernel` 268행
+  `const int d = k < me ? k : k + 1;`(CTA k의 목적지), 278행 `ncclGin gin{devComm, d};`(보내는 CTA의 문맥 = 목적지), 302행 `ncclGin gin{devComm, me};`(받는 CTA의 문맥 = 자기 rank),
+  752행 `reqs.ginContextCount = N;`. 그래서 rank 3에서 문맥 0을 쓰는 것은 rank 0으로 가는 보내는 CTA 하나이고, 문맥 3(자기 rank)을 쓰는 보내는 CTA는 없다 `[소스]`.
+- **driver 스위치 `GC_GPUHANG_CTX=<k>`.** `GC_GPUHANG_IT`와 함께, 목적지가 문맥 k를 쓰는 보내는 CTA만 put을 post한 뒤 flush 전에 돈다(283행의 조건 `hangCtx < 0 || hangCtx == d`; d는 CTA마다 같아서
+  `__syncthreads()`가 갈리지 않음). 없거나 빈 값이면 지금처럼 모든 보내는 CTA(`ctx=all`). k가 숫자가 아니거나 0..N−1 밖이거나 자기 rank면 kv `usage_error=gpuhang_ctx`, exit 1.
+  hang 줄은 `GINRS gpuhang rank=R step=S spin=1 ctx=all|k wait_ms=W mono_ms=M`, 시작 kv는 `gpuhang_it=.. gpuhang_ctx=all|k|-`(스위치가 없으면 `-`). 원본 gin-mirror 파일 대비 바뀐 줄 78(2026-10-23 사본은 50).
+  **빌드 안 함**(소스만; `build_driver_gc.sh`는 그대로 쓸 수 있고 머리 주석만 고침). 다음 smoke 전에 새 `MIOUT`으로 빌드한다.
+- **셀과 예측.** `cells_gc.json`: 7절 18행 `gc4_gpuhang12000_ctx1_fence@gc`(n 5, `R3_ENV=GC_GPUHANG_IT=155 GC_GPUHANG_CTX=1`, `SUBJECT_RANK=3`, `FENCE=lineage`, 주입 kind `gpuhang`, 대조 `gc4_gpuhang12000_fence@gc`),
+  hold C10과 pilot P1(n 1)에 GPU hang 셀 바로 뒤; 뒤 행 번호 하나씩 밀림(회귀 24–25, 비용 26, 빌드 검사 27, `gate_fenced` 28). `predictions_gc.csv`: `gpuhang_ctx1_fence_restore`(perf; GPU hang 행에
+  `stall_ctx == 1`을 더함, ≥ 4/5). `cost_probe_lat4k`의 `per_trial`에 READ 수(상대마다 1 + 문맥 수, 4 rank면 5) 글. 셈: 예측 31(perf 22, safety 8, cost 1), 7절 28행, 셀 26, 시행 170 `[측정: 셀 파일과 예측 표에서 셈]`.
+- **채점기**(`rows_gc.py`). 새 열 `stall_ctx`: 생존 rank마다 대상의 STALL 판정 줄의 `ctx=`, 없으면 그 앞 마지막 의심 줄의 `ctx=`; 서로 다른 값을 `+`로 잇고, 문맥을 이름 대지 않은 STALL 판정은 `none`.
+  규칙은 `stall_ctx == 1`이라 "1+none", "0+1"은 거짓이다. 의심 줄 꼴은 괄호 안 `kind=`와 `stale_ms=` 사이나 뒤에 다른 낱말(`ctx=`)이 있어도 읽는다. 셀 env에 `GC_GPUHANG_CTX=k`가 있으면 hang 줄에
+  `ctx=k`가 있어야 주입 기록(`inject_ok`)이다. 라이브러리 줄의 `ctx=` 자리는 조각이 정한다(`TODO(lib)`): 이 열은 줄 어디의 `ctx=<숫자>`든 읽는다.
+- **자체 시험** B6: 합성 반례 시행 다섯(n1, n3–n5는 판정 줄에, n2는 의심 줄에만 `ctx=1`), `stall_ctx` "1", 판정 "맞음"; GPU hang 셀(B5)은 `none`; 규칙이 "1+none", "0+1", 빈 값, 0, `none`, STALL_HELPER 사본,
+  9 900 ms를 거짓으로; 따로 만든 시행에서 생존 rank 하나가 문맥 0을 대면 "0+1", 문맥이 없으면 "1+none", hang 줄이 `ctx=all`이면 `inject_ok` 0. 창 규칙 수 검사는 5에서 6으로.
+- 확인: `python3 test_rows_gc.py` 142 checks, 0 failed(이전 136), `python3 check_cells_gc.py` ok(7절 28행, 셀 26, 3절 키 31, drift 0) `[측정: 로컬 실행]`. 클러스터 실행 없음.
+- **남은 것.** 라이브러리 조각의 줄 꼴(`ctx=`의 자리)과 이 열을 맞춰 보기, driver 빌드, 반례 셀의 하드웨어 한 번. `hold_gc.sh` 머리 주석의 "section 7 rows 23, 24"는 이제 24, 25다(이 작업의 고칠 범위 밖이라 그대로).

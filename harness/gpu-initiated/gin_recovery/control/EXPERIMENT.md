@@ -11,28 +11,29 @@ RNIC 위 RDMA로 옮기고, 그때 죽음 판정 시간, FIN 없는 죽음, 멈�
 | 작성일 | 2026-10-16 |
 | 기준 브랜치와 커밋 | `exp/gin-control` @ `bb1b7bde` (origin/master, gin-mirror `COMPLETE` 뒤) |
 | 사전 등록 태그 | 없음 |
-| 마지막 갱신 | 2026-10-23, 문서 정리: 맨 앞 현재 상태 안내, 11절을 현재 작업 목록(11.1)과 당시 체크리스트(11.2)로 나눔, 19절을 후속 연구로. 그 전 갱신(사전 등록 초안 고침 셋, 커밋 `e1fee5b8`)과 지난 갱신 목록은 12절 |
+| 마지막 갱신 | 2026-10-24, 사용자 결정 (가)(모든 GIN 문맥의 진행 줄): GPU hang 반례 셀과 예측, driver 스위치 `GC_GPUHANG_CTX`, 3, 7, 9.2, 9.3, 18절(12절 그날 행). 그 전 갱신(2026-10-23 문서 정리)과 지난 갱신 목록은 12절 |
 
 ## 현재 상태
 
-> 갱신 절(2026-10-23, 커밋 `e1fee5b8` 기준). 작업을 시작할 때 이 절과 11.1절의 해당 항목을 먼저 읽는다. 지난 일은 12절, 근거는 아래 절에 있다.
+> 갱신 절(2026-10-24, 사용자 결정 가 반영; 그 전 판은 2026-10-23, 커밋 `e1fee5b8` 기준). 작업을 시작할 때 이 절과 11.1절의 해당 항목을 먼저 읽는다. 지난 일은 12절, 근거는 아래 절에 있다.
 
 - **단계:** `DRAFT`, 구현과 smoke 단계. 하드웨어 smoke 다섯 번(2026-10-22 smoke 1–3, 2026-10-23 smoke 4–5, 셀마다 n 1–2)을 돌렸고 모두 채점하지 않았다.
   커밋된 라이브러리 `impl/gc_layer_int.diff`(md5 `5ed121f4`)는 smoke 4와 5에서 실제 NIC로 돌았다. pilot, 본 실험, 채점은 아직 없고, smoke는 결과 주장의 근거가 아니다.
 - **사전 등록:** 없음. 태그 `prereg/gin-control-v1`과 `PREREG.txt`는 아직 없다. 2, 3, 7, 8절은 사전 등록 전이라 그 자리에서 고치고 12절에 적는다.
-  예측 표 파일 [impl/test/predictions_gc.csv](impl/test/predictions_gc.csv)는 3절과 맞다: `check_cells_gc.py` drift 0, 예측 30, 7절 27행, 셀 25(2026-10-23 다시 돌림 `[측정]`).
-  시행 165, 클러스터 실행 387은 12절 2026-10-23 "사전 등록 초안 고침 셋" 행이 셀 파일에서 센 값이다(이 정리에서 다시 세지 않음).
+  예측 표 파일 [impl/test/predictions_gc.csv](impl/test/predictions_gc.csv)는 3절과 맞다: `check_cells_gc.py` drift 0, 예측 31, 7절 28행, 셀 26(2026-10-24 다시 돌림 `[측정]`).
+  시행 170, 클러스터 실행 392는 2026-10-24에 셀 파일 [impl/test/cells_gc.json](impl/test/cells_gc.json)에서 다시 셌다 `[측정]`(2026-10-23에는 예측 30, 27행, 셀 25, 시행 165, 클러스터 387).
 - **다음 작업(최대 3개, 차례는 19절 표, 자세한 것은 11.1절):**
-  1. GPU 진행 신호의 반례 셀과 부하 pilot(19절 차례 4).
+  1. GPU 진행 신호의 반례 셀과 부하 pilot(19절 차례 4). 일부 문맥만 멈추는 반례 셀 `gc4_gpuhang12000_ctx1_fence`는 문서, 셀, driver 소스까지 됨(빌드 안 함); 라이브러리 조각(모든 문맥의 줄)의 커밋과 다음 smoke에서 그 셀 한 번이 남음.
   2. pilot(채점 안 함): W, 문턱, n을 정하고, 아직 실제 NIC에서 돌지 않은 주입과 launcher credit READ 재시도를 한 번씩 확인.
   3. 사전 등록: 고정 절 완성, 상태 `PREREGISTERED`, 해시를 담은 커밋 하나에 `prereg/gin-control-v1`(19절 차례 5).
-- **막는 것:** 사용자 결정 대기 하나. GIN 문맥 0 밖 정체를 어떻게 다룰지(모든 문맥의 줄을 등록할지, 문맥 0 밖 사용을 준비 때 거절할지; 18절 가). 사전 등록 전에 정한다.
+- **막는 것:** 없음. 2026-10-24 사용자 결정 (가)로 GIN 문맥 0 밖 정체의 결정 대기가 풀렸다(모든 문맥의 줄 등록; 18절 가, 12절 그날 행). 그 라이브러리 조각은 하드웨어 검증 대기다.
 - **열린 관찰:** 다섯 smoke 모두에서 복원 뒤 4.7–4.9 s에 새 세대의 READ 시한 줄이 한 번 난다. 까닭은 `[미확인]`(18절 끝).
 - **마지막 검증(어디까지):**
   - launcher credit READ 재시도: 코드 수정 완료, 로컬 단위 검증 완료(29 장면 784 검사 실패 0), 하드웨어 검증 대기. 커밋 `e010c374`. smoke 4와 5의 launcher(`3af84d2a`)는 고침 전 것이다.
   - 저장소 ward QP ERR 확인 뒤 활성화(Codex 자동 감독 지적): 코드 수정 완료, 로컬 단위 검증 완료(`gc_unit_ward` 165 735 검사 실패 0), 하드웨어 검증 대기. `gc_layer_int.diff` 9c16b732. smoke 4와 5의 라이브러리(5ed121f4)는 고침 전 것이다.
   - 채점기 고침: 코드 수정 완료, 로컬 검증 완료(합성 로그 자체 시험 130 검사 실패 0, smoke 폴더 사본 재처리). 커밋 `6069065b`, `e1fee5b8`. 본 채점은 pilot부터다.
   - 라이브러리 `5ed121f4`: smoke 4, 5에서 `gc` 빌드로 돎(채점 안 함; [results/20261023_smoke4/SMOKE.md](results/20261023_smoke4/SMOKE.md), [results/20261023_smoke5/SMOKE.md](results/20261023_smoke5/SMOKE.md)).
+  - 모든 문맥의 진행 줄(결정 가, 2026-10-24): 라이브러리 조각은 다른 세션이 만드는 중(커밋 뒤 12절 그날 행에 기입), 하드웨어 검증 대기. 시험 쪽(반례 셀, 예측, `stall_ctx`, driver 스위치 `GC_GPUHANG_CTX`): 코드 수정 완료, 로컬 검증 완료(자체 시험 142 검사 실패 0, drift 0), driver 빌드 안 함.
 - **관련 절:** 질문과 복구 계약 1절, 판정식 3절, 셀과 n 7절, 제외와 중단 8절, 판정 표 9.3절, 펜스 9.4절, launcher 9.5절, 주입 9.9절, 작업 목록 11절,
   실행 기록 12절, 한계 18절, 차례 표 19절. 코드, 빌드, 시험, 실행, 채점 경로는 [NOTES.md](NOTES.md), smoke마다의 해설은 `results/<날짜>_smoke<k>/SMOKE.md`.
 
@@ -160,7 +161,7 @@ CPU 비용(core-time, 정상 경로 지연, GPU 자원 점유)은 이 질문에 
 |---|---|
 | 관측 사실 `[측정: smoke, n 1씩, 채점 아님]` | SIGKILL 뒤 판정 → FENCE → FENCED → 활성화 → 복원 게시 차례가 로그에 그 차례로 남고 데이터가 같음(smoke 3, 4). 12 s SIGSTOP과 GPU hang(put 뒤 poll 전 spin)에서 약 10 s 뒤 멈춤 판정 뒤 같은 차례(smoke 3, 4). 판정을 약 90 ms 앞당겨도(증인 켬 20.8 ms 대 끔 110.9 ms) kill → 복원 게시는 185.1 ms 대 184.4 ms로 비슷했다(smoke 4 a2, a3; 같은 노드 rank 1의 시계, n 1씩) |
 | 가정 `[추론]` | pidfd가 종료를 알린 뒤 옛 화신의 WRITE가 생존 rank의 메모리를 더 바꾸지 못한다(생존 QP를 ERR로 바꾸는 단계가 있으나, 표본 칸 비교로만 확인하고 전체 영역의 stale WRITE 부재는 증명하지 않음). 상태 페이지 READ 실패가 프로세스 죽음을 뜻하고, READ 성공이 프로세스 생존을 뜻한다(뒤쪽은 거짓: exec 없이 fork한 자식이 fd를 모두 닫아도 물려받은 uverbs 매핑이 죽은 부모의 QP와 MR을 장치에 남겨 READ가 10 s 넘게 성공했다; smoke 5 `[측정]`, 18절 다). 등록한 상태와 재생 계약 밖의 application 상태는 복원 대상이 아니다 |
-| 미지원 범위 | 동시 둘 이상의 죽음, 짝과 그 짝의 동시 죽음, 노드 고장, 실제 link down(4절). 보낼 것이 없는 계산 구간의 GPU 멈춤(남은 일 0), GIN 문맥 0 밖의 정체(18절). 다른 노드나 다른 GPU의 예비 프로세스(gin-dynamic). 같은 GPU를 나눠 쓰는 프로세스 교체이므로 "독립 GPU 네 장의 장애 복구"가 아니다(5절 랭크 배치) |
+| 미지원 범위 | 동시 둘 이상의 죽음, 짝과 그 짝의 동시 죽음, 노드 고장, 실제 link down(4절). 보낼 것이 없는 계산 구간의 GPU 멈춤(남은 일 0). GIN 문맥 0 밖의 정체는 2026-10-24 결정 (가)로 지원 범위에 들어왔다(18절 가, 하드웨어 검증 대기). 다른 노드나 다른 GPU의 예비 프로세스(gin-dynamic). 같은 GPU를 나눠 쓰는 프로세스 교체이므로 "독립 GPU 네 장의 장애 복구"가 아니다(5절 랭크 배치) |
 
 표현 경계(보고와 문서에 적용): "GPU hang을 검출한다"가 아니라 **관측 중인 GIN 작업의 진행 정체를 검출한다**; "죽음을 증명했다"가 아니라 **교체 조건이 성립했고 펜스로 교체를
 안전하게 만들었다**; 복구 시간은 6절의 사건 분해로만 보고하고 복원 부분(약 180 ms)으로 전체를 대표하지 않는다(GPU hang은 약 10 s 감지 + 약 180 ms 복원).
@@ -193,6 +194,8 @@ CPU 비용(core-time, 정상 경로 지연, GPU 자원 점유)은 이 질문에 
 fd 보관 없는 `gc4_kill3_noreport_nofdhold`로 옮겼고(exec 없는 fork 자식이 물려받은 uverbs 매핑으로 죽은 rank의 QP와 MR을 쥐어 페이지 READ가 계속 답하므로 fd 보관 셀은 READ 실패 길을 잴 수 없음, 18절 다,
 `results/20261023_smoke5/SMOKE.md`), (나) 펜스 뒤 window 조건을 `win_changed_after == 0`에서 `win_verified == 1`(모든 생존 rank의 창 줄이 있고, 읽지 못한 칸 0, 바뀐 칸 0)로 바꿨고, (다) 성능 행의
 판정식 안에 든 안전성 항은 판정한 시행 하나에서라도 거짓이면 그 예측을 문턱과 상관없이 재검토로 둔다(8절). 사전 등록 전이라 그 자리에서 고쳤다(12절 그날 행).
+2026-10-24 사용자 결정 (가)(모든 GIN 문맥의 진행 줄 등록, 12절 그날 행)로 GPU hang 반례 행(`gpuhang_ctx1_fence_restore`)을 더해 31행이고, 비용 행에 주기 READ 수(상대마다 1 + 문맥 수)를 적었다(문턱은 그대로).
+사전 등록 전이라 그 자리에서 고쳤다.
 2026-10-22 통합 리뷰(12절 끝 행)와 조율 세션 결정으로 세 가지를 그 자리에서 고쳤다(사전 등록 전). (1) 멈춤 셀의 판정 원인은 주입의 물리를 따른다: SIGSTOP과 박동 쓰기 멈춤은
 호스트 스레드나 박동만 세우고 이미 띄운 GPU 커널은 계속 post하므로 15행(STALL_HELPER)이다. 14행(STALL, 호스트가 살고 GPU 줄이 멈춤)을 내는 셀은 그때 없었고, 2026-10-23 사용자 결정으로 시험 driver의 GPU hang 셀 `gc4_gpuhang12000_fence` 하나를 더했다(아래 `gpuhang_fence_restore` 행, 7절, 9.9절).
 (2) `no_tcp_control`을 링이 live가 된 뒤, live가 된 쌍, 세대마다로 다시 정했다(그 행, 8절). (3) 판정 시각의 띠를 CPU 모형과 하드웨어가 보인 꼬리로 넓혔다: 확인 창 판정은 W–W + 2 ms,
@@ -217,6 +220,7 @@ rain 생존 rank의 판정 줄 같은 것)은 실행기가 시행 앞뒤로 잰 
 | 살아서 도는 프로세스의 펜스 | `gc4_freeze12000_fence`(박동 쓰기만 멈춤) | 멈춤 판정(원인 STALL_HELPER, 15행: 호스트 박동 둘의 쓰기만 멈추고 프로세스와 GPU 커널은 돎) 10 000–10 300 ms, launcher가 종료하고 pidfd로 끝남을 봄, 펜스 뒤 생존 window 검사 완료, 바뀐 칸 0, 데이터 같음 | ≥ 4/5 | 9.4절 | `freeze_fence_restore` |
 | helper만 멈춘 rank의 펜스 | `gc4_helper_freeze12000`(시험 스위치 `FREEZE_PAGE=12000:helper`: `helperBeat` 쓰기만 멈춤, `watchBeat`와 프로세스는 돎) | helper 멈춤 판정(원인 STALL_HELPER)이 멈춤 시작 뒤 10 000–10 300 ms, launcher가 종료하고 pidfd로 끝남을 봄, 펜스 뒤 생존 window 검사 완료, 바뀐 칸 0, 복원 성공, 데이터 같음 `[설계 v3 4.2절 15행]`. 위 세 멈춤 셀도 같은 원인 이름을 내므로 셀은 원인이 아니라 주입으로 갈린다 `[추론: 통합 리뷰 B2]` | ≥ 4/5 | 9.3절; 펜스는 2026-10-17 사용자 결정 1(9.7절 끝 v3 목록 1) | `helper_stall_fence` |
 | 멈춘 GPU의 펜스(호스트는 삶) | `gc4_gpuhang12000_fence`(시험 driver 스위치 `GC_GPUHANG_IT`: rank 3의 커널이 put을 post한 뒤 그것을 poll하기 전에, 아무도 쓰지 않는 장치 낱말에서 돎) | 생존 rank마다 멈춤 판정(원인 STALL, 판정 표 14행: GPU 진행 줄이 남은 일을 둔 채 멈추고 호스트 박동 둘은 계속 오름)이 driver의 hang 줄(`GINRS gpuhang`, spin=1) 뒤 10 000–10 500 ms, FENCE 보냄 → launcher가 SIGKILL하고 pidfd로 끝남을 봄(FENCED) → 활성화, 펜스 뒤 생존 window 검사 완료, 바뀐 칸 0, 복원 성공(대기 붙잡힘, 되살린 rank가 끝까지), 데이터 같음. 띠는 2026-10-23 사용자 결정 | ≥ 4/5 `[초안: 사전 등록 전 확정]` | 9.3절 판정 표 14행, 9.9절; 사용자 결정 2026-10-23 | `gpuhang_fence_restore` |
+| 문맥 0 밖 GPU 멈춤의 펜스(반례) | `gc4_gpuhang12000_ctx1_fence`(GPU hang 셀의 스위치에 문맥 거르개 `GC_GPUHANG_CTX=1`: rank 3에서 문맥 1, 곧 rank 1로 가는 보내는 CTA만 put을 post한 뒤 poll 전에 돌고, rank 0과 2로 가는 CTA는 그 걸음을 끝냄) | 생존 rank마다 멈춤 판정(원인 STALL, 판정 표 14행: 문맥 1의 GPU 진행 줄이 남은 일을 둔 채 멈추고 문맥 0의 줄은 조용함, 호스트 박동 둘은 계속 오름)이 driver의 hang 줄(`GINRS gpuhang`, spin=1, ctx=1) 뒤 10 000–10 500 ms, 판정 줄(없으면 그 앞 의심 줄)이 `ctx=1`을 이름 댐(채점 열 `stall_ctx`), FENCE 보냄 → launcher가 SIGKILL하고 pidfd로 끝남을 봄(FENCED) → 활성화, 펜스 뒤 생존 window 검사 완료, 바뀐 칸 0, 복원 성공(대기 붙잡힘, 되살린 rank가 끝까지), 데이터 같음. 문맥 0만 읽던 줄이라면 이 셀은 판정 없이 시행 한도에 닿았을 것 `[추론: 18절 가]` | ≥ 4/5 `[초안: 사전 등록 전 확정]` | 사용자 결정 (가) 2026-10-24(12절 그날 행), 19절 차례 4; 9.3절 판정 표 14행과 "R의 두 진행 입력" | `gpuhang_ctx1_fence_restore` |
 | 관리망 끊김의 투명 | `gc4_mgmt_mute8`(증인만 8 s 막음) | 판정 0, 기록 QP 잃음 0(기록 QP 다시 짝 맺기 0이고 잃은 기록 0), 끊김 동안 확정된 체크포인트 ≥ 1, 데이터 같음 | 5/5 | 사용자 결정 8 | `mgmt_mute_transparent` |
 | 같은 끊김의 옛 길 | `gct4_mgmt_mute8@gct` | 판정 0, 데이터 같음; helper 다시 걸기 줄과 끊김 동안 버린 체크포인트 수는 보고 | 5/5 | gin-reconnect의 8 s 끊김 셀 | `mgmt_mute_tcp` |
 | 기록 QP 오류의 다시 짝 맺기 | `gc4_qperr_record`(높은 rank 1 쪽 QP만 오류) | 판정 0, ERR를 본 rank 1이 PAIR(기록, 세대 + 1)를 보내 기록 QP 세대 + 1, 생존 READ QP의 세대는 그대로이고 그 쌍의 READ 실패 0, 그 쌍의 기록이 이어짐, 데이터 같음 `[설계 v3 2.5절]` | ≥ 4/5 | 9.1절, 사용자 결정 6 | `qp_err_repair` |
@@ -227,7 +231,7 @@ rain 생존 rank의 판정 줄 같은 것)은 실행기가 시행 앞뒤로 잰 
 | 복원 시간과 관문 | rdma 빌드의 gin-mirror 한 죽음 복원 셀(증인 켬): `mi4_kill3_ow`, `mi4_kill1_ow`, `mi4_kill3_ckpt_ow`, `mi4_seg_4k`, `mi4_seg_32k`, `mi4_seg_128k`, `mi4_pull`, `rs4_kill3_mion`, `mi4_train_kill3`, 모두 `@gc` | 첫 죽음 판정 → 마지막 생존 rank 게시: 4 KiB 약 120–197 ms, 학습 모양 약 195–286 ms(지금보다 약 W 짧음) `[설계 v2 4.6절]`; kill → 마지막 게시: 지금 ± 20 ms, 곧 4 KiB 154.5–240.5 ms, 학습 229.6–318.0 ms(지금 174.5–220.5 ms, 249.6–298.0 ms `[측정]`, 1절; 지금은 판정이 kill 뒤 0.07–0.31 ms라 판정 기준 값을 kill 기준으로 씀); 상한 ≤ 2 000 ms(학습 ≤ 1 000 ms)는 그대로; 'later' 0번의 빠른 활성화 0(관문이 FENCED), LATER는 활성화마다 많아야 한 번(rdma 빌드에서는 launcher가 대신 답하므로 launcher 줄의 LATER 수로 셈). 3절의 "약" 범위를 그대로 문턱으로 씀 `[초안: 사전 등록 전 확정]`. 아래 메모 | 셀마다: n 10 셀(`mi4_kill3_ow`, `mi4_train_kill3`) ≥ 9/10, n 5 셀(나머지 일곱) ≥ 4/5 `[초안: 사전 등록 전 확정]` | 9.4, 9.5절 | `restore_time_rdma` |
 | 장애 없음: 생존 확인이 조용함 | `gc4_none_probe`(60 s), `gc4_none_ow` | READ 성공률 100 %(상대의 끝, 곧 그 상대의 BYE, LEFT, 판정 뒤에 낸 READ는 뺌), 박동이 는 간격의 최대 < 300 ms(첫 성공 READ부터 상대의 끝 전까지에서 잼), 의심 0, 판정 0, 찢긴 줄 읽기 수는 보고, 입력 멈춤 ≤ 16 ms(학습 모양 ≤ 20 ms; gin-mirror 고정값) | 10/10, 5/5 | 9.2절 | `none_probe_clean` |
 | 제어가 관리망에 없음 | rdma 빌드의 모든 시행 | (가) 링이 live가 된 뒤 이 계층이 TCP로 보낸 기록과 자료 바이트 0(증인 BYE 빼고; 라이브러리의 제어 요약 줄). live 전에 helper 소켓으로 간 bootstrap 때의 기록은 따로 센 열로 보고하고 허용한다(smoke3 rank 프로세스 20개의 마지막 제어 요약에서 프로세스마다 5 616 B 또는 7 488 B, 곧 1 872 B 기록 셋이나 넷; 예비 프로세스 넷은 0 `[측정: 이 문서가 smoke3 a1–a6 원자료의 제어 요약 줄 24개에서 다시 셈]`; 그 바이트가 모두 live 전인지는 요약 줄로 가를 수 없음 `[미확인]`), (나) 연 증인 소켓 수가 링이 live가 된 쌍의 수와 같음(증인 끄면 0), (다) 복원이 있는 시행은 (가)와 (나)를 세대(화신)마다 따로 셈: 되살린 화신과의 쌍은 새 쌍이고, 끝낼 때 열려 있는 소켓 수로 세지 않음(2026-10-22 통합 리뷰 B3, 조율 세션 결정; 그 전에는 "보낸 바이트 0"과 "TCP 연결 수와 증인 연결 수가 (N − 1) × 요약을 낸 프로세스 수"라 smoke3의 어느 시행도 참일 수 없었음), 실행기가 트래픽 중 두 번 읽은 rank 프로세스의 TCP 보낸 바이트 증가 0(`ss`, 커널의 셈; NCCL 자신의 소켓도 그 창에서 조용하다는 `[추론]`이라 pilot에서 확인), 실행기가 읽은 두 GIN 포트의 `active_mtu`와 시행 kv `active_mtu`가 4 096; `ss`로 읽은 연결 수는 보고(NCCL bootstrap 소켓 수를 pilot이 재면 사전 등록 때 조건에 더함) `[초안: 사전 등록 전 확정]` | 모든 시행 | 9.6절 | `no_tcp_control` |
-| 상태 페이지 READ의 비용 | 비용 가족 probe의 한 쌍: 팔 `probe-off`, `probe-on`(둘 다 `@gcp`), 지표 `lat4k`, 노드 둘(2026-10-22 셀 줄임으로 `lat256k`, `bw256k`, `tcp` 팔은 없앰) | `probe-on` 대 `probe-off`의 4 KiB 지연 중앙값 차 | 노드마다 차 ≤ 문턱, 문턱 = max(2 %, pilot에서 잰 `probe-off` 두 묶음 사이 4 KiB 지연 중앙값 차의 두 배), 한쪽 판정(느려짐만 셈) `[초안: 사전 등록 전 확정]`(9.9절 끝) | 9.2절 비용 | `cost_probe_lat4k` |
+| 상태 페이지 READ의 비용 | 비용 가족 probe의 한 쌍: 팔 `probe-off`, `probe-on`(둘 다 `@gcp`), 지표 `lat4k`, 노드 둘(2026-10-22 셀 줄임으로 `lat256k`, `bw256k`, `tcp` 팔은 없앰) | `probe-on` 대 `probe-off`의 4 KiB 지연 중앙값 차. `probe-on` 팔의 주기 READ는 상대마다 1 + GIN 문맥 수(호스트 페이지 하나와 문맥마다 장치 진행 줄 하나; 4 rank면 5, 2026-10-24 사용자 결정 가 전에는 둘)이고, 이 예측은 그 READ 수로 잰 `probe-on` 팔로 판정한다 | 노드마다 차 ≤ 문턱, 문턱 = max(2 %, pilot에서 잰 `probe-off` 두 묶음 사이 4 KiB 지연 중앙값 차의 두 배), 한쪽 판정(느려짐만 셈) `[초안: 사전 등록 전 확정]`(9.9절 끝) | 9.2절 비용 | `cost_probe_lat4k` |
 | 긴 hold의 lane(사용자 결정 14: 문서화한 한계) | 위 셀 가운데 hold가 1 s를 넘는 시행(멈춤 펜스, launcher의 LATER 한도) | 생존 rank 사이 lane 깨짐과 DISARM 수 | 넘치면 그 받는 rank의 DISARM이 예측이고 실패로 세지 않음; DISARM이 있어도 데이터는 같아야 함. 대상 시행이 0이면 "자료 없음"이고 실패가 아님. 생존 rank끼리만 계속 주고받는 driver 셀은 gin-dynamic | 사용자 결정 14, 동적 예비 프로세스 리뷰 | `long_hold_lane` |
 | FENCED 관문은 마지막 thread를 기다림 | CPU 시험 `gate_fenced`: 실제 자식 프로세스(main thread가 먼저 끝나고 둘째 thread가 500 ms 더 삶; [impl/test/gate_proc_gc.py](impl/test/gate_proc_gc.py)), 시행 열 번은 프로세스 열 개 | 옛 관문(`/proc`, Z = GO)은 둘째 thread가 끝나기 전에 GO; FENCED 관문(pidfd)은 둘째 thread가 끝난 뒤 0–5 ms 안에 GO이고, 시험 장치가 따로 잰 pidfd 읽힘 시각과 5 ms 안; 두 관문의 차이(약 500 ms)는 보고 `[초안: 사전 등록 전 확정]`. 관문 시각은 `impl/gate_fenced.cc`의 실제 pid 모드가 내야 하고 그 전에는 자료 부족이다(지금 그 파일은 시간표 모형이라 이 예측의 시험이 아님, 12절) | 10/10 | 9.4절, 사용자 결정(저녁) | `gate_fenced` |
 | 회귀(tcp 빌드, 대조 셀 하나) | gin-mirror 7절의 `mi4_kill3_ow`(hold G1, n 10) 하나를 이름과 env 그대로 `@gct`(2026-10-22 셀 줄임 전에는 비용 밖 셀 전부) | 그 셀 하나만 보는 gin-mirror 예측 일곱을 원래 판정식 그대로: `ow_wait_held`(대기 붙잡힘), `ow_data_equal`, `ow_no_reexec`, `ow_revived_done`, `ow_suppress_exact`, `ow_from_pool`, `ow_restore_time`. 여러 셀을 보는 gin-mirror 예측(`store_rdma` 등)은 넣지 않음 | 원래 기준 | 사용자 결정 1 | `regression_tcp`(gin-mirror의 찾는 키들) |
@@ -307,11 +311,12 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
 ## 6. 변수
 
 - **독립변수.** 제어 빌드(rdma `gc`, tcp `gct`), 장애(SIGKILL, RST로 죽기, 자식이 증인 소켓만 쥔 kill, 자식이 uverbs fd까지 쥔 kill, SIGSTOP 1 500, 4 000,
-  8 000, 12 000 ms, 50 ms씩 멈춤 반복, 박동 쓰기만 멈춤, 살아 있는 RST와 포트 닫힘, 증인 8 s 막음, 기록 QP 오류 상태, UD datagram 버림, credit 멈춤), 펜스
+  8 000, 12 000 ms, 50 ms씩 멈춤 반복, 박동 쓰기만 멈춤, 살아 있는 RST와 포트 닫힘, 증인 8 s 막음, 기록 QP 오류 상태, UD datagram 버림, credit 멈춤, 시험 driver의 GPU hang(모든 보내는 CTA, 또는 2026-10-24부터 한 GIN 문맥의 CTA만:
+  `GC_GPUHANG_CTX`)), 펜스
   (`NCCL_GIN_RESTORE_FENCE=lineage|none`), 증인(`NCCL_GIN_CTRL_WITNESS=1|0`, 기본 1), launcher 종료 보고(켬, 끔: 시험 스위치), 상태 페이지 READ(켬, 끔: 비용 셀).
 - **종속변수.** gin-mirror의 종속변수 전부(대기 결과, 데이터 비교, 단계 실행 수, 억제 수, 복원 단계별 시각, 입력 멈춤)와 더해서: 판정 종류와 시각(주입 또는
   마지막 박동 증가 → 판정), 생존 rank 사이 판정 시각의 퍼짐, READ 성공률과 지연(중앙값, 최대), 박동 증가 간격의 최대, 찢긴 줄 읽기 수, 의심과 멈춤 판정 수,
-  증인 상태, 계보 국면 차례(FENCING, FENCED)와 시각, launcher의 종료와 pidfd 확인 시각, LATER 수, 펜스 뒤 생존 window에 바뀐 칸, 기록 QP 세대와 다시 짝 맺기
+  멈춤 판정이 이름 댄 GIN 문맥(`stall_ctx`, 2026-10-24), 증인 상태, 계보 국면 차례(FENCING, FENCED)와 시각, launcher의 종료와 pidfd 확인 시각, LATER 수, 펜스 뒤 생존 window에 바뀐 칸, 기록 QP 세대와 다시 짝 맺기
   수, 보내는 쪽 대기열 최고, 이 계층의 TCP 바이트와 연결 수, put 지연과 묶음 대역.
 - **통제변수.** gin-mirror 6절의 통제변수 전부(mirror 켬, segment 자리 3, lane 1 MiB, 당기기 50 %, 시행마다 프로세스를 새로 띄움 등). 더해서: READ 주기
   `NCCL_GIN_TS_PROBE_MS` 100, READ 시한 500 ms, FIN이나 RST 뒤 확인 창 W(`NCCL_GIN_CTRL_CONFIRM_MS`, 20–50 ms `[초안]`: pilot의 장애 없는 셀에서 잰 `watchBeat` 간격 최대의
@@ -333,7 +338,8 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
 2026-10-22 셀 줄임(12절 끝 행)으로 이 표는 27행에서 25행, 이 실험의 cell@build는 27개에서 23개다: tcp 대조 셀 넷(`gc4_rst_kill3@gctc`, `gct4_rstgap_live50`, `gct4_rstgap_live300`,
 `gct4_fdhold_sock_kill3`, 모두 `@gctc`)을 빼고, tcp 회귀를 셀 하나로, 비용 가족을 한 쌍으로 좁혔다. 사전 등록 전이라 이 표를 그 자리에서 고쳤다.
 2026-10-23 사용자 결정으로 GPU hang 셀 `gc4_gpuhang12000_fence` 행을 더해 26행, cell@build 24개다(12절 그날 행). 같은 날 smoke 5 뒤 fd 보관 없는 READ 실패 셀
-`gc4_kill3_noreport_nofdhold` 행을 더해 27행, cell@build 25개다(12절 그날 끝 행).
+`gc4_kill3_noreport_nofdhold` 행을 더해 27행, cell@build 25개다(12절 그날 끝 행). 2026-10-24 사용자 결정 (가)로 GPU hang 반례 셀 `gc4_gpuhang12000_ctx1_fence` 행을 더해
+28행, cell@build 26개다(12절 그날 행; [impl/test/cells_gc.json](impl/test/cells_gc.json)에서 셈 `[측정]`).
 
 | 셀 | 조건 | 빌드와 반복 수 | 종류 |
 |---|---|---|---|
@@ -354,6 +360,7 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
 | `gc4_freeze12000_fence` | rank 3의 박동 쓰기만 12 000 ms 멈춤(프로세스는 돎), `FENCE=lineage`(대상 `SUBJECT_RANK=3`) | `@gc` 5 | 도는 프로세스의 펜스 |
 | `gc4_helper_freeze12000` | rank 3의 `helperBeat` 쓰기만 12 000 ms 멈춤(`FREEZE_PAGE=12000:helper`; `watchBeat`와 프로세스는 돎), `FENCE=lineage`(대상 `SUBJECT_RANK=3`) | `@gc` 5 | helper만 멈춘 rank의 펜스(판정 표 15행) |
 | `gc4_gpuhang12000_fence` | rank 3의 커널이 걸음 155(ring live 뒤 약 2 s)에서 put을 post한 뒤 그 poll 전에 돎(시험 driver 스위치 `GC_GPUHANG_IT`, [impl/test/driver/gin_mi.cu](impl/test/driver/gin_mi.cu); 호스트 스레드는 돎, spin은 스스로 끝나지 않고 펜스의 SIGKILL이 끝냄), `FENCE=lineage`(대상 `SUBJECT_RANK=3`) | `@gc` 5 | 멈춘 GPU의 펜스(판정 표 14행) |
+| `gc4_gpuhang12000_ctx1_fence` | GPU hang 셀과 같고 문맥 거르개 `GC_GPUHANG_CTX=1`(2026-10-24 사용자 결정 가): rank 3에서 문맥 1(rank 1로 가는 보내는 CTA)만 put을 post한 뒤 그 poll 전에 돌고, rank 0과 2로 가는 CTA는 그 걸음을 끝낸다. 그래서 rank 3의 문맥 0 줄은 조용하고 문맥 1만 남은 일을 둔 채 선다(문맥 0만 읽던 줄의 반례, 18절 가). hold와 pilot 자리는 GPU hang 셀과 같음(C10, P1), `FENCE=lineage`(대상 `SUBJECT_RANK=3`) | `@gc` 5 | 문맥 0 밖 GPU 멈춤의 펜스(반례, 판정 표 14행) |
 | `gc4_mgmt_mute8`, `gct4_mgmt_mute8` | rank 1의 증인(tcp는 helper 소켓) 8 s 막음(대상 `SUBJECT_RANK=1`) | `@gc` 5, `@gct` 5 | 관리망 끊김 |
 | `gc4_qperr_record` | rank 0과 rank 1 사이 기록 QP 가운데 높은 rank 1 쪽 하나만 로컬에서 오류 상태로(시험 스위치; 낮은 rank 쪽은 RTS 그대로; 대상 `SUBJECT_RANK=1`) | `@gc` 5 | 다시 짝 맺기(어느 쪽이든 시작) |
 | `gc4_ud_drop_rejoin` | rank 3 kill, 예비 프로세스의 첫 REJOIN datagram을 버림 | `@gc` 5 | UD 잃음 |
@@ -365,7 +372,7 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
 | 빌드 검사 | 매크로 없는 프로그램 넷과 라이브러리 장치 객체를 `mi`와 비교(셀이 쓰는 세 빌드 `gc`, `gct`, `gcp`); `gct`의 호스트 파일 전처리 결과를 ln4와 비교 | 빌드 검사 | 회귀 |
 | CPU 시험 `gate_fenced` | main thread가 먼저 끝나고 다른 thread가 500 ms 더 사는 프로그램에서 옛 관문과 FENCED 관문(예측 `gate_fenced`) | 10 | 관문 |
 
-- 시험 스위치로 넣는 셀 여덟(위의 `SUBJECT_RANK` 표시; 2026-10-23 GPU hang 셀을 더함, 2026-10-22 셀 줄임 전에는 아홉)은 kill이나 멈춤을 받는 rank가 없어 실행기가 대상 rank를 셀 파일의 `SUBJECT_RANK`로 받는다. 채점기의
+- 시험 스위치로 넣는 셀 아홉(위의 `SUBJECT_RANK` 표시; 2026-10-23 GPU hang 셀을 더해 여덟, 2026-10-24 GPU hang 반례 셀을 더해 아홉, 2026-10-22 셀 줄임 전에는 아홉; 셀 파일에서 셈 `[측정]`)은 kill이나 멈춤을 받는 rank가 없어 실행기가 대상 rank를 셀 파일의 `SUBJECT_RANK`로 받는다. 채점기의
   판정, 펜스, launcher 열은 대상 rank를 기준으로 센다(시험 쪽 리뷰 막는 문제 2).
 - kill 셀은 gin-mirror처럼 실행기가 기록한 PID로 트래픽 중 kill한다. 멈춤 셀의 SIGSTOP과 SIGCONT도 실행기가 자기가 띄운 rank의 정확한 PID에만 보내고, 끝에
   CONT 뒤 그 PID에 SIGKILL로 정리한다.
@@ -377,10 +384,14 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
   rank 3에서 걸음 `GC_GPUHANG_IT`의 put을 post한 뒤 poll 전에 장치 쪽에서 spin한다(남은 일을 둔 채 GPU 줄이 멈추고 호스트 스레드는 돎). spin은 스스로 끝나지 않으므로 이름의 12000은 12 s 멈춤 셀 무리라는 뜻이고,
   끝은 펜스의 SIGKILL이다. 바뀐 장치 코드는 시험 driver의 것뿐이고 라이브러리의 장치 코드는 0줄 그대로다. spin은 장애 자체이고 라이브러리 안이나 정상 경로에 있지 않다. 남는 위험: 그 rank를
   기다리는 생존 rank의 GPU 줄도 남은 일을 둔 채 멎으면 생존 rank가 14행으로 보일 수 있다(`impl/notes_live.md` 7절 1). 이 driver의 생존 rank는 기다리기 전에 flush하므로 줄이 "조용함"일 것이다 `[추론: 소스]`.
+- **GPU hang 반례 셀**(2026-10-24 사용자 결정 가, 19절 차례 4의 "일부 QP(문맥)만 멈춤"): `gc4_gpuhang12000_ctx1_fence`. 시험 driver의 새 스위치 `GC_GPUHANG_CTX=<k>`는 `GC_GPUHANG_IT`와 함께
+  목적지가 문맥 k를 쓰는 보내는 CTA만 돌게 한다(목적지 d로 가는 CTA는 문맥 d를 씀; 기본은 지금처럼 모든 보내는 CTA). k = 1은 rank 3의 문맥 0(rank 0으로 가는 CTA)과 다른 문맥이다.
+  모든 문맥의 줄을 등록한 라이브러리에서는 문맥 1이 남은 일을 둔 채 멈춰 14행 STALL이 `ctx=1`로 나야 하고, 문맥 0만 읽던 줄이라면 판정이 없었을 것이다 `[추론: 18절 가]`.
+  driver는 빌드 안 함(2026-10-24 소스만 바꿈; 다음 smoke 전에 `build_driver_gc.sh`로 빌드).
 - gin-mirror 회귀 셀의 수는 시행 188(비용 밖)이다 `[측정: 문서 ../mirror/README.md의 시행 수(복원과 거절 168, 회귀 20)에서 셈; 2026-10-22에 ../mirror/impl/test/cells_mi.json의
   hold 여덟에서 다시 셈: 188]`. 2026-10-22 셀 줄임으로 `@gc`는 188 그대로, `@gct`는 `mi4_kill3_ow` 10이라 회귀는 198 시행이다(줄임 전 두 빌드 376).
-- **계획 시행 수**(2026-10-23 GPU hang 셀과 fd 보관 없는 READ 실패 셀을 더한 뒤; [impl/test/cells_gc.json](impl/test/cells_gc.json)에서 셈) `[측정: 셀 파일에서 셈]`. 이 실험의 셀 25개 165 시행(fd 보관 없는 셀 전 24개 160, 2026-10-22 셀 줄임 뒤 23개 155, 줄임 전 27개 185),
-  gin-mirror 회귀 198(줄임 전 376), 비용 실행 24(팔 둘 × 지표 하나 × 6 × 노드 둘; 줄임 전 팔 셋 × 지표 셋 × 6 × 노드 둘 = 108). 클러스터 합 387(fd 보관 없는 셀 전 382, GPU hang 셀 전 377, 줄임 전 669).
+- **계획 시행 수**(2026-10-24 GPU hang 반례 셀을 더한 뒤; [impl/test/cells_gc.json](impl/test/cells_gc.json)에서 셈) `[측정: 셀 파일에서 셈, 2026-10-24]`. 이 실험의 셀 26개 170 시행(반례 셀 전 25개 165, fd 보관 없는 셀 전 24개 160, 2026-10-22 셀 줄임 뒤 23개 155, 줄임 전 27개 185),
+  gin-mirror 회귀 198(줄임 전 376), 비용 실행 24(팔 둘 × 지표 하나 × 6 × 노드 둘; 줄임 전 팔 셋 × 지표 셋 × 6 × 노드 둘 = 108). 클러스터 합 392(반례 셀 전 387, fd 보관 없는 셀 전 382, GPU hang 셀 전 377, 줄임 전 669).
   CPU 시험 `gate_fenced` 10은 따로다. pilot과 smoke는 따로 센다(8절).
 
 ## 8. 제외 기준과 중단 기준
@@ -585,7 +596,7 @@ rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 �
   `incNonce`가 기대와 다르면 그 상대의 페이지 자리가 바뀐 것(되살린 프로세스)이다. 새 rkey는 REJOIN과 REJOIN_ACK이 싣고(9.5절), 그 전에는 그 상대를 READ하지 않는다.
 - **쓰는 쪽.** 감시 스레드 하나(쓰는 쪽이 하나여야 함). helper와 다른 스레드는 원자 변수에 값을 두고 감시 스레드가 1 ms마다 옮겨 쓴다. 쓰는 것은 호스트 메모리뿐이다
   (장치, PCIe 쓰기, 펌웨어 명령 없음).
-- **읽는 쪽.** 감시 스레드가 gated이고 거절 안 된 상대마다 100 ms마다 READ를 띄운다(2026-10-22 생존 신호 결정 뒤 짝마다 둘: 호스트 페이지 전부와 장치 진행 줄, 9.3절 "R의 두 진행 입력"; 그 전에는 페이지 하나). 증인 FIN이나 RST(링과 증인 어디에도 BYE 없음)를 helper가 알리면 확인 창을
+- **읽는 쪽.** 감시 스레드가 gated이고 거절 안 된 상대마다 100 ms마다 READ를 띄운다(2026-10-22 생존 신호 결정 뒤 짝마다 둘: 호스트 페이지 전부와 장치 진행 줄, 9.3절 "R의 두 진행 입력"; 그 전에는 페이지 하나; 2026-10-24 사용자 결정 (가) 뒤 짝마다 1 + GIN 문맥 수: 호스트 페이지 하나와 문맥마다 장치 진행 줄 하나, 4 rank면 5, 12절 그날 행). 증인 FIN이나 RST(링과 증인 어디에도 BYE 없음)를 helper가 알리면 확인 창을
   연다: 그 때 t_F에 줄 0의 READ1, t_F + W/2에 READ2, t_F + W에 판정(9.3절). 기록 QP 오류는 창을 열지 않는다(처음 초안의 5 ms 간격 둘은 리뷰가 버렸고, 설계 v2의 "W 뒤 READ"는
   둘째 재검토가 판정 시각과 READ2의 시한이 없다고 찾아 설계 v3가 이 꼴로 정함) `[설계 v3 4.2절]`. W는 20–50 ms 사이에서 pilot의 장애 없는 셀에서
   잰 `watchBeat` 간격 최대의 5배 이상으로, 20 ms 아래로는 두지 않고 정한다 `[설계 v2 4.3절]` `[초안]`. 간격 최대가 10 ms를 넘으면 W가 50 ms를 넘을 수 있고 그때 3절의
@@ -607,6 +618,9 @@ rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 �
   512 KiB, `inStage` 1 MiB, MR 일곱과 1단계 페이지의 둘; 리뷰 nit 10) `[미확인: 이 문서에서 다시 세지 않음]`. 고친 코드로 다시 센 뒤 이 값을 고친다. 모두 호스트라 BAR1을 쓰지 않는다. mirror 끈 rank의 저장소 몫은 9.1절 큰 자료.
   gin-mirror의 4 KiB put 지연(off 팔) 11.26–12.29 µs `[측정: 문서 gin-mirror 2절]`에서 2 %는 0.23–0.25 µs이고, 이것은 그 실험의 pilot 사이 퍼짐(약 9 %)보다 작다.
   그래서 판정식의 2 %가 실행 사이 잡음 아래일 수 있다 `[추론]`. pilot에서 같은 팔 사이 퍼짐을 보고 사전 등록에서 정한다(9.9절 끝).
+  2026-10-24 사용자 결정 (가) 뒤 주기 READ는 상대마다 1 + GIN 문맥 수(4 rank면 5)다. 문맥 줄 하나가 지금의 문맥 0 줄과 같은 크기(4 rank에서 1 184 B, `impl/notes_live.md`)라면
+  주기마다 상대마다 320 + 4 × 1 184 = 5 056 B, rank마다 초당 약 152 KB다(2026-10-22 줄 하나일 때 약 45 KB/s) `[추론: 셈; 줄의 크기와 꼴은 라이브러리 조각이 정함, 미확인]`.
+  비용 예측(3절 `cost_probe_lat4k`)은 그 READ 수로 잰 `probe-on` 팔로 판정하고 문턱은 바꾸지 않는다.
 - **등록 차례.** 죽는 프로세스에서 MR이 QP보다 먼저 사라지면 READ는 원격 접근 오류(마지막 ACK 뒤 0.38–3.51 ms), QP가 먼저면 응답 없음(3.51–3.76 s)을 받는다
   `[측정: 문서 teardown_order]`. 페이지 MR은 준비 때 생존 READ QP보다 먼저 등록되므로 원격 접근 오류는 드물 것이다 `[추론]`. 판정은 원격 접근 오류에 기대지 않는다.
 
@@ -617,6 +631,8 @@ rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 �
 `[소스: impl/notes_live.md 7절]`: (1) 첫 put 전이나 남은 일이 없는 계산 구간의 멈춤은 정상적인 조용함과 가르지 못한다. (2) 정상 rank도 실패한 상대를 기다리다 진행이 설 수 있다
 (이 driver는 기다리기 전에 flush하므로 줄이 조용함이 되지만 `[추론]`, 다른 workload에서는 다르다). (3) 지금 줄은 GIN 문맥 0의 post와 poll 인덱스만 읽으므로 다른 문맥의 정체는 전체
 합이 가릴 수 있다(18절; 문맥 전부를 등록할지, 문맥 0 밖 사용을 거절할지는 결정 대기). 이 경계를 공격하는 반례 셀은 19절에 있다.
+**(3)은 2026-10-24에 닫힘**(사용자 결정 가, 12절 그날 행): 모든 문맥의 줄을 등록하고 어느 문맥이든 남은 일을 둔 채 서면 멈춤으로 본다(아래 "R의 두 진행 입력" 끝). 라이브러리 조각은
+하드웨어 검증 대기이고, 반례 셀 `gc4_gpuhang12000_ctx1_fence`(문맥 1만 멈춤, 7절)가 이 경계를 잰다.
 
 **신호마다의 시간.**
 
@@ -651,11 +667,16 @@ rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 �
   분할 막이와 데이터 경로 거부권 그대로)이고, (6)–(9)는 호스트 박동 둘(`watchBeat`는 바쁨 한도로 면제되지 않음, `helperBeat`는 바쁨 한도 뒤부터; 막이만)이다. 그래서 위 (6)–(9)의
   "`watchBeat` 늚"은 조건이 아니고, `watchBeat` 정체도 (7)–(9)로 간다. 함께 걸리면 표의 차례대로 무거운 쪽(14행 > 15행 > GPU 의심 > 호스트 의심 > 바쁨)이다. 줄이 없는 상대는 전처럼
   `watchBeat`가 (2)–(5)다 `[소스: impl/notes_live.md 4절; 통합 리뷰 B2가 적용 트리 799bd4f(diff 571e604e)에서 읽음]`.
+  **모든 문맥의 줄**(2026-10-24 사용자 결정 가, 12절 그날 행; Codex 지적 Ffc5d2613c5). 라이브러리는 GIN 문맥마다 GPU 진행 줄을 등록하고, 주기 READ는 상대마다 호스트 페이지 하나와 문맥마다
+  장치 줄 하나(1 + 문맥 수)다. GPU 쪽 정체는 문맥마다 따로 잰다: 문맥마다 (post와 poll 인덱스, 그 값을 처음 본 성공 READ의 시각)을 두고, 다른 문맥이 오르는 것은 그 문맥의 정체를
+  되돌리지 않는다(문맥을 합친 값으로 재지 않음). **어느 한 문맥이라도 post했으나 poll하지 않은 일이 있고 그 문맥의 줄이 `STALL_MS` 동안 바뀌지 않으면** (5) 멈춤이다(분할 막이와
+  데이터 경로 거부권 그대로; `SUSPECT_MS`–`STALL_MS`면 (3)). 정체 길이는 그런 문맥 가운데 가장 긴 것이고, 의심 줄과 판정 줄은 그 문맥을 `ctx=`로 이름 댄다. 모든 문맥이 조용하면(남은
+  일 0) 멈춤으로 세지 않는다(경계 (1) 그대로). `[설계: 사용자 결정 가; 라이브러리 조각은 코드 수정 중, 하드웨어 검증 대기]`
 - **행의 뜻과 셀이 내는 원인**(2026-10-22 조율 세션 결정, 통합 리뷰 B2). 14행 STALL은 "GPU 멈춤, 호스트는 삶", 15행 STALL_HELPER는 "호스트 멈춤(helper나 감시 스레드), GPU 줄은 오르거나 조용"이다.
   셀의 원인은 주입의 물리를 따른다. SIGSTOP은 호스트 스레드를 세우나 이미 띄운 GPU 커널은 계속 post하고, 박동 쓰기 멈춤(`FREEZE_PAGE`)은 프로세스와 커널을 그대로 두므로
   `gc4_stop12000_fence`, `gc4_stop12000_none`, `gc4_freeze12000_fence`, `gc4_helper_freeze12000`은 모두 15행이다. smoke3의 멈춤 판정 6줄(a3, a4)이 모두 STALL_HELPER였다 `[측정: 이 문서가 원자료에서 다시 셈]`.
   a3(펜스 없이 거절된 시도)에서는 멈춤 뒤 약 14 s에 `kind=gpu` 의심 줄이 생존 rank마다 하나씩 났다 `[측정: 문서 SMOKE.md]`: SIGSTOP된 rank의 GPU 줄도 나중에는 남은 일을 둔 채 멎을 수 있으나
-  15행 판정(10 s)이 먼저다 `[추론]`. uverbs fd를 쥔 자식 셀은 EXITED(3행)가 먼저일 것이고, 박동 정체로 가면 14행인지 15행인지 `[미확인]`(3절). 14행을 내는 주입은 이 실험에 없다(7절의 선택 셀 제안, 18절).
+  15행 판정(10 s)이 먼저다 `[추론]`. uverbs fd를 쥔 자식 셀은 EXITED(3행)가 먼저일 것이고, 박동 정체로 가면 14행인지 15행인지 `[미확인]`(3절). 14행을 내는 주입은 이 실험에 없다(7절의 선택 셀 제안, 18절). (2026-10-23부터는 시험 driver의 GPU hang 셀이, 2026-10-24부터는 그 반례 셀도 14행을 낸다, 7절.)
 
 목록(차례가 우선순위, 빈칸은 "앞 행에 걸리지 않은 아무것"; 설계 v3 4.2절의 표를 그대로 옮기고 절 번호만 이 문서의 것으로 바꿈):
 
@@ -1262,6 +1283,9 @@ hold 사슬(`RS_SET=<set> chain_gc.sh <결과 폴더> <hold> …`; hold마다 `h
 - **관리망 끊김.** 기존 소켓 필터 스위치 `SOCK_MUTE`(프로세스 안에서 증인 소켓만 막음; 사용자 결정 8). 방화벽은 쓰지 않음.
 - **GPU hang(커널이 돎).** 시험 driver 스위치 `GC_GPUHANG_IT=<걸음>`([impl/test/driver/gin_mi.cu](impl/test/driver/gin_mi.cu), 2026-10-23 사용자 결정): 그 걸음에서 대상 rank의 보내는 CTA가 put을 post한 뒤
   그 poll(flush) 전에, 아무도 쓰지 않는 장치 낱말에서 돈다. 예비 프로세스에는 걸리지 않는다. spin 직전에 매핑된 호스트 낱말을 써서 호스트가 `GINRS gpuhang` 줄(주입 기록)을 낸다. 끝은 펜스의 SIGKILL이다.
+  **문맥 거르개** `GC_GPUHANG_CTX=<k>`(2026-10-24 사용자 결정 가): 함께 주면 목적지가 문맥 k를 쓰는 보내는 CTA만 돌고(목적지 d로 가는 CTA는 문맥 d를 씀, `gin_mi.cu`의 `ncclGin gin{devComm, d}`와
+  `ginContextCount = N` `[소스]`), 다른 목적지로 가는 CTA는 그 걸음을 끝낸다. 없으면 지금처럼 모든 보내는 CTA다. hang 줄은 `ctx=all` 또는 `ctx=<k>`를, kv는 `gpuhang_ctx`를 남긴다. k가 그 rank
+  자신(받는 CTA의 문맥이라 도는 CTA가 없음)이거나 0..N−1 밖이면 usage error(exit 1). 반례 셀 `gc4_gpuhang12000_ctx1_fence`가 k = 1로 쓴다. 소스만 바꿨고 빌드 안 함.
 
 **넣지 않는 것.** 실제 link down과 flap, 방화벽 규칙 바꾸기, 재부팅, 드라이버 재적재, `devlink reload`, NIC floor 바꾸기, PFC나 pause storm, 다른 사용자 프로세스.
 
@@ -1276,7 +1300,7 @@ crash 쪽 결론은 보고를 끈 fd 보관 없는 셀(`gc4_kill3_noreport_nofdh
 정지는 이미 도는 커널을 멈추지 않을 수 있음), 50 ms 반복은 느려짐이 아니라 짧은 멈춤의 반복이다. 박동 쓰기만 멈추는 주입은 감시 스레드 하나만 서는 소프트웨어
 결함에 가깝고, 펜스가 도는 프로세스를 끝낸다는 것을 보이는 장치다. GPU hang 주입은 끝나지 않는 커널(deadlock, 무한 루프, 오지 않는 신호를 기다림)의 GPU 쪽 모양이다: post한 일을 거두지
 않은 채 GPU 진행 줄이 서고 호스트 스레드는 산다. spin은 장애 자체를 시험 driver의 커널에 넣은 것이고 라이브러리 안이나 정상 경로에는 없다(라이브러리 장치 코드 0줄). 하드웨어 오류(Xid, ECC)로
-선 GPU와는 CUDA 오류가 없다는 점이 다르다 `[추론]`. 기록 QP를 오류 상태로 바꾸는 주입은 전송 오류 뒤 QP가 닿는 최종 상태를 재현하지만 원인을
+선 GPU와는 CUDA 오류가 없다는 점이 다르다 `[추론]`. 문맥 하나만 거는 반례는 통신 흐름 하나(한 목적지로 가는 CTA)만 끝나지 않고 나머지는 그 걸음을 마치는 모양이다 `[추론]`. 기록 QP를 오류 상태로 바꾸는 주입은 전송 오류 뒤 QP가 닿는 최종 상태를 재현하지만 원인을
 알려 주는 첫 오류 완료와 비동기 이벤트가 없고 QP 하나에만 곧바로 걸린다. 실제 링크 장애는 포트 이벤트 뒤 재시도 시간을 지나 그 포트의 QP가 함께 실패하고,
 이 실험은 그 경우를 판정 표의 "노드 또는 선" 행으로 설계만 하고 재지 않는다. 증인만 막는 관리망 끊김은 관리망 스위치나 케이블 장애의 이 계층 쪽 모양이다. 실제
 link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려지기만 하는 장애, 여러 호스트의 동시 장애, GPU silent data corruption은 공유 testbed에서 안전하게
@@ -1322,10 +1346,12 @@ link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려
 
 지금 열린 것(19절 표의 차례대로):
 - [ ] launcher credit READ 재시도(Codex 1차 [high]): 코드 수정 완료, 로컬 단위 검증 완료(29 장면 784 검사 실패 0, 고침 전 전송의 음성 대조 5 검사 실패), **하드웨어 검증 대기**(다음 smoke나 pilot). 커밋 `e010c374`, 12절 그날 행, [impl/launcher/notes_launcher_credit.md](impl/launcher/notes_launcher_credit.md). 옛 표기 "진행 중"을 이 셋으로 바꿈
-- [ ] 문맥 0 밖 정체(18절 가)의 처리 결정: 모든 문맥의 줄을 등록할지, 문맥 0 밖 사용을 준비 때 거절할지 — 사용자 결정 대기
-- [ ] 각 행의 `kind` 확인(사전 등록 전). 지금 safety 8, perf 21, cost 1(2026-10-23 예측 표 30행에서 다시 셈 `[측정]`). 행마다 맞는 종류인지는 아직 보지 않음
+- [x] 문맥 0 밖 정체(18절 가)의 처리 결정: 모든 문맥의 줄을 등록할지, 문맥 0 밖 사용을 준비 때 거절할지 — 2026-10-24 사용자 결정 **(가) 모든 문맥의 줄 등록**(어느 문맥이든 남은 일을 둔 채 `STALL_MS` 동안 서면 멈춤; 9.3절, 12절 그날 행). 결정은 닫힘. 라이브러리 조각은 다른 세션이 만드는 중이고(코드 수정과 로컬 검증의 근거는 조각 커밋 뒤 기입), **하드웨어 검증 대기**
+- [ ] 각 행의 `kind` 확인(사전 등록 전). 지금 safety 8, perf 22, cost 1(2026-10-24 예측 표 31행에서 다시 셈 `[측정]`; 2026-10-23 30행에서는 perf 21). 행마다 맞는 종류인지는 아직 보지 않음
 - [ ] 복원 뒤 4.7–4.9 s의 READ 시한 줄 하나(다섯 smoke 모두)의 까닭 `[미확인]`
 - [ ] 차례 4: GPU 진행 신호의 반례 셀과 부하 pilot(19절 표 4행의 넷)
+  - [ ] 일부 문맥만 멈춤: 반례 셀 `gc4_gpuhang12000_ctx1_fence`(n 5, hold C10, pilot P1; 예측 `gpuhang_ctx1_fence_restore`), driver 스위치 `GC_GPUHANG_CTX`, 채점 열 `stall_ctx`, 자체 시험 B6 — 코드 수정 완료, 로컬 검증 완료(자체 시험 142 검사 실패 0, `check_cells_gc.py` drift 0, 2026-10-24 `[측정]`), driver 빌드 안 함, **하드웨어 검증 대기**(라이브러리 조각과 함께 다음 smoke). 12절 2026-10-24 행
+  - [ ] 나머지 셋(정상적인 긴 계산 대 실제 정체, 실패한 rank 대 그것을 기다리는 정상 rank, 호스트 박동은 멈추고 GPU 작업은 진행)과 부하 pilot
 - [ ] pilot 전후에 남은 것(11.2의 옛 줄에서 옮김; 닫혔다는 기록을 찾지 못함):
   - [ ] 아직 실제 NIC에서 돌지 않은 주입을 셀마다 한 번: `gc4_stop12000_none`, 짧은 멈춤 셋, `DIE_RST`, `RST_GAP`, `FREEZE_PAGE` 두 꼴, `QP_ERR`, `DROP_UD`, `CREDIT_STALL`, 관리망 끊김([results/20261023_smoke4/SMOKE.md](results/20261023_smoke4/SMOKE.md) "남은 것과 요청" 5; 스위치 코드는 `impl/gc_layer_int.diff`에 있음 `[소스]`)
   - [ ] `gct`, `gcp` 빌드와 고친 트리의 검사 사슬(syn, api, 빌드, pre, sites, unit, ident, diff), libnccl md5를 12절에(smoke는 `gc`만 빌드했다)
@@ -1445,9 +1471,10 @@ link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려
 | 2026-10-23 | **launcher credit READ 재시도**(Codex 1차 [high]; 코드로 확인됨 `[소스]`): 64칸 창이 닫히면 `gl_v_rc_send`가 credit 낱말을 한 번 READ하고, 같은 값이 오면 `gl_v_flush`만 불러 보낼 수 없었다. 다시 READ하는 길은 다음 `rc_send`나 그 rank의 SEND(ackSeq 전진)뿐이고 SEND 완료, `gl_v_poll`, 주 루프는 다시 읽지 않았다. 고침(`impl/launcher/launcher_transport_verbs.c`만): 1 ms one-shot timerfd를 전송 fd 셋째로 돌려 launcher 루프를 깨우고, credit으로 닫힌 큐에 READ가 날아가 있지 않을 때 무장, 울리면 다시 READ(QP마다 READ 하나 그대로; 창이 열리거나 QP 오류나 닫힘이면 끝). 시험: `launcher_unit.cc`에 가짜 verbs(`GL_UNIT_VERBS`)를 넣어 verbs 전송을 ASan과 UBSan으로 링크, 새 장면 `verbs_credit_retry`(22 검사: 첫 READ와 첫 재시도는 같은 값, 둘째 재시도에서 전진, 65번 메시지가 seq 65로 나감, READ 하나씩, 간격 ≥ 0.9 ms, 큐가 비면 READ 없음); HEAD 전송에 같은 장면을 돌리면 5 검사 실패(음성 대조). 결과: 29 장면 784 검사 실패 0, sanitizer 보고 0(조율 세션이 다시 돌려 확인) `[측정]`. `gin_launcher` md5 `d1aceaf6`. 하드웨어에서는 아직 돌지 않음(다음 smoke에서). 기록: `impl/launcher/notes_launcher_credit.md`, `README_launcher.md`. |
 | 2026-10-23 | **채점기 고침 여섯**(외부 리뷰 지적 전부 코드로 확인됨; `impl/test/`만, 클러스터 실행 없음, 조율 세션이 자체 시험과 drift 검사를 다시 돌림 `[측정]`): (1) MTU: kv에 `active_mtu`가 없어 요약의 열거값 5가 `active_mtu_kv_min`에 그대로 들었음 → `mtu_bytes`(1–5 → 256–4 096 B), 실제 smoke 4 요약 줄로 시험, 열거값 3은 `no_tcp_control` 거짓. (2) 데이터 같음: `_spare.kv`가 있으면 `revived=1`을 요구해 장애 없는 시행 6개가 0 → 최종 세대의 활성 프로세스만 비교(한 죽음 시행), 둘째 죽음 시행은 gin-mirror 열 그대로; 열 `spare_state`, `final_gen_n`. (3) 펜스 뒤 window: `win_unreadable`, `win_checked`, `win_lines_n`, `win_missing`, `win_verified`; 다 읽지 못하면 `win_changed_after` 빈칸(라이브러리 줄에 검사한 칸 수와 화신이 없어 `win_checked`는 비고 대상 rank만 맞춤). (4) 제외: `config`는 `CONFIG_REFUSALS` 이유가 있을 때만, 그 밖은 `prep_failure`(자리 유지, 채움 없음, 회귀 셀 포함); 예측마다 계획, 실행, 이유별 제외, 준비 실패, 채점 n, 조건부와 전체 성공률 출력. (5) `kind` 열(safety 8, cost 1, perf 20; `check_cells_gc.py`가 검사). (6) 사건 분해 열(rank 1, sunny 시계; 주입 뒤 ms: 의심 / 판정 / hold / 펜스 / 게시 / 첫 걸음): smoke 4 kill 0.4 / 20.8 / 24.7 / 118.9 / 155.6 / 350.0, 증인 끔 kill – / 110.9 / 115.5 / 115.0 / 155.1 / 354.3, 12 s STOP 2 007 / 10 010 / 10 014 / 10 140 / 10 177 / 10 365, GPU hang 2 029 / 10 033 / 10 037 / 10 146 / 10 184 / 10 360; smoke 3 kill 0.4 / 102.2 / 107.4 / 106.7 / 146.6 / 339.7, STOP 2 091 / 10 094 / 10 099 / 10 222 / 10 261 / 10 459 `[측정: notes_test.md 끝 절; 생존 QP ERR 줄이 없어 hold 시작이 입력 차단을 대신하고, driver가 걸음마다 검사를 내지 않아 첫 걸음은 게시 뒤 `tx_err=0`인 첫 걸음 줄(kv `dev_bad=0`일 때만)]`. 두 kill 셀의 "게시 → 첫 걸음" 약 195–200 ms는 복원 게시가 application의 유효한 재개와 같은 사건이 아님을 보인다 `[측정, n 1씩]`. smoke 1–5 재처리(스크래치): MTU 5 → 4 096 25 시행, 데이터 같음 0 → 1 6 시행, smoke 1 a1 `config` → `prep_failure`, 판정 바뀜 없음(모두 자료 부족, n 1). 자체 시험 106 → 124 검사 실패 0, drift 0. 문서 반영: 8절 두 규칙과 3절 `kind` 메모, 11절. |
 | 2026-10-23 | **다섯째 하드웨어 smoke**(진단, 채점 안 함, 셀 둘 × n 2, 시도 넷, `cluster_run.sh` 안, 묶음 `gc_smoke4` 그대로, 라이브러리와 driver와 launcher 변경 없음; `results/20261023_smoke5/SMOKE.md`): smoke 4 a4의 까닭을 경쟁 가설 넷으로 가름. (가) fd 보관 없는 `gc4_kill3_noreport_nofdhold`(새 pilot 셀): NORESP ×3(11행) kill 뒤 3 595.8–3 746.2 ms, 예측 `finless_read_fail`의 띠 안; rank 3의 verbs 객체는 kill + 0.6 s에 이미 없음. (나) `gc4_fdhold_sock_kill3_noreport`: STALL_HELPER ×3(15행) 10 067–10 082 ms(smoke 4와 같음); 같은 객체(ctx 1, pd 2, cq 10, qp 17, mr 50)가 pid 없이 kill + 0.56 s부터 판정(kill + 10.35 s)까지 남았고 자식 SIGKILL 뒤 0.5 s 안에 사라짐; 자식의 fd는 0–2뿐이고 메모리 맵에 `uverbs0` 매핑 18개와 nvidia 매핑 `[측정: rdma res show qp/mr/pd/cq, /proc/<pid>/fd, maps]`. 판정: H1(남은 fd) 아님, H4(자식 없는 정리 지연) 아님, H3(집계 섞임)은 요약 수가 세대를 넘어 누적되는 것은 사실이나 판정 앞 실패 줄 0과 시간 상한으로 ≥ 75 READ 성공이 확인되어 결론을 바꾸지 않음, **H2(물려받은 매핑이 자원을 쥠) 지지**(커널 경로는 `[추론]`). 결과와 예정은 18절 다, 11절. 실행기 결함 고침(`impl/test/run_gc.sh`): 판정 줄 기다림의 정규식 묶음을 줄 기다림 도우미가 걸음 번호로 읽어 늘 실패했고, 그래서 smoke 4의 fd 자식은 늘 kill + 25 s에 꺼졌음(`why=bound`); 지금은 판정 + 1 s. 새 읽기 전용 자원 캡처 `RES_CAPTURE=1`(kill을 약 370 ms 늦춤). 미해결: 복원 뒤 4.7–4.9 s의 READ 시한 줄 하나(다섯 smoke 모두). |
-| 2026-10-23 | **사전 등록 초안 고침 셋**(smoke 5와 채점기 리뷰에서; `impl/test/`와 이 문서만, 클러스터 실행 없음) `[측정: 로컬 실행]`. (1) 예측 바꿈: FIN 없는 죽음의 READ 실패 예측(`finless_read_fail`, 3.5–4.5 s, NORESP 11행)을 fd 보관 없는 `gc4_kill3_noreport_nofdhold`(pilot 셀에서 본 셀로, n 5, hold C6에 다른 `NO_EXIT_REPORT` 셀과 함께, pilot P3; 대조 `gc4_kill3_ow_nowitness`)로 옮기고, fd 보관 셀 `gc4_fdhold_sock_kill3_noreport`(n 5 그대로)에는 새 성능 예측 `fdhold_sock_helper_stall`(STALL_HELPER ×생존 rank, 15행, kill 뒤 10 000–10 500 ms, 판정 앞 READ 실패 줄 0, FENCE → FENCED → 활성화, 복원, 데이터 같음)을 둠. 까닭: exec 없는 fork 자식이 물려받은 uverbs 매핑이 죽은 rank의 QP와 MR을 쥐어 그 셀은 READ 실패 길을 잴 수 없음(smoke 4 a4, smoke 5 a3, a4; 18절 다). 채점기 새 열 `probe_fail_n`(판정 앞 READ 실패 줄; smoke 5 a1, a2 6, a3, a4 0 `[측정]`). 예측 29행 → 30행, 7절 26행 → 27행, cell@build 24 → 25, 이 실험의 시행 160 → 165, 클러스터 합 382 → 387(셀 파일에서 다시 셈). (2) perf 행 안의 안전성 항: 행을 가르지 않고 `score_gc.SAFETY_TERMS`의 항이 판정한 시행 하나에서라도 거짓이면 그 예측을 "재검토(안전성 항 어긋남 k/n)"로, SCORE.md에 시행 ID와 항(8절). 이 규칙을 받는 perf 행 16개(앞 글의 14개는 `rst_judge_rdma`를 빠뜨린 셈). (3) 창 조건 다섯(`stall_fence_restore`, `stall_none_refuse`, `freeze_fence_restore`, `helper_stall_fence`, `gpuhang_fence_restore`)을 `win_changed_after == 0`에서 `win_verified == 1`로, 3절 글은 "window 검사 완료, 바뀐 칸 0"; `win_verified`를 `LIB_COLS`에 더함(창 줄 없음은 자료 부족 그대로). 자체 시험 124 → 130 검사 실패 0(fd 보관 없는 셀과 fd 보관 셀의 합성 시행, 재검토 셋, `win_verified` 규칙), `check_cells_gc.py` ok, drift 0. 남은 것: `hold_gc.sh` 머리 주석의 "P3 the noreport cell"(이 고침의 범위 밖), 9.7절 충돌 표와 18절 다의 "바꿈 예정" 글. | [impl/test/predictions_gc.csv](impl/test/predictions_gc.csv), [impl/test/cells_gc.json](impl/test/cells_gc.json), [impl/test/score_gc.py](impl/test/score_gc.py), [impl/test/rows_gc.py](impl/test/rows_gc.py), [impl/test/test_rows_gc.py](impl/test/test_rows_gc.py), [impl/test/notes_test.md](impl/test/notes_test.md) 끝 절; 3, 7, 8, 9.9(한 마디), 11절; 근거 [results/20261023_smoke5/SMOKE.md](results/20261023_smoke5/SMOKE.md) |
+| 2026-10-23 | **사전 등록 초안 고침 셋**(smoke 5와 채점기 리뷰에서; `impl/test/`와 이 문서만, 클러스터 실행 없음) `[측정: 로컬 실행]`. (1) 예측 바꿈: FIN 없는 죽음의 READ 실패 예측(`finless_read_fail`, 3.5–4.5 s, NORESP 11행)을 fd 보관 없는 `gc4_kill3_noreport_nofdhold`(pilot 셀에서 본 셀로, n 5, hold C6에 다른 `NO_EXIT_REPORT` 셀과 함께, pilot P3; 대조 `gc4_kill3_ow_nowitness`)로 옮기고, fd 보관 셀 `gc4_fdhold_sock_kill3_noreport`(n 5 그대로)에는 새 성능 예측 `fdhold_sock_helper_stall`(STALL_HELPER ×생존 rank, 15행, kill 뒤 10 000–10 500 ms, 판정 앞 READ 실패 줄 0, FENCE → FENCED → 활성화, 복원, 데이터 같음)을 둠. 까닭: exec 없는 fork 자식이 물려받은 uverbs 매핑이 죽은 rank의 QP와 MR을 쥐어 그 셀은 READ 실패 길을 잴 수 없음(smoke 4 a4, smoke 5 a3, a4; 18절 다). 채점기 새 열 `probe_fail_n`(판정 앞 READ 실패 줄; smoke 5 a1, a2 6, a3, a4 0 `[측정]`). 예측 29행 → 30행, 7절 26행 → 27행, cell@build 24 → 25, 이 실험의 시행 160 → 165, 클러스터 합 382 → 387(셀 파일에서 다시 셈). (2) perf 행 안의 안전성 항: 행을 가르지 않고 `score_gc.SAFETY_TERMS`의 항이 판정한 시행 하나에서라도 거짓이면 그 예측을 "재검토(안전성 항 어긋남 k/n)"로, SCORE.md에 시행 ID와 항(8절). 이 규칙을 받는 perf 행 17개(2026-10-24 반례 셀 행을 더한 뒤; 그 전 16개)(앞 글의 14개는 `rst_judge_rdma`를 빠뜨린 셈). (3) 창 조건 다섯(`stall_fence_restore`, `stall_none_refuse`, `freeze_fence_restore`, `helper_stall_fence`, `gpuhang_fence_restore`)을 `win_changed_after == 0`에서 `win_verified == 1`로, 3절 글은 "window 검사 완료, 바뀐 칸 0"; `win_verified`를 `LIB_COLS`에 더함(창 줄 없음은 자료 부족 그대로). 자체 시험 124 → 130 검사 실패 0(fd 보관 없는 셀과 fd 보관 셀의 합성 시행, 재검토 셋, `win_verified` 규칙), `check_cells_gc.py` ok, drift 0. 남은 것: `hold_gc.sh` 머리 주석의 "P3 the noreport cell"(이 고침의 범위 밖), 9.7절 충돌 표와 18절 다의 "바꿈 예정" 글. | [impl/test/predictions_gc.csv](impl/test/predictions_gc.csv), [impl/test/cells_gc.json](impl/test/cells_gc.json), [impl/test/score_gc.py](impl/test/score_gc.py), [impl/test/rows_gc.py](impl/test/rows_gc.py), [impl/test/test_rows_gc.py](impl/test/test_rows_gc.py), [impl/test/notes_test.md](impl/test/notes_test.md) 끝 절; 3, 7, 8, 9.9(한 마디), 11절; 근거 [results/20261023_smoke5/SMOKE.md](results/20261023_smoke5/SMOKE.md) |
 | 2026-10-23 | **변경:** 문서 정리(문서만). 맨 앞에 현재 상태 안내, 11절을 현재 작업 목록 11.1과 당시 체크리스트 11.2로 나눔(외부 리뷰 뒤 차례의 항목을 11.1로 옮기고, launcher credit READ 재시도를 단계 셋으로 적음), 19절 제목을 후속 연구로, 이 절 머리에 새 행의 꼴, 폴더 README와 NOTES를 현재 상태로. 2, 3, 7, 8, 9절과 수치는 바꾸지 않음. **검증:** `check_cells_gc.py` ok(drift 0, 예측 30, 7절 27행, 셀 25), 예측 표의 `kind` 셈(safety 8, perf 21, cost 1), `tools/check_md.py`, `git diff --check` `[측정]`. 클러스터 실행 없음. **남은 일:** 커밋(조율 세션) | 이 파일, [README.md](README.md), [NOTES.md](NOTES.md) |
 | 2026-10-23 | **첫 자동 감독 검토(Codex, hook)와 고침 둘.** 변경: (1) 채점기 — 요약이 없는 프로세스나 빠진 카운터를 0으로 치지 않고 빈칸(`ctrlsum_missing`, `ctrlsum_fields_missing`; `changed=`나 `unreadable=` 없는 window 줄은 미검증), 커밋 e822499a. (2) 라이브러리(호스트 파일만, 장치 0줄) — hold 시작의 저장소 ward QP ERR 요청이 store thread 큐에 들어가고 돌아오기만 해서 HOLDING도 활성화 gate도 ERR 완료를 보지 않았음 `[소스]`; ward마다 상태(NONE, ASKED, DONE, FAILED)를 두고 활성화 gate(`gdakiCtrlActFenceOk`)가 buddy에서 DONE을 요구, FAILED나 2 000 ms 초과는 WARN 뒤 FENCE_NAK와 같은 fall back, ERR 일은 큐 맨 앞(같은 ward의 SERVE 뒤)으로; `impl/gc_layer_wardfix.diff`(e5d1f442, 228줄), 새 `gc_layer_int.diff` 9c16b732, libnccl gc cca75dbb, `impl/notes_wardfix.md`. 검증: 로컬만 — 새 단위 시험 `gc_unit_ward.cc` 165 735 검사 실패 0(gate를 옛 모양으로 되돌린 변이에서 8 678 실패), gc 단위 시험 전부 두 빌드에서 실패 0, 빌드 경고 0, syn 셋 통과. 하드웨어 검증 대기(다음 smoke에서 launcher 고침과 함께). 2 000 ms 한도는 정한 값 `[미확인]`. 남은 일: 문맥 0 밖 정체는 사용자 결정 대기(unverified로 기록). 증거: `~/.claude/rdma-supervision/runs/gin-control-*/20261023T050949Z-cca66ff/review-1/`(모델 요청 gpt-6-astra, 확인 gpt-6-astra). |
+| 2026-10-24 | **사용자 결정 (가): GIN 문맥 0 밖 정체.** Codex 지적 Ffc5d2613c5(진행 줄이 문맥 0만 등록해 다른 문맥의 정체를 못 봄, 18절 가)에 대해 둘을 견줬다. (가) 라이브러리가 모든 GIN 문맥의 GPU 진행 줄을 등록하고 probe가 상대마다 문맥마다 장치 줄 하나를 READ하며, 어느 문맥이든 post했으나 poll하지 않은 일이 있고 그 줄이 `STALL_MS` 동안 서면 GPU 멈춤으로 판정. (나) 문맥 0 밖 사용을 준비 때 거절. **(가)를 고른 까닭:** 관측 빈틈을 닫고, 목적지마다 문맥을 쓰는 시험 driver(`ginContextCount = N`)와 앞선 workload를 그대로 둬 앞 실험과 견줄 수 있으며((나)는 그 driver 자체를 거절함 `[소스: gin_mi.cu]`), 늘어난 READ(상대마다 1 + 문맥 수, 4 rank면 5)의 비용은 비용 셀이 잰다. **변경**(사전 등록 전이라 그 자리에서; 이 문서와 `impl/test/`만): 3절 반례 행 `gpuhang_ctx1_fence_restore`와 비용 행의 READ 수 글, 7절 셀 `gc4_gpuhang12000_ctx1_fence`(n 5, hold C10, pilot P1, `R3_ENV=GC_GPUHANG_IT=155 GC_GPUHANG_CTX=1`, 대상 rank 3), 6, 9.2, 9.3, 9.9, 11.1, 18절과 현재 상태; driver 스위치 `GC_GPUHANG_CTX=<k>`(hang 줄 `ctx=`, kv `gpuhang_ctx`; 문맥 k를 쓰는 보내는 CTA만 돎), `rows_gc.py` 열 `stall_ctx`(판정 줄, 없으면 그 앞 의심 줄의 `ctx=`)와 `ctx=` 있는 의심 줄 읽기, 셀에 `GC_GPUHANG_CTX`가 있으면 hang 줄의 `ctx=`가 같아야 주입 기록, 자체 시험 B6. 셈: 예측 31(perf 22, safety 8, cost 1), 7절 28행, cell@build 26, 이 실험의 시행 170, 클러스터 합 392(셀 파일에서 다시 셈). **검증:** 코드 수정 완료, 로컬 검증 완료(`test_rows_gc.py` 142 검사 실패 0, `check_cells_gc.py` ok, drift 0, `tools/check_md.py`, `git diff --check`) `[측정]`; driver는 빌드 안 함; 라이브러리 조각(모든 문맥의 줄 등록)은 다른 세션이 만드는 중, 하드웨어 검증 대기. 클러스터 실행 없음. **남은 일:** 라이브러리 조각 커밋과 그 로컬 검증, driver 빌드, 다음 smoke에서 반례 셀 한 번, 판정 줄과 의심 줄의 `ctx=` 꼴을 조각에 맞춰 확인 | 고침 커밋: (이 행과 같은 커밋: `impl/gc_layer_ctxall.diff` cacf9f86, 832줄, 호스트 파일 하나, 장치 0줄; 새 `gc_layer_int.diff` f4819515; libnccl gc ea82cd71; `impl/notes_ctxall.md`. 로컬 검증: 새 단위 시험 `gc_unit_livectx` 1 078 020 검사 실패 0(문맥 0만 보는 변이에서 9개 실패), gc 단위 시험 전부 두 빌드 실패 0, 빌드 경고 0, syn 셋 통과. 하드웨어 검증 대기). [impl/test/driver/gin_mi.cu](impl/test/driver/gin_mi.cu)(md5 6cb4ff28), [impl/test/notes_test.md](impl/test/notes_test.md), [impl/test/cells_gc.json](impl/test/cells_gc.json), [impl/test/predictions_gc.csv](impl/test/predictions_gc.csv) |
 
 ## 13. 사전 등록 이후 변경
 
@@ -1484,10 +1511,12 @@ link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려
 퍼짐보다 작은 것과 판정 전 장치 대기가 잰 적 없는 것은 9.9절 끝.
 2026-10-22 GPU 진행 줄로 GPU 멈춤(호스트가 살고 GPU 줄이 남은 일을 둔 채 멈춤)은 판정 표 14행의 입력이 됐고, 2026-10-23부터 시험 driver의 GPU hang 셀 하나가 그것을 잰다(7절).
 그 셀의 hang은 한 꼴뿐이다: 보내는 CTA가 put을 post한 뒤 poll 전에 도는 것. 보낼 것이 없는 계산 구간에서 멈추는 GPU(남은 일 0, 줄이 "조용함")는 멈춤으로 세지 않으므로 이 길로는 잡히지 않고,
-줄은 GIN 문맥 0만 읽는다(`impl/notes_live.md` 7절 3). Xid나 ECC 같은 하드웨어 오류로 선 GPU는 넣지 않았다(9.9절). application 호스트 스레드만의 멈춤은 위 한계 그대로다.
+줄은 GIN 문맥 0만 읽는다(`impl/notes_live.md` 7절 3; 2026-10-24 닫힘: 사용자 결정 가로 모든 문맥의 줄, 아래 가). Xid나 ECC 같은 하드웨어 오류로 선 GPU는 넣지 않았다(9.9절). application 호스트 스레드만의 멈춤은 위 한계 그대로다.
 2026-10-23 외부 리뷰가 더한 것: (가) 등록하는 진행 영역이 문맥 0의 장치 QP 줄뿐인데 시험 driver는 목적지마다 다른 문맥을 쓰므로(`gin_mi.cu`의 `ginContextCount`), 문맥 0이 조용하고
 문맥 1 이상만 post 뒤 poll 전에 서면 정체 시계가 초기화되어 STALL → FENCE가 시작되지 않을 것으로 추론된다 `[추론: 리뷰가 소스로 확인, 시행으로 관측 안 함]`. smoke 4 a6은 모든 송신 CTA가 함께
-돌아 이 빈틈을 재지 않았다. (나) 펜스 뒤 window 검사는 판정 시점과 FENCED 직후의 표본 비교이므로 그 뒤 구간의 stale WRITE 부재를 증명하지 않는다. (다) `NO_EXIT_REPORT` 셀에서 죽은
+돌아 이 빈틈을 재지 않았다. **(가)는 2026-10-24에 닫힘**: 사용자 결정 (가)로 라이브러리가 모든 GIN 문맥의 진행 줄을 등록하고 어느 문맥이든 남은 일을 둔 채 `STALL_MS` 동안
+서면 멈춤으로 본다(9.3절, 12절 그날 행; Codex 지적 Ffc5d2613c5). 라이브러리 조각은 하드웨어 검증 대기이고, 이 빈틈을 재는 반례 셀 `gc4_gpuhang12000_ctx1_fence`(문맥 1만 멈춤)를 7절에 넣었다.
+남는 것: 문맥 수에 비례해 느는 READ 비용(9.2절, 비용 셀이 잼), 남은 일 0인 계산 구간의 멈춤은 그대로 못 봄. (나) 펜스 뒤 window 검사는 판정 시점과 FENCED 직후의 표본 비교이므로 그 뒤 구간의 stale WRITE 부재를 증명하지 않는다. (다) `NO_EXIT_REPORT` 셀에서 죽은
 프로세스의 페이지가 10 s READ에 답한 까닭(smoke 4 a4)은 smoke 5가 갈랐다(`results/20261023_smoke5/SMOKE.md`): fd 보관 자식의 fd는 0–2(`/dev/null`)뿐이었지만 메모리 맵에 `uverbs0` 매핑
 18개(rank 3과 같은 수)와 nvidia 매핑이 남아, 죽은 rank의 verbs 객체(ctx 1, pd 2, cq 10, qp 17, mr 50)가 pid 없이 장치에 남았고 자식을 끈 뒤 0.5 s 안에 사라졌다 `[측정: rdma res show, /proc]`.
 fd 보관 없는 같은 kill에서는 kill + 0.6 s에 객체가 없었고 READ 재시도 초과(11행)로 3.60–3.75 s에 판정됐다(n 2). 그러므로 남은 fd(H1)와 자식 없는 정리 지연(H4)은 아니고, 물려받은 매핑이나
@@ -1495,6 +1524,8 @@ fd 보관 없는 같은 kill에서는 kill + 0.6 s에 객체가 없었고 READ �
 재는 것은 성립하지 않으며, 그 자리는 fd 보관 없는 셀 `gc4_kill3_noreport_nofdhold`가 맡고 fd 보관 셀은 "물려받은 매핑이 자원을 쥔 죽음은 호스트 박동 멈춤(15행)으로 약 10 s에 판정된다"를 재는
 행이 된다(2026-10-23에 3절과 7절을 그렇게 바꿨다: `finless_read_fail`은 `gc4_kill3_noreport_nofdhold`로, fd 보관 셀에는 `fdhold_sock_helper_stall`; 12절 그날 행). 결정적 후속(라이브러리 변경): exec하는 보관 자식(매핑이 풀림), uverbs 매핑만 또는 nvidia 매핑만 푸는 변형 `[미확인]`. 복구 시간은 6절의
 사건 분해로만 보고한다. 미해결 관찰 하나: 다섯 smoke 모두에서 복원 뒤 4.7–4.9 s에 새 세대의 READ 시한 줄이 한 번 난다 `[미확인]`.
+
+2026-10-24 결정 (가)의 구현 뒤 남는 것(`impl/notes_ctxall.md`): (라) 정체 시계는 문맥마다 따로 두고 판정 입력은 그 최댓값이다(조용하거나 진행하는 문맥은 자기 시계만 되돌림). 데이터 경로 거부권은 손대지 않았으므로, 대상 rank의 문맥 0 트래픽이 판정하는 rank에 계속 닿으면 문맥 1의 멈춤은 거부권에 막혀 18행에 머문다(단위 장면으로 확인 `[측정: CPU 모형]`). 반례 셀 `gc4_gpuhang12000_ctx1_fence`에서 이 경우가 실제로 나는지는 하드웨어에서 본다 `[미확인]`. mirror 문맥의 줄은 등록하지 않는다. 문맥이 8개를 넘거나 등록이 하나라도 실패하면 줄 없이 호스트 박동으로 돌아간다(WARN).
 
 ## 19. 후속 연구
 

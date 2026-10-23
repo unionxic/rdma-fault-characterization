@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# build_driver_gc.sh - gin-control: compile this folder's gin_mi.cu (gin-mirror's test driver with the GC_GPUHANG_IT switch,
-# see its head comment and ../notes_test.md) LOCALLY on rain (nice 19, idle I/O). COMPILE ONLY: no library build, no GPU or
+# build_driver_gc.sh - gin-control: compile this folder's gin_mi.cu (gin-mirror's test driver with the GC_GPUHANG_IT switch
+# and, since 2026-10-24, its context filter GC_GPUHANG_CTX; see its head comment and ../notes_test.md) LOCALLY on rain (nice 19, idle I/O). COMPILE ONLY: no library build, no GPU or
 # RDMA program runs. gin-mirror's ../../../../mirror/impl/test/build_mi_test.sh stage "mi" (copied, then cut to that stage).
 # The headers and the library are a gin-control build tree's installed ones (RSINC, RSLIB; default the session scratch's
 # agent_gc_p2a2/build, the tree the smokes build gc in), the headers copied first; nothing under that tree is written.

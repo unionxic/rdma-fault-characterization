@@ -37,7 +37,7 @@
 #                          one trial of every rdma cell, P2 of every tcp cell, P3 the two noreport cells (fd-holder and no-fd-holder) (its launcher with
 #                          NO_EXIT_REPORT), P4 9.9's unscored 12 000 ms stop (its own cell gc4_stop12000_pilot)
 #   RG-<gct|gc>-<G1|G3|T1|T2|G2|R1|R2|R3>   gin-mirror's hold of that name (../../../mirror/impl/test/cells_mi.json), every
-#                          cell with its name, env and n, at the named build (section 7 rows 23, 24); a build with
+#                          cell with its name, env and n, at the named build (section 7 rows 24, 25); a build with
 #                          regression.builds.<b>.cells runs only those cells (2026-10-22: @gct only mi4_kill3_ow, i.e.
 #                          RG-gct-G1; any other RG-gct-* hold has no cell and stops)
 #   COST-probe-<rain|sunny>[-<metric>]       the probe cost family on the receiving node (3 arms x 3 metrics x 6 rounds)

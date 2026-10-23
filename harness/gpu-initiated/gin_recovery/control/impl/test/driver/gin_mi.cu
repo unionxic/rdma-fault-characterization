@@ -1,13 +1,22 @@
 // gin-control copy (../../../EXPERIMENT.md 7, 9.9; user decision 2026-10-23): gin-mirror's ../../../../mirror/impl/test/gin_mi.cu
-// (md5 556804c0, commit 980a0752) with one research-cell switch, nothing else changed:
+// (md5 556804c0, commit 980a0752) with one research-cell switch and its context filter, nothing else changed:
 //   GC_GPUHANG_IT=<N>  a live (not spare) process, overwrite or gin_rs workload: in step N every sending CTA, after its put
 //                      is posted and before the flush that polls it, spins on a device word nothing ever sets. The GPU
-//                      progress line (GIN context 0's QP words: posted > polled) then stops with work left while the host
-//                      threads (the library's helper and watch thread) keep beating: the fault itself (a hung kernel), not
-//                      in the library or the healthy path. The fence's SIGKILL ends the process. Before the spin the CTA's
-//                      thread 0 sets a mapped host word; the host prints "GINRS gpuhang rank=R step=N spin=1 wait_ms=W"
-//                      once it sees it (spin=0 after 2 000 ms without it), then blocks in its synchronize. kv gpuhang_it.
-//                      RS_TRAIN with the switch is a usage error (exit 1).
+//                      progress line (the QP words of the context the put went on: posted > polled) then stops with work
+//                      left while the host threads (the library's helper and watch thread) keep beating: the fault itself
+//                      (a hung kernel), not in the library or the healthy path. The fence's SIGKILL ends the process. Before
+//                      the spin the CTA's thread 0 sets a mapped host word; the host prints
+//                      "GINRS gpuhang rank=R step=N spin=1 ctx=C wait_ms=W" once it sees it (spin=0 after 2 000 ms without
+//                      it), then blocks in its synchronize. kv gpuhang_it, gpuhang_ctx. RS_TRAIN with the switch is a usage
+//                      error (exit 1).
+//   GC_GPUHANG_CTX=<k> (2026-10-24, user decision (가), ../../../EXPERIMENT.md 7, 18 (가)) with GC_GPUHANG_IT: only the
+//                      sending CTA whose put goes on GIN context k spins; the CTAs to the other destinations post, flush and
+//                      finish their step as usual. The sender to destination d uses context d (stepKernel's
+//                      `ncclGin gin{devComm, d}`, reqs.ginContextCount = N below), so k is the destination rank: 0 <= k < N
+//                      and k != this rank (no sending CTA of this rank uses context = its own rank, the receiver's), else a
+//                      usage error (exit 1). Unset or empty: every sending CTA (C = all, the GPU hang cell as before).
+//                      With k != 0 context 0 stays quiet (posted == polled) and only context k is pending and frozen: the
+//                      counterexample cell gc4_gpuhang12000_ctx1_fence for a line that reads context 0 only.
 // The head comment of gin-mirror's file follows unchanged.
 // gin_mi.cu - gin-mirror, test branch (../../EXPERIMENT.md 7, 9.8; impl/PARALLEL.md row exp/gin-mirror-test): gin-restore's
 // test workload (../../../restore/impl/test/gin_rs.cu, md5 bfcefa19, copied and then extended) with two more workloads.
@@ -250,7 +259,7 @@ struct Out {
 // overwrite (gin-mirror, RS_OVERWRITE): one send slot per destination, poisoned right after the flush returned.
 __global__ void stepKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, uint8_t* sendBuf, const uint8_t* recvBuf,
                            uint64_t* xHist, int* execCnt, size_t bytes, int n, int me, int s, size_t regionBytes,
-                           int overwrite, struct ncclDevComm devComm, Out* out, int hangStep,
+                           int overwrite, struct ncclDevComm devComm, Out* out, int hangStep, int hangCtx,
                            const volatile int* hangWord, volatile int* hangSeen) {
   const int k = blockIdx.x;
   __shared__ int sRc, sBad, sRel, sPois;
@@ -269,7 +278,9 @@ __global__ void stepKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, uint8_t* 
     ncclGin gin{devComm, d};
     if (threadIdx.x == 0)
       gin.put(ncclTeamWorld(devComm), d, recvWin, ro, sendWin, lo, bytes, ncclGin_WeakSignalInc{(unsigned)(s & 1)});
-    if (s == hangStep) {  // gin-control GC_GPUHANG_IT (head comment): posted, never polled
+    // gin-control GC_GPUHANG_IT (head comment): posted, never polled; GC_GPUHANG_CTX (hangCtx >= 0): only the CTA whose
+    // put went on context hangCtx (= d, the context of this CTA's gin above); the condition is the same for a whole CTA
+    if (s == hangStep && (hangCtx < 0 || hangCtx == d)) {
       __syncthreads();
       if (threadIdx.x == 0) {
         *hangSeen = 1;
@@ -536,6 +547,12 @@ int main(int argc, char** argv) {
   const char* armFile = getenv("GIN_RS_ARM_FILE");
   // gin-control: the GPU hang of a live process (head comment); -1 off
   const int hangStep = (!spare && getenv("GC_GPUHANG_IT") && *getenv("GC_GPUHANG_IT")) ? atoi(getenv("GC_GPUHANG_IT")) : -1;
+  // GC_GPUHANG_CTX (2026-10-24): the one context whose sending CTA spins; -1 (unset or empty) every sending CTA
+  const char* hangCtxEnv = getenv("GC_GPUHANG_CTX");
+  const bool hangCtxSet = hangCtxEnv && *hangCtxEnv;
+  char* hangCtxEnd = nullptr;
+  const long hangCtxL = hangCtxSet ? strtol(hangCtxEnv, &hangCtxEnd, 10) : -1;
+  const int hangCtx = !hangCtxSet ? -1 : (*hangCtxEnd == '\0' && hangCtxL >= 0 && hangCtxL < 1024) ? (int)hangCtxL : -2;
   const int macro =
 #ifdef NCCL_GIN_RESTORE_DEVICE
     1;
@@ -558,9 +575,19 @@ int main(int argc, char** argv) {
     kv("usage_error=train_ring_or_bytes exit=1");
     return 1;
   }
-  kv("gpuhang_it=%d", hangStep);
+  char hangCtxTok[16];
+  if (hangCtx >= 0)
+    snprintf(hangCtxTok, sizeof(hangCtxTok), "%d", hangCtx);
+  else
+    snprintf(hangCtxTok, sizeof(hangCtxTok), "%s", hangCtx == -1 ? "all" : "invalid");
+  kv("gpuhang_it=%d gpuhang_ctx=%s", hangStep, hangStep >= 0 ? hangCtxTok : "-");
   if (hangStep >= 0 && train) {
     kv("usage_error=gpuhang_train exit=1");
+    return 1;
+  }
+  // a context no sending CTA of this rank uses (its own rank: the receiver's; outside 0..N-1; not a number) never spins
+  if (hangStep >= 0 && hangCtxSet && (hangCtx < 0 || hangCtx >= N || hangCtx == rank)) {
+    kv("usage_error=gpuhang_ctx exit=1");
     return 1;
   }
   printf("GINRS start rank=%d mode=%s mono_ms=%.3f\n", rank, spare ? "spare" : "live", monoMs());
@@ -845,13 +872,14 @@ int main(int argc, char** argv) {
                               rank, s, devComm, dOut);
     else
       stepKernel<<<N, 128>>>(sendWin, recvWin, (uint8_t*)dSend, (const uint8_t*)dRecv, dxHist, dExec, bytes, N, rank, s,
-                             regionBytes, overwrite ? 1 : 0, devComm, dOut, hangStep, dHangWord, dHangSeen);
+                             regionBytes, overwrite ? 1 : 0, devComm, dOut, hangStep, hangCtx, dHangWord, dHangSeen);
     CK(cudaGetLastError());
     if (s == hangStep) {  // gin-control GC_GPUHANG_IT: the injection record, then the synchronize below never returns
       const double h0 = monoMs();
       while (*hHangSeen == 0 && monoMs() - h0 < 2000.0) usleep(50);
       const int seen = *hHangSeen != 0 ? 1 : 0;
-      printf("GINRS gpuhang rank=%d step=%d spin=%d wait_ms=%.3f mono_ms=%.3f\n", rank, s, seen, monoMs() - h0, monoMs());
+      printf("GINRS gpuhang rank=%d step=%d spin=%d ctx=%s wait_ms=%.3f mono_ms=%.3f\n", rank, s, seen, hangCtxTok,
+             monoMs() - h0, monoMs());
       fflush(stdout);
       kv("gpuhang_step=%d gpuhang_seen=%d", s, seen);
     }

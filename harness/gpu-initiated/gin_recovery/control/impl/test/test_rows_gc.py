@@ -27,6 +27,10 @@ trials carry run_gc.sh's measured offset unless they say otherwise.
   B5 gc4_gpuhang12000_fence@gc x 5: the test driver's GPU hang (GC_GPUHANG_IT in R3_ENV, its GINRS gpuhang line), judged
      STALL (table row 14) 10.1 s after the hang line, FENCE -> FENCED by the launcher; the rule takes STALL, a STALL_HELPER
      copy fails (2026-10-23)
+  B6 gc4_gpuhang12000_ctx1_fence@gc x 5: the same hang with the context filter (GC_GPUHANG_CTX=1, its hang line ctx=1),
+     judged STALL with ctx=1 on the STALLED line (n1, n3-n5) or only on the suspect line before it (n2): stall_ctx 1; the
+     rule gpuhang_ctx1_fence_restore takes it, "1+none", "0+1", empty and 0 fail; a ctx=all hang line in that cell is no
+     injection record (2026-10-24, decision (가))
   B4 "(STOP_launcher: ...)" in the gap before trial_start (n16) and a launcher QP loss (n17): rows_gc.py --stops, the hold's
      tail check on a whole launcher log, and the launcher table read
   J  section 3's 2026-10-22 revision on copies of the rows above: the stall rules count STALL_HELPER (a STALL copy fails),
@@ -193,6 +197,28 @@ def trial(d, cell, k, *, build="gc", kill=3, subject=3, dead=None, witness="1", 
     return stem
 
 
+def gpu_ctx1_trial(d, k, *, on_stall=True, ctxs=(1, 1, 1), hang_ctx="1"):
+    """one gc4_gpuhang12000_ctx1_fence@gc trial (B6): the hang line names ctx=hang_ctx; survivor r's STALL judgement names
+    ctxs[r] (None: no ctx= at all) on its STALLED line (on_stall) or only on a gpu suspect line 2 s before it"""
+    fz = [(12.101, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCING: FENCE sent to the launcher of node 1"),
+          (12.130, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCED (by FENCED from node 1)")]
+    L = restore_lines(3, 12.1, "STALL", buddy_fence=fz, t_pub=12.45)
+    for r in (0, 1, 2):
+        c = ctxs[r]
+        tok = (" ctx=%d" % c) if (c is not None and on_stall) else ""
+        L[r] = [x if "judged dead" not in x[1] else
+                (x[0], "GIN/RC: rank %d: rank 3 (incarnation 0) judged stalled (liveness stall judged (STALL)%s); STALLED to 3 rank(s)" % (r, tok))
+                for x in L[r]]
+        if c is not None and not on_stall:
+            L[r].append((10.1, "GIN/RC: rank %d: rank 3 suspected (kind=gpu ctx=%d stale_ms=2000.4)" % (r, c)))
+        L[r].append((12.5, "GIN/RC: rank %d: window check after the fence of rank 3: changed=0 cells against=snapshot_at_judgement unreadable=0" % r))
+    L[3] += [(2.0, "GINRS gpuhang rank=3 step=155 spin=1 ctx=%s wait_ms=0.120" % hang_ctx)]
+    return trial(d, "gc4_gpuhang12000_ctx1_fence", k, kill=None, subject=3, dead=[3], inject="none", lines=L, probe=probe_ok(),
+                 meta_extra={"r3_env": "GC_GPUHANG_IT=155+GC_GPUHANG_CTX=1"},
+                 la={"sunny": [(12.102, "FENCE of rank 3 incarnation 0 from rank 2: SIGKILL sent through its pidfd (pid 999)"),
+                               (12.128, "rank 3 incarnation 0 FENCED: the group ended 26.000 ms after SIGKILL through its pidfd")]})
+
+
 def restore_lines(subject, t_judge, cause, survivors=(0, 1, 2), t_pub=None, buddy_fence=None, extra=None):
     """the survivors' lines for a restore of subject judged at t_judge (node s)"""
     t_pub = t_pub if t_pub is not None else t_judge + 0.150
@@ -355,6 +381,9 @@ def build(R):
               meta_extra={"r3_env": "GC_GPUHANG_IT=155"},
               la={"sunny": [(12.102, "FENCE of rank 3 incarnation 0 from rank 2: SIGKILL sent through its pidfd (pid 999)"),
                             (12.128, "rank 3 incarnation 0 FENCED: the group ended 26.000 ms after SIGKILL through its pidfd")]})
+    # B6: the GPU hang counterexample (GC_GPUHANG_CTX=1: only rank 3's sender on context 1 spins; 2026-10-24, decision (가))
+    for k in range(1, 6):
+        gpu_ctx1_trial(raw, k, on_stall=(k != 2))
     # B2: the live RST and port gap on rank 1 in the tcp control build (SUBJECT_RANK 1; fail-fast, no restore)
     for cell, n, judged in (("gct4_rstgap_live50", 10, False), ("gct4_rstgap_live300", 5, True)):
         for k in range(1, n + 1):
@@ -727,8 +756,9 @@ def review_checks():
         wrules = [p["acceptance"] for p in _csv0.DictReader(open(score_gc.PREDS, encoding="utf-8"))]
         check(not ok("win_verified == 1", g(8)) and not ok("win_verified == 1", g(1)) and ok("win_verified == 1", g(7))
               and "win_verified == 1" in ff_rule and not any("win_changed_after == 0" in a for a in wrules)
-              and sum("win_verified == 1" in a for a in wrules) == 5,
-              "review 3: the five window rules read win_verified == 1 (2026-10-23), false on an incomplete window")
+              and sum("win_verified == 1" in a for a in wrules) == 6,
+              "review 3: the six window rules (five on 2026-10-23, the GPU hang counterexample's 2026-10-24) read "
+              "win_verified == 1, false on an incomplete window")
         # (4) refusal classes
         check(g(2)["resume_refusal"] == "prep" and g(3)["resume_refusal"] == "config" and g(4)["ring_not_live_class"] == "prep"
               and g(5)["ring_not_live_class"] == "config" and "not paired with its node's launcher" in g(2)["resume_why_refused"],
@@ -965,6 +995,31 @@ def main():
     check(ok5(gh, H5) and not ok5(gh, dict(H5, n_judge_stall=0, n_judge_stall_helper=3))
           and not ok5(gh, dict(H5, stop_judge_ms_max=10600.0)),
           "B5: gpuhang_fence_restore takes STALL in 10 000-10 500 ms; a STALL_HELPER copy and 10 600 ms fail")
+    # B6: the counterexample cell: STALL naming context 1 (on the judgement, or on the suspect line before it)
+    H6, H6b = rows["gc4_gpuhang12000_ctx1_fence_gc_n1"], rows["gc4_gpuhang12000_ctx1_fence_gc_n2"]
+    check(H6["n_judge_stall"] == 3 and H6["stall_ctx"] == "1" and H6b["stall_ctx"] == "1" and H6["inject_ok"] == 1
+          and abs(H6["stop_judge_ms_min"] - 10100.0) < 0.01 and H6["fence_order_ok"] == 1 and H6["ow_data_equal"] == 1,
+          "B6: ctx=1 read from the STALLED line and from the suspect line (%r %r %r %r)" % (
+              H6["stall_ctx"], H6b["stall_ctx"], H6["inject_ok"], H6["stop_judge_ms_min"]))
+    check(H5["stall_ctx"] == "none", "B6: the GPU hang cell's STALL lines name no context: stall_ctx none (%r)" % H5["stall_ctx"])
+    g6 = rule("gpuhang_ctx1_fence_restore")
+    check(ok5(g6, H6) and ok5(g6, H6b) and not any(ok5(g6, dict(H6, stall_ctx=v)) for v in ("1+none", "0+1", "", "0", "none"))
+          and not ok5(g6, dict(H6, n_judge_stall=0, n_judge_stall_helper=3)) and not ok5(g6, dict(H6, stop_judge_ms_min=9900.0)),
+          "B6: gpuhang_ctx1_fence_restore takes STALL with stall_ctx 1 only")
+    neg6 = tempfile.mkdtemp(prefix="gc_selftest_ctx_")
+    try:
+        nraw = os.path.join(neg6, "raw")
+        gpu_ctx1_trial(nraw, 6, ctxs=(1, 0, 1))
+        gpu_ctx1_trial(nraw, 7, ctxs=(1, None, 1))
+        gpu_ctx1_trial(nraw, 8, hang_ctx="all")
+        nr = {r["id"]: r for r in rows_gc.all_rows(neg6) if r["sub"] == "raw"}
+        n6, n7, n8 = (nr.get("gc4_gpuhang12000_ctx1_fence_gc_n%d" % i, {}) for i in (6, 7, 8))
+        check(n6.get("stall_ctx") == "0+1" and n7.get("stall_ctx") == "1+none" and not ok5(g6, n6) and not ok5(g6, n7),
+              "B6: a survivor naming context 0, or none, fails the rule (%r %r)" % (n6.get("stall_ctx"), n7.get("stall_ctx")))
+        check(n8.get("inject_ok") == 0 and n6.get("inject_ok") == 1,
+              "B6: the hang line must name the cell's context: ctx=all is no injection record there (%r)" % n8.get("inject_ok"))
+    finally:
+        shutil.rmtree(neg6, ignore_errors=True)
     # B4: rows_gc.py --stops (the hold's per-trial check) on both forms and on the QP loss
     def stops(stem):
         return subprocess.run([sys.executable, os.path.join(HERE, "rows_gc.py"), "--stops", os.path.join(R, "raw", stem)],
@@ -1033,7 +1088,7 @@ def main():
                       ("none_probe_clean", "맞음"), ("gate_fenced", "자료 부족"), ("no_tcp_control", "맞음"),
                       ("long_hold_lane", "맞음"), ("stall_fence_restore", "자료 부족"), ("restore_time_rdma", "자료 부족"),
                       ("regression_tcp", "자료 부족"), ("cost_probe_lat4k", "자료 부족"), ("freeze_fence_restore", "맞음"),
-                      ("gpuhang_fence_restore", "맞음")):
+                      ("gpuhang_fence_restore", "맞음"), ("gpuhang_ctx1_fence_restore", "맞음")):
         check(verd.get(pid) == want, "verdict %s: %s (want %s)" % (pid, verd.get(pid), want))
     # the 2026-10-22 trim: regression.builds.gct.cells limits the tcp regression plan; @gc keeps every hold's cells
     reg = score_gc.regression_entries(score_gc.load_cells(), score_gc.mirror_cells())

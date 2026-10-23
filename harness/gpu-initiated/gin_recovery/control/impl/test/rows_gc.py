@@ -33,12 +33,14 @@ defines for phase N to emit exactly (notes_test.md lists them):
   DEAD      GIN/TS: rank R: rank P judged dead (cause=C) mono_ms=M                                  exists (ln4); C in rdma:
             EXITED, FIN+STALE, FIN+NORESP, REMACC+FIN, NORESP, LINKDOWN (TODO(p1): the rdma build prints its cause names)
   STALLED   GIN/RC: rank R: rank P (incarnation I) judged stalled (... STALL | STALL_HELPER ...) ... mono_ms=M   exists (p1)
+            a "ctx=K" token anywhere on the line (the GIN context whose line froze)   TODO(lib, 2026-10-24 decision (가))
   CLOSED    GIN/TS: rank R: socket to rank P closed cause=C mono_ms=M [liveness=...]                 exists (ln4; FIN, ECONNRESET)
   PAGEUP    GIN/RC: rank R: status page up (B B in use, probe_ms=P stall_ms=S W=W[, device line ...]) mono_ms=M  exists;
             probe_ms= and W= read wherever they stand, any suffix (REVIEW_INT3 B1)
   CONFIRM   GIN/RC: rank R: confirm window for rank P opened by FIN|RST|END W=W ... mono_ms=M        exists
             GIN/RC: rank R: confirm window for rank P closed: alive|STALE|NORESP|REMACC|unconfirmed mono_ms=M   TODO(p1)
-  SUSPECT   GIN/RC: rank R: rank P suspected (kind=watch|helper stale_ms=X) mono_ms=M                TODO(p1)
+  SUSPECT   GIN/RC: rank R: rank P suspected (kind=watch|helper|gpu stale_ms=X) mono_ms=M            exists (p1)
+            other tokens inside the parenthesis are allowed; "ctx=K" anywhere on the line   TODO(lib, 2026-10-24 decision (가))
   TIMEOUT   GIN/RC: rank R: probe of rank P timed out (no CQE in T ms) mono_ms=M                     TODO(p1)
   READFAIL  GIN/RC: rank R: liveness READ of rank P[ (device line)]: <why> (status S) mono_ms=M      exists (smoke 5)
   PROBESUM  GIN/RC: rank R: probe summary peer=P reads=N ok=K remacc=A noresp=B timeout=C gen=G lat_med_us=X lat_max_us=Y
@@ -70,8 +72,9 @@ defines for phase N to emit exactly (notes_test.md lists them):
             GIN/RC: rank R: test switch QP_ERR: record QP to rank P moved to ERR mono_ms=M          TODO(p2)
             GIN/RC: rank R: test switch CREDIT_STALL: no RECV re-posted for L ms mono_ms=M          TODO(p2)
             GIN/RC: rank R: test switch DROP_UD: the REJOIN datagram to rank P dropped mono_ms=M    TODO(p2)
-  driver    GINRS gpuhang rank=R step=S spin=1 wait_ms=W mono_ms=M (impl/test/driver/gin_mi.cu GC_GPUHANG_IT: the
-            hung kernel's spin started; the injection record of gc4_gpuhang12000_fence, 2026-10-23)        exists
+  driver    GINRS gpuhang rank=R step=S spin=1 [ctx=all|K ]wait_ms=W mono_ms=M (impl/test/driver/gin_mi.cu GC_GPUHANG_IT:
+            the hung kernel's spin started; the injection record of gc4_gpuhang12000_fence, 2026-10-23; ctx= since the
+            2026-10-24 context filter GC_GPUHANG_CTX: a cell with GC_GPUHANG_CTX=K needs ctx=K, gc4_gpuhang12000_ctx1_fence)   exists
             GIN/TS: TEST socket mute on|off rank=R peers=N mono_ms=M                                exists (gin-harden)
   The launcher's lines (GIN/LA: node N: ..., ../launcher/gin_launcher.c, exist): EXITED, "exited; EXITED not sent", FENCE ...
   SIGKILL sent, FENCED (after SIGKILL X ms / ended before), "(STOP_launcher)", "refused to signal", activation ... LATER |
@@ -90,6 +93,10 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   mono_off_used_ms, mono_off_rtt_ms, mono_off_drift_ms   the node clock offset used, its round trip, after - before
   n_judge, n_judge_confirm, n_judge_exited, n_judge_noresp, n_judge_stall, n_judge_stall_helper, n_judge_linkdown
                              survivors with a judgement of the subject (their first DEAD or STALLED line), by cause
+  stall_ctx                  (2026-10-24, decision (가)) the GIN context each survivor's STALL judgement of the subject names:
+                             ctx= on its STALLED line, else on its last SUSPECT line naming the subject before it; the
+                             distinct values "+"-joined, "none" for a STALL judgement that names none; empty when no
+                             survivor judged STALL ("1" is the number 1 to the rules; "1+none" is not)
   weak_cause_n               rdma builds: DEAD lines (any subject) whose cause is not one of the seven or LINKDOWN
   timeout_judge_n            DEAD lines whose cause names a timeout only
   judge_any_n                every DEAD and STALLED line of the trial (every subject, every process)
@@ -225,7 +232,9 @@ GAPL = re.compile(r"GINRS killed rank=(\d+) node=\w+ pid=\d+ which=after_spare g
 LA_MARK_START = re.compile(r"GINLA mark trial_start ")
 CONF_OPEN = re.compile(r"GIN/RC: rank (\d+): confirm window for rank (\d+) opened by (FIN|RST|END) W=(\d+)")
 CONF_CLOSE = re.compile(r"GIN/RC: rank (\d+): confirm window for rank (\d+) closed: (alive|STALE|NORESP|REMACC|unconfirmed)")
-SUSPECT = re.compile(r"GIN/RC: rank (\d+): rank (\d+) suspected \(kind=(\w+) stale_ms=([0-9.]+)\)")
+# 2026-10-24: other tokens (ctx=) may stand between kind= and stale_ms= or after it inside the parenthesis
+SUSPECT = re.compile(r"GIN/RC: rank (\d+): rank (\d+) suspected \(kind=(\w+)\b[^)]*?\bstale_ms=([0-9.]+)[^)]*\)")
+CTXTOK = re.compile(r"\bctx=(\d+)\b")  # the GIN context a STALLED or SUSPECT line names (2026-10-24, decision (가))
 PROBESUM = re.compile(r"GIN/RC: rank (\d+): probe summary peer=(\d+) (.*)$")
 WITLOST = re.compile(r"GIN/RC: rank (\d+): witness of rank (\d+) lost; liveness alive")
 FENCING = re.compile(r"GIN/RC: rank (\d+): rank (\d+) \(incarnation (\d+)\) fence FENCING\b")
@@ -245,6 +254,7 @@ SW_RST_GAP = re.compile(r"GIN/TS: rank (\d+): test switch RST_GAP:")
 SW_FDHOLD = re.compile(r"GIN/TS: rank (\d+): test switch FD_HOLDER=(sock|uverbs): child gin_fdhold pid=(\d+)")
 SW_FREEZE = re.compile(r"GIN/RC: rank (\d+): test switch FREEZE_PAGE=")
 SW_GPUHANG = re.compile(r"GINRS gpuhang rank=(\d+) step=(\d+) spin=1 ")  # the test driver's GC_GPUHANG_IT (2026-10-23)
+HANGCTX_ENV = re.compile(r"\bGC_GPUHANG_CTX=(\d+)\b")  # its context filter (2026-10-24): the line must say ctx=<k>
 SW_QPERR = re.compile(r"GIN/RC: rank (\d+): test switch QP_ERR: record QP to rank (\d+) moved to ERR")
 SW_CREDIT = re.compile(r"GIN/RC: rank (\d+): test switch CREDIT_STALL:")
 SW_DROPUD = re.compile(r"GIN/RC: rank (\d+): test switch DROP_UD: the REJOIN datagram to rank (\d+) dropped")
@@ -315,7 +325,7 @@ STRONG = set(STRONG_CONFIRM) | {"EXITED", "NORESP", "STALL", "STALL_HELPER", "LI
 
 GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_ms", "probe_ms_page", "mono_off_used_ms",
            "mono_off_rtt_ms", "mono_off_drift_ms", "n_judge", "n_judge_confirm",
-           "n_judge_exited", "n_judge_noresp", "n_judge_stall", "n_judge_stall_helper", "n_judge_linkdown", "judge_causes",
+           "n_judge_exited", "n_judge_noresp", "n_judge_stall", "n_judge_stall_helper", "n_judge_linkdown", "judge_causes", "stall_ctx",
            "weak_cause_n", "timeout_judge_n", "judge_any_n", "fin_judge_dev_min_ms", "fin_judge_dev_max_ms", "n_rst_surv",
            "n_rst_confirm", "n_rst_exited", "rst_judge_dev_min_ms", "rst_judge_dev_max_ms", "rst_exited_kill_judge_min_ms",
            "rst_exited_kill_judge_max_ms", "rst_judge_ms_min", "rst_judge_ms_max", "kill_judge_ms_min", "kill_judge_ms_max",
@@ -753,6 +763,19 @@ def gc_overlay(stem, base, meta):
         out["n_judge_linkdown"] = len(cause("LINKDOWN"))
         out["judge_causes"] = "+".join("%s:%d" % (c, sum(1 for _, (_, k) in js.items() if k == c))
                                        for c in sorted({k for _, (_, k) in js.items()}))
+        # stall_ctx (2026-10-24, decision (가)): the context each STALL judgement names (its line, else its last suspect line)
+        sc = set()
+        for r, (je, k) in js.items():
+            if k != "STALL":
+                continue
+            cm = CTXTOK.search(je.text)
+            if cm is None:
+                lg = logs[r] if not (r == kr and kr2 >= 0) else slog
+                su = [e for e in lg for m in [SUSPECT.search(e.text)] if m and int(m.group(2)) == s and e.t <= je.t
+                      and CTXTOK.search(e.text)]
+                cm = CTXTOK.search(max(su, key=lambda x: x.t).text) if su else None
+            sc.add(cm.group(1) if cm else "none")
+        out["stall_ctx"] = "+".join(sorted(sc)) if sc else ""
         out["probe_timeout_n"] = sum(1 for r, (je, _) in js.items() for e in logs[r] for m in [TIMEOUTL.search(e.text)]
                                      if m and int(m.group(2)) == s and e.t <= je.t)
         out["probe_fail_n"] = sum(1 for r, (je, _) in js.items() for e in logs[r] for m in [READFAILL.search(e.text)]
@@ -1142,8 +1165,9 @@ def gc_overlay(stem, base, meta):
         need = [(sw, rx) for sw, rx in (("TEST_RST_GAP", SW_RST_GAP), ("TEST_FREEZE_PAGE", SW_FREEZE), ("TEST_QP_ERR", SW_QPERR),
                                         ("TEST_CREDIT_STALL", SW_CREDIT), ("TEST_DROP_UD", SW_DROPUD), ("TEST_SOCK_MUTE", MUTE_ON))
                 if sw in envs]
-        if "GC_GPUHANG_IT" in envs:  # the driver's switch: its line (spin=1) on the subject
-            need.append(("GC_GPUHANG_IT", SW_GPUHANG))
+        if "GC_GPUHANG_IT" in envs:  # the driver's switch: its line (spin=1) on the subject; with GC_GPUHANG_CTX=k, ctx=k
+            hc = HANGCTX_ENV.search(envs)
+            need.append(("GC_GPUHANG_IT", re.compile(SW_GPUHANG.pattern + r"ctx=%s " % hc.group(1)) if hc else SW_GPUHANG))
         if need:
             out["inject_ok"] = int(all(any(rx.search(e.text) for e in every) for _, rx in need))
         if s >= 0 and "TEST_FREEZE_PAGE" in envs:
