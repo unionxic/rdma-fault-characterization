@@ -1,6 +1,6 @@
 {
  "study": "gin-control",
- "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n and the switch values are fixed at the pre-registration prereg/gin-control-v1). Input of hold_gc.sh (what to run), check_cells_gc.py (the cross-check with section 3) and score_gc.py (the planned scored trials per cell@build). 'rows' are section 7's 25 table rows (27 before the 2026-10-22 trim); 'cells' the cell@build runs (kind rs -> run_gc.sh through cells_gc.sh); 'holds' the main-run holds C1-C3, C5-C11 (C4 held only the removed tcp contrast cells) and the pilot holds P0-P4 (never scored; P4 runs the pilot-only cell of 'pilot_cells'); 'regression' gin-mirror's non-cost cells by name and env at @gc, and at @gct only the one control cell of regression.builds.gct.cells; 'cost' the probe cost family (run_cost_gc.sh); 'local' the CPU-only items (no cluster). env values are run_gc.sh's variables (R<r>_ENV, SPARE_ENV: the library's test switches of that process). Each trial's launchers run with its cell's launcher_env (EXPERIMENT 5: one launcher per node per trial since 2026-10-22, started by run_gc.sh). Every TODO names the phase or the pilot that fixes it.",
+ "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n and the switch values are fixed at the pre-registration prereg/gin-control-v1). Input of hold_gc.sh (what to run), check_cells_gc.py (the cross-check with section 3) and score_gc.py (the planned scored trials per cell@build). 'rows' are section 7's 26 table rows (25 after the 2026-10-22 trim, 27 before it; the GPU-hang cell added 2026-10-23); 'cells' the cell@build runs (kind rs -> run_gc.sh through cells_gc.sh); 'holds' the main-run holds C1-C3, C5-C11 (C4 held only the removed tcp contrast cells) and the pilot holds P0-P4 (never scored; P4 runs the pilot-only cell of 'pilot_cells'); 'regression' gin-mirror's non-cost cells by name and env at @gc, and at @gct only the one control cell of regression.builds.gct.cells; 'cost' the probe cost family (run_cost_gc.sh); 'local' the CPU-only items (no cluster). env values are run_gc.sh's variables (R<r>_ENV, SPARE_ENV: the library's test switches of that process). Each trial's launchers run with its cell's launcher_env (EXPERIMENT 5: one launcher per node per trial since 2026-10-22, started by run_gc.sh). Every TODO names the phase or the pilot that fixes it.",
  "builds": {
   "gc": {
    "lib": "gc",
@@ -211,6 +211,19 @@
   },
   {
    "row": 16,
+   "name": "gc4_gpuhang12000_fence",
+   "keys": [
+    "gc4_gpuhang12000_fence@gc"
+   ],
+   "kind": "멈춘 GPU의 펜스",
+   "preds": [
+    "gpuhang_fence_restore",
+    "no_tcp_control",
+    "long_hold_lane"
+   ]
+  },
+  {
+   "row": 17,
    "name": "gc4_mgmt_mute8, gct4_mgmt_mute8",
    "keys": [
     "gc4_mgmt_mute8@gc",
@@ -224,7 +237,7 @@
    ]
   },
   {
-   "row": 17,
+   "row": 18,
    "name": "gc4_qperr_record",
    "keys": [
     "gc4_qperr_record@gc"
@@ -236,7 +249,7 @@
    ]
   },
   {
-   "row": 18,
+   "row": 19,
    "name": "gc4_ud_drop_rejoin",
    "keys": [
     "gc4_ud_drop_rejoin@gc"
@@ -248,7 +261,7 @@
    ]
   },
   {
-   "row": 19,
+   "row": 20,
    "name": "gc4_credit_stall",
    "keys": [
     "gc4_credit_stall@gc"
@@ -260,7 +273,7 @@
    ]
   },
   {
-   "row": 20,
+   "row": 21,
    "name": "gc4_kill3_ow_spareabsent",
    "keys": [
     "gc4_kill3_ow_spareabsent@gc"
@@ -272,7 +285,7 @@
    ]
   },
   {
-   "row": 21,
+   "row": 22,
    "name": "gin-mirror 회귀(tcp)",
    "keys": [
     "regression:gct"
@@ -283,7 +296,7 @@
    ]
   },
   {
-   "row": 22,
+   "row": 23,
    "name": "gin-mirror 회귀(rdma)",
    "keys": [
     "regression:gc"
@@ -299,7 +312,7 @@
    ]
   },
   {
-   "row": 23,
+   "row": 24,
    "name": "비용 가족 probe",
    "keys": [
     "cost:probe"
@@ -310,7 +323,7 @@
    ]
   },
   {
-   "row": 24,
+   "row": 25,
    "name": "빌드 검사",
    "keys": [
     "local:build_check"
@@ -320,7 +333,7 @@
    "qa_only": "10절 QA 항목(기계어와 tcp 전처리 동일성); 3절의 찾는 키가 없음"
   },
   {
-   "row": 25,
+   "row": 26,
    "name": "CPU 시험 gate_fenced",
    "keys": [
     "local:gate_fenced"
@@ -833,6 +846,39 @@
    "todo": "TODO(phase1): as above",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
+  "gc4_gpuhang12000_fence@gc": {
+   "cell": "gc4_gpuhang12000_fence",
+   "build": "gc",
+   "kind": "rs",
+   "n": 5,
+   "driver": "gin_mi",
+   "env": {
+    "OVERWRITE": "1",
+    "MIRROR": "1",
+    "CKPT_STEPS": "20",
+    "SPARE": "1",
+    "FENCE": "lineage",
+    "SPARE_RANK": "3",
+    "R3_ENV": "GC_GPUHANG_IT=155",
+    "SUBJECT_RANK": "3"
+   },
+   "injection": {
+    "kind": "gpuhang",
+    "target": 3,
+    "timing": "the test driver's switch on rank 3 (impl/test/driver/gin_mi.cu, user decision 2026-10-23): in step 155 (about 2 s after the ring went live at smoke3's 7.9 ms per step) every sending CTA spins after its put is posted and before the flush that polls it, on a device word nothing sets; the GPU progress line stops with work left while the host threads keep beating; the spin has no end of its own (12000 in the name: the 12 s stall cells' family), the fence's SIGKILL ends the process; its GINRS gpuhang line is the injection record",
+    "switch": "R3_ENV GC_GPUHANG_IT=<step>"
+   },
+   "preds": [
+    "gpuhang_fence_restore",
+    "no_tcp_control",
+    "long_hold_lane"
+   ],
+   "control": "gc4_stop12000_fence@gc",
+   "bound_s": 60,
+   "row": 16,
+   "todo": "TODO(pilot): GC_GPUHANG_IT 155 is a placeholder from smoke3's step timing (about 2 s after live); the pilot's step lines fix it",
+   "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
+  },
   "gc4_mgmt_mute8@gc": {
    "cell": "gc4_mgmt_mute8",
    "build": "gc",
@@ -859,7 +905,7 @@
    ],
    "control": "gct4_mgmt_mute8@gct",
    "bound_s": 60,
-   "row": 16,
+   "row": 17,
    "todo": "TODO(pilot): STEPS 2400 (about 12 s) keeps the checkpoints going through the 8 s mute",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
@@ -888,7 +934,7 @@
    ],
    "control": "gc4_mgmt_mute8@gc",
    "bound_s": 60,
-   "row": 16,
+   "row": 17,
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_qperr_record@gc": {
@@ -916,7 +962,7 @@
    ],
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
-   "row": 17,
+   "row": 18,
    "todo": "TODO(phase2): the switch's value format <ms>:<peer> is this file's proposal",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
@@ -946,7 +992,7 @@
    ],
    "control": "gc4_kill3_ow@gc",
    "bound_s": 60,
-   "row": 18,
+   "row": 19,
    "todo": "TODO(phase2): the switch's value format rejoin:<count> is this file's proposal"
   },
   "gc4_credit_stall@gc": {
@@ -974,7 +1020,7 @@
    ],
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
-   "row": 19,
+   "row": 20,
    "todo": "TODO(phase2): the switch's value format <start>:<len> is this file's proposal",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
@@ -1004,7 +1050,7 @@
    ],
    "control": "gc4_kill3_ow@gc",
    "bound_s": 60,
-   "row": 20
+   "row": 21
   }
  },
  "pilot_cells": {
@@ -1106,6 +1152,9 @@
    },
    {
     "key": "gc4_helper_freeze12000@gc"
+   },
+   {
+    "key": "gc4_gpuhang12000_fence@gc"
    }
   ],
   "C11": [
@@ -1198,6 +1247,10 @@
    },
    {
     "key": "gc4_helper_freeze12000@gc",
+    "n": 1
+   },
+   {
+    "key": "gc4_gpuhang12000_fence@gc",
     "n": 1
    },
    {

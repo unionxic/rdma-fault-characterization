@@ -21,6 +21,9 @@ trials carry run_gc.sh's measured offset unless they say otherwise.
   B2 gc4_freeze12000_fence@gc x 5 (judged STALL_HELPER) and gct4_rstgap_live50@gctc x 10, gct4_rstgap_live300@gctc x 5: cells injected by a library
      test switch, with SUBJECT_RANK, judged
   B3 mi4_kill2_kill3_ow@gc: the second kill before the re-arm: counted (scored), its re-image condition false
+  B5 gc4_gpuhang12000_fence@gc x 5: the test driver's GPU hang (GC_GPUHANG_IT in R3_ENV, its GINRS gpuhang line), judged
+     STALL (table row 14) 10.1 s after the hang line, FENCE -> FENCED by the launcher; the rule takes STALL, a STALL_HELPER
+     copy fails (2026-10-23)
   B4 "(STOP_launcher: ...)" in the gap before trial_start (n16) and a launcher QP loss (n17): rows_gc.py --stops, the hold's
      tail check on a whole launcher log, and the launcher table read
   J  section 3's 2026-10-22 revision on copies of the rows above: the stall rules count STALL_HELPER (a STALL copy fails),
@@ -312,6 +315,21 @@ def build(R):
               meta_extra={"r3_env": "NCCL_GIN_TS_TEST_FREEZE_PAGE=12000"},
               la={"sunny": [(12.102, "FENCE of rank 3 incarnation 0 from rank 2: SIGKILL sent through its pidfd (pid 999)"),
                             (12.104, "rank 3 incarnation 0 FENCED: the group ended 1.500 ms after SIGKILL through its pidfd")]})
+    # B5: the GPU-hang cell (the driver's GC_GPUHANG_IT on rank 3, SUBJECT_RANK 3, no KILL_RANK): judged STALL (row 14)
+    for k in range(1, 6):
+        fz = [(12.101, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCING: FENCE sent to the launcher of node 1"),
+              (12.130, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCED (by FENCED from node 1)")]
+        L = restore_lines(3, 12.1, "STALL", buddy_fence=fz, t_pub=12.45)
+        for r in (0, 1, 2):
+            L[r] = [x if "judged dead" not in x[1] else
+                    (x[0], "GIN/RC: rank %d: rank 3 (incarnation 0) judged stalled (liveness stall judged (STALL)); STALLED to 3 rank(s)" % r)
+                    for x in L[r]]
+            L[r].append((12.5, "GIN/RC: rank %d: window check after the fence of rank 3: changed=0 cells" % r))
+        L[3] += [(2.0, "GINRS gpuhang rank=3 step=155 spin=1 wait_ms=0.120")]
+        trial(raw, "gc4_gpuhang12000_fence", k, kill=None, subject=3, dead=[3], inject="none", lines=L, probe=probe_ok(),
+              meta_extra={"r3_env": "GC_GPUHANG_IT=155"},
+              la={"sunny": [(12.102, "FENCE of rank 3 incarnation 0 from rank 2: SIGKILL sent through its pidfd (pid 999)"),
+                            (12.128, "rank 3 incarnation 0 FENCED: the group ended 26.000 ms after SIGKILL through its pidfd")]})
     # B2: the live RST and port gap on rank 1 in the tcp control build (SUBJECT_RANK 1; fail-fast, no restore)
     for cell, n, judged in (("gct4_rstgap_live50", 10, False), ("gct4_rstgap_live300", 5, True)):
         for k in range(1, n + 1):
@@ -651,6 +669,19 @@ def main():
     check(G3["subject"] == "1" and G3["n_judge"] == 3 and G3["n_rst_surv"] == 3 and abs(G3["rst_judge_ms_min"] - 103.0) < 0.01,
           "B2: the live RST cell judged on rank 1, RST -> judgement 103 ms (%r %r)" % (G3["n_judge"], G3["rst_judge_ms_min"]))
     revision_checks(A, B, F)
+    # B5: the GPU-hang cell judged STALL on its subject; the rule takes STALL only
+    H5 = rows["gc4_gpuhang12000_fence_gc_n1"]
+    check(H5["subject"] == "3" and H5["n_judge"] == 3 and H5["n_judge_stall"] == 3 and H5["n_judge_stall_helper"] == 0
+          and abs(H5["stop_judge_ms_min"] - 10100.0) < 0.01 and H5["inject_ok"] == 1 and H5["ckpt_stable_before_inj"] == 1
+          and H5["la_fence_sigkill_n"] == 1 and H5["la_fenced_n"] == 1 and H5["fence_order_ok"] == 1 and H5["subject_fenced"] == 1
+          and H5["ow_data_equal"] == 1,
+          "B5: the GPU-hang cell judged STALL 10 100 ms after the hang line (%r %r %r %r)" % (
+              H5["n_judge_stall"], H5["stop_judge_ms_min"], H5["inject_ok"], H5["fence_order_ok"]))
+    gh = rule("gpuhang_fence_restore")
+    ok5 = score_gc.s2.cond_true
+    check(ok5(gh, H5) and not ok5(gh, dict(H5, n_judge_stall=0, n_judge_stall_helper=3))
+          and not ok5(gh, dict(H5, stop_judge_ms_max=10600.0)),
+          "B5: gpuhang_fence_restore takes STALL in 10 000-10 500 ms; a STALL_HELPER copy and 10 600 ms fail")
     # B4: rows_gc.py --stops (the hold's per-trial check) on both forms and on the QP loss
     def stops(stem):
         return subprocess.run([sys.executable, os.path.join(HERE, "rows_gc.py"), "--stops", os.path.join(R, "raw", stem)],
@@ -717,7 +748,8 @@ def main():
     for pid, want in (("kill_judge_rdma", "자료 부족"), ("finless_exit_report", "맞음"), ("finless_read_fail", "맞음"),
                       ("none_probe_clean", "맞음"), ("gate_fenced", "자료 부족"), ("no_tcp_control", "맞음"),
                       ("long_hold_lane", "맞음"), ("stall_fence_restore", "자료 부족"), ("restore_time_rdma", "자료 부족"),
-                      ("regression_tcp", "자료 부족"), ("cost_probe_lat4k", "자료 부족"), ("freeze_fence_restore", "맞음")):
+                      ("regression_tcp", "자료 부족"), ("cost_probe_lat4k", "자료 부족"), ("freeze_fence_restore", "맞음"),
+                      ("gpuhang_fence_restore", "맞음")):
         check(verd.get(pid) == want, "verdict %s: %s (want %s)" % (pid, verd.get(pid), want))
     # the 2026-10-22 trim: regression.builds.gct.cells limits the tcp regression plan; @gc keeps every hold's cells
     reg = score_gc.regression_entries(score_gc.load_cells(), score_gc.mirror_cells())

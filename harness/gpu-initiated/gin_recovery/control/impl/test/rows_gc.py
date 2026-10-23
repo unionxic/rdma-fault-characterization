@@ -68,6 +68,8 @@ defines for phase N to emit exactly (notes_test.md lists them):
             GIN/RC: rank R: test switch QP_ERR: record QP to rank P moved to ERR mono_ms=M          TODO(p2)
             GIN/RC: rank R: test switch CREDIT_STALL: no RECV re-posted for L ms mono_ms=M          TODO(p2)
             GIN/RC: rank R: test switch DROP_UD: the REJOIN datagram to rank P dropped mono_ms=M    TODO(p2)
+  driver    GINRS gpuhang rank=R step=S spin=1 wait_ms=W mono_ms=M (impl/test/driver/gin_mi.cu GC_GPUHANG_IT: the
+            hung kernel's spin started; the injection record of gc4_gpuhang12000_fence, 2026-10-23)        exists
             GIN/TS: TEST socket mute on|off rank=R peers=N mono_ms=M                                exists (gin-harden)
   The launcher's lines (GIN/LA: node N: ..., ../launcher/gin_launcher.c, exist): EXITED, "exited; EXITED not sent", FENCE ...
   SIGKILL sent, FENCED (after SIGKILL X ms / ended before), "(STOP_launcher)", "refused to signal", activation ... LATER |
@@ -95,7 +97,8 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              survivors with an ECONNRESET CLOSED line naming the subject: their judgement's cause; for the
                              confirm causes (judgement - that RST) - W; for EXITED kill -> judgement; any cause RST -> judgement
   kill_judge_ms_min/max, kill_judge_exited_min_ms/max, kill_judge_clock   kill -> first judgement per survivor
-  stop_judge_ms_min/max      injection start (GINRS stop, or the FREEZE_PAGE line) -> the survivor's STALLED line
+  stop_judge_ms_min/max      injection start (GINRS stop, the FREEZE_PAGE line, or the driver's GINRS gpuhang line) ->
+                             the survivor's STALLED line
   judge_spread_ms            the survivors' first judgements, max - min (receipt clock)
   judge_to_publish_ms, kill_to_publish_ms   the first judgement / the kill -> the last survivor's first "published" line
   hold_ms_max, hold_other_n, kill_hold_ms_min   the survivors' hold durations (hold start -> restored, given up or the log's
@@ -159,8 +162,8 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   pair_gap_ms                the spare-absent cell: the runner's spare kill -> rank kill on that node's clock
   subject_fenced             1 when the runner killed nobody and the subject ended by SIGKILL (the fence): gin-restore's and
                              gin-mirror's columns then read it as the killed rank (fenced_subject)
-  ckpt_stable_before_inj     a stable (or armed) checkpoint of the subject before its injection (the kill, DIE_RST, the STOP or
-                             FREEZE_PAGE line); section 8's "before the first armed checkpoint" for every injected cell
+  ckpt_stable_before_inj     a stable (or armed) checkpoint of the subject before its injection (the kill, DIE_RST, the STOP,
+                             FREEZE_PAGE or GINRS gpuhang line); section 8's "before the first armed checkpoint" for every injected cell
   kill2_after_armed          KILL2_KIND=pid_after_armed: the second kill's receipt >= the survivors' last armed line (meta)
   stable_between_pair_kills  the spare-absent cell: a stable checkpoint of the subject between the spare kill and its kill
                              (the subject's mono_ms against the runner's on the same node)
@@ -205,6 +208,7 @@ SW_DIE_RST = re.compile(r"GIN/TS: rank (\d+): test switch DIE_RST:")
 SW_RST_GAP = re.compile(r"GIN/TS: rank (\d+): test switch RST_GAP:")
 SW_FDHOLD = re.compile(r"GIN/TS: rank (\d+): test switch FD_HOLDER=(sock|uverbs): child gin_fdhold pid=(\d+)")
 SW_FREEZE = re.compile(r"GIN/RC: rank (\d+): test switch FREEZE_PAGE=")
+SW_GPUHANG = re.compile(r"GINRS gpuhang rank=(\d+) step=(\d+) spin=1 ")  # the test driver's GC_GPUHANG_IT (2026-10-23)
 SW_QPERR = re.compile(r"GIN/RC: rank (\d+): test switch QP_ERR: record QP to rank (\d+) moved to ERR")
 SW_CREDIT = re.compile(r"GIN/RC: rank (\d+): test switch CREDIT_STALL:")
 SW_DROPUD = re.compile(r"GIN/RC: rank (\d+): test switch DROP_UD: the REJOIN datagram to rank (\d+) dropped")
@@ -641,6 +645,8 @@ def gc_overlay(stem, base, meta):
         st_ev, _ = first(inj, STOPL, lambda m: int(m.group(1)) == s)
         if st_ev is None:
             st_ev, _ = first(logs[s], SW_FREEZE)
+        if st_ev is None:
+            st_ev, _ = first(logs[s], SW_GPUHANG)
         if st_ev is not None:
             sj = [xd(st_ev, je)[0] for r, (je, k) in js.items() if k in ("STALL", "STALL_HELPER")]
             out["stop_judge_ms_min"], out["stop_judge_ms_max"] = mm(sj) if sj else ("", "")
@@ -920,10 +926,14 @@ def gc_overlay(stem, base, meta):
         need = [(sw, rx) for sw, rx in (("TEST_RST_GAP", SW_RST_GAP), ("TEST_FREEZE_PAGE", SW_FREEZE), ("TEST_QP_ERR", SW_QPERR),
                                         ("TEST_CREDIT_STALL", SW_CREDIT), ("TEST_DROP_UD", SW_DROPUD), ("TEST_SOCK_MUTE", MUTE_ON))
                 if sw in envs]
+        if "GC_GPUHANG_IT" in envs:  # the driver's switch: its line (spin=1) on the subject
+            need.append(("GC_GPUHANG_IT", SW_GPUHANG))
         if need:
             out["inject_ok"] = int(all(any(rx.search(e.text) for e in every) for _, rx in need))
         if s >= 0 and "TEST_FREEZE_PAGE" in envs:
             inj_ev = first(logs[s], SW_FREEZE)[0]
+        if s >= 0 and "GC_GPUHANG_IT" in envs:
+            inj_ev = first(logs[s], SW_GPUHANG)[0]
     if rk is not None and plan is not None:
         out["inject_off_ms"] = r1(abs(rk.t - plan) * 1000.0)
     if s >= 0 and inj_ev is not None:

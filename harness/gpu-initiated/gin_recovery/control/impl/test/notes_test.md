@@ -351,3 +351,20 @@ launcher가 노드마다 예비 프로세스 하나를 스스로 띄우고 활�
 - `test_rows_gc.py`: 합성 멈춤 줄(D, B2 freeze)을 smoke3의 실제 꼴 `judged stalled (liveness stall judged (STALL_HELPER))`로 바꿨다. J 검사 20개를 더했다: 멈춤 규칙은 STALL_HELPER를 받고 STALL 사본은 떨어뜨림, uverbs 규칙, EXITED 101, 120, 149 ms는 들고 99, 151, 160 ms는 빠짐(`kill_judge_rdma`, `finless_exit_report`, `kill_no_witness`), 확인 창 W + 1.5, 2.0 ms는 들고 2.5 ms는 빠짐, drift 검사가 지금 행에서 0이고 옛 꼴 여섯 사본을 모두 잡음.
 - 확인: `python3 test_rows_gc.py` 103 checks 0 failed, `python3 check_cells_gc.py` ok(drift 0), 셸 여덟 `bash -n` 통과 `[측정: 로컬 실행]`. 클러스터 실행 없음.
 - 남은 것: 8절에는 링이 live가 되지 않은 시행의 제외(`ring_not_live`, 한도 `LIVE_BOUND_MS` 10 000 ms 자리 표시) 줄이 없다. 그 규칙은 `rows_gc.py`, `score_gc.py`와 11절 할 일(F7: "8절에 한 줄")에만 있다 `[소스]`. 세대마다 증인 셈은 8절에 있고 `no_tcp_control` 행과 같다. 고치지 않은 행 가운데 `restore_time_rdma`, `gate_fenced`, `cost_probe_lat4k`, `regression_rdma`, `regression_rdma_mirror_off`의 `todo` 글은 "3절에 k(또는 목록, 규칙, 수치)가 없음"이라고 하지만 지금 3절은 그 값을 `[초안: 사전 등록 전 확정]`으로 적었다. 판정식은 3절과 같아 이번에는 그대로 두었다.
+
+## GPU hang 셀과 driver 사본 (2026-10-23, 사용자 결정)
+
+- **driver 사본.** `driver/gin_mi.cu`는 gin-mirror의 `../../../mirror/impl/test/gin_mi.cu`(md5 `556804c0b5e627b7d3d09203c8ef0679`, 커밋 `980a0752`)를 복사하고 스위치 하나만 더한 것이다
+  (사본 md5 `9f4568d98c4faf084db9a2277297b4c7`, 원본 대비 바뀐 줄 50, gin-mirror 파일은 고치지 않음). `GC_GPUHANG_IT=<N>`: 예비 프로세스가 아닌 프로세스에서 걸음 N의 보내는 CTA가 put을 post한 뒤
+  flush(poll) 전에, 아무도 쓰지 않는 장치 낱말에서 돈다. spin 직전에 매핑된 호스트 낱말을 쓰고, 호스트가 `GINRS gpuhang rank=R step=N spin=1 wait_ms=W mono_ms=M`을 내고(2 000 ms 안에 못 보면 spin=0),
+  kv `gpuhang_it`, `gpuhang_step`, `gpuhang_seen`을 남긴다. `RS_TRAIN`과 함께면 usage error(exit 1). 바뀐 장치 코드는 이 시험 driver의 것뿐이고 라이브러리 장치 코드는 0줄이다.
+- **빌드.** `driver/build_driver_gc.sh`(md5 `07dc8ab0`; gin-mirror `build_mi_test.sh`의 `mi` 단계를 잘라 옮김): 머리와 라이브러리는 `agent_gc_p2a2/build`(머리 digest `65fdf19b`), 출력 `agent_gc_smoke4/test/out/mi/gin_mi`
+  md5 `563cb460ea0b78c6f614028032934fe9`, 경고 0 `[측정]`.
+- **셀과 예측.** `cells_gc.json`: 7절 16행 `gc4_gpuhang12000_fence@gc`(n 5, `R3_ENV=GC_GPUHANG_IT=155`, `SUBJECT_RANK=3`, `FENCE=lineage`, 주입 kind `gpuhang`), hold C10(멈춤과 freeze 셀과 함께), pilot P1에 n 1;
+  뒤 행 번호 하나씩 밀림. 걸음 155는 smoke3의 걸음 시간(약 7.9 ms, live 뒤 걸음 100이 1.57 s)에서 live 뒤 약 2 s로 잡은 자리 표시다(todo). `predictions_gc.csv`: `gpuhang_fence_restore`
+  (`n_judge_stall == n_judge`, `stop_judge_ms` 10 000–10 500, FENCE SIGKILL과 FENCED, `fence_order_ok`, 바뀐 칸 0, 복원과 데이터 같음, ≥ 4/5).
+- **채점기.** `rows_gc.py`: `SW_GPUHANG`(`GINRS gpuhang rank=R step=S spin=1 `)이 주입 기록이다. 셀 env에 `GC_GPUHANG_IT`가 있으면 그 줄이 `inject_ok`의 조건이고, `ckpt_stable_before_inj`와
+  `stop_judge_ms_min/max`의 시작이다(STOP, FREEZE_PAGE 줄 다음 차례).
+- **자체 시험.** `test_rows_gc.py` B5: 합성 GPU hang 시행 다섯(판정 STALL, hang 줄 뒤 10 100 ms, FENCE → FENCED → 활성화). 열 검사, 규칙이 STALL만 받고 STALL_HELPER 사본과 10 600 ms는 거짓, 판정 "맞음".
+- 확인: `python3 test_rows_gc.py` 106 checks 0 failed, `python3 check_cells_gc.py` ok(7절 26행, 셀 24, 3절 키 29, drift 0) `[측정: 로컬 실행]`.
+- **넷째 smoke.** 같은 셀이 실제 NIC에서 한 번 돌았다(a6): STALL ×3이 hang 줄 뒤 10 032–10 033 ms, FENCE → FENCED 106.9 ms, 복원, 데이터 같음 `[측정, n 1, 채점 아님]`(`../../results/20261023_smoke4/SMOKE.md`).
