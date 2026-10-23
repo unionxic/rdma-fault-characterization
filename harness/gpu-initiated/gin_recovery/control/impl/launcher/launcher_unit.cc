@@ -1,5 +1,5 @@
 // launcher_unit.cc - CPU unit test of the launcher's state machine (gin-control, EXPERIMENT.md 9.5, 9.8 "launcher:
-// state machine model"). Built with ASan and UBSan by build_launcher.sh; no verbs, no CUDA, no network.
+// state machine model"). Built with ASan and UBSan by build_launcher.sh; no libibverbs, no CUDA, no network.
 //
 // The state machine is gin_launcher.c itself (compiled with -DGL_NO_MAIN). The RNIC side is the in-process test
 // transport below (it records what the launcher sends and lets a test inject UD and RC messages, READ completions and QP
@@ -30,6 +30,10 @@
 // process the launcher did not spawn or register; the options. The wait-for (sparefix): a spawn waits until its pattern
 // matches (then spawns within a poll), or spawns anyway after the bound; an exit "cannot open the transcript" of such a
 // spawn is not counted against the respawn cap; the same exit of a spawn whose wait was met is (the bound of the rule).
+//
+// The verbs transport's credit retry (review 2026-10-23; only when <infiniband/verbs.h> exists, GL_UNIT_VERBS): the
+// transport itself is linked against an in-file fake of libibverbs (no device, no libibverbs at run time); the window is
+// full, the credit READ comes back unchanged, the rank sends nothing; the timer READs again until the queued message goes.
 #include <cerrno>
 #include <cinttypes>
 #include <cstdio>
@@ -3161,6 +3165,333 @@ static void test_header() {
   CHECK(strcmp(gl_reason_text(GL_R_SPAWN_NOT_BUILT), "spawn not built") == 0);
 }
 
+#ifdef GL_UNIT_VERBS
+// ------------------------------------------------------------------------------------------------ fake libibverbs
+// The verbs transport (launcher_transport_verbs.c) is linked into this binary against the fake below, not libibverbs: no
+// device is opened, nothing reaches an RNIC. The fake records every posted send WR and completes only what a scene tells it
+// to (fv_complete), so the credit READ's timing is the scene's.
+#include <sys/eventfd.h>
+
+#include <infiniband/verbs.h>
+
+namespace {
+struct FvWr {
+  uint64_t id;
+  int opcode;
+  uint64_t addr;
+  uint32_t len;
+  uint64_t raddr;
+  uint32_t rkey;
+  double ms;  // posted at
+  bool done;
+};
+struct FV {
+  ibv_device dev;
+  ibv_device* list[2];
+  std::deque<ibv_wc> cq;     // completions a scene made, for poll_cq
+  std::vector<FvWr> sends;   // every posted send WR, in order
+  int nRecv = 0, nObj = 0, readsOut = 0, readsOutMax = 0;
+  uint32_t nextKey = 0x100, nextQpn = 0x200;
+};
+FV* gFv = nullptr;
+int fv_post_send(ibv_qp*, ibv_send_wr* wr, ibv_send_wr**) {
+  for (; wr; wr = wr->next) {
+    gFv->sends.push_back({wr->wr_id, (int)wr->opcode, wr->sg_list[0].addr, wr->sg_list[0].length, wr->wr.rdma.remote_addr,
+                          wr->wr.rdma.rkey, now_ms(), false});
+    if (wr->opcode == IBV_WR_RDMA_READ) gFv->readsOutMax = std::max(gFv->readsOutMax, ++gFv->readsOut);
+  }
+  return 0;
+}
+int fv_post_recv(ibv_qp*, ibv_recv_wr* wr, ibv_recv_wr**) {
+  for (; wr; wr = wr->next) gFv->nRecv++;
+  return 0;
+}
+int fv_poll_cq(ibv_cq*, int n, ibv_wc* wc) {
+  int k = 0;
+  while (k < n && !gFv->cq.empty()) {
+    wc[k++] = gFv->cq.front();
+    gFv->cq.pop_front();
+  }
+  return k;
+}
+int fv_req_notify(ibv_cq*, int) { return 0; }
+template <class T>
+T* fv_new() {
+  gFv->nObj++;
+  return (T*)calloc(1, sizeof(T));
+}
+template <class T>
+void fv_free(T* p) {
+  if (!p) return;
+  gFv->nObj--;
+  free(p);
+}
+// Complete send WR i: success; a READ first gets `word` (8 B) written into its local buffer, as the NIC would.
+void fv_complete(size_t i, uint64_t word = 0) {
+  FvWr& w = gFv->sends[i];
+  if (w.done) return;
+  w.done = true;
+  ibv_wc c;
+  memset(&c, 0, sizeof(c));
+  c.wr_id = w.id;
+  c.status = IBV_WC_SUCCESS;
+  if (w.opcode == IBV_WR_RDMA_READ) {
+    memcpy((void*)(uintptr_t)w.addr, &word, sizeof(word));
+    c.opcode = IBV_WC_RDMA_READ;
+    gFv->readsOut--;
+  } else {
+    c.opcode = IBV_WC_SEND;
+  }
+  gFv->cq.push_back(c);
+}
+int fv_count(int opcode) {
+  int n = 0;
+  for (const FvWr& w : gFv->sends) n += w.opcode == opcode;
+  return n;
+}
+long fv_last(int opcode) {  // index of the last WR of this opcode, -1 none
+  for (size_t i = gFv->sends.size(); i-- > 0;)
+    if (gFv->sends[i].opcode == opcode) return (long)i;
+  return -1;
+}
+}  // namespace
+
+// The names the transport links against (several are macros in verbs.h: the parentheses keep them functions).
+extern "C" {
+struct ibv_device** (ibv_get_device_list)(int* n) {
+  if (n) *n = 1;
+  return gFv->list;
+}
+void ibv_free_device_list(struct ibv_device**) {}
+const char* ibv_get_device_name(struct ibv_device*) { return "fakev0"; }
+struct ibv_context* ibv_open_device(struct ibv_device* d) {
+  ibv_context* c = fv_new<ibv_context>();
+  c->device = d;
+  c->ops.post_send = fv_post_send;
+  c->ops.post_recv = fv_post_recv;
+  c->ops.poll_cq = fv_poll_cq;
+  c->ops.req_notify_cq = fv_req_notify;
+  c->async_fd = eventfd(0, EFD_CLOEXEC);
+  return c;
+}
+int ibv_close_device(struct ibv_context* c) {
+  close(c->async_fd);
+  fv_free(c);
+  return 0;
+}
+int (ibv_query_port)(struct ibv_context*, uint8_t, struct _compat_ibv_port_attr* a) {
+  ibv_port_attr* p = (ibv_port_attr*)a;
+  p->state = IBV_PORT_ACTIVE;
+  p->active_mtu = IBV_MTU_4096;
+  p->lid = 7;
+  return 0;
+}
+int ibv_query_gid(struct ibv_context*, uint8_t, int, union ibv_gid* g) {
+  memset(g, 0, sizeof(*g));
+  g->raw[15] = 9;
+  return 0;
+}
+struct ibv_pd* ibv_alloc_pd(struct ibv_context* c) {
+  ibv_pd* p = fv_new<ibv_pd>();
+  p->context = c;
+  return p;
+}
+int ibv_dealloc_pd(struct ibv_pd* p) {
+  fv_free(p);
+  return 0;
+}
+struct ibv_comp_channel* ibv_create_comp_channel(struct ibv_context* c) {
+  ibv_comp_channel* ch = fv_new<ibv_comp_channel>();
+  ch->context = c;
+  ch->fd = eventfd(0, EFD_CLOEXEC);
+  return ch;
+}
+int ibv_destroy_comp_channel(struct ibv_comp_channel* ch) {
+  close(ch->fd);
+  fv_free(ch);
+  return 0;
+}
+struct ibv_cq* ibv_create_cq(struct ibv_context* c, int cqe, void* ctx, struct ibv_comp_channel* ch, int) {
+  ibv_cq* q = fv_new<ibv_cq>();
+  q->context = c;
+  q->channel = ch;
+  q->cq_context = ctx;
+  q->cqe = cqe;
+  return q;
+}
+int ibv_destroy_cq(struct ibv_cq* q) {
+  fv_free(q);
+  return 0;
+}
+int ibv_get_cq_event(struct ibv_comp_channel*, struct ibv_cq**, void**) {
+  errno = EAGAIN;
+  return -1;
+}
+void ibv_ack_cq_events(struct ibv_cq*, unsigned int) {}
+int ibv_get_async_event(struct ibv_context*, struct ibv_async_event*) {
+  errno = EAGAIN;
+  return -1;
+}
+void ibv_ack_async_event(struct ibv_async_event*) {}
+static struct ibv_mr* fv_mr(struct ibv_pd* pd, void* addr, size_t len) {
+  ibv_mr* m = fv_new<ibv_mr>();
+  m->context = pd->context;
+  m->pd = pd;
+  m->addr = addr;
+  m->length = len;
+  m->lkey = m->rkey = gFv->nextKey++;
+  return m;
+}
+struct ibv_mr* (ibv_reg_mr)(struct ibv_pd* pd, void* addr, size_t len, int) { return fv_mr(pd, addr, len); }
+struct ibv_mr* ibv_reg_mr_iova2(struct ibv_pd* pd, void* addr, size_t len, uint64_t, unsigned int) {
+  return fv_mr(pd, addr, len);
+}
+int ibv_dereg_mr(struct ibv_mr* m) {
+  fv_free(m);
+  return 0;
+}
+struct ibv_qp* ibv_create_qp(struct ibv_pd* pd, struct ibv_qp_init_attr* ia) {
+  ibv_qp* q = fv_new<ibv_qp>();
+  q->context = pd->context;
+  q->pd = pd;
+  q->send_cq = ia->send_cq;
+  q->recv_cq = ia->recv_cq;
+  q->qp_type = ia->qp_type;
+  q->qp_num = gFv->nextQpn++;
+  return q;
+}
+int ibv_modify_qp(struct ibv_qp*, struct ibv_qp_attr*, int) { return 0; }
+int ibv_destroy_qp(struct ibv_qp* q) {
+  fv_free(q);
+  return 0;
+}
+struct ibv_ah* ibv_create_ah(struct ibv_pd* pd, struct ibv_ah_attr*) {
+  ibv_ah* a = fv_new<ibv_ah>();
+  a->context = pd->context;
+  a->pd = pd;
+  return a;
+}
+int ibv_destroy_ah(struct ibv_ah* a) {
+  fv_free(a);
+  return 0;
+}
+const char* ibv_wc_status_str(enum ibv_wc_status) { return "fake status"; }
+const char* ibv_event_type_str(enum ibv_event_type) { return "fake event"; }
+}
+
+// Review 2026-10-23 (credit retry): the 64-message window to a rank is full; the credit READ that the 65th message starts
+// comes back unchanged; the rank sends nothing. Before the fix nothing READ the count again and the message stayed queued
+// on a healthy QP. Now the transport's timer fd becomes readable after GL_V_CREDIT_RETRY_MS (1 ms) and the next poll
+// READs again, one READ in flight at a time; once the count has moved the queued message goes out (seq 65), and no
+// further READ follows an empty queue.
+static void test_verbs_credit_retry() {
+  FV fv;
+  gFv = &fv;
+  memset(&fv.dev, 0, sizeof(fv.dev));
+  fv.list[0] = &fv.dev;
+  fv.list[1] = nullptr;
+  glTransport* tp = gl_transport_verbs_open("fakev0", 1, 3, 0, 0x1234, 5);
+  CHECK(tp != nullptr);
+  if (!tp) return;
+  int fds[4];
+  const int nfd = tp->ops->fds(tp, fds, 4);
+  CHECK(nfd == 3);  // completion channel, async fd, the credit retry timer
+  const int tfd = fds[2];
+  glEp loc;
+  const uint32_t gen = 1;
+  const int h = tp->ops->rc_create(tp, GL_PAIR_RECORD, gen, 0xabcdef, &loc);
+  CHECK(h >= 0);
+  glEp rem = loc;
+  CHECK(tp->ops->rc_connect(tp, h, &rem) == 0);
+  glRegion pg;
+  memset(&pg, 0, sizeof(pg));
+  pg.addr = 0x10000;
+  pg.rkey = 0x77;
+  pg.len = 4096;
+  tp->ops->rc_credit_at(tp, h, &pg, 8);
+  glTpEvent ev[16];
+  auto msg = [](uint32_t i) {
+    glMsg m;
+    memset(&m, 0, sizeof(m));
+    m.h.seq = i;  // the scene's marker: the transport does not look inside
+    return m;
+  };
+  int nOk = 0;
+  for (uint32_t i = 1; i <= 64; i++) {
+    const glMsg m = msg(i);
+    nOk += tp->ops->rc_send(tp, h, &m) == 0;
+  }
+  CHECK(nOk == 64);
+  CHECK(fv_count(IBV_WR_SEND) == 64 && fv_count(IBV_WR_RDMA_READ) == 0);
+  for (size_t i = 0; i < fv.sends.size(); i++) fv_complete(i);  // the NIC finished them; the rank consumed none yet
+  CHECK(tp->ops->poll(tp, ev, 16) == 0);
+  const glMsg m65 = msg(65);
+  CHECK(tp->ops->rc_send(tp, h, &m65) == 0);  // queued: the window is shut by credit
+  CHECK(fv_count(IBV_WR_SEND) == 64 && fv_count(IBV_WR_RDMA_READ) == 1);
+  const long r0 = fv_last(IBV_WR_RDMA_READ);
+  CHECK(fv.sends[r0].raddr == pg.addr + 8 && fv.sends[r0].rkey == pg.rkey && fv.sends[r0].len == 8);
+  const uint64_t unchanged = ((uint64_t)gen << 32) | 0u, moved = ((uint64_t)gen << 32) | 10u;
+  // the first READ and the first retry come back unchanged; the second retry sees the moved count
+  int nUnchanged = 0;
+  double doneMs = now_ms();
+  fv_complete((size_t)r0, unchanged);
+  nUnchanged++;
+  CHECK(tp->ops->poll(tp, ev, 16) == 0);
+  CHECK(fv_count(IBV_WR_SEND) == 64 && fv_count(IBV_WR_RDMA_READ) == 1);  // not at once: after the retry interval
+  bool woke = false, spaced = true, heldOk = true, sent = false, quiet = true;  // quiet: no event (no RECV, no error)
+  const double t0 = now_ms();
+  while (now_ms() - t0 < 2000 && !sent) {
+    struct pollfd p = {tfd, POLLIN, 0};
+    if (poll(&p, 1, 50) > 0 && (p.revents & POLLIN)) woke = true;  // the launcher's loop polls this fd: it would wake
+    const int nr0 = fv_count(IBV_WR_RDMA_READ);
+    if (tp->ops->poll(tp, ev, 16) != 0) quiet = false;
+    if (fv_count(IBV_WR_RDMA_READ) == nr0) continue;
+    const long r = fv_last(IBV_WR_RDMA_READ);
+    if (fv.sends[r].ms - doneMs < 0.9) spaced = false;
+    if (nUnchanged == 1) {  // hold this READ for 5 ms: no second READ meanwhile (one at a time)
+      const double h0 = now_ms();
+      while (now_ms() - h0 < 5) {
+        (void)poll(&p, 1, 1);
+        if (tp->ops->poll(tp, ev, 16) != 0) quiet = false;
+      }
+      if (fv_count(IBV_WR_RDMA_READ) != nr0 + 1) heldOk = false;
+    }
+    doneMs = now_ms();
+    fv_complete((size_t)r, nUnchanged < 2 ? unchanged : moved);
+    if (nUnchanged < 2) nUnchanged++;
+    if (tp->ops->poll(tp, ev, 16) != 0) quiet = false;
+    sent = fv_count(IBV_WR_SEND) == 65;
+  }
+  CHECK(woke);
+  CHECK(sent);
+  CHECK(spaced);  // every retry at least ~1 ms after the previous READ's completion
+  CHECK(heldOk);
+  CHECK(fv.readsOutMax == 1);
+  CHECK(fv_count(IBV_WR_RDMA_READ) == 3);  // the first READ, two retries
+  const long s65 = fv_last(IBV_WR_SEND);
+  if (s65 >= 0) {
+    glCtrlEnv e;
+    glMsg m;
+    memcpy(&e, (const void*)(uintptr_t)fv.sends[s65].addr, sizeof(e));
+    memcpy(&m, (const void*)(uintptr_t)(fv.sends[s65].addr + sizeof(e)), sizeof(m));
+    CHECK(e.seq == 65 && e.gen == gen && m.h.seq == 65);
+  }
+  // the queue is empty: no more READs
+  const double q0 = now_ms();
+  while (now_ms() - q0 < 10) {
+    struct pollfd p = {tfd, POLLIN, 0};
+    (void)poll(&p, 1, 2);
+    if (tp->ops->poll(tp, ev, 16) != 0) quiet = false;
+  }
+  CHECK(quiet);
+  CHECK(fv_count(IBV_WR_RDMA_READ) == 3);
+  tp->ops->rc_close(tp, h);
+  tp->ops->close(tp);
+  CHECK(fv.nObj == 0);  // every fake object the transport made it also destroyed
+  gFv = nullptr;
+}
+#endif
+
 int main(int argc, char** argv) {
   if (argc > 1 && strcmp(argv[1], "--fake-spare") == 0) return fake_spare_main(argc, argv);  // exec'd by a launcher
   if (argc > 1 && chdir(argv[1]) != 0) {
@@ -3207,7 +3538,11 @@ int main(int argc, char** argv) {
                {"spare_respawn", test_spare_respawn},
                {"spare_hello_timeout", test_spare_hello_timeout},
                {"spare_no_foreign_signal", test_spare_no_foreign_signal},
-               {"spare_wait_for", test_spare_wait_for}};
+               {"spare_wait_for", test_spare_wait_for},
+#ifdef GL_UNIT_VERBS
+               {"verbs_credit_retry", test_verbs_credit_retry},
+#endif
+  };
   int nt = 0;
   for (auto& t : tests) {
     const int f0 = nFail, c0 = nChecks;

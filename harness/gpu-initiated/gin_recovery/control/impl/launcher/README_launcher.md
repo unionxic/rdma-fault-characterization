@@ -71,10 +71,11 @@ OUT=<출력 디렉터리> ./build_launcher.sh unit     # launcher_unit 실행, �
 - `/usr/include/infiniband/verbs.h`가 있으면 verbs 전송까지 빌드하고(실행하지 않음), 없으면 `-DGL_NO_VERBS`로 빌드한다(그 프로그램은 시작을 거절한다).
 - 스크립트는 `gin_launcher`를 실행하지 않고, verbs 장치나 GPU를 열지 않는다. 단위 시험은 프로세스 안 시험 전송과, 스스로 fork한 자식(실제 pidfd, 실제 SIGSTOP과
   SIGKILL)만 쓴다. ASan과 UBSan으로 빌드한다.
-- 장면(28개): pidfd 사실, 등록과 거절, EXITED, LEFT와 BYE, FENCE와 EXITED의 엇갈림, 남의 pidfd에 신호 없음, SPAWN 거절, LATER 뒤 넘기기, 예비 프로세스가 활성화 전에
+- 장면(28개, verbs.h가 있으면 29개): pidfd 사실, 등록과 거절, EXITED, LEFT와 BYE, FENCE와 EXITED의 엇갈림, 남의 pidfd에 신호 없음, SPAWN 거절, LATER 뒤 넘기기, 예비 프로세스가 활성화 전에
   끝남, 이른 답의 한도, 잃는 ACCEPTED와 ACCEPTED 뒤 QP 끊김, READ 중 ABORT와 끝남과 QP 잃음, 손잡이 칸의 다시 씀(음성 대조 포함), 같은 화신 둘째 접속, pidfd 바꿈,
   짝 맺기와 다시 짝 맺기, credit 낱말, 등록 oracle(장면 14개, 장면마다 검사 하나), 소켓 디렉터리, 잘못된 말, nonce 없는 INFO, 그리고 따뜻한 예비 프로세스 일곱
   (옵션, 시작 때 띄우기와 HELLO 한도, 활성화 뒤 다음 것, 쓰이지 않은 것의 다시 띄우기와 한도, HELLO 한도 넘김, 남의 프로세스에 신호 없음, 기록 파일 기다림; 아래 절).
+  verbs.h가 있으면 verbs 전송 자체를 `launcher_unit.cc` 안의 가짜 libibverbs에 붙인 장면 `verbs_credit_retry`도 돈다(libibverbs는 링크하지 않는다).
 - 시험 전송은 손잡이를 verbs 전송과 같은 꼴로 줄 수 있고(칸 다시 씀 + 일련번호), READ를 붙잡아 두었다가 늦게 끝낼 수 있으며, `rc_close` 뒤에는 그 QP의 READ와
   사건을 버린다(전송 계약).
 
@@ -255,6 +256,14 @@ rain(5.15.0-97-generic)에서 `launcher_unit`의 pidfd 장면으로 쟀다(fork�
 - `launcher_unit.cc`에 계획 `t`와 장면 `spare_wait_for`(57 검사), `spare_opts`에 검사 13(새 검사 70 = 692 → 762). ASan, UBSan 단위 시험 세 번(`all` 한 번, `unit` 두 번): 세 번 모두 28 장면 762 검사
   실패 0, sanitizer 보고 0 `[측정, n 3]`. 파일을 만든 때부터 띄움까지는 시험이 재지 않고 "< 300 ms"만 본다. 시작부터 맞을 때까지의 줄 값은 501.2–501.3 ms(세 번, 그중 400 ms는 시험이
   파일 없이 기다린 시간).
+
+2026-10-23, credit 다시 읽기(독립 리뷰 지적, [notes_launcher_credit.md](notes_launcher_credit.md)). 64개 창이 차서 큐에 쌓인 메시지는 credit READ 하나가
+값이 그대로인 채 돌아오면, launcher가 다른 `rc_send`를 하거나 rank가 SEND를 보내기 전에는 다시 READ하지 않아 멀쩡한 QP에서 FENCED나 활성화 메시지가 멈출 수
+있었다. 이제 `launcher_transport_verbs.c`가 credit으로 닫힌 큐가 있고 그 QP에 credit READ가 떠 있지 않으면 1 ms 한 번 timerfd(전송의 fd 셋째, launcher 루프가
+poll한다)를 걸고, 울리면 다시 READ한다. QP마다 READ는 한 번에 하나(`creditReading`)이고, 창이 열리거나 QP가 오류 나거나 닫히면 멈춘다(따로 둔 한도 없음). 장면
+`verbs_credit_retry`(22 검사): 창 가득, 첫 READ와 첫 다시 읽기는 그대로, 둘째 다시 읽기에서 값이 움직여 65번째 메시지(envelope seq 65)가 나감, READ 사이 1 ms 이상,
+READ를 5 ms 붙잡는 동안 둘째 READ 없음, 큐가 빈 뒤 READ 없음. 고치기 전 전송에 붙이면 5 검사가 실패했다 `[측정, n 1]`. 고친 뒤 ASan, UBSan 단위 시험 세 번(`all` 한 번,
+`unit` 두 번) 모두 29 장면 784 검사 실패 0, sanitizer 보고 0 `[측정, n 3]`. `gin_launcher` md5 `d1aceaf6`, `launcher_unit` `df4f5248`. 하드웨어 실행은 없다(빌드됨).
 
 ## 열린 질문
 

@@ -9,6 +9,13 @@
  * while seq - ackSeq < GL_V_RQ, where ackSeq is the count the rank put into its last envelope. Past that it queues
  * (bounded) and logs. It sends no credit-only message.
  *
+ * Credit retry (review 2026-10-23): a queue that is shut by credit (seq - ackSeq >= GL_V_RQ) READs the rank's consumed
+ * count once when it shuts, and again every GL_V_CREDIT_RETRY_MS while it stays shut (a one-shot timerfd among the
+ * transport's fds wakes the launcher's loop): before, a READ that came back unchanged was never repeated, and with no
+ * further rc_send and no SEND of the rank the queue stayed shut on a healthy QP. One credit READ per QP at a time
+ * (creditReading), as before; the retries end when the window opens, or the QP errs or is closed (the launcher's own
+ * timeouts decide that).
+ *
  * Handles (REVIEW_PREP fix 11): an RC handle is (serial << 8) | slot; a slot is reused, its handle never, so a closed
  * QP's completions (still in the CQ) and queued events can never be taken for a newer QP's: every completion and event
  * is matched against the slot's current handle, and rc_close drops the queued events of the handle it closes.
@@ -30,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/timerfd.h>
 
 #include <infiniband/verbs.h>
 
@@ -49,6 +57,7 @@
 #define GL_V_TIMEOUT 14
 #define GL_V_RETRY 7
 #define GL_V_RNR_RETRY 3
+#define GL_V_CREDIT_RETRY_MS 1  /* a credit-shut queue READs the rank's consumed count again after this */
 
 enum { WR_UD_RECV = 1, WR_UD_SEND = 2, WR_RC_RECV = 3, WR_RC_SEND = 4, WR_RC_READ = 5, WR_RC_CREDIT = 6 };
 static uint64_t wr_id(int type, int peer, int slot) {
@@ -117,6 +126,8 @@ struct glVerbs {
   uint32_t serial;
   struct ibv_mr* pageMr;
   struct glVPeer peer[GL_V_PEERS];
+  int creditTfd;            /* one-shot timer of the credit retry (-1: none) */
+  int creditArmed;
   struct glTpEvent ev[GL_V_EVQ];
   int evHead, evCount;
 };
@@ -221,6 +232,7 @@ static int gl_v_fds(struct glTransport* tp, int* fds, int max) {
   int n = 0;
   if (n < max) fds[n++] = v->ch->fd;
   if (n < max) fds[n++] = v->ctx->async_fd;
+  if (n < max && v->creditTfd >= 0) fds[n++] = v->creditTfd;
   return n;
 }
 
@@ -272,6 +284,31 @@ static void gl_v_credit_read(struct glVerbs* v, int handle) {
     p->creditReading = 1;
     p->sInflight++;
   }
+}
+/* Shut by credit (not by SQ slots, which their own completions reopen) and able to READ the credit word. */
+static int gl_v_credit_shut(const struct glVPeer* p) {
+  return p->used && p->kind == GL_PAIR_RECORD && p->connected && !p->broken && p->pCount > 0 && p->creditMr &&
+         p->creditPage.rkey != 0 && p->seqOut - p->ackIn >= GL_V_RQ;
+}
+/* Arm the retry timer once when a credit-shut queue has no credit READ in flight (one READ per QP at a time). */
+static void gl_v_credit_arm(struct glVerbs* v) {
+  if (v->creditTfd < 0 || v->creditArmed) return;
+  for (int i = 0; i < GL_V_PEERS; i++)
+    if (gl_v_credit_shut(&v->peer[i]) && !v->peer[i].creditReading) {
+      struct itimerspec t;
+      memset(&t, 0, sizeof(t));
+      t.it_value.tv_nsec = GL_V_CREDIT_RETRY_MS * 1000000L;
+      if (timerfd_settime(v->creditTfd, 0, &t, NULL) == 0) v->creditArmed = 1;
+      return;
+    }
+}
+/* The timer fired: READ the credit word again for every credit-shut queue without a READ in flight. */
+static void gl_v_credit_retry(struct glVerbs* v) {
+  uint64_t x;
+  if (v->creditTfd < 0 || read(v->creditTfd, &x, sizeof(x)) != (ssize_t)sizeof(x)) return;
+  v->creditArmed = 0;
+  for (int i = 0; i < GL_V_PEERS; i++)
+    if (gl_v_credit_shut(&v->peer[i]) && !v->peer[i].creditReading) gl_v_credit_read(v, v->peer[i].handle);
 }
 static void gl_v_flush(struct glVerbs* v, int handle) {
   struct glVPeer* p = gl_v_peer(v, handle);
@@ -397,6 +434,7 @@ static int gl_v_poll(struct glTransport* tp, struct glTpEvent* out, int max) {
     if (n <= 0) break;
     for (int i = 0; i < n; i++) gl_v_on_wc(v, &wc[i]);
   }
+  gl_v_credit_retry(v);  // after the completions: one that opened the window makes the retry unneeded
   struct ibv_async_event ae;
   int udBroken = 0;
   while (ibv_get_async_event(v->ctx, &ae) == 0) {  // the async fd is non-blocking
@@ -415,6 +453,7 @@ static int gl_v_poll(struct glTransport* tp, struct glTpEvent* out, int max) {
     ibv_ack_async_event(&ae);
   }
   if (udBroken && gl_v_ud_setup(v) != 0) gl_v_fatal(v, -1);
+  gl_v_credit_arm(v);  // e.g. a credit READ came back unchanged above: READ again in GL_V_CREDIT_RETRY_MS
   int k = 0;
   while (k < max && v->evCount > 0) {
     out[k++] = v->ev[v->evHead];
@@ -644,6 +683,7 @@ static int gl_v_rc_send(struct glTransport* tp, int handle, const struct glMsg* 
   gl_v_credit_read(v, handle);
   p->pend[(p->pHead + p->pCount) % GL_V_PENDQ] = *m;
   p->pCount++;
+  gl_v_credit_arm(v);  // the READ could not be posted (SQ full): the timer tries again
   return 0;
 }
 
@@ -703,6 +743,7 @@ static void gl_v_close(struct glTransport* tp) {
   if (v->ch) ibv_destroy_comp_channel(v->ch);
   if (v->pd) ibv_dealloc_pd(v->pd);
   if (v->ctx) ibv_close_device(v->ctx);
+  if (v->creditTfd >= 0) close(v->creditTfd);
   free(v->udRbuf);
   free(v->udSbuf);
   free(v);
@@ -769,6 +810,7 @@ struct glTransport* gl_transport_verbs_open(const char* dev, int port, int gidIn
   }
   tp->ops = &gl_v_ops;
   tp->impl = v;
+  v->creditTfd = -1;
   v->port = port;
   v->gidIndex = gidIndex;
   v->tc = trafficClass;
@@ -792,6 +834,9 @@ struct glTransport* gl_transport_verbs_open(const char* dev, int port, int gidIn
   v->ch = v->pd ? ibv_create_comp_channel(v->ctx) : NULL;
   v->cq = v->ch ? ibv_create_cq(v->ctx, GL_V_CQ, NULL, v->ch, 0) : NULL;
   if (!v->cq || gl_v_nonblock(v->ch->fd) || gl_v_nonblock(v->ctx->async_fd) || ibv_req_notify_cq(v->cq, 0)) goto fail;
+  step = "the credit retry timer";
+  v->creditTfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+  if (v->creditTfd < 0) goto fail;
   step = "UD buffers";
   v->udRbuf = (uint8_t*)calloc(GL_V_UD_RQ, GL_V_GRH + GL_WIRE_BYTES);
   v->udSbuf = (uint8_t*)calloc(GL_V_UD_SQ, GL_WIRE_BYTES);
