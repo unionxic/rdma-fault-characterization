@@ -75,10 +75,11 @@
 #   FDHOLD_AFTER_MS (1000), FDHOLD_KILL_S (25), STOP_RANK, STOP_MS, DUTY_RANK, DUTY_ON_MS (50), DUTY_OFF_MS (50), DUTY_S (20),
 #   KILL2_KIND, SUBJECT_RANK, LAUNCHER_ENV (hold_gc.sh: the cell's launcher_env, +-joined, or -), LA_BOUND_S (the launcher's
 #   timeout -s KILL: WATCHDOG_S + 120), SS_STEP1 (30), SS_STEP2 (80), BAR1_AT_GATE (hold_gc.sh, gin-mirror's training holds),
-#   HOLD_TAG (hold_gc.sh). RS_DRY_CONFIG=1 prints the configuration line and exits before any file, address, ssh or process is
-#   touched (CPU self-test).
-# files in <logdir>: run_mi.sh's, plus <stem>_inject.out, <stem>_launcher_<node>.log, <stem>_fdhold.out, <stem>_ss.out
-#   (stem = <cell>_<lib>_<tag>).
+#   HOLD_TAG (hold_gc.sh), RES_CAPTURE (0; 1: CAPPY's read-only resource capture around the traffic kill, smoke 5; the kill
+#   waits for its "before" point), CAP_BOUND_S (40). RS_DRY_CONFIG=1 prints the configuration line and exits before any file,
+#   address, ssh or process is touched (CPU self-test).
+# files in <logdir>: run_mi.sh's, plus <stem>_inject.out, <stem>_launcher_<node>.log, <stem>_fdhold.out, <stem>_ss.out,
+#   <stem>_rescap.out (RES_CAPTURE=1) (stem = <cell>_<lib>_<tag>).
 # exit: 0 trial ran, 5 host memory short, 6 a launcher did not come up, 7 a stale launcher socket or process on a node.
 set -u
 TRIAL=${1:?trial tag}; LOGDIR=${2:?logdir}
@@ -634,6 +635,85 @@ elif op=="ss":  # the established TCP sockets of these pids: counts and bytes on
     for x in sorted(want):
         here=os.path.exists("/proc/%s"%x)
         print("GINRS ss %s pid=%s present=%d n=%d acked=%d received=%d mono_ms=%.3f"%(tag,x,int(here),n.get(x,0),ack.get(x,0),rcv.get(x,0),mono()))'
+# CAPPY <rank pid> <child pid|-> <trigger prefix> <ib dev> <bound s> (RES_CAPTURE=1, smoke 5; read only, on the killed rank's
+# node): the verbs resources of that device and the two processes at fixed points. "before" (then the line the runner waits
+# for before its kill), then the rank's death as seen here (/proc/<pid>/stat gone or Z/X, polled every 1 ms), then dead + 500,
+# 2000, 5000, 9000 ms, "judged" when <prefix>.judged appears and, with a child, "fdkill" 500 ms after <prefix>.fdkill appears;
+# ends when all are taken or at dead + bound. Per point and kind (ctx pd cq qp mr): sum (the device's restrack count from
+# `rdma -j res show`, taken before and after the listing: sum, sum2), list (entries `rdma -j res show <kind>` lists for the
+# device), pid (listed with the rank's pid; a resource made by another thread carries that thread's id, so this undercounts),
+# child (with the child's pid), kern (listed without a pid: the kernel's own and, on sunny's kernel 6.8, a dead task's: smoke 5
+# measured the dead rank's ctx, pd, cq, qp and mr there, so the rank's share is kern minus the "before" kern), hidden = sum -
+# list (0 in every smoke 5 capture). Per process: present, state, fd count and fd targets (sockets as socket:[], no address), map lines
+# naming infiniband/uverbs and nvidia, PPid. No signal, no write but its own stdout.
+CAPPY='import os,re,sys,time,json,subprocess
+def mono(): return time.clock_gettime(time.CLOCK_MONOTONIC)*1000.0
+rp,cp,pref,dev,bound=int(sys.argv[1]),sys.argv[2],sys.argv[3],sys.argv[4],float(sys.argv[5])
+cp=int(cp) if cp.isdigit() else 0
+K=("ctx","pd","cq","qp","mr")
+def rj(args):
+    try:
+        p=subprocess.run(["rdma","-j"]+args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10)
+        return json.loads(p.stdout.decode("utf-8","replace") or "[]"),p.stderr.decode("utf-8","replace").strip()[:80]
+    except Exception as e: return None,str(e)[:80]
+def summ():
+    d,_=rj(["res","show"])
+    for x in d or []:
+        if x.get("ifname")==dev: return {k:x.get(k,-1) for k in K}
+    return {k:-1 for k in K}
+def proc(p,tag):
+    if p<=0: return "%s_present=-"%tag
+    try: st=open("/proc/%d/stat"%p).read(); s=st.rsplit(")",1)[1].split()[0]
+    except OSError: return "%s_present=0"%tag
+    out=["%s_present=1 %s_state=%s"%(tag,tag,s)]
+    try:
+        fds=sorted(os.listdir("/proc/%d/fd"%p),key=int); tg=[]
+        for f in fds:
+            try: t=os.readlink("/proc/%d/fd/%s"%(p,f))
+            except OSError: t="?"
+            tg.append("%s:%s"%(f,t if t.startswith(("socket:","pipe:","anon_inode:","/dev/")) else "file:"+os.path.basename(t)))
+        out.append("%s_fd_n=%d %s_fds=%s"%(tag,len(fds),tag,",".join(tg) or "-"))
+    except OSError as e: out.append("%s_fd_n=? (%s)"%(tag,e.strerror))
+    try:
+        L=open("/proc/%d/maps"%p).read().splitlines(); ib=[l for l in L if re.search("infiniband|uverbs",l)]; nv=[l for l in L if "nvidia" in l]
+        nm={}
+        for l in ib+nv:
+            n=os.path.basename(l.split()[-1]) if len(l.split())>=6 else "?"; nm[n]=nm.get(n,0)+1
+        out.append("%s_maps=%d %s_maps_ib=%d %s_maps_nv=%d %s_maps_files=%s"%(tag,len(L),tag,len(ib),tag,len(nv),tag,",".join("%s:%d"%kv for kv in sorted(nm.items())) or "-"))
+    except OSError as e: out.append("%s_maps=? (%s)"%(tag,e.strerror))
+    try:
+        S=dict(l.split(":",1) for l in open("/proc/%d/status"%p).read().splitlines() if ":" in l)
+        out.append("%s_ppid=%s %s_threads=%s %s_vmrss=%s"%(tag,S.get("PPid","?").strip(),tag,S.get("Threads","?").strip(),tag,S.get("VmRSS","-").strip().replace(" ","")))
+    except OSError: pass
+    return " ".join(out)
+def cap(name,t0):
+    a=mono(); s1=summ(); f=[]
+    for k in K:
+        d,err=rj(["res","show",k]); d=[x for x in (d or []) if x.get("ifname")==dev]
+        f.append((k,len(d),sum(1 for x in d if x.get("pid")==rp),sum(1 for x in d if cp and x.get("pid")==cp),sum(1 for x in d if "pid" not in x),err))
+    s2=summ(); b=mono()
+    kv=" ".join("%s_sum=%s %s_sum2=%s %s_list=%d %s_pid=%d %s_child=%d %s_kern=%d %s_hidden=%s"%(k,s1[k],k,s2[k],k,n,k,np,k,nc,k,nk,k,(s1[k]-n) if s1[k]==s2[k] else "%d/%d"%(s1[k]-n,s2[k]-n)) for k,n,np,nc,nk,_ in f)
+    errs=";".join("%s:%s"%(k,e) for k,_,_,_,_,e in f if e)
+    print("GINRS rescap point=%s rel_ms=%s dur_ms=%.1f dev=%s %s %s %s%s mono_ms=%.3f"%(name,"%.1f"%(a-t0) if t0 else "-",b-a,dev,kv,proc(rp,"rank"),proc(cp,"child"),(" err="+errs) if errs else "",a))
+    sys.stdout.flush()
+cap("before",None)
+def dead():
+    try: return open("/proc/%d/stat"%rp).read().rsplit(")",1)[1].split()[0] in ("Z","X")
+    except OSError: return True
+end=mono()+60000.0
+while not dead() and mono()<end: time.sleep(0.001)
+td=mono(); print("GINRS rescap dead pid=%d seen=%d mono_ms=%.3f"%(rp,int(dead()),td)); sys.stdout.flush()
+todo=[("dead+500",500.0),("dead+2000",2000.0),("dead+5000",5000.0),("dead+9000",9000.0)]
+ev={"judged":None};
+if cp: ev["fdkill"]=None
+while (todo or any(v!="done" for v in ev.values())) and mono()<td+bound*1000.0:
+    now=mono()
+    if todo and now>=td+todo[0][1]: cap(todo.pop(0)[0],td); continue
+    for e in ev:
+        if ev[e] is None and os.path.exists(pref+"."+e): ev[e]=mono()+(500.0 if e=="fdkill" else 0.0)
+        if ev[e] not in (None,"done") and mono()>=ev[e]: cap(e,td); ev[e]="done"
+    time.sleep(0.002)
+print("GINRS rescap end left=%s mono_ms=%.3f"%(",".join([n for n,_ in todo]+[e for e,v in ev.items() if v!="done"]) or "-",mono()))'
 # on_node <node> <python op args...>: run INJPY on that node, output stamped at receipt into <out file> (appended)
 inj() {
   local node=$1 out=$2; shift 2
@@ -765,14 +845,35 @@ if [ "$KILL_KIND" = traffic ] || [ "$KILL_KIND" = after_stable ] || [ "$KILL_KIN
     read -r c p cst < <(cpid_of "r$TR")
     if [ -n "$STOP_RANK" ]; then inj "$tnode" "$WORK/inject.out" stop "${c:-0}" "${p:--}" "$BINNAME" "$TR" "$STOP_MS"
     elif [ -n "$DUTY_RANK" ]; then inj "$tnode" "$WORK/inject.out" duty "${c:-0}" "${p:--}" "$BINNAME" "$TR" "$DUTY_ON_MS" "$DUTY_OFF_MS" "$DUTY_S"
-    else inj "$tnode" "$WORK/kill.out" kill "${c:-0}" "${p:--}" "$BINNAME" "$TR" "$tnode" first
+    else
+      CAPJ=""; CAPT=""; capp=$(npath "$tnode" cap)
+      if [ "${RES_CAPTURE:-0}" = 1 ]; then  # smoke 5: the resource capture on the rank's node, its "before" point first
+        fpid=-; [ -s "$WORK/fdhold.pid" ] && fpid=$(cat "$WORK/fdhold.pid")
+        cdev=$([ "$tnode" = rain ] && echo mlx5_1 || echo mlx5_0)
+        ( node_py "$tnode" "$CAPPY" "${c:-0}" "$fpid" "$capp" "$cdev" "${CAP_BOUND_S:-40}" 2>&1 | python3 -u -c "$STAMP" >> "$WORK/rescap.out" ) &
+        CAPJ=$!
+        wait_line "$WORK/rescap.out" "GINRS rescap point=before " 0 0 15 > /dev/null
+      fi
+      inj "$tnode" "$WORK/kill.out" kill "${c:-0}" "${p:--}" "$BINNAME" "$TR" "$tnode" first
+      # the buddy's first judgement line of TR (no capture group: WAITPY reads group 1 as a step number, and the old
+      # pattern's "(TS|RC)" made every match a ValueError, so the fd holder below always waited out its bound; smoke 5)
+      jrx="GIN/(?:TS|RC): rank [0-9]+: rank $TR (?:\(incarnation [0-9]+\) )?judged"
+      if [ "${RES_CAPTURE:-0}" = 1 ]; then
+        # shellcheck disable=SC2016
+        ( [ -n "$(wait_line "$WORK/r$(( TR ^ 1 )).log" "$jrx" 0 0 30)" ] && node_sh "$tnode" 'touch "$1.judged"' "$capp" ) &
+        CAPT=$!
+      fi
       if [ "$FDHOLD" = 1 ] && [ -s "$WORK/fdhold.pid" ]; then  # the child holds the rank's output pipe: end it once judged
         echo "${cst:--}" > "$WORK/fdhold.pst"
         b=$(( TR ^ 1 ))
-        read -r tj _ <<< "$(wait_line "$WORK/r$b.log" "GIN/(TS|RC): rank [0-9]+: rank $TR (\(incarnation [0-9]+\) )?judged" 0 0 "${FDHOLD_KILL_S:-25}")"
+        read -r tj _ <<< "$(wait_line "$WORK/r$b.log" "$jrx" 0 0 "${FDHOLD_KILL_S:-25}")"
         if [ -n "${tj:-}" ]; then sleep "$(secs "${FDHOLD_AFTER_MS:-1000}")"; why=judged; else why=bound; fi
         inj "$tnode" "$WORK/fdhold.out" fdkill "$(cat "$WORK/fdhold.pid")" "${cst:--}" "$why"
+        # shellcheck disable=SC2016
+        [ "${RES_CAPTURE:-0}" = 1 ] && node_sh "$tnode" 'touch "$1.fdkill"' "$capp"
       fi
+      [ -n "$CAPT" ] && wait "$CAPT" 2>/dev/null
+      [ -n "$CAPJ" ] && wait "$CAPJ" 2>/dev/null
     fi ) &
   INJECTOR=$!
 fi
@@ -891,7 +992,7 @@ for name in $names; do
   [ -f "$WORK/$name.kv" ] && sed "$MASK" "$WORK/$name.kv" > "$LOGDIR/${stem}_$name.kv"
   [ -f "$WORK/$name.log" ] && sed "$MASK" "$WORK/$name.log" > "$LOGDIR/${stem}_$name.log"
 done
-for f in kill spare_kill inject fdhold cleanup ss; do
+for f in kill spare_kill inject fdhold cleanup ss rescap; do
   [ -f "$WORK/$f.out" ] && sed "$MASK" "$WORK/$f.out" > "$LOGDIR/${stem}_$f.out"
 done
 for f in "$WORK"/spare_rain_i*.log "$WORK"/spare_sunny_i*.log; do  # the launchers' other spares (unused, respawned), stamped
@@ -936,7 +1037,7 @@ mem_need_rain=$NEED_RAIN mem_need_sunny=$NEED_SUNNY pin_mb_per_proc=$PIN_PER tri
 extra=$(echo ${EXTRA_ENV:-} | tr ' ' '+') r0_env=$(echo ${R0_ENV:-} | tr ' ' '+') r1_env=$(echo ${R1_ENV:-} | tr ' ' '+') \
 r2_env=$(echo ${R2_ENV:-} | tr ' ' '+') r3_env=$(echo ${R3_ENV:-} | tr ' ' '+') spare_env=$(echo ${SPARE_ENV:-} | tr ' ' '+')$rcs \
 left=$LEFT left_stopped=$LEFT_STOPPED left_fdhold=$LEFT_FD gid0=$GID0 gid1=$GID1 port=$PORT port_tries=$PORT_TRIES \
-rdv_nonce_set=1 runner=gcr driver=$DRIVER wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') watchdog_s=$WATCHDOG_S \
+rdv_nonce_set=1 res_capture=${RES_CAPTURE:-0} runner=gcr driver=$DRIVER wall_s=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}') watchdog_s=$WATCHDOG_S \
 bin=$BINNAME rs_set=$RS_SET lib_md5=$LIB_MD5 driver_md5=$DRIVER_MD5" > "$LOGDIR/${stem}_meta.txt"
 echo "[$tag]$rcs left=$LEFT stopped=$LEFT_STOPPED fdhold=$LEFT_FD wall=$(awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b - a}')s" >&2
 exit 0

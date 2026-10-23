@@ -1079,6 +1079,34 @@
    "control": "-",
    "bound_s": 60,
    "pilot_note": "9.9 끝의 채점하지 않는 pilot 셀: 판정 전 생존 rank의 장치 대기와 hold 한도(rank 3 SIGSTOP 12 000 ms, 펜스 끔). 본 실행 셀과 이름이 달라 파일 이름이 겹치지 않음"
+  },
+  "gc4_kill3_noreport_nofdhold@gc": {
+   "cell": "gc4_kill3_noreport_nofdhold",
+   "build": "gc",
+   "kind": "rs",
+   "n": 2,
+   "driver": "gin_mi",
+   "env": {
+    "OVERWRITE": "1",
+    "MIRROR": "1",
+    "CKPT_STEPS": "20",
+    "KILL_RANK": "3",
+    "SPARE": "1",
+    "WITNESS": "0",
+    "SPARE_RANK": "3"
+   },
+   "injection": {
+    "kind": "kill_traffic",
+    "target": 3,
+    "timing": "the runner's SIGKILL of rank 3's recorded PID at the traffic-kill step (no FD_HOLDER: no child is forked); the launcher does not send EXITED (NO_EXIT_REPORT)"
+   },
+   "preds": [],
+   "control": "-",
+   "bound_s": 60,
+   "launcher_env": {
+    "NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT": "1"
+   },
+   "pilot_note": "smoke 5 진단 대조(채점 안 함): gc4_fdhold_sock_kill3_noreport에서 FD_HOLDER만 뺀 셀. smoke 4 a4의 죽은 rank 3 페이지 READ가 10 s 성공한 것이 fd 자식 때문인지 가름(results/20261023_smoke5/SMOKE.md)"
   }
  },
  "holds": {
