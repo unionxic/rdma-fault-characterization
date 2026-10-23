@@ -406,10 +406,18 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
 
 - **안전성 기준과 성능 기준의 분리(2026-10-23 외부 리뷰 6항, DRAFT).** 3절 예측을 세 종류로 표시한다(채점기 `predictions_gc.csv`의 `kind` 열). **안전성**(데이터 같음, 중복이나
   누락 적용 없음, FENCED 전 활성화 없음, 펜스 뒤 window 바뀜 없음, 옛 쓰기 없음)은 채점한 n 가운데 실패 0이어야 맞음이다. 한 번이라도 어긋나면 그 주장을 재검토한다. **성능**(판정과
-  복원 시각 띠)과 **비용**은 기존 문턱(예: 9/10)을 그대로 쓴다. 이 분리는 예측의 규칙과 문턱을 바꾸지 않고 판정 방식만 정한다 `[초안: 사전 등록 전 확정]`.
+  복원 시각 띠)과 **비용**은 기존 문턱(예: 9/10)을 그대로 쓴다. 이 분리는 예측의 규칙과 문턱을 바꾸지 않고 판정 방식만 정한다 `[초안: 사전 등록 전 확정]`. 채점기 반영(2026-10-23):
+  `kind` 열은 safety 8(`fdhold_uverbs_refuse`, `stall_none_refuse`, `ud_drop_rejoin`, `credit_stall_no_loss`, `long_hold_lane`, `gate_fenced`, `no_tcp_control`, `regression_rdma_mirror_off`),
+  cost 1(`cost_probe_lat4k`), perf 20이다. perf 행 14개의 규칙 안에 든 안전성 항(데이터 같음, FENCE → FENCED 차례 등)은 아직 0 실패 규칙을 받지 않고 시행마다 보고만 되므로, 사전 등록 전에
+  그 항을 따로 된 safety 행으로 가를지 정한다(11절) `[초안]`.
 - **제외한 시행의 분모 공개(같은 리뷰 6항, DRAFT).** 링 준비 실패, Resume 거절, launcher 상실로 제외한 시행 수를 셀마다 적고, 결과는 "준비가 정상 완료된 조건의 성공률"과
   "전체 실행의 복구 성공률" 둘로 보고한다. 설정 오류(`config`)로 빼는 것은 라이브러리가 구체적 거절 이유를 적은 시행만이고, 올바른 설정에서 난 Resume 거절과 링 준비 실패는
-  제외가 아니라 준비 실패(`prep_failure`)로 세며 뒤 시행으로 채우지 않는다 `[초안: 사전 등록 전 확정]`.
+  제외가 아니라 준비 실패(`prep_failure`)로 세며 뒤 시행으로 채우지 않는다 `[초안: 사전 등록 전 확정]`. 채점기 반영(2026-10-23, 12절 그날 행): `config`는 `rows_gc.CONFIG_REFUSALS`의
+  이유(Resume 조건 42, 43, 44, 44T; mirror R36, R37, R39; gin-restore의 env, 매크로, HCA 거절)가 로그에 있을 때만이고, 그 밖의 Resume 거절과 설정 합의(42, 44) 줄 없는 링 준비 실패는
+  `prep_failure`다(smoke 1 a1의 Resume 조건 41 거절이 그 예: 전에는 `config`로 빠졌음). 준비 실패는 자리를 지키고 뒤 시행으로 채우지 않으며 회귀 셀에서도 센다. SCORE.md와 출력은 예측마다
+  계획 n, 실행, 이유별 제외, 준비 실패, 채점 n, 조건부 성공률과 전체 실행 성공률을 적는다. 미사용 warm spare는 데이터 같음의 대상이 아니다(최종 세대의 활성 프로세스만; 열 `spare_state`,
+  `final_gen_n`). 펜스 뒤 window 검사는 모든 필수 표본을 읽었을 때만 값을 가진다(`win_unreadable`, `win_checked`, `win_lines_n`, `win_missing`, `win_verified`; 다 읽지 못하면
+  `win_changed_after`가 비어 `== 0` 규칙이 거짓이 됨). 3절의 `win_changed_after == 0`을 `win_verified == 1`로 바꿀지는 사전 등록 전에 정한다(11절).
 - **독립 재계산과 독립 검증의 구분.** 같은 로그를 다른 에이전트가 다시 세는 것은 산술과 파싱 오류를 잡는다. 라이브러리가 틀리게 낸 `data_equal=1`은 잡지 못하므로, 안전성
   셀은 driver의 데이터 비교 kv(`x_match`, `sig_exact`, `xchg`)와 실행기가 밖에서 본 프로세스 상태(`present`, 펜스 뒤 바뀐 칸)로 따로 확인한다(10절).
 - **표본 수의 뜻.** 시행 하나의 생존 rank 셋은 독립 시행 셋이 아니다(판정 시각의 퍼짐을 보는 데만 쓴다). 독립 시행 10회에서 실패 0이어도 단측 95 % 실패율 상한은 약 26 %다. 이 n은
@@ -1321,7 +1329,8 @@ link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려
 - 2026-10-23 외부 리뷰 뒤의 차례(19절 표):
   - [x] 1 복구 계약 표(1절 끝), 사건 분해 정의(6절), 안전성과 성능 기준 분리와 분모 공개(8절, DRAFT), 판정 표의 뜻(9.3절), 한계(18절) — 2026-10-23
   - [ ] 2 fd 보관 자식 원인 분리(smoke 5) — 진행 중
-  - [ ] 3 채점기 수정과 smoke 재처리 — 진행 중
+  - [x] 3 채점기 수정과 smoke 재처리 — 2026-10-23(12절 그날 행; 자체 시험 124 검사)
+  - [ ] 3절 정리(사전 등록 전): perf 행 14개 안의 안전성 항을 safety 행으로 가를지, `win_changed_after == 0`을 `win_verified == 1`로 바꿀지, 각 행의 `kind` 확인
   - [ ] launcher credit READ 재시도 지적(Codex 1차)의 검증과 고침 — 진행 중
   - [ ] 문맥 0 밖 정체(18절 가)의 처리 결정: 모든 문맥의 줄을 등록할지, 문맥 0 밖 사용을 준비 때 거절할지 — 사용자 결정 대기
   - [ ] 4 반례 셀과 부하 pilot
@@ -1363,6 +1372,7 @@ link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려
 | 2026-10-23 | **넷째 하드웨어 smoke**(채점 안 함, 셀마다 n 1, 시도 여섯, `cluster_run.sh` 안): 커밋된 라이브러리(`gc_layer_int.diff` `5ed121f4`, libnccl `3b901b12`)와 새 driver(`563cb460`)의 첫 실행. 대조 통과(판정 0, READ 100 %); kill은 확인 창 FIN+STALE(4행)로 kill 뒤 20.8–21.2 ms, FENCE → FENCED 91.6 ms, 복원; 증인 끈 kill은 EXITED(3행) 110.7–110.9 ms, FIN은 `liveness=ignored`; 12 s 멈춤은 STALL_HELPER(15행) 10 008–10 010 ms 뒤 펜스와 복원; GPU hang은 STALL(14행) hang 줄 뒤 10 032–10 033 ms, FENCE → FENCED 106.9 ms, 복원, 데이터 같음; `NO_EXIT_REPORT` 셀은 READ 실패 길이 아니라 STALL_HELPER(10.09 s, 죽은 프로세스의 페이지 READ가 성공, 까닭 `[미확인]`). 라이브러리 고침 없음. 모든 시도의 live 뒤 TCP 기록 바이트 0 `[측정, n 1씩]` | [results/20261023_smoke4/SMOKE.md](results/20261023_smoke4/SMOKE.md) |
 | 2026-10-23 | **외부 리뷰 둘(Codex, 읽기만, 클러스터 실행 없음)과 사용자 결정.** (1) adversarial review(master 대비 가지 전체): [high] launcher 전송의 credit READ가 바뀌지 않은 값을 돌려주면 다시 READ하는 길이 없어 새 보내기나 들어오는 SEND가 없으면 FENCED나 활성화 메시지가 건강한 QP에서 영영 기다릴 수 있음(`launcher_transport_verbs.c`); [medium] 채점기 MTU 단위(열거값 5 대 4 096). (2) 감독자 관점 review: [high] 진행 줄이 GIN 문맥 0만 등록해 다른 문맥의 정체는 잡지 못함(18절 가); [high] `rows_gc.py`가 읽지 못한 window(`unreadable`)를 바뀜 0으로 셈; [high] `score_gc.py`가 Resume 거절과 링 준비 실패를 이유 없이 제외하고 뒤 시행으로 채워 구현의 준비 실패가 사라질 수 있음. 그리고 지도교수식 총평 여덟(연구 중심을 "안전한 rank 교체 조건"으로, 가시성 → 판정 → 안전한 교체 → 실용적 이득의 흐름, 감지를 90 ms 앞당겨도 전체 복원이 비슷한 관찰, fd 보관 문제는 펜스 경계의 문제, 판정 표는 정책, 채점기의 안전성과 성능 분리와 분모 공개, 투명 복구의 뜻 좁히기, 작업 차례 일곱). **사용자 결정: 리뷰를 받아들여 기능 확장 전에 안을 단단히 한다.** 이 문서에 반영: 1절 끝 복구 계약 표와 표현 경계, 6절 사건 분해, 8절 안전성과 성능 분리와 분모 공개(DRAFT), 9.3절 표의 뜻과 GPU 입력의 세 경계, 18절 가–다, 19절 차례 표, 11절 체크리스트. 사실 둘을 바로잡음(저장소 문서는 맞았고 조율 세션의 외부 설명이 틀렸음): 노드마다 GPU 한 장(GPU당 rank 둘), mirror는 짝 rank의 호스트 메모리. 지적의 고침은 조각마다 따로 커밋한다(아래 행). |
 | 2026-10-23 | **launcher credit READ 재시도**(Codex 1차 [high]; 코드로 확인됨 `[소스]`): 64칸 창이 닫히면 `gl_v_rc_send`가 credit 낱말을 한 번 READ하고, 같은 값이 오면 `gl_v_flush`만 불러 보낼 수 없었다. 다시 READ하는 길은 다음 `rc_send`나 그 rank의 SEND(ackSeq 전진)뿐이고 SEND 완료, `gl_v_poll`, 주 루프는 다시 읽지 않았다. 고침(`impl/launcher/launcher_transport_verbs.c`만): 1 ms one-shot timerfd를 전송 fd 셋째로 돌려 launcher 루프를 깨우고, credit으로 닫힌 큐에 READ가 날아가 있지 않을 때 무장, 울리면 다시 READ(QP마다 READ 하나 그대로; 창이 열리거나 QP 오류나 닫힘이면 끝). 시험: `launcher_unit.cc`에 가짜 verbs(`GL_UNIT_VERBS`)를 넣어 verbs 전송을 ASan과 UBSan으로 링크, 새 장면 `verbs_credit_retry`(22 검사: 첫 READ와 첫 재시도는 같은 값, 둘째 재시도에서 전진, 65번 메시지가 seq 65로 나감, READ 하나씩, 간격 ≥ 0.9 ms, 큐가 비면 READ 없음); HEAD 전송에 같은 장면을 돌리면 5 검사 실패(음성 대조). 결과: 29 장면 784 검사 실패 0, sanitizer 보고 0(조율 세션이 다시 돌려 확인) `[측정]`. `gin_launcher` md5 `d1aceaf6`. 하드웨어에서는 아직 돌지 않음(다음 smoke에서). 기록: `impl/launcher/notes_launcher_credit.md`, `README_launcher.md`. |
+| 2026-10-23 | **채점기 고침 여섯**(외부 리뷰 지적 전부 코드로 확인됨; `impl/test/`만, 클러스터 실행 없음, 조율 세션이 자체 시험과 drift 검사를 다시 돌림 `[측정]`): (1) MTU: kv에 `active_mtu`가 없어 요약의 열거값 5가 `active_mtu_kv_min`에 그대로 들었음 → `mtu_bytes`(1–5 → 256–4 096 B), 실제 smoke 4 요약 줄로 시험, 열거값 3은 `no_tcp_control` 거짓. (2) 데이터 같음: `_spare.kv`가 있으면 `revived=1`을 요구해 장애 없는 시행 6개가 0 → 최종 세대의 활성 프로세스만 비교(한 죽음 시행), 둘째 죽음 시행은 gin-mirror 열 그대로; 열 `spare_state`, `final_gen_n`. (3) 펜스 뒤 window: `win_unreadable`, `win_checked`, `win_lines_n`, `win_missing`, `win_verified`; 다 읽지 못하면 `win_changed_after` 빈칸(라이브러리 줄에 검사한 칸 수와 화신이 없어 `win_checked`는 비고 대상 rank만 맞춤). (4) 제외: `config`는 `CONFIG_REFUSALS` 이유가 있을 때만, 그 밖은 `prep_failure`(자리 유지, 채움 없음, 회귀 셀 포함); 예측마다 계획, 실행, 이유별 제외, 준비 실패, 채점 n, 조건부와 전체 성공률 출력. (5) `kind` 열(safety 8, cost 1, perf 20; `check_cells_gc.py`가 검사). (6) 사건 분해 열(rank 1, sunny 시계; 주입 뒤 ms: 의심 / 판정 / hold / 펜스 / 게시 / 첫 걸음): smoke 4 kill 0.4 / 20.8 / 24.7 / 118.9 / 155.6 / 350.0, 증인 끔 kill – / 110.9 / 115.5 / 115.0 / 155.1 / 354.3, 12 s STOP 2 007 / 10 010 / 10 014 / 10 140 / 10 177 / 10 365, GPU hang 2 029 / 10 033 / 10 037 / 10 146 / 10 184 / 10 360; smoke 3 kill 0.4 / 102.2 / 107.4 / 106.7 / 146.6 / 339.7, STOP 2 091 / 10 094 / 10 099 / 10 222 / 10 261 / 10 459 `[측정: notes_test.md 끝 절; 생존 QP ERR 줄이 없어 hold 시작이 입력 차단을 대신하고, driver가 걸음마다 검사를 내지 않아 첫 걸음은 게시 뒤 `tx_err=0`인 첫 걸음 줄(kv `dev_bad=0`일 때만)]`. 두 kill 셀의 "게시 → 첫 걸음" 약 195–200 ms는 복원 게시가 application의 유효한 재개와 같은 사건이 아님을 보인다 `[측정, n 1씩]`. smoke 1–5 재처리(스크래치): MTU 5 → 4 096 25 시행, 데이터 같음 0 → 1 6 시행, smoke 1 a1 `config` → `prep_failure`, 판정 바뀜 없음(모두 자료 부족, n 1). 자체 시험 106 → 124 검사 실패 0, drift 0. 문서 반영: 8절 두 규칙과 3절 `kind` 메모, 11절. |
 
 ## 13. 사전 등록 이후 변경
 

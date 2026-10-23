@@ -368,3 +368,92 @@ launcher가 노드마다 예비 프로세스 하나를 스스로 띄우고 활�
 - **자체 시험.** `test_rows_gc.py` B5: 합성 GPU hang 시행 다섯(판정 STALL, hang 줄 뒤 10 100 ms, FENCE → FENCED → 활성화). 열 검사, 규칙이 STALL만 받고 STALL_HELPER 사본과 10 600 ms는 거짓, 판정 "맞음".
 - 확인: `python3 test_rows_gc.py` 106 checks 0 failed, `python3 check_cells_gc.py` ok(7절 26행, 셀 24, 3절 키 29, drift 0) `[측정: 로컬 실행]`.
 - **넷째 smoke.** 같은 셀이 실제 NIC에서 한 번 돌았다(a6): STALL ×3이 hang 줄 뒤 10 032–10 033 ms, FENCE → FENCED 106.9 ms, 복원, 데이터 같음 `[측정, n 1, 채점 아님]`(`../../results/20261023_smoke4/SMOKE.md`).
+
+## 다섯째 smoke의 실행기 몫 (2026-10-23, 조율 세션 지시)
+
+넷째 smoke a4(`NO_EXIT_REPORT` + FD_HOLDER, 죽은 rank 3의 페이지 READ가 10 s 성공)를 가르려고 실행기와 셀 파일만 고쳤다. 라이브러리, driver, launcher는 그대로다.
+
+- **`RES_CAPTURE=1`(기본 0) 자원 캡처.** traffic kill 갈래에서 kill 직전에 죽일 rank의 노드에 읽기 전용 python(`CAPPY`) 하나를 띄우고, 그 "before" 줄이 나온 뒤에 kill한다
+  (smoke5에서 kill이 계획보다 652–676 ms 늦음, smoke4는 284 ms). 그 뒤 죽음(`/proc/<pid>/stat`이 없거나 Z/X, 1 ms마다 봄) + 500, 2 000, 5 000, 9 000 ms, 짝의 첫 판정 줄(실행기가
+  `<prefix>.judged`를 만듦), 자식이 있으면 자식 kill + 500 ms(`<prefix>.fdkill`)에 잰다. 재는 것: 장치(sunny `mlx5_0`)의 `rdma -j res show` 수(앞뒤 두 번)와
+  `rdma -j res show ctx|pd|cq|qp|mr` 목록(pid별, pid 없음), rank와 자식의 fd 목록, `/proc/<pid>/maps`의 uverbs와 nvidia 줄 수, PPid. 출력은 `<stem>_rescap.out`, meta에 `res_capture`.
+  `CAP_BOUND_S`(40)가 한도다. sunny 커널 6.8에서는 주인이 죽은 자원이 pid 없이 목록에 남는다(`kern` 열; 숨은 수 `hidden`은 smoke5 캡처 모두 0) `[측정]`.
+- **판정 줄 기다림 고침.** fd 자식을 끄는 기다림의 정규식 `GIN/(TS|RC): ...`은 잡음 묶음이 있어 `WAITPY`가 그것을 걸음 수로 `int()`하다 ValueError로 늘 놓쳤다.
+  그래서 FD_HOLDER 셀의 자식은 판정과 상관없이 늘 kill + 25 s(`why=bound`)에 꺼졌다(smoke4 a4 `fdhold_killed … why=bound`, kill + 25.3 s) `[측정]`.
+  잡지 않는 묶음 `(?:…)`으로 바꿔 판정 + 1 s(`why=judged`)에 끈다(smoke5 a3, a4: kill + 11.37 s) `[측정]`.
+- **셀.** `cells_gc.json`의 `pilot_cells`에 `gc4_kill3_noreport_nofdhold@gc`(n 2, 예측 없음, 채점 안 함): `gc4_fdhold_sock_kill3_noreport`에서 `FDHOLD`와 `R3_ENV`만 뺐다.
+- 확인: `bash -n run_gc.sh`, `python3 check_cells_gc.py` ok(7절 26행, 셀 24; pilot 셀은 행 검사 밖), `python3 test_rows_gc.py` 124 checks 0 failed `[측정: 로컬 실행]`.
+  그 시험은 같은 때 다른 세션이 고치던 `rows_gc.py`, `test_rows_gc.py`(이 고침 밖) 위에서 돌았다. 처음 한 번은 그 고침 중간에 `TypeError`로 멈췄다.
+- 결과: [../../results/20261023_smoke5/SMOKE.md](../../results/20261023_smoke5/SMOKE.md).
+
+## 채점기 고침 (독립 리뷰 Codex 2026-10-23 반영)
+
+리뷰가 짚은 여섯 가지를 코드에서 먼저 확인하고 `rows_gc.py`, `score_gc.py`, `predictions_gc.csv`(`kind` 열), `check_cells_gc.py`, `test_rows_gc.py`만 고쳤다.
+EXPERIMENT.md, 라이브러리 diff, launcher, driver, 실행기는 그대로다. 위 절의 `TypeError: keywords must be strings`는 이 고침을 쓰는 도중의 시험 파일이었고 지금은 없다 `[측정: 로컬 실행]`.
+
+| 항목 | 확인 | 고침 |
+|---|---|---|
+| 1 MTU 단위 | 맞음. kv에는 `active_mtu`가 없고 제어 요약의 `active_mtu=5`(ibv_mtu enum)가 그대로 `active_mtu_kv_min`이 되어 모든 smoke에서 5였다 `[측정]` | `mtu_bytes`: 1–5는 256–4096 B, 256 이상은 그대로. driver의 바이트 값(meta)도 같은 함수 |
+| 2 장애 없는 시행의 데이터 같음 | 맞음. gin-restore와 gin-mirror의 열이 `_spare.kv`가 있으면 예비 프로세스의 `revived=1`을 요구해, 쓰이지 않은 따뜻한 예비 프로세스가 장애 없는 시행과 투명 셀을 0으로 만들었다(smoke4 a1 등 6시행) `[측정]` | `final_data`: 마지막 세대의 활성 프로세스만 견줌(죽은 rank는 그 rank로 되살아난 예비 프로세스, 쓰이지 않은 예비 프로세스는 빠짐). 열 `spare_state`, `final_gen_n`. 둘째 죽음 시행은 gin-mirror 열 그대로 |
+| 3 창 검사 | 맞음. `changed=`만 더하고 `unreadable=`와 생존 rank의 줄 빠짐을 보지 않았다 `[소스]` | `win_unreadable`, `win_checked`, `win_lines_n`, `win_missing`, `win_verified`. 읽지 못한 칸이 있거나 줄이 빠지면 `win_changed_after`는 빈 값 |
+| 4 Resume 거절과 링 live 실패 | 맞음. 둘 다 무조건 제외였고 뒤 후보가 채웠다. smoke1 a1(조건 41, launcher 짝 맺기 전 Resume)이 그렇게 `config`로 빠졌다 `[측정]` | 설정 이유(`CONFIG_REFUSALS`)만 `config`, 나머지는 `prep_failure`(계획 n 안의 자리를 차지, 채우지 않음). 예측마다 계획, 실행, 사유별 제외, 준비 실패, 판정 n, 조건부와 전체 성공률 |
+| 5 안전과 성능 | 해당. 규칙 하나가 데이터 같음과 시간 띠를 한 `count()`에 묶어 ≥ k/n이면 데이터 불일치 하나가 지나간다 `[소스]` | `kind` 열(safety, perf, cost). safety는 판정한 시행 실패 0일 때만 맞음. perf 규칙 안의 안전 조건은 시행별로 보고만 |
+| 6 사건 시각표 | 열이 없었다 | `tl_*`, `t_*_ms`(아래) |
+
+**`CONFIG_REFUSALS`**(Resume 거절 이유 중 설정을 말하는 것; 원문은 `../gc_layer_int.diff`의 `GDAKI_CTRL_R42`–`R44T`, gin-mirror `mi_layer.diff`의 `GDAKI_MI_R36`, `R37`, `R39`,
+gin-restore `rs_layer.diff`의 `GDAKI_RS_L` 줄 중 환경변수, 빌드 매크로, HCA를 이름하는 것): MTU 2048 미만(42), `ibv_is_fork_initialized()`(43), 제어 경로나 launcher 노드가 다름(44),
+생존 판정 문턱이 다름(44), MIRROR와 CHECKSUM 둘 다 켬, MIRROR_LANE 배수 아님, MIRROR_SLOTS나 LANE이 rank마다 다름, `NCCL_GIN_NCONNECTIONS`, host RMA 켬, `NCCL_RUNTIME_CONNECT` 끔,
+NVLS 켬, `NCCL_GIN_FAULT_RECOVERY` 끔, `NCCL_GIN_TS_RECONNECT` 1 아님, QP watch 끔, 로그 측정 모드, `NCCL_GIN_RESTORE_DEVICE` 없이 빌드, `NCCL_GIN_RESTORE_RECORD` 없음, HCA atomic 부족.
+그 밖(조건 41 launcher 짝 맺기, pool, mirror QP, side table, NIC 복사 길, atomic 준비, replay)은 준비 실패다. 링 live 실패는 어느 rank의 setup agreement 줄이
+조건 42나 44로 꺼졌다고 하면 `config`, 아니면 준비 실패다.
+
+**`kind` 배정**(문서 주인이 3절에 옮길 제안): safety는 `fdhold_uverbs_refuse`, `stall_none_refuse`, `ud_drop_rejoin`, `credit_stall_no_loss`, `long_hold_lane`, `gate_fenced`,
+`no_tcp_control`, `regression_rdma_mirror_off`; cost는 `cost_probe_lat4k`; 나머지 20행은 perf다. perf 중 안전 조건을 함께 묶은 행(`finless_exit_report`, `finless_read_fail`,
+`stop_transparent`, `stall_fence_restore`, `freeze_fence_restore`, `helper_stall_fence`, `gpuhang_fence_restore`, `mgmt_mute_transparent`, `mgmt_mute_tcp`, `qp_err_repair`, `kill_no_witness`,
+`restore_time_rdma`, `regression_tcp`, `regression_rdma`)은 안전 조건을 따로 떼어 safety 행으로 두어야 실패 0 규칙이 그 조건에 걸린다 `[추론]`. 지금은 SCORE.md에 보고만 한다.
+
+### 새 열의 꼴
+
+- `active_mtu_kv_min`, `active_mtu_rain`, `active_mtu_sunny`: 바이트(4096). 라이브러리의 `active_mtu=`와 `min_active_mtu=`는 enum이다.
+- `data_equal`, `ow_data_equal`: 한 죽음 시행에서 덮어씀(위 2). `spare_state`: 예비 프로세스마다 `unused`, `restored`, `restored_bad`, `not_restored`, `revived_unexpected`를 `+`로 이음. `final_gen_n`: 견준 프로세스 수.
+- `win_changed_after`: `changed=` 합(표본이 완전하거나 바뀐 칸이 보였을 때만, 아니면 빈 값). `win_lines_n`, `win_missing`(줄이 없는 생존 rank, 예: `0+2`), `win_unreadable`, `win_checked`(줄에 `checked=`가 없으면 빈 값),
+  `win_verified`(모든 생존 rank의 줄, unreadable 0, changed 0일 때 1). 창 줄에는 지금 incarnation과 검사한 칸 수가 없다: 대상 rank 이름만 맞춘다 `[소스: gdakiCtrlLaWindowLine]`.
+- `resume_refusal`(`config`, `prep`, 빈 값), `resume_why_refused`(거절 이유, 머리 "the restore cannot be enabled …" 뺌), `ring_not_live_class`(`config`, `prep`).
+- 시각표(대상 노드의 생존 rank, 대상 xor 2; 주입 줄 뒤 ms, 그 노드의 CLOCK_MONOTONIC): `tl_rank`, `tl_inject`, `tl_clock`, `t_suspect_ms`(SUSPECT, 확인 창 열림, READ time-out 중 첫 줄),
+  `t_judge_ms`, `t_block_ms`(hold 시작 줄; QP를 ERR로 옮기는 줄은 라이브러리에 없다), `t_fenced_ms`와 `t_fenced_src`(그 rank의 FENCED 줄, 없으면 창 줄 `window_fence` | `window_judgement`),
+  `t_la_fenced_ms`(그 노드 launcher의 FENCED 줄), `t_publish_ms`, `t_first_ok_ms`와 `t_first_ok_step`(publish 뒤 첫 `GINRS step … released=0 tx_err=0` 줄).
+  driver는 걸음마다 검사 결과를 찍지 않는다(장치 검사 `dev_bad`는 끝의 kv에 합쳐짐): 그래서 그 rank의 kv가 `dev_bad=0`일 때만 채운다 `[소스: gin_mi.cu]`.
+- 채점기: 상태 `prep_failure`, SCORE.md 예측별 표(키, 계획, 실행, 제외(사유), 준비 실패, 판정 n, 조건, 조건부 성공, 전체 성공), 안전 예측의 실패 줄, perf 안의 안전 조건 줄.
+  표준 출력은 예측마다 `id: 판정` 다음에 `[kind] key planned= run= excluded= prep_failure= scored= cond= whole=` 줄.
+
+### 시각표 (다시 셈, smoke, n 1씩, 채점 아님)
+
+rank 1의 줄, 주입 줄(실행기의 kill과 stop 줄, rank 3의 gpuhang 줄)도 sunny 줄이라 한 노드 시계다 `[측정: rows_gc.py]`.
+
+| 시도 | 셀 | 의심 | 판정 | hold 시작 | 펜스(근거) | 게시 | 첫 걸음(번호) |
+|---|---|--:|--:|--:|---|--:|--:|
+| smoke4 a2 | kill | 0.4 | 20.8 | 24.7 | 118.9(창, fence) | 155.6 | 350.0(139) |
+| smoke4 a3 | kill, 증인 끔 | 없음 | 110.9 | 115.5 | 115.0(창, judgement) | 155.1 | 354.3(137) |
+| smoke4 a5 | STOP 12 s | 2 007.3 | 10 010.0 | 10 014.1 | 10 139.8(창, fence) | 10 177.1 | 10 364.6(138) |
+| smoke4 a6 | GPU hang | 2 029.5 | 10 033.3 | 10 037.1 | 10 146.4(창, fence) | 10 183.7 | 10 359.5(156) |
+| smoke3 a2 | kill | 0.4 | 102.2 | 107.4 | 106.7(창, judgement) | 146.6 | 339.7(138) |
+| smoke3 a4 | STOP 12 s | 2 091.2 | 10 094.4 | 10 098.6 | 10 222.2(창, fence) | 10 260.7 | 10 458.7(139) |
+| smoke3 a5 | kill, 증인 끔 | 0.4 | 103.5 | 108.0 | 107.5(창, judgement) | 146.4 | 363.7(140) |
+| smoke3 a6 | kill | 1.3 | 105.4 | 110.0 | 109.4(창, judgement) | 148.9 | 350.3(138) |
+
+smoke3 a3(STOP, 펜스 없는 옛 라이브러리)은 의심 2 050.1, 판정 10 053.8에서 멈춘다(hold 없음). smoke3 a5의 의심 0.4는 증인 끔이 창을 열던 옛 라이브러리의 FIN 창이다(smoke3 요청 2).
+
+### 다시 돌린 결과 (smoke 폴더 다섯의 사본, 원자료는 읽기만)
+
+- 폴더: smoke1 a1–a4, a6; smoke2 a1–a4; smoke3 a1–a6; smoke4 a1–a6; smoke5 a1–a4(이 고침 중에 생긴 폴더). 사본은 세션 스크래치에서 돌렸고 결과 폴더에는 쓰지 않았다.
+- 바뀐 것: `active_mtu_kv_min` 5 → 4096(25시행 모두); `data_equal`과 `ow_data_equal` 0 → 1(쓰이지 않은 예비 프로세스가 있는 장애 없는 시행 6: smoke1 a4, a6, smoke2 a1, a4, smoke3 a1, smoke4 a1);
+  smoke1 a1 `config` → `prep_failure`(조건 41). smoke2 a2, a3은 `win_verified` 0(실제로 바뀐 칸 3, 6). 판정은 모두 그대로 "자료 부족"(n 1) `[측정]`.
+- 시험: `python3 test_rows_gc.py` 124 checks 0 failed(이전 106; 새 18: MTU enum과 실제 요약 줄, 쓰이지 않은 예비 프로세스, 되살아나지 않은 예비 프로세스, `unreadable=48`, 빠진 생존 rank 줄,
+  거절 41과 42, 링 live 실패 둘, 회귀 셀의 준비 실패, 준비 실패가 채워지지 않음, 안전 사본 틀림과 perf 사본 맞음, 출력과 SCORE.md의 셈, `kind` 열, 시각표). INT3 F7 시험은 `ring_not_live` 대신
+  `prep_failure`를 기대하게 바꿨다. `python3 check_cells_gc.py` ok(drift 0; `kind` 검사 추가: 잘못된 값 하나를 넣은 사본에서 FAIL) `[측정: 로컬 실행]`.
+
+### 3절과 8절에 문서 주인이 정할 것
+
+- 3절: 각 행의 종류(위 배정)와, 안전 조건을 묶은 perf 행을 나눌지. 창 조건을 `win_changed_after == 0`에서 `win_verified == 1`로 바꿀지(지금도 불완전한 창은 빈 값이라 거짓이다).
+- 8절: "Resume 거절 = config 제외"를 설정 이유로 좁히는 문장과 이유 목록, 링 live 실패가 준비 실패라는 문장, 준비 실패가 판정에 어떻게 드는지(지금: 판정은 판정 n 위의 조건부, 전체 성공률은 보고만; 계획 n에서 준비 실패 수를 뺀 n이 있어야 "자료 부족"이 아님).
+- 8절과 9.3절: 쓰이지 않은 예비 프로세스는 데이터 같음에 들지 않는다는 문장.

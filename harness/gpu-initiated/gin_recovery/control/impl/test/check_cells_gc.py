@@ -17,7 +17,9 @@ Checks (each failure is one line "FAIL ..."; exit 1 when any):
               preds name that row (a row on "build:<b>" takes any cell of build b); a regression cell a row names has the row
               in regression.builds[b].preds, and every row of regression.builds[b].preds names a cell, a "mirror:" or a
               "build:" key at that build; a regression build that lists "cells" (the 2026-10-22 trim: @gct runs only
-              mi4_kill3_ow) names gin-mirror regression cells only, and a row's regression cell at that build is one of them
+              mi4_kill3_ow) names gin-mirror regression cells only, and a row's regression cell at that build is one of them;
+              every row's kind is safety, perf or cost, and cost exactly when its acceptance is a cost: rule (Codex review
+              2026-10-23 item 5; score_gc.py judges safety rows at 0 failures)
   build keys  every build key a cell, a pilot cell, the regression, the cost family, "builds" or a prediction's "build:"
               names is in the document's build-key table (the header table "빌드 키"; a stray gctc fails)
   drift       each predictions_gc.csv row against its own section 3 row (2026-10-22: the stall rows still counted STALL and
@@ -278,6 +280,14 @@ def main():
         if sorted(ids) != sorted(keys):
             fail("predictions_gc.csv ids differ from section 3: missing %s, extra %s" %
                  (sorted(set(keys) - set(ids)), sorted(set(ids) - set(keys))))
+        # the kind column (Codex review 2026-10-23 item 5)
+        for p in pr:
+            k = (p.get("kind") or "").strip()
+            if k not in ("safety", "perf", "cost"):
+                fail("prediction %s: kind %r is not safety, perf or cost" % (p["id"], k))
+            elif (k == "cost") != p["acceptance"].strip().startswith("cost:"):
+                fail("prediction %s: kind %s but its acceptance %s a cost: rule" % (
+                    p["id"], k, "is" if k != "cost" else "is not"))
         # the regression cells: gin-mirror's non-cost cells at the regression builds; "mirror:" names gin-mirror's ids
         reg = cj["regression"]
         src = os.path.join(HERE, reg["source"])

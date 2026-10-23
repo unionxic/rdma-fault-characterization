@@ -46,7 +46,8 @@ defines for phase N to emit exactly (notes_test.md lists them):
   WITLOST   GIN/RC: rank R: witness of rank P lost; liveness alive mono_ms=M (table row 8)           TODO(p1)
   FENCING   GIN/RC: rank R: rank P (incarnation I) fence FENCING: FENCE sent to the launcher of node N mono_ms=M   TODO(p3)
   FENCED    GIN/RC: rank R: rank P (incarnation I) fence FENCED (by FENCED|EXITED from node N) mono_ms=M        TODO(p3)
-  WINCHG    GIN/RC: rank R: window check after the fence|judgement of rank P: changed=N cells mono_ms=M        TODO(p3)
+  WINCHG    GIN/RC: rank R: window check after the fence|judgement of rank P: changed=N cells against=snapshot_at_judgement
+            unreadable=U mono_ms=M        exists; checked=C and "(incarnation I)" after P are read when a later line has them
   CTRLSUM   GIN/RC: rank R: control summary tcp_record_bytes=.. tcp_data_bytes=.. tcp_conns=.. witness_conns=..
             records_lost=.. records_dup=.. repairs=.. sendq_deferred=.. sendq_max=.. rnr=.. async=.. active_mtu=.. mono_ms=M
             (at teardown and at every confirmed checkpoint, every process; the last one of a process counts)  TODO(p2)
@@ -115,7 +116,27 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              FENCED and the activation exist, FENCING (when there) <= FENCED <= the activation;
                              fence_names_ok = both FENCING and FENCED exist; FENCED -> the buddy's first "is given up" line
   cont_target_present        the runner's SIGCONT line: was the stopped PID still there (0 when the fence ended it)
-  win_changed_after          WINCHG lines summed
+  win_changed_after, win_lines_n, win_missing, win_unreadable, win_checked, win_verified   (Codex review 2026-10-23 item 3)
+                             the WINCHG lines: changed= summed (empty unless the samples are complete or a change was seen:
+                             an unread window is never "0 changes"), the survivors with a line for the subject and those
+                             without ("0+2"), unreadable= and checked= summed (checked empty: the line has none);
+                             win_verified 1 iff every survivor's line is there, unreadable 0, checked > 0 where given, changed 0
+  data_equal, ow_data_equal, spare_state, final_gen_n   (item 2) override gin-restore's and gin-mirror's columns for one death:
+                             every active process of the final generation (a dead rank: the spare that revived as it; an
+                             unused warm spare contributes nothing); spare_state unused | restored | restored_bad |
+                             not_restored | revived_unexpected; final_gen_n the processes compared. A second death keeps
+                             gin-mirror's columns
+  resume_refusal, resume_why_refused, ring_not_live_class   (item 4) a Resume refusal's class (config when a refused rank's
+                             reason is one of CONFIG_REFUSALS, else prep) and the reasons; a ring not live: config when a
+                             rank's setup agreement turned recovery off for condition 42 or 44, else prep
+  tl_rank, tl_inject, tl_clock, t_suspect_ms, t_judge_ms, t_block_ms, t_fenced_ms, t_fenced_src, t_la_fenced_ms, t_publish_ms,
+  t_first_ok_ms, t_first_ok_step   (item 6) the event timeline on the subject node's survivor (subject xor 2), ms after the
+                             injection (the kill, STOP, FREEZE_PAGE, DIE_RST or gpuhang line), that node's CLOCK_MONOTONIC:
+                             the first SUSPECT, confirm-window open or READ time-out line naming the subject, its judgement,
+                             its hold start (the gates; no QP-to-ERR line exists), its FENCED line or else its window line
+                             (t_fenced_src FENCED | window_fence | window_judgement), the launcher's FENCED line on that node,
+                             its "published" line, and the first driver step line after the publish with tx_err=0 (the
+                             driver prints no per-step check: counted only when the rank's kv dev_bad is 0)
   la_exited_n, la_exit_silent_n, la_fence_sigkill_n, la_fenced_n, la_fenced_after_sigkill_ms, la_later_n,
   la_act_refused_why, la_stop_n, la_refused_signal_n, la_pid_mismatch_n, la_qp_err_n, launcher_same, launcher_ready
                              the trial's launcher logs (both nodes) for the subject; la_stop_n counts every "(STOP_launcher)"
@@ -149,7 +170,8 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              lines before the trial_end marker; both are in la_stop_n
   ss_tcp_conn_n, ss_pids_both, ss_tx_delta_bytes, ss_rx_delta_bytes   the runner's two ss snapshots of the rank PIDs: the
                              established TCP sockets at the first, the bytes acked / received between the two (pids in both)
-  active_mtu_rain, active_mtu_sunny   the runner's ibv_devinfo reading (meta)
+  active_mtu_rain, active_mtu_sunny   the runner's ibv_devinfo reading (meta); active_mtu_kv_min and these in bytes: the
+                             library's active_mtu= is the ibv_mtu enum (5 = 4096 B; item 1, mtu_bytes)
   ckpt_stable_in_mute, ckpt_void_in_mute, helper_reconnect_n   stable / void checkpoint lines inside the socket mute's on -> off
                              window (receipt), and helper reconnect lines
   qperr_pair_sent_by_target, qperr_rec_gen_delta, qperr_probe_gen_delta, qperr_pair_read_fail, qperr_records_after
@@ -196,7 +218,8 @@ PROBESUM = re.compile(r"GIN/RC: rank (\d+): probe summary peer=(\d+) (.*)$")
 WITLOST = re.compile(r"GIN/RC: rank (\d+): witness of rank (\d+) lost; liveness alive")
 FENCING = re.compile(r"GIN/RC: rank (\d+): rank (\d+) \(incarnation (\d+)\) fence FENCING\b")
 FENCEDL = re.compile(r"GIN/RC: rank (\d+): rank (\d+) \(incarnation (\d+)\) fence FENCED\b")
-WINCHG = re.compile(r"GIN/RC: rank (\d+): window check after the (?:fence|judgement) of rank (\d+): changed=(\d+)")
+WINCHG = re.compile(r"GIN/RC: rank (\d+): window check after the (?:fence|judgement) of rank (\d+)(?: \(incarnation (\d+)\))?: "
+                    r"changed=(\d+)( cells.*)?$")
 CTRLSUM = re.compile(r"GIN/RC: rank (\d+): control summary (.*)$")
 RINGSUM = re.compile(r"GIN/RC: rank (\d+): ring summary peer=(\d+) (.*)$")
 PAIRSENT = re.compile(r"GIN/RC: rank (\d+): PAIR\(record, gen (\d+)\) to rank (\d+)")
@@ -242,6 +265,24 @@ REDIAL = re.compile(r"GIN/RC: rank (\d+): rank (\d+)'s witness socket after its 
 RJ_INC = re.compile(r"GIN/R[CS]: rank (\d+): (?:the REJOIN of rank (\d+) \(incarnation (\d+)\) taken|"
                     r"rank (\d+)'s spare rejoined as incarnation (\d+))")
 SPARE_INC = re.compile(r"GIN/RS: spare rank (\d+): restored as incarnation (\d+)")
+STEPL = re.compile(r"GINRS step rank=(\d+) step=(\d+) released=0 tx_err=(\d+) ")  # the driver's step line (gin_mi.cu)
+SETUP_OFF = re.compile(r"setup agreement: .*transparent recovery off at the setup \(Resume condition (\d+)\)")
+# Codex review 2026-10-23 item 4: the Resume refusals that name a configuration (the cell's env, build or hardware), read
+# from the libraries' condition texts (gc_layer_int.diff GDAKI_CTRL_R42-R44T; mi_layer.diff GDAKI_MI_R36, R37, R39;
+# rs_layer.diff's GDAKI_RS_L lines that name an env variable, a build macro or the HCA). Any other refusal (the launcher
+# pairing of condition 41, a pool, a QP, the side table, the NIC copy path, the atomics, a replay) is a preparation failure
+CONFIG_REFUSALS = (
+    "a rank's active MTU is below 2048", "ibv_is_fork_initialized() is not IBV_FORK_UNNEEDED",
+    "the control path or the launcher node differs between ranks", "the liveness thresholds differ between ranks",
+    "NCCL_GIN_RESTORE_MIRROR and NCCL_GIN_RESTORE_CHECKSUM are both on",
+    "NCCL_GIN_RESTORE_MIRROR_LANE is not a positive multiple of 64",
+    "NCCL_GIN_RESTORE_MIRROR_SLOTS or NCCL_GIN_RESTORE_MIRROR_LANE differs between ranks",
+    "GIN connections (NCCL_GIN_NCONNECTIONS)", "host RMA is on", "runtime connect is off (NCCL_RUNTIME_CONNECT)",
+    "NVLS is on (NCCL_NVLS_ENABLE)", "transparent recovery is off for this devComm (NCCL_GIN_FAULT_RECOVERY",
+    "NCCL_GIN_TS_RECONNECT is not 1", "the QP watch is off (NCCL_GIN_TS_QPWATCH_MS)",
+    "the send-side log measurement mode is on", "program not built with NCCL_GIN_RESTORE_DEVICE",
+    "does not record its init transcript (NCCL_GIN_RESTORE_RECORD)", "the HCA's atomic capability is below IBV_ATOMIC_HCA")
+CONFIG_SETUP_OFF = ("42", "44")  # the setup agreement's off line: an MTU below 2048, the control path differs (config)
 LIVE_BOUND_MS = 10000.0  # F7's setup bound: process start -> live line (GL_REPAIR_MS, the pairing bound); TODO(prereg)
 LA_REFSIG = re.compile(r"refused to signal")
 LA_PIDMIS = re.compile(r"the pidfd is not the peer's process")
@@ -272,7 +313,10 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "suspect_stale_ms_max", "read_n", "read_ok_n", "read_success_pct", "read_lat_med_us_max", "read_lat_max_us",
            "beat_gap_max_ms", "page_torn_n", "witness_lost_n", "confirm_alive_n", "fence_sent", "fenced", "fence_order_ok",
            "fence_names_ok", "fence_sent_to_fenced_ms", "fenced_to_fallback_ms", "cont_target_present",
-           "win_changed_after", "la_exited_n", "la_exit_silent_n", "la_fence_sigkill_n", "la_fenced_n",
+           "win_changed_after", "win_lines_n", "win_missing", "win_unreadable", "win_checked", "win_verified",
+           "spare_state", "final_gen_n", "resume_refusal", "resume_why_refused", "ring_not_live_class", "tl_rank",
+           "tl_inject", "tl_clock", "t_suspect_ms", "t_judge_ms", "t_block_ms", "t_fenced_ms", "t_fenced_src",
+           "t_la_fenced_ms", "t_publish_ms", "t_first_ok_ms", "t_first_ok_step", "la_exited_n", "la_exit_silent_n", "la_fence_sigkill_n", "la_fenced_n",
            "la_fenced_after_sigkill_ms", "la_later_n", "la_act_refused_why", "la_stop_n", "la_refused_signal_n",
            "la_pid_mismatch_n", "la_qp_err_n", "launcher_same", "launcher_ready", "launcher_scope", "launcher_stale",
            "la_spare_spawn_n", "la_spare_respawn_n", "la_spare_cap_expected_n", "spare_hello_after_ms", "spare2_inc_want",
@@ -512,6 +556,81 @@ def ctrl_split(d, k):
     if pre is not None:
         return tot - pre, pre
     return (0.0, 0.0) if tot == 0 else (None, None)
+
+
+def mtu_bytes(v):
+    """an MTU in bytes: the ibv_mtu enum (1..5: 256..4096 B, the library's active_mtu= and min_active_mtu=) or a byte value
+    (256 and up, the runner's ibv_devinfo reading) as it stands; None otherwise (Codex review 2026-10-23 item 1)"""
+    x = fnum(v)
+    if x is None:
+        return None
+    if x == int(x) and 1 <= x <= 5:
+        return 128 << int(x)
+    return int(x) if x >= 256 else None
+
+
+def _norm(t):
+    return " ".join(str(t).replace("_", " ").split())
+
+
+def refusal_class(whys):
+    """config when a refused rank's reason names a configuration (CONFIG_REFUSALS), else prep; "" without a refusal"""
+    whys = [w for w in whys if w]
+    if not whys:
+        return ""
+    return "config" if any(_norm(c) in _norm(w) for w in whys for c in CONFIG_REFUSALS) else "prep"
+
+
+def _num(d, k, dflt=None):
+    return rows_rs.num(d, k, dflt)
+
+
+def exact_rs(d):
+    """gin-restore's data check of one final process (rows_rs.rs_row's exact)"""
+    return (_num(d, "recv_bad", 1) == 0 and _num(d, "xhist_bad", 1) == 0 and _num(d, "dev_bad", 1) == 0 and
+            _num(d, "x_match", 0) == 1 and _num(d, "sig_exact", 0) == 1)
+
+
+def exact_ow(d):
+    """gin-mirror's (rows_mi's exact_mi): the data check and no poison"""
+    return exact_rs(d) and (_num(d, "recv_poison", 0) or 0) == 0 and (_num(d, "dev_poison", 0) or 0) == 0
+
+
+def revived_ok(d):
+    return bool(d) and _num(d, "revived", 0) == 1 and _num(d, "exit", 1) == 0 and _num(d, "steps_done", -1) == _num(d, "steps", -2)
+
+
+def final_data(stem, n, dead, meta):
+    """Codex review 2026-10-23 item 2: data equality over the active processes of the final generation (one death). A rank
+    that did not die is its own process; a dead rank (killed, or ended by the fence) is the spare that revived as it (kv
+    revived=1), which must have finished and be exact; a dead rank whose spare did not revive fails when a spare was there
+    for it (the restore was expected) and contributes nothing without one (fail-fast: gin-restore's survivors). A spare
+    whose rank did not die (the warm spare of a fault-free or transparent cell) is unused and contributes nothing.
+    Returns (data_equal, ow_data_equal, spare_state, final_gen_n)"""
+    kv = {r: rows_rs.parse_kv("%s_r%d.kv" % (stem, r)) for r in range(n)}
+    spares = [rows_rs.parse_kv(stem + "_spare.kv")] if os.path.exists(stem + "_spare.kv") else []
+    states, finals, missing = [], [], False
+    for d in spares:
+        used = _num(d, "revived", 0) == 1
+        if _num(d, "rank", -1) in dead:
+            states.append("restored" if (used and revived_ok(d) and exact_ow(d)) else ("restored_bad" if used else "not_restored"))
+        else:
+            states.append("revived_unexpected" if used else "unused")
+    for r in range(n):
+        if r not in dead:
+            finals.append(kv[r])
+            continue
+        sp = [d for d in spares if _num(d, "rank", -1) == r]
+        if not sp:
+            missing = missing or meta.get("spare") == "1"  # the restore's spare was asked and left no kv
+            continue
+        if revived_ok(sp[-1]):
+            finals.append(sp[-1])
+        else:
+            missing = True
+    de = int(bool(finals) and not missing and all(exact_rs(d) for d in finals))
+    ow = int(bool(finals) and not missing and all(exact_ow(d) for d in finals))
+    return de, ow, "+".join(states), len(finals)
 
 
 def gc_overlay(stem, base, meta):
@@ -792,8 +911,27 @@ def gc_overlay(stem, base, meta):
         out["suspect_stale_ms_min"], out["suspect_stale_ms_max"] = mm(sus) if sus else ("", "")
         out["witness_lost_n"] = sum(1 for e in every if WITLOST.search(e.text))
         out["confirm_alive_n"] = sum(1 for e in every for m in [CONF_CLOSE.search(e.text)] if m and m.group(3) == "alive")
-    wc = [int(m.group(3)) for e in every for m in [WINCHG.search(e.text)] if m]
-    out["win_changed_after"] = sum(wc) if wc else ""
+    # the window check (Codex review 2026-10-23 item 3): changed= of every line, unreadable= and checked= (when the line
+    # has them) and whether every survivor reported the line for the subject (the line names no incarnation today: any
+    # line naming the subject counts). The fence predicate win_verified is 1 only when every survivor's line is there,
+    # no sample was unreadable (and checked > 0 when the line says checked=) and changed = 0; win_changed_after is the
+    # changed sum when the samples are complete, or when a change was seen anyway, else empty (unknown, never "0 changes")
+    wl = [(e, m, kvd(m.group(5) or "")) for e in every for m in [WINCHG.search(e.text)] if m]
+    if wl:
+        chg = sum(int(m.group(4)) for _, m, _ in wl)
+        unr = [fnum(d.get("unreadable")) for _, _, d in wl]
+        chk = [fnum(d.get("checked")) for _, _, d in wl]
+        out["win_unreadable"] = int(sum(x for x in unr if x is not None))
+        out["win_checked"] = int(sum(x for x in chk if x is not None)) if any(x is not None for x in chk) else ""
+        complete = out["win_unreadable"] == 0 and all(x is None or x > 0 for x in chk)
+        if s >= 0:
+            have = {int(m.group(1)) for e, m, _ in wl if int(m.group(2)) == s}
+            miss = [r for r in surv if r not in have]
+            out["win_lines_n"] = len(have & set(surv))
+            out["win_missing"] = "+".join(str(r) for r in miss)
+            complete = complete and not miss
+            out["win_verified"] = int(complete and chg == 0)
+        out["win_changed_after"] = chg if (complete or chg > 0) else ""
     # the control summaries: each process's last one
     cs = []
     for lg in [logs[r] for r in ranks] + spare_all:  # every process of the trial (the spares: _spare*.log)
@@ -831,7 +969,7 @@ def gc_overlay(stem, base, meta):
             if b0 is not None and a0 is not None:
                 port += int(a0 - b0)
         out["rnr_n"] = sm("rnr") + port
-        mtus = [fnum(d.get("active_mtu")) for d in cs if fnum(d.get("active_mtu")) is not None]
+        mtus = [mtu_bytes(d.get("active_mtu")) for d in cs if mtu_bytes(d.get("active_mtu")) is not None]
     else:
         mtus = []
     if ctrl == "rdma" and any(logs[r] for r in ranks):  # B3 (b), (c): from the lines, with or without a summary
@@ -840,11 +978,12 @@ def gc_overlay(stem, base, meta):
         out["ring_live_pairs"], out["tcp_ctrl_conn_n"] = live_p, open_p
         out["witness_pairs"] = open_p if wit_on else 0
         out["witness_expected"] = live_p if wit_on else 0
-    kvm = [fnum(rows_rs.parse_kv("%s_r%d.kv" % (stem, r)).get("active_mtu")) for r in ranks]
+    # item 1 (Codex review 2026-10-23): the kv's and the summaries' active_mtu is the ibv_mtu enum (5 = 4096 B); bytes here
+    kvm = [mtu_bytes(rows_rs.parse_kv("%s_r%d.kv" % (stem, r)).get("active_mtu")) for r in ranks]
     kvm = [x for x in kvm if x is not None] or mtus
     out["active_mtu_kv_min"] = int(min(kvm)) if kvm else ""
     for nd in ("rain", "sunny"):
-        v = fnum(meta.get("active_mtu_" + nd))
+        v = mtu_bytes(meta.get("active_mtu_" + nd))
         out["active_mtu_" + nd] = int(v) if v is not None else ""
     # the runner's ss snapshots (counts only)
     ssl = [m for t, l in rows_rs.stamped(stem + "_ss.out") if t is not None for m in [SSL.search(l)] if m]
@@ -955,6 +1094,70 @@ def gc_overlay(stem, base, meta):
             sk0 = min(sk, key=lambda x: x.t)
             stab = [e for e in every for m in [STABLE_ANY.search(e.text)] if m and int(m.group(1)) == s]
             out["stable_between_pair_kills"] = int(any((xd(sk0, e)[0] or 0) > 0 and (xd(e, ev)[0] or 0) > 0 for e in stab))
+    # item 2: data equality over the final generation's active processes (one death; a second death keeps gin-mirror's
+    # columns, whose two spares are both needed); spare_state names each spare process's part
+    bk = int(base["kill_rank"]) if str(base.get("kill_rank", "")).isdigit() else -1
+    if os.path.exists("%s_r0.kv" % stem):
+        de, ow, sst, fgn = final_data(stem, n, {bk} if bk >= 0 else set(), meta)
+        out["spare_state"], out["final_gen_n"] = sst, fgn
+        if kr2 < 0:
+            out["data_equal"], out["ow_data_equal"] = de, ow
+    # item 4: a Resume refusal's class (config: the reason names a configuration; prep: any other) and a ring that did
+    # not go live: config when a rank's setup agreement turned recovery off for an MTU or a control path that differ
+    whys = [rows_rs.parse_kv("%s_r%d.kv" % (stem, r)) for r in ranks]
+    whys = [d.get("resume_why", "") for d in whys if (_num(d, "resume_rc", 0) or 0) != 0]
+    out["resume_refusal"] = refusal_class(whys) or ("prep" if whys else "")  # no reason text: not a named configuration
+    pre = "GIN/RS: ncclGinRestoreResume: the restore cannot be enabled on this communicator: "
+    out["resume_why_refused"] = " | ".join(sorted({_norm(w).replace(pre, "")[:200] for w in whys if w}))
+    if str(out.get("ring_live_all")) == "0":
+        offs = {m.group(1) for r in ranks for e in logs[r] for m in [SETUP_OFF.search(e.text)] if m}
+        out["ring_not_live_class"] = "config" if offs & set(CONFIG_SETUP_OFF) else "prep"
+    # item 6: the event timeline on the subject node's survivor (s xor 2: rank 1 for rank 3), ms after the injection, that
+    # node's CLOCK_MONOTONIC (the runner's kill, stop and inject lines and the subject's own lines are that node's too)
+    if s >= 0 and inj_ev is not None:
+        tr = s ^ 2
+        tl = logs.get(tr, []) if tr != kr2 else []
+        sw = next((nm for nm, rx in (("gpuhang", SW_GPUHANG), ("freeze", SW_FREEZE), ("die_rst", SW_DIE_RST))
+                   if rx.search(inj_ev.text)), "")
+        out["tl_rank"], out["tl_inject"] = tr, (kind if kind not in ("", "none") else (sw or "switch"))
+        jt = js.get(tr, (None, None))[0]
+        aft = lambda e: e.t >= inj_ev.t - 0.001
+        def at(rx, g=2, lim=None):
+            for e in sorted(tl, key=lambda x: x.t):
+                m = rx.search(e.text)
+                if m and int(m.group(g)) == s and aft(e) and (lim is None or e.t <= lim.t):
+                    return e
+            return None
+        sus = [x for x in (at(SUSPECT, lim=jt), at(CONF_OPEN, lim=jt), at(TIMEOUTL, lim=jt)) if x is not None]
+        ev = {"t_suspect_ms": min(sus, key=lambda x: x.t) if sus else None, "t_judge_ms": jt, "t_block_ms": at(HOLD_OF),
+              "t_publish_ms": at(PUB_OF, 1)}
+        fz = at(FENCEDL)
+        wz = at(WINCHG)
+        if fz is not None and (wz is None or fz.t <= wz.t):
+            ev["t_fenced_ms"], out["t_fenced_src"] = fz, "FENCED"
+        elif wz is not None:
+            ev["t_fenced_ms"] = wz
+            out["t_fenced_src"] = "window_" + ("fence" if "after the fence" in wz.text else "judgement")
+        lz = [e for e in la_after_start(lalog[node_of(s)]) for m in [LA_FENCED.search(e.text)] if m and int(m.group(1)) == s]
+        ev["t_la_fenced_ms"] = min(lz, key=lambda x: x.t) if lz else None
+        pub = ev["t_publish_ms"]
+        kvt = rows_rs.parse_kv("%s_r%d.kv" % (stem, tr))
+        # the driver checks a step's received data on the device (dev_bad, summed into the kv at the end) and prints no
+        # per-step verdict: the first step line after the publish with tx_err=0 is the first completed step; it counts
+        # as checked only when the rank's kv says dev_bad=0 over every step
+        if pub is not None and _num(kvt, "dev_bad", 1) == 0:
+            st = [(e, m) for e in sorted(tl, key=lambda x: x.t) for m in [STEPL.search(e.text)]
+                  if m and int(m.group(1)) == tr and int(m.group(3)) == 0 and e.t > pub.t]
+            if st:
+                ev["t_first_ok_ms"] = st[0][0]
+                out["t_first_ok_step"] = int(st[0][1].group(2))
+        clocks = set()
+        for c, e in ev.items():
+            if e is not None:
+                d, ck = xd(inj_ev, e)
+                out[c] = r1(d)
+                clocks.add(ck)
+        out["tl_clock"] = "+".join(sorted(clocks))
     return out
 
 

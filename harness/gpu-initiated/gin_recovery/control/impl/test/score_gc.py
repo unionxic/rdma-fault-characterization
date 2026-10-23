@@ -11,11 +11,13 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
      costpilot*, or a trial of another hold P*) are counted apart and never scored. The gc cells' exclusions of section 8
      (gin-mirror's and these): void, config_driver, workload, config (the trial ran another build, witness, fence, policy or
      restore setting than its cell, another launcher env than the cell's launcher_env, a W or READ period other than
-     cells_gc.json "prereg", or its Resume was refused where the cell expects the restore), launcher_stale (a stale
+     cells_gc.json "prereg", or its Resume was refused where the cell expects the restore for a reason that names a
+     configuration: rows_gc.CONFIG_REFUSALS), launcher_stale (a stale
      launcher socket or process on a node at the trial's start: nothing ran; section 8's per-trial launcher rule of
      2026-10-22), launcher_not_ready (the start check: a launcher of the trial did not come up), launcher_changed (a launcher
-     ended or changed during the trial, or a launcher QP loss outside the test-switch cells), ring_not_live (an rdma
-     trial with a rank whose ring never went live within the setup bound: no judgement table; REVIEW_INT3 F7), not_applied (the injection's record is missing), inject_late (the runner's injection more than 1 s from its
+     ended or changed during the trial, or a launcher QP loss outside the test-switch cells), a ring that never went live
+     within the setup bound (REVIEW_INT3 F7) is config when a rank's setup agreement turned recovery off for an MTU or a
+     control path that differ, not_applied (the injection's record is missing), inject_late (the runner's injection more than 1 s from its
      plan, a stop's length more than 1 s off, or the spare-absent cell's two kills more than 5 ms apart), spare_start_fail,
      (also: a second death's spare that is not the launcher's, rows_gc.py spare2_daemon_ok 0: the same rank's second restore
      needs the daemon's next spare, incarnation 2; another rank's, that node's own warm spare), foreign_gpu, restore_not_live, kill_before_ckpt (the kill, DIE_RST, STOP or FREEZE_PAGE before the subject's first
@@ -24,7 +26,13 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
      a re-arm that never came counts as a failed condition (gin-mirror's section 8, pre-registered; the coordinator's
      decision of 2026-10-17 for @gct and @gc). gin-mirror's regression rows take gin-mirror's own statuses (its score.py)
      plus the launcher exclusions here.
-  3. per key cell@build the first PLANNED candidates by trial number are scored; "자료 부족" when a key of this study (its
+     Codex review 2026-10-23 item 4: a Resume refusal for any other reason and a ring that did not go live under the
+     cell's configuration are prep_failure: not an exclusion; among the first PLANNED trials (candidates and prep failures
+     by trial number) a prep failure keeps its place and is never refilled; SCORE.md and the output give per prediction and
+     key the plan, the run, the exclusions by reason, the prep failures, the scored n, the conditional (over the scored)
+     and the whole-run (over the scored and the prep failures) success rates.
+  3. per key cell@build the first PLANNED candidates by trial number are scored (a key is short when its scored trials
+     and prep failures are fewer than planned); "자료 부족" when a key of this study (its
      own cells and the regression cells its own formulas read) has fewer scored trials than planned (section 8 refills the
      exclusions; REVIEW_TEST fix 11), when a pooled key "build:<b>" has a cell with trials below its plan, or when a library
      column its formula reads (LIB_COLS: from TODO lines and the runner's new readings) is empty in every scored trial.
@@ -37,6 +45,9 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
        mirror: <id,...|all>@<build>    gin-mirror's predictions_mi.csv rows (cost rows left out) with @mi -> @<build>,
                                        judged by gin-mirror's score.py; every one 맞음 -> 맞음
        cost: rule=within:<pct>         the cost family per receiving node (cells "cost:<family>:<arms>:<metrics>")
+     predictions_gc.csv kind (item 5): safety predictions hold only when every count() part is true on every scored
+     trial (0 failures); perf keep their rule's threshold, and their safety terms (SAFETY_TERM) are reported per trial;
+     cost is the cost family.
      keys "build:<b>" pool every scored gin-control-runner trial of build b (no_tcp_control, long_hold_lane), "local:<x>" the
      local rows.
   5. STOP: the results folder's STOP_* files (their line counts), every trial's "(STOP_launcher)" and
@@ -78,7 +89,6 @@ EXCL = {"void": "시작 실패(생존 rank가 교환 전에 끝남)", "config_dr
         "launcher_not_ready": "시행 시작 때 launcher가 두 노드 모두에서 준비되지 않음",
         "launcher_stale": "시행 시작 때 앞 launcher의 소켓이나 프로세스가 노드에 남아 있음(아무것도 돌지 않음)",
         "launcher_changed": "시행 중 launcher가 끝났거나 바뀜, 또는 시험 스위치 셀 밖의 launcher QP 잃음",
-        "ring_not_live": "링이 live가 되지 않음(어느 rank에 설정 한도 안의 live 줄이 없음; 판정 표 밖이라 판정 예측에 넣지 않음)",
         "not_applied": "주입 기록 없음", "inject_late": "주입이 정한 시각보다 1 s 넘게 어긋남(또는 짝 kill 간격 > 5 ms)",
         "spare_start_fail": "예비 프로세스가 활성화 전에 시작에 실패함", "foreign_gpu": "시행 시작 때 GPU에 다른 프로세스",
         "restore_not_live": "복원 계층 미통합", "kill_before_ckpt": "주입(kill, DIE_RST, STOP, FREEZE_PAGE)이 대상의 첫 확정 체크포인트 전",
@@ -87,6 +97,54 @@ EXCL = {"void": "시작 실패(생존 rank가 교환 전에 끝남)", "config_dr
         "pilot": "pilot(채점 안 함)"}
 EXCL.update({k: v for k, v in msc.EXCL.items() if k not in EXCL})
 TEST_SWITCH_ENV = ("TEST_QP_ERR", "TEST_DROP_UD", "TEST_CREDIT_STALL")
+EXCL["prep_failure"] = "준비 실패(설정이 맞는데 Resume 거절이나 링 live 실패; 따로 세고 채우지 않음)"
+KINDS = ("safety", "perf", "cost")
+# item 5: the safety terms of section 3's rules (data equality, no duplicate or missing application, no activation before
+# FENCED, the window unchanged after the fence): inside a perf prediction they are reported per trial, not judged
+SAFETY_TERM = re.compile(r"\b(data_equal|ow_data_equal|no_reexec|rec_lost_n|rec_dup_n|rejoin_accept_dup_n|fence_order_ok|"
+                         r"win_changed_after|win_verified)\s*==\s*(\d+)\b")
+APART = ("scored", "prep_failure", "surplus", "smoke", "pilot")
+
+
+def kind_of(p):
+    """predictions_gc.csv kind: safety, perf or cost (a cost: rule is cost; an empty kind reads as perf)"""
+    k = (p.get("kind") or "").strip()
+    return k if k in KINDS else ("cost" if p["acceptance"].strip().startswith("cost:") else "perf")
+
+
+def all_evals(det):
+    """(key, details) of every count() evaluation of a prediction: its own parts and gin-mirror's"""
+    out = [(k, dd) for k, ok, dd, expr in det["evals"]]
+    for _, _, _, mev, _ in det["mirror"]:
+        out += [(e[0], e[2]) for e in mev]
+    return out
+
+
+def safety_fails(det):
+    """[(key, inner, true count, n)] of the count() parts that failed a scored trial (item 5's 0-failure rule)"""
+    return [(k, inner, cnt, n) for k, dd in all_evals(det) for inner, cnt, n, *_ in dd if cnt != n]
+
+
+def perf_safety_terms(p, det, scored, mpreds=()):
+    """[(key, term, failing trials, n)]: a perf rule's safety terms (its own text and the gin-mirror rules it names) on its
+    keys' scored trials (reported only)"""
+    mids = {m[0] for m in det["mirror"]}
+    text = p["acceptance"] + " " + " ".join(q["acceptance"] for q in mpreds if q["id"] in mids)
+    terms = sorted({m.group(0) for m in SAFETY_TERM.finditer(text)})
+    keys = sorted({k for k, _ in all_evals(det)})
+    return [(k, t, [r["id"] for r in scored.get(k, []) if not s2.cond_true(t, r)], len(scored.get(k, [])))
+            for k in keys for t in terms if scored.get(k)]
+
+
+def key_counts(k, by_key, scored, prep, PLANNED, pooled):
+    """(planned, run, {excluded reason: n}, prep failures, scored) of one key (a pooled key: its cells summed)"""
+    ks = pooled.get(k, [k])
+    rs = [r for x in ks for r in by_key.get(x, []) if r["status"] not in ("smoke", "pilot")]
+    exc = {}
+    for r in rs:
+        if r["status"] not in APART:
+            exc[r["status"]] = exc.get(r["status"], 0) + 1
+    return (sum(PLANNED.get(x, 0) for x in ks), len(rs), exc, sum(prep.get(x, 0) for x in ks), len(scored.get(k, [])))
 
 
 def load_cells():
@@ -156,7 +214,11 @@ def status_gc(r, cell, prereg=None):
                         ("RESTORE", "restore", "1")):
         if meta.get(mk, dflt) != env.get(k, dflt):
             return "config"
-    if env.get("RESTORE", "1") == "1" and env.get("FAULT_POLICY", "hold") == "hold" and str(r.get("resume_refused")) == "1":
+    # Codex review 2026-10-23 item 4: a Resume refusal is a configuration exclusion only when its reason names a
+    # configuration (rows_gc.CONFIG_REFUSALS: resume_refusal "config"); any other refusal is a preparation failure of the
+    # library under the cell's configuration (prep_failure below: counted, never refilled)
+    refused = env.get("RESTORE", "1") == "1" and env.get("FAULT_POLICY", "hold") == "hold" and str(r.get("resume_refused")) == "1"
+    if refused and r.get("resume_refusal") != "prep":
         return "config"
     # REVIEW_TEST fix 12: the launcher env of the hold, W and the READ period
     if r.get("ctrl") == "rdma":
@@ -180,7 +242,9 @@ def status_gc(r, cell, prereg=None):
         if str(r.get("launcher_same")) == "0" or (not sw and ival(r.get("la_qp_err_n"), 0) > 0):
             return "launcher_changed"
         if str(r.get("ring_live_all")) == "0":  # REVIEW_INT3 F7: no live line within the setup bound on some rank
-            return "ring_not_live"
+            return ring_status(r)
+    if refused:
+        return "prep_failure"
     inj = cell.get("injection", {}).get("kind", "none")
     if inj != "none":
         if str(r.get("inject_ok")) == "0" or (env.get("KILL_RANK") and ival(r.get("applied"), 0) == 0):
@@ -206,6 +270,12 @@ def status_gc(r, cell, prereg=None):
     return "candidate"
 
 
+def ring_status(r):
+    """a ring that did not go live (REVIEW_INT3 F7): config when a rank's setup agreement turned recovery off for an MTU
+    or a control path that differ (rows_gc ring_not_live_class), else a preparation failure (item 4)"""
+    return "config" if r.get("ring_not_live_class") == "config" else "prep_failure"
+
+
 def spare2_not_daemon(r):
     """a second death with a second spare wanted, in an rdma build: its spare is not the launcher's (rows_gc.py)"""
     return r.get("ctrl") == "rdma" and r.get("_meta", {}).get("spare2_wanted") == "1" and str(r.get("spare2_daemon_ok")) == "0"
@@ -214,7 +284,10 @@ def spare2_not_daemon(r):
 def status_regression(r, entry, mcells_b):
     if r.get("ctrl") == "rdma" and r.get("launcher_stale") not in ("", None, "-"):
         return "launcher_stale"
-    s = msc.status_rs(r, mcells_b)
+    # item 4: gin-mirror's status_rs takes every Resume refusal as config; a preparation refusal is not one here
+    prep = (str(r.get("resume_refused")) == "1" and r.get("resume_refusal") == "prep" and
+            not str(r.get("cell", "")).startswith(msc.REFUSAL))
+    s = msc.status_rs(dict(r, resume_refused=0) if prep else r, mcells_b)
     if s != "candidate":
         return s
     if spare2_not_daemon(r):
@@ -225,7 +298,9 @@ def status_regression(r, entry, mcells_b):
         if str(r.get("launcher_same")) == "0" or ival(r.get("la_qp_err_n"), 0) > 0:
             return "launcher_changed"
         if str(r.get("ring_live_all")) == "0":  # REVIEW_INT3 F7
-            return "ring_not_live"
+            return ring_status(r)
+    if prep:
+        return "prep_failure"
     # no second-death exclusion (REVIEW_TEST B3; gin-mirror section 8: a second kill before the re-arm, a failed first
     # restore or a re-arm that never came is a failed condition of its prediction, never an exclusion)
     return "candidate"
@@ -358,7 +433,7 @@ def score(R, planned_override=None):
             r["status"] = status_regression(r, reg[r["key"]], mcells_b)
         else:
             r["status"] = "config"
-    by_key, scored = {}, {}
+    by_key, scored, prep = {}, {}, {}
     for r in sorted(rows, key=lambda x: (x["key"], x.get("tnum") or 0, x["sub"])):
         by_key.setdefault(r["key"], []).append(r)
     for k, rs in by_key.items():
@@ -370,10 +445,15 @@ def score(R, planned_override=None):
             for nr in per.values():
                 for i, r in enumerate(nr):
                     r["status"] = "scored" if i < c["cost"]["n_per_arm"] else "surplus"
-        else:
-            for i, r in enumerate(cand):
-                r["status"] = "scored" if i < PLANNED.get(k, 0) else "surplus"
+        else:  # item 4: a preparation failure takes its trial's place among the planned and is never refilled
+            pool = [r for r in rs if r["status"] in ("candidate", "prep_failure")]
+            for i, r in enumerate(pool):
+                if i >= PLANNED.get(k, 0):
+                    r["status"] = "surplus"
+                elif r["status"] == "candidate":
+                    r["status"] = "scored"
         scored[k] = [r for r in rs if r["status"] == "scored"]
+        prep[k] = sum(1 for r in rs if r["status"] == "prep_failure")
     pooled = {}
     for b in c["builds"]:
         ks = sorted(k for k, rs in by_key.items() if "@" in k and not k.startswith("cost_")
@@ -381,6 +461,9 @@ def score(R, planned_override=None):
                             for r in rs))
         pooled["build:" + b] = ks
         scored["build:" + b] = [r for k in ks for r in scored.get(k, [])]
+        prep["build:" + b] = sum(prep.get(k, 0) for k in ks)
+    # the plan less the preparation failures in it: a key is short only when scored + prep failures < planned
+    EFF = {k: max(0, v - prep.get(k, 0)) for k, v in PLANNED.items()}
     preds = list(csv.DictReader(open(PREDS, encoding="utf-8")))
     mpreds = list(csv.DictReader(open(MPREDS, encoding="utf-8")))
     sha = hashlib.sha256(open(PREDS, "rb").read()).hexdigest()
@@ -401,7 +484,7 @@ def score(R, planned_override=None):
         ok_all = True
         for part in [x.strip() for x in acc.split(";;")]:
             if part.startswith("mirror:"):
-                res, missing = mirror_part(part[len("mirror:"):].strip(), scored, PLANNED, mpreds)
+                res, missing = mirror_part(part[len("mirror:"):].strip(), scored, EFF, mpreds)
                 det["mirror"] += res
                 det["missing"] += missing
                 if any(v == "자료 부족" for _, v, _, _, _ in res) or missing or not res:
@@ -410,7 +493,7 @@ def score(R, planned_override=None):
                 continue
             m = re.match(r"([A-Za-z0-9_]+@[a-z]+|build:[a-z]+|local:[a-z_]+):\s*(.*)$", part)
             pk, pa = ([m.group(1)], m.group(2)) if m else (keys, part)
-            ev, sh, nd = eval_part(pa, pk, scored, PLANNED, pooled)
+            ev, sh, nd = eval_part(pa, pk, scored, EFF, pooled)
             det["evals"] += ev
             det["short"] += sh
             det["nodata"] = det["nodata"] or nd
@@ -421,6 +504,11 @@ def score(R, planned_override=None):
             v = "자료 부족"
         else:
             v = "맞음" if ok_all else "틀림"
+        # item 5: a safety prediction holds only with no failure over its scored trials (every count() part n of n)
+        det["safety_fail"] = safety_fails(det)
+        if kind_of(p) == "safety" and v == "맞음" and det["safety_fail"]:
+            v = "틀림"
+        det["perf_safety"] = perf_safety_terms(p, det, scored, mpreds) if kind_of(p) == "perf" else []
         results.append((p, keys, v, det))
     # trials_scored.csv
     cols = rows_gc.columns(rows)
@@ -437,7 +525,22 @@ def score(R, planned_override=None):
     stops = sorted(x for x in os.listdir(R) if x.startswith("STOP_"))
     la_stop = [(r["id"], ival(r.get("la_stop_n"), 0)) for r in rows if ival(r.get("la_stop_n"), 0) > 0]
     la_cap = sum(ival(r.get("la_spare_cap_expected_n"), 0) for r in rows)
-    not_live = sorted(r["id"] for r in rows if r.get("status") == "ring_not_live")
+    not_live = sorted("%s(%s)" % (r["id"], r["status"]) for r in rows if r.get("runner") == "gcr" and str(r.get("ring_live_all")) == "0")
+    prep_ids = sorted(r["id"] for r in rows if r.get("status") == "prep_failure")
+
+    def rate(a, b):
+        return "%d/%d = %.1f %%" % (a, b, 100.0 * a / b) if b else "%d/0" % a
+
+    def count_rows(det):
+        """item 4: per key and count() of a prediction: planned, run, excluded by reason, prep failures, scored, the
+        conditional (over scored) and the whole-run (over scored + prep failures) success rates"""
+        out = []
+        for k, dd in all_evals(det):
+            pl, run, exc, pf, sc = key_counts(k, by_key, scored, prep, PLANNED, pooled)
+            ex = ", ".join("%s %d" % kv for kv in sorted(exc.items())) or "0"
+            for inner, cnt, n, *_ in dd:
+                out.append((k, pl, run, ex, pf, sc, inner, rate(cnt, n), rate(cnt, n + pf)))
+        return out
     la_down = [(r["id"], "낡은 소켓이나 프로세스 %s" % r["launcher_stale"] if r.get("launcher_stale") else "뜨지 않음")
                for r in rows if r.get("ctrl") == "rdma" and r.get("runner") == "gcr" and
                (r.get("launcher_stale") or str(r.get("launcher_ready")) == "0")]
@@ -451,15 +554,19 @@ def score(R, planned_override=None):
          "- `(STOP_launcher)`와 `(STOP_launcher: …)` 줄(launcher 로그와 rank, 예비 프로세스 로그; rank 쪽의 launcher Unix 소켓 끊김 줄 %d개 포함; 8절 채점 규칙, FENCE_NAK 포함): %d줄, 시행 %s." % (
              sum(ival(r.get("rank_la_sock_lost_n"), 0) for r in rows), sum(n for _, n in la_stop),
              ", ".join("%s(%d)" % x for x in la_stop) or "없음"),
-         "- 링이 live가 되지 않아 제외한 시행(REVIEW_INT3 F7): %d개%s." % (
+         "- 링이 live가 되지 않은 시행(REVIEW_INT3 F7; 설정 탓이면 config 제외, 아니면 준비 실패로 셈): %d개%s." % (
              len(not_live), (": " + ", ".join(not_live)) if not_live else ""),
+         "- 준비 실패(설정이 맞는데 Resume 거절이나 링 live 실패; 계획 n 안의 자리를 차지하고 채우지 않음; Codex 리뷰 4): %d개%s." % (
+             len(prep_ids), (": " + ", ".join(prep_ids)) if prep_ids else ""),
          "- 예비 프로세스 없음 셀의 예상된 다시 띄우기 한도 줄(실행기가 끝낸 예비 프로세스를 launcher가 다시 띄우지 않음; STOP으로 세지 않음): %d줄." % la_cap,
          "- launcher가 뜨지 않았거나 낡은 launcher 소켓이나 프로세스가 남아 돌지 않은 시행(8절, STOP_launcher): %s." % (
              ", ".join("%s(%s)" % x for x in la_down) or "없음"), "",
-         "## 판정 요약", "", "| 예측 | 셀 | n | 판정 |", "|---|---|--:|---|"]
+         "## 판정 요약", "", "안전 예측(kind safety)은 판정한 시행에서 실패 0일 때만 맞음, 성능 예측(perf)은 판정식의 문턱 그대로다(Codex 리뷰 5).", "",
+         "| 예측 | 종류 | 셀 | n | 판정 |", "|---|---|---|--:|---|"]
     for p, keys, v, det in results:
         ns = " / ".join(str(len(scored.get(k, []))) for k in keys if not k.startswith(("mirror:", "cost:")))
-        L.append("| %s (%s) | %s | %s | %s |" % (p["predicted"], p["id"], ", ".join("`%s`" % k for k in keys), ns or "-", v))
+        L.append("| %s (%s) | %s | %s | %s | %s |" % (p["predicted"], p["id"], kind_of(p), ", ".join("`%s`" % k for k in keys),
+                                                  ns or "-", v))
     L += ["", "## 예측별 세부", ""]
     for p, keys, v, det in results:
         L += ["### %s: %s" % (p["id"], v), "", "- 판정식: `%s`" % p["acceptance"]]
@@ -476,6 +583,16 @@ def score(R, planned_override=None):
             L.append("- gin-mirror `%s` (%s): %s" % (mid, ", ".join(mkeys), mv))
         if det["missing"]:
             L.append("- gin-mirror 예측 표에 없는 ID: %s" % ", ".join(det["missing"]))
+        if det.get("safety_fail") and kind_of(p) == "safety":
+            L.append("- 안전 예측의 실패(실패 0 규칙): %s" % "; ".join("`%s` `count(%s)` %d/%d" % x for x in det["safety_fail"]))
+        for k, t, fs, n in det.get("perf_safety", []):
+            L.append("- 성능 예측 안의 안전 조건(보고만, 판정에 넣지 않음) `%s` `%s`: 실패 %d/%d%s" % (
+                k, t, len(fs), n, (" (" + ", ".join(fs) + ")") if fs else ""))
+        cr = count_rows(det)
+        if cr:
+            L += ["", "| 키 | 계획 | 실행 | 제외(사유) | 준비 실패 | 판정 n | 조건 | 조건부 성공(판정 n) | 전체 성공(판정 n + 준비 실패) |",
+                  "|---|--:|--:|---|--:|--:|---|--:|--:|"]
+            L += ["| `%s` | %d | %d | %s | %d | %d | `%s` | %s | %s |" % x for x in cr]
         if det["cost"]:
             L += ["", "| 받는 노드 | 지표 | 팔 | n | 중앙값 | 기준 팔과의 차 | 읽기 |", "|---|---|---|--:|--:|---|---|"] + det["cost"]
         L.append("")
@@ -494,7 +611,11 @@ def score(R, planned_override=None):
         L.append("| `%s` | %d | %d | %d | %s |" % (k, PLANNED.get(k, 0), len(rs), len(scored.get(k, [])), txt))
     L.append("")
     open(os.path.join(R, "SCORE.md"), "w", encoding="utf-8").write("\n".join(L))
-    print("\n".join("%s: %s" % (p["id"], v) for p, _, v, _ in results))
+    for p, _, v, det in results:
+        print("%s: %s" % (p["id"], v))
+        for k, pl, run, ex, pf, sc, inner, cr_, wr in count_rows(det):
+            print("  [%s] %s planned=%d run=%d excluded=%s prep_failure=%d scored=%d cond=%s whole=%s" % (
+                kind_of(p), k, pl, run, ex.replace(" ", ":").replace(",:", ","), pf, sc, cr_.split(" =")[0], wr.split(" =")[0]))
     return {p["id"]: v for p, _, v, _ in results}, rows
 
 

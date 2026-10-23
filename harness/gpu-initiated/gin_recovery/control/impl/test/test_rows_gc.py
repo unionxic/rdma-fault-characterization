@@ -87,11 +87,12 @@ def write(path, lines):
 def trial(d, cell, k, *, build="gc", kill=3, subject=3, dead=None, witness="1", fence="lineage", inject="kill_traffic",
           lines=None, spare=True, spare_rank=3, la=None, la_pre=None, kout=None, injout=None, meta_extra=None, ctrlsum=True,
           page=True, probe=None, killed=True, offset=True, ss=True, live_ranks=None, rec_bytes=0, ctrl_kv="",
-          spare_live=None):
+          spare_live=None, mtu="4096", kv_extra=None, spare_kv=None):
     """one synthetic run_gc.sh trial; lines: {rank or 'spare': [(t, text)]} in node seconds; dead: the ranks that died.
     rdma builds: every rank in live_ranks (default all) logs the ring's live line at 0.6 s; the spare logs its restore and
     its live line when a survivor's line names its rejoin (spare_live None) or when spare_live is True; rec_bytes and
-    ctrl_kv go into the survivors' control summaries"""
+    ctrl_kv go into the survivors' control summaries; mtu is the summaries' active_mtu= (the library prints the ibv_mtu
+    enum, 5); kv_extra {rank: {k: v}} changes a rank's kv (a value None drops the key); spare_kv replaces the spare's kv"""
     os.makedirs(d, exist_ok=True)
     stem = os.path.join(d, "%s_%s_n%d" % (cell, build, k))
     lines = lines or {}
@@ -125,6 +126,8 @@ def trial(d, cell, k, *, build="gc", kill=3, subject=3, dead=None, witness="1", 
         is_dead = r in dead
         kv = dict(rank=r, init_rc=0, reg_rc=0, devcomm_rc=0, resume_rc=0, steps=600, rs_hooks_live=1, workload="overwrite",
                   overwrite=1, train=0, ring=4, mirror_env=1, checksum_env="off") if is_dead else dict(GOOD, rank=r)
+        kv.update((kv_extra or {}).get(r, {}))
+        kv = {k: v for k, v in kv.items() if v is not None}
         with open("%s_r%d.kv" % (stem, r), "w") as f:
             f.write(kvline(kv))
         nd = node(r)
@@ -141,7 +144,7 @@ def trial(d, cell, k, *, build="gc", kill=3, subject=3, dead=None, witness="1", 
                 w = 3 if witness == "1" else 0
                 L.append(ln(nd, 9.1, "GIN/RC: rank %d: control summary tcp_record_bytes=%d tcp_data_bytes=0 tcp_conns=%d "
                                      "witness_conns=%d records_lost=0 records_dup=0 repairs=0 sendq_deferred=0 sendq_max=0 "
-                                     "rnr=0 async=0 active_mtu=4096%s" % (r, rec_bytes, w, w, ctrl_kv)))
+                                     "rnr=0 async=0 active_mtu=%s%s" % (r, rec_bytes, w, w, mtu, ctrl_kv)))
                 nsum += 1
         else:
             L.append(raw_line(1.9, "GINRS step rank=%d step=100 released=0" % r))
@@ -149,7 +152,8 @@ def trial(d, cell, k, *, build="gc", kill=3, subject=3, dead=None, witness="1", 
     if spare:
         sn = node(spare_rank)
         with open(stem + "_spare.kv", "w") as f:
-            f.write(kvline(dict(GOOD, rank=spare_rank, mode="spare", resume_step=100, revived=1, start_step=101)))
+            f.write(kvline(spare_kv if spare_kv is not None else
+                           dict(GOOD, rank=spare_rank, mode="spare", resume_step=100, revived=1, start_step=101)))
         S = [raw_line(0.0, "GINRS start rank=%d mode=spare" % spare_rank),
              raw_line(1.0, "GINRS spare_ready rank=%d rt_s=1.0" % spare_rank)]
         S += [ln(sn, t, x) for t, x in lines.get("spare", [])]
@@ -162,7 +166,7 @@ def trial(d, cell, k, *, build="gc", kill=3, subject=3, dead=None, witness="1", 
             w = 3 if witness == "1" else 0
             S.append(ln(sn, 9.2, "GIN/RC: rank %d: control summary tcp_record_bytes=0 tcp_data_bytes=0 tcp_conns=%d "
                                  "witness_conns=%d records_lost=0 records_dup=0 repairs=0 sendq_deferred=0 sendq_max=0 rnr=0 "
-                                 "async=0 active_mtu=4096" % (spare_rank, w, w)))
+                                 "async=0 active_mtu=%s" % (spare_rank, w, w, mtu)))
         write(stem + "_spare.log", S)
     if kout is None and killed and inject in ("kill_traffic", "fd_holder_kill"):
         kout = [ln("sunny", 2.0, "GINRS killed rank=%d node=sunny pid=999 which=first" % kill)]
@@ -595,12 +599,160 @@ def int3_checks():
               and r32["ring_live_all"] == 1, "INT3 F7: a rank without a live line, one beyond the bound")
         _, srows = score_gc.score(R)
         st = {r["id"]: r["status"] for r in srows}
-        check(st["gc4_kill3_ow_gc_n37"] == st["gc4_kill3_ow_gc_n38"] == "ring_not_live" and st["gc4_kill3_ow_gc_n32"] == "scored",
-              "INT3 F7: ring_not_live excluded (%s, %s, %s)" % (st["gc4_kill3_ow_gc_n37"], st["gc4_kill3_ow_gc_n38"],
-                                                               st["gc4_kill3_ow_gc_n32"]))
+        # Codex review 2026-10-23 item 4: a ring that did not go live under the cell's configuration is a preparation
+        # failure (counted, never refilled), no longer the exclusion ring_not_live
+        check(st["gc4_kill3_ow_gc_n37"] == st["gc4_kill3_ow_gc_n38"] == "prep_failure" and st["gc4_kill3_ow_gc_n32"] == "scored",
+              "INT3 F7 (review item 4): a ring not live is a prep failure (%s, %s, %s)" % (
+                  st["gc4_kill3_ow_gc_n37"], st["gc4_kill3_ow_gc_n38"], st["gc4_kill3_ow_gc_n32"]))
         md = open(os.path.join(R, "SCORE.md"), encoding="utf-8").read()
-        check("제외한 시행(REVIEW_INT3 F7): 2개: gc4_kill3_ow_gc_n37, gc4_kill3_ow_gc_n38" in md and
+        check("gc4_kill3_ow_gc_n37(prep_failure), gc4_kill3_ow_gc_n38(prep_failure)" in md and
               "Unix 소켓 끊김 줄 1개 포함" in md and "gc4_kill3_ow_gc_n36(2)" in md, "INT3 F6, F7: SCORE.md lists them")
+    finally:
+        shutil.rmtree(R, ignore_errors=True)
+
+
+# real lines and kv of the hardware smokes (address-redacted raw logs, ../../results/20261023_smoke4/a1/raw/)
+REAL_CTRLSUM = ("GIN/RC: rank 1: control summary tcp_record_bytes=7488 tcp_data_bytes=0 tcp_conns=0 witness_conns=3 records_lost=0 "
+                "records_dup=0 repairs=0 sendq_deferred=0 sendq_max=0 rnr=0 async=0 active_mtu=5 tcp_rx_bytes_peer0=3744 "
+                "tcp_rx_bytes_peer2=1872 tcp_rx_bytes_peer3=1872 async_rec=0 async_read=0 async_la=0 tcp_late_records=0 "
+                "tcp_record_bytes_prelive=7488 tcp_record_bytes_live=0 tcp_data_bytes_prelive=0 tcp_data_bytes_live=0 live=1")
+REAL_SPARE_KV = dict(mode="spare", rank=3, nranks=4, buddy=2, steps=600, bytes=4096, rs_device_macro=1, rs_api=1, workload="overwrite",
+                     overwrite=1, train=0, ring=0, mirror_env=1, checksum_env="off", gpuhang_it=-1, init_rc=0, reg_rc=0,
+                     devcomm_rc=0, register_rc=0, registered=1)  # the warm spare that was never activated: no revived, no steps
+WIN = "GIN/RC: rank %d: window check after the fence of rank 3: changed=%d cells against=snapshot_at_judgement unreadable=%d"
+WHY41 = ("GIN/RS:_ncclGinRestoreResume:_the_restore_cannot_be_enabled_on_this_communicator:_rank_1:_the_restore_was_asked_but_this_"
+         "rank_is_not_paired_with_its_node's_launcher")  # smoke1 a1, rank 1's kv (Resume condition 41: a preparation failure)
+WHY42 = ("GIN/RS:_ncclGinRestoreResume:_the_restore_cannot_be_enabled_on_this_communicator:_rank_1:_a_rank's_active_MTU_is_below_"
+         "2048_(a_control_datagram_does_not_fit)_(rank_1's_active_MTU_(enum_3)_is_below_2048)")  # condition 42: configuration
+
+
+def review_checks():
+    """Codex review 2026-10-23: (1) the ibv_mtu enum in bytes, (2) data equality over the final generation (an unused
+    warm spare contributes nothing), (3) the window check's completeness (unreadable cells, a missing survivor line),
+    (4) Resume refusals and a ring not live: config only for a named configuration, else a prep failure that keeps its
+    place, (5) safety predictions at 0 failures, (6) the event timeline on the subject node's survivor"""
+    R = tempfile.mkdtemp(prefix="gc_selftest_review_")
+    raw = os.path.join(R, "raw")
+    ok = score_gc.s2.cond_true
+    try:
+        def kill_lines(extra=None):
+            return restore_lines(3, 2.0206, "FIN+STALE", extra=extra)
+        la = {"sunny": [(2.119, EXITED3)]}
+        # gc4_kill3_ow@gc (planned 10): n1 the timeline (rank 1's window line only: ranks 0 and 2 miss theirs), n2 a
+        # Resume refusal by condition 41 (prep), n3 by condition 42 (config), n4 a ring not live (prep), n5 a ring not
+        # live after the setup agreement's condition 42 (config), n6 a data mismatch, n7 every window line, n8 one
+        # unreadable=48, n9-n13 good (n13 beyond the plan)
+        tl = {1: [(2.0003, "GIN/RC: rank 1: confirm window for rank 3 opened by FIN W=20 over the watch beat"),
+                  (2.100, WIN % (1, 0, 0)),
+                  (2.300, "GINRS step rank=1 step=139 released=0 tx_err=0 hook_rc=0 stable=120")]}
+        trial(raw, "gc4_kill3_ow", 1, lines=kill_lines(tl), probe=probe_ok(), la=la)
+        trial(raw, "gc4_kill3_ow", 2, lines=kill_lines(), probe=probe_ok(), la=la,
+              kv_extra={1: {"resume_rc": 5, "resume_why": WHY41}})
+        trial(raw, "gc4_kill3_ow", 3, lines=kill_lines(), probe=probe_ok(), la=la,
+              kv_extra={r: {"resume_rc": 5, "resume_why": WHY42} for r in range(N)})
+        trial(raw, "gc4_kill3_ow", 4, lines=kill_lines(), probe=probe_ok(), la=la, live_ranks=(0, 1, 3))
+        L = kill_lines()
+        L[2].append((0.55, "GIN/RC: rank 2: setup agreement: rank 1's active MTU (enum 3) is below 2048 (rank 1): transparent "
+                           "recovery off at the setup (Resume condition 42) min_active_mtu=3"))
+        trial(raw, "gc4_kill3_ow", 5, lines=L, probe=probe_ok(), la=la, live_ranks=(0, 1, 3))
+        trial(raw, "gc4_kill3_ow", 6, lines=kill_lines(), probe=probe_ok(), la=la, kv_extra={0: {"x_match": 0}})
+        trial(raw, "gc4_kill3_ow", 7, lines=kill_lines({r: [(2.1, WIN % (r, 0, 0))] for r in (0, 1, 2)}), probe=probe_ok(), la=la)
+        trial(raw, "gc4_kill3_ow", 8, lines=kill_lines({r: [(2.1, WIN % (r, 0, 48 if r == 0 else 0))] for r in (0, 1, 2)}),
+              probe=probe_ok(), la=la)
+        for k in range(9, 14):
+            trial(raw, "gc4_kill3_ow", k, lines=kill_lines(), probe=probe_ok(), la=la)
+        # the killed rank's spare that never revived (the warm spare's kv): the restore was expected, data_equal 0
+        trial(raw, "gc4_kill3_ow_nowitness", 1, witness="0", lines=kill_lines(), probe=probe_ok(), la=la, spare_kv=REAL_SPARE_KV)
+        # fault-free with the unused warm spare (smoke4 a1's form: active_mtu=5 in the summaries, none in the kv), a copy
+        # with a data mismatch on rank 2, and a copy whose summaries say enum 3 (1024 B)
+        nomtu = {r: {"active_mtu": None} for r in range(N)}
+        ff = dict(kill=None, subject=None, inject="none", killed=False, probe=probe_ok(), spare_kv=REAL_SPARE_KV)
+        trial(raw, "gc4_none_ow", 1, mtu="5", kv_extra=nomtu, lines={1: [(9.5, REAL_CTRLSUM)]}, **ff)
+        trial(raw, "gc4_none_ow", 2, mtu="5", kv_extra={r: ({"active_mtu": None, "x_match": 0} if r == 2 else {"active_mtu": None}) for r in range(N)}, **ff)
+        trial(raw, "gc4_none_ow", 3, mtu="3", kv_extra=nomtu, **ff)
+        # gin-mirror's regression cell at @gc with the condition 41 refusal: a prep failure there too
+        trial(raw, "mi4_kill3_ow", 1, lines=kill_lines(), probe=probe_ok(), la=la, meta_extra={"hold": "RG-gc-G1"},
+              kv_extra={1: {"resume_rc": 5, "resume_why": WHY41}})
+        rows = {r["id"]: r for r in rows_gc.all_rows(R)}
+        g = lambda k: rows["gc4_kill3_ow_gc_n%d" % k]
+        # (1) MTU
+        f1, f3 = rows["gc4_none_ow_gc_n1"], rows["gc4_none_ow_gc_n3"]
+        check([rows_gc.mtu_bytes(x) for x in ("1", "3", "5", "4096", "0", "")] == [256, 1024, 4096, 4096, None, None],
+              "review 1: the ibv_mtu enum 1..5 is 256..4096 B, a byte value stays")
+        nt = rule("no_tcp_control")
+        check(f1["active_mtu_kv_min"] == 4096 and ok(nt, f1) and f3["active_mtu_kv_min"] == 1024 and not ok(nt, f3),
+              "review 1: active_mtu=5 in the real summary is 4096 B; enum 3 fails no_tcp_control (%r %r)" % (
+                  f1["active_mtu_kv_min"], f3["active_mtu_kv_min"]))
+        # (2) data equality
+        check(f1["data_equal"] == 1 and f1["ow_data_equal"] == 1 and f1["spare_state"] == "unused" and f1["final_gen_n"] == 4,
+              "review 2: fault-free with the unused warm spare: data equal over the four ranks (%r %r %r)" % (
+                  f1["data_equal"], f1["ow_data_equal"], f1["spare_state"]))
+        check(rows["gc4_none_ow_gc_n2"]["data_equal"] == 0 and rows["gc4_none_ow_gc_n2"]["ow_data_equal"] == 0,
+              "review 2: a rank's mismatch still fails it")
+        nr = rows["gc4_kill3_ow_nowitness_gc_n1"]
+        check(nr["data_equal"] == 0 and nr["ow_data_equal"] == 0 and nr["spare_state"] == "not_restored"
+              and g(9)["spare_state"] == "restored" and g(9)["ow_data_equal"] == 1 and g(6)["ow_data_equal"] == 0,
+              "review 2: a killed rank whose spare did not revive fails, a revived one counts (%r %r)" % (
+                  nr["spare_state"], g(9)["spare_state"]))
+        # (3) the window check
+        check(g(7)["win_verified"] == 1 and g(7)["win_changed_after"] == 0 and g(7)["win_lines_n"] == 3,
+              "review 3: every survivor's line, all read, no change: verified (%r)" % g(7)["win_verified"])
+        check(g(8)["win_verified"] == 0 and g(8)["win_unreadable"] == 48 and g(8)["win_changed_after"] == "",
+              "review 3: unreadable=48 is not '0 changes' (%r %r)" % (g(8)["win_verified"], g(8)["win_changed_after"]))
+        check(g(1)["win_verified"] == 0 and g(1)["win_missing"] == "0+2" and g(1)["win_changed_after"] == "",
+              "review 3: a survivor without its line: not verified (%r %r)" % (g(1)["win_verified"], g(1)["win_missing"]))
+        ff_rule = rule("freeze_fence_restore")
+        check(not ok("win_changed_after == 0", g(8)) and ok("win_changed_after == 0", g(7)) and "win_changed_after == 0" in ff_rule,
+              "review 3: the rules' win_changed_after == 0 fails on an incomplete window")
+        # (4) refusal classes
+        check(g(2)["resume_refusal"] == "prep" and g(3)["resume_refusal"] == "config" and g(4)["ring_not_live_class"] == "prep"
+              and g(5)["ring_not_live_class"] == "config" and "not paired with its node's launcher" in g(2)["resume_why_refused"],
+              "review 4: refusal and ring classes (%r %r %r %r)" % (g(2)["resume_refusal"], g(3)["resume_refusal"],
+                                                                  g(4)["ring_not_live_class"], g(5)["ring_not_live_class"]))
+        # (6) the timeline on rank 1 (subject 3's node), ms after the kill (2.0 s on sunny)
+        t = g(1)
+        want = dict(t_suspect_ms=0.3, t_judge_ms=20.6, t_block_ms=21.6, t_fenced_ms=100.0, t_publish_ms=170.6, t_first_ok_ms=300.0)
+        check(t["tl_rank"] == 1 and t["tl_clock"] == "mono" and t["t_fenced_src"] == "window_fence" and t["t_first_ok_step"] == 139
+              and all(t[k] != "" and abs(t[k] - v) < 0.01 for k, v in want.items()),
+              "review 6: the timeline on rank 1 (%s)" % {k: t[k] for k in want})
+        check(g(9)["t_first_ok_ms"] == "" and g(9)["t_fenced_ms"] == "", "review 6: no step line, no window line: empty")
+        # (4), (5) the scorer: the prep failures keep their places; a safety copy of a rule fails on one bad trial
+        tmp = os.path.join(R, "preds.csv")
+        import csv as _csv
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=["id", "predicted", "cells", "kind", "acceptance", "todo"], quoting=_csv.QUOTE_ALL)
+            w.writeheader()
+            for kd in ("safety", "perf"):
+                w.writerow(dict(id="t_" + kd, predicted="t", cells="gc4_kill3_ow@gc", kind=kd,
+                                acceptance="count(ow_data_equal == 1) >= 7", todo=""))
+        import io, contextlib
+        old, score_gc.PREDS = score_gc.PREDS, tmp
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                verd, srows = score_gc.score(R)
+        finally:
+            score_gc.PREDS = old
+        st = {r["id"]: r["status"] for r in srows}
+        sk = lambda k: st["gc4_kill3_ow_gc_n%d" % k]
+        check([sk(k) for k in range(1, 14)] == ["scored", "prep_failure", "config", "prep_failure", "config"] + ["scored"] * 7 +
+              ["surplus"], "review 4: statuses %s" % [sk(k) for k in range(1, 14)])
+        check(st["mi4_kill3_ow_gc_n1"] == "prep_failure", "review 4: the regression cell's prep refusal (%s)" % st["mi4_kill3_ow_gc_n1"])
+        check(verd.get("t_safety") == "틀림" and verd.get("t_perf") == "맞음",
+              "review 5: one data mismatch in 8: safety 틀림, perf (>= 7) 맞음 (%s, %s)" % (verd.get("t_safety"), verd.get("t_perf")))
+        out = buf.getvalue()
+        md = open(os.path.join(R, "SCORE.md"), encoding="utf-8").read()
+        check("[safety] gc4_kill3_ow@gc planned=10 run=13 excluded=config:2 prep_failure=2 scored=8 cond=7/8 whole=7/10" in out,
+              "review 4: the output's per-prediction counts (%s)" % [x for x in out.splitlines() if "planned=" in x][:1])
+        check("| `gc4_kill3_ow@gc` | 10 | 13 | config 2 | 2 | 8 | `ow_data_equal == 1` | 7/8 = 87.5 % | 7/10 = 70.0 % |" in md
+              and "성능 예측 안의 안전 조건(보고만, 판정에 넣지 않음) `gc4_kill3_ow@gc` `ow_data_equal == 1`: 실패 1/8" in md
+              and "안전 예측의 실패(실패 0 규칙)" in md, "review 4, 5: SCORE.md's counts, rates and safety lines")
+        # (5) the kind column: every row has one, cost rows are cost
+        import csv as _csv2
+        pr = list(_csv2.DictReader(open(score_gc.PREDS, encoding="utf-8")))
+        check(all(p["kind"] in score_gc.KINDS for p in pr) and
+              all((p["kind"] == "cost") == p["acceptance"].startswith("cost:") for p in pr),
+              "review 5: predictions_gc.csv kind is safety, perf or cost on every row")
     finally:
         shutil.rmtree(R, ignore_errors=True)
 
@@ -767,6 +919,7 @@ def main():
     check(os.path.exists(os.path.join(R, "trials_scored.csv")), "trials_scored.csv written")
     shell_checks(R)
     int3_checks()
+    review_checks()
     print("self-test: %d checks, %d failed%s" % (CHECKS[0], CHECKS[1], "" if a.keep else " (folder %s removed)" % R))
     if not a.keep:
         shutil.rmtree(R, ignore_errors=True)
