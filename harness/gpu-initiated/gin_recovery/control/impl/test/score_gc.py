@@ -51,6 +51,12 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
      one false term on one trial turns a 맞음 or 틀림 into "재검토(안전성 항 어긋남 k/n)" (k the scored trials with a false
      term, n the scored trials the terms were evaluated on; EXPERIMENT 8, 2026-10-23), and SCORE.md lists the trials and
      their terms; cost is the cost family.
+     EXPERIMENT 8 (2026-10-23, DRAFT; data_gaps): a scored trial on which a count() is false only because it read an empty
+     required summary column (REQUIRED_COLS: the control and probe summaries, with rows_gc.py's marker of the gap) is
+     "자료 부족" for that prediction, neither a pass nor a fail, and SCORE.md lists it with the columns; the count is judged
+     over the other scored trials against the pre-registered k ("count(..) >= N_SCORED" takes the trials with data, at least
+     1): fewer trials with data than k -> "자료 부족(n<k)"; a safety prediction's 0-failure rule runs over the trials with
+     data; a perf rule's safety term on such a column is 자료 부족 on that trial, not a failure.
      keys "build:<b>" pool every scored gin-control-runner trial of build b (no_tcp_control, long_hold_lane), "local:<x>" the
      local rows.
   5. STOP: the results folder's STOP_* files (their line counts), every trial's "(STOP_launcher)" and
@@ -131,8 +137,11 @@ def all_evals(det):
 
 
 def safety_fails(det):
-    """[(key, inner, true count, n)] of the count() parts that failed a scored trial (item 5's 0-failure rule)"""
-    return [(k, inner, cnt, n) for k, dd in all_evals(det) for inner, cnt, n, *_ in dd if cnt != n]
+    """[(key, inner, true count, n)] of the count() parts that failed a scored trial (item 5's 0-failure rule), n the
+    trials with data (a 자료 부족 trial of data_gaps is neither a pass nor a fail; EXPERIMENT 8, 2026-10-23)"""
+    gn = {(k, inner): len(g) for k, inner, g, *_ in det.get("gaps", [])}
+    return [(k, inner, cnt, n - gn.get((k, inner), 0)) for k, dd in all_evals(det) for inner, cnt, n, *_ in dd
+            if cnt != n - gn.get((k, inner), 0)]
 
 
 def safety_parts(p, keys, mpreds=()):
@@ -163,8 +172,9 @@ def safety_parts(p, keys, mpreds=()):
 
 
 def perf_safety_terms(p, det, scored, mpreds=()):
-    """[(key, term, failing trial ids, n)]: a perf rule's safety terms (SAFETY_TERMS, each part on its own keys) on the
-    scored trials of those keys (the subset's rows for a subset() part)"""
+    """[(key, term, failing trial ids, n, 자료 부족 trial ids)]: a perf rule's safety terms (SAFETY_TERMS, each part on its
+    own keys) on the scored trials of those keys (the subset's rows for a subset() part); a term on an empty required
+    column (data_gaps) is 자료 부족 on that trial, not a failure, and n counts the trials with data"""
     out = {}
     keys = [x.strip() for x in p["cells"].split(";") if x.strip()]
     for k, text in safety_parts(p, keys, mpreds):
@@ -174,18 +184,21 @@ def perf_safety_terms(p, det, scored, mpreds=()):
             rows = [r for r in rows if s2.cond_true(m.group(1), r)]
         for t in sorted({x.group(0) for x in SAFETY_TERM.finditer(text)}):
             if rows and (k, t) not in out:
-                out[(k, t)] = ([r["id"] for r in rows if not s2.cond_true(t, r)], len(rows))
-    return [(k, t, fs, n) for (k, t), (fs, n) in sorted(out.items())]
+                g = data_gaps(t, rows)
+                out[(k, t)] = ([r["id"] for r in rows if r["id"] not in g and not s2.cond_true(t, r)], len(rows) - len(g),
+                               sorted(g))
+    return [(k, t, fs, n, gs) for (k, t), (fs, n, gs) in sorted(out.items())]
 
 
 def perf_review(ps):
     """(k, n, {trial id: [terms]}) of a perf prediction's safety terms: k scored trials with a false term among the n
-    scored trials the terms were read on"""
-    bad = {}
-    for k, t, fs, n in ps:
+    scored trials the terms were read on (per key the most any term had data on)"""
+    bad, nk = {}, {}
+    for k, t, fs, n, _ in ps:
+        nk[k] = max(nk.get(k, 0), n)
         for i in fs:
             bad.setdefault(i, []).append(t)
-    return len(bad), sum(n for k, n in {k: n for k, _, _, n in ps}.items()), bad
+    return len(bad), sum(nk.values()), bad
 
 
 def key_counts(k, by_key, scored, prep, PLANNED, pooled):
@@ -371,9 +384,102 @@ def val_empty(v):
     return v is None or v == ""
 
 
+# EXPERIMENT 8 (2026-10-23, DRAFT): the summary columns every scored trial must carry, with the rows_gc.py columns that name
+# a missing summary or counter. Such a column is empty only through a data gap (rows_gc.py: "an absent counter is never 0");
+# an event column (a judgement time, a launcher line) stays a measurement when empty
+_CTRL_MARK = ("ctrlsum_missing", "ctrlsum_fields_missing")
+_PROBE_MARK = ("probe_missing",)
+REQUIRED_COLS = dict([(c, _CTRL_MARK) for c in (
+    "tcp_ctrl_bytes", "tcp_data_bytes", "tcp_record_bytes_sum", "tcp_record_bytes_prelive", "tcp_record_bytes_unsplit",
+    "tcp_conns_lib", "witness_conns_lib", "tcp_ctrl_conn_n", "witness_pairs", "witness_expected", "rec_lost_n", "rec_dup_n",
+    "rec_repair_n", "sendq_deferred", "sendq_max", "async_n", "rnr_n")] + [(c, _PROBE_MARK) for c in (
+    "read_n", "read_ok_n", "dev_read_n", "dev_read_ok_n", "read_page_success_pct", "read_dev_success_pct",
+    "read_success_pct", "page_torn_n", "read_lat_med_us_max", "read_lat_max_us", "beat_gap_max_ms")])
+
+
+class _Unknown(s2.Nil):
+    """an empty required column read by a rule (data_gaps): every use records its name and holds (an optimistic reading:
+    a rule that is false even so failed on the measured columns)"""
+    def __init__(self, name, used):
+        self.name, self.used = name, used
+
+    def _use(self, *a):
+        self.used.add(self.name)
+        return True
+
+    def _same(self, *a):
+        self.used.add(self.name)
+        return self
+
+    __eq__ = __ne__ = __lt__ = __le__ = __gt__ = __ge__ = __bool__ = _use
+    __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = __truediv__ = __rtruediv__ = __abs__ = _same
+    __and__ = __rand__ = _same
+
+    def __hash__(self):
+        return 0
+
+
+class _GapNS(dict):
+    def __init__(self, row, used):
+        super().__init__()
+        self.row, self.used = row, used
+
+    def __missing__(self, k):
+        if k not in self.row:
+            raise KeyError(k)
+        v = self.row[k]
+        if k in REQUIRED_COLS and val_empty(v) and any(not val_empty(self.row.get(m)) for m in REQUIRED_COLS[k]):
+            return _Unknown(k, self.used)
+        return s2.val(v)
+
+
+def data_gaps(inner, rows):
+    """EXPERIMENT 8 (2026-10-23, DRAFT): {trial id: (empty required columns, the gap markers)} of the rows where count(inner)
+    is false only because it read an empty required column (REQUIRED_COLS, with its marker set): false as read, true with
+    those columns unknown. Such a trial is 자료 부족 for the rule, neither a pass nor a fail; a rule false on its measured
+    columns whatever the missing ones hold is a fail. nonempty(<col>) is a presence test, a measurement"""
+    out = {}
+    for r in rows:
+        if s2.cond_true(inner, r):
+            continue
+        used = set()
+        try:
+            hold = bool(eval(inner, {"__builtins__": {}, "has": s2.has, "nonempty": s2.nonempty, "maskbit": s2.maskbit,
+                                     "abs": abs}, _GapNS(r, used)))
+        except (TypeError, ValueError):
+            hold = False
+        if used and hold:
+            marks = sorted({m for c in used for m in REQUIRED_COLS[c] if not val_empty(r.get(m))})
+            out[r["id"]] = (sorted(used), " ".join("%s=%s" % (m, r[m]) for m in marks), r.get("stem"))
+    return out
+
+
+def with_data_n(a, rows):
+    """an acceptance text's count() parts on rows with their data gaps: (the text with each "count(..) >= N_SCORED" taking
+    the trials with data, [(inner, gaps, trials with data, k)]); k the pre-registered threshold of ">= <k>" (N_SCORED:
+    the trials with data, at least 1), None for another form"""
+    parts, info, pos = [], [], 0
+    for s, e, inner in s2.split_counts(a):
+        g = data_gaps(inner, rows)
+        nd = len(rows) - len(g)
+        m = re.match(r"\s*>=\s*(N_SCORED\b|\d+)", a[e:])
+        k = None
+        parts.append(a[pos:e])
+        pos = e
+        if m and m.group(1) == "N_SCORED":
+            parts.append(a[e:e + m.end()].replace("N_SCORED", str(nd)))
+            pos, k = e + m.end(), max(nd, 1)
+        elif m:
+            k = int(m.group(1))
+        info.append((inner, g, nd, k))
+    parts.append(a[pos:])
+    return "".join(parts), info
+
+
 def eval_part(acc, keys, scored, PLANNED, pooled):
-    """one acceptance part on keys; returns (evals, short keys, nodata). A cell key is short below its planned n; a pooled
-    key when any cell key in it is short (pooled: {key: [its cell keys]})"""
+    """one acceptance part on keys; returns (evals, short keys, nodata, gaps). A cell key is short below its planned n; a
+    pooled key when any cell key in it is short (pooled: {key: [its cell keys]}). gaps: [(key, inner, {trial id: (columns,
+    markers, stem)}, scored n, n with data, k)] per count() (data_gaps; EXPERIMENT 8, 2026-10-23)"""
     per_cell = acc.startswith("per cell:")
     a = acc[len("per cell:"):].strip() if per_cell else acc
     sub = None
@@ -381,7 +487,7 @@ def eval_part(acc, keys, scored, PLANNED, pooled):
     if m:
         sub, a = m.group(1), m.group(2)
     use = keys if per_cell else keys[:1]
-    short, evals, nodata = [], [], False
+    short, evals, nodata, gaps = [], [], False, []
     for k in use:
         rows = scored.get(k, [])
         if sub is not None:
@@ -396,9 +502,11 @@ def eval_part(acc, keys, scored, PLANNED, pooled):
         refs = sorted(c for c in LIB_COLS if re.search(r"\b" + c + r"\b", a))
         if rows and any(all(val_empty(r.get(c)) for r in rows) for c in refs):
             short.append(k)
-        ak = re.sub(r"\bN_SCORED\b", str(len(rows)), a)
+        ak, info = with_data_n(a, rows)
+        ak = re.sub(r"\bN_SCORED\b", str(len(rows)), ak)
         evals.append((k,) + s2.evaluate(ak, {k: rows}, k, s2.NIL))
-    return evals, short, nodata
+        gaps += [(k, inner, g, len(rows), nd, kk) for inner, g, nd, kk in info]
+    return evals, short, nodata, gaps
 
 
 def mirror_part(spec, scored, PLANNED, mpreds):
@@ -528,7 +636,7 @@ def score(R, planned_override=None):
     for p in preds:
         acc = p["acceptance"].strip()
         keys = [x.strip() for x in p["cells"].split(";") if x.strip()]
-        det = {"evals": [], "short": [], "mirror": [], "cost": [], "nodata": False, "missing": []}
+        det = {"evals": [], "short": [], "mirror": [], "cost": [], "nodata": False, "missing": [], "gaps": []}
         if acc.startswith("cost:"):
             v, det["cost"] = cost_eval(keys[0], acc.split("rule=", 1)[1].strip(), rows, c)
             results.append((p, keys, v, det))
@@ -545,15 +653,21 @@ def score(R, planned_override=None):
                 continue
             m = re.match(r"([A-Za-z0-9_]+@[a-z]+|build:[a-z]+|local:[a-z_]+):\s*(.*)$", part)
             pk, pa = ([m.group(1)], m.group(2)) if m else (keys, part)
-            ev, sh, nd = eval_part(pa, pk, scored, EFF, pooled)
+            ev, sh, nd, gp = eval_part(pa, pk, scored, EFF, pooled)
             det["evals"] += ev
             det["short"] += sh
             det["nodata"] = det["nodata"] or nd
+            det["gaps"] += gp
             ok_all = ok_all and all(e[1] for e in ev)
+        # EXPERIMENT 8 (2026-10-23, DRAFT): the 자료 부족 trials are neither passes nor fails; a count() whose trials with
+        # data are fewer than its pre-registered k cannot be judged (never 맞음 by a smaller denominator)
+        det["below_k"] = [(k, inner, nd, kk) for k, inner, g, n, nd, kk in det["gaps"] if kk is not None and nd < kk]
         if det["nodata"]:
             v = "자료 없음(실패 아님)"
         elif det["short"]:
             v = "자료 부족"
+        elif det["below_k"]:
+            v = "자료 부족(n<k)"
         else:
             v = "맞음" if ok_all else "틀림"
         # item 5: a safety prediction holds only with no failure over its scored trials (every count() part n of n)
@@ -590,13 +704,16 @@ def score(R, planned_override=None):
 
     def count_rows(det):
         """item 4: per key and count() of a prediction: planned, run, excluded by reason, prep failures, scored, the
-        conditional (over scored) and the whole-run (over scored + prep failures) success rates"""
+        conditional (over the scored with data) and the whole-run (over scored + prep failures) success rates, and the
+        scored trials that are 자료 부족 for the count() (data_gaps; EXPERIMENT 8, 2026-10-23)"""
         out = []
+        gn = {(k, inner): len(g) for k, inner, g, *_ in det.get("gaps", [])}
         for k, dd in all_evals(det):
             pl, run, exc, pf, sc = key_counts(k, by_key, scored, prep, PLANNED, pooled)
             ex = ", ".join("%s %d" % kv for kv in sorted(exc.items())) or "0"
             for inner, cnt, n, *_ in dd:
-                out.append((k, pl, run, ex, pf, sc, inner, rate(cnt, n), rate(cnt, n + pf)))
+                g = gn.get((k, inner), 0)
+                out.append((k, pl, run, ex, pf, sc, g, inner, rate(cnt, n - g), rate(cnt, n + pf)))
         return out
     la_down = [(r["id"], "낡은 소켓이나 프로세스 %s" % r["launcher_stale"] if r.get("launcher_stale") else "뜨지 않음")
                for r in rows if r.get("ctrl") == "rdma" and r.get("runner") == "gcr" and
@@ -620,10 +737,16 @@ def score(R, planned_override=None):
              ", ".join("%s(%s)" % x for x in la_down) or "없음"), "",
          "## 판정 요약", "", "안전 예측(kind safety)은 판정한 시행에서 실패 0일 때만 맞음, 성능 예측(perf)은 판정식의 문턱 그대로다(Codex 리뷰 5). "
          "다만 성능 예측의 판정식 안의 안전성 항(%s)이 판정한 시행 하나에서라도 거짓이면 그 예측은 문턱과 상관없이 "
-         "재검토(안전성 항 어긋남 k/n)다(8절, 2026-10-23)." % ", ".join("`%s`" % t for t in SAFETY_TERMS), "",
+         "재검토(안전성 항 어긋남 k/n)다(8절, 2026-10-23). 판정식이 읽는 필수 요약 열(제어 요약, READ 요약)이 빈 시행은 그 예측에서 "
+         "자료 부족 시행이다(통과도 실패도 아님). 판정은 나머지 시행으로 사전 등록 문턱 k에 견주고, 자료 있는 시행이 k보다 적으면 "
+         "자료 부족(n<k)이다(8절, 2026-10-23)." % ", ".join("`%s`" % t for t in SAFETY_TERMS), "",
          "| 예측 | 종류 | 셀 | n | 판정 |", "|---|---|---|--:|---|"]
     for p, keys, v, det in results:
-        ns = " / ".join(str(len(scored.get(k, []))) for k in keys if not k.startswith(("mirror:", "cost:")))
+        gk = {}
+        for k, _, g, *_ in det.get("gaps", []):
+            gk.setdefault(k, set()).update(g)
+        ns = " / ".join(str(len(scored.get(k, []))) + (" (자료 부족 %d)" % len(gk[k]) if gk.get(k) else "")
+                        for k in keys if not k.startswith(("mirror:", "cost:")))
         L.append("| %s (%s) | %s | %s | %s | %s |" % (p["predicted"], p["id"], kind_of(p), ", ".join("`%s`" % k for k in keys),
                                                   ns or "-", v))
     L += ["", "## 예측별 세부", ""]
@@ -633,28 +756,38 @@ def score(R, planned_override=None):
             L.append("- 표시: %s" % p["todo"])
         if det["short"]:
             L.append("- 자료 부족(판정한 시행이 계획 n 미만, 묶음 키 안의 셀이 계획 미만, 라이브러리 열이 비어 있음, 또는 gin-mirror 예측의 자료 부족): %s" % ", ".join(det["short"]))
+        gmap = {(k, inner): (g, nd, kk) for k, inner, g, n, nd, kk in det.get("gaps", [])}
         for k, ok, dd, expr in det["evals"]:
             L.append("- `%s`: 판정한 시행 %d회, 대입한 식 `%s` → %s" % (k, len(scored.get(k, [])), expr, "참" if ok else "거짓"))
             for inner, cnt, n, fs, ts, tail in dd:
+                g, nd, kk = gmap.get((k, inner), ({}, n, None))
+                gst = {x[2] for x in g.values()}
+                fs = [x for x in fs if x not in gst]
                 L.append("  - `count(%s)` = %d/%d. 만족하지 않은 시행: %s" % (
-                    inner, cnt, n, ", ".join(os.path.basename(str(x)) for x in fs) if fs else "없음"))
+                    inner, cnt, nd, ", ".join(os.path.basename(str(x)) for x in fs) if fs else "없음"))
+                L.append("  - 채점 n %d, 자료 부족 n %d, 자료 있는 n %d, 문턱 k %s%s" % (
+                    n, len(g), nd, "-" if kk is None else kk, " → 자료 부족(n<k)" if kk is not None and nd < kk else ""))
+                if g:
+                    L.append("  - 자료 부족 시행(빈 필수 열; 통과도 실패도 아님, 8절): %s" % "; ".join(
+                        "`%s` (%s%s)" % (i, ", ".join(cs), "; " + mk if mk else "") for i, (cs, mk, _) in sorted(g.items())))
         for mid, mv, mkeys, mev, msh in det["mirror"]:
             L.append("- gin-mirror `%s` (%s): %s" % (mid, ", ".join(mkeys), mv))
         if det["missing"]:
             L.append("- gin-mirror 예측 표에 없는 ID: %s" % ", ".join(det["missing"]))
         if det.get("safety_fail") and kind_of(p) == "safety":
             L.append("- 안전 예측의 실패(실패 0 규칙): %s" % "; ".join("`%s` `count(%s)` %d/%d" % x for x in det["safety_fail"]))
-        for k, t, fs, n in det.get("perf_safety", []):
-            L.append("- 성능 예측 안의 안전성 항(어긋나면 재검토, 8절) `%s` `%s`: 실패 %d/%d%s" % (
-                k, t, len(fs), n, (" (" + ", ".join(fs) + ")") if fs else ""))
+        for k, t, fs, n, gs in det.get("perf_safety", []):
+            L.append("- 성능 예측 안의 안전성 항(어긋나면 재검토, 8절) `%s` `%s`: 실패 %d/%d%s%s" % (
+                k, t, len(fs), n, (" (" + ", ".join(fs) + ")") if fs else "",
+                ", 자료 부족 %d (%s)" % (len(gs), ", ".join(gs)) if gs else ""))
         if det.get("perf_bad"):
             L.append("- 안전성 항 어긋남(재검토): %s" % "; ".join(
                 "`%s` (%s)" % (i, ", ".join("`%s`" % t for t in ts)) for i, ts in sorted(det["perf_bad"].items())))
         cr = count_rows(det)
         if cr:
-            L += ["", "| 키 | 계획 | 실행 | 제외(사유) | 준비 실패 | 판정 n | 조건 | 조건부 성공(판정 n) | 전체 성공(판정 n + 준비 실패) |",
-                  "|---|--:|--:|---|--:|--:|---|--:|--:|"]
-            L += ["| `%s` | %d | %d | %s | %d | %d | `%s` | %s | %s |" % x for x in cr]
+            L += ["", "| 키 | 계획 | 실행 | 제외(사유) | 준비 실패 | 판정 n | 자료 부족 n | 조건 | 조건부 성공(판정 n − 자료 부족) | 전체 성공(판정 n + 준비 실패) |",
+                  "|---|--:|--:|---|--:|--:|--:|---|--:|--:|"]
+            L += ["| `%s` | %d | %d | %s | %d | %d | %d | `%s` | %s | %s |" % x for x in cr]
         if det["cost"]:
             L += ["", "| 받는 노드 | 지표 | 팔 | n | 중앙값 | 기준 팔과의 차 | 읽기 |", "|---|---|---|--:|--:|---|---|"] + det["cost"]
         L.append("")
@@ -675,9 +808,9 @@ def score(R, planned_override=None):
     open(os.path.join(R, "SCORE.md"), "w", encoding="utf-8").write("\n".join(L))
     for p, _, v, det in results:
         print("%s: %s" % (p["id"], v))
-        for k, pl, run, ex, pf, sc, inner, cr_, wr in count_rows(det):
-            print("  [%s] %s planned=%d run=%d excluded=%s prep_failure=%d scored=%d cond=%s whole=%s" % (
-                kind_of(p), k, pl, run, ex.replace(" ", ":").replace(",:", ","), pf, sc, cr_.split(" =")[0], wr.split(" =")[0]))
+        for k, pl, run, ex, pf, sc, g, inner, cr_, wr in count_rows(det):
+            print("  [%s] %s planned=%d run=%d excluded=%s prep_failure=%d scored=%d cond=%s whole=%s data_gap=%d" % (
+                kind_of(p), k, pl, run, ex.replace(" ", ":").replace(",:", ","), pf, sc, cr_.split(" =")[0], wr.split(" =")[0], g))
     return {p["id"]: v for p, _, v, _ in results}, rows
 
 

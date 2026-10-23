@@ -830,7 +830,7 @@ def review_checks():
         md = open(os.path.join(R, "SCORE.md"), encoding="utf-8").read()
         check("[safety] gc4_kill3_ow@gc planned=10 run=13 excluded=config:2 prep_failure=2 scored=8 cond=7/8 whole=7/10" in out,
               "review 4: the output's per-prediction counts (%s)" % [x for x in out.splitlines() if "planned=" in x][:1])
-        check("| `gc4_kill3_ow@gc` | 10 | 13 | config 2 | 2 | 8 | `ow_data_equal == 1` | 7/8 = 87.5 % | 7/10 = 70.0 % |" in md
+        check("| `gc4_kill3_ow@gc` | 10 | 13 | config 2 | 2 | 8 | 0 | `ow_data_equal == 1` | 7/8 = 87.5 % | 7/10 = 70.0 % |" in md
               and "성능 예측 안의 안전성 항(어긋나면 재검토, 8절) `gc4_kill3_ow@gc` `ow_data_equal == 1`: 실패 1/8 (gc4_kill3_ow_gc_n6)" in md
               and "안전성 항 어긋남(재검토): `gc4_kill3_ow_gc_n6` (`ow_data_equal == 1`)" in md
               and "안전 예측의 실패(실패 0 규칙)" in md, "review 4, 5: SCORE.md's counts, rates and safety lines")
@@ -928,6 +928,84 @@ def ctrlsum_checks():
             shutil.rmtree(R, ignore_errors=True)
 
 
+def gap_checks():
+    """EXPERIMENT 8 (2026-10-23, DRAFT): a scored trial whose rule reads an empty required summary column is 자료 부족 for
+    that prediction (neither a pass nor a fail); the verdict is judged over the trials with data against the k; fewer than
+    k with data is 자료 부족(n<k); a safety rule keeps its 0-failure rule over the trials with data, with the gap listed"""
+    import io, contextlib, csv as _csv
+    dg = score_gc.data_gaps
+    # unit: a presence test, an event column and a summary column without its gap marker are measurements, not gaps
+    r0 = dict(id="u", stem="u", rec_lost_n="", ow_data_equal=1, kill_judge_ms_min="", ctrlsum_missing="r1",
+              ctrlsum_fields_missing="")
+    g0 = dg("rec_lost_n == 0 and ow_data_equal == 1", [r0])
+    check(sorted(g0) == ["u"] and g0["u"][:2] == (["rec_lost_n"], "ctrlsum_missing=r1")
+          and dg("rec_lost_n == 0 and ow_data_equal == 0", [r0]) == {} and dg("nonempty(rec_lost_n)", [r0]) == {}
+          and dg("kill_judge_ms_min <= 5", [r0]) == {} and dg("rec_lost_n == 0", [dict(r0, ctrlsum_missing="")]) == {},
+          "gap: an empty required column with its marker is a gap; a measured false term beside it, nonempty(), an event "
+          "column and a column without a marker are not (%r)" % g0)
+    tops = []
+    try:
+        def five(R, gaps=(), bad=()):
+            """five gc4_credit_stall@gc trials (ctrlsum_checks' form); rank 1's control summary removed in the trials gaps,
+            rank 0's data mismatch (x_match 0) in the trials bad"""
+            for k in range(1, 6):
+                st = trial(os.path.join(R, "raw"), "gc4_credit_stall", k, kill=None, subject=2, inject="none", killed=False,
+                           probe=probe_ok(), spare_kv=REAL_SPARE_KV, ctrl_kv=" sendq_deferred=4",
+                           meta_extra={"r2_env": "NCCL_GIN_CTRL_TEST_CREDIT_STALL=3000:500"},
+                           kv_extra={0: {"x_match": 0}} if k in bad else None,
+                           lines={2: [(3.0, "GIN/RC: rank 2: test switch CREDIT_STALL: no RECV re-posted for 500 ms")]})
+                if k in gaps:
+                    t = open(st + "_r1.log").read()
+                    with open(st + "_r1.log", "w") as f:
+                        f.write("\n".join(x for x in t.split("\n") if "control summary" not in x))
+        tmp = tempfile.mkdtemp(prefix="gc_selftest_gap_preds_")
+        tops.append(tmp)
+        pf = os.path.join(tmp, "preds.csv")
+        cond = "rec_lost_n == 0 and ow_data_equal == 1"
+        with open(pf, "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=["id", "predicted", "cells", "kind", "acceptance", "todo"], quoting=_csv.QUOTE_ALL)
+            w.writeheader()
+            for pid, kd, acc in (("g_perf4", "perf", "count(%s) >= 4" % cond), ("g_perf5", "perf", "count(%s) >= 5" % cond),
+                                 ("g_safe4", "safety", "count(%s) >= 4" % cond),
+                                 ("g_safe_all", "safety", "count(rec_lost_n == 0) >= N_SCORED")):
+                w.writerow(dict(id=pid, predicted="t", cells="gc4_credit_stall@gc", kind=kd, acceptance=acc, todo=""))
+        res = {}
+        for tag, gaps, bad in (("one", (1,), ()), ("two", (1, 2), ()), ("bad", (1,), (1,))):
+            R = tempfile.mkdtemp(prefix="gc_selftest_gap_")
+            tops.append(R)
+            five(R, gaps, bad)
+            old, score_gc.PREDS = score_gc.PREDS, pf
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf):
+                    verd, _ = score_gc.score(R)
+            finally:
+                score_gc.PREDS = old
+            res[tag] = (verd, open(os.path.join(R, "SCORE.md"), encoding="utf-8").read(), buf.getvalue())
+        v, md, out = res["one"]
+        check(v.get("g_perf4") == "맞음" and v.get("g_safe4") == "맞음" and v.get("g_safe_all") == "맞음"
+              and v.get("g_perf5") == "자료 부족(n<k)",
+              "gap: one trial without rank 1's summary: perf k 4 맞음 over the other four, perf k 5 자료 부족(n<k), safety k 4 "
+              "and N_SCORED 맞음 (%s %s %s %s)" % (v.get("g_perf4"), v.get("g_perf5"), v.get("g_safe4"), v.get("g_safe_all")))
+        check("채점 n 5, 자료 부족 n 1, 자료 있는 n 4, 문턱 k 4" in md and "채점 n 5, 자료 부족 n 1, 자료 있는 n 4, 문턱 k 5 → 자료 부족(n<k)" in md
+              and "자료 부족 시행(빈 필수 열; 통과도 실패도 아님, 8절): `gc4_credit_stall_gc_n1` (rec_lost_n; ctrlsum_missing=r1)" in md
+              and "| 5 (자료 부족 1) | 맞음 |" in md and "scored=5 cond=4/4 whole=4/5 data_gap=1" in out
+              and "`count(%s)` = 4/4. 만족하지 않은 시행: 없음" % cond in md
+              and "`rec_lost_n == 0`: 실패 0/4, 자료 부족 1 (gc4_credit_stall_gc_n1)" in md,
+              "gap: SCORE.md gives the scored n, the gap n, the trial and its column, the verdict over the trials with data")
+        v, md, _ = res["two"]
+        check(v.get("g_perf4") == "자료 부족(n<k)" and v.get("g_safe4") == "자료 부족(n<k)" and v.get("g_safe_all") == "맞음",
+              "gap: two trials without the summary: three with data against k 4 is 자료 부족(n<k), never 맞음 by the smaller "
+              "denominator (%s %s %s)" % (v.get("g_perf4"), v.get("g_safe4"), v.get("g_safe_all")))
+        v, md, _ = res["bad"]
+        check(v.get("g_safe4") == "틀림" and v.get("g_perf4") == "재검토(안전성 항 어긋남 1/5)" and v.get("g_safe_all") == "맞음",
+              "gap: the gap trial with a measured data mismatch is a fail, not 자료 부족: safety 틀림, perf 재검토; the rule "
+              "on the empty column alone stays a gap (%s %s %s)" % (v.get("g_safe4"), v.get("g_perf4"), v.get("g_safe_all")))
+    finally:
+        for R in tops:
+            shutil.rmtree(R, ignore_errors=True)
+
+
 def probe_checks():
     """Codex finding 1 (2026-10-23): read_success_pct counts the device-line READs too, every process of the final generation
     must leave one probe summary per peer, and a summary whose peer named a device line its dev_* counters; a gap is
@@ -977,9 +1055,10 @@ def probe_checks():
               "probe: rank 1's summary for peer 2 missing in every trial: every count empty, 자료 부족 (%r %s)" % (
                   m1["probe_missing"], vm))
         o1, o2, vo = res["nosum1"]
-        check(o1["probe_missing"] == "r1:p2" and o1["read_success_pct"] == "" and o2["read_success_pct"] == 100.0 and vo != "맞음",
-              "probe: the same gap in one trial: that trial's rate empty, no pass (%s; score_gc.py counts an empty trial as "
-              "failed unless the column is empty in every trial)" % vo)
+        check(o1["probe_missing"] == "r1:p2" and o1["read_success_pct"] == "" and o2["read_success_pct"] == 100.0
+              and vo == "자료 부족(n<k)",
+              "probe: the same gap in one trial: that trial's rate empty, the trial 자료 부족 (8절, 2026-10-23), 9 with data "
+              "against k 10: 자료 부족(n<k) (%s)" % vo)
         n1, _, vn = res["nodevok"]
         check("r0:p1:dev_ok" in n1["probe_missing"] and "dev_reads" not in n1["probe_missing"] and n1["dev_read_ok_n"] == ""
               and n1["read_dev_success_pct"] == "" and n1["read_success_pct"] == "" and n1["read_n"] == 3600 and vn == "자료 부족",
@@ -1305,6 +1384,7 @@ def main():
     int3_checks()
     review_checks()
     ctrlsum_checks()
+    gap_checks()
     probe_checks()
     cost_checks()
     print("self-test: %d checks, %d failed%s" % (CHECKS[0], CHECKS[1], "" if a.keep else " (folder %s removed)" % R))
