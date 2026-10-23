@@ -1,5 +1,9 @@
 # How this repository is run
 
+This file covers Git operations only. Research rules and safety rules are in
+[CLAUDE.md](../CLAUDE.md); the steps between experiment states are in the
+[experiment-workflow skill](../.claude/skills/experiment-workflow/SKILL.md).
+
 Follows common research-software practice:
 - [The Turing Way](https://book.the-turing-way.org/reproducible-research/vcs/vcs-workflow-branches/):
   single-purpose branches merged through pull requests;
@@ -14,6 +18,8 @@ Follows common research-software practice:
 - **Everything else happens on a short-lived branch.** It is merged with a pull request, using
   "Rebase and merge", then deleted. Rebase keeps each commit's author (the noreply address) and
   message. A web squash would record the account's primary e-mail as the author.
+- **An experiment's last PR carries its QA, results, data release and the `COMPLETE` status**; it is
+  merged after them, not before ([skill](../.claude/skills/experiment-workflow/SKILL.md), section 5).
 
 | prefix | for | example |
 |---|---|---|
@@ -83,16 +89,15 @@ nothing, in any spelling, escaped or not.
 
 ## Markdown
 
-GitHub renders `~text~` (one or two tildes) as strikethrough. Two range tildes in one paragraph,
-list item or table cell strike out everything between them. Outside code, write ranges with an en
-dash (`3.5–3.8 s`) and "about" as "약 60 µs" or `≈60 µs`. `tools/check_md.py` lists every tilde
-outside code that is not surrounded by spaces; the local pre-push hook runs it.
+The local pre-push hook runs `tools/check_md.py`, which lists every tilde outside code that is not
+surrounded by spaces (GitHub renders `~text~` as strikethrough). The writing rule (en dash for
+ranges, "약 N" or `≈N` for "about") is in [CLAUDE.md](../CLAUDE.md), "이미 정해진 문서 규칙".
 
 ## Tags and releases
 
 | tag | meaning |
 |---|---|
-| `prereg/<study>-v<n>` | annotated tag on the commit that fixes a pre-registered plan, before any run. Later deviations go to that study's `DEVIATIONS.md`. |
+| `prereg/<study>-v<n>` | annotated tag on the commit that fixes a pre-registered plan, before any main run. It stays on that branch commit after a rebase merge. Later deviations go to section 13 of that study's `EXPERIMENT.md`, which links `DEVIATIONS.md` where a study already keeps one. Procedure: the [experiment-workflow skill](../.claude/skills/experiment-workflow/SKILL.md), section 2. |
 | `data-YYYYMMDD` | a raw-data release (see above) |
 | `vX.Y` | a snapshot cited in a report or paper; can be archived on Zenodo for a DOI |
 

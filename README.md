@@ -62,6 +62,10 @@ RDMA 통신에서 장애가 났을 때, 그 정보가 NIC에서 application까�
 
 ## 진행 중
 
+- **복원 제어 경로를 RDMA로 옮기기:** 죽은 rank를 되살리는 복원 계층이 관리망 TCP 소켓에 맡기던 제어 메시지와 생존 판정을 데이터망
+  RDMA로 옮긴다. 제어 기록은 rank 사이 RC 연결로, 생존 판정은 상대 상태 페이지의 RDMA READ로, 되살리기 전에 옛 프로세스를 막는 일은
+  노드마다 띄운 관리 프로세스로 맡기고, 판정 시간, 투명성, 비용을 잰다. 지금은 구현과 smoke 단계이고 사전 등록 전이라 결과는 아직 없다.
+  기준 문서는 `harness/gpu-initiated/gin_recovery/control/EXPERIMENT.md`다.
 - NVIDIA의 #117 수정이 공개되면 그 release로 다시 재기.
 
 ## 범위와 한계
