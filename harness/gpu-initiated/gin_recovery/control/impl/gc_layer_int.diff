@@ -1,5 +1,5 @@
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index fefde6f..16e6702 100644
+index fefde6f..7b1293a 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -23,6 +23,9 @@
@@ -14038,21 +14038,23 @@ index fefde6f..16e6702 100644
  #endif
    if (!orphan) gdakiTsCloseAll(ts, r->ctx->rank);
    ts->stopped = true;
-@@ -22241,6 +35225,13 @@ static struct gdakiMiPool* gdakiMiTakePool(struct gdakiRecHost* r) {
+@@ -22241,6 +35225,15 @@ static struct gdakiMiPool* gdakiMiTakePool(struct gdakiRecHost* r) {
  // After the user contexts' connects and self loops (single thread): the host state, the mirror QPs' rec entries (unused
  // until MIRROR_SETUP connects them; a spare's at its setup), the self loop pair, the pool. Nothing here fails the context:
  // a failure is a Resume condition (35, 38).
 +// gin-control (ctxall): the user GIN contexts of r's context (nContexts without the mirror context, when it was made).
++#if !NCCL_GIN_CTRL_TCP
 +[[maybe_unused]] static int gdakiMiUserCtxOf(const struct gdakiRecHost* r) {
 +  const struct gdaki_context* g = r != nullptr ? r->ctx : nullptr;
 +  if (g == nullptr) return 0;
 +  const struct gdakiMiHost* m = r->mi.host;
 +  return (m != nullptr && m->created) ? m->nUserCtx : g->nContexts;
 +}
++#endif
  static void gdakiMiContextSetup(struct gdaki_context* g, const struct gdakiMiPlan& plan, int nUserCtx, int nqpsForComm,
                                  struct ibv_pd* pd) {
    struct gdakiRecHost* r = g->rec;
-@@ -22336,7 +35327,11 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
+@@ -22336,7 +35329,11 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
    // this rank's records first, to every peer, then every peer's (each rank sends before it reads: no wait cycle)
    const bool mineOn = m->confOk && m->poolOk;
    auto sendSetup = [&](int p, bool on) -> bool {
@@ -14064,7 +14066,7 @@ index fefde6f..16e6702 100644
      struct gdakiMiSetup s;
      memset(&s, 0, sizeof(s));
      s.version = GDAKI_MI_WIRE_VERSION;
-@@ -22356,7 +35351,7 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
+@@ -22356,7 +35353,7 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
      x.nqp = 1;
      x.nonce = ts->nonce;
      memcpy(x.executed, &s, sizeof(s));
@@ -14073,7 +14075,7 @@ index fefde6f..16e6702 100644
    };
    for (int p = 0; p < n; p++) {
      if (p == me || !ts->peers[p].gated) continue;
-@@ -22369,7 +35364,11 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
+@@ -22369,7 +35366,11 @@ static void gdakiMiSetupEnd(struct gdakiRecHost* r, struct gdakiTs* ts, bool agr
      struct gdakiTsPeer& pe = ts->peers[p];
      struct gdakiTsMsg in;
      const int rem = (int)(deadline - gdakiQ4MonoMs());
@@ -14085,7 +14087,7 @@ index fefde6f..16e6702 100644
      char w[128] = {0};
      if (got != 1) {
        snprintf(w, sizeof(w), "rank %d: %s", p, got == 0 ? "no MIRROR_SETUP within NCCL_GIN_TS_HANDSHAKE_MS"
-@@ -23227,6 +36226,9 @@ static ncclResult_t gdakiRsSpareResume(const struct ncclGinRestoreCommFacts* f,
+@@ -23227,6 +36228,9 @@ static ncclResult_t gdakiRsSpareResume(const struct ncclGinRestoreCommFacts* f,
                          : nullptr;
    if (bad != nullptr) {  // nothing was answered: the buddy's ACTIVATE finds no port and the survivors fall back
      WARN("GIN/RS: spare rank %d: ncclGinRestoreResume cannot run the restore: %s", f->rank, bad);
@@ -14095,7 +14097,7 @@ index fefde6f..16e6702 100644
      return ncclInvalidUsage;
    }
    struct gdakiRsSpareResumeArg a;
-@@ -23367,8 +36369,36 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+@@ -23367,8 +36371,36 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
    char sideWhy[128] = {0}, rsLbWhy[128] = {0}, resWhy[128] = {0};
    char atomicWhy[160] = "not set up";  // gin-restore (dev, A1): the loopback atomic pair's verdict
    char miCtxWhy[160] = {0}, miPoolWhy[160] = {0}, miConfWhy[160] = {0}, miPeersWhy[160] = {0};  // gin-mirror (host)
@@ -14132,7 +14134,7 @@ index fefde6f..16e6702 100644
    {
      std::lock_guard<std::mutex> lk(gdakiRecRegMu);
      for (auto* r : gdakiRecReg)
-@@ -23402,6 +36432,19 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+@@ -23402,6 +36434,19 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
      // exchange's mirror part (the bit, S, L)
      gdakiMiResumeFacts(rFound != nullptr && rFound->ts != nullptr ? rFound : nullptr, c.spare >= 0 && rsReplaying(), &in,
                         &mine, miCtxWhy, miPoolWhy, miConfWhy, miPeersWhy, sizeof(miCtxWhy));
@@ -14152,7 +14154,7 @@ index fefde6f..16e6702 100644
    }
    in.sideWhy = sideWhy;
    in.rsLbWhy = rsLbWhy;
-@@ -23499,6 +36542,10 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+@@ -23499,6 +36544,10 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
      e.verdict = verdict;
      snprintf(e.why, sizeof(e.why), "%s", why);
    }

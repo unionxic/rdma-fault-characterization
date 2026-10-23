@@ -587,3 +587,9 @@ smoke3 a3(STOP, 펜스 없는 옛 라이브러리)은 의심 2 050.1, 판정 10 
   `stall_ctx=1`이다. 위 절의 `TODO(lib)`(줄의 `ctx=` 자리)는 실제 줄과 맞다 `[측정: ../../results/20261023_smoke6/SMOKE.md (e)]`. 모든 context가 멈추는 셀은 `stall_ctx=0+1`이었다(그 예측은 이 열을 쓰지 않음).
 - 새 열 `dev_read_n`, `dev_read_ok_n`, `read_page_success_pct`, `read_dev_success_pct`, `probe_missing`이 context 넷인 실제 요약 줄(`dev_ctx=4 dev_reads_ctx=a/b/c/d`)에서 채워졌고 `probe_missing`은 여섯 시도 모두 빈칸이다 `[측정]`.
 - 복원 뒤 4.7–5.2 s의 READ 시한 줄은 driver가 예비 프로세스에서 끝 유예를 건너뛰어(`gin_mi.cu` 1011행) 복원된 화신이 먼저 teardown하기 때문으로 본다 `[추론: 같은 SMOKE.md 절]`. 판정 뒤라 `probe_timeout_n`에 들지 않는다.
+
+## pilot 1의 실행기 몫 (2026-10-23)
+
+- `hold_gc.sh`: pilot 회귀 hold `PRG-<b>-<mirror hold>`(`RG-`와 같은 셀을 n 1로; `P`로 시작하므로 pilot 폴더에서만). P0–P4에 tcp 회귀 대조 `mi4_kill3_ow@gct`가 없어서 더했고, `PRG-gct-G1`이 pilot 1 a7에서 돌았다 `[측정]`.
+- `deploy_gc.sh`: 기존 묶음의 md5 목록(`EXIST`)이 폴더를 가리키는 링크(`~/rs-bundle/gc_smoke*`)에 `md5sum`을 걸어 오류가 났고, `set -e`로 쓰기 전에 멈췄다. 이제 일반 파일만 md5를 내고 링크는 `경로 -> 대상`으로 적는다. 고친 판으로 `gc_pilot1`을 배포했다 `[측정]`.
+- 결과와 셀 값 문제(`gc4_none_probe`의 창 크기, freeze 셀의 시작과 길이, credit 셀, `qperr_rec_gen_delta`의 셈, 비용 probe-on 팔의 증거, QUERY_QP 한도)는 [../../results/20261023_pilot1/PILOT.md](../../results/20261023_pilot1/PILOT.md)에 있다.

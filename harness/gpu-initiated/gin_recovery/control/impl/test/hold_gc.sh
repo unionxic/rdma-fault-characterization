@@ -40,6 +40,8 @@
 #                          cell with its name, env and n, at the named build (section 7 rows 24, 25); a build with
 #                          regression.builds.<b>.cells runs only those cells (2026-10-22: @gct only mi4_kill3_ow, i.e.
 #                          RG-gct-G1; any other RG-gct-* hold has no cell and stops)
+#   PRG-<gct|gc>-<mirror hold>   the pilot form of RG- (pilot 1, 2026-10-23): the same cells, each once (n 1), in a pilot
+#                          folder only (P* is a pilot hold); PRG-gct-G1 is the tcp regression control mi4_kill3_ow once
 #   COST-probe-<rain|sunny>[-<metric>]       the probe cost family on the receiving node (3 arms x 3 metrics x 6 rounds)
 #   COSTPILOT-<rain|sunny> one round of the probe cost family
 # env: SUNNY_SSH (required), RS_SET (required), RS_QUERY_CAP (50000), RS_QUERY_CAP_REG (150000), RS_TRIAL_BOUND_S (60: the
@@ -215,8 +217,9 @@ json_hold() {
 import json, sys
 c = json.load(open(sys.argv[1])); m = json.load(open(sys.argv[2])); h = sys.argv[3]
 out = []
-if h.startswith("RG-"):
+if h.startswith("RG-") or h.startswith("PRG-"):  # PRG-: the pilot form of RG- (pilot 1, 2026-10-23): every cell once
     _, b, mh = h.split("-", 2)
+    pilot = h.startswith("PRG-")
     if b not in c["regression"]["builds"] or mh not in c["regression"]["holds"]:
         sys.exit("unknown regression hold %s" % h)
     keep = c["regression"]["builds"][b].get("cells")  # the 2026-10-22 trim: @gct runs only these cells
@@ -224,7 +227,7 @@ if h.startswith("RG-"):
         if keep is not None and e["cell"] not in keep:
             continue
         bound = 150 if e["cell"].startswith("mi4_train_") else 60
-        out.append((e["cell"], b, e["kind"], e["n"], e.get("driver", ""), bound, {}, e.get("env", {})))
+        out.append((e["cell"], b, e["kind"], 1 if pilot else e["n"], e.get("driver", ""), bound, {}, e.get("env", {})))
     if not out:
         sys.exit("regression hold %s: no cell of regression.builds.%s.cells in gin-mirror hold %s" % (h, b, mh))
 elif h in c["holds"]:
@@ -306,7 +309,7 @@ cost_family() {  # cost_family <family> <node> <dir> <rounds> [metric]
   done
 }
 case "$H" in
-  C[0-9]*|P[0-9]*|RG-*) do_json_hold "$H" ;;
+  C[0-9]*|P[0-9]*|RG-*|PRG-*) do_json_hold "$H" ;;
   COSTPILOT-*)
     node=${H#COSTPILOT-}; node=${node%%-*}
     case "$node" in rain|sunny) ;; *) echo "COSTPILOT-<rain|sunny>" >&2; exit 2 ;; esac
