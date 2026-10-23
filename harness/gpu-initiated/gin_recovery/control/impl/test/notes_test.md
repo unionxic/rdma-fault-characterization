@@ -665,3 +665,33 @@ EXPERIMENT.md 12절 그날 "사전 등록 전 확정" 행의 시험 쪽이다. �
   - `t_fenced_ms`는 창 줄 시각으로 대신 서므로(`t_fenced_src` `window_fence`) 이제 REJOIN 받아들임 때다. launcher FENCED보다 14.2–33.1 ms 늦고, 이 열을 쓰는 예측은 없다.
   - TODO(scorer): 두 죽음 셀의 `witness_pairs`가 5/6이다. `witness_view`가 둘째 예비 프로세스의 rank 2 소켓을 화신 0에 매겨 `no_tcp_control`의 `build:gc` 항이 거짓이 된다(소켓은 열림, gen=4 줄).
 - 자체 시험 `test_rows_gc.py` 198 검사 실패 0(바뀐 파일 없음) `[측정: 로컬 실행]`.
+
+## 채점기 고침 둘: 두 죽음의 증인 쌍, 시각표의 펜스 (2026-10-24, pilot 3 뒤 조율 세션 지시)
+
+pilot 3 [PILOT.md](../../results/20261024_pilot3/PILOT.md) "문제" 1, 2의 고침이다. 고친 파일은 `rows_gc.py`, `test_rows_gc.py`와 이 문서뿐이다. 라이브러리, launcher, `score_gc.py`, 셀과 예측 파일은 그대로다.
+
+- **증인 쌍의 화신(문제 2).** 소켓마다 그 프로세스의 줄이 이름 댄 화신 쌍에 매긴다.
+  - `reconnected`, `re-dialled`, REJOIN_ACK 줄에는 화신이 없다. 그래서 그 줄은 그 프로세스가 본 상대의 지금 화신에 매긴다.
+  - 지금 화신을 바꾸는 줄: 생존 쪽의 REJOIN 받음 줄과 "spare rejoined as incarnation" 줄(전과 같음), 그리고 예비 프로세스 쪽의 새 줄 `RJ_PEER_INC`. 예: `rank 2 (incarnation 1) is reached over UD at the activation table's endpoint`, `the REJOIN to rank 2 (incarnation 1, restored before)` `[소스: spare_2nd.log 149, 151행]`.
+  - 그 줄이 없을 때는 복원 순서로 정한다(`restore_order`, `peer_incs_at`). 예비 프로세스가 시작할 때 상대의 화신은, 그 예비 프로세스의 "restored as incarnation" 줄보다 먼저 복원된 상대 화신 가운데 가장 높은 것이다.
+  - 셈은 전처럼 마지막 세대의 쌍만 한다(`ring_pairs`).
+  - `gen=`은 매김에 쓰지 않는다 `[추론]`. pilot 3에서는 진짜 재연결의 gen이 2 × (두 끝 화신의 합)이다(생존 쪽 gen 2, 둘째 예비 프로세스와 rank 2 화신 1 사이 gen 4) `[측정]`. 하지만 이것은 라이브러리가 약속한 꼴이 아니고, 소켓을 한 번 깔 때마다 gen이 오른다(fd −1 설치 gen 1, 3).
+- **시각표의 펜스(문제 1).** `t_fenced_ms`는 다음 순서로 고르고, `t_fenced_src`에 무엇을 골랐는지 적는다.
+  1. 그 시행 launcher 로그의 FENCED 줄(대상 노드, trial_start 뒤 첫 줄): `launcher_FENCED`. 이때 `t_la_fenced_ms`와 값이 같다.
+  2. 그 줄이 없으면 생존 프로세스의 `fence FENCED` 보고 줄: `survivor_FENCED`. 시각표 rank 자신의 줄을 먼저 보고, 없으면 다른 rank와 예비 프로세스 가운데 가장 이른 줄을 쓴다. 보통 FENCE를 보낸 buddy가 이 줄을 낸다.
+  3. 둘 다 없을 때만 창 줄: `window_fence` 또는 `window_judgement`.
+  - 옛 값 `FENCED`(시각표 rank 자신의 줄)는 `survivor_FENCED`가 맡는다. 옛 규칙에서는 창 줄보다 이를 때만 이 값이었다.
+- **사본에서 다시 셈** `[측정: 세션 스크래치, results의 aN/raw 45 시도 전부를 복사해 고침 앞뒤로 rows_gc.py; results의 trials.csv는 다시 쓰지 않음]`.
+  - `witness_pairs`와 `tcp_ctrl_conn_n`이 바뀐 시행은 pilot 3 a2의 두 죽음 시행 넷뿐이다(5 → 6, `witness_expected` 6). 나머지는 모두 그대로다. pilot 3 a1의 kill 시행 6/6, pilot 1 a3의 증인 끈 kill 시행 0/0, pilot 2 a4, a6의 두 죽음 시행 6/6.
+  - `no_tcp_control`의 `build:gc` 항을 시행마다 다시 대 보았다. pilot 3 여덟 시행이 4/8에서 8/8이 된다(`score_gc.s2.cond_true`, 사본 행).
+  - `t_fenced_src`: 고침 앞에는 `window_fence` 52, `window_judgement` 7이었다. 고친 뒤에는 `launcher_FENCED` 44, `survivor_FENCED` 15이다(pilot 2와 3만 보면 27과 1). `launcher_FENCED` 44개는 모두 `t_fenced_ms` = `t_la_fenced_ms`이다.
+  - pilot 3 여덟 시행의 옛 값(창 줄)은 새 값보다 14.2–33.1 ms 컸다(여덟 시행의 범위). PILOT.md 값과 같아, 원자료에서 다시 셌다.
+  - 이 열을 쓰는 예측은 없다. `tl_clock`은 생존 줄이 다른 노드에 있는 15 시행에서 `mono+mono_xnode`가 된다.
+- **자체 시험 M(`pilot3_checks`), 새 검사 9개.**
+  - 합성 두 죽음 시행 셋: pilot 3 줄 꼴 6/6, 화신 줄 없이 복원 순서만으로 6/6, 둘째 예비 프로세스가 rank 2에 다시 잇지 않으면 5/6이고 `no_tcp_control` `build:gc` 거짓.
+  - 두 죽음 시행의 펜스는 `launcher_FENCED`이다. kill 시행 셋은 각각 launcher(110 ms), 생존 보고(22.6 ms), 창 줄(100 ms)로 펜스를 고른다.
+  - 원자료가 이 기계에 있을 때(raw는 git에 없음, 없으면 건너뜀): pilot 3 a2 두 죽음 넷은 6/6이고 펜스가 launcher의 것, a1 kill은 6/6, pilot 1 a3 증인 끈 kill은 0/0.
+  - 고침 앞의 매김(`RJ_PEER_INC`와 복원 순서를 끔)으로 같은 검사를 돌리면 6/6 검사 셋이 5/6으로 실패한다. 둘 가운데 하나만 켜도 pilot 3 꼴은 통과한다 `[측정: 로컬 실행]`.
+  - review 6의 기대값을 바꿨다. 합성 buddy의 `fence FENCED (by EXITED …)` 줄이 이제 펜스여서 22.6 ms, `survivor_FENCED`, `mono+mono_xnode`이다. 창 줄 길은 M이 본다.
+- 확인 `[측정: 로컬 실행]`: `python3 test_rows_gc.py`는 207 검사에 실패 0이다(198 + 9). `python3 check_cells_gc.py`는 ok이고 drift 0이다. 클러스터 실행 없음, 커밋 없음.
+- 남은 것: PILOT.md 문제 3(둘째 죽음의 판정과 펜스 열이 없음)은 이번 범위 밖이다.

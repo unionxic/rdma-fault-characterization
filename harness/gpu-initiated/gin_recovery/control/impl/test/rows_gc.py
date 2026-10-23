@@ -156,8 +156,10 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   t_first_ok_ms, t_first_ok_step   (item 6) the event timeline on the subject node's survivor (subject xor 2), ms after the
                              injection (the kill, STOP, FREEZE_PAGE, DIE_RST or gpuhang line), that node's CLOCK_MONOTONIC:
                              the first SUSPECT, confirm-window open or READ time-out line naming the subject, its judgement,
-                             its hold start (the gates; no QP-to-ERR line exists), its FENCED line or else its window line
-                             (t_fenced_src FENCED | window_fence | window_judgement), the launcher's FENCED line on that node,
+                             its hold start (the gates; no QP-to-ERR line exists), the fence (t_fenced_src: the subject
+                             node launcher's FENCED line of the trial launcher_FENCED, else a survivor's FENCE -> FENCED report
+                             line survivor_FENCED, else the window line window_fence | window_judgement; 2026-10-24 after
+                             pilot 3), the launcher's FENCED line on that node (t_la_fenced_ms),
                              its "published" line, and the first driver step line after the publish with tx_err=0 (the
                              driver prints no per-step check: counted only when the rank's kv dev_bad is 0)
   la_exited_n, la_exit_silent_n, la_fence_sigkill_n, la_fenced_n, la_fenced_after_sigkill_ms, la_later_n,
@@ -191,7 +193,9 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              summary without the split adds its record total to _unsplit and leaves tcp_ctrl_bytes empty
   ring_live_pairs, tcp_ctrl_conn_n   rdma builds (B3 (b), (c)): the pairs of the final generation (a spare that restored and
                              went live replaces its rank's earlier process) whose two processes went live, and those whose
-                             socket both ends opened (witness_view: the live line, reconnected, re-dialled, the REJOIN lines)
+                             socket both ends opened (witness_view: the live line, reconnected, re-dialled, the REJOIN lines;
+                             each socket belongs to the incarnation pair its process's lines name, a spare's peers starting at
+                             the incarnations restored before it; 2026-10-24 after pilot 3)
   witness_pairs, witness_expected   tcp_ctrl_conn_n and ring_live_pairs with the witness on, 0 with it off (tcp builds: the
                              library's witness_conns sum and (N - 1) x the summaries, REVIEW_TEST fix 10)
   ring_live_n, ring_live_all, ring_live_ms_max   rdma builds (REVIEW_INT3 F7): the ranks whose live line came within
@@ -304,6 +308,11 @@ REDIAL = re.compile(r"GIN/RC: rank (\d+): rank (\d+)'s witness socket after its 
 RJ_INC = re.compile(r"GIN/R[CS]: rank (\d+): (?:the REJOIN of rank (\d+) \(incarnation (\d+)\) taken|"
                     r"rank (\d+)'s spare rejoined as incarnation (\d+))")
 SPARE_INC = re.compile(r"GIN/RS: spare rank (\d+): restored as incarnation (\d+)")
+# 2026-10-24 after pilot 3: a spare's own lines that name the incarnation of the peer it rejoins (a peer restored before:
+# spare_2nd.log "rank 2 (incarnation 1) is reached over UD at the activation table's endpoint" and "the REJOIN to rank 2
+# (incarnation 1, restored before) starts gen ..."); its "reconnected", "re-dialled" and REJOIN_ACK lines name no incarnation
+RJ_PEER_INC = re.compile(r"GIN/RC: rank (\d+): (?:rank (\d+) \(incarnation (\d+)\) is reached over UD|"
+                         r"the REJOIN to rank (\d+) \(incarnation (\d+)\b)")
 STEPL = re.compile(r"GINRS step rank=(\d+) step=(\d+) released=0 tx_err=(\d+) ")  # the driver's step line (gin_mi.cu)
 SETUP_OFF = re.compile(r"setup agreement: .*transparent recovery off at the setup \(Resume condition (\d+)\)")
 # Codex review 2026-10-23 item 4: the Resume refusals that name a configuration (the cell's env, build or hardware), read
@@ -552,16 +561,21 @@ def first(evl, rx, pred=None):
     return None, None
 
 
-def witness_view(evl, me, n):
+def witness_view(evl, me, n, init=None):
     """B3 (REVIEW_INT3): one process's view, its lines in file order: (went live, {peer: {incarnation of the peer: opened}}).
-    The live line opens the helper socket (the witness) of every peer without an earlier witness line; a REJOIN taken from a
-    peer's new incarnation starts a new pair (EXPERIMENT 8: a revived incarnation's pair is a new pair); "reconnected" opens
+    init {peer: incarnation}: the peer's incarnation when this process starts (0 for a rank's own process; a spare's from the
+    restore order, ring_pairs). The live line opens the helper socket (the witness) of every peer without an earlier witness
+    line; a REJOIN taken from a peer's new incarnation, or a spare's own line naming the incarnation of the peer it rejoins
+    (RJ_PEER_INC), starts a new pair (EXPERIMENT 8: a revived incarnation's pair is a new pair); "reconnected" opens
     the pair's socket, "unknown, re-dialled" (the UD REJOIN: no socket yet) closes it again (the "reconnected gen=1
     attempts=0" line just before it is the fd -1 install, REVIEW_INT3 F10). A socket's end never undoes "opened". A
-    reconnect after the socket's end and before the new incarnation's REJOIN line is that new pair's (a TCP REJOIN)"""
+    reconnect after the socket's end and before the new incarnation's REJOIN line is that new pair's (a TCP REJOIN).
+    Every "reconnected" and "re-dialled" line belongs to the peer's current incarnation in this view (the lines name none)"""
     peers = [p for p in range(n) if p != me]
-    segs = {p: {0: None} for p in peers}
-    cur, lost, carry = dict.fromkeys(peers, 0), dict.fromkeys(peers, False), dict.fromkeys(peers, False)
+    init = init or {}
+    cur = {p: int(init.get(p, 0)) for p in peers}
+    segs = {p: {cur[p]: None} for p in peers}
+    lost, carry = dict.fromkeys(peers, False), dict.fromkeys(peers, False)
     live = False
     for e in evl:
         x = e.text
@@ -572,7 +586,7 @@ def witness_view(evl, me, n):
                 if segs[p][cur[p]] is None:
                     segs[p][cur[p]] = True
             continue
-        m = RJ_INC.search(x)
+        m = RJ_INC.search(x) or RJ_PEER_INC.search(x)
         if m and int(m.group(1)) == me:
             p, i = (int(m.group(2)), int(m.group(3))) if m.group(2) else (int(m.group(4)), int(m.group(5)))
             if p in segs and i not in segs[p]:
@@ -610,10 +624,39 @@ def final_generation(logs, spare_logs, n):
     return fin
 
 
+def restore_order(spare_logs):
+    """[(receipt time of the restore line, rank, incarnation)] of every spare that logged its restore, oldest first"""
+    out = []
+    for sl in spare_logs:
+        for e in sl:
+            m = SPARE_INC.search(e.text)
+            if m:
+                out.append((e.t, int(m.group(1)), int(m.group(2))))
+                break
+    return sorted(out)
+
+
+def peer_incs_at(order, me, t, n):
+    """{peer: its incarnation when a spare of rank me restored at receipt time t}: the highest incarnation of each peer whose
+    restore line came earlier (2026-10-24 after pilot 3: the second spare rejoins rank 2's incarnation 1, restored before)"""
+    inc = {p: 0 for p in range(n) if p != me}
+    for tr, r, i in order:
+        if tr < t and r in inc and i > inc[r]:
+            inc[r] = i
+    return inc
+
+
 def ring_pairs(logs, spare_logs, n):
-    """(pairs of the final generation live at both ends, those with the socket opened at both ends)"""
+    """(pairs of the final generation live at both ends, those with the socket opened at both ends). Each process's sockets
+    are attributed to the incarnation pair its own lines name (witness_view), a spare's peers starting at the incarnations
+    restored before it (restore order); only the final generation's pairs count (2026-10-24 after pilot 3)"""
     fin = final_generation(logs, spare_logs, n)
-    view = {r: witness_view(fin[r][0], r, n) for r in range(n)}
+    order = restore_order(spare_logs)
+    view = {}
+    for r in range(n):
+        lg, i = fin[r]
+        t = next((e.t for e in lg if SPARE_INC.search(e.text)), None) if i > 0 else None
+        view[r] = witness_view(lg, r, n, peer_incs_at(order, r, t, n) if t is not None else None)
     live_n = opened_n = 0
     for a in range(n):
         for b in range(a + 1, n):
@@ -1405,15 +1448,25 @@ def gc_overlay(stem, base, meta):
         sus = [x for x in (at(SUSPECT, lim=jt), at(CONF_OPEN, lim=jt), at(TIMEOUTL, lim=jt)) if x is not None]
         ev = {"t_suspect_ms": min(sus, key=lambda x: x.t) if sus else None, "t_judge_ms": jt, "t_block_ms": at(HOLD_OF),
               "t_publish_ms": at(PUB_OF, 1)}
+        # the fence time (2026-10-24 after pilot 3: the window line moved to the REJOIN take, 14.2-33.1 ms after the
+        # launcher's FENCED): the subject node's launcher FENCED line of this trial (launcher_FENCED); else the survivors'
+        # FENCE -> FENCED report line naming the subject (survivor_FENCED: the timeline rank's own, else the earliest of the
+        # other rank and spare processes; the buddy that sent the FENCE logs it); only else the window line
+        lz = [e for e in la_after_start(lalog[node_of(s)]) for m in [LA_FENCED.search(e.text)] if m and int(m.group(1)) == s]
+        ev["t_la_fenced_ms"] = min(lz, key=lambda x: x.t) if lz else None
         fz = at(FENCEDL)
+        if fz is None:
+            oth = [e for r in ranks if r not in (s, tr) for e in logs.get(r, [])] + [e for lg in spare_all for e in lg]
+            fo = [e for e in oth for m in [FENCEDL.search(e.text)] if m and int(m.group(2)) == s and aft(e)]
+            fz = min(fo, key=lambda x: x.t) if fo else None
         wz = at(WINCHG)
-        if fz is not None and (wz is None or fz.t <= wz.t):
-            ev["t_fenced_ms"], out["t_fenced_src"] = fz, "FENCED"
+        if ev["t_la_fenced_ms"] is not None:
+            ev["t_fenced_ms"], out["t_fenced_src"] = ev["t_la_fenced_ms"], "launcher_FENCED"
+        elif fz is not None:
+            ev["t_fenced_ms"], out["t_fenced_src"] = fz, "survivor_FENCED"
         elif wz is not None:
             ev["t_fenced_ms"] = wz
             out["t_fenced_src"] = "window_" + ("fence" if "after the fence" in wz.text else "judgement")
-        lz = [e for e in la_after_start(lalog[node_of(s)]) for m in [LA_FENCED.search(e.text)] if m and int(m.group(1)) == s]
-        ev["t_la_fenced_ms"] = min(lz, key=lambda x: x.t) if lz else None
         pub = ev["t_publish_ms"]
         kvt = rows_rs.parse_kv("%s_r%d.kv" % (stem, tr))
         # the driver checks a step's received data on the device (dev_bad, summed into the kv at the end) and prints no

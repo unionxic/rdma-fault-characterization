@@ -43,6 +43,10 @@ trials carry run_gc.sh's measured offset unless they say otherwise.
      stale launcher socket at the trial's start: nothing ran, launcher_stale and --stops la_stale_n); gc4_kill3_ow_spareabsent
      n1 (the one expected respawn-cap line is not a STOP; the same line in a normal cell is); launcher_gc.sh stale on a
      scratch root with a left socket
+  M  (2026-10-24 after pilot 3) mi4_kill2_kill3_ow@gc x 3: the second spare's witness sockets attributed to rank 2's
+     incarnation 1 (its incarnation lines, or the restore order): 6 of 6, one missing socket 5 of 6; gc4_kill3_ow@gc x 3:
+     the timeline's fence from the launcher's FENCED, else a survivor's report, else the window line; the pilot 3 and
+     pilot 1 raw logs when present
 """
 import argparse, os, re, shlex, shutil, subprocess, sys, tempfile
 
@@ -804,11 +808,14 @@ def review_checks():
                                                                   g(4)["ring_not_live_class"], g(5)["ring_not_live_class"]))
         # (6) the timeline on rank 1 (subject 3's node), ms after the kill (2.0 s on sunny)
         t = g(1)
-        want = dict(t_suspect_ms=0.3, t_judge_ms=20.6, t_block_ms=21.6, t_fenced_ms=100.0, t_publish_ms=170.6, t_first_ok_ms=300.0)
-        check(t["tl_rank"] == 1 and t["tl_clock"] == "mono" and t["t_fenced_src"] == "window_fence" and t["t_first_ok_step"] == 139
-              and all(t[k] != "" and abs(t[k] - v) < 0.01 for k, v in want.items()),
-              "review 6: the timeline on rank 1 (%s)" % {k: t[k] for k in want})
-        check(g(9)["t_first_ok_ms"] == "" and g(9)["t_fenced_ms"] == "", "review 6: no step line, no window line: empty")
+        # 2026-10-24 after pilot 3: the buddy rank 2's "fence FENCED (by EXITED ...)" line (restore_lines) is the fence now,
+        # before rank 1's window line (rain's line against sunny's kill: mono_xnode); the window path is pilot3_checks'
+        want = dict(t_suspect_ms=0.3, t_judge_ms=20.6, t_block_ms=21.6, t_fenced_ms=22.6, t_publish_ms=170.6, t_first_ok_ms=300.0)
+        check(t["tl_rank"] == 1 and t["tl_clock"] == "mono+mono_xnode" and t["t_fenced_src"] == "survivor_FENCED"
+              and t["t_first_ok_step"] == 139 and all(t[k] != "" and abs(t[k] - v) < 0.01 for k, v in want.items()),
+              "review 6: the timeline on rank 1 (%s %s)" % ({k: t[k] for k in want}, t["tl_clock"]))
+        check(g(9)["t_first_ok_ms"] == "" and abs(g(9)["t_fenced_ms"] - 22.6) < 0.01 and g(9)["t_fenced_src"] == "survivor_FENCED",
+              "review 6: no step line: empty; no window line: the survivor's FENCED line (%r)" % g(9)["t_fenced_src"])
         # (4), (5) the scorer: the prep failures keep their places; a safety copy of a rule fails on one bad trial
         tmp = os.path.join(R, "preds.csv")
         import csv as _csv
@@ -1331,6 +1338,135 @@ def prereg_checks(rows):
           "K: the cost rule judges sunny only: rain +7.7 %% reported (%s), both nodes judged (%s), sunny +7.7 %% (%s)" % (v1, v2, v3))
 
 
+def pilot3_checks():
+    """M (2026-10-24, the coordinator's decisions after pilot 3): (1) a second death's witness sockets belong to the
+    incarnation pair the process's lines name: the second spare (rank 3 incarnation 1) rejoins rank 2's incarnation 1
+    (its "is reached over UD" and "REJOIN to rank 2 (incarnation 1" lines, or else the restore order), so the final
+    generation's six pairs are 6 of 6 (pilot 3 a2: 5 of 6 before); (2) the timeline's fence: the launcher's FENCED line,
+    else a survivor's FENCE -> FENCED report, else the window line (t_fenced_src). Synthetic lines in pilot 3's forms; the
+    pilot 3 raw logs too when they are on this machine (the raw files are not in git: skipped otherwise)"""
+    R = tempfile.mkdtemp(prefix="gc_selftest_p3_")
+    raw = os.path.join(R, "raw")
+    try:
+        def two_death(k, explicit=True, reconnect2=True):
+            L = {r: [] for r in range(N)}
+            L["spare"] = []
+            for r in (0, 1):
+                for p, t in ((2, 2.0), (3, 4.0)):
+                    L[r] += [(t + 0.0003, "GIN/TS: rank %d: socket to rank %d closed cause=FIN liveness=pending (the confirm window judges: W=20 ms)" % (r, p)),
+                             (t + 0.140, "GIN/RC: rank %d: the REJOIN of rank %d (incarnation 1) taken over UD: record QP gen 1048577" % (r, p)),
+                             (t + 0.1401, "GIN/TS: rank %d: socket to rank %d reconnected gen=1 attempts=0" % (r, p)),
+                             (t + 0.1402, "GIN/RC: rank %d: rank %d's witness socket after its REJOIN over UD: unknown, re-dialled" % (r, p)),
+                             (t + 0.1403, "GIN/RS: rank %d: rank %d's spare rejoined as incarnation 1 (119.5 ms after the hold start)" % (r, p)),
+                             (t + 0.195, "GIN/RS: rank %d: rank %d restored as incarnation 1 (on time)" % (r, p)),
+                             (t + 0.196, "GIN/TS: rank %d: socket to rank %d reconnected gen=2 attempts=1" % (r, p))]
+                L[r] += [(8.9, "GIN/TS: rank %d: socket to rank %d closed cause=FIN liveness=left" % (r, p)) for p in (2, 3)]
+            L[3] = [(2.0003, "GIN/TS: rank 3: socket to rank 2 closed cause=FIN liveness=pending (the confirm window judges: W=20 ms)"),
+                    (2.120, "GIN/RC: rank 3: rank 2 (incarnation 0) fence FENCED (by FENCED from node 0)"),
+                    (2.140, "GIN/RC: rank 3: the REJOIN of rank 2 (incarnation 1) taken over UD: record QP gen 1048577"),
+                    (2.1401, "GIN/TS: rank 3: socket to rank 2 reconnected gen=1 attempts=0"),
+                    (2.1402, "GIN/RC: rank 3: rank 2's witness socket after its REJOIN over UD: unknown, re-dialled"),
+                    (2.196, "GIN/TS: rank 3: socket to rank 2 reconnected gen=2 attempts=0")]
+            S = [(2.134, "GIN/RC: rank 2: REJOIN over UD to 3 of 3 gated rank(s) as incarnation 1 (record and liveness READ QPs gen 1048577)")]
+            for i, p in enumerate((0, 1, 3)):
+                S += [(2.135 + 0.01 * i, "GIN/RC: rank 2: REJOIN_ACK of rank %d taken over UD (try 1): record QP gen 1048577 CONNECTED sent" % p),
+                      (2.1351 + 0.01 * i, "GIN/RC: rank 2: rank %d's witness socket after its REJOIN over UD: unknown, re-dialled" % p)]
+            S += [(2.195, "GIN/RS: spare rank 2: restored as incarnation 1 from step 200"),
+                  (2.1951, "GIN/TS: rank 2: socket to rank 0 reconnected gen=2 attempts=0"),
+                  (2.1952, "GIN/TS: rank 2: socket to rank 1 reconnected gen=2 attempts=0"),
+                  (2.1953, LIVE % 2),
+                  (2.200, "GIN/TS: rank 2: socket to rank 3 reconnected gen=2 attempts=1"),
+                  (4.0003, "GIN/TS: rank 2: socket to rank 3 closed cause=FIN liveness=pending (the confirm window judges: W=20 ms)"),
+                  (4.120, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCED (by FENCED from node 1)"),
+                  (4.140, "GIN/RC: rank 2: the REJOIN of rank 3 (incarnation 1) taken over UD: record QP gen 2097153"),
+                  (4.1401, "GIN/TS: rank 2: socket to rank 3 reconnected gen=3 attempts=0"),
+                  (4.1402, "GIN/RC: rank 2: rank 3's witness socket after its REJOIN over UD: unknown, re-dialled"),
+                  (4.1403, "GIN/RS: rank 2: rank 3's spare rejoined as incarnation 1 (152.3 ms after the hold start)"),
+                  (4.196, "GIN/TS: rank 2: socket to rank 3 reconnected gen=4 attempts=1")]
+            L["spare"] = S
+            ko = [ln("rain", 1.95, "GINRS killed rank=2 node=rain pid=998 which=first"),
+                  ln("sunny", 3.95, "GINRS killed rank=3 node=sunny pid=999 which=first")]
+            stem = trial(raw, "mi4_kill2_kill3_ow", k, kill=2, subject=2, dead=[2, 3], lines=L, probe=probe_ok(), spare_rank=2,
+                         kout=ko, spare_live=False,
+                         meta_extra={"kill2_rank": 3, "die_at": "200:10", "die2_at": "400:10", "spare2": 1, "spare2_wanted": 1,
+                                     "spare2_ready": 1, "hold": "PRC-gc-mi4_kill2_kill3_ow"},
+                         la={"rain": [(2.110, "rank 2 incarnation 0 FENCED: the group ended 160.000 ms after SIGKILL through its pidfd mono_ms=%.3f" % (BASE["rain"] + 2110.0))],
+                             "sunny": [(4.110, "rank 3 incarnation 0 FENCED: the group ended 160.000 ms after SIGKILL through its pidfd mono_ms=%.3f" % (BASE["sunny"] + 4110.0))]})
+            T = [(4.119, "GIN/RC: rank 3: rank 2 (incarnation 1) is reached over UD at the activation table's endpoint (UD QPN 5233; the transcript's 5175)"),
+                 (4.1191, "GIN/RC: rank 3: the REJOIN to rank 2 (incarnation 1, restored before) starts gen 2097153: above the pair's generations of both incarnations")] if explicit else []
+            T += [(4.124, "GIN/RC: rank 3: REJOIN over UD to 3 of 3 gated rank(s) as incarnation 1 (record and liveness READ QPs gen 1048577)")]
+            for i, p in enumerate((0, 1, 2)):
+                T += [(4.125 + 0.01 * i, "GIN/RC: rank 3: REJOIN_ACK of rank %d taken over UD (try 1): record QP gen %d CONNECTED sent" % (p, 2097153 if p == 2 else 1048577)),
+                      (4.1251 + 0.01 * i, "GIN/RC: rank 3: rank %d's witness socket after its REJOIN over UD: unknown, re-dialled" % p)]
+            T += [(4.192, "GIN/RS: spare rank 3: restored as incarnation 1 from step 380"),
+                  (4.1921, "GIN/TS: rank 3: socket to rank 0 reconnected gen=2 attempts=0"),
+                  (4.1922, "GIN/TS: rank 3: socket to rank 1 reconnected gen=2 attempts=0")]
+            if reconnect2:
+                T.append((4.1923, "GIN/TS: rank 3: socket to rank 2 reconnected gen=4 attempts=0"))
+            T += [(4.1924, LIVE % 3)]
+            T2 = [raw_line(0.0, "GINRS start rank=3 mode=spare"), raw_line(1.0, "GINRS spare_ready rank=3 rt_s=1.0")]
+            T2 += [ln("sunny", t, x) for t, x in T]
+            T2 += [ln("sunny", 9.0, x) for x in probe_ok()(3)]
+            T2.append(ln("sunny", 9.2, "GIN/RC: rank 3: control summary tcp_record_bytes=0 tcp_data_bytes=0 tcp_conns=3 witness_conns=3 "
+                                       "records_lost=0 records_dup=0 repairs=0 sendq_deferred=0 sendq_max=0 rnr=0 async=0 active_mtu=4096"))
+            write(stem + "_spare_2nd.log", T2)
+            with open(stem + "_spare_2nd.kv", "w") as f:
+                f.write(kvline(dict(GOOD, rank=3, mode="spare", resume_step=380, revived=1, start_step=381)))
+        two_death(1)                      # pilot 3's lines
+        two_death(2, explicit=False)      # no line naming rank 2's incarnation: the restore order
+        two_death(3, reconnect2=False)    # the second spare never reconnects rank 2: 5 of 6 still caught
+        # the timeline's fence on a kill of rank 3 (rank 1's view; kill at 2.0 s on sunny): n1 the launcher's FENCED line
+        # (110 ms) with the buddy's report (22.6 ms) and rank 1's window line (100 ms); n2 no launcher FENCED; n3 neither
+        tl = {1: [(2.100, WIN % (1, 0, 0))]}
+        la_f = {"sunny": [(2.105, "FENCE of rank 3 incarnation 0 from rank 2: SIGKILL sent through its pidfd (pid 999)"),
+                          (2.110, "rank 3 incarnation 0 FENCED: the group ended 5.000 ms after SIGKILL through its pidfd mono_ms=%.3f" % (BASE["sunny"] + 2110.0))]}
+        trial(raw, "gc4_kill3_ow", 1, lines=restore_lines(3, 2.0206, "FIN+STALE", extra=tl), probe=probe_ok(), la=la_f)
+        trial(raw, "gc4_kill3_ow", 2, lines=restore_lines(3, 2.0206, "FIN+STALE", extra=tl), probe=probe_ok(),
+              la={"sunny": [(2.119, EXITED3)]})
+        nofz = [(2.0216, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCING: FENCE sent to the launcher of node 1")]
+        trial(raw, "gc4_kill3_ow", 3, lines=restore_lines(3, 2.0206, "FIN+STALE", buddy_fence=nofz, extra=tl), probe=probe_ok(),
+              la={"sunny": [(2.119, EXITED3)]})
+        rows = {r["id"]: r for r in rows_gc.all_rows(R)}
+        w = lambda k: rows["mi4_kill2_kill3_ow_gc_n%d" % k]
+        wp = lambda r: (r["witness_pairs"], r["witness_expected"], r["ring_live_pairs"])
+        check(wp(w(1)) == (6, 6, 6) and w(1)["tcp_ctrl_conn_n"] == 6,
+              "M (1): the second spare's socket to rank 2 belongs to rank 2's incarnation 1: 6 of 6 (%r)" % (wp(w(1)),))
+        check(wp(w(2)) == (6, 6, 6), "M (1): without the incarnation lines, the restore order (%r)" % (wp(w(2)),))
+        check(wp(w(3)) == (5, 6, 6), "M (1): a pair of the final generation without its socket is still missing (%r)" % (wp(w(3)),))
+        nt = rule("no_tcp_control", "build:gc")
+        check(not score_gc.s2.cond_true(nt, w(3)) and "witness_pairs == witness_expected" in nt,
+              "M (1): no_tcp_control's build:gc part reads witness_pairs == witness_expected")
+        check(w(1)["t_fenced_src"] == "launcher_FENCED" and w(1)["t_fenced_ms"] == w(1)["t_la_fenced_ms"] != "",
+              "M (2): the two-death trial's fence is the launcher's FENCED line (%r %r %r)" % (
+                  w(1)["t_fenced_src"], w(1)["t_fenced_ms"], w(1)["t_la_fenced_ms"]))
+        g = lambda k: rows["gc4_kill3_ow_gc_n%d" % k]
+        srcs = [(g(k)["t_fenced_src"], g(k)["t_fenced_ms"]) for k in (1, 2, 3)]
+        check(srcs[0][0] == "launcher_FENCED" and abs(srcs[0][1] - 110.0) < 0.01 and g(1)["t_la_fenced_ms"] == srcs[0][1]
+              and g(1)["tl_clock"] == "mono"
+              and srcs[1][0] == "survivor_FENCED" and abs(srcs[1][1] - 22.6) < 0.01
+              and srcs[2][0] == "window_fence" and abs(srcs[2][1] - 100.0) < 0.01 and g(3)["t_la_fenced_ms"] == "",
+              "M (2): launcher FENCED, else the survivor's report, else the window line (%r)" % (srcs,))
+        # the pilot 3 raw logs (results/20261024_pilot3/a1, a2; read only): two deaths 6 of 6, the one-death kill 6 of 6
+        P3 = os.path.join(HERE, "..", "..", "results", "20261024_pilot3")
+        if os.path.isdir(os.path.join(P3, "a2", "raw")) and os.path.isdir(os.path.join(P3, "a1", "raw")):
+            r2 = [r for r in rows_gc.all_rows(os.path.join(P3, "a2")) if "kill2_kill3" in r["id"]]
+            r1 = {r["id"]: r for r in rows_gc.all_rows(os.path.join(P3, "a1"))}
+            check(len(r2) == 4 and all(wp(r) == (6, 6, 6) for r in r2)
+                  and all(r["t_fenced_src"] == "launcher_FENCED" and r["t_fenced_ms"] == r["t_la_fenced_ms"] for r in r2),
+                  "M: pilot 3 a2's two-death trials 6 of 6, the fence the launcher's (%r)" % ([(r["id"], wp(r), r["t_fenced_src"]) for r in r2],))
+            k1 = r1.get("gc4_kill3_ow_gc_n1", {})
+            check(wp(k1) == (6, 6, 6) if k1 else False, "M: pilot 3 a1's kill trial 6 of 6 (%r)" % (wp(k1) if k1 else None,))
+        else:
+            print("note: pilot 3 raw logs not here; M's raw-data checks skipped")
+        P1 = os.path.join(HERE, "..", "..", "results", "20261023_pilot1", "a3")
+        if os.path.isdir(os.path.join(P1, "raw")):
+            nw = [r for r in rows_gc.all_rows(P1) if r["id"].startswith("gc4_kill3_ow_nowitness")]
+            check(nw and all(r["witness_pairs"] == 0 == r["witness_expected"] for r in nw),
+                  "M: pilot 1 a3's witness-off kill 0 of 0 (%r)" % ([wp(r) for r in nw],))
+    finally:
+        shutil.rmtree(R, ignore_errors=True)
+
+
 def json_load_cells():
     import json
     return json.load(open(os.path.join(HERE, "cells_gc.json"), encoding="utf-8"))
@@ -1585,6 +1721,7 @@ def main():
     check(os.path.exists(os.path.join(R, "trials_scored.csv")), "trials_scored.csv written")
     prereg_checks(rows)
     pilot2_checks()
+    pilot3_checks()
     qperr_checks()
     shell_checks(R)
     int3_checks()
