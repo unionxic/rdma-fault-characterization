@@ -636,3 +636,18 @@ EXPERIMENT.md 12절 그날 "사전 등록 전 확정" 행의 시험 쪽이다. �
   - `spare_absent_refused`의 시행은 `inject_late` 제외에서 채점(조건 1/1)으로 바뀜.
   - 판정은 모두 "자료 부족(n<k)"이다. k는 고치지 않았다.
 - 확인: `python3 check_cells_gc.py` ok(drift 0, 7절 28행, 셀 26, 3절 키 31), 셸 `bash -n`(`hold_gc.sh`, `run_cost_gc.sh`) `[측정: 로컬 실행]`.
+
+## pilot 2의 실행기 몫 (2026-10-23)
+
+결과와 셀마다의 해설은 [../../results/20261023_pilot2/PILOT.md](../../results/20261023_pilot2/PILOT.md)에 있다. 라이브러리, launcher, 채점기, 셀과 예측 파일은 고치지 않았다.
+
+- `hold_gc.sh`에 pilot 전용 hold 꼴 셋을 더했다(모두 `P`로 시작하거나 `COSTPILOT-`라 pilot 폴더에서만 돈다).
+  - `PCELL-<셀>[+<셀>…]`: `cells_gc.json`의 `cells`나 `pilot_cells`에서 이름이 같은 항목 하나를 n 1로. 셀 env와 `launcher_env`, `bound_s`는 그 항목의 것. pilot 2 a1에서 바뀐 셀 여덟을 한 hold로 돌렸다 `[측정]`.
+  - `PRG-<빌드>-<h1>+<h2>…`: gin-mirror hold 여럿의 셀을 pilot hold 하나에 n 1로(본 실행 꼴 `RG-`는 그대로 hold 하나). a4–a7에서 돌았다.
+  - `COSTPILOT-<노드>-<묶음 수>`(1–6): 비용 묶음 여러 번, 짝수 묶음은 팔 차례를 뒤집음(`cost_family`의 기존 규칙). a2, a3에서 2묶음씩 돌았다.
+- `hold_gc.sh` `gc_after_trial`: gin-mirror의 두 죽음 셀(`*_kill2_kill3*`)에서 launcher 기록 QP 잃음 줄은 STOP_launcher 대신 `<결과>/la_qp_twokill.txt`에 적는다.
+  - 까닭: `rows_gc.py --stops`의 `la_qp_err_n`은 `subject_rank`(첫 kill)만 빼서 둘째 kill(KILL2_RANK 3)의 줄을 센다 `[소스: rows_gc.py la_counts]`. pilot 2 a4가 이것으로 STOP였다(`mi4_kill2_kill3_ow`, 줄 2, 모두 rank 3).
+  - 고친 뒤 a6의 `mi4_train_kill2_kill3`에서 같은 줄 2를 적기만 했다 `[측정]`. 채점기의 `launcher_changed` 제외는 그대로라 두 시행은 제외된다. TODO(scorer): `la_counts`가 KILL2_RANK도 빼야 한다.
+  - 고침은 새 파일을 쓰고 옮겨(rename) 넣었다. a5(돌던 hold)는 옛 파일을 읽던 중이었고 그 hold에는 두 죽음 셀 시행이 남지 않았다.
+- 확인: `bash -n hold_gc.sh` `[측정: 로컬 실행]`. 자체 시험(`test_rows_gc.py`)은 실행기 파일을 읽지 않아 다시 돌리지 않았다.
+- 실행기 쪽에서 본 남은 일(PILOT.md 문제 5): `run_gc.sh`의 ss 두 스냅숏은 이른 kill 셀에서 죽은 rank의 소켓이 닫혀 `ss_tx_delta_bytes`가 음수(−23 712, −19 969)이거나 둘째 스냅숏이 없어 빈칸이 된다(유효 rdma 시행 35개 중 6). 소켓마다의 차로 바꿀지, kill 앞에서 잴지는 결정 대기다(고치지 않음).

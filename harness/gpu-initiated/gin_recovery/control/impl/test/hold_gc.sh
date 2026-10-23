@@ -43,7 +43,9 @@
 #   PRG-<gct|gc>-<mirror hold>   the pilot form of RG- (pilot 1, 2026-10-23): the same cells, each once (n 1), in a pilot
 #                          folder only (P* is a pilot hold); PRG-gct-G1 is the tcp regression control mi4_kill3_ow once
 #   COST-probe-<rain|sunny>[-<metric>]       the probe cost family on the receiving node (3 arms x 3 metrics x 6 rounds)
-#   COSTPILOT-<rain|sunny> one round of the probe cost family
+#   PCELL-<cell>[+<cell>...]   pilot 2 (2026-10-24): the named cells of cells_gc.json (cells or pilot_cells), each once (n 1),
+#                          in a pilot folder only; PRG-<b>-<h1>+<h2>... runs several gin-mirror holds' cells in one pilot hold
+#   COSTPILOT-<rain|sunny>[-<rounds>] one round (or 1-6 rounds, the arm order reversed on even rounds) of the probe cost family
 # The per-trial QUERY_QP cap scales with the trial's wall (EXPERIMENT 8, fixed 2026-10-24 from pilot 1, where eight trials of
 # 18.6-67.7 s went over the flat 50 000 at 2 700-3 100 per s): RS_QUERY_RATE (4000) per second of the trial's meta wall_s
 # (run_gc.sh and run_cost_gc.sh trials); RS_QUERY_CAP stays the cap of a trial without a meta wall, RS_QUERY_CAP_REG that of
@@ -168,6 +170,11 @@ gc_after_trial() {  # gc_after_trial <what> <meta> <cell>: section 8's gin-contr
     if [ "${lstop:-0}" -gt 0 ]; then
       echo "$(date '+%F %T') hold $H: $what: $lstop launcher line(s) (STOP_launcher) or (STOP_launcher: ...)" | tee -a "$R/STOP_launcher"
     fi
+    # pilot 2 (2026-10-24): in gin-mirror's two-death cells (mi4_kill2_kill3_ow, mi4_train_kill2_kill3) the second killed
+    # rank (KILL2_RANK 3) is a subject too, but rows_gc.py --stops leaves out only the first (subject_rank); its record-QP
+    # loss lines are recorded in la_qp_twokill.txt, not a stop (the scorer's la_qp_err_n keeps counting them: TODO(scorer))
+    if [ "$sw" = 0 ] && [ "${lqp:-0}" -gt 0 ]; then case "$cell" in *_kill2_kill3*)
+      echo "$(date '+%F %T') hold $H: $what: $lqp launcher QP loss line(s) in a two-death cell (the second subject's; not a stop)" >> "$R/la_qp_twokill.txt"; lqp=0 ;; esac; fi
     if [ "$sw" = 0 ] && [ "${lqp:-0}" -gt 0 ]; then
       echo "$(date '+%F %T') hold $H: $what: $lqp launcher QP loss line(s) outside the test-switch cells (section 8)" | tee -a "$R/STOP_launcher"
     fi
@@ -227,18 +234,28 @@ import json, sys
 c = json.load(open(sys.argv[1])); m = json.load(open(sys.argv[2])); h = sys.argv[3]
 out = []
 if h.startswith("RG-") or h.startswith("PRG-"):  # PRG-: the pilot form of RG- (pilot 1, 2026-10-23): every cell once
-    _, b, mh = h.split("-", 2)
+    _, b, mhs = h.split("-", 2)
     pilot = h.startswith("PRG-")
-    if b not in c["regression"]["builds"] or mh not in c["regression"]["holds"]:
+    mhl = mhs.split("+") if pilot else [mhs]  # pilot 2 (2026-10-24): PRG-<b>-<h1>+<h2>... runs those mirror holds in one hold
+    if b not in c["regression"]["builds"] or any(mh not in c["regression"]["holds"] for mh in mhl):
         sys.exit("unknown regression hold %s" % h)
     keep = c["regression"]["builds"][b].get("cells")  # the 2026-10-22 trim: @gct runs only these cells
-    for e in m["holds"][mh]:
-        if keep is not None and e["cell"] not in keep:
-            continue
-        bound = 150 if e["cell"].startswith("mi4_train_") else 60
-        out.append((e["cell"], b, e["kind"], 1 if pilot else e["n"], e.get("driver", ""), bound, {}, e.get("env", {})))
+    for mh in mhl:
+        for e in m["holds"][mh]:
+            if keep is not None and e["cell"] not in keep:
+                continue
+            bound = 150 if e["cell"].startswith("mi4_train_") else 60
+            out.append((e["cell"], b, e["kind"], 1 if pilot else e["n"], e.get("driver", ""), bound, {}, e.get("env", {})))
     if not out:
-        sys.exit("regression hold %s: no cell of regression.builds.%s.cells in gin-mirror hold %s" % (h, b, mh))
+        sys.exit("regression hold %s: no cell of regression.builds.%s.cells in gin-mirror hold %s" % (h, b, mhs))
+elif h.startswith("PCELL-"):  # pilot 2 (2026-10-24): PCELL-<cell>[+<cell>...], each named cell of cells_gc.json once (n 1)
+    for name in h[len("PCELL-"):].split("+"):
+        ks = [k for k in list(c["cells"]) + list(c["pilot_cells"]) if k.split("@")[0] == name]
+        if len(ks) != 1:
+            sys.exit("PCELL hold %s: cell %s names %d cell entries" % (h, name, len(ks)))
+        e = c["cells"].get(ks[0]) or c["pilot_cells"][ks[0]]
+        out.append((e["cell"], e["build"], e["kind"], 1, e.get("driver", ""), e.get("bound_s", 60),
+                    e.get("launcher_env", {}), dict(e.get("env", {}))))
 elif h in c["holds"]:
     for x in c["holds"][h]:
         e = c["cells"].get(x["key"]) or c["pilot_cells"][x["key"]]
@@ -318,12 +335,15 @@ cost_family() {  # cost_family <family> <node> <dir> <rounds> [metric]
   done
 }
 case "$H" in
-  C[0-9]*|P[0-9]*|RG-*|PRG-*) do_json_hold "$H" ;;
+  C[0-9]*|P[0-9]*|RG-*|PRG-*|PCELL-*) do_json_hold "$H" ;;
   COSTPILOT-*)
-    node=${H#COSTPILOT-}; node=${node%%-*}
-    case "$node" in rain|sunny) ;; *) echo "COSTPILOT-<rain|sunny>" >&2; exit 2 ;; esac
+    node=${H#COSTPILOT-}; rounds=1
+    case "$node" in *-[0-9]*) rounds=${node##*-} ;; esac  # pilot 2: COSTPILOT-<node>-<rounds> (the arm order reversed on even rounds)
+    node=${node%%-*}
+    case "$node" in rain|sunny) ;; *) echo "COSTPILOT-<rain|sunny>[-<rounds>]" >&2; exit 2 ;; esac
+    case "$rounds" in [1-6]) ;; *) echo "COSTPILOT rounds 1-6" >&2; exit 2 ;; esac
     d=$(newdir "costpilot_$node"); mkdir -p "$d"
-    cost_family probe "$node" "$d" 1 ;;
+    cost_family probe "$node" "$d" "$rounds" ;;
   COST-*)
     rest=${H#COST-}; fam=${rest%%-*}; rest=${rest#*-}; node=${rest%%-*}; met=""
     case "$rest" in *-*) met=${rest#*-}; met=${met%%-*} ;; esac
