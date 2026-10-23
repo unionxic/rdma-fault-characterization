@@ -11,7 +11,10 @@ trials carry run_gc.sh's measured offset unless they say otherwise.
   A  gc4_kill3_ow@gc x 10            a confirm-window judgement (witness FIN, W 30, FIN+NORESP 30.4 ms after the FIN); the
                                      launcher slice starts with an earlier trial's late EXITED before the trial_start marker
   B  gc4_fdhold_sock_kill3@gc x 10   a normal restore judged by the launcher's EXITED (kill + 120 ms), the fd-holder fork line
-  C  gc4_fdhold_sock_kill3_noreport@gc x 5   a READ-failure judgement (NORESP kill + 3.9 s), FENCING -> FENCED -> activation
+  C  gc4_kill3_noreport_nofdhold@gc x 5   a READ-failure judgement (NORESP kill + 3.9 s, its READ failure line just before),
+                                     FENCING -> FENCED -> activation (finless_read_fail; 2026-10-23, smoke 5's cell without the fd holder)
+  C2 gc4_fdhold_sock_kill3_noreport@gc x 5   the inherited-mapping death: judged STALL_HELPER kill + 10.07 s with no READ
+                                     failure line before it (one after), FENCING -> FENCED -> activation (fdhold_sock_helper_stall)
   D  gc4_stop12000_fence@gc x 1      a "(STOP_launcher)" line (FENCE_NAK); a hold over 1 s; judged STALL_HELPER (smoke3's form)
   E  gc4_kill3_ow@gc n11 (launchers not ready), n12 (no stable checkpoint before the kill), smoke/ (a smoke trial)
   F  gc4_kill3_ow@gc n13, n14        the second kill of rank 3 by recorded PID after / before the armed lines (reported only)
@@ -244,19 +247,37 @@ def build(R):
         L[3] += [(0.6, "GIN/TS: rank 3: test switch FD_HOLDER=sock: child gin_fdhold pid=4242 holds 1 fd(s)")]
         trial(raw, "gc4_fdhold_sock_kill3", k, inject="fd_holder_kill", lines=L, probe=probe_ok(),
               meta_extra={"fdhold": 1, "fdhold_pid": 4242, "fdhold_line": 1}, la={"sunny": [(2.119, EXITED3)]})
-    # C: the READ-failure judgement (NORESP kill + 3.9 s), FENCING -> FENCED -> activation, witness off
+    # C: the READ-failure judgement (NORESP kill + 3.9 s), FENCING -> FENCED -> activation, witness off, no fd holder
+    noreport = {"launcher_env_rain": "NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=1", "launcher_env_sunny": "NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=1"}
     for k in range(1, 6):
         fz = [(5.901, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCING: FENCE sent to the launcher of node 1"),
               (5.903, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCED (by FENCED from node 1)")]
-        ex = {r: [(2.5, "GIN/RC: rank %d: probe of rank 3 timed out (no CQE in 500 ms)" % r)] for r in (0, 1, 2)}
+        ex = {r: [(2.5, "GIN/RC: rank %d: probe of rank 3 timed out (no CQE in 500 ms)" % r),
+                  (5.8995, "GIN/RC: rank %d: liveness READ of rank 3: retry exceeded (no response) (status 12)" % r)]
+              for r in (0, 1, 2)}
         L = restore_lines(3, 5.900, "NORESP", buddy_fence=fz, extra=ex)
-        L[3] += [(0.6, "GIN/TS: rank 3: test switch FD_HOLDER=sock: child gin_fdhold pid=4243 holds 0 fd(s)")]
-        trial(raw, "gc4_fdhold_sock_kill3_noreport", k, witness="0", inject="fd_holder_kill", lines=L, probe=probe_ok(),
-              meta_extra={"fdhold": 1, "launcher_env_rain": "NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=1",
-                          "launcher_env_sunny": "NCCL_GIN_CTRL_TEST_NO_EXIT_REPORT=1"},
+        trial(raw, "gc4_kill3_noreport_nofdhold", k, witness="0", lines=L, probe=probe_ok(), meta_extra=dict(noreport),
               la={"sunny": [(2.12, "rank 3 incarnation 0 exited; EXITED not sent (test switch NO_EXIT_REPORT)"),
                             (5.902, "FENCE of rank 3 incarnation 0 from rank 2: already ended; FENCED"),
                             (5.902, "rank 3 incarnation 0 FENCED: it had ended before the FENCE (already exited)")]})
+    # C2: the fd holder's inherited mappings keep rank 3's QPs and MRs: the READs answer, the host beats stop; judged
+    # STALL_HELPER (row 15) kill + 10.07 s, one READ failure line only after the judgement (not counted)
+    for k in range(1, 6):
+        fz = [(12.071, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCING: FENCE sent to the launcher of node 1"),
+              (12.073, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCED (by FENCED from node 1)")]
+        L = restore_lines(3, 12.070, "STALL_HELPER", buddy_fence=fz)
+        for r in (0, 1, 2):
+            L[r] = [x if "judged dead" not in x[1] else
+                    (x[0], "GIN/RC: rank %d: rank 3 (incarnation 0) judged stalled (liveness stall judged (STALL_HELPER)); STALLED to 3 rank(s)" % r)
+                    for x in L[r]]
+            L[r] += [(4.07, "GIN/RC: rank %d: rank 3 suspected (kind=watch stale_ms=2000.4)" % r),
+                     (12.5, "GIN/RC: rank %d: liveness READ of rank 3: retry exceeded (no response) (status 12)" % r)]
+        L[3] += [(0.6, "GIN/TS: rank 3: test switch FD_HOLDER=sock: child gin_fdhold pid=4243 holds 0 fd(s)")]
+        trial(raw, "gc4_fdhold_sock_kill3_noreport", k, witness="0", inject="fd_holder_kill", lines=L, probe=probe_ok(),
+              meta_extra=dict(noreport, fdhold=1),
+              la={"sunny": [(2.12, "rank 3 incarnation 0 exited; EXITED not sent (test switch NO_EXIT_REPORT)"),
+                            (12.072, "FENCE of rank 3 incarnation 0 from rank 2: already ended; FENCED"),
+                            (12.072, "rank 3 incarnation 0 FENCED: it had ended before the FENCE (already exited)")]})
     # D: a STOP_launcher line (FENCE_NAK) in a stall cell; a hold of 1.4 s; the runner's stop/cont lines
     L = {r: [(12.05, "GIN/RC: rank %d: rank 3 (incarnation 0) judged stalled (liveness stall judged (STALL_HELPER)); STALLED to 2 rank(s)" % r),
              (12.06, "GIN/RS: rank %d: hold of rank 3 started: gates odd since 0.0 ms before the start" % r),
@@ -478,7 +499,7 @@ def revision_checks(A, B, F):
     fr = rule("freeze_fence_restore")
     check(ok(fr, F) and not ok(fr, as_stall(F)), "J: freeze_fence_restore takes STALL_HELPER, a STALL copy fails")
     sn = rule("stall_none_refuse")
-    S = dict(n_judge_stall_helper=3, n_judge_stall=0, decline_n=1, surv_released=3, n_surv=3, win_changed_after=0)
+    S = dict(n_judge_stall_helper=3, n_judge_stall=0, decline_n=1, surv_released=3, n_surv=3, win_changed_after=0, win_verified=1)
     check(ok(sn, S) and not ok(sn, as_stall(S)), "J: stall_none_refuse takes STALL_HELPER, a STALL copy fails")
     sf = rule("stall_fence_restore")
     check("n_judge_stall_helper == n_judge" in sf and not re.search(r"\bn_judge_stall\b", sf),
@@ -702,8 +723,12 @@ def review_checks():
         check(g(1)["win_verified"] == 0 and g(1)["win_missing"] == "0+2" and g(1)["win_changed_after"] == "",
               "review 3: a survivor without its line: not verified (%r %r)" % (g(1)["win_verified"], g(1)["win_missing"]))
         ff_rule = rule("freeze_fence_restore")
-        check(not ok("win_changed_after == 0", g(8)) and ok("win_changed_after == 0", g(7)) and "win_changed_after == 0" in ff_rule,
-              "review 3: the rules' win_changed_after == 0 fails on an incomplete window")
+        import csv as _csv0
+        wrules = [p["acceptance"] for p in _csv0.DictReader(open(score_gc.PREDS, encoding="utf-8"))]
+        check(not ok("win_verified == 1", g(8)) and not ok("win_verified == 1", g(1)) and ok("win_verified == 1", g(7))
+              and "win_verified == 1" in ff_rule and not any("win_changed_after == 0" in a for a in wrules)
+              and sum("win_verified == 1" in a for a in wrules) == 5,
+              "review 3: the five window rules read win_verified == 1 (2026-10-23), false on an incomplete window")
         # (4) refusal classes
         check(g(2)["resume_refusal"] == "prep" and g(3)["resume_refusal"] == "config" and g(4)["ring_not_live_class"] == "prep"
               and g(5)["ring_not_live_class"] == "config" and "not paired with its node's launcher" in g(2)["resume_why_refused"],
@@ -725,6 +750,11 @@ def review_checks():
             for kd in ("safety", "perf"):
                 w.writerow(dict(id="t_" + kd, predicted="t", cells="gc4_kill3_ow@gc", kind=kd,
                                 acceptance="count(ow_data_equal == 1) >= 7", todo=""))
+            # EXPERIMENT 8 (2026-10-23): a perf rule failing its count is re-examined too; one without a safety term is not
+            w.writerow(dict(id="t_perf_count", predicted="t", cells="gc4_kill3_ow@gc", kind="perf",
+                            acceptance="count(ow_data_equal == 1 and n_judge == n_surv) >= 8", todo=""))
+            w.writerow(dict(id="t_perf_plain", predicted="t", cells="gc4_kill3_ow@gc", kind="perf",
+                            acceptance="count(n_judge == n_surv) >= 7", todo=""))
         import io, contextlib
         old, score_gc.PREDS = score_gc.PREDS, tmp
         buf = io.StringIO()
@@ -738,14 +768,21 @@ def review_checks():
         check([sk(k) for k in range(1, 14)] == ["scored", "prep_failure", "config", "prep_failure", "config"] + ["scored"] * 7 +
               ["surplus"], "review 4: statuses %s" % [sk(k) for k in range(1, 14)])
         check(st["mi4_kill3_ow_gc_n1"] == "prep_failure", "review 4: the regression cell's prep refusal (%s)" % st["mi4_kill3_ow_gc_n1"])
-        check(verd.get("t_safety") == "틀림" and verd.get("t_perf") == "맞음",
-              "review 5: one data mismatch in 8: safety 틀림, perf (>= 7) 맞음 (%s, %s)" % (verd.get("t_safety"), verd.get("t_perf")))
+        check(verd.get("t_safety") == "틀림" and verd.get("t_perf") == "재검토(안전성 항 어긋남 1/8)",
+              "review 5, EXPERIMENT 8: one data mismatch in 8: safety 틀림, perf passing its count (>= 7) 재검토 (%s, %s)" % (
+                  verd.get("t_safety"), verd.get("t_perf")))
+        check(verd.get("t_perf_count") == "재검토(안전성 항 어긋남 1/8)" and verd.get("t_perf_plain") == "맞음",
+              "EXPERIMENT 8: a perf rule failing its count with a safety term false is 재검토, one without a safety term keeps 맞음 (%s, %s)" % (
+                  verd.get("t_perf_count"), verd.get("t_perf_plain")))
+        check(score_gc.SAFETY_TERMS[:2] == ("data_equal", "ow_data_equal") and "win_verified" in score_gc.SAFETY_TERMS
+              and "fence_order_ok" in score_gc.SAFETY_TERMS, "EXPERIMENT 8: SAFETY_TERMS names the columns")
         out = buf.getvalue()
         md = open(os.path.join(R, "SCORE.md"), encoding="utf-8").read()
         check("[safety] gc4_kill3_ow@gc planned=10 run=13 excluded=config:2 prep_failure=2 scored=8 cond=7/8 whole=7/10" in out,
               "review 4: the output's per-prediction counts (%s)" % [x for x in out.splitlines() if "planned=" in x][:1])
         check("| `gc4_kill3_ow@gc` | 10 | 13 | config 2 | 2 | 8 | `ow_data_equal == 1` | 7/8 = 87.5 % | 7/10 = 70.0 % |" in md
-              and "성능 예측 안의 안전 조건(보고만, 판정에 넣지 않음) `gc4_kill3_ow@gc` `ow_data_equal == 1`: 실패 1/8" in md
+              and "성능 예측 안의 안전성 항(어긋나면 재검토, 8절) `gc4_kill3_ow@gc` `ow_data_equal == 1`: 실패 1/8 (gc4_kill3_ow_gc_n6)" in md
+              and "안전성 항 어긋남(재검토): `gc4_kill3_ow_gc_n6` (`ow_data_equal == 1`)" in md
               and "안전 예측의 실패(실패 0 규칙)" in md, "review 4, 5: SCORE.md's counts, rates and safety lines")
         # (5) the kind column: every row has one, cost rows are cost
         import csv as _csv2
@@ -792,8 +829,18 @@ def main():
     B = rows["gc4_fdhold_sock_kill3_gc_n1"]
     check(B["n_judge_exited"] == 3 and abs(B["kill_judge_exited_min_ms"] - 120.0) < 0.01 and abs(B["kill_judge_ms_max"] - 120.0) < 0.01, "B: EXITED 120 ms after the kill")
     check(B["inject_ok"] == 1 and abs(B["inject_off_ms"] - 4.0) < 0.01, "B: the fd-holder injection record (receipt 4 ms after the plan)")
-    C = rows["gc4_fdhold_sock_kill3_noreport_gc_n1"]
+    C = rows["gc4_kill3_noreport_nofdhold_gc_n1"]
     check(C["n_judge_noresp"] == 3 and abs(C["kill_judge_ms_min"] - 3900.0) < 0.01, "C: NORESP 3.9 s after the kill (%r)" % C["kill_judge_ms_min"])
+    check(C["probe_fail_n"] == 3, "C: one READ failure line per survivor before its judgement (%r)" % C["probe_fail_n"])
+    C2 = rows["gc4_fdhold_sock_kill3_noreport_gc_n1"]
+    hs = rule("fdhold_sock_helper_stall")
+    check(C2["n_judge_stall_helper"] == 3 and C2["n_judge_noresp"] == 0 and abs(C2["kill_judge_ms_min"] - 10070.0) < 0.01
+          and C2["probe_fail_n"] == 0 and C2["fence_names_ok"] == 1 and C2["fence_order_ok"] == 1 and C2["la_exit_silent_n"] == 1,
+          "C2: STALL_HELPER kill + 10.07 s, the READ failure line after the judgement not counted (%r %r)" % (
+              C2["kill_judge_ms_min"], C2["probe_fail_n"]))
+    check(score_gc.s2.cond_true(hs, C2) and not score_gc.s2.cond_true(hs, dict(C2, probe_fail_n=1))
+          and not score_gc.s2.cond_true(hs, C) and not score_gc.s2.cond_true(hs, dict(C2, kill_judge_ms_max=10600.0)),
+          "C2: fdhold_sock_helper_stall holds on C2, not with a READ failure line before the judgement, not on C, not at 10.6 s")
     check(C["fence_names_ok"] == 1 and C["fence_order_ok"] == 1 and abs(C["fence_sent_to_fenced_ms"] - 2.0) < 0.01, "C: FENCING -> FENCED -> activation")
     check(C["timeout_judge_n"] == 0 and C["probe_timeout_n"] == 3 and C["la_exit_silent_n"] == 1 and C["la_fenced_n"] == 1
           and C["witness_pairs"] == 0 and C["witness_expected"] == 0, "C: time-out lines before the judgement, the silent exit, witness off")
@@ -898,6 +945,7 @@ def main():
     check(M["status"] == "scored" and str(M.get("rearm_ok")) == "0" and not score_gc.s2.cond_true(reim, M),
           "B3: the second death before the re-arm is scored, its re-image condition false (%s, rearm_ok %r)" % (M["status"], M.get("rearm_ok")))
     for pid, want in (("kill_judge_rdma", "자료 부족"), ("finless_exit_report", "맞음"), ("finless_read_fail", "맞음"),
+                      ("fdhold_sock_helper_stall", "맞음"),
                       ("none_probe_clean", "맞음"), ("gate_fenced", "자료 부족"), ("no_tcp_control", "맞음"),
                       ("long_hold_lane", "맞음"), ("stall_fence_restore", "자료 부족"), ("restore_time_rdma", "자료 부족"),
                       ("regression_tcp", "자료 부족"), ("cost_probe_lat4k", "자료 부족"), ("freeze_fence_restore", "맞음"),

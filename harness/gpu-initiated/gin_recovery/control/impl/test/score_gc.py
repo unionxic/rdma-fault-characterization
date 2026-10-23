@@ -46,8 +46,11 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
                                        judged by gin-mirror's score.py; every one 맞음 -> 맞음
        cost: rule=within:<pct>         the cost family per receiving node (cells "cost:<family>:<arms>:<metrics>")
      predictions_gc.csv kind (item 5): safety predictions hold only when every count() part is true on every scored
-     trial (0 failures); perf keep their rule's threshold, and their safety terms (SAFETY_TERM) are reported per trial;
-     cost is the cost family.
+     trial (0 failures); perf keep their rule's threshold, but every safety term of the rule (SAFETY_TERMS, in the rule's
+     own parts and in the gin-mirror rules a "mirror:" part names) is evaluated on every scored trial of its part's keys:
+     one false term on one trial turns a 맞음 or 틀림 into "재검토(안전성 항 어긋남 k/n)" (k the scored trials with a false
+     term, n the scored trials the terms were evaluated on; EXPERIMENT 8, 2026-10-23), and SCORE.md lists the trials and
+     their terms; cost is the cost family.
      keys "build:<b>" pool every scored gin-control-runner trial of build b (no_tcp_control, long_hold_lane), "local:<x>" the
      local rows.
   5. STOP: the results folder's STOP_* files (their line counts), every trial's "(STOP_launcher)" and
@@ -74,7 +77,7 @@ MPREDS = os.path.join(GR, "mirror", "impl", "test", "predictions_mi.csv")
 LIB_COLS = {"confirm_w_ms", "fin_judge_dev_min_ms", "fin_judge_dev_max_ms", "read_n", "read_ok_n", "read_success_pct",
             "beat_gap_max_ms", "page_torn_n", "tcp_ctrl_bytes", "tcp_data_bytes", "tcp_ctrl_conn_n", "witness_pairs",
             "rec_lost_n", "rec_dup_n", "rec_repair_n", "sendq_deferred", "rnr_n", "async_n", "active_mtu_kv_min",
-            "win_changed_after", "fence_order_ok", "fence_names_ok", "fenced_to_fallback_ms", "suspect_n",
+            "win_changed_after", "win_verified", "fence_order_ok", "fence_names_ok", "fenced_to_fallback_ms", "suspect_n",
             "suspect_stale_ms_min", "suspect_stale_ms_max", "qperr_pair_sent_by_target", "qperr_rec_gen_delta",
             "qperr_probe_gen_delta", "qperr_pair_read_fail", "qperr_records_after", "rejoin_resent", "rejoin_dropped",
             "ckpt_stable_in_mute", "la_fence_sigkill_n", "la_fenced_n", "la_act_refused_why", "stop_judge_ms_min",
@@ -99,10 +102,17 @@ EXCL.update({k: v for k, v in msc.EXCL.items() if k not in EXCL})
 TEST_SWITCH_ENV = ("TEST_QP_ERR", "TEST_DROP_UD", "TEST_CREDIT_STALL")
 EXCL["prep_failure"] = "준비 실패(설정이 맞는데 Resume 거절이나 링 live 실패; 따로 세고 채우지 않음)"
 KINDS = ("safety", "perf", "cost")
-# item 5: the safety terms of section 3's rules (data equality, no duplicate or missing application, no activation before
-# FENCED, the window unchanged after the fence): inside a perf prediction they are reported per trial, not judged
-SAFETY_TERM = re.compile(r"\b(data_equal|ow_data_equal|no_reexec|rec_lost_n|rec_dup_n|rejoin_accept_dup_n|fence_order_ok|"
-                         r"win_changed_after|win_verified)\s*==\s*(\d+)\b")
+# item 5 and EXPERIMENT 8 (2026-10-23): the safety terms of section 3's rules, by their rows_gc.py / gin-mirror columns:
+# data equality (data_equal, ow_data_equal), no re-execution (no_reexec), no lost or duplicate record or REJOIN
+# (rec_lost_n, rec_dup_n, rejoin_accept_dup_n), FENCED before the activation (fence_order_ok; there is no separate
+# "fenced before activate" column) with both phase names (fence_names_ok), the window checked complete and unchanged after
+# the fence (win_verified; win_changed_after for a rule that still names it), the survivors' wait held and the revived
+# rank done (wait_held, revived_done), the subject ended by the fence (subject_fenced). Inside a perf prediction one false
+# term on one scored trial makes the verdict 재검토 (perf_review)
+SAFETY_TERMS = ("data_equal", "ow_data_equal", "no_reexec", "rec_lost_n", "rec_dup_n", "rejoin_accept_dup_n",
+                "fence_order_ok", "fence_names_ok", "win_verified", "win_changed_after", "wait_held", "revived_done",
+                "subject_fenced")
+SAFETY_TERM = re.compile(r"\b(%s)\s*==\s*(\d+)\b" % "|".join(SAFETY_TERMS))
 APART = ("scored", "prep_failure", "surplus", "smoke", "pilot")
 
 
@@ -125,15 +135,57 @@ def safety_fails(det):
     return [(k, inner, cnt, n) for k, dd in all_evals(det) for inner, cnt, n, *_ in dd if cnt != n]
 
 
+def safety_parts(p, keys, mpreds=()):
+    """[(key, rule text)]: each count() part of a rule with the keys it is evaluated on (a "<key>:" part on that key, a
+    "per cell:" part on every key, a plain part on the first key, a "mirror:" part as each named gin-mirror rule on its
+    first key with @mi -> @<build>); a subset() part's terms are read on the subset's rows only (safety_rows)"""
+    out = []
+    for part in [x.strip() for x in p["acceptance"].split(";;") if x.strip()]:
+        if part.startswith("mirror:"):
+            want, _, b = part[len("mirror:"):].strip().rpartition("@")
+            ids = [x.strip() for x in want.split(",") if x.strip()]
+            for q in mpreds:
+                if q["acceptance"].startswith("cost:") or not ("all" in ids or q["id"] in ids):
+                    continue
+                qk = [x.strip().replace("@mi", "@" + b) for x in q["cells"].split(";") if x.strip()]
+                qa = q["acceptance"]
+                for k in (qk if qa.startswith("per cell:") else qk[:1]):
+                    out.append((k, qa))
+            continue
+        m = re.match(r"([A-Za-z0-9_]+@[a-z]+|build:[a-z]+|local:[a-z_]+):\s*(.*)$", part)
+        if m:
+            out.append((m.group(1), m.group(2)))
+        elif part.startswith("per cell:"):
+            out += [(k, part[len("per cell:"):]) for k in keys]
+        elif keys:
+            out.append((keys[0], part))
+    return out
+
+
 def perf_safety_terms(p, det, scored, mpreds=()):
-    """[(key, term, failing trials, n)]: a perf rule's safety terms (its own text and the gin-mirror rules it names) on its
-    keys' scored trials (reported only)"""
-    mids = {m[0] for m in det["mirror"]}
-    text = p["acceptance"] + " " + " ".join(q["acceptance"] for q in mpreds if q["id"] in mids)
-    terms = sorted({m.group(0) for m in SAFETY_TERM.finditer(text)})
-    keys = sorted({k for k, _ in all_evals(det)})
-    return [(k, t, [r["id"] for r in scored.get(k, []) if not s2.cond_true(t, r)], len(scored.get(k, [])))
-            for k in keys for t in terms if scored.get(k)]
+    """[(key, term, failing trial ids, n)]: a perf rule's safety terms (SAFETY_TERMS, each part on its own keys) on the
+    scored trials of those keys (the subset's rows for a subset() part)"""
+    out = {}
+    keys = [x.strip() for x in p["cells"].split(";") if x.strip()]
+    for k, text in safety_parts(p, keys, mpreds):
+        rows = scored.get(k, [])
+        m = re.search(r"subset\((.*?)\):", text)
+        if m:
+            rows = [r for r in rows if s2.cond_true(m.group(1), r)]
+        for t in sorted({x.group(0) for x in SAFETY_TERM.finditer(text)}):
+            if rows and (k, t) not in out:
+                out[(k, t)] = ([r["id"] for r in rows if not s2.cond_true(t, r)], len(rows))
+    return [(k, t, fs, n) for (k, t), (fs, n) in sorted(out.items())]
+
+
+def perf_review(ps):
+    """(k, n, {trial id: [terms]}) of a perf prediction's safety terms: k scored trials with a false term among the n
+    scored trials the terms were read on"""
+    bad = {}
+    for k, t, fs, n in ps:
+        for i in fs:
+            bad.setdefault(i, []).append(t)
+    return len(bad), sum(n for k, n in {k: n for k, _, _, n in ps}.items()), bad
 
 
 def key_counts(k, by_key, scored, prep, PLANNED, pooled):
@@ -509,6 +561,11 @@ def score(R, planned_override=None):
         if kind_of(p) == "safety" and v == "맞음" and det["safety_fail"]:
             v = "틀림"
         det["perf_safety"] = perf_safety_terms(p, det, scored, mpreds) if kind_of(p) == "perf" else []
+        # EXPERIMENT 8 (2026-10-23): a perf rule whose safety term fails on any scored trial is re-examined, whatever its
+        # count threshold says (a short or no-data verdict stays; its failing trials are listed all the same)
+        k_bad, n_read, det["perf_bad"] = perf_review(det["perf_safety"])
+        if k_bad and v in ("맞음", "틀림"):
+            v = "재검토(안전성 항 어긋남 %d/%d)" % (k_bad, n_read)
         results.append((p, keys, v, det))
     # trials_scored.csv
     cols = rows_gc.columns(rows)
@@ -561,7 +618,9 @@ def score(R, planned_override=None):
          "- 예비 프로세스 없음 셀의 예상된 다시 띄우기 한도 줄(실행기가 끝낸 예비 프로세스를 launcher가 다시 띄우지 않음; STOP으로 세지 않음): %d줄." % la_cap,
          "- launcher가 뜨지 않았거나 낡은 launcher 소켓이나 프로세스가 남아 돌지 않은 시행(8절, STOP_launcher): %s." % (
              ", ".join("%s(%s)" % x for x in la_down) or "없음"), "",
-         "## 판정 요약", "", "안전 예측(kind safety)은 판정한 시행에서 실패 0일 때만 맞음, 성능 예측(perf)은 판정식의 문턱 그대로다(Codex 리뷰 5).", "",
+         "## 판정 요약", "", "안전 예측(kind safety)은 판정한 시행에서 실패 0일 때만 맞음, 성능 예측(perf)은 판정식의 문턱 그대로다(Codex 리뷰 5). "
+         "다만 성능 예측의 판정식 안의 안전성 항(%s)이 판정한 시행 하나에서라도 거짓이면 그 예측은 문턱과 상관없이 "
+         "재검토(안전성 항 어긋남 k/n)다(8절, 2026-10-23)." % ", ".join("`%s`" % t for t in SAFETY_TERMS), "",
          "| 예측 | 종류 | 셀 | n | 판정 |", "|---|---|---|--:|---|"]
     for p, keys, v, det in results:
         ns = " / ".join(str(len(scored.get(k, []))) for k in keys if not k.startswith(("mirror:", "cost:")))
@@ -586,8 +645,11 @@ def score(R, planned_override=None):
         if det.get("safety_fail") and kind_of(p) == "safety":
             L.append("- 안전 예측의 실패(실패 0 규칙): %s" % "; ".join("`%s` `count(%s)` %d/%d" % x for x in det["safety_fail"]))
         for k, t, fs, n in det.get("perf_safety", []):
-            L.append("- 성능 예측 안의 안전 조건(보고만, 판정에 넣지 않음) `%s` `%s`: 실패 %d/%d%s" % (
+            L.append("- 성능 예측 안의 안전성 항(어긋나면 재검토, 8절) `%s` `%s`: 실패 %d/%d%s" % (
                 k, t, len(fs), n, (" (" + ", ".join(fs) + ")") if fs else ""))
+        if det.get("perf_bad"):
+            L.append("- 안전성 항 어긋남(재검토): %s" % "; ".join(
+                "`%s` (%s)" % (i, ", ".join("`%s`" % t for t in ts)) for i, ts in sorted(det["perf_bad"].items())))
         cr = count_rows(det)
         if cr:
             L += ["", "| 키 | 계획 | 실행 | 제외(사유) | 준비 실패 | 판정 n | 조건 | 조건부 성공(판정 n) | 전체 성공(판정 n + 준비 실패) |",

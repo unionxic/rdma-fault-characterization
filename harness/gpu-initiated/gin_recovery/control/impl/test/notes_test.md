@@ -23,9 +23,9 @@
 
 | 파일 | 하는 일 |
 |---|---|
-| `cells_gc.json` | 7절 25행(`rows`), cell@build 23개(`cells`: env, 주입, n, 대조 팔, 찾는 키, 시행 한도), 본 실행 hold C1–C3, C5–C11과 pilot hold P0–P4, 회귀(gin-mirror `cells_mi.json`의 비용 밖 hold 여덟을 `@gc`로, `@gct`는 `regression.builds.gct.cells`의 `mi4_kill3_ow` 하나), 비용 가족 probe의 한 쌍, 로컬 항목. 2026-10-22 셀 줄임 전에는 27행, 27개, C1–C11(아래 "셀 줄임" 절) |
+| `cells_gc.json` | 7절 27행(`rows`; 2026-10-23 GPU hang 셀과 `gc4_kill3_noreport_nofdhold`를 더하기 전 25행), cell@build 25개(전 23개; `cells`: env, 주입, n, 대조 팔, 찾는 키, 시행 한도), 본 실행 hold C1–C3, C5–C11과 pilot hold P0–P4, 회귀(gin-mirror `cells_mi.json`의 비용 밖 hold 여덟을 `@gc`로, `@gct`는 `regression.builds.gct.cells`의 `mi4_kill3_ow` 하나), 비용 가족 probe의 한 쌍, 로컬 항목. 2026-10-22 셀 줄임 전에는 27행, 27개, C1–C11(아래 "셀 줄임" 절) |
 | `check_cells_gc.py` | 셀 파일과 예측 표를 EXPERIMENT.md 3, 7절에 맞춰 봄(행 수, 셀 이름, 빌드, n, 찾는 키마다 셀 하나 이상, 셀마다 예측 하나 이상, 회귀 빌드의 `cells` 목록) |
-| `predictions_gc.csv` | 3절의 28행(2026-10-22 셀 줄임 전 31행). 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
+| `predictions_gc.csv` | 3절의 30행(2026-10-23 `gpuhang_fence_restore`, `fdhold_sock_helper_stall`을 더하기 전 28행, 2026-10-22 셀 줄임 전 31행). 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
 | `remote_gc.sh` | 원격 셸에 넘기는 명령을 한 번만 따옴표로 쌈(`rcmd`, `pcmd`, `sunny_sh`), 공용 읽기 질의(`MTU_Q`, `RNR_Q`, `GID_PROBE`)와 IPv4 가림 식 |
 | `launcher_gc.sh` | launcher 하나(start, stale, info, mark, table, stop). 0700 소켓 디렉터리(시작마다 새 경로), `--tc`, 예비 프로세스 옵션을 그대로 넘김, 낡은 소켓이나 프로세스면 띄우지 않음(exit 3), 기록한 PID와 시작 시각에만 신호, 준비 실패 때 스스로 끔 |
 | `run_gc.sh` | 시행 하나. 9.9절 주입, 시행마다 launcher 띄우기와 끄기(예비 프로세스 명령과 환경 포함), 예비 프로세스 로그 따라 읽기, 시행 표지, 노드 시계 차, ss 스냅숏, `active_mtu`, RNR 카운터, 끄는 차례 |
@@ -457,3 +457,19 @@ smoke3 a3(STOP, 펜스 없는 옛 라이브러리)은 의심 2 050.1, 판정 10 
 - 3절: 각 행의 종류(위 배정)와, 안전 조건을 묶은 perf 행을 나눌지. 창 조건을 `win_changed_after == 0`에서 `win_verified == 1`로 바꿀지(지금도 불완전한 창은 빈 값이라 거짓이다).
 - 8절: "Resume 거절 = config 제외"를 설정 이유로 좁히는 문장과 이유 목록, 링 live 실패가 준비 실패라는 문장, 준비 실패가 판정에 어떻게 드는지(지금: 판정은 판정 n 위의 조건부, 전체 성공률은 보고만; 계획 n에서 준비 실패 수를 뺀 n이 있어야 "자료 부족"이 아님).
 - 8절과 9.3절: 쓰이지 않은 예비 프로세스는 데이터 같음에 들지 않는다는 문장.
+
+## 사전 등록 초안 고침 셋 (2026-10-23, smoke 5와 채점기 리뷰 뒤; EXPERIMENT 12절 그날 끝 행)
+
+- **예측 바꿈.** `finless_read_fail`의 셀을 `gc4_kill3_noreport_nofdhold@gc`로 옮김(`pilot_cells`에서 `cells`로, n 2 → 5, env와 주입은 smoke 5가 돈 그대로, 대조 `gc4_kill3_ow_nowitness@gc`,
+  hold C6에 `gc4_fdhold_sock_kill3_noreport@gc`와 함께, pilot P3에 n 1). `gc4_fdhold_sock_kill3_noreport@gc`는 새 예측 `fdhold_sock_helper_stall`(perf; 대조 `gc4_kill3_noreport_nofdhold@gc`).
+  `rows` 9행을 넣고 뒤 행 번호를 하나씩 밀었다(로컬 항목 26, 27; 회귀와 비용 `about`의 행 번호도). 남은 것: `hold_gc.sh` 머리 주석의 "P3 the noreport cell"은 이 고침의 범위 밖이라 그대로.
+- **새 열 `probe_fail_n`**(`rows_gc.py`): 판정 앞의 READ 실패 줄(`liveness READ of rank P[ (device line)]: …`, 대상 이름) 수. smoke 5 원자료(읽기만): a1, a2 6(생존 rank마다 재시도 초과 줄과 장치 줄 flush 줄),
+  a3, a4 0 `[측정: rows_gc.all_rows]`. 같은 원자료에서 a3, a4는 새 예측의 조건을, a1, a2는 `finless_read_fail`의 조건을 모두 채운다(smoke, n 1씩, 채점 아님).
+- **perf 안의 안전성 항**(`score_gc.py`): `SAFETY_TERMS`(열 이름 그대로: `data_equal`, `ow_data_equal`, `no_reexec`, `rec_lost_n`, `rec_dup_n`, `rejoin_accept_dup_n`, `fence_order_ok`, `fence_names_ok`,
+  `win_verified`, `win_changed_after`, `wait_held`, `revived_done`, `subject_fenced`; "FENCED 전 활성화"는 `fence_order_ok`가 맡고 따로 된 열은 없음). `safety_parts`가 판정식을 부분마다 그 키로 나누고
+  ("mirror:" 부분은 gin-mirror 판정식을 그 셀 키로), `perf_safety_terms`가 판정한 시행마다 항을 본다. 거짓인 시행이 하나라도 있으면 맞음이나 틀림이 `재검토(안전성 항 어긋남 k/n)`가 된다(자료 부족, 자료 없음은 그대로).
+  SCORE.md: 항마다 "성능 예측 안의 안전성 항(어긋나면 재검토, 8절)" 줄과 "안전성 항 어긋남(재검토)" 줄(시행 ID와 항). 이 규칙을 받는 perf 행 16개(위 "kind 배정"의 14개 목록은 `rst_judge_rdma`를 빠뜨렸음).
+- **창 조건**: 판정식 다섯의 `win_changed_after == 0` → `win_verified == 1`(per_trial 글은 "window 검사 완료, 바뀐 칸 0"). `win_verified`를 `LIB_COLS`에 더함: 창 줄이 하나도 없으면 두 열 모두 비어 자료 부족
+  (합성 D 시행의 `stall_fence_restore`가 그 예; 더하지 않으면 틀림 → 재검토가 됐음).
+- **시험**: `python3 test_rows_gc.py` 130 checks 0 failed(전 124). 바뀐 것: C를 fd 보관 없는 셀로, 새 C2(fd 보관 셀, STALL_HELPER kill + 10.07 s, 판정 뒤 READ 실패 줄 하나는 세지 않음),
+  창 규칙 다섯이 `win_verified`, perf 행 둘(문턱을 넘는 것과 못 넘는 것)이 데이터 다름 하나로 재검토, 안전성 항 없는 perf 행은 맞음 그대로. `python3 check_cells_gc.py` ok, drift 0 `[측정: 로컬 실행]`.

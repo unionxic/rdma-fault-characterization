@@ -40,6 +40,7 @@ defines for phase N to emit exactly (notes_test.md lists them):
             GIN/RC: rank R: confirm window for rank P closed: alive|STALE|NORESP|REMACC|unconfirmed mono_ms=M   TODO(p1)
   SUSPECT   GIN/RC: rank R: rank P suspected (kind=watch|helper stale_ms=X) mono_ms=M                TODO(p1)
   TIMEOUT   GIN/RC: rank R: probe of rank P timed out (no CQE in T ms) mono_ms=M                     TODO(p1)
+  READFAIL  GIN/RC: rank R: liveness READ of rank P[ (device line)]: <why> (status S) mono_ms=M      exists (smoke 5)
   PROBESUM  GIN/RC: rank R: probe summary peer=P reads=N ok=K remacc=A noresp=B timeout=C gen=G lat_med_us=X lat_max_us=Y
             beat_gap_max_ms=Z torn=T after_end_reads=E after_end_ok=F mono_ms=M   (at teardown, one per peer; the
             after_end_* READs came after the peer's BYE, LEFT or judgement and are left out of read_n and read_ok_n)  TODO(p1)
@@ -107,6 +108,8 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   hold_after_restore_n       hold starts (any rank, any subject, the spares' logs too) after the subject's first restored line
                              (a false hold at the revived rank's own end is counted here; REVIEW_TEST fix 9)
   probe_timeout_n            READ time-out lines naming the subject before that survivor's judgement
+  probe_fail_n               READ failure lines (READFAIL, either form) naming the subject before that survivor's judgement
+                             (2026-10-23: fdhold_sock_helper_stall wants 0, the inherited mappings keep the READ answered)
   suspect_n, suspect_stale_ms_min/max   SUSPECT lines naming the subject
   read_n, read_ok_n, read_success_pct, read_lat_med_us_max, read_lat_max_us, beat_gap_max_ms, page_torn_n   PROBESUM, summed
   witness_lost_n, confirm_alive_n   WITLOST lines; CONFIRM closed alive lines
@@ -208,6 +211,7 @@ CLOSED = re.compile(r"GIN/TS: rank (\d+): socket to rank (\d+) closed cause=(\S+
 # B1 (REVIEW_INT3): the tokens wherever they stand in the parenthesis, any suffix (", device line named 1184 B)" since 2a-2-C)
 PAGEUP = re.compile(r"GIN/RC: rank (\d+): status page up \(.*?\bprobe_ms=(\d+)\b.*?\bW=(\d+)\b")
 TIMEOUTL = re.compile(r"GIN/RC: rank (\d+): probe of rank (\d+) timed out")
+READFAILL = re.compile(r"GIN/RC: rank (\d+): liveness READ of rank (\d+)\b")
 SSL = re.compile(r"GINRS ss (s1|s2) pid=(\d+) present=([01]) n=(\d+) acked=(\d+) received=(\d+)")
 GAPL = re.compile(r"GINRS killed rank=(\d+) node=\w+ pid=\d+ which=after_spare gap_ms=([0-9.]+)")
 LA_MARK_START = re.compile(r"GINLA mark trial_start ")
@@ -308,7 +312,7 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "rst_exited_kill_judge_max_ms", "rst_judge_ms_min", "rst_judge_ms_max", "kill_judge_ms_min", "kill_judge_ms_max",
            "kill_judge_exited_min_ms", "kill_judge_exited_max_ms", "kill_judge_clock", "stop_judge_ms_min",
            "stop_judge_ms_max", "judge_spread_ms", "judge_spread_clock", "judge_to_publish_ms", "kill_to_publish_ms",
-           "publish_clock", "hold_ms_max", "hold_other_n", "kill_hold_ms_min", "hold_after_restore_n", "probe_timeout_n",
+           "publish_clock", "hold_ms_max", "hold_other_n", "kill_hold_ms_min", "hold_after_restore_n", "probe_timeout_n", "probe_fail_n",
            "end_after_kill_ms", "suspect_n", "suspect_stale_ms_min",
            "suspect_stale_ms_max", "read_n", "read_ok_n", "read_success_pct", "read_lat_med_us_max", "read_lat_max_us",
            "beat_gap_max_ms", "page_torn_n", "witness_lost_n", "confirm_alive_n", "fence_sent", "fenced", "fence_order_ok",
@@ -710,6 +714,8 @@ def gc_overlay(stem, base, meta):
                                        for c in sorted({k for _, (_, k) in js.items()}))
         out["probe_timeout_n"] = sum(1 for r, (je, _) in js.items() for e in logs[r] for m in [TIMEOUTL.search(e.text)]
                                      if m and int(m.group(2)) == s and e.t <= je.t)
+        out["probe_fail_n"] = sum(1 for r, (je, _) in js.items() for e in logs[r] for m in [READFAILL.search(e.text)]
+                                  if m and int(m.group(2)) == s and e.t <= je.t)
 
         def opener(r, je):
             lg = logs[r]

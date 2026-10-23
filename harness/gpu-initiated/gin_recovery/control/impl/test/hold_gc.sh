@@ -34,7 +34,7 @@
 # usage: hold_gc.sh <resultsdir> <hold>
 #   C1-C11                 the main-run holds of cells_gc.json (section 7 rows 1-22)
 #   P0-P4                  the pilot holds (never scored; a results folder pilot* or smoke* of their own): P0 the smoke, P1
-#                          one trial of every rdma cell, P2 of every tcp cell, P3 the noreport cell (its launcher with
+#                          one trial of every rdma cell, P2 of every tcp cell, P3 the two noreport cells (fd-holder and no-fd-holder) (its launcher with
 #                          NO_EXIT_REPORT), P4 9.9's unscored 12 000 ms stop (its own cell gc4_stop12000_pilot)
 #   RG-<gct|gc>-<G1|G3|T1|T2|G2|R1|R2|R3>   gin-mirror's hold of that name (../../../mirror/impl/test/cells_mi.json), every
 #                          cell with its name, env and n, at the named build (section 7 rows 23, 24); a build with
