@@ -45,6 +45,8 @@
 #   COST-probe-<rain|sunny>[-<metric>]       the probe cost family on the receiving node (3 arms x 3 metrics x 6 rounds)
 #   PCELL-<cell>[+<cell>...]   pilot 2 (2026-10-24): the named cells of cells_gc.json (cells or pilot_cells), each once (n 1),
 #                          in a pilot folder only; PRG-<b>-<h1>+<h2>... runs several gin-mirror holds' cells in one pilot hold
+#   PRC-<gct|gc>-<cell>[+<cell>...]   pilot 3 (2026-10-24): named cells of the regression holds (as PRG-, at that build), in a
+#                          pilot folder only; a name given k times runs k trials (n1..nk)
 #   COSTPILOT-<rain|sunny>[-<rounds>] one round (or 1-6 rounds, the arm order reversed on even rounds) of the probe cost family
 # The per-trial QUERY_QP cap scales with the trial's wall (EXPERIMENT 8, fixed 2026-10-24 from pilot 1, where eight trials of
 # 18.6-67.7 s went over the flat 50 000 at 2 700-3 100 per s): RS_QUERY_RATE (4000) per second of the trial's meta wall_s
@@ -246,6 +248,22 @@ if h.startswith("RG-") or h.startswith("PRG-"):  # PRG-: the pilot form of RG- (
             out.append((e["cell"], b, e["kind"], 1 if pilot else e["n"], e.get("driver", ""), bound, {}, e.get("env", {})))
     if not out:
         sys.exit("regression hold %s: no cell of regression.builds.%s.cells in gin-mirror hold %s" % (h, b, mhs))
+elif h.startswith("PRC-"):  # pilot 3 (2026-10-24): PRC-<b>-<cell>[+<cell>...], named cells of the regression holds (as PRG-);
+    _, b, names = h.split("-", 2)  # a name given k times runs k trials (n1..nk)
+    if b not in c["regression"]["builds"]:
+        sys.exit("unknown regression build in %s" % h)
+    keep = c["regression"]["builds"][b].get("cells")
+    order = []
+    for name in names.split("+"):
+        if name not in order:
+            order.append(name)
+    for name in order:
+        es = [e for mh in c["regression"]["holds"] for e in m["holds"][mh] if e["cell"] == name]
+        if len(es) != 1 or (keep is not None and name not in keep):
+            sys.exit("PRC hold %s: cell %s names %d regression entries (or is not run at %s)" % (h, name, len(es), b))
+        e = es[0]
+        out.append((e["cell"], b, e["kind"], names.split("+").count(name), e.get("driver", ""),
+                    150 if name.startswith("mi4_train_") else 60, {}, e.get("env", {})))
 elif h.startswith("PCELL-"):  # pilot 2 (2026-10-24): PCELL-<cell>[+<cell>...], each named cell of cells_gc.json once (n 1)
     for name in h[len("PCELL-"):].split("+"):
         ks = [k for k in list(c["cells"]) + list(c["pilot_cells"]) if k.split("@")[0] == name]
@@ -333,7 +351,7 @@ cost_family() {  # cost_family <family> <node> <dir> <rounds> [metric]
   done
 }
 case "$H" in
-  C[0-9]*|P[0-9]*|RG-*|PRG-*|PCELL-*) do_json_hold "$H" ;;
+  C[0-9]*|P[0-9]*|RG-*|PRG-*|PRC-*|PCELL-*) do_json_hold "$H" ;;
   COSTPILOT-*)
     node=${H#COSTPILOT-}; rounds=1
     case "$node" in *-[0-9]*) rounds=${node##*-} ;; esac  # pilot 2: COSTPILOT-<node>-<rounds> (the arm order reversed on even rounds)

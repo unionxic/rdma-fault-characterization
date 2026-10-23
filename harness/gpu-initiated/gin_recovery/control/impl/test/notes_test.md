@@ -651,3 +651,17 @@ EXPERIMENT.md 12절 그날 "사전 등록 전 확정" 행의 시험 쪽이다. �
   - 고침은 새 파일을 쓰고 옮겨(rename) 넣었다. a5(돌던 hold)는 옛 파일을 읽던 중이었고 그 hold에는 두 죽음 셀 시행이 남지 않았다.
 - 확인: `bash -n hold_gc.sh` `[측정: 로컬 실행]`. 자체 시험(`test_rows_gc.py`)은 실행기 파일을 읽지 않아 다시 돌리지 않았다.
 - 실행기 쪽에서 본 남은 일(PILOT.md 문제 5): `run_gc.sh`의 ss 두 스냅숏은 이른 kill 셀에서 죽은 rank의 소켓이 닫혀 `ss_tx_delta_bytes`가 음수(−23 712, −19 969)이거나 둘째 스냅숏이 없어 빈칸이 된다(유효 rdma 시행 35개 중 6). 소켓마다의 차로 바꿀지, kill 앞에서 잴지는 결정 대기다(고치지 않음).
+
+## pilot 3의 실행기 몫 (2026-10-24)
+
+결과와 셀마다의 해설은 [../../results/20261024_pilot3/PILOT.md](../../results/20261024_pilot3/PILOT.md)에 있다. 라이브러리, launcher, 채점기, 셀과 예측 파일은 고치지 않았다.
+
+- `hold_gc.sh`에 pilot hold 꼴 `PRC-<빌드>-<셀>[+<셀>…]`를 더했다(`P`로 시작하므로 pilot 폴더에서만 돈다).
+  - 회귀 hold(`cells_gc.json` `regression.holds`)의 gin-mirror 셀 가운데 이름이 같은 항목 하나를 그 빌드로 돌린다. 같은 이름을 k번 쓰면 시행 k개(n1–nk)이고, bound는 `PRG-`와 같다(학습 150 s, 나머지 60 s).
+  - 까닭: 두 죽음 셀만 셀마다 두 번 돌려야 했는데 `PRG-`는 hold 전체(G1 일곱 셀, T2)를 n 1로만 돌린다. 같은 결과 폴더에서는 meta가 있는 시행을 건너뛰므로(hold 이어 돌기) 같은 hold를 다시 부를 수도 없다.
+  - 확인: `bash -n` 통과. 메마른 점검에서 `PRC-gc-mi4_kill2_kill3_ow+mi4_train_kill2_kill3+mi4_kill2_kill3_ow+mi4_train_kill2_kill3`가 두 셀을 n 2로, `PRC-gct-mi4_kill2_kill3_ow`는 거절 `[측정: 로컬 실행]`. pilot 3 a2에서 돌았다(시행 4, STOP 0) `[측정]`.
+- 채점기에서 본 것(고치지 않음, PILOT.md 문제 1, 2):
+  - 새 창 줄 꼴(`base=fenced sample=rejoin`)은 `WINCHG`가 그대로 읽는다. `win_lines_n` 3, `win_verified` 1, 겹침 셈 없음(REJOIN 줄과 hold_end 줄을 함께 낸 rank 없음) `[측정]`. 다만 `win_changed_after`는 대상과 상관없이 모든 줄을 더한다 `[소스: rows_gc.py 1152–1171]`.
+  - `t_fenced_ms`는 창 줄 시각으로 대신 서므로(`t_fenced_src` `window_fence`) 이제 REJOIN 받아들임 때다. launcher FENCED보다 14.2–33.1 ms 늦고, 이 열을 쓰는 예측은 없다.
+  - TODO(scorer): 두 죽음 셀의 `witness_pairs`가 5/6이다. `witness_view`가 둘째 예비 프로세스의 rank 2 소켓을 화신 0에 매겨 `no_tcp_control`의 `build:gc` 항이 거짓이 된다(소켓은 열림, gen=4 줄).
+- 자체 시험 `test_rows_gc.py` 198 검사 실패 0(바뀐 파일 없음) `[측정: 로컬 실행]`.
