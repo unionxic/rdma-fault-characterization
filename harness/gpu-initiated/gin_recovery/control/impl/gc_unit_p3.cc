@@ -650,8 +650,13 @@ static void sceneKillExited() {
   CHECK(gdakiCtrlLaFence(&w.b->k, 3, 0, nowMs(), true) == 1);
   CHECK(!w.b->k.fence[3].sent);
   CHECK(nLines(*w.b, "rank 2: rank 3 (incarnation 0) fence FENCED (by EXITED from node 1)") == 1);
-  CHECK(nLines(*w.b, "window check after the judgement of rank 3: changed=0 cells against=snapshot_at_judgement "
-                     "unreadable=0") == 1);
+  // pilot2fix: the word gives the window's baseline; the line comes at the new incarnation's REJOIN here
+  CHECK(w.b->k.fence[3].baseTaken && w.b->k.fence[3].baseExited && nLines(*w.b, "window check after") == 0);
+  gdakiCtrlLaOnRejoinTaken(&w.b->k, 3, 0);  // not the new incarnation's: nothing
+  CHECK(nLines(*w.b, "window check after") == 0);
+  gdakiCtrlLaOnRejoinTaken(&w.b->k, 3, 1);
+  CHECK(nLines(*w.b, "window check after the judgement of rank 3: changed=0 cells against=snapshot_at_fence base=fenced "
+                     "sample=rejoin unreadable=0") == 1);
   // an older incarnation's end never fences a newer one: FENCED of 0 does not say 1 is fenced
   CHECK(!gdakiCtrlFencedIs(w.b->k.fencedPlus1[3], 1));
   // a FUTURE or STALE end (the lineage says no) leaves the word
@@ -689,8 +694,10 @@ static void sceneFenceStopped() {
   gdakiCtrlLaFenceReport(&w.b->k, 3, true);
   CHECK(gdakiCtrlLaFence(&w.b->k, 3, 0, nowMs(), true) == 1);
   CHECK(nLines(*w.b, "rank 2: rank 3 (incarnation 0) fence FENCED (by FENCED from node 1)") == 1);
-  CHECK(nLines(*w.b, "window check after the fence of rank 3: changed=0 cells against=snapshot_at_judgement "
-                     "unreadable=0") == 1);
+  CHECK(nLines(*w.b, "window check after") == 0);  // pilot2fix: the baseline now, the line at the REJOIN
+  gdakiCtrlLaOnRejoinTaken(&w.b->k, 3, 1);
+  CHECK(nLines(*w.b, "window check after the fence of rank 3: changed=0 cells against=snapshot_at_fence base=fenced "
+                     "sample=rejoin unreadable=0") == 1);
   int st = 0;
   waitpid(k.pid, &st, 0);
   CHECK(WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL);
@@ -722,7 +729,7 @@ static void sceneLateWrite() {
   CHECK(kidRes(w.cores, k) == 'W');  // the late write landed
   gdakiCtrlLaOnHoldEnd(&w.b->k, 1);
   CHECK(nLines(*w.b, "window check after the judgement of rank 1: changed=16 cells against=snapshot_at_judgement "
-                     "unreadable=16") == 1);
+                     "base=judgement sample=hold_end unreadable=16") == 1);
   gdakiCtrlLaOnHoldEnd(&w.b->k, 1);
   CHECK(nLines(*w.b, "window check after") == 1);  // once per hold
   gdakiCtrlLaOnHoldEnd(&w.b->k, 0);  // no hold of rank 0 armed: nothing
@@ -738,6 +745,63 @@ static void sceneLateWrite() {
   CHECK(off.size() == 1 && off[0] == 0);
   gdakiCtrlLaCellPlan(0, &off);
   CHECK(off.empty());
+  reap(k);
+  rmWorld(w);
+  nScenes++;
+}
+
+// pilot2fix (PILOT.md pilot 2 문제 1): the old incarnation runs until the fence (a frozen status page: its process steps
+// on). Its writes between the judgement and the FENCED word moved the cells (pilot 2: changed=1-2 against the judgement's
+// snapshot); the baseline is taken when the word stands (the process is gone) and the REJOIN's sample compares with it:
+// 0. A write that lands after the word (here: this rank's memory changed between the baseline and the sample) counts.
+static void sceneFenceFrozen() {
+  World w = mkWorld();
+  buddyUp(w);
+  Kid k = spawnKid(w.cores[1]->sock.c_str(), GDAKI_CTRL_LA_ROLE_RANK, 3, 0, NONCE);
+  CHECK(kidRes(w.cores, k) == '1' && kidRes(w.cores, k) == 'c');
+  kidCmd(k, 'a');
+  CHECK(kidRes(w.cores, k) == 'K');
+  gdakiCtrlLaOnJudgement(&w.b->k, 3, 0);  // the judgement (STALL_HELPER of a frozen page): the process runs on
+  gdakiCtrlLaFenceArm(&w.b->k, 3, 0);
+  kidCmd(k, 'w');  // its write after the judgement, before the fence
+  CHECK(kidRes(w.cores, k) == 'W');
+  CHECK(gdakiCtrlLaFence(&w.b->k, 3, 0, nowMs(), true) == 0);  // FENCE sent
+  CHECK(pumpUntil(w.cores, [&] { return gdakiCtrlFencedIs(w.b->k.fencedPlus1[3], 0); }));
+  gdakiCtrlLaFenceReport(&w.b->k, 3, true);  // FENCED: the baseline (the process is gone)
+  CHECK(w.b->k.fence[3].baseTaken && !w.b->k.fence[3].baseExited && w.b->k.snapF[3].have &&
+        w.b->k.snapF[3].v.size() == GDAKI_CTRL_LA_CELLS_PER_REGION);
+  {  // the judgement's snapshot sees the old incarnation's write: what the line said before this fix
+    std::vector<uint64_t> v;
+    std::vector<uint8_t> ok;
+    gdakiCtrlLaCellsTake(w.b->k.cells, &v, &ok);
+    uint32_t unr = 0;
+    CHECK(gdakiCtrlLaCellsDiff(w.b->k.snap[3], 0, v, ok, &unr) == GDAKI_CTRL_LA_CELLS_PER_REGION && unr == 0);
+  }
+  CHECK(nLines(*w.b, "window check after") == 0);
+  gdakiCtrlLaFenceReport(&w.b->k, 3, true);  // again (the next envelope): the same baseline, still no line
+  CHECK(nLines(*w.b, "window check after") == 0);
+  gdakiCtrlLaOnRejoinTaken(&w.b->k, 3, 1);
+  CHECK(nLines(*w.b, "rank 2: window check after the fence of rank 3: changed=0 cells against=snapshot_at_fence "
+                     "base=fenced sample=rejoin unreadable=0") == 1);
+  gdakiCtrlLaOnRejoinTaken(&w.b->k, 3, 1);  // once per hold
+  gdakiCtrlLaOnHoldEnd(&w.b->k, 3);
+  CHECK(nLines(*w.b, "window check after") == 1);
+  int st = 0;
+  waitpid(k.pid, &st, 0);
+  CHECK(WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL);
+  k.pid = -1;
+  // a write after the word: the hold of rank 1's incarnation 0 (its word set here), this rank's window changed between
+  // the baseline and the hold's end: counted against the baseline
+  gdakiCtrlLaOnJudgement(&w.b->k, 1, 0);
+  gdakiCtrlLaFenceArm(&w.b->k, 1, 0);
+  w.b->k.fencedPlus1[1] = gdakiCtrlFenceWord(0);
+  w.b->k.endKind[1] = GL_K_FENCED;
+  gdakiCtrlLaFenceReport(&w.b->k, 1, false);
+  CHECK(w.b->k.fence[1].baseTaken && nLines(*w.b, "window check after the fence of rank 1") == 0);
+  for (size_t i = 0; i < gWinBytes; i++) gWin[i] ^= 0x33;
+  gdakiCtrlLaOnHoldEnd(&w.b->k, 1);
+  CHECK(nLines(*w.b, "rank 2: window check after the fence of rank 1: changed=16 cells against=snapshot_at_fence "
+                     "base=fenced sample=hold_end unreadable=0") == 1);
   reap(k);
   rmWorld(w);
   nScenes++;
@@ -1689,6 +1753,7 @@ int main(int argc, char** argv) {
   sceneKillExited();
   sceneFenceStopped();
   sceneLateWrite();
+  sceneFenceFrozen();
   sceneFenceNak();
   sceneActivationLaterAccepted();
   sceneRelayEndsReplayFailed();

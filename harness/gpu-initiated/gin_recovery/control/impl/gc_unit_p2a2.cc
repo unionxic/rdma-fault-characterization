@@ -2789,6 +2789,160 @@ static void testRejoinAcceptRetry() {
          "kept; the next REJOIN: watch thread busy, 1 failed CONNECT, accepted on try 3, the record QP untouched, "
          "TOKEN and READY through\n", el1);
 }
+// ---- 10c. pilot2fix (PILOT.md pilot 2 문제 3): two deaths, the second spare's REJOIN to the rank restored first ----
+// Rank 3 dies and its spare (incarnation 1) rejoins ranks 0-2 (the path of 9). Then rank 2 dies; its spare's transcript
+// holds rank 3's first incarnation's setup record, whose UD QP is gone. Without the activation table's UD entry its
+// REJOINs to rank 3 go nowhere (pilot 2: 150 resends, no answer); with it they reach the restored rank 3, whose pair
+// with rank 2 is in its own REJOIN's generation (1 << 20) + 1: the spare's generation counts both incarnations
+// ((1 + 1) << 20) + 1 and is taken. Ranks 0 and 1 (incarnation 0) see (1 << 20) + 1 as before.
+static void stepP(std::vector<Rank*>& P, Rank* S) {
+  for (Rank* x : P) {
+    if (x == nullptr) continue;
+    gdakiCtrlRingHelperStep(&x->r);
+    watchStep(*x);
+  }
+  if (S != nullptr) watchStep(*S);
+}
+// Spare S of rank d (incarnation 1) rejoins survivor P[s] over UD, call by call as the host makes them (9): true when the
+// survivor took it in generation G and the spare installed the pair from the REJOIN_ACK.
+static bool rjOver(std::vector<Rank*>& P, int d, Rank& S, int s, uint32_t G, uint64_t nonce) {
+  Rank& V = *P[(size_t)s];
+  struct gdakiCtrlRdmaPeer& sp = S.st.ring->peers[(size_t)s];
+  struct gdakiCtrlRdmaPeer& vp = V.st.ring->peers[(size_t)d];
+  struct gdakiTsMsg m = rjRec(GDAKI_TS_RS_REJOIN, d, nonce, 1), in, pk;
+  m.executed[1] = 1;
+  if (gdakiCtrlSend(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &m, 200) != 0) return false;
+  for (int k = 0; k < 50 && !vp.rj.parked; k++) stepP(P, &S);
+  if (!vp.rj.parked || !gdakiCtrlRjParkedTake(&V.r, d, &pk)) return false;
+  struct gdakiTsMsg ack = rjRec(GDAKI_TS_RS_REJOIN_ACK, s, nonce, 1);
+  ack.round = 1;
+  ack.executed[1] = gSelfInc[s];  // the survivor's own incarnation (gdakiRsRejoinAccept)
+  char why[192] = {0};
+  int k = 0;
+  for (int t = 0; t < 20 && (k = gdakiCtrlRjAcceptStep(&V.r, d, pk, &ack, why, sizeof(why))) == 0; t++) watchStep(V);
+  if (k != 1) {
+    logLine("WARN", "test: the REJOIN of rank %d at rank %d not taken: %s", d, s, why);
+    return false;
+  }
+  if (gdakiCtrlSend(&V.r, d, GDAKI_CTRL_CH_REJOIN, -1, &ack, 200) != 0) return false;
+  gdakiCtrlRjAccepted(&V.r, d, pk, ack);
+  gPeerInc[s][d] = 1;  // the lineage: HOLD_SUCC of incarnation 1
+  if (gdakiCtrlRecvOn(&S.r, s, GDAKI_CTRL_CH_REJOIN, -1, &in, 300, nullptr) != 1 || in.type != GDAKI_TS_RS_REJOIN_ACK)
+    return false;
+  gdakiCtrlChanInstall(&S.r, s, S.ts.peers[(size_t)s], -1);
+  for (int t = 0; t < 5; t++) stepP(P, &S);
+  return sp.rj.state == GDAKI_CTRL_RJS_INSTALLED && sp.pairRec.cur == G && sp.ring.gen == G && vp.pairRec.cur == G &&
+         vp.ring.gen == G && vp.ring.connected && vp.rj.takenInc == 1 && vp.rj.takenGen == G &&
+         sp.pairRec.peerInc == gSelfInc[s] &&
+         gdakiCtrlStateWayOf(&V.r, d, false, 1) == GDAKI_CTRL_SW_UP && gdakiCtrlStateWayOf(&S.r, s, true, 1) == GDAKI_CTRL_SW_UP;
+}
+// The spare's ring and every survivor's liveness READ QP toward it up (9's end).
+static bool spareLive(std::vector<Rank*>& P, int d, Rank& S) {
+  gdakiCtrlRjSpareDone(&S.r);
+  const double t0 = gdakiQ4MonoMs();
+  while (gdakiQ4MonoMs() - t0 < 2000.0) {
+    stepP(P, &S);
+    gdakiCtrlRingHelperStep(&S.r);
+    bool up = S.st.ring->live;
+    for (Rank* x : P)
+      if (x != nullptr) up = up && x->st.ring->peers[(size_t)d].prb.st.state == GDAKI_CTRL_PS_UP;
+    if (up) return true;
+  }
+  return false;
+}
+static void testRejoinTwoDeaths(bool table) {
+  const int n = 4;
+  std::vector<Rank> R((size_t)n);
+  CHECK(bringUp(R, n));
+  const uint64_t nonce = R[0].ts.nonce;
+  const uint32_t G1 = gdakiCtrlRjGenOf(1), G2 = gdakiCtrlRjGenOf(2);
+  CHECK(G1 == (1u << 20) + 1u && G2 == (2u << 20) + 1u);
+  // the first death: rank 3, restored as incarnation 1 by ranks 0-2
+  holdAndEnd(R, 3, true);
+  for (int k = 0; k < 3; k++) stepRj(R, 3, nullptr);
+  Rank S3;
+  spareOf(R, 3, S3);
+  gdakiCtrlRjSpareBegin(&S3.r, 1);
+  watchStep(S3);
+  std::vector<Rank*> P = {&R[0], &R[1], &R[2], nullptr};
+  for (int s = 0; s < 3; s++) CHECK(rjOver(P, 3, S3, s, G1, nonce));
+  CHECK(spareLive(P, 3, S3));
+  P[3] = &S3;  // a survivor from now
+  const uint32_t oldUd = R[3].mine.ud.qpn, newUd = S3.st.ring->udLocal.qpn;
+  CHECK(oldUd != newUd);
+  for (int s = 0; s < 3; s++) CHECK(R[(size_t)s].st.ring->peers[3].remoteUd.qpn == newUd);  // its REJOIN's nrp
+  CHECK(S3.st.ring->peers[2].pairRec.cur == G1 && S3.st.ring->peers[2].prb.st.cur == G1);  // its own REJOIN's generation
+  // the second death: rank 2; the survivors are ranks 0, 1 and the restored rank 3
+  for (int s : {0, 1, 3}) {
+    gHeld[s][2] = true;
+    gdakiCtrlRdmaRecordToErr(P[(size_t)s]->st.ring, 2);
+    gdakiCtrlRjOnHoldStart(&P[(size_t)s]->r, 2);
+  }
+  gdakiCtrlRdmaDestroy(R[2].st.ring);
+  R[2].st.ring = nullptr;
+  pageDown(R[2]);
+  P[2] = nullptr;
+  for (int k = 0; k < 3; k++) stepP(P, nullptr);
+  Rank S2;
+  spareOf(R, 2, S2);  // its transcript: the setup records of every rank's first incarnation (rank 3's old UD QP)
+  struct gdakiCtrlRing* g2 = S2.st.ring;
+  CHECK(g2->peers[3].haveUd && g2->peers[3].remoteUd.qpn == oldUd);
+  const size_t ln0 = logCount("is reached over UD at the activation table's endpoint (UD QPN"),
+               gl0 = logCount("REJOIN to rank 3 (incarnation 1, restored before) starts gen 2097153"),
+               ak0 = logCount("REJOIN_ACK of rank 3 taken over UD (try 1): record QP gen 2097153");
+  if (table) {  // the activation table as the buddy (rank 3, restored: its own endpoint) sends it and the spare reads it
+    const std::vector<uint32_t> inc = {0, 0, 0, 1};
+    const std::vector<struct gdakiCtrlActUd> eb = gdakiCtrlActUdOf(&S3.r, 2, inc), e0 = gdakiCtrlActUdOf(&R[0].r, 2, inc);
+    CHECK(eb.size() == 1 && e0.size() == 1 && eb[0].rank == 3 && eb[0].incarnation == 1 && eb[0].ud.qpn == newUd &&
+          memcmp(&eb[0].ud, &e0[0].ud, sizeof(eb[0].ud)) == 0 && gdakiCtrlActUdOf(&R[0].r, 2, {0, 0, 0, 0}).empty());
+    std::vector<uint8_t> bytes(100, 7);  // gin-mirror's parts first
+    gdakiCtrlActUdPut(eb, &bytes);
+    CHECK(bytes.size() == 100 + sizeof(struct gdakiCtrlActUdHdr) + sizeof(struct gdakiCtrlActUd));
+    std::vector<struct gdakiCtrlActUd> got, bad;
+    CHECK(gdakiCtrlActUdGet(bytes.data() + 100, bytes.size() - 100, n, &got) && got.size() == 1 &&
+          memcmp(&got[0], &eb[0], sizeof(got[0])) == 0);
+    CHECK(gdakiCtrlActUdGet(bytes.data(), 0, n, &bad) && bad.empty());           // none: a buddy without the table
+    CHECK(!gdakiCtrlActUdGet(bytes.data() + 100, bytes.size() - 101, n, &bad));  // cut
+    std::vector<uint8_t> two;
+    gdakiCtrlActUdPut({eb[0], eb[0]}, &two);
+    CHECK(!gdakiCtrlActUdGet(two.data(), two.size(), n, &bad));  // a rank twice
+    two[0] ^= 1;
+    CHECK(!gdakiCtrlActUdGet(two.data(), two.size(), n, &bad));  // not the magic
+    std::vector<uint8_t> far;
+    struct gdakiCtrlActUd x = eb[0];
+    x.rank = n;
+    gdakiCtrlActUdPut({x}, &far);
+    CHECK(!gdakiCtrlActUdGet(far.data(), far.size(), n, &bad));  // a rank out of range
+    g2->actHave = true;  // gdakiCtrlLaSpareBlobRecv
+    g2->actInc = inc;
+    g2->actUd = got;
+  }
+  gdakiCtrlRjSpareBegin(&S2.r, 1);
+  watchStep(S2);
+  CHECK(g2->peers[0].rj.gen == G1 && g2->peers[1].rj.gen == G1 && g2->peers[0].rj.peerInc == 0);
+  if (table)
+    CHECK(g2->peers[3].remoteUd.qpn == newUd && g2->peers[3].rj.gen == G2 && g2->peers[3].rj.peerInc == 1 &&
+          logCount("is reached over UD at the activation table's endpoint (UD QPN") == ln0 + 1 &&
+          logCount("REJOIN to rank 3 (incarnation 1, restored before) starts gen 2097153") == gl0 + 1);
+  else
+    CHECK(g2->peers[3].remoteUd.qpn == oldUd && g2->peers[3].rj.gen == G1);
+  for (int s : {0, 1}) CHECK(rjOver(P, 2, S2, s, G1, nonce));
+  const uint64_t drop0 = gUdDropped;
+  const bool to3 = rjOver(P, 2, S2, 3, G2, nonce);
+  if (table) {
+    CHECK(to3 && S3.st.ring->peers[2].rj.intake == 1 && logCount("REJOIN_ACK of rank 3 taken over UD (try 1): record QP gen 2097153") == ak0 + 1);
+    CHECK(spareLive(P, 2, S2));
+  } else {  // the pilot's failure: the REJOIN to rank 3 went to its first incarnation's UD QP (no receiver)
+    CHECK(!to3 && S3.st.ring->peers[2].rj.intake == 0 && gUdDropped >= drop0 + 1 && !S3.st.ring->peers[2].rj.parked);
+  }
+  printf("rejoin two deaths (%s): the second spare's REJOIN to the restored rank 3 to UD QPN %u (first incarnation's %u, "
+         "restored %u), gen %u: %s (intake %llu, UD dropped %llu)\n", table ? "with the activation table" : "transcript only",
+         g2->peers[3].remoteUd.qpn, oldUd, newUd, g2->peers[3].rj.gen, to3 ? "taken" : "no answer",
+         (unsigned long long)S3.st.ring->peers[2].rj.intake, (unsigned long long)(gUdDropped - drop0));
+  teardown(R);
+  spareDown(S2, 2, n);
+  spareDown(S3, 3, n);
+}
 // ---- 11, 12. 2a-2-C step 3: STATE and the rkey list over the outbox ----
 // ln4's bytes on the data socket (gc_unit_p2b.cc's comparison): the answer record through gdakiTsSend, the rkey list
 // through gdakiRsRkeysSend and back through gdakiRsRkeysRecv, on AF_UNIX stream pairs.
@@ -3117,6 +3271,8 @@ int main() {
   testRejoin(4, 2);
   testRejoinAnswers();
   testRejoinAcceptRetry();
+  testRejoinTwoDeaths(false);
+  testRejoinTwoDeaths(true);
   testStateWayRule();
   testStateOutbox(2, 1);
   testStateOutbox(4, 2);
