@@ -485,3 +485,17 @@ smoke3 a3(STOP, 펜스 없는 옛 라이브러리)은 의심 2 050.1, 판정 10 
   (합성 D 시행의 `stall_fence_restore`가 그 예; 더하지 않으면 틀림 → 재검토가 됐음).
 - **시험**: `python3 test_rows_gc.py` 130 checks 0 failed(전 124). 바뀐 것: C를 fd 보관 없는 셀로, 새 C2(fd 보관 셀, STALL_HELPER kill + 10.07 s, 판정 뒤 READ 실패 줄 하나는 세지 않음),
   창 규칙 다섯이 `win_verified`, perf 행 둘(문턱을 넘는 것과 못 넘는 것)이 데이터 다름 하나로 재검토, 안전성 항 없는 perf 행은 맞음 그대로. `python3 check_cells_gc.py` ok, drift 0 `[측정: 로컬 실행]`.
+
+## 제어 요약과 창 줄의 빠진 값 (2026-10-23, Codex 리뷰)
+
+- **고친 것**(`rows_gc.py`). 제어 요약 열은 있는 요약만 더하고 빠진 키를 0으로 쳤다. 그래서 요약 줄이 없는 프로세스가 있거나 요약에 계수가 빠진 시행도 `no_tcp_control`, `credit_stall_no_loss`를 채울 수 있었다.
+  이제 요약이 있어야 할 프로세스를 `ctrlsum_required`가 정한다: 마지막 세대(죽지 않은 rank는 자기 프로세스, 활성화된 예비 프로세스는 그 rank; 둘이면 높은 화신; 쓰이지 않은 예비 프로세스와 예비 없이 죽은 rank는 없음; `final_data`와 같은 규칙).
+  그 가운데 하나라도 요약이 없으면 요약에서 나온 열이 모두 비고 `ctrlsum_missing`에 이름이 남는다(자료 부족). 필요한 요약에 열이 읽는 계수가 없으면 그 열만 비고 `ctrlsum_fields_missing`에 `proc:field`가 남는다. 0으로 메우지 않는다.
+  창 줄도 고쳤다. `changed=`나 `unreadable=`이 없는 줄이 하나라도 있으면 창이 불완전하다: `win_verified` 0, `win_changed_after` 빈칸, 빠진 합도 빈칸, `win_missing`에 `rank:field`가 남는다.
+  시험 합성 줄 둘(B2 freeze, B5 GPU hang의 창 줄)에는 실제 줄처럼 `unreadable=0`을 넣었다.
+- **새 시험 셋**(`ctrlsum_checks`). (1) rank 1의 요약이 없음: 요약 열이 비고 두 판정 모두 자료 부족. (2) rank 0 요약에 `records_lost`가 없음: `rec_lost_n` 빈칸, `credit_stall_no_loss` 자료 부족. (3) rank 1의 창 줄에 `unreadable=`이 없음: `win_verified` 0, 창 판정 거짓.
+  고치기 전 `rows_gc.py`로 같은 시험을 돌리면 셋 다 실패한다(맞음, 맞음, `win_verified` 1) `[측정: 로컬 실행]`.
+- **smoke 다시 계산.** smoke1–5의 `a*/raw` 25시행 사본(세션 스크래치, 원자료는 읽기만)에서 고치기 전과 뒤를 견줬다. 기존 열이 바뀐 시행은 0이다. 실제로 요약이 빠진 시행도 없다(`ctrlsum_missing` 모두 빈칸).
+  새 열 `ctrlsum_fields_missing`은 smoke1–3의 15시행에서 `r<k>:tcp_record_bytes_live`를 보인다. 이 요약들에는 live 앞뒤 구분이 없어서 `tcp_ctrl_bytes`가 원래 빈칸이었고, 그 값은 그대로다. smoke4, smoke5에서는 빈칸이다 `[측정: rows_gc.all_rows]`.
+- **시험.** `python3 test_rows_gc.py` 134 checks, 0 failed(이전 130). `python3 check_cells_gc.py` ok, drift 0 `[측정: 로컬 실행]`.
+- **남은 것** `[미확인]`. 쓰이지 않은 예비 프로세스의 요약에 빠진 계수는 아직 판정하지 않는다(필요 집합 밖이라 그대로 더함). 두 번째 죽음에서 첫 예비 프로세스가 죽으면, 높은 화신 하나만 요구하는 규칙은 아직 시험하지 않았다.

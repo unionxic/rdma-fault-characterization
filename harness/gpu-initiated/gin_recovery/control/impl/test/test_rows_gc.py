@@ -334,7 +334,7 @@ def build(R):
             L[r] = [x if "judged dead" not in x[1] else
                     (x[0], "GIN/RC: rank %d: rank 3 (incarnation 0) judged stalled (liveness stall judged (STALL_HELPER)); STALLED to 2 rank(s)" % r)
                     for x in L[r]]
-            L[r].append((12.3, "GIN/RC: rank %d: window check after the fence of rank 3: changed=0 cells" % r))
+            L[r].append((12.3, "GIN/RC: rank %d: window check after the fence of rank 3: changed=0 cells against=snapshot_at_judgement unreadable=0" % r))
         L[3] += [(2.0, "GIN/RC: rank 3: test switch FREEZE_PAGE=12000: watchBeat+helperBeat frozen")]
         trial(raw, "gc4_freeze12000_fence", k, kill=None, subject=3, dead=[3], inject="none", lines=L, probe=probe_ok(),
               meta_extra={"r3_env": "NCCL_GIN_TS_TEST_FREEZE_PAGE=12000"},
@@ -349,7 +349,7 @@ def build(R):
             L[r] = [x if "judged dead" not in x[1] else
                     (x[0], "GIN/RC: rank %d: rank 3 (incarnation 0) judged stalled (liveness stall judged (STALL)); STALLED to 3 rank(s)" % r)
                     for x in L[r]]
-            L[r].append((12.5, "GIN/RC: rank %d: window check after the fence of rank 3: changed=0 cells" % r))
+            L[r].append((12.5, "GIN/RC: rank %d: window check after the fence of rank 3: changed=0 cells against=snapshot_at_judgement unreadable=0" % r))
         L[3] += [(2.0, "GINRS gpuhang rank=3 step=155 spin=1 wait_ms=0.120")]
         trial(raw, "gc4_gpuhang12000_fence", k, kill=None, subject=3, dead=[3], inject="none", lines=L, probe=probe_ok(),
               meta_extra={"r3_env": "GC_GPUHANG_IT=155"},
@@ -794,6 +794,75 @@ def review_checks():
         shutil.rmtree(R, ignore_errors=True)
 
 
+def ctrlsum_checks():
+    """Codex review 2026-10-23 (control summary): a required process without its control summary, a summary without a
+    counter, and a window line without unreadable= are 자료 부족 or incomplete, never a pass by a 0 that was not read"""
+    import io, contextlib
+    ok = score_gc.s2.cond_true
+    tops = []
+    try:
+        def credit(R, edit=None):
+            """five gc4_credit_stall@gc trials (the switch on rank 2, fault-free, the unused warm spare); edit(stem) changes
+            the raw files after they are written"""
+            for k in range(1, 6):
+                st = trial(os.path.join(R, "raw"), "gc4_credit_stall", k, kill=None, subject=2, inject="none", killed=False,
+                           probe=probe_ok(), spare_kv=REAL_SPARE_KV, ctrl_kv=" sendq_deferred=4",
+                           meta_extra={"r2_env": "NCCL_GIN_CTRL_TEST_CREDIT_STALL=3000:500"},
+                           lines={2: [(3.0, "GIN/RC: rank 2: test switch CREDIT_STALL: no RECV re-posted for 500 ms")]})
+                if edit:
+                    edit(st)
+
+        def sub(path, old, new):
+            t = open(path).read()
+            with open(path, "w") as f:
+                f.write("\n".join(new(x) if old in x else x for x in t.split("\n")))
+        drop_r1 = lambda st: sub(st + "_r1.log", "control summary", lambda x: "")
+        no_lost = lambda st: sub(st + "_r0.log", "control summary", lambda x: x.replace(" records_lost=0", ""))
+        res = {}
+        for tag, ed in (("good", None), ("nosum", drop_r1), ("nolost", no_lost)):
+            R = tempfile.mkdtemp(prefix="gc_selftest_ctrlsum_")
+            tops.append(R)
+            credit(R, ed)
+            rows = {r["id"]: r for r in rows_gc.all_rows(R)}
+            with contextlib.redirect_stdout(io.StringIO()):
+                verd, _ = score_gc.score(R)
+            res[tag] = (rows["gc4_credit_stall_gc_n1"], verd)
+        cr, nt = rule("credit_stall_no_loss"), rule("no_tcp_control")
+        g, vg = res["good"]
+        check(g["ctrlsum_missing"] == "" and g["ctrlsum_fields_missing"] == "" and g["rec_lost_n"] == 0 and g["sendq_deferred"] == 16
+              and ok(cr, g) and ok(nt, g) and vg.get("credit_stall_no_loss") == "맞음",
+              "ctrlsum: the control (every summary, every counter): both rules hold, credit_stall_no_loss 맞음 (%r %r %s)" % (
+                  g["ctrlsum_missing"], g["sendq_deferred"], vg.get("credit_stall_no_loss")))
+        m, vm = res["nosum"]
+        empty = ("tcp_ctrl_bytes", "tcp_data_bytes", "rec_lost_n", "rec_dup_n", "rnr_n", "sendq_deferred", "tcp_record_bytes_prelive")
+        check(m["ctrlsum_missing"] == "r1" and all(m[c] == "" for c in empty) and not ok(cr, m) and not ok(nt, m)
+              and vm.get("credit_stall_no_loss") == "자료 부족" and vm.get("no_tcp_control") == "자료 부족",
+              "ctrlsum: rank 1 without its summary: the summary columns empty, both rules 자료 부족 (%r %s %s)" % (
+                  m["ctrlsum_missing"], vm.get("credit_stall_no_loss"), vm.get("no_tcp_control")))
+        f, vf = res["nolost"]
+        check(f["ctrlsum_missing"] == "" and f["ctrlsum_fields_missing"] == "r0:records_lost" and f["rec_lost_n"] == ""
+              and f["rec_dup_n"] == 0 and not ok(cr, f) and vf.get("credit_stall_no_loss") == "자료 부족",
+              "ctrlsum: a summary without records_lost: rec_lost_n empty (not 0), credit_stall_no_loss 자료 부족 (%r %r %s)" % (
+                  f["ctrlsum_fields_missing"], f["rec_lost_n"], vf.get("credit_stall_no_loss")))
+        # the window line of rank 1 without unreadable=: incomplete, not verified, no change count
+        R = tempfile.mkdtemp(prefix="gc_selftest_win_")
+        tops.append(R)
+        wl = {r: [(2.1, WIN % (r, 0, 0) if r != 1 else
+                   "GIN/RC: rank 1: window check after the fence of rank 3: changed=0 cells against=snapshot_at_judgement")]
+              for r in (0, 1, 2)}
+        trial(os.path.join(R, "raw"), "gc4_kill3_ow", 1, lines=restore_lines(3, 2.0206, "FIN+STALE", extra=wl), probe=probe_ok(),
+              la={"sunny": [(2.119, EXITED3)]})
+        w = {r["id"]: r for r in rows_gc.all_rows(R)}["gc4_kill3_ow_gc_n1"]
+        check(w["win_verified"] == 0 and w["win_missing"] == "1:unreadable" and w["win_changed_after"] == "" and w["win_unreadable"] == ""
+              and w["win_lines_n"] == 3 and not ok("win_verified == 1", w)
+              and not ok(rule("freeze_fence_restore"), dict(w, n_judge_stall_helper=3)),
+              "ctrlsum: a window line without unreadable=: incomplete, the window rules fail (%r %r %r)" % (
+                  w["win_verified"], w["win_missing"], w["win_changed_after"]))
+    finally:
+        for R in tops:
+            shutil.rmtree(R, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", default=None)
@@ -968,6 +1037,7 @@ def main():
     shell_checks(R)
     int3_checks()
     review_checks()
+    ctrlsum_checks()
     print("self-test: %d checks, %d failed%s" % (CHECKS[0], CHECKS[1], "" if a.keep else " (folder %s removed)" % R))
     if not a.keep:
         shutil.rmtree(R, ignore_errors=True)

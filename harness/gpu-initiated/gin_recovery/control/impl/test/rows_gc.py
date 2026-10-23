@@ -123,7 +123,8 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              the WINCHG lines: changed= summed (empty unless the samples are complete or a change was seen:
                              an unread window is never "0 changes"), the survivors with a line for the subject and those
                              without ("0+2"), unreadable= and checked= summed (checked empty: the line has none);
-                             win_verified 1 iff every survivor's line is there, unreadable 0, checked > 0 where given, changed 0
+                             win_verified 1 iff every survivor's line is there, unreadable 0, checked > 0 where given, changed 0;
+                             a line without changed= or unreadable= is incomplete ("rank:field" in win_missing)
   data_equal, ow_data_equal, spare_state, final_gen_n   (item 2) override gin-restore's and gin-mirror's columns for one death:
                              every active process of the final generation (a dead rank: the spare that revived as it; an
                              unused warm spare contributes nothing); spare_state unused | restored | restored_bad |
@@ -158,6 +159,10 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   tcp_data_bytes, rec_lost_n, rec_dup_n, rec_repair_n, sendq_deferred, sendq_max, rnr_n, async_n, active_mtu_kv_min,
   tcp_conns_lib, witness_conns_lib   CTRLSUM (each process's last, every rank and spare process) summed (rnr_n adds the
                              meta's RNR port-counter growth); the two _lib columns are the library's own counts (reported only)
+  ctrlsum_missing, ctrlsum_fields_missing   (Codex review 2026-10-23) the final generation's processes (ctrlsum_required:
+                             the ranks that did not die, the spares that became active; not an unused spare) without a
+                             summary (every summary column then empty), and "proc:field" for a counter a column reads that a
+                             required summary lacks (that column empty; never 0)
   tcp_ctrl_bytes, tcp_record_bytes_prelive, tcp_record_bytes_unsplit   rdma builds (REVIEW_INT3 B3 (a)): the TCP record and
                              data bytes each process sent after its ring went live (the summary's tcp_<k>_bytes_live= or
                              _prelive= split; a total of 0 is 0 on both sides); the bootstrap records before live apart; a
@@ -222,8 +227,9 @@ PROBESUM = re.compile(r"GIN/RC: rank (\d+): probe summary peer=(\d+) (.*)$")
 WITLOST = re.compile(r"GIN/RC: rank (\d+): witness of rank (\d+) lost; liveness alive")
 FENCING = re.compile(r"GIN/RC: rank (\d+): rank (\d+) \(incarnation (\d+)\) fence FENCING\b")
 FENCEDL = re.compile(r"GIN/RC: rank (\d+): rank (\d+) \(incarnation (\d+)\) fence FENCED\b")
+# any window line, its fields as key=value (changed= and unreadable= are required: a line without one is incomplete)
 WINCHG = re.compile(r"GIN/RC: rank (\d+): window check after the (?:fence|judgement) of rank (\d+)(?: \(incarnation (\d+)\))?: "
-                    r"changed=(\d+)( cells.*)?$")
+                    r"(.*)$")
 CTRLSUM = re.compile(r"GIN/RC: rank (\d+): control summary (.*)$")
 RINGSUM = re.compile(r"GIN/RC: rank (\d+): ring summary peer=(\d+) (.*)$")
 PAIRSENT = re.compile(r"GIN/RC: rank (\d+): PAIR\(record, gen (\d+)\) to rank (\d+)")
@@ -318,6 +324,7 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "beat_gap_max_ms", "page_torn_n", "witness_lost_n", "confirm_alive_n", "fence_sent", "fenced", "fence_order_ok",
            "fence_names_ok", "fence_sent_to_fenced_ms", "fenced_to_fallback_ms", "cont_target_present",
            "win_changed_after", "win_lines_n", "win_missing", "win_unreadable", "win_checked", "win_verified",
+           "ctrlsum_missing", "ctrlsum_fields_missing",
            "spare_state", "final_gen_n", "resume_refusal", "resume_why_refused", "ring_not_live_class", "tl_rank",
            "tl_inject", "tl_clock", "t_suspect_ms", "t_judge_ms", "t_block_ms", "t_fenced_ms", "t_fenced_src",
            "t_la_fenced_ms", "t_publish_ms", "t_first_ok_ms", "t_first_ok_step", "la_exited_n", "la_exit_silent_n", "la_fence_sigkill_n", "la_fenced_n",
@@ -637,6 +644,31 @@ def final_data(stem, n, dead, meta):
     return de, ow, "+".join(states), len(finals)
 
 
+def proc_name(stem, path):
+    """a process log's name in ctrlsum_missing: r<k> for a rank, spare / spare_2nd for the spare logs"""
+    return os.path.basename(path)[len(os.path.basename(stem)) + 1:-len(".log")]
+
+
+def ctrlsum_required(stem, n, sp_paths, sp_logs, dead):
+    """Codex review 2026-10-23 (control summary): the processes that must leave a control summary, the final generation
+    (final_data's rule): a rank that did not die is its own process (r<k>); a rank with a spare that became active (its
+    log's "restored as incarnation I" line, else its kv's revived=1, incarnation the log's order) is that spare, the highest
+    incarnation when two did; a dead rank (dead: the killed ranks) without an active spare and an unused spare need none"""
+    act = {}
+    for i, (p, lg) in enumerate(zip(sp_paths, sp_logs)):
+        m = next((mm for e in lg for mm in [SPARE_INC.search(e.text)] if mm), None)
+        if m is not None:
+            r, inc = int(m.group(1)), int(m.group(2))
+        else:
+            d = rows_rs.parse_kv(p[:-len(".log")] + ".kv") if os.path.exists(p[:-len(".log")] + ".kv") else {}
+            if _num(d, "revived", 0) != 1 or _num(d, "rank", -1) is None:
+                continue
+            r, inc = int(_num(d, "rank", -1)), i + 1
+        if 0 <= r < n and (r not in act or inc > act[r][1]):
+            act[r] = (proc_name(stem, p), inc)
+    return [act[r][0] if r in act else "r%d" % r for r in range(n) if r in act or r not in dead]
+
+
 def gc_overlay(stem, base, meta):
     n = int(base.get("n") or 4)
     ranks = list(range(n))
@@ -922,62 +954,89 @@ def gc_overlay(stem, base, meta):
     # line naming the subject counts). The fence predicate win_verified is 1 only when every survivor's line is there,
     # no sample was unreadable (and checked > 0 when the line says checked=) and changed = 0; win_changed_after is the
     # changed sum when the samples are complete, or when a change was seen anyway, else empty (unknown, never "0 changes")
-    wl = [(e, m, kvd(m.group(5) or "")) for e in every for m in [WINCHG.search(e.text)] if m]
+    # (Codex review 2026-10-23, control summary): a line without changed= or unreadable= leaves the window incomplete
+    # (win_verified 0, win_changed_after and the sum it lacks empty) and is listed in win_missing as "rank:field"
+    wl = [(e, m, kvd(m.group(4) or "")) for e in every for m in [WINCHG.search(e.text)] if m]
     if wl:
-        chg = sum(int(m.group(4)) for _, m, _ in wl)
+        fl = [(int(m.group(1)), k) for _, m, d in wl for k in ("changed", "unreadable") if fnum(d.get(k)) is None]
+        chg = sum(int(fnum(d.get("changed")) or 0) for _, _, d in wl)
         unr = [fnum(d.get("unreadable")) for _, _, d in wl]
         chk = [fnum(d.get("checked")) for _, _, d in wl]
-        out["win_unreadable"] = int(sum(x for x in unr if x is not None))
+        out["win_unreadable"] = "" if any(x is None for x in unr) else int(sum(unr))
         out["win_checked"] = int(sum(x for x in chk if x is not None)) if any(x is not None for x in chk) else ""
-        complete = out["win_unreadable"] == 0 and all(x is None or x > 0 for x in chk)
+        complete = not fl and out["win_unreadable"] == 0 and all(x is None or x > 0 for x in chk)
+        fmis = ["%d:%s" % x for x in fl]
         if s >= 0:
             have = {int(m.group(1)) for e, m, _ in wl if int(m.group(2)) == s}
             miss = [r for r in surv if r not in have]
             out["win_lines_n"] = len(have & set(surv))
-            out["win_missing"] = "+".join(str(r) for r in miss)
+            out["win_missing"] = "+".join([str(r) for r in miss] + fmis)
             complete = complete and not miss
             out["win_verified"] = int(complete and chg == 0)
-        out["win_changed_after"] = chg if (complete or chg > 0) else ""
-    # the control summaries: each process's last one
-    cs = []
-    for lg in [logs[r] for r in ranks] + spare_all:  # every process of the trial (the spares: _spare*.log)
+        elif fmis:
+            out["win_missing"] = "+".join(fmis)
+        out["win_changed_after"] = chg if (complete or (chg > 0 and not fl)) else ""
+    # the control summaries: each process's last one. Codex review 2026-10-23 (control summary): the processes of the final
+    # generation must each have one (ctrlsum_required); a required process without one leaves every summary column empty
+    # (ctrlsum_missing names it), and a counter a column reads that is absent from a required summary leaves that column
+    # empty (ctrlsum_fields_missing "proc:field"); an absent counter is never 0. The sums still run over every summary
+    sp_paths = sorted(glob.glob(stem + "_spare*.log"))
+    bk0 = int(base["kill_rank"]) if str(base.get("kill_rank", "")).isdigit() else -1
+    req = ctrlsum_required(stem, n, sp_paths, spare_all, {bk0, kr2})
+    named = {}
+    for nm, lg in [("r%d" % r, logs[r]) for r in ranks] + [(proc_name(stem, p), lg) for p, lg in zip(sp_paths, spare_all)]:
         l = [m for e in lg for m in [CTRLSUM.search(e.text)] if m]
         if l:
-            cs.append(kvd(l[-1].group(2)))
-    if cs:
-        sm = lambda k: int(sum(fnum(d.get(k)) or 0 for d in cs))
+            named[nm] = kvd(l[-1].group(2))
+    cs = list(named.values())
+    cs_miss = [p for p in req if p not in named]
+    out["ctrlsum_missing"] = "+".join(cs_miss)
+    fmiss = []
+    if cs and not cs_miss:
+        reqd = [named[p] for p in req]
+        lack = lambda *ks: [p + ":" + k for p in req for k in ks if fnum(named[p].get(k)) is None]
+        def sm(*ks):  # the sum of the counters ks over every summary; None when a required summary lacks one
+            bad = lack(*ks)
+            fmiss.extend(x for x in bad if x not in fmiss)
+            return None if bad else int(sum(fnum(d.get(k)) or 0 for d in cs for k in ks))
+        e0 = lambda v: "" if v is None else v
         wit_on = meta.get("witness", "1") != "0"
-        out["tcp_record_bytes_sum"] = sm("tcp_record_bytes")
-        out["tcp_data_bytes"] = sm("tcp_data_bytes")
-        out["tcp_conns_lib"], out["witness_conns_lib"] = sm("tcp_conns"), sm("witness_conns")  # reported only
+        out["tcp_record_bytes_sum"] = e0(sm("tcp_record_bytes"))
+        out["tcp_data_bytes"] = e0(sm("tcp_data_bytes"))
+        out["tcp_conns_lib"], out["witness_conns_lib"] = e0(sm("tcp_conns")), e0(sm("witness_conns"))  # reported only
         if ctrl == "rdma":
             # B3 (REVIEW_INT3, the coordinator's rule): (a) the TCP bytes after each process's ring went live; the bootstrap
             # records before it apart (tcp_record_bytes_prelive; a process whose summary cannot split them adds its total to
             # tcp_record_bytes_unsplit and leaves tcp_ctrl_bytes empty); (b), (c) the witness sockets opened per pair of the
             # final generation (a revived incarnation's pairs replace the old ones) against the pairs that went live
-            sp = [(ctrl_split(d, "record"), ctrl_split(d, "data"), d) for d in cs]
-            unk = [d for (rl, _), (dl, _), d in sp if rl is None or dl is None]
-            out["tcp_ctrl_bytes"] = "" if unk else int(sum(rl + dl for (rl, _), (dl, _), _ in sp))
-            out["tcp_record_bytes_prelive"] = int(sum(rp for (_, rp), _, _ in sp if rp is not None))
-            out["tcp_record_bytes_unsplit"] = int(sum(fnum(d.get("tcp_record_bytes")) or 0 for d in unk))
+            if sm("tcp_record_bytes", "tcp_data_bytes") is not None:
+                sp = [(ctrl_split(d, "record"), ctrl_split(d, "data"), d) for d in cs]
+                unk = [d for (rl, _), (dl, _), d in sp if rl is None or dl is None]
+                out["tcp_ctrl_bytes"] = "" if unk else int(sum(rl + dl for (rl, _), (dl, _), _ in sp))
+                out["tcp_record_bytes_prelive"] = int(sum(rp for (_, rp), _, _ in sp if rp is not None))
+                out["tcp_record_bytes_unsplit"] = int(sum(fnum(d.get("tcp_record_bytes")) or 0 for d in unk))
+                for p in req:  # a nonzero total without its live/prelive split (tcp_ctrl_bytes is then empty)
+                    fmiss.extend("%s:tcp_%s_bytes_live" % (p, k) for k in ("record", "data") if None in ctrl_split(named[p], k))
         else:  # the tcp control builds: the library's sums (no ring, no live line)
-            out["tcp_ctrl_bytes"] = sm("tcp_record_bytes") + sm("tcp_data_bytes")
-            out["tcp_ctrl_conn_n"] = sm("tcp_conns")
-            out["witness_pairs"] = sm("witness_conns") if wit_on else 0
+            out["tcp_ctrl_bytes"] = e0(sm("tcp_record_bytes", "tcp_data_bytes"))
+            out["tcp_ctrl_conn_n"] = e0(sm("tcp_conns"))
+            wc = sm("witness_conns")
+            out["witness_pairs"] = (e0(wc) if wit_on else 0)
             out["witness_expected"] = (n - 1) * len(cs) if wit_on else 0
         for c, k in (("rec_lost_n", "records_lost"), ("rec_dup_n", "records_dup"), ("rec_repair_n", "repairs"),
                      ("sendq_deferred", "sendq_deferred"), ("async_n", "async")):
-            out[c] = sm(k)
-        out["sendq_max"] = int(max(fnum(d.get("sendq_max")) or 0 for d in cs))
+            out[c] = e0(sm(k))
+        if sm("sendq_max") is not None:
+            out["sendq_max"] = int(max(fnum(d.get("sendq_max")) or 0 for d in cs))
         port = 0
         for nd in ("rain", "sunny"):
             b0, a0 = fnum(meta.get("rnr_before_" + nd)), fnum(meta.get("rnr_after_" + nd))
             if b0 is not None and a0 is not None:
                 port += int(a0 - b0)
-        out["rnr_n"] = sm("rnr") + port
-        mtus = [mtu_bytes(d.get("active_mtu")) for d in cs if mtu_bytes(d.get("active_mtu")) is not None]
-    else:
-        mtus = []
+        rn = sm("rnr")
+        out["rnr_n"] = "" if rn is None else rn + port
+    out["ctrlsum_fields_missing"] = "+".join(fmiss)
+    mtus = [mtu_bytes(d.get("active_mtu")) for d in cs if mtu_bytes(d.get("active_mtu")) is not None]
     if ctrl == "rdma" and any(logs[r] for r in ranks):  # B3 (b), (c): from the lines, with or without a summary
         wit_on = meta.get("witness", "1") != "0"
         live_p, open_p = ring_pairs(logs, spare_all, n)
