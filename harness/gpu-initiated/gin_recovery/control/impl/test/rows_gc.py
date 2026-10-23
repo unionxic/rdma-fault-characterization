@@ -162,7 +162,10 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   ctrlsum_missing, ctrlsum_fields_missing   (Codex review 2026-10-23) the final generation's processes (ctrlsum_required:
                              the ranks that did not die, the spares that became active; not an unused spare) without a
                              summary (every summary column then empty), and "proc:field" for a counter a column reads that a
-                             required summary lacks (that column empty; never 0)
+                             required summary lacks (that column empty; never 0); the spares come from the _spare*.kv as
+                             well as the logs, and a required process without a .log is named <proc>:nolog
+  dead_log_missing           (Codex re-check 2026-10-23) the killed ranks (kill_rank, kill2_rank; no summary needed) whose
+                             _r<k>.log is absent, "+"-joined
   tcp_ctrl_bytes, tcp_record_bytes_prelive, tcp_record_bytes_unsplit   rdma builds (REVIEW_INT3 B3 (a)): the TCP record and
                              data bytes each process sent after its ring went live (the summary's tcp_<k>_bytes_live= or
                              _prelive= split; a total of 0 is 0 on both sides); the bootstrap records before live apart; a
@@ -324,7 +327,7 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "beat_gap_max_ms", "page_torn_n", "witness_lost_n", "confirm_alive_n", "fence_sent", "fenced", "fence_order_ok",
            "fence_names_ok", "fence_sent_to_fenced_ms", "fenced_to_fallback_ms", "cont_target_present",
            "win_changed_after", "win_lines_n", "win_missing", "win_unreadable", "win_checked", "win_verified",
-           "ctrlsum_missing", "ctrlsum_fields_missing",
+           "ctrlsum_missing", "ctrlsum_fields_missing", "dead_log_missing",
            "spare_state", "final_gen_n", "resume_refusal", "resume_why_refused", "ring_not_live_class", "tl_rank",
            "tl_inject", "tl_clock", "t_suspect_ms", "t_judge_ms", "t_block_ms", "t_fenced_ms", "t_fenced_src",
            "t_la_fenced_ms", "t_publish_ms", "t_first_ok_ms", "t_first_ok_step", "la_exited_n", "la_exit_silent_n", "la_fence_sigkill_n", "la_fenced_n",
@@ -652,11 +655,17 @@ def proc_name(stem, path):
 def ctrlsum_required(stem, n, sp_paths, sp_logs, dead):
     """Codex review 2026-10-23 (control summary): the processes that must leave a control summary, the final generation
     (final_data's rule): a rank that did not die is its own process (r<k>); a rank with a spare that became active (its
-    log's "restored as incarnation I" line, else its kv's revived=1, incarnation the log's order) is that spare, the highest
-    incarnation when two did; a dead rank (dead: the killed ranks) without an active spare and an unused spare need none"""
+    log's "restored as incarnation I" line, else its kv's revived=1, incarnation the spare's order) is that spare, the highest
+    incarnation when two did; a dead rank (dead: the killed ranks) without an active spare and an unused spare need none.
+    Codex re-check 2026-10-23: the spares are every _spare*.kv and _spare*.log (a spare whose .log is missing while its kv
+    says revived=1 stays required; the caller names it <proc>:nolog), not only the logs that exist"""
+    lg_of = dict(zip(sp_paths, sp_logs))
+    names = sorted({proc_name(stem, p) for p in sp_paths} |
+                   {os.path.basename(p)[len(os.path.basename(stem)) + 1:-len(".kv")] for p in glob.glob(stem + "_spare*.kv")})
     act = {}
-    for i, (p, lg) in enumerate(zip(sp_paths, sp_logs)):
-        m = next((mm for e in lg for mm in [SPARE_INC.search(e.text)] if mm), None)
+    for i, nm in enumerate(names):
+        p = "%s_%s.log" % (stem, nm)
+        m = next((mm for e in lg_of.get(p, []) for mm in [SPARE_INC.search(e.text)] if mm), None)
         if m is not None:
             r, inc = int(m.group(1)), int(m.group(2))
         else:
@@ -665,7 +674,7 @@ def ctrlsum_required(stem, n, sp_paths, sp_logs, dead):
                 continue
             r, inc = int(_num(d, "rank", -1)), i + 1
         if 0 <= r < n and (r not in act or inc > act[r][1]):
-            act[r] = (proc_name(stem, p), inc)
+            act[r] = (nm, inc)
     return [act[r][0] if r in act else "r%d" % r for r in range(n) if r in act or r not in dead]
 
 
@@ -990,7 +999,10 @@ def gc_overlay(stem, base, meta):
             named[nm] = kvd(l[-1].group(2))
     cs = list(named.values())
     cs_miss = [p for p in req if p not in named]
-    out["ctrlsum_missing"] = "+".join(cs_miss)
+    out["ctrlsum_missing"] = "+".join(p + ("" if os.path.exists("%s_%s.log" % (stem, p)) else ":nolog") for p in cs_miss)
+    # the dead original ranks need no summary, but a missing .log of one is flagged (Codex re-check 2026-10-23)
+    out["dead_log_missing"] = "+".join("r%d" % r for r in sorted({bk0, kr2}) if 0 <= r < n
+                                       and not os.path.exists("%s_r%d.log" % (stem, r)))
     fmiss = []
     if cs and not cs_miss:
         reqd = [named[p] for p in req]

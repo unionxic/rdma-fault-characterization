@@ -499,3 +499,5 @@ smoke3 a3(STOP, 펜스 없는 옛 라이브러리)은 의심 2 050.1, 판정 10 
   새 열 `ctrlsum_fields_missing`은 smoke1–3의 15시행에서 `r<k>:tcp_record_bytes_live`를 보인다. 이 요약들에는 live 앞뒤 구분이 없어서 `tcp_ctrl_bytes`가 원래 빈칸이었고, 그 값은 그대로다. smoke4, smoke5에서는 빈칸이다 `[측정: rows_gc.all_rows]`.
 - **시험.** `python3 test_rows_gc.py` 134 checks, 0 failed(이전 130). `python3 check_cells_gc.py` ok, drift 0 `[측정: 로컬 실행]`.
 - **남은 것** `[미확인]`. 쓰이지 않은 예비 프로세스의 요약에 빠진 계수는 아직 판정하지 않는다(필요 집합 밖이라 그대로 더함). 두 번째 죽음에서 첫 예비 프로세스가 죽으면, 높은 화신 하나만 요구하는 규칙은 아직 시험하지 않았다.
+- **다시 확인 고침(Codex 2026-10-23).** `ctrlsum_required`가 예비 프로세스를 있는 `.log`에서만 찾아서, 활성화된 예비의 `.log`가 통째로 없으면(kv는 `revived=1`) 필요 목록에서 빠지고 요약 열이 숫자로 남았다. 이제 `_spare*.kv`와 `_spare*.log`를 함께 보고, `.log`가 없는 필요 프로세스는 `ctrlsum_missing`에 `spare:nolog`처럼 남고 요약 열이 모두 빈다. 죽은 원래 rank는 필요 목록 밖에 두되 `.log`가 없으면 새 열 `dead_log_missing`(`r3`)에 남긴다.
+  새 시험 둘(활성 예비 `.log` 지움: `spare:nolog`, 두 판정 자료 부족; 죽은 rank `.log` 지움: `dead_log_missing` r3). 고치기 전 규칙을 되살린 변이에서 첫 시험이 실패한다(빈칸, 맞음, 맞음). `test_rows_gc.py` 136 checks, 0 failed, `check_cells_gc.py` ok, drift 0; smoke1–5 사본 25시행에서 기존 열 변화 0, `dead_log_missing` 모두 빈칸 `[측정: 로컬 실행]`.

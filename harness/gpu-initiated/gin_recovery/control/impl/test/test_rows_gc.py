@@ -801,12 +801,12 @@ def ctrlsum_checks():
     ok = score_gc.s2.cond_true
     tops = []
     try:
-        def credit(R, edit=None):
+        def credit(R, edit=None, act=False):
             """five gc4_credit_stall@gc trials (the switch on rank 2, fault-free, the unused warm spare); edit(stem) changes
-            the raw files after they are written"""
+            the raw files after they are written; act: rank 3 died and its spare revived (kv revived=1, its summary)"""
             for k in range(1, 6):
-                st = trial(os.path.join(R, "raw"), "gc4_credit_stall", k, kill=None, subject=2, inject="none", killed=False,
-                           probe=probe_ok(), spare_kv=REAL_SPARE_KV, ctrl_kv=" sendq_deferred=4",
+                st = trial(os.path.join(R, "raw"), "gc4_credit_stall", k, kill=3 if act else None, subject=2, inject="none",
+                           killed=act, probe=probe_ok(), spare_kv=None if act else REAL_SPARE_KV, ctrl_kv=" sendq_deferred=4",
                            meta_extra={"r2_env": "NCCL_GIN_CTRL_TEST_CREDIT_STALL=3000:500"},
                            lines={2: [(3.0, "GIN/RC: rank 2: test switch CREDIT_STALL: no RECV re-posted for 500 ms")]})
                 if edit:
@@ -818,11 +818,13 @@ def ctrlsum_checks():
                 f.write("\n".join(new(x) if old in x else x for x in t.split("\n")))
         drop_r1 = lambda st: sub(st + "_r1.log", "control summary", lambda x: "")
         no_lost = lambda st: sub(st + "_r0.log", "control summary", lambda x: x.replace(" records_lost=0", ""))
+        rm = lambda suf: (lambda st: os.remove(st + suf))
         res = {}
-        for tag, ed in (("good", None), ("nosum", drop_r1), ("nolost", no_lost)):
+        for tag, ed, act in (("good", None, False), ("nosum", drop_r1, False), ("nolost", no_lost, False),
+                             ("act", None, True), ("act_nolog", rm("_spare.log"), True), ("dead_nolog", rm("_r3.log"), True)):
             R = tempfile.mkdtemp(prefix="gc_selftest_ctrlsum_")
             tops.append(R)
-            credit(R, ed)
+            credit(R, ed, act)
             rows = {r["id"]: r for r in rows_gc.all_rows(R)}
             with contextlib.redirect_stdout(io.StringIO()):
                 verd, _ = score_gc.score(R)
@@ -844,6 +846,19 @@ def ctrlsum_checks():
               and f["rec_dup_n"] == 0 and not ok(cr, f) and vf.get("credit_stall_no_loss") == "자료 부족",
               "ctrlsum: a summary without records_lost: rec_lost_n empty (not 0), credit_stall_no_loss 자료 부족 (%r %r %s)" % (
                   f["ctrlsum_fields_missing"], f["rec_lost_n"], vf.get("credit_stall_no_loss")))
+        # Codex re-check 2026-10-23: the active spare's .log removed, its kv (revived=1) kept: still required, named spare:nolog
+        a, va = res["act"]
+        s, vs = res["act_nolog"]
+        check(a["ctrlsum_missing"] == "" and a["dead_log_missing"] == "" and a["rec_lost_n"] == 0 and ok(cr, a) and ok(nt, a)
+              and s["ctrlsum_missing"] == "spare:nolog" and all(s[c] == "" for c in empty) and not ok(cr, s) and not ok(nt, s)
+              and vs.get("credit_stall_no_loss") == "자료 부족" and vs.get("no_tcp_control") == "자료 부족",
+              "ctrlsum: the active spare without its .log (kv revived=1 kept): spare:nolog, the summary columns empty, both "
+              "rules 자료 부족 (%r %r %s %s)" % (a["ctrlsum_missing"], s["ctrlsum_missing"], vs.get("credit_stall_no_loss"),
+                                                vs.get("no_tcp_control")))
+        x, _ = res["dead_nolog"]
+        check(x["dead_log_missing"] == "r3" and x["ctrlsum_missing"] == "" and a["dead_log_missing"] == "",
+              "ctrlsum: the killed rank's .log removed: dead_log_missing r3, no summary required of it (%r %r)" % (
+                  x["dead_log_missing"], x["ctrlsum_missing"]))
         # the window line of rank 1 without unreadable=: incomplete, not verified, no change count
         R = tempfile.mkdtemp(prefix="gc_selftest_win_")
         tops.append(R)
