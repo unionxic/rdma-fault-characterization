@@ -548,8 +548,14 @@ def revision_checks(A, B, F):
     fr = rule("freeze_fence_restore")
     check(ok(fr, F) and not ok(fr, as_stall(F)), "J: freeze_fence_restore takes STALL_HELPER, a STALL copy fails")
     sn = rule("stall_none_refuse")
-    S = dict(n_judge_stall_helper=3, n_judge_stall=0, decline_n=1, surv_released=3, n_surv=3, win_changed_after=0, win_verified=1)
+    S = dict(n_judge_stall_helper=3, n_judge_stall=0, decline_n=1, surv_released=3, n_surv=3, subject_fenced=0)
     check(ok(sn, S) and not ok(sn, as_stall(S)), "J: stall_none_refuse takes STALL_HELPER, a STALL copy fails")
+    # 2026-10-24 (pilot 1 problem 5): with FENCE=none the stopped rank resumes and is released too (4 of 3), and no fence
+    # means no window line: the rule reads surv_released >= n_surv and subject_fenced == 0, no win_verified term
+    check(ok(sn, dict(S, surv_released=4)) and ok(sn, dict(S, win_verified="", win_changed_after=""))
+          and not ok(sn, dict(S, surv_released=2)) and not ok(sn, dict(S, subject_fenced=1)) and not ok(sn, dict(S, decline_n=0))
+          and "win_verified" not in sn,
+          "J: stall_none_refuse: 4 released of 3 and no window line hold; 2 released, a fenced subject, no refusal fail")
     sf = rule("stall_fence_restore")
     check("n_judge_stall_helper == n_judge" in sf and not re.search(r"\bn_judge_stall\b", sf),
           "J: stall_fence_restore counts STALL_HELPER only (%s)" % sf[:60])
@@ -563,9 +569,13 @@ def revision_checks(A, B, F):
     Bw = dict(B, judge_to_publish_ms=70.0, hold_other_n=0, hold_after_restore_n=0)
     for ms, want in ((101.0, True), (120.0, True), (149.0, True), (99.0, False), (151.0, False), (160.0, False)):
         e = dict(kill_judge_ms_min=ms, kill_judge_ms_max=ms, kill_judge_exited_min_ms=ms, kill_judge_exited_max_ms=ms)
-        got = (ok(kj, dict(B, **e)), ok(fe, dict(B, **e)), ok(kw, dict(Bw, **e)))
-        check(got == (want,) * 3, "J: EXITED %g ms after the kill: kill_judge_rdma, finless_exit_report, kill_no_witness %r (want %r)" % (
+        got = (ok(kj, dict(B, **e)), ok(kw, dict(Bw, **e)))
+        check(got == (want,) * 2, "J: EXITED %g ms after the kill: kill_judge_rdma, kill_no_witness %r (want %r)" % (
             ms, got, want))
+    # 2026-10-24 (pilot 1, smoke 4, 6: kill -> the launcher's end line 61.9-129.5 ms): finless_exit_report's band is 40-200 ms
+    for ms, want in ((40.0, True), (62.0, True), (127.0, True), (200.0, True), (39.0, False), (201.0, False)):
+        e = dict(kill_judge_ms_min=ms, kill_judge_ms_max=ms, kill_judge_exited_min_ms=ms, kill_judge_exited_max_ms=ms)
+        check(ok(fe, dict(B, **e)) == want, "J: EXITED %g ms after the kill: finless_exit_report %r" % (ms, not want))
     for dev, want in ((1.5, True), (2.0, True), (2.5, False)):
         check(ok(kj, dict(A, fin_judge_dev_max_ms=dev)) == want, "J: confirm window judgement W + %g ms: %r" % (dev, not want))
     import csv as _csv
@@ -776,8 +786,9 @@ def review_checks():
         wrules = [p["acceptance"] for p in _csv0.DictReader(open(score_gc.PREDS, encoding="utf-8"))]
         check(not ok("win_verified == 1", g(8)) and not ok("win_verified == 1", g(1)) and ok("win_verified == 1", g(7))
               and "win_verified == 1" in ff_rule and not any("win_changed_after == 0" in a for a in wrules)
-              and sum("win_verified == 1" in a for a in wrules) == 6,
-              "review 3: the six window rules (five on 2026-10-23, the GPU hang counterexample's 2026-10-24) read "
+              and sum("win_verified == 1" in a for a in wrules) == 5,
+              "review 3: the five window rules (five on 2026-10-23, the GPU hang counterexample's six on 2026-10-24, "
+              "stall_none_refuse's dropped on 2026-10-24: no fence, no window line) read "
               "win_verified == 1, false on an incomplete window")
         # (4) refusal classes
         check(g(2)["resume_refusal"] == "prep" and g(3)["resume_refusal"] == "config" and g(4)["ring_not_live_class"] == "prep"
@@ -1184,10 +1195,99 @@ def cost_checks():
         shutil.rmtree(R, ignore_errors=True)
 
 
+def prereg_checks(rows):
+    """K (2026-10-24, the values fixed before the pre-registration from pilot 1): W 20 in the cell file's prereg (a W-30
+    trial is config, a W-20 one is not), a stop's length 50 ms off at most (was 1 s), the spare-absent gap 10 ms at most
+    (was the runner's target 5 ms); the cost rule judges the named receiving nodes only"""
+    pre = json_load_cells()["prereg"]
+    check(pre["confirm_ms"] == 20 and pre["live_bound_ms"] == 10000 == rows_gc.LIVE_BOUND_MS and pre["launcher_stall_ms"] == 1000
+          and pre["stop_len_tol_ms"] == 50 and pre["pair_gap_limit_ms"] == 10 and pre["query_qp_per_s"] == 4000,
+          "K: the prereg values of the cell file (%r)" % {k: v for k, v in pre.items() if k not in ("about", "basis")})
+    c = json_load_cells()
+    A = rows["gc4_kill3_ow_gc_n1"]
+    cA = c["cells"]["gc4_kill3_ow@gc"]
+    check(score_gc.status_gc(dict(A), cA, pre) == "config" and score_gc.status_gc(dict(A, confirm_w_ms=20), cA, pre) != "config",
+          "K: W 30 is config against the fixed W 20, W 20 is not (%s, %s)" % (
+              score_gc.status_gc(dict(A), cA, pre), score_gc.status_gc(dict(A, confirm_w_ms=20), cA, pre)))
+    D = rows["gc4_stop12000_fence_gc_n1"]
+    cD = c["cells"]["gc4_stop12000_fence@gc"]
+    st = lambda off: score_gc.status_gc(dict(D, confirm_w_ms=20, inject_dur_off_ms=off), cD, pre)
+    check(st(12.2) != "inject_late" and st(50.0) != "inject_late" and st(50.1) == "inject_late" and st(400.0) == "inject_late",
+          "K: a stop's length 12.2 and 50 ms off is kept, 50.1 and 400 ms off is inject_late (%s %s %s %s)" % (
+              st(12.2), st(50.0), st(50.1), st(400.0)))
+    SA = rows["gc4_kill3_ow_spareabsent_gc_n1"]
+    cS = c["cells"]["gc4_kill3_ow_spareabsent@gc"]
+    sg = lambda g: score_gc.status_gc(dict(SA, confirm_w_ms=20, inject_ok=1, applied=1, pair_gap_ms=g), cS, pre)
+    check(sg(5.032) != "inject_late" and sg(10.0) != "inject_late" and sg(10.2) == "inject_late",
+          "K: the spare-absent gap 5.032 and 10 ms is kept, 10.2 ms is inject_late (%s %s %s)" % (sg(5.032), sg(10.0), sg(10.2)))
+    # the cost rule: sunny judged, rain reported only (rain's receive latency is quantized to 1 024 ns)
+    def crow(node, arm, v):
+        return {"runner": "cost", "status": "scored", "metric": "lat4k", "arm": arm, "rx": node, "value": v}
+    cr = [crow(n, "probe-off", 13.0) for n in ("rain", "sunny") for _ in range(6)]
+    cr += [crow("sunny", "probe-on", 13.1) for _ in range(6)] + [crow("rain", "probe-on", 14.0) for _ in range(6)]
+    acc = [p for p in __import__("csv").DictReader(open(score_gc.PREDS, encoding="utf-8")) if p["id"] == "cost_probe_lat4k"][0]
+    rl = acc["acceptance"].split("rule=", 1)[1].strip()
+    v1, l1 = score_gc.cost_eval(acc["cells"].strip(), rl, cr, c)
+    v2, _ = score_gc.cost_eval(acc["cells"].strip(), "within:2", cr, c)
+    cr3 = [x for x in cr if not (x["rx"] == "rain" and x["arm"] == "probe-on")][:-1] + cr[-6:]
+    v3, _ = score_gc.cost_eval(acc["cells"].strip(), rl, [dict(x, value=14.0) if x["rx"] == "sunny" and x["arm"] == "probe-on" else x
+                                                          for x in cr], c)
+    check(rl == "within:2 judged_nodes=sunny" and v1 == "맞음" and v2 == "틀림" and v3 == "틀림"
+          and any("rain" in x and "판정 밖" in x for x in l1),
+          "K: the cost rule judges sunny only: rain +7.7 %% reported (%s), both nodes judged (%s), sunny +7.7 %% (%s)" % (v1, v2, v3))
+
+
+def json_load_cells():
+    import json
+    return json.load(open(os.path.join(HERE, "cells_gc.json"), encoding="utf-8"))
+
+
+def qperr_checks():
+    """K2 (2026-10-24, pilot 1 problem 4): qperr_rec_gen_delta is the record QP's generation delta (gen 1 -> 2: 1), not the
+    new generation (2); qp_err_repair's rule holds on one re-pairing and not on two"""
+    R = tempfile.mkdtemp(prefix="gc_selftest_qperr_")
+    try:
+        raw = os.path.join(R, "raw")
+        def lines(gens):
+            L = {1: [(3.0, "GIN/RC: rank 1: test switch QP_ERR: record QP to rank 0 moved to ERR")],
+                 0: []}
+            for g in gens:
+                L[1] += [(3.0 + 0.001 * g, "GIN/RC: rank 1: PAIR(record, gen %d) to rank 0 (local ERR)" % g),
+                         (3.002 + 0.001 * g, "GIN/RC: rank 1: record QP to rank 0 re-paired (gen %d)" % g)]
+                L[0] += [(3.002 + 0.001 * g, "GIN/RC: rank 0: record QP to rank 1 re-paired (gen %d)" % g)]
+            L[1] += [(9.05, "GIN/RC: rank 1: ring summary peer=0 gen=%d sent=151 received=152 lost=0 dup=0" % gens[-1])]
+            return L
+        env = {"r1_env": "NCCL_GIN_CTRL_TEST_QP_ERR=3000:0"}
+        trial(raw, "gc4_qperr_record", 1, kill=None, subject=1, inject="-", lines=lines([2]), spare=False, killed=False,
+              meta_extra=env, probe=probe_ok())
+        trial(raw, "gc4_qperr_record", 2, kill=None, subject=1, inject="-", lines=lines([2, 3]), spare=False, killed=False,
+              meta_extra=env, probe=probe_ok())
+        rr = {r["id"]: r for r in rows_gc.all_rows(R) if r["sub"] == "raw"}
+        q1, q2 = rr["gc4_qperr_record_gc_n1"], rr["gc4_qperr_record_gc_n2"]
+        qr = rule("qp_err_repair")
+        check(q1["qperr_rec_gen_delta"] == 1 and q2["qperr_rec_gen_delta"] == 2 and q1["qperr_pair_sent_by_target"] == 1,
+              "K2: the record QP's generation delta: one re-pairing 1, two 2 (%r %r)" % (q1["qperr_rec_gen_delta"], q2["qperr_rec_gen_delta"]))
+        check(score_gc.s2.cond_true(qr, dict(q1, ow_data_equal=1)) and not score_gc.s2.cond_true(qr, dict(q2, ow_data_equal=1))
+              and not score_gc.s2.cond_true(qr, dict(q1, ow_data_equal=1, qperr_rec_gen_delta=2)),
+              "K2: qp_err_repair holds on one re-pairing, not on two or on the old column value 2 (%r %r %r %r %r)" % (
+                  q1["judge_any_n"], q1["qperr_probe_gen_delta"], q1["qperr_pair_read_fail"], q1["qperr_records_after"],
+                  q1["ow_data_equal"]))
+    finally:
+        shutil.rmtree(R, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", default=None)
     a = ap.parse_args()
+    # the synthetic trials run at W 30 (their status page line); the cell file fixes W 20 since 2026-10-24, which would make
+    # them all config: every scoring here reads the prereg with W open, and prereg_checks tests the fixed value itself
+    real_load = score_gc.load_cells
+    def load_w_open():
+        cc = real_load()
+        cc["prereg"] = dict(cc.get("prereg", {}), confirm_ms=None)
+        return cc
+    score_gc.load_cells = load_w_open
     R = a.keep or tempfile.mkdtemp(prefix="gc_selftest_")
     if a.keep:
         shutil.rmtree(R, ignore_errors=True)
@@ -1380,6 +1480,8 @@ def main():
     check("한도 줄(실행기가 끝낸 예비 프로세스를 launcher가 다시 띄우지 않음; STOP으로 세지 않음): 1줄" in md and
           "gc4_kill3_ow_gc_n20(낡은 소켓이나 프로세스 sunny:1+0)" in md, "SCORE.md lists the expected cap line and the stale trial")
     check(os.path.exists(os.path.join(R, "trials_scored.csv")), "trials_scored.csv written")
+    prereg_checks(rows)
+    qperr_checks()
     shell_checks(R)
     int3_checks()
     review_checks()

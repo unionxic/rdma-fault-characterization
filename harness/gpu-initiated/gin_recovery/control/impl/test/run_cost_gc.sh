@@ -12,7 +12,9 @@
 # itself, and the EXIT trap stops both) and stopped after both ranks ended; the ranks get NCCL_GIN_CTRL_LAUNCHER_SOCK and _NODE. TODO(phase3): whether the measurement mode asks for the
 # launcher pairing (Resume condition 41); if it does not, the launchers are harmless here.
 # Metrics: lat4k | lat256k (3 000 iterations of one put + signal + flush) | bw256k (burst, one thread, 12 iterations of
-# 8 x 256 KiB + signal + flush; bandwidth = burst_K x bytes / p50).
+# 8 x 256 KiB + signal + flush; bandwidth = burst_K x bytes / p50). cells_gc.json cost.iters.<metric> overrides the
+# iterations (2026-10-24, pilot 1 problem 6: lat4k 150 000, a kernel of about 2.3 s with at least 20 probe periods of
+# 100 ms inside it; 3 000 made a 45.4-46.5 ms kernel, shorter than one period); the meta line carries iters=.
 # Safety, ports, management address, IPv4 masking and the leftover count are run_cost_mi.sh's. Every NCCL_/GIN_ variable of
 # the caller is dropped first. Run only by the main session inside ../../../../common/cluster_run.sh through hold_gc.sh.
 #
@@ -34,6 +36,9 @@ case "$METRIC" in
   bw256k)  MODE=burst; ITERS=12;   BYTES=262144;  XENV="GIN_TS_TX_BLOCKS=1 GIN_TS_TX_THREADS=1 GIN_TS_BURST_K=8 GIN_TS_AGG=1" ;;
   *) echo "bad metric in $CELL" >&2; exit 2 ;;
 esac
+CITERS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cost"].get("iters", {}).get(sys.argv[2], ""))' \
+  "$(cd "$(dirname "$0")" && pwd)/cells_gc.json" "$METRIC" 2>/dev/null) || CITERS=""
+case "$CITERS" in ""|*[!0-9]*) ;; *) ITERS=$CITERS ;; esac
 RS_SET=${RS_SET:-}
 # shellcheck source=../../../mirror/impl/test/rs_set_mi.sh
 . "$(cd "$(dirname "$0")" && pwd)/../../../mirror/impl/test/rs_set_mi.sh"

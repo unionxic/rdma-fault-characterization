@@ -44,7 +44,11 @@
 #                          folder only (P* is a pilot hold); PRG-gct-G1 is the tcp regression control mi4_kill3_ow once
 #   COST-probe-<rain|sunny>[-<metric>]       the probe cost family on the receiving node (3 arms x 3 metrics x 6 rounds)
 #   COSTPILOT-<rain|sunny> one round of the probe cost family
-# env: SUNNY_SSH (required), RS_SET (required), RS_QUERY_CAP (50000), RS_QUERY_CAP_REG (150000), RS_TRIAL_BOUND_S (60: the
+# The per-trial QUERY_QP cap scales with the trial's wall (EXPERIMENT 8, fixed 2026-10-24 from pilot 1, where eight trials of
+# 18.6-67.7 s went over the flat 50 000 at 2 700-3 100 per s): RS_QUERY_RATE (4000) per second of the trial's meta wall_s
+# (run_gc.sh and run_cost_gc.sh trials); RS_QUERY_CAP stays the cap of a trial without a meta wall, RS_QUERY_CAP_REG that of
+# gin-remaining's regression runner.
+# env: SUNNY_SSH (required), RS_SET (required), RS_QUERY_RATE (4000), RS_QUERY_CAP (50000), RS_QUERY_CAP_REG (150000), RS_TRIAL_BOUND_S (60: the
 #   4 KiB trials; a cell's bound_s overrides), RS_TRAIN_BOUND_S (150), GC_CHAIN (1, set by chain_gc.sh).
 # Resumable as hold_mi.sh: a cell trial whose <stem>_meta.txt exists is skipped.
 set -u
@@ -65,6 +69,7 @@ MCELLS=$D/../../../mirror/impl/test/cells_mi.json
 FW=$D/../../../scripts/ts1/fwcmd_snapshot.sh
 [ -f "$FW" ] || { echo "missing $FW" >&2; exit 2; }
 QCAP=${RS_QUERY_CAP:-50000}
+QRATE=${RS_QUERY_RATE:-4000}
 QCAP_REG=${RS_QUERY_CAP_REG:-150000}
 TRIAL_BOUND=${RS_TRIAL_BOUND_S:-60}
 TRAIN_BOUND=${RS_TRAIN_BOUND_S:-150}
@@ -189,7 +194,11 @@ gc_after_trial() {  # gc_after_trial <what> <meta> <cell>: section 8's gin-contr
   return 0
 }
 after_trial() {  # hold_mi.sh's per-trial stops: kv error keys, a refused Resume where the restore is expected, firmware, QUERY_QP
-  local what=$1 f fw qq refuse_ok=${3:-1} cap=${4:-$QCAP}
+  local what=$1 f fw qq refuse_ok=${3:-1} cap=${4:-$QCAP} meta=${5:-} wall
+  if [ -n "$meta" ] && [ -f "$meta" ]; then  # the cap per second of the trial's wall (section 8, 2026-10-24)
+    wall=$(mval "$meta" wall_s)
+    case "$wall" in ""|*[!0-9.]*) ;; *) cap=$(awk -v r="$QRATE" -v w="$wall" 'BEGIN{c = r * w; printf "%d", (c == int(c)) ? c : int(c) + 1}') ;; esac
+  fi
   for f in $2; do
     [ -f "$f" ] || continue
     case "$f" in
@@ -205,8 +214,8 @@ after_trial() {  # hold_mi.sh's per-trial stops: kv error keys, a refused Resume
   read -r fw qq < <(fwread "after-$what")
   [ "$fw" -gt "$FW0" ] && echo "$(date '+%F %T') hold $H: firmware-command failures grew after $what ($FW0 -> $fw)" | tee -a "$R/STOP_mlx5"
   if [ $((qq - QQ)) -gt "$cap" ]; then
-    if [ "$PILOT" = 1 ]; then echo "$(date '+%F %T') $what: rain QUERY_QP +$((qq - QQ)) > $cap" >> "$R/qp_over.txt"
-    else echo "$(date '+%F %T') hold $H: $what: rain QUERY_QP +$((qq - QQ)) > cap $cap" | tee -a "$R/STOP_mlx5"; fi
+    if [ "$PILOT" = 1 ]; then echo "$(date '+%F %T') $what: rain QUERY_QP +$((qq - QQ)) > $cap${wall:+ ($QRATE x wall ${wall} s)}" >> "$R/qp_over.txt"
+    else echo "$(date '+%F %T') hold $H: $what: rain QUERY_QP +$((qq - QQ)) > cap $cap${wall:+ ($QRATE x wall ${wall} s)}" | tee -a "$R/STOP_mlx5"; fi
   fi
   QQ=$qq
 }
@@ -267,7 +276,7 @@ do_json_hold() {
       LAUNCHER_ENV=$le bash "$D/cells_gc.sh" "$ldir" "$cell" "$build" "$kind" 1 "$k" "${envs[@]}" < /dev/null  # its launchers: run_gc.sh
       case "$cell" in mi4_refuse_*|rs4_refuse_*|*rstgap*) rok=1 ;; *) rok=$([ "$kind" = rs ] && echo 0 || echo 1) ;; esac
       if [ "$kind" = rs ]; then
-        after_trial "${cell}_${build}_n$k" "$ldir/${cell}_${build}_n${k}_*.kv" "$rok"
+        after_trial "${cell}_${build}_n$k" "$ldir/${cell}_${build}_n${k}_*.kv" "$rok" "$QCAP" "$ldir/${cell}_${build}_n${k}_meta.txt"
         gc_after_trial "${cell}_${build}_n$k" "$ldir/${cell}_${build}_n${k}_meta.txt" "$cell"
       else after_trial "${cell}_n$k" "$ldir/${cell}_n${k}_r*.kv" 1 "$QCAP_REG"; fi
     done
@@ -291,7 +300,7 @@ cost_run() {  # cost_run <cell> <tag> <logdir>
   [ -n "$bad" ] && echo "$(date '+%F %T') hold $H: ${cell}_$tag error ($bad); no further run" | tee -a "$R/STOP_nic"
   local lft; lft=$(sed -n 's/.* left=\([0-9]*\) .*/\1/p' "$dir/${cell}_${tag}_meta.txt" 2>/dev/null)
   [ -n "$lft" ] && [ "$lft" -gt 0 ] && echo "$(date '+%F %T') hold $H: ${cell}_$tag left $lft" | tee -a "$R/STOP_left"
-  after_trial "${cell}_$tag" ""
+  after_trial "${cell}_$tag" "" 1 "$QCAP" "$dir/${cell}_${tag}_meta.txt"
 }
 cost_family() {  # cost_family <family> <node> <dir> <rounds> [metric]
   local fam=$1 node=$2 dir=$3 rounds=$4 only=${5:-} k m a arms

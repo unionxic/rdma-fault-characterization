@@ -404,7 +404,7 @@
     "OVERWRITE": "1",
     "MIRROR": "1",
     "CKPT_STEPS": "20",
-    "STEPS": "12000",
+    "STEPS": "6000",
     "WATCHDOG_S": "120"
    },
    "injection": {
@@ -419,7 +419,7 @@
    "control": "gc4_none_ow@gc",
    "bound_s": 120,
    "row": 2,
-   "todo": "TODO(pilot): STEPS 12000 x STEP_GAP_US 5000 is the 60 s of section 7 at the 4 KiB overwrite rate; the pilot's wall fixes it"
+   "todo": "2026-10-24 (pilot 1 problem 1): STEPS 12000 made a 148 897 792 B receive window (12000 x 4 KiB x three peers) that rank 0 could not register on rain (ibv_reg_mr_iova2 Bad address, NVRM can't alloc VA space; BAR1 256 MiB; STOP_nic); 6000 (about 74 MB, gc4_slow_duty's) ran in pilot 1; at pilot 1's 4 KiB step rate (gc4_none_ow: 600 steps in about 4.7 s) about 47 s of traffic; a pilot-2 trial still to run"
   },
   "gc4_kill3_ow@gc": {
    "cell": "gc4_kill3_ow",
@@ -850,14 +850,15 @@
     "SPARE": "1",
     "FENCE": "lineage",
     "SPARE_RANK": "3",
-    "R3_ENV": "NCCL_GIN_TS_TEST_FREEZE_PAGE=12000",
-    "SUBJECT_RANK": "3"
+    "R3_ENV": "NCCL_GIN_TS_TEST_FREEZE_PAGE=12000@2000",
+    "SUBJECT_RANK": "3",
+    "STEPS": "3000"
    },
    "injection": {
     "kind": "freeze",
     "target": 3,
-    "timing": "the library's test switch on rank 3: the watch thread stops writing both beats for 12 000 ms (the process runs)",
-    "switch": "R3_ENV NCCL_GIN_TS_TEST_FREEZE_PAGE=12000"
+    "timing": "the library's test switch on rank 3: the watch thread stops writing both beats for 12 000 ms (the process runs), from 2 000 ms after the communicator is first armed (the switch's @<after ms>; armed about 4 ms before the ring's live line in pilot 1), its FREEZE_PAGE line at the real start is the injection record",
+    "switch": "R3_ENV NCCL_GIN_TS_TEST_FREEZE_PAGE=12000@2000"
    },
    "preds": [
     "freeze_fence_restore",
@@ -867,7 +868,7 @@
    "control": "gc4_stop12000_fence@gc",
    "bound_s": 60,
    "row": 15,
-   "todo": "TODO(phase1): the freeze's start (after the first armed stable checkpoint) is the library's; its line is the injection record",
+   "todo": "2026-10-24 (pilot 1 problem 2): the freeze started at the first arm (gdakiCtrlFreezeParse: armed + @<after ms>, default 0) and the 600 steps ended about 5.6 s later, before any judgement (kill_before_ckpt); now @2000 (about 2 s after live, step about 148 at pilot 1's 7.86 ms per step, after the first stable checkpoint) and STEPS 3000 (about 23.6 s of steps after step 0, about 0.84 s after live): judgement about 12.0-12.3 s after live, fence and restore about 0.4 s, about 11 s of steps left; a pilot-2 trial still to run",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_helper_freeze12000@gc": {
@@ -883,14 +884,15 @@
     "SPARE": "1",
     "FENCE": "lineage",
     "SPARE_RANK": "3",
-    "R3_ENV": "NCCL_GIN_TS_TEST_FREEZE_PAGE=12000:helper",
-    "SUBJECT_RANK": "3"
+    "R3_ENV": "NCCL_GIN_TS_TEST_FREEZE_PAGE=12000:helper@2000",
+    "SUBJECT_RANK": "3",
+    "STEPS": "3000"
    },
    "injection": {
     "kind": "freeze",
     "target": 3,
-    "timing": "the library's test switch on rank 3: the watch thread stops writing helperBeat only for 12 000 ms (the process runs)",
-    "switch": "R3_ENV NCCL_GIN_TS_TEST_FREEZE_PAGE=12000:helper"
+    "timing": "the library's test switch on rank 3: the watch thread stops writing helperBeat only for 12 000 ms (the process runs), from 2 000 ms after the communicator is first armed (the switch's @<after ms>; armed about 4 ms before the ring's live line in pilot 1), its FREEZE_PAGE line at the real start is the injection record",
+    "switch": "R3_ENV NCCL_GIN_TS_TEST_FREEZE_PAGE=12000:helper@2000"
    },
    "preds": [
     "helper_stall_fence",
@@ -900,7 +902,7 @@
    "control": "gc4_freeze12000_fence@gc",
    "bound_s": 60,
    "row": 16,
-   "todo": "TODO(phase1): as above",
+   "todo": "2026-10-24 (pilot 1 problem 2): the freeze started at the first arm (gdakiCtrlFreezeParse: armed + @<after ms>, default 0) and the 600 steps ended about 5.6 s later, before any judgement (kill_before_ckpt); now @2000 (about 2 s after live, step about 148 at pilot 1's 7.86 ms per step, after the first stable checkpoint) and STEPS 3000 (about 23.6 s of steps after step 0, about 0.84 s after live): judgement about 12.0-12.3 s after live, fence and restore about 0.4 s, about 11 s of steps left; a pilot-2 trial still to run",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_gpuhang12000_fence@gc": {
@@ -1111,7 +1113,7 @@
    "control": "gc4_none_ow@gc",
    "bound_s": 60,
    "row": 22,
-   "todo": "TODO(phase2): the switch's value format <start>:<len> is this file's proposal",
+   "todo": "2026-10-24 (pilot 1 problem 3; the coordinating session asked for a value that fills the 64-slot window): not settled by the cell env. The switch (gc_layer_int.diff gdakiCtrlRingSwOf, gdakiCtrlRdmaCollect) holds rank 2's RECV completions for <len> ms from <start> ms after the ring's origin (pilot 1: the CREDIT_STALL line 3 001 ms after rank 2's live line), so no credit goes back. Records go 5 per checkpoint per peer (pilot 1: 150 per peer in 600 steps at CKPT_STEPS 20, about 28 per s), and the senders stop with the stalled rank: every rank's steps stood still from about 60 ms after the stall's start to its end (step 375 -> 383 over 470 ms, ranks 0 and 2), because each checkpoint pauses the input until rank 2 takes its records. A longer stall therefore sends no more records (all 88 control summaries of pilot 1, the 12 000 ms SIGSTOP cells included, say sendq_max=0); filling 64 slots needs 65 records toward one receiver without its reply, which this workload never has. Options for the coordinating session: a library switch that sends filler records during CREDIT_STALL, or sendq_deferred reported only (a prediction change)",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2)"
   },
   "gc4_kill3_ow_spareabsent@gc": {
@@ -1140,7 +1142,8 @@
    ],
    "control": "gc4_kill3_ow@gc",
    "bound_s": 60,
-   "row": 23
+   "row": 23,
+   "gap_note": "SPARE_GAP_MS 5 is the runner's target; the exclusion bound is 10 ms (score_gc.py PAIR_GAP_LIMIT_MS, EXPERIMENT 8, 2026-10-24; pilot 1 measured 5.032 ms)"
   }
  },
  "pilot_cells": {
@@ -1473,7 +1476,11 @@
      "probe-on": "gin_ts2_mi"
     }
    }
-  }
+  },
+  "iters": {
+   "lat4k": 150000
+  },
+  "iters_note": "2026-10-24 (pilot 1 problem 6): run_cost_gc.sh reads the iterations per metric here. 3 000 lat4k iterations made a 45.4-46.5 ms kernel, shorter than one 100 ms probe period; 150 000 at pilot 1's 15.1-15.5 us per iteration is a 2.27-2.33 s kernel, at least 20 probe periods (22) inside it. The judged node is sunny's receive arm (rain's receive latency reads in 1 024 ns steps; predictions_gc.csv cost_probe_lat4k judged_nodes=sunny)"
  },
  "local": {
   "build_check": {
@@ -1492,10 +1499,15 @@
   }
  },
  "prereg": {
-  "about": "values the scorer's config exclusion compares with (score_gc.py status_gc; REVIEW_TEST fix 12). null: not fixed yet (the pilot fixes it; then no trial is excluded for it)",
-  "confirm_ms": null,
+  "about": "values fixed before the pre-registration (2026-10-24, the coordinating session's decision from pilot 1; EXPERIMENT 3, 6, 8, 12). confirm_ms and probe_ms are what the scorer's config exclusion compares with (score_gc.py status_gc; REVIEW_TEST fix 12); stop_len_tol_ms and pair_gap_limit_ms are its inject_late bounds; live_bound_ms is rows_gc.py LIVE_BOUND_MS (ring_not_live); launcher_stall_ms is the library default (rs_ctrl_api.h GDAKI_CTRL_LAUNCHER_STALL_MS_DEFAULT, no cell sets it); query_qp_per_s is hold_gc.sh's per-trial QUERY_QP cap per second of trial wall",
+  "confirm_ms": 20,
   "probe_ms": 100,
-  "todo": "TODO(pilot): W (NCCL_GIN_CTRL_CONFIRM_MS, section 6: 20-50 ms) from the pilot's no-fault cells"
+  "live_bound_ms": 10000,
+  "launcher_stall_ms": 1000,
+  "stop_len_tol_ms": 50,
+  "pair_gap_limit_ms": 10,
+  "query_qp_per_s": 4000,
+  "basis": "pilot 1 (results/20261023_pilot1/PILOT.md): W = 5 x the largest fault-free beat gap 2.775 ms (13.9 ms) clamped to 20 (the library default and floor, rs_ctrl_api.h); ring live 990.1-1 079.0 ms in 25 rdma trials (9 x margin); a stop's measured length +1.7 to +12.2 ms off over six trials; the spare-absent gap 5.032 ms; QUERY_QP 2 700-3 100 per s of trial wall in the eight trials over 50 000; LAUNCHER_STALL_MS has no data of its own in pilot 1 (no launcher-lost line in 28 trials) and stays the default"
  },
  "builds_unused": {
   "gctc": "2026-10-22 trim (EXPERIMENT 12, the user's decision): no cell runs it; NCCL_GIN_CTRL_TCP_CELLS stays in the code as an unused switch (build_gc.sh still compares its preprocessed file)",

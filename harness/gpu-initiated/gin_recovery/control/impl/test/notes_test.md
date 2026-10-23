@@ -593,3 +593,46 @@ smoke3 a3(STOP, 펜스 없는 옛 라이브러리)은 의심 2 050.1, 판정 10 
 - `hold_gc.sh`: pilot 회귀 hold `PRG-<b>-<mirror hold>`(`RG-`와 같은 셀을 n 1로; `P`로 시작하므로 pilot 폴더에서만). P0–P4에 tcp 회귀 대조 `mi4_kill3_ow@gct`가 없어서 더했고, `PRG-gct-G1`이 pilot 1 a7에서 돌았다 `[측정]`.
 - `deploy_gc.sh`: 기존 묶음의 md5 목록(`EXIST`)이 폴더를 가리키는 링크(`~/rs-bundle/gc_smoke*`)에 `md5sum`을 걸어 오류가 났고, `set -e`로 쓰기 전에 멈췄다. 이제 일반 파일만 md5를 내고 링크는 `경로 -> 대상`으로 적는다. 고친 판으로 `gc_pilot1`을 배포했다 `[측정]`.
 - 결과와 셀 값 문제(`gc4_none_probe`의 창 크기, freeze 셀의 시작과 길이, credit 셀, `qperr_rec_gen_delta`의 셈, 비용 probe-on 팔의 증거, QUERY_QP 한도)는 [../../results/20261023_pilot1/PILOT.md](../../results/20261023_pilot1/PILOT.md)에 있다.
+
+## 사전 등록 전 확정의 시험 쪽 몫 (2026-10-24, pilot 1 뒤 조율 세션 결정)
+
+EXPERIMENT.md 12절 그날 "사전 등록 전 확정" 행의 시험 쪽이다. 라이브러리, launcher, 클러스터 실행은 없다. pilot 1 원자료는 읽기만 했다.
+
+- **셀 env의 꼴(이번에 바꾼 것).**
+  - `gc4_none_probe`: `STEPS=6000`(12 000은 받는 창 148 897 792 B가 rain에서 등록 실패, PILOT.md 문제 1).
+  - freeze 셀 둘: `R3_ENV=NCCL_GIN_TS_TEST_FREEZE_PAGE=12000@2000`, `...=12000:helper@2000`, `STEPS=3000`. 값 꼴은 `<ms>[:helper][@<after ms>]`이고 `@`는 `:helper` 뒤다 `[소스: gc_layer_int.diff gdakiCtrlFreezeParse]`.
+  - `gc4_credit_stall`: 바꾸지 않음(`R2_ENV=NCCL_GIN_CTRL_TEST_CREDIT_STALL=3000:500`, 꼴 `<start ms>:<length ms>`). 아래 셈.
+  - `cells_gc.json` `prereg`: `confirm_ms` 20, `probe_ms` 100, `live_bound_ms` 10000, `launcher_stall_ms` 1000, `stop_len_tol_ms` 50, `pair_gap_limit_ms` 10, `query_qp_per_s` 4000과 근거.
+  - `cells_gc.json` `cost.iters`: `{"lat4k": 150000}`. `run_cost_gc.sh`가 지표마다 읽고, 없으면 옛 값(3 000, 12)이다.
+- **freeze의 셈** `[측정: pilot 1 a3 rank 3 로그]`.
+  - 무장(`GINRS resume`) → FREEZE_PAGE 줄 0.4 ms, → ring live 줄 4.1 ms, → 걸음 0 약 840 ms. 600 걸음 약 4.71 s, 걸음당 7.86 ms.
+  - `@2000`이면 멈춤은 live 뒤 약 1 996 ms, 걸음 약 148에서 시작한다(첫 확정 체크포인트는 걸음 약 20). 판정은 그 10 000–10 300 ms 뒤다.
+  - `STEPS` 3000은 걸음 0 뒤 약 23.6 s다. 판정(live 뒤 약 12.0–12.3 s), 펜스와 복원(약 0.4 s) 뒤 약 11 s가 남는다 `[추론]`.
+  - 주입 기록은 실제 시작 때 나는 FREEZE_PAGE 줄이라 `stop_judge_ms_min/max`의 기준은 바뀌지 않는다.
+- **credit의 셈(창을 채우는 셀 값이 없음).**
+  - 스위치: rank 2의 RECV 완료를 `<start>` ms 뒤부터 `<len>` ms 쥐고, 그동안 RECV를 다시 내지 않는다(credit이 돌아가지 않음) `[소스: gdakiCtrlRingSwOf, gdakiCtrlStallNow, gdakiCtrlRdmaCollect]`. pilot 1에서 그 줄은 rank 2의 live 줄 뒤 3 001 ms였다.
+  - 기록 수: 상대마다 150(600 걸음, `CKPT_STEPS` 20, 체크포인트 30), 곧 체크포인트마다 상대마다 5, 초당 약 28 `[측정: a3 ring summary]`. 64칸을 넘기려면 한 받는 rank로 답 없는 기록 65개, 그 속도로 약 2.3 s다.
+  - 그러나 걸음이 멈춤과 함께 선다. rank 0과 2 모두 걸음 375(멈춤 시작 + 57 ms) → 383(+530 ms)이고, 멈춤 끝(+500 ms) 뒤에 다시 간다 `[측정: a3 걸음 줄]`. 체크포인트마다 입력이 그 rank의 기록을 기다리기 때문으로 본다 `[추론]`.
+  - 그래서 멈춤을 늘려도 나가는 기록이 늘지 않는다. pilot 1의 제어 요약 88줄(12 000 ms SIGSTOP 셀 포함)이 모두 `sendq_max=0 sendq_deferred=0`이다 `[측정: grep]`.
+  - 남은 고를 것(조율 세션): 라이브러리가 CREDIT_STALL 동안 채움 기록을 보내는 스위치, 또는 `sendq_deferred >= 1`을 보고만 하는 예측 바꿈.
+- **비용 kernel.** 3 000회는 kernel 45.4–46.5 ms, 회당 15.1–15.5 µs였다. 150 000회는 약 2.27–2.33 s라 100 ms 주기 22개가 든다 `[추론]`. lat 모드는 같은 칸을 다시 쓰므로 창 크기는 그대로이고, 장치 배열은 회마다 8 B × 3이다 `[소스: gin_ts2.cu 995–1083행]`.
+- **채점기.**
+  - `rows_gc.py`: `qperr_rec_gen_delta` = 다시 짝 맺은 기록 세대의 최대 − `REC_GEN0`(1). gen 0은 "짝 없음"이고 다시 짝 맺기 없는 상대의 ring summary는 모두 gen=1이다 `[소스, 측정: a3]`. `LIVE_BOUND_MS` 주석은 확정으로 바꿈.
+  - `score_gc.py`: `inject_late`의 멈춤 길이 한도 `STOP_LEN_TOL_MS` 50(전에는 `inject_dur_off_ms > 1000`), 간격 한도 `PAIR_GAP_LIMIT_MS` 10(전에는 셀의 `SPARE_GAP_MS` 5). 둘 다 `prereg`에 있으면 그 값을 쓴다.
+  - `score_gc.py` 비용 규칙: `cost: rule=within:<pct> judged_nodes=<n,...>`. 이름 댄 수신 노드만 판정하고 자료 부족도 그 노드로만 센다. 다른 노드는 "보고만: 이 수신 노드는 판정 밖"이다.
+  - `predictions_gc.csv`: `finless_exit_report` 40–200 ms, `stall_none_refuse` `count(n_judge_stall_helper >= 1 and decline_n >= 1 and surv_released >= n_surv and subject_fenced == 0) >= 4`, `cost_probe_lat4k` `judged_nodes=sunny`, `no_tcp_control` todo의 bootstrap 34(보고만), `freeze_fence_restore` todo의 시작 기준.
+- **실행기.**
+  - `hold_gc.sh`: QUERY_QP 상한 = `RS_QUERY_RATE`(4000) × 시행 meta `wall_s`(올림). `run_gc.sh` 시행과 비용 실행에 건다. meta wall이 없으면 `RS_QUERY_CAP` 50 000, gin-remaining 회귀는 150 000 그대로다. 넘음 줄에 `(<rate> x wall <s> s)`를 붙인다.
+  - pilot 1의 여덟 시행(50 000 넘음)은 새 상한 아래다: 초당 2 710–3 118회 `[측정: a3, a4, a5 qp_over.txt와 meta]`. 50 000 아래였던 짧은 시행 하나하나의 증가는 기록이 없어 보지 못했다 `[미확인]`. hold 평균은 초당 2 459–2 692회다.
+  - `run_cost_gc.sh`: `cells_gc.json` `cost.iters.<metric>`를 읽음.
+- **자체 시험** `test_rows_gc.py`: 186 checks, 0 failed(이전 172) `[측정: 로컬 실행]`.
+  - 합성 시행은 W 30이라, `main()`이 채점 전에 `load_cells`를 감싸 `prereg.confirm_ms`를 비운다. 고정값 자체는 `prereg_checks`가 본다.
+  - `prereg_checks` K: prereg 값, W 30은 `config`이고 W 20은 아님, 멈춤 길이 12.2와 50 ms는 남고 50.1, 400 ms는 `inject_late`, 간격 5.032와 10 ms는 남고 10.2 ms는 `inject_late`, 비용 규칙은 sunny만 판정(rain +7.7 %는 보고만, 두 노드 판정이면 틀림).
+  - `qperr_checks` K2: 다시 짝 맺기 한 번은 차이 1, 두 번은 2. `qp_err_repair`는 한 번에서만 참이고, 옛 열 값 2에서는 거짓.
+  - J: `finless_exit_report` 40, 62, 127, 200 ms는 들고 39, 201 ms는 빠짐. `kill_judge_rdma`, `kill_no_witness`의 100–150 ms 검사는 그대로. `stall_none_refuse`는 풀림 4 대 3과 창 줄 없음에서 참이고, 풀림 2, 펜스된 대상, 거절 없음에서 거짓.
+  - review 3: 창 규칙은 여섯에서 다섯(`stall_none_refuse`가 빠짐).
+- **pilot 1 사본 재채점**(세션 스크래치에 a3 사본, `smoke_of`를 꺼 pilot 표시 끔, 계획 n 1; 원자료는 읽기만) `[측정: 로컬 실행]`.
+  - 시행 조건: `qp_err_repair` 0/1 → 1/1(`qperr_rec_gen_delta` 2 → 1), `stall_none_refuse` 0/1 → 1/1(풀림 4, 생존 3, `subject_fenced` 0), `finless_exit_report` 0/1 → 1/1(62.0 ms).
+  - `spare_absent_refused`의 시행은 `inject_late` 제외에서 채점(조건 1/1)으로 바뀜.
+  - 판정은 모두 "자료 부족(n<k)"이다. k는 고치지 않았다.
+- 확인: `python3 check_cells_gc.py` ok(drift 0, 7절 28행, 셀 26, 3절 키 31), 셸 `bash -n`(`hold_gc.sh`, `run_cost_gc.sh`) `[측정: 로컬 실행]`.

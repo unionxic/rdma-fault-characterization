@@ -18,7 +18,8 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
      ended or changed during the trial, or a launcher QP loss outside the test-switch cells), a ring that never went live
      within the setup bound (REVIEW_INT3 F7) is config when a rank's setup agreement turned recovery off for an MTU or a
      control path that differ, not_applied (the injection's record is missing), inject_late (the runner's injection more than 1 s from its
-     plan, a stop's length more than 1 s off, or the spare-absent cell's two kills more than 5 ms apart), spare_start_fail,
+     plan, a stop's length more than STOP_LEN_TOL_MS (50) off, or the spare-absent cell's two kills more than PAIR_GAP_LIMIT_MS
+     (10) apart; both fixed 2026-10-24 from pilot 1, EXPERIMENT 8), spare_start_fail,
      (also: a second death's spare that is not the launcher's, rows_gc.py spare2_daemon_ok 0: the same rank's second restore
      needs the daemon's next spare, incarnation 2; another rank's, that node's own warm spare), foreign_gpu, restore_not_live, kill_before_ckpt (the kill, DIE_RST, STOP or FREEZE_PAGE before the subject's first
      stable checkpoint, in every cell with a spare), spareabsent_disarmed (a stable checkpoint between the spare's kill and
@@ -44,7 +45,10 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
        subset(<cond>): <expr>          the key's scored rows where cond holds (N_SCORED their number); none -> "자료 없음"
        mirror: <id,...|all>@<build>    gin-mirror's predictions_mi.csv rows (cost rows left out) with @mi -> @<build>,
                                        judged by gin-mirror's score.py; every one 맞음 -> 맞음
-       cost: rule=within:<pct>         the cost family per receiving node (cells "cost:<family>:<arms>:<metrics>")
+       cost: rule=within:<pct> [judged_nodes=<n,...>]   the cost family per receiving node (cells
+                                       "cost:<family>:<arms>:<metrics>"); with judged_nodes only those receiving nodes are
+                                       judged and the others reported (2026-10-24: rain's receive latency is quantized to
+                                       1 024 ns, so cost_probe_lat4k judges sunny's only)
      predictions_gc.csv kind (item 5): safety predictions hold only when every count() part is true on every scored
      trial (0 failures); perf keep their rule's threshold, but every safety term of the rule (SAFETY_TERMS, in the rule's
      own parts and in the gin-mirror rules a "mirror:" part names) is evaluated on every scored trial of its part's keys:
@@ -98,7 +102,7 @@ EXCL = {"void": "시작 실패(생존 rank가 교환 전에 끝남)", "config_dr
         "launcher_not_ready": "시행 시작 때 launcher가 두 노드 모두에서 준비되지 않음",
         "launcher_stale": "시행 시작 때 앞 launcher의 소켓이나 프로세스가 노드에 남아 있음(아무것도 돌지 않음)",
         "launcher_changed": "시행 중 launcher가 끝났거나 바뀜, 또는 시험 스위치 셀 밖의 launcher QP 잃음",
-        "not_applied": "주입 기록 없음", "inject_late": "주입이 정한 시각보다 1 s 넘게 어긋남(또는 짝 kill 간격 > 5 ms)",
+        "not_applied": "주입 기록 없음", "inject_late": "주입이 정한 시각보다 1 s 넘게, 멈춤 길이가 50 ms 넘게 어긋남(또는 짝 kill 간격 > 10 ms)",
         "spare_start_fail": "예비 프로세스가 활성화 전에 시작에 실패함", "foreign_gpu": "시행 시작 때 GPU에 다른 프로세스",
         "restore_not_live": "복원 계층 미통합", "kill_before_ckpt": "주입(kill, DIE_RST, STOP, FREEZE_PAGE)이 대상의 첫 확정 체크포인트 전",
         "spareabsent_disarmed": "예비 프로세스를 끝낸 뒤 rank kill 전에 체크포인트가 확정되어 무장이 풀림",
@@ -106,6 +110,11 @@ EXCL = {"void": "시작 실패(생존 rank가 교환 전에 끝남)", "config_dr
         "pilot": "pilot(채점 안 함)"}
 EXCL.update({k: v for k, v in msc.EXCL.items() if k not in EXCL})
 TEST_SWITCH_ENV = ("TEST_QP_ERR", "TEST_DROP_UD", "TEST_CREDIT_STALL")
+# EXPERIMENT 8, fixed 2026-10-24 before the pre-registration (pilot 1): a SIGSTOP's measured length (SIGCONT - SIGSTOP) may
+# be this far from the cell's STOP_MS (pilot 1: +1.7 to +12.2 ms over six trials; before: 1 s), and the spare-absent cell's
+# spare kill -> rank kill gap this long (the runner's target stays SPARE_GAP_MS 5; pilot 1 measured 5.032 ms; before: 5 ms)
+STOP_LEN_TOL_MS = 50.0
+PAIR_GAP_LIMIT_MS = 10.0
 EXCL["prep_failure"] = "준비 실패(설정이 맞는데 Resume 거절이나 링 live 실패; 따로 세고 채우지 않음)"
 KINDS = ("safety", "perf", "cost")
 # item 5 and EXPERIMENT 8 (2026-10-23): the safety terms of section 3's rules, by their rows_gc.py / gin-mirror columns:
@@ -314,9 +323,14 @@ def status_gc(r, cell, prereg=None):
     if inj != "none":
         if str(r.get("inject_ok")) == "0" or (env.get("KILL_RANK") and ival(r.get("applied"), 0) == 0):
             return "not_applied"
-        if (ival(r.get("inject_off_ms"), 0) or 0) > 1000 or (ival(r.get("inject_dur_off_ms"), 0) or 0) > 1000:
+        if (ival(r.get("inject_off_ms"), 0) or 0) > 1000:
             return "inject_late"
-        if r.get("pair_gap_ms") not in ("", None) and float(r["pair_gap_ms"]) > float(env.get("SPARE_GAP_MS", "5")):
+        pre = prereg or {}
+        if r.get("inject_dur_off_ms") not in ("", None) and \
+                float(r["inject_dur_off_ms"]) > float(pre.get("stop_len_tol_ms", STOP_LEN_TOL_MS)):
+            return "inject_late"
+        if r.get("pair_gap_ms") not in ("", None) and \
+                float(r["pair_gap_ms"]) > float(pre.get("pair_gap_limit_ms", PAIR_GAP_LIMIT_MS)):
             return "inject_late"
     if str(r.get("spare_start_fail")) == "1" or str(r.get("spare2_start_fail")) == "1" or spare2_not_daemon(r):
         return "spare_start_fail"
@@ -527,7 +541,10 @@ def cost_eval(spec_cells, rule, rows, c):
     fam = c["cost"]["families"][parts[1]]
     named = [a for a in parts[2].split(",") if a] if len(parts) > 2 else []
     metrics = [m for m in parts[3].split(",") if m] if len(parts) > 3 else list(fam["metrics"])
-    kind, _, arg = rule.partition(":")
+    words = rule.split()
+    kind, _, arg = (words[0] if words else rule).partition(":")
+    opts = dict(w.split("=", 1) for w in words[1:] if "=" in w)
+    jnodes = set(x for x in opts.get("judged_nodes", "").split(",") if x) or set(c["cost"]["nodes"])
     base = fam["base"]
     judged = set(fam.get("judged", [])) & (set(named) if named else set(fam["arms"]))
     lines, short, bad = [], False, False
@@ -536,7 +553,7 @@ def cost_eval(spec_cells, rule, rows, c):
             vals = {a: sorted(float(r["value"]) for r in rows if r["runner"] == "cost" and r["status"] == "scored"
                               and r.get("metric") == m and r.get("arm") == a and r.get("rx") == node)
                     for a in [base] + [x for x in fam["arms"] if x != base and (not named or x in named)]}
-            if any(len(v) < 5 for v in vals.values()):
+            if node in jnodes and any(len(v) < 5 for v in vals.values()):
                 short = True
             bv = vals.get(base, [])
             for a, v in vals.items():
@@ -551,10 +568,12 @@ def cost_eval(spec_cells, rule, rows, c):
                 d = (med - bmed) if not m.startswith("bw") else (bmed - med)
                 pct = 100.0 * d / bmed if bmed else float("inf")
                 tag = "%+.2f%%" % pct
-                if a in judged and kind == "within":
+                if a in judged and kind == "within" and node in jnodes:
                     ok = pct <= float(arg)
                     bad = bad or not ok
                     tag = ("범위 안 " if ok else "범위 밖 ") + "%s (≤ %s%%)" % (tag, arg)
+                elif a in judged and kind == "within":
+                    tag += "(보고만: 이 수신 노드는 판정 밖)"
                 else:
                     tag += "(보고만)"
                 lines.append("| %s | %s | %s | %d | %.3f | %+.3f | %s |" % (node, m, a, len(v), med, d, tag))

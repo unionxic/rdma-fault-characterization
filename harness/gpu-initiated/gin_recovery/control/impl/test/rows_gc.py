@@ -206,7 +206,8 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              window (receipt), and helper reconnect lines
   qperr_pair_sent_by_target, qperr_rec_gen_delta, qperr_probe_gen_delta, qperr_pair_read_fail, qperr_records_after
                              the QP_ERR target rank T and its peer P (the switch line): T logged PAIRSENT to P; the highest
-                             re-paired record gen on T toward P; liveness-READ re-pairings of the pair (both ends); the pair's
+                             re-paired record gen on T toward P less the ring's first gen (REC_GEN0 = 1; pilot 1 problem 4:
+                             it was the new gen itself, 2 for one re-pairing); liveness-READ re-pairings of the pair (both ends); the pair's
                              PROBESUM failures; RINGSUM received by T from P in a gen >= 1
   rejoin_dropped, rejoin_resent, rejoin_accept_n, rejoin_accept_dup_n, fail_to_spare_n
   inject_ok, inject_off_ms, inject_dur_off_ms   the injection's record exists (runner line or library switch line); the
@@ -318,7 +319,10 @@ CONFIG_REFUSALS = (
     "the send-side log measurement mode is on", "program not built with NCCL_GIN_RESTORE_DEVICE",
     "does not record its init transcript (NCCL_GIN_RESTORE_RECORD)", "the HCA's atomic capability is below IBV_ATOMIC_HCA")
 CONFIG_SETUP_OFF = ("42", "44")  # the setup agreement's off line: an MTU below 2048, the control path differs (config)
-LIVE_BOUND_MS = 10000.0  # F7's setup bound: process start -> live line (GL_REPAIR_MS, the pairing bound); TODO(prereg)
+LIVE_BOUND_MS = 10000.0  # F7's setup bound: process start -> live line (GL_REPAIR_MS, the pairing bound); fixed 2026-10-24
+# (EXPERIMENT 8, pilot 1: ring live after 990.1-1 079.0 ms in 25 rdma trials)
+REC_GEN0 = 1  # a record QP's first generation: gen 0 is "not paired" (gc_layer_int.diff, gdakiCtrlRing*: p->gen == 0), and
+# every ring summary of a peer without a re-pairing says gen=1 (pilot 1 a3 gc4_qperr_record, ranks 0-3)
 LA_REFSIG = re.compile(r"refused to signal")
 LA_PIDMIS = re.compile(r"the pidfd is not the peer's process")
 LA_QPLOST = re.compile(r"GIN/LA: node \d+: (?:record QP of rank (\d+)\b.*\blost|liveness-READ QP of rank (\d+) failed)")
@@ -1248,7 +1252,7 @@ def gc_overlay(stem, base, meta):
                                                    for e in logs[T] for m in [PAIRSENT.search(e.text)] if m))
         gens = [int(m.group(4)) for e in logs[T] for m in [REPAIRED.search(e.text)]
                 if m and m.group(2) == "record QP" and int(m.group(3)) == P]
-        out["qperr_rec_gen_delta"] = max(gens) if gens else 0
+        out["qperr_rec_gen_delta"] = max(gens) - REC_GEN0 if gens else 0  # the delta, not the new gen (pilot 1 problem 4)
         out["qperr_probe_gen_delta"] = sum(1 for q, o in ((T, P), (P, T)) for e in logs[q] for m in [REPAIRED.search(e.text)]
                                            if m and m.group(2) == "liveness READ QP" and int(m.group(3)) == o)
         pf = [kvd(m.group(3)) for q, o in ((T, P), (P, T)) for e in logs[q] for m in [PROBESUM.search(e.text)]
