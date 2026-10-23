@@ -183,6 +183,9 @@ shutdown: the spare spawn waiting for its wait-for (incarnation <I>) ends unspaw
   포기하지 않고 다시 띄우기 0번, 그 뒤 파일이 생기면 셋째가 HELLO. (3) 음성 대조: 기다림 패턴이 다른 파일(이미 있음)이면 같은 끝남을 셈(respawn 1 of 1, 그다음 한도 줄).
   (4) 기다리는 동안 shutdown: 줄 하나, 띄움과 신호 0. 옵션은 `spare_opts`에(기본값이 `--spare-env`의 `NCCL_GIN_RESTORE_REPLAY`, `-`, 패턴, 빈 값 거절).
 
+> 2026-10-23 표시: 아래 여덟은 2026-10-22 당시의 요청이다. 같은 날 `test/`에 적용됐고([../test/notes_test.md](../test/notes_test.md) "launcher 데몬의 예비 프로세스" 절),
+> 6은 (가) launcher를 시행마다 띄우는 것으로 정해졌다(EXPERIMENT.md 5절 launcher 행). 지금 실행기 동작의 기준은 그 절과 [NOTES.md](../../NOTES.md)다.
+
 **실행기 쪽에 필요한 바꿈**(`test/`는 이 작업 범위 밖이라 고치지 않았다; 조율 세션이 적용). 지금 `test/run_gc.sh`의 `start_spare`는 시행마다 rank의 `GINRS resume`
 줄을 본 뒤 `launch`로 예비 프로세스를 띄운다. 명령은 `stdbuf -oL -eL timeout -s KILL <WATCHDOG_S + 20> $RSBIN <rank> $ARGS $WORK/<name>.kv`, 환경은 `NENV`, `hca`,
 `la_env`, `RS_ENV`, `RS_RDV_NONCE`, `NCCL_GIN_RESTORE_SPARE=<rank>`, `_PORT`, `_WAIT_MS`, `_REPLAY`, `SPARE_ENV`(같은 rank의 둘째는 `NCCL_GIN_RESTORE_SPARE_INC=2`)다.

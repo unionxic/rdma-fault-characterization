@@ -1,5 +1,7 @@
 # gin-control int2: 감시 스레드 고침 3, 3단계, 2a-2 A+B를 한 층으로 (작업 기록)
 
+> **읽기 전에(2026-10-23 표시).** 작성 2026-10-17(본문 날짜; 저장소 커밋 `f1f9efc8`, 2026-10-22), 결과 `gc_layer_int.diff` `c0975edb`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: [notes_live.md](notes_live.md), [notes_smoke.md](notes_smoke.md), [notes_snap.md](notes_snap.md), [notes_int3.md](notes_int3.md). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 ## 단계 목록 (12줄)
 
 1. 트리 `agent_gc_p2a2/`: 작업 트리를 "gin-control 2a-2-B (gc_layer_p2a2.diff 414a8790)"로 커밋
@@ -85,6 +87,8 @@ notes_fix3 "합칠 때 볼 것": 1 fix3의 `gc_unit_p2.cc`(5612fd13)를 받음, 
 - 모든 것이 CPU 모형이다. launcher 길은 가짜 NIC(장면 7)과 launcher core의 프로세스 안 전송(`gc_unit_p3`)에서만 돌았다. 실제 verbs, launcher 프로그램과의 RNIC 길, 클러스터에서는 한 번도 돌지 않았다 `[미확인]`
 
 ## EXPERIMENT.md 11절과 12절에 넣을 줄 (안)
+
+> 반영됨(2026-10-23 확인, EXPERIMENT.md 읽기만): 11절의 통합 2 줄(`c0975edb`)과 12절 2026-10-17 통합 2 행. 다시 붙이지 않는다.
 
 - 11절: `- [ ] 통합 int2(감시 스레드 고침 3 + 3단계 + 2a-2 A, B, 그리고 그 사이 접착: launcher 전송 표를 링의 launcher 기록 QP와 UD로, launcher 봉투 받기, all-gather의 launcher 칸과 모든 rank 같은 launcher 수의 페이지 배치, 덩어리 칸, launcher 페이지 박동 READ, Resume 41, rank 쪽 INFO 켬): 빌드와 CPU 시험까지 — 2026-10-17, impl/gc_layer_int.diff(ln4 대비 전체 층, md5는 아래 표). 2a-2-C(REJOIN을 UD로, STATE와 rkey의 outbox, 증인 다시 걸기, 판정 효력, 전환 표지)는 남음`
 - 12절: `| 2026-10-17 | 통합 int2(실행 없음, CPU와 빌드만). 2a-2-B를 커밋하고 감시 스레드 고침 3(gc_layer_fix3.diff 2f469461)과 3단계(gc_layer_p3.diff c755b1df)를 3-way로 합침(충돌 하나: all-gather 앞 준비 블록, 링 만들기 다음 INFO). 접착 여섯: launcher 기록 QP와 UD 전송, launcher 봉투 받기, all-gather 칸(72 B)과 launcher 수로 페이지 배치(creditOff가 rxConsumedL), 덩어리 전용 REMOTE_READ 칸, helper의 launcher 페이지 박동 READ, Resume 41; launcher f8e3216e의 INFO로 rank 쪽 INFO 켬. 헤더 948b3ecf + p2b + p2a2 + p3. gc, gcp, gct, gctp 빌드됨(경고 0), tcp 전처리 gct, gctp hunk 0, gctc RST 간격 2 hunk [측정]. 단위 시험 두 빌드 통과(gc_unit_p2a2 장면 7 더함, gc_unit_p3 INFO 장면을 답하는 launcher로) [측정, n 1]. 장치 동일성은 아래 표. 실제 verbs와 클러스터 실행 없음 | impl/notes_int2.md, 스크래치 agent_gc_p2a2/logs_int2/ |`

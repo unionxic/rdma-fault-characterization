@@ -1,5 +1,7 @@
 # 준비 단계와 launcher의 리뷰 고침 (REVIEW_PREP.md, 2026-10-17)
 
+> **읽기 전에(2026-10-23 표시).** 작성 2026-10-17(커밋 `fd4ae2d6`), 결과 `gc_layer.diff` `0df79ae2`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: [notes_int.md](notes_int.md)(이 준비 단계 위로 1단계와 2a-1을 합침). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 ## 단계 (계획)
 
 1. 헤더: 받기 seam(`gdakiCtrlRecv`, `gdakiCtrlRecvOn`), REJOIN 거절 답 seam, 채널 seam 셋(`gdakiCtrlChanUp`, `gdakiCtrlPollFd`, `gdakiCtrlChanInstall`)과 세대 seam; `gdakiCtrlFd` 없앰
@@ -150,6 +152,8 @@
 | `../../mirror/impl/mi_layer.diff` | `dcd30859ac6db214e37475c527c37e2f` (바뀌지 않음) |
 
 ## EXPERIMENT.md에 넣을 문장 (조율 세션용)
+
+> 반영됨(2026-10-23 확인, EXPERIMENT.md 읽기만): 11절의 준비 단계 리뷰 줄과 12절 2026-10-17 준비 단계 고침 행. 다시 붙이지 않는다.
 
 **11절(작업 체크리스트)**
 

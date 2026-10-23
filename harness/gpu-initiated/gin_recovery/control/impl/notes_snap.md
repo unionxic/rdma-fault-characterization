@@ -1,5 +1,7 @@
 # gin-control: mirror 끈 체크포인트 멈춤 줄이기 (GPU 안 사본, 장치 헤더 변경 없음; 작업 기록)
 
+> **읽기 전에(2026-10-23 표시).** 커밋 `544d570c`, 결과 `gc_layer_snap.diff` `17892f1f`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: [notes_int3.md](notes_int3.md). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 2026-10-22. 사용자 선택(같은 날): mirror 끈 rank의 체크포인트 멈춤 안에서는 장치 안 사본(D2D)만 찍고, 호스트로 옮기기(D2H)와 저장소 WRITE는 멈춤 뒤에 한다.
 2c 설계 안(`notes_p2c.md`, 내용 검사 커널)의 "장치 코드 없는 대안"을 고른 것이다. 장치 코드 0줄, 호스트 파일 하나만 바꿨다.
 표시: [소스] 코드를 읽어 확인, [측정] 이 작업이 돌려서 본 것, [추론] 해석이나 셈, [미확인] 확인 안 함.
@@ -102,12 +104,16 @@ gct 첫 판은 라이브러리를 만든 뒤 스크립트를 실행 중에 고�
 
 ## EXPERIMENT.md 3절에 넣을 다시 예측 (안; mirror 끈 셀, 사전 등록 전)
 
+> 반영 여부(2026-10-23 확인, EXPERIMENT.md 읽기만): 3절에 이 행이 없다(`snap_pause_d2d` 0건). 넣을지는 이 메모가 정하지 않는다.
+
 - 새 행 "mirror 끈 체크포인트의 멈춤 안 호스트 바이트 0": 셀 `rs4_kill3`, `rs4_kill3_ckpt`, `rs4_kill1`, `rs4_none`(모두 `@gc`). 시행마다 snapshot 줄의 `host_bytes`가 모두 0이고 `d2d_bytes`가 이미지 크기와 같음, `d2h_bytes`가 멈춤 뒤 줄에 있음. 구조적 성질이라 모든 유효 시행 `[초안: 사전 등록 전 확정]`. 찾는 키 안 `snap_pause_d2d`.
 - 멈춤 길이: `rs4_none@gc`의 입력 멈춤 상한은 gin-mirror 장애 없음 고정값 16 ms(4 KiB 셀)를 그대로 쓴다. 2b 판이었다면 멈춤 안 D2H(이미지 I에서 I / 13.1 GB/s, 20 MiB에서 약 1.6 ms)가 더해졌을 것이고, 이 판에서는 D2D(20 MiB에서 약 0.1–0.2 ms `[추론, 미확인]`)만 더해진다. 시행마다 snapshot 줄의 `d2d_us`와 `d2h_us`를 보고한다. 이 셀들의 이미지 크기는 `[미확인]`(pilot에서 줄로 읽음).
 - 복원 시간: mirror 끈 셀의 kill → 마지막 게시는 2b와 같은 범위로 둔다. FETCH가 읽는 안정 칸의 바이트와 크기가 2b와 같기 때문이다(단위 시험 4). 바뀌는 것은 안정 확정의 시각뿐이다: CKPT_STABLE이 멈춤 뒤 D2H만큼(20 MiB에서 약 1.6 ms) 늦고, 그 사이의 kill은 한 체크포인트 앞으로 복원된다(2b에서 WRITE 중의 kill과 같은 꼴). 재실행 단계 수는 gin-restore의 원래 판정식 그대로다 `[추론]`.
 - 5절 "장치 코드 0줄"은 그대로 참이다(GPU 메모리가 이미지만큼 는 것만 적음).
 
 ## EXPERIMENT.md 11절과 12절에 넣을 줄 (안)
+
+> 반영 여부(2026-10-23 확인, EXPERIMENT.md 읽기만): 이 글 그대로는 들어가지 않았다(`17892f1f` 0건). 12절 2026-10-22 통합 3 행에 mirror 끔 스냅샷(커밋 `c4659ddb`)으로 요약돼 있다. 다시 붙이지 않는다.
 
 - 11절: `- [ ] mirror 끈 체크포인트 멈춤 줄이기(GPU 안 사본: 멈춤 안 D2D만, D2H와 WRITE는 멈춤 뒤): 빌드와 CPU 시험까지 — 2026-10-22, impl/gc_layer_snap.diff 17892f1f(45274b6 위). 클러스터에서 멈춤 길이와 D2D 시간은 안 잼`
 - 12절: `| 2026-10-22 | mirror 끈 체크포인트 멈춤 줄이기 구현(실행 없음, CPU와 빌드만; 사용자 선택 2026-10-22). int2 커밋 45274b6 위의 impl/gc_layer_snap.diff(17892f1f, 257줄, 호스트 파일만, 더하기 180줄, 장치 코드 0줄): mirror 끈 rank는 멈춤 안에서 영역마다 D2D 하나로 장치 staging(이미지 크기, 20 MiB에서 20.00 MiB GPU 메모리)에 사본을 찍고, arm(CKPT_RESUME) 뒤 D2H, header, blob, 2b의 WRITE; CKPT_STABLE은 WRITE 뒤 그대로; 다음 멈춤은 staging이 빈 뒤(busy 기다림과 줄); mirror 켬과 tcp 빌드는 그대로. gc, gcp, gct, gctp 빌드됨(이 작업의 경고 0). tcp 전처리는 정규화 뒤 ln4와 hunk 0(gct, gctp), gctc는 RST 간격 2 hunk만 [측정]. 단위 시험 두 빌드 통과, gc_unit_snap 453 402 검사 실패 0(rdma): 멈춤 안 호스트 바이트 0, 무작위 열 400개에서 CKPT_STABLE 차례, staging busy, 읽는 바이트가 2b와 같음 [측정]. 장치 동일성: 프로그램 16 조합 같음, 장치 객체 207개 × 4가 SASS로 ln4와 같음(해시만 다른 것 2개씩) [측정]. 클러스터 실행 없음 | impl/notes_snap.md, 스크래치 agent_gc_snap/logs_snap/ |`

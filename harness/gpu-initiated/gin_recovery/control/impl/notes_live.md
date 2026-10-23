@@ -1,5 +1,7 @@
 # gin-control: 생존 낱말을 GPU 진행으로 (사용자 결정 2026-10-22, 작업 기록)
 
+> **읽기 전에(2026-10-23 표시).** 커밋 `544d570c`, 결과 `gc_layer_live.diff` `6a4cbf92`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: [notes_int3.md](notes_int3.md)(통합 3). 그 뒤 확인 창은 GPU 진행 줄을 읽지 않게 바뀌었다(커밋 `eade9099`, EXPERIMENT.md 9.3절). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 기준: `agent_gc_p2a2/nccl-src`를 `agent_gc_live/nccl-src`로 복사하고 커밋 `acfede7` "gin-control 2a-2-C step 1 (gc_layer_int.diff 3219c376)"을 checkout(작업 트리 깨끗), 빌드 넷은 `agent_gc_p2a2`의 것을 복사하고 경로를 바꿈. 입력과 시험은 worktree 커밋 `886bc62c`(2a-2-C 1단계)의 것을 `agent_gc_live/pin/`에 고정. 스크립트는 `agent_gc_live/build_gc_live.sh`(키 `live`, `build_gc_p2a2.sh`의 int2/p2a2c 단계에 얹음). 호스트 파일 하나, 장치 코드 0줄. 클러스터, ssh, verbs 장치, GPU 실행 없음. 표시: `[측정]` 돌려서 봄, `[추론]` 해석, `[미확인]` 확인 안 함.
 
 ## 1. 장치 줄이 무엇인가
@@ -87,6 +89,9 @@ R 값을 고르는 순수 함수 `gdakiCtrlRDerive`(20126, `if (f.devMode)` 2013
 6. 줄 READ 크기가 n에 비례(§3). 장치에서 한 번도 돌지 않았다 `[미확인]`.
 
 ## 8. EXPERIMENT.md에 넣을 문장 (조율 세션용; 이 작업은 EXPERIMENT.md를 고치지 않음)
+
+> 반영 여부(2026-10-23 확인, EXPERIMENT.md 읽기만): 9.3절 R 항목은 9.3절 "R의 두 진행 입력"으로 들어갔다. 9.3절 확인 창 문장은 그 뒤 바뀐 규칙(창은 GPU 진행 줄을 읽지 않음, 9.3절)이 대신한다.
+> 9.2절 두 항목(GPU 진행 줄 항목, "읽는 쪽" 첫 문장)은 9.2절에 같은 글이 없다. 넣을지는 이 메모가 정하지 않는다. 11, 12절 줄은 12절 2026-10-22 행들(사용자 결정, 통합 3)에 요약돼 있다. 아래를 그대로 다시 붙이지 않는다.
 
 **9.2절(상태 페이지) 끝에 한 항목**
 

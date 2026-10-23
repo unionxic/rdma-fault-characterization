@@ -1,5 +1,7 @@
 # gin-control 2단계 2a-1: 링 모형, UD 짝 맺기 모형, 단위 시험, verbs 뒤끝 (작업 기록)
 
+> **읽기 전에(2026-10-23 표시).** 작성 2026-10-17(커밋 `494cd666`, nit 고침 `a5f7ef0b`), 결과 `gc_layer_p2.diff` `d571b977`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: [notes_int.md](notes_int.md), [notes_fix12.md](notes_fix12.md)(REVIEW_P12의 2a-1 막는 문제 고침). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 ## 단계 목록 (처음에 적은 계획, 20줄)
 
 1. `build_gc_p2.sh`: 작업 공간 스크립트 사본에 `p2` 키(트리 `agent_gc_p2`, diff `gc_layer_p2.diff`, unit에 `gc_unit_p2.cc`)
@@ -163,6 +165,8 @@ EARLY, BADMAGIC, BADENV), framing(gc_unit_prep.cc 생성기의 기록 10 872개:
 `agent_gc_p2/logs_p2/build_script.diff`(180줄).
 
 ## EXPERIMENT.md 11절과 12절에 넣을 줄 (안)
+
+> 반영됨(2026-10-23 확인, EXPERIMENT.md 읽기만): 11절의 2a-1 줄과 12절 2026-10-17 2a-1 행(`d571b977`). 다시 붙이지 않는다.
 
 - 11절: `- [ ] 2단계 2a-1: 링과 짝 맺기 모형, CPU 단위 시험, verbs 뒤끝(빌드만) — 2026-10-17, 부르는 자리 잇기(2a-2)와 2b는 남음`
   (2a-1만 끝난 것이라 "링과 기록" 칸 자체는 체크하지 않음)

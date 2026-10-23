@@ -1,5 +1,7 @@
 # gin-control 통합: 고친 준비 단계 + 1단계 + 2단계 2a-1 (작업 기록)
 
+> **읽기 전에(2026-10-23 표시).** 작성 2026-10-17(커밋 `9dbcabe3`), 결과 `gc_layer_int.diff` `a7600a46`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: [notes_fix12.md](notes_fix12.md). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 ## 단계 목록 (처음에 적은 계획)
 
 1. `agent_gc_int/`: `agent_gc_prep`의 nccl-src와 빌드 넷을 복사, 고친 준비 단계를 "gin-control prep-fix (gc_layer.diff 0df79ae2)"로 커밋
@@ -162,6 +164,8 @@ worktree HEAD `21295000` 위에서 한 일이다. 트리는 스크래치 `agent_
 `build_gc.sh`의 `p1`, `p2` 키는 넣기만 했고 돌리지 않았다 [미확인]: 고정 입력(`impl_base/`, `agent_gc_p2/pin/`)의 옛 헤더에는 지금 시험 소스가 맞지 않으므로 그 키의 `unit`은 `GCTEST=`(단계 때 소스, `git show 73be8802:`, `494cd666:`)가 있어야 한다.
 
 ## EXPERIMENT.md에 넣을 문장 (조율 세션용)
+
+> 반영됨(2026-10-23 확인, EXPERIMENT.md 읽기만): 11절의 통합 줄(`a7600a46`)과 12절 2026-10-17 통합 행. 다시 붙이지 않는다.
 
 **11절(작업 체크리스트)**
 

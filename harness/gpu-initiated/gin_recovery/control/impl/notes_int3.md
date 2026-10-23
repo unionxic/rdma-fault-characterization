@@ -1,5 +1,7 @@
 # gin-control int3: 2a-2-C 1–3단계와 병렬 조각 넷을 한 트리로, 그리고 둘째 하드웨어 smoke (작업 기록, 2026-10-22)
 
+> **읽기 전에(2026-10-23 표시).** 커밋 `544d570c`, 결과 `gc_layer_int.diff` `907116f3`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 그 뒤의 라이브러리 고침(2a-2-C 4, 5단계, 시험 스위치, 통합 리뷰 고침)은 [notes_p2a2.md](notes_p2a2.md) 2a-2-C 절과 EXPERIMENT.md 12절 2026-10-22, 2026-10-23 행. 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 트리는 세션 스크래치 `agent_gc_p2a2/nccl-src`이고 제자리에서 했다(복사 없음). 호스트 파일 하나, 장치 코드 0줄. 저장소에는 `git add`, commit, push를 하지 않았다.
 `EXPERIMENT.md`, `launcher/*`, `test/*`는 고치지 않았다. smoke 결과는 [../results/20261022_smoke2/SMOKE.md](../results/20261022_smoke2/SMOKE.md).
 표시: `[측정]` 돌려서 봄, `[소스]` 코드를 읽어 확인, `[추론]` 해석, `[미확인]` 확인 안 함.

@@ -1,5 +1,7 @@
 # gin-control 2단계 2a-2: 링을 준비 때 만들고 seam으로 살아 있는 길에 묶기 (작업 기록)
 
+> **읽기 전에(2026-10-23 표시).** 2a-2-A, 2a-2-B 절은 2026-10-17 작업 기록(커밋 `45900d7e`, `95110cc8`)이고, 2a-2-C 절은 2026-10-22까지 이어 쓴 기록이다(마지막 커밋 `16016519`, 마지막 기준 `gc_layer_int.diff` `5ed121f4`). 본문의 "남은 것", 계획, TODO는 그 절을 쓴 때 기준이다. 후속: [notes_int2.md](notes_int2.md)(2a-2-A, B를 합침), [notes_int3.md](notes_int3.md)(2a-2-C 1–3단계를 합침). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 ## 단계 목록 (처음에 적은 계획, 20줄)
 
 1. 트리 `agent_gc_p2a2/`: int+fix12 커밋, 2b와 헤더 diff 적용(충돌 해결), 커밋; `build_gc_p2a2.sh`(키 `p2a2`); 기준선 `unit`

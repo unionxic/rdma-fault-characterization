@@ -1,5 +1,7 @@
 # gin-control sparefix: 따뜻한 예비 프로세스의 두 결함 (작업 기록, 2026-10-22)
 
+> **읽기 전에(2026-10-23 표시).** 커밋 `544d570c`, 결과 `gc_layer_sparefix.diff` `99b6eb47`과 launcher `--spare-wait-for`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: [notes_int3.md](notes_int3.md); launcher 쪽은 [launcher/README_launcher.md](launcher/README_launcher.md) "바뀐 것". 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 첫 하드웨어 smoke([../results/20261022_smoke1/SMOKE.md](../results/20261022_smoke1/SMOKE.md), [notes_smoke.md](notes_smoke.md))의 a4와 a6이 보인 결함 둘을
 고쳤다. 클러스터는 쓰지 않았고 CPU 단위 시험만 돌렸다. 표시: `[측정]` 돌려서 봄, `[소스]` 코드를 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 

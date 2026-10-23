@@ -1,5 +1,7 @@
 # gin-control 첫 하드웨어 smoke: 빌드, 배포, 고침 (작업 기록, 2026-10-22)
 
+> **읽기 전에(2026-10-23 표시).** 커밋 `544d570c`, 결과 `gc_layer_smokefix.diff` `10f7e810`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: [notes_sparefix.md](notes_sparefix.md), [notes_int3.md](notes_int3.md). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 결과와 본 줄은 [../results/20261022_smoke1/SMOKE.md](../results/20261022_smoke1/SMOKE.md), 고친 diff는 [gc_layer_smokefix.diff](gc_layer_smokefix.diff)
 (커밋 "gin-control 2a-2-C step 1" 대비, 106줄, 호스트 파일 하나 60줄 더함, 장치 코드 0줄, `__device__`/`__global__` 더한 줄 0, 거꾸로 적용 확인). 스크래치 작업 폴더는
 `agent_gc_smoke/`(세션 스크래치)다. 표시: `[측정]` 돌려서 봄, `[소스]` 코드를 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.

@@ -84,6 +84,9 @@ GPU 쪽에서 장애 원인을 분류하는 기존 구현 위에 복구를 얹�
 
 ## 파일
 
+죽은 rank 되살리기는 [`remaining/`](remaining/README.md)과 [`../../gpu-detect/`](../../gpu-detect/README.md) 뒤로 [`restore/`](restore/README.md) → [`mirror/`](mirror/README.md) →
+[`control/`](control/README.md) 차례로 이어진다. 앞 둘은 끝났고(`COMPLETE`), control은 진행 중(`DRAFT`)이다. 결론은 각 README, 설계와 근거와 이력은 각 EXPERIMENT.md에 있다.
+
 | 파일 | 내용 |
 |---|---|
 | [NOTES.md](NOTES.md) | 상세 기록 |
@@ -105,3 +108,6 @@ GPU 쪽에서 장애 원인을 분류하는 기존 구현 위에 복구를 얹�
 | [`handoff/`](handoff/README.md) | 거절 뒤 communicator 줄이기와 GPU 가득 참(사전 등록, 24개 예측 모두 맞음): 죽은 rank를 뺀 shrink가 약 17 ms에 됨. 복구를 막은 것은 GIN 커널 뒤의 application CUDA 호출 |
 | [`peer/`](peer/README.md) | 상대별 중단 신호, 앞 리뷰의 남은 지적, 원인을 보는 shrink, 랑데부 포트(사전 등록, 37개 예측 모두 맞음): 랭크 4개에서 한 rank가 죽어도 나머지끼리 통신. 상대를 지정하지 않는 대기는 그 죽음에 풀리지 않음. 원인이 자기 쪽인 거절 뒤 shrink는 원래 답을 지킴. 포트 bind 실패 없음 |
 | [`remaining/`](remaining/README.md) | 남은 세 문제(사전 등록, 34개 예측 중 33개 맞음): 세 rank 순환 대기를 0.7–1.0 s에 복구, 상대를 지정하지 않는 대기를 죽음 판정 2 s 뒤 오류로 풀기, 복구 상태 복사를 NIC 루프백으로 옮겨 application의 커널 첫 적재에 막히지 않음 |
+| [`restore/`](restore/README.md) | 죽은 rank를 예비 프로세스에 되살리기(gin-restore, 사전 등록, 21개 예측 중 18개 맞음): 생존 rank의 상대를 모르는 대기가 원래 값으로 끝남, 복원 0.3–0.4 s. 틀린 셋은 4 KiB 비용 한도 |
+| [`mirror/`](mirror/README.md) | restore 위에서 보낸 버퍼를 곧바로 다시 쓰는 application도 되살리기(gin-mirror, 사전 등록, 53개 예측 중 51개 맞음): 보낸 내용의 사본을 짝의 호스트 메모리에 둠, 둘째 죽음도 되살림, 복원 약 0.18–0.30 s |
+| [`control/`](control/README.md) | 진행 중(`DRAFT`, 사전 등록 전): restore와 mirror 복원 계층의 제어와 생존 판정을 관리망 TCP에서 RDMA로 옮김(gin-control). 결과 주장은 아직 없다 |
