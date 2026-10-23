@@ -299,7 +299,7 @@ pidfd), 종료 보고(EXITED)와 LEFT, FENCE와 FENCED, 미리 띄운 예비 프
 | 랭크 배치 | 랭크 4개, GPU마다 둘(rain에 0과 2, sunny에 1과 3), 짝은 p xor 1, 예비 프로세스는 같은 노드 같은 GPU | gin-mirror 5절 |
 | launcher | 노드마다 하나(rain, sunny). 실행기가 **시행마다** rank보다 먼저 그 시행의 예비 프로세스 명령과 함께 띄우고, rank(되살린 rank 포함)가 끝난 뒤 끔(2026-10-22 조율 세션 결정; 그 전에는 hold 시작 때 한 번 띄우고 hold 끝에 끔). 까닭: launcher가 스스로 띄우는 예비 프로세스(9.5절)의 명령과 환경에 시행마다 바뀌는 값(`RS_RDV_NONCE`, 포트, 재생 기록과 kv 경로)이 있고, launcher에는 명령을 바꾸는 말이 없음 `[소스: impl/launcher/README_launcher.md "실행기 쪽에 필요한 바꿈" 6]`. sunny는 ssh 하나로 띄움(시험 장치). 실행기는 시행 앞뒤로 launcher마다 pid와 시작 시각을 남김 `[설계 v3 5.2절]` | 계획(실행기는 빌드 없이 `bash -n`과 CPU 자체 시험만) |
 | 데이터 QP 시한 | `NCCL_IB_TIMEOUT=14`, retry 7. 이 NIC은 floor 때문에 재시도 초과가 3.5–3.8 s | `[측정: 문서 ack_timeout]` |
-| 라이브러리 | gin-mirror ln4(`mi`) + 9절의 제어 계층(`gc`); 같은 소스의 TCP 제어 빌드(`gct`). 장치 코드 변경은 mirror 끈 rank의 더러운 segment 표시(2c)만; 그 밖은 바뀌지 않음(2026-10-17 사용자 결정) | 구현 전 |
+| 라이브러리 | gin-mirror ln4(`mi`) + 9절의 제어 계층(`gc`); 같은 소스의 TCP 제어 빌드(`gct`). 장치 코드 변경 0줄: 2026-10-17 결정은 mirror 끈 rank의 더러운 segment 표시(2c)만 허용했으나 2c는 소스 확인 뒤 스냅숏 안으로 대체됐다(`impl/notes_p2c.md`, `impl/notes_snap.md`; 12절 2026-10-17 행). 시험 driver(`impl/test/driver/`)의 GPU hang 스위치는 라이브러리가 아니다 | `gc_layer_int.diff` 5ed121f4의 장치 동일성 검사(`impl/notes_int3.md`) |
 | 관리망 | 1 GbE. 이 계층에서는 증인 소켓만 쓴다(9.6절) | 사용자, 계획 |
 | UD 경로 MTU | GIN 포트(rain `mlx5_1`, sunny `mlx5_0`)의 `active_mtu` 4 096, GIN 쌍의 경로 MTU 4 096 | `[측정: 문서]` 제어 경로 설계 리뷰가 2026-09-23 장치 캡처(`ibv_devinfo -v`)와 gin-restore 실행 가능성 kv에서 읽음; 이 문서에서 다시 보지 않음. RoCE의 `active_mtu`는 netdev MTU를 따르므로 준비 때 rank마다 `ibv_query_port`로 ≥ 2 048을 검사하고(못 맞추면 Resume 조건 42로 fail-fast) 시행 kv `active_mtu`에 남긴다 `[설계 v2 2.5절]` |
 
@@ -584,7 +584,7 @@ rank 4, launcher 둘이면 판정 낱말이 줄 0과 80 B(줄 둘), 보고 줄 �
   `incNonce`가 기대와 다르면 그 상대의 페이지 자리가 바뀐 것(되살린 프로세스)이다. 새 rkey는 REJOIN과 REJOIN_ACK이 싣고(9.5절), 그 전에는 그 상대를 READ하지 않는다.
 - **쓰는 쪽.** 감시 스레드 하나(쓰는 쪽이 하나여야 함). helper와 다른 스레드는 원자 변수에 값을 두고 감시 스레드가 1 ms마다 옮겨 쓴다. 쓰는 것은 호스트 메모리뿐이다
   (장치, PCIe 쓰기, 펌웨어 명령 없음).
-- **읽는 쪽.** 감시 스레드가 gated이고 거절 안 된 상대마다 100 ms마다 하나만 띄운다(페이지 전부). 증인 FIN이나 RST(링과 증인 어디에도 BYE 없음)를 helper가 알리면 확인 창을
+- **읽는 쪽.** 감시 스레드가 gated이고 거절 안 된 상대마다 100 ms마다 READ를 띄운다(2026-10-22 생존 신호 결정 뒤 짝마다 둘: 호스트 페이지 전부와 장치 진행 줄, 9.3절 "R의 두 진행 입력"; 그 전에는 페이지 하나). 증인 FIN이나 RST(링과 증인 어디에도 BYE 없음)를 helper가 알리면 확인 창을
   연다: 그 때 t_F에 줄 0의 READ1, t_F + W/2에 READ2, t_F + W에 판정(9.3절). 기록 QP 오류는 창을 열지 않는다(처음 초안의 5 ms 간격 둘은 리뷰가 버렸고, 설계 v2의 "W 뒤 READ"는
   둘째 재검토가 판정 시각과 READ2의 시한이 없다고 찾아 설계 v3가 이 꼴로 정함) `[설계 v3 4.2절]`. W는 20–50 ms 사이에서 pilot의 장애 없는 셀에서
   잰 `watchBeat` 간격 최대의 5배 이상으로, 20 ms 아래로는 두지 않고 정한다 `[설계 v2 4.3절]` `[초안]`. 간격 최대가 10 ms를 넘으면 W가 50 ms를 넘을 수 있고 그때 3절의
