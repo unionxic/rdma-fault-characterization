@@ -119,6 +119,18 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              (2026-10-23: fdhold_sock_helper_stall wants 0, the inherited mappings keep the READ answered)
   suspect_n, suspect_stale_ms_min/max   SUSPECT lines naming the subject
   read_n, read_ok_n, read_success_pct, read_lat_med_us_max, read_lat_max_us, beat_gap_max_ms, page_torn_n   PROBESUM, summed
+                             over every rank and spare process (read_n, read_ok_n: the page READs, after_end_* apart)
+  dev_read_n, dev_read_ok_n, read_page_success_pct, read_dev_success_pct, probe_missing   (Codex finding 1, 2026-10-23) the
+                             device-line READs (dev_reads=, dev_ok=: every context's sum); the page and device success rates
+                             apart; read_success_pct = (page ok + device ok) / (page READs + device READs). Every process of
+                             the final generation (required_procs) needs one summary per peer of the final generation, and a
+                             summary whose peer named a device line (its dev_line=1, or the peer's "device line named" page
+                             line) its dev_reads= and dev_ok= (with dev_ctx= or the peer page's contexts= above 1, also
+                             dev_reads_ctx= and dev_ok_ctx= of that many values); probe_missing names each gap
+                             ("proc:p<peer>" a summary, "proc:p<peer>:<field>" a counter). A missing summary empties every
+                             count and rate, a missing counter its side's, any gap read_success_pct (never a 0 for it)
+  cost_probe_evidence, cost_probe_window   cost rows (Codex finding 2, 2026-10-23): the probe arms' READ evidence in
+                             the trial's own logs (cost_probe); "ok", else the reasons, and the row's cost_valid is then 0
   witness_lost_n, confirm_alive_n   WITLOST lines; CONFIRM closed alive lines
   fence_sent, fenced, fence_order_ok, fence_names_ok, fence_sent_to_fenced_ms, fenced_to_fallback_ms
                              the buddy's (subject xor 1, the revived buddy's spare log when the buddy died first) FENCING and
@@ -333,7 +345,8 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "stop_judge_ms_max", "judge_spread_ms", "judge_spread_clock", "judge_to_publish_ms", "kill_to_publish_ms",
            "publish_clock", "hold_ms_max", "hold_other_n", "kill_hold_ms_min", "hold_after_restore_n", "probe_timeout_n", "probe_fail_n",
            "end_after_kill_ms", "suspect_n", "suspect_stale_ms_min",
-           "suspect_stale_ms_max", "read_n", "read_ok_n", "read_success_pct", "read_lat_med_us_max", "read_lat_max_us",
+           "suspect_stale_ms_max", "read_n", "read_ok_n", "read_success_pct", "dev_read_n", "dev_read_ok_n",
+           "read_page_success_pct", "read_dev_success_pct", "probe_missing", "read_lat_med_us_max", "read_lat_max_us",
            "beat_gap_max_ms", "page_torn_n", "witness_lost_n", "confirm_alive_n", "fence_sent", "fenced", "fence_order_ok",
            "fence_names_ok", "fence_sent_to_fenced_ms", "fenced_to_fallback_ms", "cont_target_present",
            "win_changed_after", "win_lines_n", "win_missing", "win_unreadable", "win_checked", "win_verified",
@@ -355,7 +368,7 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "rejoin_accept_n", "rejoin_accept_dup_n", "fail_to_spare_n", "inject", "inject_ok", "inject_off_ms",
            "inject_dur_off_ms", "pair_gap_ms", "ckpt_stable_before_inj", "kill2_after_armed", "stable_between_pair_kills",
            "subject_fenced", "gate_real", "old_go_ms", "fenced_go_ms", "gate_diff_ms", "second_thread_ms", "pidfd_ms", "z_ms",
-           "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms"]
+           "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms", "cost_probe_evidence", "cost_probe_window"]
 
 
 def mono(l):
@@ -663,12 +676,18 @@ def proc_name(stem, path):
 
 
 def ctrlsum_required(stem, n, sp_paths, sp_logs, dead):
+    """the names of required_procs (r<k>, spare, spare_2nd, ...)"""
+    return [nm for nm, _ in required_procs(stem, n, sp_paths, sp_logs, dead)]
+
+
+def required_procs(stem, n, sp_paths, sp_logs, dead):
     """Codex review 2026-10-23 (control summary): the processes that must leave a control summary, the final generation
     (final_data's rule): a rank that did not die is its own process (r<k>); a rank with a spare that became active (its
     log's "restored as incarnation I" line, else its kv's revived=1, incarnation the spare's order) is that spare, the highest
     incarnation when two did; a dead rank (dead: the killed ranks) without an active spare and an unused spare need none.
     Codex re-check 2026-10-23: the spares are every _spare*.kv and _spare*.log (a spare whose .log is missing while its kv
-    says revived=1 stays required; the caller names it <proc>:nolog), not only the logs that exist"""
+    says revived=1 stays required; the caller names it <proc>:nolog), not only the logs that exist.
+    Returns [(name, rank)] in rank order (2026-10-23 probe fix: the probe summaries' requirement reuses it)"""
     lg_of = dict(zip(sp_paths, sp_logs))
     names = sorted({proc_name(stem, p) for p in sp_paths} |
                    {os.path.basename(p)[len(os.path.basename(stem)) + 1:-len(".kv")] for p in glob.glob(stem + "_spare*.kv")})
@@ -685,7 +704,120 @@ def ctrlsum_required(stem, n, sp_paths, sp_logs, dead):
             r, inc = int(_num(d, "rank", -1)), i + 1
         if 0 <= r < n and (r not in act or inc > act[r][1]):
             act[r] = (nm, inc)
-    return [act[r][0] if r in act else "r%d" % r for r in range(n) if r in act or r not in dead]
+    return [(act[r][0] if r in act else "r%d" % r, r) for r in range(n) if r in act or r not in dead]
+
+
+# the probe summary's device line (2026-10-23, Codex finding 1): the page's own line names it ("device line named|none",
+# 2a-2-C) and, since ctxall, its context count ("contexts=n"); the summary says dev_line=0|1 for the peer it read
+PAGEDEV = re.compile(r"GIN/RC: rank (\d+): status page up \(.*?\bdevice line (named|none)\b")
+PAGECTX = re.compile(r"GIN/RC: rank (\d+): status page up \(.*?\bcontexts=(\d+)\b")
+DEV_KEYS = ("dev_reads", "dev_ok")
+
+
+def page_devs(evl):
+    """{rank: (device line named on its page: True/False/None, its context count or None)} from the status page lines (any
+    process, any incarnation: named on any of them counts as named)"""
+    out = {}
+    for e in evl:
+        m = PAGEDEV.search(e.text)
+        mc = PAGECTX.search(e.text)
+        if not (m or mc):
+            continue
+        r = int((m or mc).group(1))
+        nm, cx = out.get(r, (None, None))
+        if m:
+            nm = bool(nm) or m.group(2) == "named"
+        if mc:
+            cx = max(cx or 0, int(mc.group(2)))
+        out[r] = (nm, cx)
+    return out
+
+
+def ctx_list(v):
+    """'a/b/..' -> [a, b, ..] (ints); None when absent or not numbers"""
+    if v in (None, ""):
+        return None
+    try:
+        return [int(x) for x in str(v).split("/")]
+    except ValueError:
+        return None
+
+
+def dev_expected(d, peer, pdev):
+    """the summary's peer named a device line: its dev_line=1, or the peer's own page line says named"""
+    return d.get("dev_line") == "1" or bool(pdev.get(peer, (None, None))[0])
+
+
+def ctx_expected(d, peer, pdev):
+    """the number of contexts whose device READs the summary must list: its dev_ctx=, else the peer page's contexts= when
+    above 1 (one context: dev_reads is that context's), else None"""
+    k = fnum(d.get("dev_ctx"))
+    if k is not None:
+        return int(k)
+    c = pdev.get(peer, (None, None))[1]
+    return c if (c or 0) > 1 else None
+
+
+def probe_cols(sums, req, pdev):
+    """Codex finding 1 (2026-10-23): the READ probe's counts over every probe summary, with the gaps that make them unknown.
+    sums: [(proc, rank, peer, kv)] every summary of the trial; req: required_procs (the final generation), each of which
+    must have one summary per peer of the final generation (the library writes one line per peer with a READ QP at the
+    teardown); pdev: page_devs. A summary whose peer named a device line must carry dev_reads= and dev_ok= (and, with more
+    than one context, dev_reads_ctx= and dev_ok_ctx= of that many values). Page READs are reads - after_end_reads (the
+    READs after the peer's end apart: REVIEW_TEST fix 18), the device READs dev_reads (every context's sum). The gaps
+    ("proc:p<peer>" for a missing summary, "proc:p<peer>:<field>" for a missing counter) are in probe_missing; a missing
+    summary empties every count, a missing page / device counter its side's counts, and any gap read_success_pct: an
+    unknown count is never 0"""
+    out = {c: "" for c in ("read_n", "read_ok_n", "dev_read_n", "dev_read_ok_n", "read_page_success_pct",
+                           "read_dev_success_pct", "read_success_pct", "probe_missing", "page_torn_n")}
+    if not sums and not req:
+        return out
+    fin = {r for _, r in req}
+    gaps, gap_sum, gap_page, gap_dev = [], False, False, False
+    for nm, r in req:
+        for p in sorted(fin - {r}):
+            if not any(pp == nm and peer == p for pp, _, peer, _ in sums):
+                gaps.append("%s:p%d" % (nm, p))
+                gap_sum = True
+    for nm, _, p, d in sums:
+        for k in ("reads", "ok"):
+            if fnum(d.get(k)) is None:
+                gaps.append("%s:p%d:%s" % (nm, p, k))
+                gap_page = True
+        if dev_expected(d, p, pdev):
+            for k in DEV_KEYS:
+                if fnum(d.get(k)) is None:
+                    gaps.append("%s:p%d:%s" % (nm, p, k))
+                    gap_dev = True
+            kx = ctx_expected(d, p, pdev)
+            if kx is not None:
+                for k in ("dev_reads_ctx", "dev_ok_ctx"):
+                    v = ctx_list(d.get(k))
+                    if v is None or len(v) != kx:
+                        gaps.append("%s:p%d:%s" % (nm, p, k))
+                        gap_dev = True
+    out["probe_missing"] = "+".join(dict.fromkeys(gaps))
+    g = lambda d, k: fnum(d.get(k)) or 0
+    pr = int(sum(g(d, "reads") - g(d, "after_end_reads") for *_, d in sums))
+    po = int(sum(g(d, "ok") - g(d, "after_end_ok") for *_, d in sums))
+    dr = int(sum(g(d, "dev_reads") for *_, d in sums))
+    do = int(sum(g(d, "dev_ok") for *_, d in sums))
+    pct = lambda a, b: r1(100.0 * a / b) if b else ""
+    if sums and not gap_sum:  # torn= as before: summed where the summary has it (reported, no rule needs it)
+        out["page_torn_n"] = int(sum(g(d, "torn") for *_, d in sums))
+    if not (gap_sum or gap_page):
+        out["read_n"], out["read_ok_n"], out["read_page_success_pct"] = pr, po, pct(po, pr)
+    if not (gap_sum or gap_dev):
+        out["dev_read_n"], out["dev_read_ok_n"], out["read_dev_success_pct"] = dr, do, pct(do, dr)
+    if not gaps:
+        out["read_success_pct"] = pct(po + do, pr + dr)
+    return out
+
+
+def proc_sums(named_logs):
+    """[(proc, rank, peer, kv)] of every probe summary in [(proc, its events)]"""
+    return [(nm, int(m.group(1)), int(m.group(2)), kvd(m.group(3))) for nm, lg in named_logs for e in lg
+            for m in [PROBESUM.search(e.text)] if m]
 
 
 def gc_overlay(stem, base, meta):
@@ -962,18 +1094,6 @@ def gc_overlay(stem, base, meta):
             same = same and bool(bf) and key(bf) == key(af) and "alive=1" in af
         out["launcher_same"] = int(same)
         out["launcher_ready"] = int(meta.get("launcher_ready") == "1")
-    # the READ probe (every process; the READs after the peer's end apart: REVIEW_TEST fix 18)
-    ps = [kvd(m.group(3)) for e in every for m in [PROBESUM.search(e.text)] if m]
-    if ps:
-        g = lambda k: [fnum(d.get(k)) for d in ps if fnum(d.get(k)) is not None]
-        reads = sum((fnum(d.get("reads")) or 0) - (fnum(d.get("after_end_reads")) or 0) for d in ps)
-        oks = sum((fnum(d.get("ok")) or 0) - (fnum(d.get("after_end_ok")) or 0) for d in ps)
-        out["read_n"], out["read_ok_n"] = int(reads), int(oks)
-        out["read_success_pct"] = r1(100.0 * out["read_ok_n"] / out["read_n"]) if out["read_n"] else ""
-        out["read_lat_med_us_max"] = max(g("lat_med_us")) if g("lat_med_us") else ""
-        out["read_lat_max_us"] = max(g("lat_max_us")) if g("lat_max_us") else ""
-        out["beat_gap_max_ms"] = max(g("beat_gap_max_ms")) if g("beat_gap_max_ms") else ""
-        out["page_torn_n"] = int(sum(g("torn")))
     # the page-dependent counts: empty when no process brought its status page up (the library does not run it yet)
     if ws:
         sus = [fnum(m.group(4)) for e in every for m in [SUSPECT.search(e.text)] if m and (s < 0 or int(m.group(2)) == s)]
@@ -1071,6 +1191,20 @@ def gc_overlay(stem, base, meta):
         rn = sm("rnr")
         out["rnr_n"] = "" if rn is None else rn + port
     out["ctrlsum_fields_missing"] = "+".join(fmiss)
+    # the READ probe (Codex finding 1, 2026-10-23): every summary of every rank and spare process; the page READs and the
+    # device-line READs (every context) both count in read_success_pct; the final generation's processes (required_procs,
+    # as for the control summary) must each have one summary per peer of it, and a summary whose peer named a device line
+    # its dev_* counters (probe_cols). Only a trial whose probe ran (a status page line or a summary) has these columns
+    named_logs = [("r%d" % r, logs[r]) for r in ranks] + [(proc_name(stem, p), lg) for p, lg in zip(sp_paths, spare_all)]
+    sums = proc_sums(named_logs)
+    if pg or sums:
+        out.update(probe_cols(sums, required_procs(stem, n, sp_paths, spare_all, {bk0, kr2}),
+                              page_devs([e for _, lg in named_logs for e in lg])))
+        ps = [d for *_, d in sums]
+        g = lambda k: [fnum(d.get(k)) for d in ps if fnum(d.get(k)) is not None]
+        out["read_lat_med_us_max"] = max(g("lat_med_us")) if g("lat_med_us") else ""
+        out["read_lat_max_us"] = max(g("lat_max_us")) if g("lat_max_us") else ""
+        out["beat_gap_max_ms"] = max(g("beat_gap_max_ms")) if g("beat_gap_max_ms") else ""
     mtus = [mtu_bytes(d.get("active_mtu")) for d in cs if mtu_bytes(d.get("active_mtu")) is not None]
     if ctrl == "rdma" and any(logs[r] for r in ranks):  # B3 (b), (c): from the lines, with or without a summary
         wit_on = meta.get("witness", "1") != "0"
@@ -1317,6 +1451,76 @@ def gate_rows(R):
     return rows
 
 
+COST_PROBE_ARMS = ("probe-on", "probe-off")  # run_cost_gc.sh: both gcp, NCCL_GIN_TS_PROBE_MS=100 and 0
+
+
+def cost_probe(stem, r):
+    """Codex finding 2 (2026-10-23): the probe cost arms need the probe's own evidence in the trial's logs (run_cost_gc.sh:
+    two ranks, _r0.log and _r1.log, the plain output without receipt stamps; the library's lines carry mono_ms).
+    probe-on: each rank has a probe summary for its peer with page READs (reads - after_end_reads) > 0, and when that peer
+    named a device line (dev_line=1 or its page line) dev_reads > 0 and, with dev_ctx= or the peer page's contexts= above
+    1, every context's READs (dev_reads_ctx) > 0; the READs overlap the measurement window: the rank's status page line
+    (else its first library line) <= the window's end and its summary >= the window's start, the window being the
+    driver's kv launch_mono_ms to launch_mono_ms + kernel_ms (the same process's CLOCK_MONOTONIC; without kernel_ms only
+    the start is checked; without launch_mono_ms or a mono_ms the overlap is "no_time", not a failure). probe-off: no
+    summary, or reads, after_end_reads and dev_reads all 0. Any other arm (tcp): not checked (empty). Returns
+    {cost_probe_evidence: "ok" | reasons "; "-joined | "", cost_probe_window: per rank "r<k>:<covers|overlaps|no_time|
+    outside>" | ""}"""
+    arm = r.get("arm", "")
+    out = {"cost_probe_evidence": "", "cost_probe_window": ""}
+    if arm not in COST_PROBE_ARMS:
+        return out
+    why, win = [], []
+    ln = {k: [Ev(0.0, mono(x), "?", x) for x in rows_mi._lines("%s_r%d.log" % (stem, k))] for k in (0, 1)}
+    pdev = page_devs(ln[0] + ln[1])
+    for k in (0, 1):
+        p = 1 - k
+        sm = [(e, kvd(m.group(3))) for e in ln[k] for m in [PROBESUM.search(e.text)] if m and int(m.group(1)) == k
+              and int(m.group(2)) == p]
+        g = lambda d, f: fnum(d.get(f))
+        if arm == "probe-off":
+            for _, d in sm:  # a summary without reads= is no proof of none
+                if g(d, "reads") is None or sum(g(d, f) or 0 for f in ("reads", "after_end_reads", "dev_reads")) > 0:
+                    why.append("r%d:p%d:reads=%s dev_reads=%s on probe-off" % (k, p, d.get("reads"), d.get("dev_reads")))
+            continue
+        if not sm:
+            why.append("r%d:p%d:no_summary" % (k, p))
+            continue
+        e, d = sm[-1]
+        if g(d, "reads") is None:
+            why.append("r%d:p%d:reads_missing" % (k, p))
+        elif g(d, "reads") - (g(d, "after_end_reads") or 0) <= 0:
+            why.append("r%d:p%d:reads=0" % (k, p))
+        if dev_expected(d, p, pdev):
+            if g(d, "dev_reads") is None:
+                why.append("r%d:p%d:dev_reads_missing" % (k, p))
+            elif g(d, "dev_reads") <= 0:
+                why.append("r%d:p%d:dev_reads=0" % (k, p))
+            kx = ctx_expected(d, p, pdev)
+            if kx is not None:
+                c = ctx_list(d.get("dev_reads_ctx"))
+                if c is None or len(c) != kx:
+                    why.append("r%d:p%d:dev_reads_ctx_missing" % (k, p))
+                else:
+                    why += ["r%d:p%d:ctx%d_reads=0" % (k, p, i) for i, x in enumerate(c) if x <= 0]
+        kv = rows_rs.parse_kv("%s_r%d.kv" % (stem, k))
+        w0, km = fnum(kv.get("launch_mono_ms")), fnum(kv.get("kernel_ms"))
+        pu = next((x for x in ln[k] if PAGEUP.search(x.text) and x.m is not None), None)
+        st = pu.m if pu is not None else min((x.m for x in ln[k] if x.m is not None), default=None)
+        if w0 is None or e.m is None or st is None:
+            win.append("r%d:no_time" % k)
+            continue
+        w1 = w0 + km if km is not None else None
+        if e.m < w0 or (w1 is not None and st > w1):
+            win.append("r%d:outside" % k)
+            why.append("r%d:p%d:outside_window" % (k, p))
+        else:
+            win.append("r%d:%s" % (k, "covers" if (w1 is not None and st <= w0 and e.m >= w1) else "overlaps"))
+    out["cost_probe_evidence"] = "; ".join(why) if why else "ok"
+    out["cost_probe_window"] = "+".join(win)
+    return out
+
+
 def all_rows(R):
     rows = []
     for sub in sorted(os.listdir(R)):
@@ -1330,6 +1534,9 @@ def all_rows(R):
             if runner in ("costgc", "cost", "costmi") or sub.startswith("cost"):
                 r = rows_rs.cost_row(stem, sub)
                 r.update(rows_mi.cost_overlay(stem, r))
+                r.update(cost_probe(stem, r))  # Codex finding 2: a probe arm without its READ evidence is invalid
+                if r["cost_probe_evidence"] not in ("", "ok"):
+                    r["cost_valid"] = 0
                 r["runner"] = "cost"
                 r["key"] = "cost_%s_%s@%s" % (r["metric"], r["arm"], r["lib"])
             elif runner == "mrr" or sub.startswith("reg"):

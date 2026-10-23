@@ -523,3 +523,44 @@ smoke3 a3(STOP, 펜스 없는 옛 라이브러리)은 의심 2 050.1, 판정 10 
   9 900 ms를 거짓으로; 따로 만든 시행에서 생존 rank 하나가 문맥 0을 대면 "0+1", 문맥이 없으면 "1+none", hang 줄이 `ctx=all`이면 `inject_ok` 0. 창 규칙 수 검사는 5에서 6으로.
 - 확인: `python3 test_rows_gc.py` 142 checks, 0 failed(이전 136), `python3 check_cells_gc.py` ok(7절 28행, 셀 26, 3절 키 31, drift 0) `[측정: 로컬 실행]`. 클러스터 실행 없음.
 - **남은 것.** 라이브러리 조각의 줄 꼴(`ctx=`의 자리)과 이 열을 맞춰 보기, driver 빌드, 반례 셀의 하드웨어 한 번. `hold_gc.sh` 머리 주석의 "section 7 rows 23, 24"는 이제 24, 25다(이 작업의 고칠 범위 밖이라 그대로).
+
+## READ 성공률의 장치 줄 READ와 비용 팔의 probe 증거 (2026-10-23, Codex 지적 둘)
+
+`rows_gc.py`와 `test_rows_gc.py`만 고쳤다. `predictions_gc.csv`, `score_gc.py`, 라이브러리, 클러스터 실행은 없다.
+
+- **지적 1: READ 성공률.** `read_success_pct`가 probe summary의 페이지 `reads`/`ok`만 더했고, 장치 줄 READ(`dev_reads`/`dev_ok`, ctxall부터 문맥마다)는 빠졌다. 요약이 빠진 프로세스도 보지 않았다.
+  이제 `read_success_pct` = (페이지 ok + 장치 ok) / (페이지 READ + 장치 READ)이다. 페이지 READ는 전처럼 `reads − after_end_reads`, 장치 READ는 `dev_reads`(모든 문맥의 합)다.
+  새 열은 `dev_read_n`, `dev_read_ok_n`, `read_page_success_pct`, `read_dev_success_pct`, `probe_missing`이다. 합은 모든 rank와 예비 프로세스의 로그에서 낸다(`_spare*.log` 전부).
+- **필요 조건.** 최종 세대의 프로세스(`required_procs`, 제어 요약의 `ctrlsum_required`와 같은 규칙)마다 최종 세대의 다른 rank 하나에 요약 하나가 있어야 한다. 라이브러리는 teardown에서 READ QP가 있는 상대마다 한 줄을 쓴다 `[소스: gc_layer_smokefix.diff, gc_layer_ctxall.diff]`.
+  상대가 장치 줄을 이름 댔으면(요약의 `dev_line=1`, 또는 그 상대의 status page 줄 "device line named") `dev_reads=`, `dev_ok=`가 있어야 한다. `dev_ctx=`나 상대 페이지의 `contexts=`가 1보다 크면 그 수만큼 값이 든 `dev_reads_ctx=`, `dev_ok_ctx=`도 있어야 한다.
+  빠진 것은 `probe_missing`에 `proc:p<상대>`(요약)나 `proc:p<상대>:<칸>`(계수)로 남는다. 요약이 빠지면 모든 수와 비율이, 계수가 빠지면 그쪽 수와 비율이, 무엇이든 빠지면 `read_success_pct`가 빈칸이 된다. 0으로 채우지 않는다.
+  status page 줄도 요약도 없는 시행(tcp 빌드)은 전처럼 이 열들이 빈칸이다.
+- **지적 2: 비용 팔.** `runner costgc` 경로는 mirror의 파서만 불러서, READ가 한 번도 없던 probe-on 시행도 유효였다. 새 `cost_probe`가 시행의 `_r0.log`, `_r1.log`(수신 시각 없는 원래 출력)를 읽는다.
+  probe-on은 rank마다 상대에 대한 요약이 있어야 하고, 그 요약의 페이지 READ와 장치 READ가 0보다 커야 한다(장치 줄이 켜져 있을 때 문맥마다). probe-off는 요약이 없거나 `reads`, `after_end_reads`, `dev_reads`가 모두 0이어야 한다. tcp 팔은 보지 않는다.
+  시간 창: driver kv의 `launch_mono_ms`부터 `launch_mono_ms + kernel_ms`까지다. rank의 status page 줄(없으면 첫 `mono_ms` 줄)이 창 끝 이하이고 요약이 창 시작 이상이면 겹친다(`covers` 또는 `overlaps`), 아니면 `outside`로 무효다.
+  `launch_mono_ms`나 줄의 `mono_ms`가 없으면 `no_time`으로 적고 무효로 하지 않는다. 어긋나면 `cost_valid` 0이고, 채점기는 기존 표시 `cost_invalid`로 센다. 새 열은 `cost_probe_evidence`(`ok` 또는 이유)와 `cost_probe_window`다.
+- **시험.** `probe_checks` 8개, `cost_checks` 12개를 더했다. 합성 probe summary를 rank마다 상대 셋에 한 줄씩(예비 프로세스 포함)으로 바꿨다(라이브러리 꼴). 결과는 다음과 같다 `[측정: 로컬 실행]`.
+  - 장치 줄이 켜진 깨끗한 자료: `none_probe_clean` 맞음.
+  - 한 시행의 장치 READ 실패 하나: 페이지 비율은 100 %(옛 식), 전체는 100 % 아래, 틀림.
+  - rank 1의 상대 2 요약을 모든 시행에서 지움: 자료 부족. 같은 것을 한 시행에서만 지움: 틀림(아래 남은 것).
+  - 장치 줄이 켜진 채 `dev_ok=`를 지움: 자료 부족.
+  - 활성 예비 프로세스의 요약이 없음, 상대 페이지는 named인데 요약에 `dev_*`가 없음, `dev_ctx=2`인데 `dev_ok_ctx` 값이 하나: 셋 다 빈칸이고 이름이 남는다.
+  - 비용: 요약 지움, 페이지 READ 0, 장치 READ 0, 문맥 하나의 READ 0, 창 앞의 요약, probe-off의 READ 15는 무효다. 깨끗한 probe-on, 시각 없음, probe-off의 요약 없음과 READ 0, tcp 팔은 유효다.
+  - 변이: 옛 식(페이지만, 필요 조건 없음)을 되살리면 `probe_checks` 8개 중 7개가 실패하고, 증거 검사를 끄면 `cost_checks` 12개 중 7개가 실패한다.
+  - `python3 test_rows_gc.py` 162 checks, 0 failed(이전 142). `python3 check_cells_gc.py` ok, drift 0.
+- **smoke 다시 계산.** smoke1–5의 `a*/raw` 사본 25시행(세션 스크래치, 원자료는 읽기만)에서 고치기 전과 뒤를 견줬다. 비용 시행은 smoke에 없다(모두 `runner gcr`). 결과는 다음과 같다 `[측정: rows_gc.all_rows]`.
+  - `read_success_pct`가 바뀐 시행은 넷이다. 넷 모두 장치 READ 실패 3개가 새로 들어갔다.
+    - smoke3 a2: 99.654 → 99.651.
+    - smoke3 a5: 99.652 → 99.649.
+    - smoke5 a1: 99.716 → 99.714.
+    - smoke5 a2: 99.718 → 99.716.
+  - 고치기 전에도 100 % 아래였으므로 판정 방향은 같다.
+  - smoke1 a1, a2는 `probe_missing`이 열두 칸 모두다(teardown 요약 고침 전 빌드라 요약이 없음). `read_success_pct`는 전에도 빈칸이었다.
+  - smoke1 a3, a4, a6은 장치 줄이 없는 빌드여서 `dev_read_n` 0이다.
+  - 나머지 smoke2–5 시행은 장치 READ가 모두 성공했고, `probe_missing`이 빈칸이다.
+- **남은 것.**
+  - `[미확인]` 한 시행만 빈칸이면 `score_gc.py`는 그 시행을 거짓으로 세어 "틀림"이 된다. 자료 부족(`LIB_COLS`)은 열이 모든 시행에서 빈칸일 때뿐이다. 한 시행의 빈칸을 자료 부족이나 다시 채움으로 보려면 `score_gc.py` 또는 8절 고침이 필요하다(이 작업 범위 밖).
+  - `[미확인]` 새 열은 `LIB_COLS`에 없다.
+  - `[미확인]` gin_ts2_mi kv의 `kernel_ms`가 실제로 있는지 확인하지 않았다(harden의 `recount.py`가 같은 계통 kv에서 읽음). 없으면 창 시작만 본다.
+  - `[추론]` 라이브러리 `mono_ms`와 driver의 `launch_mono_ms`는 같은 프로세스의 CLOCK_MONOTONIC이다.
+  - `dev_reads_ctx`의 합과 `dev_reads`가 같은지는 보지 않는다.

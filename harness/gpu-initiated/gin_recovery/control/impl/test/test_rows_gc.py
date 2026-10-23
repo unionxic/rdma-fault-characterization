@@ -145,8 +145,9 @@ def trial(d, cell, k, *, build="gc", kill=3, subject=3, dead=None, witness="1", 
             L.append(ln(nd, 0.6, LIVE % r))
         L += [ln(nd, t, x) for t, x in lines.get(r, [])]
         if not is_dead:
-            if probe is not None:
-                L.append(ln(nd, 9.0, probe(r)))
+            if probe is not None:  # one summary per peer (the library's teardown line; Codex finding 1)
+                pl = probe(r)
+                L += [ln(nd, 9.0, x) for x in ([pl] if isinstance(pl, str) else pl)]
             if ctrlsum:
                 w = 3 if witness == "1" else 0
                 L.append(ln(nd, 9.1, "GIN/RC: rank %d: control summary tcp_record_bytes=%d tcp_data_bytes=0 tcp_conns=%d "
@@ -169,6 +170,9 @@ def trial(d, cell, k, *, build="gc", kill=3, subject=3, dead=None, witness="1", 
             t0 = min(rj) if rj else 2.5
             S += [ln(sn, t0 + 0.004, "GIN/RS: spare rank %d: restored as incarnation 1 from step 100" % spare_rank),
                   ln(sn, t0 + 0.005, LIVE % spare_rank)]
+        if probe is not None:  # the spare's own summaries (required when it became active)
+            pl = probe(spare_rank)
+            S += [ln(sn, 9.15, x) for x in ([pl] if isinstance(pl, str) else pl)]
         if ctrlsum:
             w = 3 if witness == "1" else 0
             S.append(ln(sn, 9.2, "GIN/RC: rank %d: control summary tcp_record_bytes=0 tcp_data_bytes=0 tcp_conns=%d "
@@ -242,9 +246,25 @@ def restore_lines(subject, t_judge, cause, survivors=(0, 1, 2), t_pub=None, budd
     return L
 
 
-def probe_ok(torn=0):
-    return lambda r: ("GIN/RC: rank %d: probe summary peer=%d reads=300 ok=300 remacc=0 noresp=0 timeout=0 gen=0 lat_med_us=6.1 "
-                      "lat_max_us=40.0 beat_gap_max_ms=4.0 torn=%d" % (r, (r + 1) % N, torn if r == 0 else 0))
+def probe_ok(torn=0, dev=False, dev_fail=None, drop=None, no_dev_ok=False):
+    """the probe summaries of rank r, one per peer (the library's teardown lines): 300 page READs, all ok; torn on rank 0's
+    first line only; dev: the device line's counters too (dev_line=1, 299 READs in one context, smoke 5's form with ctxall's
+    dev_ctx= tokens); dev_fail (r, peer): that line's dev_ok one short; drop (r, peer): that line left out; no_dev_ok: every
+    line without dev_ok="""
+    def lines(r):
+        out = []
+        for i, p in enumerate(q for q in range(N) if q != r):
+            if drop == (r, p):
+                continue
+            x = ("GIN/RC: rank %d: probe summary peer=%d reads=300 ok=300 remacc=0 noresp=0 timeout=0 gen=0 lat_med_us=6.1 "
+                 "lat_max_us=40.0 beat_gap_max_ms=4.0 torn=%d after_end_reads=0 after_end_ok=0" % (r, p, torn if (r == 0 and i == 0) else 0))
+            if dev:
+                ok = 298 if dev_fail == (r, p) else 299
+                x += " dev_line=1 dev_reads=299%s dev_quiet=%d dev_ag_diff=0 dev_bad=0 pair_max=2 dev_ctx=1 dev_reads_ctx=299 dev_ok_ctx=%d" % (
+                    "" if no_dev_ok else " dev_ok=%d" % ok, ok, ok)
+            out.append(x)
+        return out
+    return lines
 
 
 EXITED3 = "rank 3 incarnation 0 EXITED (its pidfd is readable: the thread group ended)"
@@ -908,6 +928,167 @@ def ctrlsum_checks():
             shutil.rmtree(R, ignore_errors=True)
 
 
+def probe_checks():
+    """Codex finding 1 (2026-10-23): read_success_pct counts the device-line READs too, every process of the final generation
+    must leave one probe summary per peer, and a summary whose peer named a device line its dev_* counters; a gap is
+    자료 부족 (every trial) or no pass (one trial), never 맞음 by a 0 or a ratio that was not read"""
+    import io, contextlib
+    tops = []
+    pause = lambda us: {r: [(1.0, "GIN/RS: rank %d: input pause for rank 0's checkpoint 20 ended (ok) pause_us=%d" % (r, us))]
+                        for r in range(N)}
+
+    def none_cells(R, kw_of):
+        """gc4_none_probe@gc x 10 and gc4_none_ow@gc x 5, device line on; kw_of(cell, k) -> probe_ok's arguments"""
+        raw = os.path.join(R, "raw")
+        for cell, n, us in (("gc4_none_probe", 10, 2300), ("gc4_none_ow", 5, 8100)):
+            for k in range(1, n + 1):
+                trial(raw, cell, k, kill=None, subject=None, inject="none", spare=False, killed=False, lines=pause(us),
+                      probe=probe_ok(**dict(dict(dev=True), **kw_of(cell, k))))
+
+    try:
+        res = {}
+        one = lambda cell, k: cell == "gc4_none_probe" and k == 1
+        for tag, kw_of in (("clean", lambda c, k: {}),
+                           ("devfail", lambda c, k: {"dev_fail": (0, 1)} if one(c, k) else {}),
+                           ("nosum", lambda c, k: {"drop": (1, 2)}),
+                           ("nosum1", lambda c, k: {"drop": (1, 2)} if one(c, k) else {}),
+                           ("nodevok", lambda c, k: {"no_dev_ok": True})):
+            R = tempfile.mkdtemp(prefix="gc_selftest_probe_")
+            tops.append(R)
+            none_cells(R, kw_of)
+            rows = {r["id"]: r for r in rows_gc.all_rows(R)}
+            with contextlib.redirect_stdout(io.StringIO()):
+                verd, _ = score_gc.score(R)
+            res[tag] = (rows["gc4_none_probe_gc_n1"], rows["gc4_none_probe_gc_n2"], verd.get("none_probe_clean"))
+        c1, _, vc = res["clean"]
+        check(c1["read_n"] == 3600 and c1["dev_read_n"] == 3588 and c1["dev_read_ok_n"] == 3588 and c1["read_success_pct"] == 100.0
+              and c1["probe_missing"] == "" and vc == "맞음",
+              "probe: clean, device line on: page 3600 + device 3588 READs, 100 %%, none_probe_clean 맞음 (%r %r %r %s)" % (
+                  c1["read_n"], c1["dev_read_n"], c1["read_success_pct"], vc))
+        d1, d2, vd = res["devfail"]
+        check(d1["read_page_success_pct"] == 100.0 and d1["read_dev_success_pct"] < 100.0 and d1["read_success_pct"] < 100.0
+              and d2["read_success_pct"] == 100.0 and vd == "틀림",
+              "probe: one device READ failure in one trial: page 100 %% (the old formula), total %r, none_probe_clean 틀림 (%s)" % (
+                  d1["read_success_pct"], vd))
+        m1, _, vm = res["nosum"]
+        check(m1["probe_missing"] == "r1:p2" and all(m1[c] == "" for c in ("read_n", "dev_read_n", "read_success_pct",
+                                                                             "read_page_success_pct", "page_torn_n"))
+              and vm == "자료 부족",
+              "probe: rank 1's summary for peer 2 missing in every trial: every count empty, 자료 부족 (%r %s)" % (
+                  m1["probe_missing"], vm))
+        o1, o2, vo = res["nosum1"]
+        check(o1["probe_missing"] == "r1:p2" and o1["read_success_pct"] == "" and o2["read_success_pct"] == 100.0 and vo != "맞음",
+              "probe: the same gap in one trial: that trial's rate empty, no pass (%s; score_gc.py counts an empty trial as "
+              "failed unless the column is empty in every trial)" % vo)
+        n1, _, vn = res["nodevok"]
+        check("r0:p1:dev_ok" in n1["probe_missing"] and "dev_reads" not in n1["probe_missing"] and n1["dev_read_ok_n"] == ""
+              and n1["read_dev_success_pct"] == "" and n1["read_success_pct"] == "" and n1["read_n"] == 3600 and vn == "자료 부족",
+              "probe: dev_ok= removed while the device line is on: the device side and the total empty, the page side kept, "
+              "자료 부족 (%r %s)" % (n1["probe_missing"][:40], vn))
+        # the active spare's summaries are required; an old-format summary whose peer's page named a device line lacks
+        # dev_*; two contexts need dev_ok_ctx= of two values
+        R = tempfile.mkdtemp(prefix="gc_selftest_probe_")
+        tops.append(R)
+        raw = os.path.join(R, "raw")
+        st = trial(raw, "gc4_kill3_ow", 1, lines=restore_lines(3, 2.0306, "FIN+NORESP"), probe=probe_ok(dev=True))
+        t = open(st + "_spare.log").read()
+        with open(st + "_spare.log", "w") as f:
+            f.write("\n".join(x for x in t.split("\n") if "probe summary" not in x))
+        named = {r: [(0.55, "GIN/RC: rank %d: status page up (320 B in use, probe_ms=100 stall_ms=10000 W=20, device line named "
+                            "1184 B)" % r)] for r in range(N)}
+        trial(raw, "gc4_none_ow", 1, kill=None, subject=None, inject="none", spare=False, killed=False, lines=named, probe=probe_ok())
+        two = lambda r: [x.replace("dev_ctx=1 dev_reads_ctx=299 dev_ok_ctx=299", "dev_ctx=2 dev_reads_ctx=150/149 dev_ok_ctx=299")
+                         for x in probe_ok(dev=True)(r)]
+        trial(raw, "gc4_none_ow", 2, kill=None, subject=None, inject="none", spare=False, killed=False, probe=two)
+        rows = {r["id"]: r for r in rows_gc.all_rows(R)}
+        a, b, c = rows["gc4_kill3_ow_gc_n1"], rows["gc4_none_ow_gc_n1"], rows["gc4_none_ow_gc_n2"]
+        check(a["probe_missing"] == "spare:p0+spare:p1+spare:p2" and a["read_success_pct"] == "",
+              "probe: the active spare without its summaries: named, the rate empty (%r)" % a["probe_missing"])
+        check("r0:p1:dev_reads" in b["probe_missing"] and "r0:p1:dev_ok" in b["probe_missing"] and b["read_n"] == 3600
+              and b["read_success_pct"] == "",
+              "probe: the peer's page named a device line, the summary has no dev_*: a gap (%r)" % b["probe_missing"][:40])
+        check(c["probe_missing"].split("+")[0] == "r0:p1:dev_ok_ctx" and "dev_reads_ctx" not in c["probe_missing"]
+              and c["read_success_pct"] == "",
+              "probe: dev_ctx=2 with a one-value dev_ok_ctx: a gap (%r)" % c["probe_missing"][:40])
+    finally:
+        for R in tops:
+            shutil.rmtree(R, ignore_errors=True)
+
+
+def cost_trial(d, arm, k, *, lib="gcp", sums=None, kv_extra=None):
+    """one run_cost_gc.sh trial (lat4k, receiving node rain; plain logs without receipt stamps): each rank's status page
+    line (mono 900) and, unless sums says otherwise, its summary for the peer (mono 1600); the kv's measurement window
+    launch_mono_ms 1000, kernel_ms 500. sums: {rank: None (no summary) | {field: value} (changes)}"""
+    os.makedirs(d, exist_ok=True)
+    cell = "cost_lat4k_%s_rain" % arm
+    stem = os.path.join(d, "%s_k%d" % (cell, k))
+    with open(stem + "_meta.txt", "w") as f:
+        f.write(kvline(dict(cell=cell, tag="k%d" % k, metric="lat4k", arm=arm, rx="rain", tx="sunny", mode="lat", iters=3000,
+                            bytes=4096, lib=lib, launcher_ready=1, runner="costgc", bin="gin_ts2_mi")))
+    on = arm == "probe-on"
+    for r in (0, 1):
+        kv = dict(rank=r, exit=0, win_flags="0x3", launch_mono_ms=1000.0, kernel_ms=500.0)
+        if r == 0:
+            kv.update(lat_p50_us=10.5, tx_done=3000)
+        kv.update((kv_extra or {}).get(r, {}))
+        with open("%s_r%d.kv" % (stem, r), "w") as f:
+            f.write(kvline({x: v for x, v in kv.items() if v is not None}))
+        L = ["[t] host:1:1 [0] gin_host_gdaki.cc:1 (gdakiPageSetup) NCCL WARN GIN/RC: rank %d: status page up (320 B in use, "
+             "probe_ms=%d stall_ms=10000 W=20, device line named 1184 B, contexts=1 page_read=320 B) mono_ms=900.000" % (r, 100 if on else 0)]
+        s = dict(reads=15 if on else 0, ok=15 if on else 0, after_end_reads=0, after_end_ok=0, dev_line=1,
+                 dev_reads=14 if on else 0, dev_ok=14 if on else 0, dev_ctx=1, dev_reads_ctx=14 if on else 0,
+                 dev_ok_ctx=14 if on else 0, mono_ms="1600.000")
+        sx = (sums or {}).get(r, {})
+        if sx is not None:
+            s.update(sx)
+            L.append("[t] host:1:1 [0] gin_host_gdaki.cc:2 (gdakiCtrlProbeSummary) NCCL WARN GIN/RC: rank %d: probe summary "
+                     "peer=%d %s" % (r, 1 - r, " ".join("%s=%s" % kv for kv in s.items() if kv[1] is not None)))
+        with open("%s_r%d.log" % (stem, r), "w") as f:
+            f.write("\n".join(L) + "\n")
+    return stem
+
+
+def cost_checks():
+    """Codex finding 2 (2026-10-23): a probe-on cost trial needs the probe's READs in its own logs (a summary per rank with
+    page and device READs > 0, overlapping the measurement window), a probe-off trial none; otherwise cost_valid 0 and the
+    scorer's cost_invalid"""
+    import io, contextlib
+    R = tempfile.mkdtemp(prefix="gc_selftest_cost_")
+    try:
+        d = os.path.join(R, "cost")
+        cases = [("on_good", "probe-on", {}, None, 1), ("on_nosum", "probe-on", {1: None}, None, 0),
+                 ("on_reads0", "probe-on", {0: {"reads": 0, "ok": 0}}, None, 0),
+                 ("on_dev0", "probe-on", {1: {"dev_reads": 0, "dev_ok": 0, "dev_reads_ctx": 0, "dev_ok_ctx": 0}}, None, 0),
+                 ("on_ctx0", "probe-on", {0: {"dev_ctx": 2, "dev_reads_ctx": "14/0", "dev_ok_ctx": "14/0"}}, None, 0),
+                 ("on_early", "probe-on", {0: {"mono_ms": "950.000"}}, None, 0),
+                 ("on_notime", "probe-on", {}, {0: {"launch_mono_ms": None}, 1: {"launch_mono_ms": None}}, 1),
+                 ("off_none", "probe-off", {0: None, 1: None}, None, 1), ("off_zero", "probe-off", {}, None, 1),
+                 ("off_reads", "probe-off", {1: {"reads": 15, "ok": 15}}, None, 0)]
+        for k, (_, arm, sm, kx, _) in enumerate(cases, 1):
+            cost_trial(d, arm, k, sums=sm, kv_extra=kx)
+        cost_trial(d, "tcp", 99, lib="gctp", sums={0: None, 1: None})
+        rows = {r["id"]: r for r in rows_gc.all_rows(R)}
+        with contextlib.redirect_stdout(io.StringIO()):
+            _, srows = score_gc.score(R)
+        stt = {r["id"]: r["status"] for r in srows}
+        for k, (tag, arm, _, _, want) in enumerate(cases, 1):
+            rid = "cost_lat4k_%s_rain_k%d" % (arm, k)
+            r = rows[rid]
+            check(r["cost_valid"] == want and (r["cost_probe_evidence"] == "ok") == (want == 1)
+                  and (stt[rid] == "cost_invalid") == (want == 0),
+                  "cost: %s: cost_valid %r (want %d), %r, status %s" % (tag, r["cost_valid"], want, r["cost_probe_evidence"],
+                                                                       stt[rid]))
+        g, nt = rows["cost_lat4k_probe-on_rain_k1"], rows["cost_lat4k_probe-on_rain_k7"]
+        check(g["cost_probe_window"] == "r0:covers+r1:covers" and nt["cost_probe_window"] == "r0:no_time+r1:no_time"
+              and "r0:p1:outside_window" in rows["cost_lat4k_probe-on_rain_k6"]["cost_probe_evidence"],
+              "cost: the window read from the kv (%r, %r)" % (g["cost_probe_window"], nt["cost_probe_window"]))
+        tc = rows["cost_lat4k_tcp_rain_k99"]
+        check(tc["cost_probe_evidence"] == "" and tc["cost_valid"] == 1, "cost: the tcp arm is not checked (%r %r)" % (
+            tc["cost_probe_evidence"], tc["cost_valid"]))
+    finally:
+        shutil.rmtree(R, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", default=None)
@@ -1108,6 +1289,8 @@ def main():
     int3_checks()
     review_checks()
     ctrlsum_checks()
+    probe_checks()
+    cost_checks()
     print("self-test: %d checks, %d failed%s" % (CHECKS[0], CHECKS[1], "" if a.keep else " (folder %s removed)" % R))
     if not a.keep:
         shutil.rmtree(R, ignore_errors=True)
