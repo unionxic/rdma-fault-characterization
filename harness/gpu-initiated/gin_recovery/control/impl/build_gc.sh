@@ -50,6 +50,8 @@
 #          int: then impl/gc_unit_p2.cc (both builds; tcp: 0 checks); g++ with ASan and UBSan, with -DNCCL_GIN_CTRL_TCP=1
 #          for tcp. No NCCL, no CUDA, no network.
 #   unitp1, unitp2  the development loop: phase 1's tests alone (BR p1, int), phase 2a-1's alone (BR p2, int).
+#   unitward  BR=int3: impl/gc_unit_ward.cc alone (wardfix: the activation gate waits for the ward QP's ERR, against the
+#          store's pure region); `unit` runs it too (BR=int3).
 #   syn    the host file's compile command of build, build-gcp and build-gct with -fsyntax-only (the development loop).
 #   pre    the preprocessed host file (g++ -E -P with the build's own flags) of gct, gctp and gctc (gct's flags with
 #          NCCL_GIN_CTRL_TCP_CELLS=1) against ln4's (gctp: its production flags), as is and with the tree's path in the
@@ -510,6 +512,9 @@ unitliveone() {  # int3: gc_unit_live.cc against the cut page region, as gc_unit
 unitsnapone() {  # int3: gc_unit_snap.cc, the snapshot pause over a fake CUDA and a fake store (build_gc_snap.sh's)
   unit1 "$1" gc_unit_snap "$TI/gc_unit_snap.cc" -DGDAKI_CTRL_API_NO_ENTRY_DECLS -I"$TI"
 }
+unitwardone() {  # int3: gc_unit_ward.cc, the ward QP's ERR before the activation over a fake store thread (wardfix)
+  unit1 "$1" gc_unit_ward "$TI/gc_unit_ward.cc" -DGDAKI_CTRL_API_NO_ENTRY_DECLS
+}
 unitp() {  # unitp <1|2|2b|2a2|3>: one phase's tests alone (the development loop)
   head_ok
   case "$1:$BR" in 1:p1 | 1:int | 2:p2 | 2:int | 1:p2a2 | 2:p2a2 | 2b:p2a2 | 2a2:p2a2 | 1:fix3 | 2:fix3 | 2b:fix3 | 1:p2b | 2:p2b | 2b:p2b | 1:p3 | 2:p3 | 2b:p3 | 3:p3 | 1:int2 | 2:int2 | 2b:int2 | 2a2:int2 | 3:int2) ;; *) echo "unitp$1 is not BR=$BR's" >&2; exit 2 ;; esac
@@ -591,6 +596,7 @@ unit() {
     case "$BR" in p3 | int2) unitp3one "$c" ;; esac
     [ "$INT3" = 1 ] && unitliveone "$c"
     [ "$INT3" = 1 ] && unitsnapone "$c"
+    [ "$INT3" = 1 ] && unitwardone "$c"
   done
 }
 cutdefs() {  # cutdefs <host file> <out> <start>...: for each start (a line prefix): a #define line as it is, a struct up to
@@ -941,7 +947,7 @@ info() {
     done
     [ "$BR" = p2a2 ] && echo "build_gc_p2a2.sh $(md5 "$W/build_gc_p2a2.sh") $(wc -l < "$W/build_gc_p2a2.sh") lines (agent_gc_p2a2/)"
     case "$BR" in p1 | p2 | int | p2b | p2a2 | fix3 | p3 | int2)
-      for f in gc_unit_p1.cc gate_fenced.cc gc_unit_p2.cc gc_unit_p2b.cc gc_unit_p2a2.cc gc_unit_p3.cc gc_unit_live.cc gc_unit_snap.cc gc_layer_live.diff gc_layer_snap.diff gc_layer_smokefix.diff gc_layer_sparefix.diff gc_layer_smoke2fix.diff gc_layer.diff gc_layer_p1.diff gc_layer_p2.diff gc_layer_int.diff gc_layer_p2b.diff gc_layer_p2a2.diff gc_layer_fix3.diff gc_layer_p3.diff; do
+      for f in gc_unit_p1.cc gate_fenced.cc gc_unit_p2.cc gc_unit_p2b.cc gc_unit_p2a2.cc gc_unit_p3.cc gc_unit_live.cc gc_unit_snap.cc gc_unit_ward.cc gc_layer_live.diff gc_layer_snap.diff gc_layer_smokefix.diff gc_layer_sparefix.diff gc_layer_smoke2fix.diff gc_layer.diff gc_layer_p1.diff gc_layer_p2.diff gc_layer_int.diff gc_layer_p2b.diff gc_layer_p2a2.diff gc_layer_fix3.diff gc_layer_p3.diff; do
         [ -f "$TI/$f" ] && echo "$f $(md5 "$TI/$f") $(wc -l < "$TI/$f") lines"
       done ;;
     esac
@@ -963,8 +969,9 @@ case "$STAGE" in
   unitp2b) unitp 2b ;;
   unitp2a2) unitp 2a2 ;;
   unitp3) unitp 3 ;;
-  unitlive | unitsnap) head_ok; [ "$INT3" = 1 ] || { echo "$STAGE is BR=int3's" >&2; exit 2; }
-    for c in ${CFG:-rdma tcp}; do mkdir -p "$OUT/unit_$c"; regions "$OUT/unit_$c"; if [ "$STAGE" = unitlive ]; then unitliveone "$c"; else unitsnapone "$c"; fi; done ;;
+  unitlive | unitsnap | unitward) head_ok; [ "$INT3" = 1 ] || { echo "$STAGE is BR=int3's" >&2; exit 2; }
+    for c in ${CFG:-rdma tcp}; do mkdir -p "$OUT/unit_$c"; regions "$OUT/unit_$c"
+      case "$STAGE" in unitlive) unitliveone "$c" ;; unitsnap) unitsnapone "$c" ;; *) unitwardone "$c" ;; esac; done ;;
   syn) head_ok; syn1 build "" && syn1 build-gcp "-DNCCL_GIN_TS_PRODUCTION" && syn1 build-gct "-DNCCL_GIN_CTRL_TCP=1" ;;
   pre) pre ;;
   sites) sites ;;
