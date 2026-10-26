@@ -75,6 +75,12 @@ defines for phase N to emit exactly (notes_test.md lists them):
   driver    GINRS gpuhang rank=R step=S spin=1 [ctx=all|K ]wait_ms=W mono_ms=M (impl/test/driver/gin_mi.cu GC_GPUHANG_IT:
             the hung kernel's spin started; the injection record of gc4_gpuhang12000_fence, 2026-10-23; ctx= since the
             2026-10-24 context filter GC_GPUHANG_CTX: a cell with GC_GPUHANG_CTX=K needs ctx=K, gc4_gpuhang12000_ctx1_fence)   exists
+            GINRS quiet rank=R step=S ms=L spin=1 ctas=C wait_ms=W mono_ms=M and GINRS quiet end rank=R step=S ms=L done=1
+            took_ms=T mono_ms=M (GC_QUIET_IT=S@L, 2026-10-27: the start line with the cell's S and L is the injection record of
+            gc4_quiet12000; the end line bounds the window)                                          source only (not run)
+            GINRS waitpend rank=R step=S dest=D wait_ms=W mono_ms=M (a wait over 1 000 ms) and GINRS waitpend end rank=R step=S
+            dest=D result=satisfied|released wait_ms=W mono_ms=M (GC_WAITPEND=1, 2026-10-27; the rank's kv waitpend=1 is the
+            injection record, the lines are reported)                                                source only (not run)
             GIN/TS: TEST socket mute on|off rank=R peers=N mono_ms=M                                exists (gin-harden)
   The launcher's lines (GIN/LA: node N: ..., ../launcher/gin_launcher.c, exist): EXITED, "exited; EXITED not sent", FENCE ...
   SIGKILL sent, FENCED (after SIGKILL X ms / ended before), "(STOP_launcher)", "refused to signal", activation ... LATER |
@@ -227,6 +233,23 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   kill2_after_armed          KILL2_KIND=pid_after_armed: the second kill's receipt >= the survivors' last armed line (meta)
   stable_between_pair_kills  the spare-absent cell: a stable checkpoint of the subject between the spare kill and its kill
                              (the subject's mono_ms against the runner's on the same node)
+  suspect_any_n, hold_any_n, spare_used   (2026-10-27, Codex review of the counterexample design, item 6) every SUSPECT line
+                             of the trial whatever rank it names (page-dependent like suspect_n), every hold start of any rank
+                             in any process, and 1 when a spare was used (a spare's "restored as incarnation", a survivor's
+                             "rank P restored as incarnation" or a launcher's ACCEPTED activation), else 0
+  quiet_ms, quiet_periods, quiet_lb_detail   (2026-10-27, GC_QUIET_IT on the subject) the window (its quiet end - start line,
+                             one process) and the least over the observers of max(0, P_w - X_O): P_w = floor(window /
+                             probe_ms) - 1, X_O = dev_ctx x reads - dev_quiet of the observer's last summary for the subject
+                             (the context READs not counted quiet over the whole run; each spoils at most one period of the
+                             window); 0 without the end line (a measured failure), empty without an observer's summary
+  waiter, waiter_judge_n, waiter_judge_ms_min/max, waiter_judge_causes, waiter_fenced, waiter_hold_n, waiter_given_up_n
+                             (2026-10-27, meta waiter_rank from the cell's WAITER_RANK) the observer processes (every rank and
+                             spare log but the waiter's) with a DEAD or STALLED line naming the waiter, the subject's gpuhang
+                             line -> their first such line (min, max; cross-node in rain's clock), the causes; reported: the
+                             launcher's FENCE SIGKILL or FENCED of the waiter, hold starts and give-ups naming it
+  waitpend_kv, waitpend_long_n, waitpend_ms_max, waitpend_result   (GC_WAITPEND=1 in a rank's env) "rank:kv waitpend" (each
+                             must be 1, else inject_ok 0), the waiter's long-wait lines, the longest ended wait, the results
+                             ("open" when a long wait has no end line)
   gate rows (local/): gate_real, old_go_ms, fenced_go_ms, gate_diff_ms, second_thread_ms, pidfd_ms, z_ms,
                              fenced_after_second_ms, fenced_vs_pidfd_abs_ms. gate_proc_gc.py's lines (a real child process: its
                              main thread ends first, a second thread 500 ms later; the harness's own pidfd and /proc readings)
@@ -275,6 +298,13 @@ SW_FDHOLD = re.compile(r"GIN/TS: rank (\d+): test switch FD_HOLDER=(sock|uverbs)
 SW_FREEZE = re.compile(r"GIN/RC: rank (\d+): test switch FREEZE_PAGE=")
 SW_GPUHANG = re.compile(r"GINRS gpuhang rank=(\d+) step=(\d+) spin=1 ")  # the test driver's GC_GPUHANG_IT (2026-10-23)
 HANGCTX_ENV = re.compile(r"\bGC_GPUHANG_CTX=(\d+)\b")  # its context filter (2026-10-24): the line must say ctx=<k>
+# the test driver's GC_QUIET_IT=<step>@<ms> and GC_WAITPEND=1 (2026-10-27, gc4_quiet12000 and gc4_gpuhang12000_waitpend_fence)
+QUIET_ENV = re.compile(r"\bGC_QUIET_IT=(\d+)@(\d+)\b")
+SW_QUIET = re.compile(r"GINRS quiet rank=(\d+) step=(\d+) ms=(\d+) spin=1\b")
+SW_QUIET_END = re.compile(r"GINRS quiet end rank=(\d+) step=(\d+) ms=(\d+) done=1\b")
+WAITPEND_ENV = re.compile(r"\bGC_WAITPEND=1\b")
+WP_LONG = re.compile(r"GINRS waitpend rank=(\d+) step=(\d+) dest=(\d+) wait_ms=([0-9.]+)")
+WP_END = re.compile(r"GINRS waitpend end rank=(\d+) step=(\d+) dest=(\d+) result=(satisfied|released) wait_ms=([0-9.]+)")
 SW_QPERR = re.compile(r"GIN/RC: rank (\d+): test switch QP_ERR: record QP to rank (\d+) moved to ERR")
 SW_CREDIT = re.compile(r"GIN/RC: rank (\d+): test switch CREDIT_STALL:")
 SW_DROPUD = re.compile(r"GIN/RC: rank (\d+): test switch DROP_UD: the REJOIN datagram to rank (\d+) dropped")
@@ -389,7 +419,11 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "inject_dur_off_ms", "pair_gap_ms", "ckpt_stable_before_inj", "kill2_after_armed", "stable_between_pair_kills",
            "subject_fenced", "gate_real", "old_go_ms", "fenced_go_ms", "gate_diff_ms", "second_thread_ms", "pidfd_ms", "z_ms",
            "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms", "gate_src", "cost_probe_evidence", "cost_probe_window",
-           "cost_probe_inwindow_lb", "cost_probe_expected"]
+           "cost_probe_inwindow_lb", "cost_probe_expected",
+           # 2026-10-27: the counterexample cells (gc4_quiet12000, gc4_gpuhang12000_waitpend_fence)
+           "suspect_any_n", "hold_any_n", "spare_used", "quiet_ms", "quiet_periods", "quiet_lb_detail", "waiter",
+           "waiter_judge_n", "waiter_judge_ms_min", "waiter_judge_ms_max", "waiter_judge_causes", "waiter_fenced",
+           "waiter_hold_n", "waiter_given_up_n", "waitpend_kv", "waitpend_long_n", "waitpend_ms_max", "waitpend_result"]
 
 
 def mono(l):
@@ -1052,6 +1086,8 @@ def gc_overlay(stem, base, meta):
             st_ev, _ = first(logs[s], SW_FREEZE)
         if st_ev is None:
             st_ev, _ = first(logs[s], SW_GPUHANG)
+        if st_ev is None:  # 2026-10-27: the quiet computation's start (no judgement is expected there; reported)
+            st_ev, _ = first(logs[s], SW_QUIET)
         if st_ev is not None:
             sj = [xd(st_ev, je)[0] for r, (je, k) in js.items() if k in ("STALL", "STALL_HELPER")]
             out["stop_judge_ms_min"], out["stop_judge_ms_max"] = mm(sj) if sj else ("", "")
@@ -1183,8 +1219,17 @@ def gc_overlay(stem, base, meta):
         sus = [fnum(m.group(4)) for e in every for m in [SUSPECT.search(e.text)] if m and (s < 0 or int(m.group(2)) == s)]
         out["suspect_n"] = len(sus)
         out["suspect_stale_ms_min"], out["suspect_stale_ms_max"] = mm(sus) if sus else ("", "")
+        # 2026-10-27 (Codex review of the counterexample design, item 6): every SUSPECT line of the trial, whatever rank it
+        # names and whichever process logged it (suspect_n counts the subject only)
+        out["suspect_any_n"] = sum(1 for e in every if SUSPECT.search(e.text))
         out["witness_lost_n"] = sum(1 for e in every if WITLOST.search(e.text))
         out["confirm_alive_n"] = sum(1 for e in every for m in [CONF_CLOSE.search(e.text)] if m and m.group(3) == "alive")
+    # 2026-10-27: every hold start (any rank, any subject, every rank and spare log) and whether a spare was used (a spare
+    # restored as an incarnation, a survivor's "restored as incarnation" line, or a launcher's ACCEPTED activation)
+    out["hold_any_n"] = sum(1 for e in every if HOLD_OF.search(e.text))
+    la_all = la_after_start(lalog["rain"]) + la_after_start(lalog["sunny"])
+    out["spare_used"] = int(any(SPARE_INC.search(e.text) or RESTORED_OF.search(e.text) for e in every) or
+                            any(m and m.group(2) == "ACCEPTED" for e in la_all for m in [LA_ACT.search(e.text)]))
     # the window check (Codex review 2026-10-23 item 3): changed= of every line, unreadable= and checked= (when the line
     # has them) and whether every survivor reported the line for the subject (the line names no incarnation today: any
     # line naming the subject counts). The fence predicate win_verified is 1 only when every survivor's line is there,
@@ -1289,7 +1334,75 @@ def gc_overlay(stem, base, meta):
         out["read_lat_med_us_max"] = max(g("lat_med_us")) if g("lat_med_us") else ""
         out["read_lat_max_us"] = max(g("lat_max_us")) if g("lat_max_us") else ""
         out["beat_gap_max_ms"] = max(g("beat_gap_max_ms")) if g("beat_gap_max_ms") else ""
-    mtus = [mtu_bytes(d.get("active_mtu")) for d in cs if mtu_bytes(d.get("active_mtu")) is not None]
+    # 2026-10-27, the quiet computation (GC_QUIET_IT on the subject): quiet_periods, a lower bound of the complete probe
+    # periods inside the injection window in which every registered GIN context of the subject was read quiet, the least
+    # over the observers (every other rank's own process, its last probe summary for the subject):
+    #   P_w = floor(window / probe_ms) - 1, window = the subject's quiet end line - its quiet start line (one process's
+    #         mono_ms), probe_ms = probe_ms_page: the complete periods inside the window, at least;
+    #   X_O = dev_ctx x reads - dev_quiet: the context READs of the whole run that the observer did not count quiet (work
+    #         pending, failed, bad, or not issued in a period whose page READ was), each spoiling at most one period;
+    #   quiet_periods = min over O of max(0, P_w - X_O).
+    # A context that is always quiet (the subject's receiving context) cannot raise it: a period counts only with every
+    # context quiet. No end line (the subject ended inside the window): 0, a measured failure; an observer without its
+    # summary or one of reads, dev_ctx, dev_quiet: empty (자료 부족 through probe_missing)
+    if s >= 0 and QUIET_ENV.search(" ".join(meta.get(k, "") or "" for k in ("r0_env", "r1_env", "r2_env", "r3_env"))):
+        qs, _ = first(logs[s], SW_QUIET)
+        qend, _ = first(logs[s], SW_QUIET_END)
+        if qs is not None:
+            win = xd(qs, qend)[0] if qend is not None else None
+            out["quiet_ms"] = r1(win) if win is not None else ""
+            pms = fnum(out["probe_ms_page"]) if out["probe_ms_page"] != "" else None
+            last = {}
+            for nm, rr, peer, d in sums:
+                if nm == "r%d" % rr and rr != s and peer == s:
+                    last[rr] = d
+            xs = {}
+            for rr in surv:
+                d = last.get(rr)
+                vals = [fnum(d.get(k)) for k in ("reads", "dev_ctx", "dev_quiet")] if d else [None]
+                xs[rr] = None if any(v is None for v in vals) else int(vals[1] * vals[0] - vals[2])
+            if qend is None or win is None:
+                out["quiet_periods"] = 0
+                out["quiet_lb_detail"] = "no_end_line"
+            elif pms and all(v is not None for v in xs.values()) and xs:
+                pw = int(math.floor(win / pms)) - 1
+                out["quiet_periods"] = min(max(0, pw - x) for x in xs.values())
+                out["quiet_lb_detail"] = "P_w=%d " % pw + " ".join("X_%d=%d" % kv for kv in sorted(xs.items()))
+            else:
+                out["quiet_lb_detail"] = "missing:" + "+".join(str(rr) for rr, x in sorted(xs.items()) if x is None)
+    # 2026-10-27, the waiting rank (meta waiter_rank, the cell's WAITER_RANK): the judgements naming it, per observer process
+    # (every rank's and spare's log but the waiter's own), from the subject's injection line (the driver's gpuhang line);
+    # what followed it (reported): a fence of it by its launcher, holds of it, their give-ups; the waiter's own long-wait
+    # lines (GC_WAITPEND)
+    wr = int(meta["waiter_rank"]) if str(meta.get("waiter_rank", "")).isdigit() else -1
+    if 0 <= wr < n:
+        out["waiter"] = wr
+        obs = [("r%d" % r, logs[r]) for r in ranks if r != wr] + [(proc_name(stem, p), lg) for p, lg in zip(sp_paths, spare_all)]
+        firsts, causes = [], {}
+        for nm, lg in obs:
+            jl = [(e, m.group(3)) for e in lg for m in [DEAD.search(e.text) or STALLED.search(e.text)] if m and int(m.group(2)) == wr]
+            if jl:
+                je, cz = min(jl, key=lambda x: x[0].t)
+                firsts.append(je)
+                causes[cz] = causes.get(cz, 0) + 1
+        out["waiter_judge_n"] = len(firsts)
+        out["waiter_judge_causes"] = "+".join("%s:%d" % kv for kv in sorted(causes.items()))
+        hang_ev = first(logs[s], SW_GPUHANG)[0] if s >= 0 else None
+        if hang_ev is not None and firsts:
+            ds = [xd(hang_ev, je)[0] for je in firsts]
+            ds = [d for d in ds if d is not None]
+            out["waiter_judge_ms_min"], out["waiter_judge_ms_max"] = mm(ds) if ds else ("", "")
+        if la_all or lalog["rain"] or lalog["sunny"]:
+            out["waiter_fenced"] = int(any(m and int(m.group(1)) == wr for e in la_all
+                                           for m in [LA_SIGKILL.search(e.text) or LA_FENCED.search(e.text)]))
+        out["waiter_hold_n"] = sum(1 for e in every for m in [HOLD_OF.search(e.text)] if m and int(m.group(2)) == wr)
+        out["waiter_given_up_n"] = sum(1 for e in every for m in [GIVEN_UP_OF.search(e.text)] if m and int(m.group(1)) == wr)
+        wl_ = [m for e in logs[wr] for m in [WP_LONG.search(e.text)] if m and int(m.group(1)) == wr]
+        we_ = [m for e in logs[wr] for m in [WP_END.search(e.text)] if m and int(m.group(1)) == wr]
+        out["waitpend_long_n"] = len(wl_)
+        out["waitpend_ms_max"] = r1(max(float(m.group(5)) for m in we_)) if we_ else ""
+        out["waitpend_result"] = "+".join(sorted({m.group(4) for m in we_})) if we_ else ("open" if wl_ else "")
+    mtus =[mtu_bytes(d.get("active_mtu")) for d in cs if mtu_bytes(d.get("active_mtu")) is not None]
     if ctrl == "rdma" and any(logs[r] for r in ranks):  # B3 (b), (c): from the lines, with or without a summary
         wit_on = meta.get("witness", "1") != "0"
         live_p, open_p = ring_pairs(logs, spare_all, n)
@@ -1384,12 +1497,26 @@ def gc_overlay(stem, base, meta):
         if "GC_GPUHANG_IT" in envs:  # the driver's switch: its line (spin=1) on the subject; with GC_GPUHANG_CTX=k, ctx=k
             hc = HANGCTX_ENV.search(envs)
             need.append(("GC_GPUHANG_IT", re.compile(SW_GPUHANG.pattern + r"ctx=%s " % hc.group(1)) if hc else SW_GPUHANG))
+        qe_env = QUIET_ENV.search(envs)
+        if qe_env:  # 2026-10-27: the driver's GC_QUIET_IT: its start line (spin=1) with the cell's step and length; the end
+            # line is not part of the record (a rank fenced inside the window has none: a measured failure, not missing data)
+            need.append(("GC_QUIET_IT", re.compile(r"GINRS quiet rank=\d+ step=%s ms=%s spin=1\b" % qe_env.groups())))
         if need:
             out["inject_ok"] = int(all(any(rx.search(e.text) for e in every) for _, rx in need))
+        # 2026-10-27: GC_WAITPEND=1 in a rank's env: that rank's kv must say waitpend=1 (the driver read the switch; the
+        # kv is written at the start, so a rank fenced later still has it); missing on any such rank: no injection record
+        wp_ranks = [r for r in ranks if WAITPEND_ENV.search(meta.get("r%d_env" % r, "") or "")]
+        if wp_ranks:
+            wkv = {r: str(rows_rs.parse_kv("%s_r%d.kv" % (stem, r)).get("waitpend", "")) for r in wp_ranks}
+            out["waitpend_kv"] = "+".join("%d:%s" % (r, wkv[r] or "-") for r in wp_ranks)
+            ok_wp = all(wkv[r] == "1" for r in wp_ranks)
+            out["inject_ok"] = int(ok_wp and (out["inject_ok"] in ("", 1)))
         if s >= 0 and "TEST_FREEZE_PAGE" in envs:
             inj_ev = first(logs[s], SW_FREEZE)[0]
         if s >= 0 and "GC_GPUHANG_IT" in envs:
             inj_ev = first(logs[s], SW_GPUHANG)[0]
+        if s >= 0 and qe_env:
+            inj_ev = first(logs[s], SW_QUIET)[0]
     if rk is not None and plan is not None:
         out["inject_off_ms"] = r1(abs(rk.t - plan) * 1000.0)
     if s >= 0 and inj_ev is not None:

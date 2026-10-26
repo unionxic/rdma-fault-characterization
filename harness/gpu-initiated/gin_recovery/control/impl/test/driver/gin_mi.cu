@@ -1,5 +1,6 @@
 // gin-control copy (../../../EXPERIMENT.md 7, 9.9; user decision 2026-10-23): gin-mirror's ../../../../mirror/impl/test/gin_mi.cu
-// (md5 556804c0, commit 980a0752) with one research-cell switch and its context filter, nothing else changed:
+// (md5 556804c0, commit 980a0752) with the research-cell switches below (the GPU hang, its context filter, and since
+// 2026-10-27 the quiet computation and the pending wait), nothing else changed:
 //   GC_GPUHANG_IT=<N>  a live (not spare) process, overwrite or gin_rs workload: in step N every sending CTA, after its put
 //                      is posted and before the flush that polls it, spins on a device word nothing ever sets. The GPU
 //                      progress line (the QP words of the context the put went on: posted > polled) then stops with work
@@ -17,6 +18,35 @@
 //                      usage error (exit 1). Unset or empty: every sending CTA (C = all, the GPU hang cell as before).
 //                      With k != 0 context 0 stays quiet (posted == polled) and only context k is pending and frozen: the
 //                      counterexample cell gc4_gpuhang12000_ctx1_fence for a line that reads context 0 only.
+//   GC_QUIET_IT=<N>@<ms> (2026-10-27, ../../../EXPERIMENT.md 7, 9.9, the coordinating session's decision) a live (not
+//                      spare) process, overwrite or gin_rs workload: at the start of step N's kernel, before any slot write,
+//                      put or wait, thread 0 of every CTA (the senders and the receiver) spins on %globaltimer for <ms>
+//                      milliseconds, then the step runs as usual. Step N-1's flush has returned, so every context of this
+//                      rank is quiet (posted == polled) for the whole window while the host threads keep beating: a long
+//                      quiet computation, not a fault (the cell gc4_quiet12000). Each CTA sets its mapped host word to 1
+//                      when it starts and to 2 when it is done; the host prints
+//                      "GINRS quiet rank=R step=N ms=M spin=1 ctas=C wait_ms=W" once every CTA started (spin=0 after
+//                      2 000 ms without it) and "GINRS quiet end rank=R step=N ms=M done=1 took_ms=T" once every CTA is done
+//                      (done=0 after M + 5 000 ms), then synchronizes. kv quiet_it, quiet_ms (start), quiet_step,
+//                      quiet_started, quiet_done, quiet_took_ms. A value that is not <N>@<ms> (N >= 0, 0 < ms <= 600000),
+//                      RS_TRAIN with the switch, or GC_GPUHANG_IT on the same process is a usage error (exit 1).
+//   GC_WAITPEND=1      (2026-10-27, same decision) a live process, overwrite or gin_rs workload: every sending CTA, after its
+//                      put to destination d is posted and before the flush that polls it, waits until the first 8 bytes
+//                      of its own receive slot (d, s) are non-zero (d's step-s put has landed; the receive window starts
+//                      zeroed and has one slot per (peer, step)). Thread 0 polls with repeated volatile loads, and every
+//                      10 000 polls reads the devComm abort word exactly as the untimed waitSignal does
+//                      (nccl::utility::testAbort on devComm.abortFlag): a raised word (an abort, a fallback) releases the
+//                      wait, the CTA skips its flush, and the step reports released (kv released, xchg released) like a
+//                      released receiver. The marker is the value d sends: the host checks before step 0 that
+//                      sendValue(x_d(s), d, me, s) is non-zero for every step and peer (else usage error
+//                      waitpend_marker_zero, exit 1; kv waitpend_marker=nonzero). A wait never posts anything, so the CTA
+//                      keeps one posted-but-unpolled put toward d while it waits: an application that waits on a peer's
+//                      data before it flushes (the cell gc4_gpuhang12000_waitpend_fence, rank 1). A host thread prints
+//                      "GINRS waitpend rank=R step=S dest=D wait_ms=W" when one wait passes 1 000 ms and
+//                      "GINRS waitpend end rank=R step=S dest=D result=satisfied|released wait_ms=W" when that wait ends
+//                      (W from the device's %globaltimer). kv waitpend, waitpend_marker, waitpend_long_n,
+//                      waitpend_max_ms, waitpend_released. Any other non-empty value than 0 or 1, or RS_TRAIN with it, is
+//                      a usage error (exit 1).
 // The head comment of gin-mirror's file follows unchanged.
 // gin_mi.cu - gin-mirror, test branch (../../EXPERIMENT.md 7, 9.8; impl/PARALLEL.md row exp/gin-mirror-test): gin-restore's
 // test workload (../../../restore/impl/test/gin_rs.cu, md5 bfcefa19, copied and then extended) with two more workloads.
@@ -254,16 +284,41 @@ __host__ __device__ static inline bool isPoison(uint64_t w0, uint64_t w1, size_t
 struct Out {
   int txErr, rxErr, devBad, released, reexec, devPoison;
   unsigned long long got, want;
+  int wpRel;  // gin-control GC_WAITPEND: a sending CTA's slot wait released by the abort word (0 otherwise)
 };
+// gin-control GC_QUIET_IT and GC_WAITPEND: the GPU's global nanosecond timer
+__device__ static inline unsigned long long globalNs() {
+  unsigned long long t;
+  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+  return t;
+}
+// GC_WAITPEND: the mapped host words of sending CTA k, WP_WORDS per CTA: [0] the step + 1 of the wait in progress or last
+// begun, [1] its start (globaltimer ns), [2] 1 waiting, 2 satisfied, 3 released, [3] the step + 1 of the last wait that
+// ended, [4] its result (2 or 3), [5] its length (ns), [6] the longest wait of the run (ns)
+#define WP_WORDS 8
 // CTA k < N-1: the sender to the k-th other rank (context = that rank); CTA N-1: the receiver (context = this rank).
 // overwrite (gin-mirror, RS_OVERWRITE): one send slot per destination, poisoned right after the flush returned.
 __global__ void stepKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, uint8_t* sendBuf, const uint8_t* recvBuf,
                            uint64_t* xHist, int* execCnt, size_t bytes, int n, int me, int s, size_t regionBytes,
                            int overwrite, struct ncclDevComm devComm, Out* out, int hangStep, int hangCtx,
-                           const volatile int* hangWord, volatile int* hangSeen) {
+                           const volatile int* hangWord, volatile int* hangSeen, int quietStep,
+                           unsigned long long quietNs, volatile int* quietFlags, int waitPend,
+                           volatile unsigned long long* wpInfo) {
   const int k = blockIdx.x;
-  __shared__ int sRc, sBad, sRel, sPois;
+  __shared__ int sRc, sBad, sRel, sPois, sWpRel;
   __shared__ uint64_t sRecv[8];
+  // gin-control GC_QUIET_IT (head comment): every CTA, before anything of this step; step s-1's flush has returned
+  if (s == quietStep) {
+    if (threadIdx.x == 0) {
+      quietFlags[k] = 1;
+      __threadfence_system();
+      const unsigned long long q0 = globalNs();
+      while (globalNs() - q0 < quietNs) __nanosleep(100000);
+      quietFlags[k] = 2;
+      __threadfence_system();
+    }
+    __syncthreads();
+  }
   if (k < n - 1) {
     const int d = k < me ? k : k + 1;
     const uint64_t x = ((volatile uint64_t*)xHist)[s];  // x_me(s): written before this launch (host or step s-1)
@@ -287,6 +342,44 @@ __global__ void stepKernel(ncclWindow_t sendWin, ncclWindow_t recvWin, uint8_t* 
         __threadfence_system();
       }
       while (*hangWord == 0) __nanosleep(1000);
+    }
+    // gin-control GC_WAITPEND (head comment): the put to d is posted and not polled; wait for d's step-s put to this rank
+    // (the first 8 bytes of receive slot (d, s): sendValue, non-zero by the host's check) with waitSignal's abort test
+    if (waitPend) {
+      if (threadIdx.x == 0) {
+        sWpRel = 0;
+        const volatile uint64_t* mark =
+          (const volatile uint64_t*)(recvBuf + (size_t)idxOf(d, me) * regionBytes + (size_t)s * bytes);
+        if (*mark == 0) {
+          volatile unsigned long long* wi = wpInfo + (size_t)k * WP_WORDS;
+          const unsigned long long w0 = globalNs();
+          wi[0] = (unsigned long long)s + 1;
+          wi[1] = w0;
+          __threadfence_system();
+          wi[2] = 1;
+          __threadfence_system();
+          uint32_t steps = 0;
+          while (*mark == 0) {
+            if (nccl::utility::testAbort(devComm.abortFlag, steps)) {
+              sWpRel = 1;
+              break;
+            }
+          }
+          const unsigned long long len = globalNs() - w0;
+          wi[5] = len;
+          wi[4] = sWpRel ? 3 : 2;
+          if (len > wi[6]) wi[6] = len;
+          __threadfence_system();
+          wi[3] = (unsigned long long)s + 1;
+          wi[2] = sWpRel ? 3 : 2;
+          __threadfence_system();
+        }
+      }
+      __syncthreads();
+      if (sWpRel) {  // released like waitSignal's receiver: no flush, no slot reuse, the step ends here for this CTA
+        if (threadIdx.x == 0) out->wpRel = 1;
+        return;
+      }
     }
     ncclResult_t rc = gin.flush(ncclCoopCta());
     if (rc != ncclSuccess) atomicCAS(&sRc, 0, (int)rc);
@@ -553,6 +646,30 @@ int main(int argc, char** argv) {
   char* hangCtxEnd = nullptr;
   const long hangCtxL = hangCtxSet ? strtol(hangCtxEnv, &hangCtxEnd, 10) : -1;
   const int hangCtx = !hangCtxSet ? -1 : (*hangCtxEnd == '\0' && hangCtxL >= 0 && hangCtxL < 1024) ? (int)hangCtxL : -2;
+  // gin-control GC_QUIET_IT=<step>@<ms> (2026-10-27): a long quiet computation of a live process; -1 off
+  const char* quietEnv = spare ? nullptr : getenv("GC_QUIET_IT");
+  const bool quietSet = quietEnv && *quietEnv;
+  int quietStep = -1;
+  long quietMs = 0;
+  bool quietBad = false;
+  if (quietSet) {
+    char* e1 = nullptr;
+    const long st = strtol(quietEnv, &e1, 10);
+    char* e2 = nullptr;
+    const long ms = (e1 != quietEnv && *e1 == '@') ? strtol(e1 + 1, &e2, 10) : -1;
+    if (e1 == quietEnv || *e1 != '@' || e2 == e1 + 1 || (e2 && *e2 != '\0') || st < 0 || st > 1000000 || ms <= 0 ||
+        ms > 600000)
+      quietBad = true;
+    else {
+      quietStep = (int)st;
+      quietMs = ms;
+    }
+  }
+  // gin-control GC_WAITPEND=1 (2026-10-27): a sender that waits for its peer's data before it flushes; live only
+  const char* wpEnv = spare ? nullptr : getenv("GC_WAITPEND");
+  const bool wpSet = wpEnv && *wpEnv;
+  const bool waitPend = wpSet && strcmp(wpEnv, "1") == 0;
+  const bool wpBad = wpSet && strcmp(wpEnv, "1") != 0 && strcmp(wpEnv, "0") != 0;
   const int macro =
 #ifdef NCCL_GIN_RESTORE_DEVICE
     1;
@@ -588,6 +705,28 @@ int main(int argc, char** argv) {
   // a context no sending CTA of this rank uses (its own rank: the receiver's; outside 0..N-1; not a number) never spins
   if (hangStep >= 0 && hangCtxSet && (hangCtx < 0 || hangCtx >= N || hangCtx == rank)) {
     kv("usage_error=gpuhang_ctx exit=1");
+    return 1;
+  }
+  // gin-control GC_QUIET_IT and GC_WAITPEND (2026-10-27; head comment)
+  kv("quiet_it=%d quiet_ms=%ld waitpend=%d", quietStep, quietMs, waitPend ? 1 : 0);
+  if (quietBad) {
+    kv("usage_error=quiet_it exit=1");
+    return 1;
+  }
+  if (quietStep >= 0 && train) {
+    kv("usage_error=quiet_train exit=1");
+    return 1;
+  }
+  if (quietStep >= 0 && hangStep >= 0) {
+    kv("usage_error=quiet_gpuhang exit=1");
+    return 1;
+  }
+  if (wpBad) {
+    kv("usage_error=waitpend exit=1");
+    return 1;
+  }
+  if (waitPend && train) {
+    kv("usage_error=waitpend_train exit=1");
     return 1;
   }
   printf("GINRS start rank=%d mode=%s mono_ms=%.3f\n", rank, spare ? "spare" : "live", monoMs());
@@ -862,8 +1001,75 @@ int main(int argc, char** argv) {
     *hHangSeen = 0;
     CK(cudaHostGetDevicePointer((void**)&dHangSeen, (void*)hHangSeen, 0));
   }
+  // gin-control GC_QUIET_IT: one mapped word per CTA (1 started, 2 done)
+  volatile int* hQuiet = nullptr;
+  int* dQuiet = nullptr;
+  if (quietStep >= 0) {
+    CK(cudaHostAlloc((void**)&hQuiet, sizeof(int) * (size_t)N, cudaHostAllocMapped));
+    for (int c = 0; c < N; c++) hQuiet[c] = 0;
+    CK(cudaHostGetDevicePointer((void**)&dQuiet, (void*)hQuiet, 0));
+  }
+  // gin-control GC_WAITPEND: WP_WORDS mapped words per sending CTA, and a host thread that prints the long waits
+  volatile unsigned long long* hWp = nullptr;
+  unsigned long long* dWp = nullptr;
+  std::atomic<bool> wpStop{false};
+  std::atomic<int> wpLongN{0};
+  std::thread wpMon;
+  if (waitPend) {
+    // the marker is the value each peer sends (the first 8 bytes of its slot): it must never be 0 (head comment)
+    std::vector<std::vector<uint64_t>> xRef;
+    hostReference(N, steps, xRef);
+    for (int s = 0; s < steps; s++)
+      for (int d = 0; d < N; d++)
+        if (d != rank && sendValue(xRef[(size_t)s][(size_t)d], d, rank, s) == 0) {
+          kv("usage_error=waitpend_marker_zero step=%d src=%d exit=1", s, d);
+          _exit(1);
+        }
+    kv("waitpend_marker=nonzero");
+    CK(cudaHostAlloc((void**)&hWp, sizeof(unsigned long long) * WP_WORDS * (size_t)N, cudaHostAllocMapped));
+    for (int c = 0; c < WP_WORDS * N; c++) hWp[c] = 0;
+    CK(cudaHostGetDevicePointer((void**)&dWp, (void*)hWp, 0));
+    wpMon = std::thread([&wpStop, &wpLongN, hWp, N, rank]() {
+      std::vector<unsigned long long> shown((size_t)N, 0), ended((size_t)N, 0);  // the step + 1 printed / ended per CTA
+      std::vector<double> seen((size_t)N, 0.0);  // the host time a wait in progress was first seen
+      std::vector<unsigned long long> seenStep((size_t)N, 0);
+      for (bool last = false;; last = wpStop.load()) {
+        for (int c = 0; c < N - 1; c++) {
+          volatile unsigned long long* wi = hWp + (size_t)c * WP_WORDS;
+          const int dest = c < rank ? c : c + 1;
+          const unsigned long long st = wi[2];
+          __sync_synchronize();
+          const unsigned long long cur = wi[0];
+          const double now = monoMs();
+          if (st == 1 && cur != 0) {
+            if (seenStep[(size_t)c] != cur) {
+              seenStep[(size_t)c] = cur;
+              seen[(size_t)c] = now;
+            }
+            if (shown[(size_t)c] != cur && now - seen[(size_t)c] > 1000.0) {
+              shown[(size_t)c] = cur;
+              wpLongN.fetch_add(1);
+              printf("GINRS waitpend rank=%d step=%llu dest=%d wait_ms=%.3f mono_ms=%.3f\n", rank, cur - 1, dest,
+                     now - seen[(size_t)c], now);
+              fflush(stdout);
+            }
+          }
+          const unsigned long long eStep = wi[3];
+          __sync_synchronize();
+          if (shown[(size_t)c] != 0 && ended[(size_t)c] != shown[(size_t)c] && eStep == shown[(size_t)c]) {
+            ended[(size_t)c] = eStep;
+            printf("GINRS waitpend end rank=%d step=%llu dest=%d result=%s wait_ms=%.3f mono_ms=%.3f\n", rank, eStep - 1, dest,
+                   wi[4] == 3 ? "released" : "satisfied", (double)wi[5] * 1e-6, monoMs());
+            fflush(stdout);
+          }
+        }
+        if (last) break;
+        usleep(1000);
+      }
+    });
+  }
   int txErr = 0, rxErr = 0, devBad = 0, released = 0, releasedStep = -1, reexecMax = 0, stepsDone = startStep;
-  int hooksLive = 0, devPoison = 0;
+  int hooksLive = 0, devPoison = 0, wpReleased = 0;
   long long stableLast = -1;
   for (int s = startStep; s < steps; s++) {
     CK(cudaMemset(dOut, 0, sizeof(Out)));
@@ -872,8 +1078,29 @@ int main(int argc, char** argv) {
                               rank, s, devComm, dOut);
     else
       stepKernel<<<N, 128>>>(sendWin, recvWin, (uint8_t*)dSend, (const uint8_t*)dRecv, dxHist, dExec, bytes, N, rank, s,
-                             regionBytes, overwrite ? 1 : 0, devComm, dOut, hangStep, hangCtx, dHangWord, dHangSeen);
+                             regionBytes, overwrite ? 1 : 0, devComm, dOut, hangStep, hangCtx, dHangWord, dHangSeen,
+                             quietStep, (unsigned long long)quietMs * 1000000ull, dQuiet, waitPend ? 1 : 0, dWp);
     CK(cudaGetLastError());
+    if (s == quietStep) {  // gin-control GC_QUIET_IT: the injection record (start and end), then the synchronize below
+      const double q0 = monoMs();
+      auto count = [&](int at) {
+        int c = 0;
+        for (int b = 0; b < N; b++) c += hQuiet[b] >= at ? 1 : 0;
+        return c;
+      };
+      while (count(1) < N && monoMs() - q0 < 2000.0) usleep(50);
+      const int started = count(1) == N ? 1 : 0;
+      const double qs = monoMs();
+      printf("GINRS quiet rank=%d step=%d ms=%ld spin=%d ctas=%d wait_ms=%.3f mono_ms=%.3f\n", rank, s, quietMs, started,
+             count(1), qs - q0, qs);
+      fflush(stdout);
+      while (count(2) < N && monoMs() - qs < (double)quietMs + 5000.0) usleep(50);
+      const int done = count(2) == N ? 1 : 0;
+      const double qe = monoMs();
+      printf("GINRS quiet end rank=%d step=%d ms=%ld done=%d took_ms=%.3f mono_ms=%.3f\n", rank, s, quietMs, done, qe - qs, qe);
+      fflush(stdout);
+      kv("quiet_step=%d quiet_started=%d quiet_done=%d quiet_took_ms=%.3f", s, started, done, qe - qs);
+    }
     if (s == hangStep) {  // gin-control GC_GPUHANG_IT: the injection record, then the synchronize below never returns
       const double h0 = monoMs();
       while (*hHangSeen == 0 && monoMs() - h0 < 2000.0) usleep(50);
@@ -899,11 +1126,12 @@ int main(int argc, char** argv) {
     devBad += ho.devBad;
     devPoison += ho.devPoison;
     if (ho.reexec > reexecMax) reexecMax = ho.reexec;
-    if (ho.released) {
+    if (ho.wpRel) wpReleased = 1;  // gin-control GC_WAITPEND: a sender's slot wait let go (head comment)
+    if (ho.released || ho.wpRel) {
       released++;
       releasedStep = s;
-      printf("GINRS step rank=%d step=%d released=1 got=%llu want=%llu tx_err=%d mono_ms=%.3f\n", rank, s, ho.got, ho.want,
-             ho.txErr, monoMs());
+      printf("GINRS step rank=%d step=%d released=1 got=%llu want=%llu tx_err=%d%s mono_ms=%.3f\n", rank, s, ho.got, ho.want,
+             ho.txErr, ho.wpRel ? " waitpend_released=1" : "", monoMs());
       break;  // a let-go wait: the run ends here for this rank (the slots of this step may be missing)
     }
     stepsDone = s + 1;
@@ -929,6 +1157,13 @@ int main(int argc, char** argv) {
   }
   g_asyncStop.store(true);
   poller.join();
+  if (waitPend) {  // gin-control GC_WAITPEND: the monitor's last pass (an end line for a long wait), then the run's summary
+    wpStop.store(true);
+    wpMon.join();
+    unsigned long long mx = 0;
+    for (int c = 0; c < N - 1; c++) mx = hWp[(size_t)c * WP_WORDS + 6] > mx ? hWp[(size_t)c * WP_WORDS + 6] : mx;
+    kv("waitpend_long_n=%d waitpend_max_ms=%.3f waitpend_released=%d", wpLongN.load(), (double)mx * 1e-6, wpReleased);
+  }
 
   // the exact checks against the host reference
   std::vector<std::vector<uint64_t>> xAll;

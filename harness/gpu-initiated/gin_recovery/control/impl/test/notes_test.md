@@ -27,9 +27,9 @@
 
 | 파일 | 하는 일 |
 |---|---|
-| `cells_gc.json` | 7절 28행(`rows`; 2026-10-24 GPU hang 반례 셀 `gc4_gpuhang12000_ctx1_fence`를 더하기 전 27행, 2026-10-23 GPU hang 셀과 `gc4_kill3_noreport_nofdhold`를 더하기 전 25행), cell@build 26개(2026-10-24 전 25개, 그 전 23개; `cells`: env, 주입, n, 대조 팔, 찾는 키, 시행 한도), 본 실행 hold C1–C3, C5–C11과 pilot hold P0–P4, 회귀(gin-mirror `cells_mi.json`의 비용 밖 hold 여덟을 `@gc`로, `@gct`는 `regression.builds.gct.cells`의 `mi4_kill3_ow` 하나), 비용 가족 probe의 한 쌍, 로컬 항목. 2026-10-22 셀 줄임 전에는 27행, 27개, C1–C11(아래 "셀 줄임" 절) |
+| `cells_gc.json` | 7절 30행(`rows`; 2026-10-27 반례 셀 둘 `gc4_quiet12000`, `gc4_gpuhang12000_waitpend_fence`를 더하기 전 28행, 2026-10-24 GPU hang 반례 셀 `gc4_gpuhang12000_ctx1_fence`를 더하기 전 27행, 2026-10-23 GPU hang 셀과 `gc4_kill3_noreport_nofdhold`를 더하기 전 25행), cell@build 28개(2026-10-27 전 26개, 2026-10-24 전 25개, 그 전 23개; `cells`: env, 주입, n, 대조 팔, 찾는 키, 시행 한도), 본 실행 hold C1–C3, C5–C11과 pilot hold P0–P5(P5는 2026-10-27 pilot 4), 회귀(gin-mirror `cells_mi.json`의 비용 밖 hold 여덟을 `@gc`로, `@gct`는 `regression.builds.gct.cells`의 `mi4_kill3_ow` 하나), 비용 가족 probe의 한 쌍, 로컬 항목. 2026-10-22 셀 줄임 전에는 27행, 27개, C1–C11(아래 "셀 줄임" 절) |
 | `check_cells_gc.py` | 셀 파일과 예측 표를 EXPERIMENT.md 3, 7절에 맞춰 봄(행 수, 셀 이름, 빌드, n, 찾는 키마다 셀 하나 이상, 셀마다 예측 하나 이상, 회귀 빌드의 `cells` 목록) |
-| `predictions_gc.csv` | 3절의 31행(2026-10-24 `gpuhang_ctx1_fence_restore`를 더하기 전 30행, 2026-10-23 `gpuhang_fence_restore`, `fdhold_sock_helper_stall`을 더하기 전 28행, 2026-10-22 셀 줄임 전 31행). 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
+| `predictions_gc.csv` | 3절의 33행(2026-10-27 `quiet_compute_no_judge`, `waiter_old_rule`을 더하기 전 31행, 2026-10-24 `gpuhang_ctx1_fence_restore`를 더하기 전 30행, 2026-10-23 `gpuhang_fence_restore`, `fdhold_sock_helper_stall`을 더하기 전 28행, 2026-10-22 셀 줄임 전 31행). 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
 | `remote_gc.sh` | 원격 셸에 넘기는 명령을 한 번만 따옴표로 쌈(`rcmd`, `pcmd`, `sunny_sh`), 공용 읽기 질의(`MTU_Q`, `RNR_Q`, `GID_PROBE`)와 IPv4 가림 식 |
 | `launcher_gc.sh` | launcher 하나(start, stale, info, mark, table, stop). 0700 소켓 디렉터리(시작마다 새 경로), `--tc`, 예비 프로세스 옵션을 그대로 넘김, 낡은 소켓이나 프로세스면 띄우지 않음(exit 3), 기록한 PID와 시작 시각에만 신호, 준비 실패 때 스스로 끔 |
 | `run_gc.sh` | 시행 하나. 9.9절 주입, 시행마다 launcher 띄우기와 끄기(예비 프로세스 명령과 환경 포함), 예비 프로세스 로그 따라 읽기, 시행 표지, 노드 시계 차, ss 스냅숏, `active_mtu`, RNR 카운터, 끄는 차례 |
@@ -695,3 +695,30 @@ pilot 3 [PILOT.md](../../results/20261024_pilot3/PILOT.md) "문제" 1, 2의 고�
   - review 6의 기대값을 바꿨다. 합성 buddy의 `fence FENCED (by EXITED …)` 줄이 이제 펜스여서 22.6 ms, `survivor_FENCED`, `mono+mono_xnode`이다. 창 줄 길은 M이 본다.
 - 확인 `[측정: 로컬 실행]`: `python3 test_rows_gc.py`는 207 검사에 실패 0이다(198 + 9). `python3 check_cells_gc.py`는 ok이고 drift 0이다. 클러스터 실행 없음, 커밋 없음.
 - 남은 것: PILOT.md 문제 3(둘째 죽음의 판정과 펜스 열이 없음)은 이번 범위 밖이다.
+
+## 반례 셀 둘: 조용한 긴 계산, 멈춘 rank를 기다리는 정상 rank (2026-10-27, 조율 세션 결정)
+
+설계와 검토, 결정은 [../notes_counterexample.md](../notes_counterexample.md). 판정 규칙(라이브러리)은 그대로이고 바뀐 것은 시험 쪽뿐이다.
+
+- **driver.** `GC_QUIET_IT=<걸음>@<ms>`(live만): 그 걸음 커널의 첫머리에서 모든 CTA의 thread 0이 `%globaltimer`로 돌고, CTA마다 매핑된 호스트 낱말에 1(시작)과 2(끝)를 쓴다. 호스트 줄
+  `GINRS quiet rank=R step=N ms=M spin=1 ctas=C wait_ms=W mono_ms=..`, `GINRS quiet end rank=R step=N ms=M done=1 took_ms=T mono_ms=..`, kv `quiet_it`, `quiet_ms`, `quiet_step`, `quiet_started`,
+  `quiet_done`, `quiet_took_ms`. `<N>@<ms>` 꼴이 아니거나 `RS_TRAIN`, 같은 프로세스의 `GC_GPUHANG_IT`과 함께면 usage error. `GC_WAITPEND=1`(live만): 보내는 CTA가 put 뒤 flush 전에 받는 칸 (d, s)의
+  첫 8 B를 반복 volatile load로 기다리고, 1만 번마다 `nccl::utility::testAbort(devComm.abortFlag, steps)`(untimed `waitSignal`과 같음)로 풀리면 flush를 건너뛰고 `Out.wpRel`로 released를 알린다(호스트의
+  step 줄 `released=1 ... waitpend_released=1`). 표지는 `sendValue`이고 호스트가 걸음 0 전에 모든 (걸음, 상대)에서 0이 아님을 확인한다(kv `waitpend_marker=nonzero`). 매핑된 낱말 8개씩(CTA마다)을
+  호스트 스레드가 1 ms마다 읽어 1 000 ms 넘은 기다림에 `GINRS waitpend rank=R step=S dest=D wait_ms=W`, 그 끝에 `GINRS waitpend end ... result=satisfied|released wait_ms=W`를 낸다. 끝 kv
+  `waitpend_long_n`, `waitpend_max_ms`, `waitpend_released`. 빌드: `build_driver_gc.sh mi`(MIOUT `mi_cx2`, scratch `agent_gc_cx/out`), 경고 0, gin_mi md5 `5bd02b27`, 소스 md5 `a28df3fe`, 라이브러리 pf2
+  `39024bef`에 링크. 실행 안 함.
+- **셀.** `gc4_quiet12000@gc`(R3_ENV `GC_QUIET_IT=155@12000`)와 `gc4_gpuhang12000_waitpend_fence@gc`(R3_ENV `GC_GPUHANG_IT=155`, R1_ENV `GC_WAITPEND=1`, 새 키 `WAITER_RANK=1`), 둘 다 GPU hang 셀의
+  env, n 5, `bound_s` 60, hold C10(셀 일곱, 35 시행: 840 s 한도에 들지 않으면 hold를 다시 돌려 채움), pilot hold P5(셀마다 n 2). `run_gc.sh`는 `WAITER_RANK`를 meta `waiter_rank`로만 남긴다.
+- **예측.** `quiet_compute_no_judge`(safety, 모든 채점 시행), `waiter_old_rule`(perf, ≥ 4/5), `gpuhang_fence_restore`는 `per cell:` 꼴로 두 셀. 셀 열에 키가 둘 이상인 행의 일반 꼴은 첫 셀만 채점되므로
+  (`score_gc.eval_part`의 `keys[:1]`) `check_cells_gc.py`의 `plain_part_fails`가 실패로 친다(지금 행에는 없음).
+- **채점 열**(`rows_gc.py`). `suspect_any_n`(모든 SUSPECT 줄; 페이지가 선 시행만), `hold_any_n`(모든 hold 시작), `spare_used`(예비 프로세스의 restored 줄, 생존 rank의 "restored as incarnation" 줄,
+  launcher ACCEPTED 가운데 하나), `quiet_ms`, `quiet_periods`, `quiet_lb_detail`(셈은 rows_gc.py 머리 주석과 EXPERIMENT 3절 행), `waiter`, `waiter_judge_n`(대기자를 대상으로 한 DEAD나 STALLED 줄을 낸
+  관측 프로세스 수; 대기자 자신의 로그는 뺌), `waiter_judge_ms_min/max`(rank 3의 hang 줄 → 그 첫 줄), `waiter_judge_causes`, `waiter_fenced`, `waiter_hold_n`, `waiter_given_up_n`, `waitpend_kv`,
+  `waitpend_long_n`, `waitpend_ms_max`, `waitpend_result`. 주입 확인: `GC_QUIET_IT=N@M`이면 시작 줄(step=N ms=M spin=1)이 있어야 하고 끝 줄은 기록이 아니다(창 안의 펜스는 실패로 셈:
+  `quiet_periods` 0). `GC_WAITPEND=1`이 env에 있는 rank마다 kv `waitpend=1`이 있어야 한다. 없으면 `inject_ok` 0 → `not_applied`(8절). `score_gc.py`: `LIB_COLS`에 `suspect_any_n`, `quiet_periods`,
+  `REQUIRED_COLS`에 `quiet_periods`(빠짐 표시 `probe_missing`).
+- **자체 시험 B7.** 두 셀의 깨끗한 시행 다섯씩(`quiet_periods` 114 = 119 − 5, rank 1의 판정 10 200 ms를 rank 0, 2의 줄로; 옛 rank 3의 로그는 hang에서 끝남), 그리고 따로 된 폴더 넷: 대상 아닌 rank의
+  의심 하나 → `quiet_compute_no_judge` 틀림; rank 1 판정 없음 → `waiter_old_rule` 틀림; 주입 기록 없음(시작 줄, 다른 걸음의 시작 줄, kv `waitpend`, hang 줄) → `not_applied`, 끝 줄 없음 → 채점되고 0,
+  관측자 summary 없음 → 그 시행 자료 부족; 기다리는 셀의 rank 3 판정이 10.6 s → `per cell:`에서 `gpuhang_fence_restore` 틀림, 같은 규칙의 일반 꼴은 첫 셀만 보아 맞음(그리고 `plain_part_fails`가 잡음).
+  `python3 test_rows_gc.py`: 221 검사 실패 0, `python3 check_cells_gc.py`: drift 0 `[측정: 로컬 실행, 2026-10-27]`.

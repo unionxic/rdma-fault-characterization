@@ -39,8 +39,9 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
      column its formula reads (LIB_COLS: from TODO lines and the runner's new readings) is empty in every scored trial.
      gin-mirror's own predictions ("mirror:") keep that study's rule (its score.py).
   4. the acceptance grammar is gin-mirror's (s2_close 3.2: count(<expr>), N_SCORED, median) with these forms:
-       <expr>                          on the first key of the cells column
-       per cell: <expr>                on every key
+       <expr>                          on the first key of the cells column (check_cells_gc.py fails a row with two or
+                                       more keys and such a part, 2026-10-27: write "per cell:" or "<key>:")
+       per cell: <expr>                on every key (each key against the same k; gpuhang_fence_restore since 2026-10-27)
        <key>: <expr> ;; <key>: <expr>  each part on its key; every part must hold
        subset(<cond>): <expr>          the key's scored rows where cond holds (N_SCORED their number); none -> "자료 없음"
        mirror: <id,...|all>@<build>    gin-mirror's predictions_mi.csv rows (cost rows left out) with @mi -> @<build>,
@@ -95,7 +96,9 @@ LIB_COLS = {"confirm_w_ms", "fin_judge_dev_min_ms", "fin_judge_dev_max_ms", "rea
             "probe_ms_page", "ring_live_pairs",
             # the runner's new readings (not run on the cluster yet) and the library gate program's real-pid mode
             "ss_tcp_conn_n", "ss_tx_delta_bytes", "ss_rx_delta_bytes", "old_go_ms", "fenced_go_ms",
-            "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms"}
+            "fenced_after_second_ms", "fenced_vs_pidfd_abs_ms",
+            # 2026-10-27: the counterexample cells' page-dependent and probe-summary columns (rows_gc.py)
+            "suspect_any_n", "quiet_periods"}
 EXCL = {"void": "시작 실패(생존 rank가 교환 전에 끝남)", "config_driver": "셀이 정한 빌드가 아닌 프로그램으로 돎",
         "workload": "workload나 mirror 설정이 셀과 다름",
         "config": "셀이 정한 제어 빌드, 증인, 펜스, 정책, 복원 설정과 다르게 돎(또는 복원 셀에서 Resume 거절)",
@@ -414,6 +417,9 @@ REQUIRED_COLS = dict([(c, _CTRL_MARK) for c in (
 # a live process's delta was negative (a socket closed between the reads) or the second snapshot is missing (rows_gc.py
 # ss_deltas): 자료 부족 for that trial, never a 0 and never a fail
 REQUIRED_COLS["ss_tx_delta_bytes"] = ("ss_excluded",)
+# 2026-10-27: quiet_periods reads every observer's probe summary for the subject: empty only when one is missing (rows_gc.py;
+# probe_missing names it), so such a trial is 자료 부족 for quiet_compute_no_judge (a missing end line is 0, a measured fail)
+REQUIRED_COLS["quiet_periods"] = _PROBE_MARK
 
 
 class _Unknown(s2.Nil):

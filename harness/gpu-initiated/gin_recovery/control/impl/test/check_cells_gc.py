@@ -19,7 +19,10 @@ Checks (each failure is one line "FAIL ..."; exit 1 when any):
               "build:" key at that build; a regression build that lists "cells" (the 2026-10-22 trim: @gct runs only
               mi4_kill3_ow) names gin-mirror regression cells only, and a row's regression cell at that build is one of them;
               every row's kind is safety, perf or cost, and cost exactly when its acceptance is a cost: rule (Codex review
-              2026-10-23 item 5; score_gc.py judges safety rows at 0 failures)
+              2026-10-23 item 5; score_gc.py judges safety rows at 0 failures); a row with two or more keys has no plain
+              count() part (the scorer reads a plain part on the first key only; each part names its key or says
+              "per cell:", 2026-10-27, plain_part_fails); a row with two or more keys has no plain count() part (the
+              scorer reads a plain part on the first key only; each part names its key or says "per cell:", 2026-10-27)
   build keys  every build key a cell, a pilot cell, the regression, the cost family, "builds" or a prediction's "build:"
               names is in the document's build-key table (the header table "빌드 키"; a stray gctc fails)
   drift       each predictions_gc.csv row against its own section 3 row (2026-10-22: the stall rows still counted STALL and
@@ -131,6 +134,22 @@ def drift(p, cols):
             out.append("drift %s: %s <= %g, section 3's row writes < %g" % (pid, c, b, b))
         if op == "<" and inle and not inlt:
             out.append("drift %s: %s < %g, section 3's row writes ≤ %g" % (pid, c, b, b))
+    return out
+
+
+def plain_part_fails(preds):
+    """the rows with two or more keys (mirror: ones apart) and a plain count() part, which the scorer reads on the first key
+    only (score_gc.eval_part); each such part is one fail line (2026-10-27)"""
+    out = []
+    for p in preds:
+        pk = [x.strip() for x in p["cells"].split(";") if x.strip() and not x.strip().startswith("mirror:")]
+        if len(pk) < 2:
+            continue
+        for part in [x.strip() for x in p["acceptance"].split(";;") if x.strip()]:
+            if not (part.startswith(("mirror:", "per cell:", "cost:")) or
+                    re.match(r"([A-Za-z0-9_]+@[a-z]+|build:[a-z]+|local:[a-z_]+):", part)):
+                out.append("prediction %s: a plain part on %d keys is scored on the first key only (%s): write per cell: "
+                           "or <key>:" % (p["id"], len(pk), part[:40]))
     return out
 
 
@@ -288,6 +307,11 @@ def main():
             elif (k == "cost") != p["acceptance"].strip().startswith("cost:"):
                 fail("prediction %s: kind %s but its acceptance %s a cost: rule" % (
                     p["id"], k, "is" if k != "cost" else "is not"))
+        # 2026-10-27 (Codex review of the counterexample design, item 6): the scorer evaluates a plain count() part on the
+        # first key of the cells column only (score_gc.eval_part, keys[:1]); a row with two or more keys must give each part
+        # a key ("<key>:"), "per cell:", "mirror:" or "cost:", or the other keys go unscored
+        for msg in plain_part_fails(pr):
+            fail(msg)
         # the regression cells: gin-mirror's non-cost cells at the regression builds; "mirror:" names gin-mirror's ids
         reg = cj["regression"]
         src = os.path.join(HERE, reg["source"])
