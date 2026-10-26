@@ -722,3 +722,15 @@ pilot 3 [PILOT.md](../../results/20261024_pilot3/PILOT.md) "문제" 1, 2의 고�
   의심 하나 → `quiet_compute_no_judge` 틀림; rank 1 판정 없음 → `waiter_old_rule` 틀림; 주입 기록 없음(시작 줄, 다른 걸음의 시작 줄, kv `waitpend`, hang 줄) → `not_applied`, 끝 줄 없음 → 채점되고 0,
   관측자 summary 없음 → 그 시행 자료 부족; 기다리는 셀의 rank 3 판정이 10.6 s → `per cell:`에서 `gpuhang_fence_restore` 틀림, 같은 규칙의 일반 꼴은 첫 셀만 보아 맞음(그리고 `plain_part_fails`가 잡음).
   `python3 test_rows_gc.py`: 221 검사 실패 0, `python3 check_cells_gc.py`: drift 0 `[측정: 로컬 실행, 2026-10-27]`.
+
+## pilot 4의 실행기 몫 (2026-10-27)
+
+결과와 셀마다의 해설은 [../../results/20261027_pilot4/PILOT.md](../../results/20261027_pilot4/PILOT.md)에 있다. 라이브러리, launcher, 채점기, 셀과 예측 파일은 고치지 않았다.
+
+- `hold_gc.sh` `after_trial`(+14줄): GPU hang 셀의 대상(시행 meta `subject_rank`의 env에 `GC_GPUHANG_IT=`)이 펜스되지 않고 자기 watchdog으로 끝나면(kv `watchdog=1`, `cuda_error=`와 `nccl_error=` 없음)
+  STOP_nic 대신 `<결과>/hang_watchdog.txt`에 한 줄 적는다. 다른 kv와 오류 키는 그대로 STOP이다.
+  - 까닭: pilot 4 a1의 `gc4_gpuhang12000_waitpend_fence` n1에서 생존 셋이 rank 3을 hold 없이 거절해(정상 rank 1의 판정이 먼저) 펜스가 없었고, 스스로 끝나지 않는 hang 커널의 rank 3이 200 s watchdog으로 끝나
+    STOP_nic가 섰다. 생존 셋의 kv에는 오류 키가 없고 새 mlx5 줄 0, 펌웨어 실패 그대로였다 `[측정]`.
+  - 확인: `bash -n` 통과, a1 시행 사본으로 함수만 돌려 기록 줄이 나고 같은 kv에 `nccl_error=`를 더하면 STOP_nic `[측정: 로컬 실행]`. a2에서 돌았다(셀 B n2, 기록 한 줄, STOP 0) `[측정]`.
+- 실행기 쪽에서 본 남은 일: 셀 B 시행 하나가 200.4 s라 `cells_gc.json`의 `bound_s` 60과 맞지 않는다(본 실행 hold C10의 시간 어림, PILOT.md 문제 3). 셀 파일은 고치지 않았다.
+- 자체 시험 `test_rows_gc.py`는 실행기 파일을 읽지 않아 다시 돌리지 않았다(시작 때 221 검사 실패 0).

@@ -206,11 +206,25 @@ after_trial() {  # hold_mi.sh's per-trial stops: kv error keys, a refused Resume
     wall=$(mval "$meta" wall_s)
     case "$wall" in ""|*[!0-9.]*) ;; *) cap=$(awk -v r="$QRATE" -v w="$wall" 'BEGIN{c = r * w; printf "%d", (c == int(c)) ? c : int(c) + 1}') ;; esac
   fi
+  local hsub="" hsubenv=""
+  if [ -n "$meta" ] && [ -f "$meta" ]; then  # pilot 4 (2026-10-27): the GPU hang subject's own watchdog, below
+    hsub=$(mval "$meta" subject_rank)
+    case "$hsub" in [0-9]*) hsubenv=$(mval "$meta" "r${hsub}_env") ;; *) hsub="" ;; esac
+  fi
   for f in $2; do
     [ -f "$f" ] || continue
     case "$f" in
       *_spare.kv|*_spare_2nd.kv) grep -q 'watchdog=1' "$f" && echo "$(date '+%F %T') $what: $(basename "$f") ended at its watchdog" >> "$R/spare_wait.txt"; continue ;;
     esac
+    # pilot 4 (2026-10-27): a GPU hang cell's subject (GC_GPUHANG_IT in its env) spins with no end of its own; when no
+    # survivor fences it (the fallback: every survivor declined) its own watchdog ends it. That is the cell's measured
+    # outcome, not a NIC fault: recorded in hang_watchdog.txt, no STOP. Any cuda_error= or nccl_error= still stops, and
+    # every other kv keeps the rule.
+    if [ -n "$hsub" ] && [ "${f##*_r}" = "$hsub.kv" ] && echo "$hsubenv" | grep -q 'GC_GPUHANG_IT=' &&
+        grep -q 'watchdog=1' "$f" && ! grep -qE 'cuda_error=|nccl_error=' "$f"; then
+      echo "$(date '+%F %T') hold $H: $what: $(basename "$f") (the GPU hang subject, rank $hsub) ended at its own watchdog: not fenced" | tee -a "$R/hang_watchdog.txt"
+      continue
+    fi
     if grep -qE 'cuda_error=|watchdog=1|nccl_error=' "$f"; then
       echo "$(date '+%F %T') hold $H: $what: an error key in $(basename "$f"); no further trial" | tee -a "$R/STOP_nic"; break
     fi
