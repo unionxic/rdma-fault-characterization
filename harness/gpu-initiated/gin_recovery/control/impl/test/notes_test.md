@@ -816,3 +816,40 @@ build script    impl/test/driver/build_driver_gc.sh   3cf014a5f03281ba3f0457e7cb
 ```
 
 경로는 세션 스크래치 기준이다. 본 실행 배포 뒤 두 노드의 md5가 이 값과 같은지 `deploy_gc.sh` 출력으로 확인한다(아직 배포 안 함).
+
+### 2026-10-28 묶음 (① 라이브러리; 위 wp2 묶음을 대신함)
+
+위 wp2 묶음은 ① 확정된 중단 결정의 전파(`impl/notes_abortdec.md`, 커밋 `90c61553`) 전 판이라 본 실행에 쓰지 않는다. pilot 7(2026-10-28)이 같은 driver 소스와 머리(digest `65fdf19b`)를
+① 라이브러리에 다시 빌드했고(rain, nvcc, 경고 0, `OUTROOT=agent_gc_cx/out MIOUT=mi_ad`; [../../results/20261028_pilot7/VERSIONS.md](../../results/20261028_pilot7/VERSIONS.md)), 그 `gin_mi`가 pilot 7에서 돌았다.
+nvcc 출력은 바이트 단위로 재현되지 않으므로 본 실행 묶음 `gc_main1`은 다시 빌드하지 않고 아래 파일을 그대로 배포한다(`gc_pilot7`에는 gc, `gin_mi`, launcher 셋만 있음). `gctc`, `gctp`는 쓰는 셀이 없다(셀 파일 `notes.gctc`, `notes.gctp`).
+`PREREG.txt` 주석에 그대로 옮길 것(모두 md5) `[측정: 2026-10-28 이 세션에서 다시 셈]`:
+
+```
+library layer   impl/gc_layer_int.diff                3ae8f572e991c32f60878cb740ef5e3e  (vs f53e5d2, patience; scratch tree agent_gc_p2a2/nccl-src HEAD 05f5a97)
+libnccl gc      agent_gc_p2a2/out/gc_ad               ed13666bacdf07dcc2e16ef4028561e3  (= build/lib)
+libnccl gcp     agent_gc_p2a2/out/gcp_ad              55ffb80e1ac74e58b05666fbd08176e8  (= build-gcp/lib, cost arms)
+libnccl gct     agent_gc_p2a2/out/gct_ad              df1d091bb8ba6ec391604e4933c9c56d  (tcp regression arm)
+headers         agent_gc_p2a2/build/include           digest 65fdf19b302d19d593a81886871900ba
+driver gin_mi           agent_gc_cx/out/mi_ad/gin_mi            0565a677eb68b304540e6518f16bd48e  src gin_mi.cu 8270cce39caa1f4ebe013b89fc23d04f, macro=1, lib gc
+driver gin_mi_nomacro   agent_gc_cx/out/mi_ad/gin_mi_nomacro    e8530bcc33920690191f86afec6dd3e6  src gin_mi.cu 8270cce39caa1f4ebe013b89fc23d04f, macro=0, lib gc
+driver gin_mr ff        agent_gc_cx/out/mi_ad/mr/ff/gin_mr      ac1a419b9c5995e92397c0d12f5aadb4  src remaining/gin_mr.cu a6a526ad3df1b853efd48d53a0a11ca7, macro=0, lib gc
+driver gin_mr hold      agent_gc_cx/out/mi_ad/mr/hold/gin_mr    23b33c94be24c718b4af70d0569c7dfe  src remaining/gin_mr.cu a6a526ad3df1b853efd48d53a0a11ca7, macro=1, lib gc
+driver gin_ts2_mi       agent_gc_cx/out/mi_ad/gin_ts2_mi        2bf3b36aef636ddf2b91682a905f596a  src gin_ts2.cu 1779db9d62eaa5dba5758b14a5ba6e17 + restore/feas/gin_ts2_winflags.diff fb9d2d8d47c689892238a9dac6338e8d + mirror/impl/test/gin_ts2_mi.diff 0e5aef6cb4295bb7e110d5a882f87280 (patched a26bec9cc002ccc1cb469d502aa0e386), macro=1, lib gcp
+launcher        lb-fix/gin_launcher                   d1aceaf68f00d99eafa4d585195f3348
+build script    impl/test/driver/build_driver_gc.sh   3cf014a5f03281ba3f0457e7cb8f190d  (stages mi, nomacro, mr, cost; unchanged)
+runner          impl/test/hold_gc.sh                  1113382149995f6d6ce8a5b734395c1a  (pilot 7 PCELL fix)
+```
+
+## pilot 7의 실행기 몫 (2026-10-28)
+
+결과와 셀마다의 해설은 [../../results/20261028_pilot7/PILOT.md](../../results/20261028_pilot7/PILOT.md), 판은 같은 폴더의 VERSIONS.md다. 라이브러리, launcher, 채점기, 셀과 예측 파일은 고치지 않았다.
+
+- `hold_gc.sh` `json_hold`의 `PCELL-` 꼴(+5줄): 같은 셀 이름을 k번 쓰면 시행 k개(n1..nk)다(`PRC-`와 같은 규칙, 처음 나온 차례). 전에는 이름마다 n 1이라 둘째가 `_n1` meta로 건너뛰어졌다 `[소스]`.
+  - 까닭: 기다리는 rank도 멈춘 셀(`gc4_gpuhang12000_waiter_hung`)을 다른 셀과 한 pilot hold에서 n 2로 돌려야 했다(P6은 셀 B n 2, 고리 셀을 함께 돈다).
+  - 확인: `bash -n` 통과, `json_hold`만 떼어 돌려 이번 hold의 셀 줄(waiter_hung n 2, 나머지 n 1)과 pilot 5의 `PCELL-gc4_kill3_ow+gc4_stop12000_fence`(전과 같음)를 봄 `[측정: 로컬 실행]`. pilot 7 `PCELL1`에서 돌았다(시행 다섯, STOP 0) `[측정]`.
+  - md5 `2b09ef87` → `11133821`.
+- driver: `build_driver_gc.sh` 네 단계(`mi`, `nomacro`, `mr`, `cost`)를 piece ① 라이브러리(gc `ed13666b`, gcp `55ffb80e`)에 `MIOUT=mi_ad`로 빌드했다. 경고 0, 머리 digest `65fdf19b`. md5는 VERSIONS.md(`gin_mi` `0565a677`, `gin_mi_nomacro` `e8530bcc`, `gin_mr` ff `ac1a419b`, hold `23b33c94`, `gin_ts2_mi` `2bf3b36a`).
+  "본 실행 driver 빌드" 절의 묶음(`mi_wp2`, 라이브러리 wp2)과 소스, 머리가 같고 링크한 라이브러리만 다르다. 본 실행은 piece ① 라이브러리를 쓰므로 그 절에 2026-10-28 묶음을 더했다(조율 세션, 위).
+- 채점기에서 본 것(고치지 않음): 기다리는 rank도 멈춘 셀 n1에서 r2가 rank 1을 스스로 판정하지 않고 r0의 `ABORT_DECIDED`를 적용해 `waiter_judge_n` 1, `waiter_judge_causes` `STALL:1`이다. 열 정의(판정 줄을 낸 관측 프로세스)대로라 결함은 아니다.
+  결정의 적용은 decline 사유 `ABORT_DECIDED(…): a confirmed abort decision`으로만 보이며 이것을 세는 열은 없다. 생존 rank 둘 이상의 자기 판정을 세는 조건이 있는 셀에서 쓸지는 결정 대기다(PILOT.md 문제 1).
+- 자체 시험 `test_rows_gc.py`는 실행기 파일을 읽지 않아 다시 돌리지 않았다.

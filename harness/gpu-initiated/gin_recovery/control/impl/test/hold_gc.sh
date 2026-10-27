@@ -46,7 +46,7 @@
 #                          folder only (P* is a pilot hold); PRG-gct-G1 is the tcp regression control mi4_kill3_ow once
 #   COST-probe-<rain|sunny>[-<metric>]       the probe cost family on the receiving node (3 arms x 3 metrics x 6 rounds)
 #   PCELL-<cell>[+<cell>...]   pilot 2 (2026-10-24): the named cells of cells_gc.json (cells or pilot_cells), each once (n 1),
-#                          in a pilot folder only; PRG-<b>-<h1>+<h2>... runs several gin-mirror holds' cells in one pilot hold
+#                          in a pilot folder only (pilot 7, 2026-10-28: a name given k times runs k trials, n1..nk); PRG-<b>-<h1>+<h2>... runs several gin-mirror holds' cells in one pilot hold
 #   PRC-<gct|gc>-<cell>[+<cell>...]   pilot 3 (2026-10-24): named cells of the regression holds (as PRG-, at that build), in a
 #                          pilot folder only; a name given k times runs k trials (n1..nk)
 #   COSTPILOT-<rain|sunny>[-<rounds>] one round (or 1-6 rounds, the arm order reversed on even rounds) of the probe cost family
@@ -292,13 +292,18 @@ elif h.startswith("PRC-"):  # pilot 3 (2026-10-24): PRC-<b>-<cell>[+<cell>...], 
         e = es[0]
         out.append((e["cell"], b, e["kind"], names.split("+").count(name), e.get("driver", ""),
                     150 if name.startswith("mi4_train_") else 60, {}, e.get("env", {})))
-elif h.startswith("PCELL-"):  # pilot 2 (2026-10-24): PCELL-<cell>[+<cell>...], each named cell of cells_gc.json once (n 1)
-    for name in h[len("PCELL-"):].split("+"):
+elif h.startswith("PCELL-"):  # pilot 2 (2026-10-24): PCELL-<cell>[+<cell>...], each named cell of cells_gc.json once (n 1);
+    names = h[len("PCELL-"):].split("+")  # pilot 7 (2026-10-28): a name given k times runs k trials (n1..nk), as PRC-
+    order = []
+    for name in names:
+        if name not in order:
+            order.append(name)
+    for name in order:
         ks = [k for k in list(c["cells"]) + list(c["pilot_cells"]) if k.split("@")[0] == name]
         if len(ks) != 1:
             sys.exit("PCELL hold %s: cell %s names %d cell entries" % (h, name, len(ks)))
         e = c["cells"].get(ks[0]) or c["pilot_cells"][ks[0]]
-        out.append((e["cell"], e["build"], e["kind"], 1, e.get("driver", ""), e.get("bound_s", 60),
+        out.append((e["cell"], e["build"], e["kind"], names.count(name), e.get("driver", ""), e.get("bound_s", 60),
                     e.get("launcher_env", {}), dict(e.get("env", {}))))
 elif h in c["holds"]:
     for x in c["holds"][h]:
