@@ -1,6 +1,6 @@
 {
  "study": "gin-control",
- "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n and the switch values are fixed at the pre-registration prereg/gin-control-v1). Input of hold_gc.sh (what to run), check_cells_gc.py (the cross-check with section 3) and score_gc.py (the planned scored trials per cell@build). 'rows' are section 7's 30 table rows (25 after the 2026-10-22 trim, 27 before it; the GPU-hang cell and, after smoke 5, gc4_kill3_noreport_nofdhold added 2026-10-23; the GPU hang counterexample gc4_gpuhang12000_ctx1_fence 2026-10-24; the quiet computation gc4_quiet12000 and the waiting rank gc4_gpuhang12000_waitpend_fence 2026-10-27); 'cells' the cell@build runs (kind rs -> run_gc.sh through cells_gc.sh); 'holds' the main-run holds C1-C3, C5-C11 (C4 held only the removed tcp contrast cells) and the pilot holds P0-P5 (never scored; P3 the two NO_EXIT_REPORT cells of hold C6, P4 the pilot-only cell of 'pilot_cells', P5 pilot 4's two counterexample cells, n 2 each, 2026-10-27); 'regression' gin-mirror's non-cost cells by name and env at @gc, and at @gct only the one control cell of regression.builds.gct.cells; 'cost' the probe cost family (run_cost_gc.sh); 'local' the CPU-only items (no cluster). env values are run_gc.sh's variables (R<r>_ENV, SPARE_ENV: the library's test switches of that process). Each trial's launchers run with its cell's launcher_env (EXPERIMENT 5: one launcher per node per trial since 2026-10-22, started by run_gc.sh). Every TODO names the phase or the pilot that fixes it.",
+ "about": "The cells of ../../EXPERIMENT.md 7 (DRAFT: n and the switch values are fixed at the pre-registration prereg/gin-control-v1). Input of hold_gc.sh (what to run), check_cells_gc.py (the cross-check with section 3) and score_gc.py (the planned scored trials per cell@build). 'rows' are section 7's 30 table rows (25 after the 2026-10-22 trim, 27 before it; the GPU-hang cell and, after smoke 5, gc4_kill3_noreport_nofdhold added 2026-10-23; the GPU hang counterexample gc4_gpuhang12000_ctx1_fence 2026-10-24; the quiet computation gc4_quiet12000 and the waiting rank gc4_gpuhang12000_waitpend_fence 2026-10-27); 'cells' the cell@build runs (kind rs -> run_gc.sh through cells_gc.sh); 'holds' the main-run holds C1-C3, C5-C11 (C4 held only the removed tcp contrast cells) and the pilot holds P0-P6 (never scored; P3 the two NO_EXIT_REPORT cells of hold C6, P4 the pilot-only cell gc4_stop12000_pilot of 'pilot_cells', P5 pilot 4's two counterexample cells, n 2 each, 2026-10-27; P6 pilot 5's cells: cell B x 2, the two pilot-only cells gc4_gpuhang12000_waiter_hung x 2 and gc4_gpuhang12000_cycle x 1 of 'pilot_cells', the GPU hang control and the quiet cell x 1 each, 2026-10-27); 'regression' gin-mirror's non-cost cells by name and env at @gc, and at @gct only the one control cell of regression.builds.gct.cells; 'cost' the probe cost family (run_cost_gc.sh); 'local' the CPU-only items (no cluster). env values are run_gc.sh's variables (R<r>_ENV, SPARE_ENV: the library's test switches of that process). Each trial's launchers run with its cell's launcher_env (EXPERIMENT 5: one launcher per node per trial since 2026-10-22, started by run_gc.sh). Every TODO names the phase or the pilot that fixes it.",
  "builds": {
   "gc": {
    "lib": "gc",
@@ -1270,6 +1270,69 @@
    "control": "-",
    "bound_s": 60,
    "pilot_note": "9.9 끝의 채점하지 않는 pilot 셀: 판정 전 생존 rank의 장치 대기와 hold 한도(rank 3 SIGSTOP 12 000 ms, 펜스 끔). 본 실행 셀과 이름이 달라 파일 이름이 겹치지 않음"
+  },
+  "gc4_gpuhang12000_waiter_hung@gc": {
+   "cell": "gc4_gpuhang12000_waiter_hung",
+   "build": "gc",
+   "kind": "rs",
+   "n": 2,
+   "driver": "gin_mi",
+   "env": {
+    "OVERWRITE": "1",
+    "MIRROR": "1",
+    "CKPT_STEPS": "20",
+    "SPARE": "1",
+    "FENCE": "lineage",
+    "SPARE_RANK": "3",
+    "R3_ENV": "GC_GPUHANG_IT=155",
+    "R1_ENV": "GC_GPUHANG_IT=156 GC_GPUHANG_CTX=3",
+    "SUBJECT_RANK": "3",
+    "WAITER_RANK": "1",
+    "HUNG_RANKS": "3,1",
+    "WATCHDOG_S": "60"
+   },
+   "injection": {
+    "kind": "gpuhang",
+    "target": 3,
+    "timing": "two GPU hangs of the test driver (impl/test/driver/gin_mi.cu): rank 3 GC_GPUHANG_IT=155 (every sending CTA of rank 3 spins after its step-155 put is posted, before the flush; the GPU hang cell's switch) and rank 1 GC_GPUHANG_IT=156 GC_GPUHANG_CTX=3 (in step 156 only rank 1's sending CTA toward rank 3, context 3, spins after its put is posted; its senders to ranks 0 and 2 flush). Rank 3's step-155 puts land, so rank 1 finishes step 155 and stops for good in step 156 with work left only toward rank 3: the waiting rank of cell B that has really stopped (the analysis's failure 3). No GC_WAITPEND (the hang spin comes first, the same meaning). Injection records: rank 3's GINRS gpuhang line (step 155) and rank 1's (step 156, ctx=3); either missing: not_applied",
+    "switch": "R3_ENV GC_GPUHANG_IT=<step>; R1_ENV GC_GPUHANG_IT=<step> GC_GPUHANG_CTX=<k>; HUNG_RANKS=<rank>,<rank>"
+   },
+   "preds": [],
+   "control": "gc4_gpuhang12000_waitpend_fence@gc",
+   "bound_s": 230,
+   "pilot_note": "pilot 5 전용(2026-10-27, 채점 안 함, 본 실행 셀 아님): 기다리는 rank도 실제로 멈춤(rank 3으로만 남은 일). 기대(저장소 밖 설계 문서 ANALYSIS.md 3절 표, SPEC2.md): rank 3 판정, 펜스, 복원, 그 뒤 G(2 000 ms) 안에 rank 1 STALL, 예비 프로세스가 없어 decline과 오류(fallback). HUNG_RANKS는 meta hung_ranks로 남고, 실행기 hold_gc.sh after_trial은 env에 GC_GPUHANG_IT가 있는 모든 rank의 자기 watchdog을 STOP이 아니라 hang_watchdog.txt에 적는다. WAITER_RANK 1은 채점기의 waiter_* 열(여기서는 멈춘 대기자)",
+   "subject_note": "SUBJECT_RANK 3: the first hang (the spare's rank); HUNG_RANKS: every rank with a hang switch; WAITER_RANK 1: the rank that waits toward rank 3 (here it has stopped too)"
+  },
+  "gc4_gpuhang12000_cycle@gc": {
+   "cell": "gc4_gpuhang12000_cycle",
+   "build": "gc",
+   "kind": "rs",
+   "n": 1,
+   "driver": "gin_mi",
+   "env": {
+    "OVERWRITE": "1",
+    "MIRROR": "1",
+    "CKPT_STEPS": "20",
+    "SPARE": "1",
+    "FENCE": "lineage",
+    "SPARE_RANK": "3",
+    "R3_ENV": "GC_GPUHANG_IT=155 GC_GPUHANG_CTX=1",
+    "R1_ENV": "GC_WAITPEND=1",
+    "SUBJECT_RANK": "3",
+    "WAITER_RANK": "1",
+    "WATCHDOG_S": "60"
+   },
+   "injection": {
+    "kind": "gpuhang",
+    "target": 3,
+    "timing": "a two-rank cycle: rank 3 GC_GPUHANG_IT=155 GC_GPUHANG_CTX=1 (in step 155 only rank 3's sending CTA toward rank 1, context 1, spins after its put is posted; its senders to ranks 0 and 2 flush) and rank 1 GC_WAITPEND=1 (every sending CTA of rank 1 waits after its put is posted, before its flush, until its peer's put of the same step has landed, with waitSignal's abort test). Rank 1 keeps a posted-but-unpolled put toward rank 3 and rank 3 one toward rank 1: neither is the cause the observers can name. Injection records: rank 3's GINRS gpuhang line with ctx=1 and rank 1's kv waitpend=1; either missing: not_applied",
+    "switch": "R3_ENV GC_GPUHANG_IT=<step> GC_GPUHANG_CTX=<k>; R1_ENV GC_WAITPEND=1"
+   },
+   "preds": [],
+   "control": "gc4_gpuhang12000_ctx1_fence@gc",
+   "bound_s": 230,
+   "pilot_note": "pilot 5 전용(2026-10-27, 채점 안 함, 본 실행 셀 아님): 두 rank만의 고리 1↔3. 기대(ANALYSIS.md 3절 표, SPEC2.md 역할 분류의 CYCLE): 원인이 없어 둘 다 STALL_MS에 판정, 한 번의 장애 범위로 fallback, 숨김 없음(어느 rank도 판정 없이 남지 않음)",
+   "subject_note": "SUBJECT_RANK 3: the hang switch's rank; WAITER_RANK 1: the rank with GC_WAITPEND"
   }
  },
  "holds": {
@@ -1511,6 +1574,28 @@
    {
     "key": "gc4_gpuhang12000_waitpend_fence@gc",
     "n": 2
+   }
+  ],
+  "P6": [
+   {
+    "key": "gc4_gpuhang12000_waitpend_fence@gc",
+    "n": 2
+   },
+   {
+    "key": "gc4_gpuhang12000_waiter_hung@gc",
+    "n": 2
+   },
+   {
+    "key": "gc4_gpuhang12000_cycle@gc",
+    "n": 1
+   },
+   {
+    "key": "gc4_gpuhang12000_fence@gc",
+    "n": 1
+   },
+   {
+    "key": "gc4_quiet12000@gc",
+    "n": 1
    }
   ]
  },

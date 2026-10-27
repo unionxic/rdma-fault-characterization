@@ -7,7 +7,11 @@ sections 3 and 7. CPU only, standard library only; reads files, writes nothing.
 Checks (each failure is one line "FAIL ..."; exit 1 when any):
   section 7   the table rows = cells_gc.json "rows" (in order; 25 since the 2026-10-22 trim, the count is not hard-coded); every row's gc*/gct* cell names and their builds and n (column
               "빌드와 반복 수", parentheses dropped; forms "`@b` n", "`@b` 각 n", "`@b1` n1, `@b2` n2", "`@b` n1, n2" with two
-              names) equal the cells of cells_gc.json; no cell in the json outside section 7
+              names) equal the cells of cells_gc.json; no cell in the json outside section 7. The table is section 7's
+              first table; a later table headed "pilot 전용 셀" (2026-10-27, pilot 5) names pilot_cells only (none of
+              "cells"), each with its n, and is not counted in the main rows, cells or trials
+  hang ranks  (2026-10-27, pilot 5) a cell or pilot cell with GC_GPUHANG_IT= in two or more R<k>_ENV names them all in
+              HUNG_RANKS, and a HUNG_RANKS names exactly the ranks whose R<k>_ENV has GC_GPUHANG_IT=
   section 3   every search key of the table's last column has at least one cell (a cell@build, the regression, the cost
               family or a local item); every cell of the json feeds at least one key that section 3 names; every gc*/gct*
               cell name in a key's own row feeds that key in the json
@@ -158,6 +162,38 @@ def section(text, num):
     return m.group(1) if m else ""
 
 
+def tables(sec):
+    """the tables of a section: each a list of rows (the header first, separator lines dropped)"""
+    out, cur = [], None
+    for line in sec.splitlines():
+        if not line.startswith("|"):
+            cur = None
+            continue
+        if set(line.replace("|", "").strip()) <= set("-: "):
+            continue
+        if cur is None:
+            cur = []
+            out.append(cur)
+        cur.append([c.strip() for c in line.strip().strip("|").split("|")])
+    return out
+
+
+def hang_rank_fails(cj):
+    """the cells whose HUNG_RANKS and R<k>_ENV hang switches disagree (2026-10-27, pilot 5)"""
+    out = []
+    for k, c in list(cj["cells"].items()) + list(cj.get("pilot_cells", {}).items()):
+        env = c.get("env", {})
+        hung = sorted(int(m.group(1)) for kk, v in env.items() for m in [re.fullmatch(r"R(\d+)_ENV", kk)]
+                      if m and re.search(r"\bGC_GPUHANG_IT=\d+", v))
+        if "HUNG_RANKS" in env:
+            got = sorted(int(x) for x in env["HUNG_RANKS"].split(",") if x.strip().isdigit())
+            if got != hung:
+                out.append("%s: HUNG_RANKS %s, the ranks with GC_GPUHANG_IT in R<k>_ENV %s" % (k, env["HUNG_RANKS"], hung))
+        elif len(hung) >= 2:
+            out.append("%s: GC_GPUHANG_IT on ranks %s without HUNG_RANKS" % (k, hung))
+    return out
+
+
 def table_rows(sec):
     out = []
     for line in sec.splitlines():
@@ -229,7 +265,27 @@ def main():
         print("FAIL " + s)
 
     # ---- section 7
-    r7 = table_rows(section(text, 7))
+    t7 = tables(section(text, 7))
+    r7 = t7[0][1:] if t7 else []
+    pilot_t = [t for t in t7[1:] if t and t[0] and t[0][0] == "pilot 전용 셀"]
+    for t in t7[1:]:
+        if t not in pilot_t:
+            fail("section 7 has a table other than the cell table and the pilot-only table (header %r)" % (t[0][0] if t and t[0] else ""))
+    pilot_named = set()
+    for t in pilot_t:
+        for cols in t[1:]:
+            w = sec7_cells(cols)
+            for k, n in w.items():
+                pilot_named.add(k)
+                pc = cj.get("pilot_cells", {}).get(k)
+                if k in cj["cells"] or pc is None:
+                    fail("section 7 pilot-only row %s is not a pilot cell of cells_gc.json (pilot_cells only)" % k)
+                elif pc["n"] != n:
+                    fail("pilot cell %s: n %d in section 7's pilot-only table, %d in cells_gc.json" % (k, n, pc["n"]))
+            if not w:
+                fail("section 7 pilot-only row names no cell@build (%s)" % cols[0][:40])
+    for s_ in hang_rank_fails(cj):
+        fail(s_)
     rows = cj["rows"]
     if len(r7) != len(rows):
         fail("section 7 has %d rows, cells_gc.json %d" % (len(r7), len(rows)))
@@ -412,8 +468,11 @@ def main():
     for b in sorted(set(used) - bkeys):
         fail("build key %s (used by %s) is not in the document's build-key table %s" % (b, ", ".join(sorted(used[b])[:4]), sorted(bkeys)))
     qa = [r["row"] for r in rows if r.get("qa_only")]
-    print("section 7 rows %d, cells %d, section 3 keys %d, build keys %d used of %d in the table, rows without a key (qa_only) %s: %s" %
-          (len(r7), len(cj["cells"]), len(keys), len(used), len(bkeys), qa or "none", "FAIL" if fails else "ok"))
+    main_n = sum(x.get("n", cj["cells"][x["key"]]["n"]) for h, xs in cj["holds"].items() if h.startswith("C") for x in xs)
+    print("section 7 rows %d, cells %d (main-run trials %d), pilot-only rows %d, section 3 keys %d, build keys %d used of %d "
+          "in the table, rows without a key (qa_only) %s: %s" %
+          (len(r7), len(cj["cells"]), main_n, len(pilot_named), len(keys), len(used), len(bkeys), qa or "none",
+           "FAIL" if fails else "ok"))
     sys.exit(1 if fails else 0)
 
 

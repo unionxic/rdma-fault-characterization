@@ -63,6 +63,9 @@
 #   - WAITER_RANK (cells_gc.json, 2026-10-27): the healthy rank that waits with a posted-but-unpolled put toward the
 #     subject (gc4_gpuhang12000_waitpend_fence: rank 1 with the driver's GC_WAITPEND=1); written to the meta as waiter_rank
 #     (- when unset) for rows_gc.py's waiter_* columns; the runner does nothing else with it;
+#   - HUNG_RANKS (cells_gc.json, 2026-10-27, pilot 5): the comma list of the ranks a GPU hang switch spins
+#     (gc4_gpuhang12000_waiter_hung: 3,1); written to the meta as hung_ranks (- when unset) for rows_gc.py; hold_gc.sh's
+#     watchdog record reads the ranks' env (GC_GPUHANG_IT=) itself, not this key;
 #   - shutdown order: the ranks and spares end by themselves (the library's BYE at the communicator's destroy, then exit),
 #     the runner waits for every one of them (a revived spare: its launcher's end line); then it stops both launchers (the
 #     unused warm spares are SIGKILLed by the launcher's own shutdown).
@@ -76,7 +79,7 @@
 #   default 1), FENCE (empty: library default lineage), RST_GAP_MS (gctc only), CONFIRM_MS, PROBE_MS, SPARE_RANK (default
 #   KILL_RANK: the rank whose spare runs), SPARE_ENV (the spare's test switches), KILL_KIND, SPARE_GAP_MS (5), FDHOLD,
 #   FDHOLD_AFTER_MS (1000), FDHOLD_KILL_S (25), STOP_RANK, STOP_MS, DUTY_RANK, DUTY_ON_MS (50), DUTY_OFF_MS (50), DUTY_S (20),
-#   KILL2_KIND, SUBJECT_RANK, WAITER_RANK, LAUNCHER_ENV (hold_gc.sh: the cell's launcher_env, +-joined, or -), LA_BOUND_S (the launcher's
+#   KILL2_KIND, SUBJECT_RANK, WAITER_RANK, HUNG_RANKS, LAUNCHER_ENV (hold_gc.sh: the cell's launcher_env, +-joined, or -), LA_BOUND_S (the launcher's
 #   timeout -s KILL: WATCHDOG_S + 120), SS_STEP1 (30), SS_STEP2 (80), BAR1_AT_GATE (hold_gc.sh, gin-mirror's training holds),
 #   HOLD_TAG (hold_gc.sh), RES_CAPTURE (0; 1: CAPPY's read-only resource capture around the traffic kill, smoke 5; the kill
 #   waits for its "before" point), CAP_BOUND_S (40). RS_DRY_CONFIG=1 prints the configuration line and exits before any file,
@@ -199,7 +202,7 @@ CFGLINE="cell=${CELL:-} lib=$LIB ctrl=$CTRL driver=$DRIVER policy=$FAULT_POLICY 
 fence=${FENCE:-default} rst_gap_ms=${RST_GAP_MS:-} confirm_ms=${CONFIRM_MS:-} probe_ms=${PROBE_MS:-} launcher_scope=$LAUNCHER_SCOPE \
 kill_rank=$KILL_RANK kill_kind=$KILL_KIND spare_wanted=$SPARE spare_rank=$SPARE_RANK spare_gap_ms=$SPARE_GAP_MS fdhold=$FDHOLD \
 stop_rank=$STOP_RANK stop_ms=$STOP_MS duty_rank=$DUTY_RANK duty_on_ms=$DUTY_ON_MS duty_off_ms=$DUTY_OFF_MS duty_s=$DUTY_S \
-kill2_rank=$KILL2_RANK kill2_kind=${KILL2_KIND:--} die_at=${DIE_AT:--} die2_at=${DIE2_AT:--} subject_rank=$SUBJECT inject=$INJECT \
+kill2_rank=$KILL2_RANK kill2_kind=${KILL2_KIND:--} die_at=${DIE_AT:--} die2_at=${DIE2_AT:--} subject_rank=$SUBJECT hung_ranks=${HUNG_RANKS:--} inject=$INJECT \
 r0_env=$(echo ${R0_ENV:-} | tr ' ' '+') r1_env=$(echo ${R1_ENV:-} | tr ' ' '+') r2_env=$(echo ${R2_ENV:-} | tr ' ' '+') \
 r3_env=$(echo ${R3_ENV:-} | tr ' ' '+') spare_env=$(echo ${SPARE_ENV:-} | tr ' ' '+') overwrite=$OVERWRITE train=$TRAIN \
 steps=$STEPS bytes=$BYTES mirror=$MIRROR need_mb_rain=$NEED_RAIN need_mb_sunny=$NEED_SUNNY rs_set=$RS_SET \
@@ -257,7 +260,7 @@ la_stop_all() {  # both launchers of this trial (launcher_gc.sh stop: a node wit
 LAB_RAIN=-; LAB_SUNNY=-; LAA_RAIN=-; LAA_SUNNY=-
 early_meta() {  # early_meta <k=v ...>: the meta of a trial that did not start (score_gc.py reads launcher_ready, launcher_stale)
   mkdir -p "$LOGDIR"
-  echo "cell=${CELL:-} lib=$LIB ctrl=$CTRL driver=$DRIVER trial=$TRIAL hold=${HOLD_TAG:-} subject_rank=$SUBJECT waiter_rank=${WAITER_RANK:--} inject=$INJECT launcher_scope=$LAUNCHER_SCOPE $* launcher_before_rain=$(echo "$LAB_RAIN" | tr ' ' ',') launcher_before_sunny=$(echo "$LAB_SUNNY" | tr ' ' ',') runner=gcr" \
+  echo "cell=${CELL:-} lib=$LIB ctrl=$CTRL driver=$DRIVER trial=$TRIAL hold=${HOLD_TAG:-} subject_rank=$SUBJECT waiter_rank=${WAITER_RANK:--} hung_ranks=${HUNG_RANKS:--} inject=$INJECT launcher_scope=$LAUNCHER_SCOPE $* launcher_before_rain=$(echo "$LAB_RAIN" | tr ' ' ',') launcher_before_sunny=$(echo "$LAB_SUNNY" | tr ' ' ',') runner=gcr" \
     > "$LOGDIR/${STEM0}_meta.txt"
 }
 # LAPY <op> <launcher log> ...: the warm spare's lines of one launcher log (stamped; ../launcher/README_launcher.md's exact lines)
@@ -1015,7 +1018,7 @@ gin_type=$GIN_TYPE num_rma_ctx=$NUM_RMA_CTX nconn=$NCONN qpwatch_ms=$QPWATCH res
 log_measure=$LOG_MEASURE step_gap_us=$STEP_GAP_US mirror=$MIRROR mirror_slots=${MIRROR_SLOTS:-} mirror_lane=${MIRROR_LANE:-} \
 overwrite=$OVERWRITE train=$TRAIN ring=$RING ckpt_steps=${CKPT_STEPS:-} witness=${WITNESS:-1} fence=${FENCE:-lineage} \
 rst_gap_ms=${RST_GAP_MS:-} confirm_ms=${CONFIRM_MS:-} probe_ms=${PROBE_MS:-} kill_rank=$KILL_RANK kill_kind=$KILL_KIND \
-kill_at_step=$KILL_AT_STEP kill_delay_us=$KILL_DELAY_US kill_fallback_ms=$KILL_DELAY_MS subject_rank=$SUBJECT waiter_rank=${WAITER_RANK:--} inject=$INJECT \
+kill_at_step=$KILL_AT_STEP kill_delay_us=$KILL_DELAY_US kill_fallback_ms=$KILL_DELAY_MS subject_rank=$SUBJECT waiter_rank=${WAITER_RANK:--} hung_ranks=${HUNG_RANKS:--} inject=$INJECT \
 kill_in_hook=$KILL_IN_HOOK kill_hook_us=$KILL_HOOK_US kill_after_stable=$KILL_AFTER_STABLE kill_stable_k=$KILL_STABLE_K \
 die_switch=$([ "$KILL_KIND" = hook ] && echo NCCL_GIN_RESTORE_TEST_DIE_IN_CKPT || echo -) arm_wait=$ARM_WAIT \
 spare_kill_first=${SPARE_KILL_FIRST:-0} \

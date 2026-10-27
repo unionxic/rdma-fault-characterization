@@ -47,6 +47,9 @@ trials carry run_gc.sh's measured offset unless they say otherwise.
      incarnation 1 (its incarnation lines, or the restore order): 6 of 6, one missing socket 5 of 6; gc4_kill3_ow@gc x 3:
      the timeline's fence from the launcher's FENCED, else a survivor's report, else the window line; the pilot 3 and
      pilot 1 raw logs when present
+  P5 (2026-10-27, pilot 5's pilot-only cells) gc4_gpuhang12000_waiter_hung x 4 (both hang lines; rank 1's with ctx=all,
+     missing or of another step: no record) and gc4_gpuhang12000_cycle x 3 (no kv waitpend or a ctx=all line: no record):
+     hang_lines, judged_ranks; hold_gc.sh's hang_watchdog_ok on every rank with a hang switch
 """
 import argparse, os, re, shlex, shutil, subprocess, sys, tempfile
 
@@ -1670,6 +1673,131 @@ def counterexample_checks():
             shutil.rmtree(R, ignore_errors=True)
 
 
+def pilot5_trial(d, cell, k, *, r1_hang="ctx=3", r1_step=156, r3_ctx="1", kv_wp=True):
+    """one trial of pilot 5's pilot-only cells (2026-10-27, EXPERIMENT 7 "pilot 전용 셀"). gc4_gpuhang12000_waiter_hung:
+    rank 3 hangs at 2.0 (step 155), rank 1 at 2.01 (step r1_step, its hang line's ctx token r1_hang; None: no line);
+    ranks 0-2 judge rank 3 STALL at 12.1, FENCE -> FENCED -> restore; ranks 0, 2 and the revived spare judge rank 1 STALL
+    at 14.4-14.41 (after the restore). gc4_gpuhang12000_cycle: rank 3 hangs with ctx=r3_ctx, rank 1 waits (GC_WAITPEND=1,
+    kv waitpend=1 unless not kv_wp); ranks 0, 2 judge rank 1 at 12.098 and ranks 0-2 judge rank 3 at 12.1, no restore"""
+    J = "GIN/RC: rank %d: rank %d (incarnation 0) judged stalled (liveness stall judged (STALL)%s); STALLED to 3 rank(s)"
+    if cell == "gc4_gpuhang12000_waiter_hung":
+        fz = [(12.101, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCING: FENCE sent to the launcher of node 1"),
+              (12.130, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCED (by FENCED from node 1)")]
+        L = restore_lines(3, 12.1, "STALL", buddy_fence=fz, t_pub=12.45)
+        for r in (0, 1, 2):
+            L[r] = [x if "judged dead" not in x[1] else (x[0], J % (r, 3, "")) for x in L[r]]
+        L[3] += [(2.0, "GINRS gpuhang rank=3 step=155 spin=1 ctx=all wait_ms=0.120")]
+        if r1_hang is not None:
+            L[1] += [(2.01, "GINRS gpuhang rank=1 step=%d spin=1 %s wait_ms=0.130" % (r1_step, r1_hang))]
+        for r in (0, 2):
+            L[r].append((14.4, J % (r, 1, " ctx=3")))
+        L["spare"].append((14.41, J % (3, 1, " ctx=3")))
+        env = {"r3_env": "GC_GPUHANG_IT=155", "r1_env": "GC_GPUHANG_IT=156+GC_GPUHANG_CTX=3", "waiter_rank": 1,
+               "hung_ranks": "3,1", "hold": "P6"}
+        kv = None
+        la = {"sunny": [(12.102, "FENCE of rank 3 incarnation 0 from rank 2: SIGKILL sent through its pidfd (pid 999)"),
+                        (12.128, "rank 3 incarnation 0 FENCED: the group ended 26.000 ms after SIGKILL through its pidfd")]}
+    else:
+        L = {r: [] for r in range(N)}
+        L[3] = [(0.4, "GIN/RS: rank 3: checkpoint 80 stable at buddy rank 2 (armable)"),
+                (2.0, "GINRS gpuhang rank=3 step=155 spin=1 ctx=%s wait_ms=0.120" % r3_ctx)]
+        L[1] = [(3.01, "GINRS waitpend rank=1 step=156 dest=3 wait_ms=1000.500")]
+        for r in (0, 2):
+            L[r].append((12.098, J % (r, 1, " ctx=3")))
+        for r in (0, 1, 2):
+            L[r].append((12.1, J % (r, 3, " ctx=1")))
+        env = {"r3_env": "GC_GPUHANG_IT=155+GC_GPUHANG_CTX=1", "r1_env": "GC_WAITPEND=1", "waiter_rank": 1, "hold": "P6"}
+        kv = {1: {"waitpend": 1 if kv_wp else None, "quiet_it": -1}}
+        la = None
+    return trial(d, cell, k, kill=None, subject=3, dead=[3], inject="none", lines=L, probe=probe_ok(), meta_extra=env,
+                 kv_extra=kv, la=la)
+
+
+def pilot5_checks():
+    """P5 (2026-10-27, pilot 5's preparation): the injection record of the two pilot-only cells per hung rank (rank 3's
+    hang line and rank 1's with ctx=3; the cycle's ctx=1 line and rank 1's kv waitpend=1), hang_lines, judged_ranks (who
+    was judged when, from the first hang line), and hold_gc.sh's watchdog record for every rank with a hang switch"""
+    R = tempfile.mkdtemp(prefix="gc_selftest_p5_")
+    try:
+        raw = os.path.join(R, "raw")
+        W, C = "gc4_gpuhang12000_waiter_hung", "gc4_gpuhang12000_cycle"
+        pilot5_trial(raw, W, 1)
+        pilot5_trial(raw, W, 2, r1_hang="ctx=all")
+        pilot5_trial(raw, W, 3, r1_hang=None)
+        pilot5_trial(raw, W, 4, r1_step=157)
+        pilot5_trial(raw, C, 1)
+        pilot5_trial(raw, C, 2, kv_wp=False)
+        pilot5_trial(raw, C, 3, r3_ctx="all")
+        rr = {r["id"]: r for r in rows_gc.all_rows(R) if r["sub"] == "raw"}
+        w1, w2, w3, w4 = (rr["%s_gc_n%d" % (W, i)] for i in (1, 2, 3, 4))
+        c1, c2, c3 = (rr["%s_gc_n%d" % (C, i)] for i in (1, 2, 3))
+        check(w1["inject_ok"] == 1 and w1["hang_lines"] == "1:156:3+3:155:all"
+              and w1["judged_ranks"] == "3:10100.0:3+1:12400.0:3" and w1["waiter_judge_n"] == 3
+              and abs(w1["waiter_judge_ms_min"] - 12400.0) < 0.01 and w1["n_judge_stall"] == 3 and w1["spare_used"] == 1,
+              "P5: the waiting rank that hangs too: both hang lines, rank 3 judged 10 100 ms and rank 1 12 400 ms after the "
+              "first hang line, rank 1 by ranks 0, 2 and the revived spare (%r %r %r %r)" % (
+                  w1["inject_ok"], w1["hang_lines"], w1["judged_ranks"], w1["waiter_judge_n"]))
+        check(w2["inject_ok"] == 0 and w3["inject_ok"] == 0 and w4["inject_ok"] == 0 and w3["hang_lines"] == "1:-+3:155:all"
+              and w2["hang_lines"] == "1:156:all+3:155:all",
+              "P5: rank 1's hang line must be there with its step and ctx=3 (ctx=all, none, step 157: no record; %r %r %r %r)" % (
+                  w2["inject_ok"], w3["inject_ok"], w4["inject_ok"], w3["hang_lines"]))
+        check(c1["inject_ok"] == 1 and c1["hang_lines"] == "3:155:1" and c1["waitpend_kv"] == "1:1"
+              and c1["judged_ranks"] == "1:10098.0:2+3:10100.0:3" and c2["inject_ok"] == 0 and c3["inject_ok"] == 0,
+              "P5: the cycle: rank 3's ctx=1 line and rank 1's kv waitpend=1 (each missing: no record); both ranks judged "
+              "(%r %r %r %r %r)" % (c1["inject_ok"], c1["hang_lines"], c1["judged_ranks"], c2["inject_ok"], c3["inject_ok"]))
+        q = rr.get("gc4_quiet12000_gc_n1")
+        check(q is None and w1["judged_ranks"] != "" and all(rows_gc.GC_COLS.count(c) == 1 for c in ("hang_lines", "judged_ranks")),
+              "P5: the two columns are rows_gc.py columns")
+        # hold_gc.sh: hang_watchdog_ok on the ranks' env (GC_GPUHANG_IT=), not only the subject
+        src = open(os.path.join(HERE, "hold_gc.sh")).read().splitlines()
+        fn = [l for l in src if l.startswith("mval() {")]
+        for name in ("hung_ranks() {", "hang_watchdog_ok() {"):
+            i = [j for j, l in enumerate(src) if l.startswith(name)][0]
+            j = i + [k for k, l in enumerate(src[i:]) if l == "}"][0]
+            fn += src[i:j + 1]
+        fp = os.path.join(R, "hold_fn.sh")
+        with open(fp, "w") as f:
+            f.write("\n".join(fn) + "\n")
+        wm, cm = (os.path.join(raw, "%s_gc_n1_meta.txt" % x) for x in (W, C))
+        def kvf(name, text):
+            p = os.path.join(R, name)
+            with open(p, "w") as f:
+                f.write(text + "\n")
+            return p
+        cases = [(wm, kvf("w_r1.kv", "rank=1 exit=7 watchdog=1"), 0), (wm, kvf("w_r3.kv", "rank=3 exit=7 watchdog=1"), 0),
+                 (wm, kvf("w_r0.kv", "rank=0 exit=7 watchdog=1"), 1),
+                 (wm, kvf("w2_r1.kv", "rank=1 exit=7 watchdog=1 nccl_error=5"), 1),
+                 (cm, kvf("c_r1.kv", "rank=1 exit=7 watchdog=1"), 1), (cm, kvf("c_r3.kv", "rank=3 exit=7 watchdog=1"), 0)]
+        got = [subprocess.run(["bash", "-c", '. "$1"; hang_watchdog_ok "$2" "$3"', "_", fp, m, k]).returncode for m, k, _ in cases]
+        hr = subprocess.run(["bash", "-c", '. "$1"; hung_ranks "$2"', "_", fp, wm], stdout=subprocess.PIPE).stdout.decode()
+        check([g == 0 for g in got] == [w == 0 for _, _, w in cases] and hr.split() == ["1", "3"],
+              "P5: hold_gc.sh records the watchdog of every rank with a hang switch (ranks 1 and 3 of the waiter-hung cell), "
+              "not of a rank without one or with an error key, nor the cycle's waiting rank 1 (%r %r)" % (got, hr))
+        # check_cells_gc.py: HUNG_RANKS against the ranks' env; the pilot-only table of section 7 is apart from the main rows
+        import check_cells_gc as cc, copy, json as _json
+        cj = json_load_cells()
+        k5 = "gc4_gpuhang12000_waiter_hung@gc"
+        bad1, bad2 = copy.deepcopy(cj), copy.deepcopy(cj)
+        bad1["pilot_cells"][k5]["env"]["HUNG_RANKS"] = "3"
+        del bad2["pilot_cells"][k5]["env"]["HUNG_RANKS"]
+        doc = open(os.path.join(HERE, "..", "..", "EXPERIMENT.md"), encoding="utf-8").read()
+        dp, jp = os.path.join(R, "EXP.md"), os.path.join(R, "cells.json")
+        with open(dp, "w", encoding="utf-8") as f:
+            f.write(doc.replace("| `@gc` 2(hold P6) |", "| `@gc` 3(hold P6) |"))
+        with open(jp, "w", encoding="utf-8") as f:
+            _json.dump(dict(cj, cells=dict(cj["cells"], **{k5: cj["pilot_cells"][k5]})), f)
+        rc_n = subprocess.run([sys.executable, os.path.join(HERE, "check_cells_gc.py"), "--doc", dp], stdout=subprocess.PIPE)
+        rc_m = subprocess.run([sys.executable, os.path.join(HERE, "check_cells_gc.py"), "--cells", jp], stdout=subprocess.PIPE)
+        sec7 = cc.tables(cc.section(doc, 7))
+        check(cc.hang_rank_fails(cj) == [] and len(cc.hang_rank_fails(bad1)) == 1 and len(cc.hang_rank_fails(bad2)) == 1
+              and rc_n.returncode == 1 and b"n 3 in section 7's pilot-only table" in rc_n.stdout and rc_m.returncode == 1
+              and len(sec7) == 2 and len(sec7[0]) - 1 == len(cj["rows"]),
+              "P5: check_cells_gc.py: HUNG_RANKS must name the hang ranks; the pilot-only table's n is checked, a pilot "
+              "cell among the main cells fails, the main table keeps its rows (%r %r)" % (rc_n.returncode, rc_m.returncode))
+    finally:
+        shutil.rmtree(R, ignore_errors=True)
+
+
 def json_load_cells():
     import json
     return json.load(open(os.path.join(HERE, "cells_gc.json"), encoding="utf-8"))
@@ -1892,7 +2020,8 @@ def main():
           "B7: quiet_compute_no_judge holds on the clean trial, any suspect, judgement, refusal, hold, spare use, 99 quiet "
           "periods or a data mismatch fails it")
     counterexample_checks()
-    neg6 = tempfile.mkdtemp(prefix="gc_selftest_ctx_")
+    pilot5_checks()
+    neg6 =tempfile.mkdtemp(prefix="gc_selftest_ctx_")
     try:
         nraw = os.path.join(neg6, "raw")
         gpu_ctx1_trial(nraw, 6, ctxs=(1, 0, 1))

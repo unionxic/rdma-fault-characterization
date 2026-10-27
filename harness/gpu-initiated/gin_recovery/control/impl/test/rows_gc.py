@@ -250,6 +250,13 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   waitpend_kv, waitpend_long_n, waitpend_ms_max, waitpend_result   (GC_WAITPEND=1 in a rank's env) "rank:kv waitpend" (each
                              must be 1, else inject_ok 0), the waiter's long-wait lines, the longest ended wait, the results
                              ("open" when a long wait has no end line)
+  hang_lines, judged_ranks   (2026-10-27, pilot 5) hang_lines: for every rank whose env has GC_GPUHANG_IT=S
+                             "rank:step:ctx" of its first GINRS gpuhang line ("rank:-" without one); the injection record needs,
+                             per such rank, a line rank=R step=S spin=1 (with ctx=K when that rank's env has GC_GPUHANG_CTX=K).
+                             judged_ranks: with a GINRS gpuhang line in the trial, every rank that some process judged (a DEAD or
+                             STALLED line naming it, the observer's own rank apart) as "rank:ms:observers" in time order, ms =
+                             the first hang line (any rank, rain's clock across nodes) -> that rank's first judgement line,
+                             observers = the processes (rank and spare logs) with such a line; "none" when nothing was judged
   gate rows (local/): gate_real, old_go_ms, fenced_go_ms, gate_diff_ms, second_thread_ms, pidfd_ms, z_ms,
                              fenced_after_second_ms, fenced_vs_pidfd_abs_ms. gate_proc_gc.py's lines (a real child process: its
                              main thread ends first, a second thread 500 ms later; the harness's own pidfd and /proc readings)
@@ -298,6 +305,7 @@ SW_FDHOLD = re.compile(r"GIN/TS: rank (\d+): test switch FD_HOLDER=(sock|uverbs)
 SW_FREEZE = re.compile(r"GIN/RC: rank (\d+): test switch FREEZE_PAGE=")
 SW_GPUHANG = re.compile(r"GINRS gpuhang rank=(\d+) step=(\d+) spin=1 ")  # the test driver's GC_GPUHANG_IT (2026-10-23)
 HANGCTX_ENV = re.compile(r"\bGC_GPUHANG_CTX=(\d+)\b")  # its context filter (2026-10-24): the line must say ctx=<k>
+HANGIT_ENV = re.compile(r"\bGC_GPUHANG_IT=(\d+)\b")  # per rank (2026-10-27, pilot 5: two hung ranks in one trial)
 # the test driver's GC_QUIET_IT=<step>@<ms> and GC_WAITPEND=1 (2026-10-27, gc4_quiet12000 and gc4_gpuhang12000_waitpend_fence)
 QUIET_ENV = re.compile(r"\bGC_QUIET_IT=(\d+)@(\d+)\b")
 SW_QUIET = re.compile(r"GINRS quiet rank=(\d+) step=(\d+) ms=(\d+) spin=1\b")
@@ -423,7 +431,9 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            # 2026-10-27: the counterexample cells (gc4_quiet12000, gc4_gpuhang12000_waitpend_fence)
            "suspect_any_n", "hold_any_n", "spare_used", "quiet_ms", "quiet_periods", "quiet_lb_detail", "waiter",
            "waiter_judge_n", "waiter_judge_ms_min", "waiter_judge_ms_max", "waiter_judge_causes", "waiter_fenced",
-           "waiter_hold_n", "waiter_given_up_n", "waitpend_kv", "waitpend_long_n", "waitpend_ms_max", "waitpend_result"]
+           "waiter_hold_n", "waiter_given_up_n", "waitpend_kv", "waitpend_long_n", "waitpend_ms_max", "waitpend_result",
+           # 2026-10-27, pilot 5 (gc4_gpuhang12000_waiter_hung, gc4_gpuhang12000_cycle; pilot-only cells)
+           "hang_lines", "judged_ranks"]
 
 
 def mono(l):
@@ -1402,6 +1412,32 @@ def gc_overlay(stem, base, meta):
         out["waitpend_long_n"] = len(wl_)
         out["waitpend_ms_max"] = r1(max(float(m.group(5)) for m in we_)) if we_ else ""
         out["waitpend_result"] = "+".join(sorted({m.group(4) for m in we_})) if we_ else ("open" if wl_ else "")
+    # 2026-10-27, pilot 5: who was judged when, from the trial's first GINRS gpuhang line (any rank; the earliest in rain's
+    # clock across nodes): per judged rank its first DEAD or STALLED line over every process but the judged rank's own lines
+    hang_evs = [e for r in ranks for e in [first(logs[r], SW_GPUHANG)[0]] if e is not None]
+    if hang_evs:
+        h0 = hang_evs[0]
+        for e in hang_evs[1:]:
+            d_, _ = xd(h0, e)
+            if d_ is not None and d_ < 0:
+                h0 = e
+        per = {}
+        for lg in [logs[r] for r in ranks] + spare_all:
+            seen = {}
+            for e in lg:
+                m = DEAD.search(e.text) or STALLED.search(e.text)
+                if m and m.group(1) != m.group(2):
+                    t = int(m.group(2))
+                    if t not in seen or e.t < seen[t].t:
+                        seen[t] = e
+            for t, e in seen.items():
+                per.setdefault(t, []).append(e)
+        jr = []
+        for t, es in per.items():
+            ds = [d_ for d_ in (xd(h0, e)[0] for e in es) if d_ is not None]
+            jr.append((min(ds) if ds else None, t, len(es)))
+        jr.sort(key=lambda x: (x[0] is None, x[0] or 0.0, x[1]))
+        out["judged_ranks"] = "+".join("%d:%s:%d" % (t, "%.1f" % d_ if d_ is not None else "-", k) for d_, t, k in jr) or "none"
     mtus =[mtu_bytes(d.get("active_mtu")) for d in cs if mtu_bytes(d.get("active_mtu")) is not None]
     if ctrl == "rdma" and any(logs[r] for r in ranks):  # B3 (b), (c): from the lines, with or without a summary
         wit_on = meta.get("witness", "1") != "0"
@@ -1494,7 +1530,26 @@ def gc_overlay(stem, base, meta):
         need = [(sw, rx) for sw, rx in (("TEST_RST_GAP", SW_RST_GAP), ("TEST_FREEZE_PAGE", SW_FREEZE), ("TEST_QP_ERR", SW_QPERR),
                                         ("TEST_CREDIT_STALL", SW_CREDIT), ("TEST_DROP_UD", SW_DROPUD), ("TEST_SOCK_MUTE", MUTE_ON))
                 if sw in envs]
-        if "GC_GPUHANG_IT" in envs:  # the driver's switch: its line (spin=1) on the subject; with GC_GPUHANG_CTX=k, ctx=k
+        # the driver's switch: per rank whose env has GC_GPUHANG_IT=S its line rank=R step=S spin=1, with ctx=k when that
+        # rank's env has GC_GPUHANG_CTX=k (2026-10-27, pilot 5: two hung ranks, rank 1 with ctx=3; before it the switch's
+        # line anywhere, ctx from the first GC_GPUHANG_CTX of all the envs)
+        hang_need = []
+        for r in ranks:
+            ev_ = meta.get("r%d_env" % r, "") or ""
+            hm = HANGIT_ENV.search(ev_)
+            if hm:
+                hc = HANGCTX_ENV.search(ev_)
+                hang_need.append((r, re.compile(r"GINRS gpuhang rank=%d step=%s spin=1 %s" % (r, hm.group(1), ("ctx=%s " % hc.group(1)) if hc else ""))))
+        for r, rx in hang_need:
+            need.append(("GC_GPUHANG_IT", rx))
+        if hang_need:
+            hl = []
+            for r, _ in hang_need:
+                m0 = first(every, SW_GPUHANG, lambda m: int(m.group(1)) == r)[1]
+                cm = re.search(r"\bctx=(\w+)", m0.string[m0.end():]) if m0 else None
+                hl.append("%d:%s:%s" % (r, m0.group(2), cm.group(1) if cm else "-") if m0 else "%d:-" % r)
+            out["hang_lines"] = "+".join(hl)
+        elif "GC_GPUHANG_IT" in envs:  # the switch on no rank's env (the spare's): its line anywhere
             hc = HANGCTX_ENV.search(envs)
             need.append(("GC_GPUHANG_IT", re.compile(SW_GPUHANG.pattern + r"ctx=%s " % hc.group(1)) if hc else SW_GPUHANG))
         qe_env = QUIET_ENV.search(envs)

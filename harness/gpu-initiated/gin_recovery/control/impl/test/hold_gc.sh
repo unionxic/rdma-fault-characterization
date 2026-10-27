@@ -33,9 +33,11 @@
 #
 # usage: hold_gc.sh <resultsdir> <hold>
 #   C1-C11                 the main-run holds of cells_gc.json (section 7 rows 1-22)
-#   P0-P5                  the pilot holds (never scored; a results folder pilot* or smoke* of their own): P0 the smoke, P1
+#   P0-P6                  the pilot holds (never scored; a results folder pilot* or smoke* of their own): P0 the smoke, P1
 #                          one trial of every rdma cell, P2 of every tcp cell, P3 the two noreport cells (fd-holder and no-fd-holder) (its launcher with
-#                          NO_EXIT_REPORT), P4 9.9's unscored 12 000 ms stop (its own cell gc4_stop12000_pilot)
+#                          NO_EXIT_REPORT), P4 9.9's unscored 12 000 ms stop (its own cell gc4_stop12000_pilot), P5 pilot 4's two
+#                          counterexample cells, P6 pilot 5 (cell B, the pilot cells gc4_gpuhang12000_waiter_hung and
+#                          gc4_gpuhang12000_cycle, the GPU hang control, the quiet cell)
 #   RG-<gct|gc>-<G1|G3|T1|T2|G2|R1|R2|R3>   gin-mirror's hold of that name (../../../mirror/impl/test/cells_mi.json), every
 #                          cell with its name, env and n, at the named build (section 7 rows 24, 25); a build with
 #                          regression.builds.<b>.cells runs only those cells (2026-10-22: @gct only mi4_kill3_ow, i.e.
@@ -150,6 +152,18 @@ fits() {
 }
 stopped() { ls "$R"/STOP_* > /dev/null 2>&1; }
 mval() { sed -n "s/.*\b$2=\([^ ]*\).*/\1/p" "$1" 2>/dev/null | head -1; }
+hung_ranks() {  # hung_ranks <meta>: the ranks whose env has a GPU hang switch (GC_GPUHANG_IT=), space-separated (pilot 5,
+  # 2026-10-27: gc4_gpuhang12000_waiter_hung hangs rank 1 too); the cell's HUNG_RANKS (meta hung_ranks) is the scorer's
+  # record and check_cells_gc.py's, never a reason by itself to pass a watchdog
+  grep -o '\br[0-9][0-9]*_env=[^ ]*' "$1" 2>/dev/null | grep 'GC_GPUHANG_IT=' | sed 's/^r\([0-9]*\)_env=.*/\1/' | sort -un | tr '\n' ' '
+}
+hang_watchdog_ok() {  # hang_watchdog_ok <meta> <rank kv>: true when the kv is a GPU hang rank's (hung_ranks) and says watchdog=1
+  # with no cuda_error= or nccl_error= (after_trial records it instead of STOP_nic)
+  local fr=${2##*_r}
+  fr=${fr%.kv}
+  case " $(hung_ranks "$1")" in *" $fr "*) ;; *) return 1 ;; esac
+  grep -q 'watchdog=1' "$2" && ! grep -qE 'cuda_error=|nccl_error=' "$2"
+}
 gc_after_trial() {  # gc_after_trial <what> <meta> <cell>: section 8's gin-control stops for one restore trial
   local what=$1 m=$2 cell=$3 stem b a nd st f envs sw=0 chk lstop lqp
   [ -f "$m" ] || return 0
@@ -206,23 +220,23 @@ after_trial() {  # hold_mi.sh's per-trial stops: kv error keys, a refused Resume
     wall=$(mval "$meta" wall_s)
     case "$wall" in ""|*[!0-9.]*) ;; *) cap=$(awk -v r="$QRATE" -v w="$wall" 'BEGIN{c = r * w; printf "%d", (c == int(c)) ? c : int(c) + 1}') ;; esac
   fi
-  local hsub="" hsubenv=""
-  if [ -n "$meta" ] && [ -f "$meta" ]; then  # pilot 4 (2026-10-27): the GPU hang subject's own watchdog, below
-    hsub=$(mval "$meta" subject_rank)
-    case "$hsub" in [0-9]*) hsubenv=$(mval "$meta" "r${hsub}_env") ;; *) hsub="" ;; esac
+  local hung="" fr
+  if [ -n "$meta" ] && [ -f "$meta" ]; then  # pilot 4, 5 (2026-10-27): a GPU hang rank's own watchdog, below
+    hung=$(hung_ranks "$meta")
   fi
   for f in $2; do
     [ -f "$f" ] || continue
     case "$f" in
       *_spare.kv|*_spare_2nd.kv) grep -q 'watchdog=1' "$f" && echo "$(date '+%F %T') $what: $(basename "$f") ended at its watchdog" >> "$R/spare_wait.txt"; continue ;;
     esac
-    # pilot 4 (2026-10-27): a GPU hang cell's subject (GC_GPUHANG_IT in its env) spins with no end of its own; when no
-    # survivor fences it (the fallback: every survivor declined) its own watchdog ends it. That is the cell's measured
-    # outcome, not a NIC fault: recorded in hang_watchdog.txt, no STOP. Any cuda_error= or nccl_error= still stops, and
-    # every other kv keeps the rule.
-    if [ -n "$hsub" ] && [ "${f##*_r}" = "$hsub.kv" ] && echo "$hsubenv" | grep -q 'GC_GPUHANG_IT=' &&
-        grep -q 'watchdog=1' "$f" && ! grep -qE 'cuda_error=|nccl_error=' "$f"; then
-      echo "$(date '+%F %T') hold $H: $what: $(basename "$f") (the GPU hang subject, rank $hsub) ended at its own watchdog: not fenced" | tee -a "$R/hang_watchdog.txt"
+    # pilot 4 (2026-10-27): a GPU hang rank (GC_GPUHANG_IT in its env) spins with no end of its own; when no survivor
+    # fences it (the fallback: every survivor declined) its own watchdog ends it. That is the cell's measured outcome, not
+    # a NIC fault: recorded in hang_watchdog.txt, no STOP. Pilot 5 (2026-10-27): every such rank, not only the subject
+    # (gc4_gpuhang12000_waiter_hung: rank 1 hangs too and is declined, no spare). Any cuda_error= or nccl_error= still
+    # stops, and every other kv keeps the rule.
+    if [ -n "$hung" ] && hang_watchdog_ok "$meta" "$f"; then
+      fr=${f##*_r}
+      echo "$(date '+%F %T') hold $H: $what: $(basename "$f") (a GPU hang rank, rank ${fr%.kv} of ${hung% }; subject $(mval "$meta" subject_rank)) ended at its own watchdog: not fenced" | tee -a "$R/hang_watchdog.txt"
       continue
     fi
     if grep -qE 'cuda_error=|watchdog=1|nccl_error=' "$f"; then

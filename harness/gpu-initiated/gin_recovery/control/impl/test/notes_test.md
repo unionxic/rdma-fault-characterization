@@ -755,3 +755,16 @@ pilot 3 [PILOT.md](../../results/20261024_pilot3/PILOT.md) "문제" 1, 2의 고�
   `python3 test_rows_gc.py` 227 검사 실패 0, `python3 check_cells_gc.py` drift 0 `[측정: 로컬 실행, 2026-10-27]`.
 - **pilot 4 사본 재채점**(세션 스크래치, pilot 표시 끔, 채점 아님) `[측정]`. 있는 n 그대로면 `gpuhang_fence_restore`는 셀 B 0/2, 다섯 항 모두 해당 없음, 재검토 없음, 판정 자료 부족(n<k)(n 2 < k 4)이다.
   셀 B와 대조 시행을 다섯씩으로 복사한 사본은 셀 B 0/5, 대조 5/5, 틀림이다. `no_tcp_control`의 `build:gc`는 k 5 → 자료 부족(n<k)이다(이전 k 3으로 참).
+
+## pilot 5 준비의 시험 쪽 몫 (2026-10-27, pilot 전용 셀 둘)
+
+근거는 저장소 밖 설계 문서(scratch `next/counterexample/ANALYSIS.md` 4절 "하드웨어 pilot 5", `next/counterexample/SPEC2.md`), 셀의 뜻은 EXPERIMENT 7절 끝 "pilot 전용 셀", 기록은 12절 그날 "pilot 5 준비" 행이다. 라이브러리, driver, 예측 표 파일은 고치지 않았다.
+
+- **셀 파일.** `pilot_cells`에 `gc4_gpuhang12000_waiter_hung@gc`(rank 3 `GC_GPUHANG_IT=155`, rank 1 `GC_GPUHANG_IT=156 GC_GPUHANG_CTX=3`, `HUNG_RANKS=3,1`)와 `gc4_gpuhang12000_cycle@gc`(rank 3 `GC_GPUHANG_IT=155 GC_GPUHANG_CTX=1`, rank 1 `GC_WAITPEND=1`). 둘 다 `WATCHDOG_S` 60, `bound_s` 230, `SUBJECT_RANK` 3, `WAITER_RANK` 1, 예측 없음. hold P6은 셀 다섯, 시행 7(hold P5는 그대로).
+- **실행기.** `hold_gc.sh`의 `hung_ranks <meta>`는 meta의 `r<k>_env`에 `GC_GPUHANG_IT=`가 있는 rank를 낸다. `hang_watchdog_ok <meta> <kv>`는 그 rank의 kv가 `watchdog=1`이고 `cuda_error=`, `nccl_error=`가 없을 때 참이다. `after_trial`은 그때 STOP_nic 대신 `hang_watchdog.txt`에 한 줄 적는다(pilot 4 때는 `subject_rank`만).
+  `HUNG_RANKS`는 기록용이라 그것만으로 watchdog을 넘기지 않는다. `run_gc.sh`는 meta에 `hung_ranks`(없으면 `-`)를 적는다.
+- **채점기.** `rows_gc.py`의 hang 주입 기록은 rank마다다: env에 `GC_GPUHANG_IT=S`가 있는 rank R마다 `GINRS gpuhang rank=R step=S spin=1 `(그 rank env에 `GC_GPUHANG_CTX=k`면 `ctx=k `)가 있어야 한다. 전에는 그 줄이 어디든 하나, `ctx`는 모든 env의 첫 `GC_GPUHANG_CTX`였다.
+  새 열 `hang_lines`(rank:걸음:ctx)와 `judged_ranks`(rank:첫 hang 줄 → 첫 판정 ms:관측 프로세스 수, 시각 차례; 관측자 자신의 rank는 뺌).
+- **셀 검사.** `check_cells_gc.py`는 7절의 첫 표만 본 표로 읽고, 머리가 "pilot 전용 셀"인 표는 `pilot_cells`와 n을 대조한다. `HUNG_RANKS`는 env의 hang rank와 같아야 하고, hang rank가 둘 이상이면 있어야 한다.
+- **확인** `[측정: 로컬 실행]`. `python3 test_rows_gc.py` 233 검사 실패 0(새 `pilot5_checks`), `python3 check_cells_gc.py` drift 0(본 실행 셀 28개, 시행 180), `bash -n` 셋, `RS_DRY_CONFIG=1`의 설정 줄 `hung_ranks=3,1`.
+  pilot 4 원자료 사본으로 다시 낸 행의 데이터 열은 추적된 `trials.csv`와 같고, `judged_ranks`의 시각은 PILOT.md 표와 같다.
