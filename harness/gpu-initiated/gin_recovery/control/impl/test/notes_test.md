@@ -787,3 +787,32 @@ pilot 3 [PILOT.md](../../results/20261024_pilot3/PILOT.md) "문제" 1, 2의 고�
   셀 B n1, n2가 규칙에 맞는지, 기다리는 rank도 멈춘 셀(`wait_ended_nogress` 1), 고리(`wait_peer` none), 대조(waiter 없음)가 맞지 않는지 본다.
 - **확인** `[측정: 로컬 실행, 2026-10-27]`. `python3 test_rows_gc.py` 237 검사 실패 0(이전 233). pilot 5 사본에서 셀 B n1, n2 `wait_peer` 3, `wait_ended_progress` 1, `waiter_judge_n` 0, `waiter_fenced` 0.
   `python3 check_cells_gc.py`는 FAIL이다: `cells_gc.json`이 행 20과 셀 `gc4_gpuhang12000_waitpend_fence@gc`의 `preds`에 아직 `waiter_old_rule`을 적는다(이 작업 범위 밖). 두 자리만 바꾼 스크래치 사본(`--cells`)으로는 drift 0, ok.
+
+## 본 실행 driver 빌드 (2026-10-27, 사전 등록 전)
+
+까닭: 비용 driver와 회귀 driver의 md5를 "배포 때 재서 `PREREG.txt` 주석에" 넣는 계획은 태그 뒤에는 불가능하다(조율 세션의 사전 등록 승인용 요약 6절 8). 그래서 본 실행의 driver를 사전 등록 커밋 전에 빌드해 쟀다.
+빌드만 했다(rain에서 nvcc, nice 19, idle I/O). 실행, 배포, 클러스터 작업은 없다.
+
+- **단계.** [driver/build_driver_gc.sh](driver/build_driver_gc.sh)에 단계 셋(`nomacro`, `mr`, `cost`)을 더했다. 명령은 pilot 1의 스크래치 `agent_gc_pilot1/build_cost_pl1.sh`와 pilot 2의 `agent_gc_pilot2/build_extra_pl2.sh`의 것 그대로다(nvcc 플래그, 패치 둘, 링크 라이브러리: `gin_mi_nomacro`와 `gin_mr`은 `RSLIB` = gc, `gin_ts2_mi`는 새 변수 `PLIB` = gcp). `mi` 단계는 바꾸지 않았다. 스크립트 md5 `410a3531`(pilot 5) → `3cf014a5`.
+- **입력** `[측정]`. 머리 `agent_gc_p2a2/build/include` digest `65fdf19b`(pilot 2, 4, 5와 같음), `build/lib` = gc `54e7ddec`, `build-gcp/lib` = gcp `bbb7e334`(`build_driver_gc.sh info`). 패치한 비용 소스 `a26bec9c`는 pilot 1, 2의 `cost_src/gin_ts2.cu`와 같다.
+- **출력.** `OUTROOT=agent_gc_cx/out MIOUT=mi_wp2`, 곧 pilot 5의 `gin_mi`(`7efe38ad`)가 있는 폴더 하나에 모두 있다. 이 폴더가 본 실행 배포(`deploy_gc.sh`)의 `DRV_DIR`이다. 빌드 줄은 같은 폴더의 `*.build.txt`. 경고 0(출력이 md5 줄뿐).
+- **pilot 2 판과 다름.** `gin_mi_nomacro`는 소스가 `6cb4ff28` → `8270cce3`(2026-10-24, 10-27 driver 스위치)이고 라이브러리가 c128c4c8 → 54e7ddec다. `gin_mr`과 `gin_ts2_mi`는 소스가 같고 라이브러리만 다르다(gc_sf1 c128c4c8 → 54e7ddec, gcp_sf1 60e5a9f7 → bbb7e334). nvcc 출력은 바이트 재현이 안 되므로 md5가 다른 것은 판 구분일 뿐이다.
+
+본 실행 빌드 묶음(`PREREG.txt` 주석에 그대로 옮길 것; 모두 md5) `[측정: 2026-10-27 이 세션에서 다시 셈]`:
+
+```
+library layer   impl/gc_layer_int.diff                279b5c90d5bc596f5a60e0742068169b  (vs f53e5d2, patience; scratch tree agent_gc_p2a2/nccl-src HEAD 0b622ed)
+libnccl gc      agent_gc_p2a2/out/gc_wp2              54e7ddec95945a655ec87688718378f3  (= build/lib)
+libnccl gcp     agent_gc_p2a2/out/gcp_wp2             bbb7e334ca819797aae353e9bd083b30  (= build-gcp/lib, cost arms)
+libnccl gct     agent_gc_p2a2/out/gct_wp2             7dbbed96e481c53cc17f8cb08a9c3502  (tcp regression arm)
+headers         agent_gc_p2a2/build/include           digest 65fdf19b302d19d593a81886871900ba
+driver gin_mi           agent_gc_cx/out/mi_wp2/gin_mi           7efe38adfd133356d4158ee9397fe739  src gin_mi.cu 8270cce39caa1f4ebe013b89fc23d04f, macro=1, lib gc
+driver gin_mi_nomacro   agent_gc_cx/out/mi_wp2/gin_mi_nomacro   bbbaee72f5bcf0361a6ce2bb0d13b187  src gin_mi.cu 8270cce39caa1f4ebe013b89fc23d04f, macro=0, lib gc
+driver gin_mr ff        agent_gc_cx/out/mi_wp2/mr/ff/gin_mr     9c2a6b1cf099156bf6e8124bb5b39892  src remaining/gin_mr.cu a6a526ad3df1b853efd48d53a0a11ca7, macro=0, lib gc
+driver gin_mr hold      agent_gc_cx/out/mi_wp2/mr/hold/gin_mr   d198f0c18cad86a12232b6944d512276  src remaining/gin_mr.cu a6a526ad3df1b853efd48d53a0a11ca7, macro=1, lib gc
+driver gin_ts2_mi       agent_gc_cx/out/mi_wp2/gin_ts2_mi       2bacee4c5627ce3d4ef850d90f6406fd  src gin_ts2.cu 1779db9d62eaa5dba5758b14a5ba6e17 + restore/feas/gin_ts2_winflags.diff fb9d2d8d47c689892238a9dac6338e8d + mirror/impl/test/gin_ts2_mi.diff 0e5aef6cb4295bb7e110d5a882f87280 (patched a26bec9cc002ccc1cb469d502aa0e386), macro=1, lib gcp
+launcher        lb-fix/gin_launcher                   d1aceaf68f00d99eafa4d585195f3348
+build script    impl/test/driver/build_driver_gc.sh   3cf014a5f03281ba3f0457e7cb8f190d  (stages mi, nomacro, mr, cost)
+```
+
+경로는 세션 스크래치 기준이다. 본 실행 배포 뒤 두 노드의 md5가 이 값과 같은지 `deploy_gc.sh` 출력으로 확인한다(아직 배포 안 함).
