@@ -1,6 +1,6 @@
 # notes_abortdec.md: 확정된 중단 결정이 상대와 나중 화신에게 간다 (SPEC3 ①을 review3 1–6으로 고친 것, 2026-10-28, 작업 기록)
 
-상태: **코드 수정 완료 / 로컬 단위 검증 완료 / 하드웨어 검증 대기**
+상태: **코드 수정 완료 / 로컬 단위 검증 완료 / 하드웨어 pilot 7 통과**(2026-10-28, 받아들임 2/2, 대조 7/7; [../results/20261028_pilot7/PILOT.md](../results/20261028_pilot7/PILOT.md), 커밋 `d6f4cfa4`). 열린 문제 1은 닫혔고 2는 장치에서 한 번 보였다(아래).
 
 표시: `[측정]` 돌려서 봄, `[소스]` 코드를 읽음, `[추론]` 해석, `[미확인]` 확인 안 함.
 
@@ -137,11 +137,12 @@ watchdog). 0.25 ms 걸음.
 
 ## 열린 문제
 
-1. **하드웨어 확인 전부** `[미확인]`. pilot 7에서 볼 것: 기다리는 rank도 멈춤 셀의 복원된 rank 3 `exit=4`, `xchg=released`, watchdog 없음, 그 `released=1`과
-   늦은 생존 rank의 `released=1` 차, 줄 `ABORT_DECIDED(rank 1, incarnation 0, ...) ... applied`, probe summary `ad_rx_applied`; 복원만 있는 셀의 `ad_tx` 0.
-2. **생존 rank 결과가 바뀐다** `[추론]`. 남의 결정을 먼저 받은 생존 rank는 그 해제 시각에 풀리고(pilot 5 n1이면 r2가 약 96 ms 일찍), decline 줄의 사유가
-   `ABORT_DECIDED(...)`가 된다. 채점기의 판정 원인 열(`waiter_judge_causes` 등)과 `spare_absent_refused`, `fdhold_uverbs_refuse`, `stall_none_refuse`의
-   자기 판정 수가 달라질 수 있다(review3 표). 채점기는 고치지 않았다.
+1. **하드웨어 확인** — 2026-10-28 pilot 7로 닫힘 `[측정: results/20261028_pilot7/PILOT.md]`. 기다리는 rank도 멈춤 셀 2/2: 복원된 rank 3 `exit=4 xchg=released`, watchdog 없음,
+   `released=1`이 생존 rank보다 1.2–2.6 ms 먼저, `ABORT_DECIDED(rank 1, incarnation 0, no. 1, cause STALL) … applied`, 예비의 `ad_rx_applied` 1; 복원만 있는 일곱 시행(두 죽음 포함)의 `ad_*` 모두 0.
+   걸리지 않은 길 `[미확인]`: 다시 보냄(`sent again`), activation blob의 "GAAD", 계보 완성 뒤 적용(결정이 모두 복원 뒤에 났음).
+2. **생존 rank 결과가 바뀐다** — pilot 7 n1에서 한 번 보임 `[측정]`: r2가 rank 1을 스스로 판정하기 전에 r0의 결정을 적용해(r0 결정 12 345.4 ms, r2 적용 12 348.3 ms) decline 사유가
+   `ABORT_DECIDED(...)`가 되고 `waiter_judge_n` 1(pilot 5 n1은 2). n2는 둘 다 스스로 정했고 늦게 온 것은 "late"로 셌다. 거절 셀(`spare_absent_refused`, `fdhold_uverbs_refuse`,
+   `stall_none_refuse`)의 자기 판정 수에 미치는지는 pilot 8(거절 셀 셋 n 1씩)에서 본다(EXPERIMENT.md 11.1). 채점기는 고치지 않았다.
 3. **진행 중인 다른 hold** `[추론]`. 적용이 상대의 낱말과 degraded 예약, 비동기 오류를 올리므로 이 rank가 다른 상대를 hold 중이면 다음 걸음의 TOLD
    규칙(`gdakiHoldTold`)이 그 hold를 fallback한다. 기존 규칙이고 바꾸지 않았다. 모형은 TOLD 조건이 서는 것까지만 본다.
 4. **모형의 hold는 개요다**. A5a, 두 중계 장면은 결정이 난 뒤에도 다른 rank의 복원이 끝난다고 놓았다. 실제로는 3번의 TOLD 규칙으로 그 복원이 먼저
