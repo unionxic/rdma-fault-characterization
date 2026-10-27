@@ -269,7 +269,7 @@
    "kind": "멈춘 GPU를 기다리는 정상 rank(반례, 지금 규칙의 연쇄 판정)",
    "preds": [
     "gpuhang_fence_restore",
-    "waiter_old_rule",
+    "waiter_not_judged",
     "no_tcp_control",
     "long_hold_lane"
    ]
@@ -1053,12 +1053,12 @@
    "injection": {
     "kind": "gpuhang",
     "target": 3,
-    "timing": "the GPU hang cell's switch on rank 3 (GC_GPUHANG_IT=155: every sending CTA of rank 3 spins after its step-155 put is posted, before the flush) and on rank 1 the driver's GC_WAITPEND=1 (2026-10-27): every sending CTA of rank 1 waits, after its put is posted and before its flush, until its peer's put of the same step has landed in its receive slot (first 8 bytes non-zero), with waitSignal's abort test. Rank 3's step-155 puts land, so rank 1 finishes step 155; in step 156 rank 1's senders to ranks 0 and 2 flush, and its sender to rank 3 keeps one posted-but-unpolled put toward the stalled rank 3 while it waits (context 3 pending, frozen). Under the current judgement rule rank 1 can be judged stalled about 10 s later too (the cascade the cell measures, prediction waiter_old_rule). Injection records: rank 3's GINRS gpuhang line (spin=1) and rank 1's kv waitpend=1; either missing excludes the trial (not_applied)",
+    "timing": "the GPU hang cell's switch on rank 3 (GC_GPUHANG_IT=155: every sending CTA of rank 3 spins after its step-155 put is posted, before the flush) and on rank 1 the driver's GC_WAITPEND=1 (2026-10-27): every sending CTA of rank 1 waits, after its put is posted and before its flush, until its peer's put of the same step has landed in its receive slot (first 8 bytes non-zero), with waitSignal's abort test. Rank 3's step-155 puts land, so rank 1 finishes step 155; in step 156 rank 1's senders to ranks 0 and 2 flush, and its sender to rank 3 keeps one posted-but-unpolled put toward the stalled rank 3 while it waits (context 3 pending, frozen). Under the current judgement rule rank 1 can be judged stalled about 10 s later too (the cascade the cell measures, prediction waiter_not_judged). Injection records: rank 3's GINRS gpuhang line (spin=1) and rank 1's kv waitpend=1; either missing excludes the trial (not_applied)",
     "switch": "R3_ENV GC_GPUHANG_IT=<step>; R1_ENV GC_WAITPEND=1; WAITER_RANK=<the waiting rank>"
    },
    "preds": [
     "gpuhang_fence_restore",
-    "waiter_old_rule",
+    "waiter_not_judged",
     "no_tcp_control",
     "long_hold_lane"
    ],

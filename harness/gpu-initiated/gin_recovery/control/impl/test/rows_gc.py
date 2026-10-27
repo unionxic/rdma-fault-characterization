@@ -257,6 +257,12 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
                              STALLED line naming it, the observer's own rank apart) as "rank:ms:observers" in time order, ms =
                              the first hang line (any rank, rain's clock across nodes) -> that rank's first judgement line,
                              observers = the processes (rank and spare logs) with such a line; "none" when nothing was judged
+  wait_peer, wait_ended_progress, wait_ended_nogress   (2026-10-27 after pilot 5; the waiting rule of impl/notes_waitpeer.md,
+                             meta waiter_rank) over the observer processes of the waiter columns (every rank and spare log but
+                             the waiter's): wait_peer the peers named in their "rank W waiting (peer=P[,Q])" lines, sorted and
+                             joined by "+" ("none" without such a line); wait_ended_progress 1 when some observer has "rank W
+                             wait ended (progress: ...", else 0; wait_ended_nogress the same for "wait ended (its peers
+                             resolved, no progress within G ..." (the hard-bound ending sets neither)
   gate rows (local/): gate_real, old_go_ms, fenced_go_ms, gate_diff_ms, second_thread_ms, pidfd_ms, z_ms,
                              fenced_after_second_ms, fenced_vs_pidfd_abs_ms. gate_proc_gc.py's lines (a real child process: its
                              main thread ends first, a second thread 500 ms later; the harness's own pidfd and /proc readings)
@@ -313,6 +319,9 @@ SW_QUIET_END = re.compile(r"GINRS quiet end rank=(\d+) step=(\d+) ms=(\d+) done=
 WAITPEND_ENV = re.compile(r"\bGC_WAITPEND=1\b")
 WP_LONG = re.compile(r"GINRS waitpend rank=(\d+) step=(\d+) dest=(\d+) wait_ms=([0-9.]+)")
 WP_END = re.compile(r"GINRS waitpend end rank=(\d+) step=(\d+) dest=(\d+) result=(satisfied|released) wait_ms=([0-9.]+)")
+# 2026-10-27 after pilot 5: the library's waiting-rule lines (gin_host_gdaki.cc gdakiCtrlWaitStep)
+WAIT_PEER = re.compile(r"GIN/RC: rank (\d+): rank (\d+) waiting \(peer=([0-9,]+)\)")
+WAIT_ENDED = re.compile(r"GIN/RC: rank (\d+): rank (\d+) wait ended \((progress: |its peers resolved, no progress within G|the hard bound)")
 SW_QPERR = re.compile(r"GIN/RC: rank (\d+): test switch QP_ERR: record QP to rank (\d+) moved to ERR")
 SW_CREDIT = re.compile(r"GIN/RC: rank (\d+): test switch CREDIT_STALL:")
 SW_DROPUD = re.compile(r"GIN/RC: rank (\d+): test switch DROP_UD: the REJOIN datagram to rank (\d+) dropped")
@@ -433,7 +442,9 @@ GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_m
            "waiter_judge_n", "waiter_judge_ms_min", "waiter_judge_ms_max", "waiter_judge_causes", "waiter_fenced",
            "waiter_hold_n", "waiter_given_up_n", "waitpend_kv", "waitpend_long_n", "waitpend_ms_max", "waitpend_result",
            # 2026-10-27, pilot 5 (gc4_gpuhang12000_waiter_hung, gc4_gpuhang12000_cycle; pilot-only cells)
-           "hang_lines", "judged_ranks"]
+           "hang_lines", "judged_ranks",
+           # 2026-10-27 after pilot 5 (waiter_not_judged): the waiting rule's lines naming the waiter
+           "wait_peer", "wait_ended_progress", "wait_ended_nogress"]
 
 
 def mono(l):
@@ -1396,6 +1407,19 @@ def gc_overlay(stem, base, meta):
                 firsts.append(je)
                 causes[cz] = causes.get(cz, 0) + 1
         out["waiter_judge_n"] = len(firsts)
+        # 2026-10-27 after pilot 5: the waiting rule's lines naming the waiter, over the same observers
+        peers, ends = set(), set()
+        for nm, lg in obs:
+            for e in lg:
+                m = WAIT_PEER.search(e.text)
+                if m and int(m.group(2)) == wr:
+                    peers.update(int(x) for x in m.group(3).split(",") if x)
+                m = WAIT_ENDED.search(e.text)
+                if m and int(m.group(2)) == wr:
+                    ends.add(m.group(3))
+        out["wait_peer"] = "+".join(str(p) for p in sorted(peers)) or "none"
+        out["wait_ended_progress"] = int("progress: " in ends)
+        out["wait_ended_nogress"] = int("its peers resolved, no progress within G" in ends)
         out["waiter_judge_causes"] = "+".join("%s:%d" % kv for kv in sorted(causes.items()))
         hang_ev = first(logs[s], SW_GPUHANG)[0] if s >= 0 else None
         if hang_ev is not None and firsts:

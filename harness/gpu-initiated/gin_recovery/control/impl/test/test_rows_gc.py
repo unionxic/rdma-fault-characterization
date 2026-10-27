@@ -264,11 +264,22 @@ def quiet_trial(d, k, *, suspect_other=False, start=True, end=True, drop=None, s
                  probe=quiet_probe(drop=drop), spare_kv=REAL_SPARE_KV, meta_extra={"r3_env": "GC_QUIET_IT=155@12000"})
 
 
-def waitpend_trial(d, k, *, waiter_judged=True, t_judge3=12.1, t_judge1=12.2, kv_wp=True, hang=True, judges_of_1=(0, 2)):
+WAITING_L = ("GIN/RC: rank %d: rank 1 waiting (peer=3) (stale_ms=1800.7 ctx=3 ctx_stale_ms=1800.7; its stalled QPs go only to "
+             "stalled ranks: not judged until they are resolved, hard bound 20000 ms)")
+WAIT_END_L = {"progress": "GIN/RC: rank %d: rank 1 wait ended (progress: it left the stalled set; waited 8600.7 ms, stale_ms=0.0)",
+              "nogress": "GIN/RC: rank %d: rank 1 wait ended (its peers resolved, no progress within G: the 10 s rule judges it; "
+                         "waited 10399.2 ms, stale_ms=12104.4)"}
+
+
+def waitpend_trial(d, k, *, waiter_judged=False, waiting="progress", t_judge3=12.1, t_judge1=12.2, kv_wp=True, hang=True,
+                   judges_of_1=(0, 2)):
     """one gc4_gpuhang12000_waitpend_fence@gc trial (2026-10-27): the GPU hang cell's trial (rank 3 hangs at 2.0, judged
     STALL at t_judge3 by ranks 0-2, FENCE -> FENCED -> restore) with rank 1 waiting on rank 3 (GC_WAITPEND=1, kv waitpend=1,
-    its long-wait line and its end); waiter_judged: ranks judges_of_1 judge rank 1 STALL at t_judge1 (the current rule's
-    cascade); rank 3 is fenced, so its log ends at the hang (no summary, no end line of its own)"""
+    its long-wait line and its end); waiting (2026-10-27 after pilot 5, the waiting rule): ranks 0, 2 and 3 log "rank 1
+    waiting (peer=3)" at about 3.85 s and ranks 0, 2 "rank 1 wait ended (progress ...)" ("progress") or "(its peers
+    resolved, no progress within G ...)" ("nogress") at t_judge3 + 0.40 (the texts of pilot 5's cell B n1 and waiter-hung
+    n1 r2 lines verbatim); None: no such line (the old rule's library); waiter_judged: ranks judges_of_1 judge rank 1 STALL
+    at t_judge1 (the old rule's cascade); rank 3 is fenced, so its log ends at the hang (no summary, no end line of its own)"""
     fz = [(t_judge3 + 0.001, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCING: FENCE sent to the launcher of node 1"),
           (t_judge3 + 0.030, "GIN/RC: rank 2: rank 3 (incarnation 0) fence FENCED (by FENCED from node 1)")]
     L = restore_lines(3, t_judge3, "STALL", buddy_fence=fz, t_pub=t_judge3 + 0.35)
@@ -281,6 +292,11 @@ def waitpend_trial(d, k, *, waiter_judged=True, t_judge3=12.1, t_judge1=12.2, kv
         L[3] += [(2.0, "GINRS gpuhang rank=3 step=155 spin=1 ctx=all wait_ms=0.120")]
     L[1] += [(3.01, "GINRS waitpend rank=1 step=156 dest=3 wait_ms=1000.500"),
              (t_judge3 + 0.36, "GINRS waitpend end rank=1 step=156 dest=3 result=satisfied wait_ms=%.3f" % ((t_judge3 + 0.36 - 2.01) * 1000.0))]
+    if waiting:
+        for r, t in ((0, 3.844), (2, 3.843), (3, 3.939)):
+            L[r].append((t, WAITING_L % r))
+        for r in (0, 2):
+            L[r].append((t_judge3 + 0.40, WAIT_END_L[waiting] % r))
     if waiter_judged:
         for r in judges_of_1:
             L[r].append((t_judge1, "GIN/RC: rank %d: rank 1 (incarnation 0) judged stalled (liveness stall judged (STALL) ctx=3); STALLED to 3 rank(s)" % r))
@@ -1560,8 +1576,9 @@ def pilot3_checks():
 
 def counterexample_checks():
     """B7's regression checks (2026-10-27, Codex review of the counterexample design, item 6) on folders of their own: a
-    suspect of a non-subject rank in the quiet cell fails quiet_compute_no_judge; the waiting-rank cell with no judgement of
-    rank 1 fails waiter_old_rule; a missing injection record (the quiet start line; rank 1's kv waitpend=1; rank 3's hang
+    suspect of a non-subject rank in the quiet cell fails quiet_compute_no_judge; the waiting-rank cell with rank 1 judged
+    (the old rule's shape), or with a wait ended without progress, fails waiter_not_judged (2026-10-27 after pilot 5; before
+    it waiter_old_rule failed on no judgement); a missing injection record (the quiet start line; rank 1's kv waitpend=1; rank 3's hang
     line) excludes the trial (not_applied), a missing quiet end line does not (quiet_periods 0, a fail); an observer's
     missing summary is 자료 부족 for that trial; the waiting-rank cell is scored by gpuhang_fence_restore (per cell: a
     trial of it outside the band fails the row, which a plain part on the first key would not see); the old rank 3 that
@@ -1592,14 +1609,33 @@ def counterexample_checks():
               and v.get("quiet_compute_no_judge") == "틀림",
               "B7: a suspect of a non-subject rank in the quiet cell: suspect_n 0, suspect_any_n 1, the safety row 틀림 (%r %r %s)" % (
                   q3["suspect_n"], q3["suspect_any_n"], v.get("quiet_compute_no_judge")))
-        # (2) five waiting-rank trials, none judging rank 1: waiter_old_rule 틀림 (not 자료 부족), the trials scored
+        # (2) five waiting-rank trials of the old rule's shape (ranks 0, 2 judge rank 1, no waiting line): the waiter columns
+        # come from the observers' logs while rank 3's own log ends at the hang; waiter_not_judged 틀림 (a safety row: not
+        # 자료 부족), the trials scored. (2b, 2026-10-27 after pilot 5) five trials of the waiting rule's shape, one of them
+        # ending "no progress within G" instead of "progress": 틀림 again, its wait_ended_nogress 1
         R = tempfile.mkdtemp(prefix="gc_selftest_cx2_")
         tops.append(R)
         for k in range(1, 6):
-            waitpend_trial(os.path.join(R, "raw"), k, waiter_judged=False)
+            waitpend_trial(os.path.join(R, "raw"), k, waiter_judged=True, waiting=None)
         v, sr = scored(R)
-        check(v.get("waiter_old_rule") == "틀림" and all(r["status"] == "scored" and r["waiter_judge_n"] == 0 for r in sr.values()),
-              "B7: the waiting-rank cell with no judgement of rank 1: waiter_old_rule 틀림 (%s)" % v.get("waiter_old_rule"))
+        o1 = sr["gc4_gpuhang12000_waitpend_fence_gc_n1"]
+        check(v.get("waiter_not_judged") == "틀림" and all(r["status"] == "scored" and r["waiter_judge_n"] == 2 for r in sr.values())
+              and abs(o1["waiter_judge_ms_min"] - 10200.0) < 0.01 and o1["waiter_judge_causes"] == "STALL:2"
+              and o1["waiter_fenced"] == 0 and o1["wait_peer"] == "none" and o1["wait_ended_progress"] == 0,
+              "B7: the old rule's shape: rank 1 judged by ranks 0 and 2 10 200 ms after the hang line, from the observers' logs "
+              "while rank 3's own log ends at the hang, no waiting line; waiter_not_judged 틀림 (%s %r %r %r)" % (
+                  v.get("waiter_not_judged"), o1["waiter_judge_ms_min"], o1["waiter_judge_causes"], o1["wait_peer"]))
+        R = tempfile.mkdtemp(prefix="gc_selftest_cx2b_")
+        tops.append(R)
+        for k in range(1, 6):
+            waitpend_trial(os.path.join(R, "raw"), k, waiting="nogress" if k == 3 else "progress")
+        v, sr = scored(R)
+        g3 = sr["gc4_gpuhang12000_waitpend_fence_gc_n3"]
+        check(v.get("waiter_not_judged") == "틀림" and g3["wait_ended_progress"] == 0 and g3["wait_ended_nogress"] == 1
+              and g3["wait_peer"] == "3" and g3["waiter_judge_n"] == 0
+              and all(r["wait_ended_progress"] == 1 for i, r in sr.items() if not i.endswith("_n3")),
+              "B7: one waiting-rank trial whose wait ended without progress within G fails waiter_not_judged (%s %r %r)" % (
+                  v.get("waiter_not_judged"), g3["wait_ended_progress"], g3["wait_ended_nogress"]))
         # (3) injection records: no quiet start line, no kv waitpend=1, no hang line -> not_applied; no quiet end line ->
         # scored with quiet_periods 0; an observer's summary missing -> quiet_periods empty, 자료 부족 for that trial
         R = tempfile.mkdtemp(prefix="gc_selftest_cx3_")
@@ -1664,7 +1700,7 @@ def counterexample_checks():
         v2, _ = scored(R, pf)
         import check_cells_gc as cc
         check(v.get("gpuhang_fence_restore") == "틀림" and v2.get("gpuhang_fence_restore") == "맞음"
-              and v.get("waiter_old_rule") == "맞음"
+              and v.get("waiter_not_judged") == "맞음"
               and any("gpuhang_fence_restore" in x for x in cc.plain_part_fails(plain)) and not cc.plain_part_fails(prs),
               "B7: per cell scores the waiting-rank cell too (틀림 with its rank 3 judged at 10.6 s; the plain part on the first "
               "key alone says %s, and check_cells_gc.py fails that form)" % v2.get("gpuhang_fence_restore"))
@@ -1796,6 +1832,39 @@ def pilot5_checks():
               "cell among the main cells fails, the main table keeps its rows (%r %r)" % (rc_n.returncode, rc_m.returncode))
     finally:
         shutil.rmtree(R, ignore_errors=True)
+
+
+def pilot5_raw_checks():
+    """P5b (2026-10-27 after pilot 5): on pilot 5's raw copy (results/20261027_pilot5/a1/raw, not tracked: the release holds
+    it; skipped with a note when absent) the rows equal the tracked a1/trials.csv in its columns (stem, status and _meta
+    apart), and the new waiting columns read: cell B n1, n2 wait_peer 3, wait_ended_progress 1, waiter_not_judged's rule
+    true; the waiter-hung cell (pilot-only) wait_peer 3 with wait_ended_nogress 1 and the rule false; the two-rank cycle
+    wait_peer none and the rule false; the GPU hang control has no waiter (the waiter columns empty)"""
+    import csv as _csv
+    P5 = os.path.join(HERE, "..", "..", "results", "20261027_pilot5", "a1")
+    if not os.path.isdir(os.path.join(P5, "raw")):
+        print("note: P5b skipped: pilot 5's raw copy is not at %s/raw" % os.path.normpath(P5))
+        return
+    rr = {r["id"]: r for r in rows_gc.all_rows(P5) if r["sub"] == "raw"}
+    tr = list(_csv.DictReader(open(os.path.join(P5, "trials.csv"), encoding="utf-8")))
+    diff = [(t["id"], c) for t in tr for c, v in t.items() if c not in ("stem", "status", "_meta")
+            and ("" if rr.get(t["id"], {}).get(c) is None else str(rr.get(t["id"], {}).get(c, ""))) != v]
+    check(len(tr) == 9 and len(rr) == 9 and not diff,
+          "P5b: pilot 5's raw copy gives the tracked trials.csv's values (%d rows, differences %r)" % (len(tr), diff[:5]))
+    wn = rule("waiter_not_judged")
+    B = [rr["gc4_gpuhang12000_waitpend_fence_gc_n%d" % i] for i in (1, 2)]
+    H = [rr["gc4_gpuhang12000_waiter_hung_gc_n%d" % i] for i in (1, 2)]
+    C, G = rr["gc4_gpuhang12000_cycle_gc_n1"], rr["gc4_gpuhang12000_fence_gc_n1"]
+    check(all(b["wait_peer"] == "3" and b["wait_ended_progress"] == 1 and b["wait_ended_nogress"] == 0
+              and b["waiter_judge_n"] == 0 and b["waiter_fenced"] == 0 and score_gc.s2.cond_true(wn, b) for b in B),
+          "P5b: cell B 2/2 on waiter_not_judged's rule: waiting (peer=3), wait ended (progress), rank 1 not judged nor "
+          "fenced (%r)" % [(b["wait_peer"], b["wait_ended_progress"], b["waiter_judge_n"]) for b in B])
+    check(all(h["wait_peer"] == "3" and h["wait_ended_progress"] == 0 and h["wait_ended_nogress"] == 1
+              and not score_gc.s2.cond_true(wn, h) for h in H)
+          and C["wait_peer"] == "none" and C["wait_ended_progress"] == 0 and not score_gc.s2.cond_true(wn, C)
+          and G.get("wait_peer", "") == "" and not score_gc.s2.cond_true(wn, G),
+          "P5b: the waiter that hangs too ends 'no progress within G', the cycle has no waiting line, the control no waiter: "
+          "the rule false on each (%r %r %r)" % ([h["wait_ended_nogress"] for h in H], C["wait_peer"], G.get("wait_peer")))
 
 
 def json_load_cells():
@@ -2000,20 +2069,24 @@ def main():
           and Q1["ckpt_stable_before_inj"] == 1 and Q1["quiet_lb_detail"] == "P_w=119 X_0=5 X_1=5 X_2=5",
           "B7: the quiet cell: window 12 000 ms, P_w 119 less X 5 = 114 quiet periods, nothing judged (%r %r %r %r)" % (
               Q1["inject_ok"], Q1["quiet_ms"], Q1["quiet_periods"], Q1["quiet_lb_detail"]))
-    check(W1["inject_ok"] == 1 and W1["waitpend_kv"] == "1:1" and W1["waiter"] == 1 and W1["waiter_judge_n"] == 2
-          and abs(W1["waiter_judge_ms_min"] - 10200.0) < 0.01 and W1["waiter_judge_causes"] == "STALL:2"
+    # 2026-10-27 after pilot 5: the waiting rule's shape (the old rule's judged waiter: counterexample_checks (2))
+    check(W1["inject_ok"] == 1 and W1["waitpend_kv"] == "1:1" and W1["waiter"] == 1 and W1["waiter_judge_n"] == 0
+          and W1["waiter_judge_ms_min"] == "" and W1["waiter_judge_causes"] == ""
           and W1["waiter_fenced"] == 0 and W1["waiter_hold_n"] == 0 and W1["waitpend_long_n"] == 1
-          and W1["waitpend_result"] == "satisfied" and W1["n_judge_stall"] == 3 and W1["spare_used"] == 1,
-          "B7: the waiting rank judged by ranks 0 and 2 10 200 ms after the hang line, from the observers' logs while rank 3's "
-          "own log ends at the hang (%r %r %r %r)" % (W1["waiter_judge_n"], W1["waiter_judge_ms_min"], W1["waitpend_kv"],
-                                                      W1["waitpend_result"]))
-    wo = rule("waiter_old_rule")
+          and W1["waitpend_result"] == "satisfied" and W1["n_judge_stall"] == 3 and W1["spare_used"] == 1
+          and W1["wait_peer"] == "3" and W1["wait_ended_progress"] == 1 and W1["wait_ended_nogress"] == 0,
+          "B7: the waiting rank not judged, the observers' waiting (peer=3) and wait ended (progress) lines read, rank 3's "
+          "own waiting line counted with them (%r %r %r %r %r)" % (W1["waiter_judge_n"], W1["wait_peer"],
+                                                                   W1["wait_ended_progress"], W1["waitpend_kv"], W1["waitpend_result"]))
+    wn = rule("waiter_not_judged")
     qc = rule("quiet_compute_no_judge")
-    check(ok5(wo, W1) and not ok5(wo, dict(W1, waiter_judge_n=0, waiter_judge_ms_min="", waiter_judge_ms_max=""))
-          and not ok5(wo, dict(W1, waiter_judge_ms_min=12600.0)) and not ok5(wo, dict(W1, waiter_judge_ms_min=9900.0))
+    check(ok5(wn, W1) and not any(ok5(wn, dict(W1, **{c: v})) for c, v in (
+        ("waiter_judge_n", 1), ("waiter_fenced", 1), ("waiter_fenced", ""), ("wait_peer", "1+3"), ("wait_peer", "none"),
+        ("wait_ended_progress", 0), ("revived_done", 0), ("ow_data_equal", 0)))
           and ok5(gh, W1),
-          "B7: waiter_old_rule takes a judgement of rank 1 in 10 000-12 500 ms, none or outside fails; gpuhang_fence_restore "
-          "holds on the same trial")
+          "B7: waiter_not_judged holds on the waiting rule's trial; a judgement or a fence of rank 1 (or no launcher log), a "
+          "waiting line naming another peer or none, no progress line, the revived rank 3 not done, a data mismatch fail it; "
+          "gpuhang_fence_restore holds on the same trial")
     check(ok5(qc, Q1) and not any(ok5(qc, dict(Q1, **{c: v})) for c, v in (
         ("suspect_any_n", 1), ("judge_any_n", 1), ("decline_n", 1), ("hold_any_n", 1), ("spare_used", 1),
         ("quiet_periods", 99), ("ow_data_equal", 0))),
@@ -2021,6 +2094,7 @@ def main():
           "periods or a data mismatch fails it")
     counterexample_checks()
     pilot5_checks()
+    pilot5_raw_checks()
     neg6 =tempfile.mkdtemp(prefix="gc_selftest_ctx_")
     try:
         nraw = os.path.join(neg6, "raw")
@@ -2113,7 +2187,7 @@ def main():
                       ("long_hold_lane", "맞음"), ("stall_fence_restore", "자료 부족"), ("restore_time_rdma", "자료 부족"),
                       ("regression_tcp", "자료 부족"), ("cost_probe_lat4k", "자료 부족"), ("freeze_fence_restore", "맞음"),
                       ("gpuhang_fence_restore", "맞음"), ("gpuhang_ctx1_fence_restore", "맞음"),
-                      ("quiet_compute_no_judge", "맞음"), ("waiter_old_rule", "맞음")):
+                      ("quiet_compute_no_judge", "맞음"), ("waiter_not_judged", "맞음")):
         check(verd.get(pid) == want, "verdict %s: %s (want %s)" % (pid, verd.get(pid), want))
     check(all(st["gc4_quiet12000_gc_n%d" % k] == "scored" and st["gc4_gpuhang12000_waitpend_fence_gc_n%d" % k] == "scored"
               for k in range(1, 6)), "B7: the counterexample cells' clean trials are scored")

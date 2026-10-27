@@ -29,7 +29,7 @@
 |---|---|
 | `cells_gc.json` | 7절 30행(`rows`; 2026-10-27 반례 셀 둘 `gc4_quiet12000`, `gc4_gpuhang12000_waitpend_fence`를 더하기 전 28행, 2026-10-24 GPU hang 반례 셀 `gc4_gpuhang12000_ctx1_fence`를 더하기 전 27행, 2026-10-23 GPU hang 셀과 `gc4_kill3_noreport_nofdhold`를 더하기 전 25행), cell@build 28개(2026-10-27 전 26개, 2026-10-24 전 25개, 그 전 23개; `cells`: env, 주입, n, 대조 팔, 찾는 키, 시행 한도), 본 실행 hold C1–C3, C5–C11과 pilot hold P0–P5(P5는 2026-10-27 pilot 4), 회귀(gin-mirror `cells_mi.json`의 비용 밖 hold 여덟을 `@gc`로, `@gct`는 `regression.builds.gct.cells`의 `mi4_kill3_ow` 하나), 비용 가족 probe의 한 쌍, 로컬 항목. 2026-10-22 셀 줄임 전에는 27행, 27개, C1–C11(아래 "셀 줄임" 절) |
 | `check_cells_gc.py` | 셀 파일과 예측 표를 EXPERIMENT.md 3, 7절에 맞춰 봄(행 수, 셀 이름, 빌드, n, 찾는 키마다 셀 하나 이상, 셀마다 예측 하나 이상, 회귀 빌드의 `cells` 목록) |
-| `predictions_gc.csv` | 3절의 33행(2026-10-27 `quiet_compute_no_judge`, `waiter_old_rule`을 더하기 전 31행, 2026-10-24 `gpuhang_ctx1_fence_restore`를 더하기 전 30행, 2026-10-23 `gpuhang_fence_restore`, `fdhold_sock_helper_stall`을 더하기 전 28행, 2026-10-22 셀 줄임 전 31행). 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
+| `predictions_gc.csv` | 3절의 33행(2026-10-27 pilot 5 뒤 `waiter_old_rule`을 safety 행 `waiter_not_judged`로 바꿈; 같은 날 `quiet_compute_no_judge`, `waiter_old_rule`을 더하기 전 31행, 2026-10-24 `gpuhang_ctx1_fence_restore`를 더하기 전 30행, 2026-10-23 `gpuhang_fence_restore`, `fdhold_sock_helper_stall`을 더하기 전 28행, 2026-10-22 셀 줄임 전 31행). 열은 gin-mirror의 `id,predicted,cells,acceptance`에 `per_trial,k_required,n_planned,control_arm,basis,todo`를 더함 |
 | `remote_gc.sh` | 원격 셸에 넘기는 명령을 한 번만 따옴표로 쌈(`rcmd`, `pcmd`, `sunny_sh`), 공용 읽기 질의(`MTU_Q`, `RNR_Q`, `GID_PROBE`)와 IPv4 가림 식 |
 | `launcher_gc.sh` | launcher 하나(start, stale, info, mark, table, stop). 0700 소켓 디렉터리(시작마다 새 경로), `--tc`, 예비 프로세스 옵션을 그대로 넘김, 낡은 소켓이나 프로세스면 띄우지 않음(exit 3), 기록한 PID와 시작 시각에만 신호, 준비 실패 때 스스로 끔 |
 | `run_gc.sh` | 시행 하나. 9.9절 주입, 시행마다 launcher 띄우기와 끄기(예비 프로세스 명령과 환경 포함), 예비 프로세스 로그 따라 읽기, 시행 표지, 노드 시계 차, ss 스냅숏, `active_mtu`, RNR 카운터, 끄는 차례 |
@@ -768,3 +768,22 @@ pilot 3 [PILOT.md](../../results/20261024_pilot3/PILOT.md) "문제" 1, 2의 고�
 - **셀 검사.** `check_cells_gc.py`는 7절의 첫 표만 본 표로 읽고, 머리가 "pilot 전용 셀"인 표는 `pilot_cells`와 n을 대조한다. `HUNG_RANKS`는 env의 hang rank와 같아야 하고, hang rank가 둘 이상이면 있어야 한다.
 - **확인** `[측정: 로컬 실행]`. `python3 test_rows_gc.py` 233 검사 실패 0(새 `pilot5_checks`), `python3 check_cells_gc.py` drift 0(본 실행 셀 28개, 시행 180), `bash -n` 셋, `RS_DRY_CONFIG=1`의 설정 줄 `hung_ranks=3,1`.
   pilot 4 원자료 사본으로 다시 낸 행의 데이터 열은 추적된 `trials.csv`와 같고, `judged_ranks`의 시각은 PILOT.md 표와 같다.
+
+## pilot 5 뒤 예측과 한계의 시험 쪽 몫 (2026-10-27, 조율 세션 결정)
+
+근거는 EXPERIMENT 3절 `waiter_not_judged` 행, 18절 사–자, 12절 그날 "pilot 5 뒤 예측과 한계" 행과 [../../results/20261027_pilot5/PILOT.md](../../results/20261027_pilot5/PILOT.md) 문제 3이다. 라이브러리, 셀 파일, `score_gc.py`, `check_cells_gc.py`는 고치지 않았다.
+
+- **예측 표 파일.** `waiter_old_rule`(perf, rank 1 판정 ≥ 4/5)을 `waiter_not_judged`(safety, 모든 채점 시행)로 바꿨다:
+  `count(waiter_judge_n == 0 and waiter_fenced == 0 and wait_peer == 3 and wait_ended_progress == 1 and revived_done == 1 and ow_data_equal == 1) >= N_SCORED`, 대조 `gc4_gpuhang12000_fence@gc`.
+  `gpuhang_fence_restore`의 todo 글 한 문장도 새 규칙에 맞췄다(규칙은 그대로). 33행, safety 10, perf 22, cost 1이다.
+- **채점 열**(`rows_gc.py`, meta `waiter_rank`가 있을 때; 관측자는 `waiter_*` 열과 같은 프로세스, 곧 기다리는 rank의 로그를 뺀 모든 rank와 예비 프로세스 로그).
+  `wait_peer`는 `GIN/RC: rank O: rank W waiting (peer=P[,Q])` 줄의 상대들을 모아 정렬해 `+`로 잇고 줄이 없으면 `none`이다(값 `3`은 채점 문법에서 수 3).
+  `wait_ended_progress`는 `rank W wait ended (progress: …` 줄이 한 관측자에라도 있으면 1, `wait_ended_nogress`는 `wait ended (its peers resolved, no progress within G …` 줄이 있으면 1이다. 하드 상한으로 끝난 줄은 둘 다 세우지 않는다.
+  줄 꼴은 라이브러리 `gdakiCtrlWaitStep`의 것이다 `[소스: ../gc_layer_waitpeer.diff]`.
+- **자체 시험.** 셀 B 합성 시행(`waitpend_trial`)의 기본 꼴을 새 규칙의 것으로 바꿨다: rank 1 판정 없음, 관측자 0, 2, 3의 `waiting (peer=3)`와 0, 2의 `wait ended (progress…)`(pilot 5 셀 B n1 r2 줄의 글 그대로).
+  주 묶음의 셀 B 행은 새 열과 `waiter_not_judged`(그리고 그 음성 여덟: rank 1 판정, 펜스, launcher 로그 없음, 다른 상대, 기다림 줄 없음, 진행 줄 없음, 되살린 rank 미완, 불일치)를 본다.
+  옛 꼴(rank 0, 2가 rank 1을 판정, 기다림 줄 없음)은 `counterexample_checks` (2)로 옮겨 그 열 값과 `waiter_not_judged` 틀림을 보고, (2b)는 다섯 가운데 하나가 "no progress within G"로 끝나면 틀림임을 본다.
+  새 `pilot5_raw_checks`(P5b)는 pilot 5 원자료 사본(`../../results/20261027_pilot5/a1/raw`, gitignore; 없으면 note 한 줄로 건너뜀)에서 행이 추적된 `a1/trials.csv`와 열마다 같은지(`stem`, `status`, `_meta` 빼고),
+  셀 B n1, n2가 규칙에 맞는지, 기다리는 rank도 멈춘 셀(`wait_ended_nogress` 1), 고리(`wait_peer` none), 대조(waiter 없음)가 맞지 않는지 본다.
+- **확인** `[측정: 로컬 실행, 2026-10-27]`. `python3 test_rows_gc.py` 237 검사 실패 0(이전 233). pilot 5 사본에서 셀 B n1, n2 `wait_peer` 3, `wait_ended_progress` 1, `waiter_judge_n` 0, `waiter_fenced` 0.
+  `python3 check_cells_gc.py`는 FAIL이다: `cells_gc.json`이 행 20과 셀 `gc4_gpuhang12000_waitpend_fence@gc`의 `preds`에 아직 `waiter_old_rule`을 적는다(이 작업 범위 밖). 두 자리만 바꾼 스크래치 사본(`--cells`)으로는 drift 0, ok.
