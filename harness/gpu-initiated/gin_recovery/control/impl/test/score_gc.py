@@ -55,13 +55,19 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
      own parts and in the gin-mirror rules a "mirror:" part names) is evaluated on every scored trial of its part's keys:
      one false term on one trial turns a 맞음 or 틀림 into "재검토(안전성 항 어긋남 k/n)" (k the scored trials with a false
      term, n the scored trials the terms were evaluated on; EXPERIMENT 8, 2026-10-23), and SCORE.md lists the trials and
-     their terms; cost is the cost family.
+     their terms; cost is the cost family. EXPERIMENT 8, 2026-10-27 after pilot 4 (user decision 2): a term is read only
+     on the trials where the action it guards happened (term_applies: the fence terms FENCE_TERMS when a FENCE was sent,
+     FENCED reported or a restore attempted, the restore terms RESTORE_TERMS unless the trial ended in fallback without a
+     restore); a fallback trial (fallback_trial) is a perf failure of the rule, never a 안전성 어긋남, and SCORE.md lists it
+     as "fallback(복원 없음)".
      EXPERIMENT 8 (2026-10-23, DRAFT; data_gaps): a scored trial on which a count() is false only because it read an empty
      required summary column (REQUIRED_COLS: the control and probe summaries, with rows_gc.py's marker of the gap) is
      "자료 부족" for that prediction, neither a pass nor a fail, and SCORE.md lists it with the columns; the count is judged
-     over the other scored trials against the pre-registered k ("count(..) >= N_SCORED" takes the trials with data, at least
-     1): fewer trials with data than k -> "자료 부족(n<k)"; a safety prediction's 0-failure rule runs over the trials with
-     data; a perf rule's safety term on such a column is 자료 부족 on that trial, not a failure.
+     over the other scored trials against the pre-registered k (since 2026-10-27, user decision 1: "count(..) >= N_SCORED"
+     takes k = the key's planned n less its preparation failures, EFF; before, the trials with data): fewer trials with
+     data than k -> "자료 부족(n<k)"; a safety prediction's 0-failure rule runs over the trials with data (a measured
+     failure there is 틀림 even when the key is 자료 부족(n<k)); a perf rule's safety term on such a column is 자료 부족 on
+     that trial, not a failure.
      keys "build:<b>" pool every scored gin-control-runner trial of build b (no_tcp_control, long_hold_lane), "local:<x>" the
      local rows.
   5. STOP: the results folder's STOP_* files (their line counts), every trial's "(STOP_launcher)" and
@@ -132,6 +138,51 @@ SAFETY_TERMS = ("data_equal", "ow_data_equal", "no_reexec", "rec_lost_n", "rec_d
                 "fence_order_ok", "fence_names_ok", "win_verified", "win_changed_after", "wait_held", "revived_done",
                 "subject_fenced")
 SAFETY_TERM = re.compile(r"\b(%s)\s*==\s*(\d+)\b" % "|".join(SAFETY_TERMS))
+# EXPERIMENT 8, 2026-10-27 after pilot 4 (user decision 2): a perf rule's safety term is read only on the trials where the
+# action it guards happened. Pilot 4's waiting-survivor cell ended twice in a fallback with no fence and no restore, and
+# its empty fence_order_ok, wait_held 0, revived_done 0, ow_data_equal 0 and win_verified empty or 0 then read as a
+# safety violation (RECHECK.md 3 (나)) where nothing was activated or restored. The predicates use existing rows_gc.py
+# columns only; a row without any of a predicate's columns keeps the term (unknown is never "not applicable")
+FENCE_TERMS = ("fence_order_ok", "fence_names_ok", "win_verified", "win_changed_after", "subject_fenced")
+RESTORE_TERMS = ("wait_held", "revived_done", "ow_data_equal", "data_equal")
+_RESTORE_COLS = ("spare_used", "restore_count", "t_publish_ms")
+_FENCE_COLS = ("fence_sent", "fenced", "la_fence_sigkill_n", "la_fenced_n")
+
+
+def restore_tried(r):
+    """a restore was attempted or published: a spare used (rows_gc.py spare_used: a spare's restored line, a survivor's
+    "restored as incarnation" line or the launcher's ACCEPTED activation), a restored line (restore_count) or a survivor's
+    "published" line (t_publish_ms); None when the row has none of these columns"""
+    if all(val_empty(r.get(c)) for c in _RESTORE_COLS):
+        return None
+    return (ival(r.get("spare_used"), 0) or 0) >= 1 or (ival(r.get("restore_count"), 0) or 0) >= 1 or \
+        not val_empty(r.get("t_publish_ms"))
+
+
+def fallback_trial(r):
+    """a trial that ended in fallback without a restore: no restore attempted (restore_tried false) and at least one
+    survivor's wait let go (surv_released >= 1)"""
+    return restore_tried(r) is False and (ival(r.get("surv_released"), 0) or 0) >= 1
+
+
+def fence_acted(r):
+    """a FENCE was sent or FENCED reported for the subject (the buddy's FENCING or FENCED line, the launcher's fence
+    SIGKILL or FENCED line), or a restore attempted (an activation without a fence keeps the fence terms, so a missing
+    fence still shows); True when the row has none of these columns"""
+    if all(val_empty(r.get(c)) for c in _FENCE_COLS + _RESTORE_COLS):
+        return True
+    return bool(restore_tried(r)) or any((ival(r.get(c), 0) or 0) >= 1 for c in _FENCE_COLS)
+
+
+def term_applies(term, r):
+    """whether a perf rule's safety term (its text, e.g. "fence_order_ok == 1") is read on row r: the fence terms when
+    fence_acted and the trial is no fallback trial, the restore terms unless it is a fallback trial, the others always"""
+    name = term.split("==")[0].strip()
+    if name in FENCE_TERMS:
+        return fence_acted(r) and not fallback_trial(r)
+    if name in RESTORE_TERMS:
+        return not fallback_trial(r)
+    return True
 APART = ("scored", "prep_failure", "surplus", "smoke", "pilot")
 
 
@@ -185,9 +236,10 @@ def safety_parts(p, keys, mpreds=()):
 
 
 def perf_safety_terms(p, det, scored, mpreds=()):
-    """[(key, term, failing trial ids, n, 자료 부족 trial ids)]: a perf rule's safety terms (SAFETY_TERMS, each part on its
-    own keys) on the scored trials of those keys (the subset's rows for a subset() part); a term on an empty required
-    column (data_gaps) is 자료 부족 on that trial, not a failure, and n counts the trials with data"""
+    """[(key, term, failing trial ids, n, 자료 부족 trial ids, 해당 없음 trial ids)]: a perf rule's safety terms
+    (SAFETY_TERMS, each part on its own keys) on the scored trials of those keys (the subset's rows for a subset() part)
+    where the action the term guards happened (term_applies; the others are 해당 없음, a fallback trial among them); a term
+    on an empty required column (data_gaps) is 자료 부족 on that trial, not a failure, and n counts the trials read with data"""
     out = {}
     keys = [x.strip() for x in p["cells"].split(";") if x.strip()]
     for k, text in safety_parts(p, keys, mpreds):
@@ -197,17 +249,30 @@ def perf_safety_terms(p, det, scored, mpreds=()):
             rows = [r for r in rows if s2.cond_true(m.group(1), r)]
         for t in sorted({x.group(0) for x in SAFETY_TERM.finditer(text)}):
             if rows and (k, t) not in out:
-                g = data_gaps(t, rows)
-                out[(k, t)] = ([r["id"] for r in rows if r["id"] not in g and not s2.cond_true(t, r)], len(rows) - len(g),
-                               sorted(g))
-    return [(k, t, fs, n, gs) for (k, t), (fs, n, gs) in sorted(out.items())]
+                use = [r for r in rows if term_applies(t, r)]
+                na = sorted(r["id"] for r in rows if not term_applies(t, r))
+                g = data_gaps(t, use)
+                out[(k, t)] = ([r["id"] for r in use if r["id"] not in g and not s2.cond_true(t, r)], len(use) - len(g),
+                               sorted(g), na)
+    return [(k, t, fs, n, gs, na) for (k, t), (fs, n, gs, na) in sorted(out.items())]
+
+
+def perf_fallbacks(p, scored, mpreds=()):
+    """the scored trials of a perf rule's keys that ended in fallback without a restore (fallback_trial), when the rule
+    has a fence or restore term: listed in SCORE.md as "fallback(복원 없음)" (a perf failure, not a 안전성 어긋남)"""
+    keys = [x.strip() for x in p["cells"].split(";") if x.strip()]
+    ids = set()
+    for k, text in safety_parts(p, keys, mpreds):
+        if any(x.group(1) in FENCE_TERMS + RESTORE_TERMS for x in SAFETY_TERM.finditer(text)):
+            ids.update(r["id"] for r in scored.get(k, []) if fallback_trial(r))
+    return sorted(ids)
 
 
 def perf_review(ps):
     """(k, n, {trial id: [terms]}) of a perf prediction's safety terms: k scored trials with a false term among the n
     scored trials the terms were read on (per key the most any term had data on)"""
     bad, nk = {}, {}
-    for k, t, fs, n, _ in ps:
+    for k, t, fs, n, *_ in ps:
         nk[k] = max(nk.get(k, 0), n)
         for i in fs:
             bad.setdefault(i, []).append(t)
@@ -479,10 +544,13 @@ def data_gaps(inner, rows):
     return out
 
 
-def with_data_n(a, rows):
+def with_data_n(a, rows, n_planned=None):
     """an acceptance text's count() parts on rows with their data gaps: (the text with each "count(..) >= N_SCORED" taking
-    the trials with data, [(inner, gaps, trials with data, k)]); k the pre-registered threshold of ">= <k>" (N_SCORED:
-    the trials with data, at least 1), None for another form"""
+    k, [(inner, gaps, trials with data, k)]); k the pre-registered threshold of ">= <k>", for N_SCORED the key's planned
+    n less its preparation failures (n_planned: EFF; the scored rows when not given), at least 1 (EXPERIMENT 8,
+    2026-10-27 after pilot 4, user decision 1: a data gap no longer shrinks N_SCORED to the trials with data, so a gap
+    makes the count 자료 부족(n<k) instead of passing on the remaining trials); None for another form"""
+    kn = max(len(rows) if n_planned is None else n_planned, 1)
     parts, info, pos = [], [], 0
     for s, e, inner in s2.split_counts(a):
         g = data_gaps(inner, rows)
@@ -492,8 +560,8 @@ def with_data_n(a, rows):
         parts.append(a[pos:e])
         pos = e
         if m and m.group(1) == "N_SCORED":
-            parts.append(a[e:e + m.end()].replace("N_SCORED", str(nd)))
-            pos, k = e + m.end(), max(nd, 1)
+            parts.append(a[e:e + m.end()].replace("N_SCORED", str(kn)))
+            pos, k = e + m.end(), kn
         elif m:
             k = int(m.group(1))
         info.append((inner, g, nd, k))
@@ -525,9 +593,16 @@ def eval_part(acc, keys, scored, PLANNED, pooled):
         elif PLANNED.get(k, 0) == 0 or len(rows) < PLANNED.get(k, 0):
             short.append(k)
         refs = sorted(c for c in LIB_COLS if re.search(r"\b" + c + r"\b", a))
-        if rows and any(all(val_empty(r.get(c)) for r in rows) for c in refs):
+        # a library column empty in every scored trial is 자료 부족 (the line is not emitted); a fence or restore term's
+        # column is looked for only in the trials where its action happened (term_applies; 2026-10-27, user decision 2):
+        # a key whose trials all ended in fallback is then judged (its count fails), not 자료 부족
+        if rows and any((lambda rs: rs and all(val_empty(r.get(c)) for r in rs))(
+                [r for r in rows if term_applies(c + " ==", r)]) for c in refs):
             short.append(k)
-        ak, info = with_data_n(a, rows)
+        # N_SCORED's k: the planned n less preparation failures (EFF; a pooled key its cells' sum), a subset its scored rows
+        kn = len(rows) if sub is not None else (sum(PLANNED.get(x, 0) for x in pooled[k]) if k in pooled
+                                                else PLANNED.get(k, 0))
+        ak, info = with_data_n(a, rows, kn)
         ak = re.sub(r"\bN_SCORED\b", str(len(rows)), ak)
         evals.append((k,) + s2.evaluate(ak, {k: rows}, k, s2.NIL))
         gaps += [(k, inner, g, len(rows), nd, kk) for inner, g, nd, kk in info]
@@ -704,9 +779,11 @@ def score(R, planned_override=None):
             v = "맞음" if ok_all else "틀림"
         # item 5: a safety prediction holds only with no failure over its scored trials (every count() part n of n)
         det["safety_fail"] = safety_fails(det)
-        if kind_of(p) == "safety" and v == "맞음" and det["safety_fail"]:
+        # a measured failure on a trial with data is a fail even when gaps leave the key 자료 부족(n<k) (2026-10-27)
+        if kind_of(p) == "safety" and v in ("맞음", "자료 부족(n<k)") and det["safety_fail"]:
             v = "틀림"
         det["perf_safety"] = perf_safety_terms(p, det, scored, mpreds) if kind_of(p) == "perf" else []
+        det["fallback"] = perf_fallbacks(p, scored, mpreds) if kind_of(p) == "perf" else []
         # EXPERIMENT 8 (2026-10-23): a perf rule whose safety term fails on any scored trial is re-examined, whatever its
         # count threshold says (a short or no-data verdict stays; its failing trials are listed all the same)
         k_bad, n_read, det["perf_bad"] = perf_review(det["perf_safety"])
@@ -769,9 +846,10 @@ def score(R, planned_override=None):
              ", ".join("%s(%s)" % x for x in la_down) or "없음"), "",
          "## 판정 요약", "", "안전 예측(kind safety)은 판정한 시행에서 실패 0일 때만 맞음, 성능 예측(perf)은 판정식의 문턱 그대로다(Codex 리뷰 5). "
          "다만 성능 예측의 판정식 안의 안전성 항(%s)이 판정한 시행 하나에서라도 거짓이면 그 예측은 문턱과 상관없이 "
-         "재검토(안전성 항 어긋남 k/n)다(8절, 2026-10-23). 판정식이 읽는 필수 요약 열(제어 요약, READ 요약)이 빈 시행은 그 예측에서 "
-         "자료 부족 시행이다(통과도 실패도 아님). 판정은 나머지 시행으로 사전 등록 문턱 k에 견주고, 자료 있는 시행이 k보다 적으면 "
-         "자료 부족(n<k)이다(8절, 2026-10-23)." % ", ".join("`%s`" % t for t in SAFETY_TERMS), "",
+         "재검토(안전성 항 어긋남 k/n)다(8절, 2026-10-23). 안전성 항은 그 항이 지키는 동작(펜스, 복원)이 있었던 시행에서만 보고, "
+         "복원 시도 없이 fallback으로 끝난 시행은 성능 실패로만 센다(fallback(복원 없음), 8절, 2026-10-27). 판정식이 읽는 필수 요약 열(제어 요약, READ 요약)이 빈 시행은 그 예측에서 "
+         "자료 부족 시행이다(통과도 실패도 아님). 판정은 나머지 시행으로 사전 등록 문턱 k에 견주고(`>= N_SCORED`의 k는 계획 n), 자료 있는 시행이 k보다 적으면 "
+         "자료 부족(n<k)이다(8절, 2026-10-23, 2026-10-27)." % ", ".join("`%s`" % t for t in SAFETY_TERMS), "",
          "| 예측 | 종류 | 셀 | n | 판정 |", "|---|---|---|--:|---|"]
     for p, keys, v, det in results:
         gk = {}
@@ -808,10 +886,14 @@ def score(R, planned_override=None):
             L.append("- gin-mirror 예측 표에 없는 ID: %s" % ", ".join(det["missing"]))
         if det.get("safety_fail") and kind_of(p) == "safety":
             L.append("- 안전 예측의 실패(실패 0 규칙): %s" % "; ".join("`%s` `count(%s)` %d/%d" % x for x in det["safety_fail"]))
-        for k, t, fs, n, gs in det.get("perf_safety", []):
-            L.append("- 성능 예측 안의 안전성 항(어긋나면 재검토, 8절) `%s` `%s`: 실패 %d/%d%s%s" % (
+        for k, t, fs, n, gs, na in det.get("perf_safety", []):
+            L.append("- 성능 예측 안의 안전성 항(어긋나면 재검토, 8절) `%s` `%s`: 실패 %d/%d%s%s%s" % (
                 k, t, len(fs), n, (" (" + ", ".join(fs) + ")") if fs else "",
-                ", 자료 부족 %d (%s)" % (len(gs), ", ".join(gs)) if gs else ""))
+                ", 자료 부족 %d (%s)" % (len(gs), ", ".join(gs)) if gs else "",
+                ", 해당 없음 %d (%s)" % (len(na), ", ".join(na)) if na else ""))
+        if det.get("fallback"):
+            L.append("- fallback(복원 없음) 시행(복원 시도 없이 생존 rank가 풀림; 성능 실패로만 세고 안전성 어긋남으로 세지 않음, 8절): %s" % (
+                ", ".join("`%s`" % i for i in det["fallback"])))
         if det.get("perf_bad"):
             L.append("- 안전성 항 어긋남(재검토): %s" % "; ".join(
                 "`%s` (%s)" % (i, ", ".join("`%s`" % t for t in ts)) for i, ts in sorted(det["perf_bad"].items())))

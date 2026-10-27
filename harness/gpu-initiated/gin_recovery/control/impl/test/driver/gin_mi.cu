@@ -132,7 +132,7 @@
 // usage: gin_mi <rank> <nranks> <rank0_ip> <port> <out_kv>     (a spare ignores rank0_ip and port: no rendezvous)
 // env: RS_RDV_NONCE (16 hex; a rank r > 0 sends nothing before it checked rank 0's greeting "GINRS_01" + nonce),
 //   RS_STEPS (40; RS_TRAIN: 2000), RS_BYTES (4096; RS_TRAIN: 2097152; multiple of 8), RS_DEV (0), RS_WATCHDOG_S (90),
-//   RS_ASYNC_POLL_US (200),
+//   RS_ASYNC_POLL_US (200; after the first async error 100 ms and at most 1 000 error results, see asyncPoll),
 //   RS_START_GATE=<path> and RS_START_GATE_S (150): rank 0 waits for the file before the first step (a spare gets ready),
 //   RS_STEP_GAP_US (0: a host pause after each step's hook; pacing only), RS_END_GRACE_MS (0: a live rank's pause before
 //   its final ncclCommAbort, so a revived rank finishes its last step and checks first),
@@ -583,19 +583,32 @@ static void hostReference(int n, int steps, std::vector<std::vector<uint64_t>>& 
 }
 
 // the communicator's async error, polled (9.8 (a): a survivor must see none)
+// gin-control (2026-10-27, pilot 4 problem 4): the library prints one "GIN Error detected" WARN per call that returns an
+// error (init.cc, ncclCommGetAsyncError; pilot 4: a survivor's async_n equals its WARN count), so a process that lives
+// on after a fallback logged about 690 000 such lines at RS_ASYNC_POLL_US 200. After the first error the check runs once
+// per kAsyncBackoffUs (100 ms, the sleep cut in 10 ms slices so the end of the run is not delayed) and stops after
+// kAsyncErrCap (1 000) error results: at most 1 000 such WARN lines per process. async_n counts the error results (zero
+// or not as before; its size is no longer a time); async_first and the one GINRS async line are unchanged.
 static std::atomic<bool> g_asyncStop{false};
 static std::atomic<int> g_asyncFirst{0};
 static std::atomic<long> g_asyncN{0};
+static const useconds_t kAsyncBackoffUs = 100000u, kAsyncSliceUs = 10000u;
+static const long kAsyncErrCap = 1000;
 static void asyncPoll(useconds_t us) {
   while (!g_asyncStop.load()) {
     ncclResult_t s = ncclSuccess;
-    if (g_comm && ncclCommGetAsyncError(g_comm, &s) == ncclSuccess && s != ncclSuccess && s != ncclInProgress) {
+    if (g_comm && g_asyncN.load() < kAsyncErrCap && ncclCommGetAsyncError(g_comm, &s) == ncclSuccess &&
+        s != ncclSuccess && s != ncclInProgress) {
       if (g_asyncN.fetch_add(1) == 0) {
         g_asyncFirst.store((int)s);
         printf("GINRS async rank=%d err=%d mono_ms=%.3f\n", g_rank, (int)s, monoMs());
       }
     }
-    usleep(us);
+    if (g_asyncN.load() == 0) {
+      usleep(us);
+      continue;
+    }
+    for (useconds_t t = 0; t < kAsyncBackoffUs && !g_asyncStop.load(); t += kAsyncSliceUs) usleep(kAsyncSliceUs);
   }
 }
 

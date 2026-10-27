@@ -1023,7 +1023,9 @@ def ctrlsum_checks():
 def gap_checks():
     """EXPERIMENT 8 (2026-10-23, DRAFT): a scored trial whose rule reads an empty required summary column is 자료 부족 for
     that prediction (neither a pass nor a fail); the verdict is judged over the trials with data against the k; fewer than
-    k with data is 자료 부족(n<k); a safety rule keeps its 0-failure rule over the trials with data, with the gap listed"""
+    k with data is 자료 부족(n<k); a safety rule keeps its 0-failure rule over the trials with data, with the gap listed.
+    2026-10-27 after pilot 4 (user decision 1): ">= N_SCORED" takes k = the planned n (EFF), so 5 planned with 2 gaps and
+    3 passes is 자료 부족(n<k) and 5 of 5 is 맞음; a measured failure beside a gap is still 틀림 for a safety rule"""
     import io, contextlib, csv as _csv
     dg = score_gc.data_gaps
     # unit: a presence test, an event column and a summary column without its gap marker are measurements, not gaps
@@ -1059,10 +1061,12 @@ def gap_checks():
             w.writeheader()
             for pid, kd, acc in (("g_perf4", "perf", "count(%s) >= 4" % cond), ("g_perf5", "perf", "count(%s) >= 5" % cond),
                                  ("g_safe4", "safety", "count(%s) >= 4" % cond),
-                                 ("g_safe_all", "safety", "count(rec_lost_n == 0) >= N_SCORED")):
+                                 ("g_safe_all", "safety", "count(rec_lost_n == 0) >= N_SCORED"),
+                                 ("g_safe_all_ow", "safety", "count(%s) >= N_SCORED" % cond)):
                 w.writerow(dict(id=pid, predicted="t", cells="gc4_credit_stall@gc", kind=kd, acceptance=acc, todo=""))
         res = {}
-        for tag, gaps, bad in (("one", (1,), ()), ("two", (1, 2), ()), ("bad", (1,), (1,))):
+        for tag, gaps, bad in (("one", (1,), ()), ("two", (1, 2), ()), ("bad", (1,), (1,)), ("none", (), ()),
+                               ("gapbad", (1,), (2,))):
             R = tempfile.mkdtemp(prefix="gc_selftest_gap_")
             tops.append(R)
             five(R, gaps, bad)
@@ -1075,10 +1079,11 @@ def gap_checks():
                 score_gc.PREDS = old
             res[tag] = (verd, open(os.path.join(R, "SCORE.md"), encoding="utf-8").read(), buf.getvalue())
         v, md, out = res["one"]
-        check(v.get("g_perf4") == "맞음" and v.get("g_safe4") == "맞음" and v.get("g_safe_all") == "맞음"
+        check(v.get("g_perf4") == "맞음" and v.get("g_safe4") == "맞음" and v.get("g_safe_all") == "자료 부족(n<k)"
               and v.get("g_perf5") == "자료 부족(n<k)",
               "gap: one trial without rank 1's summary: perf k 4 맞음 over the other four, perf k 5 자료 부족(n<k), safety k 4 "
-              "and N_SCORED 맞음 (%s %s %s %s)" % (v.get("g_perf4"), v.get("g_perf5"), v.get("g_safe4"), v.get("g_safe_all")))
+              "맞음, N_SCORED (k = planned 5) 자료 부족(n<k) (%s %s %s %s)" % (
+                  v.get("g_perf4"), v.get("g_perf5"), v.get("g_safe4"), v.get("g_safe_all")))
         check("채점 n 5, 자료 부족 n 1, 자료 있는 n 4, 문턱 k 4" in md and "채점 n 5, 자료 부족 n 1, 자료 있는 n 4, 문턱 k 5 → 자료 부족(n<k)" in md
               and "자료 부족 시행(빈 필수 열; 통과도 실패도 아님, 8절): `gc4_credit_stall_gc_n1` (rec_lost_n; ctrlsum_missing=r1)" in md
               and "| 5 (자료 부족 1) | 맞음 |" in md and "scored=5 cond=4/4 whole=4/5 data_gap=1" in out
@@ -1086,11 +1091,27 @@ def gap_checks():
               and "`rec_lost_n == 0`: 실패 0/4, 자료 부족 1 (gc4_credit_stall_gc_n1)" in md,
               "gap: SCORE.md gives the scored n, the gap n, the trial and its column, the verdict over the trials with data")
         v, md, _ = res["two"]
-        check(v.get("g_perf4") == "자료 부족(n<k)" and v.get("g_safe4") == "자료 부족(n<k)" and v.get("g_safe_all") == "맞음",
+        check(v.get("g_safe_all") == "자료 부족(n<k)" and
+              "`count(rec_lost_n == 0)` = 3/3. 만족하지 않은 시행: 없음" in md and
+              "채점 n 5, 자료 부족 n 2, 자료 있는 n 3, 문턱 k 5 → 자료 부족(n<k)" in md,
+              "gap (2026-10-27, decision 1): N_SCORED with 5 planned, 2 gaps and 3 passes is 자료 부족(n<k), k 5 (%s)" %
+              v.get("g_safe_all"))
+        check(v.get("g_perf4") == "자료 부족(n<k)" and v.get("g_safe4") == "자료 부족(n<k)" and
+              v.get("g_safe_all") == "자료 부족(n<k)",
               "gap: two trials without the summary: three with data against k 4 is 자료 부족(n<k), never 맞음 by the smaller "
               "denominator (%s %s %s)" % (v.get("g_perf4"), v.get("g_safe4"), v.get("g_safe_all")))
+        v, md, _ = res["none"]
+        check(all(v.get(x) == "맞음" for x in ("g_perf4", "g_perf5", "g_safe4", "g_safe_all", "g_safe_all_ow")) and
+              "채점 n 5, 자료 부족 n 0, 자료 있는 n 5, 문턱 k 5" in md,
+              "gap (2026-10-27, decision 1): no gap, 5 of 5: every rule 맞음, N_SCORED k 5 (%s)" % sorted(v.items())[:6])
+        v, md, _ = res["gapbad"]
+        check(v.get("g_safe_all_ow") == "틀림" and v.get("g_safe_all") == "자료 부족(n<k)",
+              "gap (2026-10-27): a gap in one trial and a measured mismatch in another: the safety N_SCORED rule is 틀림 (a "
+              "fail among the trials with data), not hidden by 자료 부족(n<k); the rule on the empty column alone stays "
+              "자료 부족(n<k) (%s %s)" % (v.get("g_safe_all_ow"), v.get("g_safe_all")))
         v, md, _ = res["bad"]
-        check(v.get("g_safe4") == "틀림" and v.get("g_perf4") == "재검토(안전성 항 어긋남 1/5)" and v.get("g_safe_all") == "맞음",
+        check(v.get("g_safe4") == "틀림" and v.get("g_perf4") == "재검토(안전성 항 어긋남 1/5)" and
+              v.get("g_safe_all") == "자료 부족(n<k)",
               "gap: the gap trial with a measured data mismatch is a fail, not 자료 부족: safety 틀림, perf 재검토; the rule "
               "on the empty column alone stays a gap (%s %s %s)" % (v.get("g_safe4"), v.get("g_perf4"), v.get("g_safe_all")))
     finally:
@@ -1688,6 +1709,56 @@ def qperr_checks():
         shutil.rmtree(R, ignore_errors=True)
 
 
+def fallback_checks():
+    """EXPERIMENT 8, 2026-10-27 after pilot 4 (user decision 2): a perf rule's safety term is read only where the action it
+    guards happened. On pilot 4's waiting-survivor rows (tracked results/20261027_pilot4/aN/trials.csv; both ended in
+    fallback, no fence, no restore) gpuhang_fence_restore's five safety terms are 해당 없음 and the cell's count is 0/2 (a
+    perf failure, not 재검토); its GPU hang control row keeps every term. A violation stays visible: an activation without
+    a fence, a fence without a fallback, a data mismatch without a release, a row without the guard columns"""
+    import csv as _csv
+    P4 = os.path.join(HERE, "..", "..", "results", "20261027_pilot4")
+    rows = []
+    for a in ("a1", "a2"):
+        f = os.path.join(P4, a, "trials.csv")
+        if os.path.exists(f):
+            rows += list(_csv.DictReader(open(f, encoding="utf-8")))
+    B, C = "gc4_gpuhang12000_waitpend_fence@gc", "gc4_gpuhang12000_fence@gc"
+    rb = sorted((r for r in rows if r.get("key") == B), key=lambda r: r["id"])
+    rc = [r for r in rows if r.get("key") == C]
+    if len(rb) != 2 or len(rc) != 1:
+        check(False, "fallback: pilot 4 rows (2 waiting-survivor, 1 control) not found under %s (%d %d)" % (P4, len(rb), len(rc)))
+        return
+    p = [x for x in _csv.DictReader(open(score_gc.PREDS, encoding="utf-8")) if x["id"] == "gpuhang_fence_restore"][0]
+    ids = [r["id"] for r in rb]
+    ps = score_gc.perf_safety_terms(p, {}, {B: rb, C: rc})
+    kb, nr, bad = score_gc.perf_review(ps)
+    nab = {t: na for k, t, fs, n, gs, na in ps if k == B}
+    check(kb == 0 and not bad and len(nab) == 5 and all(na == ids for na in nab.values()) and
+          all(n == 0 for k, t, fs, n, gs, na in ps if k == B) and
+          all(not fs and n == 1 and not na for k, t, fs, n, gs, na in ps if k == C) and
+          score_gc.perf_fallbacks(p, {B: rb, C: rc}) == ids,
+          "fallback: pilot 4's waiting-survivor rows: the five safety terms 해당 없음 on both, no 재검토, both listed as "
+          "fallback(복원 없음); the control row reads every term (%r)" % [(k, t, len(fs), n, na) for k, t, fs, n, gs, na in ps])
+    a = p["acceptance"][len("per cell:"):].strip()
+    inner = score_gc.s2.split_counts(a)[0][2]
+    check(sum(score_gc.s2.cond_true(inner, r) for r in rb) == 0 and score_gc.s2.cond_true(inner, rc[0]),
+          "fallback: the rule's count is 0/2 on the waiting-survivor rows (a perf failure) and 1/1 on the control row")
+
+    def terms_of(r):
+        return {t: fs for k, t, fs, n, gs, na in score_gc.perf_safety_terms(p, {}, {B: [r]})}
+    act = terms_of(dict(rb[0], spare_used="1"))
+    fen = terms_of(dict(rb[0], la_fenced_n="1", surv_released="0"))
+    ow = terms_of(dict(rb[0], surv_released="0"))
+    bare = terms_of({k: v for k, v in rb[0].items() if k not in score_gc._FENCE_COLS + score_gc._RESTORE_COLS + ("surv_released",)})
+    check(act.get("fence_order_ok == 1") == [ids[0]] and act.get("ow_data_equal == 1") == [ids[0]] and
+          fen.get("fence_order_ok == 1") == [ids[0]] and fen.get("win_verified == 1") == [ids[0]] and
+          ow.get("ow_data_equal == 1") == [ids[0]] and ow.get("fence_order_ok == 1") == [] and
+          all(v == [ids[0]] for v in bare.values()) and len(bare) == 5,
+          "fallback: a violation stays visible: an activation without a fence fails fence_order_ok, a fence without a "
+          "fallback fails the fence terms, a mismatch without a release fails ow_data_equal (the fence terms then 해당 "
+          "없음: no fence), a row without the guard columns reads every term (%r %r %r %r)" % (act, fen, ow, bare))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", default=None)
@@ -1940,6 +2011,7 @@ def main():
     review_checks()
     ctrlsum_checks()
     gap_checks()
+    fallback_checks()
     probe_checks()
     cost_checks()
     print("self-test: %d checks, %d failed%s" % (CHECKS[0], CHECKS[1], "" if a.keep else " (folder %s removed)" % R))

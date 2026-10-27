@@ -1047,7 +1047,8 @@
     "R3_ENV": "GC_GPUHANG_IT=155",
     "R1_ENV": "GC_WAITPEND=1",
     "SUBJECT_RANK": "3",
-    "WAITER_RANK": "1"
+    "WAITER_RANK": "1",
+    "WATCHDOG_S": "60"
    },
    "injection": {
     "kind": "gpuhang",
@@ -1062,7 +1063,8 @@
     "long_hold_lane"
    ],
    "control": "gc4_gpuhang12000_fence@gc",
-   "bound_s": 60,
+   "bound_s": 230,
+   "bound_note": "2026-10-27 after pilot 4 (user decision 3): a trial that ends in fallback leaves the hung rank 3 to the driver watchdog (pilot 4: 200.4 s at WATCHDOG_S 200, rank 3 ended by watchdog 197.3 s after the hang line); WATCHDOG_S 60 for this cell ends it about 60 s after its start (the runner records the hung subject's own watchdog in hang_watchdog.txt, not a STOP), and bound_s 230 keeps hold_gc.sh's fits() estimate above the 200.4 s measured at the old watchdog",
    "row": 20,
    "todo": "TODO(pilot 4): pilot 4 (hold P5) runs this cell with the modified driver and the current library: whether the current rule judges rank 1 (waiter_judge_n, waiter_judge_ms_min), whether rank 1 is fenced (waiter_fenced), how its hold ends (waiter_hold_n, waiter_given_up_n, decline_n), and rank 1's tx_err and flush return around rank 3's restore; WAITER_RANK goes to the runner's meta (waiter_rank) for rows_gc.py",
    "subject_note": "SUBJECT_RANK: the rank the test switch acts on, so that the per-subject columns are read (REVIEW_TEST B2); WAITER_RANK: the healthy rank that waits with a posted-but-unpolled put toward the subject (rows_gc.py waiter_* columns, 2026-10-27)"

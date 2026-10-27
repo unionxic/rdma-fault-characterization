@@ -734,3 +734,24 @@ pilot 3 [PILOT.md](../../results/20261024_pilot3/PILOT.md) "문제" 1, 2의 고�
   - 확인: `bash -n` 통과, a1 시행 사본으로 함수만 돌려 기록 줄이 나고 같은 kv에 `nccl_error=`를 더하면 STOP_nic `[측정: 로컬 실행]`. a2에서 돌았다(셀 B n2, 기록 한 줄, STOP 0) `[측정]`.
 - 실행기 쪽에서 본 남은 일: 셀 B 시행 하나가 200.4 s라 `cells_gc.json`의 `bound_s` 60과 맞지 않는다(본 실행 hold C10의 시간 어림, PILOT.md 문제 3). 셀 파일은 고치지 않았다.
 - 자체 시험 `test_rows_gc.py`는 실행기 파일을 읽지 않아 다시 돌리지 않았다(시작 때 221 검사 실패 0).
+
+## pilot 4 뒤 채점 규칙과 셀 값 (2026-10-27, 사용자 결정 넷)
+
+근거는 [../../results/20261027_pilot4/RECHECK.md](../../results/20261027_pilot4/RECHECK.md) 2–5와 PILOT.md "문제", 규칙 글은 EXPERIMENT 8절, 기록은 12절 그날 같은 이름 행이다. 판정 규칙(라이브러리), `rows_gc.py`, 예측 표 파일은 고치지 않았다.
+
+- **`>= N_SCORED`의 k**(결정 1, `score_gc.with_data_n`, `eval_part`). k는 그 키의 계획 n에서 준비 실패를 뺀 수(`EFF`)다. 묶음 키는 셀들의 합, `subset()` 부분은 그 채점 시행 수다. 자료 부족 시행이 있으면 "자료 부족(n<k)"이다.
+  안전 예측은 자료 있는 시행에서 잰 실패가 있으면 그래도 틀림이다(새 k가 실패를 가리지 않게).
+- **안전성 항의 동작 조건**(결정 2, `term_applies`, `fallback_trial`, `restore_tried`, `fence_acted`). 복원 시도는 `spare_used` 1, `restore_count` ≥ 1, `t_publish_ms` 있음 가운데 하나다.
+  fallback 시행은 복원 시도가 없고 `surv_released` ≥ 1인 시행이다. 펜스 동작은 `fence_sent`, `fenced`, `la_fence_sigkill_n`, `la_fenced_n` 가운데 하나이거나 복원 시도다.
+  펜스 항(`fence_order_ok`, `fence_names_ok`, `win_verified`, `win_changed_after`, `subject_fenced`)은 펜스 동작이 있고 fallback이 아닌 시행에서, 복원 항(`wait_held`, `revived_done`, `ow_data_equal`, `data_equal`)은 fallback이 아닌 시행에서 본다.
+  판단 열이 모두 없는 행은 항을 본다. `LIB_COLS`의 빈 열 검사도 같은 조건이다. SCORE.md는 항마다 "해당 없음 n (ID)"와 예측마다 "fallback(복원 없음)" 시행을 적는다. `perf_safety_terms`의 튜플에 해당 없음 ID가 붙었다.
+- **셀 B**(결정 3, `cells_gc.json`). `gc4_gpuhang12000_waitpend_fence@gc`의 `bound_s` 230, env `WATCHDOG_S` 60과 `bound_note`. `cells_gc.sh`가 env를 export하고 `run_gc.sh`가 `WATCHDOG_S`를 `RS_WATCHDOG_S`로 넘긴다 `[소스]`.
+- **driver의 비동기 오류 확인**(결정 4, `driver/gin_mi.cu` `asyncPoll`, 호스트 코드만). "GIN Error detected" WARN은 라이브러리(`init.cc`의 `ncclCommGetAsyncError`)가 오류를 돌려주는 호출마다 한 줄 낸다.
+  pilot 4 셀 B n1의 생존 rank는 kv `async_n`과 그 WARN 줄 수가 같았다(7 869, 7 392, 7 860) `[측정]`. 그래서 driver는 줄을 직접 막지 못하고 호출 수로 줄인다.
+  첫 오류 뒤에는 100 ms마다 확인하고(`kAsyncBackoffUs`; 10 ms 조각으로 자며 `g_asyncStop`을 보아 끝을 늦추지 않음), 오류 결과 1 000번(`kAsyncErrCap`) 뒤에는 부르지 않는다. 그래서 프로세스마다 그 WARN은 1 000줄 이하다.
+  셀 B의 rank 3(첫 오류 약 10 s, watchdog 60 s)이면 약 500줄이다 `[추론]`. 첫 오류 전의 간격(`RS_ASYNC_POLL_US`, 200 µs), `GINRS async` 한 줄, `async_first`는 그대로다. `async_n`은 0과 0 아님만 뜻을 갖는다(쓰는 곳 `rows_mi.py`는 합이 0인지만 봄 `[소스]`).
+  빌드: `build_driver_gc.sh mi`(MIOUT `mi_wd1`, OUTROOT scratch `agent_gc_cx/out`), 경고 0, 소스 md5 `8270cce39caa1f4ebe013b89fc23d04f`, gin_mi md5 `8ea4b4500acad7cd9c166c6411ad9602`, include `65fdf19b`, lib `39024bef`(pf2). 실행 안 함.
+- **자체 시험.** `gap_checks`에 넷(계획 5, 자료 부족 2, 통과 3 → 자료 부족(n<k)과 k 5; 자료 부족 없이 5/5 → 맞음; 자료 부족과 다른 시행의 잰 불일치 → 안전 예측 틀림; 옛 기대 셋을 새 k로 바꿈), 새 `fallback_checks` 셋(추적된 pilot 4 `trials.csv`의 셀 B와 대조 행; 어긋남이 보이는 변형 넷).
+  `python3 test_rows_gc.py` 227 검사 실패 0, `python3 check_cells_gc.py` drift 0 `[측정: 로컬 실행, 2026-10-27]`.
+- **pilot 4 사본 재채점**(세션 스크래치, pilot 표시 끔, 채점 아님) `[측정]`. 있는 n 그대로면 `gpuhang_fence_restore`는 셀 B 0/2, 다섯 항 모두 해당 없음, 재검토 없음, 판정 자료 부족(n<k)(n 2 < k 4)이다.
+  셀 B와 대조 시행을 다섯씩으로 복사한 사본은 셀 B 0/5, 대조 5/5, 틀림이다. `no_tcp_control`의 `build:gc`는 k 5 → 자료 부족(n<k)이다(이전 k 3으로 참).
