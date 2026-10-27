@@ -360,7 +360,8 @@
     "kill_judge_rdma",
     "restore_time_rdma",
     "no_tcp_control",
-    "long_hold_lane"
+    "long_hold_lane",
+    "none_probe_clean"
    ]
   },
   {
@@ -1629,7 +1630,8 @@
      "kill_judge_rdma",
      "restore_time_rdma",
      "no_tcp_control",
-     "long_hold_lane"
+     "long_hold_lane",
+     "none_probe_clean"
     ]
    }
   },

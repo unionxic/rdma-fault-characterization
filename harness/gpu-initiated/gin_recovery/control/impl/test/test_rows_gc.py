@@ -18,7 +18,7 @@ trials carry run_gc.sh's measured offset unless they say otherwise.
   D  gc4_stop12000_fence@gc x 1      a "(STOP_launcher)" line (FENCE_NAK); a hold over 1 s; judged STALL_HELPER (smoke3's form)
   E  gc4_kill3_ow@gc n11 (launchers not ready), n12 (no stable checkpoint before the kill), smoke/ (a smoke trial)
   F  gc4_kill3_ow@gc n13, n14        the second kill of rank 3 by recorded PID after / before the armed lines (reported only)
-  G  gc4_none_probe@gc x 10 with torn reads, gc4_none_ow@gc x 5
+  G  gc4_none_probe@gc x 10 with torn reads, gc4_none_ow@gc x 5, mi4_train_none@gc x 5 (2026-10-28, the load cell of none_probe_clean)
   H  local/gate_fenced.log (gate_fenced.cc's real-process lines: gate_real 1, scored) and local/gate_proc.log (real-process
      lines, no gate program: no_gate, reported only; 2026-10-24 after pilot 2)
   B1 the active_mtu query handed to the remote shell: one word list (shlex) and 4096 read through a fake ibv_devinfo
@@ -457,6 +457,12 @@ def build(R):
     for k in range(1, 6):
         trial(raw, "gc4_none_ow", k, kill=None, subject=None, inject="none", spare=False, killed=False, probe=probe_ok(),
               lines={r: [(1.0, "GIN/RS: rank %d: input pause for rank 0's checkpoint 20 ended (ok) pause_us=8100" % r)] for r in range(N)})
+    # G (2026-10-28, user decision: the load cell): gin-mirror's fault-free training-shaped regression cell feeds
+    # none_probe_clean per cell (no suspect, judgement or hold start anywhere, READs 100 %, pause <= 20 ms)
+    for k in range(1, 6):
+        trial(raw, "mi4_train_none", k, kill=None, subject=None, inject="none", spare=False, killed=False, probe=probe_ok(),
+              meta_extra={"hold": "RG-gc-T1"}, kv_extra={r: {"train": 1, "workload": "train"} for r in range(N)},
+              lines={r: [(1.0, "GIN/RS: rank %d: input pause for rank 0's checkpoint 20 ended (ok) pause_us=9500" % r)] for r in range(N)})
     # B2: the freeze cell (FREEZE_PAGE on rank 3, SUBJECT_RANK 3, no KILL_RANK); the launcher's FENCE SIGKILL and FENCED
     for k in range(1, 6):
         L = restore_lines(3, 12.1, "STALL_HELPER")
@@ -1154,6 +1160,10 @@ def probe_checks():
             for k in range(1, n + 1):
                 trial(raw, cell, k, kill=None, subject=None, inject="none", spare=False, killed=False, lines=pause(us),
                       probe=probe_ok(**dict(dict(dev=True), **kw_of(cell, k))))
+        for k in range(1, 6):  # 2026-10-28: the training-shaped regression cell of none_probe_clean, always clean here
+            trial(raw, "mi4_train_none", k, kill=None, subject=None, inject="none", spare=False, killed=False,
+                  lines=pause(9500), probe=probe_ok(dev=True), meta_extra={"hold": "RG-gc-T1"},
+                  kv_extra={r: {"train": 1, "workload": "train"} for r in range(N)})
 
     try:
         res = {}
@@ -1401,6 +1411,15 @@ def pilot2_checks():
               and score_gc.s2.cond_true(inner("none_probe_clean", i), dict(good, ckpt_pause_ms=20.0))
               and not score_gc.s2.cond_true(inner("none_probe_clean", i), dict(good, ckpt_pause_ms=20.1)) for i in (0, 1)),
           "L: none_probe_clean's pause bound 20 ms on both cells (16.526 and 20 in, 20.1 out)")
+    # (5) 2026-10-28 (user decision: the load cell): mi4_train_none@gc's own part: any suspect, judgement or hold start
+    # fails it, READs 100 %, the pause bound of gin-mirror's train_none_clean (20 ms); the beat gap is not read
+    tn = inner("none_probe_clean", 2)
+    tg = {"suspect_any_n": 0, "judge_any_n": 0, "hold_any_n": 0, "read_success_pct": 100, "ckpt_pause_ms": 9.5}
+    check(tn.startswith("suspect_any_n == 0") and score_gc.s2.cond_true(tn, tg)
+          and score_gc.s2.cond_true(tn, dict(tg, ckpt_pause_ms=20.0, beat_gap_max_ms=900))
+          and not any(score_gc.s2.cond_true(tn, dict(tg, **{c: v})) for c, v in (
+              ("suspect_any_n", 1), ("judge_any_n", 1), ("hold_any_n", 1), ("read_success_pct", 99.9), ("ckpt_pause_ms", 20.1))),
+          "L: none_probe_clean's mi4_train_none@gc part: clean in, a suspect, judgement, hold start, READ gap or 20.1 ms out")
 
 
 def prereg_checks(rows):
