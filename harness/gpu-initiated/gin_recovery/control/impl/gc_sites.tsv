@@ -176,3 +176,6 @@ state	12230	gdakiTsInitiate	record	kept	pe.gone after the ACK wait failed
 #use	ring	gdakiTsPump	2	gdakiCtrlPathSockRead: the pair's socket for the path rule (the witness pump and the pump read it; 2a-2-C); gdakiCtrlRingPumpOf: ln4's answer on no socket while this side's records go on the socket
 #use	ring	gdakiTsSend	2	gdakiCtrlRingSendOf (2a-2-C): a socket path generation's marker record (GDAKI_TS_CTRL_PATH), then the record on the socket path
 #use	ring	gdakiCtrlRejoinFail	1	gdakiCtrlRjIntake (2a-2-C step 3): a declined rank's REJOIN over UD answered FAIL through the seam (no socket: its UD body)
+#use	page	gdakiCtrlChanGen	2	abortdec: the declaration in the region "abort decisions, declarations" (the definition is the ring placeholders'), gdakiAdPump: a peer's send key (its record channel's generation)
+#use	page	gdakiCtrlChanUp	1	abortdec: gdakiAdPump: record 57 only to a peer whose record channel is up
+#use	page	gdakiHoldSend	1	abortdec: gdakiAdPump: record 57 (a confirmed abort decision) to a peer

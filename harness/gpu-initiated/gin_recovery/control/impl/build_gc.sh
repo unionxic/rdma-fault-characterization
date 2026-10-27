@@ -13,7 +13,7 @@
 # spare fix, the GPU-progress liveness words and the mirror-off D2D snapshot merged; the header requests and the merge's
 # fixes in the working tree; outputs gc_int3* and IDTAG int3; impl/notes_int3.md).
 # usage: SCR=<the session scratch dir> BR=<prep|page|ring|launcher|int|p1|p2|p2b|p2a2|fix3|p3|int2|int3> build_gc.sh
-#          <setup|paste|repaste|api|gc|gcp|gct|gctp|unit|unitp1|unitp2|unitp2b|unitp2a2|unitp3|unitlive|unitsnap|unitward|unitlivectx|unitwaitpeer|syn|pre|sites|ident|diff|info>
+#          <setup|paste|repaste|api|gc|gcp|gct|gctp|unit|unitp1|unitp2|unitp2b|unitp2a2|unitp3|unitlive|unitsnap|unitward|unitlivectx|unitwaitpeer|unitabortdec|syn|pre|sites|ident|diff|info>
 #   prep, the preparation stage (9.8 "준비"); page, ring, launcher: phases 1, 2, 3 (they start from ln4 + the preparation
 #   stage's diff); int: their integration (phase 4 binds the rest of the TCP code behind the switch). int's tree holds
 #   the fixed preparation stage (impl/gc_layer.diff 0df79ae2, head commit "gin-control prep-fix (gc_layer.diff 0df79ae2)")
@@ -52,6 +52,10 @@
 #   unitp1, unitp2  the development loop: phase 1's tests alone (BR p1, int), phase 2a-1's alone (BR p2, int).
 #   unitward  BR=int3: impl/gc_unit_ward.cc alone (wardfix: the activation gate waits for the ward QP's ERR, against the
 #          store's pure region); `unit` runs it too (BR=int3).
+#   unitabortdec  BR=int3: impl/gc_unit_abortdec.cc alone (abortdec, SPEC3 1 as review3 1-6 corrected it: confirmed abort
+#          decisions reach peers and later incarnations; the regions "gin-control (page): abort decisions" and the code they
+#          run through, cut as it is; then its nine mutations, each a text change of the cut that must be caught; rdma);
+#          `unit` runs it too (BR=int3).
 #   unitwaitpeer  BR=int3: impl/gc_unit_waitpeer.cc alone (waitpeer, SPEC2: dependent waiters are not judged while their
 #          source is unresolved; four observers over the page's and the hold's pure regions); `unit` runs it too (BR=int3).
 #   unitlivectx  BR=int3: impl/gc_unit_livectx.cc alone (ctxall: the progress line of every GIN context, against the page's
@@ -528,6 +532,113 @@ unitwaitpeerone() {  # int3: gc_unit_waitpeer.cc, the waitpeer rule (SPEC2) over
   cp "$TI/gc_unit_waitpeer.cc" "$o/gc_unit_waitpeer.cc"  # compiled from the cut folder (its quoted includes)
   unit1 "$c" gc_unit_waitpeer "$o/gc_unit_waitpeer.cc" -I"$RSD" -include "$o/mi_reasons.h"
 }
+unitabortdecone() {  # int3: gc_unit_abortdec.cc, the confirmed abort decisions (SPEC3 1, review3 1-6) over a fake
+  # communicator: the host file's regions "gin-control (page): abort decisions" (declarations, pure, host) and the code
+  # they run through, cut as it is (gdakiTsDecline, gdakiUaRaisePeer, gdakiUaDegradedStep, ncclGinTsUserAbortRaise,
+  # gdakiHoldWatchdog, gdakiTsToComm, gdakiRecForPeer, the UD table's pieces, struct gdakiTsMsg and gdakiTsPeer); then
+  # the mutations (a text change of the cut each, rdma only): the test's mutation mode must see each caught
+  local c=$1 o=$OUT/unit_$1
+  grep -E '^#define GDAKI_MI_R(3[4-9]|40) ' "$MID/rs_mirror_api.h" > "$o/mi_reasons.h"
+  python3 - "$W/nccl-src/$HOSTF" "$o" <<'PYAD'
+import sys
+src, o = sys.argv[1], sys.argv[2]
+L = open(src, encoding='utf-8').read().split('\n')
+def find(prefix, after=0):
+    h = [i for i, l in enumerate(L) if l.startswith(prefix) and i >= after]
+    if not h: sys.exit('abortdec cut: no line starts with %r' % prefix)
+    return h[0]
+def upto(i, end):  # lines i.. up to the first line equal to `end` (a one-line definition: that line)
+    if L[i].rstrip().endswith('}') or L[i].rstrip().endswith('};'): return L[i:i + 1]
+    k = i
+    while L[k] != end: k += 1
+    return L[i:k + 1]
+def fn(prefix, tmpl=False):  # the definition (a declaration before it, ending in ';' before any '{', is skipped)
+    i = find(prefix)
+    while True:
+        k = i
+        while not (L[k].rstrip().endswith('{') or L[k].rstrip().endswith(';') or L[k].rstrip().endswith('}')): k += 1
+        if not L[k].rstrip().endswith(';'): break
+        i = find(prefix, k + 1)
+    return ([L[i - 1]] if tmpl else []) + upto(i, '}')
+def st(prefix): return upto(find(prefix), '};')
+def line(prefix): return [L[find(prefix)]]
+def enum(prefix):
+    i = find(prefix); k = i
+    while '};' not in L[k]: k += 1
+    return L[i:k + 1]
+def region(b, e):
+    i = find(b); k = find(e, i)
+    return L[i:k + 1]
+def raisePeer():  # the rdma definition with its #if head (the tcp one stays out)
+    i = find('static void gdakiUaRaisePeer(void* comm, int peer, int why) {')
+    if L[i - 1] != '#if NCCL_GIN_CTRL_TCP': sys.exit('abortdec cut: gdakiUaRaisePeer has no #if head')
+    k = i
+    while L[k] != '}': k += 1
+    return L[i - 1:k + 1]
+a = ['// cut from %s (build_gc.sh unitabortdec: the record, the peer, the cause, the scope)' % src]
+a += enum('enum class gdakiCause') + fn('static const char* gdakiCauseName(') + st('struct gdakiTsMsg {') + \
+     st('struct gdakiTsPeer {') + fn('static uint32_t gdakiTsCausePad(') + line('#define GDAKI_TS_SCOPE_ALL ') + \
+     line('static thread_local uint32_t gdakiTsScope') + line('#define GDAKI_TS_LIFE_RUNNING') + \
+     line('#define GDAKI_TS_LIFE_EXITED') + line('#define GDAKI_TS_LIFE_ORPHAN')
+d = ['// cut from %s (build_gc.sh unitabortdec: the declarations region)' % src]
+d += region('// ---- gin-control (page): abort decisions, declarations (begin', '// ---- gin-control (page): abort decisions, declarations (end)')
+u = ['// cut from %s (build_gc.sh unitabortdec: the QP walk, the communicator write, the user devComm words)' % src]
+u += fn('static void gdakiRecForPeer(', True) + fn('static bool gdakiTsToComm(', True) + enum('enum { GDAKI_UA_ABORT = 1') + \
+     fn('static const char* gdakiUaName(') + st('struct gdakiUa {') + line('static std::mutex gdakiUaMu;') + \
+     line('static std::vector<struct gdakiUa> gdakiUaReg;') + line('static std::atomic<int> gdakiUaDegradedPending') + \
+     fn('void ncclGinTsUserAbortRaise(void* comm, int why) {')
+b = ['// cut from %s (build_gc.sh unitabortdec: the code the decisions run through, then their regions)' % src]
+b += raisePeer() + fn('static void gdakiUaDegradedStep(') + \
+     fn('static void gdakiTsDecline(') + fn('static bool gdakiHoldPeerOk(') + fn('static void gdakiHoldWatchdog(') + \
+     line('#define GDAKI_CTRL_ACT_UD_MAGIC ') + line('#define GDAKI_CTRL_ACT_UD_MAX ') + st('struct gdakiCtrlActUdHdr {') + \
+     st('struct gdakiCtrlActUd {') + fn('static inline void gdakiCtrlActUdPut(') + fn('static inline bool gdakiCtrlActUdGet(') + \
+     fn('static inline size_t gdakiCtrlActUdLenOf(') + \
+     region('// ==== gin-control (page): abort decisions (begin', '// ==== gin-control (page): abort decisions (end) ====')
+for n, t in (('gc_ad_cut_a.inc', a), ('gc_ad_decl.inc', d), ('gc_ad_cut_u.inc', u), ('gc_ad_cut_b.inc', b)):
+    open(o + '/' + n, 'w', encoding='utf-8').write('\n'.join(t) + '\n')
+PYAD
+  cp "$TI/gc_unit_abortdec.cc" "$o/gc_unit_abortdec.cc"  # compiled from the cut folder (its quoted includes)
+  unit1 "$c" gc_unit_abortdec "$o/gc_unit_abortdec.cc" -I"$RSD" -include "$o/mi_reasons.h" -DGDAKI_CTRL_API_NO_ENTRY_DECLS
+  [ "$c" = tcp ] && { echo "unit ($c): gc_unit_abortdec's mutations are rdma only (the tcp build has no abort decisions)"; return 0; }
+  local m caught=0
+  for m in 1 2 3 4 5 6 7 8 9; do
+    local md=$o/admut$m
+    mkdir -p "$md"
+    python3 - "$o/gc_ad_cut_b.inc" "$md/gc_ad_cut_b.inc" "$m" <<'PYMUT'
+import sys
+src, dst, m = sys.argv[1], sys.argv[2], int(sys.argv[3])
+s = open(src, encoding='utf-8').read()
+M = {  # mutation: [(old, new)], each old once in the cut
+  1: [('  struct gdakiAdState* a = gdakiAdOf(r);\n  if (a == nullptr) return;\n  uint32_t fwdInc = 0;\n',
+       '  struct gdakiAdState* a = gdakiAdOf(r);\n  if (a != nullptr) return;  // MUTATION 1: the record 57 handler off\n  uint32_t fwdInc = 0;\n')],
+  2: [('  if (!in.lnComplete) return GDAKI_AD_RX_PEND;\n', ''),
+      ('!in.self && in.lnComplete && !in.ownJudged', '!in.self && !in.ownJudged')],
+  3: [('    in.targetCls = gdakiLnClassify(gdakiLnOf(r, e.target), e.targetInc);\n',
+       '    in.targetCls = idx >= 0 ? (uint32_t)GDAKI_LN_CURRENT : gdakiLnClassify(gdakiLnOf(r, e.target), e.targetInc);\n')],
+  4: [('  if (epoch > epochAt && open) return 2;\n', '  if (epoch > epochAt && open && own && !own) return 2;\n')],
+  5: [('      if (idx < 0 && gdakiAdSameKey(x, e)) in.dup = true;\n', '      if (idx < 0 && gdakiAdSameKey(x, e)) (void)0;\n')],
+  6: [('  if (!in.sameComm || !in.sameGen) return GDAKI_AD_RX_OTHER;\n', '')],
+  7: [('  e.deadlineMs = m.t[0] < 0 ? -1.0 : nowMs + m.t[0];\n',
+       '  e.deadlineMs = m.t[0] < 0 ? -1.0 : nowMs + (double)ncclParamGinTsDegradedMs();\n'),
+      ('  e.deadlineMs = w.remainingMs < 0 ? -1.0 : nowMs + w.remainingMs;\n',
+       '  e.deadlineMs = w.remainingMs < 0 ? -1.0 : nowMs + (double)ncclParamGinTsDegradedMs();\n')],
+  8: [('  if (adAt == nullptr && gdakiPolicyOnDecline(r, peer, why, cause, uaWhy)) return;',
+       '  if (gdakiPolicyOnDecline(r, peer, why, cause, uaWhy)) return;')],
+  9: [('    gdakiAdOnTransition(r, p, inc, GDAKI_AD_C_DEADLINE, adTr, true);', '    (void)adTr;')],
+}
+for old, new in M[m]:
+    if s.count(old) != 1: sys.exit('mutation %d: %d matches of %r' % (m, s.count(old), old[:80]))
+    s = s.replace(old, new)
+open(dst, 'w', encoding='utf-8').write(s)
+PYMUT
+    cp "$TI/gc_unit_abortdec.cc" "$md/gc_unit_abortdec.cc"
+    GXX -DGC_AD_MUT=$m -I"$md" -I"$o" -I"$DI" -I"$MID" -I"$W/nccl-src/src/include" -I"$RSD" -include "$o/mi_reasons.h" \
+      -DGDAKI_CTRL_API_NO_ENTRY_DECLS "$md/gc_unit_abortdec.cc" -o "$md/gc_unit_abortdec"
+    if "$md/gc_unit_abortdec"; then caught=$((caught + 1)); else echo "unit ($c): gc_unit_abortdec mutation $m NOT caught" >&2; fi
+  done
+  echo "unit ($c): gc_unit_abortdec mutations caught: $caught of 9"
+  [ "$caught" = 9 ]
+}
 unitwardone() {  # int3: gc_unit_ward.cc, the ward QP's ERR before the activation over a fake store thread (wardfix)
   unit1 "$1" gc_unit_ward "$TI/gc_unit_ward.cc" -DGDAKI_CTRL_API_NO_ENTRY_DECLS
 }
@@ -615,6 +726,7 @@ unit() {
     [ "$INT3" = 1 ] && unitwardone "$c"
     [ "$INT3" = 1 ] && unitlivectxone "$c"
     [ "$INT3" = 1 ] && unitwaitpeerone "$c"
+    [ "$INT3" = 1 ] && unitabortdecone "$c"
   done
 }
 cutdefs() {  # cutdefs <host file> <out> <start>...: for each start (a line prefix): a #define line as it is, a struct up to
@@ -987,9 +1099,9 @@ case "$STAGE" in
   unitp2b) unitp 2b ;;
   unitp2a2) unitp 2a2 ;;
   unitp3) unitp 3 ;;
-  unitlive | unitsnap | unitward | unitlivectx | unitwaitpeer) head_ok; [ "$INT3" = 1 ] || { echo "$STAGE is BR=int3's" >&2; exit 2; }
+  unitlive | unitsnap | unitward | unitlivectx | unitwaitpeer | unitabortdec) head_ok; [ "$INT3" = 1 ] || { echo "$STAGE is BR=int3's" >&2; exit 2; }
     for c in ${CFG:-rdma tcp}; do mkdir -p "$OUT/unit_$c"; regions "$OUT/unit_$c"
-      case "$STAGE" in unitlive) unitliveone "$c" ;; unitsnap) unitsnapone "$c" ;; unitlivectx) unitlivectxone "$c" ;; unitwaitpeer) unitwaitpeerone "$c" ;;
+      case "$STAGE" in unitlive) unitliveone "$c" ;; unitsnap) unitsnapone "$c" ;; unitlivectx) unitlivectxone "$c" ;; unitwaitpeer) unitwaitpeerone "$c" ;; unitabortdec) unitabortdecone "$c" ;;
         *) unitwardone "$c" ;; esac; done ;;
   syn) head_ok; syn1 build "" && syn1 build-gcp "-DNCCL_GIN_TS_PRODUCTION" && syn1 build-gct "-DNCCL_GIN_CTRL_TCP=1" ;;
   pre) pre ;;
