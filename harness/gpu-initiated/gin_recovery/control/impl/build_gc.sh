@@ -13,7 +13,7 @@
 # spare fix, the GPU-progress liveness words and the mirror-off D2D snapshot merged; the header requests and the merge's
 # fixes in the working tree; outputs gc_int3* and IDTAG int3; impl/notes_int3.md).
 # usage: SCR=<the session scratch dir> BR=<prep|page|ring|launcher|int|p1|p2|p2b|p2a2|fix3|p3|int2|int3> build_gc.sh
-#          <setup|paste|repaste|api|gc|gcp|gct|gctp|unit|unitp1|unitp2|unitp2b|unitp2a2|unitp3|unitlive|unitsnap|unitward|unitlivectx|syn|pre|sites|ident|diff|info>
+#          <setup|paste|repaste|api|gc|gcp|gct|gctp|unit|unitp1|unitp2|unitp2b|unitp2a2|unitp3|unitlive|unitsnap|unitward|unitlivectx|unitwaitpeer|syn|pre|sites|ident|diff|info>
 #   prep, the preparation stage (9.8 "준비"); page, ring, launcher: phases 1, 2, 3 (they start from ln4 + the preparation
 #   stage's diff); int: their integration (phase 4 binds the rest of the TCP code behind the switch). int's tree holds
 #   the fixed preparation stage (impl/gc_layer.diff 0df79ae2, head commit "gin-control prep-fix (gc_layer.diff 0df79ae2)")
@@ -52,6 +52,8 @@
 #   unitp1, unitp2  the development loop: phase 1's tests alone (BR p1, int), phase 2a-1's alone (BR p2, int).
 #   unitward  BR=int3: impl/gc_unit_ward.cc alone (wardfix: the activation gate waits for the ward QP's ERR, against the
 #          store's pure region); `unit` runs it too (BR=int3).
+#   unitwaitpeer  BR=int3: impl/gc_unit_waitpeer.cc alone (waitpeer, SPEC2: dependent waiters are not judged while their
+#          source is unresolved; four observers over the page's and the hold's pure regions); `unit` runs it too (BR=int3).
 #   unitlivectx  BR=int3: impl/gc_unit_livectx.cc alone (ctxall: the progress line of every GIN context, against the page's
 #          pure region, as gc_unit_live.cc); `unit` runs it too (BR=int3).
 #   syn    the host file's compile command of build, build-gcp and build-gct with -fsyntax-only (the development loop).
@@ -520,6 +522,12 @@ unitlivectxone() {  # int3: gc_unit_livectx.cc, every GIN context's progress lin
   cp "$TI/gc_unit_livectx.cc" "$o/gc_unit_livectx.cc"  # compiled from the cut folder (its quoted includes)
   unit1 "$c" gc_unit_livectx "$o/gc_unit_livectx.cc" -I"$RSD" -include "$o/mi_reasons.h"
 }
+unitwaitpeerone() {  # int3: gc_unit_waitpeer.cc, the waitpeer rule (SPEC2) over four observers, as gc_unit_livectx.cc
+  local c=$1 o=$OUT/unit_$1
+  grep -E '^#define GDAKI_MI_R(3[4-9]|40) ' "$MID/rs_mirror_api.h" > "$o/mi_reasons.h"
+  cp "$TI/gc_unit_waitpeer.cc" "$o/gc_unit_waitpeer.cc"  # compiled from the cut folder (its quoted includes)
+  unit1 "$c" gc_unit_waitpeer "$o/gc_unit_waitpeer.cc" -I"$RSD" -include "$o/mi_reasons.h"
+}
 unitwardone() {  # int3: gc_unit_ward.cc, the ward QP's ERR before the activation over a fake store thread (wardfix)
   unit1 "$1" gc_unit_ward "$TI/gc_unit_ward.cc" -DGDAKI_CTRL_API_NO_ENTRY_DECLS
 }
@@ -606,6 +614,7 @@ unit() {
     [ "$INT3" = 1 ] && unitsnapone "$c"
     [ "$INT3" = 1 ] && unitwardone "$c"
     [ "$INT3" = 1 ] && unitlivectxone "$c"
+    [ "$INT3" = 1 ] && unitwaitpeerone "$c"
   done
 }
 cutdefs() {  # cutdefs <host file> <out> <start>...: for each start (a line prefix): a #define line as it is, a struct up to
@@ -956,7 +965,7 @@ info() {
     done
     [ "$BR" = p2a2 ] && echo "build_gc_p2a2.sh $(md5 "$W/build_gc_p2a2.sh") $(wc -l < "$W/build_gc_p2a2.sh") lines (agent_gc_p2a2/)"
     case "$BR" in p1 | p2 | int | p2b | p2a2 | fix3 | p3 | int2)
-      for f in gc_unit_p1.cc gate_fenced.cc gc_unit_p2.cc gc_unit_p2b.cc gc_unit_p2a2.cc gc_unit_p3.cc gc_unit_live.cc gc_unit_snap.cc gc_unit_ward.cc gc_unit_livectx.cc gc_layer_live.diff gc_layer_snap.diff gc_layer_smokefix.diff gc_layer_sparefix.diff gc_layer_smoke2fix.diff gc_layer.diff gc_layer_p1.diff gc_layer_p2.diff gc_layer_int.diff gc_layer_p2b.diff gc_layer_p2a2.diff gc_layer_fix3.diff gc_layer_p3.diff; do
+      for f in gc_unit_p1.cc gate_fenced.cc gc_unit_p2.cc gc_unit_p2b.cc gc_unit_p2a2.cc gc_unit_p3.cc gc_unit_live.cc gc_unit_snap.cc gc_unit_ward.cc gc_unit_livectx.cc gc_unit_waitpeer.cc gc_layer_live.diff gc_layer_snap.diff gc_layer_smokefix.diff gc_layer_sparefix.diff gc_layer_smoke2fix.diff gc_layer.diff gc_layer_p1.diff gc_layer_p2.diff gc_layer_int.diff gc_layer_p2b.diff gc_layer_p2a2.diff gc_layer_fix3.diff gc_layer_p3.diff; do
         [ -f "$TI/$f" ] && echo "$f $(md5 "$TI/$f") $(wc -l < "$TI/$f") lines"
       done ;;
     esac
@@ -978,9 +987,9 @@ case "$STAGE" in
   unitp2b) unitp 2b ;;
   unitp2a2) unitp 2a2 ;;
   unitp3) unitp 3 ;;
-  unitlive | unitsnap | unitward | unitlivectx) head_ok; [ "$INT3" = 1 ] || { echo "$STAGE is BR=int3's" >&2; exit 2; }
+  unitlive | unitsnap | unitward | unitlivectx | unitwaitpeer) head_ok; [ "$INT3" = 1 ] || { echo "$STAGE is BR=int3's" >&2; exit 2; }
     for c in ${CFG:-rdma tcp}; do mkdir -p "$OUT/unit_$c"; regions "$OUT/unit_$c"
-      case "$STAGE" in unitlive) unitliveone "$c" ;; unitsnap) unitsnapone "$c" ;; unitlivectx) unitlivectxone "$c" ;;
+      case "$STAGE" in unitlive) unitliveone "$c" ;; unitsnap) unitsnapone "$c" ;; unitlivectx) unitlivectxone "$c" ;; unitwaitpeer) unitwaitpeerone "$c" ;;
         *) unitwardone "$c" ;; esac; done ;;
   syn) head_ok; syn1 build "" && syn1 build-gcp "-DNCCL_GIN_TS_PRODUCTION" && syn1 build-gct "-DNCCL_GIN_CTRL_TCP=1" ;;
   pre) pre ;;
