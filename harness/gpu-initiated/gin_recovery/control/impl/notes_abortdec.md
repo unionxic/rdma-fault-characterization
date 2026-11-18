@@ -143,6 +143,8 @@ watchdog). 0.25 ms 걸음.
 2. **생존 rank 결과가 바뀐다** — pilot 7 n1에서 한 번 보임 `[측정]`: r2가 rank 1을 스스로 판정하기 전에 r0의 결정을 적용해(r0 결정 12 345.4 ms, r2 적용 12 348.3 ms) decline 사유가
    `ABORT_DECIDED(...)`가 되고 `waiter_judge_n` 1(pilot 5 n1은 2). n2는 둘 다 스스로 정했고 늦게 온 것은 "late"로 셌다. 거절 셀(`spare_absent_refused`, `fdhold_uverbs_refuse`,
    `stall_none_refuse`)의 자기 판정 수에 미치는지는 pilot 8(거절 셀 셋 n 1씩)에서 본다(EXPERIMENT.md 11.1). 채점기는 고치지 않았다.
+   2026-11-18: pilot 8 펜스 끈 멈춤 셀에서도 한 번 보였고(`n_judge` 2/3), 사용자 결정 (가)로 채점기에 열 `n_judge_taken`을 더해 `fdhold_uverbs_refuse`가
+   남의 결정을 적용한 생존 rank를 판정을 마친 것으로 센다(EXPERIMENT.md 12절 그날 "채점기 고침 둘(검수 뒤)" 행). 라이브러리는 그대로다.
 3. **진행 중인 다른 hold** `[추론]`. 적용이 상대의 낱말과 degraded 예약, 비동기 오류를 올리므로 이 rank가 다른 상대를 hold 중이면 다음 걸음의 TOLD
    규칙(`gdakiHoldTold`)이 그 hold를 fallback한다. 기존 규칙이고 바꾸지 않았다. 모형은 TOLD 조건이 서는 것까지만 본다.
 4. **모형의 hold는 개요다**. A5a, 두 중계 장면은 결정이 난 뒤에도 다른 rank의 복원이 끝난다고 놓았다. 실제로는 3번의 TOLD 규칙으로 그 복원이 먼저
@@ -152,3 +154,7 @@ watchdog). 0.25 ms 걸음.
    판정한다.
 7. hold 상태가 없는 프로세스(복원을 요청하지 않음)는 57을 hold drain으로 받지 않는다(STALLED와 같음). 보내는 쪽은 보낸다 `[소스]`.
 8. 실제 링에서 57이 TOKEN·DONE_RS 수신 경로에 끼지 않는다는 것은 "LIVE일 때만 보냄"과 쌍마다의 순서에 기댄다. 클러스터에서 확인할 것 `[미확인]`.
+9. **낡은 전달자의 사본이 키를 차지한다** `[소스: gc_layer_abortdec.diff gdakiAdCheck, gdakiAdRxAction]`. 전달자가 이 rank 계보에서 그 화신의 CURRENT가 아닌
+   기록 57(FWD_STALE)도 상태 STALE로 기록장에 들어가고, 도착 때의 중복 검사(`gdakiAdSameKey`)는 상태를 가리지 않으므로, 같은 키(정한 rank, 화신, 번호)를
+   CURRENT 전달자가 나중에 보내면 중복으로 버려진다. probe summary도 FWD_STALE을 `ad_rx_stale`에 섞어 센다. 2026-11-18 채점기 검수의 지적 3이고,
+   사전 등록 전에는 고치지 않고 후속으로 미룬다(EXPERIMENT.md 18절 (사), 12절 2026-11-18 행). 하드웨어에서 걸린 적은 없다 `[미확인]`.

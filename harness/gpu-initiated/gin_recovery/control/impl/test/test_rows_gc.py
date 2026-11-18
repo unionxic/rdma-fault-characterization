@@ -50,6 +50,8 @@ trials carry run_gc.sh's measured offset unless they say otherwise.
   P5 (2026-10-27, pilot 5's pilot-only cells) gc4_gpuhang12000_waiter_hung x 4 (both hang lines; rank 1's with ctx=all,
      missing or of another step: no record) and gc4_gpuhang12000_cycle x 3 (no kv waitpend or a ctx=all line: no record):
      hang_lines, judged_ranks; hold_gc.sh's hang_watchdog_ok on every rank with a hang switch
+  AD (2026-11-18, review fixes) gc4_fdhold_uverbs_kill3@gc x 3 in pilot 8 n1's shape (n_judge_taken, fdhold_uverbs_refuse);
+     gap_checks' short key (planned 5, scored 4): a measured safety failure is 틀림
 """
 import argparse, os, re, shlex, shutil, subprocess, sys, tempfile
 
@@ -663,7 +665,7 @@ def revision_checks(A, B, F):
           "J: stall_fence_restore counts STALL_HELPER only (%s)" % sf[:60])
     fu = rule("fdhold_uverbs_refuse")
     U = dict(n_judge=3, n_surv=3, n_judge_exited=1, n_judge_stall_helper=1, n_judge_stall=1, restore_count=0, decline_n=1,
-             surv_released=3)
+             surv_released=3, n_judge_taken=0)
     check(ok(fu, U) and ok(fu, dict(U, n_judge_exited=3, n_judge_stall_helper=0, n_judge_stall=0))
           and not ok(fu, dict(U, n_judge_stall=0)), "J: fdhold_uverbs_refuse takes EXITED or either stall cause, every judgement counted")
     kj, fe = rule("kill_judge_rdma", "gc4_kill3_ow@gc"), rule("finless_exit_report")
@@ -1064,10 +1066,10 @@ def gap_checks():
           "column and a column without a marker are not (%r)" % g0)
     tops = []
     try:
-        def five(R, gaps=(), bad=()):
-            """five gc4_credit_stall@gc trials (ctrlsum_checks' form); rank 1's control summary removed in the trials gaps,
-            rank 0's data mismatch (x_match 0) in the trials bad"""
-            for k in range(1, 6):
+        def five(R, gaps=(), bad=(), n=5):
+            """five gc4_credit_stall@gc trials (ctrlsum_checks' form; n of them for a short key); rank 1's control summary
+            removed in the trials gaps, rank 0's data mismatch (x_match 0) in the trials bad"""
+            for k in range(1, n + 1):
                 st = trial(os.path.join(R, "raw"), "gc4_credit_stall", k, kill=None, subject=2, inject="none", killed=False,
                            probe=probe_ok(), spare_kv=REAL_SPARE_KV, ctrl_kv=" sendq_deferred=4",
                            meta_extra={"r2_env": "NCCL_GIN_CTRL_TEST_CREDIT_STALL=3000:500"},
@@ -1090,11 +1092,11 @@ def gap_checks():
                                  ("g_safe_all_ow", "safety", "count(%s) >= N_SCORED" % cond)):
                 w.writerow(dict(id=pid, predicted="t", cells="gc4_credit_stall@gc", kind=kd, acceptance=acc, todo=""))
         res = {}
-        for tag, gaps, bad in (("one", (1,), ()), ("two", (1, 2), ()), ("bad", (1,), (1,)), ("none", (), ()),
-                               ("gapbad", (1,), (2,))):
+        for tag, gaps, bad, n in (("one", (1,), (), 5), ("two", (1, 2), (), 5), ("bad", (1,), (1,), 5), ("none", (), (), 5),
+                                  ("gapbad", (1,), (2,), 5), ("short", (), (), 4), ("shortbad", (), (1,), 4)):
             R = tempfile.mkdtemp(prefix="gc_selftest_gap_")
             tops.append(R)
-            five(R, gaps, bad)
+            five(R, gaps, bad, n)
             old, score_gc.PREDS = score_gc.PREDS, pf
             buf = io.StringIO()
             try:
@@ -1139,6 +1141,14 @@ def gap_checks():
               v.get("g_safe_all") == "자료 부족(n<k)",
               "gap: the gap trial with a measured data mismatch is a fail, not 자료 부족: safety 틀림, perf 재검토; the rule "
               "on the empty column alone stays a gap (%s %s %s)" % (v.get("g_safe4"), v.get("g_perf4"), v.get("g_safe_all")))
+        # 2026-11-18 (review fix 2): a short key (planned 5, scored 4, e.g. after a STOP) with a measured failure is 틀림 for a
+        # safety rule, not 자료 부족; without a failure it stays 자료 부족, and a perf rule stays 자료 부족 either way
+        vs, vb = res["short"][0], res["shortbad"][0]
+        check(vb.get("g_safe4") == "틀림" and vb.get("g_safe_all_ow") == "틀림" and vb.get("g_perf4") == "자료 부족"
+              and vs.get("g_safe4") == "자료 부족" and vs.get("g_safe_all_ow") == "자료 부족" and vs.get("g_perf4") == "자료 부족",
+              "gap (2026-11-18): planned 5, scored 4, one measured mismatch: safety 틀림 (%s %s), perf 자료 부족 (%s); the same "
+              "short key without it: 자료 부족 (%s %s %s)" % (vb.get("g_safe4"), vb.get("g_safe_all_ow"), vb.get("g_perf4"),
+                                                            vs.get("g_safe4"), vs.get("g_safe_all_ow"), vs.get("g_perf4")))
     finally:
         for R in tops:
             shutil.rmtree(R, ignore_errors=True)
@@ -1925,6 +1935,48 @@ def qperr_checks():
         shutil.rmtree(R, ignore_errors=True)
 
 
+def taken_checks():
+    """2026-11-18 (decision (가) after pilot 8, review fix 1): pilot 8 n1's fence-off stall shape in the uverbs cell: ranks 0
+    and 1 judge rank 3 STALL_HELPER and decline it; rank 2 has no judgement line, only the decline whose reason is rank 0's
+    confirmed abort decision (the real line of results/20261028_pilot8/a1/raw/gc4_stop12000_none_gc_n1_r2.log): n_judge 2,
+    n_judge_taken 1, fdhold_uverbs_refuse's trial condition true (the old n_judge == n_surv false); a decision about another
+    rank or a decline without the decision does not count"""
+    R = tempfile.mkdtemp(prefix="gc_selftest_taken_")
+    try:
+        raw = os.path.join(R, "raw")
+        dec = ('GIN/TS: declined rank=%d peer=3 reason="ABORT_DECIDED(rank %d, incarnation 0, no. 1, cause STALL_HELPER) of '
+               'rank 0 (incarnation 0): a confirmed abort decision" class=0')
+
+        def lines(r2):
+            L = {}
+            for r, t in ((0, 12.072), (1, 12.072)):
+                L[r] = [(t, "GIN/RC: rank %d: rank 3 (incarnation 0) judged stalled (liveness stall judged (STALL_HELPER)); "
+                            "STALLED to 3 rank(s); declined (fence=none or no launcher)" % r),
+                        (t + 0.002, 'GIN/TS: declined rank=%d peer=3 reason="liveness stall judged (STALL_HELPER)" class=0' % r)]
+            L[2] = r2
+            return L
+        rel = {r: {"released": 1, "steps_done": 139} for r in (0, 1, 2)}
+        for k, r2 in ((1, [(12.0767, dec % (2, 3))]), (2, [(12.0767, dec % (2, 1))]),
+                      (3, [(12.0767, 'GIN/TS: declined rank=2 peer=3 reason="liveness stall judged (STALL_HELPER)" class=0')])):
+            trial(raw, "gc4_fdhold_uverbs_kill3", k, inject="fd_holder_kill", spare=False, lines=lines(r2), kv_extra=rel,
+                  probe=probe_ok())
+        rr = {r["id"]: r for r in rows_gc.all_rows(R) if r["sub"] == "raw"}
+        t1, t2, t3 = (rr["gc4_fdhold_uverbs_kill3_gc_n%d" % k] for k in (1, 2, 3))
+        fu = rule("fdhold_uverbs_refuse")
+        old = fu.replace("n_judge + n_judge_taken == n_surv", "n_judge == n_surv")
+        ok = score_gc.s2.cond_true
+        check(t1["n_judge"] == 2 and t1["n_judge_taken"] == 1 and t1["n_judge_stall_helper"] == 2 and t1["n_surv"] == 3
+              and t1["decline_n"] >= 1 and t1["surv_released"] == 3 and t1["restore_count"] == 0
+              and ok(fu, t1) and old != fu and not ok(old, t1),
+              "taken (pilot 8 n1 shape): n_judge 2, n_judge_taken 1, fdhold_uverbs_refuse true, the old n_judge == n_surv "
+              "false (%r %r %r %r %r)" % (t1["n_judge"], t1["n_judge_taken"], t1["decline_n"], t1["surv_released"], t1["restore_count"]))
+        check(t2["n_judge_taken"] == 0 and t3["n_judge_taken"] == 0 and not ok(fu, t2) and not ok(fu, t3),
+              "taken: a decision about rank 1 or a decline without a decision is not counted, the rule false (%r %r)" % (
+                  t2["n_judge_taken"], t3["n_judge_taken"]))
+    finally:
+        shutil.rmtree(R, ignore_errors=True)
+
+
 def fallback_checks():
     """EXPERIMENT 8, 2026-10-27 after pilot 4 (user decision 2): a perf rule's safety term is read only where the action it
     guards happened. On pilot 4's waiting-survivor rows (tracked results/20261027_pilot4/aN/trials.csv; both ended in
@@ -2228,6 +2280,7 @@ def main():
     pilot2_checks()
     pilot3_checks()
     qperr_checks()
+    taken_checks()
     shell_checks(R)
     int3_checks()
     review_checks()

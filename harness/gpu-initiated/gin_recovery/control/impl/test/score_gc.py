@@ -66,8 +66,9 @@ Steps (../../EXPERIMENT.md 3, 7, 8):
      over the other scored trials against the pre-registered k (since 2026-10-27, user decision 1: "count(..) >= N_SCORED"
      takes k = the key's planned n less its preparation failures, EFF; before, the trials with data): fewer trials with
      data than k -> "자료 부족(n<k)"; a safety prediction's 0-failure rule runs over the trials with data (a measured
-     failure there is 틀림 even when the key is 자료 부족(n<k)); a perf rule's safety term on such a column is 자료 부족 on
-     that trial, not a failure.
+     failure there is 틀림 even when the key is 자료 부족(n<k), and since 2026-11-18 also when the key is short, 자료 부족:
+     fewer scored trials than planned, e.g. after a STOP; never 자료 없음(실패 아님)); a perf rule's safety term on such a
+     column is 자료 부족 on that trial, not a failure.
      keys "build:<b>" pool every scored gin-control-runner trial of build b (no_tcp_control, long_hold_lane), "local:<x>" the
      local rows.
   5. STOP: the results folder's STOP_* files (their line counts), every trial's "(STOP_launcher)" and
@@ -779,8 +780,9 @@ def score(R, planned_override=None):
             v = "맞음" if ok_all else "틀림"
         # item 5: a safety prediction holds only with no failure over its scored trials (every count() part n of n)
         det["safety_fail"] = safety_fails(det)
-        # a measured failure on a trial with data is a fail even when gaps leave the key 자료 부족(n<k) (2026-10-27)
-        if kind_of(p) == "safety" and v in ("맞음", "자료 부족(n<k)") and det["safety_fail"]:
+        # a measured failure on a trial with data is a fail even when gaps leave the key 자료 부족(n<k) (2026-10-27) or the key
+        # is short, fewer scored trials than planned (자료 부족, e.g. after a STOP; 2026-11-18 review); never 자료 없음
+        if kind_of(p) == "safety" and v in ("맞음", "자료 부족", "자료 부족(n<k)") and det["safety_fail"]:
             v = "틀림"
         det["perf_safety"] = perf_safety_terms(p, det, scored, mpreds) if kind_of(p) == "perf" else []
         det["fallback"] = perf_fallbacks(p, scored, mpreds) if kind_of(p) == "perf" else []

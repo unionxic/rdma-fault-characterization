@@ -99,6 +99,12 @@ Columns (empty when the lines are missing; counts are 0 when the lines exist but
   mono_off_used_ms, mono_off_rtt_ms, mono_off_drift_ms   the node clock offset used, its round trip, after - before
   n_judge, n_judge_confirm, n_judge_exited, n_judge_noresp, n_judge_stall, n_judge_stall_helper, n_judge_linkdown
                              survivors with a judgement of the subject (their first DEAD or STALLED line), by cause
+  n_judge_taken              (2026-11-18, decision (가) after pilot 8) survivors with no judgement line of the subject but a
+                             decline of it whose reason is another rank's confirmed abort decision about it ("GIN/TS:
+                             declined rank=R peer=<subject> reason="ABORT_DECIDED(rank <subject>, ..."; piece ①, the line of
+                             ../notes_abortdec.md "줄"): the survivor applied a peer's decision before its own judgement
+                             (pilot 8's fence-off stall cell, pilot 7 n1) and counts as having concluded; n_judge +
+                             n_judge_taken <= n_surv
   stall_ctx                  (2026-10-24, decision (가)) the GIN context each survivor's STALL judgement of the subject names:
                              ctx= on its STALLED line, else on its last SUSPECT line naming the subject before it; the
                              distinct values "+"-joined, "none" for a STALL judgement that names none; empty when no
@@ -291,6 +297,8 @@ CONF_CLOSE = re.compile(r"GIN/RC: rank (\d+): confirm window for rank (\d+) clos
 # 2026-10-24: other tokens (ctx=) may stand between kind= and stale_ms= or after it inside the parenthesis
 SUSPECT = re.compile(r"GIN/RC: rank (\d+): rank (\d+) suspected \(kind=(\w+)\b[^)]*?\bstale_ms=([0-9.]+)[^)]*\)")
 CTXTOK = re.compile(r"\bctx=(\d+)\b")  # the GIN context a STALLED or SUSPECT line names (2026-10-24, decision (가))
+# 2026-11-18 (n_judge_taken): a decline whose reason is a confirmed abort decision of another rank (piece ①, gdakiTsDecline)
+ADTAKEN = re.compile(r'GIN/TS: declined rank=(\d+) peer=(\d+) reason="ABORT_DECIDED\(rank (\d+),')
 PROBESUM = re.compile(r"GIN/RC: rank (\d+): probe summary peer=(\d+) (.*)$")
 WITLOST = re.compile(r"GIN/RC: rank (\d+): witness of rank (\d+) lost; liveness alive")
 FENCING = re.compile(r"GIN/RC: rank (\d+): rank (\d+) \(incarnation (\d+)\) fence FENCING\b")
@@ -404,7 +412,7 @@ STRONG = set(STRONG_CONFIRM) | {"EXITED", "NORESP", "STALL", "STALL_HELPER", "LI
 
 GC_COLS = ["subject", "n_surv", "ctrl", "witness_cfg", "fence_cfg", "confirm_w_ms", "probe_ms_page", "mono_off_used_ms",
            "mono_off_rtt_ms", "mono_off_drift_ms", "n_judge", "n_judge_confirm",
-           "n_judge_exited", "n_judge_noresp", "n_judge_stall", "n_judge_stall_helper", "n_judge_linkdown", "judge_causes", "stall_ctx",
+           "n_judge_exited", "n_judge_noresp", "n_judge_stall", "n_judge_stall_helper", "n_judge_linkdown", "n_judge_taken", "judge_causes", "stall_ctx",
            "weak_cause_n", "timeout_judge_n", "judge_any_n", "fin_judge_dev_min_ms", "fin_judge_dev_max_ms", "n_rst_surv",
            "n_rst_confirm", "n_rst_exited", "rst_judge_dev_min_ms", "rst_judge_dev_max_ms", "rst_exited_kill_judge_min_ms",
            "rst_exited_kill_judge_max_ms", "rst_judge_ms_min", "rst_judge_ms_max", "kill_judge_ms_min", "kill_judge_ms_max",
@@ -1032,6 +1040,16 @@ def gc_overlay(stem, base, meta):
         out["n_judge_stall"] = len(cause("STALL"))
         out["n_judge_stall_helper"] = len(cause("STALL_HELPER"))
         out["n_judge_linkdown"] = len(cause("LINKDOWN"))
+        # 2026-11-18: a survivor without its own judgement that applied another rank's confirmed abort decision about the
+        # subject (its decline names the subject as the peer and its reason starts with ABORT_DECIDED(rank <subject>,)
+        taken = 0
+        for r in surv:
+            if r in js:
+                continue
+            lg = logs[r] if not (r == kr and kr2 >= 0) else slog
+            if any(m and int(m.group(2)) == s and int(m.group(3)) == s for e in lg for m in [ADTAKEN.search(e.text)]):
+                taken += 1
+        out["n_judge_taken"] = taken
         out["judge_causes"] = "+".join("%s:%d" % (c, sum(1 for _, (_, k) in js.items() if k == c))
                                        for c in sorted({k for _, (_, k) in js.items()}))
         # stall_ctx (2026-10-24, decision (가)): the context each STALL judgement names (its line, else its last suspect line)
