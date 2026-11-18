@@ -62,5 +62,6 @@
 
 ## 파일
 
-[EXPERIMENT.md](EXPERIMENT.md)(설계 9절, 기록 12절, 결과 15절, 결론 17절), [NOTES.md](NOTES.md)(빌드, 실행, 채점, 원자료), [PREREG.txt](PREREG.txt),
+[EXPERIMENT.md](EXPERIMENT.md)(설계 9절, 이력 12절과 사전 등록 뒤 변경 13절, 결과 15절, QA 16절, 결론 17절, 한계 18절), [NOTES.md](NOTES.md)(빌드, 실행, 채점, 원자료), [PREREG.txt](PREREG.txt),
 [impl/](impl/)(계층 diff, 단위 시험, 실행기, 채점기), [feas/](feas/)(실행 가능성 시험), [results/](results/).
+앞 실험은 [../restore/](../restore/README.md), 이 계층의 제어 경로를 RDMA로 옮기는 다음 실험은 [../control/](../control/README.md)(진행 중)이다.

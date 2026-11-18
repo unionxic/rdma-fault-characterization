@@ -1,0 +1,416 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 1344b9d..1481844 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -9728,6 +9728,7 @@ static bool gdakiCtrlRjAnswer(struct gdakiRecHost* r, int peer, uint64_t round,
+ static int gdakiCtrlRjAcceptStep(struct gdakiRecHost* r, int peer, const struct gdakiTsMsg& m, struct gdakiTsMsg* ack,
+                                  char* why, size_t whyLen);
+ static void gdakiCtrlRjAccepted(struct gdakiRecHost* r, int peer, const struct gdakiTsMsg& m, const struct gdakiTsMsg& ack);
++static void gdakiCtrlOnRejoinTaken(struct gdakiRecHost* r, int peer, uint32_t inc);  // pilot2fix: the window's sample
+ #endif
+ // Liveness of `p` now (a peek at the socket; a failure found here is recorded as by the idle loop).
+ static int gdakiTsPeerLiveness(struct gdakiRecHost* r, int p, const char** cause) {
+@@ -10933,6 +10934,9 @@ static void gdakiRsRejoinExpire(struct gdakiRecHost* r) {
+   if (!gdakiRsRejoinValidate(m.executed[0], m.nonce, ts->nonce, m.pad, knownInc, (int)m.nqp, ownNqp, viewQpn, ownQpn,
+                              vwhy, sizeof(vwhy)))
+     return refuse(vwhy);
++#if !NCCL_GIN_CTRL_TCP
++  gdakiCtrlOnRejoinTaken(r, peer, m.pad);  // gin-control (launcher) pilot2fix: the window line, before the REJOIN_ACK
++#endif
+   struct gdakiTsPeer& pe = ts->peers[peer];
+   const uint32_t gen = pe.gen + 1;
+   struct gdakiTsMsg ack;
+@@ -23467,6 +23471,49 @@ static inline uint64_t* gdakiCtrlBindWords(uint64_t* own, uint64_t* pageWords, i
+   for (int p = 0; p < nranks; p++) __atomic_store_n(&pageWords[p], __atomic_load_n(&own[p], __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
+   return pageWords;
+ }
++// pilot2fix (PILOT.md pilot 2 문제 3, two deaths): the activation table's UD endpoints. A spare's transcript holds every
++// survivor's first incarnation's UD QP (the setup's all-gather); a survivor restored before has a new one that only the
++// ranks which took its REJOIN know (its nrp). The buddy appends to the activation blob, after gin-mirror's parts, one
++// entry per survivor of incarnation above 0 (gdakiCtrlActUdOf); the spare reads them (gdakiCtrlLaSpareBlobRecv) and its
++// REJOINs use them (gdakiCtrlRjSpareBegin). The launcher relays the blob's bytes as they are (GL_U_MAX_PAYLOAD).
++#define GDAKI_CTRL_ACT_UD_MAGIC 0x44554147u  // "GAUD"
++#define GDAKI_CTRL_ACT_UD_MAX (8u + 48u * 4096u)  // the table's bytes at most (4 096 ranks: the generations' bound)
++struct gdakiCtrlActUdHdr {
++  uint32_t magic, count;
++};
++struct gdakiCtrlActUd {
++  int32_t rank;
++  uint32_t incarnation;         // the table's incarnation of the rank (gdakiMiActAddr::incarnation)
++  struct gdakiCtrlEndpoint ud;  // its UD QP now (psn: its Q_Key)
++};
++static_assert(sizeof(struct gdakiCtrlActUdHdr) == 8 && sizeof(struct gdakiCtrlActUd) == 48, "the UD table's entries");
++static inline void gdakiCtrlActUdPut(const std::vector<struct gdakiCtrlActUd>& e, std::vector<uint8_t>* out) {
++  const struct gdakiCtrlActUdHdr h = {GDAKI_CTRL_ACT_UD_MAGIC, (uint32_t)e.size()};
++  const size_t at = out->size(), eb = e.size() * sizeof(struct gdakiCtrlActUd);
++  out->resize(at + sizeof(h) + eb);
++  memcpy(out->data() + at, &h, sizeof(h));
++  if (eb) memcpy(out->data() + at + sizeof(h), e.data(), eb);
++}
++// The bytes after gin-mirror's parts: none (a buddy without the table) is true with no entry; else the header and
++// exactly `count` entries (count <= nranks), each of a rank in range, at most once. False: damaged.
++static inline bool gdakiCtrlActUdGet(const uint8_t* p, size_t n, int nranks, std::vector<struct gdakiCtrlActUd>* out) {
++  out->clear();
++  if (n == 0) return true;
++  struct gdakiCtrlActUdHdr h;
++  if (n < sizeof(h) || nranks <= 0) return false;
++  memcpy(&h, p, sizeof(h));
++  if (h.magic != GDAKI_CTRL_ACT_UD_MAGIC || h.count > (uint32_t)nranks ||
++      n != sizeof(h) + (size_t)h.count * sizeof(struct gdakiCtrlActUd))
++    return false;
++  out->resize(h.count);
++  if (h.count) memcpy(out->data(), p + sizeof(h), (size_t)h.count * sizeof(struct gdakiCtrlActUd));
++  for (size_t i = 0; i < out->size(); i++) {
++    if ((*out)[i].rank < 0 || (*out)[i].rank >= nranks) return false;
++    for (size_t j = 0; j < i; j++)
++      if ((*out)[j].rank == (*out)[i].rank) return false;
++  }
++  return true;
++}
+ #endif  // !NCCL_GIN_CTRL_TCP
+ // ==== gin-control (ring): setup, pure (end) ====
+ 
+@@ -23725,7 +23772,8 @@ struct gdakiCtrlRjSt {
+   // the spare
+   uint32_t state = GDAKI_CTRL_RJS_IDLE;
+   uint32_t gen = 0, probeGen = 0;  // the generations its REJOIN starts (gdakiCtrlRjGenOf)
+-  uint32_t tries = 0;              // REJOIN datagrams handed to the UD send (the first and the resends)
++  uint32_t peerInc = 0;            // pilot2fix: the survivor's incarnation those count (the activation table's)
++  uint32_t tries = 0;             // REJOIN datagrams handed to the UD send (the first and the resends)
+   struct gdakiCtrlRejoinNrp nrp;   // the endpoints its first REJOIN carried (every resend carries the same)
+   double sentMs = -1e18;           // the last one
+   uint32_t lastAnswer = 0;         // the last answer that did not take it (GDAKI_CTRL_RJA_WAIT, _REFUSE; 0 none)
+@@ -23739,7 +23787,8 @@ struct gdakiCtrlRjSt {
+   bool accStarted = false;         // its pairings were TAKEn (gdakiCtrlRjAcceptStep), for (accInc, accGen)
+   bool accProbeAsked = false;      // the liveness READ QP's CONNECT of this try is with the watch thread
+   uint32_t accInc = 0, accGen = 0;
+-  uint64_t accAnswered = 0;        // the liveness READ QP link's answers before its CONNECT was asked
++  uint32_t takenInc = 0, takenGen = 0;  // pilot2fix: the REJOIN taken last (gdakiCtrlRjAccepted): its record QP generation
++  uint64_t accAnswered = 0;       // the liveness READ QP link's answers before its CONNECT was asked
+   // REVIEW_INT3 F3: the record QP TAKEn for the REJOIN of (accInc, accGen) from the spare's (accRecQpn, accRecPsn): kept
+   // through a failed acceptance (the spare's record QP may be connected to it already); the same REJOIN again goes on
+   // from the liveness READ QP's step. That step's transient part (the watch thread takes the CONNECT, the CONNECT works)
+@@ -23959,6 +24008,11 @@ struct gdakiCtrlRing {
+                                                 // records stay on the helper socket and the ring only pairs)
+   bool spareRejoined = false;                   // phase 2a-2-C: a spare's REJOINs over UD were all taken (its ring may
+                                                 // go live: gdakiCtrlRingLiveStep)
++  // pilot2fix: a spare's activation table (gdakiCtrlLaSpareBlobRecv): by rank the table's incarnation, and the UD
++  // endpoints of the survivors restored before (gdakiCtrlRjActApply, before the REJOINs)
++  bool actHave = false;
++  std::vector<uint32_t> actInc;
++  std::vector<struct gdakiCtrlActUd> actUd;
+   // phase 2a-2-B
+   struct gdakiCtrlRingSw sw;                    // the test switches
+   std::deque<struct gdakiCtrlHeldWc> held;      // RECV completions held by CREDIT_STALL (fed in order after it)
+@@ -26260,7 +26314,15 @@ static int gdakiCtrlRingPumpMark(struct gdakiCtrlRing* g, int peer, struct gdaki
+ #define GDAKI_CTRL_RJ_PARK_MS 1000.0   // a parked REJOIN nobody took (ln4's park limit)
+ #define GDAKI_CTRL_RJ_ACC_TRIES 3u     // REVIEW_INT3 F3: the acceptance's liveness READ QP CONNECT, tries in a resend interval
+ // REVIEW_INT3 nit 4: 32 bits hold incarnations below 4 096 (inc << 20); this study's restores stay far below.
++// pilot2fix (two deaths): the spare's REJOIN counts the pair's two incarnations, gdakiCtrlRjGenOf(inc + the survivor's
++// incarnation in the activation table): each REJOIN of the pair raises that sum, so its generations are above every one
++// of the pair before, also toward a survivor restored before (whose own REJOIN took (its inc << 20) + 1 with this rank).
++// Toward a survivor of incarnation 0 it is (inc << 20) + 1 as before. The sum stays below 4 096 too.
+ static inline uint32_t gdakiCtrlRjGenOf(uint32_t inc) { return (inc << 20) + 1u; }
++// The activation table's incarnation of `peer` at a spare (0: none, or the table has none).
++static uint32_t gdakiCtrlRjActIncOf(const struct gdakiCtrlRing* g, int peer) {
++  return g != nullptr && g->actHave && peer >= 0 && peer < (int)g->actInc.size() ? g->actInc[(size_t)peer] : 0u;
++}
+ static inline const char* gdakiCtrlRjaName(uint32_t a) {
+   return a == GDAKI_CTRL_RJA_WAIT ? "WAIT" : a == GDAKI_CTRL_RJA_REFUSE ? "REFUSE" : "FAIL";
+ }
+@@ -26573,21 +26635,73 @@ static void gdakiCtrlRjAccepted(struct gdakiRecHost* r, int peer, const struct g
+   pr.shownRec = n.gen;  // the REJOIN's pairings have this line, not the re-paired ones
+   pr.shownPrb = n.probeGen;
+   pr.rj.accStarted = pr.rj.accProbeAsked = pr.rj.accRecOn = false;
++  pr.rj.takenInc = m.pad;  // pilot2fix: the STATE turn's agreed generation is this REJOIN's (gdakiCtrlStateWayOf)
++  pr.rj.takenGen = n.gen;
+   GIN_TS_NOTE("GIN/RC: rank %d: the REJOIN of rank %d (incarnation %u) taken over UD: record QP gen %u, liveness READ QP "
+               "gen %u, REJOIN_ACK sent; the records go on the ring after its CONNECTED mono_ms=%.3f", g->me, peer, m.pad,
+               n.gen, n.probeGen, gdakiQ4MonoMs());
+ }
++// pilot2fix: the buddy's UD table for the activation of rank d (gdakiCtrlLaHostBlob): every rank q but d whose table
++// incarnation inc[q] is above 0, with the UD endpoint this rank's ring holds for it (the one its REJOIN's nrp carried;
++// this rank's own for itself). A rank without one here is left out (the spare's REJOIN to it then takes TCP).
++static std::vector<struct gdakiCtrlActUd> gdakiCtrlActUdOf(struct gdakiRecHost* r, int d, const std::vector<uint32_t>& inc) {
++  std::vector<struct gdakiCtrlActUd> out;
++  const struct gdakiCtrlRing* g = (r != nullptr && r->ctrl != nullptr) ? r->ctrl->ring : nullptr;
++  if (g == nullptr) return out;
++  for (int q = 0; q < g->nranks && q < (int)inc.size(); q++) {
++    if (q == d || inc[(size_t)q] == 0) continue;
++    struct gdakiCtrlActUd e;
++    memset(&e, 0, sizeof(e));
++    e.rank = q;
++    e.incarnation = inc[(size_t)q];
++    if (q == g->me) e.ud = g->udLocal;
++    else if (g->peers[(size_t)q].haveUd) e.ud = g->peers[(size_t)q].remoteUd;
++    else continue;
++    out.push_back(e);
++  }
++  return out;
++}
++// pilot2fix: the activation table at the spare before its REJOINs: a survivor restored before (table incarnation above
++// 0) is reached at the table's UD endpoint (one line), never at the transcript's, which is its dead incarnation's UD QP
++// (the datagrams went nowhere: pilot 2, 150 REJOINs unanswered). One without a usable entry keeps no UD endpoint: its
++// REJOIN takes TCP to the table's listen address (gdakiMiApplyAddrTable).
++static void gdakiCtrlRjActApply(struct gdakiRecHost* r) {
++  struct gdakiCtrlRing* g = (r != nullptr && r->ctrl != nullptr) ? r->ctrl->ring : nullptr;
++  if (g == nullptr || !g->actHave) return;
++  for (int p = 0; p < g->nranks; p++) {
++    const uint32_t inc = gdakiCtrlRjActIncOf(g, p);
++    if (p == g->me || inc == 0) continue;
++    const struct gdakiCtrlActUd* e = nullptr;
++    for (const struct gdakiCtrlActUd& x : g->actUd)
++      if (x.rank == p) e = &x;
++    struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)p];
++    if (e != nullptr && e->incarnation == inc && gdakiCtrlEndpointOk(e->ud) && e->ud.qpType == GDAKI_CTRL_QPT_UD) {
++      const uint32_t was = pr.haveUd ? pr.remoteUd.qpn : 0u;
++      gdakiCtrlRdmaSetUd(g, p, e->ud);
++      GIN_TS_NOTE("GIN/RC: rank %d: rank %d (incarnation %u) is reached over UD at the activation table's endpoint (UD QPN "
++                  "%u; the transcript's %u) mono_ms=%.3f", g->me, p, inc, e->ud.qpn, was, gdakiQ4MonoMs());
++    } else if (pr.haveUd) {
++      if (pr.ah != nullptr) (void)gdakiCtrlVerbsOf()->destroyAh(pr.ah);
++      pr.ah = nullptr;
++      pr.haveUd = false;
++      WARN("GIN/RC: rank %d: the activation table names no UD endpoint of rank %d (incarnation %u): its REJOIN takes TCP "
++           "(the transcript's UD QP is its dead incarnation's) mono_ms=%.3f", g->me, p, inc, gdakiQ4MonoMs());
++    }
++  }
++}
+ // The spare's REJOINs start (gdakiRsSpareRejoinAll, before the first; the setup thread, the helper not started): this
+ // process's incarnation into the ring, the ring bound to the status page by the helper's step once (a spare starts no
+ // pairing of its own), and per gated peer with a UD way its record QP prepared for the REJOIN's generation (INIT, its
+ // RECVs posted, a fresh PSN; the model STARTED) and its liveness READ QP's PREPARE asked of the watch thread.
++// pilot2fix: the activation table first (gdakiCtrlRjActApply); the generation of each pair counts both incarnations.
+ static void gdakiCtrlRjSpareBegin(struct gdakiRecHost* r, uint32_t inc) {
+   struct gdakiCtrlRing* g = (r != nullptr && r->ctrl != nullptr) ? r->ctrl->ring : nullptr;
+   if (g == nullptr || r->ts == nullptr) return;
+   g->inc = inc;
+   for (struct gdakiCtrlRdmaPeer& pr : g->peers) pr.ring.inc = inc;
+   gdakiCtrlRingHelperStep(r);
+-  const uint32_t gen = gdakiCtrlRjGenOf(inc);
++  gdakiCtrlRjActApply(r);
++  const uint32_t gen0 = gdakiCtrlRjGenOf(inc);
+   const struct gdakiCtrlProbeLinkCtx pc = gdakiCtrlRdmaProbeCtx(g);
+   int ready = 0, gated = 0;
+   for (int p = 0; p < g->nranks && p < (int)r->ts->peers.size(); p++) {
+@@ -26595,7 +26709,12 @@ static void gdakiCtrlRjSpareBegin(struct gdakiRecHost* r, uint32_t inc) {
+     gated++;
+     if (!gdakiCtrlRjUd(r, p)) continue;
+     struct gdakiCtrlRdmaPeer& pr = g->peers[(size_t)p];
++    const uint32_t pinc = gdakiCtrlRjActIncOf(g, p), gen = gdakiCtrlRjGenOf(inc + pinc);
+     pr.rj = gdakiCtrlRjSt();
++    pr.rj.peerInc = pinc;
++    if (gen != gen0)
++      GIN_TS_NOTE("GIN/RC: rank %d: the REJOIN to rank %d (incarnation %u, restored before) starts gen %u: above the pair's "
++                  "generations of both incarnations mono_ms=%.3f", g->me, p, pinc, gen, gdakiQ4MonoMs());
+     char why[160] = {0};
+     if (gdakiCtrlRdmaPrepare(g, p, gen, true, why, sizeof(why)) != ncclSuccess) {
+       WARN("GIN/RC: rank %d: the record QP for the REJOIN to rank %d: %s (the REJOIN takes TCP) mono_ms=%.3f", g->me, p, why,
+@@ -26612,7 +26731,7 @@ static void gdakiCtrlRjSpareBegin(struct gdakiRecHost* r, uint32_t inc) {
+     ready++;
+   }
+   GIN_TS_NOTE("GIN/RC: rank %d: REJOIN over UD to %d of %d gated rank(s) as incarnation %u (record and liveness READ QPs "
+-              "gen %u) mono_ms=%.3f", g->me, ready, gated, inc, gen, gdakiQ4MonoMs());
++              "gen %u) mono_ms=%.3f", g->me, ready, gated, inc, gen0, gdakiQ4MonoMs());
+ }
+ // The spare's REJOIN to `peer` over UD (gdakiCtrlSend _REJOIN, fd -1): its endpoints into the record's nrp (the first
+ // time its liveness READ QP's once the watch thread answered the PREPARE, waited for at most timeoutMs; every resend the
+@@ -26779,7 +26898,7 @@ static int gdakiCtrlNoWitnessLv(struct gdakiRecHost* r, int peer) {
+ // ---- STATE and the rkey list over the outbox (phase 2a-2-C step 3; impl/notes_p2b.md "기록과 XFER 차례", design v3 2.3,
+ // 5.4 5) ----
+ // The way of a pair's STATE turn is the REJOIN's: both sides know how the spare's REJOIN went (over UD, its generations
+-// (inc << 20) + 1 agreed in its nrp, or over TCP), so they never wait on different paths. Over UD the turn takes the
++// gdakiCtrlRjGenOf agreed in its nrp, or over TCP), so they never wait on different paths. Over UD the turn takes the
+ // ring and waits ("not yet") until the pair's record QP is up in that generation or a later one (a re-pairing of the same
+ // incarnation); a side whose generation lags (the survivor before the spare's CONNECTED, the spare before its install)
+ // waits, never takes the socket. The data socket (ln4's way) only when the pair has no ring: none in this context, or the
+@@ -26805,11 +26924,11 @@ static int gdakiCtrlStateWayOf(struct gdakiRecHost* r, int peer, bool spare, uin
+   if (spare) {
+     if (pr.rj.state == GDAKI_CTRL_RJS_INSTALLED) rj = GDAKI_CTRL_SWR_TAKEN;
+     else if (pr.rj.state != GDAKI_CTRL_RJS_IDLE) rj = GDAKI_CTRL_SWR_UD;
+-    agreed = pr.rj.gen == gdakiCtrlRjGenOf(inc) ? pr.rj.gen : 0u;
++    agreed = pr.rj.gen == gdakiCtrlRjGenOf(inc + pr.rj.peerInc) ? pr.rj.gen : 0u;  // pilot2fix: both incarnations
+   } else {
+     if (pr.rejoin.accepted && pr.rejoin.inc == inc) rj = GDAKI_CTRL_SWR_TAKEN;
+     else if ((pr.rj.parked && pr.rj.park.pad == inc) || (pr.rj.accStarted && pr.rj.accInc == inc)) rj = GDAKI_CTRL_SWR_UD;
+-    agreed = gdakiCtrlRjGenOf(inc);
++    agreed = pr.rj.takenInc == inc && pr.rj.takenGen != 0 ? pr.rj.takenGen : gdakiCtrlRjGenOf(inc);  // pilot2fix
+   }
+   return gdakiCtrlStateWayRule(true, rj, agreed, pr.ring.gen, gdakiCtrlRingUp(&pr.ring));
+ }
+@@ -28523,6 +28642,7 @@ struct gdakiCtrlLaFence {
+   bool armed = false;               // a hold of (peer, dead) started here
+   uint32_t dead = 0;
+   bool sent = false, nak = false, reported = false, windowSaid = false, noPathSaid = false;
++  bool baseTaken = false, baseExited = false;  // pilot2fix: the window's baseline taken when the word stood (by EXITED)
+   double sentMs = 0;
+ };
+ // ---- the window line's cells (REVIEW_P3 막는 문제 1; design v3 4.4, EXPERIMENT.md 6 "펜스 뒤 생존 window에 바뀐 칸") ----
+@@ -28531,6 +28651,11 @@ struct gdakiCtrlLaFence {
+ // its start and the last ending at its end. A cell's value is its bytes' FNV-1a hash. The snapshot is taken at the
+ // judgement, before the hold start's quiesce moves any QP (gdakiCtrlOnJudgement); the comparison comes when the fence
+ // word stands (FENCED: "after the fence"; EXITED: "after the judgement") or, without it, at the hold's end.
++// pilot2fix (PILOT.md pilot 2 문제 1): the old incarnation runs until the word stands (a frozen page, a stalled helper),
++// so the cells moved between the judgement and the fence (changed=1-2). The baseline is taken when the word stands (the
++// old process is gone: base=fenced) and the line compares a later sample with it: this rank's acceptance of the new
++// incarnation's REJOIN, before its REJOIN_ACK (sample=rejoin; the new incarnation writes nothing here before), or the
++// hold's end (sample=hold_end). A hold that ends without the word compares with the judgement's (base=judgement).
+ #define GDAKI_CTRL_LA_CELL_BYTES 64u
+ #define GDAKI_CTRL_LA_CELLS_PER_REGION 16u
+ struct gdakiCtrlLaRegion {
+@@ -28631,6 +28756,7 @@ struct gdakiCtrlLaLink {
+   std::vector<uint32_t> endKind, endNode;  // by rank: what raised the word last (GL_K_FENCED, GL_K_EXITED), from which node
+   std::vector<struct gdakiCtrlLaFence> fence;
+   std::vector<struct gdakiCtrlLaSnap> snap;  // by peer: the window cells at its judgement (gdakiCtrlLaOnJudgement)
++  std::vector<struct gdakiCtrlLaSnap> snapF;  // pilot2fix: by peer, the cells when the fence word stood (the baseline)
+   struct gdakiCtrlLaCellsIo cells;
+   std::vector<struct gdakiCtrlLaAct> act;
+   struct gdakiCtrlLaTx tx;
+@@ -28671,6 +28797,7 @@ static void gdakiCtrlLaInit(struct gdakiCtrlLaLink* k, int me, int nranks, uint3
+   k->endNode.assign((size_t)nranks, 0u);
+   k->fence.assign((size_t)nranks, gdakiCtrlLaFence());
+   k->snap.assign((size_t)nranks, gdakiCtrlLaSnap());
++  k->snapF.assign((size_t)nranks, gdakiCtrlLaSnap());
+   k->act.assign((size_t)nranks, gdakiCtrlLaAct());
+ }
+ static int gdakiCtrlLaIndexOfNode(const struct gdakiCtrlLaLink* k, uint32_t node);
+@@ -28958,7 +29085,7 @@ static bool gdakiCtrlLaStableArm(struct gdakiCtrlLaLink* k, bool allArmable, boo
+ 
+ // ---- the fence word and its lines ----
+ // An ended (rank, inc) from launcher li (EXITED, FENCED): the word goes to max(word, inc + 1) when the lineage takes it.
+-// The buddy's FENCED line and every survivor's window line come once per armed hold (gdakiCtrlLaFenceReport).
++// The buddy's FENCED line and every survivor's window baseline come once per armed hold (gdakiCtrlLaFenceReport).
+ // The judgement of (peer, dead) here, before the hold start's quiesce: the window cells' snapshot, once per (peer, dead).
+ static void gdakiCtrlLaOnJudgement(struct gdakiCtrlLaLink* k, int peer, uint32_t dead) {
+   if (peer < 0 || peer >= k->nranks) return;
+@@ -28968,9 +29095,20 @@ static void gdakiCtrlLaOnJudgement(struct gdakiCtrlLaLink* k, int peer, uint32_t
+   s.have = true;
+   s.dead = dead;
+ }
+-// The window line, once per armed hold: `after` is "fence" (the word stood by FENCED) or "judgement" (by EXITED, or the
+-// hold ended without the word).
+-static void gdakiCtrlLaWindowLine(struct gdakiCtrlLaLink* k, int peer, const char* after) {
++// pilot2fix: the baseline when the word stands (once per armed hold; the line comes at a later sample).
++static void gdakiCtrlLaFenceBase(struct gdakiCtrlLaLink* k, int peer, bool exited) {
++  struct gdakiCtrlLaFence& f = k->fence[(size_t)peer];
++  if (f.baseTaken || f.windowSaid) return;
++  struct gdakiCtrlLaSnap& s = k->snapF[(size_t)peer];
++  gdakiCtrlLaCellsTake(k->cells, &s.v, &s.ok);
++  s.have = true;
++  s.dead = f.dead;
++  f.baseTaken = true;
++  f.baseExited = exited;
++}
++// The window line, once per armed hold, at the sample `sample`: against the baseline of the word (base=fenced; after
++// "fence" for FENCED, "judgement" for EXITED) or, without the word, against the judgement's snapshot (base=judgement).
++static void gdakiCtrlLaWindowLine(struct gdakiCtrlLaLink* k, int peer, const char* sample) {
+   struct gdakiCtrlLaFence& f = k->fence[(size_t)peer];
+   if (f.windowSaid) return;
+   f.windowSaid = true;
+@@ -28978,9 +29116,19 @@ static void gdakiCtrlLaWindowLine(struct gdakiCtrlLaLink* k, int peer, const cha
+   std::vector<uint8_t> ok;
+   gdakiCtrlLaCellsTake(k->cells, &v, &ok);
+   uint32_t unreadable = 0;
+-  const uint32_t changed = gdakiCtrlLaCellsDiff(k->snap[(size_t)peer], f.dead, v, ok, &unreadable);
+-  gdakiCtrlLaSay(k->log, "GIN/RC: rank %d: window check after the %s of rank %d: changed=%u cells "
+-                 "against=snapshot_at_judgement unreadable=%u", k->me, after, peer, changed, unreadable);
++  const bool fb = f.baseTaken;
++  const uint32_t changed = gdakiCtrlLaCellsDiff(fb ? k->snapF[(size_t)peer] : k->snap[(size_t)peer], f.dead, v, ok,
++                                                &unreadable);
++  gdakiCtrlLaSay(k->log, "GIN/RC: rank %d: window check after the %s of rank %d: changed=%u cells against=%s base=%s "
++                 "sample=%s unreadable=%u", k->me, fb && !f.baseExited ? "fence" : "judgement", peer, changed,
++                 fb ? "snapshot_at_fence" : "snapshot_at_judgement", fb ? "fenced" : "judgement", sample, unreadable);
++}
++// pilot2fix: this rank takes the REJOIN of `peer`'s incarnation inc (gdakiRsRejoinAccept, before its REJOIN_ACK): the
++// window line's later sample when the baseline of the hold of inc - 1 is there.
++static void gdakiCtrlLaOnRejoinTaken(struct gdakiCtrlLaLink* k, int peer, uint32_t inc) {
++  if (peer < 0 || peer >= k->nranks) return;
++  const struct gdakiCtrlLaFence& f = k->fence[(size_t)peer];
++  if (f.armed && f.baseTaken && inc > f.dead) gdakiCtrlLaWindowLine(k, peer, "rejoin");
+ }
+ static void gdakiCtrlLaFenceReport(struct gdakiCtrlLaLink* k, int peer, bool buddy) {
+   struct gdakiCtrlLaFence& f = k->fence[(size_t)peer];
+@@ -28990,12 +29138,12 @@ static void gdakiCtrlLaFenceReport(struct gdakiCtrlLaLink* k, int peer, bool bud
+     gdakiCtrlLaSay(k->log, "GIN/RC: rank %d: rank %d (incarnation %u) fence FENCED (by %s from node %u)", k->me, peer, f.dead,
+                    k->endKind[(size_t)peer] == GL_K_EXITED ? "EXITED" : "FENCED", k->endNode[(size_t)peer]);
+   }
+-  gdakiCtrlLaWindowLine(k, peer, k->endKind[(size_t)peer] == GL_K_EXITED ? "judgement" : "fence");
++  gdakiCtrlLaFenceBase(k, peer, k->endKind[(size_t)peer] == GL_K_EXITED);  // pilot2fix: the line at a later sample
+ }
+ // The hold of (peer, f.dead) ended here without the fence word (a fallback, a cancel): the window line now.
+ static void gdakiCtrlLaOnHoldEnd(struct gdakiCtrlLaLink* k, int peer) {
+   if (peer < 0 || peer >= k->nranks || !k->fence[(size_t)peer].armed) return;
+-  gdakiCtrlLaWindowLine(k, peer, "judgement");
++  gdakiCtrlLaWindowLine(k, peer, "hold_end");
+ }
+ static void gdakiCtrlLaOnEnded(struct gdakiCtrlLaLink* k, int li, const struct glMsg& m) {
+   const int p = m.h.rank;
+@@ -30247,6 +30395,14 @@ static void gdakiCtrlOnHoldStart(struct gdakiRecHost* r, int peer, uint32_t inc)
+   if (buddy) gdakiCtrlLaSpawn(&L->k, peer, inc + 1u);
+   gdakiCtrlLaFenceReport(&L->k, peer, buddy);
+ }
++// pilot2fix: the REJOIN hook (gdakiRsRejoinAccept, once the lineage and the view took the REJOIN of `peer`'s incarnation
++// inc, before its REJOIN_ACK): the window line's later sample (gdakiCtrlLaOnRejoinTaken).
++static void gdakiCtrlOnRejoinTaken(struct gdakiRecHost* r, int peer, uint32_t inc) {
++  struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
++  if (L == nullptr || peer < 0 || peer >= L->k.nranks) return;
++  std::lock_guard<std::mutex> lk(L->mu);
++  gdakiCtrlLaOnRejoinTaken(&L->k, peer, inc);
++}
+ static int gdakiCtrlLauncherSend(struct gdakiRecHost* r, int node, const void* msg, size_t bytes) {
+   struct gdakiCtrlLauncher* L = gdakiCtrlLaOf(r);
+   if (L == nullptr || msg == nullptr || bytes != sizeof(struct glMsg) || node < 0) return -1;
+@@ -34369,6 +34525,11 @@ static bool gdakiCtrlLaHostBlob(void* arg, int peer, uint32_t dead, const struct
+     snprintf(why, whyLen, "the activation blob could not be encoded");
+     return false;
+   }
++  // pilot2fix: after gin-mirror's parts, the UD endpoints of the survivors restored before (gdakiCtrlActUdOf)
++  std::vector<uint32_t> inc(blob->addr.size(), 0u);
++  for (size_t q = 0; q < blob->addr.size(); q++)
++    if (blob->addr[q].rank == (int32_t)q) inc[q] = blob->addr[q].incarnation;
++  gdakiCtrlActUdPut(gdakiCtrlActUdOf(r, peer, inc), bytes);
+   return true;
+ }
+ static bool gdakiCtrlLaHostFetchConnect(void* arg, int peer, uint32_t dead, const struct gdakiMiActAnswer& an, char* why,
+@@ -34466,7 +34627,40 @@ static int gdakiCtrlLaSpareBlobRecv(void* arg, int fd, const struct glRsActivate
+   struct gdakiCtrlLaSpareCtx* c = (struct gdakiCtrlLaSpareCtx*)arg;
+   struct gdakiRsActivate a;
+   memcpy(&a, &rec, sizeof(a));
+-  return gdakiMiActRecv(c->r, fd, a, gdakiQ4MonoMs() + 500.0, c->blob, why, whyLen);
++  const double deadline = gdakiQ4MonoMs() + 500.0;
++  const int code = gdakiMiActRecv(c->r, fd, a, deadline, c->blob, why, whyLen);
++  if (code != 0) return code;
++  // pilot2fix: the bytes after gin-mirror's parts (the socketpair's writer is closed: they end at EOF) are the UD table
++  std::vector<uint8_t> rest;
++  uint8_t buf[4096];
++  while (rest.size() <= GDAKI_CTRL_ACT_UD_MAX) {
++    const ssize_t k = recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
++    if (k > 0) {
++      rest.insert(rest.end(), buf, buf + k);
++      continue;
++    }
++    if (k == 0) break;
++    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) break;
++    const int rem = (int)(deadline - gdakiQ4MonoMs());
++    if (rem <= 0) break;
++    struct pollfd pf = {fd, POLLIN, 0};
++    (void)poll(&pf, 1, std::min(rem, 5));
++  }
++  struct gdakiCtrlRing* g = (c->r != nullptr && c->r->ctrl != nullptr) ? c->r->ctrl->ring : nullptr;
++  std::vector<struct gdakiCtrlActUd> ud;
++  if (rest.size() > GDAKI_CTRL_ACT_UD_MAX ||
++      !gdakiCtrlActUdGet(rest.data(), rest.size(), c->r->nranks, &ud)) {
++    snprintf(why, whyLen, "the activation blob's UD table is damaged (%zu bytes)", rest.size());
++    return 13;
++  }
++  if (g != nullptr) {
++    g->actHave = true;
++    g->actInc.assign(c->blob->addr.size(), 0u);
++    for (size_t q = 0; q < c->blob->addr.size(); q++)
++      if (c->blob->addr[q].rank == (int32_t)q) g->actInc[q] = c->blob->addr[q].incarnation;
++    g->actUd = ud;
++  }
++  return 0;
+ }
+ // gdakiRsSpareActivateWait's rdma body: gdakiCtrlLaSpareTake (the link's glue) with gin-mirror's blob reader; the lines.
+ static ncclResult_t gdakiCtrlLaSpareWait(struct gdakiRecHost* r, int waitMs, bool mi, struct gdakiRsActivate* act,

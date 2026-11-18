@@ -1,0 +1,79 @@
+--- a/rs_ctrl_api.h
++++ b/rs_ctrl_api.h
+@@ -362,7 +362,10 @@
+ 
+ // ---- the judgement's inputs and result (design v3 4.2; the values here, the table is phase 1's gdakiCtrlJudge) ----
+ // L, the launcher (5 values); B, a BYE (2); W, the witness and the confirmation window (9); R, the liveness READ (13):
+-// 5 x 2 x 9 x 13 = 1 170 points, each of which phase 1's CPU model walks.
++// 5 x 2 x 9 x 13 = 1 170 points, each of which phase 1's CPU model walks. R's two progress inputs (live, user decision
++// 2026-10-22): R (2)-(5) read the peer's device progress line (the GPU's own posts and polls, struct gdakiCtrlPageHead's
++// devLine names it), R (6)-(9) the host page's two beats (the watch thread and the helper), R (10)-(13) the READs
++// themselves; a peer without a device line keeps the watch beat in R (2)-(5) (the page region's gdakiCtrlRDerive).
+ enum : uint32_t { GDAKI_CTRL_L_LEFT = 0, GDAKI_CTRL_L_ENDED = 1, GDAKI_CTRL_L_ALIVE = 2, GDAKI_CTRL_L_NOINFO = 3,
+                   GDAKI_CTRL_L_NORESP = 4, GDAKI_CTRL_L_N = 5 };
+ enum : uint32_t { GDAKI_CTRL_B_NONE = 0, GDAKI_CTRL_B_SEEN = 1, GDAKI_CTRL_B_N = 2 };
+@@ -405,14 +408,25 @@
+   uint64_t flags;           // GDAKI_CTRL_PF_*, the page version in the top byte
+   uint64_t appStep;         // the last ncclGinRestoreStep's step (report only)
+   uint64_t lastStableCkpt;  // this rank's last stable checkpoint (report and the buddy's check)
+-  uint64_t rsv;
++  uint64_t devLine;         // live: this rank's device progress line, gdakiCtrlDevLineWord(rkey, bytes) (0: none); set
++                            // before the page is up, constant after (the MR's iova is 0: the line is at remote address 0)
+ };
+ static_assert(sizeof(struct gdakiCtrlPageHead) == 64 && alignof(struct gdakiCtrlPageHead) == 64, "line 0 is 64 B");
+ static_assert(offsetof(struct gdakiCtrlPageHead, watchBeat) == 0 && offsetof(struct gdakiCtrlPageHead, helperBeat) == 8 &&
+                   offsetof(struct gdakiCtrlPageHead, helperBusy) == 16 && offsetof(struct gdakiCtrlPageHead, incNonce) == 24 &&
+                   offsetof(struct gdakiCtrlPageHead, flags) == 32 && offsetof(struct gdakiCtrlPageHead, appStep) == 40 &&
+-                  offsetof(struct gdakiCtrlPageHead, lastStableCkpt) == 48,
++                  offsetof(struct gdakiCtrlPageHead, lastStableCkpt) == 48 &&
++                  offsetof(struct gdakiCtrlPageHead, devLine) == 56,
+               "the judgement words are 8 B aligned at fixed offsets");
++// The device progress line (live): the GIN context 0's device QP array (DOCA's struct doca_gpu_dev_verbs_qp, one per
++// peer, in GPU memory; the GPU advances sq_rsvd_index at every post and cq_sq.cqe_ci at every poll), registered in the
++// GIN PD for REMOTE_READ at iova 0. One 8 B word in line 0 names it (rkey, bytes) so that every incarnation's page names
++// its own; the setup all-gather carries the same region (gdakiCtrlSetupAddr::dev). 0: no line (not registered).
++static inline uint64_t gdakiCtrlDevLineWord(uint32_t rkey, uint32_t bytes) {
++  return rkey == 0 || bytes == 0 ? 0 : ((uint64_t)rkey << 32) | bytes;
++}
++static inline uint32_t gdakiCtrlDevLineRkey(uint64_t w) { return (uint32_t)(w >> 32); }
++static inline uint32_t gdakiCtrlDevLineBytes(uint64_t w) { return (uint32_t)w; }
+ #define GDAKI_CTRL_PF_LEAVING 0x1ull  // BYE sent: the rank is leaving
+ #define GDAKI_CTRL_PF_RESTORE 0x2ull  // the restore is on
+ #define GDAKI_CTRL_PF_MIRROR 0x4ull   // the mirror is on
+@@ -748,7 +762,8 @@
+   return gdakiCtrlQpAttrRecord(ibTimeout, helperCq);
+ }
+ // The liveness READ QP: SQ 4, RQ 0, REMOTE_READ only, the record QP's timeout, retry_cnt 7, the watch thread's CQ
+-// (max_rd_atomic 1).
++// (max_rd_atomic 1: the READs in the SQ go one after another). Live: SQ 4 = the periodic pair (the page, the device
++// progress line) + the confirmation window's two READs (the device line); the page region's model asserts it.
+ #define GDAKI_CTRL_PROBE_SQ 4u
+ static inline struct gdakiCtrlQpAttr gdakiCtrlQpAttrProbe(uint8_t ibTimeout, void* watchCq) {
+   struct gdakiCtrlQpAttr a;
+@@ -828,10 +843,12 @@
+ struct gdakiCtrlPage;      // [1] this rank's status page, the probe state per peer, the judgement
+ struct gdakiCtrlRing;      // [2] the record QPs, the rings, the credit, the inboxes, the UD QP, the outbox
+ struct gdakiCtrlLauncher;  // [3] the node's launcher link (the Unix socket, the launcher QPs)
++struct gdakiCtrlDev;       // [1] live: this rank's device progress line (its MR) and every rank's all-gather region
+ struct gdakiCtrlState {
+   struct gdakiCtrlPage* page = nullptr;
+   struct gdakiCtrlRing* ring = nullptr;
+   struct gdakiCtrlLauncher* launcher = nullptr;
++  struct gdakiCtrlDev* dev = nullptr;  // [1] made before the all-gather, freed by [1]'s free hook (gdakiCtrlPageFree)
+ };
+ // The liveness READ QP of one pair (the API below). Its state is software, written by its owner thread alone (the watch
+ // thread once phase 1 hands it over; REVIEW_PREP 고칠 것 7, design v3 2.1): `connected` from the connect until an error
+@@ -959,10 +976,11 @@
+   uint32_t activeMtu;                          // enum ibv_mtu of the GIN port (ibv_query_port's active_mtu)
+   uint32_t fork;                               // ibv_is_fork_initialized(); 0xff: the symbol is missing
+   int32_t probeMs, probeTimeoutMs, confirmMs, suspectMs, stallMs;  // the liveness thresholds (strict; 고칠 것 4)
+-  uint32_t rsv[4];
++  struct gdakiCtrlRegion dev;                  // [1] live: this rank's device progress line (addr = its iova 0, rkey, len;
++                                               //     rkey 0: none); not strict (a spare's is its own)
+ };
+ static_assert(sizeof(struct gdakiCtrlSetupAddr) == 168 && offsetof(struct gdakiCtrlSetupAddr, ud) == 32 &&
+-                  offsetof(struct gdakiCtrlSetupAddr, path) == 116,
++                  offsetof(struct gdakiCtrlSetupAddr, path) == 116 && offsetof(struct gdakiCtrlSetupAddr, dev) == 152,
+               "the setup all-gather's control fields are 168 bytes");
+ // The agreement over every rank's fields (the same verdict on every rank: the same records). 0: agreed; else the
+ // Resume condition it is (42 an MTU below 2048, 44 the control path differs) or GDAKI_CTRL_SA_THRESH; *minMtu the lowest.

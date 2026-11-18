@@ -62,5 +62,6 @@ GPU가 직접 통신하는 NCCL GIN에서 rank 하나가 죽으면, 살아남은
 
 ## 파일
 
-[EXPERIMENT.md](EXPERIMENT.md)(설계 9절, 기록 12절, 결과 15절), [NOTES.md](NOTES.md)(계층, 빌드, 실행), [PREREG.txt](PREREG.txt), [impl/](impl/)(계층 diff,
+[EXPERIMENT.md](EXPERIMENT.md)(설계 9절, 이력 12절과 사전 등록 뒤 변경 13절, 결과 15절, QA 16절, 결론 17절, 한계 18절), [NOTES.md](NOTES.md)(계층, 빌드, 실행), [PREREG.txt](PREREG.txt), [impl/](impl/)(계층 diff,
 단위 시험, 실행기, 채점기), [feas/](feas/)(실행 가능성 시험), [results/](results/).
+다음 실험은 보낸 버퍼를 곧바로 다시 쓰는 경우를 다룬 [../mirror/](../mirror/README.md), 그 뒤 제어 경로를 RDMA로 옮기는 [../control/](../control/README.md)(진행 중)이다.

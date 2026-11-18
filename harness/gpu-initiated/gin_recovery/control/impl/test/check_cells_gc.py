@@ -5,9 +5,13 @@ sections 3 and 7. CPU only, standard library only; reads files, writes nothing.
     check_cells_gc.py [--doc ../../EXPERIMENT.md]
 
 Checks (each failure is one line "FAIL ..."; exit 1 when any):
-  section 7   27 table rows = cells_gc.json "rows" (in order); every row's gc*/gct* cell names and their builds and n (column
+  section 7   the table rows = cells_gc.json "rows" (in order; 25 since the 2026-10-22 trim, the count is not hard-coded); every row's gc*/gct* cell names and their builds and n (column
               "빌드와 반복 수", parentheses dropped; forms "`@b` n", "`@b` 각 n", "`@b1` n1, `@b2` n2", "`@b` n1, n2" with two
-              names) equal the cells of cells_gc.json; no cell in the json outside section 7
+              names) equal the cells of cells_gc.json; no cell in the json outside section 7. The table is section 7's
+              first table; a later table headed "pilot 전용 셀" (2026-10-27, pilot 5) names pilot_cells only (none of
+              "cells"), each with its n, and is not counted in the main rows, cells or trials
+  hang ranks  (2026-10-27, pilot 5) a cell or pilot cell with GC_GPUHANG_IT= in two or more R<k>_ENV names them all in
+              HUNG_RANKS, and a HUNG_RANKS names exactly the ranks whose R<k>_ENV has GC_GPUHANG_IT=
   section 3   every search key of the table's last column has at least one cell (a cell@build, the regression, the cost
               family or a local item); every cell of the json feeds at least one key that section 3 names; every gc*/gct*
               cell name in a key's own row feeds that key in the json
@@ -16,16 +20,178 @@ Checks (each failure is one line "FAIL ..."; exit 1 when any):
               two lists agree (REVIEW_TEST fix 19): the gc cells a row's cells column names are exactly the json cells whose
               preds name that row (a row on "build:<b>" takes any cell of build b); a regression cell a row names has the row
               in regression.builds[b].preds, and every row of regression.builds[b].preds names a cell, a "mirror:" or a
-              "build:" key at that build
+              "build:" key at that build; a regression build that lists "cells" (the 2026-10-22 trim: @gct runs only
+              mi4_kill3_ow) names gin-mirror regression cells only, and a row's regression cell at that build is one of them;
+              every row's kind is safety, perf or cost, and cost exactly when its acceptance is a cost: rule (Codex review
+              2026-10-23 item 5; score_gc.py judges safety rows at 0 failures); a row with two or more keys has no plain
+              count() part (the scorer reads a plain part on the first key only; each part names its key or says
+              "per cell:", 2026-10-27, plain_part_fails); a row with two or more keys has no plain count() part (the
+              scorer reads a plain part on the first key only; each part names its key or says "per cell:", 2026-10-27)
+  build keys  every build key a cell, a pilot cell, the regression, the cost family, "builds" or a prediction's "build:"
+              names is in the document's build-key table (the header table "빌드 키"; a stray gctc fails)
+  drift       each predictions_gc.csv row against its own section 3 row (2026-10-22: the stall rows still counted STALL and
+              the time bands were the old W + 1 ms and 102-206 ms after section 3 changed). Causes: every judgement-cause
+              column the acceptance uses (n_judge_exited, n_rst_confirm, n_judge_stall_helper, ...) names a cause that the
+              row's per-trial column names, every cause that column names has a column in the acceptance, and every cause
+              the per_trial text names is in the row. Bounds (columns with "ms" in the name only): a band "a <= x <= b" or
+              "a <= x_min and x_max <= b" is an "a-b ms" (or "a-b s") band of the row, a "_dev_" band "0 <= x and x <= d" is
+              the row's "W-W + d ms"; a lone "x <= b" or "x < b" is a number of the row, and "<" or "<=" follows the row's
+              "<" or the row's "≤" where the row writes one. The row text drops the `[...]` notes and the
+              "2026-10-22 전에는 ..." history (to the next ";" or ")") first; a number written "3.5 s" counts as 3500 ms.
+              Counts (k), equalities and columns without "ms" are not compared.
 """
 import argparse, csv, json, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# ---- drift: the CSV row against its section 3 row
+CAUSES = re.compile(r"(?<![A-Z_+])(FIN\+STALE|FIN\+NORESP|REMACC\+FIN|EXITED|NORESP|STALL_HELPER|STALL|LINKDOWN)(?![A-Z_+])")
+CONFIRM = {"FIN+STALE", "FIN+NORESP", "REMACC+FIN"}
+CAUSE_COLS = {"confirm": ("n_judge_confirm", "n_rst_confirm"), "EXITED": ("n_judge_exited", "n_rst_exited"),
+              "NORESP": ("n_judge_noresp",), "STALL_HELPER": ("n_judge_stall_helper",), "STALL": ("n_judge_stall",),
+              "LINKDOWN": ("n_judge_linkdown",)}
+NUM = r"\d{1,3}(?: \d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
+
+
+def num(s):
+    return float(s.replace(" ", ""))
+
+
+def doc_clean(s):
+    s = re.sub(r"`\[[^`]*\]`", " ", s)                  # the [측정 ...], [설계 ...] notes
+    return re.sub(r"2026-10-22 전에는[^;)]*", " ", s)     # the values before the 2026-10-22 change
+
+
+def cause_groups(text):
+    """the cause groups a text names; a cause followed by ' 0' (a count of none) is not named"""
+    out = set()
+    for m in CAUSES.finditer(text):
+        if re.match(r"\s+0(?![\d.])", text[m.end():]):
+            continue
+        out.add("confirm" if m.group(1) in CONFIRM else m.group(1))
+    return out
+
+
+def doc_bounds(text):
+    bands, wbands, nums, le, lt = set(), set(), set(), set(), set()
+    for m in re.finditer(r"(%s)\s*–\s*(%s)\s*(ms|s)(?![A-Za-z])" % (NUM, NUM), text):
+        f = 1000.0 if m.group(3) == "s" else 1.0
+        bands.add((num(m.group(1)) * f, num(m.group(2)) * f))
+    for m in re.finditer(r"W\s*–\s*W\s*\+\s*(%s)\s*ms" % NUM, text):
+        wbands.add((0.0, num(m.group(1))))
+    for m in re.finditer(r"(?<![\d.])(%s)(\s*s(?![A-Za-z]))?" % NUM, text):
+        nums.add(num(m.group(1)) * (1000.0 if m.group(2) else 1.0))
+        nums.add(num(m.group(1)))
+    for m in re.finditer(r"([≤<])\s*(%s)\s*(ms|s)?(?![A-Za-z])" % NUM, text):
+        v = num(m.group(2)) * (1000.0 if m.group(3) == "s" else 1.0)
+        (le if m.group(1) == "≤" else lt).add(v)
+    return bands, wbands, nums, le, lt
+
+
+def csv_bounds(acc):
+    """[(column, lo, hi)] bands and [(column, op, b)] lone upper bounds of columns with 'ms' in the name"""
+    bands, lone, N = [], [], r"-?\d+(?:\.\d+)?"
+    rest = acc
+    for m in re.finditer(r"(%s) <= (\w+) <= (%s)" % (N, N), acc):
+        bands.append((m.group(2), float(m.group(1)), float(m.group(3))))
+    rest = re.sub(r"(%s) <= (\w+) <= (%s)" % (N, N), " ", rest)
+    pat = re.compile(r"(%s) <= (\w+) and (\w+) <= (%s)" % (N, N))
+    for m in pat.finditer(rest):
+        if m.group(2).replace("min", "max") == m.group(3):
+            bands.append((m.group(2), float(m.group(1)), float(m.group(4))))
+    rest = pat.sub(lambda m: " " if m.group(2).replace("min", "max") == m.group(3) else m.group(0), rest)
+    for m in re.finditer(r"(\w+) (<=|<) (%s)(?![\w.])" % N, rest):
+        lone.append((m.group(1), m.group(2), float(m.group(3))))
+    keep = lambda c: "ms" in c
+    return [b for b in bands if keep(b[0])], [x for x in lone if keep(x[0])]
+
+
+def drift(p, cols):
+    """the differences between a predictions_gc.csv row p and its section 3 row cols (a list of fail lines)"""
+    out, pid = [], p["id"]
+    cond = doc_clean(cols[2])
+    text = doc_clean(" ".join(cols[2:4]))
+    acc = p["acceptance"]
+    want = cause_groups(cond)
+    used = {g for g, cs in CAUSE_COLS.items() for c in cs if re.search(r"\b%s\b" % c, acc)}
+    for g in sorted(used - want):
+        out.append("drift %s: the acceptance counts cause %s (%s), section 3's row names %s" %
+                   (pid, g, "/".join(CAUSE_COLS[g]), sorted(want) or "no cause"))
+    for g in sorted(want - used):
+        out.append("drift %s: section 3's row names cause %s, the acceptance has no %s" % (pid, g, "/".join(CAUSE_COLS[g])))
+    for g in sorted(cause_groups(p["per_trial"]) - want):
+        out.append("drift %s: the per_trial text names cause %s, section 3's row does not" % (pid, g))
+    bands, wbands, nums, le, lt = doc_bounds(text)
+    cb, cl = csv_bounds(acc)
+    for c, lo, hi in cb:
+        pool = wbands if "_dev_" in c else bands
+        if not any(abs(lo - a) < 1e-6 and abs(hi - b) < 1e-6 for a, b in pool):
+            out.append("drift %s: %s band %g-%g ms is not a band of section 3's row (%s)" %
+                       (pid, c, lo, hi, ", ".join("%g-%g" % x for x in sorted(pool)) or "none"))
+    out = list(dict.fromkeys(out))  # a row with one rule per cell says each difference once
+    for c, op, b in cl:
+        if not any(abs(b - v) < 1e-6 for v in nums):
+            out.append("drift %s: %s %s %g, section 3's row has no %g" % (pid, c, op, b, b))
+            continue
+        inle, inlt = any(abs(b - v) < 1e-6 for v in le), any(abs(b - v) < 1e-6 for v in lt)
+        if op == "<=" and inlt and not inle:
+            out.append("drift %s: %s <= %g, section 3's row writes < %g" % (pid, c, b, b))
+        if op == "<" and inle and not inlt:
+            out.append("drift %s: %s < %g, section 3's row writes ≤ %g" % (pid, c, b, b))
+    return out
+
+
+def plain_part_fails(preds):
+    """the rows with two or more keys (mirror: ones apart) and a plain count() part, which the scorer reads on the first key
+    only (score_gc.eval_part); each such part is one fail line (2026-10-27)"""
+    out = []
+    for p in preds:
+        pk = [x.strip() for x in p["cells"].split(";") if x.strip() and not x.strip().startswith("mirror:")]
+        if len(pk) < 2:
+            continue
+        for part in [x.strip() for x in p["acceptance"].split(";;") if x.strip()]:
+            if not (part.startswith(("mirror:", "per cell:", "cost:")) or
+                    re.match(r"([A-Za-z0-9_]+@[a-z]+|build:[a-z]+|local:[a-z_]+):", part)):
+                out.append("prediction %s: a plain part on %d keys is scored on the first key only (%s): write per cell: "
+                           "or <key>:" % (p["id"], len(pk), part[:40]))
+    return out
+
 
 def section(text, num):
     m = re.search(r"^## %d\. .*?$(.*?)(?=^## \d+\. )" % num, text, re.S | re.M)
     return m.group(1) if m else ""
+
+
+def tables(sec):
+    """the tables of a section: each a list of rows (the header first, separator lines dropped)"""
+    out, cur = [], None
+    for line in sec.splitlines():
+        if not line.startswith("|"):
+            cur = None
+            continue
+        if set(line.replace("|", "").strip()) <= set("-: "):
+            continue
+        if cur is None:
+            cur = []
+            out.append(cur)
+        cur.append([c.strip() for c in line.strip().strip("|").split("|")])
+    return out
+
+
+def hang_rank_fails(cj):
+    """the cells whose HUNG_RANKS and R<k>_ENV hang switches disagree (2026-10-27, pilot 5)"""
+    out = []
+    for k, c in list(cj["cells"].items()) + list(cj.get("pilot_cells", {}).items()):
+        env = c.get("env", {})
+        hung = sorted(int(m.group(1)) for kk, v in env.items() for m in [re.fullmatch(r"R(\d+)_ENV", kk)]
+                      if m and re.search(r"\bGC_GPUHANG_IT=\d+", v))
+        if "HUNG_RANKS" in env:
+            got = sorted(int(x) for x in env["HUNG_RANKS"].split(",") if x.strip().isdigit())
+            if got != hung:
+                out.append("%s: HUNG_RANKS %s, the ranks with GC_GPUHANG_IT in R<k>_ENV %s" % (k, env["HUNG_RANKS"], hung))
+        elif len(hung) >= 2:
+            out.append("%s: GC_GPUHANG_IT on ranks %s without HUNG_RANKS" % (k, hung))
+    return out
 
 
 def table_rows(sec):
@@ -39,6 +205,24 @@ def table_rows(sec):
 
 
 CELLNAME = re.compile(r"`(gct?4_[a-z0-9_]+)`")
+
+
+def build_key_table(text):
+    """the build keys of the first table whose header's first column is 빌드 키"""
+    keys, inside = set(), False
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            if inside:
+                break
+            continue
+        cols = [c.strip() for c in line.strip().strip("|").split("|")]
+        if not inside:
+            inside = cols[0] == "빌드 키"
+            continue
+        m = re.fullmatch(r"`(\w+)`", cols[0])
+        if m:
+            keys.add(m.group(1))
+    return keys
 
 
 def sec7_cells(cols):
@@ -81,7 +265,27 @@ def main():
         print("FAIL " + s)
 
     # ---- section 7
-    r7 = table_rows(section(text, 7))
+    t7 = tables(section(text, 7))
+    r7 = t7[0][1:] if t7 else []
+    pilot_t = [t for t in t7[1:] if t and t[0] and t[0][0] == "pilot 전용 셀"]
+    for t in t7[1:]:
+        if t not in pilot_t:
+            fail("section 7 has a table other than the cell table and the pilot-only table (header %r)" % (t[0][0] if t and t[0] else ""))
+    pilot_named = set()
+    for t in pilot_t:
+        for cols in t[1:]:
+            w = sec7_cells(cols)
+            for k, n in w.items():
+                pilot_named.add(k)
+                pc = cj.get("pilot_cells", {}).get(k)
+                if k in cj["cells"] or pc is None:
+                    fail("section 7 pilot-only row %s is not a pilot cell of cells_gc.json (pilot_cells only)" % k)
+                elif pc["n"] != n:
+                    fail("pilot cell %s: n %d in section 7's pilot-only table, %d in cells_gc.json" % (k, n, pc["n"]))
+            if not w:
+                fail("section 7 pilot-only row names no cell@build (%s)" % cols[0][:40])
+    for s_ in hang_rank_fails(cj):
+        fail(s_)
     rows = cj["rows"]
     if len(r7) != len(rows):
         fail("section 7 has %d rows, cells_gc.json %d" % (len(r7), len(rows)))
@@ -106,12 +310,13 @@ def main():
             fail("cells_gc.json cell %s is not in section 7" % k)
     # ---- section 3
     r3 = table_rows(section(text, 3))
-    keys, key_cells = [], {}
+    keys, key_cells, key_cols = [], {}, {}
     for cols in r3:
         m = re.search(r"`([a-z0-9_]+)`", cols[-1])
         if not m:
             continue
         keys.append(m.group(1))
+        key_cols[m.group(1)] = cols
         key_cells[m.group(1)] = set(CELLNAME.findall(cols[1]))
     feeds = {}
     for k, c in cj["cells"].items():
@@ -150,11 +355,28 @@ def main():
         if sorted(ids) != sorted(keys):
             fail("predictions_gc.csv ids differ from section 3: missing %s, extra %s" %
                  (sorted(set(keys) - set(ids)), sorted(set(ids) - set(keys))))
+        # the kind column (Codex review 2026-10-23 item 5)
+        for p in pr:
+            k = (p.get("kind") or "").strip()
+            if k not in ("safety", "perf", "cost"):
+                fail("prediction %s: kind %r is not safety, perf or cost" % (p["id"], k))
+            elif (k == "cost") != p["acceptance"].strip().startswith("cost:"):
+                fail("prediction %s: kind %s but its acceptance %s a cost: rule" % (
+                    p["id"], k, "is" if k != "cost" else "is not"))
+        # 2026-10-27 (Codex review of the counterexample design, item 6): the scorer evaluates a plain count() part on the
+        # first key of the cells column only (score_gc.eval_part, keys[:1]); a row with two or more keys must give each part
+        # a key ("<key>:"), "per cell:", "mirror:" or "cost:", or the other keys go unscored
+        for msg in plain_part_fails(pr):
+            fail(msg)
         # the regression cells: gin-mirror's non-cost cells at the regression builds; "mirror:" names gin-mirror's ids
         reg = cj["regression"]
         src = os.path.join(HERE, reg["source"])
         mcells = json.load(open(src, encoding="utf-8"))
         mnames = {e["cell"] for h in reg["holds"] for e in mcells["holds"].get(h, [])}
+        bcells = {b: set(spec["cells"]) for b, spec in reg["builds"].items() if "cells" in spec}
+        for b, cs in sorted(bcells.items()):
+            for n in sorted(cs - mnames):
+                fail("regression.builds.%s.cells names %s, not a cell of the regression holds" % (b, n))
         mpreds = os.path.join(os.path.dirname(src), "predictions_mi.csv")
         mids = {r["id"] for r in csv.DictReader(open(mpreds, encoding="utf-8"))}
         for p in pr:
@@ -176,6 +398,8 @@ def main():
                     c, _, b = k.rpartition("@")
                     if not (c in mnames and b in reg["builds"]):
                         fail("prediction %s names cell %s, neither in cells_gc.json nor a regression cell" % (p["id"], k))
+                    elif b in bcells and c not in bcells[b]:
+                        fail("prediction %s names cell %s, but regression.builds.%s.cells leaves %s out" % (p["id"], k, b, c))
         # the two lists agree (REVIEW_TEST fix 19)
         for p in pr:
             ks = [x.strip() for x in p["cells"].split(";") if x.strip()]
@@ -203,15 +427,52 @@ def main():
                 if p is None:
                     continue
                 ks = [x.strip() for x in p["cells"].split(";") if x.strip()]
-                ok = any((k.endswith("@" + b) and k.split("@")[0] in mnames) or (k.startswith("mirror:") and k.endswith("@" + b))
+                ok = any((k.endswith("@" + b) and k.split("@")[0] in bcells.get(b, mnames)) or (k.startswith("mirror:") and k.endswith("@" + b))
                          or k == "build:" + b for k in ks)
                 if not ok:
                     fail("regression.builds.%s.preds names %s, whose cells column names no %s regression cell" % (b, pid, b))
+        # drift: each row's causes and bounds against its section 3 row
+        ndrift = 0
+        for p in pr:
+            if p["id"] in key_cols and len(key_cols[p["id"]]) >= 4:
+                for s in drift(p, key_cols[p["id"]]):
+                    ndrift += 1
+                    fail(s)
+        print("drift: %d prediction rows against section 3, %d difference(s)" % (len([p for p in pr if p["id"] in key_cols]), ndrift))
     else:
         print("note: %s not found (predictions not checked)" % a.preds)
+    # ---- build keys (the document's build-key table)
+    bkeys = build_key_table(text)
+    if not bkeys:
+        fail("the document has no build-key table (header 빌드 키)")
+    used = {}
+    for k, c in list(cj["cells"].items()) + list(cj.get("pilot_cells", {}).items()):
+        used.setdefault(c["build"], set()).add(k)
+        if "@" in k:
+            used.setdefault(k.rpartition("@")[2], set()).add(k)
+    for b in cj["regression"]["builds"]:
+        used.setdefault(b, set()).add("regression.builds")
+    for f, spec in cj["cost"]["families"].items():
+        for arm, b in spec["lib"].items():
+            used.setdefault(b, set()).add("cost.%s.%s" % (f, arm))
+    for b, spec in cj["builds"].items():
+        used.setdefault(b, set()).add("builds")
+        used.setdefault(spec.get("lib", b), set()).add("builds.%s.lib" % b)
+    if os.path.exists(a.preds):
+        for p in csv.DictReader(open(a.preds, encoding="utf-8")):
+            for k in [x.strip() for x in p["cells"].split(";") if x.strip()]:
+                if k.startswith("build:"):
+                    used.setdefault(k[len("build:"):], set()).add("prediction " + p["id"])
+                elif "@" in k and not k.startswith(("mirror:", "cost:", "local:")):
+                    used.setdefault(k.rpartition("@")[2], set()).add("prediction " + p["id"])
+    for b in sorted(set(used) - bkeys):
+        fail("build key %s (used by %s) is not in the document's build-key table %s" % (b, ", ".join(sorted(used[b])[:4]), sorted(bkeys)))
     qa = [r["row"] for r in rows if r.get("qa_only")]
-    print("section 7 rows %d, cells %d, section 3 keys %d, rows without a key (qa_only) %s: %s" %
-          (len(r7), len(cj["cells"]), len(keys), qa or "none", "FAIL" if fails else "ok"))
+    main_n = sum(x.get("n", cj["cells"][x["key"]]["n"]) for h, xs in cj["holds"].items() if h.startswith("C") for x in xs)
+    print("section 7 rows %d, cells %d (main-run trials %d), pilot-only rows %d, section 3 keys %d, build keys %d used of %d "
+          "in the table, rows without a key (qa_only) %s: %s" %
+          (len(r7), len(cj["cells"]), main_n, len(pilot_named), len(keys), len(used), len(bkeys), qa or "none",
+           "FAIL" if fails else "ok"))
     sys.exit(1 if fails else 0)
 
 

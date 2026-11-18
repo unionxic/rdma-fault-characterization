@@ -7,22 +7,22 @@
 # gate, the per-trial QUERY_QP cap.
 #
 # What is new against hold_mi.sh (section 8's additions):
-#   - the launchers: a hold that runs an rdma build (gc, gcp) starts one launcher per node before its first trial
-#     (launcher_gc.sh start, with the hold's one launcher_env from cells_gc.json; EXPERIMENT 5: one per node per hold, the
-#     coordinator's decision of 2026-10-17) and stops them after its last trial (the ranks of every trial ended before: the
-#     launcher last). run_gc.sh reads their records (LAUNCHER_REC_RAIN, LAUNCHER_REC_SUNNY), checks at every trial's start
-#     that the registration table is empty (exit 7 otherwise) and writes trial_start / trial_end markers into both launcher
-#     logs. Either launcher not ready: both are stopped and the hold does not start (STOP_launcher);
-#   - per trial: STOP_launcher for a launcher line "(STOP_launcher)" or "(STOP_launcher: ...)" in the trial's launcher slices
-#     (a refused signal, a FENCE_NAK, the RNIC transport failing; the pid-check failure; both forms through
-#     rows_gc.py --stops, the scorer's rule), a launcher QP loss outside the test-switch cells (the same rule as rows_gc.py's
-#     la_qp_err_n: after the trial's start marker, before the first "is leaving", of a rank other than the subject), a
-#     launcher gone or changed (pid or start time) between the trial's start and end, or the trial's start check failing
-#     (run_gc.sh exit 6: not ready, exit 7: the table not empty; cells_gc.sh); STOP_rnr for a growth of the RNR port counter
-#     outside gc4_credit_stall; STOP_left for a stopped (state T) process or a gin_fdhold child left after the trial
+#   - the launchers: one per node per trial (EXPERIMENT 5; the coordinator's decision of 2026-10-22, replacing one per hold:
+#     the warm spare's command carries per-trial values). run_gc.sh starts them before the ranks with the cell's launcher_env
+#     from cells_gc.json (LAUNCHER_ENV, +-joined) and the node's warm spare, and stops them after the ranks; this hold starts
+#     none. A launcher that does not come up (run_gc.sh exit 6) or a stale launcher socket or process on a node (exit 7) is
+#     STOP_launcher (cells_gc.sh);
+#   - per trial: STOP_launcher for a launcher line "(STOP_launcher)" or "(STOP_launcher: ...)" in the trial's launcher logs
+#     (each the trial's own launcher's whole log; a refused signal, a FENCE_NAK, the RNIC transport failing, the pid-check
+#     failure, the warm spare's HELLO bound or respawn cap; both forms through rows_gc.py --stops, the scorer's rule, which
+#     leaves out the one expected cap line of the spare-absent cells), a launcher QP loss outside the test-switch cells (the
+#     same rule as rows_gc.py's la_qp_err_n: after the trial's start marker, before the first "is leaving", of a rank other
+#     than the subject and the second kill's rank),a launcher gone or changed (pid or start time) between the trial's start and end, or the trial's
+#     start check failing (run_gc.sh exit 6: not up, exit 7: stale; cells_gc.sh); STOP_rnr for a growth of the RNR port
+#     counter outside gc4_credit_stall; STOP_left for a stopped (state T) process or a gin_fdhold child left after the trial
 #     (run_gc.sh's meta left_stopped, left_fdhold); STOP_async for an asynchronous event of a record or liveness-READ QP (the
 #     library's control summary, TODO(phase2)) outside the test-switch cells; STOP_mtu when a port's active_mtu after the
-#     trial differs from before; after the last trial, a STOP line in a launcher log after its last trial_end marker;
+#     trial differs from before;
 #   - the start check of section 8: both GIN ports' active_mtu must be at least 2048 and equal, else the hold does not start
 #     (STOP_mtu);
 #   - leftovers: this study's driver names (gin_mi, gin_mi_nomacro), this uid's gin_fdhold and gin_launcher, this study's
@@ -33,14 +33,28 @@
 #
 # usage: hold_gc.sh <resultsdir> <hold>
 #   C1-C11                 the main-run holds of cells_gc.json (section 7 rows 1-22)
-#   P0-P4                  the pilot holds (never scored; a results folder pilot* or smoke* of their own): P0 the smoke, P1
-#                          one trial of every rdma cell, P2 of every tcp cell, P3 the noreport cell (its launcher with
-#                          NO_EXIT_REPORT), P4 9.9's unscored 12 000 ms stop (its own cell gc4_stop12000_pilot)
+#   P0-P6                  the pilot holds (never scored; a results folder pilot* or smoke* of their own): P0 the smoke, P1
+#                          one trial of every rdma cell, P2 of every tcp cell, P3 the two noreport cells (fd-holder and no-fd-holder) (its launcher with
+#                          NO_EXIT_REPORT), P4 9.9's unscored 12 000 ms stop (its own cell gc4_stop12000_pilot), P5 pilot 4's two
+#                          counterexample cells, P6 pilot 5 (cell B, the pilot cells gc4_gpuhang12000_waiter_hung and
+#                          gc4_gpuhang12000_cycle, the GPU hang control, the quiet cell)
 #   RG-<gct|gc>-<G1|G3|T1|T2|G2|R1|R2|R3>   gin-mirror's hold of that name (../../../mirror/impl/test/cells_mi.json), every
-#                          cell with its name, env and n, at the named build (section 7 rows 23, 24)
+#                          cell with its name, env and n, at the named build (section 7 rows 24, 25); a build with
+#                          regression.builds.<b>.cells runs only those cells (2026-10-22: @gct only mi4_kill3_ow, i.e.
+#                          RG-gct-G1; any other RG-gct-* hold has no cell and stops)
+#   PRG-<gct|gc>-<mirror hold>   the pilot form of RG- (pilot 1, 2026-10-23): the same cells, each once (n 1), in a pilot
+#                          folder only (P* is a pilot hold); PRG-gct-G1 is the tcp regression control mi4_kill3_ow once
 #   COST-probe-<rain|sunny>[-<metric>]       the probe cost family on the receiving node (3 arms x 3 metrics x 6 rounds)
-#   COSTPILOT-<rain|sunny> one round of the probe cost family
-# env: SUNNY_SSH (required), RS_SET (required), RS_QUERY_CAP (50000), RS_QUERY_CAP_REG (150000), RS_TRIAL_BOUND_S (60: the
+#   PCELL-<cell>[+<cell>...]   pilot 2 (2026-10-24): the named cells of cells_gc.json (cells or pilot_cells), each once (n 1),
+#                          in a pilot folder only (pilot 7, 2026-10-28: a name given k times runs k trials, n1..nk); PRG-<b>-<h1>+<h2>... runs several gin-mirror holds' cells in one pilot hold
+#   PRC-<gct|gc>-<cell>[+<cell>...]   pilot 3 (2026-10-24): named cells of the regression holds (as PRG-, at that build), in a
+#                          pilot folder only; a name given k times runs k trials (n1..nk)
+#   COSTPILOT-<rain|sunny>[-<rounds>] one round (or 1-6 rounds, the arm order reversed on even rounds) of the probe cost family
+# The per-trial QUERY_QP cap scales with the trial's wall (EXPERIMENT 8, fixed 2026-10-24 from pilot 1, where eight trials of
+# 18.6-67.7 s went over the flat 50 000 at 2 700-3 100 per s): RS_QUERY_RATE (4000) per second of the trial's meta wall_s
+# (run_gc.sh and run_cost_gc.sh trials); RS_QUERY_CAP stays the cap of a trial without a meta wall, RS_QUERY_CAP_REG that of
+# gin-remaining's regression runner.
+# env: SUNNY_SSH (required), RS_SET (required), RS_QUERY_RATE (4000), RS_QUERY_CAP (50000), RS_QUERY_CAP_REG (150000), RS_TRIAL_BOUND_S (60: the
 #   4 KiB trials; a cell's bound_s overrides), RS_TRAIN_BOUND_S (150), GC_CHAIN (1, set by chain_gc.sh).
 # Resumable as hold_mi.sh: a cell trial whose <stem>_meta.txt exists is skipped.
 set -u
@@ -61,6 +75,7 @@ MCELLS=$D/../../../mirror/impl/test/cells_mi.json
 FW=$D/../../../scripts/ts1/fwcmd_snapshot.sh
 [ -f "$FW" ] || { echo "missing $FW" >&2; exit 2; }
 QCAP=${RS_QUERY_CAP:-50000}
+QRATE=${RS_QUERY_RATE:-4000}
 QCAP_REG=${RS_QUERY_CAP_REG:-150000}
 TRIAL_BOUND=${RS_TRIAL_BOUND_S:-60}
 TRAIN_BOUND=${RS_TRAIN_BOUND_S:-150}
@@ -137,6 +152,18 @@ fits() {
 }
 stopped() { ls "$R"/STOP_* > /dev/null 2>&1; }
 mval() { sed -n "s/.*\b$2=\([^ ]*\).*/\1/p" "$1" 2>/dev/null | head -1; }
+hung_ranks() {  # hung_ranks <meta>: the ranks whose env has a GPU hang switch (GC_GPUHANG_IT=), space-separated (pilot 5,
+  # 2026-10-27: gc4_gpuhang12000_waiter_hung hangs rank 1 too); the cell's HUNG_RANKS (meta hung_ranks) is the scorer's
+  # record and check_cells_gc.py's, never a reason by itself to pass a watchdog
+  grep -o '\br[0-9][0-9]*_env=[^ ]*' "$1" 2>/dev/null | grep 'GC_GPUHANG_IT=' | sed 's/^r\([0-9]*\)_env=.*/\1/' | sort -un | tr '\n' ' '
+}
+hang_watchdog_ok() {  # hang_watchdog_ok <meta> <rank kv>: true when the kv is a GPU hang rank's (hung_ranks) and says watchdog=1
+  # with no cuda_error= or nccl_error= (after_trial records it instead of STOP_nic)
+  local fr=${2##*_r}
+  fr=${fr%.kv}
+  case " $(hung_ranks "$1")" in *" $fr "*) ;; *) return 1 ;; esac
+  grep -q 'watchdog=1' "$2" && ! grep -qE 'cuda_error=|nccl_error=' "$2"
+}
 gc_after_trial() {  # gc_after_trial <what> <meta> <cell>: section 8's gin-control stops for one restore trial
   local what=$1 m=$2 cell=$3 stem b a nd st f envs sw=0 chk lstop lqp
   [ -f "$m" ] || return 0
@@ -159,6 +186,9 @@ gc_after_trial() {  # gc_after_trial <what> <meta> <cell>: section 8's gin-contr
     if [ "${lstop:-0}" -gt 0 ]; then
       echo "$(date '+%F %T') hold $H: $what: $lstop launcher line(s) (STOP_launcher) or (STOP_launcher: ...)" | tee -a "$R/STOP_launcher"
     fi
+    # gin-mirror's two-death cells (mi4_kill2_kill3_ow, mi4_train_kill2_kill3): the second killed rank (meta kill2_rank) is
+    # a subject too; rows_gc.py --stops leaves its QP loss lines out like the first's (2026-10-24 after pilot 2, where a4
+    # stopped on them; pilot 2's stopgap la_qp_twokill.txt record is gone)
     if [ "$sw" = 0 ] && [ "${lqp:-0}" -gt 0 ]; then
       echo "$(date '+%F %T') hold $H: $what: $lqp launcher QP loss line(s) outside the test-switch cells (section 8)" | tee -a "$R/STOP_launcher"
     fi
@@ -185,12 +215,30 @@ gc_after_trial() {  # gc_after_trial <what> <meta> <cell>: section 8's gin-contr
   return 0
 }
 after_trial() {  # hold_mi.sh's per-trial stops: kv error keys, a refused Resume where the restore is expected, firmware, QUERY_QP
-  local what=$1 f fw qq refuse_ok=${3:-1} cap=${4:-$QCAP}
+  local what=$1 f fw qq refuse_ok=${3:-1} cap=${4:-$QCAP} meta=${5:-} wall
+  if [ -n "$meta" ] && [ -f "$meta" ]; then  # the cap per second of the trial's wall (section 8, 2026-10-24)
+    wall=$(mval "$meta" wall_s)
+    case "$wall" in ""|*[!0-9.]*) ;; *) cap=$(awk -v r="$QRATE" -v w="$wall" 'BEGIN{c = r * w; printf "%d", (c == int(c)) ? c : int(c) + 1}') ;; esac
+  fi
+  local hung="" fr
+  if [ -n "$meta" ] && [ -f "$meta" ]; then  # pilot 4, 5 (2026-10-27): a GPU hang rank's own watchdog, below
+    hung=$(hung_ranks "$meta")
+  fi
   for f in $2; do
     [ -f "$f" ] || continue
     case "$f" in
       *_spare.kv|*_spare_2nd.kv) grep -q 'watchdog=1' "$f" && echo "$(date '+%F %T') $what: $(basename "$f") ended at its watchdog" >> "$R/spare_wait.txt"; continue ;;
     esac
+    # pilot 4 (2026-10-27): a GPU hang rank (GC_GPUHANG_IT in its env) spins with no end of its own; when no survivor
+    # fences it (the fallback: every survivor declined) its own watchdog ends it. That is the cell's measured outcome, not
+    # a NIC fault: recorded in hang_watchdog.txt, no STOP. Pilot 5 (2026-10-27): every such rank, not only the subject
+    # (gc4_gpuhang12000_waiter_hung: rank 1 hangs too and is declined, no spare). Any cuda_error= or nccl_error= still
+    # stops, and every other kv keeps the rule.
+    if [ -n "$hung" ] && hang_watchdog_ok "$meta" "$f"; then
+      fr=${f##*_r}
+      echo "$(date '+%F %T') hold $H: $what: $(basename "$f") (a GPU hang rank, rank ${fr%.kv} of ${hung% }; subject $(mval "$meta" subject_rank)) ended at its own watchdog: not fenced" | tee -a "$R/hang_watchdog.txt"
+      continue
+    fi
     if grep -qE 'cuda_error=|watchdog=1|nccl_error=' "$f"; then
       echo "$(date '+%F %T') hold $H: $what: an error key in $(basename "$f"); no further trial" | tee -a "$R/STOP_nic"; break
     fi
@@ -201,8 +249,8 @@ after_trial() {  # hold_mi.sh's per-trial stops: kv error keys, a refused Resume
   read -r fw qq < <(fwread "after-$what")
   [ "$fw" -gt "$FW0" ] && echo "$(date '+%F %T') hold $H: firmware-command failures grew after $what ($FW0 -> $fw)" | tee -a "$R/STOP_mlx5"
   if [ $((qq - QQ)) -gt "$cap" ]; then
-    if [ "$PILOT" = 1 ]; then echo "$(date '+%F %T') $what: rain QUERY_QP +$((qq - QQ)) > $cap" >> "$R/qp_over.txt"
-    else echo "$(date '+%F %T') hold $H: $what: rain QUERY_QP +$((qq - QQ)) > cap $cap" | tee -a "$R/STOP_mlx5"; fi
+    if [ "$PILOT" = 1 ]; then echo "$(date '+%F %T') $what: rain QUERY_QP +$((qq - QQ)) > $cap${wall:+ ($QRATE x wall ${wall} s)}" >> "$R/qp_over.txt"
+    else echo "$(date '+%F %T') hold $H: $what: rain QUERY_QP +$((qq - QQ)) > cap $cap${wall:+ ($QRATE x wall ${wall} s)}" | tee -a "$R/STOP_mlx5"; fi
   fi
   QQ=$qq
 }
@@ -213,13 +261,50 @@ json_hold() {
 import json, sys
 c = json.load(open(sys.argv[1])); m = json.load(open(sys.argv[2])); h = sys.argv[3]
 out = []
-if h.startswith("RG-"):
-    _, b, mh = h.split("-", 2)
-    if b not in c["regression"]["builds"] or mh not in c["regression"]["holds"]:
+if h.startswith("RG-") or h.startswith("PRG-"):  # PRG-: the pilot form of RG- (pilot 1, 2026-10-23): every cell once
+    _, b, mhs = h.split("-", 2)
+    pilot = h.startswith("PRG-")
+    mhl = mhs.split("+") if pilot else [mhs]  # pilot 2 (2026-10-24): PRG-<b>-<h1>+<h2>... runs those mirror holds in one hold
+    if b not in c["regression"]["builds"] or any(mh not in c["regression"]["holds"] for mh in mhl):
         sys.exit("unknown regression hold %s" % h)
-    for e in m["holds"][mh]:
-        bound = 150 if e["cell"].startswith("mi4_train_") else 60
-        out.append((e["cell"], b, e["kind"], e["n"], e.get("driver", ""), bound, {}, e.get("env", {})))
+    keep = c["regression"]["builds"][b].get("cells")  # the 2026-10-22 trim: @gct runs only these cells
+    for mh in mhl:
+        for e in m["holds"][mh]:
+            if keep is not None and e["cell"] not in keep:
+                continue
+            bound = 150 if e["cell"].startswith("mi4_train_") else 60
+            out.append((e["cell"], b, e["kind"], 1 if pilot else e["n"], e.get("driver", ""), bound, {}, e.get("env", {})))
+    if not out:
+        sys.exit("regression hold %s: no cell of regression.builds.%s.cells in gin-mirror hold %s" % (h, b, mhs))
+elif h.startswith("PRC-"):  # pilot 3 (2026-10-24): PRC-<b>-<cell>[+<cell>...], named cells of the regression holds (as PRG-);
+    _, b, names = h.split("-", 2)  # a name given k times runs k trials (n1..nk)
+    if b not in c["regression"]["builds"]:
+        sys.exit("unknown regression build in %s" % h)
+    keep = c["regression"]["builds"][b].get("cells")
+    order = []
+    for name in names.split("+"):
+        if name not in order:
+            order.append(name)
+    for name in order:
+        es = [e for mh in c["regression"]["holds"] for e in m["holds"][mh] if e["cell"] == name]
+        if len(es) != 1 or (keep is not None and name not in keep):
+            sys.exit("PRC hold %s: cell %s names %d regression entries (or is not run at %s)" % (h, name, len(es), b))
+        e = es[0]
+        out.append((e["cell"], b, e["kind"], names.split("+").count(name), e.get("driver", ""),
+                    150 if name.startswith("mi4_train_") else 60, {}, e.get("env", {})))
+elif h.startswith("PCELL-"):  # pilot 2 (2026-10-24): PCELL-<cell>[+<cell>...], each named cell of cells_gc.json once (n 1);
+    names = h[len("PCELL-"):].split("+")  # pilot 7 (2026-10-28): a name given k times runs k trials (n1..nk), as PRC-
+    order = []
+    for name in names:
+        if name not in order:
+            order.append(name)
+    for name in order:
+        ks = [k for k in list(c["cells"]) + list(c["pilot_cells"]) if k.split("@")[0] == name]
+        if len(ks) != 1:
+            sys.exit("PCELL hold %s: cell %s names %d cell entries" % (h, name, len(ks)))
+        e = c["cells"].get(ks[0]) or c["pilot_cells"][ks[0]]
+        out.append((e["cell"], e["build"], e["kind"], names.count(name), e.get("driver", ""), e.get("bound_s", 60),
+                    e.get("launcher_env", {}), dict(e.get("env", {}))))
 elif h in c["holds"]:
     for x in c["holds"][h]:
         e = c["cells"].get(x["key"]) or c["pilot_cells"][x["key"]]
@@ -228,53 +313,19 @@ elif h in c["holds"]:
                     e.get("launcher_env", {}), env))
 else:
     sys.exit("unknown hold %s" % h)
-les = {json.dumps(o[6], sort_keys=True) for o in out}
-if len(les) > 1:
-    sys.exit("hold %s mixes launcher_env values" % h)
 for cell, b, kind, n, drv, bound, le, env in out:
     f = [cell, b, kind, str(n), str(bound), "+".join("%s=%s" % kv for kv in sorted(le.items())) or "-"]
     f += ["DRIVER=%s" % drv] + ["%s=%s" % kv for kv in env.items()]
     print("\t".join(f))
 PY
 }
-LA_STARTED=0
-la_start() {  # la_start <launcher_env, +-joined or ->: one launcher per node for this hold (EXPERIMENT 5)
-  local le=$1 nd args=()
-  [ "$le" != - ] && IFS=+ read -r -a args <<< "$le"
-  for nd in rain sunny; do
-    if ! bash "$D/launcher_gc.sh" start "$nd" "$R/launcher" "$HT" "${args[@]}"; then
-      echo "$(date '+%F %T') hold $H: the $nd launcher did not get ready; both are stopped and the hold does not start" | tee -a "$R/STOP_launcher"
-      for nd in rain sunny; do bash "$D/launcher_gc.sh" stop "$nd" "$R/launcher" "$HT"; done  # REVIEW_TEST fix 5
-      return 1
-    fi
-  done
-  export LAUNCHER_REC_RAIN=$R/launcher/la_${HT}_rain.rec LAUNCHER_REC_SUNNY=$R/launcher/la_${HT}_sunny.rec
-  LA_STARTED=1
-}
-la_stop() {
-  [ "$LA_STARTED" = 1 ] || return 0
-  local nd lg n
-  for nd in rain sunny; do bash "$D/launcher_gc.sh" stop "$nd" "$R/launcher" "$HT"; done
-  LA_STARTED=0
-  for nd in rain sunny; do  # the lines after the last trial's end marker belong to no trial slice: their STOP lines here
-    lg=$R/launcher/la_${HT}_$nd.log
-    [ -f "$lg" ] || continue
-    n=$(tac "$lg" | sed '/GINLA mark trial_end /q' | grep -c '(STOP_launcher')
-    [ "$n" -gt 0 ] && echo "$(date '+%F %T') hold $H: $nd launcher: $n line(s) (STOP_launcher) after the last trial" | tee -a "$R/STOP_launcher"
-  done
-  return 0
-}
 do_json_hold() {
-  local line cell build kind n bound le ldir rok first=1 lines
+  local line cell build kind n bound le ldir rok lines
   local -a f envs
   lines=$(json_hold "$1") || { echo "hold $1: no cell list" >&2; return 1; }
   while IFS= read -r line <&3; do
     IFS=$'\t' read -r -a f <<< "$line"
     cell=${f[0]}; build=${f[1]}; kind=${f[2]}; n=${f[3]}; bound=${f[4]}; le=${f[5]}; envs=("${f[@]:6}")
-    if [ "$first" = 1 ]; then
-      first=0
-      if printf '%s\n' "$lines" | cut -f2 | grep -qxE 'gc|gcp'; then la_start "$le" || return 1; fi
-    fi
     case "$kind" in reg) ldir=$R/reg ;; *) ldir=$R/raw ;; esac
     mkdir -p "$ldir"
     for ((k = 1; k <= n; k++)); do
@@ -288,15 +339,14 @@ do_json_hold() {
         case "$cell" in mi4_train_*) [ "$bound" -lt "$TRAIN_BOUND" ] && bound=$TRAIN_BOUND ;; *) [ "$bound" -lt "$TRIAL_BOUND" ] && bound=$TRIAL_BOUND ;; esac
         fits "$bound" "${cell}@${build}_n$k" || break
       else fits 150 "${cell}_n$k" || break; fi
-      bash "$D/cells_gc.sh" "$ldir" "$cell" "$build" "$kind" 1 "$k" "${envs[@]}" < /dev/null
+      LAUNCHER_ENV=$le bash "$D/cells_gc.sh" "$ldir" "$cell" "$build" "$kind" 1 "$k" "${envs[@]}" < /dev/null  # its launchers: run_gc.sh
       case "$cell" in mi4_refuse_*|rs4_refuse_*|*rstgap*) rok=1 ;; *) rok=$([ "$kind" = rs ] && echo 0 || echo 1) ;; esac
       if [ "$kind" = rs ]; then
-        after_trial "${cell}_${build}_n$k" "$ldir/${cell}_${build}_n${k}_*.kv" "$rok"
+        after_trial "${cell}_${build}_n$k" "$ldir/${cell}_${build}_n${k}_*.kv" "$rok" "$QCAP" "$ldir/${cell}_${build}_n${k}_meta.txt"
         gc_after_trial "${cell}_${build}_n$k" "$ldir/${cell}_${build}_n${k}_meta.txt" "$cell"
       else after_trial "${cell}_n$k" "$ldir/${cell}_n${k}_r*.kv" 1 "$QCAP_REG"; fi
     done
   done 3< <(printf '%s\n' "$lines")
-  la_stop
 }
 cost_run() {  # cost_run <cell> <tag> <logdir>
   local cell=$1 tag=$2 dir=$3 f bad=""
@@ -316,7 +366,7 @@ cost_run() {  # cost_run <cell> <tag> <logdir>
   [ -n "$bad" ] && echo "$(date '+%F %T') hold $H: ${cell}_$tag error ($bad); no further run" | tee -a "$R/STOP_nic"
   local lft; lft=$(sed -n 's/.* left=\([0-9]*\) .*/\1/p' "$dir/${cell}_${tag}_meta.txt" 2>/dev/null)
   [ -n "$lft" ] && [ "$lft" -gt 0 ] && echo "$(date '+%F %T') hold $H: ${cell}_$tag left $lft" | tee -a "$R/STOP_left"
-  after_trial "${cell}_$tag" ""
+  after_trial "${cell}_$tag" "" 1 "$QCAP" "$dir/${cell}_${tag}_meta.txt"
 }
 cost_family() {  # cost_family <family> <node> <dir> <rounds> [metric]
   local fam=$1 node=$2 dir=$3 rounds=$4 only=${5:-} k m a arms
@@ -334,12 +384,15 @@ cost_family() {  # cost_family <family> <node> <dir> <rounds> [metric]
   done
 }
 case "$H" in
-  C[0-9]*|P[0-9]*|RG-*) do_json_hold "$H" ;;
+  C[0-9]*|P[0-9]*|RG-*|PRG-*|PRC-*|PCELL-*) do_json_hold "$H" ;;
   COSTPILOT-*)
-    node=${H#COSTPILOT-}; node=${node%%-*}
-    case "$node" in rain|sunny) ;; *) echo "COSTPILOT-<rain|sunny>" >&2; exit 2 ;; esac
+    node=${H#COSTPILOT-}; rounds=1
+    case "$node" in *-[0-9]*) rounds=${node##*-} ;; esac  # pilot 2: COSTPILOT-<node>-<rounds> (the arm order reversed on even rounds)
+    node=${node%%-*}
+    case "$node" in rain|sunny) ;; *) echo "COSTPILOT-<rain|sunny>[-<rounds>]" >&2; exit 2 ;; esac
+    case "$rounds" in [1-6]) ;; *) echo "COSTPILOT rounds 1-6" >&2; exit 2 ;; esac
     d=$(newdir "costpilot_$node"); mkdir -p "$d"
-    cost_family probe "$node" "$d" 1 ;;
+    cost_family probe "$node" "$d" "$rounds" ;;
   COST-*)
     rest=${H#COST-}; fam=${rest%%-*}; rest=${rest#*-}; node=${rest%%-*}; met=""
     case "$rest" in *-*) met=${rest#*-}; met=${met%%-*} ;; esac
@@ -350,7 +403,6 @@ case "$H" in
     cost_family "$fam" "$node" "$d" 6 "$met" ;;
   *) echo "unknown hold $H" >&2; exit 2 ;;
 esac
-la_stop
 snap "after-$HT" | tee "$R/snap_after-$HT.txt"
 for node in rain sunny; do
   diff <(sort "$R/mlx5_before-${HT}_$node.txt") <(sort "$R/mlx5_after-${HT}_$node.txt") | grep '^>' | sed "s/^> /$node: /"

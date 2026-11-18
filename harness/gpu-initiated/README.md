@@ -108,7 +108,7 @@ IB 타임아웃 14에서 상대 QP 오류와 상대 프로세스 kill의 RETRY_E
 | `cqe_seq/` | 장애 뒤 NIC가 쓰는 CQE 순서(CPU verbs) |
 | `gin/` | NCCL GIN proxy와 GDAKI의 stock 동작 |
 | `gin_q4/` | GDAKI 장치 쪽 분류기, collapsed CQ와 ring CQ 비교 |
-| `gin_recovery/` | GDAKI 복구와 GIN 투명 복구 1단계 |
+| `gin_recovery/` | GDAKI 복구와 GIN 투명 복구 1단계. 그 뒤 실험들(죽은 rank 되살리기 restore → mirror → 진행 중인 control 포함)은 [gin_recovery/README.md](gin_recovery/README.md)의 파일 표 |
 | `gin_recovery/s2_close/` | GIN 투명 복구 2단계의 남은 확인 항목 |
 | `gpu_doorbell/` | GPU가 doorbell을 직접 울린 실행 |
 | `nvshmem/` | NVSHMEM IBGDA의 stock 동작 |

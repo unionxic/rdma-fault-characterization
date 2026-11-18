@@ -1,0 +1,106 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index db8197f..b939929 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -20212,6 +20212,8 @@ struct gdakiCtrlPage {
+   bool witnessOn = true;
+   std::atomic<bool> up{false};                   // the page MR and the READ MR are registered (set last)
+   std::atomic<bool> launcherPaired{false};       // a latch: phase 3 sets it once per context, it never goes down
++  bool summarized = false;                       // smoke fix 2: the probe summary is written once (teardown or free)
++  std::atomic<int> sumReq{0};                    // smoke fix 2: 0 none, 1 asked (teardown), 4 being written, 2 written
+   struct gdakiCtrlFreezeSpec freeze;             // the test switch (research builds)
+   double freezeFromMs = -1, freezeToMs = -1;
+   bool freezeLogged = false;
+@@ -20335,6 +20337,8 @@ static void gdakiPageSetup(struct gdakiRecHost* r) {
+ 
+ // The probe summary (rows_gc.py PROBESUM), one line per peer, at the teardown.
+ static void gdakiCtrlProbeSummary(struct gdakiRecHost* r, struct gdakiCtrlPage* pg) {
++  if (pg == nullptr || pg->summarized) return;  // smoke fix 2: once, at the communicator's teardown or at the free
++  pg->summarized = true;
+   for (int p = 0; p < (int)pg->peers.size(); p++) {
+     struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)p];
+     if (p == pg->me || pp.qp.q == nullptr) continue;
+@@ -20358,6 +20362,25 @@ static void gdakiCtrlProbeSummary(struct gdakiRecHost* r, struct gdakiCtrlPage*
+   }
+   (void)r;
+ }
++// Smoke fix 2: the communicator's teardown asks the watch thread for the summary (it owns the counters and the latency
++// vector) and waits up to 500 ms; a watch thread that does not step by then is not running, and the teardown writes it.
++static void gdakiCtrlProbeSummaryAtTeardown(struct gdakiRecHost* r) {
++  struct gdakiCtrlPage* pg = gdakiPageOf(r);
++  if (pg == nullptr || !gdakiPageUp(pg)) return;
++  int want = 0;
++  if (!pg->sumReq.compare_exchange_strong(want, 1, std::memory_order_acq_rel)) return;
++  const double t0 = gdakiQ4MonoMs();
++  while (pg->sumReq.load(std::memory_order_acquire) == 1 && gdakiQ4MonoMs() - t0 < 500.0)
++    std::this_thread::sleep_for(std::chrono::milliseconds(1));
++  want = 1;
++  if (pg->sumReq.compare_exchange_strong(want, 4, std::memory_order_acq_rel)) {
++    gdakiCtrlProbeSummary(r, pg);
++    pg->sumReq.store(2, std::memory_order_release);
++    return;
++  }
++  while (pg->sumReq.load(std::memory_order_acquire) == 4 && gdakiQ4MonoMs() - t0 < 1000.0)
++    std::this_thread::sleep_for(std::chrono::milliseconds(1));
++}
+ static void gdakiCtrlPageFree(struct gdakiRecHost* r) {  // [1] the free hook gdakiCtrlFree calls (threads stopped)
+   struct gdakiCtrlState* st = (r != nullptr) ? r->ctrl : nullptr;
+   struct gdakiCtrlPage* pg = gdakiPageOf(r);
+@@ -20796,6 +20819,14 @@ static void gdakiCtrlPageStep(struct gdakiRecHost* r) {
+   if (!gdakiPageUp(pg)) return;  // published complete on the setup thread (gdakiPageSetup)
+   const double nowMs = gdakiQ4MonoMs();
+   gdakiPageBeatStep(r, pg, nowMs);
++  if (pg->sumReq.load(std::memory_order_acquire) != 0) {  // smoke fix 2: the teardown asked for the summary
++    int want = 1;
++    if (pg->sumReq.compare_exchange_strong(want, 4, std::memory_order_acq_rel)) {
++      gdakiCtrlProbeSummary(r, pg);
++      pg->sumReq.store(2, std::memory_order_release);
++    }
++    return;  // the communicator is gone: the beat goes on (peers still read it), no more READs
++  }
+   for (int p = 0; p < (int)pg->peers.size(); p++)
+     if (p != pg->me && pg->peers[(size_t)p].hasQp) gdakiProbePeerStep(r, pg, p, nowMs);  // a lost QP still answers requests
+ }
+@@ -32295,6 +32326,12 @@ extern int ncclGinGdakiTsCommTeardown(void* commKey, void* collComm) {
+     // gpu-detect: the QP-state watch of this context (written by the helper only: read after the join)
+     if (joined) gdakiDetTeardownLine(ts, rank);
+     if (joined) gdakiHoldTeardownLine(r);  // gin-restore (rs, work package 7)
++#if !NCCL_GIN_CTRL_TCP
++    // gin-control smoke fix 2 (2026-10-22, the first hardware smoke): the probe summary was written only by
++    // gdakiCtrlPageFree (gdakiRecFree, the context's destroy), which this driver's teardown never reaches: none came.
++    // Asked here; the watch thread (gdakiQ4Watch, still running) writes it at its next step and stops probing.
++    if (joined) gdakiCtrlProbeSummaryAtTeardown(r);
++#endif
+     if (joined) {  // gin-restore (rs, work package 5): the data threads stop here (they read the helper's state)
+       gdakiCkptStop(r);
+       gdakiCkptTeardownLine(r);
+@@ -33723,6 +33760,29 @@ ncclResult_t ncclGinGdakiRestoreResume(void* comm, const struct ncclGinRestoreCo
+ #endif
+   uint64_t ctxSeq = 0;
+   void* ctxColl = nullptr;
++#if !NCCL_GIN_CTRL_TCP
++  // gin-control smoke fix 1 (2026-10-22, the first hardware smoke): condition 41 is read at the call, and a Resume that
++  // comes before the helper's first pairing with its own launcher finished got 41 on a healthy node (sunny rank 1:
++  // the call came, by its log, before the latch). Wait up to NCCL_GIN_CTRL_LATER_MS for the latch of this context (the lock taken per
++  // look, never held while sleeping), then read the facts as before.
++  {
++    const double until = gdakiQ4MonoMs() + (double)std::max<int64_t>(0, (int64_t)ncclParamGinCtrlLaterMs());
++    for (;;) {
++      bool wait = false;
++      {
++        std::lock_guard<std::mutex> lk(gdakiRecRegMu);
++        for (auto* r : gdakiRecReg)
++          if (key != nullptr && r->commKey == comm && r->ctx != nullptr && r->ctx->devHandle != nullptr &&
++              r->ctx->devHandle->handle == key && r->ctrl != nullptr && r->ctrl->launcher != nullptr) {
++            const struct gdakiCtrlPage* pg = gdakiPageOf(r);
++            wait = pg == nullptr || !pg->launcherPaired.load(std::memory_order_acquire);
++          }
++      }
++      if (!wait || gdakiQ4MonoMs() >= until) break;
++      std::this_thread::sleep_for(std::chrono::milliseconds(1));
++    }
++  }
++#endif
+   {
+     std::lock_guard<std::mutex> lk(gdakiRecRegMu);
+     for (auto* r : gdakiRecReg)

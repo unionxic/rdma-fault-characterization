@@ -1,5 +1,7 @@
 # gin-control 1단계 감시 스레드 고침 3 (REVIEW_FIX12_P2B 막는 문제 1–3과 같은 자리의 고칠 것)
 
+> **읽기 전에(2026-10-23 표시).** 작성 2026-10-17(커밋 `34d52ef6`). 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: [notes_int2.md](notes_int2.md). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 기준: 커밋 `2efebe3` "gin-control + 2b"를 `agent_gc_fix3/`에 복사(nccl-src와 빌드 넷, 경로 바꿈). 헤더는 커밋된 헤더 + `rs_ctrl_api_p2b.diff`(트리의 블록과 같아 다시 붙여도 바뀜 없음). 호스트 파일 하나, 장치 코드 0줄. 클러스터, ssh, verbs 장치, GPU 실행 없음. 표시: `[측정]` 돌려서 봄, `[추론]` 해석, `[미확인]` 확인 안 함.
 
 ## 걸음 (하나씩, 걸음마다 syn과 unitp1)

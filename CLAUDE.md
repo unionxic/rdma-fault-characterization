@@ -1,66 +1,87 @@
 # rdma-error: Claude Code 작업 규칙
 
 RDMA 장애가 NIC에서 application까지 어디서 남고 어디서 사라지는지 재는 연구 저장소다. 이 파일은 이
-저장소에서 일하는 Claude Code가 따를 규칙이다.
+저장소에서 일하는 Claude Code가 따를 공통 원칙과 안전 규칙이다. 문서마다 맡은 일은 다음과 같고, 같은 지시를
+여러 곳에 길게 적지 않고 링크한다.
 
-## 먼저 볼 문서
-
-| 문서 | 내용 |
+| 문서 | 맡은 일 |
 |---|---|
-| [README.md](README.md) | 연구 질문과 주요 결과 |
-| [MODEL.md](MODEL.md) | 오류 전파 규칙(분석 틀) |
-| [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) | 브랜치, 커밋, 추적 범위, 데이터 릴리스, 태그 |
-| [DATA.md](DATA.md) | 원자료가 있는 Release 자산과 체크섬 |
-| [docs/templates/EXPERIMENT.md](docs/templates/EXPERIMENT.md) | 실험 문서 템플릿 |
-| [.claude/skills/experiment-workflow/SKILL.md](.claude/skills/experiment-workflow/SKILL.md) | 실험 작업 절차(skill) |
+| `CLAUDE.md`(이 파일) | 공통 원칙, 문서 규칙, 안전 규칙 |
+| [.claude/skills/experiment-workflow/SKILL.md](.claude/skills/experiment-workflow/SKILL.md) | 실험 상태를 넘기는 절차 |
+| [docs/templates/EXPERIMENT.md](docs/templates/EXPERIMENT.md) | `EXPERIMENT.md`의 작성 틀, 고정 절과 갱신 절의 구분 |
+| [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) | Git 운영: 브랜치, 커밋, 추적 범위, 관리망 주소 필터, 태그, release |
+
+## 작업별 참고 문서
+
+모든 문서를 미리 읽지 않는다. 작업에 맞는 줄만 본다.
+
+| 작업 | 볼 것 |
+|---|---|
+| 새 실험 시작 | skill 1절, 템플릿, 앞선 실험의 `EXPERIMENT.md` 중 관련 절, [MODEL.md](MODEL.md)(분석 틀) |
+| 실험 이어 하기 | 아래 "작업 시작 때 읽는 순서", skill 0절과 지금 상태의 절 |
+| 구현 한 단계(코드, 빌드, 시험) | 그 실험의 11절 해당 항목, 9절의 해당 설계 절, 폴더 `NOTES.md`, 고칠 코드와 그 시험 |
+| 채점, 재계산, QA | skill 4절, 3, 7, 8절(판정식, 셀, 제외 기준), 채점기 코드, 원자료 |
+| 원자료 release | skill 5절, [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) "What is tracked", [DATA.md](DATA.md), `tools/pack_release.py` |
+| 브랜치, 커밋, 태그, PR | [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md), 아래 "Git" |
+| 연구 질문과 결과 확인 | [README.md](README.md), [MODEL.md](MODEL.md), 결과 폴더의 README |
 
 ## 실험 워크플로: 실험 하나에 `EXPERIMENT.md` 하나
 
-- **문서 하나로 관리한다.** 실험 하나는 폴더 하나이고, 그 폴더의 `EXPERIMENT.md` 하나가 단일 기준
-  문서다. 다음 과정을 모두 이 파일에서 관리한다.
-  - 연구 질문과 기획
-  - 사전 예측
-  - 구현과 실행
-  - 진행 기록
-  - QA
-  - 결론
+- **문서 하나로 관리한다.** 실험 하나는 폴더 하나이고, 그 폴더의 `EXPERIMENT.md` 하나가 기획, 사전 예측,
+  구현과 실행, 진행 기록, QA, 결론의 단일 기준 문서다.
 - **단계별 문서를 따로 만들지 않는다.** `spec.md`, `plan.md`, `tasks.md`, `qa.md`는 없다. 원자료,
   코드, CSV, 기존 문서는 복사하지 않고 링크한다.
 - **상태는 여섯 가지다.**
 
   | 상태 | 뜻 |
   |---|---|
-  | `DRAFT` | 질문, 가설, 셀을 정하는 중이다 |
+  | `DRAFT` | 질문, 가설, 셀을 정하는 중이다. 구현, 빌드, smoke, pilot도 이 상태에서 할 수 있다 |
   | `PREREGISTERED` | 예측, 셀, 반복 수, 제외 기준이 고정됐다. 고정 절, 이 상태, 해시를 담은 커밋 하나에 `prereg/<study>-v<n>` 태그를 단다 |
   | `RUNNING` | 본 실험을 실행 중이다 |
   | `QA` | 실행이 끝나 채점과 재계산, 검토를 하는 중이다 |
   | `COMPLETE` | QA까지 끝났다 |
   | `BLOCKED` | 진행할 수 없다. 이유와 풀 조건을 적는다 |
 
-- **절차는 skill에 있다.** 새 실험을 시작하는 방법과 상태를 넘기는 방법은
-  `.claude/skills/experiment-workflow/SKILL.md`에 있다.
+- **절차는 skill에 있다.** 상태를 넘기는 방법과 각 상태에서 갱신할 절은
+  [skill](.claude/skills/experiment-workflow/SKILL.md)에 있다.
+
+### 작업 시작 때 읽는 순서
+
+작은 수정마다 `EXPERIMENT.md` 전체를 읽지 않는다. 대신 다음 순서로 필요한 만큼 읽는다.
+
+1. **시작 확인(항상).**
+   - 그 실험 `EXPERIMENT.md`의 머리 표와 맨 앞 현재 상태 안내(현재 단계, 다음 작업, blocker). 안내가 없는
+     옛 문서는 머리 표의 "마지막 갱신"을 본다.
+   - 사전 등록 여부: 머리 표의 태그, 있으면 `PREREG.txt`와 고정 파일이 바뀌지 않았는지(skill 0절).
+   - 이 파일의 안전 규칙("Git", "클러스터 안전")과 사전 등록 뒤의 변경 제약(아래 2, 3번 규칙).
+   - 11절의 현재 작업 목록에서 이번 작업에 해당하는 항목.
+2. **작업 관련 읽기.** 이번 작업이 닿는 절, 코드, 원자료, 변경 기록(13절과 거기서 링크한
+   `DEVIATIONS.md`)을 더 읽는다. 요약이나 현재 상태 안내만으로 연구 판단을 끝내지 않는다. 판단이 어떤 수치나
+   동작에 기대면 그 원문, 코드, 원자료까지 따라간다.
+3. **전체 읽기.** 사전 등록 검토, 실험 전체 감사, 최종 QA(`QA` → `COMPLETE`)에서는 `EXPERIMENT.md`
+   전체와 링크한 고정 파일을 확인한다.
 
 ### 반드시 지킬 규칙
 
-1. 실험 작업을 시작하기 전에 해당 실험의 `EXPERIMENT.md`를 먼저 읽는다.
-2. `PREREGISTERED` 이후에는 가설, 예측, 실험 셀, 반복 수, 제외 기준을 조용히 고치지 않는다.
-3. 사전 등록 이후의 변경은 기존 문장을 덮어쓰지 않는다. 변경 기록에 다음을 남긴다.
-   - 날짜, 이유, 영향 범위
-   - 관련 커밋
+1. 실험 작업은 위 "작업 시작 때 읽는 순서"의 시작 확인을 한 뒤 시작한다.
+2. `PREREGISTERED` 이후에는 고정한 것을 조용히 고치지 않는다. 고정 범위는 태그 시점 `EXPERIMENT.md`의
+   2절(가설), 3절(예측), 7절(셀과 반복 수), 8절(제외와 중단 기준), `PREREG.txt`와 거기 sha256이 적힌 파일이다.
+   그 실험이 12절이나 `PREREG.txt`에 더 넓게 고정했으면 그 범위를 따르고, 보호 범위를 임의로 줄이지 않는다.
+3. 사전 등록 이후의 변경은 기존 문장을 덮어쓰지 않는다. 13절에 날짜, 이유, 영향 범위, 관련 커밋을
+   덧붙인다. 이미 `DEVIATIONS.md`를 쓰는 실험은 13절에서 그 파일을 링크하고, 같은 내용을 두 곳에 복사하지
+   않는다.
 4. 측정값, 추론, 미확인 사항을 구분해 표시한다. 예: `[측정]`, `[추론]`, `[미확인]`.
 5. 문서에 적힌 집계값을 그대로 옮기지 않는다. 가능하면 원자료에서 다시 계산하고, 다시 계산했는지
    적는다.
-6. 테스트나 실험을 실행하지 않았으면 성공했다고 쓰지 않는다. 컴파일만 했으면 "빌드됨"이라고 쓴다.
+6. 테스트나 실험을 실행하지 않았으면 성공했다고 쓰지 않는다. 컴파일만 했으면 "빌드됨"이라고 쓴다. 상태는
+   "코드 수정 완료", "로컬 검증 완료", "하드웨어 검증 대기"처럼 어디까지 확인했는지로 적는다.
 7. 결과마다 근거를 하나 이상 링크한다. 원자료 경로, 실행 ID나 태그, 커밋 중 하나다.
 8. 표본 수(n)를 적는다. 실패, 제외, smoke 실행은 본 실험과 따로 센다.
 9. 여러 실행을 합친 범위와 대표 실행 하나의 범위를 섞지 않는다. 범위마다 무엇의 범위인지 적는다.
 10. 기존 숫자나 설명이 원자료와 다르면 원자료를 따르고, 충돌했다는 사실을 기록한다.
 11. 긴 로그와 원자료를 Markdown에 복사하지 않는다. 경로와 줄 수, 필요한 한두 줄만 적는다.
-12. 진행할 때마다 다음을 함께 갱신한다.
-    - 작업 체크박스
-    - 실행 기록
-    - 결과 링크
-    - 상태
+12. 진행할 때마다 현재 상태 안내, 작업 목록, 실행 기록, 결과 링크, 상태를 함께 갱신한다. 어느 절인지는
+    skill 3절에 있다.
 13. QA가 끝나기 전에는 상태를 `COMPLETE`로 바꾸지 않는다.
 14. 다른 실험의 `EXPERIMENT.md`를 고칠 때 그 실험의 결과나 사전 등록 내용을 새로 해석하지 않는다.
     고친 것은 링크와 상태 같은 사실뿐이어야 한다.
@@ -93,10 +114,12 @@ RDMA 장애가 NIC에서 application까지 어디서 남고 어디서 사라지�
 
 ## Git
 
-- master에는 직접 push하지 않는다. force push와 삭제는 저장소 규칙으로 막혀 있다.
-- 작업은 브랜치에서 하고 PR로 합친다. 합칠 때는 "Rebase and merge"를 쓴다.
-- 커밋 메시지는 Conventional Commits 형식이다. 작성자는 저장소에 설정된 noreply 주소다.
-- Co-Authored-By나 도구 표기 줄을 넣지 않는다.
+자세한 운영은 [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md)에 있다. 다음은 어떤 작업에서도 지킨다.
+
+- master에는 직접 push하지 않는다. force push와 삭제는 저장소 규칙으로 막혀 있다. 작업은 브랜치에서
+  하고 PR로 "Rebase and merge"한다.
+- 커밋 메시지는 Conventional Commits 형식이고, 작성자는 저장소에 설정된 noreply 주소다.
+  Co-Authored-By나 도구 표기 줄을 넣지 않는다.
 - 원자료(로그, 시행별 기록, 압축본)는 커밋하지 않고 Release에 올린다. 결과 폴더에는 해설 `.md`와
   문서가 인용한 표만 둔다.
 - 관리망 실제 주소는 저장소 밖 `~/.config/rdma-error/mgmt.env`에만 있다. 어떤 표기로도 커밋하지

@@ -1,0 +1,19 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 16e6702..7b1293a 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -35226,12 +35226,14 @@ static struct gdakiMiPool* gdakiMiTakePool(struct gdakiRecHost* r) {
+ // until MIRROR_SETUP connects them; a spare's at its setup), the self loop pair, the pool. Nothing here fails the context:
+ // a failure is a Resume condition (35, 38).
+ // gin-control (ctxall): the user GIN contexts of r's context (nContexts without the mirror context, when it was made).
++#if !NCCL_GIN_CTRL_TCP
+ [[maybe_unused]] static int gdakiMiUserCtxOf(const struct gdakiRecHost* r) {
+   const struct gdaki_context* g = r != nullptr ? r->ctx : nullptr;
+   if (g == nullptr) return 0;
+   const struct gdakiMiHost* m = r->mi.host;
+   return (m != nullptr && m->created) ? m->nUserCtx : g->nContexts;
+ }
++#endif
+ static void gdakiMiContextSetup(struct gdaki_context* g, const struct gdakiMiPlan& plan, int nUserCtx, int nqpsForComm,
+                                 struct ibv_pd* pd) {
+   struct gdakiRecHost* r = g->rec;

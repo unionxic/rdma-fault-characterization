@@ -1,0 +1,832 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 1cc0847..16e6702 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -20034,6 +20034,74 @@ static inline double gdakiCtrlDevOnRead(struct gdakiCtrlStale* s, const struct g
+   if (quiet != nullptr) *quiet = d.pending == 0;
+   return st;
+ }
++// ---- every GIN context's line (ctxall; user decision 2026-10-24 (가)) ----
++// A rank registers the device QP array of each of its GIN contexts c in [0, ginContextCount) (the user contexts; the
++// mirror context is not one of them), one MR per context (each array is its own GPU-page aligned allocation). The reader
++// keeps one stall clock per context (gdakiCtrlDevOnRead over that context's line alone): a change of context c's line or
++// a quiet line of c (nothing pending in c) resets c's origin only. The peer's GPU stall (R (2)-(5)) is the largest of the
++// contexts' stalls: pending_any = some context has work pending, and the stall is judged when ANY context with pending
++// work has an unchanged line for STALL_MS. A quiet context (stall 0) never hides, and never resets, the stall of a
++// context with pending work; a context that progresses resets its own clock only (so progress on context 0 does not
++// mask a frozen context 1). "progress" (any context's line changed) is a report fact (R (1) only when no context stalls).
++#define GDAKI_CTRL_DEV_MAX_CTX 8u  // the contexts one rank may name (the page's context line: 7 words after its head)
++// The stall over n clocks (the contexts'): the largest lastMs - firstMs; *ctx the context with it (the lowest index on a
++// tie; -1 when every context is 0: changed, quiet or not read).
++static inline double gdakiCtrlDevStaleOf(const struct gdakiCtrlStale* s, uint32_t n, int* ctx = nullptr) {
++  double m = 0;
++  int k = -1;
++  for (uint32_t c = 0; c < n && c < GDAKI_CTRL_DEV_MAX_CTX; c++) {
++    const double v = s[c].have ? s[c].lastMs - s[c].firstMs : 0;
++    if (v > m) {
++      m = v;
++      k = (int)c;
++    }
++  }
++  if (ctx != nullptr) *ctx = k;
++  return m;
++}
++// The same at `nowMs` (the page word staleMs[q]: nowMs - firstMs of each context read at least once; 0: none).
++static inline double gdakiCtrlDevStaleAt(const struct gdakiCtrlStale* s, uint32_t n, double nowMs) {
++  double m = 0;
++  for (uint32_t c = 0; c < n && c < GDAKI_CTRL_DEV_MAX_CTX; c++)
++    if (s[c].have) m = std::max(m, nowMs - s[c].firstMs);
++  return m;
++}
++// The page's context line: with more than one context, the 64 B right after the layout's used part (page byte
++// layout.bytes; the layout uses at most 4 032 B of the 4 KiB page) name contexts 1..7: word 0 is gdakiCtrlDevxHead(count)
++// (count: the rank's contexts, 2..8), word c context c's line word (gdakiCtrlDevLineWord, as line 0's devLine, which
++// stays context 0's). One context: no context line; the page, its READ and its layout are as before.
++#define GDAKI_CTRL_DEVX_MAGIC 0x44455658u  // "DEVX"
++#define GDAKI_CTRL_DEVX_BYTES 64u
++static inline uint64_t gdakiCtrlDevxHead(uint32_t count) { return ((uint64_t)GDAKI_CTRL_DEVX_MAGIC << 32) | count; }
++static inline uint32_t gdakiCtrlDevxBytes(uint32_t nCtx) { return nCtx > 1u ? GDAKI_CTRL_DEVX_BYTES : 0u; }
++// The line words a page names (w[0..MAX), 0: none) and their count: line 0's devLine, then, when this reader fetched the
++// context line (nMine > 1, x: its 8 words), the peer's contexts up to the reader's own count. *peerN: the count the peer
++// names (above nMine: the reader reads its first nMine).
++static inline uint32_t gdakiCtrlDevLinesOf(uint64_t line0, const uint64_t* x, uint32_t nMine, uint64_t* w,
++                                           uint32_t* peerN = nullptr) {
++  uint32_t n = 1, pn = 1;
++  w[0] = line0;
++  if (nMine > 1u && x != nullptr && (uint32_t)(x[0] >> 32) == GDAKI_CTRL_DEVX_MAGIC && (uint32_t)x[0] >= 1u &&
++      (uint32_t)x[0] <= GDAKI_CTRL_DEV_MAX_CTX) {
++    pn = (uint32_t)x[0];
++    n = std::min(pn, nMine);
++    for (uint32_t c = 1; c < n; c++) w[c] = x[c];
++  }
++  for (uint32_t c = n; c < GDAKI_CTRL_DEV_MAX_CTX; c++) w[c] = 0;
++  if (peerN != nullptr) *peerN = pn;
++  return n;
++}
++// The setup all-gather's contexts 1..count-1 (gdakiTsAddr::devx, after the launcher field; context 0 stays
++// gdakiCtrlSetupAddr::dev): a count and an array bounded by GDAKI_CTRL_DEV_MAX_CTX. count 0: no line; 1: context 0 only.
++struct gdakiCtrlDevAgX {
++  uint32_t count;
++  uint32_t rsv;
++  struct gdakiCtrlRegion more[GDAKI_CTRL_DEV_MAX_CTX - 1u];  // context c at more[c - 1] (addr = its iova 0, rkey, len)
++};
++static_assert(sizeof(struct gdakiCtrlDevAgX) == 8u + 16u * (GDAKI_CTRL_DEV_MAX_CTX - 1u), "the contexts' all-gather field");
++// The setup's bound: n contexts fit (1..MAX); else the rank registers no line at all (the host beats, as a failed
++// registration) and says why.
++static inline bool gdakiCtrlDevCtxFits(int n) { return n >= 1 && n <= (int)GDAKI_CTRL_DEV_MAX_CTX; }
+ // The R value of one beat from a reader's facts (vetoClear = no data-path progress of the peer within STALL_RMSN_MS;
+ // guardOk = the partition guard passed; helper = this is the helperBeat, not the watchBeat). A rising beat is (1); a
+ // helper beat below SUSPECT_MS is (1) too. The veto is the watch beat's only (design v3 4.2 R (4), (5)): R (8), (9) are
+@@ -20084,6 +20152,13 @@ static inline uint32_t gdakiCtrlProbeWrKind(uint64_t id) { return (uint32_t)(id
+ static inline uint32_t gdakiCtrlProbeWrPeer(uint64_t id) { return (uint32_t)(id >> 48) & 0xfffu; }
+ static inline bool gdakiCtrlProbeWrGenIs(uint64_t id, uint32_t gen) { return ((uint32_t)(id >> 32) & 0xffffu) == (gen & 0xffffu); }
+ static inline uint32_t gdakiCtrlProbeWrSeq(uint64_t id) { return (uint32_t)id; }
++// ctxall: the device READ of context c has kind GDAKI_CTRL_PW_DEV + c (context 0: GDAKI_CTRL_PW_DEV, as before).
++static_assert(GDAKI_CTRL_PW_DEV + GDAKI_CTRL_DEV_MAX_CTX - 1u <= 15u, "a context's device READ kind fits the 4 bits");
++static inline uint32_t gdakiCtrlProbeDevKind(uint32_t ctx) { return GDAKI_CTRL_PW_DEV + ctx; }
++static inline bool gdakiCtrlProbeKindIsDev(uint32_t kind) {
++  return kind >= GDAKI_CTRL_PW_DEV && kind < GDAKI_CTRL_PW_DEV + GDAKI_CTRL_DEV_MAX_CTX;
++}
++static inline uint32_t gdakiCtrlProbeDevCtxOf(uint32_t kind) { return kind - GDAKI_CTRL_PW_DEV; }
+ 
+ // ---- the liveness READ QP's send queue (design v3 3.4: one periodic READ at a time; REVIEW_P12 막는 문제 4) ----
+ // A periodic READ is never posted while one is outstanding: its timeout (PROBE_TIMEOUT_MS) is a report (R (12) once) and
+@@ -20093,12 +20168,16 @@ static inline uint32_t gdakiCtrlProbeWrSeq(uint64_t id) { return (uint32_t)id; }
+ // Live: the periodic READ is a pair, the page READ and the device line's READ (GDAKI_CTRL_PW_DEV, the same sequence),
+ // posted in one step and judged when both completed; the next pair waits for both. The bound: the pair's 2 + the
+ // window's 2 = GDAKI_CTRL_PROBE_SQ (4). A peer without a device line keeps the single READ (need 1).
++// ctxall: a peer that names n > 1 contexts' lines takes 1 + n READs a period: the page and the first context's as the
++// pair, then the rest one by one as the period's slots free (periodicMore; never more than 2 of the period in flight,
++// so the SQ bound 4 and the watch CQ's 4 per QP stay). The period is judged when its last READ completed.
+ struct gdakiCtrlProbeIo {
+   uint32_t outstanding = 0;     // READs posted whose completion is not seen yet (every kind)
+   uint32_t maxOutstanding = 0;  // the high mark (never above GDAKI_CTRL_PROBE_SQ)
+   bool periodicOut = false;     // the one periodic READ (live: pair) in flight
+   uint32_t periodicLeft = 0;    // live: READs of the pair in flight not completed yet (1 or 2 at the post)
+   uint32_t maxPeriodicLeft = 0; // live: the high mark of periodicLeft (never above 2)
++  uint32_t periodicMore = 0;    // ctxall: the period's device READs not posted yet (the chain; 0 with one context)
+   uint32_t periodicSeq = 0;
+   double periodicPostMs = 0;
+   bool timeoutSeen = false;     // its PROBE_TIMEOUT_MS passed (reported once; it stays in flight)
+@@ -20130,14 +20209,16 @@ static inline void gdakiCtrlProbeOnPosted(struct gdakiCtrlProbeIo* io, uint32_t
+     io->periodicPostMs = nowMs;
+     io->timeoutSeen = false;
+     io->nextSeq = seq + 1u;
+-  } else if (kind == GDAKI_CTRL_PW_DEV && io->periodicOut && seq == io->periodicSeq) {
+-    io->periodicLeft++;  // live: the pair's second READ
++    io->periodicMore = 0;  // ctxall: gdakiCtrlProbeChainSet after the pair's two posts
++  } else if (gdakiCtrlProbeKindIsDev(kind) && io->periodicOut && seq == io->periodicSeq) {
++    io->periodicLeft++;  // live: the pair's second READ (ctxall: or the chain's next)
++    if (io->periodicMore > 0) io->periodicMore--;
+   }
+   if (io->periodicLeft > io->maxPeriodicLeft) io->maxPeriodicLeft = io->periodicLeft;
+ }
+ // A completion of the periodic READ (live: pair) in flight, before gdakiCtrlProbeOnCqe takes it.
+ static inline bool gdakiCtrlProbeIsPeriodic(const struct gdakiCtrlProbeIo* io, uint32_t kind, uint32_t seq) {
+-  return (kind == GDAKI_CTRL_PW_PERIODIC || kind == GDAKI_CTRL_PW_DEV) && io->periodicOut && seq == io->periodicSeq;
++  return (kind == GDAKI_CTRL_PW_PERIODIC || gdakiCtrlProbeKindIsDev(kind)) && io->periodicOut && seq == io->periodicSeq;
+ }
+ // A completion of this QP (any status): its slot is free. True when it completes the periodic READ in flight (live: the
+ // pair's last completion; its result is R's); a window READ's or an older READ's completion is not.
+@@ -20145,12 +20226,29 @@ static inline bool gdakiCtrlProbeOnCqe(struct gdakiCtrlProbeIo* io, uint32_t kin
+   if (io->outstanding > 0) io->outstanding--;
+   if (gdakiCtrlProbeIsPeriodic(io, kind, seq)) {
+     if (io->periodicLeft > 0) io->periodicLeft--;
+-    if (io->periodicLeft > 0) return false;
++    if (io->periodicLeft > 0 || io->periodicMore > 0) return false;  // ctxall: the chain's READs still to go
+     io->periodicOut = false;
+     return true;
+   }
+   return false;
+ }
++// ctxall, the chain: after the pair's two posts, `more` device READs of this period follow (the contexts after the first).
++static inline void gdakiCtrlProbeChainSet(struct gdakiCtrlProbeIo* io, uint32_t more) {
++  if (io->periodicOut) io->periodicMore = more;
++}
++// The chain's next READ may be posted now: the period in flight, READs left to post, fewer than 2 of the period in
++// flight, a free slot beyond the `reserve` slots the open window still needs (as gdakiCtrlProbePeriodicDue's).
++static inline bool gdakiCtrlProbeChainDue(const struct gdakiCtrlProbeIo* io, uint32_t reserve = 0) {
++  return io->periodicOut && io->periodicMore > 0 && io->periodicLeft < 2u && gdakiCtrlProbeCanPost(io, 1u + reserve);
++}
++// The chain given up (a failed post, the QP not this thread's or not RTS): no more READs this period. True when that
++// completes the period now (nothing in flight: the caller judges it, as at the last completion).
++static inline bool gdakiCtrlProbeChainDrop(struct gdakiCtrlProbeIo* io) {
++  io->periodicMore = 0;
++  if (!io->periodicOut || io->periodicLeft > 0) return false;
++  io->periodicOut = false;
++  return true;
++}
+ // The periodic READ in flight past PROBE_TIMEOUT_MS: true once (R (12): suspicion and a line; it stays in flight).
+ static inline bool gdakiCtrlProbeTimedOut(struct gdakiCtrlProbeIo* io, double nowMs, double timeoutMs) {
+   if (!io->periodicOut || io->timeoutSeen || nowMs - io->periodicPostMs <= timeoutMs) return false;
+@@ -20162,6 +20260,7 @@ static inline void gdakiCtrlProbeIoReset(struct gdakiCtrlProbeIo* io) {
+   io->outstanding = 0;
+   io->periodicOut = false;
+   io->periodicLeft = 0;
++  io->periodicMore = 0;
+   io->timeoutSeen = false;
+ }
+ 
+@@ -20445,7 +20544,8 @@ struct gdakiCtrlRFacts {
+   double suspectMs = GDAKI_CTRL_SUSPECT_MS_DEFAULT, stallMs = GDAKI_CTRL_STALL_MS_DEFAULT;
+   bool devMode = false;                 // live: the peer's page names a device line (else the watch beat is R (2)-(5))
+   bool devOk = false;                   // live: a device line READ succeeded in this QP generation
+-  double devStaleMs = 0;                // live: the GPU's stall (gdakiCtrlDevOnRead; 0 when changed or quiet)
++  double devStaleMs = 0;                // live: the GPU's stall (gdakiCtrlDevOnRead; 0 when changed or quiet); ctxall:
++                                        // the largest of the contexts' stalls (gdakiCtrlDevStaleOf)
+ };
+ static inline uint32_t gdakiCtrlRDerive(const struct gdakiCtrlRFacts& f) {
+   if (f.probeOff) return GDAKI_CTRL_R_UNCONFIRMED;
+@@ -20758,11 +20858,17 @@ struct gdakiCtrlPeerProbe {
+   uint32_t lastCls = GDAKI_CTRL_CQ_OK;
+   double lastOkMs = -1e18, nextReadMs = 0, postMs = 0;
+   std::vector<double> theirStale;       // the peer's page staleMs[] (its view of every rank), from the last success
+-  // live: the peer's device progress line (named by its page's devLine; reset at every CONNECT)
+-  uint32_t devRkey = 0, devLen = 0;     // from the last successful page READ of this pairing (0: the page names none)
+-  bool devSeen = false;                 // a device line READ succeeded in this QP generation
+-  struct gdakiCtrlStale devStale;       // the GPU's stall clock (gdakiCtrlDevOnRead)
+-  bool devRose = false, devQuiet = false;
++  // live: the peer's device progress line (named by its page's devLine; reset at every CONNECT). ctxall: one per GIN
++  // context of the peer (context 0: devLine; the others: the page's context line), each with its own stall clock
++  uint32_t devN = 0;                    // ctxall: the contexts the page names (lines 0..devN-1; 0: none)
++  uint32_t devRkey[GDAKI_CTRL_DEV_MAX_CTX] = {};  // by context, from the last successful page READ (0: no line)
++  uint32_t devLen = 0;                  // one line's bytes (every context's: nranks QPs; 0: the page names none)
++  uint32_t devSeenMask = 0;             // ctxall: the contexts whose line READ succeeded in this QP generation
++  struct gdakiCtrlStale devStale[GDAKI_CTRL_DEV_MAX_CTX];  // the GPU's stall clock of each context (gdakiCtrlDevOnRead)
++  bool devRose = false, devQuiet = false;  // ctxall: the last line read changed / was quiet (that context's)
++  uint32_t devNext = 0;                 // ctxall: the chain's next context to read in this period
++  int devCtx = -1;                      // ctxall: the context with the largest stall at the last judgement (-1: none)
++  std::atomic<int> stallCtx{-1};        // ctxall, watch -> helper: the context a GPU stall verdict names (before stallMail)
+   uint32_t pairCls = GDAKI_CTRL_CQ_OK;  // the periodic pair's first error class (OK: none yet)
+   struct gdakiCtrlJudgement last = gdakiCtrlJudgementOfRow(13);  // row 13 until a READ says more (REVIEW_P12 nit 4)
+   uint32_t latchedInc = 0;              // the incarnation (+ 1) a stall verdict was posted for (0: none)
+@@ -20771,6 +20877,8 @@ struct gdakiCtrlPeerProbe {
+   // reports (the probe summary)
+   uint64_t reads = 0, ok = 0, remacc = 0, noresp = 0, broken = 0, timeouts = 0, torn = 0, otherInc = 0;
+   uint64_t devReads = 0, devOkN = 0, devQuietN = 0, devAgDiff = 0, devBad = 0;  // live: the device line READs
++  uint64_t devReadsC[GDAKI_CTRL_DEV_MAX_CTX] = {}, devOkC[GDAKI_CTRL_DEV_MAX_CTX] = {};  // ctxall: by context
++  uint64_t devPeerMore = 0;             // ctxall: page READs naming more contexts than this rank reads (its first ones)
+   std::vector<float> latUs;
+   bool fenceSent = false;               // phase 3 sets it when this rank sent FENCE for the peer's dead incarnation
+   struct gdakiCtrlEff eff;              // helper: the judgement's effect (2a-2-C step 4: the FIN opens the window only)
+@@ -20782,8 +20890,10 @@ struct gdakiCtrlPage {
+   uint8_t* rd = nullptr;             // the READ buffers: one slot per peer and per launcher (LOCAL_WRITE, one MR)
+   size_t rdSlot = 0, rdBytes = 0;    // a slot: the page's used part rounded to 64 B, then the window's two line-0 READs
+   size_t devOff = 0, devSlot = 0;    // live: after the slots, per peer: the device line's periodic READ (devBytes rounded
+-                                     // to 64 B; smoke3: the window reads line 0, not the line)
++                                     // to 64 B; smoke3: the window reads line 0, not the line); ctxall: devCtxN of them
+   uint32_t devBytes = 0, devStride = 0, devOffPosted = 0, devOffPolled = 0;  // a line of this library (nranks QPs)
++  uint32_t devCtxN = 1;              // ctxall: the GIN contexts a rank of this communicator has (1..MAX; the slots per
++                                     // peer, and > 1: the page READ also fetches the context line)
+   struct ibv_mr* rdMr = nullptr;
+   struct gdakiCtrlPageLayout layout;
+   std::vector<struct gdakiCtrlPeerProbe> peers;  // by rank
+@@ -20822,8 +20932,35 @@ static struct gdakiCtrlPage* gdakiPageOf(struct gdakiRecHost* r) {
+ }
+ static bool gdakiPageUp(const struct gdakiCtrlPage* pg) { return pg != nullptr && pg->up.load(std::memory_order_acquire); }
+ static uint8_t* gdakiPageRd(struct gdakiCtrlPage* pg, int peer) { return pg->rd + (size_t)peer * pg->rdSlot; }
+-// live: where peer's device line lands (the periodic READ's)
+-static uint8_t* gdakiPageDevRd(struct gdakiCtrlPage* pg, int peer) { return pg->rd + pg->devOff + (size_t)peer * pg->devSlot; }
++// live: where peer's device line lands (the periodic READ's); ctxall: context c's
++static uint8_t* gdakiPageDevRd(struct gdakiCtrlPage* pg, int peer, uint32_t c = 0) {
++  return pg->rd + pg->devOff + ((size_t)peer * pg->devCtxN + c) * pg->devSlot;
++}
++// ctxall: the period's page READ length (the layout's part, and with more than one context the context line after it)
++static uint32_t gdakiPagePeriodicBytes(const struct gdakiCtrlPage* pg, const struct gdakiCtrlPeerProbe& pp) {
++  const uint32_t b = std::min<uint32_t>(pg->layout.bytes, pp.remotePage.len);
++  const uint32_t x = b == pg->layout.bytes ? gdakiCtrlDevxBytes(pg->devCtxN) : 0u;
++  return b + x <= GDAKI_CTRL_PAGE_BYTES ? b + x : b;
++}
++// ctxall: forget the peer's device lines (a new pairing: its page names them again).
++static void gdakiProbeDevReset(struct gdakiCtrlPeerProbe& pp) {
++  pp.devN = pp.devLen = 0;
++  for (uint32_t c = 0; c < GDAKI_CTRL_DEV_MAX_CTX; c++) {
++    pp.devRkey[c] = 0;
++    pp.devStale[c] = gdakiCtrlStale();
++  }
++  pp.devSeenMask = 0;
++  pp.devRose = pp.devQuiet = false;
++  pp.devNext = 0;
++  pp.devCtx = -1;
++}
++// ctxall: the contexts whose line the peer's page names (bit c).
++static uint32_t gdakiProbeDevNamed(const struct gdakiCtrlPeerProbe& pp) {
++  uint32_t m = 0;
++  for (uint32_t c = 0; c < pp.devN && c < GDAKI_CTRL_DEV_MAX_CTX; c++)
++    if (pp.devRkey[c] != 0) m |= 1u << c;
++  return m;
++}
+ static size_t gdakiPageWinOff(const struct gdakiCtrlPage* pg, uint32_t which) {
+   return pg->rdSlot - 2 * sizeof(struct gdakiCtrlPageHead) + (which - 1u) * sizeof(struct gdakiCtrlPageHead);
+ }
+@@ -20846,12 +20983,30 @@ static void gdakiCtrlPageDelete(struct gdakiCtrlPage* pg) {  // a page never pub
+ // ordering), before the setup all-gather so that the region goes out in gdakiCtrlSetupAddr::dev; the status page names
+ // it too (devLine), for an incarnation the all-gather does not reach. BAR1: the allocation's GPU page (64 KiB for up to
+ // 221 ranks), the NIC copy path registered it in its own PD already. Made and freed on the setup and teardown threads.
++// ctxall (user decision 2026-10-24 (가)): every user GIN context's array, [0, ginContextCount) (the mirror context, which
++// gin-mirror adds after them, is not one), one MR each: every context's array is its own doca_gpu_mem_alloc (GPU-page
++// aligned), so the arrays are not contiguous and one MR cannot cover them. All or none: a context that cannot be
++// registered (or more contexts than GDAKI_CTRL_DEV_MAX_CTX) leaves the rank with no line (the host beats), never with a
++// line that misses a context. Context 0 goes out in gdakiCtrlSetupAddr::dev as before, the others in gdakiTsAddr::devx.
+ struct gdakiCtrlDev {
+-  struct ibv_mr* mr = nullptr;
++  struct ibv_mr* mr = nullptr;              // context 0's
++  struct ibv_mr* mrX[GDAKI_CTRL_DEV_MAX_CTX - 1u] = {};  // ctxall: context c's at mrX[c - 1]
++  uint32_t n = 0;                           // ctxall: the contexts registered (0: none)
+   uint32_t bytes = 0;                       // nranks x sizeof(struct doca_gpu_dev_verbs_qp)
+   std::vector<struct gdakiCtrlRegion> ag;   // every rank's all-gather region (rkey 0: none), by rank
++  std::vector<struct gdakiCtrlDevAgX> agX;  // ctxall: every rank's contexts 1.. (count 0: none), by rank
+ };
+-static void gdakiCtrlDevSetup(struct gdakiRecHost* r, bool on, struct gdakiCtrlSetupAddr* mine) {
++static uint32_t gdakiCtrlDevRkeyOf(const struct gdakiCtrlDev* d, uint32_t c) {
++  const struct ibv_mr* m = c == 0 ? d->mr : c < GDAKI_CTRL_DEV_MAX_CTX ? d->mrX[c - 1u] : nullptr;
++  return m != nullptr ? m->rkey : 0u;
++}
++// ctxall: the user GIN contexts of this rank (gdaki_context::nContexts counts gin-mirror's context too, when made;
++// gdakiMiUserCtxOf, after struct gdakiMiHost, takes it off).
++static int gdakiMiUserCtxOf(const struct gdakiRecHost* r);
++static int gdakiCtrlDevCtxCount(const struct gdakiRecHost* r) { return gdakiMiUserCtxOf(r); }
++static void gdakiCtrlDevSetup(struct gdakiRecHost* r, bool on, struct gdakiCtrlSetupAddr* mine,
++                              struct gdakiCtrlDevAgX* mineX) {
++  memset(mineX, 0, sizeof(*mineX));
+   if (!on || r == nullptr || r->ctrl == nullptr || r->ctrl->dev != nullptr || ncclParamGinCtrlPage() == 0) return;
+   struct gdaki_context* g = r->ctx;
+   if (g == nullptr || g->collComm == nullptr || g->collComm->ib.pd == nullptr || g->gin_gdaki_gpu_ctx_host_staging == nullptr)
+@@ -20859,33 +21014,78 @@ static void gdakiCtrlDevSetup(struct gdakiRecHost* r, bool on, struct gdakiCtrlS
+   struct gdakiCtrlDev* d = new gdakiCtrlDev();
+   r->ctrl->dev = d;
+   d->ag.assign((size_t)std::max(0, r->nranks), gdakiCtrlRegion());
+-  void* base = (void*)g->gin_gdaki_gpu_ctx_host_staging[0].gdqp;
++  d->agX.assign((size_t)std::max(0, r->nranks), gdakiCtrlDevAgX());
++  for (auto& x : d->agX) memset(&x, 0, sizeof(x));
++  const int nc = gdakiCtrlDevCtxCount(r);
+   const uint32_t bytes = (uint32_t)((size_t)std::max(0, r->nranks) * sizeof(struct doca_gpu_dev_verbs_qp));
+-  ncclResult_t res = ncclInvalidUsage;
+-  if (base != nullptr && bytes != 0) res = gdakiRegMr(&d->mr, g->collComm->ib.pd, base, bytes, IBV_ACCESS_REMOTE_READ, true);
+-  if (res != ncclSuccess || d->mr == nullptr) {
++  if (!gdakiCtrlDevCtxFits(nc)) {
++    WARN("GIN/RC: rank %d: %d GIN contexts, the device progress lines name at most %u (GDAKI_CTRL_DEV_MAX_CTX): no line "
++         "is registered, liveness falls back to the host beats for this rank mono_ms=%.3f", g->rank, nc,
++         GDAKI_CTRL_DEV_MAX_CTX, gdakiQ4MonoMs());
++    return;
++  }
++  int bad = -1;
++  for (int c = 0; c < nc && bad < 0; c++) {
++    void* base = (void*)g->gin_gdaki_gpu_ctx_host_staging[c].gdqp;
++    struct ibv_mr** slot = c == 0 ? &d->mr : &d->mrX[c - 1];
++    ncclResult_t res = ncclInvalidUsage;
++    if (base != nullptr && bytes != 0) res = gdakiRegMr(slot, g->collComm->ib.pd, base, bytes, IBV_ACCESS_REMOTE_READ, true);
++    if (res != ncclSuccess || *slot == nullptr) {
++      *slot = nullptr;
++      bad = c;
++    }
++  }
++  if (bad >= 0) {
++    if (d->mr != nullptr) (void)wrap_ibv_dereg_mr(d->mr);
+     d->mr = nullptr;
+-    WARN("GIN/RC: rank %d: the device progress line (%u B) could not be registered: liveness falls back to the host beats "
+-         "for this rank mono_ms=%.3f", g->rank, bytes, gdakiQ4MonoMs());
++    for (auto& m : d->mrX) {
++      if (m != nullptr) (void)wrap_ibv_dereg_mr(m);
++      m = nullptr;
++    }
++    WARN("GIN/RC: rank %d: the device progress line of context %d of %d (%u B) could not be registered: no line, liveness "
++         "falls back to the host beats for this rank mono_ms=%.3f", g->rank, bad, nc, bytes, gdakiQ4MonoMs());
+     return;
+   }
++  d->n = (uint32_t)nc;
+   d->bytes = bytes;
+   mine->dev.addr = 0;  // the MR's iova
+   mine->dev.rkey = d->mr->rkey;
+   mine->dev.len = bytes;
+-  GIN_TS_NOTE("GIN/RC: rank %d: device progress line registered (%u B, %d QPs of context 0, rkey=0x%x) mono_ms=%.3f",
+-              g->rank, bytes, r->nranks, d->mr->rkey, gdakiQ4MonoMs());
++  mineX->count = d->n;
++  for (uint32_t c = 1; c < d->n; c++) {
++    mineX->more[c - 1].addr = 0;
++    mineX->more[c - 1].rkey = d->mrX[c - 1]->rkey;
++    mineX->more[c - 1].len = bytes;
++  }
++  char ks[GDAKI_CTRL_DEV_MAX_CTX * 12 + 1] = {0};
++  for (uint32_t c = 0, o = 0; c < d->n && o < sizeof(ks); c++)
++    o += (uint32_t)snprintf(ks + o, sizeof(ks) - o, "%s0x%x", c == 0 ? "" : ",", gdakiCtrlDevRkeyOf(d, c));
++  GIN_TS_NOTE("GIN/RC: rank %d: device progress line registered (%u B, %d QPs of context 0, rkey=0x%x; contexts=%u, one MR "
++              "each, rkeys=%s) mono_ms=%.3f", g->rank, bytes, r->nranks, d->mr->rkey, d->n, ks, gdakiQ4MonoMs());
+ }
+-// After the all-gather: every rank's region (all[p] null: a rank without transparent recovery).
+-static void gdakiCtrlDevAgTake(struct gdakiRecHost* r, int nranks, const struct gdakiCtrlSetupAddr* const* all) {
++// After the all-gather: every rank's region (all[p] null: a rank without transparent recovery); ctxall: allX[p], its
++// contexts 1.. (null: none).
++static void gdakiCtrlDevAgTake(struct gdakiRecHost* r, int nranks, const struct gdakiCtrlSetupAddr* const* all,
++                               const struct gdakiCtrlDevAgX* const* allX) {
+   struct gdakiCtrlDev* d = (r != nullptr && r->ctrl != nullptr) ? r->ctrl->dev : nullptr;
+   if (d == nullptr) return;
+-  for (int p = 0; p < nranks && p < (int)d->ag.size(); p++)
++  for (int p = 0; p < nranks && p < (int)d->ag.size(); p++) {
+     if (all[p] != nullptr) d->ag[(size_t)p] = all[p]->dev;
++    if (allX[p] != nullptr && p < (int)d->agX.size()) d->agX[(size_t)p] = *allX[p];
++  }
++}
++// ctxall: rank p's all-gather rkey of context c (0: none).
++static uint32_t gdakiCtrlDevAgRkey(const struct gdakiCtrlDev* d, int p, uint32_t c) {
++  if (d == nullptr || p < 0 || (size_t)p >= d->ag.size()) return 0u;
++  if (c == 0) return d->ag[(size_t)p].rkey;
++  const struct gdakiCtrlDevAgX& x = d->agX[(size_t)p];
++  return c < x.count && c < GDAKI_CTRL_DEV_MAX_CTX ? x.more[c - 1u].rkey : 0u;
+ }
+ static void gdakiCtrlDevFree(struct gdakiCtrlState* st) {  // after the page (its READ QPs) is gone, before the unexport
+   if (st == nullptr || st->dev == nullptr) return;
+   if (st->dev->mr != nullptr) (void)wrap_ibv_dereg_mr(st->dev->mr);
++  for (auto& m : st->dev->mrX)
++    if (m != nullptr) (void)wrap_ibv_dereg_mr(m);
+   delete st->dev;
+   st->dev = nullptr;
+ }
+@@ -20945,7 +21145,15 @@ static void gdakiPageSetup(struct gdakiRecHost* r) {
+     gdakiCtrlPageDelete(pg);
+     return;
+   }
+-  pg->rdSlot = (((size_t)pg->layout.bytes + 63u) & ~(size_t)63u) + 2 * sizeof(struct gdakiCtrlPageHead);
++  // ctxall: the communicator's GIN contexts (the slots per peer; more than one: the page's context line after the
++  // layout, which the page READ fetches too)
++  {
++    const int nc = gdakiCtrlDevCtxCount(r);
++    pg->devCtxN = gdakiCtrlDevCtxFits(nc) && pg->layout.bytes + gdakiCtrlDevxBytes((uint32_t)nc) <= GDAKI_CTRL_PAGE_BYTES
++                      ? (uint32_t)nc : 1u;
++  }
++  pg->rdSlot = (((size_t)pg->layout.bytes + gdakiCtrlDevxBytes(pg->devCtxN) + 63u) & ~(size_t)63u) +
++               2 * sizeof(struct gdakiCtrlPageHead);
+   // live: the device line areas after the slots (a peer's line has this library's layout: nranks QPs)
+   pg->devStride = (uint32_t)sizeof(struct doca_gpu_dev_verbs_qp);
+   pg->devOffPosted = (uint32_t)offsetof(struct doca_gpu_dev_verbs_qp, sq_rsvd_index);
+@@ -20953,7 +21161,7 @@ static void gdakiPageSetup(struct gdakiRecHost* r) {
+   pg->devBytes = (uint32_t)nranks * pg->devStride;
+   pg->devOff = pg->rdSlot * ((size_t)nranks + GDAKI_CTRL_PAGE_MAX_LAUNCHERS);
+   pg->devSlot = (((size_t)pg->devBytes) + 63u) & ~(size_t)63u;
+-  pg->rdBytes = ((pg->devOff + pg->devSlot * (size_t)nranks) + 4095u) & ~(size_t)4095u;
++  pg->rdBytes = ((pg->devOff + pg->devSlot * (size_t)nranks * pg->devCtxN) + 4095u) & ~(size_t)4095u;
+   void* rd = nullptr;
+   if (posix_memalign(&pg->page, 4096, GDAKI_CTRL_PAGE_BYTES) != 0 || pg->page == nullptr ||
+       posix_memalign(&rd, 4096, pg->rdBytes) != 0 || rd == nullptr) {
+@@ -20969,6 +21177,13 @@ static void gdakiPageSetup(struct gdakiRecHost* r) {
+   // live: the page names this rank's device progress line (constant from here; 0 when it is not registered)
+   if (st->dev != nullptr && st->dev->mr != nullptr)
+     gdakiCtrlWordStore(&pg->head->devLine, gdakiCtrlDevLineWord(st->dev->mr->rkey, st->dev->bytes));
++  // ctxall: the context line (contexts 1..n-1) right after the layout's part, constant from here as devLine
++  if (st->dev != nullptr && st->dev->n > 1u && pg->devCtxN > 1u) {
++    uint64_t* x = (uint64_t*)((uint8_t*)pg->page + pg->layout.bytes);
++    gdakiCtrlWordStore(&x[0], gdakiCtrlDevxHead(st->dev->n));
++    for (uint32_t c = 1; c < st->dev->n; c++)
++      gdakiCtrlWordStore(&x[c], gdakiCtrlDevLineWord(gdakiCtrlDevRkeyOf(st->dev, c), st->dev->bytes));
++  }
+   // the page MR before any liveness READ QP (design 3.5's registration order)
+   if (wrap_ibv_reg_mr(&pg->pageMr, pd, pg->page, GDAKI_CTRL_PAGE_BYTES, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ) !=
+           ncclSuccess ||
+@@ -20990,9 +21205,11 @@ static void gdakiPageSetup(struct gdakiRecHost* r) {
+   pg->lastBeatMs = gdakiQ4MonoMs();
+   pg->up.store(true, std::memory_order_release);
+   __atomic_store_n(&st->page, pg, __ATOMIC_RELEASE);  // published complete
+-  GIN_TS_NOTE("GIN/RC: rank %d: status page up (%u B in use, probe_ms=%d stall_ms=%d W=%d, device line %s %u B) "
+-              "mono_ms=%.3f", g->rank, pg->layout.bytes, pg->probeMs, pg->stallMs, pg->wMs,
+-              pg->head->devLine != 0 ? "named" : "none", pg->devBytes, gdakiQ4MonoMs());
++  GIN_TS_NOTE("GIN/RC: rank %d: status page up (%u B in use, probe_ms=%d stall_ms=%d W=%d, device line %s %u B, "
++              "contexts=%u page_read=%u B) mono_ms=%.3f", g->rank, pg->layout.bytes, pg->probeMs, pg->stallMs, pg->wMs,
++              pg->head->devLine != 0 ? "named" : "none", pg->devBytes,
++              st->dev != nullptr && st->dev->mr != nullptr ? st->dev->n : 0u,
++              pg->layout.bytes + gdakiCtrlDevxBytes(pg->devCtxN), gdakiQ4MonoMs());
+ }
+ 
+ // The probe summary (rows_gc.py PROBESUM), one line per peer, at the teardown.
+@@ -21009,19 +21226,27 @@ static void gdakiCtrlProbeSummary(struct gdakiRecHost* r, struct gdakiCtrlPage*
+       med = l[l.size() / 2];
+       mx = *std::max_element(l.begin(), l.end());
+     }
++    // ctxall: the device READs by context ("a/b/..", one per context the communicator has)
++    char rc[GDAKI_CTRL_DEV_MAX_CTX * 21 + 1] = {0}, oc[GDAKI_CTRL_DEV_MAX_CTX * 21 + 1] = {0};
++    for (uint32_t c = 0, o1 = 0, o2 = 0; c < pg->devCtxN && c < GDAKI_CTRL_DEV_MAX_CTX; c++) {
++      if (o1 < sizeof(rc)) o1 += (uint32_t)snprintf(rc + o1, sizeof(rc) - o1, "%s%lu", c ? "/" : "", (unsigned long)pp.devReadsC[c]);
++      if (o2 < sizeof(oc)) o2 += (uint32_t)snprintf(oc + o2, sizeof(oc) - o2, "%s%lu", c ? "/" : "", (unsigned long)pp.devOkC[c]);
++    }
+     GIN_TS_NOTE("GIN/RC: rank %d: probe summary peer=%d reads=%lu ok=%lu remacc=%lu noresp=%lu timeout=%lu gen=%u "
+                 "lat_med_us=%.1f lat_max_us=%.1f beat_gap_max_ms=%.3f torn=%lu after_end_reads=0 after_end_ok=0 "
+                 "broken=%lu other_page=%lu sq_max=%u W=%d W_rule=%d helper_fw=%lu watch_fw=0 drain_giveup=%lu "
+                 "refused_hold=%lu refused_lineage=%lu dev_line=%d dev_reads=%lu dev_ok=%lu dev_quiet=%lu dev_ag_diff=%lu "
+-                "dev_bad=%lu pair_max=%u mono_ms=%.3f", pg->me, p, (unsigned long)pp.reads,
++                "dev_bad=%lu pair_max=%u dev_ctx=%u dev_reads_ctx=%s dev_ok_ctx=%s dev_peer_more=%lu mono_ms=%.3f", pg->me, p,
++                (unsigned long)pp.reads,
+                 (unsigned long)pp.ok, (unsigned long)pp.remacc, (unsigned long)pp.noresp, (unsigned long)pp.timeouts,
+                 pp.qp.gen, (double)med, (double)mx, pg->gapMaxMs, (unsigned long)pp.torn, (unsigned long)pp.broken,
+                 (unsigned long)pp.otherInc, pp.io.maxOutstanding, pg->wMs,
+                 gdakiCtrlConfirmW(GDAKI_CTRL_CONFIRM_FACTOR, pg->gapMaxMs), (unsigned long)pp.helperFw,
+                 (unsigned long)pp.hand.drainGiveUps, (unsigned long)pp.hand.refusedHold,
+-                (unsigned long)pp.hand.refusedLineage, pp.devRkey != 0 ? 1 : 0, (unsigned long)pp.devReads,
++                (unsigned long)pp.hand.refusedLineage, pp.devN != 0 ? 1 : 0, (unsigned long)pp.devReads,
+                 (unsigned long)pp.devOkN, (unsigned long)pp.devQuietN, (unsigned long)pp.devAgDiff,
+-                (unsigned long)pp.devBad, pp.io.maxPeriodicLeft, gdakiQ4MonoMs());
++                (unsigned long)pp.devBad, pp.io.maxPeriodicLeft, pp.devN, rc, oc, (unsigned long)pp.devPeerMore,
++                gdakiQ4MonoMs());
+   }
+   (void)r;
+ }
+@@ -21102,17 +21327,18 @@ static void gdakiPageBeatStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg,
+     const struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)q];
+     const bool seen = q != pg->me && pp.watchStale.have;  // "never seen" is its own value (REVIEW_FIX12_P2B 고칠 것 2)
+     double s = seen ? std::max(nowMs - pp.watchStale.firstMs, pp.helperStale.have ? nowMs - pp.helperStale.firstMs : 0.0) : 0;
+-    if (seen && pp.devRkey != 0 && pp.devStale.have) s = std::max(s, nowMs - pp.devStale.firstMs);  // live: the GPU's
++    if (seen && pp.devN != 0) s = std::max(s, gdakiCtrlDevStaleAt(pp.devStale, pp.devN, nowMs));  // live: the GPU's (ctxall: any context's)
+     gdakiCtrlWordStore(&sw[q], gdakiCtrlStaleWord(seen, s));
+   }
+ }
+ 
+ // One signaled READ of `bytes` of the peer's page into `local` (this peer's slot of the READ buffer). 0 posted. Live:
+-// `dev` reads the peer's device progress line instead (remote address 0 of its MR, the rkey its page named).
++// `dev` reads the peer's device progress line instead (remote address 0 of its MR, the rkey its page named); ctxall:
++// context `ctx`'s line.
+ static int gdakiProbePost(struct gdakiCtrlPage* pg, struct gdakiCtrlPeerProbe& pp, uint8_t* local, uint32_t bytes,
+-                          uint64_t wrId, bool dev = false) {
++                          uint64_t wrId, bool dev = false, uint32_t ctx = 0) {
+   if (pp.qp.q == nullptr || pp.qp.q->qp == nullptr || !pp.haveRemote || !gdakiCtrlProbeCanPost(&pp.io, 1)) return -1;
+-  if (dev && (pp.devRkey == 0 || bytes > pp.devLen)) return -1;
++  if (dev && (ctx >= GDAKI_CTRL_DEV_MAX_CTX || pp.devRkey[ctx] == 0 || bytes > pp.devLen)) return -1;
+   struct ibv_sge sg;
+   memset(&sg, 0, sizeof(sg));
+   sg.addr = (uint64_t)(uintptr_t)local;
+@@ -21126,7 +21352,7 @@ static int gdakiProbePost(struct gdakiCtrlPage* pg, struct gdakiCtrlPeerProbe& p
+   wr.opcode = IBV_WR_RDMA_READ;
+   wr.send_flags = IBV_SEND_SIGNALED;
+   wr.wr.rdma.remote_addr = dev ? 0 : pp.remotePage.addr;
+-  wr.wr.rdma.rkey = dev ? pp.devRkey : pp.remotePage.rkey;
++  wr.wr.rdma.rkey = dev ? pp.devRkey[ctx] : pp.remotePage.rkey;
+   if (wrap_ibv_post_send(pp.qp.q->qp, &wr, &bad) != ncclSuccess) return -1;
+   pp.qp.q->outstanding++;
+   return 0;
+@@ -21157,9 +21383,7 @@ static void gdakiProbeHandWatch(struct gdakiCtrlPeerProbe& pp) {
+       pp.lastCls = GDAKI_CTRL_CQ_OK;
+       pp.pageOk = true;
+       pp.witnessUnknown = false;
+-      pp.devRkey = pp.devLen = 0;  // live: the device line again from this pairing's page (another process may answer)
+-      pp.devSeen = pp.devRose = pp.devQuiet = false;
+-      pp.devStale = gdakiCtrlStale();
++      gdakiProbeDevReset(pp);  // live: the device lines again from this pairing's page (another process may answer)
+       pp.pairCls = GDAKI_CTRL_CQ_OK;
+       pp.nextReadMs = gdakiQ4MonoMs();
+       pp.holdErr.store(false, std::memory_order_release);  // a new connection of a current incarnation
+@@ -21294,9 +21518,12 @@ static void gdakiProbeJudge(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, in
+   f.busy = gdakiCtrlBusySeenAt(&pp.busy, nowMs, &f.busyOverMs);
+   f.suspectMs = (double)pg->suspectMs;
+   f.stallMs = (double)pg->stallMs;
+-  f.devMode = pp.devRkey != 0;  // live: the GPU's progress (R (2)-(5)) from the device line; the beats are R (6)-(9)
+-  f.devOk = pp.devSeen;
+-  f.devStaleMs = pp.devStale.have ? pp.devStale.lastMs - pp.devStale.firstMs : 0;
++  // live: the GPU's progress (R (2)-(5)) from the device line; the beats are R (6)-(9). ctxall: every named context's
++  // line read in this generation, and the largest of the contexts' stalls (the context with it: devCtx)
++  const uint32_t named = gdakiProbeDevNamed(pp);
++  f.devMode = named != 0;
++  f.devOk = f.devMode && (pp.devSeenMask & named) == named;
++  f.devStaleMs = gdakiCtrlDevStaleOf(pp.devStale, pp.devN, &pp.devCtx);
+   // the partition guard: the other survivors' view of p (their page word staleMs[p], from this rank's last READ of them)
+   double others[GDAKI_CTRL_PAGE_MAX_RANKS];
+   bool valid[GDAKI_CTRL_PAGE_MAX_RANKS];
+@@ -21331,9 +21558,11 @@ static void gdakiProbeJudge(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, in
+     pp.suspectLogged = true;
+     const bool helper = R == GDAKI_CTRL_R_HELPER_SUSPECT || R == GDAKI_CTRL_R_HELPER_GUARDED;
+     const bool hostWatch = f.devMode && helper && f.watchStaleMs >= f.suspectMs;
+-    GIN_TS_NOTE("GIN/RC: rank %d: rank %d suspected (kind=%s stale_ms=%.1f)%s mono_ms=%.3f", pg->me, p,
++    char cx[24] = {0};  // ctxall: the context of a GPU suspicion
++    if (!helper && f.devMode && pp.devCtx >= 0) snprintf(cx, sizeof(cx), " ctx=%d", pp.devCtx);
++    GIN_TS_NOTE("GIN/RC: rank %d: rank %d suspected (kind=%s stale_ms=%.1f%s)%s mono_ms=%.3f", pg->me, p,
+                 helper ? (hostWatch ? "watch" : "helper") : f.devMode ? "gpu" : "watch",
+-                helper ? (hostWatch ? f.watchStaleMs : f.helperStaleMs) : f.devMode ? f.devStaleMs : f.watchStaleMs,
++                helper ? (hostWatch ? f.watchStaleMs : f.helperStaleMs) : f.devMode ? f.devStaleMs : f.watchStaleMs, cx,
+                 guard == GDAKI_CTRL_PG_FRESH  ? " (partition guard: another survivor sees it fresh)"
+                 : guard == GDAKI_CTRL_PG_SELF ? " (partition guard: no other survivor readable; this rank suspects itself)"
+                 : !f.vetoClear && !helper     ? " (the data path's veto: its responder count moved)"
+@@ -21344,6 +21573,8 @@ static void gdakiProbeJudge(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, in
+   }
+   if ((pp.last.verdict == GDAKI_CTRL_V_STALL || pp.last.verdict == GDAKI_CTRL_V_STALL_HELPER) && pp.latchedInc != inc + 1u) {
+     pp.latchedInc = inc + 1u;  // the latch: once per incarnation
++    // ctxall: the context a GPU stall (R (5) from the device lines) names, before the mail (its release carries it)
++    pp.stallCtx.store(f.devMode && R == GDAKI_CTRL_R_STALL ? pp.devCtx : -1, std::memory_order_relaxed);
+     pp.stallMail.store(gdakiCtrlMailPack(pp.last.row, pp.last.verdict, pp.last.cause, inc), std::memory_order_release);
+   }
+   if (gdakiCtrlEffReadRow(pp.last.row) && pp.readLatchedInc != inc + 1u) {  // smoke3: the READ failure path, once
+@@ -21370,6 +21601,38 @@ static void gdakiProbeWindowEnd(struct gdakiRecHost* r, struct gdakiCtrlPage* pg
+   pp.witnessUnknown = true;  // the FIN or RST is spent (design 4.2 W: 모름)
+ }
+ 
++// ctxall: the period's chain, the device READs of the contexts after the first, each as a slot of the period frees
++// (never more than 2 of the period in flight). The chain is given up when the QP is not this thread's or not RTS, or a
++// post fails (the QP broke); a period that this completes is judged as at its last completion.
++static void gdakiProbeDevChainStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, int p, double nowMs) {
++  struct gdakiCtrlPeerProbe& pp = pg->peers[(size_t)p];
++  const uint32_t named = gdakiProbeDevNamed(pp);
++  const uint32_t reserve =
++      pp.win.state == GDAKI_CTRL_WS_OPEN ? (uint32_t)!pp.win.r1Posted + (uint32_t)!pp.win.r2Posted : 0u;
++  while (gdakiCtrlProbeChainDue(&pp.io, reserve)) {
++    uint32_t c = pp.devNext;
++    while (c < pp.devN && c < GDAKI_CTRL_DEV_MAX_CTX && (named & (1u << c)) == 0) c++;
++    bool ok = c < pp.devN && c < GDAKI_CTRL_DEV_MAX_CTX && pp.watchOwns && gdakiProbeQpIsRts(&pp.qp);
++    if (ok) {
++      const uint32_t seq = pp.io.periodicSeq;
++      ok = gdakiProbePost(pg, pp, gdakiPageDevRd(pg, p, c), pp.devLen,
++                          gdakiCtrlProbeWrId(gdakiCtrlProbeDevKind(c), (uint32_t)p, pp.qp.gen, seq), true, c) == 0;
++      if (ok) {
++        gdakiCtrlProbeOnPosted(&pp.io, gdakiCtrlProbeDevKind(c), seq, nowMs);
++        pp.devNext = c + 1u;
++        continue;
++      }
++      gdakiProbeBroke(pp);  // a failed post: the QP is not usable (the pairing re-pairs it)
++    }
++    if (gdakiCtrlProbeChainDrop(&pp.io)) {  // nothing in flight: the period ends here
++      pp.lastCls = pp.pairCls;
++      pp.pairCls = GDAKI_CTRL_CQ_OK;
++      gdakiProbeJudge(r, pg, p, nowMs, false, 0);
++    }
++    break;
++  }
++}
++
+ // One peer's probe, run by the watch thread every step: the handoff, the completions by wr_id, the periodic READ (one at
+ // a time), its timeout, the window, the judgement.
+ static void gdakiProbePeerStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg, int p, double nowMs) {
+@@ -21402,20 +21665,27 @@ static void gdakiProbePeerStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg,
+       if (cls != GDAKI_CTRL_CQ_OK && thisGen && !pp.holdErr.load(std::memory_order_acquire)) gdakiProbeBroke(pp);
+       if (!gdakiCtrlProbeWrGenIs(id, pp.qp.gen)) continue;           // an older generation's: its slot only
+       if (ofPair) {
+-        const bool devRead = kind == GDAKI_CTRL_PW_DEV;
+-        if (devRead) pp.devReads++;
+-        else pp.reads++;
++        const bool devRead = gdakiCtrlProbeKindIsDev(kind);
++        const uint32_t dc = devRead ? gdakiCtrlProbeDevCtxOf(kind) : 0u;  // ctxall: the context of a device READ
++        if (devRead) {
++          pp.devReads++;
++          pp.devReadsC[dc]++;
++        } else {
++          pp.reads++;
++        }
+         if (cls == GDAKI_CTRL_CQ_OK) {
+           gdakiProbeQpOnSuccess(&pp.qp, pp.qp.gen);
+           pp.okGen.store(pp.qp.gen, std::memory_order_release);
+         }
+         if (cls == GDAKI_CTRL_CQ_OK && devRead) {
+-          if (pp.pageOk && pp.devRkey != 0) {  // live: the GPU's stall clock, from the line the same pair's page named
+-            const struct gdakiCtrlDevSum d = gdakiCtrlDevSumOf(gdakiPageDevRd(pg, p), pp.devLen, pg->devStride,
++          if (pp.pageOk && dc < pp.devN && pp.devRkey[dc] != 0) {  // live: the GPU's stall clock, from the line the
++            // same pair's page named; ctxall: context dc's own clock (another context's is not touched)
++            const struct gdakiCtrlDevSum d = gdakiCtrlDevSumOf(gdakiPageDevRd(pg, p, dc), pp.devLen, pg->devStride,
+                                                                  pg->devOffPosted, pg->devOffPolled);
+-            (void)gdakiCtrlDevOnRead(&pp.devStale, d, nowMs, (double)pg->probeMs, &pp.devRose, &pp.devQuiet);
+-            pp.devSeen = true;
++            (void)gdakiCtrlDevOnRead(&pp.devStale[dc], d, nowMs, (double)pg->probeMs, &pp.devRose, &pp.devQuiet);
++            pp.devSeenMask |= 1u << dc;
+             pp.devOkN++;
++            pp.devOkC[dc]++;
+             if (pp.devQuiet) pp.devQuietN++;
+           }
+         } else if (cls == GDAKI_CTRL_CQ_OK) {
+@@ -21440,21 +21710,40 @@ static void gdakiProbePeerStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg,
+               memcpy(w, b + pg->layout.staleMsOff, 8u * nw);
+               for (size_t i = 0; i < nw; i++) pp.theirStale[i] = gdakiCtrlStaleOfWord(w[i]);
+             }
+-            // live: the device line this process's page names (a line of another layout is not read: devBad)
+-            const uint64_t dl = h.devLine;
+-            const bool fits = dl != 0 && gdakiCtrlDevLineBytes(dl) == pg->devBytes;
+-            if (dl != 0 && !fits) pp.devBad++;
+-            const uint32_t rk = fits ? gdakiCtrlDevLineRkey(dl) : 0u;
+-            if (rk != pp.devRkey) {
+-              pp.devRkey = rk;
+-              pp.devLen = rk != 0 ? gdakiCtrlDevLineBytes(dl) : 0u;
+-              pp.devSeen = pp.devRose = pp.devQuiet = false;
+-              pp.devStale = gdakiCtrlStale();
+-              const struct gdakiCtrlDev* dv = r->ctrl != nullptr ? r->ctrl->dev : nullptr;
+-              const uint32_t agRk = dv != nullptr && (size_t)p < dv->ag.size() ? dv->ag[(size_t)p].rkey : 0u;
++            // live: the device line this process's page names (a line of another layout is not read: devBad); ctxall:
++            // every context's (line 0's devLine for context 0, the context line after the layout for the others)
++            uint64_t lw[GDAKI_CTRL_DEV_MAX_CTX];
++            uint32_t peerN = 1;
++            const bool haveX = pg->devCtxN > 1u && gdakiPagePeriodicBytes(pg, pp) > pg->layout.bytes;
++            uint64_t xw[GDAKI_CTRL_DEV_MAX_CTX];
++            if (haveX) memcpy(xw, b + pg->layout.bytes, sizeof(xw));
++            const uint32_t nl = gdakiCtrlDevLinesOf(h.devLine, haveX ? xw : nullptr, pg->devCtxN, lw, &peerN);
++            if (peerN > nl) pp.devPeerMore++;
++            const struct gdakiCtrlDev* dv = r->ctrl != nullptr ? r->ctrl->dev : nullptr;
++            bool changed = false;
++            uint32_t anyLen = 0;
++            for (uint32_t c = 0; c < GDAKI_CTRL_DEV_MAX_CTX; c++) {
++              const uint64_t dl = c < nl ? lw[c] : 0u;
++              const bool fits = dl != 0 && gdakiCtrlDevLineBytes(dl) == pg->devBytes;
++              if (dl != 0 && !fits) pp.devBad++;
++              const uint32_t rk = fits ? gdakiCtrlDevLineRkey(dl) : 0u;
++              if (rk != 0) anyLen = gdakiCtrlDevLineBytes(dl);
++              if (rk == pp.devRkey[c]) continue;
++              changed = true;
++              pp.devRkey[c] = rk;
++              pp.devSeenMask &= ~(1u << c);
++              pp.devStale[c] = gdakiCtrlStale();
++              const uint32_t agRk = gdakiCtrlDevAgRkey(dv, p, c);
+               if (rk != 0 && agRk != rk) pp.devAgDiff++;  // another incarnation than the setup's, or none at the setup
+-              GIN_TS_NOTE("GIN/RC: rank %d: rank %d's device progress line %s (rkey=0x%x %u B; setup all-gather rkey=0x%x) "
+-                          "mono_ms=%.3f", pg->me, p, rk != 0 ? "named" : "none", rk, pp.devLen, agRk, nowMs);
++              GIN_TS_NOTE("GIN/RC: rank %d: rank %d's device progress line %s (ctx=%u of %u; rkey=0x%x %u B; setup "
++                          "all-gather rkey=0x%x) mono_ms=%.3f", pg->me, p, rk != 0 ? "named" : "none", c, nl, rk,
++                          rk != 0 ? gdakiCtrlDevLineBytes(dl) : 0u, agRk, nowMs);
++            }
++            if (changed) {
++              pp.devN = nl;
++              pp.devLen = anyLen;
++              pp.devRose = pp.devQuiet = false;
++              (void)gdakiCtrlProbeChainDrop(&pp.io);  // ctxall: the rest of this period read the old names: not posted
+             }
+           }
+         } else {
+@@ -21488,6 +21777,18 @@ static void gdakiProbePeerStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg,
+     if (gdakiCtrlHandDrain(&pp.hand, pp.io.outstanding, nowMs) == 1 && !pp.hand.drainOk) gdakiCtrlProbeIoReset(&pp.io);
+     pp.watchOwns = gdakiCtrlHandWatchOwns(&pp.hand);
+   }
++  // ctxall: the chain's next device READs (or its end when the QP is not this thread's now)
++  if (pp.io.periodicMore > 0) {
++    if (!pp.watchOwns || !gdakiProbeQpIsRts(&pp.qp)) {
++      if (gdakiCtrlProbeChainDrop(&pp.io)) {
++        pp.lastCls = pp.pairCls;
++        pp.pairCls = GDAKI_CTRL_CQ_OK;
++        gdakiProbeJudge(r, pg, p, nowMs, false, 0);
++      }
++    } else {
++      gdakiProbeDevChainStep(r, pg, p, nowMs);
++    }
++  }
+   // the periodic READ's timeout: a report (R (12)), the READ stays in flight
+   if (gdakiCtrlProbeTimedOut(&pp.io, nowMs, (double)pg->probeTimeoutMs)) {
+     pp.timeouts++;
+@@ -21524,21 +21825,29 @@ static void gdakiProbePeerStep(struct gdakiRecHost* r, struct gdakiCtrlPage* pg,
+   if (pg->probeMs == 0 || !pp.haveRemote || !pp.watchOwns || !gdakiProbeQpIsRts(&pp.qp)) return;
+   const uint32_t reserve =
+       pp.win.state == GDAKI_CTRL_WS_OPEN ? (uint32_t)!pp.win.r1Posted + (uint32_t)!pp.win.r2Posted : 0u;
+-  const bool devP = pp.devRkey != 0;  // live: the pair (the page, then the device line its last READ named)
++  // live: the pair (the page, then the device line its last READ named); ctxall: the first named context's line, the
++  // others' by the chain (gdakiProbeDevChainStep), 1 + n READs a period
++  const uint32_t named = gdakiProbeDevNamed(pp);
++  const bool devP = named != 0;
+   const uint32_t seq = gdakiCtrlProbePeriodicDue(&pp.io, nowMs, pp.nextReadMs, reserve, devP ? 2u : 1u);
+   if (seq == 0) return;
+   pp.nextReadMs = nowMs + (double)pg->probeMs;
+-  const uint32_t bytes = std::min<uint32_t>(pg->layout.bytes, pp.remotePage.len);
++  const uint32_t bytes = gdakiPagePeriodicBytes(pg, pp);
+   if (gdakiProbePost(pg, pp, gdakiPageRd(pg, p), bytes, gdakiCtrlProbeWrId(GDAKI_CTRL_PW_PERIODIC, (uint32_t)p, pp.qp.gen,
+                                                                            seq)) == 0) {
+     gdakiCtrlProbeOnPosted(&pp.io, GDAKI_CTRL_PW_PERIODIC, seq, nowMs);
+     pp.postMs = nowMs;
+     if (devP) {
+-      if (gdakiProbePost(pg, pp, gdakiPageDevRd(pg, p), pp.devLen,
+-                         gdakiCtrlProbeWrId(GDAKI_CTRL_PW_DEV, (uint32_t)p, pp.qp.gen, seq), true) == 0)
+-        gdakiCtrlProbeOnPosted(&pp.io, GDAKI_CTRL_PW_DEV, seq, nowMs);
+-      else
++      const uint32_t c0 = (uint32_t)__builtin_ctz(named);
++      if (gdakiProbePost(pg, pp, gdakiPageDevRd(pg, p, c0), pp.devLen,
++                         gdakiCtrlProbeWrId(gdakiCtrlProbeDevKind(c0), (uint32_t)p, pp.qp.gen, seq), true, c0) == 0) {
++        gdakiCtrlProbeOnPosted(&pp.io, gdakiCtrlProbeDevKind(c0), seq, nowMs);
++        pp.devNext = c0 + 1u;
++        gdakiCtrlProbeChainSet(&pp.io, (uint32_t)__builtin_popcount(named) - 1u);
++        gdakiProbeDevChainStep(r, pg, p, nowMs);
++      } else {
+         gdakiProbeBroke(pp);  // the page READ completes the period alone (its pair has one READ)
++      }
+     }
+   } else {
+     gdakiProbeBroke(pp);  // a failed post: the QP is not usable (the pairing re-pairs it)
+@@ -21802,7 +22111,7 @@ static bool gdakiCtrlStallFenceOn(struct gdakiRecHost* r) {
+   return (v == nullptr || v[0] == '\0' || strcmp(v, GDAKI_CTRL_RESTORE_FENCE_DEFAULT) == 0) && pg != nullptr &&
+          pg->launcherPaired.load(std::memory_order_acquire);
+ }
+-static void gdakiCtrlStallDecline(struct gdakiRecHost* r, int peer, uint32_t inc, const char* cause) {
++static void gdakiCtrlStallDecline(struct gdakiRecHost* r, int peer, uint32_t inc, const char* cause, int ctx = -1) {
+   struct gdakiHold* h = gdakiHoldOf(r);
+   const int told = h != nullptr ? gdakiHoldBroadcast(r, GDAKI_TS_CTRL_STALLED, peer, inc, -1) : 0;
+   const char* c = (cause != nullptr && cause[0]) ? cause : "STALL";
+@@ -21811,8 +22120,10 @@ static void gdakiCtrlStallDecline(struct gdakiRecHost* r, int peer, uint32_t inc
+   const bool fence = gdakiCtrlStallFenceOn(r);
+   if (fence && r->ts != nullptr && peer >= 0 && peer < (int)r->ts->peers.size())
+     snprintf(r->ts->peers[(size_t)peer].lostCause, sizeof(r->ts->peers[(size_t)peer].lostCause), "%s", c);
+-  WARN("GIN/RC: rank %d: rank %d (incarnation %u) judged stalled (%s); STALLED to %d rank(s); %s mono_ms=%.3f",
+-       r->ctx->rank, peer, inc, why, told,
++  char cx[24] = {0};  // ctxall: the GIN context whose device line stalled (a GPU stall; none for the host beats)
++  if (ctx >= 0) snprintf(cx, sizeof(cx), " ctx=%d;", ctx);
++  WARN("GIN/RC: rank %d: rank %d (incarnation %u) judged stalled (%s); STALLED to %d rank(s);%s %s mono_ms=%.3f",
++       r->ctx->rank, peer, inc, why, told, cx,
+        fence ? "the hold when armed, then FENCE and the restore (fence=lineage, launcher paired)"
+              : "declined (fence=none or no launcher)",
+        gdakiQ4MonoMs());
+@@ -21833,7 +22144,8 @@ static void gdakiCtrlPageHelperStep(struct gdakiRecHost* r) {
+         GIN_TS_NOTE("GIN/LN: rank %d: stall verdict of rank %d for incarnation %u dropped (current %u) mono_ms=%.3f",
+                     pg->me, p, inc, gdakiLnOf(r, p).cur, gdakiQ4MonoMs());
+       else if (!pe.declined)
+-        gdakiCtrlStallDecline(r, p, inc, gdakiCtrlCauseName(gdakiCtrlMailCause(sm)));
++        gdakiCtrlStallDecline(r, p, inc, gdakiCtrlCauseName(gdakiCtrlMailCause(sm)),
++                              pp.stallCtx.load(std::memory_order_relaxed));
+     }
+     const uint64_t rm = pp.readMail.exchange(0, std::memory_order_acq_rel);
+     if (rm != 0) {  // smoke3: rows 10, 11 end an effective pair (the witness off has no window: this or row 3 judges)
+@@ -30187,12 +30499,16 @@ struct gdakiTsAddr {
+   uint32_t policyPad;  //   every rank of a job must run the same library (this all-gather always assumed it)
+   struct gdakiCtrlSetupAddr ctl;  // gin-control (phase 2a-2): this rank's control fields (EXPERIMENT.md 9.6)
+   struct gdakiCtrlLaAgInfo la;    // gin-control (int2, REVIEW_P3 막는 문제 2): the node launcher's INFO answer (magic 0: none)
++  struct gdakiCtrlDevAgX devx;    // gin-control (ctxall, 2026-10-24 (가)): the device lines of GIN contexts 1.. (count, array)
+ };
+-// The spare's transcript slot is this record (rsPeekGinOwn checks its length): 168 + 72 B more than the tcp build's 56, so
+-// a transcript of another build or of an earlier phase does not replay here (the next entry is not the helper all-gather).
++// The spare's transcript slot is this record (rsPeekGinOwn checks its length): 168 + 72 + 120 B more than the tcp build's
++// 56, so a transcript of another build or of an earlier phase does not replay here (the next entry is not the helper
++// all-gather). ctxall: the record grew by devx (120 B; a transcript made before it does not replay).
+ // The launcher field may differ between the recording and the replay (the launcher's facts, not the rank's: no strict
+ // comparison of it; the spare's own slot is its new `mine`).
+-static_assert(sizeof(struct gdakiTsAddr) == 56 + sizeof(struct gdakiCtrlSetupAddr) + sizeof(struct gdakiCtrlLaAgInfo) &&
++static_assert(sizeof(struct gdakiTsAddr) ==
++                      56 + sizeof(struct gdakiCtrlSetupAddr) + sizeof(struct gdakiCtrlLaAgInfo) + sizeof(struct gdakiCtrlDevAgX) &&
++                  offsetof(struct gdakiTsAddr, devx) == 56 + sizeof(struct gdakiCtrlSetupAddr) + sizeof(struct gdakiCtrlLaAgInfo) &&
+                   offsetof(struct gdakiTsAddr, ctl) == 56 &&
+                   offsetof(struct gdakiTsAddr, la) == 56 + sizeof(struct gdakiCtrlSetupAddr),
+               "the rdma setup record is the tcp build's 56 B, the control fields and the launcher field");
+@@ -30340,8 +30656,9 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+   // gin-control (phase 2a-2-A): the ring and this rank's control fields (UD endpoint, outbox, path, active_mtu, fork,
+   // thresholds; notes_p2 finding 6: in `mine` before the exchange)
+   gdakiCtrlRingSetup(r, why == nullptr, rank, nranks, mine.salt, &mine.ctl);
+-  // gin-control (page, live): the device progress line's MR and its region in `mine` (gdakiCtrlSetupAddr::dev)
+-  gdakiCtrlDevSetup(r, why == nullptr, &mine.ctl);
++  // gin-control (page, live): the device progress line's MR and its region in `mine` (gdakiCtrlSetupAddr::dev); ctxall:
++  // every GIN context's, contexts 1.. in mine.devx
++  gdakiCtrlDevSetup(r, why == nullptr, &mine.ctl, &mine.devx);
+   // gin-control (launcher) [3] (REVIEW_P3 막는 문제 2): the launcher's static facts by a nonce-free INFO before the
+   // exchange (200 ms bound); REGISTER (the nonce) stays after it, in gdakiTsStart. int2 (TODO(2a-2) 3): `mine` carries the
+   // answer; every rank's goes to gdakiCtrlLauncherAgTake after the exchange
+@@ -30377,11 +30694,15 @@ static ncclResult_t gdakiTsSetup(struct gdaki_context* g, struct ncclGinIbCollCo
+   // have transparent recovery on; 42 and 44 turn it off on every rank here (notes_p2 finding 8)
+   {
+     std::vector<const struct gdakiCtrlSetupAddr*> ctl((size_t)nranks, nullptr);
++    std::vector<const struct gdakiCtrlDevAgX*> devx((size_t)nranks, nullptr);  // ctxall
+     for (int p = 0; p < nranks; p++)
+-      if (all[p].magic == GDAKI_TS_MAGIC) ctl[(size_t)p] = &all[p].ctl;
++      if (all[p].magic == GDAKI_TS_MAGIC) {
++        ctl[(size_t)p] = &all[p].ctl;
++        devx[(size_t)p] = &all[p].devx;
++      }
+     const char* gcOff = gdakiCtrlRingAgree(r, rank, nranks, nonce, ctl.data(), rsRepSetup ? &rsRec.ctl : nullptr);
+     if (gcOff != nullptr && why == nullptr) why = gcOff;
+-    gdakiCtrlDevAgTake(r, nranks, ctl.data());  // gin-control (page, live): every rank's device line region
++    gdakiCtrlDevAgTake(r, nranks, ctl.data(), devx.data());  // gin-control (page, live): every rank's device line regions
+   }
+   // gin-control (int2, TODO(2a-2) 3): every rank's launcher field: the communicator's launchers in node order, each rank's
+   // node launcher (the link of a rank that asks for the restore), and their count for the page layout of every rank with
+@@ -34904,6 +35225,13 @@ static struct gdakiMiPool* gdakiMiTakePool(struct gdakiRecHost* r) {
+ // After the user contexts' connects and self loops (single thread): the host state, the mirror QPs' rec entries (unused
+ // until MIRROR_SETUP connects them; a spare's at its setup), the self loop pair, the pool. Nothing here fails the context:
+ // a failure is a Resume condition (35, 38).
++// gin-control (ctxall): the user GIN contexts of r's context (nContexts without the mirror context, when it was made).
++[[maybe_unused]] static int gdakiMiUserCtxOf(const struct gdakiRecHost* r) {
++  const struct gdaki_context* g = r != nullptr ? r->ctx : nullptr;
++  if (g == nullptr) return 0;
++  const struct gdakiMiHost* m = r->mi.host;
++  return (m != nullptr && m->created) ? m->nUserCtx : g->nContexts;
++}
+ static void gdakiMiContextSetup(struct gdaki_context* g, const struct gdakiMiPlan& plan, int nUserCtx, int nqpsForComm,
+                                 struct ibv_pd* pd) {
+   struct gdakiRecHost* r = g->rec;

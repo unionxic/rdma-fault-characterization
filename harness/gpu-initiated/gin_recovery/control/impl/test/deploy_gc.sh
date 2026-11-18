@@ -65,7 +65,9 @@ for g in lib/rs lib/rsp rstest rscost lib/mi lib/mip mitest; do
   if [ -e "$HOME/$B/$g" ] || ssh -n "$SUNNY_SSH" "[ -e \$HOME/$B/$g ]"; then echo "~/$B is another study's set ($g): use a new RS_SET" >&2; exit 1; fi
 done
 prune=""; for dir in "${DIRS[@]}"; do prune="$prune -path $dir -prune -o"; done
-EXIST="cd \$HOME && { for d in gi-bundle gd-bundle blind-bundle rs-bundle; do [ -d \"\$d\" ] && find \"\$d\" $prune \\( -type f -o -type l \\) -print; done; } | sort | xargs -r md5sum"
+# pilot 1 (2026-10-23): md5 of the regular files only and the links as "path -> target" (a link to a folder, e.g. a smoke's
+# ~/rs-bundle/<set> link, made md5sum fail and the script stop under set -e before anything was written)
+EXIST="cd \$HOME && { for d in gi-bundle gd-bundle blind-bundle rs-bundle; do [ -d \"\$d\" ] && find \"\$d\" $prune -type f -print; done; } | sort | xargs -r md5sum; for d in gi-bundle gd-bundle blind-bundle rs-bundle; do [ -d \"\$d\" ] && find \"\$d\" $prune -type l -printf '%p -> %l\n'; done | sort"
 BEFORE_L=$(bash -c "$EXIST"); BEFORE_S=$(ssh -n "$SUNNY_SSH" "$EXIST")
 for a in "${SEL[@]}"; do
   IFS='|' read -r want src dir fn lib <<< "$a"
