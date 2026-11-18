@@ -1459,16 +1459,16 @@ link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려
 
 ## 10. 완료 조건과 QA 기준
 
-- [ ] 모든 셀이 계획한 n만큼 실행됐다(제외와 실패를 따로 센 표 포함).
-- [ ] 예측마다 판정(맞음/틀림/자료 없음)과 놓친 시행 목록이 있다.
-- [ ] 핵심 수치를 원자료에서 다시 계산했다: 판정 종류와 시각(kill, RST, FIN 없는 죽음, 멈춤), 판정 시각의 퍼짐, 펜스 차례와 펜스 뒤 바뀐 칸, 복원 시간, READ 성공률과
+- [x] (2026-11-18, SCORE.md 키 표와 qa_recount.md) 모든 셀이 계획한 n만큼 실행됐다(제외와 실패를 따로 센 표 포함).
+- [x] (2026-11-18, SCORE.md) 예측마다 판정(맞음/틀림/자료 없음)과 놓친 시행 목록이 있다.
+- [x] (2026-11-18, 15절과 qa_recount.md) 핵심 수치를 원자료에서 다시 계산했다: 판정 종류와 시각(kill, RST, FIN 없는 죽음, 멈춤), 판정 시각의 퍼짐, 펜스 차례와 펜스 뒤 바뀐 칸, 복원 시간, READ 성공률과
   박동 간격, 이 계층의 TCP 바이트, 비용 중앙값.
-- [ ] 다른 에이전트가 채점기를 보지 않고 원자료에서 판정 시각 셀과 펜스 셀의 판정을 다시 셌다(펜스 셀은 국면 차례를 줄의 시각으로 확인).
+- [x] (2026-11-18, qa_recount.md) 다른 에이전트가 채점기를 보지 않고 원자료에서 판정 시각 셀과 펜스 셀의 판정을 다시 셌다(펜스 셀은 국면 차례를 줄의 시각으로 확인).
 - [ ] 매크로 없는 프로그램의 기계어와 라이브러리 장치 객체가 `mi`와 같음을 셀이 쓰는 세 빌드(`gc`, `gct`, `gcp`) 모두에서 확인했다.
-- [ ] tcp 빌드의 회귀 예측(대조 셀 `mi4_kill3_ow` 하나)을 gin-mirror의 판정식 그대로 다시 채점했다.
-- [ ] launcher가 등록받지 않은 프로세스에 신호를 보낸 줄이 0임을 원자료에서 확인했다.
-- [ ] smoke, pilot, 제외 시행이 결과에 섞이지 않았다. 여러 실행의 범위와 대표 실행의 범위를 섞지 않았다.
-- [ ] 원자료를 Release에 올리고 DATA.md에 적었다.
+- [x] (2026-11-18, SCORE.md `regression_tcp` 맞음) tcp 빌드의 회귀 예측(대조 셀 `mi4_kill3_ow` 하나)을 gin-mirror의 판정식 그대로 다시 채점했다.
+- [x] (2026-11-18, 16절 빌드 검사) launcher가 등록받지 않은 프로세스에 신호를 보낸 줄이 0임을 원자료에서 확인했다.
+- [x] (2026-11-18, SCORE.md 머리: smoke 0, pilot 0; 범위마다 n 표기) smoke, pilot, 제외 시행이 결과에 섞이지 않았다. 여러 실행의 범위와 대표 실행의 범위를 섞지 않았다.
+- [x] (2026-11-18, Release `data-20261118`, DATA.md) 원자료를 Release에 올리고 DATA.md에 적었다.
 
 ## 11. 작업 체크리스트
 
@@ -1543,9 +1543,9 @@ link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려
   - [x] 그 뒤 사전 등록 커밋(아래 차례 5) — 2026-11-18
 - [x] 차례 5: 고정 절 완성, 상태 `PREREGISTERED`, 해시 기록을 커밋 하나로 만들고 그 커밋에 `prereg/gin-control-v1` 태그 — 2026-11-18(12절 그날 "사전 등록" 행)
 - [x] 본 실행 (`RUNNING`) — 2026-11-18 15:34 시작(12절 그날 "본 실행 시작" 행)
-- [ ] 차례 6, 7(19절 표): 같은 조건의 옛 TCP 제어 길과 전체 재시작 비교, 측정된 병목에 따른 기능 선택
-- [ ] 채점과 독립 재계산 (`QA`)
-- [ ] 결과 정리, 원자료 release, PR
+- [ ] 차례 6, 7(19절 표): 같은 조건의 옛 TCP 제어 길과 전체 재시작 비교, 측정된 병목에 따른 기능 선택 — 이 실험에서는 tcp 대조 셀 하나(`mi4_kill3_ow@gct`)와 15절의 TCP 판 대비만; 전체 재시작 비교와 기능 선택은 후속
+- [x] 채점과 독립 재계산 (`QA`) — 2026-11-18(16절)
+- [ ] 결과 정리, 원자료 release, PR — 2026-11-18 release와 15–18절 끝남, PR 남음
 - [ ] 결론 확정 (`COMPLETE`)
 
 ### 11.2 구현 단계 체크리스트 (2026-10-16–23 당시 기록)
@@ -1686,7 +1686,7 @@ link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려
 | 2026-11-18 | **채점기 고침 둘(검수 뒤)**(사용자 결정 (가)와 채점기 코드 검수의 지적 둘; 사전 등록 전이라 3, 8, 11.1, 18절과 현재 상태를 그 자리에서 고침; `impl/test/`의 채점기, 예측 표 파일 한 행, 자체 시험만, 라이브러리와 셀 파일은 바꾸지 않음, 클러스터 실행 없음). **변경:** (1) 꼭 고칠 것: 다른 생존 rank의 확정된 중단 결정을 자기 판정 전에 적용한 생존 rank는 대상을 이름한 DEAD, STALLED 줄이 없어 `n_judge`에 들지 않았고, `n_judge == n_surv`를 요구하는 `fdhold_uverbs_refuse`는 안전한 시행을 틀림으로 셀 수 있었다(pilot 8 펜스 끈 멈춤 셀: r2가 r0의 판정 4.6 ms 뒤 그 결정을 적용, `n_judge` 2/3; pilot 7 문제 1). `rows_gc.py`에 열 `n_judge_taken`을 더함: 대상의 자기 판정 줄이 없고, decline 줄 `GIN/TS: declined rank=R peer=<대상> reason="ABORT_DECIDED(rank <대상>, …) of rank D (incarnation I): a confirmed abort decision"`이 있는 생존 rank 수(줄 꼴은 pilot 8 원자료 `a1/raw/gc4_stop12000_none_gc_n1_r2.log` 402행과 pilot 7 원자료에서 확인 `[측정]`). `fdhold_uverbs_refuse`의 판정식 첫 항을 `n_judge + n_judge_taken == n_surv`로, 시행 기준 글에 "그 적용은 판정을 마친 것으로 셈" 한 구절을 더함(나머지 항, k 4/5, 셀 그대로). (2) 고쳐야 할 것: `score_gc.py`에서 안전 예측의 잰 실패를 틀림으로 바꾸는 규칙이 "맞음"과 "자료 부족(n<k)"만 덮어, STOP 따위로 채점 시행이 계획 n보다 적은 키("자료 부족")에서는 실패가 가려졌다. "자료 부족"도 덮게 고침("자료 없음(실패 아님)"은 그대로; 8절). **같은 경합을 본 다른 예측:** `n_judge == n_surv`를 쓰는 perf 행 열(`kill_judge_rdma`, `finless_exit_report`, `finless_read_fail`, `fdhold_sock_helper_stall`, `stall_fence_restore`, `freeze_fence_restore`, `helper_stall_fence`, `gpuhang_fence_restore`, `gpuhang_ctx1_fence_restore`, `kill_no_witness`)은 그대로 둠. 결정은 decline과 hold 시한 넘김(watcher)에서만 난다 `[소스: notes_abortdec.md "기록 지점 둘"]`. 아홉 행은 판정식에 복원 항(`wait_held`, `revived_done`, `ow_data_equal`, `win_verified` 가운데 하나 이상)이 있어 결정이 난 시행은 어차피 조건 거짓이고, `kill_judge_rdma`는 복원 항이 없지만 kill 길의 판정(확인 창, EXITED)은 생존 rank 사이에 거의 함께 나고(pilot 8에서 0.4 ms, 1.8 ms 안) 결정은 그 뒤의 decline에서만 나므로 앞지를 틈이 없다(pilot 8의 kill 길 두 셀에서 결정 열둘 모두 늦음) `[추론; 측정: results/20261028_pilot8/PILOT.md]`. 판정 0을 요구하는 항(`waiter_not_judged`의 `waiter_judge_n == 0`, `credit_stall_no_loss`의 `n_judge == 0`, `judge_any_n == 0`을 쓰는 여덟 행 `rstgap_live_rdma`, `stop_transparent`, `slow_no_judge`, `quiet_compute_no_judge`, `mgmt_mute_transparent`, `mgmt_mute_tcp`, `qp_err_repair`, `none_probe_clean`)은 같은 이유가 그대로 들지 않는다: 경합은 판정 수를 줄이는 쪽이라 안전한 시행을 틀림으로 만들지 않는다. 다만 판정 없는 decline(예: RETRY_EXC)이 결정을 내면 뒤따를 다른 생존 rank의 판정이 지워질 수 있고, 판정식에 decline이나 데이터 항이 없는 `slow_no_judge`, `none_probe_clean`은 그것을 보지 않는다 `[추론]`(바꾸지 않음); `stall_none_refuse`는 `n_judge_stall_helper >= 1`만 봄 `[추론]`. **검증:** 자체 시험 241 검사 실패 0(그 전 238; 새 검사 셋: pilot 8 꼴 합성 시행에서 `n_judge` 2, `n_judge_taken` 1, 새 판정식 참이고 옛 식 거짓, 다른 rank에 대한 결정이나 결정 없는 decline은 세지 않음; 계획 5, 채점 4, 실패 1인 safety 키가 틀림이고 실패 없으면 자료 부족; 기존 J 검사에 새 열), 고침을 하나씩 되돌리면 새 검사가 하나씩 실패, `check_cells_gc.py` drift 0과 ok `[측정: 로컬 실행]`. pilot 7, 8 원자료 사본을 `score_v0/score_pilot.py`로 다시 채점: SCORE.md는 예측 표 sha256과 `fdhold_uverbs_refuse`의 판정식 글만, trials_scored.csv는 새 열만 다르고 판정은 모두 그대로, `n_judge_taken`은 pilot 8 펜스 끈 멈춤 셀 1, 나머지 11 시행 0 `[측정: score_v1/DIFF.md 둘]`. 예측 표 sha256 `de6bf8ec70ca7cb16818be540fb530c12be576f73d186c436874703aa72ce4a8`, 셀 파일은 바뀌지 않음. **미룸:** 검수 지적 3(낡은 전달자의 결정 사본이 그 키를 차지해 CURRENT 전달자의 같은 결정이 중복으로 버려지고, FWD_STALE이 STALE로 기록됨; 라이브러리 `gdakiAdCheck`)은 후속으로(18절 (사), `impl/notes_abortdec.md` 열린 문제 9). **남은 일:** 사전 등록 승인과 태그(19절 차례 5) | [impl/test/rows_gc.py](impl/test/rows_gc.py) `n_judge_taken`, [impl/test/score_gc.py](impl/test/score_gc.py), [impl/test/predictions_gc.csv](impl/test/predictions_gc.csv) `fdhold_uverbs_refuse`, [impl/test/test_rows_gc.py](impl/test/test_rows_gc.py) `taken_checks`, `gap_checks`, [results/20261028_pilot8/score_v1/DIFF.md](results/20261028_pilot8/score_v1/DIFF.md), [results/20261028_pilot7/score_v1/DIFF.md](results/20261028_pilot7/score_v1/DIFF.md); 이 행과 같은 커밋 |
 | 2026-11-18 | **사전 등록**(상태 `PREREGISTERED`, 태그 `prereg/gin-control-v1`을 이 커밋에 단다; 측정 전, 클러스터 실행 없음). **고정:** 2절 가설, 3절 예측 33(안전성 13, 성능 19, 비용 1), 7절 셀 30행(이 실험 셀 28, 시행 180; gin-mirror 회귀 198, 비용 24, 클러스터 402), 8절 제외와 중단. `PREREG.txt`에 예측 표 파일 sha256 `de6bf8ec70ca7cb16818be540fb530c12be576f73d186c436874703aa72ce4a8`, 셀 파일 `6f36041dae8e4c2900e0c463ccc0bbc1a4c2e60e7d7e161862986369d88e8a14`와 본 실행 묶음의 md5(① 라이브러리 `gc_layer_int.diff` 3ae8f572, libnccl gc ed13666b, gcp 55ffb80e, gct df1d091b, driver 다섯과 launcher d1aceaf6; `impl/test/notes_test.md` 2026-10-28 묶음). 검사: `check_cells_gc.py` drift 0과 ok, `test_rows_gc.py` 241 검사 실패 0 `[측정: 로컬 실행]`. **배포:** 묶음 `gc_main1`을 두 노드에 배포, 아홉 파일 md5 9/9 일치, `gin_mi`와 `gin_mr`은 묶음의 `lib/gc`, `gin_ts2_mi`는 `lib/gcp`에 연결, 다른 묶음의 기존 파일 변화 없음 `[측정: 배포 출력]`(출력은 저장소 밖 scratch `agent_gc_main1/deploy.txt`). **결정 기록:** 사용자가 2026-11-18 "실험을 다 돌리고 보고"로 진행을 정했고, 검수 지적 셋 가운데 1, 2(채점기)는 넣고 3(라이브러리 한 줄, 좁은 경우)은 다시 빌드와 smoke가 따라 후속으로 미룬 것은 조율 세션의 결정이다(`impl/notes_abortdec.md` 열린 문제 9). **변경:** 머리 표, 현재 상태, 2, 3, 7, 8절 머리 문장, 11.1 차례 5, 13절 머리. 다음은 본 실행 402회와 `RUNNING` | [PREREG.txt](PREREG.txt); 사전 등록 커밋(이 행의 커밋; 태그 `prereg/gin-control-v1`) |
 | 2026-11-18 | **본 실행 시작**(상태 `RUNNING`; 사전 등록 커밋 `d1062ac4`, 태그 `prereg/gin-control-v1`; 묶음 `gc_main1`; `cluster_run.sh` 안에서 `chain_gc.sh`로 hold 24개를 한 사슬로: C1, C2, C3, C5, C6, C7, C8, C9, C10 ×4(이어 돌기), C11, RG-gc-G1, G3, T1, T2, G2, R1, R2, R3, RG-gct-G1, COST-probe-rain, COST-probe-sunny; 15:34:14 hold C1 시작, STOP 규칙 켬, 결과는 저장소 밖 scratch `agent_gc_main1/main/`에 모아 끝난 뒤 `results/20261118_main/`으로 옮김). 사전 등록 뒤 고정 파일은 바꾸지 않음(`sha256sum -c PREREG.txt` OK) `[측정]`. 끝나면 계획 n 대비 빠진 시행을 세어 채움 pass를 돌리고 12절에 적는다 | scratch `agent_gc_main1/attempts.txt`, `main/chain.out` |
-| 2026-11-18 | **본 실행 끝과 채점**(상태 `QA`). 15:34:14 hold C1 시작, 18:22:04 마지막 hold 끝(약 2 h 48 min; 시행 사이 대기 포함). pass 셋: pass 1은 hold C1 뒤 STOP_left로 멈춤, pass 2는 C2–C11, RG-gc-G1·G3·T1·T2·G2 뒤 STOP_left로 멈춤, pass 3은 RG-gc-R1·R2·R3, RG-gct-G1, COST-probe 둘, RG-gc-G1 채움. **STOP_left 둘(hold 끝 검사):** C1 뒤 15:41:58 시험 프로세스 1개, RG-gc-G2 뒤 17:47:18 3개가 hold 끝의 남은 프로세스 검사에 잡혔다. 두 번 모두 그 hold의 모든 시행이 `left=0`이었고, 조율 세션이 1분 안에 두 노드를 보았을 때 시험 프로세스는 0개였다 `[측정: run/stops/, run/attempts.txt]`. 마지막 시행의 정리(launcher 끝내기) 중인 프로세스가 검사 순간에 잡힌 것으로 본다 `[추론; QA에서 확인]`. STOP 파일은 `run/stops/`로 옮기고 다음 hold부터 이어 돌렸다(C1과 G2의 자료는 그대로 채점). **840 s 한도로 건너뛴 시행:** C10 셋(`gpuhang12000_ctx1_fence` n3, `quiet12000` n1, `waitpend_fence` n1), RG-gc-G1 하나(`mi4_kill3_ow_sampled` n5); 같은 hold를 다시 돌려 모두 채움(`run/skipped.txt`). **완결성:** 이 실험 셀 28의 시행 180/180, 회귀 198, 비용 24, 합 402 `[측정: 셀 파일 대비 meta 수]`. **채점**(`score_gc.py`, 예측 표 sha256 `PREREG.txt`와 같음): 시행 402, 판정 385, 준비 실패 17(모두 gin-mirror의 거절 셀 `mi4_refuse_*`: 설계대로 Resume 거절), 제외 0, STOP 파일 0, launcher STOP 줄 0. 예측 33 가운데 맞음 28, 틀림 1(`restore_time_rdma`: `mi4_kill3_ckpt_ow@gc`만 1/5, kill → 게시 145.6–167.2 ms로 띠 하한 154.5 ms **아래**, 곧 예측보다 빨랐다 `[측정: trials_scored.csv]`; 다른 여덟 키는 모두 맞음), 재검토 2(`freeze_fence_restore` 3/5와 `helper_stall_fence` 1/5가 펜스 뒤 약 20.79 s에 fallback, 데이터 같음 0; 원인 조사 중), 자료 부족 1(`gate_fenced`: 관문 프로그램의 `--pid` 모드가 없어 사전 등록 때부터 자료 부족으로 예정), 자료 없음 1(`long_hold_lane`: 문서화한 한계). 안전성 13행은 자료 없음 1, 자료 부족 1을 빼고 11행 모두 맞음(실패 0). **변경:** 상태, 현재 상태, 머리 표. 15–18절은 QA 뒤 | [results/20261118_main/SCORE.md](results/20261118_main/SCORE.md), [trials_scored.csv](results/20261118_main/trials_scored.csv), [run/](results/20261118_main/run/)(chain, stops, skipped, hold 출력, 배포) |
+| 2026-11-18 | **본 실행 끝과 채점**(상태 `QA`). 15:34:14 hold C1 시작, 18:22:04 마지막 hold 끝(약 2 h 48 min; 시행 사이 대기 포함). pass 셋: pass 1은 hold C1 뒤 STOP_left로 멈춤, pass 2는 C2–C11, RG-gc-G1·G3·T1·T2·G2 뒤 STOP_left로 멈춤, pass 3은 RG-gc-R1·R2·R3, RG-gct-G1, COST-probe 둘, RG-gc-G1 채움. **STOP_left 둘(hold 끝 검사):** C1 뒤 15:41:58 시험 프로세스 1개, RG-gc-G2 뒤 17:47:18 3개가 hold 끝의 남은 프로세스 검사에 잡혔다. 두 번 모두 그 hold의 모든 시행이 `left=0`이었고, 조율 세션이 1분 안에 두 노드를 보았을 때 시험 프로세스는 0개였다 `[측정: run/stops/, run/attempts.txt]`. 마지막 시행의 정리(launcher 끝내기) 중인 프로세스가 검사 순간에 잡힌 것으로 본다 `[추론; QA에서 확인]`. STOP 파일은 `run/stops/`로 옮기고 다음 hold부터 이어 돌렸다(C1과 G2의 자료는 그대로 채점). **840 s 한도로 건너뛴 시행:** C10 셋(`gpuhang12000_ctx1_fence` n3, `quiet12000` n1, `waitpend_fence` n1), RG-gc-G1 하나(`mi4_kill3_ow_sampled` n5); 같은 hold를 다시 돌려 모두 채움(`run/skipped.txt`). **완결성:** 이 실험 셀 28의 시행 180/180, 회귀 198, 비용 24, 합 402 `[측정: 셀 파일 대비 meta 수]`. **채점**(`score_gc.py`, 예측 표 sha256 `PREREG.txt`와 같음): 시행 402, 판정 385, 준비 실패 17(모두 gin-mirror의 거절 셀 `mi4_refuse_*`: 설계대로 Resume 거절), 제외 0, STOP 파일 0, launcher STOP 줄 0. 예측 33 가운데 맞음 28, 틀림 1(`restore_time_rdma`: `mi4_kill3_ckpt_ow@gc`만 1/5, kill → 게시 145.6–167.2 ms로 띠 하한 154.5 ms **아래**, 곧 예측보다 빨랐다 `[측정: trials_scored.csv]`; 다른 여덟 키는 모두 맞음), 재검토 2(`freeze_fence_restore` 3/5와 `helper_stall_fence` 1/5가 펜스 뒤 약 20.79 s에 fallback, 데이터 같음 0; 원인 조사 중), 자료 부족 1(`gate_fenced`: 관문 프로그램의 `--pid` 모드가 없어 사전 등록 때부터 자료 부족으로 예정), 자료 없음 1(`long_hold_lane`: 문서화한 한계). 안전성 13행은 자료 없음 1, 자료 부족 1을 빼고 11행 모두 맞음(실패 0). **변경:** 상태, 현재 상태, 머리 표. 15–18절은 QA 뒤. **(QA에서 고침, 2026-11-18, 16절):** 준비 실패 17은 `mi4_refuse_*` 9와 `rs4_refuse_*` 8이고, 건너뛴 시행은 C10 세 셀의 13과 G1의 1이다 | [results/20261118_main/SCORE.md](results/20261118_main/SCORE.md), [trials_scored.csv](results/20261118_main/trials_scored.csv), [run/](results/20261118_main/run/)(chain, stops, skipped, hold 출력, 배포) |
 
 ## 13. 사전 등록 이후 변경
 
@@ -1700,18 +1700,76 @@ link down과 flap, PFC pause storm, 일부 패킷만 잃는 gray failure, 느려
 | 무엇 | 경로 또는 Release 자산 | n |
 |---|---|--:|
 | 기준(대조): gin-mirror 본 실행 | `../mirror/results/20261015_main/`, Release `data-20261015` | 428 |
+| 본 실행(2026-11-18, 묶음 `gc_main1`, 태그 `prereg/gin-control-v1`) 채점표와 시행 표 | [results/20261118_main/SCORE.md](results/20261118_main/SCORE.md), [trials_scored.csv](results/20261118_main/trials_scored.csv) | 402 |
+| 본 실행 실행 기록(사슬, STOP, 건너뜀, hold 출력, 배포, 두 노드 md5) | [results/20261118_main/run/](results/20261118_main/run/) | hold 24 |
+| 본 실행 원자료(시행별 로그, kv, meta, snapshot) | Release `data-20261118`, 자산 `harness__gpu-initiated__gin_recovery__control__results__20261118_main.tar.xz`(6 178 파일, 25.18 MB, sha256 `3667b94b06ce`) | 402 |
+| smoke 1–6, pilot 1–8 원자료(채점 안 함) | Release `data-20261118`의 다른 자산 14개(DATA.md) | - |
+| 독립 재집계 | [results/20261118_main/qa_recount.md](results/20261118_main/qa_recount.md) | - |
+| 맞지 않은 예측 셋과 STOP 사건의 원인 조사 | [results/20261118_main/qa_findings.md](results/20261118_main/qa_findings.md) | - |
 
 ## 15. 결과 요약
 
-`[미확인]`: 측정 전이다.
+본 실행 402회(2026-11-18 15:34–18:22)의 결과다. 수치는 모두 `[측정: results/20261118_main/trials_scored.csv에서 다시 셈]`이고 범위는 그 셀의 채점한 모든 시행에 걸친 범위다(뺀 시행 없음). 판정 시각은 주입 줄(kill, stop, gpuhang, freeze)부터 각 생존 rank의 판정 줄까지이고, 복원 시간은 첫 판정부터 마지막 생존 rank의 복원 게시까지다. 해석은 `[추론]`으로 표시했다.
+
+**예측과 판정** `[측정: SCORE.md]`. 예측 33 가운데 맞음 28, 틀림 1, 재검토 2, 자료 부족 1, 자료 없음 1. 안전성 13행은 자료 없음 1(`long_hold_lane`, 문서화한 한계)과 자료 부족 1(`gate_fenced`, 관문 프로그램의 `--pid` 모드가 없어 사전 등록 때부터 예정)을 빼고 11행이 모두 맞았고 잰 실패는 0이다. 판정한 시행 385, 준비 실패 17(모두 설계대로 Resume을 거절하는 gin-mirror와 gin-restore의 거절 셀: `mi4_refuse_*` 9, `rs4_refuse_*` 8), 제외 0, STOP 파일로 끊긴 시행 0.
+
+- **틀림 1: 복원 시간과 관문(`restore_time_rdma`).** 아홉 키 가운데 체크포인트 멈춤 중 kill 셀(`mi4_kill3_ckpt_ow@gc`) 하나만 1/5였고 나머지 여덟 키는 모두 맞았다. 어긋난 항은 kill → 마지막 게시의 **하한** 154.5 ms 하나다. 네 시행이 145.6–153.7 ms로 그보다 **빨랐다**(판정 → 게시 124.9–146.2 ms, 'later' 답 0, 펜스 순서 5/5). 띠는 gin-mirror의 TCP 판 값에서 20 ms를 뺀 것이라, launcher의 SIGKILL → FENCED가 70–89 ms로 더 짧았던 것과 이 셀의 활성화 뒤 부분이 40.8–42.4 ms(다른 셀 약 62 ms)인 것을 반영하지 못했다 `[추론: qa_findings.md 1절]`. 같은 셀의 gin-mirror 회귀 판정(`ckpt_kill_ow`)은 5/5다.
+- **재검토 2: 살아서 도는 프로세스의 펜스(`freeze_fence_restore`) 2/5, helper만 멈춘 rank의 펜스(`helper_stall_fence`) 4/5.** 열 시행 모두 판정(STALL_HELPER 10 003.6–10 102.7 ms), 펜스(SIGKILL → FENCED 109.7–116.7 ms), window 검사(바뀐 칸 0), 활성화, 복원 게시까지는 됐다. 그런데 넷(freeze n1, n3, n5, helper n5)은 생존 rank의 판정이 약 95 ms 벌어져(대상과 같은 노드의 rank 1이 늦음) hold 때 보낸 걸음이 생존 rank 사이에 2 차이 났고, 되살린 rank가 일찍 hold한 rank의 다음 걸음 메시지를 기다리는 동안 그 메시지는 INJECTED를 기다려 gate에 묶였다. 이 원형 기다림은 장치 한도(gate가 홀수가 된 뒤 21 000 ms)에서 fallback으로 끊겼고(FENCED 뒤 20 787–20 792 ms), 생존 rank와 되살린 rank는 오류로 풀렸다(`released=1`, rc 4). 잘못 전달된 데이터는 없다(손상, 독 값 0) `[측정]`. 복원된 여섯 시행은 걸음 차가 0–1이었다. 라이브러리 결함이고(mirror 판의 "gate는 INJECTED까지 홀수"와 "단계 맞춤 가져오기"가 걸음 차 2 이상을 만나면 막힘), 살아서 도는 대상에서만 생긴다(kill, SIGSTOP, GPU 정체 셀은 대상이 걸음을 더 못 가 차가 생기지 않음) `[추론: qa_findings.md 2, 3절]`. 고침은 사전 등록 뒤라 이 실험에 넣지 않고 19절로 미룬다.
+
+**죽음 판정과 복원**(이 실험의 셀, `@gc`)
+
+| 장애 | 판정 원인 | 판정 시각 | 복원 또는 거절 | n |
+|---|---|---|---|--:|
+| SIGKILL(증인 켬) | FIN+STALE 3/3 | 20.8–22.9 ms | 첫 판정 → 게시 144.2–150.2 ms(활성화 80.8–87.9, 그 뒤 61.0–62.7), 데이터 같음 10/10 | 10 |
+| SIGKILL, 소켓에 읽지 않은 자료(RST) | FIN+STALE 3/3 | 20.9–21.9 ms | 145.2–159.1 ms, 데이터 같음 | 10 |
+| SIGKILL, 증인 끔 | EXITED(launcher 보고) 3/3 | 95.1–98.3 ms | 68.7–70.1 ms | 5 |
+| FIN 없는 죽음(fd 자식이 소켓만 쥠) | EXITED 3/3 | 53.8–55.4 ms | 69.9–80.7 ms | 10 |
+| FIN 없는 죽음, launcher 보고 없음, fd 자식 없음 | NORESP(READ 실패) 3/3 | 3 643–3 826 ms | 복원 | 5 |
+| FIN 없는 죽음, launcher 보고 없음, fd 자식이 매핑까지 쥠 | STALL_HELPER 3/3 | 10 006–10 083 ms | 복원 | 5 |
+| fd 자식이 uverbs fd까지 쥠 | EXITED 3/3 | - | 거절만, 생존 rank 모두 풀림 3/3, 복원 0 | 5 |
+| 무장됐으나 예비 프로세스 없음 | FIN+STALE | - | FENCED 뒤 2.2–2.8 ms에 fallback("the spare exited"), 생존 rank 풀림 | 5 |
+
+- TCP 판(gin-mirror)에서 약 1 s 늦던 RST 죽음이 RDMA 판에서는 다른 kill과 같은 20.9–21.9 ms다. 확인 창 W 20 ms가 판정의 바닥이다. 같은 소스의 TCP 제어 빌드 대조 셀(`mi4_kill3_ow@gct`)은 FIN을 0.15–0.32 ms에 판정하지만 복원은 75.3–174.1 ms로 RDMA 판과 같은 띠다.
+
+**멈춤과 GPU 진행 정체**
+
+| 장애 | 판정 | 그 뒤 | n |
+|---|---|---|--:|
+| SIGSTOP 1.5 s / 4 s / 8 s | 판정 0, 의심 줄은 4 s와 8 s에서 2 000.6–2 001.0 ms | 투명, 데이터 같음 | 10 × 3 |
+| SIGSTOP 12 s, 펜스 켬 | STALL_HELPER 10 005.6–10 094.2 ms | SIGKILL → FENCED 96.4–99.8 ms, 첫 판정 → 게시 170.1–178.7 ms, 데이터 같음 10/10 | 10 |
+| SIGSTOP 12 s, 펜스 끔 | STALL_HELPER | 거절, 생존 셋과 SIGCONT 뒤의 대상까지 풀림 4/4 | 5 |
+| GPU 정체 12 s(호스트는 삶) | STALL 10 006.5–10 104.5 ms | 펜스, 복원 173.2–268.0 ms, 데이터 같음 5/5 | 5 |
+| GPU 정체, 문맥 1만 | STALL 10 026.6–10 096.5 ms, `stall_ctx` 1 5/5 | 복원 | 5 |
+| GPU 정체, 기다리는 정상 rank 있음(셀 B) | rank 3만 STALL 10 005.2–10 098.1 ms, 기다리는 rank 1 판정 0/5 | 복원, 데이터 같음 5/5 | 5 |
+| 조용한 긴 계산 12 s(남은 일 0) | 의심 0, 판정 0, 조용한 주기 114–115 | 데이터 같음 | 5 |
+| 느린 상대 | 의심 0, 판정 0 | 데이터 같음 | 5 |
+| 살아서 도는 프로세스, 박동만 멈춤 12 s | STALL_HELPER 10 005.5–10 101.9 ms | 펜스 5/5, 복원 2/5(위 재검토) | 5 |
+| helper만 멈춤 12 s | STALL_HELPER 10 003.6–10 102.7 ms | 펜스 5/5, 복원 4/5(위 재검토) | 5 |
+
+**제어 경로** `[측정]`. 관리망 8 s 끊김: 판정 0, 기록 다시 걸기 0, 데이터 같음 5/5(옛 TCP 길도 5/5). 기록 QP 오류: 다시 짝 맺기 2회씩, 데이터 같음 5/5. REJOIN datagram 잃음: 복원 346.9–354.9 ms, 데이터 같음 5/5. credit 멈춤: 기록 잃음 0, 판정 0 5/5. 장애 없음: 의심 0, 판정 0, READ 성공 100 %, 관리망 바이트 0(15/15); `build:gc` 326 시행 모두 관리망 제어 바이트 0.
+
+**회귀(gin-mirror와 gin-restore 셀, 제어 경로와 무관한 예측)** `[측정: SCORE.md mirror: 행]`. rdma 빌드에서 gin-mirror 예측 열둘이 원래 판정식으로 모두 맞음, mirror 끈 길(RDMA 저장소) 넷 맞음, tcp 빌드 대조 셀 맞음. 두 죽음 셀 복원 171.3–178.7 ms와 132.0–160.5 ms, 둘째 복원 5/5; 학습 모양 kill 복원 214.7–237.7 ms 10/10.
+
+**비용**(받는 노드마다 팔마다 6실행의 중앙값) `[측정]`. 4 KiB put 지연: sunny probe-on 12.86 µs 대 probe-off 12.845 µs(+0.015 µs, 0.1 %), rain 13.31 대 13.31 µs. 상대마다 100 ms에 READ 다섯(1 + 문맥 넷)의 비용은 2 % 문턱 안이다.
 
 ## 16. QA와 재현성
 
-`[미확인]`: 측정 전이다. 재현에 필요한 기준은 gin-mirror 빌드 ln4([../mirror/impl/mi_layer.diff](../mirror/impl/mi_layer.diff), md5 `dcd30859`)다.
+- **채점.** `score_gc.py`(커밋 `30050f57`의 것)가 사전 등록한 판정식(`impl/test/predictions_gc.csv`, sha256 `de6bf8ec…`가 `PREREG.txt`와 같음)을 원자료에 적용해 [results/20261118_main/SCORE.md](results/20261118_main/SCORE.md)와 `trials_scored.csv`를 썼다. 손으로 고친 값은 없다. 사전 등록 뒤 고정 파일은 바뀌지 않았다(`git diff prereg/gin-control-v1 -- predictions_gc.csv cells_gc.json` 0줄, `sha256sum -c PREREG.txt` OK) `[측정]`.
+- **독립 재집계.** 다른 Opus 에이전트가 채점기 코드를 읽지도 돌리지도 않고 원자료에서 다시 셌다([qa_recount.md](results/20261118_main/qa_recount.md), 스크립트 [qa/](results/20261118_main/qa/)). 시행마다의 판정 수, 원인, 판정 시각 min과 max, 데이터 같음(358/358), window 검사, 풀림, `left`, 비용 차(+0.12 %)가 채점기와 같다. 28셀 모두 계획 n을 채웠고 원자료로 제외할 시행은 없다 `[측정: qa_recount.md]`.
+- **충돌(규칙 10).** 판정이 갈리는 곳은 하나다. 안전성 예측 `long_hold_lane`("hold가 1 s를 넘는 시행에서 DISARM이 있어도 데이터는 같아야 함")을 채점기는 `hold_ms_max`(사전 등록한 열 정의: hold 시작 → restored, given up 또는 로그 끝 가운데 먼저 온 것)로 보아 1 s를 넘는 시행이 0이라 "자료 없음(실패 아님)"으로 냈다. 재집계는 생존 rank가 실제로 붙잡혀 있던 시간(hold 시작 → 포기 줄)으로 보면 freeze n1, n3, n5와 helper n5가 20 996–20 998 ms이고 넷 모두 데이터가 같지 않아 4/4 거짓이라고 했다 `[측정: qa_recount.md]`. 두 읽기의 차는 열 정의다. 사전 등록한 열 정의대로의 판정("자료 없음")을 채점표 값으로 두되, **그 네 시행은 15절 재검토 둘과 같은 시행이고 그 메커니즘(gate가 INJECTED까지 홀수로 남는 원형 기다림)으로 생존 rank가 21 s 붙잡혔다가 데이터 없이 풀린 것은 사실**이므로, 이 실험은 "긴 hold에서 데이터가 같다"를 주장하지 않는다(17절). lane 넘침과 DISARM(이 예측이 보려던 것)은 어느 시행에서도 없었다(`lane_broken`, `disarm_n` 0) `[측정: trials_scored.csv]`.
+- **채점기와 재집계의 정의 차이(판정 바뀌지 않음)** `[측정: qa_recount.md]`: 복원 시간 끝점(마지막 restored 줄 대 마지막 published 줄)과 시작점 차로 +0.2–+5.4 ms; `mi4_seg_32k` n4의 FIN → 판정에서 W를 뺀 값이 재집계 기준(소켓 닫힘 줄) 2.04 ms, 채점기(창 열림 줄) 1.941 ms(셀은 4/5로 문턱을 넘음); 예비 없음 셀의 `fence_order_ok`가 채점기 0, 재집계는 맞음(FENCE → FENCED 뒤 활성화 REFUSED; 이 열을 읽는 예측 없음); 거절 셀 21 시행은 모두 설계대로의 Resume 거절인데 채점기는 링이 live가 되지 않은 17을 준비 실패로 가르고 링이 live였던 넷(`rs4_refuse_restoreoff1` n2 등)은 채점 시행으로 둠(이 셀들을 읽는 예측 없음).
+- **맞지 않은 예측 셋과 STOP_left 둘의 원인**([qa_findings.md](results/20261118_main/qa_findings.md), 다른 에이전트, 소스와 원자료): 15절에 옮겼다. STOP_left 둘은 실행기 결함이다. 시행 끝에 실행기가 `ss` snapshot을 기다리는 subshell만 끝내고(`run_gc.sh` 929행 `kill "$SSPID"`) 그 자식 python 대기(인자에 시행 디렉터리 `/tmp/gc_rt.*` 경로, 한도 30 s 또는 15 s)를 남겨, 걸음 기준에 못 미친 시행(예비 없음 셀, 거절 셀) 뒤에만 hold 끝 검사(`hold_gc.sh`의 `pgrep -f "[/]tmp/gc_rt"`)가 그것을 잡았다. C1의 마지막 시행 뒤 1개, G2의 마지막 거절 셀 셋 뒤 3개로 수와 시각이 맞는다 `[측정: qa_findings.md 4절]`. 시험 프로세스(`gin_mi`, launcher, 예비 프로세스)가 남은 것이 아니고 그 python은 로그를 읽기만 하므로 시행 자료는 영향받지 않았다 `[추론]`. 검사 순간의 프로세스 목록은 남지 않았다 `[미확인]`.
+- **12절 행의 고친 글.** 2026-11-18 "본 실행 끝과 채점" 행의 "준비 실패 17(모두 gin-mirror의 거절 셀 `mi4_refuse_*`)"는 틀렸고 `mi4_refuse_*` 9와 `rs4_refuse_*` 8이다. "건너뛴 시행 C10 셋, G1 하나"는 셀마다 처음 건너뛴 시행만 적힌 `skipped.txt`를 옮긴 것이고 실제로는 C10 세 셀의 13 시행(C10 둘째 돌기가 모두 채움), G1 1 시행이다. 그 행은 그대로 두고 여기에 고친다 `[측정: qa_findings.md 그 밖 2, 5]`.
+- **빌드 검사.** 시행 meta의 `rs_set` 402/402가 `gc_main1`, 라이브러리 md5가 gc `ed13666b` 363(이 실험 셀과 rdma 회귀), gct `df1d091b` 15(tcp 대조), gcp `55ffb80e` 24(비용), driver md5가 `gin_mi` `0565a677` 355, `gin_mi_nomacro` `e8530bcc` 3, `gin_mr` ff `ac1a419b` 10, hold `23b33c94` 10, `gin_ts2_mi` `2bf3b36a` 24로 모두 `PREREG.txt`와 같다 `[측정: meta와 cost 출력에서 셈]`. launcher md5는 배포 때 두 노드에서 `d1aceaf6`로 확인했다(`run/md5_both_nodes.txt`). launcher가 등록받지 않은 프로세스에 신호를 보낸 줄 0 `[측정: grep]`. 매크로 없는 프로그램의 기계어 동일성은 이 본 실행에서 다시 확인하지 않았다(2026-10-28 ① 라이브러리 때 장치 SASS 207 × 4 같음, `impl/notes_abortdec.md`) `[미확인: 본 실행 묶음]`.
+- **재현.** 계층 diff [impl/gc_layer_int.diff](impl/gc_layer_int.diff)(md5 `3ae8f572`, 상류 `f53e5d2` 위), 빌드와 driver md5 [PREREG.txt](PREREG.txt), 배포 `impl/test/deploy_gc.sh`, 실행 `impl/test/chain_gc.sh`(hold 차례는 12절 "본 실행 시작" 행과 `results/20261118_main/run/run_main.sh`), 채점 `python3 impl/test/score_gc.py <결과 폴더>`. 원자료는 Release `data-20261118`.
 
 ## 17. 결론
 
-아직 없다.
+- **제어와 생존 판정을 관리망 TCP에서 데이터망 RDMA로 옮겨도 복원은 그대로 되고, TCP 판의 빈틈 넷 가운데 셋이 닫혔다.** RST 죽음의 1 s 지연이 사라졌고(20.9–21.9 ms), SIGSTOP과 GPU 정체는 10 s 문턱에 판정되어 펜스 뒤 복원됐으며(TCP 판은 아무도 모름), FIN 없는 죽음은 launcher 보고로 53.8–98.3 ms에, 보고가 없으면 READ 실패로 3.6–3.8 s에 판정됐다. 옛 화신의 쓰기는 펜스(launcher의 SIGKILL과 pidfd 확인, 생존 QP ERR) 뒤에만 활성화해 막았고 window 검사에서 바뀐 칸은 0이다. 복원 시간은 kill 뒤 144–159 ms로 TCP 판(174–221 ms)보다 짧다.
+- **정상 rank는 교체되지 않았다.** 짧은 멈춤 30회, 느린 상대 5회, 조용한 긴 계산 5회, 멈춘 상대를 기다리는 정상 rank 5회, 관리망 끊김 5회, 장애 없음 15회에서 판정과 거절은 0이다. 안전성 예측 11행이 실패 0으로 맞았다.
+- **비용은 4 KiB put마다 0.1 % 안이다.** 상대마다 100 ms에 READ 다섯으로 생존을 확인하는 비용이다.
+- **살아서 도는 대상의 복원에 결함이 남았다.** 박동만 멈춘 프로세스와 helper만 멈춘 rank 열 시행 가운데 넷이 펜스와 게시까지 되고도 생존 rank 사이 걸음 차 2 때문에 되살린 rank가 INJECTED 전의 gate에 묶여 21 s 뒤 fallback했다. 데이터 손상은 없지만 복원이 끝나지 못한 성능 실패이고, 다음 조각에서 INJECTED를 생존 rank마다로 바꾸는 고침이 필요하다(19절).
+- 예측 33 가운데 28이 맞았다. 틀린 하나는 복원이 예측 띠보다 빨라서다.
 
 ## 18. 한계
 
@@ -1766,11 +1824,14 @@ CPU 단위 시험(`gc_unit_p2`, `gc_unit_p2a2`, launcher 장면 `verbs_credit_re
 원인을 가를 수 없는 고리는 둘 다 `STALL_MS`에 판정되어 fallback하는 것이 정책이고 원인 식별이 아니다. pilot 전용 고리 셀(n 1)에서 rank 3이 rank 1보다 약 100 ms 먼저 판정되어 SIGKILL로 펜스됐고, rank 1의 판정으로 hold가 포기되어
 복원 없이 fallback했다 `[측정: PILOT.md]`. 그래서 고리에서는 정상 대기자를 교체하지 않는다는 주장이 없고(링 allreduce 모양 포함, notes 열린 문제 7), 먼저 판정된 rank의 프로세스는 남지 않는다.
 
+2026-11-18 본 실행 뒤 더한 것(15, 16절). (차) **살아서 도는 대상의 복원은 생존 rank 사이 걸음 차가 2 이상이면 끝나지 못한다.** 박동만 멈춘 프로세스와 helper만 멈춘 rank 열 시행 가운데 넷에서 생존 rank의 판정이 약 95 ms 벌어져(대상과 같은 노드의 rank가 늦음) hold 때 보낸 걸음이 2 차이 났고, mirror 판의 복원은 게시 뒤에도 INJECTED가 올 때까지 gate를 홀수로 두므로 일찍 hold한 rank의 다음 걸음 put이 gate에 묶였다. 되살린 rank는 그 메시지를 기다리고, INJECTED는 가져오기가 export의 `last_step`(최댓값)에 닿아야 나오며, 그 가져오기는 그 걸음이 끝나야 나온다. 이 원형 기다림을 장치 한도(gate 홀수 뒤 21 000 ms)가 끊어 fallback했고 데이터 손상은 없다 `[측정: qa_findings.md 2, 3절]`. kill, SIGSTOP, GPU 정체 셀은 대상이 걸음을 더 못 가 차가 생기지 않는다 `[추론]`. 고침(INJECTED를 생존 rank마다 그 rank의 export 기준으로)은 19절. (카) **hold 시간 열의 뜻.** 채점기의 `hold_ms_max`는 hold 시작 → restored(또는 포기, 로그 끝) 가운데 먼저 온 것이라, 게시 뒤에 생존 rank가 더 붙잡힌 시간은 세지 않는다. 그래서 `long_hold_lane`은 "자료 없음"이고, 게시 뒤 21 s 붙잡힘(차)은 15절 재검토와 16절 충돌에 적었다. (타) **실행기의 hold 끝 검사.** 시행 끝에 남는 snapshot 대기 python이 hold 끝 검사에 잡혀 사슬이 두 번 멈췄다(16절). 시행 자료에는 영향이 없지만, 사슬이 멈춘 시간(약 1분 45초, 44초)과 조율 세션의 개입이 실행 기록에 남는다. (파) **복원 시간 예측 띠의 하한.** 체크포인트 멈춤 중 kill 셀의 kill → 게시가 예측 하한 154.5 ms보다 빨라(145.6–153.7 ms) 성능 예측이 틀렸다. TCP 판 값에서 뺀 20 ms가 launcher 펜스의 실제 시간(70–89 ms)과 이 셀의 짧은 활성화 뒤 부분(약 41 ms)을 반영하지 못한 것이고, 동작은 예측보다 빨랐다.
+
 ## 19. 후속 연구
 
 > 첫 문단은 이 실험 뒤의 연구 방향이다. 아래 표는 이 실험 안의 지금 차례이고, 11.1의 항목이 이 차례를 따른다. 어디까지 했는지는 11.1에만 적는다.
 
 gin-dynamic(동적 예비 프로세스: 이 실험의 launcher SPAWN, LATER 대리 답, 한도 위에서; 같은 rank의 둘째 죽음, 긴 hold의 lane), 그다음 gin-train(실제 framework 연결).
+**2026-11-18 본 실행이 남긴 첫 고침 셋(다음 조각, 사전 등록 뒤라 이 실험에는 넣지 않음):** (1) 살아서 도는 대상의 복원이 생존 rank 사이 걸음 차 2 이상에서 막힘(18절 차): INJECTED(또는 gate를 짝수로 되돌리는 것)를 생존 rank마다 그 rank의 export `last_step` 기준으로 하고, 단위 장면은 export `last_step`이 m, m + 1, m + 2로 갈린 셋, 하드웨어 셀은 `gc4_freeze12000_fence`와 `gc4_helper_freeze12000`(판정 퍼짐 약 95 ms가 재현 조건). (2) 실행기 `run_gc.sh`의 snapshot 대기: 작업 디렉터리가 사라지면 끝나게 하거나 subshell의 자식까지 끝냄(18절 타). (3) 복원 시간 예측 띠의 하한을 RDMA 판 값으로(18절 파). 그 밖에 검수 지적 3(낡은 전달자의 결정 사본이 키를 차지함, `impl/notes_abortdec.md` 열린 문제 9)과 `gate_fenced.cc`의 `--pid` 모드(사전 등록 때부터 자료 부족).
 링의 credit 역압 길을 실제 NIC에서 재는 채움 기록 스위치(CREDIT_STALL 동안 상대가 채움 기록을 냄)도 gin-dynamic으로 미룬다(18절 마, 2026-10-24).
 짝 단위 제어 길 fallback(degraded mode, 2026-10-22 사용자 제안)은 이 실험에 넣지 않는 후속이고 11.2 끝에 적혀 있다.
 복원된 화신이 생존 rank들의 멈춘 대기자 STALLED 판정을 따르게 하는 고침(18절 사, 복원 직후의 둘째 장애)도 gin-dynamic에서 한다(2026-10-27 pilot 5 뒤).
