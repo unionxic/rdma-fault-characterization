@@ -8,7 +8,7 @@
 
 | 무엇 | 파일 | 자세한 문서 |
 |---|---|---|
-| 라이브러리 계층(호스트 파일 `gin_host_gdaki.cc` 하나, 장치 코드 0줄) | [impl/gc_layer_int.diff](impl/gc_layer_int.diff)(md5 `5ed121f4`): gin-mirror ln4([../mirror/impl/mi_layer.diff](../mirror/impl/mi_layer.diff), md5 `dcd30859`) 위의 전체 층. smoke 4와 5가 이것을 돌렸다 | EXPERIMENT 9.1–9.8절, 단계별 작업 기록 `impl/notes_*.md` |
+| 라이브러리 계층(호스트 파일 `gin_host_gdaki.cc` 하나, 장치 코드 0줄) | [impl/gc_layer_int.diff](impl/gc_layer_int.diff)(md5 `3ae8f572`, 2026-10-28 ① 라이브러리; 2026-10-23 당시 `5ed121f4`): gin-mirror ln4([../mirror/impl/mi_layer.diff](../mirror/impl/mi_layer.diff), md5 `dcd30859`) 위의 전체 층. smoke 4와 5가 이것을 돌렸다 | EXPERIMENT 9.1–9.8절, 단계별 작업 기록 `impl/notes_*.md` |
 | 공유 헤더와 바꿈 자리 표 | [impl/rs_ctrl_api.h](impl/rs_ctrl_api.h)(호스트 파일에 붙이는 블록 둘), [impl/gc_sites.tsv](impl/gc_sites.tsv) | `impl/build_gc.sh`의 `paste`, `api`, `sites` 단계 |
 | 단계별 diff와 단위 시험 | `impl/gc_layer_<단계>.diff`, `impl/rs_ctrl_api_<단계>.diff`, `impl/gc_unit_*.cc`, [impl/gate_fenced.cc](impl/gate_fenced.cc) | 단계마다의 기록이다. 지금 층은 `gc_layer_int.diff` 하나다 |
 | launcher(노드마다 하나) | [impl/launcher/](impl/launcher/): `gin_launcher.c`, `launcher_transport_verbs.c`, `launcher_msg.h`, `launcher_unit.cc` | [impl/launcher/README_launcher.md](impl/launcher/README_launcher.md), credit READ 재시도는 [impl/launcher/notes_launcher_credit.md](impl/launcher/notes_launcher_credit.md) |
@@ -52,6 +52,13 @@
 | [impl/test/run_cost_gc.sh](impl/test/run_cost_gc.sh) | 비용 셀 하나 |
 
 smoke 1–5는 저장소 밖 스크래치의 실행 스크립트가 `cells_gc.sh` → `run_gc.sh`를 불렀다(smoke마다 `SMOKE.md` 머리).
+
+## 본 실행 (2026-11-18)
+
+- 배포: `deploy_gc.sh`로 묶음 `gc_main1`(라이브러리 gc `ed13666b`, gcp `55ffb80e`, gct `df1d091b`, driver 다섯, launcher `d1aceaf6`; md5는 `PREREG.txt`)을 두 노드 `~/rs-bundle/gc_main1/`에 두었다(`results/20261118_main/run/deploy.txt`, `md5_both_nodes.txt`).
+- 실행: `results/20261118_main/run/run_main.sh <pass> <hold>...`가 `chain_gc.sh`를 `cluster_run.sh` 안에서 불렀다. hold 24개를 세 pass로 돌렸고(`run/attempts.txt`, `run/chain.out`), 840 s 한도로 건너뛴 시행은 같은 hold를 다시 돌려 채웠다(`run/skipped.txt`는 셀마다 첫 줄만). STOP_left 둘은 `run/stops/`에 있고 원인은 EXPERIMENT.md 16절이다.
+- 채점: `python3 impl/test/score_gc.py <결과 폴더>`(결과 폴더에 `raw/`, `reg/`, `cost_probe_*/`). 출력 `SCORE.md`, `trials_scored.csv`는 `results/20261118_main/`에 있고 원자료는 Release `data-20261118`에서 같은 경로로 풀린다.
+- QA: 독립 재집계 `results/20261118_main/qa_recount.md`(스크립트 `qa/`), 원인 조사 `qa_findings.md`.
 
 ## 채점
 
