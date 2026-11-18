@@ -172,3 +172,28 @@ real ones).
 | `harness/gpu-initiated/gin_recovery/mirror/results/20261015_pilot5` | `harness__gpu-initiated__gin_recovery__mirror__results__20261015_pilot5.tar.xz` | 95 | 0.50 | `aa36a864f817` | pilot 5 on set mi5 (build ln3), not scored |
 | `harness/gpu-initiated/gin_recovery/mirror/results/20261015_pilot6` | `harness__gpu-initiated__gin_recovery__mirror__results__20261015_pilot6.tar.xz` | 95 | 0.51 | `db8c9c3f1791` | pilot 6 on set mi6 (build ln4), not scored |
 | `harness/gpu-initiated/gin_recovery/mirror/results/20261015_main` | `harness__gpu-initiated__gin_recovery__mirror__results__20261015_main.tar.xz` | 3627 | 9.19 | `4b6777e21056` | pre-registered main run, 428 trials (the tracked `SCORE.md`, `trials_scored.csv` and `qa_recount.md` ride along) |
+
+## Release `data-20261118`
+
+15 raw-data archives of the gin-control study (`harness/gpu-initiated/gin_recovery/control`), 8735 files, 43.33 MB
+compressed. Packed with `tools/pack_release.py` (the files git ignores in each result folder: per-trial logs, kv and meta files, hold snapshots; one
+`.tar.xz` per result folder, unpacking to the folder's repository path) from the worktree `exp/gin-control`. The full checksums are in the `SHA256SUMS`
+asset of that release. The `hold_*.out` files carry the documentation placeholder addresses stated above (the runner masks the real ones).
+
+| folder | asset | files | MB | sha256 (first 12) | note |
+|---|---|--:|--:|---|---|
+| `harness/gpu-initiated/gin_recovery/control/results/20261022_smoke1` | `harness__gpu-initiated__gin_recovery__control__results__20261022_smoke1.tar.xz` | 77 | 0.14 | `00be5139fee5` | smoke 1 (set gc_smoke), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261022_smoke2` | `harness__gpu-initiated__gin_recovery__control__results__20261022_smoke2.tar.xz` | 70 | 0.23 | `435fd7274a9d` | smoke 2 (gc_smoke2), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261022_smoke3` | `harness__gpu-initiated__gin_recovery__control__results__20261022_smoke3.tar.xz` | 107 | 0.31 | `35976f3afcda` | smoke 3 (gc_smoke3), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261023_pilot1` | `harness__gpu-initiated__gin_recovery__control__results__20261023_pilot1.tar.xz` | 502 | 1.69 | `e08b0d8b392f` | pilot 1 (gc_pilot1, one trial of every rdma cell), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261023_pilot2` | `harness__gpu-initiated__gin_recovery__control__results__20261023_pilot2.tar.xz` | 782 | 4.85 | `55a26a5b6463` | pilot 2 (gc_pilot2, tcp cells and RG-gc regression once), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261023_smoke4` | `harness__gpu-initiated__gin_recovery__control__results__20261023_smoke4.tar.xz` | 107 | 0.24 | `3dbdfbc9b064` | smoke 4 (gc_smoke4; GPU hang and fd-holder cells), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261023_smoke5` | `harness__gpu-initiated__gin_recovery__control__results__20261023_smoke5.tar.xz` | 78 | 0.16 | `4d874b374cbc` | smoke 5 (fd-holder cause split), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261023_smoke6` | `harness__gpu-initiated__gin_recovery__control__results__20261023_smoke6.tar.xz` | 106 | 0.24 | `90a1ad9e6ddb` | smoke 6 (ward QP ERR check, all-context progress lines), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261024_pilot3` | `harness__gpu-initiated__gin_recovery__control__results__20261024_pilot3.tar.xz` | 153 | 0.76 | `c516cc63f425` | pilot 3 (gc_pilot3, second-death fixes), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261027_pilot4` | `harness__gpu-initiated__gin_recovery__control__results__20261027_pilot4.tar.xz` | 96 | 8.58 | `07c67542184e` | pilot 4 (counterexample cells, old rule), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261027_pilot5` | `harness__gpu-initiated__gin_recovery__control__results__20261027_pilot5.tar.xz` | 168 | 0.30 | `f074ac4dabb5` | pilot 5 (dependent-waiter rule), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261027_pilot6` | `harness__gpu-initiated__gin_recovery__control__results__20261027_pilot6.tar.xz` | 72 | 0.25 | `a524c2800472` | pilot 6 (two deaths on the final library), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261028_pilot7` | `harness__gpu-initiated__gin_recovery__control__results__20261028_pilot7.tar.xz` | 178 | 0.34 | `c725ede725ee` | pilot 7 (abort-decision library, gc_pilot7), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261028_pilot8` | `harness__gpu-initiated__gin_recovery__control__results__20261028_pilot8.tar.xz` | 61 | 0.06 | `609c2612beb2` | pilot 8 (refusal cells, gc_pilot7), not scored |
+| `harness/gpu-initiated/gin_recovery/control/results/20261118_main` | `harness__gpu-initiated__gin_recovery__control__results__20261118_main.tar.xz` | 6178 | 25.18 | `3667b94b06ce` | pre-registered main run, 402 trials (set gc_main1; the tracked SCORE.md and trials_scored.csv are in the repository), tag prereg/gin-control-v1 |

@@ -1,5 +1,7 @@
 # gin-control 2단계 2c: mirror 끈 rank의 더러운 segment만 체크포인트 (0단계 확인과 설계 안; 구현은 다음 주)
 
+> **읽기 전에(2026-10-23 표시).** 설계 안(코드 없음, 커밋 `c17c8c3e`)이고 구현하지 않았다. 본문의 "구현은 다음 주"는 그때 계획이다. 고른 길은 장치 코드 없는 대안(GPU 안 사본, 2026-10-22 사용자 선택): [notes_snap.md](notes_snap.md). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 2026-10-17. 사용자 지시로 구현을 다음 주로 미뤘다. 이 문서는 0단계(소스 확인)와 고를 설계, 어림한 줄 수만 담는다. 트리 복사, 빌드, 코드, 시험은 하지 않았다(0단계를 읽으려고 `agent_gc_p2c/nccl-src`에 e3faf02를 잠깐 꺼냈고, 계획이 바뀐 뒤 지웠다). 표시: [소스] 코드를 읽어 확인, [측정] 기존 로그의 값, [추론] 해석이나 셈, [미확인] 확인 안 함.
 
 줄 번호의 바탕: 호스트 파일 `src/transport/net_ib/gdaki/gin_host_gdaki.cc`는 커밋 e3faf02("gin-control + 2b (gc_layer_p2b.diff fa3f1b48)", md5 `78653573`, 29 979줄), 장치 헤더 `src/include/nccl_device/gin/gdaki/gin_gdaki.h`와 `gin_gdaki_device_host_common.h`도 e3faf02의 것. 시험 프로그램은 worktree의 `../../mirror/impl/test/gin_mi.cu`.
@@ -87,6 +89,9 @@
 비교: 지시의 put 경로 비트맵이었다면 `gin_gdaki.h`(매크로 뒤)에 약 40–60줄과 측 표 칸 하나, 호스트는 링의 dirty set 기록, OR, 잃은 set까지 약 350줄로 본다. 위 2절 때문에 고르지 않는다.
 
 ## EXPERIMENT.md 5절과 9.8절에 넣을 글 (안; 구현과 확인 뒤에 확정)
+
+> 반영 여부(2026-10-23 확인, EXPERIMENT.md 읽기만): 5절 라이브러리 행에는 비슷한 글(장치 코드 변경은 2c 표시만)이 들어갔고, 9.8절 문장은 없다(`onerank.cu.o` 0건).
+> 그 뒤 고른 길은 장치 코드 없는 GPU 안 사본([notes_snap.md](notes_snap.md))이라 이 안은 다시 붙이지 않는다. notes_snap.md는 "5절 '장치 코드 0줄'은 그대로 참"이라 적어 지금 5절 행과 다르다 `[확인: 읽기만]`.
 
 - 5절: "장치 코드 0줄"을 "장치 변경은 더러운 segment 표시만(라이브러리 안의 검사 커널 하나, `src/device/onerank.cu`; application 장치 헤더는 0줄)"으로 바꾼다. 까닭: mirror 끈 rank의 저장소 길이 멈춤 안에서 이미지를 통째 D2H한다(2b). 바뀐 segment의 기록은 장치에도 호스트에도 없고, 이미지에는 로컬 커널이 쓰는 영역이 있어 put만 보는 표시로는 맞지 않는다. 그래서 내용으로 찾는 커널이 필요하다(2026-10-17 사용자 결정: 호스트 쪽 우회보다 라이브러리 안 변경).
 - 9.8절 동일성 확인: "매크로 없는 프로그램과 매크로 프로그램 16 조합은 ln4와 같아야 함, 설치 헤더 같음, 장치 객체는 `onerank.cu.o`와 device link 객체만 다름(네 빌드 모두), 나머지는 SASS 같음"으로 고친다.

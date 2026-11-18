@@ -1,5 +1,7 @@
 # gin-control 2단계 2b: 결정 7(mirror 끈 저장소 길), 저장소 몫의 활성화 덩어리, `gdakiStoreWardToErr`, STATE와 rkey 목록의 outbox 차례 (작업 기록)
 
+> **읽기 전에(2026-10-23 표시).** 작성 2026-10-17(커밋 `21ceb8c3`), int 커밋(`gc_layer_int.diff` `a7600a46`) 위, 결과 `gc_layer_p2b.diff` `fa3f1b48`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: "gin-control + 2b" 위의 [notes_fix3.md](notes_fix3.md), [notes_p3.md](notes_p3.md), [notes_p2a2.md](notes_p2a2.md), 그리고 [notes_int2.md](notes_int2.md). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 ## 단계 목록 (처음에 적은 계획)
 
 1. `agent_gc_int/` 트리를 `agent_gc_p2b/`로 복사, 머리 커밋이 "gin-control int (gc_layer_int.diff a7600a46)"인지 확인
@@ -124,6 +126,8 @@ REJOIN이 받아들여지고 쌍 (생존 rank s, 예비 프로세스 d)의 링�
 바탕(고치지 않음): `rs_ctrl_api.h` `948b3ecf`, `gc_layer_int.diff` `a7600a46`, worktree `build_gc.sh` `5eaaf11e`(이 작업 동안 고침 에이전트가 바꾼 판), `gc_sites.tsv` HEAD `6cd637e5`, `gc_unit_prep.cc` `f2264508`, HEAD의 `gc_unit_p1.cc` `3350519e`, `gc_unit_p2.cc` `b1ea84fd`, `gate_fenced.cc` `a0817ab0`. `EXPERIMENT.md`, `launcher/*`, `test/*`, `../../mirror/*`, `rs_ctrl_api.h`, `gc_layer*.diff`(이 작업의 새 파일 빼고), `build_gc.sh`는 이 작업이 고치지 않았다.
 
 ## EXPERIMENT.md 11절과 12절에 넣을 줄 (안)
+
+> 반영 여부(2026-10-23 확인, EXPERIMENT.md 읽기만): 이 글 그대로는 들어가지 않았다(`fa3f1b48` 0건). 2b는 11절의 통합 2 줄과 12절 2026-10-17 재리뷰 행(커밋 `21ceb8c3`)에 들어 있다. 다시 붙이지 않는다.
 
 - 11절: `- [ ] 2단계 2b(결정 7, 덩어리의 저장소 칸, gdakiStoreWardToErr, STATE와 rkey 목록의 outbox 차례, 메모리 보고 줄): 빌드와 CPU 시험까지 — 2026-10-17, impl/gc_layer_p2b.diff fa3f1b48(int 커밋 위). 링 만들기(2a-2) 전에는 STATE와 rkey가 자료 소켓으로 감; 시험 스위치 셋, MTU와 fork 검사, BYE 차례, launcher QP는 남음`
 - 12절: `| 2026-10-17 | 2단계 2b 구현(실행 없음, CPU와 빌드만). int 커밋(gc_layer_int.diff a7600a46) 위의 impl/gc_layer_p2b.diff(fa3f1b48, 639줄, 호스트 파일만, 더하기 512줄, 장치 코드 0줄): rdma 빌드의 gdakiStoreOn을 복원 켬 전체로(mirror 끈 체크포인트도 저장소 WRITE, 예비 프로세스는 활성화 v2와 FETCH QP의 READ, 덩어리는 저장소 칸만), gdakiStoreWardToErr(죽은 rank가 주인인 ward의 올리기 QP를 저장소 스레드가 ERR로), STATE와 rkey 목록의 outbox 세 전송(예비 프로세스가 차례를 시작; 바이트는 ln4 자료 소켓과 같음; 링 전에는 자료 소켓, TODO(2a-2)), 메모리 보고 줄(rank 4, I = 20 MiB에서 3I + 7.45 MiB, 한도 없음). gc, gcp, gct, gctp 빌드됨(경고 0). tcp 전처리는 정규화 뒤 ln4와 hunk 0(gct, gctp), gctc는 RST 간격 2 hunk만 [측정]. 단위 시험 두 빌드 통과, gc_unit_p2b 11 114 검사 실패 0(rdma) [측정]. 장치 동일성: 프로그램 16 조합과 장치 객체 207개 × 4가 ln4와 같음 [측정]. 헤더 요청은 impl/rs_ctrl_api_p2b.diff(전송 머리). 클러스터 실행 없음, verbs 장치에서 실행 안 함 | impl/notes_p2b.md, 스크래치 agent_gc_p2b/logs_p2b/ |`

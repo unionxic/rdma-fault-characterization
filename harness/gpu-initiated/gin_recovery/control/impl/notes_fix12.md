@@ -1,5 +1,7 @@
 # gin-control 1단계와 2a-1단계 고침 (REVIEW_P12 반영, 작업 기록)
 
+> **읽기 전에(2026-10-23 표시).** 작성 2026-10-17(커밋 `a5f7ef0b`), 결과 `gc_layer_int.diff` `60ca3cd9`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: [notes_p2b.md](notes_p2b.md), [notes_fix3.md](notes_fix3.md)(재리뷰의 새 막는 문제), [notes_p3.md](notes_p3.md), [notes_p2a2.md](notes_p2a2.md). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 ## 단계 목록 (처음에 적은 계획)
 
 1. 트리 `agent_gc_int/`의 작업 트리를 "gin-control int (gc_layer_int.diff a7600a46)"로 커밋
@@ -155,6 +157,8 @@
 | 덧 | `gate_fenced`의 새 관문을 `/proc` 관문으로 바꾼 변종은 0/10, 21 실패(시험이 틀릴 수 있음) `[측정]` | `gate_fenced_mutant.log` |
 
 ## EXPERIMENT.md에 넣을 문장 (조율 세션용)
+
+> 반영 여부(2026-10-23 확인, EXPERIMENT.md 읽기만): 이 글 그대로는 들어가지 않았다(`60ca3cd9` 0건). 이 고침은 12절 2026-10-17 재리뷰 행(커밋 `a5f7ef0b`)에 요약돼 있다. 아래를 그대로 다시 붙이지 않는다.
 
 **11절(작업 체크리스트)**
 

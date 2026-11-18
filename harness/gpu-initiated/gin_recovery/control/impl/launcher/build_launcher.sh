@@ -10,7 +10,8 @@
 #
 # Safety: this machine may be a cluster node. The script never runs gin_launcher, never opens a verbs device or a GPU,
 # never runs anything that uses libibverbs or CUDA at run time. Linking gin_launcher against libibverbs is compile time
-# only. The unit test uses an in-process transport and forked children of its own.
+# only. The unit test uses an in-process transport and forked children of its own; when verbs.h exists it also links the
+# verbs transport against its own fake libibverbs (launcher_unit.cc; libibverbs is not linked into launcher_unit).
 set -euo pipefail
 D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${OUT:-${TMPDIR:-/tmp}/gin-launcher-build-${USER:-$(id -un)}}"
@@ -38,8 +39,15 @@ build() {
   "$CC" -std=c11 -O2 "${WARN[@]}" -DGL_PRODUCTION -I"$D" -DGL_NO_VERBS -c "$D/gin_launcher.c" -o "$OUT/gin_launcher_prod_noverbs.o"
   echo "== launcher_unit (ASan, UBSan)"
   "$CC" -std=c11 "${SAN[@]}" "${WARN[@]}" -DGL_NO_MAIN -I"$D" -c "$D/gin_launcher.c" -o "$OUT/gin_launcher_core.o"
-  "$CXX" -std=c++17 "${SAN[@]}" "${WARN[@]}" -pthread -I"$D" "$D/launcher_unit.cc" "$OUT/gin_launcher_core.o" \
-    -o "$OUT/launcher_unit"
+  local UV=() UO=()
+  if [ -f "$VERBS_H" ]; then  # the verbs transport against the test's fake libibverbs (not linked: -libverbs absent)
+    echo "   + the verbs transport against launcher_unit.cc's fake libibverbs (scene verbs_credit_retry)"
+    "$CC" -std=c11 "${SAN[@]}" "${WARN[@]}" -I"$D" -c "$D/launcher_transport_verbs.c" -o "$OUT/launcher_transport_verbs_unit.o"
+    UV=(-DGL_UNIT_VERBS)
+    UO=("$OUT/launcher_transport_verbs_unit.o")
+  fi
+  "$CXX" -std=c++17 "${SAN[@]}" "${WARN[@]}" "${UV[@]}" -pthread -I"$D" "$D/launcher_unit.cc" "$OUT/gin_launcher_core.o" \
+    "${UO[@]}" -o "$OUT/launcher_unit"
   (cd "$OUT" && md5sum gin_launcher launcher_unit) | tee "$OUT/build.md5"
 }
 

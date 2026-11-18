@@ -1,5 +1,7 @@
 # notes_p1.md — gin-control 1단계 (상태 페이지, READ 감지, 펜스)
 
+> **읽기 전에(2026-10-23 표시).** 작성 2026-10-17(커밋 `73be8802`, nit 고침 `a5f7ef0b`), 결과 `gc_layer_p1.diff` `2fc1ad01`. 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 그 뒤 코드 리뷰(REVIEW_P12)가 이 단계의 막는 문제를 찾았다(확인 창과 PROBE_SETUP 보내기를 부르는 곳 0, EXPERIMENT.md 12절 2026-10-17 행). 후속: [notes_int.md](notes_int.md), [notes_fix12.md](notes_fix12.md). 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 준비 단계(`gc_layer.diff` md5 `f5061a31`) 위에 1단계를 구현했다. 호스트 코드만, 장치 코드 0줄. 모든 새 코드는
 `#if !NCCL_GIN_CTRL_TCP` 안이라 tcp 회귀 빌드(`gct`, `gctp`)의 전처리 결과는 ln4 그대로다. 산출물은 이 폴더의
 `gc_layer_p1.diff`, `gc_unit_p1.cc`, `gate_fenced.cc`, 이 파일이다. `git add`/commit/push는 하지 않았다.
@@ -137,6 +139,8 @@
 새 준비 단계 위로 rebase하면서 위 3절 seam들을 묶으면 된다. `gc_layer_p1.diff`는 `f5061a31` 위 호스트 파일 diff다.
 
 ## 8. EXPERIMENT.md에 넣을 문장 (코디네이터가 11·12절에 붙일 것; 다른 실험 문서는 사실만)
+
+> 반영됨(2026-10-23 확인, EXPERIMENT.md 읽기만): 11절의 1단계 줄(그 뒤 리뷰 결과로 미완료 표시가 됨)과 12절 2026-10-17 1단계 행(`2fc1ad01`). 다시 붙이지 않는다.
 
 **11절 체크리스트(한 줄 추가):**
 

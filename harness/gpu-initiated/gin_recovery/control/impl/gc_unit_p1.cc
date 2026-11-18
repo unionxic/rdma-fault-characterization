@@ -22,7 +22,15 @@
 //   8. the partition guard over four ranks (one rank stalled: judged; the reader alone sees everyone stale: not judged;
 //      another survivor sees the peer fresh: not judged; two ranks);
 //   9. the fence word, its step and gdakiLnFenceOf over a lineage oracle (the design 4.4 scenes);
-//  10. the mailbox words and the FREEZE_PAGE switch's values.
+//  10. the mailbox words and the FREEZE_PAGE switch's values;
+//  11. the judgement's effect (phase 2a-2-C step 4): a FIN on a pair with a live ring only opens the window, the end on
+//      rows 3-6 at t_F + W or at once on the launcher's EXITED/FENCED, ln4's rule without the ring, the floor rule over the
+//      grid, the overdue bound, 4 000 kill scenes over the window and a QP model;
+//  12. the launcher page pull: the registration slot of (nonce, rank), pullOk, rows 10-12 reachable;
+//  13. the witness off (smoke3, NCCL_GIN_CTRL_WITNESS=0): the socket's end opens no window and feeds no judgement on an
+//      effective pair (W is off whatever the socket did), 3 000 kill scenes end by the launcher's report (row 3) or by
+//      the READ failure path (row 11 NORESP 3.5-4.5 s after the kill, row 10 LINKDOWN with the launcher gone too), never
+//      at the FIN, never on rows 4-9; the READ rows' end once per incarnation.
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
@@ -1334,6 +1342,379 @@ static void testMailFreeze() {
         !gdakiCtrlFreezeParse("12000:helpers", &f) && !gdakiCtrlFreezeParse("100@", &f));
   printf("mail and freeze: ok\n");
 }
+
+// ---- 11. the judgement's effect on the record path (phase 2a-2-C step 4; EXPERIMENT.md 9.3) ----
+// struct gdakiCtrlEff: on an effective pair (records on the live ring, page and liveness READ QP up) a FIN only opens the
+// window; the end (hold or decline) comes on the window's verdict (rows 3-6) or at once on the launcher's EXITED/FENCED;
+// a pair without a live ring keeps ln4's rule. The launcher page pull gives pullOk and the registration word (rows 10-12).
+// The window runs over a small QP model of a killed peer: READ1 done 0.1 ms after its post (the QP still there), READ2
+// one of: never done (the QP gone: NORESP), a remote access error (the MR gone first: REMACC), done with the beat as
+// READ1's (STALE), done with the beat ahead (alive: row 8). The launcher's end comes at a random time 1-200 ms after t_F
+// or not at all.
+static void testEffect() {
+  // the rule's inputs: effective only with the live ring, the page and the QP
+  for (int m = 0; m < 8; m++)
+    CHECK(gdakiCtrlEffective(m & 1, m & 2, m & 4) == (m == 7));
+  // a pair without the ring: ln4's rule for the FIN, nothing for the launcher's end (the old path)
+  {
+    struct gdakiCtrlEff e;
+    CHECK(gdakiCtrlEffOnFin(&e, false, GDAKI_CTRL_WSRC_FIN, 0, 1.0) == GDAKI_CTRL_EA_OLD && e.pendInc1 == 0);
+    CHECK(gdakiCtrlEffOnFin(&e, gdakiCtrlEffective(false, true, true), GDAKI_CTRL_WSRC_RST, 0, 1.0) == GDAKI_CTRL_EA_OLD);
+    CHECK(gdakiCtrlEffOnEnded(&e, false, 0) == GDAKI_CTRL_EA_NONE && e.doneInc1 == 0);
+    CHECK(gdakiCtrlEffOnVerdict(&e, 5, 0) == GDAKI_CTRL_EA_NONE);  // its window is reported only
+  }
+  // every row as the window's verdict: the end only for rows 3-6, row 8 re-dials, the rest waits; once per incarnation
+  long ends = 0;
+  for (uint32_t row = 1; row <= 21; row++) {
+    struct gdakiCtrlEff e;
+    CHECK(gdakiCtrlEffOnFin(&e, true, GDAKI_CTRL_WSRC_FIN, 2, 10.0) == GDAKI_CTRL_EA_WINDOW && e.pendInc1 == 3);
+    CHECK(gdakiCtrlEffOnFin(&e, true, GDAKI_CTRL_WSRC_RST, 2, 12.0) == GDAKI_CTRL_EA_WINDOW && e.tF == 10.0 &&
+          e.src == GDAKI_CTRL_WSRC_FIN);  // a second FIN/RST keeps the first t_F
+    CHECK(gdakiCtrlEffOnVerdict(&e, row, 1) == GDAKI_CTRL_EA_NONE);  // another incarnation's window
+    const uint32_t a = gdakiCtrlEffOnVerdict(&e, row, 2);
+    CHECK(a == (row >= 3 && row <= 6 ? GDAKI_CTRL_EA_END : row == 8 ? GDAKI_CTRL_EA_REDIAL : GDAKI_CTRL_EA_WAIT));
+    CHECK(gdakiCtrlEffOnVerdict(&e, row, 2) == GDAKI_CTRL_EA_NONE);  // the mailbox once
+    if (a == GDAKI_CTRL_EA_END) {
+      ends++;
+      CHECK(gdakiCtrlEffOnFin(&e, true, GDAKI_CTRL_WSRC_FIN, 2, 20.0) == GDAKI_CTRL_EA_NONE);  // spent
+      CHECK(gdakiCtrlEffOnEnded(&e, true, 2) == GDAKI_CTRL_EA_NONE);                          // ended once
+      CHECK(gdakiCtrlEffOnFin(&e, true, GDAKI_CTRL_WSRC_FIN, 3, 30.0) == GDAKI_CTRL_EA_WINDOW);  // the next incarnation
+    } else {
+      CHECK(gdakiCtrlEffOnEnded(&e, true, 2) == GDAKI_CTRL_EA_END);  // EXITED wins over a rising beat (row 8 first)
+    }
+  }
+  CHECK(ends == 4);
+  // the floor rule over the whole grid: the window's verdict ends a peer only with the launcher's end or a confirmed window
+  long gridEnds = 0;
+  for (uint32_t L = 0; L < GDAKI_CTRL_L_N; L++)
+    for (uint32_t B = 0; B < GDAKI_CTRL_B_N; B++)
+      for (uint32_t W = 0; W < GDAKI_CTRL_W_N; W++)
+        for (uint32_t R = 0; R < GDAKI_CTRL_R_N; R++) {
+          struct gdakiCtrlEff e;
+          (void)gdakiCtrlEffOnFin(&e, true, GDAKI_CTRL_WSRC_FIN, 0, 0.0);
+          if (gdakiCtrlEffOnVerdict(&e, judgeRow(L, B, W, R), 0) != GDAKI_CTRL_EA_END) continue;
+          gridEnds++;
+          CHECK(L == GDAKI_CTRL_L_ENDED || W == GDAKI_CTRL_W_END_STALE || W == GDAKI_CTRL_W_END_NORESP ||
+                W == GDAKI_CTRL_W_END_REMACC);
+          CHECK(B == GDAKI_CTRL_B_NONE && L != GDAKI_CTRL_L_LEFT);
+        }
+  CHECK(gridEnds == 117 + 3 * 39);  // rows 3-6's hand counts
+  // the overdue bound: a pending window without its verdict waits once (the witness unknown), then nothing
+  {
+    struct gdakiCtrlEff e;
+    (void)gdakiCtrlEffOnFin(&e, true, GDAKI_CTRL_WSRC_FIN, 0, 100.0);
+    CHECK(gdakiCtrlEffOverdue(&e, 100.0 + 520.0, 520.0) == GDAKI_CTRL_EA_NONE);
+    CHECK(gdakiCtrlEffOverdue(&e, 100.0 + 520.5, 520.0) == GDAKI_CTRL_EA_WAIT && e.pendInc1 == 0);
+    CHECK(gdakiCtrlEffOverdue(&e, 100.0 + 900.0, 520.0) == GDAKI_CTRL_EA_NONE);
+    CHECK(gdakiCtrlEffOnVerdict(&e, 5, 0) == GDAKI_CTRL_EA_NONE);  // a verdict after it: nothing more
+    CHECK(gdakiCtrlEffOnEnded(&e, true, 0) == GDAKI_CTRL_EA_END);   // the launcher's end still decides
+  }
+  // the kill scenes over the window and the QP model (W 20-50 ms)
+  std::mt19937_64 rng(0x6566666563740aull);
+  long scenes = 0, byKind[4] = {}, endAtVerdict = 0, endAtReport = 0, beforeW = 0, redials = 0, noEnd = 0;
+  double maxVerdictLag = 0;
+  for (int i = 0; i < 4000; i++) {
+    const double W = 20 + (double)(rng() % 31), tF = (double)(rng() % 1000);
+    const int kind = (int)(rng() % 4);  // READ2: 0 never done, 1 REMACC, 2 STALE, 3 alive
+    const bool report = rng() % 3 != 0;
+    const double reportAt = tF + 1.0 + (double)(rng() % 200);
+    const uint64_t incExp = gdakiCtrlIncNonce(0, 0x1234);
+    struct gdakiCtrlEff e;
+    struct gdakiCtrlWindow w;
+    CHECK(gdakiCtrlEffOnFin(&e, true, GDAKI_CTRL_WSRC_FIN, 0, tF) == GDAKI_CTRL_EA_WINDOW);
+    CHECK(gdakiCtrlWindowOpen(&w, GDAKI_CTRL_WSRC_FIN, tF, true));
+    const uint32_t no = w.no;
+    double post[2] = {-1, -1}, endAt = -1, verdictAt = -1;
+    bool polled[2] = {false, false}, ended = false;
+    uint32_t endBy = 0;  // 1 the window's verdict, 2 the launcher's report
+    for (double t = tF + 0.01; t <= tF + 3 * W + 250; t += 0.05 + (double)(rng() % 1000) / 1000.0) {
+      // the launcher's report (EXITED or FENCED) reaches the helper
+      const bool endedWord = report && t >= reportAt;
+      if (endedWord && !ended && gdakiCtrlEffOnEnded(&e, true, 0) == GDAKI_CTRL_EA_END) {
+        ended = true;
+        endAt = t;
+        endBy = 2;
+      }
+      // the QP model's completions
+      if (post[0] >= 0 && !polled[0] && t >= post[0] + 0.1) {
+        polled[0] = true;
+        CHECK(gdakiCtrlWindowOnCqe(&w, no, 1, GDAKI_CTRL_CQ_OK, 77, incExp, t));
+      }
+      if (post[1] >= 0 && !polled[1] && kind != 0 && polled[0] && t >= post[1] + 0.1) {
+        polled[1] = true;
+        CHECK(gdakiCtrlWindowOnCqe(&w, no, 2, kind == 1 ? GDAKI_CTRL_CQ_REMACC : GDAKI_CTRL_CQ_OK, kind == 3 ? 78 : 77,
+                                   incExp, t));
+      }
+      if (w.state == GDAKI_CTRL_WS_OPEN) {
+        const uint32_t a = gdakiCtrlWindowStep(&w, t, W);
+        if (a == GDAKI_CTRL_WA_POST1 || a == GDAKI_CTRL_WA_POST2) {
+          post[a == GDAKI_CTRL_WA_POST1 ? 0 : 1] = t;
+          gdakiCtrlWindowPosted(&w, a == GDAKI_CTRL_WA_POST1 ? 1u : 2u, true, t);
+        } else if (a == GDAKI_CTRL_WA_JUDGE) {
+          verdictAt = t;
+          const uint32_t v = gdakiCtrlWindowJudge(&w, incExp, t);
+          // the table at the verdict (gdakiProbeWindowEnd): L ended if the report came, else no information
+          const uint32_t row = judgeRow(endedWord ? GDAKI_CTRL_L_ENDED : GDAKI_CTRL_L_NOINFO, GDAKI_CTRL_B_NONE,
+                                        gdakiCtrlWofConfirm(v), GDAKI_CTRL_R_ROSE);
+          static const uint32_t kWant[4] = {GDAKI_CTRL_CW_NORESP, GDAKI_CTRL_CW_REMACC, GDAKI_CTRL_CW_STALE,
+                                            GDAKI_CTRL_CW_ALIVE};
+          CHECK(v == kWant[kind]);
+          CHECK(t >= tF + W - 1e-9);  // the verdict never before t_F + W
+          if (t - (tF + W) > maxVerdictLag) maxVerdictLag = t - (tF + W);
+          const uint32_t a2 = gdakiCtrlEffOnVerdict(&e, row, 0);
+          if (ended) {
+            CHECK(a2 == GDAKI_CTRL_EA_NONE);  // the report decided first: the window's verdict does nothing
+          } else if (a2 == GDAKI_CTRL_EA_END) {
+            ended = true;
+            endAt = t;
+            endBy = 1;
+          } else {
+            CHECK(kind == 3 && a2 == GDAKI_CTRL_EA_REDIAL);  // only the alive window leaves it to the report
+            redials++;
+          }
+        }
+      }
+      if (ended && w.state != GDAKI_CTRL_WS_OPEN) break;
+    }
+    CHECK(verdictAt >= 0 || (ended && endBy == 2));
+    if (endBy == 2) {
+      endAtReport++;
+      CHECK(endAt >= reportAt && endAt < reportAt + 1.1);  // at once: within one helper step of the report
+      if (endAt < tF + W) beforeW++;
+    } else if (endBy == 1) {
+      endAtVerdict++;
+      CHECK(kind != 3 && endAt >= tF + W - 1e-9 && endAt <= tF + W + 2.2);  // the window concludes at W (+ two steps)
+      CHECK(!report || reportAt > endAt);
+    } else {
+      noEnd++;
+      CHECK(kind == 3 && !report);  // alive and no report: no end (the witness is re-dialled; ln4's refusal rule)
+    }
+    // never an end on the FIN alone: before t_F + W only the launcher's report ends it
+    if (ended && endAt < tF + W) CHECK(endBy == 2);
+    byKind[kind]++;
+    scenes++;
+  }
+  for (int k = 0; k < 4; k++) CHECK(byKind[k] > 0);
+  CHECK(endAtVerdict > 0 && endAtReport > 0 && beforeW > 0 && redials > 0 && noEnd > 0);
+  printf("effect: rows 3-6 end (%ld grid points, all ended or a confirmed window), row 8 re-dials, others wait; %ld kill "
+         "scenes (READ2 never done %ld, REMACC %ld, STALE %ld, alive %ld): ended at the window's verdict %ld (t_F + W "
+         "+ at most %.3f ms), at the launcher's report %ld (%ld before t_F + W), not ended %ld (alive, no report); "
+         "never on the FIN alone\n",
+         gridEnds, scenes, byKind[0], byKind[1], byKind[2], byKind[3], endAtVerdict, maxVerdictLag, endAtReport, beforeW,
+         noEnd);
+}
+
+// ---- 12. the launcher page pull: pullOk and the registration word make rows 10-12 reachable (design v3 4.2 L) ----
+static void putSlot(std::vector<uint8_t>& pg, uint32_t i, uint64_t nonce, uint64_t reg) {
+  memcpy(pg.data() + GDAKI_CTRL_LAP_HEAD + GDAKI_CTRL_LAP_SLOT * i, &nonce, 8);
+  memcpy(pg.data() + GDAKI_CTRL_LAP_HEAD + GDAKI_CTRL_LAP_SLOT * i + 8, &reg, 8);
+}
+static uint64_t pageWord(uint32_t st, int rank, uint32_t inc) {
+  return ((uint64_t)st << 56) | ((uint64_t)((uint32_t)rank & 0xffffffu) << 32) | inc;
+}
+static void testPull() {
+  CHECK(GDAKI_CTRL_LAP_PULL_BYTES == 2048);
+  const uint64_t N = 0x6e6f6e6365ull, other = N ^ 0x55;
+  std::vector<uint8_t> pg(GDAKI_CTRL_LAP_PULL_BYTES, 0);
+  const uint64_t mv = ((uint64_t)GDAKI_CTRL_LAP_MAGIC << 32) | (1u << 16) | 2u;
+  memcpy(pg.data(), &mv, 8);
+  putSlot(pg, 3, N, pageWord(GDAKI_CTRL_LAP_RS_ALIVE, 2, 0));      // rank 2 incarnation 0 alive
+  putSlot(pg, 7, N, pageWord(2u, 1, 0));                           // rank 1: the word's EXITED (not an end)
+  putSlot(pg, 9, other, pageWord(GDAKI_CTRL_LAP_RS_ALIVE, 3, 0));  // rank 3 of another communicator
+  putSlot(pg, 61, N, pageWord(GDAKI_CTRL_LAP_RS_LEFT, 5, 1));      // rank 5 incarnation 1 left (the last slot)
+  uint64_t w = 0;
+  bool al = false, lf = false;
+  CHECK(gdakiCtrlLaPageRegOf(pg.data(), pg.size(), N, 2, &w) == 1 && w == pageWord(GDAKI_CTRL_LAP_RS_ALIVE, 2, 0));
+  gdakiCtrlLaPageRegL(1, w, 0, &al, &lf);
+  CHECK(al && !lf);
+  gdakiCtrlLaPageRegL(1, w, 1, &al, &lf);  // another incarnation's ALIVE: no information
+  CHECK(!al && !lf);
+  CHECK(gdakiCtrlLaPageRegOf(pg.data(), pg.size(), N, 1, &w) == 1);
+  gdakiCtrlLaPageRegL(1, w, 0, &al, &lf);
+  CHECK(!al && !lf);
+  CHECK(gdakiCtrlLaPageRegOf(pg.data(), pg.size(), N, 3, &w) == 0 && w == 0);  // no slot for this nonce
+  CHECK(gdakiCtrlLaPageRegOf(pg.data(), pg.size(), N, 5, &w) == 1);
+  gdakiCtrlLaPageRegL(1, w, 1, &al, &lf);
+  CHECK(!al && lf);
+  CHECK(gdakiCtrlLaPageRegOf(pg.data(), 16, N, 2, &w) == -1);  // the beat's 16 B: no pull
+  std::vector<uint8_t> bad = pg;
+  bad[7] ^= 1;
+  CHECK(gdakiCtrlLaPageRegOf(bad.data(), bad.size(), N, 2, &w) == -1);  // not a launcher page
+  // pullOk: connected, no QP error, the beat not stale, a pull within the stall bound
+  CHECK(gdakiCtrlLaPullOk(true, false, false, 100.0, 1099.0, 1000.0));
+  CHECK(!gdakiCtrlLaPullOk(true, false, false, 100.0, 1100.0, 1000.0));
+  CHECK(!gdakiCtrlLaPullOk(true, false, false, -1.0, 100.0, 1000.0));
+  CHECK(!gdakiCtrlLaPullOk(false, false, false, 100.0, 101.0, 1000.0) && !gdakiCtrlLaPullOk(true, true, false, 100.0, 101.0, 1000.0) &&
+        !gdakiCtrlLaPullOk(true, false, true, 100.0, 101.0, 1000.0));
+  // the published word round trip
+  for (int f = 0; f <= 1; f++)
+    for (int ok = 0; ok <= 1; ok++) {
+      const uint64_t word = pageWord(GDAKI_CTRL_LAP_RS_ALIVE, 2, 7);
+      bool po, ra, rl;
+      gdakiCtrlLaPullL(gdakiCtrlLaPullPack(ok, f, word), 7, &po, &ra, &rl);
+      CHECK(po == (ok == 1) && ra == (f == 1) && !rl);
+    }
+  // the rows over every pull outcome and witness: R (11) with L from the pull
+  struct Pull {
+    bool ok;
+    int rank;
+    uint32_t inc;
+  } const pulls[] = {{false, 2, 0}, {true, 2, 0}, {true, 2, 1}, {true, 1, 0}, {true, 3, 0}, {true, 5, 1}};
+  long rows[22] = {}, rowsOld[22] = {};
+  for (const Pull& p : pulls)
+    for (uint32_t W = GDAKI_CTRL_W_OK; W <= GDAKI_CTRL_W_OFF; W++) {  // the witness normal, unknown, off
+      const int f = gdakiCtrlLaPageRegOf(pg.data(), pg.size(), N, p.rank, &w);
+      bool ra, rl;
+      gdakiCtrlLaPageRegL(f, w, p.inc, &ra, &rl);
+      const uint32_t L = gdakiCtrlLOf(true, false, false, p.ok, ra, rl);
+      const uint32_t row = judgeRow(L, GDAKI_CTRL_B_NONE, W, GDAKI_CTRL_R_HW_NORESP);
+      rows[row]++;
+      if (!p.ok) CHECK(row == 10);                                   // no pull: 무응답, row 10
+      if (p.ok && L == GDAKI_CTRL_L_NOINFO && W == GDAKI_CTRL_W_OFF) CHECK(row == 11);
+      if (p.ok && L == GDAKI_CTRL_L_ALIVE) CHECK(row == 12);
+      if (p.ok && rl) CHECK(row == 1);                               // the page's LEFT: left
+      rowsOld[judgeRow(gdakiCtrlLOf(true, false, false, false, ra, rl), GDAKI_CTRL_B_NONE, W, GDAKI_CTRL_R_HW_NORESP)]++;
+    }
+  CHECK(rows[10] > 0 && rows[11] > 0 && rows[12] > 0 && rows[1] > 0);
+  CHECK(rowsOld[11] == 0 && rowsOld[12] == 0);  // pullOk false (before this step): rows 11 and 12 unreachable from L
+  printf("pull: slots by (nonce, rank), another incarnation, EXITED word and no slot are no information, LEFT left; rows "
+         "with R (11): 10 x %ld, 11 x %ld, 12 x %ld, 1 x %ld (pullOk false: 10 x %ld, 11 x 0, 12 x 0)\n",
+         rows[10], rows[11], rows[12], rows[1], rowsOld[10]);
+}
+#endif  // !NCCL_GIN_CTRL_TCP
+
+#if !NCCL_GIN_CTRL_TCP
+// ---- 13. the witness off (smoke3; EXPERIMENT.md 9.3 W "꺼짐", 9.9 the witness-off kill cell) ----
+// The subject is SIGKILLed at tK; its witness socket's FIN comes 0.07-0.31 ms later and is muted (no window). Its watch
+// beat stops at tK; its liveness READ QP answers (the frozen page) until its thread group ends 100-200 ms after the kill,
+// then a READ gets no answer until the hardware's retry exceeded 3.51-3.76 s after its post (a timeout at 500 ms first).
+// The launcher's page word is ALIVE until the group ends, then not (EXITED: no information); its EXITED message comes at
+// the group's end unless NO_EXIT_REPORT (a third of the scenes); in a tenth the launcher is gone with the node (L
+// unresponsive, no report). The reader posts one periodic READ every 100 ms and judges at each completion and timeout.
+static void testWitnessOff() {
+  for (int m = 0; m < 8; m++)
+    CHECK(gdakiCtrlWitnessMuted(m & 1, m & 2, m & 4) == (m == 1));  // effective, witness off, no BYE
+  for (int m = 0; m < 16; m++)  // the witness off: W is off unless a window is open or ends (none opens: the FIN is muted)
+    CHECK(gdakiCtrlWOf(false, false, false, (uint32_t)(m % 5), m & 8) == GDAKI_CTRL_W_OFF);
+  // the READ rows' end: effective pairs only, rows 10 and 11 only, once per incarnation, not after the launcher's end
+  for (uint32_t row = 1; row <= 21; row++) {
+    struct gdakiCtrlEff e;
+    CHECK(gdakiCtrlEffOnReadRow(&e, false, row, 0) == GDAKI_CTRL_EA_NONE);
+    const uint32_t a = gdakiCtrlEffOnReadRow(&e, true, row, 0);
+    CHECK(a == (row == 10 || row == 11 ? GDAKI_CTRL_EA_END : GDAKI_CTRL_EA_NONE));
+    CHECK(gdakiCtrlEffOnReadRow(&e, true, row, 0) == GDAKI_CTRL_EA_NONE);
+    if (a == GDAKI_CTRL_EA_END) {
+      CHECK(gdakiCtrlEffOnEnded(&e, true, 0) == GDAKI_CTRL_EA_NONE && gdakiCtrlEffOnReadRow(&e, true, row, 1) == a);
+    }
+  }
+  {
+    struct gdakiCtrlEff e;
+    CHECK(gdakiCtrlEffOnEnded(&e, true, 4) == GDAKI_CTRL_EA_END && gdakiCtrlEffOnReadRow(&e, true, 11, 4) == GDAKI_CTRL_EA_NONE);
+  }
+  CHECK(std::string(gdakiCtrlCauseName(gdakiCtrlJudgementOfRow(11).cause)) == "NORESP" &&
+        std::string(gdakiCtrlCauseName(gdakiCtrlJudgementOfRow(10).cause)) == "LINKDOWN");
+  std::mt19937_64 rng(0x7769746f6666ull);
+  std::uniform_real_distribution<double> u(0, 1);
+  long scenes = 0, byReport = 0, byRow11 = 0, byRow10 = 0;
+  double r11Min = 1e18, r11Max = -1, r10Min = 1e18, r10Max = -1;
+  std::set<uint32_t> seen;
+  for (int i = 0; i < 3000; i++) {
+    const double tK = 1000.0 + 100.0 * u(rng), tFin = tK + 0.07 + 0.24 * u(rng);
+    const double groupEnd = tK + 100.0 + 100.0 * u(rng);
+    const int kind = (int)(rng() % 10);  // 0: the node's launcher gone too; 1-3: NO_EXIT_REPORT; else the report
+    const bool laGone = kind == 0, report = kind >= 4;
+    const bool muted = gdakiCtrlWitnessMuted(true, false, false);
+    CHECK(muted);  // the FIN at tFin: no gdakiCtrlEffOnFin, no window request
+    struct gdakiCtrlEff e;
+    struct gdakiCtrlStale ws, hs;
+    uint32_t lastCls = GDAKI_CTRL_CQ_OK;
+    double postAt = -1, doneAt = -1, next = 0;
+    bool timeoutSeen = false, ended = false;
+    double endAt = -1;
+    uint32_t endRow = 0;
+    const double beatStep = 1.0;
+    for (double t = 0; t < tK + 6000 && !ended; t += 1.0) {
+      // the launcher's EXITED (the helper's step: at once)
+      if (report && t >= groupEnd && gdakiCtrlEffOnEnded(&e, true, 0) == GDAKI_CTRL_EA_END) {
+        ended = true;
+        endAt = t;
+        endRow = 3;
+        break;
+      }
+      bool judge = false;
+      if (postAt >= 0 && doneAt >= 0 && t >= doneAt) {  // a completion
+        const bool answered = postAt < groupEnd;
+        lastCls = answered ? GDAKI_CTRL_CQ_OK : GDAKI_CTRL_CQ_NORESP;
+        if (answered) {
+          const double b = std::min(postAt, tK);
+          (void)gdakiCtrlStaleOnRead(&ws, (uint64_t)(b / beatStep), t, 100);
+          (void)gdakiCtrlStaleOnRead(&hs, (uint64_t)(b / beatStep) * 7u, t, 100);
+        }
+        postAt = doneAt = -1;
+        timeoutSeen = false;
+        judge = true;
+      } else if (postAt >= 0 && !timeoutSeen && t - postAt > 500) {
+        timeoutSeen = true;
+        judge = true;
+      }
+      if (judge) {
+        struct gdakiCtrlRFacts f;
+        f.okInGen = true;
+        f.lastCls = lastCls;
+        f.timedOut = postAt >= 0 && timeoutSeen;
+        f.watchRose = false;
+        f.watchStaleMs = ws.have ? ws.lastMs - ws.firstMs : 0;
+        f.helperStaleMs = hs.have ? hs.lastMs - hs.firstMs : 0;
+        const uint32_t R = gdakiCtrlRDerive(f);
+        const bool regAlive = t < groupEnd;
+        const uint32_t L = gdakiCtrlLOf(true, false, false, !laGone || t < tK, regAlive, false);
+        const uint32_t W = gdakiCtrlWOf(false, false, false, 0, t >= tFin);
+        const uint32_t row = judgeRow(L, GDAKI_CTRL_B_NONE, W, R);
+        seen.insert(row);
+        CHECK(row < 4 || row > 9);  // no window: never rows 4-9
+        if (gdakiCtrlEffOnReadRow(&e, true, row, 0) == GDAKI_CTRL_EA_END) {
+          ended = true;
+          endAt = t;
+          endRow = row;
+          break;
+        }
+        CHECK(!gdakiCtrlEffEndRow(row));
+      }
+      if (postAt < 0 && t >= next) {  // the next periodic READ
+        postAt = t;
+        next = t + 100;
+        doneAt = t < groupEnd ? t + 0.01 : t + 3510.0 + 250.0 * u(rng);
+      }
+    }
+    CHECK(ended);
+    if (!ended) continue;
+    CHECK(endAt > tFin + 50.0);  // never at the FIN (the old rule ended within 0.1 ms; a window would end at t_F + W)
+    if (endRow == 3) {
+      byReport++;
+      CHECK(report && endAt >= groupEnd && endAt < groupEnd + 1.01);
+    } else if (endRow == 11) {
+      byRow11++;
+      CHECK(!report && !laGone);
+      r11Min = std::min(r11Min, endAt - tK);
+      r11Max = std::max(r11Max, endAt - tK);
+      CHECK(endAt - tK >= 3500 && endAt - tK <= 4500);
+    } else {
+      byRow10++;
+      CHECK(endRow == 10 && laGone);
+      r10Min = std::min(r10Min, endAt - tK);
+      r10Max = std::max(r10Max, endAt - tK);
+      CHECK(endAt - tK >= 3500 && endAt - tK <= 4500);
+    }
+    scenes++;
+  }
+  CHECK(byReport > 0 && byRow11 > 0 && byRow10 > 0 && byReport + byRow11 + byRow10 == scenes);
+  std::string rows;
+  for (uint32_t r : seen) rows += " " + std::to_string(r);
+  printf("witness off: the socket's end muted on an effective pair (W off); %ld kill scenes: the launcher's report (row 3) "
+         "%ld, the READ failure path row 11 (NORESP) %ld at %.0f-%.0f ms after the kill, row 10 (LINKDOWN, the launcher "
+         "gone too) %ld at %.0f-%.0f ms; never at the FIN; rows judged:%s\n",
+         scenes, byReport, byRow11, r11Min, r11Max, byRow10, r10Min, r10Max, rows.c_str());
+}
 #endif  // !NCCL_GIN_CTRL_TCP
 
 int main() {
@@ -1351,6 +1732,9 @@ int main() {
   testFence();
   testFenceScenes();
   testMailFreeze();
+  testEffect();
+  testPull();
+  testWitnessOff();
 #endif
   printf("gc_unit_p1 (%s): %ld checks, %ld failed\n", NCCL_GIN_CTRL_TCP ? "tcp" : "rdma", gChecks, gFailed);
   return gFailed == 0 ? 0 : 1;

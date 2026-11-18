@@ -1,0 +1,228 @@
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 429dbe9..1cc0847 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -7780,6 +7780,8 @@ static ncclResult_t gdakiCtrlRkeysHandOver(struct gdakiRecHost* r, int peer, int
+                                            int timeoutMs);
+ static void gdakiCtrlStoreWardToErrAsk(struct gdakiRecHost* r, int peer);
+ static void gdakiCtrlStoreWardErrRun(struct gdakiRecHost* r, struct gdakiStoreState* st, int d);
++static int gdakiCtrlStoreWardGateOf(struct gdakiRecHost* r, int peer, const char** why);  // wardfix: 1 go, 0 wait, -1 fall back
++static inline int gdakiCtrlActWardJoin(bool fenceGo, int ward);                          // wardfix: the gate's join
+ static void gdakiCtrlStoreMemLine(struct gdakiRecHost* r, struct gdakiStoreState* st, uint64_t image, uint64_t slotBytes);
+ struct gdakiMiActHdr;
+ static inline bool gdakiCtrlStoreBlobModeOk(const struct gdakiMiActHdr& h, bool mirrorOn);
+@@ -18541,6 +18543,8 @@ struct gdakiStoreState {
+ #if !NCCL_GIN_CTRL_TCP
+   uint64_t ctrlMemImage = 0;           // helper: gin-control (store), the image size of the last memory line
+   struct gdakiSnapStage snap;          // application thread: gin-control (snap), the mirror off's device staging
++  std::vector<int> wardErr;            // mu: gin-control (wardfix), per ward its upload QP's ERR (GDAKI_CTRL_WERR_*)
++  std::vector<double> wardErrAskMs;    // mu: when that ERR was last asked (the activation gate's bound)
+ #endif
+ };
+ static std::mutex gdakiStoreLifeMu;  // r->mi.store's creation (helper or application thread, first use) and teardown
+@@ -21876,6 +21880,27 @@ static bool gdakiCtrlActFenceOk(struct gdakiRecHost* r, int peer, uint32_t dead)
+     return false;
+   }
+   const int v = gdakiCtrlActGate(true, gdakiCtrlFencedIs(word, dead), GDAKI_RS_ACT_WAIT);
++  // gin-control (wardfix): on the dead rank's buddy the store's upload QP of that ward must be in ERR too (the hold start
++  // only queued that for the store thread); a QP that cannot get there falls the hold back as a FENCE_NAK does
++  const char* ww = "";
++  const int wg = gdakiCtrlStoreWardGateOf(r, peer, &ww);
++  const int join = gdakiCtrlActWardJoin(v == GDAKI_RS_ACT_GO, wg);
++  if (join < 0) {
++    WARN("GIN/CTRL: rank %d: store ward QP of rank %d not in ERR: %s; the activation of incarnation %u falls back "
++         "mono_ms=%.3f", r->ctx->rank, peer, ww, dead + 1u, gdakiQ4MonoMs());
++    snprintf(fw, sizeof(fw), "the store's upload QP of the peer's dead incarnation is not in ERR at its buddy (%.100s)", ww);
++    gdakiHoldFallback(r, peer, fw);
++    return false;
++  }
++  if (v == GDAKI_RS_ACT_GO && wg == 0) {
++    static thread_local uint64_t lastWardSaid = ~0ull;
++    const uint64_t key = ((uint64_t)(uint32_t)peer << 32) | dead;
++    if (key != lastWardSaid) {
++      lastWardSaid = key;
++      GIN_TS_NOTE("GIN/CTRL: rank %d: rank %d (incarnation %u) FENCED: the activation waits for the store's upload QP of "
++                  "the ward to reach ERR mono_ms=%.3f", r->ctx->rank, peer, dead, gdakiQ4MonoMs());
++    }
++  }
+   if (v != GDAKI_RS_ACT_GO && pg != nullptr) {
+     static thread_local uint64_t lastSaid = ~0ull;
+     const uint64_t key = ((uint64_t)(uint32_t)peer << 32) | dead;
+@@ -21888,7 +21913,7 @@ static bool gdakiCtrlActFenceOk(struct gdakiRecHost* r, int peer, uint32_t dead)
+                   gdakiQ4MonoMs());
+     }
+   }
+-  return v == GDAKI_RS_ACT_GO;
++  return join > 0;
+ }
+ // FENCED(peer, inc) into the fence word (design 4.4; gdakiLnFencedStep: CURRENT or HELD_OLD only, never down). In
+ // phase 1 (no launcher) this is reached only by a relayed FENCED record (record 54), which this experiment does not
+@@ -25295,7 +25320,8 @@ static bool gdakiCtrlRdmaLiveUp(struct gdakiRecHost* r, int peer, bool* up) {
+ //     as the whole image over the upload QP into the buddy's store (gin-mirror's store path, unchanged), the spare FETCHes
+ //     it over a FETCH QP after its activation v2, whose blob has the store part only (GDAKI_MI_ACTB_F_STORE, no pool);
+ //   - gdakiStoreWardToErr: at the hold start of a ward (the dead rank was the ward's owner) the buddy's side of that
+-//     ward's upload QP goes to ERR through the store thread (the QP's owner); the stable slot stays for the FETCH;
++//     ward's upload QP goes to ERR through the store thread (the QP's owner); the stable slot stays for the FETCH; the
++//     buddy's activation gate waits until that thread reports the ERR (wardfix: gdakiCtrlStoreWardGateOf);
+ //   - STATE and the rkey list: through the pair's outbox (three transfers below) when the spare's REJOIN went over UD
+ //     (phase 2a-2-C step 3: both sides take that way, waiting until the pair is up in the REJOIN's generation); the data
+ //     socket carries them as in ln4 only when the pair has no ring (none in the context, or the REJOIN went over TCP);
+@@ -25494,6 +25520,49 @@ static inline bool gdakiCtrlStoreBlobModeOk(const struct gdakiMiActHdr& h, bool
+ static inline bool gdakiCtrlStoreWardErrDue(int me, int n, int dead, int buddyOfDead) {
+   return n >= 2 && dead >= 0 && dead < n && dead != me && buddyOfDead == me;
+ }
++// The ward QP's ERR as the buddy's activation gate sees it (wardfix, impl/notes_wardfix.md): the hold start only asks the
++// store thread (gdakiCtrlStoreWardToErrAsk), so the ACTIVATE of dead + 1 waits until that thread reports the QP in ERR (a
++// late upload WRITE of the dead incarnation can then land nowhere before the successor's FETCH). Per ward, under st->mu:
++// NONE (never asked), ASKED (a job queued), DONE (no QP on this side, or the modify to ERR succeeded), FAILED (it did not).
++enum : int { GDAKI_CTRL_WERR_NONE = 0, GDAKI_CTRL_WERR_ASKED = 1, GDAKI_CTRL_WERR_DONE = 2, GDAKI_CTRL_WERR_FAILED = 3 };
++// The bound of the gate's wait for DONE from the ask (ms): the store thread runs one job before it at most (the one in
++// progress: a SERVE's MR registration or a FREE), then the one modify. Past it the gate falls back as on a FENCE_NAK.
++#define GDAKI_CTRL_WARD_ERR_WAIT_MS 2000.0
++// The store thread's verdict of one WARD_ERR job: no QP on this side (never served here, or dropped): nothing can land,
++// DONE; else the modify's result.
++static inline int gdakiCtrlStoreWardErrOutcome(bool haveQp, bool modifiedToErr) {
++  return (!haveQp || modifiedToErr) ? GDAKI_CTRL_WERR_DONE : GDAKI_CTRL_WERR_FAILED;
++}
++// Where the WARD_ERR job of ward d goes in the store thread's queue: ahead of every job but a SERVE of d itself (that one
++// may install a newer QP of d, which the ERR must then find): right after the last SERVE of d, else at the front.
++template <class J>
++static inline size_t gdakiCtrlStoreWardErrPos(const std::vector<J>& jobs, int d, int serveKind) {
++  size_t pos = 0;
++  for (size_t i = 0; i < jobs.size(); i++)
++    if (jobs[i].kind == serveKind && jobs[i].d == d) pos = i + 1;
++  return pos;
++}
++// The gate's ward part: 1 go (not this rank's ward, or DONE), 0 wait (ASKED within the bound; NONE: the caller asks now),
++// -1 fall back with *why (FAILED, or ASKED past the bound).
++static inline int gdakiCtrlStoreWardGate(bool due, int state, double askedMs, double nowMs, double boundMs,
++                                         const char** why) {
++  if (!due || state == GDAKI_CTRL_WERR_DONE) return 1;
++  if (state == GDAKI_CTRL_WERR_FAILED) {
++    *why = "the store thread's modify to ERR failed";
++    return -1;
++  }
++  if (state == GDAKI_CTRL_WERR_ASKED && nowMs - askedMs >= boundMs) {
++    *why = "the store thread did not report it in ERR within the bound";
++    return -1;
++  }
++  return 0;
++}
++// The activation gate (gdakiCtrlActFenceOk): FENCED (fenceGo) and the ward part (1, 0, -1 as above): 1 go, 0 not now, -1
++// fall back (a ward that cannot reach ERR, whatever the fence says).
++static inline int gdakiCtrlActWardJoin(bool fenceGo, int ward) {
++  if (ward < 0) return -1;
++  return (fenceGo && ward > 0) ? 1 : 0;
++}
+ // ---- the host memory this path adds per rank (design v3 3.5; reported, not bounded: the 2026-10-17 decision) ----
+ // staging: the upload's pinned buffer (one slot of this rank's image); wards: per ward, the store MR's two slots (this
+ // rank's image size when the ward's is not known: the test cells' p xor 1 pairs are alike); control: phase 2a-1's ring
+@@ -25619,8 +25688,23 @@ static ncclResult_t gdakiCtrlRkeysHandOver(struct gdakiRecHost* r, int peer, int
+     gdakiCtrlRingNap(g, 1);
+   }
+ }
++// The WARD_ERR job of `peer` queued (st->mu held): ahead of the other wards' jobs (gdakiCtrlStoreWardErrPos), its state
++// ASKED from now (the gate's bound counts from here).
++static void gdakiCtrlStoreWardErrQueueLocked(struct gdakiStoreState* st, int peer) {
++  if (st->wardErr.size() != (size_t)st->n) {
++    st->wardErr.assign((size_t)st->n, GDAKI_CTRL_WERR_NONE);
++    st->wardErrAskMs.assign((size_t)st->n, 0.0);
++  }
++  struct gdakiStoreJob j;
++  j.kind = GDAKI_CTRL_STORE_JOB_WARD_ERR;
++  j.d = peer;
++  st->jobs.insert(st->jobs.begin() + (ptrdiff_t)gdakiCtrlStoreWardErrPos(st->jobs, peer, GDAKI_STORE_JOB_SERVE), j);
++  st->wardErr[(size_t)peer] = GDAKI_CTRL_WERR_ASKED;
++  st->wardErrAskMs[(size_t)peer] = gdakiQ4MonoMs();
++}
+ // gdakiStoreWardToErr's work (the hold start's hook, the helper): a job for the store thread, which owns the ward's QP.
+-// Never creates the store state (a process that has none has no ward QP); idempotent (the thread skips a QP in ERR).
++// Never creates the store state (a process that has none has no ward QP); idempotent (a second job moves the QP to ERR
++// again, which verbs allows from any state).
+ static void gdakiCtrlStoreWardToErrAsk(struct gdakiRecHost* r, int peer) {
+   if (r == nullptr || r->ctx == nullptr || !gdakiStoreOn(r)) return;
+   struct gdakiStoreState* st;
+@@ -25632,29 +25716,69 @@ static void gdakiCtrlStoreWardToErrAsk(struct gdakiRecHost* r, int peer) {
+   {
+     std::lock_guard<std::mutex> lk(st->mu);
+     if (st->stop) return;
+-    struct gdakiStoreJob j;
+-    j.kind = GDAKI_CTRL_STORE_JOB_WARD_ERR;
+-    j.d = peer;
+-    st->jobs.push_back(j);
++    gdakiCtrlStoreWardErrQueueLocked(st, peer);
+   }
+   st->cv.notify_all();
+ }
+ // The store thread: ward d's upload QP (this rank's side) to ERR. The record, the MRs and the stable slot stay; the next
+-// STORE_REQ of d's successor replaces the QP (gdakiStoreServe destroys the old one first).
++// STORE_REQ of d's successor replaces the QP (gdakiStoreServe destroys the old one first). The verdict goes into the
++// ward's state for the activation gate unless another WARD_ERR job of d is still queued (that one's verdict counts).
+ static void gdakiCtrlStoreWardErrRun(struct gdakiRecHost* r, struct gdakiStoreState* st, int d) {
+   if (d < 0 || d >= st->n) return;
+   struct gdakiMiHostQp* q = st->wards[(size_t)d].qp;
+-  if (q == nullptr || q->qp == nullptr || q->err) return;
+-  struct ibv_qp_attr a;
+-  memset(&a, 0, sizeof(a));
+-  a.qp_state = IBV_QPS_ERR;
+-  const bool moved = wrap_ibv_modify_qp(q->qp, &a, IBV_QP_STATE) == ncclSuccess;
+-  q->err = true;  // either way never used again: the next request of the ward destroys it
+-  GIN_TS_NOTE("GIN/CTRL: rank %d: the store's upload QP of ward rank %d (qpn %#x) %s at its hold start mono_ms=%.3f", st->me,
+-              d, q->qp->qp_num, moved ? "moved to ERR" : "could not be moved to ERR (it is not used again)",
+-              gdakiQ4MonoMs());
++  const bool haveQp = q != nullptr && q->qp != nullptr;
++  bool moved = false;
++  if (haveQp) {
++    struct ibv_qp_attr a;
++    memset(&a, 0, sizeof(a));
++    a.qp_state = IBV_QPS_ERR;
++    moved = wrap_ibv_modify_qp(q->qp, &a, IBV_QP_STATE) == ncclSuccess;
++    q->err = true;  // either way never used again: the next request of the ward destroys it
++    GIN_TS_NOTE("GIN/CTRL: rank %d: the store's upload QP of ward rank %d (qpn %#x) %s at its hold start mono_ms=%.3f",
++                st->me, d, q->qp->qp_num, moved ? "moved to ERR" : "could not be moved to ERR (the activation falls back)",
++                gdakiQ4MonoMs());
++  }
++  const int v = gdakiCtrlStoreWardErrOutcome(haveQp, moved);
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    bool later = false;
++    for (const auto& j : st->jobs) later = later || (j.kind == GDAKI_CTRL_STORE_JOB_WARD_ERR && j.d == d);
++    if (!later && (size_t)d < st->wardErr.size()) st->wardErr[(size_t)d] = v;
++  }
+   (void)r;
+ }
++// The activation gate's ward part (gdakiCtrlActFenceOk, the helper): 1 go, 0 wait, -1 fall back with *why
++// (gdakiCtrlStoreWardGate). Not this rank's ward, no store state (no ward QP): go. Never asked (the hold start's job was
++// not queued): asked now.
++static int gdakiCtrlStoreWardGateOf(struct gdakiRecHost* r, int peer, const char** why) {
++  if (r == nullptr || r->ctx == nullptr || !gdakiStoreOn(r)) return 1;
++  struct gdakiStoreState* st;
++  {
++    std::lock_guard<std::mutex> lk(gdakiStoreLifeMu);
++    st = r->mi.store;
++  }
++  if (st == nullptr) return 1;
++  const bool due = gdakiCtrlStoreWardErrDue(st->me, st->n, peer, gdakiHoldBuddyOf(peer, st->n));
++  if (!due) return 1;
++  int s;
++  double askMs;
++  bool asked = false;
++  {
++    std::lock_guard<std::mutex> lk(st->mu);
++    if (st->stop) {
++      *why = "the store is being torn down";
++      return -1;
++    }
++    if (st->wardErr.size() != (size_t)st->n || st->wardErr[(size_t)peer] == GDAKI_CTRL_WERR_NONE) {
++      gdakiCtrlStoreWardErrQueueLocked(st, peer);
++      asked = true;
++    }
++    s = st->wardErr[(size_t)peer];
++    askMs = st->wardErrAskMs[(size_t)peer];
++  }
++  if (asked) st->cv.notify_all();
++  return gdakiCtrlStoreWardGate(due, s, askMs, gdakiQ4MonoMs(), GDAKI_CTRL_WARD_ERR_WAIT_MS, why);
++}
+ // The host memory line (gdakiStoreUpStep, after a request with a new image size went out; once per size).
+ static void gdakiCtrlStoreMemLine(struct gdakiRecHost* r, struct gdakiStoreState* st, uint64_t image, uint64_t slotBytes) {
+   if (st == nullptr || image == 0 || st->ctrlMemImage == image) return;

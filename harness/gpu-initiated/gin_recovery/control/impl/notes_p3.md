@@ -1,5 +1,7 @@
 # gin-control 3단계(rank 쪽 launcher) 작업 기록
 
+> **읽기 전에(2026-10-23 표시).** 작성 2026-10-17(커밋 `1bc422f2`, 리뷰 고침 `f5f6a085`), 결과 `gc_layer_p3.diff` `c755b1df`(고침 뒤). 당시의 작업 기록(역사)이고, 본문의 "남음", 계획, TODO는 그때 기준이다. 후속: [notes_int2.md](notes_int2.md); launcher INFO는 [launcher/README_launcher.md](launcher/README_launcher.md) "바뀐 것". 지금 상태와 할 일은 [EXPERIMENT.md](../EXPERIMENT.md) 11절, 지금 빌드와 실행 경로는 [NOTES.md](../NOTES.md)에 있다.
+
 ## 단계 목록 (처음에 적은 계획)
 
 1. `agent_gc_p3/`: int 트리 복사, "gin-control int+fix12 (gc_layer_int.diff 60ca3cd9)" 커밋, 2b와 헤더 2b 적용, "gin-control + 2b" 커밋
@@ -155,6 +157,9 @@ fallback 까닭(`gdakiHoldFallback`의 글): `the peer's spare is not READY 1000
 - FENCE_NAK 시행을 제외로 칠지 실패로 칠지(8절 열린 것)는 그대로다.
 
 ## EXPERIMENT.md 11절과 12절에 넣을 줄 (안)
+
+> 반영 여부(2026-10-23 확인, EXPERIMENT.md 읽기만): 이 글 그대로는 들어가지 않았다(`cca4bb18`, `c755b1df` 0건). 3단계와 그 리뷰 고침은 12절 2026-10-17 행(근거 열에 이 문서)과 11절의 통합 2 줄에 요약돼 있다.
+> 아래 "등록 차례"의 9.7절 표 반영은 확인하지 않았다 `[미확인]`. "launcher에 내는 요청"(INFO)은 launcher 커밋 `f8e3216e`가 했다([launcher/README_launcher.md](launcher/README_launcher.md) "바뀐 것"). 다시 붙이지 않는다.
 
 - 11절: `- [ ] 3단계(rank 쪽 launcher: 등록과 LEAVING, 무장 = gl_path_exists, STORE_REQ 꼬리의 launcher 길, 펜스(FENCE, FENCED, 펜스 낱말, 줄 셋), FENCED만 요구하는 관문, launcher 중계 활성화(LATER 한 번, 한도 셋, ABORT), 예비 프로세스의 READY와 FETCH 중계, 되살린 rank의 다시 등록과 다시 무장): 빌드와 CPU 시험까지 — 2026-10-17, impl/gc_layer_p3.diff cca4bb18(int+fix12+2b 커밋 위). launcher와의 RNIC 길(짝 맺기 전송, launcher 봉투 받기, outbox, 페이지 끌어 읽기)은 TODO(2a-2); 되살린 짝의 STORE_ACK 비트는 남음`
 - 12절: `| 2026-10-17 | 3단계 rank 쪽 구현(실행 없음, CPU와 빌드만). int+fix12+2b 커밋 위의 impl/gc_layer_p3.diff(cca4bb18, 2 407줄, 호스트 파일만, 장치 코드 0줄): launcher 헤더를 바이트 그대로 붙이고, Unix 소켓 등록(자기 pidfd, CLOEXEC, fork 때 닫음), LEAVING, 무장 = gl_path_exists, STORE_REQ 꼬리의 launcher 길 등록, 펜스 낱말을 launcher link가 쥐고 rdma 관문은 /proc 없이 FENCED만, 짝의 FENCE와 줄 셋, launcher 중계 활성화(LATER 한 번, LATER 뒤 1 000 ms, 첫 답 1 000 ms, 박동 1 000 ms, ABORT와 fallback), 예비 프로세스의 READY와 기록 검사(FENCED를 싣는 기록)와 FETCH 중계, 되살린 rank의 다시 등록. 헤더 요청은 impl/rs_ctrl_api_p3.diff. gc, gcp, gct, gctp 빌드됨(경고 0). tcp 전처리는 gct, gctp가 ln4와 hunk 0, gctc는 RST 간격 2 hunk만 [측정]. 단위 시험 두 빌드 통과, gc_unit_p3 11 장면 3 255 검사 실패 0(launcher 상태 기계와 실제 자식 프로세스) [측정, n 1]. 장치 동일성: 프로그램 16/16, 장치 객체는 다시 빌드되지 않은 사본(gcp, gctp의 device_glue.o 하나는 병렬 비교 출력이 달랐으나 바이트 같고 다시 뽑은 SASS 같음) [측정]. launcher와의 RNIC 길은 TODO(2a-2)라 이 빌드는 아직 무장되지 않음. 클러스터 실행 없음 | impl/notes_p3.md, 스크래치 agent_gc_p3/logs_p3/ |`
