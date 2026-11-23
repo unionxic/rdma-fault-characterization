@@ -679,9 +679,18 @@ index 56ed377..1ef3fb2 100644
      uint8_t ordering_semantic{};
      bool ordering_semantic_set{};
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 961da83..d4d62c9 100644
+index 961da83..c98bfe4 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -61,7 +61,7 @@ NCCL_PARAM(GinGdakiMaxDestRdAtomic, "GIN_GDAKI_MAX_DEST_RD_ATOMIC", -2);
+ NCCL_PARAM(GinGdakiMaxQpRdAtomic, "GIN_GDAKI_MAX_QP_RD_ATOMIC", -2);
+ NCCL_PARAM(GinGdakiLAGAwareDisable, "GIN_GDAKI_LAG_AWARE_DISABLE", 0);
+ NCCL_PARAM(GinGdakiCqType, "GIN_GDAKI_CQ_TYPE", 0);
+-NCCL_PARAM(GinErrorQuerySec, "GIN_ERROR_QUERY_SEC", 10);
++NCCL_PARAM(GinErrorQuerySec, "GIN_ERROR_QUERY_SEC", 1);  // was 10: device code learns of a failure in ms, the host should not lag it by 10 s
+ NCCL_PARAM(GinIbOooAll, "GIN_IB_OOO_OPT", 0);
+ // Allocate a dedicated GIN-owned Q counter set and attach every GIN QP to it (diagnostic-only).
+ // Set to 0 to disable, leaving GIN QPs on the device default counter set (behavior unchanged).
 @@ -384,6 +384,8 @@ struct gdaki_context {
      CUmemGenericAllocationHandle mhandle;
    } sink_buffer;
