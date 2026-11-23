@@ -30,10 +30,6 @@
 
 # Never track these, even if they match the allow-list above.
 __pycache__/
-# Claude Code: only the root project skills are shared; worktrees, local state and any
-# nested .claude folders stay out.
-**/.claude/*
-!/.claude/skills/
 **/build/
 **/install/
 
@@ -45,3 +41,4 @@ __pycache__/
 
 # Session QA notes stay local.
 harness/QA_20260923.md
+!*.cpp

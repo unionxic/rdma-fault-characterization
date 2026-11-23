@@ -1,0 +1,735 @@
+diff --git a/src/include/nccl_device/gin/gdaki/gin_gdaki.h b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
+index 8ab840c..96b60e5 100644
+--- a/src/include/nccl_device/gin/gdaki/gin_gdaki.h
++++ b/src/include/nccl_device/gin/gdaki/gin_gdaki.h
+@@ -350,9 +350,9 @@ NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinReque
+   // the caller has no deadline AND no abort flag to honor.
+   if NCCL_IF_CONSTEXPR (!HasTimeout) {
+     if (abortFlag == nullptr) {
+-      doca_gpu_dev_verbs_wait<doca_sharing_mode>(qp, pollIdx);
++      int status = doca_gpu_dev_verbs_poll_cq_at<doca_sharing_mode>(qp, pollIdx);
+       cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
+-      return ncclSuccess;
++      return status < 0 ? ncclRemoteError : ncclSuccess;
+     }
+   }
+ 
+@@ -363,9 +363,9 @@ NCCL_DEVICE_INLINE static ncclResult_t waitImplCore(ncclGinCtx ctx, ncclGinReque
+   NVCC_PRAGMA_UNROLL_DISABLED
+   while (true) {
+     int status = doca_gpu_dev_verbs_poll_one_cq_at<doca_sharing_mode>(qp, pollIdx);
+-    if (status == 0) {
++    if (status <= 0) { // done, or (< 0) an error CQE: the operation failed and will not complete
+       cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
+-      return ncclSuccess;
++      return status < 0 ? ncclRemoteError : ncclSuccess;
+     }
+     if NCCL_IF_CONSTEXPR (HasTimeout) {
+       if (clock64() - startCycle >= timeoutCycles) return ncclTimeout;
+@@ -399,6 +399,7 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+   ncclGinGdakiGPUContext* gdaki = &((struct ncclGinGdakiGPUContext*)ctx.handle)[ctx.contextId];
+   doca_gpu_dev_verbs_qp* qps = loadConst(&gdaki->gdqp);
+   uint32_t steps = 0;
++  ncclResult_t ret = ncclSuccess; // ncclRemoteError once any peer's QP reported an error CQE
+   uint64_t startCycle = 0;
+   (void)startCycle; // referenced only when HasTimeout is true
+   if NCCL_IF_CONSTEXPR (HasTimeout) startCycle = clock64();
+@@ -413,7 +414,7 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+     // no deadline AND no abort flag to honor.
+     if NCCL_IF_CONSTEXPR (!HasTimeout) {
+       if (abortFlag == nullptr) {
+-        doca_gpu_dev_verbs_wait<resource_sharing_mode>(&qps[peer], ticket);
++        if (doca_gpu_dev_verbs_poll_cq_at<resource_sharing_mode>(&qps[peer], ticket) < 0) ret = ncclRemoteError;
+         continue;
+       }
+     }
+@@ -421,7 +422,8 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+     NVCC_PRAGMA_UNROLL_DISABLED
+     while (true) {
+       int status = doca_gpu_dev_verbs_poll_one_cq_at<resource_sharing_mode>(&qps[peer], ticket);
+-      if (status == 0) break;
++      if (status < 0) ret = ncclRemoteError;
++      if (status <= 0) break;
+       if NCCL_IF_CONSTEXPR (HasTimeout) {
+         if (clock64() - startCycle >= timeoutCycles) return ncclTimeout;
+       }
+@@ -434,7 +436,7 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplModeCore(ncclGinCtx ctx, Coop co
+     }
+   }
+   cuda::atomic_thread_fence(ord, cuda::thread_scope_system);
+-  return ncclSuccess;
++  return ret;
+ }
+ 
+ template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode, typename Coop>
+diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/include/common/doca_gpunetio_verbs_dev.h b/src/transport/net_ib/gdaki/doca-gpunetio/include/common/doca_gpunetio_verbs_dev.h
+index a8e0385..c325874 100644
+--- a/src/transport/net_ib/gdaki/doca-gpunetio/include/common/doca_gpunetio_verbs_dev.h
++++ b/src/transport/net_ib/gdaki/doca-gpunetio/include/common/doca_gpunetio_verbs_dev.h
+@@ -164,8 +164,27 @@ struct doca_gpu_dev_verbs_cq {
+     uint8_t reserved1[2];                      /**< Reserved */
+     uint64_t cqe_rsvd;                         /**< All previous CQEs are polled */
+     enum doca_gpu_dev_verbs_mem_type mem_type; /**< Memory type of the completion queue */
+-    uint8_t reserved2[12];                     /**< Reserved */
++    uint8_t reserved2[4];                      /**< Reserved */
++    uint64_t err; /**< 0: no error CQE seen. Else DOCA_GPUNETIO_VERBS_CQ_ERR_RECORD() */
+ } __attribute__((__aligned__(8))) __attribute__((__packed__));
++/* cq->err record: ((2^48-1 - WQE index) << 16) | syndrome << 8 | vendor_err_synd.
++ * A larger record is an earlier WQE, so a max over records keeps the first failure.
++ * shortcut: the index is kept modulo 2^48 WQEs per QP; widen the record if a QP can live that long. */
++#define DOCA_GPUNETIO_VERBS_CQ_ERR_IDX_MASK 0xFFFFFFFFFFFFULL
++/* Set in cqe_ci of a GPU-polled CQ together with the first record. */
++#define DOCA_GPUNETIO_VERBS_CQ_CI_FAILED (1ULL << 63)
++#define DOCA_GPUNETIO_VERBS_CQ_ERR_RECORD(idx, synd, vend)                                        \
++    (((DOCA_GPUNETIO_VERBS_CQ_ERR_IDX_MASK - ((uint64_t)(idx) & DOCA_GPUNETIO_VERBS_CQ_ERR_IDX_MASK)) \
++      << 16) |                                                                                    \
++     ((uint64_t)(uint8_t)(synd) << 8) | (uint8_t)(vend))
++#define DOCA_GPUNETIO_VERBS_CQ_ERR_IDX(rec) (DOCA_GPUNETIO_VERBS_CQ_ERR_IDX_MASK - ((rec) >> 16))
++/* Index of the WQE a 16-bit wqe_counter refers to, taken as the one nearest to near_idx. */
++#define DOCA_GPUNETIO_VERBS_CQ_WQE_IDX(near_idx, wqe_counter) \
++    ((uint64_t)(near_idx) + (int16_t)((uint16_t)(wqe_counter) - (uint16_t)(near_idx)))
++#ifdef __cplusplus
++static_assert(sizeof(struct doca_gpu_dev_verbs_cq) == 64 && offsetof(struct doca_gpu_dev_verbs_cq, err) == 56,
++              "doca_gpu_dev_verbs_cq layout changed");
++#endif
+ 
+ /**
+  * Describes GPUNetIO dev QP
+diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_counter.cuh b/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_counter.cuh
+index 6cda217..b30b382 100644
+--- a/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_counter.cuh
++++ b/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_counter.cuh
+@@ -217,6 +217,17 @@ __device__ static __forceinline__ void doca_gpu_dev_verbs_submit_multi_qps(
+     struct doca_gpu_dev_verbs_qp **qps, uint64_t *prod_indices,
+     uint32_t code_opt = DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_DEFAULT) {
+     DOCA_GPUNETIO_VERBS_ASSERT(num_qps >= 2);
++    // The WQEs of one operation go to several QPs: if one of them has failed, none is submitted
++    // (the NIC would run the others without it). Those QPs are marked failed too (syndrome 0:
++    // cancelled here, not by the NIC), which ends the waits on their never-submitted WQEs.
++    for (unsigned int i = 0; i < num_qps; i++)
++        [[unlikely]] if (doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(
++                             &doca_gpu_dev_verbs_qp_get_cq(qps[i])->err)) {
++            for (unsigned int j = 0; j < num_qps; j++)
++                doca_priv_gpu_dev_verbs_cq_set_err<resource_sharing_mode>(
++                    doca_gpu_dev_verbs_qp_get_cq(qps[j]), prod_indices[j], 0, 0);
++            return;
++        }
+     if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO) {
+         const enum doca_gpu_dev_verbs_nic_handler qp_nic_handler =
+             (enum doca_gpu_dev_verbs_nic_handler)doca_gpu_dev_verbs_load_const(
+diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh b/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh
+index ba8ddf4..95a3449 100644
+--- a/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh
++++ b/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh
+@@ -96,6 +96,146 @@ __device__ static __forceinline__ void doca_gpu_dev_verbs_cq_print_cqe_err(
+ }
+ #endif
+ 
++// ==================== Error record ====================
++
++/**
++ * @brief [Internal] Host-polled CQ: what a poll returns when the CQE it wants is not there: -EIO
++ * once the QP has failed (the CQE will never arrive), EBUSY otherwise. The host writes cq->err, so
++ * it is read with the system-scope, cache-bypassing load.
++ */
++__device__ static __forceinline__ int doca_priv_gpu_dev_verbs_cq_not_ready(
++    struct doca_gpu_dev_verbs_cq *cq) {
++    return doca_gpu_dev_verbs_load_relaxed_sys_global(&cq->err) ? -EIO : EBUSY;
++}
++
++/**
++ * @brief [Internal] GPU-polled CQ: true if cqe_ci has passed WQE cons_index. Once the QP has failed
++ * cqe_ci carries DOCA_GPUNETIO_VERBS_CQ_CI_FAILED, so a poll learns of it from the load it does
++ * anyway (reading cq->err in the poll loops cost 4% in ring_exchange). The flag is then stripped
++ * from *cqe_ci and *not_ready becomes -EIO, as above.
++ */
++__device__ static __forceinline__ bool doca_priv_gpu_dev_verbs_cq_passed(
++    uint64_t cons_index, uint64_t *cqe_ci, int *not_ready = nullptr) {
++    if (cons_index >= *cqe_ci) return false;
++    [[likely]] if (!(*cqe_ci & DOCA_GPUNETIO_VERBS_CQ_CI_FAILED))
++        return true;
++    *cqe_ci &= ~DOCA_GPUNETIO_VERBS_CQ_CI_FAILED;
++    if (not_ready) *not_ready = -EIO;
++    return cons_index < *cqe_ci;
++}
++
++/**
++ * @brief [Internal] Record the error CQE of WQE wqe_index in cq->err and return -EIO.
++ * After the first error CQE the QP is in the error state: no later WQE succeeds, and cqe_ci stops
++ * advancing because it only moves on success. Without this record every later poll waits forever.
++ * The record keeps the lowest failed index polled so far: the root cause if its CQE was polled, a
++ * flush otherwise.
++ */
++template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode>
++__device__ static __forceinline__ int doca_priv_gpu_dev_verbs_cq_set_err(
++    struct doca_gpu_dev_verbs_cq *cq, uint64_t wqe_index, uint8_t syndrome, uint8_t vendor_err) {
++    // The first record also flags cqe_ci (not of a host-polled CQ: there the host owns cqe_ci).
++    if (doca_gpu_dev_verbs_atomic_max<uint64_t, resource_sharing_mode>(
++            &cq->err, DOCA_GPUNETIO_VERBS_CQ_ERR_RECORD(wqe_index, syndrome, vendor_err)) == 0 &&
++        doca_gpu_dev_verbs_load_const((uint8_t *)&cq->cq_type) !=
++            DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED_HOST)
++        doca_gpu_dev_verbs_atomic_add<uint64_t, resource_sharing_mode>(
++            &cq->cqe_ci, DOCA_GPUNETIO_VERBS_CQ_CI_FAILED);
++    return -EIO;
++}
++
++/**
++ * @brief [Internal] Read the header and the two syndrome bytes of a CQE that the NIC may be
++ * overwriting. The NIC writes these with DMA, so every load bypasses the cache, and the bytes are
++ * kept only if the header is the same before and after.
++ * @return The byte-swapped wqe_counter_sig_op_own_raw word.
++ */
++__device__ static __forceinline__ uint32_t doca_priv_gpu_dev_verbs_cq_read_err_cqe(
++    struct doca_gpunetio_ib_mlx5_cqe64 *cqe64, uint8_t *syndrome, uint8_t *vendor_err) {
++    struct doca_gpunetio_ib_mlx5_err_cqe_ex *err_cqe =
++        (struct doca_gpunetio_ib_mlx5_err_cqe_ex *)cqe64;
++    uint32_t cqe_chunk;
++    do {
++        cqe_chunk = doca_gpu_dev_verbs_load_relaxed_sys_global(&cqe64->wqe_counter_sig_op_own_raw);
++        *syndrome = doca_gpu_dev_verbs_load_relaxed_sys_global(&err_cqe->syndrome);
++        *vendor_err = doca_gpu_dev_verbs_load_relaxed_sys_global(&err_cqe->vendor_err_synd);
++    } while (doca_gpu_dev_verbs_load_relaxed_sys_global(&cqe64->wqe_counter_sig_op_own_raw) !=
++             cqe_chunk);
++    return doca_gpu_dev_verbs_bswap32(cqe_chunk);
++}
++
++__device__ static __forceinline__ bool doca_priv_gpu_dev_verbs_cq_is_err_of(uint32_t cqe_chunk,
++                                                                            uint64_t wqe_index) {
++    return ((cqe_chunk & 0xff) >> DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT) ==
++               DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR &&
++           (cqe_chunk >> 16) == (wqe_index & 0xffff);
++}
++
++/**
++ * @brief [Internal] Non-collapsed GPU CQ: the poll found an error CQE for WQE cons_index. Walk back
++ * to the first failed WQE and record that one: its CQE holds the cause, the ones after it are
++ * flushes. The walk is bounded by the CQ size because cons_index < cqe_ci + cqe_num.
++ */
++template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode>
++__device__ static __noinline__ int doca_priv_gpu_dev_verbs_cq_set_err_device(
++    struct doca_gpu_dev_verbs_cq *cq, uint64_t cons_index) {
++    struct doca_gpunetio_ib_mlx5_cqe64 *cqes =
++        (struct doca_gpunetio_ib_mlx5_cqe64 *)doca_gpu_dev_verbs_load_const(
++            (uintptr_t *)&cq->cqe_daddr);
++    const uint32_t cqe_mask = doca_gpu_dev_verbs_load_const(&cq->cqe_num) - 1;
++    const uint64_t cqe_rsvd = doca_gpu_dev_verbs_load_const(&cq->cqe_rsvd);
++    uint64_t cqe_ci = doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci);
++    uint8_t syndrome, vendor_err, prev_syndrome, prev_vendor_err;
++    int not_ready = EBUSY;
++
++    // Another thread may have moved cqe_ci past cons_index since the caller looked: then the slot
++    // was reused and the CQE in it belongs to a later WQE.
++    if (doca_priv_gpu_dev_verbs_cq_passed(cons_index, &cqe_ci, &not_ready)) return 0;
++    if (!doca_priv_gpu_dev_verbs_cq_is_err_of(
++            doca_priv_gpu_dev_verbs_cq_read_err_cqe(&cqes[(cons_index + cqe_rsvd) & cqe_mask],
++                                                    &syndrome, &vendor_err),
++            cons_index))
++        return not_ready;
++
++    uint64_t first = cons_index;
++    while (first > cqe_ci &&
++           doca_priv_gpu_dev_verbs_cq_is_err_of(
++               doca_priv_gpu_dev_verbs_cq_read_err_cqe(&cqes[(first - 1 + cqe_rsvd) & cqe_mask],
++                                                       &prev_syndrome, &prev_vendor_err),
++               first - 1)) {
++        --first;
++        syndrome = prev_syndrome;
++        vendor_err = prev_vendor_err;
++    }
++    return doca_priv_gpu_dev_verbs_cq_set_err<resource_sharing_mode>(cq, first, syndrome,
++                                                                      vendor_err);
++}
++
++/**
++ * @brief [Internal] Collapsed CQ: the single slot holds an error CQE. Record it, then tell whether
++ * cons_index failed (-EIO) or completed before the first recorded failure (0).
++ * The NIC overwrites the slot with the flush CQE of every WQE that was posted after the failed one,
++ * so the record holds the cause only if a poll ran before the first flush landed. Once a slot holds
++ * an error CQE it only ever holds error CQEs, so this never has to report "not ready".
++ */
++template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode>
++__device__ static __noinline__ int doca_priv_gpu_dev_verbs_cq_set_err_collapsed(
++    struct doca_gpu_dev_verbs_cq *cq, uint64_t cons_index,
++    struct doca_gpunetio_ib_mlx5_cqe64 *cqe64) {
++#if DOCA_GPUNETIO_VERBS_ENABLE_DEBUG == 1
++    doca_gpu_dev_verbs_cq_print_cqe_err(cqe64);
++#endif
++    uint8_t syndrome, vendor_err;
++    const uint32_t cqe_chunk =
++        doca_priv_gpu_dev_verbs_cq_read_err_cqe(cqe64, &syndrome, &vendor_err);
++    doca_priv_gpu_dev_verbs_cq_set_err<resource_sharing_mode>(
++        cq, DOCA_GPUNETIO_VERBS_CQ_WQE_IDX(cons_index, cqe_chunk >> 16), syndrome, vendor_err);
++    const uint64_t err = doca_gpu_dev_verbs_load_relaxed_sys_global(&cq->err);
++    // A flush record (syndrome 0x05) means the failed WQE is an earlier one whose CQE was lost.
++    const bool is_flush = ((err >> 8) & 0xff) == 0x05;
++    return (!is_flush && cons_index < DOCA_GPUNETIO_VERBS_CQ_ERR_IDX(err)) ? 0 : -EIO;
++}
++
+ // ==================== Poll One CQ At ====================
+ 
+ /**
+@@ -120,9 +260,10 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_one_cq_device
+         (struct doca_gpunetio_ib_mlx5_cqe64 *)(cqe + (idx * DOCA_GPUNETIO_VERBS_CQE_SIZE));
+ 
+     uint64_t cqe_ci = doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci);
++    int not_ready = EBUSY;
+ 
+-    if (cons_index < cqe_ci) return 0;
+-    if (cons_index >= cqe_ci + cqe_num) return EBUSY;
++    if (doca_priv_gpu_dev_verbs_cq_passed(cons_index, &cqe_ci, &not_ready)) return 0;
++    if (cons_index >= cqe_ci + cqe_num) return not_ready;
+ 
+     uint8_t opown;
+     uint8_t opcode;
+@@ -147,14 +288,16 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_one_cq_device
+         (wqe_counter == ((uint32_t)cons_index & 0xffff));
+ #endif
+ 
+-    if (!observed_completion) return EBUSY;
++    if (!observed_completion) return not_ready;
+ 
+     opcode = opown >> DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT;
+ 
+ #if DOCA_GPUNETIO_VERBS_ENABLE_DEBUG == 1
+     if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) doca_gpu_dev_verbs_cq_print_cqe_err(cqe64);
+ #endif
+-    return (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) * -EIO;
++    [[unlikely]] if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR)
++        return doca_priv_gpu_dev_verbs_cq_set_err_device<resource_sharing_mode>(cq, cons_index);
++    return 0;
+ }
+ 
+ /**
+@@ -198,7 +341,8 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_one_cq_host_at(
+     struct doca_gpu_dev_verbs_cq *cq, uint64_t cons_index) {
+     int status = 0;
+     uint64_t cqe_ci = doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci);
+-    if (cons_index >= cqe_ci) status = EBUSY;
++    if (cons_index >= cqe_ci)
++        status = doca_priv_gpu_dev_verbs_cq_not_ready(cq);
+     doca_gpu_dev_verbs_fence_acquire_nvidia_nic();
+     return status;
+ }
+@@ -224,11 +368,10 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_one_collap
+             (uintptr_t *)&cq->cqe_daddr);
+     const uint32_t cqe_num = doca_gpu_dev_verbs_load_const(&cq->cqe_num);
+     uint64_t cqe_ci = doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci);
++    int not_ready = EBUSY;  // -EIO once the QP has failed: with no error CQE it was cancelled
+ 
+-    [[unlikely]] if (cons_index < cqe_ci)
++    [[unlikely]] if (doca_priv_gpu_dev_verbs_cq_passed(cons_index, &cqe_ci, &not_ready))
+         return 0;
+-    if (cons_index >= cqe_ci + cqe_num) return EBUSY;
+-
+     uint32_t cqe_chunk =
+         doca_gpu_dev_verbs_load_relaxed_sys_global(&cqe64->wqe_counter_sig_op_own_raw);
+     cqe_chunk = doca_gpu_dev_verbs_bswap32(cqe_chunk);
+@@ -236,21 +379,22 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_one_collap
+     uint8_t opown = cqe_chunk & 0xff;
+     uint8_t opcode = opown >> DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT;
+ 
++    [[unlikely]] if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR)
++        return doca_priv_gpu_dev_verbs_cq_set_err_collapsed<resource_sharing_mode>(cq, cons_index,
++                                                                                   cqe64);
++    if (cons_index >= cqe_ci + cqe_num) return not_ready;
++
+     if ((opcode == DOCA_GPUNETIO_IB_MLX5_CQE_INVALID) ||
+         ((cqe_ci <= cons_index) &&
+          ((uint16_t)((uint16_t)cons_index - wqe_counter - (uint16_t)2) < cqe_num))) {
+-        return EBUSY;
++        return not_ready;
+     }
+ 
+     ++wqe_counter;
+     *new_cqe_ci = ((cons_index & ~(0xFFFFULL)) | wqe_counter) +
+                   (((uint16_t)cons_index > wqe_counter) ? 0x10000ULL : 0x0);
+ 
+-#if DOCA_GPUNETIO_VERBS_ENABLE_DEBUG == 1
+-    if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) doca_gpu_dev_verbs_cq_print_cqe_err(cqe64);
+-#endif
+-
+-    return ((opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) * -EIO);
++    return 0;
+ }
+ 
+ /**
+@@ -365,7 +509,9 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_device_at(
+ #if DOCA_GPUNETIO_VERBS_ENABLE_DEBUG == 1
+     if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) doca_gpu_dev_verbs_cq_print_cqe_err(cqe64);
+ #endif
+-    return (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) * -EIO;
++    [[unlikely]] if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR)
++        return doca_priv_gpu_dev_verbs_cq_set_err_device<resource_sharing_mode>(cq, cons_index);
++    return 0;
+ }
+ 
+ /**
+@@ -384,7 +530,13 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq_device_at(
+     int status = doca_priv_gpu_dev_verbs_poll_cq_device_at<resource_sharing_mode>(cq, cons_index);
+     if (status == 0) {
+         doca_gpu_dev_verbs_fence_acquire_nvidia_nic();
+-        doca_gpu_dev_verbs_atomic_max<uint64_t, resource_sharing_mode>(&cq->cqe_ci, cons_index + 1);
++        // CI_FAILED makes cqe_ci larger than any index, which also ends the wait above: then the
++        // CQE is there now or never.
++        [[unlikely]] if (doca_gpu_dev_verbs_atomic_max<uint64_t, resource_sharing_mode>(
++                             &cq->cqe_ci, cons_index + 1) &
++                         DOCA_GPUNETIO_VERBS_CQ_CI_FAILED)
++            return doca_priv_gpu_dev_verbs_poll_one_cq_device_at<resource_sharing_mode>(
++                cq, cons_index);
+     }
+     return status;
+ }
+@@ -406,6 +558,8 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq_host_at(
+     uint64_t cqe_ci;
+     do {
+         cqe_ci = doca_gpu_dev_verbs_load_relaxed_sys_global((uint64_t *)&cq->cqe_ci);
++        [[unlikely]] if (cons_index >= cqe_ci && doca_priv_gpu_dev_verbs_cq_not_ready(cq) < 0)
++            return -EIO;
+     } while (cons_index >= cqe_ci);
+     doca_gpu_dev_verbs_fence_acquire_nvidia_nic();
+     return 0;
+@@ -436,23 +590,37 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_collapsed_
+     uint64_t cqe_ci;
+     uint32_t cqe_chunk;
+     uint16_t wqe_counter;
++    int not_ready = EBUSY;
++    bool pending;
+ 
+     // If idx is a lot greater than cons_idx, we might get incorrect result due
+     // to wqe_counter wraparound. We need to check prod_idx to be sure that idx
+     // has already been submitted.
++    // A cancelled submission (doca_gpu_dev_verbs_submit_multi_qps) never moves sq_wqe_pi there.
+     while (doca_gpu_dev_verbs_atomic_read<uint64_t, resource_sharing_mode>(&qp->sq_wqe_pi) <
+-           cons_index);
++               cons_index &&
++           !(doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci) &
++             DOCA_GPUNETIO_VERBS_CQ_CI_FAILED));
+     doca_gpu_dev_verbs_fence_acquire<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU>();
+ 
+     do {
+         cqe_ci = doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci);
+-        [[unlikely]] if (cons_index < cqe_ci)
++        [[unlikely]] if (doca_priv_gpu_dev_verbs_cq_passed(cons_index, &cqe_ci, &not_ready))
+             return 0;
+         cqe_chunk = doca_gpu_dev_verbs_load_relaxed_sys_global(&cqe64->wqe_counter_sig_op_own_raw);
+         cqe_chunk = doca_gpu_dev_verbs_bswap32(cqe_chunk);
+         wqe_counter = cqe_chunk >> 16;
+         opown = cqe_chunk & 0xff;
+         opcode = opown >> DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT;
++        [[unlikely]] if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR)
++            return doca_priv_gpu_dev_verbs_cq_set_err_collapsed<resource_sharing_mode>(
++                cq, cons_index, cqe64);
++        pending = (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_INVALID) ||
++                  ((cqe_ci <= cons_index) &&
++                   ((uint16_t)((uint16_t)cons_index - wqe_counter - (uint16_t)2) < cqe_num));
++        // The QP has failed but no error CQE is there: it was cancelled, the CQE will never come.
++        [[unlikely]] if (pending && not_ready != EBUSY)
++            return not_ready;
+     }
+     // NOTE: This while loop is part of do while above.
+     // wqe_counter is the HW consumer index. However, we always maintain index
+@@ -462,19 +630,13 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_collapsed_
+     // idx, and thus we need to wait. We don't need to wait when idx ==
+     // wqe_counter + 1. That's why we use - (uint16_t)2 here to make this case
+     // wraparound.
+-    while ((opcode == DOCA_GPUNETIO_IB_MLX5_CQE_INVALID) ||
+-           ((cqe_ci <= cons_index) &&
+-            ((uint16_t)((uint16_t)cons_index - wqe_counter - (uint16_t)2) < cqe_num)));
++    while (pending);
+ 
+     ++wqe_counter;
+     *new_cqe_ci = ((cons_index & ~(0xFFFFULL)) | wqe_counter) +
+                   (((uint16_t)cons_index > wqe_counter) ? 0x10000ULL : 0x0);
+ 
+-#if DOCA_GPUNETIO_VERBS_ENABLE_DEBUG == 1
+-    if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) doca_gpu_dev_verbs_cq_print_cqe_err(cqe64);
+-#endif
+-
+-    return ((opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) * -EIO);
++    return 0;
+ }
+ 
+ /**
+@@ -543,8 +705,9 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq(struct doca_gpu
+     [[unlikely]] if (count == 0)
+         return 0;
+     struct doca_gpu_dev_verbs_cq *cq = doca_gpu_dev_verbs_qp_get_cq<qp_type>(qp);
+-    uint64_t cons_index =
+-        doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci) + count - 1;
++    uint64_t cons_index = (doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci) &
++                           ~DOCA_GPUNETIO_VERBS_CQ_CI_FAILED) +
++                          count - 1;
+     return doca_gpu_dev_verbs_poll_cq_at<resource_sharing_mode, qp_type, cq_type>(qp, cons_index);
+ }
+ 
+diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_gpunetio.h b/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_gpunetio.h
+index 4b6f044..aeccec7 100644
+--- a/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_gpunetio.h
++++ b/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_gpunetio.h
+@@ -120,6 +120,8 @@ struct doca_gpu_verbs_qp {
+     struct doca_gpu_dev_verbs_qp *qp_gpu;
+     /* CPU-accessible GPU handler. Linked with qp_gpu via GDRCopy. */
+     struct doca_gpu_dev_verbs_qp *qp_gpu_h;
++    /* CPU-readable view of qp_gpu, set whenever GDRCopy is available. Used to read cq_sq.err. */
++    const struct doca_gpu_dev_verbs_qp *qp_gpu_ro_h;
+     /*
+      * Free flow rings DB whenever this threshold is reached or there is no more WQE.
+      * Set the threshold to 0 to ring DB only when there is no more WQE.
+diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_verbs.h b/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_verbs.h
+index e871701..934ebd2 100644
+--- a/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_verbs.h
++++ b/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_verbs.h
+@@ -1310,6 +1310,16 @@ doca_error_t doca_verbs_qp_attr_set_cc_group(doca_verbs_qp_attr_t *verbs_qp_attr
+ doca_error_t doca_verbs_qp_attr_set_counter_set_id(doca_verbs_qp_attr_t *qp_attr,
+                                                    uint32_t counter_set_id);
+ 
++/**
++ * @brief Get the first error of a queried QP as the NIC keeps it in the QP context:
++ * hw_err << 24 | hw_type << 20 | vendor_err << 8 | syndrome, 0 if none (or the NIC does not keep it).
++ *
++ * @return
++ * DOCA_SUCCESS, or DOCA_ERROR_NOT_SUPPORTED if called in SDK mode or with a NULL argument.
++ */
++doca_error_t doca_verbs_qp_attr_get_error_syndrome(doca_verbs_qp_attr_t *qp_attr,
++                                                   uint32_t *error_syndrome);
++
+ /**
+  * @brief Set lag_tx_port_affinity attribute for verbs_qp_attr
+  *
+diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/include/host/mlx5_ifc.h b/src/transport/net_ib/gdaki/doca-gpunetio/include/host/mlx5_ifc.h
+index 36c420d..49238a0 100644
+--- a/src/transport/net_ib/gdaki/doca-gpunetio/include/host/mlx5_ifc.h
++++ b/src/transport/net_ib/gdaki/doca-gpunetio/include/host/mlx5_ifc.h
+@@ -3930,7 +3930,8 @@ struct mlx5_ifc_query_qp_in_bits {
+     u8 reserved_at_20[0x10];
+     u8 op_mod[0x10];
+ 
+-    u8 reserved_at_40[0x8];
++    u8 qpc_ext[0x1];
++    u8 reserved_at_41[0x7];
+     u8 qpn[0x18];
+ 
+     u8 reserved_at_60[0x20];
+diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_gpunetio.cpp b/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_gpunetio.cpp
+index ba5dd70..19cee8f 100644
+--- a/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_gpunetio.cpp
++++ b/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_gpunetio.cpp
+@@ -1279,7 +1279,8 @@ doca_error_t doca_gpu_verbs_export_multi_qps_dev(doca_gpu_t *gpu_dev,
+ 
+     if (need_cpu_mapping) assert(doca_gpu_gdrcopy_is_supported());
+ 
+-    if (need_cpu_mapping)
++    // Map for the CPU whenever possible, so the host can read the error record in cq_sq.err.
++    if (need_cpu_mapping || doca_gpu_gdrcopy_is_supported())
+         mtype =
+             need_data_direct ? DOCA_GPU_MEM_TYPE_GPU_CPU_DATA_DIRECT : DOCA_GPU_MEM_TYPE_GPU_CPU;
+     else
+@@ -1303,6 +1304,7 @@ doca_error_t doca_gpu_verbs_export_multi_qps_dev(doca_gpu_t *gpu_dev,
+         if (qp == nullptr) continue;
+         assert(qp->qp_cpu != nullptr);
+         qp->qp_gpu = &(qp_gpus_d[qp_idx]);
++        qp->qp_gpu_ro_h = qp_cpus ? &(qp_cpus[qp_idx]) : nullptr;
+         if (qp->cq_type == DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED_HOST)
+             qp->qp_gpu_h = &(qp_cpus[qp_idx]);
+         if ((qp->send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_SW_EMULATED) &&
+@@ -1345,6 +1347,7 @@ doca_error_t doca_gpu_verbs_unexport_multi_qps_dev(doca_gpu_t *gpu_dev,
+         if (qp == nullptr) continue;
+         qp->qp_gpu = nullptr;
+         qp->qp_gpu_h = nullptr;
++        qp->qp_gpu_ro_h = nullptr;
+     }
+ 
+     status = doca_gpu_mem_free(gpu_dev, qp_gpus);
+@@ -1449,7 +1452,22 @@ static inline void priv_cpu_proxy_progress_cq(struct doca_gpu_verbs_qp *qp, bool
+         goto out;
+ 
+     if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) {
+-        DOCA_LOG(LOG_WARNING, "CQE indicates request error");
++        // Keep the first error CQE this thread sees: the cause if it got here before the NIC
++        // overwrote it with a flush. GPU threads waiting on this CQ leave their poll loops once the
++        // record is set.
++        if (READ_ONCE(qp->qp_gpu_h->cq_sq.err) == 0) {
++            const struct doca_gpunetio_ib_mlx5_err_cqe_ex err_cqe =
++                *reinterpret_cast<struct doca_gpunetio_ib_mlx5_err_cqe_ex *>(cqe64);
++            // Overwritten while it was being copied: take the next one on the next call.
++            if (reinterpret_cast<std::atomic<uint32_t> *>(&cqe64->wqe_counter_sig_op_own_raw)
++                    ->load(std::memory_order_relaxed) != htobe32(cqe_chunk))
++                goto out;
++            DOCA_LOG(LOG_WARNING, "CQE indicates request error");
++            WRITE_ONCE(qp->qp_gpu_h->cq_sq.err,
++                       DOCA_GPUNETIO_VERBS_CQ_ERR_RECORD(
++                           DOCA_GPUNETIO_VERBS_CQ_WQE_IDX(old_cqe_ci, wqe_counter),
++                           err_cqe.syndrome, err_cqe.vendor_err_synd));
++        }
+         goto out;
+     }
+ 
+@@ -1491,8 +1509,10 @@ doca_error_t doca_gpu_verbs_cpu_proxy_progress(struct doca_gpu_verbs_qp *qp, boo
+         return DOCA_ERROR_NOT_SUPPORTED;
+     }
+ 
+-    if ((qp->send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_SW_EMULATED) &&
+-        ((qp->qp_cpu->nic_handler & DOCA_GPUNETIO_VERBS_NIC_HANDLER_FLAG_CPU_PROXY) == 0)) {
++    // A QP with a recorded failure gets no new WQEs from the CPU proxy.
++    if (qp->qp_gpu_ro_h && READ_ONCE(qp->qp_gpu_ro_h->cq_sq.err)) {
++    } else if ((qp->send_dbr_mode_ext == DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_SW_EMULATED) &&
++               ((qp->qp_cpu->nic_handler & DOCA_GPUNETIO_VERBS_NIC_HANDLER_FLAG_CPU_PROXY) == 0)) {
+         priv_cpu_proxy_progress_dbr_assisted(qp);
+     } else {
+         priv_cpu_proxy_progress_full_assisted(qp, &qp_progressed);
+@@ -1815,6 +1835,7 @@ doca_error_t doca_gpu_verbs_query_last_error(struct doca_gpu_verbs_qp *qp,
+     enum doca_verbs_qp_state current_state;
+     doca_verbs_qp_attr_t *qp_attr = nullptr;
+     doca_verbs_qp_init_attr_t *qp_init_attr = nullptr;
++    uint32_t qpc_err = 0;
+ 
+     if (qp == nullptr || qp->qp == nullptr || error_info == nullptr)
+         return DOCA_ERROR_INVALID_VALUE;
+@@ -1846,6 +1867,25 @@ doca_error_t doca_gpu_verbs_query_last_error(struct doca_gpu_verbs_qp *qp,
+     }
+ 
+     error_info->has_error = (current_state == DOCA_VERBS_QP_STATE_ERR);
++    if (error_info->has_error && qp->qp_gpu_ro_h) {
++        // 0 until a GPU thread (or the host CQ thread) has polled the error CQE.
++        const uint64_t err = READ_ONCE(qp->qp_gpu_ro_h->cq_sq.err);
++        if (err) {
++            error_info->syndrome = (err >> 8) & 0xff;
++            error_info->vendor_err_synd = err & 0xff;
++            error_info->wqe_counter = (uint16_t)DOCA_GPUNETIO_VERBS_CQ_ERR_IDX(err);
++        }
++    }
++    // The cause as the NIC keeps it in the QP context wins: it is there before any thread polls the
++    // CQE, needs no CPU mapping of the QP, and is not a flush that followed the failed WQE.
++    // wqe_counter stays that of the CQ record (0 without it) and need not be the failed WQE.
++    if (error_info->has_error &&
++        doca_verbs_qp_attr_get_error_syndrome(qp_attr, &qpc_err) == DOCA_SUCCESS && qpc_err) {
++        error_info->syndrome = qpc_err & 0xff;
++        error_info->vendor_err_synd = (qpc_err >> 8) & 0xff;
++        error_info->hw_synd_type = (qpc_err >> 20) & 0xf;
++        error_info->hw_err_synd = qpc_err >> 24;
++    }
+ 
+     status = doca_verbs_qp_init_attr_destroy(qp_init_attr);
+     if (status != DOCA_SUCCESS) {
+diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_verbs_qp.cpp b/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_verbs_qp.cpp
+index 0353999..5585724 100644
+--- a/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_verbs_qp.cpp
++++ b/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_verbs_qp.cpp
+@@ -120,7 +120,6 @@ using qp_2rst_in = uint32_t[MLX5_ST_SZ_DW(qp_2rst_in)];
+ using qp_2rst_out = uint32_t[MLX5_ST_SZ_DW(qp_2rst_out)];
+ 
+ using query_qp_in = uint32_t[MLX5_ST_SZ_DW(query_qp_in)];
+-using query_qp_out = uint32_t[MLX5_ST_SZ_DW(query_qp_out)];
+ 
+ int rst2init_requested_attr[DOCA_VERBS_QP_TYPE_RC + 1] = {
+     /* [DOCA_VERBS_QP_TYPE_RC] */
+@@ -1327,12 +1326,23 @@ doca_error_t doca_verbs_qp_open::query_qp(
+     struct doca_verbs_qp_attr_open *verbs_qp_attr,
+     struct doca_verbs_qp_init_attr_open *verbs_qp_init_attr) noexcept {
+     query_qp_in in{0};
+-    query_qp_out out{0};
++    // query_qp_out, then the QP context extension: its 4th dword is the first error of the QP, which
++    // the NIC keeps there and a later flush does not replace.
++    uint32_t out[MLX5_ST_SZ_DW(query_qp_out) + MLX5_ST_SZ_DW(qpc_extension_and_pas_list_in)] = {0};
+ 
+     DEVX_SET(query_qp_in, in, opcode, MLX5_CMD_OP_QUERY_QP);
+     DEVX_SET(query_qp_in, in, qpn, m_qp_num);
++    DEVX_SET(query_qp_in, in, qpc_ext, 1);
+ 
+     auto ret = doca_verbs_wrapper_mlx5dv_devx_obj_query(m_qp_obj, in, sizeof(in), out, sizeof(out));
++    verbs_qp_attr->error_syndrome = 0;
++    if (ret == DOCA_SUCCESS) {
++        verbs_qp_attr->error_syndrome = be32toh(out[MLX5_ST_SZ_DW(query_qp_out) + 3]);
++    } else {  // e.g. a NIC without the extension: the plain query, whose tail is not an extension
++        DEVX_SET(query_qp_in, in, qpc_ext, 0);
++        ret = doca_verbs_wrapper_mlx5dv_devx_obj_query(m_qp_obj, in, sizeof(in), out,
++                                                       MLX5_ST_SZ_BYTES(query_qp_out));
++    }
+     if (ret != DOCA_SUCCESS) {
+         DOCA_LOG(LOG_ERR, "Failed to query QP");
+         return DOCA_ERROR_DRIVER;
+@@ -3217,6 +3227,15 @@ doca_error_t doca_verbs_qp_attr_set_counter_set_id(doca_verbs_qp_attr_t *qp_attr
+     return DOCA_SUCCESS;
+ }
+ 
++doca_error_t doca_verbs_qp_attr_get_error_syndrome(doca_verbs_qp_attr_t *qp_attr,
++                                                   uint32_t *error_syndrome) {
++    if (qp_attr == nullptr || error_syndrome == nullptr ||
++        qp_attr->type == DOCA_VERBS_SDK_LIB_TYPE_SDK || qp_attr->open == nullptr)
++        return DOCA_ERROR_NOT_SUPPORTED;
++    *error_syndrome = qp_attr->open->error_syndrome;
++    return DOCA_SUCCESS;
++}
++
+ doca_error_t doca_verbs_qp_attr_set_ah_attr(doca_verbs_qp_attr_t *qp_attr,
+                                             doca_verbs_ah_attr_t *ah_attr) {
+     if (qp_attr == nullptr) {
+diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_verbs_qp.hpp b/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_verbs_qp.hpp
+index 56ed377..1ef3fb2 100644
+--- a/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_verbs_qp.hpp
++++ b/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_verbs_qp.hpp
+@@ -143,6 +143,7 @@ struct doca_verbs_qp_attr_open {
+     uint8_t max_rd_atomic{};
+     uint8_t max_dest_rd_atomic{};
+     uint32_t counter_set_id{};
++    uint32_t error_syndrome{};  // query only: hw_err << 24 | hw_type << 20 | vendor_err << 8 | syndrome
+     uint8_t lag_tx_port_affinity{};
+     uint8_t ordering_semantic{};
+     bool ordering_semantic_set{};
+diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+index 961da83..d4d62c9 100644
+--- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
++++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
+@@ -384,6 +384,8 @@ struct gdaki_context {
+     CUmemGenericAllocationHandle mhandle;
+   } sink_buffer;
+   uint64_t last_error_query_time;
++  bool error_seen;   // a QP error was seen once; QPs do not leave the error state, so it stays reported
++  bool cause_logged; // the WARN for it carried the device's error record, so no more queries are needed
+ 
+   uint64_t* last_issued_get;
+   uint64_t* last_visible_get;
+@@ -675,6 +677,13 @@ NCCL_PARAM(GinGdakiForceMcst, "GDAKI_FORCE_MCST", 0);
+ 
+ static ncclResult_t gdakiCheckDeviceSupport(doca_gpu_t* gpuDev, doca_dev_t* netDev,
+                                             enum doca_gpu_dev_verbs_nic_handler nicHandler, int rank) {
++  // NCCL only calls the generic DOCA submit, which has no BlueFlame branch: the doorbell is never rung and
++  // every GIN operation hangs without an error (NVIDIA/nccl#2480).
++  if (nicHandler & DOCA_GPUNETIO_VERBS_NIC_HANDLER_FLAG_BF) {
++    WARN("[%d] GIN/GDAKI: NCCL_GIN_GDAKI_NIC_HANDLER=%d (BlueFlame doorbell) is not supported", rank, (int)nicHandler);
++    return ncclInvalidUsage;
++  }
++
+   doca_error_t docaStatus = doca_gpu_nic_cap_is_gpu_mem_umem_supported(gpuDev, netDev);
+   if (docaStatus != DOCA_SUCCESS &&
+       !(gpuDev->type == DOCA_GPU_LIB_TYPE_SDK && netDev->type == DOCA_VERBS_SDK_LIB_TYPE_SDK &&
+@@ -1592,6 +1601,7 @@ static void gdakiReportQpError(struct gdaki_context* ctx, struct doca_gpu_verbs_
+        ctx->nContexts, qpn, ctx->ginCounterSetId, (unsigned)errorInfo->syndrome, (unsigned)errorInfo->vendor_err_synd,
+        (unsigned)errorInfo->hw_err_synd, (unsigned)errorInfo->hw_synd_type, errorInfo->wqe_counter,
+        gdakiQCounterString(ctx, counters, sizeof(counters)));
++  ctx->cause_logged = errorInfo->syndrome != 0;
+ }
+ 
+ static ncclResult_t ncclGinGdakiQueryLastErrorPolling(struct gdaki_context* gdakiCtx, bool* hasError) {
+@@ -1660,9 +1670,10 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
+   struct gdaki_context* gdakiCtx = (struct gdaki_context*)ginCtx;
+   bool hasError_ = false;
+ 
+-  // We throttle the frequency of these queries since they can easily take 250us.
++  // We throttle the frequency of these queries since they can easily take 250us. After an error
++  // they go on only until the WARN has carried the cause, which the device may record later.
+   uint64_t now = clockNano();
+-  if ((now - gdakiCtx->last_error_query_time) / 1e9 < ncclParamGinErrorQuerySec()) {
++  if (gdakiCtx->cause_logged || (now - gdakiCtx->last_error_query_time) / 1e9 < ncclParamGinErrorQuerySec()) {
+     goto exit;
+   }
+   gdakiCtx->last_error_query_time = now;
+@@ -1674,6 +1685,7 @@ ncclResult_t ncclGinGdakiQueryLastError(void* ginCtx, bool* hasError) {
+   }
+ 
+ exit:
+-  *hasError = hasError_;
++  gdakiCtx->error_seen |= hasError_;
++  *hasError = gdakiCtx->error_seen;
+   return status;
+ }
