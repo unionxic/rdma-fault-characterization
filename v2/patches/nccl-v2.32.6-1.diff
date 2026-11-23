@@ -118,10 +118,10 @@ index 6cda217..b30b382 100644
          const enum doca_gpu_dev_verbs_nic_handler qp_nic_handler =
              (enum doca_gpu_dev_verbs_nic_handler)doca_gpu_dev_verbs_load_const(
 diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh b/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh
-index ba8ddf4..95a3449 100644
+index ba8ddf4..d1af905 100644
 --- a/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh
 +++ b/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh
-@@ -96,6 +96,146 @@ __device__ static __forceinline__ void doca_gpu_dev_verbs_cq_print_cqe_err(
+@@ -96,6 +96,148 @@ __device__ static __forceinline__ void doca_gpu_dev_verbs_cq_print_cqe_err(
  }
  #endif
  
@@ -242,10 +242,12 @@ index ba8ddf4..95a3449 100644
 +
 +/**
 + * @brief [Internal] Collapsed CQ: the single slot holds an error CQE. Record it, then tell whether
-+ * cons_index failed (-EIO) or completed before the first recorded failure (0).
++ * cons_index failed (-EIO) or is known to have completed (0).
 + * The NIC overwrites the slot with the flush CQE of every WQE that was posted after the failed one,
-+ * so the record holds the cause only if a poll ran before the first flush landed. Once a slot holds
-+ * an error CQE it only ever holds error CQEs, so this never has to report "not ready".
++ * so neither the syndrome nor the counter in the slot need be those of the failed WQE. The index
++ * recorded is therefore cqe_ci, which stops advancing once the QP has failed: every WQE below it
++ * has completed, the ones from it on may or may not have. Once a slot holds an error CQE it only
++ * ever holds error CQEs, so this never has to report "not ready".
 + */
 +template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode>
 +__device__ static __noinline__ int doca_priv_gpu_dev_verbs_cq_set_err_collapsed(
@@ -255,20 +257,20 @@ index ba8ddf4..95a3449 100644
 +    doca_gpu_dev_verbs_cq_print_cqe_err(cqe64);
 +#endif
 +    uint8_t syndrome, vendor_err;
-+    const uint32_t cqe_chunk =
-+        doca_priv_gpu_dev_verbs_cq_read_err_cqe(cqe64, &syndrome, &vendor_err);
-+    doca_priv_gpu_dev_verbs_cq_set_err<resource_sharing_mode>(
-+        cq, DOCA_GPUNETIO_VERBS_CQ_WQE_IDX(cons_index, cqe_chunk >> 16), syndrome, vendor_err);
-+    const uint64_t err = doca_gpu_dev_verbs_load_relaxed_sys_global(&cq->err);
-+    // A flush record (syndrome 0x05) means the failed WQE is an earlier one whose CQE was lost.
-+    const bool is_flush = ((err >> 8) & 0xff) == 0x05;
-+    return (!is_flush && cons_index < DOCA_GPUNETIO_VERBS_CQ_ERR_IDX(err)) ? 0 : -EIO;
++    const uint64_t done = doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci) &
++                          ~DOCA_GPUNETIO_VERBS_CQ_CI_FAILED;
++    doca_priv_gpu_dev_verbs_cq_read_err_cqe(cqe64, &syndrome, &vendor_err);
++    doca_priv_gpu_dev_verbs_cq_set_err<resource_sharing_mode>(cq, done, syndrome, vendor_err);
++    return cons_index < DOCA_GPUNETIO_VERBS_CQ_ERR_IDX(
++                            doca_gpu_dev_verbs_load_relaxed_sys_global(&cq->err))
++               ? 0
++               : -EIO;
 +}
 +
  // ==================== Poll One CQ At ====================
  
  /**
-@@ -120,9 +260,10 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_one_cq_device
+@@ -120,9 +262,10 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_one_cq_device
          (struct doca_gpunetio_ib_mlx5_cqe64 *)(cqe + (idx * DOCA_GPUNETIO_VERBS_CQE_SIZE));
  
      uint64_t cqe_ci = doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci);
@@ -281,7 +283,7 @@ index ba8ddf4..95a3449 100644
  
      uint8_t opown;
      uint8_t opcode;
-@@ -147,14 +288,16 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_one_cq_device
+@@ -147,14 +290,16 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_one_cq_device
          (wqe_counter == ((uint32_t)cons_index & 0xffff));
  #endif
  
@@ -300,7 +302,7 @@ index ba8ddf4..95a3449 100644
  }
  
  /**
-@@ -198,7 +341,8 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_one_cq_host_at(
+@@ -198,7 +343,8 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_one_cq_host_at(
      struct doca_gpu_dev_verbs_cq *cq, uint64_t cons_index) {
      int status = 0;
      uint64_t cqe_ci = doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci);
@@ -310,7 +312,7 @@ index ba8ddf4..95a3449 100644
      doca_gpu_dev_verbs_fence_acquire_nvidia_nic();
      return status;
  }
-@@ -224,11 +368,10 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_one_collap
+@@ -224,11 +370,10 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_one_collap
              (uintptr_t *)&cq->cqe_daddr);
      const uint32_t cqe_num = doca_gpu_dev_verbs_load_const(&cq->cqe_num);
      uint64_t cqe_ci = doca_gpu_dev_verbs_load_relaxed<resource_sharing_mode>(&cq->cqe_ci);
@@ -324,7 +326,7 @@ index ba8ddf4..95a3449 100644
      uint32_t cqe_chunk =
          doca_gpu_dev_verbs_load_relaxed_sys_global(&cqe64->wqe_counter_sig_op_own_raw);
      cqe_chunk = doca_gpu_dev_verbs_bswap32(cqe_chunk);
-@@ -236,21 +379,22 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_one_collap
+@@ -236,21 +381,22 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_one_collap
      uint8_t opown = cqe_chunk & 0xff;
      uint8_t opcode = opown >> DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT;
  
@@ -353,7 +355,7 @@ index ba8ddf4..95a3449 100644
  }
  
  /**
-@@ -365,7 +509,9 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_device_at(
+@@ -365,7 +511,9 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_device_at(
  #if DOCA_GPUNETIO_VERBS_ENABLE_DEBUG == 1
      if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) doca_gpu_dev_verbs_cq_print_cqe_err(cqe64);
  #endif
@@ -364,7 +366,7 @@ index ba8ddf4..95a3449 100644
  }
  
  /**
-@@ -384,7 +530,13 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq_device_at(
+@@ -384,7 +532,13 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq_device_at(
      int status = doca_priv_gpu_dev_verbs_poll_cq_device_at<resource_sharing_mode>(cq, cons_index);
      if (status == 0) {
          doca_gpu_dev_verbs_fence_acquire_nvidia_nic();
@@ -379,7 +381,7 @@ index ba8ddf4..95a3449 100644
      }
      return status;
  }
-@@ -406,6 +558,8 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq_host_at(
+@@ -406,6 +560,8 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq_host_at(
      uint64_t cqe_ci;
      do {
          cqe_ci = doca_gpu_dev_verbs_load_relaxed_sys_global((uint64_t *)&cq->cqe_ci);
@@ -388,7 +390,7 @@ index ba8ddf4..95a3449 100644
      } while (cons_index >= cqe_ci);
      doca_gpu_dev_verbs_fence_acquire_nvidia_nic();
      return 0;
-@@ -436,23 +590,37 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_collapsed_
+@@ -436,23 +592,37 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_collapsed_
      uint64_t cqe_ci;
      uint32_t cqe_chunk;
      uint16_t wqe_counter;
@@ -428,7 +430,7 @@ index ba8ddf4..95a3449 100644
      }
      // NOTE: This while loop is part of do while above.
      // wqe_counter is the HW consumer index. However, we always maintain index
-@@ -462,19 +630,13 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_collapsed_
+@@ -462,19 +632,13 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_collapsed_
      // idx, and thus we need to wait. We don't need to wait when idx ==
      // wqe_counter + 1. That's why we use - (uint16_t)2 here to make this case
      // wraparound.
@@ -450,7 +452,7 @@ index ba8ddf4..95a3449 100644
  }
  
  /**
-@@ -543,8 +705,9 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq(struct doca_gpu
+@@ -543,8 +707,9 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq(struct doca_gpu
      [[unlikely]] if (count == 0)
          return 0;
      struct doca_gpu_dev_verbs_cq *cq = doca_gpu_dev_verbs_qp_get_cq<qp_type>(qp);

@@ -89,16 +89,18 @@ index d07d11e6..c9599dc2 100644
      nvshmemx_region_handle_t *handle, const nvshmemx_region_attrs_t *attrs) {
      return nvshmemi_region_start_block(handle, attrs);
 diff --git a/src/include/device_host_transport/nvshmem_common_ibgda.h b/src/include/device_host_transport/nvshmem_common_ibgda.h
-index f735ca81..fe716c5c 100644
+index f735ca81..4cf98d1f 100644
 --- a/src/include/device_host_transport/nvshmem_common_ibgda.h
 +++ b/src/include/device_host_transport/nvshmem_common_ibgda.h
-@@ -11,12 +11,20 @@
+@@ -11,12 +11,22 @@
  
  #define NVSHMEMI_IBGDA_STATE_PADDING_V2 44
  
 +/* state.extra points to one uint64_t in host-pinned memory, written by device code and read by the
-+ * host: 0, or the first error CQE that device code polled:
-+ * 1 << 63 | QP number << 32 | wqe_counter << 16 | syndrome << 8 | vendor_err_synd */
++ * host: 0, or the first error that device code polled:
++ * 1 << 63 | QP number << 32 | wqe_counter << 16 | syndrome << 8 | vendor_err_synd
++ * wqe_counter is the low 16 bits of the QP's cons_idx before the error was seen: every WQE of that QP
++ * below it has completed (see ibgda_latch_err_cqe). */
 +#define NVSHMEMI_IBGDA_ERR_RECORD(qpn, wqe_counter, syndrome, vendor_err)                  \
 +    ((1ULL << 63) | ((uint64_t)((qpn)&0xffffff) << 32) | ((uint64_t)(uint16_t)(wqe_counter) << 16) | \
 +     ((uint64_t)(uint8_t)(syndrome) << 8) | (uint8_t)(vendor_err))
@@ -113,7 +115,7 @@ index f735ca81..fe716c5c 100644
  #include <linux/types.h>        // for __be32
  #if !defined __CUDACC_RTC__
  #include <stddef.h>  // for size_t
-@@ -346,6 +354,40 @@ static_assert(sizeof(nvshmemi_ibgda_device_state_v2) == 8384,
+@@ -346,6 +356,40 @@ static_assert(sizeof(nvshmemi_ibgda_device_state_v2) == 8384,
  
  typedef nvshmemi_ibgda_device_state_v2 nvshmemi_ibgda_device_state_t;
  
@@ -184,10 +186,10 @@ index 89028436..6c032138 100644
      rma_handle rma;
      amo_handle amo;
 diff --git a/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh b/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh
-index a5818a0a..134be6e4 100644
+index a5818a0a..aeaee6bf 100644
 --- a/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh
 +++ b/src/include/non_abi/device/pt-to-pt/ibgda_device.cuh
-@@ -496,6 +496,36 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_check_poll_ti
+@@ -496,6 +496,39 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_check_poll_ti
  }
  #endif
  
@@ -195,8 +197,11 @@ index a5818a0a..134be6e4 100644
 +// nvshmemx_get_op_error() and the host WARN. Call before cons_idx publishes the completion: a thread
 +// that sees it may quiet and query at once. Returns op_own so the poll reads the CQE no more often
 +// than the original code (each read is a cache-bypassing load).
++// The record keeps cons_idx, not the counter of the CQE: the CQ is collapsed, so that CQE can be the
++// flush of a later WQE, while every WQE below the cons_idx read before the first error was seen
++// has completed. That is the index a retransmission can safely start from.
 +__device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE uint8_t ibgda_latch_err_cqe(
-+    void *record, struct mlx5_cqe64 *cqe64) {
++    void *record, struct mlx5_cqe64 *cqe64, uint64_t cons_idx) {
 +    ibgda_mlx5_err_cqe_t *cqe_err = (ibgda_mlx5_err_cqe_t *)cqe64;
 +    __be16 counter;
 +    __be32 qpn;
@@ -213,8 +218,8 @@ index a5818a0a..134be6e4 100644
 +        vendor_err = ibgda_atomic_read(&cqe_err->vendor_err_synd);
 +    } while (ibgda_atomic_read(&cqe_err->wqe_counter) != counter);
 +    atomicCAS((unsigned long long int *)record, 0ULL,
-+              (unsigned long long int)NVSHMEMI_IBGDA_ERR_RECORD(BSWAP32(qpn), BSWAP16(counter),
-+                                                                syndrome, vendor_err));
++              (unsigned long long int)NVSHMEMI_IBGDA_ERR_RECORD(BSWAP32(qpn), cons_idx, syndrome,
++                                                                vendor_err));
 +    // The caller publishes the completion in cons_idx next. Threads of other blocks and the host
 +    // read the record, so it is made visible at system scope first (error path only).
 +    __threadfence_system();
@@ -224,18 +229,18 @@ index a5818a0a..134be6e4 100644
  static_assert(NVSHMEMI_IBGDA_MAX_QP_DEPTH <= 32768,
                "static_assert(NVSHMEMI_IBGDA_MAX_QP_DEPTH <= 32768) failed");
  __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
-@@ -596,16 +626,18 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
+@@ -596,16 +629,18 @@ __device__ NVSHMEMI_STATIC NVSHMEMI_DEVICE_ALWAYS_INLINE int ibgda_poll_cq(
      ++wqe_counter;
      new_cons_idx =
          (idx & ~(0xffffULL) | wqe_counter) + (((uint16_t)idx > wqe_counter) ? 0x10000ULL : 0x0);
-+    opown = ibgda_latch_err_cqe(state->extra, cqe64);
++    opown = ibgda_latch_err_cqe(state->extra, cqe64, cons_idx);
      atomicMax((unsigned long long int *)cq->cons_idx, (unsigned long long int)new_cons_idx);
  
  #ifdef NVSHMEM_TIMEOUT_DEVICE_POLLING
 -check_opcode:
 +    if (false) { // entered only by the timeout path's goto, which skips the read above
 +    check_opcode:
-+        opown = ibgda_latch_err_cqe(state->extra, cqe64);
++        opown = ibgda_latch_err_cqe(state->extra, cqe64, cons_idx);
 +    }
  #endif
  
@@ -312,7 +317,7 @@ index a9d5db27..b7f04c2b 100644
      __threadfence(); /* 1. Ensures consitency op is not called before the prior test/wait condition
                          has been met
 diff --git a/src/include/non_abi/nvshmemx_error.h b/src/include/non_abi/nvshmemx_error.h
-index 65ea63d9..04f059e4 100644
+index 65ea63d9..12e1c12e 100644
 --- a/src/include/non_abi/nvshmemx_error.h
 +++ b/src/include/non_abi/nvshmemx_error.h
 @@ -8,6 +8,7 @@
@@ -331,7 +336,7 @@ index 65ea63d9..04f059e4 100644
  #endif
  
  /* The !! idiom is used to convert non-boolean types to booleans.
-@@ -46,6 +48,39 @@ enum nvshmemx_status {
+@@ -46,6 +48,41 @@ enum nvshmemx_status {
      NVSHMEMX_STATUS_LIST(NVSHMEMX_GENERATE_ENUM) NVSHMEMX_ERROR_SENTINEL = INT_MAX
  };
  
@@ -345,10 +350,12 @@ index 65ea63d9..04f059e4 100644
 +    NVSHMEMX_OP_ERROR_UNKNOWN   /* only a flush was seen, or an unclassified syndrome */
 +} nvshmemx_op_error_class_t;
 +
-+/* The first error since init, see nvshmemx_get_op_error(). qpn and wqe_counter are those of the first
-+ * error CQE that device code polled, which can be a flush that follows the failed operation: they do
-+ * not identify the failed operation. syndrome and vendor_err are the cause the NIC keeps for that QP
-+ * once the host has read it, and those of the polled CQE before that or where it cannot be read. */
++/* The first error since init, see nvshmemx_get_op_error(). qpn is the QP of the first error CQE that
++ * device code polled. wqe_counter is a lower bound, not the failed operation: every WQE of that QP
++ * below it (16-bit index) has completed, the ones from it on may or may not have. syndrome and
++ * vendor_err are the cause the NIC keeps for that QP once the host has read it, and those of the
++ * polled CQE (possibly a flush that follows the failed operation) before that or where it cannot be
++ * read. */
 +typedef struct {
 +    nvshmemx_op_error_class_t error_class;
 +    uint32_t qpn;
@@ -386,7 +393,7 @@ index ee1dc7ef..11be2266 100644
  
      u8 reserved_at_60[0x20];
 diff --git a/src/modules/transport/ibgda/ibgda.cpp b/src/modules/transport/ibgda/ibgda.cpp
-index de35481b..04957389 100644
+index de35481b..0aa43cdf 100644
 --- a/src/modules/transport/ibgda/ibgda.cpp
 +++ b/src/modules/transport/ibgda/ibgda.cpp
 @@ -515,7 +515,7 @@ int ibgda_dci_progress(nvshmem_transport_t t) {
@@ -407,7 +414,7 @@ index de35481b..04957389 100644
                  bf = (__be64 *)ep->uar_mobject->aligned.cpu_ptr;
  
                  memset((void *)&ctrl_seg, 0, sizeof(ctrl_seg));
-@@ -598,8 +598,79 @@ out:
+@@ -598,8 +598,89 @@ out:
      return NVSHMEMX_SUCCESS;
  }
  
@@ -416,9 +423,11 @@ index de35481b..04957389 100644
 + * context (QUERY_QP with qpc_ext; qp_context_extension.error_syndrome is 12 bytes into the extension
 + * that follows query_qp_out, vendor_error_syndrome and syndrome are its last two bytes), and a flush
 + * does not replace it [measured, ConnectX-6 firmware 20.43.4100]. A latched flush is replaced by
-+ * that; wqe_counter stays that of the flush. QP numbers are per NIC and the record does not name
-+ * the NIC, so nothing is replaced unless exactly one RC or DCI QP has that number. */
-+static void ibgda_restore_cause(nvshmem_transport_t t, uint64_t *record) {
++ * that; wqe_counter is not touched. QP numbers are per NIC and the record does not name
++ * the NIC, so nothing is replaced unless exactly one RC or DCI QP has that number.
++ * psn[0], psn[1] get last_acked_psn and next_send_psn of that QP: how far the NIC got, in packets
++ * (the send PSN starts at 0, see ibgda_qp_rtr2rts). */
++static void ibgda_restore_cause(nvshmem_transport_t t, uint64_t *record, uint32_t *psn) {
 +    nvshmemt_ibgda_state_t *ibgda_state = (nvshmemt_ibgda_state_t *)t->state;
 +    const uint64_t rec = *record;
 +    const uint32_t qpn = (rec >> 32) & 0xffffff;
@@ -446,9 +455,13 @@ index de35481b..04957389 100644
 +        match(device->rc.eps, device->rc.num_eps_per_pe * t->n_pes);
 +        match(device->dci.eps, device->dci.num_eps);
 +    }
-+    if (matches == 1 &&
-+        !mlx5dv_devx_obj_query(found->devx_qp, in, sizeof(in), out, sizeof(out)) && synd[3] &&
-+        synd[3] != MLX5_CQE_SYNDROME_WR_FLUSH_ERR)
++    if (matches != 1 || mlx5dv_devx_obj_query(found->devx_qp, in, sizeof(in), out, sizeof(out)))
++        return;
++    psn[0] = DEVX_GET(qpc, DEVX_ADDR_OF(query_qp_out, out, qpc), last_acked_psn);
++    psn[1] = DEVX_GET(qpc, DEVX_ADDR_OF(query_qp_out, out, qpc), next_send_psn);
++    if (((rec >> 8) & 0xff) == MLX5_CQE_SYNDROME_WR_FLUSH_ERR &&
++        (rec & 0xff) != NVSHMEMI_IBGDA_VENDOR_ERR_LOCAL_QP && synd[3] &&
++        (synd[3] != MLX5_CQE_SYNDROME_WR_FLUSH_ERR || synd[2] == NVSHMEMI_IBGDA_VENDOR_ERR_LOCAL_QP))
 +        __sync_bool_compare_and_swap(record, rec,
 +                                     (rec & ~0xffffULL) | (uint64_t)synd[3] << 8 | synd[2]);
 +}
@@ -463,20 +476,24 @@ index de35481b..04957389 100644
 +    nvshmemi_ibgda_device_state_t *state_h =
 +        (nvshmemi_ibgda_device_state_t *)t->type_specific_shared_state;
 +    nvshmemx_op_error_t err = {};
++    uint32_t psn[2] = {0, 0};
 +
 +    if (state_h) nvshmemi_ibgda_load_err(state_h->extra, &err);
-+    if (err.syndrome == MLX5_CQE_SYNDROME_WR_FLUSH_ERR &&
-+        err.vendor_err != NVSHMEMI_IBGDA_VENDOR_ERR_LOCAL_QP && restore_tries > 0) {
++    /* One query for the WARN; more only while the record is still a trailing flush. */
++    if (err.error_class != NVSHMEMX_OP_ERROR_NONE && restore_tries > 0 &&
++        (!reported || (err.syndrome == MLX5_CQE_SYNDROME_WR_FLUSH_ERR &&
++                       err.vendor_err != NVSHMEMI_IBGDA_VENDOR_ERR_LOCAL_QP))) {
 +        restore_tries--;
-+        ibgda_restore_cause(t, (uint64_t *)state_h->extra);
++        ibgda_restore_cause(t, (uint64_t *)state_h->extra, psn);
 +        nvshmemi_ibgda_load_err(state_h->extra, &err);
 +    }
 +    if (err.error_class != NVSHMEMX_OP_ERROR_NONE && !reported) {
 +        reported = true;
 +        NVSHMEMI_WARN_PRINT(
-+            "IBGDA error CQE: reporting_pe=%d qpn=%#x wqe_counter=%u syndrome=%#x vendor_err=%#x class=%d. "
-+            "The operation failed and later operations on this QP are flushed.",
-+            t->my_pe, err.qpn, err.wqe_counter, err.syndrome, err.vendor_err, err.error_class);
++            "IBGDA error CQE: reporting_pe=%d qpn=%#x wqe_counter=%u syndrome=%#x vendor_err=%#x class=%d "
++            "acked_psn=%u next_psn=%u. The operation failed and later operations on this QP are flushed.",
++            t->my_pe, err.qpn, err.wqe_counter, err.syndrome, err.vendor_err, err.error_class, psn[0],
++            psn[1]);
 +    }
 +    return 0;
 +}
@@ -487,7 +504,7 @@ index de35481b..04957389 100644
      status = ibgda_dci_progress(t);
      if (status) {
          return status;
-@@ -3812,6 +3883,12 @@ static int ibgda_post_gpu_device_state(
+@@ -3812,6 +3893,12 @@ static int ibgda_post_gpu_device_state(
          static_cast<uint32_t>(ibgda_region_batch_rma_threshold);
      ibgda_device_state_h->support_half_av_seg = support_half_av_seg;
      ibgda_device_state_h->may_skip_cst = ibgda_state->skip_cst;
@@ -500,7 +517,7 @@ index de35481b..04957389 100644
      ibgda_device_state_h->use_async_postsend = (ibgda_nic_handler != IBGDA_NIC_HANDLER_GPU);
      ibgda_device_state_h->num_devices_initialized = n_devs_selected;
      ibgda_device_state_h->num_default_rc_per_pe = ibgda_state->common.options->IBGDA_NUM_RC_PER_PE;
-@@ -4548,6 +4625,10 @@ int nvshmemt_ibgda_finalize(nvshmem_transport_t transport) {
+@@ -4548,6 +4635,10 @@ int nvshmemt_ibgda_finalize(nvshmem_transport_t transport) {
  
      ibgda_device_state_h = (nvshmemi_ibgda_device_state_t *)transport->type_specific_shared_state;
      if (ibgda_device_state_h) {
@@ -511,7 +528,7 @@ index de35481b..04957389 100644
          if (ibgda_device_state_h->globalmem.dcts) {
              cudaFree(ibgda_device_state_h->globalmem.dcts);
          }
-@@ -5304,8 +5385,10 @@ int nvshmemt_init(nvshmem_transport_t *t, struct nvshmemi_cuda_fn_table *table,
+@@ -5304,8 +5395,10 @@ int nvshmemt_init(nvshmem_transport_t *t, struct nvshmemi_cuda_fn_table *table,
      transport->host_ops.get_mem_handle = nvshmemt_ibgda_get_mem_handle;
      transport->host_ops.release_mem_handle = nvshmemt_ibgda_release_mem_handle;
      transport->host_ops.show_info = nvshmemt_ibgda_show_info;
