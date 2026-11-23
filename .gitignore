@@ -45,3 +45,4 @@ __pycache__/
 
 # Session QA notes stay local.
 harness/QA_20260923.md
+!*.cpp
