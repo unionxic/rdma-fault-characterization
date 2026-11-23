@@ -69,10 +69,13 @@ int main(int argc, char** argv) {
     sender<<<1, 1>>>(dc, wDst, wSrc, chunk, winBytes, n, bad, timed, (uint64_t)envl("TMO_CYCLES", 5000000000L),
                      (uint64_t)envl("DELAY_CYCLES", 15000000L), burst, counter, (int)envl("FLUSH_EVERY", 1), dProg);
     int lastIt = -1, lastPhase = 0, stalled = 0; ncclResult_t lastAsync = ncclSuccess; long asyncErrSamples = 0;
+    long qCalls = 0, qSlow = 0; double qSlowMs = 0, qMaxMs = 0;
     double* tIt = (double*)calloc(n + 1, sizeof(double));
     while (prog[1] != 9) {
+      double tq = nowMs();
       ncclResult_t a; CHK(ncclCommGetAsyncError(comm, &a));
       double t = nowMs();
+      qCalls++; if (t - tq > 0.05) { qSlow++; qSlowMs += t - tq; if (t - tq > qMaxMs) qMaxMs = t - tq; } // > 50 us: a host error query ran
       if (a != ncclSuccess) asyncErrSamples++;
       if (a != lastAsync) { printf("ASYNC t=%.0f ms value=%s\n", t - t0, ncclGetErrorString(a)); lastAsync = a; }
       int it = prog[0], ph = prog[1];
@@ -92,6 +95,7 @@ int main(int argc, char** argv) {
     ncclResult_t a; CHK(ncclCommGetAsyncError(comm, &a));
     printf("SUMMARY iterations_returned=%d of %d non_success_flush=%d stalled=%d async_error_samples=%ld async_final=%s elapsed=%.0f ms\n",
            done, n, nonSuccess, stalled, asyncErrSamples, ncclGetErrorString(a), nowMs() - t0);
+    printf("ASYNCQ calls=%ld slow=%ld slow_mean_us=%.0f max_us=%.0f\n", qCalls, qSlow, qSlow ? 1e3 * qSlowMs / qSlow : 0.0, 1e3 * qMaxMs);
     int go = 1; MPI_Send(&go, 1, MPI_INT, 1, 0, MPI_COMM_WORLD);
   } else {
     int go; MPI_Recv(&go, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
