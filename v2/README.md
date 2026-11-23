@@ -10,11 +10,12 @@ NCCL v2.32.6-1과 NVSHMEM v3.8.0-0의 release 소스에서 출발한 작업. v1�
 | 경로 | 내용 |
 |---|---|
 | `RECORD.md` | 단일 기록. 4절이 오류 분류의 근거, 4.1절이 복구 규칙(제안), 6절이 실행 기록 |
-| `patches/nccl-v2.32.6-1.diff` | NCCL `ad2d192`(v2.32.6-1) 대비 변경. 11개 파일 +326 −46 |
-| `patches/nvshmem-v3.8.0-0.diff` | NVSHMEM `270759e5`(v3.8.0-0) 대비 변경. 15개 파일 +254 −11 |
+| `patches/nccl-v2.32.6-1.diff` | NCCL `ad2d192`(v2.32.6-1) 대비 변경. 11개 파일 +328 −46 |
+| `patches/nvshmem-v3.8.0-0.diff` | NVSHMEM `270759e5`(v3.8.0-0) 대비 변경. 15개 파일 +271 −11 |
 | `repro/gin_fault.cu` | nccl#2483 재현: 창 밖 주소로 put을 보낸 뒤 flush와 host 조회의 반환 확인 |
 | `repro/shmem_fault.cu` | nvshmem#120 재현: 잘못된 주소 또는 정렬 안 된 atomic, 스레드 수 조절 |
 | `repro/synd.c`, `synd.sh` | CQE syndrome 13개 재현 시도(CPU verbs, 한 프로세스 loopback). CQE, QP context의 오류 기록, 비동기 이벤트, 포트 카운터, 커널 로그를 경우마다 기록 |
+| `repro/qperr.c` | LD_PRELOAD 주입기. 프로세스의 QP를 실행 중에 오류 상태로 바꿔 "연결 쪽 문제"를 재현(라이브러리 코드 변경 없음) |
 | `repro/decode_test.cpp` | NVSHMEM 분류 표의 자체 검사(GPU와 NIC 불필요) |
 | `repro/build.sh` | 재현 프로그램 빌드 |
 | `run_gin_fault.sh`, `shmem_fault.sh`, `shmem_cnt.sh` | 재현 실행과 집계 |
@@ -50,12 +51,16 @@ git clone https://github.com/NVIDIA/nvshmem && cd nvshmem && git checkout 270759
 - **정상 경로 비용.** NCCL `ring_exchange` 원본 대비 +0.6%, +1.2%, +0.1%, +0.1%(구성 4가지, 20회, 원본의 회차 간 편차
   0.4–1.9%). NVSHMEM put 지연 +1.1%, p 지연 +2.2%, 대역폭은 편차 안(10회).
 - **오류 주입 재시험.** NCCL CQ 방식 3가지 × 양방향 120회에서 멈춤 0회, host 조회 90회 모두 원인(`0x13/0x88`) 출력.
+- **세 분류의 재현.** 요청이 틀린 경우(`0x13`, `0x12`), 상대 프로세스 종료(`0x15/0x81`), 연결 쪽 문제(보내는 쪽 QP 오류
+  `0x05/0xf5`, 받는 쪽 QP 오류 `0x15/0x81`)를 두 라이브러리에서 재현. 분류 결과는 모두 기대와 일치, 멈춤 0회.
+- **어디까지 끝났는지는 하한으로 기록.** 오류 기록의 요청 번호는 "그 아래는 모두 완료"를 뜻하는 하한. put 수만 개가
+  떠 있는 도중에 QP를 죽인 50회 모두에서 기록된 번호가 실제 도착분 이하(NCCL 기본 CQ는 정확히 일치).
 
 ## 한계
 
 - 소프트웨어로 넣은 장애만 대상. 케이블이나 펌웨어 결함 같은 물리 장애는 미포함
 - vendor_err 값은 드라이버 헤더에 정의가 없어 측정으로 정한 값. ConnectX-6(MT4123) 펌웨어 20.43.4100 한 가지에서 측정
 - 노드 2개(NVSHMEM은 GPU 한 장에 PE 둘)에서만 실행
-- 원인은 복원되지만, 어느 요청이 실패했는지(WQE 번호)는 flush에 덮이면 알 수 없음
+- 실패한 요청을 정확히 짚지는 못함. 기록은 "여기까지는 끝났다"는 하한이며, 그 뒤 구간의 요청은 완료 여부 미확정
 - 복구 규칙(`RECORD.md` 4.1절)은 제안 단계. 실행으로 확인한 것 없음
 - 실행 로그는 미공개(관리망 주소 포함). `RECORD.md`가 가리키는 `runs/...` 경로는 이 저장소에 없음

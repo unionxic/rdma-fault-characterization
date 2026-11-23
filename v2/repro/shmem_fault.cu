@@ -1,6 +1,6 @@
 // Reproduces NVIDIA/nvshmem#120 on one node: PE 0 does p + quiet + g to PE 1 N times; one p targets an address
 // outside the symmetric heap. Shows whether quiet returns, what g returns, and what arrived. Exits without finalize.
-// env: N=40 BAD=10 (-1: none) STALL_S=15 KIND=0 (bad op: 0 p far outside the heap, 1 atomic add on a misaligned address) HOLD_S=0 (sleep before exit) CHECK=0 (1: the kernel asks nvshmemx_get_op_error after quiet and stops) THREADS=1 (GPU threads sharing the QP; only thread 0 sends the bad op; with CHECK=1 they stop together one iteration after it)
+// env: N=40 BAD=10 (-1: none) STALL_S=15 KIND=0 (bad op: 0 p far outside the heap, 1 atomic add on a misaligned address) HOLD_S=0 (sleep before exit) DELAY_CYCLES=0 (GPU clock cycles between iterations) STREAM=0 (1: only p, one quiet at the end; THREADS=1) CHECK=0 (1: the kernel asks nvshmemx_get_op_error after quiet and stops) THREADS=1 (GPU threads sharing the QP; only thread 0 sends the bad op; with CHECK=1 they stop together one iteration after it)
 #include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,13 +15,14 @@ static double nowMs() { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t
 
 // prog[0] = iteration in progress, prog[1] = 9 when done (8: stopped on an error), prog[2+it] = 1 after quiet returned, got[it] = value from g
 // miss[0] = quiets that returned after the bad iteration while the query still said "no error", miss[1] = last query status
-__global__ void sender(int* dst, int n, int bad, int kind, int check, volatile int* prog, int* got, int* miss) {
+__global__ void sender(int* dst, int n, int bad, int kind, int check, uint64_t delay, int stream, volatile int* prog, int* got, int* miss) {
   const bool t0 = threadIdx.x == 0, many = blockDim.x > 1;
   for (int it = 0; it < n; it++) {
     if (t0) prog[0] = it;
     int* p = it == bad && t0 ? dst + (2ull << 30) / sizeof(int) : dst + it;
     if (it == bad && t0 && kind == 1) nvshmem_long_atomic_add((long*)((char*)dst + 1), 1, 1);
     else nvshmem_int_p(p, 1000 + it, 1);
+    if (stream) { for (uint64_t c0 = clock64(); clock64() - c0 < delay;) {} continue; } // puts stay in flight
     nvshmem_quiet();
     nvshmemx_op_error_t e;
     int st = nvshmemx_get_op_error(&e);
@@ -30,8 +31,10 @@ __global__ void sender(int* dst, int n, int bad, int kind, int check, volatile i
     if (afterBad && !seen) atomicAdd(miss, 1); // this thread's op at it > bad was flushed, so the record must be set by now
     if (check && (many ? afterBad : seen)) { if (t0) prog[1] = 8; return; } // the same decision in every thread
     if (t0) { prog[2 + it] = 1; got[it] = nvshmem_int_g(dst + it, 1); }
+    for (uint64_t c0 = clock64(); clock64() - c0 < delay;) {}
     __syncthreads(); // no thread starts iteration bad + 1 before thread 0 has sent the bad op
   }
+  if (stream) nvshmem_quiet();
   if (t0) prog[1] = 9;
 }
 
@@ -51,7 +54,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 2 + n; i++) prog[i] = 0;
     for (int i = 0; i < n; i++) got[i] = -1;
     printf("CONFIG n=%d bad=%d\n", n, bad);
-    sender<<<1, threads>>>(dst, n, bad, envl("KIND", 0), envl("CHECK", 0), dProg, dGot, dMiss);
+    sender<<<1, threads>>>(dst, n, bad, envl("KIND", 0), envl("CHECK", 0), (uint64_t)envl("DELAY_CYCLES", 0), (int)envl("STREAM", 0), dProg, dGot, dMiss);
     CHK(cudaGetLastError());
     double last = nowMs(), stallMs = envl("STALL_S", 15) * 1e3; int lastIt = -1, stalled = 0;
     while (prog[1] == 0) {

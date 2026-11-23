@@ -58,7 +58,7 @@ static int drain(struct ibv_cq *cq, const char *side) {
   int n = 0;
   while (ibv_poll_cq(cq, 1, &wc) > 0) {
     n++;
-    printf(" | %s: status=%d(%s) syndrome=%#x vendor_err=%#x", side, wc.status, ibv_wc_status_str(wc.status),
+    printf(" | %s: wr=%d status=%d(%s) syndrome=%#x vendor_err=%#x", side, (int)wc.wr_id, wc.status, ibv_wc_status_str(wc.status),
            wc.status < 17 ? synd[wc.status] : -1, wc.status ? wc.vendor_err : 0);  // vendor_err is not set on success
   }
   return n;
@@ -72,7 +72,13 @@ static void qp_query(struct ibv_qp *q, const char *side) {
   memcpy(in + 8, &w, 4);
   const int rc = mlx5dv_devx_qp_query(q, in, sizeof in, out, sizeof out);
   if (rc) printf(" %s=query failed rc=%d cmd_status=%#x", side, rc, out[0]);
-  else printf(" %s=syndrome=%#x vendor_err=%#x hw_type=%#x hw_err=%#x", side, out[287], out[286], out[285] >> 4, out[284]);
+  else {
+    // qpc starts at byte 24 of the output; offsets inside it from mlx5_ifc.h (qpc_bits)
+    const uint8_t *c = out + 24;
+    printf(" %s=syndrome=%#x vendor_err=%#x hw_type=%#x hw_err=%#x sq_hw=%u sq_sw=%u acked_psn=%u next_psn=%u rcv_psn=%u", side,
+           out[287], out[286], out[285] >> 4, out[284], c[180] << 8 | c[181], c[182] << 8 | c[183],
+           c[137] << 16 | c[138] << 8 | c[139], c[121] << 16 | c[122] << 8 | c[123], c[149] << 16 | c[150] << 8 | c[151]);
+  }
 }
 
 int main(int argc, char **argv) {
@@ -142,6 +148,16 @@ int main(int argc, char **argv) {
   else if (IS("peer_err") || IS("peer_reset")) { struct ibv_qp_attr a = {.qp_state = IS("peer_err") ? IBV_QPS_ERR : IBV_QPS_RESET}; CHK(!ibv_modify_qp(qb, &a, IBV_QP_STATE)); }
   else if (IS("local_err")) { struct ibv_qp_attr a = {.qp_state = IBV_QPS_ERR}; CHK(!ibv_modify_qp(qa, &a, IBV_QP_STATE)); }
   else if (IS("flush_after")) { wr.wr.rdma.rkey = 0xdeadbeef; second = 1; }
+  // Where did it stop: 8 writes in flight, the 4th (burst_bad) is rejected, or B fails first (burst_peer_err).
+  else if (IS("burst_bad") || IS("burst_ok") || IS("burst_peer_err")) {
+    if (IS("burst_peer_err")) { struct ibv_qp_attr a = {.qp_state = IBV_QPS_ERR}; CHK(!ibv_modify_qp(qb, &a, IBV_QP_STATE)); }
+    for (int i = 0; i < 7; i++) {
+      wr.wr_id = 10 + i;
+      wr.wr.rdma.rkey = (IS("burst_bad") && i == 3) ? 0xdeadbeef : mb->rkey;
+      CHK(!ibv_post_send(qa, &wr, &bad));
+    }
+    wr.wr_id = 17; wr.wr.rdma.rkey = mb->rkey;  // the 8th is posted below
+  }
   else if (IS("mw_bind") || IS("mw_range") || IS("mw_len") || IS("mw_other_pd")) {
     struct ibv_mw *mw = ibv_alloc_mw(pd, IBV_MW_TYPE_1);
     if (!mw) return printf("case=%s ibv_alloc_mw failed errno=%d: did not reach the NIC\n", name, errno), 0;
