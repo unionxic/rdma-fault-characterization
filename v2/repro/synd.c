@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define CHK(x) do { if (!(x)) { printf("case=%s setup failed: %s (errno %d)\n", name, #x, errno); exit(2); } } while (0)
@@ -149,11 +150,11 @@ int main(int argc, char **argv) {
   else if (IS("local_err")) { struct ibv_qp_attr a = {.qp_state = IBV_QPS_ERR}; CHK(!ibv_modify_qp(qa, &a, IBV_QP_STATE)); }
   else if (IS("flush_after")) { wr.wr.rdma.rkey = 0xdeadbeef; second = 1; }
   // Where did it stop: 8 writes in flight, the 4th (burst_bad) is rejected, or B fails first (burst_peer_err).
-  else if (IS("burst_bad") || IS("burst_ok") || IS("burst_peer_err")) {
+  else if (IS("burst_bad") || IS("burst_ok") || IS("burst_peer_err") || IS("reset_reuse")) {
     if (IS("burst_peer_err")) { struct ibv_qp_attr a = {.qp_state = IBV_QPS_ERR}; CHK(!ibv_modify_qp(qb, &a, IBV_QP_STATE)); }
     for (int i = 0; i < 7; i++) {
       wr.wr_id = 10 + i;
-      wr.wr.rdma.rkey = (IS("burst_bad") && i == 3) ? 0xdeadbeef : mb->rkey;
+      wr.wr.rdma.rkey = ((IS("burst_bad") || IS("reset_reuse")) && i == 3) ? 0xdeadbeef : mb->rkey;
       CHK(!ibv_post_send(qa, &wr, &bad));
     }
     wr.wr_id = 17; wr.wr.rdma.rkey = mb->rkey;  // the 8th is posted below
@@ -183,6 +184,21 @@ posted:
   usleep(300000);
   na += drain(cqa, "A");
   if (!IS("peer_gone")) nb += drain(cqb, "B");
+  // Can the pair be used again: both QPs to RESET and back to RTS, then 8 more writes.
+  if (IS("reset_reuse")) {
+    struct timespec t0, t1;
+    struct ibv_qp_attr r = {.qp_state = IBV_QPS_RESET};
+    printf(" | before_reset:"); qp_query(qa, "A"); qp_query(qb, "B");
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    CHK(!ibv_modify_qp(qa, &r, IBV_QP_STATE)); CHK(!ibv_modify_qp(qb, &r, IBV_QP_STATE));
+    connect_qp(qa, qb->qp_num, &gid, gidx, all, 1, 1); connect_qp(qb, qa->qp_num, &gid, gidx, all, 1, 1);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    printf(" | reset_both_us=%.0f", (t1.tv_sec - t0.tv_sec) * 1e6 + (t1.tv_nsec - t0.tv_nsec) / 1e3);
+    wr.wr.rdma.rkey = mb->rkey;
+    for (int i = 0; i < 8; i++) { wr.wr_id = 30 + i; CHK(!ibv_post_send(qa, &wr, &bad)); }
+    usleep(200000);
+    printf(" | after_reset:"); na += drain(cqa, "A");
+  }
   if (!na) printf(" | A: no CQE in 8 s");
   if (!nb) printf(" | B: no CQE");
   printf(" | qp_query:");

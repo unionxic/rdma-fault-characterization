@@ -409,7 +409,7 @@ index ee1dc7ef..11be2266 100644
  
      u8 reserved_at_60[0x20];
 diff --git a/src/modules/transport/ibgda/ibgda.cpp b/src/modules/transport/ibgda/ibgda.cpp
-index de35481b..17a0432e 100644
+index de35481b..e0348d12 100644
 --- a/src/modules/transport/ibgda/ibgda.cpp
 +++ b/src/modules/transport/ibgda/ibgda.cpp
 @@ -515,7 +515,7 @@ int ibgda_dci_progress(nvshmem_transport_t t) {
@@ -430,7 +430,7 @@ index de35481b..17a0432e 100644
                  bf = (__be64 *)ep->uar_mobject->aligned.cpu_ptr;
  
                  memset((void *)&ctrl_seg, 0, sizeof(ctrl_seg));
-@@ -598,8 +598,98 @@ out:
+@@ -598,8 +598,107 @@ out:
      return NVSHMEMX_SUCCESS;
  }
  
@@ -443,7 +443,7 @@ index de35481b..17a0432e 100644
 + * the NIC, so nothing is replaced unless exactly one RC or DCI QP has that number.
 + * psn[0], psn[1] get last_acked_psn and next_send_psn of that QP: how far the NIC got, in packets
 + * (the send PSN starts at 0, see ibgda_qp_rtr2rts). */
-+static void ibgda_restore_cause(nvshmem_transport_t t, uint64_t *record, uint32_t *psn) {
++static bool ibgda_restore_cause(nvshmem_transport_t t, uint64_t *record, uint32_t *psn) {
 +    nvshmemt_ibgda_state_t *ibgda_state = (nvshmemt_ibgda_state_t *)t->state;
 +    const uint64_t rec = *record;
 +    const uint32_t qpn = (rec >> 32) & 0xffffff;
@@ -472,7 +472,7 @@ index de35481b..17a0432e 100644
 +        match(device->dci.eps, device->dci.num_eps);
 +    }
 +    if (matches != 1 || mlx5dv_devx_obj_query(found->devx_qp, in, sizeof(in), out, sizeof(out)))
-+        return;
++        return false;
 +    psn[0] = DEVX_GET(qpc, DEVX_ADDR_OF(query_qp_out, out, qpc), last_acked_psn);
 +    psn[1] = DEVX_GET(qpc, DEVX_ADDR_OF(query_qp_out, out, qpc), next_send_psn);
 +    if (((rec >> 8) & 0xff) == MLX5_CQE_SYNDROME_WR_FLUSH_ERR &&
@@ -480,6 +480,7 @@ index de35481b..17a0432e 100644
 +        (synd[3] != MLX5_CQE_SYNDROME_WR_FLUSH_ERR || synd[2] == NVSHMEMI_IBGDA_VENDOR_ERR_LOCAL_QP))
 +        __sync_bool_compare_and_swap(record, rec,
 +                                     (rec & ~0xffffULL) | (uint64_t)synd[3] << 8 | synd[2]);
++    return true;
 +}
 +
 +/* Prints, once, the first error CQE that device code latched in state.extra (see ibgda_poll_cq).
@@ -492,26 +493,34 @@ index de35481b..17a0432e 100644
 +    nvshmemi_ibgda_device_state_t *state_h =
 +        (nvshmemi_ibgda_device_state_t *)t->type_specific_shared_state;
 +    nvshmemx_op_error_t err = {};
-+    uint32_t psn[2] = {0, 0};
++    static uint32_t psn[2];
++    static bool psn_valid = false;
++    char psn_str[48] = "psn=unavailable";
++    const auto trailing_flush = [&err] {
++        return err.syndrome == MLX5_CQE_SYNDROME_WR_FLUSH_ERR &&
++               err.vendor_err != NVSHMEMI_IBGDA_VENDOR_ERR_LOCAL_QP;
++    };
 +
 +    if (state_h) nvshmemi_ibgda_load_err(state_h->extra, &err);
-+    /* One query for the WARN; more only while the record is still a trailing flush. */
++    /* Queries go on while the QP did not answer or the record is still a trailing flush. */
 +    if (err.error_class != NVSHMEMX_OP_ERROR_NONE && restore_tries > 0 &&
-+        (!reported || (err.syndrome == MLX5_CQE_SYNDROME_WR_FLUSH_ERR &&
-+                       err.vendor_err != NVSHMEMI_IBGDA_VENDOR_ERR_LOCAL_QP))) {
++        (!psn_valid || trailing_flush())) {
 +        restore_tries--;
-+        ibgda_restore_cause(t, (uint64_t *)state_h->extra, psn);
++        psn_valid |= ibgda_restore_cause(t, (uint64_t *)state_h->extra, psn);
 +        nvshmemi_ibgda_load_err(state_h->extra, &err);
 +    }
-+    if (err.error_class != NVSHMEMX_OP_ERROR_NONE && !reported) {
++    /* One line, printed once no further query can improve it. */
++    if (err.error_class != NVSHMEMX_OP_ERROR_NONE && !reported &&
++        !(trailing_flush() && restore_tries > 0)) {
 +        reported = true;
++        if (psn_valid) snprintf(psn_str, sizeof(psn_str), "acked_psn=%u next_psn=%u", psn[0], psn[1]);
 +        NVSHMEMI_WARN_PRINT(
 +            "IBGDA error CQE: reporting_pe=%d qpn=%#x wqe_counter=%u syndrome=%#x vendor_err=%#x class=%d "
-+            "acked_psn=%u next_psn=%u. The operation failed and later operations on this QP are flushed.",
-+            t->my_pe, err.qpn, err.wqe_counter, err.syndrome, err.vendor_err, err.error_class, psn[0],
-+            psn[1]);
-+        /* quiet and the blocking calls cannot return an error, so by default the job stops here
-+         * rather than go on with data that did not arrive. */
++            "%s. The operation failed and later operations on this QP are flushed.",
++            t->my_pe, err.qpn, err.wqe_counter, err.syndrome, err.vendor_err, err.error_class, psn_str);
++        /* quiet and the blocking calls cannot return an error, so by default this process exits
++         * here rather than go on with data that did not arrive. Whether the other PEs stop is up
++         * to the launcher (mpirun ends the job). */
 +        if (((nvshmemt_ibgda_state_t *)t->state)->common.options->IBGDA_ABORT_ON_OP_ERROR) {
 +            NVSHMEMI_ERROR_PRINT("Aborting after the IBGDA error above. Set "
 +                                 "NVSHMEM_IBGDA_ABORT_ON_OP_ERROR=0 to keep running and handle "
@@ -529,7 +538,7 @@ index de35481b..17a0432e 100644
      status = ibgda_dci_progress(t);
      if (status) {
          return status;
-@@ -3812,6 +3902,12 @@ static int ibgda_post_gpu_device_state(
+@@ -3812,6 +3911,12 @@ static int ibgda_post_gpu_device_state(
          static_cast<uint32_t>(ibgda_region_batch_rma_threshold);
      ibgda_device_state_h->support_half_av_seg = support_half_av_seg;
      ibgda_device_state_h->may_skip_cst = ibgda_state->skip_cst;
@@ -542,7 +551,7 @@ index de35481b..17a0432e 100644
      ibgda_device_state_h->use_async_postsend = (ibgda_nic_handler != IBGDA_NIC_HANDLER_GPU);
      ibgda_device_state_h->num_devices_initialized = n_devs_selected;
      ibgda_device_state_h->num_default_rc_per_pe = ibgda_state->common.options->IBGDA_NUM_RC_PER_PE;
-@@ -4548,6 +4644,10 @@ int nvshmemt_ibgda_finalize(nvshmem_transport_t transport) {
+@@ -4548,6 +4653,10 @@ int nvshmemt_ibgda_finalize(nvshmem_transport_t transport) {
  
      ibgda_device_state_h = (nvshmemi_ibgda_device_state_t *)transport->type_specific_shared_state;
      if (ibgda_device_state_h) {
@@ -553,7 +562,7 @@ index de35481b..17a0432e 100644
          if (ibgda_device_state_h->globalmem.dcts) {
              cudaFree(ibgda_device_state_h->globalmem.dcts);
          }
-@@ -5304,8 +5404,10 @@ int nvshmemt_init(nvshmem_transport_t *t, struct nvshmemi_cuda_fn_table *table,
+@@ -5304,8 +5413,10 @@ int nvshmemt_init(nvshmem_transport_t *t, struct nvshmemi_cuda_fn_table *table,
      transport->host_ops.get_mem_handle = nvshmemt_ibgda_get_mem_handle;
      transport->host_ops.release_mem_handle = nvshmemt_ibgda_release_mem_handle;
      transport->host_ops.show_info = nvshmemt_ibgda_show_info;
