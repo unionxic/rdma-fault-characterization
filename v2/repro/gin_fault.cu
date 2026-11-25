@@ -9,7 +9,11 @@
 //      CHUNK=65536 (bytes per put) FLUSH_EVERY=1 (0: one flush at the end, so puts are in flight when a fault is injected) LINGER_MS=0
 //      WAITCTR=0|1 (1: wait on the local counter instead of the flush, so the main CQ is not polled; needs COUNTER=1)
 //      HOLD_MS=0 (rank 0 stays alive this long after MPI_Finalize while the other ranks exit)
+//      ACCEPT=<name> (scenario name in the ACCEPT verdict line) DESTROY=0|1 (1: tear down after the run and time it; no-fault runs only)
+// Every put (request) has its own destination slot and a payload naming it; the receiver checks every word of every slot.
+// Lines: ACCEPT (verdict), LAT (call times, ms from kernel start), TIMES (init/teardown ms), MEM (this process at the end of the run).
 #include <mpi.h>
+#include <algorithm>
 #include <signal.h>
 #include <sys/time.h>
 #include <stdio.h>
@@ -22,18 +26,19 @@
 
 #define CHK(x) do { int r_ = (int)(x); if (r_) { printf("FAILED %s -> %d (line %d)\n", #x, r_, __LINE__); fflush(stdout); MPI_Abort(MPI_COMM_WORLD, 1); } } while (0)
 static long envl(const char* k, long d) { const char* v = getenv(k); return v ? atol(v) : d; }
-static double nowMs() { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
+static double nowMs(clockid_t c = CLOCK_MONOTONIC) { timespec t; clock_gettime(c, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
 
-// prog[0] = iteration in progress, prog[1] = phase (1 put, 2 flush, 9 done), prog[2+it] = 1000 + flush result
+// prog[0] = iteration in progress, prog[1] = phase (1 put, 2 flush, 3 flush returned, 9 done), prog[2+it] = 1000 + flush result
 __global__ void sender(ncclDevComm dc, ncclWindow_t dst, ncclWindow_t src, size_t chunk, size_t winBytes, int n, int bad,
                        int timed, uint64_t tmo, uint64_t delay, int burst, int counter, int flushEvery, int waitCtr, volatile int* prog) {
   ncclGin gin{dc, 0};
   for (int it = 0; it < n; it++) {
     prog[0] = it; prog[1] = 1;
     for (int b = 0; b < burst; b++) {
-      size_t off = it == bad && b == 0 ? winBytes + (64ull << 20) : (size_t)it * chunk;
-      if (counter) gin.put(ncclTeamWorld(dc), 1, dst, off, src, 0, chunk, ncclGin_WeakSignalInc{0}, ncclGin_WeakCounterInc{0});
-      else gin.put(ncclTeamWorld(dc), 1, dst, off, src, 0, chunk, ncclGin_WeakSignalInc{0});
+      const size_t slot = ((size_t)it * burst + b) * chunk;
+      size_t off = it == bad && b == 0 ? winBytes + (64ull << 20) : slot;
+      if (counter) gin.put(ncclTeamWorld(dc), 1, dst, off, src, slot, chunk, ncclGin_WeakSignalInc{0}, ncclGin_WeakCounterInc{0});
+      else gin.put(ncclTeamWorld(dc), 1, dst, off, src, slot, chunk, ncclGin_WeakSignalInc{0});
     }
     if (flushEvery ? (it + 1) % flushEvery == 0 : it == n - 1) {
       prog[1] = 2;
@@ -43,14 +48,14 @@ __global__ void sender(ncclDevComm dc, ncclWindow_t dst, ncclWindow_t src, size_
       else if (waitCtr) gin.waitCounter(ncclCoopCta(), 0, least);
       else if (timed) r = (int)gin.flush(ncclCoopCta(), cuda::memory_order_acquire, ncclGin_None{}, tmo);
       else gin.flush(ncclCoopCta());
-      prog[2 + it] = 1000 + r;
+      prog[2 + it] = 1000 + r; prog[1] = 3;
     }
     for (uint64_t t0 = clock64(); clock64() - t0 < delay;) {}
   }
   prog[0] = n; prog[1] = 9;
 }
 
-__global__ void readSignal(ncclDevComm dc, uint64_t* out) { ncclGin gin{dc, 0}; *out = gin.readSignal(0); }
+__global__ void readSignal(ncclDevComm dc, int counter, uint64_t* out) { ncclGin gin{dc, 0}; out[0] = gin.readSignal(0); if (counter) out[1] = gin.readCounter(0); }
 
 // The GPU's own send indices (main and companion QP: sq_rsvd_index, cqe_ci), per context, for one peer
 __global__ void readQp(ncclDevComm dc, int peer, unsigned long long* out) {
@@ -67,18 +72,25 @@ __global__ void readQp(ncclDevComm dc, int peer, unsigned long long* out) {
 
 // One run on a communicator: windows, device communicator, rank 0 sends to rank 1, the other ranks report.
 static int mpiSize, dead = -1, spare = -1; // dead: the MPI rank that is gone, spare: the MPI rank that is not in the communicator
+static double initMs;
 static void phase(ncclComm_t comm, int rank, bool first) {
   const int n = envl("N", 120), bad = first ? envl("BAD", 10) : -1, timed = envl("TIMED", 0), burst = envl("BURST", 1), counter = envl("COUNTER", 0);
-  const size_t chunk = envl("CHUNK", 64 << 10), winBytes = (size_t)n * chunk;
+  const size_t chunk = envl("CHUNK", 64 << 10), nreq = (size_t)n * burst, winBytes = nreq * chunk, words = chunk / 8;
   void *dSrc, *dDst; ncclWindow_t wSrc, wDst;
   CHK(ncclMemAlloc(&dSrc, winBytes)); CHK(ncclMemAlloc(&dDst, winBytes));
-  CHK(cudaMemset(dSrc, 0x5a, winBytes)); CHK(cudaMemset(dDst, 0, winBytes));
+  uint64_t* pat = (uint64_t*)malloc(winBytes); // word w of request i's slot: (i + 1) << 32 | w
+  for (size_t w = 0; w < winBytes / 8; w++) pat[w] = (w / words + 1) << 32 | w % words;
+  CHK(cudaMemcpy(dSrc, pat, winBytes, cudaMemcpyHostToDevice)); CHK(cudaMemset(dDst, 0, winBytes));
+  double t = nowMs();
   CHK(ncclCommWindowRegister(comm, dSrc, winBytes, &wSrc, NCCL_WIN_COLL_SYMMETRIC));
   CHK(ncclCommWindowRegister(comm, dDst, winBytes, &wDst, NCCL_WIN_COLL_SYMMETRIC));
+  const double winMs = nowMs() - t;
   ncclDevComm dc; ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.ginSignalCount = 1; reqs.ginCounterCount = counter; reqs.ginConnectionType = NCCL_GIN_CONNECTION_FULL;
-  CHK(ncclDevCommCreate(comm, &reqs, &dc));
+  t = nowMs(); CHK(ncclDevCommCreate(comm, &reqs, &dc)); const double devMs = nowMs() - t;
   if (first) MPI_Barrier(MPI_COMM_WORLD); // later runs have lost a rank: the receivers wait for the message from rank 0
+  const bool accept = dc.nRanks > 1 && !(first && dead == 1); // comm rank 1 is alive and reports its check to rank 0
+  uint64_t* vals; CHK(cudaHostAlloc(&vals, 2 * sizeof *vals, cudaHostAllocMapped)); vals[0] = vals[1] = ~0ull; // signal, counter
 
   if (rank == 0) {
     int* prog; CHK(cudaHostAlloc(&prog, (2 + n) * sizeof(int), cudaHostAllocMapped));
@@ -86,14 +98,16 @@ static void phase(ncclComm_t comm, int rank, bool first) {
     int* dProg; CHK(cudaHostGetDevicePointer(&dProg, prog, 0));
     const int waitCtr = (int)envl("WAITCTR", 0);
     printf("CONFIG n=%d bad=%d timed=%d burst=%d counter=%d waitctr=%d chunk=%zu\n", n, bad, timed, burst, counter, waitCtr, chunk);
-    double t0 = nowMs(), lastMove = t0, stallMs = envl("STALL_S", 15) * 1e3;
+    double t0 = nowMs(), t0Wall = nowMs(CLOCK_REALTIME), lastMove = t0, stallMs = envl("STALL_S", 15) * 1e3;
     sender<<<1, 1>>>(dc, wDst, wSrc, chunk, winBytes, n, bad, timed, (uint64_t)envl("TMO_CYCLES", 5000000000L),
                      (uint64_t)envl("DELAY_CYCLES", 15000000L), burst, counter, (int)envl("FLUSH_EVERY", 1), waitCtr, dProg);
     int lastIt = -1, lastPhase = 0, stalled = 0; ncclResult_t lastAsync = ncclSuccess; long asyncErrSamples = 0;
     long qCalls = 0, qSlow = 0; double qSlowMs = 0, qMaxMs = 0;
     double* tIt = (double*)calloc(n + 1, sizeof(double));
     const int noAsk = (int)envl("NOASK", 0);
-    while (prog[1] != 9) {
+    int scan = 0, failIt = -1, longIt = -1; double tFail = -1, tCall = 0, longMs = 0, longStart = -1; // first failed and longest flush/wait
+    for (int fin = 0; !fin; usleep(1000)) { // one more pass after the kernel is done, to see its last call return
+      fin = prog[1] == 9;
       double tq = nowMs();
       ncclResult_t a = ncclSuccess; if (!noAsk) CHK(ncclCommGetAsyncError(comm, &a));
       double t = nowMs();
@@ -101,10 +115,13 @@ static void phase(ncclComm_t comm, int rank, bool first) {
       if (a != ncclSuccess) asyncErrSamples++;
       if (a != lastAsync) { printf("ASYNC t=%.0f ms value=%s\n", t - t0, ncclGetErrorString(a)); lastAsync = a; }
       int it = prog[0], ph = prog[1];
+      if (lastPhase == 2 && (ph != 2 || it != lastIt) && t - tCall > longMs) { longMs = t - tCall; longIt = lastIt; longStart = tCall - t0; }
+      if (ph == 2 && (lastPhase != 2 || it != lastIt)) tCall = t;
+      for (; scan < n && (scan < it || prog[2 + scan]); scan++) if (prog[2 + scan] > 1000 && failIt < 0) { failIt = scan; tFail = t - t0; }
       if (it != lastIt || ph != lastPhase) { lastMove = t; if (it != lastIt && it <= n) tIt[it] = t - t0; lastIt = it; lastPhase = ph; }
       if (t - lastMove > stallMs) { printf("STALL at=%s it=%d after %.0f ms without progress\n", ph == 1 ? "put" : "flush", it, t - lastMove); stalled = 1; break; }
-      usleep(1000);
     }
+    const double endMs = nowMs() - t0;
     // LINGER_MS: keep the host error query running after the kernel, so its WARN (cause, WQE index) is printed
     for (double tEnd = nowMs() + envl("LINGER_MS", 0); nowMs() < tEnd; usleep(1000)) { ncclResult_t a; if (!noAsk) CHK(ncclCommGetAsyncError(comm, &a)); }
     for (int it = 0; it < n; it++) {
@@ -117,6 +134,9 @@ static void phase(ncclComm_t comm, int rank, bool first) {
     ncclResult_t a; CHK(ncclCommGetAsyncError(comm, &a));
     printf("SUMMARY iterations_returned=%d of %d non_success_flush=%d stalled=%d async_error_samples=%ld async_final=%s elapsed=%.0f ms\n",
            done, n, nonSuccess, stalled, asyncErrSamples, ncclGetErrorString(a), nowMs() - t0);
+    printf("LAT t0_wall_ms=%.1f bad_start_ms=%.1f first_fail_it=%d first_fail_ms=%.1f longest_call_it=%d longest_call_start_ms=%.1f longest_call_ms=%.1f end_ms=%.1f\n",
+           t0Wall, bad >= 0 && bad < n ? tIt[bad] : -1.0, failIt, tFail, longIt, longStart, longMs, endMs);
+    if (counter && !stalled) { readSignal<<<1, 1>>>(dc, 1, vals); CHK(cudaDeviceSynchronize()); }
     for (int p = 1; p < dc.nRanks && !stalled; p++) { // a stalled kernel would block this one
       unsigned long long* q; CHK(cudaHostAlloc(&q, 4 * dc.ginContextCount * sizeof *q, cudaHostAllocMapped));
       readQp<<<1, 1>>>(dc, p, q); CHK(cudaDeviceSynchronize());
@@ -128,18 +148,43 @@ static void phase(ncclComm_t comm, int rank, bool first) {
     // CPU time of NCCL's error thread: /proc schedstat = ns on CPU, ns waiting, times scheduled
     if (!system("for t in /proc/$PPID/task/*; do grep -q 'NCCL GIN Err' $t/comm 2>/dev/null && echo ERRTHREAD cpu_ns,wait_ns,scheduled=$(tr ' ' , < $t/schedstat); done")) fflush(stdout);
     int go = 1; for (int r = 1; r < mpiSize; r++) if (r != dead && r != spare) MPI_Send(&go, 1, MPI_INT, r, 0, MPI_COMM_WORLD); // ranks >= 2 only hold their QPs
+    long res[3] = {-1, -1, -1}; // from comm rank 1: requests arrived intact, slots holding anything else, signal
+    if (accept) {
+      MPI_Recv(res, 3, MPI_LONG, MPI_ANY_SOURCE, 2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      const bool hasBad = bad >= 0 && bad < n; const long expArr = nreq - hasBad, expFail = timed && hasBad, ctr = counter ? (long)vals[1] : 0;
+      char ex[32] = "all_arrive"; if (hasBad) snprintf(ex, sizeof ex, "only_req%zu_fails", (size_t)bad * burst);
+      const bool pass = res[0] == expArr && !res[1] && res[2] == expArr && ctr == (counter ? expArr : 0) && nonSuccess == expFail && !stalled;
+      // a duplicate write of the same payload to its own slot leaves no trace in memory: only signal and counter excess show it
+      printf("ACCEPT scenario=%s expect=%s arrived=%ld/%ld duplicates=%ld wrong_content=%ld signal=%ld/%ld counter=%ld/%ld failed_calls=%d/%ld stalled=%d => %s\n",
+             getenv("ACCEPT") ? getenv("ACCEPT") : "-", ex, res[0], expArr, std::max({0L, res[2] - expArr, ctr - expArr}), res[1], res[2], expArr,
+             ctr, counter ? expArr : 0, nonSuccess, expFail, stalled, pass ? "PASS" : "FAIL");
+    }
   } else {
     int go; MPI_Recv(&go, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    unsigned char* h = (unsigned char*)malloc(winBytes); CHK(cudaMemcpy(h, dDst, winBytes, cudaMemcpyDeviceToHost));
-    int got = 0, firstMissing = -1, late = 0;
-    for (int it = 0; it < n; it++) {
-      if (h[(size_t)it * chunk] != 0x5a || h[(size_t)it * chunk + chunk - 1] != 0x5a) { if (firstMissing < 0) firstMissing = it; continue; }
+    uint64_t* g = (uint64_t*)malloc(winBytes); CHK(cudaMemcpy(g, dDst, winBytes, cudaMemcpyDeviceToHost));
+    long got = 0, wrong = 0; int firstMissing = -1, late = 0;
+    for (size_t i = 0; i < nreq; i++) { // a slot holds its request's payload, zeros, or anything else (wrong)
+      size_t eq = 0, zero = 0;
+      for (size_t w = i * words; w < (i + 1) * words; w++) { eq += g[w] == pat[w]; zero += !g[w]; }
+      if (eq < words) { if (firstMissing < 0) firstMissing = i; wrong += zero < words; continue; }
       got++; late += firstMissing >= 0;
     }
-    uint64_t* sig; CHK(cudaHostAlloc(&sig, sizeof *sig, cudaHostAllocMapped)); *sig = ~0ull;
-    readSignal<<<1, 1>>>(dc, sig); CHK(cudaDeviceSynchronize());
-    printf("RECV slots_arrived=%d of %d first_missing=%d arrived_after_first_missing=%d signal=%llu\n", got, n, firstMissing, late, (unsigned long long)*sig);
+    readSignal<<<1, 1>>>(dc, 0, vals); CHK(cudaDeviceSynchronize());
+    printf("RECV slots_arrived=%ld of %zu first_missing=%d arrived_after_first_missing=%d signal=%llu\n", got, nreq, firstMissing, late, (unsigned long long)vals[0]);
+    long res[3] = {got, wrong, (long)vals[0]};
+    if (accept && rank == 1) MPI_Send(res, 3, MPI_LONG, 0, 2, MPI_COMM_WORLD);
   }
+  fflush(stdout);
+  char cmd[512]; // MEM: this process with the communicator up (gpu_mib: nvidia-smi's per-process used memory)
+  snprintf(cmd, sizeof cmd, "echo MEM rank=%d $(grep -E '^(VmHWM|VmRSS|VmPin|VmLck|Threads):' /proc/$PPID/status | tr -d ' \\t' | tr ':\\n' '= ')"
+           "fds=$(ls /proc/$PPID/fd | wc -l) gpu_mib=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | awk -F', ' -v p=$PPID '$1==p{print $2}')", rank);
+  if (system(cmd)) {}
+  double tDestroy = -1;
+  if (envl("DESTROY", 0)) {
+    t = nowMs(); CHK(ncclDevCommDestroy(comm, &dc)); CHK(ncclCommWindowDeregister(comm, wSrc)); CHK(ncclCommWindowDeregister(comm, wDst));
+    CHK(ncclMemFree(dSrc)); CHK(ncclMemFree(dDst)); CHK(ncclCommFinalize(comm)); CHK(ncclCommDestroy(comm)); tDestroy = nowMs() - t;
+  }
+  printf("TIMES rank=%d init_ms=%.1f winreg_ms=%.1f devcomm_ms=%.1f destroy_ms=%.1f\n", rank, initMs, winMs, devMs, tDestroy);
   fflush(stdout);
 }
 
@@ -157,7 +202,7 @@ int main(int argc, char** argv) {
     printf("GROW new rank=%d grow_ms=%.0f\n", nranks - 1, nowMs() - t0); fflush(stdout);
     spare = -1; phase(grown, nranks - 1, false); pause();
   }
-  ncclComm_t comm; CHK(ncclCommInitRank(&comm, nranks, id, rank));
+  ncclComm_t comm; double t = nowMs(); CHK(ncclCommInitRank(&comm, nranks, id, rank)); initMs = nowMs() - t;
   if (afterMs) dead = victim; // it dies during the run: rank 0 does not message it
   if (afterMs && rank == victim) { itimerval t = {{0, 0}, {afterMs / 1000, afterMs % 1000 * 1000}}; setitimer(ITIMER_REAL, &t, NULL); } // SIGALRM ends the process
   phase(comm, rank, true);
