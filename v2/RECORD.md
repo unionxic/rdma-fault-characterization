@@ -37,7 +37,7 @@
 - 둘 다 release에서 시작한다. upstream이 이미 고친 것도 이 폴더의 코드에 직접 반영한다.
 - 두 저장소 모두 로컬 브랜치 `recovery`에서 작업하고, 이슈 하나가 해결될 때마다 커밋한다. NCCL 6개(`cf1e2ec` #2480, `3c0f8bd` #2483,
   `0fd4724` collapsed CQ 하한, `3116a5e` host 스레드, `da35e25` shrink, `d56b15e` 죽음 판정; 2026-11-25에 정리, 6절), NVSHMEM 6개(`26eb3006` #117, `d0f3ee2a` #120, `3f5eeed6`, `20ba0c88`, `efad32f5`, `71856a5e`).
-  공개 저장소 `rdma-fault-characterization`의 `v2/`에 라이브러리별 diff 하나로 올린다(`publish.sh`). 마지막 반영(2026-11-23) 뒤의 것(독립 검사 4회 반영분, host 스레드, shrink, 죽음 판정, NVSHMEM `71856a5e`)은 아직 올리지 않았다.
+  공개 저장소 `rdma-fault-characterization`의 `v2/`에 라이브러리별 diff 하나로 올린다(`publish.sh`). 마지막 반영은 2026-11-25(위 커밋 전부).
 - 빌드 환경 `[측정: 2026-11-19 rain]`: MOFED 23.10-7.1.8, rdma-core 2307mlnx47, `mlx5dv.h` 있음, CUDA 12.8.93, gcc 9.4.0,
   cmake 3.28.0, OpenMPI 4.1.8(`~/opt/openmpi-4.1.8`), UCX 1.16.0. DOCA GPUNetIO는 NCCL 소스에 들어 있어 따로 설치할
   필요가 없다. gdrcopy v2.5.2를 2026-11-20에 rain과 sunny 둘 다 넣었다: 라이브러리 `~/opt/gdrcopy/lib`, 모듈은 `~/rdma-recovery/deps/gdrcopy/insmod.sh`로 올림(재부팅하면 다시 올려야 함). NVSHMEM은 gdrcopy를
@@ -199,7 +199,7 @@
 - 남은 한계: counter로 기다리는 GPU 대기는 죽음 판정으로 풀리지 않는다(counter 값만 봄; 자기 제한 시간으로만 끝남) `[측정]`. 받기만 하는
   rank는 보낸 것이 없어 판정하지 못한다. 조회 한 번의 순간값이라 정상 종료 중 ACK가 아직 오는 중이면 틀릴 수 있다 `[추론]`.
 - NCCL은 비동기 오류가 있는 communicator의 shrink를 거절한다 `[측정: 소스 init.cc]`. `NCCL_SHRINK_ABORT`를 준 shrink는
-  `ncclRemoteError`가 있어도 받게 고쳤다(커밋 `da35e25`): 남은 rank가 12–19 ms에 다시 묶이고 새 communicator에서 GIN 전송이 정상 `[측정]`.
+  `ncclRemoteError`가 있어도 받게 고쳤다(커밋 `da35e25`): 남은 rank가 12–18 ms에 다시 묶이고 새 communicator에서 GIN 전송이 정상 `[측정]`.
 - shrink 뒤 `ncclCommGrow`로 새 프로세스를 넣는 것도 된다(328–335 ms) `[측정, 6절 2026-11-24]`. 다만 번호가 당겨지고 device 핸들을
   application이 다시 만들어야 한다. 그래서 방향은 제자리 교체다(4.3절).
 - `[미확인]`: 보내는 rank가 죽는 경우, 이웃이 아닌 rank의 죽음, 장비 전원이 꺼지는 경우(소켓이 닫히지 않음), application 상태 복사.
