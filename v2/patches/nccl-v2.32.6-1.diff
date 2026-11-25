@@ -80,16 +80,15 @@ index 40a2d9e..bc1634c 100644
    *newcomm = NCCL_COMM_NULL;
    if (isShrink) {
 diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/include/common/doca_gpunetio_verbs_dev.h b/src/transport/net_ib/gdaki/doca-gpunetio/include/common/doca_gpunetio_verbs_dev.h
-index a8e0385..18006a6 100644
+index a8e0385..4a4686a 100644
 --- a/src/transport/net_ib/gdaki/doca-gpunetio/include/common/doca_gpunetio_verbs_dev.h
 +++ b/src/transport/net_ib/gdaki/doca-gpunetio/include/common/doca_gpunetio_verbs_dev.h
-@@ -164,8 +164,28 @@ struct doca_gpu_dev_verbs_cq {
+@@ -164,8 +164,24 @@ struct doca_gpu_dev_verbs_cq {
      uint8_t reserved1[2];                      /**< Reserved */
      uint64_t cqe_rsvd;                         /**< All previous CQEs are polled */
      enum doca_gpu_dev_verbs_mem_type mem_type; /**< Memory type of the completion queue */
 -    uint8_t reserved2[12];                     /**< Reserved */
-+    uint8_t hold; /**< Written by the host only. Nonzero: the host decides what becomes of a failed QP, polls wait */
-+    uint8_t reserved2[3];                      /**< Reserved */
++    uint8_t reserved2[4];                      /**< Reserved */
 +    uint64_t err; /**< 0: no error CQE seen. Else DOCA_GPUNETIO_VERBS_CQ_ERR_RECORD() */
  } __attribute__((__aligned__(8))) __attribute__((__packed__));
 +/* cq->err record: ((2^48-1 - WQE index) << 16) | syndrome << 8 | vendor_err_synd.
@@ -103,9 +102,6 @@ index a8e0385..18006a6 100644
 +      << 16) |                                                                                    \
 +     ((uint64_t)(uint8_t)(synd) << 8) | (uint8_t)(vend))
 +#define DOCA_GPUNETIO_VERBS_CQ_ERR_IDX(rec) (DOCA_GPUNETIO_VERBS_CQ_ERR_IDX_MASK - ((rec) >> 16))
-+/* Index of the WQE a 16-bit wqe_counter refers to, taken as the one nearest to near_idx. */
-+#define DOCA_GPUNETIO_VERBS_CQ_WQE_IDX(near_idx, wqe_counter) \
-+    ((uint64_t)(near_idx) + (int16_t)((uint16_t)(wqe_counter) - (uint16_t)(near_idx)))
 +#ifdef __cplusplus
 +static_assert(sizeof(struct doca_gpu_dev_verbs_cq) == 64 && offsetof(struct doca_gpu_dev_verbs_cq, err) == 56,
 +              "doca_gpu_dev_verbs_cq layout changed");
@@ -136,7 +132,7 @@ index 6cda217..b30b382 100644
          const enum doca_gpu_dev_verbs_nic_handler qp_nic_handler =
              (enum doca_gpu_dev_verbs_nic_handler)doca_gpu_dev_verbs_load_const(
 diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh b/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh
-index ba8ddf4..51efde0 100644
+index ba8ddf4..79f3490 100644
 --- a/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh
 +++ b/src/transport/net_ib/gdaki/doca-gpunetio/include/device/doca_gpunetio_dev_verbs_cq.cuh
 @@ -96,6 +96,148 @@ __device__ static __forceinline__ void doca_gpu_dev_verbs_cq_print_cqe_err(
@@ -373,93 +369,18 @@ index ba8ddf4..51efde0 100644
  }
  
  /**
-@@ -276,6 +422,45 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_one_cq_collapsed_a
-     return status;
- }
- 
-+template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode,
-+          enum doca_gpu_dev_verbs_cq_type cq_type = DOCA_GPUNETIO_VERBS_CQ_UNKNOWN>
-+__device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_one_cq_at(
-+    struct doca_gpu_dev_verbs_cq *cq, uint64_t cons_index) {
-+    enum doca_gpu_dev_verbs_cq_type mode = cq_type;
-+    if (cq_type == DOCA_GPUNETIO_VERBS_CQ_UNKNOWN) {
-+        mode =
-+            (enum doca_gpu_dev_verbs_cq_type)doca_gpu_dev_verbs_load_const((uint8_t *)&cq->cq_type);
-+    }
-+
-+    if (mode == DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED_HOST) {
-+        return doca_gpu_dev_verbs_poll_one_cq_host_at<resource_sharing_mode>(cq, cons_index);
-+    } else if (mode == DOCA_GPUNETIO_VERBS_CQ_64B) {
-+        return doca_gpu_dev_verbs_poll_one_cq_device_at<resource_sharing_mode>(cq, cons_index);
-+    } else if (mode == DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED) {
-+        return doca_gpu_dev_verbs_poll_one_cq_collapsed_at<resource_sharing_mode>(cq, cons_index);
-+    }
-+    return EINVAL;
-+}
-+
-+/**
-+ * @brief [Internal] A poll that may have failed: returns status unless it is -EIO. A failed QP is
-+ * "not ready" for as long as the host holds it (cq->hold): the host either rebuilds it, and the
-+ * completion comes after all, or lets go, and the failure is final. With wait, polls until one of
-+ * the two has happened. Called only from the failure paths, so the normal path stays as it was.
-+ */
-+template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode>
-+__device__ static __noinline__ int doca_priv_gpu_dev_verbs_cq_held(struct doca_gpu_dev_verbs_cq *cq,
-+                                                                   uint64_t cons_index, int status,
-+                                                                   bool wait) {
-+    while (status == -EIO && doca_gpu_dev_verbs_load_relaxed_sys_global(&cq->hold)) {
-+        if (!wait) return EBUSY;
-+        do {
-+            status = doca_priv_gpu_dev_verbs_poll_one_cq_at<resource_sharing_mode>(cq, cons_index);
-+        } while (status == EBUSY);
-+    }
-+    return status;
-+}
-+
- /**
-  * @brief Poll the Completion Queue (CQ) at a specific index.
-  * This function does not wait for the completion to arrive.
-@@ -293,20 +478,12 @@ template <enum doca_gpu_dev_verbs_resource_sharing_mode resource_sharing_mode =
- __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_one_cq_at(
-     struct doca_gpu_dev_verbs_qp *qp, uint64_t cons_index) {
-     struct doca_gpu_dev_verbs_cq *cq = doca_gpu_dev_verbs_qp_get_cq<qp_type>(qp);
--    enum doca_gpu_dev_verbs_cq_type mode = cq_type;
--    if (cq_type == DOCA_GPUNETIO_VERBS_CQ_UNKNOWN) {
--        mode =
--            (enum doca_gpu_dev_verbs_cq_type)doca_gpu_dev_verbs_load_const((uint8_t *)&cq->cq_type);
--    }
--
--    if (mode == DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED_HOST) {
--        return doca_gpu_dev_verbs_poll_one_cq_host_at<resource_sharing_mode>(cq, cons_index);
--    } else if (mode == DOCA_GPUNETIO_VERBS_CQ_64B) {
--        return doca_gpu_dev_verbs_poll_one_cq_device_at<resource_sharing_mode>(cq, cons_index);
--    } else if (mode == DOCA_GPUNETIO_VERBS_CQ_64B_COLLAPSED) {
--        return doca_gpu_dev_verbs_poll_one_cq_collapsed_at<resource_sharing_mode>(cq, cons_index);
--    }
--    return EINVAL;
-+    int status =
-+        doca_priv_gpu_dev_verbs_poll_one_cq_at<resource_sharing_mode, cq_type>(cq, cons_index);
-+    [[unlikely]] if (status == -EIO)
-+        status =
-+            doca_priv_gpu_dev_verbs_cq_held<resource_sharing_mode>(cq, cons_index, status, false);
-+    return status;
- }
- 
- // ==================== Poll CQ At ====================
-@@ -365,7 +542,11 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_device_at(
+@@ -365,7 +511,9 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_device_at(
  #if DOCA_GPUNETIO_VERBS_ENABLE_DEBUG == 1
      if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) doca_gpu_dev_verbs_cq_print_cqe_err(cqe64);
  #endif
 -    return (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR) * -EIO;
 +    [[unlikely]] if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR)
-+        return doca_priv_gpu_dev_verbs_cq_held<resource_sharing_mode>(
-+            cq, cons_index,
-+            doca_priv_gpu_dev_verbs_cq_set_err_device<resource_sharing_mode>(cq, cons_index), true);
++        return doca_priv_gpu_dev_verbs_cq_set_err_device<resource_sharing_mode>(cq, cons_index);
 +    return 0;
  }
  
  /**
-@@ -384,7 +565,16 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq_device_at(
+@@ -384,7 +532,13 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq_device_at(
      int status = doca_priv_gpu_dev_verbs_poll_cq_device_at<resource_sharing_mode>(cq, cons_index);
      if (status == 0) {
          doca_gpu_dev_verbs_fence_acquire_nvidia_nic();
@@ -469,25 +390,21 @@ index ba8ddf4..51efde0 100644
 +        [[unlikely]] if (doca_gpu_dev_verbs_atomic_max<uint64_t, resource_sharing_mode>(
 +                             &cq->cqe_ci, cons_index + 1) &
 +                         DOCA_GPUNETIO_VERBS_CQ_CI_FAILED)
-+            return doca_priv_gpu_dev_verbs_cq_held<resource_sharing_mode>(
-+                cq, cons_index,
-+                doca_priv_gpu_dev_verbs_poll_one_cq_device_at<resource_sharing_mode>(cq,
-+                                                                                     cons_index),
-+                true);
++            return doca_priv_gpu_dev_verbs_poll_one_cq_device_at<resource_sharing_mode>(
++                cq, cons_index);
      }
      return status;
  }
-@@ -406,6 +596,9 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq_host_at(
+@@ -406,6 +560,8 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq_host_at(
      uint64_t cqe_ci;
      do {
          cqe_ci = doca_gpu_dev_verbs_load_relaxed_sys_global((uint64_t *)&cq->cqe_ci);
 +        [[unlikely]] if (cons_index >= cqe_ci && doca_priv_gpu_dev_verbs_cq_not_ready(cq) < 0)
-+            return doca_priv_gpu_dev_verbs_cq_held<resource_sharing_mode>(cq, cons_index, -EIO,
-+                                                                          true);
++            return -EIO;
      } while (cons_index >= cqe_ci);
      doca_gpu_dev_verbs_fence_acquire_nvidia_nic();
      return 0;
-@@ -436,23 +629,42 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_collapsed_
+@@ -436,23 +592,38 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_collapsed_
      uint64_t cqe_ci;
      uint32_t cqe_chunk;
      uint16_t wqe_counter;
@@ -516,23 +433,19 @@ index ba8ddf4..51efde0 100644
          opown = cqe_chunk & 0xff;
          opcode = opown >> DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT;
 +        [[unlikely]] if (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_REQ_ERR)
-+            return doca_priv_gpu_dev_verbs_cq_held<resource_sharing_mode>(
-+                cq, cons_index,
-+                doca_priv_gpu_dev_verbs_cq_set_err_collapsed<resource_sharing_mode>(cq, cons_index,
-+                                                                                    cqe64),
-+                true);
++            return doca_priv_gpu_dev_verbs_cq_set_err_collapsed<resource_sharing_mode>(
++                cq, cons_index, cqe64);
 +        pending = (opcode == DOCA_GPUNETIO_IB_MLX5_CQE_INVALID) ||
 +                  ((cqe_ci <= cons_index) &&
 +                   ((uint16_t)((uint16_t)cons_index - wqe_counter - (uint16_t)2) < cqe_num));
 +        // The QP has failed but no error CQE is there (cancelled): stop waiting, completion is not
 +        // established.
 +        [[unlikely]] if (pending && not_ready != EBUSY)
-+            return doca_priv_gpu_dev_verbs_cq_held<resource_sharing_mode>(cq, cons_index, not_ready,
-+                                                                          true);
++            return not_ready;
      }
      // NOTE: This while loop is part of do while above.
      // wqe_counter is the HW consumer index. However, we always maintain index
-@@ -462,19 +674,13 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_collapsed_
+@@ -462,19 +633,13 @@ __device__ static __forceinline__ int doca_priv_gpu_dev_verbs_poll_cq_collapsed_
      // idx, and thus we need to wait. We don't need to wait when idx ==
      // wqe_counter + 1. That's why we use - (uint16_t)2 here to make this case
      // wraparound.
@@ -554,7 +467,7 @@ index ba8ddf4..51efde0 100644
  }
  
  /**
-@@ -543,8 +749,9 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq(struct doca_gpu
+@@ -543,8 +708,9 @@ __device__ static __forceinline__ int doca_gpu_dev_verbs_poll_cq(struct doca_gpu
      [[unlikely]] if (count == 0)
          return 0;
      struct doca_gpu_dev_verbs_cq *cq = doca_gpu_dev_verbs_qp_get_cq<qp_type>(qp);
@@ -567,20 +480,19 @@ index ba8ddf4..51efde0 100644
  }
  
 diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_gpunetio.h b/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_gpunetio.h
-index 4b6f044..d6bedeb 100644
+index 4b6f044..ac13206 100644
 --- a/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_gpunetio.h
 +++ b/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_gpunetio.h
-@@ -120,6 +120,9 @@ struct doca_gpu_verbs_qp {
+@@ -120,6 +120,8 @@ struct doca_gpu_verbs_qp {
      struct doca_gpu_dev_verbs_qp *qp_gpu;
      /* CPU-accessible GPU handler. Linked with qp_gpu via GDRCopy. */
      struct doca_gpu_dev_verbs_qp *qp_gpu_h;
-+    /* CPU view of qp_gpu, set whenever GDRCopy is available. Used to read cq_sq.err; the only
-+     * thing written through it is cq_sq.hold (doca_gpu_verbs_qp_hold). */
-+    struct doca_gpu_dev_verbs_qp *qp_gpu_ro_h;
++    /* CPU-readable view of qp_gpu, set whenever GDRCopy is available. Used to read cq_sq.err. */
++    const struct doca_gpu_dev_verbs_qp *qp_gpu_ro_h;
      /*
       * Free flow rings DB whenever this threshold is reached or there is no more WQE.
       * Set the threshold to 0 to ring DB only when there is no more WQE.
-@@ -150,6 +153,9 @@ struct doca_gpu_verbs_qp_error_info {
+@@ -150,6 +152,9 @@ struct doca_gpu_verbs_qp_error_info {
      int hw_err_synd;
      int hw_synd_type;
      int wqe_counter;
@@ -590,20 +502,6 @@ index 4b6f044..d6bedeb 100644
  };
  
  /**
-@@ -460,6 +466,13 @@ doca_error_t doca_gpu_verbs_destroy_service(doca_gpu_verbs_service_t service);
- doca_error_t doca_gpu_verbs_query_last_error(struct doca_gpu_verbs_qp *qp,
-                                              struct doca_gpu_verbs_qp_error_info *error_info);
- 
-+/**
-+ * Tell the device code what a failure of this QP means from now on. hold true: polls wait, because
-+ * the host will rebuild the QP or call this again with false. hold false (the initial state): polls
-+ * return the failure. Needs the CPU view of the QP (GDRCopy): DOCA_ERROR_NOT_SUPPORTED without it.
-+ */
-+doca_error_t doca_gpu_verbs_qp_hold(struct doca_gpu_verbs_qp *qp, bool hold);
-+
- /**
-  * Export multiple QPs to GPU.
-  * This API allows holes in the `qps` array.
 diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_verbs.h b/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_verbs.h
 index e871701..b76d9b0 100644
 --- a/src/transport/net_ib/gdaki/doca-gpunetio/include/host/doca_verbs.h
@@ -665,7 +563,7 @@ index 36c420d..49238a0 100644
  
      u8 reserved_at_60[0x20];
 diff --git a/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_gpunetio.cpp b/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_gpunetio.cpp
-index ba5dd70..67082e5 100644
+index ba5dd70..8545108 100644
 --- a/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_gpunetio.cpp
 +++ b/src/transport/net_ib/gdaki/doca-gpunetio/src/doca_gpunetio.cpp
 @@ -1279,7 +1279,8 @@ doca_error_t doca_gpu_verbs_export_multi_qps_dev(doca_gpu_t *gpu_dev,
@@ -731,20 +629,7 @@ index ba5dd70..67082e5 100644
          priv_cpu_proxy_progress_dbr_assisted(qp);
      } else {
          priv_cpu_proxy_progress_full_assisted(qp, &qp_progressed);
-@@ -1809,12 +1829,20 @@ doca_error_t doca_gpu_verbs_destroy_service(doca_gpu_verbs_service_t service) {
-     return DOCA_SUCCESS;
- }
- 
-+doca_error_t doca_gpu_verbs_qp_hold(struct doca_gpu_verbs_qp *qp, bool hold) {
-+    if (qp == nullptr || qp->qp_gpu_ro_h == nullptr) return DOCA_ERROR_NOT_SUPPORTED;
-+    WRITE_ONCE(qp->qp_gpu_ro_h->cq_sq.hold, (uint8_t)hold);
-+    doca_internal_wc_store_fence();
-+    return DOCA_SUCCESS;
-+}
-+
- doca_error_t doca_gpu_verbs_query_last_error(struct doca_gpu_verbs_qp *qp,
-                                              struct doca_gpu_verbs_qp_error_info *error_info) {
-     doca_error_t status = DOCA_SUCCESS;
+@@ -1815,6 +1835,7 @@ doca_error_t doca_gpu_verbs_query_last_error(struct doca_gpu_verbs_qp *qp,
      enum doca_verbs_qp_state current_state;
      doca_verbs_qp_attr_t *qp_attr = nullptr;
      doca_verbs_qp_init_attr_t *qp_init_attr = nullptr;
@@ -752,7 +637,7 @@ index ba5dd70..67082e5 100644
  
      if (qp == nullptr || qp->qp == nullptr || error_info == nullptr)
          return DOCA_ERROR_INVALID_VALUE;
-@@ -1846,6 +1874,28 @@ doca_error_t doca_gpu_verbs_query_last_error(struct doca_gpu_verbs_qp *qp,
+@@ -1846,6 +1867,28 @@ doca_error_t doca_gpu_verbs_query_last_error(struct doca_gpu_verbs_qp *qp,
      }
  
      error_info->has_error = (current_state == DOCA_VERBS_QP_STATE_ERR);
@@ -897,7 +782,7 @@ index 56ed377..1e9eedf 100644
      uint8_t ordering_semantic{};
      bool ordering_semantic_set{};
 diff --git a/src/transport/net_ib/gdaki/gin_host_gdaki.cc b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
-index 961da83..ff151e4 100644
+index 961da83..c70ceab 100644
 --- a/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 +++ b/src/transport/net_ib/gdaki/gin_host_gdaki.cc
 @@ -15,6 +15,14 @@
@@ -924,7 +809,7 @@ index 961da83..ff151e4 100644
  NCCL_PARAM(GinIbOooAll, "GIN_IB_OOO_OPT", 0);
  // Allocate a dedicated GIN-owned Q counter set and attach every GIN QP to it (diagnostic-only).
  // Set to 0 to disable, leaving GIN QPs on the device default counter set (behavior unchanged).
-@@ -384,16 +392,38 @@ struct gdaki_context {
+@@ -384,16 +392,24 @@ struct gdaki_context {
      CUmemGenericAllocationHandle mhandle;
    } sink_buffer;
    uint64_t last_error_query_time;
@@ -946,24 +831,10 @@ index 961da83..ff151e4 100644
 +  pthread_mutex_t err_mutex; // the query state is shared by err_thread and ncclCommGetAsyncError (zeroed by calloc = initialized)
  };
 +static void gdakiErrorThread(struct gdaki_context* ctx);
-+
-+// hold true: GPU threads wait on a failed QP for the error thread's verdict instead of returning the failure.
-+// There is no rebuild yet, so the verdict is always "failed": the thread lets every QP go on the first error.
-+// Every QP, because one failure also fails the requests that were cancelled on the others without an error
-+// CQE (doca_gpu_dev_verbs_submit_multi_qps), and those would wait for a verdict of their own for ever.
-+static void gdakiHold(struct gdaki_context* ctx, bool hold) {
-+  const int nranks = ctx->nranks;
-+  for (int idx = 0; idx < ctx->nContexts * (nranks + 1); idx++) { // + 1: the self-loop responders
-+    if (ctx->gqps[idx]) (void)doca_gpu_verbs_qp_hold(ctx->gqps[idx]->qp_gverbs, hold);
-+  }
-+  for (int idx = 0; ctx->companion_gqps && idx < ctx->nContexts * nranks * 2; idx++) {
-+    if (ctx->companion_gqps[idx]) (void)doca_gpu_verbs_qp_hold(ctx->companion_gqps[idx]->qp_gverbs, hold);
-+  }
-+}
  
  #define GDAKI_Q_COUNTER_FIELD(fld) {#fld, MLX5_BYTE_OFF(query_q_counter_out, fld) / 4}
  static const struct {
-@@ -675,6 +705,13 @@ NCCL_PARAM(GinGdakiForceMcst, "GDAKI_FORCE_MCST", 0);
+@@ -675,6 +691,13 @@ NCCL_PARAM(GinGdakiForceMcst, "GDAKI_FORCE_MCST", 0);
  
  static ncclResult_t gdakiCheckDeviceSupport(doca_gpu_t* gpuDev, doca_dev_t* netDev,
                                              enum doca_gpu_dev_verbs_nic_handler nicHandler, int rank) {
@@ -977,7 +848,7 @@ index 961da83..ff151e4 100644
    doca_error_t docaStatus = doca_gpu_nic_cap_is_gpu_mem_umem_supported(gpuDev, netDev);
    if (docaStatus != DOCA_SUCCESS &&
        !(gpuDev->type == DOCA_GPU_LIB_TYPE_SDK && netDev->type == DOCA_VERBS_SDK_LIB_TYPE_SDK &&
-@@ -1255,9 +1292,17 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
+@@ -1255,9 +1278,16 @@ ncclResult_t ncclGinGdakiCreateContext(void* collComm, ncclGinConfig_t* config,
    gdaki_ctx->sink_buffer.mr = sink_buffer_mr;
    gdaki_ctx->sink_buffer.mhandle = sink_buffer_mhandle;
    gdaki_ctx->collComm = cComm;
@@ -987,7 +858,6 @@ index 961da83..ff151e4 100644
  
 +  if (gdaki_ctx->docaEvent && doca_verbs_comp_channel_get_fd(gdaki_ctx->docaEvent) >= 0 &&
 +      (gdaki_ctx->err_stop_fd = eventfd(0, EFD_CLOEXEC)) >= 0) {
-+    // gdakiHold(gdaki_ctx, true) goes here once the host can rebuild a failed QP: until then a hold only delays the error.
 +    gdaki_ctx->err_thread = new std::thread(gdakiErrorThread, gdaki_ctx);
 +    ncclSetThreadName(*gdaki_ctx->err_thread, "NCCL GIN Err");
 +  }
@@ -995,7 +865,7 @@ index 961da83..ff151e4 100644
    *outDevHandle = devHandle;
    *outGinCtx = gdaki_ctx;
  
-@@ -1360,6 +1405,12 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
+@@ -1360,6 +1390,12 @@ ncclResult_t ncclGinGdakiDestroyContext(void* ginCtx) {
    const int nranks = cComm->nranks;
    const int ncontexts = gdaki_ctx->nContexts;
  
@@ -1008,7 +878,7 @@ index 961da83..ff151e4 100644
    if (gdaki_ctx->docaEvent) {
      doca_verbs_comp_channel_destroy(gdaki_ctx->docaEvent);
      gdaki_ctx->docaEvent = nullptr;
-@@ -1532,7 +1583,7 @@ ncclResult_t ncclGinGdakiDeregMrSym(void* collComm, void* mhandle) {
+@@ -1532,7 +1568,7 @@ ncclResult_t ncclGinGdakiDeregMrSym(void* collComm, void* mhandle) {
  ncclResult_t ncclGinGdakiProgress(void* ctx) {
    struct gdaki_context* gdakiCtx = (struct gdaki_context*)ctx;
    const int ncontexts = gdakiCtx->nContexts;
@@ -1017,7 +887,7 @@ index 961da83..ff151e4 100644
    const int nqpsPerRank = ncontexts;
    const int nqpsForComm = nqpsPerRank * nranks;  // Number of QPs for communication
    bool has_progressed = true;
-@@ -1565,7 +1616,7 @@ ncclResult_t ncclGinGdakiProgress(void* ctx) {
+@@ -1565,7 +1601,7 @@ ncclResult_t ncclGinGdakiProgress(void* ctx) {
  // hardware counters, so triage can tell whether GIN traffic as a whole saw retries, drops, sequence errors, etc.
  static void gdakiReportQpError(struct gdaki_context* ctx, struct doca_gpu_verbs_qp* qp,
                                 const struct doca_gpu_verbs_qp_error_info* errorInfo) {
@@ -1026,7 +896,7 @@ index 961da83..ff151e4 100644
    const int nqpsForComm = ctx->nContexts * nranks;
    const char* type = "self-loop peer";
    int qpIdx = -1;
-@@ -1592,12 +1643,13 @@ static void gdakiReportQpError(struct gdaki_context* ctx, struct doca_gpu_verbs_
+@@ -1592,12 +1628,13 @@ static void gdakiReportQpError(struct gdaki_context* ctx, struct doca_gpu_verbs_
         ctx->nContexts, qpn, ctx->ginCounterSetId, (unsigned)errorInfo->syndrome, (unsigned)errorInfo->vendor_err_synd,
         (unsigned)errorInfo->hw_err_synd, (unsigned)errorInfo->hw_synd_type, errorInfo->wqe_counter,
         gdakiQCounterString(ctx, counters, sizeof(counters)));
@@ -1041,7 +911,7 @@ index 961da83..ff151e4 100644
    const int nqpsPerRank = ncontexts;
    const int nqpsForComm = nqpsPerRank * nranks;  // Number of QPs for communication
  
-@@ -1628,7 +1680,8 @@ static ncclResult_t ncclGinGdakiQueryLastErrorPolling(struct gdaki_context* gdak
+@@ -1628,7 +1665,8 @@ static ncclResult_t ncclGinGdakiQueryLastErrorPolling(struct gdaki_context* gdak
    return ncclSuccess;
  }
  
@@ -1051,7 +921,7 @@ index 961da83..ff151e4 100644
    bool hasError_ = false;
    struct doca_gpu_verbs_qp* eventQp = nullptr;
    void* cq_context;
-@@ -1642,7 +1695,8 @@ static ncclResult_t ncclGinGdakiQueryLastErrorEvent(struct gdaki_context* gdakiC
+@@ -1642,7 +1680,8 @@ static ncclResult_t ncclGinGdakiQueryLastErrorEvent(struct gdaki_context* gdakiC
        struct doca_gpu_verbs_qp_error_info errorInfo;
        DOCACHECK(doca_gpu_verbs_query_last_error(eventQp, &errorInfo));
        hasError_ = errorInfo.has_error;
@@ -1061,7 +931,7 @@ index 961da83..ff151e4 100644
  
        status = doca_verbs_ack_cq_events(eventQp->cq_sq, 1);
        if (status != DOCA_SUCCESS) return ncclInternalError;
-@@ -1650,30 +1704,146 @@ static ncclResult_t ncclGinGdakiQueryLastErrorEvent(struct gdaki_context* gdakiC
+@@ -1650,30 +1689,143 @@ static ncclResult_t ncclGinGdakiQueryLastErrorEvent(struct gdaki_context* gdakiC
        WARN("doca_verbs_get_cq_comp_channel_event failure: cq_context not set on success.");
      } else if (status != DOCA_SUCCESS && status != DOCA_ERROR_AGAIN) return ncclInternalError;
    }
@@ -1074,7 +944,6 @@ index 961da83..ff151e4 100644
 +    if (hasError_ && report) gdakiReportQpError(gdakiCtx, gdakiCtx->pending_err_qp, &errorInfo);
 +  }
  
-+  if (hasError_) gdakiHold(gdakiCtx, false); // here, as ncclCommGetAsyncError may take the event before the thread
    *hasError = hasError_;
    return ncclSuccess;
  }
@@ -1099,7 +968,6 @@ index 961da83..ff151e4 100644
 +    }
 +  }
 +  if (attr) doca_verbs_qp_attr_destroy(attr);
-+  gdakiHold(ctx, false);
 +  pthread_mutex_unlock(&ctx->err_mutex);
 +}
 +
@@ -1174,7 +1042,6 @@ index 961da83..ff151e4 100644
 +    pthread_mutex_unlock(&ctx->err_mutex);
 +    if (ret != ncclSuccess) break; // ncclCommGetAsyncError still runs the query
 +  }
-+  gdakiHold(ctx, false); // also on a stop or a failed query: nobody is left to give a verdict
 +  if (cnpFd >= 0) close(cnpFd);
 +}
 +

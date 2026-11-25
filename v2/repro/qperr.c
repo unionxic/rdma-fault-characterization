@@ -2,6 +2,8 @@
 // creates through mlx5dv_devx_obj_create and, QPERR_AFTER_MS after the first of them reaches RTS, moves all of
 // them to the error state (2ERR_QP), as a local QP failure does. No library code is changed.
 // env: QPERR_RANK (the MPI rank that injects; unset: off)  QPERR_AFTER_MS (default 1000)
+//      QPERR_AGAIN_MS (set: a second injection this long after the first, on the QPs the process has then)
+// Each injection also prints one "QPERR rank=r round=k qps=n wall_ms=t" line (t: CLOCK_REALTIME before the first QP moves).
 // build: gcc -O2 -shared -fPIC -o libqperr.so qperr.c -ldl -lpthread
 // NVSHMEM links libmlx5 and is caught by symbol interposition; NCCL loads it with dlopen + dlsym, so dlsym is
 // wrapped too.
@@ -13,16 +15,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 struct mlx5dv_devx_obj;
 struct ibv_context;
 typedef struct mlx5dv_devx_obj *(*create_fn)(struct ibv_context *, const void *, size_t, void *, size_t);
 typedef int (*modify_fn)(struct mlx5dv_devx_obj *, const void *, size_t, void *, size_t);
+typedef int (*destroy_fn)(struct mlx5dv_devx_obj *);
 
 enum { CREATE_QP = 0x500, RTR2RTS_QP = 0x504, TO_ERR_QP = 0x507, MAXQP = 256 };
 static create_fn real_create;
 static modify_fn real_modify;
+static destroy_fn real_destroy;
 static struct { struct mlx5dv_devx_obj *obj; uint32_t qpn; } qps[MAXQP];
 static int nqps, armed;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -39,18 +44,32 @@ static int my_rank(void) {
 }
 
 static void *inject(void *arg) {
-  const char *ms = getenv("QPERR_AFTER_MS");
-  usleep(1000 * (ms ? atoi(ms) : 1000));
-  pthread_mutex_lock(&lock);
-  for (int i = 0; i < nqps; i++) {
-    uint8_t in[16] = {TO_ERR_QP >> 8, TO_ERR_QP & 0xff}, out[16] = {0};
-    const uint32_t q = htobe32(qps[i].qpn);
-    memcpy(in + 8, &q, 4);
-    const int rc = real_modify(qps[i].obj, in, sizeof in, out, sizeof out);
-    fprintf(stderr, "QPERR rank=%s qpn=%#x moved to ERR rc=%d\n", getenv("OMPI_COMM_WORLD_RANK"), qps[i].qpn, rc);
+  const char *ms = getenv("QPERR_AFTER_MS"), *again = getenv("QPERR_AGAIN_MS");
+  for (int round = 1; round <= 1 + !!again; round++) {
+    usleep(1000 * (round > 1 ? atoi(again) : ms ? atoi(ms) : 1000));
+    pthread_mutex_lock(&lock);
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    fprintf(stderr, "QPERR rank=%s round=%d qps=%d wall_ms=%.1f\n", getenv("OMPI_COMM_WORLD_RANK"), round, nqps, t.tv_sec * 1e3 + t.tv_nsec / 1e6);
+    for (int i = 0; i < nqps; i++) {
+      uint8_t in[16] = {TO_ERR_QP >> 8, TO_ERR_QP & 0xff}, out[16] = {0};
+      const uint32_t q = htobe32(qps[i].qpn);
+      memcpy(in + 8, &q, 4);
+      const int rc = real_modify(qps[i].obj, in, sizeof in, out, sizeof out);
+      fprintf(stderr, "QPERR rank=%s qpn=%#x moved to ERR rc=%d\n", getenv("OMPI_COMM_WORLD_RANK"), qps[i].qpn, rc);
+    }
+    pthread_mutex_unlock(&lock);
   }
-  pthread_mutex_unlock(&lock);
   return arg;
+}
+
+// A QP that recovery replaces with a new object must leave the table before the second injection.
+static int wrap_destroy(struct mlx5dv_devx_obj *obj) {
+  pthread_mutex_lock(&lock);
+  for (int i = 0; i < nqps; i++)
+    if (qps[i].obj == obj) { qps[i] = qps[--nqps]; break; }
+  pthread_mutex_unlock(&lock);
+  return real_destroy(obj);
 }
 
 static struct mlx5dv_devx_obj *wrap_create(struct ibv_context *c, const void *in, size_t inlen, void *out, size_t outlen) {
@@ -88,11 +107,16 @@ int mlx5dv_devx_obj_modify(struct mlx5dv_devx_obj *obj, const void *in, size_t i
   if (!real_modify) real_modify = (modify_fn)mlx5_sym("mlx5dv_devx_obj_modify");
   return wrap_modify(obj, in, inlen, out, outlen);
 }
+int mlx5dv_devx_obj_destroy(struct mlx5dv_devx_obj *obj) {
+  if (!real_destroy) real_destroy = (destroy_fn)mlx5_sym("mlx5dv_devx_obj_destroy");
+  return wrap_destroy(obj);
+}
 
-// Callers that look the two functions up with dlsym (NCCL's DOCA wrapper).
+// Callers that look the functions up with dlsym (NCCL's DOCA wrapper).
 void *dlsym(void *h, const char *name) {
   void *p = real_dlsym(h, name);
   if (p && !strcmp(name, "mlx5dv_devx_obj_create")) { real_create = (create_fn)p; return (void *)wrap_create; }
   if (p && !strcmp(name, "mlx5dv_devx_obj_modify")) { real_modify = (modify_fn)p; return (void *)wrap_modify; }
+  if (p && !strcmp(name, "mlx5dv_devx_obj_destroy")) { real_destroy = (destroy_fn)p; return (void *)wrap_destroy; }
   return p;
 }

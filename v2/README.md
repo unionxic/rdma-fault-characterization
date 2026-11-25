@@ -1,8 +1,8 @@
-# v2: 원본 소스에서 다시 만드는 오류 전달과 복구
+# v2: 원본 소스에서 다시 만드는 오류 전달과 죽음 판정
 
 NCCL v2.32.6-1과 NVSHMEM v3.8.0-0의 release 소스에서 출발한 작업. v1의 복구 패치와 설계는 미참고.
 현재까지의 범위는 **오류가 application까지 원인과 함께 전달되게 하는 것**과 **상대 프로세스의 죽음을 일찍 알아채는 것**(NCCL GIN).
-복구 구현은 시작 전(규칙과 설계 단계).
+투명 복구(실패한 QP를 다시 세워 떠 있던 요청을 이어 보냄)는 설계와 측정까지 하고 만들지 않음(`RECORD.md` 4.3절).
 
 기록은 [`RECORD.md`](RECORD.md) 한 파일: 결정, 분류의 근거, 날짜별 실행 기록.
 
@@ -10,12 +10,13 @@ NCCL v2.32.6-1과 NVSHMEM v3.8.0-0의 release 소스에서 출발한 작업. v1�
 
 | 경로 | 내용 |
 |---|---|
-| `RECORD.md` | 단일 기록. 4절이 오류 분류의 근거, 4.1절이 복구 규칙, 4.2절이 상대 죽음(복구의 가정과 판정), 4.3절이 복구 설계, 6절이 실행 기록 |
-| `patches/nccl-v2.32.6-1.diff` | NCCL `ad2d192`(v2.32.6-1) 대비 변경. 14개 파일 +616 −69 |
+| `RECORD.md` | 단일 기록. 4절이 오류 분류의 근거, 4.1절이 분류 규칙, 4.2절이 상대 죽음의 판정과 그 뒤, 4.3절이 투명 복구를 만들지 않는 근거와 측정, 6절이 실행 기록 |
+| `patches/nccl-v2.32.6-1.diff` | NCCL `ad2d192`(v2.32.6-1) 대비 변경. 14개 파일 +524 −55 |
 | `patches/nvshmem-v3.8.0-0.diff` | NVSHMEM `270759e5`(v3.8.0-0) 대비 변경. 16개 파일 +294 −11 |
 | `repro/gin_fault.cu` | nccl#2483 재현: 창 밖 주소로 put을 보낸 뒤 flush와 host 조회의 반환 확인. rank를 실행 도중 죽이는 시험, shrink와 grow, counter 대기도 포함(env는 파일 첫머리) |
 | `repro/shmem_fault.cu` | nvshmem#120 재현: 잘못된 주소 또는 정렬 안 된 atomic, 스레드 수 조절 |
-| `repro/synd.c`, `synd.sh` | CQE syndrome 13개 재현 시도(CPU verbs, 한 프로세스 loopback). CQE, QP context의 오류 기록, 비동기 이벤트, 포트 카운터, 커널 로그를 경우마다 기록 |
+| `repro/synd.c`, `synd.sh` | CQE syndrome 13개 재현 시도(CPU verbs, 한 프로세스 loopback). CQE, QP context의 오류 기록, 비동기 이벤트, 포트 카운터, 커널 로그를 경우마다 기록. `psn_*`·`sqctr*`·`noplap*`·`psnmap` 경우: 순번을 이어 한쪽 QP만 다시 세우기, RESET 뒤 NIC의 SQ 번호 |
+| `repro/xnode.c`, `xnode.sh`, `xnode_sum.py` | 두 장비 사이에서 한쪽 QP만 다시 세우기 측정(CPU verbs, 양방향 전송 도중 ERR·RESET)과 그 요약 표 |
 | `repro/qperr.c` | LD_PRELOAD 주입기. 프로세스의 QP를 실행 중에 오류 상태로 바꿔 "연결 쪽 문제"를 재현(라이브러리 코드 변경 없음) |
 | `repro/decode_test.cpp` | NVSHMEM 분류 표의 자체 검사(GPU와 NIC 불필요) |
 | `repro/dev0.c` | LD_PRELOAD shim. GPU 한 장에 rank 여러 개를 올릴 때 NCCL 예제가 device 0을 쓰게 함 |
@@ -23,6 +24,7 @@ NCCL v2.32.6-1과 NVSHMEM v3.8.0-0의 release 소스에서 출발한 작업. v1�
 | `repro/build.sh` | 재현 프로그램 빌드 |
 | `run_gin_fault.sh`, `shmem_fault.sh`, `shmem_cnt.sh` | 재현 실행과 집계 |
 | `ab.sh`, `ab_report.py` | 원본과 수정본을 번갈아 돌리는 성능 비교와 중앙값 표 |
+| `accept.sh`, `baseline.sh` | 장애 시나리오 표(S1–S4는 투명 복구가 있어야 통과해 불합격으로 남음, S5·S6 통과)와 비용 기준값(정상 경로, 초기화, 메모리, 오류 스레드 CPU, 장애 뒤 대기 시간) |
 | `env.sh`, `verify.sh`, `shmem_sunny.sh`, `socks.sh` | 실행 환경, 첫 동작 확인, 보조 스크립트 |
 
 스크립트의 가정: `~/rdma-recovery/` 아래에 `nccl/`, `nvshmem/`(패치 적용본), `base/`(원본 빌드), `repro/`, host 이름은
@@ -46,10 +48,9 @@ git clone https://github.com/NVIDIA/nvshmem && cd nvshmem && git checkout 270759
 
 ## 이슈 밖에서 더한 것 (NCCL GIN GDAKI)
 
-- **host 오류 스레드.** context마다 스레드 하나가 NIC의 오류 이벤트에서 잠들어 있다가 QP 오류를 원인과 함께 경고로 출력. application이 `ncclCommGetAsyncError`를 부르지 않아도 동작. 평소 CPU 사용 스레드당 6–10 us.
+- **host 오류 스레드.** context마다 스레드 하나가 NIC의 오류 이벤트에서 잠들어 있다가 QP 오류를 원인과 함께 경고로 출력. application이 `ncclCommGetAsyncError`를 부르지 않아도 동작. 장애 없는 실행 한 번에 스레드당 CPU 약 89 us(51–129 us; 1 s마다 포트 카운터를 읽음).
 - **상대 죽음의 판정.** 원본은 죽은 rank에게 보낸 요청이 NIC의 재시도 한도(약 1분)까지 정지. 스레드가 1 s마다 포트 카운터 `rp_cnp_handled`를 읽고, 올랐을 때 이웃 소켓이 닫혔고 그 rank로 보낸 PSN 중 ACK를 못 받은 것이 있으면(QUERY_QP) 죽음으로 판정, 그 rank로 가는 QP만 오류 상태로 전환. 소켓으로 보내는 것은 없음.
 - **죽음 뒤의 shrink.** 오류가 기록된 communicator도 `ncclCommShrink(NCCL_SHRINK_ABORT)`는 수락.
-- **`cq->hold`.** 실패한 QP에서 GPU 폴링이 host의 결정을 기다리게 하는 장치. 복구(QP 재구성)의 바탕이며 지금은 꺼 둔 상태.
 
 ## 측정으로 확인한 것
 
@@ -68,8 +69,13 @@ git clone https://github.com/NVIDIA/nvshmem && cd nvshmem && git checkout 270759
   다른 job이 카운터를 올리는 중에도 동일. 판정의 근거 신호: 사라진 QP로 가는 재전송마다 보내는 쪽 포트의 `rp_cnp_handled`가 +1, 첫 상승은 죽은 뒤 0–20 ms.
 - **죽음 오판은 0회.** 장애 없는 실행, 상대가 살아 있는 QP 오류, 이웃의 정상 종료(flush 대기와 counter 대기, 카운터 잡음 유무) 모두. 이전 구현은 요청이
   떠 있는지를 GPU 쪽 번호로 판단해 counter 대기 + 정상 종료 + 잡음에서 3회 중 3회 오판, NIC의 PSN으로 바꾼 뒤 0회.
-- **정상 경로 비용.** NCCL `ring_exchange` 원본 대비 +0.06%, +0.5–1.1%, +0.0–0.2%, −0.1–−0.2%(구성 4가지, 20회씩 두 번, 원본의 회차 간 편차
-  0.1–4.4%). NVSHMEM put 지연 +1.1%, p 지연 +1.7%, 대역폭은 편차 안(10회).
+- **한쪽만 다시 세우기의 범위(투명 복구를 만들지 않은 근거).** 두 장비 사이 860회. 되는 것: ERR 상태의 QP context에서 읽은 순번은
+  정확(380/380). 그 순번을 이어 다시 세우면 한 패킷짜리 write는 230개 흐름 모두 정확히 한 번, 응답 쪽을 다시 세우지 않으면 atomic도
+  정확히 한 번(30/30). 안 되는 것: 64 KiB write는 이어 보낼 위치가 70회 중 20회 메시지 중간이라 오류 없는 데이터 손상 16회, 재실행 2회.
+  응답 쪽을 다시 세운 뒤의 atomic은 이중 실행은 없으나(0/400) 30회 중 28회 끝나지 않음.
+- **정상 경로 비용.** NCCL `ring_exchange` 원본 대비 +0.7%, +0.2–0.5%, +0.3%, −0.1–+0.2%(구성 4가지, 20회씩 두 번, 원본의 회차 간 편차
+  0.1–4.2%). 이 값은 코드 배치에 따라 움직임: 실패 경로 코드를 빼기 전(같은 날) 구성 1·2는 +0.1%, +0.8–1.1%. 구성 1의 차이(약 0.8 us)는
+  명령 수가 아니라 배치의 효과로 추정. NVSHMEM put 지연 +1.1%, p 지연 +1.7%, 대역폭은 편차 안(10회).
 
 ## 한계
 
@@ -78,5 +84,7 @@ git clone https://github.com/NVIDIA/nvshmem && cd nvshmem && git checkout 270759
 - 노드 2개에서만 실행(NCCL은 GPU 한 장에 rank 둘을 올린 rank 4개까지, NVSHMEM은 GPU 한 장에 PE 둘). 스위치 없는 직결 링크
 - 죽음 판정은 죽은 rank에게 보내던 ring 이웃만 가능. 받기만 하는 rank, 이웃이 아닌 rank, 장비 전원 차단(소켓이 닫히지 않음)은 대상 밖. counter로 기다리는 GPU 대기는 판정으로 풀리지 않음. 스위치가 있어 혼잡이 카운터를 올리는 망은 미확인(이 직결 링크에서는 실제 부하가 카운터를 올리지 않음)
 - 실패한 요청을 정확히 짚지는 못함. 기록은 "여기까지는 끝났다"는 하한이며, 그 뒤 구간의 요청은 완료 여부 미확정
-- 복구 규칙과 설계(`RECORD.md` 4.1, 4.3절)는 구현 전. 복구를 실행해 확인한 것 없음
+- 투명 복구는 만들지 않음(근거와 측정은 `RECORD.md` 4.3절). 죽은 rank의 교체는 step 재실행 위에서 가능(shrink 12–18 ms, 그 뒤 grow
+  328–335 ms; rank 죽음 뒤 한 실행에서 측정, application 상태 복사는 미확인). 같은 번호로 끼워 넣는 제자리 교체는 범위 밖. 장애는 모두
+  소프트웨어로 주입(실제 경로 고장은 재시도가 끝난 뒤, 약 47 s 뒤에야 `0x15`)
 - 실행 로그는 미공개(관리망 주소 포함). `RECORD.md`가 가리키는 `runs/...` 경로는 이 저장소에 없음
