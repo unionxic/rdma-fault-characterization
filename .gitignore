@@ -27,8 +27,6 @@
 !*.txt
 !*.json
 !*.spec
-# figures of the v2 README
-!v2/docs/*.png
 
 # Never track these, even if they match the allow-list above.
 __pycache__/

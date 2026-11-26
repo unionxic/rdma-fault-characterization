@@ -13,7 +13,6 @@ NCCL v2.32.6-1과 NVSHMEM v3.8.0-0의 release 소스에서 출발한 작업. v1�
 | `RECORD.md` | 단일 기록. 4절이 오류 분류의 근거, 4.1절이 분류 규칙, 4.2절이 상대 죽음의 판정과 그 뒤, 4.3절이 투명 복구를 만들지 않는 근거와 측정, 6절이 실행 기록 |
 | `patches/nccl-v2.32.6-1.diff` | NCCL `ad2d192`(v2.32.6-1) 대비 변경. 17개 파일 +558 −59 |
 | `patches/nvshmem-v3.8.0-0.diff` | NVSHMEM `270759e5`(v3.8.0-0) 대비 변경. 16개 파일 +294 −11 |
-| `docs/*.png` | 그림 다섯 장: 오류 전달 경로, 같은 status로 보고되는 장애, 죽음 판정, 감지 방법 비교, 실행 로그의 터미널 화면 |
 | `repro/gin_fault.cu` | nccl#2483 재현: 창 밖 주소로 put을 보낸 뒤 flush와 host 조회의 반환 확인. rank를 실행 도중 죽이는 시험, shrink와 grow, counter 대기도 포함(env는 파일 첫머리) |
 | `repro/shmem_fault.cu` | nvshmem#120 재현: 잘못된 주소 또는 정렬 안 된 atomic, 스레드 수 조절 |
 | `repro/synd.c`, `synd.sh` | CQE syndrome 13개 재현 시도(CPU verbs, 한 프로세스 loopback). CQE, QP context의 오류 기록, 비동기 이벤트, 포트 카운터, 커널 로그를 경우마다 기록. `psn_*`·`sqctr*`·`noplap*`·`psnmap` 경우: 순번을 이어 한쪽 QP만 다시 세우기, RESET 뒤 NIC의 SQ 번호 |
@@ -47,17 +46,10 @@ git clone https://github.com/NVIDIA/nvshmem && cd nvshmem && git checkout 270759
 | [NVIDIA/nccl#2483](https://github.com/NVIDIA/nccl/issues/2483) | GIN GDAKI에서 실패한 put을 device 코드가 알 수 없고 대기가 끝나지 않음. host는 10 s 조회에서 한 번만 확인 | 첫 오류를 CQ에 기록, 반환값이 있는 flush와 wait의 `ncclRemoteError` 반환, host 경고에 원인 출력(조회 간격 기본 10 s → 1 s). CQ 방식 3가지 모두 |
 | [NVIDIA/nccl#2480](https://github.com/NVIDIA/nccl/issues/2480) | `NCCL_GIN_GDAKI_NIC_HANDLER=6`이 init을 통과한 뒤 조용히 정지 | 지원하지 않는 값을 경고와 함께 거절. upstream 수정은 dev 브랜치 |
 
-고친 뒤 오류 한 건이 전달되는 경로(NCCL GIN). 실선은 오류의 전달, 점선은 host의 조회.
-
-![오류 한 건의 전달 경로](docs/error-flow.png)
-
 ## 이슈 밖에서 더한 것 (NCCL GIN GDAKI)
 
 - **host 오류 스레드.** context마다 스레드 하나가 NIC의 오류 이벤트에서 잠들어 있다가 QP 오류를 원인과 함께 경고로 출력. application이 `ncclCommGetAsyncError`를 부르지 않아도 동작. 장애 없는 실행 한 번에 스레드당 CPU 약 89 us(51–129 us; 1 s마다 포트 카운터를 읽음).
 - **상대 죽음의 판정.** 원본은 죽은 rank에게 보낸 요청이 NIC의 재시도 한도(약 1분)까지 정지. 스레드가 1 s마다 포트 카운터 `rp_cnp_handled`를 읽고, 올랐을 때 이웃 소켓이 닫혔고 그 rank로 보낸 PSN 중 ACK를 못 받은 것이 있으면(QUERY_QP) 죽음으로 판정, 그 rank로 가는 QP만 오류 상태로 전환. 소켓으로 보내는 것은 없음.
-
-  ![상대 죽음의 판정](docs/death-verdict.png)
-
 - **죽음 뒤의 shrink.** 오류가 기록된 communicator도 `ncclCommShrink(NCCL_SHRINK_ABORT)`는 수락.
 - **강제 shrink 예외의 범위.** 위 예외는 초기화가 성공으로 끝난 communicator에만 적용. 초기화 실패 뒤의 강제 shrink: 고치기 전
   `ncclSuccess`와 NULL communicator(2/2), 고친 뒤 `ncclRemoteError`(2/2).
@@ -74,10 +66,6 @@ git clone https://github.com/NVIDIA/nvshmem && cd nvshmem && git checkout 270759
   GPU 경로(write, read, atomic만 사용, 수신 큐 없음)가 낼 수 있는 것은 6개(`RECORD.md` 4절).
 - **오류 주입 재시험.** NCCL CQ 방식 3가지 × 양방향 120회에서 멈춤 0회, host 조회 90회 모두 원인(`0x13/0x88`) 출력.
   host 스레드를 넣은 뒤의 82회(장애 70회)에서도 멈춤 0회, 경고 한 번씩, 원인 일치.
-- **같은 코드, 다른 원인.** 서로 다른 장애가 같은 status로 보고됨(`repro/synd.c`).
-
-  ![서로 다른 장애가 같은 status로 보고됨](docs/same-status.png)
-
 - **세 분류의 재현.** 요청이 틀린 경우(`0x13`, `0x12`), 상대 프로세스 종료(`0x15/0x81`), 연결 쪽 문제(보내는 쪽 QP 오류
   `0x05/0xf5`, 받는 쪽 QP 오류 `0x15/0x81`)를 두 라이브러리에서 재현. 분류 결과는 모두 기대와 일치, 멈춤 0회.
 - **어디까지 끝났는지는 하한으로 기록.** 오류 기록의 요청 번호는 "그 아래는 모두 완료"를 뜻하는 하한. put 수만 개가
@@ -86,17 +74,18 @@ git clone https://github.com/NVIDIA/nvshmem && cd nvshmem && git checkout 270759
   다른 job이 카운터를 올리는 중에도 동일. 판정의 근거 신호: 사라진 QP로 가는 재전송마다 보내는 쪽 포트의 `rp_cnp_handled`가 +1, 첫 상승은 죽은 뒤 0–20 ms.
 - **죽음 오판은 0회.** 장애 없는 실행, 상대가 살아 있는 QP 오류, 이웃의 정상 종료(flush 대기와 counter 대기, 카운터 잡음 유무) 모두. 이전 구현은 요청이
   떠 있는지를 GPU 쪽 번호로 판단해 counter 대기 + 정상 종료 + 잡음에서 3회 중 3회 오판, NIC의 PSN으로 바꾼 뒤 0회.
-- **다른 감지 방법과의 비교.** 상대의 죽음을 아는 시간과 조건. `*`는 소스에서 읽은 기본값(PyTorch v2.6.0 `ProcessGroupNCCL`의
+- **다른 감지 방법과의 비교.** 상대의 죽음을 아는 시간과 조건. 기본값 둘은 소스에서 읽은 값(PyTorch v2.6.0 `ProcessGroupNCCL`의
   heartbeat 감시 480 s, TorchElastic dynamic rendezvous의 keep-alive 5 s × 3회)이고 이 장비에서 잰 값이 아님. NCCL 기본 약 58 s,
   `NCCL_IB_TIMEOUT=14`에서 3.5–3.8 s, 이 작업 약 0.5 s는 측정. 별도 제어 통신 없이, GPU 경로에 코드를 더하지 않고, 오판 없이 판정
   (`RECORD.md` 4.2절).
 
-  ![상대의 죽음을 아는 데 걸리는 시간](docs/detection-time.png)
-
-- **실제 로그.** 2026-11-25 실행의 두 경고를 터미널에서 `grep`한 화면. 위: rank가 전송 도중 죽었을 때의 판정 경고. 아래: 상대가 살아
-  있는 QP 오류의 원인 경고.
-
-  ![터미널에서 본 두 경고](docs/log-capture.png)
+  | 방법 | 상대의 죽음을 아는 시간 | 추가 통신 | 한계 |
+  |---|---|---|---|
+  | PyTorch의 NCCL heartbeat 감시 | 480 s(기본값) | 없음 | 멈춤만 감지하고 원인은 모름 |
+  | NCCL 기본(재시도 초과) | 약 58 s | 없음 | 죽음과 경로 장애를 구분 못 함 |
+  | elastic 학습의 heartbeat(TorchElastic) | 15 s(기본값) | 필요 | 별도 통신과 agent 필요, worker 전체 재시작 |
+  | `NCCL_IB_TIMEOUT` 축소(14) | 3.5–3.8 s | 없음 | 그보다 긴 일시 장애도 오류가 됨(추론) |
+  | 이 작업 | 약 0.5 s | 없음 | 오판 0회 |
 
 - **한쪽만 다시 세우기의 범위(투명 복구를 만들지 않은 근거).** 두 장비 사이 860회. 되는 것: ERR 상태의 QP context에서 읽은 순번은
   정확(380/380). 그 순번을 이어 다시 세우면 한 패킷짜리 write는 230개 흐름 모두 정확히 한 번, 응답 쪽을 다시 세우지 않으면 atomic도
