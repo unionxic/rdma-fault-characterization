@@ -57,29 +57,19 @@ GPU-initiated 스택에서는 GPU 커널이 NIC에 직접 요청을 올리므로
 | 상대 죽음의 판정 | host 오류 스레드가 포트 카운터 `rp_cnp_handled`의 상승, ring 이웃 소켓의 닫힘, ACK를 못 받은 PSN(QUERY_QP)으로 판정하고 그 rank로 가는 QP만 오류로 전환. rank 4개에서 받는 rank를 전송 도중 죽이면 보내던 rank만 판정, flush 정지 0.49–0.72 s(8회, 원본은 약 58 s 정지). 장애 없는 실행·상대가 살아 있는 QP 오류·이웃의 정상 종료(카운터 잡음 포함)에서 오판 0회. 오류가 기록된 communicator도 `ncclCommShrink(NCCL_SHRINK_ABORT)`는 수락 | `v2/RECORD.md` 4.2절, 6절 |
 | counter 대기 해제 | counter 값만 보는 `waitCounter`가 QP 오류나 죽음 판정에도 끝나지 않던 것(제한 시간이 없으면 멈춤)을 device context의 `failed` 바이트로 해제(abort flag처럼 폴링 10000번에 한 번 읽음). 돌던 대기가 죽은 뒤 약 0.5 s에 끝남(대기 시작 기준 538–565 ms, 8회). 대기 비용: 제한 시간 없음 +0.2%(대기당 약 20 ns), 제한 시간 있음 차이 없음 | `v2/RECORD.md` 4.2절, 6절 |
 | 강제 shrink의 범위 | `NCCL_SHRINK_ABORT` 예외는 초기화가 성공으로 끝난 communicator에만 적용. 초기화 실패 뒤의 강제 shrink: 고치기 전 `ncclSuccess`와 NULL communicator(2/2), 고친 뒤 `ncclRemoteError`(2/2) | `v2/RECORD.md` 4.2절, 6절 |
-| 다른 감지 방법과의 비교 | 상대의 죽음을 아는 시간과 조건을 다섯 방법으로 비교(아래 그림). 두 값은 소스의 기본값, 나머지는 측정 | `v2/RECORD.md` 4.2절 |
+| 다른 감지 방법과의 비교 | 상대의 죽음을 아는 시간과 조건을 다섯 방법으로 비교(아래 표). 두 값은 소스의 기본값, 나머지는 측정 | `v2/RECORD.md` 4.2절 |
 | 정상 경로 비용 | 원본 대비 NCCL `ring_exchange` 구성 4가지 +0.1–0.9%(20회씩 두 번, 원본의 회차 간 편차 0.1–3.5%, 예제의 device 코드는 counter 대기 수정 전후가 같음). NVSHMEM put 지연 +1.1%, p 지연 +1.7%(10회) | `v2/RECORD.md` 6절 |
 
-**같은 코드, 다른 원인**
+**다른 감지 방법과의 비교.** 기본값 둘은 소스에서 읽은 값(PyTorch v2.6.0의 heartbeat 감시 480 s, TorchElastic의 keep-alive
+5 s × 3회)이고 이 장비에서 잰 값이 아님. 나머지는 이 저장소의 측정. 출처는 `v2/RECORD.md` 4.2절.
 
-![서로 다른 장애가 같은 status로 보고됨](v2/docs/same-status.png)
-
-**오류 한 건의 전달 경로(NCCL GIN, 고친 뒤).** 실선은 오류의 전달, 점선은 host의 조회.
-
-![오류 한 건의 전달 경로](v2/docs/error-flow.png)
-
-**상대 죽음의 판정.** 이미 있는 정보 세 가지가 모두 맞을 때만 판정.
-
-![상대 죽음의 판정](v2/docs/death-verdict.png)
-
-**다른 감지 방법과의 비교.** 가로축은 로그. `*`는 소스에서 읽은 기본값(PyTorch v2.6.0의 heartbeat 감시 480 s, TorchElastic의
-keep-alive 5 s × 3회)이고 이 장비에서 잰 값이 아님. 나머지는 이 저장소의 측정. 출처는 `v2/RECORD.md` 4.2절.
-
-![상대의 죽음을 아는 데 걸리는 시간](v2/docs/detection-time.png)
-
-**실제 로그(2026-11-25 실행).** 위: rank가 전송 도중 죽었을 때의 판정 경고. 아래: 상대가 살아 있는 QP 오류의 원인 경고.
-
-![터미널에서 본 두 경고](v2/docs/log-capture.png)
+| 방법 | 상대의 죽음을 아는 시간 | 추가 통신 | 한계 |
+|---|---|---|---|
+| PyTorch의 NCCL heartbeat 감시 | 480 s(기본값) | 없음 | 멈춤만 감지하고 원인은 모름 |
+| NCCL 기본(재시도 초과) | 약 58 s | 없음 | 죽음과 경로 장애를 구분 못 함 |
+| elastic 학습의 heartbeat(TorchElastic) | 15 s(기본값) | 필요 | 별도 통신과 agent 필요, worker 전체 재시작 |
+| `NCCL_IB_TIMEOUT` 축소(14) | 3.5–3.8 s | 없음 | 그보다 긴 일시 장애도 오류가 됨(추론) |
+| 이 작업 | 약 0.5 s | 없음 | 오판 0회 |
 
 ### v1: 장애 전파 측정 (2026-09 – 2026-11)
 
