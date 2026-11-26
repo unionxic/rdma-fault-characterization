@@ -10,7 +10,7 @@
 |---|---|
 | 상태 | `RUNNING` |
 | 작성일 | 2026-11-19 |
-| 마지막 갱신 | 2026-11-25, 방향 전환: 투명 복구는 만들지 않음(4.3절). 중심은 세분화된 진단과 빠른 죽음 판정. 그 뒤 counter 대기 해제와 shrink 예외 좁히기(6절 끝) |
+| 마지막 갱신 | 2026-11-26, 마무리: 중심은 세분화된 진단과 빠른 죽음 판정. 투명 복구는 만들지 않고 막히는 곳의 측정만 남김(4.3절). 다른 감지 방법과의 비교(4.2절)와 그림(`docs/`)을 더함 |
 
 ## 1. 목표 (결정, 2026-11-19)
 
@@ -204,6 +204,17 @@
   application이 다시 만들어야 한다. 즉 죽은 rank의 교체는 step 재실행 위에서 된다: 떠 있던 요청은 버리고, 새 rank를 넣고, 연결을 새로
   맺고, 그 step을 다시 한다(요청 보존은 필요 없다). 옛 communicator에 같은 번호로 끼워 넣는 제자리 교체(번호와 device 핸들 유지)는
   NCCL에 없는 기능(같은 번호로 합류, GPU 쪽 QP·rkey 표 교체)을 새로 만들어야 해서 이번 범위에서 뺀다(결정 2026-11-25).
+- **다른 감지 방법과의 비교**(2026-11-25; 두 기본값은 소스에서 읽은 값이고 이 장비에서 잰 것이 아니다):
+
+  | 방법 | 상대의 죽음을 아는 시간 | 추가 통신 | 한계 |
+  |---|---|---|---|
+  | PyTorch `ProcessGroupNCCL`의 heartbeat 감시 | 480 s(기본값) `[측정: 소스, PyTorch v2.6.0 ProcessGroupNCCL.cpp:908–909; collective 제한 시간의 기본값은 10분, ProcessGroupNCCL.hpp:132]` | 없음 | watchdog 스레드가 멈춘 것만 감지해 프로세스를 중단한다. 원인을 모르고, GPU가 직접 보내는 GIN 경로는 보지 않는다 |
+  | NCCL 기본(NIC의 재시도 초과) | 약 56–60 s `[측정]` | 없음 | `0x15/0x81` 하나로 와서 상대의 죽음과 경로 장애를 구분하지 못한다(4절) |
+  | elastic 학습의 heartbeat(TorchElastic dynamic rendezvous) | 15 s(기본값: 5 s 간격 × 3회) `[측정: 소스, torch/distributed/elastic/rendezvous/dynamic_rendezvous.py, main 2026-11-25]` | 필요(rendezvous 저장소로 가는 TCP) | 별도 통신과 node마다 agent가 필요하고, 판정 뒤 worker 전체를 다시 시작한다 |
+  | `NCCL_IB_TIMEOUT` 축소(14) | 3.5–3.8 s `[측정: v1 ack_timeout; 6절 2026-11-25의 inject에서 약 3.5 s]` | 없음 | 같은 타이머가 재전송 타이머라 그보다 긴 일시 장애도 오류가 된다 `[추론]` |
+  | 이 작업의 판정 | 약 0.5 s `[측정]` | 없음(이미 있는 소켓의 닫힘만 본다) | 오판 0회 `[측정]`. 범위와 한계는 이 절의 다른 항목 |
+
+  이 비교로 말할 수 있는 것: 별도 제어 통신 없이, GPU 경로에 코드를 더하지 않고(판정은 host 스레드가 한다), 오판 없이 약 0.5 s에 판정한다.
 - `[미확인]`: application 상태 복사.
 
 ## 4.3 투명 복구: 만들지 않는다 (결정, 2026-11-25)
@@ -239,6 +250,11 @@
 - 주입한 고장은 실제와 다르다. 실제 망 고장은 재시도가 다 끝난 뒤(약 47 s)에야 `0x15`가 나고 그때 경로가 아직 끊겨 있을 수 있다.
   "받는 쪽 QP만 ERR"인 시나리오는 실제 원인이 거의 없는 주입 방식의 산물이다.
 
+**남긴 길** (만들지 않음, 결정 2026-11-25): 위의 막힘 가운데 둘(QP가 양방향 공용, 메시지의 첫 순번을 알 수 없음)은 한쪽만 다시
+세우기 때문에 생긴다. 실행 중에 양쪽이 말을 주고받는 별도 통로가 있으면, 양쪽이 합의해 QP를 함께 다시 세우고 받는 쪽이 알려 준 위치부터 메시지
+단위로 다시 보낼 수 있다 `[추론, 돌려 보지 않음]`. 그래도 고칠 수 있는 고장의 몫은 그대로이고, GPU의 전송을 멈추고 이어받는 장치(뺀 hold)가 다시
+필요하다. 이 작업은 소켓으로 메시지를 보내지 않는 조건에서 했으므로 이 길은 향후 연구로 남기고, 작업은 진단과 빠른 죽음 판정으로 마무리한다.
+
 **확인된 사실** (설계 중에 잰 것)
 
 - QP 쌍은 양쪽을 RESET으로 내렸다 올리면 다시 쓸 수 있다. NIC의 SQ 번호와 PSN이 0에서 다시 시작하고 QP context의 오류
@@ -271,6 +287,7 @@
 - [x] 복구 규칙 정하기(4.1절)
 - [x] 죽음 판정(4.2절)
 - [x] 투명 복구의 범위 측정과 설계 → 만들지 않기로 결정(4.3절)
+- [x] 마무리(2026-11-25): 다른 감지 방법과의 비교(4.2절), 남긴 길(4.3절), 그림(`docs/`)
 
 ## 6. 실행 기록
 
@@ -344,3 +361,6 @@
 | 2026-11-25 | counter 대기를 실패로 풀기(결정: 고친다, 비용 측정 포함). `waitCounter`는 counter 값만 봐서 죽음 판정이나 QP 오류가 나도 끝나지 않았다(제한 시간이 없으면 멈춤). 수정(커밋 `02dc204`): `ncclGinGdakiGPUContext`의 빈 자리(오프셋 69)에 `failed` 바이트(크기 88 그대로, `static_assert`), `GetCounterPtr`가 그 주소를 함께 돌려주고(`ncclGinOffsetPtr::failed`), `waitRollingLessEq`가 counter 대기에서만 abort flag와 같은 주기(폴링 10000번에 한 번)로 읽어 `ncclRemoteError`를 돌려준다. host는 `error_seen`을 쓰던 세 곳을 함수 하나(`gdakiSetErrorSeen`)로 모아 `failed`를 쓰고 기존 복사 함수(`copy_h_to_d`)로 device에 보낸다. 버린 방식: counter 값 자체에 표시(host가 counter 표에 닿지 못하고, 두 NIC 모두 `ATOMIC_HCA`라 NIC의 atomic과 host 쓰기가 겹치면 증가가 사라짐), 포인터로 가리키는 flag(context가 96바이트가 되어 원본 헤더로 빌드한 application과 어긋남), abort flag(대기가 성공으로 끝남). 시험: rank 4개 죽이기(`COUNTER=1 WAITCTR=1`, timed·untimed 4회씩), `inject` 2회, 잘못된 put(CQ 방식 3가지), 장애 없는 실행(rank 2·4, timed·untimed 2회씩), 정상 종료(잡음 유무), 기존 시험 전체와 `accept.sh`, `ab.sh gin 20` 2회, counter 대기 비용(64 B put + `waitCounter` 50000회, 구성마다 16회, 이전 빌드와 번갈아), SASS, 독립 코드 검사 | `[측정]` 원본 대비 17개 파일 +555 −59(전 14개 +524 −55; 아래 shrink 수정을 더하면 +558 −59). **죽이기**: 판정 8/8, 돌던 대기가 시작 뒤 538–565 ms에 끝남(대기는 죽기 전 한 반복, 약 10 ms 안에 시작)(timed는 `ncclRemoteError`, 그 뒤의 대기 63–67개는 바로 실패; untimed는 120/120회 반환, 멈춤 0). 고치기 전은 5 s 뒤 STALL. **상대가 살아 있는 QP 오류**: NIC이 재시도를 포기한 뒤(주입 뒤 약 3.5 s) 돌던 대기가 약 450 ms에 `ncclRemoteError`, 멈춤 0. **잘못된 put**: timed 4–5 ms에 `ncclRemoteError`(실패 110), untimed 4.2 ms에 풀림. **잘못 풀림 0**: 장애 없는 실행 8회 모두 counter 120/120, 정상 종료 4회와 잡음 job 7개에서 WARN 없음. 기존 시험의 결과 줄은 hold 제거 때와 같고 `accept.sh` 네 시나리오 6구성 모두 2/2(S6 486–564 ms). **비용**: `ring_exchange` 네 구성은 `waitCounter`를 부르지 않고 device 코드(SASS)가 수정 전과 바이트까지 같다; us/batch 원본 대비 +0.70·+0.70 / +0.90·+0.62 / +0.19·+0.27 / +0.05·+0.06 %(원본 편차 0.1–0.4/2.4–3.5/0.8–1.3/1.3–1.8%). counter 대기 자체: untimed 중앙값 516.6 → 517.6 ms(+0.2%, 대기당 약 20 ns), timed 515.5 → 515.0–515.5 ms(차이 없음). SASS로 폴링 한 번당 명령 +4–5개(비교 3, 분기 1), load 수는 같고 10000번에 한 번 1바이트 load. shrink 시간은 오늘 실행 전체에서 12–66 ms(중앙값 약 20 ms; 수정 전후 같음). 검사 지적 2건(미반영): `failed` 복사가 CUDA에서 실패하면 WARN만 내고 다시 하지 않음; timed `waitCounter`의 결과는 협력 그룹의 스레드 0만 받음(제한 시간 초과도 같은 기존 동작). 반영: 복사를 QP를 ERR로 바꾼 뒤에 함. 안 본 것: completion channel 없는 구성과 SDK 방식(application이 `ncclCommGetAsyncError`를 불러야 풀림), GIN 연결 여러 개, 복사가 `err_mutex`를 잡는 시간, signal 대기(`waitSignal`; 코드로는 같은 문제, 고치지 않음), Debug·SDK 빌드. 로그 `runs/ginfault-ctrw-*`, `runs/accept-ctrw-20261125-191352`, `runs/ab-gin-20261125-192446`, `-192546`, `runs/ctrcost-20261125-192726`, `-192856`|
 | 2026-11-25 | 강제 shrink 예외를 좁힘(결정: 검사 지적을 반영한다). `ncclRemoteError`는 초기화에 실패한 communicator에도 남으므로 예외가 그것까지 통과시켰다. 수정(`src/init.cc` +5 −2, 미공개 커밋이라 shrink 커밋 `561b358`에 합침): 예외에 `initState == ncclSuccess`(초기화가 성공으로 끝났을 때만 쓰이는 기존 값)를 더함. 시험: 초기화 실패(bootstrap root인 rank 1이 초기화 전에 죽음, non-blocking 초기화가 약 1 s에 `ncclRemoteError`) 뒤 강제 shrink를 수정 전후 2회씩; 죽음 뒤 shrink 3회(오류가 난 rank에서 split과 flag 없는 shrink를 먼저 시도); `accept.sh` S6 2구성; 독립 코드 검사 | `[측정]` 초기화 실패 뒤의 강제 shrink: 수정 전 `ncclSuccess`와 NULL communicator 2/2 → 수정 뒤 `ncclRemoteError` 2/2. 죽음 뒤: split과 flag 없는 shrink는 `ncclRemoteError` 3/3, 강제 shrink는 13–49 ms에 되고 새 communicator에서 120/120. S6 4/4 PASS. 검사: 추가한 조건에는 지적 없음. 남은 지적 1건(수정 전부터 있던 것, 미반영): non-blocking communicator에서 끝난 group job이 걸려 있는 채로 오류를 받아들이면 새 shrink job의 추적이 빠질 수 있음(돌려 보지 않음; blocking communicator는 해당 없음). 주석 문구는 검사 의견대로 고침(주석만이라 다시 빌드하지 않음). 로그 `runs/shrinkB-refuse-{before,after}-*`, `runs/ginfault-shrinkB-kill-20261125-194239`, `runs/accept-shrinkB-20261125-194444`|
 | 2026-11-25 | 위 두 수정의 커밋. shrink 수정은 미공개 기록의 shrink 커밋에 합쳤고(그 커밋과 그 위 죽음 판정 커밋의 해시가 바뀌어 이 문서의 해시를 지금 것으로 고침: `561b358`, `5f7ef8c`), counter 대기 해제는 새 커밋 `02dc204` | `[측정]` `git diff ad2d192 --shortstat` 17개 파일 +558 −59, 양쪽 장비의 `git diff ad2d192`가 같음(md5) |
+| 2026-11-25 | 다른 감지 방법과의 비교(결정: 약 58 s는 아무도 쓰지 않는 기본값이라 비교 대상이 아니다. 실제 비교 대상은 PyTorch의 NCCL watchdog, `NCCL_IB_TIMEOUT` 조정, elastic framework의 감지). PyTorch v2.6.0과 main의 소스에서 기본값을 읽고, 재시도 시간은 이 문서의 측정을 씀 | `[측정: 소스]` PyTorch `ProcessGroupNCCL`: heartbeat 감시는 기본으로 켜져 있고 제한 시간 480 s(`TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC`), collective 제한 시간 10분. TorchElastic dynamic rendezvous: keep-alive 5 s 간격, 3회 실패면 죽은 node로 봄(15 s). `[측정]` NCCL 기본 약 56–60 s, `NCCL_IB_TIMEOUT=14`에서 3.5–3.8 s, 이 작업 약 0.5 s. 표와 말할 수 있는 것은 4.2절. 안 한 것: 두 기본값을 이 장비에서 재는 것 |
+| 2026-11-25 | 마무리 결정. 별도 통로로 양쪽이 합의해 다시 세우는 방식이 한쪽 재구성의 막힘을 푸는지 검토 `[추론]`, 만들지 않고 향후 연구로 남김(4.3절 "남긴 길"). 작업은 진단과 빠른 죽음 판정으로 마무리 | 코드 변경 없음 |
+| 2026-11-26 | 그림 정리. `docs/`에 다섯 장: `error-flow.png`(오류 한 건의 전달 경로), `same-status.png`(다른 장애가 같은 status), `death-verdict.png`(죽음 판정), `detection-time.png`(4.2절의 비교), `log-capture.png`(2026-11-25 실행 로그 두 줄을 터미널에서 `grep`한 화면: 죽음 판정 경고와 QP 오류 원인 경고) | 그림만 추가 |
